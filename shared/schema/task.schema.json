@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kaixuan.local/opencode-pocket/task.schema.json",
+  "title": "Task",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string" },
+    "title": { "type": "string" },
+    "status": { "type": "string" },
+    "priority": { "type": "string" },
+    "workstreamId": { "type": "string" },
+    "sessionCount": { "type": "integer" },
+    "pendingApprovals": { "type": "integer" },
+    "summary": { "type": "object" }
+  },
+  "required": ["id", "title", "status", "priority"]
+}

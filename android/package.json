@@ -1,0 +1,11 @@
+{
+  "name": "opencode-pocket-android",
+  "private": true,
+  "scripts": {
+    "sync": "cap sync android",
+    "open": "cap open android"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2"
+  }
+}

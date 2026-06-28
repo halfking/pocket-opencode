@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kaixuan.local/opencode-pocket/session-resume-brief.schema.json",
+  "title": "SessionResumeBrief",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "instanceId": { "type": "string" },
+    "sessionId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "title": { "type": "string" },
+    "currentState": { "type": "string" },
+    "lastObjective": { "type": "string" },
+    "decisions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "changedFiles": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "nextAction": { "type": "string" }
+  },
+  "required": ["instanceId", "sessionId", "taskId", "title", "currentState", "nextAction"]
+}
