@@ -126,7 +126,7 @@ class WebSocketClient {
 }
 
 // 创建全局 WebSocket 实例
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8088'
+const API_BASE = import.meta.env.VITE_API_BASE || ''
 const WS_URL = API_BASE.replace(/^http/, 'ws') + '/ws'
 
 export const wsClient = new WebSocketClient(WS_URL)

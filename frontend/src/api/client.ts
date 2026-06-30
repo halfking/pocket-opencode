@@ -1,18 +1,19 @@
 import type { PocketTaskSummary } from "../../../../shared/schema"
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8088"
+const API_BASE = import.meta.env.VITE_API_BASE || ""
 
 export interface Task {
   id: string
   title: string
   description?: string
   status: string
-  priority: string
+  priority?: string
   workstreamId?: string
-  createdAt: string
-  updatedAt: string
-  pendingApprovals: number
-  sessionCount: number
+  createdAt?: string
+  updatedAt?: string
+  pendingApprovals?: number
+  sessionCount?: number
+  owner?: string
 }
 
 export interface Instance {
@@ -68,8 +69,10 @@ export interface ModelDefinition {
 }
 
 export const api = {
-  async getTasks(): Promise<Task[]> {
-    const res = await fetch(`${API_BASE}/api/tasks`)
+  async getTasks(instanceId?: string): Promise<Task[]> {
+    const url = new URL(`${API_BASE}/api/tasks`, window.location.origin)
+    if (instanceId) url.searchParams.set("instance_id", instanceId)
+    const res = await fetch(url.toString().replace(window.location.origin, ""))
     if (!res.ok) throw new Error(`Failed to fetch tasks: ${res.statusText}`)
     const data = await res.json()
     return data.tasks || []
@@ -152,5 +155,31 @@ export const api = {
       body: JSON.stringify({ providerId, modelId }),
     })
     if (!res.ok) throw new Error(`Failed to test model: ${res.statusText}`)
+  },
+
+  // 新增：获取所有会话列表（支持过滤和分页）
+  async getAllSessions(instanceId?: string, limit = 20, offset = 0): Promise<{ sessions: Session[], total: number, limit: number, offset: number }> {
+    const params = new URLSearchParams()
+    if (instanceId) params.append('instance_id', instanceId)
+    params.append('limit', limit.toString())
+    params.append('offset', offset.toString())
+    
+    const res = await fetch(`${API_BASE}/api/sessions?${params}`)
+    if (!res.ok) throw new Error(`Failed to fetch all sessions: ${res.statusText}`)
+    return res.json()
+  },
+
+  // 新增：附加会话到任务
+  async attachSessionToTask(taskId: string, sessionId: string, instanceId: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/api/tasks/${taskId}/attach-session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        instanceId, 
+        sessionId, 
+        role: "primary" 
+      }),
+    })
+    if (!res.ok) throw new Error(`Failed to attach session to task: ${res.statusText}`)
   },
 }

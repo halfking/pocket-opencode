@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- 允许访问所有域名（开发阶段，生产环境应该限制） -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    
+    <!-- localhost 配置 (adb reverse) -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+    </domain-config>
+    
+    <!-- 生产服务器配置 -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">14.103.169.56</domain>
+        <domain includeSubdomains="true">192.168.31.41</domain>
+        <domain includeSubdomains="true">pocket.kxpms.cn</domain>
+        <domain includeSubdomains="true">kxpms.cn</domain>
+    </domain-config>
+</network-security-config>

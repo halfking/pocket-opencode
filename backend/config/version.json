@@ -1,0 +1,21 @@
+{
+  "version": "1.2.0",
+  "buildNumber": 2,
+  "downloadURL": "https://files.itestu.cn/api/v3/file/get/PLACEHOLDER/opencode-pocket-latest.apk?sign=PLACEHOLDER",
+  "fileSize": 4200000,
+  "changelog": [
+    "✨ 全新移动端 UI 设计",
+    "✨ 添加登录系统",
+    "✨ 支持多服务器切换（NPS 56 / NPS 252）",
+    "✨ 实现 OpenCode 实例列表",
+    "✨ 任务列表按状态分组显示",
+    "✨ 任务详情页面",
+    "✨ 创建任务功能",
+    "🐛 修复实例列表返回后不刷新问题",
+    "🐛 修复任务列表不按实例过滤问题",
+    "🐛 修复 Android 阻止 localhost 请求问题"
+  ],
+  "forceUpdate": false,
+  "releaseDate": "2026-06-29",
+  "_comment": "downloadURL 需要上传 APK 到 CloudReve 后更新实际链接"
+}

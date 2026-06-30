@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">OpenCode Pocket</string>
+    <string name="title_activity_main">OpenCode Pocket</string>
+    <string name="package_name">com.kaixuan.opencode.pocket</string>
+    <string name="custom_url_scheme">com.kaixuan.opencode.pocket</string>
+</resources>

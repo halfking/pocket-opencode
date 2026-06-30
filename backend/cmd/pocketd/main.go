@@ -42,10 +42,15 @@ func main() {
 	}
 
 	// Initialize OpenCode adapter
-	timeoutMS, _ := strconv.Atoi(cfg.OpenCodeTimeoutMS)
+	// OpenCode 实例的会话/任务通过各实例的 HTTP API（/session）获取，
+	// 因此始终使用 HTTP adapter（按 instance_id 路由到对应实例）。
+	// POCKET_MCP_* 环境变量保留兼容但不再作为 OpenCode 会话的来源。
+	var timeoutMS int
+	timeoutMS, _ = strconv.Atoi(cfg.OpenCodeTimeoutMS)
 	if timeoutMS == 0 {
 		timeoutMS = 5000
 	}
+	log.Printf("Using OpenCode HTTP adapter (timeout: %dms)", timeoutMS)
 	opencodeAdapter := adapter.NewOpenCodeHTTPAdapter(timeoutMS)
 
 	// Initialize OpenCode Config adapter

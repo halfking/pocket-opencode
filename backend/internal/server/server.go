@@ -2,8 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -53,12 +56,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/api/instances", s.handleInstances)
 	mux.HandleFunc("/api/sessions/", s.handleSessions)
+	mux.HandleFunc("/api/sessions", s.handleAllSessions) // 新增：获取所有会话
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/tasks/", s.handleTaskOperations)
 	mux.HandleFunc("/api/config/models", s.handleModelConfig)
 	mux.HandleFunc("/api/config/reload", s.handleConfigReload)
 	mux.HandleFunc("/api/config/models/test", s.handleModelTest)
 	mux.HandleFunc("/ws", s.handleWebSocket)
+	mux.HandleFunc("/api/app/check-update", s.handleCheckUpdate)
+	mux.HandleFunc("/api/app/download", s.handleDownloadAPK)
 	return mux
 }
 
@@ -130,6 +136,117 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAllSessions 获取所有会话列表（支持过滤和分页）
+func (s *Server) handleAllSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.opencode == nil {
+		http.Error(w, "opencode adapter not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// 获取查询参数
+	instanceID := r.URL.Query().Get("instance_id")
+	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
+
+	limit := 20
+	offset := 0
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+	if offsetStr != "" {
+		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+
+	// 如果指定了 instance_id，只获取该实例的会话
+	if instanceID != "" {
+		var instanceBaseURL string
+		if s.registry != nil {
+			apiBase, err := s.registry.GetInstanceAPIBase(instanceID)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			instanceBaseURL = apiBase
+		} else {
+			http.Error(w, "registry not configured", http.StatusServiceUnavailable)
+			return
+		}
+
+		sessions, err := s.opencode.ListSessions(r.Context(), instanceBaseURL)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// 应用分页
+		start := offset
+		end := offset + limit
+		if start > len(sessions) {
+			start = len(sessions)
+		}
+		if end > len(sessions) {
+			end = len(sessions)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"sessions": sessions[start:end],
+			"total":    len(sessions),
+			"limit":    limit,
+			"offset":   offset,
+		})
+		return
+	}
+
+	// 获取所有实例的会话（如果没有指定 instance_id）
+	var allSessions []adapter.OpenCodeSession
+	if s.registry != nil {
+		instances := s.registry.ListInstances()
+		for _, inst := range instances {
+			// 通过 registry 获取实例的 API base URL
+			apiBase, err := s.registry.GetInstanceAPIBase(inst.ID)
+			if err != nil {
+				log.Printf("Failed to get API base for instance %s: %v", inst.ID, err)
+				continue
+			}
+			
+			sessions, err := s.opencode.ListSessions(r.Context(), apiBase)
+			if err != nil {
+				log.Printf("Failed to list sessions for instance %s: %v", inst.ID, err)
+				continue
+			}
+			allSessions = append(allSessions, sessions...)
+		}
+	}
+
+	// 应用分页
+	start := offset
+	end := offset + limit
+	if start > len(allSessions) {
+		start = len(allSessions)
+	}
+	if end > len(allSessions) {
+		end = len(allSessions)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"sessions": allSessions[start:end],
+		"total":    len(allSessions),
+		"limit":    limit,
+		"offset":   offset,
+	})
+}
+
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if s.taskStore == nil {
 		http.Error(w, "task store not configured", http.StatusServiceUnavailable)
@@ -138,13 +255,36 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		tasks, err := s.taskStore.ListTasks(r.Context())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		// 任务来自指定 OpenCode 实例的 /session API（一个 Session = 一个开发任务）。
+		instanceID := r.URL.Query().Get("instance_id")
+		if instanceID == "" {
+			http.Error(w, "missing instance_id query param (required for OpenCode task lookup)", http.StatusBadRequest)
 			return
 		}
+		if s.registry == nil {
+			http.Error(w, "registry not configured", http.StatusServiceUnavailable)
+			return
+		}
+		instanceBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+
+		if s.opencode == nil {
+			http.Error(w, "opencode adapter not configured", http.StatusServiceUnavailable)
+			return
+		}
+
+		remoteTasks, err := s.opencode.ListRemoteTasks(r.Context(), instanceBaseURL, "", 100)
+		if err != nil {
+			log.Printf("Failed to fetch OpenCode sessions for instance %s: %v", instanceID, err)
+			http.Error(w, fmt.Sprintf("failed to fetch tasks from instance: %v", err), http.StatusBadGateway)
+			return
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"tasks": tasks})
+		_ = json.NewEncoder(w).Encode(map[string]any{"tasks": remoteTasks})
 
 	case http.MethodPost:
 		var req task.Task
@@ -474,4 +614,127 @@ func splitPath(path string) []string {
 		result = append(result, current)
 	}
 	return result
+}
+
+// VersionInfo 版本信息结构
+type VersionInfo struct {
+	Version      string   `json:"version"`
+	BuildNumber  int      `json:"buildNumber"`
+	DownloadURL  string   `json:"downloadUrl"`
+	FileSize     int64    `json:"fileSize"`
+	Changelog    []string `json:"changelog"`
+	ForceUpdate  bool     `json:"forceUpdate"`
+	ReleaseDate  string   `json:"releaseDate"`
+}
+
+// loadVersionConfig 从配置文件加载版本信息
+func (s *Server) loadVersionConfig() (*VersionInfo, error) {
+	configPath := os.Getenv("POCKET_VERSION_CONFIG_PATH")
+	if configPath == "" {
+		// 默认路径：相对于可执行文件的 config/version.json
+		configPath = "config/version.json"
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		// 如果文件不存在，使用默认配置
+		log.Printf("Warning: version config not found at %s, using defaults: %v", configPath, err)
+		return &VersionInfo{
+			Version:     "1.2.0",
+			BuildNumber: 2,
+			DownloadURL: "http://14.103.169.56:8088/api/app/download",
+			FileSize:    4200000,
+			Changelog: []string{
+				"✨ 全新移动端 UI 设计",
+				"✨ 添加登录系统",
+				"🐛 修复若干已知问题",
+			},
+			ForceUpdate: false,
+			ReleaseDate: time.Now().Format("2006-01-02"),
+		}, nil
+	}
+
+	var versionInfo VersionInfo
+	if err := json.Unmarshal(data, &versionInfo); err != nil {
+		return nil, fmt.Errorf("failed to parse version config: %w", err)
+	}
+
+	log.Printf("Loaded version config: v%s build %d from %s", versionInfo.Version, versionInfo.BuildNumber, configPath)
+	return &versionInfo, nil
+}
+
+// handleCheckUpdate 检查应用更新
+func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	type CheckUpdateRequest struct {
+		CurrentVersion  string `json:"currentVersion"`
+		CurrentBuild    int    `json:"currentBuild"`
+		Platform        string `json:"platform"`
+		DeviceModel     string `json:"deviceModel"`
+	}
+
+	type CheckUpdateResponse struct {
+		HasUpdate   bool         `json:"hasUpdate"`
+		Latest      *VersionInfo `json:"latest,omitempty"`
+		ForceUpdate bool         `json:"forceUpdate"`
+		Message     string       `json:"message"`
+	}
+
+	var req CheckUpdateRequest
+	if r.Method == http.MethodPost {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			req.CurrentVersion = "1.0.0"
+			req.CurrentBuild = 1
+		}
+	} else {
+		req.CurrentVersion = r.URL.Query().Get("version")
+		if req.CurrentVersion == "" {
+			req.CurrentVersion = "1.0.0"
+		}
+	}
+
+	// 从配置文件加载最新版本信息
+	latestVersion, err := s.loadVersionConfig()
+	if err != nil {
+		log.Printf("Error loading version config: %v", err)
+		http.Error(w, "failed to load version info", http.StatusInternalServerError)
+		return
+	}
+
+	// 简单的版本比较
+	hasUpdate := req.CurrentVersion < latestVersion.Version || req.CurrentBuild < latestVersion.BuildNumber
+
+	resp := CheckUpdateResponse{
+		HasUpdate:   hasUpdate,
+		ForceUpdate: latestVersion.ForceUpdate,
+		Message:     "当前已是最新版本",
+	}
+
+	if hasUpdate {
+		resp.Latest = latestVersion
+		resp.Message = "发现新版本"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleDownloadAPK 下载 APK
+func (s *Server) handleDownloadAPK(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// APK 文件路径（实际部署时应该指向真实的 APK 文件）
+	apkPath := "/data/www/pocket.kxpms.cn/downloads/opencode-pocket-latest.apk"
+
+	w.Header().Set("Content-Type", "application/vnd.android.package-archive")
+	w.Header().Set("Content-Disposition", "attachment; filename=opencode-pocket.apk")
+	
+	http.ServeFile(w, r, apkPath)
 }
