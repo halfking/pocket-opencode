@@ -11,10 +11,18 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
+	"github.com/halfking/pocket-opencode/backend/internal/email"
+	"github.com/halfking/pocket-opencode/backend/internal/feishu"
+	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
+	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
+	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
+	"github.com/halfking/pocket-opencode/backend/internal/vault"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
 
@@ -27,12 +35,27 @@ type Server struct {
 	configAdapter adapter.OpenCodeConfigAdapter
 	wsHub         *ws.Hub
 	upgrader      websocket.Upgrader
+	// Phase 0: 个人助理模块 store 与依赖
+	notesStore  *notes.Store
+	emailStore  *email.Store
+	vaultStore  *vault.Store
+	transcriber *stt.Transcriber // nil = 云端 STT 兜底未配置
+	mcpClient   *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
+	// Phase C: 无状态 AI 网关（嵌入/LLM 代理）。nil = 未配置，对应 handler 返回 503。
+	embedder    aigate.Embedder
+	llm         aigate.LLMClient
+	// 后端集成：kxmemory AI 编排（分类/SSOT/总结）
+	kxmemory    *kxmemory.Client // nil = kxmemory 未配置
 }
 
-func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter) *Server {
+// New 构造 Server。Phase 0 扩展：新增 notes/email/vault store、STT transcriber、ACC MCP client。
+// Phase C 扩展：新增 embedder/llm 无状态 AI 网关。
+// 后端集成：新增 kxmemory 客户端（AI 编排服务）。
+// 这些依赖都允许为 nil（对应功能降级），由各 handler 自行判断。
+func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore *vault.Store, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem *kxmemory.Client) *Server {
 	hub := ws.NewHub()
 	go hub.Run()
-	
+
 	return &Server{
 		cfg:           cfg,
 		nps:           nps,
@@ -41,6 +64,14 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 		registry:      reg,
 		configAdapter: configAdapter,
 		wsHub:         hub,
+		notesStore:    notesStore,
+		emailStore:    emailStore,
+		vaultStore:    vaultStore,
+		transcriber:   transcriber,
+		mcpClient:     mcpClient,
+		embedder:      embedder,
+		llm:           llm,
+		kxmemory:      kxmem,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -65,6 +96,30 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/ws", s.handleWebSocket)
 	mux.HandleFunc("/api/app/check-update", s.handleCheckUpdate)
 	mux.HandleFunc("/api/app/download", s.handleDownloadAPK)
+	// 飞书事件回调 (m.kxpms.cn/callback/feishu 由 56 nginx 转发到 9010)
+	mux.HandleFunc("/callback/feishu", s.handleFeishuCallback)
+
+	// ---- Phase 0: 个人助理模块路由 ----
+	// 认证
+	mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
+	// 语音笔记
+	mux.HandleFunc("/api/notes", s.handleNotes)
+	mux.HandleFunc("/api/notes/", s.handleNoteOperations)
+	// 邮箱助手
+	mux.HandleFunc("/api/email/accounts", s.handleEmailAccounts)
+	mux.HandleFunc("/api/email/accounts/", s.handleEmailAccountOps)
+	mux.HandleFunc("/api/email/summaries", s.handleEmailSummaries)
+	mux.HandleFunc("/api/email/summaries/", s.handleEmailSummaryOps)
+	mux.HandleFunc("/api/emails", s.handleEmails)
+	mux.HandleFunc("/api/emails/sync", s.handleEmailSync)
+	mux.HandleFunc("/api/emails/", s.handleEmailOps)
+	// 密码箱（子树，含 /api/vault/sync/latest）
+	mux.HandleFunc("/api/vault/sync/", s.handleVaultSync)
+	// STT 云端兜底
+	mux.HandleFunc("/api/stt/transcribe", s.handleSttTranscribe)
+	// Phase C: 无状态 AI 网关（仅转发嵌入/LLM，不存数据）
+	mux.HandleFunc("/api/embed", s.handleEmbed)
+	mux.HandleFunc("/api/llm/chat", s.handleLLMChat)
 	return mux
 }
 
@@ -248,45 +303,99 @@ func (s *Server) handleAllSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
-	if s.taskStore == nil {
-		http.Error(w, "task store not configured", http.StatusServiceUnavailable)
-		return
-	}
+	// 降级：taskStore 为 nil 时（remote-only 模式）只支持 GET 列出远程任务
+	// POST 仍要求 PG；GET 在无 PG 时跳过 local 源，其他源照常
 
 	switch r.Method {
 	case http.MethodGet:
-		// 任务来自指定 OpenCode 实例的 /session API（一个 Session = 一个开发任务）。
+		// 🦞 三源任务聚合：按 ?source=local|opencode|acc 过滤，或省略返回所有
+		//   source=acc     → 调 ACC MCP（acc_get_tasks），Source=acc
+		//   source=opencode→ 按 instance_id 调 OpenCode HTTP adapter，Source=opencode
+		//   source=local   → 查本地 PG store，Source=local
+		//   省略           → 三源合并 + 按 workstreamId/source 过滤
+		source := r.URL.Query().Get("source")
 		instanceID := r.URL.Query().Get("instance_id")
-		if instanceID == "" {
-			http.Error(w, "missing instance_id query param (required for OpenCode task lookup)", http.StatusBadRequest)
-			return
-		}
-		if s.registry == nil {
-			http.Error(w, "registry not configured", http.StatusServiceUnavailable)
-			return
-		}
-		instanceBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
+		workstreamID := r.URL.Query().Get("workstream_id")
+		limitStr := r.URL.Query().Get("limit")
+		limit := 100
+		if limitStr != "" {
+			if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= 500 {
+				limit = n
+			}
 		}
 
-		if s.opencode == nil {
-			http.Error(w, "opencode adapter not configured", http.StatusServiceUnavailable)
-			return
+		var allTasks []task.Task
+
+		// 1. ACC 任务（经 MCP 客户端）
+		if (source == "" || source == "acc") && s.mcpClient != nil {
+			statusFilter := r.URL.Query().Get("status")
+			parsed, err := s.mcpClient.GetRemoteTasks(r.Context(), statusFilter, limit)
+			if err != nil {
+				log.Printf("[mcp] fetch ACC tasks failed: %v", err)
+				// 不阻断其他源
+			} else {
+				now := time.Now().Unix()
+				for _, p := range parsed {
+					allTasks = append(allTasks, task.Task{
+						ID:               p.ID,
+						Title:            p.Title,
+						Status:           p.Status,
+						Priority:         "normal",
+						WorkstreamID:     workstreamID,
+						Source:           "acc",
+						CreatedAt:        time.Unix(now, 0),
+						UpdatedAt:        time.Unix(now, 0),
+					})
+				}
+			}
 		}
 
-		remoteTasks, err := s.opencode.ListRemoteTasks(r.Context(), instanceBaseURL, "", 100)
-		if err != nil {
-			log.Printf("Failed to fetch OpenCode sessions for instance %s: %v", instanceID, err)
-			http.Error(w, fmt.Sprintf("failed to fetch tasks from instance: %v", err), http.StatusBadGateway)
-			return
+		// 2. OpenCode 实例会话（HTTP adapter）
+		if (source == "" || source == "opencode") && instanceID != "" && s.opencode != nil && s.registry != nil {
+			apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+			if err == nil {
+				remoteTasks, err := s.opencode.ListRemoteTasks(r.Context(), apiBaseURL, "", limit)
+				if err != nil {
+					log.Printf("Failed to fetch OpenCode sessions for instance %s: %v", instanceID, err)
+				} else {
+					now := time.Now().Unix()
+					for _, rt := range remoteTasks {
+						allTasks = append(allTasks, task.Task{
+							ID:               rt.ID,
+							Title:            rt.Title,
+							Status:           rt.Status,
+							Priority:         "normal",
+							WorkstreamID:     instanceID, // OpenCode 实例 ID 即 workstream
+							Source:           "opencode",
+							CreatedAt:        time.Unix(now, 0),
+							UpdatedAt:        time.Unix(now, 0),
+						})
+					}
+				}
+			}
+		}
+
+		// 3. 本地任务（PG store，nil-safe 降级）
+		if (source == "" || source == "local") && s.taskStore != nil {
+			localTasks, err := s.taskStore.ListTasks(r.Context())
+			if err == nil {
+				for _, t := range localTasks {
+					if workstreamID != "" && t.WorkstreamID != workstreamID {
+						continue
+					}
+					allTasks = append(allTasks, t)
+				}
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"tasks": remoteTasks})
+		_ = json.NewEncoder(w).Encode(map[string]any{"tasks": allTasks})
 
 	case http.MethodPost:
+		if s.taskStore == nil {
+			http.Error(w, "local task store not configured (remote-only mode)", http.StatusServiceUnavailable)
+			return
+		}
 		var req task.Task
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -296,14 +405,17 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "missing required fields", http.StatusBadRequest)
 			return
 		}
+		if req.Source == "" {
+			req.Source = "local" // POST 创建的任务默认为本地源
+		}
 		if err := s.taskStore.CreateTask(r.Context(), &req); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		
+
 		// 广播任务创建事件
 		s.broadcastTaskEvent("task_created", &req)
-		
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(req)
@@ -735,6 +847,14 @@ func (s *Server) handleDownloadAPK(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/vnd.android.package-archive")
 	w.Header().Set("Content-Disposition", "attachment; filename=opencode-pocket.apk")
-	
+
 	http.ServeFile(w, r, apkPath)
+}
+
+// handleFeishuCallback 处理飞书事件回调（m.kxpms.cn/callback/feishu）。
+// 由 feishu.PublicEntry 包装，传入 wsHub.Broadcast 闭包以推送 WebSocket。
+func (s *Server) handleFeishuCallback(w http.ResponseWriter, r *http.Request) {
+	feishu.PublicEntry(s.cfg, func(msgType string, payload interface{}) {
+		s.wsHub.Broadcast(msgType, payload)
+	})(w, r)
 }

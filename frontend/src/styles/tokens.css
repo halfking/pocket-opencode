@@ -1,0 +1,84 @@
+/**
+ * Design tokens — central CSS variable system.
+ * Replaces hardcoded colors scattered across views. Import once in main.ts.
+ * Supports dark mode via prefers-color-scheme.
+ */
+:root {
+  /* Brand */
+  --brand-primary: #667eea;
+  --brand-secondary: #764ba2;
+  --brand-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+
+  /* Surfaces */
+  --bg-base: #f7f7fa;
+  --bg-card: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-subtle: #f3f4f6;
+
+  /* Text */
+  --text-primary: #111827;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+  --text-inverse: #ffffff;
+
+  /* Borders & dividers */
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+
+  /* Functional */
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --info: #3b82f6;
+
+  /* Category accents (email/notes) */
+  --cat-work: #3b82f6;
+  --cat-bill: #f59e0b;
+  --cat-notification: #6b7280;
+  --cat-personal: #ec4899;
+  --cat-marketing: #8b5cf6;
+  --cat-spam: #6b7280;
+  --cat-idea: #10b981;
+  --cat-study: #06b6d4;
+  --cat-life: #f97316;
+
+  /* Radius */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+
+  /* Layout */
+  --topbar-height: 52px;
+  --bottomnav-height: 60px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-base: #0f0f14;
+    --bg-card: #1a1a22;
+    --bg-elevated: #22222c;
+    --bg-subtle: #1f1f28;
+    --text-primary: #f3f4f6;
+    --text-secondary: #9ca3af;
+    --text-muted: #6b7280;
+    --border: #2a2a35;
+    --border-strong: #3a3a48;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+  }
+}

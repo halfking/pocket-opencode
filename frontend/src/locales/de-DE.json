@@ -1,0 +1,26 @@
+{
+  "common": {
+    "confirm": "Bestätigen",
+    "cancel": "Abbrechen",
+    "save": "Speichern",
+    "delete": "Löschen",
+    "edit": "Bearbeiten",
+    "add": "Hinzufügen",
+    "search": "Suchen",
+    "reset": "Zurücksetzen",
+    "submit": "Absenden",
+    "back": "Zurück",
+    "next": "Weiter",
+    "previous": "Vorherige",
+    "finish": "Fertig",
+    "loading": "Wird geladen...",
+    "success": "Erfolgreich",
+    "error": "Fehler",
+    "warning": "Warnung",
+    "info": "Info"
+  },
+  "app": {
+    "title": "OpenCode Pocket",
+    "welcome": "Willkommen"
+  }
+}
