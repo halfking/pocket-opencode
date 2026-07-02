@@ -16,14 +16,16 @@ import (
 
 // Client MCP 客户端
 type Client struct {
-	mu         sync.Mutex
-	baseURL    string
-	apiKey     string
-	httpClient *http.Client
-	requestID  atomic.Int64
-	sessionID  string
+	mu          sync.Mutex
+	baseURL     string
+	apiKey      string
+	httpClient  *http.Client
+	requestID   atomic.Int64
+	sessionID   string
 	initialized bool
-	initTime   time.Time
+	initTime    time.Time
+	initOnce    sync.Once  // 确保 initialize 只执行一次
+	initErr     error      // 缓存初始化错误
 }
 
 // NewClient 创建新的 MCP 客户端。
@@ -124,7 +126,7 @@ func (c *Client) doRaw(ctx context.Context, payload []byte) ([]byte, http.Header
 	return body, resp.Header, nil
 }
 
-// ensureInitialized 确保 MCP 会话已初始化
+// ensureInitialized 确保 MCP 会话已初始化（并发安全，使用 sync.Once 确保单次执行）
 func (c *Client) ensureInitialized(ctx context.Context) error {
 	c.mu.Lock()
 	if c.initialized && time.Since(c.initTime) < 5*time.Minute {
@@ -133,6 +135,16 @@ func (c *Client) ensureInitialized(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 
+	// 使用 sync.Once 确保多个并发调用只有一个执行初始化
+	c.initOnce.Do(func() {
+		c.initErr = c.doInitialize(ctx)
+	})
+
+	return c.initErr
+}
+
+// doInitialize 执行实际的初始化流程（由 sync.Once 保证单次执行）
+func (c *Client) doInitialize(ctx context.Context) error {
 	// Step 1: Initialize
 	initPayload, _ := json.Marshal(JSONRPCRequest{
 		JSONRPC: "2.0",

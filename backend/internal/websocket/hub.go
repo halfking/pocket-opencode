@@ -66,16 +66,30 @@ func (h *Hub) Run() {
 
 		case message := <-h.broadcast:
 			h.mu.RLock()
+			// 收集需要移除的客户端（发送缓冲区满）
+			var toRemove []*Client
 			for client := range h.clients {
 				select {
 				case client.send <- message:
 				default:
-					// 客户端发送缓冲区满，关闭连接
-					close(client.send)
-					delete(h.clients, client)
+					// 客户端发送缓冲区满，标记为待移除
+					toRemove = append(toRemove, client)
 				}
 			}
 			h.mu.RUnlock()
+
+			// 在读锁外统一移除（避免在 RLock 下写 map）
+			if len(toRemove) > 0 {
+				h.mu.Lock()
+				for _, client := range toRemove {
+					if _, ok := h.clients[client]; ok {
+						close(client.send)
+						delete(h.clients, client)
+						log.Printf("WebSocket client removed (send buffer full): %s", client.ID)
+					}
+				}
+				h.mu.Unlock()
+			}
 		}
 	}
 }

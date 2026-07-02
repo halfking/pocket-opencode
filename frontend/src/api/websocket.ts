@@ -128,10 +128,26 @@ class WebSocketClient {
 // 创建全局 WebSocket 实例
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 const WS_URL = API_BASE.replace(/^http/, 'ws') + '/ws'
+const TOKEN_KEY = 'pocket_token'
 
 export const wsClient = new WebSocketClient(WS_URL)
 
-// 自动连接
-wsClient.connect()
+/**
+ * 延迟建立 WS 连接：仅在已登录（localStorage 中存在 pocket_token）时才 connect。
+ *
+ * 历史问题：模块加载即 wsClient.connect()，导致未登录也建立无认证的 WS。
+ * 现在改为显式调用 —— 由 main.ts / LoginView 在认证成功后触发，
+ * 重复调用安全（已连接则 no-op，未登录则 no-op）。
+ *
+ * 注意：handler 注册（ws-bus.initWsBus）与连接分离，互不影响。
+ */
+export function connectWs(): void {
+  const token = localStorage.getItem(TOKEN_KEY)
+  if (!token) {
+    // 未登录：不建立 WS，避免无认证连接
+    return
+  }
+  wsClient.connect()
+}
 
 export default wsClient

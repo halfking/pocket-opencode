@@ -72,11 +72,17 @@ func (s *Store) migrate() error {
 		processed_at BIGINT,
 		created_at BIGINT NOT NULL,
 		UNIQUE(account_id, message_id),
-		-- IMAP fallback 去重：message_id 缺失时按 (account_id, subject, date) 去重
-		-- 必须存在对应 UNIQUE 约束，否则 ON CONFLICT 会运行时报错
-		UNIQUE(account_id, subject, date),
 		FOREIGN KEY (account_id) REFERENCES email_accounts(id) ON DELETE CASCADE
 	);
+	-- IMAP fallback 去重：仅当 message_id 缺失时按 (account_id, subject, date)
+	-- 去重。用部分唯一索引而非全局 UNIQUE 约束，否则两封不同 message_id
+	-- 但同主题同日期（如 "Daily report"、"Out of office"）的邮件会被
+	-- ON CONFLICT DO NOTHING 静默丢弃，造成数据丢失。
+	-- 兼容旧库：先删除第一轮审计误加的全局表级 UNIQUE 约束（约束名由
+	-- PostgreSQL 自动生成）。新库此语句无副作用。
+	ALTER TABLE emails DROP CONSTRAINT IF EXISTS emails_account_id_subject_date_key;
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_subject_date
+		ON emails(account_id, subject, date) WHERE message_id IS NULL;
 	CREATE INDEX IF NOT EXISTS idx_emails_date ON emails(date DESC);
 	CREATE INDEX IF NOT EXISTS idx_emails_category ON emails(category);
 	CREATE INDEX IF NOT EXISTS idx_emails_importance ON emails(importance);
@@ -215,11 +221,16 @@ func (s *Store) SetClassification(ctx context.Context, id, category, importance,
 }
 
 // InsertEmail inserts a fetched email (IMAP sync). Returns error on conflict (duplicate).
+//
+// ON CONFLICT DO NOTHING 不指定冲突目标，PostgreSQL 会自动匹配任一唯一
+// 约束/索引：(account_id, message_id) 全局唯一约束，或 message_id IS NULL
+// 时的 (account_id, subject, date) 部分唯一索引。这样无论哪种冲突都不会
+// 抛错中断同步。
 func (s *Store) InsertEmail(ctx context.Context, e Email) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO emails (id, account_id, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-		 ON CONFLICT (account_id, subject, date) DO NOTHING`,
+		 ON CONFLICT DO NOTHING`,
 		e.ID, e.AccountID, e.FromAddress, e.FromName, e.Subject, e.Snippet, e.Date,
 		e.IsRead, e.IsStarred, e.Category, e.Importance, e.AISummary, e.SuggestedAction, e.HasAttachments)
 	return err

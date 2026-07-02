@@ -31,6 +31,18 @@ export function getCryptoKey(): CryptoKey {
   return cryptoKey
 }
 
+/**
+ * 清除内存中的共享 AES-GCM key。
+ *
+ * 用于 lockLobster()：锁定后 cryptoKey 被置 null，后续任何
+ * encryptString/decryptString 调用都会因 getCryptoKey() 抛错而失败，
+ * 防止锁定状态下仍然能解密 vault/email 凭证。页面刷新同样会清除
+ * （Web Crypto API key 不持久化），此函数提供主动清除能力。
+ */
+export function resetCryptoKey(): void {
+  cryptoKey = null
+}
+
 /** AES-GCM 加密，返回 base64（iv 前缀 + 密文）。 */
 export async function encryptString(plain: string): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(12))

@@ -13,7 +13,7 @@
  */
 import { localDB } from './local-db'
 import { vectorIndex } from './vector'
-import { initAppCrypto } from './crypto'
+import { initAppCrypto, resetCryptoKey } from './crypto'
 
 export interface InitStatus {
   ready: boolean
@@ -81,4 +81,11 @@ export async function initLobster(masterPassword: string): Promise<void> {
 export async function lockLobster(): Promise<void> {
   _ready = false
   _initializing = false // 重置初始化标志，允许下次解锁
+
+  // 关键：清除共享 AES-GCM key。否则锁定后（_ready=false）业务层调用
+  // encryptString/decryptString 仍可解密 vault/email 凭证，构成数据泄漏。
+  // resetCryptoKey() 把 cryptoKey 置 null，getCryptoKey() 此后会抛错。
+  // 注意：不强制关闭 DB 连接（localDB.close 不存在/会导致后续解锁问题），
+  // 但清掉 cryptoKey 已足以阻止 vault/email 凭证解密。
+  resetCryptoKey()
 }

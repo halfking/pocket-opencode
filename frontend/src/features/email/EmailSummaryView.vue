@@ -80,6 +80,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import AppLayout from '../../app/AppLayout.vue'
 import { emailApi } from '../../api/email'
 import type { DailySummary } from '../../api/email'
@@ -140,9 +141,11 @@ function loadByMode() {
 
 const renderedMarkdown = computed(() => {
   if (!summary.value) return ''
-  // marked v18 默认同步返回 string；强制 async:false
+  // marked v18 默认不过滤 HTML，存在存储型 XSS 风险；
+  // 强制 async:false 保证返回 string，再经 DOMPurify 清洗后渲染。
   const out = marked.parse(summary.value.content, { async: false })
-  return typeof out === 'string' ? out : ''
+  const html = typeof out === 'string' ? out : ''
+  return DOMPurify.sanitize(html)
 })
 
 function preview(s: string | undefined) {

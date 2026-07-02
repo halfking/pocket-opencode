@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
@@ -169,9 +170,18 @@ func main() {
 	taskScheduler.Start(context.Background())
 	defer taskScheduler.Stop()
 
+	// HTTP server 配置超时，防止 Slowloris 攻击和资源耗尽
 	addr := ":" + cfg.HTTPPort
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,  // 读取请求头超时
+		ReadTimeout:       30 * time.Second,  // 读取整个请求超时
+		WriteTimeout:      30 * time.Second,  // 写响应超时（注意：对 SSE/WebSocket 长连接需特殊处理）
+		IdleTimeout:       120 * time.Second, // Keep-Alive 连接空闲超时
+	}
 	log.Printf("pocketd listening on %s", addr)
-	if err := http.ListenAndServe(addr, srv.Handler()); err != nil {
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

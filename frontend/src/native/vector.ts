@@ -110,6 +110,11 @@ class VectorIndex {
     const n = this.ids.length
     const k = Math.min(topK, n)
 
+    // 防御：topK <= 0 时直接返回空数组，避免后续访问
+    // topK_results[topK_results.length - 1].score（即 undefined.score）
+    // 抛 TypeError。
+    if (k <= 0) return []
+
     // 暴力点积（归一化后 = 余弦相似度）。n 条 × DIM 维。
     // 使用 top-k 选择避免全量排序：O(n*k) vs O(n*log n)
     const topK_results: VectorMatch[] = []

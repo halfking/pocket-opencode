@@ -73,6 +73,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import AppLayout from '../../app/AppLayout.vue'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
@@ -94,8 +95,10 @@ const displayTitle = computed(() => {
 const renderedMarkdown = computed(() => {
   if (!note.value) return ''
   // marked v18 默认同步返回 string；强制 async:false 保证类型为 string
+  // marked 默认不过滤 HTML，存在存储型 XSS 风险，输出必须经 DOMPurify 消毒
   const out = marked.parse(note.value.content, { async: false })
-  return typeof out === 'string' ? out : ''
+  const html = typeof out === 'string' ? out : ''
+  return DOMPurify.sanitize(html)
 })
 
 onMounted(async () => {

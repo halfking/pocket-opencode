@@ -24,9 +24,10 @@ type Manager struct {
 
 // SessionCache 会话缓存
 type SessionCache struct {
-	mu       sync.RWMutex
-	sessions map[string]*CachedSession // key: sessionID
-	byInstance map[string][]string     // key: instanceID, value: sessionIDs
+	mu         sync.RWMutex
+	sessions   map[string]*CachedSession // key: sessionID
+	byInstance map[string][]string       // key: instanceID, value: sessionIDs
+	cachedAt   map[string]time.Time      // key: instanceID, value: 缓存时间（用于 TTL 校验）
 }
 
 // CachedSession 缓存的会话信息
@@ -97,6 +98,7 @@ func newSessionCache() *SessionCache {
 	return &SessionCache{
 		sessions:   make(map[string]*CachedSession),
 		byInstance: make(map[string][]string),
+		cachedAt:   make(map[string]time.Time),
 	}
 }
 
@@ -108,27 +110,30 @@ func newStatusMonitor() *StatusMonitor {
 	}
 }
 
-// GetSessions 获取指定实例的会话列表（带缓存）
+// GetSessions 获取指定实例的会话列表（带缓存，5分钟 TTL）
 func (m *Manager) GetSessions(ctx context.Context, instanceID string) ([]*CachedSession, error) {
 	// 先从缓存获取
 	m.sessionCache.mu.RLock()
 	sessionIDs, exists := m.sessionCache.byInstance[instanceID]
-	if exists {
-		sessions := make([]*CachedSession, 0, len(sessionIDs))
-		for _, sid := range sessionIDs {
-			if session, ok := m.sessionCache.sessions[sid]; ok {
-				sessions = append(sessions, session)
+	cachedTime, hasCacheTime := m.sessionCache.cachedAt[instanceID]
+	if exists && hasCacheTime {
+		// TTL 校验：5 分钟内有效
+		if time.Since(cachedTime) < 5*time.Minute {
+			sessions := make([]*CachedSession, 0, len(sessionIDs))
+			for _, sid := range sessionIDs {
+				if session, ok := m.sessionCache.sessions[sid]; ok {
+					// 深拷贝避免调用方修改共享指针
+					copied := *session
+					sessions = append(sessions, &copied)
+				}
+			}
+			m.sessionCache.mu.RUnlock()
+			if len(sessions) > 0 {
+				return sessions, nil
 			}
 		}
-		m.sessionCache.mu.RUnlock()
-		
-		// 如果缓存有效（5分钟内），直接返回
-		if len(sessions) > 0 {
-			return sessions, nil
-		}
-	} else {
-		m.sessionCache.mu.RUnlock()
 	}
+	m.sessionCache.mu.RUnlock()
 
 	// 缓存未命中，从 OpenCode 实例获取
 	apiBaseURL, err := m.registry.GetInstanceAPIBase(instanceID)
@@ -158,14 +163,15 @@ func (m *Manager) GetSessions(ctx context.Context, instanceID string) ([]*Cached
 			UpdatedAt:  time.Now(),
 		}
 		
-		m.sessionCache.sessions[raw.ID] = cached
-		sessions = append(sessions, cached)
-		sessionIDs = append(sessionIDs, raw.ID)
-	}
-	
-	m.sessionCache.byInstance[instanceID] = sessionIDs
+	m.sessionCache.sessions[raw.ID] = cached
+	sessions = append(sessions, cached)
+	sessionIDs = append(sessionIDs, raw.ID)
+}
 
-	return sessions, nil
+m.sessionCache.byInstance[instanceID] = sessionIDs
+m.sessionCache.cachedAt[instanceID] = time.Now() // 记录缓存时间用于 TTL 校验
+
+return sessions, nil
 }
 
 // GetSessionHistory 获取会话的详细历史

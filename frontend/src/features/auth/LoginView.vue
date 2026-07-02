@@ -75,6 +75,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { http, ApiError } from '../../api/http'
+import { connectWs } from '../../api/websocket'
 import { initLobster, isLobsterReady } from '../../native/lobster-init'
 
 const router = useRouter()
@@ -139,6 +140,8 @@ async function handleLogin() {
       body: JSON.stringify({ username: username.value, password: password.value }),
     })
     auth.setAuth(res.token, res.user)
+    // 🦞 认证成功后才建立 WS（此前模块加载不会自动连）
+    await connectWs()
     // 🦞 登录密码同时作为本地加密库主密码（MVP；生产用 cap-keystore 独立管理）
     await initLobster(password.value)
     router.push('/ai')
@@ -153,6 +156,7 @@ async function handleLogin() {
           const legacyUser = JSON.stringify({ username: 'admin', loginTime: new Date().toISOString() })
           const legacyToken = 'legacy-token-' + Date.now() // 临时 token 用于兼容性
           auth.setAuth(legacyToken, legacyUser)
+          await connectWs()
           await initLobster(password.value)
           router.push('/ai')
           return

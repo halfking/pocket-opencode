@@ -173,15 +173,21 @@ export async function importEncryptedBlob(blob: string): Promise<number> {
     })
   }
 
-  // 3. 全部校验通过后，才清空本地并写入（事务保证原子性）
-  await localDB.run('DELETE FROM local_vault_entries')
+  // 3. 全部校验通过后，才清空本地并写入。
+  //    DELETE + 所有 INSERT 在同一事务中执行（runInTransaction），
+  //    任意一条失败则整批回滚，避免解密成功→DELETE 后→INSERT 失败导致数据丢失。
+  const statements: { statement: string; values: unknown[] }[] = [
+    { statement: 'DELETE FROM local_vault_entries', values: [] },
+  ]
   for (const v of validated) {
-    await localDB.run(
-      `INSERT INTO local_vault_entries (id, title, username, url, entry_ciphertext, iv, category, icon, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      [v.id, v.title, v.username, v.url, v.entry_ciphertext, v.iv, v.category, v.icon, v.created_at, v.updated_at],
-    )
+    statements.push({
+      statement:
+        `INSERT INTO local_vault_entries (id, title, username, url, entry_ciphertext, iv, category, icon, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      values: [v.id, v.title, v.username, v.url, v.entry_ciphertext, v.iv, v.category, v.icon, v.created_at, v.updated_at],
+    })
   }
+  await localDB.runInTransaction(statements)
   return validated.length
 }
 

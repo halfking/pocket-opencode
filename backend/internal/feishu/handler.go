@@ -21,6 +21,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 )
@@ -124,20 +126,41 @@ func handleURLVerification(w http.ResponseWriter, cfg config.Config, env envelop
 	writeJSON(w, http.StatusOK, map[string]any{"challenge": env.Challenge})
 }
 
-// verifySignature 飞书 V2 HMAC-SHA256 验签
+// verifySignature 飞书 V2 HMAC-SHA256 验签 + 时间戳新鲜度校验
 // 签名公式：hmac_sha256(timestamp + nonce + secret, body) → base64
+// 时间戳校验：防止重放攻击，要求 timestamp 在 5 分钟内
 func verifySignature(timestamp, nonce, secret, body, signature string) bool {
 	if secret == "" {
-		return true // dev 模式
+		return true // dev 模式（无 secret 时跳过验签和时间戳校验）
 	}
 	if timestamp == "" || signature == "" {
 		return false
 	}
+
+	// 时间戳新鲜度校验（防止重放）
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return false // 时间戳格式错误
+	}
+	now := time.Now().Unix()
+	if abs(now-ts) > 5*60 { // 5 分钟窗口
+		return false // 时间戳过期或来自未来
+	}
+
+	// HMAC 签名验证
 	stringToSign := timestamp + nonce + secret
 	h := hmac.New(sha256.New, []byte(stringToSign))
 	h.Write([]byte(body))
 	expected := base64.StdEncoding.EncodeToString(h.Sum(nil))
 	return subtle.ConstantTimeCompare([]byte(expected), []byte(signature)) == 1
+}
+
+// abs 返回绝对值
+func abs(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 // dispatch 根据 event.type 派发到具体处理函数

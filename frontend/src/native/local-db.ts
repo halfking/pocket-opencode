@@ -82,6 +82,25 @@ class LocalDB {
   }
 
   /**
+   * 在单个事务中依次执行多条参数化语句（INSERT/UPDATE/DELETE）。
+   *
+   * 底层走 conn.executeSet(set, transaction=true)：任意一条失败则整批回滚，
+   * 保证原子性。每条语句用 `values` 数组对应 `?` 占位符，避免 SQL 注入。
+   *
+   * @param statements `{ statement, values }` 列表
+   * @returns 受影响的总行数
+   */
+  async runInTransaction(
+    statements: { statement: string; values: unknown[] }[],
+  ): Promise<number> {
+    this.requireReady()
+    if (statements.length === 0) return 0
+    const res = await this.conn!.executeSet(statements, true)
+    const changes = res.changes?.changes ?? 0
+    return typeof changes === 'number' ? changes : 0
+  }
+
+  /**
    * 查询返回多行。values 对应 ? 占位。
    */
   async query<T = Record<string, unknown>>(sql: string, values: unknown[] = []): Promise<T[]> {
