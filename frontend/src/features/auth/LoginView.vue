@@ -55,8 +55,12 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useAuthStore } from '../../stores/auth'
+import { http, ApiError } from '../../api/http'
+import { initLobster } from '../../native/lobster-init'
 
 const router = useRouter()
+const auth = useAuthStore()
 
 const username = ref('admin')
 const password = ref('admin')
@@ -72,23 +76,30 @@ async function handleLogin() {
   loading.value = true
   error.value = ''
 
-  // 模拟登录（固化用户）
-  setTimeout(() => {
-    if (username.value === 'admin' && password.value === 'admin') {
-      // 保存登录状态
-      const user = {
-        username: username.value,
-        loginTime: new Date().toISOString()
+  try {
+    // Phase C: 服务端无状态认证（只为签发调用 /embed /llm 的 JWT）
+    const res = await http<{ token: string; user: string }>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: username.value, password: password.value }),
+    })
+    auth.setAuth(res.token, res.user)
+    // 🦞 登录密码同时作为本地加密库主密码（MVP；生产用 cap-keystore 独立管理）
+    await initLobster(password.value)
+    router.push('/ai')
+  } catch (e: any) {
+    if (e instanceof ApiError && e.status === 404) {
+      // 后端尚未部署 auth 路由时，回退到 legacy localStorage 兼容模式。
+      if (username.value === 'admin' && password.value === 'admin') {
+        auth.setLegacyUser(JSON.stringify({ username: 'admin', loginTime: new Date().toISOString() }))
+        await initLobster(password.value)
+        router.push('/ai')
+        return
       }
-      localStorage.setItem('pocket_user', JSON.stringify(user))
-      
-      // 跳转到服务器选择页
-      router.push('/servers')
-    } else {
-      error.value = '用户名或密码错误'
-      loading.value = false
     }
-  }, 500)
+    error.value = e.message || '登录失败'
+  } finally {
+    loading.value = false
+  }
 }
 </script>
 
