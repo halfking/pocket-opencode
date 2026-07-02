@@ -110,7 +110,8 @@ func (s *Store) ListAccounts(ctx context.Context, userID string) ([]Account, err
 	for rows.Next() {
 		var a Account
 		var lastUID, lastAt sql.NullInt64
-		if err := rows.Scan(&a.ID, &a.UserID, &a.DisplayName, &a.EmailAddress, &a.IMAPHost, &a.IMAPPort, &a.AuthType, &a.SyncIntervalMin, &lastUID, &lastAt, &a.Rules, &a.Enabled, &a.CreatedAt); err != nil {
+		var rules sql.NullString
+		if err := rows.Scan(&a.ID, &a.UserID, &a.DisplayName, &a.EmailAddress, &a.IMAPHost, &a.IMAPPort, &a.AuthType, &a.SyncIntervalMin, &lastUID, &lastAt, &rules, &a.Enabled, &a.CreatedAt); err != nil {
 			return nil, err
 		}
 		if lastUID.Valid {
@@ -118,6 +119,9 @@ func (s *Store) ListAccounts(ctx context.Context, userID string) ([]Account, err
 		}
 		if lastAt.Valid {
 			a.LastSyncedAt = lastAt.Int64
+		}
+		if rules.Valid {
+			a.Rules = rules.String
 		}
 		out = append(out, a)
 	}
@@ -160,8 +164,34 @@ func (s *Store) ListEmails(ctx context.Context, filter ListFilter) ([]Email, err
 	var out []Email
 	for rows.Next() {
 		var e Email
-		if err := rows.Scan(&e.ID, &e.AccountID, &e.FromAddress, &e.FromName, &e.Subject, &e.Snippet, &e.Date, &e.IsRead, &e.IsStarred, &e.Category, &e.Importance, &e.AISummary, &e.SuggestedAction, &e.HasAttachments); err != nil {
+		// Several columns are nullable in the actual schema (from_name,
+		// subject, snippet, category, importance, ai_summary,
+		// suggested_action). Use sql.NullString to scan them and copy
+		// into the in-Go struct when present.
+		var fromName, subject, snippet, category, importance, aiSummary, suggestedAction sql.NullString
+		if err := rows.Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments); err != nil {
 			return nil, err
+		}
+		if fromName.Valid {
+			e.FromName = fromName.String
+		}
+		if subject.Valid {
+			e.Subject = subject.String
+		}
+		if snippet.Valid {
+			e.Snippet = snippet.String
+		}
+		if category.Valid {
+			e.Category = category.String
+		}
+		if importance.Valid {
+			e.Importance = importance.String
+		}
+		if aiSummary.Valid {
+			e.AISummary = aiSummary.String
+		}
+		if suggestedAction.Valid {
+			e.SuggestedAction = suggestedAction.String
 		}
 		out = append(out, e)
 	}
