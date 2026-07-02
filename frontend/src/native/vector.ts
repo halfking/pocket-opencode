@@ -18,6 +18,10 @@
 import { localDB } from './local-db'
 
 const DIM = 1536 // OpenAI text-embedding-3-small 维度
+// 内存索引上限：超过后新向量只存库不加载到内存（防 OOM）。
+// 50000 条 × 1536 维 × 4B ≈ 300MB，移动端可接受的上限。
+// 超过此规模应切换 sqlite-vec 原生索引。
+const MAX_VECTORS = 50000
 
 export interface VectorMatch {
   noteId: string
@@ -54,6 +58,10 @@ class VectorIndex {
 
   /** 添加一条向量（笔记创建/更新后）。同时写库。 */
   async add(noteId: string, embedding: Float32Array, model: string): Promise<void> {
+    // 内存上限保护：超过 MAX_VECTORS 时仍写库但不再加载到内存索引
+    // （查询时降级为仅 FTS，提示用户切换 sqlite-vec 或清理旧笔记）
+    const isInMemory = this.ids.indexOf(noteId) < 0 && this.ids.length < MAX_VECTORS
+
     // L2 归一化，之后点积即余弦相似度
     const normalized = normalize(embedding)
     const blob = new Uint8Array(normalized.buffer, normalized.byteOffset, normalized.byteLength)
@@ -64,6 +72,13 @@ class VectorIndex {
        ON CONFLICT(note_id) DO UPDATE SET embedding = EXCLUDED.embedding, dim = EXCLUDED.dim, model = EXCLUDED.model`,
       [noteId, blob.buffer, normalized.length, model, Date.now()],
     )
+
+    if (!isInMemory) {
+      if (this.ids.length >= MAX_VECTORS) {
+        console.warn(`[vector] 已达内存索引上限 ${MAX_VECTORS}，新向量仅存库不加载到内存。考虑启用 sqlite-vec。`)
+      }
+      return
+    }
 
     // 增量更新内存索引
     this.ids.push(noteId)

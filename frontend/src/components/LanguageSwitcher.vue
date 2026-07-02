@@ -12,6 +12,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useLocaleStore } from '@/stores/locale'
+import type { LocaleType } from '@/i18n'
 
 const { locale } = useI18n()
 const localeStore = useLocaleStore()
@@ -31,7 +32,7 @@ const availableLocales = [
 const currentLocale = computed({
   get: () => locale.value,
   set: (value) => {
-    localeStore.setLocale(value)
+    localeStore.setLocale(value as LocaleType)
   }
 })
 

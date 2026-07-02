@@ -62,9 +62,9 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	// TODO Phase 0: verify against user store + sign JWT with s.cfg.JWTSecret.
-	// 目前保留 admin/admin 兼容，前端 LoginView 仍可工作。
-	if body.Username == "admin" && body.Password == "admin" {
+	// 开发登录：仅在 POCKET_DEV_AUTH=true 时允许 admin/admin（生产环境必须关闭）
+	if s.cfg.DevAuth && body.Username == "admin" && body.Password == "admin" {
+		// TODO Phase 1: 用 s.cfg.JWTSecret 签发真实 JWT 替代 dev-token
 		writeJSON(w, http.StatusOK, map[string]string{
 			"token": "dev-token",
 			"user":  body.Username,

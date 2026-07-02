@@ -80,7 +80,7 @@ async function load(): Promise<CapKeystorePlugin> {
   if (_impl) return _impl
   try {
     const cap = await import('@capacitor/core')
-    _impl = (cap as any).registerPlugin<CapKeystorePlugin>('Keystore')
+    _impl = (cap.registerPlugin as <T>(name: string) => T)('Keystore') as CapKeystorePlugin
   } catch {
     _impl = new StubKeystore()
   }

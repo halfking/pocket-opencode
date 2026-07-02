@@ -88,7 +88,7 @@ func main() {
 	// ACC MCP endpoint is configured so task handlers can fetch ACC tasks.
 	var mcpClient *mcp.Client
 	if cfg.MCPBaseURL != "" {
-		mcpClient = mcp.NewClient(cfg.MCPBaseURL, cfg.MCPAPIKey)
+		mcpClient = mcp.NewClient(cfg.MCPBaseURL, cfg.MCPAPIKey, cfg.MCPInsecureTLS)
 		log.Printf("ACC MCP client configured: %s", cfg.MCPBaseURL)
 	}
 
@@ -162,7 +162,7 @@ func main() {
 	}
 
 	srv := server.New(cfg, npsAdapter, opencodeAdapter, taskStore, reg, configAdapter,
-		notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem)
+		notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, nil /* opencodeManager, TODO: construct */)
 
 	// Phase 5: 启动 ACC 任务后台同步（5 分钟一次把 ACC 任务拉取到本地）
 	taskScheduler := tasksync.New(mcpClient, taskStore, 5*60*1_000_000_000) // 5min

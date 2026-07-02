@@ -10,6 +10,11 @@ import (
 // ticker loop — no external cron dependency. Each account's SyncIntervalMin
 // is honored independently.
 //
+// ⚠️ 当前状态（2026-07-02 审计）：此 Scheduler 尚未在 main.go 中启动
+// （email.NewScheduler / .Start 未被调用）。pollLoop 和 dailySummaryLoop 的
+// body 仍是 TODO stub。属于 Phase 2 邮箱完整功能的预留骨架，非死代码删除项。
+// 启用方式：main.go 构造 email.NewScheduler(store, fetcher).Start(ctx)。
+//
 // Skeleton: Start launches background goroutines; Stop cancels them.
 type Scheduler struct {
 	store   *Store

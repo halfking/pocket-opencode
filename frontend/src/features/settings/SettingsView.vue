@@ -73,7 +73,7 @@
           <div class="setting-icon">🌐</div>
           <div class="setting-content">
             <div class="setting-label">API 地址</div>
-            <div class="setting-value small">{{ window.location.origin }}</div>
+            <div class="setting-value small">{{ apiOrigin }}</div>
           </div>
         </div>
       </div>
@@ -116,6 +116,9 @@ import { useRouter } from 'vue-router'
 import { APP_VERSION, checkUpdate } from '../../utils/version'
 
 const router = useRouter()
+
+// 暴露给 template（Vue template 不能直接访问 window）
+const apiOrigin = typeof window !== 'undefined' ? window.location.origin : ''
 
 const user = ref<any>(null)
 const selectedServer = ref<any>(null)

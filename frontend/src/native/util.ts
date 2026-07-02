@@ -10,7 +10,7 @@ export function registerPluginSafely<T>(name: string, stub: T): T {
     if (cached) return cached
     try {
       const cap = await import('@capacitor/core')
-      cached = (cap as any).registerPlugin<T>(name) as T
+      cached = (cap.registerPlugin as <T>(name: string) => T)(name) as T
     } catch {
       cached = stub
     }

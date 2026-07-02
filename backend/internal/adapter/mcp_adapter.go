@@ -14,7 +14,7 @@ type MCPAdapter struct {
 // NewMCPAdapter 创建新的 MCP 适配器
 func NewMCPAdapter(baseURL, apiKey string) *MCPAdapter {
 	return &MCPAdapter{
-		mcpClient: mcp.NewClient(baseURL, apiKey),
+		mcpClient: mcp.NewClient(baseURL, apiKey, false),
 	}
 }
 
