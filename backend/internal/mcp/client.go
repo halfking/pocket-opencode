@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -190,8 +191,9 @@ func (c *Client) doInitialize(ctx context.Context) error {
 
 	// 发送 notifications/initialized（不需要响应）
 	if _, _, err := c.doRaw(ctx, notifPayload); err != nil {
-		// 忽略通知错误（通知不需要响应）
-		_ = err
+		// 忽略通知错误（MCP 协议允许客户端不处理 notifications 响应）
+		// 但记录到日志以便调试连接问题
+		log.Printf("[MCP] notifications/initialized failed (ignored): %v", err)
 	}
 
 	c.mu.Lock()
