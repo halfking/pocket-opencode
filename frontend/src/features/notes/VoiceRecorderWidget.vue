@@ -25,7 +25,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onBeforeUnmount } from 'vue'
 import { sttApi } from '../../api/stt'
 
 const emit = defineEmits<{
@@ -35,15 +35,17 @@ const emit = defineEmits<{
 const recording = ref(false)
 const status = ref('')
 let mediaRecorder: MediaRecorder | null = null
+let mediaStream: MediaStream | null = null
 let chunks: Blob[] = []
 let startedAt = 0
-let audioPath = '' // in production: write to a file and pass its path
+let audioPath = '' // blob URL，转写完成后释放
+let audioPathTimeout: ReturnType<typeof setTimeout> | null = null
 
 async function start() {
   if (recording.value) return
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } })
-    mediaRecorder = new MediaRecorder(stream)
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } })
+    mediaRecorder = new MediaRecorder(mediaStream)
     chunks = []
     mediaRecorder.ondataavailable = (e) => e.data.size > 0 && chunks.push(e.data)
     mediaRecorder.start()
@@ -52,6 +54,7 @@ async function start() {
     status.value = '录音中…'
   } catch (e) {
     status.value = '麦克风权限被拒绝'
+    cleanupMedia()
   }
 }
 
@@ -65,9 +68,9 @@ async function stop() {
     mediaRecorder!.onstop = () => resolve()
     mediaRecorder!.stop()
   })
-  mediaRecorder?.stream.getTracks().forEach((t) => t.stop())
+  cleanupMedia()
 
-  // TODO: persist blob to a file and set audioPath. For now pass a placeholder.
+  // TODO: persist blob to a real file path for native STT. Currently a blob URL.
   const blob = new Blob(chunks, { type: 'audio/webm' })
   audioPath = URL.createObjectURL(blob)
 
@@ -82,8 +85,32 @@ async function stop() {
   } catch (e: any) {
     status.value = `转写失败：${e.message}`
     setTimeout(() => (status.value = ''), 3000)
+  } finally {
+    // 转写完成后释放 blob URL（避免内存泄漏；30s 后清理给复制窗口留时间）
+    audioPathTimeout = setTimeout(() => {
+      if (audioPath) { URL.revokeObjectURL(audioPath); audioPath = '' }
+    }, 30000)
   }
 }
+
+/** 清理 MediaRecorder 和 MediaStream tracks（防 mic 泄漏） */
+function cleanupMedia() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    try { mediaRecorder.stop() } catch { /* already stopped */ }
+  }
+  mediaRecorder = null
+  if (mediaStream) {
+    mediaStream.getTracks().forEach((t) => t.stop())
+    mediaStream = null
+  }
+}
+
+// 组件卸载时强制清理（防止录音中切走导致 mic 常开）
+onBeforeUnmount(() => {
+  cleanupMedia()
+  if (audioPathTimeout) clearTimeout(audioPathTimeout)
+  if (audioPath) URL.revokeObjectURL(audioPath)
+})
 </script>
 
 <style scoped>

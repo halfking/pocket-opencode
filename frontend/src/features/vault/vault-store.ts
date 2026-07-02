@@ -145,26 +145,44 @@ export async function exportEncryptedBlob(): Promise<{ blob: string; version: nu
 
 /**
  * 从云端下载的加密 blob 导入到本地库（解密 → 替换本地数据）。
+ *
+ * 安全策略：先解析+校验全部行，**全部成功后才**清空本地并写入。
+ * 避免解密/解析失败时已清空本地导致数据丢失。
  * @param blob 密文 blob（从 pocketd GET /api/vault/sync/latest 获得）
  */
 export async function importEncryptedBlob(blob: string): Promise<number> {
-  // 解密整库
+  // 1. 解密整库（若 blob 损坏/篡改此处会抛错，本地数据未动）
   const json = await decryptString(blob)
   const rows: any[] = JSON.parse(json)
 
-  // 清空本地 vault（云端是权威版本）
-  await localDB.run('DELETE FROM local_vault_entries')
-
-  // 逐条写入
+  // 2. 校验每行必有字段（任何一行缺字段 → 抛错，本地数据未动）
+  const validated: Array<{
+    id: string; title: string; username: string | null; url: string | null;
+    entry_ciphertext: string; iv: string; category: string | null;
+    icon: string | null; created_at: number; updated_at: number
+  }> = []
   for (const r of rows) {
+    if (!r.id || !r.entry_ciphertext) {
+      throw new Error(`importEncryptedBlob: row missing id or entry_ciphertext: ${JSON.stringify(r).slice(0, 100)}`)
+    }
+    validated.push({
+      id: r.id, title: r.title ?? '', username: r.username ?? null, url: r.url ?? null,
+      entry_ciphertext: r.entry_ciphertext, iv: r.iv ?? '',
+      category: r.category ?? null, icon: r.icon ?? null,
+      created_at: r.created_at ?? Date.now(), updated_at: r.updated_at ?? Date.now(),
+    })
+  }
+
+  // 3. 全部校验通过后，才清空本地并写入（事务保证原子性）
+  await localDB.run('DELETE FROM local_vault_entries')
+  for (const v of validated) {
     await localDB.run(
       `INSERT INTO local_vault_entries (id, title, username, url, entry_ciphertext, iv, category, icon, created_at, updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      [r.id, r.title, r.username, r.url, r.entry_ciphertext, r.iv ?? '',
-       r.category ?? null, r.icon ?? null, r.created_at ?? Date.now(), r.updated_at ?? Date.now()],
+      [v.id, v.title, v.username, v.url, v.entry_ciphertext, v.iv, v.category, v.icon, v.created_at, v.updated_at],
     )
   }
-  return rows.length
+  return validated.length
 }
 
 /** 获取本地 vault 条目数（用于同步前检查） */
