@@ -153,11 +153,12 @@ async function handleAttach() {
   if (!task.value || !newSession.value.sessionId || !newSession.value.instanceId) return
   
   try {
-    await api.attachSession(task.value.id, {
-      instanceId: newSession.value.instanceId,
-      sessionId: newSession.value.sessionId,
-      role: newSession.value.role
-    })
+    await api.attachSession(
+      task.value.id,
+      newSession.value.instanceId,
+      newSession.value.sessionId,
+      newSession.value.role || 'primary',
+    )
     
     // 重新加载会话列表
     sessions.value = await api.getTaskSessions(task.value.id)
@@ -180,13 +181,13 @@ function goBack() {
   router.push('/tasks')
 }
 
-function priorityText(priority: string): string {
+function priorityText(priority: string | undefined): string {
   const map: Record<string, string> = {
     high: '高优先级',
     medium: '中优先级',
     low: '低优先级'
   }
-  return map[priority] || priority
+  return map[priority ?? ''] || priority || ''
 }
 
 function statusText(status: string): string {

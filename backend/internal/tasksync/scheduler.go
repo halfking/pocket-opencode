@@ -6,6 +6,7 @@ package tasksync
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
@@ -95,7 +96,12 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			UpdatedAt:        time.Unix(now, 0),
 		}
 		if err := s.taskStore.CreateTask(ctx, &t); err != nil {
-			// UNIQUE 冲突 = 已存在，跳过（轻量错误，不刷屏）
+			// PostgreSQL UNIQUE 冲突错误码 23505 = 已存在，静默跳过
+			// 其他错误（连接断开、schema 问题等）记录日志，避免静默吞掉真实故障
+			errStr := err.Error()
+			if !strings.Contains(errStr, "23505") && !strings.Contains(errStr, "duplicate key") {
+				log.Printf("[tasksync] create ACC task %s failed: %v", p.ID, err)
+			}
 			continue
 		}
 	}

@@ -170,9 +170,9 @@ export async function searchSemantic(queryText: string, topK = 10): Promise<Sear
   const noteMap = new Map(rows.map((r) => [r.id, rowToNote(r)]))
 
   return matches
-    .map((m) => {
+    .map((m): SearchResult | null => {
       const note = noteMap.get(m.noteId)
-      return note ? { note, score: m.score, source: 'vector' as const } : null
+      return note ? { note, score: m.score, source: 'vector' } : null
     })
     .filter((r): r is SearchResult => r !== null)
 }

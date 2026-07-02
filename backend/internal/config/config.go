@@ -31,8 +31,10 @@ type Config struct {
 	// 任务系统整合（Phase 5）
 	MCPBaseURL string // POCKET_MCP_BASE_URL：ACC 系统 MCP 端点（mcp.kxpms.cn/acc/mcp）
 	MCPAPIKey  string // POCKET_MCP_API_KEY：ACC MCP Bearer token
+	MCPInsecureTLS bool // POCKET_MCP_INSECURE_TLS：跳过 TLS 验证（仅 dev/自签证书，生产必须 false）
 	// 认证（Phase 0）
 	JWTSecret string // POCKET_JWT_SECRET：签发/校验 app JWT
+	DevAuth   bool   // POCKET_DEV_AUTH：允许 admin/admin 开发登录（生产必须不设或 false）
 
 	// ---- Phase C: 龙虾无状态 AI 网关 ----
 	// pocketd 作为无状态代理：只转发嵌入/LLM 请求，不存任何用户数据。
@@ -74,7 +76,9 @@ func Load() Config {
 		EmailMasterKey: getEnv("POCKET_EMAIL_MASTER_KEY", ""),
 		MCPBaseURL:     getEnv("POCKET_MCP_BASE_URL", ""),
 		MCPAPIKey:      getEnv("POCKET_MCP_API_KEY", ""),
+		MCPInsecureTLS: getEnv("POCKET_MCP_INSECURE_TLS", "") == "true",
 		JWTSecret:      getEnv("POCKET_JWT_SECRET", "pocket-dev-insecure-secret"),
+		DevAuth:        getEnv("POCKET_DEV_AUTH", "") == "true",
 		// Phase C 无状态 AI 网关
 		EmbedBaseURL: getEnv("POCKET_EMBED_BASE_URL", ""),
 		EmbedAPIKey:  getFirstEnv([]string{"POCKET_EMBED_API_KEY", "POCKET_OPENAI_API_KEY"}, ""),

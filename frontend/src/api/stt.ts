@@ -39,7 +39,7 @@ export const sttApi = {
     if (opts.forceEngine !== 'cloud') {
       try {
         const local = await sherpa.transcribe(opts.audioPath)
-        if (local.confidence >= minConf && opts.forceEngine !== 'cloud') {
+        if (local.confidence >= minConf) {
           return {
             text: local.text,
             confidence: local.confidence,
@@ -73,6 +73,8 @@ export const sttApi = {
     return sherpa.startListening()
   },
   async stopStreaming(): Promise<SherpaResult> {
-    return sherpa.stopListening()
+    const res = await sherpa.stopListening()
+    // sherpa.stopListening 返回 { final: SherpaResult }，展开
+    return res.final ?? res
   },
 }

@@ -26,8 +26,9 @@ type Client struct {
 	initTime   time.Time
 }
 
-// NewClient 创建新的 MCP 客户端
-func NewClient(baseURL, apiKey string) *Client {
+// NewClient 创建新的 MCP 客户端。
+// insecureTLS=true 时跳过 TLS 证书验证（仅限开发/内网自签证书场景，生产必须 false）。
+func NewClient(baseURL, apiKey string, insecureTLS bool) *Client {
 	return &Client{
 		baseURL: baseURL,
 		apiKey:  apiKey,
@@ -35,7 +36,7 @@ func NewClient(baseURL, apiKey string) *Client {
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
-					InsecureSkipVerify: true,
+					InsecureSkipVerify: insecureTLS, // 生产环境必须为 false
 				},
 			},
 		},

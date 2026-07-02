@@ -19,6 +19,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
+	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
@@ -46,32 +47,36 @@ type Server struct {
 	llm         aigate.LLMClient
 	// 后端集成：kxmemory AI 编排（分类/SSOT/总结）
 	kxmemory    *kxmemory.Client // nil = kxmemory 未配置
+	// OpenCode 管理器
+	opencodeManager *opencode.Manager // nil = OpenCode 管理未启用
 }
 
 // New 构造 Server。Phase 0 扩展：新增 notes/email/vault store、STT transcriber、ACC MCP client。
 // Phase C 扩展：新增 embedder/llm 无状态 AI 网关。
 // 后端集成：新增 kxmemory 客户端（AI 编排服务）。
+// OpenCode 扩展：新增 opencodeManager（实例和会话管理）。
 // 这些依赖都允许为 nil（对应功能降级），由各 handler 自行判断。
-func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore *vault.Store, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem *kxmemory.Client) *Server {
+func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore *vault.Store, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem *kxmemory.Client, opencodeManager *opencode.Manager) *Server {
 	hub := ws.NewHub()
 	go hub.Run()
 
 	return &Server{
-		cfg:           cfg,
-		nps:           nps,
-		opencode:      opencode,
-		taskStore:     taskStore,
-		registry:      reg,
-		configAdapter: configAdapter,
-		wsHub:         hub,
-		notesStore:    notesStore,
-		emailStore:    emailStore,
-		vaultStore:    vaultStore,
-		transcriber:   transcriber,
-		mcpClient:     mcpClient,
-		embedder:      embedder,
-		llm:           llm,
-		kxmemory:      kxmem,
+		cfg:             cfg,
+		nps:             nps,
+		opencode:        opencode,
+		taskStore:       taskStore,
+		registry:        reg,
+		configAdapter:   configAdapter,
+		wsHub:           hub,
+		notesStore:      notesStore,
+		emailStore:      emailStore,
+		vaultStore:      vaultStore,
+		transcriber:     transcriber,
+		mcpClient:       mcpClient,
+		embedder:        embedder,
+		llm:             llm,
+		kxmemory:        kxmem,
+		opencodeManager: opencodeManager,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -120,7 +125,49 @@ func (s *Server) Handler() http.Handler {
 	// Phase C: 无状态 AI 网关（仅转发嵌入/LLM，不存数据）
 	mux.HandleFunc("/api/embed", s.handleEmbed)
 	mux.HandleFunc("/api/llm/chat", s.handleLLMChat)
+	
+	// OpenCode 管理 API
+	mux.HandleFunc("/api/opencode/sessions", s.handleOpenCodeSessions)
+	mux.HandleFunc("/api/opencode/sessions/", s.handleOpenCodeSessionOperations)
+	mux.HandleFunc("/api/opencode/instances/", s.handleOpenCodeInstanceOperations)
+	mux.HandleFunc("/api/opencode/cache/refresh", s.handleOpenCodeRefreshCache)
+	
+	// OpenCode 发现和任务感知 API
+	mux.HandleFunc("/api/opencode/discover", s.handleDiscoverInstances)
+	mux.HandleFunc("/api/opencode/tasks", s.handleListAllTasks)
+	mux.HandleFunc("/api/opencode/tasks/", s.handleGetTaskDetail)
+	
 	return mux
+}
+
+// handleOpenCodeSessionOperations 处理 OpenCode 会话相关操作的路由分发
+func (s *Server) handleOpenCodeSessionOperations(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path[len("/api/opencode/sessions/"):]
+	
+	// 检查是否是 /history 或 /summary 结尾
+	if len(path) > 8 && path[len(path)-8:] == "/history" {
+		s.handleOpenCodeSessionHistory(w, r)
+		return
+	}
+	if len(path) > 8 && path[len(path)-8:] == "/summary" {
+		s.handleOpenCodeSessionSummary(w, r)
+		return
+	}
+	
+	http.Error(w, "not found", http.StatusNotFound)
+}
+
+// handleOpenCodeInstanceOperations 处理 OpenCode 实例相关操作的路由分发
+func (s *Server) handleOpenCodeInstanceOperations(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path[len("/api/opencode/instances/"):]
+	
+	// 检查是否是 /stats 结尾
+	if len(path) > 6 && path[len(path)-6:] == "/stats" {
+		s.handleOpenCodeInstanceStats(w, r)
+		return
+	}
+	
+	http.Error(w, "not found", http.StatusNotFound)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {

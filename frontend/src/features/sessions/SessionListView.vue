@@ -132,7 +132,13 @@ const filteredSessions = computed(() => {
 async function loadInstances() {
   try {
     const data = await api.getInstances()
-    instances.value = data.instances || []
+    // api.getInstances 返回 client.ts 的 Instance[]（含 displayName/environment 等）
+    // 映射为本地 SessionListView 用的 {id, name, baseURL} 形状
+    instances.value = (data || []).map((i: any) => ({
+      id: i.id,
+      name: i.displayName || i.name || i.id,
+      baseURL: i.baseURL || i.apiBaseURL || '',
+    }))
   } catch (err: any) {
     console.error('Failed to load instances:', err)
   }
