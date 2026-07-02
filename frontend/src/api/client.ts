@@ -1,19 +1,38 @@
 import { useAuthStore } from '../stores/auth'
+import { ApiError } from './http'
 
 const API_BASE = import.meta.env.VITE_API_BASE || ""
 
 /**
- * fetch 包装：注入 Bearer token，保持与 api/http.ts 一致的认证行为。
+ * fetch 包装：注入 Bearer token + 统一错误处理。
+ * 
  * 旧 client.ts 直接裸 fetch，导致这批接口永远不带 Authorization 头。
- * 这里统一注入，且不改变既有方法签名/返回值。
+ * 第五轮修复：统一注入 token。
+ * 第六轮优化：包装响应错误为 ApiError（与 http.ts 一致），便于调用方处理。
  */
-function authFetch(input: string, init: RequestInit = {}): Promise<Response> {
+async function authFetch(input: string, init: RequestInit = {}): Promise<Response> {
   const auth = useAuthStore()
   const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
     ...(init.headers as Record<string, string> | undefined),
   }
   if (auth.token) headers["Authorization"] = `Bearer ${auth.token}`
-  return fetch(input, { ...init, headers })
+  
+  const response = await fetch(input, { ...init, headers })
+  
+  // 非 2xx 响应抛 ApiError（与 http.ts 行为一致）
+  if (!response.ok) {
+    let message = response.statusText
+    try {
+      const body = await response.json()
+      if (body.error) message = body.error
+    } catch {
+      // 响应不是 JSON，用 statusText
+    }
+    throw new ApiError(response.status, message)
+  }
+  
+  return response
 }
 
 export interface Task {
@@ -87,14 +106,12 @@ export const api = {
     const url = new URL(`${API_BASE}/api/tasks`, window.location.origin)
     if (instanceId) url.searchParams.set("instance_id", instanceId)
     const res = await authFetch(url.toString().replace(window.location.origin, ""))
-    if (!res.ok) throw new Error(`Failed to fetch tasks: ${res.statusText}`)
     const data = await res.json()
     return data.tasks || []
   },
 
   async getTask(id: string): Promise<Task> {
     const res = await authFetch(`${API_BASE}/api/tasks/${id}`)
-    if (!res.ok) throw new Error(`Failed to fetch task: ${res.statusText}`)
     return res.json()
   },
 
@@ -104,20 +121,17 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(task),
     })
-    if (!res.ok) throw new Error(`Failed to create task: ${res.statusText}`)
     return res.json()
   },
 
   async getTaskSessions(taskId: string): Promise<SessionLink[]> {
     const res = await authFetch(`${API_BASE}/api/tasks/${taskId}/sessions`)
-    if (!res.ok) throw new Error(`Failed to fetch task sessions: ${res.statusText}`)
     const data = await res.json()
     return data.sessions || []
   },
 
   async getInstances(): Promise<Instance[]> {
     const res = await authFetch(`${API_BASE}/api/instances`)
-    if (!res.ok) throw new Error(`Failed to fetch instances: ${res.statusText}`)
     const data = await res.json()
     return data.instances || []
   },
@@ -125,7 +139,6 @@ export const api = {
   async getSessions(instanceBaseURL: string): Promise<Session[]> {
     const url = `${API_BASE}/api/sessions/?instance=${encodeURIComponent(instanceBaseURL)}`
     const res = await authFetch(url)
-    if (!res.ok) throw new Error(`Failed to fetch sessions: ${res.statusText}`)
     const data = await res.json()
     return data.sessions || []
   },
@@ -136,12 +149,10 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ instanceId, sessionId, role }),
     })
-    if (!res.ok) throw new Error(`Failed to attach session: ${res.statusText}`)
   },
 
   async getModelConfig(instanceId: string): Promise<ModelConfig> {
     const res = await authFetch(`${API_BASE}/api/config/models?instance_id=${instanceId}`)
-    if (!res.ok) throw new Error(`Failed to get config: ${res.statusText}`)
     const data = await res.json()
     return data.config
   },
@@ -152,14 +163,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ config }),
     })
-    if (!res.ok) throw new Error(`Failed to update config: ${res.statusText}`)
   },
 
   async reloadConfig(instanceId: string): Promise<void> {
     const res = await authFetch(`${API_BASE}/api/config/reload?instance_id=${instanceId}`, {
       method: "POST",
     })
-    if (!res.ok) throw new Error(`Failed to reload config: ${res.statusText}`)
   },
 
   async testModel(instanceId: string, providerId: string, modelId: string): Promise<void> {
@@ -168,7 +177,6 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ providerId, modelId }),
     })
-    if (!res.ok) throw new Error(`Failed to test model: ${res.statusText}`)
   },
 
   // 新增：获取所有会话列表（支持过滤和分页）
@@ -179,7 +187,6 @@ export const api = {
     params.append('offset', offset.toString())
     
     const res = await authFetch(`${API_BASE}/api/sessions?${params}`)
-    if (!res.ok) throw new Error(`Failed to fetch all sessions: ${res.statusText}`)
     return res.json()
   },
 
@@ -194,6 +201,5 @@ export const api = {
         role: "primary" 
       }),
     })
-    if (!res.ok) throw new Error(`Failed to attach session to task: ${res.statusText}`)
   },
 }

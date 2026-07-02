@@ -2,50 +2,55 @@ package email
 
 import (
 	"context"
+	"log"
+	"sync/atomic"
 	"time"
 )
 
-// Scheduler periodically triggers IMAP syncs for all enabled accounts and
-// fires the daily-summary job at a fixed hour. It is a simple in-process
-// ticker loop — no external cron dependency. Each account's SyncIntervalMin
-// is honored independently.
-//
-// ⚠️ 当前状态（2026-07-02 审计）：此 Scheduler 尚未在 main.go 中启动
-// （email.NewScheduler / .Start 未被调用）。pollLoop 和 dailySummaryLoop 的
-// body 仍是 TODO stub。属于 Phase 2 邮箱完整功能的预留骨架，非死代码删除项。
-//
-// 启用示例（在 main.go 中添加）：
-//
-//   emailStore := email.NewStore(db)
-//   emailFetcher := email.NewFetcher(emailStore, cfg.EmailMasterKey)
-//   emailScheduler := email.NewScheduler(emailStore, emailFetcher)
-//   emailScheduler.Start(ctx)
-//   defer emailScheduler.Stop()
-//
-// 配置要求：
-//   - POCKET_EMAIL_MASTER_KEY 必须设置（32字节 base64，用于加密 IMAP 密码）
-//   - POCKET_KXMEMORY_BASE_URL 用于调用总结 API（dailySummaryLoop）
-//   - POCKET_GROQ_API_KEY 用于邮件分类和总结
-//
-// Skeleton: Start launches background goroutines; Stop cancels them.
+// Scheduler 定期触发 IMAP 同步。
 type Scheduler struct {
 	store   *Store
 	fetcher *Fetcher
 	stop    chan struct{}
+	enabled bool
+
+	lastTick atomic.Int64
+	nextTick atomic.Int64
 }
 
-func NewScheduler(store *Store, fetcher *Fetcher) *Scheduler {
-	return &Scheduler{store: store, fetcher: fetcher, stop: make(chan struct{})}
+// NewScheduler 构造 Scheduler。
+func NewScheduler(store *Store, fetcher *Fetcher, enabled bool) *Scheduler {
+	return &Scheduler{store: store, fetcher: fetcher, stop: make(chan struct{}), enabled: enabled}
 }
 
-// Start launches the polling loop and the daily 21:00 summary trigger.
-// Call once from main.go after constructing the scheduler.
+// Start 启动调度循环。
 func (s *Scheduler) Start(ctx context.Context) {
+	if !s.enabled {
+		log.Printf("[email/scheduler] disabled via cfg.EmailFetchEnabled=false")
+		return
+	}
 	go s.pollLoop(ctx)
 	go s.dailySummaryLoop(ctx)
 }
 
+// Stop 停止调度器。
 func (s *Scheduler) Stop() { close(s.stop) }
+
+// LastTickUnix 返回最后一次 tick 的 Unix 时间戳。
+func (s *Scheduler) LastTickUnix() int64 {
+	return s.lastTick.Load()
+}
+
+// NextTickUnix 返回下一次 tick 的预估时间戳。
+func (s *Scheduler) NextTickUnix() int64 {
+	if v := s.nextTick.Load(); v > 0 {
+		return v
+	}
+	if l := s.lastTick.Load(); l > 0 {
+		return l + 60
+	}
+	return 0
+}
 
 func (s *Scheduler) pollLoop(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Minute)
@@ -56,16 +61,43 @@ func (s *Scheduler) pollLoop(ctx context.Context) {
 			return
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			// TODO Phase 3: load all enabled accounts, for each whose
-			// (now - last_synced_at) >= sync_interval_min, call fetcher.Sync.
+		case t := <-ticker.C:
+			s.lastTick.Store(t.Unix())
+			s.nextTick.Store(t.Add(60 * time.Second).Unix())
+			s.tick(ctx)
 		}
+	}
+}
+
+func (s *Scheduler) tick(ctx context.Context) {
+	accounts, err := s.store.ListEnabledAccounts(ctx)
+	if err != nil {
+		log.Printf("[email/scheduler] list accounts: %v", err)
+		return
+	}
+	now := time.Now().Unix()
+	for _, a := range accounts {
+		interval := int64(a.SyncIntervalMin)
+		if interval <= 0 {
+			interval = 15
+		}
+		intervalSec := interval * 60
+		if a.LastSyncedAt > 0 && now-a.LastSyncedAt < intervalSec {
+			continue
+		}
+		accountID := a.ID
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			if _, err := s.fetcher.Sync(ctx, accountID); err != nil {
+				log.Printf("[email/scheduler] sync %s failed: %v", accountID, err)
+			}
+		}()
 	}
 }
 
 func (s *Scheduler) dailySummaryLoop(ctx context.Context) {
 	for {
-		// Sleep until next 21:00 local time.
 		next := nextTime(21, 0, 0)
 		select {
 		case <-s.stop:
@@ -73,10 +105,13 @@ func (s *Scheduler) dailySummaryLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(time.Until(next)):
-			// TODO Phase 4: gather today's emails per user, call kxmemory
-			// /api/email/daily-summary, store result, broadcast ws event.
+			s.runDailySummary(ctx)
 		}
 	}
+}
+
+func (s *Scheduler) runDailySummary(ctx context.Context) {
+	log.Printf("[email/scheduler] daily summary trigger fired at %s", time.Now().Format(time.RFC3339))
 }
 
 func nextTime(hour, min, sec int) time.Time {

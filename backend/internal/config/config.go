@@ -33,8 +33,18 @@ type Config struct {
 	MCPAPIKey  string // POCKET_MCP_API_KEY：ACC MCP Bearer token
 	MCPInsecureTLS bool // POCKET_MCP_INSECURE_TLS：跳过 TLS 验证（仅 dev/自签证书，生产必须 false）
 	// 认证（Phase 0）
-	JWTSecret string // POCKET_JWT_SECRET：签发/校验 app JWT
-	DevAuth   bool   // POCKET_DEV_AUTH：允许 admin/admin 开发登录（生产必须不设或 false）
+	JWTSecret   string // POCKET_JWT_SECRET：签发/校验 app JWT
+	DevAuth     bool   // POCKET_DEV_AUTH：允许 admin/admin 开发登录（生产必须不设或 false）
+	DevAuthUser string // POCKET_AUTH_USER：首用户 bootstrap 用户名（缺省 admin）
+	DevAuthPass string // POCKET_AUTH_PASS：首用户 bootstrap 密码（缺省 admin；仅 POCKET_DEV_AUTH=true 时生效）
+
+	// 邮箱 OAuth + IMAP fetch
+	EmailGoogleClientID       string // POCKET_EMAIL_GOOGLE_CLIENT_ID
+	EmailGoogleClientSecret   string // POCKET_EMAIL_GOOGLE_CLIENT_SECRET
+	EmailMicrosoftClientID    string // POCKET_EMAIL_MICROSOFT_CLIENT_ID
+	EmailMicrosoftClientSecret string // POCKET_EMAIL_MICROSOFT_CLIENT_SECRET
+	EmailOAuthRedirectURL     string // POCKET_EMAIL_OAUTH_REDIRECT_URL（默认 http://localhost:8088/callback/email/oauth）
+	EmailFetchEnabled         bool   // POCKET_EMAIL_FETCH_ENABLED（默认 true；CI/dev 可关闭）
 
 	// ---- Phase C: 龙虾无状态 AI 网关 ----
 	// pocketd 作为无状态代理：只转发嵌入/LLM 请求，不存任何用户数据。
@@ -77,8 +87,16 @@ func Load() Config {
 		MCPBaseURL:     getEnv("POCKET_MCP_BASE_URL", ""),
 		MCPAPIKey:      getEnv("POCKET_MCP_API_KEY", ""),
 		MCPInsecureTLS: getEnv("POCKET_MCP_INSECURE_TLS", "") == "true",
-		JWTSecret:      getEnv("POCKET_JWT_SECRET", "pocket-dev-insecure-secret"),
-		DevAuth:        getEnv("POCKET_DEV_AUTH", "") == "true",
+		JWTSecret:                  getEnv("POCKET_JWT_SECRET", "pocket-dev-insecure-secret"),
+		DevAuth:                    getEnv("POCKET_DEV_AUTH", "") == "true",
+		DevAuthUser:                getEnv("POCKET_AUTH_USER", ""),
+		DevAuthPass:                getEnv("POCKET_AUTH_PASS", ""),
+		EmailGoogleClientID:        getEnv("POCKET_EMAIL_GOOGLE_CLIENT_ID", ""),
+		EmailGoogleClientSecret:    getEnv("POCKET_EMAIL_GOOGLE_CLIENT_SECRET", ""),
+		EmailMicrosoftClientID:     getEnv("POCKET_EMAIL_MICROSOFT_CLIENT_ID", ""),
+		EmailMicrosoftClientSecret: getEnv("POCKET_EMAIL_MICROSOFT_CLIENT_SECRET", ""),
+		EmailOAuthRedirectURL:      getEnv("POCKET_EMAIL_OAUTH_REDIRECT_URL", "http://localhost:8088/callback/email/oauth"),
+		EmailFetchEnabled:          getEnv("POCKET_EMAIL_FETCH_ENABLED", "true") == "true",
 		// Phase C 无状态 AI 网关
 		EmbedBaseURL: getEnv("POCKET_EMBED_BASE_URL", ""),
 		EmbedAPIKey:  getFirstEnv([]string{"POCKET_EMBED_API_KEY", "POCKET_OPENAI_API_KEY"}, ""),

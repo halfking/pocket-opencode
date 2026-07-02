@@ -12,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
+	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
@@ -49,14 +50,27 @@ type Server struct {
 	kxmemory    *kxmemory.Client // nil = kxmemory 未配置
 	// OpenCode 管理器
 	opencodeManager *opencode.Manager // nil = OpenCode 管理未启用
+
+	// Auth
+	userStore *auth.UserStore
+	jwtSigner *auth.Signer
+
+	// Email
+	emailCrypto    *email.Crypto
+	emailPending   *email.PendingOAuth
+	emailScheduler *email.Scheduler
+	emailFetcher   *email.Fetcher
+
+	dataDir string // 数据目录
 }
 
 // New 构造 Server。Phase 0 扩展：新增 notes/email/vault store、STT transcriber、ACC MCP client。
 // Phase C 扩展：新增 embedder/llm 无状态 AI 网关。
 // 后端集成：新增 kxmemory 客户端（AI 编排服务）。
 // OpenCode 扩展：新增 opencodeManager（实例和会话管理）。
+// Auth + Email: 新增 userStore/jwtSigner/emailCrypto/emailPending/emailScheduler/emailFetcher/dataDir。
 // 这些依赖都允许为 nil（对应功能降级），由各 handler 自行判断。
-func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore *vault.Store, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem *kxmemory.Client, opencodeManager *opencode.Manager) *Server {
+func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore *vault.Store, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem *kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string) *Server {
 	hub := ws.NewHub()
 	go hub.Run()
 
@@ -77,6 +91,13 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 		llm:             llm,
 		kxmemory:        kxmem,
 		opencodeManager: opencodeManager,
+		userStore:       userStore,
+		jwtSigner:       jwtSigner,
+		emailCrypto:     emailCrypto,
+		emailPending:    emailPending,
+		emailScheduler:  emailScheduler,
+		emailFetcher:    emailFetcher,
+		dataDir:         dataDir,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,

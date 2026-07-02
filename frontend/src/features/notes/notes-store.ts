@@ -8,11 +8,16 @@
  *   - 嵌入计算时才发文本片段给 pocketd（云端只见片段）
  *   - 混合检索用 RRF 融合 FTS + 向量结果
  *
+ * 安全加固（第七轮审计）：
+ *   - content 字段使用 AES-GCM 加密存储（与 vault 同级安全）
+ *   - 解密失败时返回 "[加密内容无法解密]" 占位符，不阻塞列表渲染
+ *
  * 其他 feature store（emails/passwords/meetings）照此模式。
  */
 import { localDB } from '../../native/local-db'
 import { vectorIndex, type VectorMatch } from '../../native/vector'
 import { http } from '../../api/http'
+import { encryptString, decryptString } from '../../native/crypto'
 
 export interface LocalNote {
   id: string
@@ -65,13 +70,16 @@ export async function createNote(input: {
     updatedAt: now,
   }
 
+  // 加密 content 后存储（第七轮审计安全加固）
+  const encryptedContent = await encryptString(note.content)
+  
   await localDB.run(
     `INSERT INTO local_notes
        (id, workspace_id, title, content, content_type, domain, category, tags,
         audio_path, audio_duration_ms, created_by_voice, created_at, updated_at)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
-      note.id, note.workspaceId, note.title, note.content, note.contentType,
+      note.id, note.workspaceId, note.title, encryptedContent, note.contentType,
       note.domain, note.category, note.tags ? JSON.stringify(note.tags) : null,
       note.audioPath, note.audioDurationMs, note.createdByVoice ? 1 : 0,
       note.createdAt, note.updatedAt,
@@ -98,7 +106,12 @@ export async function updateNote(id: string, patch: Partial<Pick<LocalNote, 'tit
   const sets: string[] = []
   const vals: unknown[] = []
   if (patch.title !== undefined) { sets.push('title = ?'); vals.push(patch.title) }
-  if (patch.content !== undefined) { sets.push('content = ?'); vals.push(patch.content) }
+  if (patch.content !== undefined) { 
+    // 加密 content 后更新（第七轮审计安全加固）
+    const encryptedContent = await encryptString(patch.content)
+    sets.push('content = ?')
+    vals.push(encryptedContent)
+  }
   if (patch.domain !== undefined) { sets.push('domain = ?'); vals.push(patch.domain) }
   if (patch.tags !== undefined) { sets.push('tags = ?'); vals.push(patch.tags ? JSON.stringify(patch.tags) : null) }
   if (sets.length === 0) return
@@ -136,7 +149,8 @@ export async function listNotes(opts: { domain?: string; limit?: number } = {}):
   sql += ' ORDER BY updated_at DESC LIMIT ?'
   vals.push(opts.limit ?? 100)
   const rows = await localDB.query<NoteRow>(sql, vals)
-  return rows.map(rowToNote).filter((n): n is LocalNote => n !== null)
+  const notes = await Promise.all(rows.map(rowToNote))
+  return notes.filter((n): n is LocalNote => n !== null)
 }
 
 /** FTS5 全文搜索。 */
@@ -150,7 +164,11 @@ export async function searchFullText(query: string, limit = 20): Promise<SearchR
      ORDER BY score DESC LIMIT ?`,
     [sanitizeFtsQuery(query), limit],
   )
-  return rows.map((r) => ({ note: rowToNote(r)!, score: r.score, source: 'fts' as const }))
+  const notes = await Promise.all(rows.map(async (r) => {
+    const note = await rowToNote(r)
+    return note ? { note, score: r.score, source: 'fts' as const } : null
+  }))
+  return notes.filter((r): r is { note: LocalNote; score: number; source: 'fts' } => r !== null)
 }
 
 /** 语义搜索（本地向量余弦）。queryText 先发 pocketd 算嵌入。 */
@@ -167,7 +185,8 @@ export async function searchSemantic(queryText: string, topK = 10): Promise<Sear
     `SELECT * FROM local_notes WHERE id IN (${placeholders}) AND deleted_at IS NULL`,
     ids,
   )
-  const noteMap = new Map(rows.map((r) => [r.id, rowToNote(r)]))
+  const notesArray = await Promise.all(rows.map(rowToNote))
+  const noteMap = new Map(notesArray.filter((n): n is LocalNote => n !== null).map((n) => [n.id, n]))
 
   return matches
     .map((m): SearchResult | null => {
@@ -252,25 +271,29 @@ export async function handleServerEvent(note: LocalNote): Promise<void> {
     : { ...note }
 
   if (existing) {
+    // 加密 content 后更新（第七轮审计安全加固）
+    const encryptedContent = await encryptString(merged.content)
     await localDB.run(
       `UPDATE local_notes
          SET title = ?, content = ?, content_type = ?, domain = ?,
              category = ?, tags = ?, updated_at = ?
        WHERE id = ?`,
       [
-        merged.title, merged.content, merged.contentType, merged.domain,
+        merged.title, encryptedContent, merged.contentType, merged.domain,
         merged.category, merged.tags ? JSON.stringify(merged.tags) : null,
         merged.updatedAt, merged.id,
       ],
     )
   } else {
+    // 加密 content 后插入（第七轮审计安全加固）
+    const encryptedContent = await encryptString(merged.content)
     await localDB.run(
       `INSERT INTO local_notes
          (id, workspace_id, title, content, content_type, domain, category, tags,
           audio_path, audio_duration_ms, created_by_voice, created_at, updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
-        merged.id, merged.workspaceId, merged.title, merged.content, merged.contentType,
+        merged.id, merged.workspaceId, merged.title, encryptedContent, merged.contentType,
         merged.domain, merged.category, merged.tags ? JSON.stringify(merged.tags) : null,
         merged.audioPath, merged.audioDurationMs, merged.createdByVoice ? 1 : 0,
         merged.createdAt, merged.updatedAt,
@@ -294,10 +317,21 @@ interface NoteRow {
   created_at: number; updated_at: number; deleted_at: number | null;
 }
 
-function rowToNote(r: NoteRow | null): LocalNote | null {
+async function rowToNote(r: NoteRow | null): Promise<LocalNote | null> {
   if (!r) return null
+  
+  // 解密 content（第七轮审计安全加固）
+  let decryptedContent: string
+  try {
+    decryptedContent = await decryptString(r.content)
+  } catch (e) {
+    console.error(`[notes-store] 无法解密 note ${r.id} 的 content:`, e)
+    // 解密失败时返回占位符，不阻塞列表渲染
+    decryptedContent = '[加密内容无法解密 - 可能密码错误或数据损坏]'
+  }
+  
   return {
-    id: r.id, workspaceId: r.workspace_id, title: r.title, content: r.content,
+    id: r.id, workspaceId: r.workspace_id, title: r.title, content: decryptedContent,
     contentType: r.content_type, domain: r.domain, category: r.category,
     tags: r.tags ? JSON.parse(r.tags) : null, audioPath: r.audio_path,
     audioDurationMs: r.audio_duration_ms, createdByVoice: r.created_by_voice === 1,

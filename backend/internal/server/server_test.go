@@ -21,7 +21,7 @@ func TestHealthz(t *testing.T) {
 
 	reg := registry.NewRegistry()
 	configAdapter := adapter.NewOpenCodeConfigHTTPAdapter(timeoutMS)
-	srv := New(cfg, adapter.NewStaticNPSAdapter(), adapter.NewOpenCodeHTTPAdapter(timeoutMS), nil, reg, configAdapter, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	srv := New(cfg, adapter.NewStaticNPSAdapter(), adapter.NewOpenCodeHTTPAdapter(timeoutMS), nil, reg, configAdapter, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "")
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 
@@ -45,7 +45,7 @@ func TestInstances(t *testing.T) {
 
 	reg := registry.NewRegistry()
 	configAdapter := adapter.NewOpenCodeConfigHTTPAdapter(timeoutMS)
-	srv := New(cfg, adapter.NewStaticNPSAdapter(), adapter.NewOpenCodeHTTPAdapter(timeoutMS), nil, reg, configAdapter, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	srv := New(cfg, adapter.NewStaticNPSAdapter(), adapter.NewOpenCodeHTTPAdapter(timeoutMS), nil, reg, configAdapter, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "")
 	req := httptest.NewRequest(http.MethodGet, "/api/instances", nil)
 	rr := httptest.NewRecorder()
 

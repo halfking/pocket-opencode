@@ -145,7 +145,24 @@ const renderedMarkdown = computed(() => {
   // 强制 async:false 保证返回 string，再经 DOMPurify 清洗后渲染。
   const out = marked.parse(summary.value.content, { async: false })
   const html = typeof out === 'string' ? out : ''
-  return DOMPurify.sanitize(html)
+  
+  // Markdown 安全白名单配置（第七轮审计修复）
+  // 允许合法的 Markdown 渲染标签（表格、代码块、链接等），禁止危险标签和属性
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: [
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+      'p', 'br', 'strong', 'em', 'u', 'del', 's',
+      'a', 'img',
+      'ul', 'ol', 'li',
+      'blockquote', 'pre', 'code',
+      'table', 'thead', 'tbody', 'tr', 'th', 'td',  // 允许 Markdown 表格
+      'hr', 'div', 'span'
+    ],
+    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id'],
+    ALLOW_DATA_ATTR: false,  // 禁止 data-* 属性（防止 XSS）
+    FORBID_TAGS: ['style', 'script'],  // 明确禁止危险标签
+    FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover']  // 禁止事件处理器
+  })
 })
 
 function preview(s: string | undefined) {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
+	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/db"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
@@ -73,6 +74,75 @@ func main() {
 		if err != nil { log.Fatalf("vault store: %v", err) }
 		vaultStore = vs
 		log.Println("Module stores initialized (PG)")
+	}
+
+	// ---- Auth (multi-user, JWT) ----
+	var (
+		userStore *auth.UserStore
+		jwtSigner *auth.Signer
+	)
+	if pool != nil {
+		us, err := auth.NewUserStore(pool)
+		if err != nil {
+			log.Fatalf("user store: %v", err)
+		}
+		userStore = us
+		if n, _ := us.CountUsers(context.Background()); n == 0 {
+			user := cfg.DevAuthUser
+			pass := cfg.DevAuthPass
+			if user == "" {
+				user = "admin"
+			}
+			if pass == "" {
+				if !cfg.DevAuth {
+					log.Printf("WARN: users table empty and POCKET_DEV_AUTH not set; refusing to auto-create admin/admin")
+				} else {
+					pass = "admin"
+				}
+			}
+			if pass != "" {
+				if err := us.InsertUser(context.Background(), &auth.User{ID: "user-" + user, Username: user, Role: "admin"}, pass); err != nil {
+					log.Printf("WARN: bootstrap first user %s: %v", user, err)
+				} else {
+					log.Printf("Bootstrap: created first admin user %q", user)
+				}
+			}
+		}
+		jwtSigner = auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
+		log.Println("Auth: user store + JWT signer initialized")
+	}
+
+	// ---- Email crypto + fetcher + scheduler ----
+	var (
+		emailCrypto    *email.Crypto
+		emailPending   *email.PendingOAuth
+		emailFetcher   *email.Fetcher
+		emailScheduler *email.Scheduler
+	)
+	if pool != nil {
+		key, err := email.EnsureMasterKey(cfg.EmailMasterKey, dataDir)
+		if err != nil {
+			log.Printf("WARN: email master key: %v — email fetcher disabled", err)
+		} else {
+			if cfg.EmailMasterKey == "" {
+				log.Printf("WARN: POCKET_EMAIL_MASTER_KEY not set; auto-generated key persisted to %s/email_master.key", dataDir)
+			}
+			ec, err := email.NewCrypto(key)
+			if err != nil {
+				log.Printf("WARN: email crypto init: %v — fetcher disabled", err)
+			} else {
+				emailCrypto = ec
+				emailPending = email.NewPendingOAuth()
+				go emailPending.GCLoop(context.Background())
+				if emailStore != nil {
+					emailFetcher = email.NewFetcher(emailStore, emailCrypto)
+					emailScheduler = email.NewScheduler(emailStore, emailFetcher, cfg.EmailFetchEnabled)
+					emailScheduler.Start(context.Background())
+					defer emailScheduler.Stop()
+					log.Printf("Email scheduler started (fetch_enabled=%v)", cfg.EmailFetchEnabled)
+				}
+			}
+		}
 	}
 
 	// ---- STT cloud fallback (Groq Whisper Large v3 Turbo) ----
@@ -163,7 +233,11 @@ func main() {
 	}
 
 	srv := server.New(cfg, npsAdapter, opencodeAdapter, taskStore, reg, configAdapter,
-		notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, nil /* opencodeManager, TODO: construct */)
+		notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, nil, /* opencodeManager */
+		userStore, jwtSigner,
+		emailCrypto, emailPending,
+		emailScheduler, emailFetcher,
+		dataDir)
 
 	// Phase 5: 启动 ACC 任务后台同步（5 分钟一次把 ACC 任务拉取到本地）
 	taskScheduler := tasksync.New(mcpClient, taskStore, 5*60*1_000_000_000) // 5min
