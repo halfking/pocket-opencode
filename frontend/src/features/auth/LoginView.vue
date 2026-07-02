@@ -3,13 +3,32 @@
     <div class="login-container">
       <!-- Logo 和标题 -->
       <div class="logo-section">
-        <div class="logo">📱</div>
+        <div class="logo">🦞</div>
         <h1 class="app-title">OpenCode Pocket</h1>
-        <p class="app-subtitle">移动端多实例管理平台</p>
+        <p class="app-subtitle">{{ needUnlock ? '解锁本地数据' : '移动端多实例管理平台' }}</p>
+      </div>
+
+      <!-- 解锁界面（已登录但刷新后 crypto 未初始化）-->
+      <div v-if="needUnlock" class="login-form">
+        <p class="unlock-hint">检测到已有登录态，但本地加密库未解锁。<br />请重新输入主密码以访问本地数据。</p>
+        <div class="form-group">
+          <label>主密码</label>
+          <input
+            v-model="unlockPassword"
+            type="password"
+            placeholder="输入主密码解锁"
+            @keyup.enter="unlock"
+          />
+        </div>
+        <button class="login-btn" :disabled="!unlockPassword || loading" @click="unlock">
+          {{ loading ? '解锁中...' : '🔓 解锁' }}
+        </button>
+        <div v-if="error" class="error-message">{{ error }}</div>
+        <p class="hint" style="margin-top: 20px; cursor: pointer;" @click="logoutAndRelogin">退出重新登录 →</p>
       </div>
 
       <!-- 登录表单 -->
-      <div class="login-form">
+      <div v-else class="login-form">
         <div class="form-group">
           <label>用户名</label>
           <input
@@ -53,11 +72,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { http, ApiError } from '../../api/http'
-import { initLobster } from '../../native/lobster-init'
+import { initLobster, isLobsterReady } from '../../native/lobster-init'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -66,6 +85,44 @@ const username = ref('admin')
 const password = ref('admin')
 const loading = ref(false)
 const error = ref('')
+
+// 场景：刷新页面后 token 持久（localStorage），但龙虾（crypto + SQLCipher）未初始化
+// 此时需要用户重新输入主密码解锁本地数据，而非直接跳走。
+const needUnlock = ref(false)
+const unlockPassword = ref('')
+
+onMounted(() => {
+  if (auth.isAuthenticated && !isLobsterReady()) {
+    needUnlock.value = true
+  } else if (auth.isAuthenticated && isLobsterReady()) {
+    // 已登录且已初始化，直接进首页
+    router.push('/ai')
+  }
+})
+
+async function unlock() {
+  if (!unlockPassword.value) {
+    error.value = '请输入主密码以解锁本地数据'
+    return
+  }
+  loading.value = true
+  error.value = ''
+  try {
+    await initLobster(unlockPassword.value)
+    needUnlock.value = false
+    router.push('/ai')
+  } catch (e: any) {
+    error.value = `解锁失败（主密码错误？）：${e.message || e}`
+  } finally {
+    loading.value = false
+  }
+}
+
+function logoutAndRelogin() {
+  auth.logout()
+  needUnlock.value = false
+  error.value = ''
+}
 
 async function handleLogin() {
   if (!username.value || !password.value) {
@@ -224,5 +281,17 @@ async function handleLogin() {
 .hint {
   color: #667eea;
   font-weight: 500;
+}
+
+.unlock-hint {
+  color: #555;
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: #f8f9ff;
+  border-radius: 8px;
+  border: 1px solid #e0e7ff;
 }
 </style>

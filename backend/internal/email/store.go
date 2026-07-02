@@ -72,6 +72,9 @@ func (s *Store) migrate() error {
 		processed_at BIGINT,
 		created_at BIGINT NOT NULL,
 		UNIQUE(account_id, message_id),
+		-- IMAP fallback 去重：message_id 缺失时按 (account_id, subject, date) 去重
+		-- 必须存在对应 UNIQUE 约束，否则 ON CONFLICT 会运行时报错
+		UNIQUE(account_id, subject, date),
 		FOREIGN KEY (account_id) REFERENCES email_accounts(id) ON DELETE CASCADE
 	);
 	CREATE INDEX IF NOT EXISTS idx_emails_date ON emails(date DESC);

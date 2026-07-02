@@ -1,10 +1,12 @@
 # 🔌 kxmemory ↔ pocketd API 契约
 
-**版本**: v1.0.0
+**版本**: v1.1.0（2026-07-02 审计修正）
 **日期**: 2026-07-02
 **状态**: 契约定义（Phase 1，解决审计阻塞项 #2）
 
 > 本文档定义 pocketd（Go）调用 kxmemory（FastAPI）所有跨服务接口的精确契约：请求/响应 JSON schema、认证、错误码、重试语义。Phase 0 审计发现"kxmemory 接口全凭想象"，本契约作为 pocketd handler 与 kxmemory service 实现的共同依据。
+
+> ⚠️ **路径口径说明（v1.1 审计修正）**：下文 §2/§3 设计的路径前缀为 `/api/voice/`、`/api/email/`（kxmemory 设计稿原始命名）。但 `backend/internal/kxmemory/client.go` 已实现的 3 个方法实际调用的是 **`/v1/notes/classify`、`/v1/emails/classify`、`/v1/emails/daily-summary`**（`/v1/` 前缀）。**kxmemory 团队实现时以 client.go 的 `/v1/` 路径为准**；下文的 `/api/voice/...` 路径仅作为模块归属的设计参考。§2.2~2.8（notes list/detail/put/delete、classify、ssot/check、search）当前**未在 client.go 实现**，属于规划中的端点。
 
 ---
 

@@ -33,7 +33,15 @@
 
 **隐私契约**：这些 handler 只转发请求给 AI 提供商，不写任何持久存储。日志只记请求大小和耗时，**绝不记请求内容**。代码在 `internal/aigate/` + `server_assistant.go:handleEmbed/handleLLMChat`。
 
-### 可选云同步路由（唯一持久化端点）
+### 可选云同步路由（默认零持久化，仅 vault blob）
+
+> ⚠️ **架构现状说明（2026-07-02 审计修正）**：本设计的"pocketd 不持久化用户数据"是**目标态**。
+> 实际代码中，当配置了 `POCKET_POSTGRES_DSN`（生产部署常用）时，Phase 0 的 task/notes/email
+> store 会**自动启用并写入 PG**（用于任务三源聚合缓存、笔记云模式、邮件抓取存储）。
+> 只有 **vault store** 的数据是端到端加密 blob（服务端零知识）；task/notes/email 在当前代码下
+> 是**明文**存 PG。这是 Phase 0 → Phase C 转型的遗留，完整落地"零持久化"需后续 Phase 把
+> task/notes/email 也改为客户端加密上传。当前阶段：**vault 是加密零知识端点；其余 PG 表
+> 在云模式启用时明文存储（仅服务端可见，不外泄）**。
 
 | 路由 | 用途 | 存储 |
 |------|------|------|

@@ -297,11 +297,12 @@ func (s *Server) handleEmails(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleEmailOps(w http.ResponseWriter, r *http.Request) {
 	// /api/emails/sync/status — POST, fetch per-account sync status.
-	// Detected before the {id} parsing because this sub-path doesn't
-	// correspond to an email record. The plain /api/emails/sync (exact)
-	// route is handled by handleEmailSync; this branch catches the suffix.
 	if strings.HasSuffix(r.URL.Path, "/sync/status") {
 		s.handleEmailSyncStatus(w, r)
+		return
+	}
+	if s.emailStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "email store not configured (remote-only mode)")
 		return
 	}
 	// /api/emails/{id} — GET 详情 / PATCH 标记已读。
@@ -666,6 +667,17 @@ func (s *Server) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 	if len(body.Messages) == 0 {
 		writeError(w, http.StatusBadRequest, "messages required")
 		return
+	}
+	// 输入大小限制：防止滥用（与 /api/embed 一致的 16K/消息上限 + 50 条消息上限）
+	if len(body.Messages) > 50 {
+		writeError(w, http.StatusBadRequest, "too many messages (max 50)")
+		return
+	}
+	for _, m := range body.Messages {
+		if len(m.Content) > 32000 {
+			writeError(w, http.StatusBadRequest, "message too long (max 32000 chars per message)")
+			return
+		}
 	}
 
 	model := body.Model
