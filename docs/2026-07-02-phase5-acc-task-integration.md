@@ -13,7 +13,7 @@ pocketd 把任务来源分成三类，用 `task.Task.Source` 字段标识：
 
 | Source | 来源 | 数据位置 | 更新方式 |
 |--------|------|---------|---------|
-| `acc` | ACC 系统 | 远程（`acc.kxpms.cn/mcp`）| 实时拉取 + 5min 后台同步到 PG |
+| `acc` | ACC 系统 | 远程（`https://acc.kxpms.cn/mcp`）| 实时拉取 + 5min 后台同步到 PG |
 | `opencode` | OpenCode 实例 | 远程（每个 instance 的 `/session`）| 实时拉取，不缓存 |
 | `local` | 本地 PG store | 本地 PG（pocketd `tasks` 表）| 实时写入 + WebSocket 广播 |
 

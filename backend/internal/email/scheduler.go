@@ -13,7 +13,19 @@ import (
 // ⚠️ 当前状态（2026-07-02 审计）：此 Scheduler 尚未在 main.go 中启动
 // （email.NewScheduler / .Start 未被调用）。pollLoop 和 dailySummaryLoop 的
 // body 仍是 TODO stub。属于 Phase 2 邮箱完整功能的预留骨架，非死代码删除项。
-// 启用方式：main.go 构造 email.NewScheduler(store, fetcher).Start(ctx)。
+//
+// 启用示例（在 main.go 中添加）：
+//
+//   emailStore := email.NewStore(db)
+//   emailFetcher := email.NewFetcher(emailStore, cfg.EmailMasterKey)
+//   emailScheduler := email.NewScheduler(emailStore, emailFetcher)
+//   emailScheduler.Start(ctx)
+//   defer emailScheduler.Stop()
+//
+// 配置要求：
+//   - POCKET_EMAIL_MASTER_KEY 必须设置（32字节 base64，用于加密 IMAP 密码）
+//   - POCKET_KXMEMORY_BASE_URL 用于调用总结 API（dailySummaryLoop）
+//   - POCKET_GROQ_API_KEY 用于邮件分类和总结
 //
 // Skeleton: Start launches background goroutines; Stop cancels them.
 type Scheduler struct {

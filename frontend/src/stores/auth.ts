@@ -17,7 +17,7 @@ export const useAuthStore = defineStore('auth', {
     user: localStorage.getItem(USER_KEY) || '',
   }),
   getters: {
-    isAuthenticated: (s) => Boolean(s.token) || Boolean(s.user),
+    isAuthenticated: (s) => Boolean(s.token) && Boolean(s.user),
   },
   actions: {
     /** Store token after a successful login API call. */

@@ -84,7 +84,7 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 		return
 	}
 
-	now := time.Now().Unix()
+	now := time.Now()
 	for _, p := range parsed {
 		t := task.Task{
 			ID:               p.ID,
@@ -92,8 +92,8 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			Status:           p.Status,
 			Priority:         "normal",
 			Source:           "acc",
-			CreatedAt:        time.Unix(now, 0),
-			UpdatedAt:        time.Unix(now, 0),
+			CreatedAt:        now,
+			UpdatedAt:        now,
 		}
 		if err := s.taskStore.CreateTask(ctx, &t); err != nil {
 			// PostgreSQL UNIQUE 冲突错误码 23505 = 已存在，静默跳过

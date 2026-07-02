@@ -150,7 +150,9 @@ async function handleLogin() {
       } else if (e.status === 404) {
         // 后端尚未部署 auth 路由时，回退到 legacy localStorage 兼容模式。
         if (username.value === 'admin' && password.value === 'admin') {
-          auth.setLegacyUser(JSON.stringify({ username: 'admin', loginTime: new Date().toISOString() }))
+          const legacyUser = JSON.stringify({ username: 'admin', loginTime: new Date().toISOString() })
+          const legacyToken = 'legacy-token-' + Date.now() // 临时 token 用于兼容性
+          auth.setAuth(legacyToken, legacyUser)
           await initLobster(password.value)
           router.push('/ai')
           return

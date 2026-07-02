@@ -38,11 +38,16 @@ let mediaRecorder: MediaRecorder | null = null
 let mediaStream: MediaStream | null = null
 let chunks: Blob[] = []
 let startedAt = 0
-let audioPath = '' // blob URL，转写完成后释放
+// 当前录音的 blob URL，转写完成后延迟释放（给父组件时间处理）
+let audioPath = ''
 let audioPathTimeout: ReturnType<typeof setTimeout> | null = null
 
 async function start() {
   if (recording.value) return
+  
+  // 清理前一次录音的 blob URL（防止快速连续录音导致泄漏）
+  cleanupAudioPath()
+  
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } })
     mediaRecorder = new MediaRecorder(mediaStream)
@@ -86,9 +91,10 @@ async function stop() {
     status.value = `转写失败：${e.message}`
     setTimeout(() => (status.value = ''), 3000)
   } finally {
-    // 转写完成后释放 blob URL（避免内存泄漏；30s 后清理给复制窗口留时间）
+    // 转写完成后延迟释放 blob URL（30s 缓冲期给父组件处理/保存 audio）
+    // 父组件应尽快将 audioPath 持久化，不应依赖 blob URL 长期有效
     audioPathTimeout = setTimeout(() => {
-      if (audioPath) { URL.revokeObjectURL(audioPath); audioPath = '' }
+      cleanupAudioPath()
     }, 30000)
   }
 }
@@ -105,11 +111,22 @@ function cleanupMedia() {
   }
 }
 
+/** 清理 audioPath blob URL（防止内存泄漏） */
+function cleanupAudioPath() {
+  if (audioPathTimeout) {
+    clearTimeout(audioPathTimeout)
+    audioPathTimeout = null
+  }
+  if (audioPath) {
+    URL.revokeObjectURL(audioPath)
+    audioPath = ''
+  }
+}
+
 // 组件卸载时强制清理（防止录音中切走导致 mic 常开）
 onBeforeUnmount(() => {
   cleanupMedia()
-  if (audioPathTimeout) clearTimeout(audioPathTimeout)
-  if (audioPath) URL.revokeObjectURL(audioPath)
+  cleanupAudioPath()
 })
 </script>
 

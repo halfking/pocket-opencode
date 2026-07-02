@@ -214,14 +214,14 @@ pocketd 支持两种 LLM 路由模式（自动选择）：
 
 ```bash
 # === llm-gateway-go 企业网关（推荐生产环境）===
-POCKET_LLM_GATEWAY_URL=http://llm-gateway.kxpms.cn     # 或 http://localhost:8080
+POCKET_LLM_GATEWAY_URL=https://llm-gateway.kxpms.cn    # 或 http://localhost:8080
 POCKET_LLM_GATEWAY_API_KEY=pocketd-tenant-key          # llm-gateway 签发的租户 key
 
 # === 嵌入（llm-gateway 未配置时用直连）===
 POCKET_EMBED_MODEL=text-embedding-3-small
 
 # === kxmemory AI 编排 ===
-POCKET_KXMEMORY_BASE_URL=http://kxmemory.kxpms.cn      # 或 http://localhost:8000
+POCKET_KXMEMORY_BASE_URL=https://kxmemory.kxpms.cn     # 或 http://localhost:8000
 POCKET_JWT_SECRET=<共享密钥>                            # kxmemory 用相同 secret 校验 JWT
 ```
 
@@ -231,7 +231,7 @@ kxmemory 调 llm-gateway-go（OpenAI 兼容）：
 
 ```bash
 # kxmemory 的 .env
-LLM_GATEWAY_URL=http://llm-gateway.kxpms.cn
+LLM_GATEWAY_URL=https://llm-gateway.kxpms.cn
 LLM_GATEWAY_API_KEY=kxmemory-tenant-key
 LLM_MODEL_DEFAULT=gpt-4o-mini          # 分类用（快+便宜）
 LLM_MODEL_ADVANCED=gpt-4o              # 总结/复杂推理用

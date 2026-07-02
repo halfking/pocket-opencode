@@ -108,27 +108,34 @@ class VectorIndex {
 
     const q = normalize(query)
     const n = this.ids.length
-    const scores = new Float32Array(n)
+    const k = Math.min(topK, n)
 
     // 暴力点积（归一化后 = 余弦相似度）。n 条 × DIM 维。
+    // 使用 top-k 选择避免全量排序：O(n*k) vs O(n*log n)
+    const topK_results: VectorMatch[] = []
+
     for (let i = 0; i < n; i++) {
       let dot = 0
       const base = i * DIM
       for (let d = 0; d < DIM; d++) {
         dot += this.matrix[base + d] * q[d]
       }
-      scores[i] = dot
+
+      // 插入排序维护 top-k：只在分数足够高时插入
+      if (topK_results.length < k || dot > topK_results[topK_results.length - 1].score) {
+        const match: VectorMatch = { noteId: this.ids[i], score: dot }
+        let insertPos = topK_results.length
+        // 找到插入位置（降序）
+        for (let j = topK_results.length - 1; j >= 0; j--) {
+          if (dot <= topK_results[j].score) break
+          insertPos = j
+        }
+        topK_results.splice(insertPos, 0, match)
+        if (topK_results.length > k) topK_results.pop()
+      }
     }
 
-    // TopK 选择（部分排序，避免全排序开销）
-    const k = Math.min(topK, n)
-    const indices = Array.from({ length: n }, (_, i) => i)
-    indices.sort((a, b) => scores[b] - scores[a])
-
-    return indices.slice(0, k).map((i) => ({
-      noteId: this.ids[i],
-      score: scores[i],
-    }))
+    return topK_results
   }
 
   /** 当前索引的向量数量。 */
