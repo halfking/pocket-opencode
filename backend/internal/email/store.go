@@ -344,3 +344,146 @@ func joinStr(parts []string, sep string) string {
 	}
 	return out
 }
+
+// --- Extended CRUD methods for PR #6 ---
+
+// InsertAccount 插入新账户。
+func (s *Store) InsertAccount(ctx context.Context, a *Account, credentialEncrypted string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO email_accounts
+			(id, user_id, display_name, email_address, imap_host, imap_port, auth_type,
+			 credential_encrypted, sync_interval_min, rules, enabled, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`,
+		a.ID, a.UserID, a.DisplayName, a.EmailAddress, a.IMAPHost, a.IMAPPort,
+		a.AuthType, credentialEncrypted, a.SyncIntervalMin,
+		nullStr(a.Rules), a.Enabled, a.CreatedAt)
+	return err
+}
+
+// UpdateAccount 更新账户元数据（不包括 credential）。
+func (s *Store) UpdateAccount(ctx context.Context, a *Account) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE email_accounts SET
+			display_name = $2, imap_host = $3, imap_port = $4,
+			sync_interval_min = $5, rules = $6, enabled = $7
+		WHERE id = $1
+	`, a.ID, a.DisplayName, a.IMAPHost, a.IMAPPort, a.SyncIntervalMin,
+		nullStr(a.Rules), a.Enabled)
+	return err
+}
+
+// UpdateCredential 更新加密凭证。
+func (s *Store) UpdateCredential(ctx context.Context, id, credentialEncrypted string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE email_accounts SET credential_encrypted = $2 WHERE id = $1`, id, credentialEncrypted)
+	return err
+}
+
+// DeleteAccount 删除账户。
+func (s *Store) DeleteAccount(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM email_accounts WHERE id = $1`, id)
+	return err
+}
+
+// GetAccountByID 返回账户 + 加密凭证（仅供 scheduler / OAuth 使用）。
+func (s *Store) GetAccountByID(ctx context.Context, id string) (*Account, string, error) {
+	var a Account
+	var cred string
+	var lastUID, lastAt sql.NullInt64
+	var rules sql.NullString
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, user_id, display_name, email_address, imap_host, imap_port, auth_type,
+		       credential_encrypted, sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at
+		FROM email_accounts WHERE id = $1
+	`, id).Scan(&a.ID, &a.UserID, &a.DisplayName, &a.EmailAddress, &a.IMAPHost, &a.IMAPPort,
+		&a.AuthType, &cred, &a.SyncIntervalMin, &lastUID, &lastAt, &rules, &a.Enabled, &a.CreatedAt)
+	if err != nil {
+		return nil, "", err
+	}
+	if lastUID.Valid {
+		a.LastSyncedUID = lastUID.Int64
+	}
+	if lastAt.Valid {
+		a.LastSyncedAt = lastAt.Int64
+	}
+	if rules.Valid {
+		a.Rules = rules.String
+	}
+	return &a, cred, nil
+}
+
+// SetAccountAuthType 更新 auth_type（OAuth 回调后使用）。
+func (s *Store) SetAccountAuthType(ctx context.Context, id, authType string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE email_accounts SET auth_type = $2 WHERE id = $1`, id, authType)
+	return err
+}
+
+// UpdateSyncState 更新最后同步的 UID 和时间。
+func (s *Store) UpdateSyncState(ctx context.Context, id string, lastUID int64, lastAt int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE email_accounts SET last_synced_uid = $2, last_synced_at = $3 WHERE id = $1`, id, lastUID, lastAt)
+	return err
+}
+
+// ListEnabledAccounts 返回所有启用的账户（scheduler 使用）。
+func (s *Store) ListEnabledAccounts(ctx context.Context) ([]Account, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, user_id, display_name, email_address, imap_host, imap_port, auth_type, sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at
+		FROM email_accounts WHERE enabled = TRUE ORDER BY created_at
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Account
+	for rows.Next() {
+		var a Account
+		var lastUID, lastAt sql.NullInt64
+		var rules sql.NullString
+		if err := rows.Scan(&a.ID, &a.UserID, &a.DisplayName, &a.EmailAddress, &a.IMAPHost, &a.IMAPPort, &a.AuthType, &a.SyncIntervalMin, &lastUID, &lastAt, &rules, &a.Enabled, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		if lastUID.Valid {
+			a.LastSyncedUID = lastUID.Int64
+		}
+		if lastAt.Valid {
+			a.LastSyncedAt = lastAt.Int64
+		}
+		if rules.Valid {
+			a.Rules = rules.String
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// UpsertOAuthToken 插入或更新 OAuth token。
+func (s *Store) UpsertOAuthToken(ctx context.Context, accountID, refreshEnc, accessEnc string, expiresAt int64, scope string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO email_oauth_tokens
+			(account_id, refresh_token_encrypted, access_token_encrypted, expires_at, scope, updated_at)
+		VALUES ($1, $2, $3, $4, $5, EXTRACT(EPOCH FROM NOW())::BIGINT)
+		ON CONFLICT (account_id) DO UPDATE SET
+			refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
+			access_token_encrypted  = EXCLUDED.access_token_encrypted,
+			expires_at              = EXCLUDED.expires_at,
+			scope                   = EXCLUDED.scope,
+			updated_at              = EXTRACT(EPOCH FROM NOW())::BIGINT
+	`, accountID, refreshEnc, accessEnc, expiresAt, scope)
+	return err
+}
+
+// GetOAuthToken 返回加密的 OAuth token。
+func (s *Store) GetOAuthToken(ctx context.Context, accountID string) (refreshEnc, accessEnc string, expiresAt int64, scope string, err error) {
+	err = s.pool.QueryRow(ctx, `
+		SELECT refresh_token_encrypted, COALESCE(access_token_encrypted, ''), expires_at, COALESCE(scope, '')
+		FROM email_oauth_tokens WHERE account_id = $1
+	`, accountID).Scan(&refreshEnc, &accessEnc, &expiresAt, &scope)
+	return
+}
+
+func nullStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
