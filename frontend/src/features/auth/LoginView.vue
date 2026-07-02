@@ -65,7 +65,6 @@
       <!-- 版本信息 -->
       <div class="version-info">
         <p>v1.1.0-mobile</p>
-        <p class="hint">提示：默认用户名/密码 admin/admin</p>
       </div>
     </div>
   </div>
@@ -144,16 +143,25 @@ async function handleLogin() {
     await initLobster(password.value)
     router.push('/ai')
   } catch (e: any) {
-    if (e instanceof ApiError && e.status === 404) {
-      // 后端尚未部署 auth 路由时，回退到 legacy localStorage 兼容模式。
-      if (username.value === 'admin' && password.value === 'admin') {
-        auth.setLegacyUser(JSON.stringify({ username: 'admin', loginTime: new Date().toISOString() }))
-        await initLobster(password.value)
-        router.push('/ai')
-        return
+    if (e instanceof ApiError) {
+      if (e.status === 401) {
+        // 认证失败：用户名密码错误，或后端未开启 POCKET_DEV_AUTH=true（admin/admin 需此 gate）
+        error.value = '登录失败：凭据错误或后端未开启开发登录（需设置 POCKET_DEV_AUTH=true）'
+      } else if (e.status === 404) {
+        // 后端尚未部署 auth 路由时，回退到 legacy localStorage 兼容模式。
+        if (username.value === 'admin' && password.value === 'admin') {
+          auth.setLegacyUser(JSON.stringify({ username: 'admin', loginTime: new Date().toISOString() }))
+          await initLobster(password.value)
+          router.push('/ai')
+          return
+        }
+        error.value = '后端未部署认证接口'
+      } else {
+        error.value = e.message || '登录失败'
       }
+    } else {
+      error.value = e.message || '登录失败'
     }
-    error.value = e.message || '登录失败'
   } finally {
     loading.value = false
   }

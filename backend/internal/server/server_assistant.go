@@ -35,9 +35,13 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// userIDFromRequest 是一个占位：当前 auth 还是 legacy（localStorage），
-// 单用户场景下先用固定 user_id = "local"。Phase 0 后期接入 JWT 后改成
-// 从 Bearer token 解析。
+// userIDFromRequest 提取当前请求的用户 ID。
+//
+// 当前实现（Phase 0 单用户 MVP）：硬编码返回 "local"，适用于个人部署场景。
+// 多用户改造时需修改为：从 Authorization: Bearer <JWT> 解析 user_id claim。
+// 配套改动：handleAuthLogin 签发真实 JWT（用 s.cfg.JWTSecret）。
+//
+// 审计标记 M5：单用户假设，多租户部署时需改。
 func userIDFromRequest(_ *http.Request) string { return "local" }
 
 // =====================================================================

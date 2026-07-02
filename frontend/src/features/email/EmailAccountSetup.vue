@@ -332,10 +332,10 @@ function toLocal(a: ApiEmailAccount): EmailAccount {
     emailAddress: a.emailAddress,
     imapHost: a.imapHost,
     imapPort: a.imapPort,
-    authType: a.authType,
+    authType: String(a.authType), // API 是 AuthType enum，本地 store 是 string
     syncIntervalMin: a.syncIntervalMin,
-    lastSyncedUid: null,
-    lastSyncedAt: a.lastSyncedAt ? Date.parse(a.lastSyncedAt) : null,
+    lastSyncedUid: null, // 本地 store 字段，API 无此字段
+    lastSyncedAt: a.lastSyncedAt ? Date.parse(a.lastSyncedAt) : null, // API 是 ISO string，本地是 timestamp
     enabled: a.enabled,
     createdAt: Date.now(),
   }

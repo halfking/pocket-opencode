@@ -98,6 +98,20 @@ cd backend
 go run cmd/pocketd/main.go
 ```
 
+**Environment Variables** (optional):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `POCKET_JWT_SECRET` | `pocket-dev-insecure-secret` | JWT signing key for `/api/auth/*` endpoints |
+| `POCKET_DEV_AUTH` | `false` | Enable dev login (admin/admin). **Production must be false or unset.** |
+| `POCKET_MCP_INSECURE_TLS` | `false` | Skip TLS cert verification for MCP client (dev/self-signed only). **Production must be false.** |
+| `POCKET_MCP_BASE_URL` | - | ACC system MCP endpoint (e.g. `https://mcp.kxpms.cn/acc/mcp`) |
+| `POCKET_MCP_API_KEY` | - | ACC MCP Bearer token |
+| `DATABASE_URL` | - | PostgreSQL connection string |
+| `KXMEMORY_BASE_URL` | - | kxmemory embedding/LLM gateway endpoint |
+
+See `backend/internal/config/config.go` for full list.
+
 ### Frontend
 
 ```bash

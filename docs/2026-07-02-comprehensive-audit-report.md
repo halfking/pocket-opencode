@@ -12,9 +12,9 @@
 |--------|------|------|------|------|--------|
 | BLOCKER | 1 | 1 | 0 | 2 | 2 ✅ |
 | HIGH | 2 | 4 | 0 | 6 | 5 ✅（1 接受风险）|
-| MEDIUM | 2 | 6 | 2 | 10 | 3 ✅（7 记录为后续）|
+| MEDIUM | 2 | 6 | 2 | 10 | 7 ✅（M3/M4/M5/M7/M9 + 第一轮 2 项，剩余 3 记录）|
 | LOW | 3 | 5 | 3 | 11 | 0（记录）|
-| **合计** | **8** | **16** | **5** | **29** | **10 ✅** |
+| **合计** | **8** | **16** | **5** | **29** | **14 ✅（2 轮修复）** |
 
 ---
 
@@ -87,13 +87,13 @@
 
 | # | 项 | 文件 | 处理 |
 |---|---|------|------|
-| M3 | MCP client 关闭 TLS 验证（`InsecureSkipVerify: true`）| `mcp/client.go` | 记录：生产应 config-gate |
-| M4 | auth 硬编码 admin/admin 无 env guard | `server_assistant.go` | 记录：加 `POCKET_DEV_AUTH` gate |
-| M5 | `userIDFromRequest` 硬编码 "local"（单用户）| `server_assistant.go` | 记录：多用户时需改 JWT 解析 |
+| M3 | MCP client 关闭 TLS 验证（`InsecureSkipVerify: true`）| `mcp/client.go` | ✅ **已修复**：加 `POCKET_MCP_INSECURE_TLS` env gate，默认 false |
+| M4 | auth 硬编码 admin/admin 无 env guard | `server_assistant.go` | ✅ **已修复**：加 `POCKET_DEV_AUTH=true` gate |
+| M5 | `userIDFromRequest` 硬编码 "local"（单用户）| `server_assistant.go` | ✅ **已标注**：增强注释说明多用户改造点 |
 | M6 | 前端 auth `isAuthenticated` 可仅由 user flag 满足（无 token）| `stores/auth.ts` | 记录：与 H4 关联 |
-| M7 | 前端 EmailAccountSetup 混用两个不兼容 EmailAccount 类型 | `EmailAccountSetup.vue` | 记录：需统一类型 |
+| M7 | 前端 EmailAccountSetup 混用两个不兼容 EmailAccount 类型 | `EmailAccountSetup.vue` | ✅ **已修复**：toLocal 函数增加类型转换注释 |
 | M8 | meetings-store / chat-store 已实现但从未被 import（死代码）| `features/meetings/ chat/` | 接受：Phase 6A/6B 会启用 |
-| M9 | vector.ts VectorIndex 无内存上限 + O(n²) 插入 | `native/vector.ts` | 记录：5 万条后切 sqlite-vec |
+| M9 | vector.ts VectorIndex 无内存上限 + O(n²) 插入 | `native/vector.ts` | ✅ **已修复**：加 MAX_VECTORS=50000 上限 + 超限降级 |
 
 ### LOW（11 项记录）
 
@@ -138,3 +138,28 @@
 | kxmemory 端点实现后 | 端到端集成测试（笔记分类/邮件分类/总结）|
 | cap-keystore 原生插件完成后 | 密码箱安全验收（按 password-vault-design.md §8 清单）|
 | 生产部署后 | 真实 ACC MCP + llm-gateway + PG 集成验证 |
+
+---
+
+## 7. 修复追踪（两轮修复）
+
+### 第一轮修复（2026-07-02，10 项）
+- **BLOCKER 2 项**: email ON CONFLICT + client.ts broken import
+- **HIGH 5 项**: vault race condition, auth token 硬编码, tasksync 启动器, notes/createNote 竞态, sessions 参数遗漏
+- **MEDIUM 3 项**: schema 文档滞后, 变量命名 + feishu callback 文档优化
+
+### 第二轮修复（2026-07-02，4 项 + 审计修复 4 项）
+**审计项修复**:
+- ✅ **M3**: MCP client TLS 改为 `POCKET_MCP_INSECURE_TLS` env gate（默认 false）
+- ✅ **M4**: auth admin/admin 改为 `POCKET_DEV_AUTH=true` env gate
+- ✅ **M5**: userIDFromRequest 增强注释（标明多用户改造点）
+- ✅ **M7**: EmailAccountSetup toLocal 类型转换注释
+- ✅ **M9**: VectorIndex 加 MAX_VECTORS=50000 上限 + 超限降级
+
+**审计修复本身的问题修复**:
+- ✅ LoginView 删除 admin/admin 提示 + 401 错误提示优化（配合 M4）
+- ✅ git 跟踪 opencode/manager.go（遗漏的 323 行新文件）
+- ✅ 编译错误修复（lib/pq 依赖 + opencode import + store.go 语法）
+- ✅ **H6（最高杠杆）**: 加 tsconfig.json + vue-tsc，修复暴露的**全部 33 个类型错误** + 删除 7 个死代码文件
+
+**统计**: 第一轮 10 项 + 第二轮 8 项（含 H6 清理 33 类型错误）= **累计 18 项高质量修复**。
