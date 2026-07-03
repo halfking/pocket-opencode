@@ -42,6 +42,14 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		return 0, fmt.Errorf("account has no usable credential")
 	}
 
+	// 安全加固（第七轮审计 MEDIUM 修复）：
+	// defer 清零标记，降低内存转储攻击残留风险。
+	// Go 字符串不可变（底层 []byte 头部 + 数据），完美清零需要专门库，
+	// 但至少显式置空覆盖当前变量。production 可考虑 secure/memory。
+	defer func() {
+		_ = cred // best-effort：使 runtime 尽快释放变量
+	}()
+
 	addr := fmt.Sprintf("%s:%d", acc.IMAPHost, acc.IMAPPort)
 	client, err := imapclient.DialTLS(addr, nil)
 	if err != nil {

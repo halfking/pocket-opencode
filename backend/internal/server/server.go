@@ -44,10 +44,10 @@ type Server struct {
 	transcriber *stt.Transcriber // nil = 云端 STT 兜底未配置
 	mcpClient   *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// Phase C: 无状态 AI 网关（嵌入/LLM 代理）。nil = 未配置，对应 handler 返回 503。
-	embedder    aigate.Embedder
-	llm         aigate.LLMClient
+	embedder aigate.Embedder
+	llm      aigate.LLMClient
 	// 后端集成：kxmemory AI 编排（分类/SSOT/总结）
-	kxmemory    *kxmemory.Client // nil = kxmemory 未配置
+	kxmemory *kxmemory.Client // nil = kxmemory 未配置
 	// OpenCode 管理器
 	opencodeManager *opencode.Manager // nil = OpenCode 管理未启用
 
@@ -140,31 +140,53 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/emails/sync", s.handleEmailSync)
 	mux.HandleFunc("/api/emails/", s.handleEmailOps)
 	// 密码箱（子树，含 /api/vault/sync/latest）
-	mux.HandleFunc("/api/vault/sync/", s.handleVaultSync)
+	// Phase 1: 速率限制（防滥用，保护密码箱敏感操作）
+	{
+		h := http.HandlerFunc(s.handleVaultSync)
+		mux.Handle("/api/vault/sync/", s.RateLimitVault(h))
+	}
 	// STT 云端兜底
 	mux.HandleFunc("/api/stt/transcribe", s.handleSttTranscribe)
 	// Phase C: 无状态 AI 网关（仅转发嵌入/LLM，不存数据）
-	mux.HandleFunc("/api/embed", s.handleEmbed)
-	mux.HandleFunc("/api/llm/chat", s.handleLLMChat)
-	
+	// Phase 1: 速率限制（防滥用，昂贵端点）
+	{
+		hEmbed := http.HandlerFunc(s.handleEmbed)
+		mux.Handle("/api/embed", s.RateLimitLLM(hEmbed))
+		hLLM := http.HandlerFunc(s.handleLLMChat)
+		mux.Handle("/api/llm/chat", s.RateLimitLLM(hLLM))
+	}
+
 	// OpenCode 管理 API
 	mux.HandleFunc("/api/opencode/sessions", s.handleOpenCodeSessions)
 	mux.HandleFunc("/api/opencode/sessions/", s.handleOpenCodeSessionOperations)
 	mux.HandleFunc("/api/opencode/instances/", s.handleOpenCodeInstanceOperations)
 	mux.HandleFunc("/api/opencode/cache/refresh", s.handleOpenCodeRefreshCache)
-	
+
 	// OpenCode 发现和任务感知 API
 	mux.HandleFunc("/api/opencode/discover", s.handleDiscoverInstances)
 	mux.HandleFunc("/api/opencode/tasks", s.handleListAllTasks)
 	mux.HandleFunc("/api/opencode/tasks/", s.handleGetTaskDetail)
-	
-	return mux
+
+	// Phase 1: 包装 JWT 上下文中间件，注入 jwtSigner 给所有 handler
+	// 渐进式认证改造：从 context 注入 JWT signer 给 userIDFromRequest 等。
+	return s.withAuthContext(mux)
+}
+
+// withAuthContext 是 Handler 的最外层中间件：把 s.jwtSigner 注入 context。
+func (s *Server) withAuthContext(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.jwtSigner != nil {
+			ctx := withJWTSigner(r.Context(), s.jwtSigner)
+			r = r.WithContext(ctx)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // handleOpenCodeSessionOperations 处理 OpenCode 会话相关操作的路由分发
 func (s *Server) handleOpenCodeSessionOperations(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path[len("/api/opencode/sessions/"):]
-	
+
 	// 检查是否是 /history 或 /summary 结尾
 	if len(path) > 8 && path[len(path)-8:] == "/history" {
 		s.handleOpenCodeSessionHistory(w, r)
@@ -174,20 +196,20 @@ func (s *Server) handleOpenCodeSessionOperations(w http.ResponseWriter, r *http.
 		s.handleOpenCodeSessionSummary(w, r)
 		return
 	}
-	
+
 	http.Error(w, "not found", http.StatusNotFound)
 }
 
 // handleOpenCodeInstanceOperations 处理 OpenCode 实例相关操作的路由分发
 func (s *Server) handleOpenCodeInstanceOperations(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path[len("/api/opencode/instances/"):]
-	
+
 	// 检查是否是 /stats 结尾
 	if len(path) > 6 && path[len(path)-6:] == "/stats" {
 		s.handleOpenCodeInstanceStats(w, r)
 		return
 	}
-	
+
 	http.Error(w, "not found", http.StatusNotFound)
 }
 
@@ -341,7 +363,7 @@ func (s *Server) handleAllSessions(w http.ResponseWriter, r *http.Request) {
 				log.Printf("Failed to get API base for instance %s: %v", inst.ID, err)
 				continue
 			}
-			
+
 			sessions, err := s.opencode.ListSessions(r.Context(), apiBase)
 			if err != nil {
 				log.Printf("Failed to list sessions for instance %s: %v", inst.ID, err)
@@ -405,14 +427,14 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				now := time.Now().Unix()
 				for _, p := range parsed {
 					allTasks = append(allTasks, task.Task{
-						ID:               p.ID,
-						Title:            p.Title,
-						Status:           p.Status,
-						Priority:         "normal",
-						WorkstreamID:     workstreamID,
-						Source:           "acc",
-						CreatedAt:        time.Unix(now, 0),
-						UpdatedAt:        time.Unix(now, 0),
+						ID:           p.ID,
+						Title:        p.Title,
+						Status:       p.Status,
+						Priority:     "normal",
+						WorkstreamID: workstreamID,
+						Source:       "acc",
+						CreatedAt:    time.Unix(now, 0),
+						UpdatedAt:    time.Unix(now, 0),
 					})
 				}
 			}
@@ -429,14 +451,14 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 					now := time.Now().Unix()
 					for _, rt := range remoteTasks {
 						allTasks = append(allTasks, task.Task{
-							ID:               rt.ID,
-							Title:            rt.Title,
-							Status:           rt.Status,
-							Priority:         "normal",
-							WorkstreamID:     instanceID, // OpenCode 实例 ID 即 workstream
-							Source:           "opencode",
-							CreatedAt:        time.Unix(now, 0),
-							UpdatedAt:        time.Unix(now, 0),
+							ID:           rt.ID,
+							Title:        rt.Title,
+							Status:       rt.Status,
+							Priority:     "normal",
+							WorkstreamID: instanceID, // OpenCode 实例 ID 即 workstream
+							Source:       "opencode",
+							CreatedAt:    time.Unix(now, 0),
+							UpdatedAt:    time.Unix(now, 0),
 						})
 					}
 				}
@@ -798,13 +820,13 @@ func splitPath(path string) []string {
 
 // VersionInfo 版本信息结构
 type VersionInfo struct {
-	Version      string   `json:"version"`
-	BuildNumber  int      `json:"buildNumber"`
-	DownloadURL  string   `json:"downloadUrl"`
-	FileSize     int64    `json:"fileSize"`
-	Changelog    []string `json:"changelog"`
-	ForceUpdate  bool     `json:"forceUpdate"`
-	ReleaseDate  string   `json:"releaseDate"`
+	Version     string   `json:"version"`
+	BuildNumber int      `json:"buildNumber"`
+	DownloadURL string   `json:"downloadUrl"`
+	FileSize    int64    `json:"fileSize"`
+	Changelog   []string `json:"changelog"`
+	ForceUpdate bool     `json:"forceUpdate"`
+	ReleaseDate string   `json:"releaseDate"`
 }
 
 // loadVersionConfig 从配置文件加载版本信息
@@ -851,10 +873,10 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type CheckUpdateRequest struct {
-		CurrentVersion  string `json:"currentVersion"`
-		CurrentBuild    int    `json:"currentBuild"`
-		Platform        string `json:"platform"`
-		DeviceModel     string `json:"deviceModel"`
+		CurrentVersion string `json:"currentVersion"`
+		CurrentBuild   int    `json:"currentBuild"`
+		Platform       string `json:"platform"`
+		DeviceModel    string `json:"deviceModel"`
 	}
 
 	type CheckUpdateResponse struct {

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
+	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
@@ -37,22 +38,86 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 // userIDFromRequest 提取当前请求的用户 ID。
 //
-// 当前实现（Phase 0 单用户 MVP）：硬编码返回 "local"，适用于个人部署场景。
-// 多用户改造时需修改为：从 Authorization: Bearer <JWT> 解析 user_id claim。
-// 配套改动：handleAuthLogin 签发真实 JWT（用 s.cfg.JWTSecret）。
+// Phase 1 实现：从 Authorization: Bearer <JWT> 解析 user_id claim。
+// 回退策略（保持向后兼容）：
+//   - 有有效 JWT → 解析 user_id
+//   - 无 JWT 或解析失败 → 返回 "local"（Phase 0 行为，多用户部署必须关闭 DevAuth）
 //
-// 审计标记 M5：单用户假设，多租户部署时需改。
-func userIDFromRequest(_ *http.Request) string { return "local" }
+// 渐进式认证改造，未带 token 的旧请求继续工作。
+// 多用户部署必须：1) 关闭 DevAuth，2) 所有客户端启用 authFetch。
+func userIDFromRequest(r *http.Request) string {
+	signer := jwtSignerFromContext(r.Context())
+	if signer == nil {
+		return "local"
+	}
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+		return "local"
+	}
+	tok := strings.TrimSpace(authHeader[len("Bearer "):])
+	if tok == "" || tok == "dev-token" {
+		return "local"
+	}
+	claims, err := signer.Parse(tok)
+	if err != nil || claims == nil || claims.UserID == "" {
+		return "local"
+	}
+	return claims.UserID
+}
+
+// userRoleFromRequest 提取当前请求的用户角色（默认 "user"）。
+func userRoleFromRequest(r *http.Request) string {
+	signer := jwtSignerFromContext(r.Context())
+	if signer == nil {
+		return "user"
+	}
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return "user"
+	}
+	tok := strings.TrimSpace(authHeader[len("Bearer "):])
+	if tok == "" || tok == "dev-token" {
+		return "user"
+	}
+	claims, err := signer.Parse(tok)
+	if err != nil || claims == nil {
+		return "user"
+	}
+	return claims.Role
+}
+
+// jwtSignerKey 是 context.Context 中存储 jwtSigner 的键。
+type jwtSignerKey struct{}
+
+// jwtSignerFromContext 从 context 提取 jwtSigner。
+func jwtSignerFromContext(ctx context.Context) *auth.Signer {
+	if ctx == nil {
+		return nil
+	}
+	if v, ok := ctx.Value(jwtSignerKey{}).(*auth.Signer); ok {
+		return v
+	}
+	return nil
+}
+
+// withJWTSigner 把 jwtSigner 注入 context。
+func withJWTSigner(ctx context.Context, signer *auth.Signer) context.Context {
+	if signer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, jwtSignerKey{}, signer)
+}
 
 // =====================================================================
 // 认证
 // =====================================================================
 
-// handleAuthLogin — Phase 0 真实 JWT 登录入口。
+// handleAuthLogin — Phase 1 真实 JWT 登录入口。
 //
-// 当前为骨架：验证用户名/密码（POCKET_AUTH_USER / POCKET_AUTH_PASS 环境变量，
-// 缺省 admin/admin 兼容现有前端），签发 JWT。完整实现（用户表、刷新令牌）
-// 在 Phase 0 后期补全。
+// 流程：
+//  1. 验证用户名/密码（DevAuth 模式支持 admin/admin）
+//  2. 签发真实 JWT（HS256，使用 cfg.JWTSecret）
+//  3. 返回 token + user + role
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
@@ -66,15 +131,27 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	// 开发登录：仅在 POCKET_DEV_AUTH=true 时允许 admin/admin（生产环境必须关闭）
+
+	// DevAuth 模式（仅 POCKET_DEV_AUTH=true 时生效）
 	if s.cfg.DevAuth && body.Username == "admin" && body.Password == "admin" {
-		// TODO Phase 1: 用 s.cfg.JWTSecret 签发真实 JWT 替代 dev-token
-		writeJSON(w, http.StatusOK, map[string]string{
-			"token": "dev-token",
+		if s.jwtSigner == nil {
+			writeError(w, http.StatusServiceUnavailable, "JWT signer not configured")
+			return
+		}
+		// 签发真实 JWT（HS256 + cfg.JWTSecret）
+		token, err := s.jwtSigner.Sign("local", "user")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("sign token: %v", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token": token,
 			"user":  body.Username,
+			"role":  "user",
 		})
 		return
 	}
+
 	writeError(w, http.StatusUnauthorized, "invalid credentials")
 }
 
@@ -763,4 +840,3 @@ func toTagsJSON(tags []string) string {
 	b, _ := json.Marshal(tags)
 	return string(b)
 }
-

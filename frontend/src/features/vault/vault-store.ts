@@ -156,6 +156,8 @@ export async function importEncryptedBlob(blob: string): Promise<number> {
   const rows: any[] = JSON.parse(json)
 
   // 2. 校验每行必有字段（任何一行缺字段 → 抛错，本地数据未动）
+  //    同时验证每条 entry 的密文可被当前主密码解密（第七轮审计 MEDIUM 修复）。
+  //    失败则提示用户密码错误或数据损坏，避免导入后才报错。
   const validated: Array<{
     id: string; title: string; username: string | null; url: string | null;
     entry_ciphertext: string; iv: string; category: string | null;
@@ -165,6 +167,18 @@ export async function importEncryptedBlob(blob: string): Promise<number> {
     if (!r.id || !r.entry_ciphertext) {
       throw new Error(`importEncryptedBlob: row missing id or entry_ciphertext: ${JSON.stringify(r).slice(0, 100)}`)
     }
+    
+    // 验证密文可解密（防损坏/篡改的密文进入本地库）
+    try {
+      await decryptData(r.entry_ciphertext)
+    } catch (e) {
+      throw new Error(
+        `importEncryptedBlob: row ${r.id} contains undecryptable ciphertext. ` +
+        `可能原因：1) 主密码错误  2) 数据损坏或被篡改. ` +
+        `Original: ${(e as Error).message}`
+      )
+    }
+    
     validated.push({
       id: r.id, title: r.title ?? '', username: r.username ?? null, url: r.url ?? null,
       entry_ciphertext: r.entry_ciphertext, iv: r.iv ?? '',
