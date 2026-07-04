@@ -1,17 +1,17 @@
+<!--
+  TasksView — Phase 4: 主题任务抽象 + M3 强化 + 下滑关闭
+
+  变化点（相对 Phase 3）：
+  1. 顶部集成 ThemeTabs（5 主题 chip + 未完成 badge）
+  2. 状态分组 chip 升级为 M3 AssistChip 风格（active/blocked/completed 三色）
+  3. 任务卡片升级为 M3 ElevatedCard（圆角 12、shadow-md、press scale）
+  4. "+" 按钮改为右下 FAB（圆形 primary-container）
+  5. 创建 modal 加 ESC + 下滑关闭（usePullDownClose）
+-->
 <template>
   <div class="tasks-view">
-    <!-- 顶部栏 -->
-    <div class="top-bar">
-      <button class="back-btn" @click="goBack">← 返回</button>
-      <h1>任务列表</h1>
-      <button class="add-btn" @click="showCreateModal = true">+</button>
-    </div>
-
-    <!-- 当前实例信息 -->
-    <div class="instance-info-bar">
-      <span class="instance-label">当前实例:</span>
-      <span class="instance-name">{{ currentInstance?.displayName }}</span>
-    </div>
+    <!-- 主题切换器（M3 SegmentedButton） -->
+    <ThemeTabs v-model="activeTheme" :tabs="themeTabs" />
 
     <!-- 加载状态 -->
     <div v-if="loading" class="loading-state">
@@ -19,14 +19,14 @@
       <p>加载任务...</p>
     </div>
 
-    <!-- 任务列表（按分组） -->
+    <!-- 任务列表（按状态分组） -->
     <div v-else-if="groupedTasks.length > 0" class="tasks-container">
       <div v-for="group in groupedTasks" :key="group.name" class="task-group">
         <div class="group-header">
           <h2>{{ group.name }}</h2>
           <span class="task-count">{{ group.tasks.length }}</span>
         </div>
-        
+
         <div class="task-list">
           <div
             v-for="task in group.tasks"
@@ -43,7 +43,7 @@
                   <span class="meta-icon">💬</span>
                   {{ task.sessionCount || 0 }} 会话
                 </span>
-                <span class="meta-item status" :class="task.status">
+                <span class="meta-item" :class="['status-chip', `status-${task.status}`]">
                   {{ statusText(task.status) }}
                 </span>
               </div>
@@ -63,50 +63,64 @@
       </button>
     </div>
 
-    <!--
-      ✅ 已移除硬编码底部导航（任务/会话/实例/设置）。
-      App.vue 现在用 AppLayout 包裹 router-view，共享的 BottomNav 会自动渲染
-      5模块 Tab（AI/笔记/会议/邮件/更多）。这里不再重复渲染以免双层 UI。
-    -->
+    <!-- M3 FAB：右下圆形创建按钮 -->
+    <button class="fab" aria-label="创建任务" @click="showCreateModal = true">
+      <span class="fab-icon">+</span>
+    </button>
 
-    <!-- 创建任务模态框 -->
-    <div v-if="showCreateModal" class="modal-overlay" @click="showCreateModal = false">
-      <div class="modal-content" @click.stop>
-        <h2>创建任务</h2>
-        
-        <div class="form-group">
-          <label>标题 *</label>
-          <input v-model="newTask.title" type="text" placeholder="输入任务标题" />
-        </div>
+    <!-- 创建任务 modal（M3 + 下滑关闭 + ESC） -->
+    <div
+      v-if="showCreateModal"
+      ref="modalRef"
+      class="modal-overlay"
+      @click.self="closeModal"
+    >
+      <div
+        ref="modalSheetRef"
+        class="modal-sheet"
+        :style="{ transform: `translateY(${pullDownOffset}px)` }"
+        @touchstart="onSheetTouchStart"
+        @touchmove="onSheetTouchMove"
+        @touchend="onSheetTouchEnd"
+      >
+        <div class="modal-handle" />
+        <div class="modal-body">
+          <h2>创建任务</h2>
 
-        <div class="form-group">
-          <label>描述</label>
-          <textarea v-model="newTask.description" placeholder="输入任务描述" rows="3"></textarea>
-        </div>
+          <div class="form-group">
+            <label>标题 *</label>
+            <input v-model="newTask.title" type="text" placeholder="输入任务标题" />
+          </div>
 
-        <div class="form-group">
-          <label>优先级</label>
-          <select v-model="newTask.priority">
-            <option value="high">高</option>
-            <option value="medium">中</option>
-            <option value="low">低</option>
-          </select>
-        </div>
+          <div class="form-group">
+            <label>描述</label>
+            <textarea v-model="newTask.description" placeholder="输入任务描述" rows="3" />
+          </div>
 
-        <div class="form-group">
-          <label>状态</label>
-          <select v-model="newTask.status">
-            <option value="active">进行中</option>
-            <option value="blocked">已阻塞</option>
-            <option value="completed">已完成</option>
-          </select>
-        </div>
+          <div class="form-group">
+            <label>优先级</label>
+            <select v-model="newTask.priority">
+              <option value="high">高</option>
+              <option value="medium">中</option>
+              <option value="low">低</option>
+            </select>
+          </div>
 
-        <div class="modal-actions">
-          <button class="cancel-btn" @click="showCreateModal = false">取消</button>
-          <button class="create-btn" @click="handleCreate" :disabled="!newTask.title">
-            创建
-          </button>
+          <div class="form-group">
+            <label>状态</label>
+            <select v-model="newTask.status">
+              <option value="active">进行中</option>
+              <option value="blocked">已阻塞</option>
+              <option value="completed">已完成</option>
+            </select>
+          </div>
+
+          <div class="modal-actions">
+            <button class="cancel-btn" @click="closeModal">取消</button>
+            <button class="create-btn" :disabled="!newTask.title" @click="handleCreate">
+              创建
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -114,10 +128,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type Task } from '../../api/client'
 import wsClient from '../../api/websocket'
+import ThemeTabs, { type ThemeTab } from '../../components/interactive/ThemeTabs.vue'
+import { usePullDownClose } from '../../composables/usePullDownClose'
 
 const router = useRouter()
 
@@ -125,62 +141,120 @@ const currentInstance = ref<any>(null)
 const tasks = ref<Task[]>([])
 const loading = ref(true)
 const showCreateModal = ref(false)
+const activeTheme = ref<string>('all')
+
+const modalRef = ref<HTMLElement | null>(null)
+const modalSheetRef = ref<HTMLElement | null>(null)
 
 const newTask = ref({
   title: '',
   description: '',
   priority: 'medium',
-  status: 'active'
+  status: 'active',
 })
 
-// 按分组组织任务
+// Phase 4: 主题列表（与 BottomNav 5 模块对齐）
+const themeTabs = computed<ThemeTab[]>(() => {
+  const open = (s: string) => tasks.value.filter((t) => t.status === s).length
+  const aiCount = tasks.value.filter(
+    (t) => t.workstreamId === currentInstance.value?.id && t.status !== 'completed',
+  ).length
+  const noteCount = tasks.value.filter(
+    (t) => t.source === 'local' && t.status !== 'completed',
+  ).length
+  // meeting/email 暂用 source 标识 fallback 到 0
+  const meetingCount = tasks.value.filter(
+    (t) => (t as any).category === 'meeting' && t.status !== 'completed',
+  ).length
+  const emailCount = tasks.value.filter(
+    (t) => (t as any).category === 'email' && t.status !== 'completed',
+  ).length
+
+  return [
+    { id: 'all', label: '全部', icon: '✦', count: open('active') + open('blocked') },
+    { id: 'ai', label: 'AI', icon: '🤖', count: aiCount },
+    { id: 'notes', label: '笔记', icon: '📝', count: noteCount },
+    { id: 'meetings', label: '会议', icon: '🎙️', count: meetingCount },
+    { id: 'email', label: '邮件', icon: '✉️', count: emailCount },
+  ]
+})
+
+// 过滤后的 task 列表
+const filteredTasks = computed(() => {
+  if (activeTheme.value === 'all') return tasks.value
+  const map: Record<string, (t: Task) => boolean> = {
+    ai: (t) => t.workstreamId === currentInstance.value?.id,
+    notes: (t) => t.source === 'local',
+    meetings: (t) => (t as any).category === 'meeting',
+    email: (t) => (t as any).category === 'email',
+  }
+  const pred = map[activeTheme.value]
+  return pred ? tasks.value.filter(pred) : tasks.value
+})
+
+// 按状态分组（仅展示 open 状态；completed 折叠）
 const groupedTasks = computed(() => {
   const groups = [
-    { name: '进行中', tasks: tasks.value.filter(t => t.status === 'active') },
-    { name: '已阻塞', tasks: tasks.value.filter(t => t.status === 'blocked') },
-    { name: '已完成', tasks: tasks.value.filter(t => t.status === 'completed') }
+    { name: '进行中', tasks: filteredTasks.value.filter((t) => t.status === 'active') },
+    { name: '已阻塞', tasks: filteredTasks.value.filter((t) => t.status === 'blocked') },
+    { name: '已完成', tasks: filteredTasks.value.filter((t) => t.status === 'completed') },
   ]
-  return groups.filter(g => g.tasks.length > 0)
+  return groups.filter((g) => g.tasks.length > 0)
 })
 
+// Phase 4.3: 下滑关闭 modal
+const { pullDownOffset, onSheetTouchStart, onSheetTouchMove, onSheetTouchEnd } =
+  usePullDownClose({
+    threshold: 80,
+    onClose: () => closeModal(),
+  })
+
+function closeModal() {
+  showCreateModal.value = false
+}
+
+// Phase 4.3: ESC 关闭 modal
+function onKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && showCreateModal.value) closeModal()
+}
+
 onMounted(() => {
-  // 加载当前实例
   const instanceStr = localStorage.getItem('selected_instance')
-  if (instanceStr) {
-    currentInstance.value = JSON.parse(instanceStr)
-  }
-  
+  if (instanceStr) currentInstance.value = JSON.parse(instanceStr)
+
   loadTasks()
-  
-  // WebSocket 实时更新
+
   wsClient.on('task_created', handleTaskUpdate)
   wsClient.on('task_updated', handleTaskUpdate)
   wsClient.on('session_attached', handleSessionAttached)
+  window.addEventListener('keydown', onKeyDown)
 })
 
 onUnmounted(() => {
   wsClient.off('task_created', handleTaskUpdate)
   wsClient.off('task_updated', handleTaskUpdate)
   wsClient.off('session_attached', handleSessionAttached)
+  window.removeEventListener('keydown', onKeyDown)
+})
+
+watch(activeTheme, () => {
+  // 切换主题时如想刷后端可在此触发 loadTasks(opts)
 })
 
 async function loadTasks() {
   loading.value = true
   try {
-    console.log('🔍 开始加载任务...', '当前实例:', currentInstance.value)
-
     if (!currentInstance.value) {
       tasks.value = []
-      console.warn('⚠️ 未选择实例，任务列表为空')
       return
     }
-
-    // 直接从当前 OpenCode 实例获取开发会话（每个 Session = 一个任务）
-    const instanceTasks = await api.getTasks(currentInstance.value.id)
-    console.log('✅ 实例任务:', instanceTasks.length, instanceTasks)
+    // Phase 4: 拉三源任务（acc + opencode + local）
+    const instanceTasks = await api.getTasks(currentInstance.value.id, {
+      workstreamId: currentInstance.value.id,
+    })
     tasks.value = instanceTasks
   } catch (error) {
-    console.error('❌ 加载任务失败:', error)
+    console.error('Failed to load tasks:', error)
     tasks.value = []
   } finally {
     loading.value = false
@@ -189,7 +263,6 @@ async function loadTasks() {
 
 async function handleCreate() {
   if (!newTask.value.title) return
-  
   try {
     const task: Task = {
       id: `task-${Date.now()}`,
@@ -197,69 +270,45 @@ async function handleCreate() {
       description: newTask.value.description,
       status: newTask.value.status as any,
       priority: newTask.value.priority as any,
+      workstreamId: currentInstance.value?.id,
+      source: 'local',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      sessionCount: 0
+      sessionCount: 0,
     }
-    
     await api.createTask(task)
-    
-    // 重置表单
-    newTask.value = {
-      title: '',
-      description: '',
-      priority: 'medium',
-      status: 'active'
-    }
-    
-    showCreateModal.value = false
+    newTask.value = { title: '', description: '', priority: 'medium', status: 'active' }
+    closeModal()
     loadTasks()
   } catch (error) {
     console.error('Failed to create task:', error)
-    alert('创建任务失败')
   }
 }
 
 function handleTaskUpdate(task: Task) {
-  const index = tasks.value.findIndex(t => t.id === task.id)
-  if (index >= 0) {
-    tasks.value[index] = task
-  } else {
-    tasks.value.unshift(task)
-  }
+  const index = tasks.value.findIndex((t) => t.id === task.id)
+  if (index >= 0) tasks.value[index] = task
+  else tasks.value.unshift(task)
 }
 
 function handleSessionAttached(link: any) {
-  const task = tasks.value.find(t => t.id === link.taskId)
-  if (task) {
-    task.sessionCount = (task.sessionCount || 0) + 1
-  }
+  const task = tasks.value.find((t) => t.id === link.taskId)
+  if (task) task.sessionCount = (task.sessionCount || 0) + 1
 }
 
 function viewTask(taskId: string) {
-  // Phase V3: 直接进入会话对话视图（task = session 1:1）
-  const instanceId = (() => {
-    try {
-      const raw = localStorage.getItem('selected_instance')
-      if (raw) return JSON.parse(raw)?.id || ''
-    } catch {}
-    return ''
-  })()
+  const instanceId = currentInstance.value?.id || ''
   router.push({
     path: `/sessions/${taskId}`,
     query: { instance_id: instanceId, title: '' },
   })
 }
 
-function goBack() {
-  router.push('/instances')
-}
-
 function statusText(status: string): string {
   const map: Record<string, string> = {
     active: '进行中',
     blocked: '已阻塞',
-    completed: '已完成'
+    completed: '已完成',
   }
   return map[status] || status
 }
@@ -268,49 +317,10 @@ function statusText(status: string): string {
 <style scoped>
 .tasks-view {
   min-height: 100vh;
-  background: #f5f7fa;
+  background: var(--bg-base);
   display: flex;
   flex-direction: column;
-  padding-bottom: 70px;
-}
-
-.top-bar {
-  background: white;
-  padding: var(--space-3) var(--space-4);   /* 修改：12px 16px（原 16px 20px） */
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  border-bottom: 1px solid var(--border);   /* 替代阴影 */
-}
-
-.back-btn, .add-btn {
-  padding: var(--space-1-5) var(--space-2-5); /* 更紧凑 */
-  font-size: 14px;
-  background: transparent;
-  border: 1px solid #e0e0e0;
-  border-radius: var(--radius-md);          /* 修改：使用变量 (8px) */
-  cursor: pointer;
-}
-
-.add-btn {
-  font-size: 20px;
-  font-weight: bold;
-  color: #667eea;
-  border-color: #667eea;
-}
-
-.top-bar h1 {
-  flex: 1;
-  font-size: 18px;                          /* 修改：18px（原 20px） */
-  font-weight: 600;
-  margin: 0;
-}
-
-.instance-info-bar {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  padding: var(--space-2-5) var(--space-4); /* 修改：10px 16px（原 12px 20px） */
-  color: white;
-  font-size: 13px;                          /* 修改：13px（原 14px） */
+  padding-bottom: 96px; /* FAB + bottom-nav 空间 */
 }
 
 .loading-state {
@@ -324,77 +334,96 @@ function statusText(status: string): string {
 .spinner {
   width: 40px;
   height: 40px;
-  border: 4px solid #f3f3f3;
-  border-top: 4px solid #667eea;
+  border: 4px solid var(--bg-subtle);
+  border-top: 4px solid var(--brand-primary);
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin-bottom: 16px;
 }
 
 @keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .tasks-container {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-4);                  /* 修改：使用变量 (14px，原 20px) */
+  padding: var(--space-3);
 }
 
 .task-group {
-  margin-bottom: var(--space-5);            /* 修改：使用变量 (18px，原 24px) */
+  margin-bottom: var(--space-4);
 }
 
 .group-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
+  padding: 0 4px;
 }
 
 .group-header h2 {
-  font-size: 15px;                          /* 修改：15px（原 16px） */
+  font-size: 14px;
   font-weight: 600;
-  color: #333;
+  color: var(--text-secondary);
   margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
 }
 
 .task-count {
-  font-size: 11px;                          /* 修改：11px（原 12px） */
-  padding: 2px 6px;                         /* 修改：2px 6px（原 4px 8px） */
-  background: #e8f0fe;
-  color: #667eea;
-  border-radius: 12px;
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  border-radius: 999px;
   font-weight: 600;
 }
 
+/* M3 ElevatedCard */
 .task-card {
-  background: white;
-  border-radius: var(--radius-md);          /* 修改：使用变量 (8px，原 12px) */
-  padding: var(--space-3);                  /* 修改：使用变量 (12px，原 16px) */
-  margin-bottom: var(--space-2);            /* 修改：使用变量 (8px，原 8px) */
+  background: var(--bg-elevated);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 10px;
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: 12px;
   cursor: pointer;
-  border: 1px solid var(--border);          /* 新增：替代阴影 */
+  box-shadow: var(--shadow-sm);
+  transition:
+    transform 120ms ease,
+    box-shadow 180ms ease;
+}
+
+.task-card:hover {
+  box-shadow: var(--shadow-md);
 }
 
 .task-card:active {
   transform: scale(0.98);
+  box-shadow: var(--shadow-sm);
 }
 
 .task-priority {
-  width: 3px;                               /* 修改：3px（原 4px） */
-  height: 36px;                             /* 修改：36px（原 40px） */
+  width: 3px;
+  height: 40px;
   border-radius: 2px;
   flex-shrink: 0;
 }
 
-.task-priority.high { background: #ff4757; }
-.task-priority.medium { background: #ffa502; }
-.task-priority.low { background: #2ed573; }
+.task-priority.high {
+  background: var(--error, #ef4444);
+}
+.task-priority.medium {
+  background: var(--warning);
+}
+.task-priority.low {
+  background: var(--success);
+}
 
 .task-content {
   flex: 1;
@@ -402,19 +431,19 @@ function statusText(status: string): string {
 }
 
 .task-content h3 {
-  font-size: 14px;                          /* 修改：14px（原 15px） */
+  font-size: 14px;
   font-weight: 600;
-  color: #333;
-  margin: 0 0 var(--space-1) 0;
+  color: var(--text-primary);
+  margin: 0 0 4px 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .task-desc {
-  font-size: 12px;                          /* 修改：12px（原 13px） */
-  color: #666;
-  margin: 0 0 var(--space-1-5) 0;           /* 修改：使用变量 */
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0 0 6px 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -422,41 +451,45 @@ function statusText(status: string): string {
 
 .task-meta {
   display: flex;
-  gap: var(--space-2-5);                    /* 修改：使用变量 (10px，原 12px) */
-  font-size: 11px;                          /* 修改：11px（原 12px） */
+  gap: 8px;
+  font-size: 11px;
+  align-items: center;
 }
 
 .meta-item {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: #999;
+  color: var(--text-muted);
 }
 
-.meta-item.status {
-  padding: 2px 6px;                         /* 修改：2px 6px（原 4px 8px） */
-  border-radius: var(--radius-sm);          /* 修改：使用变量 */
-  font-weight: 500;
+/* M3 AssistChip：状态 chip 升级 */
+.meta-item.status-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 11px;
+  line-height: 16px;
 }
 
-.meta-item.status.active {
-  background: #d4f4dd;
-  color: #2a8a4e;
+.meta-item.status-chip.status-active {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--success);
 }
 
-.meta-item.status.blocked {
-  background: #fff3cd;
-  color: #856404;
+.meta-item.status-chip.status-blocked {
+  background: rgba(245, 158, 11, 0.14);
+  color: var(--warning);
 }
 
-.meta-item.status.completed {
-  background: #e8f0fe;
-  color: #667eea;
+.meta-item.status-chip.status-completed {
+  background: rgba(102, 126, 234, 0.14);
+  color: var(--brand-primary);
 }
 
 .task-arrow {
-  font-size: 18px;                          /* 修改：18px（原 20px） */
-  color: var(--border-strong);              /* 修改：使用变量 */
+  font-size: 18px;
+  color: var(--text-muted);
 }
 
 .empty-state {
@@ -478,50 +511,112 @@ function statusText(status: string): string {
   font-size: 14px;
   font-weight: 600;
   color: white;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--brand-gradient);
   border: none;
-  border-radius: var(--radius-md);          /* 修改：使用变量 (8px) */
+  border-radius: 999px;
   cursor: pointer;
   margin-top: 16px;
 }
 
-/*
-  ✅ 已删除硬编码底部导航的 CSS 样式（.bottom-nav / .nav-item / .nav-icon /
-  .nav-label），由 AppLayout 提供的共享 BottomNav 接管。
-*/
-
-/*
-  ✅ 已删除硬编码底部导航的 CSS 样式（.bottom-nav / .nav-item / .nav-icon /
-  .nav-label），由 AppLayout 提供的共享 BottomNav 接管。
-*/
-
-.modal-overlay {
+/* M3 FloatingActionButton */
+.fab {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  right: 20px;
+  bottom: calc(56px + env(safe-area-inset-bottom, 0) + 16px);
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  border: none;
+  background: var(--brand-primary);
+  color: #fff;
+  font-size: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
-  z-index: 1000;
+  cursor: pointer;
+  box-shadow: var(--shadow-lg);
+  transition:
+    transform 120ms ease,
+    box-shadow 180ms ease;
+  z-index: 50;
 }
 
-.modal-content {
-  background: white;
-  border-radius: var(--radius-lg);          /* 修改：使用变量 (10px，原 16px) */
-  padding: 24px;
+.fab:hover {
+  box-shadow: 0 12px 20px -4px rgba(102, 126, 234, 0.4);
+}
+
+.fab:active {
+  transform: scale(0.94);
+}
+
+.fab-icon {
+  display: block;
+  line-height: 1;
+  margin-top: -2px;
+}
+
+/* ============ Modal (下滑关闭 + M3) ============ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 180ms ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.modal-sheet {
+  background: var(--bg-elevated);
+  border-radius: 24px 24px 0 0;
   width: 100%;
-  max-width: 400px;
-  max-height: 80vh;
+  max-width: 600px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  animation: slideUp 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  touch-action: none;
+  will-change: transform;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.modal-handle {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  margin: 10px auto 6px;
+  flex-shrink: 0;
+}
+
+.modal-body {
+  padding: 12px 24px 24px;
   overflow-y: auto;
 }
 
-.modal-content h2 {
+.modal-body h2 {
   font-size: 20px;
-  margin: 0 0 20px 0;
+  font-weight: 600;
+  margin: 8px 0 20px;
+  color: var(--text-primary);
 }
 
 .form-group {
@@ -530,9 +625,10 @@ function statusText(status: string): string {
 
 .form-group label {
   display: block;
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
 }
 
 .form-group input,
@@ -541,9 +637,20 @@ function statusText(status: string): string {
   width: 100%;
   padding: 12px;
   font-size: 14px;
-  border: 1px solid #e0e0e0;
-  border-radius: var(--radius-md);          /* 修改：使用变量 (8px) */
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  border: 1px solid transparent;
+  border-radius: 8px;
   box-sizing: border-box;
+  font-family: inherit;
+  transition: border-color 180ms ease;
+}
+
+.form-group input:focus,
+.form-group textarea:focus,
+.form-group select:focus {
+  border-color: var(--brand-primary);
+  background: var(--bg-card);
 }
 
 .modal-actions {
@@ -559,22 +666,27 @@ function statusText(status: string): string {
   font-size: 14px;
   font-weight: 600;
   border: none;
-  border-radius: var(--radius-md);          /* 修改：使用变量 (8px) */
+  border-radius: 999px;
   cursor: pointer;
+  transition: background 180ms ease;
 }
 
 .cancel-btn {
-  background: #f5f7fa;
-  color: #666;
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+}
+
+.cancel-btn:hover {
+  background: var(--border);
 }
 
 .create-btn {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  background: var(--brand-primary);
+  color: #fff;
 }
 
 .create-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 </style>

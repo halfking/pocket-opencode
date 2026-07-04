@@ -42,6 +42,8 @@ export interface Task {
   status: string
   priority?: string
   workstreamId?: string
+  source?: 'acc' | 'opencode' | 'local'
+  category?: string
   createdAt?: string
   updatedAt?: string
   pendingApprovals?: number
@@ -102,10 +104,15 @@ export interface ModelDefinition {
 }
 
 export const api = {
-  async getTasks(instanceId?: string): Promise<Task[]> {
+  async getTasks(
+    instanceId?: string,
+    opts: { workstreamId?: string; source?: 'acc' | 'opencode' | 'local' } = {},
+  ): Promise<Task[]> {
     const url = new URL(`${API_BASE}/api/tasks`, window.location.origin)
-    if (instanceId) url.searchParams.set("instance_id", instanceId)
-    const res = await authFetch(url.toString().replace(window.location.origin, ""))
+    if (instanceId) url.searchParams.set('instance_id', instanceId)
+    if (opts.workstreamId) url.searchParams.set('workstream_id', opts.workstreamId)
+    if (opts.source) url.searchParams.set('source', opts.source)
+    const res = await authFetch(url.toString().replace(window.location.origin, ''))
     const data = await res.json()
     return data.tasks || []
   },
