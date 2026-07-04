@@ -20,6 +20,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
+	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/server"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
@@ -81,7 +82,7 @@ func main() {
 		userStore *auth.UserStore
 		jwtSigner *auth.Signer
 	)
-	if pool != nil {
+if pool != nil {
 		us, err := auth.NewUserStore(pool)
 		if err != nil {
 			log.Fatalf("user store: %v", err)
@@ -102,7 +103,7 @@ func main() {
 			}
 			if pass != "" {
 				if err := us.InsertUser(context.Background(), &auth.User{ID: "user-" + user, Username: user, Role: "admin"}, pass); err != nil {
-					log.Printf("WARN: bootstrap first user %s: %v", user, err)
+					log.Printf("WARN: bootstrap first user %q: %v", user, err)
 				} else {
 					log.Printf("Bootstrap: created first admin user %q", user)
 				}
@@ -110,6 +111,11 @@ func main() {
 		}
 		jwtSigner = auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
 		log.Println("Auth: user store + JWT signer initialized")
+	} else if cfg.DevAuth {
+		// Dev 模式无 PG 时：仍然 init JWT signer，让 requireAuth 通过（用户可用外部 JWT）。
+		// userStore 仍 nil，所以 /api/auth/login 会 503；但其它 requireAuth 路由可用。
+		jwtSigner = auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
+		log.Println("Dev mode: JWT signer initialized without user store (login disabled)")
 	}
 
 	// ---- Email crypto + fetcher + scheduler ----
@@ -233,11 +239,70 @@ func main() {
 	}
 
 	srv := server.New(cfg, npsAdapter, opencodeAdapter, taskStore, reg, configAdapter,
-		notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, nil, /* opencodeManager */
+		notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, nil, /* opencodeManager (set below) */
 		userStore, jwtSigner,
 		emailCrypto, emailPending,
 		emailScheduler, emailFetcher,
 		dataDir)
+
+	// ---- OpenCode 域管理器装配（Phase V3: 真实任务与会话接入）----
+	// 在 server.New 之后再装配，因为 manager 持有 opencodeAdapter/registry 引用。
+	// noopHistoryStore 是 HistoryStore 的零开销实现——真实持久化交给 OpenCode 自身（server-side SQLite）。
+	ocMgr := opencode.NewManager(reg, opencodeAdapter, noopHistoryStore{})
+	eventMgr := opencode.NewEventStreamManager(reg, opencodeAdapter)
+	permMgr := opencode.NewPermissionManager(reg, opencodeAdapter, opencode.PermissionManagerOptions{PollInterval: 3 * time.Second})
+	quesMgr := opencode.NewQuestionManager(reg, opencodeAdapter, opencode.QuestionManagerOptions{PollInterval: 3 * time.Second})
+
+	// 启动后台循环
+	mgrCtx, mgrCancel := context.WithCancel(context.Background())
+	defer mgrCancel()
+
+	// 让管理器在主进程退出时关闭（defer 调用，但 goroutine 在 mgrCancel 之后才退出）
+	defer eventMgr.Close()
+	defer permMgr.Close()
+	defer quesMgr.Close()
+
+	// 把 OpenCode 上游事件回灌给 ocMgr，驱动 active/idle 推断
+	go func() {
+		instances := reg.ListInstances()
+		for _, inst := range instances {
+			instanceID := inst.ID
+			ctx, cancel := context.WithCancel(mgrCtx)
+			defer cancel()
+			ch, cleanup, err := eventMgr.Subscribe(ctx, opencode.SubscribeOptions{InstanceID: instanceID, BufferSize: 128})
+			if err != nil {
+				log.Printf("warn: subscribe events for %s failed: %v", instanceID, err)
+				continue
+			}
+			defer cleanup()
+			go func(c <-chan opencode.DomainEvent, iid string) {
+				for evt := range c {
+					if evt.SessionID != "" {
+						ocMgr.OnSessionEvent(evt.SessionID, evt.Type)
+					}
+				}
+			}(ch, instanceID)
+		}
+	}()
+
+	// 每 30s 刷新一次 idle/active（兜底：长时间无事件则视为 idle）
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-mgrCtx.Done():
+				return
+			case <-t.C:
+				ocMgr.RefreshStatuses(5 * time.Minute)
+			}
+		}
+	}()
+
+	log.Printf("OpenCode domain managers wired: eventMgr + permMgr + quesMgr + ocMgr (refreshStatus 30s)")
+
+	// 把 manager 注入 server（用 setter 而非扩展 New，避免 26+ 参数）
+	srv.SetOpenCodeManagers(ocMgr, eventMgr, permMgr, quesMgr)
 
 	// Phase 5: 启动 ACC 任务后台同步（5 分钟一次把 ACC 任务拉取到本地）
 	taskScheduler := tasksync.New(mcpClient, taskStore, 5*60*1_000_000_000) // 5min
@@ -261,6 +326,19 @@ func main() {
 }
 
 // ---- llm-gateway 适配器（把 llm-gateway OpenAI 兼容协议适配到 aigate 接口）----
+
+// noopHistoryStore 实现 opencode.HistoryStore 的零开销空实现。
+// 当前 Pocket 不在本地持久化 OpenCode 会话历史——由 OpenCode 自身（~/.local/share/opencode/db.sqlite）持久化，
+// Pocket 只代理视图。如未来需要本地副本，替换为 PG 实现即可。
+type noopHistoryStore struct{}
+
+func (noopHistoryStore) SaveEvent(ctx context.Context, sessionID string, event *opencode.HistoryEvent) error {
+	return nil
+}
+
+func (noopHistoryStore) GetHistory(ctx context.Context, sessionID string, limit int) ([]*opencode.HistoryEvent, error) {
+	return nil, nil
+}
 
 // llmGatewayEmbedderAdapter 把 llmgateway.Client 适配为 aigate.Embedder
 type llmGatewayEmbedderAdapter struct {

@@ -50,6 +50,10 @@ type Server struct {
 	kxmemory    *kxmemory.Client // nil = kxmemory 未配置
 	// OpenCode 管理器
 	opencodeManager *opencode.Manager // nil = OpenCode 管理未启用
+	// OpenCode 域事件/许可/提问管理（Phase V3：真实任务与会话接入）
+	eventMgr *opencode.EventStreamManager
+	permMgr  *opencode.PermissionManager
+	quesMgr  *opencode.QuestionManager
 
 	// Auth
 	userStore *auth.UserStore
@@ -108,6 +112,15 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 	}
 }
 
+// SetOpenCodeManagers 由 main.go 在 server.New 之后注入 OpenCode 域管理器。
+// 使用 setter 而非扩展 New 签名，避免参数膨胀。所有 manager 允许为 nil。
+func (s *Server) SetOpenCodeManagers(ocMgr *opencode.Manager, eventMgr *opencode.EventStreamManager, permMgr *opencode.PermissionManager, quesMgr *opencode.QuestionManager) {
+	s.opencodeManager = ocMgr
+	s.eventMgr = eventMgr
+	s.permMgr = permMgr
+	s.quesMgr = quesMgr
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
@@ -116,10 +129,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/sessions", s.handleAllSessions) // 新增：获取所有会话
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/tasks/", s.handleTaskOperations)
-	mux.HandleFunc("/api/config/models", s.handleModelConfig)
-	mux.HandleFunc("/api/config/reload", s.handleConfigReload)
+	mux.HandleFunc("/api/config/models", s.requireAuth(s.handleModelConfig))
+	mux.HandleFunc("/api/config/reload", s.requireAuth(s.handleConfigReload))
 	mux.HandleFunc("/api/config/models/test", s.handleModelTest)
-	mux.HandleFunc("/ws", s.handleWebSocket)
+	mux.HandleFunc("/ws", s.requireAuth(s.handleWebSocket))
 	mux.HandleFunc("/api/app/check-update", s.handleCheckUpdate)
 	mux.HandleFunc("/api/app/download", s.handleDownloadAPK)
 	// 飞书事件回调 (m.kxpms.cn/callback/feishu 由 56 nginx 转发到 9010)
@@ -129,36 +142,66 @@ func (s *Server) Handler() http.Handler {
 	// 认证
 	mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
 	// 语音笔记
-	mux.HandleFunc("/api/notes", s.handleNotes)
-	mux.HandleFunc("/api/notes/", s.handleNoteOperations)
+	mux.HandleFunc("/api/notes", s.requireAuth(s.handleNotes))
+	mux.HandleFunc("/api/notes/", s.requireAuth(s.handleNoteOperations))
 	// 邮箱助手
-	mux.HandleFunc("/api/email/accounts", s.handleEmailAccounts)
-	mux.HandleFunc("/api/email/accounts/", s.handleEmailAccountOps)
-	mux.HandleFunc("/api/email/summaries", s.handleEmailSummaries)
-	mux.HandleFunc("/api/email/summaries/", s.handleEmailSummaryOps)
-	mux.HandleFunc("/api/emails", s.handleEmails)
-	mux.HandleFunc("/api/emails/sync", s.handleEmailSync)
-	mux.HandleFunc("/api/emails/", s.handleEmailOps)
+	mux.HandleFunc("/api/email/accounts", s.requireAuth(s.handleEmailAccounts))
+	mux.HandleFunc("/api/email/accounts/", s.requireAuth(s.handleEmailAccountOps))
+	mux.HandleFunc("/api/email/summaries", s.requireAuth(s.handleEmailSummaries))
+	mux.HandleFunc("/api/email/summaries/", s.requireAuth(s.handleEmailSummaryOps))
+	mux.HandleFunc("/api/emails", s.requireAuth(s.handleEmails))
+	mux.HandleFunc("/api/emails/sync", s.requireAuth(s.handleEmailSync))
+	mux.HandleFunc("/api/emails/", s.requireAuth(s.handleEmailOps))
 	// 密码箱（子树，含 /api/vault/sync/latest）
-	mux.HandleFunc("/api/vault/sync/", s.handleVaultSync)
+	mux.HandleFunc("/api/vault/sync/", s.requireAuth(s.handleVaultSync))
 	// STT 云端兜底
 	mux.HandleFunc("/api/stt/transcribe", s.handleSttTranscribe)
 	// Phase C: 无状态 AI 网关（仅转发嵌入/LLM，不存数据）
-	mux.HandleFunc("/api/embed", s.handleEmbed)
-	mux.HandleFunc("/api/llm/chat", s.handleLLMChat)
+	mux.HandleFunc("/api/embed", s.requireAuth(s.handleEmbed))
+	mux.HandleFunc("/api/llm/chat", s.requireAuth(s.handleLLMChat))
 	
 	// OpenCode 管理 API
 	mux.HandleFunc("/api/opencode/sessions", s.handleOpenCodeSessions)
 	mux.HandleFunc("/api/opencode/sessions/", s.handleOpenCodeSessionOperations)
 	mux.HandleFunc("/api/opencode/instances/", s.handleOpenCodeInstanceOperations)
-	mux.HandleFunc("/api/opencode/cache/refresh", s.handleOpenCodeRefreshCache)
+	mux.HandleFunc("/api/opencode/cache/refresh", s.requireAuth(s.handleOpenCodeRefreshCache))
 	
 	// OpenCode 发现和任务感知 API
 	mux.HandleFunc("/api/opencode/discover", s.handleDiscoverInstances)
 	mux.HandleFunc("/api/opencode/tasks", s.handleListAllTasks)
 	mux.HandleFunc("/api/opencode/tasks/", s.handleGetTaskDetail)
-	
-	return mux
+
+	// ---- Phase V3: LLM Gateway 配置管理 ----
+	// 用户在 Settings 改 llmgo.kxpms.cn URL / API Key；pocketd 写入 OpenCode 配置
+	mux.HandleFunc("/api/llm-gateway/config", s.requireAuth(s.handleLLMGatewayConfig))
+	mux.HandleFunc("/api/llm-gateway/test", s.requireAuth(s.handleLLMGatewayTest))
+	mux.HandleFunc("/api/llm-gateway/models", s.requireAuth(s.handleLLMGatewayModels))
+
+	// ---- Phase V3: 移动端真实会话交互 API ----
+	// SSE / Prompt / Interrupt / Messages / Create — 转发到 OpenCode 上游
+	mux.HandleFunc("/api/mobile/sessions", s.requireAuth(s.handleMobileSessionRouter))
+	mux.HandleFunc("/api/mobile/sessions/", s.requireAuth(s.handleMobileSessionRouter))
+
+	return corsMiddleware(mux)
+}
+
+// corsMiddleware 添加 CORS 支持
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 允许所有源（生产环境应该更严格）
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Max-Age", "3600")
+		
+		// 处理 OPTIONS 预检请求
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		
+		next.ServeHTTP(w, r)
+	})
 }
 
 // handleOpenCodeSessionOperations 处理 OpenCode 会话相关操作的路由分发

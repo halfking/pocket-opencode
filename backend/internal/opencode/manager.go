@@ -2,10 +2,8 @@ package opencode
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"sync"
 	"time"
 
@@ -24,10 +22,11 @@ type Manager struct {
 
 // SessionCache 会话缓存
 type SessionCache struct {
-	mu         sync.RWMutex
-	sessions   map[string]*CachedSession // key: sessionID
-	byInstance map[string][]string       // key: instanceID, value: sessionIDs
-	cachedAt   map[string]time.Time      // key: instanceID, value: 缓存时间（用于 TTL 校验）
+	mu          sync.RWMutex
+	sessions    map[string]*CachedSession // key: sessionID
+	byInstance  map[string][]string       // key: instanceID, value: sessionIDs
+	cachedAt    map[string]time.Time      // key: instanceID, value: 缓存时间（用于 TTL 校验）
+	lastSeenEvt map[string]time.Time      // key: sessionID, value: 最近一次事件时间（用于 active/idle 推断）
 }
 
 // CachedSession 缓存的会话信息
@@ -96,9 +95,10 @@ func NewManager(reg *registry.Registry, adapter adapter.OpenCodeAdapter, history
 
 func newSessionCache() *SessionCache {
 	return &SessionCache{
-		sessions:   make(map[string]*CachedSession),
-		byInstance: make(map[string][]string),
-		cachedAt:   make(map[string]time.Time),
+		sessions:    make(map[string]*CachedSession),
+		byInstance:  make(map[string][]string),
+		cachedAt:    make(map[string]time.Time),
+		lastSeenEvt: make(map[string]time.Time),
 	}
 }
 
@@ -228,60 +228,63 @@ func (m *Manager) SubscribeStatusUpdates() <-chan StatusUpdate {
 	return ch
 }
 
-// StartStatusMonitoring 启动状态监控（轮询所有实例）
-func (m *Manager) StartStatusMonitoring(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+// OnSessionEvent 由 EventStreamManager 在收到事件时调用。
+// 用于更新每个 session 的最近事件时间，并据此推断 active/idle。
+// 这一替换了原"轮询 /session/status"的设计——该接口在 OpenCode 上游并不存在。
+func (m *Manager) OnSessionEvent(sessionID, eventType string) {
+	if sessionID == "" {
+		return
+	}
+	now := time.Now()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			m.pollAllInstances(ctx)
-		}
+	m.sessionCache.mu.Lock()
+	m.sessionCache.lastSeenEvt[sessionID] = now
+	m.sessionCache.mu.Unlock()
+
+	// 活跃事件类型：prompted/step-start/shell-start/text-delta/reasoning-delta
+	switch eventType {
+	case "session.next.prompted",
+		"session.next.prompt.admitted",
+		"session.next.step.started",
+		"session.next.shell.started",
+		"session.next.text.delta",
+		"session.next.reasoning.delta",
+		"session.next.tool.called",
+		"session.next.context.updated":
+		m.UpdateSessionStatus(sessionID, "active")
+	case "session.next.step.ended",
+		"session.next.shell.ended",
+		"session.next.text.ended",
+		"session.next.reasoning.ended",
+		"session.next.compaction.ended":
+		// 步骤结束时不立刻置 idle，由时间窗口兜底（>5min 无事件 = idle）
 	}
 }
 
-func (m *Manager) pollAllInstances(ctx context.Context) {
-	instances := m.registry.ListInstances()
-	
-	for _, inst := range instances {
-		go func(instanceID string) {
-			apiBaseURL, err := m.registry.GetInstanceAPIBase(instanceID)
-			if err != nil {
-				return
-			}
+// RefreshStatuses 周期性根据 lastSeenEvt 推断 idle/active。
+// 替代了原 pollAllInstances 对不存在端点 /session/status 的调用。
+// 调用方（main.go）按 30s 一次触发。
+func (m *Manager) RefreshStatuses(idleAfter time.Duration) {
+	now := time.Now()
+	m.sessionCache.mu.RLock()
+	snapshot := make(map[string]time.Time, len(m.sessionCache.lastSeenEvt))
+	for k, v := range m.sessionCache.lastSeenEvt {
+		snapshot[k] = v
+	}
+	m.sessionCache.mu.RUnlock()
 
-			// 获取实时状态
-			// 注意：这需要 OpenCode 提供 /session/status API
-			statusURL := fmt.Sprintf("%s/session/status", apiBaseURL)
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
-			if err != nil {
-				return
-			}
-
-			client := &http.Client{Timeout: 5 * time.Second}
-			resp, err := client.Do(req)
-			if err != nil {
-				return
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK {
-				return
-			}
-
-			var statusMap map[string]string
-			if err := json.NewDecoder(resp.Body).Decode(&statusMap); err != nil {
-				return
-			}
-
-			// 更新状态
-			for sessionID, status := range statusMap {
-				m.UpdateSessionStatus(sessionID, status)
-			}
-		}(inst.ID)
+	for sid, ts := range snapshot {
+		status := "idle"
+		if now.Sub(ts) < idleAfter {
+			status = "active"
+		}
+		// 只在状态变化时写，避免噪声广播
+		m.statusMonitor.mu.RLock()
+		cur := m.statusMonitor.statusMap[sid]
+		m.statusMonitor.mu.RUnlock()
+		if cur != status {
+			m.UpdateSessionStatus(sid, status)
+		}
 	}
 }
 

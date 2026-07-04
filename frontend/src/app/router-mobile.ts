@@ -171,31 +171,38 @@ const router = createRouter({
       path: '/instances',
       name: 'instances',
       component: InstanceListView,
-      meta: { requiresAuth: true }
+      meta: { requiresAuth: true, title: '实例', bottomNav: true }
     },
     {
       path: '/tasks',
       name: 'tasks',
       component: TasksView,
-      meta: { requiresAuth: true }
+      meta: { requiresAuth: true, title: '任务', bottomNav: true }
     },
     {
       path: '/tasks/:id',
       name: 'task-detail',
       component: TaskDetailView,
-      meta: { requiresAuth: true }
+      meta: { requiresAuth: true, title: '任务详情', bottomNav: true, canGoBack: true }
     },
     {
       path: '/sessions',
       name: 'sessions',
       component: SessionListView,
-      meta: { requiresAuth: true }
+      meta: { requiresAuth: true, title: '会话', bottomNav: true }
+    },
+    {
+      // Phase V3: 实时会话对话视图
+      path: '/sessions/:id',
+      name: 'session-conversation',
+      component: () => import('../features/sessions/SessionConversationView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '会话', bottomNav: false, canGoBack: true }
     },
     {
       path: '/settings',
       name: 'settings',
       component: SettingsView,
-      meta: { requiresAuth: true }
+      meta: { requiresAuth: true, title: '设置', bottomNav: true }
     }
   ]
 })

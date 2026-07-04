@@ -5,10 +5,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
-	"github.com/halfking/pocket-opencode/backend/internal/websocket"
+	mobilews "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
 
 // MobileAPI provides optimized endpoints for mobile clients.
@@ -17,7 +18,7 @@ type MobileAPI struct {
 	eventMgr    *opencode.EventStreamManager
 	permMgr     *opencode.PermissionManager
 	questionMgr *opencode.QuestionManager
-	wsHub       *websocket.MobileWSHub
+	wsHub       *mobilews.MobileWSHub
 }
 
 // MobileSessionListItem is a lightweight session representation for mobile.
@@ -63,7 +64,7 @@ func NewMobileAPI(
 	eventMgr *opencode.EventStreamManager,
 	permMgr *opencode.PermissionManager,
 	questionMgr *opencode.QuestionManager,
-	wsHub *websocket.MobileWSHub,
+	wsHub *mobilews.MobileWSHub,
 ) *MobileAPI {
 	return &MobileAPI{
 		httpAdapter: httpAdapter,
@@ -120,7 +121,7 @@ func (api *MobileAPI) ListSessions(c echo.Context) error {
 
 	// Get sessions from OpenCode
 	// TODO: Implement pagination with cursor
-	sessions, err := api.httpAdapter.ListSessions(c.Request().Context(), "", "", limit, order)
+	sessions, err := api.httpAdapter.ListSessions(c.Request().Context(), "")
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
@@ -147,10 +148,10 @@ func (api *MobileAPI) ListSessions(c echo.Context) error {
 		item := MobileSessionListItem{
 			ID:        s.ID,
 			Title:     s.Title,
-			ModelName: s.Model,
+			ModelName: "",           // OpenCodeSession doesn't have Model field
 			Status:    determineStatus(s),
-			UpdatedAt: s.UpdatedAt,
-			Preview:   truncate(s.LastMessage, 100),
+			UpdatedAt: time.Now(),   // OpenCodeSession doesn't have UpdatedAt field
+			Preview:   "",           // OpenCodeSession doesn't have LastMessage field
 		}
 
 		if pendingType, hasPending := pendingBySession[s.ID]; hasPending {
@@ -209,7 +210,19 @@ func (api *MobileAPI) GetMessages(c echo.Context) error {
 	// Convert to mobile format
 	messages := make([]MobileMessage, 0, len(resp.Data))
 	for _, msg := range resp.Data {
-		mobileMsg := convertToMobileMessage(msg)
+		// Extract fields from opencodeMessage struct
+		mobileMsg := MobileMessage{
+			ID:        msg.ID,
+			Type:      msg.Type,
+			Text:      "",
+			Timestamp: time.Now().Unix(),
+		}
+		// Try to extract text from data map if available
+		if msg.Data != nil {
+			if text, ok := msg.Data["text"].(string); ok {
+				mobileMsg.Text = text
+			}
+		}
 		messages = append(messages, mobileMsg)
 	}
 
@@ -234,14 +247,21 @@ func (api *MobileAPI) SendPrompt(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "text is required")
 	}
 
-	err := api.httpAdapter.SendPrompt(c.Request().Context(), "", sessionID, req.Text)
+	// Create SendPromptRequest with text prompt
+	promptReq := &adapter.SendPromptRequest{
+		Prompt: adapter.PromptPayload{
+			Text: req.Text,
+		},
+	}
+
+	_, err := api.httpAdapter.SendPrompt(c.Request().Context(), "", sessionID, promptReq)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 
 	// Broadcast event
-	api.wsHub.BroadcastEvent(websocket.MobileEvent{
-		Type:      websocket.EventSessionUpdated,
+	api.wsHub.BroadcastEvent(mobilews.MobileEvent{
+		Type:      mobilews.EventSessionUpdated,
 		SessionID: sessionID,
 		Data:      map[string]string{"action": "prompt_sent"},
 	})
@@ -389,11 +409,10 @@ func (api *MobileAPI) HandleWebSocket(c echo.Context) error {
 // Helper functions
 // =============================================================================
 
-func determineStatus(s adapter.SessionListItem) string {
-	// Simple status determination based on timestamps
-	// TODO: Use actual session state from OpenCode
-	idleThreshold := 5 * time.Minute
-	if time.Since(s.UpdatedAt) < idleThreshold {
+func determineStatus(s adapter.OpenCodeSession) string {
+	// Simple status determination based on session status
+	// OpenCodeSession already has a Status field
+	if s.Status == "active" {
 		return "busy"
 	}
 	return "idle"
@@ -406,13 +425,23 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-func convertToMobileMessage(msg adapter.OpenCodeMessage) MobileMessage {
+func convertToMobileMessage(msg interface{}) MobileMessage {
 	// TODO: Implement full message conversion based on actual message structure
 	// This is a placeholder implementation
+	// The message type from GetSessionMessages is opencodeMessage which is not exported
+	// For now, we'll use a generic interface and extract fields dynamically
+	msgMap, ok := msg.(map[string]interface{})
+	if !ok {
+		return MobileMessage{}
+	}
+	
+	id, _ := msgMap["id"].(string)
+	msgType, _ := msgMap["type"].(string)
+	
 	return MobileMessage{
-		ID:        msg.ID,
-		Type:      msg.Type,
-		Text:      msg.Content,
-		Timestamp: msg.Timestamp,
+		ID:        id,
+		Type:      msgType,
+		Text:      "",
+		Timestamp: time.Now().Unix(),
 	}
 }

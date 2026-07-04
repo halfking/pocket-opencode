@@ -86,9 +86,10 @@ func (a *OpenCodeHTTPAdapter) GetSessionSummary(ctx context.Context, instanceBas
 	return result.Data.Title, nil
 }
 
-// opencodeSessionInfo 映射 OpenCode /api/session 响应中的 SessionInfo。
+// OpenCodeSessionInfo 映射 OpenCode /api/session 响应中的 SessionInfo。
 // 基于实际源码：~/workspace/ai/opencode/packages/core/src/session/schema.ts
-type opencodeSessionInfo struct {
+// 别名 OpenCodeSessionInfo 提供给外部 package 使用。
+type OpenCodeSessionInfo struct {
 	ID        string  `json:"id"`
 	ParentID  *string `json:"parentID,omitempty"`
 	ProjectID string  `json:"projectID"`
@@ -125,7 +126,7 @@ type opencodeSessionInfo struct {
 // 实际响应格式：{ "data": [SessionInfo], "cursor": {...} }
 func parseSessionList(body io.Reader) ([]OpenCodeSession, error) {
 	var response struct {
-		Data []opencodeSessionInfo `json:"data"`
+		Data []OpenCodeSessionInfo `json:"data"`
 	}
 	if err := json.NewDecoder(body).Decode(&response); err != nil {
 		return nil, fmt.Errorf("decode sessions failed: %w", err)
@@ -184,7 +185,7 @@ func (a *OpenCodeHTTPAdapter) ListRemoteTasks(ctx context.Context, instanceBaseU
 
 	// 修正：响应格式是 { "data": [SessionInfo], "cursor": {...} }
 	var response struct {
-		Data []opencodeSessionInfo `json:"data"`
+		Data []OpenCodeSessionInfo `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return nil, fmt.Errorf("decode sessions failed: %w", err)
@@ -215,7 +216,7 @@ func (a *OpenCodeHTTPAdapter) ListRemoteTasks(ctx context.Context, instanceBaseU
 }
 
 // GetSessionDetail 获取会话详细信息
-func (a *OpenCodeHTTPAdapter) GetSessionDetail(ctx context.Context, instanceBaseURL, sessionID string) (*opencodeSessionInfo, error) {
+func (a *OpenCodeHTTPAdapter) GetSessionDetail(ctx context.Context, instanceBaseURL, sessionID string) (*OpenCodeSessionInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
@@ -236,7 +237,7 @@ func (a *OpenCodeHTTPAdapter) GetSessionDetail(ctx context.Context, instanceBase
 	}
 
 	var response struct {
-		Data opencodeSessionInfo `json:"data"`
+		Data OpenCodeSessionInfo `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return nil, fmt.Errorf("decode session failed: %w", err)
@@ -248,7 +249,7 @@ func (a *OpenCodeHTTPAdapter) GetSessionDetail(ctx context.Context, instanceBase
 // CreateSession 创建新会话
 // API: POST /api/session
 // Payload: { id?, agent?, model?, location? }
-func (a *OpenCodeHTTPAdapter) CreateSession(ctx context.Context, instanceBaseURL string, payload *CreateSessionRequest) (*opencodeSessionInfo, error) {
+func (a *OpenCodeHTTPAdapter) CreateSession(ctx context.Context, instanceBaseURL string, payload *CreateSessionRequest) (*OpenCodeSessionInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
@@ -275,7 +276,7 @@ func (a *OpenCodeHTTPAdapter) CreateSession(ctx context.Context, instanceBaseURL
 	}
 
 	var response struct {
-		Data opencodeSessionInfo `json:"data"`
+		Data OpenCodeSessionInfo `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return nil, fmt.Errorf("decode session failed: %w", err)
@@ -331,9 +332,12 @@ type opencodeMessage struct {
 	Data map[string]interface{} `json:"data,omitempty"`
 }
 
+// OpenCodeMessage is the exported version of opencodeMessage for external use
+type OpenCodeMessage = opencodeMessage
+
 // SessionMessagesResponse 消息列表响应
 type SessionMessagesResponse struct {
-	Data   []opencodeMessage `json:"data"`
+	Data   []OpenCodeMessage `json:"data"`
 	Cursor *MessageCursor    `json:"cursor,omitempty"`
 }
 
@@ -387,7 +391,7 @@ func (a *OpenCodeHTTPAdapter) GetSessionMessages(ctx context.Context, instanceBa
 
 // GetSessionContext 获取会话上下文（最后压缩点之后的所有消息）
 // API: GET /api/session/:sessionID/context
-func (a *OpenCodeHTTPAdapter) GetSessionContext(ctx context.Context, instanceBaseURL, sessionID string) ([]opencodeMessage, error) {
+func (a *OpenCodeHTTPAdapter) GetSessionContext(ctx context.Context, instanceBaseURL, sessionID string) ([]OpenCodeMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
@@ -408,13 +412,47 @@ func (a *OpenCodeHTTPAdapter) GetSessionContext(ctx context.Context, instanceBas
 	}
 
 	var response struct {
-		Data []opencodeMessage `json:"data"`
+		Data []OpenCodeMessage `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return nil, fmt.Errorf("decode context failed: %w", err)
 	}
 
 	return response.Data, nil
+}
+
+// InterruptSession 中断 session 当前的 agent 循环
+// API: POST /api/session/:sessionID/interrupt (V2)
+func (a *OpenCodeHTTPAdapter) InterruptSession(ctx context.Context, instanceBaseURL, sessionID string) error {
+	ctx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
+
+	url := fmt.Sprintf("%s/api/session/%s/interrupt", instanceBaseURL, sessionID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return fmt.Errorf("create interrupt request failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("opencode interrupt request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("opencode interrupt returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// GetMessages 拉取 session 历史消息（用于 SSE 断线后回填）
+func (a *OpenCodeHTTPAdapter) GetMessages(ctx context.Context, instanceBaseURL, sessionID string, limit int, order string) ([]OpenCodeMessage, error) {
+	resp, err := a.GetSessionMessages(ctx, instanceBaseURL, sessionID, limit, order, "")
+	if err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
 }
 
 // CompactSession 压缩会话

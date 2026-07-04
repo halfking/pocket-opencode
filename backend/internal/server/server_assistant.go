@@ -37,12 +37,23 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 // userIDFromRequest 提取当前请求的用户 ID。
 //
-// 当前实现（Phase 0 单用户 MVP）：硬编码返回 "local"，适用于个人部署场景。
-// 多用户改造时需修改为：从 Authorization: Bearer <JWT> 解析 user_id claim。
-// 配套改动：handleAuthLogin 签发真实 JWT（用 s.cfg.JWTSecret）。
-//
-// 审计标记 M5：单用户假设，多租户部署时需改。
-func userIDFromRequest(_ *http.Request) string { return "local" }
+// Phase 1 实现：从 Authorization: Bearer <JWT> 解析 user_id claim。
+// 如果 JWT 不存在或无效，回退到 "local"（单用户兼容）。
+func (s *Server) userIDFromRequest(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return "local" // 回退到单用户模式
+	}
+	token := strings.TrimSpace(auth[len("Bearer "):])
+	if s.jwtSigner == nil {
+		return "local"
+	}
+	claims, err := s.jwtSigner.Parse(token)
+	if err != nil || claims.UserID == "" {
+		return "local" // JWT 解析失败，回退
+	}
+	return claims.UserID
+}
 
 // =====================================================================
 // 认证
@@ -68,9 +79,18 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	// 开发登录：仅在 POCKET_DEV_AUTH=true 时允许 admin/admin（生产环境必须关闭）
 	if s.cfg.DevAuth && body.Username == "admin" && body.Password == "admin" {
-		// TODO Phase 1: 用 s.cfg.JWTSecret 签发真实 JWT 替代 dev-token
+		// Phase 1: 签发真实 JWT（使用 jwtSigner）
+		if s.jwtSigner == nil {
+			writeError(w, http.StatusInternalServerError, "JWT signer not configured")
+			return
+		}
+		token, err := s.jwtSigner.Sign(body.Username, "user")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to sign JWT")
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]string{
-			"token": "dev-token",
+			"token": token,
 			"user":  body.Username,
 		})
 		return
@@ -87,7 +107,7 @@ func (s *Server) handleNotes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "notes store not configured")
 		return
 	}
-	uid := userIDFromRequest(r)
+	uid := s.userIDFromRequest(r)
 	switch r.Method {
 	case http.MethodGet:
 		domain := r.URL.Query().Get("domain")
@@ -143,7 +163,7 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		// TODO Phase 3: 从 kxmemory 拉取完整内容（本地只缓存元数据）。
-		list, err := s.notesStore.List(r.Context(), userIDFromRequest(r), "")
+		list, err := s.notesStore.List(r.Context(), s.userIDFromRequest(r), "")
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -192,7 +212,7 @@ func (s *Server) handleNoteClassify(w http.ResponseWriter, r *http.Request, id s
 
 	// Look up the note. Single-user, ≤ 200 notes → List + filter is fine and
 	// avoids adding a new store method.
-	list, err := s.notesStore.List(r.Context(), userIDFromRequest(r), "")
+	list, err := s.notesStore.List(r.Context(), s.userIDFromRequest(r), "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -257,7 +277,7 @@ func (s *Server) handleEmailAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		list, err := s.emailStore.ListAccounts(r.Context(), userIDFromRequest(r))
+		list, err := s.emailStore.ListAccounts(r.Context(), s.userIDFromRequest(r))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -389,7 +409,7 @@ func (s *Server) handleEmailSyncStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "email store not configured")
 		return
 	}
-	statuses, err := s.emailStore.GetSyncStatus(r.Context(), userIDFromRequest(r))
+	statuses, err := s.emailStore.GetSyncStatus(r.Context(), s.userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -472,7 +492,7 @@ func (s *Server) handleEmailSummaryOps(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid date (expected YYYY-MM-DD)")
 		return
 	}
-	sum, err := s.emailStore.GetSummaryByDate(r.Context(), userIDFromRequest(r), sub)
+	sum, err := s.emailStore.GetSummaryByDate(r.Context(), s.userIDFromRequest(r), sub)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -493,7 +513,7 @@ func (s *Server) handleVaultSync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "vault store not configured")
 		return
 	}
-	uid := userIDFromRequest(r)
+	uid := s.userIDFromRequest(r)
 	sub := strings.TrimPrefix(r.URL.Path, "/api/vault/sync/")
 	switch {
 	case r.Method == http.MethodPost && sub == "":

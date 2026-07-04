@@ -63,25 +63,11 @@
       </button>
     </div>
 
-    <!-- 底部导航 -->
-    <div class="bottom-nav">
-      <button class="nav-item active" @click="$router.push('/tasks')">
-        <span class="nav-icon">📋</span>
-        <span class="nav-label">任务</span>
-      </button>
-      <button class="nav-item" @click="$router.push('/sessions')">
-        <span class="nav-icon">💬</span>
-        <span class="nav-label">会话</span>
-      </button>
-      <button class="nav-item" @click="$router.push('/instances')">
-        <span class="nav-icon">💻</span>
-        <span class="nav-label">实例</span>
-      </button>
-      <button class="nav-item" @click="$router.push('/settings')">
-        <span class="nav-icon">⚙️</span>
-        <span class="nav-label">设置</span>
-      </button>
-    </div>
+    <!--
+      ✅ 已移除硬编码底部导航（任务/会话/实例/设置）。
+      App.vue 现在用 AppLayout 包裹 router-view，共享的 BottomNav 会自动渲染
+      5模块 Tab（AI/笔记/会议/邮件/更多）。这里不再重复渲染以免双层 UI。
+    -->
 
     <!-- 创建任务模态框 -->
     <div v-if="showCreateModal" class="modal-overlay" @click="showCreateModal = false">
@@ -251,7 +237,18 @@ function handleSessionAttached(link: any) {
 }
 
 function viewTask(taskId: string) {
-  router.push(`/tasks/${taskId}`)
+  // Phase V3: 直接进入会话对话视图（task = session 1:1）
+  const instanceId = (() => {
+    try {
+      const raw = localStorage.getItem('selected_instance')
+      if (raw) return JSON.parse(raw)?.id || ''
+    } catch {}
+    return ''
+  })()
+  router.push({
+    path: `/sessions/${taskId}`,
+    query: { instance_id: instanceId, title: '' },
+  })
 }
 
 function goBack() {
@@ -279,19 +276,19 @@ function statusText(status: string): string {
 
 .top-bar {
   background: white;
-  padding: 16px 20px;
+  padding: var(--space-3) var(--space-4);   /* 修改：12px 16px（原 16px 20px） */
   display: flex;
   align-items: center;
-  gap: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  gap: var(--space-3);
+  border-bottom: 1px solid var(--border);   /* 替代阴影 */
 }
 
 .back-btn, .add-btn {
-  padding: 8px 12px;
+  padding: var(--space-1-5) var(--space-2-5); /* 更紧凑 */
   font-size: 14px;
   background: transparent;
   border: 1px solid #e0e0e0;
-  border-radius: 8px;
+  border-radius: var(--radius-md);          /* 修改：使用变量 (8px) */
   cursor: pointer;
 }
 
@@ -304,16 +301,16 @@ function statusText(status: string): string {
 
 .top-bar h1 {
   flex: 1;
-  font-size: 20px;
+  font-size: 18px;                          /* 修改：18px（原 20px） */
   font-weight: 600;
   margin: 0;
 }
 
 .instance-info-bar {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  padding: 12px 20px;
+  padding: var(--space-2-5) var(--space-4); /* 修改：10px 16px（原 12px 20px） */
   color: white;
-  font-size: 14px;
+  font-size: 13px;                          /* 修改：13px（原 14px） */
 }
 
 .loading-state {
@@ -342,11 +339,11 @@ function statusText(status: string): string {
 .tasks-container {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
+  padding: var(--space-4);                  /* 修改：使用变量 (14px，原 20px) */
 }
 
 .task-group {
-  margin-bottom: 24px;
+  margin-bottom: var(--space-5);            /* 修改：使用变量 (18px，原 24px) */
 }
 
 .group-header {
@@ -357,15 +354,15 @@ function statusText(status: string): string {
 }
 
 .group-header h2 {
-  font-size: 16px;
+  font-size: 15px;                          /* 修改：15px（原 16px） */
   font-weight: 600;
   color: #333;
   margin: 0;
 }
 
 .task-count {
-  font-size: 12px;
-  padding: 4px 8px;
+  font-size: 11px;                          /* 修改：11px（原 12px） */
+  padding: 2px 6px;                         /* 修改：2px 6px（原 4px 8px） */
   background: #e8f0fe;
   color: #667eea;
   border-radius: 12px;
@@ -374,14 +371,14 @@ function statusText(status: string): string {
 
 .task-card {
   background: white;
-  border-radius: 12px;
-  padding: 16px;
-  margin-bottom: 8px;
+  border-radius: var(--radius-md);          /* 修改：使用变量 (8px，原 12px) */
+  padding: var(--space-3);                  /* 修改：使用变量 (12px，原 16px) */
+  margin-bottom: var(--space-2);            /* 修改：使用变量 (8px，原 8px) */
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  border: 1px solid var(--border);          /* 新增：替代阴影 */
 }
 
 .task-card:active {
@@ -389,8 +386,8 @@ function statusText(status: string): string {
 }
 
 .task-priority {
-  width: 4px;
-  height: 40px;
+  width: 3px;                               /* 修改：3px（原 4px） */
+  height: 36px;                             /* 修改：36px（原 40px） */
   border-radius: 2px;
   flex-shrink: 0;
 }
@@ -405,19 +402,19 @@ function statusText(status: string): string {
 }
 
 .task-content h3 {
-  font-size: 15px;
+  font-size: 14px;                          /* 修改：14px（原 15px） */
   font-weight: 600;
   color: #333;
-  margin: 0 0 4px 0;
+  margin: 0 0 var(--space-1) 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .task-desc {
-  font-size: 13px;
+  font-size: 12px;                          /* 修改：12px（原 13px） */
   color: #666;
-  margin: 0 0 8px 0;
+  margin: 0 0 var(--space-1-5) 0;           /* 修改：使用变量 */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -425,8 +422,8 @@ function statusText(status: string): string {
 
 .task-meta {
   display: flex;
-  gap: 12px;
-  font-size: 12px;
+  gap: var(--space-2-5);                    /* 修改：使用变量 (10px，原 12px) */
+  font-size: 11px;                          /* 修改：11px（原 12px） */
 }
 
 .meta-item {
@@ -437,8 +434,8 @@ function statusText(status: string): string {
 }
 
 .meta-item.status {
-  padding: 4px 8px;
-  border-radius: 4px;
+  padding: 2px 6px;                         /* 修改：2px 6px（原 4px 8px） */
+  border-radius: var(--radius-sm);          /* 修改：使用变量 */
   font-weight: 500;
 }
 
@@ -458,8 +455,8 @@ function statusText(status: string): string {
 }
 
 .task-arrow {
-  font-size: 20px;
-  color: #ccc;
+  font-size: 18px;                          /* 修改：18px（原 20px） */
+  color: var(--border-strong);              /* 修改：使用变量 */
 }
 
 .empty-state {
@@ -483,47 +480,20 @@ function statusText(status: string): string {
   color: white;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-md);          /* 修改：使用变量 (8px) */
   cursor: pointer;
   margin-top: 16px;
 }
 
-.bottom-nav {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: white;
-  display: flex;
-  padding: 8px;
-  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.1);
-}
+/*
+  ✅ 已删除硬编码底部导航的 CSS 样式（.bottom-nav / .nav-item / .nav-icon /
+  .nav-label），由 AppLayout 提供的共享 BottomNav 接管。
+*/
 
-.nav-item {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 8px;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  gap: 4px;
-}
-
-.nav-icon {
-  font-size: 22px;
-}
-
-.nav-label {
-  font-size: 11px;
-  color: #999;
-}
-
-.nav-item.active .nav-label {
-  color: #667eea;
-  font-weight: 600;
-}
+/*
+  ✅ 已删除硬编码底部导航的 CSS 样式（.bottom-nav / .nav-item / .nav-icon /
+  .nav-label），由 AppLayout 提供的共享 BottomNav 接管。
+*/
 
 .modal-overlay {
   position: fixed;
@@ -541,7 +511,7 @@ function statusText(status: string): string {
 
 .modal-content {
   background: white;
-  border-radius: 16px;
+  border-radius: var(--radius-lg);          /* 修改：使用变量 (10px，原 16px) */
   padding: 24px;
   width: 100%;
   max-width: 400px;
@@ -572,7 +542,7 @@ function statusText(status: string): string {
   padding: 12px;
   font-size: 14px;
   border: 1px solid #e0e0e0;
-  border-radius: 8px;
+  border-radius: var(--radius-md);          /* 修改：使用变量 (8px) */
   box-sizing: border-box;
 }
 
@@ -589,7 +559,7 @@ function statusText(status: string): string {
   font-size: 14px;
   font-weight: 600;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-md);          /* 修改：使用变量 (8px) */
   cursor: pointer;
 }
 
