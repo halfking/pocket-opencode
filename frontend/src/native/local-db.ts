@@ -34,10 +34,48 @@ class LocalDB {
    * 幂等：重复调用安全。
    */
   async init(dbSecret: string): Promise<void> {
+    // 关键修复：如果已有连接，先关闭它，防止重复createConnection报错
+    if (this.conn) {
+      try {
+        await this.sqlite.closeConnection(DB_NAME, false)
+      } catch {
+        // 忽略关闭失败的错误（可能连接已经不存在）
+      }
+      this.conn = null
+    }
+
     if (this.initialized) return
 
     const encrypted = dbSecret.length > 0
+
+    // ✅ 关键修复：在 createConnection 之前先调用 setEncryptionSecret
+    // 官方 API 文档：setEncryptionSecret "Only to be used once if you wish to encrypt database"
+    // open() 内部会从 secure store 取密码作为 SQLCipher PRAGMA key
+    // 如果在 open() 之后调用，SQLCipher 已经在未设 key 的情况下尝试读 db header，必然失败
+    // （"Open: No Passphrase stored"）。
+    if (encrypted) {
+      try {
+        // SQLiteConnection 包装层接受字符串；底层 plugin 才会转成 {secret: passphrase}
+        await this.sqlite.setEncryptionSecret(dbSecret)
+      } catch (e) {
+        // 若 secret 已存，再次设置可能抛错；这种场景下假定密码一致（用户重启 App 时常见）。
+        // 真正的改密路径需要走 changeEncryptionSecret(oldPass, newPass)，MVP 暂不实现。
+        console.warn('[localDB] setEncryptionSecret 已存或失败，沿用现有 secret:', e)
+      }
+    }
+
     const mode = encrypted ? 'secret' : 'no-encryption'
+
+    // 先检查连接是否已存在（保险措施）
+    try {
+      const existingConn = await this.sqlite.retrieveConnection(DB_NAME, false)
+      if (existingConn) {
+        await this.sqlite.closeConnection(DB_NAME, false)
+      }
+    } catch {
+      // 连接不存在，继续创建
+    }
+
     this.conn = await this.sqlite.createConnection(
       DB_NAME,
       encrypted,
@@ -47,14 +85,28 @@ class LocalDB {
     )
     await this.conn.open()
 
-    if (encrypted) {
-      await this.sqlite.setEncryptionSecret(dbSecret)
-    }
-
     // 建表（幂等 CREATE IF NOT EXISTS）
     await this.conn.execute(SCHEMA_SQL, false)
 
     this.initialized = true
+  }
+
+  /** 关闭并清理连接，允许重新初始化 */
+  async close(): Promise<void> {
+    if (this.conn) {
+      try {
+        await this.conn.close()
+      } catch {
+        // 忽略
+      }
+      try {
+        await this.sqlite.closeConnection(DB_NAME, false)
+      } catch {
+        // 忽略
+      }
+      this.conn = null
+    }
+    this.initialized = false
   }
 
   /** 是否已初始化 */

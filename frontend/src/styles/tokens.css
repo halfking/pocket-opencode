@@ -15,10 +15,10 @@
   --bg-elevated: #ffffff;
   --bg-subtle: #f3f4f6;
 
-  /* Text */
-  --text-primary: #111827;
-  --text-secondary: #6b7280;
-  --text-muted: #9ca3af;
+  /* Text - 增强对比度（Codex 风格） */
+  --text-primary: #0a0a0a;    /* 更深黑（原 #111827） */
+  --text-secondary: #525252;  /* 更深灰（原 #6b7280） */
+  --text-muted: #a3a3a3;      /* 保持 */
   --text-inverse: #ffffff;
 
   /* Borders & dividers */
@@ -42,28 +42,50 @@
   --cat-study: #06b6d4;
   --cat-life: #f97316;
 
-  /* Radius */
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
+  /* Radius - 更锐利的圆角（Codex 风格） */
+  --radius-sm: 6px;   /* 原 8px */
+  --radius-md: 8px;   /* 原 12px */
+  --radius-lg: 10px;  /* 原 16px */
   --radius-full: 9999px;
 
-  /* Spacing scale */
+  /* Spacing scale - 更紧凑的间距系统 */
+  --space-0: 0px;
   --space-1: 4px;
   --space-2: 8px;
+  --space-2-5: 10px;  /* 新增：介于小和中之间 */
   --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 20px;
-  --space-6: 24px;
+  --space-4: 14px;    /* 原 16px，紧凑化 */
+  --space-5: 18px;    /* 原 20px */
+  --space-6: 20px;    /* 原 24px，组间距 */
+
+  /* 语义化间距变量 */
+  --spacing-card-padding: var(--space-3);   /* 卡片内边距：12px */
+  --spacing-list-gap: var(--space-2-5);     /* 列表项间距：10px */
+  --spacing-section-gap: var(--space-5);    /* 区块间距：18px */
+  --spacing-inline-gap: var(--space-2);     /* 行内元素间距：8px */
+
+  /* 字体大小层级 - 更明确的视觉层次 */
+  --text-xs: 10px;    /* 极小文本（时间戳、徽章） */
+  --text-sm: 12px;    /* 小文本（元信息） */
+  --text-base: 14px;  /* 主体文本 */
+  --text-md: 15px;    /* 强调文本（标题） */
+  --text-lg: 16px;    /* 大标题 */
+  --text-xl: 18px;    /* 特大标题 */
+
+  /* 字重系统 */
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
 
   /* Shadows */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08);
   --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
 
-  /* Layout */
-  --topbar-height: 52px;
-  --bottomnav-height: 60px;
+  /* Layout - 更紧凑的布局高度 */
+  --topbar-height: 48px;      /* 原 52px */
+  --bottomnav-height: 56px;   /* 原 60px */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -72,8 +94,8 @@
     --bg-card: #1a1a22;
     --bg-elevated: #22222c;
     --bg-subtle: #1f1f28;
-    --text-primary: #f3f4f6;
-    --text-secondary: #9ca3af;
+    --text-primary: #fafafa;    /* 更亮白（原 #f3f4f6） */
+    --text-secondary: #a3a3a3;  /* 更亮灰（原 #9ca3af） */
     --text-muted: #6b7280;
     --border: #2a2a35;
     --border-strong: #3a3a48;

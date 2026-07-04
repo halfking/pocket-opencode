@@ -202,11 +202,64 @@ export const api = {
     const res = await authFetch(`${API_BASE}/api/tasks/${taskId}/attach-session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        instanceId, 
-        sessionId, 
-        role: "primary" 
+      body: JSON.stringify({
+        instanceId,
+        sessionId,
+        role: "primary"
       }),
     })
   },
+
+  // ---- Phase 5: LLM Gateway 配置管理 ----
+  /** 读当前 LLM Gateway 配置（API Key 已被后端掩码） */
+  async getGatewayConfig(): Promise<GatewayConfig> {
+    const res = await authFetch(`${API_BASE}/api/llm-gateway/config`)
+    return res.json()
+  },
+
+  /** 连通性测试：拉一次 /v1/models 验证 baseURL + apiKey */
+  async testGateway(): Promise<GatewayTestResult> {
+    const res = await authFetch(`${API_BASE}/api/llm-gateway/test`, { method: 'POST' })
+    return res.json()
+  },
+
+  /**
+   * 保存配置：baseURL 必填；apiKey 留空表示保留旧值。
+   * 后端会立即触发 OpenCode 配置热更新（PUT /config 或写文件 + reload）。
+   */
+  async saveGatewayConfig(body: {
+    baseURL: string
+    apiKey?: string
+    models?: string[]
+  }): Promise<{ ok: boolean; baseURL: string; models: string[] }> {
+    const res = await authFetch(`${API_BASE}/api/llm-gateway/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return res.json()
+  },
+
+  /** 读已缓存的模型列表 */
+  async getGatewayModels(): Promise<{ baseURL: string; models: string[] }> {
+    const res = await authFetch(`${API_BASE}/api/llm-gateway/models`)
+    return res.json()
+  },
+}
+
+// ---- Phase 5: LLM Gateway 类型 ----
+export interface GatewayConfig {
+  baseURL: string
+  apiKeySet: boolean
+  apiKey: string          // 后端掩码后字符串，如 sk-****5678
+  models: string[]
+  source: 'pocketd'
+}
+
+export interface GatewayTestResult {
+  ok: boolean
+  status?: number
+  models?: string[]
+  error?: string
+  response?: string
 }

@@ -49,11 +49,11 @@ function goBack() {
   flex-direction: column;
 }
 .top-bar {
-  height: var(--topbar-height);
+  height: 48px;                    /* 修改：52px → 48px */
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: 0 var(--space-4);
+  gap: var(--space-2-5);           /* 修改：space-3 → space-2-5 (10px) */
+  padding: 0 var(--space-3);       /* 修改：space-4 → space-3 (12px) */
   background: var(--bg-card);
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -70,15 +70,15 @@ function goBack() {
 }
 .title {
   flex: 1;
-  font-size: 17px;
+  font-size: 16px;                 /* 修改：17px → 16px */
   font-weight: 600;
   margin: 0;
 }
 .content {
   flex: 1;
-  padding: var(--space-4);
+  padding: var(--space-3);         /* 修改：space-4 → space-3 (12px) */
 }
 .content.has-bottom-nav {
-  padding-bottom: calc(var(--bottomnav-height) + var(--space-4));
+  padding-bottom: calc(56px + var(--space-3)); /* 修改：60px → 56px, space-4 → space-3 */
 }
 </style>

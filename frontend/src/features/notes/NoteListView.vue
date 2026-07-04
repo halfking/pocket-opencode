@@ -129,39 +129,58 @@ onMounted(load)
 <style scoped>
 .search-bar input {
   width: 100%;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2-5) var(--space-3); /* 修改：10px 12px（原 12px 16px） */
   border-radius: var(--radius-full);
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--text-primary);
   font-size: 14px;
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-2-5);          /* 修改：10px（原 12px） */
 }
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
 .state .hint { font-size: 12px; color: var(--text-muted); margin-top: var(--space-2); }
-.note-list { display: flex; flex-direction: column; gap: var(--space-3); }
+.note-list { display: flex; flex-direction: column; gap: var(--space-2-5); } /* 修改：10px（原 12px） */
 .note-card {
   background: var(--bg-card);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-  box-shadow: var(--shadow-sm);
+  border-radius: var(--radius-md);          /* 修改：8px（原 12px） */
+  padding: var(--space-2-5) var(--space-3); /* 修改：10px 12px（原 12px 16px） */
+  border: 1px solid var(--border);          /* 新增：边框 */
   cursor: pointer;
   border-left: 3px solid var(--cat-work);
 }
 .note-card.domain-study { border-left-color: var(--cat-study); }
 .note-card.domain-life { border-left-color: var(--cat-life); }
 .note-card.domain-idea { border-left-color: var(--cat-idea); }
-.note-title { font-weight: 600; font-size: 15px; margin-bottom: var(--space-1); }
+.note-title {
+  font-weight: 600;
+  font-size: 14px;                          /* 修改：14px（原 15px） */
+  margin-bottom: var(--space-1);
+  color: var(--text-primary);               /* 新增：高对比度 */
+}
 .note-snippet {
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 12px;                          /* 修改：12px（原 13px） */
+  line-height: 1.4;                         /* 新增：更紧凑行高 */
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;                    /* 修改：3 行（原 2 行） */
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.note-meta { display: flex; gap: var(--space-2); align-items: center; margin-top: var(--space-2); font-size: 11px; color: var(--text-muted); }
-.badge.voice { font-size: 12px; }
-.domain-tag { background: var(--bg-subtle); padding: 1px 6px; border-radius: var(--radius-sm); }
+.note-meta {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: var(--space-2);
+  font-size: 10px;                          /* 修改：10px（原 11px） */
+  color: var(--text-muted);
+}
+.badge.voice { font-size: 11px; }          /* 修改：11px（原 12px） */
+.domain-tag {
+  background: var(--bg-subtle);
+  padding: 2px 6px;                         /* 修改：2px 垂直（原 1px） */
+  border-radius: var(--radius-sm);
+  font-size: 10px;                          /* 新增：明确字号 */
+  font-weight: 500;                         /* 新增：加粗 */
+}
 .time { margin-left: auto; }
 </style>

@@ -7,6 +7,7 @@ import { connectWs } from "./api/websocket"
 import i18n from "./i18n"
 import "./styles.css"
 import "./styles/tokens.css"
+import "./styles/responsive.css"
 
 const app = createApp(App)
 app.use(createPinia())

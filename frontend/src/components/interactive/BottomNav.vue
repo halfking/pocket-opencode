@@ -80,8 +80,8 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: space-around;
-  height: 60px;
-  padding: 0 var(--space-2);
+  height: 56px;                    /* 修改：60px → 56px */
+  padding: 0 var(--space-1);       /* 修改：space-2 → space-1 (4px) */
 }
 
 .nav-item {
@@ -89,7 +89,7 @@ defineExpose({
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 2px;                        /* 修改：4px → 2px */
   flex: 1;
   height: 100%;
   background: none;
@@ -99,7 +99,7 @@ defineExpose({
   transition: all var(--duration-fast) var(--ease-out);
   user-select: none;
   -webkit-tap-highlight-color: transparent;
-  padding: var(--space-2);
+  padding: var(--space-1);         /* 修改：space-2 → space-1 (4px) */
   position: relative;
 }
 
@@ -109,8 +109,8 @@ defineExpose({
   top: 0;
   left: 50%;
   transform: translateX(-50%) scaleX(0);
-  width: 40px;
-  height: 3px;
+  width: 32px;                     /* 修改：40px → 32px */
+  height: 2px;                     /* 修改：3px → 2px */
   background: var(--gradient-primary);
   border-radius: 0 0 3px 3px;
   transition: transform var(--duration-base) var(--ease-spring);
@@ -129,7 +129,7 @@ defineExpose({
 }
 
 .nav-icon {
-  font-size: 24px;
+  font-size: 22px;                 /* 修改：24px → 22px */
   line-height: 1;
   transition: transform var(--duration-base) var(--ease-spring);
 }
@@ -139,7 +139,7 @@ defineExpose({
 }
 
 .nav-label {
-  font-size: 11px;
+  font-size: 10px;                 /* 修改：11px → 10px */
   font-weight: var(--font-weight-medium);
   line-height: 1;
   white-space: nowrap;

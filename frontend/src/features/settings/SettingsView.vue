@@ -90,23 +90,60 @@
           🚪 退出登录
         </button>
       </div>
+
+      <!-- AI 模型（LLM Gateway） -->
+      <div class="settings-section">
+        <h2>AI 模型</h2>
+        <div class="setting-item">
+          <div class="setting-icon">🌐</div>
+          <div class="setting-content">
+            <div class="setting-label">Gateway URL</div>
+            <div class="setting-value small">{{ gateway.baseURL || '未配置' }}</div>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-icon">🔑</div>
+          <div class="setting-content">
+            <div class="setting-label">API Key</div>
+            <div class="setting-value">
+              {{ gateway.apiKeySet ? '✓ 已设置' : '未设置' }}
+            </div>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-icon">🧠</div>
+          <div class="setting-content">
+            <div class="setting-label">可用模型</div>
+            <div class="setting-value">
+              <span v-if="gateway.models.length === 0" class="muted">未配置</span>
+              <span v-else class="model-row">
+                <code v-for="m in gateway.models.slice(0, 3)" :key="m" class="model-chip">{{ m }}</code>
+                <span v-if="gateway.models.length > 3" class="muted">
+                  +{{ gateway.models.length - 3 }}
+                </span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="action-row">
+          <button class="action-btn secondary" :disabled="testing" @click="testGateway">
+            {{ testing ? '测试中…' : '🧪 测试连接' }}
+          </button>
+          <button class="action-btn primary" @click="openGatewayEditor">
+            ⚙️ 编辑配置
+          </button>
+        </div>
+        <div v-if="testResult" :class="['test-result', testResult.ok ? 'ok' : 'fail']">
+          {{ testResult.text }}
+        </div>
+      </div>
     </div>
 
-    <!-- 底部导航 -->
-    <div class="bottom-nav">
-      <button class="nav-item" @click="$router.push('/tasks')">
-        <span class="nav-icon">📋</span>
-        <span class="nav-label">任务</span>
-      </button>
-      <button class="nav-item" @click="$router.push('/instances')">
-        <span class="nav-icon">💻</span>
-        <span class="nav-label">实例</span>
-      </button>
-      <button class="nav-item active" @click="$router.push('/settings')">
-        <span class="nav-icon">⚙️</span>
-        <span class="nav-label">设置</span>
-      </button>
-    </div>
+    <!--
+      ✅ 已移除硬编码底部导航（任务/实例/设置）。
+      App.vue 现在用 AppLayout 包裹 router-view，共享的 BottomNav 会自动渲染
+      5模块 Tab（AI/笔记/会议/邮件/更多）。
+    -->
   </div>
 </template>
 
@@ -114,6 +151,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { APP_VERSION, checkUpdate } from '../../utils/version'
+import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
 
 const router = useRouter()
 
@@ -124,7 +162,18 @@ const user = ref<any>(null)
 const selectedServer = ref<any>(null)
 const selectedInstance = ref<any>(null)
 
-onMounted(() => {
+// Phase 5: LLM Gateway 状态
+const gateway = ref<GatewayConfig>({
+  baseURL: '',
+  apiKeySet: false,
+  apiKey: '',
+  models: [],
+  source: 'pocketd',
+})
+const testing = ref(false)
+const testResult = ref<{ ok: boolean; text: string } | null>(null)
+
+onMounted(async () => {
   // 加载用户信息
   const userStr = localStorage.getItem('pocket_user')
   if (userStr) {
@@ -142,7 +191,47 @@ onMounted(() => {
   if (instanceStr) {
     selectedInstance.value = JSON.parse(instanceStr)
   }
+
+  // 加载 LLM Gateway 配置
+  await refreshGateway()
 })
+
+async function refreshGateway() {
+  try {
+    const cfg = await api.getGatewayConfig()
+    gateway.value = cfg
+  } catch (err) {
+    console.warn('Failed to load gateway config:', err)
+  }
+}
+
+async function testGateway() {
+  testing.value = true
+  testResult.value = null
+  try {
+    const r: GatewayTestResult = await api.testGateway()
+    if (r.ok) {
+      testResult.value = {
+        ok: true,
+        text: `✓ 连通 · ${r.models?.length || 0} 个模型`,
+      }
+      await refreshGateway()
+    } else {
+      testResult.value = {
+        ok: false,
+        text: `✗ 失败：${r.error || r.response || 'HTTP ' + r.status}`,
+      }
+    }
+  } catch (err: any) {
+    testResult.value = { ok: false, text: '✗ ' + (err?.message || String(err)) }
+  } finally {
+    testing.value = false
+  }
+}
+
+function openGatewayEditor() {
+  router.push('/settings/llm-gateway')
+}
 
 function formatLoginTime(): string {
   if (!user.value?.loginTime) return '-'
@@ -301,42 +390,10 @@ function handleLogout() {
   transform: scale(0.98);
 }
 
-.bottom-nav {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: white;
-  display: flex;
-  padding: 8px;
-  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.1);
-}
-
-.nav-item {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 8px;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  gap: 4px;
-}
-
-.nav-icon {
-  font-size: 22px;
-}
-
-.nav-label {
-  font-size: 11px;
-  color: #999;
-}
-
-.nav-item.active .nav-label {
-  color: #667eea;
-  font-weight: 600;
-}
+/*
+  ✅ 已删除硬编码底部导航的 CSS 样式（.bottom-nav / .nav-item / .nav-icon /
+  .nav-label），由 AppLayout 提供的共享 BottomNav 接管。
+*/
 </style>
 
 .action-btn.secondary {

@@ -194,9 +194,14 @@ function nextPage() {
 
 // 打开会话详情
 function openSessionDetail(session: Session) {
-  // TODO: 导航到会话详情页或在新窗口打开 OpenCode
-  console.log('Open session:', session)
-  alert(`会话详情功能开发中\n\nID: ${session.id}\nTitle: ${session.title}`)
+  // Phase V3: 跳转到实时会话对话视图
+  router.push({
+    path: `/sessions/${session.id}`,
+    query: {
+      instance_id: selectedInstanceId.value,
+      title: session.title || '',
+    },
+  })
 }
 
 // 附加到任务

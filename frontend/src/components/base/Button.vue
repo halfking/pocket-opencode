@@ -64,7 +64,7 @@ const handleClick = (event: MouseEvent) => {
   font-family: var(--font-sans);
   font-weight: var(--font-weight-medium);
   border: none;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);  /* 修改：lg → md (8px) */
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-out);
   outline: none;
@@ -73,23 +73,23 @@ const handleClick = (event: MouseEvent) => {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* 尺寸变体 */
+/* 尺寸变体 - 更紧凑 */
 .button--small {
-  height: 32px;
-  padding: 0 var(--space-3);
-  font-size: 14px;
+  height: 28px;                    /* 修改：32px → 28px */
+  padding: 0 var(--space-2-5);     /* 修改：space-3 → space-2-5 (10px) */
+  font-size: 13px;                 /* 修改：14px → 13px */
 }
 
 .button--medium {
-  height: 40px;
-  padding: 0 var(--space-4);
-  font-size: 16px;
+  height: 36px;                    /* 修改：40px → 36px */
+  padding: 0 var(--space-4);       /* 14px */
+  font-size: 14px;                 /* 修改：16px → 14px */
 }
 
 .button--large {
-  height: 48px;
-  padding: 0 var(--space-6);
-  font-size: 18px;
+  height: 42px;                    /* 修改：48px → 42px */
+  padding: 0 var(--space-5);       /* 18px */
+  font-size: 16px;                 /* 修改：18px → 16px */
 }
 
 /* Primary 变体 */
@@ -100,8 +100,7 @@ const handleClick = (event: MouseEvent) => {
 
 .button--primary:hover:not(.button--disabled):not(.button--loading) {
   opacity: 0.9;
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-md);
+  /* 移除 transform 和 box-shadow，更稳定 */
 }
 
 .button--primary:active:not(.button--disabled):not(.button--loading) {
@@ -145,8 +144,7 @@ const handleClick = (event: MouseEvent) => {
 
 .button--danger:hover:not(.button--disabled):not(.button--loading) {
   opacity: 0.9;
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-md);
+  /* 移除 transform 和 box-shadow */
 }
 
 .button--danger:active:not(.button--disabled):not(.button--loading) {

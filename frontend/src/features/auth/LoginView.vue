@@ -142,8 +142,13 @@ async function handleLogin() {
     auth.setAuth(res.token, res.user)
     // 🦞 认证成功后才建立 WS（此前模块加载不会自动连）
     await connectWs()
-    // 🦞 登录密码同时作为本地加密库主密码（MVP；生产用 cap-keystore 独立管理）
-    await initLobster(password.value)
+    // 🦞 尝试初始化本地加密库（如失败不阻塞登录，仅影响本地加密功能）
+    try {
+      await initLobster(password.value)
+    } catch (lobsterErr: any) {
+      console.warn('[login] 龙虾初始化失败，将以非加密模式继续:', lobsterErr?.message || lobsterErr)
+      // 不阻塞登录，本地加密功能不可用但服务端功能正常
+    }
     router.push('/ai')
   } catch (e: any) {
     if (e instanceof ApiError) {
@@ -157,7 +162,13 @@ async function handleLogin() {
           const legacyToken = 'legacy-token-' + Date.now() // 临时 token 用于兼容性
           auth.setAuth(legacyToken, legacyUser)
           await connectWs()
-          await initLobster(password.value)
+          // ✅ 修复：legacy 分支也给 initLobster 包 try/catch，
+          // 否则 native 插件（如 SQLCipher）异常时整个登录流程崩。
+          try {
+            await initLobster(password.value)
+          } catch (lobsterErr: any) {
+            console.warn('[login-legacy] 龙虾初始化失败:', lobsterErr?.message || lobsterErr)
+          }
           router.push('/ai')
           return
         }
@@ -188,8 +199,8 @@ async function handleLogin() {
   width: 100%;
   max-width: 400px;
   background: white;
-  border-radius: 20px;
-  padding: 40px 30px;
+  border-radius: var(--radius-lg);      /* 修改：使用变量 (10px，原 20px) */
+  padding: 32px 24px;                   /* 修改：32px 24px（原 40px 30px） */
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
 }
 
@@ -199,15 +210,15 @@ async function handleLogin() {
 }
 
 .logo {
-  font-size: 64px;
-  margin-bottom: 20px;
+  font-size: 56px;                      /* 修改：56px（原 64px） */
+  margin-bottom: 16px;                  /* 修改：16px（原 20px） */
 }
 
 .app-title {
-  font-size: 28px;
+  font-size: 24px;                      /* 修改：24px（原 28px） */
   font-weight: 700;
   color: #333;
-  margin: 0 0 10px 0;
+  margin: 0 0 8px 0;                    /* 修改：8px（原 10px） */
 }
 
 .app-subtitle {
@@ -221,7 +232,7 @@ async function handleLogin() {
 }
 
 .form-group {
-  margin-bottom: 20px;
+  margin-bottom: 16px;                  /* 修改：16px（原 20px） */
 }
 
 .form-group label {
@@ -234,10 +245,10 @@ async function handleLogin() {
 
 .form-group input {
   width: 100%;
-  padding: 14px 16px;
+  padding: 12px 14px;                   /* 修改：12px 14px（原 14px 16px） */
   font-size: 16px;
   border: 2px solid #e0e0e0;
-  border-radius: 12px;
+  border-radius: var(--radius-md);      /* 修改：使用变量 (8px，原 12px) */
   transition: all 0.3s;
   box-sizing: border-box;
 }
@@ -250,13 +261,13 @@ async function handleLogin() {
 
 .login-btn {
   width: 100%;
-  padding: 16px;
+  padding: 14px;                        /* 修改：14px（原 16px） */
   font-size: 16px;
   font-weight: 600;
   color: white;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   border: none;
-  border-radius: 12px;
+  border-radius: var(--radius-md);      /* 修改：使用变量 (8px，原 12px) */
   cursor: pointer;
   transition: all 0.3s;
 }
@@ -276,7 +287,7 @@ async function handleLogin() {
   padding: 12px;
   background: #fee;
   border: 1px solid #fcc;
-  border-radius: 8px;
+  border-radius: var(--radius-md);      /* 修改：使用变量 (8px) */
   color: #c33;
   font-size: 14px;
   text-align: center;
@@ -305,7 +316,7 @@ async function handleLogin() {
   margin-bottom: 16px;
   padding: 12px;
   background: #f8f9ff;
-  border-radius: 8px;
+  border-radius: var(--radius-md);      /* 修改：使用变量 (8px) */
   border: 1px solid #e0e7ff;
 }
 </style>

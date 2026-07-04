@@ -203,6 +203,13 @@ const router = createRouter({
       name: 'settings',
       component: SettingsView,
       meta: { requiresAuth: true, title: '设置', bottomNav: true }
+    },
+    {
+      // Phase 5: LLM Gateway 配置编辑
+      path: '/settings/llm-gateway',
+      name: 'settings-llm-gateway',
+      component: () => import('../features/settings/SettingsLLMGateway.vue'),
+      meta: { requiresAuth: true, title: 'AI 模型', bottomNav: false, canGoBack: true }
     }
   ]
 })

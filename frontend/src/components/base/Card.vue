@@ -43,31 +43,32 @@ const handleClick = (event: MouseEvent) => {
 
 <style scoped>
 .card {
-  background: var(--color-bg-surface);
-  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  border-radius: var(--radius-md);  /* 修改：lg → md (8px) */
   transition: all var(--duration-base) var(--ease-out);
+  border: 1px solid var(--border);  /* 新增：边框替代阴影 */
 }
 
-/* Default 变体 */
+/* Default 变体 - 移除阴影 */
 .card--default {
-  box-shadow: var(--shadow-md);
+  /* 无阴影，更轻盈 */
 }
 
 /* Outlined 变体 */
 .card--outlined {
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border);
   box-shadow: none;
 }
 
 /* Elevated 变体 */
 .card--elevated {
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-sm);  /* 修改：lg → sm */
 }
 
 /* Hoverable 效果 */
 .card--hoverable:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-lg);
+  transform: translateY(-1px);  /* 修改：-2px → -1px */
+  box-shadow: var(--shadow-md); /* 修改：lg → md */
 }
 
 /* Clickable 效果 */
