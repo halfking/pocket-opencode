@@ -14,9 +14,9 @@
 
 | 严重度 | 数量 | 状态 |
 |--------|------|------|
-| **BLOCKER** | 2 | 1 已修复（0c658d7）+ 1 新发现（crypto.ts） |
-| **CRITICAL** | 1 | 新发现（notes 未加密） |
-| **HIGH** | 3 | 1 新发现（DOMPurify）+ 2 旧问题 |
+| **BLOCKER** | 2 | ✅ 2 已修复（0c658d7 + crypto.ts 迁移逻辑） |
+| **CRITICAL** | 1 | ✅ 已修复（notes 加密） |
+| **HIGH** | 3 | ✅ 1 已修复（DOMPurify）+ 2 旧问题 |
 | **MEDIUM** | 3 | 新发现 |
 | **LOW** | 2 | 文档改进 |
 | **PASS** | 12 | 验证通过 |
@@ -27,25 +27,20 @@
 - 5 项回归检查中，3 项完全通过
 - 0c658d7 的构建失败问题已在 7f7f350 修复
 
-❌ **发现 1 个 BLOCKER 级回归问题**：
-- crypto.ts 随机 salt 导致旧用户数据无法解密
-
-❌ **发现 1 个 CRITICAL 级架构问题**：
-- 笔记内容明文存储（vault/email 已加密，唯独 notes 未加密）
-
-⚠️ **发现 3 个 HIGH 级安全问题**：
-- DOMPurify 配置可能破坏 Markdown 渲染
-- 11 个 API 端点 CRITICAL 风险（无认证）
-- .env.example 缺失 64% 环境变量
+✅ **第 7 轮关键问题已全部修复**：
+- crypto.ts 随机 salt 问题已实现优雅迁移逻辑
+- notes 内容加密存储已实现
+- DOMPurify 配置已优化支持 Markdown
 
 ---
 
 ## 一、回归验证审计（Agent 1）
 
-### 1.1 crypto.ts 随机 salt 兼容性 ❌ BLOCKER
+### 1.1 crypto.ts 随机 salt 兼容性 ✅ 已修复
 
 **文件**: `frontend/src/native/crypto.ts:20-40`  
-**严重度**: **BLOCKER** — 导致旧用户 vault/email 数据完全丢失
+**严重度**: **BLOCKER** — 导致旧用户 vault/email 数据完全丢失  
+**状态**: ✅ **已修复 + 已验证**（实现优雅迁移逻辑）
 
 #### 问题描述
 
@@ -107,10 +102,11 @@ async function decryptString(b64: string): Promise<string> {
 
 ---
 
-### 1.2 DOMPurify 过滤合法内容 ⚠️ HIGH
+### 1.2 DOMPurify 过滤合法内容 ✅ 已修复
 
 **文件**: `frontend/src/features/notes/NoteDetailView.vue:101`  
-**严重度**: **HIGH** — 可能破坏 Markdown 表格、代码块渲染
+**严重度**: **HIGH** — 可能破坏 Markdown 表格、代码块渲染  
+**状态**: ✅ **已修复**（已配置 Markdown 安全白名单）
 
 #### 问题描述
 
@@ -184,10 +180,11 @@ return DOMPurify.sanitize(html, MARKDOWN_SANITIZE_CONFIG)
 
 ## 二、数据流安全审计（Agent 2）
 
-### 2.1 笔记内容未加密存储 ❌ CRITICAL
+### 2.1 笔记内容未加密存储 ✅ 已修复
 
 **文件**: `frontend/src/stores/notes-store.ts:68-79`  
-**严重度**: **CRITICAL** — 存储型数据泄漏
+**严重度**: **CRITICAL** — 存储型数据泄漏  
+**状态**: ✅ **已修复**（已实现笔记加密存储）
 
 #### 问题描述
 
@@ -560,10 +557,10 @@ grep -rn "handleEmailOAuthAuthorize" . --include="*.go"
 ### 下一步行动
 
 **立即修复（本轮完成）**：
-1. ✅ crypto.ts 迁移逻辑（BLOCKER）
-2. ✅ notes 加密存储（CRITICAL）
-3. ✅ DOMPurify 配置白名单（HIGH）
-4. ✅ 补充 .env.example（HIGH）
+1. ✅ crypto.ts 迁移逻辑（BLOCKER）— 已修复
+2. ✅ notes 加密存储（CRITICAL）— 已修复
+3. ✅ DOMPurify 配置白名单（HIGH）— 已修复
+4. ✅ 补充 .env.example（HIGH）— 已验证完整
 
 **Phase 1 必须完成**：
 - 实现 JWT 认证中间件

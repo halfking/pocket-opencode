@@ -63,15 +63,31 @@ docker rm "${CONTAINER_NAME}" 2>/dev/null || true
 
 # ── 5. 启动新容器 ──────────────────────────────────────────────────
 echo "▶ 启动新容器: ${CONTAINER_NAME}"
-# TODO: 替换为实际的 docker run 命令
-# 镜像名称需替换为实际镜像
-# docker run -d \
-#   --name "${CONTAINER_NAME}" \
-#   --restart always \
-#   -p ${PORT:-8080}:${PORT:-8080} \
-#   --env-file .env \
-#   --network kaixuan_local_net \
-#   "registry.kxpms.cn/kaixuan-platform-${SERVICE_NAME}:${TAG}"
+
+# 读取 .env 文件获取配置（如果存在）
+DEPLOY_DIR="${SCRIPT_DIR}"
+ENV_FILE="${DEPLOY_DIR}/.env"
+if [[ ! -f "${ENV_FILE}" ]]; then
+  echo "⚠️  警告: ${ENV_FILE} 不存在，使用默认配置"
+  ENV_FILE="${SCRIPT_DIR}/../backend/.env"
+fi
+
+# 从 .env 读取端口（默认 8088）
+PORT=$(grep "^POCKET_HTTP_PORT=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 || echo "8088")
+PORT=${PORT:-8088}
+
+# 数据卷挂载路径
+DATA_DIR="${SCRIPT_DIR}/../data"
+mkdir -p "${DATA_DIR}"
+
+docker run -d \
+  --name "${CONTAINER_NAME}" \
+  --restart always \
+  -p "${PORT}:${PORT}" \
+  --env-file "${ENV_FILE}" \
+  --network kaixuan_local_net \
+  -v "${DATA_DIR}:/app/data" \
+  "registry.kxpms.cn/kaixuan-platform-${SERVICE_NAME}:${TAG}"
 
 echo "✅ 部署完成"
 

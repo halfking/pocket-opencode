@@ -107,7 +107,7 @@ function isActive(item: NavItem) {
   background: rgba(0, 0, 0, 0.4);
   display: flex;
   align-items: flex-end;
-  z-index: 30;
+  z-index: 60; /* Phase 6: 高于 TasksView FAB (z-index:50)，避免遮挡 sheet tile */
 }
 .more-panel {
   width: 100%;

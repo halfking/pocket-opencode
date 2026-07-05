@@ -28,29 +28,80 @@ done
 PASS=0; FAIL=0
 
 check() {
-  if "$@"; then
-    echo "  ✅ $1"; ((PASS++))
+  local desc="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    echo "  ✅ ${desc}"; ((PASS++))
+    return 0
   else
-    echo "  ❌ $1"; ((FAIL++))
+    echo "  ❌ ${desc}"; ((FAIL++))
+    return 1
   fi
 }
 
 echo "━━━ verify: ${SERVICE_NAME} (env=${ENV}, tag=${TAG}) ━━━"
 
-# ── 1. 容器存活 ────────────────────────────────────────────────────
-# check docker ps --filter "name=${CONTAINER_NAME}" --format "{{.Status}}" | grep -q "Up"
+# 读取端口配置
+DEPLOY_DIR="${SCRIPT_DIR}"
+ENV_FILE="${DEPLOY_DIR}/.env"
+if [[ ! -f "${ENV_FILE}" ]]; then
+  ENV_FILE="${SCRIPT_DIR}/../backend/.env"
+fi
+PORT=$(grep "^POCKET_HTTP_PORT=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 || echo "8088")
+PORT=${PORT:-8088}
 
-# ── 2. HTTP 健康检查 ──────────────────────────────────────────────
-PORT=${PORT:-8080}
-# check curl -sf "http://localhost:${PORT}/health" >/dev/null 2>&1
+# ── 1. 容器存活检查 ────────────────────────────────────────────────
+check "容器运行状态" docker ps --filter "name=${CONTAINER_NAME}" --format "{{.Status}}" | grep -q "Up"
 
-# ── 3. 应用层检查 ──────────────────────────────────────────────────
-# 替换为实际服务的业务 check
-# check curl -sf "http://localhost:${PORT}/api/v1/ping" >/dev/null 2>&1
+# 等待服务启动（最多 30 秒）
+echo "▶ 等待服务启动..."
+for i in {1..30}; do
+  if curl -sf "http://localhost:${PORT}/healthz" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
 
-# ── 4. 依赖检查（可选） ─────────────────────────────────────────────
-# check pg_isready -h localhost -p 5432 >/dev/null 2>&1
-# check redis-cli -h localhost ping >/dev/null 2>&1
+# ── 2. 健康检查端点 ────────────────────────────────────────────────
+check "健康检查 /healthz" curl -sf "http://localhost:${PORT}/healthz"
+
+# ── 3. 实例列表 API ────────────────────────────────────────────────
+check "实例列表 /api/instances" curl -sf "http://localhost:${PORT}/api/instances" | grep -q '\['
+
+# ── 4. 关键环境变量检查 ─────────────────────────────────────────────
+if [[ -f "${ENV_FILE}" ]]; then
+  check "JWT_SECRET 已配置" grep -q "^POCKET_JWT_SECRET=" "${ENV_FILE}"
+  
+  # 检查生产环境配置
+  if [[ "${ENV}" == "prod" ]]; then
+    # 生产环境不能使用默认密钥
+    if grep -q "^POCKET_JWT_SECRET=pocket-dev-insecure-secret" "${ENV_FILE}"; then
+      echo "  ❌ 生产环境使用了默认 JWT 密钥"; ((FAIL++))
+    else
+      echo "  ✅ JWT 密钥已自定义"; ((PASS++))
+    fi
+    
+    # 生产环境必须禁用开发认证
+    if grep -q "^POCKET_DEV_AUTH=true" "${ENV_FILE}"; then
+      echo "  ❌ 生产环境启用了开发认证"; ((FAIL++))
+    else
+      echo "  ✅ 开发认证已禁用"; ((PASS++))
+    fi
+  fi
+else
+  echo "  ⚠️  未找到 .env 文件，跳过环境变量检查"
+fi
+
+# ── 5. 数据目录权限检查 ─────────────────────────────────────────────
+DATA_DIR="${SCRIPT_DIR}/../data"
+check "数据目录可写" test -w "${DATA_DIR}"
+
+# ── 6. 容器日志检查（无严重错误） ────────────────────────────────────
+if docker logs "${CONTAINER_NAME}" --tail 50 2>&1 | grep -iE "(panic|fatal|error.*database)" >/dev/null 2>&1; then
+  echo "  ⚠️  容器日志中发现错误信息"; ((FAIL++))
+else
+  echo "  ✅ 容器日志正常"; ((PASS++))
+fi
 
 echo "━━━ 验证结果 ━━━"
 echo "  通过: $PASS, 失败: $FAIL"

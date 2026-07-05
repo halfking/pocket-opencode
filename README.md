@@ -11,7 +11,22 @@ It is intended for small teams and individual operators who need a lightweight w
 
 ## Status
 
+**Current Phase**: Phase 0 完成 → Phase 1 进行中
+
 This repository is maintained as a standalone project and can also be consumed as a git submodule from a larger deployment monorepo.
+
+Phase 0 deliverables (✅ Complete):
+- Personal assistant core (notes, vault, email integration)
+- Feishu integration and event callbacks
+- JWT authentication foundation
+- Database encryption layer (notes, vault, email credentials)
+- Security audit R7 fixes (crypto migration, DOMPurify config)
+
+Phase 1 in progress:
+- Multi-user authentication and authorization
+- API endpoint permission matrix
+- Rate limiting for LLM/embedding endpoints
+- Production deployment automation
 
 The current codebase includes:
 - `backend/`: Go API server and local persistence
