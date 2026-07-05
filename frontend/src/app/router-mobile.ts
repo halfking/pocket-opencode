@@ -215,14 +215,20 @@ const router = createRouter({
 })
 
 /**
- * 🦞 路由守卫：
- *   1. 已登录 + 已初始化但访问 /login → 跳 /ai，避免重复登录
+ * Router Guard:
+ *   1. 已登录访问 /login 且龙虾已初始化 → 重定向到首页
  *   2. 需要登录的页面 → 未登录跳 /login
  *   3. 需要龙虾硬壳已初始化的页面（笔记/邮箱/密码箱/会议等本地存储相关）
  *      → 未初始化跳 /login（龙虾初始化由 LoginView 在用户输入主密码后触发）
+ * 
+ * Phase 7: Added syncFromStorage() to ensure auth state is current on each navigation
  */
 router.beforeEach((to, from, next) => {
   const auth = useAuthStore()
+  
+  // Phase 7: Sync auth state from localStorage before checking
+  // This ensures we have the latest auth state, even if localStorage was modified externally
+  auth.syncFromStorage()
 
   // 1) 已登录 + 已初始化但访问 /login → 直接去首页
   if (to.path === '/login' && auth.isAuthenticated && isLobsterReady()) {
