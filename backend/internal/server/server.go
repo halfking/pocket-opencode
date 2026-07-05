@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -27,6 +29,17 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/vault"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
+
+// generateUUID generates a simple UUID-like string (Phase 7)
+func generateUUID() string {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		// Fallback to timestamp-based ID
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
 
 type Server struct {
 	cfg           config.Config
@@ -512,8 +525,12 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		if req.ID == "" || req.Title == "" {
-			http.Error(w, "missing required fields", http.StatusBadRequest)
+		// Phase 7: Auto-generate ID if not provided
+		if req.ID == "" {
+			req.ID = "task-" + generateUUID()
+		}
+		if req.Title == "" {
+			http.Error(w, "title is required", http.StatusBadRequest)
 			return
 		}
 		if req.Source == "" {
