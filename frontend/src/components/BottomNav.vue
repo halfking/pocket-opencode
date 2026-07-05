@@ -114,9 +114,12 @@ function isActive(item: NavItem) {
   background: var(--bg-card);
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   padding: var(--space-4);
+  padding-bottom: calc(var(--space-4) + 80px); /* Phase 7: 额外空间避开 FAB */
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr); /* Phase 7: 改为 2 列，避免第 3 列被 FAB 遮挡 */
   gap: var(--space-3);
+  max-height: 70vh; /* 限制最大高度 */
+  overflow-y: auto; /* 内容过多时可滚动 */
 }
 .more-item {
   display: flex;
