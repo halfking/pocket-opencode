@@ -1,79 +1,177 @@
 <!--
-  TasksView — Phase 4: 主题任务抽象 + M3 强化 + 下滑关闭
+  TasksView — Codex-style compact dual-panel AI hub
 
-  变化点（相对 Phase 3）：
-  1. 顶部集成 ThemeTabs（5 主题 chip + 未完成 badge）
-  2. 状态分组 chip 升级为 M3 AssistChip 风格（active/blocked/completed 三色）
-  3. 任务卡片升级为 M3 ElevatedCard（圆角 12、shadow-md、press scale）
-  4. "+" 按钮改为右下 FAB（圆形 primary-container）
-  5. 创建 modal 加 ESC + 下滑关闭（usePullDownClose）
+  Layout:
+  A. 运行中 — horizontal compact task cards (active across all instances)
+  B. 会话   — vertical session list (recent AI conversations)
+  C. 已完成 — collapsed expandable section
+  D. Voice bar — fixed above bottom nav
 -->
 <template>
-  <div class="tasks-view">
-    <!-- 主题切换器（M3 SegmentedButton） -->
-    <ThemeTabs v-model="activeTheme" :tabs="themeTabs" />
+  <div class="ai-hub">
+    <!-- Section A: Running Tasks -->
+    <section class="section running-section">
+      <div class="section-header">
+        <h2>
+          <span class="dot pulse" />运行中
+          <span class="badge">{{ activeTasks.length }}</span>
+        </h2>
+        <button class="link-btn" @click="showCreateModal = true">+ 新任务</button>
+      </div>
 
-    <!-- 加载状态 -->
-    <div v-if="loading" class="loading-state">
-      <div class="spinner"></div>
-      <p>加载任务...</p>
-    </div>
+      <div v-if="loading" class="skeleton-row">
+        <div v-for="i in 3" :key="i" class="skeleton-card" />
+      </div>
 
-    <!-- 任务列表（按状态分组） -->
-    <div v-else-if="groupedTasks.length > 0" class="tasks-container">
-      <div v-for="group in groupedTasks" :key="group.name" class="task-group">
-        <div class="group-header">
-          <h2>{{ group.name }}</h2>
-          <span class="task-count">{{ group.tasks.length }}</span>
-        </div>
-
-        <div class="task-list">
-          <div
-            v-for="task in group.tasks"
-            :key="task.id"
-            class="task-card"
-            @click="viewTask(task.id)"
-          >
-            <div class="task-priority" :class="task.priority"></div>
-            <div class="task-content">
-              <h3>{{ task.title }}</h3>
-              <p v-if="task.description" class="task-desc">{{ task.description }}</p>
-              <div class="task-meta">
-                <span class="meta-item">
-                  <span class="meta-icon">💬</span>
-                  {{ task.sessionCount || 0 }} 会话
-                </span>
-                <span class="meta-item" :class="['status-chip', `status-${task.status}`]">
-                  {{ statusText(task.status) }}
-                </span>
-              </div>
+      <div v-else-if="activeTasks.length > 0" class="task-scroll">
+        <div
+          v-for="task in activeTasks"
+          :key="task.id"
+          class="task-card compact"
+          @click="viewTask(task.id)"
+        >
+          <div class="priority-bar" :class="task.priority" />
+          <div class="task-body">
+            <div class="task-title">{{ task.title }}</div>
+            <div class="task-meta-row">
+              <span v-if="task.instanceName" class="instance-tag">{{ task.instanceName }}</span>
+              <span class="meta-muted">
+                <span class="meta-icon">💬</span>{{ task.sessionCount || 0 }}
+              </span>
+              <span v-if="task.updatedAt" class="meta-muted time">{{ timeAgo(task.updatedAt) }}</span>
             </div>
-            <div class="task-arrow">›</div>
+          </div>
+          <span class="chevron">›</span>
+        </div>
+      </div>
+
+      <div v-else class="empty-inline">
+        <span class="empty-text">暂无运行中的任务</span>
+      </div>
+
+      <!-- Blocked tasks (inline) -->
+      <div v-if="blockedTasks.length > 0" class="blocked-strip">
+        <div class="strip-header">
+          <span class="dot blocked" />已阻塞
+          <span class="badge warn">{{ blockedTasks.length }}</span>
+        </div>
+        <div
+          v-for="task in blockedTasks"
+          :key="task.id"
+          class="task-card compact blocked-card"
+          @click="viewTask(task.id)"
+        >
+          <div class="priority-bar" :class="task.priority" />
+          <div class="task-body">
+            <div class="task-title">{{ task.title }}</div>
+            <div class="task-meta-row">
+              <span v-if="task.instanceName" class="instance-tag">{{ task.instanceName }}</span>
+              <span class="meta-muted">💬 {{ task.sessionCount || 0 }}</span>
+            </div>
+          </div>
+          <span class="chevron">›</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section B: AI Sessions -->
+    <section class="section sessions-section">
+      <div class="section-header">
+        <h2>
+          <span class="dot session" />会话
+          <span class="badge">{{ sessions.length }}</span>
+        </h2>
+        <button class="link-btn" @click="router.push('/sessions')">全部</button>
+      </div>
+
+      <div v-if="sessionsLoading" class="skeleton-row">
+        <div v-for="i in 3" :key="i" class="skeleton-card" />
+      </div>
+
+      <div v-else-if="sessions.length > 0" class="session-list">
+        <div
+          v-for="s in sessions"
+          :key="s.id"
+          class="session-item"
+          @click="openSession(s)"
+        >
+          <span class="status-dot" :class="s.status" />
+          <div class="session-body">
+            <div class="session-title">{{ s.title || '未命名会话' }}</div>
+            <div class="session-meta">
+              <span v-if="s.instanceName" class="instance-tag sm">{{ s.instanceName }}</span>
+              <span v-if="s.updatedAt" class="meta-muted time">{{ timeAgo(s.updatedAt) }}</span>
+            </div>
+          </div>
+          <span class="chevron">›</span>
+        </div>
+      </div>
+
+      <div v-else class="empty-inline">
+        <span class="empty-text">暂无会话</span>
+      </div>
+    </section>
+
+    <!-- Section C: Completed (collapsed) -->
+    <section v-if="completedTasks.length > 0" class="section completed-section">
+      <div class="section-header" @click="showCompleted = !showCompleted">
+        <h2>
+          <span class="dot done" />已完成
+          <span class="badge muted">{{ completedTasks.length }}</span>
+        </h2>
+        <span class="expand-icon" :class="{ open: showCompleted }">›</span>
+      </div>
+
+      <div v-if="showCompleted" class="completed-list">
+        <div
+          v-for="task in completedTasks"
+          :key="task.id"
+          class="task-card compact completed-card"
+          @click="viewTask(task.id)"
+        >
+          <div class="task-body">
+            <div class="task-title done">{{ task.title }}</div>
+            <span class="meta-muted time">{{ timeAgo(task.updatedAt) }}</span>
           </div>
         </div>
       </div>
+    </section>
+
+    <!-- Voice Input Bar -->
+    <div class="voice-bar">
+      <div class="voice-input-wrap">
+        <textarea
+          v-model="quickPrompt"
+          class="voice-textarea"
+          placeholder="快速提问..."
+          rows="1"
+          @keydown.enter.exact.prevent="sendQuickPrompt"
+        />
+        <button
+          class="voice-btn"
+          :class="{ recording: isRecording }"
+          @click="toggleVoice"
+          @touchstart.prevent="onVoiceTouchStart"
+          @touchend.prevent="onVoiceTouchEnd"
+        >
+          {{ isRecording ? '⏹' : '🎙' }}
+        </button>
+        <button
+          v-if="quickPrompt.trim()"
+          class="send-btn"
+          @click="sendQuickPrompt"
+        >
+          ↑
+        </button>
+      </div>
     </div>
 
-    <!-- 空状态 -->
-    <div v-else class="empty-state">
-      <div class="empty-icon">📝</div>
-      <p>暂无任务</p>
-      <button class="create-first-btn" @click="showCreateModal = true">
-        创建第一个任务
-      </button>
-    </div>
-
-    <!-- M3 FAB：右下圆形创建按钮 -->
-    <button class="fab" aria-label="创建任务" @click="showCreateModal = true">
-      <span class="fab-icon">+</span>
-    </button>
-
-    <!-- 创建任务 modal（M3 + 下滑关闭 + ESC） -->
+    <!-- Create Task Modal -->
     <div
       v-if="showCreateModal"
       ref="modalRef"
       class="modal-overlay"
-      @click.self="closeModal"
+      @click.self="showCreateModal = false"
     >
       <div
         ref="modalSheetRef"
@@ -86,40 +184,34 @@
         <div class="modal-handle" />
         <div class="modal-body">
           <h2>创建任务</h2>
-
           <div class="form-group">
             <label>标题 *</label>
             <input v-model="newTask.title" type="text" placeholder="输入任务标题" />
           </div>
-
           <div class="form-group">
             <label>描述</label>
-            <textarea v-model="newTask.description" placeholder="输入任务描述" rows="3" />
+            <textarea v-model="newTask.description" placeholder="输入任务描述" rows="2" />
           </div>
-
-          <div class="form-group">
-            <label>优先级</label>
-            <select v-model="newTask.priority">
-              <option value="high">高</option>
-              <option value="medium">中</option>
-              <option value="low">低</option>
-            </select>
+          <div class="form-row">
+            <div class="form-group half">
+              <label>优先级</label>
+              <select v-model="newTask.priority">
+                <option value="high">高</option>
+                <option value="medium">中</option>
+                <option value="low">低</option>
+              </select>
+            </div>
+            <div class="form-group half">
+              <label>状态</label>
+              <select v-model="newTask.status">
+                <option value="active">进行中</option>
+                <option value="blocked">已阻塞</option>
+              </select>
+            </div>
           </div>
-
-          <div class="form-group">
-            <label>状态</label>
-            <select v-model="newTask.status">
-              <option value="active">进行中</option>
-              <option value="blocked">已阻塞</option>
-              <option value="completed">已完成</option>
-            </select>
-          </div>
-
           <div class="modal-actions">
-            <button class="cancel-btn" @click="closeModal">取消</button>
-            <button class="create-btn" :disabled="!newTask.title" @click="handleCreate">
-              创建
-            </button>
+            <button class="btn cancel" @click="showCreateModal = false">取消</button>
+            <button class="btn primary" :disabled="!newTask.title" @click="handleCreate">创建</button>
           </div>
         </div>
       </div>
@@ -128,21 +220,24 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type Task } from '../../api/client'
 import wsClient from '../../api/websocket'
-import ThemeTabs, { type ThemeTab } from '../../components/interactive/ThemeTabs.vue'
 import { usePullDownClose } from '../../composables/usePullDownClose'
 
 const router = useRouter()
 
+// ── State ──
 const currentInstance = ref<any>(null)
 const tasks = ref<Task[]>([])
+const sessions = ref<any[]>([])
 const loading = ref(true)
+const sessionsLoading = ref(true)
 const showCreateModal = ref(false)
-const activeTheme = ref<string>('all')
-
+const showCompleted = ref(false)
+const quickPrompt = ref('')
+const isRecording = ref(false)
 const modalRef = ref<HTMLElement | null>(null)
 const modalSheetRef = ref<HTMLElement | null>(null)
 
@@ -153,112 +248,94 @@ const newTask = ref({
   status: 'active',
 })
 
-// Phase 4: 主题列表（与 BottomNav 5 模块对齐）
-const themeTabs = computed<ThemeTab[]>(() => {
-  const open = (s: string) => tasks.value.filter((t) => t.status === s).length
-  const aiCount = tasks.value.filter(
-    (t) => t.workstreamId === currentInstance.value?.id && t.status !== 'completed',
-  ).length
-  const noteCount = tasks.value.filter(
-    (t) => t.source === 'local' && t.status !== 'completed',
-  ).length
-  // meeting/email 暂用 source 标识 fallback 到 0
-  const meetingCount = tasks.value.filter(
-    (t) => (t as any).category === 'meeting' && t.status !== 'completed',
-  ).length
-  const emailCount = tasks.value.filter(
-    (t) => (t as any).category === 'email' && t.status !== 'completed',
-  ).length
+// ── Computed ──
+const activeTasks = computed(() =>
+  tasks.value
+    .filter((t) => t.status === 'active')
+    .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+)
 
-  return [
-    { id: 'all', label: '全部', icon: '✦', count: open('active') + open('blocked') },
-    { id: 'ai', label: 'AI', icon: '🤖', count: aiCount },
-    { id: 'notes', label: '笔记', icon: '📝', count: noteCount },
-    { id: 'meetings', label: '会议', icon: '🎙️', count: meetingCount },
-    { id: 'email', label: '邮件', icon: '✉️', count: emailCount },
-  ]
-})
+const blockedTasks = computed(() =>
+  tasks.value.filter((t) => t.status === 'blocked')
+)
 
-// 过滤后的 task 列表
-const filteredTasks = computed(() => {
-  if (activeTheme.value === 'all') return tasks.value
-  const map: Record<string, (t: Task) => boolean> = {
-    ai: (t) => t.workstreamId === currentInstance.value?.id,
-    notes: (t) => t.source === 'local',
-    meetings: (t) => (t as any).category === 'meeting',
-    email: (t) => (t as any).category === 'email',
-  }
-  const pred = map[activeTheme.value]
-  return pred ? tasks.value.filter(pred) : tasks.value
-})
+const completedTasks = computed(() =>
+  tasks.value
+    .filter((t) => t.status === 'completed')
+    .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+)
 
-// 按状态分组（仅展示 open 状态；completed 折叠）
-const groupedTasks = computed(() => {
-  const groups = [
-    { name: '进行中', tasks: filteredTasks.value.filter((t) => t.status === 'active') },
-    { name: '已阻塞', tasks: filteredTasks.value.filter((t) => t.status === 'blocked') },
-    { name: '已完成', tasks: filteredTasks.value.filter((t) => t.status === 'completed') },
-  ]
-  return groups.filter((g) => g.tasks.length > 0)
-})
-
-// Phase 4.3: 下滑关闭 modal
+// ── Pull-down close ──
 const { pullDownOffset, onSheetTouchStart, onSheetTouchMove, onSheetTouchEnd } =
-  usePullDownClose({
-    threshold: 80,
-    onClose: () => closeModal(),
-  })
+  usePullDownClose({ threshold: 80, onClose: () => { showCreateModal.value = false } })
 
-function closeModal() {
-  showCreateModal.value = false
-}
-
-// Phase 4.3: ESC 关闭 modal
-function onKeyDown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && showCreateModal.value) closeModal()
-}
-
+// ── Lifecycle ──
 onMounted(() => {
   const instanceStr = localStorage.getItem('selected_instance')
   if (instanceStr) currentInstance.value = JSON.parse(instanceStr)
-
   loadTasks()
-
+  loadSessions()
   wsClient.on('task_created', handleTaskUpdate)
   wsClient.on('task_updated', handleTaskUpdate)
   wsClient.on('session_attached', handleSessionAttached)
-  window.addEventListener('keydown', onKeyDown)
 })
 
 onUnmounted(() => {
   wsClient.off('task_created', handleTaskUpdate)
   wsClient.off('task_updated', handleTaskUpdate)
   wsClient.off('session_attached', handleSessionAttached)
-  window.removeEventListener('keydown', onKeyDown)
 })
 
-watch(activeTheme, () => {
-  // 切换主题时如想刷后端可在此触发 loadTasks(opts)
-})
-
+// ── Data Loading ──
 async function loadTasks() {
   loading.value = true
   try {
-    if (!currentInstance.value) {
-      tasks.value = []
-      return
-    }
-    // Phase 4: 拉三源任务（acc + opencode + local）
+    if (!currentInstance.value) { tasks.value = []; return }
     const instanceTasks = await api.getTasks(currentInstance.value.id, {
       workstreamId: currentInstance.value.id,
     })
-    tasks.value = instanceTasks
-  } catch (error) {
-    console.error('Failed to load tasks:', error)
+    tasks.value = (instanceTasks || []).map((t: any) => ({
+      ...t,
+      instanceName: currentInstance.value?.displayName || currentInstance.value?.name || '',
+    }))
+  } catch (e) {
+    console.error('Failed to load tasks:', e)
     tasks.value = []
   } finally {
     loading.value = false
   }
+}
+
+async function loadSessions() {
+  sessionsLoading.value = true
+  try {
+    const data = await api.getAllSessions(undefined, 10, 0)
+    sessions.value = (data.sessions || []).map((s: any) => ({
+      id: s.id || s.ID || '',
+      title: s.title || s.Title || '',
+      status: s.status || s.Status || 'idle',
+      instanceId: s.instanceId || s.InstanceId || '',
+      instanceName: s.instanceName || s.InstanceName || '',
+      updatedAt: s.updatedAt || s.UpdatedAt || '',
+    }))
+  } catch (e) {
+    console.error('Failed to load sessions:', e)
+    sessions.value = []
+  } finally {
+    sessionsLoading.value = false
+  }
+}
+
+// ── Handlers ──
+function handleTaskUpdate(task: Task) {
+  const idx = tasks.value.findIndex((t) => t.id === task.id)
+  if (idx >= 0) tasks.value[idx] = { ...tasks.value[idx], ...task }
+  else tasks.value.unshift({ ...task, instanceName: currentInstance.value?.displayName || '' })
+}
+
+function handleSessionAttached(link: any) {
+  const task = tasks.value.find((t) => t.id === link.taskId)
+  if (task) task.sessionCount = (task.sessionCount || 0) + 1
 }
 
 async function handleCreate() {
@@ -278,364 +355,516 @@ async function handleCreate() {
     }
     await api.createTask(task)
     newTask.value = { title: '', description: '', priority: 'medium', status: 'active' }
-    closeModal()
+    showCreateModal.value = false
     loadTasks()
-  } catch (error) {
-    console.error('Failed to create task:', error)
+  } catch (e) {
+    console.error('Failed to create task:', e)
   }
-}
-
-function handleTaskUpdate(task: Task) {
-  const index = tasks.value.findIndex((t) => t.id === task.id)
-  if (index >= 0) tasks.value[index] = task
-  else tasks.value.unshift(task)
-}
-
-function handleSessionAttached(link: any) {
-  const task = tasks.value.find((t) => t.id === link.taskId)
-  if (task) task.sessionCount = (task.sessionCount || 0) + 1
 }
 
 function viewTask(taskId: string) {
-  const instanceId = currentInstance.value?.id || ''
+  router.push({ path: `/tasks/${taskId}` })
+}
+
+function openSession(s: any) {
+  const instId = s.instanceId || currentInstance.value?.id || ''
   router.push({
-    path: `/sessions/${taskId}`,
-    query: { instance_id: instanceId, title: '' },
+    path: `/sessions/${s.id}`,
+    query: { instance_id: instId, title: s.title },
   })
 }
 
-function statusText(status: string): string {
-  const map: Record<string, string> = {
-    active: '进行中',
-    blocked: '已阻塞',
-    completed: '已完成',
+// ── Voice ──
+let mediaRecorder: MediaRecorder | null = null
+let audioChunks: Blob[] = []
+
+async function toggleVoice() {
+  if (isRecording.value) {
+    stopRecording()
+  } else {
+    await startRecording()
   }
-  return map[status] || status
+}
+
+async function startRecording() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } })
+    mediaRecorder = new MediaRecorder(stream)
+    audioChunks = []
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data) }
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop())
+      // Placeholder: STT integration goes here
+      // For now, just show a hint
+      if (quickPrompt.value.trim()) return
+      quickPrompt.value = '[语音识别中...]'
+    }
+    mediaRecorder.start()
+    isRecording.value = true
+  } catch (e) {
+    console.error('Microphone access denied:', e)
+  }
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop()
+  }
+  isRecording.value = false
+}
+
+function onVoiceTouchStart() { /* long-press future: auto-send on stop */ }
+function onVoiceTouchEnd() { /* noop for now */ }
+
+function sendQuickPrompt() {
+  const text = quickPrompt.value.trim()
+  if (!text) return
+  // Find the most recent active session, or navigate to sessions
+  const activeSession = sessions.value.find((s) => s.status === 'active') || sessions.value[0]
+  if (activeSession) {
+    router.push({
+      path: `/sessions/${activeSession.id}`,
+      query: { instance_id: activeSession.instanceId, title: activeSession.title, prompt: text },
+    })
+  } else {
+    router.push('/sessions')
+  }
+  quickPrompt.value = ''
+}
+
+// ── Utils ──
+function timeAgo(dateStr?: string): string {
+  if (!dateStr) return ''
+  const diff = Date.now() - new Date(dateStr).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return '刚刚'
+  if (mins < 60) return `${mins}分钟前`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}小时前`
+  const days = Math.floor(hrs / 24)
+  return `${days}天前`
 }
 </script>
 
 <style scoped>
-.tasks-view {
+.ai-hub {
   min-height: 100vh;
   background: var(--bg-base);
   display: flex;
   flex-direction: column;
-  padding-bottom: 96px; /* FAB + bottom-nav 空间 */
+  gap: 2px;
+  padding-bottom: 110px; /* voice-bar + bottom-nav */
 }
 
-.loading-state {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+/* ── Section ── */
+.section {
+  padding: 10px var(--space-3) 6px;
 }
-
-.spinner {
-  width: 40px;
-  height: 40px;
-  border: 4px solid var(--bg-subtle);
-  border-top: 4px solid var(--brand-primary);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin-bottom: 16px;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.tasks-container {
-  flex: 1;
-  overflow-y: auto;
-  padding: var(--space-3);
-}
-
-.task-group {
-  margin-bottom: var(--space-4);
-}
-
-.group-header {
+.section-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-  padding: 0 4px;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  padding: 0 2px;
 }
-
-.group-header h2 {
-  font-size: 14px;
+.section-header h2 {
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-secondary);
   margin: 0;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}
-
-.task-count {
-  font-size: 11px;
-  padding: 2px 8px;
-  background: var(--bg-subtle);
-  color: var(--text-secondary);
-  border-radius: 999px;
-  font-weight: 600;
-}
-
-/* M3 ElevatedCard */
-.task-card {
-  background: var(--bg-elevated);
-  border-radius: 12px;
-  padding: 14px;
-  margin-bottom: 10px;
   display: flex;
   align-items: center;
-  gap: 12px;
-  cursor: pointer;
-  box-shadow: var(--shadow-sm);
-  transition:
-    transform 120ms ease,
-    box-shadow 180ms ease;
+  gap: 6px;
+  letter-spacing: 0.3px;
 }
-
-.task-card:hover {
-  box-shadow: var(--shadow-md);
-}
-
-.task-card:active {
-  transform: scale(0.98);
-  box-shadow: var(--shadow-sm);
-}
-
-.task-priority {
-  width: 3px;
-  height: 40px;
-  border-radius: 2px;
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
   flex-shrink: 0;
 }
-
-.task-priority.high {
-  background: var(--error, #ef4444);
-}
-.task-priority.medium {
-  background: var(--warning);
-}
-.task-priority.low {
+.dot.pulse {
   background: var(--success);
+  animation: pulse 2s infinite;
+}
+.dot.blocked { background: var(--warning); }
+.dot.session { background: var(--brand-primary); }
+.dot.done { background: var(--text-muted); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
-.task-content {
-  flex: 1;
-  min-width: 0;
-}
-
-.task-content h3 {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0 0 4px 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-desc {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin: 0 0 6px 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-meta {
-  display: flex;
-  gap: 8px;
-  font-size: 11px;
-  align-items: center;
-}
-
-.meta-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--text-muted);
-}
-
-/* M3 AssistChip：状态 chip 升级 */
-.meta-item.status-chip {
-  padding: 2px 8px;
+.badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
   border-radius: 999px;
-  font-weight: 600;
-  font-size: 11px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
   line-height: 16px;
 }
-
-.meta-item.status-chip.status-active {
-  background: rgba(16, 185, 129, 0.12);
-  color: var(--success);
-}
-
-.meta-item.status-chip.status-blocked {
+.badge.warn {
   background: rgba(245, 158, 11, 0.14);
   color: var(--warning);
 }
-
-.meta-item.status-chip.status-completed {
-  background: rgba(102, 126, 234, 0.14);
-  color: var(--brand-primary);
-}
-
-.task-arrow {
-  font-size: 18px;
+.badge.muted {
+  background: var(--bg-subtle);
   color: var(--text-muted);
 }
 
-.empty-state {
-  flex: 1;
+.link-btn {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand-primary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+/* ── Task Cards (Codex compact) ── */
+.task-scroll {
   display: flex;
   flex-direction: column;
+  gap: 6px;
+}
+.task-card.compact {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 40px;
-}
-
-.empty-icon {
-  font-size: 64px;
-  margin-bottom: 16px;
-}
-
-.create-first-btn {
-  padding: 12px 24px;
-  font-size: 14px;
-  font-weight: 600;
-  color: white;
-  background: var(--brand-gradient);
-  border: none;
-  border-radius: 999px;
+  gap: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
   cursor: pointer;
-  margin-top: 16px;
+  transition: background 120ms;
+}
+.task-card.compact:active {
+  background: var(--bg-subtle);
+}
+.priority-bar {
+  width: 2px;
+  height: 28px;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+.priority-bar.high { background: var(--error, #ef4444); }
+.priority-bar.medium { background: var(--warning); }
+.priority-bar.low { background: var(--success); }
+
+.task-body {
+  flex: 1;
+  min-width: 0;
+}
+.task-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 18px;
+}
+.task-title.done {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+.task-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.instance-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(102, 126, 234, 0.1);
+  color: var(--brand-primary);
+  line-height: 14px;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.instance-tag.sm {
+  font-size: 9px;
+  padding: 0px 4px;
+}
+.meta-muted {
+  font-size: 11px;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.meta-muted .meta-icon {
+  font-size: 10px;
+}
+.meta-muted.time {
+  font-size: 10px;
+}
+.chevron {
+  font-size: 16px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  opacity: 0.5;
 }
 
-/* M3 FloatingActionButton */
-.fab {
+.blocked-strip {
+  margin-top: 8px;
+}
+.strip-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  padding: 0 2px;
+}
+.blocked-card {
+  border-color: rgba(245, 158, 11, 0.2);
+}
+
+/* ── Session List ── */
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 120ms;
+}
+.session-item:active {
+  background: var(--bg-subtle);
+}
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+.status-dot.active,
+.status-dot.streaming {
+  background: var(--success);
+  animation: pulse 2s infinite;
+}
+.status-dot.idle { background: var(--brand-primary); }
+.status-dot.error { background: var(--error, #ef4444); }
+
+.session-body {
+  flex: 1;
+  min-width: 0;
+}
+.session-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 18px;
+}
+.session-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+/* ── Empty State ── */
+.empty-inline {
+  padding: 16px 10px;
+  text-align: center;
+}
+.empty-text {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ── Skeleton ── */
+.skeleton-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.skeleton-card {
+  height: 44px;
+  background: var(--bg-subtle);
+  border-radius: 8px;
+  animation: shimmer 1.5s infinite;
+}
+@keyframes shimmer {
+  0% { opacity: 0.6; }
+  50% { opacity: 1; }
+  100% { opacity: 0.6; }
+}
+
+/* ── Completed Section ── */
+.completed-section .section-header {
+  cursor: pointer;
+}
+.expand-icon {
+  font-size: 16px;
+  color: var(--text-muted);
+  transition: transform 200ms;
+}
+.expand-icon.open {
+  transform: rotate(90deg);
+}
+.completed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.completed-card {
+  opacity: 0.7;
+  padding: 6px 10px;
+}
+.completed-card .task-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ── Voice Bar ── */
+.voice-bar {
   position: fixed;
-  right: 20px;
-  bottom: calc(56px + env(safe-area-inset-bottom, 0) + 16px);
-  width: 56px;
-  height: 56px;
-  border-radius: 16px;
+  bottom: var(--bottomnav-height);
+  left: 0;
+  right: 0;
+  padding: 6px 12px;
+  padding-bottom: calc(6px + env(safe-area-inset-bottom, 0));
+  background: var(--bg-card);
+  border-top: 1px solid var(--border);
+  z-index: 15;
+}
+.voice-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 4px 6px 4px 14px;
+}
+.voice-textarea {
+  flex: 1;
   border: none;
-  background: var(--brand-primary);
-  color: #fff;
-  font-size: 28px;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text-primary);
+  resize: none;
+  outline: none;
+  font-family: inherit;
+  line-height: 20px;
+  max-height: 60px;
+  padding: 4px 0;
+}
+.voice-textarea::placeholder {
+  color: var(--text-muted);
+}
+.voice-btn,
+.send-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  font-size: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  box-shadow: var(--shadow-lg);
-  transition:
-    transform 120ms ease,
-    box-shadow 180ms ease;
-  z-index: 50;
+  flex-shrink: 0;
+  transition: transform 100ms;
+}
+.voice-btn {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+.voice-btn.recording {
+  background: var(--error, #ef4444);
+  color: #fff;
+  animation: pulse 1s infinite;
+}
+.send-btn {
+  background: var(--brand-primary);
+  color: #fff;
+}
+.send-btn:active,
+.voice-btn:active {
+  transform: scale(0.9);
 }
 
-.fab:hover {
-  box-shadow: 0 12px 20px -4px rgba(102, 126, 234, 0.4);
-}
-
-.fab:active {
-  transform: scale(0.94);
-}
-
-.fab-icon {
-  display: block;
-  line-height: 1;
-  margin-top: -2px;
-}
-
-/* ============ Modal (下滑关闭 + M3) ============ */
+/* ── Modal ── */
 .modal-overlay {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: flex-end;
-  justify-content: center;
   z-index: 1000;
-  animation: fadeIn 180ms ease;
+  animation: fadeIn 150ms ease;
 }
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 .modal-sheet {
   background: var(--bg-elevated);
-  border-radius: 24px 24px 0 0;
+  border-radius: 16px 16px 0 0;
   width: 100%;
-  max-width: 600px;
   max-height: 85vh;
   display: flex;
   flex-direction: column;
-  animation: slideUp 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: slideUp 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
   touch-action: none;
-  will-change: transform;
 }
-
-@keyframes slideUp {
-  from {
-    transform: translateY(100%);
-  }
-  to {
-    transform: translateY(0);
-  }
-}
-
+@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
 .modal-handle {
   width: 36px;
   height: 4px;
   border-radius: 2px;
   background: var(--border-strong);
-  margin: 10px auto 6px;
-  flex-shrink: 0;
+  margin: 8px auto 4px;
 }
-
 .modal-body {
-  padding: 12px 24px 24px;
+  padding: 8px 20px 20px;
   overflow-y: auto;
 }
-
 .modal-body h2 {
-  font-size: 20px;
-  font-weight: 600;
-  margin: 8px 0 20px;
+  font-size: 16px;
+  font-weight: 700;
+  margin: 4px 0 16px;
   color: var(--text-primary);
 }
-
 .form-group {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
-
 .form-group label {
   display: block;
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--text-secondary);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
-
 .form-group input,
 .form-group textarea,
 .form-group select {
   width: 100%;
-  padding: 12px;
+  padding: 10px;
   font-size: 14px;
   background: var(--bg-subtle);
   color: var(--text-primary);
@@ -643,49 +872,43 @@ function statusText(status: string): string {
   border-radius: 8px;
   box-sizing: border-box;
   font-family: inherit;
-  transition: border-color 180ms ease;
 }
-
 .form-group input:focus,
 .form-group textarea:focus,
 .form-group select:focus {
   border-color: var(--brand-primary);
-  background: var(--bg-card);
+  outline: none;
 }
-
-.modal-actions {
+.form-row {
   display: flex;
   gap: 12px;
-  margin-top: 24px;
 }
-
-.cancel-btn,
-.create-btn {
+.form-group.half {
   flex: 1;
-  padding: 12px;
+}
+.modal-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+.btn {
+  flex: 1;
+  padding: 10px;
   font-size: 14px;
   font-weight: 600;
   border: none;
-  border-radius: 999px;
+  border-radius: 10px;
   cursor: pointer;
-  transition: background 180ms ease;
 }
-
-.cancel-btn {
+.btn.cancel {
   background: var(--bg-subtle);
   color: var(--text-primary);
 }
-
-.cancel-btn:hover {
-  background: var(--border);
-}
-
-.create-btn {
+.btn.primary {
   background: var(--brand-primary);
   color: #fff;
 }
-
-.create-btn:disabled {
+.btn.primary:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }

@@ -1,115 +1,133 @@
+<!--
+  TaskDetailView — Codex-style compact detail with operation buttons
+-->
 <template>
-  <div class="task-detail-view">
-    <!-- 顶部栏 -->
-    <div class="top-bar">
-      <button class="back-btn" @click="goBack">← 返回</button>
-      <h1>任务详情</h1>
-      <button class="menu-btn">⋮</button>
+  <div class="task-detail">
+    <!-- Header: priority + title + status on one line -->
+    <div class="header">
+      <span class="priority-chip" :class="task?.priority">
+        {{ priorityText(task?.priority) }}
+      </span>
+      <h1 class="title">{{ task?.title || '加载中...' }}</h1>
+      <span class="status-chip" :class="task?.status">
+        {{ statusText(task?.status) }}
+      </span>
     </div>
 
-    <!-- 加载状态 -->
-    <div v-if="loading" class="loading-state">
-      <div class="spinner"></div>
-      <p>加载中...</p>
+    <!-- Description -->
+    <p v-if="task?.description" class="desc">{{ task.description }}</p>
+
+    <!-- Stats strip -->
+    <div class="stats-strip">
+      <div class="stat">
+        <span class="stat-icon">💬</span>
+        <span class="stat-val">{{ task?.sessionCount || 0 }}</span>
+        <span class="stat-lbl">会话</span>
+      </div>
+      <div class="stat">
+        <span class="stat-icon">📅</span>
+        <span class="stat-val">{{ formatDate(task?.createdAt) }}</span>
+        <span class="stat-lbl">创建</span>
+      </div>
+      <div v-if="task?.workstreamId" class="stat">
+        <span class="stat-icon">💻</span>
+        <span class="stat-val">{{ task?.workstreamId?.slice(0, 8) }}</span>
+        <span class="stat-lbl">实例</span>
+      </div>
     </div>
 
-    <!-- 任务详情 -->
-    <div v-else-if="task" class="task-detail-container">
-      <!-- 任务头部 -->
-      <div class="task-header">
-        <div class="priority-badge" :class="task.priority">
-          {{ priorityText(task.priority) }}
-        </div>
-        <h2>{{ task.title }}</h2>
-        <p v-if="task.description" class="task-description">
-          {{ task.description }}
-        </p>
-        <div class="task-status" :class="task.status">
-          {{ statusText(task.status) }}
-        </div>
+    <!-- Action Bar -->
+    <div class="action-bar">
+      <button
+        v-if="task?.status !== 'active'"
+        class="action-btn resume"
+        @click="updateStatus('active')"
+      >
+        ▶ 恢复
+      </button>
+      <button
+        v-if="task?.status === 'active'"
+        class="action-btn pause"
+        @click="updateStatus('blocked')"
+      >
+        ⏸ 暂停
+      </button>
+      <button
+        v-if="task?.status !== 'completed'"
+        class="action-btn complete"
+        @click="updateStatus('completed')"
+      >
+        ✅ 完成
+      </button>
+      <button class="action-btn attach" @click="showAttachModal = true">
+        📎 附加
+      </button>
+      <button class="action-btn delete" @click="confirmDelete">
+        🗑
+      </button>
+    </div>
+
+    <!-- Sessions Section -->
+    <div class="sessions-section">
+      <div class="section-header">
+        <h3>关联会话 <span class="badge">{{ sessions.length }}</span></h3>
+        <button class="link-btn" @click="showAttachModal = true">+ 附加</button>
       </div>
 
-      <!-- 统计信息 -->
-      <div class="stats-section">
-        <div class="stat-card">
-          <div class="stat-icon">💬</div>
-          <div class="stat-info">
-            <div class="stat-value">{{ task.sessionCount || 0 }}</div>
-            <div class="stat-label">会话数</div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon">📅</div>
-          <div class="stat-info">
-            <div class="stat-value">{{ formatDate(task.createdAt) }}</div>
-            <div class="stat-label">创建时间</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 会话列表 -->
-      <div class="section">
-        <div class="section-header">
-          <h3>关联会话</h3>
-          <button class="attach-btn" @click="showAttachModal = true">+ 附加</button>
-        </div>
-        
-        <div v-if="sessions.length > 0" class="session-list">
-          <div v-for="session in sessions" :key="session.sessionId" class="session-card">
-            <div class="session-icon">📝</div>
-            <div class="session-info">
-              <div class="session-id">{{ session.sessionId }}</div>
-              <div class="session-meta">
-                <span class="meta-tag">{{ session.role }}</span>
-                <span class="meta-tag">{{ session.instanceId }}</span>
-              </div>
+      <div v-if="sessions.length > 0" class="session-list">
+        <div
+          v-for="s in sessions"
+          :key="s.sessionId"
+          class="session-row"
+          @click="openSession(s)"
+        >
+          <span class="status-dot" />
+          <div class="session-info">
+            <div class="session-id">{{ s.sessionId.slice(0, 16) }}…</div>
+            <div class="session-tags">
+              <span class="tag">{{ s.role }}</span>
+              <span class="tag">{{ s.instanceId }}</span>
             </div>
           </div>
+          <span class="chevron">›</span>
         </div>
-        
-        <div v-else class="empty-sessions">
-          <p>暂无关联会话</p>
-          <button class="attach-first-btn" @click="showAttachModal = true">
-            附加第一个会话
-          </button>
-        </div>
+      </div>
+
+      <div v-else class="empty-sessions">
+        <span class="empty-text">暂无关联会话</span>
       </div>
     </div>
 
-    <!-- 附加会话模态框 -->
+    <!-- Attach Modal -->
     <div v-if="showAttachModal" class="modal-overlay" @click="showAttachModal = false">
-      <div class="modal-content" @click.stop>
-        <h2>附加会话</h2>
-        
-        <div class="form-group">
-          <label>会话 ID *</label>
-          <input v-model="newSession.sessionId" type="text" placeholder="输入会话 ID" />
-        </div>
-
-        <div class="form-group">
-          <label>实例 ID *</label>
-          <input v-model="newSession.instanceId" type="text" placeholder="输入实例 ID" />
-        </div>
-
-        <div class="form-group">
-          <label>角色</label>
-          <select v-model="newSession.role">
-            <option value="primary">主要会话</option>
-            <option value="supporting">支持会话</option>
-            <option value="exploratory">探索会话</option>
-            <option value="duplicate">重复会话</option>
-          </select>
-        </div>
-
-        <div class="modal-actions">
-          <button class="cancel-btn" @click="showAttachModal = false">取消</button>
-          <button 
-            class="attach-confirm-btn" 
-            @click="handleAttach"
-            :disabled="!newSession.sessionId || !newSession.instanceId"
-          >
-            附加
-          </button>
+      <div class="modal-sheet" @click.stop>
+        <div class="modal-handle" />
+        <div class="modal-body">
+          <h2>附加会话</h2>
+          <div class="form-group">
+            <label>会话 ID *</label>
+            <input v-model="newSession.sessionId" type="text" placeholder="ses_..." />
+          </div>
+          <div class="form-group">
+            <label>实例 ID *</label>
+            <input v-model="newSession.instanceId" type="text" placeholder="local-dev" />
+          </div>
+          <div class="form-group">
+            <label>角色</label>
+            <select v-model="newSession.role">
+              <option value="primary">主要</option>
+              <option value="supporting">支持</option>
+              <option value="exploratory">探索</option>
+            </select>
+          </div>
+          <div class="modal-actions">
+            <button class="btn cancel" @click="showAttachModal = false">取消</button>
+            <button
+              class="btn primary"
+              :disabled="!newSession.sessionId || !newSession.instanceId"
+              @click="handleAttach"
+            >附加</button>
+          </div>
         </div>
       </div>
     </div>
@@ -126,407 +144,360 @@ const route = useRoute()
 
 const task = ref<Task | null>(null)
 const sessions = ref<any[]>([])
-const loading = ref(true)
 const showAttachModal = ref(false)
-
-const newSession = ref({
-  sessionId: '',
-  instanceId: '',
-  role: 'primary'
-})
+const newSession = ref({ sessionId: '', instanceId: '', role: 'primary' })
 
 onMounted(async () => {
   const taskId = route.params.id as string
-  loading.value = true
-  
   try {
     task.value = await api.getTask(taskId)
     sessions.value = await api.getTaskSessions(taskId)
-  } catch (error) {
-    console.error('Failed to load task:', error)
-  } finally {
-    loading.value = false
+  } catch (e) {
+    console.error('Failed to load task:', e)
   }
 })
 
+async function updateStatus(status: string) {
+  if (!task.value) return
+  try {
+    // Optimistic update
+    const old = task.value.status
+    task.value.status = status as any
+    // TODO: call API to persist status change
+    // await api.updateTask(task.value.id, { status })
+  } catch (e) {
+    console.error('Failed to update status:', e)
+  }
+}
+
+function confirmDelete() {
+  if (confirm('确定删除此任务？')) {
+    // TODO: call API to delete
+    router.push('/ai')
+  }
+}
+
 async function handleAttach() {
   if (!task.value || !newSession.value.sessionId || !newSession.value.instanceId) return
-  
   try {
     await api.attachSession(
       task.value.id,
       newSession.value.instanceId,
       newSession.value.sessionId,
-      newSession.value.role || 'primary',
+      newSession.value.role,
     )
-    
-    // 重新加载会话列表
     sessions.value = await api.getTaskSessions(task.value.id)
-    
-    // 重置表单
-    newSession.value = {
-      sessionId: '',
-      instanceId: '',
-      role: 'primary'
-    }
-    
+    newSession.value = { sessionId: '', instanceId: '', role: 'primary' }
     showAttachModal.value = false
-  } catch (error) {
-    console.error('Failed to attach session:', error)
-    alert('附加会话失败')
+  } catch (e) {
+    console.error('Failed to attach session:', e)
   }
 }
 
-function goBack() {
-  router.push('/tasks')
+function openSession(s: any) {
+  router.push({
+    path: `/sessions/${s.sessionId}`,
+    query: { instance_id: s.instanceId },
+  })
 }
 
-function priorityText(priority: string | undefined): string {
-  const map: Record<string, string> = {
-    high: '高优先级',
-    medium: '中优先级',
-    low: '低优先级'
-  }
-  return map[priority ?? ''] || priority || ''
+function priorityText(p?: string): string {
+  return { high: '高', medium: '中', low: '低' }[p ?? ''] ?? ''
 }
 
-function statusText(status: string): string {
-  const map: Record<string, string> = {
-    active: '进行中',
-    blocked: '已阻塞',
-    completed: '已完成'
-  }
-  return map[status] || status
+function statusText(s?: string): string {
+  return { active: '进行中', blocked: '已阻塞', completed: '已完成' }[s ?? ''] ?? s ?? ''
 }
 
-function formatDate(date?: string): string {
-  if (!date) return '-'
-  return new Date(date).toLocaleDateString('zh-CN')
+function formatDate(d?: string): string {
+  if (!d) return '-'
+  return new Date(d).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 }
 </script>
 
 <style scoped>
-.task-detail-view {
+.task-detail {
   min-height: 100vh;
-  background: #f5f7fa;
-  display: flex;
-  flex-direction: column;
+  background: var(--bg-base);
+  padding: 12px var(--space-3);
+  padding-bottom: 80px;
 }
 
-.top-bar {
-  background: white;
-  padding: 16px 20px;
+/* ── Header ── */
+.header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
 }
-
-.back-btn, .menu-btn {
-  padding: 8px 12px;
-  font-size: 14px;
-  background: transparent;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
-  cursor: pointer;
+.priority-chip {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
 }
+.priority-chip.high { background: rgba(239, 68, 68, 0.12); color: var(--error, #ef4444); }
+.priority-chip.medium { background: rgba(245, 158, 11, 0.12); color: var(--warning); }
+.priority-chip.low { background: rgba(16, 185, 129, 0.12); color: var(--success); }
 
-.top-bar h1 {
-  flex: 1;
-  font-size: 20px;
-  font-weight: 600;
+.title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-primary);
   margin: 0;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-chip {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.status-chip.active { background: rgba(16, 185, 129, 0.12); color: var(--success); }
+.status-chip.blocked { background: rgba(245, 158, 11, 0.12); color: var(--warning); }
+.status-chip.completed { background: rgba(102, 126, 234, 0.12); color: var(--brand-primary); }
+
+.desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0 0 12px;
+  line-height: 1.5;
 }
 
-.loading-state {
+/* ── Stats Strip ── */
+.stats-strip {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 4px;
+}
+.stat {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  gap: 2px;
 }
-
-.spinner {
-  width: 40px;
-  height: 40px;
-  border: 4px solid #f3f3f3;
-  border-top: 4px solid #667eea;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin-bottom: 16px;
-}
-
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
-}
-
-.task-detail-container {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px;
-}
-
-.task-header {
-  background: white;
-  border-radius: 16px;
-  padding: 24px;
-  margin-bottom: 16px;
-}
-
-.priority-badge {
-  display: inline-block;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 6px 12px;
-  border-radius: 6px;
-  margin-bottom: 12px;
-}
-
-.priority-badge.high {
-  background: #ffe5e5;
-  color: #ff4757;
-}
-
-.priority-badge.medium {
-  background: #fff3e0;
-  color: #ffa502;
-}
-
-.priority-badge.low {
-  background: #e8f5e9;
-  color: #2ed573;
-}
-
-.task-header h2 {
-  font-size: 22px;
-  font-weight: 700;
-  color: #333;
-  margin: 0 0 12px 0;
-}
-
-.task-description {
-  font-size: 15px;
-  color: #666;
-  line-height: 1.6;
-  margin: 0 0 16px 0;
-}
-
-.task-status {
-  display: inline-block;
+.stat-icon { font-size: 14px; }
+.stat-val {
   font-size: 13px;
-  font-weight: 600;
-  padding: 8px 16px;
-  border-radius: 8px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.stat-lbl {
+  font-size: 10px;
+  color: var(--text-muted);
 }
 
-.task-status.active {
-  background: #d4f4dd;
-  color: #2a8a4e;
-}
-
-.task-status.blocked {
-  background: #fff3cd;
-  color: #856404;
-}
-
-.task-status.completed {
-  background: #e8f0fe;
-  color: #667eea;
-}
-
-.stats-section {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+/* ── Action Bar ── */
+.action-bar {
+  display: flex;
+  gap: 6px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
 }
-
-.stat-card {
-  background: white;
-  border-radius: 12px;
-  padding: 16px;
+.action-btn {
   display: flex;
   align-items: center;
-  gap: 12px;
-}
-
-.stat-icon {
-  font-size: 28px;
-}
-
-.stat-value {
-  font-size: 20px;
-  font-weight: 700;
-  color: #333;
-}
-
-.stat-label {
+  gap: 4px;
+  padding: 6px 12px;
   font-size: 12px;
-  color: #999;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 120ms;
+}
+.action-btn:active {
+  background: var(--bg-subtle);
+}
+.action-btn.resume { border-color: var(--success); color: var(--success); }
+.action-btn.complete { border-color: var(--brand-primary); color: var(--brand-primary); }
+.action-btn.delete {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 6px 8px;
 }
 
-.section {
-  background: white;
-  border-radius: 16px;
-  padding: 20px;
-  margin-bottom: 16px;
+/* ── Sessions ── */
+.sessions-section {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
 }
-
 .section-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
+  justify-content: space-between;
+  margin-bottom: 10px;
 }
-
 .section-header h3 {
-  font-size: 16px;
-  font-weight: 600;
-  margin: 0;
-}
-
-.attach-btn {
-  padding: 8px 16px;
   font-size: 14px;
   font-weight: 600;
-  color: #667eea;
-  background: #e8f0fe;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.session-card {
-  background: #f8f9fa;
-  border-radius: 12px;
-  padding: 16px;
-  margin-bottom: 8px;
+  color: var(--text-primary);
+  margin: 0;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 6px;
 }
-
-.session-icon {
-  font-size: 24px;
+.badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
 }
-
-.session-id {
-  font-size: 14px;
+.link-btn {
+  font-size: 12px;
   font-weight: 600;
-  color: #333;
-  margin-bottom: 4px;
+  color: var(--brand-primary);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 120ms;
+}
+.session-row:active { background: var(--bg-subtle); }
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand-primary);
+  flex-shrink: 0;
+}
+.session-info { flex: 1; min-width: 0; }
+.session-id {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
   font-family: monospace;
 }
-
-.session-meta {
+.session-tags {
   display: flex;
-  gap: 8px;
+  gap: 4px;
+  margin-top: 2px;
 }
-
-.meta-tag {
-  font-size: 11px;
-  padding: 4px 8px;
-  background: white;
-  border-radius: 4px;
-  color: #667eea;
+.tag {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
 }
-
+.chevron {
+  font-size: 14px;
+  color: var(--text-muted);
+  opacity: 0.5;
+}
 .empty-sessions {
   text-align: center;
-  padding: 40px 20px;
-  color: #999;
+  padding: 24px 0;
+}
+.empty-text {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
-.attach-first-btn {
-  padding: 12px 24px;
-  font-size: 14px;
-  font-weight: 600;
-  color: white;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  margin-top: 16px;
-}
-
+/* ── Modal ── */
 .modal-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   background: rgba(0, 0, 0, 0.5);
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
+  align-items: flex-end;
   z-index: 1000;
 }
-
-.modal-content {
-  background: white;
-  border-radius: 16px;
-  padding: 24px;
+.modal-sheet {
+  background: var(--bg-elevated);
+  border-radius: 16px 16px 0 0;
   width: 100%;
-  max-width: 400px;
+  animation: slideUp 200ms ease;
 }
-
-.modal-content h2 {
-  font-size: 20px;
-  margin: 0 0 20px 0;
+@keyframes slideUp { from { transform: translateY(100%); } }
+.modal-handle {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  margin: 8px auto 4px;
 }
-
+.modal-body {
+  padding: 8px 20px 20px;
+}
+.modal-body h2 {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 4px 0 16px;
+  color: var(--text-primary);
+}
 .form-group {
-  margin-bottom: 16px;
+  margin-bottom: 10px;
 }
-
 .form-group label {
   display: block;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
-  margin-bottom: 8px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
 }
-
 .form-group input,
 .form-group select {
   width: 100%;
-  padding: 12px;
+  padding: 10px;
   font-size: 14px;
-  border: 1px solid #e0e0e0;
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  border: 1px solid transparent;
   border-radius: 8px;
   box-sizing: border-box;
 }
-
+.form-group input:focus,
+.form-group select:focus {
+  border-color: var(--brand-primary);
+  outline: none;
+}
 .modal-actions {
   display: flex;
-  gap: 12px;
-  margin-top: 24px;
+  gap: 10px;
+  margin-top: 16px;
 }
-
-.cancel-btn,
-.attach-confirm-btn {
+.btn {
   flex: 1;
-  padding: 12px;
+  padding: 10px;
   font-size: 14px;
   font-weight: 600;
   border: none;
-  border-radius: 8px;
+  border-radius: 10px;
   cursor: pointer;
 }
-
-.cancel-btn {
-  background: #f5f7fa;
-  color: #666;
-}
-
-.attach-confirm-btn {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-}
-
-.attach-confirm-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+.btn.cancel { background: var(--bg-subtle); color: var(--text-primary); }
+.btn.primary { background: var(--brand-primary); color: #fff; }
+.btn.primary:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>

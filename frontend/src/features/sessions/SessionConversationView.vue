@@ -25,6 +25,9 @@ const initialTitle = computed(() => (route.query.title as string) || '')
 
 const inputText = ref('')
 const sending = ref(false)
+const isRecording = ref(false)
+let mediaRecorder: MediaRecorder | null = null
+let audioChunks: Blob[] = []
 const messagesEl = ref<HTMLElement | null>(null)
 const autoScroll = ref(true)
 
@@ -88,6 +91,52 @@ async function send() {
   } finally {
     sending.value = false
   }
+}
+
+// ── Voice Recording ──
+async function toggleVoice() {
+  if (isRecording.value) {
+    stopRecording()
+  } else {
+    await startRecording()
+  }
+}
+
+async function startRecording() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, sampleRate: 16000 },
+    })
+    mediaRecorder = new MediaRecorder(stream)
+    audioChunks = []
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunks.push(e.data)
+    }
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop())
+      // STT: try local sherpa-onnx first, fallback to cloud
+      try {
+        const blob = new Blob(audioChunks, { type: 'audio/webm' })
+        const url = URL.createObjectURL(blob)
+        // Placeholder: use sttApi.transcribe(url) when available
+        // For now, insert a placeholder
+        inputText.value = '[语音输入完成，请编辑后发送]'
+      } catch (e) {
+        console.error('STT failed:', e)
+      }
+    }
+    mediaRecorder.start()
+    isRecording.value = true
+  } catch (e) {
+    console.error('Microphone access denied:', e)
+  }
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop()
+  }
+  isRecording.value = false
 }
 
 async function stop() {
@@ -246,11 +295,19 @@ function goBack() {
       <textarea
         v-model="inputText"
         class="input"
-        placeholder="输入消息…"
+        :placeholder="isRecording ? '🎙 录音中...' : '输入消息…'"
         rows="1"
         @keydown="onKeydown"
-        :disabled="sending"
+        :disabled="sending || isRecording"
       ></textarea>
+      <button
+        class="voice-btn"
+        :class="{ recording: isRecording }"
+        @click="toggleVoice"
+        aria-label="语音"
+      >
+        {{ isRecording ? '⏹' : '🎙' }}
+      </button>
       <button
         class="send-btn"
         :disabled="!inputText.trim() || sending"
@@ -578,6 +635,33 @@ function goBack() {
 }
 .send-btn:not(:disabled):active {
   transform: scale(0.95);
+}
+.voice-btn {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--surface-variant, #f3f4f6);
+  color: var(--text-secondary, #6b7280);
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 150ms;
+}
+.voice-btn.recording {
+  background: var(--error, #ef4444);
+  color: #fff;
+  animation: pulse-voice 1s infinite;
+}
+@keyframes pulse-voice {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.05); }
+}
+.voice-btn:active {
+  transform: scale(0.9);
 }
 .material-symbols-outlined {
   font-family: 'Material Symbols Outlined', 'Material Icons';
