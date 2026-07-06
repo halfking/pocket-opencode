@@ -4,14 +4,10 @@ const config: CapacitorConfig = {
   appId: 'com.kaixuan.opencode.pocket',
   appName: 'OpenCode Pocket',
   webDir: 'dist',
-  // 注释掉 server.url，使用本地打包的文件
-  // server: {
-  //   url: 'http://14.103.169.56:8088',
-  //   cleartext: true
-  // },
+  // 本地打包模式，通过 VITE_API_BASE 环境变量指定后端地址
   android: {
-    allowMixedContent: true, // 允许混合内容 (HTTP + HTTPS)
-    backgroundColor: '#ffffff'
+    allowMixedContent: true,
+    backgroundColor: '#ffffff',
   }
 };
 

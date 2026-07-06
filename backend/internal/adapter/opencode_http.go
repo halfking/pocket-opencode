@@ -28,8 +28,8 @@ func (a *OpenCodeHTTPAdapter) ListSessions(ctx context.Context, instanceBaseURL 
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	// 修正：实际 API 路径是 /api/session
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, instanceBaseURL+"/api/session", nil)
+	// 修正：实际 API 路径是 /session
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, instanceBaseURL+"/session", nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %w", err)
 	}
@@ -55,8 +55,8 @@ func (a *OpenCodeHTTPAdapter) GetSessionSummary(ctx context.Context, instanceBas
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	// 修正：实际 API 没有 /summarize 端点，改用 /api/session/:sessionID 获取 title
-	url := fmt.Sprintf("%s/api/session/%s", instanceBaseURL, sessionID)
+	// 修正：实际 API 没有 /summarize 端点，改用 /session/:sessionID 获取 title
+	url := fmt.Sprintf("%s/session/%s", instanceBaseURL, sessionID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("create request failed: %w", err)
@@ -86,7 +86,7 @@ func (a *OpenCodeHTTPAdapter) GetSessionSummary(ctx context.Context, instanceBas
 	return result.Data.Title, nil
 }
 
-// OpenCodeSessionInfo 映射 OpenCode /api/session 响应中的 SessionInfo。
+// OpenCodeSessionInfo 映射 OpenCode /session 响应中的 SessionInfo。
 // 基于实际源码：~/workspace/ai/opencode/packages/core/src/session/schema.ts
 // 别名 OpenCodeSessionInfo 提供给外部 package 使用。
 type OpenCodeSessionInfo struct {
@@ -122,17 +122,30 @@ type OpenCodeSessionInfo struct {
 	Subpath *string `json:"subpath,omitempty"`
 }
 
-// parseSessionList 解析 OpenCode /api/session 响应。
-// 实际响应格式：{ "data": [SessionInfo], "cursor": {...} }
+// parseSessionList 解析 OpenCode /session 响应。
+// 实际响应格式：直接是数组 [SessionInfo, ...]
 func parseSessionList(body io.Reader) ([]OpenCodeSession, error) {
-	var response struct {
-		Data []OpenCodeSessionInfo `json:"data"`
+	// 先尝试读取响应体
+	bodyBytes, err := io.ReadAll(body)
+	if err != nil {
+		return nil, fmt.Errorf("read response body failed: %w", err)
 	}
-	if err := json.NewDecoder(body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("decode sessions failed: %w", err)
+
+	// 尝试解析为数组（OpenCode 实际格式）
+	var sessionsInfo []OpenCodeSessionInfo
+	if err := json.Unmarshal(bodyBytes, &sessionsInfo); err != nil {
+		// 如果失败，尝试解析为对象格式 {"data": [...]}
+		var response struct {
+			Data []OpenCodeSessionInfo `json:"data"`
+		}
+		if err2 := json.Unmarshal(bodyBytes, &response); err2 != nil {
+			return nil, fmt.Errorf("decode sessions failed: %w (raw: %s)", err, string(bodyBytes[:min(200, len(bodyBytes))]))
+		}
+		sessionsInfo = response.Data
 	}
-	sessions := make([]OpenCodeSession, 0, len(response.Data))
-	for _, s := range response.Data {
+
+	sessions := make([]OpenCodeSession, 0, len(sessionsInfo))
+	for _, s := range sessionsInfo {
 		// 判断状态：根据最后更新时间
 		status := "idle"
 		if time.Since(time.UnixMilli(s.Time.Updated)) < 5*time.Minute {
@@ -148,7 +161,14 @@ func parseSessionList(body io.Reader) ([]OpenCodeSession, error) {
 	return sessions, nil
 }
 
-// ListRemoteTasks 从指定 OpenCode 实例的 /api/session API 获取开发会话列表，
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// ListRemoteTasks 从指定 OpenCode 实例的 /session API 获取开发会话列表，
 // 将每个 Session 映射为 RemoteTask。一个 OpenCode Session 即一个"开发任务"。
 func (a *OpenCodeHTTPAdapter) ListRemoteTasks(ctx context.Context, instanceBaseURL, status string, limit int) ([]RemoteTask, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
@@ -159,7 +179,7 @@ func (a *OpenCodeHTTPAdapter) ListRemoteTasks(ctx context.Context, instanceBaseU
 	}
 
 	// 修正：使用正确的 API 路径和查询参数
-	url := instanceBaseURL + "/api/session"
+	url := instanceBaseURL + "/session"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %w", err)
@@ -220,7 +240,7 @@ func (a *OpenCodeHTTPAdapter) GetSessionDetail(ctx context.Context, instanceBase
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/api/session/%s", instanceBaseURL, sessionID)
+	url := fmt.Sprintf("%s/session/%s", instanceBaseURL, sessionID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %w", err)
@@ -247,13 +267,13 @@ func (a *OpenCodeHTTPAdapter) GetSessionDetail(ctx context.Context, instanceBase
 }
 
 // CreateSession 创建新会话
-// API: POST /api/session
+// API: POST /session
 // Payload: { id?, agent?, model?, location? }
 func (a *OpenCodeHTTPAdapter) CreateSession(ctx context.Context, instanceBaseURL string, payload *CreateSessionRequest) (*OpenCodeSessionInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := instanceBaseURL + "/api/session"
+	url := instanceBaseURL + "/session"
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload failed: %w", err)
@@ -286,13 +306,13 @@ func (a *OpenCodeHTTPAdapter) CreateSession(ctx context.Context, instanceBaseURL
 }
 
 // SendPrompt 发送 Prompt 到指定会话
-// API: POST /api/session/:sessionID/prompt
+// API: POST /session/:sessionID/prompt
 // Payload: { id?, prompt, delivery?, resume? }
 func (a *OpenCodeHTTPAdapter) SendPrompt(ctx context.Context, instanceBaseURL, sessionID string, payload *SendPromptRequest) (*SendPromptResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/api/session/%s/prompt", instanceBaseURL, sessionID)
+	url := fmt.Sprintf("%s/session/%s/prompt", instanceBaseURL, sessionID)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload failed: %w", err)
@@ -348,12 +368,12 @@ type MessageCursor struct {
 }
 
 // GetSessionMessages 获取会话消息（完整版，支持游标分页）
-// API: GET /api/session/:sessionID/message?limit=&order=&cursor=
+// API: GET /session/:sessionID/message?limit=&order=&cursor=
 func (a *OpenCodeHTTPAdapter) GetSessionMessages(ctx context.Context, instanceBaseURL, sessionID string, limit int, order string, cursor string) (*SessionMessagesResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/api/session/%s/message", instanceBaseURL, sessionID)
+	url := fmt.Sprintf("%s/session/%s/message", instanceBaseURL, sessionID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %w", err)
@@ -390,12 +410,12 @@ func (a *OpenCodeHTTPAdapter) GetSessionMessages(ctx context.Context, instanceBa
 }
 
 // GetSessionContext 获取会话上下文（最后压缩点之后的所有消息）
-// API: GET /api/session/:sessionID/context
+// API: GET /session/:sessionID/context
 func (a *OpenCodeHTTPAdapter) GetSessionContext(ctx context.Context, instanceBaseURL, sessionID string) ([]OpenCodeMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/api/session/%s/context", instanceBaseURL, sessionID)
+	url := fmt.Sprintf("%s/session/%s/context", instanceBaseURL, sessionID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %w", err)
@@ -422,12 +442,12 @@ func (a *OpenCodeHTTPAdapter) GetSessionContext(ctx context.Context, instanceBas
 }
 
 // InterruptSession 中断 session 当前的 agent 循环
-// API: POST /api/session/:sessionID/interrupt (V2)
+// API: POST /session/:sessionID/interrupt (V2)
 func (a *OpenCodeHTTPAdapter) InterruptSession(ctx context.Context, instanceBaseURL, sessionID string) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/api/session/%s/interrupt", instanceBaseURL, sessionID)
+	url := fmt.Sprintf("%s/session/%s/interrupt", instanceBaseURL, sessionID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return fmt.Errorf("create interrupt request failed: %w", err)
@@ -446,6 +466,30 @@ func (a *OpenCodeHTTPAdapter) InterruptSession(ctx context.Context, instanceBase
 	return nil
 }
 
+// DeleteSession 删除指定的 session
+// API: DELETE /session/:sessionID (Phase 2.1 新增)
+func (a *OpenCodeHTTPAdapter) DeleteSession(ctx context.Context, instanceBaseURL, sessionID string) error {
+	ctx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
+
+	url := fmt.Sprintf("%s/session/%s", instanceBaseURL, sessionID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return fmt.Errorf("create delete request failed: %w", err)
+	}
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("opencode delete session request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("opencode delete session returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // GetMessages 拉取 session 历史消息（用于 SSE 断线后回填）
 func (a *OpenCodeHTTPAdapter) GetMessages(ctx context.Context, instanceBaseURL, sessionID string, limit int, order string) ([]OpenCodeMessage, error) {
 	resp, err := a.GetSessionMessages(ctx, instanceBaseURL, sessionID, limit, order, "")
@@ -456,12 +500,12 @@ func (a *OpenCodeHTTPAdapter) GetMessages(ctx context.Context, instanceBaseURL, 
 }
 
 // CompactSession 压缩会话
-// API: POST /api/session/:sessionID/compact
+// API: POST /session/:sessionID/compact
 func (a *OpenCodeHTTPAdapter) CompactSession(ctx context.Context, instanceBaseURL, sessionID string) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/api/session/%s/compact", instanceBaseURL, sessionID)
+	url := fmt.Sprintf("%s/session/%s/compact", instanceBaseURL, sessionID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return fmt.Errorf("create request failed: %w", err)
@@ -481,12 +525,12 @@ func (a *OpenCodeHTTPAdapter) CompactSession(ctx context.Context, instanceBaseUR
 }
 
 // WaitForSessionIdle 等待会话代理循环变为空闲
-// API: POST /api/session/:sessionID/wait
+// API: POST /session/:sessionID/wait
 func (a *OpenCodeHTTPAdapter) WaitForSessionIdle(ctx context.Context, instanceBaseURL, sessionID string) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/api/session/%s/wait", instanceBaseURL, sessionID)
+	url := fmt.Sprintf("%s/session/%s/wait", instanceBaseURL, sessionID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return fmt.Errorf("create request failed: %w", err)
@@ -580,13 +624,13 @@ type PermissionReplyRequest struct {
 }
 
 // GetPermissionRequests 获取会话的待审批权限请求列表
-// API: GET /api/session/:sessionID/permission
+// API: GET /session/:sessionID/permission
 // 响应: { data: PermissionRequest[] }
 func (a *OpenCodeHTTPAdapter) GetPermissionRequests(ctx context.Context, instanceBaseURL, sessionID string) ([]PermissionRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/api/session/%s/permission", instanceBaseURL, sessionID)
+	url := fmt.Sprintf("%s/session/%s/permission", instanceBaseURL, sessionID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create permission list request failed: %w", err)
@@ -657,14 +701,14 @@ func (a *OpenCodeHTTPAdapter) GetAllPendingPermissionRequests(ctx context.Contex
 }
 
 // ReplyPermission 回复权限请求
-// API: POST /api/session/:sessionID/permission/:requestID/reply
+// API: POST /session/:sessionID/permission/:requestID/reply
 // Payload: { reply: "once"|"always"|"reject", message?: string }
 // 响应: 204 No Content
 func (a *OpenCodeHTTPAdapter) ReplyPermission(ctx context.Context, instanceBaseURL, sessionID, requestID string, reply PermissionReply, message string) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/api/session/%s/permission/%s/reply", instanceBaseURL, sessionID, requestID)
+	url := fmt.Sprintf("%s/session/%s/permission/%s/reply", instanceBaseURL, sessionID, requestID)
 	payload := PermissionReplyRequest{Reply: reply, Message: message}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -736,13 +780,13 @@ type QuestionReplyRequest struct {
 }
 
 // GetQuestionRequests 获取会话的待回答问题列表
-// API: GET /api/session/:sessionID/question
+// API: GET /session/:sessionID/question
 // 响应: { data: QuestionRequest[] }
 func (a *OpenCodeHTTPAdapter) GetQuestionRequests(ctx context.Context, instanceBaseURL, sessionID string) ([]QuestionRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/api/session/%s/question", instanceBaseURL, sessionID)
+	url := fmt.Sprintf("%s/session/%s/question", instanceBaseURL, sessionID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create question list request failed: %w", err)
@@ -812,14 +856,14 @@ func (a *OpenCodeHTTPAdapter) GetAllPendingQuestionRequests(ctx context.Context,
 }
 
 // ReplyQuestion 回答问题
-// API: POST /api/session/:sessionID/question/:requestID/reply
+// API: POST /session/:sessionID/question/:requestID/reply
 // Payload: { answers: [[label1, label2], [label3], ...] } —— 每个问题对应一个答案数组
 // 响应: 204 No Content
 func (a *OpenCodeHTTPAdapter) ReplyQuestion(ctx context.Context, instanceBaseURL, sessionID, requestID string, answers []QuestionAnswer) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/api/session/%s/question/%s/reply", instanceBaseURL, sessionID, requestID)
+	url := fmt.Sprintf("%s/session/%s/question/%s/reply", instanceBaseURL, sessionID, requestID)
 	payload := QuestionReplyRequest{Answers: answers}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -847,13 +891,13 @@ func (a *OpenCodeHTTPAdapter) ReplyQuestion(ctx context.Context, instanceBaseURL
 }
 
 // RejectQuestion 拒绝回答问题
-// API: POST /api/session/:sessionID/question/:requestID/reject
+// API: POST /session/:sessionID/question/:requestID/reject
 // 响应: 204 No Content
 func (a *OpenCodeHTTPAdapter) RejectQuestion(ctx context.Context, instanceBaseURL, sessionID, requestID string) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/api/session/%s/question/%s/reject", instanceBaseURL, sessionID, requestID)
+	url := fmt.Sprintf("%s/session/%s/question/%s/reject", instanceBaseURL, sessionID, requestID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return fmt.Errorf("create reject request failed: %w", err)

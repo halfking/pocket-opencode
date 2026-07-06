@@ -14,15 +14,17 @@ import (
 // QuestionManager orchestrates the question-request lifecycle for the mobile
 // admin UI:
 //
-//  1. Periodically polls each instance for pending question requests
-//     (GET /api/session/:sessionID/question)
-//  2. Caches pending requests in memory
-//  3. Emits QuestionEvent values to subscribers
-//  4. Forwards user answers (or rejections) to OpenCode
+//  1. Subscribes to EventStreamManager for real-time question events
+//     (question.asked, question.answered) - Phase 1.3 优化
+//  2. Falls back to periodic polling for instances without event stream
+//  3. Caches pending requests in memory
+//  4. Emits QuestionEvent values to subscribers
+//  5. Forwards user answers (or rejections) to OpenCode
 //     (POST /api/session/:sessionID/question/:requestID/{reply,reject})
 type QuestionManager struct {
-	registry *registry.Registry
-	adapter  adapter.OpenCodeAdapter
+	registry    *registry.Registry
+	adapter     adapter.OpenCodeAdapter
+	eventStream *EventStreamManager // Phase 1.3: 事件驱动
 
 	mu      sync.RWMutex
 	pending map[string]*pendingQuestion
@@ -62,7 +64,8 @@ type QuestionManagerOptions struct {
 }
 
 // NewQuestionManager creates a new question manager.
-func NewQuestionManager(reg *registry.Registry, ad adapter.OpenCodeAdapter, opts QuestionManagerOptions) *QuestionManager {
+// Phase 1.3: eventStream 参数支持事件驱动模式（可选，为 nil 时降级为轮询）
+func NewQuestionManager(reg *registry.Registry, ad adapter.OpenCodeAdapter, opts QuestionManagerOptions, eventStream *EventStreamManager) *QuestionManager {
 	interval := opts.PollInterval
 	if interval <= 0 {
 		interval = 3 * time.Second
@@ -70,6 +73,7 @@ func NewQuestionManager(reg *registry.Registry, ad adapter.OpenCodeAdapter, opts
 	return &QuestionManager{
 		registry:     reg,
 		adapter:      ad,
+		eventStream:  eventStream,
 		pending:      make(map[string]*pendingQuestion),
 		subs:         make(map[uint64]chan QuestionEvent),
 		closeCh:      make(chan struct{}),
@@ -98,8 +102,205 @@ func (m *QuestionManager) Subscribe(bufferSize int) (<-chan QuestionEvent, func(
 	}
 }
 
-// Start begins polling all known instances for question requests.
+// Start begins processing question requests.
+// Phase 1.3: 优先使用事件驱动模式，降级为轮询模式。
 func (m *QuestionManager) Start(ctx context.Context) {
+	// Phase 1.3: 如果有 EventStreamManager，使用事件驱动模式
+	if m.eventStream != nil {
+		m.startEventDriven(ctx)
+		return
+	}
+	// 降级：轮询模式
+	m.startPolling(ctx)
+}
+
+// startEventDriven 事件驱动模式 - 实时响应问题事件
+func (m *QuestionManager) startEventDriven(ctx context.Context) {
+	log.Println("[question-mgr] starting in event-driven mode")
+
+	// 订阅所有实例的事件
+	instances := m.registry.ListInstances()
+	for _, inst := range instances {
+		if inst.Health != "healthy" {
+			continue
+		}
+		go m.subscribeInstanceEvents(ctx, inst.ID)
+	}
+
+	// 保留低频轮询作为兜底（30秒间隔）
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.closeCh:
+			return
+		case <-ticker.C:
+			// 兜底轮询：检查是否有遗漏的问题请求
+			m.pollAllInstances(ctx)
+		}
+	}
+}
+
+// subscribeInstanceEvents 订阅单个实例的问题事件
+func (m *QuestionManager) subscribeInstanceEvents(ctx context.Context, instanceID string) {
+	events, cleanup, err := m.eventStream.Subscribe(ctx, SubscribeOptions{
+		InstanceID: instanceID,
+		BufferSize: 64,
+	})
+	if err != nil {
+		log.Printf("[question-mgr] subscribe instance=%s failed: %v, falling back to polling", instanceID, err)
+		return
+	}
+	defer cleanup()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.closeCh:
+			return
+		case evt, ok := <-events:
+			if !ok {
+				return
+			}
+			m.handleQuestionEvent(evt)
+		}
+	}
+}
+
+// handleQuestionEvent 处理问题相关事件
+func (m *QuestionManager) handleQuestionEvent(evt DomainEvent) {
+	sessionID := evt.SessionID
+
+	switch evt.Type {
+	case "question.asked":
+		// 新问题请求
+		if data, ok := evt.Raw.Data.(map[string]any); ok {
+			m.handleNewQuestionFromEvent(evt.InstanceID, sessionID, data)
+		}
+
+	case "question.answered", "question.rejected":
+		// 问题已回答/拒绝
+		if data, ok := evt.Raw.Data.(map[string]any); ok {
+			m.handleResolvedQuestionFromEvent(evt.InstanceID, sessionID, data)
+		}
+	}
+}
+
+// handleNewQuestionFromEvent 从事件中处理新问题请求
+func (m *QuestionManager) handleNewQuestionFromEvent(instanceID, sessionID string, data map[string]any) {
+	requestID, _ := data["id"].(string)
+	if requestID == "" {
+		requestID, _ = data["requestID"].(string)
+	}
+	if requestID == "" {
+		return
+	}
+
+	key := permissionKey(instanceID, sessionID, requestID)
+	now := time.Now()
+
+	m.mu.Lock()
+	existing, ok := m.pending[key]
+	if ok {
+		existing.LastSeenAt = now
+		m.mu.Unlock()
+		return
+	}
+
+	// 构建 QuestionRequest
+	req := adapter.QuestionRequest{
+		ID:        requestID,
+		SessionID: sessionID,
+	}
+	// 从事件数据构建 Questions 数组
+	if questions, ok := data["questions"].([]interface{}); ok {
+		for _, q := range questions {
+			if qMap, ok := q.(map[string]interface{}); ok {
+				info := adapter.QuestionInfo{}
+				if question, ok := qMap["question"].(string); ok {
+					info.Question = question
+				}
+				if header, ok := qMap["header"].(string); ok {
+					info.Header = header
+				}
+				if options, ok := qMap["options"].([]interface{}); ok {
+					for _, opt := range options {
+						if optMap, ok := opt.(map[string]interface{}); ok {
+							optInfo := adapter.QuestionOption{}
+							if label, ok := optMap["label"].(string); ok {
+								optInfo.Label = label
+							}
+							if desc, ok := optMap["description"].(string); ok {
+								optInfo.Description = desc
+							}
+							info.Options = append(info.Options, optInfo)
+						}
+					}
+				}
+				req.Questions = append(req.Questions, info)
+			}
+		}
+	}
+
+	m.pending[key] = &pendingQuestion{
+		InstanceID:  instanceID,
+		SessionID:   sessionID,
+		Request:     req,
+		FirstSeenAt: now,
+		LastSeenAt:  now,
+	}
+	m.mu.Unlock()
+
+	log.Printf("[question-mgr] new question from event: instance=%s session=%s request=%s", instanceID, sessionID, requestID)
+
+	m.publish(QuestionEvent{
+		Type:       "new",
+		InstanceID: instanceID,
+		SessionID:  sessionID,
+		RequestID:  requestID,
+		Request:    &req,
+		Timestamp:  now,
+	})
+}
+
+// handleResolvedQuestionFromEvent 从事件中处理已解决的问题
+func (m *QuestionManager) handleResolvedQuestionFromEvent(instanceID, sessionID string, data map[string]any) {
+	requestID, _ := data["id"].(string)
+	if requestID == "" {
+		requestID, _ = data["requestID"].(string)
+	}
+	if requestID == "" {
+		return
+	}
+
+	key := permissionKey(instanceID, sessionID, requestID)
+
+	m.mu.Lock()
+	q, ok := m.pending[key]
+	if ok {
+		delete(m.pending, key)
+	}
+	m.mu.Unlock()
+
+	if ok && q != nil {
+		log.Printf("[question-mgr] resolved question from event: instance=%s session=%s request=%s", instanceID, sessionID, requestID)
+		m.publish(QuestionEvent{
+			Type:       "resolved",
+			InstanceID: instanceID,
+			SessionID:  sessionID,
+			RequestID:  requestID,
+			Timestamp:  time.Now(),
+		})
+	}
+}
+
+// startPolling 轮询模式 - 兼容无 EventStreamManager 的场景
+func (m *QuestionManager) startPolling(ctx context.Context) {
+	log.Println("[question-mgr] starting in polling mode")
 	ticker := time.NewTicker(m.pollInterval)
 	defer ticker.Stop()
 

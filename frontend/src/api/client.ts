@@ -12,6 +12,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || ""
  */
 async function authFetch(input: string, init: RequestInit = {}): Promise<Response> {
   const auth = useAuthStore()
+  console.log('🌐 authFetch:', init.method || 'GET', input.slice(0, 80))
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(init.headers as Record<string, string> | undefined),

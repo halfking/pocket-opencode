@@ -250,8 +250,8 @@ if pool != nil {
 	// noopHistoryStore 是 HistoryStore 的零开销实现——真实持久化交给 OpenCode 自身（server-side SQLite）。
 	ocMgr := opencode.NewManager(reg, opencodeAdapter, noopHistoryStore{})
 	eventMgr := opencode.NewEventStreamManager(reg, opencodeAdapter)
-	permMgr := opencode.NewPermissionManager(reg, opencodeAdapter, opencode.PermissionManagerOptions{PollInterval: 3 * time.Second})
-	quesMgr := opencode.NewQuestionManager(reg, opencodeAdapter, opencode.QuestionManagerOptions{PollInterval: 3 * time.Second})
+	permMgr := opencode.NewPermissionManager(reg, opencodeAdapter, opencode.PermissionManagerOptions{PollInterval: 3 * time.Second}, eventMgr) // Phase 1.2: 传入 eventStream
+	quesMgr := opencode.NewQuestionManager(reg, opencodeAdapter, opencode.QuestionManagerOptions{PollInterval: 3 * time.Second}, eventMgr) // Phase 1.3: 传入 eventStream
 
 	// 启动后台循环
 	mgrCtx, mgrCancel := context.WithCancel(context.Background())

@@ -150,16 +150,20 @@ async function loadSessions() {
   error.value = ''
   
   try {
-    const data = await api.getAllSessions(
-      selectedInstanceId.value || undefined,
-      limit.value,
-      offset.value
-    )
-    sessions.value = data.sessions || []
+    const instId = selectedInstanceId.value || undefined
+    console.log('📡 加载会话列表, instanceId:', instId)
+    const data = await api.getAllSessions(instId, limit.value, offset.value)
+    // API 返回大写字段 (ID, Title, Status)，映射为小写
+    sessions.value = (data.sessions || []).map((s: any) => ({
+      id: s.id || s.ID || '',
+      title: s.title || s.Title || '',
+      status: s.status || s.Status || 'idle',
+    }))
     total.value = data.total || 0
+    console.log('✅ 加载到', sessions.value.length, '个会话')
   } catch (err: any) {
     error.value = err.message || '加载会话失败'
-    console.error('Failed to load sessions:', err)
+    console.error('❌ 加载会话失败:', err.message)
   } finally {
     loading.value = false
   }

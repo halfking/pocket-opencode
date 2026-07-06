@@ -49,6 +49,7 @@ type Server struct {
 	registry      *registry.Registry
 	configAdapter adapter.OpenCodeConfigAdapter
 	wsHub         *ws.Hub
+	pluginHub     *ws.PluginHub // Plugin/Manager WebSocket Hub
 	upgrader      websocket.Upgrader
 	// Phase 0: 个人助理模块 store 与依赖
 	notesStore  *notes.Store
@@ -91,6 +92,10 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 	hub := ws.NewHub()
 	go hub.Run()
 
+	// Initialize Plugin Hub
+	pluginHub := ws.NewPluginHub()
+	go pluginHub.Run()
+
 	return &Server{
 		cfg:             cfg,
 		nps:             nps,
@@ -99,6 +104,7 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 		registry:        reg,
 		configAdapter:   configAdapter,
 		wsHub:           hub,
+		pluginHub:       pluginHub,
 		notesStore:      notesStore,
 		emailStore:      emailStore,
 		vaultStore:      vaultStore,
@@ -194,6 +200,11 @@ func (s *Server) Handler() http.Handler {
 	// SSE / Prompt / Interrupt / Messages / Create — 转发到 OpenCode 上游
 	mux.HandleFunc("/api/mobile/sessions", s.requireAuth(s.handleMobileSessionRouter))
 	mux.HandleFunc("/api/mobile/sessions/", s.requireAuth(s.handleMobileSessionRouter))
+
+	// Plugin/Manager WebSocket routes
+	mux.HandleFunc("/plugin/ws", s.handlePluginWebSocket)
+	mux.HandleFunc("/api/plugin/status", s.handlePluginStatus)
+	mux.HandleFunc("/api/plugin/command", s.requireAuth(s.handleSendCommand))
 
 	return corsMiddleware(mux)
 }

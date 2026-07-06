@@ -53,6 +53,8 @@ type OpenCodeAdapter interface {
 	SendPrompt(ctx context.Context, instanceBaseURL, sessionID string, payload *SendPromptRequest) (*SendPromptResponse, error)
 	// InterruptSession 中断 session 当前的 agent 循环。
 	InterruptSession(ctx context.Context, instanceBaseURL, sessionID string) error
+	// DeleteSession 删除指定的 session。Phase 2.1 新增。
+	DeleteSession(ctx context.Context, instanceBaseURL, sessionID string) error
 	// SubscribeEvents 订阅 OpenCode 上游 SSE 事件流。
 	// 返回的 channel 在 ctx cancel 或 cleanup 调用后关闭。
 	SubscribeEvents(ctx context.Context, instanceBaseURL, directory, workspaceID string) (<-chan OpenCodeEvent, func(), error)

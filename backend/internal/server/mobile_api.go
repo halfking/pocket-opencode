@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -81,7 +82,9 @@ func (api *MobileAPI) RegisterRoutes(e *echo.Group) {
 
 	// Session endpoints
 	mobile.GET("/sessions", api.ListSessions)
+	mobile.GET("/sessions/search", api.SearchSessions) // Phase 2.2: 搜索会话
 	mobile.GET("/sessions/:id", api.GetSession)
+	mobile.GET("/sessions/:id/summary", api.GetSessionSummary) // Phase 2.3: 会话摘要
 	mobile.GET("/sessions/:id/messages", api.GetMessages)
 	mobile.POST("/sessions/:id/prompt", api.SendPrompt)
 
@@ -168,6 +171,56 @@ func (api *MobileAPI) ListSessions(c echo.Context) error {
 	})
 }
 
+// SearchSessions searches sessions by keyword.
+// Query params:
+//   - q: search keyword (required)
+//   - limit: number of results (default 20)
+// Phase 2.2: 搜索会话功能
+func (api *MobileAPI) SearchSessions(c echo.Context) error {
+	query := c.QueryParam("q")
+	if query == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "missing search query 'q'")
+	}
+
+	limit, _ := strconv.Atoi(c.QueryParam("limit"))
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	// 获取所有会话
+	sessions, err := api.httpAdapter.ListSessions(c.Request().Context(), "")
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+
+	// 搜索匹配的会话
+	results := make([]MobileSessionListItem, 0)
+	queryLower := toLowerCase(query)
+
+	for _, s := range sessions {
+		if len(results) >= limit {
+			break
+		}
+
+		// 匹配标题或ID
+		if containsIgnoreCase(s.Title, queryLower) || containsIgnoreCase(s.ID, queryLower) {
+			item := MobileSessionListItem{
+				ID:        s.ID,
+				Title:     s.Title,
+				Status:    determineStatus(s),
+				UpdatedAt: time.Now(),
+			}
+			results = append(results, item)
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"data":  results,
+		"query": query,
+		"total": len(results),
+	})
+}
+
 // GetSession returns session details.
 func (api *MobileAPI) GetSession(c echo.Context) error {
 	sessionID := c.Param("id")
@@ -180,6 +233,79 @@ func (api *MobileAPI) GetSession(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"data": summary,
 	})
+}
+
+// GetSessionSummary returns a summary of the session.
+// Phase 2.3: 会话摘要生成功能
+func (api *MobileAPI) GetSessionSummary(c echo.Context) error {
+	sessionID := c.Param("id")
+
+	// 获取会话标题作为基础摘要
+	title, err := api.httpAdapter.GetSessionSummary(c.Request().Context(), "", sessionID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+
+	// 获取消息历史用于生成详细摘要
+	messages, err := api.httpAdapter.GetMessages(c.Request().Context(), "", sessionID, 20, "desc")
+	if err != nil {
+		// 如果获取消息失败，返回标题作为摘要
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"data": map[string]interface{}{
+				"sessionID": sessionID,
+				"title":     title,
+				"summary":   title,
+				"messageCount": 0,
+			},
+		})
+	}
+
+	// 生成摘要：统计消息类型和提取关键信息
+	summary := generateSummary(title, messages)
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"data": map[string]interface{}{
+			"sessionID":    sessionID,
+			"title":        title,
+			"summary":      summary,
+			"messageCount": len(messages),
+		},
+	})
+}
+
+// generateSummary 从消息历史生成会话摘要
+func generateSummary(title string, messages []adapter.OpenCodeMessage) string {
+	if len(messages) == 0 {
+		return title
+	}
+
+	// 统计消息类型
+	userCount := 0
+	assistantCount := 0
+	toolCount := 0
+
+	for _, msg := range messages {
+		switch msg.Type {
+		case "user":
+			userCount++
+		case "assistant":
+			assistantCount++
+		case "tool":
+			toolCount++
+		}
+	}
+
+	// 构建摘要
+	summary := title
+	if userCount > 0 || assistantCount > 0 {
+		summary += fmt.Sprintf(" (用户消息: %d, AI回复: %d", userCount, assistantCount)
+		if toolCount > 0 {
+			summary += fmt.Sprintf(", 工具调用: %d", toolCount)
+		}
+		summary += ")"
+	}
+
+	return summary
 }
 
 // GetMessages returns messages for a session.
@@ -434,14 +560,50 @@ func convertToMobileMessage(msg interface{}) MobileMessage {
 	if !ok {
 		return MobileMessage{}
 	}
-	
+
 	id, _ := msgMap["id"].(string)
 	msgType, _ := msgMap["type"].(string)
-	
+
 	return MobileMessage{
 		ID:        id,
 		Type:      msgType,
 		Text:      "",
 		Timestamp: time.Now().Unix(),
 	}
+}
+
+// Phase 2.2: 搜索辅助函数
+
+func toLowerCase(s string) string {
+	result := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c = c + 32
+		}
+		result[i] = c
+	}
+	return string(result)
+}
+
+func containsIgnoreCase(s, substr string) bool {
+	if substr == "" {
+		return true
+	}
+	sLower := toLowerCase(s)
+	substrLower := toLowerCase(substr)
+	return contains(sLower, substrLower)
+}
+
+func contains(s, substr string) bool {
+	return len(substr) <= len(s) && (substr == "" || searchString(s, substr))
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

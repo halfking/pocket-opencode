@@ -28,18 +28,20 @@ type QuestionCaller interface {
 // PermissionManager orchestrates the permission-request lifecycle for the
 // mobile admin UI:
 //
-//  1. Periodically polls each instance for pending permission requests
-//     (GET /api/session/:sessionID/permission)
-//  2. Caches pending requests in memory so the UI can list them quickly
-//  3. Emits PermissionEvent values to subscribers whenever a new request
+//  1. Subscribes to EventStreamManager for real-time permission events
+//     (permission.requested, permission.resolved) - Phase 1.2 优化
+//  2. Falls back to periodic polling for instances without event stream
+//  3. Caches pending requests in memory so the UI can list them quickly
+//  4. Emits PermissionEvent values to subscribers whenever a new request
 //     arrives or the state changes
-//  4. Forwards user replies (once/always/reject) to OpenCode
+//  5. Forwards user replies (once/always/reject) to OpenCode
 //     (POST /api/session/:sessionID/permission/:requestID/reply)
 //
 // The QuestionManager below uses the same pattern for question requests.
 type PermissionManager struct {
-	registry *registry.Registry
-	adapter  adapter.OpenCodeAdapter
+	registry    *registry.Registry
+	adapter     adapter.OpenCodeAdapter
+	eventStream *EventStreamManager // Phase 1.2: 事件驱动
 
 	mu      sync.RWMutex
 	pending map[string]*pendingPermission // key: instanceID + ":" + sessionID + ":" + requestID
@@ -82,7 +84,8 @@ type PermissionManagerOptions struct {
 }
 
 // NewPermissionManager creates a new permission manager.
-func NewPermissionManager(reg *registry.Registry, ad adapter.OpenCodeAdapter, opts PermissionManagerOptions) *PermissionManager {
+// Phase 1.2: eventStream 参数支持事件驱动模式（可选，为 nil 时降级为轮询）
+func NewPermissionManager(reg *registry.Registry, ad adapter.OpenCodeAdapter, opts PermissionManagerOptions, eventStream *EventStreamManager) *PermissionManager {
 	interval := opts.PollInterval
 	if interval <= 0 {
 		interval = 3 * time.Second
@@ -90,6 +93,7 @@ func NewPermissionManager(reg *registry.Registry, ad adapter.OpenCodeAdapter, op
 	return &PermissionManager{
 		registry:     reg,
 		adapter:      ad,
+		eventStream:  eventStream,
 		pending:      make(map[string]*pendingPermission),
 		subs:         make(map[uint64]chan PermissionEvent),
 		closeCh:      make(chan struct{}),
@@ -119,9 +123,189 @@ func (m *PermissionManager) Subscribe(bufferSize int) (<-chan PermissionEvent, f
 	}
 }
 
-// Start begins polling all known instances for permission requests.
+// Start begins processing permission requests.
+// Phase 1.2: 优先使用事件驱动模式，降级为轮询模式。
 // Blocks until ctx is cancelled or Close is called.
 func (m *PermissionManager) Start(ctx context.Context) {
+	// Phase 1.2: 如果有 EventStreamManager，使用事件驱动模式
+	if m.eventStream != nil {
+		m.startEventDriven(ctx)
+		return
+	}
+	// 降级：轮询模式
+	m.startPolling(ctx)
+}
+
+// startEventDriven 事件驱动模式 - 实时响应权限事件
+func (m *PermissionManager) startEventDriven(ctx context.Context) {
+	log.Println("[permission-mgr] starting in event-driven mode")
+
+	// 订阅所有实例的事件
+	instances := m.registry.ListInstances()
+	for _, inst := range instances {
+		if inst.Health != "healthy" {
+			continue
+		}
+		go m.subscribeInstanceEvents(ctx, inst.ID)
+	}
+
+	// 保留低频轮询作为兜底（30秒间隔）
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.closeCh:
+			return
+		case <-ticker.C:
+			// 兜底轮询：检查是否有遗漏的权限请求
+			m.pollAllInstances(ctx)
+		}
+	}
+}
+
+// subscribeInstanceEvents 订阅单个实例的权限事件
+func (m *PermissionManager) subscribeInstanceEvents(ctx context.Context, instanceID string) {
+	events, cleanup, err := m.eventStream.Subscribe(ctx, SubscribeOptions{
+		InstanceID: instanceID,
+		BufferSize: 64,
+	})
+	if err != nil {
+		log.Printf("[permission-mgr] subscribe instance=%s failed: %v, falling back to polling", instanceID, err)
+		return
+	}
+	defer cleanup()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.closeCh:
+			return
+		case evt, ok := <-events:
+			if !ok {
+				return
+			}
+			m.handlePermissionEvent(evt)
+		}
+	}
+}
+
+// handlePermissionEvent 处理权限相关事件
+func (m *PermissionManager) handlePermissionEvent(evt DomainEvent) {
+	// 提取 sessionID
+	sessionID := evt.SessionID
+
+	switch evt.Type {
+	case "permission.requested":
+		// 新权限请求
+		if data, ok := evt.Raw.Data.(map[string]any); ok {
+			m.handleNewPermissionFromEvent(evt.InstanceID, sessionID, data)
+		}
+
+	case "permission.resolved", "permission.revoked":
+		// 权限已解决
+		if data, ok := evt.Raw.Data.(map[string]any); ok {
+			m.handleResolvedPermissionFromEvent(evt.InstanceID, sessionID, data)
+		}
+	}
+}
+
+// handleNewPermissionFromEvent 从事件中处理新权限请求
+func (m *PermissionManager) handleNewPermissionFromEvent(instanceID, sessionID string, data map[string]any) {
+	// 提取请求 ID
+	requestID, _ := data["id"].(string)
+	if requestID == "" {
+		requestID, _ = data["requestID"].(string)
+	}
+	if requestID == "" {
+		return
+	}
+
+	key := permissionKey(instanceID, sessionID, requestID)
+	now := time.Now()
+
+	m.mu.Lock()
+	existing, ok := m.pending[key]
+	if ok {
+		existing.LastSeenAt = now
+		m.mu.Unlock()
+		return
+	}
+
+	// 构建 PermissionRequest
+	req := adapter.PermissionRequest{
+		ID:        requestID,
+		SessionID: sessionID,
+	}
+	if action, ok := data["action"].(string); ok {
+		req.Action = action
+	}
+	if resources, ok := data["resources"].([]interface{}); ok {
+		for _, r := range resources {
+			if s, ok := r.(string); ok {
+				req.Resources = append(req.Resources, s)
+			}
+		}
+	}
+
+	m.pending[key] = &pendingPermission{
+		InstanceID:  instanceID,
+		SessionID:   sessionID,
+		Request:     req,
+		FirstSeenAt: now,
+		LastSeenAt:  now,
+	}
+	m.mu.Unlock()
+
+	log.Printf("[permission-mgr] new permission from event: instance=%s session=%s request=%s", instanceID, sessionID, requestID)
+
+	m.publish(PermissionEvent{
+		Type:       "new",
+		InstanceID: instanceID,
+		SessionID:  sessionID,
+		RequestID:  requestID,
+		Request:    &req,
+		Timestamp:  now,
+	})
+}
+
+// handleResolvedPermissionFromEvent 从事件中处理已解决的权限
+func (m *PermissionManager) handleResolvedPermissionFromEvent(instanceID, sessionID string, data map[string]any) {
+	requestID, _ := data["id"].(string)
+	if requestID == "" {
+		requestID, _ = data["requestID"].(string)
+	}
+	if requestID == "" {
+		return
+	}
+
+	key := permissionKey(instanceID, sessionID, requestID)
+
+	m.mu.Lock()
+	p, ok := m.pending[key]
+	if ok {
+		delete(m.pending, key)
+	}
+	m.mu.Unlock()
+
+	if ok && p != nil {
+		log.Printf("[permission-mgr] resolved permission from event: instance=%s session=%s request=%s", instanceID, sessionID, requestID)
+		m.publish(PermissionEvent{
+			Type:       "resolved",
+			InstanceID: instanceID,
+			SessionID:  sessionID,
+			RequestID:  requestID,
+			Timestamp:  time.Now(),
+		})
+	}
+}
+
+// startPolling 轮询模式 - 兼容无 EventStreamManager 的场景
+func (m *PermissionManager) startPolling(ctx context.Context) {
+	log.Println("[permission-mgr] starting in polling mode")
 	ticker := time.NewTicker(m.pollInterval)
 	defer ticker.Stop()
 

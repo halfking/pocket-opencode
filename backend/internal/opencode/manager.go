@@ -27,6 +27,8 @@ type SessionCache struct {
 	byInstance  map[string][]string       // key: instanceID, value: sessionIDs
 	cachedAt    map[string]time.Time      // key: instanceID, value: 缓存时间（用于 TTL 校验）
 	lastSeenEvt map[string]time.Time      // key: sessionID, value: 最近一次事件时间（用于 active/idle 推断）
+	// Phase 1.4: 精确状态跟踪
+	activeSteps map[string]int // key: sessionID, value: 进行中的步骤数
 }
 
 // CachedSession 缓存的会话信息
@@ -99,6 +101,7 @@ func newSessionCache() *SessionCache {
 		byInstance:  make(map[string][]string),
 		cachedAt:    make(map[string]time.Time),
 		lastSeenEvt: make(map[string]time.Time),
+		activeSteps: make(map[string]int), // Phase 1.4
 	}
 }
 
@@ -229,8 +232,7 @@ func (m *Manager) SubscribeStatusUpdates() <-chan StatusUpdate {
 }
 
 // OnSessionEvent 由 EventStreamManager 在收到事件时调用。
-// 用于更新每个 session 的最近事件时间，并据此推断 active/idle。
-// 这一替换了原"轮询 /session/status"的设计——该接口在 OpenCode 上游并不存在。
+// Phase 1.4: 优化状态推断算法 - 基于步骤计数而非时间窗口。
 func (m *Manager) OnSessionEvent(sessionID, eventType string) {
 	if sessionID == "" {
 		return
@@ -245,35 +247,109 @@ func (m *Manager) OnSessionEvent(sessionID, eventType string) {
 	switch eventType {
 	case "session.next.prompted",
 		"session.next.prompt.admitted",
-		"session.next.step.started",
-		"session.next.shell.started",
-		"session.next.text.delta",
-		"session.next.reasoning.delta",
-		"session.next.tool.called",
 		"session.next.context.updated":
+		// 用户输入或上下文更新 -> 活跃
 		m.UpdateSessionStatus(sessionID, "active")
-	case "session.next.step.ended",
-		"session.next.shell.ended",
-		"session.next.text.ended",
+
+	case "session.next.step.started":
+		// 步骤开始 -> 增加活跃步骤计数
+		m.sessionCache.mu.Lock()
+		m.sessionCache.activeSteps[sessionID]++
+		m.sessionCache.mu.Unlock()
+		m.UpdateSessionStatus(sessionID, "active")
+
+	case "session.next.shell.started",
+		"session.next.tool.called":
+		// 工具/Shell 开始 -> 活跃
+		m.UpdateSessionStatus(sessionID, "active")
+
+	case "session.next.text.delta",
+		"session.next.reasoning.delta",
+		"session.next.tool.input.delta":
+		// 流式输出中 -> 活跃
+		m.UpdateSessionStatus(sessionID, "active")
+
+	case "session.next.step.ended":
+		// 步骤结束 -> 减少活跃步骤计数
+		m.sessionCache.mu.Lock()
+		m.sessionCache.activeSteps[sessionID]--
+		if m.sessionCache.activeSteps[sessionID] <= 0 {
+			delete(m.sessionCache.activeSteps, sessionID)
+			// 所有步骤完成，检查是否还有进行中的工具
+			m.sessionCache.mu.Unlock()
+			// 短延迟后检查是否真的空闲（可能有后续步骤）
+			go func() {
+				time.Sleep(2 * time.Second)
+				m.sessionCache.mu.RLock()
+				steps := m.sessionCache.activeSteps[sessionID]
+				m.sessionCache.mu.RUnlock()
+				if steps <= 0 {
+					m.UpdateSessionStatus(sessionID, "idle")
+				}
+			}()
+		} else {
+			m.sessionCache.mu.Unlock()
+		}
+
+	case "session.next.shell.ended",
+		"session.next.tool.success",
+		"session.next.tool.failed":
+		// 工具/Shell 结束 -> 检查是否所有活动都完成
+		go func() {
+			time.Sleep(1 * time.Second)
+			m.sessionCache.mu.RLock()
+			steps := m.sessionCache.activeSteps[sessionID]
+			lastSeen := m.sessionCache.lastSeenEvt[sessionID]
+			m.sessionCache.mu.RUnlock()
+			// 如果没有进行中的步骤，且最近事件超过2秒，标记为空闲
+			if steps <= 0 && time.Since(lastSeen) > 2*time.Second {
+				m.UpdateSessionStatus(sessionID, "idle")
+			}
+		}()
+
+	case "session.next.text.ended",
 		"session.next.reasoning.ended",
 		"session.next.compaction.ended":
-		// 步骤结束时不立刻置 idle，由时间窗口兜底（>5min 无事件 = idle）
+		// 文本/推理结束 -> 不立即标记空闲，等待步骤结束
+
+	case "session.completed":
+		// 会话完成 -> 空闲
+		m.UpdateSessionStatus(sessionID, "idle")
+		m.sessionCache.mu.Lock()
+		delete(m.sessionCache.activeSteps, sessionID)
+		m.sessionCache.mu.Unlock()
 	}
 }
 
-// RefreshStatuses 周期性根据 lastSeenEvt 推断 idle/active。
-// 替代了原 pollAllInstances 对不存在端点 /session/status 的调用。
-// 调用方（main.go）按 30s 一次触发。
+// RefreshStatuses 周期性根据 lastSeenEvt 和 activeSteps 推断 idle/active。
+// Phase 1.4: 结合步骤计数和时间窗口，更精确判断状态。
 func (m *Manager) RefreshStatuses(idleAfter time.Duration) {
 	now := time.Now()
 	m.sessionCache.mu.RLock()
 	snapshot := make(map[string]time.Time, len(m.sessionCache.lastSeenEvt))
+	stepsSnapshot := make(map[string]int, len(m.sessionCache.activeSteps))
 	for k, v := range m.sessionCache.lastSeenEvt {
 		snapshot[k] = v
+	}
+	for k, v := range m.sessionCache.activeSteps {
+		stepsSnapshot[k] = v
 	}
 	m.sessionCache.mu.RUnlock()
 
 	for sid, ts := range snapshot {
+		// Phase 1.4: 优先检查步骤计数
+		if steps, ok := stepsSnapshot[sid]; ok && steps > 0 {
+			// 有进行中的步骤 -> 活跃
+			m.statusMonitor.mu.RLock()
+			cur := m.statusMonitor.statusMap[sid]
+			m.statusMonitor.mu.RUnlock()
+			if cur != "active" {
+				m.UpdateSessionStatus(sid, "active")
+			}
+			continue
+		}
+
+		// 没有进行中的步骤，检查时间窗口
 		status := "idle"
 		if now.Sub(ts) < idleAfter {
 			status = "active"
