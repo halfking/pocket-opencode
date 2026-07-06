@@ -18,3 +18,13 @@ type Task struct {
 	PendingApprovals  int       `json:"pendingApprovals"`
 	SessionCount     int       `json:"sessionCount"`
 }
+
+// TaskUpdate holds optional fields for PATCH /api/tasks/{id}.
+// Pointer fields are nil when not provided (so we can distinguish "set to empty" from "not set").
+type TaskUpdate struct {
+	Title        *string `json:"title"`
+	Description  *string `json:"description"`
+	Status       *string `json:"status"`
+	Priority     *string `json:"priority"`
+	WorkstreamID *string `json:"workstreamId"`
+}

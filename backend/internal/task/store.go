@@ -139,6 +139,57 @@ func (s *Store) AttachSession(ctx context.Context, link SessionLink) error {
 	return err
 }
 
+// ListTasksCursor returns tasks with keyset pagination.
+// cursorCreatedAt/cursorID are from the last item of the previous page (0/"" for first page).
+// Returns tasks + whether there are more items.
+func (s *Store) ListTasksCursor(ctx context.Context, limit int, cursorCreatedAt int64, cursorID string) ([]Task, bool, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	// Fetch limit+1 to detect hasMore
+	query := `SELECT id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count
+		FROM tasks`
+	var args []interface{}
+	argIdx := 1
+
+	if cursorCreatedAt > 0 && cursorID != "" {
+		query += fmt.Sprintf(` WHERE (created_at < $%d) OR (created_at = $%d AND id < $%d)`,
+			argIdx, argIdx, argIdx+1)
+		args = append(args, cursorCreatedAt, cursorID)
+		argIdx += 2
+	}
+
+	query += fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, argIdx)
+	args = append(args, limit+1)
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	tasks := []Task{}
+	for rows.Next() {
+		task := Task{}
+		var createdAt, updatedAt int64
+		if err := rows.Scan(&task.ID, &task.Title, &task.Description, &task.Status, &task.Priority, &task.WorkstreamID, &task.Source, &createdAt, &updatedAt, &task.PendingApprovals, &task.SessionCount); err != nil {
+			return nil, false, err
+		}
+		task.CreatedAt = time.Unix(createdAt, 0)
+		task.UpdatedAt = time.Unix(updatedAt, 0)
+		tasks = append(tasks, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+
+	hasMore := len(tasks) > limit
+	if hasMore {
+		tasks = tasks[:limit]
+	}
+	return tasks, hasMore, nil
+}
+
 func (s *Store) ListSessionsForTask(ctx context.Context, taskID string) ([]SessionLink, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT task_id, instance_id, session_id, role FROM task_session_links WHERE task_id = $1
@@ -158,6 +209,97 @@ func (s *Store) ListSessionsForTask(ctx context.Context, taskID string) ([]Sessi
 	}
 
 	return links, rows.Err()
+}
+
+// UpdateTask updates a task's mutable fields (title, description, status, priority).
+// Only non-zero values in the update are applied; use explicit empty string to clear.
+func (s *Store) UpdateTask(ctx context.Context, id string, update TaskUpdate) (*Task, error) {
+	now := time.Now().Unix()
+
+	// Build dynamic SET clause
+	sets := []string{}
+	args := []interface{}{}
+	argIdx := 1
+
+	if update.Title != nil {
+		sets = append(sets, fmt.Sprintf("title = $%d", argIdx))
+		args = append(args, *update.Title)
+		argIdx++
+	}
+	if update.Description != nil {
+		sets = append(sets, fmt.Sprintf("description = $%d", argIdx))
+		args = append(args, *update.Description)
+		argIdx++
+	}
+	if update.Status != nil {
+		sets = append(sets, fmt.Sprintf("status = $%d", argIdx))
+		args = append(args, *update.Status)
+		argIdx++
+	}
+	if update.Priority != nil {
+		sets = append(sets, fmt.Sprintf("priority = $%d", argIdx))
+		args = append(args, *update.Priority)
+		argIdx++
+	}
+	if update.WorkstreamID != nil {
+		sets = append(sets, fmt.Sprintf("workstream_id = $%d", argIdx))
+		args = append(args, *update.WorkstreamID)
+		argIdx++
+	}
+
+	if len(sets) == 0 {
+		// Nothing to update; return current task
+		return s.GetTask(ctx, id)
+	}
+
+	// Always bump updated_at
+	sets = append(sets, fmt.Sprintf("updated_at = $%d", argIdx))
+	args = append(args, now)
+	argIdx++
+
+	// WHERE id = $N
+	args = append(args, id)
+
+	query := fmt.Sprintf("UPDATE tasks SET %s WHERE id = $%d",
+		joinStrings(sets, ", "), argIdx)
+
+	tag, err := s.pool.Exec(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("update task: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, fmt.Errorf("task not found: %s", id)
+	}
+
+	return s.GetTask(ctx, id)
+}
+
+// DeleteTask removes a task and its session links.
+func (s *Store) DeleteTask(ctx context.Context, id string) error {
+	// 先删关联
+	_, err := s.pool.Exec(ctx, `DELETE FROM task_session_links WHERE task_id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete task sessions: %w", err)
+	}
+	tag, err := s.pool.Exec(ctx, `DELETE FROM tasks WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete task: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("task not found: %s", id)
+	}
+	return nil
+}
+
+func joinStrings(ss []string, sep string) string {
+	result := ""
+	for i, s := range ss {
+		if i > 0 {
+			result += sep
+		}
+		result += s
+	}
+	return result
 }
 
 func (s *Store) Close() error {

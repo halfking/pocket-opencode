@@ -9,10 +9,14 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -597,13 +601,98 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
 	}
-	// TODO Phase 3: 从 multipart 或文件路径读取音频字节。
-	// 当前骨架接受 {audioPath} 并提示需要文件读取实现。
-	var body struct {
-		AudioPath string `json:"audioPath"`
+
+	var audioData []byte
+	var filename string
+
+	// 优先尝试 multipart/form-data（前端录音上传）
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		// 解析 multipart，限制 25 MB
+		if err := r.ParseMultipartForm(25 << 20); err != nil {
+			writeError(w, http.StatusBadRequest, "failed to parse multipart: "+err.Error())
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "missing 'file' field in multipart: "+err.Error())
+			return
+		}
+		defer file.Close()
+		filename = header.Filename
+		audioData, err = io.ReadAll(file)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read audio file: "+err.Error())
+			return
+		}
+	} else {
+		// JSON body: { "audioPath": "/path/to/audio.wav" } 或 { "audioBase64": "..." }
+		var body struct {
+			AudioPath    string `json:"audioPath"`
+			AudioBase64  string `json:"audioBase64"`
+			Filename     string `json:"filename"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		filename = body.Filename
+		if body.AudioBase64 != "" {
+			// Base64 编码的音频
+			var decodeErr error
+			audioData, decodeErr = base64.StdEncoding.DecodeString(body.AudioBase64)
+			if decodeErr != nil {
+				writeError(w, http.StatusBadRequest, "invalid base64 audio: "+decodeErr.Error())
+				return
+			}
+			if filename == "" {
+				filename = "audio.wav"
+			}
+		} else if body.AudioPath != "" {
+			// 文件路径（本地开发场景）
+			var readErr error
+			audioData, readErr = os.ReadFile(body.AudioPath)
+			if readErr != nil {
+				writeError(w, http.StatusBadRequest, "failed to read audio file: "+readErr.Error())
+				return
+			}
+			if filename == "" {
+				filename = filepath.Base(body.AudioPath)
+			}
+		} else {
+			writeError(w, http.StatusBadRequest, "provide 'file' (multipart), 'audioBase64', or 'audioPath'")
+			return
+		}
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	writeError(w, http.StatusNotImplemented, "audio file handling: Phase 3")
+
+	if len(audioData) == 0 {
+		writeError(w, http.StatusBadRequest, "empty audio data")
+		return
+	}
+	if len(audioData) > 25<<20 {
+		writeError(w, http.StatusBadRequest, "audio too large (max 25 MB)")
+		return
+	}
+	if filename == "" {
+		filename = "audio.wav"
+	}
+
+	// 调用 Groq Whisper Large v3 Turbo
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	result, err := s.transcriber.Transcribe(ctx, audioData, filename)
+	if err != nil {
+		log.Printf("[stt] transcribe failed: %v", err)
+		writeError(w, http.StatusBadGateway, "transcription failed: "+err.Error())
+		return
+	}
+
+	log.Printf("[stt] transcribed %d bytes (%s) -> %d chars", len(audioData), filename, len(result.Text))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"text":       result.Text,
+		"confidence": result.Confidence,
+	})
 }
 
 // =====================================================================

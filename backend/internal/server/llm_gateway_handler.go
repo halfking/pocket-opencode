@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -70,6 +71,13 @@ func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) 
 		currentLLMGateway.BaseURL = req.BaseURL
 		if req.Models != nil {
 			currentLLMGateway.Models = req.Models
+		}
+		// 持久化到 PostgreSQL（如果配置了）
+		if s.llmGWStore != nil {
+			if err := s.llmGWStore.SaveConfig(r.Context(), currentLLMGateway); err != nil {
+				log.Printf("[llm-gateway] persist config failed: %v", err)
+				// 不阻断主流程，仅记日志
+			}
 		}
 		// 触发 OpenCode 配置热更新（如果可达）
 		go s.pushConfigToOpenCode()
@@ -197,4 +205,29 @@ func maskKey(s string) string {
 		return "****"
 	}
 	return s[:4] + "****" + s[len(s)-4:]
+}
+
+// LoadLLMGatewayFromDB 从数据库加载最新的 LLM Gateway 配置到内存。
+// 在 main.go 中 server 创建后、HTTP 启动前调用。
+func (s *Server) LoadLLMGatewayFromDB() {
+	if s.llmGWStore == nil {
+		return
+	}
+	st, err := s.llmGWStore.LoadConfig(context.Background())
+	if err != nil {
+		log.Printf("[llm-gateway] load from DB failed: %v", err)
+		return
+	}
+	if st == nil {
+		log.Println("[llm-gateway] no saved config in DB, using env defaults")
+		return
+	}
+	currentLLMGateway.BaseURL = st.BaseURL
+	if st.APIKey != "" {
+		currentLLMGateway.APIKey = st.APIKey
+	}
+	if len(st.Models) > 0 {
+		currentLLMGateway.Models = st.Models
+	}
+	log.Printf("[llm-gateway] loaded config from DB: baseURL=%s models=%d", st.BaseURL, len(st.Models))
 }

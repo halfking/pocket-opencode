@@ -72,15 +72,17 @@ func (s *Server) handleOpenCodeSessions(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleOpenCodeSessionHistory 处理会话历史请求
-// GET /api/opencode/sessions/{session_id}/history?limit=100
+// GET /api/opencode/sessions/{session_id}/history?instance_id=xxx&limit=100
+//
+// 代理到 OpenCode 实例的 /session/{id}/message API，不在本地持久化历史。
 func (s *Server) handleOpenCodeSessionHistory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	if s.opencodeManager == nil {
-		http.Error(w, "opencode manager not configured", http.StatusServiceUnavailable)
+	if s.opencode == nil || s.registry == nil {
+		http.Error(w, "opencode adapter not configured", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -99,25 +101,72 @@ func (s *Server) handleOpenCodeSessionHistory(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	limitStr := r.URL.Query().Get("limit")
-	limit := 100
-	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-			limit = l
-		}
+	instanceID := r.URL.Query().Get("instance_id")
+	limit := ParseLimit(r.URL.Query().Get("limit"), 100, 500)
+	order := r.URL.Query().Get("order")
+	if order == "" {
+		order = "desc"
 	}
 
-	history, err := s.opencodeManager.GetSessionHistory(r.Context(), sessionID, limit)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	// 如果指定了 instance_id，直接代理到该实例
+	if instanceID != "" {
+		apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		msgs, err := s.opencode.GetMessages(r.Context(), apiBaseURL, sessionID, limit, order)
+		if err != nil {
+			http.Error(w, "get messages: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"sessionId": sessionID,
+			"messages":  msgs,
+			"total":     len(msgs),
+		})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	// 无 instance_id：尝试从 opencodeManager 获取（降级到 noopHistoryStore）
+	if s.opencodeManager != nil {
+		history, err := s.opencodeManager.GetSessionHistory(r.Context(), sessionID, limit)
+		if err == nil && len(history) > 0 {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"sessionId": sessionID,
+				"timeline":  history,
+				"total":     len(history),
+			})
+			return
+		}
+	}
+
+	// 尝试所有实例查找该 session（慢路径）
+	instances := s.registry.ListInstances()
+	for _, inst := range instances {
+		apiBase, err := s.registry.GetInstanceAPIBase(inst.ID)
+		if err != nil {
+			continue
+		}
+		msgs, err := s.opencode.GetMessages(r.Context(), apiBase, sessionID, limit, order)
+		if err != nil {
+			continue
+		}
+		if len(msgs) > 0 {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"sessionId":  sessionID,
+				"instanceId": inst.ID,
+				"messages":   msgs,
+				"total":      len(msgs),
+			})
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"sessionId": sessionID,
-		"timeline":  history,
-		"total":     len(history),
+		"messages":  []interface{}{},
+		"total":     0,
 	})
 }
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -80,6 +81,8 @@ type Server struct {
 	emailFetcher   *email.Fetcher
 
 	dataDir string // 数据目录
+
+	llmGWStore *LLMGatewayStore // nil = 无 PG，配置不持久化
 }
 
 // New 构造 Server。Phase 0 扩展：新增 notes/email/vault store、STT transcriber、ACC MCP client。
@@ -124,9 +127,7 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
-			CheckOrigin: func(r *http.Request) bool {
-				return true // 允许所有源，生产环境应该更严格
-			},
+			CheckOrigin:     buildOriginChecker(cfg.AllowedOrigins, cfg.DevAuth),
 		},
 	}
 }
@@ -138,6 +139,11 @@ func (s *Server) SetOpenCodeManagers(ocMgr *opencode.Manager, eventMgr *opencode
 	s.eventMgr = eventMgr
 	s.permMgr = permMgr
 	s.quesMgr = quesMgr
+}
+
+// SetLLMGatewayStore 注入 LLM 网关配置持久化 store（PG pool 可用时）。
+func (s *Server) SetLLMGatewayStore(store *LLMGatewayStore) {
+	s.llmGWStore = store
 }
 
 func (s *Server) Handler() http.Handler {
@@ -214,7 +220,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 允许所有源（生产环境应该更严格）
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Max-Age", "3600")
 		
@@ -448,15 +454,47 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		//   source=opencode→ 按 instance_id 调 OpenCode HTTP adapter，Source=opencode
 		//   source=local   → 查本地 PG store，Source=local
 		//   省略           → 三源合并 + 按 workstreamId/source 过滤
+		// 游标分页：?cursor=xxx&limit=20（仅 source=local 时生效）
 		source := r.URL.Query().Get("source")
 		instanceID := r.URL.Query().Get("instance_id")
 		workstreamID := r.URL.Query().Get("workstream_id")
-		limitStr := r.URL.Query().Get("limit")
-		limit := 100
-		if limitStr != "" {
-			if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= 500 {
-				limit = n
+		cursorStr := r.URL.Query().Get("cursor")
+		limit := ParseLimit(r.URL.Query().Get("limit"), 100, 500)
+
+		// 纯本地源 + 游标分页：走 keyset pagination
+		if source == "local" && s.taskStore != nil && cursorStr != "" {
+			cur := DecodeCursor(cursorStr)
+			var createdAt int64
+			var id string
+			if cur != nil {
+				createdAt = cur.CreatedAt
+				id = cur.ID
 			}
+			tasks, hasMore, err := s.taskStore.ListTasksCursor(r.Context(), limit, createdAt, id)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			// 过滤 workstreamID
+			if workstreamID != "" {
+				filtered := make([]task.Task, 0, len(tasks))
+				for _, t := range tasks {
+					if t.WorkstreamID == workstreamID {
+						filtered = append(filtered, t)
+					}
+				}
+				tasks = filtered
+			}
+			var resp PaginatedResponse
+			if len(tasks) > 0 {
+				last := tasks[len(tasks)-1]
+				resp = FormatCursorPage(tasks, last.ID, last.CreatedAt.Unix(), hasMore)
+			} else {
+				resp = FormatCursorPage(tasks, "", 0, false)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
 		}
 
 		var allTasks []task.Task
@@ -600,6 +638,36 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(task)
+		return
+	}
+
+	// PATCH /api/tasks/{id} — 更新任务状态/优先级/标题
+	if r.Method == http.MethodPatch {
+		var update task.TaskUpdate
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		updated, err := s.taskStore.UpdateTask(r.Context(), path, update)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		s.broadcastTaskEvent("task_updated", updated)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(updated)
+		return
+	}
+
+	// DELETE /api/tasks/{id} — 删除任务及其会话关联
+	if r.Method == http.MethodDelete {
+		if err := s.taskStore.DeleteTask(r.Context(), path); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		s.broadcastTaskEvent("task_deleted", &task.Task{ID: path})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
 		return
 	}
 
@@ -845,6 +913,50 @@ func defaultInstances() []model.PocketInstance {
 			Health:          "healthy",
 			LastHeartbeatAt: time.Now().UTC().Format(time.RFC3339),
 		},
+	}
+}
+
+// buildOriginChecker creates a WebSocket origin check function.
+// If allowedOrigins is set, only those origins are allowed.
+// In dev mode (devAuth=true), localhost:* is always allowed.
+// Production must set POCKET_ALLOWED_ORIGINS explicitly.
+func buildOriginChecker(allowedOrigins string, devAuth bool) func(r *http.Request) bool {
+	// Parse allowed origins into a set
+	originSet := make(map[string]bool)
+	if allowedOrigins != "" {
+		for _, o := range strings.Split(allowedOrigins, ",") {
+			o = strings.TrimSpace(o)
+			if o != "" {
+				originSet[o] = true
+			}
+		}
+	}
+
+	return func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+
+		// Dev mode: allow localhost and 127.0.0.1
+		if devAuth {
+			if origin == "" {
+				return true
+			}
+			if strings.Contains(origin, "localhost") || strings.Contains(origin, "127.0.0.1") {
+				return true
+			}
+		}
+
+		// If no origin header (non-browser client), allow
+		if origin == "" {
+			return true
+		}
+
+		// If no allowed origins configured and not dev, allow all (backward compat)
+		if len(originSet) == 0 && !devAuth {
+			return true
+		}
+
+		// Check against allowed set
+		return originSet[origin]
 	}
 }
 

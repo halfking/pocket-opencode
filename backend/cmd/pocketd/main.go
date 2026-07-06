@@ -238,12 +238,28 @@ if pool != nil {
 		}
 	}
 
+	// 启用自动发现：扫描 localhost + LAN 端口发现 OpenCode 实例（60s 间隔）
+	reg.EnableAutoDiscovery(registry.NetworkDiscovery(), 60*time.Second)
+	go reg.StartAutoDiscovery(context.Background())
+
 	srv := server.New(cfg, npsAdapter, opencodeAdapter, taskStore, reg, configAdapter,
 		notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, nil, /* opencodeManager (set below) */
 		userStore, jwtSigner,
 		emailCrypto, emailPending,
 		emailScheduler, emailFetcher,
 		dataDir)
+
+	// ---- LLM Gateway 配置持久化（PG 可用时从数据库加载）----
+	if pool != nil {
+		lgStore, err := server.NewLLMGatewayStore(pool)
+		if err != nil {
+			log.Printf("WARN: LLM gateway store init failed: %v", err)
+		} else {
+			srv.SetLLMGatewayStore(lgStore)
+			srv.LoadLLMGatewayFromDB()
+			log.Println("LLM gateway config persistence enabled (PG)")
+		}
+	}
 
 	// ---- OpenCode 域管理器装配（Phase V3: 真实任务与会话接入）----
 	// 在 server.New 之后再装配，因为 manager 持有 opencodeAdapter/registry 引用。

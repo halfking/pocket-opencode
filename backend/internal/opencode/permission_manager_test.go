@@ -95,7 +95,7 @@ func newTestPermissionManager() (*PermissionManager, *fakePermissionAdapter) {
 	ad := newFakePermissionAdapter()
 	mgr := NewPermissionManager(reg, ad, PermissionManagerOptions{
 		PollInterval: 50 * time.Millisecond,
-	})
+	}, nil)
 	return mgr, ad
 }
 

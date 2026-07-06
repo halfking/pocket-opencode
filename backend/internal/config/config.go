@@ -59,6 +59,9 @@ type Config struct {
 	// 后端集成：可选代理到 llm-gateway-go 企业网关（享受流量治理）
 	LLMGatewayURL    string // POCKET_LLM_GATEWAY_URL：llm-gateway-go 地址
 	LLMGatewayAPIKey string // POCKET_LLM_GATEWAY_API_KEY：llm-gateway 租户 key
+
+	// WebSocket 安全
+	AllowedOrigins string // POCKET_ALLOWED_ORIGINS：逗号分隔的允许 origin 列表（空=dev 模式允许 localhost）
 }
 
 func Load() Config {
@@ -107,6 +110,8 @@ func Load() Config {
 		// 后端集成：llm-gateway-go 企业网关（可选）
 		LLMGatewayURL:    getEnv("POCKET_LLM_GATEWAY_URL", ""),
 		LLMGatewayAPIKey: getEnv("POCKET_LLM_GATEWAY_API_KEY", ""),
+		// WebSocket 安全
+		AllowedOrigins: getEnv("POCKET_ALLOWED_ORIGINS", ""),
 	}
 }
 
