@@ -25,43 +25,57 @@
     </div>
 
     <!-- 错误提示 -->
-    <div v-else-if="error" class="error">
-      <p>{{ error }}</p>
-      <button @click="loadSessions" class="retry-btn">重试</button>
-    </div>
+    <ErrorState
+      v-else-if="error"
+      icon="⚠️"
+      title="加载失败"
+      :message="error"
+      retry-label="重试"
+      @retry="loadSessions"
+    />
 
     <!-- 会话列表 -->
-    <div v-else class="session-list">
-      <div v-if="filteredSessions.length === 0" class="empty-state">
-        <p>暂无会话</p>
+    <PullToRefresh
+      v-else
+      class="session-list-wrap"
+      :on-refresh="reloadSessions"
+    >
+      <div class="session-list">
+        <EmptyState
+          v-if="filteredSessions.length === 0"
+          icon="💬"
+          :title="searchQuery ? '无匹配结果' : '暂无会话'"
+          :message="searchQuery ? `未找到包含 “${searchQuery}” 的会话` : '选择一个实例开始新的 AI 会话'"
+          hint="在 AI 页面点击 + 新任务，或在下方选择实例"
+        />
+
+        <SwipeableListItem
+          v-for="session in filteredSessions"
+          :key="session.id"
+          class="session-card"
+          :right-actions="getSwipeActions(session)"
+        >
+          <div @click="openSessionDetail(session)">
+            <div class="session-header">
+              <h3 class="session-title">{{ session.title }}</h3>
+              <span :class="['status-badge', session.status]">
+                {{ getStatusText(session.status) }}
+              </span>
+            </div>
+            <p class="session-id">ID: {{ session.id }}</p>
+            <div class="session-footer">
+              <button
+                @click.stop="attachToTask(session)"
+                class="attach-btn"
+                :disabled="attaching === session.id"
+              >
+                {{ attaching === session.id ? '附加中...' : '附加到任务' }}
+              </button>
+            </div>
+          </div>
+        </SwipeableListItem>
       </div>
-      
-      <div 
-        v-for="session in filteredSessions" 
-        :key="session.id"
-        class="session-card"
-        @click="openSessionDetail(session)"
-      >
-        <div class="session-header">
-          <h3 class="session-title">{{ session.title }}</h3>
-          <span :class="['status-badge', session.status]">
-            {{ getStatusText(session.status) }}
-          </span>
-        </div>
-        
-        <p class="session-id">ID: {{ session.id }}</p>
-        
-        <div class="session-footer">
-          <button 
-            @click.stop="attachToTask(session)" 
-            class="attach-btn"
-            :disabled="attaching === session.id"
-          >
-            {{ attaching === session.id ? '附加中...' : '附加到任务' }}
-          </button>
-        </div>
-      </div>
-    </div>
+    </PullToRefresh>
 
     <!-- 分页 -->
     <div v-if="total > limit" class="pagination">
@@ -90,6 +104,11 @@
 import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
+import { useToast } from '@/composables/useToast'
+import EmptyState from '@/components/base/EmptyState.vue'
+import ErrorState from '@/components/base/ErrorState.vue'
+import PullToRefresh from '@/components/interactive/PullToRefresh.vue'
+import SwipeableListItem, { type SwipeAction } from '@/components/interactive/SwipeableListItem.vue'
 
 interface Session {
   id: string
@@ -104,6 +123,7 @@ interface Instance {
 }
 
 const router = useRouter()
+const toast = useToast()
 
 // 状态
 const sessions = ref<Session[]>([])
@@ -232,6 +252,44 @@ function getStatusText(status: string): string {
   return statusMap[status] || status
 }
 
+// 下拉刷新包装器：保持 offset=0 让刷新回到第一页
+async function reloadSessions(): Promise<void> {
+  offset.value = 0
+  await loadSessions()
+}
+
+// 左滑显示的操作按钮（删除 + 归档占位）
+function getSwipeActions(session: Session): SwipeAction[] {
+  return [
+    {
+      id: `archive-${session.id}`,
+      icon: '📥',
+      label: '归档',
+      type: 'warning',
+      onAction: () => archiveSession(session),
+    },
+    {
+      id: `delete-${session.id}`,
+      icon: '🗑',
+      label: '删除',
+      type: 'danger',
+      onAction: () => deleteSession(session),
+    },
+  ]
+}
+
+async function archiveSession(session: Session): Promise<void> {
+  // 后端暂无 archive 接口；提示用户到详情页操作
+  toast.info(`归档功能开发中：${session.title}`)
+}
+
+async function deleteSession(session: Session): Promise<void> {
+  if (!confirm(`确定删除会话 “${session.title}”？`)) return
+  // 后端暂无 DELETE /api/sessions/:id；先提示用户，不做虚假删除避免
+  // 下一次刷新后条目"复活"造成数据不一致。
+  toast.warning('删除功能开发中，请到 OpenCode 实例侧手动删除')
+}
+
 onMounted(() => {
   loadInstances()
   loadSessions()
@@ -248,16 +306,16 @@ onActivated(() => {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  padding: 1rem;
-  padding-bottom: 70px; /* 为底部导航留空间 */
+  background: var(--bg-base);
+  padding: var(--space-3);
+  padding-bottom: 70px;
   overflow-y: auto;
 }
 
 .toolbar {
   display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 
 .search-bar {
@@ -266,20 +324,26 @@ onActivated(() => {
 
 .search-bar input {
   width: 100%;
-  padding: 0.75rem 1rem;
-  border: none;
-  border-radius: 12px;
-  font-size: 1rem;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  box-sizing: border-box;
+}
+
+.search-bar input::placeholder {
+  color: var(--text-muted);
 }
 
 .instance-filter {
-  padding: 0.75rem 1rem;
-  border: none;
-  border-radius: 12px;
-  font-size: 1rem;
-  background: white;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
+  background: var(--bg-card);
+  color: var(--text-primary);
   cursor: pointer;
 }
 
@@ -288,125 +352,112 @@ onActivated(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 3rem 1rem;
-  color: white;
+  padding: 3rem var(--space-3);
+  color: var(--text-secondary);
   text-align: center;
 }
 
 .spinner {
-  width: 40px;
-  height: 40px;
-  border: 3px solid rgba(255, 255, 255, 0.3);
-  border-top-color: white;
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--brand-primary);
   border-radius: 50%;
   animation: spin 1s linear infinite;
-  margin-bottom: 1rem;
+  margin-bottom: var(--space-3);
 }
 
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
 
-.retry-btn {
-  margin-top: 1rem;
-  padding: 0.75rem 2rem;
-  background: white;
-  color: #667eea;
-  border: none;
-  border-radius: 12px;
-  font-size: 1rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.empty-state {
-  text-align: center;
-  padding: 3rem 1rem;
-  color: white;
+.session-list-wrap {
+  flex: 1;
+  min-height: 0;
 }
 
 .session-list {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: var(--space-2-5);
+  padding-bottom: var(--space-4);
 }
 
 .session-card {
-  background: white;
-  border-radius: 16px;
-  padding: 1rem;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-card-padding);
+  border: 1px solid var(--border);
   cursor: pointer;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition: background 120ms;
 }
 
 .session-card:active {
-  transform: scale(0.98);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  background: var(--bg-subtle);
 }
 
 .session-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 0.5rem;
+  margin-bottom: var(--space-1);
 }
 
 .session-title {
   margin: 0;
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: #333;
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
   flex: 1;
-  margin-right: 0.5rem;
+  margin-right: var(--space-2);
 }
 
 .status-badge {
-  padding: 0.25rem 0.75rem;
-  border-radius: 12px;
-  font-size: 0.85rem;
-  font-weight: 600;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-semibold);
   white-space: nowrap;
 }
 
 .status-badge.active {
-  background: #d4edda;
-  color: #155724;
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--success);
 }
 
 .status-badge.inactive {
-  background: #f8d7da;
-  color: #721c24;
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--danger);
 }
 
 .status-badge.empty {
-  background: #fff3cd;
-  color: #856404;
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--warning);
 }
 
 .session-id {
-  margin: 0.5rem 0;
-  font-size: 0.85rem;
-  color: #666;
+  margin: var(--space-1) 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
   font-family: monospace;
 }
 
 .session-footer {
   display: flex;
   justify-content: flex-end;
-  margin-top: 1rem;
+  margin-top: var(--space-2);
 }
 
 .attach-btn {
-  padding: 0.5rem 1.5rem;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  padding: var(--space-1) var(--space-3);
+  background: var(--brand-primary);
+  color: var(--text-inverse);
   border: none;
-  border-radius: 12px;
-  font-size: 0.9rem;
-  font-weight: 600;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
   cursor: pointer;
-  transition: opacity 0.2s;
+  transition: opacity 120ms;
 }
 
 .attach-btn:disabled {
@@ -418,22 +469,22 @@ onActivated(() => {
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 1rem;
-  margin-top: 1rem;
-  padding: 1rem;
-  background: white;
-  border-radius: 16px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 
 .page-btn {
-  padding: 0.5rem 1.5rem;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  padding: var(--space-1) var(--space-3);
+  background: var(--brand-primary);
+  color: var(--text-inverse);
   border: none;
-  border-radius: 12px;
-  font-size: 0.9rem;
-  font-weight: 600;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
   cursor: pointer;
 }
 
@@ -443,7 +494,8 @@ onActivated(() => {
 }
 
 .page-info {
-  color: #666;
-  font-weight: 600;
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--text-sm);
 }
 </style>

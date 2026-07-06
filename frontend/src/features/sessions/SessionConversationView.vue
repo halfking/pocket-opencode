@@ -11,13 +11,17 @@
  *  - Stop 按钮中断 agent
  *  - 自动滚动到底部（用户上滚时暂停）
  */
-import { onMounted, onBeforeUnmount, ref, nextTick, computed } from 'vue'
+import { onMounted, onBeforeUnmount, ref, nextTick, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '../../stores/session'
+import { useVoiceRecording } from '../../composables/useVoiceRecording'
+import { useToast } from '../../composables/useToast'
+import { renderMarkdown } from '../../utils/markdown'
 
 const route = useRoute()
 const router = useRouter()
 const store = useSessionStore()
+const toast = useToast()
 
 const sessionID = computed(() => route.params.id as string)
 const instanceID = computed(() => (route.query.instance_id as string) || localStorage.getItem('selected_instance_id') || '')
@@ -25,11 +29,20 @@ const initialTitle = computed(() => (route.query.title as string) || '')
 
 const inputText = ref('')
 const sending = ref(false)
-const isRecording = ref(false)
-let mediaRecorder: MediaRecorder | null = null
-let audioChunks: Blob[] = []
 const messagesEl = ref<HTMLElement | null>(null)
 const autoScroll = ref(true)
+
+const { isRecording, transcribing, toggleRecording } = useVoiceRecording({
+  onTranscribed(text) {
+    // Append with a space if user already has text; otherwise replace.
+    inputText.value = inputText.value
+      ? `${inputText.value.trimEnd()} ${text}`
+      : text
+  },
+  onError(msg) {
+    toast.error(msg)
+  },
+})
 
 const selectedInstance = computed(() => {
   try {
@@ -93,51 +106,8 @@ async function send() {
   }
 }
 
-// ── Voice Recording ──
-async function toggleVoice() {
-  if (isRecording.value) {
-    stopRecording()
-  } else {
-    await startRecording()
-  }
-}
-
-async function startRecording() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, sampleRate: 16000 },
-    })
-    mediaRecorder = new MediaRecorder(stream)
-    audioChunks = []
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) audioChunks.push(e.data)
-    }
-    mediaRecorder.onstop = async () => {
-      stream.getTracks().forEach((t) => t.stop())
-      // STT: try local sherpa-onnx first, fallback to cloud
-      try {
-        const blob = new Blob(audioChunks, { type: 'audio/webm' })
-        const url = URL.createObjectURL(blob)
-        // Placeholder: use sttApi.transcribe(url) when available
-        // For now, insert a placeholder
-        inputText.value = '[语音输入完成，请编辑后发送]'
-      } catch (e) {
-        console.error('STT failed:', e)
-      }
-    }
-    mediaRecorder.start()
-    isRecording.value = true
-  } catch (e) {
-    console.error('Microphone access denied:', e)
-  }
-}
-
-function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop()
-  }
-  isRecording.value = false
-}
+// ── Voice Recording (via composable) ──
+const toggleVoice = toggleRecording
 
 async function stop() {
   await store.interrupt()
@@ -152,7 +122,6 @@ function onKeydown(e: KeyboardEvent) {
 
 // 自动跟随流式输出
 const lastMsgId = computed(() => store.messages[store.messages.length - 1]?.id)
-import { watch } from 'vue'
 watch(
   () => [store.messages.length, lastMsgId.value, store.lastMessage?.text?.length],
   () => {
@@ -166,6 +135,135 @@ function goBack() {
   } else {
     router.push('/ai')
   }
+}
+
+// ── Markdown rendering (assistant messages) ──
+// Local set tracks which long messages the user has expanded. We deliberately
+// do NOT mutate the store's Message objects (Pinia prefers explicit state).
+const LONG_LINE_THRESHOLD = 20
+const PREVIEW_LINE_COUNT = 5
+const PREVIEW_CHAR_LIMIT = 280
+const expandedIds = ref<Set<string>>(new Set())
+
+function isLong(msg: { text?: string }): boolean {
+  if (!msg?.text) return false
+  const lines = String(msg.text).split('\n').length
+  return lines > LONG_LINE_THRESHOLD || msg.text.length > PREVIEW_CHAR_LIMIT * 2
+}
+
+function isExpanded(id: string): boolean {
+  return expandedIds.value.has(id)
+}
+
+function previewText(text: string): string {
+  const lines = text.split('\n').slice(0, PREVIEW_LINE_COUNT).join('\n')
+  if (lines.length > PREVIEW_CHAR_LIMIT) {
+    return lines.slice(0, PREVIEW_CHAR_LIMIT) + '…'
+  }
+  return lines + '…'
+}
+
+function renderedHtml(msg: { text?: string }): string {
+  return renderMarkdown(msg.text || '')
+}
+
+function toggleExpanded(id: string) {
+  const next = new Set(expandedIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedIds.value = next
+}
+
+// ── JSON pretty printing (with basic HTML escape) ──
+// We tokenize carefully so quoted strings inside string values aren't
+// accidentally re-colored. The strategy: alternate between string and
+// non-string contexts starting from the first opening quote after `{`,
+// `[`, or `,`.
+function renderJson(value: any): string {
+  let json: string
+  try {
+    json = JSON.stringify(value, null, 2)
+  } catch {
+    json = String(value)
+  }
+  // First, full HTML escape.
+  let out = json
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+  // Walk character-by-character to label only "real" JSON strings:
+  // a `"` at the start, or after `:` / `[` / `,`, is a value/key opening.
+  // Inside a string we just escape & keep raw. The next unescaped `"` closes it.
+  let i = 0
+  let result = ''
+  let inStr = false
+  while (i < out.length) {
+    const ch = out[i]
+    if (inStr) {
+      if (ch === '\\' && i + 1 < out.length) {
+        // pass through escape sequence verbatim
+        result += ch + out[i + 1]
+        i += 2
+        continue
+      }
+      if (ch === '"') {
+        inStr = false
+        result += ch
+        i++
+        continue
+      }
+      result += ch
+      i++
+      continue
+    }
+    // not in string
+    if (ch === '"') {
+      // peek context — string is a JSON string if preceded by `{`, `[`, `,`, or `:`
+      const prev = result.trimEnd().slice(-1)
+      const isJsonString = prev === '{' || prev === '[' || prev === ',' || prev === ':'
+      inStr = true
+      if (isJsonString) {
+        // decide color: if previous non-whitespace char is `:`, this is a value; else a key
+        const trimmed = result.trimEnd()
+        const isValue = trimmed.endsWith(':')
+        const cls = isValue ? 'json-str' : 'json-key'
+        result += `<span class="${cls}">`
+        // find closing quote
+        let j = i + 1
+        while (j < out.length) {
+          const c = out[j]
+          if (c === '\\' && j + 1 < out.length) { j += 2; continue }
+          if (c === '"') break
+          j++
+        }
+        result += out.slice(i, j + 1)
+        result += '</span>'
+        inStr = false
+        i = j + 1
+        continue
+      } else {
+        // not a JSON string (shouldn't happen after escape, but fallback)
+        result += ch
+        i++
+      }
+      continue
+    }
+    result += ch
+    i++
+  }
+  out = result
+
+  // Color numbers, booleans, null at value positions (after `:` or `[` or `,`).
+  out = out.replace(/([\[\,:]\s*)(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\b/g, '$1<span class="json-num">$2</span>')
+  out = out.replace(/([\[\,:]\s*)(true|false|null)\b/g, '$1<span class="json-bool">$2</span>')
+  return out
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`
 }
 </script>
 
@@ -225,8 +323,25 @@ function goBack() {
         <template v-else-if="msg.role === 'assistant'">
           <div class="avatar assistant-avatar">AI</div>
           <div class="bubble assistant-bubble">
-            <div v-if="msg.text" class="text-content">
-              {{ msg.text }}<span v-if="msg.streaming" class="caret">▍</span>
+            <div v-if="msg.text" class="text-content markdown-body">
+              <span v-if="isLong(msg)" class="caret-line"> </span>
+              <div v-if="!isExpanded(msg.id) && isLong(msg)" class="collapsed">
+                {{ previewText(msg.text) }}
+              </div>
+              <!-- eslint-disable-next-line vue/no-v-html -->
+              <div
+                v-else
+                class="rendered"
+                v-html="renderedHtml(msg)"
+              ></div>
+              <span v-if="msg.streaming" class="caret">▍</span>
+              <button
+                v-if="isLong(msg) && !msg.streaming"
+                class="expand-btn"
+                @click="toggleExpanded(msg.id)"
+              >
+                {{ isExpanded(msg.id) ? '收起' : '展开全部' }}
+              </button>
             </div>
             <div v-if="msg.content" class="content-list">
               <div
@@ -240,6 +355,9 @@ function goBack() {
                     <summary>
                       <span class="tool-icon">🔧</span>
                       <span class="tool-name">{{ c.name }}</span>
+                      <span v-if="c.durationMs" class="tool-duration">
+                        {{ formatDuration(c.durationMs) }}
+                      </span>
                       <span class="tool-state" :class="'state-' + c.state">
                         {{
                           c.state === 'running' ? '执行中'
@@ -251,11 +369,13 @@ function goBack() {
                     </summary>
                     <div v-if="c.input" class="tool-section">
                       <div class="tool-section-title">输入</div>
-                      <pre>{{ JSON.stringify(c.input, null, 2) }}</pre>
+                      <!-- eslint-disable-next-line vue/no-v-html -->
+                      <pre v-html="renderJson(c.input)"></pre>
                     </div>
                     <div v-if="c.output" class="tool-section">
                       <div class="tool-section-title">输出</div>
-                      <pre>{{ JSON.stringify(c.output, null, 2) }}</pre>
+                      <!-- eslint-disable-next-line vue/no-v-html -->
+                      <pre v-html="renderJson(c.output)"></pre>
                     </div>
                     <div v-if="c.error" class="tool-section error">
                       <div class="tool-section-title">错误</div>
@@ -295,10 +415,10 @@ function goBack() {
       <textarea
         v-model="inputText"
         class="input"
-        :placeholder="isRecording ? '🎙 录音中...' : '输入消息…'"
+        :placeholder="isRecording ? '🎙 录音中...' : transcribing ? '识别中...' : '输入消息…'"
         rows="1"
         @keydown="onKeydown"
-        :disabled="sending || isRecording"
+        :disabled="sending || isRecording || transcribing"
       ></textarea>
       <button
         class="voice-btn"
@@ -325,8 +445,7 @@ function goBack() {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: var(--bg, #fafbfc);
-  /* iOS safe area */
+  background: var(--bg-base);
   padding-top: env(safe-area-inset-top);
 }
 
@@ -335,75 +454,74 @@ function goBack() {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  background: var(--surface, #fff);
-  border-bottom: 1px solid var(--border, #e5e7eb);
-  -webkit-app-region: drag;
+  gap: var(--space-2);
+  padding: var(--space-2-5) var(--space-3);
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
 }
 .back-btn,
 .stop-btn,
 .top-spacer {
   flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background: transparent;
   border: none;
   cursor: pointer;
-  color: var(--text, #111827);
+  color: var(--text-primary);
 }
-.back-btn:hover,
-.stop-btn:hover {
-  background: var(--hover, #f3f4f6);
+.back-btn:active,
+.stop-btn:active {
+  background: var(--bg-subtle);
 }
 .stop-btn {
-  color: #ef4444;
+  color: var(--danger);
 }
 .title-block {
   flex: 1 1 auto;
   min-width: 0;
 }
 .title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text, #111827);
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .subtitle {
-  font-size: 12px;
-  color: var(--text-secondary, #6b7280);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   margin-top: 2px;
 }
 .status-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #10b981;
+  background: var(--success);
   display: inline-block;
 }
 .status-dot.streaming {
-  background: #3b82f6;
+  background: var(--info);
   animation: pulse 1.5s ease-in-out infinite;
 }
 .status-dot.error {
-  background: #ef4444;
+  background: var(--danger);
 }
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.5; transform: scale(1.4); }
 }
 .instance-tag {
-  color: var(--text-tertiary, #9ca3af);
-  font-size: 11px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
 }
 
 /* Messages */
@@ -412,10 +530,10 @@ function goBack() {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
-  padding: 16px;
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-2-5);
   scroll-behavior: smooth;
 }
 .empty {
@@ -424,16 +542,16 @@ function goBack() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   text-align: center;
-  padding: 40px;
+  padding: var(--space-6);
 }
-.empty-icon { font-size: 48px; margin-bottom: 12px; }
-.empty-text { font-size: 18px; font-weight: 500; margin: 0 0 4px; color: var(--text, #111827); }
-.empty-hint { font-size: 14px; margin: 0; }
+.empty-icon { font-size: 40px; margin-bottom: var(--space-3); }
+.empty-text { font-size: var(--text-lg); font-weight: var(--font-weight-medium); margin: 0 0 var(--space-1); color: var(--text-primary); }
+.empty-hint { font-size: var(--text-sm); margin: 0; color: var(--text-muted); }
 .message {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   max-width: 90%;
   animation: message-in 200ms ease-out;
 }
@@ -454,48 +572,48 @@ function goBack() {
 }
 .avatar {
   flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #667eea, #764ba2);
-  color: white;
-  font-size: 11px;
-  font-weight: 600;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-full);
+  background: var(--brand-gradient);
+  color: var(--text-inverse);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-semibold);
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 .bubble {
-  padding: 10px 14px;
-  border-radius: 16px;
-  font-size: 15px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-base);
   line-height: 1.5;
   word-break: break-word;
   white-space: pre-wrap;
   position: relative;
 }
 .user-bubble {
-  background: var(--primary, #3b82f6);
-  color: white;
-  border-bottom-right-radius: 4px;
+  background: var(--brand-primary);
+  color: var(--text-inverse);
+  border-bottom-right-radius: var(--radius-sm);
 }
 .assistant-bubble {
-  background: var(--surface, #fff);
-  color: var(--text, #111827);
-  border: 1px solid var(--border, #e5e7eb);
-  border-bottom-left-radius: 4px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: var(--radius-sm);
 }
 .system-bubble {
-  background: var(--surface-variant, #f3f4f6);
-  color: var(--text-secondary, #6b7280);
-  font-size: 13px;
-  padding: 6px 12px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-2-5);
 }
 .caret {
   display: inline-block;
   margin-left: 1px;
-  color: var(--primary, #3b82f6);
+  color: var(--brand-primary);
   animation: blink 1s steps(1) infinite;
 }
 @keyframes blink {
@@ -504,84 +622,83 @@ function goBack() {
 .content-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 .tool-card {
-  background: var(--surface-variant, #f9fafb);
-  border: 1px solid var(--border, #e5e7eb);
-  border-radius: 8px;
-  padding: 8px 12px;
-  font-size: 13px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-2-5);
+  font-size: var(--text-sm);
 }
 .tool-card summary {
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1);
   list-style: none;
 }
 .tool-card summary::-webkit-details-marker {
   display: none;
 }
-.tool-icon { font-size: 14px; }
-.tool-name { font-weight: 600; font-family: monospace; }
+.tool-icon { font-size: var(--text-sm); }
+.tool-name { font-weight: var(--font-weight-semibold); font-family: monospace; font-size: var(--text-sm); }
 .tool-state {
   margin-left: auto;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  font-weight: 500;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
 }
-.tool-state.state-running { background: #dbeafe; color: #1e40af; }
-.tool-state.state-completed { background: #d1fae5; color: #065f46; }
-.tool-state.state-error { background: #fee2e2; color: #991b1b; }
-.tool-state.state-pending { background: #f3f4f6; color: #6b7280; }
+.tool-state.state-running { background: rgba(59, 130, 246, 0.12); color: var(--info); }
+.tool-state.state-completed { background: rgba(16, 185, 129, 0.12); color: var(--success); }
+.tool-state.state-error { background: rgba(239, 68, 68, 0.12); color: var(--danger); }
+.tool-state.state-pending { background: var(--bg-subtle); color: var(--text-muted); }
 .tool-section {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--border, #e5e7eb);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px dashed var(--border);
 }
-.tool-section.error { color: #991b1b; }
-.tool-section-title { font-size: 11px; font-weight: 600; color: var(--text-secondary, #6b7280); margin-bottom: 4px; }
+.tool-section.error { color: var(--danger); }
+.tool-section-title { font-size: var(--text-xs); font-weight: var(--font-weight-semibold); color: var(--text-secondary); margin-bottom: var(--space-1); }
 .tool-section pre {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-family: 'SF Mono', Menlo, monospace;
   white-space: pre-wrap;
   word-break: break-all;
-  background: rgba(0, 0, 0, 0.03);
-  padding: 6px 8px;
-  border-radius: 4px;
+  background: var(--bg-subtle);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
 }
 
 /* Scroll-to-bottom button */
 .scroll-bottom-btn {
   position: absolute;
   bottom: 80px;
-  right: 16px;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: var(--surface, #fff);
-  border: 1px solid var(--border, #e5e7eb);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  right: var(--space-3);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
 }
 
 /* Error banner */
 .error-banner {
   flex: 0 0 auto;
-  background: #fee2e2;
-  color: #991b1b;
-  padding: 8px 16px;
-  font-size: 13px;
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
   text-align: center;
-  border-top: 1px solid #fecaca;
+  border-top: 1px solid rgba(239, 68, 68, 0.2);
 }
 
 /* Input bar */
@@ -589,38 +706,41 @@ function goBack() {
   flex: 0 0 auto;
   display: flex;
   align-items: flex-end;
-  gap: 8px;
-  padding: 12px 16px;
-  padding-bottom: calc(12px + env(safe-area-inset-bottom));
-  background: var(--surface, #fff);
-  border-top: 1px solid var(--border, #e5e7eb);
+  gap: var(--space-2);
+  padding: var(--space-2-5) var(--space-3);
+  padding-bottom: calc(var(--space-2-5) + env(safe-area-inset-bottom));
+  background: var(--bg-card);
+  border-top: 1px solid var(--border);
 }
 .input {
   flex: 1 1 auto;
   resize: none;
   max-height: 200px;
-  padding: 10px 14px;
-  border: 1px solid var(--border, #e5e7eb);
-  border-radius: 20px;
-  font-size: 15px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  font-size: var(--text-base);
   line-height: 1.5;
   font-family: inherit;
-  background: var(--surface-variant, #f9fafb);
-  color: var(--text, #111827);
+  background: var(--bg-subtle);
+  color: var(--text-primary);
   outline: none;
   transition: border-color 150ms;
 }
+.input::placeholder {
+  color: var(--text-muted);
+}
 .input:focus {
-  border-color: var(--primary, #3b82f6);
-  background: var(--surface, #fff);
+  border-color: var(--brand-primary);
+  background: var(--bg-card);
 }
 .send-btn {
   flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: var(--primary, #3b82f6);
-  color: white;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-full);
+  background: var(--brand-primary);
+  color: var(--text-inverse);
   border: none;
   cursor: pointer;
   display: flex;
@@ -629,8 +749,8 @@ function goBack() {
   transition: all 150ms;
 }
 .send-btn:disabled {
-  background: var(--border, #e5e7eb);
-  color: var(--text-tertiary, #9ca3af);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
   cursor: not-allowed;
 }
 .send-btn:not(:disabled):active {
@@ -638,13 +758,13 @@ function goBack() {
 }
 .voice-btn {
   flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: var(--surface-variant, #f3f4f6);
-  color: var(--text-secondary, #6b7280);
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-full);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
   border: none;
-  font-size: 18px;
+  font-size: 16px;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -652,8 +772,8 @@ function goBack() {
   transition: all 150ms;
 }
 .voice-btn.recording {
-  background: var(--error, #ef4444);
-  color: #fff;
+  background: var(--danger);
+  color: var(--text-inverse);
   animation: pulse-voice 1s infinite;
 }
 @keyframes pulse-voice {
@@ -670,4 +790,127 @@ function goBack() {
   font-size: 20px;
   line-height: 1;
 }
+
+/* ── Markdown rendering ── */
+.markdown-body {
+  font-size: var(--text-base);
+  line-height: 1.5;
+}
+.markdown-body .rendered,
+.markdown-body .collapsed {
+  white-space: normal;
+}
+.markdown-body p {
+  margin: 0 0 var(--space-2) 0;
+}
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  margin: var(--space-3) 0 var(--space-2) 0;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+.markdown-body h1 { font-size: var(--text-xl); }
+.markdown-body h2 { font-size: var(--text-lg); }
+.markdown-body h3 { font-size: var(--text-md); }
+.markdown-body h4 { font-size: var(--text-base); }
+.markdown-body ul,
+.markdown-body ol {
+  margin: var(--space-2) 0;
+  padding-left: var(--space-5);
+}
+.markdown-body li {
+  margin: var(--space-1) 0;
+}
+.markdown-body code {
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: var(--text-sm);
+  background: var(--bg-subtle);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+}
+.markdown-body pre {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  overflow-x: auto;
+  margin: var(--space-2) 0;
+}
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+.markdown-body blockquote {
+  border-left: 3px solid var(--brand-primary);
+  padding-left: var(--space-3);
+  margin: var(--space-2) 0;
+  color: var(--text-secondary);
+}
+.markdown-body a {
+  color: var(--brand-primary);
+  text-decoration: none;
+}
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+.markdown-body table {
+  border-collapse: collapse;
+  margin: var(--space-2) 0;
+  width: 100%;
+  font-size: var(--text-sm);
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border);
+  padding: var(--space-1) var(--space-2);
+  text-align: left;
+}
+.markdown-body th {
+  background: var(--bg-subtle);
+  font-weight: var(--font-weight-semibold);
+}
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: var(--space-3) 0;
+}
+.markdown-body .collapsed {
+  color: var(--text-secondary);
+}
+.expand-btn {
+  display: inline-block;
+  margin-top: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--brand-primary);
+  cursor: pointer;
+  font-weight: var(--font-weight-semibold);
+}
+.expand-btn:active {
+  background: var(--bg-subtle);
+}
+
+/* ── Tool duration & JSON syntax ── */
+.tool-duration {
+  margin-left: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-family: monospace;
+}
+.tool-section pre :deep(.json-key) { color: var(--brand-primary); }
+.tool-section pre :deep(.json-str) { color: var(--success); }
+.tool-section pre :deep(.json-num) { color: var(--warning); }
+.tool-section pre :deep(.json-bool) { color: var(--info); }
 </style>

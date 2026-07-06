@@ -20,11 +20,14 @@
     </div>
 
     <!-- 错误状态 -->
-    <div v-else-if="error" class="error-state">
-      <div class="error-icon">⚠️</div>
-      <p>{{ error }}</p>
-      <button class="retry-btn" @click="loadInstances">重试</button>
-    </div>
+    <ErrorState
+      v-else-if="error"
+      icon="⚠️"
+      title="加载实例失败"
+      :message="error"
+      retry-label="重试"
+      @retry="loadInstances"
+    />
 
     <!-- 实例列表 -->
     <div v-else-if="instances.length > 0" class="instance-list">
@@ -48,11 +51,15 @@
     </div>
 
     <!-- 空状态 -->
-    <div v-else class="empty-state">
-      <div class="empty-icon">📭</div>
-      <p>暂无可用的 OpenCode 实例</p>
-      <button class="retry-btn" @click="loadInstances">重试</button>
-    </div>
+    <EmptyState
+      v-else
+      icon="📭"
+      title="暂无可用的 OpenCode 实例"
+      message="当前服务器未注册任何实例"
+      hint="检查后端 POCKET_OPENCODE_INSTANCES 配置"
+      action-label="重新加载"
+      @action="loadInstances"
+    />
   </div>
 </template>
 
@@ -60,6 +67,8 @@
 import { ref, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../../api/client'
+import EmptyState from '../../components/base/EmptyState.vue'
+import ErrorState from '../../components/base/ErrorState.vue'
 
 const router = useRouter()
 
@@ -125,50 +134,51 @@ function goBack() {
 <style scoped>
 .instance-list-view {
   min-height: 100vh;
-  background: #f5f7fa;
+  background: var(--bg-base);
   display: flex;
   flex-direction: column;
 }
 
 .top-bar {
-  background: white;
-  padding: 16px 20px;
+  background: var(--bg-card);
+  padding: var(--space-3) var(--space-4);
   display: flex;
   align-items: center;
-  gap: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  gap: var(--space-3);
+  border-bottom: 1px solid var(--border);
 }
 
 .back-btn, .refresh-btn {
-  padding: 8px 12px;
-  font-size: 14px;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
   background: transparent;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   cursor: pointer;
-  transition: all 0.3s;
+  color: var(--text-primary);
+  transition: background 120ms;
 }
 
 .back-btn:active, .refresh-btn:active {
-  background: #f5f7fa;
+  background: var(--bg-subtle);
 }
 
 .top-bar h1 {
   flex: 1;
-  font-size: 20px;
-  font-weight: 600;
-  color: #333;
+  font-size: var(--text-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
   margin: 0;
 }
 
 .server-info-bar {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  padding: 12px 20px;
-  color: white;
-  font-size: 14px;
+  background: var(--brand-gradient);
+  padding: var(--space-2) var(--space-4);
+  color: var(--text-inverse);
+  font-size: var(--text-sm);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .server-label {
@@ -176,7 +186,7 @@ function goBack() {
 }
 
 .server-name {
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
 
 .loading-state {
@@ -185,17 +195,17 @@ function goBack() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #999;
+  color: var(--text-muted);
 }
 
 .spinner {
-  width: 40px;
-  height: 40px;
-  border: 4px solid #f3f3f3;
-  border-top: 4px solid #667eea;
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top: 3px solid var(--brand-primary);
   border-radius: 50%;
   animation: spin 1s linear infinite;
-  margin-bottom: 16px;
+  margin-bottom: var(--space-3);
 }
 
 @keyframes spin {
@@ -205,75 +215,78 @@ function goBack() {
 
 .instance-list {
   flex: 1;
-  padding: 20px;
+  padding: var(--space-3);
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2-5);
 }
 
 .instance-card {
-  background: white;
-  border-radius: 16px;
-  padding: 20px;
-  margin-bottom: 12px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-card-padding);
+  border: 1px solid var(--border);
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-3);
   cursor: pointer;
-  transition: all 0.3s;
+  transition: background 120ms;
 }
 
 .instance-card:active {
-  transform: scale(0.98);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  background: var(--bg-subtle);
 }
 
 .instance-icon {
-  font-size: 36px;
-  width: 56px;
-  height: 56px;
+  font-size: var(--text-xl);
+  width: 40px;
+  height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f0f2f5;
-  border-radius: 12px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-md);
   flex-shrink: 0;
 }
 
 .instance-info {
   flex: 1;
+  min-width: 0;
 }
 
 .instance-info h3 {
-  font-size: 16px;
-  font-weight: 600;
-  color: #333;
-  margin: 0 0 4px 0;
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  margin: 0 0 var(--space-1) 0;
 }
 
 .instance-id {
-  font-size: 12px;
-  color: #999;
-  margin: 0 0 8px 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin: 0 0 var(--space-2) 0;
   font-family: monospace;
 }
 
 .instance-meta {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .meta-tag {
-  font-size: 11px;
-  padding: 4px 8px;
-  background: #e8f0fe;
-  color: #667eea;
-  border-radius: 4px;
-  font-weight: 500;
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-2);
+  background: rgba(102, 126, 234, 0.1);
+  color: var(--brand-primary);
+  border-radius: var(--radius-sm);
+  font-weight: var(--font-weight-medium);
 }
 
 .instance-arrow {
-  font-size: 24px;
-  color: #ccc;
+  font-size: var(--text-lg);
+  color: var(--text-muted);
+  opacity: 0.5;
 }
 
 .empty-state {
@@ -282,35 +295,34 @@ function goBack() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px;
-  color: #999;
+  padding: var(--space-6);
+  color: var(--text-muted);
 }
 
 .empty-icon {
-  font-size: 64px;
-  margin-bottom: 16px;
+  font-size: 48px;
+  margin-bottom: var(--space-3);
 }
 
 .empty-state p {
-  font-size: 16px;
-  margin-bottom: 20px;
+  font-size: var(--text-base);
+  margin-bottom: var(--space-4);
 }
 
 .retry-btn {
-  padding: 12px 24px;
-  font-size: 14px;
-  font-weight: 600;
-  color: white;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: var(--space-2) var(--space-5);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-inverse);
+  background: var(--brand-primary);
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 
 .retry-btn:active {
   opacity: 0.8;
 }
-</style>
 
 .error-state {
   flex: 1;
@@ -318,17 +330,18 @@ function goBack() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px;
-  color: #c33;
+  padding: var(--space-6);
+  color: var(--danger);
 }
 
 .error-icon {
-  font-size: 64px;
-  margin-bottom: 16px;
+  font-size: 48px;
+  margin-bottom: var(--space-3);
 }
 
 .error-state p {
-  font-size: 16px;
-  margin-bottom: 20px;
+  font-size: var(--text-base);
+  margin-bottom: var(--space-4);
   text-align: center;
 }
+</style>

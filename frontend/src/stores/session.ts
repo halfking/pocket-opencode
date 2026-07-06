@@ -31,6 +31,8 @@ export interface ToolContent {
   input?: Record<string, any>
   output?: any
   error?: string
+  /** Execution duration (ms); may be filled in once the tool finishes. */
+  durationMs?: number
 }
 
 export type AssistantContent = TextContent | ReasoningContent | ToolContent

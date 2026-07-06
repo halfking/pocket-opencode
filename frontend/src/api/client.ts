@@ -131,6 +131,21 @@ export const api = {
     return res.json()
   },
 
+  async updateTask(id: string, data: Partial<Task>): Promise<Task> {
+    const res = await authFetch(`${API_BASE}/api/tasks/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    })
+    return res.json()
+  },
+
+  async deleteTask(id: string): Promise<void> {
+    await authFetch(`${API_BASE}/api/tasks/${id}`, {
+      method: "DELETE",
+    })
+  },
+
   async getTaskSessions(taskId: string): Promise<SessionLink[]> {
     const res = await authFetch(`${API_BASE}/api/tasks/${taskId}/sessions`)
     const data = await res.json()

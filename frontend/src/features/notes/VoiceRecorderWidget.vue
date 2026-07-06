@@ -75,12 +75,11 @@ async function stop() {
   })
   cleanupMedia()
 
-  // TODO: persist blob to a real file path for native STT. Currently a blob URL.
   const blob = new Blob(chunks, { type: 'audio/webm' })
   audioPath = URL.createObjectURL(blob)
 
   try {
-    const result = await sttApi.transcribe({ audioPath })
+    const result = await sttApi.transcribe({ audioBlob: blob })
     emit('transcribed', {
       text: result.text,
       audioPath,

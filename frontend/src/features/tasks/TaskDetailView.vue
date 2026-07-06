@@ -41,6 +41,7 @@
       <button
         v-if="task?.status !== 'active'"
         class="action-btn resume"
+        :disabled="updating"
         @click="updateStatus('active')"
       >
         ▶ 恢复
@@ -48,6 +49,7 @@
       <button
         v-if="task?.status === 'active'"
         class="action-btn pause"
+        :disabled="updating"
         @click="updateStatus('blocked')"
       >
         ⏸ 暂停
@@ -55,6 +57,7 @@
       <button
         v-if="task?.status !== 'completed'"
         class="action-btn complete"
+        :disabled="updating"
         @click="updateStatus('completed')"
       >
         ✅ 完成
@@ -62,7 +65,7 @@
       <button class="action-btn attach" @click="showAttachModal = true">
         📎 附加
       </button>
-      <button class="action-btn delete" @click="confirmDelete">
+      <button class="action-btn delete" :disabled="deleting" @click="confirmDelete">
         🗑
       </button>
     </div>
@@ -146,6 +149,8 @@ const task = ref<Task | null>(null)
 const sessions = ref<any[]>([])
 const showAttachModal = ref(false)
 const newSession = ref({ sessionId: '', instanceId: '', role: 'primary' })
+const updating = ref(false)
+const deleting = ref(false)
 
 onMounted(async () => {
   const taskId = route.params.id as string
@@ -158,22 +163,34 @@ onMounted(async () => {
 })
 
 async function updateStatus(status: string) {
-  if (!task.value) return
+  if (!task.value || updating.value) return
+  const oldStatus = task.value.status
+  updating.value = true
+  // Optimistic update — rewind on error.
+  task.value.status = status as any
   try {
-    // Optimistic update
-    const old = task.value.status
-    task.value.status = status as any
-    // TODO: call API to persist status change
-    // await api.updateTask(task.value.id, { status })
-  } catch (e) {
+    await api.updateTask(task.value.id, { status })
+  } catch (e: any) {
     console.error('Failed to update status:', e)
+    task.value.status = oldStatus as any
+    alert(`状态更新失败：${e?.message || '未知错误'}`)
+  } finally {
+    updating.value = false
   }
 }
 
-function confirmDelete() {
-  if (confirm('确定删除此任务？')) {
-    // TODO: call API to delete
+async function confirmDelete() {
+  if (!task.value || deleting.value) return
+  if (!confirm('确定删除此任务？')) return
+  const taskId = task.value.id
+  deleting.value = true
+  try {
+    await api.deleteTask(taskId)
     router.push('/ai')
+  } catch (e: any) {
+    console.error('Failed to delete task:', e)
+    deleting.value = false
+    alert(`删除失败：${e?.message || '未知错误'}\n请重试或稍后再试。`)
   }
 }
 

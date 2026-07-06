@@ -270,52 +270,54 @@ function handleLogout() {
 <style scoped>
 .settings-view {
   min-height: 100vh;
-  background: #f5f7fa;
+  background: var(--bg-base);
   display: flex;
   flex-direction: column;
   padding-bottom: 70px;
 }
 
 .top-bar {
-  background: white;
-  padding: 16px 20px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  background: var(--bg-card);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
 }
 
 .top-bar h1 {
-  font-size: 20px;
-  font-weight: 600;
+  font-size: var(--text-lg);
+  font-weight: var(--font-weight-semibold);
   margin: 0;
+  color: var(--text-primary);
 }
 
 .settings-container {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
+  padding: var(--space-3);
 }
 
 .settings-section {
-  background: white;
-  border-radius: 16px;
-  padding: 20px;
-  margin-bottom: 16px;
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  margin-bottom: var(--space-3);
+  border: 1px solid var(--border);
 }
 
 .settings-section h2 {
-  font-size: 14px;
-  font-weight: 600;
-  color: #999;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-muted);
   text-transform: uppercase;
-  margin: 0 0 16px 0;
+  margin: 0 0 var(--space-3) 0;
   letter-spacing: 0.5px;
 }
 
 .setting-item {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 16px 0;
-  border-bottom: 1px solid #f0f0f0;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
 }
 
 .setting-item:last-child {
@@ -323,14 +325,14 @@ function handleLogout() {
 }
 
 .setting-icon {
-  font-size: 24px;
-  width: 40px;
-  height: 40px;
+  font-size: var(--text-lg);
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f8f9fa;
-  border-radius: 10px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-md);
   flex-shrink: 0;
 }
 
@@ -339,36 +341,36 @@ function handleLogout() {
 }
 
 .setting-label {
-  font-size: 15px;
-  font-weight: 600;
-  color: #333;
-  margin-bottom: 4px;
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  margin-bottom: var(--space-1);
 }
 
 .setting-value {
-  font-size: 14px;
-  color: #666;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
 }
 
 .setting-value.small {
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-family: monospace;
 }
 
 .action-btn {
   width: 100%;
-  padding: 16px;
-  font-size: 16px;
-  font-weight: 600;
+  padding: var(--space-3);
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-semibold);
   border: none;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  transition: all 0.3s;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2-5);
+  transition: all 120ms;
 }
 
 .action-btn:last-child {
@@ -376,18 +378,72 @@ function handleLogout() {
 }
 
 .action-btn.primary {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  background: var(--brand-primary);
+  color: var(--text-inverse);
+}
+
+.action-btn.secondary {
+  background: rgba(102, 126, 234, 0.1);
+  color: var(--brand-primary);
+  border: 1px solid rgba(102, 126, 234, 0.2);
 }
 
 .action-btn.danger {
-  background: #fee;
-  color: #c33;
-  border: 1px solid #fcc;
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+  border: 1px solid rgba(239, 68, 68, 0.2);
 }
 
 .action-btn:active {
   transform: scale(0.98);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.model-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.model-chip {
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+  font-family: monospace;
+  color: var(--text-primary);
+}
+
+.action-row {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.action-row .action-btn {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.test-result {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+.test-result.ok {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--success);
+}
+
+.test-result.fail {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
 }
 
 /*
@@ -395,9 +451,3 @@ function handleLogout() {
   .nav-label），由 AppLayout 提供的共享 BottomNav 接管。
 */
 </style>
-
-.action-btn.secondary {
-  background: #e8f0fe;
-  color: #667eea;
-  border: 1px solid #d0e1fd;
-}

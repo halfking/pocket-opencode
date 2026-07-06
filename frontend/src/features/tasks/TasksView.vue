@@ -225,21 +225,35 @@ import { useRouter } from 'vue-router'
 import { api, type Task } from '../../api/client'
 import wsClient from '../../api/websocket'
 import { usePullDownClose } from '../../composables/usePullDownClose'
+import { useVoiceRecording } from '../../composables/useVoiceRecording'
+import { useToast } from '../../composables/useToast'
 
 const router = useRouter()
+const toast = useToast()
 
 // ── State ──
 const currentInstance = ref<any>(null)
-const tasks = ref<Task[]>([])
+type TaskWithInstance = Task & { instanceName?: string }
+const tasks = ref<TaskWithInstance[]>([])
 const sessions = ref<any[]>([])
 const loading = ref(true)
 const sessionsLoading = ref(true)
 const showCreateModal = ref(false)
 const showCompleted = ref(false)
 const quickPrompt = ref('')
-const isRecording = ref(false)
 const modalRef = ref<HTMLElement | null>(null)
 const modalSheetRef = ref<HTMLElement | null>(null)
+
+const { isRecording, transcribing, toggleRecording } = useVoiceRecording({
+  onTranscribed(text) {
+    quickPrompt.value = quickPrompt.value
+      ? `${quickPrompt.value.trimEnd()} ${text}`
+      : text
+  },
+  onError(msg) {
+    toast.error(msg)
+  },
+})
 
 const newTask = ref({
   title: '',
@@ -327,7 +341,7 @@ async function loadSessions() {
 }
 
 // ── Handlers ──
-function handleTaskUpdate(task: Task) {
+function handleTaskUpdate(task: TaskWithInstance) {
   const idx = tasks.value.findIndex((t) => t.id === task.id)
   if (idx >= 0) tasks.value[idx] = { ...tasks.value[idx], ...task }
   else tasks.value.unshift({ ...task, instanceName: currentInstance.value?.displayName || '' })
@@ -374,44 +388,8 @@ function openSession(s: any) {
   })
 }
 
-// ── Voice ──
-let mediaRecorder: MediaRecorder | null = null
-let audioChunks: Blob[] = []
-
-async function toggleVoice() {
-  if (isRecording.value) {
-    stopRecording()
-  } else {
-    await startRecording()
-  }
-}
-
-async function startRecording() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } })
-    mediaRecorder = new MediaRecorder(stream)
-    audioChunks = []
-    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data) }
-    mediaRecorder.onstop = async () => {
-      stream.getTracks().forEach((t) => t.stop())
-      // Placeholder: STT integration goes here
-      // For now, just show a hint
-      if (quickPrompt.value.trim()) return
-      quickPrompt.value = '[语音识别中...]'
-    }
-    mediaRecorder.start()
-    isRecording.value = true
-  } catch (e) {
-    console.error('Microphone access denied:', e)
-  }
-}
-
-function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop()
-  }
-  isRecording.value = false
-}
+// ── Voice (via composable) ──
+const toggleVoice = toggleRecording
 
 function onVoiceTouchStart() { /* long-press future: auto-send on stop */ }
 function onVoiceTouchEnd() { /* noop for now */ }

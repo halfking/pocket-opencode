@@ -8,6 +8,8 @@ export { default as Input } from './base/Input.vue'
 export { default as Dialog } from './base/Dialog.vue'
 export { default as BottomSheet } from './base/BottomSheet.vue'
 export { default as Loading } from './base/Loading.vue'
+export { default as EmptyState } from './base/EmptyState.vue'
+export { default as ErrorState } from './base/ErrorState.vue'
 
 // 交互组件
 export { default as BottomNav } from './interactive/BottomNav.vue'
