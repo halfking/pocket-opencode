@@ -5,23 +5,36 @@
 <template>
   <div class="notes-view">
     <AppLayout>
-      <div class="search-bar">
-        <input v-model="query" placeholder="搜索笔记…" @keyup.enter="onSearch" />
-        <select v-model="searchMode" @change="onSearch" class="search-mode">
-          <option value="list">全部</option>
-          <option value="fts">全文</option>
-          <option value="semantic">语义</option>
-          <option value="hybrid">混合</option>
-        </select>
+      <!-- 本地数据库未初始化提示 -->
+      <div v-if="dbNotReady" class="state" style="padding: 40px 20px;">
+        <p style="font-size: 48px; margin-bottom: 16px;">🔒</p>
+        <p style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">本地数据未解锁</p>
+        <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">
+          笔记功能需要本地加密数据库<br/>请退出重新登录以初始化本地存储
+        </p>
+        <button class="btn-ghost" @click="goToLogin" style="margin: 0 auto; padding: 8px 24px; border: 1px solid var(--border); border-radius: 8px;">
+          重新登录
+        </button>
       </div>
 
-      <div v-if="loading" class="state">加载中…</div>
-      <div v-else-if="notes.length === 0" class="state">
-        <p>还没有笔记</p>
-        <p class="hint">长按右下角麦克风开始语音录入</p>
-      </div>
+      <template v-else>
+        <div class="search-bar">
+          <input v-model="query" placeholder="搜索笔记…" @keyup.enter="onSearch" />
+          <select v-model="searchMode" @change="onSearch" class="search-mode">
+            <option value="list">全部</option>
+            <option value="fts">全文</option>
+            <option value="semantic">语义</option>
+            <option value="hybrid">混合</option>
+          </select>
+        </div>
 
-      <div v-else class="note-list">
+        <div v-if="loading" class="state">加载中…</div>
+        <div v-else-if="notes.length === 0" class="state">
+          <p>还没有笔记</p>
+          <p class="hint">长按右下角麦克风开始语音录入</p>
+        </div>
+
+        <div v-else class="note-list">
         <div
           v-for="n in notes"
           :key="n.id"
@@ -40,6 +53,7 @@
       </div>
 
       <VoiceRecorderWidget @transcribed="onTranscribed" />
+      </template>
     </AppLayout>
   </div>
 </template>
@@ -57,12 +71,26 @@ const notes = ref<LocalNote[]>([])
 const loading = ref(true)
 const query = ref('')
 const searchMode = ref<'list' | 'fts' | 'semantic' | 'hybrid'>('list')
+const dbNotReady = ref(false)
+
+function goToLogin() {
+  router.push('/login')
+}
 
 async function load() {
   loading.value = true
+  dbNotReady.value = false
   try {
     const results = await notesStore.listNotes({ limit: 100 })
     notes.value = results
+  } catch (e: any) {
+    // 本地数据库未初始化时，显示友好提示而非崩溃
+    if (e?.message?.includes('LocalDB 未初始化')) {
+      dbNotReady.value = true
+      console.warn('[notes] 本地数据库未初始化，显示降级界面')
+    } else {
+      console.error('[notes] 加载失败:', e)
+    }
   } finally {
     loading.value = false
   }

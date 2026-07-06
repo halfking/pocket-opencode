@@ -5,6 +5,19 @@
 -->
 <template>
   <AppLayout>
+    <!-- 本地数据库未初始化提示 -->
+    <div v-if="dbNotReady" class="state" style="padding: 40px 20px;">
+      <p style="font-size: 48px; margin-bottom: 16px;">🔒</p>
+      <p style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">本地数据未解锁</p>
+      <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">
+        邮箱功能需要本地加密数据库<br/>请退出重新登录以初始化本地存储
+      </p>
+      <button class="btn-ghost" @click="goToLogin" style="margin: 0 auto; padding: 8px 24px; border: 1px solid var(--border); border-radius: 8px;">
+        重新登录
+      </button>
+    </div>
+
+    <template v-else>
     <div class="filters">
       <button
         v-for="c in categories"
@@ -47,6 +60,7 @@
         </div>
       </div>
     </div>
+    </template>
   </AppLayout>
 </template>
 
@@ -61,6 +75,11 @@ const router = useRouter()
 const emails = ref<LocalEmail[]>([])
 const loading = ref(true)
 const activeCategory = ref<string>('')
+const dbNotReady = ref(false)
+
+function goToLogin() {
+  router.push('/login')
+}
 
 const categories: { label: string; value: string }[] = [
   { label: '全部', value: '' },
@@ -72,10 +91,18 @@ const categories: { label: string; value: string }[] = [
 
 async function load() {
   loading.value = true
+  dbNotReady.value = false
   try {
     emails.value = await emailsStore.listEmails(
       activeCategory.value ? { category: activeCategory.value } : {},
     )
+  } catch (e: any) {
+    if (e?.message?.includes('LocalDB 未初始化')) {
+      dbNotReady.value = true
+      console.warn('[email] 本地数据库未初始化，显示降级界面')
+    } else {
+      console.error('[email] 加载失败:', e)
+    }
   } finally {
     loading.value = false
   }

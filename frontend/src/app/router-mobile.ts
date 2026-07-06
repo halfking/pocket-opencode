@@ -216,12 +216,16 @@ const router = createRouter({
 
 /**
  * Router Guard:
- *   1. 已登录访问 /login 且龙虾已初始化 → 重定向到首页
+ *   1. 已登录访问 /login → 重定向到首页
  *   2. 需要登录的页面 → 未登录跳 /login
- *   3. 需要龙虾硬壳已初始化的页面（笔记/邮箱/密码箱/会议等本地存储相关）
- *      → 未初始化跳 /login（龙虾初始化由 LoginView 在用户输入主密码后触发）
+ *   3. 需要龙虾硬壳的页面：只检查登录态，让页面组件自己处理 Lobster 未就绪的情况
  * 
- * Phase 7: Added syncFromStorage() to ensure auth state is current on each navigation
+ * Phase 7: 
+ *   - Added syncFromStorage() to ensure auth state is current on each navigation
+ *   - Fixed: Remove forced redirect to /login when Lobster not ready
+ *   - Rationale: Lobster initialization may fail (native plugin issues), but user
+ *     should still be able to navigate. Pages requiring Lobster will show appropriate
+ *     error messages or fallback UI instead of forcing re-login.
  */
 router.beforeEach((to, from, next) => {
   const auth = useAuthStore()
@@ -230,8 +234,8 @@ router.beforeEach((to, from, next) => {
   // This ensures we have the latest auth state, even if localStorage was modified externally
   auth.syncFromStorage()
 
-  // 1) 已登录 + 已初始化但访问 /login → 直接去首页
-  if (to.path === '/login' && auth.isAuthenticated && isLobsterReady()) {
+  // 1) 已登录访问 /login → 直接去首页
+  if (to.path === '/login' && auth.isAuthenticated) {
     return next('/ai')
   }
 
@@ -240,10 +244,9 @@ router.beforeEach((to, from, next) => {
     return next('/login')
   }
 
-  // 3) 需要龙虾初始化但未初始化（/notes /email /vault /meetings 等）
-  if (needsLobster(to) && !isLobsterReady()) {
-    return next('/login')
-  }
+  // 3) Lobster 检查移除：让页面组件自己处理未初始化的情况
+  //    理由：Lobster 初始化可能因为 native 插件问题失败，但不应该阻止导航
+  //    需要 Lobster 的页面会显示友好的错误提示或降级功能
 
   next()
 })
