@@ -210,6 +210,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/opencode/cache/refresh", s.requireAuth(s.handleOpenCodeRefreshCache))
 	mux.HandleFunc("/api/opencode/dispatch", s.requireAuth(s.handleOpenCodeDispatch))
 
+	// 会话迁移方案：跨主机迁移 API
+	mux.HandleFunc("/api/migration", s.requireAuth(s.handleMigration))
+	mux.HandleFunc("/api/migration/preview", s.requireAuth(s.handleMigrationPreview))
+
 
 	// ---- Phase V3: LLM Gateway 配置管理 ----
 	// 用户在 Settings 改 llmgo.kxpms.cn URL / API Key；pocketd 写入 OpenCode 配置

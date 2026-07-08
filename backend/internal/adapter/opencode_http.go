@@ -350,11 +350,30 @@ func (a *OpenCodeHTTPAdapter) SendPrompt(ctx context.Context, instanceBaseURL, s
 	return &SendPromptResponse{Enqueued: true}, nil
 }
 
-// opencodeMessage 映射 OpenCode Message 结构
+// opencodeMessage 映射 OpenCode Message 结构。
+// OpenCode V1 消息顶层结构是 {info:{role,...}, parts:[{type,text,...}]}，
+// 没有外层 "data" 包装。Data 字段用 json.RawMessage + 自定义 UnmarshalJSON
+// 把整个消息体（含 info/parts）放入 Data，供调用方按需提取。
 type opencodeMessage struct {
-	ID   string                 `json:"id"`
-	Type string                 `json:"type"`
-	Data map[string]interface{} `json:"data,omitempty"`
+	ID   string                 `json:"-"`
+	Type string                 `json:"-"`
+	Data map[string]interface{} `json:"-"`
+}
+
+// UnmarshalJSON 把整个 JSON 对象解析到 Data map（兼容 V1 顶层 {info, parts} 结构）。
+func (m *opencodeMessage) UnmarshalJSON(b []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	m.Data = raw
+	if id, ok := raw["id"].(string); ok {
+		m.ID = id
+	}
+	if t, ok := raw["type"].(string); ok {
+		m.Type = t
+	}
+	return nil
 }
 
 // OpenCodeMessage is the exported version of opencodeMessage for external use

@@ -12,5 +12,10 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     port: 4174,
+    proxy: {
+      "/api": "http://localhost:8088",
+      "/ws": { target: "http://localhost:8088", ws: true },
+      "/healthz": "http://localhost:8088",
+    },
   },
 })
