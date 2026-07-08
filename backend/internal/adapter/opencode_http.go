@@ -406,12 +406,31 @@ func (a *OpenCodeHTTPAdapter) GetSessionMessages(ctx context.Context, instanceBa
 		return nil, fmt.Errorf("opencode get messages returned %d", resp.StatusCode)
 	}
 
-	var response SessionMessagesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("decode messages failed: %w", err)
+	// OpenCode 真实响应是裸数组 [...]，但旧版/某些端点可能返回 {data:[...]} 包装。
+	// 双格式兼容：先试裸数组，再试包装对象（与 parseSessionList 策略一致）。
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read messages body failed: %w", err)
 	}
 
-	return &response, nil
+	response := &SessionMessagesResponse{}
+	trimmed := strings.TrimSpace(string(body))
+	if strings.HasPrefix(trimmed, "[") {
+		// 裸数组格式
+		if err := json.Unmarshal(body, &response.Data); err != nil {
+			return nil, fmt.Errorf("decode messages (array) failed: %w", err)
+		}
+	} else {
+		// 包装对象格式 {data:[...], cursor:{...}}
+		var wrapper SessionMessagesResponse
+		if err := json.Unmarshal(body, &wrapper); err != nil {
+			return nil, fmt.Errorf("decode messages (wrapped) failed: %w", err)
+		}
+		response.Data = wrapper.Data
+		response.Cursor = wrapper.Cursor
+	}
+
+	return response, nil
 }
 
 // GetSessionContext 获取会话上下文（最后压缩点之后的所有消息）
@@ -827,7 +846,7 @@ func (a *OpenCodeHTTPAdapter) GetAllPendingQuestionRequests(ctx context.Context,
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := instanceBaseURL + "/api/question/request"
+	url := instanceBaseURL + "/question/request"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create question list request failed: %w", err)
@@ -953,7 +972,7 @@ func (a *OpenCodeHTTPAdapter) SubscribeEvents(ctx context.Context, instanceBaseU
 		Timeout: 0, // 无限超时（由 ctx 控制）
 	}
 
-	url := instanceBaseURL + "/api/event"
+	url := instanceBaseURL + "/event"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create event subscribe request failed: %w", err)

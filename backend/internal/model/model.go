@@ -64,6 +64,7 @@ type SessionResumeBrief struct {
 	ChangedFiles  []string `json:"changedFiles"`
 	Blockers      []string `json:"blockers"`
 	NextAction    string   `json:"nextAction"`
+	Summary       string   `json:"summary,omitempty"` // 会话摘要（与 TS 端 MigrationPack.summary 对齐）
 
 	// —— 迁移方案扩展 ——
 	Attachments []AttachmentRef `json:"attachments,omitempty"` // 产物文件引用（CloudReve URL）

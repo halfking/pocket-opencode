@@ -78,6 +78,10 @@ func (s *Server) handleOpenCodeDispatch(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, fmt.Sprintf("create session failed: %v", err), http.StatusBadGateway)
 		return
 	}
+	if info == nil || info.ID == "" {
+		http.Error(w, "create session returned empty session id", http.StatusBadGateway)
+		return
+	}
 
 	// 2. Send prompt
 	sessionID := info.ID

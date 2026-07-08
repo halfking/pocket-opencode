@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -195,11 +194,7 @@ func (s *Service) CompleteMigration(ctx context.Context, taskID, toInstance, new
 }
 
 // buildPackFromOpenCode 从源 OpenCode 实例拉取会话消息，组装迁移包。
-// 直接调 OpenCode HTTP API（GET /session/:id + GET /session/:id/message），
-// 不依赖 llm-gateway（gateway 路径见 buildPackFromGateway，待 gateway 有真实数据时启用）。
-//
-// 注：adapter.GetMessages 当前期望包装对象，而真实 OpenCode V1 返回裸数组，
-// 此处直接用 http.Client 拉取并解析数组，绕过该 bug（adapter 修正见后续清理）。
+// 复用 adapter.GetSessionDetail + adapter.GetMessages（已修正为双格式解析，支持裸数组响应）。
 func (s *Service) buildPackFromOpenCode(ctx context.Context, instanceBaseURL, sessionID, instanceID string) (*model.SessionResumeBrief, error) {
 	httpAdapter, ok := s.opencode.(*adapter.OpenCodeHTTPAdapter)
 	if !ok {
@@ -212,8 +207,8 @@ func (s *Service) buildPackFromOpenCode(ctx context.Context, instanceBaseURL, se
 		return nil, fmt.Errorf("get session detail: %w", err)
 	}
 
-	// 消息流：直接 HTTP GET /session/:id/message?limit=50（真实返回裸数组）
-	msgs, err := fetchMessagesRaw(ctx, instanceBaseURL, sessionID, 50)
+	// 消息流：复用 adapter.GetMessages（已修正支持裸数组响应，不再需要 fetchMessagesRaw）
+	msgs, err := httpAdapter.GetMessages(ctx, instanceBaseURL, sessionID, 50, "asc")
 	if err != nil {
 		return nil, fmt.Errorf("get messages: %w", err)
 	}
@@ -227,34 +222,11 @@ func (s *Service) buildPackFromOpenCode(ctx context.Context, instanceBaseURL, se
 	}
 
 	// 从消息里提取最后一条 assistant 回复作为 currentState/nextAction 线索。
-	pack.CurrentState = summarizeLastTurnRaw(msgs)
-	pack.NextAction = inferNextActionRaw(msgs)
+	// OpenCodeMessage.Data 是 V1 结构 {info:{role}, parts:[{type,text}]}。
+	pack.CurrentState = summarizeLastTurnFromAdapter(msgs)
+	pack.NextAction = inferNextActionFromAdapter(msgs)
 
 	return pack, nil
-}
-
-// fetchMessagesRaw 直接 HTTP GET /session/:id/message，解析裸数组响应。
-// 每条消息是 V1 结构 {info:{role,...}, parts:[{type,text,...}]}。
-func fetchMessagesRaw(ctx context.Context, instanceBaseURL, sessionID string, limit int) ([]map[string]interface{}, error) {
-	url := fmt.Sprintf("%s/session/%s/message?limit=%d", instanceBaseURL, sessionID, limit)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	var msgs []map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&msgs); err != nil {
-		return nil, fmt.Errorf("decode: %w", err)
-	}
-	return msgs, nil
 }
 
 // selectTarget 选择目标实例：健康 + 活跃会话最少 + 非源实例。
@@ -323,23 +295,14 @@ func (s *Service) execLink(ctx context.Context, taskID, instanceID, sessionID, r
 	})
 }
 
-// extractStringField 从 map（如 session detail JSON）里安全取字符串字段。
-func extractStringField(m map[string]interface{}, key string) string {
-	if v, ok := m[key]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
-// summarizeLastTurnRaw 从原始消息流（[]map，V1 结构）取最后一条 assistant 文本作为当前状态摘要。
-func summarizeLastTurnRaw(msgs []map[string]interface{}) string {
+// summarizeLastTurnFromAdapter 从 adapter 消息流里取最后一条 assistant 文本作为当前状态摘要。
+// OpenCodeMessage.Data 是 V1 结构 {info:{role}, parts:[{type,text}]}。
+func summarizeLastTurnFromAdapter(msgs []adapter.OpenCodeMessage) string {
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if roleFromData(msgs[i]) != "assistant" {
+		if roleFromData(msgs[i].Data) != "assistant" {
 			continue
 		}
-		text := extractTextFromData(msgs[i])
+		text := extractTextFromData(msgs[i].Data)
 		if text == "" {
 			continue
 		}
@@ -351,9 +314,9 @@ func summarizeLastTurnRaw(msgs []map[string]interface{}) string {
 	return ""
 }
 
-// inferNextActionRaw 从最后一条 assistant 消息推断下一步（取末尾 200 字符）。
-func inferNextActionRaw(msgs []map[string]interface{}) string {
-	last := summarizeLastTurnRaw(msgs)
+// inferNextActionFromAdapter 从最后一条 assistant 消息推断下一步（取末尾 200 字符）。
+func inferNextActionFromAdapter(msgs []adapter.OpenCodeMessage) string {
+	last := summarizeLastTurnFromAdapter(msgs)
 	if last == "" {
 		return ""
 	}
@@ -363,9 +326,9 @@ func inferNextActionRaw(msgs []map[string]interface{}) string {
 	return last
 }
 
-// roleFromData 从 V1 message 里取 info.role（Raw 消息顶层含 info/parts）。
-func roleFromData(msg map[string]interface{}) string {
-	if info, ok := msg["info"].(map[string]interface{}); ok {
+// roleFromData 从 V1 message Data 里取 info.role。
+func roleFromData(data map[string]interface{}) string {
+	if info, ok := data["info"].(map[string]interface{}); ok {
 		if r, ok := info["role"].(string); ok {
 			return r
 		}
@@ -373,9 +336,9 @@ func roleFromData(msg map[string]interface{}) string {
 	return ""
 }
 
-// extractTextFromData 从 V1 message 里拼接 parts[].text（type==text）。
-func extractTextFromData(msg map[string]interface{}) string {
-	parts, ok := msg["parts"].([]interface{})
+// extractTextFromData 从 V1 message Data 里拼接 parts[].text（type==text）。
+func extractTextFromData(data map[string]interface{}) string {
+	parts, ok := data["parts"].([]interface{})
 	if !ok {
 		return ""
 	}

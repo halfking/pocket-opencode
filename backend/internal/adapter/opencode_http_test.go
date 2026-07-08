@@ -73,13 +73,13 @@ func newMockOpenCodeServer() *mockOpenCodeServer {
 func (m *mockOpenCodeServer) handler() http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/global/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"healthy": m.healthOK})
 	})
 
-	mux.HandleFunc("/api/session/", func(w http.ResponseWriter, r *http.Request) {
-		path := strings.TrimPrefix(r.URL.Path, "/api/session/")
+	mux.HandleFunc("/session/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/session/")
 		parts := strings.Split(path, "/")
 		if len(parts) < 1 || parts[0] == "" {
 			http.Error(w, "missing session id", http.StatusBadRequest)
@@ -166,17 +166,17 @@ func (m *mockOpenCodeServer) handler() http.Handler {
 		http.NotFound(w, r)
 	})
 
-	mux.HandleFunc("/api/permission/request", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/permission/request", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": m.permissionList})
 	})
 
-	mux.HandleFunc("/api/question/request", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/question/request", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": m.questionList})
 	})
 
-	mux.HandleFunc("/api/event", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/event", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache, no-transform")
 		flusher, ok := w.(http.Flusher)

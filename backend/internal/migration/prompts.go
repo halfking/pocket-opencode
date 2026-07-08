@@ -86,6 +86,10 @@ func buildTaskResume(b *model.SessionResumeBrief) string {
 	}
 	if b.NextAction != "" {
 		lines = append(lines, fmt.Sprintf("- 下一步（请直接从这里接续）：%s", b.NextAction))
+	} else if b.Summary != "" {
+		// 与 TS 端 prompts.ts:90-93 对齐：NextAction 空时回退到 Summary
+		lines = append(lines, fmt.Sprintf("- 上次摘要：%s", b.Summary))
+		lines = append(lines, "- 请根据摘要判断下一步并继续。")
 	} else if b.CurrentState != "" {
 		lines = append(lines, "- 请根据当前状态判断下一步并继续。")
 	}
