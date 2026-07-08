@@ -87,21 +87,21 @@ func (s *Service) Migrate(ctx context.Context, req MigrationRequest) (*Migration
 
 	if s.registry == nil || s.opencode == nil || s.pluginHub == nil {
 		result.Error = "migration service not fully configured (registry/opencode/pluginHub required)"
-		return result, fmt.Errorf(result.Error)
+		return result, fmt.Errorf("%s", result.Error)
 	}
 
 	// 1. 解析源实例 API 地址
 	fromBase, err := s.registry.GetInstanceAPIBase(req.FromInstanceID)
 	if err != nil {
 		result.Error = fmt.Sprintf("source instance not found: %v", err)
-		return result, fmt.Errorf(result.Error)
+		return result, fmt.Errorf("%s", result.Error)
 	}
 
 	// 2. 从源实例拉会话消息 + 元数据，组装迁移包
 	pack, err := s.buildPackFromOpenCode(ctx, fromBase, req.SessionID, req.FromInstanceID)
 	if err != nil {
 		result.Error = fmt.Sprintf("build pack: %v", err)
-		return result, fmt.Errorf(result.Error)
+		return result, fmt.Errorf("%s", result.Error)
 	}
 	result.TurnsMigrated = pack.TurnCount
 
@@ -111,7 +111,7 @@ func (s *Service) Migrate(ctx context.Context, req MigrationRequest) (*Migration
 		toInstance, err = s.selectTarget(req.FromInstanceID)
 		if err != nil {
 			result.Error = fmt.Sprintf("select target: %v", err)
-			return result, fmt.Errorf(result.Error)
+			return result, fmt.Errorf("%s", result.Error)
 		}
 	}
 	result.ToInstance = toInstance
@@ -144,7 +144,7 @@ func (s *Service) Migrate(ctx context.Context, req MigrationRequest) (*Migration
 	})
 	if err != nil {
 		result.Error = fmt.Sprintf("dispatch migrate_to to %s: %v", toInstance, err)
-		return result, fmt.Errorf(result.Error)
+		return result, fmt.Errorf("%s", result.Error)
 	}
 
 	// 6. 命令已下发。newSessionID 异步回填（目标端 command.result 到达后由 webhook/事件处理器更新）。
