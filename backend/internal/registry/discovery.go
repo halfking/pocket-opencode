@@ -15,28 +15,85 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/model"
 )
 
 // DefaultPorts is the ordered list of ports to scan for OpenCode instances.
-var DefaultPorts = []int{14096, 14097, 14098, 14099, 14100}
+// OpenCode 真实默认端口是 4096（port=0 时的优先值，见 opencode server.ts:117）。
+// 14096-14100 是历史误用值（Pocket 早期假设），保留作向后兼容。
+// 3000/8080 是 opencode serve / opencode web 可能的显式配置端口。
+var DefaultPorts = []int{4096, 14096, 14097, 14098, 14099, 14100, 3000, 8080}
+
+// ZCodePorts 是 ZCode 桌面版/守护进程常见的监听端口（与 OpenCode 共存）。
+var ZCodePorts = []int{4096, 3000, 8080, 9000}
+
+// discoveryOptions 控制扫描行为。零值即退化到原有的"本机+网关"行为，
+// 保证向后兼容；只有显式开启 fullSubnet 才会扫完整 /24（开销较大）。
+type discoveryOptions struct {
+	fullSubnet bool   // 是否扫描每个接口的完整 /24
+	ports      []int  // 待探测端口列表（空=DefaultPorts）
+	extraHosts []string
+}
+
+// DiscoveryOption 配置 NetworkDiscovery 行为。
+type DiscoveryOption func(*discoveryOptions)
+
+// WithFullSubnetScan 开启完整 /24 子网扫描（默认仅扫本机+网关）。
+func WithFullSubnetScan(enable bool) DiscoveryOption {
+	return func(o *discoveryOptions) { o.fullSubnet = enable }
+}
+
+// WithPorts 覆盖默认端口列表。
+func WithPorts(ports []int) DiscoveryOption {
+	return func(o *discoveryOptions) {
+		if len(ports) > 0 {
+			o.ports = ports
+		}
+	}
+}
+
+// WithExtraHosts 追加额外主机（例如 ACC/NPS 返回的内网穿透目标）。
+func WithExtraHosts(hosts []string) DiscoveryOption {
+	return func(o *discoveryOptions) { o.extraHosts = hosts }
+}
 
 // NetworkDiscovery returns a DiscoveryFunc that scans localhost and the host's
 // LAN subnet for OpenCode instances. The scan is fast (< 2s per run with a
 // 500ms timeout per probe) and safe for production use.
-func NetworkDiscovery() DiscoveryFunc {
+//
+// 默认仅扫描本机 + 网关，向后兼容；通过 WithFullSubnetScan(true) 可启用完整 /24 扫描。
+func NetworkDiscovery(opts ...DiscoveryOption) DiscoveryFunc {
+	o := discoveryOptions{ports: DefaultPorts}
+	for _, opt := range opts {
+		opt(&o)
+	}
 	return func(ctx context.Context) ([]InstanceConfig, error) {
-		candidates := buildCandidates()
+		candidates := buildCandidates(o)
 		return probeCandidates(ctx, candidates)
 	}
 }
 
 // buildCandidates collects all (ip, port) pairs to probe.
-func buildCandidates() []hostPort {
+// 默认行为（向后兼容）：本机 + 各接口网关。
+// 当 opts.fullSubnet=true：扫描每个 Up 接口的完整 /24（1-254）。
+// opts.ports 为空时使用 DefaultPorts。
+func buildCandidates(opts discoveryOptions) []hostPort {
 	var result []hostPort
 	// Always scan localhost / 127.0.0.1
 	hosts := []string{"127.0.0.1", "localhost"}
 
-	// Scan LAN interfaces for additional hosts (only the first /24 of each IPv4)
+	// 追加额外配置主机（ACC/NPS 注入的内网穿透目标）
+	for _, h := range opts.extraHosts {
+		hosts = appendUnique(hosts, h)
+	}
+
+	ports := opts.ports
+	if len(ports) == 0 {
+		ports = DefaultPorts
+	}
+
+	// Scan LAN interfaces for additional hosts
 	ifaces, err := net.Interfaces()
 	if err == nil {
 		for _, iface := range ifaces {
@@ -52,22 +109,32 @@ func buildCandidates() []hostPort {
 				if !ok || ipNet.IP.To4() == nil {
 					continue
 				}
-				// Probe the host itself plus the gateway (.1)
 				hostIP := ipNet.IP.String()
 				hosts = appendUnique(hosts, hostIP)
 
-				// Also probe the .1 gateway
 				base := ipNet.IP.Mask(ipNet.Mask)
-				gateway := make(net.IP, len(base))
-				copy(gateway, base)
-				gateway[3] = 1
-				hosts = appendUnique(hosts, gateway.String())
+
+				if opts.fullSubnet {
+					// 完整 /24：扫描 .1 - .254
+					for i := 1; i <= 254; i++ {
+						ip := make(net.IP, len(base))
+						copy(ip, base)
+						ip[3] = byte(i)
+						hosts = appendUnique(hosts, ip.String())
+					}
+				} else {
+					// 默认：仅网关 .1（向后兼容）
+					gateway := make(net.IP, len(base))
+					copy(gateway, base)
+					gateway[3] = 1
+					hosts = appendUnique(hosts, gateway.String())
+				}
 			}
 		}
 	}
 
 	for _, host := range hosts {
-		for _, port := range DefaultPorts {
+		for _, port := range ports {
 			result = append(result, hostPort{Host: host, Port: port})
 		}
 	}
@@ -113,9 +180,12 @@ func probeCandidates(ctx context.Context, candidates []hostPort) ([]InstanceConf
 
 // probeOne checks whether host:port is an OpenCode instance by calling
 // GET /api/health and parsing the response. Returns the instance config on
-// success.
+// success. 探测时尽量从 health 响应中提取 version/capabilities/machine 等自描述字段，
+// 缺失字段保持空值（由 Registry 兜底）。
 func probeOne(ctx context.Context, client *http.Client, host string, port int) (InstanceConfig, bool) {
-	url := fmt.Sprintf("http://%s:%d/api/health", host, port)
+	// OpenCode 真实健康端点是 GET /global/health（无 /api 前缀），返回 {"healthy":true,"version":"..."}。
+	// 历史代码用 /api/health 探测，导致扫不到真实实例——此处修正。
+	url := fmt.Sprintf("http://%s:%d/global/health", host, port)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return InstanceConfig{}, false
@@ -131,11 +201,17 @@ func probeOne(ctx context.Context, client *http.Client, host string, port int) (
 		return InstanceConfig{}, false
 	}
 
-	// 验证响应格式：{ "healthy": true } 或 { "status": "ok" }
+	// 兼容多种 health 响应格式：
+	//   {"healthy": true, "version": "1.14.33"}              ← OpenCode 真实格式
+	//   {"healthy": true, "status": "ok", "version": "..."}   ← 兼容扩展
+	// 额外接受 product（zcode/opencode）、machine 自描述字段（边端 manager 可挂同一端口）。
 	var result struct {
-		Healthy bool   `json:"healthy"`
-		Status  string `json:"status"`
-		Version string `json:"version"`
+		Healthy      bool              `json:"healthy"`
+		Status       string            `json:"status"`
+		Version      string            `json:"version"`
+		Product      string            `json:"product"`      // opencode / zcode
+		Capabilities []string          `json:"capabilities"` // 真实能力
+		Machine      model.MachineInfo `json:"machine"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return InstanceConfig{}, false
@@ -151,16 +227,30 @@ func probeOne(ctx context.Context, client *http.Client, host string, port int) (
 		displayHost = "local"
 	}
 	id := fmt.Sprintf("discovered-%s-%d", displayHost, port)
-	displayName := fmt.Sprintf("OpenCode (%s:%d)", host, port)
+
+	// 产品名优先：zcode/opencode，否则用 OpenCode 占位
+	productLabel := "OpenCode"
+	if result.Product != "" {
+		productLabel = result.Product
+	}
+
+	displayName := fmt.Sprintf("%s (%s:%d)", productLabel, host, port)
 	if result.Version != "" {
-		displayName = fmt.Sprintf("OpenCode %s (%s:%d)", result.Version, host, port)
+		displayName = fmt.Sprintf("%s %s (%s:%d)", productLabel, result.Version, host, port)
 	}
 
 	return InstanceConfig{
-		ID:          id,
-		DisplayName: displayName,
-		APIBaseURL:  fmt.Sprintf("http://%s:%d", host, port),
-		Environment: "discovered",
+		ID:           id,
+		DisplayName:  displayName,
+		APIBaseURL:   fmt.Sprintf("http://%s:%d", host, port),
+		Environment:  "discovered",
+		Hostname:     host,
+		IP:           host,
+		Port:         port,
+		Version:      result.Version,
+		Machine:      result.Machine,
+		Origin:       "discovered",
+		Capabilities: result.Capabilities,
 	}, true
 }
 

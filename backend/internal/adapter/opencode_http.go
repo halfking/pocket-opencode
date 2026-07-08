@@ -306,13 +306,13 @@ func (a *OpenCodeHTTPAdapter) CreateSession(ctx context.Context, instanceBaseURL
 }
 
 // SendPrompt 发送 Prompt 到指定会话
-// API: POST /session/:sessionID/prompt
+// OpenCode 真实 API: POST /session/:sessionID/message（无 /prompt 后缀）
 // Payload: { id?, prompt, delivery?, resume? }
 func (a *OpenCodeHTTPAdapter) SendPrompt(ctx context.Context, instanceBaseURL, sessionID string, payload *SendPromptRequest) (*SendPromptResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/session/%s/prompt", instanceBaseURL, sessionID)
+	url := fmt.Sprintf("%s/session/%s/message", instanceBaseURL, sessionID)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload failed: %w", err)
@@ -322,6 +322,7 @@ func (a *OpenCodeHTTPAdapter) SendPrompt(ctx context.Context, instanceBaseURL, s
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %w", err)
 	}
+	// OpenCode 会按 Content-Type 解析 JSON body
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := a.client.Do(req)
@@ -330,19 +331,23 @@ func (a *OpenCodeHTTPAdapter) SendPrompt(ctx context.Context, instanceBaseURL, s
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("opencode send prompt returned %d: %s", resp.StatusCode, string(body))
+	if resp.StatusCode != http.StatusOK {
+		r, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("opencode send prompt returned %d: %s", resp.StatusCode, string(r))
 	}
 
-	var response struct {
+	// 兼容两种响应：
+	// 1) { data: { messageID, enqueued, position } }
+	// 2) 直接返回 SessionInput/Message 结构（未来版本）
+	var wrapper struct {
 		Data SendPromptResponse `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("decode prompt response failed: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err == nil {
+		return &wrapper.Data, nil
 	}
 
-	return &response.Data, nil
+	// 回退：某些版本可能只返回 200 + 空体 / SSE 起始，不影响"已发送"语义
+	return &SendPromptResponse{Enqueued: true}, nil
 }
 
 // opencodeMessage 映射 OpenCode Message 结构
@@ -549,12 +554,14 @@ func (a *OpenCodeHTTPAdapter) WaitForSessionIdle(ctx context.Context, instanceBa
 	return nil
 }
 
-// HealthCheck 检查 OpenCode 实例健康状态
+// HealthCheck 检查 OpenCode 实例健康状态。
+// OpenCode 真实端点是 GET /global/health（无 /api 前缀），返回 {"healthy":true,"version":"..."}。
+// 历史代码误用 /api/health，导致扫描找不到真实实例——此处修正。
 func (a *OpenCodeHTTPAdapter) HealthCheck(ctx context.Context, instanceBaseURL string) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, instanceBaseURL+"/api/health", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, instanceBaseURL+"/global/health", nil)
 	if err != nil {
 		return fmt.Errorf("create health check request failed: %w", err)
 	}
@@ -570,7 +577,8 @@ func (a *OpenCodeHTTPAdapter) HealthCheck(ctx context.Context, instanceBaseURL s
 	}
 
 	var result struct {
-		Healthy bool `json:"healthy"`
+		Healthy bool   `json:"healthy"`
+		Version string `json:"version"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return fmt.Errorf("decode health check response failed: %w", err)
@@ -658,13 +666,13 @@ func (a *OpenCodeHTTPAdapter) GetPermissionRequests(ctx context.Context, instanc
 }
 
 // GetAllPendingPermissionRequests 获取所有位置下的待审批权限请求
-// API: GET /api/permission/request?directory=&workspaceID=
+// API: GET /permission/request?directory=&workspaceID=（OpenCode 路径无 /api 前缀）
 // 响应: Location.response(PermissionRequest[])
 func (a *OpenCodeHTTPAdapter) GetAllPendingPermissionRequests(ctx context.Context, instanceBaseURL, directory, workspaceID string) ([]PermissionRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := instanceBaseURL + "/api/permission/request"
+	url := instanceBaseURL + "/permission/request"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create permission list request failed: %w", err)

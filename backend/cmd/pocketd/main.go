@@ -19,6 +19,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
+	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
@@ -239,7 +240,16 @@ if pool != nil {
 	}
 
 	// 启用自动发现：扫描 localhost + LAN 端口发现 OpenCode 实例（60s 间隔）
-	reg.EnableAutoDiscovery(registry.NetworkDiscovery(), 60*time.Second)
+	// 会话迁移方案：支持完整 /24 扫描、自定义端口、额外主机（ACC/NPS 注入）
+	discoveryFunc := registry.NetworkDiscovery(
+		registry.WithFullSubnetScan(cfg.DiscoveryFullSubnet),
+		registry.WithPorts(cfg.DiscoveryPorts),
+		registry.WithExtraHosts(cfg.DiscoveryExtraHosts),
+	)
+	if cfg.DiscoveryFullSubnet {
+		log.Printf("⚠️ 启用完整 /24 子网扫描（生产慎用，开销较大）")
+	}
+	reg.EnableAutoDiscovery(discoveryFunc, 60*time.Second)
 	go reg.StartAutoDiscovery(context.Background())
 
 	srv := server.New(cfg, npsAdapter, opencodeAdapter, taskStore, reg, configAdapter,
@@ -319,6 +329,13 @@ if pool != nil {
 
 	// 把 manager 注入 server（用 setter 而非扩展 New，避免 26+ 参数）
 	srv.SetOpenCodeManagers(ocMgr, eventMgr, permMgr, quesMgr)
+
+	// 会话迁移方案：装配跨主机迁移服务（registry + opencodeAdapter + pluginHub + taskStore）。
+	// 任一依赖为 nil 时迁移服务内部降级。taskStore 可能为 nil（remote-only 模式），
+	// 迁移服务此时跳过逻辑会话映射，但仍可下发命令。
+	migrationSvc := migration.New(reg, opencodeAdapter, srv.PluginHub(), taskStore)
+	srv.SetMigrationService(migrationSvc)
+	log.Println("会话迁移服务已装配（/api/migration, /api/migration/preview）")
 
 	// Phase 5: 启动 ACC 任务后台同步（5 分钟一次把 ACC 任务拉取到本地）
 	taskScheduler := tasksync.New(mcpClient, taskStore, 5*60*1_000_000_000) // 5min

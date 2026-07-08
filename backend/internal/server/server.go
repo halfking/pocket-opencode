@@ -21,6 +21,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
+	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
@@ -83,6 +84,9 @@ type Server struct {
 	dataDir string // 数据目录
 
 	llmGWStore *LLMGatewayStore // nil = 无 PG，配置不持久化
+
+	// 会话迁移方案：跨主机迁移编排服务（nil = registry/adapter/pluginHub 未就绪）
+	migrationSvc *migration.Service
 }
 
 // New 构造 Server。Phase 0 扩展：新增 notes/email/vault store、STT transcriber、ACC MCP client。
@@ -98,6 +102,12 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 	// Initialize Plugin Hub
 	pluginHub := ws.NewPluginHub()
 	go pluginHub.Run()
+	// 会话迁移方案：把 Registry 注入 PluginHub，
+	// 使边端插件/manager 的 instance.register / heartbeat 能写入 Registry
+	// （origin=registered），/api/instances 即可展示真实实例。
+	if reg != nil {
+		pluginHub.SetInstanceRegistrar(reg)
+	}
 
 	return &Server{
 		cfg:             cfg,
@@ -146,6 +156,14 @@ func (s *Server) SetLLMGatewayStore(store *LLMGatewayStore) {
 	s.llmGWStore = store
 }
 
+// SetMigrationService 注入会话跨主机迁移编排服务（registry/adapter/pluginHub 就绪后由 main 装配）。
+func (s *Server) SetMigrationService(svc *migration.Service) {
+	s.migrationSvc = svc
+}
+
+// PluginHub 返回内部的 PluginHub，供 main 装配迁移服务等需要下发命令的组件复用。
+func (s *Server) PluginHub() *ws.PluginHub { return s.pluginHub }
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
@@ -190,11 +208,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/opencode/sessions/", s.handleOpenCodeSessionOperations)
 	mux.HandleFunc("/api/opencode/instances/", s.handleOpenCodeInstanceOperations)
 	mux.HandleFunc("/api/opencode/cache/refresh", s.requireAuth(s.handleOpenCodeRefreshCache))
-	
-	// OpenCode 发现和任务感知 API
-	mux.HandleFunc("/api/opencode/discover", s.handleDiscoverInstances)
-	mux.HandleFunc("/api/opencode/tasks", s.handleListAllTasks)
-	mux.HandleFunc("/api/opencode/tasks/", s.handleGetTaskDetail)
+	mux.HandleFunc("/api/opencode/dispatch", s.requireAuth(s.handleOpenCodeDispatch))
+
 
 	// ---- Phase V3: LLM Gateway 配置管理 ----
 	// 用户在 Settings 改 llmgo.kxpms.cn URL / API Key；pocketd 写入 OpenCode 配置
