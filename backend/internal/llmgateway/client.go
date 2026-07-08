@@ -146,3 +146,119 @@ func (c *Client) Embed(ctx context.Context, req EmbeddingRequest) (*EmbeddingRes
 	}
 	return &out, nil
 }
+
+// =============================================================================
+// 会话跨主机迁移：导出/导入/拉取（对接 llm-gateway-go /api/admin/session-export）
+// =============================================================================
+
+// SessionPack 是会话迁移包的客户端镜像（与 admin.SessionExport 对齐）。
+// json tag 与 llm-gateway-go 的 wire format 一致，可直接反序列化。
+type SessionPack struct {
+	SessionMeta struct {
+		ID        string `json:"id"`
+		Title     string `json:"title,omitempty"`
+		Directory string `json:"directory,omitempty"`
+		Instance  string `json:"instance,omitempty"`
+		TaskID    string `json:"taskId,omitempty"`
+	} `json:"session_meta"`
+	ResumeBrief struct {
+		CurrentState  string   `json:"currentState,omitempty"`
+		LastObjective string   `json:"lastObjective,omitempty"`
+		Decisions     []string `json:"decisions,omitempty"`
+		ChangedFiles  []string `json:"changedFiles,omitempty"`
+		Blockers      []string `json:"blockers,omitempty"`
+		NextAction    string   `json:"nextAction,omitempty"`
+	} `json:"resume_brief"`
+	Messages    []json.RawMessage `json:"messages,omitempty"`
+	Summary     string            `json:"summary,omitempty"`
+	ExportedAt  string            `json:"exported_at,omitempty"`
+}
+
+// ExportSession 从 llm-gateway-go 导出指定会话的完整迁移包。
+// 对应 GET /api/admin/session-export?id=<gw_session_id>&tenant=<t>。
+func (c *Client) ExportSession(ctx context.Context, gwSessionID, tenantID string) (*SessionPack, error) {
+	u := fmt.Sprintf("%s/api/admin/session-export?id=%s&tenant=%s", c.BaseURL, gwSessionID, tenantID)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+	resp, err := c.Client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("export session: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		r, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("export session %d: %s", resp.StatusCode, string(r))
+	}
+
+	var pack SessionPack
+	if err := json.NewDecoder(resp.Body).Decode(&pack); err != nil {
+		return nil, fmt.Errorf("decode session pack: %w", err)
+	}
+	return &pack, nil
+}
+
+// ImportPackResp 是 ImportPack 的响应。
+type ImportPackResp struct {
+	PackID    string `json:"pack_id"`
+	SessionID string `json:"session_id"`
+}
+
+// ImportPack 把迁移包上传到 llm-gateway-go staging，返回 pack_id 供目标主机拉取。
+// 对应 POST /api/admin/session-export/import?tenant=<t>。
+func (c *Client) ImportPack(ctx context.Context, pack *SessionPack, tenantID string) (*ImportPackResp, error) {
+	body, _ := json.Marshal(pack)
+	u := fmt.Sprintf("%s/api/admin/session-export/import?tenant=%s", c.BaseURL, tenantID)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+	resp, err := c.Client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("import pack: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		r, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("import pack %d: %s", resp.StatusCode, string(r))
+	}
+
+	var out ImportPackResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode import resp: %w", err)
+	}
+	return &out, nil
+}
+
+// FetchPack 按 pack_id 从 llm-gateway-go 拉取已导入的迁移包（目标主机调用）。
+// 对应 GET /api/admin/session-export/pack?id=<pack_id>&tenant=<t>。
+func (c *Client) FetchPack(ctx context.Context, packID, tenantID string) (*SessionPack, error) {
+	u := fmt.Sprintf("%s/api/admin/session-export/pack?id=%s&tenant=%s", c.BaseURL, packID, tenantID)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+	resp, err := c.Client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("fetch pack: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		r, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("fetch pack %d: %s", resp.StatusCode, string(r))
+	}
+
+	var pack SessionPack
+	if err := json.NewDecoder(resp.Body).Decode(&pack); err != nil {
+		return nil, fmt.Errorf("decode pack: %w", err)
+	}
+	return &pack, nil
+}

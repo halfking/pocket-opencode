@@ -1,6 +1,10 @@
 package config
 
-import "os"
+import (
+	"os"
+	"strconv"
+	"strings"
+)
 
 type Config struct {
 	HTTPPort                 string
@@ -62,6 +66,11 @@ type Config struct {
 
 	// WebSocket 安全
 	AllowedOrigins string // POCKET_ALLOWED_ORIGINS：逗号分隔的允许 origin 列表（空=dev 模式允许 localhost）
+
+	// —— 会话迁移方案：实例感知增强配置 ——
+	DiscoveryFullSubnet bool     // POCKET_DISCOVERY_FULL_SUBNET：true=扫描完整 /24（默认 false 仅本机+网关）
+	DiscoveryPorts      []int    // POCKET_DISCOVERY_PORTS：自定义扫描端口（逗号分隔，空=默认 14096-14100）
+	DiscoveryExtraHosts []string // POCKET_DISCOVERY_EXTRA_HOSTS：追加扫描主机（逗号分隔，如 ACC/NPS 内网穿透目标）
 }
 
 func Load() Config {
@@ -112,6 +121,10 @@ func Load() Config {
 		LLMGatewayAPIKey: getEnv("POCKET_LLM_GATEWAY_API_KEY", ""),
 		// WebSocket 安全
 		AllowedOrigins: getEnv("POCKET_ALLOWED_ORIGINS", ""),
+		// 会话迁移方案：实例感知增强
+		DiscoveryFullSubnet: getEnv("POCKET_DISCOVERY_FULL_SUBNET", "") == "true",
+		DiscoveryPorts:      parseIntList(getEnv("POCKET_DISCOVERY_PORTS", "")),
+		DiscoveryExtraHosts: parseStringList(getEnv("POCKET_DISCOVERY_EXTRA_HOSTS", "")),
 	}
 }
 
@@ -129,4 +142,37 @@ func getFirstEnv(keys []string, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+// parseIntList 解析逗号分隔的整数列表（如 "14096,14097,8080"）。空串返回 nil。
+func parseIntList(s string) []int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	var result []int
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if n, err := strconv.Atoi(p); err == nil && n > 0 {
+			result = append(result, n)
+		}
+	}
+	return result
+}
+
+// parseStringList 解析逗号分隔的字符串列表。空串返回 nil。
+func parseStringList(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	var result []string
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			result = append(result, v)
+		}
+	}
+	return result
 }

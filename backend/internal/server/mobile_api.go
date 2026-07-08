@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	mobilews "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
@@ -20,6 +22,7 @@ type MobileAPI struct {
 	permMgr     *opencode.PermissionManager
 	questionMgr *opencode.QuestionManager
 	wsHub       *mobilews.MobileWSHub
+	jwtSigner   *auth.Signer
 }
 
 // MobileSessionListItem is a lightweight session representation for mobile.
@@ -66,6 +69,7 @@ func NewMobileAPI(
 	permMgr *opencode.PermissionManager,
 	questionMgr *opencode.QuestionManager,
 	wsHub *mobilews.MobileWSHub,
+	jwtSigner *auth.Signer,
 ) *MobileAPI {
 	return &MobileAPI{
 		httpAdapter: httpAdapter,
@@ -73,6 +77,7 @@ func NewMobileAPI(
 		permMgr:     permMgr,
 		questionMgr: questionMgr,
 		wsHub:       wsHub,
+		jwtSigner:   jwtSigner,
 	}
 }
 
@@ -515,13 +520,35 @@ func (api *MobileAPI) HandleWebSocket(c echo.Context) error {
 		},
 	}
 
+	// Extract and validate token from query parameter
+	tokenString := c.QueryParam("token")
+	if tokenString == "" {
+		// Fallback: try Authorization header
+		tokenString = c.Request().Header.Get("Authorization")
+		if tokenString != "" && len(tokenString) > 7 && tokenString[:7] == "Bearer " {
+			tokenString = tokenString[7:]
+		}
+	}
+
+	var userID string
+	if tokenString != "" && api.jwtSigner != nil {
+		claims, err := api.jwtSigner.Parse(tokenString)
+		if err != nil {
+			log.Printf("WebSocket token validation failed: %v", err)
+			return echo.NewHTTPError(http.StatusUnauthorized, "Invalid token")
+		}
+		userID = claims.UserID
+	} else {
+		// Fallback: try X-User-ID header for backward compatibility
+		userID = c.Request().Header.Get("X-User-ID")
+	}
+
 	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
 		return err
 	}
 
-	// Extract user/device info from context or headers
-	userID := c.Request().Header.Get("X-User-ID")
+	// Extract device info
 	deviceID := c.Request().Header.Get("X-Device-ID")
 	if deviceID == "" {
 		deviceID = c.RealIP()
