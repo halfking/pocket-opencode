@@ -558,10 +558,10 @@ func (s *Server) handleMobileSessionPrompt(w http.ResponseWriter, r *http.Reques
 	}
 
 	payload := &adapter.SendPromptRequest{
-		Prompt: adapter.PromptPayload{
-			Text:  req.Text,
-			Agent: req.Agent,
-		},
+		Parts: []adapter.PromptPart{{Type: "text", Text: req.Text}},
+	}
+	if req.Agent != nil && *req.Agent != "" {
+		payload.Agent = req.Agent
 	}
 
 	resp, err := s.opencode.SendPrompt(r.Context(), apiBaseURL, sessionID, payload)

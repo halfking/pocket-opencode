@@ -378,11 +378,9 @@ func (api *MobileAPI) SendPrompt(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "text is required")
 	}
 
-	// Create SendPromptRequest with text prompt
+	// Create SendPromptRequest with text prompt (V2: parts at top level)
 	promptReq := &adapter.SendPromptRequest{
-		Prompt: adapter.PromptPayload{
-			Text: req.Text,
-		},
+		Parts: []adapter.PromptPart{{Type: "text", Text: req.Text}},
 	}
 
 	_, err := api.httpAdapter.SendPrompt(c.Request().Context(), "", sessionID, promptReq)

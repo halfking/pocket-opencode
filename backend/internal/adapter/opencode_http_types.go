@@ -1,13 +1,8 @@
 package adapter
 
-// CreateSessionRequest 是 POST /api/session 的请求体。
-// 对应 OpenCode: ~/workspace/ai/opencode/packages/server/src/groups/session.ts
-//   payload: Schema.Struct({
-//     id: SessionV2.ID.pipe(Schema.optional),
-//     agent: AgentV2.ID.pipe(Schema.optional),
-//     model: ModelV2.Ref.pipe(Schema.optional),
-//     location: Location.Ref.pipe(Schema.optional),
-//   })
+import "encoding/json"
+
+// CreateSessionRequest 是 POST /session 的请求体。
 type CreateSessionRequest struct {
 	ID       *string         `json:"id,omitempty"`
 	Agent    *string         `json:"agent,omitempty"`
@@ -28,31 +23,31 @@ type LocationRefRef struct {
 	WorkspaceID *string `json:"workspaceID,omitempty"`
 }
 
-// SendPromptRequest 是 POST /api/session/:sessionID/prompt 的请求体。
-//   payload: Schema.Struct({
-//     id: SessionMessage.ID.pipe(Schema.optional),
-//     prompt: Prompt,
-//     delivery: SessionInput.Delivery.pipe(Schema.optional),
-//     resume: Schema.Boolean.pipe(Schema.optional),
-//   })
+// SendPromptRequest 是 POST /session/:sessionID/message 的请求体。
+// OpenCode V2 真实格式（来自 SDK types.gen.ts SessionPromptData）：
+//   { parts: [...], agent?, model?, tools?, system? }
+// 注意：没有 prompt 包装，parts 在顶层。V1 的 prompt.text 不再支持。
 type SendPromptRequest struct {
-	ID       *string            `json:"id,omitempty"`
-	Prompt   PromptPayload      `json:"prompt"`
-	Delivery *string            `json:"delivery,omitempty"` // "queue" | "single"
-	Resume   *bool              `json:"resume,omitempty"`
-	Metadata map[string]any     `json:"metadata,omitempty"`
-}
-
-// PromptPayload 是 Prompt 结构
-// 对应 ~/workspace/ai/opencode/packages/core/src/session/prompt.ts
-type PromptPayload struct {
-	Text     string         `json:"text"`     // 文本内容
-	Parts    []PromptPart   `json:"parts,omitempty"` // 多模态内容
+	Parts    []PromptPart   `json:"parts"`              // V2 必填：多模态内容数组
 	Agent    *string        `json:"agent,omitempty"`
 	Model    *ModelRefHTTP  `json:"model,omitempty"`
+	MessageID *string       `json:"messageID,omitempty"`
 }
 
-// PromptPart 多模态片段
+// PromptPayload 兼容旧调用方：Text 自动转为 Parts。
+type PromptPayload struct {
+	Text string `json:"-"`
+}
+
+// MarshalJSON 确保 Text 自动同步到 Parts（OpenCode V2 要求 parts 数组非空）。
+func (p PromptPayload) MarshalJSON() ([]byte, error) {
+	if p.Text != "" {
+		return json.Marshal([]PromptPart{{Type: "text", Text: p.Text}})
+	}
+	return json.Marshal([]PromptPart{})
+}
+
+// PromptPart 多模态片段（V2 TextPartInput 等）
 type PromptPart struct {
 	Type     string         `json:"type"` // "text" | "file" | "image"
 	Text     string         `json:"text,omitempty"`
@@ -62,10 +57,9 @@ type PromptPart struct {
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
-// SendPromptResponse 是 POST /api/session/:sessionID/prompt 的响应 data 部分。
-// 对应 success: Schema.Struct({ data: SessionInput.Admitted })
+// SendPromptResponse 是 POST /session/:sessionID/message 的响应。
 type SendPromptResponse struct {
-	MessageID string `json:"messageID"` // 已接收的 Message ID
-	Enqueued  bool   `json:"enqueued"`  // 是否已加入队列
-	Position  *int   `json:"position,omitempty"` // 队列位置
+	MessageID string `json:"messageID"`
+	Enqueued  bool   `json:"enqueued"`
+	Position  *int   `json:"position,omitempty"`
 }

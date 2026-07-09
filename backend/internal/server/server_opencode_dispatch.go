@@ -83,17 +83,16 @@ func (s *Server) handleOpenCodeDispatch(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 2. Send prompt
+	// 2. Send prompt（V2 格式：parts 在顶层）
 	sessionID := info.ID
-	delivery := "single"
 	payload := &adapter.SendPromptRequest{
-		ID: &sessionID,
-		Prompt: adapter.PromptPayload{
-			Text: req.Prompt,
-		},
-		Delivery: &delivery,
+		Parts: []adapter.PromptPart{{Type: "text", Text: req.Prompt}},
 	}
-	if _, err := s.opencode.SendPrompt(r.Context(), apiBaseURL, info.ID, payload); err != nil {
+	if req.Agent != "" {
+		agent := req.Agent
+		payload.Agent = &agent
+	}
+	if _, err := s.opencode.SendPrompt(r.Context(), apiBaseURL, sessionID, payload); err != nil {
 		http.Error(w, fmt.Sprintf("send prompt failed: %v", err), http.StatusBadGateway)
 		return
 	}

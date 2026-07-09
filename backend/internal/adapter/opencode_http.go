@@ -256,14 +256,26 @@ func (a *OpenCodeHTTPAdapter) GetSessionDetail(ctx context.Context, instanceBase
 		return nil, fmt.Errorf("opencode get session returned %d", resp.StatusCode)
 	}
 
-	var response struct {
-		Data OpenCodeSessionInfo `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("decode session failed: %w", err)
+	// 双格式兼容：裸对象 {id, ...} 或包装 {data: {id, ...}}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read session body failed: %w", err)
 	}
 
-	return &response.Data, nil
+	var info OpenCodeSessionInfo
+	if err := json.Unmarshal(body, &info); err != nil {
+		return nil, fmt.Errorf("decode session failed: %w", err)
+	}
+	if info.ID == "" {
+		var wrapper struct {
+			Data OpenCodeSessionInfo `json:"data"`
+		}
+		if err := json.Unmarshal(body, &wrapper); err == nil && wrapper.Data.ID != "" {
+			info = wrapper.Data
+		}
+	}
+
+	return &info, nil
 }
 
 // CreateSession 创建新会话
@@ -295,14 +307,34 @@ func (a *OpenCodeHTTPAdapter) CreateSession(ctx context.Context, instanceBaseURL
 		return nil, fmt.Errorf("opencode create session returned %d", resp.StatusCode)
 	}
 
-	var response struct {
-		Data OpenCodeSessionInfo `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("decode session failed: %w", err)
+	// OpenCode 真实响应是裸对象 {id, slug, ...}，旧版可能是 {data: {...}} 包装。
+	// 双格式兼容：先试裸对象，再试包装对象。
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, fmt.Errorf("read session body failed: %w", readErr)
 	}
 
-	return &response.Data, nil
+	var info OpenCodeSessionInfo
+	trimmed := strings.TrimSpace(string(respBody))
+	if strings.HasPrefix(trimmed, "{") {
+		// 先试裸对象
+		if err := json.Unmarshal(respBody, &info); err != nil {
+			return nil, fmt.Errorf("decode session (raw) failed: %w", err)
+		}
+		// 如果 ID 为空，可能是 {data: {...}} 包装
+		if info.ID == "" {
+			var wrapper struct {
+				Data OpenCodeSessionInfo `json:"data"`
+			}
+			if err := json.Unmarshal(respBody, &wrapper); err == nil && wrapper.Data.ID != "" {
+				info = wrapper.Data
+			}
+		}
+	} else {
+		return nil, fmt.Errorf("unexpected session response format")
+	}
+
+	return &info, nil
 }
 
 // SendPrompt 发送 Prompt 到指定会话
