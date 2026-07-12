@@ -21,6 +21,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
@@ -76,6 +77,9 @@ type Server struct {
 	userStore    *auth.UserStore
 	jwtSigner    *auth.Signer
 	identityStore *identity.Store // nil = S0-A 未启用，handler 降级到单租户
+	// S0-B: unified LLM BFF。nil = 未配置（POCKET_LLM_* 未设且无网关配置），handler 返回 503。
+	llmBFF        *llmbff.Service
+	llmBFFSummarizer llmbff.Summarizer
 
 	// Email
 	emailCrypto    *email.Crypto
@@ -169,6 +173,15 @@ func (s *Server) SetIdentityStore(store *identity.Store) {
 	s.identityStore = store
 }
 
+// SetLLMBFF 注入 S0-B 统一 LLM BFF service + 可选 summarizer。
+// provider 由调用方通过 NewLLMGatewayBFFProvider 包装；nil service = 503。
+func (s *Server) SetLLMBFF(svc *llmbff.Service, sum llmbff.Summarizer) {
+	s.llmBFF = svc
+	if sum != nil {
+		s.llmBFFSummarizer = sum
+	}
+}
+
 // PluginHub 返回内部的 PluginHub，供 main 装配迁移服务等需要下发命令的组件复用。
 func (s *Server) PluginHub() *ws.PluginHub { return s.pluginHub }
 
@@ -213,6 +226,10 @@ func (s *Server) Handler() http.Handler {
 	// Phase C: 无状态 AI 网关（仅转发嵌入/LLM，不存数据）
 	mux.HandleFunc("/api/embed", s.requireAuth(s.handleEmbed))
 	mux.HandleFunc("/api/llm/chat", s.requireAuth(s.handleLLMChat))
+	// S0-B: 统一 LLM BFF（流式 + 用量查询）。老的 /api/llm/chat 保留兼容，
+	// llmBFF 启用时优先走 BFF；未启用时回退到老 handler。
+	mux.HandleFunc("/api/llm/stream", s.requireAuth(s.handleLLMBFFStream))
+	mux.HandleFunc("/api/llm/usage", s.requireAuth(s.handleLLMBFFUsage))
 	
 	// OpenCode 管理 API
 	mux.HandleFunc("/api/opencode/sessions", s.handleOpenCodeSessions)

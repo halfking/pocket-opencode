@@ -18,6 +18,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
@@ -281,6 +282,26 @@ if pool != nil {
 			srv.SetIdentityStore(identStore)
 			log.Println("Identity Core enabled (workspaces/members/devices)")
 		}
+	}
+
+	// ---- S0-B: Unified LLM BFF (stream + usage tracking) ----
+	// 仅在企业网关模式下启用：BFF 需要一个支持 stream 的 Provider，目前只有
+	// llmgateway.Client 满足。直连模式（aigate）的 BFF 适配器留到后续 sprint。
+	if cfg.LLMGatewayURL != "" && cfg.LLMGatewayAPIKey != "" {
+		gwClientForBFF := llmgateway.NewClient(cfg.LLMGatewayURL, cfg.LLMGatewayAPIKey)
+		provider := server.NewLLMGatewayBFFProvider(gwClientForBFF)
+		var recorder llmbff.Recorder = llmbff.NoopRecorder{}
+		var summarizer llmbff.Summarizer
+		if pool != nil {
+			if usageStore, err := llmbff.NewUsageStore(pool); err != nil {
+				log.Printf("WARN: llm usage store init failed: %v", err)
+			} else {
+				recorder = usageStore
+				summarizer = usageStore
+			}
+		}
+		srv.SetLLMBFF(llmbff.NewService(provider, recorder), summarizer)
+		log.Println("LLM BFF enabled (stream + usage tracking)")
 	}
 
 	// ---- OpenCode 域管理器装配（Phase V3: 真实任务与会话接入）----

@@ -98,6 +98,58 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	return &out, nil
 }
 
+// StreamDelta is one chunk of a streaming chat completion (OpenAI SSE shape).
+// Content is the incremental text; Usage is only present on the final chunk
+// when the request set stream_options.include_usage.
+type StreamDelta struct {
+	Content      string `json:"content"`
+	FinishReason string `json:"finish_reason"`
+	Done         bool   `json:"done"`
+	PromptTokens     int `json:"prompt_tokens,omitempty"`
+	CompletionTokens int `json:"completion_tokens,omitempty"`
+	TotalTokens      int `json:"total_tokens,omitempty"`
+}
+
+// Stream 调用 llm-gateway 的 chat completion（流式 SSE）。
+//
+// 对每个 SSE data 块解析 OpenAI delta 并调用 fn(delta)。fn 返回 false 时
+// 提前终止流（客户端断连）。返回最终 usage（若 provider 在末帧返回）。
+//
+// 请求自动设置 stream=true 和 stream_options.include_usage=true。
+func (c *Client) Stream(ctx context.Context, req ChatRequest, fn func(StreamDelta) bool) (*StreamDelta, error) {
+	req.Stream = true
+	// 注：ChatRequest 没有 stream_options 字段；这里通过包装 body 注入。
+	body, _ := json.Marshal(map[string]any{
+		"model":       req.Model,
+		"messages":    req.Messages,
+		"temperature": req.Temperature,
+		"max_tokens":  req.MaxTokens,
+		"stream":      true,
+		"user":        req.User,
+		"stream_options": map[string]bool{"include_usage": true},
+	})
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.Client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("llm-gateway stream: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		r, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("llm-gateway stream %d: %s", resp.StatusCode, string(r))
+	}
+
+	// 逐行解析 SSE。每行 "data: {...}"；以 "data: [DONE]" 结束。
+	return parseSSEStream(resp.Body, fn)
+}
+
 // EmbeddingRequest 对应 POST /v1/embeddings（OpenAI 兼容）
 type EmbeddingRequest struct {
 	Model string `json:"model"`
