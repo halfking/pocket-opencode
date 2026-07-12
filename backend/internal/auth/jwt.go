@@ -8,9 +8,15 @@ import (
 )
 
 // Claims 是 JWT payload 结构。
+//
+// WorkspaceID is populated by S0-A Identity Core once the user has a default
+// workspace; legacy/single-tenant callers that use Sign (without a workspace)
+// leave it empty and handlers fall back to "default" for backwards
+// compatibility with pre-S0 data.
 type Claims struct {
-	UserID string `json:"user_id"`
-	Role   string `json:"role"`
+	UserID      string `json:"user_id"`
+	Role        string `json:"role"`
+	WorkspaceID string `json:"workspace_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -26,11 +32,21 @@ func NewSigner(secret string, ttl time.Duration) *Signer {
 }
 
 // Sign 签发 JWT，包含 user_id 和 role claim。
+//
+// 保留为向后兼容入口：不带 workspace 的单租户场景。S0-A Identity Core
+// 登录流程应改用 SignWithWorkspace 把 workspace_id 写入 claim，这样后续
+// handler 可以直接从 JWT 拿到 workspace 隔离边界。
 func (s *Signer) Sign(userID, role string) (string, error) {
+	return s.SignWithWorkspace(userID, role, "")
+}
+
+// SignWithWorkspace 签发带 workspace_id 的 JWT。workspaceID 为空时与 Sign 等价。
+func (s *Signer) SignWithWorkspace(userID, role, workspaceID string) (string, error) {
 	now := time.Now()
 	claims := Claims{
-		UserID: userID,
-		Role:   role,
+		UserID:      userID,
+		Role:        role,
+		WorkspaceID: workspaceID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.ttl)),
 			IssuedAt:  jwt.NewNumericDate(now),

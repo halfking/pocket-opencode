@@ -19,6 +19,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
+	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
@@ -72,8 +73,9 @@ type Server struct {
 	quesMgr  *opencode.QuestionManager
 
 	// Auth
-	userStore *auth.UserStore
-	jwtSigner *auth.Signer
+	userStore    *auth.UserStore
+	jwtSigner    *auth.Signer
+	identityStore *identity.Store // nil = S0-A 未启用，handler 降级到单租户
 
 	// Email
 	emailCrypto    *email.Crypto
@@ -161,6 +163,12 @@ func (s *Server) SetMigrationService(svc *migration.Service) {
 	s.migrationSvc = svc
 }
 
+// SetIdentityStore 注入 S0-A Identity Core store。nil = 身份/工作空间功能降级
+// （登录仍可用，但无 workspace 隔离/邀请/设备管理）。
+func (s *Server) SetIdentityStore(store *identity.Store) {
+	s.identityStore = store
+}
+
 // PluginHub 返回内部的 PluginHub，供 main 装配迁移服务等需要下发命令的组件复用。
 func (s *Server) PluginHub() *ws.PluginHub { return s.pluginHub }
 
@@ -184,6 +192,9 @@ func (s *Server) Handler() http.Handler {
 	// ---- Phase 0: 个人助理模块路由 ----
 	// 认证
 	mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
+	// S0-A: Identity Core（工作空间 / 成员 / 设备）
+	mux.HandleFunc("/api/workspaces", s.requireAuth(s.handleWorkspaces))
+	mux.HandleFunc("/api/workspaces/", s.requireAuth(s.handleWorkspaceOps))
 	// 语音笔记
 	mux.HandleFunc("/api/notes", s.requireAuth(s.handleNotes))
 	mux.HandleFunc("/api/notes/", s.requireAuth(s.handleNoteOperations))

@@ -39,6 +39,9 @@ func (s *Store) migrate() error {
 		PRIMARY KEY (user_id, version)
 	);
 	CREATE INDEX IF NOT EXISTS idx_vault_user ON vault_sync(user_id);
+	-- S0-A: workspace_id isolation (idempotent).
+	ALTER TABLE vault_sync ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
+	CREATE INDEX IF NOT EXISTS idx_vault_ws ON vault_sync(workspace_id);
 	`)
 	return err
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/db"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
+	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
@@ -268,6 +269,17 @@ if pool != nil {
 			srv.SetLLMGatewayStore(lgStore)
 			srv.LoadLLMGatewayFromDB()
 			log.Println("LLM gateway config persistence enabled (PG)")
+		}
+	}
+
+	// ---- S0-A: Identity Core (workspaces / members / devices) ----
+	if pool != nil {
+		identStore, err := identity.New(pool)
+		if err != nil {
+			log.Printf("WARN: identity store init failed: %v", err)
+		} else {
+			srv.SetIdentityStore(identStore)
+			log.Println("Identity Core enabled (workspaces/members/devices)")
 		}
 	}
 
