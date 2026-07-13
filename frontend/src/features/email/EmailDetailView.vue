@@ -15,7 +15,7 @@
     <article v-else class="detail">
       <header class="meta-card">
         <div class="from-row">
-          <div class="from-block">
+          <div class="from-block" @click="navigateToContact">
             <span class="from-name">{{ email.fromName || email.fromAddress }}</span>
             <span v-if="email.fromName" class="from-addr">&lt;{{ email.fromAddress }}&gt;</span>
           </div>
@@ -82,6 +82,7 @@ import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '../../app/AppLayout.vue'
 import { api } from '../../api/client'
 import { useToast } from '../../composables/useToast'
+import { findContactByEmail } from '../contact/contacts-store'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
 
@@ -146,6 +147,20 @@ async function convertToTodo() {
     toast.error(e?.message || '创建任务失败')
   } finally {
     converting.value = false
+  }
+}
+
+async function navigateToContact() {
+  if (!email.value?.fromAddress) return
+  try {
+    const contact = await findContactByEmail(email.value.fromAddress)
+    if (contact) {
+      router.push(`/contacts/${contact.id}`)
+    } else {
+      toast.info('联系人不存在，请先在联系人页面聚合')
+    }
+  } catch (error: any) {
+    toast.error(error?.message || '查找联系人失败')
   }
 }
 

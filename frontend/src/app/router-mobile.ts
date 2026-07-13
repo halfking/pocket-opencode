@@ -132,6 +132,20 @@ const router = createRouter({
       component: EmailAccountSetup,
       meta: { requiresAuth: true, requiresLobster: true, title: '邮箱账户', canGoBack: true }
     },
+    // S2.3 联系人：从邮件/会议来源聚合的本地联系人
+    {
+      path: '/contacts',
+      name: 'contacts',
+      component: () => import('../features/contact/ContactListView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '联系人', bottomNav: false, canGoBack: true },
+    },
+    {
+      path: '/contacts/:id',
+      name: 'contact-detail',
+      component: () => import('../features/contact/ContactDetailView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '联系人详情', bottomNav: false, canGoBack: true },
+    },
+
     // 个人助理 — 密码箱
     {
       path: '/vault',
