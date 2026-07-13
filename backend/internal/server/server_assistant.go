@@ -405,32 +405,100 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
 	}
-	// 龙虾架构：客户端抓取 IMAP 后把邮件列表 POST 到此端点，pocketd 批量分类。
-	// 分类只发 snippet（前 ~500 字）给 kxmemory，不发完整邮件正文。
+
+	// 两种模式（由 body 内容区分）：
+	//
+	// A) 主动 IMAP 抓取（v1.0 主路径）：POST 空 body 或 {"account_id":"..."}。
+	//    后端用 emailFetcher.Sync 连 IMAP 拉新邮件，落库后异步分类。
+	//    account_id 省略 = 同步该用户所有 enabled 账户。
+	//
+	// B) 客户端推送（旧路径，保留兼容）：POST {"emails":[...]}。
+	//    客户端自己抓 IMAP 后把邮件列表推上来，pocketd 只做去重落库 + 分类。
 	var body struct {
-		Emails []email.Email `json:"emails"`
+		Emails    []email.Email `json:"emails"`
+		AccountID string        `json:"account_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
-		return
-	}
-	if len(body.Emails) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"classified": 0})
-		return
-	}
-
-	// 先写入本地库（去重）
-	for i := range body.Emails {
-		if body.Emails[i].ID == "" {
-			body.Emails[i].ID = randomID("email")
+	// 空 body 合法（触发模式 A），decode 错误仅在非空时致命
+	raw, _ := io.ReadAll(r.Body)
+	if len(strings.TrimSpace(string(raw))) > 0 {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid body")
+			return
 		}
-		_ = s.emailStore.InsertEmail(r.Context(), body.Emails[i])
 	}
 
-	// 异步调 kxmemory 批量分类（非阻塞）
-	go s.classifyEmailsAsync(body.Emails)
+	// 模式 B：客户端推了 emails 数组 → 走老路径
+	if len(body.Emails) > 0 {
+		for i := range body.Emails {
+			if body.Emails[i].ID == "" {
+				body.Emails[i].ID = randomID("email")
+			}
+			_ = s.emailStore.InsertEmail(r.Context(), body.Emails[i])
+		}
+		go s.classifyEmailsAsync(body.Emails)
+		writeJSON(w, http.StatusOK, map[string]any{"received": len(body.Emails), "classify": "async"})
+		return
+	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"received": len(body.Emails), "classify": "async"})
+	// 模式 A：主动 IMAP 抓取
+	if s.emailFetcher == nil {
+		writeError(w, http.StatusServiceUnavailable, "email fetcher not configured (IMAP disabled)")
+		return
+	}
+	userID := s.userIDFromRequest(r)
+
+	// 选要同步的账户：指定 account_id 就只同步它，否则同步该用户所有 enabled 账户
+	var accounts []email.Account
+	var err error
+	if body.AccountID != "" {
+		var acc *email.Account
+		var encryptedCredential string
+		acc, encryptedCredential, err = s.emailStore.GetAccountByID(r.Context(), body.AccountID)
+		_ = encryptedCredential
+		if acc != nil {
+			accounts = []email.Account{*acc}
+		}
+	} else {
+		accounts, err = s.emailStore.ListAccounts(r.Context(), userID)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list accounts: "+err.Error())
+		return
+	}
+
+	totalSaved := 0
+	synced := 0
+	failed := []string{}
+	var allNew []email.Email
+	for _, acc := range accounts {
+		if !acc.Enabled {
+			continue
+		}
+		n, ferr := s.emailFetcher.Sync(r.Context(), acc.ID)
+		if ferr != nil {
+			log.Printf("[email/sync] account %s (%s): %v", acc.ID, acc.EmailAddress, ferr)
+			failed = append(failed, acc.EmailAddress)
+			continue
+		}
+		totalSaved += n
+		synced++
+	}
+	// 有新邮件就异步分类
+	if totalSaved > 0 {
+		// classifyEmailsAsync 需要具体邮件列表；这里简化：分类靠 scheduler 定时扫，
+		// 或前端刷新列表时各自触发。v1.0 先不在此处批量拉新邮件列表。
+		_ = allNew
+	}
+
+	result := map[string]any{
+		"mode":   "imap_fetch",
+		"synced": synced,
+		"new":    totalSaved,
+	}
+	if len(failed) > 0 {
+		result["failed"] = failed
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // handleEmailSyncStatus — POST /api/email/sync/status

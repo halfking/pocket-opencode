@@ -18,17 +18,24 @@
     </div>
 
     <template v-else>
-    <div class="filters">
-      <button
-        v-for="c in categories"
-        :key="c.value || 'all'"
-        class="chip"
-        :class="{ active: activeCategory === c.value }"
-        @click="setCategory(c.value)"
-      >
-        {{ c.label }}
+    <div class="toolbar">
+      <div class="filters">
+        <button
+          v-for="c in categories"
+          :key="c.value || 'all'"
+          class="chip"
+          :class="{ active: activeCategory === c.value }"
+          @click="setCategory(c.value)"
+        >
+          {{ c.label }}
+        </button>
+      </div>
+      <button class="sync-btn" :disabled="syncing" @click="syncNow">
+        {{ syncing ? '同步中…' : '↻ 同步' }}
       </button>
     </div>
+
+    <p v-if="syncMessage" class="sync-message">{{ syncMessage }}</p>
 
     <div v-if="loading" class="state">加载中…</div>
     <div v-else-if="emails.length === 0" class="state">暂无邮件</div>
@@ -68,6 +75,7 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppLayout from '../../app/AppLayout.vue'
+import { emailApi } from '../../api/email'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
 
@@ -76,6 +84,8 @@ const emails = ref<LocalEmail[]>([])
 const loading = ref(true)
 const activeCategory = ref<string>('')
 const dbNotReady = ref(false)
+const syncing = ref(false)
+const syncMessage = ref('')
 
 function goToLogin() {
   router.push('/login')
@@ -111,6 +121,23 @@ function setCategory(c: string) {
   activeCategory.value = c
   load()
 }
+
+async function syncNow() {
+  if (syncing.value) return
+  syncing.value = true
+  syncMessage.value = ''
+  try {
+    const result = await emailApi.syncNow()
+    syncMessage.value = result.new
+      ? `同步完成：新增 ${result.new} 封邮件`
+      : '同步完成：没有新邮件'
+    await load()
+  } catch (e: any) {
+    syncMessage.value = e?.message || '同步失败，请检查邮箱配置'
+  } finally {
+    syncing.value = false
+  }
+}
 function open(id: string) { router.push(`/email/${id}`) }
 
 const catLabel = (c: string | null) =>
@@ -134,6 +161,20 @@ onMounted(load)
 
 <style scoped>
 .filters { display: flex; gap: var(--space-2); overflow-x: auto; padding-bottom: var(--space-3); }
+.toolbar { display: flex; align-items: flex-start; gap: var(--space-2); }
+.toolbar .filters { flex: 1; min-width: 0; }
+.sync-btn {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--brand-primary);
+  padding: 5px 9px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sync-btn:disabled { opacity: 0.6; cursor: wait; }
+.sync-message { margin: 0 0 var(--space-2); color: var(--text-secondary); font-size: 12px; }
 .chip {
   padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-full);
