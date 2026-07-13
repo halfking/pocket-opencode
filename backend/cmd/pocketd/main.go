@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
@@ -312,6 +313,18 @@ if pool != nil {
 		} else {
 			srv.SetLobsterSync(ls)
 			log.Println("Lobster Vault sync enabled (e2ee asset mirror)")
+		}
+	}
+
+	// ---- S0-D: Agent Bridge（统一远端 opencode 实例为 Agent 抽象）----
+	if pool != nil {
+		if abStore, err := agentbridge.New(pool); err != nil {
+			log.Printf("WARN: agent bridge store init failed: %v", err)
+		} else {
+			creator, resolver, attacher := server.NewAgentBridgeAdapters(opencodeAdapter, reg, taskStore)
+			bridge := agentbridge.NewBridge(abStore, creator, resolver, attacher)
+			srv.SetAgentBridge(bridge, abStore)
+			log.Println("Agent Bridge enabled (unified agent dispatch)")
 		}
 	}
 

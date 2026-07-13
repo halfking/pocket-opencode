@@ -14,6 +14,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
@@ -83,6 +84,9 @@ type Server struct {
 	llmBFFSummarizer llmbff.Summarizer
 	// S0-C: Lobster Vault 加密镜像同步 store。nil = 同步路由返回 503。
 	lobsterSync   *lobster.SyncStore
+	// S0-D: Agent Bridge。nil = /api/agents 返回 503。
+	agentBridge   *agentbridge.Bridge
+	agentStore    *agentbridge.Store
 
 	// Email
 	emailCrypto    *email.Crypto
@@ -190,6 +194,12 @@ func (s *Server) SetLobsterSync(store *lobster.SyncStore) {
 	s.lobsterSync = store
 }
 
+// SetAgentBridge 注入 S0-D Agent Bridge + store。nil bridge = /api/agents 503。
+func (s *Server) SetAgentBridge(b *agentbridge.Bridge, store *agentbridge.Store) {
+	s.agentBridge = b
+	s.agentStore = store
+}
+
 // PluginHub 返回内部的 PluginHub，供 main 装配迁移服务等需要下发命令的组件复用。
 func (s *Server) PluginHub() *ws.PluginHub { return s.pluginHub }
 
@@ -247,6 +257,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/opencode/instances/", s.handleOpenCodeInstanceOperations)
 	mux.HandleFunc("/api/opencode/cache/refresh", s.requireAuth(s.handleOpenCodeRefreshCache))
 	mux.HandleFunc("/api/opencode/dispatch", s.requireAuth(s.handleOpenCodeDispatch))
+	// S0-D: Agent Bridge（list/get/create/send）。底层复用 opencode adapter。
+	mux.HandleFunc("/api/agents", s.requireAuth(s.handleAgents))
+	mux.HandleFunc("/api/agents/", s.requireAuth(s.handleAgentOps))
 
 	// 会话迁移方案：跨主机迁移 API
 	mux.HandleFunc("/api/migration", s.requireAuth(s.handleMigration))
