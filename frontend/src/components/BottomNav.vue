@@ -56,6 +56,7 @@ const items: NavItem[] = [
 ]
 
 const more: NavItem[] = [
+  { to: '/pkm/today', icon: '🗒️', label: 'PKM笔记' },
   { to: '/vault', icon: '🔐', label: '密码箱' },
   { to: '/tasks', icon: '📋', label: '任务' },
   { to: '/sessions', icon: '💬', label: '会话' },
