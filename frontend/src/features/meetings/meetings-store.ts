@@ -65,6 +65,25 @@ export async function getMeeting(id: string): Promise<LocalMeeting | null> {
   return row ? rowToMeeting(row) : null
 }
 
+export async function updateMeetingRecording(
+  id: string,
+  patch: { audioPath?: string | null; durationMs?: number },
+): Promise<void> {
+  const sets: string[] = []
+  const values: unknown[] = []
+  if (patch.audioPath !== undefined) {
+    sets.push('audio_path = ?')
+    values.push(patch.audioPath)
+  }
+  if (patch.durationMs !== undefined) {
+    sets.push('duration_ms = ?')
+    values.push(patch.durationMs)
+  }
+  if (sets.length === 0) return
+  values.push(id)
+  await localDB.run(`UPDATE local_meetings SET ${sets.join(', ')} WHERE id = ?`, values)
+}
+
 export async function updateTranscript(id: string, transcript: string): Promise<void> {
   await localDB.run('UPDATE local_meetings SET transcript = ? WHERE id = ?', [transcript, id])
 }
