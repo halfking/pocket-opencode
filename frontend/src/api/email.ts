@@ -92,8 +92,11 @@ export const emailApi = {
   patchEmail(id: string, patch: { isRead?: boolean; isStarred?: boolean }): Promise<void> {
     return http(`/api/emails/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
   },
-  syncNow(): Promise<void> {
-    return http('/api/emails/sync', { method: 'POST' })
+  syncNow(accountId?: string): Promise<{ mode?: string; synced?: number; new?: number; failed?: string[] }> {
+    return http('/api/emails/sync', {
+      method: 'POST',
+      body: JSON.stringify(accountId ? { account_id: accountId } : {}),
+    })
   },
 
   // Daily summaries

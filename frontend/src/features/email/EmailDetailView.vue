@@ -66,12 +66,12 @@
         >
           {{ email.isRead ? '✓ 已读' : '标为已读' }}
         </button>
-        <button class="action-btn" @click="convertToTodo">
-          转 Todo
+        <button class="action-btn" :disabled="converting" @click="convertToTodo">
+          {{ converting ? '创建中…' : '转 Todo' }}
         </button>
       </div>
 
-      <p class="hint">完整正文需等 Phase 4 后端实现 <code>getEmail</code> 接口后展示。</p>
+      <p class="hint">当前本地仅保存邮件摘要片段（约 500 字），完整正文不落本地。</p>
     </article>
   </AppLayout>
 </template>
@@ -80,14 +80,18 @@
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '../../app/AppLayout.vue'
+import { api } from '../../api/client'
+import { useToast } from '../../composables/useToast'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
 
 const route = useRoute()
 const router = useRouter()
+const toast = useToast()
 
 const email = ref<LocalEmail | null>(null)
 const loading = ref(true)
+const converting = ref(false)
 
 async function load() {
   const id = route.params.id as string
@@ -123,13 +127,26 @@ async function toggleStar() {
   await emailsStore.setStarred(email.value.id, email.value.isStarred)
 }
 
-function convertToTodo() {
-  if (!email.value) return
-  // 暂不联动笔记/todo 模块（Phase 5 才打通），先用 alert 占位
-  const subj = email.value.subject || '(无主题)'
+async function convertToTodo() {
+  if (!email.value || converting.value) return
+  converting.value = true
+  const subject = email.value.subject || '(无主题)'
   const from = email.value.fromName || email.value.fromAddress
-  // eslint-disable-next-line no-alert
-  alert(`已转待办：${subj} — 来自 ${from}（提示词待接通 todo 模块）`)
+  try {
+    const task = await api.createTask({
+      title: subject,
+      description: `${email.value.snippet || ''}\n\n来自：${from}`.trim(),
+      source: 'local',
+      status: 'active',
+      priority: email.value.importance === 'high' ? 'high' : 'medium',
+    })
+    toast.success(`已转为任务：${task.title}`)
+    router.push(`/tasks/${task.id}`)
+  } catch (e: any) {
+    toast.error(e?.message || '创建任务失败')
+  } finally {
+    converting.value = false
+  }
 }
 
 function goBack() {
