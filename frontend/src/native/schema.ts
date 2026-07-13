@@ -244,4 +244,107 @@ CREATE TABLE IF NOT EXISTS local_sync_state (
     last_synced_rowid INTEGER,
     pending_changes INTEGER DEFAULT 0
 );
+
+-- ============================================================
+-- S0-C: Lobster Vault 3.x — 统一 Asset 抽象
+--
+-- 设计目标（spec §3.2 决策 4）：把新业务（S1 PKM block、S2 会议录音 blob、
+-- S3 凭证图、附件等）收敛到统一的 Asset 模型，而不是继续为每种业务加表。
+--
+-- Asset = (id, workspace_id, kind, title, meta_json, sync_mode, blobs[], vectors[])
+--   - kind: note / meeting_audio / meeting_transcript / voucher_image / pdf /
+--           pdf_attachment / voice_memo / screenshot / mixed / ...
+--   - meta_json: 业务自定义字段（block 树、标签、关联 id 等）
+--   - sync_mode: e2ee_local_first | cloud_authoritative | cloud_readonly
+--
+-- 与老表的关系：local_notes / local_emails / local_vault_entries /
+-- local_meetings 保持不动（已实现的特定业务），新业务一律走 Asset。
+-- 老业务可在后续 sprint 通过适配器逐步迁移到 Asset。
+--
+-- 加密：body_text / meta_json 由调用方决定是否加密（敏感字段走
+-- encryptString，元数据如 title 留明文以便 FTS 检索）。
+-- blob 文件（录音/图片）单独走 AES-GCM 分块加密，存 local_asset_blobs。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_assets (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    kind TEXT NOT NULL,                -- note / meeting_audio / voucher_image / ...
+    title TEXT,                        -- 明文，便于 FTS + 列表展示
+    body_text TEXT DEFAULT '',         -- 主体文本（可能加密，由调用方决定）
+    body_encrypted INTEGER DEFAULT 0,  -- 1 = body_text 是密文
+    meta_json TEXT DEFAULT '{}',       -- 业务自定义元数据（JSON）
+    source TEXT,                       -- voice / share / email / clipper / pdf / manual
+    sync_mode TEXT NOT NULL DEFAULT 'e2ee_local_first',
+    -- e2ee_local_first | cloud_authoritative | cloud_readonly
+    client_rev INTEGER NOT NULL DEFAULT 1,  -- 客户端修订号，每次更新 +1
+    server_rev INTEGER DEFAULT 0,      -- 服务端已知修订号（0 = 未同步）
+    dirty INTEGER NOT NULL DEFAULT 1,  -- 1 = 本地改动待推送
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER                 -- 非 NULL = 软删除（墓碑）
+);
+CREATE INDEX IF NOT EXISTS idx_assets_workspace_kind ON local_assets(workspace_id, kind) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_assets_updated ON local_assets(updated_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_assets_dirty ON local_assets(dirty) WHERE dirty = 1 AND deleted_at IS NULL;
+
+-- Asset FTS（仅索引明文 title + body；加密的 body 不进 FTS）
+CREATE VIRTUAL TABLE IF NOT EXISTS local_assets_fts USING fts5(
+    title, body, content='local_assets', content_rowid='rowid',
+    tokenize='unicode61 remove_diacritics 2'
+);
+-- 注意：触发器只在 body_encrypted=0 时才有意义；加密 body 进 FTS 会泄露明文。
+-- 这里用 AFTER INSERT/UPDATE 全量同步，调用方负责不把加密 body 写进 body_text
+-- （加密内容应进 meta_json 或独立 blob）。
+CREATE TRIGGER IF NOT EXISTS local_assets_ai AFTER INSERT ON local_assets BEGIN
+    INSERT INTO local_assets_fts(rowid, title, body)
+    VALUES (new.rowid, new.title, CASE WHEN new.body_encrypted = 0 THEN new.body_text ELSE '' END);
+END;
+CREATE TRIGGER IF NOT EXISTS local_assets_ad AFTER DELETE ON local_assets BEGIN
+    INSERT INTO local_assets_fts(local_assets_fts, rowid, title, body)
+    VALUES ('delete', old.rowid, old.title, CASE WHEN old.body_encrypted = 0 THEN old.body_text ELSE '' END);
+END;
+CREATE TRIGGER IF NOT EXISTS local_assets_au AFTER UPDATE ON local_assets BEGIN
+    INSERT INTO local_assets_fts(local_assets_fts, rowid, title, body)
+    VALUES ('delete', old.rowid, old.title, CASE WHEN old.body_encrypted = 0 THEN old.body_text ELSE '' END);
+    INSERT INTO local_assets_fts(rowid, title, body)
+    VALUES (new.rowid, new.title, CASE WHEN new.body_encrypted = 0 THEN new.body_text ELSE '' END);
+END;
+
+-- ============================================================
+-- Asset blob（大文件分块加密存储）
+--
+-- 一个 asset 可有多个 blob（如多图笔记、分块录音）。每个 blob 独立
+-- AES-GCM 加密，cipher_text 存库（小文件）或引用外部文件路径（大文件）。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_asset_blobs (
+    id TEXT PRIMARY KEY,
+    asset_id TEXT NOT NULL,
+    idx INTEGER NOT NULL DEFAULT 0,     -- blob 顺序（多 blob 时）
+    kind TEXT,                          -- image / audio / pdf / file / ...
+    cipher_text TEXT,                   -- 小文件：base64(iv + 密文) 直存
+    file_path TEXT,                     -- 大文件：外部加密文件路径
+    size_bytes INTEGER DEFAULT 0,       -- 原始大小（加密前）
+    hash TEXT,                          -- 原始内容 sha256（去重用）
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (asset_id) REFERENCES local_assets(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_asset_blobs_asset ON local_asset_blobs(asset_id, idx);
+
+-- ============================================================
+-- Asset 向量（语义检索，与 local_note_vectors 平行）
+--
+-- 一个 asset 可有多个向量（如 block 级 embedding）。独立表便于按 kind
+-- 重建索引。查询时复用 vectorIndex 的暴力点积（见 vector.ts）。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_asset_vectors (
+    id TEXT PRIMARY KEY,
+    asset_id TEXT NOT NULL,
+    embedding BLOB NOT NULL,            -- Float32Array 序列化
+    dim INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    chunk_idx INTEGER DEFAULT 0,        -- 分块 embedding 的索引（0 = 整篇）
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (asset_id) REFERENCES local_assets(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_asset_vectors_asset ON local_asset_vectors(asset_id);
 `

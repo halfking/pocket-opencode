@@ -22,6 +22,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
+	"github.com/halfking/pocket-opencode/backend/internal/lobster"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
@@ -80,6 +81,8 @@ type Server struct {
 	// S0-B: unified LLM BFF。nil = 未配置（POCKET_LLM_* 未设且无网关配置），handler 返回 503。
 	llmBFF        *llmbff.Service
 	llmBFFSummarizer llmbff.Summarizer
+	// S0-C: Lobster Vault 加密镜像同步 store。nil = 同步路由返回 503。
+	lobsterSync   *lobster.SyncStore
 
 	// Email
 	emailCrypto    *email.Crypto
@@ -182,6 +185,11 @@ func (s *Server) SetLLMBFF(svc *llmbff.Service, sum llmbff.Summarizer) {
 	}
 }
 
+// SetLobsterSync 注入 S0-C Lobster Vault 加密镜像同步 store。
+func (s *Server) SetLobsterSync(store *lobster.SyncStore) {
+	s.lobsterSync = store
+}
+
 // PluginHub 返回内部的 PluginHub，供 main 装配迁移服务等需要下发命令的组件复用。
 func (s *Server) PluginHub() *ws.PluginHub { return s.pluginHub }
 
@@ -221,6 +229,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/emails/", s.requireAuth(s.handleEmailOps))
 	// 密码箱（子树，含 /api/vault/sync/latest）
 	mux.HandleFunc("/api/vault/sync/", s.requireAuth(s.handleVaultSync))
+	// S0-C: Lobster Vault 加密镜像同步（e2ee assets 跨设备同步）
+	mux.HandleFunc("/api/assets/sync", s.requireAuth(s.handleAssetSync))
 	// STT 云端兜底
 	mux.HandleFunc("/api/stt/transcribe", s.handleSttTranscribe)
 	// Phase C: 无状态 AI 网关（仅转发嵌入/LLM，不存数据）

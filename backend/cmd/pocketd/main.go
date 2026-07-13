@@ -20,6 +20,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
+	"github.com/halfking/pocket-opencode/backend/internal/lobster"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
@@ -302,6 +303,16 @@ if pool != nil {
 		}
 		srv.SetLLMBFF(llmbff.NewService(provider, recorder), summarizer)
 		log.Println("LLM BFF enabled (stream + usage tracking)")
+	}
+
+	// ---- S0-C: Lobster Vault 加密镜像同步 ----
+	if pool != nil {
+		if ls, err := lobster.NewSyncStore(pool); err != nil {
+			log.Printf("WARN: lobster sync store init failed: %v", err)
+		} else {
+			srv.SetLobsterSync(ls)
+			log.Println("Lobster Vault sync enabled (e2ee asset mirror)")
+		}
 	}
 
 	// ---- OpenCode 域管理器装配（Phase V3: 真实任务与会话接入）----
