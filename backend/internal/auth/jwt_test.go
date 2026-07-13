@@ -79,6 +79,39 @@ func TestJWTDifferentSecrets(t *testing.T) {
 	// Try to parse with different secret
 	_, err = signer2.Parse(token)
 	if err == nil {
-		t.Fatal("Expected error when parsing with different secret, got nil")
+		t.Fatal("Expected error when parsing with different secret", nil)
+	}
+}
+
+// TestJWTSignWithWorkspace verifies the S0-A extension: workspace_id round-trips
+// through SignWithWorkspace/Parse, and legacy Sign keeps it empty.
+func TestJWTSignWithWorkspace(t *testing.T) {
+	secret := "test-secret-key-at-least-32-bytes-long"
+	signer := NewSigner(secret, 24*time.Hour)
+
+	tok, err := signer.SignWithWorkspace("u1", "owner", "ws_u1")
+	if err != nil {
+		t.Fatalf("SignWithWorkspace failed: %v", err)
+	}
+	claims, err := signer.Parse(tok)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if claims.WorkspaceID != "ws_u1" {
+		t.Errorf("expected workspace_id 'ws_u1', got %q", claims.WorkspaceID)
+	}
+
+	// Backwards compatibility: legacy Sign must still work and leave
+	// WorkspaceID empty.
+	legacyTok, err := signer.Sign("u1", "user")
+	if err != nil {
+		t.Fatalf("legacy Sign failed: %v", err)
+	}
+	legacyClaims, err := signer.Parse(legacyTok)
+	if err != nil {
+		t.Fatalf("legacy Parse failed: %v", err)
+	}
+	if legacyClaims.WorkspaceID != "" {
+		t.Errorf("expected empty workspace_id for legacy Sign, got %q", legacyClaims.WorkspaceID)
 	}
 }

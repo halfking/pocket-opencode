@@ -11,16 +11,21 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/db"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
+	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
+	"github.com/halfking/pocket-opencode/backend/internal/lobster"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
+	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/server"
@@ -268,6 +273,72 @@ if pool != nil {
 			srv.SetLLMGatewayStore(lgStore)
 			srv.LoadLLMGatewayFromDB()
 			log.Println("LLM gateway config persistence enabled (PG)")
+		}
+	}
+
+	// ---- S0-A: Identity Core (workspaces / members / devices) ----
+	if pool != nil {
+		identStore, err := identity.New(pool)
+		if err != nil {
+			log.Printf("WARN: identity store init failed: %v", err)
+		} else {
+			srv.SetIdentityStore(identStore)
+			log.Println("Identity Core enabled (workspaces/members/devices)")
+		}
+	}
+
+	// ---- S0-B: Unified LLM BFF (stream + usage tracking) ----
+	// 仅在企业网关模式下启用：BFF 需要一个支持 stream 的 Provider，目前只有
+	// llmgateway.Client 满足。直连模式（aigate）的 BFF 适配器留到后续 sprint。
+	if cfg.LLMGatewayURL != "" && cfg.LLMGatewayAPIKey != "" {
+		gwClientForBFF := llmgateway.NewClient(cfg.LLMGatewayURL, cfg.LLMGatewayAPIKey)
+		provider := server.NewLLMGatewayBFFProvider(gwClientForBFF)
+		var recorder llmbff.Recorder = llmbff.NoopRecorder{}
+		var summarizer llmbff.Summarizer
+		if pool != nil {
+			if usageStore, err := llmbff.NewUsageStore(pool); err != nil {
+				log.Printf("WARN: llm usage store init failed: %v", err)
+			} else {
+				recorder = usageStore
+				summarizer = usageStore
+			}
+		}
+		srv.SetLLMBFF(llmbff.NewService(provider, recorder), summarizer)
+		log.Println("LLM BFF enabled (stream + usage tracking)")
+	}
+
+	// ---- S0-C: Lobster Vault 加密镜像同步 ----
+	if pool != nil {
+		if ls, err := lobster.NewSyncStore(pool); err != nil {
+			log.Printf("WARN: lobster sync store init failed: %v", err)
+		} else {
+			srv.SetLobsterSync(ls)
+			log.Println("Lobster Vault sync enabled (e2ee asset mirror)")
+		}
+	}
+
+	// ---- S0-D: Agent Bridge（统一远端 opencode 实例为 Agent 抽象）----
+	if pool != nil {
+		if abStore, err := agentbridge.New(pool); err != nil {
+			log.Printf("WARN: agent bridge store init failed: %v", err)
+		} else {
+			creator, resolver, attacher := server.NewAgentBridgeAdapters(opencodeAdapter, reg, taskStore)
+			bridge := agentbridge.NewBridge(abStore, creator, resolver, attacher)
+			srv.SetAgentBridge(bridge, abStore)
+			log.Println("Agent Bridge enabled (unified agent dispatch)")
+		}
+	}
+
+	// ---- S0-E: Notification Center（inbox + rules + 前台 WS 推送）----
+	if pool != nil {
+		if ncStore, err := notifycenter.New(pool); err != nil {
+			log.Printf("WARN: notify center store init failed: %v", err)
+		} else {
+			// 前台 WS sender 复用现有 wsHub；后台 APNs/FCM 留 Noop（部署期接证书）。
+			wsSender := notifycenter.NewWebsocketSender(srv.WSHub())
+			svc := notifycenter.NewService(ncStore, wsSender)
+			srv.SetNotifyCenter(svc, ncStore)
+			log.Println("Notification Center enabled (inbox + rules + WS foreground push)")
 		}
 	}
 

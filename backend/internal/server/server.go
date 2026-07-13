@@ -14,16 +14,21 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
+	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
+	"github.com/halfking/pocket-opencode/backend/internal/lobster"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
+	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
@@ -72,8 +77,20 @@ type Server struct {
 	quesMgr  *opencode.QuestionManager
 
 	// Auth
-	userStore *auth.UserStore
-	jwtSigner *auth.Signer
+	userStore    *auth.UserStore
+	jwtSigner    *auth.Signer
+	identityStore *identity.Store // nil = S0-A 未启用，handler 降级到单租户
+	// S0-B: unified LLM BFF。nil = 未配置（POCKET_LLM_* 未设且无网关配置），handler 返回 503。
+	llmBFF        *llmbff.Service
+	llmBFFSummarizer llmbff.Summarizer
+	// S0-C: Lobster Vault 加密镜像同步 store。nil = 同步路由返回 503。
+	lobsterSync   *lobster.SyncStore
+	// S0-D: Agent Bridge。nil = /api/agents 返回 503。
+	agentBridge   *agentbridge.Bridge
+	agentStore    *agentbridge.Store
+	// S0-E: Notification Center。nil = /api/notifications 返回 503。
+	notifySvc     *notifycenter.Service
+	notifyStore   *notifycenter.Store
 
 	// Email
 	emailCrypto    *email.Crypto
@@ -161,8 +178,44 @@ func (s *Server) SetMigrationService(svc *migration.Service) {
 	s.migrationSvc = svc
 }
 
+// SetIdentityStore 注入 S0-A Identity Core store。nil = 身份/工作空间功能降级
+// （登录仍可用，但无 workspace 隔离/邀请/设备管理）。
+func (s *Server) SetIdentityStore(store *identity.Store) {
+	s.identityStore = store
+}
+
+// SetLLMBFF 注入 S0-B 统一 LLM BFF service + 可选 summarizer。
+// provider 由调用方通过 NewLLMGatewayBFFProvider 包装；nil service = 503。
+func (s *Server) SetLLMBFF(svc *llmbff.Service, sum llmbff.Summarizer) {
+	s.llmBFF = svc
+	if sum != nil {
+		s.llmBFFSummarizer = sum
+	}
+}
+
+// SetLobsterSync 注入 S0-C Lobster Vault 加密镜像同步 store。
+func (s *Server) SetLobsterSync(store *lobster.SyncStore) {
+	s.lobsterSync = store
+}
+
+// SetAgentBridge 注入 S0-D Agent Bridge + store。nil bridge = /api/agents 503。
+func (s *Server) SetAgentBridge(b *agentbridge.Bridge, store *agentbridge.Store) {
+	s.agentBridge = b
+	s.agentStore = store
+}
+
+// SetNotifyCenter 注入 S0-E Notification Center。
+func (s *Server) SetNotifyCenter(svc *notifycenter.Service, store *notifycenter.Store) {
+	s.notifySvc = svc
+	s.notifyStore = store
+}
+
 // PluginHub 返回内部的 PluginHub，供 main 装配迁移服务等需要下发命令的组件复用。
 func (s *Server) PluginHub() *ws.PluginHub { return s.pluginHub }
+
+// WSHub 返回内部的业务事件 Hub，供 S0-E Notification Center 等需要前台推送
+// 的组件复用（避免把私有字段暴露成公开）。
+func (s *Server) WSHub() *ws.Hub { return s.wsHub }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -184,6 +237,9 @@ func (s *Server) Handler() http.Handler {
 	// ---- Phase 0: 个人助理模块路由 ----
 	// 认证
 	mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
+	// S0-A: Identity Core（工作空间 / 成员 / 设备）
+	mux.HandleFunc("/api/workspaces", s.requireAuth(s.handleWorkspaces))
+	mux.HandleFunc("/api/workspaces/", s.requireAuth(s.handleWorkspaceOps))
 	// 语音笔记
 	mux.HandleFunc("/api/notes", s.requireAuth(s.handleNotes))
 	mux.HandleFunc("/api/notes/", s.requireAuth(s.handleNoteOperations))
@@ -197,11 +253,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/emails/", s.requireAuth(s.handleEmailOps))
 	// 密码箱（子树，含 /api/vault/sync/latest）
 	mux.HandleFunc("/api/vault/sync/", s.requireAuth(s.handleVaultSync))
+	// S0-C: Lobster Vault 加密镜像同步（e2ee assets 跨设备同步）
+	mux.HandleFunc("/api/assets/sync", s.requireAuth(s.handleAssetSync))
 	// STT 云端兜底
 	mux.HandleFunc("/api/stt/transcribe", s.handleSttTranscribe)
 	// Phase C: 无状态 AI 网关（仅转发嵌入/LLM，不存数据）
 	mux.HandleFunc("/api/embed", s.requireAuth(s.handleEmbed))
 	mux.HandleFunc("/api/llm/chat", s.requireAuth(s.handleLLMChat))
+	// S0-B: 统一 LLM BFF（流式 + 用量查询）。老的 /api/llm/chat 保留兼容，
+	// llmBFF 启用时优先走 BFF；未启用时回退到老 handler。
+	mux.HandleFunc("/api/llm/stream", s.requireAuth(s.handleLLMBFFStream))
+	mux.HandleFunc("/api/llm/usage", s.requireAuth(s.handleLLMBFFUsage))
 	
 	// OpenCode 管理 API
 	mux.HandleFunc("/api/opencode/sessions", s.handleOpenCodeSessions)
@@ -209,6 +271,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/opencode/instances/", s.handleOpenCodeInstanceOperations)
 	mux.HandleFunc("/api/opencode/cache/refresh", s.requireAuth(s.handleOpenCodeRefreshCache))
 	mux.HandleFunc("/api/opencode/dispatch", s.requireAuth(s.handleOpenCodeDispatch))
+	// S0-D: Agent Bridge（list/get/create/send）。底层复用 opencode adapter。
+	mux.HandleFunc("/api/agents", s.requireAuth(s.handleAgents))
+	mux.HandleFunc("/api/agents/", s.requireAuth(s.handleAgentOps))
+	// S0-E: Notification Center（inbox + rules）
+	mux.HandleFunc("/api/notifications", s.requireAuth(s.handleNotifications))
+	mux.HandleFunc("/api/notifications/", s.requireAuth(s.handleNotificationOps))
+	mux.HandleFunc("/api/notifications/rules", s.requireAuth(s.handleNotificationRules))
 
 	// 会话迁移方案：跨主机迁移 API
 	mux.HandleFunc("/api/migration", s.requireAuth(s.handleMigration))

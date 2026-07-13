@@ -54,6 +54,10 @@ func (s *Store) migrate() error {
 		attached_at BIGINT NOT NULL,
 		PRIMARY KEY (task_id, instance_id, session_id)
 	);
+	-- S0-A: workspace_id isolation (idempotent on existing DBs).
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
+	ALTER TABLE task_session_links ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
+	CREATE INDEX IF NOT EXISTS idx_tasks_workspace ON tasks(workspace_id);
 	`)
 	return err
 }

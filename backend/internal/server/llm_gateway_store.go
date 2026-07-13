@@ -33,6 +33,10 @@ func (s *LLMGatewayStore) migrate() error {
 		is_active BOOLEAN DEFAULT true,
 		created_at TIMESTAMPTZ DEFAULT NOW()
 	);
+	-- S0-A: workspace_id isolation (idempotent). The active config is scoped
+	-- per workspace so collaborators can carry their own gateway settings.
+	ALTER TABLE llm_gateway_configs ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
+	CREATE INDEX IF NOT EXISTS idx_llm_gw_ws ON llm_gateway_configs(workspace_id);
 	`)
 	return err
 }

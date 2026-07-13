@@ -100,6 +100,12 @@ func (s *Store) migrate() error {
 		UNIQUE(user_id, summary_date)
 	);
 	CREATE INDEX IF NOT EXISTS idx_daily_summaries_user ON daily_summaries(user_id);
+	-- S0-A: workspace_id isolation (idempotent).
+	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
+	ALTER TABLE emails ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
+	ALTER TABLE daily_summaries ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
+	CREATE INDEX IF NOT EXISTS idx_email_accounts_ws ON email_accounts(workspace_id);
+	CREATE INDEX IF NOT EXISTS idx_emails_ws ON emails(workspace_id);
 	`)
 	return err
 }

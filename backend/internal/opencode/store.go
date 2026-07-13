@@ -314,6 +314,12 @@ func InitSchema(db *sql.DB) error {
 
 	CREATE INDEX IF NOT EXISTS idx_opencode_history_session_id ON opencode_session_history(session_id);
 	CREATE INDEX IF NOT EXISTS idx_opencode_history_timestamp ON opencode_session_history(timestamp);
+
+	-- S0-A: workspace_id isolation (idempotent). Both tables get the column
+	-- so S0-D Agent Bridge can scope sessions to a workspace.
+	ALTER TABLE opencode_sessions ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(32) NOT NULL DEFAULT 'default';
+	ALTER TABLE opencode_session_history ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(32) NOT NULL DEFAULT 'default';
+	CREATE INDEX IF NOT EXISTS idx_opencode_sessions_ws ON opencode_sessions(workspace_id);
 	`
 
 	_, err := db.Exec(schema)
