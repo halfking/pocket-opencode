@@ -13,11 +13,16 @@ import { defineStore } from 'pinia'
 
 const TOKEN_KEY = 'pocket_token'
 const USER_KEY = 'pocket_user'
+const WS_KEY = 'pocket_workspace_id'
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
     token: localStorage.getItem(TOKEN_KEY) || '',
     user: localStorage.getItem(USER_KEY) || '',
+    /** S0-A: 当前 workspace_id（登录后由后端 EnsureDefaultWorkspace 返回）。 */
+    workspaceId: localStorage.getItem(WS_KEY) || '',
+    /** S0-A: 服务端 user_id（JWT claim）。 */
+    userId: '',
   }),
   getters: {
     isAuthenticated: (s) => Boolean(s.token) && Boolean(s.user),
@@ -29,6 +34,16 @@ export const useAuthStore = defineStore('auth', {
       this.user = user
       localStorage.setItem(TOKEN_KEY, token)
       localStorage.setItem(USER_KEY, user)
+    },
+    /**
+     * S0-A 扩展：登录后同时记录 workspace_id + user_id。
+     * 后端 /api/auth/login 现在返回 { token, user, user_id, workspace_id }。
+     */
+    setAuthWithWorkspace(token: string, user: string, userId: string, workspaceId: string) {
+      this.setAuth(token, user)
+      this.userId = userId
+      this.workspaceId = workspaceId
+      localStorage.setItem(WS_KEY, workspaceId)
     },
     /** Legacy compatibility: a session exists without a real token yet. */
     setLegacyUser(user: string) {
@@ -57,8 +72,11 @@ export const useAuthStore = defineStore('auth', {
     logout() {
       this.token = ''
       this.user = ''
+      this.workspaceId = ''
+      this.userId = ''
       localStorage.removeItem(TOKEN_KEY)
       localStorage.removeItem(USER_KEY)
+      localStorage.removeItem(WS_KEY)
     },
   },
 })
