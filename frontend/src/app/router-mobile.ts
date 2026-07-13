@@ -167,13 +167,24 @@ const router = createRouter({
       component: PkmNoteView,
       meta: { requiresAuth: true, requiresLobster: true, title: '笔记', bottomNav: false, canGoBack: true }
     },
-    // 个人助理 — 会议记录（Phase 6A，占位避免死链）
+    // S2.2 会议记录：录音 → 转写 → AI 纪要 → Note/Task 沉淀
     {
       path: '/meetings',
       name: 'meetings',
-      component: ComingSoonView,
-      props: { icon: '🎙️', title: '会议记录', desc: '录音转写、声纹识别、会议纪要生成。', phase: 'Phase 6A 开发中' },
+      component: () => import('../features/meetings/MeetingListView.vue'),
       meta: { requiresAuth: true, requiresLobster: true, title: '会议', bottomNav: true },
+    },
+    {
+      path: '/meetings/new',
+      name: 'meeting-new',
+      component: () => import('../features/meetings/MeetingRecordView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '开始会议', bottomNav: false, canGoBack: true },
+    },
+    {
+      path: '/meetings/:id',
+      name: 'meeting-detail',
+      component: () => import('../features/meetings/MeetingDetailView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '会议详情', bottomNav: false, canGoBack: true },
     },
     {
       path: '/login',
