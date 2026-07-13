@@ -28,6 +28,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
+	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
@@ -87,6 +88,9 @@ type Server struct {
 	// S0-D: Agent Bridge。nil = /api/agents 返回 503。
 	agentBridge   *agentbridge.Bridge
 	agentStore    *agentbridge.Store
+	// S0-E: Notification Center。nil = /api/notifications 返回 503。
+	notifySvc     *notifycenter.Service
+	notifyStore   *notifycenter.Store
 
 	// Email
 	emailCrypto    *email.Crypto
@@ -200,8 +204,18 @@ func (s *Server) SetAgentBridge(b *agentbridge.Bridge, store *agentbridge.Store)
 	s.agentStore = store
 }
 
+// SetNotifyCenter 注入 S0-E Notification Center。
+func (s *Server) SetNotifyCenter(svc *notifycenter.Service, store *notifycenter.Store) {
+	s.notifySvc = svc
+	s.notifyStore = store
+}
+
 // PluginHub 返回内部的 PluginHub，供 main 装配迁移服务等需要下发命令的组件复用。
 func (s *Server) PluginHub() *ws.PluginHub { return s.pluginHub }
+
+// WSHub 返回内部的业务事件 Hub，供 S0-E Notification Center 等需要前台推送
+// 的组件复用（避免把私有字段暴露成公开）。
+func (s *Server) WSHub() *ws.Hub { return s.wsHub }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -260,6 +274,10 @@ func (s *Server) Handler() http.Handler {
 	// S0-D: Agent Bridge（list/get/create/send）。底层复用 opencode adapter。
 	mux.HandleFunc("/api/agents", s.requireAuth(s.handleAgents))
 	mux.HandleFunc("/api/agents/", s.requireAuth(s.handleAgentOps))
+	// S0-E: Notification Center（inbox + rules）
+	mux.HandleFunc("/api/notifications", s.requireAuth(s.handleNotifications))
+	mux.HandleFunc("/api/notifications/", s.requireAuth(s.handleNotificationOps))
+	mux.HandleFunc("/api/notifications/rules", s.requireAuth(s.handleNotificationRules))
 
 	// 会话迁移方案：跨主机迁移 API
 	mux.HandleFunc("/api/migration", s.requireAuth(s.handleMigration))

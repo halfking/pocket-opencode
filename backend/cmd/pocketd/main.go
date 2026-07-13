@@ -25,6 +25,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
+	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/server"
@@ -325,6 +326,19 @@ if pool != nil {
 			bridge := agentbridge.NewBridge(abStore, creator, resolver, attacher)
 			srv.SetAgentBridge(bridge, abStore)
 			log.Println("Agent Bridge enabled (unified agent dispatch)")
+		}
+	}
+
+	// ---- S0-E: Notification Center（inbox + rules + 前台 WS 推送）----
+	if pool != nil {
+		if ncStore, err := notifycenter.New(pool); err != nil {
+			log.Printf("WARN: notify center store init failed: %v", err)
+		} else {
+			// 前台 WS sender 复用现有 wsHub；后台 APNs/FCM 留 Noop（部署期接证书）。
+			wsSender := notifycenter.NewWebsocketSender(srv.WSHub())
+			svc := notifycenter.NewService(ncStore, wsSender)
+			srv.SetNotifyCenter(svc, ncStore)
+			log.Println("Notification Center enabled (inbox + rules + WS foreground push)")
 		}
 	}
 
