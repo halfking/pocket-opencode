@@ -135,11 +135,16 @@ async function handleLogin() {
 
   try {
     // Phase C: 服务端无状态认证（只为签发调用 /embed /llm 的 JWT）
-    const res = await http<{ token: string; user: string }>('/api/auth/login', {
+    // S0-A 扩展：后端返回 { token, user, user_id, workspace_id }。
+    const res = await http<{ token: string; user: string; user_id?: string; workspace_id?: string }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username: username.value, password: password.value }),
     })
-    auth.setAuth(res.token, res.user)
+    if (res.user_id && res.workspace_id) {
+      auth.setAuthWithWorkspace(res.token, res.user, res.user_id, res.workspace_id)
+    } else {
+      auth.setAuth(res.token, res.user)
+    }
     // 🦞 认证成功后才建立 WS（此前模块加载不会自动连）
     await connectWs()
     // 🦞 尝试初始化本地加密库（如失败不阻塞登录，仅影响本地加密功能）

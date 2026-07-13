@@ -65,9 +65,13 @@ func (s *Server) userIDFromRequest(r *http.Request) string {
 
 // handleAuthLogin — Phase 0 真实 JWT 登录入口。
 //
-// 当前为骨架：验证用户名/密码（POCKET_AUTH_USER / POCKET_AUTH_PASS 环境变量，
-// 缺省 admin/admin 兼容现有前端），签发 JWT。完整实现（用户表、刷新令牌）
-// 在 Phase 0 后期补全。
+// S0-A 扩展：登录成功后，
+//   1. 若 identityStore 可用，EnsureDefaultWorkspace 自动为用户建一个
+//      "ws_<userID>" 默认 workspace（幂等）。
+//   2. 用 SignWithWorkspace 签发带 workspace_id claim 的 JWT，让后续 handler
+//      可以从 JWT 拿到隔离边界。
+//
+// 兼容性：identityStore 或 jwtSigner 未配置时降级到原 Sign 行为，老前端无感。
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
@@ -81,25 +85,55 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	// 开发登录：仅在 POCKET_DEV_AUTH=true 时允许 admin/admin（生产环境必须关闭）
-	if s.cfg.DevAuth && body.Username == "admin" && body.Password == "admin" {
-		// Phase 1: 签发真实 JWT（使用 jwtSigner）
-		if s.jwtSigner == nil {
-			writeError(w, http.StatusInternalServerError, "JWT signer not configured")
-			return
-		}
-		token, err := s.jwtSigner.Sign(body.Username, "user")
+
+	// 路径 1（生产）：真实 UserStore 校验。
+	var userID string
+	var role string
+	if s.userStore != nil {
+		u, err := s.userStore.VerifyPassword(r.Context(), body.Username, body.Password)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to sign JWT")
+			writeError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{
-			"token": token,
-			"user":  body.Username,
-		})
+		userID = u.ID
+		role = u.Role
+	} else if s.cfg.DevAuth && body.Username == "admin" && body.Password == "admin" {
+		// 路径 2（dev 兼容）：POCKET_DEV_AUTH=true 时 admin/admin。
+		userID = "user-admin"
+		role = "admin"
+	} else {
+		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	writeError(w, http.StatusUnauthorized, "invalid credentials")
+
+	if s.jwtSigner == nil {
+		writeError(w, http.StatusInternalServerError, "JWT signer not configured")
+		return
+	}
+
+	// S0-A: 确保有默认 workspace，并把 workspace_id 写进 JWT claim。
+	wsID := "default"
+	if s.identityStore != nil {
+		ws, err := s.identityStore.EnsureDefaultWorkspace(r.Context(), userID)
+		if err != nil {
+			// EnsureDefaultWorkspace 失败不阻断登录——降级到 "default"。
+			log.Printf("WARN: EnsureDefaultWorkspace for %s failed: %v (falling back to 'default')", userID, err)
+		} else if ws != nil {
+			wsID = ws.ID
+		}
+	}
+
+	token, err := s.jwtSigner.SignWithWorkspace(userID, role, wsID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to sign JWT")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"token":       token,
+		"user":        body.Username,
+		"user_id":     userID,
+		"workspace_id": wsID,
+	})
 }
 
 // =====================================================================
