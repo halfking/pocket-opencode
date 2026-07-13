@@ -159,9 +159,10 @@
         <button
           v-if="quickPrompt.trim()"
           class="send-btn"
+          :disabled="sending"
           @click="sendQuickPrompt"
         >
-          ↑
+          {{ sending ? '⋯' : '↑' }}
         </button>
       </div>
     </div>
@@ -223,6 +224,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type Task } from '../../api/client'
+import { agentsApi, type Agent } from '../../api/agents'
 import wsClient from '../../api/websocket'
 import { usePullDownClose } from '../../composables/usePullDownClose'
 import { useVoiceRecording } from '../../composables/useVoiceRecording'
@@ -243,6 +245,10 @@ const showCompleted = ref(false)
 const quickPrompt = ref('')
 const modalRef = ref<HTMLElement | null>(null)
 const modalSheetRef = ref<HTMLElement | null>(null)
+
+// S1.2: workspace 内的 agent。v1.0 用单 Agent 模式——取列表第一个可用 agent。
+const agents = ref<Agent[]>([])
+const sending = ref(false)
 
 const { isRecording, transcribing, toggleRecording } = useVoiceRecording({
   onTranscribed(text) {
@@ -289,6 +295,7 @@ onMounted(() => {
   if (instanceStr) currentInstance.value = JSON.parse(instanceStr)
   loadTasks()
   loadSessions()
+  loadAgents() // S1.2: 预载 workspace agent，供 sendQuickPrompt 单 Agent 模式使用
   wsClient.on('task_created', handleTaskUpdate)
   wsClient.on('task_updated', handleTaskUpdate)
   wsClient.on('session_attached', handleSessionAttached)
@@ -337,6 +344,16 @@ async function loadSessions() {
     sessions.value = []
   } finally {
     sessionsLoading.value = false
+  }
+}
+
+/** S1.2: 预载 workspace agent。失败静默（agent bridge 未配置时发任务会单独报错）。 */
+async function loadAgents() {
+  try {
+    agents.value = await agentsApi.list()
+  } catch (e) {
+    console.warn('[tasks] agent bridge 未配置或不可用:', e)
+    agents.value = []
   }
 }
 
@@ -394,20 +411,54 @@ const toggleVoice = toggleRecording
 function onVoiceTouchStart() { /* long-press future: auto-send on stop */ }
 function onVoiceTouchEnd() { /* noop for now */ }
 
-function sendQuickPrompt() {
+/**
+ * S1.2: 真正的 Agent 任务闭环。
+ *   1. 先用 prompt 标题建任务壳（createTask）
+ *   2. 取 workspace 默认 agent（单 Agent 模式：第一个 online 的）
+ *   3. agentsApi.send(agent, { task_id }) → 后端创建 session 并自动 attach
+ *   4. 跳到会话详情，prompt 已在 session 里
+ *
+ * 失败处理：无 agent → toast 提示去绑定实例；send 失败 → toast 报错，任务壳保留。
+ */
+async function sendQuickPrompt() {
   const text = quickPrompt.value.trim()
-  if (!text) return
-  // Find the most recent active session, or navigate to sessions
-  const activeSession = sessions.value.find((s) => s.status === 'active') || sessions.value[0]
-  if (activeSession) {
-    router.push({
-      path: `/sessions/${activeSession.id}`,
-      query: { instance_id: activeSession.instanceId, title: activeSession.title, prompt: text },
+  if (!text || sending.value) return
+  sending.value = true
+  try {
+    // 1) 选 agent：优先 online，否则取第一个（可能 busy/offline 也能发）
+    const agent = agents.value.find((a) => a.status === 'online') || agents.value[0]
+    if (!agent) {
+      toast.error('暂无可用 Agent，请先在实例页绑定')
+      return
+    }
+
+    // 2) 建任务壳（标题取 prompt 首行/前 40 字）
+    const title = text.split('\n')[0].slice(0, 40) || '新任务'
+    const task = await api.createTask({ title, description: text, status: 'active', priority: 'medium' })
+
+    // 3) 发给 agent，后端创建 session + 自动 attach task
+    const res = await agentsApi.send(agent.id, {
+      prompt: text,
+      task_id: task.id,
     })
-  } else {
-    router.push('/sessions')
+
+    // 4) 跳会话详情（session 已建好，prompt 已注入）
+    router.push({
+      path: `/sessions/${res.session_id}`,
+      query: {
+        instance_id: res.instance_id,
+        title,
+        agent_id: agent.id,
+        task_id: res.task_id || task.id,
+      },
+    })
+    quickPrompt.value = ''
+  } catch (e: any) {
+    console.error('[sendQuickPrompt] agent send failed:', e)
+    toast.error(e?.message || '发送失败，请重试')
+  } finally {
+    sending.value = false
   }
-  quickPrompt.value = ''
 }
 
 // ── Utils ──
