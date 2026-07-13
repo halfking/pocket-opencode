@@ -34,6 +34,11 @@ import VaultListView from '../features/vault/VaultListView.vue'
 import VaultEntryView from '../features/vault/VaultEntryView.vue'
 import ComingSoonView from '../features/common/ComingSoonView.vue'
 
+// S1.1 PKM 记事本（TipTap WYSIWYG + 双向链接，基于 S0-C assetStore）
+// 路由级懒加载：TipTap ~200KB 只在进入 /pkm 时才下载，保持首屏精简。
+const PkmTodayView = () => import('../features/pkm/PkmTodayView.vue')
+const PkmNoteView = () => import('../features/pkm/PkmNoteView.vue')
+
 // 🦞 守卫所需：登录态 + 龙虾初始化态
 import { useAuthStore } from '../stores/auth'
 import { isLobsterReady } from '../native/lobster-init'
@@ -45,7 +50,7 @@ import { isLobsterReady } from '../native/lobster-init'
 function needsLobster(to: { path: string; meta: { requiresLobster?: boolean } }): boolean {
   if (to.meta.requiresLobster) return true
   // 兼容子路由（detail / edit 继承父级 lobster 需求）
-  if (to.path.startsWith('/notes') || to.path.startsWith('/email') || to.path.startsWith('/vault') || to.path.startsWith('/meetings')) {
+  if (to.path.startsWith('/notes') || to.path.startsWith('/pkm') || to.path.startsWith('/email') || to.path.startsWith('/vault') || to.path.startsWith('/meetings')) {
     return true
   }
   return false
@@ -147,6 +152,20 @@ const router = createRouter({
       name: 'vault-entry-edit',
       component: VaultEntryView,
       meta: { requiresAuth: true, requiresLobster: true, title: '编辑密码', canGoBack: true, bottomNav: false }
+    },
+    // 个人助理 — PKM 记事本 Today 入口（双向链接 + Daily Note）
+    {
+      path: '/pkm/today',
+      name: 'pkm-today',
+      component: PkmTodayView,
+      meta: { requiresAuth: true, requiresLobster: true, title: '笔记', bottomNav: true }
+    },
+    // PKM — 笔记编辑/新建（:id === 'new' 表示新建）
+    {
+      path: '/pkm/n/:id',
+      name: 'pkm-note',
+      component: PkmNoteView,
+      meta: { requiresAuth: true, requiresLobster: true, title: '笔记', bottomNav: false, canGoBack: true }
     },
     // 个人助理 — 会议记录（Phase 6A，占位避免死链）
     {
