@@ -1,30 +1,29 @@
 <template>
   <div class="instance-list-view">
-    <!-- 顶部栏 -->
-    <div class="top-bar">
-      <button class="back-btn" @click="goBack">← 返回</button>
-      <h1>OpenCode 实例</h1>
-      <button class="refresh-btn" @click="loadInstances">🔄</button>
-    </div>
-
-    <!-- 当前服务器信息 -->
-    <div class="server-info-bar">
-      <span class="server-label">当前服务器:</span>
-      <span class="server-name">{{ currentServer?.name }}</span>
-    </div>
+    <ScrollChromePortal>
+      <div class="chrome-toolbar">
+        <div class="server-info-bar">
+          <span class="server-label">当前服务器:</span>
+          <span class="server-name">{{ currentServer?.name }}</span>
+        </div>
+        <button class="refresh-btn" type="button" @click="loadInstances" aria-label="刷新">🔄</button>
+      </div>
+    </ScrollChromePortal>
 
     <!-- 加载状态 -->
     <div v-if="loading" class="loading-state">
-      <div class="spinner"></div>
-      <p>加载实例列表...</p>
+      <Skeleton :count="3" />
     </div>
 
     <!-- 错误状态 -->
-    <div v-else-if="error" class="error-state">
-      <div class="error-icon">⚠️</div>
-      <p>{{ error }}</p>
-      <button class="retry-btn" @click="loadInstances">重试</button>
-    </div>
+    <EmptyState
+      v-else-if="error"
+      icon="⚠️"
+      :title="error"
+      hint="请检查服务器连接"
+      action-label="重试"
+      @action="loadInstances"
+    />
 
     <!-- 实例列表 -->
     <div v-else-if="instances.length > 0" class="instance-list">
@@ -48,11 +47,14 @@
     </div>
 
     <!-- 空状态 -->
-    <div v-else class="empty-state">
-      <div class="empty-icon">📭</div>
-      <p>暂无可用的 OpenCode 实例</p>
-      <button class="retry-btn" @click="loadInstances">重试</button>
-    </div>
+    <EmptyState
+      v-else
+      icon="📭"
+      title="暂无可用的 OpenCode 实例"
+      hint="请确认服务器已注册实例后重试"
+      action-label="重试"
+      @action="loadInstances"
+    />
   </div>
 </template>
 
@@ -60,6 +62,8 @@
 import { ref, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../../api/client'
+import { Skeleton, EmptyState } from '../../components'
+import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 
 const router = useRouter()
 
@@ -110,65 +114,46 @@ async function loadInstances() {
 }
 
 function selectInstance(instance: Instance) {
-  // 保存选择的实例
   localStorage.setItem('selected_instance', JSON.stringify(instance))
-  
-  // 跳转到任务列表
   router.push('/tasks')
-}
-
-function goBack() {
-  router.push('/servers')
 }
 </script>
 
 <style scoped>
 .instance-list-view {
-  min-height: 100vh;
-  background: #f5f7fa;
+  min-height: 100%;
+}
+
+.chrome-toolbar {
   display: flex;
-  flex-direction: column;
-}
-
-.top-bar {
-  background: white;
-  padding: 16px 20px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
-}
-
-.back-btn, .refresh-btn {
-  padding: 8px 12px;
-  font-size: 14px;
-  background: transparent;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 0.3s;
-}
-
-.back-btn:active, .refresh-btn:active {
-  background: #f5f7fa;
-}
-
-.top-bar h1 {
-  flex: 1;
-  font-size: 20px;
-  font-weight: 600;
-  color: #333;
-  margin: 0;
+  align-items: stretch;
 }
 
 .server-info-bar {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  padding: 12px 20px;
-  color: white;
-  font-size: 14px;
+  flex: 1;
+  background: var(--brand-gradient);
+  padding: var(--space-2) var(--space-4);
+  color: var(--text-inverse);
+  font-size: var(--text-sm);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
+}
+
+.refresh-btn {
+  flex-shrink: 0;
+  width: 44px;
+  padding: var(--space-2);
+  font-size: var(--text-sm);
+  background: var(--bg-card);
+  border: none;
+  border-left: 1px solid var(--border);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.refresh-btn:active {
+  background: var(--bg-subtle);
 }
 
 .server-label {
@@ -176,159 +161,94 @@ function goBack() {
 }
 
 .server-name {
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
 
 .loading-state {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  color: #999;
-}
-
-.spinner {
-  width: 40px;
-  height: 40px;
-  border: 4px solid #f3f3f3;
-  border-top: 4px solid #667eea;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin-bottom: 16px;
-}
-
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+  padding: var(--space-3);
 }
 
 .instance-list {
   flex: 1;
-  padding: 20px;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-list-gap);
 }
 
 .instance-card {
-  background: white;
-  border-radius: 16px;
-  padding: 20px;
-  margin-bottom: 12px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-card-padding);
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-3);
   cursor: pointer;
-  transition: all 0.3s;
+  transition: background 120ms;
+  min-height: 56px;
+  max-height: 66px;
 }
 
 .instance-card:active {
-  transform: scale(0.98);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  background: var(--bg-subtle);
 }
 
 .instance-icon {
-  font-size: 36px;
-  width: 56px;
-  height: 56px;
+  font-size: 20px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f0f2f5;
-  border-radius: 12px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
   flex-shrink: 0;
 }
 
 .instance-info {
   flex: 1;
+  min-width: 0;
 }
 
 .instance-info h3 {
-  font-size: 16px;
-  font-weight: 600;
-  color: #333;
-  margin: 0 0 4px 0;
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .instance-id {
-  font-size: 12px;
-  color: #999;
-  margin: 0 0 8px 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin: 0;
   font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .instance-meta {
   display: flex;
-  gap: 8px;
+  gap: var(--space-1);
+  margin-top: 2px;
 }
 
 .meta-tag {
-  font-size: 11px;
-  padding: 4px 8px;
-  background: #e8f0fe;
-  color: #667eea;
-  border-radius: 4px;
-  font-weight: 500;
+  font-size: var(--text-xs);
+  padding: 1px var(--space-2);
+  background: var(--brand-bg);
+  color: var(--brand-primary);
+  border-radius: var(--radius-sm);
+  font-weight: var(--font-weight-medium);
 }
 
 .instance-arrow {
-  font-size: 24px;
-  color: #ccc;
-}
-
-.empty-state {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 40px;
-  color: #999;
-}
-
-.empty-icon {
-  font-size: 64px;
-  margin-bottom: 16px;
-}
-
-.empty-state p {
-  font-size: 16px;
-  margin-bottom: 20px;
-}
-
-.retry-btn {
-  padding: 12px 24px;
-  font-size: 14px;
-  font-weight: 600;
-  color: white;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.retry-btn:active {
-  opacity: 0.8;
+  font-size: var(--text-lg);
+  color: var(--text-muted);
+  flex-shrink: 0;
 }
 </style>
-
-.error-state {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 40px;
-  color: #c33;
-}
-
-.error-icon {
-  font-size: 64px;
-  margin-bottom: 16px;
-}
-
-.error-state p {
-  font-size: 16px;
-  margin-bottom: 20px;
-  text-align: center;
-}

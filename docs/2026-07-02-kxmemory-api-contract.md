@@ -248,6 +248,49 @@ pocketd 用 Go `net/http` 直接调 kxmemory（不引入新依赖），客户端
 
 ---
 
+---
+
+## 4. 会议 AI 接口（Phase 6A Sprint 2）
+
+pocketd 在会议录音过程中调用，客户端已实现 handler；kxmemory 需实现对应端点。
+
+### 4.1 `POST /v1/meetings/summary` — 增量滚动摘要
+
+**请求**
+```json
+{
+  "meeting_id": "meeting-xxx",
+  "segments": [{ "speaker": "张三", "text": "...", "lang": "zh", "start_ms": 0, "end_ms": 5000 }],
+  "prev_summary": "已有摘要（可选）",
+  "meta": { "title": "Q3 预算讨论", "participants": ["张三"] }
+}
+```
+
+**响应 200**
+```json
+{
+  "summary": "...",
+  "key_points": ["..."],
+  "action_items": [{ "text": "...", "assignee": "张三", "due": "2026-07-18" }],
+  "decisions": ["..."],
+  "open_questions": ["..."]
+}
+```
+
+### 4.2 `POST /v1/meetings/recommend` — 记忆检索推荐
+
+**请求**: `{ "meeting_id", "segments", "summary" }`  
+**响应**: `{ "items": [{ "type": "note|email|meeting|contact", "id", "title", "snippet", "score" }] }`
+
+### 4.3 `POST /v1/meetings/refine` — 事后精翻
+
+**请求**: `{ "meeting_id", "segments", "target_langs": ["en"] }`  
+**响应**: `{ "refined_transcript", "translations": {}, "structured_minutes": {}, "todos": [], "note_id" }`
+
+> pocketd 已实现 kxmemory 调用 + LLM 兜底；kxmemory 未就绪时自动降级。
+
+---
+
 ## 7. 待定项
 
 - JWT 与 kxmemory 现有认证（Casdoor）的打通方式——确认 kxmemory 是否接受 pocketd 签发的 JWT，还是用服务间固定 token

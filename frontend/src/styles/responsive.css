@@ -1,0 +1,17 @@
+/**
+ * Responsive breakpoints — mobile-first layout helpers.
+ * Complements tokens.css for Codex compact mobile UI.
+ */
+@media (max-width: 480px) {
+  :root {
+    --spacing-card-padding: var(--space-2);
+    --spacing-list-gap: var(--space-2);
+  }
+}
+
+@media (min-width: 768px) {
+  :root {
+    --spacing-card-padding: var(--space-4);
+    --spacing-section-gap: var(--space-6);
+  }
+}

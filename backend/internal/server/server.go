@@ -19,6 +19,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/meeting"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
@@ -55,6 +56,7 @@ type Server struct {
 	notesStore  *notes.Store
 	emailStore  *email.Store
 	vaultStore  *vault.Store
+	meetingStore *meeting.Store
 	transcriber *stt.Transcriber // nil = 云端 STT 兜底未配置
 	mcpClient   *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// Phase C: 无状态 AI 网关（嵌入/LLM 代理）。nil = 未配置，对应 handler 返回 503。
@@ -133,6 +135,10 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 
 // SetOpenCodeManagers 由 main.go 在 server.New 之后注入 OpenCode 域管理器。
 // 使用 setter 而非扩展 New 签名，避免参数膨胀。所有 manager 允许为 nil。
+func (s *Server) SetMeetingStore(ms *meeting.Store) {
+	s.meetingStore = ms
+}
+
 func (s *Server) SetOpenCodeManagers(ocMgr *opencode.Manager, eventMgr *opencode.EventStreamManager, permMgr *opencode.PermissionManager, quesMgr *opencode.QuestionManager) {
 	s.opencodeManager = ocMgr
 	s.eventMgr = eventMgr
@@ -175,6 +181,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/vault/sync/", s.requireAuth(s.handleVaultSync))
 	// STT 云端兜底
 	mux.HandleFunc("/api/stt/transcribe", s.handleSttTranscribe)
+	mux.HandleFunc("/api/meetings", s.requireAuth(s.handleMeetings))
+	mux.HandleFunc("/api/meetings/", s.requireAuth(s.handleMeetingRouter))
 	// Phase C: 无状态 AI 网关（仅转发嵌入/LLM，不存数据）
 	mux.HandleFunc("/api/embed", s.requireAuth(s.handleEmbed))
 	mux.HandleFunc("/api/llm/chat", s.requireAuth(s.handleLLMChat))

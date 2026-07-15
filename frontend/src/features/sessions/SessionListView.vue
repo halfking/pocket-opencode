@@ -1,88 +1,80 @@
 <template>
   <div class="sessions-page">
-    <!-- 顶部工具栏 -->
-    <div class="toolbar">
-      <div class="search-bar">
-        <input 
-          v-model="searchQuery" 
-          type="search" 
-          placeholder="搜索会话..." 
-          @input="handleSearch"
+    <ScrollChromePortal>
+      <div class="toolbar">
+        <div class="search-bar">
+          <input
+            v-model="searchQuery"
+            type="search"
+            placeholder="搜索会话..."
+            @input="handleSearch"
+          />
+        </div>
+        <select v-model="selectedInstanceId" class="instance-filter" @change="handleInstanceChange">
+          <option value="">所有实例</option>
+          <option v-for="inst in instances" :key="inst.id" :value="inst.id">
+            {{ inst.name }}
+          </option>
+        </select>
+      </div>
+    </ScrollChromePortal>
+
+    <PullToRefresh :on-refresh="handleRefresh" class="list-scroll">
+      <!-- 加载状态 -->
+      <div v-if="loading" class="state-wrap">
+        <Skeleton :count="4" :rows="2" />
+      </div>
+
+      <!-- 错误提示 -->
+      <EmptyState
+        v-else-if="error"
+        icon="⚠️"
+        :title="error"
+        hint="请检查网络连接后重试"
+        action-label="重试"
+        variant="inline"
+        @action="loadSessions"
+      />
+
+      <!-- 会话列表 -->
+      <template v-else>
+        <EmptyState
+          v-if="filteredSessions.length === 0"
+          icon="💬"
+          title="暂无会话"
+          hint="在 AI 页面开始新对话，或切换实例筛选"
+          size="sm"
+          variant="inline"
         />
-      </div>
-      <select v-model="selectedInstanceId" @change="handleInstanceChange" class="instance-filter">
-        <option value="">所有实例</option>
-        <option v-for="inst in instances" :key="inst.id" :value="inst.id">
-          {{ inst.name }}
-        </option>
-      </select>
-    </div>
 
-    <!-- 加载状态 -->
-    <div v-if="loading" class="loading">
-      <div class="spinner"></div>
-      <p>加载会话中...</p>
-    </div>
-
-    <!-- 错误提示 -->
-    <div v-else-if="error" class="error">
-      <p>{{ error }}</p>
-      <button @click="loadSessions" class="retry-btn">重试</button>
-    </div>
-
-    <!-- 会话列表 -->
-    <div v-else class="session-list">
-      <div v-if="filteredSessions.length === 0" class="empty-state">
-        <p>暂无会话</p>
-      </div>
-      
-      <div 
-        v-for="session in filteredSessions" 
-        :key="session.id"
-        class="session-card"
-        @click="openSessionDetail(session)"
-      >
-        <div class="session-header">
-          <h3 class="session-title">{{ session.title }}</h3>
-          <span :class="['status-badge', session.status]">
-            {{ getStatusText(session.status) }}
-          </span>
-        </div>
-        
-        <p class="session-id">ID: {{ session.id }}</p>
-        
-        <div class="session-footer">
-          <button 
-            @click.stop="attachToTask(session)" 
-            class="attach-btn"
-            :disabled="attaching === session.id"
+        <div v-else class="session-list">
+          <SwipeableListItem
+            v-for="session in filteredSessions"
+            :key="session.id"
+            :right-actions="getSwipeActions(session)"
           >
-            {{ attaching === session.id ? '附加中...' : '附加到任务' }}
-          </button>
+            <div class="session-card" @click="openSessionDetail(session)">
+              <div class="session-header">
+                <h3 class="session-title">{{ session.title }}</h3>
+                <span :class="['status-badge', session.status]">
+                  {{ getStatusText(session.status) }}
+                </span>
+              </div>
+              <p class="session-id">{{ session.id.slice(0, 20) }}…</p>
+            </div>
+          </SwipeableListItem>
         </div>
-      </div>
-    </div>
 
-    <!-- 分页 -->
-    <div v-if="total > limit" class="pagination">
-      <button 
-        @click="prevPage" 
-        :disabled="offset === 0"
-        class="page-btn"
-      >
-        上一页
-      </button>
-      <span class="page-info">
-        {{ Math.floor(offset / limit) + 1 }} / {{ Math.ceil(total / limit) }}
-      </span>
-      <button 
-        @click="nextPage" 
-        :disabled="offset + limit >= total"
-        class="page-btn"
-      >
-        下一页
-      </button>
-    </div>
+        <!-- 分页 -->
+        <div v-if="total > limit" class="pagination">
+          <button class="page-btn" :disabled="offset === 0" @click="prevPage">上一页</button>
+          <span class="page-info">
+            {{ Math.floor(offset / limit) + 1 }} / {{ Math.ceil(total / limit) }}
+          </span>
+          <button class="page-btn" :disabled="offset + limit >= total" @click="nextPage">下一页</button>
+        </div>
+      </template>
+    </PullToRefresh>
   </div>
 </template>
 
@@ -90,6 +82,8 @@
 import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
+import { Skeleton, EmptyState, PullToRefresh, SwipeableListItem, type SwipeAction } from '@/components'
+import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 
 interface Session {
   id: string
@@ -103,37 +97,48 @@ interface Instance {
   baseURL: string
 }
 
+const ARCHIVE_KEY = 'archived_session_ids'
+
 const router = useRouter()
 
-// 状态
 const sessions = ref<Session[]>([])
 const instances = ref<Instance[]>([])
 const loading = ref(false)
 const error = ref('')
 const searchQuery = ref('')
 const selectedInstanceId = ref('')
-const attaching = ref('')
 const offset = ref(0)
 const limit = ref(20)
 const total = ref(0)
+const archivedIds = ref<Set<string>>(new Set())
 
-// 计算属性 - 过滤会话
+function loadArchivedIds() {
+  try {
+    const raw = localStorage.getItem(ARCHIVE_KEY)
+    archivedIds.value = new Set(raw ? JSON.parse(raw) : [])
+  } catch {
+    archivedIds.value = new Set()
+  }
+}
+
+function saveArchivedIds() {
+  localStorage.setItem(ARCHIVE_KEY, JSON.stringify([...archivedIds.value]))
+}
+
 const filteredSessions = computed(() => {
-  if (!searchQuery.value) return sessions.value
-  
+  let list = sessions.value.filter((s) => !archivedIds.value.has(s.id))
+  if (!searchQuery.value) return list
   const query = searchQuery.value.toLowerCase()
-  return sessions.value.filter(s => 
-    s.title.toLowerCase().includes(query) ||
-    s.id.toLowerCase().includes(query)
+  return list.filter(
+    (s) =>
+      s.title.toLowerCase().includes(query) ||
+      s.id.toLowerCase().includes(query),
   )
 })
 
-// 加载实例列表
 async function loadInstances() {
   try {
     const data = await api.getInstances()
-    // api.getInstances 返回 client.ts 的 Instance[]（含 displayName/environment 等）
-    // 映射为本地 SessionListView 用的 {id, name, baseURL} 形状
     instances.value = (data || []).map((i: any) => ({
       id: i.id,
       name: i.displayName || i.name || i.id,
@@ -144,18 +149,15 @@ async function loadInstances() {
   }
 }
 
-// 加载会话列表
 async function loadSessions() {
   loading.value = true
   error.value = ''
-  
   try {
     const instId = selectedInstanceId.value || undefined
     const data = await api.getAllSessions(instId, limit.value, offset.value)
-    // API 返回大写字段 (ID, Title, Status)，映射为小写
     sessions.value = (data.sessions || []).map((s: any) => ({
       id: s.id || s.ID || '',
-      title: s.title || s.Title || '',
+      title: s.title || s.Title || '未命名会话',
       status: s.status || s.Status || 'idle',
     }))
     total.value = data.total || 0
@@ -166,18 +168,20 @@ async function loadSessions() {
   }
 }
 
-// 处理搜索
-function handleSearch() {
-  // 搜索在客户端过滤，不需要重新请求
+async function handleRefresh() {
+  offset.value = 0
+  await loadSessions()
 }
 
-// 处理实例切换
+function handleSearch() {
+  /* 客户端过滤 */
+}
+
 function handleInstanceChange() {
   offset.value = 0
   loadSessions()
 }
 
-// 上一页
 function prevPage() {
   if (offset.value >= limit.value) {
     offset.value -= limit.value
@@ -185,7 +189,6 @@ function prevPage() {
   }
 }
 
-// 下一页
 function nextPage() {
   if (offset.value + limit.value < total.value) {
     offset.value += limit.value
@@ -193,9 +196,7 @@ function nextPage() {
   }
 }
 
-// 打开会话详情
 function openSessionDetail(session: Session) {
-  // Phase V3: 跳转到实时会话对话视图
   router.push({
     path: `/sessions/${session.id}`,
     query: {
@@ -205,40 +206,65 @@ function openSessionDetail(session: Session) {
   })
 }
 
-// 附加到任务
-async function attachToTask(session: Session) {
-  // 简化版：直接提示选择任务
-  const taskId = prompt(`请输入要附加的任务 ID:\n\n会话: ${session.title}`)
-  if (!taskId) return
-  
-  attaching.value = session.id
+function archiveSession(session: Session) {
+  archivedIds.value.add(session.id)
+  saveArchivedIds()
+}
+
+async function deleteSession(session: Session) {
+  const instId = selectedInstanceId.value
+  if (!instId) {
+    alert('请先选择实例再删除会话')
+    return
+  }
+  if (!confirm(`确定删除会话「${session.title}」？`)) return
   try {
-    await api.attachSessionToTask(taskId, session.id, selectedInstanceId.value || 'default')
-    alert('附加成功!')
+    await api.deleteSession(session.id, instId)
+    sessions.value = sessions.value.filter((s) => s.id !== session.id)
+    total.value = Math.max(0, total.value - 1)
   } catch (err: any) {
-    alert('附加失败: ' + (err.message || '未知错误'))
-  } finally {
-    attaching.value = ''
+    alert('删除失败: ' + (err.message || '未知错误'))
   }
 }
 
-// 获取状态文本
+function getSwipeActions(session: Session): SwipeAction[] {
+  return [
+    {
+      id: 'archive',
+      icon: '📦',
+      label: '归档',
+      type: 'warning',
+      onAction: () => archiveSession(session),
+    },
+    {
+      id: 'delete',
+      icon: '🗑',
+      label: '删除',
+      type: 'danger',
+      onAction: () => deleteSession(session),
+    },
+  ]
+}
+
 function getStatusText(status: string): string {
   const statusMap: Record<string, string> = {
-    'active': '进行中',
-    'inactive': '已归档',
-    'empty': '空会话',
+    active: '进行中',
+    inactive: '已归档',
+    empty: '空会话',
+    idle: '空闲',
+    streaming: '生成中',
   }
   return statusMap[status] || status
 }
 
 onMounted(() => {
+  loadArchivedIds()
   loadInstances()
   loadSessions()
 })
 
 onActivated(() => {
-  // 从其他页面返回时重新加载
+  loadArchivedIds()
   loadSessions()
 })
 </script>
@@ -247,17 +273,20 @@ onActivated(() => {
 .sessions-page {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  padding: 1rem;
-  padding-bottom: 70px; /* 为底部导航留空间 */
-  overflow-y: auto;
+  height: 100%;
+  min-height: 0;
 }
 
 .toolbar {
   display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+
+.list-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .search-bar {
@@ -266,184 +295,136 @@ onActivated(() => {
 
 .search-bar input {
   width: 100%;
-  padding: 0.75rem 1rem;
-  border: none;
-  border-radius: 12px;
-  font-size: 1rem;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.search-bar input:focus {
+  border-color: var(--brand-primary);
 }
 
 .instance-filter {
-  padding: 0.75rem 1rem;
-  border: none;
-  border-radius: 12px;
-  font-size: 1rem;
-  background: white;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  background: var(--bg-card);
+  color: var(--text-primary);
   cursor: pointer;
 }
 
-.loading, .error {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 3rem 1rem;
-  color: white;
-  text-align: center;
-}
-
-.spinner {
-  width: 40px;
-  height: 40px;
-  border: 3px solid rgba(255, 255, 255, 0.3);
-  border-top-color: white;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin-bottom: 1rem;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.retry-btn {
-  margin-top: 1rem;
-  padding: 0.75rem 2rem;
-  background: white;
-  color: #667eea;
-  border: none;
-  border-radius: 12px;
-  font-size: 1rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.empty-state {
-  text-align: center;
-  padding: 3rem 1rem;
-  color: white;
+.state-wrap {
+  padding: var(--space-2) 0;
 }
 
 .session-list {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: var(--spacing-list-gap);
 }
 
 .session-card {
-  background: white;
-  border-radius: 16px;
-  padding: 1rem;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-card-padding);
   cursor: pointer;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition: background 120ms;
+  min-height: 52px;
 }
 
 .session-card:active {
-  transform: scale(0.98);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  background: var(--bg-subtle);
 }
 
 .session-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 0.5rem;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .session-title {
   margin: 0;
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: #333;
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
   flex: 1;
-  margin-right: 0.5rem;
-}
-
-.status-badge {
-  padding: 0.25rem 0.75rem;
-  border-radius: 12px;
-  font-size: 0.85rem;
-  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.status-badge.active {
-  background: #d4edda;
-  color: #155724;
+.status-badge {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-semibold);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.status-badge.active,
+.status-badge.streaming {
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .status-badge.inactive {
-  background: #f8d7da;
-  color: #721c24;
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 
-.status-badge.empty {
-  background: #fff3cd;
-  color: #856404;
+.status-badge.empty,
+.status-badge.idle {
+  background: var(--warning-bg);
+  color: var(--warning);
 }
 
 .session-id {
-  margin: 0.5rem 0;
-  font-size: 0.85rem;
-  color: #666;
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
   font-family: monospace;
-}
-
-.session-footer {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 1rem;
-}
-
-.attach-btn {
-  padding: 0.5rem 1.5rem;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  border: none;
-  border-radius: 12px;
-  font-size: 0.9rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: opacity 0.2s;
-}
-
-.attach-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .pagination {
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 1rem;
-  margin-top: 1rem;
-  padding: 1rem;
-  background: white;
-  border-radius: 16px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding: var(--spacing-card-padding);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 
 .page-btn {
-  padding: 0.5rem 1.5rem;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  padding: var(--space-1) var(--space-3);
+  background: var(--brand-primary);
+  color: var(--text-inverse);
   border: none;
-  border-radius: 12px;
-  font-size: 0.9rem;
-  font-weight: 600;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
   cursor: pointer;
 }
 
 .page-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 
 .page-info {
-  color: #666;
-  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
 }
 </style>

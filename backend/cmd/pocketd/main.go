@@ -19,6 +19,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
+	"github.com/halfking/pocket-opencode/backend/internal/meeting"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
@@ -59,7 +60,8 @@ func main() {
 		taskStore  *task.Store  // nil-safe: nil when pool is nil
 		notesStore *notes.Store
 		emailStore *email.Store
-		vaultStore *vault.Store
+		vaultStore   *vault.Store
+		meetingStore *meeting.Store
 	)
 	if pool != nil {
 		ts, err := task.NewStore(pool)
@@ -74,6 +76,9 @@ func main() {
 		vs, err := vault.NewStore(pool)
 		if err != nil { log.Fatalf("vault store: %v", err) }
 		vaultStore = vs
+		ms, err := meeting.NewStore(pool)
+		if err != nil { log.Fatalf("meeting store: %v", err) }
+		meetingStore = ms
 		log.Println("Module stores initialized (PG)")
 	}
 
@@ -244,6 +249,7 @@ if pool != nil {
 		emailCrypto, emailPending,
 		emailScheduler, emailFetcher,
 		dataDir)
+	srv.SetMeetingStore(meetingStore)
 
 	// ---- OpenCode 域管理器装配（Phase V3: 真实任务与会话接入）----
 	// 在 server.New 之后再装配，因为 manager 持有 opencodeAdapter/registry 引用。

@@ -16,14 +16,17 @@
       </span>
     </template>
 
-    <!-- 加载中 -->
-    <div v-if="loading" class="state">加载中…</div>
+    <div v-if="loading" class="state-wrap"><Skeleton :count="3" /></div>
 
-    <!-- 不存在 -->
-    <div v-else-if="!entry" class="state">
-      <p>条目不存在或已被删除</p>
-      <button class="action-btn ghost" @click="goBack">返回</button>
-    </div>
+    <EmptyState
+      v-else-if="!entry"
+      icon="🔍"
+      title="条目不存在或已被删除"
+      size="sm"
+      variant="inline"
+      action-label="返回列表"
+      @action="goBack"
+    />
 
     <!-- ======== 编辑模式 ======== -->
     <div v-else-if="isEdit" class="edit-form">
@@ -182,6 +185,7 @@ import { computed, onBeforeUnmount, onMounted, onUnmounted, reactive, ref, watch
 import { useRoute, useRouter } from 'vue-router'
 import { TOTP, Secret } from 'otpauth'
 import AppLayout from '../../app/AppLayout.vue'
+import { Skeleton, EmptyState } from '../../components'
 import * as vaultStore from './vault-store'
 import type { VaultEntry } from './vault-store'
 
@@ -486,9 +490,9 @@ onBeforeUnmount(() => {
   border-left: 4px solid var(--brand-primary);
   box-shadow: var(--shadow-sm);
 }
-.entry-header.cat-card { border-left-color: #f59e0b; }
-.entry-header.cat-note { border-left-color: #10b981; }
-.entry-header.cat-identity { border-left-color: #8b5cf6; }
+.entry-header.cat-card { border-left-color: var(--warning); }
+.entry-header.cat-note { border-left-color: var(--success); }
+.entry-header.cat-identity { border-left-color: var(--cat-marketing); }
 .header-icon { font-size: 28px; }
 .header-title { font-size: 20px; font-weight: 700; margin: 0; color: var(--text-primary); flex: 1; word-break: break-word; }
 
@@ -521,22 +525,25 @@ onBeforeUnmount(() => {
 }
 .field-icon-btn:active { opacity: 0.7; }
 .field-icon-btn.primary-copy {
-  background: var(--brand-primary); color: white; border-color: var(--brand-primary);
-  font-weight: 500;
+  background: var(--brand-primary); color: var(--text-inverse); border-color: var(--brand-primary);
+  font-weight: var(--font-weight-medium);
 }
 .field-icon-btn.countdown {
-  background: var(--danger); color: white; border-color: var(--danger);
-  font-weight: 600; cursor: default;
+  background: var(--danger); color: var(--text-inverse); border-color: var(--danger);
+  font-weight: var(--font-weight-semibold); cursor: default;
 }
 
 .totp-field .field-row { background: var(--bg-subtle); padding: var(--space-3); border-radius: var(--radius-sm); }
 .totp-code { font-size: 22px; letter-spacing: 4px; font-weight: 700; color: var(--brand-primary); }
 .totp-remaining {
-  font-size: 12px; color: var(--text-muted);
-  background: rgba(0,0,0,0.05); padding: 2px 8px; border-radius: var(--radius-full);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  background: var(--overlay-subtle);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
   font-variant-numeric: tabular-nums;
 }
-.totp-remaining.urgent { background: var(--danger); color: white; }
+.totp-remaining.urgent { background: var(--danger); color: var(--text-inverse); }
 
 .meta {
   font-size: 12px; color: var(--text-muted); padding: 0 var(--space-2);
@@ -552,7 +559,7 @@ onBeforeUnmount(() => {
 .action-btn:active { opacity: 0.7; }
 .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .action-btn.primary {
-  background: var(--brand-gradient); color: white; border: none;
+  background: var(--brand-gradient); color: var(--text-inverse); border: none;
 }
 .action-btn.ghost { background: var(--bg-subtle); }
 .action-btn.danger { color: var(--danger); border-color: var(--danger); }
@@ -570,16 +577,17 @@ onBeforeUnmount(() => {
 
 /* toast */
 .toast {
-  position: fixed; bottom: calc(var(--space-6)); left: 50%;
+  position: fixed; bottom: var(--space-6); left: 50%;
   transform: translateX(-50%);
-  background: var(--danger); color: white;
+  background: var(--danger); color: var(--text-inverse);
   padding: var(--space-3) var(--space-5);
   border-radius: var(--radius-md);
-  font-size: 14px; font-weight: 500;
-  box-shadow: var(--shadow-md, 0 4px 12px rgba(0,0,0,0.2));
+  font-size: var(--text-sm); font-weight: var(--font-weight-medium);
+  box-shadow: var(--shadow-md);
   z-index: 100; max-width: 90vw; text-align: center;
 }
-.toast.success { background: #10b981; }
+.toast.success { background: var(--success); }
+.state-wrap { padding: var(--space-3) 0; }
 .toast-enter-active, .toast-leave-active { transition: opacity 0.2s, transform 0.2s; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, 10px); }
 </style>

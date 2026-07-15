@@ -49,6 +49,8 @@ export interface Task {
   pendingApprovals?: number
   sessionCount?: number
   owner?: string
+  /** UI-only: 实例显示名（TasksView 本地 enrich） */
+  instanceName?: string
 }
 
 export interface Instance {
@@ -131,6 +133,19 @@ export const api = {
     return res.json()
   },
 
+  async updateTask(id: string, data: Partial<Task>): Promise<Task> {
+    const res = await authFetch(`${API_BASE}/api/tasks/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    })
+    return res.json()
+  },
+
+  async deleteTask(id: string): Promise<void> {
+    await authFetch(`${API_BASE}/api/tasks/${id}`, { method: "DELETE" })
+  },
+
   async getTaskSessions(taskId: string): Promise<SessionLink[]> {
     const res = await authFetch(`${API_BASE}/api/tasks/${taskId}/sessions`)
     const data = await res.json()
@@ -197,7 +212,16 @@ export const api = {
     return res.json()
   },
 
-  // 新增：附加会话到任务
+  // 删除移动端会话
+  async deleteSession(sessionId: string, instanceId: string): Promise<void> {
+    const qs = new URLSearchParams({ instance_id: instanceId })
+    await authFetch(
+      `${API_BASE}/api/mobile/sessions/${encodeURIComponent(sessionId)}?${qs}`,
+      { method: 'DELETE' },
+    )
+  },
+
+  // 附加会话到任务
   async attachSessionToTask(taskId: string, sessionId: string, instanceId: string): Promise<void> {
     const res = await authFetch(`${API_BASE}/api/tasks/${taskId}/attach-session`, {
       method: "POST",

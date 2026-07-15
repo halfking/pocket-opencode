@@ -91,26 +91,26 @@ defineEmits<{
 
 .theme-tab.active {
   background: var(--brand-primary);
-  color: #fff;
+  color: var(--text-inverse);
   border-color: var(--brand-primary);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
 
 .theme-tab.has-badge .theme-tab-badge {
   background: var(--warning);
-  color: #fff;
-  border-radius: 999px;
+  color: var(--text-inverse);
+  border-radius: var(--radius-full);
   padding: 1px 7px;
-  font-size: 11px;
+  font-size: var(--text-xs);
   line-height: 14px;
   min-width: 18px;
   text-align: center;
-  font-weight: 700;
+  font-weight: var(--font-weight-bold);
 }
 
 .theme-tab.active .theme-tab-badge {
-  background: rgba(255, 255, 255, 0.25);
-  color: #fff;
+  background: var(--badge-on-active);
+  color: var(--text-inverse);
 }
 
 .theme-tab-icon {

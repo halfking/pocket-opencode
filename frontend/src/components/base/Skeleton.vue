@@ -27,25 +27,25 @@ withDefaults(defineProps<SkeletonProps>(), {
 
 <style scoped>
 .skeleton-loader {
-  padding: var(--space-4);
+  padding: var(--space-3);
 }
 
 .skeleton-item {
   display: flex;
   gap: var(--space-3);
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-3);
 }
 
 .skeleton-avatar {
   flex-shrink: 0;
-  width: 48px;
-  height: 48px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   background: linear-gradient(
     90deg,
-    var(--color-border) 25%,
-    var(--color-bg-surface) 50%,
-    var(--color-border) 75%
+    var(--border) 25%,
+    var(--bg-subtle) 50%,
+    var(--border) 75%
   );
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
@@ -59,13 +59,13 @@ withDefaults(defineProps<SkeletonProps>(), {
 }
 
 .skeleton-line {
-  height: 16px;
+  height: 14px;
   border-radius: var(--radius-sm);
   background: linear-gradient(
     90deg,
-    var(--color-border) 25%,
-    var(--color-bg-surface) 50%,
-    var(--color-border) 75%
+    var(--border) 25%,
+    var(--bg-subtle) 50%,
+    var(--border) 75%
   );
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;

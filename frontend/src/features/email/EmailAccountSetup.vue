@@ -16,11 +16,17 @@
     </div>
 
     <!-- 已有账户列表 -->
-    <div v-if="loading" class="state">加载中…</div>
-    <div v-else-if="accounts.length === 0 && !showForm" class="state">
-      <p>尚未添加邮箱账户。</p>
-      <p class="hint">点击右上角"＋ 添加"配置 IMAP。</p>
-    </div>
+    <div v-if="loading" class="state-wrap"><Skeleton :count="2" /></div>
+    <EmptyState
+      v-else-if="accounts.length === 0 && !showForm"
+      icon="📬"
+      title="尚未添加邮箱账户"
+      hint="点击右上角「＋ 添加」配置 IMAP"
+      size="sm"
+      variant="inline"
+      action-label="添加账户"
+      @action="showForm = true"
+    />
 
     <div v-else class="account-list">
       <div v-for="a in accounts" :key="a.id" class="account-card">
@@ -121,6 +127,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import AppLayout from '../../app/AppLayout.vue'
+import { Skeleton, EmptyState } from '../../components'
 import * as emailsStore from './emails-store'
 import type { EmailAccount } from './emails-store'
 import { emailApi } from '../../api/email'
@@ -418,7 +425,7 @@ onMounted(loadList)
   cursor: pointer;
   display: flex; flex-direction: column; align-items: center; gap: 2px;
 }
-.tpl-btn.selected { border-color: var(--brand-primary); background: rgba(102,126,234,0.08); }
+.tpl-btn.selected { border-color: var(--brand-primary); background: var(--brand-bg); }
 .tpl-icon { font-size: 22px; }
 .tpl-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
 .tpl-host { font-size: 11px; color: var(--text-muted); }
@@ -464,17 +471,18 @@ onMounted(loadList)
 .primary-btn:disabled { background: var(--text-muted); cursor: not-allowed; }
 
 .error {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--danger);
   padding: var(--space-2);
-  background: rgba(239,68,68,0.08);
+  background: var(--danger-bg);
   border-radius: var(--radius-sm);
 }
 .toast {
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: var(--space-2);
   border-radius: var(--radius-sm);
 }
-.toast.ok { color: var(--success); background: rgba(16,185,129,0.08); }
-.toast.err { color: var(--danger); background: rgba(239,68,68,0.08); }
+.toast.ok { color: var(--success); background: var(--success-bg); }
+.toast.err { color: var(--danger); background: var(--danger-bg); }
+.state-wrap { padding: var(--space-2) 0; }
 </style>

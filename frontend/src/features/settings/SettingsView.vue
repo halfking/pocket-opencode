@@ -1,10 +1,5 @@
 <template>
   <div class="settings-view">
-    <!-- 顶部栏 -->
-    <div class="top-bar">
-      <h1>设置</h1>
-    </div>
-
     <!-- 设置列表 -->
     <div class="settings-container">
       <!-- 用户信息 -->
@@ -269,53 +264,37 @@ function handleLogout() {
 
 <style scoped>
 .settings-view {
-  min-height: 100vh;
-  background: #f5f7fa;
-  display: flex;
-  flex-direction: column;
-  padding-bottom: 70px;
-}
-
-.top-bar {
-  background: white;
-  padding: 16px 20px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
-}
-
-.top-bar h1 {
-  font-size: 20px;
-  font-weight: 600;
-  margin: 0;
+  min-height: 100%;
 }
 
 .settings-container {
   flex: 1;
-  overflow-y: auto;
-  padding: 20px;
+  padding: var(--space-3);
 }
 
 .settings-section {
-  background: white;
-  border-radius: 16px;
-  padding: 20px;
-  margin-bottom: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-card-padding);
+  margin-bottom: var(--spacing-list-gap);
 }
 
 .settings-section h2 {
-  font-size: 14px;
-  font-weight: 600;
-  color: #999;
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-muted);
   text-transform: uppercase;
-  margin: 0 0 16px 0;
+  margin: 0 0 var(--space-3) 0;
   letter-spacing: 0.5px;
 }
 
 .setting-item {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 16px 0;
-  border-bottom: 1px solid #f0f0f0;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
 }
 
 .setting-item:last-child {
@@ -323,52 +302,54 @@ function handleLogout() {
 }
 
 .setting-icon {
-  font-size: 24px;
-  width: 40px;
-  height: 40px;
+  font-size: 20px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f8f9fa;
-  border-radius: 10px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
   flex-shrink: 0;
 }
 
 .setting-content {
   flex: 1;
+  min-width: 0;
 }
 
 .setting-label {
-  font-size: 15px;
-  font-weight: 600;
-  color: #333;
-  margin-bottom: 4px;
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  margin-bottom: 2px;
 }
 
 .setting-value {
-  font-size: 14px;
-  color: #666;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
 }
 
 .setting-value.small {
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-family: monospace;
+  word-break: break-all;
 }
 
 .action-btn {
   width: 100%;
-  padding: 16px;
-  font-size: 16px;
-  font-weight: 600;
+  padding: var(--space-3);
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-semibold);
   border: none;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  transition: all 0.3s;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  transition: opacity 120ms;
 }
 
 .action-btn:last-child {
@@ -376,28 +357,71 @@ function handleLogout() {
 }
 
 .action-btn.primary {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  background: var(--brand-gradient);
+  color: var(--text-inverse);
+}
+
+.action-btn.secondary {
+  background: var(--brand-bg);
+  color: var(--brand-primary);
+  border: 1px solid var(--border);
 }
 
 .action-btn.danger {
-  background: #fee;
-  color: #c33;
-  border: 1px solid #fcc;
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--border);
 }
 
 .action-btn:active {
-  transform: scale(0.98);
+  opacity: 0.85;
 }
 
-/*
-  ✅ 已删除硬编码底部导航的 CSS 样式（.bottom-nav / .nav-item / .nav-icon /
-  .nav-label），由 AppLayout 提供的共享 BottomNav 接管。
-*/
+.action-row {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.action-row .action-btn {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.test-result {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+
+.test-result.ok {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.test-result.fail {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.model-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  align-items: center;
+}
+
+.model-chip {
+  font-size: var(--text-xs);
+  padding: 1px var(--space-2);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+.muted {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
 </style>
-
-.action-btn.secondary {
-  background: #e8f0fe;
-  color: #667eea;
-  border: 1px solid #d0e1fd;
-}

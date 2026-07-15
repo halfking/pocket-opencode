@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -597,13 +598,72 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
 	}
-	// TODO Phase 3: 从 multipart 或文件路径读取音频字节。
-	// 当前骨架接受 {audioPath} 并提示需要文件读取实现。
-	var body struct {
-		AudioPath string `json:"audioPath"`
+
+	// multipart 文件上传
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid multipart")
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "file required")
+			return
+		}
+		defer file.Close()
+		audio, err := io.ReadAll(file)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "read file failed")
+			return
+		}
+		filename := "audio.webm"
+		if header != nil && header.Filename != "" {
+			filename = header.Filename
+		}
+		result, err := s.transcriber.Transcribe(r.Context(), audio, filename)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "transcribe failed: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	writeError(w, http.StatusNotImplemented, "audio file handling: Phase 3")
+
+	// JSON base64 上传（前端 blob → base64）
+	var body struct {
+		AudioPath   string `json:"audioPath"`   // 兼容旧字段（忽略）
+		AudioBase64 string `json:"audioBase64"` // data URI 或纯 base64
+		MimeType    string `json:"mimeType"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.AudioBase64 == "" {
+		writeError(w, http.StatusBadRequest, "audioBase64 required")
+		return
+	}
+	audio, err := decodeAudioBase64(body.AudioBase64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid base64 audio")
+		return
+	}
+	if len(audio) > 10<<20 {
+		writeError(w, http.StatusBadRequest, "audio too large (max 10MB)")
+		return
+	}
+	ext := "webm"
+	if strings.Contains(body.MimeType, "wav") {
+		ext = "wav"
+	} else if strings.Contains(body.MimeType, "mp4") || strings.Contains(body.MimeType, "m4a") {
+		ext = "m4a"
+	}
+	result, err := s.transcriber.Transcribe(r.Context(), audio, "audio."+ext)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "transcribe failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // =====================================================================

@@ -26,6 +26,7 @@
       @touchstart="handleTouchStart"
       @touchmove="handleTouchMove"
       @touchend="handleTouchEnd"
+      @scroll="onContentScroll"
     >
       <slot />
     </div>
@@ -33,7 +34,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
+import { SCROLL_CHROME_KEY } from '@/composables/scroll-chrome'
 
 export interface PullToRefreshProps {
   onRefresh: () => Promise<void>
@@ -46,12 +48,33 @@ const props = withDefaults(defineProps<PullToRefreshProps>(), {
   disabled: false,
 })
 
+const scrollChrome = inject(SCROLL_CHROME_KEY, null)
+
 const containerRef = ref<HTMLElement>()
 const contentRef = ref<HTMLElement>()
 const pullDistance = ref(0)
 const startY = ref(0)
 const isPulling = ref(false)
 const isRefreshing = ref(false)
+
+let lastScrollTop = 0
+
+function onContentScroll() {
+  const el = contentRef.value
+  if (!el || !scrollChrome?.enabled.value) return
+  const top = el.scrollTop
+  const delta = top - lastScrollTop
+  lastScrollTop = top
+  scrollChrome.reportScroll({ scrollTop: top, delta })
+}
+
+onMounted(() => {
+  contentRef.value?.addEventListener('scroll', onContentScroll, { passive: true })
+})
+
+onUnmounted(() => {
+  contentRef.value?.removeEventListener('scroll', onContentScroll)
+})
 
 const refreshText = computed(() => {
   if (isRefreshing.value) return '刷新中...'
@@ -131,7 +154,7 @@ const handleTouchEnd = async () => {
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  background: var(--color-bg-surface);
+  background: var(--bg-card);
   transform: translateY(-100%);
   z-index: 1;
   transition: opacity var(--duration-fast) var(--ease-out);
@@ -139,7 +162,7 @@ const handleTouchEnd = async () => {
 
 .refresh-icon {
   font-size: 24px;
-  color: var(--color-primary);
+  color: var(--brand-primary);
   transition: transform var(--duration-base) var(--ease-out);
 }
 
@@ -154,8 +177,8 @@ const handleTouchEnd = async () => {
 }
 
 .refresh-text {
-  font-size: 14px;
-  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
   font-weight: var(--font-weight-medium);
 }
 

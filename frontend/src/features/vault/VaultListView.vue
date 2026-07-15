@@ -4,7 +4,7 @@
   docs/2026-07-02-password-vault-design.md.
 -->
 <template>
-  <AppLayout>
+  <div class="vault-page">
     <!-- Locked / setup state -->
     <div v-if="!unlocked" class="lock-screen">
       <div class="lock-icon">🔐</div>
@@ -23,16 +23,19 @@
     </div>
 
     <!-- Unlocked: list -->
-    <div v-else>
-      <div class="toolbar">
-        <button class="btn-ghost" @click="showAdd = !showAdd">➕ 新增</button>
-        <button class="btn-ghost" @click="generate">🎲 生成密码</button>
-        <button class="btn-ghost" @click="cloudSync" :disabled="syncing">
-          {{ syncing ? '☁️ 同步中…' : '☁️ 云同步' }}
-        </button>
-        <button class="btn-ghost" @click="lock">🔒 锁定</button>
-      </div>
+    <div v-else class="vault-unlocked">
+      <ScrollChromePortal>
+        <div class="toolbar">
+          <button class="btn-ghost" @click="showAdd = !showAdd">➕ 新增</button>
+          <button class="btn-ghost" @click="generate">🎲 生成密码</button>
+          <button class="btn-ghost" @click="cloudSync" :disabled="syncing">
+            {{ syncing ? '☁️ 同步中…' : '☁️ 云同步' }}
+          </button>
+          <button class="btn-ghost" @click="lock">🔒 锁定</button>
+        </div>
+      </ScrollChromePortal>
 
+      <div class="vault-body">
       <div v-if="syncStatus" class="sync-status" :class="syncStatus.type">
         {{ syncStatus.msg }}
       </div>
@@ -53,7 +56,16 @@
         <button class="btn-primary" @click="saveNew">保存</button>
       </div>
 
-      <div v-if="entries.length === 0" class="state">密码箱为空</div>
+      <EmptyState
+        v-if="entries.length === 0"
+        icon="🔐"
+        title="密码箱为空"
+        hint="点击「新增」添加登录凭据，或使用「生成密码」"
+        size="sm"
+        variant="inline"
+        action-label="新增条目"
+        @action="showAdd = true"
+      />
       <div v-else class="entry-list">
         <div v-for="e in entries" :key="e.id" class="entry-card" @click="open(e.id)">
           <span class="entry-icon">{{ categoryIcon(e.category) }}</span>
@@ -64,14 +76,16 @@
           <span class="arrow">›</span>
         </div>
       </div>
+      </div>
     </div>
-  </AppLayout>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
+import { EmptyState } from '../../components'
+import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 import { keystore } from '../../native/keystore'
 import * as vaultStore from './vault-store'
 import * as syncStore from './sync-store'
@@ -220,7 +234,7 @@ input {
   background: var(--bg-card);
   color: var(--text-primary);
 }
-.btn-primary { background: var(--brand-gradient); color: white; border: none; padding: var(--space-3); border-radius: var(--radius-md); font-weight: 600; cursor: pointer; }
+.btn-primary { background: var(--brand-gradient); color: var(--text-inverse); border: none; padding: var(--space-3); border-radius: var(--radius-md); font-weight: var(--font-weight-semibold); cursor: pointer; }
 .btn-bio { background: var(--bg-card); color: var(--brand-primary); border: 1px solid var(--brand-primary); padding: var(--space-3); border-radius: var(--radius-md); font-weight: 600; cursor: pointer; }
 .error { color: var(--danger); font-size: 13px; text-align: center; }
 .add-form {
@@ -237,13 +251,27 @@ input {
   margin-bottom: var(--space-3); padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm); font-size: 13px;
 }
-.sync-status.ok { background: rgba(34,197,94,0.12); color: #16a34a; }
-.sync-status.err { background: rgba(239,68,68,0.12); color: var(--danger); }
-.toolbar { display: flex; gap: var(--space-2); margin-bottom: var(--space-3); }
+.sync-status.ok { background: var(--success-bg); color: var(--success); }
+.sync-status.err { background: var(--danger-bg); color: var(--danger); }
+.toolbar { display: flex; gap: var(--space-2); padding: var(--space-3); flex-wrap: wrap; }
+.vault-page { height: 100%; min-height: 0; }
+.vault-unlocked { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.vault-body { flex: 1; min-height: 0; }
 .btn-ghost { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-primary); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); font-size: 13px; cursor: pointer; }
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
 .entry-list { display: flex; flex-direction: column; gap: var(--space-2); }
-.entry-card { display: flex; align-items: center; gap: var(--space-3); background: var(--bg-card); padding: var(--space-3); border-radius: var(--radius-md); cursor: pointer; box-shadow: var(--shadow-sm); }
+.entry-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  background: var(--bg-card);
+  padding: var(--spacing-card-padding);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  min-height: 52px;
+  max-height: 66px;
+}
 .entry-icon { font-size: 22px; }
 .entry-body { flex: 1; }
 .entry-title { font-weight: 600; font-size: 14px; }

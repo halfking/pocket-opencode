@@ -210,3 +210,118 @@ func (c *Client) DailySummary(ctx context.Context, req DailySummaryRequest) (*Da
 	}
 	return &out, nil
 }
+
+// ---- 会议相关 ----
+
+type MeetingSegment struct {
+	Speaker string `json:"speaker"`
+	Text    string `json:"text"`
+	Lang    string `json:"lang"`
+	StartMs int    `json:"start_ms"`
+	EndMs   int    `json:"end_ms"`
+}
+
+type MeetingMeta struct {
+	Title        string   `json:"title"`
+	Participants []string `json:"participants"`
+	Location     string   `json:"location,omitempty"`
+}
+
+type MeetingSummaryRequest struct {
+	MeetingID   string           `json:"meeting_id"`
+	Segments    []MeetingSegment `json:"segments"`
+	PrevSummary string           `json:"prev_summary,omitempty"`
+	Meta        MeetingMeta      `json:"meta,omitempty"`
+}
+
+type MeetingActionItem struct {
+	Text     string `json:"text"`
+	Assignee string `json:"assignee,omitempty"`
+	Due      string `json:"due,omitempty"`
+}
+
+type MeetingSummaryResponse struct {
+	Summary       string              `json:"summary"`
+	KeyPoints     []string            `json:"key_points"`
+	ActionItems   []MeetingActionItem `json:"action_items"`
+	Decisions     []string            `json:"decisions"`
+	OpenQuestions []string            `json:"open_questions"`
+}
+
+type MeetingRecommendRequest struct {
+	MeetingID string           `json:"meeting_id"`
+	Segments  []MeetingSegment `json:"segments"`
+	Summary   string           `json:"summary,omitempty"`
+}
+
+type RecommendItem struct {
+	Type    string  `json:"type"`
+	ID      string  `json:"id"`
+	Title   string  `json:"title"`
+	Snippet string  `json:"snippet"`
+	Score   float64 `json:"score"`
+}
+
+type MeetingRecommendResponse struct {
+	Items []RecommendItem `json:"items"`
+}
+
+type MeetingRefineRequest struct {
+	MeetingID   string           `json:"meeting_id"`
+	Segments    []MeetingSegment `json:"segments"`
+	TargetLangs []string         `json:"target_langs,omitempty"`
+}
+
+type MeetingRefineResponse struct {
+	RefinedTranscript string              `json:"refined_transcript"`
+	Translations      map[string]string   `json:"translations"`
+	StructuredMinutes map[string]any      `json:"structured_minutes"`
+	Todos             []MeetingActionItem `json:"todos"`
+	NoteID            string              `json:"note_id,omitempty"`
+}
+
+func (c *Client) postJSON(ctx context.Context, path string, reqBody, out any) error {
+	body, _ := json.Marshal(reqBody)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	resp, err := c.Client.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		r, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("kxmemory %s %d: %s", path, resp.StatusCode, string(r))
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *Client) MeetingSummary(ctx context.Context, req MeetingSummaryRequest) (*MeetingSummaryResponse, error) {
+	var out MeetingSummaryResponse
+	if err := c.postJSON(ctx, "/v1/meetings/summary", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) MeetingRecommend(ctx context.Context, req MeetingRecommendRequest) (*MeetingRecommendResponse, error) {
+	var out MeetingRecommendResponse
+	if err := c.postJSON(ctx, "/v1/meetings/recommend", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) MeetingRefine(ctx context.Context, req MeetingRefineRequest) (*MeetingRefineResponse, error) {
+	var out MeetingRefineResponse
+	if err := c.postJSON(ctx, "/v1/meetings/refine", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

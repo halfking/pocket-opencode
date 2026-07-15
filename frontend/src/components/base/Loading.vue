@@ -40,7 +40,7 @@ const spinnerClasses = computed(() => {
 .loading-spinner--fullscreen {
   position: fixed;
   inset: 0;
-  background: var(--color-bg-overlay);
+  background: var(--overlay);
   backdrop-filter: blur(4px);
   display: flex;
   justify-content: center;
@@ -49,8 +49,8 @@ const spinnerClasses = computed(() => {
 }
 
 .spinner-circle {
-  border: 3px solid var(--color-border);
-  border-top-color: var(--color-primary);
+  border: 3px solid var(--border);
+  border-top-color: var(--brand-primary);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -74,8 +74,8 @@ const spinnerClasses = computed(() => {
 }
 
 .spinner-text {
-  font-size: 14px;
-  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
   font-weight: var(--font-weight-medium);
 }
 

@@ -189,7 +189,7 @@ defineExpose({ reset })
 .swipe-content {
   position: relative;
   z-index: 2;
-  background: var(--color-bg-surface);
+  background: var(--bg-card);
   transition: transform 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
   touch-action: pan-y; /* 允许垂直滚动 */
 }
@@ -244,18 +244,18 @@ defineExpose({ reset })
 
 /* 操作按钮颜色 */
 .swipe-action--primary {
-  background: var(--color-primary);
+  background: var(--brand-primary);
 }
 
 .swipe-action--success {
-  background: var(--color-success);
+  background: var(--success);
 }
 
 .swipe-action--warning {
-  background: var(--color-warning);
+  background: var(--warning);
 }
 
 .swipe-action--danger {
-  background: var(--color-error);
+  background: var(--danger);
 }
 </style>

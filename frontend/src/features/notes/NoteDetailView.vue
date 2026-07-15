@@ -225,10 +225,10 @@ function formatTime(ms: number) {
   background: var(--bg-subtle);
   color: var(--text-primary);
 }
-.domain-tag.domain-work { background: #dbeafe; color: var(--cat-work); }
-.domain-tag.domain-study { background: #cffafe; color: var(--cat-study); }
-.domain-tag.domain-life { background: #ffedd5; color: var(--cat-life); }
-.domain-tag.domain-idea { background: #d1fae5; color: var(--cat-idea); }
+.domain-tag.domain-work { background: var(--cat-work-bg); color: var(--cat-work); }
+.domain-tag.domain-study { background: var(--cat-study-bg); color: var(--cat-study); }
+.domain-tag.domain-life { background: var(--cat-life-bg); color: var(--cat-life); }
+.domain-tag.domain-idea { background: var(--cat-idea-bg); color: var(--cat-idea); }
 .meta-text { font-size: 12px; }
 .meta-tag.voice, .meta-tag.text {
   padding: 2px 6px;

@@ -8,6 +8,7 @@
   D. Voice bar — fixed above bottom nav
 -->
 <template>
+  <PullToRefresh :on-refresh="handleRefresh" class="ai-hub-scroll">
   <div class="ai-hub">
     <!-- Section A: Running Tasks -->
     <section class="section running-section">
@@ -28,7 +29,10 @@
           v-for="task in activeTasks"
           :key="task.id"
           class="task-card compact"
-          @click="viewTask(task.id)"
+          @click="onTaskClick(task.id)"
+          @touchstart="onTaskTouchStart(task, $event)"
+          @touchmove="onTaskTouchMove"
+          @touchend="onTaskTouchEnd"
         >
           <div class="priority-bar" :class="task.priority" />
           <div class="task-body">
@@ -46,7 +50,13 @@
       </div>
 
       <div v-else class="empty-inline">
-        <span class="empty-text">暂无运行中的任务</span>
+        <EmptyState
+          icon="📋"
+          title="暂无运行中的任务"
+          hint="点击「+ 新任务」创建，或长按任务卡片操作"
+          size="sm"
+          variant="inline"
+        />
       </div>
 
       <!-- Blocked tasks (inline) -->
@@ -59,7 +69,10 @@
           v-for="task in blockedTasks"
           :key="task.id"
           class="task-card compact blocked-card"
-          @click="viewTask(task.id)"
+          @click="onTaskClick(task.id)"
+          @touchstart="onTaskTouchStart(task, $event)"
+          @touchmove="onTaskTouchMove"
+          @touchend="onTaskTouchEnd"
         >
           <div class="priority-bar" :class="task.priority" />
           <div class="task-body">
@@ -108,7 +121,13 @@
       </div>
 
       <div v-else class="empty-inline">
-        <span class="empty-text">暂无会话</span>
+        <EmptyState
+          icon="💬"
+          title="暂无会话"
+          hint="开始新对话后会显示在这里"
+          size="sm"
+          variant="inline"
+        />
       </div>
     </section>
 
@@ -127,7 +146,10 @@
           v-for="task in completedTasks"
           :key="task.id"
           class="task-card compact completed-card"
-          @click="viewTask(task.id)"
+          @click="onTaskClick(task.id)"
+          @touchstart="onTaskTouchStart(task, $event)"
+          @touchmove="onTaskTouchMove"
+          @touchend="onTaskTouchEnd"
         >
           <div class="task-body">
             <div class="task-title done">{{ task.title }}</div>
@@ -139,13 +161,23 @@
 
     <!-- Voice Input Bar -->
     <div class="voice-bar">
+      <div v-if="isRecording" class="recording-indicator">
+        <span class="rec-dot" />
+        <span class="rec-bars"><i /><i /><i /><i /><i /></span>
+        <span class="rec-label">录音中…</span>
+      </div>
+      <div v-else-if="isTranscribing" class="recording-indicator transcribing">
+        <span class="rec-label">转写中…</span>
+      </div>
+      <div v-if="sttError" class="stt-error">{{ sttError }}</div>
       <div class="voice-input-wrap">
         <textarea
           v-model="quickPrompt"
           class="voice-textarea"
-          placeholder="快速提问..."
+          :placeholder="isRecording ? '🎙 录音中...' : isTranscribing ? '转写中...' : '快速提问...'"
           rows="1"
           @keydown.enter.exact.prevent="sendQuickPrompt"
+          :disabled="isRecording || isTranscribing"
         />
         <button
           class="voice-btn"
@@ -163,6 +195,35 @@
         >
           ↑
         </button>
+      </div>
+    </div>
+
+    <!-- Task Context Menu (long-press) -->
+    <div v-if="showContextMenu && contextTask" class="modal-overlay" @click.self="closeContextMenu">
+      <div class="modal-sheet context-sheet" @click.stop>
+        <div class="modal-handle" />
+        <div class="modal-body">
+          <h2 class="context-title">{{ contextTask.title }}</h2>
+          <div class="context-actions">
+            <button class="ctx-btn" @click="ctxViewDetail">查看详情</button>
+            <button
+              v-if="contextTask.status !== 'active'"
+              class="ctx-btn"
+              @click="ctxUpdateStatus('active')"
+            >▶ 恢复</button>
+            <button
+              v-if="contextTask.status === 'active'"
+              class="ctx-btn"
+              @click="ctxUpdateStatus('blocked')"
+            >⏸ 暂停</button>
+            <button
+              v-if="contextTask.status !== 'completed'"
+              class="ctx-btn"
+              @click="ctxUpdateStatus('completed')"
+            >✅ 完成</button>
+            <button class="ctx-btn danger" @click="ctxDelete">🗑 删除</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -217,6 +278,7 @@
       </div>
     </div>
   </div>
+  </PullToRefresh>
 </template>
 
 <script setup lang="ts">
@@ -225,8 +287,18 @@ import { useRouter } from 'vue-router'
 import { api, type Task } from '../../api/client'
 import wsClient from '../../api/websocket'
 import { usePullDownClose } from '../../composables/usePullDownClose'
+import { useVoiceInput } from '../../composables/useVoiceInput'
+import { EmptyState, PullToRefresh } from '../../components'
 
 const router = useRouter()
+const { isRecording, isTranscribing, sttError, startRecording, stopRecording } = useVoiceInput()
+
+// ── Context menu (long-press) ──
+const showContextMenu = ref(false)
+const contextTask = ref<Task | null>(null)
+let longPressTimer: ReturnType<typeof setTimeout> | null = null
+let pressStart = { x: 0, y: 0 }
+let suppressClick = false
 
 // ── State ──
 const currentInstance = ref<any>(null)
@@ -237,7 +309,6 @@ const sessionsLoading = ref(true)
 const showCreateModal = ref(false)
 const showCompleted = ref(false)
 const quickPrompt = ref('')
-const isRecording = ref(false)
 const modalRef = ref<HTMLElement | null>(null)
 const modalSheetRef = ref<HTMLElement | null>(null)
 
@@ -287,6 +358,10 @@ onUnmounted(() => {
 })
 
 // ── Data Loading ──
+async function handleRefresh() {
+  await Promise.all([loadTasks(), loadSessions()])
+}
+
 async function loadTasks() {
   loading.value = true
   try {
@@ -366,6 +441,79 @@ function viewTask(taskId: string) {
   router.push({ path: `/tasks/${taskId}` })
 }
 
+function onTaskClick(taskId: string) {
+  if (suppressClick) return
+  viewTask(taskId)
+}
+
+function onTaskTouchStart(task: Task, e: TouchEvent) {
+  const t = e.touches[0]
+  if (!t) return
+  pressStart = { x: t.clientX, y: t.clientY }
+  longPressTimer = setTimeout(() => {
+    contextTask.value = task
+    showContextMenu.value = true
+    suppressClick = true
+    if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(12)
+    setTimeout(() => { suppressClick = false }, 400)
+  }, 500)
+}
+
+function onTaskTouchMove(e: TouchEvent) {
+  if (!longPressTimer) return
+  const t = e.touches[0]
+  if (!t) return
+  if (Math.abs(t.clientX - pressStart.x) > 8 || Math.abs(t.clientY - pressStart.y) > 8) {
+    clearTimeout(longPressTimer)
+    longPressTimer = null
+  }
+}
+
+function onTaskTouchEnd() {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer)
+    longPressTimer = null
+  }
+}
+
+function closeContextMenu() {
+  showContextMenu.value = false
+  contextTask.value = null
+}
+
+function ctxViewDetail() {
+  if (contextTask.value) viewTask(contextTask.value.id)
+  closeContextMenu()
+}
+
+async function ctxUpdateStatus(status: string) {
+  if (!contextTask.value) return
+  const task = contextTask.value
+  const old = task.status
+  task.status = status
+  try {
+    await api.updateTask(task.id, { status })
+    closeContextMenu()
+  } catch (e) {
+    task.status = old
+    console.error('Failed to update task:', e)
+    alert('操作失败，请重试')
+  }
+}
+
+async function ctxDelete() {
+  if (!contextTask.value || !confirm(`确定删除「${contextTask.value.title}」？`)) return
+  const id = contextTask.value.id
+  try {
+    await api.deleteTask(id)
+    tasks.value = tasks.value.filter((t) => t.id !== id)
+    closeContextMenu()
+  } catch (e) {
+    console.error('Failed to delete task:', e)
+    alert('删除失败，请重试')
+  }
+}
+
 function openSession(s: any) {
   const instId = s.instanceId || currentInstance.value?.id || ''
   router.push({
@@ -375,46 +523,17 @@ function openSession(s: any) {
 }
 
 // ── Voice ──
-let mediaRecorder: MediaRecorder | null = null
-let audioChunks: Blob[] = []
-
 async function toggleVoice() {
   if (isRecording.value) {
-    stopRecording()
+    const text = await stopRecording()
+    if (text) quickPrompt.value = text
   } else {
     await startRecording()
   }
 }
 
-async function startRecording() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } })
-    mediaRecorder = new MediaRecorder(stream)
-    audioChunks = []
-    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data) }
-    mediaRecorder.onstop = async () => {
-      stream.getTracks().forEach((t) => t.stop())
-      // Placeholder: STT integration goes here
-      // For now, just show a hint
-      if (quickPrompt.value.trim()) return
-      quickPrompt.value = '[语音识别中...]'
-    }
-    mediaRecorder.start()
-    isRecording.value = true
-  } catch (e) {
-    console.error('Microphone access denied:', e)
-  }
-}
-
-function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop()
-  }
-  isRecording.value = false
-}
-
-function onVoiceTouchStart() { /* long-press future: auto-send on stop */ }
-function onVoiceTouchEnd() { /* noop for now */ }
+function onVoiceTouchStart() { /* long-press future */ }
+function onVoiceTouchEnd() { /* noop */ }
 
 function sendQuickPrompt() {
   const text = quickPrompt.value.trim()
@@ -447,8 +566,11 @@ function timeAgo(dateStr?: string): string {
 </script>
 
 <style scoped>
+.ai-hub-scroll {
+  height: 100%;
+  min-height: 0;
+}
 .ai-hub {
-  min-height: 100vh;
   background: var(--bg-base);
   display: flex;
   flex-direction: column;
@@ -507,7 +629,7 @@ function timeAgo(dateStr?: string): string {
   line-height: 16px;
 }
 .badge.warn {
-  background: rgba(245, 158, 11, 0.14);
+  background: var(--warning-bg);
   color: var(--warning);
 }
 .badge.muted {
@@ -551,7 +673,7 @@ function timeAgo(dateStr?: string): string {
   border-radius: 1px;
   flex-shrink: 0;
 }
-.priority-bar.high { background: var(--error, #ef4444); }
+.priority-bar.high { background: var(--danger); }
 .priority-bar.medium { background: var(--warning); }
 .priority-bar.low { background: var(--success); }
 
@@ -583,7 +705,7 @@ function timeAgo(dateStr?: string): string {
   font-weight: 600;
   padding: 1px 6px;
   border-radius: 4px;
-  background: rgba(102, 126, 234, 0.1);
+  background: var(--brand-bg);
   color: var(--brand-primary);
   line-height: 14px;
   max-width: 80px;
@@ -629,7 +751,7 @@ function timeAgo(dateStr?: string): string {
   padding: 0 2px;
 }
 .blocked-card {
-  border-color: rgba(245, 158, 11, 0.2);
+  border-color: color-mix(in srgb, var(--warning) 20%, var(--border));
 }
 
 /* ── Session List ── */
@@ -665,7 +787,7 @@ function timeAgo(dateStr?: string): string {
   animation: pulse 2s infinite;
 }
 .status-dot.idle { background: var(--brand-primary); }
-.status-dot.error { background: var(--error, #ef4444); }
+.status-dot.error { background: var(--danger); }
 
 .session-body {
   flex: 1;
@@ -745,7 +867,7 @@ function timeAgo(dateStr?: string): string {
 /* ── Voice Bar ── */
 .voice-bar {
   position: fixed;
-  bottom: var(--bottomnav-height);
+  bottom: calc(var(--bottomnav-height) - var(--bottom-chrome-hide, 0px));
   left: 0;
   right: 0;
   padding: 6px 12px;
@@ -798,24 +920,69 @@ function timeAgo(dateStr?: string): string {
   color: var(--text-secondary);
 }
 .voice-btn.recording {
-  background: var(--error, #ef4444);
-  color: #fff;
+  background: var(--danger);
+  color: var(--text-inverse);
   animation: pulse 1s infinite;
 }
 .send-btn {
   background: var(--brand-primary);
-  color: #fff;
+  color: var(--text-inverse);
 }
 .send-btn:active,
 .voice-btn:active {
   transform: scale(0.9);
 }
 
+/* ── Recording indicator ── */
+.recording-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-2) var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--danger);
+}
+.rec-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: pulse 1s infinite;
+}
+.rec-bars {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 14px;
+}
+.rec-bars i {
+  display: block;
+  width: 2px;
+  height: 4px;
+  background: var(--danger);
+  border-radius: 1px;
+  animation: wave 0.8s ease-in-out infinite;
+}
+.rec-bars i:nth-child(2) { animation-delay: 0.1s; }
+.rec-bars i:nth-child(3) { animation-delay: 0.2s; }
+.rec-bars i:nth-child(4) { animation-delay: 0.3s; }
+.rec-bars i:nth-child(5) { animation-delay: 0.4s; }
+@keyframes wave {
+  0%, 100% { height: 4px; }
+  50% { height: 14px; }
+}
+.rec-label { font-weight: var(--font-weight-medium); }
+.stt-error {
+  font-size: var(--text-xs);
+  color: var(--danger);
+  padding: 0 var(--space-2) var(--space-1);
+}
+
 /* ── Modal ── */
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay);
   display: flex;
   align-items: flex-end;
   z-index: 1000;
@@ -906,10 +1073,45 @@ function timeAgo(dateStr?: string): string {
 }
 .btn.primary {
   background: var(--brand-primary);
-  color: #fff;
+  color: var(--text-inverse);
 }
 .btn.primary:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* ── Context menu ── */
+.context-sheet .context-title {
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-semibold);
+  margin: 0 0 var(--space-3);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.context-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.ctx-btn {
+  width: 100%;
+  padding: var(--space-3);
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-medium);
+  text-align: left;
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.ctx-btn:active {
+  background: var(--bg-elevated);
+}
+.ctx-btn.danger {
+  color: var(--danger);
+  border-color: var(--danger-bg);
 }
 </style>

@@ -81,6 +81,8 @@ function isActive(item: NavItem) {
   align-items: center;
   justify-content: space-around;
   z-index: 20;
+  will-change: transform;
+  transform: translate3d(0, var(--bottom-chrome-hide, 0px), 0);
 }
 .nav-item {
   flex: 1;

@@ -4,34 +4,46 @@
   setup wizard come later.
 -->
 <template>
-  <AppLayout>
-    <!-- 本地数据库未初始化提示 -->
-    <div v-if="dbNotReady" class="state" style="padding: 40px 20px;">
-      <p style="font-size: 48px; margin-bottom: 16px;">🔒</p>
-      <p style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">本地数据未解锁</p>
-      <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">
-        邮箱功能需要本地加密数据库<br/>请退出重新登录以初始化本地存储
-      </p>
-      <button class="btn-ghost" @click="goToLogin" style="margin: 0 auto; padding: 8px 24px; border: 1px solid var(--border); border-radius: 8px;">
-        重新登录
-      </button>
-    </div>
+  <div class="inbox-page">
+    <DbLockedState
+      v-if="dbNotReady"
+      hint="邮箱功能需要本地加密数据库"
+      @relogin="goToLogin"
+    />
 
     <template v-else>
-    <div class="filters">
-      <button
-        v-for="c in categories"
-        :key="c.value || 'all'"
-        class="chip"
-        :class="{ active: activeCategory === c.value }"
-        @click="setCategory(c.value)"
-      >
-        {{ c.label }}
-      </button>
-    </div>
+      <ScrollChromePortal>
+        <div class="filters">
+          <button
+            v-for="c in categories"
+            :key="c.value || 'all'"
+            class="chip"
+            :class="{ active: activeCategory === c.value }"
+            @click="setCategory(c.value)"
+          >
+            {{ c.label }}
+          </button>
+        </div>
+      </ScrollChromePortal>
 
-    <div v-if="loading" class="state">加载中…</div>
-    <div v-else-if="emails.length === 0" class="state">暂无邮件</div>
+      <PullToRefresh :on-refresh="load" class="inbox-scroll">
+    <div v-if="loading" class="state-wrap"><Skeleton :count="5" /></div>
+    <EmptyState
+      v-else-if="loadError"
+      icon="⚠️"
+      :title="loadError"
+      action-label="重试"
+      variant="inline"
+      @action="load"
+    />
+    <EmptyState
+      v-else-if="emails.length === 0"
+      icon="📧"
+      title="暂无邮件"
+      hint="添加邮箱账户并同步后即可在此查看"
+      size="sm"
+      variant="inline"
+    />
 
     <div v-else class="email-list">
       <div
@@ -60,20 +72,23 @@
         </div>
       </div>
     </div>
+    </PullToRefresh>
     </template>
-  </AppLayout>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
+import { Skeleton, EmptyState, PullToRefresh, DbLockedState } from '../../components'
+import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
 
 const router = useRouter()
 const emails = ref<LocalEmail[]>([])
 const loading = ref(true)
+const loadError = ref('')
 const activeCategory = ref<string>('')
 const dbNotReady = ref(false)
 
@@ -91,6 +106,7 @@ const categories: { label: string; value: string }[] = [
 
 async function load() {
   loading.value = true
+  loadError.value = ''
   dbNotReady.value = false
   try {
     emails.value = await emailsStore.listEmails(
@@ -99,8 +115,8 @@ async function load() {
   } catch (e: any) {
     if (e?.message?.includes('LocalDB 未初始化')) {
       dbNotReady.value = true
-      console.warn('[email] 本地数据库未初始化，显示降级界面')
     } else {
+      loadError.value = e?.message || '加载邮件失败'
       console.error('[email] 加载失败:', e)
     }
   } finally {
@@ -133,7 +149,19 @@ onMounted(load)
 </script>
 
 <style scoped>
-.filters { display: flex; gap: var(--space-2); overflow-x: auto; padding-bottom: var(--space-3); }
+.inbox-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.filters {
+  display: flex;
+  gap: var(--space-2);
+  overflow-x: auto;
+  padding: var(--space-3);
+}
 .chip {
   padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-full);
@@ -144,14 +172,18 @@ onMounted(load)
   white-space: nowrap;
   cursor: pointer;
 }
-.chip.active { background: var(--brand-primary); color: white; border-color: var(--brand-primary); }
-.state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
-.email-list { display: flex; flex-direction: column; gap: var(--space-2); }
+.chip.active { background: var(--brand-primary); color: var(--text-inverse); border-color: var(--brand-primary); }
+.inbox-scroll {
+  flex: 1;
+  min-height: 0;
+}
+.state-wrap { padding: var(--space-2) 0; }
+.email-list { display: flex; flex-direction: column; gap: var(--spacing-list-gap); }
 .email-card {
   background: var(--bg-card);
   border-radius: var(--radius-md);
-  padding: var(--space-3);
-  box-shadow: var(--shadow-sm);
+  padding: var(--spacing-card-padding);
+  border: 1px solid var(--border);
   cursor: pointer;
   border-left: 3px solid transparent;
 }
@@ -165,10 +197,12 @@ onMounted(load)
 .ai-summary { margin-top: var(--space-1); font-size: 12px; color: var(--brand-primary); background: var(--bg-subtle); padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); }
 .row-meta { display: flex; gap: var(--space-2); align-items: center; margin-top: var(--space-2); }
 .tag { font-size: 10px; padding: 1px 6px; border-radius: var(--radius-sm); }
-.cat-work { background: rgba(59,130,246,0.15); color: var(--cat-work); }
-.cat-bill { background: rgba(245,158,11,0.15); color: var(--cat-bill); }
-.cat-personal { background: rgba(236,72,153,0.15); color: var(--cat-personal); }
-.cat-notification { background: rgba(107,114,128,0.15); color: var(--cat-notification); }
+.cat-work { background: var(--cat-work-bg); color: var(--cat-work); }
+.cat-bill { background: var(--cat-bill-bg); color: var(--cat-bill); }
+.cat-personal { background: var(--cat-personal-bg); color: var(--cat-personal); }
+.cat-notification { background: var(--cat-notification-bg); color: var(--cat-notification); }
+.cat-marketing { background: var(--cat-marketing-bg); color: var(--cat-marketing); }
+.cat-spam { background: var(--cat-spam-bg); color: var(--cat-spam); }
 .importance { font-size: 11px; color: var(--warning); }
 .attach { font-size: 12px; }
 .read-btn {

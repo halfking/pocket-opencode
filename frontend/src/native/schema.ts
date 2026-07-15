@@ -188,10 +188,17 @@ CREATE TABLE IF NOT EXISTS local_vault_entries (
 CREATE TABLE IF NOT EXISTS local_meetings (
     id TEXT PRIMARY KEY,
     title TEXT,
+    location TEXT,
+    participants TEXT,               -- JSON array
     audio_path TEXT,
-    duration_ms INTEGER,
+    duration_ms INTEGER DEFAULT 0,
     transcript TEXT,                 -- 完整转写（本地存）
     summary TEXT,                    -- AI 纪要（发片段生成）
+    live_summary TEXT,               -- 实时摘要 JSON
+    refined_transcript TEXT,         -- 精翻后全文
+    recommendations TEXT,            -- 推荐 JSON
+    note_id TEXT,                    -- 关联笔记（精翻后）
+    status TEXT DEFAULT 'recording', -- recording|completed|processing|refined
     started_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
     deleted_at INTEGER
@@ -204,12 +211,23 @@ CREATE TABLE IF NOT EXISTS local_meeting_segments (
     id TEXT PRIMARY KEY,
     meeting_id TEXT NOT NULL,
     speaker_label TEXT,              -- 说话人（声纹聚类后）
+    lang TEXT DEFAULT 'zh',          -- 语种 ISO 639-1
+    confidence REAL DEFAULT 1.0,
     start_ms INTEGER NOT NULL,
     end_ms INTEGER NOT NULL,
     text TEXT NOT NULL,
     FOREIGN KEY (meeting_id) REFERENCES local_meetings(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_segments_meeting ON local_meeting_segments(meeting_id, start_ms);
+
+-- 声纹库（Phase 6A Sprint 3）
+CREATE TABLE IF NOT EXISTS local_voiceprints (
+    id TEXT PRIMARY KEY,
+    display_name TEXT,
+    embedding BLOB,
+    sample_count INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL
+);
 
 -- ============================================================
 -- 聊天消息（Phase 6B，三路抓取后本地存）

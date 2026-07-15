@@ -188,93 +188,95 @@ async function handleLogin() {
 <style scoped>
 .login-view {
   min-height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--brand-gradient);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  padding: var(--space-4);
 }
 
 .login-container {
   width: 100%;
   max-width: 400px;
-  background: white;
-  border-radius: var(--radius-lg);      /* 修改：使用变量 (10px，原 20px) */
-  padding: 32px 24px;                   /* 修改：32px 24px（原 40px 30px） */
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6) var(--space-4);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
 }
 
 .logo-section {
   text-align: center;
-  margin-bottom: 40px;
+  margin-bottom: var(--space-6);
 }
 
 .logo {
-  font-size: 56px;                      /* 修改：56px（原 64px） */
-  margin-bottom: 16px;                  /* 修改：16px（原 20px） */
+  font-size: 56px;
+  margin-bottom: var(--space-3);
 }
 
 .app-title {
-  font-size: 24px;                      /* 修改：24px（原 28px） */
-  font-weight: 700;
-  color: #333;
-  margin: 0 0 8px 0;                    /* 修改：8px（原 10px） */
+  font-size: var(--text-xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+  margin: 0 0 var(--space-2) 0;
 }
 
 .app-subtitle {
-  font-size: 14px;
-  color: #666;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
   margin: 0;
 }
 
 .login-form {
-  margin-bottom: 30px;
+  margin-bottom: var(--space-5);
 }
 
 .form-group {
-  margin-bottom: 16px;                  /* 修改：16px（原 20px） */
+  margin-bottom: var(--space-3);
 }
 
 .form-group label {
   display: block;
-  font-size: 14px;
-  font-weight: 600;
-  color: #333;
-  margin-bottom: 8px;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  margin-bottom: var(--space-2);
 }
 
 .form-group input {
   width: 100%;
-  padding: 12px 14px;                   /* 修改：12px 14px（原 14px 16px） */
-  font-size: 16px;
-  border: 2px solid #e0e0e0;
-  border-radius: var(--radius-md);      /* 修改：使用变量 (8px，原 12px) */
-  transition: all 0.3s;
+  padding: var(--space-3);
+  font-size: var(--text-lg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  transition: border-color 150ms;
   box-sizing: border-box;
 }
 
 .form-group input:focus {
   outline: none;
-  border-color: #667eea;
-  background: #f8f9ff;
+  border-color: var(--brand-primary);
+  background: var(--bg-card);
 }
 
 .login-btn {
   width: 100%;
-  padding: 14px;                        /* 修改：14px（原 16px） */
-  font-size: 16px;
-  font-weight: 600;
-  color: white;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: var(--space-3);
+  font-size: var(--text-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-inverse);
+  background: var(--brand-gradient);
   border: none;
-  border-radius: var(--radius-md);      /* 修改：使用变量 (8px，原 12px) */
+  border-radius: var(--radius-md);
   cursor: pointer;
-  transition: all 0.3s;
+  transition: opacity 150ms;
 }
 
-.login-btn:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+.login-btn:active:not(:disabled) {
+  opacity: 0.9;
 }
 
 .login-btn:disabled {
@@ -283,40 +285,40 @@ async function handleLogin() {
 }
 
 .error-message {
-  margin-top: 15px;
-  padding: 12px;
-  background: #fee;
-  border: 1px solid #fcc;
-  border-radius: var(--radius-md);      /* 修改：使用变量 (8px) */
-  color: #c33;
-  font-size: 14px;
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: var(--danger-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--danger);
+  font-size: var(--text-sm);
   text-align: center;
 }
 
 .version-info {
   text-align: center;
-  color: #999;
-  font-size: 12px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
 }
 
 .version-info p {
-  margin: 5px 0;
+  margin: var(--space-1) 0;
 }
 
 .hint {
-  color: #667eea;
-  font-weight: 500;
+  color: var(--brand-primary);
+  font-weight: var(--font-weight-medium);
 }
 
 .unlock-hint {
-  color: #555;
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
   line-height: 1.6;
   text-align: center;
-  margin-bottom: 16px;
-  padding: 12px;
-  background: #f8f9ff;
-  border-radius: var(--radius-md);      /* 修改：使用变量 (8px) */
-  border: 1px solid #e0e7ff;
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  background: var(--brand-bg);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
 }
 </style>

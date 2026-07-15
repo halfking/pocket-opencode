@@ -93,9 +93,16 @@
         </div>
       </div>
 
-      <div v-else class="empty-sessions">
-        <span class="empty-text">暂无关联会话</span>
-      </div>
+      <EmptyState
+        v-else
+        icon="💬"
+        title="暂无关联会话"
+        hint="点击「附加」将会话关联到此任务"
+        size="sm"
+        variant="inline"
+        action-label="附加会话"
+        @action="showAttachModal = true"
+      />
     </div>
 
     <!-- Attach Modal -->
@@ -138,6 +145,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { api, type Task } from '../../api/client'
+import { EmptyState } from '../../components'
 
 const router = useRouter()
 const route = useRoute()
@@ -159,21 +167,26 @@ onMounted(async () => {
 
 async function updateStatus(status: string) {
   if (!task.value) return
+  const old = task.value.status
+  task.value.status = status as Task['status']
   try {
-    // Optimistic update
-    const old = task.value.status
-    task.value.status = status as any
-    // TODO: call API to persist status change
-    // await api.updateTask(task.value.id, { status })
+    await api.updateTask(task.value.id, { status })
   } catch (e) {
+    task.value.status = old
     console.error('Failed to update status:', e)
+    alert('状态更新失败，请重试')
   }
 }
 
-function confirmDelete() {
-  if (confirm('确定删除此任务？')) {
-    // TODO: call API to delete
+async function confirmDelete() {
+  if (!task.value || !confirm('确定删除此任务？')) return
+  const deleted = task.value
+  try {
+    await api.deleteTask(deleted.id)
     router.push('/ai')
+  } catch (e) {
+    console.error('Failed to delete task:', e)
+    alert('删除失败，请重试')
   }
 }
 
@@ -239,9 +252,9 @@ function formatDate(d?: string): string {
   text-transform: uppercase;
   letter-spacing: 0.3px;
 }
-.priority-chip.high { background: rgba(239, 68, 68, 0.12); color: var(--error, #ef4444); }
-.priority-chip.medium { background: rgba(245, 158, 11, 0.12); color: var(--warning); }
-.priority-chip.low { background: rgba(16, 185, 129, 0.12); color: var(--success); }
+.priority-chip.high { background: var(--danger-bg); color: var(--danger); }
+.priority-chip.medium { background: var(--warning-bg); color: var(--warning); }
+.priority-chip.low { background: var(--success-bg); color: var(--success); }
 
 .title {
   font-size: 17px;
@@ -260,9 +273,9 @@ function formatDate(d?: string): string {
   padding: 2px 8px;
   border-radius: 999px;
 }
-.status-chip.active { background: rgba(16, 185, 129, 0.12); color: var(--success); }
-.status-chip.blocked { background: rgba(245, 158, 11, 0.12); color: var(--warning); }
-.status-chip.completed { background: rgba(102, 126, 234, 0.12); color: var(--brand-primary); }
+.status-chip.active { background: var(--success-bg); color: var(--success); }
+.status-chip.blocked { background: var(--warning-bg); color: var(--warning); }
+.status-chip.completed { background: var(--brand-bg); color: var(--brand-primary); }
 
 .desc {
   font-size: 13px;
@@ -429,7 +442,7 @@ function formatDate(d?: string): string {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay);
   display: flex;
   align-items: flex-end;
   z-index: 1000;
@@ -498,6 +511,6 @@ function formatDate(d?: string): string {
   cursor: pointer;
 }
 .btn.cancel { background: var(--bg-subtle); color: var(--text-primary); }
-.btn.primary { background: var(--brand-primary); color: #fff; }
+.btn.primary { background: var(--brand-primary); color: var(--text-inverse); }
 .btn.primary:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>

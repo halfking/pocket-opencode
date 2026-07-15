@@ -32,7 +32,9 @@ import EmailSummaryView from '../features/email/EmailSummaryView.vue'
 import EmailAccountSetup from '../features/email/EmailAccountSetup.vue'
 import VaultListView from '../features/vault/VaultListView.vue'
 import VaultEntryView from '../features/vault/VaultEntryView.vue'
-import ComingSoonView from '../features/common/ComingSoonView.vue'
+import MeetingListView from '../features/meetings/MeetingListView.vue'
+import MeetingRecordView from '../features/meetings/MeetingRecordView.vue'
+import MeetingDetailView from '../features/meetings/MeetingDetailView.vue'
 
 // 🦞 守卫所需：登录态 + 龙虾初始化态
 import { useAuthStore } from '../stores/auth'
@@ -148,13 +150,24 @@ const router = createRouter({
       component: VaultEntryView,
       meta: { requiresAuth: true, requiresLobster: true, title: '编辑密码', canGoBack: true, bottomNav: false }
     },
-    // 个人助理 — 会议记录（Phase 6A，占位避免死链）
+    // 个人助理 — 会议记录
     {
       path: '/meetings',
       name: 'meetings',
-      component: ComingSoonView,
-      props: { icon: '🎙️', title: '会议记录', desc: '录音转写、声纹识别、会议纪要生成。', phase: 'Phase 6A 开发中' },
+      component: MeetingListView,
       meta: { requiresAuth: true, requiresLobster: true, title: '会议', bottomNav: true },
+    },
+    {
+      path: '/meetings/:id/record',
+      name: 'meeting-record',
+      component: MeetingRecordView,
+      meta: { requiresAuth: true, requiresLobster: true, title: '录音中', canGoBack: true, bottomNav: false, hideAppHeader: true },
+    },
+    {
+      path: '/meetings/:id',
+      name: 'meeting-detail',
+      component: MeetingDetailView,
+      meta: { requiresAuth: true, requiresLobster: true, title: '会议详情', canGoBack: true, bottomNav: false },
     },
     {
       path: '/login',
@@ -196,7 +209,7 @@ const router = createRouter({
       path: '/sessions/:id',
       name: 'session-conversation',
       component: () => import('../features/sessions/SessionConversationView.vue'),
-      meta: { requiresAuth: true, requiresLobster: true, title: '会话', bottomNav: false, canGoBack: true }
+      meta: { requiresAuth: true, requiresLobster: true, title: '会话', bottomNav: false, canGoBack: true, hideAppHeader: true }
     },
     {
       path: '/settings',
@@ -209,7 +222,7 @@ const router = createRouter({
       path: '/settings/llm-gateway',
       name: 'settings-llm-gateway',
       component: () => import('../features/settings/SettingsLLMGateway.vue'),
-      meta: { requiresAuth: true, title: 'AI 模型', bottomNav: false, canGoBack: true }
+      meta: { requiresAuth: true, title: 'AI 模型', bottomNav: false, canGoBack: true, hideAppHeader: true }
     }
   ]
 })

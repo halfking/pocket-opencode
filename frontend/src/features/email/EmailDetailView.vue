@@ -194,12 +194,12 @@ onMounted(load)
   padding: 2px 8px;
   border-radius: var(--radius-sm);
 }
-.cat-work { background: rgba(59,130,246,0.15); color: var(--cat-work); }
-.cat-bill { background: rgba(245,158,11,0.15); color: var(--cat-bill); }
-.cat-personal { background: rgba(236,72,153,0.15); color: var(--cat-personal); }
-.cat-notification { background: rgba(107,114,128,0.15); color: var(--cat-notification); }
-.cat-marketing { background: rgba(139,92,246,0.15); color: var(--cat-marketing); }
-.cat-spam { background: rgba(107,114,128,0.15); color: var(--cat-spam); }
+.cat-work { background: var(--cat-work-bg); color: var(--cat-work); }
+.cat-bill { background: var(--cat-bill-bg); color: var(--cat-bill); }
+.cat-personal { background: var(--cat-personal-bg); color: var(--cat-personal); }
+.cat-notification { background: var(--cat-notification-bg); color: var(--cat-notification); }
+.cat-marketing { background: var(--cat-marketing-bg); color: var(--cat-marketing); }
+.cat-spam { background: var(--cat-spam-bg); color: var(--cat-spam); }
 .importance { font-size: 11px; color: var(--warning); }
 .importance.low { color: var(--text-muted); }
 

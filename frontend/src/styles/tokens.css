@@ -29,7 +29,20 @@
   --success: #10b981;
   --warning: #f59e0b;
   --danger: #ef4444;
+  --error: #ef4444;
   --info: #3b82f6;
+
+  /* Status chip backgrounds */
+  --success-bg: rgba(16, 185, 129, 0.12);
+  --warning-bg: rgba(245, 158, 11, 0.12);
+  --danger-bg: rgba(239, 68, 68, 0.12);
+  --info-bg: rgba(59, 130, 246, 0.12);
+  --brand-bg: rgba(102, 126, 234, 0.1);
+
+  /* Overlays */
+  --overlay: rgba(0, 0, 0, 0.5);
+  --overlay-subtle: rgba(0, 0, 0, 0.03);
+  --badge-on-active: rgba(255, 255, 255, 0.25);
 
   /* Category accents (email/notes) */
   --cat-work: #3b82f6;
@@ -41,6 +54,17 @@
   --cat-idea: #10b981;
   --cat-study: #06b6d4;
   --cat-life: #f97316;
+
+  /* Category chip backgrounds */
+  --cat-work-bg: rgba(59, 130, 246, 0.15);
+  --cat-bill-bg: rgba(245, 158, 11, 0.15);
+  --cat-personal-bg: rgba(236, 72, 153, 0.15);
+  --cat-notification-bg: rgba(107, 114, 128, 0.15);
+  --cat-marketing-bg: rgba(139, 92, 246, 0.15);
+  --cat-spam-bg: rgba(107, 114, 128, 0.15);
+  --cat-idea-bg: rgba(16, 185, 129, 0.15);
+  --cat-study-bg: rgba(6, 182, 212, 0.15);
+  --cat-life-bg: rgba(249, 115, 22, 0.15);
 
   /* Radius - 更锐利的圆角（Codex 风格） */
   --radius-sm: 6px;   /* 原 8px */
@@ -86,6 +110,28 @@
   /* Layout - 更紧凑的布局高度 */
   --topbar-height: 48px;      /* 原 52px */
   --bottomnav-height: 56px;   /* 原 60px */
+
+  /* Motion */
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+  --ease-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Legacy aliases — 兼容旧组件 --color-* 命名 */
+  --color-primary: var(--brand-primary);
+  --color-primary-rgb: 102, 126, 234;
+  --color-bg-surface: var(--bg-card);
+  --color-bg-base: var(--bg-base);
+  --color-bg-subtle: var(--bg-subtle);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-bg-hover: var(--bg-subtle);
+  --color-bg-overlay: var(--overlay);
+  --color-border: var(--border);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-muted);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--danger);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -102,5 +148,10 @@
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+    --cat-work-bg: rgba(59, 130, 246, 0.2);
+    --cat-bill-bg: rgba(245, 158, 11, 0.2);
+    --cat-personal-bg: rgba(236, 72, 153, 0.2);
+    --cat-notification-bg: rgba(107, 114, 128, 0.25);
+    --cat-marketing-bg: rgba(139, 92, 246, 0.2);
   }
 }

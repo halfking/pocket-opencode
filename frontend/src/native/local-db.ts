@@ -13,6 +13,18 @@
 import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacitor-community/sqlite'
 import { SCHEMA_SQL } from './schema'
 
+const MEETINGS_V2_COLUMNS = [
+  { table: 'local_meetings', column: 'location', sql: 'ALTER TABLE local_meetings ADD COLUMN location TEXT' },
+  { table: 'local_meetings', column: 'participants', sql: 'ALTER TABLE local_meetings ADD COLUMN participants TEXT' },
+  { table: 'local_meetings', column: 'live_summary', sql: 'ALTER TABLE local_meetings ADD COLUMN live_summary TEXT' },
+  { table: 'local_meetings', column: 'refined_transcript', sql: 'ALTER TABLE local_meetings ADD COLUMN refined_transcript TEXT' },
+  { table: 'local_meetings', column: 'recommendations', sql: 'ALTER TABLE local_meetings ADD COLUMN recommendations TEXT' },
+  { table: 'local_meetings', column: 'status', sql: "ALTER TABLE local_meetings ADD COLUMN status TEXT DEFAULT 'completed'" },
+  { table: 'local_meeting_segments', column: 'lang', sql: "ALTER TABLE local_meeting_segments ADD COLUMN lang TEXT DEFAULT 'zh'" },
+  { table: 'local_meeting_segments', column: 'confidence', sql: 'ALTER TABLE local_meeting_segments ADD COLUMN confidence REAL DEFAULT 1.0' },
+  { table: 'local_meetings', column: 'note_id', sql: 'ALTER TABLE local_meetings ADD COLUMN note_id TEXT' },
+]
+
 const DB_NAME = 'lobster'
 const DB_VERSION = 1
 
@@ -88,7 +100,51 @@ class LocalDB {
     // 建表（幂等 CREATE IF NOT EXISTS）
     await this.conn.execute(SCHEMA_SQL, false)
 
+    // 增量迁移（已有库补列）
+    await this.runMeetingsV2Migration()
+
     this.initialized = true
+  }
+
+  /** 会议模块 v2：为旧库补列，列已存在则跳过 */
+  private async runMeetingsV2Migration(): Promise<void> {
+    if (!this.conn) return
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        version TEXT PRIMARY KEY,
+        description TEXT,
+        applied_at INTEGER NOT NULL
+      );
+    `, false)
+    const done = await this.queryOne<{ version: string }>(
+      "SELECT version FROM _schema_migrations WHERE version = '2026-07-15-meetings-v2'",
+    )
+    if (done) return
+
+    for (const col of MEETINGS_V2_COLUMNS) {
+      const exists = await this.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
+        [col.column],
+      )
+      if (exists && exists.cnt > 0) continue
+      try {
+        await this.conn.execute(col.sql, false)
+      } catch {
+        // 列可能已存在，忽略
+      }
+    }
+    // 声纹表
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS local_voiceprints (
+        id TEXT PRIMARY KEY,
+        display_name TEXT,
+        embedding BLOB,
+        sample_count INTEGER DEFAULT 1,
+        created_at INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at)
+      VALUES ('2026-07-15-meetings-v2', '会议模块扩展字段', strftime('%s', 'now') * 1000);
+    `, false)
   }
 
   /** 关闭并清理连接，允许重新初始化 */

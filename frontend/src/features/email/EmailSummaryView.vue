@@ -217,7 +217,7 @@ onMounted(loadByMode)
   background: var(--bg-subtle);
   color: var(--text-secondary);
 }
-.badge.important { background: rgba(239,68,68,0.12); color: var(--danger); }
+.badge.important { background: var(--danger-bg); color: var(--danger); }
 .total { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
 .preview {
   margin-top: var(--space-2);

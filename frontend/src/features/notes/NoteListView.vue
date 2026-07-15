@@ -5,17 +5,11 @@
 <template>
   <div class="notes-view">
     <AppLayout>
-      <!-- 本地数据库未初始化提示 -->
-      <div v-if="dbNotReady" class="state" style="padding: 40px 20px;">
-        <p style="font-size: 48px; margin-bottom: 16px;">🔒</p>
-        <p style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">本地数据未解锁</p>
-        <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">
-          笔记功能需要本地加密数据库<br/>请退出重新登录以初始化本地存储
-        </p>
-        <button class="btn-ghost" @click="goToLogin" style="margin: 0 auto; padding: 8px 24px; border: 1px solid var(--border); border-radius: 8px;">
-          重新登录
-        </button>
-      </div>
+      <DbLockedState
+        v-if="dbNotReady"
+        hint="笔记功能需要本地加密数据库"
+        @relogin="goToLogin"
+      />
 
       <template v-else>
         <div class="search-bar">
@@ -28,11 +22,15 @@
           </select>
         </div>
 
-        <div v-if="loading" class="state">加载中…</div>
-        <div v-else-if="notes.length === 0" class="state">
-          <p>还没有笔记</p>
-          <p class="hint">长按右下角麦克风开始语音录入</p>
-        </div>
+        <div v-if="loading" class="state"><Skeleton :count="3" /></div>
+        <EmptyState
+          v-else-if="notes.length === 0"
+          icon="📝"
+          title="还没有笔记"
+          hint="长按右下角麦克风开始语音录入"
+          size="sm"
+          variant="inline"
+        />
 
         <div v-else class="note-list">
         <div
@@ -63,6 +61,7 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppLayout from '../../app/AppLayout.vue'
 import VoiceRecorderWidget from './VoiceRecorderWidget.vue'
+import { Skeleton, EmptyState, DbLockedState } from '../../components'
 import * as notesStore from './notes-store'
 import type { LocalNote, SearchResult } from './notes-store'
 

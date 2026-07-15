@@ -12,6 +12,7 @@
  * devices we may prefer cloud by default to save battery.
  */
 import { sherpa, type SherpaResult } from '../native/sherpa'
+import { blobUrlToBase64 } from '../native/meeting-audio'
 import { http } from './http'
 
 export interface SttResult {
@@ -52,12 +53,13 @@ export const sttApi = {
       }
     }
 
-    // Cloud fallback via pocketd → Groq Whisper Large v3 Turbo.
+    // Cloud fallback: blob URL → base64 → pocketd → Groq Whisper
+    const audioBase64 = await blobUrlToBase64(opts.audioPath)
     const res = await http<{ text: string; confidence: number; costCents?: number }>(
       '/api/stt/transcribe',
       {
         method: 'POST',
-        body: JSON.stringify({ audioPath: opts.audioPath }),
+        body: JSON.stringify({ audioBase64, mimeType: 'audio/webm' }),
       },
     )
     return {

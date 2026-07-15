@@ -10,22 +10,31 @@
 -->
 <template>
   <div class="llm-gateway-view">
-    <!-- 顶部栏 -->
-    <header class="top-bar">
+    <div
+      ref="chromeRef"
+      class="chrome-shell"
+      :class="{ 'is-snapping': chrome.snapping }"
+      :style="chromeShellStyle"
+    >
+      <header class="top-bar">
       <button class="back-btn" @click="goBack" aria-label="返回">
         <span class="material-symbols-outlined">arrow_back</span>
       </button>
       <h1 class="title">AI 模型</h1>
       <div class="top-spacer"></div>
-    </header>
+      </header>
 
-    <!-- 状态条 -->
-    <div v-if="status" :class="['status-bar', `status-${status.kind}`]">
-      {{ status.text }}
+      <div v-if="status" :class="['status-bar', `status-${status.kind}`]">
+        {{ status.text }}
+      </div>
     </div>
 
-    <!-- 表单 -->
-    <main class="form-container">
+    <main
+      ref="scrollRef"
+      class="form-container"
+      :style="{ paddingTop: chromeHeight + 'px' }"
+      @scroll="onScroll"
+    >
       <div class="form-section">
         <label class="form-label">Gateway Base URL *</label>
         <input
@@ -98,8 +107,30 @@
 import { ref, computed, onMounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
+import { createScrollHideChrome } from '../../composables/useScrollHideChrome'
 
 const router = useRouter()
+
+const chromeRef = ref<HTMLElement | null>(null)
+const scrollRef = ref<HTMLElement | null>(null)
+const chromeHeight = ref(96)
+const chrome = createScrollHideChrome(() => chromeHeight.value)
+const chromeShellStyle = computed(() => ({
+  transform: `translate3d(0, -${chrome.hiddenOffset.value}px, 0)`,
+}))
+
+let lastScrollTop = 0
+function onScroll() {
+  const el = scrollRef.value
+  if (!el) return
+  const delta = el.scrollTop - lastScrollTop
+  lastScrollTop = el.scrollTop
+  chrome.reportScroll({ scrollTop: el.scrollTop, delta })
+}
+
+function measureChrome() {
+  chromeHeight.value = chromeRef.value?.offsetHeight ?? 96
+}
 
 const original = reactive<GatewayConfig>({
   baseURL: '',
@@ -128,6 +159,7 @@ const canSave = computed(
 )
 
 onMounted(async () => {
+  measureChrome()
   try {
     const cfg = await api.getGatewayConfig()
     Object.assign(original, cfg)
@@ -218,12 +250,26 @@ function goBack() {
 
 <style scoped>
 .llm-gateway-view {
-  min-height: 100vh;
+  height: 100dvh;
   background: var(--bg-base);
   display: flex;
   flex-direction: column;
-  padding-top: env(safe-area-inset-top);
   padding-bottom: env(safe-area-inset-bottom);
+}
+
+.chrome-shell {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  will-change: transform;
+  padding-top: env(safe-area-inset-top);
+  background: var(--bg-card);
+}
+
+.chrome-shell.is-snapping {
+  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 .top-bar {
@@ -276,17 +322,20 @@ function goBack() {
 }
 
 .status-bar.status-success {
-  background: rgba(16, 185, 129, 0.12);
+  background: var(--success-bg);
   color: var(--success);
 }
 
 .status-bar.status-error {
-  background: rgba(239, 68, 68, 0.12);
-  color: var(--error, #ef4444);
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 
 .form-container {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -398,7 +447,7 @@ function goBack() {
 
 .btn-primary {
   background: var(--brand-primary);
-  color: #fff;
+  color: var(--text-inverse);
 }
 
 .btn-primary:disabled,
