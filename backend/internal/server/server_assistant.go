@@ -11,10 +11,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/mail"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,6 +27,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
+	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
 
 // ---- 公共辅助 ----
@@ -39,24 +42,38 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// userIDFromRequest 提取当前请求的用户 ID。
+// writeKxmemoryError 把 kxmemory.Error 翻译为前端可读的结构化错误响应。
 //
-// Phase 1 实现：从 Authorization: Bearer <JWT> 解析 user_id claim。
-// 如果 JWT 不存在或无效，回退到 "local"（单用户兼容）。
+// 状态码映射：
+//   - transient（可重试：5xx / 网络 / 超时）→ 503 Service Unavailable + retryable=true
+//   - permanent（不可重试：4xx / JSON decode）→ 502 Bad Gateway + retryable=false
+//
+// 同时保留 `error` 字段做向后兼容；新增 `code` 和 `retryable` 让前端能精确判断。
+func writeKxmemoryError(w http.ResponseWriter, err error) {
+	var kxe *kxmemory.Error
+	if !errors.As(err, &kxe) {
+		writeError(w, http.StatusBadGateway, "kxmemory: "+err.Error())
+		return
+	}
+	status := http.StatusBadGateway
+	if kxe.Retryable() {
+		status = http.StatusServiceUnavailable
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error":     kxe.Error(),
+		"code":      kxe.Code,
+		"retryable": kxe.Retryable(),
+	})
+}
+
+// userIDFromRequest 提取当前请求的用户 ID。
 func (s *Server) userIDFromRequest(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
-		return "local" // 回退到单用户模式
+	if c := s.claimsFromRequest(r); c != nil && c.UserID != "" {
+		return c.UserID
 	}
-	token := strings.TrimSpace(auth[len("Bearer "):])
-	if s.jwtSigner == nil {
-		return "local"
-	}
-	claims, err := s.jwtSigner.Parse(token)
-	if err != nil || claims.UserID == "" {
-		return "local" // JWT 解析失败，回退
-	}
-	return claims.UserID
+	return "local"
 }
 
 // =====================================================================
@@ -66,10 +83,10 @@ func (s *Server) userIDFromRequest(r *http.Request) string {
 // handleAuthLogin — Phase 0 真实 JWT 登录入口。
 //
 // S0-A 扩展：登录成功后，
-//   1. 若 identityStore 可用，EnsureDefaultWorkspace 自动为用户建一个
-//      "ws_<userID>" 默认 workspace（幂等）。
-//   2. 用 SignWithWorkspace 签发带 workspace_id claim 的 JWT，让后续 handler
-//      可以从 JWT 拿到隔离边界。
+//  1. 若 identityStore 可用，EnsureDefaultWorkspace 自动为用户建一个
+//     "ws_<userID>" 默认 workspace（幂等）。
+//  2. 用 SignWithWorkspace 签发带 workspace_id claim 的 JWT，让后续 handler
+//     可以从 JWT 拿到隔离边界。
 //
 // 兼容性：identityStore 或 jwtSigner 未配置时降级到原 Sign 行为，老前端无感。
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
@@ -129,9 +146,9 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"token":       token,
-		"user":        body.Username,
-		"user_id":     userID,
+		"token":        token,
+		"user":         body.Username,
+		"user_id":      userID,
 		"workspace_id": wsID,
 	})
 }
@@ -171,7 +188,7 @@ func (s *Server) handleNotes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusCreated, n)
-		s.wsHub.Broadcast("note.created", &n)
+		s.wsHub.BroadcastTo(ws.BroadcastTarget{UserID: uid}, "note.created", &n)
 		// 异步调 kxmemory（非阻塞）
 		go s.classifyNoteAsync(n)
 	default:
@@ -200,19 +217,17 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		// TODO Phase 3: 从 kxmemory 拉取完整内容（本地只缓存元数据）。
-		list, err := s.notesStore.List(r.Context(), s.userIDFromRequest(r), "")
+		// 用 GetByID 替换 List+linear scan（O(1) 查询且包含 snippet 列）。
+		found, err := s.notesStore.GetByID(r.Context(), id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		for i := range list {
-			if list[i].ID == id {
-				writeJSON(w, http.StatusOK, list[i])
-				return
-			}
+		if found == nil {
+			writeError(w, http.StatusNotFound, "note not found")
+			return
 		}
-		writeError(w, http.StatusNotFound, "note not found")
+		writeJSON(w, http.StatusOK, found)
 	case http.MethodDelete:
 		if err := s.notesStore.Delete(r.Context(), id); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -248,19 +263,13 @@ func (s *Server) handleNoteClassify(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 
-	// Look up the note. Single-user, ≤ 200 notes → List + filter is fine and
-	// avoids adding a new store method.
-	list, err := s.notesStore.List(r.Context(), s.userIDFromRequest(r), "")
+	// Look up the note by ID (Phase 1.1: 替换 List+scan 的 O(N) 反模式为 O(1) 查询)。
+	// 此前 List 的 SELECT 漏了 snippet 列，导致 sync classify 路径永远发送空
+	// content 给 kxmemory → 真实 kxmemory-go 返回 400。新增 GetByID 修复。
+	found, err := s.notesStore.GetByID(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	var found *notes.Note
-	for i := range list {
-		if list[i].ID == id {
-			found = &list[i]
-			break
-		}
 	}
 	if found == nil {
 		writeError(w, http.StatusNotFound, "note not found")
@@ -278,7 +287,7 @@ func (s *Server) handleNoteClassify(w http.ResponseWriter, r *http.Request, id s
 		Tags:        parseTagsJSON(found.Tags),
 	})
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "kxmemory classify failed: "+err.Error())
+		writeKxmemoryError(w, err)
 		return
 	}
 
@@ -292,7 +301,7 @@ func (s *Server) handleNoteClassify(w http.ResponseWriter, r *http.Request, id s
 		log.Printf("[kxmemory] update note %s after classify failed: %v", found.ID, err)
 	}
 
-	s.wsHub.Broadcast("note.classified", map[string]any{
+	s.wsHub.BroadcastTo(ws.BroadcastTarget{UserID: found.UserID}, "note.classified", map[string]any{
 		"noteId":         found.ID,
 		"domain":         resp.Classification.Domain,
 		"category":       resp.Classification.Category,
@@ -315,23 +324,296 @@ func (s *Server) handleEmailAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		list, err := s.emailStore.ListAccounts(r.Context(), s.userIDFromRequest(r))
+		list, err := s.emailStore.ListAccountsScoped(r.Context(), s.userIDFromRequest(r), s.workspaceIDFromRequest(r))
+
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"accounts": list})
 	case http.MethodPost:
-		// TODO Phase 2: 加密 credential、验证 IMAP 连通性、启动 scheduler。
-		writeError(w, http.StatusNotImplemented, "account creation: Phase 2")
+		// Phase 2: 加密 credential、写库；IMAP 连通性验证交给 scheduler
+		// 在首次 Sync 时做（不阻塞 POST 立即返回 201）。
+		s.createEmailAccount(w, r)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "GET/POST only")
 	}
 }
 
+// createEmailAccount 处理 POST /api/email/accounts。
+//
+// 请求体（所有字段语义见 email.Account）：
+//
+//	{
+//	  "displayName": "Work Gmail",
+//	  "emailAddress": "foo@gmail.com",
+//	  "imapHost": "imap.gmail.com",
+//	  "imapPort": 993,
+//	  "authType": "password" | "oauth2",
+//	  "password": "...",        // authType=password 必填
+//	  "oauthToken": "...",      // authType=oauth2 必填（access token）
+//	  "syncIntervalMin": 15,
+//	  "rules": "...",
+//	  "enabled": true
+//	}
+//
+// 安全要点：
+//   - credential 加密后入库，明文不持久化（即使 DB 泄漏也不能反解）；
+//   - OAuth 流程下 access token 也走同样加密（refresh token 由 OAuth 回调
+//     单独管理，不在本接口处理）；
+//   - 创建后立即广播 email.account.created 事件，触发前端刷新列表。
+func (s *Server) createEmailAccount(w http.ResponseWriter, r *http.Request) {
+	if s.emailStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "email store not configured")
+		return
+	}
+	if s.emailCrypto == nil {
+		writeError(w, http.StatusServiceUnavailable, "email crypto not configured (set POCKET_EMAIL_MASTER_KEY)")
+		return
+	}
+	var body struct {
+		DisplayName     string `json:"displayName"`
+		EmailAddress    string `json:"emailAddress"`
+		IMAPHost        string `json:"imapHost"`
+		IMAPPort        int    `json:"imapPort"`
+		AuthType        string `json:"authType"` // password | oauth2
+		Password        string `json:"password"`
+		OAuthToken      string `json:"oauthToken"`
+		SyncIntervalMin int    `json:"syncIntervalMin"`
+		Rules           string `json:"rules"`
+		Enabled         *bool  `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if err := validateEmailAccountInput(body.EmailAddress, body.IMAPHost, body.IMAPPort, body.AuthType, body.SyncIntervalMin, body.Rules); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.AuthType == "" {
+		body.AuthType = "password"
+	}
+	if body.AuthType == "password" && body.Password == "" {
+		writeError(w, http.StatusBadRequest, "password required for authType=password")
+		return
+	}
+	if body.AuthType == "oauth2" && body.OAuthToken == "" {
+		writeError(w, http.StatusBadRequest, "oauthToken required for authType=oauth2")
+		return
+	}
+	if body.IMAPPort == 0 {
+		body.IMAPPort = 993
+	}
+	if body.SyncIntervalMin == 0 {
+		body.SyncIntervalMin = 15
+	}
+
+	plaintext := body.Password
+	if body.AuthType == "oauth2" {
+		plaintext = body.OAuthToken
+	}
+	encrypted, err := s.emailCrypto.EncryptString(plaintext)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "encrypt credential: "+err.Error())
+		return
+	}
+
+	enabled := true
+	if body.Enabled != nil {
+		enabled = *body.Enabled
+	}
+	uid := s.userIDFromRequest(r)
+	acc := &email.Account{
+		ID:              randomID("acct"),
+		UserID:          uid,
+		WorkspaceID:     s.workspaceIDFromRequest(r),
+		DisplayName:     body.DisplayName,
+		EmailAddress:    body.EmailAddress,
+		IMAPHost:        body.IMAPHost,
+		IMAPPort:        body.IMAPPort,
+		AuthType:        body.AuthType,
+		SyncIntervalMin: body.SyncIntervalMin,
+		Rules:           body.Rules,
+		Enabled:         enabled,
+		CreatedAt:       time.Now().Unix(),
+	}
+	if err := s.emailStore.InsertAccount(r.Context(), acc, encrypted); err != nil {
+		writeError(w, http.StatusInternalServerError, "insert account: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, acc)
+	if s.wsHub != nil {
+		s.wsHub.BroadcastToUser(uid, "email.account.created", acc)
+	}
+}
+
+func validateEmailAccountInput(address, host string, port int, authType string, interval int, rules string) error {
+	if address == "" {
+		return errors.New("emailAddress is required")
+	}
+	if _, err := mail.ParseAddress(address); err != nil {
+		return errors.New("emailAddress is invalid")
+	}
+	if host == "" {
+		return errors.New("imapHost is required")
+	}
+	if port != 0 && (port < 1 || port > 65535) {
+		return errors.New("imapPort must be between 1 and 65535")
+	}
+	if authType != "" && authType != "password" && authType != "oauth2" {
+		return errors.New("authType must be 'password' or 'oauth2'")
+	}
+	if interval != 0 && (interval < 5 || interval > 60) {
+		return errors.New("syncIntervalMin must be between 5 and 60")
+	}
+	if rules != "" {
+		var value any
+		if err := json.Unmarshal([]byte(rules), &value); err != nil {
+			return errors.New("rules must be valid JSON")
+		}
+	}
+	return nil
+}
+
+//	PUT    — 更新账户元数据（displayName / imapHost / imapPort / syncIntervalMin / rules / enabled）；
+//	         如果 body 含 password 或 oauthToken，会重新加密并更新 credential_encrypted。
+//	DELETE — 删除账户（emails 表通过 ON DELETE CASCADE 自动清理）。
+//
+// 安全：先校验账户归属当前 user，越权访问返回 404（不暴露存在性）。
 func (s *Server) handleEmailAccountOps(w http.ResponseWriter, r *http.Request) {
-	// TODO Phase 2: PUT/DELETE 账户。
-	writeError(w, http.StatusNotImplemented, "Phase 2")
+	if s.emailStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "email store not configured")
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/email/accounts/")
+	id = strings.TrimSuffix(id, "/")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing account id")
+		return
+	}
+
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+	acc, _, err := s.emailStore.GetAccountByIDScoped(r.Context(), id, uid, wsID)
+	if errors.Is(err, email.ErrNotFound) || acc == nil {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPut:
+		s.updateEmailAccount(w, r, acc, wsID)
+	case http.MethodDelete:
+		if err := s.emailStore.DeleteAccountScoped(r.Context(), id, uid, wsID); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+		if s.wsHub != nil {
+			s.wsHub.BroadcastToUser(uid, "email.account.deleted", map[string]string{"id": id})
+		}
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "PUT/DELETE only")
+	}
+}
+
+// updateEmailAccount 处理 PUT /api/email/accounts/{id} 的部分更新。
+//
+// 字段语义：
+//   - 所有字段可选；未提供则保留原值（patch 语义）。
+//   - 仅允许修改自己的账户；账号所有权已在调用方校验。
+//   - password / oauthToken 互斥（不能同时改）；提供任一则触发 credential
+//     重加密。如果 authType 改为 oauth2，应同时提供 oauthToken。
+func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc *email.Account, workspaceID string) {
+	var body struct {
+		DisplayName     *string `json:"displayName"`
+		IMAPHost        *string `json:"imapHost"`
+		IMAPPort        *int    `json:"imapPort"`
+		AuthType        *string `json:"authType"`
+		SyncIntervalMin *int    `json:"syncIntervalMin"`
+		Rules           *string `json:"rules"`
+		Enabled         *bool   `json:"enabled"`
+		Password        *string `json:"password"`
+		OAuthToken      *string `json:"oauthToken"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.Password != nil && body.OAuthToken != nil {
+		writeError(w, http.StatusBadRequest, "provide only one of password / oauthToken")
+		return
+	}
+	if body.IMAPPort != nil && (*body.IMAPPort < 1 || *body.IMAPPort > 65535) {
+		writeError(w, http.StatusBadRequest, "imapPort must be between 1 and 65535")
+		return
+	}
+	if body.SyncIntervalMin != nil && (*body.SyncIntervalMin < 5 || *body.SyncIntervalMin > 60) {
+		writeError(w, http.StatusBadRequest, "syncIntervalMin must be between 5 and 60")
+		return
+	}
+	if body.Rules != nil {
+		var v any
+		if err := json.Unmarshal([]byte(*body.Rules), &v); err != nil {
+			writeError(w, http.StatusBadRequest, "rules must be valid JSON")
+			return
+		}
+	}
+
+	if body.DisplayName != nil { acc.DisplayName = *body.DisplayName }
+	if body.IMAPHost != nil { acc.IMAPHost = *body.IMAPHost }
+	if body.IMAPPort != nil && *body.IMAPPort > 0 { acc.IMAPPort = *body.IMAPPort }
+	if body.SyncIntervalMin != nil && *body.SyncIntervalMin > 0 { acc.SyncIntervalMin = *body.SyncIntervalMin }
+	if body.Rules != nil { acc.Rules = *body.Rules }
+	if body.Enabled != nil { acc.Enabled = *body.Enabled }
+	if body.AuthType != nil {
+		if *body.AuthType != "password" && *body.AuthType != "oauth2" {
+			writeError(w, http.StatusBadRequest, "authType must be 'password' or 'oauth2'")
+			return
+		}
+		acc.AuthType = *body.AuthType
+	}
+
+	var encrypted string
+	updateCredential := false
+	if body.Password != nil || body.OAuthToken != nil {
+		if s.emailCrypto == nil {
+			writeError(w, http.StatusServiceUnavailable, "email crypto not configured")
+			return
+		}
+		if body.AuthType != nil && *body.AuthType == "oauth2" && body.OAuthToken == nil {
+			writeError(w, http.StatusBadRequest, "oauthToken required when authType=oauth2")
+			return
+		}
+		plaintext := ""
+		if body.Password != nil { plaintext = *body.Password } else { plaintext = *body.OAuthToken }
+		enc, err := s.emailCrypto.EncryptString(plaintext)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "encrypt credential: "+err.Error())
+			return
+		}
+		encrypted = enc
+		updateCredential = true
+	}
+
+	uid := s.userIDFromRequest(r)
+	if err := s.emailStore.UpdateAccountScoped(r.Context(), acc, uid, workspaceID, encrypted, updateCredential); err != nil {
+		if errors.Is(err, email.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "account not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "update account: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, acc)
+	if s.wsHub != nil {
+		s.wsHub.BroadcastToUser(uid, "email.account.updated", acc)
+	}
 }
 
 func (s *Server) handleEmails(w http.ResponseWriter, r *http.Request) {
@@ -349,7 +631,7 @@ func (s *Server) handleEmails(w http.ResponseWriter, r *http.Request) {
 		Importance: r.URL.Query().Get("importance"),
 		UnreadOnly: r.URL.Query().Get("unread") == "1",
 	}
-	list, err := s.emailStore.ListEmails(r.Context(), f)
+	list, err := s.emailStore.ListEmailsScoped(r.Context(), f, s.userIDFromRequest(r), s.workspaceIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -375,6 +657,17 @@ func (s *Server) handleEmailOps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.Method {
+	case http.MethodGet:
+		em, err := s.emailStore.GetEmailByIDScoped(r.Context(), id, s.userIDFromRequest(r), s.workspaceIDFromRequest(r))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if em == nil {
+			writeError(w, http.StatusNotFound, "email not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, em)
 	case http.MethodPatch:
 		var body struct {
 			IsRead    *bool `json:"isRead"`
@@ -384,15 +677,21 @@ func (s *Server) handleEmailOps(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		if body.IsRead != nil {
-			if err := s.emailStore.MarkRead(r.Context(), id, *body.IsRead); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+		if body.IsRead == nil && body.IsStarred == nil {
+			writeError(w, http.StatusBadRequest, "provide at least one of isRead / isStarred")
+			return
+		}
+		if err := s.emailStore.UpdateEmailFlagsScoped(r.Context(), id, s.userIDFromRequest(r), s.workspaceIDFromRequest(r), body.IsRead, body.IsStarred); err != nil {
+			if errors.Is(err, email.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "email not found")
 				return
 			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	default:
-		writeError(w, http.StatusNotImplemented, "Phase 2: GET/PATCH detail")
+		writeError(w, http.StatusMethodNotAllowed, "GET/PATCH only")
 	}
 }
 
@@ -446,24 +745,27 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
 
-	// 选要同步的账户：指定 account_id 就只同步它，否则同步该用户所有 enabled 账户
 	var accounts []email.Account
-	var err error
 	if body.AccountID != "" {
-		var acc *email.Account
-		var encryptedCredential string
-		acc, encryptedCredential, err = s.emailStore.GetAccountByID(r.Context(), body.AccountID)
-		_ = encryptedCredential
-		if acc != nil {
-			accounts = []email.Account{*acc}
+		acc, _, err := s.emailStore.GetAccountByIDScoped(r.Context(), body.AccountID, userID, wsID)
+		if errors.Is(err, email.ErrNotFound) || acc == nil {
+			writeError(w, http.StatusNotFound, "account not found")
+			return
 		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "load account: "+err.Error())
+			return
+		}
+		accounts = []email.Account{*acc}
 	} else {
-		accounts, err = s.emailStore.ListAccounts(r.Context(), userID)
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "list accounts: "+err.Error())
-		return
+		listed, err := s.emailStore.ListAccountsScoped(r.Context(), userID, wsID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "list accounts: "+err.Error())
+			return
+		}
+		accounts = listed
 	}
 
 	totalSaved := 0
@@ -573,8 +875,33 @@ func (s *Server) classifyEmailsAsync(emails []email.Email) {
 }
 
 func (s *Server) handleEmailSummaries(w http.ResponseWriter, r *http.Request) {
-	// TODO Phase 2: list daily summaries.
-	writeJSON(w, http.StatusOK, map[string]any{"summaries": []any{}})
+	if s.emailStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "email store not configured")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+
+	// 可选 ?limit=N（默认 30，上限 200）。
+	// 单用户每日一封的频率下 limit=30 已足够覆盖一个月，无须支持游标。
+	limit := 30
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	list, err := s.emailStore.ListSummariesScoped(r.Context(), s.userIDFromRequest(r), s.workspaceIDFromRequest(r), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if list == nil {
+		list = []email.DailySummary{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"summaries": list})
 }
 
 func (s *Server) handleEmailSummaryOps(w http.ResponseWriter, r *http.Request) {
@@ -598,7 +925,7 @@ func (s *Server) handleEmailSummaryOps(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid date (expected YYYY-MM-DD)")
 		return
 	}
-	sum, err := s.emailStore.GetSummaryByDate(r.Context(), s.userIDFromRequest(r), sub)
+	sum, err := s.emailStore.GetSummaryByDateScoped(r.Context(), s.userIDFromRequest(r), s.workspaceIDFromRequest(r), sub)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -636,7 +963,7 @@ func (s *Server) handleVaultSync(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		s.wsHub.Broadcast("vault.synced", map[string]string{"userId": uid})
+		s.wsHub.BroadcastToUser(uid, "vault.synced", map[string]string{"userId": uid})
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	case r.Method == http.MethodGet && (sub == "latest" || sub == ""):
 		blob, ver, err := s.vaultStore.GetLatest(r.Context(), uid)
@@ -662,7 +989,7 @@ func (s *Server) handleVaultSync(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		s.wsHub.Broadcast("vault.restored", map[string]any{"userId": uid, "version": ver})
+		s.wsHub.BroadcastToUser(uid, "vault.restored", map[string]any{"userId": uid, "version": ver})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": ver, "blob": blob})
 	case r.Method == http.MethodGet && strings.HasPrefix(sub, "versions/"):
 		// GET /api/vault/sync/versions/{version} — 单版本加密 blob 详情
@@ -730,9 +1057,9 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// JSON body: { "audioPath": "/path/to/audio.wav" } 或 { "audioBase64": "..." }
 		var body struct {
-			AudioPath    string `json:"audioPath"`
-			AudioBase64  string `json:"audioBase64"`
-			Filename     string `json:"filename"`
+			AudioPath   string `json:"audioPath"`
+			AudioBase64 string `json:"audioBase64"`
+			Filename    string `json:"filename"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid body")
@@ -933,6 +1260,20 @@ func (s *Server) classifyNoteAsync(note notes.Note) {
 	})
 	if err != nil {
 		log.Printf("[kxmemory] classify note %s failed: %v", note.ID, err)
+		// WS 广播失败事件，前端可展示重试按钮
+		var kxe *kxmemory.Error
+		retryable := true
+		code := "KXMEMORY_UNREACHABLE"
+		if errors.As(err, &kxe) {
+			retryable = kxe.Retryable()
+			code = kxe.Code
+		}
+		s.wsHub.BroadcastTo(ws.BroadcastTarget{UserID: note.UserID}, "note.classification_failed", map[string]any{
+			"noteId":    note.ID,
+			"code":      code,
+			"retryable": retryable,
+			"error":     err.Error(),
+		})
 		return
 	}
 
@@ -950,9 +1291,21 @@ func (s *Server) classifyNoteAsync(note notes.Note) {
 		note.ID, resp.Classification.Domain, resp.Classification.Category,
 		resp.Classification.Tags, resp.Classification.Confidence)
 
-	// TODO: 如果 resp.Status == "conflict_detected"，推送 SSOT 冲突通知给客户端
+	// SSOT 冲突检测：当 kxmemory 报告 conflict_detected 时，把冲突明细推
+	// 给前端，让用户决定是 "merge / supersede / keep both"。
+	//
+	// 为什么不放在 classifyNoteAsync 外层统一 broadcast？
+	//  - 成功分类的 note.classified 已经在 handleNoteClassify 同步路径里
+	//    推过，避免重复广播。
+	//  - 异步路径只在成功分类后才会走到这里，所以不会有遗漏。
 	if resp.Status == "conflict_detected" && len(resp.SSOTConflicts) > 0 {
 		log.Printf("[kxmemory] SSOT conflict detected for note %s: %d conflicts", note.ID, len(resp.SSOTConflicts))
+		s.wsHub.BroadcastTo(ws.BroadcastTarget{UserID: note.UserID}, "note.ssot_conflict", map[string]any{
+			"noteId":    note.ID,
+			"conflicts": resp.SSOTConflicts,
+			"category":  resp.Classification.Category,
+			"domain":    resp.Classification.Domain,
+		})
 	}
 }
 
@@ -974,4 +1327,3 @@ func toTagsJSON(tags []string) string {
 	b, _ := json.Marshal(tags)
 	return string(b)
 }
-

@@ -6,6 +6,7 @@ package email
 type Account struct {
 	ID              string `json:"id"`
 	UserID          string `json:"userId"`
+	WorkspaceID     string `json:"workspaceId,omitempty"`
 	DisplayName     string `json:"displayName"`
 	EmailAddress    string `json:"emailAddress"`
 	IMAPHost        string `json:"imapHost"`
@@ -23,6 +24,7 @@ type Account struct {
 type Email struct {
 	ID              string `json:"id"`
 	AccountID       string `json:"accountId"`
+	WorkspaceID     string `json:"workspaceId,omitempty"`
 	FromAddress     string `json:"fromAddress"`
 	FromName        string `json:"fromName,omitempty"`
 	Subject         string `json:"subject"`
@@ -41,6 +43,7 @@ type Email struct {
 type DailySummary struct {
 	ID             string `json:"id"`
 	UserID         string `json:"userId"`
+	WorkspaceID    string `json:"workspaceId,omitempty"`
 	SummaryDate    string `json:"summaryDate"`
 	TotalCount     int    `json:"totalCount"`
 	ImportantCount int    `json:"importantCount"`

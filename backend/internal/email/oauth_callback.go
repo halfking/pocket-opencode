@@ -103,10 +103,13 @@ func (p *PendingOAuth) gcLoop(ctx context.Context) {
 
 // OAuthCallbackConfig 配置 OAuth callback handler 的依赖。
 type OAuthCallbackConfig struct {
-	Store       *Store
-	Crypto      *Crypto
-	Pending     *PendingOAuth
-	Broadcaster interface{ Broadcast(string, interface{}) }
+	Store               *Store
+	Crypto              *Crypto
+	Pending             *PendingOAuth
+	Broadcaster         interface{ Broadcast(string, interface{}) }
+	TargetedBroadcaster interface {
+		BroadcastToUser(userID, msgType string, payload interface{})
+	}
 }
 
 // HandleOAuthCallback 返回 GET /callback/email/oauth 的 handler。
@@ -159,11 +162,14 @@ func HandleOAuthCallback(cfg OAuthCallbackConfig) http.HandlerFunc {
 			log.Printf("[oauth] set auth type: %v", err)
 		}
 		// 广播 WS 事件通知前端
-		if cfg.Broadcaster != nil {
-			cfg.Broadcaster.Broadcast("email.oauth.completed", map[string]string{
-				"accountId": entry.AccountID,
-				"userId":    entry.UserID,
-			})
+		payload := map[string]string{
+			"accountId": entry.AccountID,
+			"userId":    entry.UserID,
+		}
+		if cfg.TargetedBroadcaster != nil && entry.UserID != "" {
+			cfg.TargetedBroadcaster.BroadcastToUser(entry.UserID, "email.oauth.completed", payload)
+		} else if cfg.Broadcaster != nil {
+			cfg.Broadcaster.Broadcast("email.oauth.completed", payload)
 		}
 		// 返回成功页面（或重定向到移动端 deep link）
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

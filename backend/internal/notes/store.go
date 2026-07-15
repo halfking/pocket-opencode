@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -145,11 +147,13 @@ func (s *Store) Upsert(ctx context.Context, n *Note) error {
 }
 
 func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error) {
-	// Only select columns that exist in BOTH schemas, so this query
-	// works against either a fresh install or a DB created by the
-	// appendix-a migration.
+	// SELECT 现在包含 content 和 snippet — 修复 v1.0 期间遗留的字段缺失
+	// bug（sync classify 路径曾因此拿到空 snippet 让真实 kxmemory 返回 400）。
+	// 这两个列都加 NOT NULL DEFAULT '' 在 migrate() 里，所以向后兼容旧行。
 	q := `
-		SELECT id, user_id, workspace_id, title, content_type, domain, tags, audio_path, audio_duration, created_by_voice, created_at, updated_at
+		SELECT id, user_id, workspace_id, title, content, snippet,
+		       content_type, domain, tags, audio_path, audio_duration,
+		       created_by_voice, created_at, updated_at
 		FROM notes WHERE user_id = $1 AND deleted_at IS NULL`
 	args := []any{userID}
 	if domain != "" {
@@ -167,16 +171,20 @@ func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error)
 	var out []Note
 	for rows.Next() {
 		var (
-			n            Note
-			workspaceID  sql.NullString
-			title        sql.NullString
-			domain       sql.NullString
-			tags         []byte // raw jsonb
-			audioPath    sql.NullString
-			createdAt    sql.NullTime
-			updatedAt    sql.NullTime
+			n           Note
+			workspaceID sql.NullString
+			title       sql.NullString
+			content     sql.NullString
+			snippet     sql.NullString
+			domain      sql.NullString
+			tags        []byte // raw jsonb
+			audioPath   sql.NullString
+			createdAt   sql.NullTime
+			updatedAt   sql.NullTime
 		)
-		if err := rows.Scan(&n.ID, &n.UserID, &workspaceID, &title, &n.ContentType, &domain, &tags, &audioPath, &n.AudioDuration, &n.CreatedByVoice, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&n.ID, &n.UserID, &workspaceID, &title, &content, &snippet,
+			&n.ContentType, &domain, &tags, &audioPath, &n.AudioDuration, &n.CreatedByVoice,
+			&createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		if workspaceID.Valid {
@@ -184,6 +192,12 @@ func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error)
 		}
 		if title.Valid {
 			n.Title = title.String
+		}
+		if content.Valid {
+			n.Content = content.String
+		}
+		if snippet.Valid {
+			n.Snippet = snippet.String
 		}
 		if domain.Valid {
 			n.Domain = domain.String
@@ -210,6 +224,76 @@ func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error)
 	return out, rows.Err()
 }
 
+// GetByID 按 ID 查找单条笔记（不含软删除）。
+//
+// 返回 (nil, nil) 表示不存在（与 email.Store.GetEmailByID 行为一致），让
+// handler 用 `if found == nil` 判断 404 而非依赖 error 类型。
+//
+// 用于替换 handleNoteClassify / handleNoteOperations 的 O(N) List + linear
+// scan 反模式，避免每次 sync classify 都扫整张 notes 表。
+func (s *Store) GetByID(ctx context.Context, id string) (*Note, error) {
+	var (
+		n           Note
+		workspaceID sql.NullString
+		title       sql.NullString
+		content     sql.NullString
+		snippet     sql.NullString
+		domain      sql.NullString
+		tags        []byte
+		audioPath   sql.NullString
+		createdAt   sql.NullTime
+		updatedAt   sql.NullTime
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, user_id, workspace_id, title, content, snippet,
+		       content_type, domain, tags, audio_path, audio_duration,
+		       created_by_voice, created_at, updated_at
+		FROM notes WHERE id = $1 AND deleted_at IS NULL
+	`, id).Scan(
+		&n.ID, &n.UserID, &workspaceID, &title, &content, &snippet,
+		&n.ContentType, &domain, &tags, &audioPath, &n.AudioDuration, &n.CreatedByVoice,
+		&createdAt, &updatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if workspaceID.Valid {
+		n.WorkspaceID = workspaceID.String
+	}
+	if title.Valid {
+		n.Title = title.String
+	}
+	if content.Valid {
+		n.Content = content.String
+	}
+	if snippet.Valid {
+		n.Snippet = snippet.String
+	}
+	if domain.Valid {
+		n.Domain = domain.String
+	}
+	if audioPath.Valid {
+		n.AudioPath = audioPath.String
+	}
+	if createdAt.Valid {
+		n.CreatedAt = createdAt.Time.Unix()
+	}
+	if updatedAt.Valid {
+		n.UpdatedAt = updatedAt.Time.Unix()
+	}
+	if len(tags) > 0 {
+		var arr []string
+		if err := json.Unmarshal(tags, &arr); err == nil {
+			b, _ := json.Marshal(arr)
+			n.Tags = string(b)
+		}
+	}
+	return &n, nil
+}
+
 func (s *Store) Delete(ctx context.Context, id string) error {
 	// Soft-delete: keep the row, set deleted_at. Avoids breaking FK
 	// relationships in other tables that may reference notes.id in the
@@ -220,4 +304,3 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 }
 
 func (s *Store) Close() error { return nil }
-
