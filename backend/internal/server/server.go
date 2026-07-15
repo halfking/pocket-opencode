@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -65,10 +66,10 @@ type Server struct {
 	transcriber *stt.Transcriber // nil = 云端 STT 兜底未配置
 	mcpClient   *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// Phase C: 无状态 AI 网关（嵌入/LLM 代理）。nil = 未配置，对应 handler 返回 503。
-	embedder    aigate.Embedder
-	llm         aigate.LLMClient
+	embedder aigate.Embedder
+	llm      aigate.LLMClient
 	// 后端集成：kxmemory AI 编排（分类/SSOT/总结）
-	kxmemory    *kxmemory.Client // nil = kxmemory 未配置
+	kxmemory kxmemory.Client // 接口类型（默认 *kxmemory.HTTPClient 实现）
 	// OpenCode 管理器
 	opencodeManager *opencode.Manager // nil = OpenCode 管理未启用
 	// OpenCode 域事件/许可/提问管理（Phase V3：真实任务与会话接入）
@@ -77,20 +78,20 @@ type Server struct {
 	quesMgr  *opencode.QuestionManager
 
 	// Auth
-	userStore    *auth.UserStore
-	jwtSigner    *auth.Signer
+	userStore     *auth.UserStore
+	jwtSigner     *auth.Signer
 	identityStore *identity.Store // nil = S0-A 未启用，handler 降级到单租户
 	// S0-B: unified LLM BFF。nil = 未配置（POCKET_LLM_* 未设且无网关配置），handler 返回 503。
-	llmBFF        *llmbff.Service
+	llmBFF           *llmbff.Service
 	llmBFFSummarizer llmbff.Summarizer
 	// S0-C: Lobster Vault 加密镜像同步 store。nil = 同步路由返回 503。
-	lobsterSync   *lobster.SyncStore
+	lobsterSync *lobster.SyncStore
 	// S0-D: Agent Bridge。nil = /api/agents 返回 503。
-	agentBridge   *agentbridge.Bridge
-	agentStore    *agentbridge.Store
+	agentBridge *agentbridge.Bridge
+	agentStore  *agentbridge.Store
 	// S0-E: Notification Center。nil = /api/notifications 返回 503。
-	notifySvc     *notifycenter.Service
-	notifyStore   *notifycenter.Store
+	notifySvc   *notifycenter.Service
+	notifyStore *notifycenter.Store
 
 	// Email
 	emailCrypto    *email.Crypto
@@ -112,7 +113,7 @@ type Server struct {
 // OpenCode 扩展：新增 opencodeManager（实例和会话管理）。
 // Auth + Email: 新增 userStore/jwtSigner/emailCrypto/emailPending/emailScheduler/emailFetcher/dataDir。
 // 这些依赖都允许为 nil（对应功能降级），由各 handler 自行判断。
-func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore *vault.Store, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem *kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string) *Server {
+func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore *vault.Store, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string) *Server {
 	hub := ws.NewHub()
 	go hub.Run()
 
@@ -251,6 +252,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/emails", s.requireAuth(s.handleEmails))
 	mux.HandleFunc("/api/emails/sync", s.requireAuth(s.handleEmailSync))
 	mux.HandleFunc("/api/emails/", s.requireAuth(s.handleEmailOps))
+	// OAuth 流程：start 返回 authorization URL；callback 由 email 包提供，
+	// 不走 requireAuth（OAuth provider 用 state 而非 JWT 验证回调合法性）。
+	mux.HandleFunc("/api/email/oauth/start", s.requireAuth(s.startEmailOAuth))
+	mux.HandleFunc("/callback/email/oauth", s.handleEmailOAuthCallback())
 	// 密码箱（子树，含 /api/vault/sync/latest）
 	mux.HandleFunc("/api/vault/sync/", s.requireAuth(s.handleVaultSync))
 	// S0-C: Lobster Vault 加密镜像同步（e2ee assets 跨设备同步）
@@ -264,7 +269,7 @@ func (s *Server) Handler() http.Handler {
 	// llmBFF 启用时优先走 BFF；未启用时回退到老 handler。
 	mux.HandleFunc("/api/llm/stream", s.requireAuth(s.handleLLMBFFStream))
 	mux.HandleFunc("/api/llm/usage", s.requireAuth(s.handleLLMBFFUsage))
-	
+
 	// OpenCode 管理 API
 	mux.HandleFunc("/api/opencode/sessions", s.handleOpenCodeSessions)
 	mux.HandleFunc("/api/opencode/sessions/", s.handleOpenCodeSessionOperations)
@@ -283,7 +288,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/migration", s.requireAuth(s.handleMigration))
 	mux.HandleFunc("/api/migration/preview", s.requireAuth(s.handleMigrationPreview))
 
-
 	// ---- Phase V3: LLM Gateway 配置管理 ----
 	// 用户在 Settings 改 llmgo.kxpms.cn URL / API Key；pocketd 写入 OpenCode 配置
 	mux.HandleFunc("/api/llm-gateway/config", s.requireAuth(s.handleLLMGatewayConfig))
@@ -296,28 +300,34 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/mobile/sessions/", s.requireAuth(s.handleMobileSessionRouter))
 
 	// Plugin/Manager WebSocket routes
-	mux.HandleFunc("/plugin/ws", s.handlePluginWebSocket)
+	mux.HandleFunc("/plugin/ws", s.requireAuth(s.handlePluginWebSocket))
 	mux.HandleFunc("/api/plugin/status", s.handlePluginStatus)
 	mux.HandleFunc("/api/plugin/command", s.requireAuth(s.handleSendCommand))
 
-	return corsMiddleware(mux)
+	return corsMiddleware(mux, s.cfg.AllowedOrigins, s.cfg.DevAuth)
 }
 
-// corsMiddleware 添加 CORS 支持
-func corsMiddleware(next http.Handler) http.Handler {
+func corsMiddleware(next http.Handler, allowedOrigins string, devAuth bool) http.Handler {
+	originChecker := buildOriginChecker(allowedOrigins, devAuth)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 允许所有源（生产环境应该更严格）
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if origin != "" && originChecker(r) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Max-Age", "3600")
-		
-		// 处理 OPTIONS 预检请求
+
 		if r.Method == "OPTIONS" {
+			if origin != "" && !originChecker(r) {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -325,7 +335,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 // handleOpenCodeSessionOperations 处理 OpenCode 会话相关操作的路由分发
 func (s *Server) handleOpenCodeSessionOperations(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path[len("/api/opencode/sessions/"):]
-	
+
 	// 检查是否是 /history 或 /summary 结尾
 	if len(path) > 8 && path[len(path)-8:] == "/history" {
 		s.handleOpenCodeSessionHistory(w, r)
@@ -335,20 +345,20 @@ func (s *Server) handleOpenCodeSessionOperations(w http.ResponseWriter, r *http.
 		s.handleOpenCodeSessionSummary(w, r)
 		return
 	}
-	
+
 	http.Error(w, "not found", http.StatusNotFound)
 }
 
 // handleOpenCodeInstanceOperations 处理 OpenCode 实例相关操作的路由分发
 func (s *Server) handleOpenCodeInstanceOperations(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path[len("/api/opencode/instances/"):]
-	
+
 	// 检查是否是 /stats 结尾
 	if len(path) > 6 && path[len(path)-6:] == "/stats" {
 		s.handleOpenCodeInstanceStats(w, r)
 		return
 	}
-	
+
 	http.Error(w, "not found", http.StatusNotFound)
 }
 
@@ -502,7 +512,7 @@ func (s *Server) handleAllSessions(w http.ResponseWriter, r *http.Request) {
 				log.Printf("Failed to get API base for instance %s: %v", inst.ID, err)
 				continue
 			}
-			
+
 			sessions, err := s.opencode.ListSessions(r.Context(), apiBase)
 			if err != nil {
 				log.Printf("Failed to list sessions for instance %s: %v", inst.ID, err)
@@ -598,14 +608,14 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				now := time.Now().Unix()
 				for _, p := range parsed {
 					allTasks = append(allTasks, task.Task{
-						ID:               p.ID,
-						Title:            p.Title,
-						Status:           p.Status,
-						Priority:         "normal",
-						WorkstreamID:     workstreamID,
-						Source:           "acc",
-						CreatedAt:        time.Unix(now, 0),
-						UpdatedAt:        time.Unix(now, 0),
+						ID:           p.ID,
+						Title:        p.Title,
+						Status:       p.Status,
+						Priority:     "normal",
+						WorkstreamID: workstreamID,
+						Source:       "acc",
+						CreatedAt:    time.Unix(now, 0),
+						UpdatedAt:    time.Unix(now, 0),
 					})
 				}
 			}
@@ -622,14 +632,14 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 					now := time.Now().Unix()
 					for _, rt := range remoteTasks {
 						allTasks = append(allTasks, task.Task{
-							ID:               rt.ID,
-							Title:            rt.Title,
-							Status:           rt.Status,
-							Priority:         "normal",
-							WorkstreamID:     instanceID, // OpenCode 实例 ID 即 workstream
-							Source:           "opencode",
-							CreatedAt:        time.Unix(now, 0),
-							UpdatedAt:        time.Unix(now, 0),
+							ID:           rt.ID,
+							Title:        rt.Title,
+							Status:       rt.Status,
+							Priority:     "normal",
+							WorkstreamID: instanceID, // OpenCode 实例 ID 即 workstream
+							Source:       "opencode",
+							CreatedAt:    time.Unix(now, 0),
+							UpdatedAt:    time.Unix(now, 0),
 						})
 					}
 				}
@@ -932,6 +942,16 @@ func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	claims := s.claimsFromContext(r)
+	if claims == nil {
+		log.Printf("WebSocket connection missing authenticated claims")
+		return
+	}
+	workspaceID := claims.WorkspaceID
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("WebSocket upgrade error: %v", err)
@@ -943,7 +963,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		clientID = r.RemoteAddr
 	}
 
-	client := ws.NewClient(s.wsHub, conn, clientID)
+	client := ws.NewClientWithIdentity(s.wsHub, conn, clientID, claims.UserID, workspaceID)
 	s.wsHub.Register(client)
 
 	// 启动读写协程
@@ -1006,45 +1026,38 @@ func defaultInstances() []model.PocketInstance {
 
 // buildOriginChecker creates a WebSocket origin check function.
 // If allowedOrigins is set, only those origins are allowed.
-// In dev mode (devAuth=true), localhost:* is always allowed.
-// Production must set POCKET_ALLOWED_ORIGINS explicitly.
+// In dev mode (devAuth=true), localhost and 127.0.0.1 are allowed.
 func buildOriginChecker(allowedOrigins string, devAuth bool) func(r *http.Request) bool {
-	// Parse allowed origins into a set
 	originSet := make(map[string]bool)
 	if allowedOrigins != "" {
-		for _, o := range strings.Split(allowedOrigins, ",") {
-			o = strings.TrimSpace(o)
-			if o != "" {
-				originSet[o] = true
+		for _, origin := range strings.Split(allowedOrigins, ",") {
+			origin = strings.TrimSpace(origin)
+			if origin != "" {
+				originSet[origin] = true
 			}
 		}
 	}
 
 	return func(r *http.Request) bool {
-		origin := r.Header.Get("Origin")
-
-		// Dev mode: allow localhost and 127.0.0.1
-		if devAuth {
-			if origin == "" {
-				return true
-			}
-			if strings.Contains(origin, "localhost") || strings.Contains(origin, "127.0.0.1") {
-				return true
-			}
-		}
-
-		// If no origin header (non-browser client), allow
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
 		if origin == "" {
 			return true
 		}
 
-		// If no allowed origins configured and not dev, allow all (backward compat)
-		if len(originSet) == 0 && !devAuth {
+		if originSet[origin] {
 			return true
 		}
 
-		// Check against allowed set
-		return originSet[origin]
+		if devAuth {
+			u, err := url.Parse(origin)
+			if err == nil && u.Path == "" && u.RawQuery == "" && u.Fragment == "" &&
+				(u.Scheme == "http" || u.Scheme == "https") &&
+				(u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1") {
+				return true
+			}
+		}
+
+		return false
 	}
 }
 
@@ -1069,13 +1082,13 @@ func splitPath(path string) []string {
 
 // VersionInfo 版本信息结构
 type VersionInfo struct {
-	Version      string   `json:"version"`
-	BuildNumber  int      `json:"buildNumber"`
-	DownloadURL  string   `json:"downloadUrl"`
-	FileSize     int64    `json:"fileSize"`
-	Changelog    []string `json:"changelog"`
-	ForceUpdate  bool     `json:"forceUpdate"`
-	ReleaseDate  string   `json:"releaseDate"`
+	Version     string   `json:"version"`
+	BuildNumber int      `json:"buildNumber"`
+	DownloadURL string   `json:"downloadUrl"`
+	FileSize    int64    `json:"fileSize"`
+	Changelog   []string `json:"changelog"`
+	ForceUpdate bool     `json:"forceUpdate"`
+	ReleaseDate string   `json:"releaseDate"`
 }
 
 // loadVersionConfig 从配置文件加载版本信息
@@ -1122,10 +1135,10 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type CheckUpdateRequest struct {
-		CurrentVersion  string `json:"currentVersion"`
-		CurrentBuild    int    `json:"currentBuild"`
-		Platform        string `json:"platform"`
-		DeviceModel     string `json:"deviceModel"`
+		CurrentVersion string `json:"currentVersion"`
+		CurrentBuild   int    `json:"currentBuild"`
+		Platform       string `json:"platform"`
+		DeviceModel    string `json:"deviceModel"`
 	}
 
 	type CheckUpdateResponse struct {

@@ -22,12 +22,12 @@ type InstanceConfig struct {
 	Environment string `json:"environment"`
 
 	// —— 迁移方案扩展（可选，发现/注册时填充）——
-	Hostname string          `json:"hostname,omitempty"` // 主机名
-	IP       string          `json:"ip,omitempty"`       // 主 IP
-	Port     int             `json:"port,omitempty"`     // 端口
-	Version  string          `json:"version,omitempty"`  // 版本
-	Machine  model.MachineInfo `json:"machine,omitempty"` // 机器信息
-	Origin   string          `json:"origin,omitempty"`   // discovered/registered/static/acc
+	Hostname string            `json:"hostname,omitempty"` // 主机名
+	IP       string            `json:"ip,omitempty"`       // 主 IP
+	Port     int               `json:"port,omitempty"`     // 端口
+	Version  string            `json:"version,omitempty"`  // 版本
+	Machine  model.MachineInfo `json:"machine,omitempty"`  // 机器信息
+	Origin   string            `json:"origin,omitempty"`   // discovered/registered/static/acc
 	// Capabilities 留空时由 Registry 用默认值兜底；探测成功后由 capabilities 探测覆盖
 	Capabilities []string `json:"capabilities,omitempty"`
 }
@@ -37,11 +37,11 @@ type Registry struct {
 	mu        sync.RWMutex
 	instances map[string]*model.PocketInstance
 	apiURLMap map[string]string // instanceID -> apiBaseURL
-	
+
 	// 新增：自动发现和心跳
-	discoveryEnabled bool
+	discoveryEnabled  bool
 	heartbeatInterval time.Duration
-	discoveryFunc    DiscoveryFunc
+	discoveryFunc     DiscoveryFunc
 }
 
 // DiscoveryFunc 实例发现函数类型
@@ -264,7 +264,7 @@ func (r *Registry) RegisterInstance(instance *model.PocketInstance) error {
 
 	r.instances[instance.ID] = instance
 	log.Printf("✅ 手动注册实例: %s (%s)", instance.DisplayName, instance.ID)
-	
+
 	return nil
 }
 

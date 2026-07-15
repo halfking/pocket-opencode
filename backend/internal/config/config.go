@@ -1,12 +1,15 @@
 package config
 
 import (
+	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 )
 
 type Config struct {
+	Environment              string
 	HTTPPort                 string
 	DBPath                   string // 保留兼容；Postgres 迁移后仅用于 data 目录定位
 	PostgresDSN              string // Phase 0: pocket 后端统一数据层
@@ -20,22 +23,25 @@ type Config struct {
 	UseAndroidShell          string
 	OpenCodeInstancesJSON    string
 	// 飞书事件回调（m.kxpms.cn/callback/feishu）
-	FeishuAppID       string
-	FeishuAppSecret   string
-	FeishuVerifyToken string // url_verification.token 匹配（可选）
+	FeishuAppID        string
+	FeishuAppSecret    string
+	FeishuVerifyToken  string // url_verification.token 匹配（可选）
 	FeishuVerifySecret string // X-Lark-Signature 验签密钥（留空 = dev 模式跳过）
-	FeishuEncryptKey  string // V1 加密事件解密用（V2 不加密，留空即可）
+	FeishuEncryptKey   string // V1 加密事件解密用（V2 不加密，留空即可）
 
 	// ---- Phase 0: 个人助理模块新增配置 ----
 	// AI/STT 后端
-	GroqAPIKey     string // POCKET_GROQ_API_KEY：云端 Whisper Large v3 Turbo 兜底
-	KxMemoryBaseURL string // POCKET_KXMEMORY_BASE_URL：kxmemory FastAPI（笔记/分类/SSOT/总结）
+	GroqAPIKey      string // POCKET_GROQ_API_KEY：云端 Whisper Large v3 Turbo 兜底
+	KxMemoryBaseURL            string // POCKET_KXMEMORY_BASE_URL：kxmemory FastAPI（笔记/分类/SSOT/总结）
+	KxMemoryNoteClassifyPath   string // POCKET_KXMEMORY_NOTE_CLASSIFY_PATH（默认 /v1/notes/classify）
+	KxMemoryEmailClassifyPath  string // POCKET_KXMEMORY_EMAIL_CLASSIFY_PATH（默认 /v1/emails/classify）
+	KxMemoryDailySummaryPath   string // POCKET_KXMEMORY_DAILY_SUMMARY_PATH（默认 /v1/emails/daily-summary）
 	// 邮箱模块
 	EmailMasterKey string // POCKET_EMAIL_MASTER_KEY：AES-GCM 加密 IMAP 凭证
 	// 任务系统整合（Phase 5）
-	MCPBaseURL string // POCKET_MCP_BASE_URL：ACC 系统 MCP 端点（mcp.kxpms.cn/acc/mcp）
-	MCPAPIKey  string // POCKET_MCP_API_KEY：ACC MCP Bearer token
-	MCPInsecureTLS bool // POCKET_MCP_INSECURE_TLS：跳过 TLS 验证（仅 dev/自签证书，生产必须 false）
+	MCPBaseURL     string // POCKET_MCP_BASE_URL：ACC 系统 MCP 端点（mcp.kxpms.cn/acc/mcp）
+	MCPAPIKey      string // POCKET_MCP_API_KEY：ACC MCP Bearer token
+	MCPInsecureTLS bool   // POCKET_MCP_INSECURE_TLS：跳过 TLS 验证（仅 dev/自签证书，生产必须 false）
 	// 认证（Phase 0）
 	JWTSecret   string // POCKET_JWT_SECRET：签发/校验 app JWT
 	DevAuth     bool   // POCKET_DEV_AUTH：允许 admin/admin 开发登录（生产必须不设或 false）
@@ -43,12 +49,13 @@ type Config struct {
 	DevAuthPass string // POCKET_AUTH_PASS：首用户 bootstrap 密码（缺省 admin；仅 POCKET_DEV_AUTH=true 时生效）
 
 	// 邮箱 OAuth + IMAP fetch
-	EmailGoogleClientID       string // POCKET_EMAIL_GOOGLE_CLIENT_ID
-	EmailGoogleClientSecret   string // POCKET_EMAIL_GOOGLE_CLIENT_SECRET
-	EmailMicrosoftClientID    string // POCKET_EMAIL_MICROSOFT_CLIENT_ID
+	EmailGoogleClientID        string // POCKET_EMAIL_GOOGLE_CLIENT_ID
+	EmailGoogleClientSecret    string // POCKET_EMAIL_GOOGLE_CLIENT_SECRET
+	EmailMicrosoftClientID     string // POCKET_EMAIL_MICROSOFT_CLIENT_ID
 	EmailMicrosoftClientSecret string // POCKET_EMAIL_MICROSOFT_CLIENT_SECRET
-	EmailOAuthRedirectURL     string // POCKET_EMAIL_OAUTH_REDIRECT_URL（默认 http://localhost:8088/callback/email/oauth）
-	EmailFetchEnabled         bool   // POCKET_EMAIL_FETCH_ENABLED（默认 true；CI/dev 可关闭）
+	EmailOAuthRedirectURL      string // POCKET_EMAIL_OAUTH_REDIRECT_URL（默认 http://localhost:8088/callback/email/oauth）
+	EmailFetchEnabled          bool   // POCKET_EMAIL_FETCH_ENABLED（默认 true；CI/dev 可关闭）
+	TimezoneOffsetSec          int    // POCKET_TIMEZONE_OFFSET_SEC：用户时区偏移秒（默认 28800 = UTC+8）
 
 	// ---- Phase C: 龙虾无状态 AI 网关 ----
 	// pocketd 作为无状态代理：只转发嵌入/LLM 请求，不存任何用户数据。
@@ -74,7 +81,13 @@ type Config struct {
 }
 
 func Load() Config {
+	environment := strings.ToLower(strings.TrimSpace(getEnv("POCKET_ENV", "development")))
+	if environment == "prod" {
+		environment = "production"
+	}
+
 	return Config{
+		Environment:              environment,
 		HTTPPort:                 getEnv("POCKET_HTTP_PORT", "8088"),
 		DBPath:                   getEnv("POCKET_DB_PATH", "./data/pocket.sqlite"),
 		NPSBaseURL:               getFirstEnv([]string{"POCKET_INSTANCE_DISCOVERY_BASE_URL", "POCKET_NPS_BASE_URL"}, ""),
@@ -92,13 +105,16 @@ func Load() Config {
 		FeishuVerifySecret:       getEnv("POCKET_FEISHU_VERIFY_SECRET", ""),
 		FeishuEncryptKey:         getEnv("POCKET_FEISHU_ENCRYPT_KEY", ""),
 		// Phase 0 个人助理模块
-		PostgresDSN:    getFirstEnv([]string{"POCKET_POSTGRES_DSN", "DATABASE_URL"}, ""),
-		GroqAPIKey:     getEnv("POCKET_GROQ_API_KEY", ""),
-		KxMemoryBaseURL: getEnv("POCKET_KXMEMORY_BASE_URL", ""),
-		EmailMasterKey: getEnv("POCKET_EMAIL_MASTER_KEY", ""),
-		MCPBaseURL:     getEnv("POCKET_MCP_BASE_URL", ""),
-		MCPAPIKey:      getEnv("POCKET_MCP_API_KEY", ""),
-		MCPInsecureTLS: getEnv("POCKET_MCP_INSECURE_TLS", "") == "true",
+		PostgresDSN:                getFirstEnv([]string{"POCKET_POSTGRES_DSN", "DATABASE_URL"}, ""),
+		GroqAPIKey:                 getEnv("POCKET_GROQ_API_KEY", ""),
+		KxMemoryBaseURL:            getEnv("POCKET_KXMEMORY_BASE_URL", ""),
+		KxMemoryNoteClassifyPath:   getEnv("POCKET_KXMEMORY_NOTE_CLASSIFY_PATH", "/v1/notes/classify"),
+		KxMemoryEmailClassifyPath:  getEnv("POCKET_KXMEMORY_EMAIL_CLASSIFY_PATH", "/v1/emails/classify"),
+		KxMemoryDailySummaryPath:   getEnv("POCKET_KXMEMORY_DAILY_SUMMARY_PATH", "/v1/emails/daily-summary"),
+		EmailMasterKey:             getEnv("POCKET_EMAIL_MASTER_KEY", ""),
+		MCPBaseURL:                 getEnv("POCKET_MCP_BASE_URL", ""),
+		MCPAPIKey:                  getEnv("POCKET_MCP_API_KEY", ""),
+		MCPInsecureTLS:             getEnv("POCKET_MCP_INSECURE_TLS", "") == "true",
 		JWTSecret:                  getEnv("POCKET_JWT_SECRET", "pocket-dev-insecure-secret"),
 		DevAuth:                    getEnv("POCKET_DEV_AUTH", "") == "true",
 		DevAuthUser:                getEnv("POCKET_AUTH_USER", ""),
@@ -109,6 +125,7 @@ func Load() Config {
 		EmailMicrosoftClientSecret: getEnv("POCKET_EMAIL_MICROSOFT_CLIENT_SECRET", ""),
 		EmailOAuthRedirectURL:      getEnv("POCKET_EMAIL_OAUTH_REDIRECT_URL", "http://localhost:8088/callback/email/oauth"),
 		EmailFetchEnabled:          getEnv("POCKET_EMAIL_FETCH_ENABLED", "true") == "true",
+		TimezoneOffsetSec:          getEnvInt("POCKET_TIMEZONE_OFFSET_SEC", 28800),
 		// Phase C 无状态 AI 网关
 		EmbedBaseURL: getEnv("POCKET_EMBED_BASE_URL", ""),
 		EmbedAPIKey:  getFirstEnv([]string{"POCKET_EMBED_API_KEY", "POCKET_OPENAI_API_KEY"}, ""),
@@ -128,11 +145,63 @@ func Load() Config {
 	}
 }
 
+func (c Config) Validate() error {
+	if c.Environment != "production" {
+		return nil
+	}
+
+	if len([]byte(c.JWTSecret)) < 32 || c.JWTSecret == "pocket-dev-insecure-secret" {
+		return fmt.Errorf("POCKET_JWT_SECRET must be at least 32 bytes and must not use the development default")
+	}
+	if c.DevAuth {
+		return fmt.Errorf("POCKET_DEV_AUTH must be false in production")
+	}
+	if c.MCPInsecureTLS {
+		return fmt.Errorf("POCKET_MCP_INSECURE_TLS must be false in production")
+	}
+	if strings.TrimSpace(c.PostgresDSN) == "" {
+		return fmt.Errorf("POCKET_POSTGRES_DSN must be configured in production")
+	}
+	if strings.TrimSpace(c.AllowedOrigins) == "" {
+		return fmt.Errorf("POCKET_ALLOWED_ORIGINS must be configured in production")
+	}
+	if err := validateOrigins(c.AllowedOrigins); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateOrigins(raw string) error {
+	for _, item := range strings.Split(raw, ",") {
+		origin := strings.TrimSpace(item)
+		if origin == "" {
+			continue
+		}
+		u, err := url.Parse(origin)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("invalid origin %q in POCKET_ALLOWED_ORIGINS", origin)
+		}
+	}
+	return nil
+}
+
 func getEnv(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
 	}
 	return fallback
+}
+
+func getEnvInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
 }
 
 func getFirstEnv(keys []string, fallback string) string {

@@ -38,6 +38,9 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("invalid configuration: %v", err)
+	}
 
 	// Ensure data directory exists (still used for version.json, APK cache, etc.)
 	dataDir := filepath.Dir(cfg.DBPath)
@@ -62,23 +65,31 @@ func main() {
 
 	// ---- Module stores (all share the pool) ----
 	var (
-		taskStore  *task.Store  // nil-safe: nil when pool is nil
+		taskStore  *task.Store // nil-safe: nil when pool is nil
 		notesStore *notes.Store
 		emailStore *email.Store
 		vaultStore *vault.Store
 	)
 	if pool != nil {
 		ts, err := task.NewStore(pool)
-		if err != nil { log.Fatalf("task store: %v", err) }
+		if err != nil {
+			log.Fatalf("task store: %v", err)
+		}
 		taskStore = ts
 		ns, err := notes.NewStore(pool)
-		if err != nil { log.Fatalf("notes store: %v", err) }
+		if err != nil {
+			log.Fatalf("notes store: %v", err)
+		}
 		notesStore = ns
 		es, err := email.NewStore(pool)
-		if err != nil { log.Fatalf("email store: %v", err) }
+		if err != nil {
+			log.Fatalf("email store: %v", err)
+		}
 		emailStore = es
 		vs, err := vault.NewStore(pool)
-		if err != nil { log.Fatalf("vault store: %v", err) }
+		if err != nil {
+			log.Fatalf("vault store: %v", err)
+		}
 		vaultStore = vs
 		log.Println("Module stores initialized (PG)")
 	}
@@ -88,7 +99,10 @@ func main() {
 		userStore *auth.UserStore
 		jwtSigner *auth.Signer
 	)
-if pool != nil {
+	if pool != nil {
+		if err := auth.EnsureSchema(context.Background(), pool); err != nil {
+			log.Fatalf("auth schema: %v", err)
+		}
 		us, err := auth.NewUserStore(pool)
 		if err != nil {
 			log.Fatalf("user store: %v", err)
@@ -124,6 +138,25 @@ if pool != nil {
 		log.Println("Dev mode: JWT signer initialized without user store (login disabled)")
 	}
 
+	// ---- 后端集成: kxmemory AI 编排服务（分类/SSOT/总结）----
+	// 提前到这里构造，因为 email scheduler 也要用它（DailySummary）。
+	var kxmem kxmemory.Client
+	if cfg.KxMemoryBaseURL != "" {
+		kxmem = kxmemory.NewClientWithPaths(cfg.KxMemoryBaseURL, cfg.JWTSecret, kxmemory.DefaultRetryConfig, kxmemory.Paths{
+			NoteClassify:  cfg.KxMemoryNoteClassifyPath,
+			EmailClassify: cfg.KxMemoryEmailClassifyPath,
+			DailySummary:  cfg.KxMemoryDailySummaryPath,
+		})
+		log.Printf("kxmemory AI orchestrator enabled: %s (paths: note=%s email=%s summary=%s)",
+			cfg.KxMemoryBaseURL,
+			cfg.KxMemoryNoteClassifyPath,
+			cfg.KxMemoryEmailClassifyPath,
+			cfg.KxMemoryDailySummaryPath,
+		)
+	} else {
+		log.Println("INFO: POCKET_KXMEMORY_BASE_URL not set; AI classification/SSOT disabled")
+	}
+
 	// ---- Email crypto + fetcher + scheduler ----
 	var (
 		emailCrypto    *email.Crypto
@@ -149,9 +182,16 @@ if pool != nil {
 				if emailStore != nil {
 					emailFetcher = email.NewFetcher(emailStore, emailCrypto)
 					emailScheduler = email.NewScheduler(emailStore, emailFetcher, cfg.EmailFetchEnabled)
+					// 注入 kxmemory 客户端（可选）：未配置时 DailySummary 自动降级到 log-only。
+					if kxmem != nil {
+						emailScheduler.SetKxmemory(kxmem)
+					}
+					// 时区：默认 UTC+8（中国大陆）；可由 POCKET_TIMEZONE_OFFSET_SEC 覆盖。
+					emailScheduler.SetTimezoneOffset(cfg.TimezoneOffsetSec)
 					emailScheduler.Start(context.Background())
 					defer emailScheduler.Stop()
-					log.Printf("Email scheduler started (fetch_enabled=%v)", cfg.EmailFetchEnabled)
+					log.Printf("Email scheduler started (fetch_enabled=%v, kxmemory=%v, tz_offset=%ds)",
+						cfg.EmailFetchEnabled, kxmem != nil, cfg.TimezoneOffsetSec)
 				}
 			}
 		}
@@ -203,13 +243,8 @@ if pool != nil {
 	}
 
 	// ---- 后端集成: kxmemory AI 编排服务（分类/SSOT/总结）----
-	var kxmem *kxmemory.Client
-	if cfg.KxMemoryBaseURL != "" {
-		kxmem = kxmemory.NewClient(cfg.KxMemoryBaseURL, cfg.JWTSecret)
-		log.Printf("kxmemory AI orchestrator enabled: %s", cfg.KxMemoryBaseURL)
-	} else {
-		log.Println("INFO: POCKET_KXMEMORY_BASE_URL not set; AI classification/SSOT disabled")
-	}
+	// 注意：kxmem 已在 email scheduler block 之前构造（被 DailySummary 使用）。
+	// 这里只做防御性检查：如果用户跳过了前面 block（比如未来重构），避免重复构造。
 
 	// ---- Adapters (unchanged) ----
 	var npsAdapter adapter.NPSAdapter
@@ -348,7 +383,7 @@ if pool != nil {
 	ocMgr := opencode.NewManager(reg, opencodeAdapter, noopHistoryStore{})
 	eventMgr := opencode.NewEventStreamManager(reg, opencodeAdapter)
 	permMgr := opencode.NewPermissionManager(reg, opencodeAdapter, opencode.PermissionManagerOptions{PollInterval: 3 * time.Second}, eventMgr) // Phase 1.2: 传入 eventStream
-	quesMgr := opencode.NewQuestionManager(reg, opencodeAdapter, opencode.QuestionManagerOptions{PollInterval: 3 * time.Second}, eventMgr) // Phase 1.3: 传入 eventStream
+	quesMgr := opencode.NewQuestionManager(reg, opencodeAdapter, opencode.QuestionManagerOptions{PollInterval: 3 * time.Second}, eventMgr)     // Phase 1.3: 传入 eventStream
 
 	// 启动后台循环
 	mgrCtx, mgrCancel := context.WithCancel(context.Background())

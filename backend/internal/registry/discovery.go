@@ -25,14 +25,19 @@ import (
 // 3000/8080 是 opencode serve / opencode web 可能的显式配置端口。
 var DefaultPorts = []int{4096, 14096, 14097, 14098, 14099, 14100, 3000, 8080}
 
+// DefaultAPIPort is the canonical OpenCode HTTP API port (4096). Used by
+// handler callers (e.g. dynamic OpenCode instance bootstrap) when no port is
+// provided by the user.
+const DefaultAPIPort = 4096
+
 // ZCodePorts 是 ZCode 桌面版/守护进程常见的监听端口（与 OpenCode 共存）。
 var ZCodePorts = []int{4096, 3000, 8080, 9000}
 
 // discoveryOptions 控制扫描行为。零值即退化到原有的"本机+网关"行为，
 // 保证向后兼容；只有显式开启 fullSubnet 才会扫完整 /24（开销较大）。
 type discoveryOptions struct {
-	fullSubnet bool   // 是否扫描每个接口的完整 /24
-	ports      []int  // 待探测端口列表（空=DefaultPorts）
+	fullSubnet bool  // 是否扫描每个接口的完整 /24
+	ports      []int // 待探测端口列表（空=DefaultPorts）
 	extraHosts []string
 }
 
@@ -178,33 +183,40 @@ func probeCandidates(ctx context.Context, candidates []hostPort) ([]InstanceConf
 	return configs, nil
 }
 
-// probeOne checks whether host:port is an OpenCode instance by calling
-// GET /api/health and parsing the response. Returns the instance config on
-// success. 探测时尽量从 health 响应中提取 version/capabilities/machine 等自描述字段，
+// healthProbePaths is the ordered list of endpoints probeOne will try when
+// detecting OpenCode instances. The first non-error response is used. The
+// canonical OpenCode endpoint is /global/health, but legacy /api/health and
+// simple /healthz are kept for older forks / proxies.
+var healthProbePaths = []string{"/global/health", "/api/health", "/healthz"}
+
+// probeOne checks whether host:port is an OpenCode instance by calling the
+// health endpoint (with fallbacks) and parsing the response. Returns the
+// instance config on success. 探测时尽量从 health 响应中提取 version/capabilities/machine 等自描述字段，
 // 缺失字段保持空值（由 Registry 兜底）。
 func probeOne(ctx context.Context, client *http.Client, host string, port int) (InstanceConfig, bool) {
-	// OpenCode 真实健康端点是 GET /global/health（无 /api 前缀），返回 {"healthy":true,"version":"..."}。
-	// 历史代码用 /api/health 探测，导致扫不到真实实例——此处修正。
-	url := fmt.Sprintf("http://%s:%d/global/health", host, port)
+	for _, path := range healthProbePaths {
+		cfg, ok := probeHealth(ctx, client, host, port, path)
+		if ok {
+			return cfg, true
+		}
+	}
+	return InstanceConfig{}, false
+}
+
+func probeHealth(ctx context.Context, client *http.Client, host string, port int, path string) (InstanceConfig, bool) {
+	url := fmt.Sprintf("http://%s:%d%s", host, port, path)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return InstanceConfig{}, false
 	}
-
 	resp, err := client.Do(req)
 	if err != nil {
 		return InstanceConfig{}, false
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return InstanceConfig{}, false
 	}
-
-	// 兼容多种 health 响应格式：
-	//   {"healthy": true, "version": "1.14.33"}              ← OpenCode 真实格式
-	//   {"healthy": true, "status": "ok", "version": "..."}   ← 兼容扩展
-	// 额外接受 product（zcode/opencode）、machine 自描述字段（边端 manager 可挂同一端口）。
 	var result struct {
 		Healthy      bool              `json:"healthy"`
 		Status       string            `json:"status"`
@@ -216,29 +228,24 @@ func probeOne(ctx context.Context, client *http.Client, host string, port int) (
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return InstanceConfig{}, false
 	}
-
 	if !result.Healthy && result.Status != "ok" {
 		return InstanceConfig{}, false
 	}
 
-	// Build a stable ID from host:port
 	displayHost := host
 	if displayHost == "127.0.0.1" {
 		displayHost = "local"
 	}
 	id := fmt.Sprintf("discovered-%s-%d", displayHost, port)
 
-	// 产品名优先：zcode/opencode，否则用 OpenCode 占位
 	productLabel := "OpenCode"
 	if result.Product != "" {
 		productLabel = result.Product
 	}
-
 	displayName := fmt.Sprintf("%s (%s:%d)", productLabel, host, port)
 	if result.Version != "" {
 		displayName = fmt.Sprintf("%s %s (%s:%d)", productLabel, result.Version, host, port)
 	}
-
 	return InstanceConfig{
 		ID:           id,
 		DisplayName:  displayName,

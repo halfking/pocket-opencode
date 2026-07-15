@@ -313,9 +313,105 @@ func (s *Server) handleNoteClassify(w http.ResponseWriter, r *http.Request, id s
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleEmailOAuthCallback — GET /callback/email/oauth
+//
+// 该路由由 OAuth provider（Google/Outlook）调用，不走 requireAuth；state
+// 已经在 PendingOAuth 表里携带 user 信息。
+func (s *Server) handleEmailOAuthCallback() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.emailStore == nil || s.emailCrypto == nil || s.emailPending == nil {
+			writeError(w, http.StatusServiceUnavailable, "email oauth not configured")
+			return
+		}
+		email.HandleOAuthCallback(email.OAuthCallbackConfig{
+			Store:               s.emailStore,
+			Crypto:              s.emailCrypto,
+			Pending:             s.emailPending,
+			TargetedBroadcaster: s.wsHub,
+		}).ServeHTTP(w, r)
+	}
+}
+
 // =====================================================================
 // 邮箱助手
 // =====================================================================
+
+// startEmailOAuth — POST /api/email/oauth/start
+//
+// 请求体：
+//
+//	{
+//	  "providerId":  "google" | "outlook",
+//	  "emailAddress": "user@example.com",
+//	  "clientId":     "...",   // Google/Outlook developer console
+//	  "clientSecret": "...",
+//	  "redirectUri":  "http://localhost:8088/callback/email/oauth"
+//	}
+//
+// 行为：
+//  1. 校验 provider + 必填字段；
+//  2. 生成 PKCE 对 + 32B state；
+//  3. 写入 PendingOAuth 表（10 分钟过期）；
+//  4. 返回 authorization URL，前端用浏览器/ASWebAuthenticationSession 打开。
+//
+// 调用方需要在 callback 完成后，再次 POST /api/email/oauth/complete（保留
+// 给 Phase 2 使用）或者在 IMAP fetcher 检测到 oauth2 access token 自动
+// 改写 password credential；本阶段我们只交付 start + callback。
+func (s *Server) startEmailOAuth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if s.emailPending == nil {
+		writeError(w, http.StatusServiceUnavailable, "email oauth pending store not configured")
+		return
+	}
+	if s.emailCrypto == nil {
+		writeError(w, http.StatusServiceUnavailable, "email crypto not configured (set POCKET_EMAIL_MASTER_KEY)")
+		return
+	}
+	var body struct {
+		ProviderID   string `json:"providerId"`
+		EmailAddress string `json:"emailAddress"`
+		ClientID     string `json:"clientId"`
+		ClientSecret string `json:"clientSecret"`
+		RedirectURI  string `json:"redirectUri"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.ProviderID == "" || body.EmailAddress == "" || body.ClientID == "" || body.RedirectURI == "" {
+		writeError(w, http.StatusBadRequest, "providerId, emailAddress, clientId, redirectUri required")
+		return
+	}
+	provider, ok := email.LookupProviderByID(body.ProviderID)
+	if !ok || !provider.SupportsOAuth2 {
+		writeError(w, http.StatusBadRequest, "provider does not support OAuth2")
+		return
+	}
+	pkce, err := email.GeneratePKCE()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "pkce: "+err.Error())
+		return
+	}
+	state, err := email.RandomState()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "state: "+err.Error())
+		return
+	}
+	s.emailPending.Put(state, email.NewPendingEntry("", s.userIDFromRequest(r), body.ProviderID, body.EmailAddress,
+		pkce.Verifier, body.ClientID, body.ClientSecret, body.RedirectURI))
+	authURL, err := email.BuildAuthURL(provider, body.RedirectURI, state, pkce)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "build auth url: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authUrl": authURL,
+		"state":   state,
+	})
+}
 
 func (s *Server) handleEmailAccounts(w http.ResponseWriter, r *http.Request) {
 	if s.emailStore == nil {
