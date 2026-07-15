@@ -9,6 +9,7 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-sasl"
 )
 
 // Fetcher 通过 IMAP 拉取邮件。
@@ -20,6 +21,31 @@ type Fetcher struct {
 // NewFetcher 构造 Fetcher。
 func NewFetcher(store *Store, crypto *Crypto) *Fetcher {
 	return &Fetcher{store: store, crypto: crypto}
+}
+
+// login 根据账户 authType 选择合适的 IMAP 鉴权机制。
+//
+//   - authType == "oauth2"：先尝试 OAUTHBEARER（RFC 7628），若 server 不
+//     公告该 capability，回退 XOAUTH2（RFC 4959）。OAuth token 由主链路
+//     OAuthCallback 持久化在 email_oauth_tokens 表；如果该账户没有 OAuth
+//     token 而 credential_encrypted 是 IMAP password，则允许兼容旧实现。
+//   - authType == "password"（默认）：使用 go-imap 内置 Login（PLAIN SASL）。
+func (f *Fetcher) login(client *imapclient.Client, acc Account, cred string) error {
+	switch acc.AuthType {
+	case "oauth2":
+		if client.Caps().Has(imap.AuthCap(sasl.OAuthBearer)) {
+			saslClient := NewOAuthBearerClient(acc.EmailAddress, cred, acc.IMAPHost, acc.IMAPPort)
+			if err := client.Authenticate(saslClient); err == nil {
+				return nil
+			} else {
+				log.Printf("[email/fetcher] OAUTHBEARER for %s failed: %v; falling back to XOAUTH2", acc.EmailAddress, err)
+			}
+		}
+		saslClient := NewXOAuth2Client(acc.EmailAddress, cred)
+		return client.Authenticate(saslClient)
+	default:
+		return client.Login(acc.EmailAddress, cred).Wait()
+	}
 }
 
 // Sync 同步一个账户的新邮件。返回 (新增邮件数, error)。
@@ -49,7 +75,7 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 	}
 	defer client.Close()
 
-	if err := client.Login(acc.EmailAddress, cred).Wait(); err != nil {
+	if err := f.login(client, *acc, cred); err != nil {
 		return 0, fmt.Errorf("login %s: %w", acc.EmailAddress, err)
 	}
 

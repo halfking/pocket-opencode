@@ -114,6 +114,7 @@ func (s *Store) migrate() error {
 			scope TEXT,
 			updated_at BIGINT NOT NULL
 		);
+		CREATE INDEX IF NOT EXISTS idx_email_oauth_tokens_expires ON email_oauth_tokens(expires_at);
 
 	CREATE INDEX IF NOT EXISTS idx_email_accounts_ws ON email_accounts(workspace_id);
 	CREATE INDEX IF NOT EXISTS idx_emails_ws ON emails(workspace_id);
