@@ -48,6 +48,21 @@ func (f *Fetcher) login(client *imapclient.Client, acc Account, cred string) err
 	}
 }
 
+// RefreshTokenForAccount is a thin wrapper around RefreshAccessToken so that
+// the Fetcher (and tests) can run an on-demand refresh outside of the
+// scheduler loop. Returns the plaintext new access token.
+func (f *Fetcher) RefreshTokenForAccount(
+	ctx context.Context,
+	refresher OAuthRefresher,
+	tokenURL, clientID, clientSecret string,
+	accountID string,
+) (string, error) {
+	if f == nil || f.store == nil || f.crypto == nil {
+		return "", fmt.Errorf("email: fetcher not configured")
+	}
+	return RefreshAccessToken(ctx, f.crypto, f.store, refresher, tokenURL, clientID, clientSecret, accountID)
+}
+
 // Sync 同步一个账户的新邮件。返回 (新增邮件数, error)。
 func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 	if f.store == nil {

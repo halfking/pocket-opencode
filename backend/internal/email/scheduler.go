@@ -2,8 +2,10 @@ package email
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -14,19 +16,51 @@ import (
 type Scheduler struct {
 	store    *Store
 	fetcher  *Fetcher
+	crypto   *Crypto
 	kxmem    kxmemory.Client // optional；nil 表示禁用 DailySummary AI 生成
+	refresher OAuthRefresher // optional；nil 跳过自动 refresh
+	providers map[string]OAuthProviderConfig // providerID -> credentials/tokenURL
 	stop     chan struct{}
 	enabled  bool
-	tzOffset int // 用户时区偏移（秒），用于按"日"聚合邮件
+	// tzOffsetSec 用户时区偏移（秒），用于按"日"聚合邮件。
+	// 用 atomic.Int64 防止 cmd/pocketd 在 Start 之后修改时与 goroutine 数据竞争。
+	tzOffsetSec atomic.Int64
 
 	lastTick atomic.Int64
 	nextTick atomic.Int64
 }
 
+// OAuthProviderConfig describes how to refresh tokens for a given provider.
+// ProviderID matches provider.ID from providers.go (e.g. "gmail", "outlook").
+type OAuthProviderConfig struct {
+	ProviderID  string
+	TokenURL     string
+	ClientID     string
+	ClientSecret string
+}
+
+// 默认时区：UTC+8（中国大陆）。
+// 历史注释声称默认 28800 但实际代码默认 0，导致 DailySummary 的"日"
+// 与用户预期不一致。修复：默认即 UTC+8，cmd/pocketd 可以通过
+// SetTimezoneOffset 覆盖（已通过 POCKET_TIMEZONE_OFFSET_SEC 配置）。
+const defaultTimezoneOffsetSec = 28800
+
 // NewScheduler 构造 Scheduler。kxmem 传 nil 时 DailySummary 跳过 AI 调用
 // （保留原 log-only 行为），方便在 kxmemory 未部署的环境下继续运行。
+//
+// 默认时区为 UTC+8（中国大陆）；可通过 SetTimezoneOffset 或
+// POCKET_TIMEZONE_OFFSET_SEC 环境变量覆盖。
 func NewScheduler(store *Store, fetcher *Fetcher, enabled bool) *Scheduler {
-	return &Scheduler{store: store, fetcher: fetcher, stop: make(chan struct{}), enabled: enabled, tzOffset: 0}
+	s := &Scheduler{
+		store:     store,
+		fetcher:   fetcher,
+		crypto:    fetcher.crypto,
+		providers: make(map[string]OAuthProviderConfig),
+		stop:      make(chan struct{}),
+		enabled:   enabled,
+	}
+	s.tzOffsetSec.Store(int64(defaultTimezoneOffsetSec))
+	return s
 }
 
 // SetKxmemory 注入 kxmemory 客户端；nil = 禁用 DailySummary AI。
@@ -34,10 +68,27 @@ func (s *Scheduler) SetKxmemory(c kxmemory.Client) {
 	s.kxmem = c
 }
 
+// SetOAuthRefresher 注入 OAuth refresh 客户端及 provider credentials。传
+// nil refresher 会禁用自动 refresh（OAuth 用户需要重新走 /start 才能登录）。
+func (s *Scheduler) SetOAuthRefresher(r OAuthRefresher, providers []OAuthProviderConfig) {
+	s.refresher = r
+	for _, p := range providers {
+		if p.ProviderID == "" {
+			continue
+		}
+		s.providers[p.ProviderID] = p
+	}
+}
+
 // SetTimezoneOffset 设置用户时区偏移（秒），用于 DailySummary 的"日"边界。
 // 中国大陆默认 28800（UTC+8）。
 func (s *Scheduler) SetTimezoneOffset(sec int) {
-	s.tzOffset = sec
+	s.tzOffsetSec.Store(int64(sec))
+}
+
+// timezoneOffset 返回当前时区偏移（秒）。atomic load 安全。
+func (s *Scheduler) timezoneOffset() int {
+	return int(s.tzOffsetSec.Load())
 }
 
 // Start 启动调度循环。
@@ -48,6 +99,9 @@ func (s *Scheduler) Start(ctx context.Context) {
 	}
 	go s.pollLoop(ctx)
 	go s.dailySummaryLoop(ctx)
+	if s.refresher != nil {
+		go s.refreshLoop(ctx)
+	}
 }
 
 // Stop 停止调度器。
@@ -84,6 +138,83 @@ func (s *Scheduler) pollLoop(ctx context.Context) {
 			s.tick(ctx)
 		}
 	}
+}
+
+// refreshLoop 每 5 分钟遍历即将过期 / 已过期的 OAuth tokens，调用
+// provider token endpoint 刷新并落库；30s 单次超时，避免阻塞主调度。
+// leewaySec=300（5 min）保证 access token 在 IMAP 登录前总是有效。
+func (s *Scheduler) refreshLoop(ctx context.Context) {
+	const leewaySec = int64(300)
+	const tickInterval = 5 * time.Minute
+	const opTimeout = 30 * time.Second
+	ticker := time.NewTicker(tickInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stop:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.refreshOnce(ctx, leewaySec, opTimeout)
+		}
+	}
+}
+
+func (s *Scheduler) refreshOnce(ctx context.Context, leewaySec int64, opTimeout time.Duration) {
+	if s.refresher == nil || s.crypto == nil {
+		return
+	}
+	callCtx, cancel := context.WithTimeout(ctx, opTimeout)
+	defer cancel()
+
+	tokens, err := s.store.ListExpiredOAuthTokens(callCtx, leewaySec)
+	if err != nil {
+		log.Printf("[email/scheduler] list expired oauth tokens: %v", err)
+		return
+	}
+	if len(tokens) == 0 {
+		return
+	}
+	for _, row := range tokens {
+		acc, _, err := s.store.GetAccountByID(callCtx, row.AccountID)
+		if err != nil || acc == nil {
+			continue
+		}
+		cfg, ok := s.providers[acc.AuthType]
+		// authType=="oauth2" 不携带 provider 区分；改用 emailAddress domain
+		// 反查 providers via acc.EmailAddress（简单粗暴但够用）。
+		if !ok || cfg.ProviderID == "" {
+			cfg = s.providers[guessProviderFromEmail(acc.EmailAddress)]
+		}
+		if cfg.TokenURL == "" || cfg.ClientID == "" || cfg.ClientSecret == "" {
+			log.Printf("[email/scheduler] skip refresh for %s: provider not configured (set POCKET_EMAIL_{GOOGLE,MICROSOFT}_CLIENT_ID)", acc.EmailAddress)
+			continue
+		}
+		if _, err := RefreshAccessToken(callCtx, s.crypto, s.store, s.refresher, cfg.TokenURL, cfg.ClientID, cfg.ClientSecret, row.AccountID); err != nil {
+			log.Printf("[email/scheduler] refresh %s failed: %v", acc.EmailAddress, err)
+			continue
+		}
+		log.Printf("[email/scheduler] refreshed oauth token for %s (account %s)", acc.EmailAddress, acc.ID)
+	}
+}
+
+// guessProviderFromEmail 根据邮箱域名反推 OAuth provider 名称，用于
+// refreshLoop 无法直接拿到 providerID 的情况。简单规则：gmail.com / googlemail.com
+// → google；outlook/hotmail/live → outlook；其余返回空字符串由调用方决定。
+func guessProviderFromEmail(emailAddr string) string {
+	at := strings.LastIndex(emailAddr, "@")
+	if at < 0 {
+		return ""
+	}
+	domain := strings.ToLower(emailAddr[at+1:])
+	switch domain {
+	case "gmail.com", "googlemail.com":
+		return "google"
+	case "outlook.com", "hotmail.com", "live.com", "msn.com":
+		return "outlook"
+	}
+	return ""
 }
 
 func (s *Scheduler) tick(ctx context.Context) {
@@ -181,7 +312,7 @@ func (s *Scheduler) runDailySummary(ctx context.Context) {
 
 // summarizeUser 给单个用户生成当天的 AI 邮件总结并持久化。
 func (s *Scheduler) summarizeUser(ctx context.Context, userID, date string) error {
-	emails, err := s.store.ListEmailsByDay(ctx, userID, date, s.tzOffset)
+	emails, err := s.store.ListEmailsByDay(ctx, userID, date, s.timezoneOffset())
 	if err != nil {
 		return fmt.Errorf("list emails by day: %w", err)
 	}
@@ -213,7 +344,9 @@ func (s *Scheduler) summarizeUser(ctx context.Context, userID, date string) erro
 		return fmt.Errorf("kxmemory DailySummary: %w", err)
 	}
 
-	// 统计重要邮件数（来自 kxmemory 已有分类：importance=high）
+	// 统计重要邮件数（来自本地缓存的 importance 字段）。
+	// 注意：fresh-fetch 邮件可能还未异步分类（Importance==""），此时
+	// ImportantCount 会偏低 — 这是已知限制，等异步分类链路稳定后修复。
 	importantCount := 0
 	for _, e := range emails {
 		if e.Importance == "high" {
@@ -221,15 +354,25 @@ func (s *Scheduler) summarizeUser(ctx context.Context, userID, date string) erro
 		}
 	}
 
-	// 把 kxmemory 返回的 todos 序列化为 JSON 字符串
+	// A4: actionItems 用 json.Marshal 序列化（之前 fmt.Sprintf("%v", resp.Todos)
+	// 会产生 Go-syntax 输出如 "[kxmemory.ExtractedTodo{...}]"，不可解析）。
 	actionItemsJSON := ""
 	if len(resp.Todos) > 0 {
-		// 不展开 JSON 序列化逻辑（简单起见用 %v）
-		actionItemsJSON = fmt.Sprintf("%v", resp.Todos)
+		b, _ := json.Marshal(resp.Todos)
+		actionItemsJSON = string(b)
+	}
+
+	// A6: 复用当天已有 summary 的 ID，避免 ON CONFLICT 触发 update 后旧
+	// row 变孤儿（primary key 变更）。
+	summaryID := ""
+	if existing, _ := s.store.GetSummaryByDate(ctx, userID, date); existing != nil {
+		summaryID = existing.ID
+	} else {
+		summaryID = randomID("summary")
 	}
 
 	sum := &DailySummary{
-		ID:             randomID("summary"),
+		ID:             summaryID,
 		UserID:         userID,
 		SummaryDate:    date,
 		TotalCount:     len(emails),

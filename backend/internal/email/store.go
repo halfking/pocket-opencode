@@ -114,7 +114,10 @@ func (s *Store) migrate() error {
 			scope TEXT,
 			updated_at BIGINT NOT NULL
 		);
+		ALTER TABLE email_oauth_tokens ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
+		ALTER TABLE email_oauth_tokens ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';
 		CREATE INDEX IF NOT EXISTS idx_email_oauth_tokens_expires ON email_oauth_tokens(expires_at);
+		CREATE INDEX IF NOT EXISTS idx_email_oauth_tokens_ws ON email_oauth_tokens(workspace_id);
 
 	CREATE INDEX IF NOT EXISTS idx_email_accounts_ws ON email_accounts(workspace_id);
 	CREATE INDEX IF NOT EXISTS idx_emails_ws ON emails(workspace_id);
@@ -643,6 +646,39 @@ func (s *Store) GetOAuthToken(ctx context.Context, accountID string) (refreshEnc
 		FROM email_oauth_tokens WHERE account_id = $1
 	`, accountID).Scan(&refreshEnc, &accessEnc, &expiresAt, &scope)
 	return
+}
+
+// ListExpiredOAuthTokens returns tokens that have already expired (or are
+// within `leewaySec` of expiry) so the scheduler can refresh them in batch
+// before the next IMAP login attempt.
+func (s *Store) ListExpiredOAuthTokens(ctx context.Context, leewaySec int64) ([]OAuthTokenRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT account_id, refresh_token_encrypted, COALESCE(access_token_encrypted, ''), expires_at
+		FROM email_oauth_tokens
+		WHERE expires_at > 0 AND expires_at <= (EXTRACT(EPOCH FROM NOW())::BIGINT + $1)
+	`, leewaySec)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]OAuthTokenRow, 0)
+	for rows.Next() {
+		var r OAuthTokenRow
+		if err := rows.Scan(&r.AccountID, &r.RefreshEnc, &r.AccessEnc, &r.ExpiresAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// OAuthTokenRow is the lightweight projection used by the scheduler refresh
+// worker. Decryption happens off the hot path (in scheduler.refresh loop).
+type OAuthTokenRow struct {
+	AccountID  string
+	RefreshEnc string
+	AccessEnc  string
+	ExpiresAt  int64
 }
 
 // ListAccountsScoped returns only accounts owned by the user in the workspace.
