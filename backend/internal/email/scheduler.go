@@ -3,6 +3,7 @@ package email
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -12,6 +13,23 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 )
 
+// OAuthBroadcaster is the minimal WS surface the scheduler needs to push
+// revocation events. The websocket.Hub implements it; tests can swap a fake.
+type OAuthBroadcaster interface {
+	BroadcastToUser(userID, msgType string, payload interface{})
+}
+
+// OAuthRevokedEvent 包含前端展示给用户所需的最小信息。
+type OAuthRevokedEvent struct {
+	AccountID    string `json:"accountId"`
+	EmailAddress string `json:"emailAddress"`
+	WorkspaceID  string `json:"workspaceId,omitempty"`
+	UserID       string `json:"userId,omitempty"`
+	Reason       string `json:"reason"`           // provider error code (invalid_grant / ...)
+	ProviderID   string `json:"providerId"`        // google / outlook
+	At           int64  `json:"at"`               // unix seconds
+}
+
 // Scheduler 定期触发 IMAP 同步和每日邮件总结。
 type Scheduler struct {
 	store    *Store
@@ -20,6 +38,7 @@ type Scheduler struct {
 	kxmem    kxmemory.Client // optional；nil 表示禁用 DailySummary AI 生成
 	refresher OAuthRefresher // optional；nil 跳过自动 refresh
 	providers map[string]OAuthProviderConfig // providerID -> credentials/tokenURL
+	broadcaster OAuthBroadcaster // optional；nil 跳过 WS 推送（保留 log）
 	stop     chan struct{}
 	enabled  bool
 	// tzOffsetSec 用户时区偏移（秒），用于按"日"聚合邮件。
@@ -78,6 +97,12 @@ func (s *Scheduler) SetOAuthRefresher(r OAuthRefresher, providers []OAuthProvide
 		}
 		s.providers[p.ProviderID] = p
 	}
+}
+
+// SetBroadcaster 注入 WS hub（websocket.Hub 满足 OAuthBroadcaster 接口）。
+// nil 时 refresh 失败只写日志，不广播 revocation 事件。
+func (s *Scheduler) SetBroadcaster(b OAuthBroadcaster) {
+	s.broadcaster = b
 }
 
 // SetTimezoneOffset 设置用户时区偏移（秒），用于 DailySummary 的"日"边界。
@@ -181,22 +206,65 @@ func (s *Scheduler) refreshOnce(ctx context.Context, leewaySec int64, opTimeout 
 		if err != nil || acc == nil {
 			continue
 		}
-		cfg, ok := s.providers[acc.AuthType]
+		providerID := acc.AuthType
+		cfg, ok := s.providers[providerID]
 		// authType=="oauth2" 不携带 provider 区分；改用 emailAddress domain
 		// 反查 providers via acc.EmailAddress（简单粗暴但够用）。
 		if !ok || cfg.ProviderID == "" {
-			cfg = s.providers[guessProviderFromEmail(acc.EmailAddress)]
+			providerID = guessProviderFromEmail(acc.EmailAddress)
+			cfg = s.providers[providerID]
 		}
 		if cfg.TokenURL == "" || cfg.ClientID == "" || cfg.ClientSecret == "" {
 			log.Printf("[email/scheduler] skip refresh for %s: provider not configured (set POCKET_EMAIL_{GOOGLE,MICROSOFT}_CLIENT_ID)", acc.EmailAddress)
 			continue
 		}
-		if _, err := RefreshAccessToken(callCtx, s.crypto, s.store, s.refresher, cfg.TokenURL, cfg.ClientID, cfg.ClientSecret, row.AccountID); err != nil {
-			log.Printf("[email/scheduler] refresh %s failed: %v", acc.EmailAddress, err)
+		_, err = RefreshAccessToken(callCtx, s.crypto, s.store, s.refresher, cfg.TokenURL, cfg.ClientID, cfg.ClientSecret, row.AccountID)
+		if err == nil {
+			log.Printf("[email/scheduler] refreshed oauth token for %s (account %s)", acc.EmailAddress, acc.ID)
 			continue
 		}
-		log.Printf("[email/scheduler] refreshed oauth token for %s (account %s)", acc.EmailAddress, acc.ID)
+		if !IsPermanentRefreshError(err) {
+			log.Printf("[email/scheduler] transient refresh failure for %s: %v (will retry)", acc.EmailAddress, err)
+			continue
+		}
+		log.Printf("[email/scheduler] permanent refresh failure for %s: %v — revoking", acc.EmailAddress, err)
+		if revokeErr := s.store.RevokeOAuthToken(callCtx, row.AccountID); revokeErr != nil {
+			log.Printf("[email/scheduler] revoke oauth token for %s: %v", acc.EmailAddress, revokeErr)
+			continue
+		}
+		s.broadcastRevoked(acc, providerID, err)
 	}
+}
+
+// broadcastRevoked 在 token 永久失效后通过 WS 通知用户重新连接授权。
+// broadcaster 为 nil 时仅日志，确保 scheduler 在不同部署形态下都不 panic。
+func (s *Scheduler) broadcastRevoked(acc *Account, providerID string, refreshErr error) {
+	if s.broadcaster == nil {
+		log.Printf("[email/scheduler] oauth revoked for %s (account %s) but no broadcaster configured", acc.EmailAddress, acc.ID)
+		return
+	}
+	reason := ""
+	var re *RefreshError
+	if errors.As(refreshErr, &re) {
+		reason = re.Code
+	}
+	if reason == "" {
+		reason = refreshErr.Error()
+	}
+	if providerID == "" {
+		providerID = acc.AuthType
+	}
+	event := OAuthRevokedEvent{
+		AccountID:    acc.ID,
+		EmailAddress: acc.EmailAddress,
+		WorkspaceID:  acc.WorkspaceID,
+		UserID:       acc.UserID,
+		Reason:       reason,
+		ProviderID:   providerID,
+		At:           time.Now().Unix(),
+	}
+	s.broadcaster.BroadcastToUser(acc.UserID, "email.oauth.revoked", event)
+	log.Printf("[email/scheduler] broadcast email.oauth.revoked user=%s account=%s reason=%s", acc.UserID, acc.ID, reason)
 }
 
 // guessProviderFromEmail 根据邮箱域名反推 OAuth provider 名称，用于

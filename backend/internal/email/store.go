@@ -639,6 +639,28 @@ func (s *Store) UpsertOAuthToken(ctx context.Context, accountID, refreshEnc, acc
 	return err
 }
 
+// RevokeOAuthToken marks the account as password-backed and disabled so the
+// scheduler stops trying to login with the dead token. It also clears the
+// token row (best-effort: leaving it would not hurt, but clean rows make
+// debugging easier).
+//
+// Called only after we've already validated that the failure is permanent
+// (invalid_grant / revoked consent).
+func (s *Store) RevokeOAuthToken(ctx context.Context, accountID string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM email_oauth_tokens WHERE account_id=$1`, accountID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE email_accounts SET auth_type='password', enabled=FALSE WHERE id=$1`, accountID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // GetOAuthToken 返回加密的 OAuth token。
 func (s *Store) GetOAuthToken(ctx context.Context, accountID string) (refreshEnc, accessEnc string, expiresAt int64, scope string, err error) {
 	err = s.pool.QueryRow(ctx, `

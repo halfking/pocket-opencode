@@ -320,6 +320,13 @@ func main() {
 		emailScheduler, emailFetcher,
 		dataDir)
 
+	// 把 server 的 WS hub 反向注入 email scheduler，让 OAuth revocation
+	// 事件能精确投递给当前用户（email.oauth.revoked）。ws.Hub 已经实现
+	// OAuthBroadcaster 接口。
+	if emailScheduler != nil {
+		emailScheduler.SetBroadcaster(srv.WSHub())
+	}
+
 	// ---- LLM Gateway 配置持久化（PG 可用时从数据库加载）----
 	if pool != nil {
 		lgStore, err := server.NewLLMGatewayStore(pool)
