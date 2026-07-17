@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/agent"
 	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
@@ -177,42 +178,42 @@ func main() {
 				log.Printf("WARN: email crypto init: %v — fetcher disabled", err)
 			} else {
 				emailCrypto = ec
-					emailPending = email.NewPendingOAuth()
-					go emailPending.GCLoop(context.Background())
-					if emailStore != nil {
-						emailFetcher = email.NewFetcher(emailStore, emailCrypto)
-						emailScheduler = email.NewScheduler(emailStore, emailFetcher, cfg.EmailFetchEnabled)
-						// 注入 kxmemory 客户端（可选）：未配置时 DailySummary 自动降级到 log-only。
-						if kxmem != nil {
-							emailScheduler.SetKxmemory(kxmem)
-						}
-						// OAuth refresh：可选启用，调用方需要同时提供 provider
-						// client credentials 才能真正刷新 access token。
-						oauthRefresher := email.NewDefaultOAuthRefresher()
-						providers := []email.OAuthProviderConfig{}
-						if cfg.EmailGoogleClientID != "" && cfg.EmailGoogleClientSecret != "" {
-							providers = append(providers, email.OAuthProviderConfig{
-								ProviderID:   "google",
-								TokenURL:     "https://oauth2.googleapis.com/token",
-								ClientID:     cfg.EmailGoogleClientID,
-								ClientSecret: cfg.EmailGoogleClientSecret,
-							})
-						}
-						if cfg.EmailMicrosoftClientID != "" && cfg.EmailMicrosoftClientSecret != "" {
-							providers = append(providers, email.OAuthProviderConfig{
-								ProviderID:   "outlook",
-								TokenURL:     "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-								ClientID:     cfg.EmailMicrosoftClientID,
-								ClientSecret: cfg.EmailMicrosoftClientSecret,
-							})
-						}
-						emailScheduler.SetOAuthRefresher(oauthRefresher, providers)
-						// 时区：默认 UTC+8（中国大陆）；可由 POCKET_TIMEZONE_OFFSET_SEC 覆盖。
-						emailScheduler.SetTimezoneOffset(cfg.TimezoneOffsetSec)
-						emailScheduler.Start(context.Background())
-						defer emailScheduler.Stop()
-						log.Printf("Email scheduler started (fetch_enabled=%v, kxmemory=%v, tz_offset=%ds, oauth_providers=%d)",
-							cfg.EmailFetchEnabled, kxmem != nil, cfg.TimezoneOffsetSec, len(providers))
+				emailPending = email.NewPendingOAuth()
+				go emailPending.GCLoop(context.Background())
+				if emailStore != nil {
+					emailFetcher = email.NewFetcher(emailStore, emailCrypto)
+					emailScheduler = email.NewScheduler(emailStore, emailFetcher, cfg.EmailFetchEnabled)
+					// 注入 kxmemory 客户端（可选）：未配置时 DailySummary 自动降级到 log-only。
+					if kxmem != nil {
+						emailScheduler.SetKxmemory(kxmem)
+					}
+					// OAuth refresh：可选启用，调用方需要同时提供 provider
+					// client credentials 才能真正刷新 access token。
+					oauthRefresher := email.NewDefaultOAuthRefresher()
+					providers := []email.OAuthProviderConfig{}
+					if cfg.EmailGoogleClientID != "" && cfg.EmailGoogleClientSecret != "" {
+						providers = append(providers, email.OAuthProviderConfig{
+							ProviderID:   "google",
+							TokenURL:     "https://oauth2.googleapis.com/token",
+							ClientID:     cfg.EmailGoogleClientID,
+							ClientSecret: cfg.EmailGoogleClientSecret,
+						})
+					}
+					if cfg.EmailMicrosoftClientID != "" && cfg.EmailMicrosoftClientSecret != "" {
+						providers = append(providers, email.OAuthProviderConfig{
+							ProviderID:   "outlook",
+							TokenURL:     "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+							ClientID:     cfg.EmailMicrosoftClientID,
+							ClientSecret: cfg.EmailMicrosoftClientSecret,
+						})
+					}
+					emailScheduler.SetOAuthRefresher(oauthRefresher, providers)
+					// 时区：默认 UTC+8（中国大陆）；可由 POCKET_TIMEZONE_OFFSET_SEC 覆盖。
+					emailScheduler.SetTimezoneOffset(cfg.TimezoneOffsetSec)
+					emailScheduler.Start(context.Background())
+					defer emailScheduler.Stop()
+					log.Printf("Email scheduler started (fetch_enabled=%v, kxmemory=%v, tz_offset=%ds, oauth_providers=%d)",
+						cfg.EmailFetchEnabled, kxmem != nil, cfg.TimezoneOffsetSec, len(providers))
 				}
 			}
 		}
@@ -463,6 +464,28 @@ func main() {
 
 	// 把 manager 注入 server（用 setter 而非扩展 New，避免 26+ 参数）
 	srv.SetOpenCodeManagers(ocMgr, eventMgr, permMgr, quesMgr)
+
+	// ---- W5: 注入 ACP agent registry ----
+	// 当前 stage：仅注册 OpenCode HTTP adapter（向后兼容）。
+	// 后续 PR 会加入 acp-stdio / acp-http / acp-ws transports +
+	// 真实 ACP agent adapter (Codex / Claude Code / Gemini CLI 等)。
+	agentReg := agent.NewRegistry()
+	opencodeAgentAdapter := agent.NewOpenCodeAdapter(opencodeAdapter)
+	_ = agentReg.Register(agent.AgentRef{Type: "opencode", Target: ""}, opencodeAgentAdapter)
+	// 用 instanceMap 把 instance_id 也映射到 opencode adapter（兼容旧 query）
+	for _, ref := range reg.ListInstances() {
+		apiBase, err := reg.GetInstanceAPIBase(ref.ID)
+		if err != nil {
+			continue
+		}
+		_ = agentReg.Register(
+			agent.AgentRef{Type: "opencode", Target: apiBase},
+			opencodeAgentAdapter,
+			ref.ID,
+		)
+	}
+	srv.SetAgentRegistry(agentReg)
+	log.Printf("ACP agent registry wired: %d adapter(s)", len(agentReg.All()))
 
 	// 会话迁移方案：装配跨主机迁移服务（registry + opencodeAdapter + pluginHub + taskStore）。
 	// 任一依赖为 nil 时迁移服务内部降级。taskStore 可能为 nil（remote-only 模式），

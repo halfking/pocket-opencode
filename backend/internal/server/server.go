@@ -15,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/agent"
 	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
@@ -92,6 +93,10 @@ type Server struct {
 	// S0-E: Notification Center。nil = /api/notifications 返回 503。
 	notifySvc   *notifycenter.Service
 	notifyStore *notifycenter.Store
+
+	// ACP 通用 Agent Adapter Registry（W5 新增，与 s.opencode 并存）。
+	// 老 handler 仍走 s.opencode；新 diagnostics / health-check 用 s.agents。
+	agents *agent.Registry
 
 	// Email
 	emailCrypto    *email.Crypto
@@ -211,6 +216,11 @@ func (s *Server) SetNotifyCenter(svc *notifycenter.Service, store *notifycenter.
 	s.notifyStore = store
 }
 
+// SetAgentRegistry 注入 ACP agent registry（W5 新增）。
+func (s *Server) SetAgentRegistry(reg *agent.Registry) {
+	s.agents = reg
+}
+
 // PluginHub 返回内部的 PluginHub，供 main 装配迁移服务等需要下发命令的组件复用。
 func (s *Server) PluginHub() *ws.PluginHub { return s.pluginHub }
 
@@ -293,6 +303,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/llm-gateway/config", s.requireAuth(s.handleLLMGatewayConfig))
 	mux.HandleFunc("/api/llm-gateway/test", s.requireAuth(s.handleLLMGatewayTest))
 	mux.HandleFunc("/api/llm-gateway/models", s.requireAuth(s.handleLLMGatewayModels))
+
+	// ---- Phase 1.1: 诊断 / 健康端点 ----
+	mux.HandleFunc("/api/diagnostics/kxmemory", s.requireAuth(s.handleDiagnosticsKxmemory))
+	mux.HandleFunc("/api/diagnostics/agents", s.requireAuth(s.handleDiagnosticsAgents))
 
 	// ---- Phase V3: 移动端真实会话交互 API ----
 	// SSE / Prompt / Interrupt / Messages / Create — 转发到 OpenCode 上游
