@@ -194,7 +194,7 @@ func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error)
 			n.Title = title.String
 		}
 		if content.Valid {
-			n.Content = content.String
+			n.Snippet = content.String // Content字段已移除，用Snippet代替
 		}
 		if snippet.Valid {
 			n.Snippet = snippet.String
@@ -267,7 +267,7 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Note, error) {
 		n.Title = title.String
 	}
 	if content.Valid {
-		n.Content = content.String
+		n.Snippet = content.String // Content字段已移除，用Snippet代替
 	}
 	if snippet.Valid {
 		n.Snippet = snippet.String

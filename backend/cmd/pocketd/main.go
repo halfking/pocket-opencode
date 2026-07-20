@@ -466,10 +466,12 @@ func main() {
 	srv.SetOpenCodeManagers(ocMgr, eventMgr, permMgr, quesMgr)
 
 	// ---- W5: 注入 ACP agent registry ----
-	// 当前 stage：仅注册 OpenCode HTTP adapter（向后兼容）。
-	// 后续 PR 会加入 acp-stdio / acp-http / acp-ws transports +
-	// 真实 ACP agent adapter (Codex / Claude Code / Gemini CLI 等)。
+	// 当前 stage：
+	//   1. OpenCode HTTP adapter（向后兼容）
+	//   2. ACP stdio adapter（新增，支持 Codex/Claude Code 等 CLI agents）
 	agentReg := agent.NewRegistry()
+	
+	// 1. 注册 OpenCode HTTP adapter
 	opencodeAgentAdapter := agent.NewOpenCodeAdapter(opencodeAdapter)
 	_ = agentReg.Register(agent.AgentRef{Type: "opencode", Target: ""}, opencodeAgentAdapter)
 	// 用 instanceMap 把 instance_id 也映射到 opencode adapter（兼容旧 query）
@@ -484,6 +486,28 @@ func main() {
 			ref.ID,
 		)
 	}
+	
+	// 2. 注册 ACP stdio adapter（新增）
+	acpStdioAdapter := agent.NewACPStdioAdapter()
+	// 示例：注册 agent_echo（测试用）
+	if agentEchoPath := os.Getenv("AGENT_ECHO_PATH"); agentEchoPath != "" {
+		_ = agentReg.Register(
+			agent.AgentRef{Type: "acp-stdio", Target: agentEchoPath},
+			acpStdioAdapter,
+			"agent-echo-1", // instance_id for legacy query
+		)
+		log.Printf("Registered ACP stdio agent: agent_echo at %s", agentEchoPath)
+	}
+	// 示例：注册 Claude CLI（如果存在）
+	if claudePath := os.Getenv("CLAUDE_CLI_PATH"); claudePath != "" {
+		_ = agentReg.Register(
+			agent.AgentRef{Type: "acp-stdio", Target: claudePath},
+			acpStdioAdapter,
+			"claude-1", // instance_id
+		)
+		log.Printf("Registered ACP stdio agent: Claude CLI at %s", claudePath)
+	}
+	
 	srv.SetAgentRegistry(agentReg)
 	log.Printf("ACP agent registry wired: %d adapter(s)", len(agentReg.All()))
 

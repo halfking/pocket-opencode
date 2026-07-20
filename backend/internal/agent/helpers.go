@@ -32,3 +32,38 @@ func readBody(r io.Reader, maxLen int) string {
 func readAll(r io.Reader) ([]byte, error) {
 	return io.ReadAll(r)
 }
+
+// getString 从 map 安全取 string（type assertion + 默认值）。
+func getString(m map[string]any, key string) string {
+	if v, ok := m[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// getInt 从 map 安全取 int（type assertion + 默认值）。
+func getInt(m map[string]any, key string) int {
+	if v, ok := m[key]; ok {
+		if i, ok := v.(int); ok {
+			return i
+		}
+		// 尝试 float64（JSON unmarshal 数字默认类型）
+		if f, ok := v.(float64); ok {
+			return int(f)
+		}
+	}
+	return 0
+}
+
+// getBool 从 map 安全取 bool（type assertion + 默认值）。
+func getBool(m map[string]any, key string) bool {
+	if v, ok := m[key]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
