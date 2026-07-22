@@ -397,3 +397,156 @@ func (a *ACPStdioAdapter) Close() error {
 
 // 编译期断言
 var _ AgentAdapter = (*ACPStdioAdapter)(nil)
+
+// ---- PermissionCapable 实现 ----
+
+// ListPendingPermissions 列出指定 session 的待处理权限请求。
+//
+// ACP 协议：通过 JSON-RPC 调用 `session/permission/list`（agent-specific）
+// 或累积从 `session/update` notification 收到的权限请求。简化实现：直接
+// 调用 list 方法，agent 不支持时返回空切片（非错误）。
+func (a *ACPStdioAdapter) ListPendingPermissions(ctx context.Context, ref AgentRef, sessionID string) ([]PermissionRequest, error) {
+	tr, err := a.getOrCreateTransport(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Permissions []map[string]any `json:"permissions"`
+	}
+	if err := tr.Call(ctx, "session/permission/list", map[string]any{
+		"sessionId": sessionID,
+	}, &result); err != nil {
+		// 协议未实现 → 返回空
+		return nil, nil
+	}
+	perms := make([]PermissionRequest, 0, len(result.Permissions))
+	for _, p := range result.Permissions {
+		perms = append(perms, permissionRequestFromMap(p))
+	}
+	return perms, nil
+}
+
+// ReplyPermission 回复权限请求。
+func (a *ACPStdioAdapter) ReplyPermission(ctx context.Context, ref AgentRef, sessionID, requestID string, reply PermissionDecision) error {
+	tr, err := a.getOrCreateTransport(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if err := tr.Call(ctx, "session/permission/reply", map[string]any{
+		"sessionId": sessionID,
+		"requestId": requestID,
+		"decision":  reply,
+	}, nil); err != nil {
+		return NewProtocolError(err)
+	}
+	return nil
+}
+
+// ---- QuestionCapable 实现 ----
+
+// ListPendingQuestions 列出指定 session 的待处理问题。
+func (a *ACPStdioAdapter) ListPendingQuestions(ctx context.Context, ref AgentRef, sessionID string) ([]Question, error) {
+	tr, err := a.getOrCreateTransport(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Questions []map[string]any `json:"questions"`
+	}
+	if err := tr.Call(ctx, "session/question/list", map[string]any{
+		"sessionId": sessionID,
+	}, &result); err != nil {
+		return nil, nil
+	}
+	qs := make([]Question, 0, len(result.Questions))
+	for _, q := range result.Questions {
+		qs = append(qs, questionFromMap(q))
+	}
+	return qs, nil
+}
+
+// ReplyQuestion 回复问题。
+func (a *ACPStdioAdapter) ReplyQuestion(ctx context.Context, ref AgentRef, sessionID, requestID string, answers []QuestionAnswer) error {
+	tr, err := a.getOrCreateTransport(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if err := tr.Call(ctx, "session/question/reply", map[string]any{
+		"sessionId": sessionID,
+		"requestId": requestID,
+		"answers":   answers,
+	}, nil); err != nil {
+		return NewProtocolError(err)
+	}
+	return nil
+}
+
+// RejectQuestion 拒绝回答问题。
+func (a *ACPStdioAdapter) RejectQuestion(ctx context.Context, ref AgentRef, sessionID, requestID string) error {
+	tr, err := a.getOrCreateTransport(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if err := tr.Call(ctx, "session/question/reject", map[string]any{
+		"sessionId": sessionID,
+		"requestId": requestID,
+	}, nil); err != nil {
+		return NewProtocolError(err)
+	}
+	return nil
+}
+
+// ---- 字段映射辅助函数 ----
+
+// permissionRequestFromMap 把 JSON map 转 PermissionRequest。
+func permissionRequestFromMap(m map[string]any) PermissionRequest {
+	pr := PermissionRequest{
+		ID:       getString(m, "id"),
+		Action:   getString(m, "action"),
+		Reason:   getString(m, "reason"),
+		Metadata: m,
+	}
+	if optsRaw, ok := m["options"].([]any); ok {
+		for _, o := range optsRaw {
+			if om, ok := o.(map[string]any); ok {
+				pr.Options = append(pr.Options, PermissionOption{
+					ID:          getString(om, "id"),
+					Label:       getString(om, "label"),
+					Description: getString(om, "description"),
+				})
+			}
+		}
+	}
+	return pr
+}
+
+// questionFromMap 把 JSON map 转 Question。
+func questionFromMap(m map[string]any) Question {
+	q := Question{
+		ID:       getString(m, "id"),
+		Prompt:   getString(m, "prompt"),
+		Metadata: m,
+	}
+	if optsRaw, ok := m["options"].([]any); ok {
+		for _, o := range optsRaw {
+			if om, ok := o.(map[string]any); ok {
+				q.Options = append(q.Options, QuestionOption{
+					ID:          getString(om, "id"),
+					Label:       getString(om, "label"),
+					Description: getString(om, "description"),
+					Preview:     getString(om, "preview"),
+				})
+			}
+		}
+	}
+	if multi, ok := m["multi"].(bool); ok {
+		q.Multi = multi
+	}
+	return q
+}
+
+// 编译期断言
+var (
+	_ PermissionCapable = (*ACPStdioAdapter)(nil)
+	_ QuestionCapable   = (*ACPStdioAdapter)(nil)
+)

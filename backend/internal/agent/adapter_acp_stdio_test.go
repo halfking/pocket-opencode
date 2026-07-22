@@ -146,3 +146,105 @@ func TestACPStdioAdapter_SubscribeEventsEmptyParams(t *testing.T) {
 // helper: 检查测试可以编译时连接 agent_echo 的 net.Conn（防止 unused import）
 var _ = net.Conn(nil)
 var _ atomic.Bool
+
+// TestACPStdioAdapter_PermissionMapping 测试 permissionRequestFromMap。
+func TestACPStdioAdapter_PermissionMapping(t *testing.T) {
+	m := map[string]any{
+		"id":     "perm_123",
+		"action": "bash",
+		"reason": "execute shell command",
+		"options": []any{
+			map[string]any{
+				"id":          "allow_once",
+				"label":       "Allow Once",
+				"description": "Approve this run only",
+			},
+			map[string]any{
+				"id":    "deny",
+				"label": "Deny",
+			},
+		},
+	}
+	pr := permissionRequestFromMap(m)
+	if pr.ID != "perm_123" {
+		t.Errorf("ID = %q", pr.ID)
+	}
+	if pr.Action != "bash" {
+		t.Errorf("Action = %q", pr.Action)
+	}
+	if pr.Reason != "execute shell command" {
+		t.Errorf("Reason = %q", pr.Reason)
+	}
+	if len(pr.Options) != 2 {
+		t.Fatalf("Options = %d, want 2", len(pr.Options))
+	}
+	if pr.Options[0].Label != "Allow Once" {
+		t.Errorf("Option[0].Label = %q", pr.Options[0].Label)
+	}
+	if pr.Options[0].Description != "Approve this run only" {
+		t.Errorf("Option[0].Description = %q", pr.Options[0].Description)
+	}
+}
+
+// TestACPStdioAdapter_QuestionMapping 测试 questionFromMap。
+func TestACPStdioAdapter_QuestionMapping(t *testing.T) {
+	m := map[string]any{
+		"id":     "q_456",
+		"prompt": "Choose deployment region",
+		"multi":  false,
+		"options": []any{
+			map[string]any{
+				"id":    "us",
+				"label": "US East",
+			},
+			map[string]any{
+				"id":          "eu",
+				"label":       "EU West",
+				"description": "Frankfurt data center",
+				"preview":     "Lower latency for European users",
+			},
+		},
+	}
+	q := questionFromMap(m)
+	if q.ID != "q_456" {
+		t.Errorf("ID = %q", q.ID)
+	}
+	if q.Prompt != "Choose deployment region" {
+		t.Errorf("Prompt = %q", q.Prompt)
+	}
+	if q.Multi {
+		t.Error("Multi should be false")
+	}
+	if len(q.Options) != 2 {
+		t.Fatalf("Options = %d, want 2", len(q.Options))
+	}
+	if q.Options[1].Preview != "Lower latency for European users" {
+		t.Errorf("Option[1].Preview = %q", q.Options[1].Preview)
+	}
+}
+
+// TestACPStdioAdapter_QuestionMultiMapping 测试 multi=true 解析。
+func TestACPStdioAdapter_QuestionMultiMapping(t *testing.T) {
+	m := map[string]any{
+		"id":    "q_multi",
+		"multi": true,
+	}
+	q := questionFromMap(m)
+	if !q.Multi {
+		t.Error("Multi should be true")
+	}
+}
+
+// TestACPStdioAdapter_ImplementsCapabilities 编译期断言（间接）。
+func TestACPStdioAdapter_ImplementsCapabilities(t *testing.T) {
+	adapter := NewACPStdioAdapter()
+	defer adapter.Close()
+
+	// 运行时类型断言
+	if _, ok := any(adapter).(PermissionCapable); !ok {
+		t.Error("ACPStdioAdapter should implement PermissionCapable")
+	}
+	if _, ok := any(adapter).(QuestionCapable); !ok {
+		t.Error("ACPStdioAdapter should implement QuestionCapable")
+	}
+}
