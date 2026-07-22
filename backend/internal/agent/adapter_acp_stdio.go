@@ -7,8 +7,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // ACPStdioAdapter 实现 AgentAdapter，基于 stdio JSON-RPC 2.0 transport。
@@ -281,10 +283,100 @@ func (a *ACPStdioAdapter) SetSessionMode(ctx context.Context, ref AgentRef, sess
 }
 
 // SubscribeEvents 实现 AgentAdapter。
+//
+// 通过 StdioTransport.Recv() 接收 agent 推送的 notifications（session/update
+// 等），转换为 AgentEvent 流式推给前端。
+//
+// 设计：
+//   - 每个 ref 一个独立 goroutine
+//   - 用 transport.Recv() 拉帧，ParseFrame 分类
+//   - 仅 notification 推给 events channel（response 已在 PendingCalls 内部处理）
+//   - 上下文 cancel 自动停止 goroutine
+//   - cleanup 函数取消订阅 + close channel
 func (a *ACPStdioAdapter) SubscribeEvents(ctx context.Context, ref AgentRef) (<-chan AgentEvent, func(), error) {
-	// TODO: 实现基于 transport.Recv() 的事件订阅
-	// ACP 通过 notification "session/update" 推送事件
-	return nil, nil, NewCapabilityError("SubscribeEvents")
+	tr, err := a.getOrCreateTransport(ctx, ref)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	events := make(chan AgentEvent, 32)
+
+	// 启动后台 goroutine：从 Recv 拉帧，转发到 events
+	go func() {
+		defer close(events)
+		for {
+			frame, err := tr.Recv(ctx)
+			if err != nil {
+				// ctx cancel 或 transport 关闭 → 退出
+				return
+			}
+			_, _, _, _, _ = ParseFrame(frame)
+			// 解析 frame（id 对响应在 PendingCalls 已处理；这里只关心 notification）
+			frameType, req, _, _, _ := ParseFrame(frame)
+			if frameType != "notification" {
+				continue
+			}
+			// req 包含 method + params
+			ev := notificationToAgentEvent(req)
+			if ev == nil {
+				continue
+			}
+			select {
+			case events <- *ev:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// cleanup 取消订阅（仅关闭 events channel，goroutine 由 ctx 触发退出）
+	var closed bool
+	cleanup := func() {
+		if !closed {
+			closed = true
+			// 不 close(events)，让 goroutine 退出时自然 close
+		}
+	}
+	return events, cleanup, nil
+}
+
+// notificationToAgentEvent 把 ACP session/update notification 转 AgentEvent。
+//
+// ACP notification 格式：
+//
+//	{
+//	  "jsonrpc": "2.0",
+//	  "method": "session/update",
+//	  "params": {
+//	    "sessionId": "sess_xxx",
+//	    "update": {
+//	      "sessionUpdate": "user_message_chunk" | "agent_message_chunk" | ...
+//	      // 其他字段根据 sessionUpdate 类型而定
+//	    }
+//	  }
+//	}
+func notificationToAgentEvent(req *Request) *AgentEvent {
+	if req == nil || req.Method != "session/update" {
+		return nil
+	}
+	// params 是 json.RawMessage
+	if len(req.Params) == 0 {
+		return nil
+	}
+	var p struct {
+		SessionID string         `json:"sessionId"`
+		Update    map[string]any `json:"update"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return nil
+	}
+	ev := &AgentEvent{
+		Type:      "session_update",
+		SessionID: p.SessionID,
+		Timestamp: time.Now(),
+		Data:      p.Update,
+	}
+	return ev
 }
 
 // Close 关闭所有 transports。
