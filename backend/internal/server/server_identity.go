@@ -55,14 +55,6 @@ func (s *Server) claimsFromRequest(r *http.Request) *authClaims {
 	return &authClaims{UserID: claims.UserID, Role: claims.Role, WorkspaceID: claims.WorkspaceID}
 }
 
-// authClaims 是 server 包内部用的轻量结构，避免在 handler 里直接依赖 auth 包
-// （降低循环依赖风险）。
-type authClaims struct {
-	UserID      string
-	Role        string
-	WorkspaceID string
-}
-
 // handleWorkspaces 处理 GET/POST /api/workspaces
 func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
 	if s.identityStore == nil {

@@ -1,9 +1,33 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"strings"
 )
+
+type authClaimsContextKey struct{}
+
+// authClaims 是中间件注入到 request context 的身份信息。
+type authClaims struct {
+	UserID      string
+	Role        string
+	WorkspaceID string
+}
+
+// claimsFromContext 从 request context 提取已认证的 claims。
+// 如果 request 未经过 requireAuth 中间件，返回 nil。
+func (s *Server) claimsFromContext(r *http.Request) *authClaims {
+	v := r.Context().Value(authClaimsContextKey{})
+	if v == nil {
+		return nil
+	}
+	c, ok := v.(*authClaims)
+	if !ok {
+		return nil
+	}
+	return c
+}
 
 // requireAuth 中间件：验证 JWT，未认证返回 401。
 //
@@ -45,8 +69,12 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// JWT 验证通过，继续处理请求
-		// 注意：claims.UserID 可通过 s.userIDFromRequest(r) 在 handler 中获取
-		next.ServeHTTP(w, r)
+		// 把 claims 注入 context，handler 可通过 claimsFromContext 获取
+		ctx := context.WithValue(r.Context(), authClaimsContextKey{}, &authClaims{
+			UserID:      claims.UserID,
+			Role:        claims.Role,
+			WorkspaceID: claims.WorkspaceID,
+		})
+		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }

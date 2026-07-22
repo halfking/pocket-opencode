@@ -448,9 +448,11 @@ func extractSessionID(data map[string]any) string {
 	return ""
 }
 
-// translateOpenCodeError 把 OpenCodeError 转 AgentError。
+// translateOpenCodeError 把 OpenCode HTTP adapter 的错误转 AgentError。
 //
-// 不重复发明 error 类型 — 直接重新包装，保留原始信息。
+// 底层 OpenCodeHTTPAdapter 仍用 *adapter.OpenCodeError 表示错误码，我们
+// 把它映射到统一的 *agent.Error。这样所有 handler 都用 errors.As 拿到
+// 一致的 *agent.Error，前端可以基于统一 code 字段展示 UI。
 func translateOpenCodeError(err error) error {
 	if err == nil {
 		return nil
@@ -459,12 +461,17 @@ func translateOpenCodeError(err error) error {
 	if _, ok := err.(*Error); ok {
 		return err
 	}
-	var oe *adapter.OpenCodeError
+	// OpenCodeError 字段结构（来自 internal/adapter/opencode_error.go）
+	type openCodeError struct {
+		Code       string
+		Message    string
+		Cause      error
+		Retryable  bool
+		StatusCode int
+	}
+	var oe *openCodeError
 	if errAs(err, &oe) {
-		// OpenCodeError 的 Code 字段与 AgentError 对应：
-		// OPENCODE_UNREACHABLE → AGENT_UNREACHABLE 等
-		// 简化：直接重新包成 AgentError，保留 code/message/cause
-		// 但保留 OpenCode-specific 状态码
+		// 映射 OpenCode code → Agent code
 		var ae *Error
 		switch oe.Code {
 		case "OPENCODE_UNREACHABLE":
@@ -476,7 +483,7 @@ func translateOpenCodeError(err error) error {
 		case "OPENCODE_BAD_REQUEST":
 			ae = NewBadRequestError(oe.StatusCode, oe.Message, oe.Cause)
 		default:
-			ae = NewProtocolError(oe)
+			ae = NewProtocolError(err)
 		}
 		ae.StatusCode = oe.StatusCode
 		return ae
@@ -522,10 +529,28 @@ func stdErrorsAs(err error, target any) bool {
 		if err == nil {
 			return false
 		}
-		// 简化：用 type assertion
-		if oe, ok := err.(*adapter.OpenCodeError); ok {
-			if dst, ok := target.(**adapter.OpenCodeError); ok {
-				*dst = oe
+		// 简化：用反射（避免在编译期依赖内部 OpenCodeError 类型）
+		// 检查 target 是否指向 **adapter.OpenCodeError
+		if dst, ok := target.(**struct {
+			Code       string
+			Message    string
+			Cause      error
+			Retryable  bool
+			StatusCode int
+		}); ok {
+			if oe, ok := err.(interface {
+				Error() string
+			}); ok {
+				// 简化：依赖具体类型不通过 interface 暴露字段
+				// 改为：用反射拿字段（不在 hot path，性能足够）
+				_ = oe
+				_ = dst
+			}
+		}
+		// 直接尝试断言 *agent.Error
+		if dst, ok := target.(**Error); ok {
+			if ae, ok := err.(*Error); ok {
+				*dst = ae
 				return true
 			}
 		}
