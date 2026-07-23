@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -302,7 +303,7 @@ func (a *ACPStdioAdapter) SubscribeEvents(ctx context.Context, ref AgentRef) (<-
 	events := make(chan AgentEvent, 32)
 
 	// 启动后台 goroutine：从 Recv 拉帧，转发到 events
-	go func() {
+		go func() {
 		defer close(events)
 		for {
 			frame, err := tr.Recv(ctx)
@@ -310,7 +311,6 @@ func (a *ACPStdioAdapter) SubscribeEvents(ctx context.Context, ref AgentRef) (<-
 				// ctx cancel 或 transport 关闭 → 退出
 				return
 			}
-			_, _, _, _, _ = ParseFrame(frame)
 			// 解析 frame（id 对响应在 PendingCalls 已处理；这里只关心 notification）
 			frameType, req, _, _, _ := ParseFrame(frame)
 			if frameType != "notification" {
@@ -386,8 +386,8 @@ func (a *ACPStdioAdapter) Close() error {
 
 	for ref, tr := range a.transports {
 		if err := tr.Close(); err != nil {
-			// log error but continue
-			_ = fmt.Errorf("close transport %s: %w", ref, err)
+			// log error but continue closing other transports
+			log.Printf("close transport %s: %v", ref, err)
 		}
 	}
 
