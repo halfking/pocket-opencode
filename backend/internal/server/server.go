@@ -31,8 +31,9 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
-	"github.com/halfking/pocket-opencode/backend/internal/opencode"
-	"github.com/halfking/pocket-opencode/backend/internal/registry"
+"github.com/halfking/pocket-opencode/backend/internal/opencode"
+		"github.com/halfking/pocket-opencode/backend/internal/redclaw"
+		"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
 	"github.com/halfking/pocket-opencode/backend/internal/vault"
@@ -108,9 +109,12 @@ type Server struct {
 
 	llmGWStore *LLMGatewayStore // nil = 无 PG，配置不持久化
 
-	// 会话迁移方案：跨主机迁移编排服务（nil = registry/adapter/pluginHub 未就绪）
-	migrationSvc *migration.Service
-}
+// 会话迁移方案：跨主机迁移编排服务（nil = registry/adapter/pluginHub 未就绪）
+		migrationSvc *migration.Service
+
+		// RedClaw 企业后端桥接（nil = 未配置，对应 handler 返回 503）
+		redclawBridge *redclaw.Bridge
+	}
 
 // New 构造 Server。Phase 0 扩展：新增 notes/email/vault store、STT transcriber、ACC MCP client。
 // Phase C 扩展：新增 embedder/llm 无状态 AI 网关。
@@ -132,7 +136,7 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 		pluginHub.SetInstanceRegistrar(reg)
 	}
 
-	return &Server{
+	s := &Server{
 		cfg:             cfg,
 		nps:             nps,
 		opencode:        opencode,
@@ -163,6 +167,22 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 			CheckOrigin:     buildOriginChecker(cfg.AllowedOrigins, cfg.DevAuth),
 		},
 	}
+
+	// 初始化 RedClaw 桥接（如果配置了 RedClaw）
+	if s.cfg.RedClawBaseURL != "" {
+		rcCfg := redclaw.ClientConfig{
+			BaseURL:    s.cfg.RedClawBaseURL,
+			Secret:     s.cfg.RedClawSecret,
+			TenantID:   s.cfg.RedClawTenantID,
+			TimeoutSec: s.cfg.RedClawTimeoutSec,
+		}
+		rcClient := redclaw.NewClient(rcCfg)
+		s.redclawBridge = redclaw.NewBridge(rcClient, s.pushRedClawEvent)
+		s.redclawBridge.Start()
+		log.Println("[Server] RedClaw bridge initialized")
+	}
+
+	return s
 }
 
 // SetOpenCodeManagers 由 main.go 在 server.New 之后注入 OpenCode 域管理器。
@@ -313,10 +333,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/mobile/sessions", s.requireAuth(s.handleMobileSessionRouter))
 	mux.HandleFunc("/api/mobile/sessions/", s.requireAuth(s.handleMobileSessionRouter))
 
-	// Plugin/Manager WebSocket routes
-	mux.HandleFunc("/plugin/ws", s.requireAuth(s.handlePluginWebSocket))
-	mux.HandleFunc("/api/plugin/status", s.handlePluginStatus)
-	mux.HandleFunc("/api/plugin/command", s.requireAuth(s.handleSendCommand))
+// Plugin/Manager WebSocket routes
+		mux.HandleFunc("/plugin/ws", s.requireAuth(s.handlePluginWebSocket))
+		mux.HandleFunc("/api/plugin/status", s.handlePluginStatus)
+		mux.HandleFunc("/api/plugin/command", s.requireAuth(s.handleSendCommand))
+
+		// RedClaw 企业后端集成
+		mux.HandleFunc("/api/redclaw/health", s.handleRedClawHealth)
+		mux.HandleFunc("/api/redclaw/chat", s.handleRedClawChat)
 
 	return corsMiddleware(mux, s.cfg.AllowedOrigins, s.cfg.DevAuth)
 }
@@ -996,6 +1020,14 @@ func (s *Server) broadcastTaskEvent(eventType string, task *task.Task) {
 func (s *Server) broadcastSessionEvent(eventType string, link *task.SessionLink) {
 	if s.wsHub != nil {
 		s.wsHub.Broadcast(eventType, link)
+	}
+}
+
+// pushRedClawEvent RedClaw 桥接事件回调
+func (s *Server) pushRedClawEvent(event redclaw.BridgeEvent) {
+	// 通过 WebSocket Hub 广播事件
+	if s.wsHub != nil {
+		s.wsHub.Broadcast(event.Type, event.Payload)
 	}
 }
 

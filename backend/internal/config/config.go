@@ -76,9 +76,15 @@ type Config struct {
 
 	// —— 会话迁移方案：实例感知增强配置 ——
 	DiscoveryFullSubnet bool     // POCKET_DISCOVERY_FULL_SUBNET：true=扫描完整 /24（默认 false 仅本机+网关）
-	DiscoveryPorts      []int    // POCKET_DISCOVERY_PORTS：自定义扫描端口（逗号分隔，空=默认 14096-14100）
-	DiscoveryExtraHosts []string // POCKET_DISCOVERY_EXTRA_HOSTS：追加扫描主机（逗号分隔，如 ACC/NPS 内网穿透目标）
-}
+DiscoveryPorts      []int    // POCKET_DISCOVERY_PORTS：自定义扫描端口（逗号分隔，空=默认 14096-14100）
+		DiscoveryExtraHosts []string // POCKET_DISCOVERY_EXTRA_HOSTS：追加扫描主机（逗号分隔，如 ACC/NPS 内网穿透目标）
+
+		// RedClaw 企业后端配置（可选）
+		RedClawBaseURL    string // POCKET_REDCLAW_BASE_URL：RedClaw Gateway 地址
+		RedClawSecret     string // POCKET_REDCLAW_SECRET：共享密钥
+		RedClawTenantID   string // POCKET_REDCLAW_TENANT_ID：当前租户 ID（默认 default）
+		RedClawTimeoutSec int    // POCKET_REDCLAW_TIMEOUT_SEC：HTTP 超时秒数（默认 30）
+	}
 
 func Load() Config {
 	environment := strings.ToLower(strings.TrimSpace(getEnv("POCKET_ENV", "development")))
@@ -140,8 +146,13 @@ func Load() Config {
 		AllowedOrigins: getEnv("POCKET_ALLOWED_ORIGINS", ""),
 		// 会话迁移方案：实例感知增强
 		DiscoveryFullSubnet: getEnv("POCKET_DISCOVERY_FULL_SUBNET", "") == "true",
-		DiscoveryPorts:      parseIntList(getEnv("POCKET_DISCOVERY_PORTS", "")),
-		DiscoveryExtraHosts: parseStringList(getEnv("POCKET_DISCOVERY_EXTRA_HOSTS", "")),
+DiscoveryPorts:      parseIntList(getEnv("POCKET_DISCOVERY_PORTS", "")),
+			DiscoveryExtraHosts: parseStringList(getEnv("POCKET_DISCOVERY_EXTRA_HOSTS", "")),
+			// RedClaw 企业后端
+			RedClawBaseURL:    getEnv("POCKET_REDCLAW_BASE_URL", ""),
+			RedClawSecret:     getEnv("POCKET_REDCLAW_SECRET", ""),
+			RedClawTenantID:   getEnv("POCKET_REDCLAW_TENANT_ID", "default"),
+			RedClawTimeoutSec: getEnvInt("POCKET_REDCLAW_TIMEOUT_SEC", 30),
 	}
 }
 
