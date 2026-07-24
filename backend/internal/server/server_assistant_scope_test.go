@@ -82,10 +82,10 @@ func TestSSOTConflictPayload(t *testing.T) {
 		}
 	}
 	var roundTrip struct {
-		NoteID    string               `json:"noteId"`
+		NoteID    string                  `json:"noteId"`
 		Conflicts []kxmemory.SSOTConflict `json:"conflicts"`
-		Category  string               `json:"category"`
-		Domain    string               `json:"domain"`
+		Category  string                  `json:"category"`
+		Domain    string                  `json:"domain"`
 	}
 	if err := json.Unmarshal(b, &roundTrip); err != nil {
 		t.Fatalf("unmarshal: %v", err)
