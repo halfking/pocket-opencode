@@ -52,6 +52,7 @@ func truncateBody(body []byte) string {
 	}
 	return string(body[:maxErrorBodyLen]) + "…"
 }
+
 // IsPermanentRefreshError returns true if the error represents an unrecoverable
 // provider rejection (invalid_grant etc.). Use it where the caller only cares
 // about the binary classifier, not the full RefreshError.

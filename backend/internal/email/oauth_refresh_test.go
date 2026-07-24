@@ -182,11 +182,11 @@ func TestOAuthRefresher_TransientOn5xx(t *testing.T) {
 // code 但 status 是 401/400 的场景。
 func TestClassifyRefreshStatus(t *testing.T) {
 	cases := []struct {
-		name        string
-		status      int
-		code        string
-		wantPerm    bool
-		wantCode    string
+		name     string
+		status   int
+		code     string
+		wantPerm bool
+		wantCode string
 	}{
 		{"google invalid_grant", 400, "invalid_grant", true, "invalid_grant"},
 		{"google invalid_client", 401, "invalid_client", true, "invalid_client"},
@@ -242,8 +242,8 @@ func TestRefreshErrorUnwrap(t *testing.T) {
 
 // fakeBroadcaster 记录最近一次事件载荷，便于测试广播内容。
 type fakeBroadcaster struct {
-	mu    sync.Mutex
-	keys  []string
+	mu       sync.Mutex
+	keys     []string
 	payloads []interface{}
 }
 
@@ -316,12 +316,12 @@ func TestRefreshAccessToken_RequiresCrypto(t *testing.T) {
 // TestGuessProviderFromEmail 简单覆盖常见域名 → provider 映射。
 func TestGuessProviderFromEmail(t *testing.T) {
 	cases := map[string]string{
-		"alice@gmail.com":        "google",
-		"Bob@GOOGLEMAIL.com":     "google",
-		"carol@outlook.com":      "outlook",
-		"dan@hotmail.com":        "outlook",
-		"ed@example.com":         "",
-		"":                       "",
+		"alice@gmail.com":    "google",
+		"Bob@GOOGLEMAIL.com": "google",
+		"carol@outlook.com":  "outlook",
+		"dan@hotmail.com":    "outlook",
+		"ed@example.com":     "",
+		"":                   "",
 	}
 	for in, want := range cases {
 		if got := guessProviderFromEmail(in); got != want {

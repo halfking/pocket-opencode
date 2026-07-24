@@ -25,22 +25,22 @@ type OAuthRevokedEvent struct {
 	EmailAddress string `json:"emailAddress"`
 	WorkspaceID  string `json:"workspaceId,omitempty"`
 	UserID       string `json:"userId,omitempty"`
-	Reason       string `json:"reason"`           // provider error code (invalid_grant / ...)
-	ProviderID   string `json:"providerId"`        // google / outlook
-	At           int64  `json:"at"`               // unix seconds
+	Reason       string `json:"reason"`     // provider error code (invalid_grant / ...)
+	ProviderID   string `json:"providerId"` // google / outlook
+	At           int64  `json:"at"`         // unix seconds
 }
 
 // Scheduler 定期触发 IMAP 同步和每日邮件总结。
 type Scheduler struct {
-	store    *Store
-	fetcher  *Fetcher
-	crypto   *Crypto
-	kxmem    kxmemory.Client // optional；nil 表示禁用 DailySummary AI 生成
-	refresher OAuthRefresher // optional；nil 跳过自动 refresh
-	providers map[string]OAuthProviderConfig // providerID -> credentials/tokenURL
-	broadcaster OAuthBroadcaster // optional；nil 跳过 WS 推送（保留 log）
-	stop     chan struct{}
-	enabled  bool
+	store       *Store
+	fetcher     *Fetcher
+	crypto      *Crypto
+	kxmem       kxmemory.Client                // optional；nil 表示禁用 DailySummary AI 生成
+	refresher   OAuthRefresher                 // optional；nil 跳过自动 refresh
+	providers   map[string]OAuthProviderConfig // providerID -> credentials/tokenURL
+	broadcaster OAuthBroadcaster               // optional；nil 跳过 WS 推送（保留 log）
+	stop        chan struct{}
+	enabled     bool
 	// tzOffsetSec 用户时区偏移（秒），用于按"日"聚合邮件。
 	// 用 atomic.Int64 防止 cmd/pocketd 在 Start 之后修改时与 goroutine 数据竞争。
 	tzOffsetSec atomic.Int64
@@ -52,7 +52,7 @@ type Scheduler struct {
 // OAuthProviderConfig describes how to refresh tokens for a given provider.
 // ProviderID matches provider.ID from providers.go (e.g. "gmail", "outlook").
 type OAuthProviderConfig struct {
-	ProviderID  string
+	ProviderID   string
 	TokenURL     string
 	ClientID     string
 	ClientSecret string

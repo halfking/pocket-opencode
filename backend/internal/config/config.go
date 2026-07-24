@@ -31,11 +31,11 @@ type Config struct {
 
 	// ---- Phase 0: 个人助理模块新增配置 ----
 	// AI/STT 后端
-	GroqAPIKey      string // POCKET_GROQ_API_KEY：云端 Whisper Large v3 Turbo 兜底
-	KxMemoryBaseURL            string // POCKET_KXMEMORY_BASE_URL：kxmemory FastAPI（笔记/分类/SSOT/总结）
-	KxMemoryNoteClassifyPath   string // POCKET_KXMEMORY_NOTE_CLASSIFY_PATH（默认 /v1/notes/classify）
-	KxMemoryEmailClassifyPath  string // POCKET_KXMEMORY_EMAIL_CLASSIFY_PATH（默认 /v1/emails/classify）
-	KxMemoryDailySummaryPath   string // POCKET_KXMEMORY_DAILY_SUMMARY_PATH（默认 /v1/emails/daily-summary）
+	GroqAPIKey                string // POCKET_GROQ_API_KEY：云端 Whisper Large v3 Turbo 兜底
+	KxMemoryBaseURL           string // POCKET_KXMEMORY_BASE_URL：kxmemory FastAPI（笔记/分类/SSOT/总结）
+	KxMemoryNoteClassifyPath  string // POCKET_KXMEMORY_NOTE_CLASSIFY_PATH（默认 /v1/notes/classify）
+	KxMemoryEmailClassifyPath string // POCKET_KXMEMORY_EMAIL_CLASSIFY_PATH（默认 /v1/emails/classify）
+	KxMemoryDailySummaryPath  string // POCKET_KXMEMORY_DAILY_SUMMARY_PATH（默认 /v1/emails/daily-summary）
 	// 邮箱模块
 	EmailMasterKey string // POCKET_EMAIL_MASTER_KEY：AES-GCM 加密 IMAP 凭证
 	// 任务系统整合（Phase 5）

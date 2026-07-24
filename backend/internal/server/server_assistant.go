@@ -661,12 +661,24 @@ func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc 
 		}
 	}
 
-	if body.DisplayName != nil { acc.DisplayName = *body.DisplayName }
-	if body.IMAPHost != nil { acc.IMAPHost = *body.IMAPHost }
-	if body.IMAPPort != nil && *body.IMAPPort > 0 { acc.IMAPPort = *body.IMAPPort }
-	if body.SyncIntervalMin != nil && *body.SyncIntervalMin > 0 { acc.SyncIntervalMin = *body.SyncIntervalMin }
-	if body.Rules != nil { acc.Rules = *body.Rules }
-	if body.Enabled != nil { acc.Enabled = *body.Enabled }
+	if body.DisplayName != nil {
+		acc.DisplayName = *body.DisplayName
+	}
+	if body.IMAPHost != nil {
+		acc.IMAPHost = *body.IMAPHost
+	}
+	if body.IMAPPort != nil && *body.IMAPPort > 0 {
+		acc.IMAPPort = *body.IMAPPort
+	}
+	if body.SyncIntervalMin != nil && *body.SyncIntervalMin > 0 {
+		acc.SyncIntervalMin = *body.SyncIntervalMin
+	}
+	if body.Rules != nil {
+		acc.Rules = *body.Rules
+	}
+	if body.Enabled != nil {
+		acc.Enabled = *body.Enabled
+	}
 	if body.AuthType != nil {
 		if *body.AuthType != "password" && *body.AuthType != "oauth2" {
 			writeError(w, http.StatusBadRequest, "authType must be 'password' or 'oauth2'")
@@ -687,7 +699,11 @@ func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc 
 			return
 		}
 		plaintext := ""
-		if body.Password != nil { plaintext = *body.Password } else { plaintext = *body.OAuthToken }
+		if body.Password != nil {
+			plaintext = *body.Password
+		} else {
+			plaintext = *body.OAuthToken
+		}
 		enc, err := s.emailCrypto.EncryptString(plaintext)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "encrypt credential: "+err.Error())
