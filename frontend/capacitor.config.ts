@@ -4,11 +4,25 @@ const config: CapacitorConfig = {
   appId: 'com.kaixuan.opencode.pocket',
   appName: 'OpenCode Pocket',
   webDir: 'dist',
-  // 本地打包模式，通过 VITE_API_BASE 环境变量指定后端地址
+  server: {
+    url: process.env.VITE_API_BASE || 'http://localhost:8088',
+    cleartext: true,
+  },
   android: {
     allowMixedContent: true,
     backgroundColor: '#ffffff',
-  }
+  },
+  ios: {
+    contentInset: 'always',
+    backgroundColor: '#ffffff',
+    preferredContentMode: 'mobile',
+  },
+  plugins: {
+    SplashScreen: {
+      launchShowDuration: 2000,
+      backgroundColor: '#ffffff',
+    },
+  },
 };
 
 export default config;
