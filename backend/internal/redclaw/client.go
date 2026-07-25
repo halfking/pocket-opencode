@@ -15,8 +15,18 @@ type Client struct {
 	httpDo *http.Client
 }
 
-// NewClient 创建 RedClaw 客户端
-func NewClient(cfg ClientConfig) *Client {
+// NewClient creates a new RedClaw API client with the given configuration.
+func NewClient(cfg ClientConfig) (*Client, error) {
+	if cfg.BaseURL == "" {
+		return nil, fmt.Errorf("redclaw: BaseURL cannot be empty")
+	}
+	if cfg.Secret == "" {
+		return nil, fmt.Errorf("redclaw: Secret cannot be empty")
+	}
+	if cfg.TenantID == "" {
+		return nil, fmt.Errorf("redclaw: TenantID cannot be empty")
+	}
+	
 	timeout := cfg.TimeoutSec
 	if timeout <= 0 {
 		timeout = 30
@@ -26,10 +36,10 @@ func NewClient(cfg ClientConfig) *Client {
 		httpDo: &http.Client{
 			Timeout: time.Duration(timeout) * time.Second,
 		},
-	}
+	}, nil
 }
 
-// Health 健康检查
+// Health performs a health check against the RedClaw service.
 func (c *Client) Health() (*HealthResponse, error) {
 	resp, err := c.doRequest(http.MethodGet, "/health", nil)
 	if err != nil {
@@ -44,11 +54,17 @@ func (c *Client) Health() (*HealthResponse, error) {
 	return &result, nil
 }
 
-// Chat LLM 对话
+// Chat sends a chat request to the LLM service with tenant isolation enforcement.
 func (c *Client) Chat(req ChatRequest) (*ChatResponse, error) {
-	if req.TenantID == "" {
-		req.TenantID = c.cfg.TenantID
+	if len(req.Messages) == 0 {
+		return nil, fmt.Errorf("redclaw: chat request must contain at least one message")
 	}
+	
+	// Enforce tenant isolation: override with client's tenant ID
+	if req.TenantID != "" && req.TenantID != c.cfg.TenantID {
+		return nil, fmt.Errorf("redclaw: tenant ID mismatch (request=%s, client=%s)", req.TenantID, c.cfg.TenantID)
+	}
+	req.TenantID = c.cfg.TenantID
 
 	resp, err := c.doRequest(http.MethodPost, "/api/v1/pocket/llm/chat", req)
 	if err != nil {
@@ -72,11 +88,17 @@ func (c *Client) Chat(req ChatRequest) (*ChatResponse, error) {
 	return &result, nil
 }
 
-// KnowledgeSearch 知识库检索
+// KnowledgeSearch searches the knowledge base with tenant isolation enforcement.
 func (c *Client) KnowledgeSearch(req KnowledgeSearchRequest) (*KnowledgeSearchResponse, error) {
-	if req.TenantID == "" {
-		req.TenantID = c.cfg.TenantID
+	if req.Query == "" {
+		return nil, fmt.Errorf("redclaw: search query cannot be empty")
 	}
+	
+	// Enforce tenant isolation: override with client's tenant ID
+	if req.TenantID != "" && req.TenantID != c.cfg.TenantID {
+		return nil, fmt.Errorf("redclaw: tenant ID mismatch (request=%s, client=%s)", req.TenantID, c.cfg.TenantID)
+	}
+	req.TenantID = c.cfg.TenantID
 
 	resp, err := c.doRequest(http.MethodPost, "/api/v1/pocket/knowledge/search", req)
 	if err != nil {

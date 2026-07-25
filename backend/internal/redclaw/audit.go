@@ -35,6 +35,7 @@ type AuditStore struct {
 	maxSize int
 }
 
+// NewAuditStore creates a new audit log store with default capacity.
 func NewAuditStore() *AuditStore {
 	return &AuditStore{
 		entries: make([]*AuditEntry, 0, 1000),
@@ -42,7 +43,12 @@ func NewAuditStore() *AuditStore {
 	}
 }
 
+// Record records an audit entry to the store.
 func (s *AuditStore) Record(entry *AuditEntry) error {
+	if entry == nil {
+		return fmt.Errorf("audit entry cannot be nil")
+	}
+	
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -57,6 +63,7 @@ func (s *AuditStore) Record(entry *AuditEntry) error {
 	return nil
 }
 
+// Query retrieves audit entries matching the given query filters.
 func (s *AuditStore) Query(query AuditQuery) ([]*AuditEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -87,6 +94,7 @@ func (s *AuditStore) Query(query AuditQuery) ([]*AuditEntry, error) {
 	return result, nil
 }
 
+// Flush returns all stored audit entries and clears the store.
 func (s *AuditStore) Flush() []*AuditEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()

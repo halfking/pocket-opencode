@@ -1,5 +1,7 @@
 package redclaw
 
+import "fmt"
+
 // TenantContext 租户上下文
 type TenantContext struct {
 	TenantID string `json:"tenant_id"`
@@ -32,10 +34,13 @@ func ExtractTenantContext(claims map[string]interface{}) *TenantContext {
 	return ctx
 }
 
-// AttachTenantHeaders 生成需附加到 RedClaw 请求的 Header
-func AttachTenantHeaders(ctx *TenantContext) map[string]string {
+// AttachTenantHeaders generates headers to attach to RedClaw requests for tenant isolation.
+func AttachTenantHeaders(ctx *TenantContext) (map[string]string, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("tenant context cannot be nil")
+	}
 	return map[string]string{
 		"X-Tenant-ID": ctx.TenantID,
 		"X-User-ID":   ctx.UserID,
-	}
+	}, nil
 }

@@ -65,3 +65,43 @@ func TestAuditLog_Flush(t *testing.T) {
 		t.Errorf("expected 0 after flush, got %d", len(remaining))
 	}
 }
+
+func TestAuditLog_NilEntry(t *testing.T) {
+	store := NewAuditStore()
+	
+	err := store.Record(nil)
+	if err == nil {
+		t.Error("expected error for nil entry")
+	}
+}
+
+func TestAuditLog_ConcurrentAccess(t *testing.T) {
+	store := NewAuditStore()
+	
+	const goroutines = 10
+	const entriesPerGoroutine = 100
+	
+	done := make(chan bool, goroutines)
+	
+	for i := 0; i < goroutines; i++ {
+		go func(id int) {
+			for j := 0; j < entriesPerGoroutine; j++ {
+				store.Record(&AuditEntry{
+					Action:   "test",
+					UserID:   "user-" + string(rune(id)),
+					TenantID: "tenant-1",
+				})
+			}
+			done <- true
+		}(i)
+	}
+	
+	for i := 0; i < goroutines; i++ {
+		<-done
+	}
+	
+	entries, _ := store.Query(AuditQuery{Limit: 10000})
+	if len(entries) != goroutines*entriesPerGoroutine {
+		t.Errorf("expected %d entries, got %d", goroutines*entriesPerGoroutine, len(entries))
+	}
+}

@@ -16,10 +16,14 @@ type Bridge struct {
 	mu        sync.RWMutex
 	connected bool
 	stopCh    chan struct{}
+	stopped   bool
 }
 
-// NewBridge 创建桥接服务
+// NewBridge creates a new RedClaw bridge service.
 func NewBridge(client *Client, onEvent BridgeEventCallback) *Bridge {
+	if client == nil {
+		panic("redclaw: NewBridge called with nil client")
+	}
 	return &Bridge{
 		client:  client,
 		onEvent: onEvent,
@@ -27,7 +31,7 @@ func NewBridge(client *Client, onEvent BridgeEventCallback) *Bridge {
 	}
 }
 
-// Start 启动桥接服务
+// Start starts the bridge service and background health monitoring.
 func (b *Bridge) Start() {
 	b.mu.Lock()
 	b.connected = true
@@ -39,21 +43,22 @@ func (b *Bridge) Start() {
 	go b.healthLoop()
 }
 
-// Stop 停止桥接服务
+// Stop stops the bridge service and background health monitoring.
 func (b *Bridge) Stop() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if !b.connected {
+	if b.stopped {
 		return
 	}
 
 	b.connected = false
+	b.stopped = true
 	close(b.stopCh)
 	log.Println("[RedClaw Bridge] stopped")
 }
 
-// Chat LLM 对话
+// Chat sends a chat request to RedClaw with tenant isolation.
 func (b *Bridge) Chat(req ChatRequest) (*ChatResponse, error) {
 	b.mu.RLock()
 	connected := b.connected
@@ -66,7 +71,7 @@ func (b *Bridge) Chat(req ChatRequest) (*ChatResponse, error) {
 	return b.client.Chat(req)
 }
 
-// KnowledgeSearch 知识库检索
+// KnowledgeSearch searches the knowledge base with tenant isolation.
 func (b *Bridge) KnowledgeSearch(req KnowledgeSearchRequest) (*KnowledgeSearchResponse, error) {
 	b.mu.RLock()
 	connected := b.connected
@@ -79,13 +84,13 @@ func (b *Bridge) KnowledgeSearch(req KnowledgeSearchRequest) (*KnowledgeSearchRe
 	return b.client.KnowledgeSearch(req)
 }
 
-// HealthCheck 健康检查
+// HealthCheck performs a health check against the RedClaw service.
 func (b *Bridge) HealthCheck() bool {
 	_, err := b.client.Health()
 	return err == nil
 }
 
-// IsConnected 返回连接状态
+// IsConnected returns whether the bridge is currently connected.
 func (b *Bridge) IsConnected() bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
