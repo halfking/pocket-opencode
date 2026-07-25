@@ -27,6 +27,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/lobster"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
+	"github.com/halfking/pocket-opencode/backend/internal/meeting"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
@@ -67,6 +68,7 @@ type Server struct {
 		emailStore  *email.Store
 		vaultStore  *vault.Store
 		snippetStore *snippet.Store
+		meetingStore *meeting.Store
 	transcriber *stt.Transcriber // nil = 云端 STT 兜底未配置
 	mcpClient   *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// Phase C: 无状态 AI 网关（嵌入/LLM 代理）。nil = 未配置，对应 handler 返回 503。
@@ -151,6 +153,7 @@ notesStore:      notesStore,
 			emailStore:      emailStore,
 			vaultStore:      vaultStore,
 			snippetStore:    snippet.NewStore(),
+			meetingStore:    meeting.NewStore(),
 		transcriber:     transcriber,
 		mcpClient:       mcpClient,
 		embedder:        embedder,
@@ -277,10 +280,13 @@ func (s *Server) Handler() http.Handler {
 // 语音笔记
 		mux.HandleFunc("/api/notes", s.requireAuth(s.handleNotes))
 		mux.HandleFunc("/api/notes/", s.requireAuth(s.handleNoteOperations))
-		// 代码片段
+// 代码片段
 		mux.HandleFunc("/api/snippets", s.requireAuth(s.handleSnippets))
 		mux.HandleFunc("/api/snippets/", s.requireAuth(s.handleSnippetOps))
-	// 邮箱助手
+		// 会议管理
+		mux.HandleFunc("/api/meetings", s.requireAuth(s.handleMeetings))
+		mux.HandleFunc("/api/meetings/", s.requireAuth(s.handleMeetingOps))
+		// 邮箱助手
 	mux.HandleFunc("/api/email/accounts", s.requireAuth(s.handleEmailAccounts))
 	mux.HandleFunc("/api/email/accounts/", s.requireAuth(s.handleEmailAccountOps))
 	mux.HandleFunc("/api/email/summaries", s.requireAuth(s.handleEmailSummaries))
