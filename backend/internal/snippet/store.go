@@ -10,18 +10,33 @@ import (
 )
 
 // Store 代码片段存储（内存实现，后续可迁移到数据库）
+// Store is an in-memory code snippet storage with thread-safe operations.
 type Store struct {
 	mu       sync.RWMutex
 	snippets map[string]*Snippet
 }
 
+// NewStore creates a new snippet store instance.
 func NewStore() *Store {
 	return &Store{
 		snippets: make(map[string]*Snippet),
 	}
 }
 
+// Create creates a new snippet and returns a copy.
+// Returns error if required fields (Title, Language, Code) are empty.
 func (s *Store) Create(req CreateSnippetRequest) (*Snippet, error) {
+	// Validate required fields
+	if strings.TrimSpace(req.Title) == "" {
+		return nil, fmt.Errorf("snippet title cannot be empty")
+	}
+	if strings.TrimSpace(req.Language) == "" {
+		return nil, fmt.Errorf("snippet language cannot be empty")
+	}
+	if strings.TrimSpace(req.Code) == "" {
+		return nil, fmt.Errorf("snippet code cannot be empty")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -39,10 +54,18 @@ func (s *Store) Create(req CreateSnippetRequest) (*Snippet, error) {
 	}
 
 	s.snippets[snip.ID] = snip
-	return snip, nil
+	
+	// Return a copy to prevent external mutation
+	return copySnippet(snip), nil
 }
 
+// Get retrieves a snippet by ID and returns a copy.
+// Returns error if snippet not found or ID is empty.
 func (s *Store) Get(id string) (*Snippet, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("snippet ID cannot be empty")
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -50,9 +73,14 @@ func (s *Store) Get(id string) (*Snippet, error) {
 	if !ok {
 		return nil, fmt.Errorf("snippet not found: %s", id)
 	}
-	return snip, nil
+	
+	// Return a copy to prevent external mutation
+	return copySnippet(snip), nil
 }
 
+// List retrieves snippets matching the filter criteria and returns copies.
+// Supports filtering by Language, ProjectID, Tag, and Search (title).
+// Applies pagination via Offset and Limit (default 50).
 func (s *Store) List(req ListSnippetsRequest) ([]*Snippet, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -89,8 +117,12 @@ func (s *Store) List(req ListSnippetsRequest) ([]*Snippet, error) {
 	}
 
 	// 应用 offset
-	if req.Offset > 0 && req.Offset < len(result) {
-		result = result[req.Offset:]
+	if req.Offset > 0 {
+		if req.Offset >= len(result) {
+			result = []*Snippet{}
+		} else {
+			result = result[req.Offset:]
+		}
 	}
 
 	// 应用 limit
@@ -98,10 +130,22 @@ func (s *Store) List(req ListSnippetsRequest) ([]*Snippet, error) {
 		result = result[:limit]
 	}
 
-	return result, nil
+	// Return copies to prevent external mutation
+	copies := make([]*Snippet, len(result))
+	for i, snip := range result {
+		copies[i] = copySnippet(snip)
+	}
+
+	return copies, nil
 }
 
+// Delete removes a snippet by ID.
+// Returns error if snippet not found or ID is empty.
 func (s *Store) Delete(id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("snippet ID cannot be empty")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -114,6 +158,32 @@ func (s *Store) Delete(id string) error {
 
 var idCounter atomic.Int64
 
+// generateID creates a unique sequential ID for snippets.
 func generateID() string {
 	return fmt.Sprintf("snip_%d", idCounter.Add(1))
+}
+
+// copySnippet creates a deep copy of a snippet to prevent external mutation.
+func copySnippet(snip *Snippet) *Snippet {
+	if snip == nil {
+		return nil
+	}
+	
+	// Copy tags slice
+	tagsCopy := make([]string, len(snip.Tags))
+	copy(tagsCopy, snip.Tags)
+	
+	return &Snippet{
+		ID:          snip.ID,
+		Title:       snip.Title,
+		Language:    snip.Language,
+		Code:        snip.Code,
+		Description: snip.Description,
+		Tags:        tagsCopy,
+		ProjectID:   snip.ProjectID,
+		Source:      snip.Source,
+		SourceID:    snip.SourceID,
+		CreatedAt:   snip.CreatedAt,
+		UpdatedAt:   snip.UpdatedAt,
+	}
 }
