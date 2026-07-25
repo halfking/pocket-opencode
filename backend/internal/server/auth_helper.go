@@ -69,12 +69,18 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// 把 claims 注入 context，handler 可通过 claimsFromContext 获取
-		ctx := context.WithValue(r.Context(), authClaimsContextKey{}, &authClaims{
-			UserID:      claims.UserID,
-			Role:        claims.Role,
-			WorkspaceID: claims.WorkspaceID,
-		})
-		next.ServeHTTP(w, r.WithContext(ctx))
+// 把 claims 注入 context，handler 可通过 claimsFromContext 获取
+			ctx := context.WithValue(r.Context(), authClaimsContextKey{}, &authClaims{
+				UserID:      claims.UserID,
+				Role:        claims.Role,
+				WorkspaceID: claims.WorkspaceID,
+			})
+			
+			// 注入多租户 Headers，供下游服务使用
+			r.Header.Set("X-User-ID", claims.UserID)
+			r.Header.Set("X-Tenant-ID", claims.WorkspaceID)
+			r.Header.Set("X-User-Role", claims.Role)
+			
+			next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }
