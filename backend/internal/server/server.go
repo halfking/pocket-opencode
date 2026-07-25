@@ -356,11 +356,15 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/plugin/status", s.handlePluginStatus)
 		mux.HandleFunc("/api/plugin/command", s.requireAuth(s.handleSendCommand))
 
-		// RedClaw 企业后端集成
-		mux.HandleFunc("/api/redclaw/health", s.handleRedClawHealth)
-		mux.HandleFunc("/api/redclaw/chat", s.handleRedClawChat)
+// RedClaw 企业后端集成
+			mux.HandleFunc("/api/redclaw/health", s.handleRedClawHealth)
+			mux.HandleFunc("/api/redclaw/chat", s.handleRedClawChat)
 
-	return corsMiddleware(mux, s.cfg.AllowedOrigins, s.cfg.DevAuth)
+			// ---- 产品方案/PPT API ----
+			mux.HandleFunc("/api/presentations", s.requireAuth(s.handlePresentations))
+			mux.HandleFunc("/api/presentations/render", s.requireAuth(s.handleRenderPresentation))
+
+		return corsMiddleware(mux, s.cfg.AllowedOrigins, s.cfg.DevAuth)
 }
 
 func corsMiddleware(next http.Handler, allowedOrigins string, devAuth bool) http.Handler {
