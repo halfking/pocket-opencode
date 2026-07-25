@@ -18,10 +18,22 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Audit logs require admin role and are scoped to authenticated workspace
+	claims := s.claimsFromContext(r)
+	if claims == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if claims.Role != "admin" {
+		http.Error(w, "admin role required", http.StatusForbidden)
+		return
+	}
+
+	// Force tenant scope to authenticated workspace; ignore client-supplied tenant_id
 	query := redclaw.AuditQuery{
-		TenantID: r.URL.Query().Get("tenant_id"),
-		UserID:   r.URL.Query().Get("user_id"),
+		TenantID: claims.WorkspaceID,
 		Action:   r.URL.Query().Get("action"),
+		// UserID filter omitted to allow workspace-wide audit by admins
 	}
 
 	entries, err := s.auditStore.Query(query)

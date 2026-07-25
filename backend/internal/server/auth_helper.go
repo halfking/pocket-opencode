@@ -42,7 +42,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		if strings.HasPrefix(auth, "Bearer ") {
 			token = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 		}
-		if token == "" && (r.URL.Path == "/ws" || r.URL.Path == "/plugin/ws") {
+		if token == "" && (r.URL.Path == "/ws" || r.URL.Path == "/plugin/ws" || strings.Contains(r.URL.Path, "/event")) {
 			token = strings.TrimSpace(r.URL.Query().Get("token"))
 		}
 		if token == "" {

@@ -38,17 +38,23 @@ func (s *Server) handleRedClawChat(w http.ResponseWriter, r *http.Request) {
 
 	var req redclaw.ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request: `+err.Error()+`"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
 		return
 	}
 
-	// 从 JWT 上下文提取租户信息
-	claims := extractClaims(r)
-	if claims != nil {
-		tenantCtx := redclaw.ExtractTenantContext(claims)
-		if req.TenantID == "" {
-			req.TenantID = tenantCtx.TenantID
-		}
+	// Force tenant and user from authenticated JWT; ignore request body values
+	claims := s.claimsFromContext(r)
+	if claims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	req.TenantID = claims.WorkspaceID
+	req.UserID = claims.UserID
+
+	// Validate against configured tenant if single-tenant deployment
+	if s.cfg.RedClawTenantID != "" && req.TenantID != s.cfg.RedClawTenantID {
+		http.Error(w, `{"error":"tenant mismatch"}`, http.StatusForbidden)
+		return
 	}
 
 	resp, err := s.redclawBridge.Chat(req)
@@ -82,6 +88,14 @@ func (s *Server) handleRedClawKnowledgeSearch(w http.ResponseWriter, r *http.Req
 		http.Error(w, `{"error":"query is required"}`, http.StatusBadRequest)
 		return
 	}
+
+	// Force tenant from authenticated JWT
+	claims := s.claimsFromContext(r)
+	if claims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	req.TenantID = claims.WorkspaceID
 
 	resp, err := s.redclawBridge.KnowledgeSearch(req)
 	if err != nil {

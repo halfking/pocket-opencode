@@ -17,8 +17,6 @@ import (
 	"log"
 	"net/http"
 	"net/mail"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
