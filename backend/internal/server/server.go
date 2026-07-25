@@ -371,7 +371,8 @@ func (s *Server) Handler() http.Handler {
 			mux.HandleFunc("/api/presentations", s.requireAuth(s.handlePresentations))
 			mux.HandleFunc("/api/presentations/render", s.requireAuth(s.handleRenderPresentation))
 
-		return corsMiddleware(mux, s.cfg.AllowedOrigins, s.cfg.DevAuth)
+		handler := recoveryMiddleware(s.loggingMiddleware(corsMiddleware(mux, s.cfg.AllowedOrigins, s.cfg.DevAuth)))
+		return handler
 }
 
 func corsMiddleware(next http.Handler, allowedOrigins string, devAuth bool) http.Handler {
