@@ -66,4 +66,60 @@ func TestClassifier_ExtractTags(t *testing.T) {
 	if len(tags) == 0 {
 		t.Error("expected at least one tag")
 	}
+	// Verify we got the expected tags
+	tagMap := make(map[string]bool)
+	for _, tag := range tags {
+		tagMap[tag] = true
+	}
+	if !tagMap["Go"] {
+		t.Errorf("expected Go tag, got %v", tags)
+	}
+	if !tagMap["Docker"] {
+		t.Errorf("expected Docker tag, got %v", tags)
+	}
+}
+
+func TestClassifier_Classify_Empty(t *testing.T) {
+	c := &Classifier{}
+	result := c.Classify("")
+	if result.Type != "general" {
+		t.Errorf("expected general for empty string, got %s", result.Type)
+	}
+	if result.Tags == nil {
+		t.Error("expected non-nil tags slice")
+	}
+}
+
+func TestClassifier_ExtractTags_Empty(t *testing.T) {
+	c := &Classifier{}
+	tags := c.ExtractTags("")
+	if tags == nil {
+		t.Error("expected non-nil slice")
+	}
+	if len(tags) != 0 {
+		t.Errorf("expected empty slice for empty content, got %v", tags)
+	}
+}
+
+func TestClassifier_ExtractTags_NoMatch(t *testing.T) {
+	c := &Classifier{}
+	tags := c.ExtractTags("今天天气很好，心情不错")
+	if tags == nil {
+		t.Error("expected non-nil slice")
+	}
+	if len(tags) != 0 {
+		t.Errorf("expected empty slice for no matches, got %v", tags)
+	}
+}
+
+func TestClassifier_ExtractTags_Deduplication(t *testing.T) {
+	c := &Classifier{}
+	// "kubernetes" and "k8s" should both map to "Kubernetes" tag
+	tags := c.ExtractTags("学习kubernetes和k8s的区别")
+	if len(tags) != 1 {
+		t.Errorf("expected 1 tag after deduplication, got %d: %v", len(tags), tags)
+	}
+	if tags[0] != "Kubernetes" {
+		t.Errorf("expected Kubernetes tag, got %s", tags[0])
+	}
 }

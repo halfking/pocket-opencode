@@ -14,7 +14,9 @@ type ClassificationResult struct {
 // Classifier 笔记 AI 分类引擎（规则引擎，后续可替换为 LLM）
 type Classifier struct{}
 
-// Classify 对笔记内容进行分类
+// Classify classifies note content into one of the predefined types (tech, meeting,
+// todo, idea, product, learning, general) using keyword-based rules. It also extracts
+// relevant tags from the content. The classifier is stateless and safe for concurrent use.
 func (c *Classifier) Classify(content string) *ClassificationResult {
 	lower := strings.ToLower(content)
 
@@ -67,9 +69,11 @@ func (c *Classifier) Classify(content string) *ClassificationResult {
 	return result
 }
 
-// ExtractTags 从内容中提取标签
+// ExtractTags extracts technology-related tags from the note content by matching
+// against a predefined set of keywords (e.g., "Go", "Docker", "Kubernetes"). It
+// returns a deduplicated list of canonical tag names. Empty content returns an empty slice.
 func (c *Classifier) ExtractTags(content string) []string {
-	var tags []string
+	tags := []string{}
 	seen := make(map[string]bool)
 
 	techKeywords := map[string]string{

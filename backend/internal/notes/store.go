@@ -12,6 +12,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const (
+	// maxListResults is the maximum number of notes returned by List to prevent
+	// unbounded result sets in offline list rendering.
+	maxListResults = 200
+)
+
 // Store is the PostgreSQL-backed local cache of voice-note metadata.
 // AI processing (classification, SSOT, graph) happens in kxmemory; pocketd
 // only caches metadata for offline list rendering. Migrated from SQLite in
@@ -72,7 +78,10 @@ func (s *Store) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_notes_user_domain ON notes(user_id, domain);
 	CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC);
 	`)
-	return err
+	if err != nil {
+		return fmt.Errorf("notes store migration failed: %w", err)
+	}
+	return nil
 }
 
 // Upsert caches or updates a note's metadata after kxmemory confirms it.
@@ -143,7 +152,10 @@ func (s *Store) Upsert(ctx context.Context, n *Note) error {
 			updated_at    = COALESCE($14, CURRENT_TIMESTAMP)
 	`,
 		n.ID, n.UserID, n.WorkspaceID, n.Title, content, n.Snippet, contentTypeVal, domainVal, tagsVal, n.AudioPath, n.AudioDuration, n.CreatedByVoice, createdAt, updatedAt)
-	return err
+	if err != nil {
+		return fmt.Errorf("upsert note %s: %w", n.ID, err)
+	}
+	return nil
 }
 
 func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error) {
@@ -160,11 +172,11 @@ func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error)
 		q += " AND domain = $2"
 		args = append(args, domain)
 	}
-	q += " ORDER BY updated_at DESC LIMIT 200"
+	q += " ORDER BY updated_at DESC LIMIT " + fmt.Sprintf("%d", maxListResults)
 
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query notes for user %s: %w", userID, err)
 	}
 	defer rows.Close()
 
@@ -185,7 +197,7 @@ func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error)
 		if err := rows.Scan(&n.ID, &n.UserID, &workspaceID, &title, &content, &snippet,
 			&n.ContentType, &domain, &tags, &audioPath, &n.AudioDuration, &n.CreatedByVoice,
 			&createdAt, &updatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan note row: %w", err)
 		}
 		if workspaceID.Valid {
 			n.WorkspaceID = workspaceID.String
@@ -221,7 +233,10 @@ func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error)
 		}
 		out = append(out, n)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate note rows: %w", err)
+	}
+	return out, nil
 }
 
 // GetByID 按 ID 查找单条笔记（不含软删除）。
@@ -258,7 +273,7 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Note, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get note by id %s: %w", id, err)
 	}
 	if workspaceID.Valid {
 		n.WorkspaceID = workspaceID.String
@@ -300,7 +315,10 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	// future, and matches the actual schema's idx_notes_* `WHERE
 	// deleted_at IS NULL` partial-index design.
 	_, err := s.pool.Exec(ctx, `UPDATE notes SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1`, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("delete note %s: %w", id, err)
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return nil }
