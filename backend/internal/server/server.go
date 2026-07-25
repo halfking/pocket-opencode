@@ -35,8 +35,9 @@ import (
 "github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
-	"github.com/halfking/pocket-opencode/backend/internal/snippet"
-	"github.com/halfking/pocket-opencode/backend/internal/stt"
+"github.com/halfking/pocket-opencode/backend/internal/snippet"
+		cs "github.com/halfking/pocket-opencode/backend/internal/chat_summary"
+		"github.com/halfking/pocket-opencode/backend/internal/stt"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
 	"github.com/halfking/pocket-opencode/backend/internal/vault"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
@@ -67,8 +68,9 @@ type Server struct {
 		notesStore  *notes.Store
 		emailStore  *email.Store
 		vaultStore  *vault.Store
-		snippetStore *snippet.Store
-		meetingStore *meeting.Store
+snippetStore *snippet.Store
+			meetingStore *meeting.Store
+		chatSummaryStore *cs.Store
 	transcriber *stt.Transcriber // nil = 云端 STT 兜底未配置
 	mcpClient   *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// Phase C: 无状态 AI 网关（嵌入/LLM 代理）。nil = 未配置，对应 handler 返回 503。
@@ -152,8 +154,9 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 notesStore:      notesStore,
 			emailStore:      emailStore,
 			vaultStore:      vaultStore,
-			snippetStore:    snippet.NewStore(),
-			meetingStore:    meeting.NewStore(),
+snippetStore:    snippet.NewStore(),
+				meetingStore:    meeting.NewStore(),
+			chatSummaryStore: cs.NewStore(),
 		transcriber:     transcriber,
 		mcpClient:       mcpClient,
 		embedder:        embedder,
@@ -283,9 +286,12 @@ func (s *Server) Handler() http.Handler {
 // 代码片段
 		mux.HandleFunc("/api/snippets", s.requireAuth(s.handleSnippets))
 		mux.HandleFunc("/api/snippets/", s.requireAuth(s.handleSnippetOps))
-		// 会议管理
-		mux.HandleFunc("/api/meetings", s.requireAuth(s.handleMeetings))
-		mux.HandleFunc("/api/meetings/", s.requireAuth(s.handleMeetingOps))
+// 会议管理
+			mux.HandleFunc("/api/meetings", s.requireAuth(s.handleMeetings))
+			mux.HandleFunc("/api/meetings/", s.requireAuth(s.handleMeetingOps))
+			// 聊天总结
+			mux.HandleFunc("/api/chat-summaries", s.requireAuth(s.handleChatSummaries))
+			mux.HandleFunc("/api/chat-summaries/", s.requireAuth(s.handleChatSummaryOps))
 		// 邮箱助手
 	mux.HandleFunc("/api/email/accounts", s.requireAuth(s.handleEmailAccounts))
 	mux.HandleFunc("/api/email/accounts/", s.requireAuth(s.handleEmailAccountOps))
