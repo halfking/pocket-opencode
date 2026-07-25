@@ -271,17 +271,17 @@ func (s *Server) WSHub() *ws.Hub { return s.wsHub }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
-	mux.HandleFunc("/api/instances", s.handleInstances)
-	mux.HandleFunc("/api/sessions/", s.handleSessions)
-	mux.HandleFunc("/api/sessions", s.handleAllSessions) // 新增：获取所有会话
-	mux.HandleFunc("/api/tasks", s.handleTasks)
-	mux.HandleFunc("/api/tasks/", s.handleTaskOperations)
+		mux.HandleFunc("/api/instances", s.requireAuth(s.handleInstances))
+		mux.HandleFunc("/api/sessions/", s.requireAuth(s.handleSessions))
+		mux.HandleFunc("/api/sessions", s.requireAuth(s.handleAllSessions)) // 新增：获取所有会话
+		mux.HandleFunc("/api/tasks", s.requireAuth(s.handleTasks))
+		mux.HandleFunc("/api/tasks/", s.requireAuth(s.handleTaskOperations))
 	mux.HandleFunc("/api/config/models", s.requireAuth(s.handleModelConfig))
 	mux.HandleFunc("/api/config/reload", s.requireAuth(s.handleConfigReload))
-	mux.HandleFunc("/api/config/models/test", s.handleModelTest)
-	mux.HandleFunc("/ws", s.requireAuth(s.handleWebSocket))
-	mux.HandleFunc("/api/app/check-update", s.handleCheckUpdate)
-	mux.HandleFunc("/api/app/download", s.handleDownloadAPK)
+		mux.HandleFunc("/api/config/models/test", s.requireAuth(s.handleModelTest))
+		mux.HandleFunc("/ws", s.requireAuth(s.handleWebSocket))
+		mux.HandleFunc("/api/app/check-update", s.handleCheckUpdate)
+		mux.HandleFunc("/api/app/download", s.handleDownloadAPK)
 	// 飞书事件回调 (m.kxpms.cn/callback/feishu 由 56 nginx 转发到 9010)
 	mux.HandleFunc("/callback/feishu", s.handleFeishuCallback)
 
@@ -322,20 +322,20 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/finance/", s.requireAuth(s.handleFinanceOps))
 	// S0-C: Lobster Vault 加密镜像同步（e2ee assets 跨设备同步）
 	mux.HandleFunc("/api/assets/sync", s.requireAuth(s.handleAssetSync))
-	// STT 云端兜底
-	mux.HandleFunc("/api/stt/transcribe", s.handleSttTranscribe)
-	// Phase C: 无状态 AI 网关（仅转发嵌入/LLM，不存数据）
-	mux.HandleFunc("/api/embed", s.requireAuth(s.handleEmbed))
+		// STT 云端兜底（消耗外部 API 配额，必须认证）
+		mux.HandleFunc("/api/stt/transcribe", s.requireAuth(s.handleSttTranscribe))
+		// Phase C: 无状态 AI 网关（仅转发嵌入/LLM，不存数据）
+		mux.HandleFunc("/api/embed", s.requireAuth(s.handleEmbed))
 	mux.HandleFunc("/api/llm/chat", s.requireAuth(s.handleLLMChat))
 	// S0-B: 统一 LLM BFF（流式 + 用量查询）。老的 /api/llm/chat 保留兼容，
 	// llmBFF 启用时优先走 BFF；未启用时回退到老 handler。
 	mux.HandleFunc("/api/llm/stream", s.requireAuth(s.handleLLMBFFStream))
 	mux.HandleFunc("/api/llm/usage", s.requireAuth(s.handleLLMBFFUsage))
 
-	// OpenCode 管理 API
-	mux.HandleFunc("/api/opencode/sessions", s.handleOpenCodeSessions)
-	mux.HandleFunc("/api/opencode/sessions/", s.handleOpenCodeSessionOperations)
-	mux.HandleFunc("/api/opencode/instances/", s.handleOpenCodeInstanceOperations)
+		// OpenCode 管理 API（会话/实例数据属于认证用户可见范围）
+		mux.HandleFunc("/api/opencode/sessions", s.requireAuth(s.handleOpenCodeSessions))
+		mux.HandleFunc("/api/opencode/sessions/", s.requireAuth(s.handleOpenCodeSessionOperations))
+		mux.HandleFunc("/api/opencode/instances/", s.requireAuth(s.handleOpenCodeInstanceOperations))
 	mux.HandleFunc("/api/opencode/cache/refresh", s.requireAuth(s.handleOpenCodeRefreshCache))
 	mux.HandleFunc("/api/opencode/dispatch", s.requireAuth(s.handleOpenCodeDispatch))
 	// S0-D: Agent Bridge（list/get/create/send）。底层复用 opencode adapter。
@@ -365,15 +365,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/mobile/sessions", s.requireAuth(s.handleMobileSessionRouter))
 	mux.HandleFunc("/api/mobile/sessions/", s.requireAuth(s.handleMobileSessionRouter))
 
-// Plugin/Manager WebSocket routes
+		// Plugin/Manager WebSocket routes
 		mux.HandleFunc("/plugin/ws", s.requireAuth(s.handlePluginWebSocket))
-		mux.HandleFunc("/api/plugin/status", s.handlePluginStatus)
+		mux.HandleFunc("/api/plugin/status", s.requireAuth(s.handlePluginStatus))
 		mux.HandleFunc("/api/plugin/command", s.requireAuth(s.handleSendCommand))
 
-// RedClaw 企业后端集成
-				mux.HandleFunc("/api/redclaw/health", s.handleRedClawHealth)
-				mux.HandleFunc("/api/redclaw/chat", s.handleRedClawChat)
-				mux.HandleFunc("/api/redclaw/knowledge/search", s.requireAuth(s.handleRedClawKnowledgeSearch))
+		// RedClaw 企业后端集成（代理/配额消耗必须认证）
+		mux.HandleFunc("/api/redclaw/health", s.requireAuth(s.handleRedClawHealth))
+		mux.HandleFunc("/api/redclaw/chat", s.requireAuth(s.handleRedClawChat))
+		mux.HandleFunc("/api/redclaw/knowledge/search", s.requireAuth(s.handleRedClawKnowledgeSearch))
 
 				// Audit 审计日志
 				mux.HandleFunc("/api/audit/logs", s.requireAuth(s.handleAuditLogs))

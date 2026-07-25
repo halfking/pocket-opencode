@@ -37,22 +37,13 @@ func (s *Server) workspaceIDFromRequest(r *http.Request) string {
 	return "default"
 }
 
-// claimsFromRequest 解析 Authorization: Bearer JWT，失败返回 nil。
-// 与 userIDFromRequest 同源，但返回完整 claims 供 workspace 边界判断。
+// claimsFromRequest 从已认证的 request context 读取 claims；仅作为兼容路径时才解析 Authorization。
+// 不信任客户端可控的身份请求头，也不从 query token 推断普通 HTTP 请求身份。
 func (s *Server) claimsFromRequest(r *http.Request) *authClaims {
-	if s.jwtSigner == nil {
-		return nil
+	if claims := s.claimsFromContext(r); claims != nil {
+		return claims
 	}
-	authHeader := r.Header.Get("Authorization")
-	if !strings.HasPrefix(authHeader, "Bearer ") {
-		return nil
-	}
-	token := strings.TrimSpace(authHeader[len("Bearer "):])
-	claims, err := s.jwtSigner.Parse(token)
-	if err != nil {
-		return nil
-	}
-	return &authClaims{UserID: claims.UserID, Role: claims.Role, WorkspaceID: claims.WorkspaceID}
+	return nil
 }
 
 // handleWorkspaces 处理 GET/POST /api/workspaces

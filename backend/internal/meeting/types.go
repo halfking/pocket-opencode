@@ -6,6 +6,8 @@ import "time"
 // Meeting 会议记录
 type Meeting struct {
 	ID           string       `json:"id"`
+	OwnerID      string       `json:"owner_id,omitempty"`
+	WorkspaceID  string       `json:"workspace_id,omitempty"`
 	Title        string       `json:"title"`
 	Duration     int          `json:"duration"`      // 秒
 	RecordingURL string       `json:"recording_url,omitempty"`

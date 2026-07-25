@@ -31,33 +31,24 @@ func (s *Server) claimsFromContext(r *http.Request) *authClaims {
 
 // requireAuth 中间件：验证 JWT，未认证返回 401。
 //
-// Phase 1 实现：从 Authorization: Bearer <JWT> 或查询参数 token 解析并验证 token。
-// 验证失败时返回 401 Unauthorized，前端应重定向到登录页。
-// 
-// 支持两种token传递方式:
-// 1. Authorization header: Bearer <token>
-// 2. Query parameter: ?token=<token> (用于WebSocket连接)
+// Authorization: Bearer <JWT> 是普通 HTTP 请求的唯一凭证来源。
+// WebSocket 握手允许 /ws 和 /plugin/ws 使用 query token，因为浏览器 WebSocket
+// API 无法设置 Authorization header；其它 HTTP 路由不接受 URL 中的 token。
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var token string
-		
-		// 优先从Authorization header获取token
-		auth := r.Header.Get("Authorization")
+
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
 		if strings.HasPrefix(auth, "Bearer ") {
-			token = strings.TrimSpace(auth[len("Bearer "):])
+			token = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 		}
-		
-		// 如果header中没有token，尝试从查询参数获取（用于WebSocket）
-		if token == "" {
-			token = r.URL.Query().Get("token")
+		if token == "" && (r.URL.Path == "/ws" || r.URL.Path == "/plugin/ws") {
+			token = strings.TrimSpace(r.URL.Query().Get("token"))
 		}
-		
-		// 如果两处都没有token，返回401
 		if token == "" {
 			writeError(w, http.StatusUnauthorized, "missing authorization token")
 			return
 		}
-
 		if s.jwtSigner == nil {
 			writeError(w, http.StatusInternalServerError, "JWT signer not configured")
 			return
@@ -69,18 +60,14 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-// 把 claims 注入 context，handler 可通过 claimsFromContext 获取
-			ctx := context.WithValue(r.Context(), authClaimsContextKey{}, &authClaims{
-				UserID:      claims.UserID,
-				Role:        claims.Role,
-				WorkspaceID: claims.WorkspaceID,
-			})
-			
-			// 注入多租户 Headers，供下游服务使用
-			r.Header.Set("X-User-ID", claims.UserID)
-			r.Header.Set("X-Tenant-ID", claims.WorkspaceID)
-			r.Header.Set("X-User-Role", claims.Role)
-			
-			next.ServeHTTP(w, r.WithContext(ctx))
+		ctx := context.WithValue(r.Context(), authClaimsContextKey{}, &authClaims{
+			UserID:      claims.UserID,
+			Role:        claims.Role,
+			WorkspaceID: claims.WorkspaceID,
+		})
+		r.Header.Set("X-User-ID", claims.UserID)
+		r.Header.Set("X-Tenant-ID", claims.WorkspaceID)
+		r.Header.Set("X-User-Role", claims.Role)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }

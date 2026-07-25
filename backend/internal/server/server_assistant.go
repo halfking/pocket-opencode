@@ -1166,45 +1166,33 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to read audio file: "+err.Error())
 			return
 		}
-	} else {
-		// JSON body: { "audioPath": "/path/to/audio.wav" } 或 { "audioBase64": "..." }
-		var body struct {
-			AudioPath   string `json:"audioPath"`
-			AudioBase64 string `json:"audioBase64"`
-			Filename    string `json:"filename"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid body")
-			return
-		}
-		filename = body.Filename
-		if body.AudioBase64 != "" {
-			// Base64 编码的音频
-			var decodeErr error
-			audioData, decodeErr = base64.StdEncoding.DecodeString(body.AudioBase64)
-			if decodeErr != nil {
-				writeError(w, http.StatusBadRequest, "invalid base64 audio: "+decodeErr.Error())
-				return
-			}
-			if filename == "" {
-				filename = "audio.wav"
-			}
-		} else if body.AudioPath != "" {
-			// 文件路径（本地开发场景）
-			var readErr error
-			audioData, readErr = os.ReadFile(body.AudioPath)
-			if readErr != nil {
-				writeError(w, http.StatusBadRequest, "failed to read audio file: "+readErr.Error())
-				return
-			}
-			if filename == "" {
-				filename = filepath.Base(body.AudioPath)
-			}
 		} else {
-			writeError(w, http.StatusBadRequest, "provide 'file' (multipart), 'audioBase64', or 'audioPath'")
-			return
+			// JSON body: { "audioBase64": "..." }
+			var body struct {
+				AudioBase64 string `json:"audioBase64"`
+				Filename    string `json:"filename"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid body")
+				return
+			}
+			filename = body.Filename
+			if body.AudioBase64 != "" {
+				// Base64 编码的音频
+				var decodeErr error
+				audioData, decodeErr = base64.StdEncoding.DecodeString(body.AudioBase64)
+				if decodeErr != nil {
+					writeError(w, http.StatusBadRequest, "invalid base64 audio: "+decodeErr.Error())
+					return
+				}
+				if filename == "" {
+					filename = "audio.wav"
+				}
+			} else {
+				writeError(w, http.StatusBadRequest, "provide 'file' (multipart) or 'audioBase64'")
+				return
+			}
 		}
-	}
 
 	if len(audioData) == 0 {
 		writeError(w, http.StatusBadRequest, "empty audio data")
