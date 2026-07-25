@@ -21,11 +21,12 @@ import (
 //   - ListSessions 返回所有创建的 session
 //   - 错误注入：让 tests 模拟 unreachable / timeout
 type MockAgentAdapter struct {
-	mu        sync.Mutex
-	sessions  map[string]*AgentSession
-	messages  map[string][]AgentMessage // sessionID → messages
-	nextID    atomic.Int64
-	nextMsgID atomic.Int64
+	mu          sync.Mutex
+	sessions    map[string]*AgentSession
+	sessionList []string                     // 保持创建顺序
+	messages    map[string][]AgentMessage    // sessionID → messages
+	nextID      atomic.Int64
+	nextMsgID   atomic.Int64
 
 	// 错误注入
 	forceErr error // 非 nil 时所有方法返回这个错误
@@ -75,16 +76,18 @@ func (m *MockAgentAdapter) HealthCheck(ctx context.Context, ref AgentRef) error 
 	return m.getErr()
 }
 
-// ListSessions 返回所有 mock session。
+// ListSessions 返回所有 mock session（按创建顺序）。
 func (m *MockAgentAdapter) ListSessions(ctx context.Context, ref AgentRef, opts ListOptions) ([]AgentSession, error) {
 	if e := m.getErr(); e != nil {
 		return nil, e
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]AgentSession, 0, len(m.sessions))
-	for _, s := range m.sessions {
-		out = append(out, *s)
+	out := make([]AgentSession, 0, len(m.sessionList))
+	for _, sid := range m.sessionList {
+		if s, ok := m.sessions[sid]; ok {
+			out = append(out, *s)
+		}
 	}
 	return out, nil
 }
@@ -110,6 +113,7 @@ func (m *MockAgentAdapter) CreateSession(ctx context.Context, ref AgentRef, req 
 	}
 	m.mu.Lock()
 	m.sessions[id] = s
+	m.sessionList = append(m.sessionList, id)
 	m.messages[id] = nil
 	m.mu.Unlock()
 	return s, nil
@@ -139,6 +143,13 @@ func (m *MockAgentAdapter) DeleteSession(ctx context.Context, ref AgentRef, sess
 	defer m.mu.Unlock()
 	delete(m.sessions, sessionID)
 	delete(m.messages, sessionID)
+	// 从 sessionList 中移除
+	for i, sid := range m.sessionList {
+		if sid == sessionID {
+			m.sessionList = append(m.sessionList[:i], m.sessionList[i+1:]...)
+			break
+		}
+	}
 	return nil
 }
 
