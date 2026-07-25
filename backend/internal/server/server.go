@@ -22,6 +22,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
+		"github.com/halfking/pocket-opencode/backend/internal/finance"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
@@ -110,6 +111,7 @@ snippetStore *snippet.Store
 	emailPending   *email.PendingOAuth
 	emailScheduler *email.Scheduler
 	emailFetcher   *email.Fetcher
+		financeStore   *finance.Store
 
 	dataDir string // 数据目录
 
@@ -168,8 +170,9 @@ snippetStore:    snippet.NewStore(),
 		emailCrypto:     emailCrypto,
 		emailPending:    emailPending,
 		emailScheduler:  emailScheduler,
-		emailFetcher:    emailFetcher,
-		dataDir:         dataDir,
+emailFetcher:    emailFetcher,
+			dataDir:         dataDir,
+			financeStore:    finance.NewStore(),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -304,8 +307,11 @@ func (s *Server) Handler() http.Handler {
 	// 不走 requireAuth（OAuth provider 用 state 而非 JWT 验证回调合法性）。
 	mux.HandleFunc("/api/email/oauth/start", s.requireAuth(s.startEmailOAuth))
 	mux.HandleFunc("/callback/email/oauth", s.handleEmailOAuthCallback())
-	// 密码箱（子树，含 /api/vault/sync/latest）
-	mux.HandleFunc("/api/vault/sync/", s.requireAuth(s.handleVaultSync))
+// 密码箱（子树，含 /api/vault/sync/latest）
+		mux.HandleFunc("/api/vault/sync/", s.requireAuth(s.handleVaultSync))
+		// 记账
+		mux.HandleFunc("/api/finance", s.requireAuth(s.handleFinance))
+		mux.HandleFunc("/api/finance/", s.requireAuth(s.handleFinanceOps))
 	// S0-C: Lobster Vault 加密镜像同步（e2ee assets 跨设备同步）
 	mux.HandleFunc("/api/assets/sync", s.requireAuth(s.handleAssetSync))
 	// STT 云端兜底
