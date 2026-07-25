@@ -23,7 +23,7 @@ func (s *Server) handleChatSummaries(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleChatSummaryOps(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Path[len("/api/chat-summaries/"):]
 	if id == "" {
-		http.Error(w, "missing id", http.StatusBadRequest)
+		http.Error(w, `{"error":"missing summary id"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -31,21 +31,23 @@ func (s *Server) handleChatSummaryOps(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		summary, err := s.chatSummaryStore.Get(id)
 		if err != nil {
-			http.Error(w, "not found", http.StatusNotFound)
+			http.Error(w, `{"error":"summary not found"}`, http.StatusNotFound)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(summary)
+		if err := json.NewEncoder(w).Encode(summary); err != nil {
+			http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+		}
 
 	case http.MethodDelete:
 		if err := s.chatSummaryStore.Delete(id); err != nil {
-			http.Error(w, "not found", http.StatusNotFound)
+			http.Error(w, `{"error":"summary not found"}`, http.StatusNotFound)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 	}
 }
 
@@ -54,26 +56,32 @@ func (s *Server) handleListChatSummaries(w http.ResponseWriter, r *http.Request)
 
 	summaries, err := s.chatSummaryStore.List(channelID, 20)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, `{"error":"failed to list summaries"}`, http.StatusInternalServerError)
 		return
 	}
 
+	if summaries == nil {
+		summaries = []*cs.ChatSummary{}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"summaries": summaries,
 		"total":     len(summaries),
-	})
+	}); err != nil {
+		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) handleCreateChatSummary(w http.ResponseWriter, r *http.Request) {
 	var req cs.CreateSummaryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
 
 	if req.Channel == "" || len(req.Messages) == 0 {
-		http.Error(w, "channel and messages are required", http.StatusBadRequest)
+		http.Error(w, `{"error":"channel and messages are required"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -103,11 +111,13 @@ func (s *Server) handleCreateChatSummary(w http.ResponseWriter, r *http.Request)
 
 	// 保存
 	if err := s.chatSummaryStore.Create(summary); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, `{"error":"failed to create summary"}`, http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(summary)
+	if err := json.NewEncoder(w).Encode(summary); err != nil {
+		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+	}
 }

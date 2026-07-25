@@ -33,12 +33,15 @@ func TestRedClawHealth_Configured(t *testing.T) {
 	}))
 	defer mockRedClaw.Close()
 
-	client := redclaw.NewClient(redclaw.ClientConfig{
+	client, err := redclaw.NewClient(redclaw.ClientConfig{
 		BaseURL:    mockRedClaw.URL,
 		Secret:     "test-secret",
 		TenantID:   "test-tenant",
 		TimeoutSec: 5,
 	})
+	if err != nil {
+		t.Fatalf("Failed to create RedClaw client: %v", err)
+	}
 	bridge := redclaw.NewBridge(client, nil)
 	bridge.Start()
 	defer bridge.Stop()
@@ -78,12 +81,15 @@ func TestRedClawChat(t *testing.T) {
 	}))
 	defer mockRedClaw.Close()
 
-	client := redclaw.NewClient(redclaw.ClientConfig{
+	client, err := redclaw.NewClient(redclaw.ClientConfig{
 		BaseURL:    mockRedClaw.URL,
 		Secret:     "test-secret",
 		TenantID:   "test-tenant",
 		TimeoutSec: 5,
 	})
+	if err != nil {
+		t.Fatalf("Failed to create RedClaw client: %v", err)
+	}
 	bridge := redclaw.NewBridge(client, nil)
 	bridge.Start()
 	defer bridge.Stop()

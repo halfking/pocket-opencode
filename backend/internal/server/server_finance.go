@@ -33,62 +33,76 @@ func (s *Server) handleFinanceOps(w http.ResponseWriter, r *http.Request) {
 
 	// /api/finance/{id} — 获取或删除
 	id := path
+	if id == "" {
+		http.Error(w, `{"error":"missing transaction id"}`, http.StatusBadRequest)
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		tx, err := s.financeStore.Get(id)
 		if err != nil {
-			http.Error(w, "not found", http.StatusNotFound)
+			http.Error(w, `{"error":"transaction not found"}`, http.StatusNotFound)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(tx)
+		if err := json.NewEncoder(w).Encode(tx); err != nil {
+			http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+		}
 
 	case http.MethodDelete:
 		if err := s.financeStore.Delete(id); err != nil {
-			http.Error(w, "not found", http.StatusNotFound)
+			http.Error(w, `{"error":"transaction not found"}`, http.StatusNotFound)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 	}
 }
 
 func (s *Server) handleListFinance(w http.ResponseWriter, r *http.Request) {
 	transactions, err := s.financeStore.List()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, `{"error":"failed to list transactions"}`, http.StatusInternalServerError)
 		return
 	}
+	if transactions == nil {
+		transactions = []*finance.Transaction{}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"transactions": transactions,
 		"total":        len(transactions),
-	})
+	}); err != nil {
+		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) handleCreateFinance(w http.ResponseWriter, r *http.Request) {
 	var req finance.CreateTransactionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request", http.StatusBadRequest)
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
 
 	tx, err := s.financeStore.Create(req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, `{"error":"failed to create transaction"}`, http.StatusBadRequest)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(tx)
+	if err := json.NewEncoder(w).Encode(tx); err != nil {
+		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) handleParseFinance(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -96,19 +110,26 @@ func (s *Server) handleParseFinance(w http.ResponseWriter, r *http.Request) {
 		Text string `json:"text"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request", http.StatusBadRequest)
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	if req.Text == "" {
+		http.Error(w, `{"error":"text is required"}`, http.StatusBadRequest)
 		return
 	}
 
 	recognizer := finance.NewRecognizer()
 	result := recognizer.Parse(req.Text)
 	if result == nil {
-		http.Error(w, "unable to parse finance text", http.StatusBadRequest)
+		http.Error(w, `{"error":"unable to parse finance text"}`, http.StatusBadRequest)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) handleFinanceStats(w http.ResponseWriter, r *http.Request) {
@@ -119,10 +140,12 @@ func (s *Server) handleFinanceStats(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := s.financeStore.GetStats(query)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, `{"error":"failed to get statistics"}`, http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	if err := json.NewEncoder(w).Encode(stats); err != nil {
+		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+	}
 }

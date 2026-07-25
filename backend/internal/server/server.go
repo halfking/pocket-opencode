@@ -192,10 +192,14 @@ financeStore:    finance.NewStore(),
 			TenantID:   s.cfg.RedClawTenantID,
 			TimeoutSec: s.cfg.RedClawTimeoutSec,
 		}
-		rcClient := redclaw.NewClient(rcCfg)
-		s.redclawBridge = redclaw.NewBridge(rcClient, s.pushRedClawEvent)
-		s.redclawBridge.Start()
-		log.Println("[Server] RedClaw bridge initialized")
+		rcClient, err := redclaw.NewClient(rcCfg)
+		if err != nil {
+			log.Printf("[Server] Failed to initialize RedClaw client: %v", err)
+		} else {
+			s.redclawBridge = redclaw.NewBridge(rcClient, s.pushRedClawEvent)
+			s.redclawBridge.Start()
+			log.Println("[Server] RedClaw bridge initialized")
+		}
 	}
 
 	return s

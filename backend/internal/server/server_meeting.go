@@ -46,15 +46,17 @@ func (s *Server) handleMeetingOps(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		m, err := s.meetingStore.Get(id)
 		if err != nil {
-			http.Error(w, "not found", http.StatusNotFound)
+			http.Error(w, `{"error":"meeting not found"}`, http.StatusNotFound)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(m)
+		if err := json.NewEncoder(w).Encode(m); err != nil {
+			http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+		}
 
 	case http.MethodDelete:
 		if err := s.meetingStore.Delete(id); err != nil {
-			http.Error(w, "not found", http.StatusNotFound)
+			http.Error(w, `{"error":"meeting not found"}`, http.StatusNotFound)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -67,20 +69,25 @@ func (s *Server) handleMeetingOps(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListMeetings(w http.ResponseWriter, r *http.Request) {
 	meetings, err := s.meetingStore.List()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, `{"error":"failed to list meetings"}`, http.StatusInternalServerError)
 		return
 	}
+	if meetings == nil {
+		meetings = []*meeting.Meeting{}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"meetings": meetings,
 		"total":    len(meetings),
-	})
+	}); err != nil {
+		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
 	var req meeting.CreateMeetingRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request", http.StatusBadRequest)
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
 	if req.Title == "" {
@@ -89,24 +96,31 @@ func (s *Server) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
 
 	m, err := s.meetingStore.Create(req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, `{"error":"failed to create meeting"}`, http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(m)
+	if err := json.NewEncoder(w).Encode(m); err != nil {
+		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	if id == "" {
+		http.Error(w, `{"error":"missing meeting id"}`, http.StatusBadRequest)
 		return
 	}
 
 	m, err := s.meetingStore.Get(id)
 	if err != nil {
-		http.Error(w, "meeting not found", http.StatusNotFound)
+		http.Error(w, `{"error":"meeting not found"}`, http.StatusNotFound)
 		return
 	}
 
@@ -118,10 +132,17 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 	if err != nil {
 		m.Status = "failed"
 		s.meetingStore.Update(m)
-		http.Error(w, "failed to read audio: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, `{"error":"failed to read audio data"}`, http.StatusBadRequest)
 		return
 	}
 	defer r.Body.Close()
+
+	if len(audioData) == 0 {
+		m.Status = "failed"
+		s.meetingStore.Update(m)
+		http.Error(w, `{"error":"empty audio data"}`, http.StatusBadRequest)
+		return
+	}
 
 	// 使用 STT 转写（如果配置了）
 	if s.transcriber != nil {
@@ -129,7 +150,7 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 		if err != nil {
 			m.Status = "failed"
 			s.meetingStore.Update(m)
-			http.Error(w, "transcription failed: "+err.Error(), http.StatusInternalServerError)
+			http.Error(w, `{"error":"transcription failed"}`, http.StatusInternalServerError)
 			return
 		}
 		m.Transcript = result.Text
@@ -141,26 +162,33 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 	s.meetingStore.Update(m)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	if err := json.NewEncoder(w).Encode(map[string]string{
 		"status":     "transcribed",
 		"meeting_id": id,
-	})
+	}); err != nil {
+		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) handleSummarizeMeeting(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	if id == "" {
+		http.Error(w, `{"error":"missing meeting id"}`, http.StatusBadRequest)
 		return
 	}
 
 	m, err := s.meetingStore.Get(id)
 	if err != nil {
-		http.Error(w, "meeting not found", http.StatusNotFound)
+		http.Error(w, `{"error":"meeting not found"}`, http.StatusNotFound)
 		return
 	}
 
 	if m.Transcript == "" {
-		http.Error(w, "meeting has no transcript, transcribe first", http.StatusBadRequest)
+		http.Error(w, `{"error":"meeting has no transcript, transcribe first"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -171,7 +199,7 @@ func (s *Server) handleSummarizeMeeting(w http.ResponseWriter, r *http.Request, 
 	if err != nil {
 		m.Status = "failed"
 		s.meetingStore.Update(m)
-		http.Error(w, "summarization failed: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, `{"error":"summarization failed"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -182,5 +210,7 @@ func (s *Server) handleSummarizeMeeting(w http.ResponseWriter, r *http.Request, 
 	s.meetingStore.Update(m)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(m)
+	if err := json.NewEncoder(w).Encode(m); err != nil {
+		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+	}
 }
