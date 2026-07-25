@@ -11,6 +11,13 @@ type Summarizer struct{}
 
 // Summarize 从聚合结果生成摘要
 func (s *Summarizer) Summarize(result *AggregateResult, channelName string) *ChatSummary {
+	if result == nil {
+		return &ChatSummary{
+			Summary:      "无效的聚合结果",
+			MessageCount: 0,
+		}
+	}
+
 	if result.MessageCount == 0 {
 		return &ChatSummary{
 			Summary:      "该时间段内没有消息",

@@ -20,16 +20,21 @@ type AggregateResult struct {
 
 // Aggregate 按时间范围聚合消息
 func (a *Aggregator) Aggregate(messages []Message, periodStart, periodEnd time.Time) *AggregateResult {
-	var filtered []Message
+	filtered := make([]Message, 0)
 	participantSet := make(map[string]bool)
 
 	for _, msg := range messages {
-		if (msg.Timestamp.IsZero() || !msg.Timestamp.Before(periodStart)) &&
-			(msg.Timestamp.IsZero() || !msg.Timestamp.After(periodEnd)) {
-			filtered = append(filtered, msg)
-			if msg.Sender != "" {
-				participantSet[msg.Sender] = true
-			}
+		// Skip messages with zero timestamp or outside time range
+		if msg.Timestamp.IsZero() {
+			continue
+		}
+		if msg.Timestamp.Before(periodStart) || msg.Timestamp.After(periodEnd) {
+			continue
+		}
+
+		filtered = append(filtered, msg)
+		if msg.Sender != "" {
+			participantSet[msg.Sender] = true
 		}
 	}
 
@@ -38,7 +43,7 @@ func (a *Aggregator) Aggregate(messages []Message, periodStart, periodEnd time.T
 		return filtered[i].Timestamp.Before(filtered[j].Timestamp)
 	})
 
-	var participants []string
+	participants := make([]string, 0, len(participantSet))
 	for p := range participantSet {
 		participants = append(participants, p)
 	}

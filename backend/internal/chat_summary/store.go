@@ -16,13 +16,19 @@ type Store struct {
 	summaries map[string]*ChatSummary
 }
 
+// NewStore creates a new in-memory chat summary store
 func NewStore() *Store {
 	return &Store{
 		summaries: make(map[string]*ChatSummary),
 	}
 }
 
+// Create creates a new chat summary in the store
 func (s *Store) Create(summary *ChatSummary) error {
+	if summary == nil {
+		return fmt.Errorf("cannot create nil summary")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -32,7 +38,12 @@ func (s *Store) Create(summary *ChatSummary) error {
 	return nil
 }
 
+// Get retrieves a chat summary by ID
 func (s *Store) Get(id string) (*ChatSummary, error) {
+	if id == "" {
+		return nil, fmt.Errorf("cannot get summary with empty id")
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -43,6 +54,7 @@ func (s *Store) Get(id string) (*ChatSummary, error) {
 	return cs, nil
 }
 
+// List retrieves chat summaries, optionally filtered by channelID
 func (s *Store) List(channelID string, limit int) ([]*ChatSummary, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -66,7 +78,12 @@ func (s *Store) List(channelID string, limit int) ([]*ChatSummary, error) {
 	return result, nil
 }
 
+// Delete removes a chat summary by ID
 func (s *Store) Delete(id string) error {
+	if id == "" {
+		return fmt.Errorf("cannot delete summary with empty id")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

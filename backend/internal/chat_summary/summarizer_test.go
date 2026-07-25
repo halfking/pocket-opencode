@@ -45,3 +45,27 @@ func TestSummarizer_Empty(t *testing.T) {
 		t.Errorf("expected '该时间段内没有消息', got %s", summary.Summary)
 	}
 }
+
+func TestSummarizer_NilResult(t *testing.T) {
+	s := &Summarizer{}
+	summary := s.Summarize(nil, "测试")
+	if summary == nil {
+		t.Fatal("expected non-nil summary for nil result")
+	}
+	if summary.MessageCount != 0 {
+		t.Errorf("expected 0 message count for nil result, got %d", summary.MessageCount)
+	}
+}
+
+func TestSummarizer_EmptyMessages(t *testing.T) {
+	s := &Summarizer{}
+	result := &AggregateResult{
+		Messages:     []Message{},
+		MessageCount: 0,
+		Participants: []string{},
+	}
+	summary := s.Summarize(result, "测试")
+	if summary.Summary != "该时间段内没有消息" {
+		t.Errorf("expected empty message summary, got %s", summary.Summary)
+	}
+}

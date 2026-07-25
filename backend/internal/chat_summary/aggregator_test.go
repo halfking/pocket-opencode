@@ -53,3 +53,56 @@ func TestAggregator_TimeFilter(t *testing.T) {
 		t.Errorf("expected 'recent', got %s", result.Messages[0].Content)
 	}
 }
+
+func TestAggregator_ZeroTimestamp(t *testing.T) {
+	now := time.Now()
+	a := &Aggregator{}
+
+	messages := []Message{
+		{Sender: "A", Content: "no timestamp", Timestamp: time.Time{}},
+		{Sender: "B", Content: "with timestamp", Timestamp: now.Add(-30 * time.Minute)},
+	}
+
+	result := a.Aggregate(messages, now.Add(-1*time.Hour), now)
+	// Messages with zero timestamps should be excluded
+	if result.MessageCount != 1 {
+		t.Errorf("expected 1 message (zero timestamp excluded), got %d", result.MessageCount)
+	}
+	if len(result.Messages) > 0 && result.Messages[0].Content != "with timestamp" {
+		t.Errorf("expected 'with timestamp', got %s", result.Messages[0].Content)
+	}
+}
+
+func TestAggregator_NilMessages(t *testing.T) {
+	now := time.Now()
+	a := &Aggregator{}
+
+	result := a.Aggregate(nil, now.Add(-1*time.Hour), now)
+	if result.MessageCount != 0 {
+		t.Errorf("expected 0 messages for nil input, got %d", result.MessageCount)
+	}
+	if result.Messages == nil {
+		t.Error("expected non-nil Messages slice")
+	}
+}
+
+func TestAggregator_BoundaryInclusion(t *testing.T) {
+	now := time.Now()
+	a := &Aggregator{}
+
+	periodStart := now.Add(-1 * time.Hour)
+	periodEnd := now
+
+	messages := []Message{
+		{Sender: "A", Content: "before", Timestamp: periodStart.Add(-1 * time.Second)},
+		{Sender: "B", Content: "at start", Timestamp: periodStart},
+		{Sender: "C", Content: "at end", Timestamp: periodEnd},
+		{Sender: "D", Content: "after", Timestamp: periodEnd.Add(1 * time.Second)},
+	}
+
+	result := a.Aggregate(messages, periodStart, periodEnd)
+	// Should include messages at start and end boundaries
+	if result.MessageCount != 2 {
+		t.Errorf("expected 2 messages (at boundaries), got %d", result.MessageCount)
+	}
+}
