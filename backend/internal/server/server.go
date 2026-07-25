@@ -120,9 +120,12 @@ snippetStore *snippet.Store
 // 会话迁移方案：跨主机迁移编排服务（nil = registry/adapter/pluginHub 未就绪）
 		migrationSvc *migration.Service
 
-		// RedClaw 企业后端桥接（nil = 未配置，对应 handler 返回 503）
-		redclawBridge *redclaw.Bridge
-	}
+// RedClaw 企业后端桥接（nil = 未配置，对应 handler 返回 503）
+			redclawBridge *redclaw.Bridge
+
+			// Audit 审计日志存储
+			auditStore *redclaw.AuditStore
+		}
 
 // New 构造 Server。Phase 0 扩展：新增 notes/email/vault store、STT transcriber、ACC MCP client。
 // Phase C 扩展：新增 embedder/llm 无状态 AI 网关。
@@ -172,8 +175,9 @@ snippetStore:    snippet.NewStore(),
 		emailScheduler:  emailScheduler,
 emailFetcher:    emailFetcher,
 			dataDir:         dataDir,
-			financeStore:    finance.NewStore(),
-		upgrader: websocket.Upgrader{
+financeStore:    finance.NewStore(),
+			auditStore:      redclaw.NewAuditStore(),
+			upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
 			CheckOrigin:     buildOriginChecker(cfg.AllowedOrigins, cfg.DevAuth),
@@ -363,11 +367,14 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/plugin/command", s.requireAuth(s.handleSendCommand))
 
 // RedClaw 企业后端集成
-			mux.HandleFunc("/api/redclaw/health", s.handleRedClawHealth)
-			mux.HandleFunc("/api/redclaw/chat", s.handleRedClawChat)
-			mux.HandleFunc("/api/redclaw/knowledge/search", s.requireAuth(s.handleRedClawKnowledgeSearch))
+				mux.HandleFunc("/api/redclaw/health", s.handleRedClawHealth)
+				mux.HandleFunc("/api/redclaw/chat", s.handleRedClawChat)
+				mux.HandleFunc("/api/redclaw/knowledge/search", s.requireAuth(s.handleRedClawKnowledgeSearch))
 
-			// ---- 产品方案/PPT API ----
+				// Audit 审计日志
+				mux.HandleFunc("/api/audit/logs", s.requireAuth(s.handleAuditLogs))
+
+				// ---- 产品方案/PPT API ----
 			mux.HandleFunc("/api/presentations", s.requireAuth(s.handlePresentations))
 			mux.HandleFunc("/api/presentations/render", s.requireAuth(s.handleRenderPresentation))
 
