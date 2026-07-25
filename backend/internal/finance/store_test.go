@@ -26,12 +26,15 @@ func TestStore_CRUD(t *testing.T) {
 	}
 
 	// Create income
-	s.Create(CreateTransactionRequest{
+	_, err = s.Create(CreateTransactionRequest{
 		Type:     "income",
 		Amount:   5000.00,
 		Category: "工资",
 		Note:     "7月工资",
 	})
+	if err != nil {
+		t.Fatalf("Create income failed: %v", err)
+	}
 
 	// List
 	all, err := s.List()
@@ -56,7 +59,10 @@ func TestStore_CRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
-	all, _ = s.List()
+	all, err = s.List()
+	if err != nil {
+		t.Fatalf("List after delete failed: %v", err)
+	}
 	if len(all) != 1 {
 		t.Errorf("expected 1 after delete, got %d", len(all))
 	}
@@ -81,8 +87,9 @@ func TestStore_Stats(t *testing.T) {
 	if stats.Balance != 9850 {
 		t.Errorf("expected balance 9850, got %f", stats.Balance)
 	}
-	if len(stats.ByCategory) != 2 {
-		t.Errorf("expected 2 categories, got %d", len(stats.ByCategory))
+	// Income categories are now included in ByCategory, so we expect 3 categories
+	if len(stats.ByCategory) != 3 {
+		t.Errorf("expected 3 categories (including income), got %d", len(stats.ByCategory))
 	}
 }
 

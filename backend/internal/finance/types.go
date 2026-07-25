@@ -3,6 +3,13 @@ package finance
 
 import "time"
 
+const (
+	// TransactionTypeIncome represents income transactions
+	TransactionTypeIncome = "income"
+	// TransactionTypeExpense represents expense transactions
+	TransactionTypeExpense = "expense"
+)
+
 // Transaction 记账记录
 type Transaction struct {
 	ID        string    `json:"id"`
@@ -17,6 +24,8 @@ type Transaction struct {
 }
 
 // CreateTransactionRequest 创建记账请求
+// Type must be either "income" or "expense"
+// Amount must be positive
 type CreateTransactionRequest struct {
 	Type      string   `json:"type"`
 	Amount    float64  `json:"amount"`
@@ -26,7 +35,7 @@ type CreateTransactionRequest struct {
 	ProjectID string   `json:"project_id,omitempty"`
 }
 
-// Budget 预算
+// Budget 预算配置
 type Budget struct {
 	ID       string  `json:"id"`
 	Category string  `json:"category"`
