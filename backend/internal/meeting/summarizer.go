@@ -13,11 +13,17 @@ type MeetingSummary struct {
 	ActionItems  []ActionItem `json:"action_items"`
 }
 
-// SummarizeTranscript 对会议转写文本进行 AI 总结
-// 当前为规则引擎实现，后续可替换为 LLM 调用
+// SummarizeTranscript summarizes a meeting transcript using rule-based extraction.
+// It extracts key decisions and action items from the transcript text.
+// Returns error if transcript is empty or whitespace-only.
+// Current implementation uses keyword matching; can be replaced with LLM in the future.
 func SummarizeTranscript(transcript string, title string) (*MeetingSummary, error) {
-	if strings.TrimSpace(transcript) == "" {
+	transcript = strings.TrimSpace(transcript)
+	if transcript == "" {
 		return nil, fmt.Errorf("transcript is empty")
+	}
+	if strings.TrimSpace(title) == "" {
+		title = "Untitled Meeting"
 	}
 
 	lines := strings.Split(transcript, "\n")
