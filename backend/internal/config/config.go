@@ -8,6 +8,9 @@ import (
 	"strings"
 )
 
+// Config holds all application configuration loaded from environment variables.
+// It supports multiple deployment phases including personal assistant features,
+// AI gateway integration, email processing, and enterprise backend connectivity.
 type Config struct {
 	Environment              string
 	HTTPPort                 string
@@ -86,6 +89,9 @@ DiscoveryPorts      []int    // POCKET_DISCOVERY_PORTS：自定义扫描端口�
 		RedClawTimeoutSec int    // POCKET_REDCLAW_TIMEOUT_SEC：HTTP 超时秒数（默认 30）
 	}
 
+// Load reads all configuration from environment variables and returns a Config instance.
+// It applies sensible defaults for development environments. For production deployments,
+// call Validate() on the returned Config to ensure all required fields are properly set.
 func Load() Config {
 	environment := strings.ToLower(strings.TrimSpace(getEnv("POCKET_ENV", "development")))
 	if environment == "prod" {
@@ -156,32 +162,102 @@ DiscoveryPorts:      parseIntList(getEnv("POCKET_DISCOVERY_PORTS", "")),
 	}
 }
 
+// Validate checks that all required configuration is present and valid for production use.
+// It enforces security requirements like strong JWT secrets, disabled development flags,
+// and proper TLS configuration. Returns an error if any validation fails.
 func (c Config) Validate() error {
 	if c.Environment != "production" {
 		return nil
 	}
 
+	// Security: JWT secret must be strong and not use development default
 	if len([]byte(c.JWTSecret)) < 32 || c.JWTSecret == "pocket-dev-insecure-secret" {
 		return fmt.Errorf("POCKET_JWT_SECRET must be at least 32 bytes and must not use the development default")
 	}
+	
+	// Security: Development features must be disabled in production
 	if c.DevAuth {
 		return fmt.Errorf("POCKET_DEV_AUTH must be false in production")
 	}
+	
+	// Security: TLS verification must be enabled in production
 	if c.MCPInsecureTLS {
 		return fmt.Errorf("POCKET_MCP_INSECURE_TLS must be false in production")
 	}
+	
+	// Database: PostgreSQL is required for production
 	if strings.TrimSpace(c.PostgresDSN) == "" {
 		return fmt.Errorf("POCKET_POSTGRES_DSN must be configured in production")
 	}
+	
+	// Security: CORS origins must be explicitly configured
 	if strings.TrimSpace(c.AllowedOrigins) == "" {
 		return fmt.Errorf("POCKET_ALLOWED_ORIGINS must be configured in production")
 	}
 	if err := validateOrigins(c.AllowedOrigins); err != nil {
+		return fmt.Errorf("invalid POCKET_ALLOWED_ORIGINS: %w", err)
+	}
+	
+	// Network: HTTP port must be valid
+	if err := validatePort(c.HTTPPort); err != nil {
+		return fmt.Errorf("invalid POCKET_HTTP_PORT: %w", err)
+	}
+	
+	// Timeouts: Must be reasonable positive values
+	if err := validateTimeout(c.OpenCodeTimeoutMS, "POCKET_OPENCODE_TIMEOUT_MS"); err != nil {
 		return err
+	}
+	if err := validateTimeout(c.WSHeartbeatMS, "POCKET_WS_HEARTBEAT_MS"); err != nil {
+		return err
+	}
+	if err := validateTimeout(c.ReminderCheckIntervalSec, "POCKET_REMINDER_CHECK_INTERVAL_SEC"); err != nil {
+		return err
+	}
+	
+	// Timezone: Must be within reasonable bounds (-43200 to +50400 seconds, covering UTC-12 to UTC+14)
+	if c.TimezoneOffsetSec < -43200 || c.TimezoneOffsetSec > 50400 {
+		return fmt.Errorf("POCKET_TIMEZONE_OFFSET_SEC must be between -43200 and 50400 (UTC-12 to UTC+14), got %d", c.TimezoneOffsetSec)
+	}
+	
+	// RedClaw: Timeout must be positive if configured
+	if c.RedClawTimeoutSec <= 0 {
+		return fmt.Errorf("POCKET_REDCLAW_TIMEOUT_SEC must be positive, got %d", c.RedClawTimeoutSec)
+	}
+	
+	// Email: Master key must be set if email fetch is enabled
+	if c.EmailFetchEnabled && strings.TrimSpace(c.EmailMasterKey) == "" {
+		return fmt.Errorf("POCKET_EMAIL_MASTER_KEY must be configured when POCKET_EMAIL_FETCH_ENABLED is true")
+	}
+	
+	return nil
+}
+
+// validatePort checks that a port string is a valid port number (1-65535).
+func validatePort(port string) error {
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		return fmt.Errorf("must be a valid integer: %w", err)
+	}
+	if p < 1 || p > 65535 {
+		return fmt.Errorf("must be between 1 and 65535, got %d", p)
 	}
 	return nil
 }
 
+// validateTimeout checks that a timeout string is a positive integer.
+func validateTimeout(timeout string, fieldName string) error {
+	t, err := strconv.Atoi(timeout)
+	if err != nil {
+		return fmt.Errorf("%s must be a valid integer: %w", fieldName, err)
+	}
+	if t <= 0 {
+		return fmt.Errorf("%s must be positive, got %d", fieldName, t)
+	}
+	return nil
+}
+
+// validateOrigins checks that all origins in a comma-separated list are valid HTTP/HTTPS URLs.
+// validateOrigins checks that all origins in a comma-separated list are valid HTTP/HTTPS URLs.
 func validateOrigins(raw string) error {
 	for _, item := range strings.Split(raw, ",") {
 		origin := strings.TrimSpace(item)
@@ -196,6 +272,8 @@ func validateOrigins(raw string) error {
 	return nil
 }
 
+// getEnv retrieves an environment variable or returns a fallback value if not set.
+// getEnv retrieves an environment variable or returns a fallback value if not set.
 func getEnv(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -203,6 +281,7 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+// getEnvInt retrieves an environment variable as an integer or returns a fallback if not set or invalid.
 func getEnvInt(key string, fallback int) int {
 	v := os.Getenv(key)
 	if v == "" {
@@ -215,6 +294,10 @@ func getEnvInt(key string, fallback int) int {
 	return n
 }
 
+// getFirstEnv tries multiple environment variable keys in order and returns the first non-empty value.
+// Returns fallback if all keys are unset or empty.
+// getFirstEnv tries multiple environment variable keys in order and returns the first non-empty value.
+// Returns fallback if all keys are unset or empty.
 func getFirstEnv(keys []string, fallback string) string {
 	for _, key := range keys {
 		if value := os.Getenv(key); value != "" {
@@ -224,7 +307,10 @@ func getFirstEnv(keys []string, fallback string) string {
 	return fallback
 }
 
-// parseIntList 解析逗号分隔的整数列表（如 "14096,14097,8080"）。空串返回 nil。
+// parseIntList parses a comma-separated list of positive integers (e.g., "14096,14097,8080").
+// Returns nil for empty input. Invalid or non-positive integers are silently skipped.
+// parseIntList parses a comma-separated list of positive integers (e.g., "14096,14097,8080").
+// Returns nil for empty input. Invalid or non-positive integers are silently skipped.
 func parseIntList(s string) []int {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -241,7 +327,8 @@ func parseIntList(s string) []int {
 	return result
 }
 
-// parseStringList 解析逗号分隔的字符串列表。空串返回 nil。
+// parseStringList parses a comma-separated list of strings, trimming whitespace.
+// Returns nil for empty input. Empty entries after trimming are skipped.
 func parseStringList(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" {
