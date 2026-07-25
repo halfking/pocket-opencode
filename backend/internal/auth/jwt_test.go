@@ -8,7 +8,10 @@ import (
 func TestJWTSignAndParse(t *testing.T) {
 	secret := "test-secret-key-at-least-32-bytes-long"
 	ttl := 24 * time.Hour
-	signer := NewSigner(secret, ttl)
+	signer, err := NewSigner(secret, ttl)
+	if err != nil {
+		t.Fatalf("NewSigner failed: %v", err)
+	}
 
 	// Test signing
 	token, err := signer.Sign("testuser", "user")
@@ -35,10 +38,13 @@ func TestJWTSignAndParse(t *testing.T) {
 func TestJWTInvalidToken(t *testing.T) {
 	secret := "test-secret-key-at-least-32-bytes-long"
 	ttl := 24 * time.Hour
-	signer := NewSigner(secret, ttl)
+	signer, err := NewSigner(secret, ttl)
+	if err != nil {
+		t.Fatalf("NewSigner failed: %v", err)
+	}
 
 	// Test with invalid token
-	_, err := signer.Parse("invalid.token.here")
+	_, err = signer.Parse("invalid.token.here")
 	if err == nil {
 		t.Fatal("Expected error for invalid token, got nil")
 	}
@@ -47,7 +53,10 @@ func TestJWTInvalidToken(t *testing.T) {
 func TestJWTExpiredToken(t *testing.T) {
 	secret := "test-secret-key-at-least-32-bytes-long"
 	ttl := 1 * time.Millisecond // Very short TTL
-	signer := NewSigner(secret, ttl)
+	signer, err := NewSigner(secret, ttl)
+	if err != nil {
+		t.Fatalf("NewSigner failed: %v", err)
+	}
 
 	token, err := signer.Sign("testuser", "user")
 	if err != nil {
@@ -68,8 +77,14 @@ func TestJWTDifferentSecrets(t *testing.T) {
 	secret2 := "secret-key-two-at-least-32-bytes-long"
 	ttl := 24 * time.Hour
 
-	signer1 := NewSigner(secret1, ttl)
-	signer2 := NewSigner(secret2, ttl)
+	signer1, err := NewSigner(secret1, ttl)
+	if err != nil {
+		t.Fatalf("NewSigner failed: %v", err)
+	}
+	signer2, err := NewSigner(secret2, ttl)
+	if err != nil {
+		t.Fatalf("NewSigner failed: %v", err)
+	}
 
 	token, err := signer1.Sign("testuser", "user")
 	if err != nil {
@@ -79,7 +94,7 @@ func TestJWTDifferentSecrets(t *testing.T) {
 	// Try to parse with different secret
 	_, err = signer2.Parse(token)
 	if err == nil {
-		t.Fatal("Expected error when parsing with different secret", nil)
+		t.Fatal("Expected error when parsing with different secret")
 	}
 }
 
@@ -87,7 +102,10 @@ func TestJWTDifferentSecrets(t *testing.T) {
 // through SignWithWorkspace/Parse, and legacy Sign keeps it empty.
 func TestJWTSignWithWorkspace(t *testing.T) {
 	secret := "test-secret-key-at-least-32-bytes-long"
-	signer := NewSigner(secret, 24*time.Hour)
+	signer, err := NewSigner(secret, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewSigner failed: %v", err)
+	}
 
 	tok, err := signer.SignWithWorkspace("u1", "owner", "ws_u1")
 	if err != nil {
@@ -113,5 +131,92 @@ func TestJWTSignWithWorkspace(t *testing.T) {
 	}
 	if legacyClaims.WorkspaceID != "" {
 		t.Errorf("expected empty workspace_id for legacy Sign, got %q", legacyClaims.WorkspaceID)
+	}
+}
+
+// TestNewSignerValidation tests that NewSigner validates inputs.
+func TestNewSignerValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		secret    string
+		ttl       time.Duration
+		wantError bool
+	}{
+		{"valid", "this-is-a-valid-secret-32bytesXX", 24 * time.Hour, false},
+		{"secret too short", "short", 24 * time.Hour, true},
+		{"empty secret", "", 24 * time.Hour, true},
+		{"zero ttl", "this-is-a-valid-secret-32bytesXX", 0, true},
+		{"negative ttl", "this-is-a-valid-secret-32bytesXX", -1 * time.Hour, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewSigner(tt.secret, tt.ttl)
+			if tt.wantError && err == nil {
+				t.Error("Expected error, got nil")
+			}
+			if !tt.wantError && err != nil {
+				t.Errorf("Expected no error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestSignValidation tests that Sign/SignWithWorkspace validate inputs.
+func TestSignValidation(t *testing.T) {
+	secret := "test-secret-key-at-least-32-bytes-long"
+	signer, err := NewSigner(secret, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewSigner failed: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		userID      string
+		role        string
+		workspaceID string
+		wantError   bool
+	}{
+		{"valid", "user123", "admin", "ws1", false},
+		{"empty userID", "", "admin", "ws1", true},
+		{"empty role", "user123", "", "ws1", true},
+		{"empty workspace ok", "user123", "admin", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := signer.SignWithWorkspace(tt.userID, tt.role, tt.workspaceID)
+			if tt.wantError && err == nil {
+				t.Error("Expected error, got nil")
+			}
+			if !tt.wantError && err != nil {
+				t.Errorf("Expected no error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestParseEmptyToken tests that Parse handles empty/invalid tokens.
+func TestParseEmptyToken(t *testing.T) {
+	secret := "test-secret-key-at-least-32-bytes-long"
+	signer, err := NewSigner(secret, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewSigner failed: %v", err)
+	}
+
+	tests := []string{
+		"",
+		"   ",
+		"not-a-jwt",
+		"a.b",
+	}
+
+	for _, token := range tests {
+		t.Run("token="+token, func(t *testing.T) {
+			_, err := signer.Parse(token)
+			if err == nil {
+				t.Error("Expected error for invalid token, got nil")
+			}
+		})
 	}
 }

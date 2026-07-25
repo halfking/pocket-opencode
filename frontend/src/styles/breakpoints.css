@@ -1,0 +1,54 @@
+/**
+ * breakpoints.css — 响应式断点与工具类
+ *
+ * 断点规范（与 useBreakpoint composable 保持一致）：
+ *   - mobile : < 640px
+ *   - tablet : 640px – 1023px
+ *   - desktop: >= 1024px
+ *
+ * 使用 CSS 变量可在 JS 里读取，工具类可在模板里条件渲染。
+ */
+
+:root {
+  --bp-mobile-max: 639px;
+  --bp-tablet-min: 640px;
+  --bp-tablet-max: 1023px;
+  --bp-desktop-min: 1024px;
+}
+
+/* 默认隐藏：移动端不显示 */
+.bp-hide-on-mobile {
+  display: none;
+}
+
+/* 默认显示：移动端显示 */
+.bp-show-on-mobile {
+  display: initial;
+}
+
+@media (min-width: 640px) {
+  .bp-hide-on-mobile {
+    display: initial;
+  }
+  .bp-show-on-mobile {
+    display: none;
+  }
+}
+
+/* >= 1024px 才显示的元素 */
+.bp-show-on-desktop {
+  display: none;
+}
+
+.bp-hide-on-desktop {
+  display: initial;
+}
+
+@media (min-width: 1024px) {
+  .bp-show-on-desktop {
+    display: initial;
+  }
+  .bp-hide-on-desktop {
+    display: none;
+  }
+}

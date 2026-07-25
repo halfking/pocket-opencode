@@ -1,0 +1,12 @@
+{
+  "backendURL": "ws://localhost:8088",
+  "instanceID": "test-local-dev",
+  "opencodePath": "/Users/xutaohuang/workspace/ai/opencode",
+  "autoStart": false,
+  "port": 4096,
+  "authToken": "test-token-123",
+  "healthCheck": {
+    "interval": 30,
+    "timeout": 5
+  }
+}

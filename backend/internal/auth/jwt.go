@@ -27,8 +27,15 @@ type Signer struct {
 }
 
 // NewSigner 构造签名器。secret 是 HS256 密钥（建议 >= 32 字节）。
-func NewSigner(secret string, ttl time.Duration) *Signer {
-	return &Signer{secret: []byte(secret), ttl: ttl}
+// Returns error if secret is too short or ttl is invalid.
+func NewSigner(secret string, ttl time.Duration) (*Signer, error) {
+	if len(secret) < 32 {
+		return nil, fmt.Errorf("jwt secret must be at least 32 bytes, got %d", len(secret))
+	}
+	if ttl <= 0 {
+		return nil, fmt.Errorf("jwt ttl must be positive, got %v", ttl)
+	}
+	return &Signer{secret: []byte(secret), ttl: ttl}, nil
 }
 
 // Sign 签发 JWT，包含 user_id 和 role claim。
@@ -42,6 +49,12 @@ func (s *Signer) Sign(userID, role string) (string, error) {
 
 // SignWithWorkspace 签发带 workspace_id 的 JWT。workspaceID 为空时与 Sign 等价。
 func (s *Signer) SignWithWorkspace(userID, role, workspaceID string) (string, error) {
+	if userID == "" {
+		return "", fmt.Errorf("userID cannot be empty")
+	}
+	if role == "" {
+		return "", fmt.Errorf("role cannot be empty")
+	}
 	now := time.Now()
 	claims := Claims{
 		UserID:      userID,
@@ -71,5 +84,5 @@ func (s *Signer) Parse(tokenString string) (*Claims, error) {
 	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
 		return claims, nil
 	}
-	return nil, fmt.Errorf("invalid token")
+	return nil, fmt.Errorf("invalid token: claims validation failed")
 }

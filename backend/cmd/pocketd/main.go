@@ -130,14 +130,22 @@ func main() {
 				}
 			}
 		}
-		jwtSigner = auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
-		log.Println("Auth: user store + JWT signer initialized")
-	} else if cfg.DevAuth {
-		// Dev 模式无 PG 时：仍然 init JWT signer，让 requireAuth 通过（用户可用外部 JWT）。
-		// userStore 仍 nil，所以 /api/auth/login 会 503；但其它 requireAuth 路由可用。
-		jwtSigner = auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
-		log.Println("Dev mode: JWT signer initialized without user store (login disabled)")
-	}
+			signer, err := auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
+			if err != nil {
+				log.Fatalf("JWT signer init: %v", err)
+			}
+			jwtSigner = signer
+			log.Println("Auth: user store + JWT signer initialized")
+		} else if cfg.DevAuth {
+			// Dev 模式无 PG 时：仍然 init JWT signer，让 requireAuth 通过（用户可用外部 JWT）。
+			// userStore 仍 nil，所以 /api/auth/login 会 503；但其它 requireAuth 路由可用。
+			signer, err := auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
+			if err != nil {
+				log.Fatalf("JWT signer init: %v", err)
+			}
+			jwtSigner = signer
+			log.Println("Dev mode: JWT signer initialized without user store (login disabled)")
+		}
 
 	// ---- 后端集成: kxmemory AI 编排服务（分类/SSOT/总结）----
 	// 提前到这里构造，因为 email scheduler 也要用它（DailySummary）。

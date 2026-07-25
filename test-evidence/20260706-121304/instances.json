@@ -1,0 +1,17 @@
+{
+  "instances": [
+    {
+      "id": "demo-main",
+      "displayName": "demo-main",
+      "environment": "unknown",
+      "npsClientId": 1,
+      "capabilities": [
+        "session",
+        "summary",
+        "pty"
+      ],
+      "health": "healthy",
+      "lastHeartbeatAt": "2026-07-06T04:13:05Z"
+    }
+  ]
+}

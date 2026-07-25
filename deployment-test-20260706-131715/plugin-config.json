@@ -1,0 +1,11 @@
+{
+  "backendURL": "ws://localhost:8088",
+  "instanceID": "test-local-dev",
+  "displayName": "本地测试实例",
+  "autoRegister": true,
+  "reportInterval": 30,
+  "auth": {
+    "type": "token",
+    "token": "test-token-123"
+  }
+}

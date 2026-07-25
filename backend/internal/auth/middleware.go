@@ -1,26 +1,51 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"strings"
 )
 
-// Middleware 是可选的中间件骨架（当前未使用，预留给 Phase 1 后期）。
-// 目前 server_assistant.go 的 handlers 直接调用 requireUserIDFromAuth。
+type contextKey string
+
+const ClaimsContextKey contextKey = "auth_claims"
+
+// Middleware validates JWT tokens from the Authorization header and injects
+// claims into the request context for downstream handlers.
+// Returns 401 Unauthorized if the token is missing, invalid, or expired.
 func Middleware(signer *Signer, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
 		if !strings.HasPrefix(auth, "Bearer ") {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			http.Error(w, "Unauthorized: missing or invalid Authorization header", http.StatusUnauthorized)
 			return
 		}
 		tok := strings.TrimSpace(auth[len("Bearer "):])
-		claims, err := signer.Parse(tok)
-		if err != nil || claims.UserID == "" {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		if tok == "" {
+			http.Error(w, "Unauthorized: empty token", http.StatusUnauthorized)
 			return
 		}
-		// 可选：把 claims 塞到 context，暂时不需要
-		next.ServeHTTP(w, r)
+		claims, err := signer.Parse(tok)
+		if err != nil {
+			http.Error(w, "Unauthorized: invalid token", http.StatusUnauthorized)
+			return
+		}
+		if claims.UserID == "" {
+			http.Error(w, "Unauthorized: invalid claims", http.StatusUnauthorized)
+			return
+		}
+		// Inject claims into context for downstream handlers
+		ctx := context.WithValue(r.Context(), ClaimsContextKey, claims)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// GetClaims extracts Claims from the request context.
+// Returns nil if claims are not present (middleware not applied or auth failed).
+func GetClaims(ctx context.Context) *Claims {
+	claims, ok := ctx.Value(ClaimsContextKey).(*Claims)
+	if !ok {
+		return nil
+	}
+	return claims
 }

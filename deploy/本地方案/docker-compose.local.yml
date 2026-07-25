@@ -1,0 +1,46 @@
+services:
+  pocketd:
+    image: opencode-pocket:pocket-local
+    pull_policy: never
+    container_name: opencode-pocket-local
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    ports:
+      - "${POCKET_HTTP_PORT:-8088}:8088"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - pocket_local
+      - r112_net
+    volumes:
+      - pocket_local_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8088/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  frontend:
+    image: opencode-pocket-frontend:pocket-local
+    pull_policy: never
+    container_name: opencode-pocket-frontend-local
+    restart: unless-stopped
+    depends_on:
+      pocketd:
+        condition: service_healthy
+    ports:
+      - "${POCKET_FRONTEND_PORT:-4175}:80"
+    networks:
+      - pocket_local
+
+volumes:
+  pocket_local_data:
+
+networks:
+  pocket_local:
+    name: opencode_pocket_local
+  r112_net:
+    external: true
+    name: r112_net

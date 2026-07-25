@@ -1,0 +1,16 @@
+2026/07/07 12:39:18 WARN: POCKET_POSTGRES_DSN not set, running in remote-only mode (no local task cache)
+2026/07/07 12:39:18 Dev mode: JWT signer initialized without user store (login disabled)
+2026/07/07 12:39:18 WARNING: POCKET_GROQ_API_KEY not set; STT cloud fallback disabled
+2026/07/07 12:39:18 ACC MCP client configured: https://mcp.kxpms.cn/acc/mcp
+2026/07/07 12:39:18 WARNING: POCKET_EMBED_API_KEY not set; /api/embed disabled
+2026/07/07 12:39:18 WARNING: POCKET_LLM_API_KEY not set; /api/llm/chat disabled
+2026/07/07 12:39:18 INFO: POCKET_KXMEMORY_BASE_URL not set; AI classification/SSOT disabled
+2026/07/07 12:39:18 Using NPS Web API adapter: https://mcp.kxpms.cn/acc
+2026/07/07 12:39:18 Using OpenCode HTTP adapter (timeout: 10000ms)
+2026/07/07 12:39:18 OpenCode domain managers wired: eventMgr + permMgr + quesMgr + ocMgr (refreshStatus 30s)
+2026/07/07 12:39:18 [tasksync] disabled (mcpClient or taskStore not configured)
+2026/07/07 12:39:18 ✅ 启动 OpenCode 实例自动发现（间隔: 1m0s）
+2026/07/07 12:39:18 [PluginHub] Starting...
+2026/07/07 12:39:18 pocketd listening on :8088
+2026/07/07 12:39:59 Loaded version config: v1.2.0 build 2 from config/version.json
+2026/07/07 12:40:00 [mcp] fetch ACC tasks failed: acc_get_tasks failed: MCP not initialized: initialize failed: HTTP 404: {"error":"Not Found"}
