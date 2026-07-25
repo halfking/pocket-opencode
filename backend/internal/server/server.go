@@ -32,8 +32,9 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 "github.com/halfking/pocket-opencode/backend/internal/opencode"
-		"github.com/halfking/pocket-opencode/backend/internal/redclaw"
-		"github.com/halfking/pocket-opencode/backend/internal/registry"
+	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
+	"github.com/halfking/pocket-opencode/backend/internal/registry"
+	"github.com/halfking/pocket-opencode/backend/internal/snippet"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
 	"github.com/halfking/pocket-opencode/backend/internal/vault"
@@ -61,10 +62,11 @@ type Server struct {
 	wsHub         *ws.Hub
 	pluginHub     *ws.PluginHub // Plugin/Manager WebSocket Hub
 	upgrader      websocket.Upgrader
-	// Phase 0: 个人助理模块 store 与依赖
-	notesStore  *notes.Store
-	emailStore  *email.Store
-	vaultStore  *vault.Store
+// Phase 0: 个人助理模块 store 与依赖
+		notesStore  *notes.Store
+		emailStore  *email.Store
+		vaultStore  *vault.Store
+		snippetStore *snippet.Store
 	transcriber *stt.Transcriber // nil = 云端 STT 兜底未配置
 	mcpClient   *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// Phase C: 无状态 AI 网关（嵌入/LLM 代理）。nil = 未配置，对应 handler 返回 503。
@@ -145,9 +147,10 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 		configAdapter:   configAdapter,
 		wsHub:           hub,
 		pluginHub:       pluginHub,
-		notesStore:      notesStore,
-		emailStore:      emailStore,
-		vaultStore:      vaultStore,
+notesStore:      notesStore,
+			emailStore:      emailStore,
+			vaultStore:      vaultStore,
+			snippetStore:    snippet.NewStore(),
 		transcriber:     transcriber,
 		mcpClient:       mcpClient,
 		embedder:        embedder,
@@ -271,9 +274,12 @@ func (s *Server) Handler() http.Handler {
 	// S0-A: Identity Core（工作空间 / 成员 / 设备）
 	mux.HandleFunc("/api/workspaces", s.requireAuth(s.handleWorkspaces))
 	mux.HandleFunc("/api/workspaces/", s.requireAuth(s.handleWorkspaceOps))
-	// 语音笔记
-	mux.HandleFunc("/api/notes", s.requireAuth(s.handleNotes))
-	mux.HandleFunc("/api/notes/", s.requireAuth(s.handleNoteOperations))
+// 语音笔记
+		mux.HandleFunc("/api/notes", s.requireAuth(s.handleNotes))
+		mux.HandleFunc("/api/notes/", s.requireAuth(s.handleNoteOperations))
+		// 代码片段
+		mux.HandleFunc("/api/snippets", s.requireAuth(s.handleSnippets))
+		mux.HandleFunc("/api/snippets/", s.requireAuth(s.handleSnippetOps))
 	// 邮箱助手
 	mux.HandleFunc("/api/email/accounts", s.requireAuth(s.handleEmailAccounts))
 	mux.HandleFunc("/api/email/accounts/", s.requireAuth(s.handleEmailAccountOps))
