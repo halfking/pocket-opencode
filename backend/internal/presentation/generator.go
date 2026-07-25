@@ -7,26 +7,42 @@ import (
 	"time"
 )
 
-// Generator 产品方案生成引擎
+// Generator generates business proposals and presentations
 type Generator struct{}
 
-// Generate 根据请求生成方案
+// Generate creates a presentation based on the provided request
 func (g *Generator) Generate(req GenerateRequest) (*GenerateResponse, error) {
+	// Validate type
 	switch req.Type {
-	case "prd", "tech-spec", "weekly":
+	case TypePRD, TypeTechSpec, TypeWeekly:
 		// valid
 	default:
-		return nil, fmt.Errorf("unsupported type: %s", req.Type)
+		return nil, fmt.Errorf("generate presentation: unsupported type %q (must be prd, tech-spec, or weekly)", req.Type)
 	}
 
+	// Validate required fields
 	if req.Topic == "" {
-		return nil, fmt.Errorf("topic is required")
+		return nil, fmt.Errorf("generate presentation: topic is required")
 	}
 
-	// 生成内容
+	// Validate input lengths to prevent DoS
+	if len(req.Topic) > MaxTopicLength {
+		return nil, fmt.Errorf("generate presentation: topic exceeds maximum length of %d characters", MaxTopicLength)
+	}
+	if len(req.Context) > MaxContextLength {
+		return nil, fmt.Errorf("generate presentation: context exceeds maximum length of %d characters", MaxContextLength)
+	}
+	if len(req.Audience) > MaxAudienceLength {
+		return nil, fmt.Errorf("generate presentation: audience exceeds maximum length of %d characters", MaxAudienceLength)
+	}
+	if len(req.KeyPoints) > MaxKeyPointsLength {
+		return nil, fmt.Errorf("generate presentation: key_points exceeds maximum length of %d characters", MaxKeyPointsLength)
+	}
+
+	// Generate content
 	content := g.generateContent(req)
 
-	// 生成幻灯片
+	// Generate slides
 	slides := g.generateSlides(req, content)
 
 	p := &Presentation{
@@ -35,7 +51,7 @@ func (g *Generator) Generate(req GenerateRequest) (*GenerateResponse, error) {
 		Type:      req.Type,
 		Content:   content,
 		Slides:    slides,
-		Status:    "draft",
+		Status:    StatusDraft,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -46,6 +62,7 @@ func (g *Generator) Generate(req GenerateRequest) (*GenerateResponse, error) {
 	}, nil
 }
 
+// generateContent creates markdown content from the request
 func (g *Generator) generateContent(req GenerateRequest) string {
 	var b strings.Builder
 
@@ -75,6 +92,7 @@ func (g *Generator) generateContent(req GenerateRequest) string {
 	return b.String()
 }
 
+// generateSlides converts markdown content into slides
 func (g *Generator) generateSlides(req GenerateRequest, content string) []Slide {
 	lines := strings.Split(content, "\n")
 

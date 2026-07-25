@@ -6,13 +6,16 @@ import (
 	"strings"
 )
 
-// Renderer PPT 渲染器
+// Renderer renders presentations to various formats
 type Renderer struct{}
 
-// RenderHTML 将 Presentation 渲染为 HTML 幻灯片
+// RenderHTML renders a presentation as an HTML slideshow with proper XSS protection
 func (r *Renderer) RenderHTML(p *Presentation) (string, error) {
+	if p == nil {
+		return "", fmt.Errorf("render HTML: presentation cannot be nil")
+	}
 	if len(p.Slides) == 0 {
-		return "", fmt.Errorf("no slides to render")
+		return "", fmt.Errorf("render HTML: no slides to render")
 	}
 
 	var b strings.Builder
@@ -30,8 +33,12 @@ func (r *Renderer) RenderHTML(p *Presentation) (string, error) {
 
 	for _, slide := range p.Slides {
 		b.WriteString("<div class=\"slide\">\n")
+		// Escape all user content to prevent XSS attacks
 		b.WriteString(fmt.Sprintf("<h1>%s</h1>\n", html.EscapeString(slide.Title)))
-		b.WriteString(fmt.Sprintf("<p>%s</p>\n", html.EscapeString(slide.Content)))
+		// Replace newlines with <br> for better formatting, but escape content first
+		escapedContent := html.EscapeString(slide.Content)
+		escapedContent = strings.ReplaceAll(escapedContent, "\n", "<br>\n")
+		b.WriteString(fmt.Sprintf("<p>%s</p>\n", escapedContent))
 		b.WriteString("</div>\n")
 	}
 
@@ -39,8 +46,15 @@ func (r *Renderer) RenderHTML(p *Presentation) (string, error) {
 	return b.String(), nil
 }
 
-// RenderToMarkdown 将 Presentation 渲染为 Markdown
-func (r *Renderer) RenderToMarkdown(p *Presentation) string {
+// RenderToMarkdown renders a presentation as markdown with proper formatting
+func (r *Renderer) RenderToMarkdown(p *Presentation) (string, error) {
+	if p == nil {
+		return "", fmt.Errorf("render markdown: presentation cannot be nil")
+	}
+	if len(p.Slides) == 0 {
+		return "", fmt.Errorf("render markdown: no slides to render")
+	}
+
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("# %s\n\n", p.Title))
 
@@ -48,10 +62,10 @@ func (r *Renderer) RenderToMarkdown(p *Presentation) string {
 		b.WriteString(fmt.Sprintf("## Slide %d: %s\n\n", i+1, slide.Title))
 		b.WriteString(slide.Content + "\n\n")
 		if slide.Note != "" {
-			b.WriteString(fmt.Sprintf("> 备注: %s\n\n", slide.Note))
+			b.WriteString(fmt.Sprintf("> Note: %s\n\n", slide.Note))
 		}
 		b.WriteString("---\n\n")
 	}
 
-	return b.String()
+	return b.String(), nil
 }
