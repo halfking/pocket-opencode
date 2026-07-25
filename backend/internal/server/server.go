@@ -365,6 +365,7 @@ func (s *Server) Handler() http.Handler {
 // RedClaw 企业后端集成
 			mux.HandleFunc("/api/redclaw/health", s.handleRedClawHealth)
 			mux.HandleFunc("/api/redclaw/chat", s.handleRedClawChat)
+			mux.HandleFunc("/api/redclaw/knowledge/search", s.requireAuth(s.handleRedClawKnowledgeSearch))
 
 			// ---- 产品方案/PPT API ----
 			mux.HandleFunc("/api/presentations", s.requireAuth(s.handlePresentations))
