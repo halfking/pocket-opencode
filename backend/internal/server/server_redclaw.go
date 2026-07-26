@@ -106,15 +106,3 @@ func (s *Server) handleRedClawKnowledgeSearch(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
-
-// extractClaims 从请求上下文中提取 JWT claims（简化版）
-func extractClaims(r *http.Request) map[string]interface{} {
-	userID := r.Header.Get("X-User-ID")
-	if userID == "" {
-		return nil
-	}
-	return map[string]interface{}{
-		"sub":       userID,
-		"tenant_id": r.Header.Get("X-Tenant-ID"),
-	}
-}

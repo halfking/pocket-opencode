@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+// legacyOwnerID / legacyWorkspaceID are the identity defaults used by the
+// deprecated non-scoped API, matching the handler fallback for requests
+// without authenticated claims.
+const (
+	legacyOwnerID     = "local"
+	legacyWorkspaceID = "default"
+)
+
 // Store 记账存储（内存实现），提供线程安全的交易和预算管理
 type Store struct {
 	mu           sync.RWMutex
@@ -28,7 +36,7 @@ func NewStore() *Store {
 // 返回创建的交易对象或验证错误
 // Deprecated: Use CreateScoped for production code with proper ownership.
 func (s *Store) Create(req CreateTransactionRequest) (*Transaction, error) {
-	return s.CreateScoped(req, "", "")
+	return s.CreateScoped(req, legacyOwnerID, legacyWorkspaceID)
 }
 
 // CreateScoped 创建新的交易记录with ownership

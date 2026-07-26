@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+// legacyOwnerID / legacyWorkspaceID are the identity defaults used by the
+// deprecated non-scoped API, matching the handler fallback for requests
+// without authenticated claims.
+const (
+	legacyOwnerID     = "local"
+	legacyWorkspaceID = "default"
+)
+
 // Store 会议记录存储（内存实现）
 type Store struct {
 	mu       sync.RWMutex
@@ -25,7 +33,7 @@ func NewStore() *Store {
 // Returns error if title is empty.
 // Deprecated: Use CreateScoped for production code with proper ownership.
 func (s *Store) Create(req CreateMeetingRequest) (*Meeting, error) {
-	return s.CreateScoped(req, "", "")
+	return s.CreateScoped(req, legacyOwnerID, legacyWorkspaceID)
 }
 
 // CreateScoped creates a new meeting record with ownership.

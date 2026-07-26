@@ -9,6 +9,15 @@ import (
 	"time"
 )
 
+// legacyOwnerID / legacyWorkspaceID are the identity defaults used by the
+// deprecated non-scoped API. They match the handler fallback used when a
+// request carries no authenticated claims, so single-tenant/local callers keep
+// working while the scoped API stays strict about ownership.
+const (
+	legacyOwnerID     = "local"
+	legacyWorkspaceID = "default"
+)
+
 // Store 代码片段存储（内存实现，后续可迁移到数据库）
 // Store is an in-memory code snippet storage with thread-safe operations.
 type Store struct {
@@ -27,7 +36,7 @@ func NewStore() *Store {
 // Returns error if required fields (Title, Language, Code) are empty.
 // Deprecated: Use CreateScoped for production code with proper ownership.
 func (s *Store) Create(req CreateSnippetRequest) (*Snippet, error) {
-	return s.CreateScoped(req, "", "")
+	return s.CreateScoped(req, legacyOwnerID, legacyWorkspaceID)
 }
 
 // CreateScoped creates a new snippet with ownership and returns a copy.

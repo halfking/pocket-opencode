@@ -102,6 +102,7 @@ func TestRedClawChat(t *testing.T) {
 		Messages: []redclaw.Message{{Role: "user", Content: "Hi"}},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/redclaw/chat", bytes.NewReader(body))
+	req = withTestClaims(req, "test-user", "user", "test-tenant")
 	rec := httptest.NewRecorder()
 
 	s.handleRedClawChat(rec, req)
