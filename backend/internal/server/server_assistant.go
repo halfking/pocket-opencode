@@ -213,10 +213,14 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 		s.handleNoteClassify(w, r, realID)
 		return
 	}
+
+	// Get authenticated user identity
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
 	switch r.Method {
 	case http.MethodGet:
-		// 用 GetByID 替换 List+linear scan（O(1) 查询且包含 snippet 列）。
-		found, err := s.notesStore.GetByID(r.Context(), id)
+		found, err := s.notesStore.GetByIDScoped(r.Context(), id, uid, wsID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -227,7 +231,7 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, found)
 	case http.MethodDelete:
-		if err := s.notesStore.Delete(r.Context(), id); err != nil {
+		if err := s.notesStore.DeleteScoped(r.Context(), id, uid, wsID); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -261,10 +265,12 @@ func (s *Server) handleNoteClassify(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 
-	// Look up the note by ID (Phase 1.1: 替换 List+scan 的 O(N) 反模式为 O(1) 查询)。
-	// 此前 List 的 SELECT 漏了 snippet 列，导致 sync classify 路径永远发送空
-	// content 给 kxmemory → 真实 kxmemory-go 返回 400。新增 GetByID 修复。
-	found, err := s.notesStore.GetByID(r.Context(), id)
+	// Get authenticated user identity
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
+	// Look up the note by ID with ownership verification
+	found, err := s.notesStore.GetByIDScoped(r.Context(), id, uid, wsID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -246,6 +246,7 @@ func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error)
 //
 // 用于替换 handleNoteClassify / handleNoteOperations 的 O(N) List + linear
 // scan 反模式，避免每次 sync classify 都扫整张 notes 表。
+// Deprecated: Use GetByIDScoped for production code with ownership checks.
 func (s *Store) GetByID(ctx context.Context, id string) (*Note, error) {
 	var (
 		n           Note
@@ -309,14 +310,94 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Note, error) {
 	return &n, nil
 }
 
+// GetByIDScoped 按 ID 和 workspace 查找单条笔记（不含软删除）。
+func (s *Store) GetByIDScoped(ctx context.Context, id, userID, workspaceID string) (*Note, error) {
+	var (
+		n           Note
+		wsID        sql.NullString
+		title       sql.NullString
+		content     sql.NullString
+		snippet     sql.NullString
+		domain      sql.NullString
+		tags        []byte
+		audioPath   sql.NullString
+		createdAt   sql.NullTime
+		updatedAt   sql.NullTime
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, user_id, workspace_id, title, content, snippet,
+		       content_type, domain, tags, audio_path, audio_duration,
+		       created_by_voice, created_at, updated_at
+		FROM notes WHERE id = $1 AND user_id = $2 AND workspace_id = $3 AND deleted_at IS NULL
+	`, id, userID, workspaceID).Scan(
+		&n.ID, &n.UserID, &wsID, &title, &content, &snippet,
+		&n.ContentType, &domain, &tags, &audioPath, &n.AudioDuration, &n.CreatedByVoice,
+		&createdAt, &updatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get note by id %s: %w", id, err)
+	}
+	if wsID.Valid {
+		n.WorkspaceID = wsID.String
+	}
+	if title.Valid {
+		n.Title = title.String
+	}
+	if content.Valid {
+		n.Snippet = content.String
+	}
+	if snippet.Valid {
+		n.Snippet = snippet.String
+	}
+	if domain.Valid {
+		n.Domain = domain.String
+	}
+	if audioPath.Valid {
+		n.AudioPath = audioPath.String
+	}
+	if createdAt.Valid {
+		n.CreatedAt = createdAt.Time.Unix()
+	}
+	if updatedAt.Valid {
+		n.UpdatedAt = updatedAt.Time.Unix()
+	}
+	if len(tags) > 0 {
+		var arr []string
+		if err := json.Unmarshal(tags, &arr); err == nil {
+			b, _ := json.Marshal(arr)
+			n.Tags = string(b)
+		}
+	}
+	return &n, nil
+}
+
 func (s *Store) Delete(ctx context.Context, id string) error {
 	// Soft-delete: keep the row, set deleted_at. Avoids breaking FK
 	// relationships in other tables that may reference notes.id in the
 	// future, and matches the actual schema's idx_notes_* `WHERE
 	// deleted_at IS NULL` partial-index design.
+	// Deprecated: Use DeleteScoped for production code with ownership checks.
 	_, err := s.pool.Exec(ctx, `UPDATE notes SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("delete note %s: %w", id, err)
+	}
+	return nil
+}
+
+// DeleteScoped soft-deletes a note with ownership verification
+func (s *Store) DeleteScoped(ctx context.Context, id, userID, workspaceID string) error {
+	result, err := s.pool.Exec(ctx, `
+		UPDATE notes SET deleted_at = CURRENT_TIMESTAMP 
+		WHERE id = $1 AND user_id = $2 AND workspace_id = $3 AND deleted_at IS NULL
+	`, id, userID, workspaceID)
+	if err != nil {
+		return fmt.Errorf("delete note %s: %w", id, err)
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("note not found or already deleted")
 	}
 	return nil
 }
