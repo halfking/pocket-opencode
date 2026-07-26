@@ -1,9 +1,17 @@
 # Security Audit Report R8 - Authentication & Authorization Hardening
 
-**Date:** 2025-01-21  
+**Date:** 2025-01-21 (revised 2026-07-25)  
 **Scope:** Backend API authentication, authorization, tenant isolation, and input validation  
 **Baseline:** Commit `1ab30c1` (audit: add comprehensive audit report and fix agent mock test ordering)  
-**Status:** Partial mitigation implemented (uncommitted)
+**Status:** P0 and P1 items resolved and pushed to `main`; P2 items open (see §VIII)
+
+> **Revision 2026-07-25.** The P1 tenant-isolation work that this report
+> describes as "recommended" is now implemented and pushed. Commits: `9665b19`
+> (P0 audit-log + RedClaw tenant), `aa1f3be` snippets, `c38241b` finance,
+> `d55a49e` chat summaries, `9d51246` meetings, `51c9fd8` notes, `e243d6b`
+> (legacy-`Create` regression fix + auth-aware server tests), `2846e5b` tasks
+> and agents. Sections 2.4, 2.5 and the severity table are updated in place;
+> the rest of the report is preserved as the original finding record.
 
 ---
 
@@ -14,24 +22,36 @@ This audit identifies **critical authentication bypass, cross-tenant data access
 ### Key Findings
 
 - **27 API routes lacked authentication** prior to this round
-- **12 high-severity IDOR/cross-tenant access paths** remain in data stores
+- **12 high-severity IDOR/cross-tenant access paths** in data stores — 11 now
+  closed (snippets, meetings, finance, chat summaries, notes, tasks, agents);
+  vault remains (P2)
 - **1 critical arbitrary file read** via STT endpoint (now fixed)
-- **3 tenant isolation bypasses** in audit logs, RedClaw, and plugin commands
+- **3 tenant isolation bypasses** in audit logs, RedClaw, and plugin commands —
+  audit logs and RedClaw fixed; plugin commands remain (P2)
 
 ### Current Status
 
-✅ **Fixed in working tree (uncommitted):**
+✅ **Fixed and pushed to `main`:**
 - 11 previously public API routes now require JWT authentication
-- Query token (`?token=`) restricted to WebSocket handshakes only
+- Query token (`?token=`) restricted to WebSocket/SSE handshakes only
 - STT arbitrary file read path removed
 - Identity context no longer trusts caller-controlled headers
+- Audit log queries forced to the caller's tenant and gated on `admin` role
+- RedClaw chat/knowledge-search force `tenant_id`/`user_id` from JWT claims
+- Snippets, meetings, finance, chat summaries carry `OwnerID`/`WorkspaceID`
+  and expose scoped store methods; handlers use them exclusively
+- Notes `GetByIDScoped`/`DeleteScoped` enforce `user_id` + `workspace_id`
+- Tasks carry `WorkspaceID` end-to-end (model, SQL, all 7 handler call sites)
+- Agents scoped on get/delete/status/dispatch
 
-⚠️ **Requires immediate follow-up:**
-- Audit logs allow cross-tenant enumeration
-- RedClaw accepts caller-supplied `tenant_id`/`user_id`
+⚠️ **Still open (P2, tracked in §VIII):**
 - Plugin hub commands operate on global instance IDs
-- Four in-memory stores (snippets, meetings, finance, chat summaries) share all data across authenticated users
-- Notes/tasks/vault have partial workspace isolation but incomplete enforcement
+- Vault store filters by `user_id` only, ignoring `workspace_id`
+- Unbounded `io.ReadAll` on meeting transcribe and email sync; no global
+  `http.MaxBytesReader`; WebSocket hubs lack `SetReadLimit`
+- LLM gateway config and legacy `/api/sessions?instance=<URL>` allow SSRF
+- `identity.GetMember` does not check `expires_at`
+- notifycenter `ListNotifications` scopes workspace but not `user_id`
 
 ---
 
@@ -306,7 +326,22 @@ s.pluginHub.SendCommandToInstance(req.InstanceID, message)
 
 ---
 
-### 2.4 In-Memory Stores - No Isolation
+### 2.4 In-Memory Stores - No Isolation (✅ Fixed)
+
+> **Resolved 2026-07-25.** All four modules now carry `OwnerID`/`WorkspaceID`
+> and expose `CreateScoped`/`GetScoped`/`ListScoped`/`DeleteScoped` (plus
+> `UpdateScoped` for meetings and `GetStatsScoped` for finance). Every handler
+> derives both values from the authenticated claims. The unscoped methods are
+> retained as `Deprecated:` wrappers that pass the legacy `local`/`default`
+> identity so single-tenant callers and existing tests keep working.
+> Commits: `aa1f3be`, `c38241b`, `d55a49e`, `9d51246`, `e243d6b`.
+>
+> One caveat worth recording: the first cut of these wrappers delegated with
+> empty owner/workspace, which the strict scoped API rejects — the deprecated
+> `Create` returned `(nil, err)` and callers panicked on the nil. That shipped
+> briefly and was fixed in `e243d6b`. The lesson is in §VIII.
+>
+> The original finding is preserved below.
 
 **Issue:** Four modules store data in **global in-memory maps** with no `OwnerID`/`WorkspaceID` filtering. Any authenticated user can access/modify all records.
 
@@ -381,7 +416,42 @@ func (s *Server) handleSnippetOps(w http.ResponseWriter, r *http.Request) {
 
 ---
 
-### 2.5 Notes/Tasks/Vault - Partial Isolation
+### 2.5 Notes/Tasks/Vault - Partial Isolation (⚠️ Notes + Tasks fixed, Vault open)
+
+> **Resolved 2026-07-25 for Notes and Tasks; Vault still open.**
+>
+> **Notes** — added `GetByIDScoped` and `DeleteScoped`
+> (`WHERE id = $1 AND user_id = $2 AND workspace_id = $3 AND deleted_at IS
+> NULL`); `DeleteScoped` reports `RowsAffected() == 0` as "not found or already
+> deleted" so a cross-tenant delete is indistinguishable from a miss.
+> `handleNoteOperations` and `handleNoteClassify` use them. Commit `51c9fd8`.
+>
+> **Tasks** — the finding below was accurate and was the widest gap in the
+> codebase: the `workspace_id` column existed since S0-A but the `Task` model
+> had no field for it, so *every* read and write spanned all tenants. Added
+> `WorkspaceID` to the model and `GetTaskScoped`, `ListTasksScoped`,
+> `ListTasksCursorScoped`, `UpdateTaskScoped`, `DeleteTaskScoped`,
+> `AttachSessionScoped`, `ListSessionsForTaskScoped`. Three subtleties:
+> `AttachSessionScoped` verifies the target task is in the caller's workspace
+> *before* writing the link; `ListSessionsForTaskScoped` joins through `tasks`
+> so links written before S0-A are filtered by their task's real owner; and
+> `deleteTask` now removes the task row first, so a cross-tenant delete wipes
+> nothing instead of destroying another workspace's session links. Commit
+> `2846e5b`.
+>
+> **Agents** (not in the original report) had the same shape — `Get`/`Delete`
+> were ID-only and `Bridge.Send` would dispatch to any agent ID. Added
+> `GetScoped`/`DeleteScoped`/`UpdateStatusScoped` and
+> `SendOptions.WorkspaceID`. Commit `2846e5b`.
+>
+> **Vault** remains as described: queries filter `user_id` only. Tracked as P2.
+>
+> Verification note: the task and agentbridge suites are PG integration tests
+> that skip without a DSN, so the new SQL was initially unexecuted. It has since
+> been run against a real Postgres 16 — 11 new task tests and 4 new agentbridge
+> tests covering cross-tenant read/update/delete/attach/list/cursor-pagination.
+>
+> The original finding is preserved below.
 
 **Issue:** PostgreSQL-backed stores have `workspace_id` columns but **incomplete predicate enforcement**.
 
@@ -615,25 +685,57 @@ Remaining work tracked in SECURITY_AUDIT_REPORT_R8.md:
 - Notes/tasks/vault have incomplete workspace predicates
 ```
 
+> **Revision 2026-07-25.** The above was the plan at the time of writing. What
+> actually shipped is the commit series listed at the top of this report; every
+> item in that "remaining work" list except plugin commands and vault is now
+> closed. See §VIII for the current status table.
+
 ---
 
 ## VIII. Severity Classification
+
+Status as of 2026-07-25.
 
 | Issue | Severity | Status | Exposure |
 |-------|----------|--------|----------|
 | STT arbitrary file read | **CRITICAL** | ✅ Fixed | Any auth user → server files → Groq |
 | 11 unauthenticated routes | **HIGH** | ✅ Fixed | Anonymous quota consumption, enumeration |
 | Query token on all routes | **HIGH** | ✅ Fixed | Credential leak to logs/proxies |
-| Audit log cross-tenant query | **HIGH** | ⚠️ Open | Any auth user → all audit logs |
-| RedClaw tenant override | **HIGH** | ⚠️ Open | Workspace A → Workspace B RedClaw data |
-| In-memory stores no isolation | **HIGH** | ⚠️ Open | User A → User B snippets/meetings/finance |
+| Audit log cross-tenant query | **HIGH** | ✅ Fixed `9665b19` | Any auth user → all audit logs |
+| RedClaw tenant override | **HIGH** | ✅ Fixed `9665b19` | Workspace A → Workspace B RedClaw data |
+| In-memory stores no isolation | **HIGH** | ✅ Fixed `aa1f3be`/`c38241b`/`d55a49e`/`9d51246` | User A → User B snippets/meetings/finance |
+| Tasks ignore workspace_id | **HIGH** | ✅ Fixed `2846e5b` | Any auth user → all tenants' tasks |
+| Agents bare ID get/delete/dispatch | **HIGH** | ✅ Fixed `2846e5b` | Workspace A → drive Workspace B agent |
+| Notes bare ID lookup/delete | **MEDIUM** | ✅ Fixed `51c9fd8` | Cross-workspace if ID known |
 | Plugin command global | **HIGH** | ⚠️ Open | Workspace A → control Workspace B instance |
-| Notes/tasks bare ID lookup | **MEDIUM** | ⚠️ Open | Cross-workspace if ID known |
+| Vault ignores workspace_id | **MEDIUM** | ⚠️ Open | Same user across workspaces shares vault |
+| Unbounded request bodies | **MEDIUM** | ⚠️ Open | Memory exhaustion via transcribe/email sync |
+| WebSocket missing SetReadLimit | **MEDIUM** | ⚠️ Open | Memory exhaustion via oversized frames |
+| LLM gateway / legacy session SSRF | **MEDIUM** | ⚠️ Open | Caller-supplied URL fetched server-side |
 | OpenCode instance no ownership | **MEDIUM** | ⚠️ Open | Control/enumerate other workspaces |
 | Membership expiry unenforced | **MEDIUM** | ⚠️ Open | Revoked members retain access ~24h |
 | Email classification IDOR | **MEDIUM** | ⚠️ Open | Update classification of other user's email |
+| notifycenter list not user-scoped | **LOW** | ⚠️ Open | Workspace peers see each other's notifications |
 | Device ID collision | **LOW** | ⚠️ Open | Rebind device if ID known |
 | Dev mode backdoor | **INFO** | ⚠️ Open | admin/admin when POCKET_DEV_AUTH=true |
+
+### Process note
+
+Two things went wrong during remediation and are worth recording, since both
+were caught by verification rather than by review:
+
+1. The first cut of the deprecated in-memory `Create` wrappers delegated to the
+   strict scoped API with empty owner/workspace, which it rejects. Three
+   packages broke and were fixed in `e243d6b`. Cause: the store changes were
+   committed and pushed without re-running the affected package tests.
+2. The task/agentbridge SQL compiled and `go build`/`go vet` were clean, but the
+   integration tests that exercise it **skip** without `POCKET_TEST_POSTGRES_DSN`.
+   A clean `go test ./...` therefore proved nothing about the new queries. They
+   were subsequently run against a real Postgres before `2846e5b` was pushed.
+
+For any future store-layer change: run the affected package tests before
+pushing, and confirm the relevant integration tests actually ran rather than
+reporting `ok` because they skipped.
 
 ---
 
