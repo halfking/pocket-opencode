@@ -57,15 +57,16 @@ type TaskAttacher interface {
 // interface lets tests inject a fake without a live PG. *Store satisfies it.
 type StoreLike interface {
 	Get(ctx context.Context, id string) (*Agent, error)
+	GetScoped(ctx context.Context, id, wsID string) (*Agent, error)
 	UpdateStatus(ctx context.Context, id string, status Status) error
 }
 
 // Bridge orchestrates dispatch through a registered Agent.
 type Bridge struct {
-	store     StoreLike
-	creator   SessionCreator
-	resolver  InstanceResolver
-	attacher  TaskAttacher
+	store    StoreLike
+	creator  SessionCreator
+	resolver InstanceResolver
+	attacher TaskAttacher
 }
 
 // NewBridge constructs the Bridge. store is required; other deps may be nil
@@ -76,12 +77,18 @@ func NewBridge(store StoreLike, creator SessionCreator, resolver InstanceResolve
 
 // SendOptions controls a dispatch.
 type SendOptions struct {
-	TaskID    string // optional; if set, the new session is auto-attached
-	Role      string // task_session_links role; default "primary"
-	AgentName string // override the agent's opencode "agent" field (e.g. "build")
-	ModelID   string
-	ProviderID string
-	Directory  string
+	// WorkspaceID constrains the dispatch to an agent in that workspace.
+	// HTTP callers must always set it from the authenticated claims, otherwise
+	// any authenticated user could drive another tenant's agent by guessing
+	// its ID. Empty means "no tenant check" and is reserved for internal
+	// callers that have already established the boundary.
+	WorkspaceID string
+	TaskID      string // optional; if set, the new session is auto-attached
+	Role        string // task_session_links role; default "primary"
+	AgentName   string // override the agent's opencode "agent" field (e.g. "build")
+	ModelID     string
+	ProviderID  string
+	Directory   string
 }
 
 // SendResult is what Send returns.
@@ -108,8 +115,16 @@ func (b *Bridge) Send(ctx context.Context, agentID, prompt string, opts SendOpti
 		return nil, fmt.Errorf("agentbridge: prompt is required")
 	}
 
-	// 1. Look up the agent → instance.
-	agent, err := b.store.Get(ctx, agentID)
+	// 1. Look up the agent → instance. When the caller supplied a workspace,
+	// the lookup itself is tenant-scoped so a foreign agent ID is simply
+	// "not found" rather than dispatchable.
+	var agent *Agent
+	var err error
+	if opts.WorkspaceID != "" {
+		agent, err = b.store.GetScoped(ctx, agentID, opts.WorkspaceID)
+	} else {
+		agent, err = b.store.Get(ctx, agentID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("lookup agent: %w", err)
 	}

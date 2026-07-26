@@ -197,16 +197,17 @@ func (s *Server) handleAgentOps(w http.ResponseWriter, r *http.Request) {
 
 	if len(parts) == 1 {
 		// GET /api/agents/{id}  /  DELETE /api/agents/{id}
+		wsID := s.workspaceIDFromRequest(r)
 		switch r.Method {
 		case http.MethodGet:
-			a, err := s.agentStore.Get(r.Context(), agentID)
+			a, err := s.agentStore.GetScoped(r.Context(), agentID, wsID)
 			if err != nil {
 				writeError(w, http.StatusNotFound, err.Error())
 				return
 			}
 			writeJSON(w, http.StatusOK, a)
 		case http.MethodDelete:
-			if err := s.agentStore.Delete(r.Context(), agentID); err != nil {
+			if err := s.agentStore.DeleteScoped(r.Context(), agentID, wsID); err != nil {
 				writeError(w, http.StatusNotFound, err.Error())
 				return
 			}
@@ -247,7 +248,8 @@ func (s *Server) sendToAgent(w http.ResponseWriter, r *http.Request, agentID str
 		return
 	}
 	res, err := s.agentBridge.Send(r.Context(), agentID, body.Prompt, agentbridge.SendOptions{
-		TaskID: body.TaskID, Role: body.Role, AgentName: body.AgentName,
+		WorkspaceID: s.workspaceIDFromRequest(r),
+		TaskID:      body.TaskID, Role: body.Role, AgentName: body.AgentName,
 		ModelID: body.ModelID, ProviderID: body.ProviderID, Directory: body.Directory,
 	})
 	if err != nil {

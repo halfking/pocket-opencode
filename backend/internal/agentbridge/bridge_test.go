@@ -72,6 +72,14 @@ func (s *fakeStore) Get(_ context.Context, id string) (*Agent, error) {
 	return a, nil
 }
 
+func (s *fakeStore) GetScoped(_ context.Context, id, wsID string) (*Agent, error) {
+	a, ok := s.agents[id]
+	if !ok || a.WorkspaceID != wsID {
+		return nil, ErrNotFound
+	}
+	return a, nil
+}
+
 func (s *fakeStore) UpdateStatus(_ context.Context, id string, status Status) error {
 	s.statusUpdates = append(s.statusUpdates, id+"="+string(status))
 	return nil
@@ -175,6 +183,42 @@ func TestSend_AgentNotFound(t *testing.T) {
 	_, err := bridge.Send(context.Background(), "nope", "x", SendOptions{})
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// TestSend_CrossWorkspaceRejected 回归测试：带 WorkspaceID 的 dispatch 不能
+// 命中其它 workspace 的 agent，即使 agent ID 完全正确。
+func TestSend_CrossWorkspaceRejected(t *testing.T) {
+	store := &fakeStore{agents: map[string]*Agent{
+		"a1": {ID: "a1", WorkspaceID: "ws-owner", InstanceID: "inst1"},
+	}}
+	creator := &fakeCreator{createSessionID: "ses_leak"}
+	bridge := NewBridge(store, creator, &fakeResolver{url: "http://inst1:4096"}, &recordingAttacher{})
+
+	_, err := bridge.Send(context.Background(), "a1", "dump secrets", SendOptions{
+		WorkspaceID: "ws-attacker",
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for cross-workspace dispatch, got %v", err)
+	}
+	if creator.lastCreateInput != nil {
+		t.Error("no session should be created for a cross-workspace dispatch")
+	}
+}
+
+// TestSend_SameWorkspaceAllowed 确认 scoped 查找不会误伤合法调用。
+func TestSend_SameWorkspaceAllowed(t *testing.T) {
+	store := &fakeStore{agents: map[string]*Agent{
+		"a1": {ID: "a1", WorkspaceID: "ws-owner", InstanceID: "inst1"},
+	}}
+	bridge := NewBridge(store, &fakeCreator{createSessionID: "ses_ok"}, &fakeResolver{url: "http://inst1:4096"}, &recordingAttacher{})
+
+	res, err := bridge.Send(context.Background(), "a1", "hi", SendOptions{WorkspaceID: "ws-owner"})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if res.SessionID != "ses_ok" {
+		t.Errorf("session = %s, want ses_ok", res.SessionID)
 	}
 }
 

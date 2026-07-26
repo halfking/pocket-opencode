@@ -145,6 +145,87 @@ func TestUpdateStatus(t *testing.T) {
 	}
 }
 
+// TestGetScoped_TenantIsolation 验证 GetScoped 的 SQL 真的带上了
+// workspace_id：同 ID 跨 workspace 必须 ErrNotFound，而非返回别人的 agent。
+func TestGetScoped_TenantIsolation(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	_ = s.Create(ctx, &Agent{ID: "a1", WorkspaceID: "wsOwner", InstanceID: "i1", Name: "owned"})
+
+	got, err := s.GetScoped(ctx, "a1", "wsOwner")
+	if err != nil {
+		t.Fatalf("GetScoped same workspace: %v", err)
+	}
+	if got.Name != "owned" {
+		t.Errorf("name = %s, want owned", got.Name)
+	}
+
+	if _, err := s.GetScoped(ctx, "a1", "wsAttacker"); err != ErrNotFound {
+		t.Errorf("cross-workspace GetScoped should be ErrNotFound, got %v", err)
+	}
+}
+
+// TestDeleteScoped_TenantIsolation 验证跨 workspace 删除不会生效。
+func TestDeleteScoped_TenantIsolation(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	_ = s.Create(ctx, &Agent{ID: "a1", WorkspaceID: "wsOwner", InstanceID: "i1", Name: "n"})
+
+	if err := s.DeleteScoped(ctx, "a1", "wsAttacker"); err != ErrNotFound {
+		t.Errorf("cross-workspace delete should be ErrNotFound, got %v", err)
+	}
+	// 仍然存在。
+	if _, err := s.GetScoped(ctx, "a1", "wsOwner"); err != nil {
+		t.Fatalf("agent must survive a cross-workspace delete: %v", err)
+	}
+	// 本 workspace 删除正常。
+	if err := s.DeleteScoped(ctx, "a1", "wsOwner"); err != nil {
+		t.Fatalf("DeleteScoped own workspace: %v", err)
+	}
+	if _, err := s.GetScoped(ctx, "a1", "wsOwner"); err != ErrNotFound {
+		t.Errorf("after scoped delete, expected ErrNotFound, got %v", err)
+	}
+}
+
+// TestUpdateStatusScoped_TenantIsolation 验证跨 workspace 改状态无效。
+func TestUpdateStatusScoped_TenantIsolation(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	_ = s.Create(ctx, &Agent{ID: "a1", WorkspaceID: "wsOwner", InstanceID: "i", Name: "n"})
+
+	if err := s.UpdateStatusScoped(ctx, "a1", "wsAttacker", StatusOffline); err != nil {
+		t.Fatalf("UpdateStatusScoped returned error: %v", err)
+	}
+	got, _ := s.GetScoped(ctx, "a1", "wsOwner")
+	if got.Status == StatusOffline {
+		t.Error("cross-workspace UpdateStatusScoped must not change status")
+	}
+
+	if err := s.UpdateStatusScoped(ctx, "a1", "wsOwner", StatusOnline); err != nil {
+		t.Fatalf("UpdateStatusScoped own workspace: %v", err)
+	}
+	got, _ = s.GetScoped(ctx, "a1", "wsOwner")
+	if got.Status != StatusOnline {
+		t.Errorf("status = %s, want online", got.Status)
+	}
+}
+
+// TestGetScoped_EmptyWorkspaceDefaults 验证空 workspace 归一到 "default"，
+// 与 ListByWorkspace 的既有行为一致。
+func TestGetScoped_EmptyWorkspaceDefaults(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	_ = s.Create(ctx, &Agent{ID: "a1", WorkspaceID: "default", InstanceID: "i", Name: "n"})
+
+	if _, err := s.GetScoped(ctx, "a1", ""); err != nil {
+		t.Fatalf("empty workspace should resolve to default: %v", err)
+	}
+}
+
 func TestDeleteAgent(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()

@@ -42,21 +42,21 @@ const MaxAgentsPerWorkspace = 16
 type Role string
 
 const (
-	RoleGeneric    Role = "generic"    // S0 default — no special DAG semantics
-	RolePlanner    Role = "planner"    // S1
-	RoleDeveloper  Role = "developer"  // S1
-	RoleTester     Role = "tester"     // S1
-	RoleReviewer   Role = "reviewer"   // S1
+	RoleGeneric   Role = "generic"   // S0 default — no special DAG semantics
+	RolePlanner   Role = "planner"   // S1
+	RoleDeveloper Role = "developer" // S1
+	RoleTester    Role = "tester"    // S1
+	RoleReviewer  Role = "reviewer"  // S1
 )
 
 // Status is the agent's current reachability.
 type Status string
 
 const (
-	StatusUnknown  Status = "unknown"
-	StatusOnline   Status = "online"
-	StatusOffline  Status = "offline"
-	StatusBusy     Status = "busy"
+	StatusUnknown Status = "unknown"
+	StatusOnline  Status = "online"
+	StatusOffline Status = "offline"
+	StatusBusy    Status = "busy"
 )
 
 // Agent is a registered remote opencode instance bound to a workspace.
@@ -155,7 +155,10 @@ VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
 	return err
 }
 
-// Get fetches one agent.
+// Get fetches one agent by ID without a tenant check.
+//
+// Deprecated: HTTP handlers must use GetScoped so an agent from another
+// workspace can never be read through a guessed/enumerated ID.
 func (s *Store) Get(ctx context.Context, id string) (*Agent, error) {
 	a := &Agent{}
 	var caps []byte
@@ -168,6 +171,29 @@ FROM agents WHERE id = $1
 	}
 	a.Capabilities = parseCaps(caps)
 	return a, err
+}
+
+// GetScoped fetches one agent constrained to a workspace. A miss and a
+// cross-tenant hit are indistinguishable to the caller (both ErrNotFound), so
+// the endpoint cannot be used to probe for foreign agent IDs.
+func (s *Store) GetScoped(ctx context.Context, id, wsID string) (*Agent, error) {
+	if wsID == "" {
+		wsID = "default"
+	}
+	a := &Agent{}
+	var caps []byte
+	err := s.pool.QueryRow(ctx, `
+SELECT id, workspace_id, instance_id, name, role, status, capabilities, created_at, updated_at
+FROM agents WHERE id = $1 AND workspace_id = $2
+`, id, wsID).Scan(&a.ID, &a.WorkspaceID, &a.InstanceID, &a.Name, &a.Role, &a.Status, &caps, &a.CreatedAt, &a.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	a.Capabilities = parseCaps(caps)
+	return a, nil
 }
 
 // ListByWorkspace returns all agents in a workspace.
@@ -206,6 +232,9 @@ UPDATE agents SET status = $1, updated_at = $2 WHERE id = $3
 }
 
 // Delete removes an agent registration (does not touch the underlying instance).
+//
+// Deprecated: HTTP handlers must use DeleteScoped; an ID-only delete lets any
+// authenticated caller unregister another workspace's agent.
 func (s *Store) Delete(ctx context.Context, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM agents WHERE id = $1`, id)
 	if err != nil {
@@ -215,6 +244,32 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// DeleteScoped removes an agent registration constrained to a workspace.
+func (s *Store) DeleteScoped(ctx context.Context, id, wsID string) error {
+	if wsID == "" {
+		wsID = "default"
+	}
+	tag, err := s.pool.Exec(ctx, `DELETE FROM agents WHERE id = $1 AND workspace_id = $2`, id, wsID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateStatusScoped refreshes an agent's status constrained to a workspace.
+func (s *Store) UpdateStatusScoped(ctx context.Context, id, wsID string, status Status) error {
+	if wsID == "" {
+		wsID = "default"
+	}
+	_, err := s.pool.Exec(ctx, `
+UPDATE agents SET status = $1, updated_at = $2 WHERE id = $3 AND workspace_id = $4
+`, status, time.Now().Unix(), id, wsID)
+	return err
 }
 
 // CountByWorkspace returns the agent count for cap enforcement.

@@ -19,10 +19,11 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
+	cs "github.com/halfking/pocket-opencode/backend/internal/chat_summary"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
-		"github.com/halfking/pocket-opencode/backend/internal/finance"
+	"github.com/halfking/pocket-opencode/backend/internal/finance"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
@@ -33,12 +34,11 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
-"github.com/halfking/pocket-opencode/backend/internal/opencode"
+	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
-"github.com/halfking/pocket-opencode/backend/internal/snippet"
-		cs "github.com/halfking/pocket-opencode/backend/internal/chat_summary"
-		"github.com/halfking/pocket-opencode/backend/internal/stt"
+	"github.com/halfking/pocket-opencode/backend/internal/snippet"
+	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
 	"github.com/halfking/pocket-opencode/backend/internal/vault"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
@@ -65,15 +65,15 @@ type Server struct {
 	wsHub         *ws.Hub
 	pluginHub     *ws.PluginHub // Plugin/Manager WebSocket Hub
 	upgrader      websocket.Upgrader
-// Phase 0: 个人助理模块 store 与依赖
-		notesStore  *notes.Store
-		emailStore  *email.Store
-		vaultStore  *vault.Store
-snippetStore *snippet.Store
-			meetingStore *meeting.Store
-		chatSummaryStore *cs.Store
-	transcriber *stt.Transcriber // nil = 云端 STT 兜底未配置
-	mcpClient   *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
+	// Phase 0: 个人助理模块 store 与依赖
+	notesStore       *notes.Store
+	emailStore       *email.Store
+	vaultStore       *vault.Store
+	snippetStore     *snippet.Store
+	meetingStore     *meeting.Store
+	chatSummaryStore *cs.Store
+	transcriber      *stt.Transcriber // nil = 云端 STT 兜底未配置
+	mcpClient        *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// Phase C: 无状态 AI 网关（嵌入/LLM 代理）。nil = 未配置，对应 handler 返回 503。
 	embedder aigate.Embedder
 	llm      aigate.LLMClient
@@ -111,21 +111,21 @@ snippetStore *snippet.Store
 	emailPending   *email.PendingOAuth
 	emailScheduler *email.Scheduler
 	emailFetcher   *email.Fetcher
-		financeStore   *finance.Store
+	financeStore   *finance.Store
 
 	dataDir string // 数据目录
 
 	llmGWStore *LLMGatewayStore // nil = 无 PG，配置不持久化
 
-// 会话迁移方案：跨主机迁移编排服务（nil = registry/adapter/pluginHub 未就绪）
-		migrationSvc *migration.Service
+	// 会话迁移方案：跨主机迁移编排服务（nil = registry/adapter/pluginHub 未就绪）
+	migrationSvc *migration.Service
 
-// RedClaw 企业后端桥接（nil = 未配置，对应 handler 返回 503）
-			redclawBridge *redclaw.Bridge
+	// RedClaw 企业后端桥接（nil = 未配置，对应 handler 返回 503）
+	redclawBridge *redclaw.Bridge
 
-			// Audit 审计日志存储
-			auditStore *redclaw.AuditStore
-		}
+	// Audit 审计日志存储
+	auditStore *redclaw.AuditStore
+}
 
 // New 构造 Server。Phase 0 扩展：新增 notes/email/vault store、STT transcriber、ACC MCP client。
 // Phase C 扩展：新增 embedder/llm 无状态 AI 网关。
@@ -148,36 +148,36 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 	}
 
 	s := &Server{
-		cfg:             cfg,
-		nps:             nps,
-		opencode:        opencode,
-		taskStore:       taskStore,
-		registry:        reg,
-		configAdapter:   configAdapter,
-		wsHub:           hub,
-		pluginHub:       pluginHub,
-notesStore:      notesStore,
-			emailStore:      emailStore,
-			vaultStore:      vaultStore,
-snippetStore:    snippet.NewStore(),
-				meetingStore:    meeting.NewStore(),
-			chatSummaryStore: cs.NewStore(),
-		transcriber:     transcriber,
-		mcpClient:       mcpClient,
-		embedder:        embedder,
-		llm:             llm,
-		kxmemory:        kxmem,
-		opencodeManager: opencodeManager,
-		userStore:       userStore,
-		jwtSigner:       jwtSigner,
-		emailCrypto:     emailCrypto,
-		emailPending:    emailPending,
-		emailScheduler:  emailScheduler,
-emailFetcher:    emailFetcher,
-			dataDir:         dataDir,
-financeStore:    finance.NewStore(),
-			auditStore:      redclaw.NewAuditStore(),
-			upgrader: websocket.Upgrader{
+		cfg:              cfg,
+		nps:              nps,
+		opencode:         opencode,
+		taskStore:        taskStore,
+		registry:         reg,
+		configAdapter:    configAdapter,
+		wsHub:            hub,
+		pluginHub:        pluginHub,
+		notesStore:       notesStore,
+		emailStore:       emailStore,
+		vaultStore:       vaultStore,
+		snippetStore:     snippet.NewStore(),
+		meetingStore:     meeting.NewStore(),
+		chatSummaryStore: cs.NewStore(),
+		transcriber:      transcriber,
+		mcpClient:        mcpClient,
+		embedder:         embedder,
+		llm:              llm,
+		kxmemory:         kxmem,
+		opencodeManager:  opencodeManager,
+		userStore:        userStore,
+		jwtSigner:        jwtSigner,
+		emailCrypto:      emailCrypto,
+		emailPending:     emailPending,
+		emailScheduler:   emailScheduler,
+		emailFetcher:     emailFetcher,
+		dataDir:          dataDir,
+		financeStore:     finance.NewStore(),
+		auditStore:       redclaw.NewAuditStore(),
+		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
 			CheckOrigin:     buildOriginChecker(cfg.AllowedOrigins, cfg.DevAuth),
@@ -271,17 +271,17 @@ func (s *Server) WSHub() *ws.Hub { return s.wsHub }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
-		mux.HandleFunc("/api/instances", s.requireAuth(s.handleInstances))
-		mux.HandleFunc("/api/sessions/", s.requireAuth(s.handleSessions))
-		mux.HandleFunc("/api/sessions", s.requireAuth(s.handleAllSessions)) // 新增：获取所有会话
-		mux.HandleFunc("/api/tasks", s.requireAuth(s.handleTasks))
-		mux.HandleFunc("/api/tasks/", s.requireAuth(s.handleTaskOperations))
+	mux.HandleFunc("/api/instances", s.requireAuth(s.handleInstances))
+	mux.HandleFunc("/api/sessions/", s.requireAuth(s.handleSessions))
+	mux.HandleFunc("/api/sessions", s.requireAuth(s.handleAllSessions)) // 新增：获取所有会话
+	mux.HandleFunc("/api/tasks", s.requireAuth(s.handleTasks))
+	mux.HandleFunc("/api/tasks/", s.requireAuth(s.handleTaskOperations))
 	mux.HandleFunc("/api/config/models", s.requireAuth(s.handleModelConfig))
 	mux.HandleFunc("/api/config/reload", s.requireAuth(s.handleConfigReload))
-		mux.HandleFunc("/api/config/models/test", s.requireAuth(s.handleModelTest))
-		mux.HandleFunc("/ws", s.requireAuth(s.handleWebSocket))
-		mux.HandleFunc("/api/app/check-update", s.handleCheckUpdate)
-		mux.HandleFunc("/api/app/download", s.handleDownloadAPK)
+	mux.HandleFunc("/api/config/models/test", s.requireAuth(s.handleModelTest))
+	mux.HandleFunc("/ws", s.requireAuth(s.handleWebSocket))
+	mux.HandleFunc("/api/app/check-update", s.handleCheckUpdate)
+	mux.HandleFunc("/api/app/download", s.handleDownloadAPK)
 	// 飞书事件回调 (m.kxpms.cn/callback/feishu 由 56 nginx 转发到 9010)
 	mux.HandleFunc("/callback/feishu", s.handleFeishuCallback)
 
@@ -291,19 +291,19 @@ func (s *Server) Handler() http.Handler {
 	// S0-A: Identity Core（工作空间 / 成员 / 设备）
 	mux.HandleFunc("/api/workspaces", s.requireAuth(s.handleWorkspaces))
 	mux.HandleFunc("/api/workspaces/", s.requireAuth(s.handleWorkspaceOps))
-// 语音笔记
-		mux.HandleFunc("/api/notes", s.requireAuth(s.handleNotes))
-		mux.HandleFunc("/api/notes/", s.requireAuth(s.handleNoteOperations))
-// 代码片段
-		mux.HandleFunc("/api/snippets", s.requireAuth(s.handleSnippets))
-		mux.HandleFunc("/api/snippets/", s.requireAuth(s.handleSnippetOps))
-// 会议管理
-			mux.HandleFunc("/api/meetings", s.requireAuth(s.handleMeetings))
-			mux.HandleFunc("/api/meetings/", s.requireAuth(s.handleMeetingOps))
-			// 聊天总结
-			mux.HandleFunc("/api/chat-summaries", s.requireAuth(s.handleChatSummaries))
-			mux.HandleFunc("/api/chat-summaries/", s.requireAuth(s.handleChatSummaryOps))
-		// 邮箱助手
+	// 语音笔记
+	mux.HandleFunc("/api/notes", s.requireAuth(s.handleNotes))
+	mux.HandleFunc("/api/notes/", s.requireAuth(s.handleNoteOperations))
+	// 代码片段
+	mux.HandleFunc("/api/snippets", s.requireAuth(s.handleSnippets))
+	mux.HandleFunc("/api/snippets/", s.requireAuth(s.handleSnippetOps))
+	// 会议管理
+	mux.HandleFunc("/api/meetings", s.requireAuth(s.handleMeetings))
+	mux.HandleFunc("/api/meetings/", s.requireAuth(s.handleMeetingOps))
+	// 聊天总结
+	mux.HandleFunc("/api/chat-summaries", s.requireAuth(s.handleChatSummaries))
+	mux.HandleFunc("/api/chat-summaries/", s.requireAuth(s.handleChatSummaryOps))
+	// 邮箱助手
 	mux.HandleFunc("/api/email/accounts", s.requireAuth(s.handleEmailAccounts))
 	mux.HandleFunc("/api/email/accounts/", s.requireAuth(s.handleEmailAccountOps))
 	mux.HandleFunc("/api/email/summaries", s.requireAuth(s.handleEmailSummaries))
@@ -315,27 +315,27 @@ func (s *Server) Handler() http.Handler {
 	// 不走 requireAuth（OAuth provider 用 state 而非 JWT 验证回调合法性）。
 	mux.HandleFunc("/api/email/oauth/start", s.requireAuth(s.startEmailOAuth))
 	mux.HandleFunc("/callback/email/oauth", s.handleEmailOAuthCallback())
-// 密码箱（子树，含 /api/vault/sync/latest）
-		mux.HandleFunc("/api/vault/sync/", s.requireAuth(s.handleVaultSync))
-		// 记账
-		mux.HandleFunc("/api/finance", s.requireAuth(s.handleFinance))
-		mux.HandleFunc("/api/finance/", s.requireAuth(s.handleFinanceOps))
+	// 密码箱（子树，含 /api/vault/sync/latest）
+	mux.HandleFunc("/api/vault/sync/", s.requireAuth(s.handleVaultSync))
+	// 记账
+	mux.HandleFunc("/api/finance", s.requireAuth(s.handleFinance))
+	mux.HandleFunc("/api/finance/", s.requireAuth(s.handleFinanceOps))
 	// S0-C: Lobster Vault 加密镜像同步（e2ee assets 跨设备同步）
 	mux.HandleFunc("/api/assets/sync", s.requireAuth(s.handleAssetSync))
-		// STT 云端兜底（消耗外部 API 配额，必须认证）
-		mux.HandleFunc("/api/stt/transcribe", s.requireAuth(s.handleSttTranscribe))
-		// Phase C: 无状态 AI 网关（仅转发嵌入/LLM，不存数据）
-		mux.HandleFunc("/api/embed", s.requireAuth(s.handleEmbed))
+	// STT 云端兜底（消耗外部 API 配额，必须认证）
+	mux.HandleFunc("/api/stt/transcribe", s.requireAuth(s.handleSttTranscribe))
+	// Phase C: 无状态 AI 网关（仅转发嵌入/LLM，不存数据）
+	mux.HandleFunc("/api/embed", s.requireAuth(s.handleEmbed))
 	mux.HandleFunc("/api/llm/chat", s.requireAuth(s.handleLLMChat))
 	// S0-B: 统一 LLM BFF（流式 + 用量查询）。老的 /api/llm/chat 保留兼容，
 	// llmBFF 启用时优先走 BFF；未启用时回退到老 handler。
 	mux.HandleFunc("/api/llm/stream", s.requireAuth(s.handleLLMBFFStream))
 	mux.HandleFunc("/api/llm/usage", s.requireAuth(s.handleLLMBFFUsage))
 
-		// OpenCode 管理 API（会话/实例数据属于认证用户可见范围）
-		mux.HandleFunc("/api/opencode/sessions", s.requireAuth(s.handleOpenCodeSessions))
-		mux.HandleFunc("/api/opencode/sessions/", s.requireAuth(s.handleOpenCodeSessionOperations))
-		mux.HandleFunc("/api/opencode/instances/", s.requireAuth(s.handleOpenCodeInstanceOperations))
+	// OpenCode 管理 API（会话/实例数据属于认证用户可见范围）
+	mux.HandleFunc("/api/opencode/sessions", s.requireAuth(s.handleOpenCodeSessions))
+	mux.HandleFunc("/api/opencode/sessions/", s.requireAuth(s.handleOpenCodeSessionOperations))
+	mux.HandleFunc("/api/opencode/instances/", s.requireAuth(s.handleOpenCodeInstanceOperations))
 	mux.HandleFunc("/api/opencode/cache/refresh", s.requireAuth(s.handleOpenCodeRefreshCache))
 	mux.HandleFunc("/api/opencode/dispatch", s.requireAuth(s.handleOpenCodeDispatch))
 	// S0-D: Agent Bridge（list/get/create/send）。底层复用 opencode adapter。
@@ -365,25 +365,25 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/mobile/sessions", s.requireAuth(s.handleMobileSessionRouter))
 	mux.HandleFunc("/api/mobile/sessions/", s.requireAuth(s.handleMobileSessionRouter))
 
-		// Plugin/Manager WebSocket routes
-		mux.HandleFunc("/plugin/ws", s.requireAuth(s.handlePluginWebSocket))
-		mux.HandleFunc("/api/plugin/status", s.requireAuth(s.handlePluginStatus))
-		mux.HandleFunc("/api/plugin/command", s.requireAuth(s.handleSendCommand))
+	// Plugin/Manager WebSocket routes
+	mux.HandleFunc("/plugin/ws", s.requireAuth(s.handlePluginWebSocket))
+	mux.HandleFunc("/api/plugin/status", s.requireAuth(s.handlePluginStatus))
+	mux.HandleFunc("/api/plugin/command", s.requireAuth(s.handleSendCommand))
 
-		// RedClaw 企业后端集成（代理/配额消耗必须认证）
-		mux.HandleFunc("/api/redclaw/health", s.requireAuth(s.handleRedClawHealth))
-		mux.HandleFunc("/api/redclaw/chat", s.requireAuth(s.handleRedClawChat))
-		mux.HandleFunc("/api/redclaw/knowledge/search", s.requireAuth(s.handleRedClawKnowledgeSearch))
+	// RedClaw 企业后端集成（代理/配额消耗必须认证）
+	mux.HandleFunc("/api/redclaw/health", s.requireAuth(s.handleRedClawHealth))
+	mux.HandleFunc("/api/redclaw/chat", s.requireAuth(s.handleRedClawChat))
+	mux.HandleFunc("/api/redclaw/knowledge/search", s.requireAuth(s.handleRedClawKnowledgeSearch))
 
-				// Audit 审计日志
-				mux.HandleFunc("/api/audit/logs", s.requireAuth(s.handleAuditLogs))
+	// Audit 审计日志
+	mux.HandleFunc("/api/audit/logs", s.requireAuth(s.handleAuditLogs))
 
-				// ---- 产品方案/PPT API ----
-			mux.HandleFunc("/api/presentations", s.requireAuth(s.handlePresentations))
-			mux.HandleFunc("/api/presentations/render", s.requireAuth(s.handleRenderPresentation))
+	// ---- 产品方案/PPT API ----
+	mux.HandleFunc("/api/presentations", s.requireAuth(s.handlePresentations))
+	mux.HandleFunc("/api/presentations/render", s.requireAuth(s.handleRenderPresentation))
 
-		handler := recoveryMiddleware(s.loggingMiddleware(corsMiddleware(mux, s.cfg.AllowedOrigins, s.cfg.DevAuth)))
-		return handler
+	handler := recoveryMiddleware(s.loggingMiddleware(corsMiddleware(mux, s.cfg.AllowedOrigins, s.cfg.DevAuth)))
+	return handler
 }
 
 func corsMiddleware(next http.Handler, allowedOrigins string, devAuth bool) http.Handler {
@@ -647,7 +647,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				createdAt = cur.CreatedAt
 				id = cur.ID
 			}
-			tasks, hasMore, err := s.taskStore.ListTasksCursor(r.Context(), limit, createdAt, id)
+			tasks, hasMore, err := s.taskStore.ListTasksCursorScoped(r.Context(), s.workspaceIDFromRequest(r), limit, createdAt, id)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -727,7 +727,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 
 		// 3. 本地任务（PG store，nil-safe 降级）
 		if (source == "" || source == "local") && s.taskStore != nil {
-			localTasks, err := s.taskStore.ListTasks(r.Context())
+			localTasks, err := s.taskStore.ListTasksScoped(r.Context(), s.workspaceIDFromRequest(r))
 			if err == nil {
 				for _, t := range localTasks {
 					if workstreamID != "" && t.WorkstreamID != workstreamID {
@@ -762,6 +762,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		if req.Source == "" {
 			req.Source = "local" // POST 创建的任务默认为本地源
 		}
+		// 租户来自已认证 claims，忽略请求体里的 workspaceId，避免调用方把任务
+		// 写进别人的 workspace。
+		req.WorkspaceID = s.workspaceIDFromRequest(r)
 		if err := s.taskStore.CreateTask(r.Context(), &req); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -808,7 +811,7 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 	// GET /api/tasks/{id}
 	if r.Method == http.MethodGet {
 		taskID := path
-		task, err := s.taskStore.GetTask(r.Context(), taskID)
+		task, err := s.taskStore.GetTaskScoped(r.Context(), taskID, s.workspaceIDFromRequest(r))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
@@ -825,7 +828,7 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		updated, err := s.taskStore.UpdateTask(r.Context(), path, update)
+		updated, err := s.taskStore.UpdateTaskScoped(r.Context(), path, s.workspaceIDFromRequest(r), update)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
@@ -838,7 +841,7 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 
 	// DELETE /api/tasks/{id} — 删除任务及其会话关联
 	if r.Method == http.MethodDelete {
-		if err := s.taskStore.DeleteTask(r.Context(), path); err != nil {
+		if err := s.taskStore.DeleteTaskScoped(r.Context(), path, s.workspaceIDFromRequest(r)); err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
@@ -866,7 +869,12 @@ func (s *Server) handleAttachSession(w http.ResponseWriter, r *http.Request, tas
 		req.Role = "primary"
 	}
 
-	if err := s.taskStore.AttachSession(r.Context(), req); err != nil {
+	if err := s.taskStore.AttachSessionScoped(r.Context(), req, s.workspaceIDFromRequest(r)); err != nil {
+		// 任务不在当前 workspace 时与"不存在"同义，返回 404 而非 500。
+		if strings.Contains(err.Error(), "task not found") {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -879,7 +887,7 @@ func (s *Server) handleAttachSession(w http.ResponseWriter, r *http.Request, tas
 }
 
 func (s *Server) handleTaskSessions(w http.ResponseWriter, r *http.Request, taskID string) {
-	links, err := s.taskStore.ListSessionsForTask(r.Context(), taskID)
+	links, err := s.taskStore.ListSessionsForTaskScoped(r.Context(), taskID, s.workspaceIDFromRequest(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
