@@ -40,11 +40,15 @@ func (s *Server) handleMeetingOps(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Get authenticated user identity
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
 	// /api/meetings/{id} — 获取或删除
 	id := path
 	switch r.Method {
 	case http.MethodGet:
-		m, err := s.meetingStore.Get(id)
+		m, err := s.meetingStore.GetScoped(id, uid, wsID)
 		if err != nil {
 			http.Error(w, `{"error":"meeting not found"}`, http.StatusNotFound)
 			return
@@ -55,7 +59,7 @@ func (s *Server) handleMeetingOps(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case http.MethodDelete:
-		if err := s.meetingStore.Delete(id); err != nil {
+		if err := s.meetingStore.DeleteScoped(id, uid, wsID); err != nil {
 			http.Error(w, `{"error":"meeting not found"}`, http.StatusNotFound)
 			return
 		}
@@ -67,7 +71,11 @@ func (s *Server) handleMeetingOps(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListMeetings(w http.ResponseWriter, r *http.Request) {
-	meetings, err := s.meetingStore.List()
+	// Get authenticated user identity
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
+	meetings, err := s.meetingStore.ListScoped(uid, wsID)
 	if err != nil {
 		http.Error(w, `{"error":"failed to list meetings"}`, http.StatusInternalServerError)
 		return
@@ -85,6 +93,10 @@ func (s *Server) handleListMeetings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
+	// Get authenticated user identity
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
 	var req meeting.CreateMeetingRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
@@ -94,7 +106,7 @@ func (s *Server) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
 		req.Title = "未命名会议"
 	}
 
-	m, err := s.meetingStore.Create(req)
+	m, err := s.meetingStore.CreateScoped(req, uid, wsID)
 	if err != nil {
 		http.Error(w, `{"error":"failed to create meeting"}`, http.StatusInternalServerError)
 		return
@@ -118,20 +130,24 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	m, err := s.meetingStore.Get(id)
+	// Get authenticated user identity
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
+	m, err := s.meetingStore.GetScoped(id, uid, wsID)
 	if err != nil {
 		http.Error(w, `{"error":"meeting not found"}`, http.StatusNotFound)
 		return
 	}
 
 	m.Status = "transcribing"
-	s.meetingStore.Update(m)
+	s.meetingStore.UpdateScoped(m, uid, wsID)
 
 	// 读取音频数据
 	audioData, err := io.ReadAll(r.Body)
 	if err != nil {
 		m.Status = "failed"
-		s.meetingStore.Update(m)
+		s.meetingStore.UpdateScoped(m, uid, wsID)
 		http.Error(w, `{"error":"failed to read audio data"}`, http.StatusBadRequest)
 		return
 	}
@@ -139,7 +155,7 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 
 	if len(audioData) == 0 {
 		m.Status = "failed"
-		s.meetingStore.Update(m)
+		s.meetingStore.UpdateScoped(m, uid, wsID)
 		http.Error(w, `{"error":"empty audio data"}`, http.StatusBadRequest)
 		return
 	}
@@ -149,7 +165,7 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 		result, err := s.transcriber.Transcribe(r.Context(), audioData, "meeting.wav")
 		if err != nil {
 			m.Status = "failed"
-			s.meetingStore.Update(m)
+			s.meetingStore.UpdateScoped(m, uid, wsID)
 			http.Error(w, `{"error":"transcription failed"}`, http.StatusInternalServerError)
 			return
 		}
@@ -159,7 +175,7 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 	}
 
 	m.Status = "transcribed"
-	s.meetingStore.Update(m)
+	s.meetingStore.UpdateScoped(m, uid, wsID)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]string{
@@ -181,7 +197,11 @@ func (s *Server) handleSummarizeMeeting(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	m, err := s.meetingStore.Get(id)
+	// Get authenticated user identity
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
+	m, err := s.meetingStore.GetScoped(id, uid, wsID)
 	if err != nil {
 		http.Error(w, `{"error":"meeting not found"}`, http.StatusNotFound)
 		return
@@ -193,12 +213,12 @@ func (s *Server) handleSummarizeMeeting(w http.ResponseWriter, r *http.Request, 
 	}
 
 	m.Status = "summarizing"
-	s.meetingStore.Update(m)
+	s.meetingStore.UpdateScoped(m, uid, wsID)
 
 	summary, err := meeting.SummarizeTranscript(m.Transcript, m.Title)
 	if err != nil {
 		m.Status = "failed"
-		s.meetingStore.Update(m)
+		s.meetingStore.UpdateScoped(m, uid, wsID)
 		http.Error(w, `{"error":"summarization failed"}`, http.StatusInternalServerError)
 		return
 	}
@@ -207,7 +227,7 @@ func (s *Server) handleSummarizeMeeting(w http.ResponseWriter, r *http.Request, 
 	m.KeyDecisions = summary.KeyDecisions
 	m.ActionItems = summary.ActionItems
 	m.Status = "done"
-	s.meetingStore.Update(m)
+	s.meetingStore.UpdateScoped(m, uid, wsID)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(m); err != nil {
