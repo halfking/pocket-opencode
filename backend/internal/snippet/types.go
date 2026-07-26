@@ -6,6 +6,8 @@ import "time"
 // Snippet 代码片段
 type Snippet struct {
 	ID          string    `json:"id"`
+	OwnerID     string    `json:"owner_id,omitempty"`
+	WorkspaceID string    `json:"workspace_id,omitempty"`
 	Title       string    `json:"title"`
 	Language    string    `json:"language"`
 	Code        string    `json:"code"`

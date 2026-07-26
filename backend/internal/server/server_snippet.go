@@ -19,16 +19,20 @@ func (s *Server) handleSnippets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSnippetOps(w http.ResponseWriter, r *http.Request) {
-	// 从路径提取 snippet ID: /api/snippets/{id}
+	// Extract snippet ID from path: /api/snippets/{id}
 	id := r.URL.Path[len("/api/snippets/"):]
 	if id == "" {
 		http.Error(w, `{"error":"missing snippet id"}`, http.StatusBadRequest)
 		return
 	}
 
+	// Get authenticated user identity
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
 	switch r.Method {
 	case http.MethodGet:
-		snip, err := s.snippetStore.Get(id)
+		snip, err := s.snippetStore.GetScoped(id, uid, wsID)
 		if err != nil {
 			http.Error(w, `{"error":"snippet not found"}`, http.StatusNotFound)
 			return
@@ -39,7 +43,7 @@ func (s *Server) handleSnippetOps(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case http.MethodDelete:
-		if err := s.snippetStore.Delete(id); err != nil {
+		if err := s.snippetStore.DeleteScoped(id, uid, wsID); err != nil {
 			http.Error(w, `{"error":"snippet not found"}`, http.StatusNotFound)
 			return
 		}
@@ -51,6 +55,10 @@ func (s *Server) handleSnippetOps(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListSnippets(w http.ResponseWriter, r *http.Request) {
+	// Get authenticated user identity
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
 	req := snippet.ListSnippetsRequest{
 		Language:  r.URL.Query().Get("language"),
 		Tag:       r.URL.Query().Get("tag"),
@@ -58,7 +66,7 @@ func (s *Server) handleListSnippets(w http.ResponseWriter, r *http.Request) {
 		Search:    r.URL.Query().Get("search"),
 	}
 
-	snippets, err := s.snippetStore.List(req)
+	snippets, err := s.snippetStore.ListScoped(req, uid, wsID)
 	if err != nil {
 		http.Error(w, `{"error":"failed to list snippets"}`, http.StatusInternalServerError)
 		return
@@ -78,6 +86,10 @@ func (s *Server) handleListSnippets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateSnippet(w http.ResponseWriter, r *http.Request) {
+	// Get authenticated user identity
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
 	var req snippet.CreateSnippetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
@@ -89,7 +101,7 @@ func (s *Server) handleCreateSnippet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snip, err := s.snippetStore.Create(req)
+	snip, err := s.snippetStore.CreateScoped(req, uid, wsID)
 	if err != nil {
 		http.Error(w, `{"error":"failed to create snippet"}`, http.StatusInternalServerError)
 		return
