@@ -30,6 +30,38 @@ done
 
 echo "=== deploy: ${SERVICE_NAME} (env=${ENV}, tag=${TAG}) ==="
 
+# ── 1. 前置配置检查 ─────────────────────────────────────────────────
+DEPLOY_DIR="${SCRIPT_DIR}"
+ENV_FILE="${POCKET_DEPLOY_ENV_FILE:-${DEPLOY_DIR}/.env}"
+if [[ ! -f "${ENV_FILE}" ]]; then
+  ENV_FILE="${SCRIPT_DIR}/../backend/.env"
+fi
+
+read_env_value() {
+  local key="$1"
+  awk -F= -v key="${key}" '$1 == key {sub(/^[^=]*=/, ""); gsub(/\r/, ""); print; exit}' "${ENV_FILE}"
+}
+
+if [[ "${ENV}" == "prod" ]]; then
+  if [[ ! -f "${ENV_FILE}" ]]; then
+    echo "❌ 生产部署缺少环境文件: ${ENV_FILE}" >&2
+    exit 1
+  fi
+
+  POCKET_ENV_VALUE="$(read_env_value POCKET_ENV)"
+  if [[ "${POCKET_ENV_VALUE}" != "production" && "${POCKET_ENV_VALUE}" != "prod" ]]; then
+    echo "❌ 生产部署必须设置 POCKET_ENV=production" >&2
+    exit 1
+  fi
+
+  POCKET_DEV_AUTH_VALUE="$(read_env_value POCKET_DEV_AUTH)"
+  if [[ "${POCKET_DEV_AUTH_VALUE}" == "true" ]]; then
+    echo "❌ 生产部署禁止启用 POCKET_DEV_AUTH=true" >&2
+    exit 1
+  fi
+fi
+
+# ── 2. dry-run ──────────────────────────────────────────────────────
 if [[ "$DRY_RUN" == true ]]; then
   echo "[DRY-RUN] 以下命令将被执行:"
   echo "  docker pull registry.kxpms.cn/kaixuan-platform-${SERVICE_NAME}:${TAG}"
@@ -65,12 +97,7 @@ docker rm "${CONTAINER_NAME}" 2>/dev/null || true
 echo "▶ 启动新容器: ${CONTAINER_NAME}"
 
 # 读取 .env 文件获取配置（如果存在）
-DEPLOY_DIR="${SCRIPT_DIR}"
-ENV_FILE="${DEPLOY_DIR}/.env"
-if [[ ! -f "${ENV_FILE}" ]]; then
-  echo "⚠️  警告: ${ENV_FILE} 不存在，使用默认配置"
-  ENV_FILE="${SCRIPT_DIR}/../backend/.env"
-fi
+# ENV_FILE 已在前置配置检查阶段解析并复用。
 
 # 从 .env 读取端口（默认 8088）
 PORT=$(grep "^POCKET_HTTP_PORT=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 || echo "8088")
