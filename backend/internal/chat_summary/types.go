@@ -6,6 +6,8 @@ import "time"
 // ChatSummary 聊天摘要
 type ChatSummary struct {
 	ID           string       `json:"id"`
+	OwnerID      string       `json:"owner_id,omitempty"`
+	WorkspaceID  string       `json:"workspace_id,omitempty"`
 	Channel      string       `json:"channel"`       // feishu / telegram / slack
 	ChannelID    string       `json:"channel_id"`     // 群组/频道 ID
 	ChannelName  string       `json:"channel_name,omitempty"`
