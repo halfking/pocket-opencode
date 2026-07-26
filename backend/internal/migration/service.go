@@ -35,10 +35,10 @@ import (
 
 // Service 编排会话跨主机迁移。所有依赖均可为 nil（降级）。
 type Service struct {
-	registry *registry.Registry    // 实例选择（必需）
-	opencode adapter.OpenCodeAdapter // 从源实例拉消息（必需）
-	pluginHub *websocket.PluginHub  // 下发 migrate_to 命令到目标实例（必需）
-	taskStore *task.Store           // 建立逻辑会话映射（可选）
+	registry  *registry.Registry      // 实例选择（必需）
+	opencode  adapter.OpenCodeAdapter // 从源实例拉消息（必需）
+	pluginHub *websocket.PluginHub    // 下发 migrate_to 命令到目标实例（必需）
+	taskStore *task.Store             // 建立逻辑会话映射（可选）
 }
 
 // New 构造迁移服务。
@@ -53,12 +53,12 @@ func New(reg *registry.Registry, oc adapter.OpenCodeAdapter, hub *websocket.Plug
 
 // MigrationRequest 是发起一次迁移的入参。
 type MigrationRequest struct {
-	FromInstanceID string   `json:"fromInstanceId"` // 源实例
-	SessionID      string   `json:"sessionId"`      // 源会话
-	ToInstanceID   string   `json:"toInstanceId,omitempty"`   // 目标实例（空=自动选）
-	TaskID         string   `json:"taskId,omitempty"`         // 关联任务（建逻辑映射用）
-	PromptTemplates []string `json:"promptTemplates,omitempty"` // 启用的提示词模板
-	WorkingDir     string   `json:"workingDirectory,omitempty"` // 目标工作目录覆盖
+	FromInstanceID  string   `json:"fromInstanceId"`             // 源实例
+	SessionID       string   `json:"sessionId"`                  // 源会话
+	ToInstanceID    string   `json:"toInstanceId,omitempty"`     // 目标实例（空=自动选）
+	TaskID          string   `json:"taskId,omitempty"`           // 关联任务（建逻辑映射用）
+	PromptTemplates []string `json:"promptTemplates,omitempty"`  // 启用的提示词模板
+	WorkingDir      string   `json:"workingDirectory,omitempty"` // 目标工作目录覆盖
 }
 
 // MigrationResult 是迁移结果。
@@ -76,7 +76,8 @@ type MigrationResult struct {
 }
 
 // Migrate 执行一次迁移。主要步骤见包注释。
-func (s *Service) Migrate(ctx context.Context, req MigrationRequest) (*MigrationResult, error) {
+// workspaceID 来自调用方的已认证 claims：迁移命令只会下发给同 workspace 的实例。
+func (s *Service) Migrate(ctx context.Context, workspaceID string, req MigrationRequest) (*MigrationResult, error) {
 	started := time.Now().UTC().Format(time.RFC3339)
 	result := &MigrationResult{
 		FromInstance: req.FromInstanceID,
@@ -132,12 +133,12 @@ func (s *Service) Migrate(ctx context.Context, req MigrationRequest) (*Migration
 		"workingDirectory": req.WorkingDir,
 		"packInline":       packBytes, // 目标端 manager/plugin 优先用内联包（json.RawMessage 兼容）
 		// 携带来源信息，供目标端建立反向映射
-		"fromInstance":     req.FromInstanceID,
-		"fromSession":      req.SessionID,
-		"taskId":           req.TaskID,
+		"fromInstance": req.FromInstanceID,
+		"fromSession":  req.SessionID,
+		"taskId":       req.TaskID,
 	}
 
-	err = s.pluginHub.SendCommandToInstance(toInstance, websocket.Message{
+	err = s.pluginHub.SendCommandToInstance(workspaceID, toInstance, websocket.Message{
 		Type:    "session.migrate_to",
 		Payload: cmdPayload,
 	})
@@ -179,6 +180,7 @@ func (s *Service) Preview(ctx context.Context, fromInstanceID, sessionID string,
 	prompt := BuildPrompts(pack, templates)
 	return pack, prompt, nil
 }
+
 // 由 server 层的 command.result 处理器在识别到 migrate_to 结果时调用。
 func (s *Service) CompleteMigration(ctx context.Context, taskID, toInstance, newSessionID, fromInstance, fromSession string) error {
 	if s.taskStore == nil {

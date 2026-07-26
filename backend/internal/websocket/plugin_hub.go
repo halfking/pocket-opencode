@@ -2,12 +2,22 @@ package websocket
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
+)
+
+// 控制面错误：命令下发必须显式失败，避免调用方把"未送达"当成功。
+var (
+	// ErrInstanceNotConnected 表示目标实例在调用方 workspace 内不存在或未连接。
+	// 跨 workspace 的实例同样返回该错误，不泄漏其它租户实例的存在性。
+	ErrInstanceNotConnected = errors.New("instance not connected in workspace")
+	// ErrCommandQueueFull 表示连接发送缓冲已满，命令未送达。
+	ErrCommandQueueFull = errors.New("instance command queue is full")
 )
 
 // PluginHub manages WebSocket connections for OpenCode plugins and managers
@@ -22,7 +32,7 @@ type PluginHub struct {
 	clients map[string]*ClientConnection
 
 	// Broadcast channel
-	broadcast chan Message
+	broadcast chan workspaceMessage
 
 	// Register/unregister channels
 	registerPlugin    chan *PluginConnection
@@ -76,6 +86,8 @@ type ClientConnection struct {
 
 type PluginMetadata struct {
 	InstanceID  string    `json:"instanceID"`
+	WorkspaceID string    `json:"workspaceID"`
+	UserID      string    `json:"userID"`
 	DisplayName string    `json:"displayName"`
 	Version     string    `json:"version"`
 	Environment string    `json:"environment"`
@@ -84,6 +96,8 @@ type PluginMetadata struct {
 
 type ManagerMetadata struct {
 	InstanceID  string    `json:"instanceID"`
+	WorkspaceID string    `json:"workspaceID"`
+	UserID      string    `json:"userID"`
 	Hostname    string    `json:"hostname"`
 	Version     string    `json:"version"`
 	ConnectedAt time.Time `json:"connectedAt"`
@@ -91,9 +105,17 @@ type ManagerMetadata struct {
 
 type ClientMetadata struct {
 	UserID      string    `json:"userID"`
+	WorkspaceID string    `json:"workspaceID"`
 	DeviceID    string    `json:"deviceID"`
 	Platform    string    `json:"platform"`
 	ConnectedAt time.Time `json:"connectedAt"`
+}
+
+// workspaceMessage 把广播事件与其来源 workspace 绑在一起，
+// 保证客户端只收到本租户实例的事件。
+type workspaceMessage struct {
+	workspaceID string
+	message     Message
 }
 
 type PluginMessage struct {
@@ -107,7 +129,7 @@ func NewPluginHub() *PluginHub {
 		plugins:           make(map[string]*PluginConnection),
 		managers:          make(map[string]*ManagerConnection),
 		clients:           make(map[string]*ClientConnection),
-		broadcast:         make(chan Message, 256),
+		broadcast:         make(chan workspaceMessage, 256),
 		registerPlugin:    make(chan *PluginConnection),
 		unregisterPlugin:  make(chan *PluginConnection),
 		registerManager:   make(chan *ManagerConnection),
@@ -130,8 +152,8 @@ func (h *PluginHub) Run() {
 			h.mu.Unlock()
 			log.Printf("[PluginHub] Plugin registered: %s (%s)", conn.ID, conn.Metadata.DisplayName)
 
-			// Notify all clients
-			h.broadcastToClients(Message{
+			// Notify clients in the same workspace
+			h.broadcastToClients(conn.Metadata.WorkspaceID, Message{
 				Type: "instance.online",
 				Payload: map[string]interface{}{
 					"instanceID":  conn.ID,
@@ -149,8 +171,8 @@ func (h *PluginHub) Run() {
 			h.mu.Unlock()
 			log.Printf("[PluginHub] Plugin unregistered: %s", conn.ID)
 
-			// Notify all clients
-			h.broadcastToClients(Message{
+			// Notify clients in the same workspace
+			h.broadcastToClients(conn.Metadata.WorkspaceID, Message{
 				Type: "instance.offline",
 				Payload: map[string]interface{}{
 					"instanceID": conn.ID,
@@ -194,8 +216,8 @@ func (h *PluginHub) Run() {
 			log.Printf("[PluginHub] Client disconnected: %s", conn.ID)
 
 		// Broadcast message
-		case message := <-h.broadcast:
-			h.handleBroadcast(message)
+		case wm := <-h.broadcast:
+			h.handleBroadcast(wm)
 		}
 	}
 }
@@ -230,29 +252,29 @@ func (h *PluginHub) UnregisterClient(conn *ClientConnection) {
 	h.unregisterClient <- conn
 }
 
-// Broadcast sends a message to all appropriate connections
-func (h *PluginHub) Broadcast(message Message) {
-	h.broadcast <- message
+// Broadcast sends a message to the clients of the originating workspace.
+func (h *PluginHub) Broadcast(workspaceID string, message Message) {
+	h.broadcast <- workspaceMessage{workspaceID: workspaceID, message: message}
 }
 
 // handleBroadcast handles broadcasting logic
-func (h *PluginHub) handleBroadcast(message Message) {
-	switch message.Type {
+func (h *PluginHub) handleBroadcast(wm workspaceMessage) {
+	switch wm.message.Type {
 	case "session.created", "session.updated", "session.completed":
-		// Broadcast to all clients
-		h.broadcastToClients(message)
+		// Broadcast to clients in the same workspace
+		h.broadcastToClients(wm.workspaceID, wm.message)
 
 	case "instance.status":
-		// Broadcast to all clients
-		h.broadcastToClients(message)
+		// Broadcast to clients in the same workspace
+		h.broadcastToClients(wm.workspaceID, wm.message)
 
 	default:
-		log.Printf("[PluginHub] Unknown broadcast type: %s", message.Type)
+		log.Printf("[PluginHub] Unknown broadcast type: %s", wm.message.Type)
 	}
 }
 
-// broadcastToClients sends a message to all connected clients
-func (h *PluginHub) broadcastToClients(message Message) {
+// broadcastToClients sends a message to clients belonging to workspaceID.
+func (h *PluginHub) broadcastToClients(workspaceID string, message Message) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -263,6 +285,9 @@ func (h *PluginHub) broadcastToClients(message Message) {
 	}
 
 	for _, client := range h.clients {
+		if client.Metadata.WorkspaceID != workspaceID {
+			continue
+		}
 		select {
 		case client.Send <- data:
 		default:
@@ -272,15 +297,17 @@ func (h *PluginHub) broadcastToClients(message Message) {
 	}
 }
 
-// SendCommandToInstance sends a command to a specific instance
-func (h *PluginHub) SendCommandToInstance(instanceID string, command Message) error {
+// SendCommandToInstance sends a command to an instance owned by workspaceID.
+// 目标实例不在该 workspace（或未连接）时返回 ErrInstanceNotConnected；
+// 缓冲已满返回 ErrCommandQueueFull，调用方必须按失败处理。
+func (h *PluginHub) SendCommandToInstance(workspaceID, instanceID string, command Message) error {
 	h.mu.RLock()
 	plugin, ok := h.plugins[instanceID]
 	h.mu.RUnlock()
 
-	if !ok {
-		// Instance not connected, try manager
-		return h.SendCommandToManager(instanceID, command)
+	if !ok || plugin.Metadata.WorkspaceID != workspaceID {
+		// 插件不可用时回退到 manager（同样受 workspace 约束）
+		return h.SendCommandToManager(workspaceID, instanceID, command)
 	}
 
 	data, err := json.Marshal(command)
@@ -292,19 +319,18 @@ func (h *PluginHub) SendCommandToInstance(instanceID string, command Message) er
 	case plugin.Send <- data:
 		return nil
 	default:
-		return nil // Buffer full, command dropped
+		return ErrCommandQueueFull
 	}
 }
 
-// SendCommandToManager sends a command to an instance manager
-func (h *PluginHub) SendCommandToManager(instanceID string, command Message) error {
+// SendCommandToManager sends a command to an instance manager owned by workspaceID.
+func (h *PluginHub) SendCommandToManager(workspaceID, instanceID string, command Message) error {
 	h.mu.RLock()
 	manager, ok := h.managers[instanceID]
 	h.mu.RUnlock()
 
-	if !ok {
-		log.Printf("[PluginHub] Manager not found: %s", instanceID)
-		return nil
+	if !ok || manager.Metadata.WorkspaceID != workspaceID {
+		return ErrInstanceNotConnected
 	}
 
 	data, err := json.Marshal(command)
@@ -316,17 +342,20 @@ func (h *PluginHub) SendCommandToManager(instanceID string, command Message) err
 	case manager.Send <- data:
 		return nil
 	default:
-		return nil
+		return ErrCommandQueueFull
 	}
 }
 
-// sendInstanceListToClient sends current instance list to a newly connected client
+// sendInstanceListToClient sends the workspace's instance list to a new client
 func (h *PluginHub) sendInstanceListToClient(client *ClientConnection) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	instances := make([]map[string]interface{}, 0, len(h.plugins))
 	for _, plugin := range h.plugins {
+		if plugin.Metadata.WorkspaceID != client.Metadata.WorkspaceID {
+			continue
+		}
 		instances = append(instances, map[string]interface{}{
 			"instanceID":  plugin.ID,
 			"displayName": plugin.Metadata.DisplayName,
@@ -350,36 +379,48 @@ func (h *PluginHub) sendInstanceListToClient(client *ClientConnection) {
 	}
 }
 
-// GetConnectedInstances returns list of connected instances
-func (h *PluginHub) GetConnectedInstances() []string {
+// GetConnectedInstances returns connected instances owned by workspaceID.
+func (h *PluginHub) GetConnectedInstances(workspaceID string) []string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	instances := make([]string, 0, len(h.plugins))
-	for id := range h.plugins {
+	for id, conn := range h.plugins {
+		if conn.Metadata.WorkspaceID != workspaceID {
+			continue
+		}
 		instances = append(instances, id)
 	}
 	return instances
 }
 
-// GetConnectedManagers returns list of connected managers
-func (h *PluginHub) GetConnectedManagers() []string {
+// GetConnectedManagers returns connected managers owned by workspaceID.
+func (h *PluginHub) GetConnectedManagers(workspaceID string) []string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	managers := make([]string, 0, len(h.managers))
-	for id := range h.managers {
+	for id, conn := range h.managers {
+		if conn.Metadata.WorkspaceID != workspaceID {
+			continue
+		}
 		managers = append(managers, id)
 	}
 	return managers
 }
 
-// GetConnectedClients returns count of connected clients
-func (h *PluginHub) GetConnectedClients() int {
+// GetConnectedClients returns the number of clients in workspaceID.
+func (h *PluginHub) GetConnectedClients(workspaceID string) int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	return len(h.clients)
+	count := 0
+	for _, client := range h.clients {
+		if client.Metadata.WorkspaceID == workspaceID {
+			count++
+		}
+	}
+	return count
 }
 
 // Helper function to marshal data
@@ -463,8 +504,8 @@ func (c *PluginConnection) handleMessage(msg Message) {
 		c.Hub.applyRegisteredInstance(msg, c)
 
 	case "session.created", "session.updated", "session.completed":
-		// Broadcast to all clients
-		c.Hub.Broadcast(msg)
+		// Broadcast to clients in the plugin's workspace
+		c.Hub.Broadcast(c.Metadata.WorkspaceID, msg)
 
 	case "heartbeat":
 		// Update last heartbeat time + 触发 Registry 心跳
@@ -510,9 +551,12 @@ func (h *PluginHub) applyRegisteredInstance(msg Message, c *PluginConnection) {
 		log.Printf("[PluginHub] parse instance.register: %v", err)
 		return
 	}
-	if payload.ID == "" {
-		payload.ID = c.ID
+	// 实例 ID 只认连接握手时已认证的 ID：注册 payload 不得改写别的实例。
+	if payload.ID != "" && payload.ID != c.ID {
+		log.Printf("[PluginHub] rejecting instance.register: payload id %q != connection id %q", payload.ID, c.ID)
+		return
 	}
+	payload.ID = c.ID
 	if payload.DisplayName == "" {
 		payload.DisplayName = c.Metadata.DisplayName
 	}
@@ -615,8 +659,8 @@ func (c *ManagerConnection) handleMessage(msg Message) {
 		log.Printf("[ManagerConnection] Manager %s sent register", c.ID)
 
 	case "instance.status":
-		// Broadcast to all clients
-		c.Hub.Broadcast(msg)
+		// Broadcast to clients in the manager's workspace
+		c.Hub.Broadcast(c.Metadata.WorkspaceID, msg)
 
 	case "heartbeat":
 		// Update last heartbeat time

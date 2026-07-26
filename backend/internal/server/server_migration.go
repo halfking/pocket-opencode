@@ -22,8 +22,8 @@ func (s *Server) handleMigration(w http.ResponseWriter, r *http.Request) {
 		writeMigrationJSON(w, http.StatusOK, map[string]any{
 			"enabled": true,
 			"endpoints": map[string]string{
-				"migrate":   "POST /api/migration",
-				"preview":   "POST /api/migration/preview (预览迁移包与提示词，不实际执行)",
+				"migrate": "POST /api/migration",
+				"preview": "POST /api/migration/preview (预览迁移包与提示词，不实际执行)",
 			},
 		})
 		return
@@ -39,7 +39,7 @@ func (s *Server) handleMigration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.migrationSvc.Migrate(r.Context(), req)
+	result, err := s.migrationSvc.Migrate(r.Context(), s.workspaceIDFromRequest(r), req)
 	if err != nil && result != nil && result.Error != "" {
 		// 迁移失败但有结构化结果，返回 result（含 error 字段）
 		writeMigrationJSON(w, http.StatusOK, result)

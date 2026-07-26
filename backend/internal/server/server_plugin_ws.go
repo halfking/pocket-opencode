@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -10,18 +11,21 @@ import (
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
 
-// pluginUpgrader 是插件 WebSocket 的默认 upgrader（开发兼容）。
-// 生产环境应使用 Server.upgrader（带 origin 检查）。
-var pluginUpgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true // 开发默认允许所有源
-	},
-}
-
-// handlePluginWebSocket handles WebSocket connections for plugins and managers
+// handlePluginWebSocket handles WebSocket connections for plugins and managers.
+//
+// 身份边界：连接的 workspace/user 只来自已认证 JWT claims，query 参数只提供
+// 实例路由用的 id。这样一个 workspace 的调用方无法接管或冒认别的租户实例。
 func (s *Server) handlePluginWebSocket(w http.ResponseWriter, r *http.Request) {
+	claims := s.claimsFromContext(r)
+	if claims == nil {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	workspaceID := claims.WorkspaceID
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+
 	// Get connection type from query parameter
 	connType := r.URL.Query().Get("type")
 	id := r.URL.Query().Get("id")
@@ -40,19 +44,19 @@ func (s *Server) handlePluginWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	switch connType {
 	case "plugin":
-		s.handlePluginConnection(conn, id)
+		s.handlePluginConnection(conn, id, workspaceID, claims.UserID)
 	case "manager":
-		s.handleManagerConnection(conn, id)
+		s.handleManagerConnection(conn, id, workspaceID, claims.UserID)
 	case "client":
-		s.handleClientConnection(conn, id)
+		s.handleClientConnection(conn, id, workspaceID, claims.UserID)
 	default:
 		conn.Close()
 		log.Printf("Unknown connection type: %s", connType)
 	}
 }
 
-func (s *Server) handlePluginConnection(conn *websocket.Conn, id string) {
-	log.Printf("Plugin connection: %s", id)
+func (s *Server) handlePluginConnection(conn *websocket.Conn, id, workspaceID, userID string) {
+	log.Printf("Plugin connection: %s (workspace=%s)", id, workspaceID)
 
 	pluginConn := &ws.PluginConnection{
 		ID:   id,
@@ -61,6 +65,8 @@ func (s *Server) handlePluginConnection(conn *websocket.Conn, id string) {
 		Hub:  s.pluginHub,
 		Metadata: ws.PluginMetadata{
 			InstanceID:  id,
+			WorkspaceID: workspaceID,
+			UserID:      userID,
 			DisplayName: id,
 			ConnectedAt: time.Now(),
 		},
@@ -73,8 +79,8 @@ func (s *Server) handlePluginConnection(conn *websocket.Conn, id string) {
 	go pluginConn.ReadPump()
 }
 
-func (s *Server) handleManagerConnection(conn *websocket.Conn, id string) {
-	log.Printf("Manager connection: %s", id)
+func (s *Server) handleManagerConnection(conn *websocket.Conn, id, workspaceID, userID string) {
+	log.Printf("Manager connection: %s (workspace=%s)", id, workspaceID)
 
 	managerConn := &ws.ManagerConnection{
 		ID:   id,
@@ -83,6 +89,8 @@ func (s *Server) handleManagerConnection(conn *websocket.Conn, id string) {
 		Hub:  s.pluginHub,
 		Metadata: ws.ManagerMetadata{
 			InstanceID:  id,
+			WorkspaceID: workspaceID,
+			UserID:      userID,
 			ConnectedAt: time.Now(),
 		},
 	}
@@ -94,8 +102,8 @@ func (s *Server) handleManagerConnection(conn *websocket.Conn, id string) {
 	go managerConn.ReadPump()
 }
 
-func (s *Server) handleClientConnection(conn *websocket.Conn, id string) {
-	log.Printf("Client connection: %s", id)
+func (s *Server) handleClientConnection(conn *websocket.Conn, id, workspaceID, userID string) {
+	log.Printf("Client connection: %s (workspace=%s)", id, workspaceID)
 
 	clientConn := &ws.ClientConnection{
 		ID:   id,
@@ -103,7 +111,8 @@ func (s *Server) handleClientConnection(conn *websocket.Conn, id string) {
 		Send: make(chan []byte, 256),
 		Hub:  s.pluginHub,
 		Metadata: ws.ClientMetadata{
-			UserID:      id,
+			UserID:      userID,
+			WorkspaceID: workspaceID,
 			ConnectedAt: time.Now(),
 		},
 	}
@@ -115,24 +124,25 @@ func (s *Server) handleClientConnection(conn *websocket.Conn, id string) {
 	go clientConn.ReadPump()
 }
 
-// handlePluginStatus returns current plugin hub status
+// handlePluginStatus returns the caller workspace's plugin hub status
 func (s *Server) handlePluginStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	workspaceID := s.workspaceIDFromRequest(r)
 	status := map[string]interface{}{
-		"instances": s.pluginHub.GetConnectedInstances(),
-		"managers":  s.pluginHub.GetConnectedManagers(),
-		"clients":   s.pluginHub.GetConnectedClients(),
+		"instances": s.pluginHub.GetConnectedInstances(workspaceID),
+		"managers":  s.pluginHub.GetConnectedManagers(workspaceID),
+		"clients":   s.pluginHub.GetConnectedClients(workspaceID),
 		"timestamp": time.Now().Format(time.RFC3339),
 	}
 
 	writeJSON(w, http.StatusOK, status)
 }
 
-// handleSendCommand sends a command to an instance
+// handleSendCommand sends a command to an instance owned by the caller workspace
 func (s *Server) handleSendCommand(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -149,13 +159,25 @@ func (s *Server) handleSendCommand(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+	if req.InstanceID == "" || req.Command == "" {
+		http.Error(w, "instanceID and command are required", http.StatusBadRequest)
+		return
+	}
 
 	message := ws.Message{
 		Type:    req.Command,
 		Payload: req.Data,
 	}
 
-	if err := s.pluginHub.SendCommandToInstance(req.InstanceID, message); err != nil {
+	err := s.pluginHub.SendCommandToInstance(s.workspaceIDFromRequest(r), req.InstanceID, message)
+	switch {
+	case errors.Is(err, ws.ErrInstanceNotConnected):
+		http.Error(w, "instance not connected", http.StatusNotFound)
+		return
+	case errors.Is(err, ws.ErrCommandQueueFull):
+		http.Error(w, "instance command queue is full", http.StatusServiceUnavailable)
+		return
+	case err != nil:
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
