@@ -38,9 +38,13 @@ func (s *Server) handleFinanceOps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get authenticated user identity
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
 	switch r.Method {
 	case http.MethodGet:
-		tx, err := s.financeStore.Get(id)
+		tx, err := s.financeStore.GetScoped(id, uid, wsID)
 		if err != nil {
 			http.Error(w, `{"error":"transaction not found"}`, http.StatusNotFound)
 			return
@@ -51,7 +55,7 @@ func (s *Server) handleFinanceOps(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case http.MethodDelete:
-		if err := s.financeStore.Delete(id); err != nil {
+		if err := s.financeStore.DeleteScoped(id, uid, wsID); err != nil {
 			http.Error(w, `{"error":"transaction not found"}`, http.StatusNotFound)
 			return
 		}
@@ -63,7 +67,11 @@ func (s *Server) handleFinanceOps(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListFinance(w http.ResponseWriter, r *http.Request) {
-	transactions, err := s.financeStore.List()
+	// Get authenticated user identity
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
+	transactions, err := s.financeStore.ListScoped(uid, wsID)
 	if err != nil {
 		http.Error(w, `{"error":"failed to list transactions"}`, http.StatusInternalServerError)
 		return
@@ -81,13 +89,17 @@ func (s *Server) handleListFinance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateFinance(w http.ResponseWriter, r *http.Request) {
+	// Get authenticated user identity
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
 	var req finance.CreateTransactionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
 
-	tx, err := s.financeStore.Create(req)
+	tx, err := s.financeStore.CreateScoped(req, uid, wsID)
 	if err != nil {
 		http.Error(w, `{"error":"failed to create transaction"}`, http.StatusBadRequest)
 		return
@@ -133,12 +145,16 @@ func (s *Server) handleParseFinance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFinanceStats(w http.ResponseWriter, r *http.Request) {
+	// Get authenticated user identity
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
 	query := finance.StatsQuery{
 		Month:    r.URL.Query().Get("month"),
 		Category: r.URL.Query().Get("category"),
 	}
 
-	stats, err := s.financeStore.GetStats(query)
+	stats, err := s.financeStore.GetStatsScoped(query, uid, wsID)
 	if err != nil {
 		http.Error(w, `{"error":"failed to get statistics"}`, http.StatusInternalServerError)
 		return

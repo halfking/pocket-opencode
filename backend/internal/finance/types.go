@@ -12,15 +12,17 @@ const (
 
 // Transaction 记账记录
 type Transaction struct {
-	ID        string    `json:"id"`
-	Type      string    `json:"type"`               // income / expense
-	Amount    float64   `json:"amount"`
-	Category  string    `json:"category"`            // 餐饮 / 交通 / 购物 / 工资 / 项目收入
-	Note      string    `json:"note,omitempty"`
-	Tags      []string  `json:"tags,omitempty"`
-	ProjectID string    `json:"project_id,omitempty"`
-	Source    string    `json:"source"`              // manual / voice / auto
-	CreatedAt time.Time `json:"created_at"`
+	ID          string    `json:"id"`
+	OwnerID     string    `json:"owner_id,omitempty"`
+	WorkspaceID string    `json:"workspace_id,omitempty"`
+	Type        string    `json:"type"`               // income / expense
+	Amount      float64   `json:"amount"`
+	Category    string    `json:"category"`            // 餐饮 / 交通 / 购物 / 工资 / 项目收入
+	Note        string    `json:"note,omitempty"`
+	Tags        []string  `json:"tags,omitempty"`
+	ProjectID   string    `json:"project_id,omitempty"`
+	Source      string    `json:"source"`              // manual / voice / auto
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // CreateTransactionRequest 创建记账请求
