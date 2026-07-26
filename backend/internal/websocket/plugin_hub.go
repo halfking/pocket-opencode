@@ -25,12 +25,12 @@ type PluginHub struct {
 	broadcast chan Message
 
 	// Register/unregister channels
-	registerPlugin   chan *PluginConnection
-	unregisterPlugin chan *PluginConnection
-	registerManager  chan *ManagerConnection
+	registerPlugin    chan *PluginConnection
+	unregisterPlugin  chan *PluginConnection
+	registerManager   chan *ManagerConnection
 	unregisterManager chan *ManagerConnection
-	registerClient   chan *ClientConnection
-	unregisterClient chan *ClientConnection
+	registerClient    chan *ClientConnection
+	unregisterClient  chan *ClientConnection
 
 	// Mutex for thread-safe operations
 	mu sync.RWMutex
@@ -400,6 +400,7 @@ func (c *PluginConnection) ReadPump() {
 	}()
 
 	c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	setWebSocketReadLimit(c.Conn)
 	c.Conn.SetPongHandler(func(string) error {
 		c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil
@@ -490,12 +491,12 @@ func (h *PluginHub) applyRegisteredInstance(msg Message, c *PluginConnection) {
 
 	// 注册消息 data 结构对齐 opencode-plugin InstanceInfo
 	var payload struct {
-		ID           string `json:"id"`
-		DisplayName  string `json:"displayName"`
-		Version      string `json:"version"`
-		Environment  string `json:"environment"`
+		ID           string   `json:"id"`
+		DisplayName  string   `json:"displayName"`
+		Version      string   `json:"version"`
+		Environment  string   `json:"environment"`
 		Capabilities []string `json:"capabilities"`
-		APIBaseURL   string `json:"apiBaseURL"`
+		APIBaseURL   string   `json:"apiBaseURL"`
 		Machine      struct {
 			Hostname string `json:"hostname"`
 			Platform string `json:"platform"`
@@ -553,6 +554,7 @@ func (c *ManagerConnection) ReadPump() {
 	}()
 
 	c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	setWebSocketReadLimit(c.Conn)
 	c.Conn.SetPongHandler(func(string) error {
 		c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil
@@ -637,6 +639,7 @@ func (c *ClientConnection) ReadPump() {
 	}()
 
 	c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	setWebSocketReadLimit(c.Conn)
 	c.Conn.SetPongHandler(func(string) error {
 		c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil

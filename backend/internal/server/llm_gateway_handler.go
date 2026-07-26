@@ -64,6 +64,11 @@ func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, "baseURL required", http.StatusBadRequest)
 			return
 		}
+		if err := validateOutboundURL(req.BaseURL); err != nil {
+			http.Error(w, "invalid baseURL: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
 		// apiKey 留空表示保留旧值
 		if req.APIKey != "" {
 			currentLLMGateway.APIKey = req.APIKey
@@ -82,7 +87,7 @@ func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) 
 		// 触发 OpenCode 配置热更新（如果可达）
 		go s.pushConfigToOpenCode()
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"ok":     true,
+			"ok":      true,
 			"baseURL": currentLLMGateway.BaseURL,
 			"models":  currentLLMGateway.Models,
 		})
@@ -104,10 +109,22 @@ func (s *Server) handleLLMGatewayTest(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	url := currentLLMGateway.BaseURL + "/models"
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err := validateOutboundURL(currentLLMGateway.BaseURL); err != nil {
+		http.Error(w, "invalid gateway URL", http.StatusBadRequest)
+		return
+	}
+	modelsURL, err := outboundModelsURL(currentLLMGateway.BaseURL)
+	if err != nil {
+		http.Error(w, "invalid gateway URL", http.StatusBadRequest)
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
+	if err != nil {
+		http.Error(w, "invalid gateway URL", http.StatusBadRequest)
+		return
+	}
 	req.Header.Set("Authorization", "Bearer "+currentLLMGateway.APIKey)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := safeOutboundHTTPClient().Do(req)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]interface{}{
 			"ok":    false,
@@ -116,12 +133,26 @@ func (s *Server) handleLLMGatewayTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxLLMGatewayResponseBytes+1))
+	if readErr != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]interface{}{
+			"ok":    false,
+			"error": "failed to read gateway response",
+		})
+		return
+	}
+	if len(body) > maxLLMGatewayResponseBytes {
+		writeJSON(w, http.StatusBadGateway, map[string]interface{}{
+			"ok":    false,
+			"error": "gateway response too large",
+		})
+		return
+	}
 	if resp.StatusCode >= 400 {
 		writeJSON(w, http.StatusBadGateway, map[string]interface{}{
-			"ok":       false,
-			"status":   resp.StatusCode,
-			"response": string(body),
+			"ok":     false,
+			"status": resp.StatusCode,
+			"error":  "gateway returned an error",
 		})
 		return
 	}

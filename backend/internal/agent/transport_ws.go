@@ -22,6 +22,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const maxWSTransportMessageBytes = 1 << 20
+
 // WSTransport 是 ACP over WebSocket transport。
 type WSTransport struct {
 	cfg  TransportConfig
@@ -212,6 +214,7 @@ func (t *WSTransport) readLoop(ctx context.Context) {
 		default:
 		}
 		_ = t.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		t.conn.SetReadLimit(maxWSTransportMessageBytes)
 		_, data, err := t.conn.ReadMessage()
 		if err != nil {
 			t.recvCh <- []byte(`{"error":"read closed"}`)

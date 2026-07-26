@@ -268,8 +268,25 @@ func (s *Server) PluginHub() *ws.PluginHub { return s.pluginHub }
 // 的组件复用（避免把私有字段暴露成公开）。
 func (s *Server) WSHub() *ws.Hub { return s.wsHub }
 
+const (
+	maxRequestBodyBytes = 2 << 20
+	maxAudioBodyBytes   = 25 << 20
+)
+
+func requestBodyLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit := int64(maxRequestBodyBytes)
+		if strings.HasPrefix(r.URL.Path, "/api/stt/transcribe") ||
+			(strings.HasPrefix(r.URL.Path, "/api/meetings/") && strings.HasSuffix(r.URL.Path, "/transcribe")) {
+			limit = maxAudioBodyBytes
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
+		next.ServeHTTP(w, r)
+	})
+}
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/api/instances", s.requireAuth(s.handleInstances))
 	mux.HandleFunc("/api/sessions/", s.requireAuth(s.handleSessions))
@@ -383,7 +400,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/presentations/render", s.requireAuth(s.handleRenderPresentation))
 
 	handler := recoveryMiddleware(s.loggingMiddleware(corsMiddleware(mux, s.cfg.AllowedOrigins, s.cfg.DevAuth)))
-	return handler
+	return requestBodyLimitMiddleware(handler)
 }
 
 func corsMiddleware(next http.Handler, allowedOrigins string, devAuth bool) http.Handler {
@@ -466,29 +483,21 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
-	// 支持两种方式：
-	// 1. instance_id (新方式，推荐)
-	// 2. instance (兼容旧方式)
+	// 支持 instance_id（通过 Registry 解析可信 URL）。不再接受调用方直接提供的 instance URL。
 	instanceID := r.URL.Query().Get("instance_id")
-	instanceBaseURL := r.URL.Query().Get("instance")
-
-	if instanceID != "" {
-		// 新方式：通过 Registry 查找
-		if s.registry == nil {
-			http.Error(w, "registry not configured", http.StatusServiceUnavailable)
-			return
-		}
-
-		apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		instanceBaseURL = apiBaseURL
+	if instanceID == "" {
+		http.Error(w, "missing instance_id", http.StatusBadRequest)
+		return
 	}
 
-	if instanceBaseURL == "" {
-		http.Error(w, "missing instance_id or instance query param", http.StatusBadRequest)
+	if s.registry == nil {
+		http.Error(w, "registry not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	instanceBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 

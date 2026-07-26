@@ -31,17 +31,37 @@ func NewStore(pool *pgxpool.Pool) (*Store, error) {
 func (s *Store) migrate() error {
 	_, err := s.pool.Exec(context.Background(), `
 	CREATE TABLE IF NOT EXISTS vault_sync (
+		workspace_id TEXT NOT NULL DEFAULT 'default',
 		user_id TEXT NOT NULL,
 		blob_ciphertext TEXT NOT NULL,
 		version INTEGER NOT NULL,
 		is_current BOOLEAN DEFAULT TRUE,
 		updated_at BIGINT NOT NULL,
-		PRIMARY KEY (user_id, version)
+		PRIMARY KEY (workspace_id, user_id, version)
 	);
-	CREATE INDEX IF NOT EXISTS idx_vault_user ON vault_sync(user_id);
-	-- S0-A: workspace_id isolation (idempotent).
 	ALTER TABLE vault_sync ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
-	CREATE INDEX IF NOT EXISTS idx_vault_ws ON vault_sync(workspace_id);
+	CREATE INDEX IF NOT EXISTS idx_vault_user ON vault_sync(workspace_id, user_id);
+	DO $$
+	DECLARE
+		primary_key_name TEXT;
+	BEGIN
+		IF NOT EXISTS (
+			SELECT 1
+			FROM pg_constraint
+			WHERE conrelid = 'vault_sync'::regclass
+			  AND contype = 'p'
+			  AND pg_get_constraintdef(oid) = 'PRIMARY KEY (workspace_id, user_id, version)'
+		) THEN
+			SELECT conname INTO primary_key_name
+			FROM pg_constraint
+			WHERE conrelid = 'vault_sync'::regclass AND contype = 'p'
+			LIMIT 1;
+			IF primary_key_name IS NOT NULL THEN
+				EXECUTE format('ALTER TABLE vault_sync DROP CONSTRAINT %I', primary_key_name);
+			END IF;
+			ALTER TABLE vault_sync ADD CONSTRAINT vault_sync_pkey PRIMARY KEY (workspace_id, user_id, version);
+		END IF;
+	END $$;
 	`)
 	return err
 }
@@ -49,7 +69,7 @@ func (s *Store) migrate() error {
 // PutLatest stores a new encrypted blob version for a user and marks all
 // previous versions as non-current. Older versions are retained (not
 // overwritten) so a client can surface conflicts for manual resolution.
-func (s *Store) PutLatest(ctx context.Context, userID, ciphertext string, version int) error {
+func (s *Store) PutLatest(ctx context.Context, workspaceID, userID, ciphertext string, version int) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -58,31 +78,33 @@ func (s *Store) PutLatest(ctx context.Context, userID, ciphertext string, versio
 
 	// Mark prior versions non-current.
 	if _, err := tx.Exec(ctx, `
-		UPDATE vault_sync SET is_current = FALSE WHERE user_id = $1
-	`, userID); err != nil {
+			UPDATE vault_sync SET is_current = FALSE
+			WHERE workspace_id = $1 AND user_id = $2
+		`, workspaceID, userID); err != nil {
 		return err
 	}
 	// Insert the new current version (UPSERT in case of a replayed version).
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO vault_sync (user_id, blob_ciphertext, version, is_current, updated_at)
-		VALUES ($1, $2, $3, TRUE, EXTRACT(EPOCH FROM NOW())::BIGINT)
-		ON CONFLICT (user_id, version) DO UPDATE SET
-			blob_ciphertext = EXCLUDED.blob_ciphertext,
-			is_current = TRUE,
-			updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT
-	`, userID, ciphertext, version); err != nil {
+			INSERT INTO vault_sync (workspace_id, user_id, blob_ciphertext, version, is_current, updated_at)
+			VALUES ($1, $2, $3, $4, TRUE, EXTRACT(EPOCH FROM NOW())::BIGINT)
+			ON CONFLICT (workspace_id, user_id, version) DO UPDATE SET
+				blob_ciphertext = EXCLUDED.blob_ciphertext,
+				is_current = TRUE,
+				updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT
+		`, workspaceID, userID, ciphertext, version); err != nil {
 		return err
 	}
+
 	return tx.Commit(ctx)
 }
 
 // GetLatest returns the newest current blob for a user.
-func (s *Store) GetLatest(ctx context.Context, userID string) (ciphertext string, version int, err error) {
+func (s *Store) GetLatest(ctx context.Context, workspaceID, userID string) (ciphertext string, version int, err error) {
 	err = s.pool.QueryRow(ctx, `
 		SELECT blob_ciphertext, version FROM vault_sync
-		WHERE user_id = $1 AND is_current = TRUE
+		WHERE workspace_id = $1 AND user_id = $2 AND is_current = TRUE
 		ORDER BY version DESC LIMIT 1
-	`, userID).Scan(&ciphertext, &version)
+	`, workspaceID, userID).Scan(&ciphertext, &version)
 	if err != nil {
 		return "", 0, fmt.Errorf("no vault for user: %w", err)
 	}
@@ -91,12 +113,13 @@ func (s *Store) GetLatest(ctx context.Context, userID string) (ciphertext string
 
 // ListVersions returns all retained versions for a user (used for conflict
 // surfacing). Newest first.
-func (s *Store) ListVersions(ctx context.Context, userID string) ([]Version, error) {
+func (s *Store) ListVersions(ctx context.Context, workspaceID, userID string) ([]Version, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT version, is_current, updated_at FROM vault_sync
-		WHERE user_id = $1 ORDER BY version DESC LIMIT 20
-	`, userID)
+		WHERE workspace_id = $1 AND user_id = $2 ORDER BY version DESC LIMIT 20
+	`, workspaceID, userID)
 	if err != nil {
+
 		return nil, err
 	}
 	defer rows.Close()
@@ -113,14 +136,15 @@ func (s *Store) ListVersions(ctx context.Context, userID string) ([]Version, err
 
 // GetByVersion returns the encrypted blob for a specific retained version of
 // a user's vault. Used by the restore / version-detail endpoints.
-func (s *Store) GetByVersion(ctx context.Context, userID string, version int) (string, error) {
+func (s *Store) GetByVersion(ctx context.Context, workspaceID, userID string, version int) (string, error) {
 	var blob string
 	err := s.pool.QueryRow(ctx, `
 		SELECT blob_ciphertext FROM vault_sync
-		WHERE user_id = $1 AND version = $2
+		WHERE workspace_id = $1 AND user_id = $2 AND version = $3
 		LIMIT 1
-	`, userID, version).Scan(&blob)
+	`, workspaceID, userID, version).Scan(&blob)
 	if err != nil {
+
 		return "", fmt.Errorf("vault version not found: %w", err)
 	}
 	return blob, nil
@@ -129,7 +153,7 @@ func (s *Store) GetByVersion(ctx context.Context, userID string, version int) (s
 // MarkCurrent atomically clears the current flag on every existing version for
 // the user, then sets it on the target version. Used by the restore endpoint
 // when a user picks an older version to recover from.
-func (s *Store) MarkCurrent(ctx context.Context, userID string, version int) error {
+func (s *Store) MarkCurrent(ctx context.Context, workspaceID, userID string, version int) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -137,13 +161,15 @@ func (s *Store) MarkCurrent(ctx context.Context, userID string, version int) err
 	defer tx.Rollback(ctx)
 
 	if _, err := tx.Exec(ctx,
-		`UPDATE vault_sync SET is_current = FALSE WHERE user_id = $1`, userID); err != nil {
+		`UPDATE vault_sync SET is_current = FALSE
+		 WHERE workspace_id = $1 AND user_id = $2`, workspaceID, userID); err != nil {
 		return err
 	}
 	res, err := tx.Exec(ctx,
 		`UPDATE vault_sync SET is_current = TRUE
-		 WHERE user_id = $1 AND version = $2`, userID, version)
+		 WHERE workspace_id = $1 AND user_id = $2 AND version = $3`, workspaceID, userID, version)
 	if err != nil {
+
 		return err
 	}
 	if n := res.RowsAffected(); n == 0 {

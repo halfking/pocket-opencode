@@ -144,6 +144,7 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 	s.meetingStore.UpdateScoped(m, uid, wsID)
 
 	// 读取音频数据
+	r.Body = http.MaxBytesReader(w, r.Body, maxAudioBodyBytes)
 	audioData, err := io.ReadAll(r.Body)
 	if err != nil {
 		m.Status = "failed"

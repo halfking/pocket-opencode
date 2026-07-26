@@ -237,6 +237,7 @@ func (c *Client) ReadPump() {
 	}()
 
 	c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	setWebSocketReadLimit(c.conn)
 	c.conn.SetPongHandler(func(string) error {
 		c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil

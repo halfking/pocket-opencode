@@ -708,10 +708,10 @@ Status as of 2026-07-25.
 | Agents bare ID get/delete/dispatch | **HIGH** | ✅ Fixed `2846e5b` | Workspace A → drive Workspace B agent |
 | Notes bare ID lookup/delete | **MEDIUM** | ✅ Fixed `51c9fd8` | Cross-workspace if ID known |
 | Plugin command global | **HIGH** | ⚠️ Open | Workspace A → control Workspace B instance |
-| Vault ignores workspace_id | **MEDIUM** | ⚠️ Open | Same user across workspaces shares vault |
-| Unbounded request bodies | **MEDIUM** | ⚠️ Open | Memory exhaustion via transcribe/email sync |
-| WebSocket missing SetReadLimit | **MEDIUM** | ⚠️ Open | Memory exhaustion via oversized frames |
-| LLM gateway / legacy session SSRF | **MEDIUM** | ⚠️ Open | Caller-supplied URL fetched server-side |
+| Vault ignores workspace_id | **MEDIUM** | ✅ Fixed | Same user across workspaces shares vault |
+| Unbounded request bodies | **MEDIUM** | ✅ Fixed | Memory exhaustion via transcribe/email sync |
+| WebSocket missing SetReadLimit | **MEDIUM** | ✅ Fixed | Memory exhaustion via oversized frames |
+| LLM gateway / legacy session SSRF | **MEDIUM** | ✅ Fixed | Caller-supplied URL fetched server-side |
 | OpenCode instance no ownership | **MEDIUM** | ⚠️ Open | Control/enumerate other workspaces |
 | Membership expiry unenforced | **MEDIUM** | ⚠️ Open | Revoked members retain access ~24h |
 | Email classification IDOR | **MEDIUM** | ⚠️ Open | Update classification of other user's email |

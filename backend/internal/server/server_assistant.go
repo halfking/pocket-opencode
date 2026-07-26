@@ -834,7 +834,12 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 		AccountID string        `json:"account_id"`
 	}
 	// 空 body 合法（触发模式 A），decode 错误仅在非空时致命
-	raw, _ := io.ReadAll(r.Body)
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
 	if len(strings.TrimSpace(string(raw))) > 0 {
 		if err := json.Unmarshal(raw, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid body")
@@ -1075,14 +1080,14 @@ func (s *Server) handleVaultSync(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		if err := s.vaultStore.PutLatest(r.Context(), uid, body.Blob, body.Version); err != nil {
+		if err := s.vaultStore.PutLatest(r.Context(), s.workspaceIDFromRequest(r), uid, body.Blob, body.Version); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		s.wsHub.BroadcastToUser(uid, "vault.synced", map[string]string{"userId": uid})
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	case r.Method == http.MethodGet && (sub == "latest" || sub == ""):
-		blob, ver, err := s.vaultStore.GetLatest(r.Context(), uid)
+		blob, ver, err := s.vaultStore.GetLatest(r.Context(), s.workspaceIDFromRequest(r), uid)
 		if err != nil {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
@@ -1096,12 +1101,12 @@ func (s *Server) handleVaultSync(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid version")
 			return
 		}
-		blob, err := s.vaultStore.GetByVersion(r.Context(), uid, ver)
+		blob, err := s.vaultStore.GetByVersion(r.Context(), s.workspaceIDFromRequest(r), uid, ver)
 		if err != nil {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
-		if err := s.vaultStore.MarkCurrent(r.Context(), uid, ver); err != nil {
+		if err := s.vaultStore.MarkCurrent(r.Context(), s.workspaceIDFromRequest(r), uid, ver); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -1115,14 +1120,14 @@ func (s *Server) handleVaultSync(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid version")
 			return
 		}
-		blob, err := s.vaultStore.GetByVersion(r.Context(), uid, ver)
+		blob, err := s.vaultStore.GetByVersion(r.Context(), s.workspaceIDFromRequest(r), uid, ver)
 		if err != nil {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"blob": blob, "version": ver})
 	case r.Method == http.MethodGet && sub == "versions":
-		versions, err := s.vaultStore.ListVersions(r.Context(), uid)
+		versions, err := s.vaultStore.ListVersions(r.Context(), s.workspaceIDFromRequest(r), uid)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1170,33 +1175,33 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to read audio file: "+err.Error())
 			return
 		}
-		} else {
-			// JSON body: { "audioBase64": "..." }
-			var body struct {
-				AudioBase64 string `json:"audioBase64"`
-				Filename    string `json:"filename"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				writeError(w, http.StatusBadRequest, "invalid body")
-				return
-			}
-			filename = body.Filename
-			if body.AudioBase64 != "" {
-				// Base64 编码的音频
-				var decodeErr error
-				audioData, decodeErr = base64.StdEncoding.DecodeString(body.AudioBase64)
-				if decodeErr != nil {
-					writeError(w, http.StatusBadRequest, "invalid base64 audio: "+decodeErr.Error())
-					return
-				}
-				if filename == "" {
-					filename = "audio.wav"
-				}
-			} else {
-				writeError(w, http.StatusBadRequest, "provide 'file' (multipart) or 'audioBase64'")
-				return
-			}
+	} else {
+		// JSON body: { "audioBase64": "..." }
+		var body struct {
+			AudioBase64 string `json:"audioBase64"`
+			Filename    string `json:"filename"`
 		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		filename = body.Filename
+		if body.AudioBase64 != "" {
+			// Base64 编码的音频
+			var decodeErr error
+			audioData, decodeErr = base64.StdEncoding.DecodeString(body.AudioBase64)
+			if decodeErr != nil {
+				writeError(w, http.StatusBadRequest, "invalid base64 audio: "+decodeErr.Error())
+				return
+			}
+			if filename == "" {
+				filename = "audio.wav"
+			}
+		} else {
+			writeError(w, http.StatusBadRequest, "provide 'file' (multipart) or 'audioBase64'")
+			return
+		}
+	}
 
 	if len(audioData) == 0 {
 		writeError(w, http.StatusBadRequest, "empty audio data")
