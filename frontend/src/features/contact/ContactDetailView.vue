@@ -1,6 +1,6 @@
 <!-- S2.3 联系人详情：联系人资料 + 邮件时间线。 -->
 <template>
-  <AppLayout>
+  <div class="detail-view">
     <div v-if="loading" class="state">加载中…</div>
     <div v-else-if="!contact" class="state">联系人不存在</div>
     <div v-else class="detail-page">
@@ -28,13 +28,12 @@
 
       <button class="secondary" @click="router.push('/contacts')">返回联系人</button>
     </div>
-  </AppLayout>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
 import { getContact, getContactEmails, type Contact } from './contacts-store'
 import type { LocalEmail } from '../email/emails-store'
 

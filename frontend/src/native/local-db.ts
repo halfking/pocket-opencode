@@ -14,7 +14,7 @@ import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacito
 import { SCHEMA_SQL } from './schema'
 
 const DB_NAME = 'lobster'
-const DB_VERSION = 1
+const DB_VERSION = 2
 
 /**
  * LocalDB 是前端唯一访问本地数据库的入口。所有 feature store（notes/emails/...）
@@ -87,6 +87,7 @@ class LocalDB {
 
     // 建表（幂等 CREATE IF NOT EXISTS）
     await this.conn.execute(SCHEMA_SQL, false)
+    await this.ensureSchemaMigrations()
 
     this.initialized = true
   }
@@ -178,6 +179,38 @@ class LocalDB {
       return true
     } catch {
       return false
+    }
+  }
+
+  private async ensureSchemaMigrations(): Promise<void> {
+    await this.conn!.execute(`
+      CREATE TABLE IF NOT EXISTS local_schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      )
+    `, false)
+
+    const applied = await this.query<{ version: number }>(
+      'SELECT version FROM local_schema_migrations ORDER BY version',
+    )
+    const versions = new Set(applied.map((row) => Number(row.version)))
+
+    // v2: existing installations need the field-encryption marker. New installs
+    // already receive it from SCHEMA_SQL, so duplicate-column errors are avoided.
+    if (!versions.has(2)) {
+      const columns = await this.query<{ name: string }>(
+        'PRAGMA table_info(local_notes)',
+      )
+      if (!columns.some((column) => column.name === 'encrypted_content')) {
+        await this.conn!.execute(
+          'ALTER TABLE local_notes ADD COLUMN encrypted_content INTEGER NOT NULL DEFAULT 1',
+          false,
+        )
+      }
+      await this.run(
+        'INSERT INTO local_schema_migrations (version, applied_at) VALUES (?, ?)',
+        [2, Date.now()],
+      )
     }
   }
 

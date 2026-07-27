@@ -7,8 +7,7 @@
   listAccounts() only.
 -->
 <template>
-  <AppLayout>
-    <div class="header-row">
+      <div class="header-row">
       <h2 class="page-title">邮箱账户</h2>
       <button class="add-toggle" @click="showForm = !showForm">
         {{ showForm ? '收起' : '＋ 添加' }}
@@ -115,12 +114,10 @@
         </div>
       </div>
     </section>
-  </AppLayout>
 </template>
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import AppLayout from '../../app/AppLayout.vue'
 import * as emailsStore from './emails-store'
 import type { EmailAccount } from './emails-store'
 import { emailApi } from '../../api/email'

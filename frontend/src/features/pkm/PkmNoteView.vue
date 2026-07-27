@@ -6,8 +6,7 @@
   - 底部 BacklinksPanel 显示反向链接（保存后刷新）
 -->
 <template>
-  <AppLayout>
-    <div class="pkm-note-view">
+      <div class="pkm-note-view">
       <div v-if="loading" class="state">加载中…</div>
       <template v-else-if="noteId">
         <PkmEditor
@@ -23,13 +22,11 @@
         />
       </template>
     </div>
-  </AppLayout>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
 import PkmEditor from './PkmEditor.vue'
 import BacklinksPanel from './BacklinksPanel.vue'
 import { getNote, saveNote, type PkmNote } from './pkm-store'

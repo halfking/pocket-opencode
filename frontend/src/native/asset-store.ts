@@ -82,6 +82,7 @@ export interface AssetInput {
 export interface AssetSearchQuery {
   workspaceId?: string
   kind?: AssetKind | AssetKind[]
+  source?: string
   fts?: string // 全文检索关键词
   limit?: number
   includeDeleted?: boolean
@@ -122,19 +123,22 @@ class AssetStore {
     }
 
     // 先查是否已存在（决定 INSERT 还是 UPDATE + client_rev 自增）
-    const existing = await localDB.queryOne<{ client_rev: number }>(
-      'SELECT client_rev FROM local_assets WHERE id = ?',
+    const existing = await localDB.queryOne<{ client_rev: number; workspace_id: string }>(
+      'SELECT client_rev, workspace_id FROM local_assets WHERE id = ?',
       [id],
     )
 
     if (existing) {
+      if (input.workspaceId && existing.workspace_id !== input.workspaceId) {
+        throw new Error('Asset 不属于当前 workspace')
+      }
       await localDB.run(
         `UPDATE local_assets
          SET kind=?, title=?, body_text=?, body_encrypted=?, meta_json=?, source=?, sync_mode=?,
              client_rev=?, dirty=1, updated_at=?
-         WHERE id=?`,
+         WHERE id=? AND workspace_id=?`,
         [input.kind, input.title ?? '', bodyText, bodyEncrypted, input.metaJson ?? '{}',
-         input.source ?? null, syncMode, existing.client_rev + 1, ts, id],
+         input.source ?? null, syncMode, existing.client_rev + 1, ts, id, existing.workspace_id],
       )
     } else {
       await localDB.run(
@@ -158,8 +162,18 @@ class AssetStore {
        FROM local_assets WHERE id = ?`,
       [id],
     )
-    if (!row) return null
-    return await this.fromRow(row)
+    return row ? this.fromRow(row) : null
+  }
+
+  /** 在明确 workspace 内读取 Asset，避免同一 id 跨租户误读。 */
+  async getForWorkspace(id: string, workspaceId: string): Promise<Asset | null> {
+    const row = await localDB.queryOne<RawAssetRow>(
+      `SELECT id, workspace_id, kind, title, body_text, body_encrypted, meta_json, source,
+              sync_mode, client_rev, server_rev, dirty, created_at, updated_at, deleted_at
+       FROM local_assets WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
+      [id, workspaceId],
+    )
+    return row ? this.fromRow(row) : null
   }
 
   /** 软删除（标记 deleted_at + dirty，保留墓碑供同步）。 */
@@ -170,10 +184,20 @@ class AssetStore {
     )
   }
 
-  /** 列出/搜索 Asset。支持 kind 过滤 + FTS 全文检索。 */
+  async softDeleteForWorkspace(id: string, workspaceId: string): Promise<void> {
+    await localDB.run(
+      `UPDATE local_assets SET deleted_at=?, dirty=1, client_rev=client_rev+1, updated_at=?
+       WHERE id=? AND workspace_id=?`,
+      [now(), now(), id, workspaceId],
+    )
+  }
+
+  /** 列出/搜索 Asset。支持 kind/source 过滤 + FTS 全文检索。 */
   async search(q: AssetSearchQuery = {}): Promise<Asset[]> {
     const wsId = q.workspaceId ?? 'default'
     const limit = Math.min(q.limit ?? 50, 200)
+    const kind = kindFilter(q.kind)
+    const source = q.source ? { sql: 'AND a.source = ?', args: [q.source] } : { sql: '', args: [] as unknown[] }
 
     // FTS 路径
     if (q.fts && q.fts.trim()) {
@@ -184,10 +208,11 @@ class AssetStore {
          WHERE local_assets_fts MATCH ?
            AND a.workspace_id = ?
            ${q.includeDeleted ? '' : 'AND a.deleted_at IS NULL'}
-           ${kindFilterClause(q.kind)}
+           ${kind.sql}
+           ${source.sql}
          ORDER BY rank
          LIMIT ?`,
-        [q.fts, wsId, limit],
+        [q.fts, wsId, ...kind.args, ...source.args, limit],
       )
       const out: Asset[] = []
       for (const r of ftsRows) out.push(await this.fromRow(r))
@@ -196,19 +221,44 @@ class AssetStore {
 
     // 非 FTS 路径
     const rows = await localDB.query<RawAssetRow>(
-      `SELECT id, workspace_id, kind, title, body_text, body_encrypted, meta_json, source,
-              sync_mode, client_rev, server_rev, dirty, created_at, updated_at, deleted_at
-       FROM local_assets
-       WHERE workspace_id = ?
-         ${q.includeDeleted ? '' : 'AND deleted_at IS NULL'}
-         ${kindFilterClause(q.kind)}
-       ORDER BY updated_at DESC
+      `SELECT a.id, a.workspace_id, a.kind, a.title, a.body_text, a.body_encrypted, a.meta_json, a.source,
+              a.sync_mode, a.client_rev, a.server_rev, a.dirty, a.created_at, a.updated_at, a.deleted_at
+       FROM local_assets a
+       WHERE a.workspace_id = ?
+         ${q.includeDeleted ? '' : 'AND a.deleted_at IS NULL'}
+         ${kind.sql}
+         ${source.sql}
+       ORDER BY a.updated_at DESC
        LIMIT ?`,
-      [wsId, limit],
+      [wsId, ...kind.args, ...source.args, limit],
     )
     const out: Asset[] = []
     for (const r of rows) out.push(await this.fromRow(r))
     return out
+  }
+
+  /** 查找带指定 metadata 的 Asset，供导入幂等去重使用。 */
+  async findByMeta(opts: {
+    workspaceId: string
+    kind: AssetKind
+    source?: string
+    key: string
+    value: string
+  }): Promise<Asset | null> {
+    const row = await localDB.queryOne<RawAssetRow>(
+      `SELECT id, workspace_id, kind, title, body_text, body_encrypted, meta_json, source,
+              sync_mode, client_rev, server_rev, dirty, created_at, updated_at, deleted_at
+       FROM local_assets
+       WHERE workspace_id = ? AND kind = ?
+         AND deleted_at IS NULL
+         AND json_extract(meta_json, ?) = ?
+         ${opts.source ? 'AND source = ?' : ''}
+       LIMIT 1`,
+      opts.source
+        ? [opts.workspaceId, opts.kind, `$.${opts.key}`, opts.value, opts.source]
+        : [opts.workspaceId, opts.kind, `$.${opts.key}`, opts.value],
+    )
+    return row ? this.fromRow(row) : null
   }
 
   /** 列出所有 dirty=1 的 Asset（同步引擎用）。 */
@@ -238,14 +288,15 @@ class AssetStore {
   async addBlob(assetId: string, plainContent: string, opts: { kind?: string; hash?: string } = {}): Promise<AssetBlob> {
     const id = genId('blb')
     const ts = now()
+    const idx = await nextBlobIdx(assetId)
     const cipher = await encryptString(plainContent)
     const sizeBytes = new Blob([plainContent]).size
     await localDB.run(
       `INSERT INTO local_asset_blobs (id, asset_id, idx, kind, cipher_text, size_bytes, hash, created_at)
        VALUES (?,?,?,?,?,?,?,?)`,
-      [id, assetId, await nextBlobIdx(assetId), opts.kind ?? null, cipher, sizeBytes, opts.hash ?? null, ts],
+      [id, assetId, idx, opts.kind ?? null, cipher, sizeBytes, opts.hash ?? null, ts],
     )
-    return { id, assetId, idx: 0, kind: opts.kind, cipherText: cipher, sizeBytes, hash: opts.hash, createdAt: ts }
+    return { id, assetId, idx, kind: opts.kind, cipherText: cipher, sizeBytes, hash: opts.hash, createdAt: ts }
   }
 
   /** 读取并解密一个 blob。 */
@@ -262,11 +313,25 @@ class AssetStore {
 
   /** 列出某 Asset 的所有 blob（不解密）。 */
   async listBlobs(assetId: string): Promise<AssetBlob[]> {
-    return await localDB.query<AssetBlob>(
+    const rows = await localDB.query<{
+      id: string; asset_id: string; idx: number; kind: string | null; cipher_text: string | null;
+      file_path: string | null; size_bytes: number; hash: string | null; created_at: number
+    }>(
       `SELECT id, asset_id, idx, kind, cipher_text, file_path, size_bytes, hash, created_at
        FROM local_asset_blobs WHERE asset_id = ? ORDER BY idx`,
       [assetId],
     )
+    return rows.map((row) => ({
+      id: row.id,
+      assetId: row.asset_id,
+      idx: row.idx,
+      kind: row.kind ?? undefined,
+      cipherText: row.cipher_text ?? undefined,
+      filePath: row.file_path ?? undefined,
+      sizeBytes: row.size_bytes,
+      hash: row.hash ?? undefined,
+      createdAt: row.created_at,
+    }))
   }
 
   // ---- 向量管理（语义检索）----
@@ -336,12 +401,14 @@ interface RawAssetRow {
   deleted_at: number | null
 }
 
-function kindFilterClause(kind?: AssetKind | AssetKind[]): string {
-  if (!kind) return ''
+function kindFilter(kind?: AssetKind | AssetKind[]): { sql: string; args: unknown[] } {
+  if (!kind) return { sql: '', args: [] }
   const kinds = Array.isArray(kind) ? kind : [kind]
-  if (kinds.length === 0) return ''
-  const placeholders = kinds.map(() => '?').join(',')
-  return `AND a.kind IN (${placeholders})`
+  if (kinds.length === 0) return { sql: '', args: [] }
+  return {
+    sql: `AND a.kind IN (${kinds.map(() => '?').join(',')})`,
+    args: kinds,
+  }
 }
 
 async function nextBlobIdx(assetId: string): Promise<number> {

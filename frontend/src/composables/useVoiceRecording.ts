@@ -6,6 +6,7 @@
  */
 import { ref, onBeforeUnmount } from 'vue'
 import { sttApi } from '../api/stt'
+import { useMicPermission } from './useMicPermission'
 
 export interface UseVoiceRecordingOptions {
   /** Called with the transcribed text on success. */
@@ -17,6 +18,7 @@ export interface UseVoiceRecordingOptions {
 export function useVoiceRecording(opts: UseVoiceRecordingOptions) {
   const isRecording = ref(false)
   const transcribing = ref(false)
+  const mic = useMicPermission()
 
   let mediaRecorder: MediaRecorder | null = null
   let mediaStream: MediaStream | null = null
@@ -24,6 +26,12 @@ export function useVoiceRecording(opts: UseVoiceRecordingOptions) {
 
   async function startRecording() {
     if (isRecording.value || transcribing.value) return
+    // 录音前先确保麦克风可用/已授权，被拒时给出可读引导
+    const ok = await mic.ensure()
+    if (!ok) {
+      opts.onError?.(mic.deniedLabel.value || '麦克风权限被拒绝')
+      return
+    }
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, sampleRate: 16000 },

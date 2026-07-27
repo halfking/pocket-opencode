@@ -6,7 +6,7 @@
  */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 
-export type Breakpoint = 'mobile' | 'tablet' | 'desktop'
+export type Breakpoint = 'mobile' | 'tablet' | 'desktop' | 'compact' | 'medium' | 'expanded' | 'wide'
 
 interface BreakpointQuery {
   mode: Breakpoint
@@ -15,25 +15,30 @@ interface BreakpointQuery {
 
 const QUERIES: BreakpointQuery[] = []
 let _width = 0
-let _mode: Breakpoint = 'mobile'
+let _mode: Breakpoint = 'compact'
+
+function modeForWidth(width: number): Breakpoint {
+  if (width < 560) return 'compact'
+  if (width < 840) return 'medium'
+  if (width < 1280) return 'expanded'
+  return 'wide'
+}
 
 function initQueries() {
   if (typeof window === 'undefined') return
   
   QUERIES.length = 0
   QUERIES.push(
-    { mode: 'mobile', mql: window.matchMedia('(max-width: 639px)') },
-    { mode: 'tablet', mql: window.matchMedia('(min-width: 640px) and (max-width: 1023px)') },
-    { mode: 'desktop', mql: window.matchMedia('(min-width: 1024px)') },
+    { mode: 'compact', mql: window.matchMedia('(max-width: 559px)') },
+    { mode: 'medium', mql: window.matchMedia('(min-width: 560px) and (max-width: 839px)') },
+    { mode: 'expanded', mql: window.matchMedia('(min-width: 840px) and (max-width: 1279px)') },
+    { mode: 'wide', mql: window.matchMedia('(min-width: 1280px)') },
   )
 }
 
 function updateMode() {
-  for (const q of QUERIES) {
-    if (q.mql?.matches) {
-      _mode = q.mode
-      break
-    }
+  if (typeof window !== 'undefined') {
+    _mode = modeForWidth(window.innerWidth)
   }
 }
 
@@ -50,9 +55,14 @@ export function useBreakpoint() {
   const width = ref(_width)
   const mode = ref<Breakpoint>(_mode)
 
-  const isMobile = computed(() => mode.value === 'mobile')
-  const isTablet = computed(() => mode.value === 'tablet')
-  const isDesktop = computed(() => mode.value === 'desktop')
+  const isMobile = computed(() => mode.value === 'mobile' || mode.value === 'compact' || mode.value === 'medium')
+  const isTablet = computed(() => mode.value === 'tablet' || mode.value === 'expanded')
+  const isDesktop = computed(() => mode.value === 'desktop' || mode.value === 'wide')
+  const isCompact = computed(() => mode.value === 'compact')
+  const isMedium = computed(() => mode.value === 'medium')
+  const isExpanded = computed(() => mode.value === 'expanded')
+  const isWide = computed(() => mode.value === 'wide')
+  const isFoldableExpanded = computed(() => isExpanded.value || isWide.value)
 
   let raf = 0
   const onResize = () => {
@@ -89,9 +99,15 @@ export function useBreakpoint() {
 
   return {
     mode,
+    current: mode,
     width,
     isMobile,
     isTablet,
     isDesktop,
+    isCompact,
+    isMedium,
+    isExpanded,
+    isWide,
+    isFoldableExpanded,
   }
 }

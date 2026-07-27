@@ -279,13 +279,13 @@ router.beforeEach((to, from, next) => {
   auth.syncFromStorage()
 
   // 1) 已登录访问 /login → 直接去首页
-  if (to.path === '/login' && auth.isAuthenticated) {
+  if (to.path === '/login' && auth.isAuthenticated && isLobsterReady()) {
     return next('/ai')
   }
 
   // 2) 需要登录但未登录
   if (to.meta.requiresAuth && !auth.isAuthenticated) {
-    return next('/login')
+    return next({ path: '/login', query: { redirect: to.fullPath } })
   }
 
   // 3) Lobster 检查移除：让页面组件自己处理未初始化的情况

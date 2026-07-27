@@ -9,8 +9,9 @@
 
 :root {
   /* 断点 */
-  --bp-mobile: 640px;
-  --bp-tablet: 1024px;
+  --bp-mobile: 560px;
+  --bp-tablet: 840px;
+  --bp-desktop: 1280px;
 
   /* 间距 */
   --space-xs: 4px;
@@ -43,7 +44,7 @@
 }
 
 /* === 平板：可双列 === */
-@media (min-width: 640px) {
+@media (min-width: 560px) {
   .mobile-only {
     display: none;
   }
@@ -61,11 +62,7 @@
 }
 
 /* === 桌面：三列布局 === */
-@media (min-width: 1024px) {
-  .mobile-only,
-  .tablet-only {
-    display: none;
-  }
+@media (min-width: 1280px) {
   .desktop-only {
     display: block;
   }
@@ -105,14 +102,14 @@
   padding: 0 var(--space-md);
 }
 
-@media (min-width: 640px) {
+@media (min-width: 560px) {
   .container {
     max-width: 720px;
     padding: 0 var(--space-lg);
   }
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 840px) {
   .container {
     max-width: 960px;
     padding: 0 var(--space-xl);
@@ -126,7 +123,7 @@
   grid-template-columns: 1fr;
 }
 
-@media (min-width: 640px) {
+@media (min-width: 560px) {
   .grid-2-cols {
     grid-template-columns: 1fr 1fr;
   }
@@ -140,7 +137,7 @@
   font-size: var(--font-md);
 }
 
-@media (min-width: 640px) {
+@media (min-width: 560px) {
   .text-responsive {
     font-size: var(--font-lg);
   }
