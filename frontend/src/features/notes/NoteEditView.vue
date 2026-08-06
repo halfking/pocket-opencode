@@ -9,8 +9,7 @@
 -->
 <template>
   <div class="note-edit-view">
-    <AppLayout>
-      <div v-if="loading" class="state">加载中…</div>
+          <div v-if="loading" class="state">加载中…</div>
 
       <form v-else class="edit-form" @submit.prevent="onSave">
         <!-- 标题 -->
@@ -83,20 +82,20 @@
       </form>
 
       <VoiceRecorderWidget @transcribed="onTranscribed" />
-    </AppLayout>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
 import VoiceRecorderWidget from './VoiceRecorderWidget.vue'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
+import { useAuthStore } from '../../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 
 const DOMAINS = [
   { value: 'work', label: '工作' },
@@ -157,7 +156,7 @@ onMounted(async () => {
   // 编辑模式：拉已有笔记数据
   loading.value = true
   try {
-    const existing = await notesStore.getNote(routeId.value)
+    const existing = await notesStore.getNote(routeId.value, false, currentWorkspaceId())
     if (existing) hydrate(existing)
   } finally {
     loading.value = false
@@ -177,6 +176,10 @@ function hydrate(n: LocalNote) {
 async function focusTitle() {
   await nextTick()
   titleInput.value?.focus()
+}
+
+function currentWorkspaceId(): string {
+  return auth.workspaceId || 'default'
 }
 
 function onTranscribed(result: { text: string; audioPath: string; durationSec: number }) {
@@ -201,6 +204,7 @@ async function onSave() {
     tags: parseTagsInput(form.tagsInput),
     audioPath: form.audioPath ?? undefined,
     audioDurationMs: form.audioDurationMs,
+    workspaceId: currentWorkspaceId(),
   }
 
   try {
@@ -214,7 +218,7 @@ async function onSave() {
         content: form.content.trim(),
         domain: form.domain,
         tags: parseTagsInput(form.tagsInput),
-      })
+      }, currentWorkspaceId())
       savedId = routeId.value
     }
     router.push(`/notes/${savedId}`)

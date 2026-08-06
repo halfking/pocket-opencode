@@ -1,11 +1,9 @@
 <!-- S2.3 联系人列表：从本地邮件发件人聚合联系人。 -->
 <template>
-  <AppLayout>
-    <div class="contacts-page">
+  <div class="contacts-page">
       <header class="page-header">
         <div>
-          <h1>联系人</h1>
-          <p>邮件、会议和任务中的联系人</p>
+          <p class="page-subtitle">邮件、会议和任务中的联系人</p>
         </div>
         <button class="primary" :disabled="syncing" @click="sync">{{ syncing ? '同步中…' : '↻ 聚合' }}</button>
       </header>
@@ -31,13 +29,11 @@
       </ul>
       <p v-if="message" class="message">{{ message }}</p>
     </div>
-  </AppLayout>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
 import { useAuthStore } from '../../stores/auth'
 import { listContacts, syncContactsFromEmails, type Contact } from './contacts-store'
 

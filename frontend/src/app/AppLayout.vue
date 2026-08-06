@@ -8,7 +8,7 @@
 -->
 <template>
   <div class="app-layout">
-    <header class="top-bar">
+    <header v-if="showTopBar" class="top-bar">
       <button v-if="canGoBack" class="back-btn" @click="goBack">←</button>
       <h1 class="title">{{ title }}</h1>
       <slot name="actions" />
@@ -31,6 +31,7 @@ const route = useRoute()
 const router = useRouter()
 
 const title = computed(() => (route.meta.title as string) || 'OpenCode Pocket')
+const showTopBar = computed(() => route.meta.showTopBar !== false)
 const showBottomNav = computed(() => route.meta.bottomNav !== false)
 const canGoBack = computed(() => Boolean(route.meta.canGoBack))
 
@@ -43,17 +44,22 @@ function goBack() {
 <style scoped>
 .app-layout {
   min-height: 100vh;
+  width: 100%;
   background: var(--bg-base);
   color: var(--text-primary);
   display: flex;
   flex-direction: column;
+  /* 安全区域：折叠屏/刘海屏铺满且不被遮挡 */
+  padding-left: env(safe-area-inset-left, 0);
+  padding-right: env(safe-area-inset-right, 0);
 }
 .top-bar {
-  height: 48px;                    /* 修改：52px → 48px */
+  height: 48px;
   display: flex;
   align-items: center;
-  gap: var(--space-2-5);           /* 修改：space-3 → space-2-5 (10px) */
-  padding: 0 var(--space-3);       /* 修改：space-4 → space-3 (12px) */
+  gap: var(--space-2-5);
+  padding: 0 var(--space-3);
+  padding-top: env(safe-area-inset-top, 0);
   background: var(--bg-card);
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -70,15 +76,37 @@ function goBack() {
 }
 .title {
   flex: 1;
-  font-size: 16px;                 /* 修改：17px → 16px */
+  font-size: 16px;
   font-weight: 600;
   margin: 0;
 }
 .content {
   flex: 1;
-  padding: var(--space-3);         /* 修改：space-4 → space-3 (12px) */
+  width: 100%;
+  /* 大屏（折叠展开/平板）居中限宽，避免内容被拉得过宽难读 */
+  max-width: var(--content-max, 100%);
+  margin: 0 auto;
+  padding: var(--space-3);
 }
 .content.has-bottom-nav {
-  padding-bottom: calc(56px + var(--space-3)); /* 修改：60px → 56px, space-4 → space-3 */
+  padding-bottom: calc(56px + var(--space-3));
+}
+
+/* 折叠屏展开态 / 平板（≥840px）：内容区放宽，列表类页面切双列 */
+@media (min-width: 840px) {
+  .app-layout { --content-max: 1100px; }
+  .content { padding: var(--space-4) var(--space-5); }
+  /* 通用列表双列：笔记/邮件/会议/联系人列表在大屏两列铺满 */
+  .content :is(.note-list, .meeting-list, .meetings-page .meeting-list, .contact-list, .email-list) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-3);
+  }
+}
+@media (min-width: 1280px) {
+  .app-layout { --content-max: 1320px; }
+  .content :is(.note-list, .meeting-list, .contact-list, .email-list) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 </style>

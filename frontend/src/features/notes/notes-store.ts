@@ -18,6 +18,8 @@ import { localDB } from '../../native/local-db'
 import { vectorIndex, type VectorMatch } from '../../native/vector'
 import { http } from '../../api/http'
 import { encryptString, decryptString } from '../../native/crypto'
+import { useCryptoConfig } from '../../stores/crypto-config'
+import { assetStore, type Asset } from '../../native/asset-store'
 
 export interface LocalNote {
   id: string
@@ -33,6 +35,8 @@ export interface LocalNote {
   createdByVoice: boolean
   createdAt: number
   updatedAt: number
+  storage?: 'local_notes' | 'asset'
+  source?: string | null
 }
 
 export interface SearchResult {
@@ -52,11 +56,13 @@ export async function createNote(input: {
   audioPath?: string
   audioDurationMs?: number
   contentType?: string
+  workspaceId?: string
 }): Promise<LocalNote> {
   const now = Date.now()
+  const workspaceId = input.workspaceId ?? 'default'
   const note: LocalNote = {
     id: `note-${now}-${Math.random().toString(36).slice(2, 8)}`,
-    workspaceId: null,
+    workspaceId,
     title: input.title ?? null,
     content: input.content,
     contentType: input.contentType ?? 'voice',
@@ -70,19 +76,21 @@ export async function createNote(input: {
     updatedAt: now,
   }
 
-  // 加密 content 后存储（第七轮审计安全加固）
-  const encryptedContent = await encryptString(note.content)
+  // 新笔记默认只依赖 SQLCipher 全库加密；旧配置开启字段加密时保留 AES-GCM。
+  const shouldEncrypt = useCryptoConfig().shouldEncryptField()
+  const storedContent = shouldEncrypt ? await encryptString(note.content) : note.content
+  const encryptedContent = shouldEncrypt ? 1 : 0
   
   await localDB.run(
     `INSERT INTO local_notes
        (id, workspace_id, title, content, content_type, domain, category, tags,
-        audio_path, audio_duration_ms, created_by_voice, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        audio_path, audio_duration_ms, created_by_voice, encrypted_content, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
-      note.id, note.workspaceId, note.title, encryptedContent, note.contentType,
+      note.id, note.workspaceId, note.title, storedContent, note.contentType,
       note.domain, note.category, note.tags ? JSON.stringify(note.tags) : null,
       note.audioPath, note.audioDurationMs, note.createdByVoice ? 1 : 0,
-      note.createdAt, note.updatedAt,
+      encryptedContent, note.createdAt, note.updatedAt,
     ],
   )
 
@@ -102,15 +110,34 @@ export async function createNote(input: {
 }
 
 /** 更新笔记。内容变更会重新触发嵌入计算。 */
-export async function updateNote(id: string, patch: Partial<Pick<LocalNote, 'title' | 'content' | 'domain' | 'tags'>>): Promise<void> {
+export async function updateNote(id: string, patch: Partial<Pick<LocalNote, 'title' | 'content' | 'domain' | 'tags'>>, workspaceId = 'default'): Promise<void> {
+  const existing = await getNote(id, false, workspaceId)
+  if (existing?.storage === 'asset') {
+    const asset = await assetStore.getForWorkspace(id, workspaceId)
+    if (!asset) throw new Error('笔记不存在或不属于当前 workspace')
+    let meta: Record<string, unknown> = {}
+    try { meta = JSON.parse(asset.metaJson || '{}') } catch { /* keep metadata empty */ }
+    await assetStore.upsert({
+      id,
+      workspaceId,
+      kind: asset.kind,
+      title: patch.title !== undefined ? patch.title || '' : asset.title,
+      bodyText: patch.content !== undefined ? patch.content : asset.bodyText,
+      metaJson: JSON.stringify({ ...meta, ...(patch.tags !== undefined ? { tags: patch.tags } : {}) }),
+      source: asset.source,
+      syncMode: asset.syncMode,
+    })
+    return
+  }
+
   const sets: string[] = []
   const vals: unknown[] = []
   if (patch.title !== undefined) { sets.push('title = ?'); vals.push(patch.title) }
-  if (patch.content !== undefined) { 
-    // 加密 content 后更新（第七轮审计安全加固）
-    const encryptedContent = await encryptString(patch.content)
-    sets.push('content = ?')
-    vals.push(encryptedContent)
+  if (patch.content !== undefined) {
+    const shouldEncrypt = useCryptoConfig().shouldEncryptField()
+    const storedContent = shouldEncrypt ? await encryptString(patch.content) : patch.content
+    sets.push('content = ?', 'encrypted_content = ?')
+    vals.push(storedContent, shouldEncrypt ? 1 : 0)
   }
   if (patch.domain !== undefined) { sets.push('domain = ?'); vals.push(patch.domain) }
   if (patch.tags !== undefined) { sets.push('tags = ?'); vals.push(patch.tags ? JSON.stringify(patch.tags) : null) }
@@ -120,7 +147,10 @@ export async function updateNote(id: string, patch: Partial<Pick<LocalNote, 'tit
   vals.push(Date.now())
   vals.push(id)
 
-  await localDB.run(`UPDATE local_notes SET ${sets.join(', ')} WHERE id = ?`, vals)
+    await localDB.run(
+      `UPDATE local_notes SET ${sets.join(', ')} WHERE id = ? AND workspace_id = ?`,
+      [...vals, id, workspaceId],
+    )
 
   if (patch.content !== undefined) {
     embedAndStore(id, patch.content).catch(() => {})
@@ -128,72 +158,94 @@ export async function updateNote(id: string, patch: Partial<Pick<LocalNote, 'tit
 }
 
 /** 软删除。 */
-export async function deleteNote(id: string): Promise<void> {
-  await localDB.run('UPDATE local_notes SET deleted_at = ? WHERE id = ?', [Date.now(), id])
+export async function deleteNote(id: string, workspaceId = 'default'): Promise<void> {
+  const asset = await assetStore.getForWorkspace(id, workspaceId)
+  if (asset?.kind === 'note') {
+    await assetStore.softDeleteForWorkspace(id, workspaceId)
+    return
+  }
+  await localDB.run('UPDATE local_notes SET deleted_at = ? WHERE id = ? AND workspace_id = ?', [Date.now(), id, workspaceId])
   await vectorIndex.remove(id)
 }
 
 /** 按 ID 获取（含已软删除的需传 includeDeleted）。 */
-export async function getNote(id: string, includeDeleted = false): Promise<LocalNote | null> {
+export async function getNote(id: string, includeDeleted = false, workspaceId = 'default'): Promise<LocalNote | null> {
   const sql = includeDeleted
-    ? 'SELECT * FROM local_notes WHERE id = ?'
-    : 'SELECT * FROM local_notes WHERE id = ? AND deleted_at IS NULL'
-  return rowToNote(await localDB.queryOne<NoteRow>(sql, [id]))
+    ? 'SELECT * FROM local_notes WHERE id = ? AND workspace_id = ?'
+    : 'SELECT * FROM local_notes WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL'
+  const local = await rowToNote(await localDB.queryOne<NoteRow>(sql, [id, workspaceId]))
+  if (local) return local
+  if (includeDeleted) return null
+  const asset = await assetStore.getForWorkspace(id, workspaceId)
+  return asset?.kind === 'note' && asset.source === 'enex_import' ? assetToNote(asset) : null
 }
 
 /** 列表（最新优先）。 */
-export async function listNotes(opts: { domain?: string; limit?: number } = {}): Promise<LocalNote[]> {
-  let sql = 'SELECT * FROM local_notes WHERE deleted_at IS NULL'
-  const vals: unknown[] = []
+export async function listNotes(opts: { domain?: string; limit?: number; workspaceId?: string } = {}): Promise<LocalNote[]> {
+  let sql = 'SELECT * FROM local_notes WHERE workspace_id = ? AND deleted_at IS NULL'
+  const vals: unknown[] = [opts.workspaceId ?? 'default']
   if (opts.domain) { sql += ' AND domain = ?'; vals.push(opts.domain) }
   sql += ' ORDER BY updated_at DESC LIMIT ?'
   vals.push(opts.limit ?? 100)
   const rows = await localDB.query<NoteRow>(sql, vals)
-  const notes = await Promise.all(rows.map(rowToNote))
-  return notes.filter((n): n is LocalNote => n !== null)
+  const localNotes = (await Promise.all(rows.map(rowToNote))).filter((n): n is LocalNote => n !== null)
+  const assets = await assetStore.search({ workspaceId: opts.workspaceId ?? 'default', kind: 'note', source: 'enex_import', limit: opts.limit ?? 100 })
+  return [...localNotes, ...assets.map(assetToNote)]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, opts.limit ?? 100)
 }
 
-/** FTS5 全文搜索。 */
-export async function searchFullText(query: string, limit = 20): Promise<SearchResult[]> {
-  // BM25 排序，FTS5 内置 bm25() 越小越相关，取负转成越大越相关
+/** FTS5 全文搜索（包含 ENEX Asset 笔记）。 */
+export async function searchFullText(query: string, limit = 20, workspaceId = 'default'): Promise<SearchResult[]> {
   const rows = await localDB.query<NoteRow & { score: number }>(
     `SELECT n.*, -bm25(local_notes_fts) AS score
      FROM local_notes_fts
      JOIN local_notes n ON n.rowid = local_notes_fts.rowid
-     WHERE local_notes_fts MATCH ? AND n.deleted_at IS NULL
+     WHERE local_notes_fts MATCH ? AND n.workspace_id = ? AND n.deleted_at IS NULL
      ORDER BY score DESC LIMIT ?`,
-    [sanitizeFtsQuery(query), limit],
+    [sanitizeFtsQuery(query), workspaceId, limit],
   )
-  const notes = await Promise.all(rows.map(async (r) => {
+  const localResults = (await Promise.all(rows.map(async (r) => {
     const note = await rowToNote(r)
     return note ? { note, score: r.score, source: 'fts' as const } : null
-  }))
-  return notes.filter((r): r is { note: LocalNote; score: number; source: 'fts' } => r !== null)
+  }))).filter((r): r is { note: LocalNote; score: number; source: 'fts' } => r !== null)
+  const assets = await assetStore.search({ workspaceId, kind: 'note', source: 'enex_import', fts: sanitizeFtsQuery(query), limit })
+  const assetResults = assets.map((asset, index) => ({ note: assetToNote(asset), score: -index - 1, source: 'fts' as const }))
+  return [...localResults, ...assetResults].sort((a, b) => b.score - a.score).slice(0, limit)
 }
 
 /** 语义搜索（本地向量余弦）。queryText 先发 pocketd 算嵌入。 */
-export async function searchSemantic(queryText: string, topK = 10): Promise<SearchResult[]> {
+export async function searchSemantic(queryText: string, topK = 10, workspaceId = 'default'): Promise<SearchResult[]> {
+  const assets = await assetStore.search({ workspaceId, kind: 'note', source: 'enex_import', fts: sanitizeFtsQuery(queryText), limit: topK })
+  const assetResults = assets.map((asset, index) => ({ note: assetToNote(asset), score: 1 / (index + 1), source: 'vector' as const }))
+  if (assetResults.length >= topK) return assetResults.slice(0, topK)
+
   const qVec = await embedViaPocketd(queryText)
-  if (!qVec) return []
+  if (!qVec) return assetResults
   const matches: VectorMatch[] = vectorIndex.search(qVec, topK)
-  if (matches.length === 0) return []
+  if (matches.length === 0) return assetResults
 
   // 批量拉笔记详情
   const ids = matches.map((m) => m.noteId)
   const placeholders = ids.map(() => '?').join(',')
   const rows = await localDB.query<NoteRow>(
-    `SELECT * FROM local_notes WHERE id IN (${placeholders}) AND deleted_at IS NULL`,
-    ids,
+    `SELECT * FROM local_notes WHERE id IN (${placeholders}) AND workspace_id = ? AND deleted_at IS NULL`,
+    [...ids, workspaceId],
   )
   const notesArray = await Promise.all(rows.map(rowToNote))
   const noteMap = new Map(notesArray.filter((n): n is LocalNote => n !== null).map((n) => [n.id, n]))
 
-  return matches
-    .map((m): SearchResult | null => {
-      const note = noteMap.get(m.noteId)
-      return note ? { note, score: m.score, source: 'vector' } : null
-    })
-    .filter((r): r is SearchResult => r !== null)
+  return [
+    ...matches
+      .map((m): SearchResult | null => {
+        const note = noteMap.get(m.noteId)
+        return note ? { note, score: m.score, source: 'vector' } : null
+      })
+      .filter((r): r is SearchResult => r !== null),
+    ...assetResults,
+  ]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK)
 }
 
 /**
@@ -201,10 +253,10 @@ export async function searchSemantic(queryText: string, topK = 10): Promise<Sear
  * Reciprocal Rank Fusion：各路结果按排名取 1/(60+rank) 求和，无界融合。
  * 这是 2025-2026 移动端 RAG 的推荐做法。
  */
-export async function searchHybrid(queryText: string, topK = 10): Promise<SearchResult[]> {
+export async function searchHybrid(queryText: string, topK = 10, workspaceId = 'default'): Promise<SearchResult[]> {
   const [ftsResults, vecResults] = await Promise.all([
-    searchFullText(queryText, topK * 2),
-    searchSemantic(queryText, topK * 2),
+    searchFullText(queryText, topK * 2, workspaceId),
+    searchSemantic(queryText, topK * 2, workspaceId),
   ])
 
   const rrf = new Map<string, { score: number; note: LocalNote }>()
@@ -271,32 +323,32 @@ export async function handleServerEvent(note: LocalNote): Promise<void> {
     : { ...note }
 
   if (existing) {
-    // 加密 content 后更新（第七轮审计安全加固）
-    const encryptedContent = await encryptString(merged.content)
+    const shouldEncrypt = useCryptoConfig().shouldEncryptField()
+    const storedContent = shouldEncrypt ? await encryptString(merged.content) : merged.content
     await localDB.run(
       `UPDATE local_notes
-         SET title = ?, content = ?, content_type = ?, domain = ?,
+         SET title = ?, content = ?, encrypted_content = ?, content_type = ?, domain = ?,
              category = ?, tags = ?, updated_at = ?
        WHERE id = ?`,
       [
-        merged.title, encryptedContent, merged.contentType, merged.domain,
+        merged.title, storedContent, shouldEncrypt ? 1 : 0, merged.contentType, merged.domain,
         merged.category, merged.tags ? JSON.stringify(merged.tags) : null,
         merged.updatedAt, merged.id,
       ],
     )
   } else {
-    // 加密 content 后插入（第七轮审计安全加固）
-    const encryptedContent = await encryptString(merged.content)
+    const shouldEncrypt = useCryptoConfig().shouldEncryptField()
+    const storedContent = shouldEncrypt ? await encryptString(merged.content) : merged.content
     await localDB.run(
       `INSERT INTO local_notes
          (id, workspace_id, title, content, content_type, domain, category, tags,
-          audio_path, audio_duration_ms, created_by_voice, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          audio_path, audio_duration_ms, created_by_voice, encrypted_content, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
-        merged.id, merged.workspaceId, merged.title, encryptedContent, merged.contentType,
+        merged.id, merged.workspaceId, merged.title, storedContent, merged.contentType,
         merged.domain, merged.category, merged.tags ? JSON.stringify(merged.tags) : null,
         merged.audioPath, merged.audioDurationMs, merged.createdByVoice ? 1 : 0,
-        merged.createdAt, merged.updatedAt,
+        shouldEncrypt ? 1 : 0, merged.createdAt, merged.updatedAt,
       ],
     )
   }
@@ -314,20 +366,55 @@ interface NoteRow {
   id: string; workspace_id: string | null; title: string | null; content: string;
   content_type: string; domain: string | null; category: string | null; tags: string | null;
   audio_path: string | null; audio_duration_ms: number; created_by_voice: number;
-  created_at: number; updated_at: number; deleted_at: number | null;
+  created_at: number; updated_at: number; deleted_at: number | null; encrypted_content?: number;
 }
 
+function assetToNote(asset: Asset): LocalNote {
+  let meta: Record<string, unknown> = {}
+  try { meta = JSON.parse(asset.metaJson || '{}') } catch { /* malformed metadata is ignored */ }
+  const tags = Array.isArray(meta.tags) ? meta.tags.filter((tag): tag is string => typeof tag === 'string') : null
+  const createdAt = readAssetTimestamp(meta.originalCreated, asset.createdAt)
+  const updatedAt = readAssetTimestamp(meta.originalUpdated, asset.updatedAt)
+  return {
+    id: asset.id,
+    workspaceId: asset.workspaceId,
+    title: asset.title || null,
+    content: asset.bodyText,
+    contentType: 'text',
+    domain: null,
+    category: null,
+    tags,
+    audioPath: null,
+    audioDurationMs: 0,
+    createdByVoice: false,
+    createdAt,
+    updatedAt,
+    storage: 'asset',
+    source: asset.source ?? null,
+  }
+}
+
+function readAssetTimestamp(value: unknown, fallback: number): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const numeric = Number(value)
+    if (Number.isFinite(numeric)) return numeric
+    const parsed = Date.parse(value)
+    if (!Number.isNaN(parsed)) return parsed
+  }
+  return fallback
+}
 async function rowToNote(r: NoteRow | null): Promise<LocalNote | null> {
   if (!r) return null
   
-  // 解密 content（第七轮审计安全加固）
-  let decryptedContent: string
-  try {
-    decryptedContent = await decryptString(r.content)
-  } catch (e) {
-    console.error(`[notes-store] 无法解密 note ${r.id} 的 content:`, e)
-    // 解密失败时返回占位符，不阻塞列表渲染
-    decryptedContent = '[加密内容无法解密 - 可能密码错误或数据损坏]'
+  let decryptedContent = r.content
+  if (r.encrypted_content === 1) {
+    try {
+      decryptedContent = await decryptString(r.content)
+    } catch (e) {
+      console.error(`[notes-store] 无法解密 note ${r.id} 的 content:`, e)
+      decryptedContent = '[本地数据已锁定，请先解锁]'
+    }
   }
   
   return {
@@ -336,6 +423,7 @@ async function rowToNote(r: NoteRow | null): Promise<LocalNote | null> {
     tags: r.tags ? JSON.parse(r.tags) : null, audioPath: r.audio_path,
     audioDurationMs: r.audio_duration_ms, createdByVoice: r.created_by_voice === 1,
     createdAt: r.created_at, updatedAt: r.updated_at,
+    storage: 'local_notes',
   }
 }
 

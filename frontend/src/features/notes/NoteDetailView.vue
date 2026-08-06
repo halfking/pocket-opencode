@@ -9,8 +9,7 @@
 -->
 <template>
   <div class="note-detail-view">
-    <AppLayout>
-      <div v-if="loading" class="state">加载中…</div>
+          <div v-if="loading" class="state">加载中…</div>
 
       <div v-else-if="!note" class="state">
         <p>笔记不存在或已被删除</p>
@@ -65,7 +64,6 @@
           <button class="action-btn danger" @click="onDelete">🗑 删除</button>
         </div>
       </div>
-    </AppLayout>
   </div>
 </template>
 
@@ -74,13 +72,14 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import AppLayout from '../../app/AppLayout.vue'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
 import { http } from '../../api/http'
+import { useAuthStore } from '../../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 
 const note = ref<LocalNote | null>(null)
 const loading = ref(true)
@@ -122,7 +121,7 @@ onMounted(async () => {
   const id = route.params.id as string
   loading.value = true
   try {
-    const fetched = await notesStore.getNote(id)
+    const fetched = await notesStore.getNote(id, false, currentWorkspaceId())
     note.value = fetched
     if (fetched) await loadRelated(fetched)
   } finally {
@@ -133,7 +132,7 @@ onMounted(async () => {
 async function loadRelated(target: LocalNote) {
   try {
     // 取 5 条以便排除自身后还能剩 4 条
-    const results = await notesStore.searchSemantic(target.content, 5)
+    const results = await notesStore.searchSemantic(target.content, 5, currentWorkspaceId())
     related.value = results
       .map((r) => r.note)
       .filter((n) => n.id !== target.id)
@@ -141,6 +140,10 @@ async function loadRelated(target: LocalNote) {
   } catch {
     related.value = []
   }
+}
+
+function currentWorkspaceId(): string {
+  return auth.workspaceId || 'default'
 }
 
 function goBack() {
@@ -161,7 +164,7 @@ async function onDelete() {
   if (!note.value) return
   const ok = confirm('确认删除这条笔记？此操作不可撤销。')
   if (!ok) return
-  await notesStore.deleteNote(note.value.id)
+  await notesStore.deleteNote(note.value.id, currentWorkspaceId())
   router.back()
 }
 
@@ -171,7 +174,7 @@ async function reclassify() {
   try {
     await http(`/api/notes/${note.value.id}/classify`, { method: 'POST' })
     // 后端当前 stub；刷新本地数据以拿最新分类
-    const refreshed = await notesStore.getNote(note.value.id)
+    const refreshed = await notesStore.getNote(note.value.id, false, currentWorkspaceId())
     if (refreshed) note.value = refreshed
   } catch (e) {
     console.warn('[note] 重新分类失败:', e)

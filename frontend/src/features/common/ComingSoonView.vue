@@ -4,19 +4,15 @@
   the bottom nav links to a module that's still in design or Phase 6A/6B.
 -->
 <template>
-  <AppLayout>
-    <div class="coming-soon">
-      <div class="icon">{{ icon }}</div>
-      <h2>{{ title }}</h2>
-      <p class="desc">{{ desc }}</p>
-      <p class="phase">{{ phase }}</p>
-    </div>
-  </AppLayout>
+  <div class="coming-soon">
+    <div class="icon">{{ icon }}</div>
+    <h2>{{ title }}</h2>
+    <p class="desc">{{ desc }}</p>
+    <p class="phase">{{ phase }}</p>
+  </div>
 </template>
 
 <script setup lang="ts">
-import AppLayout from '../../app/AppLayout.vue'
-
 defineProps<{
   icon?: string
   title: string

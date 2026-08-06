@@ -4,7 +4,7 @@
   docs/2026-07-02-password-vault-design.md.
 -->
 <template>
-  <AppLayout>
+  <div class="view-root">
     <!-- Locked / setup state -->
     <div v-if="!unlocked" class="lock-screen">
       <div class="lock-icon">🔐</div>
@@ -65,13 +65,12 @@
         </div>
       </div>
     </div>
-  </AppLayout>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
 import { keystore } from '../../native/keystore'
 import * as vaultStore from './vault-store'
 import * as syncStore from './sync-store'

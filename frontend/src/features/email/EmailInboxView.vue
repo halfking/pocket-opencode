@@ -4,7 +4,7 @@
   setup wizard come later.
 -->
 <template>
-  <AppLayout>
+  <div class="view-root">
     <!-- 本地数据库未初始化提示 -->
     <div v-if="dbNotReady" class="state" style="padding: 40px 20px;">
       <p style="font-size: 48px; margin-bottom: 16px;">🔒</p>
@@ -68,13 +68,12 @@
       </div>
     </div>
     </template>
-  </AppLayout>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
 import { emailApi } from '../../api/email'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'

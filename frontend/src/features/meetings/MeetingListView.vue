@@ -1,7 +1,6 @@
 <!-- S2.2 会议列表：最近会议 + 新建录音入口。 -->
 <template>
-  <AppLayout>
-    <div class="meetings-page">
+      <div class="meetings-page">
       <header class="page-header">
         <div>
           <h1>会议记录</h1>
@@ -28,13 +27,11 @@
         </li>
       </ul>
     </div>
-  </AppLayout>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
 import { listMeetings, type LocalMeeting } from './meetings-store'
 
 const router = useRouter()

@@ -1,7 +1,6 @@
 <!-- S2.2 会议详情：转写、纪要，以及沉淀到 PKM/Task。 -->
 <template>
-  <AppLayout>
-    <div v-if="loading" class="state">加载中…</div>
+      <div v-if="loading" class="state">加载中…</div>
     <div v-else-if="!meeting" class="state">会议不存在或已删除。</div>
     <div v-else class="detail-page">
       <header class="header">
@@ -44,13 +43,11 @@
 
       <p v-if="message" class="message">{{ message }}</p>
     </div>
-  </AppLayout>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
 import { api } from '../../api/client'
 import { useToast } from '../../composables/useToast'
 import { saveNote } from '../pkm/pkm-store'

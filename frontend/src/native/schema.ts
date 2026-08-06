@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS local_notes (
     audio_path TEXT,                 -- 本地文件路径（转写后可清理）
     audio_duration_ms INTEGER DEFAULT 0,
     created_by_voice INTEGER DEFAULT 1,  -- BOOLEAN as 0/1
+    encrypted_content INTEGER NOT NULL DEFAULT 1, -- legacy rows are field-encrypted
     embedding_model TEXT,            -- 生成向量用的模型，便于重建
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,

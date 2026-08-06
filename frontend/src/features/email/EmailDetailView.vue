@@ -5,8 +5,7 @@
   Auto-marks unread → read on open. Star / mark-read / turn-to-todo actions.
 -->
 <template>
-  <AppLayout>
-    <div v-if="loading" class="state">加载中…</div>
+      <div v-if="loading" class="state">加载中…</div>
     <div v-else-if="!email" class="state">
       <p>未找到该邮件（可能已被删除）。</p>
       <button class="link-btn" @click="goBack">返回邮箱</button>
@@ -73,13 +72,11 @@
 
       <p class="hint">当前本地仅保存邮件摘要片段（约 500 字），完整正文不落本地。</p>
     </article>
-  </AppLayout>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
 import { api } from '../../api/client'
 import { useToast } from '../../composables/useToast'
 import { findContactByEmail } from '../contact/contacts-store'

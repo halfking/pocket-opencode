@@ -7,8 +7,7 @@
   - 搜索框：复用 pkm-store.searchNotes
 -->
 <template>
-  <AppLayout>
-    <div class="pkm-today">
+      <div class="pkm-today">
       <!-- 今日 Daily Note -->
       <section class="daily-card" @click="openDaily">
         <div class="daily-date">
@@ -53,13 +52,11 @@
       <!-- 新建 FAB -->
       <button class="fab" @click="newNote">＋</button>
     </div>
-  </AppLayout>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
 import {
   listNotes,
   searchNotes,

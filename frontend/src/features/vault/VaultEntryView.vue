@@ -9,12 +9,8 @@
   - TOTP 每秒刷新当前 6 位动态码（otpauth 库）
 -->
 <template>
-  <AppLayout>
-    <template #actions>
-      <span class="header-extra">
-        <span class="entry-icon">{{ categoryIcon(entry?.category) }}</span>
-      </span>
-    </template>
+  <div class="view-root">
+    <div v-if="entry" class="entry-cat-badge">{{ categoryIcon(entry?.category) }}</div>
 
     <!-- 加载中 -->
     <div v-if="loading" class="state">加载中…</div>
@@ -174,14 +170,13 @@
         {{ toast.msg }}
       </div>
     </transition>
-  </AppLayout>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { TOTP, Secret } from 'otpauth'
-import AppLayout from '../../app/AppLayout.vue'
 import * as vaultStore from './vault-store'
 import type { VaultEntry } from './vault-store'
 
@@ -472,6 +467,14 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.view-root { position: relative; }
+.entry-cat-badge {
+  position: absolute;
+  top: -4px;
+  right: 0;
+  font-size: 22px;
+  z-index: 2;
+}
 .entry-detail, .edit-form { display: flex; flex-direction: column; gap: var(--space-4); padding-bottom: var(--space-6); }
 
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }

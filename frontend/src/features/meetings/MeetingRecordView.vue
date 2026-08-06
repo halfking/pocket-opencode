@@ -1,19 +1,26 @@
 <!-- S2.2 会议录音页：录音结束后转写并生成纪要。 -->
 <template>
-  <AppLayout>
-    <div class="record-page">
+      <div class="record-page">
       <header><h1>开始会议</h1><p>{{ statusText }}</p></header>
 
       <input v-model="title" class="title-input" placeholder="会议标题（可选）" :disabled="recording || transcribing" />
+      <MicStatusBar :state="micState" @retry="checkMic" @settings="openSettings" />
 
       <div class="timer">{{ elapsedText }}</div>
-      <button class="record-button" :class="{ active: recording }" :disabled="transcribing" @click="toggleRecord">
+      <button class="record-button" :class="{ active: recording }" :disabled="transcribing || mic.state.value === 'unavailable'" @click="toggleRecord">
         {{ recording ? '⏹' : '🎙️' }}
       </button>
       <p class="record-hint">{{ recording ? '点击停止并开始转写' : '点击开始录音' }}</p>
 
       <div v-if="transcribing" class="progress-card">正在转写会议录音…</div>
-      <div v-if="errorMessage" class="error-card">{{ errorMessage }}</div>
+      <ErrorActionCard
+        v-if="errorMessage"
+        :message="errorMessage"
+        :retry="true"
+        :settings="mic.state.value === 'denied'"
+        @retry="retryRecording"
+        @settings="openSettings"
+      />
 
       <section v-if="transcript" class="transcript-card">
         <h2>会议转写</h2>
@@ -23,18 +30,23 @@
         </button>
       </section>
     </div>
-  </AppLayout>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
 import { sttApi } from '../../api/stt'
 import { createMeeting, updateTranscript, updateMeetingRecording, updateSummary } from './meetings-store'
 import { summarizeMeeting } from './meetings-ai'
+import { useMicPermission } from '../../composables/useMicPermission'
+import { useAppSettings } from '../../composables/useAppSettings'
+import MicStatusBar from '../../components/MicStatusBar.vue'
+import ErrorActionCard from '../../components/ErrorActionCard.vue'
 
 const router = useRouter()
+const mic = useMicPermission()
+const { openAppDetails } = useAppSettings()
+const micState = computed(() => mic.state.value)
 const title = ref('')
 const recording = ref(false)
 const transcribing = ref(false)
@@ -58,8 +70,27 @@ const statusText = computed(() => {
   return recording.value ? '录音中' : '本地录音，结束后自动转写'
 })
 
+async function checkMic() {
+  await mic.recheck()
+}
+
+async function openSettings() {
+  await openAppDetails()
+}
+
+async function retryRecording() {
+  errorMessage.value = ''
+  await checkMic()
+}
+
 async function startRecord() {
   errorMessage.value = ''
+  // 录音前先确保麦克风权限，被拒时给出具体引导（而非笼统的"检查权限"）
+  const ok = await mic.ensure()
+  if (!ok) {
+    errorMessage.value = mic.deniedLabel.value || '无法访问麦克风，请检查权限设置。'
+    return
+  }
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } })
     recorder = new MediaRecorder(stream)

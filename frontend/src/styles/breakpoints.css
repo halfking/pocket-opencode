@@ -2,53 +2,46 @@
  * breakpoints.css — 响应式断点与工具类
  *
  * 断点规范（与 useBreakpoint composable 保持一致）：
- *   - mobile : < 640px
- *   - tablet : 640px – 1023px
- *   - desktop: >= 1024px
+ *   - compact : < 560px
+ *   - medium  : 560px – 839px
+ *   - expanded: 840px – 1279px
+ *   - wide    : >= 1280px
  *
  * 使用 CSS 变量可在 JS 里读取，工具类可在模板里条件渲染。
  */
 
 :root {
-  --bp-mobile-max: 639px;
-  --bp-tablet-min: 640px;
-  --bp-tablet-max: 1023px;
-  --bp-desktop-min: 1024px;
+  --bp-compact-max: 559px;
+  --bp-medium-min: 560px;
+  --bp-medium-max: 839px;
+  --bp-expanded-min: 840px;
+  --bp-expanded-max: 1279px;
+  --bp-wide-min: 1280px;
 }
 
-/* 默认隐藏：移动端不显示 */
-.bp-hide-on-mobile {
-  display: none;
+/* compact / folded-closed */
+.bp-hide-on-compact { display: none; }
+.bp-show-on-compact { display: initial; }
+
+@media (min-width: 560px) {
+  .bp-hide-on-compact { display: initial; }
+  .bp-show-on-compact { display: none; }
 }
 
-/* 默认显示：移动端显示 */
-.bp-show-on-mobile {
-  display: initial;
+/* expanded / folded-open */
+.bp-show-on-expanded { display: none; }
+.bp-hide-on-expanded { display: initial; }
+
+@media (min-width: 840px) {
+  .bp-show-on-expanded { display: initial; }
+  .bp-hide-on-expanded { display: none; }
 }
 
-@media (min-width: 640px) {
-  .bp-hide-on-mobile {
-    display: initial;
-  }
-  .bp-show-on-mobile {
-    display: none;
-  }
-}
+/* wide */
+.bp-show-on-wide { display: none; }
+.bp-hide-on-wide { display: initial; }
 
-/* >= 1024px 才显示的元素 */
-.bp-show-on-desktop {
-  display: none;
-}
-
-.bp-hide-on-desktop {
-  display: initial;
-}
-
-@media (min-width: 1024px) {
-  .bp-show-on-desktop {
-    display: initial;
-  }
-  .bp-hide-on-desktop {
-    display: none;
-  }
+@media (min-width: 1280px) {
+  .bp-show-on-wide { display: initial; }
+  .bp-hide-on-wide { display: none; }
 }
