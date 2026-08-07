@@ -116,6 +116,7 @@ type Server struct {
 	dataDir string // 数据目录
 
 	llmGWStore *LLMGatewayStore // nil = 无 PG，配置不持久化
+	llmGWCache *llmGatewayCache // nil = 仅依赖 env 默认配置
 
 	// 会话迁移方案：跨主机迁移编排服务（nil = registry/adapter/pluginHub 未就绪）
 	migrationSvc *migration.Service
@@ -177,6 +178,7 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 		dataDir:          dataDir,
 		financeStore:     finance.NewStore(),
 		auditStore:       redclaw.NewAuditStore(),
+		llmGWCache:       newLLMGatewayCache(),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -217,7 +219,13 @@ func (s *Server) SetOpenCodeManagers(ocMgr *opencode.Manager, eventMgr *opencode
 // SetLLMGatewayStore 注入 LLM 网关配置持久化 store（PG pool 可用时）。
 func (s *Server) SetLLMGatewayStore(store *LLMGatewayStore) {
 	s.llmGWStore = store
+	if s.llmGWCache == nil {
+		s.llmGWCache = newLLMGatewayCache()
+	}
 }
+
+// LLMGatewayStore 返回内部 store（main 装配阶段判断是否需要预加载）。
+func (s *Server) LLMGatewayStore() *LLMGatewayStore { return s.llmGWStore }
 
 // SetMigrationService 注入会话跨主机迁移编排服务（registry/adapter/pluginHub 就绪后由 main 装配）。
 func (s *Server) SetMigrationService(svc *migration.Service) {
@@ -347,6 +355,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/chat-summaries/", s.requireAuth(s.handleChatSummaryOps))
 	// 邮箱助手
 	mux.HandleFunc("/api/email/accounts", s.requireAuth(s.handleEmailAccounts))
+	// /api/email/accounts/ subtree handles {id} (GET/PUT/DELETE) and
+	// {id}/test-smtp (POST). See handleEmailAccountOps for routing.
 	mux.HandleFunc("/api/email/accounts/", s.requireAuth(s.handleEmailAccountOps))
 	mux.HandleFunc("/api/email/summaries", s.requireAuth(s.handleEmailSummaries))
 	mux.HandleFunc("/api/email/summaries/", s.requireAuth(s.handleEmailSummaryOps))
@@ -355,7 +365,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/emails", s.requireAuth(s.handleEmails))
 	mux.HandleFunc("/api/emails/sync", s.requireAuth(s.handleEmailSync))
 	mux.HandleFunc("/api/emails/", s.requireAuth(s.handleEmailOps))
-	mux.HandleFunc("/api/email/accounts/test-smtp", s.requireAuth(s.handleEmailAccountTestSMTP))
+	// /api/email/accounts/test-smtp is intentionally NOT registered — the
+	// {id}/test-smtp path is dispatched by handleEmailAccountOps so the
+	// {id} is actually a workspace-scoped account id rather than the
+	// literal "test-smtp" suffix.
 	// OAuth 流程：start 返回 authorization URL；callback 由 email 包提供，
 	// 不走 requireAuth（OAuth provider 用 state 而非 JWT 验证回调合法性）。
 	mux.HandleFunc("/api/email/oauth/start", s.requireAuth(s.startEmailOAuth))
