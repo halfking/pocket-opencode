@@ -376,6 +376,27 @@ func (s *Store) DeleteDevice(ctx context.Context, deviceID string) error {
 	return nil
 }
 
+// ListAllWorkspaceIDs returns every workspace id currently stored. Used at
+// startup to warm per-workspace caches (e.g. LLM gateway config). Returning
+// raw ids rather than full Workspace rows keeps the helper cheap and avoids
+// leaking membership metadata into unrelated subsystems.
+func (s *Store) ListAllWorkspaceIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id FROM workspaces ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0, 8)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // EnsureDefaultWorkspace bootstraps a user's default workspace if none exists.
 // Called at first login / signup. Returns the workspace (existing or newly
 // created). The workspace ID convention is "ws_<userID>" for the default.
