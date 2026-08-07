@@ -23,8 +23,17 @@ func vaultTestDSN() string {
 func newVaultTestStore(t *testing.T) (*Store, func()) {
 	t.Helper()
 	dsn := vaultTestDSN()
-	if dsn == "" {
+	ciSet := false
+	if _, ok := os.LookupEnv("CI"); ok {
+		ciSet = true
+	}
+	switch decideVaultGuard(dsn, ciSet) {
+	case vaultSkip:
 		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping vault integration test")
+	case vaultFail:
+		t.Fatal("POCKET_TEST_POSTGRES_DSN (or POCKET_POSTGRES_DSN) must be set under CI; refusing to silently skip the vault workspace-isolation test")
+	case vaultProceed:
+		// fall through to dial Postgres below
 	}
 
 	ctx := context.Background()
