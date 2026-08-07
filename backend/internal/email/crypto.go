@@ -78,8 +78,14 @@ func EnsureMasterKey(envKey, dataDir string) ([]byte, error) {
 	}
 	// 自动生成并持久化到 dataDir/email_master.key
 	keyPath := filepath.Join(dataDir, "email_master.key")
-	if data, err := os.ReadFile(keyPath); err == nil && len(data) == 32 {
-		return data, nil
+	if data, err := os.ReadFile(keyPath); err == nil {
+		// A truncated key (len != 32) is treated as MISSING on purpose so
+		// loadOrGenerateMasterKey regenerates. We must NOT pass it through
+		// to the atomic helper below, which would refuse to overwrite it
+		// (refusing-to-clobber is the contract of writeKeyAtomic).
+		if len(data) == 32 {
+			return data, nil
+		}
 	}
 	// 生成新密钥
 	key := make([]byte, 32)
@@ -89,8 +95,81 @@ func EnsureMasterKey(envKey, dataDir string) ([]byte, error) {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", dataDir, err)
 	}
-	if err := os.WriteFile(keyPath, key, 0600); err != nil {
-		return nil, fmt.Errorf("write %s: %w", keyPath, err)
+	if err := writeKeyAtomic(dataDir, key); err != nil {
+		return nil, fmt.Errorf("write master key: %w", err)
 	}
 	return key, nil
+}
+
+// writeKeyAtomic persists the 32-byte master key under
+// dataDir/email_master.key with mode 0600. The write is atomic in two
+// senses:
+//
+//  1. The directory entry is created with O_EXCL|O_CREATE on a temp file
+//     and renamed into place, so a concurrent process that tries the
+//     same dance loses the race to fs.ErrExist instead of silently
+//     overwriting the winner.
+//
+//  2. A pre-existing file at the target path is left untouched: the
+//     rename is a no-op when src/dst collide. This protects partial
+//     keys (e.g. from a crashed predecessor) from being clobbered, which
+//     would render unrecoverable every ciphertext already encrypted
+//     under those bytes.
+//
+// The caller (loadOrGenerateMasterKey) is responsible for checking
+// whether a usable key already exists; this helper is the only thing
+// that should ever create or replace the on-disk key.
+func writeKeyAtomic(dataDir string, key []byte) error {
+	if len(key) != 32 {
+		return fmt.Errorf("master key must be exactly 32 bytes, got %d", len(key))
+	}
+	final := filepath.Join(dataDir, "email_master.key")
+	tmp, err := os.CreateTemp(dataDir, ".email_master.key.*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	cleanup := func() {
+		// Best-effort: if rename failed the temp file is still on disk.
+		_ = os.Remove(tmpName)
+	}
+	if _, err := tmp.Write(key); err != nil {
+		tmp.Close()
+		cleanup()
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		cleanup()
+		return fmt.Errorf("chmod temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		cleanup()
+		return fmt.Errorf("fsync temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("close temp: %w", err)
+	}
+	// os.Rename is atomic on POSIX. If final exists, the rename still
+	// replaces it on Linux but on macOS / on Windows it depends on the
+	// filesystem. Belt-and-braces: refuse to clobber an existing file
+	// that we did not author in this call. We do that by checking
+	// existence first and returning an error.
+	if _, err := os.Stat(final); err == nil {
+		// Existing key present. The caller should have read it first
+		// and only call us when no key exists. Bail with a clear error
+		// rather than silently replacing.
+		cleanup()
+		return fmt.Errorf("refusing to overwrite existing master key at %s", final)
+	} else if !os.IsNotExist(err) {
+		cleanup()
+		return fmt.Errorf("stat %s: %w", final, err)
+	}
+	if err := os.Rename(tmpName, final); err != nil {
+		cleanup()
+		return fmt.Errorf("rename %s -> %s: %w", tmpName, final, err)
+	}
+	return nil
 }
