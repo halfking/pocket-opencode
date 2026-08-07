@@ -284,6 +284,31 @@ func requestBodyLimitMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// securityHeadersMiddleware sets baseline hardening headers on every
+// response. HSTS is suppressed in dev mode (POCKET_DEV_AUTH=true) because
+// locking a developer machine into HTTPS breaks local iteration.
+//
+// The other three headers are always on:
+//   - X-Frame-Options: DENY         — anti-clickjacking
+//   - X-Content-Type-Options: nosniff — anti-MIME-sniff
+//   - Referrer-Policy: no-referrer   — do not leak request paths
+//
+// Setting them once at the edge keeps the contract uniform across all
+// routes; downstream handlers must not remove these.
+func securityHeadersMiddleware(next http.Handler, devAuth bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		if !devAuth {
+			// 2-year HSTS with subdomains, as recommended by OWASP.
+			h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -325,9 +350,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/email/accounts/", s.requireAuth(s.handleEmailAccountOps))
 	mux.HandleFunc("/api/email/summaries", s.requireAuth(s.handleEmailSummaries))
 	mux.HandleFunc("/api/email/summaries/", s.requireAuth(s.handleEmailSummaryOps))
+	mux.HandleFunc("/api/email/vacations", s.requireAuth(s.handleEmailVacations))
+	mux.HandleFunc("/api/email/vacations/", s.requireAuth(s.handleEmailVacationOps))
 	mux.HandleFunc("/api/emails", s.requireAuth(s.handleEmails))
 	mux.HandleFunc("/api/emails/sync", s.requireAuth(s.handleEmailSync))
 	mux.HandleFunc("/api/emails/", s.requireAuth(s.handleEmailOps))
+	mux.HandleFunc("/api/email/accounts/test-smtp", s.requireAuth(s.handleEmailAccountTestSMTP))
 	// OAuth 流程：start 返回 authorization URL；callback 由 email 包提供，
 	// 不走 requireAuth（OAuth provider 用 state 而非 JWT 验证回调合法性）。
 	mux.HandleFunc("/api/email/oauth/start", s.requireAuth(s.startEmailOAuth))
@@ -399,7 +427,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/presentations", s.requireAuth(s.handlePresentations))
 	mux.HandleFunc("/api/presentations/render", s.requireAuth(s.handleRenderPresentation))
 
-	handler := recoveryMiddleware(s.loggingMiddleware(corsMiddleware(mux, s.cfg.AllowedOrigins, s.cfg.DevAuth)))
+	handler := recoveryMiddleware(s.loggingMiddleware(corsMiddleware(securityHeadersMiddleware(mux, s.cfg.DevAuth), s.cfg.AllowedOrigins, s.cfg.DevAuth)))
 	return requestBodyLimitMiddleware(handler)
 }
 
@@ -468,7 +496,7 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 
 	// 优先使用 Registry 中的实例
 	if s.registry != nil {
-		instances = s.registry.ListInstances()
+		instances = s.registry.ListInstancesForWorkspace(s.workspaceIDFromRequest(r))
 	}
 
 	// 如果 Registry 为空，从 NPS 获取
@@ -495,7 +523,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	instanceBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+	instanceBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -552,7 +580,8 @@ func (s *Server) handleAllSessions(w http.ResponseWriter, r *http.Request) {
 	if instanceID != "" {
 		var instanceBaseURL string
 		if s.registry != nil {
-			apiBase, err := s.registry.GetInstanceAPIBase(instanceID)
+			apiBase, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
+
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
@@ -592,10 +621,12 @@ func (s *Server) handleAllSessions(w http.ResponseWriter, r *http.Request) {
 	// 获取所有实例的会话（如果没有指定 instance_id）
 	var allSessions []adapter.OpenCodeSession
 	if s.registry != nil {
-		instances := s.registry.ListInstances()
+		instances := s.registry.ListInstancesForWorkspace(s.workspaceIDFromRequest(r))
+
 		for _, inst := range instances {
 			// 通过 registry 获取实例的 API base URL
-			apiBase, err := s.registry.GetInstanceAPIBase(inst.ID)
+			apiBase, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), inst.ID)
+
 			if err != nil {
 				log.Printf("Failed to get API base for instance %s: %v", inst.ID, err)
 				continue
@@ -711,7 +742,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 
 		// 2. OpenCode 实例会话（HTTP adapter）
 		if (source == "" || source == "opencode") && instanceID != "" && s.opencode != nil && s.registry != nil {
-			apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+			apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 			if err == nil {
 				remoteTasks, err := s.opencode.ListRemoteTasks(r.Context(), apiBaseURL, "", limit)
 				if err != nil {
@@ -917,7 +948,7 @@ func (s *Server) handleModelConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+	apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -978,7 +1009,7 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+	apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -1022,7 +1053,7 @@ func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+	apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return

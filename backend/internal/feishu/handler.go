@@ -72,7 +72,7 @@ func PublicEntry(cfg config.Config, broadcast func(msgType string, payload inter
 				return
 			}
 		} else {
-			log.Printf("[feishu] WARNING: POCKET_FEISHU_VERIFY_SECRET empty, signature check SKIPPED (dev mode)")
+			log.Printf("[feishu] WARNING: POCKET_FEISHU_VERIFY_SECRET is unset; signature check SKIPPED (dev mode)")
 		}
 
 		// 6) 解析 event 字段
@@ -120,12 +120,27 @@ type eventEnvelope struct {
 func handleURLVerification(w http.ResponseWriter, cfg config.Config, env envelope) {
 	// 若配置了 verify_token，强制匹配
 	if cfg.FeishuVerifyToken != "" && env.Token != cfg.FeishuVerifyToken {
-		log.Printf("[feishu] url_verification token mismatch: got=%q want=%q", env.Token, cfg.FeishuVerifyToken)
+		// Avoid logging raw verify tokens; record the lengths and a short
+		// prefix so operators can still distinguish cases without leaking
+		// the secret to log aggregators.
+		logTokenMismatch(len(env.Token), len(cfg.FeishuVerifyToken), env.Token, cfg.FeishuVerifyToken)
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": -1, "msg": "token mismatch"})
 		return
 	}
-	log.Printf("[feishu] url_verification OK challenge=%q", env.Challenge)
+	log.Printf("[feishu] url_verification OK challenge_len=%d", len(env.Challenge))
 	writeJSON(w, http.StatusOK, map[string]any{"challenge": env.Challenge})
+}
+
+// logTokenMismatch records a verify-token mismatch without leaking the
+// raw token bytes. It is a tiny seam so a unit test can assert the
+// redaction policy: the secret string must never appear verbatim in
+// log output.
+//
+// gotPrefix and wantPrefix are passed in already-clipped to <=6 bytes by
+// the caller; the helper prints the lengths and the prefixes only.
+func logTokenMismatch(gotLen, wantLen int, got, want string) {
+	log.Printf("[feishu] url_verification token mismatch: got_len=%d want_len=%d got_prefix=%.6q want_prefix=%.6q",
+		gotLen, wantLen, got, want)
 }
 
 // verifySignature 飞书 V2 HMAC-SHA256 验签 + 时间戳新鲜度校验
