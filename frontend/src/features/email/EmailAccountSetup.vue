@@ -93,7 +93,7 @@
         <label class="field">
           <span class="field-label">
             密码 / 应用专用密码
-            <span class="hint-inline">（明文传输，TLS 加密）</span>
+            <span class="hint-inline">{{ editId ? '（留空表示不变更）' : '（明文传输，TLS 加密）' }}</span>
           </span>
           <input
             v-model="form.credential"
@@ -230,7 +230,9 @@ function validate(): string | null {
   if (!form.emailAddress) return '请填写邮箱地址'
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.emailAddress)) return '邮箱地址格式不正确'
   if (!form.imapHost) return '请选择 IMAP 模板或手动填写主机'
-  if (!form.credential) return '请填写密码 / 应用专用密码'
+  // 编辑已有账户时 credential 可选（保持原密码不变）。
+  // 新增账户必须输入密码或应用专用密码——这是后端的强制契约。
+  if (!editId.value && !form.credential) return '请填写密码 / 应用专用密码'
   return null
 }
 
@@ -245,15 +247,19 @@ async function testAndSave() {
   testing.value = true
   try {
     if (editId.value) {
-      // 编辑模式：调用云端 updateAccount
-      await emailApi.updateAccount(editId.value, {
+      // 编辑模式：仅当用户输入了新密码才附带；其它元数据走 PATCH 语义。
+      const patch: Partial<ApiEmailAccount> & { password?: string } = {
         displayName: form.displayName,
         emailAddress: form.emailAddress,
         imapHost: form.imapHost,
         imapPort: form.imapPort,
-      } as Partial<ApiEmailAccount>)
+      }
+      if (form.credential) {
+        patch.password = form.credential
+      }
+      await emailApi.updateAccount(editId.value, patch)
       testOk.value = true
-      testMsg.value = '已更新。'
+      testMsg.value = form.credential ? '已更新（含新凭证）。' : '已更新（密码未改动）。'
     } else {
       // 新增：尝试云端 addAccount + syncNow，回落到本地 saveAccount
       try {
@@ -265,7 +271,7 @@ async function testAndSave() {
           authType: 'password',
           syncIntervalMin: 15,
           enabled: true,
-          credential: form.credential,
+          password: form.credential,
         })
         await emailApi.syncNow()
         testOk.value = true
