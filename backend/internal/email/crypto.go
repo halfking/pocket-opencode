@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"time"
 )
 
 // Crypto 提供 AES-256-GCM 加密/解密（用于 IMAP 密码和 OAuth token）。
@@ -124,6 +126,18 @@ func writeKeyAtomic(dataDir string, key []byte) error {
 		return fmt.Errorf("master key must be exactly 32 bytes, got %d", len(key))
 	}
 	final := filepath.Join(dataDir, "email_master.key")
+
+	// 并发安全：两个进程同时调用 EnsureMasterKey 时，Stat→Rename 不是原子
+	// 序列：两个进程都会看到 final 不存在，然后都尝试 rename 并互相覆盖。
+	// 这里用一个旁路 lock 文件（O_EXCL|O_CREATE）做"先到先得"的栅栏：
+	// 拿到锁的进程继续；其它进程最多等待短超时（轻量级自旋，避免无限阻塞
+	// 在 systemd 启动顺序里）。锁释放后下一位也能正确看到 final 已存在
+	// 并放弃写入。
+	if err := acquireKeyLock(dataDir); err != nil {
+		return err
+	}
+	defer releaseKeyLock(dataDir)
+
 	tmp, err := os.CreateTemp(dataDir, ".email_master.key.*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
@@ -152,15 +166,10 @@ func writeKeyAtomic(dataDir string, key []byte) error {
 		cleanup()
 		return fmt.Errorf("close temp: %w", err)
 	}
-	// os.Rename is atomic on POSIX. If final exists, the rename still
-	// replaces it on Linux but on macOS / on Windows it depends on the
-	// filesystem. Belt-and-braces: refuse to clobber an existing file
-	// that we did not author in this call. We do that by checking
-	// existence first and returning an error.
+	// 在持锁状态下重新检查 final：持有锁期间另一个进程不应该已经创建 final，
+	// 但崩溃恢复场景下前任进程可能留下半截 key——这种 key 必须保留，不能
+	// 被新 key 覆盖（否则历史密文无法解密）。
 	if _, err := os.Stat(final); err == nil {
-		// Existing key present. The caller should have read it first
-		// and only call us when no key exists. Bail with a clear error
-		// rather than silently replacing.
 		cleanup()
 		return fmt.Errorf("refusing to overwrite existing master key at %s", final)
 	} else if !os.IsNotExist(err) {
@@ -171,5 +180,42 @@ func writeKeyAtomic(dataDir string, key []byte) error {
 		cleanup()
 		return fmt.Errorf("rename %s -> %s: %w", tmpName, final, err)
 	}
+	// best-effort: rename 成功后 tmp 已不存在；保留 cleanup 仅为安全。
 	return nil
+}
+
+// keyLockTimeout 控制 acquireKeyLock 的最大等待时间；超过则返回错误让
+// 调用方走原来的"key 已存在"路径（避免 lock 永远不被释放导致启动卡死）。
+const keyLockTimeout = 5 * time.Second
+
+func lockPath(dataDir string) string {
+	return filepath.Join(dataDir, ".email_master.key.lock")
+}
+
+// acquireKeyLock 用 O_EXCL|O_CREATE 在 dataDir 下创建旁路锁文件；已存在则
+// 短轮询等待，直到锁被释放或超时。返回错误表示无法在合理时间内获得锁，
+// 调用方应放弃本次写入（多半 final 已被并发进程生成）。
+func acquireKeyLock(dataDir string) error {
+	deadline := time.Now().Add(keyLockTimeout)
+	for {
+		f, err := os.OpenFile(lockPath(dataDir), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err == nil {
+			// 写入自己的 pid 便于排错（不会影响锁语义）。
+			_, _ = f.WriteString(strconv.Itoa(os.Getpid()))
+			_ = f.Close()
+			return nil
+		}
+		if !os.IsExist(err) {
+			return fmt.Errorf("acquire key lock: %w", err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("acquire key lock: timeout after %s", keyLockTimeout)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// releaseKeyLock 释放旁路锁；锁文件不存在时按幂等处理。
+func releaseKeyLock(dataDir string) {
+	_ = os.Remove(lockPath(dataDir))
 }

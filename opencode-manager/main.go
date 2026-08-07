@@ -23,6 +23,7 @@ type Config struct {
 	BackendURL     string `json:"backendURL"`
 	InstanceID     string `json:"instanceID"`
 	OpenCodePath   string `json:"opencodePath"`
+	ConfigPath     string `json:"configPath,omitempty"`
 	AutoStart      bool   `json:"autoStart"`
 	Port           int    `json:"port"`
 	AuthToken      string `json:"authToken"`
@@ -172,16 +173,24 @@ func (m *InstanceManager) connectToBackend() error {
 
 func (m *InstanceManager) registerWithBackend() {
 	hostname, _ := os.Hostname()
-	
+
+	payload := map[string]interface{}{
+		"instanceID":   m.config.InstanceID,
+		"hostname":     hostname,
+		"version":      Version,
+		"opencodePath": m.config.OpenCodePath,
+		"configPath":   m.config.ConfigPath,
+		"timestamp":    time.Now().Format(time.RFC3339),
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("build manager.register payload: %v", err)
+		return
+	}
+
 	msg := WebSocketMessage{
 		Type: "manager.register",
-		Data: json.RawMessage(fmt.Sprintf(`{
-			"instanceID": "%s",
-			"hostname": "%s",
-			"version": "%s",
-			"opencodePath": "%s",
-			"timestamp": "%s"
-		}`, m.config.InstanceID, hostname, Version, m.config.OpenCodePath, time.Now().Format(time.RFC3339))),
+		Data: data,
 	}
 
 	m.sendMessage(msg)
@@ -189,9 +198,17 @@ func (m *InstanceManager) registerWithBackend() {
 }
 
 func (m *InstanceManager) unregisterFromBackend() {
+	data, err := json.Marshal(map[string]interface{}{
+		"instanceID": m.config.InstanceID,
+	})
+	if err != nil {
+		log.Printf("build manager.unregister payload: %v", err)
+		return
+	}
+
 	msg := WebSocketMessage{
 		Type: "manager.unregister",
-		Data: json.RawMessage(fmt.Sprintf(`{"instanceID": "%s"}`, m.config.InstanceID)),
+		Data: data,
 	}
 
 	m.sendMessage(msg)
@@ -206,6 +223,13 @@ func (m *InstanceManager) startOpenCode() error {
 
 	cmd := exec.Command("bun", "run", "dev")
 	cmd.Dir = m.config.OpenCodePath
+	if m.config.ConfigPath != "" {
+		content, err := os.ReadFile(m.config.ConfigPath)
+		if err != nil {
+			return fmt.Errorf("read configured OpenCode config: %w", err)
+		}
+		cmd.Env = append(os.Environ(), "OPENCODE_CONFIG_PATH="+m.config.ConfigPath, "OPENCODE_CONFIG_CONTENT="+string(content))
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -392,12 +416,12 @@ func (m *InstanceManager) handleMigrateTo(raw json.RawMessage) error {
 		return fmt.Errorf("send prompt: %w", err)
 	}
 
-	log.Printf("✅ migrate_to done: new session %s (from %s)", newSessionID, pack.sessionMetaID)
+	log.Printf("✅ migrate_to done: new session %s (from %s)", newSessionID, pack.sessionMetaID())
 
 	// 5. 回报新 sessionID（在 command.result 里带上）
 	m.sendCommandResultWithData("command.migrate_to", true, "", map[string]interface{}{
 		"newSessionID":  newSessionID,
-		"fromSessionID": pack.sessionMetaID,
+		"fromSessionID": pack.sessionMetaID(),
 	})
 	return nil
 }
