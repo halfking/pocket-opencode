@@ -158,6 +158,35 @@ func (s *Store) Upsert(ctx context.Context, n *Note) error {
 	return nil
 }
 
+// ListScoped returns notes for one (user, workspace) pair. Use this instead of
+// List on request paths: List filters on user_id only, so the same user in two
+// workspaces would see both workspaces' notes.
+func (s *Store) ListScoped(ctx context.Context, userID, workspaceID, domain string) ([]Note, error) {
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	q := `
+		SELECT id, user_id, workspace_id, title, content, snippet,
+		       content_type, domain, tags, audio_path, audio_duration,
+		       created_by_voice, created_at, updated_at
+		FROM notes WHERE user_id = $1 AND workspace_id = $2 AND deleted_at IS NULL`
+	args := []any{userID, workspaceID}
+	if domain != "" {
+		q += " AND domain = $3"
+		args = append(args, domain)
+	}
+	q += " ORDER BY updated_at DESC LIMIT " + fmt.Sprintf("%d", maxListResults)
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query notes for user %s workspace %s: %w", userID, workspaceID, err)
+	}
+	defer rows.Close()
+	return scanNoteRows(rows)
+}
+
+// Deprecated: List ignores workspace_id. Use ListScoped on any path that serves
+// an authenticated request.
 func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error) {
 	// SELECT 现在包含 content 和 snippet — 修复 v1.0 期间遗留的字段缺失
 	// bug（sync classify 路径曾因此拿到空 snippet 让真实 kxmemory 返回 400）。
@@ -179,7 +208,12 @@ func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error)
 		return nil, fmt.Errorf("query notes for user %s: %w", userID, err)
 	}
 	defer rows.Close()
+	return scanNoteRows(rows)
+}
 
+// scanNoteRows decodes the shared note SELECT column list. List and ListScoped
+// both use it so the nullable-column handling stays in one place.
+func scanNoteRows(rows pgx.Rows) ([]Note, error) {
 	var out []Note
 	for rows.Next() {
 		var (
@@ -313,16 +347,16 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Note, error) {
 // GetByIDScoped 按 ID 和 workspace 查找单条笔记（不含软删除）。
 func (s *Store) GetByIDScoped(ctx context.Context, id, userID, workspaceID string) (*Note, error) {
 	var (
-		n           Note
-		wsID        sql.NullString
-		title       sql.NullString
-		content     sql.NullString
-		snippet     sql.NullString
-		domain      sql.NullString
-		tags        []byte
-		audioPath   sql.NullString
-		createdAt   sql.NullTime
-		updatedAt   sql.NullTime
+		n         Note
+		wsID      sql.NullString
+		title     sql.NullString
+		content   sql.NullString
+		snippet   sql.NullString
+		domain    sql.NullString
+		tags      []byte
+		audioPath sql.NullString
+		createdAt sql.NullTime
+		updatedAt sql.NullTime
 	)
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, user_id, workspace_id, title, content, snippet,

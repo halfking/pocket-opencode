@@ -110,7 +110,7 @@ func (s *Server) handleOpenCodeSessionHistory(w http.ResponseWriter, r *http.Req
 
 	// 如果指定了 instance_id，直接代理到该实例
 	if instanceID != "" {
-		apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+		apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
@@ -141,10 +141,10 @@ func (s *Server) handleOpenCodeSessionHistory(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// 尝试所有实例查找该 session（慢路径）
-	instances := s.registry.ListInstances()
+	// 尝试当前 workspace 可见的实例查找该 session（慢路径）
+	instances := s.registry.ListInstancesForWorkspace(s.workspaceIDFromRequest(r))
 	for _, inst := range instances {
-		apiBase, err := s.registry.GetInstanceAPIBase(inst.ID)
+		apiBase, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), inst.ID)
 		if err != nil {
 			continue
 		}

@@ -33,14 +33,15 @@ import (
 // 所有路由要求 requiresAuth（已在 mux 注册时包装）。
 
 // handleMobileSessionRouter 分发 /api/mobile/sessions/...
-//   /api/mobile/sessions                   POST 创建 | GET 列表
-//   /api/mobile/sessions/search            GET 搜索 (Phase 2.2)
-//   /api/mobile/sessions/{id}              DELETE 删除 (Phase 2.1)
-//   /api/mobile/sessions/{id}/event        GET SSE
-//   /api/mobile/sessions/{id}/messages     GET 历史
-//   /api/mobile/sessions/{id}/summary      GET 摘要 (Phase 2.3)
-//   /api/mobile/sessions/{id}/prompt       POST 发送
-//   /api/mobile/sessions/{id}/interrupt    POST 中断
+//
+//	/api/mobile/sessions                   POST 创建 | GET 列表
+//	/api/mobile/sessions/search            GET 搜索 (Phase 2.2)
+//	/api/mobile/sessions/{id}              DELETE 删除 (Phase 2.1)
+//	/api/mobile/sessions/{id}/event        GET SSE
+//	/api/mobile/sessions/{id}/messages     GET 历史
+//	/api/mobile/sessions/{id}/summary      GET 摘要 (Phase 2.3)
+//	/api/mobile/sessions/{id}/prompt       POST 发送
+//	/api/mobile/sessions/{id}/interrupt    POST 中断
 func (s *Server) handleMobileSessionRouter(w http.ResponseWriter, r *http.Request) {
 	if s.opencode == nil || s.registry == nil {
 		http.Error(w, "opencode adapter not configured", http.StatusServiceUnavailable)
@@ -111,7 +112,7 @@ func (s *Server) handleMobileSessionCreate(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "missing instance_id", http.StatusBadRequest)
 		return
 	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+	apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -154,7 +155,7 @@ func (s *Server) handleMobileSessionList(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "missing instance_id", http.StatusBadRequest)
 		return
 	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+	apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -186,7 +187,7 @@ func (s *Server) handleMobileSessionSearch(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "missing instance_id", http.StatusBadRequest)
 		return
 	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+	apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -223,7 +224,7 @@ func (s *Server) handleMobileSessionSummary(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "missing instance_id", http.StatusBadRequest)
 		return
 	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+	apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -321,9 +322,12 @@ func (s *Server) handleMobileSessionEventViaManager(w http.ResponseWriter, r *ht
 
 	// 通过 EventStreamManager 订阅（共享上游连接）
 	events, cleanup, err := s.eventMgr.Subscribe(ctx, opencode.SubscribeOptions{
-		InstanceID: instanceID,
-		BufferSize: 128,
+		InstanceID:  instanceID,
+		WorkspaceID: s.workspaceIDFromRequest(r),
+		Directory:   r.URL.Query().Get("directory"),
+		BufferSize:  128,
 	})
+
 	if err != nil {
 		fmt.Fprintf(w, "event: error\ndata: {\"error\":\"%s\"}\n\n", err.Error())
 		flusher.Flush()
@@ -372,7 +376,7 @@ func (s *Server) handleMobileSessionEventViaManager(w http.ResponseWriter, r *ht
 
 // handleMobileSessionEventDirect 直接调用 adapter 建立独立连接（兼容模式）
 func (s *Server) handleMobileSessionEventDirect(w http.ResponseWriter, r *http.Request, sessionID, instanceID string) {
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+	apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -445,7 +449,9 @@ func (s *Server) handleMobileSessionEventDirect(w http.ResponseWriter, r *http.R
 // eventBelongsToSession 判断上游事件是否归属于指定 session
 //
 // OpenCode V1 envelope（参考 ~/workspace/ai/opencodenew/packages/protocol/src/event.ts）：
-//   { id, type, location?, data, ... }
+//
+//	{ id, type, location?, data, ... }
+//
 // V2 envelope：{ id, type, data, durable: { aggregateID, seq, ... } }
 //
 // 优先用 durable.aggregateID，其次 location.sessionID，再次 type 前缀兜底。
@@ -497,7 +503,7 @@ func (s *Server) handleMobileSessionMessages(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "missing instance_id", http.StatusBadRequest)
 		return
 	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+	apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -537,7 +543,7 @@ func (s *Server) handleMobileSessionPrompt(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "missing instance_id", http.StatusBadRequest)
 		return
 	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+	apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -586,7 +592,7 @@ func (s *Server) handleMobileSessionInterrupt(w http.ResponseWriter, r *http.Req
 		http.Error(w, "missing instance_id", http.StatusBadRequest)
 		return
 	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+	apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -607,7 +613,7 @@ func (s *Server) handleMobileSessionDelete(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "missing instance_id", http.StatusBadRequest)
 		return
 	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
+	apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return

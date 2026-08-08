@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 )
 
@@ -29,7 +29,7 @@ type llmGatewayState struct {
 func defaultLLMGatewayState() llmGatewayState {
 	return llmGatewayState{
 		BaseURL: envOr("POCKET_LLM_GATEWAY_URL", opencode.DefaultLLMGatewayBaseURL),
-		APIKey:  envOr("POCKET_LLM_GATEWAY_API_KEY", os.Getenv("POCKET_LLM_GATEWAY_KEY")),
+		APIKey:  os.Getenv("POCKET_LLM_GATEWAY_API_KEY"),
 		Models:  []string{},
 	}
 }
@@ -253,7 +253,17 @@ func (s *Server) pushConfigToOpenCode(r *http.Request, workspaceID string, st ll
 	if s.registry == nil || s.opencode == nil {
 		return nil
 	}
-	instances := s.registry.ListInstancesForWorkspace(workspaceID)
+	// ListInstancesForWorkspace deliberately also returns operator-provisioned
+	// shared instances (WorkspaceID == ""). Those must NOT receive per-tenant
+	// gateway secrets: a shared instance is visible to every workspace, so each
+	// tenant's save would overwrite the same process and leak its APIKey to the
+	// others. Only push to instances this workspace actually owns.
+	instances := make([]model.PocketInstance, 0)
+	for _, inst := range s.registry.ListInstancesForWorkspace(workspaceID) {
+		if inst.WorkspaceID == workspaceID && workspaceID != "" {
+			instances = append(instances, inst)
+		}
+	}
 	if len(instances) == 0 {
 		return nil
 	}
@@ -356,11 +366,7 @@ func (s *Server) LoadLLMGatewayFromDB(workspaceIDs ...string) {
 		}
 		st, err := s.llmGWStore.LoadConfig(context.Background(), wsID)
 		if err != nil {
-			if errors.Is(err, err) && err.Error() != "" {
-				// Distinguish "no row" (err == nil, st == nil) from a real
-				// DB failure (we land here).
-				log.Printf("[llm-gateway] load from DB failed for %s: %v", wsID, err)
-			}
+			log.Printf("[llm-gateway] load from DB failed for %s: %v", wsID, err)
 			continue
 		}
 		if st == nil {

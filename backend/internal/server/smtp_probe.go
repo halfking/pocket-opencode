@@ -35,18 +35,38 @@ func smtpProbe(host string, port int, username, password string) error {
 	}
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	ips, err := resolveSMTPHost(host)
+	if err != nil {
+		return fmt.Errorf("smtp resolve %s: %v", host, err)
+	}
+	dialValidated := func() (net.Conn, error) {
+		var lastErr error
+		for _, ip := range ips {
+			conn, dialErr := dialer.Dial("tcp", net.JoinHostPort(ip.String(), strconv.Itoa(port)))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		return nil, fmt.Errorf("smtp dial %s: %w", addr, lastErr)
+	}
 
 	tlsCfg := &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
 
 	switch {
 	case port == 465:
 		// Implicit TLS (SMTPS).
-		conn, err := tls.DialWithDialer(dialer, "tcp", addr, tlsCfg)
+		conn, err := dialValidated()
 		if err != nil {
 			return fmt.Errorf("smtp tls dial %s: %v", addr, err)
 		}
-		defer conn.Close()
-		client, err := smtp.NewClient(conn, host)
+		tlsConn := tls.Client(conn, tlsCfg)
+		if err := tlsConn.Handshake(); err != nil {
+			conn.Close()
+			return fmt.Errorf("smtp tls handshake %s: %v", addr, err)
+		}
+		defer tlsConn.Close()
+		client, err := smtp.NewClient(tlsConn, host)
 		if err != nil {
 			return fmt.Errorf("smtp client: %v", err)
 		}
@@ -57,8 +77,8 @@ func smtpProbe(host string, port int, username, password string) error {
 		return tryAuth(client, host, username, password)
 
 	default:
-		// Submission (587) 或未知端口：明文 dial → EHLO → 看 STARTTLS。
-		conn, err := dialer.Dial("tcp", addr)
+		// Submission (587) or unknown port: connect, EHLO, then STARTTLS.
+		conn, err := dialValidated()
 		if err != nil {
 			return fmt.Errorf("smtp dial %s: %v", addr, err)
 		}
@@ -76,13 +96,26 @@ func smtpProbe(host string, port int, username, password string) error {
 				return fmt.Errorf("smtp starttls: %v", err)
 			}
 		} else if port == 587 || port == 25 {
-			// submission / smtp 明文期望 STARTTLS；服务器没宣告 → 拒绝继续 AUTH。
 			return fmt.Errorf("smtp server does not advertise STARTTLS on port %d", port)
 		}
-		// 端口为未知（如 2525）时，服务器未宣告 STARTTLS 但调用方明确选择
-		// 探测 → 仍然允许 AUTH 探测（用户已意识到风险）。
 		return tryAuth(client, host, username, password)
 	}
+}
+
+func resolveSMTPHost(host string) ([]net.IP, error) {
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) == 0 {
+		return nil, errors.New("host has no addresses")
+	}
+	for _, ip := range ips {
+		if isBlockedOutboundIP(ip) {
+			return nil, fmt.Errorf("resolved address %s is not allowed", ip)
+		}
+	}
+	return ips, nil
 }
 
 func tryAuth(client *smtp.Client, host, username, password string) error {

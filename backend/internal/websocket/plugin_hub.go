@@ -538,6 +538,7 @@ func (h *PluginHub) applyRegisteredInstance(msg Message, c *PluginConnection) {
 		Environment  string   `json:"environment"`
 		Capabilities []string `json:"capabilities"`
 		APIBaseURL   string   `json:"apiBaseURL"`
+		ConfigPath   string   `json:"configPath"`
 		Machine      struct {
 			Hostname string `json:"hostname"`
 			Platform string `json:"platform"`
@@ -546,6 +547,7 @@ func (h *PluginHub) applyRegisteredInstance(msg Message, c *PluginConnection) {
 			Memory   int64  `json:"memory"` // 字节
 		} `json:"machine"`
 	}
+
 	raw, _ := json.Marshal(msg.Payload)
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		log.Printf("[PluginHub] parse instance.register: %v", err)
@@ -565,6 +567,7 @@ func (h *PluginHub) applyRegisteredInstance(msg Message, c *PluginConnection) {
 		ID:           payload.ID,
 		DisplayName:  payload.DisplayName,
 		APIBaseURL:   payload.APIBaseURL,
+		ConfigPath:   payload.ConfigPath,
 		Environment:  payload.Environment,
 		Version:      payload.Version,
 		Capabilities: payload.Capabilities,
@@ -573,6 +576,7 @@ func (h *PluginHub) applyRegisteredInstance(msg Message, c *PluginConnection) {
 		Arch:         payload.Machine.Arch,
 		CPUs:         payload.Machine.CPUs,
 		MemoryMB:     payload.Machine.Memory / 1024 / 1024,
+		WorkspaceID:  c.Metadata.WorkspaceID,
 	}
 	if err := reg.RegisterRegisteredInstance(info); err != nil {
 		log.Printf("[PluginHub] register instance %s: %v", info.ID, err)

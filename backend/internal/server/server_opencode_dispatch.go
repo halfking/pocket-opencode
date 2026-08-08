@@ -51,7 +51,7 @@ func (s *Server) handleOpenCodeDispatch(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(req.InstanceID)
+	apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), req.InstanceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return

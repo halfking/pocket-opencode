@@ -23,6 +23,7 @@ type pendingEntry struct {
 	ClientSecret string
 	RedirectURI  string
 	AccountID    string
+	WorkspaceID  string
 	CreatedAt    time.Time
 }
 
@@ -41,10 +42,16 @@ func PendingOAuthEntry(accountID, userID, providerID, emailAddress, verifier, cl
 	}
 }
 
-// NewPendingEntry 是别名。
-func NewPendingEntry(accountID, userID, providerID, emailAddress, verifier, clientID, clientSecret, redirectURI string) pendingEntry {
-	return PendingOAuthEntry(accountID, userID, providerID, emailAddress, verifier, clientID, clientSecret, redirectURI)
+// NewPendingEntryWithWorkspace records the tenant boundary for the callback.
+func NewPendingEntryWithWorkspace(accountID, userID, workspaceID, providerID, emailAddress, verifier, clientID, clientSecret, redirectURI string) pendingEntry {
+	return pendingEntry{
+		AccountID: accountID, UserID: userID, WorkspaceID: workspaceID,
+		ProviderID: providerID, EmailAddress: emailAddress, CodeVerifier: verifier,
+		ClientID: clientID, ClientSecret: clientSecret, RedirectURI: redirectURI,
+		CreatedAt: time.Now(),
+	}
 }
+
 
 // PendingOAuth 是内存 map，存储 state → pendingEntry。
 type PendingOAuth struct {
@@ -149,16 +156,24 @@ func HandleOAuthCallback(cfg OAuthCallbackConfig) http.HandlerFunc {
 			return
 		}
 		// 加密并持久化 refresh_token 和 access_token
-		refreshEnc, _ := cfg.Crypto.EncryptString(tokens.RefreshToken)
-		accessEnc, _ := cfg.Crypto.EncryptString(tokens.AccessToken)
+			refreshEnc, err := cfg.Crypto.EncryptString(tokens.RefreshToken)
+			if err != nil {
+				http.Error(w, "encrypt refresh token failed", http.StatusInternalServerError)
+				return
+			}
+			accessEnc, err := cfg.Crypto.EncryptString(tokens.AccessToken)
+			if err != nil {
+				http.Error(w, "encrypt access token failed", http.StatusInternalServerError)
+				return
+			}
 		expiresAt := time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second).Unix()
-		if err := cfg.Store.UpsertOAuthToken(r.Context(), entry.AccountID, refreshEnc, accessEnc, expiresAt, tokens.Scope); err != nil {
+			if err := cfg.Store.UpsertOAuthTokenScoped(r.Context(), entry.AccountID, entry.UserID, entry.WorkspaceID, refreshEnc, accessEnc, expiresAt, tokens.Scope); err != nil {
 			log.Printf("[oauth] upsert token: %v", err)
 			http.Error(w, "store token failed", http.StatusInternalServerError)
 			return
 		}
 		// 更新 account.auth_type = "oauth2"
-		if err := cfg.Store.SetAccountAuthType(r.Context(), entry.AccountID, "oauth2"); err != nil {
+			if err := cfg.Store.SetAccountAuthTypeScoped(r.Context(), entry.AccountID, entry.UserID, entry.WorkspaceID, "oauth2"); err != nil {
 			log.Printf("[oauth] set auth type: %v", err)
 		}
 		// 广播 WS 事件通知前端

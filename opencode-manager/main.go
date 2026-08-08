@@ -20,14 +20,14 @@ import (
 const Version = "0.1.0"
 
 type Config struct {
-	BackendURL     string `json:"backendURL"`
-	InstanceID     string `json:"instanceID"`
-	OpenCodePath   string `json:"opencodePath"`
-	ConfigPath     string `json:"configPath,omitempty"`
-	AutoStart      bool   `json:"autoStart"`
-	Port           int    `json:"port"`
-	AuthToken      string `json:"authToken"`
-	HealthCheck    HealthCheckConfig `json:"healthCheck"`
+	BackendURL   string            `json:"backendURL"`
+	InstanceID   string            `json:"instanceID"`
+	OpenCodePath string            `json:"opencodePath"`
+	ConfigPath   string            `json:"configPath,omitempty"`
+	AutoStart    bool              `json:"autoStart"`
+	Port         int               `json:"port"`
+	AuthToken    string            `json:"authToken"`
+	HealthCheck  HealthCheckConfig `json:"healthCheck"`
 }
 
 type HealthCheckConfig struct {
@@ -154,7 +154,7 @@ func (m *InstanceManager) Stop() error {
 
 func (m *InstanceManager) connectToBackend() error {
 	wsURL := fmt.Sprintf("%s/plugin/ws?type=manager&id=%s", m.config.BackendURL, m.config.InstanceID)
-	
+
 	log.Printf("Connecting to Backend: %s", wsURL)
 
 	header := http.Header{}
@@ -366,7 +366,7 @@ func (m *InstanceManager) handleCommand(msg WebSocketMessage) {
 type migrateToInput struct {
 	PackURL        string   `json:"packURL"`
 	PackToken      string   `json:"packToken,omitempty"`
-	PromptText     string   `json:"promptText,omitempty"`     // Pocket 端预拼接好的提示词（优先用）
+	PromptText     string   `json:"promptText,omitempty"`      // Pocket 端预拼接好的提示词（优先用）
 	PromptTemplate []string `json:"promptTemplates,omitempty"` // 否则按模板名在 manager 端拼（简化版）
 	WorkingDir     string   `json:"workingDirectory,omitempty"`
 	Agent          string   `json:"agent,omitempty"`
@@ -538,7 +538,7 @@ func (h *HealthChecker) Check() {
 	}
 
 	apiURL := fmt.Sprintf("http://localhost:%d/api/health", h.manager.config.Port)
-	
+
 	client := &http.Client{Timeout: h.timeout}
 	resp, err := client.Get(apiURL)
 
@@ -701,8 +701,8 @@ func createOpenCodeSession(baseURL, agent, model, workDir, authToken string) (st
 // sendOpenCodePrompt 调本机 OpenCode POST /session/{id}/prompt 发送续接 prompt。
 func sendOpenCodePrompt(baseURL, sessionID, prompt, authToken string) error {
 	payload := map[string]interface{}{
-		"id":      sessionID,
-		"prompt":  map[string]string{"text": prompt},
+		"id":       sessionID,
+		"prompt":   map[string]string{"text": prompt},
 		"delivery": "broadcast",
 	}
 	body, _ := json.Marshal(payload)

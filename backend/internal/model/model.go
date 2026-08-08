@@ -20,35 +20,37 @@ type MachineInfo struct {
 //
 // MigrationStatus 取值：idle / incoming / outgoing（跨主机迁移时由迁移服务设置）。
 type PocketInstance struct {
-	ID              string      `json:"id"`
-	DisplayName     string      `json:"displayName"`
-	Environment     string      `json:"environment"`
-	NPSClientID     int         `json:"npsClientId"`
-	Capabilities    []string    `json:"capabilities"`
-	Health          string      `json:"health"`
-	LastHeartbeatAt string      `json:"lastHeartbeatAt"`
+	ID              string   `json:"id"`
+	DisplayName     string   `json:"displayName"`
+	Environment     string   `json:"environment"`
+	NPSClientID     int      `json:"npsClientId"`
+	Capabilities    []string `json:"capabilities"`
+	Health          string   `json:"health"`
+	LastHeartbeatAt string   `json:"lastHeartbeatAt"`
 
 	// —— Phase 迁移方案新增字段 ——
 	APIBaseURL      string      `json:"apiBaseURL,omitempty"`      // 实例 HTTP API 根地址（从 registry.apiURLMap 提升为字段，便于序列化与跨主机传递）
+	ConfigPath      string      `json:"configPath,omitempty"`      // manager-owned OpenCode config path; empty means file push is unavailable
 	Hostname        string      `json:"hostname,omitempty"`        // 主机名（machine.hostname 的快捷副本）
 	IP              string      `json:"ip,omitempty"`              // 主 IP（用于展示与去重）
 	Port            int         `json:"port,omitempty"`            // API 端口
 	Version         string      `json:"version,omitempty"`         // OpenCode/ZCode 版本
 	Machine         MachineInfo `json:"machine,omitempty"`         // 主机机器信息
 	Origin          string      `json:"origin,omitempty"`          // 来源：discovered/registered/static/acc
+	WorkspaceID     string      `json:"workspaceId,omitempty"`     // registered instance tenant; empty means shared operator resource
 	MigrationStatus string      `json:"migrationStatus,omitempty"` // 迁移状态：idle/incoming/outgoing
 	ActiveSessions  int         `json:"activeSessions,omitempty"`  // 活跃会话数（展示用，由调用方填充）
 	CPUPercent      float64     `json:"cpuPercent,omitempty"`      // CPU 占用百分比（展示用，可选）
 }
 
 type TaskSummary struct {
-	ID                string `json:"id"`
-	Title             string `json:"title"`
-	Status            string `json:"status"`
-	Priority          string `json:"priority"`
-	WorkstreamID      string `json:"workstreamId"`
-	SessionCount      int    `json:"sessionCount"`
-	PendingApprovals  int    `json:"pendingApprovals"`
+	ID               string `json:"id"`
+	Title            string `json:"title"`
+	Status           string `json:"status"`
+	Priority         string `json:"priority"`
+	WorkstreamID     string `json:"workstreamId"`
+	SessionCount     int    `json:"sessionCount"`
+	PendingApprovals int    `json:"pendingApprovals"`
 }
 
 // SessionResumeBrief 是会话迁移包的语义层（迁移时由导出端填充，导入端用作续接提示词输入）。
@@ -74,10 +76,10 @@ type SessionResumeBrief struct {
 // AttachmentRef 描述一个产物文件在云端（files.itestu.cn/CloudReve）的引用。
 // 迁移时由导出端把本地文件上传到 CloudReve 后填入 URL，导入端按 URL 拉取。
 type AttachmentRef struct {
-	Type         string `json:"type"`          // file/diff/report/log
-	Name         string `json:"name"`          // 原始文件名
-	CloudReveURL string `json:"cloudreveUrl"`  // https://files.itestu.cn/api/v3/file/get/{id}/{name}?sign=
-	Size         int64  `json:"size,omitempty"`  // 字节数
+	Type         string `json:"type"`           // file/diff/report/log
+	Name         string `json:"name"`           // 原始文件名
+	CloudReveURL string `json:"cloudreveUrl"`   // https://files.itestu.cn/api/v3/file/get/{id}/{name}?sign=
+	Size         int64  `json:"size,omitempty"` // 字节数
 	Hash         string `json:"hash,omitempty"` // 内容校验（sha256）
 }
 
@@ -87,10 +89,15 @@ type AttachmentRef struct {
 
 // RegisteredInstanceInfo 是边端注册上报的实例信息（由 plugin 的 InstanceInfo 映射而来）。
 // 放在 model 包，供 websocket 和 registry 共享，避免两包互相依赖。
+//
+// WorkspaceID 仅在 Origin="registered" 时由 plugin/manager 携带：注册实例归属其
+// 工作区，其它租户既看不到，也解析不到 API 地址（运维共享的 discovered/static/acc
+// 实例不写此字段，所有 workspace 可见）。
 type RegisteredInstanceInfo struct {
 	ID           string
 	DisplayName  string
 	APIBaseURL   string // 可选：plugin/manager 在注册时提供本机 OpenCode 的 API 地址
+	ConfigPath   string // manager-owned OpenCode config path
 	Environment  string
 	Version      string
 	Capabilities []string
@@ -99,6 +106,7 @@ type RegisteredInstanceInfo struct {
 	Arch         string
 	CPUs         int
 	MemoryMB     int64
+	WorkspaceID  string // 归属工作区；空表示不参与租户隔离（运维共享实例）
 }
 
 // InstanceRegistrar 由 Registry 实现，PluginHub 通过它把边端注册/心跳写入 Registry。

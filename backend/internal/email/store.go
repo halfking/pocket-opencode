@@ -345,8 +345,16 @@ func (s *Store) SetClassification(ctx context.Context, id, category, importance,
 	return err
 }
 
-// InsertEmail inserts a fetched email (IMAP sync). Returns error on conflict (duplicate).
-//
+// SetClassificationScoped updates classification only within one user/workspace.
+func (s *Store) SetClassificationScoped(ctx context.Context, id, userID, workspaceID, category, importance, aiSummary, suggestedAction string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE emails e SET category = $1, importance = $2, ai_summary = $3, suggested_action = $4
+		FROM email_accounts a
+		WHERE e.id = $5 AND e.account_id = a.id AND a.user_id = $6 AND a.workspace_id = $7
+	`, category, importance, aiSummary, suggestedAction, id, userID, workspaceID)
+	return err
+}
+
 // ON CONFLICT DO NOTHING 不指定冲突目标，PostgreSQL 会自动匹配任一唯一
 // 约束/索引：(account_id, message_id) 全局唯一约束，或 message_id IS NULL
 // 时的 (account_id, subject, date) 部分唯一索引。这样无论哪种冲突都不会
@@ -455,7 +463,34 @@ func (s *Store) GetSyncStatus(ctx context.Context, userID string) ([]AccountSync
 	return out, rows.Err()
 }
 
-// randomID is a tiny ID helper local to the email package (mirrors
+// GetSyncStatusScoped returns sync state for one user/workspace.
+func (s *Store) GetSyncStatusScoped(ctx context.Context, userID, workspaceID string) ([]AccountSyncStatus, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT a.id, a.display_name, a.email_address, a.last_synced_uid, a.last_synced_at, a.enabled,
+		       COALESCE((SELECT COUNT(*) FROM emails e WHERE e.account_id=a.id AND e.workspace_id=a.workspace_id AND e.is_read=FALSE), 0)
+		FROM email_accounts a WHERE a.user_id=$1 AND a.workspace_id=$2 ORDER BY a.created_at`, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]AccountSyncStatus, 0)
+	for rows.Next() {
+		var st AccountSyncStatus
+		var uid, at sql.NullInt64
+		if err := rows.Scan(&st.AccountID, &st.DisplayName, &st.EmailAddress, &uid, &at, &st.Enabled, &st.PendingCount); err != nil {
+			return nil, err
+		}
+		if uid.Valid {
+			st.LastSyncedUID = uid.Int64
+		}
+		if at.Valid {
+			st.LastSyncedAt = at.Int64
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
 // server_assistant.randomID but avoids a cross-package import).
 func randomID(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
@@ -688,6 +723,7 @@ func (s *Store) UpsertVacationScoped(ctx context.Context, v *VacationReply, user
 	if workspaceID == "" {
 		workspaceID = "default"
 	}
+	wasExisting := v.ID != ""
 	if v.ID == "" {
 		v.ID = randomID("vac")
 	}
@@ -712,7 +748,7 @@ func (s *Store) UpsertVacationScoped(ctx context.Context, v *VacationReply, user
 
 	// 2. 如果 record 已存在，再校验它绑定的 account 是否在 scope 内。
 	//    这一步阻止"创建 vacation 后修改 accountID 指向他人账户"的越权。
-	if v.ID != "" {
+	if wasExisting {
 		if err := s.pool.QueryRow(ctx, `
 			SELECT EXISTS (
 				SELECT 1 FROM email_vacation_replies r
@@ -799,7 +835,15 @@ func (s *Store) SetAccountAuthType(ctx context.Context, id, authType string) err
 	return err
 }
 
-// UpdateSyncState 更新最后同步的 UID 和时间。
+// SetAccountAuthTypeScoped updates auth type only for an owned account.
+func (s *Store) SetAccountAuthTypeScoped(ctx context.Context, id, userID, workspaceID, authType string) error {
+	res, err := s.pool.Exec(ctx, `UPDATE email_accounts SET auth_type = $4 WHERE id = $1 AND user_id = $2 AND workspace_id = $3`, id, userID, workspaceID, authType)
+	if err == nil && res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
 func (s *Store) UpdateSyncState(ctx context.Context, id string, lastUID int64, lastAt int64) error {
 	_, err := s.pool.Exec(ctx, `UPDATE email_accounts SET last_synced_uid = $2, last_synced_at = $3 WHERE id = $1`, id, lastUID, lastAt)
 	return err
@@ -853,7 +897,24 @@ func (s *Store) UpsertOAuthToken(ctx context.Context, accountID, refreshEnc, acc
 	return err
 }
 
-// RevokeOAuthToken marks the account as password-backed and disabled so the
+// UpsertOAuthTokenScoped inserts or updates a token only for an owned account.
+func (s *Store) UpsertOAuthTokenScoped(ctx context.Context, accountID, userID, workspaceID, refreshEnc, accessEnc string, expiresAt int64, scope string) error {
+	res, err := s.pool.Exec(ctx, `
+		INSERT INTO email_oauth_tokens
+			(account_id, user_id, workspace_id, refresh_token_encrypted, access_token_encrypted, expires_at, scope, updated_at)
+		SELECT $1, a.user_id, a.workspace_id, $4, $5, $6, $7, EXTRACT(EPOCH FROM NOW())::BIGINT
+		FROM email_accounts a WHERE a.id=$1 AND a.user_id=$2 AND a.workspace_id=$3
+		ON CONFLICT (account_id) DO UPDATE SET
+			refresh_token_encrypted=EXCLUDED.refresh_token_encrypted,
+			access_token_encrypted=EXCLUDED.access_token_encrypted, expires_at=EXCLUDED.expires_at,
+			scope=EXCLUDED.scope, user_id=EXCLUDED.user_id, workspace_id=EXCLUDED.workspace_id,
+			updated_at=EXCLUDED.updated_at`, accountID, userID, workspaceID, refreshEnc, accessEnc, expiresAt, scope)
+	if err == nil && res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
 // scheduler stops trying to login with the dead token. It also clears the
 // token row (best-effort: leaving it would not hurt, but clean rows make
 // debugging easier).
@@ -889,9 +950,9 @@ func (s *Store) GetOAuthToken(ctx context.Context, accountID string) (refreshEnc
 // before the next IMAP login attempt.
 func (s *Store) ListExpiredOAuthTokens(ctx context.Context, leewaySec int64) ([]OAuthTokenRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT account_id, refresh_token_encrypted, COALESCE(access_token_encrypted, ''), expires_at
-		FROM email_oauth_tokens
-		WHERE expires_at > 0 AND expires_at <= (EXTRACT(EPOCH FROM NOW())::BIGINT + $1)
+			SELECT t.account_id, a.user_id, a.workspace_id, t.refresh_token_encrypted, COALESCE(t.access_token_encrypted, ''), t.expires_at
+			FROM email_oauth_tokens t JOIN email_accounts a ON a.id=t.account_id
+			WHERE t.expires_at > 0 AND t.expires_at <= (EXTRACT(EPOCH FROM NOW())::BIGINT + $1)
 	`, leewaySec)
 	if err != nil {
 		return nil, err
@@ -900,7 +961,7 @@ func (s *Store) ListExpiredOAuthTokens(ctx context.Context, leewaySec int64) ([]
 	out := make([]OAuthTokenRow, 0)
 	for rows.Next() {
 		var r OAuthTokenRow
-		if err := rows.Scan(&r.AccountID, &r.RefreshEnc, &r.AccessEnc, &r.ExpiresAt); err != nil {
+		if err := rows.Scan(&r.AccountID, &r.UserID, &r.WorkspaceID, &r.RefreshEnc, &r.AccessEnc, &r.ExpiresAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -911,10 +972,12 @@ func (s *Store) ListExpiredOAuthTokens(ctx context.Context, leewaySec int64) ([]
 // OAuthTokenRow is the lightweight projection used by the scheduler refresh
 // worker. Decryption happens off the hot path (in scheduler.refresh loop).
 type OAuthTokenRow struct {
-	AccountID  string
-	RefreshEnc string
-	AccessEnc  string
-	ExpiresAt  int64
+	AccountID   string
+	UserID      string
+	WorkspaceID string
+	RefreshEnc  string
+	AccessEnc   string
+	ExpiresAt   int64
 }
 
 // ListAccountsScoped returns only accounts owned by the user in the workspace.

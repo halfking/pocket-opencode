@@ -22,14 +22,17 @@ type apiKeyCipher interface {
 // LLMGatewayStore persists LLM gateway configurations to PostgreSQL.
 // Table: llm_gateway_configs
 type LLMGatewayStore struct {
-	pool  *pgxpool.Pool
+	pool   *pgxpool.Pool
 	cipher apiKeyCipher
 }
 
-// NewLLMGatewayStore creates the store and runs idempotent migrations.
-// cipher 允许为 nil（向后兼容）：nil 时 api_key_encrypted 列将按明文读写，
-// 但仅用于本地开发/测试环境；生产环境必须注入加密实现。
+// NewLLMGatewayStore creates the store and runs idempotent migrations. A
+// non-nil cipher is required because api_key_encrypted must never silently
+// degrade to plaintext storage when the email master key is unavailable.
 func NewLLMGatewayStore(pool *pgxpool.Pool, cipher apiKeyCipher) (*LLMGatewayStore, error) {
+	if cipher == nil {
+		return nil, fmt.Errorf("LLM gateway API-key encryption is not configured")
+	}
 	s := &LLMGatewayStore{pool: pool, cipher: cipher}
 	if err := s.migrate(); err != nil {
 		return nil, fmt.Errorf("llm_gateway_configs migrate: %w", err)
@@ -132,33 +135,27 @@ func (s *LLMGatewayStore) LoadConfig(ctx context.Context, workspaceID string) (*
 	return &st, nil
 }
 
-// encryptAPIKey 在 cipher 为 nil 时按明文落库（向后兼容旧部署）；其它情况
-// 强制加密。
+// encryptAPIKey always encrypts non-empty key material. The constructor rejects
+// a nil cipher, so no production path can write plaintext into the encrypted
+// column.
 func (s *LLMGatewayStore) encryptAPIKey(plain string) (string, error) {
 	if plain == "" {
 		return "", nil
 	}
 	if s.cipher == nil {
-		return plain, nil
+		return "", fmt.Errorf("api key encryption is not configured")
 	}
 	return s.cipher.EncryptString(plain)
 }
 
-// decryptAPIKey：与 encrypt 对称。空字符串按未配置处理直接返回。
-// 旧明文行（无加密前缀）会作为解密失败的兜底路径返回原文，并在日志里
-// 由调用方告警。
+// decryptAPIKey：与 encrypt 对称。空字符串按未配置处理直接返回。历史明文行
+// 不会被静默接受，避免把未保护的秘密继续传播到内存或 OpenCode。
 func (s *LLMGatewayStore) decryptAPIKey(enc string) (string, error) {
 	if enc == "" {
 		return "", nil
 	}
 	if s.cipher == nil {
-		return enc, nil
+		return "", fmt.Errorf("api key decryption is not configured")
 	}
-	plain, err := s.cipher.DecryptString(enc)
-	if err != nil {
-		// 解密失败：可能是历史明文行（旧部署升级后遗留）。返回原文 + 错误，
-		// 由调用方决定是否告警。
-		return enc, fmt.Errorf("api key at rest was not encrypted (legacy row?): %w", err)
-	}
-	return plain, nil
+	return s.cipher.DecryptString(enc)
 }

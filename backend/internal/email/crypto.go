@@ -98,6 +98,13 @@ func EnsureMasterKey(envKey, dataDir string) ([]byte, error) {
 		return nil, fmt.Errorf("mkdir %s: %w", dataDir, err)
 	}
 	if err := writeKeyAtomic(dataDir, key); err != nil {
+		// Another process may have won the lock and created the key while this
+		// process was waiting. Re-read a complete key before surfacing the
+		// write error; this keeps concurrent starts idempotent without ever
+		// overwriting an existing key.
+		if data, readErr := os.ReadFile(keyPath); readErr == nil && len(data) == 32 {
+			return data, nil
+		}
 		return nil, fmt.Errorf("write master key: %w", err)
 	}
 	return key, nil
