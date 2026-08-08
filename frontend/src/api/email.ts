@@ -19,9 +19,24 @@ export interface EmailAccount {
   smtpPort?: number
   authType: AuthType
   syncIntervalMin: number
-  lastSyncedAt?: string
+  /** Unix 秒（后端 email.Account 用 int64），不是 ISO 字符串。 */
+  lastSyncedAt?: number
+  /** Unix 秒。 */
+  createdAt?: number
   rules?: EmailRules
   enabled: boolean
+}
+
+/**
+ * 凭证类字段——服务端只接收、永不回传，因此不放进 EmailAccount。
+ *
+ * password / oauthToken 互斥（后端会拒绝同时提供）。
+ * smtpPassword 独立于 IMAP 凭证，存在单独的加密列里。
+ */
+export interface EmailCredentialInput {
+  password?: string
+  oauthToken?: string
+  smtpPassword?: string
 }
 
 export interface VacationReply {
@@ -78,10 +93,17 @@ export const emailApi = {
   listAccounts(): Promise<{ accounts: EmailAccount[] }> {
     return http('/api/email/accounts')
   },
-  addAccount(input: Omit<EmailAccount, 'id'> & { password?: string; oauthToken?: string }): Promise<EmailAccount> {
+  addAccount(input: Omit<EmailAccount, 'id'> & EmailCredentialInput): Promise<EmailAccount> {
     return http('/api/email/accounts', { method: 'POST', body: JSON.stringify(input) })
   },
-  updateAccount(id: string, patch: Partial<EmailAccount> & { password?: string; oauthToken?: string }): Promise<EmailAccount> {
+  /**
+   * 部分更新。未出现在 patch 里的字段保留原值。
+   *
+   * SMTP 语义（与后端 updateEmailAccount 一致）：
+   *   - 只有携带 smtpHost 时后端才会写 SMTP 列；单独传 smtpPort/smtpPassword 无效。
+   *   - smtpPassword 省略 → 保留原凭证；传 '' → 清空凭证；传非空 → 重新加密写入。
+   */
+  updateAccount(id: string, patch: Partial<EmailAccount> & EmailCredentialInput): Promise<EmailAccount> {
     return http(`/api/email/accounts/${id}`, { method: 'PUT', body: JSON.stringify(patch) })
   },
   deleteAccount(id: string): Promise<void> {

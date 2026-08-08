@@ -495,6 +495,11 @@ func (s *Server) createEmailAccount(w http.ResponseWriter, r *http.Request) {
 		SyncIntervalMin int    `json:"syncIntervalMin"`
 		Rules           string `json:"rules"`
 		Enabled         *bool  `json:"enabled"`
+		// SMTP 出站配置，可选。缺省时账户以「未配置 SMTP」创建，
+		// /test-smtp 会返回 "smtp not configured"，之后可通过 PUT 补齐。
+		SMTPHost     string `json:"smtpHost"`
+		SMTPPort     int    `json:"smtpPort"`
+		SMTPPassword string `json:"smtpPassword"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -502,6 +507,17 @@ func (s *Server) createEmailAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := validateEmailAccountInput(body.EmailAddress, body.IMAPHost, body.IMAPPort, body.AuthType, body.SyncIntervalMin, body.Rules); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// POST 没有 patch 语义：空 smtpHost 就是「不配置 SMTP」，不存在「清空」这一
+	// 状态。port==0 在这里表示「用默认端口」，由下面补成 587。
+	if body.SMTPHost == "" {
+		if err := validateSMTPInput(nil, &body.SMTPPort, &body.SMTPPassword); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	} else if body.SMTPPort != 0 && (body.SMTPPort < 1 || body.SMTPPort > 65535) {
+		writeError(w, http.StatusBadRequest, "smtpPort must be between 1 and 65535")
 		return
 	}
 	if body.AuthType == "" {
@@ -555,10 +571,71 @@ func (s *Server) createEmailAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "insert account: "+err.Error())
 		return
 	}
+	// SMTP 列不属于 InsertAccount 的写入范围，用与 PUT 相同的 scoped upsert 补齐，
+	// 避免「创建时填了 SMTP 却被静默丢弃」。
+	//
+	// 注意这两步不在同一个事务里：SMTP upsert 失败时账户已经创建成功，客户端
+	// 会收到 500 但账户存在且 SMTP 未配置。这不是脏数据（SMTP 本就可选，之后
+	// 可用 PUT 补齐），做成原子需要改 InsertAccount 签名，超出本次范围。
+	if body.SMTPHost != "" {
+		smtpPort := body.SMTPPort
+		if smtpPort == 0 {
+			smtpPort = 587
+		}
+		smtpCred := ""
+		if body.SMTPPassword != "" {
+			enc, err := s.emailCrypto.EncryptString(body.SMTPPassword)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "encrypt smtp credential: "+err.Error())
+				return
+			}
+			smtpCred = enc
+		}
+		if err := s.emailStore.UpsertSMTPSettingsScoped(r.Context(), acc.ID, uid, acc.WorkspaceID,
+			body.SMTPHost, smtpPort, smtpCred, body.SMTPPassword != ""); err != nil {
+			writeError(w, http.StatusInternalServerError, "save smtp settings: "+err.Error())
+			return
+		}
+		acc.SMTPHost = body.SMTPHost
+		acc.SMTPPort = smtpPort
+	}
 	writeJSON(w, http.StatusCreated, acc)
 	if s.wsHub != nil {
 		s.wsHub.BroadcastToUser(uid, "email.account.created", acc)
 	}
+}
+
+// validateSMTPInput 校验一次 SMTP 配置写入。
+//
+// host==nil 表示调用方没有提供 smtpHost，此时后端不会写 SMTP 列，因此单独出现
+// 的 port/credential 是无处可用的——直接拒绝而不是静默丢弃。
+//
+// host 为空字符串是「清空 SMTP 配置」的显式信号，只有这种情况允许 port==0；
+// 其余情况 port 必须在 1-65535 内（0 视为未提供，由调用方决定默认值）。
+func validateSMTPInput(host *string, port *int, credential *string) error {
+	if host == nil {
+		if port != nil && *port != 0 {
+			return errors.New("smtpHost required when smtpPort is provided")
+		}
+		if credential != nil && *credential != "" {
+			return errors.New("smtpHost required when smtpPassword is provided")
+		}
+		return nil
+	}
+	clearing := strings.TrimSpace(*host) == ""
+	if port == nil {
+		return nil
+	}
+	if *port == 0 {
+		if !clearing {
+			return errors.New("smtpPort must be between 1 and 65535")
+		}
+		return nil
+	}
+	if *port < 1 || *port > 65535 {
+		return errors.New("smtpPort must be between 1 and 65535")
+	}
+	return nil
 }
 
 func validateEmailAccountInput(address, host string, port int, authType string, interval int, rules string) error {
@@ -655,6 +732,12 @@ func (s *Server) handleEmailAccountOps(w http.ResponseWriter, r *http.Request) {
 //   - 仅允许修改自己的账户；账号所有权已在调用方校验。
 //   - password / oauthToken 互斥（不能同时改）；提供任一则触发 credential
 //     重加密。如果 authType 改为 oauth2，应同时提供 oauthToken。
+//
+// SMTP 字段语义：
+//   - 只有携带 smtpHost 才会写 SMTP 列。单独传 smtpPort/smtpPassword 以前会被
+//     静默丢弃，现在直接返回 400——静默成功比报错更难排查。
+//   - smtpHost 传空字符串表示清空 SMTP 配置，此时 port 一并归零。
+//   - smtpPassword 省略 → 保留原凭证；传 '' → 清空；传非空 → 重新加密写入。
 func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc *email.Account, workspaceID string) {
 	var body struct {
 		DisplayName     *string `json:"displayName"`
@@ -685,8 +768,8 @@ func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc 
 		writeError(w, http.StatusBadRequest, "imapPort must be between 1 and 65535")
 		return
 	}
-	if body.SMTPPort != nil && (*body.SMTPPort < 1 || *body.SMTPPort > 65535) {
-		writeError(w, http.StatusBadRequest, "smtpPort must be between 1 and 65535")
+	if err := validateSMTPInput(body.SMTPHost, body.SMTPPort, body.SMTPPassword); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if body.SyncIntervalMin != nil && (*body.SyncIntervalMin < 5 || *body.SyncIntervalMin > 60) {
@@ -769,6 +852,10 @@ func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc 
 		smtpPort := acc.SMTPPort
 		if body.SMTPPort != nil {
 			smtpPort = *body.SMTPPort
+		}
+		// 清空 host 时端口一并归零，不留「空 host + 陈旧端口」的半配置状态。
+		if strings.TrimSpace(*body.SMTPHost) == "" {
+			smtpPort = 0
 		}
 		smtpCred := ""
 		updateSMTPCred := false

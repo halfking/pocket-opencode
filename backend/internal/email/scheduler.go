@@ -306,6 +306,14 @@ func (s *Scheduler) tick(ctx context.Context) {
 		}
 		accountID := a.ID
 		go func() {
+			// 这是个裸 goroutine，panic 会直接带走整个进程。IMAP 解析在
+			// go-imap 里有多处 panic 路径（例如 NumSetKind 对非法 NumSet 直接
+			// panic），一个账户的异常不该让后端整体崩掉，所以在这里兜住。
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[email/scheduler] sync %s panicked: %v", accountID, r)
+				}
+			}()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
 			if _, err := s.fetcher.Sync(ctx, accountID); err != nil {

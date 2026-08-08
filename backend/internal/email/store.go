@@ -138,6 +138,21 @@ func (s *Store) migrate() error {
 
 	CREATE INDEX IF NOT EXISTS idx_email_accounts_ws ON email_accounts(workspace_id);
 	CREATE INDEX IF NOT EXISTS idx_emails_ws ON emails(workspace_id);
+	-- Repair emails.workspace_id against its authoritative source.
+	--
+	-- GetAccountByID never selected workspace_id, so Fetcher.Sync saw an empty
+	-- Account.WorkspaceID and every fetched email was persisted as 'default'.
+	-- The account row is the source of truth, so realign the denormalized
+	-- column from it. Read paths join on email_accounts and were never
+	-- affected; this only repairs the column itself (and anything that may
+	-- filter on it later).
+	--
+	-- Touches only rows that actually disagree, so it is idempotent and a
+	-- no-op once converged.
+	UPDATE emails e
+	SET workspace_id = a.workspace_id
+	FROM email_accounts a
+	WHERE e.account_id = a.id AND e.workspace_id <> a.workspace_id;
 	-- Phase 0.1: SMTP credentials (encrypted) + VacationReply + Email Message-ID/UID
 	-- additions are idempotent. They don't break old rows.
 	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS smtp_host TEXT NOT NULL DEFAULT '';
@@ -385,6 +400,12 @@ func (s *Store) InsertEmail(ctx context.Context, e Email) error {
 		//      supplied ("null value in column created_at ... violates
 		//      not-null constraint").
 		// Column count and placeholder count must stay in sync (19 of each now).
+		//
+		// created_at vs date — 两者刻意不同：
+		//   - date       = 邮件原始时间（IMAP envelope），排序/按日窗口/过滤都用它
+		//   - created_at = 本行入库时间（time.Now）
+		// 目前没有任何读路径消费 created_at，全部走 e.date；把 created_at 改成
+		// e.Date 只会复制 date 并丢掉入库时间，因此保持 time.Now()。
 		`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments, created_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 			 ON CONFLICT DO NOTHING`,
@@ -489,10 +510,16 @@ func (s *Store) GetSyncStatus(ctx context.Context, userID string) ([]AccountSync
 }
 
 // GetSyncStatusScoped returns sync state for one user/workspace.
+//
+// 未读数只按 e.account_id=a.id 统计。归属由外层的
+// a.user_id/a.workspace_id 谓词保证，account_id 已经唯一确定账户，因此不再
+// 附加 e.workspace_id=a.workspace_id：那个谓词依赖 emails 上的反范式列，
+// Fetcher 曾经把它一律写成 'default'，于是非 default workspace 的未读数恒为
+// 0。改成只认 account_id 后，历史脏数据也不会再影响计数。
 func (s *Store) GetSyncStatusScoped(ctx context.Context, userID, workspaceID string) ([]AccountSyncStatus, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT a.id, a.display_name, a.email_address, a.last_synced_uid, a.last_synced_at, a.enabled,
-		       COALESCE((SELECT COUNT(*) FROM emails e WHERE e.account_id=a.id AND e.workspace_id=a.workspace_id AND e.is_read=FALSE), 0)
+		       COALESCE((SELECT COUNT(*) FROM emails e WHERE e.account_id=a.id AND e.is_read=FALSE), 0)
 		FROM email_accounts a WHERE a.user_id=$1 AND a.workspace_id=$2 ORDER BY a.created_at`, userID, workspaceID)
 	if err != nil {
 		return nil, err
@@ -639,16 +666,26 @@ func (s *Store) DeleteAccount(ctx context.Context, id string) error {
 func (s *Store) GetAccountByID(ctx context.Context, id string) (*Account, string, error) {
 	var a Account
 	var cred string
-	var smtpHost, smtpCred sql.NullString
+	var smtpHost sql.NullString
 	var smtpPort sql.NullInt64
 	var lastUID, lastAt sql.NullInt64
 	var rules sql.NullString
+	// workspace_id 必须选出来：Fetcher.Sync 用它给抓下来的邮件打
+	// workspace 标记。之前这里没选，a.WorkspaceID 恒为 ""，导致所有邮件
+	// 都以 'default' 落库（defaultWorkspace 的兜底），非 default workspace
+	// 的账户在 GetSyncStatusScoped 里未读数恒为 0。
+	//
+	// smtp_host/smtp_port 同样是之前声明了变量却没进 Scan 的死代码。
+	// smtp_credential_encrypted 仍然刻意不选——它只能经
+	// GetSMTPCredentialScoped 取出，避免 SMTP 凭证混入 IMAP 路径。
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, user_id, display_name, email_address, imap_host, imap_port, auth_type,
-		       credential_encrypted, sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at
+		SELECT id, user_id, workspace_id, display_name, email_address, imap_host, imap_port, auth_type,
+		       credential_encrypted, sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at,
+		       smtp_host, smtp_port
 		FROM email_accounts WHERE id = $1
-	`, id).Scan(&a.ID, &a.UserID, &a.DisplayName, &a.EmailAddress, &a.IMAPHost, &a.IMAPPort,
-		&a.AuthType, &cred, &a.SyncIntervalMin, &lastUID, &lastAt, &rules, &a.Enabled, &a.CreatedAt)
+	`, id).Scan(&a.ID, &a.UserID, &a.WorkspaceID, &a.DisplayName, &a.EmailAddress, &a.IMAPHost, &a.IMAPPort,
+		&a.AuthType, &cred, &a.SyncIntervalMin, &lastUID, &lastAt, &rules, &a.Enabled, &a.CreatedAt,
+		&smtpHost, &smtpPort)
 	if err != nil {
 		return nil, "", err
 	}
@@ -666,11 +703,6 @@ func (s *Store) GetAccountByID(ctx context.Context, id string) (*Account, string
 	}
 	if smtpPort.Valid {
 		a.SMTPPort = int(smtpPort.Int64)
-	}
-	if smtpCred.Valid {
-		// 仅在调用方显式请求时才返回（通过独立方法 GetSMTPCredentialScoped），
-		// 避免 IMAP credential 错误地暴露给 SMTP 测试代码。
-		_ = smtpCred
 	}
 	return &a, cred, nil
 }
@@ -706,7 +738,13 @@ func (s *Store) GetSMTPCredentialScoped(ctx context.Context, id, userID, workspa
 // --- SMTP / Vacation CRUD ---
 
 // UpsertSMTPSettingsScoped 保存 SMTP host/port/credential。
-// credential 已经被主调代码加密；空字符串表示"保留原值"。
+//
+// credential 由主调代码负责加密。是否改写凭证只由 updateCredential 决定：
+//   - updateCredential=false → 完全不碰 smtp_credential_encrypted（host/port-only 编辑）
+//   - updateCredential=true  → 写入 credential，空字符串即"清空凭证"
+//
+// host 传空字符串表示清空 SMTP 配置，此时 port 允许为 0；host 非空时 port
+// 必须在合法区间内。
 func (s *Store) UpsertSMTPSettingsScoped(ctx context.Context, id, userID, workspaceID, host string, port int, credential string, updateCredential bool) error {
 	host = strings.TrimSpace(host)
 	if host != "" && (port < 1 || port > 65535) {
@@ -1007,9 +1045,14 @@ type OAuthTokenRow struct {
 
 // ListAccountsScoped returns only accounts owned by the user in the workspace.
 func (s *Store) ListAccountsScoped(ctx context.Context, userID, workspaceID string) ([]Account, error) {
+	// smtp_host/smtp_port are selected so the account list can prefill the SMTP
+	// editor without an extra per-account GET. smtp_credential_encrypted is
+	// deliberately NOT selected — it is only reachable through
+	// GetSMTPCredentialScoped.
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, user_id, workspace_id, display_name, email_address, imap_host, imap_port, auth_type,
-		       sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at
+		       sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at,
+		       smtp_host, smtp_port
 		FROM email_accounts WHERE user_id = $1 AND workspace_id = $2 ORDER BY created_at
 	`, userID, workspaceID)
 	if err != nil {
@@ -1021,8 +1064,11 @@ func (s *Store) ListAccountsScoped(ctx context.Context, userID, workspaceID stri
 		var a Account
 		var lastUID, lastAt sql.NullInt64
 		var rules sql.NullString
+		var smtpHost sql.NullString
+		var smtpPort sql.NullInt64
 		if err := rows.Scan(&a.ID, &a.UserID, &a.WorkspaceID, &a.DisplayName, &a.EmailAddress, &a.IMAPHost,
-			&a.IMAPPort, &a.AuthType, &a.SyncIntervalMin, &lastUID, &lastAt, &rules, &a.Enabled, &a.CreatedAt); err != nil {
+			&a.IMAPPort, &a.AuthType, &a.SyncIntervalMin, &lastUID, &lastAt, &rules, &a.Enabled, &a.CreatedAt,
+			&smtpHost, &smtpPort); err != nil {
 			return nil, err
 		}
 		if lastUID.Valid {
@@ -1033,6 +1079,12 @@ func (s *Store) ListAccountsScoped(ctx context.Context, userID, workspaceID stri
 		}
 		if rules.Valid {
 			a.Rules = rules.String
+		}
+		if smtpHost.Valid {
+			a.SMTPHost = smtpHost.String
+		}
+		if smtpPort.Valid {
+			a.SMTPPort = int(smtpPort.Int64)
 		}
 		out = append(out, a)
 	}

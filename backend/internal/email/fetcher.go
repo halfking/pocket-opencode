@@ -17,11 +17,23 @@ import (
 type Fetcher struct {
 	store  *Store
 	crypto *Crypto
+	// dialTLS 是可替换的连接入口，nil 时用 imapclient.DialTLS。
+	// 仅为测试留缝：Sync 原先直接写死 imapclient.DialTLS(addr, nil)，
+	// 没法指向本地 IMAP server，整条抓取链路因此无法自动化验证。
+	// 生产路径行为不变。
+	dialTLS func(addr string, opts *imapclient.Options) (*imapclient.Client, error)
 }
 
 // NewFetcher 构造 Fetcher。
 func NewFetcher(store *Store, crypto *Crypto) *Fetcher {
 	return &Fetcher{store: store, crypto: crypto}
+}
+
+func (f *Fetcher) dial(addr string) (*imapclient.Client, error) {
+	if f.dialTLS != nil {
+		return f.dialTLS(addr, nil)
+	}
+	return imapclient.DialTLS(addr, nil)
 }
 
 // login 根据账户 authType 选择合适的 IMAP 鉴权机制。
@@ -85,7 +97,7 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 	}
 
 	addr := fmt.Sprintf("%s:%d", acc.IMAPHost, acc.IMAPPort)
-	client, err := imapclient.DialTLS(addr, nil)
+	client, err := f.dial(addr)
 	if err != nil {
 		return 0, fmt.Errorf("dial %s: %w", addr, err)
 	}
@@ -134,7 +146,11 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 			Partial:   &imap.SectionPartial{Offset: 0, Size: 5 * 1024},
 		}},
 	}
-	messages, err := client.Fetch(&uidSet, fetchOpts).Collect()
+	// uidSet 必须按值传：imapwire.NumSetKind 对 imap.NumSet 做类型 switch，只
+	// 认 imap.SeqSet / imap.UIDSet 值类型，*imap.UIDSet 会落到 default 分支直接
+	// panic("imap: invalid NumSet type")。之前这里传 &uidSet，任何搜到新邮件的
+	// Sync 都会 panic，整条抓取链路从未跑通过。
+	messages, err := client.Fetch(uidSet, fetchOpts).Collect()
 	if err != nil {
 		return 0, fmt.Errorf("fetch: %w", err)
 	}
@@ -171,8 +187,12 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 			messageID = strings.TrimPrefix(strings.TrimSuffix(m.Envelope.MessageID, ">"), "<")
 		}
 		em := Email{
-			ID:          fmt.Sprintf("em-%d-%s", uid, accountID),
-			AccountID:   accountID,
+			ID:        fmt.Sprintf("em-%d-%s", uid, accountID),
+			AccountID: accountID,
+			// 抓取任务的作用域来自账户行自带的 workspace，不来自任何请求上下文。
+			// 之前没带这个字段，InsertEmail 的 defaultWorkspace 兜底把所有邮件都
+			// 写成 'default'。
+			WorkspaceID: acc.WorkspaceID,
 			MessageID:   messageID,
 			UID:         int64(uid),
 			FromAddress: fromAddr,
