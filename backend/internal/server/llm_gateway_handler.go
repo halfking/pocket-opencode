@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,23 +8,96 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 )
 
-// llmGatewayState 全局 LLM Gateway 配置（单实例）。
-// 生产环境可改为 PG 持久化 + 多租户隔离；当前阶段按"单 admin"足够。
 type llmGatewayState struct {
 	BaseURL string   `json:"baseURL"`
 	APIKey  string   `json:"apiKey"`
 	Models  []string `json:"models"`
 }
 
-var currentLLMGateway = llmGatewayState{
-	BaseURL: envOr("POCKET_LLM_GATEWAY_URL", opencode.DefaultLLMGatewayBaseURL),
-	APIKey:  os.Getenv("POCKET_LLM_GATEWAY_KEY"),
-	Models:  []string{},
+// defaultLLMGatewayState returns the env-backed fallback used when no DB row
+// has been persisted for the workspace. We keep it deterministic so GET is
+// idempotent across requests.
+func defaultLLMGatewayState() llmGatewayState {
+	return llmGatewayState{
+		BaseURL: envOr("POCKET_LLM_GATEWAY_URL", opencode.DefaultLLMGatewayBaseURL),
+		APIKey:  os.Getenv("POCKET_LLM_GATEWAY_API_KEY"),
+		Models:  []string{},
+	}
+}
+
+// llmGatewayCache holds the per-workspace gateway state. The map is keyed by
+// workspace id; the special key "default" is reserved for callers that have
+// not been scoped (e.g. system-level probes). All operations are guarded by
+// mu so concurrent POST/GET do not race on the underlying structs.
+type llmGatewayCache struct {
+	mu    sync.RWMutex
+	state map[string]*llmGatewayState
+}
+
+func newLLMGatewayCache() *llmGatewayCache {
+	return &llmGatewayCache{state: map[string]*llmGatewayState{}}
+}
+
+func (c *llmGatewayCache) get(workspaceID string) llmGatewayState {
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	c.mu.RLock()
+	st, ok := c.state[workspaceID]
+	c.mu.RUnlock()
+	if ok {
+		c.mu.RLock()
+		copy := *st
+		copy.Models = append([]string(nil), st.Models...)
+		c.mu.RUnlock()
+		return copy
+	}
+	return defaultLLMGatewayState()
+}
+
+// replace swaps the cached state for a workspace; the caller's struct is
+// copied so subsequent caller-side mutations cannot leak into the cache.
+func (c *llmGatewayCache) replace(workspaceID string, st llmGatewayState) {
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	snapshot := st
+	snapshot.Models = append([]string(nil), st.Models...)
+	c.mu.Lock()
+	c.state[workspaceID] = &snapshot
+	c.mu.Unlock()
+}
+
+// updateModels merges new model ids into the cached state (used by the test
+// endpoint after a successful list call).
+func (c *llmGatewayCache) updateModels(workspaceID string, ids []string) {
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st, ok := c.state[workspaceID]
+	if !ok {
+		return
+	}
+	st.Models = append([]string(nil), ids...)
+}
+
+// gatewaySnapshot returns the active state for the request's workspace.
+func (s *Server) gatewaySnapshot(workspaceID string) llmGatewayState {
+	if s.llmGWCache == nil {
+		return defaultLLMGatewayState()
+	}
+	return s.llmGWCache.get(workspaceID)
 }
 
 func envOr(key, def string) string {
@@ -35,20 +107,13 @@ func envOr(key, def string) string {
 	return def
 }
 
-// handleLLMGatewayConfig GET 读 / POST 写 LLM Gateway 配置
-// GET  /api/llm-gateway/config
-// POST /api/llm-gateway/config  body: { baseURL, apiKey?, models? }
 func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		// 安全：API Key 仅返回掩码（脱敏）
-		masked := maskKey(currentLLMGateway.APIKey)
+		st := s.gatewaySnapshot(s.workspaceIDFromRequest(r))
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"baseURL":   currentLLMGateway.BaseURL,
-			"apiKeySet": currentLLMGateway.APIKey != "",
-			"apiKey":    masked,
-			"models":    currentLLMGateway.Models,
-			"source":    "pocketd",
+			"baseURL": st.BaseURL, "apiKeySet": st.APIKey != "", "apiKey": maskKey(st.APIKey),
+			"models": st.Models, "source": "pocketd",
 		})
 	case http.MethodPost:
 		var req struct {
@@ -69,51 +134,64 @@ func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
-		// apiKey 留空表示保留旧值
+		workspaceID := s.workspaceIDFromRequest(r)
+		current := s.gatewaySnapshot(workspaceID)
 		if req.APIKey != "" {
-			currentLLMGateway.APIKey = req.APIKey
+			current.APIKey = req.APIKey
 		}
-		currentLLMGateway.BaseURL = req.BaseURL
+		if current.APIKey == "" {
+			http.Error(w, "apiKey required for first configuration", http.StatusBadRequest)
+			return
+		}
+		current.BaseURL = req.BaseURL
 		if req.Models != nil {
-			currentLLMGateway.Models = req.Models
+			current.Models = append([]string(nil), req.Models...)
 		}
-		// 持久化到 PostgreSQL（如果配置了）
+
+		// Order matters: persist first, then publish. If SaveConfig or
+		// pushConfigToOpenCode fails we keep the previously cached state so
+		// concurrent GET callers still observe a consistent config until the
+		// client retries. Returning an error here is the right signal to the
+		// UI; silently rolling back to the previous in-memory config is what
+		// we already do.
 		if s.llmGWStore != nil {
-			if err := s.llmGWStore.SaveConfig(r.Context(), currentLLMGateway); err != nil {
+			if err := s.llmGWStore.SaveConfig(r.Context(), workspaceID, current); err != nil {
 				log.Printf("[llm-gateway] persist config failed: %v", err)
-				// 不阻断主流程，仅记日志
+				http.Error(w, "persist config failed", http.StatusInternalServerError)
+				return
 			}
 		}
-		// 触发 OpenCode 配置热更新（如果可达）
-		go s.pushConfigToOpenCode()
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"ok":      true,
-			"baseURL": currentLLMGateway.BaseURL,
-			"models":  currentLLMGateway.Models,
-		})
+		if err := s.pushConfigToOpenCode(r, workspaceID, current); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		if s.llmGWCache != nil {
+			s.llmGWCache.replace(workspaceID, current)
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "baseURL": current.BaseURL, "models": current.Models})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-// handleLLMGatewayTest POST /api/llm-gateway/test
-// 用 gateway baseURL 发一次 dry-run models 列表请求验证连通
 func (s *Server) handleLLMGatewayTest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if currentLLMGateway.APIKey == "" {
+	workspaceID := s.workspaceIDFromRequest(r)
+	st := s.gatewaySnapshot(workspaceID)
+	if st.APIKey == "" {
 		http.Error(w, "apiKey not set", http.StatusBadRequest)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	if err := validateOutboundURL(currentLLMGateway.BaseURL); err != nil {
+	if err := validateOutboundURL(st.BaseURL); err != nil {
 		http.Error(w, "invalid gateway URL", http.StatusBadRequest)
 		return
 	}
-	modelsURL, err := outboundModelsURL(currentLLMGateway.BaseURL)
+	modelsURL, err := outboundModelsURL(st.BaseURL)
 	if err != nil {
 		http.Error(w, "invalid gateway URL", http.StatusBadRequest)
 		return
@@ -123,114 +201,146 @@ func (s *Server) handleLLMGatewayTest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid gateway URL", http.StatusBadRequest)
 		return
 	}
-	req.Header.Set("Authorization", "Bearer "+currentLLMGateway.APIKey)
+	req.Header.Set("Authorization", "Bearer "+st.APIKey)
 	resp, err := safeOutboundHTTPClient().Do(req)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]interface{}{
-			"ok":    false,
-			"error": err.Error(),
-		})
+		writeJSON(w, http.StatusBadGateway, map[string]interface{}{"ok": false, "error": err.Error()})
 		return
 	}
 	defer resp.Body.Close()
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxLLMGatewayResponseBytes+1))
-	if readErr != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]interface{}{
-			"ok":    false,
-			"error": "failed to read gateway response",
-		})
-		return
-	}
-	if len(body) > maxLLMGatewayResponseBytes {
-		writeJSON(w, http.StatusBadGateway, map[string]interface{}{
-			"ok":    false,
-			"error": "gateway response too large",
-		})
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxLLMGatewayResponseBytes+1))
+	if err != nil || len(body) > maxLLMGatewayResponseBytes {
+		writeJSON(w, http.StatusBadGateway, map[string]interface{}{"ok": false, "error": "invalid gateway response"})
 		return
 	}
 	if resp.StatusCode >= 400 {
-		writeJSON(w, http.StatusBadGateway, map[string]interface{}{
-			"ok":     false,
-			"status": resp.StatusCode,
-			"error":  "gateway returned an error",
-		})
+		writeJSON(w, http.StatusBadGateway, map[string]interface{}{"ok": false, "status": resp.StatusCode, "error": "gateway returned an error"})
 		return
 	}
-	// 解析响应，更新 models 列表
 	var listResp struct {
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(body, &listResp); err == nil && len(listResp.Data) > 0 {
+	if json.Unmarshal(body, &listResp) == nil && len(listResp.Data) > 0 {
 		ids := make([]string, 0, len(listResp.Data))
-		for _, m := range listResp.Data {
-			ids = append(ids, m.ID)
+		for _, model := range listResp.Data {
+			ids = append(ids, model.ID)
 		}
-		currentLLMGateway.Models = ids
+		if s.llmGWCache != nil {
+			s.llmGWCache.updateModels(workspaceID, ids)
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":     true,
-		"status": resp.StatusCode,
-		"models": currentLLMGateway.Models,
-	})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "status": resp.StatusCode, "models": s.gatewaySnapshot(workspaceID).Models})
 }
 
-// handleLLMGatewayModels GET /api/llm-gateway/models
-// 返回当前缓存的可用模型列表
 func (s *Server) handleLLMGatewayModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"baseURL": currentLLMGateway.BaseURL,
-		"models":  currentLLMGateway.Models,
-	})
+	st := s.gatewaySnapshot(s.workspaceIDFromRequest(r))
+	writeJSON(w, http.StatusOK, map[string]interface{}{"baseURL": st.BaseURL, "models": st.Models})
 }
 
-// pushConfigToOpenCode 异步把 gateway config 推到所有 OpenCode 实例。
-// V1 协议：PUT /config/providers（如果实现）或 reload + 写 ~/.config/opencode/config.json
-// V2 协议：尚无对应；先写文件再 reload。
-func (s *Server) pushConfigToOpenCode() {
+// pushConfigToOpenCode uses the authenticated Pocket config contract. A
+// missing token is an explicit failure when instances are configured.
+//
+// All HTTP calls share a single request context with a hard 10s deadline
+// and reuse safeOutboundHTTPClient so untrusted instance URLs go through
+// the same SSRF defenses as /api/llm-gateway/test.
+func (s *Server) pushConfigToOpenCode(r *http.Request, workspaceID string, st llmGatewayState) error {
 	if s.registry == nil || s.opencode == nil {
-		return
+		return nil
 	}
-	json, err := opencode.BuildOpenCodeConfigContent(opencode.LLMGatewayConfig{
-		BaseURL: currentLLMGateway.BaseURL,
-		APIKey:  currentLLMGateway.APIKey,
-		Models:  currentLLMGateway.Models,
-	}, "")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "pushConfigToOpenCode: build config: %v\n", err)
-		return
+	// ListInstancesForWorkspace deliberately also returns operator-provisioned
+	// shared instances (WorkspaceID == ""). Those must NOT receive per-tenant
+	// gateway secrets: a shared instance is visible to every workspace, so each
+	// tenant's save would overwrite the same process and leak its APIKey to the
+	// others. Only push to instances this workspace actually owns.
+	instances := make([]model.PocketInstance, 0)
+	for _, inst := range s.registry.ListInstancesForWorkspace(workspaceID) {
+		if inst.WorkspaceID == workspaceID && workspaceID != "" {
+			instances = append(instances, inst)
+		}
+	}
+	if len(instances) == 0 {
+		return nil
+	}
+	token := strings.TrimSpace(os.Getenv("POCKET_OPENCODE_CONFIG_TOKEN"))
+	if token == "" {
+		return fmt.Errorf("OpenCode config push requires POCKET_OPENCODE_CONFIG_TOKEN")
+	}
+	cfg := adapter.ModelConfig{
+		DefaultProvider: "openai-compatible-pocket",
+		Providers: []adapter.Provider{{
+			ID: "openai-compatible-pocket", Name: "Pocket LLM Gateway", Enabled: true,
+			APIKey: st.APIKey, BaseURL: st.BaseURL,
+			Models: make([]adapter.ModelDefinition, 0, len(st.Models)),
+		}},
+	}
+	for _, modelID := range st.Models {
+		cfg.Providers[0].Models = append(cfg.Providers[0].Models, adapter.ModelDefinition{ID: modelID, DisplayName: modelID, Enabled: true})
 	}
 
-	instances := s.registry.ListInstances()
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	client := safeOutboundHTTPClient()
+
 	for _, inst := range instances {
-		baseURL, err := s.registry.GetInstanceAPIBase(inst.ID)
-		if err != nil {
-			continue
+		baseURL := strings.TrimRight(inst.APIBaseURL, "/")
+		if baseURL == "" {
+			return fmt.Errorf("OpenCode instance %s has no API base URL", inst.ID)
 		}
-		// V1 端点：POST /config/reload 后 PUT /config/providers
-		// 先尝试 reload（若上游支持，注入新 config 后触发）
-		reloadURL := baseURL + "/config/reload"
-		req, _ := http.NewRequest(http.MethodPost, reloadURL, bytes.NewBufferString(json))
-		req.Header.Set("Content-Type", "application/json")
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		req = req.WithContext(ctx)
-		resp, err := http.DefaultClient.Do(req)
-		cancel()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "pushConfigToOpenCode[%s]: %v\n", inst.ID, err)
-			continue
+		if err := putJSONWithAuth(ctx, client, baseURL+"/api/config/models", cfg, token); err != nil {
+			return fmt.Errorf("push config to %s: %w", inst.ID, err)
 		}
-		resp.Body.Close()
-		_ = resp
+		if err := postWithAuth(ctx, client, baseURL+"/api/config/reload", token); err != nil {
+			return fmt.Errorf("reload config on %s: %w", inst.ID, err)
+		}
 	}
+	return nil
 }
 
-// maskKey 把 sk-... 密钥中间掩码。保留前 4 + 后 4 字符，中间用 **** 替换。
+func putJSONWithAuth(ctx context.Context, client *http.Client, url string, body interface{}, token string) error {
+	data, err := json.Marshal(map[string]interface{}{"config": body})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, strings.NewReader(string(data)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func postWithAuth(ctx context.Context, client *http.Client, url, token string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func maskKey(s string) string {
 	if len(s) <= 8 {
 		return "****"
@@ -238,27 +348,34 @@ func maskKey(s string) string {
 	return s[:4] + "****" + s[len(s)-4:]
 }
 
-// LoadLLMGatewayFromDB 从数据库加载最新的 LLM Gateway 配置到内存。
-// 在 main.go 中 server 创建后、HTTP 启动前调用。
-func (s *Server) LoadLLMGatewayFromDB() {
+// LoadLLMGatewayFromDB reloads the per-workspace config for every workspace
+// in the supplied list. A workspace with no saved row keeps the env defaults.
+// If workspaceIDs is empty we still preload the "default" workspace so the
+// single-tenant fallback continues to work.
+func (s *Server) LoadLLMGatewayFromDB(workspaceIDs ...string) {
 	if s.llmGWStore == nil {
 		return
 	}
-	st, err := s.llmGWStore.LoadConfig(context.Background())
-	if err != nil {
-		log.Printf("[llm-gateway] load from DB failed: %v", err)
-		return
+	ids := workspaceIDs
+	if len(ids) == 0 {
+		ids = []string{"default"}
 	}
-	if st == nil {
-		log.Println("[llm-gateway] no saved config in DB, using env defaults")
-		return
+	for _, wsID := range ids {
+		if wsID == "" {
+			wsID = "default"
+		}
+		st, err := s.llmGWStore.LoadConfig(context.Background(), wsID)
+		if err != nil {
+			log.Printf("[llm-gateway] load from DB failed for %s: %v", wsID, err)
+			continue
+		}
+		if st == nil {
+			continue
+		}
+		if s.llmGWCache == nil {
+			s.llmGWCache = newLLMGatewayCache()
+		}
+		s.llmGWCache.replace(wsID, *st)
+		log.Printf("[llm-gateway] loaded config from DB: workspace=%s baseURL=%s models=%d", wsID, st.BaseURL, len(st.Models))
 	}
-	currentLLMGateway.BaseURL = st.BaseURL
-	if st.APIKey != "" {
-		currentLLMGateway.APIKey = st.APIKey
-	}
-	if len(st.Models) > 0 {
-		currentLLMGateway.Models = st.Models
-	}
-	log.Printf("[llm-gateway] loaded config from DB: baseURL=%s models=%d", st.BaseURL, len(st.Models))
 }

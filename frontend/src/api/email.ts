@@ -15,11 +15,23 @@ export interface EmailAccount {
   emailAddress: string
   imapHost: string
   imapPort: number
+  smtpHost?: string
+  smtpPort?: number
   authType: AuthType
   syncIntervalMin: number
   lastSyncedAt?: string
   rules?: EmailRules
   enabled: boolean
+}
+
+export interface VacationReply {
+  id?: string
+  accountId: string
+  enabled: boolean
+  startAt: number
+  endAt: number
+  subject: string
+  bodyText: string
 }
 
 export interface EmailRules {
@@ -66,14 +78,29 @@ export const emailApi = {
   listAccounts(): Promise<{ accounts: EmailAccount[] }> {
     return http('/api/email/accounts')
   },
-  addAccount(input: Omit<EmailAccount, 'id'> & { credential: string }): Promise<EmailAccount> {
+  addAccount(input: Omit<EmailAccount, 'id'> & { password?: string; oauthToken?: string }): Promise<EmailAccount> {
     return http('/api/email/accounts', { method: 'POST', body: JSON.stringify(input) })
   },
-  updateAccount(id: string, patch: Partial<EmailAccount>): Promise<EmailAccount> {
+  updateAccount(id: string, patch: Partial<EmailAccount> & { password?: string; oauthToken?: string }): Promise<EmailAccount> {
     return http(`/api/email/accounts/${id}`, { method: 'PUT', body: JSON.stringify(patch) })
   },
   deleteAccount(id: string): Promise<void> {
     return http(`/api/email/accounts/${id}`, { method: 'DELETE' })
+  },
+  testSmtp(id: string): Promise<{ ok: boolean; smtp: string }> {
+    return http(`/api/email/accounts/${id}/test-smtp`, { method: 'POST', body: '{}' })
+  },
+
+  // Vacation replies (configuration only; SMTP delivery not yet implemented)
+  listVacations(accountId?: string): Promise<{ vacations: VacationReply[] }> {
+    const qs = accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''
+    return http(`/api/email/vacations${qs}`)
+  },
+  upsertVacation(v: VacationReply): Promise<VacationReply> {
+    return http('/api/email/vacations', { method: 'POST', body: JSON.stringify(v) })
+  },
+  deleteVacation(id: string): Promise<{ deleted: boolean }> {
+    return http(`/api/email/vacations/${id}`, { method: 'DELETE' })
   },
 
   // Emails

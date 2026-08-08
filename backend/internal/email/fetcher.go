@@ -10,6 +10,7 @@ import (
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-sasl"
+	"github.com/halfking/pocket-opencode/backend/internal/email/rules"
 )
 
 // Fetcher 通过 IMAP 拉取邮件。
@@ -139,6 +140,10 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 	}
 
 	saved := 0
+	rulesParsed, ruleErr := rules.ParseRules(acc.Rules)
+	if ruleErr != nil {
+		log.Printf("[email/fetcher] parse rules for %s failed: %v (skipping rules)", acc.EmailAddress, ruleErr)
+	}
 	for _, m := range messages {
 		if m.Envelope == nil {
 			continue
@@ -159,15 +164,64 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		if len(snippet) > 500 {
 			snippet = snippet[:500]
 		}
+		messageID := ""
+		if m.Envelope.MessageID != "" {
+			// go-imap returns the message ID already wrapped in < >. Strip them
+			// so the UNIQUE(account_id, message_id) index is consistent.
+			messageID = strings.TrimPrefix(strings.TrimSuffix(m.Envelope.MessageID, ">"), "<")
+		}
 		em := Email{
 			ID:          fmt.Sprintf("em-%d-%s", uid, accountID),
 			AccountID:   accountID,
+			MessageID:   messageID,
+			UID:         int64(uid),
 			FromAddress: fromAddr,
 			FromName:    fromName,
 			Subject:     subject,
 			Snippet:     snippet,
 			Date:        date,
 		}
+		// 评估账户规则。规则输出会写入 Importance / Category / ActionReason；
+		// archive / route-folder / trigger-autoreply 暂不支持，引擎已统一返回
+		// ActionUnsupported，调用方安全跳过。
+			if ruleErr == nil && len(rulesParsed) > 0 {
+				apply := rules.Evaluate(rulesParsed, rules.EmailInput{
+					From:       fromAddr,
+					Subject:    subject,
+					Body:       snippet,
+					Importance: em.Importance,
+					Category:   em.Category,
+					ReceivedAt: m.Envelope.Date,
+				})
+				if len(apply) > 0 {
+					reasons := make([]string, 0, len(apply))
+					imSet := false
+					for _, act := range apply {
+						switch act.Action {
+						case rules.ActionMarkImportant:
+							em.Importance = "high"
+							imSet = true
+						case rules.ActionLabelCategory:
+							// 规则可在 action 里携带 category（如
+							// {"name":"label-category","category":"work"}）。
+							// 持久化到 emails.category，让前端可以立即
+							// 在列表里看到分类结果，不必等待 kxmemory。
+							if cat := strings.TrimSpace(act.Category); cat != "" {
+								em.Category = cat
+							}
+						}
+						if act.Action != rules.ActionUnsupported {
+							reasons = append(reasons, string(act.Action)+": "+act.Reason)
+						}
+					}
+					if len(reasons) > 0 {
+						em.ActionReason = strings.Join(reasons, "; ")
+					}
+					if imSet {
+						log.Printf("[email/fetcher] uid=%d mark-important applied (account=%s)", uid, acc.ID)
+					}
+				}
+			}
 		if err := f.store.InsertEmail(ctx, em); err != nil {
 			log.Printf("[email/fetcher] insert email uid=%d: %v", uid, err)
 			continue

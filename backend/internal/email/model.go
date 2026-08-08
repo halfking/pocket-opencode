@@ -3,6 +3,9 @@ package email
 // Account mirrors the email_accounts table. CredentialEncrypted holds the
 // IMAP password/OAuth token encrypted with the server master key
 // (POCKET_EMAIL_MASTER_KEY); plaintext is never persisted.
+//
+// SMTP credentials live in a separate `smtp_credential_encrypted` column so
+// SMTP can be configured independently from IMAP.
 type Account struct {
 	ID              string `json:"id"`
 	UserID          string `json:"userId"`
@@ -11,6 +14,8 @@ type Account struct {
 	EmailAddress    string `json:"emailAddress"`
 	IMAPHost        string `json:"imapHost"`
 	IMAPPort        int    `json:"imapPort"`
+	SMTPHost        string `json:"smtpHost,omitempty"`
+	SMTPPort        int    `json:"smtpPort,omitempty"`
 	AuthType        string `json:"authType"` // password | oauth2
 	SyncIntervalMin int    `json:"syncIntervalMin"`
 	LastSyncedUID   int64  `json:"lastSyncedUid,omitempty"`
@@ -24,6 +29,8 @@ type Account struct {
 type Email struct {
 	ID              string `json:"id"`
 	AccountID       string `json:"accountId"`
+	MessageID       string `json:"messageId,omitempty"`
+	UID             int64  `json:"uid,omitempty"`
 	WorkspaceID     string `json:"workspaceId,omitempty"`
 	FromAddress     string `json:"fromAddress"`
 	FromName        string `json:"fromName,omitempty"`
@@ -36,7 +43,25 @@ type Email struct {
 	Importance      string `json:"importance,omitempty"`
 	AISummary       string `json:"aiSummary,omitempty"`
 	SuggestedAction string `json:"suggestedAction,omitempty"`
+	ActionReason    string `json:"actionReason,omitempty"`
 	HasAttachments  bool   `json:"hasAttachments"`
+}
+
+// VacationReply represents a configured auto-reply window. SMTP delivery
+// is intentionally not yet implemented; the table currently stores
+// configuration only so the UI can save and audit.
+type VacationReply struct {
+	ID          string `json:"id"`
+	AccountID   string `json:"accountId"`
+	WorkspaceID string `json:"workspaceId"`
+	Enabled     bool   `json:"enabled"`
+	StartAt     int64  `json:"startAt"`
+	EndAt       int64  `json:"endAt"`
+	Subject     string `json:"subject"`
+	BodyText    string `json:"bodyText"`
+	LastSentAt  *int64 `json:"lastSentAt,omitempty"`
+	CreatedAt   int64  `json:"createdAt"`
+	UpdatedAt   int64  `json:"updatedAt"`
 }
 
 // DailySummary is the LLM-generated end-of-day digest.

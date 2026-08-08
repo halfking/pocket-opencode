@@ -161,10 +161,11 @@ func (s *Server) handleNotes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
 	switch r.Method {
 	case http.MethodGet:
 		domain := r.URL.Query().Get("domain")
-		list, err := s.notesStore.List(r.Context(), uid, domain)
+		list, err := s.notesStore.ListScoped(r.Context(), uid, wsID, domain)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -177,6 +178,9 @@ func (s *Server) handleNotes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		n.UserID = uid
+		// Ownership comes from the JWT, never from the body: a client-supplied
+		// workspaceId would otherwise let a caller write into another workspace.
+		n.WorkspaceID = wsID
 		if n.ID == "" {
 			n.ID = randomID("note")
 		}
@@ -374,19 +378,28 @@ func (s *Server) startEmailOAuth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "email crypto not configured (set POCKET_EMAIL_MASTER_KEY)")
 		return
 	}
-	var body struct {
-		ProviderID   string `json:"providerId"`
-		EmailAddress string `json:"emailAddress"`
-		ClientID     string `json:"clientId"`
-		ClientSecret string `json:"clientSecret"`
-		RedirectURI  string `json:"redirectUri"`
-	}
+		var body struct {
+			AccountID    string `json:"accountId"`
+			ProviderID   string `json:"providerId"`
+			EmailAddress string `json:"emailAddress"`
+			ClientID     string `json:"clientId"`
+			ClientSecret string `json:"clientSecret"`
+			RedirectURI  string `json:"redirectUri"`
+		}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if body.ProviderID == "" || body.EmailAddress == "" || body.ClientID == "" || body.RedirectURI == "" {
-		writeError(w, http.StatusBadRequest, "providerId, emailAddress, clientId, redirectUri required")
+	if body.AccountID == "" {
+		writeError(w, http.StatusBadRequest, "accountId required")
+		return
+	}
+	if _, _, err := s.emailStore.GetAccountByIDScoped(r.Context(), body.AccountID, s.userIDFromRequest(r), s.workspaceIDFromRequest(r)); err != nil {
+		if errors.Is(err, email.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "account not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "load account: "+err.Error())
+		}
 		return
 	}
 	provider, ok := email.LookupProviderByID(body.ProviderID)
@@ -404,9 +417,9 @@ func (s *Server) startEmailOAuth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "state: "+err.Error())
 		return
 	}
-	s.emailPending.Put(state, email.NewPendingEntry("", s.userIDFromRequest(r), body.ProviderID, body.EmailAddress,
+	s.emailPending.Put(state, email.NewPendingEntryWithWorkspace(body.AccountID, s.userIDFromRequest(r), s.workspaceIDFromRequest(r), body.ProviderID, body.EmailAddress,
 		pkce.Verifier, body.ClientID, body.ClientSecret, body.RedirectURI))
-	authURL, err := email.BuildAuthURL(provider, body.RedirectURI, state, pkce)
+	authURL, err := email.BuildAuthURL(provider, body.ClientID, body.RedirectURI, state, pkce)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "build auth url: "+err.Error())
 		return
@@ -581,18 +594,31 @@ func validateEmailAccountInput(address, host string, port int, authType string, 
 //	DELETE — 删除账户（emails 表通过 ON DELETE CASCADE 自动清理）。
 //
 // 安全：先校验账户归属当前 user，越权访问返回 404（不暴露存在性）。
+// handleEmailAccountOps 负责 /api/email/accounts/ 子树：
+//   - /{id}             → GET / PUT / DELETE（账户元数据）
+//   - /{id}/test-smtp   → POST（探测 SMTP 连接）
+//
+// 必须先校验 {id} 的归属：scoped 校验失败返回 404，不暴露账户存在性。
 func (s *Server) handleEmailAccountOps(w http.ResponseWriter, r *http.Request) {
 	if s.emailStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "email store not configured")
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/api/email/accounts/")
-	id = strings.TrimSuffix(id, "/")
-	if id == "" {
+	path := strings.TrimPrefix(r.URL.Path, "/api/email/accounts/")
+	path = strings.TrimSuffix(path, "/")
+	if path == "" {
 		writeError(w, http.StatusBadRequest, "missing account id")
 		return
 	}
 
+	// /{id}/test-smtp → 单独委派探测 handler，并保留对 id 的作用域校验。
+	if strings.HasSuffix(path, "/test-smtp") {
+		id := strings.TrimSuffix(path, "/test-smtp")
+		s.handleEmailAccountTestSMTP(w, r, id)
+		return
+	}
+
+	id := path
 	uid := s.userIDFromRequest(r)
 	wsID := s.workspaceIDFromRequest(r)
 	acc, _, err := s.emailStore.GetAccountByIDScoped(r.Context(), id, uid, wsID)
@@ -618,7 +644,7 @@ func (s *Server) handleEmailAccountOps(w http.ResponseWriter, r *http.Request) {
 			s.wsHub.BroadcastToUser(uid, "email.account.deleted", map[string]string{"id": id})
 		}
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "PUT/DELETE only")
+		writeError(w, http.StatusMethodNotAllowed, "GET/PUT/DELETE only")
 	}
 }
 
@@ -755,6 +781,148 @@ func (s *Server) handleEmails(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"emails": list})
 }
 
+// handleEmailVacations — GET /api/email/vacations
+func (s *Server) handleEmailVacations(w http.ResponseWriter, r *http.Request) {
+	if s.emailStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "email store not configured")
+		return
+	}
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+	switch r.Method {
+	case http.MethodGet:
+		accountID := r.URL.Query().Get("account_id")
+		list, err := s.emailStore.ListVacationsScoped(r.Context(), accountID, uid, wsID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"vacations": list})
+	case http.MethodPost:
+		var v email.VacationReply
+		if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		if v.AccountID == "" {
+			writeError(w, http.StatusBadRequest, "accountId required")
+			return
+		}
+		if v.Subject == "" || v.BodyText == "" {
+			writeError(w, http.StatusBadRequest, "subject and bodyText required")
+			return
+		}
+		if v.EndAt <= v.StartAt {
+			writeError(w, http.StatusBadRequest, "endAt must be greater than startAt")
+			return
+		}
+		v.WorkspaceID = wsID
+		if err := s.emailStore.UpsertVacationScoped(r.Context(), &v, uid, wsID); err != nil {
+			if errors.Is(err, email.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "account not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, v)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "GET/POST only")
+	}
+}
+
+// handleEmailVacationOps — DELETE /api/email/vacations/{id}
+func (s *Server) handleEmailVacationOps(w http.ResponseWriter, r *http.Request) {
+	if s.emailStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "email store not configured")
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/email/vacations/")
+	id = strings.TrimSuffix(id, "/")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing vacation id")
+		return
+	}
+	if r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "DELETE only")
+		return
+	}
+	if err := s.emailStore.DeleteVacationScoped(r.Context(), id, s.userIDFromRequest(r), s.workspaceIDFromRequest(r)); err != nil {
+		if errors.Is(err, email.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "vacation not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+// handleEmailAccountTestSMTP — POST /api/email/accounts/{id}/test-smtp
+//
+// 探测流程：
+//   - 用 scoped query 取账户 SMTP 配置与明文凭证；
+//   - 调 smtpProbe(host, port, username, password)：
+//       465 → 直接 TLS；
+//       587 → 明文 dial + EHLO，服务器宣告 STARTTLS 时升级；
+//       其它端口 → 同 587 行为；
+//   - 凭证格式为 "user:password" 时拆分为 username/password；纯密码时
+//     username 取账户的 email_address（RFC 5321 兼容）。
+//   - 任何错误只返回脱敏的阶段信息（smtp/auth/tls），绝不回显明文。
+func (s *Server) handleEmailAccountTestSMTP(w http.ResponseWriter, r *http.Request, id string) {
+	if s.emailStore == nil || s.emailCrypto == nil {
+		writeError(w, http.StatusServiceUnavailable, "email store / crypto not configured")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing account id")
+		return
+	}
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+	host, emailAddr, port, encCred, err := s.emailStore.GetSMTPCredentialScoped(r.Context(), id, uid, wsID)
+	if err != nil {
+		if errors.Is(err, email.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "account not found")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if host == "" {
+		writeError(w, http.StatusBadRequest, "smtp not configured")
+		return
+	}
+	username := emailAddr
+	password := ""
+	if encCred != "" {
+		cred, err := s.emailCrypto.DecryptString(encCred)
+		if err != nil || cred == "" {
+			writeError(w, http.StatusBadRequest, "smtp credential invalid")
+			return
+		}
+		// 允许的格式：
+		//   "password"             → password=cred, username=emailAddr
+		//   "user:password"        → username/password 拆分
+		if u, p, ok := strings.Cut(cred, ":"); ok {
+			username = u
+			password = p
+		} else {
+			password = cred
+		}
+	}
+	if err := smtpProbe(host, port, username, password); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	addr := fmt.Sprintf("%s:%d", host, port)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "smtp": addr})
+}
+
 func (s *Server) handleEmailOps(w http.ResponseWriter, r *http.Request) {
 	// /api/emails/sync/status — POST, fetch per-account sync status.
 	if strings.HasSuffix(r.URL.Path, "/sync/status") {
@@ -849,13 +1017,29 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 
 	// 模式 B：客户端推了 emails 数组 → 走老路径
 	if len(body.Emails) > 0 {
+		// 客户端推送路径也必须绑定到当前请求的账户和 workspace。
+		userID := s.userIDFromRequest(r)
+		wsID := s.workspaceIDFromRequest(r)
 		for i := range body.Emails {
 			if body.Emails[i].ID == "" {
 				body.Emails[i].ID = randomID("email")
 			}
-			_ = s.emailStore.InsertEmail(r.Context(), body.Emails[i])
+			if body.Emails[i].AccountID == "" {
+				writeError(w, http.StatusBadRequest, "accountId required for pushed email")
+				return
+			}
+			acc, _, err := s.emailStore.GetAccountByIDScoped(r.Context(), body.Emails[i].AccountID, userID, wsID)
+			if err != nil || acc == nil {
+				writeError(w, http.StatusNotFound, "account not found")
+				return
+			}
+			body.Emails[i].WorkspaceID = wsID
+			if err := s.emailStore.InsertEmail(r.Context(), body.Emails[i]); err != nil {
+				writeError(w, http.StatusInternalServerError, "insert email: "+err.Error())
+				return
+			}
 		}
-		go s.classifyEmailsAsync(body.Emails)
+		go s.classifyEmailsAsync(body.Emails, userID, wsID)
 		writeJSON(w, http.StatusOK, map[string]any{"received": len(body.Emails), "classify": "async"})
 		return
 	}
@@ -938,7 +1122,7 @@ func (s *Server) handleEmailSyncStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "email store not configured")
 		return
 	}
-	statuses, err := s.emailStore.GetSyncStatus(r.Context(), s.userIDFromRequest(r))
+	statuses, err := s.emailStore.GetSyncStatusScoped(r.Context(), s.userIDFromRequest(r), s.workspaceIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -950,7 +1134,7 @@ func (s *Server) handleEmailSyncStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // classifyEmailsAsync 异步调 kxmemory 批量分类邮件（IMAP 同步后触发）
-func (s *Server) classifyEmailsAsync(emails []email.Email) {
+func (s *Server) classifyEmailsAsync(emails []email.Email, userID, workspaceID string) {
 	if s.kxmemory == nil {
 		return // kxmemory 未配置，跳过
 	}
@@ -985,8 +1169,8 @@ func (s *Server) classifyEmailsAsync(emails []email.Email) {
 	// 回写分类结果
 	classified := 0
 	for _, result := range resp.Results {
-		if err := s.emailStore.SetClassification(ctx, result.EmailID,
-			result.Category, result.Importance, result.Summary, result.SuggestedAction); err != nil {
+if err := s.emailStore.SetClassificationScoped(ctx, result.EmailID, userID, workspaceID,
+				result.Category, result.Importance, result.Summary, result.SuggestedAction); err != nil {
 			log.Printf("[kxmemory] update email %s classification failed: %v", result.EmailID, err)
 			continue
 		}

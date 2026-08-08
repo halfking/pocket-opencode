@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -121,6 +122,27 @@ func (s *Store) migrate() error {
 
 	CREATE INDEX IF NOT EXISTS idx_email_accounts_ws ON email_accounts(workspace_id);
 	CREATE INDEX IF NOT EXISTS idx_emails_ws ON emails(workspace_id);
+	-- Phase 0.1: SMTP credentials (encrypted) + VacationReply + Email Message-ID/UID
+	-- additions are idempotent. They don't break old rows.
+	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS smtp_host TEXT NOT NULL DEFAULT '';
+	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS smtp_port INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS smtp_credential_encrypted TEXT NOT NULL DEFAULT '';
+	CREATE TABLE IF NOT EXISTS email_vacation_replies (
+		id TEXT PRIMARY KEY,
+		account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+		workspace_id TEXT NOT NULL DEFAULT 'default',
+		enabled BOOLEAN NOT NULL DEFAULT FALSE,
+		start_at BIGINT NOT NULL,
+		end_at BIGINT NOT NULL,
+		subject TEXT NOT NULL,
+		body_text TEXT NOT NULL,
+		last_sent_at BIGINT,
+		created_at BIGINT NOT NULL,
+		updated_at BIGINT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_vacation_replies_ws ON email_vacation_replies(workspace_id, enabled);
+	-- Mark-important audit trail: action_reason already exists, ensure NOT NULL
+	-- constraint isn't enforced (legacy rows have NULL). We leave it permissive.
 	`)
 	return err
 }
@@ -323,19 +345,28 @@ func (s *Store) SetClassification(ctx context.Context, id, category, importance,
 	return err
 }
 
-// InsertEmail inserts a fetched email (IMAP sync). Returns error on conflict (duplicate).
-//
+// SetClassificationScoped updates classification only within one user/workspace.
+func (s *Store) SetClassificationScoped(ctx context.Context, id, userID, workspaceID, category, importance, aiSummary, suggestedAction string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE emails e SET category = $1, importance = $2, ai_summary = $3, suggested_action = $4
+		FROM email_accounts a
+		WHERE e.id = $5 AND e.account_id = a.id AND a.user_id = $6 AND a.workspace_id = $7
+	`, category, importance, aiSummary, suggestedAction, id, userID, workspaceID)
+	return err
+}
+
 // ON CONFLICT DO NOTHING 不指定冲突目标，PostgreSQL 会自动匹配任一唯一
 // 约束/索引：(account_id, message_id) 全局唯一约束，或 message_id IS NULL
 // 时的 (account_id, subject, date) 部分唯一索引。这样无论哪种冲突都不会
 // 抛错中断同步。
 func (s *Store) InsertEmail(ctx context.Context, e Email) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO emails (id, account_id, workspace_id, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 			 ON CONFLICT DO NOTHING`,
-		e.ID, e.AccountID, defaultWorkspace(e.WorkspaceID), e.FromAddress, e.FromName, e.Subject, e.Snippet, e.Date,
-		e.IsRead, e.IsStarred, e.Category, e.Importance, e.AISummary, e.SuggestedAction, e.HasAttachments)
+		e.ID, e.AccountID, defaultWorkspace(e.WorkspaceID), nullStr(e.MessageID), e.UID,
+		e.FromAddress, e.FromName, e.Subject, e.Snippet, e.Date,
+		e.IsRead, e.IsStarred, e.Category, e.Importance, e.AISummary, e.SuggestedAction, nullStr(e.ActionReason), e.HasAttachments)
 
 	return err
 }
@@ -432,7 +463,34 @@ func (s *Store) GetSyncStatus(ctx context.Context, userID string) ([]AccountSync
 	return out, rows.Err()
 }
 
-// randomID is a tiny ID helper local to the email package (mirrors
+// GetSyncStatusScoped returns sync state for one user/workspace.
+func (s *Store) GetSyncStatusScoped(ctx context.Context, userID, workspaceID string) ([]AccountSyncStatus, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT a.id, a.display_name, a.email_address, a.last_synced_uid, a.last_synced_at, a.enabled,
+		       COALESCE((SELECT COUNT(*) FROM emails e WHERE e.account_id=a.id AND e.workspace_id=a.workspace_id AND e.is_read=FALSE), 0)
+		FROM email_accounts a WHERE a.user_id=$1 AND a.workspace_id=$2 ORDER BY a.created_at`, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]AccountSyncStatus, 0)
+	for rows.Next() {
+		var st AccountSyncStatus
+		var uid, at sql.NullInt64
+		if err := rows.Scan(&st.AccountID, &st.DisplayName, &st.EmailAddress, &uid, &at, &st.Enabled, &st.PendingCount); err != nil {
+			return nil, err
+		}
+		if uid.Valid {
+			st.LastSyncedUID = uid.Int64
+		}
+		if at.Valid {
+			st.LastSyncedAt = at.Int64
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
 // server_assistant.randomID but avoids a cross-package import).
 func randomID(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
@@ -556,6 +614,8 @@ func (s *Store) DeleteAccount(ctx context.Context, id string) error {
 func (s *Store) GetAccountByID(ctx context.Context, id string) (*Account, string, error) {
 	var a Account
 	var cred string
+	var smtpHost, smtpCred sql.NullString
+	var smtpPort sql.NullInt64
 	var lastUID, lastAt sql.NullInt64
 	var rules sql.NullString
 	err := s.pool.QueryRow(ctx, `
@@ -576,7 +636,197 @@ func (s *Store) GetAccountByID(ctx context.Context, id string) (*Account, string
 	if rules.Valid {
 		a.Rules = rules.String
 	}
+	if smtpHost.Valid && smtpHost.String != "" {
+		a.SMTPHost = smtpHost.String
+	}
+	if smtpPort.Valid {
+		a.SMTPPort = int(smtpPort.Int64)
+	}
+	if smtpCred.Valid {
+		// 仅在调用方显式请求时才返回（通过独立方法 GetSMTPCredentialScoped），
+		// 避免 IMAP credential 错误地暴露给 SMTP 测试代码。
+		_ = smtpCred
+	}
 	return &a, cred, nil
+}
+
+// GetSMTPCredentialScoped 取出账户的 SMTP 加密凭证 + 账户 email，仅供
+// /test-smtp 等内部用途；不要在 JSON 响应中暴露任何明文。
+//
+// 返回值顺序：host, accountEmail, port, encryptedCredential。
+func (s *Store) GetSMTPCredentialScoped(ctx context.Context, id, userID, workspaceID string) (string, string, int, string, error) {
+	var smtpHost, emailAddress, smtpCred sql.NullString
+	var smtpPort sql.NullInt64
+	err := s.pool.QueryRow(ctx, `
+		SELECT smtp_host, smtp_port, email_address, smtp_credential_encrypted
+		FROM email_accounts
+		WHERE id = $1 AND user_id = $2 AND workspace_id = $3
+	`, id, userID, workspaceID).Scan(&smtpHost, &smtpPort, &emailAddress, &smtpCred)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", 0, "", ErrNotFound
+	}
+	if err != nil {
+		return "", "", 0, "", err
+	}
+	if !smtpHost.Valid {
+		return "", "", 0, "", fmt.Errorf("smtp not configured")
+	}
+	cred := ""
+	if smtpCred.Valid {
+		cred = smtpCred.String
+	}
+	return smtpHost.String, emailAddress.String, int(smtpPort.Int64), cred, nil
+}
+
+// --- SMTP / Vacation CRUD ---
+
+// UpsertSMTPSettingsScoped 保存 SMTP host/port/credential。
+// credential 已经被主调代码加密；空字符串表示"保留原值"。
+func (s *Store) UpsertSMTPSettingsScoped(ctx context.Context, id, userID, workspaceID, host string, port int, credential string, updateCredential bool) error {
+	host = strings.TrimSpace(host)
+	if host != "" && (port < 1 || port > 65535) {
+		return fmt.Errorf("smtp port out of range")
+	}
+	var setCred string
+	args := []any{host, port, id, userID, workspaceID}
+	query := `UPDATE email_accounts SET smtp_host=$1, smtp_port=$2 WHERE id=$3 AND user_id=$4 AND workspace_id=$5`
+	if updateCredential {
+		setCred = credential
+		query = `UPDATE email_accounts SET smtp_host=$1, smtp_port=$2, smtp_credential_encrypted=$3 WHERE id=$4 AND user_id=$5 AND workspace_id=$6`
+		args = []any{host, port, setCred, id, userID, workspaceID}
+	}
+	res, err := s.pool.Exec(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// --- Vacation replies (configuration only; SMTP delivery not yet implemented) ---
+
+// UpsertVacationScoped 插入或更新一条 vacation reply。accountID 必须属
+// 于 (userID, workspaceID)，否则返回 ErrNotFound（不暴露跨租户写入）。
+//
+// 第一步：若 record 已存在 (id 非空) 则校验其归属；不存在则要求
+// accountID 同样落在 scope 内。这避免任意调用方 upsert 到别人账户下的
+// vacation（之前 ON CONFLICT(id) 没有校验）。
+func (s *Store) UpsertVacationScoped(ctx context.Context, v *VacationReply, userID, workspaceID string) error {
+	if v == nil {
+		return fmt.Errorf("vacation required")
+	}
+	if userID == "" {
+		return fmt.Errorf("user required")
+	}
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	wasExisting := v.ID != ""
+	if v.ID == "" {
+		v.ID = randomID("vac")
+	}
+	if v.CreatedAt == 0 {
+		v.CreatedAt = time.Now().Unix()
+	}
+	v.UpdatedAt = time.Now().Unix()
+
+	// 1. 先确认目标 account 在 scope 内。
+	var ok bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM email_accounts
+			WHERE id = $1 AND user_id = $2 AND workspace_id = $3
+		)
+	`, v.AccountID, userID, workspaceID).Scan(&ok); err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotFound
+	}
+
+	// 2. 如果 record 已存在，再校验它绑定的 account 是否在 scope 内。
+	//    这一步阻止"创建 vacation 后修改 accountID 指向他人账户"的越权。
+	if wasExisting {
+		if err := s.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM email_vacation_replies r
+				JOIN email_accounts a ON a.id = r.account_id
+				WHERE r.id = $1 AND a.user_id = $2 AND a.workspace_id = $3
+			)
+		`, v.ID, userID, workspaceID).Scan(&ok); err != nil {
+			return err
+		}
+		if !ok {
+			return ErrNotFound
+		}
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO email_vacation_replies
+			(id, account_id, workspace_id, enabled, start_at, end_at, subject, body_text, last_sent_at, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (id) DO UPDATE SET
+			account_id  = EXCLUDED.account_id,
+			enabled     = EXCLUDED.enabled,
+			start_at    = EXCLUDED.start_at,
+			end_at      = EXCLUDED.end_at,
+			subject     = EXCLUDED.subject,
+			body_text   = EXCLUDED.body_text,
+			updated_at  = EXCLUDED.updated_at
+	`,
+		v.ID, v.AccountID, defaultWorkspace(workspaceID), v.Enabled, v.StartAt, v.EndAt,
+		v.Subject, v.BodyText, v.LastSentAt, v.CreatedAt, v.UpdatedAt)
+	return err
+}
+
+// ListVacationsScoped 列出该账户/workspace 的所有 vacation 配置。
+func (s *Store) ListVacationsScoped(ctx context.Context, accountID, userID, workspaceID string) ([]VacationReply, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, account_id, workspace_id, enabled, start_at, end_at, subject, body_text,
+		       last_sent_at, created_at, updated_at
+		FROM email_vacation_replies
+		WHERE account_id IN (SELECT id FROM email_accounts WHERE user_id=$1 AND workspace_id=$2)
+		  AND (account_id=$3 OR $3='')
+		ORDER BY start_at DESC
+	`, userID, workspaceID, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]VacationReply, 0)
+	for rows.Next() {
+		var v VacationReply
+		var lastSent sql.NullInt64
+		if err := rows.Scan(&v.ID, &v.AccountID, &v.WorkspaceID, &v.Enabled,
+			&v.StartAt, &v.EndAt, &v.Subject, &v.BodyText,
+			&lastSent, &v.CreatedAt, &v.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if lastSent.Valid {
+			ts := lastSent.Int64
+			v.LastSentAt = &ts
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// DeleteVacationScoped 删除 vacation 配置。
+func (s *Store) DeleteVacationScoped(ctx context.Context, vacationID, userID, workspaceID string) error {
+	res, err := s.pool.Exec(ctx, `
+		DELETE FROM email_vacation_replies
+		WHERE id=$1
+		  AND account_id IN (SELECT id FROM email_accounts WHERE user_id=$2 AND workspace_id=$3)
+	`, vacationID, userID, workspaceID)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // SetAccountAuthType 更新 auth_type（OAuth 回调后使用）。
@@ -585,7 +835,15 @@ func (s *Store) SetAccountAuthType(ctx context.Context, id, authType string) err
 	return err
 }
 
-// UpdateSyncState 更新最后同步的 UID 和时间。
+// SetAccountAuthTypeScoped updates auth type only for an owned account.
+func (s *Store) SetAccountAuthTypeScoped(ctx context.Context, id, userID, workspaceID, authType string) error {
+	res, err := s.pool.Exec(ctx, `UPDATE email_accounts SET auth_type = $4 WHERE id = $1 AND user_id = $2 AND workspace_id = $3`, id, userID, workspaceID, authType)
+	if err == nil && res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
 func (s *Store) UpdateSyncState(ctx context.Context, id string, lastUID int64, lastAt int64) error {
 	_, err := s.pool.Exec(ctx, `UPDATE email_accounts SET last_synced_uid = $2, last_synced_at = $3 WHERE id = $1`, id, lastUID, lastAt)
 	return err
@@ -639,7 +897,24 @@ func (s *Store) UpsertOAuthToken(ctx context.Context, accountID, refreshEnc, acc
 	return err
 }
 
-// RevokeOAuthToken marks the account as password-backed and disabled so the
+// UpsertOAuthTokenScoped inserts or updates a token only for an owned account.
+func (s *Store) UpsertOAuthTokenScoped(ctx context.Context, accountID, userID, workspaceID, refreshEnc, accessEnc string, expiresAt int64, scope string) error {
+	res, err := s.pool.Exec(ctx, `
+		INSERT INTO email_oauth_tokens
+			(account_id, user_id, workspace_id, refresh_token_encrypted, access_token_encrypted, expires_at, scope, updated_at)
+		SELECT $1, a.user_id, a.workspace_id, $4, $5, $6, $7, EXTRACT(EPOCH FROM NOW())::BIGINT
+		FROM email_accounts a WHERE a.id=$1 AND a.user_id=$2 AND a.workspace_id=$3
+		ON CONFLICT (account_id) DO UPDATE SET
+			refresh_token_encrypted=EXCLUDED.refresh_token_encrypted,
+			access_token_encrypted=EXCLUDED.access_token_encrypted, expires_at=EXCLUDED.expires_at,
+			scope=EXCLUDED.scope, user_id=EXCLUDED.user_id, workspace_id=EXCLUDED.workspace_id,
+			updated_at=EXCLUDED.updated_at`, accountID, userID, workspaceID, refreshEnc, accessEnc, expiresAt, scope)
+	if err == nil && res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
 // scheduler stops trying to login with the dead token. It also clears the
 // token row (best-effort: leaving it would not hurt, but clean rows make
 // debugging easier).
@@ -675,9 +950,9 @@ func (s *Store) GetOAuthToken(ctx context.Context, accountID string) (refreshEnc
 // before the next IMAP login attempt.
 func (s *Store) ListExpiredOAuthTokens(ctx context.Context, leewaySec int64) ([]OAuthTokenRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT account_id, refresh_token_encrypted, COALESCE(access_token_encrypted, ''), expires_at
-		FROM email_oauth_tokens
-		WHERE expires_at > 0 AND expires_at <= (EXTRACT(EPOCH FROM NOW())::BIGINT + $1)
+			SELECT t.account_id, a.user_id, a.workspace_id, t.refresh_token_encrypted, COALESCE(t.access_token_encrypted, ''), t.expires_at
+			FROM email_oauth_tokens t JOIN email_accounts a ON a.id=t.account_id
+			WHERE t.expires_at > 0 AND t.expires_at <= (EXTRACT(EPOCH FROM NOW())::BIGINT + $1)
 	`, leewaySec)
 	if err != nil {
 		return nil, err
@@ -686,7 +961,7 @@ func (s *Store) ListExpiredOAuthTokens(ctx context.Context, leewaySec int64) ([]
 	out := make([]OAuthTokenRow, 0)
 	for rows.Next() {
 		var r OAuthTokenRow
-		if err := rows.Scan(&r.AccountID, &r.RefreshEnc, &r.AccessEnc, &r.ExpiresAt); err != nil {
+		if err := rows.Scan(&r.AccountID, &r.UserID, &r.WorkspaceID, &r.RefreshEnc, &r.AccessEnc, &r.ExpiresAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -697,10 +972,12 @@ func (s *Store) ListExpiredOAuthTokens(ctx context.Context, leewaySec int64) ([]
 // OAuthTokenRow is the lightweight projection used by the scheduler refresh
 // worker. Decryption happens off the hot path (in scheduler.refresh loop).
 type OAuthTokenRow struct {
-	AccountID  string
-	RefreshEnc string
-	AccessEnc  string
-	ExpiresAt  int64
+	AccountID   string
+	UserID      string
+	WorkspaceID string
+	RefreshEnc  string
+	AccessEnc   string
+	ExpiresAt   int64
 }
 
 // ListAccountsScoped returns only accounts owned by the user in the workspace.

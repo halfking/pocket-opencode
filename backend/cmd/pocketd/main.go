@@ -337,26 +337,45 @@ func main() {
 	}
 
 	// ---- LLM Gateway 配置持久化（PG 可用时从数据库加载）----
+	// 注意：workspaces 列表在 S0-A Identity Core 装配完之后才可用，
+	// 所以这里只构造 store 并暂存，等 identity 装配完成后回调
+	// LoadLLMGatewayFromDB。
 	if pool != nil {
-		lgStore, err := server.NewLLMGatewayStore(pool)
+		lgStore, err := server.NewLLMGatewayStore(pool, emailCrypto)
 		if err != nil {
 			log.Printf("WARN: LLM gateway store init failed: %v", err)
 		} else {
 			srv.SetLLMGatewayStore(lgStore)
-			srv.LoadLLMGatewayFromDB()
-			log.Println("LLM gateway config persistence enabled (PG)")
+			log.Println("LLM gateway store initialized (PG)")
 		}
 	}
 
 	// ---- S0-A: Identity Core (workspaces / members / devices) ----
+	var identStore *identity.Store
 	if pool != nil {
-		identStore, err := identity.New(pool)
+		is, err := identity.New(pool)
 		if err != nil {
 			log.Printf("WARN: identity store init failed: %v", err)
 		} else {
-			srv.SetIdentityStore(identStore)
+			srv.SetIdentityStore(is)
+			identStore = is
 			log.Println("Identity Core enabled (workspaces/members/devices)")
 		}
+	}
+
+	// 多租户 LLM 网关配置加载：identity store 就绪后，从 workspaces 表加载
+	// 所有 workspace 的持久化配置；未保存的工作区仍走 env 默认值。
+	if pool != nil && srv.LLMGatewayStore() != nil {
+		workspaces := []string{"default"}
+		if identStore != nil {
+			if list, lerr := identStore.ListAllWorkspaceIDs(context.Background()); lerr == nil {
+				workspaces = append(workspaces, list...)
+			} else {
+				log.Printf("WARN: identity list workspaces failed: %v", lerr)
+			}
+		}
+		srv.LoadLLMGatewayFromDB(workspaces...)
+		log.Println("LLM gateway config persistence enabled (PG)")
 	}
 
 	// ---- S0-B: Unified LLM BFF (stream + usage tracking) ----

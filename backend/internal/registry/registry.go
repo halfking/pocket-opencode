@@ -19,6 +19,7 @@ type InstanceConfig struct {
 	NPSClientID int    `json:"npsClientId"`
 	NPSHost     string `json:"npsHost"`
 	APIBaseURL  string `json:"apiBaseURL"`
+	ConfigPath  string `json:"configPath,omitempty"`
 	Environment string `json:"environment"`
 
 	// —— 迁移方案扩展（可选，发现/注册时填充）——
@@ -132,6 +133,7 @@ func (r *Registry) discoverAndUpdate(ctx context.Context) {
 				Health:          "unknown",
 				LastHeartbeatAt: time.Now().UTC().Format(time.RFC3339),
 				APIBaseURL:      cfg.APIBaseURL,
+				ConfigPath:      cfg.ConfigPath,
 				MigrationStatus: "idle",
 			}
 			applyConfigFields(instance, cfg)
@@ -290,7 +292,8 @@ func (r *Registry) LoadFromConfig(configs []InstanceConfig) error {
 			Health:          "unknown",
 			LastHeartbeatAt: time.Now().UTC().Format(time.RFC3339),
 			APIBaseURL:      cfg.APIBaseURL,
-			MigrationStatus: "idle",
+			ConfigPath:      cfg.ConfigPath,
+			WorkspaceID:     "",
 		}
 		applyConfigFields(instance, cfg)
 		if instance.Origin == "" {
@@ -340,6 +343,36 @@ func defaultCapabilities(provided []string) []string {
 		return provided
 	}
 	return []string{"session", "summary", "pty"}
+}
+
+// ListInstancesForWorkspace returns registered instances owned by workspaceID
+// plus operator-provisioned shared instances.
+func (r *Registry) ListInstancesForWorkspace(workspaceID string) []model.PocketInstance {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]model.PocketInstance, 0)
+	for _, instance := range r.instances {
+		if instance.WorkspaceID == "" || instance.WorkspaceID == workspaceID {
+			out = append(out, *instance)
+		}
+	}
+	return out
+}
+
+// GetInstanceAPIBaseForWorkspace refuses to resolve another workspace's
+// registered instance, while keeping shared operator instances visible.
+func (r *Registry) GetInstanceAPIBaseForWorkspace(workspaceID, instanceID string) (string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	instance, ok := r.instances[instanceID]
+	if !ok || (instance.WorkspaceID != "" && instance.WorkspaceID != workspaceID) {
+		return "", fmt.Errorf("instance not found: %s", instanceID)
+	}
+	apiURL, ok := r.apiURLMap[instanceID]
+	if !ok || apiURL == "" {
+		return "", fmt.Errorf("instance API URL not configured: %s", instanceID)
+	}
+	return apiURL, nil
 }
 
 // GetInstanceAPIBase 根据实例 ID 获取 API base URL
@@ -449,7 +482,14 @@ func (r *Registry) RegisterRegisteredInstance(info model.RegisteredInstanceInfo)
 			existing.APIBaseURL = info.APIBaseURL
 			r.apiURLMap[info.ID] = info.APIBaseURL
 		}
+		if info.ConfigPath != "" {
+			existing.ConfigPath = info.ConfigPath
+		}
+		if info.WorkspaceID != "" {
+			existing.WorkspaceID = info.WorkspaceID
+		}
 		// 注册即在线
+
 		existing.Health = "healthy"
 		existing.LastHeartbeatAt = time.Now().UTC().Format(time.RFC3339)
 		return nil
@@ -467,10 +507,12 @@ func (r *Registry) RegisterRegisteredInstance(info model.RegisteredInstanceInfo)
 		Health:          "healthy",
 		LastHeartbeatAt: time.Now().UTC().Format(time.RFC3339),
 		APIBaseURL:      info.APIBaseURL,
+		ConfigPath:      info.ConfigPath,
 		Hostname:        info.Hostname,
 		Version:         info.Version,
 		Machine:         machine,
 		Origin:          "registered",
+		WorkspaceID:     info.WorkspaceID,
 		MigrationStatus: "idle",
 	}
 	r.instances[info.ID] = instance

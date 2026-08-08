@@ -36,9 +36,16 @@ func RandomState() (string, error) {
 }
 
 // BuildAuthURL 构造 OAuth2 授权 URL（PKCE + state）。
-func BuildAuthURL(provider Provider, redirectURI, state string, pkce *PKCEPair) (string, error) {
+//
+// clientID 必须由调用方传入真实值。之前这里写死空 client_id，Google/Outlook 会
+// 直接拒绝授权请求，OAuth 绑定永远无法完成；空值在此 fail loud，而不是返回一个
+// 注定失败的 URL。
+func BuildAuthURL(provider Provider, clientID, redirectURI, state string, pkce *PKCEPair) (string, error) {
 	if !provider.SupportsOAuth2 {
 		return "", fmt.Errorf("provider %s does not support OAuth2", provider.ID)
+	}
+	if clientID == "" {
+		return "", fmt.Errorf("clientID is required to build the %s authorization URL", provider.ID)
 	}
 	u, err := url.Parse(provider.OAuth2AuthURL)
 	if err != nil {
@@ -46,7 +53,7 @@ func BuildAuthURL(provider Provider, redirectURI, state string, pkce *PKCEPair) 
 	}
 	q := u.Query()
 	q.Set("response_type", "code")
-	q.Set("client_id", "") // 调用方填充
+	q.Set("client_id", clientID)
 	q.Set("redirect_uri", redirectURI)
 	q.Set("scope", joinScopes(provider.OAuth2Scopes))
 	q.Set("state", state)

@@ -20,13 +20,14 @@ import (
 const Version = "0.1.0"
 
 type Config struct {
-	BackendURL     string `json:"backendURL"`
-	InstanceID     string `json:"instanceID"`
-	OpenCodePath   string `json:"opencodePath"`
-	AutoStart      bool   `json:"autoStart"`
-	Port           int    `json:"port"`
-	AuthToken      string `json:"authToken"`
-	HealthCheck    HealthCheckConfig `json:"healthCheck"`
+	BackendURL   string            `json:"backendURL"`
+	InstanceID   string            `json:"instanceID"`
+	OpenCodePath string            `json:"opencodePath"`
+	ConfigPath   string            `json:"configPath,omitempty"`
+	AutoStart    bool              `json:"autoStart"`
+	Port         int               `json:"port"`
+	AuthToken    string            `json:"authToken"`
+	HealthCheck  HealthCheckConfig `json:"healthCheck"`
 }
 
 type HealthCheckConfig struct {
@@ -153,7 +154,7 @@ func (m *InstanceManager) Stop() error {
 
 func (m *InstanceManager) connectToBackend() error {
 	wsURL := fmt.Sprintf("%s/plugin/ws?type=manager&id=%s", m.config.BackendURL, m.config.InstanceID)
-	
+
 	log.Printf("Connecting to Backend: %s", wsURL)
 
 	header := http.Header{}
@@ -172,16 +173,24 @@ func (m *InstanceManager) connectToBackend() error {
 
 func (m *InstanceManager) registerWithBackend() {
 	hostname, _ := os.Hostname()
-	
+
+	payload := map[string]interface{}{
+		"instanceID":   m.config.InstanceID,
+		"hostname":     hostname,
+		"version":      Version,
+		"opencodePath": m.config.OpenCodePath,
+		"configPath":   m.config.ConfigPath,
+		"timestamp":    time.Now().Format(time.RFC3339),
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("build manager.register payload: %v", err)
+		return
+	}
+
 	msg := WebSocketMessage{
 		Type: "manager.register",
-		Data: json.RawMessage(fmt.Sprintf(`{
-			"instanceID": "%s",
-			"hostname": "%s",
-			"version": "%s",
-			"opencodePath": "%s",
-			"timestamp": "%s"
-		}`, m.config.InstanceID, hostname, Version, m.config.OpenCodePath, time.Now().Format(time.RFC3339))),
+		Data: data,
 	}
 
 	m.sendMessage(msg)
@@ -189,9 +198,17 @@ func (m *InstanceManager) registerWithBackend() {
 }
 
 func (m *InstanceManager) unregisterFromBackend() {
+	data, err := json.Marshal(map[string]interface{}{
+		"instanceID": m.config.InstanceID,
+	})
+	if err != nil {
+		log.Printf("build manager.unregister payload: %v", err)
+		return
+	}
+
 	msg := WebSocketMessage{
 		Type: "manager.unregister",
-		Data: json.RawMessage(fmt.Sprintf(`{"instanceID": "%s"}`, m.config.InstanceID)),
+		Data: data,
 	}
 
 	m.sendMessage(msg)
@@ -206,6 +223,13 @@ func (m *InstanceManager) startOpenCode() error {
 
 	cmd := exec.Command("bun", "run", "dev")
 	cmd.Dir = m.config.OpenCodePath
+	if m.config.ConfigPath != "" {
+		content, err := os.ReadFile(m.config.ConfigPath)
+		if err != nil {
+			return fmt.Errorf("read configured OpenCode config: %w", err)
+		}
+		cmd.Env = append(os.Environ(), "OPENCODE_CONFIG_PATH="+m.config.ConfigPath, "OPENCODE_CONFIG_CONTENT="+string(content))
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -342,7 +366,7 @@ func (m *InstanceManager) handleCommand(msg WebSocketMessage) {
 type migrateToInput struct {
 	PackURL        string   `json:"packURL"`
 	PackToken      string   `json:"packToken,omitempty"`
-	PromptText     string   `json:"promptText,omitempty"`     // Pocket 端预拼接好的提示词（优先用）
+	PromptText     string   `json:"promptText,omitempty"`      // Pocket 端预拼接好的提示词（优先用）
 	PromptTemplate []string `json:"promptTemplates,omitempty"` // 否则按模板名在 manager 端拼（简化版）
 	WorkingDir     string   `json:"workingDirectory,omitempty"`
 	Agent          string   `json:"agent,omitempty"`
@@ -392,12 +416,12 @@ func (m *InstanceManager) handleMigrateTo(raw json.RawMessage) error {
 		return fmt.Errorf("send prompt: %w", err)
 	}
 
-	log.Printf("✅ migrate_to done: new session %s (from %s)", newSessionID, pack.sessionMetaID)
+	log.Printf("✅ migrate_to done: new session %s (from %s)", newSessionID, pack.sessionMetaID())
 
 	// 5. 回报新 sessionID（在 command.result 里带上）
 	m.sendCommandResultWithData("command.migrate_to", true, "", map[string]interface{}{
 		"newSessionID":  newSessionID,
-		"fromSessionID": pack.sessionMetaID,
+		"fromSessionID": pack.sessionMetaID(),
 	})
 	return nil
 }
@@ -514,7 +538,7 @@ func (h *HealthChecker) Check() {
 	}
 
 	apiURL := fmt.Sprintf("http://localhost:%d/api/health", h.manager.config.Port)
-	
+
 	client := &http.Client{Timeout: h.timeout}
 	resp, err := client.Get(apiURL)
 
@@ -677,8 +701,8 @@ func createOpenCodeSession(baseURL, agent, model, workDir, authToken string) (st
 // sendOpenCodePrompt 调本机 OpenCode POST /session/{id}/prompt 发送续接 prompt。
 func sendOpenCodePrompt(baseURL, sessionID, prompt, authToken string) error {
 	payload := map[string]interface{}{
-		"id":      sessionID,
-		"prompt":  map[string]string{"text": prompt},
+		"id":       sessionID,
+		"prompt":   map[string]string{"text": prompt},
 		"delivery": "broadcast",
 	}
 	body, _ := json.Marshal(payload)
