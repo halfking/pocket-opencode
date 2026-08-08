@@ -54,8 +54,36 @@ func (s *LLMGatewayStore) migrate() error {
 	-- per workspace so collaborators can carry their own gateway settings.
 	ALTER TABLE llm_gateway_configs ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
 	CREATE INDEX IF NOT EXISTS idx_llm_gw_ws ON llm_gateway_configs(workspace_id);
+	-- At most one active row per workspace. SaveConfig does UPDATE-then-INSERT,
+	-- which under concurrent transactions can leave several rows with
+	-- is_active = true (each transaction deactivates the rows it can see, then
+	-- inserts its own). LoadConfig would then pick an arbitrary winner on a
+	-- created_at tie. Collapse legacy duplicates before adding the constraint,
+	-- otherwise index creation fails on existing data.
+	UPDATE llm_gateway_configs SET is_active = false
+	WHERE is_active = true AND ctid NOT IN (
+		SELECT DISTINCT ON (workspace_id) ctid
+		FROM llm_gateway_configs
+		WHERE is_active = true
+		ORDER BY workspace_id, created_at DESC, id DESC
+	);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_gw_active_per_ws
+		ON llm_gateway_configs(workspace_id) WHERE is_active;
 	`)
 	return err
+}
+
+// saveConfigLockKey derives the advisory-lock key that serialises SaveConfig for
+// one workspace. Postgres advisory locks are process-wide, so two pocketd
+// replicas racing on the same workspace still serialise correctly.
+func saveConfigLockKey(workspaceID string) int64 {
+	// FNV-1a over the workspace id, folded into int64 for pg_advisory_xact_lock.
+	var h uint64 = 14695981039346656037
+	for i := 0; i < len(workspaceID); i++ {
+		h ^= uint64(workspaceID[i])
+		h *= 1099511628211
+	}
+	return int64(h >> 1) // >>1 keeps it non-negative
 }
 
 // SaveConfig inserts a new config row and marks it as the active one.
@@ -75,9 +103,17 @@ func (s *LLMGatewayStore) SaveConfig(ctx context.Context, workspaceID string, st
 	}
 	defer tx.Rollback(ctx)
 
+	// Serialise concurrent saves for this workspace. Without the lock two
+	// transactions can both deactivate the rows they see and then both insert an
+	// active row, tripping idx_llm_gw_active_per_ws (or, before that index
+	// existed, silently leaving two active configs). The lock is transaction
+	// scoped, so it is released by Commit/Rollback.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, saveConfigLockKey(workspaceID)); err != nil {
+		return fmt.Errorf("acquire workspace config lock: %w", err)
+	}
+
 	// Deactivate all previous configs
 	if _, err := tx.Exec(ctx, `UPDATE llm_gateway_configs SET is_active = false WHERE workspace_id = $1`, workspaceID); err != nil {
-
 		return err
 	}
 

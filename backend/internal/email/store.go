@@ -107,6 +107,22 @@ func (s *Store) migrate() error {
 	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
 	ALTER TABLE emails ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
 		ALTER TABLE daily_summaries ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
+		-- Workspace isolation for daily summaries. The original table carried
+		-- UNIQUE(user_id, summary_date), so a user belonging to two workspaces
+		-- had both workspaces collapse onto one row and overwrite each other.
+		-- Order matters: collapse pre-existing duplicates first, otherwise
+		-- creating the new unique index fails on legacy data.
+		-- ctid breaks ties when created_at collides, so exactly one row per
+		-- (user, workspace, date) survives regardless of legacy timestamps.
+		DELETE FROM daily_summaries
+		WHERE ctid NOT IN (
+			SELECT DISTINCT ON (user_id, workspace_id, summary_date) ctid
+			FROM daily_summaries
+			ORDER BY user_id, workspace_id, summary_date, created_at DESC, ctid DESC
+		);
+		ALTER TABLE daily_summaries DROP CONSTRAINT IF EXISTS daily_summaries_user_id_summary_date_key;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_summaries_user_ws_date
+			ON daily_summaries(user_id, workspace_id, summary_date);
 		CREATE TABLE IF NOT EXISTS email_oauth_tokens (
 			account_id TEXT PRIMARY KEY REFERENCES email_accounts(id) ON DELETE CASCADE,
 			refresh_token_encrypted TEXT NOT NULL,
@@ -361,12 +377,21 @@ func (s *Store) SetClassificationScoped(ctx context.Context, id, userID, workspa
 // 抛错中断同步。
 func (s *Store) InsertEmail(ctx context.Context, e Email) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments)
+		// Two defects used to make this statement fail on every call, so no
+		// fetched email could ever be persisted:
+		//   1. a stray $19 with only 18 target columns ("INSERT has more
+		//      expressions than target columns");
+		//   2. created_at is BIGINT NOT NULL with no default, but was never
+		//      supplied ("null value in column created_at ... violates
+		//      not-null constraint").
+		// Column count and placeholder count must stay in sync (19 of each now).
+		`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments, created_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 			 ON CONFLICT DO NOTHING`,
 		e.ID, e.AccountID, defaultWorkspace(e.WorkspaceID), nullStr(e.MessageID), e.UID,
 		e.FromAddress, e.FromName, e.Subject, e.Snippet, e.Date,
-		e.IsRead, e.IsStarred, e.Category, e.Importance, e.AISummary, e.SuggestedAction, nullStr(e.ActionReason), e.HasAttachments)
+		e.IsRead, e.IsStarred, e.Category, e.Importance, e.AISummary, e.SuggestedAction,
+		nullStr(e.ActionReason), e.HasAttachments, time.Now().Unix())
 
 	return err
 }
@@ -1021,13 +1046,19 @@ func (s *Store) GetAccountByIDScoped(ctx context.Context, id, userID, workspaceI
 	var cred string
 	var lastUID, lastAt sql.NullInt64
 	var rules sql.NullString
+	var smtpHost sql.NullString
+	var smtpPort sql.NullInt64
+	// smtp_host/smtp_port are selected so the UI can render the saved SMTP
+	// settings. smtp_credential_encrypted is deliberately NOT selected here —
+	// it is only reachable through GetSMTPCredentialScoped.
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, user_id, workspace_id, display_name, email_address, imap_host, imap_port, auth_type,
-		       credential_encrypted, sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at
+		       credential_encrypted, sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at,
+		       smtp_host, smtp_port
 		FROM email_accounts WHERE id = $1 AND user_id = $2 AND workspace_id = $3
 	`, id, userID, workspaceID).Scan(&a.ID, &a.UserID, &a.WorkspaceID, &a.DisplayName, &a.EmailAddress,
 		&a.IMAPHost, &a.IMAPPort, &a.AuthType, &cred, &a.SyncIntervalMin, &lastUID, &lastAt,
-		&rules, &a.Enabled, &a.CreatedAt)
+		&rules, &a.Enabled, &a.CreatedAt, &smtpHost, &smtpPort)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", ErrNotFound
 	}
@@ -1042,6 +1073,12 @@ func (s *Store) GetAccountByIDScoped(ctx context.Context, id, userID, workspaceI
 	}
 	if rules.Valid {
 		a.Rules = rules.String
+	}
+	if smtpHost.Valid {
+		a.SMTPHost = smtpHost.String
+	}
+	if smtpPort.Valid {
+		a.SMTPPort = int(smtpPort.Int64)
 	}
 	return &a, cred, nil
 }
@@ -1243,6 +1280,168 @@ func (s *Store) GetSummaryByDateScoped(ctx context.Context, userID, workspaceID,
 		d.ActionItems = actions.String
 	}
 	return &d, nil
+}
+
+// UpsertSummaryScoped writes a daily summary keyed by (user, workspace, date).
+//
+// The legacy UpsertSummary conflicts on (user_id, summary_date) only, so a user
+// in two workspaces had the second write overwrite the first. Background jobs
+// must use this variant.
+func (s *Store) UpsertSummaryScoped(ctx context.Context, sum *DailySummary) error {
+	if sum == nil {
+		return fmt.Errorf("summary required")
+	}
+	if sum.UserID == "" {
+		return fmt.Errorf("summary user required")
+	}
+	if sum.ID == "" {
+		sum.ID = randomID("summary")
+	}
+	workspaceID := defaultWorkspace(sum.WorkspaceID)
+	sum.WorkspaceID = workspaceID
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO daily_summaries
+			(id, user_id, workspace_id, summary_date, total_count, important_count, content, action_items, created_at)
+		VALUES ($1, $2, $3, $4::DATE, $5, $6, $7, $8, $9)
+		ON CONFLICT (user_id, workspace_id, summary_date) DO UPDATE SET
+			total_count     = EXCLUDED.total_count,
+			important_count = EXCLUDED.important_count,
+			content         = EXCLUDED.content,
+			action_items    = EXCLUDED.action_items,
+			created_at      = EXCLUDED.created_at
+	`, sum.ID, sum.UserID, workspaceID, sum.SummaryDate, sum.TotalCount, sum.ImportantCount,
+		sum.Content, nullStr(sum.ActionItems), sum.CreatedAt)
+	return err
+}
+
+// ListEmailsByDayScoped returns one day's emails for a single (user, workspace).
+//
+// ListEmailsByDay joins on user_id only, so a multi-workspace user would get
+// every workspace's mail mixed into one summary.
+func (s *Store) ListEmailsByDayScoped(ctx context.Context, userID, workspaceID, date string, tzOffsetSec int) ([]Email, error) {
+	t, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return nil, fmt.Errorf("invalid date %q: %w", date, err)
+	}
+	loc := time.FixedZone("user", tzOffsetSec)
+	t = t.In(loc)
+	startUnix := t.Unix()
+	endUnix := t.Add(24 * time.Hour).Unix()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet, e.date,
+		       e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments
+		FROM emails e
+		JOIN email_accounts a ON a.id = e.account_id
+		WHERE a.user_id = $1 AND a.workspace_id = $2 AND e.date >= $3 AND e.date < $4
+		ORDER BY e.date DESC
+		LIMIT 500
+	`, userID, defaultWorkspace(workspaceID), startUnix, endUnix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Email
+	for rows.Next() {
+		var e Email
+		var fromName, subject, snippet, category, importance, aiSummary, suggestedAction sql.NullString
+		if err := rows.Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date,
+			&e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments); err != nil {
+			return nil, err
+		}
+		e.WorkspaceID = defaultWorkspace(workspaceID)
+		if fromName.Valid {
+			e.FromName = fromName.String
+		}
+		if subject.Valid {
+			e.Subject = subject.String
+		}
+		if snippet.Valid {
+			e.Snippet = snippet.String
+		}
+		if category.Valid {
+			e.Category = category.String
+		}
+		if importance.Valid {
+			e.Importance = importance.String
+		}
+		if aiSummary.Valid {
+			e.AISummary = aiSummary.String
+		}
+		if suggestedAction.Valid {
+			e.SuggestedAction = suggestedAction.String
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ListEnabledAccountsWithWorkspace is ListEnabledAccounts plus workspace_id.
+//
+// ListEnabledAccounts omits workspace_id from its SELECT, so every Account it
+// returns has an empty WorkspaceID. Background workers that group or persist by
+// workspace must use this variant or they silently fall back to "default".
+func (s *Store) ListEnabledAccountsWithWorkspace(ctx context.Context) ([]Account, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, user_id, workspace_id, display_name, email_address, imap_host, imap_port,
+		       auth_type, sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at
+		FROM email_accounts WHERE enabled = TRUE ORDER BY created_at
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Account, 0)
+	for rows.Next() {
+		var a Account
+		var lastUID, lastAt sql.NullInt64
+		var rules sql.NullString
+		if err := rows.Scan(&a.ID, &a.UserID, &a.WorkspaceID, &a.DisplayName, &a.EmailAddress,
+			&a.IMAPHost, &a.IMAPPort, &a.AuthType, &a.SyncIntervalMin, &lastUID, &lastAt,
+			&rules, &a.Enabled, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		if lastUID.Valid {
+			a.LastSyncedUID = lastUID.Int64
+		}
+		if lastAt.Valid {
+			a.LastSyncedAt = lastAt.Int64
+		}
+		if rules.Valid {
+			a.Rules = rules.String
+		}
+		a.WorkspaceID = defaultWorkspace(a.WorkspaceID)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// RevokeOAuthTokenScoped revokes a token only when the account belongs to the
+// given (user, workspace). Returns ErrNotFound otherwise, so a stale scheduler
+// row can never disable another tenant's account.
+func (s *Store) RevokeOAuthTokenScoped(ctx context.Context, accountID, userID, workspaceID string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var owned string
+	err = tx.QueryRow(ctx, `SELECT id FROM email_accounts WHERE id=$1 AND user_id=$2 AND workspace_id=$3`,
+		accountID, userID, defaultWorkspace(workspaceID)).Scan(&owned)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM email_oauth_tokens WHERE account_id=$1`, accountID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE email_accounts SET auth_type='password', enabled=FALSE WHERE id=$1`, accountID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func defaultWorkspace(workspaceID string) string {

@@ -26,6 +26,17 @@ import (
 //
 // 只做"只读"探测：连接 → EHLO → （STARTTLS?）→ AUTH → QUIT，
 // 不发送任何邮件。错误脱敏后返回给调用方。
+// Both are vars rather than consts so tests can shorten them; production code
+// never reassigns them.
+var (
+	// smtpDialTimeout bounds TCP connection setup for a single candidate IP.
+	smtpDialTimeout = 10 * time.Second
+	// smtpProbeTimeout bounds the whole probe (banner, EHLO, STARTTLS, AUTH,
+	// QUIT). net/smtp has no context support, so this is enforced as a socket
+	// deadline rather than a context cancellation.
+	smtpProbeTimeout = 20 * time.Second
+)
+
 func smtpProbe(host string, port int, username, password string) error {
 	if host == "" {
 		return errors.New("smtp host empty")
@@ -34,16 +45,26 @@ func smtpProbe(host string, port int, username, password string) error {
 		return fmt.Errorf("smtp port out of range: %d", port)
 	}
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	dialer := &net.Dialer{Timeout: smtpDialTimeout}
 	ips, err := resolveSMTPHost(host)
 	if err != nil {
 		return fmt.Errorf("smtp resolve %s: %v", host, err)
 	}
+	// net/smtp drives Hello/StartTLS/Auth/Quit through a textproto.Conn and takes
+	// no context, so net.Dialer.Timeout only bounds connection setup. Without a
+	// deadline on the socket, a server that accepts the TCP connection and then
+	// stalls on the banner (or any later command) would pin this HTTP handler
+	// indefinitely. One absolute deadline covers every phase, Quit included.
+	overallDeadline := time.Now().Add(smtpProbeTimeout)
 	dialValidated := func() (net.Conn, error) {
 		var lastErr error
 		for _, ip := range ips {
 			conn, dialErr := dialer.Dial("tcp", net.JoinHostPort(ip.String(), strconv.Itoa(port)))
 			if dialErr == nil {
+				if dErr := conn.SetDeadline(overallDeadline); dErr != nil {
+					_ = conn.Close()
+					return nil, fmt.Errorf("smtp set deadline: %w", dErr)
+				}
 				return conn, nil
 			}
 			lastErr = dialErr

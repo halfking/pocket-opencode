@@ -666,6 +666,12 @@ func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc 
 		Enabled         *bool   `json:"enabled"`
 		Password        *string `json:"password"`
 		OAuthToken      *string `json:"oauthToken"`
+		// SMTP 出站配置。此前这三个字段没有任何写入入口，
+		// UpsertSMTPSettingsScoped 在 server 层无调用点，导致 /test-smtp 对新
+		// 账户永远返回 "smtp not configured"。
+		SMTPHost     *string `json:"smtpHost"`
+		SMTPPort     *int    `json:"smtpPort"`
+		SMTPPassword *string `json:"smtpPassword"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -677,6 +683,10 @@ func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc 
 	}
 	if body.IMAPPort != nil && (*body.IMAPPort < 1 || *body.IMAPPort > 65535) {
 		writeError(w, http.StatusBadRequest, "imapPort must be between 1 and 65535")
+		return
+	}
+	if body.SMTPPort != nil && (*body.SMTPPort < 1 || *body.SMTPPort > 65535) {
+		writeError(w, http.StatusBadRequest, "smtpPort must be between 1 and 65535")
 		return
 	}
 	if body.SyncIntervalMin != nil && (*body.SyncIntervalMin < 5 || *body.SyncIntervalMin > 60) {
@@ -752,6 +762,45 @@ func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc 
 		writeError(w, http.StatusInternalServerError, "update account: "+err.Error())
 		return
 	}
+
+	// SMTP 设置走独立的 scoped upsert（host/port/credential 在单独的列里）。
+	// 只在调用方显式提供 smtpHost 时才写，避免每次 PUT 都清空 SMTP 配置。
+	if body.SMTPHost != nil {
+		smtpPort := acc.SMTPPort
+		if body.SMTPPort != nil {
+			smtpPort = *body.SMTPPort
+		}
+		smtpCred := ""
+		updateSMTPCred := false
+		if body.SMTPPassword != nil {
+			if s.emailCrypto == nil {
+				writeError(w, http.StatusServiceUnavailable, "email crypto not configured")
+				return
+			}
+			// 空字符串表示"清空凭证"，非空则加密后写入。两种都算显式更新。
+			if *body.SMTPPassword != "" {
+				enc, err := s.emailCrypto.EncryptString(*body.SMTPPassword)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "encrypt smtp credential: "+err.Error())
+					return
+				}
+				smtpCred = enc
+			}
+			updateSMTPCred = true
+		}
+		if err := s.emailStore.UpsertSMTPSettingsScoped(r.Context(), acc.ID, uid, workspaceID,
+			*body.SMTPHost, smtpPort, smtpCred, updateSMTPCred); err != nil {
+			if errors.Is(err, email.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "account not found")
+				return
+			}
+			writeError(w, http.StatusBadRequest, "update smtp settings: "+err.Error())
+			return
+		}
+		acc.SMTPHost = *body.SMTPHost
+		acc.SMTPPort = smtpPort
+	}
+
 	writeJSON(w, http.StatusOK, acc)
 	if s.wsHub != nil {
 		s.wsHub.BroadcastToUser(uid, "email.account.updated", acc)

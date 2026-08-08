@@ -202,7 +202,10 @@ func (s *Scheduler) refreshOnce(ctx context.Context, leewaySec int64, opTimeout 
 		return
 	}
 	for _, row := range tokens {
-		acc, _, err := s.store.GetAccountByID(callCtx, row.AccountID)
+		// ListExpiredOAuthTokens 已经带回该 token 所属的 user/workspace，用
+		// scoped 查询而不是 GetAccountByID：后者只按 account_id 命中，绕过了
+		// 归属校验。
+		acc, _, err := s.store.GetAccountByIDScoped(callCtx, row.AccountID, row.UserID, row.WorkspaceID)
 		if err != nil || acc == nil {
 			continue
 		}
@@ -228,7 +231,7 @@ func (s *Scheduler) refreshOnce(ctx context.Context, leewaySec int64, opTimeout 
 			continue
 		}
 		log.Printf("[email/scheduler] permanent refresh failure for %s: %v — revoking", acc.EmailAddress, err)
-		if revokeErr := s.store.RevokeOAuthToken(callCtx, row.AccountID); revokeErr != nil {
+		if revokeErr := s.store.RevokeOAuthTokenScoped(callCtx, row.AccountID, row.UserID, row.WorkspaceID); revokeErr != nil {
 			log.Printf("[email/scheduler] revoke oauth token for %s: %v", acc.EmailAddress, revokeErr)
 			continue
 		}
@@ -329,12 +332,15 @@ func (s *Scheduler) dailySummaryLoop(ctx context.Context) {
 	}
 }
 
-// runDailySummary 给当天每个用户生成 AI 邮件总结。
+// runDailySummary 给当天每个 (用户, workspace) 生成 AI 邮件总结。
 //
 // 流程：
-//  1. 取所有启用账户（隐含 userID）
-//  2. 按用户聚合
+//  1. 取所有启用账户（含 workspace_id）
+//  2. 按 (userID, workspaceID) 聚合
 //  3. 拉当天邮件 → 调 kxmemory.DailySummary → 写回 daily_summaries
+//
+// 按 (user, workspace) 而非仅按 user 聚合：同一用户可以同时属于多个 workspace，
+// 只按 userID 聚合会把不同 workspace 的邮件混进同一份摘要，并让后写的覆盖先写的。
 //
 // kxmem == nil 时整个步骤降级为 log-only（保留向后兼容）。
 func (s *Scheduler) runDailySummary(ctx context.Context) {
@@ -346,30 +352,36 @@ func (s *Scheduler) runDailySummary(ctx context.Context) {
 		return
 	}
 
-	accounts, err := s.store.ListEnabledAccounts(ctx)
+	// ListEnabledAccountsWithWorkspace（而非 ListEnabledAccounts）：后者的 SELECT
+	// 不含 workspace_id，返回的 Account.WorkspaceID 恒为空。
+	accounts, err := s.store.ListEnabledAccountsWithWorkspace(ctx)
 	if err != nil {
 		log.Printf("[email/scheduler] list accounts for daily summary: %v", err)
 		return
 	}
 
-	// 按 userID 聚合（同一用户可能有多个邮箱账户）
-	userIDs := make(map[string]struct{})
+	type summaryScope struct {
+		userID      string
+		workspaceID string
+	}
+	scopes := make(map[summaryScope]struct{})
 	for _, a := range accounts {
 		if a.Enabled && a.UserID != "" {
-			userIDs[a.UserID] = struct{}{}
+			scopes[summaryScope{userID: a.UserID, workspaceID: defaultWorkspace(a.WorkspaceID)}] = struct{}{}
 		}
 	}
 
-	if len(userIDs) == 0 {
+	if len(scopes) == 0 {
 		log.Printf("[email/scheduler] no enabled users; nothing to summarize")
 		return
 	}
 
 	successes := 0
 	failures := 0
-	for uid := range userIDs {
-		if err := s.summarizeUser(ctx, uid, today); err != nil {
-			log.Printf("[email/scheduler] daily summary for user %s failed: %v", uid, err)
+	for scope := range scopes {
+		if err := s.summarizeUser(ctx, scope.userID, scope.workspaceID, today); err != nil {
+			log.Printf("[email/scheduler] daily summary for user %s workspace %s failed: %v",
+				scope.userID, scope.workspaceID, err)
 			failures++
 			continue
 		}
@@ -378,14 +390,15 @@ func (s *Scheduler) runDailySummary(ctx context.Context) {
 	log.Printf("[email/scheduler] daily summary done: %d success, %d failed", successes, failures)
 }
 
-// summarizeUser 给单个用户生成当天的 AI 邮件总结并持久化。
-func (s *Scheduler) summarizeUser(ctx context.Context, userID, date string) error {
-	emails, err := s.store.ListEmailsByDay(ctx, userID, date, s.timezoneOffset())
+// summarizeUser 给单个 (用户, workspace) 生成当天的 AI 邮件总结并持久化。
+func (s *Scheduler) summarizeUser(ctx context.Context, userID, workspaceID, date string) error {
+	workspaceID = defaultWorkspace(workspaceID)
+	emails, err := s.store.ListEmailsByDayScoped(ctx, userID, workspaceID, date, s.timezoneOffset())
 	if err != nil {
 		return fmt.Errorf("list emails by day: %w", err)
 	}
 	if len(emails) == 0 {
-		log.Printf("[email/scheduler] user %s: no emails on %s, skipping", userID, date)
+		log.Printf("[email/scheduler] user %s workspace %s: no emails on %s, skipping", userID, workspaceID, date)
 		return nil
 	}
 
@@ -431,9 +444,10 @@ func (s *Scheduler) summarizeUser(ctx context.Context, userID, date string) erro
 	}
 
 	// A6: 复用当天已有 summary 的 ID，避免 ON CONFLICT 触发 update 后旧
-	// row 变孤儿（primary key 变更）。
+	// row 变孤儿（primary key 变更）。查询必须带 workspace，否则会复用另一个
+	// workspace 的 summary ID。
 	summaryID := ""
-	if existing, _ := s.store.GetSummaryByDate(ctx, userID, date); existing != nil {
+	if existing, _ := s.store.GetSummaryByDateScoped(ctx, userID, workspaceID, date); existing != nil {
 		summaryID = existing.ID
 	} else {
 		summaryID = randomID("summary")
@@ -442,6 +456,7 @@ func (s *Scheduler) summarizeUser(ctx context.Context, userID, date string) erro
 	sum := &DailySummary{
 		ID:             summaryID,
 		UserID:         userID,
+		WorkspaceID:    workspaceID,
 		SummaryDate:    date,
 		TotalCount:     len(emails),
 		ImportantCount: importantCount,
@@ -449,11 +464,11 @@ func (s *Scheduler) summarizeUser(ctx context.Context, userID, date string) erro
 		ActionItems:    actionItemsJSON,
 		CreatedAt:      time.Now().Unix(),
 	}
-	if err := s.store.UpsertSummary(ctx, sum); err != nil {
+	if err := s.store.UpsertSummaryScoped(ctx, sum); err != nil {
 		return fmt.Errorf("upsert summary: %w", err)
 	}
-	log.Printf("[email/scheduler] user %s: summary for %s written (%d emails, %d important)",
-		userID, date, len(emails), importantCount)
+	log.Printf("[email/scheduler] user %s workspace %s: summary for %s written (%d emails, %d important)",
+		userID, workspaceID, date, len(emails), importantCount)
 	return nil
 }
 
