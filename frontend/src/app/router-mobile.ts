@@ -254,6 +254,52 @@ const router = createRouter({
       name: 'settings-llm-gateway',
       component: () => import('../features/settings/SettingsLLMGateway.vue'),
       meta: { requiresAuth: true, title: 'AI 模型', bottomNav: false, canGoBack: true }
+    },
+
+    // ---- 网关运维控制面（llm-gateway-go 运行状态）----
+    // 只要 requiresAuth：这些页面读的是网关运行状态，不碰本地加密库，
+    // 所以不加 requiresLobster —— 否则主密码未解锁就看不了监控。
+    {
+      path: '/gateway',
+      name: 'gateway-nodes',
+      component: () => import('../features/gateway/GatewayNodeListView.vue'),
+      meta: { requiresAuth: true, title: '网关节点', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/gateway/:nodeId',
+      name: 'gateway-overview',
+      component: () => import('../features/gateway/GatewayOverviewView.vue'),
+      meta: { requiresAuth: true, title: '网关概览', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/gateway/:nodeId/providers',
+      name: 'gateway-providers',
+      component: () => import('../features/gateway/GatewayProvidersView.vue'),
+      meta: { requiresAuth: true, title: '供应商', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/gateway/:nodeId/credentials',
+      name: 'gateway-credentials',
+      component: () => import('../features/gateway/GatewayCredentialsView.vue'),
+      meta: { requiresAuth: true, title: '凭据', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/gateway/:nodeId/credentials/:credentialId',
+      name: 'gateway-credential-detail',
+      component: () => import('../features/gateway/GatewayCredentialDetailView.vue'),
+      meta: { requiresAuth: true, title: '凭据详情', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/gateway/:nodeId/models',
+      name: 'gateway-models',
+      component: () => import('../features/gateway/GatewayModelsView.vue'),
+      meta: { requiresAuth: true, title: '模型路由', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/gateway/:nodeId/live',
+      name: 'gateway-live',
+      component: () => import('../features/gateway/GatewayLiveStreamView.vue'),
+      meta: { requiresAuth: true, title: '实时请求', bottomNav: false, canGoBack: true }
     }
   ]
 })

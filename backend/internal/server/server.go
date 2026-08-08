@@ -118,6 +118,11 @@ type Server struct {
 	llmGWStore *LLMGatewayStore // nil = 无 PG，配置不持久化
 	llmGWCache *llmGatewayCache // nil = 仅依赖 env 默认配置
 
+	// LLM Gateway 运维控制面：已注册网关节点 + admin API 客户端。
+	// nil = 无 PG 或 master key 缺失，/api/llm-gateway/nodes 返回 503。
+	gatewayNodes  *GatewayNodeStore
+	gatewayClient *gatewayAdminClient
+
 	// 会话迁移方案：跨主机迁移编排服务（nil = registry/adapter/pluginHub 未就绪）
 	migrationSvc *migration.Service
 
@@ -226,6 +231,18 @@ func (s *Server) SetLLMGatewayStore(store *LLMGatewayStore) {
 
 // LLMGatewayStore 返回内部 store（main 装配阶段判断是否需要预加载）。
 func (s *Server) LLMGatewayStore() *LLMGatewayStore { return s.llmGWStore }
+
+// SetGatewayNodeStore 注入网关节点注册表，并构造配套的 admin API 客户端。
+// store 为 nil 时 /api/llm-gateway/nodes 全部返回 503（无 PG 或缺 master key）。
+func (s *Server) SetGatewayNodeStore(store *GatewayNodeStore) {
+	s.gatewayNodes = store
+	if store != nil {
+		s.gatewayClient = newGatewayAdminClient(store)
+	}
+}
+
+// GatewayNodeStore 返回节点注册表，供 main 装配阶段做 legacy 导入。
+func (s *Server) GatewayNodeStore() *GatewayNodeStore { return s.gatewayNodes }
 
 // SetMigrationService 注入会话跨主机迁移编排服务（registry/adapter/pluginHub 就绪后由 main 装配）。
 func (s *Server) SetMigrationService(svc *migration.Service) {
@@ -414,6 +431,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/llm-gateway/test", s.requireAuth(s.handleLLMGatewayTest))
 	mux.HandleFunc("/api/llm-gateway/models", s.requireAuth(s.handleLLMGatewayModels))
 
+	// ---- 网关运维控制面：节点注册 + admin API 白名单代理 + 实时请求流 ----
+	// 读操作任何已认证用户可用；写操作（凭据上下线/探测）要求 admin 角色，
+	// 由 handler 内的 requireGatewayAdmin 把关并落审计。
+	mux.HandleFunc("/api/llm-gateway/nodes", s.requireAuth(s.handleLLMGatewayNodes))
+	mux.HandleFunc("/api/llm-gateway/nodes/", s.requireAuth(s.handleLLMGatewayNodes))
+
 	// ---- Phase 1.1: 诊断 / 健康端点 ----
 	mux.HandleFunc("/api/diagnostics/kxmemory", s.requireAuth(s.handleDiagnosticsKxmemory))
 	mux.HandleFunc("/api/diagnostics/agents", s.requireAuth(s.handleDiagnosticsAgents))
@@ -440,8 +463,67 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/presentations", s.requireAuth(s.handlePresentations))
 	mux.HandleFunc("/api/presentations/render", s.requireAuth(s.handleRenderPresentation))
 
-	handler := recoveryMiddleware(s.loggingMiddleware(corsMiddleware(securityHeadersMiddleware(mux, s.cfg.DevAuth), s.cfg.AllowedOrigins, s.cfg.DevAuth)))
+	// 中间件顺序（外→内）：
+	//   requestBodyLimit   限制请求体大小
+	//   recovery           panic 兜底
+	//   logging            请求日志
+	//   cors               跨域头
+	//   securityHeaders    加固响应头
+	//   longLivedPath      清除长连接 SSE 的写 deadline
+	//   mux                业务路由
+	//
+	// longLivedPath 必须位于 mux 之外（看不清路径就扫不到前缀），同时在
+	// securityHeaders 之内（中间件包装层越少，NewResponseController 越可能
+	// 穿透到底层 ResponseWriter）。
+	handler := recoveryMiddleware(
+		s.loggingMiddleware(
+			corsMiddleware(
+				securityHeadersMiddleware(
+					longLivedPathMiddleware(mux),
+					s.cfg.DevAuth,
+				),
+				s.cfg.AllowedOrigins,
+				s.cfg.DevAuth,
+			),
+		),
+	)
 	return requestBodyLimitMiddleware(handler)
+}
+
+// longLivedPaths 列出需要把 http.Server.WriteTimeout 拉满的端点。
+//
+// http.Server 上配置了 WriteTimeout: 30s（见 cmd/pocketd/main.go），对普通请求
+// 是必要的 Slowloris 防护，但对 SSE 长连接会在 30s 处直接掐断一条本该长活的流。
+//
+// 历史上曾要求每个 handler 自己用 http.NewResponseController.SetWriteDeadline
+// 清掉本连接 deadline。问题是：这条契约散落在每个 handler 里很容易遗漏，移动
+// 端 session event / 插件 WS 等端点就有过这种被掐断的故障。
+//
+// 把判断提到中间件层之后，所有 SSE/长连接路由只需要挂上前缀白名单即可。
+// WebSocket 升级走的是 gorilla/websocket 自己的 deadline，不在 WriteTimeout 管辖
+// 范围，所以这里只覆盖 SSE 路径。
+var longLivedPaths = []string{
+	"/api/llm/stream",          // S0-B LLM BFF 流式聊天
+	"/api/llm-gateway/nodes/",  // 网关运维控制面（live-stream 等）
+	"/api/mobile/sessions/",    // 移动端 session SSE（含 /event）
+	"/api/llmbff/stream",     // 同上的历史别名（保留兼容）
+}
+
+func longLivedPathMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		for _, p := range longLivedPaths {
+			if strings.HasPrefix(path, p) {
+				// 只清"当前连接"的写 deadline，不动全局 server.WriteTimeout。
+				// 中间件包装过的 ResponseWriter（cors/logging/recovery）通常仍
+				// 支持 NewResponseController；不支持的则降级到被 30s 掐断。
+				rc := http.NewResponseController(w)
+				_ = rc.SetWriteDeadline(time.Time{})
+				break
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func corsMiddleware(next http.Handler, allowedOrigins string, devAuth bool) http.Handler {

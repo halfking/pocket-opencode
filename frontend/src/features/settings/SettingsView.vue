@@ -137,6 +137,19 @@
           {{ testResult.text }}
         </div>
       </div>
+
+      <!-- 网关运维（llm-gateway-go 控制面）-->
+      <div class="settings-section">
+        <h2>网关运维</h2>
+        <div class="setting-item clickable" @click="openGatewayOps">
+          <div class="setting-icon">📊</div>
+          <div class="setting-content">
+            <div class="setting-label">运行状态</div>
+            <div class="setting-value">供应商 · 凭据×模型 · 路由 · 实时请求流</div>
+          </div>
+          <div class="setting-chevron">›</div>
+        </div>
+      </div>
     </div>
 
     <!--
@@ -231,6 +244,10 @@ async function testGateway() {
 
 function openGatewayEditor() {
   router.push('/settings/llm-gateway')
+}
+
+function openGatewayOps() {
+  router.push('/gateway')
 }
 
 function formatLoginTime(): string {
@@ -355,6 +372,20 @@ function handleLogout() {
 .setting-value.small {
   font-size: var(--text-xs);
   font-family: monospace;
+}
+
+.setting-item.clickable {
+  cursor: pointer;
+}
+
+.setting-item.clickable:active {
+  opacity: 0.7;
+}
+
+.setting-chevron {
+  color: var(--text-muted);
+  font-size: var(--text-lg);
+  flex-shrink: 0;
 }
 
 .action-btn {

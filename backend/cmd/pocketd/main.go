@@ -378,6 +378,38 @@ func main() {
 		log.Println("LLM gateway config persistence enabled (PG)")
 	}
 
+	// ---- 网关运维控制面：节点注册表 ----
+	// 与上面的 config store 复用同一个 AES-256-GCM cipher。节点表单独存"访问
+	// 网关 admin API 的账号"——网关 admin API 只认 JWT，数据面 sk-* key 访问
+	// 不了 /api/providers、/api/credentials/* 这些端点，所以不能复用旧表。
+	if pool != nil && emailCrypto != nil {
+		gwNodes, err := server.NewGatewayNodeStore(pool, emailCrypto)
+		if err != nil {
+			log.Printf("WARN: gateway node store init failed: %v", err)
+		} else {
+			srv.SetGatewayNodeStore(gwNodes)
+
+			// 首次启动把已有的 llm_gateway_configs active 行导入成第一个节点，
+			// 省去重录 baseURL。admin 账号无法从旧表推导（旧表只有数据面 key），
+			// 所以导入后的节点 health 停在 unknown，需在移动端补录账号再探测。
+			gwWorkspaces := []string{"default"}
+			if identStore != nil {
+				if list, lerr := identStore.ListAllWorkspaceIDs(context.Background()); lerr == nil {
+					gwWorkspaces = append(gwWorkspaces, list...)
+				}
+			}
+			for _, ws := range gwWorkspaces {
+				imported, ierr := gwNodes.ImportLegacyConfig(context.Background(), ws)
+				if ierr != nil {
+					log.Printf("WARN: gateway node legacy import failed (workspace=%s): %v", ws, ierr)
+				} else if imported {
+					log.Printf("Imported legacy LLM gateway config as node (workspace=%s); admin credentials still required", ws)
+				}
+			}
+			log.Printf("Gateway node registry enabled (PG, allow_private_hosts=%v)", os.Getenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE") != "")
+		}
+	}
+
 	// ---- S0-B: Unified LLM BFF (stream + usage tracking) ----
 	// 仅在企业网关模式下启用：BFF 需要一个支持 stream 的 Provider，目前只有
 	// llmgateway.Client 满足。直连模式（aigate）的 BFF 适配器留到后续 sprint。
