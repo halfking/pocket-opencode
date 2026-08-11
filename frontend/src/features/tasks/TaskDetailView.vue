@@ -3,6 +3,7 @@
 -->
 <template>
   <div class="task-detail">
+    <p v-if="loadError" class="form-error" role="alert">{{ loadError }}</p>
     <!-- Header: priority + title + status on one line -->
     <div class="header">
       <span class="priority-chip" :class="task?.priority">
@@ -30,8 +31,8 @@
         <span class="stat-lbl">创建</span>
       </div>
       <div v-if="task?.workstreamId" class="stat">
-        <span class="stat-icon">💻</span>
-        <span class="stat-val">{{ task?.workstreamId?.slice(0, 8) }}</span>
+        <span class="stat-icon" aria-hidden="true">💻</span>
+        <span class="stat-val" :title="task?.workstreamId">{{ task?.workstreamId?.slice(0, 8) }}</span>
         <span class="stat-lbl">实例</span>
       </div>
     </div>
@@ -82,9 +83,14 @@
           v-for="s in sessions"
           :key="s.sessionId"
           class="session-row"
+          tabindex="0"
+          role="link"
+          :aria-label="`打开会话 ${s.sessionId.slice(0, 16)}`"
           @click="openSession(s)"
+          @keydown.enter.prevent="openSession(s)"
+          @keydown.space.prevent="openSession(s)"
         >
-          <span class="status-dot" />
+          <span class="status-dot" aria-hidden="true" />
           <div class="session-info">
             <div class="session-id">{{ s.sessionId.slice(0, 16) }}…</div>
             <div class="session-tags">
@@ -92,7 +98,7 @@
               <span class="tag">{{ s.instanceId }}</span>
             </div>
           </div>
-          <span class="chevron">›</span>
+          <span class="chevron" aria-hidden="true">›</span>
         </div>
       </div>
 
@@ -102,38 +108,42 @@
     </div>
 
     <!-- Attach Modal -->
-    <div v-if="showAttachModal" class="modal-overlay" @click="showAttachModal = false">
+    <div v-if="showAttachModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="attach-modal-title" @click.self="showAttachModal = false">
       <div class="modal-sheet" @click.stop>
-        <div class="modal-handle" />
+        <div class="modal-handle" aria-hidden="true" />
         <div class="modal-body">
-          <h2>附加会话</h2>
+          <h2 id="attach-modal-title">附加会话</h2>
           <div class="form-group">
-            <label>会话 ID *</label>
-            <input v-model="newSession.sessionId" type="text" placeholder="ses_..." />
+            <label for="attach-session-id">会话 ID *</label>
+            <input id="attach-session-id" v-model="newSession.sessionId" type="text" placeholder="ses_..." />
           </div>
           <div class="form-group">
-            <label>实例 ID *</label>
-            <input v-model="newSession.instanceId" type="text" placeholder="local-dev" />
+            <label for="attach-instance-id">实例 ID *</label>
+            <input id="attach-instance-id" v-model="newSession.instanceId" type="text" placeholder="local-dev" />
           </div>
           <div class="form-group">
-            <label>角色</label>
-            <select v-model="newSession.role">
+            <label for="attach-role">角色</label>
+            <select id="attach-role" v-model="newSession.role">
               <option value="primary">主要</option>
               <option value="supporting">支持</option>
               <option value="exploratory">探索</option>
             </select>
           </div>
+          <p v-if="attachError" class="form-error" role="alert">{{ attachError }}</p>
           <div class="modal-actions">
-            <button class="btn cancel" @click="showAttachModal = false">取消</button>
+            <button type="button" class="btn cancel" @click="showAttachModal = false">取消</button>
             <button
+              type="button"
               class="btn primary"
-              :disabled="!newSession.sessionId || !newSession.instanceId"
+              :disabled="!newSession.sessionId || !newSession.instanceId || attaching"
               @click="handleAttach"
-            >附加</button>
+            >{{ attaching ? '附加中…' : '附加' }}</button>
           </div>
         </div>
       </div>
     </div>
+
+    <p v-if="statusError" class="form-error" role="alert">{{ statusError }}</p>
   </div>
 </template>
 
@@ -151,14 +161,20 @@ const showAttachModal = ref(false)
 const newSession = ref({ sessionId: '', instanceId: '', role: 'primary' })
 const updating = ref(false)
 const deleting = ref(false)
+const attaching = ref(false)
+const attachError = ref('')
+const statusError = ref('')
+const loadError = ref('')
 
 onMounted(async () => {
   const taskId = route.params.id as string
+  loadError.value = ''
   try {
     task.value = await api.getTask(taskId)
     sessions.value = await api.getTaskSessions(taskId)
-  } catch (e) {
+  } catch (e: any) {
     console.error('Failed to load task:', e)
+    loadError.value = e?.message || '加载任务失败，请检查网络后重试'
   }
 })
 
@@ -166,6 +182,7 @@ async function updateStatus(status: string) {
   if (!task.value || updating.value) return
   const oldStatus = task.value.status
   updating.value = true
+  statusError.value = ''
   // Optimistic update — rewind on error.
   task.value.status = status as any
   try {
@@ -173,7 +190,7 @@ async function updateStatus(status: string) {
   } catch (e: any) {
     console.error('Failed to update status:', e)
     task.value.status = oldStatus as any
-    alert(`状态更新失败：${e?.message || '未知错误'}`)
+    statusError.value = `状态更新失败：${e?.message || '未知错误'}`
   } finally {
     updating.value = false
   }
@@ -181,21 +198,24 @@ async function updateStatus(status: string) {
 
 async function confirmDelete() {
   if (!task.value || deleting.value) return
-  if (!confirm('确定删除此任务？')) return
+  if (!confirm('确定删除此任务？此操作不可撤销。')) return
   const taskId = task.value.id
   deleting.value = true
+  statusError.value = ''
   try {
     await api.deleteTask(taskId)
     router.push('/ai')
   } catch (e: any) {
     console.error('Failed to delete task:', e)
     deleting.value = false
-    alert(`删除失败：${e?.message || '未知错误'}\n请重试或稍后再试。`)
+    statusError.value = `删除失败：${e?.message || '未知错误'}，请重试或稍后再试。`
   }
 }
 
 async function handleAttach() {
-  if (!task.value || !newSession.value.sessionId || !newSession.value.instanceId) return
+  if (!task.value || !newSession.value.sessionId || !newSession.value.instanceId || attaching.value) return
+  attaching.value = true
+  attachError.value = ''
   try {
     await api.attachSession(
       task.value.id,
@@ -206,8 +226,11 @@ async function handleAttach() {
     sessions.value = await api.getTaskSessions(task.value.id)
     newSession.value = { sessionId: '', instanceId: '', role: 'primary' }
     showAttachModal.value = false
-  } catch (e) {
+  } catch (e: any) {
     console.error('Failed to attach session:', e)
+    attachError.value = e?.message || '附加会话失败，请重试'
+  } finally {
+    attaching.value = false
   }
 }
 
@@ -256,7 +279,7 @@ function formatDate(d?: string): string {
   text-transform: uppercase;
   letter-spacing: 0.3px;
 }
-.priority-chip.high { background: rgba(239, 68, 68, 0.12); color: var(--error, #ef4444); }
+.priority-chip.high { background: rgba(239, 68, 68, 0.12); color: var(--danger); }
 .priority-chip.medium { background: rgba(245, 158, 11, 0.12); color: var(--warning); }
 .priority-chip.low { background: rgba(16, 185, 129, 0.12); color: var(--success); }
 
@@ -279,7 +302,7 @@ function formatDate(d?: string): string {
 }
 .status-chip.active { background: rgba(16, 185, 129, 0.12); color: var(--success); }
 .status-chip.blocked { background: rgba(245, 158, 11, 0.12); color: var(--warning); }
-.status-chip.completed { background: rgba(102, 126, 234, 0.12); color: var(--brand-primary); }
+.status-chip.completed { background: rgba(59, 130, 246, 0.12); color: var(--brand-primary); }
 
 .desc {
   font-size: 13px;
@@ -331,11 +354,11 @@ function formatDate(d?: string): string {
   font-size: 12px;
   font-weight: 600;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-elevated);
   color: var(--text-primary);
   cursor: pointer;
-  transition: background 120ms;
+  transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast);
 }
 .action-btn:active {
   background: var(--bg-subtle);
@@ -397,9 +420,15 @@ function formatDate(d?: string): string {
   align-items: center;
   gap: 10px;
   padding: 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: background 120ms;
+  transition: background var(--duration-fast);
+}
+.session-row:hover { background: var(--bg-subtle); }
+.session-row:focus-visible {
+  outline: none;
+  background: var(--bg-subtle);
+  box-shadow: 0 0 0 2px var(--brand-primary);
 }
 .session-row:active { background: var(--bg-subtle); }
 .status-dot {
@@ -449,13 +478,14 @@ function formatDate(d?: string): string {
   background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: flex-end;
-  z-index: 1000;
+  z-index: var(--z-modal);
 }
 .modal-sheet {
   background: var(--bg-elevated);
-  border-radius: 16px 16px 0 0;
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
   width: 100%;
-  animation: slideUp 200ms ease;
+  animation: slideUp var(--duration-base) var(--ease-spring);
+  touch-action: none;
 }
 @keyframes slideUp { from { transform: translateY(100%); } }
 .modal-handle {
@@ -515,6 +545,18 @@ function formatDate(d?: string): string {
   cursor: pointer;
 }
 .btn.cancel { background: var(--bg-subtle); color: var(--text-primary); }
-.btn.primary { background: var(--brand-primary); color: #fff; }
+.btn.primary { background: var(--brand-primary); color: var(--text-inverse); }
 .btn.primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.form-error {
+  margin: var(--space-3) var(--space-3) 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.form-error:first-child { margin-top: var(--space-3); }
 </style>
