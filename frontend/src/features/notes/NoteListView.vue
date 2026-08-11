@@ -63,7 +63,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import VoiceRecorderWidget from './VoiceRecorderWidget.vue'
@@ -199,7 +199,6 @@ const searchLabel = computed(() =>
   ({ list: '全部', fts: '全文', semantic: '语义', hybrid: '混合' }[searchMode.value]),
 )
 
-import { computed } from 'vue'
 onMounted(load)
 </script>
 
