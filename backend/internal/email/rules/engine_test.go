@@ -32,8 +32,8 @@ func TestParseRules_LegacyShape(t *testing.T) {
 	if rs[0].Type != "sender-whitelist" || rs[0].Actions[0].Name != "mark-important" {
 		t.Fatalf("first rule mismatch: %+v", rs[0])
 	}
-	if rs[1].Type != "sender-blacklist" || rs[1].Actions[0].Name != "unsupported" {
-		t.Fatalf("blacklist should map to unsupported, got %+v", rs[1])
+	if rs[1].Type != "sender-blacklist" || rs[1].Actions[0].Name != "archive" {
+		t.Fatalf("blacklist should map to archive, got %+v", rs[1])
 	}
 	if rs[2].Type != "subject-keyword" || rs[2].Actions[0].Name != "label-category" {
 		t.Fatalf("keywords should map to label-category, got %+v", rs[2])
@@ -71,11 +71,11 @@ func TestEvaluate_WhitelistTriggersMarkImportant(t *testing.T) {
 	}
 }
 
-func TestEvaluate_BlacklistMapsToUnsupported(t *testing.T) {
+func TestEvaluate_BlacklistMapsToArchive(t *testing.T) {
 	rules, _ := ParseRules(`{"rules":[{"type":"sender-blacklist","pattern":"alice@example.com","actions":["archive"]}]}`)
 	res := Evaluate(rules, mkInput())
-	if len(res) != 1 || res[0].Action != ActionUnsupported {
-		t.Fatalf("blacklist archive should be unsupported, got %+v", res)
+	if len(res) != 1 || res[0].Action != ActionArchive {
+		t.Fatalf("blacklist archive should map to ActionArchive, got %+v", res)
 	}
 }
 
@@ -161,8 +161,34 @@ func TestMatchEmail(t *testing.T) {
 
 func TestSupportedActions_Stable(t *testing.T) {
 	got := SupportedActions()
-	if len(got) != 2 {
-		t.Fatalf("expected 2 supported actions, got %v", got)
+	want := []string{
+		"mark-important",
+		"label-category",
+		"archive",
+		"route-folder",
+		"trigger-autoreply",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d supported actions, got %v", len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("supported actions mismatch at %d: got %v want %v", i, got, want)
+		}
+	}
+}
+
+// 验证 route-folder 的 folder 副参数透传到 ActionResult，调用方落库时
+// 可以直接拿到目标文件夹名。
+func TestEvaluate_RouteFolderPropagatesFolder(t *testing.T) {
+	raw := `{"rules":[{"type":"sender-blacklist","pattern":"spam@x.com","actions":[{"name":"route-folder","folder":"Junk"}]}]}`
+	rs, err := ParseRules(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	res := Evaluate(rs, EmailInput{From: "spam@x.com", Subject: "buy", Body: ""})
+	if len(res) != 1 || res[0].Action != ActionRouteFolder || res[0].Folder != "Junk" {
+		t.Fatalf("folder not propagated: %+v", res)
 	}
 }
 
