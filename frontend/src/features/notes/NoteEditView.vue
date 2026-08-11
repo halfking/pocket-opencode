@@ -79,6 +79,7 @@
             {{ saving ? '保存中…' : isNew ? '✓ 创建' : '✓ 保存' }}
           </button>
         </div>
+        <p v-if="saveError" class="form-error" role="alert">{{ saveError }}</p>
       </form>
 
       <VoiceRecorderWidget @transcribed="onTranscribed" />
@@ -108,6 +109,7 @@ type Domain = (typeof DOMAINS)[number]['value']
 
 const loading = ref(true)
 const saving = ref(false)
+const saveError = ref('')
 const titleInput = ref<HTMLInputElement | null>(null)
 
 interface FormState {
@@ -196,6 +198,7 @@ function onTranscribed(result: { text: string; audioPath: string; durationSec: n
 async function onSave() {
   if (!canSave.value || saving.value) return
   saving.value = true
+  saveError.value = ''
 
   const payload = {
     title: form.title.trim() || undefined,
@@ -222,9 +225,10 @@ async function onSave() {
       savedId = routeId.value
     }
     router.push(`/notes/${savedId}`)
-  } catch (e) {
+  } catch (e: any) {
     console.warn('[note] 保存失败:', e)
     saving.value = false
+    saveError.value = e?.message || '保存失败，请稍后重试'
   }
 }
 
@@ -298,7 +302,7 @@ function goBack() {
   color: var(--text-secondary);
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background var(--duration-fast), color var(--duration-fast), border-color var(--duration-fast), transform var(--duration-fast);
 }
 .chip:active { transform: scale(0.97); }
 .chip.active { color: var(--text-inverse); border-color: transparent; }
@@ -331,4 +335,15 @@ function goBack() {
   border: none;
 }
 .action-btn.ghost { background: var(--bg-subtle); }
+
+.form-error {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
 </style>

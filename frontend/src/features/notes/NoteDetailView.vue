@@ -47,7 +47,12 @@
               :key="r.id"
               class="related-card"
               :class="`domain-${r.domain || 'work'}`"
+              tabindex="0"
+              role="link"
+              :aria-label="`打开笔记：${r.title || (r.content || '').slice(0, 28)}`"
               @click="openNote(r.id)"
+              @keydown.enter.prevent="openNote(r.id)"
+              @keydown.space.prevent="openNote(r.id)"
             >
               <div class="related-title">{{ r.title || r.content.slice(0, 28) }}</div>
               <div class="related-snippet">{{ r.content }}</div>
@@ -63,6 +68,7 @@
           </button>
           <button class="action-btn danger" @click="onDelete">🗑 删除</button>
         </div>
+        <p v-if="reclassifyError" class="form-error" role="alert">{{ reclassifyError }}</p>
       </div>
   </div>
 </template>
@@ -85,6 +91,7 @@ const note = ref<LocalNote | null>(null)
 const loading = ref(true)
 const related = ref<LocalNote[]>([])
 const reclassifying = ref(false)
+const reclassifyError = ref('')
 
 const displayTitle = computed(() => {
   if (!note.value) return ''
@@ -171,13 +178,16 @@ async function onDelete() {
 async function reclassify() {
   if (!note.value || reclassifying.value) return
   reclassifying.value = true
+  reclassifyError.value = ''
   try {
     await http(`/api/notes/${note.value.id}/classify`, { method: 'POST' })
     // 后端当前 stub；刷新本地数据以拿最新分类
     const refreshed = await notesStore.getNote(note.value.id, false, currentWorkspaceId())
     if (refreshed) note.value = refreshed
-  } catch (e) {
+    reclassifyError.value = ''
+  } catch (e: any) {
     console.warn('[note] 重新分类失败:', e)
+    reclassifyError.value = e?.message || '重新分类失败，请稍后重试'
   } finally {
     reclassifying.value = false
   }
@@ -228,10 +238,10 @@ function formatTime(ms: number) {
   background: var(--bg-subtle);
   color: var(--text-primary);
 }
-.domain-tag.domain-work { background: #dbeafe; color: var(--cat-work); }
-.domain-tag.domain-study { background: #cffafe; color: var(--cat-study); }
-.domain-tag.domain-life { background: #ffedd5; color: var(--cat-life); }
-.domain-tag.domain-idea { background: #d1fae5; color: var(--cat-idea); }
+.domain-tag.domain-work { background: rgba(59, 130, 246, 0.12); color: var(--cat-work); }
+.domain-tag.domain-study { background: rgba(6, 182, 212, 0.12); color: var(--cat-study); }
+.domain-tag.domain-life { background: rgba(249, 115, 22, 0.12); color: var(--cat-life); }
+.domain-tag.domain-idea { background: rgba(16, 185, 129, 0.12); color: var(--cat-idea); }
 .meta-text { font-size: 12px; }
 .meta-tag.voice, .meta-tag.text {
   padding: 2px 6px;
@@ -336,7 +346,7 @@ function formatTime(ms: number) {
   font-weight: 500;
   cursor: pointer;
   color: var(--text-primary);
-  transition: opacity 0.15s;
+  transition: opacity var(--duration-fast);
 }
 .action-btn:active { opacity: 0.7; }
 .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -347,4 +357,15 @@ function formatTime(ms: number) {
 }
 .action-btn.ghost { background: var(--bg-subtle); }
 .action-btn.danger { color: var(--danger); border-color: var(--danger); }
+
+.form-error {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
 </style>

@@ -11,16 +11,19 @@
     <button
       class="fab"
       :class="{ recording }"
+      :aria-label="recording ? '停止录音' : '开始录音'"
+      :aria-pressed="recording"
+      :title="recording ? '松开停止录音' : '长按开始录音'"
       @touchstart.prevent="start"
       @touchend.prevent="stop"
       @mousedown.prevent="start"
       @mouseup.prevent="stop"
       @mouseleave="recording && stop()"
     >
-      <span class="fab-icon">{{ recording ? '⏹' : '🎤' }}</span>
+      <span class="fab-icon" aria-hidden="true">{{ recording ? '⏹' : '🎤' }}</span>
     </button>
-    <div v-if="recording" class="pulse" />
-    <div v-if="status" class="status">{{ status }}</div>
+    <div v-if="recording" class="pulse" aria-hidden="true" />
+    <div v-if="status" class="status" aria-live="polite">{{ status }}</div>
   </div>
 </template>
 
@@ -134,7 +137,7 @@ onBeforeUnmount(() => {
   position: fixed;
   right: var(--space-5);
   bottom: calc(var(--bottomnav-height) + var(--space-4));
-  z-index: 15;
+  z-index: var(--z-fab);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -160,7 +163,7 @@ onBeforeUnmount(() => {
   width: 60px; height: 60px;
   border-radius: 50%;
   border: 2px solid var(--danger);
-  animation: pulse 1.2s infinite;
+  animation: pulse var(--duration-slow) infinite;
 }
 @keyframes pulse {
   0% { transform: scale(1); opacity: 0.8; }
