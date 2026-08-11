@@ -3,12 +3,19 @@
       <div class="record-page">
       <header><h1>开始会议</h1><p>{{ statusText }}</p></header>
 
-      <input v-model="title" class="title-input" placeholder="会议标题（可选）" :disabled="recording || transcribing" />
+      <input v-model="title" class="title-input" aria-label="会议标题" placeholder="会议标题（可选）" :disabled="recording || transcribing" />
       <MicStatusBar :state="micState" @retry="checkMic" @settings="openSettings" />
 
       <div class="timer">{{ elapsedText }}</div>
-      <button class="record-button" :class="{ active: recording }" :disabled="transcribing || mic.state.value === 'unavailable'" @click="toggleRecord">
-        {{ recording ? '⏹' : '🎙️' }}
+      <button
+        class="record-button"
+        :class="{ active: recording }"
+        :aria-label="recording ? '停止录音' : '开始录音'"
+        :aria-pressed="recording"
+        :disabled="transcribing || mic.state.value === 'unavailable'"
+        @click="toggleRecord"
+      >
+        <span aria-hidden="true">{{ recording ? '⏹' : '🎙️' }}</span>
       </button>
       <p class="record-hint">{{ recording ? '点击停止并开始转写' : '点击开始录音' }}</p>
 
@@ -174,9 +181,10 @@ onBeforeUnmount(() => {
 .record-page { padding: 20px 16px 100px; text-align: center; }
 h1 { margin: 0; font-size: 24px; }
 header p { color: var(--text-secondary); font-size: 12px; margin: 6px 0 18px; }
-.title-input { width: 100%; box-sizing: border-box; padding: 11px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-card); font-size: 14px; }
+.title-input { width: 100%; box-sizing: border-box; padding: 11px 13px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); color: var(--text-primary); font-size: 14px; }
+.title-input:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-primary); }
 .timer { margin: 40px 0 18px; font-size: 42px; font-variant-numeric: tabular-nums; font-weight: 700; }
-.record-button { width: 88px; height: 88px; border-radius: 50%; border: 0; background: var(--brand-primary); color: #fff; font-size: 38px; box-shadow: 0 8px 22px rgba(37, 99, 235, .28); cursor: pointer; }
+.record-button { width: 88px; height: 88px; border-radius: 50%; border: 0; background: var(--brand-primary); color: var(--text-inverse); font-size: 38px; box-shadow: var(--shadow-lg); cursor: pointer; }
 .record-button.active { background: var(--danger, #dc2626); }
 .record-button:disabled { opacity: .55; cursor: wait; }
 .record-hint { color: var(--text-secondary); font-size: 12px; }
@@ -184,6 +192,6 @@ header p { color: var(--text-secondary); font-size: 12px; margin: 6px 0 18px; }
 .error-card { color: var(--danger); }
 .transcript-card h2 { font-size: 16px; margin: 0 0 8px; }
 .transcript-card p { white-space: pre-wrap; line-height: 1.6; font-size: 13px; }
-.primary { border: 0; border-radius: 8px; background: var(--brand-primary); color: white; padding: 10px 14px; cursor: pointer; }
+.primary { border: 0; border-radius: var(--radius-md); background: var(--brand-primary); color: var(--text-inverse); padding: 10px 14px; cursor: pointer; }
 .primary:disabled { opacity: .6; }
 </style>

@@ -8,7 +8,7 @@
           <h1>{{ meeting.title || '未命名会议' }}</h1>
           <p>{{ formatDate(meeting.startedAt) }} · {{ duration(meeting.durationMs) }}</p>
         </div>
-        <button class="ghost" @click="router.push('/meetings')">返回</button>
+        <button type="button" class="ghost" @click="router.push('/meetings')">返回</button>
       </header>
 
       <section class="actions">
@@ -41,7 +41,7 @@
         </div>
       </section>
 
-      <p v-if="message" class="message">{{ message }}</p>
+      <p v-if="message" class="message" role="status" aria-live="polite">{{ message }}</p>
     </div>
 </template>
 
@@ -127,6 +127,7 @@ async function createTask() {
   }
 }
 
+// TODO: replace with DOMPurify when the PKM note renderer accepts sanitized Markdown.
 function escapeHtml(value: string) {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
@@ -151,12 +152,12 @@ onMounted(load)
 .header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
 h1 { margin: 0; font-size: 23px; }
 .header p { margin: 5px 0 0; color: var(--text-secondary); font-size: 12px; }
-.ghost, .secondary, .primary { border-radius: 8px; padding: 9px 11px; cursor: pointer; font-size: 12px; }
+.ghost, .secondary, .primary { border-radius: var(--radius-md); padding: 9px 11px; cursor: pointer; font-size: 12px; }
 .ghost, .secondary { border: 1px solid var(--border); background: var(--bg-card); color: var(--text-primary); }
-.primary { border: 0; background: var(--brand-primary); color: white; }
+.primary { border: 0; background: var(--brand-primary); color: var(--text-inverse); }
 button:disabled { opacity: .55; cursor: not-allowed; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; }
-.card { margin-top: 12px; padding: 14px; background: var(--bg-card); border-radius: 11px; box-shadow: var(--shadow-sm); }
+.card { margin-top: 12px; padding: 14px; background: var(--bg-card); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
 h2 { margin: 0 0 9px; font-size: 16px; }
 .transcript, .summary { white-space: pre-wrap; line-height: 1.65; font-size: 13px; margin: 0; }
 .muted, .state { color: var(--text-secondary); }

@@ -24,23 +24,23 @@
     <!-- ======== 编辑模式 ======== -->
     <div v-else-if="isEdit" class="edit-form">
       <div class="form-group">
-        <label>标题</label>
-        <input v-model="form.title" placeholder="标题" />
+        <label for="vault-title">标题</label>
+        <input id="vault-title" v-model="form.title" aria-label="标题" placeholder="标题" />
       </div>
 
       <div class="form-group">
-        <label>用户名</label>
-        <input v-model="form.username" placeholder="用户名" />
+        <label for="vault-username">用户名</label>
+        <input id="vault-username" v-model="form.username" aria-label="用户名" placeholder="用户名" />
       </div>
 
       <div class="form-group">
-        <label>网址</label>
-        <input v-model="form.url" placeholder="https://" />
+        <label for="vault-url">网址</label>
+        <input id="vault-url" v-model="form.url" aria-label="网址" placeholder="https://" />
       </div>
 
       <div class="form-group">
-        <label>分类</label>
-        <select v-model="form.category">
+        <label for="vault-category">分类</label>
+        <select id="vault-category" v-model="form.category" aria-label="分类">
           <option value="login">登录</option>
           <option value="card">银行卡</option>
           <option value="note">安全笔记</option>
@@ -49,18 +49,18 @@
       </div>
 
       <div class="form-group">
-        <label>密码</label>
-        <input v-model="form.password" type="password" placeholder="密码" />
+        <label for="vault-password">密码</label>
+        <input id="vault-password" v-model="form.password" aria-label="密码" type="password" placeholder="密码" />
       </div>
 
       <div class="form-group">
-        <label>TOTP 种子（可选）</label>
-        <input v-model="form.totpSecret" placeholder="JBSWY3DPEHPK3PXP" />
+        <label for="vault-totp">TOTP 种子（可选）</label>
+        <input id="vault-totp" v-model="form.totpSecret" aria-label="TOTP 种子" placeholder="JBSWY3DPEHPK3PXP" />
       </div>
 
       <div class="form-group">
-        <label>备注</label>
-        <textarea v-model="form.notes" placeholder="备注"></textarea>
+        <label for="vault-notes">备注</label>
+        <textarea id="vault-notes" v-model="form.notes" aria-label="备注" placeholder="备注"></textarea>
       </div>
 
       <div class="actions">
@@ -86,7 +86,7 @@
           <div class="field-label">用户名</div>
           <div class="field-row">
             <span class="field-value">{{ entry.username }}</span>
-            <button class="field-icon-btn" @click="copyField('username', entry.username || '', '用户名')">📋</button>
+            <button class="field-icon-btn" aria-label="复制用户名" @click="copyField('username', entry.username || '', '用户名')">📋</button>
           </div>
         </div>
 
@@ -106,18 +106,20 @@
               <template v-if="passwordVisible">{{ entry.data.password }}</template>
               <template v-else>{{ maskedPassword }}</template>
             </span>
-            <button class="field-icon-btn" :title="passwordVisible ? '隐藏' : '显示'"
+            <button class="field-icon-btn" :aria-label="passwordVisible ? '隐藏密码' : '显示密码'" :title="passwordVisible ? '隐藏' : '显示'"
               @click="passwordVisible = !passwordVisible">
-              {{ passwordVisible ? '🙈' : '👁' }}
+              <span aria-hidden="true">{{ passwordVisible ? '🙈' : '👁' }}</span>
             </button>
             <button
               v-if="!copiedSlot"
               class="field-icon-btn primary-copy"
+              aria-label="复制密码"
               @click="copyPassword"
             >📋 复制</button>
             <button
               v-else
               class="field-icon-btn countdown"
+              aria-label="密码复制倒计时"
               disabled
             >📋 {{ copyCountdown }}s</button>
           </div>
@@ -129,11 +131,11 @@
             动态码 <span class="totp-hint">每 30 秒刷新</span>
           </div>
           <div class="field-row">
-            <span class="field-value mono totp-code">{{ totpCode }}</span>
+            <span class="field-value mono totp-code" role="text" aria-label="动态验证码">{{ totpCode }}</span>
             <span class="totp-remaining" :class="totpRemaining <= 5 ? 'urgent' : ''">
               {{ totpRemaining }}s
             </span>
-            <button class="field-icon-btn primary-copy" @click="copyField('otp', totpCode, '动态码')">📋 复制</button>
+            <button class="field-icon-btn primary-copy" aria-label="复制动态验证码" @click="copyField('otp', totpCode, '动态码')">📋 复制</button>
           </div>
         </div>
 
@@ -453,16 +455,18 @@ const removeAfterEach = router.afterEach(() => {
 onBeforeUnmount(() => { removeAfterEach() })
 
 // 进入页面隐藏保险起见再次触发一次（处理 tab 切回）
-document.addEventListener('visibilitychange', () => {
+function handleVisibilityChange() {
   if (document.visibilityState === 'hidden' && copiedSlot.value) {
     // 切到后台立刻清空 + 取消倒计时（保险策略）
     navigator.clipboard.writeText('').catch(() => { /* ignore */ })
     showToast('🔒 已清空剪贴板（页面离开前台）', 'danger')
     clearCopyTimer()
   }
-})
+}
+
+document.addEventListener('visibilitychange', handleVisibilityChange)
 onBeforeUnmount(() => {
-  document.removeEventListener('visibilitychange', () => undefined)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 </script>
 

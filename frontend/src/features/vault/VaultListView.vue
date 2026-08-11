@@ -8,7 +8,7 @@
     <!-- Locked / setup state -->
     <div v-if="!unlocked" class="lock-screen">
       <div class="lock-icon">🔐</div>
-      <p v-if="initError" class="error">{{ initError }}</p>
+      <p v-if="initError" class="error" role="alert">{{ initError }}</p>
       <div v-else-if="!initialized" class="setup">
         <h2>设置主密码</h2>
         <input v-model="master" type="password" placeholder="主密码" />
@@ -33,27 +33,31 @@
         <button class="btn-ghost" @click="lock">🔒 锁定</button>
       </div>
 
-      <div v-if="syncStatus" class="sync-status" :class="syncStatus.type">
+      <div v-if="syncStatus" class="sync-status" :class="syncStatus.type" role="status" aria-live="polite">
         {{ syncStatus.msg }}
       </div>
 
       <!-- 新增表单 -->
       <div v-if="showAdd" class="add-form">
-        <input v-model="newEntry.title" placeholder="标题（如 GitHub）" />
-        <input v-model="newEntry.username" placeholder="用户名" />
-        <input v-model="newEntry.url" placeholder="网址" />
-        <select v-model="newEntry.category">
+        <input v-model="newEntry.title" aria-label="标题" placeholder="标题（如 GitHub）" />
+        <input v-model="newEntry.username" aria-label="用户名" placeholder="用户名" />
+        <input v-model="newEntry.url" aria-label="网址" placeholder="网址" />
+        <select v-model="newEntry.category" aria-label="分类">
           <option value="login">登录</option>
           <option value="card">银行卡</option>
           <option value="note">安全笔记</option>
           <option value="identity">身份信息</option>
         </select>
-        <input v-model="newEntry.password" type="password" placeholder="密码" />
-        <textarea v-model="newEntry.notes" placeholder="备注（可选）"></textarea>
+        <input v-model="newEntry.password" type="password" aria-label="密码" placeholder="密码" />
+        <textarea v-model="newEntry.notes" aria-label="备注" placeholder="备注（可选）"></textarea>
+        <p v-if="vaultError" class="error" role="alert">{{ vaultError }}</p>
         <button class="btn-primary" @click="saveNew">保存</button>
       </div>
 
-      <div v-if="entries.length === 0" class="state">密码箱为空</div>
+      <div v-if="entries.length === 0" class="state" role="status">
+        <div class="empty-icon" aria-hidden="true">🔐</div>
+        <p>密码箱为空</p>
+      </div>
       <div v-else class="entry-list">
         <div v-for="e in entries" :key="e.id" class="entry-card" @click="open(e.id)">
           <span class="entry-icon">{{ categoryIcon(e.category) }}</span>
@@ -85,6 +89,7 @@ const entries = ref<VaultEntryMeta[]>([])
 const showAdd = ref(false)
 const syncing = ref(false)
 const syncStatus = ref<{ type: 'ok' | 'err'; msg: string } | null>(null)
+const vaultError = ref('')
 
 const router = useRouter()
 
@@ -148,10 +153,11 @@ async function lock() {
 }
 
 async function generate() {
+  vaultError.value = ''
   try {
     const pwd = await keystore.generatePassword({ length: 20, upper: true, lower: true, digits: true, symbols: true })
     await navigator.clipboard.writeText(pwd).catch(() => {})
-    alert('已生成并复制（30秒后剪贴板自动清空）')
+    syncStatus.value = { type: 'ok', msg: '已生成并复制（30 秒后剪贴板自动清空）' }
   } catch {
     // cap-keystore 不可用：用 Web Crypto 生成
     const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*'
@@ -159,24 +165,29 @@ async function generate() {
     crypto.getRandomValues(arr)
     const pwd = Array.from(arr, (n) => chars[n % chars.length]).join('')
     await navigator.clipboard.writeText(pwd).catch(() => {})
-    alert('已生成并复制（30秒后剪贴板自动清空）')
+    syncStatus.value = { type: 'ok', msg: '已生成并复制（30 秒后剪贴板自动清空）' }
   }
 }
 
 async function saveNew() {
-  if (!newEntry.title) { alert('请输入标题'); return }
-  await vaultStore.saveEntry({
-    title: newEntry.title,
-    username: newEntry.username || undefined,
-    url: newEntry.url || undefined,
-    category: newEntry.category,
-    data: { password: newEntry.password, notes: newEntry.notes },
-  })
-  // 清空表单
-  newEntry.title = ''; newEntry.username = ''; newEntry.url = ''
-  newEntry.password = ''; newEntry.notes = ''; newEntry.category = 'login'
-  showAdd.value = false
-  await load()
+  vaultError.value = ''
+  if (!newEntry.title.trim()) { vaultError.value = '请输入标题'; return }
+  try {
+    await vaultStore.saveEntry({
+      title: newEntry.title.trim(),
+      username: newEntry.username || undefined,
+      url: newEntry.url || undefined,
+      category: newEntry.category,
+      data: { password: newEntry.password, notes: newEntry.notes },
+    })
+    // 清空表单
+    newEntry.title = ''; newEntry.username = ''; newEntry.url = ''
+    newEntry.password = ''; newEntry.notes = ''; newEntry.category = 'login'
+    showAdd.value = false
+    await load()
+  } catch (e: any) {
+    vaultError.value = e?.message || '保存失败，请稍后重试'
+  }
 }
 
 function open(id: string) { router.push(`/vault/${id}`) }
