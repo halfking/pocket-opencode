@@ -4,8 +4,8 @@
   the bottom nav links to a module that's still in design or Phase 6A/6B.
 -->
 <template>
-  <div class="coming-soon">
-    <div class="icon">{{ icon }}</div>
+  <div class="coming-soon" role="status" aria-live="polite">
+    <div class="icon" aria-hidden="true">{{ icon }}</div>
     <h2>{{ title }}</h2>
     <p class="desc">{{ desc }}</p>
     <p class="phase">{{ phase }}</p>
@@ -35,6 +35,7 @@ defineProps<{
 h2 { margin: 0; font-size: 18px; color: var(--text-primary); }
 .desc { color: var(--text-secondary); font-size: 14px; max-width: 280px; }
 .phase {
+  margin: 0;
   color: var(--text-muted);
   font-size: 12px;
   background: var(--bg-subtle);

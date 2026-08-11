@@ -80,6 +80,7 @@
 
       <!-- 操作按钮 -->
       <div class="settings-section">
+        <p v-if="actionMessage" class="action-message" :class="{ error: actionMessageKind === 'error' }" role="status" aria-live="polite">{{ actionMessage }}</p>
         <button class="action-btn secondary" @click="checkForUpdates">
           🔄 检查更新
         </button>
@@ -141,7 +142,15 @@
       <!-- 网关运维（llm-gateway-go 控制面）-->
       <div class="settings-section">
         <h2>网关运维</h2>
-        <div class="setting-item clickable" @click="openGatewayOps">
+        <div
+        class="setting-item clickable"
+        tabindex="0"
+        role="link"
+        aria-label="打开网关运维"
+        @click="openGatewayOps"
+        @keydown.enter.prevent="openGatewayOps"
+        @keydown.space.prevent="openGatewayOps"
+      >
           <div class="setting-icon">📊</div>
           <div class="setting-content">
             <div class="setting-label">运行状态</div>
@@ -185,6 +194,8 @@ const gateway = ref<GatewayConfig>({
 })
 const testing = ref(false)
 const testResult = ref<{ ok: boolean; text: string } | null>(null)
+const actionMessage = ref('')
+const actionMessageKind = ref<'success' | 'error'>('success')
 
 onMounted(async () => {
   // 加载用户信息
@@ -257,16 +268,17 @@ function formatLoginTime(): string {
 }
 
 async function checkForUpdates() {
+  actionMessage.value = ''
   try {
     const response = await checkUpdate()
-    if (response.hasUpdate) {
-      alert(`发现新版本 v${response.latest?.version}！\n\n更新内容:\n${response.latest?.changelog.join('\n')}`)
-    } else {
-      alert('当前已是最新版本！')
-    }
+    actionMessageKind.value = 'success'
+    actionMessage.value = response.hasUpdate
+      ? `发现新版本 v${response.latest?.version}：${response.latest?.changelog.join('；') || '请查看更新说明'}`
+      : '当前已是最新版本。'
   } catch (error) {
     console.error('检查更新失败:', error)
-    alert('检查更新失败，请稍后重试')
+    actionMessageKind.value = 'error'
+    actionMessage.value = '检查更新失败，请稍后重试。'
   }
 }
 
@@ -275,7 +287,7 @@ function changeServer() {
 }
 
 function handleLogout() {
-  if (confirm('确定要退出登录吗？')) {
+  if (confirm('确定要退出登录吗？退出后需要重新登录。')) {
     localStorage.removeItem('pocket_user')
     localStorage.removeItem('selected_server')
     localStorage.removeItem('selected_instance')
@@ -378,8 +390,13 @@ function handleLogout() {
   cursor: pointer;
 }
 
-.setting-item.clickable:active {
-  opacity: 0.7;
+.setting-item.clickable:hover,
+.setting-item.clickable:focus-visible {
+  background: var(--bg-subtle);
+}
+.setting-item.clickable:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--brand-primary);
 }
 
 .setting-chevron {
@@ -401,7 +418,7 @@ function handleLogout() {
   justify-content: center;
   gap: var(--space-2);
   margin-bottom: var(--space-2-5);
-  transition: all 120ms;
+  transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast), transform var(--duration-fast);
 }
 
 .action-btn:last-child {
@@ -414,9 +431,9 @@ function handleLogout() {
 }
 
 .action-btn.secondary {
-  background: rgba(102, 126, 234, 0.1);
+  background: rgba(var(--color-primary-rgb), 0.1);
   color: var(--brand-primary);
-  border: 1px solid rgba(102, 126, 234, 0.2);
+  border: 1px solid rgba(var(--color-primary-rgb), 0.2);
 }
 
 .action-btn.danger {
@@ -424,6 +441,16 @@ function handleLogout() {
   color: var(--danger);
   border: 1px solid rgba(239, 68, 68, 0.2);
 }
+.action-message {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--success);
+  background: rgba(16, 185, 129, 0.1);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.action-message.error { color: var(--danger); background: rgba(239, 68, 68, 0.1); }
 
 .action-btn:active {
   transform: scale(0.98);

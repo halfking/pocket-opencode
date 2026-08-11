@@ -188,7 +188,7 @@ header p { color: var(--text-secondary); font-size: 12px; margin: 6px 0 18px; }
 .record-button.active { background: var(--danger, #dc2626); }
 .record-button:disabled { opacity: .55; cursor: wait; }
 .record-hint { color: var(--text-secondary); font-size: 12px; }
-.progress-card, .error-card, .transcript-card { margin-top: 24px; padding: 14px; border-radius: 10px; text-align: left; background: var(--bg-card); }
+.progress-card, .error-card, .transcript-card { margin-top: 24px; padding: 14px; border-radius: var(--radius-lg); text-align: left; background: var(--bg-card); }
 .error-card { color: var(--danger); }
 .transcript-card h2 { font-size: 16px; margin: 0 0 8px; }
 .transcript-card p { white-space: pre-wrap; line-height: 1.6; font-size: 13px; }

@@ -20,15 +20,16 @@
     </header>
 
     <!-- 状态条 -->
-    <div v-if="status" :class="['status-bar', `status-${status.kind}`]">
+    <div v-if="status" :class="['status-bar', `status-${status.kind}`]" role="status" aria-live="polite">
       {{ status.text }}
     </div>
 
     <!-- 表单 -->
     <main class="form-container">
       <div class="form-section">
-        <label class="form-label">Gateway Base URL *</label>
+        <label class="form-label" for="gateway-base-url">Gateway Base URL *</label>
         <input
+          id="gateway-base-url"
           v-model="form.baseURL"
           class="form-input"
           type="text"
@@ -41,9 +42,10 @@
       </div>
 
       <div class="form-section">
-        <label class="form-label">API Key</label>
+        <label class="form-label" for="gateway-api-key">API Key</label>
         <div class="key-row">
           <input
+            id="gateway-api-key"
             v-model="form.apiKey"
             class="form-input"
             :type="showKey ? 'text' : 'password'"
@@ -52,8 +54,8 @@
             autocorrect="off"
             spellcheck="false"
           />
-          <button class="key-toggle" type="button" @click="showKey = !showKey">
-            {{ showKey ? '🙈' : '👁' }}
+          <button class="key-toggle" type="button" :aria-label="showKey ? '隐藏 API Key' : '显示 API Key'" @click="showKey = !showKey">
+            <span aria-hidden="true">{{ showKey ? '🙈' : '👁' }}</span>
           </button>
         </div>
         <div v-if="original.apiKeySet" class="form-hint">
@@ -62,8 +64,9 @@
       </div>
 
       <div class="form-section">
-        <label class="form-label">模型列表（逗号分隔）</label>
+        <label class="form-label" for="gateway-models">模型列表（逗号分隔）</label>
         <input
+          id="gateway-models"
           v-model="modelsInput"
           class="form-input"
           type="text"
@@ -250,9 +253,11 @@ function goBack() {
   color: var(--text-primary);
 }
 
-.back-btn:hover {
+.back-btn:hover,
+.back-btn:focus-visible {
   background: var(--bg-subtle);
 }
+.back-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-primary); }
 
 .title {
   flex: 1;
@@ -313,7 +318,7 @@ function goBack() {
   background: var(--bg-card);
   color: var(--text-primary);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-sizing: border-box;
   transition: border-color 180ms ease;
 }
@@ -364,7 +369,7 @@ function goBack() {
 .key-toggle {
   width: 44px;
   height: 44px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--bg-card);
   cursor: pointer;
@@ -398,7 +403,7 @@ function goBack() {
 
 .btn-primary {
   background: var(--brand-primary);
-  color: #fff;
+  color: var(--text-inverse);
 }
 
 .btn-primary:disabled,

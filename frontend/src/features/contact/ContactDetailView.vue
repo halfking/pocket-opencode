@@ -1,7 +1,8 @@
 <!-- S2.3 联系人详情：联系人资料 + 邮件时间线。 -->
 <template>
   <div class="detail-view">
-    <div v-if="loading" class="state">加载中…</div>
+    <div v-if="loading" class="state" role="status">加载中…</div>
+    <div v-else-if="loadError" class="state error-state" role="alert">{{ loadError }}</div>
     <div v-else-if="!contact" class="state">联系人不存在</div>
     <div v-else class="detail-page">
       <header class="profile">
@@ -15,7 +16,16 @@
         <h2>联系时间线</h2>
         <p v-if="emails.length === 0" class="muted">暂无关联邮件</p>
         <ul v-else class="timeline">
-          <li v-for="email in emails" :key="email.id" @click="router.push(`/email/${email.id}`)">
+          <li
+            v-for="email in emails"
+            :key="email.id"
+            tabindex="0"
+            role="link"
+            :aria-label="`打开邮件：${email.subject || '无主题'}`"
+            @click="router.push(`/email/${email.id}`)"
+            @keydown.enter.prevent="router.push(`/email/${email.id}`)"
+            @keydown.space.prevent="router.push(`/email/${email.id}`)"
+          >
             <span class="dot"></span>
             <div>
               <strong>{{ email.subject || '(无主题)' }}</strong>
@@ -42,12 +52,16 @@ const router = useRouter()
 const contact = ref<Contact | null>(null)
 const emails = ref<LocalEmail[]>([])
 const loading = ref(true)
+const loadError = ref('')
 
 async function load() {
   loading.value = true
+  loadError.value = ''
   try {
     contact.value = await getContact(route.params.id as string)
     if (contact.value) emails.value = await getContactEmails(contact.value)
+  } catch (error: any) {
+    loadError.value = error?.message || '加载联系人详情失败，请稍后重试。'
   } finally { loading.value = false }
 }
 
@@ -66,16 +80,19 @@ onMounted(load)
 .avatar { width: 68px; height: 68px; margin: 0 auto 10px; display: grid; place-items: center; border-radius: 50%; background: var(--brand-primary); color: white; font-size: 22px; font-weight: 700; }
 h1 { margin: 0; font-size: 22px; }
 .profile p { margin: 4px 0; color: var(--text-secondary); font-size: 12px; }
-.card { padding: 14px; background: var(--bg-card); border-radius: 11px; box-shadow: var(--shadow-sm); }
+.card { padding: 14px; background: var(--bg-card); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
 h2 { margin: 0 0 10px; font-size: 16px; }
 .muted, .state { color: var(--text-secondary); }
 .state { padding: 48px; text-align: center; }
 .timeline { list-style: none; padding: 0; margin: 0; }
 .timeline li { display: flex; gap: 9px; padding: 11px 0; border-top: 1px solid var(--border); cursor: pointer; }
+.timeline li:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-primary); }
 .dot { width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: var(--brand-primary); flex-shrink: 0; }
 .timeline div { min-width: 0; }
 .timeline strong, .timeline p, .timeline small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .timeline p { margin: 4px 0; color: var(--text-secondary); font-size: 12px; }
 .timeline small { color: var(--text-muted); font-size: 10px; }
-.secondary { width: 100%; margin-top: 14px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-card); cursor: pointer; }
+.secondary { width: 100%; margin-top: 14px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); color: var(--text-primary); cursor: pointer; }
+.secondary:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-primary); }
+.error-state { color: var(--danger); }
 </style>
