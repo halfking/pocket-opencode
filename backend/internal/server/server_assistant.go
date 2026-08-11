@@ -10,6 +10,7 @@ package server
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,8 @@ import (
 	"log"
 	"net/http"
 	"net/mail"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -1059,6 +1062,300 @@ func (s *Server) handleEmailAccountTestSMTP(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "smtp": addr})
 }
 
+// handleEmailSend — POST /api/email/send
+//
+// 用账户已保存的 SMTP 配置实际发送一封邮件。这是从「配置/探测」到「副作用」
+// 的最后一环：请求体带 accountId 时必须属于当前 user/workspace，SMTP 凭证从
+// 加密列解密后经 TLS/STARTTLS 发送。响应不回显任何凭证或上游响应。
+//
+// 请求体：
+//
+//	{ "accountId": "acc-...", "to": ["a@x.com"], "subject": "...", "body": "..." }
+//
+// accountId 可省略：此时按当前 user/workspace 第一个配置了 SMTP 的启用账户发送
+// （便于前端「默认发信账户」场景）。
+func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
+	if s.emailStore == nil || s.emailCrypto == nil {
+		writeError(w, http.StatusServiceUnavailable, "email store / crypto not configured")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	var body struct {
+		AccountID string   `json:"accountId"`
+		To        []string `json:"to"`
+		Subject   string   `json:"subject"`
+		Body      string   `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if len(body.To) == 0 {
+		writeError(w, http.StatusBadRequest, "missing recipients")
+		return
+	}
+	cleanedTo := make([]string, 0, len(body.To))
+	for _, addr := range body.To {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			continue
+		}
+		if _, err := mail.ParseAddress(addr); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid recipient address: "+addr)
+			return
+		}
+		cleanedTo = append(cleanedTo, addr)
+	}
+	if len(cleanedTo) == 0 {
+		writeError(w, http.StatusBadRequest, "no valid recipients")
+		return
+	}
+	if len(body.Subject) > 500 {
+		writeError(w, http.StatusBadRequest, "subject too long")
+		return
+	}
+
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
+	var host, emailAddr string
+	var port int
+	var encCred string
+	if body.AccountID != "" {
+		var err error
+		host, emailAddr, port, encCred, err = s.emailStore.GetSMTPCredentialScoped(r.Context(), body.AccountID, uid, wsID)
+		if err != nil {
+			if errors.Is(err, email.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "account not found")
+				return
+			}
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	} else {
+		// 无显式 accountId：取当前 scope 第一个配置了 SMTP 的启用账户。
+		accounts, err := s.emailStore.ListAccountsScoped(r.Context(), uid, wsID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		for _, a := range accounts {
+			if !a.Enabled || a.SMTPHost == "" {
+				continue
+			}
+			h, addr, p, enc, err := s.emailStore.GetSMTPCredentialScoped(r.Context(), a.ID, uid, wsID)
+			if err != nil || h == "" || p == 0 {
+				continue
+			}
+			host = h
+			port = p
+			emailAddr = addr
+			encCred = enc
+			break
+		}
+	}
+	if host == "" {
+		writeError(w, http.StatusBadRequest, "smtp not configured for account")
+		return
+	}
+
+	username := emailAddr
+	password := ""
+	if encCred != "" {
+		cred, err := s.emailCrypto.DecryptString(encCred)
+		if err != nil || cred == "" {
+			writeError(w, http.StatusBadRequest, "smtp credential invalid")
+			return
+		}
+		if u, p, ok := strings.Cut(cred, ":"); ok {
+			username = u
+			password = p
+		} else {
+			password = cred
+		}
+	}
+
+	if err := smtpSend(host, port, username, password, emailAddr, cleanedTo, body.Subject, body.Body); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "to": cleanedTo, "from": emailAddr})
+}
+
+// handleEmailBody — GET /api/emails/{id}/body
+//
+// 返回单封邮件的完整正文（IMAP TEXT part）。流程：
+//  1. 按 (user, workspace) 取邮件，不信任 client 提供的 account/workspace；
+//  2. 命中加密缓存 (dataDir/email-bodies/<id>.bin) 直接解密返回；
+//  3. 未命中时按邮件所属 account + IMAP UID 拉取，并写到加密缓存后返回。
+//
+// 任意阶段账户/工作区不匹配返回 404，不暴露其他 workspace 的存在性。
+func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID string) {
+	if s.emailFetcher == nil {
+		writeError(w, http.StatusServiceUnavailable, "email fetcher not configured")
+		return
+	}
+	if s.emailCrypto == nil {
+		writeError(w, http.StatusServiceUnavailable, "email crypto not configured")
+		return
+	}
+	if s.dataDir == "" {
+		writeError(w, http.StatusServiceUnavailable, "data dir not configured")
+		return
+	}
+	em, err := s.emailStore.GetEmailByIDScoped(r.Context(), emailID, s.userIDFromRequest(r), s.workspaceIDFromRequest(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if em == nil {
+		writeError(w, http.StatusNotFound, "email not found")
+		return
+	}
+	if em.AccountID == "" {
+		writeError(w, http.StatusUnprocessableEntity, "email missing account id")
+		return
+	}
+
+	const maxBodyBytes = 256 * 1024
+	ctx := r.Context()
+
+	// 1) 缓存命中：body_path 非空才尝试读缓存文件，避免对未缓存邮件做无谓的 IO。
+	//    （em.BodyPath 来自 GetEmailByIDScoped 的 body_path 列；旧逻辑每次盲试文件。）
+	if em.BodyPath != "" {
+		if cached, _ := s.readCachedEmailBody(ctx, emailID, em.UID); cached != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"emailId": emailID,
+				"source":  "cache",
+				"bytes":   len(cached),
+				"body":    string(cached),
+			})
+			return
+		}
+	}
+
+	// 2) 未命中 → IMAP 拉取
+	body, err := s.emailFetcher.FetchBody(ctx, em.AccountID, em.UID, maxBodyBytes)
+	if err != nil {
+		log.Printf("[email/body] imap fetch email=%s account=%s uid=%d: %v", emailID, em.AccountID, em.UID, err)
+		writeError(w, http.StatusBadGateway, "imap fetch failed")
+		return
+	}
+	if writeErr := s.writeCachedEmailBody(ctx, emailID, body); writeErr != nil {
+		log.Printf("[email/body] cache write email=%s: %v", emailID, writeErr)
+		// 缓存写失败仍返回内容，避免阻塞前端
+	}
+	if markErr := s.emailStore.MarkEmailBodyCached(ctx, emailID, bodyCacheRelativePath(emailID), len(body)); markErr != nil && !errors.Is(markErr, email.ErrNotFound) {
+		log.Printf("[email/body] mark body cached email=%s: %v", emailID, markErr)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"emailId": emailID,
+		"source":  "imap",
+		"bytes":   len(body),
+		"body":    string(body),
+	})
+}
+
+// bodyCacheDirName 缓存目录名；放在 dataDir 内、模式 0700，仅进程可读。
+const bodyCacheDirName = "email-bodies"
+
+// bodyCacheRelativePath 返回相对 dataDir 的稳定路径，供 emails.body_path 存储。
+// 用 email ID 而非 UID：UID 可能在 sync 时变化；缓存失效则重拉并覆盖原文件。
+func bodyCacheRelativePath(emailID string) string {
+	return filepath.Join(bodyCacheDirName, emailID+".bin")
+}
+
+func (s *Server) bodyCacheDir() (string, error) {
+	if s.dataDir == "" {
+		return "", fmt.Errorf("data dir not configured")
+	}
+	dir := filepath.Join(s.dataDir, bodyCacheDirName)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// readCachedEmailBody 读缓存并解密；不存在 / 损坏 / UID 不匹配时返回 nil+nil。
+// 缓存头部写入 8 字节 UID，便于账号迁移后定位旧 UID 失效。
+func (s *Server) readCachedEmailBody(ctx context.Context, emailID string, expectedUID int64) ([]byte, error) {
+	dir, err := s.bodyCacheDir()
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, emailID+".bin")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(data) < 8 {
+		return nil, nil
+	}
+	prefixUID := int64(binary.BigEndian.Uint64(data[:8]))
+	if expectedUID > 0 && prefixUID != expectedUID {
+		return nil, nil // 旧缓存，视为未命中
+	}
+	bodyEnc := string(data[8:])
+	body, err := s.emailCrypto.DecryptString(bodyEnc)
+	if err != nil {
+		return nil, nil // 损坏视为未命中
+	}
+	return []byte(body), nil
+}
+
+// writeCachedEmailBody 原子写入（临时文件 + rename），避免 reader 撞上半文件。
+func (s *Server) writeCachedEmailBody(ctx context.Context, emailID string, body []byte) error {
+	dir, err := s.bodyCacheDir()
+	if err != nil {
+		return err
+	}
+	encrypted, err := s.emailCrypto.EncryptString(string(body))
+	if err != nil {
+		return err
+	}
+	finalPath := filepath.Join(dir, emailID+".bin")
+	tmp, err := os.CreateTemp(dir, ".body-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		if _, statErr := os.Stat(tmpPath); statErr == nil {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	hdr := make([]byte, 8)
+	// UID 在缓存写入时被省略（0），让 readCachedEmailBody 跳过 UID 校验，
+	// 避免 sync 增量 UID 改变导致命中旧内容。
+	binary.BigEndian.PutUint64(hdr, 0)
+	if _, err := tmp.Write(hdr); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.WriteString(encrypted); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		return err
+	}
+	_ = os.Chmod(finalPath, 0600)
+	return nil
+}
+
 func (s *Server) handleEmailOps(w http.ResponseWriter, r *http.Request) {
 	// /api/emails/sync/status — POST, fetch per-account sync status.
 	if strings.HasSuffix(r.URL.Path, "/sync/status") {
@@ -1069,9 +1366,24 @@ func (s *Server) handleEmailOps(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "email store not configured (remote-only mode)")
 		return
 	}
+	// /api/emails/{id}/body — GET 拉取完整正文（IMAP 懒加载）。
+	remain := strings.TrimPrefix(r.URL.Path, "/api/emails/")
+	remain = strings.TrimSuffix(remain, "/")
+	if strings.HasSuffix(remain, "/body") {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "GET only")
+			return
+		}
+		id := strings.TrimSuffix(remain, "/body")
+		if id == "" {
+			writeError(w, http.StatusBadRequest, "missing email id")
+			return
+		}
+		s.handleEmailBody(w, r, id)
+		return
+	}
 	// /api/emails/{id} — GET 详情 / PATCH 标记已读。
-	id := strings.TrimPrefix(r.URL.Path, "/api/emails/")
-	id = strings.TrimSuffix(id, "/")
+	id := remain
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "missing email id")
 		return

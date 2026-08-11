@@ -171,8 +171,48 @@ func (s *Store) migrate() error {
 		created_at BIGINT NOT NULL,
 		updated_at BIGINT NOT NULL
 	);
-	CREATE INDEX IF NOT EXISTS idx_vacation_replies_ws ON email_vacation_replies(workspace_id, enabled);
-	-- Mark-important audit trail: action_reason already exists, ensure NOT NULL
+		CREATE INDEX IF NOT EXISTS idx_vacation_replies_ws ON email_vacation_replies(workspace_id, enabled);
+		CREATE TABLE IF NOT EXISTS email_vacation_deliveries (
+			vacation_id TEXT NOT NULL REFERENCES email_vacation_replies(id) ON DELETE CASCADE,
+			email_id TEXT NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
+			workspace_id TEXT NOT NULL DEFAULT 'default',
+			recipient TEXT NOT NULL,
+			original_message_id TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL CHECK(status IN ('claimed','sent','failed')),
+			error TEXT NOT NULL DEFAULT '',
+			claimed_at BIGINT NOT NULL,
+			sent_at BIGINT,
+			updated_at BIGINT NOT NULL,
+			PRIMARY KEY (vacation_id, email_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_vacation_deliveries_recipient
+			ON email_vacation_deliveries(vacation_id, recipient, claimed_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_vacation_deliveries_ws
+			ON email_vacation_deliveries(workspace_id, status);
+		-- 规则意图：archive / route-folder / trigger-autoreply 等“副作用型”动作
+		-- 不直接执行，先落表，由后续 job 消费 + 重试。
+		CREATE TABLE IF NOT EXISTS email_action_intents (
+			id TEXT PRIMARY KEY,
+			email_id TEXT NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
+			account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+			workspace_id TEXT NOT NULL DEFAULT 'default',
+			user_id TEXT NOT NULL DEFAULT '',
+			action TEXT NOT NULL,
+			folder TEXT NOT NULL DEFAULT '',
+			reason TEXT NOT NULL DEFAULT '',
+			idempotency_key TEXT NOT NULL,
+			status TEXT NOT NULL CHECK(status IN ('pending','applied','failed','skipped')) DEFAULT 'pending',
+			error TEXT NOT NULL DEFAULT '',
+			created_at BIGINT NOT NULL,
+			updated_at BIGINT NOT NULL,
+			applied_at BIGINT
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_action_intents_idem
+			ON email_action_intents(idempotency_key);
+		CREATE INDEX IF NOT EXISTS idx_action_intents_pending
+			ON email_action_intents(status, created_at)
+			WHERE status = 'pending';
+		-- Mark-important audit trail: action_reason already exists, ensure NOT NULL
 	-- constraint isn't enforced (legacy rows have NULL). We leave it permissive.
 	`)
 	return err
@@ -768,7 +808,8 @@ func (s *Store) UpsertSMTPSettingsScoped(ctx context.Context, id, userID, worksp
 	return nil
 }
 
-// --- Vacation replies (configuration only; SMTP delivery not yet implemented) ---
+// --- Vacation replies: configuration CRUD + 投递队列。投递由 scheduler.vacationLoop --- //
+// --- 消费（ClaimNextVacationDelivery → SMTP 发送 → MarkVacationDeliverySent）。 --- //
 
 // UpsertVacationScoped 插入或更新一条 vacation reply。accountID 必须属
 // 于 (userID, workspaceID)，否则返回 ErrNotFound（不暴露跨租户写入）。
@@ -876,6 +917,170 @@ func (s *Store) ListVacationsScoped(ctx context.Context, accountID, userID, work
 	return out, rows.Err()
 }
 
+// ClaimNextVacationDelivery 原子领取一条待发送的自动回复。
+//
+// 约束：
+//   - 每个账户只采用最近更新的一条有效 vacation，避免重叠配置重复回复；
+//   - 仅处理 vacation 最近更新后新入库的邮件；
+//   - 同一 vacation + 原邮件只领取一次，失败任务在 retryAfter 后可重试；
+//   - 同一 vacation + 收件人 24 小时内最多领取一次；
+//   - advisory lock 串行化同一 vacation/收件人的并发领取。
+func (s *Store) ClaimNextVacationDelivery(ctx context.Context, now int64, retryAfter time.Duration) (*VacationDelivery, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	retryBefore := now - int64(retryAfter/time.Second)
+	var d VacationDelivery
+	err = tx.QueryRow(ctx, `
+		WITH active_vacations AS (
+			SELECT DISTINCT ON (r.account_id)
+				r.id, r.account_id, r.workspace_id, r.subject, r.body_text, r.updated_at,
+				a.user_id, a.email_address, a.smtp_host, a.smtp_port, a.smtp_credential_encrypted
+			FROM email_vacation_replies r
+			JOIN email_accounts a ON a.id = r.account_id AND a.workspace_id = r.workspace_id
+			WHERE r.enabled = TRUE
+			  AND r.start_at <= $1 AND r.end_at >= $1
+			  AND a.enabled = TRUE AND a.smtp_host <> '' AND a.smtp_port > 0
+			ORDER BY r.account_id, r.updated_at DESC, r.id DESC
+		)
+		SELECT v.id, e.id, v.account_id, v.workspace_id, v.user_id,
+		       e.from_address, COALESCE(e.message_id, ''), COALESCE(e.subject, ''),
+		       v.subject, v.body_text, v.smtp_host, v.smtp_port, v.email_address,
+		       v.smtp_credential_encrypted
+		FROM active_vacations v
+		JOIN emails e ON e.account_id = v.account_id AND e.workspace_id = v.workspace_id
+		LEFT JOIN email_vacation_deliveries d
+		  ON d.vacation_id = v.id AND d.email_id = e.id
+		WHERE e.created_at >= v.updated_at
+		  AND e.from_address <> ''
+		  AND LOWER(e.from_address) <> LOWER(v.email_address)
+		  AND LOWER(e.from_address) NOT LIKE 'no-reply@%'
+		  AND LOWER(e.from_address) NOT LIKE 'noreply@%'
+		  AND LOWER(e.from_address) NOT LIKE 'do-not-reply@%'
+		  AND LOWER(e.from_address) NOT LIKE 'mailer-daemon@%'
+		  AND LOWER(e.from_address) NOT LIKE 'postmaster@%'
+		  AND (d.vacation_id IS NULL OR (d.status IN ('claimed', 'failed') AND d.updated_at <= $2))
+		  AND NOT EXISTS (
+			SELECT 1 FROM email_vacation_deliveries recent
+			WHERE recent.vacation_id = v.id
+			  AND recent.email_id <> e.id
+			  AND LOWER(recent.recipient) = LOWER(e.from_address)
+			  AND recent.status IN ('claimed', 'sent')
+			  AND recent.claimed_at > $1 - 86400
+		  )
+		ORDER BY e.created_at, e.id
+		FOR UPDATE OF e SKIP LOCKED
+		LIMIT 1
+	`, now, retryBefore).Scan(
+		&d.VacationID, &d.EmailID, &d.AccountID, &d.WorkspaceID, &d.UserID,
+		&d.Recipient, &d.OriginalMessageID, &d.OriginalSubject,
+		&d.VacationSubject, &d.VacationBody, &d.SMTPHost, &d.SMTPPort,
+		&d.SenderAddress, &d.SMTPEncryptedCredential,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	lockKey := d.VacationID + "\x00" + strings.ToLower(d.Recipient)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
+		return nil, err
+	}
+
+	var recentlyClaimed bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM email_vacation_deliveries
+			WHERE vacation_id = $1 AND LOWER(recipient) = LOWER($2)
+			  AND status IN ('claimed', 'sent') AND claimed_at > $3 - 86400
+		)
+	`, d.VacationID, d.Recipient, now).Scan(&recentlyClaimed); err != nil {
+		return nil, err
+	}
+	if recentlyClaimed {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+
+	res, err := tx.Exec(ctx, `
+		INSERT INTO email_vacation_deliveries
+			(vacation_id, email_id, workspace_id, recipient, original_message_id,
+			 status, error, claimed_at, sent_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, 'claimed', '', $6, NULL, $6)
+		ON CONFLICT (vacation_id, email_id) DO UPDATE SET
+			status = 'claimed', error = '', claimed_at = EXCLUDED.claimed_at,
+			sent_at = NULL, updated_at = EXCLUDED.updated_at
+		WHERE email_vacation_deliveries.status IN ('claimed', 'failed')
+		  AND email_vacation_deliveries.updated_at <= $7
+	`, d.VacationID, d.EmailID, d.WorkspaceID, d.Recipient, d.OriginalMessageID, now, retryBefore)
+	if err != nil {
+		return nil, err
+	}
+	if res.RowsAffected() == 0 {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	d.ClaimedAt = now
+	return &d, nil
+}
+
+// MarkVacationDeliverySent 将 claim 标记为成功，并更新 vacation 最近发送时间。
+func (s *Store) MarkVacationDeliverySent(ctx context.Context, vacationID, emailID string, sentAt int64) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	res, err := tx.Exec(ctx, `
+		UPDATE email_vacation_deliveries
+		SET status = 'sent', error = '', sent_at = $3, updated_at = $3
+		WHERE vacation_id = $1 AND email_id = $2 AND status = 'claimed'
+	`, vacationID, emailID, sentAt)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE email_vacation_replies SET last_sent_at = $2 WHERE id = $1
+	`, vacationID, sentAt); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// MarkVacationDeliveryFailed 记录脱敏后的发送失败，供退避后重试。
+func (s *Store) MarkVacationDeliveryFailed(ctx context.Context, vacationID, emailID, message string, failedAt int64) error {
+	if len(message) > 500 {
+		message = message[:500]
+	}
+	res, err := s.pool.Exec(ctx, `
+		UPDATE email_vacation_deliveries
+		SET status = 'failed', error = $3, updated_at = $4
+		WHERE vacation_id = $1 AND email_id = $2 AND status = 'claimed'
+	`, vacationID, emailID, message, failedAt)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // DeleteVacationScoped 删除 vacation 配置。
 func (s *Store) DeleteVacationScoped(ctx context.Context, vacationID, userID, workspaceID string) error {
 	res, err := s.pool.Exec(ctx, `
@@ -912,7 +1117,11 @@ func (s *Store) UpdateSyncState(ctx context.Context, id string, lastUID int64, l
 	return err
 }
 
-// ListEnabledAccounts 返回所有启用的账户（scheduler 使用）。
+// ListEnabledAccounts 返回所有启用的账户。
+//
+// Deprecated: 该查询的 SELECT 不含 workspace_id 列，返回的 Account.WorkspaceID
+// 恒为空，下游 fetcher/Scheduler 会把邮件/任务错误地归到 'default' workspace。
+// 新代码应改用 ListEnabledAccountsWithWorkspace。保留此方法仅为兼容历史调用方。
 func (s *Store) ListEnabledAccounts(ctx context.Context) ([]Account, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, user_id, display_name, email_address, imap_host, imap_port, auth_type, sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at
@@ -1213,16 +1422,170 @@ func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID,
 }
 
 // GetEmailByIDScoped returns a message only within the requested scope.
+//
+// 比 scanEmail 多读一列 body_path：handleEmailBody 用它判断完整正文是否已缓存，
+// 避免每次都做一次文件探测。其余 list 路径不需要 body_path，仍走 scanEmail。
 func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID string) (*Email, error) {
-	row := s.pool.QueryRow(ctx, `SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet,
-		e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments
+	var e Email
+	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath sql.NullString
+	err := s.pool.QueryRow(ctx, `SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet,
+		e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments,
+		e.body_path
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
-		WHERE e.id=$1 AND a.user_id=$2 AND a.workspace_id=$3`, id, userID, workspaceID)
-	e, err := scanEmail(row)
+		WHERE e.id=$1 AND a.user_id=$2 AND a.workspace_id=$3`, id, userID, workspaceID).
+		Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead,
+			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPath)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
-	return e, err
+	if err != nil {
+		return nil, err
+	}
+	if fromName.Valid {
+		e.FromName = fromName.String
+	}
+	if subject.Valid {
+		e.Subject = subject.String
+	}
+	if snippet.Valid {
+		e.Snippet = snippet.String
+	}
+	if category.Valid {
+		e.Category = category.String
+	}
+	if importance.Valid {
+		e.Importance = importance.String
+	}
+	if aiSummary.Valid {
+		e.AISummary = aiSummary.String
+	}
+	if suggestedAction.Valid {
+		e.SuggestedAction = suggestedAction.String
+	}
+	if bodyPath.Valid {
+		e.BodyPath = bodyPath.String
+	}
+	return &e, nil
+}
+
+// InsertActionIntent 写入规则建议意图。idempotency_key 唯一约束保证
+// 同一 (email_id, action) 只产生一行；冲突时视作成功（持久状态保持 pending）。
+// workspace / user 透传 JWT 上下文，不接受 client 覆盖。
+func (s *Store) InsertActionIntent(ctx context.Context, intent *ActionIntent) error {
+	if intent == nil {
+		return fmt.Errorf("intent required")
+	}
+	if intent.EmailID == "" || intent.AccountID == "" || intent.Action == "" || intent.IdempotencyKey == "" {
+		return fmt.Errorf("intent missing required fields")
+	}
+	if intent.UserID == "" {
+		return fmt.Errorf("user required")
+	}
+	if intent.WorkspaceID == "" {
+		intent.WorkspaceID = "default"
+	}
+	if intent.CreatedAt == 0 {
+		intent.CreatedAt = time.Now().Unix()
+	}
+	intent.UpdatedAt = time.Now().Unix()
+	if intent.Status == "" {
+		intent.Status = "pending"
+	}
+	if intent.ID == "" {
+		intent.ID = randomID("act")
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO email_action_intents
+			(id, email_id, account_id, workspace_id, user_id, action, folder, reason,
+			 idempotency_key, status, error, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '', $11, $11)
+		ON CONFLICT (idempotency_key) DO NOTHING
+	`,
+		intent.ID, intent.EmailID, intent.AccountID, defaultWorkspace(intent.WorkspaceID),
+		intent.UserID, intent.Action, intent.Folder, intent.Reason,
+		intent.IdempotencyKey, intent.Status, intent.CreatedAt)
+	return err
+}
+
+// UpdateActionIntentStatus 由消费方写回 applied/failed/skipped 状态。
+// 仅在 (workspace, email, action) 命中且状态是 pending 时更新，避免竞争。
+func (s *Store) UpdateActionIntentStatus(ctx context.Context, intentID, userID, workspaceID, status, errMsg string, appliedAt int64) error {
+	if status == "" {
+		return fmt.Errorf("status required")
+	}
+	if len(errMsg) > 500 {
+		errMsg = errMsg[:500]
+	}
+	res, err := s.pool.Exec(ctx, `
+		UPDATE email_action_intents
+		SET status = $4, error = $5, updated_at = $6, applied_at = $6
+		WHERE id = $1
+		  AND user_id = $2
+		  AND workspace_id = $3
+		  AND status = 'pending'
+	`, intentID, userID, defaultWorkspace(workspaceID), status, errMsg, appliedAt)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ClaimActionIntents 拉取最多 limit 条 pending 意图，caller 主动通过
+// UpdateActionIntentStatus 标记 applied/failed/skipped；不引入新 in_flight 状态。
+func (s *Store) ClaimActionIntents(ctx context.Context, userID, workspaceID string, limit int) ([]ActionIntent, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, email_id, account_id, workspace_id, user_id, action, folder, reason,
+		       idempotency_key, status, error, created_at, updated_at, applied_at
+		FROM email_action_intents
+		WHERE user_id = $1 AND workspace_id = $2 AND status = 'pending'
+		ORDER BY created_at
+		LIMIT $3
+	`, userID, defaultWorkspace(workspaceID), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ActionIntent, 0)
+	for rows.Next() {
+		var i ActionIntent
+		var appliedAt sql.NullInt64
+		if err := rows.Scan(&i.ID, &i.EmailID, &i.AccountID, &i.WorkspaceID, &i.UserID,
+			&i.Action, &i.Folder, &i.Reason, &i.IdempotencyKey, &i.Status, &i.Error,
+			&i.CreatedAt, &i.UpdatedAt, &appliedAt); err != nil {
+			return nil, err
+		}
+		if appliedAt.Valid {
+			ts := appliedAt.Int64
+			i.AppliedAt = &ts
+		}
+		out = append(out, i)
+	}
+	return out, rows.Err()
+}
+
+// MarkEmailBodyCached 记录正文缓存路径（相对路径，由 server 层拼接 dataDir）。
+// 只在成功拿到 IMAP 完整正文后写入，未命中时 body_path 为空。
+func (s *Store) MarkEmailBodyCached(ctx context.Context, id, bodyPath string, bodyBytes int) error {
+	res, err := s.pool.Exec(ctx, `
+		UPDATE emails
+		SET body_path = $2, has_attachments = COALESCE(has_attachments, FALSE)
+		WHERE id = $1
+	`, id, bodyPath)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	_ = bodyBytes // reserved: future byte-count metadata
+	return nil
 }
 
 // UpdateEmailFlagsScoped atomically applies the supplied PATCH fields.

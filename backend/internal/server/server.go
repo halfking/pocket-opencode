@@ -379,6 +379,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/email/summaries/", s.requireAuth(s.handleEmailSummaryOps))
 	mux.HandleFunc("/api/email/vacations", s.requireAuth(s.handleEmailVacations))
 	mux.HandleFunc("/api/email/vacations/", s.requireAuth(s.handleEmailVacationOps))
+	mux.HandleFunc("/api/email/send", s.requireAuth(s.handleEmailSend))
 	mux.HandleFunc("/api/emails", s.requireAuth(s.handleEmails))
 	mux.HandleFunc("/api/emails/sync", s.requireAuth(s.handleEmailSync))
 	mux.HandleFunc("/api/emails/", s.requireAuth(s.handleEmailOps))

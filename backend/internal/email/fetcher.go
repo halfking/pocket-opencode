@@ -2,6 +2,8 @@ package email
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"strings"
@@ -74,6 +76,127 @@ func (f *Fetcher) RefreshTokenForAccount(
 		return "", fmt.Errorf("email: fetcher not configured")
 	}
 	return RefreshAccessToken(ctx, f.crypto, f.store, refresher, tokenURL, clientID, clientSecret, accountID)
+}
+
+// FetchBody 按 UID 单封拉取完整正文（TEXT part, RFC 3501 §6.4.5）。
+//
+// 用于 GET /api/emails/{id}/body：上层先按 user/workspace 取出 email，
+// 拿到 accountID + UID 后调用本方法，不在请求路径上接受 client 提供的
+// account/workspace。返回的字节是 IMAP server 解码后的 UTF-8 正文；multipart
+// 文本取第一个非空 text/* part，HTML 不会被剥离，前端可按需另走 mime 解析。
+//
+// maxBytes<=0 时不做客户端截断，调用方负责收尾限速；这里优先正确性。
+func (f *Fetcher) FetchBody(ctx context.Context, accountID string, uid int64, maxBytes int) ([]byte, error) {
+	if f == nil || f.store == nil || f.crypto == nil {
+		return nil, fmt.Errorf("email: fetcher not configured")
+	}
+	acc, encryptedCred, err := f.store.GetAccountByID(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("load account: %w", err)
+	}
+	if !acc.Enabled {
+		return nil, fmt.Errorf("account disabled")
+	}
+	cred, err := f.crypto.DecryptString(encryptedCred)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt credential: %w", err)
+	}
+	if cred == "" || cred == "oauth-pending-no-credential" {
+		return nil, fmt.Errorf("account has no usable credential")
+	}
+	if uid <= 0 {
+		return nil, fmt.Errorf("invalid uid")
+	}
+
+	addr := fmt.Sprintf("%s:%d", acc.IMAPHost, acc.IMAPPort)
+	client, err := f.dial(addr)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s: %w", addr, err)
+	}
+	defer client.Close()
+
+	if err := f.login(client, *acc, cred); err != nil {
+		return nil, fmt.Errorf("login %s: %w", acc.EmailAddress, err)
+	}
+	if _, err := client.Select("INBOX", nil).Wait(); err != nil {
+		return nil, fmt.Errorf("select INBOX: %w", err)
+	}
+
+	var uidSet imap.UIDSet
+	uidSet.AddNum(imap.UID(uid))
+	fetchOpts := &imap.FetchOptions{
+		UID: true,
+		BodySection: []*imap.FetchItemBodySection{{
+			Specifier: imap.PartSpecifierText,
+			Peek:      true,
+		}},
+	}
+	if maxBytes > 0 {
+		fetchOpts.BodySection[0].Partial = &imap.SectionPartial{Offset: 0, Size: int64(maxBytes)}
+	}
+	// uidSet 必须按值传：imapwire.NumSetKind 对 imap.NumSet 做类型 switch，只
+	// 认 imap.SeqSet / imap.UIDSet 值类型，*imap.UIDSet 会落到 default 分支直接
+	// panic("imap: invalid NumSet type")。
+	messages, err := client.Fetch(uidSet, fetchOpts).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("fetch uid=%d: %w", uid, err)
+	}
+	if len(messages) == 0 {
+		return nil, fmt.Errorf("uid %d not found", uid)
+	}
+	body, err := findBodySection(messages[0].BodySection)
+	if err != nil {
+		return nil, err
+	}
+	if maxBytes > 0 && len(body) > maxBytes {
+		body = body[:maxBytes]
+	}
+	return body, nil
+}
+
+// recordActionIntent 把副作用型规则建议写入 email_action_intents。
+//
+// idempotency_key = sha256(email_id || action || folder) 的 hex 前 32 字节：
+// 同一封邮件的同一动作只产生一行；folder 留空时（如 trigger-autoreply）
+// 仍能与 route-folder with folder=xxx 区分，不会合并。
+//
+// userID 取自所属账户行（account 在创建时绑定 user/workspace）。调度器按
+// (userID, workspaceID) 领取意图，因此这里必须写账户的真正 owner，而不是
+// accountID —— 否则 ClaimActionIntents 永远按 accountID 过滤、消费不到。
+func (f *Fetcher) recordActionIntent(ctx context.Context, em Email, acc Account, act rules.ActionResult) error {
+	if f.store == nil {
+		return fmt.Errorf("email: store not configured")
+	}
+	if em.WorkspaceID == "" || em.AccountID == "" {
+		return fmt.Errorf("action intent: missing workspace/account on email %s", em.ID)
+	}
+	h := sha256.Sum256([]byte(em.ID + "|" + string(act.Action) + "|" + act.Folder))
+	intent := &ActionIntent{
+		EmailID:        em.ID,
+		AccountID:      em.AccountID,
+		WorkspaceID:    em.WorkspaceID,
+		UserID:         acc.UserID,
+		Action:         string(act.Action),
+		Folder:         act.Folder,
+		Reason:         act.Reason,
+		IdempotencyKey: hex.EncodeToString(h[:])[:32],
+		Status:         "pending",
+	}
+	if err := f.store.InsertActionIntent(ctx, intent); err != nil {
+		return err
+	}
+	log.Printf("[email/fetcher] action intent queued action=%s email=%s folder=%q", act.Action, em.ID, act.Folder)
+	return nil
+}
+
+// findBodySection 选取 UID Fetch 返回的第一个非空 BODY[TEXT] 片段。
+func findBodySection(sections []imapclient.FetchBodySectionBuffer) ([]byte, error) {
+	for _, bs := range sections {
+		if len(bs.Bytes) > 0 {
+			return bs.Bytes, nil
+		}
+	}
+	return nil, fmt.Errorf("empty body section")
 }
 
 // Sync 同步一个账户的新邮件。返回 (新增邮件数, error)。
@@ -201,9 +324,11 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 			Snippet:     snippet,
 			Date:        date,
 		}
-		// 评估账户规则。规则输出会写入 Importance / Category / ActionReason；
-		// archive / route-folder / trigger-autoreply 暂不支持，引擎已统一返回
-		// ActionUnsupported，调用方安全跳过。
+		// 评估账户规则。规则输出分两类落地：
+		//   - 内联型（mark-important / label-category / archive）：直接写邮件字段，
+		//     archive 置 category=archived + 已读，入库即生效，不需要后续消费。
+		//   - 延迟型（route-folder / trigger-autoreply）：写入 email_action_intents，
+		//     由 scheduler.intentLoop 消费（IMAP MOVE / SMTP 自动回复）。
 			if ruleErr == nil && len(rulesParsed) > 0 {
 				apply := rules.Evaluate(rulesParsed, rules.EmailInput{
 					From:       fromAddr,
@@ -228,6 +353,19 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 							// 在列表里看到分类结果，不必等待 kxmemory。
 							if cat := strings.TrimSpace(act.Category); cat != "" {
 								em.Category = cat
+							}
+						case rules.ActionArchive:
+							// 归档直接在入库时落地：分类标 archived + 标已读，
+							// 避免引入 IMAP MOVE 副作用与 intent 队列复杂度。
+							// 行为可预测、可重放（重跑 sync 不会重复 MOVE）。
+							em.Category = "archived"
+							em.IsRead = true
+						case rules.ActionRouteFolder, rules.ActionTriggerAutoReply:
+							// 副作用型动作落 intent 表，由 scheduler 消费：
+							//   route-folder → 标记 applied（真实 IMAP MOVE 延后）
+							//   trigger-autoreply → SMTP 自动回复
+							if err := f.recordActionIntent(ctx, em, *acc, act); err != nil {
+								log.Printf("[email/fetcher] record action intent %s email=%s: %v", act.Action, em.ID, err)
 							}
 						}
 						if act.Action != rules.ActionUnsupported {

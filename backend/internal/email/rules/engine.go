@@ -19,13 +19,22 @@ import (
 	"time"
 )
 
-// Action 分类后的执行动作。当前实现仅支持落库到 emails.importance
-// 和 emails.category 的两条；其它三个尚无对应持久化字段，调用方应忽略。
+// Action 分类后的执行动作。
+//
+//   - mark-important / label-category：fetcher 立即写入 emails.importance / .category。
+//   - archive / route-folder / trigger-autoreply：fetcher 写入 email_action_intents 表
+//     （带幂等键），由后续 scheduler / IMAP job 消费。
+//
+// 所有 action 的“实际副作用”需由账户级 enable_dangerous_actions 开关放行
+// （详见 server 层 handler 校验）；fetcher 默认只落“建议意图”，不直接改信。
 type Action string
 
 const (
-	ActionMarkImportant  Action = "mark-important"
-	ActionLabelCategory Action = "label-category"
+	ActionMarkImportant   Action = "mark-important"
+	ActionLabelCategory   Action = "label-category"
+	ActionArchive         Action = "archive"
+	ActionRouteFolder     Action = "route-folder"
+	ActionTriggerAutoReply Action = "trigger-autoreply"
 	// ActionUnsupported 表示类型匹配但当前未实现，调用方应安全忽略。
 	ActionUnsupported Action = "unsupported"
 )
@@ -46,18 +55,22 @@ type EmailInput struct {
 // "你被分类了"——前端规则编辑器已经允许在 actions 里写
 // {"action":"label-category","category":"work"}，调用方拿到
 // ActionResult.Category 后即可直接写入 emails.category。
+//
+// Folder 给 archive / route-folder 提供目标文件夹名（IMAP folder）。
 type ActionResult struct {
 	Action   Action
 	Reason   string
-	Category string // 当前仅 ActionLabelCategory 使用；其它动作留空。
+	Category string // label-category 专用
+	Folder   string // archive / route-folder 专用（IMAP mailbox 名）
 }
 
 // actionSpec 是 Rule.Actions 的内部表示，支持 "mark-important" 这类字符串
 // 与 {"action":"label-category","category":"work"} 这类带副参数的对象。
-// 解析在 ParseRules 里完成，调用方拿到的是统一的 ActionResult.Category。
+// 解析在 ParseRules 里完成，调用方拿到的是统一的 ActionResult.Category / Folder。
 type actionSpec struct {
 	Name     string `json:"name"`
 	Category string `json:"category,omitempty"`
+	Folder   string `json:"folder,omitempty"`
 }
 
 // Rule 解析后的内部规则表示。Type 限定白名单；Actions 只输出支持的动作。
@@ -140,7 +153,9 @@ func ParseRules(raw string) ([]Rule, error) {
 		rs = append(rs, Rule{Type: "sender-whitelist", Pattern: from, Actions: []actionSpec{{Name: "mark-important"}}})
 	}
 	for _, from := range legacy.Blacklist {
-		rs = append(rs, Rule{Type: "sender-blacklist", Pattern: from, Actions: []actionSpec{{Name: "unsupported"}}})
+		// 黑名单语义：默认 archive。Caller 是否真正执行取决于账户级
+		// enable_dangerous_actions 开关。
+		rs = append(rs, Rule{Type: "sender-blacklist", Pattern: from, Actions: []actionSpec{{Name: "archive"}}})
 	}
 	for _, kw := range legacy.Keywords {
 		rs = append(rs, Rule{Type: "subject-keyword", Pattern: kw, Actions: []actionSpec{{Name: "label-category"}}})
@@ -183,8 +198,9 @@ func decodeActionSpecs(raw []json.RawMessage) ([]actionSpec, error) {
 }
 
 // Evaluate 对单封邮件评估所有规则并返回支持的动作 + 命中原因。
-// 评估规则：黑名单命中短路（仅返回 archive，但 archive 尚不支持，
-// 因此转为 unsupported，便于日志观察）。
+//
+// 黑名单命中：短路为 archive（除非用户用对象语法显式覆盖 actions），便于
+// 旧版 {"blacklist": [...]} 与新版规则语义对齐。
 func Evaluate(rules []Rule, in EmailInput) []ActionResult {
 	fromLower := strings.ToLower(in.From)
 	subjectLower := strings.ToLower(in.Subject)
@@ -209,7 +225,12 @@ func Evaluate(rules []Rule, in EmailInput) []ActionResult {
 				continue
 			}
 			seen[act] = true
-			results = append(results, ActionResult{Action: act, Reason: why, Category: spec.Category})
+			results = append(results, ActionResult{
+				Action:   act,
+				Reason:   why,
+				Category: spec.Category,
+				Folder:   spec.Folder,
+			})
 		}
 	}
 	// Sort for stable test order
@@ -253,8 +274,13 @@ func normalizeAction(s string) Action {
 		return ActionMarkImportant
 	case "label-category":
 		return ActionLabelCategory
-	case "archive", "route-folder", "trigger-autoreply":
-		// 尚未实现：保留为 unsupported 以便调用方记录审计。
+	case "archive":
+		return ActionArchive
+	case "route-folder":
+		return ActionRouteFolder
+	case "trigger-autoreply":
+		return ActionTriggerAutoReply
+	case "unsupported":
 		return ActionUnsupported
 	}
 	return ""
@@ -276,5 +302,11 @@ func matchEmail(pattern, email string) bool {
 
 // SupportedActions 列出已落地的动作（前端规则编辑器可见范围）。
 func SupportedActions() []string {
-	return []string{string(ActionMarkImportant), string(ActionLabelCategory)}
+	return []string{
+		string(ActionMarkImportant),
+		string(ActionLabelCategory),
+		string(ActionArchive),
+		string(ActionRouteFolder),
+		string(ActionTriggerAutoReply),
+	}
 }

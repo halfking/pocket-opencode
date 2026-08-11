@@ -45,11 +45,13 @@ type Email struct {
 	SuggestedAction string `json:"suggestedAction,omitempty"`
 	ActionReason    string `json:"actionReason,omitempty"`
 	HasAttachments  bool   `json:"hasAttachments"`
+
+	// BodyPath 是完整正文的加密缓存相对路径（见 MarkEmailBodyCached）。仅内部用于
+	// 判断缓存命中，不回显前端（json:"-"）。空 = 尚未缓存。
+	BodyPath string `json:"-"`
 }
 
-// VacationReply represents a configured auto-reply window. SMTP delivery
-// is intentionally not yet implemented; the table currently stores
-// configuration only so the UI can save and audit.
+// VacationReply represents a configured auto-reply window.
 type VacationReply struct {
 	ID          string `json:"id"`
 	AccountID   string `json:"accountId"`
@@ -62,6 +64,58 @@ type VacationReply struct {
 	LastSentAt  *int64 `json:"lastSentAt,omitempty"`
 	CreatedAt   int64  `json:"createdAt"`
 	UpdatedAt   int64  `json:"updatedAt"`
+}
+
+type VacationDelivery struct {
+	VacationID              string
+	EmailID                 string
+	AccountID               string
+	WorkspaceID             string
+	UserID                  string
+	Recipient               string
+	OriginalMessageID       string
+	OriginalSubject         string
+	VacationSubject         string
+	VacationBody            string
+	SMTPHost                string
+	SMTPPort                int
+	SenderAddress           string
+	SMTPEncryptedCredential string
+	ClaimedAt               int64
+}
+
+// OutgoingMessage is the transport-neutral payload passed to an injected SMTP sender.
+type OutgoingMessage struct {
+	Host     string
+	Port     int
+	Username string
+	Password string
+	From     string
+	To       []string
+	Subject  string
+	Body     string
+	Headers  map[string]string
+}
+
+// ActionIntent 记录规则建议的副作用动作（archive / route-folder / trigger-autoreply）。
+//
+// 由 fetcher 在评估规则后落表，后续 job 按 status='pending' 顺序消费并标记 applied/failed。
+// IdempotencyKey 由 email_id + action 派生，保证同一邮件同一动作只产生一行。
+type ActionIntent struct {
+	ID             string `json:"id"`
+	EmailID        string `json:"emailId"`
+	AccountID      string `json:"accountId"`
+	WorkspaceID    string `json:"workspaceId,omitempty"`
+	UserID         string `json:"userId,omitempty"`
+	Action         string `json:"action"`
+	Folder         string `json:"folder,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	IdempotencyKey string `json:"idempotencyKey"`
+	Status         string `json:"status"`
+	Error          string `json:"error,omitempty"`
+	CreatedAt      int64  `json:"createdAt"`
+	UpdatedAt      int64  `json:"updatedAt"`
+	AppliedAt      *int64 `json:"appliedAt,omitempty"`
 }
 
 // DailySummary is the LLM-generated end-of-day digest.

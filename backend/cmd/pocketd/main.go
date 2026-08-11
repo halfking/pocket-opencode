@@ -130,22 +130,22 @@ func main() {
 				}
 			}
 		}
-			signer, err := auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
-			if err != nil {
-				log.Fatalf("JWT signer init: %v", err)
-			}
-			jwtSigner = signer
-			log.Println("Auth: user store + JWT signer initialized")
-		} else if cfg.DevAuth {
-			// Dev 模式无 PG 时：仍然 init JWT signer，让 requireAuth 通过（用户可用外部 JWT）。
-			// userStore 仍 nil，所以 /api/auth/login 会 503；但其它 requireAuth 路由可用。
-			signer, err := auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
-			if err != nil {
-				log.Fatalf("JWT signer init: %v", err)
-			}
-			jwtSigner = signer
-			log.Println("Dev mode: JWT signer initialized without user store (login disabled)")
+		signer, err := auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
+		if err != nil {
+			log.Fatalf("JWT signer init: %v", err)
 		}
+		jwtSigner = signer
+		log.Println("Auth: user store + JWT signer initialized")
+	} else if cfg.DevAuth {
+		// Dev 模式无 PG 时：仍然 init JWT signer，让 requireAuth 通过（用户可用外部 JWT）。
+		// userStore 仍 nil，所以 /api/auth/login 会 503；但其它 requireAuth 路由可用。
+		signer, err := auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
+		if err != nil {
+			log.Fatalf("JWT signer init: %v", err)
+		}
+		jwtSigner = signer
+		log.Println("Dev mode: JWT signer initialized without user store (login disabled)")
+	}
 
 	// ---- 后端集成: kxmemory AI 编排服务（分类/SSOT/总结）----
 	// 提前到这里构造，因为 email scheduler 也要用它（DailySummary）。
@@ -216,6 +216,10 @@ func main() {
 						})
 					}
 					emailScheduler.SetOAuthRefresher(oauthRefresher, providers)
+					emailScheduler.SetVacationSender(server.NewSMTPVacationSender())
+					// 消费 email_action_intents（route-folder / trigger-autoreply）。
+					// emailStore / emailCrypto 在本块上方已构造（与 vacation sender 同源）。
+					emailScheduler.SetIntentExecutor(server.NewIntentExecutor(emailStore, emailCrypto))
 					// 时区：默认 UTC+8（中国大陆）；可由 POCKET_TIMEZONE_OFFSET_SEC 覆盖。
 					emailScheduler.SetTimezoneOffset(cfg.TimezoneOffsetSec)
 					emailScheduler.Start(context.Background())
@@ -529,7 +533,7 @@ func main() {
 	//   1. OpenCode HTTP adapter（向后兼容）
 	//   2. ACP stdio adapter（新增，支持 Codex/Claude Code 等 CLI agents）
 	agentReg := agent.NewRegistry()
-	
+
 	// 1. 注册 OpenCode HTTP adapter
 	opencodeAgentAdapter := agent.NewOpenCodeAdapter(opencodeAdapter)
 	_ = agentReg.Register(agent.AgentRef{Type: "opencode", Target: ""}, opencodeAgentAdapter)
@@ -545,7 +549,7 @@ func main() {
 			ref.ID,
 		)
 	}
-	
+
 	// 2. 注册 ACP stdio adapter（新增）
 	acpStdioAdapter := agent.NewACPStdioAdapter()
 	// 示例：注册 agent_echo（测试用）
@@ -566,7 +570,7 @@ func main() {
 		)
 		log.Printf("Registered ACP stdio agent: Claude CLI at %s", claudePath)
 	}
-	
+
 	srv.SetAgentRegistry(agentReg)
 	log.Printf("ACP agent registry wired: %d adapter(s)", len(agentReg.All()))
 

@@ -30,17 +30,38 @@ type OAuthRevokedEvent struct {
 	At           int64  `json:"at"`         // unix seconds
 }
 
-// Scheduler 定期触发 IMAP 同步和每日邮件总结。
+// VacationSender is the transport boundary used by the scheduler. The server
+// package injects the concrete SMTP implementation so email does not import server.
+type VacationSender interface {
+	Send(ctx context.Context, message OutgoingMessage) error
+}
+
+// IntentExecutor consumes an email_action_intents row produced by the rules
+// engine (route-folder / trigger-autoreply). The server package injects the
+// concrete implementation so email does not import server. Returning nil marks
+// the intent applied; a non-nil error marks it failed (and retried after
+// backoff). Returning ErrSkipIntent marks it skipped without retry.
+type IntentExecutor interface {
+	Execute(ctx context.Context, intent ActionIntent) error
+}
+
+// ErrSkipIntent 由 IntentExecutor 返回时，调度器把意图标为 skipped（终态、不重试），
+// 而非 failed。用于 route-folder 这类本期只记录、不真实执行 IMAP MOVE 的场景。
+var ErrSkipIntent = errors.New("email: skip intent (terminal, no retry)")
+
+// Scheduler 定期触发 IMAP 同步、Vacation 自动回复和每日邮件总结。
 type Scheduler struct {
-	store       *Store
-	fetcher     *Fetcher
-	crypto      *Crypto
-	kxmem       kxmemory.Client                // optional；nil 表示禁用 DailySummary AI 生成
-	refresher   OAuthRefresher                 // optional；nil 跳过自动 refresh
-	providers   map[string]OAuthProviderConfig // providerID -> credentials/tokenURL
-	broadcaster OAuthBroadcaster               // optional；nil 跳过 WS 推送（保留 log）
-	stop        chan struct{}
-	enabled     bool
+	store          *Store
+	fetcher        *Fetcher
+	crypto         *Crypto
+	kxmem          kxmemory.Client                // optional；nil 表示禁用 DailySummary AI 生成
+	refresher      OAuthRefresher                 // optional；nil 跳过自动 refresh
+	providers      map[string]OAuthProviderConfig // providerID -> credentials/tokenURL
+	broadcaster    OAuthBroadcaster               // optional；nil 跳过 WS 推送（保留 log）
+	vacationSender VacationSender                 // optional；nil 跳过自动回复投递
+	intentExecutor IntentExecutor                 // optional；nil 跳过 action_intents 消费
+	stop           chan struct{}
+	enabled        bool
 	// tzOffsetSec 用户时区偏移（秒），用于按"日"聚合邮件。
 	// 用 atomic.Int64 防止 cmd/pocketd 在 Start 之后修改时与 goroutine 数据竞争。
 	tzOffsetSec atomic.Int64
@@ -105,6 +126,17 @@ func (s *Scheduler) SetBroadcaster(b OAuthBroadcaster) {
 	s.broadcaster = b
 }
 
+// SetVacationSender 注入自动回复发送器；nil 时保留配置但不产生外发副作用。
+func (s *Scheduler) SetVacationSender(sender VacationSender) {
+	s.vacationSender = sender
+}
+
+// SetIntentExecutor 注入 action_intents 消费器；nil 时跳过 route-folder /
+// trigger-autoreply 意图消费（意图留在 pending，不丢失）。
+func (s *Scheduler) SetIntentExecutor(executor IntentExecutor) {
+	s.intentExecutor = executor
+}
+
 // SetTimezoneOffset 设置用户时区偏移（秒），用于 DailySummary 的"日"边界。
 // 中国大陆默认 28800（UTC+8）。
 func (s *Scheduler) SetTimezoneOffset(sec int) {
@@ -124,6 +156,12 @@ func (s *Scheduler) Start(ctx context.Context) {
 	}
 	go s.pollLoop(ctx)
 	go s.dailySummaryLoop(ctx)
+	if s.vacationSender != nil {
+		go s.vacationLoop(ctx)
+	}
+	if s.intentExecutor != nil {
+		go s.intentLoop(ctx)
+	}
 	if s.refresher != nil {
 		go s.refreshLoop(ctx)
 	}
@@ -288,8 +326,195 @@ func guessProviderFromEmail(emailAddr string) string {
 	return ""
 }
 
+func (s *Scheduler) vacationLoop(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stop:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.runVacationReplies(ctx, time.Now())
+		}
+	}
+}
+
+// intentLoop 每分钟消费 email_action_intents 里 status=pending 的 route-folder /
+// trigger-autoreply 意图。archive 不入队（fetcher 落库即归档）。
+//
+// 调度器没有 JWT，无法直接以单用户视角 claim：复用 runDailySummary 的做法 —— 先
+// 取所有启用账户（含 workspace_id），按 (userID, workspaceID) 去重得到 scope 集合，
+// 再对每个 scope 调 ClaimActionIntents。这样意图按真实 owner 归属消费，跨 workspace
+// 不泄漏。
+func (s *Scheduler) intentLoop(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stop:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.runIntents(ctx)
+		}
+	}
+}
+
+func (s *Scheduler) runIntents(ctx context.Context) {
+	if s.intentExecutor == nil || s.store == nil {
+		return
+	}
+	listCtx, listCancel := context.WithTimeout(ctx, 30*time.Second)
+	accounts, err := s.store.ListEnabledAccountsWithWorkspace(listCtx)
+	listCancel()
+	if err != nil {
+		log.Printf("[email/scheduler] list accounts for intents: %v", err)
+		return
+	}
+
+	type scope struct {
+		userID      string
+		workspaceID string
+	}
+	scopes := make(map[scope]struct{})
+	for _, a := range accounts {
+		if a.Enabled && a.UserID != "" {
+			scopes[scope{userID: a.UserID, workspaceID: defaultWorkspace(a.WorkspaceID)}] = struct{}{}
+		}
+	}
+
+	now := time.Now().Unix()
+	for sc := range scopes {
+		s.processScopedIntents(ctx, sc.userID, sc.workspaceID, now)
+	}
+}
+
+// processScopedIntents 领取并执行单个 (user, workspace) 的待处理意图，直到队列
+// 清空或达到硬上限（防恶意洪泛）。执行失败的意图标 failed（pending→failed/skipped
+// 都是终态；本期没有重试退避，留给后续 in_flight 状态机）。
+func (s *Scheduler) processScopedIntents(ctx context.Context, userID, workspaceID string, now int64) {
+	const (
+		batchSize = 25   // 每次 claim 的行数（一次 DB 往返）
+		hardCap   = 1000 // 单 scope 单 tick 硬上限，防恶意/积压洪泛
+	)
+	processed := 0
+	for processed < hardCap {
+		claimCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		intents, err := s.store.ClaimActionIntents(claimCtx, userID, workspaceID, batchSize)
+		cancel()
+		if err != nil {
+			log.Printf("[email/scheduler] claim intents user=%s ws=%s: %v", userID, workspaceID, err)
+			return
+		}
+		if len(intents) == 0 {
+			return
+		}
+		for _, intent := range intents {
+			if err := s.intentExecutor.Execute(ctx, intent); err != nil {
+				if errors.Is(err, ErrSkipIntent) {
+					if markErr := s.store.UpdateActionIntentStatus(ctx, intent.ID, userID, workspaceID, "skipped", "", now); markErr != nil {
+						log.Printf("[email/scheduler] mark intent skipped %s: %v", intent.ID, markErr)
+					}
+					continue
+				}
+				log.Printf("[email/scheduler] intent execute failed %s action=%s: %v", intent.ID, intent.Action, err)
+				if markErr := s.store.UpdateActionIntentStatus(ctx, intent.ID, userID, workspaceID, "failed", err.Error(), now); markErr != nil {
+					log.Printf("[email/scheduler] mark intent failed %s: %v", intent.ID, markErr)
+				}
+				continue
+			}
+			if err := s.store.UpdateActionIntentStatus(ctx, intent.ID, userID, workspaceID, "applied", "", now); err != nil {
+				log.Printf("[email/scheduler] mark intent applied %s: %v", intent.ID, err)
+			}
+		}
+		processed += len(intents)
+		// 本批不足 batchSize → 队列已清空，停止。
+		if len(intents) < batchSize {
+			return
+		}
+	}
+}
+
+func (s *Scheduler) runVacationReplies(ctx context.Context, now time.Time) {
+	if s.vacationSender == nil || s.crypto == nil || s.store == nil {
+		return
+	}
+	const (
+		maxPerTick = 20
+		retryAfter = 15 * time.Minute
+	)
+	for i := 0; i < maxPerTick; i++ {
+		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		delivery, err := s.store.ClaimNextVacationDelivery(callCtx, now.Unix(), retryAfter)
+		cancel()
+		if err != nil {
+			log.Printf("[email/scheduler] claim vacation delivery: %v", err)
+			return
+		}
+		if delivery == nil {
+			return
+		}
+		if err := s.sendVacationReply(ctx, delivery, now); err != nil {
+			log.Printf("[email/scheduler] vacation send failed vacation=%s email=%s: %v", delivery.VacationID, delivery.EmailID, err)
+			if markErr := s.store.MarkVacationDeliveryFailed(ctx, delivery.VacationID, delivery.EmailID, err.Error(), now.Unix()); markErr != nil {
+				log.Printf("[email/scheduler] mark vacation failed vacation=%s email=%s: %v", delivery.VacationID, delivery.EmailID, markErr)
+			}
+			continue
+		}
+		if err := s.store.MarkVacationDeliverySent(ctx, delivery.VacationID, delivery.EmailID, now.Unix()); err != nil {
+			log.Printf("[email/scheduler] mark vacation sent vacation=%s email=%s: %v", delivery.VacationID, delivery.EmailID, err)
+			continue
+		}
+		log.Printf("[email/scheduler] vacation reply sent vacation=%s email=%s account=%s", delivery.VacationID, delivery.EmailID, delivery.AccountID)
+	}
+}
+
+func (s *Scheduler) sendVacationReply(ctx context.Context, delivery *VacationDelivery, now time.Time) error {
+	credential := ""
+	if delivery.SMTPEncryptedCredential != "" {
+		plain, err := s.crypto.DecryptString(delivery.SMTPEncryptedCredential)
+		if err != nil {
+			return fmt.Errorf("decrypt smtp credential: %w", err)
+		}
+		credential = plain
+	}
+	username := delivery.SenderAddress
+	password := credential
+	if user, pass, ok := strings.Cut(credential, ":"); ok {
+		username = user
+		password = pass
+	}
+	headers := map[string]string{
+		"Auto-Submitted":           "auto-replied",
+		"Precedence":               "bulk",
+		"X-Auto-Response-Suppress": "All",
+		"Date":                     now.Format(time.RFC1123Z),
+	}
+	if delivery.OriginalMessageID != "" {
+		messageID := "<" + strings.Trim(delivery.OriginalMessageID, "<>") + ">"
+		headers["In-Reply-To"] = messageID
+		headers["References"] = messageID
+	}
+	subject := strings.TrimSpace(delivery.VacationSubject)
+	if subject == "" {
+		subject = "Re: " + strings.TrimSpace(delivery.OriginalSubject)
+	}
+	return s.vacationSender.Send(ctx, OutgoingMessage{
+		Host: delivery.SMTPHost, Port: delivery.SMTPPort,
+		Username: username, Password: password,
+		From: delivery.SenderAddress, To: []string{delivery.Recipient},
+		Subject: subject, Body: delivery.VacationBody, Headers: headers,
+	})
+}
+
 func (s *Scheduler) tick(ctx context.Context) {
-	accounts, err := s.store.ListEnabledAccounts(ctx)
+	// 用 WithWorkspace 变体：返回的 Account 带 workspace_id，下游 fetcher.Sync
+	// 需要它把邮件写到正确的 workspace（而非 defaultWorkspace 兜底）。旧
+	// ListEnabledAccounts 的 SELECT 不含该列，是遗留 footgun。
+	accounts, err := s.store.ListEnabledAccountsWithWorkspace(ctx)
 	if err != nil {
 		log.Printf("[email/scheduler] list accounts: %v", err)
 		return
