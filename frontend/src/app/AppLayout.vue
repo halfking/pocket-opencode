@@ -5,16 +5,41 @@
 
   This is the single source of truth for navigation; new modules only add
   an entry to BottomNav.vue and a route, not a copy of the markup.
+
+  Accessibility:
+  - Skip link is the first focusable element so keyboard users can jump
+    directly to <main> instead of tabbing through the top bar every page.
+  - <header role="banner"> marks the app-level top bar.
+  - <main id="main" role="main"> is the single primary landmark per page.
+  - <nav> in BottomNav carries aria-label="主导航".
 -->
 <template>
   <div class="app-layout">
-    <header v-if="showTopBar" class="top-bar">
-      <button v-if="canGoBack" class="back-btn" @click="goBack">←</button>
+    <a href="#main" class="skip-link" @click.prevent="focusMain">跳到主要内容</a>
+
+    <header v-if="showTopBar" class="top-bar" role="banner">
+      <button
+        v-if="canGoBack"
+        class="back-btn"
+        type="button"
+        aria-label="返回"
+        @click="goBack"
+      >
+        <span aria-hidden="true">←</span>
+      </button>
       <h1 class="title">{{ title }}</h1>
       <slot name="actions" />
     </header>
 
-    <main class="content" :class="{ 'has-bottom-nav': showBottomNav }">
+    <main
+      id="main"
+      ref="mainEl"
+      class="content"
+      role="main"
+      :class="{ 'has-bottom-nav': showBottomNav }"
+      :aria-label="title"
+      tabindex="-1"
+    >
       <slot />
     </main>
 
@@ -23,12 +48,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import BottomNav from '../components/BottomNav.vue'
 
 const route = useRoute()
 const router = useRouter()
+
+const mainEl = ref<HTMLElement | null>(null)
 
 const title = computed(() => (route.meta.title as string) || 'OpenCode Pocket')
 const showTopBar = computed(() => route.meta.showTopBar !== false)
@@ -39,22 +66,53 @@ function goBack() {
   if (window.history.length > 1) router.back()
   else router.push('/ai')
 }
+
+function focusMain() {
+  // Move focus to <main> so the skip link lands keyboard users at content.
+  mainEl.value?.focus()
+  mainEl.value?.scrollTo({ top: 0 })
+}
 </script>
 
 <style scoped>
 .app-layout {
   min-height: 100vh;
+  min-height: 100dvh;
   width: 100%;
   background: var(--bg-base);
   color: var(--text-primary);
   display: flex;
   flex-direction: column;
-  /* 安全区域：折叠屏/刘海屏铺满且不被遮挡 */
+  /* Safe area: keep fold/notch screens full-bleed without overlap. */
   padding-left: env(safe-area-inset-left, 0);
   padding-right: env(safe-area-inset-right, 0);
 }
+
+/* Skip link — visually hidden until focused via keyboard. */
+.skip-link {
+  position: absolute;
+  left: var(--space-2);
+  top: -40px;
+  z-index: var(--z-toast);
+  padding: var(--space-2) var(--space-3);
+  background: var(--brand-primary);
+  color: var(--text-inverse);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
+  text-decoration: none;
+  transition: top var(--duration-fast) var(--ease-out);
+}
+
+.skip-link:focus,
+.skip-link:focus-visible {
+  top: var(--space-2);
+  outline: 2px solid var(--text-inverse);
+  outline-offset: 2px;
+}
+
 .top-bar {
-  height: 48px;
+  height: var(--topbar-height);
   display: flex;
   align-items: center;
   gap: var(--space-2-5);
@@ -64,47 +122,68 @@ function goBack() {
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-sticky);
 }
+
 .back-btn {
-  background: none;
-  border: none;
   font-size: 20px;
   color: var(--text-primary);
-  cursor: pointer;
   padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  line-height: 1;
+  transition: background var(--duration-fast) var(--ease-out);
 }
+
+.back-btn:active {
+  background: var(--bg-subtle);
+}
+
 .title {
   flex: 1;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: var(--text-lg);
+  font-weight: var(--font-weight-semibold);
   margin: 0;
+  color: var(--text-primary);
+  /* Allow long titles to ellipsize instead of wrapping. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
 .content {
   flex: 1;
   width: 100%;
-  /* 大屏（折叠展开/平板）居中限宽，避免内容被拉得过宽难读 */
+  /* Large screens (foldable expanded / tablet): center and cap width. */
   max-width: var(--content-max, 100%);
   margin: 0 auto;
   padding: var(--space-3);
-}
-.content.has-bottom-nav {
-  padding-bottom: calc(56px + var(--space-3));
+  /* main is the scroll container for focus management. */
+  outline: none;
 }
 
-/* 折叠屏展开态 / 平板（≥840px）：内容区放宽，列表类页面切双列 */
+.content.has-bottom-nav {
+  padding-bottom: calc(var(--bottomnav-height) + var(--space-3));
+}
+
+/* Foldable expanded / tablet (≥840px): widen content and switch lists to 2-col. */
 @media (min-width: 840px) {
-  .app-layout { --content-max: 1100px; }
-  .content { padding: var(--space-4) var(--space-5); }
-  /* 通用列表双列：笔记/邮件/会议/联系人列表在大屏两列铺满 */
+  .app-layout {
+    --content-max: 1100px;
+  }
+  .content {
+    padding: var(--space-4) var(--space-5);
+  }
   .content :is(.note-list, .meeting-list, .meetings-page .meeting-list, .contact-list, .email-list) {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-3);
   }
 }
+
 @media (min-width: 1280px) {
-  .app-layout { --content-max: 1320px; }
+  .app-layout {
+    --content-max: 1320px;
+  }
   .content :is(.note-list, .meeting-list, .contact-list, .email-list) {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }

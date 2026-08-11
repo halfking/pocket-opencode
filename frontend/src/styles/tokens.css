@@ -2,36 +2,76 @@
  * Design tokens — central CSS variable system.
  * Replaces hardcoded colors scattered across views. Import once in main.ts.
  * Supports dark mode via prefers-color-scheme.
+ *
+ * Token layers (all layers defined here; views should only reference these):
+ *   1. Brand            — --brand-*, --gradient-*
+ *   2. Surfaces         — --bg-*, --color-bg-*
+ *   3. Text             — --text-*, --color-text-*
+ *   4. Borders          — --border, --color-border
+ *   5. Functional       — --success/warning/danger/info, --color-{success,warning,error}
+ *   6. Category accents — --cat-*
+ *   7. Radius           — --radius-*
+ *   8. Spacing          — --space-*, --spacing-*
+ *   9. Typography       — --text-{xs..xl}, --font-*, --font-weight-*
+ *  10. Shadows          — --shadow-*
+ *  11. Motion           — --duration-*, --ease-*
+ *  12. Layout           — --topbar-height, --bottomnav-height
+ *
+ * Aliases: --color-* aliases mirror their non-prefixed counterparts so legacy
+ * base components (Button/Card/Input/Loading/Toast/Dialog/Skeleton/BottomSheet)
+ * render correctly without rewriting every var() reference.
  */
 :root {
-  /* Brand */
+  /* ── 1. Brand ── */
   --brand-primary: #667eea;
   --brand-secondary: #764ba2;
   --brand-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  --gradient-primary: var(--brand-gradient);
+  --color-primary: var(--brand-primary);
+  --color-primary-rgb: 102, 126, 234; /* for rgba(var(--color-primary-rgb), alpha) */
 
-  /* Surfaces */
+  /* ── 2. Surfaces ── */
   --bg-base: #f7f7fa;
   --bg-card: #ffffff;
   --bg-elevated: #ffffff;
   --bg-subtle: #f3f4f6;
+  /* Aliases used by base/interactive components */
+  --color-bg-base: var(--bg-base);
+  --color-bg-surface: var(--bg-card);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-bg-subtle: var(--bg-subtle);
+  --color-bg-hover: var(--bg-subtle);
+  --color-bg-overlay: rgba(15, 23, 42, 0.5);
 
-  /* Text - 增强对比度（Codex 风格） */
-  --text-primary: #0a0a0a;    /* 更深黑（原 #111827） */
-  --text-secondary: #525252;  /* 更深灰（原 #6b7280） */
-  --text-muted: #a3a3a3;      /* 保持 */
+  /* ── 3. Text ── */
+  --text-primary: #0a0a0a;     /* deeper black for Codex-style contrast */
+  --text-secondary: #525252;   /* deeper gray */
+  --text-muted: #a3a3a3;
   --text-inverse: #ffffff;
+  /* Aliases */
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-muted);
+  --color-text-inverse: var(--text-inverse);
 
-  /* Borders & dividers */
+  /* ── 4. Borders ── */
   --border: #e5e7eb;
   --border-strong: #d1d5db;
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
 
-  /* Functional */
+  /* ── 5. Functional ── */
   --success: #10b981;
   --warning: #f59e0b;
   --danger: #ef4444;
   --info: #3b82f6;
+  /* Aliases */
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--danger);
+  --color-info: var(--info);
 
-  /* Category accents (email/notes) */
+  /* ── 6. Category accents (email/notes) ── */
   --cat-work: #3b82f6;
   --cat-bill: #f59e0b;
   --cat-notification: #6b7280;
@@ -42,50 +82,85 @@
   --cat-study: #06b6d4;
   --cat-life: #f97316;
 
-  /* Radius - 更锐利的圆角（Codex 风格） */
-  --radius-sm: 6px;   /* 原 8px */
-  --radius-md: 8px;   /* 原 12px */
-  --radius-lg: 10px;  /* 原 16px */
+  /* ── 7. Radius ── */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 16px;
   --radius-full: 9999px;
 
-  /* Spacing scale - 更紧凑的间距系统 */
+  /* ── 8. Spacing ── */
   --space-0: 0px;
   --space-1: 4px;
   --space-2: 8px;
-  --space-2-5: 10px;  /* 新增：介于小和中之间 */
+  --space-2-5: 10px;
   --space-3: 12px;
-  --space-4: 14px;    /* 原 16px，紧凑化 */
-  --space-5: 18px;    /* 原 20px */
-  --space-6: 20px;    /* 原 24px，组间距 */
+  --space-4: 14px;
+  --space-5: 18px;
+  --space-6: 20px;
+  --space-7: 24px;
+  --space-8: 32px;
 
-  /* 语义化间距变量 */
-  --spacing-card-padding: var(--space-3);   /* 卡片内边距：12px */
-  --spacing-list-gap: var(--space-2-5);     /* 列表项间距：10px */
-  --spacing-section-gap: var(--space-5);    /* 区块间距：18px */
-  --spacing-inline-gap: var(--space-2);     /* 行内元素间距：8px */
+  /* Semantic spacing */
+  --spacing-card-padding: var(--space-3);
+  --spacing-list-gap: var(--space-2-5);
+  --spacing-section-gap: var(--space-5);
+  --spacing-inline-gap: var(--space-2);
 
-  /* 字体大小层级 - 更明确的视觉层次 */
-  --text-xs: 10px;    /* 极小文本（时间戳、徽章） */
-  --text-sm: 12px;    /* 小文本（元信息） */
-  --text-base: 14px;  /* 主体文本 */
-  --text-md: 15px;    /* 强调文本（标题） */
-  --text-lg: 16px;    /* 大标题 */
-  --text-xl: 18px;    /* 特大标题 */
+  /* ── 9. Typography ── */
+  --text-xs: 10px;
+  --text-sm: 12px;
+  --text-base: 14px;
+  --text-md: 15px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+  --text-2xl: 24px;
 
-  /* 字重系统 */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
   --font-weight-normal: 400;
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
   --font-weight-bold: 700;
 
-  /* Shadows */
+  /* ── 10. Shadows ── */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08);
   --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.12);
 
-  /* Layout - 更紧凑的布局高度 */
-  --topbar-height: 48px;      /* 原 52px */
-  --bottomnav-height: 56px;   /* 原 60px */
+  /* ── 11. Motion ── */
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* ── 12. Layout ── */
+  --topbar-height: 48px;
+  --bottomnav-height: 56px;
+
+  /* ── 13. Z-index scale ── */
+  --z-base: 1;
+  --z-sticky: 10;
+  --z-fab: 30;
+  --z-bottom-nav: 20;
+  --z-sheet: 60;
+  --z-modal: 1000;
+  --z-toast: 1400;
+  --z-tooltip: 1500;
+
+  /* ── 14. Safe area insets ── */
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -94,13 +169,28 @@
     --bg-card: #1a1a22;
     --bg-elevated: #22222c;
     --bg-subtle: #1f1f28;
-    --text-primary: #fafafa;    /* 更亮白（原 #f3f4f6） */
-    --text-secondary: #a3a3a3;  /* 更亮灰（原 #9ca3af） */
+    --color-bg-base: var(--bg-base);
+    --color-bg-surface: var(--bg-card);
+    --color-bg-elevated: var(--bg-elevated);
+    --color-bg-subtle: var(--bg-subtle);
+    --color-bg-hover: #2a2a35;
+    --color-bg-overlay: rgba(0, 0, 0, 0.65);
+
+    --text-primary: #fafafa;
+    --text-secondary: #a3a3a3;
     --text-muted: #6b7280;
+    --color-text-primary: var(--text-primary);
+    --color-text-secondary: var(--text-secondary);
+    --color-text-tertiary: var(--text-muted);
+
     --border: #2a2a35;
     --border-strong: #3a3a48;
+    --color-border: var(--border);
+    --color-border-strong: var(--border-strong);
+
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.6);
   }
 }

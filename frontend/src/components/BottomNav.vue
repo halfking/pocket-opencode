@@ -3,35 +3,57 @@
   5 primary tabs + a "more" sheet for secondary modules (vault, settings,
   instances, sessions). Active state derives from the current route so we
   no longer hardcode "active" per view.
+
+  Accessibility:
+  - <nav aria-label="主导航"> wraps the whole bar.
+  - Each <router-link> sets aria-current="page" when active so screen
+    readers announce the current tab.
+  - The "更多" button uses aria-haspopup + aria-expanded.
+  - The bottom sheet uses role="dialog" + aria-modal + aria-label.
 -->
 <template>
-  <nav class="bottom-nav">
+  <nav class="bottom-nav" aria-label="主导航">
     <router-link
       v-for="item in items"
       :key="item.to"
       :to="item.to"
       class="nav-item"
       :class="{ active: isActive(item) }"
+      :aria-current="isActive(item) ? 'page' : undefined"
     >
-      <span class="icon">{{ item.icon }}</span>
+      <span class="icon" aria-hidden="true">{{ item.icon }}</span>
       <span class="label">{{ item.label }}</span>
     </router-link>
 
-    <button class="nav-item" @click="showMore = !showMore">
-      <span class="icon">⋮</span>
+    <button
+      class="nav-item"
+      type="button"
+      aria-haspopup="dialog"
+      :aria-expanded="showMore"
+      @click="showMore = !showMore"
+    >
+      <span class="icon" aria-hidden="true">⋮</span>
       <span class="label">更多</span>
     </button>
 
-    <div v-if="showMore" class="more-sheet" @click.self="showMore = false">
+    <div
+      v-if="showMore"
+      class="more-sheet"
+      role="dialog"
+      aria-modal="true"
+      aria-label="更多功能"
+      @click.self="showMore = false"
+    >
       <div class="more-panel">
         <router-link
           v-for="item in more"
           :key="item.to"
           :to="item.to"
           class="more-item"
+          :aria-current="isActive(item) ? 'page' : undefined"
           @click="showMore = false"
         >
-          <span class="icon">{{ item.icon }}</span>
+          <span class="icon" aria-hidden="true">{{ item.icon }}</span>
           <span>{{ item.label }}</span>
         </router-link>
       </div>
@@ -76,52 +98,82 @@ function isActive(item: NavItem) {
   left: 0;
   right: 0;
   height: var(--bottomnav-height);
+  /* Respect the home indicator on notched devices. */
+  padding-bottom: env(safe-area-inset-bottom, 0);
   background: var(--bg-card);
   border-top: 1px solid var(--border);
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: space-around;
-  z-index: 20;
+  z-index: var(--z-bottom-nav);
 }
+
 .nav-item {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 2px;
-  background: none;
-  border: none;
   text-decoration: none;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--text-xs);
   padding: var(--space-1);
-  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out);
+  /* Touch-friendly tap target height. */
+  min-height: 44px;
 }
+
 .nav-item.active {
   color: var(--brand-primary);
+  font-weight: var(--font-weight-semibold);
 }
-.icon { font-size: 18px; line-height: 1; }
-.label { font-size: 11px; }
+
+.nav-item:active {
+  opacity: 0.7;
+}
+
+.icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.label {
+  font-size: var(--text-xs);
+  line-height: 1;
+}
+
 .more-sheet {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: var(--color-bg-overlay, rgba(0, 0, 0, 0.4));
   display: flex;
   align-items: flex-end;
-  z-index: 60; /* Phase 6: 高于 TasksView FAB (z-index:50)，避免遮挡 sheet tile */
+  z-index: var(--z-sheet);
+  /* Higher than TasksView FAB (z-30) so the sheet is never covered. */
 }
+
 .more-panel {
   width: 100%;
   background: var(--bg-card);
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   padding: var(--space-4);
-  padding-bottom: calc(var(--space-4) + 80px); /* Phase 7: 额外空间避开 FAB */
+  /* Extra bottom padding so FAB and home indicator don't overlap tiles. */
+  padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom, 0px) + 60px);
   display: grid;
-  grid-template-columns: repeat(2, 1fr); /* Phase 7: 改为 2 列，避免第 3 列被 FAB 遮挡 */
+  grid-template-columns: repeat(2, 1fr);
   gap: var(--space-3);
-  max-height: 70vh; /* 限制最大高度 */
-  overflow-y: auto; /* 内容过多时可滚动 */
+  max-height: 70vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  animation: sheet-up var(--duration-base) var(--ease-spring);
 }
+
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
 .more-item {
   display: flex;
   flex-direction: column;
@@ -129,10 +181,23 @@ function isActive(item: NavItem) {
   gap: var(--space-1);
   text-decoration: none;
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: var(--space-3);
   border-radius: var(--radius-md);
   background: var(--bg-subtle);
+  transition: background var(--duration-fast) var(--ease-out);
 }
-.more-item .icon { font-size: 22px; }
+
+.more-item:active {
+  background: var(--bg-elevated);
+}
+
+.more-item[aria-current='page'] {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: -2px;
+}
+
+.more-item .icon {
+  font-size: 22px;
+}
 </style>

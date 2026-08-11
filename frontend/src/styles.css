@@ -1,10 +1,128 @@
-body {
-  margin: 0;
-  background: #f7f7f8;
-  color: #111827;
-  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
+/**
+ * Global styles — loaded by main.ts before tokens.css and responsive.css.
+ * Keeps resets, base element styling, and cross-cutting accessibility /
+ * motion primitives that apply to every page.
+ */
 
 * {
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  /* Use tokens so dark mode flips automatically. */
+  background: var(--bg-base, #f7f7fa);
+  color: var(--text-primary, #0a0a0a);
+  font-family: var(--font-sans, Inter, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif);
+  font-size: var(--text-base, 14px);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Avoid scroll chaining: page scroll never pulls the body underneath a modal. */
+  overscroll-behavior-y: none;
+  /* Safe-area top padding so the status bar never overlaps content. */
+  padding-top: env(safe-area-inset-top, 0);
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+#app {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* Inputs should inherit the page font stack. */
+input,
+textarea,
+select,
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+/* Focus styles: never remove outline without a replacement. */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand-primary, #667eea);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm, 6px);
+}
+
+/* Buttons get a soft focus ring by default; touch-only :active feedback. */
+button {
+  cursor: pointer;
+  background: none;
+  border: none;
+  color: inherit;
+  padding: 0;
+}
+
+button:active {
+  opacity: 0.85;
+}
+
+/* Links use brand color and respect prefers-reduced-motion. */
+a {
+  color: var(--brand-primary, #667eea);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* Scrollbars — slim, theme-aware, only shown when scrolling. */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong, #d1d5db);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted, #a3a3a3);
+}
+
+/* Honor reduced-motion preference globally. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Image defaults: never overflow, lazy-load by default. */
+img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* Selection color matches brand. */
+::selection {
+  background: rgba(var(--color-primary-rgb, 102, 126, 234), 0.25);
+  color: var(--text-primary);
 }
