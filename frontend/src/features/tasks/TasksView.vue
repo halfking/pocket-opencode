@@ -736,7 +736,7 @@ function timeAgo(dateStr?: string): string {
   height: 44px;
   background: var(--bg-subtle);
   border-radius: 8px;
-  animation: shimmer 1.5s infinite;
+  animation: shimmer var(--duration-slow) infinite;
 }
 @keyframes shimmer {
   0% { opacity: 0.6; }
@@ -781,7 +781,7 @@ function timeAgo(dateStr?: string): string {
   padding-bottom: calc(6px + env(safe-area-inset-bottom, 0));
   background: var(--bg-card);
   border-top: 1px solid var(--border);
-  z-index: 15;
+  z-index: var(--z-fab);
 }
 .voice-input-wrap {
   display: flex;
@@ -847,8 +847,8 @@ function timeAgo(dateStr?: string): string {
   background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: flex-end;
-  z-index: 1000;
-  animation: fadeIn 150ms ease;
+  z-index: var(--z-modal);
+  animation: fadeIn var(--duration-base) var(--ease-out);
 }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 .modal-sheet {
@@ -858,7 +858,7 @@ function timeAgo(dateStr?: string): string {
   max-height: 85vh;
   display: flex;
   flex-direction: column;
-  animation: slideUp 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: slideUp var(--duration-base) var(--ease-spring);
   touch-action: none;
 }
 @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
