@@ -50,11 +50,19 @@
       </section>
 
       <section class="snippet-card">
-        <div class="snippet-label">正文预览</div>
+        <div class="snippet-label">
+          正文预览
+          <span class="body-source" v-if="bodySource">{{ bodySource === 'cache' ? '（缓存）' : '（IMAP 实时）' }}</span>
+          <button v-if="!bodyLoaded && !bodyLoading" class="link-btn" @click="loadBody">查看完整正文</button>
+          <button v-else-if="bodyLoaded" class="link-btn" @click="collapseBody">收起正文</button>
+        </div>
         <div class="snippet-body">
           <template v-if="email.snippet">{{ email.snippet }}</template>
           <span v-else class="muted">(无正文预览)</span>
         </div>
+        <div v-if="bodyLoading" class="body-loading">正在加载完整正文…</div>
+        <pre v-else-if="bodyLoaded && bodyText" class="body-full">{{ bodyText }}</pre>
+        <p v-else-if="bodyError" class="body-error">{{ bodyError }}</p>
       </section>
 
       <div class="actions">
@@ -70,7 +78,7 @@
         </button>
       </div>
 
-      <p class="hint">当前本地仅保存邮件摘要片段（约 500 字），完整正文不落本地。</p>
+      <p class="hint" v-if="!bodyLoaded">完整正文需要按需从 IMAP 拉取（已支持缓存）。</p>
     </article>
 </template>
 
@@ -78,6 +86,7 @@
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../../api/client'
+import { emailApi } from '../../api/email'
 import { useToast } from '../../composables/useToast'
 import { findContactByEmail } from '../contact/contacts-store'
 import * as emailsStore from './emails-store'
@@ -90,6 +99,34 @@ const toast = useToast()
 const email = ref<LocalEmail | null>(null)
 const loading = ref(true)
 const converting = ref(false)
+// Body 懒加载状态：默认仅展示 snippet，点击“查看完整正文”才走 GET /body。
+const bodyLoaded = ref(false)
+const bodyLoading = ref(false)
+const bodyText = ref('')
+const bodySource = ref<'' | 'cache' | 'imap'>('')
+const bodyError = ref('')
+
+async function loadBody() {
+  if (!email.value || bodyLoading.value) return
+  bodyLoading.value = true
+  bodyError.value = ''
+  try {
+    const result = await emailApi.getEmailBody(email.value.id)
+    bodyText.value = result.body
+    bodySource.value = result.source
+    bodyLoaded.value = true
+  } catch (e: any) {
+    bodyError.value = e?.message || '正文拉取失败，请检查网络或账户登录态'
+  } finally {
+    bodyLoading.value = false
+  }
+}
+function collapseBody() {
+  bodyLoaded.value = false
+  bodyText.value = ''
+  bodySource.value = ''
+  bodyError.value = ''
+}
 
 async function load() {
   const id = route.params.id as string
@@ -250,7 +287,35 @@ onMounted(load)
   padding: var(--space-4);
   box-shadow: var(--shadow-sm);
 }
-.snippet-label { font-size: 11px; color: var(--text-muted); margin-bottom: var(--space-2); }
+.snippet-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: var(--space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.body-source {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.body-loading { color: var(--text-muted); font-size: 12px; margin-top: var(--space-2); }
+.body-error { color: var(--danger); font-size: 12px; margin-top: var(--space-2); }
+.body-full {
+  font-size: 14px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  line-height: 1.6;
+  word-break: break-word;
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+  max-height: 60vh;
+  overflow-y: auto;
+}
 .snippet-body { font-size: 14px; color: var(--text-primary); white-space: pre-wrap; line-height: 1.6; word-break: break-word; }
 .muted { color: var(--text-muted); }
 

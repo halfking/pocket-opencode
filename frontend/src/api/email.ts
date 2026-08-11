@@ -55,6 +55,56 @@ export interface EmailRules {
   keywords?: string[]
 }
 
+/**
+ * 规则动作：前端规则编辑器允许的动作集合。后端规则引擎已经支持全部五个：
+ *   - mark-important / label-category：fetcher 入库时立即写入
+ *   - archive / route-folder / trigger-autoreply：写入 email_action_intents 表，
+ *     由后续 scheduler 消费。账户级 enable_dangerous_actions 决定是否真正执行。
+ */
+export type EmailRuleActionName =
+  | 'mark-important'
+  | 'label-category'
+  | 'archive'
+  | 'route-folder'
+  | 'trigger-autoreply'
+
+export interface EmailRuleActionSpec {
+  name: EmailRuleActionName
+  /** label-category 用：把分类名带到 emails.category。 */
+  category?: string
+  /** route-folder 用：目标 IMAP mailbox 名（archive / trigger-autoreply 留空）。 */
+  folder?: string
+}
+
+export interface EmailRuleEntry {
+  /** type: sender-whitelist | sender-blacklist | subject-keyword | domain-match | importance-min | category-match */
+  type: string
+  pattern: string
+  /** 兼容旧字符串数组；新对象数组支持副参数。 */
+  actions: (EmailRuleActionName | EmailRuleActionSpec)[]
+}
+
+export interface EmailSendInput {
+  accountId?: string
+  to: string[]
+  subject: string
+  body: string
+}
+
+export interface EmailSendResult {
+  ok: boolean
+  to: string[]
+  from: string
+}
+
+export interface EmailBodyResult {
+  emailId: string
+  /** cache | imap — 缓存命中或 IMAP 实时拉取，便于前端展示刷新状态。 */
+  source: 'cache' | 'imap'
+  bytes: number
+  body: string
+}
+
 export interface Email {
   id: string
   accountId: string
@@ -113,7 +163,8 @@ export const emailApi = {
     return http(`/api/email/accounts/${id}/test-smtp`, { method: 'POST', body: '{}' })
   },
 
-  // Vacation replies (configuration only; SMTP delivery not yet implemented)
+  // Vacation replies: configuration CRUD. 投递由后端 scheduler.vacationLoop 自动消费
+  // （对入站邮件按时间窗 + 幂等规则触发 SMTP 自动回复）。前端尚无配置 UI。
   listVacations(accountId?: string): Promise<{ vacations: VacationReply[] }> {
     const qs = accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''
     return http(`/api/email/vacations${qs}`)
@@ -138,8 +189,23 @@ export const emailApi = {
   getEmail(id: string): Promise<Email & { body: string }> {
     return http(`/api/emails/${id}`)
   },
+  /**
+   * 完整正文懒加载：先读 dataDir/email-bodies/<id>.bin 加密缓存；未命中时按
+   * 所属 account + UID 取 IMAP BODY[TEXT]，写入加密缓存后再返回。前端拿到
+   // body 后可全文展示或自行做 mime 解析；不应把 body 写回本地 SQLCipher。
+   */
+  getEmailBody(id: string): Promise<EmailBodyResult> {
+    return http(`/api/emails/${id}/body`)
+  },
   patchEmail(id: string, patch: { isRead?: boolean; isStarred?: boolean }): Promise<void> {
     return http(`/api/emails/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+  },
+  /**
+   * 发送邮件：使用当前 user/workspace 第一个配置了 SMTP 的账户，除非显式
+   * 指定 accountId。失败时返回结构化错误（status 4xx/5xx + body.message）。
+   */
+  sendEmail(input: EmailSendInput): Promise<EmailSendResult> {
+    return http('/api/email/send', { method: 'POST', body: JSON.stringify(input) })
   },
   syncNow(accountId?: string): Promise<{ mode?: string; synced?: number; new?: number; failed?: string[] }> {
     return http('/api/emails/sync', {

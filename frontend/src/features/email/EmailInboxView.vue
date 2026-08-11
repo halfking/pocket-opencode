@@ -1,7 +1,7 @@
 <!--
   EmailInboxView — aggregated inbox across IMAP accounts with AI category
-  and importance filters. Skeleton page; full body rendering + account
-  setup wizard come later.
+  and importance filters. Includes compose modal (SMTP send) + on-demand sync.
+  Account setup lives in EmailAccountSetup.vue; full body in EmailDetailView.vue.
 -->
 <template>
   <div class="view-root">
@@ -33,6 +33,7 @@
       <button class="sync-btn" :disabled="syncing" @click="syncNow">
         {{ syncing ? '同步中…' : '↻ 同步' }}
       </button>
+      <button class="sync-btn compose-btn" @click="openCompose">✏️ 写信</button>
     </div>
 
     <p v-if="syncMessage" class="sync-message">{{ syncMessage }}</p>
@@ -68,6 +69,35 @@
       </div>
     </div>
     </template>
+
+    <!-- Compose modal -->
+    <div v-if="composing" class="compose-modal" role="dialog" aria-modal="true">
+      <div class="compose-card">
+        <header class="compose-head">
+          <strong>发送邮件</strong>
+          <button class="link-btn" :disabled="composeSending" @click="closeCompose">关闭</button>
+        </header>
+        <label class="compose-label">
+          收件人（多个用逗号或空格分隔）
+          <input v-model="composeTo" type="text" placeholder="alice@example.com, bob@example.com" />
+        </label>
+        <label class="compose-label">
+          主题
+          <input v-model="composeSubject" type="text" placeholder="邮件主题" />
+        </label>
+        <label class="compose-label">
+          正文
+          <textarea v-model="composeBody" rows="6" placeholder="邮件正文"></textarea>
+        </label>
+        <p v-if="composeError" class="compose-error">{{ composeError }}</p>
+        <div class="compose-actions">
+          <button class="btn-ghost" :disabled="composeSending" @click="closeCompose">取消</button>
+          <button class="btn-primary" :disabled="composeSending" @click="submitCompose">
+            {{ composeSending ? '发送中…' : '发送' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -139,6 +169,59 @@ async function syncNow() {
 }
 function open(id: string) { router.push(`/email/${id}`) }
 
+// Compose dialog state (local — no router entry required for this lightweight flow).
+const composing = ref(false)
+const composeTo = ref('')
+const composeSubject = ref('')
+const composeBody = ref('')
+const composeSending = ref(false)
+const composeError = ref('')
+
+function openCompose() {
+  composing.value = true
+  composeTo.value = ''
+  composeSubject.value = ''
+  composeBody.value = ''
+  composeError.value = ''
+}
+function closeCompose() {
+  if (composeSending.value) return
+  composing.value = false
+}
+function splitRecipients(raw: string): string[] {
+  return raw
+    .split(/[,;\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+async function submitCompose() {
+  if (composeSending.value) return
+  const recipients = splitRecipients(composeTo.value)
+  if (recipients.length === 0) {
+    composeError.value = '请填写收件人'
+    return
+  }
+  if (!composeSubject.value.trim()) {
+    composeError.value = '请填写主题'
+    return
+  }
+  composeSending.value = true
+  composeError.value = ''
+  try {
+    const result = await emailApi.sendEmail({
+      to: recipients,
+      subject: composeSubject.value,
+      body: composeBody.value,
+    })
+    syncMessage.value = `已发送到 ${result.from} → ${result.to.join(', ')}`
+    composing.value = false
+  } catch (e: any) {
+    composeError.value = e?.message || '发送失败，请检查 SMTP 配置'
+  } finally {
+    composeSending.value = false
+  }
+}
+
 const catLabel = (c: string | null) =>
   ({ work: '工作', bill: '账单', notification: '通知', personal: '私人', marketing: '营销', spam: '垃圾' }[c || ''] || c)
 
@@ -173,6 +256,71 @@ onMounted(load)
   cursor: pointer;
 }
 .sync-btn:disabled { opacity: 0.6; cursor: wait; }
+.compose-btn { margin-left: var(--space-2); }
+
+.compose-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-3);
+  z-index: 50;
+}
+.compose-card {
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  width: 100%;
+  max-width: 520px;
+  padding: var(--space-4);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.compose-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.compose-label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.compose-label input,
+.compose-label textarea {
+  font-size: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  resize: vertical;
+}
+.compose-error {
+  color: var(--danger);
+  font-size: 12px;
+  margin: 0;
+}
+.compose-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.btn-primary {
+  padding: 8px 16px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--brand-primary);
+  color: white;
+  font-size: 14px;
+  cursor: pointer;
+}
+.btn-primary:disabled { opacity: 0.6; cursor: wait; }
 .sync-message { margin: 0 0 var(--space-2); color: var(--text-secondary); font-size: 12px; }
 .chip {
   padding: var(--space-1) var(--space-3);
