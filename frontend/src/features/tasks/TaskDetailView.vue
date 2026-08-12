@@ -279,9 +279,9 @@ function formatDate(d?: string): string {
   text-transform: uppercase;
   letter-spacing: 0.3px;
 }
-.priority-chip.high { background: rgba(239, 68, 68, 0.12); color: var(--danger); }
-.priority-chip.medium { background: rgba(245, 158, 11, 0.12); color: var(--warning); }
-.priority-chip.low { background: rgba(16, 185, 129, 0.12); color: var(--success); }
+.priority-chip.high { background: var(--color-danger-soft); color: var(--danger); }
+.priority-chip.medium { background: var(--color-warning-soft); color: var(--warning); }
+.priority-chip.low { background: var(--color-success-soft); color: var(--success); }
 
 .title {
   font-size: 17px;
@@ -300,9 +300,9 @@ function formatDate(d?: string): string {
   padding: 2px 8px;
   border-radius: 999px;
 }
-.status-chip.active { background: rgba(16, 185, 129, 0.12); color: var(--success); }
-.status-chip.blocked { background: rgba(245, 158, 11, 0.12); color: var(--warning); }
-.status-chip.completed { background: rgba(59, 130, 246, 0.12); color: var(--brand-primary); }
+.status-chip.active { background: var(--color-success-soft); color: var(--success); }
+.status-chip.blocked { background: var(--color-warning-soft); color: var(--warning); }
+.status-chip.completed { background: var(--color-brand-soft); color: var(--brand-primary); }
 
 .desc {
   font-size: 13px;
@@ -475,7 +475,7 @@ function formatDate(d?: string): string {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--color-overlay-scrim);
   display: flex;
   align-items: flex-end;
   z-index: var(--z-modal);
@@ -552,7 +552,7 @@ function formatDate(d?: string): string {
   margin: var(--space-3) var(--space-3) 0;
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-md);
-  background: rgba(239, 68, 68, 0.1);
+  background: var(--color-danger-soft);
   color: var(--danger);
   font-size: 13px;
   font-weight: 500;

@@ -214,5 +214,14 @@
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
     --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.6);
+
+    /* In dark mode the soft tints need a brighter foreground to remain
+       readable; bump the alpha on the soft variants used for chips. */
+    --success-soft: rgba(var(--color-success-rgb), 0.18);
+    --warning-soft: rgba(var(--color-warning-rgb), 0.18);
+    --danger-soft: rgba(var(--color-danger-rgb), 0.2);
+    --info-soft: rgba(var(--color-info-rgb), 0.18);
+    --brand-soft: rgba(var(--color-primary-rgb), 0.18);
+    --neutral-bg-soft: rgba(255, 255, 255, 0.05);
   }
 }
