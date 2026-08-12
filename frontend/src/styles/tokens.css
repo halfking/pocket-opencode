@@ -65,11 +65,33 @@
   --warning: #f59e0b;
   --danger: #ef4444;
   --info: #3b82f6;
+  /* RGB triplets enable `rgba(var(--color-*-rgb), α)` surface tints
+     (see soft variants below). Kept in sync with the hex values above. */
+  --color-success-rgb: 16, 185, 129;
+  --color-warning-rgb: 245, 158, 11;
+  --color-danger-rgb: 239, 68, 68;
+  --color-info-rgb: 59, 130, 246;
   /* Aliases */
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-error: var(--danger);
   --color-info: var(--info);
+  /* Soft surface tints for chips, banners, status pills, etc.
+     Use these instead of hardcoded rgba() values so dark mode can
+     stay legible without rewriting every component. */
+  --success-soft: rgba(var(--color-success-rgb), 0.12);
+  --warning-soft: rgba(var(--color-warning-rgb), 0.12);
+  --danger-soft: rgba(var(--color-danger-rgb), 0.12);
+  --info-soft: rgba(var(--color-info-rgb), 0.12);
+  --brand-soft: rgba(var(--color-primary-rgb), 0.1);
+  /* Stronger / weaker variants for places that need a different alpha. */
+  --success-soft-strong: rgba(var(--color-success-rgb), 0.2);
+  --warning-soft-strong: rgba(var(--color-warning-rgb), 0.2);
+  --danger-soft-strong: rgba(var(--color-danger-rgb), 0.2);
+  --danger-soft-faint: rgba(var(--color-danger-rgb), 0.1);
+  --warning-soft-faint: rgba(var(--color-warning-rgb), 0.14);
+  --neutral-overlay-modal: rgba(0, 0, 0, 0.5);
+  --neutral-bg-soft: rgba(0, 0, 0, 0.05);
 
   /* ── 6. Category accents (email/notes) ── */
   --cat-work: #3b82f6;

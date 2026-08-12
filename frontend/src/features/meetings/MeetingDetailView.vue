@@ -51,6 +51,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '../../api/client'
 import { useToast } from '../../composables/useToast'
 import { saveNote } from '../pkm/pkm-store'
+import { renderMarkdown, renderPlainText, sanitizeHtml } from '../../utils/markdown'
 import { summarizeMeeting } from './meetings-ai'
 import { getMeetingWithSegments, updateSummary, type LocalMeeting, type MeetingSegment } from './meetings-store'
 
@@ -95,9 +96,11 @@ async function saveAsNote() {
   if (!meeting.value?.transcript) return
   try {
     const summary = meeting.value.summary || meeting.value.transcript.slice(0, 500)
+    // AI 纪要按 Markdown 渲染，转写按纯文本保留换行；外层静态结构
+    // 通过共享的 DOMPurify 配置做防御性净化（PKM 笔记 TipTap 接受 HTML）。
     const note = await saveNote({
       title: `会议：${meeting.value.title || '未命名会议'}`,
-      html: `<h2>会议纪要</h2><p>${escapeHtml(summary)}</p><h2>完整转写</h2><p>${escapeHtml(meeting.value.transcript)}</p>`,
+      html: buildMeetingNoteHtml(summary, meeting.value.transcript),
       workspaceId: undefined,
     })
     toast.success('已保存到 PKM 笔记')
@@ -105,6 +108,19 @@ async function saveAsNote() {
   } catch (error: any) {
     toast.error(error?.message || '保存笔记失败')
   }
+}
+
+/**
+ * Assemble the meeting note HTML and run the result through DOMPurify.
+ * Replaces the earlier local escapeHtml() helper — see docs/ui-ux-overhaul
+ * remaining work item #4. The PKM note renderer now receives sanitized
+ * HTML/Markdown via renderMarkdown / renderPlainText + sanitizeHtml.
+ */
+function buildMeetingNoteHtml(summary: string, transcript: string): string {
+  const summaryHtml = summary ? renderMarkdown(summary) : '<p><em>暂无纪要</em></p>'
+  const transcriptHtml = renderPlainText(transcript)
+  const raw = `<h2>会议纪要</h2>${summaryHtml}<h2>完整转写</h2>${transcriptHtml}`
+  return sanitizeHtml(raw)
 }
 
 async function createTask() {
@@ -127,10 +143,8 @@ async function createTask() {
   }
 }
 
-// TODO: replace with DOMPurify when the PKM note renderer accepts sanitized Markdown.
-function escapeHtml(value: string) {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
+// TODO: replaced by renderMarkdown / renderPlainText + sanitizeHtml in
+// utils/markdown.ts. The local escapeHtml() is no longer needed.
 function formatDate(ts: number) {
   const d = new Date(ts)
   return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
