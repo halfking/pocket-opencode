@@ -60,11 +60,11 @@ Commit `3068ede`:
 - Added status semantics to detail messages.
 - Added recording-button labels and pressed state.
 - Replaced hardcoded radii/shadows/colors with shared tokens.
-- Documented the temporary HTML escaping implementation pending a DOMPurify-compatible PKM renderer.
+- Replaced the temporary meeting HTML escaping path with the shared DOMPurify-backed markdown sanitization helper (`a76cd02`).
 
 ### Vault
 
-Commit `3068ede`:
+Commit `3068ede` plus the current follow-up refactor:
 
 - Replaced password-generation and form-validation alerts with inline/status feedback.
 - Added labels to new-entry and edit-mode fields.
@@ -72,6 +72,9 @@ Commit `3068ede`:
 - Added an icon-enhanced empty state.
 - Added copy-button labels and a semantic TOTP code label.
 - Fixed the `visibilitychange` cleanup bug by using a named listener reference.
+- Added the shared `Textarea` component and migrated vault password, title, username, URL, TOTP, and notes fields to shared `Input` / `Textarea` controls.
+- Added semantic `--cat-card`, `--cat-note`, and `--cat-identity` aliases, then replaced remaining Vault color, font, shadow, and transition literals with existing design tokens.
+- Kept the native category `select` intentionally; a reusable `Select` component remains a future form-control task.
 
 ### Settings, Contacts, Common
 
@@ -95,9 +98,8 @@ Commit `3d0ec7d`:
 
 1. Run Squirrel with an authenticated browser session to crawl and audit protected routes individually (email, notes, tasks, meetings, vault, gateway, settings).
 2. Decide whether the SPA shell should add SEO metadata (`robots.txt`, sitemap, canonical, Open Graph) even though the product is primarily a mobile application.
-3. Replace remaining legitimate hardcoded category accent values in older task/vault styles with dedicated semantic token aliases if full token purity is required.
-4. Replace the temporary meeting `escapeHtml` helper with DOMPurify once the PKM note rendering contract supports sanitized HTML/Markdown.
-5. Consider migrating remaining raw form controls to the shared `Input` component in a dedicated refactor.
+3. Consider a reusable `Select` component and migrating the remaining raw controls, starting with the Notes editor and Settings LLM Gateway API-key field.
+4. Extend the authenticated route audit to validate the new shared Vault controls across light and dark mode.
 
 ## Commits
 
@@ -108,3 +110,5 @@ Commit `3d0ec7d`:
 - `e78e1a8` — task detail feedback and accessibility
 - `3068ede` — meetings and vault accessibility/state improvements
 - `3d0ec7d` — settings, contacts, and common-state polish
+- `a76cd02` — meeting DOMPurify sanitization and accessibility hardening
+- `bd7da2c` — task detail soft-color token migration

@@ -84,6 +84,12 @@
   --danger-soft: rgba(var(--color-danger-rgb), 0.12);
   --info-soft: rgba(var(--color-info-rgb), 0.12);
   --brand-soft: rgba(var(--color-primary-rgb), 0.1);
+  /* Compatibility aliases used by legacy feature styles. */
+  --color-success-soft: var(--success-soft);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger-soft: var(--danger-soft);
+  --color-info-soft: var(--info-soft);
+  --color-brand-soft: var(--brand-soft);
   /* Stronger / weaker variants for places that need a different alpha. */
   --success-soft-strong: rgba(var(--color-success-rgb), 0.2);
   --warning-soft-strong: rgba(var(--color-warning-rgb), 0.2);
@@ -91,6 +97,7 @@
   --danger-soft-faint: rgba(var(--color-danger-rgb), 0.1);
   --warning-soft-faint: rgba(var(--color-warning-rgb), 0.14);
   --neutral-overlay-modal: rgba(0, 0, 0, 0.5);
+  --color-overlay-scrim: var(--neutral-overlay-modal);
   --neutral-bg-soft: rgba(0, 0, 0, 0.05);
 
   /* ── 6. Category accents (email/notes) ── */
@@ -103,6 +110,9 @@
   --cat-idea: #10b981;
   --cat-study: #06b6d4;
   --cat-life: #f97316;
+  --cat-card: #f59e0b;
+  --cat-note: #10b981;
+  --cat-identity: #8b5cf6;
 
   /* ── 7. Radius ── */
   --radius-sm: 6px;

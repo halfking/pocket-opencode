@@ -11,13 +11,13 @@
       <p v-if="initError" class="error" role="alert">{{ initError }}</p>
       <div v-else-if="!initialized" class="setup">
         <h2>设置主密码</h2>
-        <input v-model="master" type="password" placeholder="主密码" />
+        <Input v-model="master" type="password" placeholder="主密码" />
         <button class="btn-primary" @click="setup">创建密码箱</button>
       </div>
       <div v-else class="unlock">
         <h2>解锁密码箱</h2>
         <button class="btn-bio" @click="unlockBio">指纹/面容解锁</button>
-        <input v-model="master" type="password" placeholder="或输入主密码" />
+        <Input v-model="master" type="password" placeholder="或输入主密码" />
         <button class="btn-primary" @click="unlockPwd">解锁</button>
       </div>
     </div>
@@ -39,17 +39,17 @@
 
       <!-- 新增表单 -->
       <div v-if="showAdd" class="add-form">
-        <input v-model="newEntry.title" aria-label="标题" placeholder="标题（如 GitHub）" />
-        <input v-model="newEntry.username" aria-label="用户名" placeholder="用户名" />
-        <input v-model="newEntry.url" aria-label="网址" placeholder="网址" />
+        <Input v-model="newEntry.title" aria-label="标题" placeholder="标题（如 GitHub）" />
+        <Input v-model="newEntry.username" aria-label="用户名" placeholder="用户名" />
+        <Input v-model="newEntry.url" aria-label="网址" placeholder="网址" />
         <select v-model="newEntry.category" aria-label="分类">
           <option value="login">登录</option>
           <option value="card">银行卡</option>
           <option value="note">安全笔记</option>
           <option value="identity">身份信息</option>
         </select>
-        <input v-model="newEntry.password" type="password" aria-label="密码" placeholder="密码" />
-        <textarea v-model="newEntry.notes" aria-label="备注" placeholder="备注（可选）"></textarea>
+        <Input v-model="newEntry.password" type="password" aria-label="密码" placeholder="密码" />
+        <Textarea v-model="newEntry.notes" :rows="3" aria-label="备注" placeholder="备注（可选）" />
         <p v-if="vaultError" class="error" role="alert">{{ vaultError }}</p>
         <button class="btn-primary" @click="saveNew">保存</button>
       </div>
@@ -75,6 +75,7 @@
 <script setup lang="ts">
 import { onMounted, ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
+import { Input, Textarea } from '../../components'
 import { keystore } from '../../native/keystore'
 import * as vaultStore from './vault-store'
 import * as syncStore from './sync-store'
@@ -223,14 +224,7 @@ onMounted(probe)
 .lock-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 60vh; gap: var(--space-3); }
 .lock-icon { font-size: 56px; }
 .setup, .unlock { display: flex; flex-direction: column; gap: var(--space-3); width: 80%; max-width: 320px; }
-input {
-  padding: var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text-primary);
-}
-.btn-primary { background: var(--brand-gradient); color: white; border: none; padding: var(--space-3); border-radius: var(--radius-md); font-weight: 600; cursor: pointer; }
+.btn-primary { background: var(--brand-gradient); color: var(--text-inverse); border: none; padding: var(--space-3); border-radius: var(--radius-md); font-weight: 600; cursor: pointer; }
 .btn-bio { background: var(--bg-card); color: var(--brand-primary); border: 1px solid var(--brand-primary); padding: var(--space-3); border-radius: var(--radius-md); font-weight: 600; cursor: pointer; }
 .error { color: var(--danger); font-size: 13px; text-align: center; }
 .add-form {
@@ -238,7 +232,7 @@ input {
   margin-bottom: var(--space-3); padding: var(--space-3);
   background: var(--bg-elevated); border-radius: var(--radius-md);
 }
-.add-form input, .add-form select, .add-form textarea {
+.add-form select {
   padding: var(--space-2); border-radius: var(--radius-sm);
   border: 1px solid var(--border); background: var(--bg-card); color: var(--text-primary); font-size: 14px;
 }
@@ -247,8 +241,8 @@ input {
   margin-bottom: var(--space-3); padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm); font-size: 13px;
 }
-.sync-status.ok { background: rgba(34,197,94,0.12); color: #16a34a; }
-.sync-status.err { background: rgba(239,68,68,0.12); color: var(--danger); }
+.sync-status.ok { background: var(--success-soft); color: var(--success); }
+.sync-status.err { background: var(--danger-soft); color: var(--danger); }
 .toolbar { display: flex; gap: var(--space-2); margin-bottom: var(--space-3); }
 .btn-ghost { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-primary); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); font-size: 13px; cursor: pointer; }
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }

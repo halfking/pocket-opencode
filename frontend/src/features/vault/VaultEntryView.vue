@@ -25,17 +25,17 @@
     <div v-else-if="isEdit" class="edit-form">
       <div class="form-group">
         <label for="vault-title">标题</label>
-        <input id="vault-title" v-model="form.title" aria-label="标题" placeholder="标题" />
+        <Input id="vault-title" v-model="form.title" aria-label="标题" placeholder="标题" />
       </div>
 
       <div class="form-group">
         <label for="vault-username">用户名</label>
-        <input id="vault-username" v-model="form.username" aria-label="用户名" placeholder="用户名" />
+        <Input id="vault-username" v-model="form.username" aria-label="用户名" placeholder="用户名" />
       </div>
 
       <div class="form-group">
         <label for="vault-url">网址</label>
-        <input id="vault-url" v-model="form.url" aria-label="网址" placeholder="https://" />
+        <Input id="vault-url" v-model="form.url" aria-label="网址" placeholder="https://" />
       </div>
 
       <div class="form-group">
@@ -50,17 +50,17 @@
 
       <div class="form-group">
         <label for="vault-password">密码</label>
-        <input id="vault-password" v-model="form.password" aria-label="密码" type="password" placeholder="密码" />
+        <Input id="vault-password" v-model="form.password" aria-label="密码" type="password" placeholder="密码" />
       </div>
 
       <div class="form-group">
         <label for="vault-totp">TOTP 种子（可选）</label>
-        <input id="vault-totp" v-model="form.totpSecret" aria-label="TOTP 种子" placeholder="JBSWY3DPEHPK3PXP" />
+        <Input id="vault-totp" v-model="form.totpSecret" aria-label="TOTP 种子" placeholder="JBSWY3DPEHPK3PXP" />
       </div>
 
       <div class="form-group">
         <label for="vault-notes">备注</label>
-        <textarea id="vault-notes" v-model="form.notes" aria-label="备注" placeholder="备注"></textarea>
+        <Textarea id="vault-notes" v-model="form.notes" :rows="4" aria-label="备注" placeholder="备注" />
       </div>
 
       <div class="actions">
@@ -179,6 +179,7 @@
 import { computed, onBeforeUnmount, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { TOTP, Secret } from 'otpauth'
+import { Input, Textarea } from '../../components'
 import * as vaultStore from './vault-store'
 import type { VaultEntry } from './vault-store'
 
@@ -493,9 +494,9 @@ onBeforeUnmount(() => {
   border-left: 4px solid var(--brand-primary);
   box-shadow: var(--shadow-sm);
 }
-.entry-header.cat-card { border-left-color: #f59e0b; }
-.entry-header.cat-note { border-left-color: #10b981; }
-.entry-header.cat-identity { border-left-color: #8b5cf6; }
+.entry-header.cat-card { border-left-color: var(--cat-card); }
+.entry-header.cat-note { border-left-color: var(--cat-note); }
+.entry-header.cat-identity { border-left-color: var(--cat-identity); }
 .header-icon { font-size: 28px; }
 .header-title { font-size: 20px; font-weight: 700; margin: 0; color: var(--text-primary); flex: 1; word-break: break-word; }
 
@@ -517,7 +518,7 @@ onBeforeUnmount(() => {
   font-size: 14px; color: var(--text-primary);
   word-break: break-all; line-height: 1.5;
 }
-.field-value.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 15px; }
+.field-value.mono { font-family: var(--font-mono); font-size: 15px; }
 .field-value.link { color: var(--brand-primary); text-decoration: none; }
 .field-value.notes { white-space: pre-wrap; }
 .field-icon-btn {
@@ -528,11 +529,11 @@ onBeforeUnmount(() => {
 }
 .field-icon-btn:active { opacity: 0.7; }
 .field-icon-btn.primary-copy {
-  background: var(--brand-primary); color: white; border-color: var(--brand-primary);
+  background: var(--brand-primary); color: var(--text-inverse); border-color: var(--brand-primary);
   font-weight: 500;
 }
 .field-icon-btn.countdown {
-  background: var(--danger); color: white; border-color: var(--danger);
+  background: var(--danger); color: var(--text-inverse); border-color: var(--danger);
   font-weight: 600; cursor: default;
 }
 
@@ -540,10 +541,10 @@ onBeforeUnmount(() => {
 .totp-code { font-size: 22px; letter-spacing: 4px; font-weight: 700; color: var(--brand-primary); }
 .totp-remaining {
   font-size: 12px; color: var(--text-muted);
-  background: rgba(0,0,0,0.05); padding: 2px 8px; border-radius: var(--radius-full);
+  background: var(--neutral-bg-soft); padding: 2px 8px; border-radius: var(--radius-full);
   font-variant-numeric: tabular-nums;
 }
-.totp-remaining.urgent { background: var(--danger); color: white; }
+.totp-remaining.urgent { background: var(--danger); color: var(--text-inverse); }
 
 .meta {
   font-size: 12px; color: var(--text-muted); padding: 0 var(--space-2);
@@ -559,7 +560,7 @@ onBeforeUnmount(() => {
 .action-btn:active { opacity: 0.7; }
 .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .action-btn.primary {
-  background: var(--brand-gradient); color: white; border: none;
+  background: var(--brand-gradient); color: var(--text-inverse); border: none;
 }
 .action-btn.ghost { background: var(--bg-subtle); }
 .action-btn.danger { color: var(--danger); border-color: var(--danger); }
@@ -567,7 +568,7 @@ onBeforeUnmount(() => {
 /* edit form */
 .form-group { display: flex; flex-direction: column; gap: var(--space-1); margin-bottom: var(--space-3); }
 .form-group label { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
-.form-group input, .form-group select, .form-group textarea {
+.form-group select {
   width: 100%; padding: var(--space-3);
   border-radius: var(--radius-md); border: 1px solid var(--border);
   background: var(--bg-card); color: var(--text-primary);
@@ -579,14 +580,14 @@ onBeforeUnmount(() => {
 .toast {
   position: fixed; bottom: calc(var(--space-6)); left: 50%;
   transform: translateX(-50%);
-  background: var(--danger); color: white;
+  background: var(--danger); color: var(--text-inverse);
   padding: var(--space-3) var(--space-5);
   border-radius: var(--radius-md);
   font-size: 14px; font-weight: 500;
-  box-shadow: var(--shadow-md, 0 4px 12px rgba(0,0,0,0.2));
-  z-index: 100; max-width: 90vw; text-align: center;
+  box-shadow: var(--shadow-md);
+  z-index: var(--z-toast); max-width: 90vw; text-align: center;
 }
-.toast.success { background: #10b981; }
-.toast-enter-active, .toast-leave-active { transition: opacity 0.2s, transform 0.2s; }
+.toast.success { background: var(--success); }
+.toast-enter-active, .toast-leave-active { transition: opacity var(--duration-base), transform var(--duration-base); }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, 10px); }
 </style>
