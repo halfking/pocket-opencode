@@ -4,7 +4,8 @@
 > 基线：源码审计 + `docs/reclaw/RECLAW-CHANGE-REQUEST-001-platform-integration.md`
 > 状态词：`CURRENT` 已由源码证明；`PARTIAL` 已有基础但未闭环；`PLANNED` 目标能力。
 
-> API 细化：见 [API-DETAILS.md](API-DETAILS.md)，其中定义 pocketd 当前本地 API 与目标 RedClaw façade 接入、任务映射、审批、记忆和实时流迁移。
+> API 细化：见 [API-DETAILS.md](API-DETAILS.md)，其中定义 pocketd 当前本地 API 与目标 RedClaw façade 接入、任务映射、审批、记忆和实时流迁移。  
+> Mock contract test：[MOCK-CONTRACT-TEST.md](MOCK-CONTRACT-TEST.md)，定义 Pocket 作为 consumer 的契约测试用例。
 
 ## 一、定位与事实边界
 
