@@ -41,7 +41,9 @@ type fakeResolver struct {
 	err error
 }
 
-func (r *fakeResolver) ResolveAPIBase(_ string) (string, error) { return r.url, r.err }
+func (r *fakeResolver) ResolveAPIBaseForWorkspace(workspaceID, instanceID string) (string, error) {
+	return r.url, r.err
+}
 
 // recordingAttacher records AttachSession calls.
 type recordingAttacher struct {
@@ -97,7 +99,9 @@ func TestSend_AutoAttachesTask(t *testing.T) {
 	bridge := NewBridge(store, creator, resolver, attacher)
 
 	res, err := bridge.Send(context.Background(), "a1", "请重构 auth 模块", SendOptions{
-		TaskID: "task_abc", AgentName: "build",
+		WorkspaceID: "ws",
+		TaskID:      "task_abc",
+		AgentName:   "build",
 	})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
@@ -132,7 +136,7 @@ func TestSend_NoTaskID_NoAttach(t *testing.T) {
 		"a1": {ID: "a1", WorkspaceID: "ws", InstanceID: "inst1"},
 	}}
 	bridge := NewBridge(store, &fakeCreator{createSessionID: "ses_x"}, &fakeResolver{url: "http://x"}, &recordingAttacher{})
-	res, err := bridge.Send(context.Background(), "a1", "hello", SendOptions{})
+	res, err := bridge.Send(context.Background(), "a1", "hello", SendOptions{WorkspaceID: "ws"})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -148,7 +152,7 @@ func TestSend_AttachFailureNonFatal(t *testing.T) {
 	}}
 	attacher := &recordingAttacher{err: errors.New("db down")}
 	bridge := NewBridge(store, &fakeCreator{createSessionID: "ses_y"}, &fakeResolver{url: "http://y"}, attacher)
-	res, err := bridge.Send(context.Background(), "a1", "hi", SendOptions{TaskID: "t1"})
+	res, err := bridge.Send(context.Background(), "a1", "hi", SendOptions{WorkspaceID: "ws", TaskID: "t1"})
 	if err != nil {
 		t.Fatalf("dispatch should succeed even if attach fails, got %v", err)
 	}
@@ -162,7 +166,7 @@ func TestSend_InstanceOffline(t *testing.T) {
 		"a1": {ID: "a1", WorkspaceID: "ws", InstanceID: "inst_dead"},
 	}}
 	bridge := NewBridge(store, &fakeCreator{}, &fakeResolver{err: errors.New("instance not found")}, &recordingAttacher{})
-	_, err := bridge.Send(context.Background(), "a1", "x", SendOptions{})
+	_, err := bridge.Send(context.Background(), "a1", "x", SendOptions{WorkspaceID: "ws"})
 	if err == nil {
 		t.Fatal("expected error on unresolvable instance")
 	}
@@ -180,7 +184,7 @@ func TestSend_InstanceOffline(t *testing.T) {
 func TestSend_AgentNotFound(t *testing.T) {
 	store := &fakeStore{agents: map[string]*Agent{}}
 	bridge := NewBridge(store, &fakeCreator{}, &fakeResolver{}, &recordingAttacher{})
-	_, err := bridge.Send(context.Background(), "nope", "x", SendOptions{})
+	_, err := bridge.Send(context.Background(), "nope", "x", SendOptions{WorkspaceID: "ws"})
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}

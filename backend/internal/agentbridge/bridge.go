@@ -41,10 +41,10 @@ type SendPromptInput struct {
 	Text  string
 }
 
-// InstanceResolver resolves an instance_id to its HTTP API base URL.
-// In production this is *registry.Registry.
+// InstanceResolver resolves an instance_id to its HTTP API base URL within a
+// workspace. Request-serving callers must provide the authenticated workspace.
 type InstanceResolver interface {
-	ResolveAPIBase(instanceID string) (string, error)
+	ResolveAPIBaseForWorkspace(workspaceID, instanceID string) (string, error)
 }
 
 // TaskAttacher attaches a session to a task in task_session_links.
@@ -114,23 +114,18 @@ func (b *Bridge) Send(ctx context.Context, agentID, prompt string, opts SendOpti
 	if prompt == "" {
 		return nil, fmt.Errorf("agentbridge: prompt is required")
 	}
-
-	// 1. Look up the agent → instance. When the caller supplied a workspace,
-	// the lookup itself is tenant-scoped so a foreign agent ID is simply
-	// "not found" rather than dispatchable.
-	var agent *Agent
-	var err error
-	if opts.WorkspaceID != "" {
-		agent, err = b.store.GetScoped(ctx, agentID, opts.WorkspaceID)
-	} else {
-		agent, err = b.store.Get(ctx, agentID)
+	if opts.WorkspaceID == "" {
+		return nil, fmt.Errorf("agentbridge: workspace_id is required")
 	}
+
+	// 1. Look up the agent scoped to workspace.
+	agent, err := b.store.GetScoped(ctx, agentID, opts.WorkspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("lookup agent: %w", err)
 	}
 
-	// 2. Resolve instance → API base URL.
-	apiBase, err := b.resolver.ResolveAPIBase(agent.InstanceID)
+	// 2. Resolve instance → API base URL for the caller's workspace.
+	apiBase, err := b.resolver.ResolveAPIBaseForWorkspace(opts.WorkspaceID, agent.InstanceID)
 	if err != nil {
 		_ = b.store.UpdateStatus(ctx, agentID, StatusOffline)
 		return nil, fmt.Errorf("resolve instance %s: %w", agent.InstanceID, err)

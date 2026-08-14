@@ -73,19 +73,19 @@ func (c *opencodeSessionCreator) SendPromptToSession(ctx context.Context, apiBas
 	return err
 }
 
-// instanceAPIBaseResolver 是 registry 暴露的极简接口（避免 server 包反向依赖 registry）。
-type instanceAPIBaseResolver interface {
-	GetInstanceAPIBase(id string) (string, error)
+// workspaceInstanceResolver 是 registry 暴露的写权限接口。
+type workspaceInstanceResolver interface {
+	GetWritableInstanceAPIBaseForWorkspace(workspaceID, instanceID string) (string, error)
 }
 
 // registryResolver 适配 registry → agentbridge.InstanceResolver。
-type registryResolver struct{ r instanceAPIBaseResolver }
+type registryResolver struct{ r workspaceInstanceResolver }
 
-func (rr *registryResolver) ResolveAPIBase(id string) (string, error) {
+func (rr *registryResolver) ResolveAPIBaseForWorkspace(workspaceID, instanceID string) (string, error) {
 	if rr.r == nil {
 		return "", errors.New("registry not configured")
 	}
-	return rr.r.GetInstanceAPIBase(id)
+	return rr.r.GetWritableInstanceAPIBaseForWorkspace(workspaceID, instanceID)
 }
 
 // taskAttacher 适配 task.Store → agentbridge.TaskAttacher。
@@ -102,7 +102,7 @@ func (t *taskAttacher) AttachSession(ctx context.Context, taskID, instanceID, se
 
 // NewAgentBridgeAdapters 是 main.go 用的导出构造函数，把现有的
 // opencodeAdapter / registry / task.Store 包成 Bridge 依赖。
-func NewAgentBridgeAdapters(oc adapter.OpenCodeAdapter, reg instanceAPIBaseResolver, ts *task.Store) (
+func NewAgentBridgeAdapters(oc adapter.OpenCodeAdapter, reg workspaceInstanceResolver, ts *task.Store) (
 	agentbridge.SessionCreator, agentbridge.InstanceResolver, agentbridge.TaskAttacher) {
 	var creator agentbridge.SessionCreator
 	if oc != nil {
