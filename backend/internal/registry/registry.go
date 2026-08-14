@@ -375,7 +375,30 @@ func (r *Registry) GetInstanceAPIBaseForWorkspace(workspaceID, instanceID string
 	return apiURL, nil
 }
 
-// GetInstanceAPIBase 根据实例 ID 获取 API base URL
+// GetWritableInstanceAPIBaseForWorkspace resolves an instance for a mutating
+// operation. Shared operator instances are intentionally read-only for tenant
+// callers; writes require an explicitly registered instance owned by the same
+// workspace.
+func (r *Registry) GetWritableInstanceAPIBaseForWorkspace(workspaceID, instanceID string) (string, error) {
+	if workspaceID == "" {
+		return "", fmt.Errorf("workspace is required")
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	instance, ok := r.instances[instanceID]
+	if !ok || instance.WorkspaceID == "" || instance.WorkspaceID != workspaceID {
+		return "", fmt.Errorf("instance not found: %s", instanceID)
+	}
+	apiURL, ok := r.apiURLMap[instanceID]
+	if !ok || apiURL == "" {
+		return "", fmt.Errorf("instance API URL not configured: %s", instanceID)
+	}
+	return apiURL, nil
+}
+
+// GetInstanceAPIBase returns an instance API base URL without workspace scope.
+// It exists for startup and internal legacy paths; new request handlers must
+// use an explicit read or writable workspace resolver.
 func (r *Registry) GetInstanceAPIBase(instanceID string) (string, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

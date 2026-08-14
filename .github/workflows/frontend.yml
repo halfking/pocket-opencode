@@ -1,0 +1,124 @@
+name: frontend
+
+# PR12 of optimization v4 (E6-S1).
+# Boundary (per docs/优化v4/14-首批PR与执行顺序.md row 12):
+#   - Run frontend typecheck, build, and the pure Node tests from
+#     PR3, PR4, PR5, PR7, PR11 on every PR that touches frontend/**.
+#   - Run the Android Gradle assemble task against frontend/android/,
+#     which is the single Android build source per ADR-009. The root
+#     android/ directory is intentionally ignored.
+#   - Fail loudly when node_modules or gradle cache is missing; do
+#     not use continue-on-error to mask P0 regressions.
+
+on:
+  push:
+    branches: [main, feat/**, docs/audit-opt-v4-plan-fixes]
+  pull_request:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend.yml"
+      - "test-evidence/PR11/**"
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-lint:
+    name: typecheck + build + node tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        # vue-tsc --noEmit; the same command docs/优化v4/02-安全审计与整改清单.md
+        # §5 records as the historical gate.
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build:fast
+
+      - name: Run pure helper tests (PR3)
+        run: node --test src/utils/__tests__/asyncState.test.mjs
+
+      - name: Run route guard tests (PR4)
+        run: node --test src/app/__tests__/routeGuards.test.mjs
+
+      - name: Run idempotent WS bus tests (PR5)
+        run: node --test src/services/__tests__/idempotentWsBus.test.mjs
+
+      - name: Run session state helper tests (PR7)
+        run: node --test src/composables/__tests__/useSessionState.test.mjs
+
+      - name: Run fault injection harness (PR11)
+        run: node ../test-evidence/PR11/fault-injection.mjs
+
+  android-assemble:
+    name: android assembleDebug (frontend/android)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Skip on docs-only PRs to keep CI fast.
+    if: "!contains(github.event.head_commit.message, 'docs(opt-v4)')"
+
+    defaults:
+      run:
+        working-directory: frontend/android
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Sync Capacitor (frontend/android only)
+        # ADR-009: frontend/android is the single Android source of
+        # truth. We never run `npx cap sync` against the root android/
+        # directory.
+        run: npx cap sync android
+        working-directory: frontend
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Assemble debug APK
+        # Caches gradle wrapper + dependencies across runs.
+        run: ./gradlew --no-daemon assembleDebug
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+
+      - name: Upload APK on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-assemble-failure
+          path: frontend/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: ignore
