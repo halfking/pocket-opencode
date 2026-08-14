@@ -29,6 +29,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -59,8 +60,8 @@ const (
 // `retryable` is informational — clients must still consult the HTTP
 // status. The default mapping is:
 //
-//   4xx → retryable=false (except 408/425/429 which are retryable=true)
-//   5xx → retryable=true
+//	4xx → retryable=false (except 408/425/429 which are retryable=true)
+//	5xx → retryable=true
 func (s *Server) writeStructuredError(w http.ResponseWriter, r *http.Request, status int, code, msg string) {
 	if code == "" {
 		code = codeForStatus(status)
@@ -80,17 +81,11 @@ func (s *Server) writeStructuredError(w http.ResponseWriter, r *http.Request, st
 // requestIDFromContext returns the request id stored by the request-id
 // middleware, or an empty string when the middleware is not active.
 func (s *Server) requestIDFromContext(r *http.Request) string {
-	if s == nil || r == nil {
+	if r == nil {
 		return ""
 	}
-	// Prefer the standard header set by reverse proxies; fall back to
-	// the value the request_id middleware may have stored on the
-	// context.
-	if v := r.Header.Get("X-Request-ID"); v != "" {
-		return v
-	}
-	if v := r.Header.Get("X-Request-Id"); v != "" {
-		return v
+	if requestID, ok := r.Context().Value(requestIDContextKey{}).(string); ok {
+		return requestID
 	}
 	return ""
 }
@@ -171,7 +166,12 @@ func (s *Server) requireWorkspaceFromPath(next http.HandlerFunc) http.HandlerFun
 				"authentication required")
 			return
 		}
-		if claims.WorkspaceID != "" && claims.WorkspaceID != ws {
+		if claims.WorkspaceID == "" {
+			s.writeStructuredError(w, r, http.StatusBadRequest, CodeWorkspaceRequired,
+				"workspace_id is required in claims")
+			return
+		}
+		if claims.WorkspaceID != ws {
 			// Collapse cross-workspace access to a 404 to avoid
 			// existence leakage (PR1 §5).
 			s.writeStructuredError(w, r, http.StatusNotFound, CodeNotFound,
@@ -205,16 +205,45 @@ func (s *Server) decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		// MaxBytesReader surfaces as a *http.MaxBytesError in modern
-		// Go; we type-assert to be precise about the response code.
-		if _, ok := err.(*http.MaxBytesError); ok {
-			s.writeStructuredError(w, r, http.StatusRequestEntityTooLarge, CodePayloadTooLarge,
-				"request body exceeds the maximum allowed size")
+		s.writeJSONDecodeError(w, r, err)
+		return false
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			s.writeStructuredError(w, r, http.StatusBadRequest, CodeInvalidRequest,
+				"request body must contain exactly one JSON value")
 			return false
 		}
-		s.writeStructuredError(w, r, http.StatusBadRequest, CodeInvalidRequest,
-			"invalid request body: "+err.Error())
+		s.writeJSONDecodeError(w, r, err)
 		return false
 	}
 	return true
+}
+
+func (s *Server) writeJSONDecodeError(w http.ResponseWriter, r *http.Request, err error) {
+	if _, ok := err.(*http.MaxBytesError); ok {
+		s.writeStructuredError(w, r, http.StatusRequestEntityTooLarge, CodePayloadTooLarge,
+			"request body exceeds the maximum allowed size")
+		return
+	}
+	s.writeStructuredError(w, r, http.StatusBadRequest, CodeInvalidRequest,
+		"invalid request body: "+err.Error())
+}
+
+// requireMobileWorkspace fails closed for every mobile session or approval
+// operation. Legacy handlers may retain their documented default-workspace
+// fallback, but new mobile control-plane paths must never infer tenancy.
+func (s *Server) requireMobileWorkspace(w http.ResponseWriter, r *http.Request) (string, bool) {
+	claims := s.claimsFromContext(r)
+	if claims == nil {
+		s.writeStructuredError(w, r, http.StatusUnauthorized, CodeUnauthenticated,
+			"authentication required")
+		return "", false
+	}
+	if claims.WorkspaceID == "" {
+		s.writeStructuredError(w, r, http.StatusBadRequest, CodeWorkspaceRequired,
+			"workspace_id is required in claims")
+		return "", false
+	}
+	return claims.WorkspaceID, true
 }

@@ -20,18 +20,18 @@ func setClaimsForTest(ctx context.Context, c *authClaims) context.Context {
 
 func TestRetryableForStatus(t *testing.T) {
 	cases := map[int]bool{
-		http.StatusOK:                 false,
-		http.StatusBadRequest:         false,
-		http.StatusUnauthorized:       false,
-		http.StatusForbidden:          false,
-		http.StatusNotFound:           false,
-		http.StatusConflict:           false,
-		http.StatusRequestTimeout:     true,
-		http.StatusTooManyRequests:    true,
+		http.StatusOK:                  false,
+		http.StatusBadRequest:          false,
+		http.StatusUnauthorized:        false,
+		http.StatusForbidden:           false,
+		http.StatusNotFound:            false,
+		http.StatusConflict:            false,
+		http.StatusRequestTimeout:      true,
+		http.StatusTooManyRequests:     true,
 		http.StatusInternalServerError: true,
-		http.StatusBadGateway:         true,
-		http.StatusServiceUnavailable: true,
-		http.StatusGatewayTimeout:     true,
+		http.StatusBadGateway:          true,
+		http.StatusServiceUnavailable:  true,
+		http.StatusGatewayTimeout:      true,
 	}
 	for status, want := range cases {
 		if got := retryableForStatus(status); got != want {
@@ -42,17 +42,17 @@ func TestRetryableForStatus(t *testing.T) {
 
 func TestCodeForStatus(t *testing.T) {
 	cases := map[int]string{
-		http.StatusUnauthorized:            CodeUnauthenticated,
-		http.StatusForbidden:               CodeCapabilityDenied,
-		http.StatusNotFound:                CodeNotFound,
-		http.StatusConflict:                CodeConflict,
-		http.StatusRequestTimeout:          CodeRateLimited,
-		http.StatusTooManyRequests:         CodeRateLimited,
-		http.StatusBadRequest:              CodeInvalidRequest,
-		http.StatusRequestEntityTooLarge:   CodePayloadTooLarge,
-		http.StatusBadGateway:              CodeUpstreamUnavailable,
-		http.StatusServiceUnavailable:      CodeUpstreamUnavailable,
-		http.StatusGatewayTimeout:          CodeUpstreamUnavailable,
+		http.StatusUnauthorized:          CodeUnauthenticated,
+		http.StatusForbidden:             CodeCapabilityDenied,
+		http.StatusNotFound:              CodeNotFound,
+		http.StatusConflict:              CodeConflict,
+		http.StatusRequestTimeout:        CodeRateLimited,
+		http.StatusTooManyRequests:       CodeRateLimited,
+		http.StatusBadRequest:            CodeInvalidRequest,
+		http.StatusRequestEntityTooLarge: CodePayloadTooLarge,
+		http.StatusBadGateway:            CodeUpstreamUnavailable,
+		http.StatusServiceUnavailable:    CodeUpstreamUnavailable,
+		http.StatusGatewayTimeout:        CodeUpstreamUnavailable,
 	}
 	for status, want := range cases {
 		if got := codeForStatus(status); got != want {
@@ -63,11 +63,11 @@ func TestCodeForStatus(t *testing.T) {
 
 func TestWorkspaceFromPath(t *testing.T) {
 	cases := map[string]string{
-		"/workspaces/ws-1/notes":         "ws-1",
-		"/workspaces/ws-2/notes/123":     "ws-2",
-		"/workspaces//notes":             "",
-		"/notes":                         "",
-		"/workspaces/ws-1":               "ws-1",
+		"/workspaces/ws-1/notes":     "ws-1",
+		"/workspaces/ws-2/notes/123": "ws-2",
+		"/workspaces//notes":         "",
+		"/notes":                     "",
+		"/workspaces/ws-1":           "ws-1",
 	}
 	for path, want := range cases {
 		r := httptest.NewRequest(http.MethodGet, path, nil)
@@ -81,15 +81,18 @@ func TestWorkspaceFromPath(t *testing.T) {
 
 func TestWriteStructuredError_StableShape(t *testing.T) {
 	s := &Server{}
+	var body map[string]any
+	handler := requestIDMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.writeStructuredError(w, r, http.StatusBadRequest, CodeWorkspaceRequired, "workspace required")
+	}))
 	r := httptest.NewRequest(http.MethodPost, "/workspaces/ws-1/notes", strings.NewReader(""))
-	r.Header.Set("X-Request-ID", "req-abc")
+	r.Header.Set("X-Request-ID", "request_abcdefgh")
 	w := httptest.NewRecorder()
-	s.writeStructuredError(w, r, http.StatusBadRequest, CodeWorkspaceRequired, "workspace required")
+	handler.ServeHTTP(w, r)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status: want 400, got %d", w.Code)
 	}
-	var body map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -102,8 +105,24 @@ func TestWriteStructuredError_StableShape(t *testing.T) {
 	if body["retryable"] != false {
 		t.Errorf("retryable: %v", body["retryable"])
 	}
-	if body["request_id"] != "req-abc" {
+	if body["request_id"] != "request_abcdefgh" {
 		t.Errorf("request_id: %v", body["request_id"])
+	}
+	if w.Header().Get("X-Request-ID") != "request_abcdefgh" {
+		t.Errorf("response request id: %q", w.Header().Get("X-Request-ID"))
+	}
+}
+
+func TestRequestIDMiddleware_GeneratesMissingID(t *testing.T) {
+	var seen string
+	handler := requestIDMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = (&Server{}).requestIDFromContext(r)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+	if seen == "" || seen != w.Header().Get("X-Request-ID") {
+		t.Fatalf("request id context=%q header=%q", seen, w.Header().Get("X-Request-ID"))
 	}
 }
 

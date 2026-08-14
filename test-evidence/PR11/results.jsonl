@@ -14,3 +14,19 @@
 {"label":"ws: cause.action_id latest wins","expected":"02B","actual":"02B","ok":true,"defectClass":null,"ts":"2026-08-14T05:27:12.042Z"}
 {"label":"ws: unknown shape dropped without throw","expected":"unknown","actual":"unknown","ok":true,"defectClass":null,"ts":"2026-08-14T05:27:12.042Z"}
 {"label":"ws: wildcard receives all accepted types","expected":"a,b","actual":"a,b","ok":true,"defectClass":null,"ts":"2026-08-14T05:27:12.042Z"}
+{"label":"network: 401 → state.error.code=token_expired","expected":"error","actual":"error","ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.193Z"}
+{"label":"network: 401 → state.error.code=token_expired (code)","expected":"token_expired","actual":"token_expired","ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.194Z"}
+{"label":"network: 403 → state.phase=error","expected":"error","actual":"error","ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.194Z"}
+{"label":"network: 403 → retryable=false (capability)","expected":false,"actual":false,"ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.194Z"}
+{"label":"network: 404 → state.phase=error","expected":"error","actual":"error","ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.194Z"}
+{"label":"network: 404 → code=not_found","expected":"not_found","actual":"not_found","ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.194Z"}
+{"label":"network: 409 → state.error.code=conflict","expected":"conflict","actual":"conflict","ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.194Z"}
+{"label":"network: 429 → retryable=true","expected":true,"actual":true,"ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.194Z"}
+{"label":"network: 500 → retryable=true","expected":true,"actual":true,"ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.194Z"}
+{"label":"network: 200 → state.phase=ready","expected":"ready","actual":"ready","ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.195Z"}
+{"label":"network: 200 empty → state.phase=empty","expected":"empty","actual":"empty","ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.195Z"}
+{"label":"network: stale response does not overwrite newer","expected":"[9]","actual":"[9]","ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.195Z"}
+{"label":"ws: replay same id fires once","expected":"01A,02B","actual":"01A,02B","ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.195Z"}
+{"label":"ws: cause.action_id latest wins","expected":"02B","actual":"02B","ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.195Z"}
+{"label":"ws: unknown shape dropped without throw","expected":"unknown","actual":"unknown","ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.195Z"}
+{"label":"ws: wildcard receives all accepted types","expected":"a,b","actual":"a,b","ok":true,"defectClass":null,"ts":"2026-08-14T05:31:57.195Z"}

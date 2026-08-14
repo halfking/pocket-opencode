@@ -58,9 +58,10 @@ func (d Decision) Valid() bool {
 // request, used for scope validation. Wire this from Claims in the
 // handler (see server_identity.go).
 type ScopeContext struct {
-	UserID      string
-	Role        string
-	WorkspaceID string
+	UserID       string
+	Role         string
+	WorkspaceID  string
+	Capabilities []string
 }
 
 // ApprovalTarget describes the upstream target of an approval action.
@@ -80,19 +81,19 @@ type ApprovalTarget struct {
 // must produce. See PR1 §11 for the full schema. We deliberately do not
 // include payload, token, or session prompt here.
 type AuditEntry struct {
-	AuditID       string    `json:"audit_id"`
-	ActorID       string    `json:"actor_id"`
-	ActorRole     string    `json:"actor_role"`
-	WorkspaceID   string    `json:"workspace_id"`
-	ActionType    string    `json:"action_type"` // "permission_reply" | "question_reply" | "question_reject"
-	ResourceType  string    `json:"resource_type"`
-	ResourceID    string    `json:"resource_id"` // request_id
-	CorrelationID string    `json:"correlation_id"`
-	PolicyDecision string   `json:"policy_decision"` // "allow" | "deny"
-	Result        string    `json:"result"`          // "success" | "failure" | "partial"
-	InputDigest   string    `json:"input_digest,omitempty"`
-	OutputDigest  string    `json:"output_digest,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
+	AuditID        string    `json:"audit_id"`
+	ActorID        string    `json:"actor_id"`
+	ActorRole      string    `json:"actor_role"`
+	WorkspaceID    string    `json:"workspace_id"`
+	ActionType     string    `json:"action_type"` // "permission_reply" | "question_reply" | "question_reject"
+	ResourceType   string    `json:"resource_type"`
+	ResourceID     string    `json:"resource_id"` // request_id
+	CorrelationID  string    `json:"correlation_id"`
+	PolicyDecision string    `json:"policy_decision"` // "allow" | "deny"
+	Result         string    `json:"result"`          // "success" | "failure" | "partial"
+	InputDigest    string    `json:"input_digest,omitempty"`
+	OutputDigest   string    `json:"output_digest,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // ValidationError is returned when scope or shape validation fails. The
@@ -103,8 +104,8 @@ type AuditEntry struct {
 //   - "workspace_required" — actor has no workspace_id (must pick one).
 //   - "capability_denied"  — actor lacks one of CapabilityCheck.
 //   - "not_found"          — resource tuple is incomplete or unknown;
-//                            do NOT leak the difference between "no
-//                            such request" and "wrong workspace".
+//     do NOT leak the difference between "no
+//     such request" and "wrong workspace".
 //   - "payload_too_large"  — message body exceeds the policy limit.
 //   - "unauthenticated"    — actor has no user_id (no JWT / expired).
 //   - "invalid_decision"   — decision is not one of the canonical four.
@@ -172,7 +173,10 @@ func ValidateScope(actor ScopeContext, target ApprovalTarget) error {
 			Message: "target has no workspace_id; shared instances require explicit admin policy",
 		}
 	}
-	if actor.WorkspaceID != "" && actor.WorkspaceID != target.WorkspaceID {
+	if strings.TrimSpace(actor.WorkspaceID) == "" {
+		return &ValidationError{Code: "workspace_required", Message: "missing workspace_id in claims"}
+	}
+	if actor.WorkspaceID != target.WorkspaceID {
 		return &ValidationError{
 			Code:    "not_found",
 			Message: "target workspace does not match actor",

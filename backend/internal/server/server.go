@@ -446,6 +446,8 @@ func (s *Server) Handler() http.Handler {
 	// SSE / Prompt / Interrupt / Messages / Create — 转发到 OpenCode 上游
 	mux.HandleFunc("/api/mobile/sessions", s.requireAuth(s.handleMobileSessionRouter))
 	mux.HandleFunc("/api/mobile/sessions/", s.requireAuth(s.handleMobileSessionRouter))
+	mux.HandleFunc("/api/mobile/approvals", s.requireAuth(s.handleMobileApprovalRouter))
+	mux.HandleFunc("/api/mobile/approvals/", s.requireAuth(s.handleMobileApprovalRouter))
 
 	// Plugin/Manager WebSocket routes
 	mux.HandleFunc("/plugin/ws", s.requireAuth(s.handlePluginWebSocket))
@@ -488,7 +490,7 @@ func (s *Server) Handler() http.Handler {
 			),
 		),
 	)
-	return requestBodyLimitMiddleware(handler)
+	return requestIDMiddleware(requestBodyLimitMiddleware(handler))
 }
 
 // longLivedPaths 列出需要把 http.Server.WriteTimeout 拉满的端点。
@@ -504,10 +506,10 @@ func (s *Server) Handler() http.Handler {
 // WebSocket 升级走的是 gorilla/websocket 自己的 deadline，不在 WriteTimeout 管辖
 // 范围，所以这里只覆盖 SSE 路径。
 var longLivedPaths = []string{
-	"/api/llm/stream",          // S0-B LLM BFF 流式聊天
-	"/api/llm-gateway/nodes/",  // 网关运维控制面（live-stream 等）
-	"/api/mobile/sessions/",    // 移动端 session SSE（含 /event）
-	"/api/llmbff/stream",     // 同上的历史别名（保留兼容）
+	"/api/llm/stream",         // S0-B LLM BFF 流式聊天
+	"/api/llm-gateway/nodes/", // 网关运维控制面（live-stream 等）
+	"/api/mobile/sessions/",   // 移动端 session SSE（含 /event）
+	"/api/llmbff/stream",      // 同上的历史别名（保留兼容）
 }
 
 func longLivedPathMiddleware(next http.Handler) http.Handler {

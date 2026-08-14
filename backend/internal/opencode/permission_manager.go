@@ -398,9 +398,38 @@ func (m *PermissionManager) Reply(ctx context.Context, instanceID, sessionID, re
 	return nil
 }
 
-// =============================================================================
-// Internal
-// =============================================================================
+// ReplyForWorkspace forwards a validated permission reply for an instance owned
+// by workspaceID. Tenant callers cannot reply to requests on shared operator
+// instances or instances registered to another workspace.
+func (m *PermissionManager) ReplyForWorkspace(ctx context.Context, workspaceID, instanceID, sessionID, requestID string, reply adapter.PermissionReply, message string) error {
+	caller, ok := m.adapter.(PermissionCaller)
+	if !ok {
+		return fmt.Errorf("adapter %T does not support permission operations", m.adapter)
+	}
+	if !m.hasPending(instanceID, sessionID, requestID) {
+		return fmt.Errorf("permission request not pending")
+	}
+	baseURL, err := m.registry.GetWritableInstanceAPIBaseForWorkspace(workspaceID, instanceID)
+	if err != nil {
+		return fmt.Errorf("resolve writable instance base URL: %w", err)
+	}
+	if err := caller.ReplyPermission(ctx, baseURL, sessionID, requestID, reply, message); err != nil {
+		return fmt.Errorf("reply permission: %w", err)
+	}
+	key := permissionKey(instanceID, sessionID, requestID)
+	m.mu.Lock()
+	delete(m.pending, key)
+	m.mu.Unlock()
+	m.publish(PermissionEvent{Type: "resolved", InstanceID: instanceID, SessionID: sessionID, RequestID: requestID, Reply: &reply, Message: message, Timestamp: time.Now()})
+	return nil
+}
+
+func (m *PermissionManager) hasPending(instanceID, sessionID, requestID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.pending[permissionKey(instanceID, sessionID, requestID)]
+	return ok
+}
 
 func (m *PermissionManager) pollAllInstances(ctx context.Context) {
 	instances := m.registry.ListInstances()

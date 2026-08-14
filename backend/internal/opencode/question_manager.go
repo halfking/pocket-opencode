@@ -49,13 +49,13 @@ type pendingQuestion struct {
 
 // QuestionEvent is emitted to subscribers on state changes.
 type QuestionEvent struct {
-	Type       string                    `json:"type"` // "new" | "resolved" | "rejected" | "expired"
-	InstanceID string                    `json:"instanceId"`
-	SessionID  string                    `json:"sessionId"`
-	RequestID  string                    `json:"requestId,omitempty"`
-	Request    *adapter.QuestionRequest  `json:"request,omitempty"`
-	Answers    []adapter.QuestionAnswer  `json:"answers,omitempty"`
-	Timestamp  time.Time                 `json:"timestamp"`
+	Type       string                   `json:"type"` // "new" | "resolved" | "rejected" | "expired"
+	InstanceID string                   `json:"instanceId"`
+	SessionID  string                   `json:"sessionId"`
+	RequestID  string                   `json:"requestId,omitempty"`
+	Request    *adapter.QuestionRequest `json:"request,omitempty"`
+	Answers    []adapter.QuestionAnswer `json:"answers,omitempty"`
+	Timestamp  time.Time                `json:"timestamp"`
 }
 
 // QuestionManagerOptions configures the manager.
@@ -422,9 +422,61 @@ func (m *QuestionManager) Reject(ctx context.Context, instanceID, sessionID, req
 	return nil
 }
 
-// =============================================================================
-// Internal
-// =============================================================================
+// ReplyForWorkspace forwards a validated question reply for an instance owned
+// by workspaceID. Shared instances are read-only for tenant callers.
+func (m *QuestionManager) ReplyForWorkspace(ctx context.Context, workspaceID, instanceID, sessionID, requestID string, answers []adapter.QuestionAnswer) error {
+	caller, ok := m.adapter.(QuestionCaller)
+	if !ok {
+		return fmt.Errorf("adapter %T does not support question operations", m.adapter)
+	}
+	if !m.hasPending(instanceID, sessionID, requestID) {
+		return fmt.Errorf("question request not pending")
+	}
+	baseURL, err := m.registry.GetWritableInstanceAPIBaseForWorkspace(workspaceID, instanceID)
+	if err != nil {
+		return fmt.Errorf("resolve writable instance base URL: %w", err)
+	}
+	if err := caller.ReplyQuestion(ctx, baseURL, sessionID, requestID, answers); err != nil {
+		return fmt.Errorf("reply question: %w", err)
+	}
+	key := permissionKey(instanceID, sessionID, requestID)
+	m.mu.Lock()
+	delete(m.pending, key)
+	m.mu.Unlock()
+	m.publish(QuestionEvent{Type: "resolved", InstanceID: instanceID, SessionID: sessionID, RequestID: requestID, Answers: answers, Timestamp: time.Now()})
+	return nil
+}
+
+// RejectForWorkspace rejects a validated question request for an owned instance.
+func (m *QuestionManager) RejectForWorkspace(ctx context.Context, workspaceID, instanceID, sessionID, requestID string) error {
+	caller, ok := m.adapter.(QuestionCaller)
+	if !ok {
+		return fmt.Errorf("adapter %T does not support question operations", m.adapter)
+	}
+	if !m.hasPending(instanceID, sessionID, requestID) {
+		return fmt.Errorf("question request not pending")
+	}
+	baseURL, err := m.registry.GetWritableInstanceAPIBaseForWorkspace(workspaceID, instanceID)
+	if err != nil {
+		return fmt.Errorf("resolve writable instance base URL: %w", err)
+	}
+	if err := caller.RejectQuestion(ctx, baseURL, sessionID, requestID); err != nil {
+		return fmt.Errorf("reject question: %w", err)
+	}
+	key := permissionKey(instanceID, sessionID, requestID)
+	m.mu.Lock()
+	delete(m.pending, key)
+	m.mu.Unlock()
+	m.publish(QuestionEvent{Type: "rejected", InstanceID: instanceID, SessionID: sessionID, RequestID: requestID, Timestamp: time.Now()})
+	return nil
+}
+
+func (m *QuestionManager) hasPending(instanceID, sessionID, requestID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.pending[permissionKey(instanceID, sessionID, requestID)]
+	return ok
+}
 
 func (m *QuestionManager) pollAllInstances(ctx context.Context) {
 	instances := m.registry.ListInstances()

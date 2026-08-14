@@ -46,17 +46,17 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			token = strings.TrimSpace(r.URL.Query().Get("token"))
 		}
 		if token == "" {
-			writeError(w, http.StatusUnauthorized, "missing authorization token")
+			s.writeStructuredError(w, r, http.StatusUnauthorized, CodeUnauthenticated, "missing authorization token")
 			return
 		}
 		if s.jwtSigner == nil {
-			writeError(w, http.StatusInternalServerError, "JWT signer not configured")
+			s.writeStructuredError(w, r, http.StatusInternalServerError, CodeUpstreamUnavailable, "JWT signer not configured")
 			return
 		}
 
 		claims, err := s.jwtSigner.Parse(token)
 		if err != nil || claims.UserID == "" {
-			writeError(w, http.StatusUnauthorized, "invalid or expired token")
+			s.writeStructuredError(w, r, http.StatusUnauthorized, CodeUnauthenticated, "invalid or expired token")
 			return
 		}
 
