@@ -4,6 +4,8 @@
 > 基线：源码审计 + `docs/reclaw/RECLAW-CHANGE-REQUEST-001-platform-integration.md`
 > 状态词：`CURRENT` 已由源码证明；`PARTIAL` 已有基础但未闭环；`PLANNED` 目标能力。
 
+> API 细化：见 [API-DETAILS.md](API-DETAILS.md)，其中定义 pocketd 当前本地 API 与目标 RedClaw façade 接入、任务映射、审批、记忆和实时流迁移。
+
 ## 一、定位与事实边界
 
 OpenPocket 是平台的移动宿主 UI 与本地 ACP runtime 宿主。当前 Android/Capacitor 与 pocketd 已可运行，但**尚未通过 RedClaw 统一 façade 接入 ACC/Memora/gateway**。v1 的核心任务是先保留现有链路稳定，再将可迁移流量逐步切到经审计的 façade 与 service JWT。
