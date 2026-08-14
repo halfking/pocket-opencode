@@ -40,21 +40,8 @@ const PkmTodayView = () => import('../features/pkm/PkmTodayView.vue')
 const PkmNoteView = () => import('../features/pkm/PkmNoteView.vue')
 
 // 🦞 守卫所需：登录态 + 龙虾初始化态
-import { useAuthStore } from '../stores/auth'
-import { isLobsterReady } from '../native/lobster-init'
-
-/**
- * 判断某路由是否需要"龙虾硬壳已初始化"。
- * 笔记 / 邮箱 / 密码箱 / 会议记录这类本地存储相关页面都需要。
- */
-function needsLobster(to: { path: string; meta: { requiresLobster?: boolean } }): boolean {
-  if (to.meta.requiresLobster) return true
-  // 兼容子路由（detail / edit 继承父级 lobster 需求）
-  if (to.path.startsWith('/notes') || to.path.startsWith('/pkm') || to.path.startsWith('/email') || to.path.startsWith('/vault') || to.path.startsWith('/meetings')) {
-    return true
-  }
-  return false
-}
+// PR4: 守卫逻辑已抽取到 ./routeGuards.ts；本文件保留路由表，避免在
+// 创建 router 之前 import pinia/native 引发的副作用。
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -308,37 +295,29 @@ const router = createRouter({
  * Router Guard:
  *   1. 已登录访问 /login → 重定向到首页
  *   2. 需要登录的页面 → 未登录跳 /login
- *   3. 需要龙虾硬壳的页面：只检查登录态，让页面组件自己处理 Lobster 未就绪的情况
- * 
- * Phase 7: 
+ *   3. 需要龙虾硬壳的页面：已登录但 Lobster 未就绪 → 跳 /login?unlock=1
+ *
+ * Phase 7:
  *   - Added syncFromStorage() to ensure auth state is current on each navigation
  *   - Fixed: Remove forced redirect to /login when Lobster not ready
  *   - Rationale: Lobster initialization may fail (native plugin issues), but user
  *     should still be able to navigate. Pages requiring Lobster will show appropriate
  *     error messages or fallback UI instead of forcing re-login.
+ *
+ * PR4 (optimization v4 / E1-S1):
+ *   - Split guard into helper module (`./routeGuards.ts`) so the four
+ *     outcomes (allow / login / unlock / block) are testable in isolation.
+ *   - Replace `redirect` query with `returnTo` and preserve open-redirect
+ *     safety by validating the path prefix.
+ *   - Persist the last successful route under `pocket:lastRoute` for
+ *     diagnostic / restore flows.
  */
+import { runGuard } from './routeGuards'
+
 router.beforeEach((to, from, next) => {
-  const auth = useAuthStore()
-  
-  // Phase 7: Sync auth state from localStorage before checking
-  // This ensures we have the latest auth state, even if localStorage was modified externally
-  auth.syncFromStorage()
-
-  // 1) 已登录访问 /login → 直接去首页
-  if (to.path === '/login' && auth.isAuthenticated && isLobsterReady()) {
-    return next('/ai')
-  }
-
-  // 2) 需要登录但未登录
-  if (to.meta.requiresAuth && !auth.isAuthenticated) {
-    return next({ path: '/login', query: { redirect: to.fullPath } })
-  }
-
-  // 3) Lobster 检查移除：让页面组件自己处理未初始化的情况
-  //    理由：Lobster 初始化可能因为 native 插件问题失败，但不应该阻止导航
-  //    需要 Lobster 的页面会显示友好的错误提示或降级功能
-
-  next()
+  // Phase 7: Auth sync still happens inside evaluateRoute via the
+  // helper, so we delegate the whole decision tree.
+  runGuard(to, next)
 })
 
 export default router
