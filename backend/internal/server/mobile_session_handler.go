@@ -134,6 +134,10 @@ func (s *Server) handleMobileSessionRouter(w http.ResponseWriter, r *http.Reques
 
 // handleMobileSessionCreate POST /api/mobile/sessions?instance_id=xxx
 // body: { title?, parentID?, agent?, model? }
+//
+// Supports offline replay: when the Idempotency-Key header is present, a
+// retry of the same create returns the original upstream session instead of
+// creating a duplicate (SEC-06 mobile outbox drain).
 func (s *Server) handleMobileSessionCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.writeStructuredError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
@@ -143,6 +147,15 @@ func (s *Server) handleMobileSessionCreate(w http.ResponseWriter, r *http.Reques
 	apiBaseURL, workspaceID, ok := s.resolveMobileInstance(w, r, instanceID, true)
 	if !ok {
 		return
+	}
+
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey != "" && s.mobileCreates != nil {
+		if cached, hit := s.mobileCreates.Get(workspaceID, instanceID, idempotencyKey); hit {
+			w.Header().Set("Idempotency-Replayed", "true")
+			writeJSON(w, http.StatusOK, cached)
+			return
+		}
 	}
 
 	var req struct {
@@ -168,11 +181,16 @@ func (s *Server) handleMobileSessionCreate(w http.ResponseWriter, r *http.Reques
 			"create session: "+err.Error())
 		return
 	}
+	if idempotencyKey != "" && s.mobileCreates != nil {
+		s.mobileCreates.Put(workspaceID, instanceID, idempotencyKey, info)
+	}
 	writeJSON(w, http.StatusOK, info)
 }
 
-// handleMobileSessionList GET /api/mobile/sessions?instance_id=xxx
-// 返回会话列表
+// handleMobileSessionList GET /api/mobile/sessions?instance_id=xxx&since=N
+// 返回会话列表。since（Unix 毫秒）存在时仅返回 time.updated > since 的行，
+// 供移动端增量同步；响应行是同步视图（id/title/status/timeUpdatedMs），
+// 与内部 adapter 结构解耦。
 func (s *Server) handleMobileSessionList(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.URL.Query().Get("instance_id")
 	if instanceID == "" {
@@ -184,15 +202,40 @@ func (s *Server) handleMobileSessionList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	since := int64(0)
+	if rawSince := r.URL.Query().Get("since"); rawSince != "" {
+		parsed, err := strconv.ParseInt(rawSince, 10, 64)
+		if err != nil || parsed < 0 {
+			s.writeStructuredError(w, r, http.StatusBadRequest, CodeInvalidRequest,
+				"since must be a non-negative Unix millisecond timestamp")
+			return
+		}
+		since = parsed
+	}
+
 	sessions, err := s.opencode.ListSessions(r.Context(), apiBaseURL)
 	if err != nil {
 		http.Error(w, "list sessions: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
+	rows := make([]map[string]any, 0, len(sessions))
+	for _, sess := range sessions {
+		if since > 0 && sess.TimeUpdated <= since {
+			continue
+		}
+		rows = append(rows, map[string]any{
+			"id":            sess.ID,
+			"title":         sess.Title,
+			"status":        sess.Status,
+			"timeUpdatedMs": sess.TimeUpdated,
+		})
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"data":  sessions,
-		"total": len(sessions),
+		"data":        rows,
+		"total":       len(rows),
+		"sinceMs":     since,
+		"serverTimeMs": time.Now().UnixMilli(),
 	})
 }
 

@@ -26,7 +26,7 @@
  * UI notifications and analytics events MUST NOT be queued here.
  */
 
-import { newRequestId } from './asyncState'
+import { newRequestId } from './asyncState.ts'
 
 export type OutboxKind = 'retriable_action'
 

@@ -237,6 +237,97 @@ CREATE TABLE IF NOT EXISTS local_chat_conversations (
 );
 
 -- ============================================================
+-- P1 移动离线持久化（SEC-06 / 优化v4 §5）
+--
+-- 移动端聊天域（session / message / approval）的离线镜像 + 同步元数据。
+-- 同步模型：last-write-wins（LWW），判定依据统一为毫秒时间戳：
+--   - 服务端行带 server_rev（上游 time.updated，Unix ms）
+--   - 本地行带 updated_at（本地时钟）+ dirty 标记
+--   - pull：本地非 dirty 行且 remote server_rev > 本地 server_rev 时覆盖
+--   - push：dirty 行经 outbox 幂等重放到 /api/mobile/* 路由
+-- 冲突自由保证：客户端离线创建的实体使用本地生成的 id（loc_ 前缀），
+-- 创建动作走幂等键重放，上游不会产生重复实体。
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS local_mobile_sessions (
+    id TEXT PRIMARY KEY,               -- 客户端 id；离线创建为 loc_<uuid>
+    server_id TEXT,                    -- 上游 session id（push 成功后回填）
+    workspace_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    title TEXT DEFAULT '',
+    status TEXT DEFAULT '',
+    idempotency_key TEXT NOT NULL,     -- 创建重放的幂等键（唯一）
+    client_rev INTEGER NOT NULL DEFAULT 1,
+    server_rev INTEGER NOT NULL DEFAULT 0,  -- 上游 time.updated，0 = 未同步
+    dirty INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER                 -- 墓碑：本地删除待 push DELETE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mobile_sessions_server_id
+    ON local_mobile_sessions(server_id) WHERE server_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_mobile_sessions_dirty
+    ON local_mobile_sessions(workspace_id, dirty) WHERE dirty = 1;
+CREATE INDEX IF NOT EXISTS idx_mobile_sessions_sync
+    ON local_mobile_sessions(workspace_id, instance_id, server_rev);
+
+CREATE TABLE IF NOT EXISTS local_mobile_messages (
+    id TEXT PRIMARY KEY,               -- 客户端消息 id（loc_ 前缀）或上游消息 id
+    session_id TEXT NOT NULL,          -- 指向 local_mobile_sessions.id
+    workspace_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'user', -- user / assistant / tool（本地只写 user）
+    text TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'pending', -- pending / sent / failed / remote
+    server_message_id TEXT,            -- prompt 发送成功后上游 messageID
+    idempotency_key TEXT,              -- prompt 重放幂等键（本地创建的消息才有）
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES local_mobile_sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_mobile_messages_session ON local_mobile_messages(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mobile_messages_pending
+    ON local_mobile_messages(state) WHERE state = 'pending';
+
+CREATE TABLE IF NOT EXISTS local_mobile_approvals (
+    id TEXT PRIMARY KEY,               -- 服务端 request_id
+    workspace_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    session_id TEXT,
+    kind TEXT NOT NULL,                -- permission / question
+    payload TEXT NOT NULL DEFAULT '{}',-- 审批请求快照（JSON）
+    decision TEXT,                     -- 本地已做决定（once/always/reject/answer）
+    state TEXT NOT NULL DEFAULT 'pending', -- pending / sent / expired
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    replied_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_mobile_approvals_state
+    ON local_mobile_approvals(workspace_id, state);
+
+-- ============================================================
+-- Outbox（PR13 OutboxStorage 的 SQLite 落地，SEC-06）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_outbox (
+    id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    action TEXT NOT NULL,              -- session.create / session.prompt / approval.reply ...
+    payload TEXT NOT NULL,             -- JSON 序列化的 OutboxRecord.payload
+    created_at INTEGER NOT NULL,
+    next_attempt_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    cursor TEXT,                       -- 服务端返回的游标（续传用）
+    last_error TEXT,
+    state TEXT NOT NULL DEFAULT 'queued', -- queued/inflight/succeeded/failed/dead_letter
+    ttl_ms INTEGER NOT NULL DEFAULT 86400000
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_idem ON local_outbox(idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_outbox_ready
+    ON local_outbox(state, next_attempt_at) WHERE state = 'queued';
+CREATE INDEX IF NOT EXISTS idx_outbox_workspace ON local_outbox(workspace_id, state);
+
+-- ============================================================
 -- 同步状态追踪（哪些表已导出到云 blob）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS local_sync_state (

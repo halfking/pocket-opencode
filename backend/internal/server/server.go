@@ -131,6 +131,9 @@ type Server struct {
 
 	// Audit 审计日志存储
 	auditStore *redclaw.AuditStore
+
+	// 移动端离线重放的 session create 幂等缓存（SEC-06）
+	mobileCreates *mobileCreateCache
 }
 
 // New 构造 Server。Phase 0 扩展：新增 notes/email/vault store、STT transcriber、ACC MCP client。
@@ -183,6 +186,7 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 		dataDir:          dataDir,
 		financeStore:     finance.NewStore(),
 		auditStore:       redclaw.NewAuditStore(),
+		mobileCreates:    newMobileCreateCache(),
 		llmGWCache:       newLLMGatewayCache(),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
@@ -461,6 +465,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Audit 审计日志
 	mux.HandleFunc("/api/audit/logs", s.requireAuth(s.handleAuditLogs))
+	mux.HandleFunc("/api/audit/export", s.requireAuth(s.handleAuditExport))
 
 	// ---- 产品方案/PPT API ----
 	mux.HandleFunc("/api/presentations", s.requireAuth(s.handlePresentations))

@@ -153,9 +153,10 @@ func parseSessionList(body io.Reader) ([]OpenCodeSession, error) {
 		}
 
 		sessions = append(sessions, OpenCodeSession{
-			ID:     s.ID,
-			Title:  s.Title,
-			Status: status,
+			ID:          s.ID,
+			Title:       s.Title,
+			Status:      status,
+			TimeUpdated: s.Time.Updated,
 		})
 	}
 	return sessions, nil
