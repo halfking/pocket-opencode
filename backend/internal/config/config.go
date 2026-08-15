@@ -184,7 +184,16 @@ func (c Config) Validate() error {
 	if c.MCPInsecureTLS {
 		return fmt.Errorf("POCKET_MCP_INSECURE_TLS must be false in production")
 	}
-	
+
+	// PK-3.1: direct LLM provider access is forbidden in production (fail-closed).
+	// All LLM traffic must go through the enterprise gateway
+	// (POCKET_LLM_GATEWAY_URL/POCKET_LLM_GATEWAY_API_KEY). Reject the startup
+	// if a direct endpoint or key is configured, even when a gateway is also
+	// configured, so no bypass path can exist.
+	if strings.TrimSpace(c.LLMBaseURL) != "" || strings.TrimSpace(c.LLMAPIKey) != "" {
+		return fmt.Errorf("POCKET_LLM_BASE_URL/POCKET_LLM_API_KEY (direct LLM provider access) must not be configured in production; route LLM traffic through POCKET_LLM_GATEWAY_URL instead")
+	}
+
 	// Database: PostgreSQL is required for production
 	if strings.TrimSpace(c.PostgresDSN) == "" {
 		return fmt.Errorf("POCKET_POSTGRES_DSN must be configured in production")

@@ -36,6 +36,11 @@ func TestLoadProductionAlias(t *testing.T) {
 	t.Setenv("POCKET_ALLOWED_ORIGINS", "https://app.example.com")
 	t.Setenv("POCKET_POSTGRES_DSN", "postgres://user:pass@localhost/pocket")
 	t.Setenv("POCKET_EMAIL_FETCH_ENABLED", "false")
+	// PK-3.1: direct LLM env must be cleared so this test does not depend on
+	// the host machine's environment.
+	t.Setenv("POCKET_LLM_BASE_URL", "")
+	t.Setenv("POCKET_LLM_API_KEY", "")
+	t.Setenv("POCKET_GROQ_API_KEY", "")
 
 	cfg := Load()
 	if cfg.Environment != "production" {
@@ -76,6 +81,68 @@ func TestProductionConfigValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidateProductionLLMDirectAccessRejected covers PK-3.1: production
+// must fail-closed when a direct LLM endpoint/key is configured, gateway
+// routing must pass, and development keeps direct access allowed.
+func TestValidateProductionLLMDirectAccessRejected(t *testing.T) {
+	base := Config{
+		Environment:              "production",
+		HTTPPort:                 "8088",
+		OpenCodeTimeoutMS:        "5000",
+		WSHeartbeatMS:            "15000",
+		ReminderCheckIntervalSec: "60",
+		JWTSecret:                "01234567890123456789012345678901",
+		PostgresDSN:              "postgres://user:pass@localhost/pocket",
+		AllowedOrigins:           "https://app.example.com",
+		RedClawTimeoutSec:        30,
+	}
+
+	t.Run("production with direct LLM endpoint rejected", func(t *testing.T) {
+		cfg := base
+		cfg.LLMBaseURL = "https://api.groq.com/openai/v1"
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected production config with direct LLM base URL to be rejected")
+		}
+	})
+
+	t.Run("production with direct LLM key rejected", func(t *testing.T) {
+		cfg := base
+		cfg.LLMAPIKey = "gsk_direct_key"
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected production config with direct LLM API key to be rejected")
+		}
+	})
+
+	t.Run("production with gateway passes", func(t *testing.T) {
+		cfg := base
+		cfg.LLMGatewayURL = "https://llm-gateway.internal"
+		cfg.LLMGatewayAPIKey = "tenant-key"
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("expected production gateway config to pass, got %v", err)
+		}
+	})
+
+	t.Run("production with direct LLM alongside gateway still rejected", func(t *testing.T) {
+		cfg := base
+		cfg.LLMGatewayURL = "https://llm-gateway.internal"
+		cfg.LLMGatewayAPIKey = "tenant-key"
+		cfg.LLMBaseURL = "https://api.groq.com/openai/v1"
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected production config with any direct LLM setting to be rejected even when gateway is configured")
+		}
+	})
+
+	t.Run("development with direct LLM passes", func(t *testing.T) {
+		cfg := base
+		cfg.Environment = "development"
+		cfg.LLMBaseURL = "https://api.groq.com/openai/v1"
+		cfg.LLMAPIKey = "gsk_direct_key"
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("expected development config with direct LLM to pass, got %v", err)
+		}
+	})
 }
 
 func TestValidateOrigins(t *testing.T) {
