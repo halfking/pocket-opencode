@@ -270,6 +270,10 @@ CREATE INDEX IF NOT EXISTS idx_mobile_sessions_dirty
     ON local_mobile_sessions(workspace_id, dirty) WHERE dirty = 1;
 CREATE INDEX IF NOT EXISTS idx_mobile_sessions_sync
     ON local_mobile_sessions(workspace_id, instance_id, server_rev);
+-- 离线会话列表缓存查询（listCachedSessions）：等值前缀 + updated_at 排序。
+CREATE INDEX IF NOT EXISTS idx_mobile_sessions_cache
+    ON local_mobile_sessions(workspace_id, instance_id, updated_at)
+    WHERE deleted_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS local_mobile_messages (
     id TEXT PRIMARY KEY,               -- 客户端消息 id（loc_ 前缀）或上游消息 id

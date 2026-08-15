@@ -103,6 +103,15 @@ test('parseUnifiedDiff：单 hunk 5,000 行保持完整解析，供视图按批�
   assert.equal(d.hunks[0].dels, 2500)
 })
 
+test('parseUnifiedDiff：CRLF 行尾剥离，不进行内容/头', () => {
+  const crlf = ['--- a/x', '+++ b/x', '@@ -1,1 +1,1 @@', '-old', '+new'].join('\r\n') + '\r\n'
+  const d = parseUnifiedDiff(crlf)
+  assert.ok(d)
+  assert.equal(d.hunks.length, 1)
+  assert.ok(!d.hunks[0].header.endsWith('\r'))
+  assert.deepEqual(d.hunks[0].lines[1], { type: 'add', text: 'new' })
+})
+
 test('parseUnifiedDiff：5,000 行输入解析正确且 hunk 独立分段', () => {
   const lines = ['--- a/big.txt', '+++ b/big.txt']
   let expectedAdds = 0

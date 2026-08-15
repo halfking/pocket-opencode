@@ -22,8 +22,10 @@ Android `pocket_test` AVD + WebView CDP 测量：
 | 754x365 横屏手机 | 单栏回退 | 无（scrollWidth=754） |
 | 1024x768 平板模拟 | 371px / 605px 双栏 | 无（scrollWidth=1024） |
 
-平板 master/detail 两个 pane 均为独立 `overflow:auto` 滚动容器；实例切换会清空
-右侧旧详情，避免跨实例错配。窄屏选中会话继续使用 `/sessions/:id` 路由。
+平板 master/detail 两个 pane 均为独立 `overflow:auto` 滚动容器；任何视口下切换
+实例都会清空旧详情（宽窄切换不残留 selected query）；窄屏不挂载 detail 组件，
+避免后台残留 store 会话与轮询；嵌入详情顶栏提供关闭按钮作为详情态退出路径。
+窄屏选中会话继续使用 `/sessions/:id` 路由。
 
 ### E5-S3 Diff 分段：部分通过
 
@@ -59,6 +61,24 @@ frontend node --test（native/composables/utils）   93/93 PASS
 backend go test ./... -count=1                     PASS
 Android assembleDebug + install                    PASS
 ```
+
+## 审计轮次（2026-08-15 第二轮）
+
+对 fde1293 的独立审计发现 14 项（3 P1 / 11 P2），已修复：
+
+- 切换"当前/已归档"页签不重置 offset、归档后 offset 未钳制 → 分页 offset
+  钳制到最后一页页首，页签切换归零。
+- 离线 + 所有实例视图清空已有数据 → 保留已加载列表（08 §4.1）。
+- 宽屏详情态无退出路径 → 嵌入顶栏加关闭按钮。
+- 窄屏 selected query 残留与 detail 组件常挂载 → 选中态与断点解耦、窄屏卸载。
+- CRLF diff 行尾未剥离；useBreakpoint 多消费者监听泄漏；diff 提取双次求值加缓存；
+  离线缓存查询补部分索引；缓存读取失败给出可重试错误；有数据时刷新降级为内联状态。
+
+已知残留（记录在案，不阻塞）：
+
+- `isLobsterReady()` 非响应式：当前解锁流程必经 /login（路由变化触发重算），
+  但后台锁定功能接入前需把它改为响应式 ref。
+- "所有实例"视图离线只保留内存数据（本地缓存按实例隔离，无法安全合并）。
 
 ## 已知限制 / 下一步
 

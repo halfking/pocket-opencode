@@ -85,7 +85,9 @@ export function parseUnifiedDiff(text: string): ParsedDiff | null {
   let inHunks = false
   let pendingFileMeta: string[] = []
 
-  for (const raw of text.split('\n')) {
+  for (let raw of text.split('\n')) {
+    // Windows CRLF diff：剥掉行尾 \r，避免 pre 渲染行距异常与复制脏字符。
+    raw = raw.replace(/\r$/, '')
     const m = HUNK_RE.exec(raw)
     if (m) {
       inHunks = true

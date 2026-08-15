@@ -23,6 +23,26 @@ import { ApprovalBottomSheet, type ApprovalDecision } from '../../components'
 import DiffBlock from '../../components/business/DiffBlock.vue'
 import { extractDiffText } from '../../utils/diffParse'
 
+// 模板里 v-if 与 :diff 各取一次：对 64KB 输出跑两次提取，长会话反复渲染时
+// 开销翻倍。按 output 身份缓存（对象用 WeakMap，字符串用有界 Map）。
+const diffTextCache = new WeakMap<object, string | null>()
+const stringDiffCache = new Map<string, boolean>()
+
+function cachedDiffText(output: unknown): string | null {
+  if (output && typeof output === 'object') {
+    if (!diffTextCache.has(output)) diffTextCache.set(output, extractDiffText(output))
+    return diffTextCache.get(output) ?? null
+  }
+  if (typeof output !== 'string') return null
+  if (!stringDiffCache.has(output)) {
+    if (stringDiffCache.size >= 256) stringDiffCache.clear()
+    stringDiffCache.set(output, Boolean(extractDiffText(output)))
+  }
+  return stringDiffCache.get(output) ? output : null
+}
+
+const emit = defineEmits<{ close: [] }>()
+
 const props = withDefaults(defineProps<{
   embedded?: boolean
   sessionId?: string
@@ -375,6 +395,10 @@ function formatDuration(ms: number): string {
   <div class="session-view" :class="{ embedded: props.embedded }">
     <!-- Top Bar -->
     <header class="top-bar">
+      <!-- 嵌入双栏时底导隐藏，关闭按钮是详情态的唯一退出路径（08 §2.2）。 -->
+      <button v-if="props.embedded" class="back-btn" @click="emit('close')" aria-label="关闭会话详情">
+        <span class="material-symbols-outlined">close</span>
+      </button>
       <button v-if="!props.embedded" class="back-btn" @click="goBack" aria-label="返回">
         <span class="material-symbols-outlined">arrow_back</span>
       </button>
@@ -478,7 +502,7 @@ function formatDuration(ms: number): string {
                     </div>
                     <div v-if="c.output" class="tool-section">
                       <div class="tool-section-title">输出</div>
-                      <DiffBlock v-if="extractDiffText(c.output)" :diff="extractDiffText(c.output)!" />
+                      <DiffBlock v-if="cachedDiffText(c.output)" :diff="cachedDiffText(c.output)!" />
                       <!-- eslint-disable-next-line vue/no-v-html -->
                       <pre v-else v-html="renderJson(c.output)"></pre>
                     </div>

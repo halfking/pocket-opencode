@@ -25,11 +25,14 @@ const { isFoldableExpanded } = useBreakpoint()
 const selectedId = computed(() => String(route.query.selected || ''))
 const selectedTitle = computed(() => String(route.query.title || ''))
 const selectedInstance = computed(() => String(route.query.instance_id || ''))
-const detailReady = computed(() => selectedId.value !== '' && isLobsterReady())
+// 窄屏不挂载 detail（SplitLayout 也只是 display:none）：避免后台残留 store
+// 会话、WS/审批轮询照跑。选中 query 与断点解耦，宽窄切换不残留错配。
+const showDetailPane = computed(() => isFoldableExpanded.value && selectedId.value !== '')
+const detailReady = computed(() => showDetailPane.value && isLobsterReady())
 const workspaceHasDetail = computed(() => selectedId.value !== '')
 
 function clearSelection(instanceId: string): void {
-  if (!isFoldableExpanded.value || !selectedId.value) return
+  if (!selectedId.value) return
   void router.replace({
     path: '/sessions',
     query: instanceId ? { instance_id: instanceId } : {},
@@ -76,10 +79,11 @@ function selectSession(session: SelectedSession, instanceId: string): void {
         :session-id="selectedId"
         :instance-id="selectedInstance"
         :title="selectedTitle"
+        @close="clearSelection(selectedInstance)"
       />
-      <div v-else-if="selectedId && !isLobsterReady()" class="detail-empty" role="status">
-        <span class="material-symbols-outlined" aria-hidden="true">forum</span>
-        <h2>选择一个会话</h2>
+      <div v-else-if="showDetailPane" class="detail-empty" role="status">
+        <span class="material-symbols-outlined" aria-hidden="true">lock</span>
+        <h2>工作区已锁定</h2>
         <p>请先解锁本地工作区后查看会话详情。</p>
       </div>
       <div v-else class="detail-empty">

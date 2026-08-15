@@ -26,8 +26,10 @@ function modeForWidth(width: number): Breakpoint {
 
 function initQueries() {
   if (typeof window === 'undefined') return
-  
-  QUERIES.length = 0
+  // 只初始化一次：多个消费者（AppLayout/工作台）反复挂载时重建 QUERIES 会
+  // 把先挂载方挂在旧 MediaQueryList 上的监听孤立掉，造成监听泄漏。
+  if (QUERIES.length > 0) return
+
   QUERIES.push(
     { mode: 'compact', mql: window.matchMedia('(max-width: 559px)') },
     { mode: 'medium', mql: window.matchMedia('(min-width: 560px) and (max-width: 839px)') },

@@ -43,8 +43,8 @@
       <span v-if="searching" class="searching" role="status">搜索中…</span>
     </div>
 
-    <!-- 加载状态 -->
-    <div v-if="loading" class="loading">
+    <!-- 加载状态：已有数据时降级为内联刷新，不整屏替换列表（08 §4.1）。 -->
+    <div v-if="loading && sessions.length === 0" class="loading">
       <div class="spinner"></div>
       <p>加载会话中...</p>
     </div>
@@ -69,12 +69,21 @@
         <span>{{ error }}</span>
         <button type="button" @click="retryCurrent">重试</button>
       </div>
+      <div v-else-if="loading" class="inline-refreshing" role="status">刷新中…</div>
       <div class="session-list">
         <EmptyState
           v-if="pagedSessions.length === 0"
           icon="💬"
                     :title="searchQuery ? '无匹配结果' : showArchived ? '暂无归档会话' : '暂无会话'"
-          :message="searchQuery ? `未找到包含 “${searchQuery}” 的会话` : showArchived ? '左滑当前会话可将它收进归档' : '选择一个实例开始新的 AI 会话'"
+          :message="
+            searchQuery
+              ? selectedInstanceId
+                ? `未找到包含 “${searchQuery}” 的会话`
+                : '请先选择实例以全局搜索；当前仅在已加载的会话中过滤'
+              : showArchived
+                ? '左滑当前会话可将它收进归档'
+                : '选择一个实例开始新的 AI 会话'
+          "
           :hint="showArchived ? '归档只影响当前设备的列表显示，不删除服务端会话' : '在 AI 页面点击 + 新任务，或在下方选择实例'"
         />
 
@@ -225,9 +234,19 @@ const filteredSessions = computed(() => {
   return sessions.value.filter((session) => archivedIds.value.has(session.id) === showArchived.value)
 })
 
+// 客户端分页：offset 钳制到最后一页页首，归档/切页签后条目变少也不会
+// 落进空区间或让分页条整体消失。
+function clampOffset(totalItems: number): number {
+  const lastPageStart = Math.max(0, (Math.ceil(totalItems / limit.value) - 1) * limit.value)
+  return Math.min(offset.value, lastPageStart)
+}
+
 const pagedSessions = computed(() => {
   if (!selectedInstanceId.value) return filteredSessions.value
-  return filteredSessions.value.slice(offset.value, offset.value + limit.value)
+  return filteredSessions.value.slice(
+    clampOffset(filteredSessions.value.length),
+    clampOffset(filteredSessions.value.length) + limit.value,
+  )
 })
 
 const paginationTotal = computed(() => selectedInstanceId.value ? filteredSessions.value.length : total.value)
@@ -262,6 +281,9 @@ async function loadOfflineSessions(instanceId: string): Promise<Session[]> {
       timeUpdatedMs: row.updatedAt,
     }))
   } catch {
+    // 读取失败要有可执行的下一步（08 §4.1）：无数据时给错误+重试，而不是
+    // 静默显示"暂无缓存"。
+    if (sessions.value.length === 0) error.value = '本地会话缓存读取失败'
     return []
   }
 }
@@ -300,9 +322,14 @@ async function loadSessions() {
       rows = (data.data || []).map(mapSession)
       responseTotal = data.total || rows.length
     } else if (!connectivity.online) {
+      // 所有实例视图离线：本地缓存按实例隔离、旧 API 不带实例，无法安全
+      // 重建；保留已加载的数据（08 §4.1 offline 不丢旧数据），只更新标志。
       usingOfflineCache.value = false
-      rows = []
-      responseTotal = 0
+      rows = allSessions.value
+      responseTotal = total.value
+      if (rows.length === 0 && seq === searchSeq) {
+        error.value = ''
+      }
     } else {
       usingOfflineCache.value = false
       const data = await api.getAllSessions(undefined, limit.value, offset.value)
@@ -522,6 +549,17 @@ function formatUpdatedAt(timestamp: number): string {
 
 watch(archiveScope, reloadArchivedIds)
 
+// 页签切换条目数变化，回到第一页，避免落在空区间。
+watch(showArchived, () => {
+  offset.value = 0
+})
+
+// workspace 切换：归档 ID 之外，列表数据本身也要按新 workspace 重载。
+watch(() => auth.workspaceId, () => {
+  offset.value = 0
+  void loadSessions()
+})
+
 onMounted(() => {
   reloadArchivedIds()
   void loadInstances()
@@ -567,6 +605,13 @@ onBeforeUnmount(() => {
   min-height: 48px;
   color: inherit;
   font-weight: 600;
+}
+
+.inline-refreshing {
+  min-height: 48px;
+  margin-bottom: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-base);
 }
 
 .view-tabs {
