@@ -78,13 +78,13 @@ idempotency_key: string
 | --- | --- | --- | --- |
 | PK-0.1 | 梳理并文档化当前四条外部链路、配置、默认端口和 fallback | P0 | README 与 `.env.example` 一致 |
 | PK-0.2 | RedClaw bridge 标记 mock-only，避免把 `/api/chat`、`/api/knowledge/search` 写成已联通 | P0 | 联调文档说明不再使用 `localhost:8092` 作为默认 façade |
-| PK-1.1 | façade contract client（task/approval/notification/memory/events）+ mock 合同测试 | P0 | RedClaw mock 通过 |
+| PK-1.1 | façade contract client（task/approval/notification/memory/events）+ mock 合同测试 | P0，CURRENT：`backend/internal/facade/` 已实现，8 场景 mock 合同测试全过（真实 provider 联调未开始） | RedClaw mock 通过（mock 阶段达成；真实 façade 待 RedClaw 提供 adapter 后复测） |
 | PK-1.2 | 任务映射表/本地缓存升级：记录 ACC canonical ID、版本、source | P0 | 可从任一 UI 追溯 ACC task |
 | PK-1.3 | service JWT 代理调用与 tenant 校验 | P0 | 平台调用不再依赖裸 user header |
 | PK-1.4 | 移动审批闭环 | P0 | staging 完成一次 ACC Gate 决策并可审计 |
 | PK-2.1 | Memora ingest/search v2 客户端与失败重试队列 | P0 | 分类结果 24h 内可检索；重复提交幂等 |
 | PK-2.2 | ACP runtime 注册 ACC Registry | P1 | register/heartbeat/unregister + stale lease 回收 |
-| PK-3.1 | 生产 profile 禁用 LLM 直连 | P0 | 抓包/网关日志证明 0 旁路 |
+| PK-3.1 | 生产 profile 禁用 LLM 直连 | P0，PARTIAL：`config.Validate()` 已实现 fail-closed（生产配置直连 endpoint/key 即启动失败），单测覆盖生产直连/网关/开发直连；生产环境抓包验证未执行 | 抓包/网关日志证明 0 旁路（代码层已阻断，运维层验证待做） |
 | PK-4.1 | iOS 立项评估 | P2 | 报告 |
 
 ## 六、依赖与风险
