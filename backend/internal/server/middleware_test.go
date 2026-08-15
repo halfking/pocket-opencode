@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bufio"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -91,5 +93,50 @@ func TestResponseWriterDefaultStatus(t *testing.T) {
 
 	if rw.statusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", rw.statusCode)
+	}
+}
+
+// hijackableRecorder 模拟同时支持 Hijack/Flush 的底层 ResponseWriter
+// （httptest.ResponseRecorder 两者都不支持，不能直接用）。
+type hijackableRecorder struct {
+	*httptest.ResponseRecorder
+	hijacked bool
+}
+
+func (r *hijackableRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	r.hijacked = true
+	return nil, nil, nil
+}
+
+func (r *hijackableRecorder) Flush() {}
+
+// TestResponseWriterPreservesHijacker 回归测试：loggingMiddleware 的
+// responseWriter 包装层必须透传 http.Hijacker，否则 /ws 的 gorilla
+// Upgrade 会得到 "response does not implement http.Hijacker" 500。
+func TestResponseWriterPreservesHijacker(t *testing.T) {
+	inner := &hijackableRecorder{ResponseRecorder: httptest.NewRecorder()}
+	rw := &responseWriter{ResponseWriter: inner}
+
+	if _, ok := interface{}(rw).(http.Hijacker); !ok {
+		t.Fatal("responseWriter must implement http.Hijacker for WebSocket upgrades")
+	}
+	if _, ok := interface{}(rw).(http.Flusher); !ok {
+		t.Fatal("responseWriter must implement http.Flusher for SSE streaming")
+	}
+
+	if _, _, err := rw.Hijack(); err != nil {
+		t.Fatalf("Hijack passthrough failed: %v", err)
+	}
+	if !inner.hijacked {
+		t.Fatal("Hijack did not reach the underlying ResponseWriter")
+	}
+}
+
+// TestResponseWriterHijackErrorOnNonHijackableUnderlying 验证底层不支持时
+// 返回错误而不是 panic。
+func TestResponseWriterHijackErrorOnNonHijackableUnderlying(t *testing.T) {
+	rw := &responseWriter{ResponseWriter: httptest.NewRecorder()}
+	if _, _, err := rw.Hijack(); err == nil {
+		t.Fatal("expected error when underlying ResponseWriter lacks Hijacker")
 	}
 }

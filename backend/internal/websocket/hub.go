@@ -200,6 +200,13 @@ func (h *Hub) BroadcastToUser(userID, msgType string, payload interface{}) {
 	h.BroadcastTo(BroadcastTarget{UserID: userID}, msgType, payload)
 }
 
+// BroadcastToWorkspace 按 workspaceID 定向广播（便捷方法）。
+// 委托给 BroadcastTo(BroadcastTarget{WorkspaceID: workspaceID}, ...)。
+// workspaceID 为空时退化为全局广播（调用方需自行保证非空）。
+func (h *Hub) BroadcastToWorkspace(workspaceID, msgType string, payload interface{}) {
+	h.BroadcastTo(BroadcastTarget{WorkspaceID: workspaceID}, msgType, payload)
+}
+
 // GetClientCount 获取当前连接的客户端数量
 func (h *Hub) GetClientCount() int {
 	h.mu.RLock()

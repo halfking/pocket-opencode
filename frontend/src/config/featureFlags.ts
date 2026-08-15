@@ -42,8 +42,9 @@ export const flags: Record<string, FeatureFlagEntry> = {
   },
   'approval.bottom_sheet_v1': {
     key: 'approval.bottom_sheet_v1',
-    description: 'Render the new ApprovalBottomSheet from PR8.',
-    defaultValue: false,
+    description:
+      'Render the new ApprovalBottomSheet from PR8. Promoted to default-on after the P1 approval push events landed (2026-08-15); flip off to restore the legacy inline prompt.',
+    defaultValue: true,
     serverOverrideable: false,
     createdAt: '2026-08-14',
   },

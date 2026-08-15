@@ -1,8 +1,11 @@
 /**
  * usePendingApprovals — 会话页待审批请求的拉取与回复（08 §3.3、§4.5）。
  *
- * 拉取：GET /api/mobile/approvals 按 instance+session 过滤，进入会话时刷新一次
- * 并低频轮询（SSE 侧暂无审批事件，轮询是当前唯一的实时来源）。
+ * 实时来源：WS 审批推送事件（approval.permission.pending /
+ * approval.question.pending / approval.resolved，经 idempotentWsBus 幂等投递），
+ * 事件命中当前 instance+session 即触发对齐刷新。
+ * 轮询兜底：WS 断线时退回 pollMs 轮询；重连后补拉一次，覆盖断线窗口内
+ * 错过的事件。进入会话时始终先拉一次（事件只覆盖增量）。
  *
  * 回复分两条路径：
  *   - 在线：直接 POST，服务端确认（confirmed）后才算完成；
@@ -24,6 +27,9 @@ import { localDB, localDbAsSql } from '../native/local-db'
 import { SqliteOutboxStore } from '../native/outboxStore'
 import { SqliteApprovalStore } from '../native/approvalStore'
 import { enqueueApprovalReplyLocally } from '../native/mobileOffline'
+import wsClient from '../api/websocket'
+import { initIdempotentWsBus, subscribe } from '../services/idempotentWsBus'
+import { APPROVAL_EVENT_TYPES, parseApprovalEvent } from '../services/approvalEvents'
 
 export type ReplyStatus = 'confirmed' | 'queued-offline' | 'conflict' | 'failed'
 
@@ -49,6 +55,9 @@ export function usePendingApprovals(args: {
   const loadError = ref('')
   let timer: ReturnType<typeof setInterval> | null = null
   let refreshing = false
+  let eventHandles: Array<ReturnType<typeof subscribe>> = []
+  let refreshDebounce: ReturnType<typeof setTimeout> | null = null
+  let wasWsConnected = false
 
   async function refresh(): Promise<void> {
     const instanceId = args.instanceId()
@@ -114,10 +123,41 @@ export function usePendingApprovals(args: {
     }
   }
 
+  /** 事件触发的对齐刷新做 250ms 去抖：一轮连发事件只拉一次。 */
+  function scheduleEventRefresh(): void {
+    if (refreshDebounce !== null) return
+    refreshDebounce = setTimeout(() => {
+      refreshDebounce = null
+      void refresh()
+    }, 250)
+  }
+
+  function onApprovalEvent(env: unknown): void {
+    const info = parseApprovalEvent(env)
+    if (!info) return
+    if (info.instanceId !== args.instanceId() || info.sessionId !== args.sessionId()) return
+    if ((env as { type?: string }).type === 'approval.resolved') {
+      // 服务端确认的终态：立即从列表移除，再对齐拉取其余条目。
+      pendingPermissions.value = pendingPermissions.value.filter((p) => p.id !== info.requestId)
+    }
+    scheduleEventRefresh()
+  }
+
   function startPolling(): void {
     if (timer !== null) return
+    initIdempotentWsBus()
+    if (eventHandles.length === 0) {
+      eventHandles = APPROVAL_EVENT_TYPES.map((t) => subscribe(t, onApprovalEvent))
+    }
     void refresh()
-    timer = setInterval(() => void refresh(), args.pollMs ?? DEFAULT_POLL_MS)
+    wasWsConnected = wsClient.isConnected()
+    timer = setInterval(() => {
+      const connected = wsClient.isConnected()
+      if (connected && wasWsConnected) return // WS 在线：事件驱动，跳过轮询
+      wasWsConnected = connected
+      // 断线兜底轮询；断线→重连的跳变补拉一次，覆盖错过的事件。
+      void refresh()
+    }, args.pollMs ?? DEFAULT_POLL_MS)
   }
 
   function stopPolling(): void {
@@ -125,6 +165,12 @@ export function usePendingApprovals(args: {
       clearInterval(timer)
       timer = null
     }
+    if (refreshDebounce !== null) {
+      clearTimeout(refreshDebounce)
+      refreshDebounce = null
+    }
+    for (const h of eventHandles) h.unsubscribe()
+    eventHandles = []
   }
 
   return { pendingPermissions, loadError, refresh, reply, startPolling, stopPolling }

@@ -1,7 +1,10 @@
 package server
 
 import (
+	"bufio"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"time"
 )
@@ -15,6 +18,24 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack 透传给底层 ResponseWriter。
+// gorilla/websocket 的 Upgrade 要求 http.Hijacker；不透传会把 /ws 等长连接
+// 升级打成 500（response does not implement http.Hijacker）。
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := rw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("responseWriter: underlying %T does not implement http.Hijacker", rw.ResponseWriter)
+	}
+	return h.Hijack()
+}
+
+// Flush 透传：SSE / chunked 响应依赖 Flusher 逐段推送。
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // loggingMiddleware 请求日志中间件

@@ -529,6 +529,14 @@ func main() {
 	// 把 manager 注入 server（用 setter 而非扩展 New，避免 26+ 参数）
 	srv.SetOpenCodeManagers(ocMgr, eventMgr, permMgr, quesMgr)
 
+	// 审批推送：订阅 permMgr/quesMgr 的事件 channel，包装成 WsEnvelopeV1
+	// 后经 WS hub 按实例归属 workspace 定向广播（approval.permission.pending /
+	// approval.question.pending / approval.resolved），替代前端 10s 轮询。
+	// 与 emailScheduler.SetBroadcaster 相同的注入模式。
+	approvalBroadcaster := opencode.NewApprovalBroadcaster(reg, permMgr, quesMgr)
+	approvalBroadcaster.SetBroadcaster(srv.WSHub())
+	go approvalBroadcaster.Run(mgrCtx)
+
 	// ---- W5: 注入 ACP agent registry ----
 	// 当前 stage：
 	//   1. OpenCode HTTP adapter（向后兼容）
