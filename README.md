@@ -219,6 +219,15 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 - **密钥管理**: 环境变量配置
 - **HTTPS**: 生产环境强制使用
 
+### 已登记的隔离例外
+
+- **审计 FileExporter 全租户落盘**（`internal/redclaw/file_exporter.go`）：设置
+  `AUDIT_EXPORT_DIR` 后，pocketd 会把**全部租户**的审计日志增量导出为 JSONL 文件
+  （按 UTC 日期轮转，`RetainDays` 天后清理，at-least-once）。这是对接外部 SIEM 的
+  本地过渡方案，属租户隔离的**已知例外**：文件不做按租户拆分，依赖目标目录的文件
+  系统权限（仅运维侧可读）保护；敏感值不进入条目 Detail 字段。多租户查询接口
+  仍按 workspace 隔离，不受影响。
+
 ### 最佳实践
 
 ```bash

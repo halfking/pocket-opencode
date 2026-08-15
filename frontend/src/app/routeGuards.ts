@@ -34,6 +34,7 @@ export type GuardOutcome =
   | { kind: 'allow' }
   | { kind: 'redirectLogin'; returnTo: string }
   | { kind: 'redirectUnlock'; returnTo: string }
+  | { kind: 'redirectHome'; returnTo: string }
   | { kind: 'blockTerminal'; reason: string }
 
 const FALLBACK_RETURN_KEY = 'pocket:lastRoute'
@@ -60,9 +61,13 @@ export function evaluateRoute(
   const title = (to.meta as Record<string, unknown>)?.title as string | undefined
 
   // Case A: login page — bounce authenticated + ready users home.
+  // 已认证但未解锁（刷新/重启后 crypto 只在内存）必须 allow：
+  // redirectUnlock 的目的地就是 /login?unlock=1，如果这里也弹走，
+  // /login 与受保护路由之间会形成无限导航循环（实测在 Android
+  // WebView 上把渲染进程打死，解锁流程完全不可用）。
   if (to.path === '/login') {
-    if (auth.isAuthenticated && (!requiresLobster || isLobsterReady())) {
-      return { kind: 'redirectLogin', returnTo: '/' }
+    if (auth.isAuthenticated && isLobsterReady()) {
+      return { kind: 'redirectHome', returnTo: safeReturnTo(to) === '/login' ? '/' : safeReturnTo(to) }
     }
     return { kind: 'allow' }
   }
@@ -113,6 +118,10 @@ export function applyOutcome(
       return
     case 'redirectLogin':
       next({ path: '/login', query: { returnTo: outcome.returnTo } })
+      return
+    case 'redirectHome':
+      // 已认证用户访问 /login 时弹回 returnTo（不能再用 /login 做目的地）
+      next({ path: outcome.returnTo || '/' })
       return
     case 'redirectUnlock':
       // Route to login with `unlock=1` flag so the login view can show

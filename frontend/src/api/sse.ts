@@ -77,9 +77,11 @@ export class SessionSSEClient {
 
     // EventSource 不支持自定义 header；token 走 query string（开发模式）
     // 生产应由 server 端做 JWT cookie 鉴权。当前 dev 模式 token 注入 query。
+    // 参数名必须是 `token`：requireAuth 的 WS/SSE 例外分支只认 token
+    // （与 websocket.ts 一致）；此前误用 access_token 导致 SSE 全部 401。
     const token = this.getToken()
     const finalUrl = token
-      ? `${url}${url.includes('?') ? '&' : '?'}access_token=${encodeURIComponent(token)}`
+      ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
       : url
 
     this.es = new EventSource(finalUrl)

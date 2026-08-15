@@ -102,6 +102,12 @@ Pocket 回调状态时必须带 `dispatch_id/fencing_token/attempt/resource_vers
 
 ## 5. 审批 API
 
+> **当前实现范围（2026-08-15）**：移动端审批 bottom sheet（`approval.bottom_sheet_v1` flag）
+> 目前仅覆盖 **pocketd 本地审批**（OpenCode permission/question 请求，走 pocketd WS 推送）。
+> 本节描述的 RedClaw façade 审批（gate/candidate_decisions）尚未接入 UI；接入时需在
+> `usePendingApprovals` 之前增加一层 façade 审批适配层（gate_id ↔ 本地 approval_id 映射、
+> SSE cursor 与 WS 推送去重），不改现有本地审批契约。
+
 ### Pull/list approvals
 
 目标：`GET {redclaw}/api/v2/tasks?status=needs_approval` 或后续 `GET /api/v2/approvals`。

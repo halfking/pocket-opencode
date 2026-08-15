@@ -336,13 +336,14 @@ side_effects:
 package pocketclient_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
+	"github.com/halfking/pocket-opencode/backend/internal/facade"
 )
 
 func TestTaskCreate_Success(t *testing.T) {
@@ -365,13 +366,17 @@ func TestTaskCreate_Success(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	// 使用 mock server URL 初始化 Pocket RedClaw client
-	client := redclaw.NewClient(mockServer.URL, "mock-token")
+	// 使用 mock server URL 初始化 Pocket RedClaw façade client
+	client, err := facade.NewClient(facade.Config{
+		BaseURL: mockServer.URL,
+		Token:   "mock-token",
+	})
+	assert.NoError(t, err)
 	
-	resp, err := client.CreateTask(redclaw.CreateTaskRequest{
+	resp, err := client.CreateTask(context.Background(), facade.CreateTaskRequest{
 		ProjectID: "project-123",
 		Title:     "Test task",
-		TaskContract: redclaw.TaskContract{
+		TaskContract: &facade.TaskContract{
 			Type:      "agent_task",
 			RiskLevel: "low",
 		},
@@ -386,13 +391,13 @@ func TestTaskCreate_Success(t *testing.T) {
 ## 5. 运行与 CI 集成
 
 ```bash
-# 本地运行
-go test ./backend/internal/redclaw/... -v -tags=contract
+# 本地运行（契约测试位于 internal/facade，无额外 build tag）
+go test ./backend/internal/facade/... -v
 
 # CI pipeline
 - name: Contract Tests
   run: |
-    go test -v -tags=contract ./backend/internal/redclaw/...
+    go test -v ./backend/internal/facade/...
     # 可选：生成契约报告并上传
 ```
 

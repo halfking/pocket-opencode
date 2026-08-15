@@ -118,7 +118,9 @@ export const useSessionStore = defineStore('session', () => {
 
   function handleEvent(evt: SessionEvent) {
     const type = evt.type
-    const data = evt.data
+    // pocketd 转发的是 OpenCode 信封 {id,type,location,data:{...}}；
+    // 旧格式直接是扁平 payload。优先解包 data，兜底扁平。
+    const data = evt.data?.data ?? evt.data
 
     switch (type) {
       case 'server.connected':

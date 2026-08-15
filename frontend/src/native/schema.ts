@@ -444,3 +444,48 @@ CREATE TABLE IF NOT EXISTS local_asset_vectors (
 );
 CREATE INDEX IF NOT EXISTS idx_asset_vectors_asset ON local_asset_vectors(asset_id);
 `
+
+/**
+ * 把多语句 SQL 切成逐条语句数组。
+ *
+ * 为什么不用 Capacitor SQLite 的 execute(整段 SQL)：Android 端插件按 `;`
+ * 机械切分，CREATE TRIGGER 的 BEGIN...END 体内部分号会把语句截断
+ * （"Execute: incomplete input ... while compiling: CREATE TRIGGER"），
+ * 全新安装建表必然失败。这里自行切分：触发体作为一个整体保留。
+ *
+ * 规则：逐行扫描，忽略 `--` 行注释；
+ *   - CREATE [OR REPLACE] TRIGGER 语句自 BEGIN 起，到单独成行的 END(;) 止；
+ *   - 其余语句以行尾 `;` 结束。
+ */
+export function splitSqlStatements(sql: string): string[] {
+  const statements: string[] = []
+  let current = ''
+  let inTrigger = false
+
+  const push = () => {
+    const trimmed = current.trim()
+    if (trimmed) statements.push(trimmed)
+    current = ''
+  }
+
+  for (const rawLine of sql.split('\n')) {
+    // 分号/边界检测只看去掉行注释后的代码部分
+    const code = rawLine.replace(/--.*$/, '').trim()
+    if (code === '') continue // 空行与纯注释行不进入语句
+    current += rawLine + '\n'
+
+    if (!inTrigger && /^CREATE(\s+OR\s+REPLACE)?\s+TRIGGER/i.test(code)) {
+      inTrigger = true
+    }
+    if (inTrigger) {
+      if (/^END;?$/i.test(code)) {
+        inTrigger = false
+        push()
+      }
+    } else if (code.endsWith(';')) {
+      push()
+    }
+  }
+  push()
+  return statements
+}

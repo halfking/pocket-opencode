@@ -35,8 +35,12 @@ const evaluateRoute = (to, state = buildState()) => {
   const requiresLobster = Boolean(state.meta.requiresLobster)
 
   if (to.path === '/login') {
-    if (state.auth.isAuthenticated && (!requiresLobster || state.lobsterReady)) {
-      return { kind: 'redirectLogin', returnTo: '/' }
+    // 已认证+已解锁 → 弹回首页；已认证+未解锁 → allow（渲染解锁 UI）。
+    // 旧逻辑这里无条件弹走，与 redirectUnlock 的目的地 /login 形成
+    // 无限导航循环（Android WebView 实测渲染进程崩溃）。
+    if (state.auth.isAuthenticated && state.lobsterReady) {
+      const rt = safeReturnTo(to)
+      return { kind: 'redirectHome', returnTo: rt === '/login' ? '/' : rt }
     }
     return { kind: 'allow' }
   }
@@ -75,8 +79,13 @@ test('safeReturnTo: prefers explicit returnTo', () => {
 
 test('login page when authed + lobster ready → bounce home', () => {
   const r = evaluateRoute(fakeTo('/login'), buildState({ authed: true, lobster: true }))
-  assert.equal(r.kind, 'redirectLogin')
+  assert.equal(r.kind, 'redirectHome')
   assert.equal(r.returnTo, '/')
+})
+
+test('login page when authed + lobster NOT ready → allow (unlock UI, no loop)', () => {
+  const r = evaluateRoute(fakeTo('/login', {}, { unlock: '1' }), buildState({ authed: true, lobster: false }))
+  assert.equal(r.kind, 'allow')
 })
 
 test('login page when not authed → allow', () => {

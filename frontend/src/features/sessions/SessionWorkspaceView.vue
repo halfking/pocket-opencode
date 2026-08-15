@@ -9,7 +9,7 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import SplitLayout from '../../components/SplitLayout.vue'
 import { useBreakpoint } from '../../composables/useBreakpoint'
-import { isLobsterReady } from '../../native/lobster-init'
+import { isLobsterReady, lobsterReady } from '../../native/lobster-init'
 import SessionListView from './SessionListView.vue'
 import SessionConversationView from './SessionConversationView.vue'
 
@@ -28,7 +28,8 @@ const selectedInstance = computed(() => String(route.query.instance_id || ''))
 // 窄屏不挂载 detail（SplitLayout 也只是 display:none）：避免后台残留 store
 // 会话、WS/审批轮询照跑。选中 query 与断点解耦，宽窄切换不残留错配。
 const showDetailPane = computed(() => isFoldableExpanded.value && selectedId.value !== '')
-const detailReady = computed(() => showDetailPane.value && isLobsterReady())
+// 读响应式 lobsterReady：工作台挂载后才解锁（登录回跳）时 detail 也能自动挂上
+const detailReady = computed(() => showDetailPane.value && lobsterReady.value)
 const workspaceHasDetail = computed(() => selectedId.value !== '')
 
 function clearSelection(instanceId: string): void {

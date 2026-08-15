@@ -11,7 +11,7 @@
  * 架构定位：见 docs/2026-07-02-lobster-local-storage-design.md
  */
 import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacitor-community/sqlite'
-import { SCHEMA_SQL } from './schema'
+import { SCHEMA_SQL, splitSqlStatements } from './schema'
 import type { SqlDb } from './sqlDb'
 
 const DB_NAME = 'lobster'
@@ -86,11 +86,15 @@ class LocalDB {
     )
     await this.conn.open()
 
-    // 建表（幂等 CREATE IF NOT EXISTS）
-    await this.conn.execute(SCHEMA_SQL, false)
-    await this.ensureSchemaMigrations()
-
+    // 建表（幂等 CREATE IF NOT EXISTS）。不能把整段 SCHEMA_SQL 交给
+    // conn.execute：Android 插件按 `;` 切分会截断 CREATE TRIGGER 的
+    // BEGIN...END 体。自行切分后走 executeSet 单事务建表。
+    const ddl = splitSqlStatements(SCHEMA_SQL).map((statement) => ({ statement, values: [] }))
+    await this.conn.executeSet(ddl, true)
+    // 先置位再跑迁移：ensureSchemaMigrations 里的 this.query 会被
+    // requireReady 拒绝（"LocalDB 未初始化"），全新安装会卡在首启。
     this.initialized = true
+    await this.ensureSchemaMigrations()
   }
 
   /** 关闭并清理连接，允许重新初始化 */
