@@ -352,6 +352,16 @@ export class SqliteMobileSyncStore implements MobileSyncStore {
     return rows.length > 0 ? toSessionRow(rows[0] as unknown as SessionSqlRow) : null
   }
 
+  async listCachedSessions(workspaceId: string, instanceId: string): Promise<MobileSessionRow[]> {
+    const rows = await this.db.all(
+      `SELECT ${SESSION_COLUMNS} FROM local_mobile_sessions
+       WHERE workspace_id = ? AND instance_id = ? AND deleted_at IS NULL
+       ORDER BY updated_at DESC`,
+      [workspaceId, instanceId],
+    )
+    return rows.map((r) => toSessionRow(r as unknown as SessionSqlRow))
+  }
+
   async listDirtySessions(workspaceId: string): Promise<MobileSessionRow[]> {
     const rows = await this.db.all(
       `SELECT ${SESSION_COLUMNS} FROM local_mobile_sessions

@@ -44,6 +44,17 @@ function localDirtyRow(overrides = {}) {
   }
 }
 
+test('listCachedSessions returns only live rows in the requested workspace/instance', async () => {
+  const store = newStore()
+  await store.insertSession(localDirtyRow({ id: 'live', title: 'cached', dirty: false }))
+  await store.insertSession(localDirtyRow({ id: 'other-inst', instanceId: 'inst-2', dirty: false }))
+  await store.insertSession(localDirtyRow({ id: 'other-ws', workspaceId: 'ws-b', dirty: false }))
+  await store.insertSession(localDirtyRow({ id: 'deleted', deletedAt: 300, dirty: false }))
+
+  const rows = await store.listCachedSessions(WS, INST)
+  assert.deepEqual(rows.map((row) => row.id), ['live'])
+})
+
 // ---------------------------------------------------------------------------
 // mergeSessionRow（纯函数）
 // ---------------------------------------------------------------------------

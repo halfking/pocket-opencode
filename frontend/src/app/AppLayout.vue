@@ -55,15 +55,29 @@ import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import BottomNav from '../components/BottomNav.vue'
 import GlobalStatusBar from '../components/GlobalStatusBar.vue'
+import { useBreakpoint } from '../composables/useBreakpoint'
 
 const route = useRoute()
 const router = useRouter()
+const { isFoldableExpanded } = useBreakpoint()
 
 const mainEl = ref<HTMLElement | null>(null)
 
 const title = computed(() => (route.meta.title as string) || 'OpenCode Pocket')
 const showTopBar = computed(() => route.meta.showTopBar !== false)
-const showBottomNav = computed(() => route.meta.bottomNav !== false)
+const showBottomNav = computed(() => {
+  if (route.meta.bottomNav === false) return false
+  // 平板会话工作台选中 detail 后进入详情态，按 08 §2.2 隐藏底部导航。
+  if (
+    isFoldableExpanded.value &&
+    route.name === 'sessions' &&
+    typeof route.query.selected === 'string' &&
+    route.query.selected !== ''
+  ) {
+    return false
+  }
+  return true
+})
 const canGoBack = computed(() => Boolean(route.meta.canGoBack))
 
 function goBack() {

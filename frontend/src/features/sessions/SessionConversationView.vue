@@ -20,15 +20,29 @@ import { renderMarkdown } from '../../utils/markdown'
 import { useFeatureFlag } from '../../config/featureFlags'
 import { usePendingApprovals } from '../../composables/usePendingApprovals'
 import { ApprovalBottomSheet, type ApprovalDecision } from '../../components'
+import DiffBlock from '../../components/business/DiffBlock.vue'
+import { extractDiffText } from '../../utils/diffParse'
+
+const props = withDefaults(defineProps<{
+  embedded?: boolean
+  sessionId?: string
+  instanceId?: string
+  title?: string
+}>(), {
+  embedded: false,
+  sessionId: '',
+  instanceId: '',
+  title: '',
+})
 
 const route = useRoute()
 const router = useRouter()
 const store = useSessionStore()
 const toast = useToast()
 
-const sessionID = computed(() => route.params.id as string)
-const instanceID = computed(() => (route.query.instance_id as string) || localStorage.getItem('selected_instance_id') || '')
-const initialTitle = computed(() => (route.query.title as string) || '')
+const sessionID = computed(() => props.sessionId || (route.params.id as string) || '')
+const instanceID = computed(() => props.instanceId || (route.query.instance_id as string) || localStorage.getItem('selected_instance_id') || '')
+const initialTitle = computed(() => props.title || (route.query.title as string) || '')
 
 const inputText = ref('')
 const sending = ref(false)
@@ -358,10 +372,10 @@ function formatDuration(ms: number): string {
 </script>
 
 <template>
-  <div class="session-view">
+  <div class="session-view" :class="{ embedded: props.embedded }">
     <!-- Top Bar -->
     <header class="top-bar">
-      <button class="back-btn" @click="goBack" aria-label="返回">
+      <button v-if="!props.embedded" class="back-btn" @click="goBack" aria-label="返回">
         <span class="material-symbols-outlined">arrow_back</span>
       </button>
       <div class="title-block">
@@ -464,8 +478,9 @@ function formatDuration(ms: number): string {
                     </div>
                     <div v-if="c.output" class="tool-section">
                       <div class="tool-section-title">输出</div>
+                      <DiffBlock v-if="extractDiffText(c.output)" :diff="extractDiffText(c.output)!" />
                       <!-- eslint-disable-next-line vue/no-v-html -->
-                      <pre v-html="renderJson(c.output)"></pre>
+                      <pre v-else v-html="renderJson(c.output)"></pre>
                     </div>
                     <div v-if="c.error" class="tool-section error">
                       <div class="tool-section-title">错误</div>
@@ -555,6 +570,19 @@ function formatDuration(ms: number): string {
   height: 100vh;
   background: var(--bg-base);
   padding-top: env(safe-area-inset-top);
+}
+
+.session-view.embedded {
+  height: 100%;
+  min-height: 0;
+  padding-top: 0;
+  border-left: 1px solid var(--border);
+}
+
+.session-view.embedded .top-bar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-base);
 }
 
 /* Top Bar */

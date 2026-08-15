@@ -16,7 +16,7 @@ import TasksView from '../features/tasks/TasksView.vue'
 import TaskDetailView from '../features/tasks/TaskDetailView.vue'
 
 // 会话列表页
-import SessionListView from '../features/sessions/SessionListView.vue'
+import SessionWorkspaceView from '../features/sessions/SessionWorkspaceView.vue'
 
 // 设置页
 import SettingsView from '../features/settings/SettingsView.vue'
@@ -219,7 +219,7 @@ const router = createRouter({
     {
       path: '/sessions',
       name: 'sessions',
-      component: SessionListView,
+      component: SessionWorkspaceView,
       meta: { requiresAuth: true, title: '会话', bottomNav: true }
     },
     {

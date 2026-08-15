@@ -65,6 +65,26 @@ export interface Session {
   id: string
   title: string
   status: string
+  timeUpdatedMs?: number
+}
+
+export interface MobileSessionListResponse {
+  data: Session[]
+  total: number
+  sinceMs?: number
+  serverTimeMs?: number
+}
+
+export interface MobileSessionSearchResponse {
+  data: Array<Session & {
+    ID?: string
+    Title?: string
+    Status?: string
+    TimeUpdated?: number
+    time?: { updated?: number }
+  }>
+  query: string
+  total: number
 }
 
 export interface SessionLink {
@@ -207,8 +227,25 @@ export const api = {
     if (instanceId) params.append('instance_id', instanceId)
     params.append('limit', limit.toString())
     params.append('offset', offset.toString())
-    
+
     const res = await authFetch(`${API_BASE}/api/sessions?${params}`)
+    return res.json()
+  },
+
+  /**
+   * 移动会话同步视图。与 GET /api/mobile/sessions 契约一致，返回
+   * id/title/status/timeUpdatedMs；instance 是移动控制面必填边界。
+   */
+  async getMobileSessions(instanceId: string): Promise<MobileSessionListResponse> {
+    const params = new URLSearchParams({ instance_id: instanceId })
+    const res = await authFetch(`${API_BASE}/api/mobile/sessions?${params}`)
+    return res.json()
+  },
+
+  /** 服务端会话搜索（标题/ID 子串），仅在已选择 instance 时使用。 */
+  async searchMobileSessions(instanceId: string, query: string): Promise<MobileSessionSearchResponse> {
+    const params = new URLSearchParams({ instance_id: instanceId, q: query })
+    const res = await authFetch(`${API_BASE}/api/mobile/sessions/search?${params}`)
     return res.json()
   },
 

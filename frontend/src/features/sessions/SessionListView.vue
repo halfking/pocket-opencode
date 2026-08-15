@@ -1,5 +1,5 @@
 <template>
-  <div class="sessions-page">
+  <div class="sessions-page" :class="{ embedded }">
     <!-- 顶部工具栏 -->
     <div class="toolbar">
       <div class="search-bar">
@@ -18,6 +18,31 @@
       </select>
     </div>
 
+    <div class="view-tabs" role="tablist" aria-label="会话视图">
+      <button
+        type="button"
+        role="tab"
+        :aria-selected="!showArchived"
+        :class="{ active: !showArchived }"
+        @click="showArchived = false"
+      >
+        当前
+      </button>
+      <button
+        type="button"
+        role="tab"
+        :aria-selected="showArchived"
+        :class="{ active: showArchived }"
+        @click="showArchived = true"
+      >
+        已归档 <span v-if="archivedCount">{{ archivedCount }}</span>
+      </button>
+      <span v-if="connectivity.online === false" class="offline-search" role="status">
+        {{ usingOfflineCache ? '离线 · 使用加密本地缓存' : '离线 · 暂无可用会话缓存' }}
+      </span>
+      <span v-if="searching" class="searching" role="status">搜索中…</span>
+    </div>
+
     <!-- 加载状态 -->
     <div v-if="loading" class="loading">
       <div class="spinner"></div>
@@ -26,12 +51,12 @@
 
     <!-- 错误提示 -->
     <ErrorState
-      v-else-if="error"
+      v-else-if="error && sessions.length === 0"
       icon="⚠️"
       title="加载失败"
       :message="error"
       retry-label="重试"
-      @retry="loadSessions"
+      @retry="retryCurrent"
     />
 
     <!-- 会话列表 -->
@@ -40,17 +65,21 @@
       class="session-list-wrap"
       :on-refresh="reloadSessions"
     >
+      <div v-if="error" class="inline-error" role="alert">
+        <span>{{ error }}</span>
+        <button type="button" @click="retryCurrent">重试</button>
+      </div>
       <div class="session-list">
         <EmptyState
-          v-if="filteredSessions.length === 0"
+          v-if="pagedSessions.length === 0"
           icon="💬"
-          :title="searchQuery ? '无匹配结果' : '暂无会话'"
-          :message="searchQuery ? `未找到包含 “${searchQuery}” 的会话` : '选择一个实例开始新的 AI 会话'"
-          hint="在 AI 页面点击 + 新任务，或在下方选择实例"
+                    :title="searchQuery ? '无匹配结果' : showArchived ? '暂无归档会话' : '暂无会话'"
+          :message="searchQuery ? `未找到包含 “${searchQuery}” 的会话` : showArchived ? '左滑当前会话可将它收进归档' : '选择一个实例开始新的 AI 会话'"
+          :hint="showArchived ? '归档只影响当前设备的列表显示，不删除服务端会话' : '在 AI 页面点击 + 新任务，或在下方选择实例'"
         />
 
         <SwipeableListItem
-          v-for="session in filteredSessions"
+          v-for="session in pagedSessions"
           :key="session.id"
           class="session-card"
           :right-actions="getSwipeActions(session)"
@@ -64,13 +93,28 @@
             </div>
             <p class="session-id">ID: {{ session.id }}</p>
             <div class="session-footer">
-              <button
+              <time v-if="session.timeUpdatedMs" :datetime="new Date(session.timeUpdatedMs).toISOString()">
+                {{ formatUpdatedAt(session.timeUpdatedMs) }}
+              </time>
+              <div class="session-actions">
+                <button
+                  type="button"
+                  class="archive-btn"
+                  :aria-label="showArchived ? `恢复 ${session.title}` : `归档 ${session.title}`"
+                  @click.stop="showArchived ? restoreSession(session) : archiveSession(session)"
+                >
+                  <span class="material-symbols-outlined" aria-hidden="true">
+                    {{ showArchived ? 'unarchive' : 'archive' }}
+                  </span>
+                </button>
+                <button
                 @click.stop="attachToTask(session)"
                 class="attach-btn"
                 :disabled="attaching === session.id"
               >
                 {{ attaching === session.id ? '附加中...' : '附加到任务' }}
-              </button>
+                </button>
+              </div>
             </div>
           </div>
         </SwipeableListItem>
@@ -78,7 +122,7 @@
     </PullToRefresh>
 
     <!-- 分页 -->
-    <div v-if="total > limit" class="pagination">
+    <div v-if="paginationTotal > limit" class="pagination">
       <button 
         @click="prevPage" 
         :disabled="offset === 0"
@@ -87,11 +131,11 @@
         上一页
       </button>
       <span class="page-info">
-        {{ Math.floor(offset / limit) + 1 }} / {{ Math.ceil(total / limit) }}
+        {{ Math.floor(offset / limit) + 1 }} / {{ Math.ceil(paginationTotal / limit) }}
       </span>
       <button 
         @click="nextPage" 
-        :disabled="offset + limit >= total"
+        :disabled="offset + limit >= paginationTotal"
         class="page-btn"
       >
         下一页
@@ -101,10 +145,20 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted, onActivated, onBeforeUnmount, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { api } from '@/api/client'
 import { useToast } from '@/composables/useToast'
+import { useAuthStore } from '@/stores/auth'
+import { useConnectivityStore } from '@/stores/connectivity'
+import { isLobsterReady } from '@/native/lobster-init'
+import { localDB, localDbAsSql } from '@/native/local-db'
+import { SqliteMobileSyncStore } from '@/native/mobileSync'
+import {
+  readArchivedIds,
+  setSessionArchived,
+  type ArchiveScope,
+} from './sessionArchive'
 import EmptyState from '@/components/base/EmptyState.vue'
 import ErrorState from '@/components/base/ErrorState.vue'
 import PullToRefresh from '@/components/interactive/PullToRefresh.vue'
@@ -114,6 +168,7 @@ interface Session {
   id: string
   title: string
   status: string
+  timeUpdatedMs?: number
 }
 
 interface Instance {
@@ -122,31 +177,60 @@ interface Instance {
   baseURL: string
 }
 
+const props = withDefaults(defineProps<{
+  embedded?: boolean
+}>(), {
+  embedded: false,
+})
+
+const emit = defineEmits<{
+  select: [session: Session, instanceId: string]
+  contextChange: [instanceId: string]
+}>()
+
 const router = useRouter()
+const route = useRoute()
 const toast = useToast()
+const auth = useAuthStore()
+const connectivity = useConnectivityStore()
 
 // 状态
 const sessions = ref<Session[]>([])
+const allSessions = ref<Session[]>([])
 const instances = ref<Instance[]>([])
 const loading = ref(false)
 const error = ref('')
 const searchQuery = ref('')
-const selectedInstanceId = ref('')
+const selectedInstanceId = ref(props.embedded ? String(route.query.instance_id || '') : '')
 const attaching = ref('')
 const offset = ref(0)
 const limit = ref(20)
 const total = ref(0)
+const searching = ref(false)
+const showArchived = ref(false)
+const archivedIds = ref<Set<string>>(new Set())
+const usingOfflineCache = ref(false)
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+let searchSeq = 0
 
-// 计算属性 - 过滤会话
+const archiveScope = computed<ArchiveScope>(() => ({
+  workspaceId: auth.workspaceId || 'default',
+  instanceId: selectedInstanceId.value || 'all',
+}))
+
+const archivedCount = computed(() => allSessions.value.filter((session) => archivedIds.value.has(session.id)).length)
+
+// 服务端搜索结果或当前页数据，最后按设备本地归档视图过滤。
 const filteredSessions = computed(() => {
-  if (!searchQuery.value) return sessions.value
-  
-  const query = searchQuery.value.toLowerCase()
-  return sessions.value.filter(s => 
-    s.title.toLowerCase().includes(query) ||
-    s.id.toLowerCase().includes(query)
-  )
+  return sessions.value.filter((session) => archivedIds.value.has(session.id) === showArchived.value)
 })
+
+const pagedSessions = computed(() => {
+  if (!selectedInstanceId.value) return filteredSessions.value
+  return filteredSessions.value.slice(offset.value, offset.value + limit.value)
+})
+
+const paginationTotal = computed(() => selectedInstanceId.value ? filteredSessions.value.length : total.value)
 
 // 加载实例列表
 async function loadInstances() {
@@ -164,37 +248,147 @@ async function loadInstances() {
   }
 }
 
-// 加载会话列表
-async function loadSessions() {
-  loading.value = true
-  error.value = ''
-  
+async function loadOfflineSessions(instanceId: string): Promise<Session[]> {
+  usingOfflineCache.value = false
+  if (!instanceId || !isLobsterReady()) return []
   try {
-    const instId = selectedInstanceId.value || undefined
-    const data = await api.getAllSessions(instId, limit.value, offset.value)
-    // API 返回大写字段 (ID, Title, Status)，映射为小写
-    sessions.value = (data.sessions || []).map((s: any) => ({
-      id: s.id || s.ID || '',
-      title: s.title || s.Title || '',
-      status: s.status || s.Status || 'idle',
+    const store = new SqliteMobileSyncStore(localDbAsSql(localDB))
+    const rows = await store.listCachedSessions(auth.workspaceId || 'default', instanceId)
+    usingOfflineCache.value = rows.length > 0
+    return rows.map((row) => ({
+      id: row.serverId || row.id,
+      title: row.title,
+      status: row.status,
+      timeUpdatedMs: row.updatedAt,
     }))
-    total.value = data.total || 0
-  } catch (err: any) {
-    error.value = err.message || '加载会话失败'
-  } finally {
-    loading.value = false
+  } catch {
+    return []
   }
 }
 
-// 处理搜索
+function mapSession(value: unknown): Session {
+  const s = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
+  const nestedTime = s.time && typeof s.time === 'object' ? s.time as Record<string, unknown> : {}
+  return {
+    id: String(s.id || s.ID || ''),
+    title: String(s.title || s.Title || ''),
+    status: String(s.status || s.Status || 'idle'),
+    timeUpdatedMs: Number(s.timeUpdatedMs || s.TimeUpdated || nestedTime.updated || 0) || undefined,
+  }
+}
+
+function reloadArchivedIds(): void {
+  archivedIds.value = readArchivedIds(localStorage, archiveScope.value)
+}
+
+// 加载会话列表
+async function loadSessions() {
+  const seq = ++searchSeq
+  loading.value = true
+  error.value = ''
+
+  try {
+    const instId = selectedInstanceId.value
+    let rows: Session[]
+    let responseTotal: number
+    if (instId && !connectivity.online) {
+      rows = await loadOfflineSessions(instId)
+      responseTotal = rows.length
+    } else if (instId) {
+      usingOfflineCache.value = false
+      const data = await api.getMobileSessions(instId)
+      rows = (data.data || []).map(mapSession)
+      responseTotal = data.total || rows.length
+    } else if (!connectivity.online) {
+      usingOfflineCache.value = false
+      rows = []
+      responseTotal = 0
+    } else {
+      usingOfflineCache.value = false
+      const data = await api.getAllSessions(undefined, limit.value, offset.value)
+      rows = (data.sessions || []).map(mapSession)
+      responseTotal = data.total || rows.length
+    }
+    if (seq !== searchSeq) return
+    allSessions.value = rows
+    sessions.value = applyLocalSearch(rows)
+    total.value = responseTotal
+    reloadArchivedIds()
+  } catch (err: any) {
+    if (seq === searchSeq) error.value = err.message || '加载会话失败'
+  } finally {
+    if (seq === searchSeq) loading.value = false
+  }
+}
+
+function applyLocalSearch(rows: Session[]): Session[] {
+  const query = searchQuery.value.trim().toLowerCase()
+  if (!query) return rows
+  return rows.filter((s) => s.title.toLowerCase().includes(query) || s.id.toLowerCase().includes(query))
+}
+
+async function runSearch(): Promise<void> {
+  const seq = ++searchSeq
+  loading.value = false
+  searching.value = false
+  const query = searchQuery.value.trim()
+  offset.value = 0
+  if (!query) {
+    await loadSessions()
+    return
+  }
+  const instId = selectedInstanceId.value
+  // 搜索 API 需要 instance；离线/全部实例视图回退到当前页本地过滤。
+  if (!instId || !connectivity.online) {
+    sessions.value = applyLocalSearch(allSessions.value)
+    error.value = ''
+    return
+  }
+
+  searching.value = true
+  error.value = ''
+  try {
+    const data = await api.searchMobileSessions(instId, query)
+    if (seq !== searchSeq) return
+    const rows = (data.data || []).map(mapSession)
+    sessions.value = rows
+    // 搜索命中也补进缓存，便于随后断网时继续本地过滤。
+    const byId = new Map(allSessions.value.map((s) => [s.id, s]))
+    for (const row of rows) byId.set(row.id, row)
+    allSessions.value = [...byId.values()]
+    total.value = data.total || sessions.value.length
+  } catch (err: any) {
+    if (seq === searchSeq) error.value = err.message || '搜索会话失败'
+  } finally {
+    if (seq === searchSeq) searching.value = false
+  }
+}
+
+function retryCurrent(): void {
+  if (searchQuery.value.trim()) void runSearch()
+  else void loadSessions()
+}
+
+// 350ms 防抖，避免每次键入都请求上游 OpenCode。
 function handleSearch() {
-  // 搜索在客户端过滤，不需要重新请求
+  // 输入发生即作废在途请求；网络请求仍延后 350ms，避免逐键请求。
+  searchSeq++
+  loading.value = false
+  searching.value = false
+  if (searchTimer !== null) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    searchTimer = null
+    void runSearch()
+  }, 350)
 }
 
 // 处理实例切换
 function handleInstanceChange() {
   offset.value = 0
-  loadSessions()
+  searchQuery.value = ''
+  showArchived.value = false
+  emit('contextChange', selectedInstanceId.value)
+  void loadSessions()
 }
 
 // 上一页
@@ -207,7 +401,7 @@ function prevPage() {
 
 // 下一页
 function nextPage() {
-  if (offset.value + limit.value < total.value) {
+  if (offset.value + limit.value < paginationTotal.value) {
     offset.value += limit.value
     loadSessions()
   }
@@ -215,7 +409,14 @@ function nextPage() {
 
 // 打开会话详情
 function openSessionDetail(session: Session) {
-  // Phase V3: 跳转到实时会话对话视图
+  if (!selectedInstanceId.value) {
+    toast.warning('请先选择会话所属实例')
+    return
+  }
+  if (props.embedded) {
+    emit('select', session, selectedInstanceId.value)
+    return
+  }
   router.push({
     path: `/sessions/${session.id}`,
     query: {
@@ -258,8 +459,19 @@ async function reloadSessions(): Promise<void> {
   await loadSessions()
 }
 
-// 左滑显示的操作按钮（删除 + 归档占位）
+// 左滑显示的操作按钮。归档是设备本地元数据，不删除服务端会话。
 function getSwipeActions(session: Session): SwipeAction[] {
+  if (showArchived.value) {
+    return [
+      {
+        id: `restore-${session.id}`,
+        icon: '↩',
+        label: '恢复',
+        type: 'warning',
+        onAction: () => restoreSession(session),
+      },
+    ]
+  }
   return [
     {
       id: `archive-${session.id}`,
@@ -279,8 +491,17 @@ function getSwipeActions(session: Session): SwipeAction[] {
 }
 
 async function archiveSession(session: Session): Promise<void> {
-  // 后端暂无 archive 接口；提示用户到详情页操作
-  toast.info(`归档功能开发中：${session.title}`)
+  if (!selectedInstanceId.value) {
+    toast.warning('请先选择会话所属实例')
+    return
+  }
+  archivedIds.value = setSessionArchived(localStorage, archiveScope.value, session.id, true)
+  toast.success(`已归档：${session.title}`)
+}
+
+async function restoreSession(session: Session): Promise<void> {
+  archivedIds.value = setSessionArchived(localStorage, archiveScope.value, session.id, false)
+  toast.success(`已恢复：${session.title}`)
 }
 
 async function deleteSession(session: Session): Promise<void> {
@@ -290,14 +511,30 @@ async function deleteSession(session: Session): Promise<void> {
   toast.warning('删除功能开发中，请到 OpenCode 实例侧手动删除')
 }
 
+function formatUpdatedAt(timestamp: number): string {
+  const date = new Date(timestamp)
+  const now = new Date()
+  if (date.toDateString() === now.toDateString()) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric' })
+}
+
+watch(archiveScope, reloadArchivedIds)
+
 onMounted(() => {
-  loadInstances()
-  loadSessions()
+  reloadArchivedIds()
+  void loadInstances()
+  void loadSessions()
 })
 
 onActivated(() => {
   // 从其他页面返回时重新加载
-  loadSessions()
+  void loadSessions()
+})
+
+onBeforeUnmount(() => {
+  if (searchTimer !== null) clearTimeout(searchTimer)
 })
 </script>
 
@@ -312,6 +549,74 @@ onActivated(() => {
   overflow-y: auto;
 }
 
+.inline-error {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-sm);
+  color: var(--color-error);
+  font-size: var(--text-base);
+}
+
+.inline-error button {
+  min-height: 48px;
+  color: inherit;
+  font-weight: 600;
+}
+
+.view-tabs {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.view-tabs button {
+  min-height: 48px;
+  padding: 6px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.view-tabs button.active {
+  border-bottom-color: var(--brand-primary);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.view-tabs button span {
+  margin-left: 3px;
+  color: var(--text-muted);
+  font-size: var(--text-base);
+}
+
+.offline-search,
+.searching {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: var(--text-base);
+}
+
+.offline-search + .searching {
+  margin-left: var(--space-2);
+}
+
+.sessions-page.embedded {
+  height: 100%;
+  padding: 0;
+  padding-bottom: 0;
+}
+
 .toolbar {
   display: flex;
   gap: var(--space-2);
@@ -324,6 +629,7 @@ onActivated(() => {
 
 .search-bar input {
   width: 100%;
+  min-height: 48px;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -338,6 +644,7 @@ onActivated(() => {
 }
 
 .instance-filter {
+  min-height: 48px;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -415,7 +722,7 @@ onActivated(() => {
 .status-badge {
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-full);
-  font-size: var(--text-xs);
+  font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
   white-space: nowrap;
 }
@@ -437,24 +744,57 @@ onActivated(() => {
 
 .session-id {
   margin: var(--space-1) 0;
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   color: var(--text-muted);
   font-family: monospace;
 }
 
 .session-footer {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
   margin-top: var(--space-2);
 }
 
+.session-footer time {
+  color: var(--text-muted);
+  font-size: var(--text-base);
+}
+
+.session-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.archive-btn {
+  display: inline-grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.archive-btn:hover,
+.archive-btn:focus-visible {
+  background: var(--bg-subtle);
+  color: var(--brand-primary);
+}
+
 .attach-btn {
+  min-height: 48px;
   padding: var(--space-1) var(--space-3);
   background: var(--brand-primary);
   color: var(--text-inverse);
   border: none;
   border-radius: var(--radius-md);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
   cursor: pointer;
   transition: opacity 120ms;
@@ -478,12 +818,13 @@ onActivated(() => {
 }
 
 .page-btn {
+  min-height: 48px;
   padding: var(--space-1) var(--space-3);
   background: var(--brand-primary);
   color: var(--text-inverse);
   border: none;
   border-radius: var(--radius-md);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
   cursor: pointer;
 }
@@ -496,6 +837,6 @@ onActivated(() => {
 .page-info {
   color: var(--text-secondary);
   font-weight: var(--font-weight-semibold);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
 }
 </style>
