@@ -32,10 +32,22 @@
       </div>
 
       <!-- 最近 / 搜索结果 -->
-      <div v-if="loading" class="state">加载中…</div>
-      <div v-else-if="notes.length === 0" class="state">
-        <p>{{ query ? '无匹配笔记' : '还没有笔记，点右下角 + 新建' }}</p>
-      </div>
+      <Loading v-if="loading" text="加载中…" />
+      <ErrorState
+        v-else-if="loadError && notes.length === 0"
+        title="笔记加载失败"
+        :message="loadError"
+        @retry="retryLoad"
+      />
+      <EmptyState
+        v-else-if="notes.length === 0"
+        icon="📝"
+        :title="query ? '无匹配笔记' : '还没有笔记'"
+        :message="query ? '换个关键词试试，或清空搜索查看最近笔记' : '这里会展示你最近的笔记和每日记录'"
+        :hint="query ? '点击重试按钮重新加载最近笔记' : '点击右下角 + 新建第一条笔记'"
+        :action-label="query ? '重新加载' : '新建笔记'"
+        @action="query ? retryLoad() : newNote()"
+      />
       <ul v-else class="note-list">
         <li
           v-for="n in notes"
@@ -66,6 +78,7 @@ import {
   type PkmNote,
 } from './pkm-store'
 import { useAuthStore } from '../../stores/auth'
+import { EmptyState, ErrorState, Loading } from '../../components'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -75,6 +88,7 @@ const query = ref('')
 const notes = ref<PkmNote[]>([])
 const loading = ref(false)
 const dailyExists = ref(false)
+const loadError = ref('')
 
 const todayKey = dailyKey()
 const now = new Date()
@@ -83,10 +97,16 @@ const yearMonth = `${now.getFullYear()}/${now.getMonth() + 1}`
 
 async function loadRecent() {
   loading.value = true
+  loadError.value = ''
   query.value = ''
-  notes.value = await listNotes({ workspaceId, limit: 50 })
-  dailyExists.value = !!(await getDailyNote(todayKey, workspaceId))
-  loading.value = false
+  try {
+    notes.value = await listNotes({ workspaceId, limit: 50 })
+    dailyExists.value = !!(await getDailyNote(todayKey, workspaceId))
+  } catch (e: any) {
+    loadError.value = e?.message || '加载笔记失败，请稍后重试。'
+  } finally {
+    loading.value = false
+  }
 }
 
 async function onSearch() {
@@ -95,8 +115,22 @@ async function onSearch() {
     return
   }
   loading.value = true
-  notes.value = await searchNotes(query.value, { workspaceId })
-  loading.value = false
+  loadError.value = ''
+  try {
+    notes.value = await searchNotes(query.value, { workspaceId })
+  } catch (e: any) {
+    loadError.value = e?.message || '搜索笔记失败，请稍后重试。'
+  } finally {
+    loading.value = false
+  }
+}
+
+function retryLoad() {
+  if (query.value.trim()) {
+    onSearch()
+  } else {
+    loadRecent()
+  }
 }
 
 function openNote(id: string) {
@@ -186,12 +220,6 @@ onMounted(loadRecent)
   border-radius: 10px;
   font-size: 14px;
   background: var(--bg-input, #fff);
-}
-.state {
-  text-align: center;
-  color: var(--text-secondary, #999);
-  padding: 40px 0;
-  font-size: 14px;
 }
 .note-list {
   list-style: none;

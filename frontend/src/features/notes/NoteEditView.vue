@@ -9,7 +9,14 @@
 -->
 <template>
   <div class="note-edit-view">
-          <div v-if="loading" class="state">加载中…</div>
+          <div v-if="loading" class="state" role="status">加载中…</div>
+
+      <ErrorState
+        v-else-if="loadError"
+        title="笔记加载失败"
+        :message="loadError"
+        @retry="load"
+      />
 
       <form v-else class="edit-form" @submit.prevent="onSave">
         <!-- 标题 -->
@@ -92,6 +99,7 @@ import { useRoute, useRouter } from 'vue-router'
 import VoiceRecorderWidget from './VoiceRecorderWidget.vue'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
+import { ErrorState } from '../../components'
 import { useAuthStore } from '../../stores/auth'
 
 const route = useRoute()
@@ -110,6 +118,7 @@ type Domain = (typeof DOMAINS)[number]['value']
 const loading = ref(true)
 const saving = ref(false)
 const saveError = ref('')
+const loadError = ref('')
 const titleInput = ref<HTMLInputElement | null>(null)
 
 interface FormState {
@@ -148,7 +157,9 @@ function tagsFromArray(tags: string[] | null | undefined): string {
   return tags && tags.length ? tags.join(', ') : ''
 }
 
-onMounted(async () => {
+onMounted(() => load())
+
+async function load() {
   if (isNew.value) {
     loading.value = false
     await focusTitle()
@@ -157,14 +168,17 @@ onMounted(async () => {
 
   // 编辑模式：拉已有笔记数据
   loading.value = true
+  loadError.value = ''
   try {
     const existing = await notesStore.getNote(routeId.value, false, currentWorkspaceId())
     if (existing) hydrate(existing)
+  } catch (e: any) {
+    loadError.value = e?.message || '加载笔记失败，请稍后重试。'
   } finally {
     loading.value = false
     await focusTitle()
   }
-})
+}
 
 function hydrate(n: LocalNote) {
   form.title = n.title || ''

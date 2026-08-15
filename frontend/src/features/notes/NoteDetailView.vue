@@ -9,7 +9,14 @@
 -->
 <template>
   <div class="note-detail-view">
-          <div v-if="loading" class="state">加载中…</div>
+          <div v-if="loading" class="state" role="status">加载中…</div>
+
+      <ErrorState
+        v-else-if="loadError"
+        title="笔记加载失败"
+        :message="loadError"
+        @retry="load"
+      />
 
       <div v-else-if="!note" class="state">
         <p>笔记不存在或已被删除</p>
@@ -81,6 +88,7 @@ import DOMPurify from 'dompurify'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
 import { http } from '../../api/http'
+import { ErrorState } from '../../components'
 import { useAuthStore } from '../../stores/auth'
 
 const route = useRoute()
@@ -92,6 +100,7 @@ const loading = ref(true)
 const related = ref<LocalNote[]>([])
 const reclassifying = ref(false)
 const reclassifyError = ref('')
+const loadError = ref('')
 
 const displayTitle = computed(() => {
   if (!note.value) return ''
@@ -124,17 +133,22 @@ const renderedMarkdown = computed(() => {
   })
 })
 
-onMounted(async () => {
+onMounted(() => load())
+
+async function load() {
   const id = route.params.id as string
   loading.value = true
+  loadError.value = ''
   try {
     const fetched = await notesStore.getNote(id, false, currentWorkspaceId())
     note.value = fetched
     if (fetched) await loadRelated(fetched)
+  } catch (e: any) {
+    loadError.value = e?.message || '加载笔记失败，请稍后重试。'
   } finally {
     loading.value = false
   }
-})
+}
 
 async function loadRelated(target: LocalNote) {
   try {

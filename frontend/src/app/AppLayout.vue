@@ -31,6 +31,9 @@
       <slot name="actions" />
     </header>
 
+    <!-- 全局状态条：连接 / 同步 / 离线队列（08 §2.2，不用只显示 Toast）。 -->
+    <GlobalStatusBar v-if="showTopBar" />
+
     <main
       id="main"
       ref="mainEl"
@@ -51,6 +54,7 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import BottomNav from '../components/BottomNav.vue'
+import GlobalStatusBar from '../components/GlobalStatusBar.vue'
 
 const route = useRoute()
 const router = useRouter()

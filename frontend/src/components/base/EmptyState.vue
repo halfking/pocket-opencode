@@ -3,8 +3,8 @@
   用于没有数据时的友好引导。
 -->
 <template>
-  <div class="empty-state">
-    <div class="empty-icon">{{ icon }}</div>
+  <div class="empty-state" role="status">
+    <div class="empty-icon" aria-hidden="true">{{ icon }}</div>
     <h3 v-if="title" class="empty-title">{{ title }}</h3>
     <p v-if="message" class="empty-message">{{ message }}</p>
     <p v-if="hint" class="empty-hint">{{ hint }}</p>

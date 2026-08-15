@@ -12,6 +12,7 @@
  */
 import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacitor-community/sqlite'
 import { SCHEMA_SQL } from './schema'
+import type { SqlDb } from './sqlDb'
 
 const DB_NAME = 'lobster'
 const DB_VERSION = 2
@@ -223,3 +224,15 @@ class LocalDB {
 
 /** 单例。全 App 共享一个本地加密库连接。 */
 export const localDB = new LocalDB()
+
+/**
+ * LocalDB → SqlDb 接口适配（query 即 all）。
+ * 离线持久化模块（outbox / mobileSync / approvalStore）面向 SqlDb 编程，
+ * App 侧用这个适配器把单例 LocalDB 传入，Node 测试用 node:sqlite 实现同接口。
+ */
+export function localDbAsSql(db: LocalDB = localDB): SqlDb {
+  return {
+    run: (sql, params) => db.run(sql, params),
+    all: (sql, params) => db.query(sql, params),
+  }
+}

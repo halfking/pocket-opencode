@@ -15,6 +15,7 @@ import type { OutboxStorage } from '../utils/outbox.ts'
 import type { MobileMessageRow, MobileSessionRow, MobileSyncStore } from './mobileSync.ts'
 import { newLocalSessionId } from './mobileSync.ts'
 import type { ApprovalReplyPayload } from './outboxDrain.ts'
+import type { SqliteApprovalStore } from './approvalStore.ts'
 
 function newId(): string {
   return crypto.randomUUID()
@@ -112,10 +113,21 @@ export async function enqueueApprovalReplyLocally(args: {
   outbox: OutboxStorage
   workspaceId: string
   reply: ApprovalReplyPayload
+  /** 可选：审批本地表，同时记录本地决定（state 保持 pending，等 drain 确认）。 */
+  approvalStore?: Pick<SqliteApprovalStore, 'saveDecision'>
   now?: number
 }): Promise<void> {
   const now = args.now ?? Date.now()
   const idempotencyKey = `appr_${args.reply.kind}_${args.reply.requestId}`
+  if (args.approvalStore !== undefined) {
+    const decision =
+      args.reply.kind === 'permission'
+        ? (args.reply.decision ?? 'once')
+        : args.reply.decision === 'reject'
+          ? 'reject'
+          : 'answer'
+    await args.approvalStore.saveDecision(args.reply.requestId, decision, now)
+  }
   await args.outbox.put(
     enqueue(
       {

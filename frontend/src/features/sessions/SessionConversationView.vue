@@ -17,6 +17,9 @@ import { useSessionStore } from '../../stores/session'
 import { useVoiceRecording } from '../../composables/useVoiceRecording'
 import { useToast } from '../../composables/useToast'
 import { renderMarkdown } from '../../utils/markdown'
+import { useFeatureFlag } from '../../config/featureFlags'
+import { usePendingApprovals } from '../../composables/usePendingApprovals'
+import { ApprovalBottomSheet, type ApprovalDecision } from '../../components'
 
 const route = useRoute()
 const router = useRouter()
@@ -69,9 +72,12 @@ onMounted(async () => {
   await store.open(sessionID.value, instanceID.value, initialTitle.value)
   await nextTick()
   scrollToBottom(true)
+  // 审批 Bottom Sheet（feature flag 暗Launch）：进入会话即查一次 pending 并轮询。
+  if (approvalSheetEnabled) startApprovalPolling()
 })
 
 onBeforeUnmount(() => {
+  stopApprovalPolling()
   store.close()
 })
 
@@ -108,6 +114,90 @@ async function send() {
 
 // ── Voice Recording (via composable) ──
 const toggleVoice = toggleRecording
+
+// ── Pending approvals（08 §3.3 / §4.5：服务端确认前不显示已批准） ──
+const approvalSheetEnabled = useFeatureFlag('approval.bottom_sheet_v1')
+const serverConfirmRequired = useFeatureFlag('approval.server_confirm_required')
+const {
+  pendingPermissions,
+  loadError: approvalsError,
+  refresh: refreshApprovals,
+  reply: replyApproval,
+  startPolling: startApprovalPolling,
+  stopPolling: stopApprovalPolling,
+} = usePendingApprovals({
+  instanceId: () => instanceID.value,
+  sessionId: () => sessionID.value,
+})
+
+/** 用户手动关闭过、且尚未做出决定的请求不再重复弹出。 */
+const dismissedApprovalIds = ref<Set<string>>(new Set())
+const approvalSubmitting = ref(false)
+const approvalServerConfirmed = ref<boolean | null>(null)
+
+const currentApproval = computed(
+  () => pendingPermissions.value.find((p) => !dismissedApprovalIds.value.has(p.id)) ?? null,
+)
+const approvalSheetVisible = computed(() => approvalSheetEnabled && currentApproval.value !== null)
+const approvalSheetModel = computed({
+  get: () => approvalSheetVisible.value,
+  set: (v: boolean) => {
+    if (!v) dismissCurrentApproval()
+  },
+})
+
+const approvalAction = computed(() =>
+  currentApproval.value ? `调用工具：${currentApproval.value.action}` : '',
+)
+const approvalSource = computed(() =>
+  currentApproval.value
+    ? `${selectedInstance.value?.displayName || instanceID.value} · 会话 ${sessionID.value.slice(0, 8)}`
+    : '',
+)
+const approvalScope = computed(() => (currentApproval.value?.resources ?? []).join(' · '))
+const approvalDetails = computed(() => {
+  const req = currentApproval.value
+  if (!req) return ''
+  const lines: string[] = []
+  if (req.resources?.length) lines.push(`目标资源：\n${req.resources.join('\n')}`)
+  if (req.save?.length) lines.push(`持久化范围（始终允许）：\n${req.save.join('\n')}`)
+  return lines.join('\n\n')
+})
+
+function dismissCurrentApproval(): void {
+  const req = currentApproval.value
+  if (!req) return
+  const next = new Set(dismissedApprovalIds.value)
+  next.add(req.id)
+  dismissedApprovalIds.value = next
+  approvalServerConfirmed.value = null
+}
+
+async function onApprovalDecision(decision: ApprovalDecision): Promise<void> {
+  const req = currentApproval.value
+  if (!req || approvalSubmitting.value) return
+  approvalSubmitting.value = true
+  approvalServerConfirmed.value = null
+  const status = await replyApproval(req.id, decision)
+  approvalSubmitting.value = false
+
+  if (status === 'confirmed') {
+    approvalServerConfirmed.value = serverConfirmRequired ? true : null
+    toast.success('已授权')
+    setTimeout(dismissCurrentApproval, 800)
+  } else if (status === 'queued-offline') {
+    // 离线：已入待发送队列，服务端确认前不显示"已批准"（serverConfirmed=false）。
+    approvalServerConfirmed.value = serverConfirmRequired ? false : null
+    toast.info('当前离线，决定已保存，联网后自动发送')
+    setTimeout(dismissCurrentApproval, 1600)
+  } else if (status === 'conflict') {
+    toast.error('该审批请求已过期或已在别处处理')
+    dismissCurrentApproval()
+  } else {
+    // 发送失败：保留请求与 Sheet，可重试（08 §3.3）。
+    toast.error('审批发送失败，请重试')
+  }
+}
 
 async function stop() {
   await store.interrupt()
@@ -410,6 +500,24 @@ function formatDuration(ms: number): string {
       {{ store.errorMessage }}
     </div>
 
+    <!-- 审批复核状态（拉取失败可重试，不打断会话） -->
+    <div v-if="approvalSheetEnabled && approvalsError !== ''" class="approval-error" role="alert">
+      <span>审批状态拉取失败</span>
+      <button type="button" @click="refreshApprovals">重试</button>
+    </div>
+
+    <!-- 权限审批 Bottom Sheet（feature flag 暗Launch，08 §3.3） -->
+    <ApprovalBottomSheet
+      v-model:visible="approvalSheetModel"
+      :action="approvalAction"
+      :source="approvalSource"
+      :scope="approvalScope"
+      :details="approvalDetails"
+      :submitting="approvalSubmitting"
+      :server-confirmed="approvalServerConfirmed"
+      @decision="onApprovalDecision"
+    />
+
     <!-- Input bar -->
     <footer class="input-bar">
       <textarea
@@ -699,6 +807,29 @@ function formatDuration(ms: number): string {
   font-size: var(--text-sm);
   text-align: center;
   border-top: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+/* 审批复核失败提示（页面内 + 重试，08 §6） */
+.approval-error {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1-5, 6px) var(--space-3);
+  background: var(--bg-subtle);
+  color: var(--warning, #f59e0b);
+  font-size: var(--text-xs);
+}
+.approval-error button {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--brand-primary);
+  padding: 2px 10px;
+  font-size: var(--text-xs);
+  /* 触摸目标高度向 48px 靠拢（08 §5）。 */
+  min-height: 32px;
 }
 
 /* Input bar */

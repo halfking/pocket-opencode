@@ -19,9 +19,16 @@
         <button class="link-btn" @click="showCreateModal = true">+ 新任务</button>
       </div>
 
-      <div v-if="loading" class="skeleton-row">
+      <div v-if="loading" class="skeleton-row" role="status" aria-label="任务加载中">
         <div v-for="i in 3" :key="i" class="skeleton-card" />
       </div>
+
+      <ErrorState
+        v-else-if="tasksError !== ''"
+        title="任务加载失败"
+        :message="tasksError"
+        @retry="loadTasks"
+      />
 
       <div v-else-if="activeTasks.length > 0" class="task-scroll">
         <div
@@ -84,9 +91,16 @@
         <button class="link-btn" @click="router.push('/sessions')">全部</button>
       </div>
 
-      <div v-if="sessionsLoading" class="skeleton-row">
+      <div v-if="sessionsLoading" class="skeleton-row" role="status" aria-label="会话加载中">
         <div v-for="i in 3" :key="i" class="skeleton-card" />
       </div>
+
+      <ErrorState
+        v-else-if="sessionsError !== ''"
+        title="会话加载失败"
+        :message="sessionsError"
+        @retry="loadSessions"
+      />
 
       <div v-else-if="sessions.length > 0" class="session-list">
         <div
@@ -225,6 +239,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type Task } from '../../api/client'
 import { agentsApi, type Agent } from '../../api/agents'
+import { ErrorState } from '../../components'
 import wsClient from '../../api/websocket'
 import { usePullDownClose } from '../../composables/usePullDownClose'
 import { useVoiceRecording } from '../../composables/useVoiceRecording'
@@ -240,6 +255,8 @@ const tasks = ref<TaskWithInstance[]>([])
 const sessions = ref<any[]>([])
 const loading = ref(true)
 const sessionsLoading = ref(true)
+const tasksError = ref('')
+const sessionsError = ref('')
 const showCreateModal = ref(false)
 const showCompleted = ref(false)
 const quickPrompt = ref('')
@@ -310,6 +327,7 @@ onUnmounted(() => {
 // ── Data Loading ──
 async function loadTasks() {
   loading.value = true
+  tasksError.value = ''
   try {
     if (!currentInstance.value) { tasks.value = []; return }
     const instanceTasks = await api.getTasks(currentInstance.value.id, {
@@ -321,6 +339,8 @@ async function loadTasks() {
     }))
   } catch (e) {
     console.error('Failed to load tasks:', e)
+    // 页面内错误 + 重试（08 §6），不再只报 toast
+    tasksError.value = e instanceof Error ? e.message : '无法连接服务器，请检查网络后重试'
     tasks.value = []
   } finally {
     loading.value = false
@@ -329,6 +349,7 @@ async function loadTasks() {
 
 async function loadSessions() {
   sessionsLoading.value = true
+  sessionsError.value = ''
   try {
     const data = await api.getAllSessions(undefined, 10, 0)
     sessions.value = (data.sessions || []).map((s: any) => ({
@@ -341,6 +362,7 @@ async function loadSessions() {
     }))
   } catch (e) {
     console.error('Failed to load sessions:', e)
+    sessionsError.value = e instanceof Error ? e.message : '无法连接服务器，请检查网络后重试'
     sessions.value = []
   } finally {
     sessionsLoading.value = false

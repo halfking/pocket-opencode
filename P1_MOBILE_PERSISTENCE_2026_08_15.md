@@ -72,6 +72,9 @@ npm run build:fast  # clean
 
 ## 遗留（下次会话）
 
-- `local_mobile_approvals` 的 pull 侧回填（当前只有写路径；审批列表仍在线拉取）
-- drain 循环的宿主接线（App 在 network-change/resume 事件触发 `drainOutbox` + `syncSessions`）
-- 审计导出对接外部 SIEM / 落盘轮转策略
+- ~~`local_mobile_approvals` 的 pull 侧回填~~ ✅ 2026-08-15 已完成：`native/approvalStore.ts`（快照 upsert / 本地决定 / sent-expired 终态）+ `backfillApprovals`（服务端 pending 落库、本地 pending 消失行过期）+ drain 发送器回写
+- ~~drain 循环的宿主接线~~ ✅ 2026-08-15 已完成：`native/mobileSyncRuntime.ts`（online/offline / visibilitychange / Capacitor resume / 30s 兜底定时器 → drainOutbox + syncSessions + 审批回填）+ `stores/connectivity.ts` + `main.ts` 启动接线
+- ~~审计导出对接外部 SIEM / 落盘轮转策略~~ ✅ 2026-08-15 已完成（本地过渡方案）：`redclaw.FileExporter`（`backend/internal/redclaw/file_exporter.go`）增量 JSONL 落盘（`audit-YYYYMMDD.jsonl` 按天轮转 + `state.json` 游标持久化 + 保留期清理）；pocketd 由 `AUDIT_EXPORT_DIR` / `AUDIT_EXPORT_INTERVAL` / `AUDIT_EXPORT_RETENTION_DAYS` 环境变量启用，SIEM 可直接 tail 目录
+- ~~ApprovalBottomSheet 组件未接入~~ ✅ 2026-08-15 已接线（仍为暗Launch）：`SessionConversationView` 经 `usePendingApprovals`（`api/approvals.ts` + 10s 轮询）弹 `ApprovalBottomSheet`；在线直接 POST（服务端确认后才显示已授权），离线走 outbox 队列；打开需置 `approval.bottom_sheet_v1` feature flag 为 true
+- ~~次级页面手写状态标记~~ ✅ 2026-08-15 已统一：Meetings/Contacts/PKM/Notes 详情/Email 详情/Task 详情全部改用基础组件（Loading/ErrorState 重试/EmptyState 三段式）；`ServerSelectView` 为静态选择页无需异步状态
+- SSE/WS 侧尚无审批推送事件，当前靠 10s 轮询拉取 pending（后端补推送事件后可移除轮询）

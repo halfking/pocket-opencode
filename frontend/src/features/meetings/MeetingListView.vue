@@ -9,16 +9,22 @@
         <button class="primary" @click="router.push('/meetings/new')">开始会议</button>
       </header>
 
-      <div v-if="loading" class="state" role="status">加载中…</div>
-      <div v-else-if="error" class="state error-state" role="alert">
-        <p>{{ error }}</p>
-        <button type="button" class="primary" @click="load">重试</button>
-      </div>
-      <div v-else-if="meetings.length === 0" class="empty">
-        <div class="empty-icon">🎙️</div>
-        <p>还没有会议记录</p>
-        <button class="primary" @click="router.push('/meetings/new')">开始第一场会议</button>
-      </div>
+      <Loading v-if="loading" text="加载中…" />
+      <ErrorState
+        v-else-if="error && meetings.length === 0"
+        title="会议记录加载失败"
+        :message="error"
+        @retry="load"
+      />
+      <EmptyState
+        v-else-if="meetings.length === 0"
+        icon="🎙️"
+        title="还没有会议记录"
+        message="录音、转写和纪要都保存在本地"
+        hint="点击下方按钮开始第一场会议"
+        action-label="开始第一场会议"
+        @action="router.push('/meetings/new')"
+      />
       <ul v-else class="meeting-list">
         <li
           v-for="meeting in meetings"
@@ -46,6 +52,7 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { listMeetings, type LocalMeeting } from './meetings-store'
+import { EmptyState, ErrorState, Loading } from '../../components'
 
 const router = useRouter()
 const meetings = ref<LocalMeeting[]>([])
@@ -83,11 +90,8 @@ onMounted(load)
 h1 { margin: 0; font-size: 24px; }
 .page-header p { margin: 5px 0 0; color: var(--text-secondary); font-size: 12px; }
 .primary { border: 0; border-radius: var(--radius-md); background: var(--brand-primary); color: var(--text-inverse); padding: 9px 12px; font-size: 13px; cursor: pointer; }
-.state, .empty { padding: 48px 12px; text-align: center; color: var(--text-secondary); }
-.error-state p { margin: 0 0 var(--space-3); color: var(--danger); }
 .meeting-list li:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-primary); }
 .meeting-main small { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; }
-.empty-icon { font-size: 44px; margin-bottom: 8px; }
 .meeting-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 .meeting-list li { display: flex; align-items: center; gap: 11px; padding: 13px; background: var(--bg-card); border-radius: 12px; cursor: pointer; box-shadow: var(--shadow-sm); }
 .meeting-icon { font-size: 25px; }

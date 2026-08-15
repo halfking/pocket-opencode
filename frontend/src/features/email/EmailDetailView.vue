@@ -5,7 +5,13 @@
   Auto-marks unread → read on open. Star / mark-read / turn-to-todo actions.
 -->
 <template>
-      <div v-if="loading" class="state">加载中…</div>
+      <div v-if="loading" class="state" role="status">加载中…</div>
+    <ErrorState
+      v-else-if="loadError"
+      title="邮件加载失败"
+      :message="loadError"
+      @retry="load"
+    />
     <div v-else-if="!email" class="state">
       <p>未找到该邮件（可能已被删除）。</p>
       <button class="link-btn" @click="goBack">返回邮箱</button>
@@ -88,6 +94,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '../../api/client'
 import { emailApi } from '../../api/email'
 import { useToast } from '../../composables/useToast'
+import { ErrorState } from '../../components'
 import { findContactByEmail } from '../contact/contacts-store'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
@@ -99,6 +106,7 @@ const toast = useToast()
 const email = ref<LocalEmail | null>(null)
 const loading = ref(true)
 const converting = ref(false)
+const loadError = ref('')
 // Body 懒加载状态：默认仅展示 snippet，点击“查看完整正文”才走 GET /body。
 const bodyLoaded = ref(false)
 const bodyLoading = ref(false)
@@ -131,6 +139,7 @@ function collapseBody() {
 async function load() {
   const id = route.params.id as string
   loading.value = true
+  loadError.value = ''
   try {
     // 使用 getEmail（emails-store 已提供）
     const found = await emailsStore.getEmail(id)
@@ -144,6 +153,8 @@ async function load() {
         console.warn('[email] 自动标记已读失败:', e)
       }
     }
+  } catch (e: any) {
+    loadError.value = e?.message || '加载邮件失败，请稍后重试。'
   } finally {
     loading.value = false
   }

@@ -33,11 +33,20 @@
         </div>
         <p v-if="importMessage" class="import-message">{{ importMessage }}</p>
 
-        <div v-if="loading" class="state">加载中…</div>
-        <div v-else-if="notes.length === 0" class="state">
-          <p>还没有笔记</p>
-          <p class="hint">长按右下角麦克风开始语音录入</p>
-        </div>
+        <Loading v-if="loading" text="加载笔记中…" />
+        <ErrorState
+          v-else-if="loadError !== ''"
+          title="笔记加载失败"
+          :message="loadError"
+          @retry="load"
+        />
+        <EmptyState
+          v-else-if="notes.length === 0"
+          icon="📝"
+          title="还没有笔记"
+          message="创建的第一条笔记会保存在本地加密存储中"
+          hint="长按右下角麦克风开始语音录入，或在上方搜索已有内容"
+        />
 
         <div v-else class="note-list">
         <div
@@ -66,6 +75,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
+import { EmptyState, ErrorState, Loading } from '../../components'
 import VoiceRecorderWidget from './VoiceRecorderWidget.vue'
 import * as notesStore from './notes-store'
 import { importEnex, readImportFile } from '../imports/import-service'
@@ -76,6 +86,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const notes = ref<LocalNote[]>([])
 const loading = ref(true)
+const loadError = ref('')
 const query = ref('')
 const searchMode = ref<'list' | 'fts' | 'semantic' | 'hybrid'>('list')
 const dbNotReady = ref(false)
@@ -124,6 +135,7 @@ async function onImportFile(event: Event) {
 async function load() {
   loading.value = true
   dbNotReady.value = false
+  loadError.value = ''
   try {
     const results = await notesStore.listNotes({ limit: 100, workspaceId: currentWorkspaceId() })
     notes.value = results
@@ -133,6 +145,8 @@ async function load() {
       dbNotReady.value = true
       console.warn('[notes] 本地数据库未初始化，显示降级界面')
     } else {
+      // 页面内错误 + 重试（08 §6），保留已有列表数据
+      loadError.value = e?.message || '读取本地数据库失败，请重试'
       console.error('[notes] 加载失败:', e)
     }
   } finally {

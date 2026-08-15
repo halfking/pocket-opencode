@@ -28,6 +28,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
+	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/server"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
@@ -585,6 +586,29 @@ func main() {
 	taskScheduler := tasksync.New(mcpClient, taskStore, 5*60*1_000_000_000) // 5min
 	taskScheduler.Start(context.Background())
 	defer taskScheduler.Stop()
+
+	// P1 遗留：审计导出落盘轮转。AUDIT_EXPORT_DIR 设置后启用——增量 JSONL
+	// 落盘（按天分文件 audit-YYYYMMDD.jsonl），保留期外自动清理；外部 SIEM
+	// 可直接 tail 该目录。游标持久化在 state.json，重启不重扫。
+	if auditDir := os.Getenv("AUDIT_EXPORT_DIR"); auditDir != "" {
+		interval := time.Minute
+		if v, err := time.ParseDuration(os.Getenv("AUDIT_EXPORT_INTERVAL")); err == nil && v > 0 {
+			interval = v
+		}
+		retain := 7
+		if v, err := strconv.Atoi(os.Getenv("AUDIT_EXPORT_RETENTION_DAYS")); err == nil && v > 0 {
+			retain = v
+		}
+		exporter := redclaw.NewFileExporter(srv.AuditStore(), redclaw.FileExporterConfig{
+			Dir:        auditDir,
+			Interval:   interval,
+			RetainDays: retain,
+		})
+		exporterCtx, exporterCancel := context.WithCancel(context.Background())
+		go exporter.Run(exporterCtx)
+		defer exporterCancel()
+		log.Printf("审计落盘导出已启用：dir=%s interval=%s retain=%dd", auditDir, interval, retain)
+	}
 
 	// HTTP server 配置超时，防止 Slowloris 攻击和资源耗尽
 	addr := ":" + cfg.HTTPPort

@@ -297,6 +297,10 @@ func (s *Server) PluginHub() *ws.PluginHub { return s.pluginHub }
 // 的组件复用（避免把私有字段暴露成公开）。
 func (s *Server) WSHub() *ws.Hub { return s.wsHub }
 
+// AuditStore 暴露内部审计存储，供 pocketd 装配旁路导出（如 FileExporter
+// 落盘轮转 / 外部 SIEM 转发）。只读语义由 AuditStore 自身保证。
+func (s *Server) AuditStore() *redclaw.AuditStore { return s.auditStore }
+
 const (
 	maxRequestBodyBytes = 2 << 20
 	maxAudioBodyBytes   = 25 << 20

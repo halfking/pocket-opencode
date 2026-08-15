@@ -3,8 +3,8 @@
   支持重试操作。
 -->
 <template>
-  <div class="error-state">
-    <div class="error-icon">{{ icon }}</div>
+  <div class="error-state" role="alert">
+    <div class="error-icon" aria-hidden="true">{{ icon }}</div>
     <h3 v-if="title" class="error-title">{{ title }}</h3>
     <p v-if="message" class="error-message">{{ message }}</p>
     <button

@@ -1,6 +1,12 @@
 <!-- S2.2 会议详情：转写、纪要，以及沉淀到 PKM/Task。 -->
 <template>
-      <div v-if="loading" class="state">加载中…</div>
+      <div v-if="loading" class="state" role="status">加载中…</div>
+    <ErrorState
+      v-else-if="loadError"
+      title="会议详情加载失败"
+      :message="loadError"
+      @retry="load"
+    />
     <div v-else-if="!meeting" class="state">会议不存在或已删除。</div>
     <div v-else class="detail-page">
       <header class="header">
@@ -50,6 +56,7 @@ import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../../api/client'
 import { useToast } from '../../composables/useToast'
+import { ErrorState } from '../../components'
 import { saveNote } from '../pkm/pkm-store'
 import { renderMarkdown, renderPlainText, sanitizeHtml } from '../../utils/markdown'
 import { summarizeMeeting } from './meetings-ai'
@@ -64,13 +71,17 @@ const segments = ref<MeetingSegment[]>([])
 const summarizing = ref(false)
 const creatingTask = ref(false)
 const message = ref('')
+const loadError = ref('')
 
 async function load() {
   loading.value = true
+  loadError.value = ''
   try {
     const result = await getMeetingWithSegments(route.params.id as string)
     meeting.value = result?.meeting || null
     segments.value = result?.segments || []
+  } catch (e: any) {
+    loadError.value = e?.message || '加载会议详情失败，请稍后重试。'
   } finally {
     loading.value = false
   }

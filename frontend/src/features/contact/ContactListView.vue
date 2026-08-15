@@ -10,16 +10,22 @@
 
       <input v-model="query" class="search" aria-label="搜索联系人" placeholder="搜索姓名、邮箱或组织…" />
 
-      <div v-if="loading" class="state" role="status">加载中…</div>
-      <div v-else-if="loadError" class="state error-state" role="alert">
-        <p>{{ loadError }}</p>
-        <button type="button" class="primary" @click="load">重试</button>
-      </div>
-      <div v-else-if="filtered.length === 0" class="empty">
-        <div>👥</div>
-        <p>暂无联系人</p>
-        <button class="primary" @click="sync">从邮件生成联系人</button>
-      </div>
+      <Loading v-if="loading" text="加载中…" />
+      <ErrorState
+        v-else-if="loadError && contacts.length === 0"
+        title="联系人加载失败"
+        :message="loadError"
+        @retry="load"
+      />
+      <EmptyState
+        v-else-if="filtered.length === 0"
+        icon="👥"
+        title="暂无联系人"
+        message="联系人会从邮件、会议和任务中自动聚合"
+        hint="点击下方按钮从已同步的邮件生成联系人"
+        action-label="从邮件生成联系人"
+        @action="sync"
+      />
       <ul v-else class="contact-list">
         <li
           v-for="contact in filtered"
@@ -48,6 +54,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
+import { EmptyState, ErrorState, Loading } from '../../components'
 import { listContacts, syncContactsFromEmails, type Contact } from './contacts-store'
 
 const router = useRouter()
@@ -117,8 +124,5 @@ h1 { margin: 0; font-size: 24px; }
 .main strong, .main span, .main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .main span, .main small { color: var(--text-secondary); font-size: 11px; }
 .count { color: var(--text-muted); font-size: 11px; }
-.state, .empty { color: var(--text-secondary); text-align: center; padding: 45px 12px; }
-.error-state p { color: var(--danger); margin: 0 0 var(--space-3); }
-.empty div { font-size: 42px; }
 .message { color: var(--text-secondary); font-size: 12px; text-align: center; }
 </style>

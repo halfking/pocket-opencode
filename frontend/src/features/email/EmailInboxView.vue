@@ -38,8 +38,20 @@
 
     <p v-if="syncMessage" class="sync-message">{{ syncMessage }}</p>
 
-    <div v-if="loading" class="state">加载中…</div>
-    <div v-else-if="emails.length === 0" class="state">暂无邮件</div>
+    <Loading v-if="loading" text="加载邮件中…" />
+    <ErrorState
+      v-else-if="loadError !== ''"
+      title="邮件加载失败"
+      :message="loadError"
+      @retry="load"
+    />
+    <EmptyState
+      v-else-if="emails.length === 0"
+      icon="📬"
+      title="暂无邮件"
+      message="本地缓存还没有邮件"
+      hint="点击上方「同步」从邮箱服务器拉取，或先在设置中配置邮箱账户"
+    />
 
     <div v-else class="email-list">
       <div
@@ -105,12 +117,14 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { emailApi } from '../../api/email'
+import { EmptyState, ErrorState, Loading } from '../../components'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
 
 const router = useRouter()
 const emails = ref<LocalEmail[]>([])
 const loading = ref(true)
+const loadError = ref('')
 const activeCategory = ref<string>('')
 const dbNotReady = ref(false)
 const syncing = ref(false)
@@ -131,6 +145,7 @@ const categories: { label: string; value: string }[] = [
 async function load() {
   loading.value = true
   dbNotReady.value = false
+  loadError.value = ''
   try {
     emails.value = await emailsStore.listEmails(
       activeCategory.value ? { category: activeCategory.value } : {},
@@ -140,6 +155,8 @@ async function load() {
       dbNotReady.value = true
       console.warn('[email] 本地数据库未初始化，显示降级界面')
     } else {
+      // 页面内错误 + 重试（08 §6），保留已加载内容
+      loadError.value = e?.message || '读取本地邮件缓存失败，请重试'
       console.error('[email] 加载失败:', e)
     }
   } finally {

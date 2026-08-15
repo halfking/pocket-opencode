@@ -2,7 +2,12 @@
 <template>
   <div class="detail-view">
     <div v-if="loading" class="state" role="status">加载中…</div>
-    <div v-else-if="loadError" class="state error-state" role="alert">{{ loadError }}</div>
+    <ErrorState
+      v-else-if="loadError"
+      title="联系人详情加载失败"
+      :message="loadError"
+      @retry="load"
+    />
     <div v-else-if="!contact" class="state">联系人不存在</div>
     <div v-else class="detail-page">
       <header class="profile">
@@ -44,6 +49,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ErrorState } from '../../components'
 import { getContact, getContactEmails, type Contact } from './contacts-store'
 import type { LocalEmail } from '../email/emails-store'
 
@@ -94,5 +100,4 @@ h2 { margin: 0 0 10px; font-size: 16px; }
 .timeline small { color: var(--text-muted); font-size: 10px; }
 .secondary { width: 100%; margin-top: 14px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); color: var(--text-primary); cursor: pointer; }
 .secondary:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-primary); }
-.error-state { color: var(--danger); }
 </style>

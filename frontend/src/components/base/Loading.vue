@@ -1,6 +1,12 @@
 <template>
-  <div class="loading-spinner" :class="spinnerClasses">
-    <div class="spinner-circle"></div>
+  <div
+    class="loading-spinner"
+    :class="spinnerClasses"
+    role="status"
+    aria-live="polite"
+    :aria-label="text || '加载中'"
+  >
+    <div class="spinner-circle" aria-hidden="true"></div>
     <span v-if="text" class="spinner-text">{{ text }}</span>
   </div>
 </template>

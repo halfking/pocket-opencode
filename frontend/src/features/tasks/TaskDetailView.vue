@@ -3,7 +3,16 @@
 -->
 <template>
   <div class="task-detail">
-    <p v-if="loadError" class="form-error" role="alert">{{ loadError }}</p>
+    <ErrorState
+      v-if="loadError && !task"
+      title="任务加载失败"
+      :message="loadError"
+      @retry="load"
+    />
+    <p v-else-if="loadError" class="form-error" role="alert">
+      {{ loadError }}
+      <button type="button" class="link-btn retry-link" @click="load">重试</button>
+    </p>
     <!-- Header: priority + title + status on one line -->
     <div class="header">
       <span class="priority-chip" :class="task?.priority">
@@ -151,6 +160,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { api, type Task } from '../../api/client'
+import { ErrorState } from '../../components'
 
 const router = useRouter()
 const route = useRoute()
@@ -166,7 +176,9 @@ const attachError = ref('')
 const statusError = ref('')
 const loadError = ref('')
 
-onMounted(async () => {
+onMounted(() => load())
+
+async function load() {
   const taskId = route.params.id as string
   loadError.value = ''
   try {
@@ -176,7 +188,7 @@ onMounted(async () => {
     console.error('Failed to load task:', e)
     loadError.value = e?.message || '加载任务失败，请检查网络后重试'
   }
-})
+}
 
 async function updateStatus(status: string) {
   if (!task.value || updating.value) return
@@ -559,4 +571,9 @@ function formatDate(d?: string): string {
   line-height: 1.5;
 }
 .form-error:first-child { margin-top: var(--space-3); }
+.retry-link {
+  display: inline-block;
+  margin-left: var(--space-2);
+  font-size: 13px;
+}
 </style>

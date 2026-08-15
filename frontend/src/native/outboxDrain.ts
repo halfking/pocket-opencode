@@ -21,6 +21,7 @@ import {
   succeed,
 } from '../utils/outbox.ts'
 import type { MobileSyncStore } from './mobileSync.ts'
+import type { SqliteApprovalStore } from './approvalStore.ts'
 
 export interface SendOutcome {
   ok: boolean
@@ -183,11 +184,19 @@ async function sendJson(
   }
 }
 
+/** 回复成功后的决定标签（用于 approvalStore.markReplied）。 */
+function approvalDecisionLabel(payload: ApprovalReplyPayload): string {
+  if (payload.kind === 'permission') return payload.decision ?? 'once'
+  return payload.decision === 'reject' ? 'reject' : 'answer'
+}
+
 export function createMobileOutboxSenders(args: {
   doFetch: AuthorizedFetch
   syncStore: MobileSyncStore
+  /** 可选：审批本地表，drain 终态回写（sent / expired）。 */
+  approvalStore?: Pick<SqliteApprovalStore, 'markReplied' | 'markExpired'>
 }): Record<string, OutboxSender> {
-  const { doFetch, syncStore } = args
+  const { doFetch, syncStore, approvalStore } = args
 
   return {
     'session.create': async (record) => {
@@ -243,7 +252,16 @@ export function createMobileOutboxSenders(args: {
       } else if (suffix === 'reply') {
         body.answers = payload.answers ?? []
       }
-      return sendJson(doFetch, `${base}/${suffix}`, body, record.idempotencyKey)
+      const outcome = await sendJson(doFetch, `${base}/${suffix}`, body, record.idempotencyKey)
+      // 服务端确认后才置 sent；409（不再 pending）置 expired（08 §4.5）。
+      if (approvalStore !== undefined) {
+        if (outcome.ok) {
+          await approvalStore.markReplied(payload.requestId, approvalDecisionLabel(payload))
+        } else if (outcome.terminal && outcome.errorCode === 'conflict_not_pending') {
+          await approvalStore.markExpired(payload.requestId)
+        }
+      }
+      return outcome
     },
   }
 }
