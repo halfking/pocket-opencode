@@ -314,16 +314,24 @@ func (s *Server) handleMobileSessionSummary(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// 统计消息类型
+	// 统计消息类型（经移动端视图归一化：V1 信封没有顶层 type/role，
+	// 直接读 msg.Type 会恒为空）
 	userCount, assistantCount, toolCount := 0, 0, 0
-	for _, msg := range msgs {
-		switch msg.Type {
+	for i := range msgs {
+		mm := msgs[i].ToMobile()
+		if mm == nil {
+			continue
+		}
+		switch mm.Role {
 		case "user":
 			userCount++
 		case "assistant":
 			assistantCount++
-		case "tool":
-			toolCount++
+			for _, c := range mm.Content {
+				if c.Type == "tool" {
+					toolCount++
+				}
+			}
 		}
 	}
 
@@ -588,10 +596,17 @@ func (s *Server) handleMobileSessionMessages(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "get messages: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+	// V1 {info,parts} → 移动端 {id,role,text,content}；无法识别的行跳过
+	rows := make([]adapter.MobileMessage, 0, len(msgs))
+	for i := range msgs {
+		if mm := msgs[i].ToMobile(); mm != nil {
+			rows = append(rows, *mm)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"sessionId": sessionID,
-		"messages":  msgs,
-		"total":     len(msgs),
+		"messages":  rows,
+		"total":     len(rows),
 	})
 }
 
