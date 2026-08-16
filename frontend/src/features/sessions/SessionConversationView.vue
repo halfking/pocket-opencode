@@ -16,6 +16,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '../../stores/session'
 import { useVoiceRecording } from '../../composables/useVoiceRecording'
 import { useToast } from '../../composables/useToast'
+import { useSpeech } from '../../composables/useSpeech'
 import { renderMarkdown } from '../../utils/markdown'
 import { useFeatureFlag } from '../../config/featureFlags'
 import { usePendingApprovals } from '../../composables/usePendingApprovals'
@@ -59,6 +60,7 @@ const route = useRoute()
 const router = useRouter()
 const store = useSessionStore()
 const toast = useToast()
+const { supported: speechSupported, speakingId, speak: speakMessage } = useSpeech()
 
 const sessionID = computed(() => props.sessionId || (route.params.id as string) || '')
 const instanceID = computed(() => props.instanceId || (route.query.instance_id as string) || localStorage.getItem('selected_instance_id') || '')
@@ -469,6 +471,15 @@ function formatDuration(ms: number): string {
                 @click="toggleExpanded(msg.id)"
               >
                 {{ isExpanded(msg.id) ? '收起' : '展开全部' }}
+              </button>
+              <button
+                v-if="speechSupported && msg.text && !msg.streaming"
+                class="expand-btn speech-btn"
+                :aria-label="speakingId === msg.id ? '停止朗读' : '朗读这条回复'"
+                :aria-pressed="speakingId === msg.id"
+                @click="speakMessage(msg.id, msg.text)"
+              >
+                {{ speakingId === msg.id ? '⏹ 停止朗读' : '🔊 朗读' }}
               </button>
             </div>
             <div v-if="msg.content" class="content-list">
