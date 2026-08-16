@@ -534,7 +534,12 @@ func main() {
 	// approval.question.pending / approval.resolved），替代前端 10s 轮询。
 	// 与 emailScheduler.SetBroadcaster 相同的注入模式。
 	approvalBroadcaster := opencode.NewApprovalBroadcaster(reg, permMgr, quesMgr)
+	approvalBroadcaster.SetApprovalProjector(taskStore)
 	approvalBroadcaster.SetBroadcaster(srv.WSHub())
+	// Start only after the synchronous projector is installed. Otherwise an early
+	// upstream event could reach the in-memory cache without reaching the task gate.
+	go permMgr.Start(mgrCtx)
+	go quesMgr.Start(mgrCtx)
 	go approvalBroadcaster.Run(mgrCtx)
 
 	// ---- W5: 注入 ACP agent registry ----

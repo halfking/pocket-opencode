@@ -994,23 +994,16 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		if update.Status != nil && *update.Status == "completed" {
-			pendingApprovals, pendingErr := s.pendingApprovalsForTask(r.Context(), path, workspaceID)
-			if pendingErr != nil {
-				http.Error(w, pendingErr.Error(), http.StatusServiceUnavailable)
-				return
-			}
-			if err := s.taskStore.SetPendingApprovalsScoped(r.Context(), path, workspaceID, pendingApprovals); err != nil {
-				http.Error(w, err.Error(), http.StatusNotFound)
-				return
-			}
-			current.PendingApprovals = pendingApprovals
-		}
-		if statusCode, message := taskStatusUpdateError(current, update.Status); statusCode != 0 {
-			http.Error(w, message, statusCode)
+		if update.Status != nil && !isValidTaskStatus(*update.Status) {
+			http.Error(w, "invalid task status", http.StatusBadRequest)
 			return
 		}
-		updated, err := s.taskStore.UpdateTaskScoped(r.Context(), path, workspaceID, update)
+		var updated *task.Task
+		if update.Status != nil && *update.Status == "completed" {
+			updated, err = s.taskStore.CompleteTaskScoped(r.Context(), path, workspaceID, update)
+		} else {
+			updated, err = s.taskStore.UpdateTaskScoped(r.Context(), path, workspaceID, update)
+		}
 		if err != nil {
 			if errors.Is(err, task.ErrPendingApprovals) {
 				http.Error(w, err.Error(), http.StatusConflict)

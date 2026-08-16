@@ -399,6 +399,164 @@ func TestAttachSessionScoped_UpdatesSessionCount(t *testing.T) {
 
 // TestListTasksCursorScoped_TenantIsolation 游标分页也必须按 workspace 过滤，
 // 否则第一页就能翻出别人的任务。
+func TestApplyApprovalProjection_TracksLinkedTasksAndVersions(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	mustCreate(t, s, "t-owner", "ws-owner", "owner task")
+	mustCreate(t, s, "t-other", "ws-other", "other task")
+	for _, link := range []SessionLink{
+		{TaskID: "t-owner", InstanceID: "inst-1", SessionID: "session-1", Role: "primary"},
+		{TaskID: "t-other", InstanceID: "inst-1", SessionID: "session-1", Role: "primary"},
+	} {
+		if err := s.AttachSessionScoped(ctx, link, map[string]string{"t-owner": "ws-owner", "t-other": "ws-other"}[link.TaskID]); err != nil {
+			t.Fatalf("AttachSessionScoped %s: %v", link.TaskID, err)
+		}
+	}
+
+	pending := ApprovalProjectionEvent{
+		WorkspaceID: "ws-owner", InstanceID: "inst-1", SessionID: "session-1",
+		RequestID: "request-1", Kind: ApprovalKindPermission, State: ApprovalStatePending, Version: 1,
+	}
+	if err := s.ApplyApprovalProjection(ctx, pending); err != nil {
+		t.Fatalf("ApplyApprovalProjection pending: %v", err)
+	}
+	owner, err := s.GetTaskScoped(ctx, "t-owner", "ws-owner")
+	if err != nil {
+		t.Fatalf("GetTaskScoped owner: %v", err)
+	}
+	if owner.PendingApprovals != 1 {
+		t.Fatalf("owner pending = %d, want 1", owner.PendingApprovals)
+	}
+	other, err := s.GetTaskScoped(ctx, "t-other", "ws-other")
+	if err != nil {
+		t.Fatalf("GetTaskScoped other: %v", err)
+	}
+	if other.PendingApprovals != 0 {
+		t.Fatalf("other workspace pending = %d, want 0", other.PendingApprovals)
+	}
+
+	resolved := pending
+	resolved.State = ApprovalStateApproved
+	resolved.Version = 2
+	if err := s.ApplyApprovalProjection(ctx, resolved); err != nil {
+		t.Fatalf("ApplyApprovalProjection resolved: %v", err)
+	}
+	if err := s.ApplyApprovalProjection(ctx, pending); err != nil {
+		t.Fatalf("ApplyApprovalProjection stale replay: %v", err)
+	}
+	owner, err = s.GetTaskScoped(ctx, "t-owner", "ws-owner")
+	if err != nil {
+		t.Fatalf("GetTaskScoped after resolved: %v", err)
+	}
+	latePending := pending
+	latePending.Version = 3
+	if err := s.ApplyApprovalProjection(ctx, latePending); err != nil {
+		t.Fatalf("ApplyApprovalProjection terminal replay: %v", err)
+	}
+	owner, err = s.GetTaskScoped(ctx, "t-owner", "ws-owner")
+	if err != nil {
+		t.Fatalf("GetTaskScoped after terminal replay: %v", err)
+	}
+	if owner.PendingApprovals != 0 {
+		t.Fatalf("pending after terminal replay = %d, want 0", owner.PendingApprovals)
+	}
+}
+
+func TestCompleteTaskScoped_UsesApprovalProjection(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	mustCreate(t, s, "t1", "ws-owner", "task")
+	if err := s.AttachSessionScoped(ctx, SessionLink{TaskID: "t1", InstanceID: "inst-1", SessionID: "session-1", Role: "primary"}, "ws-owner"); err != nil {
+		t.Fatalf("AttachSessionScoped: %v", err)
+	}
+	pending := ApprovalProjectionEvent{
+		WorkspaceID: "ws-owner", InstanceID: "inst-1", SessionID: "session-1",
+		RequestID: "request-1", Kind: ApprovalKindQuestion, State: ApprovalStatePending, Version: 1,
+	}
+	if err := s.ApplyApprovalProjection(ctx, pending); err != nil {
+		t.Fatalf("ApplyApprovalProjection pending: %v", err)
+	}
+	if _, err := s.CompleteTaskScoped(ctx, "t1", "ws-owner", TaskUpdate{}); !errors.Is(err, ErrPendingApprovals) {
+		t.Fatalf("CompleteTaskScoped while pending = %v, want ErrPendingApprovals", err)
+	}
+
+	pending.State = ApprovalStateAnswered
+	pending.Version = 2
+	if err := s.ApplyApprovalProjection(ctx, pending); err != nil {
+		t.Fatalf("ApplyApprovalProjection answered: %v", err)
+	}
+	completed, err := s.CompleteTaskScoped(ctx, "t1", "ws-owner", TaskUpdate{})
+	if err != nil {
+		t.Fatalf("CompleteTaskScoped after resolution: %v", err)
+	}
+	if completed.Status != "completed" || completed.PendingApprovals != 0 {
+		t.Fatalf("completed = %+v, want completed with no pending approvals", completed)
+	}
+}
+
+func TestAttachSessionScoped_ProjectsPreviouslyObservedApprovals(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	mustCreate(t, s, "t1", "ws-owner", "task")
+
+	if err := s.ApplyApprovalProjection(ctx, ApprovalProjectionEvent{
+		WorkspaceID: "ws-owner", InstanceID: "inst-1", SessionID: "session-1",
+		RequestID: "request-1", Kind: ApprovalKindPermission, State: ApprovalStatePending, Version: 1,
+	}); err != nil {
+		t.Fatalf("observe pending approval before attachment: %v", err)
+	}
+	if err := s.AttachSessionScoped(ctx, SessionLink{TaskID: "t1", InstanceID: "inst-1", SessionID: "session-1", Role: "primary"}, "ws-owner"); err != nil {
+		t.Fatalf("AttachSessionScoped: %v", err)
+	}
+	stored, err := s.GetTaskScoped(ctx, "t1", "ws-owner")
+	if err != nil {
+		t.Fatalf("GetTaskScoped: %v", err)
+	}
+	if stored.PendingApprovals != 1 {
+		t.Fatalf("pending approvals after delayed task attachment = %d, want 1", stored.PendingApprovals)
+	}
+}
+
+func TestApprovalProjectionAndCompletionSerialize(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	mustCreate(t, s, "t-concurrent", "ws-owner", "task")
+	if err := s.AttachSessionScoped(ctx, SessionLink{TaskID: "t-concurrent", InstanceID: "inst-1", SessionID: "session-1", Role: "primary"}, "ws-owner"); err != nil {
+		t.Fatalf("AttachSessionScoped: %v", err)
+	}
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	go func() {
+		<-start
+		results <- s.ApplyApprovalProjection(ctx, ApprovalProjectionEvent{
+			WorkspaceID: "ws-owner", InstanceID: "inst-1", SessionID: "session-1",
+			RequestID: "request-concurrent", Kind: ApprovalKindPermission, State: ApprovalStatePending, Version: 1,
+		})
+	}()
+	go func() {
+		<-start
+		_, err := s.CompleteTaskScoped(ctx, "t-concurrent", "ws-owner", TaskUpdate{})
+		results <- err
+	}()
+	close(start)
+	first, second := <-results, <-results
+	if first != nil && second != nil && !errors.Is(first, ErrPendingApprovals) && !errors.Is(second, ErrPendingApprovals) {
+		t.Fatalf("concurrent operations failed unexpectedly: %v / %v", first, second)
+	}
+	stored, err := s.GetTaskScoped(ctx, "t-concurrent", "ws-owner")
+	if err != nil {
+		t.Fatalf("GetTaskScoped: %v", err)
+	}
+	if stored.Status == "completed" && stored.PendingApprovals != 0 {
+		t.Fatalf("completed task has pending approvals after serialization: %+v", stored)
+	}
+}
+
 func TestListTasksCursorScoped_TenantIsolation(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()

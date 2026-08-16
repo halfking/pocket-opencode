@@ -9,6 +9,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
+	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
 
 // PermissionCaller is the adapter capability required for permission
@@ -53,8 +54,8 @@ type PermissionManager struct {
 	closed  bool
 	closeCh chan struct{}
 
-	// Configuration
 	pollInterval time.Duration
+	projector    approvalProjectionSink
 }
 
 // pendingPermission tracks a permission request we've seen.
@@ -99,6 +100,11 @@ func NewPermissionManager(reg *registry.Registry, ad adapter.OpenCodeAdapter, op
 		closeCh:      make(chan struct{}),
 		pollInterval: interval,
 	}
+}
+
+// SetApprovalProjector installs the synchronous durable projection sink.
+func (m *PermissionManager) SetApprovalProjector(projector approvalProjectionSink) {
+	m.projector = projector
 }
 
 // Subscribe returns a channel of permission events and a cleanup function.
@@ -262,14 +268,20 @@ func (m *PermissionManager) handleNewPermissionFromEvent(instanceID, sessionID s
 
 	log.Printf("[permission-mgr] new permission from event: instance=%s session=%s request=%s", instanceID, sessionID, requestID)
 
-	m.publish(PermissionEvent{
+	evt := PermissionEvent{
 		Type:       "new",
 		InstanceID: instanceID,
 		SessionID:  sessionID,
 		RequestID:  requestID,
 		Request:    &req,
 		Timestamp:  now,
-	})
+	}
+	if err := m.publish(evt); err != nil {
+		m.mu.Lock()
+		delete(m.pending, key)
+		m.mu.Unlock()
+		log.Printf("[permission-mgr] persist new permission projection failed: %v", err)
+	}
 }
 
 // handleResolvedPermissionFromEvent 从事件中处理已解决的权限
@@ -284,22 +296,19 @@ func (m *PermissionManager) handleResolvedPermissionFromEvent(instanceID, sessio
 
 	key := permissionKey(instanceID, sessionID, requestID)
 
-	m.mu.Lock()
-	p, ok := m.pending[key]
-	if ok {
-		delete(m.pending, key)
+	m.mu.RLock()
+	_, ok := m.pending[key]
+	m.mu.RUnlock()
+	evt := PermissionEvent{Type: "resolved", InstanceID: instanceID, SessionID: sessionID, RequestID: requestID, Timestamp: time.Now()}
+	if err := m.publish(evt); err != nil {
+		log.Printf("[permission-mgr] persist resolved permission projection failed: %v", err)
+		return
 	}
+	m.mu.Lock()
+	delete(m.pending, key)
 	m.mu.Unlock()
-
-	if ok && p != nil {
+	if ok {
 		log.Printf("[permission-mgr] resolved permission from event: instance=%s session=%s request=%s", instanceID, sessionID, requestID)
-		m.publish(PermissionEvent{
-			Type:       "resolved",
-			InstanceID: instanceID,
-			SessionID:  sessionID,
-			RequestID:  requestID,
-			Timestamp:  time.Now(),
-		})
 	}
 }
 
@@ -381,11 +390,7 @@ func (m *PermissionManager) Reply(ctx context.Context, instanceID, sessionID, re
 	}
 
 	key := permissionKey(instanceID, sessionID, requestID)
-	m.mu.Lock()
-	delete(m.pending, key)
-	m.mu.Unlock()
-
-	m.publish(PermissionEvent{
+	if err := m.publish(PermissionEvent{
 		Type:       "resolved",
 		InstanceID: instanceID,
 		SessionID:  sessionID,
@@ -393,7 +398,12 @@ func (m *PermissionManager) Reply(ctx context.Context, instanceID, sessionID, re
 		Reply:      &reply,
 		Message:    message,
 		Timestamp:  time.Now(),
-	})
+	}); err != nil {
+		return fmt.Errorf("persist permission resolution: %w", err)
+	}
+	m.mu.Lock()
+	delete(m.pending, key)
+	m.mu.Unlock()
 
 	return nil
 }
@@ -417,10 +427,12 @@ func (m *PermissionManager) ReplyForWorkspace(ctx context.Context, workspaceID, 
 		return fmt.Errorf("reply permission: %w", err)
 	}
 	key := permissionKey(instanceID, sessionID, requestID)
+	if err := m.publish(PermissionEvent{Type: "resolved", InstanceID: instanceID, SessionID: sessionID, RequestID: requestID, Reply: &reply, Message: message, Timestamp: time.Now()}); err != nil {
+		return fmt.Errorf("persist permission resolution: %w", err)
+	}
 	m.mu.Lock()
 	delete(m.pending, key)
 	m.mu.Unlock()
-	m.publish(PermissionEvent{Type: "resolved", InstanceID: instanceID, SessionID: sessionID, RequestID: requestID, Reply: &reply, Message: message, Timestamp: time.Now()})
 	return nil
 }
 
@@ -488,14 +500,19 @@ func (m *PermissionManager) pollInstance(ctx context.Context, instanceID string)
 		}
 		m.mu.Unlock()
 
-		m.publish(PermissionEvent{
+		if err := m.publish(PermissionEvent{
 			Type:       "new",
 			InstanceID: instanceID,
 			SessionID:  req.SessionID,
 			RequestID:  req.ID,
 			Request:    &req,
 			Timestamp:  now,
-		})
+		}); err != nil {
+			m.mu.Lock()
+			delete(m.pending, key)
+			m.mu.Unlock()
+			log.Printf("[permission-mgr] persist polled permission projection failed: %v", err)
+		}
 	}
 
 	// Detect resolved (no longer in pending set)
@@ -512,20 +529,25 @@ func (m *PermissionManager) pollInstance(ctx context.Context, instanceID string)
 	m.mu.Unlock()
 
 	for _, key := range expired {
-		m.mu.Lock()
+		m.mu.RLock()
 		p := m.pending[key]
-		delete(m.pending, key)
-		m.mu.Unlock()
+		m.mu.RUnlock()
 		if p == nil {
 			continue
 		}
-		m.publish(PermissionEvent{
+		if err := m.publish(PermissionEvent{
 			Type:       "expired",
 			InstanceID: p.InstanceID,
 			SessionID:  p.SessionID,
 			RequestID:  p.Request.ID,
 			Timestamp:  time.Now(),
-		})
+		}); err != nil {
+			log.Printf("[permission-mgr] persist expired permission projection failed: %v", err)
+			continue
+		}
+		m.mu.Lock()
+		delete(m.pending, key)
+		m.mu.Unlock()
 	}
 }
 
@@ -550,7 +572,10 @@ func (m *PermissionManager) fetchPending(ctx context.Context, caller PermissionC
 	return nil, nil
 }
 
-func (m *PermissionManager) publish(evt PermissionEvent) {
+func (m *PermissionManager) publish(evt PermissionEvent) error {
+	if err := m.projectApprovalEvent(evt); err != nil {
+		return err
+	}
 	m.subsMu.RLock()
 	defer m.subsMu.RUnlock()
 	for _, ch := range m.subs {
@@ -560,6 +585,32 @@ func (m *PermissionManager) publish(evt PermissionEvent) {
 			log.Printf("[permission-mgr] dropping event for subscriber (buffer full)")
 		}
 	}
+	return nil
+}
+
+func (m *PermissionManager) projectApprovalEvent(evt PermissionEvent) error {
+	if m.projector == nil {
+		return nil
+	}
+	state := task.ApprovalStateResolved
+	decision := ""
+	switch evt.Type {
+	case "new":
+		state = task.ApprovalStatePending
+	case "resolved":
+		state = task.ApprovalStateApproved
+		if evt.Reply != nil {
+			decision = string(*evt.Reply)
+			if *evt.Reply == adapter.PermissionReplyReject {
+				state = task.ApprovalStateRejected
+			}
+		}
+	case "expired":
+		state = task.ApprovalStateExpired
+	default:
+		return nil
+	}
+	return m.projector.apply(context.Background(), task.ApprovalKindPermission, state, evt.InstanceID, evt.SessionID, evt.RequestID, decision)
 }
 
 func permissionKey(instanceID, sessionID, requestID string) string {

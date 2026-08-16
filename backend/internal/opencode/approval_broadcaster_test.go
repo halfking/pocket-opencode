@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -9,7 +10,14 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
+	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
+
+type failingApprovalProjector struct{}
+
+func (failingApprovalProjector) ApplyApprovalProjection(context.Context, task.ApprovalProjectionEvent) error {
+	return errors.New("projection unavailable")
+}
 
 // recordedApprovalBroadcast captures one BroadcastToWorkspace call.
 type recordedApprovalBroadcast struct {
@@ -314,6 +322,20 @@ func TestApprovalBroadcaster_WorkspaceIsolation(t *testing.T) {
 		if evt.workspaceID == "" {
 			t.Errorf("broadcast with empty workspace (global) is forbidden: %+v", evt)
 		}
+	}
+}
+
+func TestApprovalBroadcaster_ProjectionFailureSuppressesBroadcast(t *testing.T) {
+	_, permMgr, _, bc, hub, cleanup := newApprovalBroadcasterFixture(t, workspaceInstance("inst-a", "ws-a"))
+	defer cleanup()
+	bc.SetApprovalProjector(failingApprovalProjector{})
+
+	permMgr.handleNewPermissionFromEvent("inst-a", "ses-1", map[string]any{
+		"id": "per-projection-failure", "action": "bash",
+	})
+	time.Sleep(100 * time.Millisecond)
+	if events := hub.events(); len(events) != 0 {
+		t.Fatalf("projection failure must suppress WS broadcast, got %+v", events)
 	}
 }
 

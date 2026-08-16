@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -61,6 +63,42 @@ func (s *Store) migrate() error {
 	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
 	ALTER TABLE task_session_links ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
 	CREATE INDEX IF NOT EXISTS idx_tasks_workspace ON tasks(workspace_id);
+
+	CREATE TABLE IF NOT EXISTS approval_observations (
+		workspace_id TEXT NOT NULL,
+		instance_id TEXT NOT NULL,
+		session_id TEXT NOT NULL,
+		request_id TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		state TEXT NOT NULL,
+		version BIGINT NOT NULL,
+		decision TEXT NOT NULL DEFAULT '',
+		created_at BIGINT NOT NULL,
+		updated_at BIGINT NOT NULL,
+		PRIMARY KEY (workspace_id, instance_id, session_id, request_id, kind)
+	);
+	CREATE INDEX IF NOT EXISTS idx_approval_observations_session
+		ON approval_observations(workspace_id, instance_id, session_id);
+
+	CREATE TABLE IF NOT EXISTS task_approval_projections (
+		workspace_id TEXT NOT NULL,
+		task_id TEXT NOT NULL,
+		instance_id TEXT NOT NULL,
+		session_id TEXT NOT NULL,
+		request_id TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		state TEXT NOT NULL,
+		version BIGINT NOT NULL,
+		decision TEXT NOT NULL DEFAULT '',
+		created_at BIGINT NOT NULL,
+		updated_at BIGINT NOT NULL,
+		PRIMARY KEY (workspace_id, task_id, instance_id, session_id, request_id, kind),
+		FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+	);
+	CREATE INDEX IF NOT EXISTS idx_task_approval_projections_pending
+		ON task_approval_projections(workspace_id, task_id, state);
+	CREATE INDEX IF NOT EXISTS idx_task_approval_projections_session
+		ON task_approval_projections(workspace_id, instance_id, session_id);
 	`)
 	return err
 }
@@ -185,44 +223,54 @@ func (s *Store) AttachSessionScoped(ctx context.Context, link SessionLink, wsID 
 }
 
 func (s *Store) attachSession(ctx context.Context, link SessionLink, wsID string) error {
-	now := time.Now().Unix()
-
-	// When scoped, refuse up front if the task is not in this workspace.
-	// Otherwise the link row would point at a task the caller cannot see.
-	if wsID != "" {
-		var exists bool
-		if err := s.pool.QueryRow(ctx,
-			`SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1 AND workspace_id = $2)`,
-			link.TaskID, wsID).Scan(&exists); err != nil {
-			return fmt.Errorf("verify task workspace: %w", err)
-		}
-		if !exists {
-			return fmt.Errorf("task not found: %s", link.TaskID)
-		}
-	}
-
-	linkWS := wsID
-	if linkWS == "" {
-		linkWS = DefaultWorkspaceID
-	}
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO task_session_links (task_id, workspace_id, instance_id, session_id, role, attached_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (task_id, instance_id, session_id) DO UPDATE SET role = EXCLUDED.role, attached_at = EXCLUDED.attached_at
-	`, link.TaskID, linkWS, link.InstanceID, link.SessionID, link.Role, now)
-
+	workspaceID := wsID
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
+		return fmt.Errorf("begin attach session: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if workspaceID == "" {
+		if err := tx.QueryRow(ctx, `SELECT workspace_id FROM tasks WHERE id = $1`, link.TaskID).Scan(&workspaceID); err != nil {
+			return fmt.Errorf("resolve task workspace: %w", err)
+		}
+	}
+
+	if err := lockApprovalSession(ctx, tx, workspaceID, link.InstanceID, link.SessionID); err != nil {
 		return err
 	}
-
-	// Update session_count
-	_, err = s.pool.Exec(ctx, `
+	if err := lockTask(ctx, tx, workspaceID, link.TaskID); err != nil {
+		return err
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1 AND workspace_id = $2 FOR UPDATE)`,
+		link.TaskID, workspaceID).Scan(&exists); err != nil {
+		return fmt.Errorf("verify task workspace: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("task not found: %s", link.TaskID)
+	}
+	now := time.Now().Unix()
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO task_session_links (task_id, workspace_id, instance_id, session_id, role, attached_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (task_id, instance_id, session_id) DO UPDATE SET role = EXCLUDED.role, attached_at = EXCLUDED.attached_at`,
+		link.TaskID, workspaceID, link.InstanceID, link.SessionID, link.Role, now); err != nil {
+		return fmt.Errorf("insert task session link: %w", err)
+	}
+	if err := applyObservedApprovalsForTask(ctx, tx, link.TaskID, workspaceID, link.InstanceID, link.SessionID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
 		UPDATE tasks SET session_count = (
-			SELECT COUNT(*) FROM task_session_links WHERE task_id = $1
-		), updated_at = $2 WHERE id = $3
-	`, link.TaskID, now, link.TaskID)
-
-	return err
+			SELECT COUNT(*) FROM task_session_links WHERE task_id = $1 AND workspace_id = $2
+		), updated_at = $3 WHERE id = $1 AND workspace_id = $2`, link.TaskID, workspaceID, now); err != nil {
+		return fmt.Errorf("update task session count: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit attach session: %w", err)
+	}
+	return nil
 }
 
 // ListTasksCursor returns tasks with keyset pagination across all tenants.
@@ -336,6 +384,248 @@ func (s *Store) UpdateTask(ctx context.Context, id string, update TaskUpdate) (*
 // update are applied; use an explicit empty string to clear.
 func (s *Store) UpdateTaskScoped(ctx context.Context, id, wsID string, update TaskUpdate) (*Task, error) {
 	return s.updateTask(ctx, id, normalizeWorkspace(wsID), update)
+}
+
+// ApplyApprovalProjection materializes one upstream approval event into every
+// task linked to its session in the trusted workspace. An older or replayed
+// version cannot overwrite a newer state.
+func (s *Store) ApplyApprovalProjection(ctx context.Context, event ApprovalProjectionEvent) error {
+	if event.WorkspaceID == "" || event.InstanceID == "" || event.SessionID == "" || event.RequestID == "" {
+		return fmt.Errorf("approval projection identity is required")
+	}
+	if !isValidApprovalKind(event.Kind) || !isValidApprovalState(event.State) || event.Version <= 0 {
+		return fmt.Errorf("invalid approval projection event")
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin approval projection: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockApprovalSession(ctx, tx, event.WorkspaceID, event.InstanceID, event.SessionID); err != nil {
+		return err
+	}
+	if err := upsertApprovalObservation(ctx, tx, event); err != nil {
+		return err
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT l.task_id
+		FROM task_session_links l
+		JOIN tasks t ON t.id = l.task_id
+		WHERE l.workspace_id = $1 AND l.instance_id = $2 AND l.session_id = $3
+			AND t.workspace_id = $1`, event.WorkspaceID, event.InstanceID, event.SessionID)
+	if err != nil {
+		return fmt.Errorf("find linked tasks for approval projection: %w", err)
+	}
+	defer rows.Close()
+
+	var taskIDs []string
+	for rows.Next() {
+		var taskID string
+		if err := rows.Scan(&taskID); err != nil {
+			return fmt.Errorf("scan linked task: %w", err)
+		}
+		taskIDs = append(taskIDs, taskID)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate linked tasks: %w", err)
+	}
+
+	sort.Strings(taskIDs)
+	for _, taskID := range taskIDs {
+		if err := lockTask(ctx, tx, event.WorkspaceID, taskID); err != nil {
+			return err
+		}
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT status FROM tasks WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, taskID, event.WorkspaceID).Scan(&status); err != nil {
+			return fmt.Errorf("read task approval state: %w", err)
+		}
+		if status == "completed" && event.State == ApprovalStatePending {
+			continue
+		}
+		if err := applyApprovalProjectionForTask(ctx, tx, taskID, event); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit approval projection: %w", err)
+	}
+	return nil
+}
+
+// CompleteTaskScoped linearizes completion with approval projection updates for
+// one task. It owns the derived pending_approvals value used by legacy readers.
+func (s *Store) CompleteTaskScoped(ctx context.Context, id, wsID string, update TaskUpdate) (*Task, error) {
+	wsID = normalizeWorkspace(wsID)
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("begin complete task: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockTask(ctx, tx, wsID, id); err != nil {
+		return nil, err
+	}
+
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1 AND workspace_id = $2 FOR UPDATE)`, id, wsID).Scan(&exists); err != nil {
+		return nil, fmt.Errorf("lock task for completion: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("task not found: %s", id)
+	}
+	pending, err := pendingApprovalCount(ctx, tx, id, wsID)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().Unix()
+	if _, err := tx.Exec(ctx, `UPDATE tasks SET pending_approvals = $1, updated_at = $2 WHERE id = $3 AND workspace_id = $4`, pending, now, id, wsID); err != nil {
+		return nil, fmt.Errorf("update derived pending approvals: %w", err)
+	}
+	if pending > 0 {
+		return nil, ErrPendingApprovals
+	}
+
+	sets, args := taskUpdateSets(update, now)
+	status := "completed"
+	sets = append(sets, fmt.Sprintf("status = $%d", len(args)+1))
+	args = append(args, status)
+	args = append(args, id, wsID)
+	query := fmt.Sprintf(`UPDATE tasks SET %s WHERE id = $%d AND workspace_id = $%d`, joinStrings(sets, ", "), len(args)-1, len(args))
+	if _, err := tx.Exec(ctx, query, args...); err != nil {
+		return nil, fmt.Errorf("complete task: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit complete task: %w", err)
+	}
+	return s.GetTaskScoped(ctx, id, wsID)
+}
+
+func isValidApprovalKind(kind ApprovalKind) bool {
+	return kind == ApprovalKindPermission || kind == ApprovalKindQuestion
+}
+
+func isValidApprovalState(state ApprovalState) bool {
+	switch state {
+	case ApprovalStatePending, ApprovalStateApproved, ApprovalStateRejected, ApprovalStateAnswered, ApprovalStateExpired, ApprovalStateFailed, ApprovalStateResolved:
+		return true
+	default:
+		return false
+	}
+}
+
+func lockTask(ctx context.Context, tx pgx.Tx, workspaceID, taskID string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, workspaceID+":"+taskID); err != nil {
+		return fmt.Errorf("lock task approval state: %w", err)
+	}
+	return nil
+}
+
+func lockApprovalSession(ctx context.Context, tx pgx.Tx, workspaceID, instanceID, sessionID string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, workspaceID+":"+instanceID+":"+sessionID); err != nil {
+		return fmt.Errorf("lock approval session state: %w", err)
+	}
+	return nil
+}
+
+func upsertApprovalObservation(ctx context.Context, tx pgx.Tx, event ApprovalProjectionEvent) error {
+	now := time.Now().Unix()
+	_, err := tx.Exec(ctx, `
+		INSERT INTO approval_observations
+			(workspace_id, instance_id, session_id, request_id, kind, state, version, decision, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+		ON CONFLICT (workspace_id, instance_id, session_id, request_id, kind) DO UPDATE
+		SET state = EXCLUDED.state, version = EXCLUDED.version, decision = EXCLUDED.decision, updated_at = EXCLUDED.updated_at
+		WHERE approval_observations.version < EXCLUDED.version
+		  AND NOT (approval_observations.state <> 'pending' AND EXCLUDED.state = 'pending')`,
+		event.WorkspaceID, event.InstanceID, event.SessionID, event.RequestID, event.Kind, event.State, event.Version, event.Decision, now)
+	if err != nil {
+		return fmt.Errorf("upsert approval observation: %w", err)
+	}
+	return nil
+}
+
+func applyObservedApprovalsForTask(ctx context.Context, tx pgx.Tx, taskID, workspaceID, instanceID, sessionID string) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO task_approval_projections
+			(workspace_id, task_id, instance_id, session_id, request_id, kind, state, version, decision, created_at, updated_at)
+		SELECT workspace_id, $1, instance_id, session_id, request_id, kind, state, version, decision, created_at, updated_at
+		FROM approval_observations
+		WHERE workspace_id = $2 AND instance_id = $3 AND session_id = $4
+		  AND NOT EXISTS (SELECT 1 FROM tasks WHERE id = $1 AND workspace_id = $2 AND status = 'completed')
+		ON CONFLICT (workspace_id, task_id, instance_id, session_id, request_id, kind) DO UPDATE
+		SET state = EXCLUDED.state, version = EXCLUDED.version, decision = EXCLUDED.decision, updated_at = EXCLUDED.updated_at
+		WHERE task_approval_projections.version < EXCLUDED.version
+		  AND NOT (task_approval_projections.state <> 'pending' AND EXCLUDED.state = 'pending')`, taskID, workspaceID, instanceID, sessionID)
+	if err != nil {
+		return fmt.Errorf("project observed approvals onto task: %w", err)
+	}
+	pending, err := pendingApprovalCount(ctx, tx, taskID, workspaceID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE tasks SET pending_approvals = $1, updated_at = $2 WHERE id = $3 AND workspace_id = $4`, pending, time.Now().Unix(), taskID, workspaceID); err != nil {
+		return fmt.Errorf("update derived pending approvals: %w", err)
+	}
+	return nil
+}
+
+func applyApprovalProjectionForTask(ctx context.Context, tx pgx.Tx, taskID string, event ApprovalProjectionEvent) error {
+	now := time.Now().Unix()
+	_, err := tx.Exec(ctx, `
+		INSERT INTO task_approval_projections
+			(workspace_id, task_id, instance_id, session_id, request_id, kind, state, version, decision, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+		ON CONFLICT (workspace_id, task_id, instance_id, session_id, request_id, kind) DO UPDATE
+		SET state = EXCLUDED.state, version = EXCLUDED.version, decision = EXCLUDED.decision, updated_at = EXCLUDED.updated_at
+		WHERE task_approval_projections.version < EXCLUDED.version
+		  AND NOT (task_approval_projections.state <> 'pending' AND EXCLUDED.state = 'pending')`,
+		event.WorkspaceID, taskID, event.InstanceID, event.SessionID, event.RequestID, event.Kind, event.State, event.Version, event.Decision, now)
+	if err != nil {
+		return fmt.Errorf("upsert approval projection: %w", err)
+	}
+	pending, err := pendingApprovalCount(ctx, tx, taskID, event.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE tasks SET pending_approvals = $1, updated_at = $2 WHERE id = $3 AND workspace_id = $4`, pending, now, taskID, event.WorkspaceID); err != nil {
+		return fmt.Errorf("update derived pending approvals: %w", err)
+	}
+	return nil
+}
+
+func pendingApprovalCount(ctx context.Context, tx pgx.Tx, taskID, workspaceID string) (int, error) {
+	var count int
+	if err := tx.QueryRow(ctx, `
+		SELECT COUNT(*) FROM task_approval_projections
+		WHERE task_id = $1 AND workspace_id = $2 AND state = $3`, taskID, workspaceID, ApprovalStatePending).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count pending approval projections: %w", err)
+	}
+	return count, nil
+}
+
+func taskUpdateSets(update TaskUpdate, now int64) ([]string, []any) {
+	sets := []string{}
+	args := []any{}
+	if update.Title != nil {
+		sets = append(sets, fmt.Sprintf("title = $%d", len(args)+1))
+		args = append(args, *update.Title)
+	}
+	if update.Description != nil {
+		sets = append(sets, fmt.Sprintf("description = $%d", len(args)+1))
+		args = append(args, *update.Description)
+	}
+	if update.Priority != nil {
+		sets = append(sets, fmt.Sprintf("priority = $%d", len(args)+1))
+		args = append(args, *update.Priority)
+	}
+	if update.WorkstreamID != nil {
+		sets = append(sets, fmt.Sprintf("workstream_id = $%d", len(args)+1))
+		args = append(args, *update.WorkstreamID)
+	}
+	sets = append(sets, fmt.Sprintf("updated_at = $%d", len(args)+1))
+	args = append(args, now)
+	return sets, args
 }
 
 func (s *Store) SetPendingApprovalsScoped(ctx context.Context, id, wsID string, count int) error {

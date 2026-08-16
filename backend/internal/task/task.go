@@ -1,6 +1,9 @@
 package task
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 type Task struct {
 	ID          string `json:"id"`
@@ -36,4 +39,45 @@ type TaskUpdate struct {
 	Status       *string `json:"status"`
 	Priority     *string `json:"priority"`
 	WorkstreamID *string `json:"workstreamId"`
+}
+
+// ApprovalKind identifies the upstream workflow that created an approval gate.
+type ApprovalKind string
+
+const (
+	ApprovalKindPermission ApprovalKind = "permission"
+	ApprovalKindQuestion   ApprovalKind = "question"
+)
+
+// ApprovalState is the task-local materialized state of an upstream request.
+type ApprovalState string
+
+const (
+	ApprovalStatePending  ApprovalState = "pending"
+	ApprovalStateApproved ApprovalState = "approved"
+	ApprovalStateRejected ApprovalState = "rejected"
+	ApprovalStateAnswered ApprovalState = "answered"
+	ApprovalStateExpired  ApprovalState = "expired"
+	ApprovalStateFailed   ApprovalState = "failed"
+	ApprovalStateResolved ApprovalState = "resolved"
+)
+
+// ApprovalProjectionEvent is an idempotent, versioned update from an approval
+// lifecycle observer. WorkspaceID is always derived by the caller from trusted
+// instance ownership, never a client supplied value.
+type ApprovalProjectionEvent struct {
+	WorkspaceID string
+	InstanceID  string
+	SessionID   string
+	RequestID   string
+	Kind        ApprovalKind
+	State       ApprovalState
+	Version     int64
+	Decision    string
+}
+
+// ApprovalProjectionWriter lets event observers update the task-domain view
+// without depending on the Store's database implementation.
+type ApprovalProjectionWriter interface {
+	ApplyApprovalProjection(context.Context, ApprovalProjectionEvent) error
 }

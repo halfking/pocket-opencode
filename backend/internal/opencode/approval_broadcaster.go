@@ -9,6 +9,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
+	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
 
 // 审批推送事件类型（经 WS hub 广播，替代前端 10s 轮询）。
@@ -64,16 +65,16 @@ type ApprovalPermissionPendingPayload struct {
 // approval.question.pending. Request carries the same shape the mobile
 // approvals pull API returns per item (adapter.QuestionRequest JSON).
 type ApprovalQuestionPendingPayload struct {
-	InstanceID string                    `json:"instance_id"`
-	SessionID  string                    `json:"session_id"`
-	Request    *adapter.QuestionRequest  `json:"request"`
+	InstanceID string                   `json:"instance_id"`
+	SessionID  string                   `json:"session_id"`
+	Request    *adapter.QuestionRequest `json:"request"`
 }
 
 // ApprovalResolvedPayload is the data block for approval.resolved.
 type ApprovalResolvedPayload struct {
 	InstanceID string `json:"instance_id"`
 	SessionID  string `json:"session_id"`
-	Kind       string `json:"kind"`      // "permission" | "question"
+	Kind       string `json:"kind"` // "permission" | "question"
 	RequestID  string `json:"request_id"`
 	Resolution string `json:"resolution"` // "approved" | "rejected" | "answered" | "expired" | "resolved"
 	Decision   string `json:"decision,omitempty"`
@@ -106,6 +107,18 @@ func NewApprovalBroadcaster(reg *registry.Registry, perms *PermissionManager, qu
 // SetBroadcaster 注入 WS hub（websocket.Hub 满足 ApprovalBroadcastHub 接口）。
 func (b *ApprovalBroadcaster) SetBroadcaster(hub ApprovalBroadcastHub) {
 	b.hub = hub
+}
+
+// SetApprovalProjector installs a synchronous projection sink on both managers.
+// Lifecycle events are persisted before the managers publish to this broadcaster.
+func (b *ApprovalBroadcaster) SetApprovalProjector(writer task.ApprovalProjectionWriter) {
+	projector := newApprovalProjector(b.registry, writer)
+	if b.perms != nil {
+		b.perms.SetApprovalProjector(projector)
+	}
+	if b.ques != nil {
+		b.ques.SetApprovalProjector(projector)
+	}
 }
 
 // Run subscribes to both managers and forwards events until ctx is cancelled.
