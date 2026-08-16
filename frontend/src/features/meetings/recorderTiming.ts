@@ -62,18 +62,7 @@ export function classifyRecovery(input: {
   return input.partCount > 0 ? 'recoverable' : 'none'
 }
 
-/** Blob → base64（无 data: 前缀）。音频分片落盘用。 */
-export function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      const dataUrl = reader.result as string
-      resolve(dataUrl.split(',')[1] || '')
-    }
-    reader.onerror = reject
-    reader.readAsDataURL(blob)
-  })
-}
+/** Blob → base64 见 utils/base64.ts（与 STT 上传共用）。 */
 
 /** 分片 → 单个 Blob（恢复转写时按 seq 顺序拼接）。
  * base64 必须逐段解码再按字节拼接：字符串直连会被段内 padding 截断。 */

@@ -73,7 +73,8 @@ import {
   findUnfinishedMeetings, updateMeetingRecording, updateTranscript,
   type LocalMeeting,
 } from './meetings-store'
-import { blobToBase64, createElapsedTracker, type ElapsedTracker } from './recorderTiming'
+import { createElapsedTracker, type ElapsedTracker } from './recorderTiming'
+import { blobToBase64 } from '../../utils/base64'
 import { useMicPermission } from '../../composables/useMicPermission'
 import { useAppSettings } from '../../composables/useAppSettings'
 import MicStatusBar from '../../components/MicStatusBar.vue'
@@ -97,7 +98,6 @@ const canPause = ref(true)
 let recorder: MediaRecorder | null = null
 let stream: MediaStream | null = null
 let chunks: Blob[] = []
-let startedAt = 0
 let meetingId: string | null = null
 let seq = 0
 let cancelled = false
@@ -184,7 +184,6 @@ async function startRecord() {
     finalizeOnStop = false
     tracker = createElapsedTracker()
     tracker.start()
-    startedAt = Date.now()
     elapsedMs.value = 0
     recorder.ondataavailable = onChunk
     recorder.onstop = onRecorderStop

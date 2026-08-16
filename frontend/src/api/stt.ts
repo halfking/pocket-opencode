@@ -10,6 +10,7 @@
  */
 import { sherpa } from '../native/sherpa'
 import { http } from './http'
+import { blobToBase64 } from '../utils/base64'
 
 export interface SttResult {
   text: string
@@ -27,20 +28,6 @@ export interface SttOptions {
   forceEngine?: 'local' | 'cloud'
   /** Confidence below which we retry on cloud. Default 0.7. */
   minConfidence?: number
-}
-
-/** Convert a Blob to base64 string (without data: prefix). */
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      const dataUrl = reader.result as string
-      const base64 = dataUrl.split(',')[1] || ''
-      resolve(base64)
-    }
-    reader.onerror = reject
-    reader.readAsDataURL(blob)
-  })
 }
 
 export const sttApi = {
