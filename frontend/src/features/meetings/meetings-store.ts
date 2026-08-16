@@ -132,6 +132,75 @@ export async function getMeetingWithSegments(
   return { meeting, segments }
 }
 
+// ---- 音频分片（E5-S2 崩溃安全落盘）----
+
+export interface MeetingAudioPart {
+  id: string
+  meetingId: string
+  seq: number
+  mimeType: string
+  dataBase64: string
+  createdAt: number
+}
+
+/** 追加一段音频分片（seq 由调用方递增，决定恢复时的拼接顺序）。 */
+export async function appendAudioPart(input: {
+  meetingId: string; seq: number; mimeType: string; dataBase64: string
+}): Promise<void> {
+  const id = `part-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  await localDB.run(
+    `INSERT INTO local_meeting_audio_parts (id, meeting_id, seq, mime_type, data_base64, created_at)
+     VALUES (?,?,?,?,?,?)`,
+    [id, input.meetingId, input.seq, input.mimeType, input.dataBase64, Date.now()],
+  )
+}
+
+export async function listAudioParts(meetingId: string): Promise<MeetingAudioPart[]> {
+  const rows = await localDB.query<any>(
+    'SELECT * FROM local_meeting_audio_parts WHERE meeting_id = ? ORDER BY seq',
+    [meetingId],
+  )
+  return rows.map((r) => ({
+    id: r.id, meetingId: r.meeting_id, seq: r.seq,
+    mimeType: r.mime_type, dataBase64: r.data_base64, createdAt: r.created_at,
+  }))
+}
+
+/** 转写成功后清理音频分片（音频不再需要，回收空间）。 */
+export async function deleteAudioParts(meetingId: string): Promise<void> {
+  await localDB.run('DELETE FROM local_meeting_audio_parts WHERE meeting_id = ?', [meetingId])
+}
+
+/** 会议音频分片数（恢复判定用；避免在列表页拉全部分片数据）。 */
+export async function countAudioParts(meetingId: string): Promise<number> {
+  const row = await localDB.queryOne<any>(
+    'SELECT COUNT(*) AS n FROM local_meeting_audio_parts WHERE meeting_id = ?',
+    [meetingId],
+  )
+  return row?.n ?? 0
+}
+
+/** 删除会议及其分片（取消录音 / 丢弃恢复时调用）。 */
+export async function discardMeeting(id: string): Promise<void> {
+  await deleteAudioParts(id)
+  await deleteMeeting(id)
+}
+
+/**
+ * 未完成会议（录音中断、可恢复）：未删除、无转写、存在音频分片。
+ * E5-S2 验收「异常退出不遗失已落盘片段」的恢复入口。
+ */
+export async function findUnfinishedMeetings(): Promise<LocalMeeting[]> {
+  const rows = await localDB.query<any>(
+    `SELECT m.* FROM local_meetings m
+     WHERE m.deleted_at IS NULL
+       AND (m.transcript IS NULL OR m.transcript = '')
+       AND EXISTS (SELECT 1 FROM local_meeting_audio_parts p WHERE p.meeting_id = m.id)
+     ORDER BY m.started_at DESC`,
+  )
+  return rows.map(rowToMeeting)
+}
+
 function rowToMeeting(r: any): LocalMeeting {
   return {
     id: r.id, title: r.title, audioPath: r.audio_path, durationMs: r.duration_ms,

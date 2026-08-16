@@ -17,6 +17,18 @@
         <button type="button" class="ghost" @click="router.push('/meetings')">返回</button>
       </header>
 
+      <!-- E5-S2 恢复入口：录音中断但分片已落盘 → 可继续转写或丢弃 -->
+      <section v-if="recoverable" class="card recovery-card">
+        <h2>录音未完成处理</h2>
+        <p class="muted">上次录音中断，已保留约 {{ duration(meeting.durationMs) }} 的音频。</p>
+        <div class="actions" style="margin: 10px 0 0">
+          <button class="primary" :disabled="recovering" @click="recoverTranscribe">
+            {{ recovering ? '转写中…' : '继续转写' }}
+          </button>
+          <button class="secondary" :disabled="recovering" @click="discardRecording">丢弃录音</button>
+        </div>
+      </section>
+
       <section class="actions">
         <button class="primary" :disabled="summarizing || !meeting.transcript" @click="makeSummary">
           {{ summarizing ? '生成中…' : meeting.summary ? '重新生成纪要' : '生成会议纪要' }}
@@ -60,7 +72,13 @@ import { ErrorState } from '../../components'
 import { saveNote } from '../pkm/pkm-store'
 import { renderMarkdown, renderPlainText, sanitizeHtml } from '../../utils/markdown'
 import { summarizeMeeting } from './meetings-ai'
-import { getMeetingWithSegments, updateSummary, type LocalMeeting, type MeetingSegment } from './meetings-store'
+import { sttApi } from '../../api/stt'
+import {
+  countAudioParts, deleteAudioParts, discardMeeting, getMeetingWithSegments,
+  listAudioParts, updateMeetingRecording, updateSummary, updateTranscript,
+  type LocalMeeting, type MeetingSegment,
+} from './meetings-store'
+import { classifyRecovery, partsToBlob } from './recorderTiming'
 
 const route = useRoute()
 const router = useRouter()
@@ -72,18 +90,66 @@ const summarizing = ref(false)
 const creatingTask = ref(false)
 const message = ref('')
 const loadError = ref('')
+const recoverable = ref(false)
+const recovering = ref(false)
 
 async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    const result = await getMeetingWithSegments(route.params.id as string)
+    const id = route.params.id as string
+    const result = await getMeetingWithSegments(id)
     meeting.value = result?.meeting || null
     segments.value = result?.segments || []
+    recoverable.value = false
+    if (meeting.value) {
+      const partCount = await countAudioParts(id)
+      recoverable.value =
+        classifyRecovery({
+          deletedAt: meeting.value.deletedAt,
+          transcript: meeting.value.transcript,
+          partCount,
+        }) === 'recoverable'
+    }
   } catch (e: any) {
     loadError.value = e?.message || '加载会议详情失败，请稍后重试。'
   } finally {
     loading.value = false
+  }
+}
+
+/** 恢复中断的录音：分片 → Blob → 云转写 → 回填转写并清理分片。 */
+async function recoverTranscribe() {
+  if (!meeting.value || recovering.value) return
+  recovering.value = true
+  message.value = ''
+  try {
+    const parts = await listAudioParts(meeting.value.id)
+    const blob = partsToBlob(parts.map((p) => ({ seq: p.seq, mimeType: p.mimeType, dataBase64: p.dataBase64 })))
+    if (!blob) throw new Error('没有可恢复的音频分片。')
+    const result = await sttApi.transcribe({ audioBlob: blob, forceEngine: 'cloud' })
+    await updateTranscript(meeting.value.id, result.text)
+    await updateMeetingRecording(meeting.value.id, { durationMs: meeting.value.durationMs })
+    await deleteAudioParts(meeting.value.id)
+    recoverable.value = false
+    await load()
+    message.value = '已从中断处恢复转写。'
+  } catch (error: any) {
+    toast.error(error?.message || '恢复转写失败，音频分片已保留。')
+  } finally {
+    recovering.value = false
+  }
+}
+
+/** 丢弃中断的录音：会议行 + 分片一起删除，回到列表。 */
+async function discardRecording() {
+  if (!meeting.value || recovering.value) return
+  try {
+    await discardMeeting(meeting.value.id)
+    toast.success('已丢弃未完成的录音')
+    router.replace('/meetings')
+  } catch (error: any) {
+    toast.error(error?.message || '丢弃失败')
   }
 }
 
@@ -183,6 +249,7 @@ h1 { margin: 0; font-size: 23px; }
 button:disabled { opacity: .55; cursor: not-allowed; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; }
 .card { margin-top: 12px; padding: 14px; background: var(--bg-card); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
+.recovery-card { border: 1px solid rgba(234, 88, 12, 0.4); }
 h2 { margin: 0 0 9px; font-size: 16px; }
 .transcript, .summary { white-space: pre-wrap; line-height: 1.65; font-size: 13px; margin: 0; }
 .muted, .state { color: var(--text-secondary); }

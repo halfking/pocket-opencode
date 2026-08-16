@@ -38,7 +38,10 @@
         >
           <div class="meeting-icon">🎙️</div>
           <div class="meeting-main">
-            <strong>{{ meeting.title || '未命名会议' }}</strong>
+            <strong>
+              {{ meeting.title || '未命名会议' }}
+              <span v-if="unfinishedIds.has(meeting.id)" class="badge-unfinished">未完成</span>
+            </strong>
             <span>{{ formatDate(meeting.startedAt) }} · {{ duration(meeting.durationMs) }}</span>
             <small>{{ meeting.summary || meeting.transcript || '尚未生成纪要' }}</small>
           </div>
@@ -51,11 +54,12 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { listMeetings, type LocalMeeting } from './meetings-store'
+import { findUnfinishedMeetings, listMeetings, type LocalMeeting } from './meetings-store'
 import { EmptyState, ErrorState, Loading } from '../../components'
 
 const router = useRouter()
 const meetings = ref<LocalMeeting[]>([])
+const unfinishedIds = ref(new Set<string>())
 const loading = ref(true)
 const error = ref('')
 
@@ -64,6 +68,9 @@ async function load() {
   error.value = ''
   try {
     meetings.value = await listMeetings()
+    // 未完成（录音中断待恢复）的会议标徽标，进详情可继续转写或丢弃
+    const unfinished = await findUnfinishedMeetings()
+    unfinishedIds.value = new Set(unfinished.map((m) => m.id))
   } catch (e: any) {
     error.value = e?.message || '加载会议记录失败，请稍后重试。'
   } finally {
@@ -97,6 +104,7 @@ h1 { margin: 0; font-size: 24px; }
 .meeting-icon { font-size: 25px; }
 .meeting-main { min-width: 0; flex: 1; display: grid; gap: 3px; }
 .meeting-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge-unfinished { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: rgba(234, 88, 12, 0.12); color: #ea580c; font-size: 10px; font-weight: 600; vertical-align: middle; }
 .meeting-main span { color: var(--text-secondary); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .arrow { color: var(--text-muted); font-size: 24px; }
 </style>

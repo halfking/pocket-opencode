@@ -212,6 +212,19 @@ CREATE TABLE IF NOT EXISTS local_meeting_segments (
 );
 CREATE INDEX IF NOT EXISTS idx_segments_meeting ON local_meeting_segments(meeting_id, start_ms);
 
+-- 会议录音音频分片（E5-S2 崩溃安全：录音期间按 timescale 落盘，
+-- 应用异常退出后可凭分片恢复转写；转写成功后清理）
+CREATE TABLE IF NOT EXISTS local_meeting_audio_parts (
+    id TEXT PRIMARY KEY,
+    meeting_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,            -- 分片序号（拼接顺序）
+    mime_type TEXT NOT NULL,
+    data_base64 TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (meeting_id) REFERENCES local_meetings(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_audio_parts_meeting ON local_meeting_audio_parts(meeting_id, seq);
+
 -- ============================================================
 -- 聊天消息（Phase 6B，三路抓取后本地存）
 -- ============================================================
