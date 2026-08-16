@@ -145,12 +145,23 @@ type Server struct {
 // Auth + Email: 新增 userStore/jwtSigner/emailCrypto/emailPending/emailScheduler/emailFetcher/dataDir。
 // 这些依赖都允许为 nil（对应功能降级），由各 handler 自行判断。
 func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore *vault.Store, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string) *Server {
+	return newServer(cfg, nps, opencode, taskStore, reg, configAdapter, notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, opencodeManager, userStore, jwtSigner, emailCrypto, emailPending, emailScheduler, emailFetcher, dataDir, true)
+}
+
+// newServer builds a Server and optionally starts its long-lived websocket hubs.
+// Handler tests that do not exercise websocket or plugin traffic may disable those
+// workers to avoid leaking goroutines for the lifetime of the test process.
+func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore *vault.Store, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string, startHubs bool) *Server {
 	hub := ws.NewHub()
-	go hub.Run()
+	if startHubs {
+		go hub.Run()
+	}
 
 	// Initialize Plugin Hub
 	pluginHub := ws.NewPluginHub()
-	go pluginHub.Run()
+	if startHubs {
+		go pluginHub.Run()
+	}
 	// 会话迁移方案：把 Registry 注入 PluginHub，
 	// 使边端插件/manager 的 instance.register / heartbeat 能写入 Registry
 	// （origin=registered），/api/instances 即可展示真实实例。
