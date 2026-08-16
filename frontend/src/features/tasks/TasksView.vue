@@ -164,20 +164,22 @@
         <button
           class="voice-btn"
           :class="{ recording: isRecording }"
+          :disabled="transcribing"
+          :aria-label="transcribing ? '正在转写语音' : isRecording ? '停止录音' : '开始录音'"
           @click="toggleVoice"
-          @touchstart.prevent="onVoiceTouchStart"
-          @touchend.prevent="onVoiceTouchEnd"
         >
-          {{ isRecording ? '⏹' : '🎙' }}
+          {{ transcribing ? '⋯' : isRecording ? '⏹' : '🎙' }}
         </button>
         <button
           v-if="quickPrompt.trim()"
           class="send-btn"
-          :disabled="sending"
+          :disabled="sending || transcribing"
+          aria-label="发送任务请求"
           @click="sendQuickPrompt"
         >
           {{ sending ? '⋯' : '↑' }}
         </button>
+        <span v-if="transcribing" class="voice-status" role="status" aria-live="polite">正在转写…</span>
       </div>
     </div>
 
@@ -429,9 +431,6 @@ function openSession(s: any) {
 
 // ── Voice (via composable) ──
 const toggleVoice = toggleRecording
-
-function onVoiceTouchStart() { /* long-press future: auto-send on stop */ }
-function onVoiceTouchEnd() { /* noop for now */ }
 
 /**
  * S1.2: 真正的 Agent 任务闭环。
@@ -832,8 +831,8 @@ function timeAgo(dateStr?: string): string {
 }
 .voice-btn,
 .send-btn {
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   border: none;
   font-size: 16px;
@@ -860,6 +859,11 @@ function timeAgo(dateStr?: string): string {
 .send-btn:active,
 .voice-btn:active {
   transform: scale(0.9);
+}
+.voice-status {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 /* ── Modal ── */

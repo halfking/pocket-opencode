@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -909,6 +911,17 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		if req.Source == "" {
 			req.Source = "local" // POST 创建的任务默认为本地源
 		}
+		if req.Status == "" {
+			req.Status = "active"
+		}
+		if !isValidTaskStatus(req.Status) {
+			http.Error(w, "invalid task status", http.StatusBadRequest)
+			return
+		}
+		if req.Status == "completed" {
+			http.Error(w, "new tasks cannot be completed", http.StatusConflict)
+			return
+		}
 		// 租户来自已认证 claims，忽略请求体里的 workspaceId，避免调用方把任务
 		// 写进别人的 workspace。
 		req.WorkspaceID = s.workspaceIDFromRequest(r)
@@ -942,14 +955,14 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check for /attach-session
-	if r.Method == http.MethodPost && len(path) > 0 {
+	// Check for task subresources.
+	if len(path) > 0 {
 		parts := splitPath(path)
-		if len(parts) == 2 && parts[1] == "attach-session" {
+		if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "attach-session" {
 			s.handleAttachSession(w, r, parts[0])
 			return
 		}
-		if len(parts) == 2 && parts[1] == "sessions" {
+		if (r.Method == http.MethodGet || r.Method == http.MethodPost) && len(parts) == 2 && parts[1] == "sessions" {
 			s.handleTaskSessions(w, r, parts[0])
 			return
 		}
@@ -975,10 +988,39 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		updated, err := s.taskStore.UpdateTaskScoped(r.Context(), path, s.workspaceIDFromRequest(r), update)
+		workspaceID := s.workspaceIDFromRequest(r)
+		current, err := s.taskStore.GetTaskScoped(r.Context(), path, workspaceID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
+		}
+		if update.Status != nil && *update.Status == "completed" {
+			pendingApprovals, pendingErr := s.pendingApprovalsForTask(r.Context(), path, workspaceID)
+			if pendingErr != nil {
+				http.Error(w, pendingErr.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			if err := s.taskStore.SetPendingApprovalsScoped(r.Context(), path, workspaceID, pendingApprovals); err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			current.PendingApprovals = pendingApprovals
+		}
+		if statusCode, message := taskStatusUpdateError(current, update.Status); statusCode != 0 {
+			http.Error(w, message, statusCode)
+			return
+		}
+		updated, err := s.taskStore.UpdateTaskScoped(r.Context(), path, workspaceID, update)
+		if err != nil {
+			if errors.Is(err, task.ErrPendingApprovals) {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if current.Status != updated.Status {
+			s.auditTaskStatusChange(r, updated, current.Status)
 		}
 		s.broadcastTaskEvent("task_updated", updated)
 		w.Header().Set("Content-Type", "application/json")
@@ -1031,6 +1073,68 @@ func (s *Server) handleAttachSession(w http.ResponseWriter, r *http.Request, tas
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"success":true}`))
+}
+
+func (s *Server) pendingApprovalsForTask(ctx context.Context, taskID, workspaceID string) (int, error) {
+	if s.permMgr == nil || s.quesMgr == nil {
+		return 0, fmt.Errorf("task approval managers are not configured")
+	}
+	links, err := s.taskStore.ListSessionsForTaskScoped(ctx, taskID, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	pending := 0
+	for _, link := range links {
+		pending += len(s.permMgr.ListPending(link.InstanceID, link.SessionID))
+		pending += len(s.quesMgr.ListPending(link.InstanceID, link.SessionID))
+	}
+	return pending, nil
+}
+
+func isValidTaskStatus(status string) bool {
+	switch status {
+	case "active", "blocked", "completed":
+		return true
+	default:
+		return false
+	}
+}
+
+func taskStatusUpdateError(current *task.Task, requestedStatus *string) (int, string) {
+	if requestedStatus == nil {
+		return 0, ""
+	}
+	if !isValidTaskStatus(*requestedStatus) {
+		return http.StatusBadRequest, "invalid task status"
+	}
+	if *requestedStatus == "completed" && current.PendingApprovals > 0 {
+		return http.StatusConflict, "task has pending approvals"
+	}
+	return 0, ""
+}
+
+func (s *Server) auditTaskStatusChange(r *http.Request, updated *task.Task, previousStatus string) {
+	if s.auditStore == nil || updated == nil {
+		return
+	}
+	claims := s.claimsFromContext(r)
+	userID, workspaceID := "", s.workspaceIDFromRequest(r)
+	if claims != nil {
+		userID = claims.UserID
+		workspaceID = claims.WorkspaceID
+	}
+	detail := fmt.Sprintf("from=%s;to=%s;pending_approvals=%d;request_id=%s", previousStatus, updated.Status, updated.PendingApprovals, s.requestIDFromContext(r))
+	if err := s.auditStore.Record(&redclaw.AuditEntry{
+		Action:   "task.status.changed",
+		UserID:   userID,
+		TenantID: workspaceID,
+		Resource: "task:" + updated.ID,
+		Detail:   detail,
+		Success:  true,
+		IP:       clientIPFromRequest(r),
+	}); err != nil {
+		log.Printf("[tasks] audit status change: %v", err)
+	}
 }
 
 func (s *Server) handleTaskSessions(w http.ResponseWriter, r *http.Request, taskID string) {

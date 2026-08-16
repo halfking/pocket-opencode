@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 type Store struct {
 	pool *pgxpool.Pool
 }
+
+var ErrPendingApprovals = errors.New("task has pending approvals")
 
 type SessionLink struct {
 	TaskID     string `json:"taskId"`
@@ -98,6 +101,9 @@ func (s *Store) CreateTask(ctx context.Context, task *Task) error {
 		task.Source = "local"
 	}
 	task.WorkspaceID = normalizeWorkspace(task.WorkspaceID)
+	// Pending approvals are derived by server-owned approval workflows. A client
+	// cannot create a task with a forged approval state.
+	task.PendingApprovals = 0
 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO tasks (id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count)
@@ -332,6 +338,22 @@ func (s *Store) UpdateTaskScoped(ctx context.Context, id, wsID string, update Ta
 	return s.updateTask(ctx, id, normalizeWorkspace(wsID), update)
 }
 
+func (s *Store) SetPendingApprovalsScoped(ctx context.Context, id, wsID string, count int) error {
+	if count < 0 {
+		return fmt.Errorf("pending approvals cannot be negative")
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE tasks SET pending_approvals = $1, updated_at = $2 WHERE id = $3 AND workspace_id = $4`,
+		count, time.Now().Unix(), id, normalizeWorkspace(wsID))
+	if err != nil {
+		return fmt.Errorf("set pending approvals: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("task not found: %s", id)
+	}
+	return nil
+}
+
 func (s *Store) updateTask(ctx context.Context, id, wsID string, update TaskUpdate) (*Task, error) {
 	now := time.Now().Unix()
 
@@ -392,6 +414,10 @@ func (s *Store) updateTask(ctx context.Context, id, wsID string, update TaskUpda
 	if wsID != "" {
 		args = append(args, wsID)
 		where += fmt.Sprintf(" AND workspace_id = $%d", argIdx)
+		argIdx++
+	}
+	if update.Status != nil && *update.Status == "completed" {
+		where += " AND pending_approvals = 0"
 	}
 
 	query := fmt.Sprintf("UPDATE tasks SET %s WHERE %s",
@@ -402,6 +428,12 @@ func (s *Store) updateTask(ctx context.Context, id, wsID string, update TaskUpda
 		return nil, fmt.Errorf("update task: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
+		if update.Status != nil && *update.Status == "completed" {
+			current, readErr := reread()
+			if readErr == nil && current.PendingApprovals > 0 {
+				return nil, ErrPendingApprovals
+			}
+		}
 		return nil, fmt.Errorf("task not found: %s", id)
 	}
 

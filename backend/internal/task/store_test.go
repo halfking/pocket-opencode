@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -74,6 +75,33 @@ func mustCreate(t *testing.T, s *Store, id, wsID, title string) *Task {
 		t.Fatalf("CreateTask %s: %v", id, err)
 	}
 	return task
+}
+
+func TestCreateTask_IgnoresClientPendingApprovals(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	created := &Task{
+		ID:               "t-pending",
+		WorkspaceID:      "ws-owner",
+		Title:            "任务",
+		Status:           "active",
+		Priority:         "normal",
+		PendingApprovals: 99,
+	}
+	if err := s.CreateTask(context.Background(), created); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if created.PendingApprovals != 0 {
+		t.Fatalf("in-memory pending approvals = %d, want 0", created.PendingApprovals)
+	}
+	stored, err := s.GetTaskScoped(context.Background(), created.ID, created.WorkspaceID)
+	if err != nil {
+		t.Fatalf("GetTaskScoped: %v", err)
+	}
+	if stored.PendingApprovals != 0 {
+		t.Fatalf("stored pending approvals = %d, want 0", stored.PendingApprovals)
+	}
 }
 
 // TestCreateTask_PersistsWorkspace 确认 workspace_id 真正写进表里并能读回。
@@ -199,6 +227,39 @@ func TestUpdateTaskScoped_TenantIsolation(t *testing.T) {
 	}
 	if updated.WorkspaceID != "wsOwner" {
 		t.Errorf("workspaceID = %q, want wsOwner", updated.WorkspaceID)
+	}
+}
+
+func TestUpdateTaskScoped_CompletionRequiresNoPendingApprovals(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	mustCreate(t, s, "t1", "wsOwner", "任务")
+	if _, err := s.pool.Exec(ctx, `UPDATE tasks SET pending_approvals = 1 WHERE id = $1`, "t1"); err != nil {
+		t.Fatalf("set pending approvals: %v", err)
+	}
+
+	completed := "completed"
+	if _, err := s.UpdateTaskScoped(ctx, "t1", "wsOwner", TaskUpdate{Status: &completed}); !errors.Is(err, ErrPendingApprovals) {
+		t.Fatalf("completion with pending approvals error = %v, want ErrPendingApprovals", err)
+	}
+	current, err := s.GetTaskScoped(ctx, "t1", "wsOwner")
+	if err != nil {
+		t.Fatalf("GetTaskScoped: %v", err)
+	}
+	if current.Status == "completed" {
+		t.Fatal("task should not complete while pending approvals exist")
+	}
+
+	if _, err := s.pool.Exec(ctx, `UPDATE tasks SET pending_approvals = 0 WHERE id = $1`, "t1"); err != nil {
+		t.Fatalf("clear pending approvals: %v", err)
+	}
+	updated, err := s.UpdateTaskScoped(ctx, "t1", "wsOwner", TaskUpdate{Status: &completed})
+	if err != nil {
+		t.Fatalf("completion without pending approvals: %v", err)
+	}
+	if updated.Status != "completed" {
+		t.Fatalf("status = %q, want completed", updated.Status)
 	}
 }
 

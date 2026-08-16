@@ -75,7 +75,7 @@ import { summarizeMeeting } from './meetings-ai'
 import { sttApi } from '../../api/stt'
 import {
   countAudioParts, deleteAudioParts, discardMeeting, getMeetingWithSegments,
-  listAudioParts, updateMeetingRecording, updateSummary, updateTranscript,
+  listAudioParts, updateSummary, updateTranscript,
   type LocalMeeting, type MeetingSegment,
 } from './meetings-store'
 import { classifyRecovery, partsToBlob } from './recorderTiming'
@@ -129,7 +129,7 @@ async function recoverTranscribe() {
     if (!blob) throw new Error('没有可恢复的音频分片。')
     const result = await sttApi.transcribe({ audioBlob: blob, forceEngine: 'cloud' })
     await updateTranscript(meeting.value.id, result.text)
-    await updateMeetingRecording(meeting.value.id, { durationMs: meeting.value.durationMs })
+    // durationMs 已随分片落盘时推进，无需再写
     await deleteAudioParts(meeting.value.id)
     recoverable.value = false
     await load()

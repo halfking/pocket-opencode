@@ -52,11 +52,11 @@ type recordingAttacher struct {
 }
 
 type attachCall struct {
-	taskID, instanceID, sessionID, role string
+	taskID, instanceID, sessionID, role, workspaceID string
 }
 
-func (a *recordingAttacher) AttachSession(_ context.Context, taskID, instanceID, sessionID, role string) error {
-	a.calls = append(a.calls, attachCall{taskID, instanceID, sessionID, role})
+func (a *recordingAttacher) AttachSessionScoped(_ context.Context, taskID, instanceID, sessionID, role, workspaceID string) error {
+	a.calls = append(a.calls, attachCall{taskID, instanceID, sessionID, role, workspaceID})
 	return a.err
 }
 
@@ -116,7 +116,7 @@ func TestSend_AutoAttachesTask(t *testing.T) {
 		t.Fatalf("expected 1 attach call, got %d", len(attacher.calls))
 	}
 	c := attacher.calls[0]
-	if c.taskID != "task_abc" || c.instanceID != "inst1" || c.sessionID != "ses_123" || c.role != "primary" {
+	if c.taskID != "task_abc" || c.instanceID != "inst1" || c.sessionID != "ses_123" || c.role != "primary" || c.workspaceID != "ws" {
 		t.Errorf("attach call mismatch: %+v", c)
 	}
 	// Agent should have been marked busy after a successful dispatch.
