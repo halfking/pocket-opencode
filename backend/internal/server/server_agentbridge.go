@@ -91,13 +91,13 @@ func (rr *registryResolver) ResolveAPIBaseForWorkspace(workspaceID, instanceID s
 // taskAttacher 适配 task.Store → agentbridge.TaskAttacher。
 type taskAttacher struct{ store *task.Store }
 
-func (t *taskAttacher) AttachSession(ctx context.Context, taskID, instanceID, sessionID, role string) error {
+func (t *taskAttacher) AttachSessionScoped(ctx context.Context, taskID, instanceID, sessionID, role, workspaceID string) error {
 	if t == nil || t.store == nil {
 		return errors.New("task store not configured")
 	}
-	return t.store.AttachSession(ctx, task.SessionLink{
+	return t.store.AttachSessionScoped(ctx, task.SessionLink{
 		TaskID: taskID, InstanceID: instanceID, SessionID: sessionID, Role: role,
-	})
+	}, workspaceID)
 }
 
 // NewAgentBridgeAdapters 是 main.go 用的导出构造函数，把现有的

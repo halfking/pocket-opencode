@@ -67,11 +67,15 @@
       <button
         v-if="task?.status !== 'completed'"
         class="action-btn complete"
-        :disabled="updating"
-        @click="updateStatus('completed')"
+        :disabled="updating || (task?.pendingApprovals ?? 0) > 0"
+        :title="(task?.pendingApprovals ?? 0) > 0 ? `还有 ${task?.pendingApprovals} 项待审批/验收` : '确认任务已完成'"
+        @click="confirmComplete"
       >
         ✅ 完成
       </button>
+      <span v-if="(task?.pendingApprovals ?? 0) > 0" class="completion-blocked" role="status">
+        还有 {{ task?.pendingApprovals }} 项待审批/验收
+      </span>
       <button class="action-btn attach" @click="showAttachModal = true">
         📎 附加
       </button>
@@ -190,19 +194,26 @@ async function load() {
   }
 }
 
+async function confirmComplete() {
+  if (!task.value || (task.value.pendingApprovals ?? 0) > 0 || updating.value) return
+  if (!confirm('确认任务已完成，并提交当前状态供审计追踪？')) return
+  await updateStatus('completed')
+}
+
 async function updateStatus(status: string) {
   if (!task.value || updating.value) return
-  const oldStatus = task.value.status
   updating.value = true
   statusError.value = ''
-  // Optimistic update — rewind on error.
-  task.value.status = status as any
   try {
-    await api.updateTask(task.value.id, { status })
+    const updated = await api.updateTask(task.value.id, { status })
+    task.value = { ...task.value, ...updated }
   } catch (e: any) {
     console.error('Failed to update status:', e)
-    task.value.status = oldStatus as any
-    statusError.value = `状态更新失败：${e?.message || '未知错误'}`
+    if (e?.status === 409) {
+      statusError.value = '任务仍有待审批或验收项，完成前请先处理。'
+    } else {
+      statusError.value = `状态更新失败：${e?.message || '未知错误'}`
+    }
   } finally {
     updating.value = false
   }
@@ -382,6 +393,11 @@ function formatDate(d?: string): string {
   background: transparent;
   color: var(--text-muted);
   padding: 6px 8px;
+}
+.completion-blocked {
+  align-self: center;
+  font-size: 11px;
+  color: var(--warning);
 }
 
 /* ── Sessions ── */

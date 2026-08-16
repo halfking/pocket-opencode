@@ -30,6 +30,17 @@ export interface SttOptions {
   minConfidence?: number
 }
 
+function filenameForMimeType(mimeType: string): string {
+  const normalized = mimeType.toLowerCase().split(';', 1)[0]
+  const extension = {
+    'audio/mp4': 'm4a',
+    'audio/mpeg': 'mp3',
+    'audio/ogg': 'ogg',
+    'audio/wav': 'wav',
+    'audio/webm': 'webm',
+  }[normalized] || 'webm'
+  return `recording.${extension}`
+}
 export const sttApi = {
   /**
    * Transcribe recorded audio with automatic fallback.
@@ -59,9 +70,12 @@ export const sttApi = {
     let body: string
     if (opts.audioBlob) {
       const base64 = await blobToBase64(opts.audioBlob)
-      body = JSON.stringify({ audio: base64, mimeType: opts.audioBlob.type || 'audio/webm' })
+      body = JSON.stringify({
+        audioBase64: base64,
+        filename: filenameForMimeType(opts.audioBlob.type || 'audio/webm'),
+      })
     } else if (opts.audioPath) {
-      body = JSON.stringify({ audioPath: opts.audioPath })
+      throw new Error('本地语音识别未完成时，需要可上传的音频数据才能使用云端转写')
     } else {
       throw new Error('sttApi.transcribe: provide audioBlob or audioPath')
     }

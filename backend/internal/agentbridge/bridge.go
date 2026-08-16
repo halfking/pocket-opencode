@@ -50,7 +50,7 @@ type InstanceResolver interface {
 // TaskAttacher attaches a session to a task in task_session_links.
 // In production this is *task.Store.
 type TaskAttacher interface {
-	AttachSession(ctx context.Context, taskID, instanceID, sessionID, role string) error
+	AttachSessionScoped(ctx context.Context, taskID, instanceID, sessionID, role, workspaceID string) error
 }
 
 // StoreLike is the subset of *Store the Bridge needs. Defining it as an
@@ -168,7 +168,7 @@ func (b *Bridge) Send(ctx context.Context, agentID, prompt string, opts SendOpti
 		if role == "" {
 			role = "primary"
 		}
-		if err := b.attacher.AttachSession(ctx, opts.TaskID, agent.InstanceID, info.ID, role); err != nil {
+		if err := b.attacher.AttachSessionScoped(ctx, opts.TaskID, agent.InstanceID, info.ID, role, opts.WorkspaceID); err != nil {
 			// Attach failure is non-fatal — the session was created and prompt
 			// sent. Surface it in the result but don't fail the whole dispatch.
 			res.Attached = false
