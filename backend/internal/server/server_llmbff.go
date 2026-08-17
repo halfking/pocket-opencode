@@ -25,7 +25,45 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
+	"github.com/halfking/pocket-opencode/backend/internal/quota"
 )
+
+// checkQuotaOrAudit 在 BFF 调用前做一次 pre-flight：拉取 Enforcer 决定
+// 并写 audit。estTokens 仅用于 audit detail，不参与预算判定（预算策略自己
+// 决定如何用 token 估算）。EnforceMode=false 时 Decision 永远 Allow；本轮
+// 默认不阻断调用。
+func (s *Server) checkQuotaOrAudit(r *http.Request, action, kind, model string, estTokens int) {
+	if s.quotaEnforcer == nil {
+		return
+	}
+	wsID := s.workspaceIDFromRequest(r)
+	in := quota.DecisionInput{
+		WorkspaceID:    wsID,
+		Kind:           kind,
+		Model:          model,
+		EstimatedTokens: estTokens,
+	}
+	dec, err := s.quotaEnforcer.Check(r.Context(), in)
+	if err != nil {
+		s.Write(r, "llm.quota.error", "llm:"+action, AuditFields{
+			Success: false,
+			Detail:  fmt.Sprintf("kind=%s model=%s err=%s", kind, model, err.Error()),
+		})
+		return
+	}
+	if !dec.Allow {
+		// 未来启用 EnforceMode 时此处应阻断；本轮先记录。
+		s.Write(r, "llm.quota.denied", "llm:"+action, AuditFields{
+			Success: false,
+			Detail:  fmt.Sprintf("kind=%s model=%s reason=%s", kind, model, dec.Reason),
+		})
+		return
+	}
+	s.Write(r, "llm.quota.checked", "llm:"+action, AuditFields{
+		Success: true,
+		Detail:  fmt.Sprintf("kind=%s model=%s strategy=%s", kind, model, s.quotaEnforcer.StrategyName()),
+	})
+}
 
 // handleLLMBFFStream — 流式 chat completion，SSE 输出。
 //
@@ -79,6 +117,12 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // nginx: disable buffering
+
+	// Quota pre-flight：当前 EnforceMode=false 时永远 Allow，仅审计。
+	// 未来若 SetEnforceMode(true) 且 Decision.Allow=false，则应中断
+	// 流并返回 429——本轮不引入该路径以避免误伤现有用户。
+	s.checkQuotaOrAudit(r, "llm.stream", body.Kind, body.Model, 0)
+
 	w.WriteHeader(http.StatusOK)
 
 	req := llmbff.ChatRequest{
@@ -153,6 +197,43 @@ func (s *Server) handleLLMBFFUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
+}
+
+// handleLLMBFFQuota — 返回当前 workspace 的配额状态：每个预算的 kind /
+// limit / period，以及当前 Enforcer 策略的 allow 标志。
+//
+// 响应：
+//
+//	{
+//	  "workspace_id": "...",
+//	  "budgets":      [Budget, ...],
+//	  "strategy":     "always_allow",
+//	  "enforce_mode": false
+//	}
+//
+// 当前默认策略为 always_allow，enforce_mode=false——所有调用都放行，
+// 但事件可被审计。仅当部署替换 Enforcer 策略后才进入 enforce_mode=true。
+func (s *Server) handleLLMBFFQuota(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	if s.quotaEnforcer == nil {
+		writeError(w, http.StatusServiceUnavailable, "quota enforcer not configured")
+		return
+	}
+	wsID := s.workspaceIDFromRequest(r)
+	budgets, err := s.quotaEnforcer.Store().BudgetsFor(r.Context(), wsID, time.Now())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "quota query: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"workspace_id": wsID,
+		"budgets":      budgets,
+		"strategy":     s.quotaEnforcer.StrategyName(),
+		"enforce_mode": s.quotaEnforcer.EnforceMode(),
+	})
 }
 
 // parseIntDefault parses s as int, returning def on error. Local helper to

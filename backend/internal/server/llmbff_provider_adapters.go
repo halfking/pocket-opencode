@@ -16,6 +16,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
+	"github.com/halfking/pocket-opencode/backend/internal/quota"
 )
 
 // Compile-time checks that the adapters satisfy the Provider interface.
@@ -55,11 +56,11 @@ func (p *llmGatewayBFFProvider) Chat(ctx context.Context, req llmbff.ChatRequest
 	if len(resp.Choices) > 0 {
 		out.Content = resp.Choices[0].Message.Content
 	}
-	out.Usage = llmbff.Usage{
+	out.Usage = quota.ApplyCost(resp.Model, llmbff.Usage{
 		PromptTokens:     resp.Usage.PromptTokens,
 		CompletionTokens: resp.Usage.CompletionTokens,
 		TotalTokens:      resp.Usage.TotalTokens,
-	}
+	})
 	return out, nil
 }
 
@@ -82,11 +83,11 @@ func (p *llmGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatReque
 			Done:         d.FinishReason != "" || d.TotalTokens > 0,
 		}
 		if d.TotalTokens > 0 {
-			u := llmbff.Usage{
+			u := quota.ApplyCost(req.Model, llmbff.Usage{
 				PromptTokens:     d.PromptTokens,
 				CompletionTokens: d.CompletionTokens,
 				TotalTokens:      d.TotalTokens,
-			}
+			})
 			delta.Usage = &u
 			finalUsage = &u
 		}
@@ -115,9 +116,9 @@ func (p *llmGatewayBFFProvider) Embed(ctx context.Context, req llmbff.EmbedReque
 	return &llmbff.EmbedResponse{
 		Embedding: resp.Data[0].Embedding,
 		Model:     resp.Model,
-		Usage: llmbff.Usage{
+		Usage: quota.ApplyCost(resp.Model, llmbff.Usage{
 			PromptTokens: resp.Usage.PromptTokens,
 			TotalTokens:  resp.Usage.TotalTokens,
-		},
+		}),
 	}, nil
 }

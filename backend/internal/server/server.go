@@ -37,6 +37,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
+	"github.com/halfking/pocket-opencode/backend/internal/quota"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/snippet"
@@ -94,6 +95,10 @@ type Server struct {
 	// S0-B: unified LLM BFF。nil = 未配置（POCKET_LLM_* 未设且无网关配置），handler 返回 503。
 	llmBFF           *llmbff.Service
 	llmBFFSummarizer llmbff.Summarizer
+	// P3 成本配额骨架：Enforcer 在 BFF 调用前做 Check；当前默认
+	// AlwaysAllowStrategy，仅用于审计 / 可观测。EnforceMode=false 时
+	// 永远 Allow；未来替换为真实预算策略即可上线硬拒绝。
+	quotaEnforcer *quota.Enforcer
 	// S0-C: Lobster Vault 加密镜像同步 store。nil = 同步路由返回 503。
 	lobsterSync *lobster.SyncStore
 	// S0-D: Agent Bridge。nil = /api/agents 返回 503。
@@ -280,6 +285,11 @@ func (s *Server) SetLLMBFF(svc *llmbff.Service, sum llmbff.Summarizer) {
 	}
 }
 
+// SetQuotaEnforcer 注入 P3 配额执行器；nil 时 handler 跳过预算检查。
+func (s *Server) SetQuotaEnforcer(e *quota.Enforcer) {
+	s.quotaEnforcer = e
+}
+
 // SetLobsterSync 注入 S0-C Lobster Vault 加密镜像同步 store。
 func (s *Server) SetLobsterSync(store *lobster.SyncStore) {
 	s.lobsterSync = store
@@ -427,6 +437,8 @@ func (s *Server) Handler() http.Handler {
 	// llmBFF 启用时优先走 BFF；未启用时回退到老 handler。
 	mux.HandleFunc("/api/llm/stream", s.requireAuth(s.handleLLMBFFStream))
 	mux.HandleFunc("/api/llm/usage", s.requireAuth(s.handleLLMBFFUsage))
+	mux.HandleFunc("/api/llm/quota", s.requireAuth(s.handleLLMBFFQuota))
+	mux.HandleFunc("/api/integration/status", s.requireAuth(s.handleIntegrationStatus))
 
 	// OpenCode 管理 API（会话/实例数据属于认证用户可见范围）
 	mux.HandleFunc("/api/opencode/sessions", s.requireAuth(s.handleOpenCodeSessions))
@@ -901,13 +913,28 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"tasks": allTasks})
 
 	case http.MethodPost:
-		if s.taskStore == nil {
-			http.Error(w, "local task store not configured (remote-only mode)", http.StatusServiceUnavailable)
-			return
-		}
+		// 提前 body 解析用于 source 校验：即使 taskStore 为 nil 也要
+		// 拦截 source=acc POST——避免攻击者借助 remote-only 模式探测。
 		var req task.Task
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		// P3 §5 「企业集成只读」：POST 不允许向 ACC 写入。当前 mcp.Client
+		// 本身没有写 method（Capabilities.Write=false），但请求体里显式
+		// source=acc 仍暗示客户端试图把任务推到 ACC。这里 fail-closed，
+		// 写 audit；与 docs/优化v4/04 §7.4 「ACC 写操作必须 capability +
+		// 审批就绪」一致——目前未满足。
+		if req.Source == "acc" {
+			s.Write(r, "task.post.rejected", "task:"+req.ID, AuditFields{
+				Success: false,
+				Detail:  "reason=acc_write_disabled",
+			})
+			http.Error(w, "source=acc is read-only; POST not allowed", http.StatusForbidden)
+			return
+		}
+		if s.taskStore == nil {
+			http.Error(w, "local task store not configured (remote-only mode)", http.StatusServiceUnavailable)
 			return
 		}
 		// Phase 7: Auto-generate ID if not provided
