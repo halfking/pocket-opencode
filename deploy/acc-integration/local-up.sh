@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # local-up.sh — 启动 opencode-pocket 的 acc 集成部署（pocketd + frontend，
-# 共享 acc-local-net + 复用 kxmemory-rls-pg17）。
+# 共享 acc-local-net + 复用 llm-gateway-pg 共享 PG 实例）。
 #
 # 假设：
-#   1. `kxmemory-rls-pg17` 已运行（acc-local-net 网络成员）。
+#   1. `llm-gateway-pg` 已运行（原 kxmemory-rls-pg17 已于 2026-08-18 合并下线）。
 #   2. `acc-go-local` 可选运行（同网络）；acc-go 期望 POCKET_BASE_URL 指向它。
 #   3. kx-base 离线镜像已 `docker load`：
 #        docker load -i ~/work/docker-base-images/lang-base/kx-base-go-vue-v2-alpine-slim-arm64.tar.gz
@@ -26,7 +26,7 @@ fi
 
 # 网络存在性检查
 if ! docker network inspect acc-local-net >/dev/null 2>&1; then
-  echo "[local-up] acc-local-net does not exist. Create it or start the kxmemory-rls-pg17 stack first:"
+  echo "[local-up] acc-local-net does not exist. Create it or start the acc-local stack first:"
   echo "    docker network create acc-local-net"
   exit 1
 fi
