@@ -6,7 +6,6 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
-	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 )
 
 // handleMobileApprovalRouter is the production HTTP approval surface. It is
@@ -216,19 +215,10 @@ func (s *Server) writeApprovalConfirmed(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Server) recordMobileApprovalAudit(r *http.Request, action, instanceID, sessionID, requestID string) {
-	if s.auditStore == nil {
+	if s.claimsFromContext(r) == nil {
 		return
 	}
-	claims := s.claimsFromContext(r)
-	if claims == nil {
-		return
-	}
-	_ = s.auditStore.Record(&redclaw.AuditEntry{
-		Action:   "mobile.approval." + action,
-		UserID:   claims.UserID,
-		TenantID: claims.WorkspaceID,
-		Resource: "instance:" + instanceID + "/session:" + sessionID + "/request:" + requestID,
-		Detail:   "upstream_confirmed",
-		Success:  true,
-	})
+	s.Write(r, "mobile.approval."+action,
+		"instance:"+instanceID+"/session:"+sessionID+"/request:"+requestID,
+		AuditFields{Detail: "upstream_confirmed", Success: true})
 }

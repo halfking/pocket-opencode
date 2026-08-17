@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-
-	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -403,6 +401,10 @@ func (s *Server) probeGatewayNode(w http.ResponseWriter, r *http.Request, worksp
 	if probeErr == nil && role != "" && role != "super_admin" {
 		resp["warning"] = fmt.Sprintf("account role is %q; provider list and model probe require super_admin on the gateway", role)
 	}
+	// 审计：探测动作，detail 不含任何凭据或 error message 原文以外的敏感串。
+	s.auditGateway(r, "llm_gateway.node.probe", secret.Node.Name,
+		fmt.Sprintf("node_id=%d status=%s", nodeID, status),
+		probeErr == nil)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -444,26 +446,12 @@ func (s *Server) writeGatewayStoreError(w http.ResponseWriter, err error, fallba
 }
 
 // auditGateway 记一条 pocket 侧审计。所有写操作都会调用。
+//
+// 细节字段 detail 在写入前会经过 server.Write 集中的 redact 防护，遇
+// 到 password/token/api_key 等敏感键名会被替换为占位符；调用方仍负责
+// 截断 body 长度（proxy 路径限制 512B）。
 func (s *Server) auditGateway(r *http.Request, action, resource, detail string, success bool) {
-	if s.auditStore == nil {
-		return
-	}
-	claims := s.claimsFromContext(r)
-	userID, tenantID := "", ""
-	if claims != nil {
-		userID, tenantID = claims.UserID, claims.WorkspaceID
-	}
-	if err := s.auditStore.Record(&redclaw.AuditEntry{
-		Action:   action,
-		UserID:   userID,
-		TenantID: tenantID,
-		Resource: resource,
-		Detail:   detail,
-		Success:  success,
-		IP:       clientIPFromRequest(r),
-	}); err != nil {
-		log.Printf("[gateway-nodes] audit record failed: %v", err)
-	}
+	s.Write(r, action, resource, AuditFields{Detail: detail, Success: success})
 }
 
 // clientIPFromRequest 取客户端 IP，优先反代头。

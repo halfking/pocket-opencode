@@ -42,7 +42,6 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/snippet"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
-	"github.com/halfking/pocket-opencode/backend/internal/vault"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
 
@@ -70,7 +69,7 @@ type Server struct {
 	// Phase 0: 个人助理模块 store 与依赖
 	notesStore       *notes.Store
 	emailStore       *email.Store
-	vaultStore       *vault.Store
+	vaultStore       vaultSyncStorer
 	snippetStore     *snippet.Store
 	meetingStore     *meeting.Store
 	chatSummaryStore *cs.Store
@@ -144,14 +143,14 @@ type Server struct {
 // OpenCode 扩展：新增 opencodeManager（实例和会话管理）。
 // Auth + Email: 新增 userStore/jwtSigner/emailCrypto/emailPending/emailScheduler/emailFetcher/dataDir。
 // 这些依赖都允许为 nil（对应功能降级），由各 handler 自行判断。
-func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore *vault.Store, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string) *Server {
+func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore vaultSyncStorer, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string) *Server {
 	return newServer(cfg, nps, opencode, taskStore, reg, configAdapter, notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, opencodeManager, userStore, jwtSigner, emailCrypto, emailPending, emailScheduler, emailFetcher, dataDir, true)
 }
 
 // newServer builds a Server and optionally starts its long-lived websocket hubs.
 // Handler tests that do not exercise websocket or plugin traffic may disable those
 // workers to avoid leaking goroutines for the lifetime of the test process.
-func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore *vault.Store, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string, startHubs bool) *Server {
+func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore vaultSyncStorer, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string, startHubs bool) *Server {
 	hub := ws.NewHub()
 	if startHubs {
 		go hub.Run()
@@ -1118,27 +1117,15 @@ func taskStatusUpdateError(current *task.Task, requestedStatus *string) (int, st
 }
 
 func (s *Server) auditTaskStatusChange(r *http.Request, updated *task.Task, previousStatus string) {
-	if s.auditStore == nil || updated == nil {
+	if updated == nil {
 		return
 	}
-	claims := s.claimsFromContext(r)
-	userID, workspaceID := "", s.workspaceIDFromRequest(r)
-	if claims != nil {
-		userID = claims.UserID
-		workspaceID = claims.WorkspaceID
-	}
-	detail := fmt.Sprintf("from=%s;to=%s;pending_approvals=%d;request_id=%s", previousStatus, updated.Status, updated.PendingApprovals, s.requestIDFromContext(r))
-	if err := s.auditStore.Record(&redclaw.AuditEntry{
-		Action:   "task.status.changed",
-		UserID:   userID,
-		TenantID: workspaceID,
-		Resource: "task:" + updated.ID,
-		Detail:   detail,
-		Success:  true,
-		IP:       clientIPFromRequest(r),
-	}); err != nil {
-		log.Printf("[tasks] audit status change: %v", err)
-	}
+	detail := fmt.Sprintf("from=%s;to=%s;pending_approvals=%d;request_id=%s",
+		previousStatus, updated.Status, updated.PendingApprovals, s.requestIDFromContext(r))
+	s.Write(r, "task.status.changed", "task:"+updated.ID, AuditFields{
+		Detail:  detail,
+		Success: true,
+	})
 }
 
 func (s *Server) handleTaskSessions(w http.ResponseWriter, r *http.Request, taskID string) {
