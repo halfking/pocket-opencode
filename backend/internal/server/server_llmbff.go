@@ -28,13 +28,16 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
 )
 
-// checkQuotaOrAudit 在 BFF 调用前做一次 pre-flight：拉取 Enforcer 决定
-// 并写 audit。estTokens 仅用于 audit detail，不参与预算判定（预算策略自己
-// 决定如何用 token 估算）。EnforceMode=false 时 Decision 永远 Allow；本轮
-// 默认不阻断调用。
-func (s *Server) checkQuotaOrAudit(r *http.Request, action, kind, model string, estTokens int) {
+// checkQuotaOrAudit 在 BFF 调用前做一次 pre-flight：拉取 Enforcer 决定并
+// 写 audit。estTokens 仅用于 audit detail，不参与预算判定（预算策略自己
+// 决定如何用 token 估算）。
+//
+// 返回值 blocked 表示「EnforceMode=true 且 Decision.Allow=false」——调用方
+// 必须立刻阻断（HTTP 429 + 结构化错误）。EnforceMode=false 时永远返 false，
+// 行为与历史一致（仅审计）。
+func (s *Server) checkQuotaOrAudit(r *http.Request, action, kind, model string, estTokens int) (blocked bool) {
 	if s.quotaEnforcer == nil {
-		return
+		return false
 	}
 	wsID := s.workspaceIDFromRequest(r)
 	in := quota.DecisionInput{
@@ -49,20 +52,22 @@ func (s *Server) checkQuotaOrAudit(r *http.Request, action, kind, model string, 
 			Success: false,
 			Detail:  fmt.Sprintf("kind=%s model=%s err=%s", kind, model, err.Error()),
 		})
-		return
+		// Store 错误按 fail-open 处理：审计已记录，不阻断，避免预算子系统
+		// 故障连带杀死整个 BFF。
+		return false
 	}
 	if !dec.Allow {
-		// 未来启用 EnforceMode 时此处应阻断；本轮先记录。
 		s.Write(r, "llm.quota.denied", "llm:"+action, AuditFields{
 			Success: false,
-			Detail:  fmt.Sprintf("kind=%s model=%s reason=%s", kind, model, dec.Reason),
+			Detail:  fmt.Sprintf("kind=%s model=%s reason=%s strategy=%s enforce_mode=%v", kind, model, dec.Reason, s.quotaEnforcer.StrategyName(), s.quotaEnforcer.EnforceMode()),
 		})
-		return
+		return s.quotaEnforcer.EnforceMode()
 	}
 	s.Write(r, "llm.quota.checked", "llm:"+action, AuditFields{
 		Success: true,
 		Detail:  fmt.Sprintf("kind=%s model=%s strategy=%s", kind, model, s.quotaEnforcer.StrategyName()),
 	})
+	return false
 }
 
 // handleLLMBFFStream — 流式 chat completion，SSE 输出。
@@ -70,6 +75,11 @@ func (s *Server) checkQuotaOrAudit(r *http.Request, action, kind, model string, 
 // 请求体同 OpenAI（messages/model/temperature/max_tokens），额外可选 kind
 // 字段标记用途（chat/summarize/translate...）用于成本分类。
 // 响应 Content-Type: text/event-stream，每行 "data: {...}\n\n"。
+//
+// Quota 拦截：EnforceMode=true 且 Decision.Allow=false 时，**必须**在写
+// 任何 SSE header 之前返 429 + 结构化错误。一旦 Content-Type:
+// text/event-stream 已写，Go 的 ResponseWriter 状态码即固定，再改只能
+// 走 chunked SSE error 事件，前端需要更复杂的解析路径。
 func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 	if s.llmBFF == nil {
 		writeError(w, http.StatusServiceUnavailable, "llm bff not configured")
@@ -106,6 +116,19 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Quota pre-flight：在 body 校验通过、但 SSE header 尚未写入前拦截。
+	// EnforceMode=true 且 Deny 时返 429 + 结构化错误；EnforceMode=false
+	// 时永远 false（仅审计）。
+	if s.checkQuotaOrAudit(r, "llm.stream", body.Kind, body.Model, 0) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error":     "quota exceeded",
+			"code":      "llm.quota.denied",
+			"resource":  "llm:llm.stream",
+			"retryable": false,
+		})
+		return
+	}
+
 	// Flushable writer for SSE chunking.
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -117,11 +140,6 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // nginx: disable buffering
-
-	// Quota pre-flight：当前 EnforceMode=false 时永远 Allow，仅审计。
-	// 未来若 SetEnforceMode(true) 且 Decision.Allow=false，则应中断
-	// 流并返回 429——本轮不引入该路径以避免误伤现有用户。
-	s.checkQuotaOrAudit(r, "llm.stream", body.Kind, body.Model, 0)
 
 	w.WriteHeader(http.StatusOK)
 
