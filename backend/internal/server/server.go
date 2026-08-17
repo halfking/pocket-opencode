@@ -290,6 +290,10 @@ func (s *Server) SetQuotaEnforcer(e *quota.Enforcer) {
 	s.quotaEnforcer = e
 }
 
+// QuotaEnforcer 返回注入的执行器；未注入时返 nil。供启动期 env
+// 开关（QUOTA_ENFORCE_MODE 等）按需触发 SetEnforceMode。
+func (s *Server) QuotaEnforcer() *quota.Enforcer { return s.quotaEnforcer }
+
 // SetLobsterSync 注入 S0-C Lobster Vault 加密镜像同步 store。
 func (s *Server) SetLobsterSync(store *lobster.SyncStore) {
 	s.lobsterSync = store

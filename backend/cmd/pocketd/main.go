@@ -28,6 +28,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
+	"github.com/halfking/pocket-opencode/backend/internal/quota"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/server"
@@ -439,6 +440,29 @@ func main() {
 		}
 		srv.SetLLMBFF(llmbff.NewService(provider, recorder), summarizer)
 		log.Println("LLM BFF enabled (stream + usage tracking)")
+	}
+
+	// ---- P3: Quota Enforcer (PG-backed budgets, AlwaysAllow strategy) ----
+	// 装配顺序：DATABASE_URL 存在 → PGStore，否则 MemoryStore；策略默认
+	// AlwaysAllow，EnforceMode 默认 false（仅审计）。后续若 ops 想进入
+	// 硬拒绝模式，env 开关 QUOTA_ENFORCE_MODE=true 即可触发。
+	if pool != nil {
+		if pgBudgets, err := quota.NewPGStore(pool); err != nil {
+			log.Printf("WARN: quota PG store init failed, falling back to memory: %v", err)
+			srv.SetQuotaEnforcer(quota.NewEnforcer(quota.NewMemoryStore(), nil))
+		} else {
+			srv.SetQuotaEnforcer(quota.NewEnforcer(pgBudgets, nil))
+			log.Println("Quota enforcer enabled (PG store, AlwaysAllow strategy)")
+		}
+	} else {
+		srv.SetQuotaEnforcer(quota.NewEnforcer(quota.NewMemoryStore(), nil))
+		log.Println("Quota enforcer enabled (Memory store, no DATABASE_URL)")
+	}
+	if os.Getenv("QUOTA_ENFORCE_MODE") == "true" {
+		if e := srv.QuotaEnforcer(); e != nil {
+			e.SetEnforceMode(true)
+			log.Println("QUOTA_ENFORCE_MODE=true: Enforcer in hard-deny mode")
+		}
 	}
 
 	// ---- S0-C: Lobster Vault 加密镜像同步 ----
