@@ -94,10 +94,12 @@ func NewScheduler(store *Store, fetcher *Fetcher, enabled bool) *Scheduler {
 	s := &Scheduler{
 		store:     store,
 		fetcher:   fetcher,
-		crypto:    fetcher.crypto,
 		providers: make(map[string]OAuthProviderConfig),
 		stop:      make(chan struct{}),
 		enabled:   enabled,
+	}
+	if fetcher != nil {
+		s.crypto = fetcher.crypto
 	}
 	s.tzOffsetSec.Store(int64(defaultTimezoneOffsetSec))
 	return s
