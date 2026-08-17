@@ -3,18 +3,17 @@
 # =============================================================================
 #
 # 设计目标：
-#   - **单 PG**：复用本机已有的 `kxmemory-rls-pg17`（kxuser/kaixuan，25432）；
-#     不再起第二个 postgres 容器（用户要求：减少 PG 实例数）。
+#   - **PG 实例**：`llm-gateway-pg`（本机已有，kx-citus-pg17 + pgvector）。
+#     与 `kxmemory-rls-pg17` 切换原因：用户要求统一到 llm-gateway-pg
+#     作为共享数据底座（与 acc / memora 长期协作需要单一权威 PG）。
+#     DSN 通过 host.docker.internal:5432（容器在 bridge 上，宿主端口转发）。
 #   - **共享网络**：加入 `acc-local-net`（external）。该网络已挂载：
-#       * kxmemory-rls-pg17  (PG)
+#       * kxmemory-rls-pg17  (PG 旧，已不再用——但保留供迁移对比)
 #       * nbjl-redis          (Redis)
 #       * acc-go-local        (agent-control-center 的 Go 版本)
 #       * acc-go-proxy        (nginx proxy)
-#   - **跨容器调用**：pocketd → kxmemory-rls-pg17（DNS 名 `kxmemory-rls-pg17`
-#     或 `postgres`） +  `acc-go-local`（`POCKET_BASE_URL=http://acc-go-local:4101`，
-#     与 acc-go 的 env 期望对齐）。RedClaw 暂时通过空 `POCKET_REDCLAW_BASE_URL`
-#     跳过——pocketd 在该变量为空时不会调用 RedClaw；以后 RedClaw 实现
-#     `/api/v1/pocket/llm/chat` 时再填入。
+#   - **跨容器调用**：pocketd → llm-gateway-pg（host.docker.internal:5432）
+#     + acc-go-local（acc-local-net DNS）。
 #   - **kx-base 离线镜像**：后端用 `Dockerfile.kx-base`，需要先
 #     `docker load -i ~/work/docker-base-images/lang-base/kx-base-go-vue-v2-alpine-slim-arm64.tar.gz`
 #     （manifest 标签为 `kx-base:go-vue-optimized`）。
@@ -49,8 +48,13 @@ services:
     env_file:
       - .env
     environment:
-      # ---- 容器内 DNS 名（acc-local-net 已挂 kxmemory-rls-pg17） ----
-      POCKET_POSTGRES_DSN: postgresql://kxuser:kxpass@kxmemory-rls-pg17:5432/kaixuan?sslmode=disable
+      # ---- 容器内 DSN（指向本机 llm-gateway-pg，host.docker.internal:5432） ----
+      # llm-gateway-pg 在 bridge 网络上，不在 acc-local-net；通过 host.docker.internal
+      # （compose extra_hosts 已映射 host-gateway）走宿主 127.0.0.1:5432 转发。
+      # 使用 kaixuan DB（与 kxmemory-rls-pg17 同库名；该库在 llm-gateway-pg 上已有
+      # 191 张其他模块的表，pocketd 34 张表为 additive migration，不会冲突）。
+      # 凭据来自容器 llm-gateway-pg 的 POSTGRES_* env（详见 verify 报告）。
+      POCKET_POSTGRES_DSN: postgresql://llm_gateway:llm_gateway_db_pass_2026_secure@host.docker.internal:5432/kaixuan?sslmode=disable
 
       # ---- 跨容器调用 acc-go（agent-control-center） ----
       # acc-go 容器名 acc-go-local，监听 4101。pocketd 用作 memora/acc

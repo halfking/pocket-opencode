@@ -38,9 +38,9 @@ if ! docker image inspect kx-base:go-vue-optimized >/dev/null 2>&1; then
   exit 1
 fi
 
-# PG 可达性
-if ! docker exec kxmemory-rls-pg17 pg_isready -U kxuser -d kaixuan >/dev/null 2>&1; then
-  echo "[local-up] WARNING: kxmemory-rls-pg17 not ready (pg_isready failed); pocketd will retry on boot"
+# PG 可达性（llm-gateway-pg，宿主端口 5432）
+if ! docker exec llm-gateway-pg pg_isready -U llm_gateway -d llm_gateway >/dev/null 2>&1; then
+  echo "[local-up] WARNING: llm-gateway-pg not ready (pg_isready failed); pocketd will retry on boot"
 fi
 
 # 启动

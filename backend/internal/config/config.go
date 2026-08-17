@@ -16,6 +16,7 @@ type Config struct {
 	HTTPPort                 string
 	DBPath                   string // 保留兼容；Postgres 迁移后仅用于 data 目录定位
 	PostgresDSN              string // Phase 0: pocket 后端统一数据层
+	PostgresSchema           string // pocket 私有的 PG schema 名（隔离共享 PG 上的其他模块表）
 	NPSBaseURL               string
 	NPSAuthKey               string
 	NPSAuthCryptKey          string
@@ -118,6 +119,7 @@ func Load() Config {
 		FeishuEncryptKey:         getEnv("POCKET_FEISHU_ENCRYPT_KEY", ""),
 		// Phase 0 个人助理模块
 		PostgresDSN:                getFirstEnv([]string{"POCKET_POSTGRES_DSN", "DATABASE_URL"}, ""),
+		PostgresSchema:             getEnv("POCKET_PG_SCHEMA", "opencode_pocket"),
 		GroqAPIKey:                 getEnv("POCKET_GROQ_API_KEY", ""),
 		KxMemoryBaseURL:            getEnv("POCKET_KXMEMORY_BASE_URL", ""),
 		KxMemoryNoteClassifyPath:   getEnv("POCKET_KXMEMORY_NOTE_CLASSIFY_PATH", "/v1/notes/classify"),

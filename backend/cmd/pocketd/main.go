@@ -55,12 +55,12 @@ func main() {
 	// 可选依赖：未配置时降级为"无本地任务存储"模式，仅依赖 ACC/llm-gateway 等远程服务
 	var pool *pgxpool.Pool
 	if cfg.PostgresDSN != "" {
-		p, err := db.New(context.Background(), cfg.PostgresDSN)
+		p, err := db.New(context.Background(), cfg.PostgresDSN, cfg.PostgresSchema)
 		if err != nil {
 			log.Fatalf("Failed to connect to Postgres: %v", err)
 		}
 		pool = p
-		log.Println("Postgres pool initialized")
+		log.Printf("Postgres pool initialized (schema=%q)", cfg.PostgresSchema)
 		defer pool.Close()
 	} else {
 		log.Println("WARN: POCKET_POSTGRES_DSN not set, running in remote-only mode (no local task cache)")
