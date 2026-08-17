@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -25,7 +26,34 @@ type Task struct {
 	UpdatedAt        time.Time `json:"updatedAt"`
 	PendingApprovals int       `json:"pendingApprovals"`
 	SessionCount     int       `json:"sessionCount"`
+	// Acceptance evidence fields. All three are nil until a task moves through
+	// the dedicated AcceptTaskScoped path; PATCH never sets them.
+	// See docs/superpowers/specs/2026-08-17-task-acceptance-evidence-design.md.
+	AcceptedAt     *int64          `json:"acceptedAt,omitempty"`
+	AcceptedBy     *string         `json:"acceptedBy,omitempty"`
+	EvidenceBundle *EvidenceBundle `json:"evidenceBundle,omitempty"`
 }
+
+// EvidenceBundle is the structured payload accepted via POST /api/tasks/{id}/accept.
+// References are opaque pointers — the server does not fetch them — and may carry
+// an optional client-computed SHA256 digest.
+type EvidenceBundle struct {
+	Note       string              `json:"note,omitempty"`
+	References []EvidenceReference `json:"references"`
+}
+
+// EvidenceReference describes one piece of evidence pointing at a target.
+// Kind is one of url | task | session | note | audit_event.
+type EvidenceReference struct {
+	Kind   string `json:"kind"`
+	URI    string `json:"uri,omitempty"`
+	Label  string `json:"label,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
+}
+
+// ErrTaskNotCompletable is returned by AcceptTaskScoped when the target task is
+// not in the `completed` state. The HTTP handler maps this to 409.
+var ErrTaskNotCompletable = errors.New("task not in completed state")
 
 // DefaultWorkspaceID matches the `DEFAULT 'default'` on tasks.workspace_id, so
 // rows written before S0-A stay reachable for single-tenant deployments.

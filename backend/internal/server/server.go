@@ -1003,6 +1003,10 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			s.handleTaskSessions(w, r, parts[0])
 			return
 		}
+		if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "accept" {
+			s.handleAcceptTask(w, r, parts[0])
+			return
+		}
 	}
 
 	// GET /api/tasks/{id}
@@ -1103,6 +1107,57 @@ func (s *Server) handleAttachSession(w http.ResponseWriter, r *http.Request, tas
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"success":true}`))
+}
+
+// handleAcceptTask implements POST /api/tasks/{id}/accept. Acceptance is the
+// dedicated sub-resource for the terminal `accepted` verdict on a `completed`
+// task. The actor is taken from authenticated claims (never the body); the
+// evidence_bundle is decoded into the structured payload. See
+// docs/superpowers/specs/2026-08-17-task-acceptance-evidence-design.md.
+func (s *Server) handleAcceptTask(w http.ResponseWriter, r *http.Request, taskID string) {
+	var req struct {
+		EvidenceBundle task.EvidenceBundle `json:"evidenceBundle"`
+		Note           string               `json:"note,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	// Top-level note folds into bundle.note so the two-arg form is a
+	// convenience, not an alternate source of truth.
+	if req.Note != "" && req.EvidenceBundle.Note == "" {
+		req.EvidenceBundle.Note = req.Note
+	}
+
+	actor := s.userIDFromRequest(r)
+	if actor == "" || actor == "local" {
+		http.Error(w, "missing authenticated actor", http.StatusUnauthorized)
+		return
+	}
+
+	workspaceID := s.workspaceIDFromRequest(r)
+	previous, err := s.taskStore.GetTaskScoped(r.Context(), taskID, workspaceID)
+	if err != nil {
+		// Cross-workspace and missing-task are indistinguishable at the wire.
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	accepted, err := s.taskStore.AcceptTaskScoped(r.Context(), taskID, workspaceID, actor, req.EvidenceBundle)
+	if err != nil {
+		if errors.Is(err, task.ErrTaskNotCompletable) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	s.auditTaskStatusChange(r, accepted, previous.Status)
+	s.broadcastTaskEvent("task_updated", accepted)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(accepted)
 }
 
 func (s *Server) pendingApprovalsForTask(ctx context.Context, taskID, workspaceID string) (int, error) {
