@@ -341,6 +341,12 @@ func main() {
 		emailScheduler.SetBroadcaster(srv.WSHub())
 	}
 
+	// 注入 audit writer：email 包内 oauth callback / scheduler refresh+revoke
+	// 路径上的审计事件都通过此 writer 落到 server 持有的 AuditStore。
+	// writer 为 nil 时 email 包会仅 log、不 panic——便于在没有 server 的
+	// 单元测试中运行 email 包。
+	email.SetAuditWriter(server.NewEmailAuditWriter(srv))
+
 	// ---- LLM Gateway 配置持久化（PG 可用时从数据库加载）----
 	// 注意：workspaces 列表在 S0-A Identity Core 装配完之后才可用，
 	// 所以这里只构造 store 并暂存，等 identity 装配完成后回调
@@ -597,6 +603,8 @@ func main() {
 
 	// Phase 5: 启动 ACC 任务后台同步（5 分钟一次把 ACC 任务拉取到本地）
 	taskScheduler := tasksync.New(mcpClient, taskStore, 5*60*1_000_000_000) // 5min
+	// 注入 audit writer：system tenant 用于标记 ACC 拉取不属于任何 workspace。
+	tasksync.SetAuditWriter(server.NewTasksyncAuditWriter(srv))
 	taskScheduler.Start(context.Background())
 	defer taskScheduler.Stop()
 

@@ -262,17 +262,29 @@ func (s *Scheduler) refreshOnce(ctx context.Context, leewaySec int64, opTimeout 
 		_, err = RefreshAccessToken(callCtx, s.crypto, s.store, s.refresher, cfg.TokenURL, cfg.ClientID, cfg.ClientSecret, row.AccountID)
 		if err == nil {
 			log.Printf("[email/scheduler] refreshed oauth token for %s (account %s)", acc.EmailAddress, acc.ID)
+			recordAudit(acc.UserID, acc.WorkspaceID, "email.oauth.refreshed",
+				"email_account:"+acc.ID,
+				AuditFields{Success: true, Detail: "provider=" + providerID})
 			continue
 		}
 		if !IsPermanentRefreshError(err) {
 			log.Printf("[email/scheduler] transient refresh failure for %s: %v (will retry)", acc.EmailAddress, err)
+			recordAudit(acc.UserID, acc.WorkspaceID, "email.oauth.refreshed.error",
+				"email_account:"+acc.ID,
+				AuditFields{Success: false, Detail: "transient"})
 			continue
 		}
 		log.Printf("[email/scheduler] permanent refresh failure for %s: %v — revoking", acc.EmailAddress, err)
 		if revokeErr := s.store.RevokeOAuthTokenScoped(callCtx, row.AccountID, row.UserID, row.WorkspaceID); revokeErr != nil {
 			log.Printf("[email/scheduler] revoke oauth token for %s: %v", acc.EmailAddress, revokeErr)
+			recordAudit(acc.UserID, acc.WorkspaceID, "email.oauth.revoked.error",
+				"email_account:"+acc.ID,
+				AuditFields{Success: false, Detail: "revoke_failed"})
 			continue
 		}
+		recordAudit(acc.UserID, acc.WorkspaceID, "email.oauth.revoked",
+			"email_account:"+acc.ID,
+			AuditFields{Success: true, Detail: "provider=" + providerID})
 		s.broadcastRevoked(acc, providerID, err)
 	}
 }

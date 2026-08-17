@@ -168,6 +168,16 @@ func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) 
 		if s.llmGWCache != nil {
 			s.llmGWCache.replace(workspaceID, current)
 		}
+		// 审计：baseURL/apiKey 配置变更。detail 只暴露 baseURL host 与
+		// 是否携带 apiKey，绝不写 apiKey 原文（也绝不走 redact —— 这里
+		// 就不让它进入 detail 字符串）。
+		apiKeySet := req.APIKey != ""
+		s.WriteWithClaims(&authClaims{UserID: claimsUserFromContextOrEmpty(r), WorkspaceID: workspaceID},
+			"llm_gateway.config.updated", "llm_gateway_config",
+			AuditFields{
+				Success: true,
+				Detail:  fmt.Sprintf("base_url=%s api_key_set=%t models_set=%t", baseURLHostOnly(req.BaseURL), apiKeySet, req.Models != nil),
+			})
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "baseURL": current.BaseURL, "models": current.Models})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

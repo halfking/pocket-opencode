@@ -602,6 +602,13 @@ func (s *Server) createEmailAccount(w http.ResponseWriter, r *http.Request) {
 		acc.SMTPHost = body.SMTPHost
 		acc.SMTPPort = smtpPort
 	}
+	// 审计：创建账号事件。detail 只列 auth_type + smtp_password_set 标志，
+	// 绝不包含 password/oauthToken 原文。
+	s.Write(r, "email.account.created", "email_account:"+acc.ID, AuditFields{
+		Success: true,
+		Detail: fmt.Sprintf("auth_type=%s smtp_set=%t",
+			body.AuthType, body.SMTPPassword != ""),
+	})
 	writeJSON(w, http.StatusCreated, acc)
 	if s.wsHub != nil {
 		s.wsHub.BroadcastToUser(uid, "email.account.created", acc)
@@ -719,6 +726,10 @@ func (s *Server) handleEmailAccountOps(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		// 审计：删除账号事件；detail 仅包含 id，不含账号元数据。
+		s.Write(r, "email.account.deleted", "email_account:"+id, AuditFields{
+			Success: true,
+		})
 		writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 		if s.wsHub != nil {
 			s.wsHub.BroadcastToUser(uid, "email.account.deleted", map[string]string{"id": id})
@@ -891,6 +902,31 @@ func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc 
 		acc.SMTPPort = smtpPort
 	}
 
+	// 审计：变更字段集合（password/oauthToken/smtpPassword 出现与否），
+	// 真实凭据绝不进入 detail。
+	fields := []string{}
+	if body.Password != nil {
+		fields = append(fields, "password_set")
+	}
+	if body.OAuthToken != nil {
+		fields = append(fields, "oauth_token_set")
+	}
+	if body.SMTPHost != nil {
+		fields = append(fields, "smtp_password_set")
+	}
+	if body.SyncIntervalMin != nil {
+		fields = append(fields, "sync_interval")
+	}
+	if body.Enabled != nil {
+		fields = append(fields, "enabled")
+	}
+	if body.IMAPHost != nil {
+		fields = append(fields, "imap_host")
+	}
+	s.Write(r, "email.account.updated", "email_account:"+acc.ID, AuditFields{
+		Success: true,
+		Detail:  fmt.Sprintf("changed=%v", fields),
+	})
 	writeJSON(w, http.StatusOK, acc)
 	if s.wsHub != nil {
 		s.wsHub.BroadcastToUser(uid, "email.account.updated", acc)
@@ -1716,6 +1752,11 @@ func (s *Server) handleVaultSync(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		// 审计：记录版本与字节数，绝不写 blob 内容。
+		s.Write(r, "vault.sync.upload", "vault:"+uid, AuditFields{
+			Success: true,
+			Detail:  fmt.Sprintf("version=%d bytes=%d", body.Version, len(body.Blob)),
+		})
 		s.wsHub.BroadcastToUser(uid, "vault.synced", map[string]string{"userId": uid})
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	case r.Method == http.MethodGet && (sub == "latest" || sub == ""):
@@ -1742,6 +1783,11 @@ func (s *Server) handleVaultSync(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		// 审计：restore 不重写 blob，仅记录指针翻转到的版本。
+		s.Write(r, "vault.sync.restore", "vault:"+uid, AuditFields{
+			Success: true,
+			Detail:  fmt.Sprintf("version=%d", ver),
+		})
 		s.wsHub.BroadcastToUser(uid, "vault.restored", map[string]any{"userId": uid, "version": ver})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": ver, "blob": blob})
 	case r.Method == http.MethodGet && strings.HasPrefix(sub, "versions/"):
