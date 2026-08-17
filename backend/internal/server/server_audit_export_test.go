@@ -90,8 +90,15 @@ func TestAuditExportJSONLWithRangeAndPagination(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
 		t.Fatalf("line is not valid audit entry: %v", err)
 	}
-	if first.TenantID != "ws-a" {
-		t.Fatalf("tenant scope violated: %+v", first)
+	// 每行都必须属于 ws-a；ws-b 的 action 不能跨租户渗透。
+	for i, line := range lines {
+		var e redclaw.AuditEntry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("line %d: %v", i, err)
+		}
+		if e.TenantID != "ws-a" {
+			t.Fatalf("tenant scope violated on line %d: tenant=%q action=%q", i, e.TenantID, e.Action)
+		}
 	}
 	cursor := rr.Header().Get("X-Audit-Next-Cursor")
 	if cursor == "" {
@@ -116,6 +123,7 @@ func TestAuditExportJSONLWithRangeAndPagination(t *testing.T) {
 	all = append(all, lines2...)
 	seen := map[string]bool{}
 	var prev time.Time
+	tenantCounts := map[string]int{}
 	for _, line := range all {
 		var e redclaw.AuditEntry
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
@@ -129,6 +137,13 @@ func TestAuditExportJSONLWithRangeAndPagination(t *testing.T) {
 			t.Fatal("pages must be time-ordered")
 		}
 		prev = e.Timestamp
+		tenantCounts[e.TenantID]++
+	}
+	if tenantCounts["ws-a"] != 7 {
+		t.Fatalf("ws-a must own all 7 entries, got counts: %+v", tenantCounts)
+	}
+	if tenantCounts["ws-b"] != 0 {
+		t.Fatalf("ws-b entries must not leak into ws-a export, got counts: %+v", tenantCounts)
 	}
 }
 
@@ -192,6 +207,38 @@ func TestAuditExportValidation(t *testing.T) {
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("%s: expected 400, got %d", q, rr.Code)
 		}
+	}
+}
+
+// /api/audit/export 自身必须被审计：每次成功的导出都应在 store 里留下一条
+// audit.export 事件，便于追溯谁导了什么。
+func TestAuditExportWritesSelfAudit(t *testing.T) {
+	srv, adminToken := newAuditExportServer(t)
+	h := srv.Handler()
+
+	req := mobileRequest(http.MethodGet, "/api/audit/export?format=jsonl", adminToken, "")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export failed: %d %s", rr.Code, rr.Body.String())
+	}
+
+	entries, err := srv.auditStore.Query(redclaw.AuditQuery{Action: "audit.export"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 audit.export entry, got %d", len(entries))
+	}
+	e := entries[0]
+	if e.TenantID != "ws-a" {
+		t.Fatalf("self audit must use caller workspace, got %q", e.TenantID)
+	}
+	if !strings.Contains(e.Detail, "format=jsonl") {
+		t.Fatalf("self audit detail missing format: %q", e.Detail)
+	}
+	if !strings.Contains(e.Detail, "count=") {
+		t.Fatalf("self audit detail missing count: %q", e.Detail)
 	}
 }
 

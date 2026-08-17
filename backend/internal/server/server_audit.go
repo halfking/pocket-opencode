@@ -1,24 +1,33 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
-
-	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 )
 
+// handleAuditLogs GET /api/audit/logs — admin 视角下的工作区审计分页查询。
+//
+// 与 /api/audit/export 共享同一套 query 解析、tenant 强校验与分页语义；
+// 区别仅在于默认 format=json、默认 limit=100，且响应不带 attachment 头。
+//
+// 参数：
+//
+//	format   json（默认）| jsonl | csv
+//	start    起始时间（RFC3339，闭区间；缺省 = 最早）
+//	end      结束时间（RFC3339，开区间；缺省 = 至今）
+//	cursor   上一页返回的 X-Audit-Next-Cursor（增量续传）
+//	limit    每页条数，1-1000，默认 100
+//	action   可选 action 过滤
+//
+// 权限：仅 admin，租户范围强制取自 JWT claims（忽略客户端参数）。
 func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	if s.auditStore == nil {
 		http.Error(w, "audit not configured", http.StatusServiceUnavailable)
 		return
 	}
-
-	// Audit logs require admin role and are scoped to authenticated workspace
 	claims := s.claimsFromContext(r)
 	if claims == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -29,22 +38,17 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Force tenant scope to authenticated workspace; ignore client-supplied tenant_id
-	query := redclaw.AuditQuery{
-		TenantID: claims.WorkspaceID,
-		Action:   r.URL.Query().Get("action"),
-		// UserID filter omitted to allow workspace-wide audit by admins
+	query, format, err := parseAuditQuery(r, false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
-	entries, err := s.auditStore.Query(query)
+	page, err := s.auditStore.QueryRange(query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"entries": entries,
-		"total":   len(entries),
-	})
+	writeAuditPage(w, page, format, false)
 }
