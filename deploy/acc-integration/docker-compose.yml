@@ -1,0 +1,124 @@
+# =============================================================================
+# opencode-pocket — acc / memora / redclaw 集成部署（本地）
+# =============================================================================
+#
+# 设计目标：
+#   - **单 PG**：复用本机已有的 `kxmemory-rls-pg17`（kxuser/kaixuan，25432）；
+#     不再起第二个 postgres 容器（用户要求：减少 PG 实例数）。
+#   - **共享网络**：加入 `acc-local-net`（external）。该网络已挂载：
+#       * kxmemory-rls-pg17  (PG)
+#       * nbjl-redis          (Redis)
+#       * acc-go-local        (agent-control-center 的 Go 版本)
+#       * acc-go-proxy        (nginx proxy)
+#   - **跨容器调用**：pocketd → kxmemory-rls-pg17（DNS 名 `kxmemory-rls-pg17`
+#     或 `postgres`） +  `acc-go-local`（`POCKET_BASE_URL=http://acc-go-local:4101`，
+#     与 acc-go 的 env 期望对齐）。RedClaw 暂时通过空 `POCKET_REDCLAW_BASE_URL`
+#     跳过——pocketd 在该变量为空时不会调用 RedClaw；以后 RedClaw 实现
+#     `/api/v1/pocket/llm/chat` 时再填入。
+#   - **kx-base 离线镜像**：后端用 `Dockerfile.kx-base`，需要先
+#     `docker load -i ~/work/docker-base-images/lang-base/kx-base-go-vue-v2-alpine-slim-arm64.tar.gz`
+#     （manifest 标签为 `kx-base:go-vue-optimized`）。
+#
+# 用法：
+#   cd services/opencode-pocket/deploy/acc-integration
+#   cp .env.example .env  # 编辑端口 / secret
+#   ./local-up.sh
+#   ./local-down.sh
+#
+# 端口规划（避免与现有容器冲突）：
+#   - pocketd backend  : 8088 (本机直接访问) → 容器 8088
+#   - frontend (nginx) : 4175 (本机直接访问) → 容器 80
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # pocketd backend (opencode-pocket API server)
+  # ===========================================================================
+  pocketd:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.kx-base
+      network: host
+      args:
+        KX_BASE_TAG: kx-base:go-vue-optimized
+        RUNTIME_BASE_IMAGE: alpine:latest
+    image: opencode-pocket:pocket-acc
+    pull_policy: never
+    container_name: opencode-pocket-pocketd
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # ---- 容器内 DNS 名（acc-local-net 已挂 kxmemory-rls-pg17） ----
+      POCKET_POSTGRES_DSN: postgresql://kxuser:kxpass@kxmemory-rls-pg17:5432/kaixuan?sslmode=disable
+
+      # ---- 跨容器调用 acc-go（agent-control-center） ----
+      # acc-go 容器名 acc-go-local，监听 4101。pocketd 用作 memora/acc
+      # 协同入口；当前版本该变量未启用（POCKET_BASE_URL 不在 config 中
+      # 出现，预留给 S0-D）。
+      # POCKET_BASE_URL: http://acc-go-local:4101
+
+      # ---- RedClaw 暂时关掉（端点未实现） ----
+      POCKET_REDCLAW_BASE_URL: ""
+
+      # ---- dev mode：自动种子 admin/admin ----
+      POCKET_DEV_AUTH: "true"
+      POCKET_ENV: development
+
+      # ---- 数据 / 配置目录 ----
+      POCKET_DATA_DIR: /app/data
+      POCKET_LOG_LEVEL: info
+    ports:
+      - "${POCKET_HOST_PORT:-8088}:8088"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - acc-local-net
+    volumes:
+      - pocketd_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8088/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 25s
+
+  # ===========================================================================
+  # frontend (nginx serving the Vite-built dist/)
+  # ===========================================================================
+  frontend:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.frontend
+      network: host
+    image: opencode-pocket-frontend:pocket-acc
+    pull_policy: never
+    container_name: opencode-pocket-frontend
+    restart: unless-stopped
+    depends_on:
+      pocketd:
+        condition: service_healthy
+    environment:
+      # VITE_API_BASE 已通过 build 期 .env.ios-dev / .env.android-dev 注入
+      # bundle；容器内 nginx 反代到 pocketd:8088 提供同源体验（避免
+      # 浏览器 CORS）。
+      BACKEND_UPSTREAM: http://pocketd:8088
+    ports:
+      - "${POCKET_FRONTEND_HOST_PORT:-4175}:80"
+    networks:
+      - acc-local-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  pocketd_data:
+    name: opencode-pocket-pocketd-data
+
+networks:
+  acc-local-net:
+    external: true
+    name: acc-local-net
