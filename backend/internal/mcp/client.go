@@ -29,6 +29,33 @@ type Client struct {
 	initErr     error      // 缓存初始化错误
 }
 
+// Capabilities 描述当前 MCP 客户端声明的能力。P3 「企业集成只读」要求
+// 只读优先：当前生产代码仅调用 GetRemoteTasks（acc_get_tasks）这一个
+// tool，写路径不存在；明确把 Read 标 true、Write 标 false，便于 /api/
+// integration/status 等端点向外表达这一不变量。
+//
+// 字段命名/语义与 docs/优化v4/04 §7.4 一致；后续若引入 connector 的写
+// capability，必须同时改 Capabilities + 加显式审批路径。
+func (c *Client) Capabilities() Capabilities {
+	if c == nil {
+		return Capabilities{}
+	}
+	return Capabilities{
+		Connector: "acc",
+		Read:      true,
+		Write:     false,
+		Tools:     []string{"acc_get_tasks"},
+	}
+}
+
+// Capabilities 是 MCP connector 能力声明。
+type Capabilities struct {
+	Connector string   `json:"connector"` // 例如 "acc"
+	Read      bool     `json:"read"`
+	Write     bool     `json:"write"`
+	Tools     []string `json:"tools,omitempty"` // 当前实际可调用的 tool 列表
+}
+
 // NewClient 创建新的 MCP 客户端。
 // insecureTLS=true 时跳过 TLS 证书验证（仅限开发/内网自签证书场景，生产必须 false）。
 func NewClient(baseURL, apiKey string, insecureTLS bool) *Client {

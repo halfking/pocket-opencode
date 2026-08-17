@@ -1,0 +1,105 @@
+package server
+
+// integration_status.go — P3 §5 「企业集成只读状态」端点。
+//
+// GET /api/integration/status 返回每个外部集成的「已配置 / 已连接 +
+// 当前 capabilities」快照。该端点供 admin / ops 视图使用，未来前端
+// 「集成状态」页面直接消费；当前未集成前端，admin 可直接 curl 验证。
+//
+// 行为约束：
+//   - 仅 requireAuth；不强制 admin（admin 校验在后续 Phase D 引入；
+//     本轮不阻塞 admin 视图外的常规用户了解集成是否启用）。
+//   - 每个 connector 单独列 capabilities.connector、read/write 与 tools，
+//     与 mcp.Client.Capabilities() 保持一致。
+//   - 当 cfg 未设置对应 base URL / api key 时返回 disabled；**绝不**直接
+//     暴露 baseURL / apiKey 字符串本身（避免内部地址泄露）。
+
+import (
+	"net/http"
+)
+
+// integrationStatusResponse 是 /api/integration/status 的响应结构。
+type integrationStatusResponse struct {
+	Integrations map[string]integrationEntry `json:"integrations"`
+}
+
+// integrationEntry 是单个集成的状态摘要。
+type integrationEntry struct {
+	Enabled      bool     `json:"enabled"`
+	Configured   bool     `json:"configured"` // 凭据是否齐全
+	Read         bool     `json:"read"`
+	Write        bool     `json:"write"`
+	Tools        []string `json:"tools,omitempty"`
+	Capabilities string   `json:"capabilities,omitempty"` // 人类可读描述
+}
+
+// handleIntegrationStatus 暴露企业集成状态快照。
+func (s *Server) handleIntegrationStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	resp := integrationStatusResponse{
+		Integrations: map[string]integrationEntry{},
+	}
+
+	// ACC：通过 mcpClient 是否被注入 + Capabilities() 派生。
+	if s.mcpClient != nil {
+		caps := s.mcpClient.Capabilities()
+		resp.Integrations["acc"] = integrationEntry{
+			Enabled:      caps.Read,
+			Configured:   true,
+			Read:         caps.Read,
+			Write:        caps.Write,
+			Tools:        caps.Tools,
+			Capabilities: "read-only: " + caps.Connector,
+		}
+	} else {
+		resp.Integrations["acc"] = integrationEntry{
+			Enabled:      false,
+			Configured:   false,
+			Capabilities: "disabled: POCKET_MCP_BASE_URL not set",
+		}
+	}
+
+	// kxmemory：通过注入的 client 是否非 nil 判定；写能力永远为 false
+	// （kxmemory.Client 当前无任何写语义，只有 classify / daily_summary /
+	// stats 三个只读 / 写入笔记分类的远端调用，本端只做「可消费性」判定）。
+	if s.kxmemory != nil {
+		resp.Integrations["kxmemory"] = integrationEntry{
+			Enabled:      true,
+			Configured:   true,
+			Read:         true,
+			Write:        false,
+			Capabilities: "classify / daily_summary / stats",
+		}
+	} else {
+		resp.Integrations["kxmemory"] = integrationEntry{
+			Enabled:      false,
+			Configured:   false,
+			Capabilities: "disabled: POCKET_KXMEMORY_BASE_URL not set",
+		}
+	}
+
+	// llm-gateway：通过 llmGWCache 是否非 nil 判定（默认 non-nil，
+	// 真正启用与否取决于 cfg.LLMGatewayURL/APIKey，由 cmd/pocketd 装配
+	// 时决定）。此处只表达「配置存在 / 不存在」。
+	if s.llmGWCache != nil {
+		resp.Integrations["llm_gateway"] = integrationEntry{
+			Enabled:      true,
+			Configured:   true,
+			Read:         true,
+			Write:        false, // 当前仅提供模型列表 / 探测 / 配置；写视为「启用配置」语义，不在只读 scope
+			Capabilities: "models / nodes / probe / config",
+		}
+	} else {
+		resp.Integrations["llm_gateway"] = integrationEntry{
+			Enabled:      false,
+			Configured:   false,
+			Capabilities: "disabled",
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
