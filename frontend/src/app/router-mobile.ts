@@ -242,6 +242,13 @@ const router = createRouter({
       component: () => import('../features/settings/SettingsLLMGateway.vue'),
       meta: { requiresAuth: true, title: 'AI 模型', bottomNav: false, canGoBack: true }
     },
+    // P3 — 成本与配额只读面板
+    {
+      path: '/cost',
+      name: 'cost',
+      component: () => import('../features/cost/CostQuotaView.vue'),
+      meta: { requiresAuth: true, title: '成本与配额', bottomNav: false, canGoBack: true }
+    },
 
     // ---- 网关运维控制面（llm-gateway-go 运行状态）----
     // 只要 requiresAuth：这些页面读的是网关运行状态，不碰本地加密库，

@@ -4,6 +4,7 @@
  * 对接后端：
  *   POST /api/llm/stream   流式 chat（SSE，OpenAI delta shape）
  *   GET  /api/llm/usage    workspace 用量汇总
+ *   GET  /api/llm/quota    workspace 配额状态（budgets + strategy + enforce_mode）
  *
  * 流式读取：fetch + ReadableStream 手动解析 SSE（EventSource 不支持 POST +
  * Authorization header）。每行 "data: {...}\n\n" 直到 "data: [DONE]"。
@@ -38,6 +39,23 @@ export interface UsageSummary {
   completion_tokens: number
   total_cost_usd: number
   call_count: number
+}
+
+export type QuotaBudgetKind = 'tokens' | 'cost_usd' | 'calls'
+
+export interface QuotaBudget {
+  workspace_id: string
+  kind: QuotaBudgetKind
+  limit: number
+  period_start?: string
+  period_end?: string
+}
+
+export interface QuotaResponse {
+  workspace_id: string
+  budgets: QuotaBudget[]
+  strategy: string
+  enforce_mode: boolean
 }
 
 export interface StreamHandlers {
@@ -129,6 +147,8 @@ export const llmBffApi = {
 
   getUsage: (days = 7) =>
     http<UsageSummary>(`/api/llm/usage?days=${days}`),
+
+  getQuota: () => http<QuotaResponse>('/api/llm/quota'),
 }
 
 // 局部 http 引用，避免循环依赖（与 ./http.ts 同款）。

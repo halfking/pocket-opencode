@@ -83,6 +83,7 @@ const more: NavItem[] = [
   { to: '/tasks', icon: '📋', label: '任务' },
   { to: '/sessions', icon: '💬', label: '会话' },
   { to: '/instances', icon: '💻', label: '实例' },
+  { to: '/cost', icon: '💰', label: '成本与配额' },
   { to: '/settings', icon: '⚙️', label: '设置' },
 ]
 
