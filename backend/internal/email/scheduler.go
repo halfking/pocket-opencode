@@ -156,7 +156,13 @@ func (s *Scheduler) Start(ctx context.Context) {
 		log.Printf("[email/scheduler] disabled via cfg.EmailFetchEnabled=false")
 		return
 	}
-	go s.pollLoop(ctx)
+	// Fetch polling only makes sense with an IMAP fetcher; deployments without
+	// one (intent-only / summary-only scheduler, tests) must not spin a ticker
+	// whose tick() would be a no-op. The other loops already gate themselves on
+	// their own optional deps.
+	if s.fetcher != nil {
+		go s.pollLoop(ctx)
+	}
 	go s.dailySummaryLoop(ctx)
 	if s.vacationSender != nil {
 		go s.vacationLoop(ctx)
@@ -525,6 +531,15 @@ func (s *Scheduler) sendVacationReply(ctx context.Context, delivery *VacationDel
 }
 
 func (s *Scheduler) tick(ctx context.Context) {
+	// nil fetcher is a supported degraded mode (intent/summary-only scheduler,
+	// tests). Fetch sync is the only thing tick does, so without a fetcher this
+	// cycle is a no-op; let pollLoop's caller (Start) handle not launching the
+	// loop. This guard also protects direct tick() callers from the per-account
+	// s.fetcher.Sync dereference that previously recovered a panic each tick.
+	if s.fetcher == nil {
+		log.Printf("[email/scheduler] fetch loop skipped: fetcher not configured")
+		return
+	}
 	// 用 WithWorkspace 变体：返回的 Account 带 workspace_id，下游 fetcher.Sync
 	// 需要它把邮件写到正确的 workspace（而非 defaultWorkspace 兜底）。旧
 	// ListEnabledAccounts 的 SELECT 不含该列，是遗留 footgun。
