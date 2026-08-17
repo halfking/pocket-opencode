@@ -1960,6 +1960,11 @@ func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	embedding, model, err := s.embedder.Embed(r.Context(), body.Text)
+	// 审计：模型调用事件；detail 只含 model 与字符数，绝不记 body.Text。
+	s.Write(r, "llm.embed", "llm:embed", AuditFields{
+		Success: err == nil,
+		Detail:  fmt.Sprintf("model=%s chars=%d", model, len(body.Text)),
+	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "embed failed: "+err.Error())
 		return
@@ -2019,6 +2024,12 @@ func (s *Server) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	content, err := s.llm.Chat(r.Context(), model, body.Messages)
+	// 审计：模型调用事件（P3 §2「模型调用…有可检索审计事件」）。
+	// detail 只含 model 与消息条数，绝不写消息内容。
+	s.Write(r, "llm.chat", "llm:chat", AuditFields{
+		Success: err == nil,
+		Detail:  fmt.Sprintf("model=%s messages=%d", model, len(body.Messages)),
+	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "llm failed: "+err.Error())
 		return

@@ -64,6 +64,20 @@ func (c *llmGatewayCache) get(workspaceID string) llmGatewayState {
 	return defaultLLMGatewayState()
 }
 
+// has reports whether an explicit (env-loaded or POST /config persisted)
+// entry exists for the workspace. Unlike get(), it does NOT fall back to
+// defaultLLMGatewayState — the default carries a hardcoded BaseURL, which
+// would make "unconfigured" indistinguishable from "configured".
+func (c *llmGatewayCache) has(workspaceID string) bool {
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	c.mu.RLock()
+	_, ok := c.state[workspaceID]
+	c.mu.RUnlock()
+	return ok
+}
+
 // replace swaps the cached state for a workspace; the caller's struct is
 // copied so subsequent caller-side mutations cannot leak into the cache.
 func (c *llmGatewayCache) replace(workspaceID string, st llmGatewayState) {

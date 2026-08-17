@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,20 +13,33 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 )
 
-// /api/llm/quota 在 Enforcer 未配置时应返 503（或 401，看 requireAuth 顺序）。
+// /api/llm/quota 在 Enforcer 未配置时应返 503。
 func TestLLMQuotaHandler_NoEnforcerReturns503(t *testing.T) {
-	srv, _, _, _ := newMobileRouteServer(t)
-	h := srv.Handler()
-	// 取一个有效 token 但 server 上无 quotaEnforcer。
-	_, _, signer, _ := newMobileRouteServer(t)
+	srv, _, signer, _ := newMobileRouteServer(t)
 	tok, _ := signer.SignWithWorkspace("q-u", "member", "ws-a")
-	_ = srv
 
 	req := mobileRequest(http.MethodGet, "/api/llm/quota", tok, "")
 	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, req)
+	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 when enforcer is nil, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// budgets 为空时必须返回 [] 而非 null——前端消费方按数组遍历。
+func TestLLMQuotaHandler_EmptyBudgetsEncodeAsArray(t *testing.T) {
+	srv, _, signer, _ := newMobileRouteServer(t)
+	srv.quotaEnforcer = quota.NewEnforcer(quota.NewMemoryStore(), nil)
+
+	tok, _ := signer.SignWithWorkspace("q-u", "member", "ws-a")
+	req := mobileRequest(http.MethodGet, "/api/llm/quota", tok, "")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"budgets":[]`) {
+		t.Fatalf("budgets must encode as [] when empty, got %s", rr.Body.String())
 	}
 }
 

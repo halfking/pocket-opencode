@@ -2,6 +2,7 @@ package quota
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 )
 
@@ -44,11 +45,14 @@ type DecisionInput struct {
 
 // Enforcer 把 Store + Strategy 包装成单一入口。Check 不修改 budgets；返回
 // Decision 与一个 error（store 错误 / strategy 错误）。
+//
+// store/strategy/name 构造后不可变；enforce 用 atomic 支持
+// SetEnforceMode 与 Check 并发调用（ops 运行期翻转开关）。
 type Enforcer struct {
 	store    Store
 	strategy Strategy
 	name     string
-	enforce  bool
+	enforce  atomic.Bool
 }
 
 // NewEnforcer 构造；strategy == nil 时用 AlwaysAllowStrategy（默认）。
@@ -73,11 +77,11 @@ func (e *Enforcer) Store() Store { return e.store }
 func (e *Enforcer) StrategyName() string { return e.name }
 
 // EnforceMode 返回当前是否处于「硬拒绝」模式；当前默认 false。
-func (e *Enforcer) EnforceMode() bool { return e.enforce }
+func (e *Enforcer) EnforceMode() bool { return e.enforce.Load() }
 
 // SetEnforceMode 切换硬拒绝。开启后 Decision.Allow=false 时调用方应阻断。
-// 当前轮默认 false，仅用于可观测。
-func (e *Enforcer) SetEnforceMode(v bool) { e.enforce = v }
+// 当前轮默认 false，仅用于可观测。与 Check/EnforceMode 并发安全。
+func (e *Enforcer) SetEnforceMode(v bool) { e.enforce.Store(v) }
 
 // Check 拉取当前预算并调用 strategy。
 func (e *Enforcer) Check(ctx context.Context, in DecisionInput) (Decision, error) {

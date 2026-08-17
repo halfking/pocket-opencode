@@ -16,6 +16,7 @@ package server
 
 import (
 	"net/http"
+	"os"
 )
 
 // integrationStatusResponse 是 /api/integration/status 的响应结构。
@@ -82,10 +83,13 @@ func (s *Server) handleIntegrationStatus(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// llm-gateway：通过 llmGWCache 是否非 nil 判定（默认 non-nil，
-	// 真正启用与否取决于 cfg.LLMGatewayURL/APIKey，由 cmd/pocketd 装配
-	// 时决定）。此处只表达「配置存在 / 不存在」。
-	if s.llmGWCache != nil {
+	// llm-gateway：不能用 llmGWCache 非空（newServer 无条件创建）也不
+	// 能用 snapshot.BaseURL（default 态带硬编码回退 URL）判定。配置信
+	// 号 = env 显式设置 或 cache 里有该 workspace 的持久化条目
+	// （POST /api/llm-gateway/config 保存并从 PG 加载）。
+	gwConfigured := os.Getenv("POCKET_LLM_GATEWAY_URL") != "" ||
+		s.llmGWCache.has(s.workspaceIDFromRequest(r))
+	if gwConfigured {
 		resp.Integrations["llm_gateway"] = integrationEntry{
 			Enabled:      true,
 			Configured:   true,
@@ -97,7 +101,7 @@ func (s *Server) handleIntegrationStatus(w http.ResponseWriter, r *http.Request)
 		resp.Integrations["llm_gateway"] = integrationEntry{
 			Enabled:      false,
 			Configured:   false,
-			Capabilities: "disabled",
+			Capabilities: "disabled: gateway not explicitly configured",
 		}
 	}
 

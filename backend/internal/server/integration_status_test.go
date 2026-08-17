@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -112,6 +113,34 @@ func TestIntegrationStatus_MethodNotAllowed(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", rr.Code)
+	}
+}
+
+// llm_gateway 必须按「BaseURL 是否配置」报告——llmGWCache 在 newServer
+// 中无条件创建，不能作为启用信号（回归：曾恒报 enabled=true）。
+func TestIntegrationStatus_LLMGatewayDisabledWithoutBaseURL(t *testing.T) {
+	if os.Getenv("POCKET_LLM_GATEWAY_URL") != "" {
+		t.Skip("POCKET_LLM_GATEWAY_URL set in env; snapshot would report configured")
+	}
+	srv, _, signer, _ := newMobileRouteServer(t)
+	tok, _ := signer.SignWithWorkspace("ops", "member", "ws-a")
+
+	req := mobileRequest(http.MethodGet, "/api/integration/status", tok, "")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Integrations map[string]struct {
+			Enabled bool `json:"enabled"`
+		} `json:"integrations"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if gw, ok := resp.Integrations["llm_gateway"]; !ok || gw.Enabled {
+		t.Fatalf("llm_gateway must be disabled when baseURL unconfigured, got %+v", resp.Integrations)
 	}
 }
 

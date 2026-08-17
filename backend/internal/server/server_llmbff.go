@@ -228,6 +228,9 @@ func (s *Server) handleLLMBFFQuota(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "quota query: "+err.Error())
 		return
 	}
+	if budgets == nil {
+		budgets = []quota.Budget{} // JSON 消费方（未来的 Vue 视图）需要 [] 而非 null
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"workspace_id": wsID,
 		"budgets":      budgets,

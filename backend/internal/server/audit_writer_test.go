@@ -38,6 +38,29 @@ func TestRedactDetail_StripsSensitiveValues(t *testing.T) {
 	}
 }
 
+// 同一敏感键出现多次时必须全部掩码——只替换第一处会让第二个值幸存。
+func TestRedactDetail_StripsAllOccurrences(t *testing.T) {
+	jsonInput := `{"a":1,"password":"first-secret","b":{"password":"second-secret"}}`
+	got := redactDetail(jsonInput)
+	if strings.Contains(got, "first-secret") || strings.Contains(got, "second-secret") {
+		t.Fatalf("multi-occurrence redaction failed: %q", got)
+	}
+	if strings.Count(got, auditRedactedValue) != 2 {
+		t.Fatalf("expected 2 placeholders, got %d in %q",
+			strings.Count(got, auditRedactedValue), got)
+	}
+
+	queryInput := `password=alpha note=x password=beta`
+	got = redactDetail(queryInput)
+	if strings.Contains(got, "alpha") || strings.Contains(got, "beta") {
+		t.Fatalf("multi-occurrence query redaction failed: %q", got)
+	}
+	if strings.Count(got, auditRedactedValue) != 2 {
+		t.Fatalf("expected 2 placeholders in query form, got %d in %q",
+			strings.Count(got, auditRedactedValue), got)
+	}
+}
+
 func TestRedactDetail_PreservesBenignContent(t *testing.T) {
 	// 与 server_audit_export_test.go:142 中的 CSV detail 同义字符串。
 	input := `he said "ok", then left`
@@ -63,8 +86,12 @@ func TestWrite_TruncatesLongDetail(t *testing.T) {
 		t.Fatalf("truncated detail exceeds limit: %d", len(entries[0].Detail))
 	}
 	if !strings.HasSuffix(entries[0].Detail, auditDetailTruncatedTail) {
+		tail := entries[0].Detail
+		if len(tail) > 32 {
+			tail = tail[len(tail)-32:]
+		}
 		t.Fatalf("truncated detail must end with %q, got tail %q",
-			auditDetailTruncatedTail, entries[0].Detail[max(0, len(entries[0].Detail)-32):])
+			auditDetailTruncatedTail, tail)
 	}
 }
 
@@ -194,11 +221,4 @@ func TestWrite_ClaimsFromContext(t *testing.T) {
 	if len(entries) != 1 || entries[0].UserID != "ctx-user" {
 		t.Fatalf("context claims not picked up: %+v", entries)
 	}
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

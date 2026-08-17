@@ -153,62 +153,89 @@ func redactDetail(s string) string {
 	return s
 }
 
-// redactOne 在 src 上做一次扫描，把 key 后面的值替换为 auditRedactedValue。
-// 返回新字符串。
+// redactOne 在 src 上扫描，把 key 后面的**所有**值替换为
+// auditRedactedValue。返回新字符串。
+//
+// 同一键多次出现时全部掩码——只替换第一处会让
+// {"a":1,"password":"x","b":{"password":"y"}} 里的 y 幸存。
 func redactOne(src, key string) string {
 	if key == "" {
 		return src
 	}
-	lower := strings.ToLower(src)
 
-	// 1) JSON 风格 "key":"value"
+	// 1) JSON 风格 "key":"value"——循环替换直到无匹配。
 	jsonPrefix := `"` + key + `":`
-	for i := 0; i+len(jsonPrefix) <= len(lower); i++ {
-		if lower[i:i+len(jsonPrefix)] != jsonPrefix {
-			continue
-		}
-		// JSON value 起始引号
-		j := i + len(jsonPrefix)
-		if j >= len(src) || src[j] != '"' {
-			break
-		}
-		j++ // 跳过开引号
-		// 找闭引号（按字符扫描；不支持转义，因为 detail 不含复杂 JSON）
-		end := j
-		for end < len(src) && src[end] != '"' {
-			end++
-		}
-		if end >= len(src) {
-			return src
-		}
-		return src[:j] + auditRedactedValue + src[end:]
-	}
-
-	// 2) query/form 风格 key=value
-	for i := 0; i+len(key)+1 <= len(lower); i++ {
-		if lower[i:i+len(key)] != key || lower[i+len(key)] != '=' {
-			continue
-		}
-		// 起始必须是 token 边界
-		if i > 0 {
-			prev := lower[i-1]
-			if !isTokenBoundary(prev) {
+	for {
+		lower := strings.ToLower(src)
+		replaced := false
+		for i := 0; i+len(jsonPrefix) <= len(lower); i++ {
+			if lower[i:i+len(jsonPrefix)] != jsonPrefix {
 				continue
 			}
+			j := i + len(jsonPrefix)
+			if j >= len(src) || src[j] != '"' {
+				break
+			}
+			j++ // 跳过开引号
+			end := j
+			for end < len(src) && src[end] != '"' {
+				end++
+			}
+			if end >= len(src) {
+				return src
+			}
+			// 值已是占位符则跳过：否则重扫会把 [REDACTED] 当作新值
+			// 无限替换自身，循环永不终止。用 HasPrefix 而非全等——
+			// query 风格的值终止符包含 ']'，会把占位符截成 "[REDACTED"。
+			if strings.HasPrefix(src[j:], auditRedactedValue) {
+				continue
+			}
+			src = src[:j] + auditRedactedValue + src[end:]
+			replaced = true
+			break
 		}
-		j := i + len(key) + 1
-		// 允许等号后空白
-		for j < len(src) && (src[j] == ' ' || src[j] == '\t') {
-			j++
+		if !replaced {
+			break
 		}
-		start := j
-		for j < len(src) && !isValueTerminator(src[j]) {
-			j++
+	}
+
+	// 2) query/form 风格 key=value——同样循环到无匹配。
+	for {
+		lower := strings.ToLower(src)
+		replaced := false
+		for i := 0; i+len(key)+1 <= len(lower); i++ {
+			if lower[i:i+len(key)] != key || lower[i+len(key)] != '=' {
+				continue
+			}
+			if i > 0 {
+				prev := lower[i-1]
+				if !isTokenBoundary(prev) {
+					continue
+				}
+			}
+			j := i + len(key) + 1
+			for j < len(src) && (src[j] == ' ' || src[j] == '\t') {
+				j++
+			}
+			start := j
+			for j < len(src) && !isValueTerminator(src[j]) {
+				j++
+			}
+			if j == start {
+				continue
+			}
+			// 同上：已是占位符的值不再触发替换，避免死循环（HasPrefix
+			// 兼容 ']' 截断的情况）。
+			if strings.HasPrefix(src[start:], auditRedactedValue) {
+				continue
+			}
+			src = src[:start] + auditRedactedValue + src[j:]
+			replaced = true
+			break
 		}
-		if j == start {
-			continue
+		if !replaced {
+			break
 		}
-		return src[:start] + auditRedactedValue + src[j:]
 	}
 
 	return src

@@ -131,7 +131,9 @@ func HandleOAuthCallback(cfg OAuthCallbackConfig) http.HandlerFunc {
 		errParam := r.URL.Query().Get("error")
 		if errParam != "" {
 			log.Printf("[oauth] callback error: %s, desc: %s", errParam, r.URL.Query().Get("error_description"))
-			recordAudit("", "", "email.oauth.completed.error", "email_account:",
+			// state 尚未 Pop，无从得知 account——resource 用流程级标识而非
+			// 悬空的 "email_account:" 前缀。
+			recordAudit("", "", "email.oauth.completed.error", "email_oauth_callback",
 				AuditFields{Success: false, Detail: "provider_error=" + errParam})
 			http.Error(w, "OAuth error: "+errParam, http.StatusBadRequest)
 			return
