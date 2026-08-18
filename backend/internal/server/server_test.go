@@ -24,7 +24,7 @@ func TestHealthz(t *testing.T) {
 
 	reg := registry.NewRegistry()
 	configAdapter := adapter.NewOpenCodeConfigHTTPAdapter(timeoutMS)
-	srv := New(cfg, adapter.NewStaticNPSAdapter(), adapter.NewOpenCodeHTTPAdapter(timeoutMS), nil, reg, configAdapter, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "")
+	srv := New(cfg, adapter.NewStaticNPSAdapter(), adapter.NewOpenCodeHTTPAdapter(timeoutMS), nil, reg, configAdapter, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "", nil)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 
@@ -73,7 +73,7 @@ func newTestServerWithAuth(t *testing.T) (*Server, string) {
 
 	reg := registry.NewRegistry()
 	configAdapter := adapter.NewOpenCodeConfigHTTPAdapter(timeoutMS)
-	srv := New(cfg, adapter.NewStaticNPSAdapter(), adapter.NewOpenCodeHTTPAdapter(timeoutMS), nil, reg, configAdapter, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, signer, nil, nil, nil, nil, "")
+	srv := New(cfg, adapter.NewStaticNPSAdapter(), adapter.NewOpenCodeHTTPAdapter(timeoutMS), nil, reg, configAdapter, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, signer, nil, nil, nil, nil, "", nil)
 	return srv, token
 }
 

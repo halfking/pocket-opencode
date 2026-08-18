@@ -115,7 +115,7 @@ func newVaultAuditServer(t *testing.T) (*Server, *fakeVaultStore, string) {
 	cfg := config.Load()
 	srv := newServer(cfg, adapter.NewStaticNPSAdapter(), nil, nil,
 		registry.NewRegistry(), nil, nil, nil, vs, nil, nil, nil, nil,
-		nil, nil, nil, signer, nil, nil, nil, nil, "", false)
+		nil, nil, nil, signer, nil, nil, nil, nil, "", false, nil)
 	srv.auditStore = redclaw.NewAuditStore()
 	return srv, vs, token
 }

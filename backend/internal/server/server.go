@@ -38,6 +38,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/snippet"
@@ -136,7 +137,12 @@ type Server struct {
 	redclawBridge *redclaw.Bridge
 
 	// Audit 审计日志存储
-	auditStore *redclaw.AuditStore
+	auditStore interface {
+		Record(entry *redclaw.AuditEntry) error
+		Query(query redclaw.AuditQuery) ([]*redclaw.AuditEntry, error)
+		Flush() []*redclaw.AuditEntry
+		QueryRange(query redclaw.AuditQuery) (*redclaw.AuditPage, error)
+	}
 
 	// 移动端离线重放的 session create 幂等缓存（SEC-06）
 	mobileCreates *mobileCreateCache
@@ -148,14 +154,14 @@ type Server struct {
 // OpenCode 扩展：新增 opencodeManager（实例和会话管理）。
 // Auth + Email: 新增 userStore/jwtSigner/emailCrypto/emailPending/emailScheduler/emailFetcher/dataDir。
 // 这些依赖都允许为 nil（对应功能降级），由各 handler 自行判断。
-func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore vaultSyncStorer, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string) *Server {
-	return newServer(cfg, nps, opencode, taskStore, reg, configAdapter, notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, opencodeManager, userStore, jwtSigner, emailCrypto, emailPending, emailScheduler, emailFetcher, dataDir, true)
+func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore vaultSyncStorer, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string, pool *pgxpool.Pool) *Server {
+	return newServer(cfg, nps, opencode, taskStore, reg, configAdapter, notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, opencodeManager, userStore, jwtSigner, emailCrypto, emailPending, emailScheduler, emailFetcher, dataDir, true, pool)
 }
 
 // newServer builds a Server and optionally starts its long-lived websocket hubs.
 // Handler tests that do not exercise websocket or plugin traffic may disable those
 // workers to avoid leaking goroutines for the lifetime of the test process.
-func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore vaultSyncStorer, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string, startHubs bool) *Server {
+func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore vaultSyncStorer, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string, startHubs bool, pool *pgxpool.Pool) *Server {
 	hub := ws.NewHub()
 	if startHubs {
 		go hub.Run()
@@ -202,7 +208,14 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 		emailFetcher:     emailFetcher,
 		dataDir:          dataDir,
 		financeStore:     finance.NewStore(),
-		auditStore:       redclaw.NewAuditStore(),
+		auditStore:       func() interface{ Record(entry *redclaw.AuditEntry) error; Query(query redclaw.AuditQuery) ([]*redclaw.AuditEntry, error); Flush() []*redclaw.AuditEntry; QueryRange(query redclaw.AuditQuery) (*redclaw.AuditPage, error) } {
+			if pool != nil {
+				if pgStore, err := redclaw.NewPGAuditStore(pool); err == nil {
+					return pgStore
+				}
+			}
+			return redclaw.NewAuditStore()
+		}(),
 		mobileCreates:    newMobileCreateCache(),
 		llmGWCache:       newLLMGatewayCache(),
 		upgrader: websocket.Upgrader{
@@ -325,7 +338,12 @@ func (s *Server) WSHub() *ws.Hub { return s.wsHub }
 
 // AuditStore 暴露内部审计存储，供 pocketd 装配旁路导出（如 FileExporter
 // 落盘轮转 / 外部 SIEM 转发）。只读语义由 AuditStore 自身保证。
-func (s *Server) AuditStore() *redclaw.AuditStore { return s.auditStore }
+func (s *Server) AuditStore() interface {
+	Record(entry *redclaw.AuditEntry) error
+	Query(query redclaw.AuditQuery) ([]*redclaw.AuditEntry, error)
+	Flush() []*redclaw.AuditEntry
+	QueryRange(query redclaw.AuditQuery) (*redclaw.AuditPage, error)
+} { return s.auditStore }
 
 const (
 	maxRequestBodyBytes = 2 << 20

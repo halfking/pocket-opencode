@@ -333,7 +333,7 @@ func main() {
 		userStore, jwtSigner,
 		emailCrypto, emailPending,
 		emailScheduler, emailFetcher,
-		dataDir)
+		dataDir, pool)
 
 	// 把 server 的 WS hub 反向注入 email scheduler，让 OAuth revocation
 	// 事件能精确投递给当前用户（email.oauth.revoked）。ws.Hub 已经实现

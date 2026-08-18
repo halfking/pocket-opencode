@@ -68,7 +68,7 @@ func newWorkspaceIsolationServer(t *testing.T) (*Server, map[string]string) {
 		adapter.NewStaticNPSAdapter(),
 		adapter.NewOpenCodeHTTPAdapter(5000),
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		signer, nil, nil, nil, nil, "", false,
+		signer, nil, nil, nil, nil, "", false, nil,
 	), tokens
 }
 func TestMeetingWorkspaceIsolation(t *testing.T) {

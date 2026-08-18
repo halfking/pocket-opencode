@@ -75,7 +75,7 @@ func newMobileRouteServer(t *testing.T) (*Server, *mobileRouteAdapter, *auth.Sig
 	}
 	ad := &mobileRouteAdapter{}
 	cfg := config.Load()
-	srv := New(cfg, adapter.NewStaticNPSAdapter(), ad, nil, reg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, signer, nil, nil, nil, nil, "")
+	srv := New(cfg, adapter.NewStaticNPSAdapter(), ad, nil, reg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, signer, nil, nil, nil, nil, "", nil)
 	tokens := map[string]string{}
 	for _, ws := range []string{"ws-a", "ws-b", ""} {
 		token, err := signer.SignWithWorkspace("user-"+strings.ReplaceAll(ws, "-", ""), "member", ws)

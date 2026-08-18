@@ -24,7 +24,9 @@ import (
 //
 // 未启用时不产生任何 IO；由宿主（cmd/pocketd）通过 AUDIT_EXPORT_DIR 打开。
 type FileExporter struct {
-	store *AuditStore
+	store interface {
+		QueryRange(query AuditQuery) (*AuditPage, error)
+	}
 	cfg   FileExporterConfig
 
 	mu    sync.Mutex
@@ -45,7 +47,9 @@ type exporterState struct {
 	Cursor string `json:"cursor"`
 }
 
-func NewFileExporter(store *AuditStore, cfg FileExporterConfig) *FileExporter {
+func NewFileExporter(store interface {
+	QueryRange(query AuditQuery) (*AuditPage, error)
+}, cfg FileExporterConfig) *FileExporter {
 	if cfg.Interval <= 0 {
 		cfg.Interval = time.Minute
 	}
