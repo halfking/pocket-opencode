@@ -29,7 +29,7 @@ services/opencode-pocket/
                                                               ▲
                                                               │
                                           ┌───────────────────┘
-                                          │ DSN=postgresql://kxuser:kxpass@...
+                                          │ DSN=postgresql://<user>:<password>@...
                                           │
                                           │  http://acc-go-local:4101  (optional)
                                           │
@@ -45,12 +45,12 @@ services/opencode-pocket/
 
 | 决策 | 原因 |
 |---|---|
-| **单 PG**：复用 `kxmemory-rls-pg17` (kxuser/kxpass/kaixuan) | 用户要求"减少 PG 实例"；共享 schema 命名空间避免跨库 join。 |
+| **单 PG**：复用 `kxmemory-rls-pg17`（凭据从本地 env 注入） | 用户要求"减少 PG 实例"；共享 schema 命名空间避免跨库 join。 |
 | **网络**：加入 `acc-local-net` (external) | 该网已挂 acc-go / nbjl-redis 等；opencode-pocket 通过容器 DNS 名（如 `kxmemory-rls-pg17`、`acc-go-local`）直接连接。 |
 | **基镜像**：backend 用 `kx-base:go-vue-optimized`（kx-base-go-vue-v2-alpine-slim-arm64.tar.gz 的 manifest tag），frontend 用 `nginx:alpine` + 既有 `Dockerfile.frontend` | 用户要求"切换到 kx-base"；frontend 仍用 nginx 是历史资产，避免 vue 编译影响。 |
 | **offline build**：`pull_policy: never`、`network: host`、`--pull=false` | OFFLINE_IMAGES.md 已确立的离线约束；本机 base image 已 load。 |
 | **RedClaw**：`POCKET_REDCLAW_BASE_URL=""` 留空 | RedClaw gateway 当前未实现 `/api/v1/pocket/llm/chat` 等 pocketd 客户端要打的路径。pocketd 在该变量为空时不调用 RedClaw，端到端冒烟全绿；后续 RedClaw 补路径后只需设 env。 |
-| **JWT/Auth**：`POCKET_DEV_AUTH=true` + `admin/admin1234`（≥ 8 字符；"admin" 5 字符被 users.go 拒，留下空 hash 导致 401） | 复用已有 dev 路径，避开 bootstrap 密码长度校验。 |
+| **JWT/Auth**：`POCKET_DEV_AUTH=true` + 本地未提交的 ≥8 字符密码 | 复用已有 dev 路径，避免把开发凭据写入仓库。 |
 
 ## 3. 镜像与运行时
 
@@ -68,14 +68,14 @@ $ ./local-up.sh
 [local-up] OK.  Watching health…
 [local-up] pocketd is healthy on http://localhost:8088
 [local-up] frontend  http://localhost:4175
-[local-up] login: admin / admin1234 (POCKET_DEV_AUTH=true)
+[local-up] dev auth enabled; credentials are loaded from local ignored .env
 ```
 
 | 检查项 | 命令 | 结果 |
 |---|---|---|
 | Backend `/healthz` | `curl http://localhost:8088/healthz` | ✅ `ok` |
 | Frontend nginx `/healthz` | `curl http://localhost:4175/healthz` | ✅ HTTP 200 (`frontend ok`) |
-| Login admin/admin1234 → JWT | `POST /api/auth/login` | ✅ JWT issued (workspace=`ws_user-admin`) |
+| Login with local dev credentials → JWT | `POST /api/auth/login` | ✅ JWT issued (workspace was verified locally; credentials omitted) |
 | **PG-backed quota (空)** | `GET /api/llm/quota` | ✅ `{budgets:[], enforce_mode:false, strategy:"always_allow"}` |
 | **PG INSERT → quota 显示** | `INSERT INTO quota_budgets ...` → `GET /api/llm/quota` | ✅ 新行立刻可见 |
 | **nginx 反代 `/api/llm/quota`** | `curl :4175/api/llm/quota` | ✅ 同源结果一致 |
@@ -93,20 +93,21 @@ cp .env.example .env                              # 一次
 ./local-down.sh                                   # 停服（保留 .env）
 ./local-logs.sh                                   # 跟踪日志
 
-# 验证 admin / 测成本配额
+# 使用本地未提交的 dev credentials 验证登录 / 成本配额
 TOKEN=$(curl -s -X POST http://localhost:8088/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"admin1234"}' | python3 -c "import json,sys;print(json.load(sys.stdin)['token'])")
+  -d "{\"username\":\"${POCKET_AUTH_USER}\",\"password\":\"${POCKET_AUTH_PASS}\"}" | python3 -c "import json,sys;print(json.load(sys.stdin)['token'])")
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8088/api/llm/quota
 
 # 共享 PG 校验
-docker exec kxmemory-rls-pg17 psql -U kxuser -d kaixuan \
+# 以本地 env 注入的 PG 凭据查询共享库（示例不包含真实值）
+docker exec <shared-pg-container> psql -U "$PG_USER" -d "$PG_DATABASE" \
   -c "SELECT * FROM quota_budgets;"
 ```
 
 ## 6. 已知限制
 
-- **`admin/admin` 不可用**：backend/internal/auth/users.go:47 强制密码 ≥ 8 字符；5 字符 `admin` 会在 bootstrap 时留下空 hash → 401。本集成默认 `admin/admin1234`，**生产部署必须关闭 `POCKET_DEV_AUTH` 并通过 UI/API 创建用户**。
+- **开发密码不提交到仓库**：backend/internal/auth/users.go:47 强制密码 ≥ 8 字符；请在本地 `.env` 设置未提交的开发密码。**生产部署必须关闭 `POCKET_DEV_AUTH` 并通过 UI/API 创建用户**。
 - **RedClaw 端点暂未对接**：pocketd `redclaw.Client` 调 `/api/v1/pocket/llm/chat` 和 `/api/v1/pocket/knowledge/search`，但 RedClaw `platform-go` 服务当前不暴露这两个路径。本集成留 `POCKET_REDCLAW_BASE_URL=""`，pocketd 不发起调用；后续 RedClaw 补路由后只需设该 env 即可联通。
 - **`/api/llm/stream` / `/api/llm/chat` 不可用**：未设 `POCKET_LLM_API_KEY` / `POCKET_LLM_GATEWAY_*`。前端 `/cost` 页面渲染 OK（`/api/llm/quota` 已工作），但实际聊天流被禁用——这是 dev 设计，不影响 P3 集成冒烟。
 - **frontend bundle 包含 `192.168.31.37`**：构建期从 `.env.ios-dev` 注入的 LAN IP（本机 dev 模式）。如需同源纯 nginx 反代（推荐），编辑 `frontend/.env.ios-dev` 把 `VITE_API_BASE` 改空后重 build。
@@ -119,9 +120,9 @@ docker load -i ~/work/docker-base-images/lang-base/kx-base-go-vue-v2-alpine-slim
 docker load -i ~/work/docker-base-images/lang-base/alpine-3.20-arm64.tar.gz 2>/dev/null || true
 
 # 2. 共享 PG / 网络
-docker ps | grep kxmemory-rls-pg17 || docker run -d --name kxmemory-rls-pg17 \
-  -e POSTGRES_DB=kaixuan -e POSTGRES_USER=kxuser -e POSTGRES_PASSWORD=kxpass \
-  -p 25432:5432 --network acc-local-net pgvector/pgvector:pg17
+docker ps | grep <shared-pg-container> || echo "start the shared PG with credentials from your ignored .env"
+# Do not put POSTGRES_PASSWORD or a real DSN in this report.
+# Ensure the shared PG is attached to acc-local-net before starting pocketd.
 docker network create acc-local-net 2>/dev/null || true
 
 # 3. opencode-pocket 集成

@@ -10,7 +10,7 @@
 |---|---|---|---|
 | 1 | Backend `/healthz` | `curl :8088/healthz` | ✅ `ok` (HTTP 200) |
 | 1 | Frontend nginx `/healthz` | `curl :4175/healthz` | ✅ `frontend ok` (HTTP 200) |
-| 2 | 登录 admin/admin1234 → JWT | `POST /api/auth/login` | ✅ JWT issued, workspace=`ws_user-admin` |
+| 2 | 使用本地 dev credentials 登录 → JWT | `POST /api/auth/login` | ✅ JWT issued（凭据未写入报告） |
 | 3 | PG-backed quota (空查询) | `GET /api/llm/quota` | ✅ `{budgets:[…], enforce_mode:false, strategy:"always_allow"}` |
 | 4 | **PG INSERT → API read** | `INSERT INTO quota_budgets …` → `GET /api/llm/quota` | ✅ 两条新行立即可见（含 cost_usd 周期 + tokens 无周期） |
 | 5 | nginx 同源反代 `/api/llm/quota` | `curl :4175/api/llm/quota` | ✅ 与 backend 直连结果字节级一致 |
@@ -20,7 +20,7 @@
 | 7 | **96 张 PG 表迁移** | `psql \dt` on `kxmemory-rls-pg17` | ✅ 包括 `quota_budgets / auth_users / agent_gateways / llm_gateway_configs / llm_gateway_nodes / gateway_run_bindings / email_accounts / email_oauth_tokens / email_vacation_* / notification_rules / workspace_members / workspaces / projects / orchestration_*` 等 |
 | 8 | **审计路径** | `POST /api/llm/stream` (LLM BFF nil → 503 short-circuits) | ⚠️ 预期：503 早于 quota pre-flight；审计未触发。在启用 LLM BFF 的部署里 pre-flight 会写 `llm.quota.checked`。审计单元测试全绿。 |
 | 9 | Acc-local-net 容器清单 | `docker ps --filter network=acc-local-net` | ✅ `opencode-pocket-pocketd / opencode-pocket-frontend / acc-go-proxy / acc-go-local / kxmemory-rls-pg17 / nbjl-redis` |
-| 10 | pocketd 运行时 env 校验 | `docker exec pocketd env | grep POCKET_` | ✅ `POCKET_POSTGRES_DSN=postgresql://kxuser:kxpass@kxmemory-rls-pg17:5432/kaixuan?sslmode=disable`、`POCKET_DEV_AUTH=true`、`POCKET_AUTH_USER=admin`、`POCKET_AUTH_PASS=admin1234`、`POCKET_REDCLAW_BASE_URL=`（留空） |
+| 10 | pocketd 运行时 env 校验 | `docker exec pocketd env | grep POCKET_` | ✅ DSN/密码已确认从本地 ignored `.env` 注入；报告不记录真实值；`POCKET_PG_SCHEMA=opencode_pocket`、RedClaw base URL 留空 |
 | 11 | Backend 单元测试 | `go test ./internal/server/ ./internal/quota/ -run "TestLLMQuota\|TestLLMBFFStream\|TestEnforcer\|TestMemoryStore\|TestApplyCost\|TestCostFrom"` | ✅ 全部通过 |
 | 11 | Backend 全包测试 | `go test ./... -count=1` | ✅ 32 packages OK / 0 FAIL |
 | 12 | Frontend 生产构建 | `MOBILE_FAST=1 npm run build:fast -- --mode ios-dev` | ✅ vite build OK |
@@ -99,7 +99,7 @@ ops 启用方式：`POCKET_QUOTA_ENFORCE_MODE=true` 环境变量（`cmd/pocketd/
 | 审计仅 in-memory | `redclaw.AuditStore` 不持久化；重启后清空。生产需要 PG-backed audit（未本轮范围）。 |
 | `LLM BFF` 未启用 | `/api/llm/stream` 当前 503，因为 `POCKET_LLM_GATEWAY_URL` 未设；不影响 P3 集成冒烟（前端 `/cost` 用 `/api/llm/quota`，已绿）。 |
 | RedClaw 端点未对接 | `POCKET_REDCLAW_BASE_URL=""`，pocketd 跳过 RedClaw 调用。 |
-| `POCKET_DEV_AUTH=true` | 自动种子 admin/admin1234；**生产必须关闭**并通过 UI/API 创建用户。 |
+| `POCKET_DEV_AUTH=true` | 使用本地未提交的开发凭据；**生产必须关闭**并通过 UI/API 创建用户。 |
 
 ## 4. 状态汇总
 

@@ -39,21 +39,28 @@ if ! docker image inspect kx-base:go-vue-optimized >/dev/null 2>&1; then
 fi
 
 # PG 可达性（llm-gateway-pg，宿主端口 5432）
+if ! docker inspect llm-gateway-pg >/dev/null 2>&1; then
+  echo "[local-up] llm-gateway-pg container not found; start the shared PG before pocketd"
+  exit 1
+fi
 if ! docker exec llm-gateway-pg pg_isready -U llm_gateway -d llm_gateway >/dev/null 2>&1; then
-  echo "[local-up] WARNING: llm-gateway-pg not ready (pg_isready failed); pocketd will retry on boot"
+  echo "[local-up] llm-gateway-pg is not ready; refusing to start pocketd against an unknown host service"
+  exit 1
 fi
 
-# 启动
-docker compose -f docker-compose.yml up -d --build
+# 启动。frontend nginx 在启动时解析 pocketd 的容器 IP；pocketd 被重建后
+# 旧 nginx 可能仍指向旧 IP 并返回 502，因此两个服务必须一起强制重建。
+docker compose -f docker-compose.yml up -d --build --force-recreate pocketd frontend
 
 echo
 echo "[local-up] OK.  Watching health…"
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 16 18 20 25 30; do
   sleep 2
-  if curl -sf http://localhost:${POCKET_HOST_PORT:-8088}/healthz >/dev/null 2>&1; then
+  if curl -sf "http://localhost:${POCKET_HOST_PORT:-8088}/healthz" >/dev/null 2>&1 && \
+     curl -sf "http://localhost:${POCKET_FRONTEND_HOST_PORT:-4175}/healthz" >/dev/null 2>&1; then
     echo "[local-up] pocketd is healthy on http://localhost:${POCKET_HOST_PORT:-8088}"
-    echo "[local-up] frontend  http://localhost:${POCKET_FRONTEND_HOST_PORT:-4175}"
-    echo "[local-up] login: admin / admin1234 (POCKET_DEV_AUTH=true)"
+    echo "[local-up] frontend is healthy on http://localhost:${POCKET_FRONTEND_HOST_PORT:-4175}"
+    echo "[local-up] dev auth enabled; use POCKET_AUTH_USER/POCKET_AUTH_PASS from local .env"
     exit 0
   fi
   echo "[local-up] waiting for /healthz… ${i}"

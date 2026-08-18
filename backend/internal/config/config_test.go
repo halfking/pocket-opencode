@@ -11,6 +11,7 @@ func TestLoadDefaults(t *testing.T) {
 		"POCKET_ALLOWED_ORIGINS",
 		"POCKET_POSTGRES_DSN",
 		"DATABASE_URL",
+		"POCKET_PG_SCHEMA",
 	} {
 		t.Setenv(key, "")
 	}
@@ -25,6 +26,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.HTTPPort != "8088" {
 		t.Fatalf("unexpected default HTTP port: %q", cfg.HTTPPort)
 	}
+	if cfg.PostgresSchema != "opencode_pocket" {
+		t.Fatalf("unexpected default postgres schema: %q", cfg.PostgresSchema)
+	}
 	if !cfg.EmailFetchEnabled {
 		t.Fatal("expected email fetch to be enabled by default")
 	}
@@ -35,6 +39,7 @@ func TestLoadProductionAlias(t *testing.T) {
 	t.Setenv("POCKET_JWT_SECRET", "01234567890123456789012345678901")
 	t.Setenv("POCKET_ALLOWED_ORIGINS", "https://app.example.com")
 	t.Setenv("POCKET_POSTGRES_DSN", "postgres://user:pass@localhost/pocket")
+	t.Setenv("POCKET_PG_SCHEMA", "tenant_schema")
 	t.Setenv("POCKET_EMAIL_FETCH_ENABLED", "false")
 	// PK-3.1: direct LLM env must be cleared so this test does not depend on
 	// the host machine's environment.

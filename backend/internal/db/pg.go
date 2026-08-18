@@ -52,8 +52,9 @@ func New(ctx context.Context, dsn, schema string) (*pgxpool.Pool, error) {
 		// per new connection before it's handed back to the pool. We do NOT
 		// include `public` — shared PG instances may have `public.tasks` and
 		// similar from other modules; mixing would cause FK conflicts.
-		cfg.ConnConfig.RuntimeParams["search_path"] = schema
-		schemaCopy := schema
+		quotedSchema := quoteIdent(schema)
+		cfg.ConnConfig.RuntimeParams["search_path"] = quotedSchema
+		schemaCopy := quotedSchema
 		cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 			_, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s;", schemaCopy))
 			return err
@@ -98,15 +99,21 @@ func createSchemaOnce(ctx context.Context, pool *pgxpool.Pool, schema string) er
 	if _, err := conn.Exec(ctx, "SET search_path TO pg_catalog, public;"); err != nil {
 		return fmt.Errorf("reset search_path: %w", err)
 	}
-	if _, err := conn.Exec(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s;", schema)); err != nil {
+	if _, err := conn.Exec(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s;", quoteIdent(schema))); err != nil {
 		return fmt.Errorf("create schema: %w", err)
 	}
 	// Restore pinned search_path so subsequent uses of this pooled conn still
 	// resolve unqualified names against our schema.
-	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s;", schema)); err != nil {
+	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s;", quoteIdent(schema))); err != nil {
 		return fmt.Errorf("restore search_path: %w", err)
 	}
 	return nil
+}
+
+// quoteIdent returns a safely quoted PostgreSQL identifier. Validation still
+// rejects malformed names before this helper is called.
+func quoteIdent(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
 
 // isValidIdent guards against schema names that could break out of the quoted
@@ -114,6 +121,15 @@ func createSchemaOnce(ctx context.Context, pool *pgxpool.Pool, schema string) er
 // internally but defense-in-depth here is cheap.
 func isValidIdent(s string) bool {
 	if s == "" || len(s) > 63 {
+		return false
+	}
+	forbidden := map[string]struct{}{
+		"public":             {},
+		"pg_catalog":         {},
+		"information_schema": {},
+		"pg_toast":           {},
+	}
+	if _, ok := forbidden[strings.ToLower(s)]; ok {
 		return false
 	}
 	for i, r := range s {
@@ -127,10 +143,4 @@ func isValidIdent(s string) bool {
 		}
 	}
 	return true
-}
-
-// QuoteIdent wraps an identifier in double quotes after stripping any embedded
-// quotes. Exposed for store migrations that need to qualify table names.
-func QuoteIdent(s string) string {
-	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }

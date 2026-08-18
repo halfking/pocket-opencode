@@ -19,7 +19,7 @@
 | Networks | `bridge` only（**不在** `acc-local-net`） |
 | DB | `llm_gateway` |
 | User | `llm_gateway` |
-| Password | `llm_gateway_db_pass_2026_secure` |
+| Password | `<redacted; injected from local ignored .env>` |
 | TZ | `Asia/Shanghai` |
 
 ### 1.2 容器间连通路径
@@ -110,7 +110,7 @@ $ psql ... -d kaixuan -c "\dt opencode_pocket.*"
 | 测试 | 结果 |
 |---|---|
 | `curl :8088/healthz` | ✅ `ok` (HTTP 200) |
-| `POST /api/auth/login admin/admin1234` | ✅ JWT issued |
+| `POST /api/auth/login` 使用本地 dev credentials | ✅ JWT issued（凭据未写入报告） |
 | `GET /api/llm/quota` (空) | ✅ `{budgets:[], enforce_mode:false, strategy:"always_allow"}` |
 | `INSERT INTO opencode_pocket.quota_budgets` → `GET /api/llm/quota` | ✅ 新行立刻可见（cost_usd/75） |
 | `curl :4175/api/llm/quota` nginx 反代 | ✅ 与 backend 直连字节级一致 |
@@ -199,7 +199,16 @@ $ MOBILE_FAST=1 npm run build:fast -- --mode ios-dev
 | 容器网络 | 通过 `acc-local-net` DNS | 通过 `host.docker.internal:5432` |
 | 改动代码 | 仅 docker-compose | docker-compose + `internal/db/pg.go` + `internal/config/config.go` + `cmd/pocketd/main.go` |
 
-## 8. 后续注意
+## 8. 本次审计修复（2026-08-18，session 04）
+
+- 脱敏本报告、旧集成报告和验证报告中的数据库密码、旧 DSN 和开发登录密码；真实凭据只从本地 ignored `.env` 注入。
+- `local-up.sh` 发现 `llm-gateway-pg` 不存在或未 ready 时现在直接失败，避免误连宿主 5432 上的未知服务。
+- `local-up.sh` 现在使用 `--force-recreate pocketd frontend`；pocketd 重建后 IP 变化时，nginx 会同步重建并重新解析 upstream，避免旧 IP 导致 502。
+- 为 `isValidIdent` 增加 schema 名称、保留 schema 和引号处理单元测试；Go 全量测试、vet、前端构建和 ShellCheck 均通过。
+- `db.New` 现在对 schema 标识符使用 PostgreSQL 安全引用，并拒绝 `public`、`pg_catalog`、`pg_toast` 和 `information_schema` 等系统 schema。
+- `local-up.sh` 同时等待 pocketd 和 frontend 健康，避免 backend 已启动但 nginx 尚未就绪时提前报成功。
+
+## 9. 后续注意
 
 1. **`POCKET_PG_SCHEMA` env**：默认 `opencode_pocket`；同一 llm-gateway-pg 上的多个 pocketd 实例（多租户）需设不同的 schema 名避免冲突。
 2. **Audit 仍是 in-memory**——重启丢失；与 PG 切换无关（pre-existing）。
