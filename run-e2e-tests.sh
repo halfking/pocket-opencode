@@ -88,7 +88,7 @@ fi
 test_step "Backend login"
 TOKEN=$(curl -s -X POST http://localhost:8088/api/auth/login \
     -H "Content-Type: application/json" \
-    -d '{"username":"admin","password":"admin"}' | jq -r '.token // empty')
+    -d "{\"username\":\"${POCKET_AUTH_USER:-admin}\",\"password\":\"${POCKET_AUTH_PASS}\"}" | jq -r '.token // empty')
 
 if [ -n "$TOKEN" ]; then
     test_pass

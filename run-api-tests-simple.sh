@@ -32,7 +32,7 @@ echo ""
 echo "测试 2: 登录 API"
 LOGIN_RESULT=$(curl -s -X POST http://localhost:8088/api/auth/login \
     -H "Content-Type: application/json" \
-    -d '{"username":"admin","password":"admin"}')
+    -d "{\"username\":\"${POCKET_AUTH_USER:-admin}\",\"password\":\"${POCKET_AUTH_PASS}\"}")
 
 TOKEN=$(echo "$LOGIN_RESULT" | jq -r '.token // empty')
 USER=$(echo "$LOGIN_RESULT" | jq -r '.user // empty')

@@ -40,7 +40,7 @@ FRONTEND_URL="${POCKET_LOCAL_FRONTEND_URL:-http://127.0.0.1:${POCKET_FRONTEND_PO
 run_step api-health curl -fsS "$BASE_URL/healthz"
 run_step frontend-health curl -fsS "$FRONTEND_URL/healthz"
 
-login_body='{"username":"admin","password":"admin"}'
+login_body="{\"username\":\"${POCKET_AUTH_USER:-admin}\",\"password\":\"${POCKET_AUTH_PASS}\"}"
 login_response="$(curl -fsS -X POST "$BASE_URL/api/auth/login" -H 'Content-Type: application/json' -d "$login_body")"
 printf '%s\n' "$login_response" > "$ARTIFACT_DIR/login.json"
 token="$(printf '%s' "$login_response" | jq -r '.token // empty')"

@@ -60,7 +60,7 @@ if pgrep -f pocketd > /dev/null; then
     # 测试登录
     TOKEN=$(curl -s -X POST http://localhost:8088/api/auth/login \
         -H "Content-Type: application/json" \
-        -d '{"username":"admin","password":"admin"}' | jq -r '.token // empty')
+        -d "{\"username\":\"${POCKET_AUTH_USER:-admin}\",\"password\":\"${POCKET_AUTH_PASS}\"}" | jq -r '.token // empty')
     
     if [ -n "$TOKEN" ]; then
         echo "✅ 登录测试通过"

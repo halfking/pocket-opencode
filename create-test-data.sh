@@ -11,7 +11,7 @@ echo "=========================================="
 echo "1. 获取认证 token..."
 TOKEN=$(curl -s -X POST http://localhost:8088/api/auth/login \
     -H "Content-Type: application/json" \
-    -d '{"username":"admin","password":"admin"}' \
+    -d "{\"username\":\"${POCKET_AUTH_USER:-admin}\",\"password\":\"${POCKET_AUTH_PASS}\"}" \
     | jq -r '.token')
 
 if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then

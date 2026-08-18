@@ -44,7 +44,7 @@ echo "=========================================="
 
 LOGIN_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8088/api/auth/login \
     -H "Content-Type: application/json" \
-    -d '{"username":"admin","password":"admin"}')
+    -d "{\"username\":\"${POCKET_AUTH_USER:-admin}\",\"password\":\"${POCKET_AUTH_PASS}\"}")
 
 HTTP_CODE=$(echo "$LOGIN_RESPONSE" | tail -n 1)
 RESPONSE_BODY=$(echo "$LOGIN_RESPONSE" | head -n -1)

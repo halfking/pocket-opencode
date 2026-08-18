@@ -1,0 +1,162 @@
+name: Docker Smoke Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/acc-integration/**'
+      - 'backend/internal/db/**'
+      - 'Dockerfile*'
+      - '.github/workflows/docker-smoke.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'deploy/acc-integration/**'
+      - 'backend/internal/db/**'
+      - 'Dockerfile*'
+      - '.github/workflows/docker-smoke.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: docker-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-smoke:
+    name: Docker Smoke Test (acc-integration)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Load kx-base image from cache
+        id: kx-base-cache
+        run: |
+          if [ -f ~/docker-base-images/kx-base-go-vue-optimized.tar ]; then
+            docker load -i ~/docker-base-images/kx-base-go-vue-optimized.tar
+            echo "kx-base-loaded=true" >> $GITHUB_OUTPUT
+          else
+            echo "kx-base-loaded=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Docker images
+        working-directory: ./services/opencode-pocket
+        run: |
+          cd deploy/acc-integration
+          docker compose -f docker-compose.yml build --pull=never
+
+      - name: Start services
+        working-directory: ./services/opencode-pocket/deploy/acc-integration
+        run: |
+          # Create test .env from example
+          cp .env.example .env
+          # Override for CI environment
+          cat >> .env <<'EOF'
+          POCKET_JWT_SECRET=local-test-jwt-secret-012345678901234567890
+          POCKET_DEV_AUTH=true
+          POCKET_AUTH_USER=admin
+          POCKET_AUTH_PASS=admin1234
+          POCKET_PG_SCHEMA=opencode_pocket
+          POCKET_POSTGRES_DSN=postgresql://test_user:test_pass@localhost:5432/test_db?sslmode=disable
+          POCKET_OPENCODE_INSTANCES=[{"id":"local-opencode","displayName":"Local OpenCode","baseURL":"http://host.docker.internal:4096","environment":"development","capabilities":["session","summary","pty"]}]
+          POCKET_EMAIL_FETCH_ENABLED=false
+          POCKET_ALLOWED_ORIGINS=http://localhost:4175,http://127.0.0.1:4175
+          EOF
+
+      - name: Start test PostgreSQL
+        run: |
+          docker run -d \
+            --name test-pg \
+            -e POSTGRES_DB=kaixuan \
+            -e POSTGRES_USER=llm_gateway \
+            -e POSTGRES_PASSWORD=test_pass \
+            -p 5432:5432 \
+            --health-cmd="pg_isready -U llm_gateway -d llm_gateway" \
+            --health-interval=5s \
+            --health-timeout=3s \
+            --health-retries=10 \
+            pgvector/pgvector:pg17
+          # Wait for PG to be ready
+          for i in {1..30}; do
+            if docker exec test-pg pg_isready -U llm_gateway -d llm_gateway >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          # Create kaixuan database
+          docker exec test-pg psql -U llm_gateway -d postgres -c "CREATE DATABASE kaixuan;"
+          docker exec test-pg psql -U llm_gateway -d kaixuan -c "CREATE USER llm_gateway WITH PASSWORD 'test_pass';"
+          docker exec test-pg psql -U llm_gateway -d kaixuan -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO llm_gateway;"
+
+      - name: Run local-up.sh
+        working-directory: ./services/opencode-pocket/deploy/acc-integration
+        env:
+          POCKET_POSTGRES_DSN: postgresql://llm_gateway:test_pass@host.docker.internal:5432/kaixuan?sslmode=disable
+          POCKET_JWT_SECRET: local-test-jwt-secret-012345678901234567890
+          POCKET_DEV_AUTH: "true"
+          POCKET_AUTH_USER: admin
+          POCKET_AUTH_PASS: admin1234
+          POCKET_PG_SCHEMA: opencode_pocket
+          POCKET_EMAIL_FETCH_ENABLED: "false"
+          POCKET_OPENCODE_INSTANCES: '[{"id":"local-opencode","displayName":"Local OpenCode","baseURL":"http://host.docker.internal:4096","environment":"development","capabilities":["session","summary","pty"]}]'
+          POCKET_ALLOWED_ORIGINS: "http://localhost:4175,http://127.0.0.1:4175"
+        run: |
+          # Override the local-up.sh to use test DB
+          sed -i 's/docker exec llm-gateway-pg/docker exec test-pg/g' local-up.sh
+          sed -i 's/llm_gateway/llm_gateway/g' local-up.sh
+          ./local-up.sh
+
+      - name: Run smoke tests
+        working-directory: ./services/opencode-pocket/deploy/acc-integration
+        env:
+          POCKET_HOST_PORT: 8088
+          POCKET_FRONTEND_HOST_PORT: 4175
+        run: |
+          set -a
+          source .env
+          set +a
+          
+          # Login test
+          TOKEN=$(curl -fsS -X POST http://localhost:8088/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d "{\"username\":\"${POCKET_AUTH_USER}\",\"password\":\"${POCKET_AUTH_PASS}\"}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+          [ -n "$TOKEN" ] && echo "login: PASS" || { echo "login: FAIL"; exit 1; }
+          
+          # Backend quota test
+          curl -fsS -H "Authorization: Bearer $TOKEN" http://localhost:8088/api/llm/quota \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["strategy"]=="always_allow"; print("backend quota: PASS", d["strategy"], len(d["budgets"]))'
+          
+          # Nginx proxy test
+          curl -fsS -H "Authorization: Bearer $TOKEN" http://localhost:4175/api/llm/quota \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["strategy"]=="always_allow"; print("nginx proxy: PASS", len(d["budgets"]))'
+          
+          # Frontend health
+          curl -fsS http://localhost:4175/healthz >/dev/null && echo 'frontend health: PASS'
+          
+          # Check for migration errors
+          if docker logs opencode-pocket-pocketd --since 2m 2>&1 | grep -Eiq 'migrate:|permission denied|column .*does not exist|panic'; then
+            echo "startup migration errors found"
+            exit 1
+          else
+            echo "startup migration errors: none"
+          fi
+          
+          echo "All smoke tests PASSED"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          cd ./services/opencode-pocket/deploy/acc-integration
+          docker compose down -v || true
+          docker rm -f test-pg || true

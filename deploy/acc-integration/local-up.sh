@@ -48,6 +48,12 @@ if ! docker exec llm-gateway-pg pg_isready -U llm_gateway -d llm_gateway >/dev/n
   exit 1
 fi
 
+# 数据库身份验证（防止误连到错误的 PG 实例）
+if ! docker exec llm-gateway-pg psql -U llm_gateway -d kaixuan -tAc "SELECT current_database(), current_user;" 2>/dev/null | grep -q "^kaixuan|llm_gateway$"; then
+  echo "[local-up] Database identity mismatch; refusing to start pocketd against wrong PG instance"
+  exit 1
+fi
+
 # 启动。frontend nginx 在启动时解析 pocketd 的容器 IP；pocketd 被重建后
 # 旧 nginx 可能仍指向旧 IP 并返回 502，因此两个服务必须一起强制重建。
 docker compose -f docker-compose.yml up -d --build --force-recreate pocketd frontend
