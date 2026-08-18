@@ -68,7 +68,7 @@ func (s *PGAuditStore) Record(entry *AuditEntry) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, fmt.Sprintf(`
 INSERT INTO %s (id, action, user_id, tenant_id, resource, detail, duration_ms, success, timestamp, ip)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $10)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (id) DO NOTHING
 `, s.table),
 		entry.ID, entry.Action, entry.UserID, entry.TenantID,
@@ -200,18 +200,13 @@ func (s *PGAuditStore) QueryRange(query AuditQuery) (*AuditPage, error) {
 		whereSQL = "WHERE " + strings.Join(where, " AND ")
 	}
 
-	orderBy := "timestamp ASC, id ASC"
-	if !query.StartTime.IsZero() && query.AfterCursor == "" {
-		orderBy = "timestamp ASC, id ASC"
-	}
-
 	querySQL := fmt.Sprintf(`
 SELECT id, action, user_id, tenant_id, resource, detail, duration_ms, success, timestamp, ip
 FROM %s
 %s
-ORDER BY %s
+ORDER BY timestamp ASC, id ASC
 LIMIT %d
-`, s.table, whereSQL, orderBy, limit)
+`, s.table, whereSQL, limit)
 
 	rows, err := s.pool.Query(ctx, querySQL, args...)
 	if err != nil {
