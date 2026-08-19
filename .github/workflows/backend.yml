@@ -50,7 +50,7 @@ jobs:
           cache-dependency-path: backend/go.sum
 
       - name: Run tests
-        run: go test ./... -count=1
+        run: go test -race ./... -count=1
 
       - name: Run vet
         run: go vet ./...
