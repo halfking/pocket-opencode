@@ -47,7 +47,16 @@ func newTestPGAuditStore(t *testing.T) (*PGAuditStore, func()) {
 	if _, err := rootPool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
-	scopedPool, err := pgxpool.New(ctx, dsn+"&search_path="+schema)
+	// Pin search_path via pgxpool config so we don't mutate the DSN string
+	// (which would break keyword/value DSNs and URLs without a '?').
+	// Mirrors the pattern in identity/store_test.go and lobster/store_test.go.
+	scopedCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		rootPool.Close()
+		t.Fatalf("parse dsn: %v", err)
+	}
+	scopedCfg.ConnConfig.RuntimeParams["search_path"] = schema
+	scopedPool, err := pgxpool.NewWithConfig(ctx, scopedCfg)
 	if err != nil {
 		rootPool.Close()
 		t.Fatalf("scoped pool: %v", err)
