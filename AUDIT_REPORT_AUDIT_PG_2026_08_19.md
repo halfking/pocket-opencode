@@ -13,7 +13,7 @@
 | 文件 | 变更 | 目的 |
 |------|------|------|
 | `internal/redclaw/audit.go` | `encodeAuditCursor`/`decodeAuditCursor`：`UnixMilli()` → `UnixNano()` | 修复游标跨页**重复计数** |
-| `internal/redclaw/audit_pg.go` | `Record` ID 生成：加 `sync/atomic` 计数器，ID = `aud_<nano>_<seq>` | 修复并发写入**丢数据** |
+| `internal/redclaw/audit_pg.go` | `Record` ID 生成改为加密随机 128-bit 后缀，crypto/rand 失败时使用 atomic 计数器回退 | 避免跨进程并发写入 ID 碰撞导致审计丢失 |
 | `internal/redclaw/audit_cursor_precision_test.go`（新增） | 内存态亚毫秒 cursor 回归 | 覆盖修复 |
 | `internal/redclaw/audit_pg_cursor_test.go`（新增） | PG 态亚毫秒 cursor / same-ts 消歧 | 覆盖修复 |
 | `internal/redclaw/audit_pg_concurrent_test.go`（新增） | 8×50 并发 Record+QueryRange，断言 400/400 耐久 | 覆盖修复 + 暴露并发 bug |
@@ -92,7 +92,7 @@ QueryRange(StartTime, Limit) → 收集 → if NextCursor=="" break; else 带 Af
 
 | 级别 | 项 | 状态 |
 |------|----|------|
-| P0 | Record 并发 ID 碰撞静默丢数据 | ✅ 已修复（atomic 计数器） |
+| P0 | Record 并发 ID 碰撞静默丢数据 | ✅ 已修复（加密随机 ID；随机源失败时 atomic 回退） |
 | P0 | 游标 ms 精度丢失导致跨页重复计数 | ✅ 已修复（UnixNano） |
 | P2 | `PGAuditStoreWithPool` 生产侧未被使用（仅被自身测试引用） | ✅ 已决策 A：删除 wrapper 及其专属测试；生产路径直接使用 `NewPGAuditStore`，nil pool 由调用方处理 |
 | P2 | 16 个 store 各自内联 `CREATE TABLE`，无统一 schema 引导 | ✅ 已决策：保持 store-local 内联 DDL；不移入会话迁移包，也暂不引入统一 bootstrap，维持独立初始化与隔离 schema 测试范式 |
@@ -107,14 +107,16 @@ QueryRange(StartTime, Limit) → 收集 → if NextCursor=="" break; else 带 Af
 # 带真实 PG（llm-gateway-pg / kaixuan），-race
 go test ./internal/redclaw/... ./internal/server/... -race -count=1   → ok / ok
 
-# 无 DSN（CI 路径，PG 测试 skip）
-go test ./internal/redclaw/... ./internal/server/... -count=1          → ok / ok
+# 无 DSN（本地开发路径，PG 测试按约定 skip）
+go test ./internal/redclaw/... ./internal/server/... -count=1
 
-# E2E（真实启动 pocketd，连 kaixuan，schema opencode_pocket_e2e）
-POST /api/auth/login(admin/admin) → token
-GET  /api/audit/export?format=jsonl (Authorization: Bearer $TOKEN) → 200
-  → 在 kaixuan.opencode_pocket_e2e.audit_entries 写入 audit.export 行
-GET  /api/audit/export 二次 → 从 PG 回读出该行（写+读全链路验证）
+# 真实 PG + race（本轮已执行）
+make test-pg  → 全部 backend packages passed
+
+# 无 DSN 全量 backend + race/vet/build（本轮已执行）
+go test ./... -count=1                         → passed
+go test ./... -race -count=1                  → passed
+go vet ./... && go build ./...                → passed
 ```
 
-**总体评级**: A（两处 P0 并发/精度缺陷已修复并有回归测试覆盖；E2E 全链路验证通过）。
+**总体评级**: A-（PG audit CRUD、cursor、并发、server writer 和 backend race 门禁已通过；历史 cursor 单位兼容、操作超时、PG-backed HTTP export 仍是后续加固项）。

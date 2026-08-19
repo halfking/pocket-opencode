@@ -11,17 +11,19 @@
 | P2 并发测试 N goroutine Record+QueryRange 对 PG | ✅ 完成 | 新增 `TestPGAuditStore_ConcurrentRecordQueryRange`；**暴露并修复** Record 并发丢数据 bug |
 | P2 决定 `Flush()` 语义 | ⚠️ 决策：**no-op 正确** | PG 即时持久化无缓冲可刷，已文档化 |
 | P2 E2E 启动 + 命中 `/api/audit` + 确认 PG 持久化 | ✅ 完成 | 真实 `pocketd` 启动于 8099 + `kaixuan`，导出落 PG 并回读成功 |
-| P3 用 PG-backed store 重跑 audit_writer email/ACC 测试 | 🟡 已验证 | store 层 + E2E HTTP 链路均已在 PG 验证；单测保持内存态（后端无关）。可选改造见下方 Agent-A |
+| P3 用 PG-backed store 重跑 audit_writer email/ACC 测试 | ✅ 完成 | 新增 server PG-backed writer 测试，覆盖 claims/IP/租户、脱敏、email/tasksync/vault/LLM/ACC、截断和 system tenant；既有纯单测仍保持内存态。 |
+
 | `PGAuditStoreWithPool` 死代码审计 | ✅ 决策 A：已删除 | 生产侧未使用（`server.go` 直接调 `NewPGAuditStore`）；wrapper 的 `(nil, nil)` 合约与主构造函数不一致，调用方已显式处理 nil pool |
 | audit DDL 收敛 | ✅ 决策：保持各 store 内联 | 不移入 `internal/migration`（会话迁移包），暂不引入统一 bootstrap 包；当前 store-local、幂等 DDL 与独立初始化/隔离 schema 测试范式一致 |
 
 ## 2. HEAD 与提交
 
-- **当前 HEAD**: `6892ba5`（main，已与 `origin/main` 同步）
-- 本任务两个 commit 已并入主干：
-  - `59191b5` fix(audit): preserve sub-ms precision in QueryRange export cursor
-  - `6aaacd5` fix(audit): ensure unique entry IDs under concurrent PG Record
-- 后续有 `feat/identity-go-cross-trust` 等并入（另一会话），本地已 `merge --ff-only` 同步。
+- **当前 HEAD**: `4583f80`（main，已合并本次 PG persistence audit；待推送 `origin/main`）
+- 当前本地工作树应保持干净；本轮真实 PG、无 DSN、race、vet、build 已通过。
+- 关键提交：
+  - `aa96bba` ci: run PostgreSQL integration tests
+  - `1b21466` wip(audit): checkpoint PG persistence integration
+  - `4583f80` merge: complete PG persistence audit
 
 ## 3. 运行测试的命令（带/不带 DSN）
 
@@ -43,19 +45,25 @@ go test ./internal/redclaw/... ./internal/server/... -count=1          # 期望 
 3. 改动 `audit_pg_test.go` 既有用例需谨慎；新增测试放新文件。
 4. 提交用 conventional-commit，推送 `origin/main` 后回报 HEAD SHA。
 
-## 5. 剩余任务 → 多子代理并行方案
+## 5. 本轮实施结果与后续加固项
 
-将剩余工作拆为 **4 个互相独立**的工作流，下一段会话用并行 `Agent`（general-purpose）同时派发：
+本轮四个并行工作包已完成并合并：
 
-- **Agent-A（P3 收口）**：把 `internal/server` 的 audit_writer 单测改成可选 PG-backed（DSN 存在时注入 `PGAuditStore`，沿用 redclaw 的隔离 schema 模式），在 `kaixuan` 上跑 email/ACC/tasksync/vault/model_calls 审计写入测试，确认绿 + `-race`。
-- **Agent-B（同构并发审计）**：审计其余 PG store（identity / lobster / quota / task / email / vault / notes / opencode）是否存在同类缺陷——① 并发 `Record` 的 ID 碰撞（同 audit bug）；② 分页游标的精度/消歧问题；③ 缺失的 mutex。产出报告 + 带测试的修复。
-- **Agent-C（CI 接入）**：新增 `Makefile` 目标 `test-pg` 与 GitHub Actions job，使用 kaixuan（或临时 PG）以 `POCKET_TEST_POSTGRES_DSN` 运行 `go test ./internal/redclaw/... ./internal/server/...`（带/不带 `-race`），让 PG 集成测试进入 CI。
+- **Server P3**：新增 `backend/internal/server/audit_pg_test.go` 与 `audit_writer_pg_test.go`，以隔离 schema 验证 PG-backed writer、桥接、脱敏、租户和 system tenant；既有纯单测仍保持内存态。
+- **PG store 同构审计**：修复 email ID 并发唯一性、quota 内存读写竞争、agentbridge/identity 容量检查事务化、lobster workspace revision、vault current 唯一性，并补回归测试。
+- **CI**：`backend/Makefile:test-pg` 和 `.github/workflows/backend-pg.yml` 已接入；CI 缺少专用 DSN 时 fail-closed，本地无 DSN 时明确 skip。
+- **决策**：删除 `PGAuditStoreWithPool`；保持各 store 自治的内联 DDL，不引入统一 bootstrap。
 
-> 以上 4 个 Agent 无相互依赖，可一次性并行派发；各自独立提交、推送、回报 SHA。
+后续可选加固项（不阻塞本轮交付）：
 
-## 6. 复制即用提示词（下一段会话直接粘贴）
+1. 为旧 UnixMilli cursor 增加显式版本/单位兼容转换，并让非法 cursor 返回 400 而非静默回到第一页。
+2. 为 `PGAuditStore` 数据库操作引入请求/操作级 timeout；当前实现使用 `context.Background()`。
+3. 增加 PG-backed `/api/audit/logs`/`export` 的 HTTP 分页回归测试，以及 notes PG helper 的真实 schema 隔离覆盖。
+4. 评估生产 PG audit 初始化失败时是否应在 production 配置下 fail-closed，而非回退内存 store。
 
-下面 4 段提示词各自自包含，可分别作为 4 个并行 `Agent` 调用的 `prompt`。
+## 6. 历史复制提示词（已完成；仅供追溯）
+
+> 以下提示词记录本轮并行实施的原始分工，不应作为新的待办直接重复执行。
 
 ---
 
@@ -167,4 +175,3 @@ schema。也暂不新增 `internal/db/schema` 一类全局 bootstrap：现有多
 每个集成测试创建独立 schema、缺失 DSN 时 skip 的现有范式。待需要版本化迁移、跨表原子
 变更或集中运维 bootstrap 时，再以单独的 schema migration 设计统一演进所有 store，而非
 仅迁移 audit DDL。
-```
