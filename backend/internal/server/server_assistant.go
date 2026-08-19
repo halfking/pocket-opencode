@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
+	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
@@ -146,6 +147,11 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to sign JWT")
 		return
 	}
+
+	// Shadow 映射：本地 user_id → identity_shadow(provider=pocket, subject=userID)
+	// 在请求结束前异步写；DSN 未配置时 RecordShadow 直接 noop。
+	auth.RecordShadow("pocket", userID, wsID, body.Username, "")
+
 	writeJSON(w, http.StatusOK, map[string]string{
 		"token":        token,
 		"user":         body.Username,
