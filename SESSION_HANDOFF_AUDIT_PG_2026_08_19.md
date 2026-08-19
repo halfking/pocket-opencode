@@ -50,7 +50,6 @@ go test ./internal/redclaw/... ./internal/server/... -count=1          # 期望 
 - **Agent-A（P3 收口）**：把 `internal/server` 的 audit_writer 单测改成可选 PG-backed（DSN 存在时注入 `PGAuditStore`，沿用 redclaw 的隔离 schema 模式），在 `kaixuan` 上跑 email/ACC/tasksync/vault/model_calls 审计写入测试，确认绿 + `-race`。
 - **Agent-B（同构并发审计）**：审计其余 PG store（identity / lobster / quota / task / email / vault / notes / opencode）是否存在同类缺陷——① 并发 `Record` 的 ID 碰撞（同 audit bug）；② 分页游标的精度/消歧问题；③ 缺失的 mutex。产出报告 + 带测试的修复。
 - **Agent-C（CI 接入）**：新增 `Makefile` 目标 `test-pg` 与 GitHub Actions job，使用 kaixuan（或临时 PG）以 `POCKET_TEST_POSTGRES_DSN` 运行 `go test ./internal/redclaw/... ./internal/server/...`（带/不带 `-race`），让 PG 集成测试进入 CI。
-- **Agent-D（? 决策落地）**：落实两个 `?`：① `PGAuditStoreWithPool` 取「删除 wrapper+测试」或「保留+文档」之一并实现；② 评估是否抽出统一的 schema 引导包（如 `internal/db/schema`）收敛 16 处内联 `CREATE TABLE`，把 audit DDL 一并纳入，并补文档。
 
 > 以上 4 个 Agent 无相互依赖，可一次性并行派发；各自独立提交、推送、回报 SHA。
 
@@ -148,29 +147,7 @@ go test ./internal/redclaw/... ./internal/server/... -count=1          # 期望 
 
 ---
 
-### 🔹 Agent-D 提示词（? 决策落地：死代码 + DDL 收敛）
 
-```
-你在仓库 /Users/xutaohuang/workspace/official-deploy/services/opencode-pocket 工作（Go 模块在 backend/）。
-
-目标：落实两个此前标记为 ? 的待决策项，给出代码层结论。
-
-项 1 — PGAuditStoreWithPool 死代码
-- 现状：redclaw/audit_pg.go 的 PGAuditStoreWithPool(pool) 仅被其自身测试 TestPGAuditStore_WithPoolNil 引用；生产代码 server.go:213 直接调 NewPGAuditStore(pool)。
-- 决策二选一并实现：
-  (A) 删除 PGAuditStoreWithPool 及其测试（干净）；或
-  (B) 保留但补注释说明它是 nil-safe 构造封装、非必需。
-- 选 (A) 时同步删除 audit_pg_test.go 中 TestPGAuditStore_WithPoolNil。
-
-项 2 — audit DDL 收敛
-- 现状：原 handoff 曾想「把 audit_entries DDL 移入 internal/migration」，但 internal/migration 是会话迁移包（非 schema），该意图有误；当前 16 个 store 各自内联 CREATE TABLE IF NOT EXISTS。
-- 评估并给出建议实现：是否抽出统一 schema 引导包（如 internal/db/schema 或 internal/db 内新增 Bootstrap/RegisterDDL 机制），让各 store 注册自己的 DDL、在 pool 构造时一次性执行；把 audit_entries 的 DDL 一并纳入。
-- 若决定实现，保持「每测试隔离 schema + 无 DSN 则 skip」范式不变；补充必要的单测/集成验证；更新相关文档（如 README 或 docs 中 schema 管理说明）。
-- 若评估后认为保持内联更优，写一段结论说明（更新到对应 ? 项文档），不必强制改动。
-
-```
-
----
 
 ## 7. 决策记录（2026-08-19）
 
