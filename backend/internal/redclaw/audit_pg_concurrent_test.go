@@ -49,7 +49,7 @@ func TestPGAuditStore_ConcurrentRecordQueryRange(t *testing.T) {
 	}
 	wg.Wait()
 
-	entries, err := s.Query(AuditQuery{TenantID: "ws-conc"})
+	entries, err := s.Query(AuditQuery{TenantID: "ws-conc", Limit: total})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}

@@ -4,10 +4,18 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// pgAuditIDSeq guarantees unique audit entry IDs even when Record is called
+// concurrently within the same nanosecond. time.Now() can return identical
+// values under load (coarse clock resolution), so pairing UnixNano with a
+// strictly-increasing per-process counter yields a unique PRIMARY KEY and the
+// ON CONFLICT (id) DO NOTHING path never silently drops a distinct entry.
+var pgAuditIDSeq uint64
 
 // PGAuditStore is a PostgreSQL-backed implementation of AuditStore.
 type PGAuditStore struct {
@@ -62,7 +70,7 @@ func (s *PGAuditStore) Record(entry *AuditEntry) error {
 		entry.Timestamp = time.Now()
 	}
 	if entry.ID == "" {
-		entry.ID = fmt.Sprintf("aud_%d_%d", time.Now().UnixNano(), time.Now().UnixNano()%1000000)
+		entry.ID = fmt.Sprintf("aud_%d_%d", time.Now().UnixNano(), atomic.AddUint64(&pgAuditIDSeq, 1))
 	}
 
 	ctx := context.Background()
