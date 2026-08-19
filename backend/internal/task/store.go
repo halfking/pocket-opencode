@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -64,6 +65,14 @@ func (s *Store) migrate() error {
 	ALTER TABLE task_session_links ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
 	CREATE INDEX IF NOT EXISTS idx_tasks_workspace ON tasks(workspace_id);
 
+	-- Acceptance evidence (idempotent on existing DBs). All four columns are
+	-- nullable; status='accepted' is the only writer of accepted_at/_by/bundle.
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS accepted_at BIGINT;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS accepted_by TEXT;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acceptance_criteria JSONB;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS evidence_bundle JSONB;
+	CREATE INDEX IF NOT EXISTS idx_tasks_accepted_status ON tasks(workspace_id, status) WHERE status = 'accepted';
+
 	CREATE TABLE IF NOT EXISTS approval_observations (
 		workspace_id TEXT NOT NULL,
 		instance_id TEXT NOT NULL,
@@ -114,7 +123,7 @@ func normalizeWorkspace(wsID string) string {
 
 // taskColumns is the shared SELECT list; workspace_id is included so the model
 // round-trips its tenant instead of dropping it.
-const taskColumns = `id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count`
+const taskColumns = `id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count, accepted_at, accepted_by, evidence_bundle`
 
 // scanTask reads one row in taskColumns order.
 func scanTask(row interface {
@@ -122,12 +131,25 @@ func scanTask(row interface {
 }) (*Task, error) {
 	t := &Task{}
 	var createdAt, updatedAt int64
+	var acceptedAt *int64
+	var acceptedBy *string
+	var evidenceBundleRaw []byte
 	if err := row.Scan(&t.ID, &t.WorkspaceID, &t.Title, &t.Description, &t.Status, &t.Priority,
-		&t.WorkstreamID, &t.Source, &createdAt, &updatedAt, &t.PendingApprovals, &t.SessionCount); err != nil {
+		&t.WorkstreamID, &t.Source, &createdAt, &updatedAt, &t.PendingApprovals, &t.SessionCount,
+		&acceptedAt, &acceptedBy, &evidenceBundleRaw); err != nil {
 		return nil, err
 	}
 	t.CreatedAt = time.Unix(createdAt, 0)
 	t.UpdatedAt = time.Unix(updatedAt, 0)
+	t.AcceptedAt = acceptedAt
+	t.AcceptedBy = acceptedBy
+	if len(evidenceBundleRaw) > 0 {
+		var bundle EvidenceBundle
+		if err := json.Unmarshal(evidenceBundleRaw, &bundle); err != nil {
+			return nil, fmt.Errorf("decode evidence_bundle: %w", err)
+		}
+		t.EvidenceBundle = &bundle
+	}
 	return t, nil
 }
 
@@ -441,7 +463,9 @@ func (s *Store) ApplyApprovalProjection(ctx context.Context, event ApprovalProje
 		if err := tx.QueryRow(ctx, `SELECT status FROM tasks WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, taskID, event.WorkspaceID).Scan(&status); err != nil {
 			return fmt.Errorf("read task approval state: %w", err)
 		}
-		if status == "completed" && event.State == ApprovalStatePending {
+		// Late-pending anti-regression: completed and accepted are terminal,
+		// so a pending projection event must not reopen either.
+		if (status == "completed" || status == "accepted") && event.State == ApprovalStatePending {
 			continue
 		}
 		if err := applyApprovalProjectionForTask(ctx, tx, taskID, event); err != nil {
@@ -501,6 +525,53 @@ func (s *Store) CompleteTaskScoped(ctx context.Context, id, wsID string, update 
 	return s.GetTaskScoped(ctx, id, wsID)
 }
 
+// AcceptTaskScoped transitions a `completed` task to `accepted`, recording the
+// authenticated actor and the evidence bundle as the verdict. It linearizes
+// under the same task advisory lock as CompleteTaskScoped so a late-pending
+// approval projection event cannot race with the verdict. Returns
+// ErrTaskNotCompletable for any non-completed source state (including
+// already-accepted, which is terminal).
+func (s *Store) AcceptTaskScoped(ctx context.Context, id, wsID, actorUserID string, bundle EvidenceBundle) (*Task, error) {
+	wsID = normalizeWorkspace(wsID)
+	if actorUserID == "" {
+		return nil, fmt.Errorf("accept task: missing actor user id")
+	}
+	bundleJSON, err := json.Marshal(bundle)
+	if err != nil {
+		return nil, fmt.Errorf("encode evidence_bundle: %w", err)
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("begin accept task: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockTask(ctx, tx, wsID, id); err != nil {
+		return nil, err
+	}
+	var status string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM tasks WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+		id, wsID).Scan(&status); err != nil {
+		return nil, fmt.Errorf("lock task for acceptance: %w", err)
+	}
+	if status != "completed" {
+		return nil, ErrTaskNotCompletable
+	}
+	now := time.Now().Unix()
+	if _, err := tx.Exec(ctx,
+		`UPDATE tasks SET status = 'accepted', accepted_at = $1, accepted_by = $2,
+		    evidence_bundle = $3, updated_at = $4
+		 WHERE id = $5 AND workspace_id = $6`,
+		now, actorUserID, bundleJSON, now, id, wsID); err != nil {
+		return nil, fmt.Errorf("accept task: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit accept task: %w", err)
+	}
+	return s.GetTaskScoped(ctx, id, wsID)
+}
+
 func isValidApprovalKind(kind ApprovalKind) bool {
 	return kind == ApprovalKindPermission || kind == ApprovalKindQuestion
 }
@@ -552,7 +623,9 @@ func applyObservedApprovalsForTask(ctx context.Context, tx pgx.Tx, taskID, works
 		SELECT workspace_id, $1, instance_id, session_id, request_id, kind, state, version, decision, created_at, updated_at
 		FROM approval_observations
 		WHERE workspace_id = $2 AND instance_id = $3 AND session_id = $4
-		  AND NOT EXISTS (SELECT 1 FROM tasks WHERE id = $1 AND workspace_id = $2 AND status = 'completed')
+		  /* Late-pending anti-regression extended for accepted: terminal tasks
+		     do not get a fresh projection row inserted from a late event. */
+		  AND NOT EXISTS (SELECT 1 FROM tasks WHERE id = $1 AND workspace_id = $2 AND status IN ('completed','accepted'))
 		ON CONFLICT (workspace_id, task_id, instance_id, session_id, request_id, kind) DO UPDATE
 		SET state = EXCLUDED.state, version = EXCLUDED.version, decision = EXCLUDED.decision, updated_at = EXCLUDED.updated_at
 		WHERE task_approval_projections.version < EXCLUDED.version
