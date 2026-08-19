@@ -12,7 +12,8 @@
 | P2 决定 `Flush()` 语义 | ⚠️ 决策：**no-op 正确** | PG 即时持久化无缓冲可刷，已文档化 |
 | P2 E2E 启动 + 命中 `/api/audit` + 确认 PG 持久化 | ✅ 完成 | 真实 `pocketd` 启动于 8099 + `kaixuan`，导出落 PG 并回读成功 |
 | P3 用 PG-backed store 重跑 audit_writer email/ACC 测试 | 🟡 已验证 | store 层 + E2E HTTP 链路均已在 PG 验证；单测保持内存态（后端无关）。可选改造见下方 Agent-A |
-| ? `PGAuditStoreWithPool` 死代码审计 | ⚠️ 待决策 | 生产侧未被使用（`server.go:213` 直接调 `NewPGAuditStore`）；仅被自身测试引用 |
+| `PGAuditStoreWithPool` 死代码审计 | ✅ 决策 A：已删除 | 生产侧未使用（`server.go` 直接调 `NewPGAuditStore`）；wrapper 的 `(nil, nil)` 合约与主构造函数不一致，调用方已显式处理 nil pool |
+| audit DDL 收敛 | ✅ 决策：保持各 store 内联 | 不移入 `internal/migration`（会话迁移包），暂不引入统一 bootstrap 包；当前 store-local、幂等 DDL 与独立初始化/隔离 schema 测试范式一致 |
 
 ## 2. HEAD 与提交
 
@@ -167,6 +168,26 @@ go test ./internal/redclaw/... ./internal/server/... -count=1          # 期望 
 - 若决定实现，保持「每测试隔离 schema + 无 DSN 则 skip」范式不变；补充必要的单测/集成验证；更新相关文档（如 README 或 docs 中 schema 管理说明）。
 - 若评估后认为保持内联更优，写一段结论说明（更新到对应 ? 项文档），不必强制改动。
 
-准则：main 上工作，不重写他人历史、不 force-push；遵循 conventional-commit（refactor/cleanup/chore: ...）；
-提交推 origin/main 后回报 HEAD SHA、所做决策（A 或 B）、以及是否实现了 DDL 收敛。
+```
+
+---
+
+## 7. 决策记录（2026-08-19）
+
+### `PGAuditStoreWithPool`：选择 A，删除
+
+`PGAuditStoreWithPool` 只被 `TestPGAuditStore_WithPoolNil` 引用；生产构造路径在
+`internal/server/server.go` 已先检查 `pool != nil`，然后直接调用 `NewPGAuditStore`。
+因此 wrapper 没有调用方，也额外定义了主构造函数不具备的 `(nil, nil)` 成功语义。删除
+wrapper 与仅覆盖它的测试，保留调用方现有的内存 store 回退逻辑。
+
+### audit DDL：不收敛到统一 bootstrap 包
+
+不将 `audit_entries` 放入 `internal/migration`：该包只负责跨主机会话迁移，不拥有数据库
+schema。也暂不新增 `internal/db/schema` 一类全局 bootstrap：现有多个 PG store 都在构造时
+执行自己拥有表的幂等 DDL，统一注册需要跨包依赖、全局执行顺序和错误传播约定，并会扩大
+每个 store 的启动和测试影响范围。`audit_entries` 继续由 `PGAuditStore.migrate` 管理，保持
+每个集成测试创建独立 schema、缺失 DSN 时 skip 的现有范式。待需要版本化迁移、跨表原子
+变更或集中运维 bootstrap 时，再以单独的 schema migration 设计统一演进所有 store，而非
+仅迁移 audit DDL。
 ```

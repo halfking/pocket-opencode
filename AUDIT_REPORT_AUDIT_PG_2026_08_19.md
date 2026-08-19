@@ -93,8 +93,8 @@ QueryRange(StartTime, Limit) → 收集 → if NextCursor=="" break; else 带 Af
 |------|----|------|
 | P0 | Record 并发 ID 碰撞静默丢数据 | ✅ 已修复（atomic 计数器） |
 | P0 | 游标 ms 精度丢失导致跨页重复计数 | ✅ 已修复（UnixNano） |
-| P2 | `PGAuditStoreWithPool` 生产侧未被使用（仅被自身测试引用） | ⚠️ 待决策（见 handoff `?` 项） |
-| P2 | 16 个 store 各自内联 `CREATE TABLE`，无统一 schema 引导 | ⚠️ 待决策（见 handoff `?` 项，原「移入 internal/migration」意图有误） |
+| P2 | `PGAuditStoreWithPool` 生产侧未被使用（仅被自身测试引用） | ✅ 已决策 A：删除 wrapper 及其专属测试；生产路径直接使用 `NewPGAuditStore`，nil pool 由调用方处理 |
+| P2 | 16 个 store 各自内联 `CREATE TABLE`，无统一 schema 引导 | ✅ 已决策：保持 store-local 内联 DDL；不移入会话迁移包，也暂不引入统一 bootstrap，维持独立初始化与隔离 schema 测试范式 |
 
 **正面亮点**: 测试沿用 lobster/identity 的「隔离 schema + 无 DSN 则 skip」模式，可在 CI 与本地无缝切换；E2E 已用真实 `pocketd` 启动验证 HTTP→PG 全链路持久化与回读。
 

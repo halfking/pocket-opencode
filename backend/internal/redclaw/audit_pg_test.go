@@ -308,17 +308,6 @@ func TestPGAuditStore_RecordPreservesCallerTimestamp(t *testing.T) {
 	}
 }
 
-func TestPGAuditStore_WithPoolNil(t *testing.T) {
-	// nil pool 的防御在 PGAuditStoreWithPool：返回 (nil, nil) 让调用方回退内存版。
-	store, err := PGAuditStoreWithPool(nil)
-	if err != nil {
-		t.Fatalf("PGAuditStoreWithPool(nil) must not error, got %v", err)
-	}
-	if store != nil {
-		t.Fatalf("PGAuditStoreWithPool(nil) must return nil store, got %T", store)
-	}
-}
-
 func TestPGAuditStore_FlushUnsupported(t *testing.T) {
 	// PG 版持久化，Flush 语义不存在：返回空且不 panic。
 	s := &PGAuditStore{}

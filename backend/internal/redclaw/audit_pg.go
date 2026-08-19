@@ -242,11 +242,3 @@ LIMIT %d
 	}
 	return page, nil
 }
-
-// PGAuditStoreWithPool returns a new PGAuditStore if pool is provided, otherwise returns nil.
-func PGAuditStoreWithPool(pool *pgxpool.Pool) (*PGAuditStore, error) {
-	if pool == nil {
-		return nil, nil
-	}
-	return NewPGAuditStore(pool)
-}
