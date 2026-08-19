@@ -137,8 +137,14 @@ const (
 )
 
 // encodeAuditCursor 编码 (timestamp, id) 为不透明游标。
+//
+// 必须使用全精度（UnixNano）：time.Now() 产生的纳秒级时间戳经 PG
+// TIMESTAMPTZ 落库为微秒精度。若仅用 UnixMilli 编码，游标会丢失亚毫秒精度，
+// 导致下一页的 (timestamp, id) > (cursorTs, cursorID) 把游标所在毫秒桶整体
+// 重新包含，造成跨页重复计数。UnixNano 在内存（ns）与 PG（µs 往返）下都能与
+// 落库值精确对齐，边界条目被严格排除。
 func encodeAuditCursor(e *AuditEntry) string {
-	return strconv.FormatInt(e.Timestamp.UnixMilli(), 10) + ":" + e.ID
+	return strconv.FormatInt(e.Timestamp.UnixNano(), 10) + ":" + e.ID
 }
 
 // decodeAuditCursor 解析游标；非法游标返回零值。
@@ -147,11 +153,11 @@ func decodeAuditCursor(cursor string) (time.Time, string) {
 	if idx <= 0 {
 		return time.Time{}, ""
 	}
-	ms, err := strconv.ParseInt(cursor[:idx], 10, 64)
+	nano, err := strconv.ParseInt(cursor[:idx], 10, 64)
 	if err != nil {
 		return time.Time{}, ""
 	}
-	return time.UnixMilli(ms), cursor[idx+1:]
+	return time.Unix(0, nano), cursor[idx+1:]
 }
 
 // afterCursor 判断 e 是否严格位于游标之后。
