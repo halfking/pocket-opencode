@@ -5,14 +5,14 @@
 // of pocketd consumes:
 //
 //   - workspaces        — the "one-person company" container. Every user gets a
-//                         default workspace at bootstrap; additional shadow
-//                         workspaces are created when collaborators are invited.
+//     default workspace at bootstrap; additional shadow
+//     workspaces are created when collaborators are invited.
 //   - workspace_members — maps users into workspaces with a role (owner /
-//                         invitee) and an optional expiry (for temporary
-//                         collaborators, capped at 3 invitees per workspace).
+//     invitee) and an optional expiry (for temporary
+//     collaborators, capped at 3 invitees per workspace).
 //   - devices           — records every logged-in device (fingerprint, push
-//                         token, OS, last seen) so the owner can audit and
-//                         revoke sessions.
+//     token, OS, last seen) so the owner can audit and
+//     revoke sessions.
 //
 // Design notes:
 //   - All tables carry workspace_id so multi-workspace isolation is enforced at
@@ -69,14 +69,14 @@ type Member struct {
 // Device is a registered client device. The push token is stored here so the
 // Notification Center (S0-E) can dispatch via APNs/FCM.
 type Device struct {
-	ID           string `json:"id"`
-	UserID       string `json:"user_id"`
-	WorkspaceID  string `json:"workspace_id"`
-	Fingerprint  string `json:"fingerprint"`
-	PushToken    string `json:"push_token,omitempty"`
-	OS           string `json:"os"`
-	LastSeenAt   int64  `json:"last_seen_at"`
-	CreatedAt    int64  `json:"created_at"`
+	ID          string `json:"id"`
+	UserID      string `json:"user_id"`
+	WorkspaceID string `json:"workspace_id"`
+	Fingerprint string `json:"fingerprint"`
+	PushToken   string `json:"push_token,omitempty"`
+	OS          string `json:"os"`
+	LastSeenAt  int64  `json:"last_seen_at"`
+	CreatedAt   int64  `json:"created_at"`
 }
 
 // ErrNotFound is returned when a single-row lookup misses.
@@ -159,7 +159,7 @@ VALUES ($1, $2, $3, $4, $5)
 
 // CreateDefaultWorkspace creates a workspace and immediately registers the
 // owner as a member with RoleOwner. Intended for user bootstrap ("create my
-//随身公司").
+// 随身公司").
 func (s *Store) CreateDefaultWorkspace(ctx context.Context, ws *Workspace) error {
 	if err := s.CreateWorkspace(ctx, ws); err != nil {
 		return err
@@ -213,17 +213,46 @@ func (s *Store) AddMember(ctx context.Context, m *Member) error {
 	if m.Role == "" {
 		m.Role = RoleInvitee
 	}
-	// Enforce invitee cap. Owners don't count against the cap.
+	// Enforce invitee cap inside a workspace-scoped transaction. The advisory
+	// lock linearizes count-and-insert across concurrent invite requests.
 	if m.Role == RoleInvitee {
-		count, err := s.CountInvitees(ctx, m.WorkspaceID)
+		tx, err := s.pool.Begin(ctx)
 		if err != nil {
 			return err
 		}
-		// Allow re-inviting an existing member without bumping the count.
-		existing, _ := s.GetMember(ctx, m.WorkspaceID, m.UserID)
-		if existing == nil && count >= MaxInvitees {
-			return ErrInviteeLimit
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `
+			SELECT pg_advisory_xact_lock(hashtextextended('identity-members:' || $1, 0))
+		`, m.WorkspaceID); err != nil {
+			return err
 		}
+
+		var existingRole Role
+		err = tx.QueryRow(ctx, `
+			SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2
+		`, m.WorkspaceID, m.UserID).Scan(&existingRole)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			var count int
+			if err := tx.QueryRow(ctx, `
+				SELECT COUNT(*) FROM workspace_members WHERE workspace_id = $1 AND role = 'invitee'
+			`, m.WorkspaceID).Scan(&count); err != nil {
+				return err
+			}
+			if count >= MaxInvitees {
+				return ErrInviteeLimit
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO workspace_members (workspace_id, user_id, role, invited_at, expires_at)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = EXCLUDED.role, expires_at = EXCLUDED.expires_at
+		`, m.WorkspaceID, m.UserID, m.Role, m.InvitedAt, m.ExpiresAt); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
 	}
 	_, err := s.pool.Exec(ctx, `
 INSERT INTO workspace_members (workspace_id, user_id, role, invited_at, expires_at)

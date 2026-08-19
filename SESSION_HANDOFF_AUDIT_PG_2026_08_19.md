@@ -12,7 +12,8 @@
 | P2 决定 `Flush()` 语义 | ⚠️ 决策：**no-op 正确** | PG 即时持久化无缓冲可刷，已文档化 |
 | P2 E2E 启动 + 命中 `/api/audit` + 确认 PG 持久化 | ✅ 完成 | 真实 `pocketd` 启动于 8099 + `kaixuan`，导出落 PG 并回读成功 |
 | P3 用 PG-backed store 重跑 audit_writer email/ACC 测试 | 🟡 已验证 | store 层 + E2E HTTP 链路均已在 PG 验证；单测保持内存态（后端无关）。可选改造见下方 Agent-A |
-| ? `PGAuditStoreWithPool` 死代码审计 | ⚠️ 待决策 | 生产侧未被使用（`server.go:213` 直接调 `NewPGAuditStore`）；仅被自身测试引用 |
+| `PGAuditStoreWithPool` 死代码审计 | ✅ 决策 A：已删除 | 生产侧未使用（`server.go` 直接调 `NewPGAuditStore`）；wrapper 的 `(nil, nil)` 合约与主构造函数不一致，调用方已显式处理 nil pool |
+| audit DDL 收敛 | ✅ 决策：保持各 store 内联 | 不移入 `internal/migration`（会话迁移包），暂不引入统一 bootstrap 包；当前 store-local、幂等 DDL 与独立初始化/隔离 schema 测试范式一致 |
 
 ## 2. HEAD 与提交
 
@@ -49,7 +50,6 @@ go test ./internal/redclaw/... ./internal/server/... -count=1          # 期望 
 - **Agent-A（P3 收口）**：把 `internal/server` 的 audit_writer 单测改成可选 PG-backed（DSN 存在时注入 `PGAuditStore`，沿用 redclaw 的隔离 schema 模式），在 `kaixuan` 上跑 email/ACC/tasksync/vault/model_calls 审计写入测试，确认绿 + `-race`。
 - **Agent-B（同构并发审计）**：审计其余 PG store（identity / lobster / quota / task / email / vault / notes / opencode）是否存在同类缺陷——① 并发 `Record` 的 ID 碰撞（同 audit bug）；② 分页游标的精度/消歧问题；③ 缺失的 mutex。产出报告 + 带测试的修复。
 - **Agent-C（CI 接入）**：新增 `Makefile` 目标 `test-pg` 与 GitHub Actions job，使用 kaixuan（或临时 PG）以 `POCKET_TEST_POSTGRES_DSN` 运行 `go test ./internal/redclaw/... ./internal/server/...`（带/不带 `-race`），让 PG 集成测试进入 CI。
-- **Agent-D（? 决策落地）**：落实两个 `?`：① `PGAuditStoreWithPool` 取「删除 wrapper+测试」或「保留+文档」之一并实现；② 评估是否抽出统一的 schema 引导包（如 `internal/db/schema`）收敛 16 处内联 `CREATE TABLE`，把 audit DDL 一并纳入，并补文档。
 
 > 以上 4 个 Agent 无相互依赖，可一次性并行派发；各自独立提交、推送、回报 SHA。
 
@@ -147,26 +147,24 @@ go test ./internal/redclaw/... ./internal/server/... -count=1          # 期望 
 
 ---
 
-### 🔹 Agent-D 提示词（? 决策落地：死代码 + DDL 收敛）
 
-```
-你在仓库 /Users/xutaohuang/workspace/official-deploy/services/opencode-pocket 工作（Go 模块在 backend/）。
 
-目标：落实两个此前标记为 ? 的待决策项，给出代码层结论。
+## 7. 决策记录（2026-08-19）
 
-项 1 — PGAuditStoreWithPool 死代码
-- 现状：redclaw/audit_pg.go 的 PGAuditStoreWithPool(pool) 仅被其自身测试 TestPGAuditStore_WithPoolNil 引用；生产代码 server.go:213 直接调 NewPGAuditStore(pool)。
-- 决策二选一并实现：
-  (A) 删除 PGAuditStoreWithPool 及其测试（干净）；或
-  (B) 保留但补注释说明它是 nil-safe 构造封装、非必需。
-- 选 (A) 时同步删除 audit_pg_test.go 中 TestPGAuditStore_WithPoolNil。
+### `PGAuditStoreWithPool`：选择 A，删除
 
-项 2 — audit DDL 收敛
-- 现状：原 handoff 曾想「把 audit_entries DDL 移入 internal/migration」，但 internal/migration 是会话迁移包（非 schema），该意图有误；当前 16 个 store 各自内联 CREATE TABLE IF NOT EXISTS。
-- 评估并给出建议实现：是否抽出统一 schema 引导包（如 internal/db/schema 或 internal/db 内新增 Bootstrap/RegisterDDL 机制），让各 store 注册自己的 DDL、在 pool 构造时一次性执行；把 audit_entries 的 DDL 一并纳入。
-- 若决定实现，保持「每测试隔离 schema + 无 DSN 则 skip」范式不变；补充必要的单测/集成验证；更新相关文档（如 README 或 docs 中 schema 管理说明）。
-- 若评估后认为保持内联更优，写一段结论说明（更新到对应 ? 项文档），不必强制改动。
+`PGAuditStoreWithPool` 只被 `TestPGAuditStore_WithPoolNil` 引用；生产构造路径在
+`internal/server/server.go` 已先检查 `pool != nil`，然后直接调用 `NewPGAuditStore`。
+因此 wrapper 没有调用方，也额外定义了主构造函数不具备的 `(nil, nil)` 成功语义。删除
+wrapper 与仅覆盖它的测试，保留调用方现有的内存 store 回退逻辑。
 
-准则：main 上工作，不重写他人历史、不 force-push；遵循 conventional-commit（refactor/cleanup/chore: ...）；
-提交推 origin/main 后回报 HEAD SHA、所做决策（A 或 B）、以及是否实现了 DDL 收敛。
+### audit DDL：不收敛到统一 bootstrap 包
+
+不将 `audit_entries` 放入 `internal/migration`：该包只负责跨主机会话迁移，不拥有数据库
+schema。也暂不新增 `internal/db/schema` 一类全局 bootstrap：现有多个 PG store 都在构造时
+执行自己拥有表的幂等 DDL，统一注册需要跨包依赖、全局执行顺序和错误传播约定，并会扩大
+每个 store 的启动和测试影响范围。`audit_entries` 继续由 `PGAuditStore.migrate` 管理，保持
+每个集成测试创建独立 schema、缺失 DSN 时 skip 的现有范式。待需要版本化迁移、跨表原子
+变更或集中运维 bootstrap 时，再以单独的 schema migration 设计统一演进所有 store，而非
+仅迁移 audit DDL。
 ```

@@ -2,6 +2,8 @@ package redclaw
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -10,11 +12,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// pgAuditIDSeq guarantees unique audit entry IDs even when Record is called
-// concurrently within the same nanosecond. time.Now() can return identical
-// values under load (coarse clock resolution), so pairing UnixNano with a
-// strictly-increasing per-process counter yields a unique PRIMARY KEY and the
-// ON CONFLICT (id) DO NOTHING path never silently drops a distinct entry.
+// pgAuditIDSeq is only a fallback for the extremely unlikely crypto/rand
+// failure. The normal ID path is random so separate pocketd processes cannot
+// collide on the same timestamp and counter values.
 var pgAuditIDSeq uint64
 
 // PGAuditStore is a PostgreSQL-backed implementation of AuditStore.
@@ -26,6 +26,9 @@ type PGAuditStore struct {
 
 // NewPGAuditStore creates a new PostgreSQL-backed audit store.
 func NewPGAuditStore(pool *pgxpool.Pool) (*PGAuditStore, error) {
+	if pool == nil {
+		return nil, fmt.Errorf("pgaudit: pgxpool is nil")
+	}
 	s := &PGAuditStore{
 		pool:    pool,
 		table:   "audit_entries",
@@ -70,7 +73,12 @@ func (s *PGAuditStore) Record(entry *AuditEntry) error {
 		entry.Timestamp = time.Now()
 	}
 	if entry.ID == "" {
-		entry.ID = fmt.Sprintf("aud_%d_%d", time.Now().UnixNano(), atomic.AddUint64(&pgAuditIDSeq, 1))
+		var suffix [16]byte
+		if _, err := cryptorand.Read(suffix[:]); err == nil {
+			entry.ID = "aud_" + hex.EncodeToString(suffix[:])
+		} else {
+			entry.ID = fmt.Sprintf("aud_%d_%d", time.Now().UnixNano(), atomic.AddUint64(&pgAuditIDSeq, 1))
+		}
 	}
 
 	ctx := context.Background()
@@ -241,12 +249,4 @@ LIMIT %d
 		page.NextCursor = encodeAuditCursor(last)
 	}
 	return page, nil
-}
-
-// PGAuditStoreWithPool returns a new PGAuditStore if pool is provided, otherwise returns nil.
-func PGAuditStoreWithPool(pool *pgxpool.Pool) (*PGAuditStore, error) {
-	if pool == nil {
-		return nil, nil
-	}
-	return NewPGAuditStore(pool)
 }

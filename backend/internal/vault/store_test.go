@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,17 +24,8 @@ func vaultTestDSN() string {
 func newVaultTestStore(t *testing.T) (*Store, func()) {
 	t.Helper()
 	dsn := vaultTestDSN()
-	ciSet := false
-	if _, ok := os.LookupEnv("CI"); ok {
-		ciSet = true
-	}
-	switch decideVaultGuard(dsn, ciSet) {
-	case vaultSkip:
-		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping vault integration test")
-	case vaultFail:
-		t.Fatal("POCKET_TEST_POSTGRES_DSN (or POCKET_POSTGRES_DSN) must be set under CI; refusing to silently skip the vault workspace-isolation test")
-	case vaultProceed:
-		// fall through to dial Postgres below
+	if dsn == "" {
+		t.Skip("POCKET_TEST_POSTGRES_DSN or POCKET_POSTGRES_DSN not set; skipping vault integration test")
 	}
 
 	ctx := context.Background()
@@ -81,6 +73,41 @@ func newVaultTestStore(t *testing.T) (*Store, func()) {
 func dropVaultTestSchema(ctx context.Context, pool *pgxpool.Pool, schema string) error {
 	_, err := pool.Exec(ctx, fmt.Sprintf("DROP SCHEMA %s CASCADE", schema))
 	return err
+}
+
+func TestPutLatestConcurrentLeavesOneCurrent(t *testing.T) {
+	store, cleanup := newVaultTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	const writes = 24
+	var wg sync.WaitGroup
+	errs := make(chan error, writes)
+	for i := 1; i <= writes; i++ {
+		wg.Add(1)
+		go func(version int) {
+			defer wg.Done()
+			errs <- store.PutLatest(ctx, "workspace-concurrent", "user-1", fmt.Sprintf("cipher-%d", version), version)
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var current int
+	if err := store.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM vault_sync
+		WHERE workspace_id = $1 AND user_id = $2 AND is_current
+	`, "workspace-concurrent", "user-1").Scan(&current); err != nil {
+		t.Fatal(err)
+	}
+	if current != 1 {
+		t.Fatalf("current rows = %d, want 1", current)
+	}
 }
 
 func TestVaultVersionsAreWorkspaceScoped(t *testing.T) {

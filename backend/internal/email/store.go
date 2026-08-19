@@ -2,10 +2,13 @@ package email
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -584,8 +587,17 @@ func (s *Store) GetSyncStatusScoped(ctx context.Context, userID, workspaceID str
 }
 
 // server_assistant.randomID but avoids a cross-package import).
+var randomIDCounter atomic.Uint64
+
 func randomID(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+	var suffix [16]byte
+	if _, err := cryptorand.Read(suffix[:]); err == nil {
+		return prefix + "-" + hex.EncodeToString(suffix[:])
+	}
+	// crypto/rand failures are not expected on supported platforms. The atomic
+	// counter keeps the fallback unique within this process instead of silently
+	// reusing a timestamp-derived ID.
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), randomIDCounter.Add(1))
 }
 
 // ListEmailsByDay 返回某用户指定日期（YYYY-MM-DD）所有已抓取的邮件。
@@ -987,7 +999,7 @@ func (s *Store) ClaimNextVacationDelivery(ctx context.Context, now int64, retryA
 		return nil, err
 	}
 
-	lockKey := d.VacationID + "\x00" + strings.ToLower(d.Recipient)
+	lockKey := d.VacationID + ":" + strings.ToLower(d.Recipient)
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
 		return nil, err
 	}

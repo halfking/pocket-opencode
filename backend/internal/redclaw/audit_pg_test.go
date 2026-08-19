@@ -220,9 +220,8 @@ func TestPGAuditStore_QueryRangeSameTimestampCursorDisambiguates(t *testing.T) {
 	s, cleanup := newTestPGAuditStore(t)
 	defer cleanup()
 	ts := time.UnixMilli(3_000_000)
-	var ids []string
 	for i := 0; i < 5; i++ {
-		ids = append(ids, mustRecordPG(t, s, "ws-a", fmt.Sprintf("act_%d", i), ts).ID)
+		mustRecordPG(t, s, "ws-a", fmt.Sprintf("act_%d", i), ts)
 	}
 	// 取前两条作为第一页。
 	page1, err := s.QueryRange(AuditQuery{StartTime: ts, Limit: 2})
@@ -232,6 +231,10 @@ func TestPGAuditStore_QueryRangeSameTimestampCursorDisambiguates(t *testing.T) {
 	if len(page1.Entries) != 2 || page1.NextCursor == "" {
 		t.Fatalf("page1 unexpected: %+v", page1)
 	}
+	firstPageIDs := map[string]struct{}{
+		page1.Entries[0].ID: {},
+		page1.Entries[1].ID: {},
+	}
 	page2, err := s.QueryRange(AuditQuery{StartTime: ts, Limit: 10, AfterCursor: page1.NextCursor})
 	if err != nil {
 		t.Fatal(err)
@@ -239,8 +242,10 @@ func TestPGAuditStore_QueryRangeSameTimestampCursorDisambiguates(t *testing.T) {
 	if len(page2.Entries) != 3 {
 		t.Fatalf("same-ms cursor must resume exactly after the last id, got %d", len(page2.Entries))
 	}
-	if page2.Entries[0].ID == ids[0] || page2.Entries[0].ID == ids[1] {
-		t.Fatal("cursor did not skip exported same-ms entries")
+	for _, entry := range page2.Entries {
+		if _, ok := firstPageIDs[entry.ID]; ok {
+			t.Fatalf("cursor repeated first-page entry %s", entry.ID)
+		}
 	}
 }
 
@@ -305,17 +310,6 @@ func TestPGAuditStore_RecordPreservesCallerTimestamp(t *testing.T) {
 	}
 	if len(page.Entries) != 1 || !page.Entries[0].Timestamp.Equal(ts) {
 		t.Fatalf("roundtrip timestamp mismatch: %+v", page.Entries)
-	}
-}
-
-func TestPGAuditStore_WithPoolNil(t *testing.T) {
-	// nil pool 的防御在 PGAuditStoreWithPool：返回 (nil, nil) 让调用方回退内存版。
-	store, err := PGAuditStoreWithPool(nil)
-	if err != nil {
-		t.Fatalf("PGAuditStoreWithPool(nil) must not error, got %v", err)
-	}
-	if store != nil {
-		t.Fatalf("PGAuditStoreWithPool(nil) must return nil store, got %T", store)
 	}
 }
 

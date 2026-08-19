@@ -309,7 +309,8 @@ func TestDailySummaryUniqueIndexIsWorkspaceAware(t *testing.T) {
 	var idx int
 	if err := store.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM pg_indexes
-		WHERE indexname = 'idx_daily_summaries_user_ws_date'
+		WHERE schemaname = current_schema()
+		  AND indexname = 'idx_daily_summaries_user_ws_date'
 	`).Scan(&idx); err != nil {
 		t.Fatalf("query new index: %v", err)
 	}

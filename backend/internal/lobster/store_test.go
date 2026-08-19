@@ -11,6 +11,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"sort"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -116,10 +118,13 @@ func TestPushConflict_OlderClientRev(t *testing.T) {
 	_, _ = s.Push(ctx, &AssetMirror{
 		ID: "ast_c", WorkspaceID: "ws", Kind: "note", ClientRev: 1, CipherBlob: "A_v1", UpdatedAt: 1,
 	})
-	// Device B pushes rev 5 (newer).
-	_, _ = s.Push(ctx, &AssetMirror{
+	// Device B pushes client rev 5 (newer). Server revisions are workspace-global.
+	bRes, err := s.Push(ctx, &AssetMirror{
 		ID: "ast_c", WorkspaceID: "ws", Kind: "note", ClientRev: 5, CipherBlob: "B_v5", UpdatedAt: 2,
 	})
+	if err != nil {
+		t.Fatalf("newer push: %v", err)
+	}
 	// Device A now pushes rev 2 (stale — B already advanced to rev 5).
 	res, err := s.Push(ctx, &AssetMirror{
 		ID: "ast_c", WorkspaceID: "ws", Kind: "note", ClientRev: 2, CipherBlob: "A_v2", UpdatedAt: 3,
@@ -133,9 +138,9 @@ func TestPushConflict_OlderClientRev(t *testing.T) {
 	if res.PrevBlob != "B_v5" {
 		t.Errorf("prev_blob = %q, want B_v5", res.PrevBlob)
 	}
-	// Server rev should advance past the stale client rev.
-	if res.ServerRev <= 5 {
-		t.Errorf("server_rev = %d, want > 5", res.ServerRev)
+	// The stale push consumes the next workspace cursor after the newer push.
+	if bRes.ServerRev != 2 || res.ServerRev != 3 {
+		t.Errorf("server revisions = newer:%d stale:%d, want 2 and 3", bRes.ServerRev, res.ServerRev)
 	}
 }
 
@@ -154,6 +159,61 @@ func TestPull_WorkspaceIsolation(t *testing.T) {
 	}
 	if len(pulledB) != 1 || pulledB[0].ID != "a2" {
 		t.Errorf("ws_B pulled = %+v", pulledB)
+	}
+}
+
+func TestPushConcurrentWorkspaceRevisions(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	const pushes = 32
+	results := make(chan int, pushes)
+	errs := make(chan error, pushes)
+	var wg sync.WaitGroup
+	for i := 0; i < pushes; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			res, err := s.Push(ctx, &AssetMirror{
+				ID: fmt.Sprintf("concurrent-%d", i), WorkspaceID: "ws-concurrent",
+				Kind: "note", ClientRev: 1, CipherBlob: fmt.Sprintf("blob-%d", i),
+			})
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- res.ServerRev
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	got := make([]int, 0, pushes)
+	for rev := range results {
+		got = append(got, rev)
+	}
+	if len(got) != pushes {
+		t.Fatalf("got %d results, want %d", len(got), pushes)
+	}
+	sort.Ints(got)
+	for i, rev := range got {
+		want := i + 1
+		if rev != want {
+			t.Fatalf("sorted server revisions[%d] = %d, want %d: %v", i, rev, want, got)
+		}
+	}
+	latest, err := s.LatestServerRev(ctx, "ws-concurrent")
+	if err != nil || latest != pushes {
+		t.Fatalf("latest revision = %d, %v; want %d", latest, err, pushes)
+	}
+	pulled, err := s.Pull(ctx, "ws-concurrent", 0, pushes)
+	if err != nil || len(pulled) != pushes {
+		t.Fatalf("pull = %d rows, %v; want %d", len(pulled), err, pushes)
 	}
 }
 

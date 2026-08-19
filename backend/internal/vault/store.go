@@ -40,7 +40,21 @@ func (s *Store) migrate() error {
 		PRIMARY KEY (workspace_id, user_id, version)
 	);
 	ALTER TABLE vault_sync ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
-	CREATE INDEX IF NOT EXISTS idx_vault_user ON vault_sync(workspace_id, user_id);
+		CREATE INDEX IF NOT EXISTS idx_vault_user ON vault_sync(workspace_id, user_id);
+		WITH ranked_current AS (
+			SELECT ctid, ROW_NUMBER() OVER (
+				PARTITION BY workspace_id, user_id
+				ORDER BY version DESC, updated_at DESC
+			) AS rank
+			FROM vault_sync
+			WHERE is_current
+		)
+		UPDATE vault_sync AS v
+		SET is_current = FALSE
+		FROM ranked_current AS r
+		WHERE v.ctid = r.ctid AND r.rank > 1;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_vault_sync_one_current
+			ON vault_sync(workspace_id, user_id) WHERE is_current;
 	DO $$
 	DECLARE
 		primary_key_name TEXT;
@@ -75,6 +89,11 @@ func (s *Store) PutLatest(ctx context.Context, workspaceID, userID, ciphertext s
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		SELECT pg_advisory_xact_lock(hashtextextended('vault:' || $1 || ':' || $2, 0))
+	`, workspaceID, userID); err != nil {
+		return err
+	}
 
 	// Mark prior versions non-current.
 	if _, err := tx.Exec(ctx, `
@@ -159,6 +178,11 @@ func (s *Store) MarkCurrent(ctx context.Context, workspaceID, userID string, ver
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		SELECT pg_advisory_xact_lock(hashtextextended('vault:' || $1 || ':' || $2, 0))
+	`, workspaceID, userID); err != nil {
+		return err
+	}
 
 	if _, err := tx.Exec(ctx,
 		`UPDATE vault_sync SET is_current = FALSE

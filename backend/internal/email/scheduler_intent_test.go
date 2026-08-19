@@ -57,14 +57,21 @@ func (f *fakeIntentExecutor) seen() []ActionIntent {
 func seedPendingIntent(t *testing.T, store *Store, emailID, accountID, user, ws, action, folder string) {
 	t.Helper()
 	intent := &ActionIntent{
-		EmailID:     emailID,
-		AccountID:   accountID,
-		WorkspaceID: ws,
-		UserID:      user,
-		Action:      action,
-		Folder:      folder,
-		Reason:      "test",
-		Status:      "pending",
+		EmailID:        emailID,
+		AccountID:      accountID,
+		WorkspaceID:    ws,
+		UserID:         user,
+		Action:         action,
+		Folder:         folder,
+		Reason:         "test",
+		IdempotencyKey: "test-intent-" + emailID + "-" + action,
+		Status:         "pending",
+	}
+	if err := store.InsertEmail(context.Background(), Email{
+		ID: emailID, AccountID: accountID, WorkspaceID: ws,
+		MessageID: emailID + "@example.com", FromAddress: "sender@example.com", Date: time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("seed email %s: %v", emailID, err)
 	}
 	if err := store.InsertActionIntent(context.Background(), intent); err != nil {
 		t.Fatalf("seed intent %s: %v", action, err)

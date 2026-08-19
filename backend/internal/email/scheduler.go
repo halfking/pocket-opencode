@@ -91,10 +91,14 @@ const defaultTimezoneOffsetSec = 28800
 // 默认时区为 UTC+8（中国大陆）；可通过 SetTimezoneOffset 或
 // POCKET_TIMEZONE_OFFSET_SEC 环境变量覆盖。
 func NewScheduler(store *Store, fetcher *Fetcher, enabled bool) *Scheduler {
+	var crypto *Crypto
+	if fetcher != nil {
+		crypto = fetcher.crypto
+	}
 	s := &Scheduler{
 		store:     store,
 		fetcher:   fetcher,
-		crypto:    fetcher.crypto,
+		crypto:    crypto,
 		providers: make(map[string]OAuthProviderConfig),
 		stop:      make(chan struct{}),
 		enabled:   enabled,

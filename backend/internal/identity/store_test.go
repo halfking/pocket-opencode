@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -149,6 +150,47 @@ func TestInviteCap(t *testing.T) {
 	// Re-inviting an existing invitee should NOT error (idempotent).
 	if err := s.AddMember(ctx, &Member{WorkspaceID: "ws_cap", UserID: "invitee1", Role: RoleInvitee}); err != nil {
 		t.Errorf("re-invite existing member should be idempotent, got %v", err)
+	}
+}
+
+func TestInviteCapConcurrent(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	ws := &Workspace{ID: "ws_cap_concurrent", OwnerID: "owner", Name: "cap"}
+	if err := s.CreateDefaultWorkspace(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+
+	const attempts = MaxInvitees + 8
+	var wg sync.WaitGroup
+	results := make(chan error, attempts)
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results <- s.AddMember(ctx, &Member{
+				WorkspaceID: ws.ID, UserID: fmt.Sprintf("invitee-%d", i), Role: RoleInvitee,
+			})
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+
+	successes := 0
+	for err := range results {
+		if err == nil {
+			successes++
+		} else if !errors.Is(err, ErrInviteeLimit) {
+			t.Fatalf("unexpected concurrent invite error: %v", err)
+		}
+	}
+	if successes != MaxInvitees {
+		t.Fatalf("successful invites = %d, want %d", successes, MaxInvitees)
+	}
+	count, err := s.CountInvitees(ctx, ws.ID)
+	if err != nil || count != MaxInvitees {
+		t.Fatalf("stored invitees = %d, %v; want %d", count, err, MaxInvitees)
 	}
 }
 

@@ -4,7 +4,7 @@
 **审计范围**: audit PG 持久化两处生产代码变更（commit `59191b5` + `6aaacd5`）
 **模块**: `backend/internal/redclaw`（audit.go, audit_pg.go）
 **审计标准**: comprehensive-code-audit（数据溯源 / 业务流程闭环 / 状态机 / 并发安全 / 数据兼容）
-**当前 HEAD**: `6892ba5`（main，已与 origin/main 同步；本任务两个 commit 已并入）
+**当前基线**: 报告初始审计基于 `6892ba5`；后续已合入 CI/决策提交，当前工作以 `main` 的最新提交及其工作树验证结果为准。
 
 ---
 
@@ -17,6 +17,7 @@
 | `internal/redclaw/audit_cursor_precision_test.go`（新增） | 内存态亚毫秒 cursor 回归 | 覆盖修复 |
 | `internal/redclaw/audit_pg_cursor_test.go`（新增） | PG 态亚毫秒 cursor / same-ts 消歧 | 覆盖修复 |
 | `internal/redclaw/audit_pg_concurrent_test.go`（新增） | 8×50 并发 Record+QueryRange，断言 400/400 耐久 | 覆盖修复 + 暴露并发 bug |
+| `internal/server/audit_writer_pg_test.go`（新增） | server writer PG-backed roundtrip | 覆盖 claims/IP/租户、脱敏、email/tasksync/vault/LLM/ACC、截断和 system tenant |
 
 ---
 
@@ -45,7 +46,7 @@ QueryRange(StartTime, Limit) → 收集 → if NextCursor=="" break; else 带 Af
 ```
 - **Initiation**: `StartTime` / `AfterCursor` 起点明确。
 - **Termination**: `NextCursor` 为空即终止；游标 `(timestamp,id)` 严格单调递增，必然推进。
-- **Recovery / 超时**: 单次 `QueryRange` 受 `context.Background()`（无显式超时，但 PG 侧有连接级超时兜底）。
+- **Recovery / timeout**: `PGAuditStore` currently uses `context.Background()` for database operations; no operation-level timeout is configured. This remains a follow-up resilience item rather than a verified guarantee.
 - **幂等**: `Record` 的 `ON CONFLICT(id) DO NOTHING` 保证同 ID 重试安全。
 
 分页测试（`TestPGAuditStore_QueryRangeCursorPagination` 等）已验证：分页终止、无空洞、无重复 ID、跨页时间有序。✅ 闭环完整。
@@ -81,7 +82,7 @@ QueryRange(StartTime, Limit) → 收集 → if NextCursor=="" break; else 带 Af
 
 | 变更 | 兼容性判断 |
 |------|-----------|
-| 游标格式 `UnixMilli` → `UnixNano` | 游标是**不透明字符串**，仅 `QueryRange` 内部往返使用，无外部解析器。旧 ms 精度数据仍可解码（nanos = ms×1e6，精确）。✅ |
+| 游标格式 `UnixMilli` → `UnixNano` | 游标是内部不透明字符串；当前新格式按纳秒编码。历史毫秒格式兼容性需在正式迁移前单独处理，不能假定旧游标自动完成单位转换。⚠️ |
 | 条目 ID 格式 `aud_<nano>_<nano%1e6>` → `aud_<nano>_<seq>` | `id` 仅作主键，无外部依赖；新格式更唯一。历史行不受影响（主键不变更）。✅ |
 | `POCKET_TEST_POSTGRES_DSN` 指向 `kaixuan` 而非 `llm_gateway` | `llm_gateway` 库有 `citus_columnar` 的 `enforce_columnar_trigger` 事件触发器，在 `search_path` 被钉到隔离 schema 时建表失败；`kaixuan`（生产 pocketd 实际使用）无此触发器。✅ 属环境选择，非代码不兼容。 |
 
@@ -93,8 +94,8 @@ QueryRange(StartTime, Limit) → 收集 → if NextCursor=="" break; else 带 Af
 |------|----|------|
 | P0 | Record 并发 ID 碰撞静默丢数据 | ✅ 已修复（atomic 计数器） |
 | P0 | 游标 ms 精度丢失导致跨页重复计数 | ✅ 已修复（UnixNano） |
-| P2 | `PGAuditStoreWithPool` 生产侧未被使用（仅被自身测试引用） | ⚠️ 待决策（见 handoff `?` 项） |
-| P2 | 16 个 store 各自内联 `CREATE TABLE`，无统一 schema 引导 | ⚠️ 待决策（见 handoff `?` 项，原「移入 internal/migration」意图有误） |
+| P2 | `PGAuditStoreWithPool` 生产侧未被使用（仅被自身测试引用） | ✅ 已决策 A：删除 wrapper 及其专属测试；生产路径直接使用 `NewPGAuditStore`，nil pool 由调用方处理 |
+| P2 | 16 个 store 各自内联 `CREATE TABLE`，无统一 schema 引导 | ✅ 已决策：保持 store-local 内联 DDL；不移入会话迁移包，也暂不引入统一 bootstrap，维持独立初始化与隔离 schema 测试范式 |
 
 **正面亮点**: 测试沿用 lobster/identity 的「隔离 schema + 无 DSN 则 skip」模式，可在 CI 与本地无缝切换；E2E 已用真实 `pocketd` 启动验证 HTTP→PG 全链路持久化与回读。
 

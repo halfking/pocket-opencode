@@ -255,6 +255,12 @@ export JWT_SECRET="$(openssl rand -base64 32)"
 cd backend
 go test ./...
 
+# PostgreSQL 集成测试（优先使用 POCKET_TEST_POSTGRES_DSN，兼容 POCKET_POSTGRES_DSN）
+POCKET_TEST_POSTGRES_DSN='postgres://user:password@127.0.0.1:5432/pocket_test?sslmode=disable' make test-pg
+
+# 未设置任一 PostgreSQL DSN 时，目标会输出 SKIP 并成功退出
+make test-pg
+
 # 前端测试
 cd frontend
 npm run test
@@ -262,6 +268,12 @@ npm run test
 # E2E测试
 npm run test:e2e
 ```
+
+PostgreSQL 集成测试会为每个测试创建独立 schema，并在清理阶段删除。`make test-pg` 会运行
+审计存储和审计写入的 PostgreSQL 集成测试；`backend.yml` 运行完整 backend 测试集，
+`backend-pg.yml` 运行这组专项 PostgreSQL 测试。两个 GitHub Actions 工作流都会启动临时
+PostgreSQL 服务并设置 `POCKET_TEST_POSTGRES_DSN`，因此 CI 会实际执行这些测试；本地没有
+DSN 时则明确跳过。
 
 ### 测试覆盖率
 
