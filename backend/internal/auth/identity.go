@@ -141,8 +141,10 @@ func loadMultiIssuerConfig() ([]token.Issuer, []byte, bool) {
 
 	secret, err := token.LoadSharedSecret(envIdentitySharedSecret)
 	if err != nil {
+		// Transient / misconfigured secret — log but don't latch
+		// multiIssuerDisabled, so a corrected secret (e.g. rotated
+		// mount in Kubernetes) takes effect on the next call.
 		slog.Default().Warn("identity-go: shared secret invalid", "err", err)
-		multiIssuerDisabled = true
 		return nil, nil, false
 	}
 
@@ -153,8 +155,10 @@ func loadMultiIssuerConfig() ([]token.Issuer, []byte, bool) {
 
 	issuers, err := token.Allowlist(allowlist, secret)
 	if err != nil {
+		// Same rationale as above: don't latch on transient allowlist
+		// parse failures (which only happen if a future change makes
+		// Allowlist re-parse the env string).
 		slog.Default().Warn("identity-go: allowlist invalid", "err", err)
-		multiIssuerDisabled = true
 		return nil, nil, false
 	}
 

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -544,8 +545,12 @@ func (api *MobileAPI) HandleWebSocket(c echo.Context) error {
 
 	var userID string
 	if tokenString != "" && api.jwtSigner != nil {
-		claims, err := api.jwtSigner.Parse(tokenString)
-		if err != nil {
+		// Route through identity-go bridge so cross-project tokens
+		// (signed by pocket / memora / redclaw / acc / llm-gateway with
+		// aud=pocket-api) are accepted here too, matching the HTTP
+		// requireAuth path.
+		claims, err := auth.VerifyToken(api.jwtSigner, tokenString)
+		if err != nil || claims == nil || strings.TrimSpace(claims.UserID) == "" {
 			log.Printf("WebSocket token validation failed: %v", err)
 			return echo.NewHTTPError(http.StatusUnauthorized, "Invalid token")
 		}
