@@ -21,7 +21,7 @@ func TestVacationDeliveryClaimAndRetry(t *testing.T) {
 		t.Fatalf("smtp: %v", err)
 	}
 	vacation := &VacationReply{
-		ID: acct + "-vac", AccountID: acct, Enabled: true,
+		AccountID: acct, Enabled: true,
 		StartAt: now - 60, EndAt: now + 3600,
 		Subject: "Away", BodyText: "I am away", CreatedAt: now - 120,
 	}
@@ -88,7 +88,7 @@ func TestVacationDeliveryClaimIsWorkspaceScoped(t *testing.T) {
 	now := time.Now().Unix()
 	seedAccount(t, store, "vac-a", "user-a", "ws-a")
 	if err := store.UpsertVacationScoped(ctx, &VacationReply{
-		ID: "vac-a-1", AccountID: "vac-a", Enabled: true,
+		AccountID: "vac-a", Enabled: true,
 		StartAt: now - 10, EndAt: now + 100,
 		Subject: "Away", BodyText: "Away", CreatedAt: now - 20,
 	}, "user-a", "ws-a"); err != nil {

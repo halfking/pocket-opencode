@@ -3,6 +3,7 @@ package email
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestInsertActionIntentIdempotent(t *testing.T) {
@@ -17,6 +18,12 @@ func TestInsertActionIntentIdempotent(t *testing.T) {
 		email = "act-email"
 	)
 	seedAccount(t, store, acct, user, ws)
+	if err := store.InsertEmail(ctx, Email{
+		ID: "act-email", AccountID: acct, WorkspaceID: ws,
+		MessageID: "act-email@example.com", FromAddress: "sender@example.com", Date: time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("seed email: %v", err)
+	}
 	// 同一 (email_id, action) 写两次 — 第二次按 idempotency_key 直接忽略。
 	intent := &ActionIntent{
 		EmailID:        email,
@@ -38,6 +45,7 @@ func TestInsertActionIntentIdempotent(t *testing.T) {
 
 	// 不同 action 同 email：应并存。
 	intent2 := *intent
+	intent2.ID = ""
 	intent2.Action = "route-folder"
 	intent2.Folder = "Junk"
 	intent2.IdempotencyKey = "idem-route-folder"

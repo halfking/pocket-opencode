@@ -138,9 +138,18 @@ func (s *Store) Create(ctx context.Context, a *Agent) error {
 	}
 	a.UpdatedAt = now
 
-	// Cap check.
-	count, err := s.CountByWorkspace(ctx, a.WorkspaceID)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		SELECT pg_advisory_xact_lock(hashtextextended('agentbridge:' || $1, 0))
+	`, a.WorkspaceID); err != nil {
+		return err
+	}
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM agents WHERE workspace_id = $1`, a.WorkspaceID).Scan(&count); err != nil {
 		return err
 	}
 	if count >= MaxAgentsPerWorkspace {
@@ -148,11 +157,13 @@ func (s *Store) Create(ctx context.Context, a *Agent) error {
 	}
 
 	caps := fmt.Sprintf("[%s]", joinQuoted(a.Capabilities))
-	_, err = s.pool.Exec(ctx, `
-INSERT INTO agents (id, workspace_id, instance_id, name, role, status, capabilities, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
-`, a.ID, a.WorkspaceID, a.InstanceID, a.Name, a.Role, a.Status, caps, a.CreatedAt, a.UpdatedAt)
-	return err
+	if _, err := tx.Exec(ctx, `
+	INSERT INTO agents (id, workspace_id, instance_id, name, role, status, capabilities, created_at, updated_at)
+	VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
+	`, a.ID, a.WorkspaceID, a.InstanceID, a.Name, a.Role, a.Status, caps, a.CreatedAt, a.UpdatedAt); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // Get fetches one agent by ID without a tenant check.

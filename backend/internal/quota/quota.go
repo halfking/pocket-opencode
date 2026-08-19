@@ -17,6 +17,7 @@ package quota
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -26,10 +27,10 @@ import (
 // 只看 CostUSD 一项，但 Store 与 Enforcer 接口设计为可扩展。
 type Budget struct {
 	WorkspaceID string    `json:"workspace_id"`
-	Kind        string    `json:"kind"`           // tokens | cost_usd | calls
-	Limit       float64   `json:"limit"`          // 数值上限；kind=cost_usd 时单位 USD
-	PeriodStart time.Time `json:"period_start"`   // 闭区间
-	PeriodEnd   time.Time `json:"period_end"`     // 开区间
+	Kind        string    `json:"kind"`         // tokens | cost_usd | calls
+	Limit       float64   `json:"limit"`        // 数值上限；kind=cost_usd 时单位 USD
+	PeriodStart time.Time `json:"period_start"` // 闭区间
+	PeriodEnd   time.Time `json:"period_end"`   // 开区间
 }
 
 // Store 读取当前预算。本期提供 MemoryStore（测试 / 无 DB 部署），未来
@@ -43,6 +44,7 @@ type Store interface {
 
 // MemoryStore 进程内预算；非持久化，仅用于无 DB 部署和测试。
 type MemoryStore struct {
+	mu   sync.RWMutex
 	rows map[string][]Budget // workspace_id -> 预算列表
 }
 
@@ -53,6 +55,8 @@ func NewMemoryStore() *MemoryStore {
 
 // BudgetsFor 返回相交预算（PeriodStart <= t < PeriodEnd）。无匹配返 nil。
 func (m *MemoryStore) BudgetsFor(_ context.Context, wsID string, t time.Time) ([]Budget, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	var out []Budget
 	for _, b := range m.rows[wsID] {
 		if b.PeriodStart.IsZero() && b.PeriodEnd.IsZero() {
@@ -75,6 +79,8 @@ func (m *MemoryStore) Set(_ context.Context, b Budget) error {
 	if b.WorkspaceID == "" {
 		return errEmptyWorkspace
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.rows[b.WorkspaceID] = append(m.rows[b.WorkspaceID], b)
 	return nil
 }

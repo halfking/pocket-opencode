@@ -46,9 +46,9 @@ var auditSensitiveKeys = []string{
 	"private_key",
 }
 
-// AuditFields 是 audit 写入 helper 的可选字段。零值代表不写入对应字段
-// （Success 默认 true；Detail 不传则为空；Timestamp / IP 由 helper 自动
-// 填充）。
+// AuditFields 是 audit 写入 helper 的可选字段。Success 的零值是 false；调用方
+// 必须显式传入 Success: true 表示成功。Detail 不传则为空；Timestamp / IP 由 helper 自动
+// 填充（Timestamp 非零时保留调用方提供的事件时间）。
 //
 // TenantID 为非空时强制覆盖（用于 system:acc 等 system 级事件）；空值
 // 时默认取 auth.Claims.WorkspaceID。
@@ -123,6 +123,7 @@ func (s *Server) writeAuditEntry(action, resource string, fields AuditFields, cl
 		Success:    fields.Success,
 		DurationMs: fields.Duration.Milliseconds(),
 		IP:         ip,
+		Timestamp:  fields.Timestamp,
 	}
 	if entry.Timestamp.IsZero() {
 		entry.Timestamp = time.Now()

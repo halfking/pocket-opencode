@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -127,6 +128,43 @@ func TestCreateAgent_CapEnforced(t *testing.T) {
 	err := s.Create(ctx, &Agent{ID: "over", WorkspaceID: "wsCap", InstanceID: "i", Name: "n"})
 	if err != ErrLimitReached {
 		t.Errorf("expected ErrLimitReached, got %v", err)
+	}
+}
+
+func TestCreateAgentCapConcurrent(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	const attempts = MaxAgentsPerWorkspace + 8
+	var wg sync.WaitGroup
+	results := make(chan error, attempts)
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results <- s.Create(ctx, &Agent{
+				ID: fmt.Sprintf("concurrent-agent-%d", i), WorkspaceID: "ws-concurrent", InstanceID: "i", Name: "n",
+			})
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+
+	successes := 0
+	for err := range results {
+		if err == nil {
+			successes++
+		} else if err != ErrLimitReached {
+			t.Fatalf("unexpected concurrent create error: %v", err)
+		}
+	}
+	if successes != MaxAgentsPerWorkspace {
+		t.Fatalf("successful creates = %d, want %d", successes, MaxAgentsPerWorkspace)
+	}
+	count, err := s.CountByWorkspace(ctx, "ws-concurrent")
+	if err != nil || count != MaxAgentsPerWorkspace {
+		t.Fatalf("stored agents = %d, %v; want %d", count, err, MaxAgentsPerWorkspace)
 	}
 }
 
