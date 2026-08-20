@@ -37,13 +37,15 @@ const envIdentityIssuerAllowlist = "IDENTITY_ISSUER_ALLOWLIST"
 // When empty, shadow recording is disabled and RecordShadow becomes a noop.
 const envIdentityShadowDSN = "IDENTITY_SHADOW_DSN"
 
-// DefaultIssuerAllowlist matches the identity_shadow provider contract.
+// DefaultIssuerAllowlist returns the immutable list of trusted token
+// issuers shared across the 6 projects.
 //
-// `asm` is deliberately absent — ai-session-manager is a pure consumer of
-// llm-gateway user tokens and must not appear as an independent identity
-// provider.
-var DefaultIssuerAllowlist = []string{
-	"redclaw", "memora", "llm-gateway", "pocket", "acc",
+// Each invocation returns a fresh slice so callers cannot mutate shared
+// state. `asm` is deliberately absent — ai-session-manager is a pure
+// consumer of llm-gateway user tokens and must not appear as an
+// independent identity provider.
+func DefaultIssuerAllowlist() []string {
+	return []string{"redclaw", "memora", "llm-gateway", "pocket", "acc"}
 }
 
 // IdentityVerifierResult is the normalized output for either legacy or
@@ -151,7 +153,7 @@ func loadMultiIssuerConfig() ([]token.Issuer, []byte, bool) {
 
 	allowlist := strings.TrimSpace(os.Getenv(envIdentityIssuerAllowlist))
 	if allowlist == "" {
-		allowlist = strings.Join(DefaultIssuerAllowlist, ",")
+		allowlist = strings.Join(DefaultIssuerAllowlist(), ",")
 	}
 
 	issuers, err := token.Allowlist(allowlist, secret)
