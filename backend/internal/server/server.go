@@ -38,13 +38,13 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/snippet"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // generateUUID generates a simple UUID-like string (Phase 7)
@@ -208,7 +208,12 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 		emailFetcher:     emailFetcher,
 		dataDir:          dataDir,
 		financeStore:     finance.NewStore(),
-		auditStore:       func() interface{ Record(entry *redclaw.AuditEntry) error; Query(query redclaw.AuditQuery) ([]*redclaw.AuditEntry, error); Flush() []*redclaw.AuditEntry; QueryRange(query redclaw.AuditQuery) (*redclaw.AuditPage, error) } {
+		auditStore: func() interface {
+			Record(entry *redclaw.AuditEntry) error
+			Query(query redclaw.AuditQuery) ([]*redclaw.AuditEntry, error)
+			Flush() []*redclaw.AuditEntry
+			QueryRange(query redclaw.AuditQuery) (*redclaw.AuditPage, error)
+		} {
 			if pool != nil {
 				if pgStore, err := redclaw.NewPGAuditStore(pool); err == nil {
 					return pgStore
@@ -216,8 +221,8 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 			}
 			return redclaw.NewAuditStore()
 		}(),
-		mobileCreates:    newMobileCreateCache(),
-		llmGWCache:       newLLMGatewayCache(),
+		mobileCreates: newMobileCreateCache(),
+		llmGWCache:    newLLMGatewayCache(),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -343,7 +348,9 @@ func (s *Server) AuditStore() interface {
 	Query(query redclaw.AuditQuery) ([]*redclaw.AuditEntry, error)
 	Flush() []*redclaw.AuditEntry
 	QueryRange(query redclaw.AuditQuery) (*redclaw.AuditPage, error)
-} { return s.auditStore }
+} {
+	return s.auditStore
+}
 
 const (
 	maxRequestBodyBytes = 2 << 20
@@ -395,6 +402,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/sessions", s.requireAuth(s.handleAllSessions)) // 新增：获取所有会话
 	mux.HandleFunc("/api/tasks", s.requireAuth(s.handleTasks))
 	mux.HandleFunc("/api/tasks/", s.requireAuth(s.handleTaskOperations))
+	// P1 双向 MCP：委派任务创建到 ACC（acc_create_task）。与 /api/tasks 的
+	// source=acc 只读守卫分开——这里是显式的写路径，返回 ACC 创建的任务。
+	mux.HandleFunc("/api/tasks/delegate", s.requireAuth(s.handleDelegateTask))
 	mux.HandleFunc("/api/config/models", s.requireAuth(s.handleModelConfig))
 	mux.HandleFunc("/api/config/reload", s.requireAuth(s.handleConfigReload))
 	mux.HandleFunc("/api/config/models/test", s.requireAuth(s.handleModelTest))
@@ -1001,6 +1011,59 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleDelegateTask 实现 POST /api/tasks/delegate：把任务创建委派给 ACC
+// （经 mcp.Client.CreateTask → acc_create_task），返回 ACC 创建的任务
+// （source=acc）。与 /api/tasks 的 POST 不同——那里对 source=acc 是 fail-closed
+// 的只读守卫，本端点才是显式写路径，供移动端「经 pocketd 触发 ACC 建任务」。
+//
+// 请求体：{ "kind"?, "title", "description"? }。title 必填。
+func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.mcpClient == nil {
+		http.Error(w, "ACC MCP client not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		Kind        string `json:"kind"`
+		Title       string `json:"title"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Title == "" {
+		http.Error(w, "title is required", http.StatusBadRequest)
+		return
+	}
+
+	args := map[string]interface{}{"title": req.Title}
+	if req.Kind != "" {
+		args["kind"] = req.Kind
+	}
+	if req.Description != "" {
+		args["description"] = req.Description
+	}
+
+	out, err := s.mcpClient.CreateTask(r.Context(), args)
+	if err != nil {
+		log.Printf("[tasks/delegate] CreateTask failed: %v", err)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	// ACC 以 toolJSON 返回 JSON 字符串；原样回传，并附 source=acc 标识。
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"source": "acc",
+		"raw":    out,
+	})
+}
+
 func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 	if s.taskStore == nil {
 		http.Error(w, "task store not configured", http.StatusServiceUnavailable)
@@ -1139,7 +1202,7 @@ func (s *Server) handleAttachSession(w http.ResponseWriter, r *http.Request, tas
 func (s *Server) handleAcceptTask(w http.ResponseWriter, r *http.Request, taskID string) {
 	var req struct {
 		EvidenceBundle task.EvidenceBundle `json:"evidenceBundle"`
-		Note           string               `json:"note,omitempty"`
+		Note           string              `json:"note,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)

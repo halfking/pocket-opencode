@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -146,10 +147,25 @@ func (r *Registry) discoverAndUpdate(ctx context.Context) {
 	// 标记未发现的实例为离线
 	for id, instance := range r.instances {
 		if !discovered[id] {
+			// 本机适配器实例（如 disk-claude，APIBaseURL 为 disk:// locator）不参与
+			// 网络发现，也没有端口可扫，不能因为「没被发现」就判离线。
+			if isLocalAPIBase(instance.APIBaseURL) {
+				continue
+			}
 			instance.Health = "offline"
 			log.Printf("⚠️ 实例离线: %s (%s)", instance.DisplayName, id)
 		}
 	}
+}
+
+// isLocalAPIBase 判断实例地址是否为本机适配器 locator（非 HTTP scheme，
+// 例如 disk 适配器的 "disk://claude"）。这类实例读本地文件，既不能做 HTTP
+// 健康探测，也不参与网络发现。
+func isLocalAPIBase(apiBaseURL string) bool {
+	if apiBaseURL == "" {
+		return false
+	}
+	return !strings.HasPrefix(apiBaseURL, "http://") && !strings.HasPrefix(apiBaseURL, "https://")
 }
 
 // healthCheck 健康检查所有实例，并在响应包含自描述字段时同步更新
@@ -160,6 +176,10 @@ func (r *Registry) healthCheck(ctx context.Context) {
 	urls := make(map[string]string)
 
 	for id, apiURL := range r.apiURLMap {
+		// 本机适配器实例没有 HTTP 端点，跳过探测（否则会被误判 unhealthy）。
+		if isLocalAPIBase(apiURL) {
+			continue
+		}
 		instances = append(instances, id)
 		urls[id] = apiURL
 	}

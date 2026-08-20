@@ -13,9 +13,14 @@ import (
 )
 
 // /api/integration/status 应同时报告 ACC / kxmemory / llm_gateway 的
-// 配置与 capabilities 状态。每个 connector 的 Write 必须为 false——
-// 这是 P3 §5 「企业集成只读」验收的契约。
-func TestIntegrationStatus_AccReadOnlyReported(t *testing.T) {
+// 配置与 capabilities 状态。
+//
+// T1.2 双向 MCP 之后 ACC connector 的契约变了：pocketd 会调用 ACC 已注册的写
+// tool（acc_create_task / acc_task_claim / acc_task_complete /
+// acc_report_session），因此 acc.write=true 且 tools 必须列出这些 tool。
+// 这与「/api/tasks POST source=acc 仍被 fail-closed 拒绝」不冲突——后者是
+// pocketd HTTP 面的策略（见 integration_acc_post_test.go）。
+func TestIntegrationStatus_AccBidirectionalReported(t *testing.T) {
 	srv, _, signer, _ := newMobileRouteServer(t)
 	srv.mcpClient = mcp.NewClient("http://acc.test", "k", false)
 	srv.auditStore = redclaw.NewAuditStore()
@@ -48,8 +53,13 @@ func TestIntegrationStatus_AccReadOnlyReported(t *testing.T) {
 	if !acc.Configured || !acc.Read {
 		t.Fatalf("acc must be configured & readable, got %+v", acc)
 	}
-	if acc.Write {
-		t.Fatalf("P3 §5 contract: acc must NOT advertise write capability")
+	if !acc.Write {
+		t.Fatalf("T1.2 contract: acc must advertise write capability, got %+v", acc)
+	}
+	for _, want := range []string{mcp.ToolGetTasks, mcp.ToolCreateTask, mcp.ToolTaskClaim, mcp.ToolTaskComplete, mcp.ToolReportSession} {
+		if !strings.Contains(strings.Join(acc.Tools, ","), want) {
+			t.Fatalf("acc tools must include %s, got %v", want, acc.Tools)
+		}
 	}
 }
 

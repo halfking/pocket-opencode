@@ -46,15 +46,23 @@ func (s *Server) handleIntegrationStatus(w http.ResponseWriter, r *http.Request)
 	}
 
 	// ACC：通过 mcpClient 是否被注入 + Capabilities() 派生。
+	// T1.2 起 MCP 客户端具备写能力（acc_create_task / acc_task_claim /
+	// acc_task_complete / acc_report_session），描述串随 caps.Write 变化，
+	// 不再硬编码 read-only。注意：这只表示「pocketd 能调 ACC 的写 tool」，
+	// /api/tasks POST source=acc 仍然 fail-closed 拒绝（见 server.go 的 acc 守卫）。
 	if s.mcpClient != nil {
 		caps := s.mcpClient.Capabilities()
+		mode := "read-only: "
+		if caps.Write {
+			mode = "read-write: "
+		}
 		resp.Integrations["acc"] = integrationEntry{
 			Enabled:      caps.Read,
 			Configured:   true,
 			Read:         caps.Read,
 			Write:        caps.Write,
 			Tools:        caps.Tools,
-			Capabilities: "read-only: " + caps.Connector,
+			Capabilities: mode + caps.Connector,
 		}
 	} else {
 		resp.Integrations["acc"] = integrationEntry{

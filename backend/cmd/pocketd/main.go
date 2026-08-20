@@ -8,9 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/adapter/composite"
+	"github.com/halfking/pocket-opencode/backend/internal/adapter/disk"
 	"github.com/halfking/pocket-opencode/backend/internal/agent"
 	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
@@ -243,12 +246,20 @@ func main() {
 	}
 
 	// ---- ACC task integration (Phase 5; construct now if configured) ----
-	// mcp.Client was previously dead code; here we instantiate it when the
-	// ACC MCP endpoint is configured so task handlers can fetch ACC tasks.
+	// mcp.Client 现在以 HMAC 内部 JWT（HS256）调用 ACC 的写 tool（见
+	// internal/mcp/client.go）。tenant_id 来自 POCKET_MCP_TENANT_ID，scopes
+	// 来自 POCKET_MCP_SCOPES（默认 tasks,sessions）。
+	mcpScopes := parseScopes(cfg.MCPScopeString)
 	var mcpClient *mcp.Client
 	if cfg.MCPBaseURL != "" {
-		mcpClient = mcp.NewClient(cfg.MCPBaseURL, cfg.MCPAPIKey, cfg.MCPInsecureTLS)
-		log.Printf("ACC MCP client configured: %s", cfg.MCPBaseURL)
+		if cfg.MCPTenantID == "" {
+			log.Printf("WARN: POCKET_MCP_TENANT_ID empty; ACC JWT tenant_id will be empty (ACC may reject)")
+		}
+		if cfg.MCPAPIKey == "" {
+			log.Printf("WARN: POCKET_MCP_API_KEY empty; ACC JWT cannot be signed")
+		}
+		mcpClient = mcp.NewClientWithAuth(cfg.MCPBaseURL, cfg.MCPAPIKey, cfg.MCPTenantID, mcpScopes, cfg.MCPInsecureTLS)
+		log.Printf("ACC MCP client configured: %s (tenant=%q scopes=%v)", cfg.MCPBaseURL, cfg.MCPTenantID, mcpScopes)
 	}
 
 	// ---- Phase C: 无状态 AI 网关（嵌入/LLM 代理，不存用户数据）----
@@ -301,6 +312,12 @@ func main() {
 	opencodeAdapter := adapter.NewOpenCodeHTTPAdapter(timeoutMS)
 	configAdapter := adapter.NewOpenCodeConfigHTTPAdapter(timeoutMS)
 
+	// Gap 1: 复合适配器——把 disk 只读会话聚合进既有 HTTP 适配器，按 locator
+	// 路由。默认（disk 未启用）保持裸 HTTP 适配器，行为完全不变。
+	opencodeAdapterForRouting := adapter.OpenCodeAdapter(opencodeAdapter)
+	// diskAdapterForSync 在 disk 启用时指向 disk.Adapter，供会话上报调度器复用。
+	var diskAdapterForSync *disk.Adapter
+
 	reg := registry.NewRegistry()
 	if cfg.OpenCodeInstancesJSON != "" {
 		configs, err := registry.ParseConfigJSON(cfg.OpenCodeInstancesJSON)
@@ -313,6 +330,29 @@ func main() {
 				log.Printf("Loaded %d OpenCode instances from config", len(configs))
 			}
 		}
+	}
+
+	// ---- 磁盘会话聚合（Wake 范式移植，只读）----
+	// 把本机 Claude Code / Codex 落盘的会话注册为只读实例（disk-claude /
+	// disk-codex）。instance_id → 本地 locator 的解析走 registry 的 workspace
+	// 作用域，绝不信任客户端传来的地址；DiskSessionsWorkspace 留空时注册为
+	// 运维共享只读资源（写操作解析器会拒绝这类实例）。
+	if cfg.DiskSessionsEnabled {
+		diskAdapter := disk.New()
+		ids, err := diskAdapter.Register(reg, cfg.DiskSessionsWorkspace)
+		if err != nil {
+			log.Printf("WARN: disk session adapter registration: %v", err)
+		}
+		if len(ids) == 0 {
+			log.Println("Disk session adapter enabled but no agent data directory detected (~/.claude/projects, ~/.codex)")
+		} else {
+			log.Printf("Disk session adapter enabled (read-only): instances=%v workspace=%q", ids, cfg.DiskSessionsWorkspace)
+		}
+		// 用复合（HTTP+disk）适配器替换裸 HTTP 适配器，使 /api/sessions、
+		// 审批/问答管理器都能按 locator 路由到 disk 实例；写操作（prompt/
+		// 审批回复）在 disk 路径上返回 ErrNotSupported，与只读语义一致。
+		opencodeAdapterForRouting = composite.New(opencodeAdapter, diskAdapter)
+		diskAdapterForSync = diskAdapter
 	}
 
 	// 启用自动发现：扫描 localhost + LAN 端口发现 OpenCode 实例（60s 间隔）
@@ -328,7 +368,7 @@ func main() {
 	reg.EnableAutoDiscovery(discoveryFunc, 60*time.Second)
 	go reg.StartAutoDiscovery(context.Background())
 
-	srv := server.New(cfg, npsAdapter, opencodeAdapter, taskStore, reg, configAdapter,
+	srv := server.New(cfg, npsAdapter, opencodeAdapterForRouting, taskStore, reg, configAdapter,
 		notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, nil, /* opencodeManager (set below) */
 		userStore, jwtSigner,
 		emailCrypto, emailPending,
@@ -503,10 +543,10 @@ func main() {
 	// ---- OpenCode 域管理器装配（Phase V3: 真实任务与会话接入）----
 	// 在 server.New 之后再装配，因为 manager 持有 opencodeAdapter/registry 引用。
 	// noopHistoryStore 是 HistoryStore 的零开销实现——真实持久化交给 OpenCode 自身（server-side SQLite）。
-	ocMgr := opencode.NewManager(reg, opencodeAdapter, noopHistoryStore{})
-	eventMgr := opencode.NewEventStreamManager(reg, opencodeAdapter)
-	permMgr := opencode.NewPermissionManager(reg, opencodeAdapter, opencode.PermissionManagerOptions{PollInterval: 3 * time.Second}, eventMgr) // Phase 1.2: 传入 eventStream
-	quesMgr := opencode.NewQuestionManager(reg, opencodeAdapter, opencode.QuestionManagerOptions{PollInterval: 3 * time.Second}, eventMgr)     // Phase 1.3: 传入 eventStream
+	ocMgr := opencode.NewManager(reg, opencodeAdapterForRouting, noopHistoryStore{})
+	eventMgr := opencode.NewEventStreamManager(reg, opencodeAdapterForRouting)
+	permMgr := opencode.NewPermissionManager(reg, opencodeAdapterForRouting, opencode.PermissionManagerOptions{PollInterval: 3 * time.Second}, eventMgr) // Phase 1.2: 传入 eventStream
+	quesMgr := opencode.NewQuestionManager(reg, opencodeAdapterForRouting, opencode.QuestionManagerOptions{PollInterval: 3 * time.Second}, eventMgr)     // Phase 1.3: 传入 eventStream
 
 	// 启动后台循环
 	mgrCtx, mgrCancel := context.WithCancel(context.Background())
@@ -632,6 +672,12 @@ func main() {
 	taskScheduler.Start(context.Background())
 	defer taskScheduler.Stop()
 
+	// P1: 本机 disk 会话周期性上报 ACC（acc_report_session），与任务拉取同形，
+	// 5 分钟一次、幂等去重。disk 未启用或 mcp 未配置时自动 no-op。
+	diskSessionScheduler := tasksync.NewDiskSessionScheduler(diskAdapterForSync, mcpClient, 5*60*1_000_000_000) // 5min
+	diskSessionScheduler.Start(context.Background())
+	defer diskSessionScheduler.Stop()
+
 	// P1 遗留：审计导出落盘轮转。AUDIT_EXPORT_DIR 设置后启用——增量 JSONL
 	// 落盘（按天分文件 audit-YYYYMMDD.jsonl），保留期外自动清理；外部 SIEM
 	// 可直接 tail 该目录。游标持久化在 state.json，重启不重扫。
@@ -727,4 +773,15 @@ func (a *llmGatewayLLMAdapter) Chat(ctx context.Context, model string, messages 
 		return "", fmt.Errorf("empty llm response")
 	}
 	return resp.Choices[0].Message.Content, nil
+}
+
+// parseScopes 把 "tasks,sessions" 这样的逗号分隔串拆成 trimmed 非空切片。
+func parseScopes(raw string) []string {
+	out := make([]string, 0)
+	for _, s := range strings.Split(raw, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }

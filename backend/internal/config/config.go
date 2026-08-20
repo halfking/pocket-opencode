@@ -44,8 +44,14 @@ type Config struct {
 	EmailMasterKey string // POCKET_EMAIL_MASTER_KEY：AES-GCM 加密 IMAP 凭证
 	// 任务系统整合（Phase 5）
 	MCPBaseURL     string // POCKET_MCP_BASE_URL：ACC 系统 MCP 端点（mcp.kxpms.cn/acc/mcp）
-	MCPAPIKey      string // POCKET_MCP_API_KEY：ACC MCP Bearer token
+	MCPAPIKey      string // POCKET_MCP_API_KEY：ACC MCP 的 HMAC 密钥（ACC 的 AUTH_TOKEN_SECRET）
 	MCPInsecureTLS bool   // POCKET_MCP_INSECURE_TLS：跳过 TLS 验证（仅 dev/自签证书，生产必须 false）
+	// ACC MCP 写操作鉴权（HMAC 内部 JWT，见 internal/mcp/client.go）：
+	// pocketd 以内部 JWT（HS256）调用 acc_create_task / acc_task_claim /
+	// acc_task_complete / acc_report_session，claims 需含非空 tenant_id 与
+	// scopes（默认 tasks,sessions）。
+	MCPTenantID    string // POCKET_MCP_TENANT_ID：ACC JWT 的 tenant_id claim（非空）
+	MCPScopeString string // POCKET_MCP_SCOPES：逗号分隔，默认 "tasks,sessions"
 	// 认证（Phase 0）
 	JWTSecret   string // POCKET_JWT_SECRET：签发/校验 app JWT
 	DevAuth     bool   // POCKET_DEV_AUTH：允许 admin/admin 开发登录（生产必须不设或 false）
@@ -78,17 +84,23 @@ type Config struct {
 	// WebSocket 安全
 	AllowedOrigins string // POCKET_ALLOWED_ORIGINS：逗号分隔的允许 origin 列表（空=dev 模式允许 localhost）
 
+	// —— 磁盘会话聚合（internal/adapter/disk，Wake 范式移植）——
+	// 读本机 Claude Code / Codex 落盘的会话转录，注册为只读实例
+	// （disk-claude / disk-codex）。严格只读；默认关闭，需显式开启。
+	DiskSessionsEnabled   bool   // POCKET_DISK_SESSIONS_ENABLED=true 启用
+	DiskSessionsWorkspace string // POCKET_DISK_SESSIONS_WORKSPACE：留空=运维共享只读；填 workspace id=限定该租户
+
 	// —— 会话迁移方案：实例感知增强配置 ——
 	DiscoveryFullSubnet bool     // POCKET_DISCOVERY_FULL_SUBNET：true=扫描完整 /24（默认 false 仅本机+网关）
-DiscoveryPorts      []int    // POCKET_DISCOVERY_PORTS：自定义扫描端口（逗号分隔，空=默认 14096-14100）
-		DiscoveryExtraHosts []string // POCKET_DISCOVERY_EXTRA_HOSTS：追加扫描主机（逗号分隔，如 ACC/NPS 内网穿透目标）
+	DiscoveryPorts      []int    // POCKET_DISCOVERY_PORTS：自定义扫描端口（逗号分隔，空=默认 14096-14100）
+	DiscoveryExtraHosts []string // POCKET_DISCOVERY_EXTRA_HOSTS：追加扫描主机（逗号分隔，如 ACC/NPS 内网穿透目标）
 
-		// RedClaw 企业后端配置（可选）
-		RedClawBaseURL    string // POCKET_REDCLAW_BASE_URL：RedClaw Gateway 地址
-		RedClawSecret     string // POCKET_REDCLAW_SECRET：共享密钥
-		RedClawTenantID   string // POCKET_REDCLAW_TENANT_ID：当前租户 ID（默认 default）
-		RedClawTimeoutSec int    // POCKET_REDCLAW_TIMEOUT_SEC：HTTP 超时秒数（默认 30）
-	}
+	// RedClaw 企业后端配置（可选）
+	RedClawBaseURL    string // POCKET_REDCLAW_BASE_URL：RedClaw Gateway 地址
+	RedClawSecret     string // POCKET_REDCLAW_SECRET：共享密钥
+	RedClawTenantID   string // POCKET_REDCLAW_TENANT_ID：当前租户 ID（默认 default）
+	RedClawTimeoutSec int    // POCKET_REDCLAW_TIMEOUT_SEC：HTTP 超时秒数（默认 30）
+}
 
 // Load reads all configuration from environment variables and returns a Config instance.
 // It applies sensible defaults for development environments. For production deployments,
@@ -129,6 +141,8 @@ func Load() Config {
 		MCPBaseURL:                 getEnv("POCKET_MCP_BASE_URL", ""),
 		MCPAPIKey:                  getEnv("POCKET_MCP_API_KEY", ""),
 		MCPInsecureTLS:             getEnv("POCKET_MCP_INSECURE_TLS", "") == "true",
+		MCPTenantID:                getEnv("POCKET_MCP_TENANT_ID", ""),
+		MCPScopeString:             getEnv("POCKET_MCP_SCOPES", "tasks,sessions"),
 		JWTSecret:                  getEnv("POCKET_JWT_SECRET", "pocket-dev-insecure-secret"),
 		DevAuth:                    getEnv("POCKET_DEV_AUTH", "") == "true",
 		DevAuthUser:                getEnv("POCKET_AUTH_USER", ""),
@@ -152,15 +166,18 @@ func Load() Config {
 		LLMGatewayAPIKey: getEnv("POCKET_LLM_GATEWAY_API_KEY", ""),
 		// WebSocket 安全
 		AllowedOrigins: getEnv("POCKET_ALLOWED_ORIGINS", ""),
+		// 磁盘会话聚合（只读）
+		DiskSessionsEnabled:   getEnv("POCKET_DISK_SESSIONS_ENABLED", "") == "true",
+		DiskSessionsWorkspace: getEnv("POCKET_DISK_SESSIONS_WORKSPACE", ""),
 		// 会话迁移方案：实例感知增强
 		DiscoveryFullSubnet: getEnv("POCKET_DISCOVERY_FULL_SUBNET", "") == "true",
-DiscoveryPorts:      parseIntList(getEnv("POCKET_DISCOVERY_PORTS", "")),
-			DiscoveryExtraHosts: parseStringList(getEnv("POCKET_DISCOVERY_EXTRA_HOSTS", "")),
-			// RedClaw 企业后端
-			RedClawBaseURL:    getEnv("POCKET_REDCLAW_BASE_URL", ""),
-			RedClawSecret:     getEnv("POCKET_REDCLAW_SECRET", ""),
-			RedClawTenantID:   getEnv("POCKET_REDCLAW_TENANT_ID", "default"),
-			RedClawTimeoutSec: getEnvInt("POCKET_REDCLAW_TIMEOUT_SEC", 30),
+		DiscoveryPorts:      parseIntList(getEnv("POCKET_DISCOVERY_PORTS", "")),
+		DiscoveryExtraHosts: parseStringList(getEnv("POCKET_DISCOVERY_EXTRA_HOSTS", "")),
+		// RedClaw 企业后端
+		RedClawBaseURL:    getEnv("POCKET_REDCLAW_BASE_URL", ""),
+		RedClawSecret:     getEnv("POCKET_REDCLAW_SECRET", ""),
+		RedClawTenantID:   getEnv("POCKET_REDCLAW_TENANT_ID", "default"),
+		RedClawTimeoutSec: getEnvInt("POCKET_REDCLAW_TIMEOUT_SEC", 30),
 	}
 }
 
@@ -176,12 +193,12 @@ func (c Config) Validate() error {
 	if len([]byte(c.JWTSecret)) < 32 || c.JWTSecret == "pocket-dev-insecure-secret" {
 		return fmt.Errorf("POCKET_JWT_SECRET must be at least 32 bytes and must not use the development default")
 	}
-	
+
 	// Security: Development features must be disabled in production
 	if c.DevAuth {
 		return fmt.Errorf("POCKET_DEV_AUTH must be false in production")
 	}
-	
+
 	// Security: TLS verification must be enabled in production
 	if c.MCPInsecureTLS {
 		return fmt.Errorf("POCKET_MCP_INSECURE_TLS must be false in production")
@@ -200,7 +217,7 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.PostgresDSN) == "" {
 		return fmt.Errorf("POCKET_POSTGRES_DSN must be configured in production")
 	}
-	
+
 	// Security: CORS origins must be explicitly configured
 	if strings.TrimSpace(c.AllowedOrigins) == "" {
 		return fmt.Errorf("POCKET_ALLOWED_ORIGINS must be configured in production")
@@ -208,12 +225,12 @@ func (c Config) Validate() error {
 	if err := validateOrigins(c.AllowedOrigins); err != nil {
 		return fmt.Errorf("invalid POCKET_ALLOWED_ORIGINS: %w", err)
 	}
-	
+
 	// Network: HTTP port must be valid
 	if err := validatePort(c.HTTPPort); err != nil {
 		return fmt.Errorf("invalid POCKET_HTTP_PORT: %w", err)
 	}
-	
+
 	// Timeouts: Must be reasonable positive values
 	if err := validateTimeout(c.OpenCodeTimeoutMS, "POCKET_OPENCODE_TIMEOUT_MS"); err != nil {
 		return err
@@ -224,22 +241,22 @@ func (c Config) Validate() error {
 	if err := validateTimeout(c.ReminderCheckIntervalSec, "POCKET_REMINDER_CHECK_INTERVAL_SEC"); err != nil {
 		return err
 	}
-	
+
 	// Timezone: Must be within reasonable bounds (-43200 to +50400 seconds, covering UTC-12 to UTC+14)
 	if c.TimezoneOffsetSec < -43200 || c.TimezoneOffsetSec > 50400 {
 		return fmt.Errorf("POCKET_TIMEZONE_OFFSET_SEC must be between -43200 and 50400 (UTC-12 to UTC+14), got %d", c.TimezoneOffsetSec)
 	}
-	
+
 	// RedClaw: Timeout must be positive if configured
 	if c.RedClawTimeoutSec <= 0 {
 		return fmt.Errorf("POCKET_REDCLAW_TIMEOUT_SEC must be positive, got %d", c.RedClawTimeoutSec)
 	}
-	
+
 	// Email: Master key must be set if email fetch is enabled
 	if c.EmailFetchEnabled && strings.TrimSpace(c.EmailMasterKey) == "" {
 		return fmt.Errorf("POCKET_EMAIL_MASTER_KEY must be configured when POCKET_EMAIL_FETCH_ENABLED is true")
 	}
-	
+
 	return nil
 }
 
