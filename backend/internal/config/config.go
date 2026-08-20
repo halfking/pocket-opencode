@@ -204,6 +204,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("POCKET_MCP_INSECURE_TLS must be false in production")
 	}
 
+	// Security: ACC JWT tenant_id must be set when MCP is active in production,
+	// so the internal JWT carries a non-empty tenant_id claim (ACC rejects empty).
+	if strings.TrimSpace(c.MCPBaseURL) != "" && strings.TrimSpace(c.MCPTenantID) == "" {
+		return fmt.Errorf("POCKET_MCP_TENANT_ID must be configured in production when POCKET_MCP_BASE_URL is set")
+	}
+
 	// PK-3.1: direct LLM provider access is forbidden in production (fail-closed).
 	// All LLM traffic must go through the enterprise gateway
 	// (POCKET_LLM_GATEWAY_URL/POCKET_LLM_GATEWAY_API_KEY). Reject the startup
