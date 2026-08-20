@@ -30,6 +30,9 @@ type Client interface {
 	ClassifyNote(ctx context.Context, req ClassifyNoteRequest) (*ClassifyNoteResponse, error)
 	ClassifyEmails(ctx context.Context, req ClassifyEmailsRequest) (*ClassifyEmailsResponse, error)
 	DailySummary(ctx context.Context, req DailySummaryRequest) (*DailySummaryResponse, error)
+	MeetingSummary(ctx context.Context, req MeetingSummaryRequest) (*MeetingSummaryResponse, error)
+	MeetingRecommend(ctx context.Context, req MeetingRecommendRequest) (*MeetingRecommendResponse, error)
+	MeetingRefine(ctx context.Context, req MeetingRefineRequest) (*MeetingRefineResponse, error)
 	Stats() Stats
 }
 
@@ -612,7 +615,7 @@ type MeetingRefineResponse struct {
 	NoteID            string              `json:"note_id,omitempty"`
 }
 
-func (c *Client) postJSON(ctx context.Context, path string, reqBody, out any) error {
+func (c *HTTPClient) postJSON(ctx context.Context, path string, reqBody, out any) error {
 	body, _ := json.Marshal(reqBody)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+path, bytes.NewReader(body))
 	if err != nil {
@@ -634,7 +637,7 @@ func (c *Client) postJSON(ctx context.Context, path string, reqBody, out any) er
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-func (c *Client) MeetingSummary(ctx context.Context, req MeetingSummaryRequest) (*MeetingSummaryResponse, error) {
+func (c *HTTPClient) MeetingSummary(ctx context.Context, req MeetingSummaryRequest) (*MeetingSummaryResponse, error) {
 	var out MeetingSummaryResponse
 	if err := c.postJSON(ctx, "/v1/meetings/summary", req, &out); err != nil {
 		return nil, err
@@ -642,7 +645,7 @@ func (c *Client) MeetingSummary(ctx context.Context, req MeetingSummaryRequest) 
 	return &out, nil
 }
 
-func (c *Client) MeetingRecommend(ctx context.Context, req MeetingRecommendRequest) (*MeetingRecommendResponse, error) {
+func (c *HTTPClient) MeetingRecommend(ctx context.Context, req MeetingRecommendRequest) (*MeetingRecommendResponse, error) {
 	var out MeetingRecommendResponse
 	if err := c.postJSON(ctx, "/v1/meetings/recommend", req, &out); err != nil {
 		return nil, err
@@ -650,7 +653,7 @@ func (c *Client) MeetingRecommend(ctx context.Context, req MeetingRecommendReque
 	return &out, nil
 }
 
-func (c *Client) MeetingRefine(ctx context.Context, req MeetingRefineRequest) (*MeetingRefineResponse, error) {
+func (c *HTTPClient) MeetingRefine(ctx context.Context, req MeetingRefineRequest) (*MeetingRefineResponse, error) {
 	var out MeetingRefineResponse
 	if err := c.postJSON(ctx, "/v1/meetings/refine", req, &out); err != nil {
 		return nil, err

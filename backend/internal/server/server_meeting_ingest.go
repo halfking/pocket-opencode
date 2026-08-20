@@ -15,50 +15,70 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
 
-// handleMeetings — GET 云同步列表 / POST 元数据 upsert
+// handleMeetings dispatches GET (list) / POST (create) on /api/meetings.
 func (s *Server) handleMeetings(w http.ResponseWriter, r *http.Request) {
 	if s.meetingStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "meeting store not configured")
 		return
 	}
-	uid := s.userIDFromRequest(r)
 	switch r.Method {
 	case http.MethodGet:
-		list, err := s.meetingStore.List(r.Context(), uid, 100)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"meetings": list})
+		s.handleListMeetings(w, r)
 	case http.MethodPost:
-		var m meeting.Meeting
-		if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid body")
-			return
-		}
-		if m.ID == "" {
-			writeError(w, http.StatusBadRequest, "id required")
-			return
-		}
-		m.UserID = uid
-		if m.Status == "" {
-			m.Status = "completed"
-		}
-		if err := s.meetingStore.Upsert(r.Context(), &m); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, m)
-		s.wsHub.Broadcast("meeting.synced", map[string]string{"meetingId": m.ID, "userId": uid})
+		s.handleCreateMeeting(w, r)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "GET/POST only")
 	}
 }
 
+// handleListMeetings returns the workspace-scoped list with a total counter so
+// the mobile UI can render pagination without a second round-trip.
+func (s *Server) handleListMeetings(w http.ResponseWriter, r *http.Request) {
+	uid := s.userIDFromRequest(r)
+	workspaceID := s.workspaceIDFromRequest(r)
+	list, err := s.meetingStore.ListScoped(uid, workspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list meetings: "+err.Error())
+		return
+	}
+	if list == nil {
+		list = []*meeting.Meeting{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"meetings": list,
+		"total":    len(list),
+	})
+}
+
+// handleCreateMeeting decodes the request body and stores a new meeting in the
+// caller's workspace scope.
+func (s *Server) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
+	uid := s.userIDFromRequest(r)
+	workspaceID := s.workspaceIDFromRequest(r)
+	var req meeting.CreateMeetingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Title) == "" {
+		req.Title = "未命名会议"
+	}
+	m, err := s.meetingStore.CreateScoped(req, uid, workspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create meeting: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, m)
+	s.wsHub.Broadcast("meeting.synced", map[string]string{"meetingId": m.ID, "userId": uid})
+}
+
 // finalizeMeetingRefine 精翻完成后：笔记入库 + 待办任务 + 更新 meeting 缓存
+// workspaceID must be the caller's authenticated workspace (from
+// workspaceIDFromRequest); passing "" degrades to the legacy "default"
+// workspace for the non-S0 single-tenant callsites only.
 func (s *Server) finalizeMeetingRefine(
 	ctx context.Context,
-	uid, meetingID string,
+	uid, workspaceID, meetingID string,
 	result map[string]any,
 	meta meetingMetaIn,
 ) map[string]any {
@@ -87,17 +107,30 @@ func (s *Server) finalizeMeetingRefine(
 	}
 	result["tasks_created"] = tasksCreated
 
-	// 更新 PG meeting 缓存
+	// 更新 PG meeting 缓存（严格限定在调用方的 workspace 作用域内）
 	if s.meetingStore != nil {
-		m := &meeting.Meeting{
-			ID: meetingID, UserID: uid,
-			Title: meta.Title, Location: meta.Location,
-			Participants: meta.Participants,
-			RefinedTranscript: refined,
-			NoteID: noteID, Status: "refined",
+		uidForStore := uid
+		if uidForStore == "" {
+			uidForStore = "local"
 		}
-		if err := s.meetingStore.Upsert(ctx, m); err != nil {
-			log.Printf("[meeting] upsert after refine %s: %v", meetingID, err)
+		workspaceIDForStore := workspaceID
+		if workspaceIDForStore == "" {
+			// Legacy single-tenant callsites that never carried a workspace.
+			workspaceIDForStore = "default"
+		}
+		if existing, err := s.meetingStore.GetScoped(meetingID, uidForStore, workspaceIDForStore); err == nil {
+			if meta.Title != "" {
+				existing.Title = meta.Title
+			}
+			existing.Status = "refined"
+			if err := s.meetingStore.UpdateScoped(existing, uidForStore, workspaceIDForStore); err != nil {
+				log.Printf("[meeting] update after refine %s: %v", meetingID, err)
+			}
+		} else {
+			// No stub creation: fabricating a row here would land it in the wrong
+			// workspace and mask a genuine cross-workspace/missing-meeting error.
+			log.Printf("[meeting] refine target %s not found in workspace %s (owner=%s): %v",
+				meetingID, workspaceIDForStore, uidForStore, err)
 		}
 	}
 
@@ -245,7 +278,7 @@ func mapTodoPriority(p string) string {
 
 // kxmemory refine 响应转 map 并 ingest
 func (s *Server) finalizeKxRefine(
-	ctx context.Context, uid, meetingID string,
+	ctx context.Context, uid, workspaceID, meetingID string,
 	resp *kxmemory.MeetingRefineResponse, meta meetingMetaIn,
 ) map[string]any {
 	result := map[string]any{
@@ -257,5 +290,5 @@ func (s *Server) finalizeKxRefine(
 	if resp.NoteID != "" {
 		result["note_id"] = resp.NoteID
 	}
-	return s.finalizeMeetingRefine(ctx, uid, meetingID, result, meta)
+	return s.finalizeMeetingRefine(ctx, uid, workspaceID, meetingID, result, meta)
 }

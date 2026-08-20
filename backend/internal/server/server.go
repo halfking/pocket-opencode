@@ -446,9 +446,11 @@ func (s *Server) Handler() http.Handler {
 	// 代码片段
 	mux.HandleFunc("/api/snippets", s.requireAuth(s.handleSnippets))
 	mux.HandleFunc("/api/snippets/", s.requireAuth(s.handleSnippetOps))
-	// 会议管理
-	mux.HandleFunc("/api/meetings", s.requireAuth(s.handleMeetings))
-	mux.HandleFunc("/api/meetings/", s.requireAuth(s.handleMeetingOps))
+	// 会议管理 — /api/meetings & /api/meetings/ 注册在更下方（STT 之后）。
+// 早期 "handleMeetingOps" handler 在 S0–S2 合并中丢失；其路由会被下方
+// handleMeetingRouter (summary/recommend/refine) 与 handleMeetings (list/create)
+// 重新接管。先前的 HandleFunc 是 ServeMux 重复注册会在 Handler() 触发 panic，
+// 必须移除。
 	// 聊天总结
 	mux.HandleFunc("/api/chat-summaries", s.requireAuth(s.handleChatSummaries))
 	mux.HandleFunc("/api/chat-summaries/", s.requireAuth(s.handleChatSummaryOps))
