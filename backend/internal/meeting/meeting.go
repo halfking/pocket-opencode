@@ -1,24 +1,12 @@
 // Package meeting provides PostgreSQL-backed meeting metadata cache for
 // cloud sync. Full transcript/segments stay on-device (lobster architecture);
 // pocketd stores summary, status, and note linkage for multi-device list.
+//
+// The canonical `Meeting` struct, request types, and the in-memory `Store`
+// live in types.go and store.go respectively (the S0-A tenant-scoped schema).
+// This file exists only to keep the package doc-comment grouped together for
+// godoc; the legacy duplicate `Meeting` definition was removed when the
+// pre-S0 metadata fields (UserID / int64 timestamps / Location / Participants
+// / RefinedTranscript / NoteID) were retired in favor of OwnerID + WorkspaceID
+// + time.Time on the scoped Meeting type.
 package meeting
-
-import "time"
-
-type Meeting struct {
-	ID                string   `json:"id"`
-	UserID            string   `json:"userId"`
-	Title             string   `json:"title,omitempty"`
-	Location          string   `json:"location,omitempty"`
-	Participants      []string `json:"participants,omitempty"`
-	StartedAt         int64    `json:"startedAt"`
-	DurationMs        int      `json:"durationMs"`
-	Summary           string   `json:"summary,omitempty"`
-	RefinedTranscript string   `json:"refinedTranscript,omitempty"`
-	NoteID            string   `json:"noteId,omitempty"`
-	Status            string   `json:"status"` // recording|completed|processing|refined
-	CreatedAt         int64    `json:"createdAt"`
-	UpdatedAt         int64    `json:"updatedAt"`
-}
-
-func NowUnix() int64 { return time.Now().Unix() }

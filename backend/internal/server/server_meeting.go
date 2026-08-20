@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -12,24 +13,55 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/meeting"
 )
 
-// handleMeetingRouter dispatches /api/meetings/{id}/{action}
+// handleMeetingRouter dispatches /api/meetings/{id}/{action} and per-meeting
+// GET/DELETE. Action set: summary, recommend, refine (kxmemory-backed),
+// transcribe (STT) and summarize (rule-based). Bare {id} supports GET/DELETE.
 func (s *Server) handleMeetingRouter(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/meetings/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) == 0 || parts[0] == "" {
+		writeError(w, http.StatusNotFound, "meeting id required")
+		return
+	}
+	meetingID := parts[0]
+
+	// Bare id: GET / DELETE on a single meeting.
+	if len(parts) == 1 || parts[1] == "" {
+		if s.meetingStore == nil {
+			writeError(w, http.StatusServiceUnavailable, "meeting store not configured")
+			return
+		}
+		uid := s.userIDFromRequest(r)
+		workspaceID := s.workspaceIDFromRequest(r)
+		switch r.Method {
+		case http.MethodGet:
+			m, err := s.meetingStore.GetScoped(meetingID, uid, workspaceID)
+			if err != nil {
+				writeError(w, http.StatusNotFound, "meeting not found")
+				return
+			}
+			writeJSON(w, http.StatusOK, m)
+		case http.MethodDelete:
+			if err := s.meetingStore.DeleteScoped(meetingID, uid, workspaceID); err != nil {
+				writeError(w, http.StatusNotFound, "meeting not found")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "GET/DELETE only")
+		}
+		return
+	}
+
+	// Action suffixes: all require POST.
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
 	}
-	// /api/meetings/{id}/summary | recommend | refine
-	path := strings.TrimPrefix(r.URL.Path, "/api/meetings/")
-	parts := strings.SplitN(path, "/", 2)
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		writeError(w, http.StatusNotFound, "meeting action required")
-		return
-	}
-	meetingID := parts[0]
 	action := parts[1]
-
 	switch action {
 	case "summary":
 		s.handleMeetingSummary(w, r, meetingID)
@@ -37,9 +69,117 @@ func (s *Server) handleMeetingRouter(w http.ResponseWriter, r *http.Request) {
 		s.handleMeetingRecommend(w, r, meetingID)
 	case "refine":
 		s.handleMeetingRefine(w, r, meetingID)
+	case "transcribe":
+		s.handleTranscribeMeeting(w, r, meetingID)
+	case "summarize":
+		s.handleSummarizeMeeting(w, r, meetingID)
 	default:
 		writeError(w, http.StatusNotFound, "unknown meeting action: "+action)
 	}
+}
+
+// handleTranscribeMeeting runs the configured STT pipeline (or a no-op stub if
+// STT is not configured) and updates the meeting status / transcript under the
+// caller's workspace scope. Returns 404 if the meeting is missing or owned by
+// another workspace.
+func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request, id string) {
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing meeting id")
+		return
+	}
+	if s.meetingStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "meeting store not configured")
+		return
+	}
+	uid := s.userIDFromRequest(r)
+	workspaceID := s.workspaceIDFromRequest(r)
+	m, err := s.meetingStore.GetScoped(id, uid, workspaceID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "meeting not found")
+		return
+	}
+	m.Status = "transcribing"
+	_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAudioBodyBytes)
+	audioData, err := io.ReadAll(r.Body)
+	if err != nil {
+		m.Status = "failed"
+		_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+		writeError(w, http.StatusBadRequest, "failed to read audio data")
+		return
+	}
+	defer r.Body.Close()
+	if len(audioData) == 0 {
+		m.Status = "failed"
+		_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+		writeError(w, http.StatusBadRequest, "empty audio data")
+		return
+	}
+	if s.transcriber != nil {
+		result, err := s.transcriber.Transcribe(r.Context(), audioData, "meeting.wav")
+		if err != nil {
+			m.Status = "failed"
+			_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+			writeError(w, http.StatusBadGateway, "transcription failed: "+err.Error())
+			return
+		}
+		m.Transcript = result.Text
+	} else {
+		m.Transcript = "（STT 未配置，请设置 POCKET_GROQ_API_KEY）"
+	}
+	m.Status = "transcribed"
+	if err := s.meetingStore.UpdateScoped(m, uid, workspaceID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist transcript")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":     "transcribed",
+		"meeting_id": id,
+	})
+}
+
+// handleSummarizeMeeting produces a rule-based summary + key decisions +
+// action items from the meeting's stored transcript, then persists them.
+func (s *Server) handleSummarizeMeeting(w http.ResponseWriter, r *http.Request, id string) {
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing meeting id")
+		return
+	}
+	if s.meetingStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "meeting store not configured")
+		return
+	}
+	uid := s.userIDFromRequest(r)
+	workspaceID := s.workspaceIDFromRequest(r)
+	m, err := s.meetingStore.GetScoped(id, uid, workspaceID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "meeting not found")
+		return
+	}
+	if strings.TrimSpace(m.Transcript) == "" {
+		writeError(w, http.StatusBadRequest, "meeting has no transcript, transcribe first")
+		return
+	}
+	m.Status = "summarizing"
+	_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+
+	summary, err := meeting.SummarizeTranscript(m.Transcript, m.Title)
+	if err != nil {
+		m.Status = "failed"
+		_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+		writeError(w, http.StatusInternalServerError, "summarization failed: "+err.Error())
+		return
+	}
+	m.Summary = summary.Summary
+	m.KeyDecisions = summary.KeyDecisions
+	m.ActionItems = summary.ActionItems
+	m.Status = "done"
+	if err := s.meetingStore.UpdateScoped(m, uid, workspaceID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist summary")
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
 }
 
 type meetingSegmentIn struct {
