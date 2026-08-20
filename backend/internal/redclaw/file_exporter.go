@@ -27,7 +27,7 @@ type FileExporter struct {
 	store interface {
 		QueryRange(query AuditQuery) (*AuditPage, error)
 	}
-	cfg   FileExporterConfig
+	cfg FileExporterConfig
 
 	mu    sync.Mutex
 	state exporterState
@@ -60,6 +60,17 @@ func NewFileExporter(store interface {
 		cfg.PageSize = 1000
 	}
 	return &FileExporter{store: store, cfg: cfg}
+}
+
+func queryAuditRangeContext(ctx context.Context, store interface {
+	QueryRange(AuditQuery) (*AuditPage, error)
+}, query AuditQuery) (*AuditPage, error) {
+	if contextual, ok := store.(interface {
+		QueryRangeContext(context.Context, AuditQuery) (*AuditPage, error)
+	}); ok {
+		return contextual.QueryRangeContext(ctx, query)
+	}
+	return store.QueryRange(query)
 }
 
 // Run 阻塞轮询直到 ctx 取消。单轮失败只记日志语义（返回被吞掉），
@@ -95,7 +106,7 @@ func (f *FileExporter) ExportOnce(ctx context.Context) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return written, err
 		}
-		page, err := f.store.QueryRange(AuditQuery{AfterCursor: f.state.Cursor, Limit: f.cfg.PageSize})
+		page, err := queryAuditRangeContext(ctx, f.store, AuditQuery{AfterCursor: f.state.Cursor, Limit: f.cfg.PageSize})
 		if err != nil {
 			return written, fmt.Errorf("audit exporter: query: %w", err)
 		}

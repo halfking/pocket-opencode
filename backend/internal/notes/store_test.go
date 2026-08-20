@@ -2,6 +2,9 @@ package notes
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"os"
 	"testing"
 	"time"
 
@@ -238,18 +241,58 @@ func TestStore_Delete(t *testing.T) {
 
 // Helper functions
 
+func testDSN() string {
+	for _, key := range []string{"POCKET_TEST_POSTGRES_DSN", "POCKET_POSTGRES_DSN"} {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func getTestPool(t *testing.T) *pgxpool.Pool {
-	// Try to connect to test database
-	// This uses the same connection logic as the main app but points to a test DB
-	// For now, we'll return nil to skip tests that need a real DB
-	// In production, you'd set up a test database connection here
-	return nil
+	t.Helper()
+	dsn := testDSN()
+	if dsn == "" {
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping notes integration test")
+	}
+	ctx := context.Background()
+	rootPool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	suffix := make([]byte, 4)
+	if _, err := rand.Read(suffix); err != nil {
+		rootPool.Close()
+		t.Fatalf("rand: %v", err)
+	}
+	schema := "notes_test_" + hex.EncodeToString(suffix)
+	if _, err := rootPool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		rootPool.Close()
+		t.Fatalf("create schema: %v", err)
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		_, _ = rootPool.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
+		rootPool.Close()
+		t.Fatalf("parse dsn: %v", err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	scopedPool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		_, _ = rootPool.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
+		rootPool.Close()
+		t.Fatalf("scoped pool: %v", err)
+	}
+	t.Cleanup(func() {
+		scopedPool.Close()
+		_, _ = rootPool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
+		rootPool.Close()
+	})
+	return scopedPool
 }
 
 func cleanupTestData(t *testing.T, pool *pgxpool.Pool) {
-	// Clean up test data
-	_, err := pool.Exec(context.Background(), `DELETE FROM notes WHERE id LIKE 'test-note-%'`)
-	if err != nil {
-		t.Logf("cleanup warning: %v", err)
-	}
+	t.Helper()
+	// Pool/schema cleanup is registered by getTestPool; no shared-schema delete is needed.
 }

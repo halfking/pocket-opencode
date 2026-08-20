@@ -1,6 +1,8 @@
 package redclaw
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -12,7 +14,7 @@ import (
 // AuditEntry 审计日志条目
 type AuditEntry struct {
 	ID         string    `json:"id"`
-	Action     string    `json:"action"`                // chat.send / file.read / session.create
+	Action     string    `json:"action"` // chat.send / file.read / session.create
 	UserID     string    `json:"user_id"`
 	TenantID   string    `json:"tenant_id"`
 	Resource   string    `json:"resource,omitempty"`    // 操作的资源
@@ -67,7 +69,7 @@ func (s *AuditStore) Record(entry *AuditEntry) error {
 	if entry == nil {
 		return fmt.Errorf("audit entry cannot be nil")
 	}
-	
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -144,20 +146,43 @@ const (
 // 重新包含，造成跨页重复计数。UnixNano 在内存（ns）与 PG（µs 往返）下都能与
 // 落库值精确对齐，边界条目被严格排除。
 func encodeAuditCursor(e *AuditEntry) string {
-	return strconv.FormatInt(e.Timestamp.UnixNano(), 10) + ":" + e.ID
+	return "n:" + strconv.FormatInt(e.Timestamp.UnixNano(), 10) + ":" + e.ID
 }
 
-// decodeAuditCursor 解析游标；非法游标返回零值。
-func decodeAuditCursor(cursor string) (time.Time, string) {
-	idx := strings.Index(cursor, ":")
-	if idx <= 0 {
-		return time.Time{}, ""
+var ErrInvalidAuditCursor = errors.New("invalid audit cursor")
+
+// decodeAuditCursor parses the current nanosecond cursor format. Values in the
+// historical UnixMilli range are accepted as a best-effort compatibility mode;
+// callers must treat them as at-least-once because millisecond cursors cannot
+// identify sub-millisecond rows exactly.
+func decodeAuditCursor(cursor string) (time.Time, string, error) {
+	parts := strings.SplitN(cursor, ":", 3)
+	if len(parts) == 2 {
+		value, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil || parts[1] == "" {
+			return time.Time{}, "", ErrInvalidAuditCursor
+		}
+		// Cursors emitted before versioning used the raw timestamp. Preserve
+		// both historical UnixMilli and the later UnixNano representation.
+		if value > 0 && value < 1_000_000_000_000_000 {
+			return time.UnixMilli(value), parts[1], nil
+		}
+		return time.Unix(0, value), parts[1], nil
 	}
-	nano, err := strconv.ParseInt(cursor[:idx], 10, 64)
+	if len(parts) != 3 || parts[2] == "" {
+		return time.Time{}, "", ErrInvalidAuditCursor
+	}
+	value, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
-		return time.Time{}, ""
+		return time.Time{}, "", fmt.Errorf("%w: timestamp: %v", ErrInvalidAuditCursor, err)
 	}
-	return time.Unix(0, nano), cursor[idx+1:]
+	if parts[0] == "m" {
+		return time.UnixMilli(value), parts[2], nil
+	}
+	if parts[0] != "n" {
+		return time.Time{}, "", ErrInvalidAuditCursor
+	}
+	return time.Unix(0, value), parts[2], nil
 }
 
 // afterCursor 判断 e 是否严格位于游标之后。
@@ -174,6 +199,15 @@ func afterCursor(e *AuditEntry, ts time.Time, id string) bool {
 // 游标同时编码时间戳与 id：同毫秒多条记录也能精确续传；即使底层 entries
 // 因 maxSize 截断丢失旧记录，游标仍按时间戳正确对齐。
 func (s *AuditStore) QueryRange(query AuditQuery) (*AuditPage, error) {
+	return s.QueryRangeContext(context.Background(), query)
+}
+
+// QueryRangeContext is the cancellable form used by request handlers and
+// exporters. The in-memory implementation checks cancellation before scanning.
+func (s *AuditStore) QueryRangeContext(ctx context.Context, query AuditQuery) (*AuditPage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -187,7 +221,15 @@ func (s *AuditStore) QueryRange(query AuditQuery) (*AuditPage, error) {
 
 	// 二分：第一个 Timestamp >= StartTime 的位置（entries 按时间升序）。
 	start := query.StartTime
-	cursorTs, cursorID := decodeAuditCursor(query.AfterCursor)
+	var cursorTs time.Time
+	var cursorID string
+	if query.AfterCursor != "" {
+		var err error
+		cursorTs, cursorID, err = decodeAuditCursor(query.AfterCursor)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if !cursorTs.IsZero() && cursorTs.After(start) {
 		// 游标比 StartTime 更靠后时以游标为准（增量语义）。
 		start = cursorTs
@@ -198,6 +240,9 @@ func (s *AuditStore) QueryRange(query AuditQuery) (*AuditPage, error) {
 
 	page := &AuditPage{Entries: make([]*AuditEntry, 0, limit)}
 	for i := lo; i < len(s.entries); i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		e := s.entries[i]
 		if !query.EndTime.IsZero() && !e.Timestamp.Before(query.EndTime) {
 			return page, nil // 到达 end（闭开区间），必无更多

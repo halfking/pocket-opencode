@@ -148,6 +148,11 @@ type Server struct {
 	mobileCreates *mobileCreateCache
 }
 
+func isProductionConfig(cfg config.Config) bool {
+	value := strings.ToLower(strings.TrimSpace(cfg.Environment))
+	return value == "production" || value == "prod"
+}
+
 // New 构造 Server。Phase 0 扩展：新增 notes/email/vault store、STT transcriber、ACC MCP client。
 // Phase C 扩展：新增 embedder/llm 无状态 AI 网关。
 // 后端集成：新增 kxmemory 客户端（AI 编排服务）。
@@ -208,19 +213,30 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 		emailFetcher:     emailFetcher,
 		dataDir:          dataDir,
 		financeStore:     finance.NewStore(),
-		auditStore: func() interface {
-			Record(entry *redclaw.AuditEntry) error
-			Query(query redclaw.AuditQuery) ([]*redclaw.AuditEntry, error)
-			Flush() []*redclaw.AuditEntry
-			QueryRange(query redclaw.AuditQuery) (*redclaw.AuditPage, error)
-		} {
-			if pool != nil {
-				if pgStore, err := redclaw.NewPGAuditStore(pool); err == nil {
+			auditStore: func() interface {
+				Record(entry *redclaw.AuditEntry) error
+				Query(query redclaw.AuditQuery) ([]*redclaw.AuditEntry, error)
+				Flush() []*redclaw.AuditEntry
+				QueryRange(query redclaw.AuditQuery) (*redclaw.AuditPage, error)
+			} {
+				production := isProductionConfig(cfg)
+				if pool == nil {
+					if production {
+						log.Printf("[Server] audit PG initialization failed: postgres pool is nil")
+						return nil
+					}
+					return redclaw.NewAuditStore()
+				}
+				pgStore, err := redclaw.NewPGAuditStore(pool)
+				if err == nil {
 					return pgStore
 				}
-			}
-			return redclaw.NewAuditStore()
-		}(),
+				log.Printf("[Server] audit PG initialization failed: %v", err)
+				if production {
+					return nil
+				}
+				return redclaw.NewAuditStore()
+			}(),
 		mobileCreates: newMobileCreateCache(),
 		llmGWCache:    newLLMGatewayCache(),
 		upgrader: websocket.Upgrader{

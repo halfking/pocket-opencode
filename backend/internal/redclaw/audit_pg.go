@@ -162,8 +162,19 @@ func (s *PGAuditStore) Flush() []*AuditEntry {
 }
 
 // QueryRange implements incremental paged query for audit export.
+const auditQueryTimeout = 3 * time.Second
+
 func (s *PGAuditStore) QueryRange(query AuditQuery) (*AuditPage, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), auditQueryTimeout)
+	defer cancel()
+	return s.QueryRangeContext(ctx, query)
+}
+
+// QueryRangeContext is the cancellable form used by HTTP handlers and exporters.
+func (s *PGAuditStore) QueryRangeContext(ctx context.Context, query AuditQuery) (*AuditPage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	limit := query.Limit
 	if limit <= 0 {
 		limit = 500
@@ -203,12 +214,13 @@ func (s *PGAuditStore) QueryRange(query AuditQuery) (*AuditPage, error) {
 	}
 
 	if query.AfterCursor != "" {
-		cursorTs, cursorID := decodeAuditCursor(query.AfterCursor)
-		if !cursorTs.IsZero() {
-			where = append(where, fmt.Sprintf("(timestamp, id) > ($%d, $%d)", argIdx, argIdx+1))
-			args = append(args, cursorTs, cursorID)
-			argIdx += 2
+		cursorTs, cursorID, err := decodeAuditCursor(query.AfterCursor)
+		if err != nil {
+			return nil, err
 		}
+		where = append(where, fmt.Sprintf("(timestamp, id) > ($%d, $%d)", argIdx, argIdx+1))
+		args = append(args, cursorTs, cursorID)
+		argIdx += 2
 	}
 
 	whereSQL := ""
@@ -232,6 +244,9 @@ LIMIT %d
 
 	page := &AuditPage{Entries: make([]*AuditEntry, 0, limit)}
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var e AuditEntry
 		var ts time.Time
 		if err := rows.Scan(&e.ID, &e.Action, &e.UserID, &e.TenantID, &e.Resource, &e.Detail, &e.DurationMs, &e.Success, &ts, &e.IP); err != nil {

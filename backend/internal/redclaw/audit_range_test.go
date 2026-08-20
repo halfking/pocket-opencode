@@ -1,6 +1,8 @@
 package redclaw
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -172,16 +174,33 @@ func TestQueryRangeLimitClamped(t *testing.T) {
 	}
 }
 
-func TestQueryRangeInvalidCursorIgnoredGracefully(t *testing.T) {
+func TestQueryRangeContextCanceled(t *testing.T) {
+	s := NewAuditStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := s.QueryRangeContext(ctx, AuditQuery{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled context error=%v, want context.Canceled", err)
+	}
+}
+
+func TestQueryRangeLegacyMillisecondCursor(t *testing.T) {
+	s := NewAuditStore()
+	base := time.UnixMilli(6_000_000)
+	first := mustRecord(s, "ws-a", "chat.send", base)
+	second := mustRecord(s, "ws-a", "chat.send", base.Add(time.Second))
+	page, err := s.QueryRange(AuditQuery{StartTime: base, AfterCursor: fmt.Sprintf("%d:%s", first.Timestamp.UnixMilli(), first.ID)})
+	if err != nil || len(page.Entries) != 1 || page.Entries[0].ID != second.ID {
+		t.Fatalf("legacy millisecond cursor page=%+v err=%v", page, err)
+	}
+}
+
+func TestQueryRangeInvalidCursorReturnsError(t *testing.T) {
 	s := NewAuditStore()
 	base := time.UnixMilli(6_000_000)
 	mustRecord(s, "ws-a", "chat.send", base)
-	page, err := s.QueryRange(AuditQuery{StartTime: base, AfterCursor: "not-a-cursor"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(page.Entries) != 1 {
-		t.Fatalf("invalid cursor must degrade to timestamp-only query, got %d", len(page.Entries))
+	_, err := s.QueryRange(AuditQuery{StartTime: base, AfterCursor: "not-a-cursor"})
+	if !errors.Is(err, ErrInvalidAuditCursor) {
+		t.Fatalf("invalid cursor error=%v, want ErrInvalidAuditCursor", err)
 	}
 }
 

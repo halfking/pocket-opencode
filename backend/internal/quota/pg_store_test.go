@@ -46,15 +46,21 @@ func newTestPGStore(t *testing.T) (*PGStore, func()) {
 	if _, err := rootPool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
-	scopedPool, err := pgxpool.New(ctx, dsn+"&search_path="+schema)
+	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		// DSN may not accept search_path param; fall back to SET per session.
-		scopedPool = rootPool
-		if _, err := rootPool.Exec(ctx, "SET search_path TO "+schema); err != nil {
-			t.Fatalf("set search_path: %v", err)
-		}
+		_, _ = rootPool.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
+		rootPool.Close()
+		t.Fatalf("parse dsn: %v", err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	scopedPool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		_, _ = rootPool.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
+		rootPool.Close()
+		t.Fatalf("scoped pool: %v", err)
 	}
 	cleanup := func() {
+		scopedPool.Close()
 		_, _ = rootPool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
 		rootPool.Close()
 	}
