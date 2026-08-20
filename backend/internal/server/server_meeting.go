@@ -302,6 +302,16 @@ func (s *Server) handleMeetingRefine(w http.ResponseWriter, r *http.Request, mee
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	uid := s.userIDFromRequest(r)
+	workspaceID := s.workspaceIDFromRequest(r)
+
+	// Fail closed before spending an upstream refine call: the meeting must be
+	// visible in the caller's workspace, exactly like transcribe/summarize.
+	if s.meetingStore != nil {
+		if _, err := s.meetingStore.GetScoped(meetingID, uid, workspaceID); err != nil {
+			writeError(w, http.StatusNotFound, "meeting not found")
+			return
+		}
+	}
 
 	if s.kxmemory != nil {
 		resp, err := s.kxmemory.MeetingRefine(ctx, kxmemory.MeetingRefineRequest{
@@ -310,7 +320,7 @@ func (s *Server) handleMeetingRefine(w http.ResponseWriter, r *http.Request, mee
 			TargetLangs: body.TargetLangs,
 		})
 		if err == nil {
-			result := s.finalizeKxRefine(ctx, uid, meetingID, resp, body.Meta)
+			result := s.finalizeKxRefine(ctx, uid, workspaceID, meetingID, resp, body.Meta)
 			writeJSON(w, http.StatusOK, result)
 			return
 		}
@@ -326,7 +336,7 @@ func (s *Server) handleMeetingRefine(w http.ResponseWriter, r *http.Request, mee
 		writeError(w, http.StatusBadGateway, "refine failed: "+err.Error())
 		return
 	}
-	result = s.finalizeMeetingRefine(ctx, uid, meetingID, result, body.Meta)
+	result = s.finalizeMeetingRefine(ctx, uid, workspaceID, meetingID, result, body.Meta)
 	writeJSON(w, http.StatusOK, result)
 }
 

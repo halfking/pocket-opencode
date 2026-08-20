@@ -73,9 +73,12 @@ func (s *Server) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
 }
 
 // finalizeMeetingRefine 精翻完成后：笔记入库 + 待办任务 + 更新 meeting 缓存
+// workspaceID must be the caller's authenticated workspace (from
+// workspaceIDFromRequest); passing "" degrades to the legacy "default"
+// workspace for the non-S0 single-tenant callsites only.
 func (s *Server) finalizeMeetingRefine(
 	ctx context.Context,
-	uid, meetingID string,
+	uid, workspaceID, meetingID string,
 	result map[string]any,
 	meta meetingMetaIn,
 ) map[string]any {
@@ -104,16 +107,17 @@ func (s *Server) finalizeMeetingRefine(
 	}
 	result["tasks_created"] = tasksCreated
 
-	// 更新 PG meeting 缓存
+	// 更新 PG meeting 缓存（严格限定在调用方的 workspace 作用域内）
 	if s.meetingStore != nil {
 		uidForStore := uid
 		if uidForStore == "" {
 			uidForStore = "local"
 		}
-		// finalizeMeetingRefine doesn't carry a *http.Request — fall back to the
-		// legacy single-tenant default workspace so the store check still works
-		// for non-S0 callsites.
-		workspaceIDForStore := "default"
+		workspaceIDForStore := workspaceID
+		if workspaceIDForStore == "" {
+			// Legacy single-tenant callsites that never carried a workspace.
+			workspaceIDForStore = "default"
+		}
 		if existing, err := s.meetingStore.GetScoped(meetingID, uidForStore, workspaceIDForStore); err == nil {
 			if meta.Title != "" {
 				existing.Title = meta.Title
@@ -123,16 +127,10 @@ func (s *Server) finalizeMeetingRefine(
 				log.Printf("[meeting] update after refine %s: %v", meetingID, err)
 			}
 		} else {
-			// Fallback for legacy clients: create a stub so cloud list still surfaces the meeting.
-			created, cerr := s.meetingStore.CreateScoped(meeting.CreateMeetingRequest{Title: meta.Title}, uidForStore, workspaceIDForStore)
-			if cerr != nil {
-				log.Printf("[meeting] create stub after refine %s: %v", meetingID, cerr)
-			} else {
-				created.Status = "refined"
-				if uerr := s.meetingStore.UpdateScoped(created, uidForStore, workspaceIDForStore); uerr != nil {
-					log.Printf("[meeting] update stub after refine %s: %v", meetingID, uerr)
-				}
-			}
+			// No stub creation: fabricating a row here would land it in the wrong
+			// workspace and mask a genuine cross-workspace/missing-meeting error.
+			log.Printf("[meeting] refine target %s not found in workspace %s (owner=%s): %v",
+				meetingID, workspaceIDForStore, uidForStore, err)
 		}
 	}
 
@@ -280,7 +278,7 @@ func mapTodoPriority(p string) string {
 
 // kxmemory refine 响应转 map 并 ingest
 func (s *Server) finalizeKxRefine(
-	ctx context.Context, uid, meetingID string,
+	ctx context.Context, uid, workspaceID, meetingID string,
 	resp *kxmemory.MeetingRefineResponse, meta meetingMetaIn,
 ) map[string]any {
 	result := map[string]any{
@@ -292,5 +290,5 @@ func (s *Server) finalizeKxRefine(
 	if resp.NoteID != "" {
 		result["note_id"] = resp.NoteID
 	}
-	return s.finalizeMeetingRefine(ctx, uid, meetingID, result, meta)
+	return s.finalizeMeetingRefine(ctx, uid, workspaceID, meetingID, result, meta)
 }
