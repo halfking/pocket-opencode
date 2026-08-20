@@ -18,6 +18,7 @@ import DOMPurify from 'dompurify'
 import { useSessionStore, type ToolContent } from '../../stores/session'
 import { useVoiceInput } from '../../composables/useVoiceInput'
 import { createScrollHideChrome } from '../../composables/useScrollHideChrome'
+import ApprovalPanel from './ApprovalPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -335,6 +336,9 @@ function goBack() {
     <div v-if="store.errorMessage" class="error-banner">
       {{ store.errorMessage }}
     </div>
+
+    <!-- Human-in-the-loop 审批面板（权限/问答） -->
+    <ApprovalPanel :instance-id="instanceID" :session-id="sessionID" />
 
     <!-- Input bar -->
     <footer class="input-bar">
