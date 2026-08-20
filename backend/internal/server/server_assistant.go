@@ -1826,6 +1826,28 @@ func (s *Server) handleVaultSync(w http.ResponseWriter, r *http.Request) {
 // STT 云端兜底
 // =====================================================================
 
+func audioFilenameForContentType(contentType string) string {
+	mediaType := strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0])
+	switch mediaType {
+	case "audio/webm":
+		return "audio.webm"
+	case "audio/mpeg":
+		return "audio.mp3"
+	case "audio/mp4":
+		return "audio.m4a"
+	case "audio/wav", "audio/x-wav":
+		return "audio.wav"
+	case "audio/ogg":
+		return "audio.ogg"
+	case "audio/flac":
+		return "audio.flac"
+	case "audio/3gpp":
+		return "audio.3gp"
+	default:
+		return "audio.bin"
+	}
+}
+
 func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 	if s.transcriber == nil {
 		writeError(w, http.StatusServiceUnavailable, "STT cloud not configured (set POCKET_GROQ_API_KEY)")
@@ -1859,7 +1881,7 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to read audio file: "+err.Error())
 			return
 		}
-	} else {
+	} else if strings.HasPrefix(ct, "application/json") || ct == "" {
 		// JSON body: { "audioBase64": "..." }
 		var body struct {
 			AudioBase64 string `json:"audioBase64"`
@@ -1885,6 +1907,18 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "provide 'file' (multipart) or 'audioBase64'")
 			return
 		}
+	} else if strings.HasPrefix(ct, "audio/") {
+		// Raw audio is supported for callers of the documented binary contract.
+		var readErr error
+		audioData, readErr = io.ReadAll(r.Body)
+		if readErr != nil {
+			writeError(w, http.StatusBadRequest, "failed to read audio data")
+			return
+		}
+		filename = audioFilenameForContentType(ct)
+	} else {
+		writeError(w, http.StatusBadRequest, "unsupported content type; use audio/*, multipart/form-data, or application/json")
+		return
 	}
 
 	if len(audioData) == 0 {
