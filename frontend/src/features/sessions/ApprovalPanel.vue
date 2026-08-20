@@ -77,6 +77,9 @@ const questionCount = computed(() => store.questions.length)
 
 async function onApprove(p: { id: string }) {
   if (submitting[p.id]) return
+  if (permMessage[p.id] && permMessage[p.id].length > 500) {
+    permMessage[p.id] = permMessage[p.id].slice(0, 500)
+  }
   submitting[p.id] = true
   try {
     await store.approvePermission(p.id, permMessage[p.id]?.trim() || undefined)
@@ -87,6 +90,9 @@ async function onApprove(p: { id: string }) {
 
 async function onDeny(p: { id: string }) {
   if (submitting[p.id]) return
+  if (permMessage[p.id] && permMessage[p.id].length > 500) {
+    permMessage[p.id] = permMessage[p.id].slice(0, 500)
+  }
   submitting[p.id] = true
   try {
     await store.denyPermission(p.id, permMessage[p.id]?.trim() || undefined)
@@ -132,6 +138,7 @@ watch(
 
 onBeforeUnmount(() => {
   store.stopPolling()
+  store.reset()
 })
 </script>
 

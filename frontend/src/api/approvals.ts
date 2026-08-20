@@ -97,6 +97,7 @@ export function replyPermission(
     `/api/mobile/approvals/permission/${encodeURIComponent(requestID)}/reply`,
     {
       method: 'POST',
+      headers: { 'Idempotency-Key': `appr_permission_${requestID}` },
       body: JSON.stringify(body),
     },
   )
@@ -119,6 +120,7 @@ export function replyQuestion(
     `/api/mobile/approvals/question/${encodeURIComponent(requestID)}/reply`,
     {
       method: 'POST',
+      headers: { 'Idempotency-Key': `appr_question_${requestID}` },
       body: JSON.stringify(body),
     },
   )
@@ -133,7 +135,42 @@ export function rejectQuestion(
     `/api/mobile/approvals/question/${encodeURIComponent(requestID)}/reject`,
     {
       method: 'POST',
+      headers: { 'Idempotency-Key': `appr_question_reject_${requestID}` },
       body: JSON.stringify(body),
+    },
+  )
+}
+
+// ---- 适配远程 usePendingApprovals（08 §3.3 WS 集成）调用的扁平签名 ----
+// usePendingApprovals.ts（远程新增）按 remote 设计调用：
+//   listPendingApprovals(instanceId, sessionId)
+//   replyPermission({ instanceId, sessionId, requestId, decision })
+// 本地 store/ApprovalPanel 仍按上方 camelCase + 请求体风格调用。
+// 下面这套扁平签名是适配层，路由/URL 与上面完全一致（最终都打到
+// /api/mobile/approvals）。
+
+export interface PermissionReplyArgsFlat {
+  instanceId: string
+  sessionId: string
+  requestId: string
+  decision: 'once' | 'always' | 'reject'
+  message?: string
+}
+
+export async function replyPermissionFlat(
+  args: PermissionReplyArgsFlat,
+): Promise<{ confirmed: boolean }> {
+  return http<{ confirmed: boolean }>(
+    `/api/mobile/approvals/permission/${encodeURIComponent(args.requestId)}/reply`,
+    {
+      method: 'POST',
+      headers: { 'Idempotency-Key': `appr_permission_${args.requestId}` },
+      body: JSON.stringify({
+        instance_id: args.instanceId,
+        session_id: args.sessionId,
+        decision: args.decision,
+        ...(args.message !== undefined ? { message: args.message } : {}),
+      }),
     },
   )
 }
