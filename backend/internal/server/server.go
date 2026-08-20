@@ -213,30 +213,30 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 		emailFetcher:     emailFetcher,
 		dataDir:          dataDir,
 		financeStore:     finance.NewStore(),
-			auditStore: func() interface {
-				Record(entry *redclaw.AuditEntry) error
-				Query(query redclaw.AuditQuery) ([]*redclaw.AuditEntry, error)
-				Flush() []*redclaw.AuditEntry
-				QueryRange(query redclaw.AuditQuery) (*redclaw.AuditPage, error)
-			} {
-				production := isProductionConfig(cfg)
-				if pool == nil {
-					if production {
-						log.Printf("[Server] audit PG initialization failed: postgres pool is nil")
-						return nil
-					}
-					return redclaw.NewAuditStore()
-				}
-				pgStore, err := redclaw.NewPGAuditStore(pool)
-				if err == nil {
-					return pgStore
-				}
-				log.Printf("[Server] audit PG initialization failed: %v", err)
+		auditStore: func() interface {
+			Record(entry *redclaw.AuditEntry) error
+			Query(query redclaw.AuditQuery) ([]*redclaw.AuditEntry, error)
+			Flush() []*redclaw.AuditEntry
+			QueryRange(query redclaw.AuditQuery) (*redclaw.AuditPage, error)
+		} {
+			production := isProductionConfig(cfg)
+			if pool == nil {
 				if production {
+					log.Printf("[Server] audit PG initialization failed: postgres pool is nil")
 					return nil
 				}
 				return redclaw.NewAuditStore()
-			}(),
+			}
+			pgStore, err := redclaw.NewPGAuditStore(pool)
+			if err == nil {
+				return pgStore
+			}
+			log.Printf("[Server] audit PG initialization failed: %v", err)
+			if production {
+				return nil
+			}
+			return redclaw.NewAuditStore()
+		}(),
 		mobileCreates: newMobileCreateCache(),
 		llmGWCache:    newLLMGatewayCache(),
 		upgrader: websocket.Upgrader{
@@ -447,10 +447,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/snippets", s.requireAuth(s.handleSnippets))
 	mux.HandleFunc("/api/snippets/", s.requireAuth(s.handleSnippetOps))
 	// 会议管理 — /api/meetings & /api/meetings/ 注册在更下方（STT 之后）。
-// 早期 "handleMeetingOps" handler 在 S0–S2 合并中丢失；其路由会被下方
-// handleMeetingRouter (summary/recommend/refine) 与 handleMeetings (list/create)
-// 重新接管。先前的 HandleFunc 是 ServeMux 重复注册会在 Handler() 触发 panic，
-// 必须移除。
+	// 早期 "handleMeetingOps" handler 在 S0–S2 合并中丢失；其路由会被下方
+	// handleMeetingRouter (summary/recommend/refine) 与 handleMeetings (list/create)
+	// 重新接管。先前的 HandleFunc 是 ServeMux 重复注册会在 Handler() 触发 panic，
+	// 必须移除。
 	// 聊天总结
 	mux.HandleFunc("/api/chat-summaries", s.requireAuth(s.handleChatSummaries))
 	mux.HandleFunc("/api/chat-summaries/", s.requireAuth(s.handleChatSummaryOps))
