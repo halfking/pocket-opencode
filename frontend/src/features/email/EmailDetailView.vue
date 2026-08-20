@@ -5,8 +5,13 @@
   Auto-marks unread → read on open. Star / mark-read / turn-to-todo actions.
 -->
 <template>
-  <AppLayout>
-    <div v-if="loading" class="state">加载中…</div>
+      <div v-if="loading" class="state" role="status">加载中…</div>
+    <ErrorState
+      v-else-if="loadError"
+      title="邮件加载失败"
+      :message="loadError"
+      @retry="load"
+    />
     <div v-else-if="!email" class="state">
       <p>未找到该邮件（可能已被删除）。</p>
       <button class="link-btn" @click="goBack">返回邮箱</button>
@@ -15,7 +20,7 @@
     <article v-else class="detail">
       <header class="meta-card">
         <div class="from-row">
-          <div class="from-block">
+          <div class="from-block" @click="navigateToContact">
             <span class="from-name">{{ email.fromName || email.fromAddress }}</span>
             <span v-if="email.fromName" class="from-addr">&lt;{{ email.fromAddress }}&gt;</span>
           </div>
@@ -51,11 +56,19 @@
       </section>
 
       <section class="snippet-card">
-        <div class="snippet-label">正文预览</div>
+        <div class="snippet-label">
+          正文预览
+          <span class="body-source" v-if="bodySource">{{ bodySource === 'cache' ? '（缓存）' : '（IMAP 实时）' }}</span>
+          <button v-if="!bodyLoaded && !bodyLoading" class="link-btn" @click="loadBody">查看完整正文</button>
+          <button v-else-if="bodyLoaded" class="link-btn" @click="collapseBody">收起正文</button>
+        </div>
         <div class="snippet-body">
           <template v-if="email.snippet">{{ email.snippet }}</template>
           <span v-else class="muted">(无正文预览)</span>
         </div>
+        <div v-if="bodyLoading" class="body-loading">正在加载完整正文…</div>
+        <pre v-else-if="bodyLoaded && bodyText" class="body-full">{{ bodyText }}</pre>
+        <p v-else-if="bodyError" class="body-error">{{ bodyError }}</p>
       </section>
 
       <div class="actions">
@@ -66,32 +79,67 @@
         >
           {{ email.isRead ? '✓ 已读' : '标为已读' }}
         </button>
-        <button class="action-btn" @click="convertToTodo">
-          转 Todo
+        <button class="action-btn" :disabled="converting" @click="convertToTodo">
+          {{ converting ? '创建中…' : '转 Todo' }}
         </button>
       </div>
 
-      <p class="hint">完整正文需等 Phase 4 后端实现 <code>getEmail</code> 接口后展示。</p>
+      <p class="hint" v-if="!bodyLoaded">完整正文需要按需从 IMAP 拉取（已支持缓存）。</p>
     </article>
-  </AppLayout>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
+import { api } from '../../api/client'
+import { emailApi } from '../../api/email'
+import { useToast } from '../../composables/useToast'
+import { ErrorState } from '../../components'
+import { findContactByEmail } from '../contact/contacts-store'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
 
 const route = useRoute()
 const router = useRouter()
+const toast = useToast()
 
 const email = ref<LocalEmail | null>(null)
 const loading = ref(true)
+const converting = ref(false)
+const loadError = ref('')
+// Body 懒加载状态：默认仅展示 snippet，点击“查看完整正文”才走 GET /body。
+const bodyLoaded = ref(false)
+const bodyLoading = ref(false)
+const bodyText = ref('')
+const bodySource = ref<'' | 'cache' | 'imap'>('')
+const bodyError = ref('')
+
+async function loadBody() {
+  if (!email.value || bodyLoading.value) return
+  bodyLoading.value = true
+  bodyError.value = ''
+  try {
+    const result = await emailApi.getEmailBody(email.value.id)
+    bodyText.value = result.body
+    bodySource.value = result.source
+    bodyLoaded.value = true
+  } catch (e: any) {
+    bodyError.value = e?.message || '正文拉取失败，请检查网络或账户登录态'
+  } finally {
+    bodyLoading.value = false
+  }
+}
+function collapseBody() {
+  bodyLoaded.value = false
+  bodyText.value = ''
+  bodySource.value = ''
+  bodyError.value = ''
+}
 
 async function load() {
   const id = route.params.id as string
   loading.value = true
+  loadError.value = ''
   try {
     // 使用 getEmail（emails-store 已提供）
     const found = await emailsStore.getEmail(id)
@@ -105,6 +153,8 @@ async function load() {
         console.warn('[email] 自动标记已读失败:', e)
       }
     }
+  } catch (e: any) {
+    loadError.value = e?.message || '加载邮件失败，请稍后重试。'
   } finally {
     loading.value = false
   }
@@ -123,13 +173,40 @@ async function toggleStar() {
   await emailsStore.setStarred(email.value.id, email.value.isStarred)
 }
 
-function convertToTodo() {
-  if (!email.value) return
-  // 暂不联动笔记/todo 模块（Phase 5 才打通），先用 alert 占位
-  const subj = email.value.subject || '(无主题)'
+async function convertToTodo() {
+  if (!email.value || converting.value) return
+  converting.value = true
+  const subject = email.value.subject || '(无主题)'
   const from = email.value.fromName || email.value.fromAddress
-  // eslint-disable-next-line no-alert
-  alert(`已转待办：${subj} — 来自 ${from}（提示词待接通 todo 模块）`)
+  try {
+    const task = await api.createTask({
+      title: subject,
+      description: `${email.value.snippet || ''}\n\n来自：${from}`.trim(),
+      source: 'local',
+      status: 'active',
+      priority: email.value.importance === 'high' ? 'high' : 'medium',
+    })
+    toast.success(`已转为任务：${task.title}`)
+    router.push(`/tasks/${task.id}`)
+  } catch (e: any) {
+    toast.error(e?.message || '创建任务失败')
+  } finally {
+    converting.value = false
+  }
+}
+
+async function navigateToContact() {
+  if (!email.value?.fromAddress) return
+  try {
+    const contact = await findContactByEmail(email.value.fromAddress)
+    if (contact) {
+      router.push(`/contacts/${contact.id}`)
+    } else {
+      toast.info('联系人不存在，请先在联系人页面聚合')
+    }
+  } catch (error: any) {
+    toast.error(error?.message || '查找联系人失败')
+  }
 }
 
 function goBack() {
@@ -221,7 +298,35 @@ onMounted(load)
   padding: var(--space-4);
   box-shadow: var(--shadow-sm);
 }
-.snippet-label { font-size: 11px; color: var(--text-muted); margin-bottom: var(--space-2); }
+.snippet-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: var(--space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.body-source {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.body-loading { color: var(--text-muted); font-size: 12px; margin-top: var(--space-2); }
+.body-error { color: var(--danger); font-size: 12px; margin-top: var(--space-2); }
+.body-full {
+  font-size: 14px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  line-height: 1.6;
+  word-break: break-word;
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+  max-height: 60vh;
+  overflow-y: auto;
+}
 .snippet-body { font-size: 14px; color: var(--text-primary); white-space: pre-wrap; line-height: 1.6; word-break: break-word; }
 .muted { color: var(--text-muted); }
 

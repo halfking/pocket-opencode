@@ -8,20 +8,31 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/adapter/composite"
+	"github.com/halfking/pocket-opencode/backend/internal/adapter/disk"
+	"github.com/halfking/pocket-opencode/backend/internal/agent"
+	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/db"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
+	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
+	"github.com/halfking/pocket-opencode/backend/internal/lobster"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
-	"github.com/halfking/pocket-opencode/backend/internal/meeting"
+	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
+	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
+	"github.com/halfking/pocket-opencode/backend/internal/quota"
+	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/server"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
@@ -33,6 +44,9 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("invalid configuration: %v", err)
+	}
 
 	// Ensure data directory exists (still used for version.json, APK cache, etc.)
 	dataDir := filepath.Dir(cfg.DBPath)
@@ -44,12 +58,12 @@ func main() {
 	// 可选依赖：未配置时降级为"无本地任务存储"模式，仅依赖 ACC/llm-gateway 等远程服务
 	var pool *pgxpool.Pool
 	if cfg.PostgresDSN != "" {
-		p, err := db.New(context.Background(), cfg.PostgresDSN)
+		p, err := db.New(context.Background(), cfg.PostgresDSN, cfg.PostgresSchema)
 		if err != nil {
 			log.Fatalf("Failed to connect to Postgres: %v", err)
 		}
 		pool = p
-		log.Println("Postgres pool initialized")
+		log.Printf("Postgres pool initialized (schema=%q)", cfg.PostgresSchema)
 		defer pool.Close()
 	} else {
 		log.Println("WARN: POCKET_POSTGRES_DSN not set, running in remote-only mode (no local task cache)")
@@ -57,28 +71,32 @@ func main() {
 
 	// ---- Module stores (all share the pool) ----
 	var (
-		taskStore  *task.Store  // nil-safe: nil when pool is nil
+		taskStore  *task.Store // nil-safe: nil when pool is nil
 		notesStore *notes.Store
 		emailStore *email.Store
 		vaultStore   *vault.Store
-		meetingStore *meeting.Store
 	)
 	if pool != nil {
 		ts, err := task.NewStore(pool)
-		if err != nil { log.Fatalf("task store: %v", err) }
+		if err != nil {
+			log.Fatalf("task store: %v", err)
+		}
 		taskStore = ts
 		ns, err := notes.NewStore(pool)
-		if err != nil { log.Fatalf("notes store: %v", err) }
+		if err != nil {
+			log.Fatalf("notes store: %v", err)
+		}
 		notesStore = ns
 		es, err := email.NewStore(pool)
-		if err != nil { log.Fatalf("email store: %v", err) }
+		if err != nil {
+			log.Fatalf("email store: %v", err)
+		}
 		emailStore = es
 		vs, err := vault.NewStore(pool)
-		if err != nil { log.Fatalf("vault store: %v", err) }
+		if err != nil {
+			log.Fatalf("vault store: %v", err)
+		}
 		vaultStore = vs
-		ms, err := meeting.NewStore(pool)
-		if err != nil { log.Fatalf("meeting store: %v", err) }
-		meetingStore = ms
 		log.Println("Module stores initialized (PG)")
 	}
 
@@ -87,7 +105,10 @@ func main() {
 		userStore *auth.UserStore
 		jwtSigner *auth.Signer
 	)
-if pool != nil {
+	if pool != nil {
+		if err := auth.EnsureSchema(context.Background(), pool); err != nil {
+			log.Fatalf("auth schema: %v", err)
+		}
 		us, err := auth.NewUserStore(pool)
 		if err != nil {
 			log.Fatalf("user store: %v", err)
@@ -114,13 +135,40 @@ if pool != nil {
 				}
 			}
 		}
-		jwtSigner = auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
+		signer, err := auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
+		if err != nil {
+			log.Fatalf("JWT signer init: %v", err)
+		}
+		jwtSigner = signer
 		log.Println("Auth: user store + JWT signer initialized")
 	} else if cfg.DevAuth {
 		// Dev 模式无 PG 时：仍然 init JWT signer，让 requireAuth 通过（用户可用外部 JWT）。
 		// userStore 仍 nil，所以 /api/auth/login 会 503；但其它 requireAuth 路由可用。
-		jwtSigner = auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
+		signer, err := auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
+		if err != nil {
+			log.Fatalf("JWT signer init: %v", err)
+		}
+		jwtSigner = signer
 		log.Println("Dev mode: JWT signer initialized without user store (login disabled)")
+	}
+
+	// ---- 后端集成: kxmemory AI 编排服务（分类/SSOT/总结）----
+	// 提前到这里构造，因为 email scheduler 也要用它（DailySummary）。
+	var kxmem kxmemory.Client
+	if cfg.KxMemoryBaseURL != "" {
+		kxmem = kxmemory.NewClientWithPaths(cfg.KxMemoryBaseURL, cfg.JWTSecret, kxmemory.DefaultRetryConfig, kxmemory.Paths{
+			NoteClassify:  cfg.KxMemoryNoteClassifyPath,
+			EmailClassify: cfg.KxMemoryEmailClassifyPath,
+			DailySummary:  cfg.KxMemoryDailySummaryPath,
+		})
+		log.Printf("kxmemory AI orchestrator enabled: %s (paths: note=%s email=%s summary=%s)",
+			cfg.KxMemoryBaseURL,
+			cfg.KxMemoryNoteClassifyPath,
+			cfg.KxMemoryEmailClassifyPath,
+			cfg.KxMemoryDailySummaryPath,
+		)
+	} else {
+		log.Println("INFO: POCKET_KXMEMORY_BASE_URL not set; AI classification/SSOT disabled")
 	}
 
 	// ---- Email crypto + fetcher + scheduler ----
@@ -148,9 +196,41 @@ if pool != nil {
 				if emailStore != nil {
 					emailFetcher = email.NewFetcher(emailStore, emailCrypto)
 					emailScheduler = email.NewScheduler(emailStore, emailFetcher, cfg.EmailFetchEnabled)
+					// 注入 kxmemory 客户端（可选）：未配置时 DailySummary 自动降级到 log-only。
+					if kxmem != nil {
+						emailScheduler.SetKxmemory(kxmem)
+					}
+					// OAuth refresh：可选启用，调用方需要同时提供 provider
+					// client credentials 才能真正刷新 access token。
+					oauthRefresher := email.NewDefaultOAuthRefresher()
+					providers := []email.OAuthProviderConfig{}
+					if cfg.EmailGoogleClientID != "" && cfg.EmailGoogleClientSecret != "" {
+						providers = append(providers, email.OAuthProviderConfig{
+							ProviderID:   "google",
+							TokenURL:     "https://oauth2.googleapis.com/token",
+							ClientID:     cfg.EmailGoogleClientID,
+							ClientSecret: cfg.EmailGoogleClientSecret,
+						})
+					}
+					if cfg.EmailMicrosoftClientID != "" && cfg.EmailMicrosoftClientSecret != "" {
+						providers = append(providers, email.OAuthProviderConfig{
+							ProviderID:   "outlook",
+							TokenURL:     "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+							ClientID:     cfg.EmailMicrosoftClientID,
+							ClientSecret: cfg.EmailMicrosoftClientSecret,
+						})
+					}
+					emailScheduler.SetOAuthRefresher(oauthRefresher, providers)
+					emailScheduler.SetVacationSender(server.NewSMTPVacationSender())
+					// 消费 email_action_intents（route-folder / trigger-autoreply）。
+					// emailStore / emailCrypto 在本块上方已构造（与 vacation sender 同源）。
+					emailScheduler.SetIntentExecutor(server.NewIntentExecutor(emailStore, emailCrypto))
+					// 时区：默认 UTC+8（中国大陆）；可由 POCKET_TIMEZONE_OFFSET_SEC 覆盖。
+					emailScheduler.SetTimezoneOffset(cfg.TimezoneOffsetSec)
 					emailScheduler.Start(context.Background())
 					defer emailScheduler.Stop()
-					log.Printf("Email scheduler started (fetch_enabled=%v)", cfg.EmailFetchEnabled)
+					log.Printf("Email scheduler started (fetch_enabled=%v, kxmemory=%v, tz_offset=%ds, oauth_providers=%d)",
+						cfg.EmailFetchEnabled, kxmem != nil, cfg.TimezoneOffsetSec, len(providers))
 				}
 			}
 		}
@@ -166,12 +246,20 @@ if pool != nil {
 	}
 
 	// ---- ACC task integration (Phase 5; construct now if configured) ----
-	// mcp.Client was previously dead code; here we instantiate it when the
-	// ACC MCP endpoint is configured so task handlers can fetch ACC tasks.
+	// mcp.Client 现在以 HMAC 内部 JWT（HS256）调用 ACC 的写 tool（见
+	// internal/mcp/client.go）。tenant_id 来自 POCKET_MCP_TENANT_ID，scopes
+	// 来自 POCKET_MCP_SCOPES（默认 tasks,sessions）。
+	mcpScopes := parseScopes(cfg.MCPScopeString)
 	var mcpClient *mcp.Client
 	if cfg.MCPBaseURL != "" {
-		mcpClient = mcp.NewClient(cfg.MCPBaseURL, cfg.MCPAPIKey, cfg.MCPInsecureTLS)
-		log.Printf("ACC MCP client configured: %s", cfg.MCPBaseURL)
+		if cfg.MCPTenantID == "" {
+			log.Printf("WARN: POCKET_MCP_TENANT_ID empty; ACC JWT tenant_id will be empty (ACC may reject)")
+		}
+		if cfg.MCPAPIKey == "" {
+			log.Printf("WARN: POCKET_MCP_API_KEY empty; ACC JWT cannot be signed")
+		}
+		mcpClient = mcp.NewClientWithAuth(cfg.MCPBaseURL, cfg.MCPAPIKey, cfg.MCPTenantID, mcpScopes, cfg.MCPInsecureTLS)
+		log.Printf("ACC MCP client configured: %s (tenant=%q scopes=%v)", cfg.MCPBaseURL, cfg.MCPTenantID, mcpScopes)
 	}
 
 	// ---- Phase C: 无状态 AI 网关（嵌入/LLM 代理，不存用户数据）----
@@ -202,13 +290,8 @@ if pool != nil {
 	}
 
 	// ---- 后端集成: kxmemory AI 编排服务（分类/SSOT/总结）----
-	var kxmem *kxmemory.Client
-	if cfg.KxMemoryBaseURL != "" {
-		kxmem = kxmemory.NewClient(cfg.KxMemoryBaseURL, cfg.JWTSecret)
-		log.Printf("kxmemory AI orchestrator enabled: %s", cfg.KxMemoryBaseURL)
-	} else {
-		log.Println("INFO: POCKET_KXMEMORY_BASE_URL not set; AI classification/SSOT disabled")
-	}
+	// 注意：kxmem 已在 email scheduler block 之前构造（被 DailySummary 使用）。
+	// 这里只做防御性检查：如果用户跳过了前面 block（比如未来重构），避免重复构造。
 
 	// ---- Adapters (unchanged) ----
 	var npsAdapter adapter.NPSAdapter
@@ -229,6 +312,12 @@ if pool != nil {
 	opencodeAdapter := adapter.NewOpenCodeHTTPAdapter(timeoutMS)
 	configAdapter := adapter.NewOpenCodeConfigHTTPAdapter(timeoutMS)
 
+	// Gap 1: 复合适配器——把 disk 只读会话聚合进既有 HTTP 适配器，按 locator
+	// 路由。默认（disk 未启用）保持裸 HTTP 适配器，行为完全不变。
+	opencodeAdapterForRouting := adapter.OpenCodeAdapter(opencodeAdapter)
+	// diskAdapterForSync 在 disk 启用时指向 disk.Adapter，供会话上报调度器复用。
+	var diskAdapterForSync *disk.Adapter
+
 	reg := registry.NewRegistry()
 	if cfg.OpenCodeInstancesJSON != "" {
 		configs, err := registry.ParseConfigJSON(cfg.OpenCodeInstancesJSON)
@@ -243,21 +332,221 @@ if pool != nil {
 		}
 	}
 
-	srv := server.New(cfg, npsAdapter, opencodeAdapter, taskStore, reg, configAdapter,
+	// ---- 磁盘会话聚合（Wake 范式移植，只读）----
+	// 把本机 Claude Code / Codex 落盘的会话注册为只读实例（disk-claude /
+	// disk-codex）。instance_id → 本地 locator 的解析走 registry 的 workspace
+	// 作用域，绝不信任客户端传来的地址；DiskSessionsWorkspace 留空时注册为
+	// 运维共享只读资源（写操作解析器会拒绝这类实例）。
+	if cfg.DiskSessionsEnabled {
+		diskAdapter := disk.New()
+		ids, err := diskAdapter.Register(reg, cfg.DiskSessionsWorkspace)
+		if err != nil {
+			log.Printf("WARN: disk session adapter registration: %v", err)
+		}
+		if len(ids) == 0 {
+			log.Println("Disk session adapter enabled but no agent data directory detected (~/.claude/projects, ~/.codex)")
+		} else {
+			log.Printf("Disk session adapter enabled (read-only): instances=%v workspace=%q", ids, cfg.DiskSessionsWorkspace)
+		}
+		// 用复合（HTTP+disk）适配器替换裸 HTTP 适配器，使 /api/sessions、
+		// 审批/问答管理器都能按 locator 路由到 disk 实例；写操作（prompt/
+		// 审批回复）在 disk 路径上返回 ErrNotSupported，与只读语义一致。
+		opencodeAdapterForRouting = composite.New(opencodeAdapter, diskAdapter)
+		diskAdapterForSync = diskAdapter
+	}
+
+	// 启用自动发现：扫描 localhost + LAN 端口发现 OpenCode 实例（60s 间隔）
+	// 会话迁移方案：支持完整 /24 扫描、自定义端口、额外主机（ACC/NPS 注入）
+	discoveryFunc := registry.NetworkDiscovery(
+		registry.WithFullSubnetScan(cfg.DiscoveryFullSubnet),
+		registry.WithPorts(cfg.DiscoveryPorts),
+		registry.WithExtraHosts(cfg.DiscoveryExtraHosts),
+	)
+	if cfg.DiscoveryFullSubnet {
+		log.Printf("⚠️ 启用完整 /24 子网扫描（生产慎用，开销较大）")
+	}
+	reg.EnableAutoDiscovery(discoveryFunc, 60*time.Second)
+	go reg.StartAutoDiscovery(context.Background())
+
+	srv := server.New(cfg, npsAdapter, opencodeAdapterForRouting, taskStore, reg, configAdapter,
 		notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, nil, /* opencodeManager (set below) */
 		userStore, jwtSigner,
 		emailCrypto, emailPending,
 		emailScheduler, emailFetcher,
-		dataDir)
-	srv.SetMeetingStore(meetingStore)
+		dataDir, pool)
+
+	// 把 server 的 WS hub 反向注入 email scheduler，让 OAuth revocation
+	// 事件能精确投递给当前用户（email.oauth.revoked）。ws.Hub 已经实现
+	// OAuthBroadcaster 接口。
+	if emailScheduler != nil {
+		emailScheduler.SetBroadcaster(srv.WSHub())
+	}
+
+	// 注入 audit writer：email 包内 oauth callback / scheduler refresh+revoke
+	// 路径上的审计事件都通过此 writer 落到 server 持有的 AuditStore。
+	// writer 为 nil 时 email 包会仅 log、不 panic——便于在没有 server 的
+	// 单元测试中运行 email 包。
+	email.SetAuditWriter(server.NewEmailAuditWriter(srv))
+
+	// ---- LLM Gateway 配置持久化（PG 可用时从数据库加载）----
+	// 注意：workspaces 列表在 S0-A Identity Core 装配完之后才可用，
+	// 所以这里只构造 store 并暂存，等 identity 装配完成后回调
+	// LoadLLMGatewayFromDB。
+	if pool != nil {
+		lgStore, err := server.NewLLMGatewayStore(pool, emailCrypto)
+		if err != nil {
+			log.Printf("WARN: LLM gateway store init failed: %v", err)
+		} else {
+			srv.SetLLMGatewayStore(lgStore)
+			log.Println("LLM gateway store initialized (PG)")
+		}
+	}
+
+	// ---- S0-A: Identity Core (workspaces / members / devices) ----
+	var identStore *identity.Store
+	if pool != nil {
+		is, err := identity.New(pool)
+		if err != nil {
+			log.Printf("WARN: identity store init failed: %v", err)
+		} else {
+			srv.SetIdentityStore(is)
+			identStore = is
+			log.Println("Identity Core enabled (workspaces/members/devices)")
+		}
+	}
+
+	// 多租户 LLM 网关配置加载：identity store 就绪后，从 workspaces 表加载
+	// 所有 workspace 的持久化配置；未保存的工作区仍走 env 默认值。
+	if pool != nil && srv.LLMGatewayStore() != nil {
+		workspaces := []string{"default"}
+		if identStore != nil {
+			if list, lerr := identStore.ListAllWorkspaceIDs(context.Background()); lerr == nil {
+				workspaces = append(workspaces, list...)
+			} else {
+				log.Printf("WARN: identity list workspaces failed: %v", lerr)
+			}
+		}
+		srv.LoadLLMGatewayFromDB(workspaces...)
+		log.Println("LLM gateway config persistence enabled (PG)")
+	}
+
+	// ---- 网关运维控制面：节点注册表 ----
+	// 与上面的 config store 复用同一个 AES-256-GCM cipher。节点表单独存"访问
+	// 网关 admin API 的账号"——网关 admin API 只认 JWT，数据面 sk-* key 访问
+	// 不了 /api/providers、/api/credentials/* 这些端点，所以不能复用旧表。
+	if pool != nil && emailCrypto != nil {
+		gwNodes, err := server.NewGatewayNodeStore(pool, emailCrypto)
+		if err != nil {
+			log.Printf("WARN: gateway node store init failed: %v", err)
+		} else {
+			srv.SetGatewayNodeStore(gwNodes)
+
+			// 首次启动把已有的 llm_gateway_configs active 行导入成第一个节点，
+			// 省去重录 baseURL。admin 账号无法从旧表推导（旧表只有数据面 key），
+			// 所以导入后的节点 health 停在 unknown，需在移动端补录账号再探测。
+			gwWorkspaces := []string{"default"}
+			if identStore != nil {
+				if list, lerr := identStore.ListAllWorkspaceIDs(context.Background()); lerr == nil {
+					gwWorkspaces = append(gwWorkspaces, list...)
+				}
+			}
+			for _, ws := range gwWorkspaces {
+				imported, ierr := gwNodes.ImportLegacyConfig(context.Background(), ws)
+				if ierr != nil {
+					log.Printf("WARN: gateway node legacy import failed (workspace=%s): %v", ws, ierr)
+				} else if imported {
+					log.Printf("Imported legacy LLM gateway config as node (workspace=%s); admin credentials still required", ws)
+				}
+			}
+			log.Printf("Gateway node registry enabled (PG, allow_private_hosts=%v)", os.Getenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE") != "")
+		}
+	}
+
+	// ---- S0-B: Unified LLM BFF (stream + usage tracking) ----
+	// 仅在企业网关模式下启用：BFF 需要一个支持 stream 的 Provider，目前只有
+	// llmgateway.Client 满足。直连模式（aigate）的 BFF 适配器留到后续 sprint。
+	if cfg.LLMGatewayURL != "" && cfg.LLMGatewayAPIKey != "" {
+		gwClientForBFF := llmgateway.NewClient(cfg.LLMGatewayURL, cfg.LLMGatewayAPIKey)
+		provider := server.NewLLMGatewayBFFProvider(gwClientForBFF)
+		var recorder llmbff.Recorder = llmbff.NoopRecorder{}
+		var summarizer llmbff.Summarizer
+		if pool != nil {
+			if usageStore, err := llmbff.NewUsageStore(pool); err != nil {
+				log.Printf("WARN: llm usage store init failed: %v", err)
+			} else {
+				recorder = usageStore
+				summarizer = usageStore
+			}
+		}
+		srv.SetLLMBFF(llmbff.NewService(provider, recorder), summarizer)
+		log.Println("LLM BFF enabled (stream + usage tracking)")
+	}
+
+	// ---- P3: Quota Enforcer (PG-backed budgets, AlwaysAllow strategy) ----
+	// 装配顺序：DATABASE_URL 存在 → PGStore，否则 MemoryStore；策略默认
+	// AlwaysAllow，EnforceMode 默认 false（仅审计）。后续若 ops 想进入
+	// 硬拒绝模式，env 开关 QUOTA_ENFORCE_MODE=true 即可触发。
+	if pool != nil {
+		if pgBudgets, err := quota.NewPGStore(pool); err != nil {
+			log.Printf("WARN: quota PG store init failed, falling back to memory: %v", err)
+			srv.SetQuotaEnforcer(quota.NewEnforcer(quota.NewMemoryStore(), nil))
+		} else {
+			srv.SetQuotaEnforcer(quota.NewEnforcer(pgBudgets, nil))
+			log.Println("Quota enforcer enabled (PG store, AlwaysAllow strategy)")
+		}
+	} else {
+		srv.SetQuotaEnforcer(quota.NewEnforcer(quota.NewMemoryStore(), nil))
+		log.Println("Quota enforcer enabled (Memory store, no DATABASE_URL)")
+	}
+	if os.Getenv("QUOTA_ENFORCE_MODE") == "true" {
+		if e := srv.QuotaEnforcer(); e != nil {
+			e.SetEnforceMode(true)
+			log.Println("QUOTA_ENFORCE_MODE=true: Enforcer in hard-deny mode")
+		}
+	}
+
+	// ---- S0-C: Lobster Vault 加密镜像同步 ----
+	if pool != nil {
+		if ls, err := lobster.NewSyncStore(pool); err != nil {
+			log.Printf("WARN: lobster sync store init failed: %v", err)
+		} else {
+			srv.SetLobsterSync(ls)
+			log.Println("Lobster Vault sync enabled (e2ee asset mirror)")
+		}
+	}
+
+	// ---- S0-D: Agent Bridge（统一远端 opencode 实例为 Agent 抽象）----
+	if pool != nil {
+		if abStore, err := agentbridge.New(pool); err != nil {
+			log.Printf("WARN: agent bridge store init failed: %v", err)
+		} else {
+			creator, resolver, attacher := server.NewAgentBridgeAdapters(opencodeAdapter, reg, taskStore)
+			bridge := agentbridge.NewBridge(abStore, creator, resolver, attacher)
+			srv.SetAgentBridge(bridge, abStore)
+			log.Println("Agent Bridge enabled (unified agent dispatch)")
+		}
+	}
+
+	// ---- S0-E: Notification Center（inbox + rules + 前台 WS 推送）----
+	if pool != nil {
+		if ncStore, err := notifycenter.New(pool); err != nil {
+			log.Printf("WARN: notify center store init failed: %v", err)
+		} else {
+			// 前台 WS sender 复用现有 wsHub；后台 APNs/FCM 留 Noop（部署期接证书）。
+			wsSender := notifycenter.NewWebsocketSender(srv.WSHub())
+			svc := notifycenter.NewService(ncStore, wsSender)
+			srv.SetNotifyCenter(svc, ncStore)
+			log.Println("Notification Center enabled (inbox + rules + WS foreground push)")
+		}
+	}
 
 	// ---- OpenCode 域管理器装配（Phase V3: 真实任务与会话接入）----
 	// 在 server.New 之后再装配，因为 manager 持有 opencodeAdapter/registry 引用。
 	// noopHistoryStore 是 HistoryStore 的零开销实现——真实持久化交给 OpenCode 自身（server-side SQLite）。
-	ocMgr := opencode.NewManager(reg, opencodeAdapter, noopHistoryStore{})
-	eventMgr := opencode.NewEventStreamManager(reg, opencodeAdapter)
-	permMgr := opencode.NewPermissionManager(reg, opencodeAdapter, opencode.PermissionManagerOptions{PollInterval: 3 * time.Second}, eventMgr) // Phase 1.2: 传入 eventStream
-	quesMgr := opencode.NewQuestionManager(reg, opencodeAdapter, opencode.QuestionManagerOptions{PollInterval: 3 * time.Second}, eventMgr) // Phase 1.3: 传入 eventStream
+	ocMgr := opencode.NewManager(reg, opencodeAdapterForRouting, noopHistoryStore{})
+	eventMgr := opencode.NewEventStreamManager(reg, opencodeAdapterForRouting)
+	permMgr := opencode.NewPermissionManager(reg, opencodeAdapterForRouting, opencode.PermissionManagerOptions{PollInterval: 3 * time.Second}, eventMgr) // Phase 1.2: 传入 eventStream
+	quesMgr := opencode.NewQuestionManager(reg, opencodeAdapterForRouting, opencode.QuestionManagerOptions{PollInterval: 3 * time.Second}, eventMgr)     // Phase 1.3: 传入 eventStream
 
 	// 启动后台循环
 	mgrCtx, mgrCancel := context.WithCancel(context.Background())
@@ -310,10 +599,107 @@ if pool != nil {
 	// 把 manager 注入 server（用 setter 而非扩展 New，避免 26+ 参数）
 	srv.SetOpenCodeManagers(ocMgr, eventMgr, permMgr, quesMgr)
 
+	// 审批推送：订阅 permMgr/quesMgr 的事件 channel，包装成 WsEnvelopeV1
+	// 后经 WS hub 按实例归属 workspace 定向广播（approval.permission.pending /
+	// approval.question.pending / approval.resolved），替代前端 10s 轮询。
+	// 与 emailScheduler.SetBroadcaster 相同的注入模式。
+	approvalBroadcaster := opencode.NewApprovalBroadcaster(reg, permMgr, quesMgr)
+	approvalBroadcaster.SetApprovalProjector(taskStore)
+	approvalBroadcaster.SetBroadcaster(srv.WSHub())
+	// Start only after the synchronous projector is installed. Otherwise an early
+	// upstream event could reach the in-memory cache without reaching the task gate.
+	go permMgr.Start(mgrCtx)
+	go quesMgr.Start(mgrCtx)
+	go approvalBroadcaster.Run(mgrCtx)
+
+	// ---- W5: 注入 ACP agent registry ----
+	// 当前 stage：
+	//   1. OpenCode HTTP adapter（向后兼容）
+	//   2. ACP stdio adapter（新增，支持 Codex/Claude Code 等 CLI agents）
+	agentReg := agent.NewRegistry()
+
+	// 1. 注册 OpenCode HTTP adapter
+	opencodeAgentAdapter := agent.NewOpenCodeAdapter(opencodeAdapter)
+	_ = agentReg.Register(agent.AgentRef{Type: "opencode", Target: ""}, opencodeAgentAdapter)
+	// 用 instanceMap 把 instance_id 也映射到 opencode adapter（兼容旧 query）
+	for _, ref := range reg.ListInstances() {
+		apiBase, err := reg.GetInstanceAPIBase(ref.ID)
+		if err != nil {
+			continue
+		}
+		_ = agentReg.Register(
+			agent.AgentRef{Type: "opencode", Target: apiBase},
+			opencodeAgentAdapter,
+			ref.ID,
+		)
+	}
+
+	// 2. 注册 ACP stdio adapter（新增）
+	acpStdioAdapter := agent.NewACPStdioAdapter()
+	// 示例：注册 agent_echo（测试用）
+	if agentEchoPath := os.Getenv("AGENT_ECHO_PATH"); agentEchoPath != "" {
+		_ = agentReg.Register(
+			agent.AgentRef{Type: "acp-stdio", Target: agentEchoPath},
+			acpStdioAdapter,
+			"agent-echo-1", // instance_id for legacy query
+		)
+		log.Printf("Registered ACP stdio agent: agent_echo at %s", agentEchoPath)
+	}
+	// 示例：注册 Claude CLI（如果存在）
+	if claudePath := os.Getenv("CLAUDE_CLI_PATH"); claudePath != "" {
+		_ = agentReg.Register(
+			agent.AgentRef{Type: "acp-stdio", Target: claudePath},
+			acpStdioAdapter,
+			"claude-1", // instance_id
+		)
+		log.Printf("Registered ACP stdio agent: Claude CLI at %s", claudePath)
+	}
+
+	srv.SetAgentRegistry(agentReg)
+	log.Printf("ACP agent registry wired: %d adapter(s)", len(agentReg.All()))
+
+	// 会话迁移方案：装配跨主机迁移服务（registry + opencodeAdapter + pluginHub + taskStore）。
+	// 任一依赖为 nil 时迁移服务内部降级。taskStore 可能为 nil（remote-only 模式），
+	// 迁移服务此时跳过逻辑会话映射，但仍可下发命令。
+	migrationSvc := migration.New(reg, opencodeAdapter, srv.PluginHub(), taskStore)
+	srv.SetMigrationService(migrationSvc)
+	log.Println("会话迁移服务已装配（/api/migration, /api/migration/preview）")
+
 	// Phase 5: 启动 ACC 任务后台同步（5 分钟一次把 ACC 任务拉取到本地）
 	taskScheduler := tasksync.New(mcpClient, taskStore, 5*60*1_000_000_000) // 5min
+	// 注入 audit writer：system tenant 用于标记 ACC 拉取不属于任何 workspace。
+	tasksync.SetAuditWriter(server.NewTasksyncAuditWriter(srv))
 	taskScheduler.Start(context.Background())
 	defer taskScheduler.Stop()
+
+	// P1: 本机 disk 会话周期性上报 ACC（acc_report_session），与任务拉取同形，
+	// 5 分钟一次、幂等去重。disk 未启用或 mcp 未配置时自动 no-op。
+	diskSessionScheduler := tasksync.NewDiskSessionScheduler(diskAdapterForSync, mcpClient, 5*60*1_000_000_000) // 5min
+	diskSessionScheduler.Start(context.Background())
+	defer diskSessionScheduler.Stop()
+
+	// P1 遗留：审计导出落盘轮转。AUDIT_EXPORT_DIR 设置后启用——增量 JSONL
+	// 落盘（按天分文件 audit-YYYYMMDD.jsonl），保留期外自动清理；外部 SIEM
+	// 可直接 tail 该目录。游标持久化在 state.json，重启不重扫。
+	if auditDir := os.Getenv("AUDIT_EXPORT_DIR"); auditDir != "" {
+		interval := time.Minute
+		if v, err := time.ParseDuration(os.Getenv("AUDIT_EXPORT_INTERVAL")); err == nil && v > 0 {
+			interval = v
+		}
+		retain := 7
+		if v, err := strconv.Atoi(os.Getenv("AUDIT_EXPORT_RETENTION_DAYS")); err == nil && v > 0 {
+			retain = v
+		}
+		exporter := redclaw.NewFileExporter(srv.AuditStore(), redclaw.FileExporterConfig{
+			Dir:        auditDir,
+			Interval:   interval,
+			RetainDays: retain,
+		})
+		exporterCtx, exporterCancel := context.WithCancel(context.Background())
+		go exporter.Run(exporterCtx)
+		defer exporterCancel()
+		log.Printf("审计落盘导出已启用：dir=%s interval=%s retain=%dd", auditDir, interval, retain)
+	}
 
 	// HTTP server 配置超时，防止 Slowloris 攻击和资源耗尽
 	addr := ":" + cfg.HTTPPort
@@ -387,4 +773,15 @@ func (a *llmGatewayLLMAdapter) Chat(ctx context.Context, model string, messages 
 		return "", fmt.Errorf("empty llm response")
 	}
 	return resp.Choices[0].Message.Content, nil
+}
+
+// parseScopes 把 "tasks,sessions" 这样的逗号分隔串拆成 trimmed 非空切片。
+func parseScopes(raw string) []string {
+	out := make([]string, 0)
+	for _, s := range strings.Split(raw, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }

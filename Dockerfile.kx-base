@@ -1,0 +1,52 @@
+# ── Build Stage ──────────────────────────────────────────────────────────────
+# Uses kx-base:go-vue-optimized (kx-base-go-vue-v2-alpine-slim-arm64.tar.gz)
+# as the Go build environment. The runtime stage is plain alpine — pocketd is
+# a static Go binary, no Node/Python needed at runtime.
+#
+# Build args:
+#   KX_BASE_TAG         — defaults to kx-base:go-vue-optimized (the tag the
+#                         arm64 offline tarball uses per manifest.json).
+#                         Override to test against a fresh build.
+#   RUNTIME_BASE_IMAGE  — defaults to alpine:latest; override to lock the
+#                         runtime OS image.
+#
+# Network: builds assume the kx-base image is already loaded locally via
+#   `docker load -i ~/work/docker-base-images/lang-base/kx-base-go-vue-v2-alpine-slim-arm64.tar.gz`
+# The compose uses `pull_policy: never` and `network: host` so the build
+# never reaches the registry. Offline-safe.
+
+ARG KX_BASE_TAG=kx-base:go-vue-optimized
+ARG RUNTIME_BASE_IMAGE=alpine:latest
+
+FROM ${KX_BASE_TAG} AS builder
+
+# China network: proxy.golang.org unreachable in some build envs; goproxy.cn is
+# the standard fallback. The kx-base image already has Go installed.
+ENV GOPROXY=https://goproxy.cn,direct \
+    CGO_ENABLED=0 \
+    GOOS=linux
+
+WORKDIR /src
+COPY backend/go.mod backend/go.sum ./backend/
+RUN cd backend && go mod download
+
+COPY backend ./backend
+RUN cd backend && go build -trimpath -ldflags='-s -w' -o /out/pocketd ./cmd/pocketd
+
+# ── Runtime Stage ────────────────────────────────────────────────────────────
+FROM ${RUNTIME_BASE_IMAGE}
+
+RUN apk --no-cache add ca-certificates wget && \
+    addgroup -S pocket && adduser -S -G pocket pocket
+
+WORKDIR /app
+COPY --from=builder /out/pocketd /app/pocketd
+RUN mkdir -p /app/data && chown -R pocket:pocket /app
+
+USER pocket
+EXPOSE 8088
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=12 \
+    CMD wget -q -O- http://127.0.0.1:8088/healthz >/dev/null || exit 1
+
+ENTRYPOINT ["/app/pocketd"]

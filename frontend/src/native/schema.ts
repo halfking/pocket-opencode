@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS local_notes (
     audio_path TEXT,                 -- 本地文件路径（转写后可清理）
     audio_duration_ms INTEGER DEFAULT 0,
     created_by_voice INTEGER DEFAULT 1,  -- BOOLEAN as 0/1
+    encrypted_content INTEGER NOT NULL DEFAULT 1, -- legacy rows are field-encrypted
     embedding_model TEXT,            -- 生成向量用的模型，便于重建
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -229,6 +230,19 @@ CREATE TABLE IF NOT EXISTS local_voiceprints (
     created_at INTEGER NOT NULL
 );
 
+-- 会议录音音频分片（E5-S2 崩溃安全：录音期间按 timescale 落盘，
+-- 应用异常退出后可凭分片恢复转写；转写成功后清理）
+CREATE TABLE IF NOT EXISTS local_meeting_audio_parts (
+    id TEXT PRIMARY KEY,
+    meeting_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,            -- 分片序号（拼接顺序）
+    mime_type TEXT NOT NULL,
+    data_base64 TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (meeting_id) REFERENCES local_meetings(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_audio_parts_meeting ON local_meeting_audio_parts(meeting_id, seq);
+
 -- ============================================================
 -- 聊天消息（Phase 6B，三路抓取后本地存）
 -- ============================================================
@@ -254,6 +268,101 @@ CREATE TABLE IF NOT EXISTS local_chat_conversations (
 );
 
 -- ============================================================
+-- P1 移动离线持久化（SEC-06 / 优化v4 §5）
+--
+-- 移动端聊天域（session / message / approval）的离线镜像 + 同步元数据。
+-- 同步模型：last-write-wins（LWW），判定依据统一为毫秒时间戳：
+--   - 服务端行带 server_rev（上游 time.updated，Unix ms）
+--   - 本地行带 updated_at（本地时钟）+ dirty 标记
+--   - pull：本地非 dirty 行且 remote server_rev > 本地 server_rev 时覆盖
+--   - push：dirty 行经 outbox 幂等重放到 /api/mobile/* 路由
+-- 冲突自由保证：客户端离线创建的实体使用本地生成的 id（loc_ 前缀），
+-- 创建动作走幂等键重放，上游不会产生重复实体。
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS local_mobile_sessions (
+    id TEXT PRIMARY KEY,               -- 客户端 id；离线创建为 loc_<uuid>
+    server_id TEXT,                    -- 上游 session id（push 成功后回填）
+    workspace_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    title TEXT DEFAULT '',
+    status TEXT DEFAULT '',
+    idempotency_key TEXT NOT NULL,     -- 创建重放的幂等键（唯一）
+    client_rev INTEGER NOT NULL DEFAULT 1,
+    server_rev INTEGER NOT NULL DEFAULT 0,  -- 上游 time.updated，0 = 未同步
+    dirty INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER                 -- 墓碑：本地删除待 push DELETE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mobile_sessions_server_id
+    ON local_mobile_sessions(server_id) WHERE server_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_mobile_sessions_dirty
+    ON local_mobile_sessions(workspace_id, dirty) WHERE dirty = 1;
+CREATE INDEX IF NOT EXISTS idx_mobile_sessions_sync
+    ON local_mobile_sessions(workspace_id, instance_id, server_rev);
+-- 离线会话列表缓存查询（listCachedSessions）：等值前缀 + updated_at 排序。
+CREATE INDEX IF NOT EXISTS idx_mobile_sessions_cache
+    ON local_mobile_sessions(workspace_id, instance_id, updated_at)
+    WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS local_mobile_messages (
+    id TEXT PRIMARY KEY,               -- 客户端消息 id（loc_ 前缀）或上游消息 id
+    session_id TEXT NOT NULL,          -- 指向 local_mobile_sessions.id
+    workspace_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'user', -- user / assistant / tool（本地只写 user）
+    text TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'pending', -- pending / sent / failed / remote
+    server_message_id TEXT,            -- prompt 发送成功后上游 messageID
+    idempotency_key TEXT,              -- prompt 重放幂等键（本地创建的消息才有）
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES local_mobile_sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_mobile_messages_session ON local_mobile_messages(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mobile_messages_pending
+    ON local_mobile_messages(state) WHERE state = 'pending';
+
+CREATE TABLE IF NOT EXISTS local_mobile_approvals (
+    id TEXT PRIMARY KEY,               -- 服务端 request_id
+    workspace_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    session_id TEXT,
+    kind TEXT NOT NULL,                -- permission / question
+    payload TEXT NOT NULL DEFAULT '{}',-- 审批请求快照（JSON）
+    decision TEXT,                     -- 本地已做决定（once/always/reject/answer）
+    state TEXT NOT NULL DEFAULT 'pending', -- pending / sent / expired
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    replied_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_mobile_approvals_state
+    ON local_mobile_approvals(workspace_id, state);
+
+-- ============================================================
+-- Outbox（PR13 OutboxStorage 的 SQLite 落地，SEC-06）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_outbox (
+    id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    action TEXT NOT NULL,              -- session.create / session.prompt / approval.reply ...
+    payload TEXT NOT NULL,             -- JSON 序列化的 OutboxRecord.payload
+    created_at INTEGER NOT NULL,
+    next_attempt_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    cursor TEXT,                       -- 服务端返回的游标（续传用）
+    last_error TEXT,
+    state TEXT NOT NULL DEFAULT 'queued', -- queued/inflight/succeeded/failed/dead_letter
+    ttl_ms INTEGER NOT NULL DEFAULT 86400000
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_idem ON local_outbox(idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_outbox_ready
+    ON local_outbox(state, next_attempt_at) WHERE state = 'queued';
+CREATE INDEX IF NOT EXISTS idx_outbox_workspace ON local_outbox(workspace_id, state);
+
+-- ============================================================
 -- 同步状态追踪（哪些表已导出到云 blob）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS local_sync_state (
@@ -262,4 +371,152 @@ CREATE TABLE IF NOT EXISTS local_sync_state (
     last_synced_rowid INTEGER,
     pending_changes INTEGER DEFAULT 0
 );
+
+-- ============================================================
+-- S0-C: Lobster Vault 3.x — 统一 Asset 抽象
+--
+-- 设计目标（spec §3.2 决策 4）：把新业务（S1 PKM block、S2 会议录音 blob、
+-- S3 凭证图、附件等）收敛到统一的 Asset 模型，而不是继续为每种业务加表。
+--
+-- Asset = (id, workspace_id, kind, title, meta_json, sync_mode, blobs[], vectors[])
+--   - kind: note / meeting_audio / meeting_transcript / voucher_image / pdf /
+--           pdf_attachment / voice_memo / screenshot / mixed / ...
+--   - meta_json: 业务自定义字段（block 树、标签、关联 id 等）
+--   - sync_mode: e2ee_local_first | cloud_authoritative | cloud_readonly
+--
+-- 与老表的关系：local_notes / local_emails / local_vault_entries /
+-- local_meetings 保持不动（已实现的特定业务），新业务一律走 Asset。
+-- 老业务可在后续 sprint 通过适配器逐步迁移到 Asset。
+--
+-- 加密：body_text / meta_json 由调用方决定是否加密（敏感字段走
+-- encryptString，元数据如 title 留明文以便 FTS 检索）。
+-- blob 文件（录音/图片）单独走 AES-GCM 分块加密，存 local_asset_blobs。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_assets (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    kind TEXT NOT NULL,                -- note / meeting_audio / voucher_image / ...
+    title TEXT,                        -- 明文，便于 FTS + 列表展示
+    body_text TEXT DEFAULT '',         -- 主体文本（可能加密，由调用方决定）
+    body_encrypted INTEGER DEFAULT 0,  -- 1 = body_text 是密文
+    meta_json TEXT DEFAULT '{}',       -- 业务自定义元数据（JSON）
+    source TEXT,                       -- voice / share / email / clipper / pdf / manual
+    sync_mode TEXT NOT NULL DEFAULT 'e2ee_local_first',
+    -- e2ee_local_first | cloud_authoritative | cloud_readonly
+    client_rev INTEGER NOT NULL DEFAULT 1,  -- 客户端修订号，每次更新 +1
+    server_rev INTEGER DEFAULT 0,      -- 服务端已知修订号（0 = 未同步）
+    dirty INTEGER NOT NULL DEFAULT 1,  -- 1 = 本地改动待推送
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER                 -- 非 NULL = 软删除（墓碑）
+);
+CREATE INDEX IF NOT EXISTS idx_assets_workspace_kind ON local_assets(workspace_id, kind) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_assets_updated ON local_assets(updated_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_assets_dirty ON local_assets(dirty) WHERE dirty = 1 AND deleted_at IS NULL;
+
+-- Asset FTS（仅索引明文 title + body；加密的 body 不进 FTS）
+CREATE VIRTUAL TABLE IF NOT EXISTS local_assets_fts USING fts5(
+    title, body, content='local_assets', content_rowid='rowid',
+    tokenize='unicode61 remove_diacritics 2'
+);
+-- 注意：触发器只在 body_encrypted=0 时才有意义；加密 body 进 FTS 会泄露明文。
+-- 这里用 AFTER INSERT/UPDATE 全量同步，调用方负责不把加密 body 写进 body_text
+-- （加密内容应进 meta_json 或独立 blob）。
+CREATE TRIGGER IF NOT EXISTS local_assets_ai AFTER INSERT ON local_assets BEGIN
+    INSERT INTO local_assets_fts(rowid, title, body)
+    VALUES (new.rowid, new.title, CASE WHEN new.body_encrypted = 0 THEN new.body_text ELSE '' END);
+END;
+CREATE TRIGGER IF NOT EXISTS local_assets_ad AFTER DELETE ON local_assets BEGIN
+    INSERT INTO local_assets_fts(local_assets_fts, rowid, title, body)
+    VALUES ('delete', old.rowid, old.title, CASE WHEN old.body_encrypted = 0 THEN old.body_text ELSE '' END);
+END;
+CREATE TRIGGER IF NOT EXISTS local_assets_au AFTER UPDATE ON local_assets BEGIN
+    INSERT INTO local_assets_fts(local_assets_fts, rowid, title, body)
+    VALUES ('delete', old.rowid, old.title, CASE WHEN old.body_encrypted = 0 THEN old.body_text ELSE '' END);
+    INSERT INTO local_assets_fts(rowid, title, body)
+    VALUES (new.rowid, new.title, CASE WHEN new.body_encrypted = 0 THEN new.body_text ELSE '' END);
+END;
+
+-- ============================================================
+-- Asset blob（大文件分块加密存储）
+--
+-- 一个 asset 可有多个 blob（如多图笔记、分块录音）。每个 blob 独立
+-- AES-GCM 加密，cipher_text 存库（小文件）或引用外部文件路径（大文件）。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_asset_blobs (
+    id TEXT PRIMARY KEY,
+    asset_id TEXT NOT NULL,
+    idx INTEGER NOT NULL DEFAULT 0,     -- blob 顺序（多 blob 时）
+    kind TEXT,                          -- image / audio / pdf / file / ...
+    cipher_text TEXT,                   -- 小文件：base64(iv + 密文) 直存
+    file_path TEXT,                     -- 大文件：外部加密文件路径
+    size_bytes INTEGER DEFAULT 0,       -- 原始大小（加密前）
+    hash TEXT,                          -- 原始内容 sha256（去重用）
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (asset_id) REFERENCES local_assets(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_asset_blobs_asset ON local_asset_blobs(asset_id, idx);
+
+-- ============================================================
+-- Asset 向量（语义检索，与 local_note_vectors 平行）
+--
+-- 一个 asset 可有多个向量（如 block 级 embedding）。独立表便于按 kind
+-- 重建索引。查询时复用 vectorIndex 的暴力点积（见 vector.ts）。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_asset_vectors (
+    id TEXT PRIMARY KEY,
+    asset_id TEXT NOT NULL,
+    embedding BLOB NOT NULL,            -- Float32Array 序列化
+    dim INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    chunk_idx INTEGER DEFAULT 0,        -- 分块 embedding 的索引（0 = 整篇）
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (asset_id) REFERENCES local_assets(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_asset_vectors_asset ON local_asset_vectors(asset_id);
 `
+
+/**
+ * 把多语句 SQL 切成逐条语句数组。
+ *
+ * 为什么不用 Capacitor SQLite 的 execute(整段 SQL)：Android 端插件按 `;`
+ * 机械切分，CREATE TRIGGER 的 BEGIN...END 体内部分号会把语句截断
+ * （"Execute: incomplete input ... while compiling: CREATE TRIGGER"），
+ * 全新安装建表必然失败。这里自行切分：触发体作为一个整体保留。
+ *
+ * 规则：逐行扫描，忽略 `--` 行注释；
+ *   - CREATE [OR REPLACE] TRIGGER 语句自 BEGIN 起，到单独成行的 END(;) 止；
+ *   - 其余语句以行尾 `;` 结束。
+ */
+export function splitSqlStatements(sql: string): string[] {
+  const statements: string[] = []
+  let current = ''
+  let inTrigger = false
+
+  const push = () => {
+    const trimmed = current.trim()
+    if (trimmed) statements.push(trimmed)
+    current = ''
+  }
+
+  for (const rawLine of sql.split('\n')) {
+    // 分号/边界检测只看去掉行注释后的代码部分
+    const code = rawLine.replace(/--.*$/, '').trim()
+    if (code === '') continue // 空行与纯注释行不进入语句
+    current += rawLine + '\n'
+
+    if (!inTrigger && /^CREATE(\s+OR\s+REPLACE)?\s+TRIGGER/i.test(code)) {
+      inTrigger = true
+    }
+    if (inTrigger) {
+      if (/^END;?$/i.test(code)) {
+        inTrigger = false
+        push()
+      }
+    } else if (code.endsWith(';')) {
+      push()
+    }
+  }
+  push()
+  return statements
+}

@@ -1,0 +1,129 @@
+# =============================================================================
+# opencode-pocket — acc / memora / redclaw 集成部署（本地）
+# =============================================================================
+#
+# 设计目标：
+#   - **PG 实例**：`llm-gateway-pg`（本机已有，kx-citus-pg17 + pgvector）。
+#     与 `kxmemory-rls-pg17` 切换原因：用户要求统一到 llm-gateway-pg
+#     作为共享数据底座（与 acc / memora 长期协作需要单一权威 PG）。
+#     DSN 通过 host.docker.internal:5432（容器在 bridge 上，宿主端口转发）。
+#   - **共享网络**：加入 `acc-local-net`（external）。该网络已挂载：
+#       * llm-gateway-pg       (共享 PG; 旧 kxmemory-rls-pg17 已于 2026-08-18
+#                               合并下线, kaixuan RLS 库迁为 kaixuan_rls)
+#       * nbjl-redis          (Redis)
+#       * acc-go-local        (agent-control-center 的 Go 版本)
+#       * acc-go-proxy        (nginx proxy)
+#   - **跨容器调用**：pocketd → llm-gateway-pg（host.docker.internal:5432）
+#     + acc-go-local（acc-local-net DNS）。
+#   - **kx-base 离线镜像**：后端用 `Dockerfile.kx-base`，需要先
+#     `docker load -i ~/work/docker-base-images/lang-base/kx-base-go-vue-v2-alpine-slim-arm64.tar.gz`
+#     （manifest 标签为 `kx-base:go-vue-optimized`）。
+#
+# 用法：
+#   cd services/opencode-pocket/deploy/acc-integration
+#   cp .env.example .env  # 编辑端口 / secret
+#   ./local-up.sh
+#   ./local-down.sh
+#
+# 端口规划（避免与现有容器冲突）：
+#   - pocketd backend  : 8088 (本机直接访问) → 容器 8088
+#   - frontend (nginx) : 4175 (本机直接访问) → 容器 80
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # pocketd backend (opencode-pocket API server)
+  # ===========================================================================
+  pocketd:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.kx-base
+      network: host
+      args:
+        KX_BASE_TAG: kx-base:go-vue-optimized
+        RUNTIME_BASE_IMAGE: alpine:latest
+    image: opencode-pocket:pocket-acc
+    pull_policy: never
+    container_name: opencode-pocket-pocketd
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # ---- 容器内 DSN（指向本机 llm-gateway-pg，host.docker.internal:5432） ----
+      # llm-gateway-pg 在 bridge 网络上，不在 acc-local-net；通过 host.docker.internal
+      # （compose extra_hosts 已映射 host-gateway）走宿主 127.0.0.1:5432 转发。
+      # 使用 llm-gateway-pg 的 kaixuan DB；pocketd 通过 POCKET_PG_SCHEMA
+      # 默认使用 opencode_pocket schema，与共享库中的其他模块表隔离。
+      # DSN 必须通过本地 .env 提供，禁止把数据库密码提交到仓库。
+      POCKET_POSTGRES_DSN: ${POCKET_POSTGRES_DSN:?set POCKET_POSTGRES_DSN in deploy/acc-integration/.env}
+
+      # ---- 跨容器调用 acc-go（agent-control-center） ----
+      # acc-go 容器名 acc-go-local，监听 4101。pocketd 用作 memora/acc
+      # 协同入口；当前版本该变量未启用（POCKET_BASE_URL 不在 config 中
+      # 出现，预留给 S0-D）。
+      # POCKET_BASE_URL: http://acc-go-local:4101
+
+      # ---- RedClaw 暂时关掉（端点未实现） ----
+      POCKET_REDCLAW_BASE_URL: ""
+
+      # ---- dev mode：自动种子 admin/admin ----
+      POCKET_DEV_AUTH: "true"
+      POCKET_ENV: development
+
+      # ---- 数据 / 配置目录 ----
+      POCKET_DATA_DIR: /app/data
+      POCKET_LOG_LEVEL: info
+    ports:
+      - "${POCKET_HOST_PORT:-8088}:8088"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - acc-local-net
+    volumes:
+      - pocketd_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8088/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 25s
+
+  # ===========================================================================
+  # frontend (nginx serving the Vite-built dist/)
+  # ===========================================================================
+  frontend:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.frontend
+      network: host
+    image: opencode-pocket-frontend:pocket-acc
+    pull_policy: never
+    container_name: opencode-pocket-frontend
+    restart: unless-stopped
+    depends_on:
+      pocketd:
+        condition: service_healthy
+    environment:
+      # VITE_API_BASE 已通过 build 期 .env.ios-dev / .env.android-dev 注入
+      # bundle；容器内 nginx 反代到 pocketd:8088 提供同源体验（避免
+      # 浏览器 CORS）。
+      BACKEND_UPSTREAM: http://pocketd:8088
+    ports:
+      - "${POCKET_FRONTEND_HOST_PORT:-4175}:80"
+    networks:
+      - acc-local-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  pocketd_data:
+    name: opencode-pocket-pocketd-data
+
+networks:
+  acc-local-net:
+    external: true
+    name: acc-local-net

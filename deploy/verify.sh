@@ -41,9 +41,8 @@ check() {
 
 echo "━━━ verify: ${SERVICE_NAME} (env=${ENV}, tag=${TAG}) ━━━"
 
-# 读取端口配置
 DEPLOY_DIR="${SCRIPT_DIR}"
-ENV_FILE="${DEPLOY_DIR}/.env"
+ENV_FILE="${POCKET_DEPLOY_ENV_FILE:-${DEPLOY_DIR}/.env}"
 if [[ ! -f "${ENV_FILE}" ]]; then
   ENV_FILE="${SCRIPT_DIR}/../backend/.env"
 fi

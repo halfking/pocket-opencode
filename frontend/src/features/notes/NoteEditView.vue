@@ -9,8 +9,14 @@
 -->
 <template>
   <div class="note-edit-view">
-    <AppLayout>
-      <div v-if="loading" class="state">加载中…</div>
+          <div v-if="loading" class="state" role="status">加载中…</div>
+
+      <ErrorState
+        v-else-if="loadError"
+        title="笔记加载失败"
+        :message="loadError"
+        @retry="load"
+      />
 
       <form v-else class="edit-form" @submit.prevent="onSave">
         <!-- 标题 -->
@@ -80,23 +86,25 @@
             {{ saving ? '保存中…' : isNew ? '✓ 创建' : '✓ 保存' }}
           </button>
         </div>
+        <p v-if="saveError" class="form-error" role="alert">{{ saveError }}</p>
       </form>
 
       <VoiceRecorderWidget @transcribed="onTranscribed" />
-    </AppLayout>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
 import VoiceRecorderWidget from './VoiceRecorderWidget.vue'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
+import { ErrorState } from '../../components'
+import { useAuthStore } from '../../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 
 const DOMAINS = [
   { value: 'work', label: '工作' },
@@ -109,6 +117,8 @@ type Domain = (typeof DOMAINS)[number]['value']
 
 const loading = ref(true)
 const saving = ref(false)
+const saveError = ref('')
+const loadError = ref('')
 const titleInput = ref<HTMLInputElement | null>(null)
 
 interface FormState {
@@ -147,7 +157,9 @@ function tagsFromArray(tags: string[] | null | undefined): string {
   return tags && tags.length ? tags.join(', ') : ''
 }
 
-onMounted(async () => {
+onMounted(() => load())
+
+async function load() {
   if (isNew.value) {
     loading.value = false
     await focusTitle()
@@ -156,14 +168,17 @@ onMounted(async () => {
 
   // 编辑模式：拉已有笔记数据
   loading.value = true
+  loadError.value = ''
   try {
-    const existing = await notesStore.getNote(routeId.value)
+    const existing = await notesStore.getNote(routeId.value, false, currentWorkspaceId())
     if (existing) hydrate(existing)
+  } catch (e: any) {
+    loadError.value = e?.message || '加载笔记失败，请稍后重试。'
   } finally {
     loading.value = false
     await focusTitle()
   }
-})
+}
 
 function hydrate(n: LocalNote) {
   form.title = n.title || ''
@@ -177,6 +192,10 @@ function hydrate(n: LocalNote) {
 async function focusTitle() {
   await nextTick()
   titleInput.value?.focus()
+}
+
+function currentWorkspaceId(): string {
+  return auth.workspaceId || 'default'
 }
 
 function onTranscribed(result: { text: string; audioPath: string; durationSec: number }) {
@@ -193,6 +212,7 @@ function onTranscribed(result: { text: string; audioPath: string; durationSec: n
 async function onSave() {
   if (!canSave.value || saving.value) return
   saving.value = true
+  saveError.value = ''
 
   const payload = {
     title: form.title.trim() || undefined,
@@ -201,6 +221,7 @@ async function onSave() {
     tags: parseTagsInput(form.tagsInput),
     audioPath: form.audioPath ?? undefined,
     audioDurationMs: form.audioDurationMs,
+    workspaceId: currentWorkspaceId(),
   }
 
   try {
@@ -214,13 +235,14 @@ async function onSave() {
         content: form.content.trim(),
         domain: form.domain,
         tags: parseTagsInput(form.tagsInput),
-      })
+      }, currentWorkspaceId())
       savedId = routeId.value
     }
     router.push(`/notes/${savedId}`)
-  } catch (e) {
+  } catch (e: any) {
     console.warn('[note] 保存失败:', e)
     saving.value = false
+    saveError.value = e?.message || '保存失败，请稍后重试'
   }
 }
 
@@ -294,7 +316,7 @@ function goBack() {
   color: var(--text-secondary);
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background var(--duration-fast), color var(--duration-fast), border-color var(--duration-fast), transform var(--duration-fast);
 }
 .chip:active { transform: scale(0.97); }
 .chip.active { color: var(--text-inverse); border-color: transparent; }
@@ -327,4 +349,15 @@ function goBack() {
   border: none;
 }
 .action-btn.ghost { background: var(--bg-subtle); }
+
+.form-error {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
 </style>

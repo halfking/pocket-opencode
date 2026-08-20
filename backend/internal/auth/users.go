@@ -32,9 +32,24 @@ func NewUserStore(pool *pgxpool.Pool) (*UserStore, error) {
 
 // InsertUser 插入新用户。password 是明文，函数内部 bcrypt hash。
 func (s *UserStore) InsertUser(ctx context.Context, u *User, password string) error {
+	if u == nil {
+		return fmt.Errorf("user cannot be nil")
+	}
+	if u.ID == "" {
+		return fmt.Errorf("user ID cannot be empty")
+	}
+	if u.Username == "" {
+		return fmt.Errorf("username cannot be empty")
+	}
+	if u.Role == "" {
+		return fmt.Errorf("role cannot be empty")
+	}
+	if len(password) < 8 {
+		return fmt.Errorf("password must be at least 8 characters")
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		return fmt.Errorf("bcrypt: %w", err)
+		return fmt.Errorf("bcrypt hash generation failed: %w", err)
 	}
 	if u.CreatedAt == 0 {
 		u.CreatedAt = time.Now().Unix()
@@ -43,11 +58,22 @@ func (s *UserStore) InsertUser(ctx context.Context, u *User, password string) er
 		INSERT INTO users (id, username, password_hash, role, created_at)
 		VALUES ($1, $2, $3, $4, $5)
 	`, u.ID, u.Username, string(hash), u.Role, u.CreatedAt)
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to insert user: %w", err)
+	}
+	return nil
 }
 
 // VerifyPassword 校验用户名/密码，成功返回 User。
+// Returns generic error to prevent username enumeration attacks.
 func (s *UserStore) VerifyPassword(ctx context.Context, username, password string) (*User, error) {
+	if username == "" {
+		return nil, fmt.Errorf("invalid credentials")
+	}
+	if password == "" {
+		return nil, fmt.Errorf("invalid credentials")
+	}
+	
 	var u User
 	var hash string
 	err := s.pool.QueryRow(ctx, `
@@ -55,10 +81,12 @@ func (s *UserStore) VerifyPassword(ctx context.Context, username, password strin
 		FROM users WHERE username = $1
 	`, username).Scan(&u.ID, &u.Username, &hash, &u.Role, &u.CreatedAt)
 	if err != nil {
-		return nil, fmt.Errorf("user not found")
+		// Generic error to prevent username enumeration
+		return nil, fmt.Errorf("invalid credentials")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
-		return nil, fmt.Errorf("invalid password")
+		// Same error message to prevent username enumeration
+		return nil, fmt.Errorf("invalid credentials")
 	}
 	return &u, nil
 }
@@ -67,5 +95,8 @@ func (s *UserStore) VerifyPassword(ctx context.Context, username, password strin
 func (s *UserStore) CountUsers(ctx context.Context) (int, error) {
 	var count int
 	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM users`).Scan(&count)
-	return count, err
+	if err != nil {
+		return 0, fmt.Errorf("failed to count users: %w", err)
+	}
+	return count, nil
 }

@@ -1,0 +1,22 @@
+2026/07/07 11:50:26 WARN: POCKET_POSTGRES_DSN not set, running in remote-only mode (no local task cache)
+2026/07/07 11:50:26 Dev mode: JWT signer initialized without user store (login disabled)
+2026/07/07 11:50:26 WARNING: POCKET_GROQ_API_KEY not set; STT cloud fallback disabled
+2026/07/07 11:50:26 ACC MCP client configured: https://mcp.kxpms.cn/acc/mcp
+2026/07/07 11:50:26 WARNING: POCKET_EMBED_API_KEY not set; /api/embed disabled
+2026/07/07 11:50:26 WARNING: POCKET_LLM_API_KEY not set; /api/llm/chat disabled
+2026/07/07 11:50:26 INFO: POCKET_KXMEMORY_BASE_URL not set; AI classification/SSOT disabled
+2026/07/07 11:50:26 Using NPS Web API adapter: https://mcp.kxpms.cn/acc
+2026/07/07 11:50:26 Using OpenCode HTTP adapter (timeout: 10000ms)
+2026/07/07 11:50:26 OpenCode domain managers wired: eventMgr + permMgr + quesMgr + ocMgr (refreshStatus 30s)
+2026/07/07 11:50:26 [tasksync] disabled (mcpClient or taskStore not configured)
+2026/07/07 11:50:26 ✅ 启动 OpenCode 实例自动发现（间隔: 1m0s）
+2026/07/07 11:50:26 [PluginHub] Starting...
+2026/07/07 11:50:26 pocketd listening on :8088
+2026/07/07 11:52:09 Loaded version config: v1.2.0 build 2 from config/version.json
+2026/07/07 11:52:10 [mcp] fetch ACC tasks failed: acc_get_tasks failed: MCP not initialized: initialize failed: HTTP 404: {"error":"Not Found"}
+2026/07/07 11:52:37 [mcp] fetch ACC tasks failed: acc_get_tasks failed: MCP not initialized: initialize failed: HTTP 404: {"error":"Not Found"}
+2026/07/07 12:12:04 [mcp] fetch ACC tasks failed: acc_get_tasks failed: MCP not initialized: initialize failed: HTTP 404: {"error":"Not Found"}
+2026/07/07 12:12:09 [mcp] fetch ACC tasks failed: acc_get_tasks failed: MCP not initialized: initialize failed: HTTP 404: {"error":"Not Found"}
+2026/07/07 12:12:12 [mcp] fetch ACC tasks failed: acc_get_tasks failed: MCP not initialized: initialize failed: HTTP 404: {"error":"Not Found"}
+2026/07/07 12:18:12 Loaded version config: v1.2.0 build 2 from config/version.json
+2026/07/07 12:18:12 [mcp] fetch ACC tasks failed: acc_get_tasks failed: MCP not initialized: initialize failed: HTTP 404: {"error":"Not Found"}

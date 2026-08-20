@@ -9,6 +9,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
+	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
 
 // QuestionManager orchestrates the question-request lifecycle for the mobile
@@ -37,6 +38,7 @@ type QuestionManager struct {
 	closeCh chan struct{}
 
 	pollInterval time.Duration
+	projector    approvalProjectionSink
 }
 
 type pendingQuestion struct {
@@ -49,13 +51,13 @@ type pendingQuestion struct {
 
 // QuestionEvent is emitted to subscribers on state changes.
 type QuestionEvent struct {
-	Type       string                    `json:"type"` // "new" | "resolved" | "rejected" | "expired"
-	InstanceID string                    `json:"instanceId"`
-	SessionID  string                    `json:"sessionId"`
-	RequestID  string                    `json:"requestId,omitempty"`
-	Request    *adapter.QuestionRequest  `json:"request,omitempty"`
-	Answers    []adapter.QuestionAnswer  `json:"answers,omitempty"`
-	Timestamp  time.Time                 `json:"timestamp"`
+	Type       string                   `json:"type"` // "new" | "resolved" | "rejected" | "expired"
+	InstanceID string                   `json:"instanceId"`
+	SessionID  string                   `json:"sessionId"`
+	RequestID  string                   `json:"requestId,omitempty"`
+	Request    *adapter.QuestionRequest `json:"request,omitempty"`
+	Answers    []adapter.QuestionAnswer `json:"answers,omitempty"`
+	Timestamp  time.Time                `json:"timestamp"`
 }
 
 // QuestionManagerOptions configures the manager.
@@ -79,6 +81,11 @@ func NewQuestionManager(reg *registry.Registry, ad adapter.OpenCodeAdapter, opts
 		closeCh:      make(chan struct{}),
 		pollInterval: interval,
 	}
+}
+
+// SetApprovalProjector installs the synchronous durable projection sink.
+func (m *QuestionManager) SetApprovalProjector(projector approvalProjectionSink) {
+	m.projector = projector
 }
 
 // Subscribe returns a channel of question events and a cleanup function.
@@ -183,9 +190,8 @@ func (m *QuestionManager) handleQuestionEvent(evt DomainEvent) {
 		}
 
 	case "question.answered", "question.rejected":
-		// 问题已回答/拒绝
 		if data, ok := evt.Raw.Data.(map[string]any); ok {
-			m.handleResolvedQuestionFromEvent(evt.InstanceID, sessionID, data)
+			m.handleQuestionOutcomeFromEvent(evt.InstanceID, sessionID, data, evt.Type)
 		}
 	}
 }
@@ -257,18 +263,25 @@ func (m *QuestionManager) handleNewQuestionFromEvent(instanceID, sessionID strin
 
 	log.Printf("[question-mgr] new question from event: instance=%s session=%s request=%s", instanceID, sessionID, requestID)
 
-	m.publish(QuestionEvent{
+	evt := QuestionEvent{
 		Type:       "new",
 		InstanceID: instanceID,
 		SessionID:  sessionID,
 		RequestID:  requestID,
 		Request:    &req,
 		Timestamp:  now,
-	})
+	}
+	if err := m.publish(evt); err != nil {
+		m.mu.Lock()
+		delete(m.pending, key)
+		m.mu.Unlock()
+		log.Printf("[question-mgr] persist new question projection failed: %v", err)
+	}
 }
 
-// handleResolvedQuestionFromEvent 从事件中处理已解决的问题
-func (m *QuestionManager) handleResolvedQuestionFromEvent(instanceID, sessionID string, data map[string]any) {
+// handleQuestionOutcomeFromEvent persists the upstream outcome even after a
+// process restart, when the in-memory pending map no longer has the request.
+func (m *QuestionManager) handleQuestionOutcomeFromEvent(instanceID, sessionID string, data map[string]any, outcome string) {
 	requestID, _ := data["id"].(string)
 	if requestID == "" {
 		requestID, _ = data["requestID"].(string)
@@ -276,26 +289,31 @@ func (m *QuestionManager) handleResolvedQuestionFromEvent(instanceID, sessionID 
 	if requestID == "" {
 		return
 	}
-
 	key := permissionKey(instanceID, sessionID, requestID)
-
+	m.mu.RLock()
+	_, wasPending := m.pending[key]
+	m.mu.RUnlock()
+	eventType := "resolved"
+	if outcome == "question.rejected" {
+		eventType = "rejected"
+	}
+	evt := QuestionEvent{Type: eventType, InstanceID: instanceID, SessionID: sessionID, RequestID: requestID, Timestamp: time.Now()}
+	if err := m.publish(evt); err != nil {
+		log.Printf("[question-mgr] persist %s question projection failed: %v", outcome, err)
+		return
+	}
 	m.mu.Lock()
-	q, ok := m.pending[key]
-	if ok {
-		delete(m.pending, key)
-	}
+	delete(m.pending, key)
 	m.mu.Unlock()
-
-	if ok && q != nil {
-		log.Printf("[question-mgr] resolved question from event: instance=%s session=%s request=%s", instanceID, sessionID, requestID)
-		m.publish(QuestionEvent{
-			Type:       "resolved",
-			InstanceID: instanceID,
-			SessionID:  sessionID,
-			RequestID:  requestID,
-			Timestamp:  time.Now(),
-		})
+	if wasPending {
+		log.Printf("[question-mgr] %s question from event: instance=%s session=%s request=%s", outcome, instanceID, sessionID, requestID)
 	}
+}
+
+// handleResolvedQuestionFromEvent keeps the internal helper used by existing
+// callers that do not retain an upstream event type.
+func (m *QuestionManager) handleResolvedQuestionFromEvent(instanceID, sessionID string, data map[string]any) {
+	m.handleQuestionOutcomeFromEvent(instanceID, sessionID, data, "question.answered")
 }
 
 // startPolling 轮询模式 - 兼容无 EventStreamManager 的场景
@@ -374,18 +392,12 @@ func (m *QuestionManager) Reply(ctx context.Context, instanceID, sessionID, requ
 	}
 
 	key := permissionKey(instanceID, sessionID, requestID)
+	if err := m.publish(QuestionEvent{Type: "resolved", InstanceID: instanceID, SessionID: sessionID, RequestID: requestID, Answers: answers, Timestamp: time.Now()}); err != nil {
+		return fmt.Errorf("persist question resolution: %w", err)
+	}
 	m.mu.Lock()
 	delete(m.pending, key)
 	m.mu.Unlock()
-
-	m.publish(QuestionEvent{
-		Type:       "resolved",
-		InstanceID: instanceID,
-		SessionID:  sessionID,
-		RequestID:  requestID,
-		Answers:    answers,
-		Timestamp:  time.Now(),
-	})
 
 	return nil
 }
@@ -407,24 +419,75 @@ func (m *QuestionManager) Reject(ctx context.Context, instanceID, sessionID, req
 	}
 
 	key := permissionKey(instanceID, sessionID, requestID)
+	if err := m.publish(QuestionEvent{Type: "rejected", InstanceID: instanceID, SessionID: sessionID, RequestID: requestID, Timestamp: time.Now()}); err != nil {
+		return fmt.Errorf("persist question rejection: %w", err)
+	}
 	m.mu.Lock()
 	delete(m.pending, key)
 	m.mu.Unlock()
 
-	m.publish(QuestionEvent{
-		Type:       "rejected",
-		InstanceID: instanceID,
-		SessionID:  sessionID,
-		RequestID:  requestID,
-		Timestamp:  time.Now(),
-	})
-
 	return nil
 }
 
-// =============================================================================
-// Internal
-// =============================================================================
+// ReplyForWorkspace forwards a validated question reply for an instance owned
+// by workspaceID. Shared instances are read-only for tenant callers.
+func (m *QuestionManager) ReplyForWorkspace(ctx context.Context, workspaceID, instanceID, sessionID, requestID string, answers []adapter.QuestionAnswer) error {
+	caller, ok := m.adapter.(QuestionCaller)
+	if !ok {
+		return fmt.Errorf("adapter %T does not support question operations", m.adapter)
+	}
+	if !m.hasPending(instanceID, sessionID, requestID) {
+		return fmt.Errorf("question request not pending")
+	}
+	baseURL, err := m.registry.GetWritableInstanceAPIBaseForWorkspace(workspaceID, instanceID)
+	if err != nil {
+		return fmt.Errorf("resolve writable instance base URL: %w", err)
+	}
+	if err := caller.ReplyQuestion(ctx, baseURL, sessionID, requestID, answers); err != nil {
+		return fmt.Errorf("reply question: %w", err)
+	}
+	key := permissionKey(instanceID, sessionID, requestID)
+	if err := m.publish(QuestionEvent{Type: "resolved", InstanceID: instanceID, SessionID: sessionID, RequestID: requestID, Answers: answers, Timestamp: time.Now()}); err != nil {
+		return fmt.Errorf("persist question resolution: %w", err)
+	}
+	m.mu.Lock()
+	delete(m.pending, key)
+	m.mu.Unlock()
+	return nil
+}
+
+// RejectForWorkspace rejects a validated question request for an owned instance.
+func (m *QuestionManager) RejectForWorkspace(ctx context.Context, workspaceID, instanceID, sessionID, requestID string) error {
+	caller, ok := m.adapter.(QuestionCaller)
+	if !ok {
+		return fmt.Errorf("adapter %T does not support question operations", m.adapter)
+	}
+	if !m.hasPending(instanceID, sessionID, requestID) {
+		return fmt.Errorf("question request not pending")
+	}
+	baseURL, err := m.registry.GetWritableInstanceAPIBaseForWorkspace(workspaceID, instanceID)
+	if err != nil {
+		return fmt.Errorf("resolve writable instance base URL: %w", err)
+	}
+	if err := caller.RejectQuestion(ctx, baseURL, sessionID, requestID); err != nil {
+		return fmt.Errorf("reject question: %w", err)
+	}
+	key := permissionKey(instanceID, sessionID, requestID)
+	if err := m.publish(QuestionEvent{Type: "rejected", InstanceID: instanceID, SessionID: sessionID, RequestID: requestID, Timestamp: time.Now()}); err != nil {
+		return fmt.Errorf("persist question rejection: %w", err)
+	}
+	m.mu.Lock()
+	delete(m.pending, key)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *QuestionManager) hasPending(instanceID, sessionID, requestID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.pending[permissionKey(instanceID, sessionID, requestID)]
+	return ok
+}
 
 func (m *QuestionManager) pollAllInstances(ctx context.Context) {
 	instances := m.registry.ListInstances()
@@ -478,14 +541,19 @@ func (m *QuestionManager) pollInstance(ctx context.Context, instanceID string) {
 		}
 		m.mu.Unlock()
 
-		m.publish(QuestionEvent{
+		if err := m.publish(QuestionEvent{
 			Type:       "new",
 			InstanceID: instanceID,
 			SessionID:  req.SessionID,
 			RequestID:  req.ID,
 			Request:    &req,
 			Timestamp:  now,
-		})
+		}); err != nil {
+			m.mu.Lock()
+			delete(m.pending, key)
+			m.mu.Unlock()
+			log.Printf("[question-mgr] persist polled question projection failed: %v", err)
+		}
 	}
 
 	m.mu.Lock()
@@ -501,20 +569,25 @@ func (m *QuestionManager) pollInstance(ctx context.Context, instanceID string) {
 	m.mu.Unlock()
 
 	for _, key := range expired {
-		m.mu.Lock()
+		m.mu.RLock()
 		q := m.pending[key]
-		delete(m.pending, key)
-		m.mu.Unlock()
+		m.mu.RUnlock()
 		if q == nil {
 			continue
 		}
-		m.publish(QuestionEvent{
+		if err := m.publish(QuestionEvent{
 			Type:       "expired",
 			InstanceID: q.InstanceID,
 			SessionID:  q.SessionID,
 			RequestID:  q.Request.ID,
 			Timestamp:  time.Now(),
-		})
+		}); err != nil {
+			log.Printf("[question-mgr] persist expired question projection failed: %v", err)
+			continue
+		}
+		m.mu.Lock()
+		delete(m.pending, key)
+		m.mu.Unlock()
 	}
 }
 
@@ -532,7 +605,30 @@ func (m *QuestionManager) fetchPending(ctx context.Context, caller QuestionCalle
 	return nil, nil
 }
 
-func (m *QuestionManager) publish(evt QuestionEvent) {
+func (m *QuestionManager) projectApprovalEvent(evt QuestionEvent) error {
+	if m.projector == nil {
+		return nil
+	}
+	state := task.ApprovalStateResolved
+	switch evt.Type {
+	case "new":
+		state = task.ApprovalStatePending
+	case "resolved":
+		state = task.ApprovalStateAnswered
+	case "rejected":
+		state = task.ApprovalStateRejected
+	case "expired":
+		state = task.ApprovalStateExpired
+	default:
+		return nil
+	}
+	return m.projector.apply(context.Background(), task.ApprovalKindQuestion, state, evt.InstanceID, evt.SessionID, evt.RequestID, "")
+}
+
+func (m *QuestionManager) publish(evt QuestionEvent) error {
+	if err := m.projectApprovalEvent(evt); err != nil {
+		return err
+	}
 	m.subsMu.RLock()
 	defer m.subsMu.RUnlock()
 	for _, ch := range m.subs {
@@ -542,4 +638,5 @@ func (m *QuestionManager) publish(evt QuestionEvent) {
 			log.Printf("[question-mgr] dropping event for subscriber (buffer full)")
 		}
 	}
+	return nil
 }

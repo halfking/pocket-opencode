@@ -11,7 +11,8 @@
  * 架构定位：见 docs/2026-07-02-lobster-local-storage-design.md
  */
 import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacitor-community/sqlite'
-import { SCHEMA_SQL } from './schema'
+import { SCHEMA_SQL, splitSqlStatements } from './schema'
+import type { SqlDb } from './sqlDb'
 
 const MEETINGS_V2_COLUMNS = [
   { table: 'local_meetings', column: 'location', sql: 'ALTER TABLE local_meetings ADD COLUMN location TEXT' },
@@ -26,7 +27,7 @@ const MEETINGS_V2_COLUMNS = [
 ]
 
 const DB_NAME = 'lobster'
-const DB_VERSION = 1
+const DB_VERSION = 2
 
 /**
  * LocalDB 是前端唯一访问本地数据库的入口。所有 feature store（notes/emails/...）
@@ -97,13 +98,17 @@ class LocalDB {
     )
     await this.conn.open()
 
-    // 建表（幂等 CREATE IF NOT EXISTS）
-    await this.conn.execute(SCHEMA_SQL, false)
+// 建表（幂等 CREATE IF NOT EXISTS）。不能把整段 SCHEMA_SQL 交给
+    // conn.execute：Android 插件按 `;` 切分会截断 CREATE TRIGGER 的
+    // BEGIN...END 体。自行切分后走 executeSet 单事务建表。
+    const ddl = splitSqlStatements(SCHEMA_SQL).map((statement) => ({ statement, values: [] }))
+    await this.conn.executeSet(ddl, true)
 
-    // 增量迁移（已有库补列）
+    // 增量迁移（已有库补列；in-progress meeting work）
     await this.runMeetingsV2Migration()
 
     this.initialized = true
+    await this.ensureSchemaMigrations()
   }
 
   /** 会议模块 v2：为旧库补列，列已存在则跳过 */
@@ -237,6 +242,38 @@ class LocalDB {
     }
   }
 
+  private async ensureSchemaMigrations(): Promise<void> {
+    await this.conn!.execute(`
+      CREATE TABLE IF NOT EXISTS local_schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      )
+    `, false)
+
+    const applied = await this.query<{ version: number }>(
+      'SELECT version FROM local_schema_migrations ORDER BY version',
+    )
+    const versions = new Set(applied.map((row) => Number(row.version)))
+
+    // v2: existing installations need the field-encryption marker. New installs
+    // already receive it from SCHEMA_SQL, so duplicate-column errors are avoided.
+    if (!versions.has(2)) {
+      const columns = await this.query<{ name: string }>(
+        'PRAGMA table_info(local_notes)',
+      )
+      if (!columns.some((column) => column.name === 'encrypted_content')) {
+        await this.conn!.execute(
+          'ALTER TABLE local_notes ADD COLUMN encrypted_content INTEGER NOT NULL DEFAULT 1',
+          false,
+        )
+      }
+      await this.run(
+        'INSERT INTO local_schema_migrations (version, applied_at) VALUES (?, ?)',
+        [2, Date.now()],
+      )
+    }
+  }
+
   private requireReady() {
     if (!this.initialized || !this.conn) {
       throw new Error('LocalDB 未初始化，请先调用 init(dbSecret)')
@@ -246,3 +283,15 @@ class LocalDB {
 
 /** 单例。全 App 共享一个本地加密库连接。 */
 export const localDB = new LocalDB()
+
+/**
+ * LocalDB → SqlDb 接口适配（query 即 all）。
+ * 离线持久化模块（outbox / mobileSync / approvalStore）面向 SqlDb 编程，
+ * App 侧用这个适配器把单例 LocalDB 传入，Node 测试用 node:sqlite 实现同接口。
+ */
+export function localDbAsSql(db: LocalDB = localDB): SqlDb {
+  return {
+    run: (sql, params) => db.run(sql, params),
+    all: (sql, params) => db.query(sql, params),
+  }
+}

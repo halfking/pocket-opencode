@@ -13,35 +13,76 @@
  */
 import { onMounted, onBeforeUnmount, ref, nextTick, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
-import { useSessionStore, type ToolContent } from '../../stores/session'
-import { useVoiceInput } from '../../composables/useVoiceInput'
-import { createScrollHideChrome } from '../../composables/useScrollHideChrome'
+import { useSessionStore } from '../../stores/session'
+import { useVoiceRecording } from '../../composables/useVoiceRecording'
+import { useToast } from '../../composables/useToast'
+import { useSpeech } from '../../composables/useSpeech'
+import { renderMarkdown } from '../../utils/markdown'
+import { useFeatureFlag } from '../../config/featureFlags'
+import { usePendingApprovals } from '../../composables/usePendingApprovals'
+import { ApprovalBottomSheet, type ApprovalDecision } from '../../components'
 import ApprovalPanel from './ApprovalPanel.vue'
+import DiffBlock from '../../components/business/DiffBlock.vue'
+import { extractDiffText } from '../../utils/diffParse'
+
+// 模板里 v-if 与 :diff 各取一次：对 64KB 输出跑两次提取，长会话反复渲染时
+// 开销翻倍。按 output 身份缓存（对象用 WeakMap，字符串用有界 Map）。
+const diffTextCache = new WeakMap<object, string | null>()
+const stringDiffCache = new Map<string, boolean>()
+
+function cachedDiffText(output: unknown): string | null {
+  if (output && typeof output === 'object') {
+    if (!diffTextCache.has(output)) diffTextCache.set(output, extractDiffText(output))
+    return diffTextCache.get(output) ?? null
+  }
+  if (typeof output !== 'string') return null
+  if (!stringDiffCache.has(output)) {
+    if (stringDiffCache.size >= 256) stringDiffCache.clear()
+    stringDiffCache.set(output, Boolean(extractDiffText(output)))
+  }
+  return stringDiffCache.get(output) ? output : null
+}
+
+const emit = defineEmits<{ close: [] }>()
+
+const props = withDefaults(defineProps<{
+  embedded?: boolean
+  sessionId?: string
+  instanceId?: string
+  title?: string
+}>(), {
+  embedded: false,
+  sessionId: '',
+  instanceId: '',
+  title: '',
+})
 
 const route = useRoute()
 const router = useRouter()
 const store = useSessionStore()
-const { isRecording, isTranscribing, sttError, startRecording, stopRecording } = useVoiceInput()
+const toast = useToast()
+const { supported: speechSupported, speakingId, speak: speakMessage } = useSpeech()
 
-const sessionID = computed(() => route.params.id as string)
-const instanceID = computed(() => (route.query.instance_id as string) || localStorage.getItem('selected_instance_id') || '')
-const initialTitle = computed(() => (route.query.title as string) || '')
+const sessionID = computed(() => props.sessionId || (route.params.id as string) || '')
+const instanceID = computed(() => props.instanceId || (route.query.instance_id as string) || localStorage.getItem('selected_instance_id') || '')
+const initialTitle = computed(() => props.title || (route.query.title as string) || '')
 
 const inputText = ref('')
 const sending = ref(false)
 const messagesEl = ref<HTMLElement | null>(null)
-const headerRef = ref<HTMLElement | null>(null)
-const chromeHeight = ref(56)
 const autoScroll = ref(true)
-const expandedMessages = ref<Set<string>>(new Set())
-const COLLAPSE_LINE_THRESHOLD = 20
 
-const chrome = createScrollHideChrome(() => chromeHeight.value)
-const chromeShellStyle = computed(() => ({
-  transform: `translate3d(0, -${chrome.hiddenOffset.value}px, 0)`,
-}))
+const { isRecording, transcribing, toggleRecording } = useVoiceRecording({
+  onTranscribed(text) {
+    // Append with a space if user already has text; otherwise replace.
+    inputText.value = inputText.value
+      ? `${inputText.value.trimEnd()} ${text}`
+      : text
+  },
+  onError(msg) {
+    toast.error(msg)
+  },
+})
 
 const selectedInstance = computed(() => {
   try {
@@ -61,16 +102,19 @@ const sessionTitle = computed(() => {
 
 onMounted(async () => {
   if (!instanceID.value) {
+    // 没有 instance — 回到实例选择
     router.replace('/instances')
     return
   }
-  chromeHeight.value = headerRef.value?.offsetHeight ?? 56
   await store.open(sessionID.value, instanceID.value, initialTitle.value)
   await nextTick()
   scrollToBottom(true)
+  // 审批 Bottom Sheet（feature flag 暗Launch）：进入会话即查一次 pending 并轮询。
+  if (approvalSheetEnabled) startApprovalPolling()
 })
 
 onBeforeUnmount(() => {
+  stopApprovalPolling()
   store.close()
 })
 
@@ -82,14 +126,10 @@ async function scrollToBottom(force = false) {
   }
 }
 
-let lastMsgScrollTop = 0
+// 用户上滚 → 暂停自动滚动；触底 → 恢复
 function onScroll() {
   if (!messagesEl.value) return
   const el = messagesEl.value
-  const delta = el.scrollTop - lastMsgScrollTop
-  lastMsgScrollTop = el.scrollTop
-  chrome.reportScroll({ scrollTop: el.scrollTop, delta })
-
   const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
   autoScroll.value = distanceToBottom < 50
 }
@@ -109,62 +149,91 @@ async function send() {
   }
 }
 
-// ── Voice Recording ──
-async function toggleVoice() {
-  if (isRecording.value) {
-    const text = await stopRecording()
-    if (text) inputText.value = text
+// ── Voice Recording (via composable) ──
+const toggleVoice = toggleRecording
+
+// ── Pending approvals（08 §3.3 / §4.5：服务端确认前不显示已批准） ──
+const approvalSheetEnabled = useFeatureFlag('approval.bottom_sheet_v1')
+const serverConfirmRequired = useFeatureFlag('approval.server_confirm_required')
+const {
+  pendingPermissions,
+  loadError: approvalsError,
+  refresh: refreshApprovals,
+  reply: replyApproval,
+  startPolling: startApprovalPolling,
+  stopPolling: stopApprovalPolling,
+} = usePendingApprovals({
+  instanceId: () => instanceID.value,
+  sessionId: () => sessionID.value,
+})
+
+/** 用户手动关闭过、且尚未做出决定的请求不再重复弹出。 */
+const dismissedApprovalIds = ref<Set<string>>(new Set())
+const approvalSubmitting = ref(false)
+const approvalServerConfirmed = ref<boolean | null>(null)
+
+const currentApproval = computed(
+  () => pendingPermissions.value.find((p) => !dismissedApprovalIds.value.has(p.id)) ?? null,
+)
+const approvalSheetVisible = computed(() => approvalSheetEnabled && currentApproval.value !== null)
+const approvalSheetModel = computed({
+  get: () => approvalSheetVisible.value,
+  set: (v: boolean) => {
+    if (!v) dismissCurrentApproval()
+  },
+})
+
+const approvalAction = computed(() =>
+  currentApproval.value ? `调用工具：${currentApproval.value.action}` : '',
+)
+const approvalSource = computed(() =>
+  currentApproval.value
+    ? `${selectedInstance.value?.displayName || instanceID.value} · 会话 ${sessionID.value.slice(0, 8)}`
+    : '',
+)
+const approvalScope = computed(() => (currentApproval.value?.resources ?? []).join(' · '))
+const approvalDetails = computed(() => {
+  const req = currentApproval.value
+  if (!req) return ''
+  const lines: string[] = []
+  if (req.resources?.length) lines.push(`目标资源：\n${req.resources.join('\n')}`)
+  if (req.save?.length) lines.push(`持久化范围（始终允许）：\n${req.save.join('\n')}`)
+  return lines.join('\n\n')
+})
+
+function dismissCurrentApproval(): void {
+  const req = currentApproval.value
+  if (!req) return
+  const next = new Set(dismissedApprovalIds.value)
+  next.add(req.id)
+  dismissedApprovalIds.value = next
+  approvalServerConfirmed.value = null
+}
+
+async function onApprovalDecision(decision: ApprovalDecision): Promise<void> {
+  const req = currentApproval.value
+  if (!req || approvalSubmitting.value) return
+  approvalSubmitting.value = true
+  approvalServerConfirmed.value = null
+  const status = await replyApproval(req.id, decision)
+  approvalSubmitting.value = false
+
+  if (status === 'confirmed') {
+    approvalServerConfirmed.value = serverConfirmRequired ? true : null
+    toast.success('已授权')
+    setTimeout(dismissCurrentApproval, 800)
+  } else if (status === 'queued-offline') {
+    // 离线：已入待发送队列，服务端确认前不显示"已批准"（serverConfirmed=false）。
+    approvalServerConfirmed.value = serverConfirmRequired ? false : null
+    toast.info('当前离线，决定已保存，联网后自动发送')
+    setTimeout(dismissCurrentApproval, 1600)
+  } else if (status === 'conflict') {
+    toast.error('该审批请求已过期或已在别处处理')
+    dismissCurrentApproval()
   } else {
-    await startRecording()
+    // 发送失败：保留请求与 Sheet，可重试（08 §3.3）。
+    toast.error('审批发送失败，请重试')
   }
-}
-
-// ── Markdown rendering ──
-function renderMarkdown(text: string): string {
-  const out = marked.parse(text, { async: false })
-  const html = typeof out === 'string' ? out : ''
-  return DOMPurify.sanitize(html, {
-    ALLOWED_TAGS: [
-      'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-      'p', 'br', 'strong', 'em', 'u', 'del', 's',
-      'a', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code',
-      'table', 'thead', 'tbody', 'tr', 'th', 'td', 'hr', 'div', 'span',
-    ],
-    ALLOWED_ATTR: ['href', 'target', 'rel', 'class'],
-  })
-}
-
-function lineCount(text: string): number {
-  return text.split('\n').length
-}
-
-function isLongMessage(msg: { text: string }): boolean {
-  return lineCount(msg.text) > COLLAPSE_LINE_THRESHOLD
-}
-
-function isCollapsed(msg: { id: string; text: string }): boolean {
-  return isLongMessage(msg) && !expandedMessages.value.has(msg.id)
-}
-
-function toggleCollapse(id: string) {
-  const s = new Set(expandedMessages.value)
-  if (s.has(id)) s.delete(id)
-  else s.add(id)
-  expandedMessages.value = s
-}
-
-function truncateOutput(val: unknown, maxLen = 300): string {
-  const str = typeof val === 'string' ? val : JSON.stringify(val, null, 2)
-  if (str.length <= maxLen) return str
-  return str.slice(0, maxLen) + '…'
-}
-
-function toolDuration(c: ToolContent): string {
-  // 工具卡片暂无精确耗时字段，用状态作占位
-  if (c.state === 'running') return '执行中'
-  if (c.state === 'completed') return '已完成'
-  if (c.state === 'error') return '失败'
-  return '等待'
 }
 
 async function stop() {
@@ -194,18 +263,146 @@ function goBack() {
     router.push('/ai')
   }
 }
+
+// ── Markdown rendering (assistant messages) ──
+// Local set tracks which long messages the user has expanded. We deliberately
+// do NOT mutate the store's Message objects (Pinia prefers explicit state).
+const LONG_LINE_THRESHOLD = 20
+const PREVIEW_LINE_COUNT = 5
+const PREVIEW_CHAR_LIMIT = 280
+const expandedIds = ref<Set<string>>(new Set())
+
+function isLong(msg: { text?: string }): boolean {
+  if (!msg?.text) return false
+  const lines = String(msg.text).split('\n').length
+  return lines > LONG_LINE_THRESHOLD || msg.text.length > PREVIEW_CHAR_LIMIT * 2
+}
+
+function isExpanded(id: string): boolean {
+  return expandedIds.value.has(id)
+}
+
+function previewText(text: string): string {
+  const lines = text.split('\n').slice(0, PREVIEW_LINE_COUNT).join('\n')
+  if (lines.length > PREVIEW_CHAR_LIMIT) {
+    return lines.slice(0, PREVIEW_CHAR_LIMIT) + '…'
+  }
+  return lines + '…'
+}
+
+function renderedHtml(msg: { text?: string }): string {
+  return renderMarkdown(msg.text || '')
+}
+
+function toggleExpanded(id: string) {
+  const next = new Set(expandedIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedIds.value = next
+}
+
+// ── JSON pretty printing (with basic HTML escape) ──
+// We tokenize carefully so quoted strings inside string values aren't
+// accidentally re-colored. The strategy: alternate between string and
+// non-string contexts starting from the first opening quote after `{`,
+// `[`, or `,`.
+function renderJson(value: any): string {
+  let json: string
+  try {
+    json = JSON.stringify(value, null, 2)
+  } catch {
+    json = String(value)
+  }
+  // First, full HTML escape.
+  let out = json
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+  // Walk character-by-character to label only "real" JSON strings:
+  // a `"` at the start, or after `:` / `[` / `,`, is a value/key opening.
+  // Inside a string we just escape & keep raw. The next unescaped `"` closes it.
+  let i = 0
+  let result = ''
+  let inStr = false
+  while (i < out.length) {
+    const ch = out[i]
+    if (inStr) {
+      if (ch === '\\' && i + 1 < out.length) {
+        // pass through escape sequence verbatim
+        result += ch + out[i + 1]
+        i += 2
+        continue
+      }
+      if (ch === '"') {
+        inStr = false
+        result += ch
+        i++
+        continue
+      }
+      result += ch
+      i++
+      continue
+    }
+    // not in string
+    if (ch === '"') {
+      // peek context — string is a JSON string if preceded by `{`, `[`, `,`, or `:`
+      const prev = result.trimEnd().slice(-1)
+      const isJsonString = prev === '{' || prev === '[' || prev === ',' || prev === ':'
+      inStr = true
+      if (isJsonString) {
+        // decide color: if previous non-whitespace char is `:`, this is a value; else a key
+        const trimmed = result.trimEnd()
+        const isValue = trimmed.endsWith(':')
+        const cls = isValue ? 'json-str' : 'json-key'
+        result += `<span class="${cls}">`
+        // find closing quote
+        let j = i + 1
+        while (j < out.length) {
+          const c = out[j]
+          if (c === '\\' && j + 1 < out.length) { j += 2; continue }
+          if (c === '"') break
+          j++
+        }
+        result += out.slice(i, j + 1)
+        result += '</span>'
+        inStr = false
+        i = j + 1
+        continue
+      } else {
+        // not a JSON string (shouldn't happen after escape, but fallback)
+        result += ch
+        i++
+      }
+      continue
+    }
+    result += ch
+    i++
+  }
+  out = result
+
+  // Color numbers, booleans, null at value positions (after `:` or `[` or `,`).
+  out = out.replace(/([\[\,:]\s*)(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\b/g, '$1<span class="json-num">$2</span>')
+  out = out.replace(/([\[\,:]\s*)(true|false|null)\b/g, '$1<span class="json-bool">$2</span>')
+  return out
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`
+}
 </script>
 
 <template>
-  <div class="session-view">
-    <div
-      ref="headerRef"
-      class="chrome-shell"
-      :class="{ 'is-snapping': chrome.snapping }"
-      :style="chromeShellStyle"
-    >
-      <header class="top-bar">
-      <button class="back-btn" @click="goBack" aria-label="返回">
+  <div class="session-view" :class="{ embedded: props.embedded }">
+    <!-- Top Bar -->
+    <header class="top-bar">
+      <!-- 嵌入双栏时底导隐藏，关闭按钮是详情态的唯一退出路径（08 §2.2）。 -->
+      <button v-if="props.embedded" class="back-btn" @click="emit('close')" aria-label="关闭会话详情">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+      <button v-if="!props.embedded" class="back-btn" @click="goBack" aria-label="返回">
         <span class="material-symbols-outlined">arrow_back</span>
       </button>
       <div class="title-block">
@@ -232,16 +429,10 @@ function goBack() {
         <span class="material-symbols-outlined">stop_circle</span>
       </button>
       <div v-else class="top-spacer"></div>
-      </header>
-    </div>
+    </header>
 
     <!-- Messages -->
-    <main
-      ref="messagesEl"
-      class="messages"
-      :style="{ paddingTop: chromeHeight + 'px' }"
-      @scroll="onScroll"
-    >
+    <main ref="messagesEl" class="messages" @scroll="onScroll">
       <div v-if="store.messages.length === 0" class="empty">
         <div class="empty-icon">💬</div>
         <p class="empty-text">开始一个新的对话</p>
@@ -263,17 +454,35 @@ function goBack() {
         <template v-else-if="msg.role === 'assistant'">
           <div class="avatar assistant-avatar">AI</div>
           <div class="bubble assistant-bubble">
-            <div v-if="msg.text" class="text-content" :class="{ collapsed: isCollapsed(msg) }">
-              <div class="md-body" v-html="renderMarkdown(msg.text)" />
+            <div v-if="msg.text" class="text-content markdown-body">
+              <span v-if="isLong(msg)" class="caret-line"> </span>
+              <div v-if="!isExpanded(msg.id) && isLong(msg)" class="collapsed">
+                {{ previewText(msg.text) }}
+              </div>
+              <!-- eslint-disable-next-line vue/no-v-html -->
+              <div
+                v-else
+                class="rendered"
+                v-html="renderedHtml(msg)"
+              ></div>
               <span v-if="msg.streaming" class="caret">▍</span>
+              <button
+                v-if="isLong(msg) && !msg.streaming"
+                class="expand-btn"
+                @click="toggleExpanded(msg.id)"
+              >
+                {{ isExpanded(msg.id) ? '收起' : '展开全部' }}
+              </button>
+              <button
+                v-if="speechSupported && msg.text && !msg.streaming"
+                class="expand-btn speech-btn"
+                :aria-label="speakingId === msg.id ? '停止朗读' : '朗读这条回复'"
+                :aria-pressed="speakingId === msg.id"
+                @click="speakMessage(msg.id, msg.text)"
+              >
+                {{ speakingId === msg.id ? '⏹ 停止朗读' : '🔊 朗读' }}
+              </button>
             </div>
-            <button
-              v-if="isLongMessage(msg) && !msg.streaming"
-              class="collapse-btn"
-              @click="toggleCollapse(msg.id)"
-            >
-              {{ isCollapsed(msg) ? '展开全部' : '收起' }}
-            </button>
             <div v-if="msg.content" class="content-list">
               <div
                 v-for="(c, i) in msg.content"
@@ -286,7 +495,9 @@ function goBack() {
                     <summary>
                       <span class="tool-icon">🔧</span>
                       <span class="tool-name">{{ c.name }}</span>
-                      <span class="tool-duration">{{ toolDuration(c) }}</span>
+                      <span v-if="c.durationMs" class="tool-duration">
+                        {{ formatDuration(c.durationMs) }}
+                      </span>
                       <span class="tool-state" :class="'state-' + c.state">
                         {{
                           c.state === 'running' ? '执行中'
@@ -298,15 +509,18 @@ function goBack() {
                     </summary>
                     <div v-if="c.input" class="tool-section">
                       <div class="tool-section-title">输入</div>
-                      <pre>{{ truncateOutput(c.input) }}</pre>
+                      <!-- eslint-disable-next-line vue/no-v-html -->
+                      <pre v-html="renderJson(c.input)"></pre>
                     </div>
                     <div v-if="c.output" class="tool-section">
                       <div class="tool-section-title">输出</div>
-                      <pre>{{ truncateOutput(c.output) }}</pre>
+                      <DiffBlock v-if="cachedDiffText(c.output)" :diff="cachedDiffText(c.output)!" />
+                      <!-- eslint-disable-next-line vue/no-v-html -->
+                      <pre v-else v-html="renderJson(c.output)"></pre>
                     </div>
                     <div v-if="c.error" class="tool-section error">
                       <div class="tool-section-title">错误</div>
-                      <pre>{{ truncateOutput(c.error) }}</pre>
+                      <pre>{{ c.error }}</pre>
                     </div>
                   </details>
                 </template>
@@ -337,28 +551,36 @@ function goBack() {
       {{ store.errorMessage }}
     </div>
 
+    <!-- 审批复核状态（拉取失败可重试，不打断会话） -->
+    <div v-if="approvalSheetEnabled && approvalsError !== ''" class="approval-error" role="alert">
+      <span>审批状态拉取失败</span>
+      <button type="button" @click="refreshApprovals">重试</button>
+    </div>
+
+    <!-- 权限审批 Bottom Sheet（feature flag 暗Launch，08 §3.3） -->
+    <ApprovalBottomSheet
+      v-model:visible="approvalSheetModel"
+      :action="approvalAction"
+      :source="approvalSource"
+      :scope="approvalScope"
+      :details="approvalDetails"
+      :submitting="approvalSubmitting"
+      :server-confirmed="approvalServerConfirmed"
+      @decision="onApprovalDecision"
+    />
+
     <!-- Human-in-the-loop 审批面板（权限/问答） -->
     <ApprovalPanel :instance-id="instanceID" :session-id="sessionID" />
 
     <!-- Input bar -->
     <footer class="input-bar">
-      <div v-if="isRecording" class="recording-strip">
-        <span class="rec-dot" />
-        <span class="rec-bars"><i /><i /><i /><i /><i /></span>
-        <span class="rec-label">录音中…</span>
-      </div>
-      <div v-else-if="isTranscribing" class="recording-strip transcribing">
-        <span class="rec-label">转写中…</span>
-      </div>
-      <div v-if="sttError" class="stt-error">{{ sttError }}</div>
-      <div class="input-row">
       <textarea
         v-model="inputText"
         class="input"
-        :placeholder="isRecording ? '🎙 录音中...' : isTranscribing ? '转写中...' : '输入消息…'"
+        :placeholder="isRecording ? '🎙 录音中...' : transcribing ? '识别中...' : '输入消息…'"
         rows="1"
         @keydown="onKeydown"
-        :disabled="sending || isRecording || isTranscribing"
+        :disabled="sending || isRecording || transcribing"
       ></textarea>
       <button
         class="voice-btn"
@@ -370,13 +592,12 @@ function goBack() {
       </button>
       <button
         class="send-btn"
-        :disabled="!inputText.trim() || sending || isTranscribing"
+        :disabled="!inputText.trim() || sending"
         @click="send"
         aria-label="发送"
       >
         <span class="material-symbols-outlined">send</span>
       </button>
-      </div>
     </footer>
   </div>
 </template>
@@ -385,31 +606,31 @@ function goBack() {
 .session-view {
   display: flex;
   flex-direction: column;
-  height: 100dvh;
+  height: 100vh;
   background: var(--bg-base);
-}
-
-.chrome-shell {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 20;
-  will-change: transform;
   padding-top: env(safe-area-inset-top);
-  background: var(--bg-card);
 }
 
-.chrome-shell.is-snapping {
-  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1);
+.session-view.embedded {
+  height: 100%;
+  min-height: 0;
+  padding-top: 0;
+  border-left: 1px solid var(--border);
+}
+
+.session-view.embedded .top-bar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-base);
 }
 
 /* Top Bar */
 .top-bar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2-5) var(--space-3);
   background: var(--bg-card);
   border-bottom: 1px solid var(--border);
 }
@@ -417,19 +638,19 @@ function goBack() {
 .stop-btn,
 .top-spacer {
   flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background: transparent;
   border: none;
   cursor: pointer;
   color: var(--text-primary);
 }
-.back-btn:hover,
-.stop-btn:hover {
+.back-btn:active,
+.stop-btn:active {
   background: var(--bg-subtle);
 }
 .stop-btn {
@@ -440,7 +661,7 @@ function goBack() {
   min-width: 0;
 }
 .title {
-  font-size: var(--text-lg);
+  font-size: var(--text-md);
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
   white-space: nowrap;
@@ -448,7 +669,7 @@ function goBack() {
   text-overflow: ellipsis;
 }
 .subtitle {
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   display: flex;
   align-items: center;
@@ -484,10 +705,10 @@ function goBack() {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
-  padding: 16px;
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-2-5);
   scroll-behavior: smooth;
 }
 .empty {
@@ -500,12 +721,12 @@ function goBack() {
   text-align: center;
   padding: var(--space-6);
 }
-.empty-icon { font-size: 48px; margin-bottom: var(--space-3); }
-.empty-text { font-size: var(--text-xl); font-weight: var(--font-weight-medium); margin: 0 0 4px; color: var(--text-primary); }
-.empty-hint { font-size: var(--text-base); margin: 0; color: var(--text-muted); }
+.empty-icon { font-size: 40px; margin-bottom: var(--space-3); }
+.empty-text { font-size: var(--text-lg); font-weight: var(--font-weight-medium); margin: 0 0 var(--space-1); color: var(--text-primary); }
+.empty-hint { font-size: var(--text-sm); margin: 0; color: var(--text-muted); }
 .message {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   max-width: 90%;
   animation: message-in 200ms ease-out;
 }
@@ -526,9 +747,9 @@ function goBack() {
 }
 .avatar {
   flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-full);
   background: var(--brand-gradient);
   color: var(--text-inverse);
   font-size: var(--text-xs);
@@ -536,7 +757,7 @@ function goBack() {
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 .bubble {
   padding: var(--space-2) var(--space-3);
@@ -544,13 +765,13 @@ function goBack() {
   font-size: var(--text-base);
   line-height: 1.5;
   word-break: break-word;
+  white-space: pre-wrap;
   position: relative;
 }
 .user-bubble {
   background: var(--brand-primary);
   color: var(--text-inverse);
   border-bottom-right-radius: var(--radius-sm);
-  white-space: pre-wrap;
 }
 .assistant-bubble {
   background: var(--bg-card);
@@ -562,8 +783,7 @@ function goBack() {
   background: var(--bg-subtle);
   color: var(--text-secondary);
   font-size: var(--text-sm);
-  padding: var(--space-1) var(--space-3);
-  white-space: pre-wrap;
+  padding: var(--space-1) var(--space-2-5);
 }
 .caret {
   display: inline-block;
@@ -574,66 +794,17 @@ function goBack() {
 @keyframes blink {
   50% { opacity: 0; }
 }
-
-/* Markdown body */
-.md-body :deep(p) { margin: 0 0 var(--space-2); }
-.md-body :deep(p:last-child) { margin-bottom: 0; }
-.md-body :deep(pre) {
-  background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2);
-  overflow-x: auto;
-  font-size: var(--text-sm);
-  margin: var(--space-2) 0;
-}
-.md-body :deep(code) {
-  font-family: 'SF Mono', Menlo, monospace;
-  font-size: var(--text-sm);
-  background: var(--bg-subtle);
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-.md-body :deep(pre code) {
-  background: none;
-  padding: 0;
-}
-.text-content.collapsed {
-  max-height: calc(1.5em * 20);
-  overflow: hidden;
-  position: relative;
-}
-.text-content.collapsed::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 40px;
-  background: linear-gradient(transparent, var(--bg-card));
-}
-.collapse-btn {
-  display: block;
-  margin-top: var(--space-1);
-  padding: 2px 0;
-  font-size: var(--text-xs);
-  color: var(--brand-primary);
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-weight: var(--font-weight-medium);
-}
 .content-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 .tool-card {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-2-5);
   font-size: var(--text-sm);
 }
 .tool-card summary {
@@ -646,12 +817,8 @@ function goBack() {
 .tool-card summary::-webkit-details-marker {
   display: none;
 }
-.tool-icon { font-size: var(--text-base); }
-.tool-name { font-weight: var(--font-weight-semibold); font-family: monospace; }
-.tool-duration {
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-}
+.tool-icon { font-size: var(--text-sm); }
+.tool-name { font-weight: var(--font-weight-semibold); font-family: monospace; font-size: var(--text-sm); }
 .tool-state {
   margin-left: auto;
   padding: 2px var(--space-2);
@@ -659,9 +826,9 @@ function goBack() {
   font-size: var(--text-xs);
   font-weight: var(--font-weight-medium);
 }
-.tool-state.state-running { background: var(--info-bg); color: var(--info); }
-.tool-state.state-completed { background: var(--success-bg); color: var(--success); }
-.tool-state.state-error { background: var(--danger-bg); color: var(--danger); }
+.tool-state.state-running { background: rgba(59, 130, 246, 0.12); color: var(--info); }
+.tool-state.state-completed { background: rgba(16, 185, 129, 0.12); color: var(--success); }
+.tool-state.state-error { background: rgba(239, 68, 68, 0.12); color: var(--danger); }
 .tool-state.state-pending { background: var(--bg-subtle); color: var(--text-muted); }
 .tool-section {
   margin-top: var(--space-2);
@@ -669,14 +836,14 @@ function goBack() {
   border-top: 1px dashed var(--border);
 }
 .tool-section.error { color: var(--danger); }
-.tool-section-title { font-size: var(--text-xs); font-weight: var(--font-weight-semibold); color: var(--text-secondary); margin-bottom: 4px; }
+.tool-section-title { font-size: var(--text-xs); font-weight: var(--font-weight-semibold); color: var(--text-secondary); margin-bottom: var(--space-1); }
 .tool-section pre {
   margin: 0;
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   font-family: 'SF Mono', Menlo, monospace;
   white-space: pre-wrap;
   word-break: break-all;
-  background: var(--overlay-subtle);
+  background: var(--bg-subtle);
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
 }
@@ -685,13 +852,12 @@ function goBack() {
 .scroll-bottom-btn {
   position: absolute;
   bottom: 80px;
-  right: var(--space-4);
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
+  right: var(--space-3);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
   background: var(--bg-card);
   border: 1px solid var(--border);
-  box-shadow: var(--shadow-sm);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -702,71 +868,47 @@ function goBack() {
 /* Error banner */
 .error-banner {
   flex: 0 0 auto;
-  background: var(--danger-bg);
+  background: rgba(239, 68, 68, 0.1);
   color: var(--danger);
-  padding: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
   text-align: center;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+/* 审批复核失败提示（页面内 + 重试，08 §6） */
+.approval-error {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1-5, 6px) var(--space-3);
+  background: var(--bg-subtle);
+  color: var(--warning, #f59e0b);
+  font-size: var(--text-xs);
+}
+.approval-error button {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--brand-primary);
+  padding: 2px 10px;
+  font-size: var(--text-xs);
+  /* 触摸目标高度向 48px 靠拢（08 §5）。 */
+  min-height: 32px;
 }
 
 /* Input bar */
 .input-bar {
   flex: 0 0 auto;
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-4);
-  padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
-  background: var(--bg-card);
-  border-top: 1px solid var(--border);
-}
-.input-row {
-  display: flex;
   align-items: flex-end;
   gap: var(--space-2);
-}
-.recording-strip {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-xs);
-  color: var(--danger);
-  padding: 0 var(--space-1);
-}
-.rec-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--danger);
-  animation: pulse 1s infinite;
-}
-.rec-bars {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  height: 14px;
-}
-.rec-bars i {
-  display: block;
-  width: 2px;
-  height: 4px;
-  background: var(--danger);
-  border-radius: 1px;
-  animation: wave 0.8s ease-in-out infinite;
-}
-.rec-bars i:nth-child(2) { animation-delay: 0.1s; }
-.rec-bars i:nth-child(3) { animation-delay: 0.2s; }
-.rec-bars i:nth-child(4) { animation-delay: 0.3s; }
-.rec-bars i:nth-child(5) { animation-delay: 0.4s; }
-@keyframes wave {
-  0%, 100% { height: 4px; }
-  50% { height: 14px; }
-}
-.stt-error {
-  font-size: var(--text-xs);
-  color: var(--danger);
-  padding: 0 var(--space-1);
+  padding: var(--space-2-5) var(--space-3);
+  padding-bottom: calc(var(--space-2-5) + env(safe-area-inset-bottom));
+  background: var(--bg-card);
+  border-top: 1px solid var(--border);
 }
 .input {
   flex: 1 1 auto;
@@ -783,15 +925,18 @@ function goBack() {
   outline: none;
   transition: border-color 150ms;
 }
+.input::placeholder {
+  color: var(--text-muted);
+}
 .input:focus {
   border-color: var(--brand-primary);
   background: var(--bg-card);
 }
 .send-btn {
   flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-full);
   background: var(--brand-primary);
   color: var(--text-inverse);
   border: none;
@@ -802,7 +947,7 @@ function goBack() {
   transition: all 150ms;
 }
 .send-btn:disabled {
-  background: var(--border);
+  background: var(--bg-subtle);
   color: var(--text-muted);
   cursor: not-allowed;
 }
@@ -811,13 +956,13 @@ function goBack() {
 }
 .voice-btn {
   flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-full);
   background: var(--bg-subtle);
   color: var(--text-secondary);
   border: none;
-  font-size: 18px;
+  font-size: 16px;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -843,4 +988,127 @@ function goBack() {
   font-size: 20px;
   line-height: 1;
 }
+
+/* ── Markdown rendering ── */
+.markdown-body {
+  font-size: var(--text-base);
+  line-height: 1.5;
+}
+.markdown-body .rendered,
+.markdown-body .collapsed {
+  white-space: normal;
+}
+.markdown-body p {
+  margin: 0 0 var(--space-2) 0;
+}
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  margin: var(--space-3) 0 var(--space-2) 0;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+.markdown-body h1 { font-size: var(--text-xl); }
+.markdown-body h2 { font-size: var(--text-lg); }
+.markdown-body h3 { font-size: var(--text-md); }
+.markdown-body h4 { font-size: var(--text-base); }
+.markdown-body ul,
+.markdown-body ol {
+  margin: var(--space-2) 0;
+  padding-left: var(--space-5);
+}
+.markdown-body li {
+  margin: var(--space-1) 0;
+}
+.markdown-body code {
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: var(--text-sm);
+  background: var(--bg-subtle);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+}
+.markdown-body pre {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  overflow-x: auto;
+  margin: var(--space-2) 0;
+}
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+.markdown-body blockquote {
+  border-left: 3px solid var(--brand-primary);
+  padding-left: var(--space-3);
+  margin: var(--space-2) 0;
+  color: var(--text-secondary);
+}
+.markdown-body a {
+  color: var(--brand-primary);
+  text-decoration: none;
+}
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+.markdown-body table {
+  border-collapse: collapse;
+  margin: var(--space-2) 0;
+  width: 100%;
+  font-size: var(--text-sm);
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border);
+  padding: var(--space-1) var(--space-2);
+  text-align: left;
+}
+.markdown-body th {
+  background: var(--bg-subtle);
+  font-weight: var(--font-weight-semibold);
+}
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: var(--space-3) 0;
+}
+.markdown-body .collapsed {
+  color: var(--text-secondary);
+}
+.expand-btn {
+  display: inline-block;
+  margin-top: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--brand-primary);
+  cursor: pointer;
+  font-weight: var(--font-weight-semibold);
+}
+.expand-btn:active {
+  background: var(--bg-subtle);
+}
+
+/* ── Tool duration & JSON syntax ── */
+.tool-duration {
+  margin-left: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-family: monospace;
+}
+.tool-section pre :deep(.json-key) { color: var(--brand-primary); }
+.tool-section pre :deep(.json-str) { color: var(--success); }
+.tool-section pre :deep(.json-num) { color: var(--warning); }
+.tool-section pre :deep(.json-bool) { color: var(--info); }
 </style>

@@ -6,7 +6,7 @@
   Markdown via marked (already installed in prompt 1).
 -->
 <template>
-  <AppLayout>
+  <div class="view-root">
     <template v-if="mode === 'list'">
       <div class="header-row">
         <h2 class="page-title">邮件摘要</h2>
@@ -73,7 +73,7 @@
         <button class="back-link" @click="goList">← 返回摘要列表</button>
       </article>
     </template>
-  </AppLayout>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -81,7 +81,6 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import AppLayout from '../../app/AppLayout.vue'
 import { emailApi } from '../../api/email'
 import type { DailySummary } from '../../api/email'
 import { ApiError } from '../../api/http'

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,18 +33,50 @@ import (
 //
 // 所有路由要求 requiresAuth（已在 mux 注册时包装）。
 
-// handleMobileSessionRouter 分发 /api/mobile/sessions/...
-//   /api/mobile/sessions                   POST 创建 | GET 列表
-//   /api/mobile/sessions/search            GET 搜索 (Phase 2.2)
-//   /api/mobile/sessions/{id}              DELETE 删除 (Phase 2.1)
-//   /api/mobile/sessions/{id}/event        GET SSE
-//   /api/mobile/sessions/{id}/messages     GET 历史
-//   /api/mobile/sessions/{id}/summary      GET 摘要 (Phase 2.3)
-//   /api/mobile/sessions/{id}/prompt       POST 发送
-//   /api/mobile/sessions/{id}/interrupt    POST 中断
+// resolveMobileInstance enforces the mobile control-plane boundary before any
+// upstream call. Read operations may use explicitly shared instances; write
+// operations require an instance owned by the caller's workspace.
+func (s *Server) resolveMobileInstance(w http.ResponseWriter, r *http.Request, instanceID string, writable bool) (string, string, bool) {
+	workspaceID, ok := s.requireMobileWorkspace(w, r)
+	if !ok {
+		return "", "", false
+	}
+	if instanceID == "" {
+		s.writeStructuredError(w, r, http.StatusBadRequest, CodeInvalidRequest, "instance_id is required")
+		return "", "", false
+	}
+	var (
+		apiBaseURL string
+		err        error
+	)
+	if writable {
+		apiBaseURL, err = s.registry.GetWritableInstanceAPIBaseForWorkspace(workspaceID, instanceID)
+	} else {
+		apiBaseURL, err = s.registry.GetInstanceAPIBaseForWorkspace(workspaceID, instanceID)
+	}
+	if err != nil {
+		s.writeResourceNotFound(w, r)
+		return "", "", false
+	}
+	return apiBaseURL, workspaceID, true
+}
+
+// handleMobileSessionRouter dispatches /api/mobile/sessions/...
+//
+//	/api/mobile/sessions                   POST 创建 | GET 列表
+//	/api/mobile/sessions/search            GET 搜索 (Phase 2.2)
+//	/api/mobile/sessions/{id}              DELETE 删除 (Phase 2.1)
+//	/api/mobile/sessions/{id}/event        GET SSE
+//	/api/mobile/sessions/{id}/messages     GET 历史
+//	/api/mobile/sessions/{id}/summary      GET 摘要 (Phase 2.3)
+//	/api/mobile/sessions/{id}/prompt       POST 发送
+//	/api/mobile/sessions/{id}/interrupt    POST 中断
 func (s *Server) handleMobileSessionRouter(w http.ResponseWriter, r *http.Request) {
 	if s.opencode == nil || s.registry == nil {
-		http.Error(w, "opencode adapter not configured", http.StatusServiceUnavailable)
+		s.writeStructuredError(w, r, http.StatusServiceUnavailable, CodeUpstreamUnavailable, "opencode adapter not configured")
+		return
+	}
+	if _, ok := s.requireMobileWorkspace(w, r); !ok {
 		return
 	}
 
@@ -60,7 +93,7 @@ func (s *Server) handleMobileSessionRouter(w http.ResponseWriter, r *http.Reques
 			s.handleMobileSessionList(w, r)
 			return
 		}
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		s.writeStructuredError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -95,26 +128,34 @@ func (s *Server) handleMobileSessionRouter(w http.ResponseWriter, r *http.Reques
 	case "interrupt":
 		s.handleMobileSessionInterrupt(w, r, sessionID)
 	default:
-		http.Error(w, "not found: "+suffix, http.StatusNotFound)
+		s.writeResourceNotFound(w, r)
 	}
 }
 
 // handleMobileSessionCreate POST /api/mobile/sessions?instance_id=xxx
 // body: { title?, parentID?, agent?, model? }
+//
+// Supports offline replay: when the Idempotency-Key header is present, a
+// retry of the same create returns the original upstream session instead of
+// creating a duplicate (SEC-06 mobile outbox drain).
 func (s *Server) handleMobileSessionCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		s.writeStructuredError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	instanceID := r.URL.Query().Get("instance_id")
-	if instanceID == "" {
-		http.Error(w, "missing instance_id", http.StatusBadRequest)
+	apiBaseURL, workspaceID, ok := s.resolveMobileInstance(w, r, instanceID, true)
+	if !ok {
 		return
 	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
+
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey != "" && s.mobileCreates != nil {
+		if cached, hit := s.mobileCreates.Get(workspaceID, instanceID, idempotencyKey); hit {
+			w.Header().Set("Idempotency-Replayed", "true")
+			writeJSON(w, http.StatusOK, cached)
+			return
+		}
 	}
 
 	var req struct {
@@ -123,41 +164,53 @@ func (s *Server) handleMobileSessionCreate(w http.ResponseWriter, r *http.Reques
 		Agent    *string                `json:"agent,omitempty"`
 		Model    map[string]interface{} `json:"model,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
-		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+	if r.ContentLength != 0 && !s.decodeJSONBody(w, r, &req) {
 		return
 	}
 
-	// CreateSessionRequest 不直接接受 Title/ParentID（按 OpenCode schema），
-	// 客户端语义：title 暂作 metadata，parentID 透传为 location.workspaceID 之外的字段保留。
-	// 这里把 Title 放进 metadata。
-	_ = req.Title // 当前 OpenCode POST /api/session 不接受 title，由后续 update 补充
+	// CreateSessionRequest does not accept Title/ParentID in the OpenCode
+	// schema. Bind the new upstream session to the authenticated workspace.
+	_ = req.Title
 	_ = req.ParentID
-
-	payload := &adapter.CreateSessionRequest{
-		Agent: req.Agent,
-	}
+	payload := &adapter.CreateSessionRequest{Agent: req.Agent}
+	payload.Location = &adapter.LocationRefRef{WorkspaceID: &workspaceID}
 
 	info, err := s.opencode.CreateSession(r.Context(), apiBaseURL, payload)
 	if err != nil {
-		http.Error(w, "create session: "+err.Error(), http.StatusBadGateway)
+		s.writeStructuredError(w, r, http.StatusBadGateway, CodeUpstreamUnavailable,
+			"create session: "+err.Error())
 		return
+	}
+	if idempotencyKey != "" && s.mobileCreates != nil {
+		s.mobileCreates.Put(workspaceID, instanceID, idempotencyKey, info)
 	}
 	writeJSON(w, http.StatusOK, info)
 }
 
-// handleMobileSessionList GET /api/mobile/sessions?instance_id=xxx
-// 返回会话列表
+// handleMobileSessionList GET /api/mobile/sessions?instance_id=xxx&since=N
+// 返回会话列表。since（Unix 毫秒）存在时仅返回 time.updated > since 的行，
+// 供移动端增量同步；响应行是同步视图（id/title/status/timeUpdatedMs），
+// 与内部 adapter 结构解耦。
 func (s *Server) handleMobileSessionList(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.URL.Query().Get("instance_id")
 	if instanceID == "" {
 		http.Error(w, "missing instance_id", http.StatusBadRequest)
 		return
 	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+	apiBaseURL, _, ok := s.resolveMobileInstance(w, r, instanceID, false)
+	if !ok {
 		return
+	}
+
+	since := int64(0)
+	if rawSince := r.URL.Query().Get("since"); rawSince != "" {
+		parsed, err := strconv.ParseInt(rawSince, 10, 64)
+		if err != nil || parsed < 0 {
+			s.writeStructuredError(w, r, http.StatusBadRequest, CodeInvalidRequest,
+				"since must be a non-negative Unix millisecond timestamp")
+			return
+		}
+		since = parsed
 	}
 
 	sessions, err := s.opencode.ListSessions(r.Context(), apiBaseURL)
@@ -166,9 +219,23 @@ func (s *Server) handleMobileSessionList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	rows := make([]map[string]any, 0, len(sessions))
+	for _, sess := range sessions {
+		if since > 0 && sess.TimeUpdated <= since {
+			continue
+		}
+		rows = append(rows, map[string]any{
+			"id":            sess.ID,
+			"title":         sess.Title,
+			"status":        sess.Status,
+			"timeUpdatedMs": sess.TimeUpdated,
+		})
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"data":  sessions,
-		"total": len(sessions),
+		"data":        rows,
+		"total":       len(rows),
+		"sinceMs":     since,
+		"serverTimeMs": time.Now().UnixMilli(),
 	})
 }
 
@@ -186,9 +253,8 @@ func (s *Server) handleMobileSessionSearch(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "missing instance_id", http.StatusBadRequest)
 		return
 	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+	apiBaseURL, _, ok := s.resolveMobileInstance(w, r, instanceID, false)
+	if !ok {
 		return
 	}
 
@@ -223,9 +289,8 @@ func (s *Server) handleMobileSessionSummary(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "missing instance_id", http.StatusBadRequest)
 		return
 	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+	apiBaseURL, _, ok := s.resolveMobileInstance(w, r, instanceID, false)
+	if !ok {
 		return
 	}
 
@@ -249,16 +314,24 @@ func (s *Server) handleMobileSessionSummary(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// 统计消息类型
+	// 统计消息类型（经移动端视图归一化：V1 信封没有顶层 type/role，
+	// 直接读 msg.Type 会恒为空）
 	userCount, assistantCount, toolCount := 0, 0, 0
-	for _, msg := range msgs {
-		switch msg.Type {
+	for i := range msgs {
+		mm := msgs[i].ToMobile()
+		if mm == nil {
+			continue
+		}
+		switch mm.Role {
 		case "user":
 			userCount++
 		case "assistant":
 			assistantCount++
-		case "tool":
-			toolCount++
+			for _, c := range mm.Content {
+				if c.Type == "tool" {
+					toolCount++
+				}
+			}
 		}
 	}
 
@@ -321,9 +394,12 @@ func (s *Server) handleMobileSessionEventViaManager(w http.ResponseWriter, r *ht
 
 	// 通过 EventStreamManager 订阅（共享上游连接）
 	events, cleanup, err := s.eventMgr.Subscribe(ctx, opencode.SubscribeOptions{
-		InstanceID: instanceID,
-		BufferSize: 128,
+		InstanceID:  instanceID,
+		WorkspaceID: s.workspaceIDFromRequest(r),
+		Directory:   r.URL.Query().Get("directory"),
+		BufferSize:  128,
 	})
+
 	if err != nil {
 		fmt.Fprintf(w, "event: error\ndata: {\"error\":\"%s\"}\n\n", err.Error())
 		flusher.Flush()
@@ -372,13 +448,10 @@ func (s *Server) handleMobileSessionEventViaManager(w http.ResponseWriter, r *ht
 
 // handleMobileSessionEventDirect 直接调用 adapter 建立独立连接（兼容模式）
 func (s *Server) handleMobileSessionEventDirect(w http.ResponseWriter, r *http.Request, sessionID, instanceID string) {
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+	apiBaseURL, workspaceID, ok := s.resolveMobileInstance(w, r, instanceID, false)
+	if !ok {
 		return
 	}
-
-	// SSE 头
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Connection", "keep-alive")
@@ -390,9 +463,9 @@ func (s *Server) handleMobileSessionEventDirect(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// 订阅上游
+	// The workspace is derived only from authenticated claims. A client query
+	// parameter must never alter the upstream event subscription scope.
 	directory := r.URL.Query().Get("directory")
-	workspaceID := r.URL.Query().Get("workspaceID")
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
@@ -445,7 +518,9 @@ func (s *Server) handleMobileSessionEventDirect(w http.ResponseWriter, r *http.R
 // eventBelongsToSession 判断上游事件是否归属于指定 session
 //
 // OpenCode V1 envelope（参考 ~/workspace/ai/opencodenew/packages/protocol/src/event.ts）：
-//   { id, type, location?, data, ... }
+//
+//	{ id, type, location?, data, ... }
+//
 // V2 envelope：{ id, type, data, durable: { aggregateID, seq, ... } }
 //
 // 优先用 durable.aggregateID，其次 location.sessionID，再次 type 前缀兜底。
@@ -473,11 +548,9 @@ func eventBelongsToSession(evt adapter.OpenCodeEvent, sessionID string) bool {
 		}
 	}
 
-	// 兜底：所有 session.* 类型都转发（V1 全局事件流没有 sessionID 字段）
-	t := evt.Type
-	if strings.HasPrefix(t, "session.") {
-		return true
-	}
+	// A global event without a provable session id is not safe to forward.
+	// In particular, shared upstream instances can emit events belonging to
+	// another workspace/session.
 	return false
 }
 
@@ -489,27 +562,33 @@ func eventTypeOf(evt adapter.OpenCodeEvent) string {
 // handleMobileSessionMessages GET /api/mobile/sessions/{id}/messages?instance_id=xxx&limit=50
 func (s *Server) handleMobileSessionMessages(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		s.writeStructuredError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	instanceID := r.URL.Query().Get("instance_id")
-	if instanceID == "" {
-		http.Error(w, "missing instance_id", http.StatusBadRequest)
-		return
-	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+	apiBaseURL, _, ok := s.resolveMobileInstance(w, r, instanceID, false)
+	if !ok {
 		return
 	}
 
 	limit := 50
-	if l := r.URL.Query().Get("limit"); l != "" {
-		fmt.Sscanf(l, "%d", &limit)
+	if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed < 1 || parsed > 100 {
+			s.writeStructuredError(w, r, http.StatusBadRequest, CodeInvalidRequest,
+				"limit must be an integer between 1 and 100")
+			return
+		}
+		limit = parsed
 	}
 	order := r.URL.Query().Get("order")
 	if order == "" {
 		order = "asc"
+	}
+	if order != "asc" && order != "desc" {
+		s.writeStructuredError(w, r, http.StatusBadRequest, CodeInvalidRequest,
+			"order must be asc or desc")
+		return
 	}
 
 	msgs, err := s.opencode.GetMessages(r.Context(), apiBaseURL, sessionID, limit, order)
@@ -517,10 +596,17 @@ func (s *Server) handleMobileSessionMessages(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "get messages: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+	// V1 {info,parts} → 移动端 {id,role,text,content}；无法识别的行跳过
+	rows := make([]adapter.MobileMessage, 0, len(msgs))
+	for i := range msgs {
+		if mm := msgs[i].ToMobile(); mm != nil {
+			rows = append(rows, *mm)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"sessionId": sessionID,
-		"messages":  msgs,
-		"total":     len(msgs),
+		"messages":  rows,
+		"total":     len(rows),
 	})
 }
 
@@ -529,17 +615,12 @@ func (s *Server) handleMobileSessionMessages(w http.ResponseWriter, r *http.Requ
 // 返回: { messageID }
 func (s *Server) handleMobileSessionPrompt(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		s.writeStructuredError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	instanceID := r.URL.Query().Get("instance_id")
-	if instanceID == "" {
-		http.Error(w, "missing instance_id", http.StatusBadRequest)
-		return
-	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+	apiBaseURL, _, ok := s.resolveMobileInstance(w, r, instanceID, true)
+	if !ok {
 		return
 	}
 
@@ -548,20 +629,19 @@ func (s *Server) handleMobileSessionPrompt(w http.ResponseWriter, r *http.Reques
 		Agent *string                `json:"agent,omitempty"`
 		Model map[string]interface{} `json:"model,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+	if !s.decodeJSONBody(w, r, &req) {
 		return
 	}
-	if req.Text == "" {
-		http.Error(w, "text required", http.StatusBadRequest)
+	if strings.TrimSpace(req.Text) == "" {
+		s.writeStructuredError(w, r, http.StatusBadRequest, CodeInvalidRequest, "text is required")
 		return
 	}
 
 	payload := &adapter.SendPromptRequest{
-		Prompt: adapter.PromptPayload{
-			Text:  req.Text,
-			Agent: req.Agent,
-		},
+		Parts: []adapter.PromptPart{{Type: "text", Text: req.Text}},
+	}
+	if req.Agent != nil && *req.Agent != "" {
+		payload.Agent = req.Agent
 	}
 
 	resp, err := s.opencode.SendPrompt(r.Context(), apiBaseURL, sessionID, payload)
@@ -578,17 +658,12 @@ func (s *Server) handleMobileSessionPrompt(w http.ResponseWriter, r *http.Reques
 // handleMobileSessionInterrupt POST /api/mobile/sessions/{id}/interrupt?instance_id=xxx
 func (s *Server) handleMobileSessionInterrupt(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		s.writeStructuredError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	instanceID := r.URL.Query().Get("instance_id")
-	if instanceID == "" {
-		http.Error(w, "missing instance_id", http.StatusBadRequest)
-		return
-	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+	apiBaseURL, _, ok := s.resolveMobileInstance(w, r, instanceID, true)
+	if !ok {
 		return
 	}
 
@@ -602,14 +677,13 @@ func (s *Server) handleMobileSessionInterrupt(w http.ResponseWriter, r *http.Req
 // handleMobileSessionDelete DELETE /api/mobile/sessions/{id}?instance_id=xxx
 // Phase 2.1: 删除指定会话
 func (s *Server) handleMobileSessionDelete(w http.ResponseWriter, r *http.Request, sessionID string) {
-	instanceID := r.URL.Query().Get("instance_id")
-	if instanceID == "" {
-		http.Error(w, "missing instance_id", http.StatusBadRequest)
+	if r.Method != http.MethodDelete {
+		s.writeStructuredError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
-	apiBaseURL, err := s.registry.GetInstanceAPIBase(instanceID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+	instanceID := r.URL.Query().Get("instance_id")
+	apiBaseURL, _, ok := s.resolveMobileInstance(w, r, instanceID, true)
+	if !ok {
 		return
 	}
 

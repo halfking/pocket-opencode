@@ -1,144 +1,255 @@
+// internal/meeting/store.go
 package meeting
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-
-	"github.com/jackc/pgx/v5/pgxpool"
+	"strings"
+	"sync"
+	"time"
 )
 
+// legacyOwnerID / legacyWorkspaceID are the identity defaults used by the
+// deprecated non-scoped API, matching the handler fallback for requests
+// without authenticated claims.
+const (
+	legacyOwnerID     = "local"
+	legacyWorkspaceID = "default"
+)
+
+// Store 会议记录存储（内存实现）
 type Store struct {
-	pool *pgxpool.Pool
+	mu       sync.RWMutex
+	meetings map[string]*Meeting
 }
 
-func NewStore(pool *pgxpool.Pool) (*Store, error) {
-	s := &Store{pool: pool}
-	if err := s.migrate(); err != nil {
-		return nil, fmt.Errorf("meeting migrate: %w", err)
+// NewStore creates a new in-memory meeting store
+func NewStore() *Store {
+	return &Store{
+		meetings: make(map[string]*Meeting),
 	}
-	return s, nil
 }
 
-func (s *Store) migrate() error {
-	_, err := s.pool.Exec(context.Background(), `
-	CREATE TABLE IF NOT EXISTS meetings (
-		id TEXT PRIMARY KEY,
-		user_id TEXT NOT NULL,
-		title TEXT,
-		location TEXT,
-		participants JSONB DEFAULT '[]'::jsonb,
-		started_at BIGINT NOT NULL DEFAULT 0,
-		duration_ms INTEGER DEFAULT 0,
-		summary TEXT,
-		refined_transcript TEXT,
-		note_id TEXT,
-		status TEXT DEFAULT 'completed',
-		created_at BIGINT NOT NULL,
-		updated_at BIGINT NOT NULL,
-		deleted_at BIGINT
-	);
-	CREATE INDEX IF NOT EXISTS idx_meetings_user_started ON meetings(user_id, started_at DESC);
-	CREATE INDEX IF NOT EXISTS idx_meetings_note ON meetings(note_id) WHERE note_id IS NOT NULL;
-	`)
-	return err
+// Create creates a new meeting record with the given request.
+// Returns error if title is empty.
+// Deprecated: Use CreateScoped for production code with proper ownership.
+func (s *Store) Create(req CreateMeetingRequest) (*Meeting, error) {
+	return s.CreateScoped(req, legacyOwnerID, legacyWorkspaceID)
 }
 
-func (s *Store) Upsert(ctx context.Context, m *Meeting) error {
-	if m.CreatedAt == 0 {
-		m.CreatedAt = NowUnix()
+// CreateScoped creates a new meeting record with ownership.
+func (s *Store) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID string) (*Meeting, error) {
+	if strings.TrimSpace(req.Title) == "" {
+		return nil, fmt.Errorf("title cannot be empty")
 	}
-	m.UpdatedAt = NowUnix()
-	participants, _ := json.Marshal(m.Participants)
-	if m.Participants == nil {
-		participants = []byte("[]")
+	if ownerID == "" {
+		return nil, fmt.Errorf("owner_id is required")
 	}
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO meetings
-			(id, user_id, title, location, participants, started_at, duration_ms,
-			 summary, refined_transcript, note_id, status, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-		ON CONFLICT (id) DO UPDATE SET
-			title = EXCLUDED.title,
-			location = EXCLUDED.location,
-			participants = EXCLUDED.participants,
-			started_at = EXCLUDED.started_at,
-			duration_ms = EXCLUDED.duration_ms,
-			summary = EXCLUDED.summary,
-			refined_transcript = EXCLUDED.refined_transcript,
-			note_id = EXCLUDED.note_id,
-			status = EXCLUDED.status,
-			updated_at = EXCLUDED.updated_at
-	`, m.ID, m.UserID, nullStr(m.Title), nullStr(m.Location), participants,
-		m.StartedAt, m.DurationMs, nullStr(m.Summary), nullStr(m.RefinedTranscript),
-		nullStr(m.NoteID), m.Status, m.CreatedAt, m.UpdatedAt)
-	return err
+	if workspaceID == "" {
+		return nil, fmt.Errorf("workspace_id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	m := &Meeting{
+		ID:          fmt.Sprintf("mtg_%d", now.UnixNano()),
+		OwnerID:     ownerID,
+		WorkspaceID: workspaceID,
+		Title:       req.Title,
+		Status:      "recording",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	s.meetings[m.ID] = m
+	return copyMeeting(m), nil
 }
 
-func (s *Store) List(ctx context.Context, userID string, limit int) ([]Meeting, error) {
-	if limit <= 0 {
-		limit = 50
+// Get retrieves a meeting by ID.
+// Returns error if ID is empty or meeting not found.
+// Deprecated: Use GetScoped for production code with ownership checks.
+func (s *Store) Get(id string) (*Meeting, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("meeting ID cannot be empty")
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, user_id, title, location, participants, started_at, duration_ms,
-		       summary, refined_transcript, note_id, status, created_at, updated_at
-		FROM meetings
-		WHERE user_id = $1 AND deleted_at IS NULL
-		ORDER BY started_at DESC
-		LIMIT $2
-	`, userID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 
-	var out []Meeting
-	for rows.Next() {
-		var m Meeting
-		var title, location, summary, refined, noteID *string
-		var participants []byte
-		if err := rows.Scan(&m.ID, &m.UserID, &title, &location, &participants,
-			&m.StartedAt, &m.DurationMs, &summary, &refined, &noteID, &m.Status,
-			&m.CreatedAt, &m.UpdatedAt); err != nil {
-			return nil, err
-		}
-		if title != nil {
-			m.Title = *title
-		}
-		if location != nil {
-			m.Location = *location
-		}
-		if summary != nil {
-			m.Summary = *summary
-		}
-		if refined != nil {
-			m.RefinedTranscript = *refined
-		}
-		if noteID != nil {
-			m.NoteID = *noteID
-		}
-		_ = json.Unmarshal(participants, &m.Participants)
-		out = append(out, m)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	m, ok := s.meetings[id]
+	if !ok {
+		return nil, fmt.Errorf("meeting not found: %s", id)
 	}
-	return out, rows.Err()
+	return copyMeeting(m), nil
 }
 
-func (s *Store) Get(ctx context.Context, userID, id string) (*Meeting, error) {
-	list, err := s.List(ctx, userID, 1000)
-	if err != nil {
-		return nil, err
+// GetScoped retrieves a meeting by ID with ownership verification.
+func (s *Store) GetScoped(id, ownerID, workspaceID string) (*Meeting, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("meeting ID cannot be empty")
 	}
-	for i := range list {
-		if list[i].ID == id {
-			return &list[i], nil
-		}
+	if ownerID == "" {
+		return nil, fmt.Errorf("owner_id is required")
 	}
-	return nil, fmt.Errorf("meeting not found")
+	if workspaceID == "" {
+		return nil, fmt.Errorf("workspace_id is required")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	m, ok := s.meetings[id]
+	if !ok || m.OwnerID != ownerID || m.WorkspaceID != workspaceID {
+		return nil, fmt.Errorf("meeting not found")
+	}
+	return copyMeeting(m), nil
 }
 
-func nullStr(s string) any {
-	if s == "" {
+// Update updates an existing meeting record.
+// Returns error if meeting is nil, ID is empty, or meeting not found.
+// Deprecated: Use UpdateScoped for production code with ownership checks.
+func (s *Store) Update(m *Meeting) error {
+	if m == nil {
+		return fmt.Errorf("meeting cannot be nil")
+	}
+	if strings.TrimSpace(m.ID) == "" {
+		return fmt.Errorf("meeting ID cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.meetings[m.ID]; !ok {
+		return fmt.Errorf("meeting not found: %s", m.ID)
+	}
+	m.UpdatedAt = time.Now()
+	s.meetings[m.ID] = copyMeeting(m)
+	return nil
+}
+
+// UpdateScoped updates an existing meeting record with ownership verification.
+func (s *Store) UpdateScoped(m *Meeting, ownerID, workspaceID string) error {
+	if m == nil {
+		return fmt.Errorf("meeting cannot be nil")
+	}
+	if strings.TrimSpace(m.ID) == "" {
+		return fmt.Errorf("meeting ID cannot be empty")
+	}
+	if ownerID == "" {
+		return fmt.Errorf("owner_id is required")
+	}
+	if workspaceID == "" {
+		return fmt.Errorf("workspace_id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, ok := s.meetings[m.ID]
+	if !ok || existing.OwnerID != ownerID || existing.WorkspaceID != workspaceID {
+		return fmt.Errorf("meeting not found")
+	}
+	m.UpdatedAt = time.Now()
+	m.OwnerID = ownerID
+	m.WorkspaceID = workspaceID
+	s.meetings[m.ID] = copyMeeting(m)
+	return nil
+}
+
+// List returns all meeting records.
+// Deprecated: Use ListScoped for production code with ownership filtering.
+func (s *Store) List() ([]*Meeting, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]*Meeting, 0, len(s.meetings))
+	for _, m := range s.meetings {
+		result = append(result, copyMeeting(m))
+	}
+	return result, nil
+}
+
+// ListScoped returns meeting records for the specified owner/workspace.
+func (s *Store) ListScoped(ownerID, workspaceID string) ([]*Meeting, error) {
+	if ownerID == "" {
+		return nil, fmt.Errorf("owner_id is required")
+	}
+	if workspaceID == "" {
+		return nil, fmt.Errorf("workspace_id is required")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]*Meeting, 0)
+	for _, m := range s.meetings {
+		if m.OwnerID == ownerID && m.WorkspaceID == workspaceID {
+			result = append(result, copyMeeting(m))
+		}
+	}
+	return result, nil
+}
+
+// Delete removes a meeting by ID.
+// Returns error if ID is empty or meeting not found.
+// Deprecated: Use DeleteScoped for production code with ownership checks.
+func (s *Store) Delete(id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("meeting ID cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.meetings[id]; !ok {
+		return fmt.Errorf("meeting not found: %s", id)
+	}
+	delete(s.meetings, id)
+	return nil
+}
+
+// DeleteScoped removes a meeting by ID with ownership verification.
+func (s *Store) DeleteScoped(id, ownerID, workspaceID string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("meeting ID cannot be empty")
+	}
+	if ownerID == "" {
+		return fmt.Errorf("owner_id is required")
+	}
+	if workspaceID == "" {
+		return fmt.Errorf("workspace_id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	m, ok := s.meetings[id]
+	if !ok || m.OwnerID != ownerID || m.WorkspaceID != workspaceID {
+		return fmt.Errorf("meeting not found")
+	}
+	delete(s.meetings, id)
+	return nil
+}
+
+// copyMeeting creates a deep copy of a meeting to prevent data races
+func copyMeeting(m *Meeting) *Meeting {
+	if m == nil {
 		return nil
 	}
-	return s
+	result := *m
+	// Deep copy slices
+	if m.KeyDecisions != nil {
+		result.KeyDecisions = make([]string, len(m.KeyDecisions))
+		copy(result.KeyDecisions, m.KeyDecisions)
+	}
+	if m.ActionItems != nil {
+		result.ActionItems = make([]ActionItem, len(m.ActionItems))
+		copy(result.ActionItems, m.ActionItems)
+	}
+	if m.Tags != nil {
+		result.Tags = make([]string, len(m.Tags))
+		copy(result.Tags, m.Tags)
+	}
+	return &result
 }

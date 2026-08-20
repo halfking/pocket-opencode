@@ -11,6 +11,7 @@
  *
  * 本文件导出 initLobster()，由 App.vue 在用户输入主密码后调用。
  */
+import { ref, type Ref } from 'vue'
 import { localDB } from './local-db'
 import { vectorIndex } from './vector'
 import { initAppCrypto, resetCryptoKey } from './crypto'
@@ -20,13 +21,19 @@ export interface InitStatus {
   step: 'idle' | 'crypto' | 'db' | 'vectors' | 'done'
 }
 
-let _ready = false
+const _ready = ref(false)
 // 初始化进行中标志，防止并发调用 initLobster 导致重复初始化
 let _initializing = false
 
+/**
+ * 解锁状态（响应式）。computed/watch 等响应式上下文必须读它，
+ * 才能在 initLobster/lockLobster 后自动重算；命令式检查用 isLobsterReady()。
+ */
+export const lobsterReady: Readonly<Ref<boolean>> = _ready
+
 /** 是否已完成初始化。 */
 export function isLobsterReady(): boolean {
-  return _ready
+  return _ready.value
 }
 
 /**
@@ -41,7 +48,7 @@ export function isLobsterReady(): boolean {
  * @param masterPassword 用户主密码（Keystore 派生，或首次设置）
  */
 export async function initLobster(masterPassword: string): Promise<void> {
-  if (_ready) return
+  if (_ready.value) return
   if (_initializing) {
     console.warn('[lobster] 初始化进行中，忽略重复调用')
     return
@@ -62,7 +69,7 @@ export async function initLobster(masterPassword: string): Promise<void> {
       console.warn('[lobster] 向量索引加载失败（首次启动正常）:', e)
     }
 
-    _ready = true
+    _ready.value = true
   } finally {
     _initializing = false
   }
@@ -79,7 +86,7 @@ export async function initLobster(masterPassword: string): Promise<void> {
  *     防止后台切换时内存数据泄漏
  */
 export async function lockLobster(): Promise<void> {
-  _ready = false
+  _ready.value = false
   _initializing = false // 重置初始化标志，允许下次解锁
 
   // 关键：清除共享 AES-GCM key。否则锁定后（_ready=false）业务层调用

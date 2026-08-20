@@ -6,3 +6,16 @@ coverage/
 .env
 .env.*
 !.env.example
+.codegraph/
+
+# Local ZCode session planning notes
+.zcode/
+
+# Backend / runtime logs
+logs/
+
+# Deployment test artifacts (dated snapshots, not source)
+deployment-test-*/
+
+# Compiled instance-manager binary (sources live in this repo; build artifact)
+opencode-manager/opencode-instance-manager

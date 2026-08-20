@@ -23,6 +23,7 @@ type pendingEntry struct {
 	ClientSecret string
 	RedirectURI  string
 	AccountID    string
+	WorkspaceID  string
 	CreatedAt    time.Time
 }
 
@@ -41,10 +42,16 @@ func PendingOAuthEntry(accountID, userID, providerID, emailAddress, verifier, cl
 	}
 }
 
-// NewPendingEntry 是别名。
-func NewPendingEntry(accountID, userID, providerID, emailAddress, verifier, clientID, clientSecret, redirectURI string) pendingEntry {
-	return PendingOAuthEntry(accountID, userID, providerID, emailAddress, verifier, clientID, clientSecret, redirectURI)
+// NewPendingEntryWithWorkspace records the tenant boundary for the callback.
+func NewPendingEntryWithWorkspace(accountID, userID, workspaceID, providerID, emailAddress, verifier, clientID, clientSecret, redirectURI string) pendingEntry {
+	return pendingEntry{
+		AccountID: accountID, UserID: userID, WorkspaceID: workspaceID,
+		ProviderID: providerID, EmailAddress: emailAddress, CodeVerifier: verifier,
+		ClientID: clientID, ClientSecret: clientSecret, RedirectURI: redirectURI,
+		CreatedAt: time.Now(),
+	}
 }
+
 
 // PendingOAuth 是内存 map，存储 state → pendingEntry。
 type PendingOAuth struct {
@@ -103,10 +110,13 @@ func (p *PendingOAuth) gcLoop(ctx context.Context) {
 
 // OAuthCallbackConfig 配置 OAuth callback handler 的依赖。
 type OAuthCallbackConfig struct {
-	Store       *Store
-	Crypto      *Crypto
-	Pending     *PendingOAuth
-	Broadcaster interface{ Broadcast(string, interface{}) }
+	Store               *Store
+	Crypto              *Crypto
+	Pending             *PendingOAuth
+	Broadcaster         interface{ Broadcast(string, interface{}) }
+	TargetedBroadcaster interface {
+		BroadcastToUser(userID, msgType string, payload interface{})
+	}
 }
 
 // HandleOAuthCallback 返回 GET /callback/email/oauth 的 handler。
@@ -121,6 +131,10 @@ func HandleOAuthCallback(cfg OAuthCallbackConfig) http.HandlerFunc {
 		errParam := r.URL.Query().Get("error")
 		if errParam != "" {
 			log.Printf("[oauth] callback error: %s, desc: %s", errParam, r.URL.Query().Get("error_description"))
+			// state 尚未 Pop，无从得知 account——resource 用流程级标识而非
+			// 悬空的 "email_account:" 前缀。
+			recordAudit("", "", "email.oauth.completed.error", "email_oauth_callback",
+				AuditFields{Success: false, Detail: "provider_error=" + errParam})
 			http.Error(w, "OAuth error: "+errParam, http.StatusBadRequest)
 			return
 		}
@@ -135,6 +149,9 @@ func HandleOAuthCallback(cfg OAuthCallbackConfig) http.HandlerFunc {
 		}
 		provider, found := LookupProviderByID(entry.ProviderID)
 		if !found {
+			recordAudit(entry.UserID, entry.WorkspaceID, "email.oauth.completed.error",
+				"email_account:"+entry.AccountID,
+				AuditFields{Success: false, Detail: "unknown_provider=" + entry.ProviderID})
 			http.Error(w, "unknown provider", http.StatusInternalServerError)
 			return
 		}
@@ -142,28 +159,59 @@ func HandleOAuthCallback(cfg OAuthCallbackConfig) http.HandlerFunc {
 		tokens, err := exchangeCodeForToken(provider, code, entry.CodeVerifier, entry.ClientID, entry.ClientSecret, entry.RedirectURI)
 		if err != nil {
 			log.Printf("[oauth] exchange token: %v", err)
+			recordAudit(entry.UserID, entry.WorkspaceID, "email.oauth.completed.error",
+				"email_account:"+entry.AccountID,
+				AuditFields{Success: false, Detail: "exchange_failed"})
 			http.Error(w, "token exchange failed", http.StatusInternalServerError)
 			return
 		}
 		// 加密并持久化 refresh_token 和 access_token
-		refreshEnc, _ := cfg.Crypto.EncryptString(tokens.RefreshToken)
-		accessEnc, _ := cfg.Crypto.EncryptString(tokens.AccessToken)
+			refreshEnc, err := cfg.Crypto.EncryptString(tokens.RefreshToken)
+			if err != nil {
+				recordAudit(entry.UserID, entry.WorkspaceID, "email.oauth.completed.error",
+					"email_account:"+entry.AccountID,
+					AuditFields{Success: false, Detail: "encrypt_refresh_failed"})
+				http.Error(w, "encrypt refresh token failed", http.StatusInternalServerError)
+				return
+			}
+			accessEnc, err := cfg.Crypto.EncryptString(tokens.AccessToken)
+			if err != nil {
+				recordAudit(entry.UserID, entry.WorkspaceID, "email.oauth.completed.error",
+					"email_account:"+entry.AccountID,
+					AuditFields{Success: false, Detail: "encrypt_access_failed"})
+				http.Error(w, "encrypt access token failed", http.StatusInternalServerError)
+				return
+			}
 		expiresAt := time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second).Unix()
-		if err := cfg.Store.UpsertOAuthToken(r.Context(), entry.AccountID, refreshEnc, accessEnc, expiresAt, tokens.Scope); err != nil {
+		if err := cfg.Store.UpsertOAuthTokenScoped(r.Context(), entry.AccountID, entry.UserID, entry.WorkspaceID, refreshEnc, accessEnc, expiresAt, tokens.Scope); err != nil {
 			log.Printf("[oauth] upsert token: %v", err)
+			recordAudit(entry.UserID, entry.WorkspaceID, "email.oauth.completed.error",
+				"email_account:"+entry.AccountID,
+				AuditFields{Success: false, Detail: "store_token_failed"})
 			http.Error(w, "store token failed", http.StatusInternalServerError)
 			return
 		}
 		// 更新 account.auth_type = "oauth2"
-		if err := cfg.Store.SetAccountAuthType(r.Context(), entry.AccountID, "oauth2"); err != nil {
-			log.Printf("[oauth] set auth type: %v", err)
-		}
+			if err := cfg.Store.SetAccountAuthTypeScoped(r.Context(), entry.AccountID, entry.UserID, entry.WorkspaceID, "oauth2"); err != nil {
+				log.Printf("[oauth] set auth type: %v", err)
+			}
+		// 成功：写一条审计事件；detail 仅包含 provider 与 expires_in，
+		// 绝不含 token 字符串本身。
+		recordAudit(entry.UserID, entry.WorkspaceID, "email.oauth.completed",
+			"email_account:"+entry.AccountID,
+			AuditFields{Success: true, Detail: "provider=" + entry.ProviderID})
+		// 自审计：状态翻转可能失败，但 token 已落库，不能因 SetAccountAuthType
+		// 失败而把成功的 OAuth 事件降级——这里只 log。
+		_ = tokens
 		// 广播 WS 事件通知前端
-		if cfg.Broadcaster != nil {
-			cfg.Broadcaster.Broadcast("email.oauth.completed", map[string]string{
-				"accountId": entry.AccountID,
-				"userId":    entry.UserID,
-			})
+		payload := map[string]string{
+			"accountId": entry.AccountID,
+			"userId":    entry.UserID,
+		}
+		if cfg.TargetedBroadcaster != nil && entry.UserID != "" {
+			cfg.TargetedBroadcaster.BroadcastToUser(entry.UserID, "email.oauth.completed", payload)
+		} else if cfg.Broadcaster != nil {
+			cfg.Broadcaster.Broadcast("email.oauth.completed", payload)
 		}
 		// 返回成功页面（或重定向到移动端 deep link）
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

@@ -2,15 +2,18 @@ package server
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/labstack/echo/v4"
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	mobilews "github.com/halfking/pocket-opencode/backend/internal/websocket"
+	"github.com/labstack/echo/v4"
 )
 
 // MobileAPI provides optimized endpoints for mobile clients.
@@ -20,6 +23,7 @@ type MobileAPI struct {
 	permMgr     *opencode.PermissionManager
 	questionMgr *opencode.QuestionManager
 	wsHub       *mobilews.MobileWSHub
+	jwtSigner   *auth.Signer
 }
 
 // MobileSessionListItem is a lightweight session representation for mobile.
@@ -29,19 +33,19 @@ type MobileSessionListItem struct {
 	ModelName   string    `json:"modelName,omitempty"`
 	Status      string    `json:"status"` // "idle", "busy", "retry"
 	UpdatedAt   time.Time `json:"updatedAt"`
-	Preview     string    `json:"preview"`     // Last message preview
-	HasPending  bool      `json:"hasPending"`  // Has pending approvals
+	Preview     string    `json:"preview"`               // Last message preview
+	HasPending  bool      `json:"hasPending"`            // Has pending approvals
 	PendingType string    `json:"pendingType,omitempty"` // "permission" | "question"
 }
 
 // MobileMessage is a compressed message structure for mobile display.
 type MobileMessage struct {
-	ID        string                 `json:"id"`
-	Type      string                 `json:"type"` // "user", "assistant", "system"
-	Text      string                 `json:"text,omitempty"`
-	Tools     []MobileToolExecution  `json:"tools,omitempty"`
-	Reasoning *MobileReasoning       `json:"reasoning,omitempty"`
-	Timestamp int64                  `json:"timestamp"`
+	ID        string                `json:"id"`
+	Type      string                `json:"type"` // "user", "assistant", "system"
+	Text      string                `json:"text,omitempty"`
+	Tools     []MobileToolExecution `json:"tools,omitempty"`
+	Reasoning *MobileReasoning      `json:"reasoning,omitempty"`
+	Timestamp int64                 `json:"timestamp"`
 }
 
 // MobileToolExecution represents a tool call in mobile format.
@@ -55,17 +59,27 @@ type MobileToolExecution struct {
 // MobileReasoning represents reasoning content in mobile format.
 type MobileReasoning struct {
 	ID       string `json:"id"`
-	Summary  string `json:"summary"`  // Collapsed reasoning content
+	Summary  string `json:"summary"` // Collapsed reasoning content
 	Expanded bool   `json:"expanded"`
 }
 
-// NewMobileAPI creates a new mobile API handler.
-func NewMobileAPI(
+// newMobileAPI creates a new mobile API handler.
+//
+// NOTE: This Echo-based handler is intentionally dead code. Production mobile
+// traffic goes through handleMobileSessionRouter (see server.go). The
+// constructor and RegisterRoutes are unexported on purpose so the compiler
+// refuses any future wiring attempt; the corresponding isolation tests in
+// mobile_api_isolation_test.go lock the contract in.
+//
+// If the legacy file ever needs to be revived, remove that test alongside
+// this note.
+func newMobileAPI(
 	httpAdapter *adapter.OpenCodeHTTPAdapter,
 	eventMgr *opencode.EventStreamManager,
 	permMgr *opencode.PermissionManager,
 	questionMgr *opencode.QuestionManager,
 	wsHub *mobilews.MobileWSHub,
+	jwtSigner *auth.Signer,
 ) *MobileAPI {
 	return &MobileAPI{
 		httpAdapter: httpAdapter,
@@ -73,11 +87,16 @@ func NewMobileAPI(
 		permMgr:     permMgr,
 		questionMgr: questionMgr,
 		wsHub:       wsHub,
+		jwtSigner:   jwtSigner,
 	}
 }
 
-// RegisterRoutes registers mobile API routes.
-func (api *MobileAPI) RegisterRoutes(e *echo.Group) {
+// registerRoutes registers mobile API routes on the legacy Echo surface.
+//
+// NOTE: This method is intentionally unexported. It is part of the dead-code
+// path kept only so the file still compiles. Production routes are wired via
+// handleMobileSessionRouter in server.go.
+func (api *MobileAPI) registerRoutes(e *echo.Group) {
 	mobile := e.Group("/mobile")
 
 	// Session endpoints
@@ -151,10 +170,10 @@ func (api *MobileAPI) ListSessions(c echo.Context) error {
 		item := MobileSessionListItem{
 			ID:        s.ID,
 			Title:     s.Title,
-			ModelName: "",           // OpenCodeSession doesn't have Model field
+			ModelName: "", // OpenCodeSession doesn't have Model field
 			Status:    determineStatus(s),
-			UpdatedAt: time.Now(),   // OpenCodeSession doesn't have UpdatedAt field
-			Preview:   "",           // OpenCodeSession doesn't have LastMessage field
+			UpdatedAt: time.Now(), // OpenCodeSession doesn't have UpdatedAt field
+			Preview:   "",         // OpenCodeSession doesn't have LastMessage field
 		}
 
 		if pendingType, hasPending := pendingBySession[s.ID]; hasPending {
@@ -175,6 +194,7 @@ func (api *MobileAPI) ListSessions(c echo.Context) error {
 // Query params:
 //   - q: search keyword (required)
 //   - limit: number of results (default 20)
+//
 // Phase 2.2: 搜索会话功能
 func (api *MobileAPI) SearchSessions(c echo.Context) error {
 	query := c.QueryParam("q")
@@ -252,9 +272,9 @@ func (api *MobileAPI) GetSessionSummary(c echo.Context) error {
 		// 如果获取消息失败，返回标题作为摘要
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"data": map[string]interface{}{
-				"sessionID": sessionID,
-				"title":     title,
-				"summary":   title,
+				"sessionID":    sessionID,
+				"title":        title,
+				"summary":      title,
 				"messageCount": 0,
 			},
 		})
@@ -373,11 +393,9 @@ func (api *MobileAPI) SendPrompt(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "text is required")
 	}
 
-	// Create SendPromptRequest with text prompt
+	// Create SendPromptRequest with text prompt (V2: parts at top level)
 	promptReq := &adapter.SendPromptRequest{
-		Prompt: adapter.PromptPayload{
-			Text: req.Text,
-		},
+		Parts: []adapter.PromptPart{{Type: "text", Text: req.Text}},
 	}
 
 	_, err := api.httpAdapter.SendPrompt(c.Request().Context(), "", sessionID, promptReq)
@@ -420,7 +438,7 @@ func (api *MobileAPI) ReplyPermission(c echo.Context) error {
 	var req struct {
 		InstanceID string `json:"instanceId"`
 		SessionID  string `json:"sessionId"`
-		Reply      string `json:"reply"`  // "once" | "always" | "reject"
+		Reply      string `json:"reply"` // "once" | "always" | "reject"
 		Message    string `json:"message"`
 	}
 	if err := c.Bind(&req); err != nil {
@@ -452,9 +470,9 @@ func (api *MobileAPI) ReplyQuestion(c echo.Context) error {
 	requestID := c.Param("id")
 
 	var req struct {
-		InstanceID string                    `json:"instanceId"`
-		SessionID  string                    `json:"sessionId"`
-		Answers    []adapter.QuestionAnswer  `json:"answers"`
+		InstanceID string                   `json:"instanceId"`
+		SessionID  string                   `json:"sessionId"`
+		Answers    []adapter.QuestionAnswer `json:"answers"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
@@ -515,13 +533,39 @@ func (api *MobileAPI) HandleWebSocket(c echo.Context) error {
 		},
 	}
 
+	// Extract and validate token from query parameter
+	tokenString := c.QueryParam("token")
+	if tokenString == "" {
+		// Fallback: try Authorization header
+		tokenString = c.Request().Header.Get("Authorization")
+		if tokenString != "" && len(tokenString) > 7 && tokenString[:7] == "Bearer " {
+			tokenString = tokenString[7:]
+		}
+	}
+
+	var userID string
+	if tokenString != "" && api.jwtSigner != nil {
+		// Route through identity-go bridge so cross-project tokens
+		// (signed by pocket / memora / redclaw / acc / llm-gateway with
+		// aud=pocket-api) are accepted here too, matching the HTTP
+		// requireAuth path.
+		claims, err := auth.VerifyToken(api.jwtSigner, tokenString)
+		if err != nil || claims == nil || strings.TrimSpace(claims.UserID) == "" {
+			log.Printf("WebSocket token validation failed: %v", err)
+			return echo.NewHTTPError(http.StatusUnauthorized, "Invalid token")
+		}
+		userID = claims.UserID
+	} else {
+		// Fallback: try X-User-ID header for backward compatibility
+		userID = c.Request().Header.Get("X-User-ID")
+	}
+
 	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
 		return err
 	}
 
-	// Extract user/device info from context or headers
-	userID := c.Request().Header.Get("X-User-ID")
+	// Extract device info
 	deviceID := c.Request().Header.Get("X-Device-ID")
 	if deviceID == "" {
 		deviceID = c.RealIP()

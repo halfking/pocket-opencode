@@ -2,14 +2,14 @@ package email
 
 // Provider 定义邮件服务商的配置（IMAP + OAuth2 参数）。
 type Provider struct {
-	ID              string
-	DisplayName     string
-	IMAPHost        string
-	IMAPPort        int
-	SupportsOAuth2  bool
-	OAuth2AuthURL   string
-	OAuth2TokenURL  string
-	OAuth2Scopes    []string
+	ID             string
+	DisplayName    string
+	IMAPHost       string
+	IMAPPort       int
+	SupportsOAuth2 bool
+	OAuth2AuthURL  string
+	OAuth2TokenURL string
+	OAuth2Scopes   []string
 }
 
 // 预定义的 7 个主流邮件服务商。

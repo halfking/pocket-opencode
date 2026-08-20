@@ -1,202 +1,132 @@
 <!--
-  AppLayout — shared shell: scroll-linked chrome hide (title + sub-toolbar),
-  BottomNav, and main scroll area.
+  AppLayout — shared shell that replaces the per-view duplicated top bar
+  and bottom nav. Wraps <router-view/> with TopBar + BottomNav. Individual
+  feature views set their title via the route meta or the setHeader event.
+
+  This is the single source of truth for navigation; new modules only add
+  an entry to BottomNav.vue and a route, not a copy of the markup.
+
+  Accessibility:
+  - Skip link is the first focusable element so keyboard users can jump
+    directly to <main> instead of tabbing through the top bar every page.
+  - <header role="banner"> marks the app-level top bar.
+  - <main id="main" role="main"> is the single primary landmark per page.
+  - <nav> in BottomNav carries aria-label="主导航".
 -->
 <template>
-  <div
-    class="app-layout"
-    :class="{ 'no-chrome': hideAppHeader, 'chrome-snapping': chrome.snapping }"
-    :style="layoutStyle"
-    @click.capture="onGlobalTapToggle"
-  >
-    <div
-      v-if="!hideAppHeader"
-      ref="chromeShellRef"
-      class="chrome-shell"
-    >
-      <header ref="headerRef" class="top-bar">
-        <button v-if="canGoBack" class="back-btn" @click="goBack">←</button>
-        <h1 class="title">{{ title }}</h1>
-        <slot name="actions" />
-      </header>
-      <div id="app-chrome-sub" ref="chromeSubRef" class="chrome-sub"></div>
-    </div>
+  <div class="app-layout">
+    <a href="#main" class="skip-link" @click.prevent="focusMain">跳到主要内容</a>
+
+    <header v-if="showTopBar" class="top-bar" role="banner">
+      <button
+        v-if="canGoBack"
+        class="back-btn"
+        type="button"
+        aria-label="返回"
+        @click="goBack"
+      >
+        <span aria-hidden="true">←</span>
+      </button>
+      <h1 class="title">{{ title }}</h1>
+      <slot name="actions" />
+    </header>
+
+    <!-- 全局状态条：连接 / 同步 / 离线队列（08 §2.2，不用只显示 Toast）。 -->
+    <GlobalStatusBar v-if="showTopBar" />
 
     <main
-      ref="scrollRef"
+      id="main"
+      ref="mainEl"
       class="content"
-      :class="{ 'has-bottom-nav': showBottomNav, 'full-bleed': hideAppHeader }"
-      :style="contentStyle"
-      @scroll="onMainScrollFixed"
+      role="main"
+      :class="{ 'has-bottom-nav': showBottomNav }"
+      :aria-label="title"
+      tabindex="-1"
     >
       <slot />
     </main>
 
-    <BottomNav v-if="showBottomNav" ref="bottomNavRef" />
+    <BottomNav v-if="showBottomNav" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import BottomNav from '../components/BottomNav.vue'
-import { SCROLL_CHROME_KEY, isChromeToggleTap } from '../composables/scroll-chrome'
-import { createScrollHideChrome } from '../composables/useScrollHideChrome'
+import GlobalStatusBar from '../components/GlobalStatusBar.vue'
+import { useBreakpoint } from '../composables/useBreakpoint'
 
 const route = useRoute()
 const router = useRouter()
+const { isFoldableExpanded } = useBreakpoint()
+
+const mainEl = ref<HTMLElement | null>(null)
 
 const title = computed(() => (route.meta.title as string) || 'OpenCode Pocket')
-const showBottomNav = computed(() => route.meta.bottomNav !== false)
+const showTopBar = computed(() => route.meta.showTopBar !== false)
+const showBottomNav = computed(() => {
+  if (route.meta.bottomNav === false) return false
+  // 平板会话工作台选中 detail 后进入详情态，按 08 §2.2 隐藏底部导航。
+  if (
+    isFoldableExpanded.value &&
+    route.name === 'sessions' &&
+    typeof route.query.selected === 'string' &&
+    route.query.selected !== ''
+  ) {
+    return false
+  }
+  return true
+})
 const canGoBack = computed(() => Boolean(route.meta.canGoBack))
-const hideAppHeader = computed(() => route.meta.hideAppHeader === true)
-const scrollChromeEnabled = computed(
-  () => !hideAppHeader.value && route.meta.hideScrollChrome !== true,
-)
-
-const chromeShellRef = ref<HTMLElement | null>(null)
-const headerRef = ref<HTMLElement | null>(null)
-const chromeSubRef = ref<HTMLElement | null>(null)
-const scrollRef = ref<HTMLElement | null>(null)
-const bottomNavRef = ref<InstanceType<typeof BottomNav> | null>(null)
-
-const headerHeight = ref(48)
-const subChromeHeight = ref(0)
-const bottomNavHeight = ref(56)
-const chromeTotalHeight = computed(() => headerHeight.value + subChromeHeight.value)
-
-const maxHideOffset = computed(() => {
-  if (!scrollChromeEnabled.value) return 0
-  let max = chromeTotalHeight.value
-  if (showBottomNav.value) max = Math.max(max, bottomNavHeight.value)
-  return max
-})
-
-const chrome = createScrollHideChrome(() => maxHideOffset.value)
-
-const topHiddenPx = computed(() =>
-  Math.min(chrome.hiddenOffset.value, chromeTotalHeight.value),
-)
-const bottomHiddenPx = computed(() =>
-  showBottomNav.value
-    ? Math.min(chrome.hiddenOffset.value, bottomNavHeight.value)
-    : 0,
-)
-
-const contentStyle = computed(() => {
-  if (hideAppHeader.value) return undefined
-  return { paddingTop: `${chromeTotalHeight.value}px` }
-})
-
-const layoutStyle = computed(() => ({
-  '--bottom-chrome-hide': `${bottomHiddenPx.value}px`,
-  '--top-chrome-hide': `${topHiddenPx.value}px`,
-}))
-
-let mainLastTop = 0
-function onMainScrollFixed() {
-  if (!scrollChromeEnabled.value || !scrollRef.value) return
-  const el = scrollRef.value
-  const delta = el.scrollTop - mainLastTop
-  mainLastTop = el.scrollTop
-  chrome.reportScroll({ scrollTop: el.scrollTop, delta })
-}
-
-function onGlobalTapToggle(e: MouseEvent) {
-  if (!showBottomNav.value || !scrollChromeEnabled.value) return
-  if (!isChromeToggleTap(e.target as HTMLElement)) return
-  chrome.toggle()
-}
-
-provide(SCROLL_CHROME_KEY, {
-  ...chrome,
-  chromeTotalHeight,
-  bottomNavHeight,
-  enabled: scrollChromeEnabled,
-  topHiddenPx,
-  bottomHiddenPx,
-})
 
 function goBack() {
   if (window.history.length > 1) router.back()
   else router.push('/ai')
 }
 
-let subObserver: ResizeObserver | null = null
-let headerObserver: ResizeObserver | null = null
-let navObserver: ResizeObserver | null = null
-
-function measureHeights() {
-  headerHeight.value = headerRef.value?.offsetHeight ?? 48
-  subChromeHeight.value = chromeSubRef.value?.offsetHeight ?? 0
-  const navEl = bottomNavRef.value?.$el as HTMLElement | undefined
-  bottomNavHeight.value = navEl?.offsetHeight ?? 56
+function focusMain() {
+  // Move focus to <main> so the skip link lands keyboard users at content.
+  mainEl.value?.focus()
+  mainEl.value?.scrollTo({ top: 0 })
 }
-
-watch(
-  () => route.fullPath,
-  () => {
-    chrome.reset()
-    mainLastTop = 0
-    if (scrollRef.value) scrollRef.value.scrollTop = 0
-  },
-)
-
-onMounted(() => {
-  measureHeights()
-
-  if (headerRef.value) {
-    headerObserver = new ResizeObserver(measureHeights)
-    headerObserver.observe(headerRef.value)
-  }
-  if (chromeSubRef.value) {
-    subObserver = new ResizeObserver(measureHeights)
-    subObserver.observe(chromeSubRef.value)
-  }
-  const navEl = bottomNavRef.value?.$el as HTMLElement | undefined
-  if (navEl) {
-    navObserver = new ResizeObserver(measureHeights)
-    navObserver.observe(navEl)
-  }
-  measureHeights()
-})
-
-onUnmounted(() => {
-  headerObserver?.disconnect()
-  subObserver?.disconnect()
-  navObserver?.disconnect()
-})
 </script>
 
 <style scoped>
 .app-layout {
-  position: fixed;
-  inset: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  width: 100%;
   background: var(--bg-base);
   color: var(--text-primary);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* Safe area: keep fold/notch screens full-bleed without overlap. */
+  padding-left: env(safe-area-inset-left, 0);
+  padding-right: env(safe-area-inset-right, 0);
 }
 
-.app-layout.no-chrome .content {
-  padding-top: 0 !important;
+/* Skip link — visually hidden until focused via keyboard. */
+.skip-link {
+  position: absolute;
+  left: var(--space-2);
+  top: -40px;
+  z-index: var(--z-toast);
+  padding: var(--space-2) var(--space-3);
+  background: var(--brand-primary);
+  color: var(--text-inverse);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
+  text-decoration: none;
+  transition: top var(--duration-fast) var(--ease-out);
 }
 
-.chrome-shell {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 20;
-  will-change: transform;
-  background: var(--bg-card);
-  transform: translate3d(0, calc(-1 * var(--top-chrome-hide, 0px)), 0);
-}
-
-.app-layout.chrome-snapping .chrome-shell,
-.app-layout.chrome-snapping :deep(.bottom-nav) {
-  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1);
+.skip-link:focus,
+.skip-link:focus-visible {
+  top: var(--space-2);
+  outline: 2px solid var(--text-inverse);
+  outline-offset: 2px;
 }
 
 .top-bar {
@@ -205,44 +135,75 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--space-2-5);
   padding: 0 var(--space-3);
+  padding-top: env(safe-area-inset-top, 0);
   background: var(--bg-card);
   border-bottom: 1px solid var(--border);
-}
-
-.chrome-sub:empty {
-  display: none;
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
 }
 
 .back-btn {
-  background: none;
-  border: none;
   font-size: 20px;
   color: var(--text-primary);
-  cursor: pointer;
   padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  line-height: 1;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.back-btn:active {
+  background: var(--bg-subtle);
 }
 
 .title {
   flex: 1;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: var(--text-lg);
+  font-weight: var(--font-weight-semibold);
   margin: 0;
+  color: var(--text-primary);
+  /* Allow long titles to ellipsize instead of wrapping. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .content {
   flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
+  width: 100%;
+  /* Large screens (foldable expanded / tablet): center and cap width. */
+  max-width: var(--content-max, 100%);
+  margin: 0 auto;
   padding: var(--space-3);
+  /* main is the scroll container for focus management. */
+  outline: none;
 }
 
 .content.has-bottom-nav {
   padding-bottom: calc(var(--bottomnav-height) + var(--space-3));
 }
 
-.content.full-bleed {
-  padding: 0;
-  overflow: hidden;
+/* Foldable expanded / tablet (≥840px): widen content and switch lists to 2-col. */
+@media (min-width: 840px) {
+  .app-layout {
+    --content-max: 1100px;
+  }
+  .content {
+    padding: var(--space-4) var(--space-5);
+  }
+  .content :is(.note-list, .meeting-list, .meetings-page .meeting-list, .contact-list, .email-list) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-3);
+  }
+}
+
+@media (min-width: 1280px) {
+  .app-layout {
+    --content-max: 1320px;
+  }
+  .content :is(.note-list, .meeting-list, .contact-list, .email-list) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 </style>

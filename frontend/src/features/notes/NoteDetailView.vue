@@ -9,8 +9,14 @@
 -->
 <template>
   <div class="note-detail-view">
-    <AppLayout>
-      <div v-if="loading" class="state">加载中…</div>
+          <div v-if="loading" class="state" role="status">加载中…</div>
+
+      <ErrorState
+        v-else-if="loadError"
+        title="笔记加载失败"
+        :message="loadError"
+        @retry="load"
+      />
 
       <div v-else-if="!note" class="state">
         <p>笔记不存在或已被删除</p>
@@ -48,7 +54,12 @@
               :key="r.id"
               class="related-card"
               :class="`domain-${r.domain || 'work'}`"
+              tabindex="0"
+              role="link"
+              :aria-label="`打开笔记：${r.title || (r.content || '').slice(0, 28)}`"
               @click="openNote(r.id)"
+              @keydown.enter.prevent="openNote(r.id)"
+              @keydown.space.prevent="openNote(r.id)"
             >
               <div class="related-title">{{ r.title || r.content.slice(0, 28) }}</div>
               <div class="related-snippet">{{ r.content }}</div>
@@ -64,8 +75,8 @@
           </button>
           <button class="action-btn danger" @click="onDelete">🗑 删除</button>
         </div>
+        <p v-if="reclassifyError" class="form-error" role="alert">{{ reclassifyError }}</p>
       </div>
-    </AppLayout>
   </div>
 </template>
 
@@ -74,18 +85,22 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import AppLayout from '../../app/AppLayout.vue'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
 import { http } from '../../api/http'
+import { ErrorState } from '../../components'
+import { useAuthStore } from '../../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 
 const note = ref<LocalNote | null>(null)
 const loading = ref(true)
 const related = ref<LocalNote[]>([])
 const reclassifying = ref(false)
+const reclassifyError = ref('')
+const loadError = ref('')
 
 const displayTitle = computed(() => {
   if (!note.value) return ''
@@ -118,22 +133,27 @@ const renderedMarkdown = computed(() => {
   })
 })
 
-onMounted(async () => {
+onMounted(() => load())
+
+async function load() {
   const id = route.params.id as string
   loading.value = true
+  loadError.value = ''
   try {
-    const fetched = await notesStore.getNote(id)
+    const fetched = await notesStore.getNote(id, false, currentWorkspaceId())
     note.value = fetched
     if (fetched) await loadRelated(fetched)
+  } catch (e: any) {
+    loadError.value = e?.message || '加载笔记失败，请稍后重试。'
   } finally {
     loading.value = false
   }
-})
+}
 
 async function loadRelated(target: LocalNote) {
   try {
     // 取 5 条以便排除自身后还能剩 4 条
-    const results = await notesStore.searchSemantic(target.content, 5)
+    const results = await notesStore.searchSemantic(target.content, 5, currentWorkspaceId())
     related.value = results
       .map((r) => r.note)
       .filter((n) => n.id !== target.id)
@@ -141,6 +161,10 @@ async function loadRelated(target: LocalNote) {
   } catch {
     related.value = []
   }
+}
+
+function currentWorkspaceId(): string {
+  return auth.workspaceId || 'default'
 }
 
 function goBack() {
@@ -161,20 +185,23 @@ async function onDelete() {
   if (!note.value) return
   const ok = confirm('确认删除这条笔记？此操作不可撤销。')
   if (!ok) return
-  await notesStore.deleteNote(note.value.id)
+  await notesStore.deleteNote(note.value.id, currentWorkspaceId())
   router.back()
 }
 
 async function reclassify() {
   if (!note.value || reclassifying.value) return
   reclassifying.value = true
+  reclassifyError.value = ''
   try {
     await http(`/api/notes/${note.value.id}/classify`, { method: 'POST' })
     // 后端当前 stub；刷新本地数据以拿最新分类
-    const refreshed = await notesStore.getNote(note.value.id)
+    const refreshed = await notesStore.getNote(note.value.id, false, currentWorkspaceId())
     if (refreshed) note.value = refreshed
-  } catch (e) {
+    reclassifyError.value = ''
+  } catch (e: any) {
     console.warn('[note] 重新分类失败:', e)
+    reclassifyError.value = e?.message || '重新分类失败，请稍后重试'
   } finally {
     reclassifying.value = false
   }
@@ -333,7 +360,7 @@ function formatTime(ms: number) {
   font-weight: 500;
   cursor: pointer;
   color: var(--text-primary);
-  transition: opacity 0.15s;
+  transition: opacity var(--duration-fast);
 }
 .action-btn:active { opacity: 0.7; }
 .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -344,4 +371,15 @@ function formatTime(ms: number) {
 }
 .action-btn.ghost { background: var(--bg-subtle); }
 .action-btn.danger { color: var(--danger); border-color: var(--danger); }
+
+.form-error {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
 </style>

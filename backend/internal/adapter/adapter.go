@@ -26,6 +26,9 @@ type OpenCodeSession struct {
 	ID     string
 	Title  string
 	Status string
+	// TimeUpdated is the upstream session time.updated (Unix ms). It backs
+	// the mobile incremental-sync cursor; 0 when the upstream omits it.
+	TimeUpdated int64
 }
 
 // RemoteTask 从 OpenCode 实例的 Session API 获取的任务（一个 Session = 一个开发任务）

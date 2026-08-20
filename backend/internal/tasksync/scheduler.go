@@ -6,6 +6,7 @@ package tasksync
 import (
 	"context"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,10 +82,13 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			log.Printf("[tasksync] fetch ACC tasks failed: %v", err)
 			s.lastErrLog = time.Now()
 		}
+		recordAudit("", systemTenantID(), "tasksync.sync.error", "acc_task:",
+			AuditFields{Success: false, Detail: "fetch_failed"})
 		return
 	}
 
 	now := time.Now()
+	saved := 0
 	for _, p := range parsed {
 		t := task.Task{
 			ID:               p.ID,
@@ -101,9 +105,23 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			errStr := err.Error()
 			if !strings.Contains(errStr, "23505") && !strings.Contains(errStr, "duplicate key") {
 				log.Printf("[tasksync] create ACC task %s failed: %v", p.ID, err)
+				recordAudit("", systemTenantID(), "tasksync.sync.error", "acc_task:"+p.ID,
+					AuditFields{Success: false, Detail: "create_failed"})
 			}
 			continue
 		}
+		saved++
 	}
 	log.Printf("[tasksync] synced %d ACC tasks", len(parsed))
+	recordAudit("", systemTenantID(), "tasksync.sync", "acc_task:batch",
+		AuditFields{Success: true, Detail: countDetail(len(parsed), saved)})
+}
+
+// systemTenantID 与 server.AuditSystemTenant 同语义；tasksync 不依赖
+// server 包，因此在这里复制常量字符串。两处必须在 CI 期间保持一致
+// （通过 grep 检查两边字符串）。
+func systemTenantID() string { return "system:acc" }
+
+func countDetail(parsed, saved int) string {
+	return "parsed=" + strconv.Itoa(parsed) + " saved=" + strconv.Itoa(saved)
 }

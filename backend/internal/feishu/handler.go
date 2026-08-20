@@ -6,8 +6,9 @@
 //   - 事件回调：{"schema":"2.0","header":{...},"event":{...}}，必须在 3s 内返回 {"code":0}，否则飞书会重试
 //
 // 签名验证：V2 使用 HMAC-SHA256（消息体不加密）。
-//   X-Lark-Signature = base64(hmac_sha256(timestamp + nonce + secret, body))
-//   其中 timestamp 来自 X-Lark-Request-Timestamp header，nonce 来自 X-Lark-Request-Nonce。
+//
+//	X-Lark-Signature = base64(hmac_sha256(timestamp + nonce + secret, body))
+//	其中 timestamp 来自 X-Lark-Request-Timestamp header，nonce 来自 X-Lark-Request-Nonce。
 //
 // dev 模式：若 POCKET_FEISHU_VERIFY_SECRET 留空则跳过签名校验（生产前必须配置）。
 package feishu
@@ -38,6 +39,7 @@ func PublicEntry(cfg config.Config, broadcast func(msgType string, payload inter
 		}
 
 		// 2) 读 raw body（验签需要原始字节）
+		r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
 			log.Printf("[feishu] read body failed: %v", err)
@@ -70,7 +72,7 @@ func PublicEntry(cfg config.Config, broadcast func(msgType string, payload inter
 				return
 			}
 		} else {
-			log.Printf("[feishu] WARNING: POCKET_FEISHU_VERIFY_SECRET empty, signature check SKIPPED (dev mode)")
+			log.Printf("[feishu] WARNING: POCKET_FEISHU_VERIFY_SECRET is unset; signature check SKIPPED (dev mode)")
 		}
 
 		// 6) 解析 event 字段
@@ -104,26 +106,41 @@ type eventEnvelope struct {
 	Schema string          `json:"schema"`
 	Header json.RawMessage `json:"header"`
 	Event  struct {
-		Type     string          `json:"type"`
-		AppID    string          `json:"app_id"`
+		Type      string          `json:"type"`
+		AppID     string          `json:"app_id"`
 		TenantKey string          `json:"tenant_key"`
-		Message  json.RawMessage `json:"message,omitempty"`
-		Sender   json.RawMessage `json:"sender,omitempty"`
-		File     json.RawMessage `json:"file,omitempty"`
-		Document json.RawMessage `json:"document,omitempty"`
-		Wiki     json.RawMessage `json:"wiki,omitempty"`
+		Message   json.RawMessage `json:"message,omitempty"`
+		Sender    json.RawMessage `json:"sender,omitempty"`
+		File      json.RawMessage `json:"file,omitempty"`
+		Document  json.RawMessage `json:"document,omitempty"`
+		Wiki      json.RawMessage `json:"wiki,omitempty"`
 	} `json:"event"`
 }
 
 func handleURLVerification(w http.ResponseWriter, cfg config.Config, env envelope) {
 	// 若配置了 verify_token，强制匹配
 	if cfg.FeishuVerifyToken != "" && env.Token != cfg.FeishuVerifyToken {
-		log.Printf("[feishu] url_verification token mismatch: got=%q want=%q", env.Token, cfg.FeishuVerifyToken)
+		// Avoid logging raw verify tokens; record the lengths and a short
+		// prefix so operators can still distinguish cases without leaking
+		// the secret to log aggregators.
+		logTokenMismatch(len(env.Token), len(cfg.FeishuVerifyToken), env.Token, cfg.FeishuVerifyToken)
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": -1, "msg": "token mismatch"})
 		return
 	}
-	log.Printf("[feishu] url_verification OK challenge=%q", env.Challenge)
+	log.Printf("[feishu] url_verification OK challenge_len=%d", len(env.Challenge))
 	writeJSON(w, http.StatusOK, map[string]any{"challenge": env.Challenge})
+}
+
+// logTokenMismatch records a verify-token mismatch without leaking the
+// raw token bytes. It is a tiny seam so a unit test can assert the
+// redaction policy: the secret string must never appear verbatim in
+// log output.
+//
+// gotPrefix and wantPrefix are passed in already-clipped to <=6 bytes by
+// the caller; the helper prints the lengths and the prefixes only.
+func logTokenMismatch(gotLen, wantLen int, got, want string) {
+	log.Printf("[feishu] url_verification token mismatch: got_len=%d want_len=%d got_prefix=%.6q want_prefix=%.6q",
+		gotLen, wantLen, got, want)
 }
 
 // verifySignature 飞书 V2 HMAC-SHA256 验签 + 时间戳新鲜度校验
@@ -165,14 +182,14 @@ func abs(x int64) int64 {
 
 // dispatch 根据 event.type 派发到具体处理函数
 func dispatch(eventType string, ev struct {
-	Type     string          `json:"type"`
-	AppID    string          `json:"app_id"`
+	Type      string          `json:"type"`
+	AppID     string          `json:"app_id"`
 	TenantKey string          `json:"tenant_key"`
-	Message  json.RawMessage `json:"message,omitempty"`
-	Sender   json.RawMessage `json:"sender,omitempty"`
-	File     json.RawMessage `json:"file,omitempty"`
-	Document json.RawMessage `json:"document,omitempty"`
-	Wiki     json.RawMessage `json:"wiki,omitempty"`
+	Message   json.RawMessage `json:"message,omitempty"`
+	Sender    json.RawMessage `json:"sender,omitempty"`
+	File      json.RawMessage `json:"file,omitempty"`
+	Document  json.RawMessage `json:"document,omitempty"`
+	Wiki      json.RawMessage `json:"wiki,omitempty"`
 }, broadcast func(msgType string, payload interface{})) {
 	// 记录全部事件（便于调试 & 审计）
 	payloadBytes, _ := json.Marshal(ev)
@@ -204,23 +221,23 @@ func dispatch(eventType string, ev struct {
 
 // handleMessageEvent 消息事件：解析 chat_id / message_id / sender_id
 func handleMessageEvent(ev struct {
-	Type     string          `json:"type"`
-	AppID    string          `json:"app_id"`
+	Type      string          `json:"type"`
+	AppID     string          `json:"app_id"`
 	TenantKey string          `json:"tenant_key"`
-	Message  json.RawMessage `json:"message,omitempty"`
-	Sender   json.RawMessage `json:"sender,omitempty"`
-	File     json.RawMessage `json:"file,omitempty"`
-	Document json.RawMessage `json:"document,omitempty"`
-	Wiki     json.RawMessage `json:"wiki,omitempty"`
+	Message   json.RawMessage `json:"message,omitempty"`
+	Sender    json.RawMessage `json:"sender,omitempty"`
+	File      json.RawMessage `json:"file,omitempty"`
+	Document  json.RawMessage `json:"document,omitempty"`
+	Wiki      json.RawMessage `json:"wiki,omitempty"`
 }, broadcast func(msgType string, payload interface{}), isRead bool) {
 	// MVP: 解析关键字段，记日志 + 推 WebSocket
 	var msg struct {
-		ChatID       string `json:"chat_id"`
-		ChatType     string `json:"chat_type"`
-		MessageID    string `json:"message_id"`
-		MessageType  string `json:"message_type"`
-		Content      string `json:"content"`
-		CreateTime   string `json:"create_time"`
+		ChatID      string `json:"chat_id"`
+		ChatType    string `json:"chat_type"`
+		MessageID   string `json:"message_id"`
+		MessageType string `json:"message_type"`
+		Content     string `json:"content"`
+		CreateTime  string `json:"create_time"`
 	}
 	_ = json.Unmarshal(ev.Message, &msg)
 
@@ -250,28 +267,28 @@ func handleMessageEvent(ev struct {
 
 // handleDocEvent 文档/多维表事件
 func handleDocEvent(ev struct {
-	Type     string          `json:"type"`
-	AppID    string          `json:"app_id"`
+	Type      string          `json:"type"`
+	AppID     string          `json:"app_id"`
 	TenantKey string          `json:"tenant_key"`
-	Message  json.RawMessage `json:"message,omitempty"`
-	Sender   json.RawMessage `json:"sender,omitempty"`
-	File     json.RawMessage `json:"file,omitempty"`
-	Document json.RawMessage `json:"document,omitempty"`
-	Wiki     json.RawMessage `json:"wiki,omitempty"`
+	Message   json.RawMessage `json:"message,omitempty"`
+	Sender    json.RawMessage `json:"sender,omitempty"`
+	File      json.RawMessage `json:"file,omitempty"`
+	Document  json.RawMessage `json:"document,omitempty"`
+	Wiki      json.RawMessage `json:"wiki,omitempty"`
 }, broadcast func(msgType string, payload interface{}), eventType string) {
 	// MVP: 提取文件/文档 token + name
 	var file struct {
-		FileToken   string `json:"file_token"`
-		FileName    string `json:"file_name"`
-		FileType    string `json:"file_type"`
-		ActionList  []string `json:"action_list"`
+		FileToken  string   `json:"file_token"`
+		FileName   string   `json:"file_name"`
+		FileType   string   `json:"file_type"`
+		ActionList []string `json:"action_list"`
 	}
 	_ = json.Unmarshal(ev.File, &file)
 
 	var doc struct {
-		DocID  string `json:"doc_id"`
+		DocID   string `json:"doc_id"`
 		DocType string `json:"doc_type"`
-		Title  string `json:"title"`
+		Title   string `json:"title"`
 	}
 	_ = json.Unmarshal(ev.Document, &doc)
 

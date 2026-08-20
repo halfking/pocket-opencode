@@ -153,9 +153,10 @@ func parseSessionList(body io.Reader) ([]OpenCodeSession, error) {
 		}
 
 		sessions = append(sessions, OpenCodeSession{
-			ID:     s.ID,
-			Title:  s.Title,
-			Status: status,
+			ID:          s.ID,
+			Title:       s.Title,
+			Status:      status,
+			TimeUpdated: s.Time.Updated,
 		})
 	}
 	return sessions, nil
@@ -256,14 +257,26 @@ func (a *OpenCodeHTTPAdapter) GetSessionDetail(ctx context.Context, instanceBase
 		return nil, fmt.Errorf("opencode get session returned %d", resp.StatusCode)
 	}
 
-	var response struct {
-		Data OpenCodeSessionInfo `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("decode session failed: %w", err)
+	// 双格式兼容：裸对象 {id, ...} 或包装 {data: {id, ...}}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read session body failed: %w", err)
 	}
 
-	return &response.Data, nil
+	var info OpenCodeSessionInfo
+	if err := json.Unmarshal(body, &info); err != nil {
+		return nil, fmt.Errorf("decode session failed: %w", err)
+	}
+	if info.ID == "" {
+		var wrapper struct {
+			Data OpenCodeSessionInfo `json:"data"`
+		}
+		if err := json.Unmarshal(body, &wrapper); err == nil && wrapper.Data.ID != "" {
+			info = wrapper.Data
+		}
+	}
+
+	return &info, nil
 }
 
 // CreateSession 创建新会话
@@ -295,24 +308,44 @@ func (a *OpenCodeHTTPAdapter) CreateSession(ctx context.Context, instanceBaseURL
 		return nil, fmt.Errorf("opencode create session returned %d", resp.StatusCode)
 	}
 
-	var response struct {
-		Data OpenCodeSessionInfo `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("decode session failed: %w", err)
+	// OpenCode 真实响应是裸对象 {id, slug, ...}，旧版可能是 {data: {...}} 包装。
+	// 双格式兼容：先试裸对象，再试包装对象。
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, fmt.Errorf("read session body failed: %w", readErr)
 	}
 
-	return &response.Data, nil
+	var info OpenCodeSessionInfo
+	trimmed := strings.TrimSpace(string(respBody))
+	if strings.HasPrefix(trimmed, "{") {
+		// 先试裸对象
+		if err := json.Unmarshal(respBody, &info); err != nil {
+			return nil, fmt.Errorf("decode session (raw) failed: %w", err)
+		}
+		// 如果 ID 为空，可能是 {data: {...}} 包装
+		if info.ID == "" {
+			var wrapper struct {
+				Data OpenCodeSessionInfo `json:"data"`
+			}
+			if err := json.Unmarshal(respBody, &wrapper); err == nil && wrapper.Data.ID != "" {
+				info = wrapper.Data
+			}
+		}
+	} else {
+		return nil, fmt.Errorf("unexpected session response format")
+	}
+
+	return &info, nil
 }
 
 // SendPrompt 发送 Prompt 到指定会话
-// API: POST /session/:sessionID/prompt
+// OpenCode 真实 API: POST /session/:sessionID/message（无 /prompt 后缀）
 // Payload: { id?, prompt, delivery?, resume? }
 func (a *OpenCodeHTTPAdapter) SendPrompt(ctx context.Context, instanceBaseURL, sessionID string, payload *SendPromptRequest) (*SendPromptResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/session/%s/prompt", instanceBaseURL, sessionID)
+	url := fmt.Sprintf("%s/session/%s/message", instanceBaseURL, sessionID)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload failed: %w", err)
@@ -322,6 +355,7 @@ func (a *OpenCodeHTTPAdapter) SendPrompt(ctx context.Context, instanceBaseURL, s
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %w", err)
 	}
+	// OpenCode 会按 Content-Type 解析 JSON body
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := a.client.Do(req)
@@ -330,26 +364,49 @@ func (a *OpenCodeHTTPAdapter) SendPrompt(ctx context.Context, instanceBaseURL, s
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("opencode send prompt returned %d: %s", resp.StatusCode, string(body))
+	if resp.StatusCode != http.StatusOK {
+		r, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("opencode send prompt returned %d: %s", resp.StatusCode, string(r))
 	}
 
-	var response struct {
+	// 兼容两种响应：
+	// 1) { data: { messageID, enqueued, position } }
+	// 2) 直接返回 SessionInput/Message 结构（未来版本）
+	var wrapper struct {
 		Data SendPromptResponse `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("decode prompt response failed: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err == nil {
+		return &wrapper.Data, nil
 	}
 
-	return &response.Data, nil
+	// 回退：某些版本可能只返回 200 + 空体 / SSE 起始，不影响"已发送"语义
+	return &SendPromptResponse{Enqueued: true}, nil
 }
 
-// opencodeMessage 映射 OpenCode Message 结构
+// opencodeMessage 映射 OpenCode Message 结构。
+// OpenCode V1 消息顶层结构是 {info:{role,...}, parts:[{type,text,...}]}，
+// 没有外层 "data" 包装。Data 字段用 json.RawMessage + 自定义 UnmarshalJSON
+// 把整个消息体（含 info/parts）放入 Data，供调用方按需提取。
 type opencodeMessage struct {
-	ID   string                 `json:"id"`
-	Type string                 `json:"type"`
-	Data map[string]interface{} `json:"data,omitempty"`
+	ID   string                 `json:"-"`
+	Type string                 `json:"-"`
+	Data map[string]interface{} `json:"-"`
+}
+
+// UnmarshalJSON 把整个 JSON 对象解析到 Data map（兼容 V1 顶层 {info, parts} 结构）。
+func (m *opencodeMessage) UnmarshalJSON(b []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	m.Data = raw
+	if id, ok := raw["id"].(string); ok {
+		m.ID = id
+	}
+	if t, ok := raw["type"].(string); ok {
+		m.Type = t
+	}
+	return nil
 }
 
 // OpenCodeMessage is the exported version of opencodeMessage for external use
@@ -401,12 +458,31 @@ func (a *OpenCodeHTTPAdapter) GetSessionMessages(ctx context.Context, instanceBa
 		return nil, fmt.Errorf("opencode get messages returned %d", resp.StatusCode)
 	}
 
-	var response SessionMessagesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("decode messages failed: %w", err)
+	// OpenCode 真实响应是裸数组 [...]，但旧版/某些端点可能返回 {data:[...]} 包装。
+	// 双格式兼容：先试裸数组，再试包装对象（与 parseSessionList 策略一致）。
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read messages body failed: %w", err)
 	}
 
-	return &response, nil
+	response := &SessionMessagesResponse{}
+	trimmed := strings.TrimSpace(string(body))
+	if strings.HasPrefix(trimmed, "[") {
+		// 裸数组格式
+		if err := json.Unmarshal(body, &response.Data); err != nil {
+			return nil, fmt.Errorf("decode messages (array) failed: %w", err)
+		}
+	} else {
+		// 包装对象格式 {data:[...], cursor:{...}}
+		var wrapper SessionMessagesResponse
+		if err := json.Unmarshal(body, &wrapper); err != nil {
+			return nil, fmt.Errorf("decode messages (wrapped) failed: %w", err)
+		}
+		response.Data = wrapper.Data
+		response.Cursor = wrapper.Cursor
+	}
+
+	return response, nil
 }
 
 // GetSessionContext 获取会话上下文（最后压缩点之后的所有消息）
@@ -549,12 +625,14 @@ func (a *OpenCodeHTTPAdapter) WaitForSessionIdle(ctx context.Context, instanceBa
 	return nil
 }
 
-// HealthCheck 检查 OpenCode 实例健康状态
+// HealthCheck 检查 OpenCode 实例健康状态。
+// OpenCode 真实端点是 GET /global/health（无 /api 前缀），返回 {"healthy":true,"version":"..."}。
+// 历史代码误用 /api/health，导致扫描找不到真实实例——此处修正。
 func (a *OpenCodeHTTPAdapter) HealthCheck(ctx context.Context, instanceBaseURL string) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, instanceBaseURL+"/api/health", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, instanceBaseURL+"/global/health", nil)
 	if err != nil {
 		return fmt.Errorf("create health check request failed: %w", err)
 	}
@@ -570,7 +648,8 @@ func (a *OpenCodeHTTPAdapter) HealthCheck(ctx context.Context, instanceBaseURL s
 	}
 
 	var result struct {
-		Healthy bool `json:"healthy"`
+		Healthy bool   `json:"healthy"`
+		Version string `json:"version"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return fmt.Errorf("decode health check response failed: %w", err)
@@ -658,13 +737,13 @@ func (a *OpenCodeHTTPAdapter) GetPermissionRequests(ctx context.Context, instanc
 }
 
 // GetAllPendingPermissionRequests 获取所有位置下的待审批权限请求
-// API: GET /api/permission/request?directory=&workspaceID=
+// API: GET /permission/request?directory=&workspaceID=（OpenCode 路径无 /api 前缀）
 // 响应: Location.response(PermissionRequest[])
 func (a *OpenCodeHTTPAdapter) GetAllPendingPermissionRequests(ctx context.Context, instanceBaseURL, directory, workspaceID string) ([]PermissionRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := instanceBaseURL + "/api/permission/request"
+	url := instanceBaseURL + "/permission/request"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create permission list request failed: %w", err)
@@ -819,7 +898,7 @@ func (a *OpenCodeHTTPAdapter) GetAllPendingQuestionRequests(ctx context.Context,
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	url := instanceBaseURL + "/api/question/request"
+	url := instanceBaseURL + "/question/request"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create question list request failed: %w", err)
@@ -945,7 +1024,7 @@ func (a *OpenCodeHTTPAdapter) SubscribeEvents(ctx context.Context, instanceBaseU
 		Timeout: 0, // 无限超时（由 ctx 控制）
 	}
 
-	url := instanceBaseURL + "/api/event"
+	url := instanceBaseURL + "/event"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create event subscribe request failed: %w", err)

@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
+	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
 
 // fakeInstance creates a PocketInstance stub for testing.
@@ -29,8 +31,8 @@ type fakePermissionAdapter struct {
 	mu sync.Mutex
 
 	pendingRequests map[string][]adapter.PermissionRequest // key: sessionID
-	replyCalls       int32
-	replied          []repliedPermission
+	replyCalls      int32
+	replied         []repliedPermission
 }
 
 type repliedPermission struct {
@@ -95,10 +97,25 @@ func newTestPermissionManager() (*PermissionManager, *fakePermissionAdapter) {
 	ad := newFakePermissionAdapter()
 	mgr := NewPermissionManager(reg, ad, PermissionManagerOptions{
 		PollInterval: 50 * time.Millisecond,
-	})
+	}, nil)
 	return mgr, ad
 }
 
+type failingManagerProjector struct{}
+
+func (failingManagerProjector) apply(context.Context, task.ApprovalKind, task.ApprovalState, string, string, string, string) error {
+	return errors.New("projection unavailable")
+}
+
+func TestPermissionManager_ProjectionFailureDoesNotCacheNewRequest(t *testing.T) {
+	mgr, _ := newTestPermissionManager()
+	defer mgr.Close()
+	mgr.projector = failingManagerProjector{}
+	mgr.handleNewPermissionFromEvent("inst-a", "ses-1", map[string]any{"id": "per-fail", "action": "bash"})
+	if got := mgr.ListPending("inst-a", "ses-1"); len(got) != 0 {
+		t.Fatalf("failed projection must not cache request, got %+v", got)
+	}
+}
 func TestPermissionManager_EmitsNewAndResolved(t *testing.T) {
 	mgr, ad := newTestPermissionManager()
 	defer mgr.Close()

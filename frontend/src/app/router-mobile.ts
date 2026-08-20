@@ -16,7 +16,7 @@ import TasksView from '../features/tasks/TasksView.vue'
 import TaskDetailView from '../features/tasks/TaskDetailView.vue'
 
 // 会话列表页
-import SessionListView from '../features/sessions/SessionListView.vue'
+import SessionWorkspaceView from '../features/sessions/SessionWorkspaceView.vue'
 
 // 设置页
 import SettingsView from '../features/settings/SettingsView.vue'
@@ -36,22 +36,14 @@ import MeetingListView from '../features/meetings/MeetingListView.vue'
 import MeetingRecordView from '../features/meetings/MeetingRecordView.vue'
 import MeetingDetailView from '../features/meetings/MeetingDetailView.vue'
 
-// 🦞 守卫所需：登录态 + 龙虾初始化态
-import { useAuthStore } from '../stores/auth'
-import { isLobsterReady } from '../native/lobster-init'
+// S1.1 PKM 记事本（TipTap WYSIWYG + 双向链接，基于 S0-C assetStore）
+// 路由级懒加载：TipTap ~200KB 只在进入 /pkm 时才下载，保持首屏精简。
+const PkmTodayView = () => import('../features/pkm/PkmTodayView.vue')
+const PkmNoteView = () => import('../features/pkm/PkmNoteView.vue')
 
-/**
- * 判断某路由是否需要"龙虾硬壳已初始化"。
- * 笔记 / 邮箱 / 密码箱 / 会议记录这类本地存储相关页面都需要。
- */
-function needsLobster(to: { path: string; meta: { requiresLobster?: boolean } }): boolean {
-  if (to.meta.requiresLobster) return true
-  // 兼容子路由（detail / edit 继承父级 lobster 需求）
-  if (to.path.startsWith('/notes') || to.path.startsWith('/email') || to.path.startsWith('/vault') || to.path.startsWith('/meetings')) {
-    return true
-  }
-  return false
-}
+// 🦞 守卫所需：登录态 + 龙虾初始化态
+// PR4: 守卫逻辑已抽取到 ./routeGuards.ts；本文件保留路由表，避免在
+// 创建 router 之前 import pinia/native 引发的副作用。
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -129,6 +121,20 @@ const router = createRouter({
       component: EmailAccountSetup,
       meta: { requiresAuth: true, requiresLobster: true, title: '邮箱账户', canGoBack: true }
     },
+    // S2.3 联系人：从邮件/会议来源聚合的本地联系人
+    {
+      path: '/contacts',
+      name: 'contacts',
+      component: () => import('../features/contact/ContactListView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '联系人', bottomNav: false, canGoBack: true },
+    },
+    {
+      path: '/contacts/:id',
+      name: 'contact-detail',
+      component: () => import('../features/contact/ContactDetailView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '联系人详情', bottomNav: false, canGoBack: true },
+    },
+
     // 个人助理 — 密码箱
     {
       path: '/vault',
@@ -150,24 +156,38 @@ const router = createRouter({
       component: VaultEntryView,
       meta: { requiresAuth: true, requiresLobster: true, title: '编辑密码', canGoBack: true, bottomNav: false }
     },
-    // 个人助理 — 会议记录
+    // 个人助理 — PKM 记事本 Today 入口（双向链接 + Daily Note）
+    {
+      path: '/pkm/today',
+      name: 'pkm-today',
+      component: PkmTodayView,
+      meta: { requiresAuth: true, requiresLobster: true, title: '笔记', bottomNav: true }
+    },
+    // PKM — 笔记编辑/新建（:id === 'new' 表示新建）
+    {
+      path: '/pkm/n/:id',
+      name: 'pkm-note',
+      component: PkmNoteView,
+      meta: { requiresAuth: true, requiresLobster: true, title: '笔记', bottomNav: false, canGoBack: true }
+    },
+    // S2.2 会议记录：录音 → 转写 → AI 纪要 → Note/Task 沉淀
     {
       path: '/meetings',
       name: 'meetings',
-      component: MeetingListView,
+      component: () => import('../features/meetings/MeetingListView.vue'),
       meta: { requiresAuth: true, requiresLobster: true, title: '会议', bottomNav: true },
     },
     {
-      path: '/meetings/:id/record',
-      name: 'meeting-record',
-      component: MeetingRecordView,
-      meta: { requiresAuth: true, requiresLobster: true, title: '录音中', canGoBack: true, bottomNav: false, hideAppHeader: true },
+      path: '/meetings/new',
+      name: 'meeting-new',
+      component: () => import('../features/meetings/MeetingRecordView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '开始会议', bottomNav: false, canGoBack: true },
     },
     {
       path: '/meetings/:id',
       name: 'meeting-detail',
-      component: MeetingDetailView,
-      meta: { requiresAuth: true, requiresLobster: true, title: '会议详情', canGoBack: true, bottomNav: false },
+      component: () => import('../features/meetings/MeetingDetailView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '会议详情', bottomNav: false, canGoBack: true },
     },
     {
       path: '/login',
@@ -201,7 +221,7 @@ const router = createRouter({
     {
       path: '/sessions',
       name: 'sessions',
-      component: SessionListView,
+      component: SessionWorkspaceView,
       meta: { requiresAuth: true, title: '会话', bottomNav: true }
     },
     {
@@ -222,7 +242,60 @@ const router = createRouter({
       path: '/settings/llm-gateway',
       name: 'settings-llm-gateway',
       component: () => import('../features/settings/SettingsLLMGateway.vue'),
-      meta: { requiresAuth: true, title: 'AI 模型', bottomNav: false, canGoBack: true, hideAppHeader: true }
+meta: { requiresAuth: true, title: 'AI 模型', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
+    // P3 — 成本与配额只读面板
+    {
+      path: '/cost',
+      name: 'cost',
+      component: () => import('../features/cost/CostQuotaView.vue'),
+      meta: { requiresAuth: true, title: '成本与配额', bottomNav: false, canGoBack: true }
+    },
+
+    // ---- 网关运维控制面（llm-gateway-go 运行状态）----
+    // 只要 requiresAuth：这些页面读的是网关运行状态，不碰本地加密库，
+    // 所以不加 requiresLobster —— 否则主密码未解锁就看不了监控。
+    {
+      path: '/gateway',
+      name: 'gateway-nodes',
+      component: () => import('../features/gateway/GatewayNodeListView.vue'),
+      meta: { requiresAuth: true, title: '网关节点', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/gateway/:nodeId',
+      name: 'gateway-overview',
+      component: () => import('../features/gateway/GatewayOverviewView.vue'),
+      meta: { requiresAuth: true, title: '网关概览', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/gateway/:nodeId/providers',
+      name: 'gateway-providers',
+      component: () => import('../features/gateway/GatewayProvidersView.vue'),
+      meta: { requiresAuth: true, title: '供应商', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/gateway/:nodeId/credentials',
+      name: 'gateway-credentials',
+      component: () => import('../features/gateway/GatewayCredentialsView.vue'),
+      meta: { requiresAuth: true, title: '凭据', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/gateway/:nodeId/credentials/:credentialId',
+      name: 'gateway-credential-detail',
+      component: () => import('../features/gateway/GatewayCredentialDetailView.vue'),
+      meta: { requiresAuth: true, title: '凭据详情', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/gateway/:nodeId/models',
+      name: 'gateway-models',
+      component: () => import('../features/gateway/GatewayModelsView.vue'),
+      meta: { requiresAuth: true, title: '模型路由', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/gateway/:nodeId/live',
+      name: 'gateway-live',
+      component: () => import('../features/gateway/GatewayLiveStreamView.vue'),
+      meta: { requiresAuth: true, title: '实时请求', bottomNav: false, canGoBack: true }
     }
   ]
 })
@@ -231,37 +304,29 @@ const router = createRouter({
  * Router Guard:
  *   1. 已登录访问 /login → 重定向到首页
  *   2. 需要登录的页面 → 未登录跳 /login
- *   3. 需要龙虾硬壳的页面：只检查登录态，让页面组件自己处理 Lobster 未就绪的情况
- * 
- * Phase 7: 
+ *   3. 需要龙虾硬壳的页面：已登录但 Lobster 未就绪 → 跳 /login?unlock=1
+ *
+ * Phase 7:
  *   - Added syncFromStorage() to ensure auth state is current on each navigation
  *   - Fixed: Remove forced redirect to /login when Lobster not ready
  *   - Rationale: Lobster initialization may fail (native plugin issues), but user
  *     should still be able to navigate. Pages requiring Lobster will show appropriate
  *     error messages or fallback UI instead of forcing re-login.
+ *
+ * PR4 (optimization v4 / E1-S1):
+ *   - Split guard into helper module (`./routeGuards.ts`) so the four
+ *     outcomes (allow / login / unlock / block) are testable in isolation.
+ *   - Replace `redirect` query with `returnTo` and preserve open-redirect
+ *     safety by validating the path prefix.
+ *   - Persist the last successful route under `pocket:lastRoute` for
+ *     diagnostic / restore flows.
  */
+import { runGuard } from './routeGuards'
+
 router.beforeEach((to, from, next) => {
-  const auth = useAuthStore()
-  
-  // Phase 7: Sync auth state from localStorage before checking
-  // This ensures we have the latest auth state, even if localStorage was modified externally
-  auth.syncFromStorage()
-
-  // 1) 已登录访问 /login → 直接去首页
-  if (to.path === '/login' && auth.isAuthenticated) {
-    return next('/ai')
-  }
-
-  // 2) 需要登录但未登录
-  if (to.meta.requiresAuth && !auth.isAuthenticated) {
-    return next('/login')
-  }
-
-  // 3) Lobster 检查移除：让页面组件自己处理未初始化的情况
-  //    理由：Lobster 初始化可能因为 native 插件问题失败，但不应该阻止导航
-  //    需要 Lobster 的页面会显示友好的错误提示或降级功能
-
-  next()
+  // Phase 7: Auth sync still happens inside evaluateRoute via the
+  // helper, so we delegate the whole decision tree.
+  runGuard(to, next)
 })
 
 export default router

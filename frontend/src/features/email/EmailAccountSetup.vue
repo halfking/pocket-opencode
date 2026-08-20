@@ -7,8 +7,7 @@
   listAccounts() only.
 -->
 <template>
-  <AppLayout>
-    <div class="header-row">
+      <div class="header-row">
       <h2 class="page-title">邮箱账户</h2>
       <button class="add-toggle" @click="showForm = !showForm">
         {{ showForm ? '收起' : '＋ 添加' }}
@@ -100,7 +99,7 @@
         <label class="field">
           <span class="field-label">
             密码 / 应用专用密码
-            <span class="hint-inline">（明文传输，TLS 加密）</span>
+            <span class="hint-inline">{{ editId ? '（留空表示不变更）' : '（明文传输，TLS 加密）' }}</span>
           </span>
           <input
             v-model="form.credential"
@@ -110,28 +109,84 @@
           />
         </label>
 
+        <!-- SMTP 出站配置：可选。留空则不配置发信，/test-smtp 会返回未配置。 -->
+        <div class="section-divider">
+          <span class="section-title">SMTP 发信（可选）</span>
+          <span class="section-hint">仅在需要发信 / 假期自动回复时填写</span>
+        </div>
+        <label class="field">
+          <span class="field-label">SMTP 主机</span>
+          <input
+            v-model="form.smtpHost"
+            class="input"
+            placeholder="例如：smtp.gmail.com"
+            autocomplete="off"
+          />
+        </label>
+        <label class="field">
+          <span class="field-label">
+            SMTP 端口
+            <span class="hint-inline">（465 隐式 TLS / 587 STARTTLS）</span>
+          </span>
+          <input v-model.number="form.smtpPort" type="number" class="input" />
+        </label>
+        <label class="field">
+          <span class="field-label">
+            SMTP 密码
+            <span class="hint-inline">
+              {{ editId ? '（留空表示不变更）' : '（不填则不设置发信凭证）' }}
+            </span>
+          </span>
+          <input
+            v-model="form.smtpCredential"
+            type="password"
+            class="input"
+            :disabled="form.clearSmtpCredential"
+            autocomplete="new-password"
+          />
+        </label>
+        <label v-if="editId && smtpConfigured" class="checkbox-field">
+          <input v-model="form.clearSmtpCredential" type="checkbox" />
+          <span>清空已保存的 SMTP 密码</span>
+        </label>
+
         <div v-if="formError" class="error">{{ formError }}</div>
         <div v-if="testMsg" :class="['toast', testOk ? 'ok' : 'err']">{{ testMsg }}</div>
 
         <div class="form-actions">
           <button class="ghost-btn" @click="cancelEdit">取消</button>
-          <button class="primary-btn" :disabled="testing" @click="testAndSave">
-            {{ testing ? '测试连接中…' : '测试连接并保存' }}
+          <!--
+            /test-smtp 读的是库里已保存的配置，所以只有已存在的云端账户才能探测。
+            新建账户请先保存，再回到编辑态测试。
+          -->
+          <button
+            v-if="editId && isCloudAccount"
+            class="ghost-btn"
+            :disabled="testing || smtpTesting"
+            @click="onTestSmtp"
+          >
+            {{ smtpTesting ? '探测中…' : '测试 SMTP' }}
+          </button>
+          <!--
+            新建走 addAccount + syncNow（syncNow 会真正连一次 IMAP），所以叫"测试连接并保存"；
+            编辑只是 PUT，不触发任何连接探测，标签如实反映为"保存"。
+          -->
+          <button class="primary-btn" :disabled="testing || smtpTesting" @click="testAndSave">
+            {{ saveButtonLabel }}
           </button>
         </div>
       </div>
     </section>
-  </AppLayout>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import AppLayout from '../../app/AppLayout.vue'
 import { Skeleton, EmptyState } from '../../components'
 import * as emailsStore from './emails-store'
 import type { EmailAccount } from './emails-store'
 import { emailApi } from '../../api/email'
-import type { EmailAccount as ApiEmailAccount } from '../../api/email'
+import type { EmailAccount as ApiEmailAccount, EmailCredentialInput } from '../../api/email'
 import { ApiError } from '../../api/http'
 
 interface ImapTemplate {
@@ -157,6 +212,7 @@ const testing = ref(false)
 const formError = ref('')
 const testMsg = ref('')
 const testOk = ref(false)
+const smtpTesting = ref(false)
 const editId = ref<string | null>(null)
 
 const form = reactive({
@@ -165,27 +221,71 @@ const form = reactive({
   imapHost: '',
   imapPort: 993 as number,
   credential: '',
+  smtpHost: '',
+  smtpPort: 587 as number,
+  smtpCredential: '',
+  clearSmtpCredential: false,
 })
 
+/**
+ * 云端账户快照，按 id 索引。
+ *
+ * 本地 store 的 EmailAccount 没有 SMTP 字段（SMTP 只在服务端生效），所以编辑
+ * 态要预填 smtpHost/smtpPort 必须拿云端那份。同时它也用来判断某个账户是不是
+ * 云端账户——只有云端账户能调 PUT / test-smtp。
+ */
+const cloudAccounts = ref<Map<string, ApiEmailAccount>>(new Map())
+
+const isCloudAccount = computed(() => !!editId.value && cloudAccounts.value.has(editId.value))
+const smtpConfigured = computed(() => {
+  if (!editId.value) return false
+  return !!cloudAccounts.value.get(editId.value)?.smtpHost
+})
+const saveButtonLabel = computed(() => {
+  if (testing.value) return editId.value ? '保存中…' : '测试连接中…'
+  return editId.value ? '保存' : '测试连接并保存'
+})
+
+/**
+ * 合并云端与本地账户。
+ *
+ * 之前这里是「本地优先，失败才查云端」，但 listAccounts() 在本地库为空时返回
+ * []（不抛异常），而云端创建的账户从不写本地库——只有 addAccount 失败后的本地
+ * 回落路径才写。结果云端账户永远不出现在列表里，也就没有编辑入口，SMTP 编辑
+ * 态对真正支持 SMTP 的那批账户完全不可达。
+ *
+ * 现在两边都取并按 id 合并，云端优先（服务端才是云账户的权威来源，且只有它
+ * 带 SMTP 字段）。
+ */
 async function loadList() {
   loading.value = true
+  await refreshCloudSnapshot()
+  const merged = new Map<string, EmailAccount>()
   try {
-    accounts.value = await emailsStore.listAccounts()
-  } catch (e) {
-    console.warn('[email] 列出本地账户失败，尝试云端:', e)
-    try {
-      const r = await emailApi.listAccounts()
-      accounts.value = (r.accounts || []).map(toLocal)
-    } catch (e2) {
-      if (e2 instanceof ApiError && e2.status === 404) {
-        accounts.value = []
-      } else {
-        console.warn('[email] 云端账户列表也失败:', e2)
-        accounts.value = []
-      }
+    for (const a of await emailsStore.listAccounts()) {
+      merged.set(a.id, a)
     }
-  } finally {
-    loading.value = false
+  } catch (e) {
+    console.warn('[email] 列出本地账户失败，仅显示云端账户:', e)
+  }
+  for (const a of cloudAccounts.value.values()) {
+    merged.set(a.id, toLocal(a))
+  }
+  // 按创建时间排序，避免顺序随两个来源的合并次序漂移。
+  accounts.value = [...merged.values()].sort((a, b) => a.createdAt - b.createdAt)
+  loading.value = false
+}
+
+async function refreshCloudSnapshot() {
+  try {
+    const r = await emailApi.listAccounts()
+    cloudAccounts.value = new Map((r.accounts || []).map((a) => [a.id, a]))
+  } catch (e) {
+    // 404 = 后端未实现该路由（纯本地模式），静默降级；其它错误留个警告。
+    if (!(e instanceof ApiError && e.status === 404)) {
+      console.warn('[email] 拉取云端账户失败，SMTP 预填不可用:', e)
+    }
+    cloudAccounts.value = new Map()
   }
 }
 
@@ -213,6 +313,10 @@ function resetForm() {
   form.imapHost = ''
   form.imapPort = 993
   form.credential = ''
+  form.smtpHost = ''
+  form.smtpPort = 587
+  form.smtpCredential = ''
+  form.clearSmtpCredential = false
   formError.value = ''
   testMsg.value = ''
   testOk.value = false
@@ -226,6 +330,12 @@ function editAccount(a: EmailAccount) {
   form.imapHost = a.imapHost
   form.imapPort = a.imapPort
   form.credential = '' // 已有账户不反查密码
+  // SMTP host/port 可以回显（非敏感）；凭证不回显，与 IMAP 密码同样处理。
+  const cloud = cloudAccounts.value.get(a.id)
+  form.smtpHost = cloud?.smtpHost ?? ''
+  form.smtpPort = cloud?.smtpPort || 587
+  form.smtpCredential = ''
+  form.clearSmtpCredential = false
   formError.value = ''
   testMsg.value = ''
   showForm.value = true
@@ -240,8 +350,97 @@ function validate(): string | null {
   if (!form.emailAddress) return '请填写邮箱地址'
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.emailAddress)) return '邮箱地址格式不正确'
   if (!form.imapHost) return '请选择 IMAP 模板或手动填写主机'
-  if (!form.credential) return '请填写密码 / 应用专用密码'
+  if (!Number.isInteger(form.imapPort) || form.imapPort < 1 || form.imapPort > 65535) {
+    return 'IMAP 端口需在 1-65535 之间'
+  }
+  // 编辑已有账户时 credential 可选（保持原密码不变）。
+  // 新增账户必须输入密码或应用专用密码——这是后端的强制契约。
+  if (!editId.value && !form.credential) return '请填写密码 / 应用专用密码'
+  // SMTP 是可选块：填了 host 才校验 port；反过来只填 port/密码而没 host，
+  // 后端会拒绝（smtpHost required），所以这里提前拦住给出更清楚的提示。
+  if (form.smtpHost) {
+    if (!Number.isInteger(form.smtpPort) || form.smtpPort < 1 || form.smtpPort > 65535) {
+      return 'SMTP 端口需在 1-65535 之间'
+    }
+  } else if (form.smtpCredential) {
+    return '填写 SMTP 密码前请先填写 SMTP 主机'
+  }
   return null
+}
+
+/**
+ * 构造 PUT 的 SMTP 部分。后端约定：只有携带 smtpHost 才会写 SMTP 列。
+ *
+ *   - host 非空                → 写 host+port，凭证按下面规则
+ *   - host 清空且原本配过      → 传 ''，把 SMTP 配置置空
+ *   - host 清空且原本也没配    → 完全不带 SMTP 字段，避免无意义写入
+ *
+ * 凭证：勾了"清空"传 ''（后端识别为清空），填了新值传新值，都没有则省略以保留原凭证。
+ */
+function buildSmtpPatch(): Partial<ApiEmailAccount> & EmailCredentialInput {
+  const host = form.smtpHost.trim()
+  if (!host) {
+    return smtpConfigured.value ? { smtpHost: '', smtpPort: 0, smtpPassword: '' } : {}
+  }
+  const patch: Partial<ApiEmailAccount> & EmailCredentialInput = {
+    smtpHost: host,
+    smtpPort: form.smtpPort,
+  }
+  if (form.clearSmtpCredential) {
+    patch.smtpPassword = ''
+  } else if (form.smtpCredential) {
+    patch.smtpPassword = form.smtpCredential
+  }
+  return patch
+}
+
+function describeSaveResult(): string {
+  const parts: string[] = [form.credential ? '已更新（含新 IMAP 凭证）' : '已更新（IMAP 密码未改动）']
+  const host = form.smtpHost.trim()
+  if (!host && smtpConfigured.value) {
+    parts.push('已清空 SMTP 配置')
+  } else if (host) {
+    if (form.clearSmtpCredential) parts.push('已清空 SMTP 密码')
+    else if (form.smtpCredential) parts.push('已更新 SMTP 密码')
+    else parts.push('SMTP 主机/端口已保存')
+  }
+  return `${parts.join('；')}。`
+}
+
+/**
+ * 探测 SMTP。/test-smtp 读的是库里已保存的配置，所以先保存再探测，
+ * 否则用户改了输入框却测到旧配置，结果具有误导性。
+ */
+async function onTestSmtp() {
+  if (!editId.value) return
+  formError.value = ''
+  testMsg.value = ''
+  const err = validate()
+  if (err) {
+    formError.value = err
+    return
+  }
+  if (!form.smtpHost.trim()) {
+    formError.value = '请先填写 SMTP 主机再测试'
+    return
+  }
+  smtpTesting.value = true
+  try {
+    await emailApi.updateAccount(editId.value, buildSmtpPatch())
+    await refreshCloudSnapshot()
+    const r = await emailApi.testSmtp(editId.value)
+    testOk.value = true
+    testMsg.value = `SMTP 连接成功：${r.smtp}`
+    form.smtpCredential = ''
+    form.clearSmtpCredential = false
+  } catch (e) {
+    testOk.value = false
+    testMsg.value = e instanceof ApiError
+      ? `SMTP 测试失败：HTTP ${e.status} ${e.message}`
+      : `SMTP 测试失败：${e instanceof Error ? e.message : '未知错误'}`
+  } finally {
+    smtpTesting.value = false
+  }
 }
 
 async function testAndSave() {
@@ -255,15 +454,20 @@ async function testAndSave() {
   testing.value = true
   try {
     if (editId.value) {
-      // 编辑模式：调用云端 updateAccount
-      await emailApi.updateAccount(editId.value, {
+      // 编辑模式：仅当用户输入了新密码才附带；其它元数据走 PATCH 语义。
+      const patch: Partial<ApiEmailAccount> & EmailCredentialInput = {
         displayName: form.displayName,
         emailAddress: form.emailAddress,
         imapHost: form.imapHost,
         imapPort: form.imapPort,
-      } as Partial<ApiEmailAccount>)
+      }
+      if (form.credential) {
+        patch.password = form.credential
+      }
+      Object.assign(patch, buildSmtpPatch())
+      await emailApi.updateAccount(editId.value, patch)
       testOk.value = true
-      testMsg.value = '已更新。'
+      testMsg.value = describeSaveResult()
     } else {
       // 新增：尝试云端 addAccount + syncNow，回落到本地 saveAccount
       try {
@@ -275,7 +479,15 @@ async function testAndSave() {
           authType: 'password',
           syncIntervalMin: 15,
           enabled: true,
-          credential: form.credential,
+          password: form.credential,
+          // SMTP 可选；后端要求「有 port/密码必须有 host」，validate() 已保证。
+          ...(form.smtpHost
+            ? {
+                smtpHost: form.smtpHost,
+                smtpPort: form.smtpPort,
+                ...(form.smtpCredential ? { smtpPassword: form.smtpCredential } : {}),
+              }
+            : {}),
         })
         await emailApi.syncNow()
         testOk.value = true
@@ -342,9 +554,12 @@ function toLocal(a: ApiEmailAccount): EmailAccount {
     authType: String(a.authType), // API 是 AuthType enum，本地 store 是 string
     syncIntervalMin: a.syncIntervalMin,
     lastSyncedUid: null, // 本地 store 字段，API 无此字段
-    lastSyncedAt: a.lastSyncedAt ? Date.parse(a.lastSyncedAt) : null, // API 是 ISO string，本地是 timestamp
+    // 后端发的是 Unix 秒；本地 store 与 formatTime 都用毫秒。
+    // 之前这里按 ISO 字符串 Date.parse 解析，对数字必然得到 NaN——只是云端账户
+    // 此前从不出现在列表里，这个 bug 一直没显形。
+    lastSyncedAt: a.lastSyncedAt ? a.lastSyncedAt * 1000 : null,
     enabled: a.enabled,
-    createdAt: Date.now(),
+    createdAt: a.createdAt ? a.createdAt * 1000 : Date.now(),
   }
 }
 
@@ -444,6 +659,19 @@ onMounted(loadList)
   outline: none;
 }
 .input:focus { border-color: var(--brand-primary); }
+.input:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.section-divider {
+  display: flex; flex-direction: column; gap: 2px;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+.section-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.section-hint { font-size: 11px; color: var(--text-muted); }
+.checkbox-field {
+  display: flex; align-items: center; gap: var(--space-2);
+  font-size: 12px; color: var(--text-secondary);
+}
 
 .form-actions { display: flex; gap: var(--space-2); margin-top: var(--space-1); }
 .ghost-btn {

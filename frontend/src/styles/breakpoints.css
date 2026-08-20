@@ -1,0 +1,47 @@
+/**
+ * breakpoints.css — 响应式断点与工具类
+ *
+ * 断点规范（与 useBreakpoint composable 保持一致）：
+ *   - compact : < 560px
+ *   - medium  : 560px – 839px
+ *   - expanded: 840px – 1279px
+ *   - wide    : >= 1280px
+ *
+ * 使用 CSS 变量可在 JS 里读取，工具类可在模板里条件渲染。
+ */
+
+:root {
+  --bp-compact-max: 559px;
+  --bp-medium-min: 560px;
+  --bp-medium-max: 839px;
+  --bp-expanded-min: 840px;
+  --bp-expanded-max: 1279px;
+  --bp-wide-min: 1280px;
+}
+
+/* compact / folded-closed */
+.bp-hide-on-compact { display: none; }
+.bp-show-on-compact { display: initial; }
+
+@media (min-width: 560px) {
+  .bp-hide-on-compact { display: initial; }
+  .bp-show-on-compact { display: none; }
+}
+
+/* expanded / folded-open */
+.bp-show-on-expanded { display: none; }
+.bp-hide-on-expanded { display: initial; }
+
+@media (min-width: 840px) {
+  .bp-show-on-expanded { display: initial; }
+  .bp-hide-on-expanded { display: none; }
+}
+
+/* wide */
+.bp-show-on-wide { display: none; }
+.bp-hide-on-wide { display: initial; }
+
+@media (min-width: 1280px) {
+  .bp-show-on-wide { display: initial; }
+  .bp-hide-on-wide { display: none; }
+}

@@ -36,7 +36,7 @@ type EventStreamManager struct {
 	adapter  adapter.OpenCodeAdapter
 
 	mu      sync.RWMutex
-	streams map[string]*instanceStream // key: instanceID
+	streams map[string]*instanceStream // key: instanceID + workspaceID + directory
 	closed  bool
 	closeCh chan struct{}
 
@@ -73,11 +73,13 @@ type subscription struct {
 // It wraps the raw OpenCode event with routing metadata so subscribers don't
 // need to know about individual instance IDs.
 type DomainEvent struct {
-	InstanceID string                `json:"instanceId"`
-	SessionID  string                `json:"sessionId,omitempty"`
-	Type       string                `json:"type"`
-	Raw        adapter.OpenCodeEvent `json:"raw"`
-	ReceivedAt time.Time             `json:"receivedAt"`
+	InstanceID  string                `json:"instanceId"`
+	WorkspaceID string                `json:"workspaceId,omitempty"`
+	Directory   string                `json:"directory,omitempty"`
+	SessionID   string                `json:"sessionId,omitempty"`
+	Type        string                `json:"type"`
+	Raw         adapter.OpenCodeEvent `json:"raw"`
+	ReceivedAt  time.Time             `json:"receivedAt"`
 }
 
 // NewEventStreamManager creates a new event stream manager.
@@ -123,6 +125,13 @@ func (m *EventStreamManager) Subscribe(ctx context.Context, opts SubscribeOption
 	cleanup := func() {
 		stream.removeSubscriber(sub.id)
 	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			cleanup()
+		case <-m.closeCh:
+		}
+	}()
 
 	return sub.ch, cleanup, nil
 }
@@ -137,33 +146,37 @@ func (m *EventStreamManager) PublishEvent(evt DomainEvent) {
 // Close stops all upstream connections and closes all subscriber channels.
 func (m *EventStreamManager) Close() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	
 	if m.closed {
+		m.mu.Unlock()
 		return
 	}
 	m.closed = true
 	streams := m.streams
 	m.streams = make(map[string]*instanceStream)
 	close(m.closeCh)
-
-	// Release lock before shutting down streams to avoid holding lock during I/O
+	// Drop m.mu before shutdown: it cancels upstream contexts and closes
+	// subscriber channels, which must never run under the manager lock.
 	m.mu.Unlock()
+
 	for _, s := range streams {
 		s.shutdown()
 	}
-	m.mu.Lock() // Re-acquire for defer
 }
 
 // Stats returns a snapshot of manager-level metrics.
 func (m *EventStreamManager) Stats() EventStreamStats {
+	// activeStreamCount takes m.mu, so read it before locking muMetrics:
+	// nesting the two locks here would pin a muMetrics→mu ordering that the
+	// rest of the file does not honour.
+	active := m.activeStreamCount()
+
 	m.muMetrics.RLock()
 	defer m.muMetrics.RUnlock()
 	return EventStreamStats{
 		TotalEvents:   m.totalEvents,
 		TotalReconns:  m.totalReconns,
 		TotalErrors:   m.totalErrors,
-		ActiveStreams: m.activeStreamCount(),
+		ActiveStreams: active,
 	}
 }
 
@@ -187,20 +200,18 @@ func (m *EventStreamManager) getOrCreateStream(ctx context.Context, opts Subscri
 		return nil, fmt.Errorf("event stream manager is closed")
 	}
 
-	if existing, ok := m.streams[opts.InstanceID]; ok {
-		// Update filters (best effort; new filters apply on next reconnect)
-		existing.mu.Lock()
-		defer existing.mu.Unlock()
-		if opts.Directory != "" {
-			existing.directory = opts.Directory
-		}
-		if opts.WorkspaceID != "" {
-			existing.workspaceID = opts.WorkspaceID
-		}
+	key := streamKey(opts)
+	if existing, ok := m.streams[key]; ok {
 		return existing, nil
 	}
 
-	baseURL, err := m.registry.GetInstanceAPIBase(opts.InstanceID)
+	var baseURL string
+	var err error
+	if opts.WorkspaceID != "" {
+		baseURL, err = m.registry.GetInstanceAPIBaseForWorkspace(opts.WorkspaceID, opts.InstanceID)
+	} else {
+		baseURL, err = m.registry.GetInstanceAPIBase(opts.InstanceID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("resolve instance base URL: %w", err)
 	}
@@ -213,10 +224,14 @@ func (m *EventStreamManager) getOrCreateStream(ctx context.Context, opts Subscri
 		subs:        make(map[uint64]*subscription),
 	}
 
-	m.streams[opts.InstanceID] = stream
+	m.streams[key] = stream
 	go m.runUpstreamLoop(stream)
 
 	return stream, nil
+}
+
+func streamKey(opts SubscribeOptions) string {
+	return opts.InstanceID + "\x00" + opts.WorkspaceID + "\x00" + opts.Directory
 }
 
 func (m *EventStreamManager) runUpstreamLoop(stream *instanceStream) {
@@ -246,11 +261,11 @@ func (m *EventStreamManager) runUpstreamLoop(stream *instanceStream) {
 		cancel()
 
 		stream.mu.Lock()
-		defer stream.mu.Unlock()
 		stream.connected = false
 		if err != nil {
 			stream.lastError = err.Error()
 		}
+		stream.mu.Unlock()
 
 		m.incError()
 
@@ -308,10 +323,12 @@ func (m *EventStreamManager) connectAndPump(ctx context.Context, stream *instanc
 			stream.mu.Unlock()
 
 			domain := DomainEvent{
-				InstanceID: stream.instanceID,
-				Type:       rawEvent.Type,
-				Raw:        rawEvent,
-				ReceivedAt: time.Now(),
+				InstanceID:  stream.instanceID,
+				WorkspaceID: stream.workspaceID,
+				Directory:   stream.directory,
+				Type:        rawEvent.Type,
+				Raw:         rawEvent,
+				ReceivedAt:  time.Now(),
 			}
 
 			// Try to extract sessionID from common event payload shapes
@@ -350,20 +367,19 @@ func extractSessionID(evt adapter.OpenCodeEvent) string {
 
 func (m *EventStreamManager) fanout(evt DomainEvent) {
 	m.mu.RLock()
-	stream, ok := m.streams[evt.InstanceID]
+	stream, ok := m.streams[streamKey(SubscribeOptions{
+		InstanceID:  evt.InstanceID,
+		WorkspaceID: evt.WorkspaceID,
+		Directory:   evt.Directory,
+	})]
 	m.mu.RUnlock()
 	if !ok {
 		return
 	}
 
 	stream.mu.RLock()
-	subs := make([]*subscription, 0, len(stream.subs))
+	defer stream.mu.RUnlock()
 	for _, s := range stream.subs {
-		subs = append(subs, s)
-	}
-	stream.mu.RUnlock()
-
-	for _, s := range subs {
 		select {
 		case s.ch <- evt:
 		default:
@@ -455,21 +471,43 @@ type StreamStatus struct {
 	Subscribers int       `json:"subscribers"`
 }
 
-// StreamStatus returns the current status of the stream for an instance.
+// StreamStatus returns the aggregate status of every stream for an instance.
+//
+// streams is keyed by instance+workspace+directory, so one instance can back
+// several upstream connections. A plain m.streams[instanceID] lookup would
+// therefore never hit. We report the instance as connected when any of its
+// streams is connected, sum the subscribers, and keep the most recent event
+// timestamp; lastError is only meaningful when nothing is connected.
 func (m *EventStreamManager) StreamStatus(instanceID string) (StreamStatus, bool) {
 	m.mu.RLock()
-	s, ok := m.streams[instanceID]
+	matched := make([]*instanceStream, 0, 1)
+	for _, s := range m.streams {
+		if s.instanceID == instanceID {
+			matched = append(matched, s)
+		}
+	}
 	m.mu.RUnlock()
-	if !ok {
+	if len(matched) == 0 {
 		return StreamStatus{}, false
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return StreamStatus{
-		InstanceID:  instanceID,
-		Connected:   s.connected,
-		LastError:   s.lastError,
-		LastEvent:   s.lastEvent,
-		Subscribers: len(s.subs),
-	}, true
+
+	out := StreamStatus{InstanceID: instanceID}
+	for _, s := range matched {
+		s.mu.RLock()
+		if s.connected {
+			out.Connected = true
+		}
+		if s.lastEvent.After(out.LastEvent) {
+			out.LastEvent = s.lastEvent
+		}
+		if s.lastError != "" && out.LastError == "" {
+			out.LastError = s.lastError
+		}
+		out.Subscribers += len(s.subs)
+		s.mu.RUnlock()
+	}
+	if out.Connected {
+		out.LastError = ""
+	}
+	return out, true
 }

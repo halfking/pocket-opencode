@@ -4,10 +4,18 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const (
+	// maxListResults is the maximum number of notes returned by List to prevent
+	// unbounded result sets in offline list rendering.
+	maxListResults = 200
 )
 
 // Store is the PostgreSQL-backed local cache of voice-note metadata.
@@ -70,7 +78,10 @@ func (s *Store) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_notes_user_domain ON notes(user_id, domain);
 	CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC);
 	`)
-	return err
+	if err != nil {
+		return fmt.Errorf("notes store migration failed: %w", err)
+	}
+	return nil
 }
 
 // Upsert caches or updates a note's metadata after kxmemory confirms it.
@@ -141,49 +152,98 @@ func (s *Store) Upsert(ctx context.Context, n *Note) error {
 			updated_at    = COALESCE($14, CURRENT_TIMESTAMP)
 	`,
 		n.ID, n.UserID, n.WorkspaceID, n.Title, content, n.Snippet, contentTypeVal, domainVal, tagsVal, n.AudioPath, n.AudioDuration, n.CreatedByVoice, createdAt, updatedAt)
-	return err
+	if err != nil {
+		return fmt.Errorf("upsert note %s: %w", n.ID, err)
+	}
+	return nil
 }
 
-func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error) {
-	// Only select columns that exist in BOTH schemas, so this query
-	// works against either a fresh install or a DB created by the
-	// appendix-a migration.
+// ListScoped returns notes for one (user, workspace) pair. Use this instead of
+// List on request paths: List filters on user_id only, so the same user in two
+// workspaces would see both workspaces' notes.
+func (s *Store) ListScoped(ctx context.Context, userID, workspaceID, domain string) ([]Note, error) {
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
 	q := `
-		SELECT id, user_id, workspace_id, title, content_type, domain, tags, audio_path, audio_duration, created_by_voice, created_at, updated_at
+		SELECT id, user_id, workspace_id, title, content, snippet,
+		       content_type, domain, tags, audio_path, audio_duration,
+		       created_by_voice, created_at, updated_at
+		FROM notes WHERE user_id = $1 AND workspace_id = $2 AND deleted_at IS NULL`
+	args := []any{userID, workspaceID}
+	if domain != "" {
+		q += " AND domain = $3"
+		args = append(args, domain)
+	}
+	q += " ORDER BY updated_at DESC LIMIT " + fmt.Sprintf("%d", maxListResults)
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query notes for user %s workspace %s: %w", userID, workspaceID, err)
+	}
+	defer rows.Close()
+	return scanNoteRows(rows)
+}
+
+// Deprecated: List ignores workspace_id. Use ListScoped on any path that serves
+// an authenticated request.
+func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error) {
+	// SELECT 现在包含 content 和 snippet — 修复 v1.0 期间遗留的字段缺失
+	// bug（sync classify 路径曾因此拿到空 snippet 让真实 kxmemory 返回 400）。
+	// 这两个列都加 NOT NULL DEFAULT '' 在 migrate() 里，所以向后兼容旧行。
+	q := `
+		SELECT id, user_id, workspace_id, title, content, snippet,
+		       content_type, domain, tags, audio_path, audio_duration,
+		       created_by_voice, created_at, updated_at
 		FROM notes WHERE user_id = $1 AND deleted_at IS NULL`
 	args := []any{userID}
 	if domain != "" {
 		q += " AND domain = $2"
 		args = append(args, domain)
 	}
-	q += " ORDER BY updated_at DESC LIMIT 200"
+	q += " ORDER BY updated_at DESC LIMIT " + fmt.Sprintf("%d", maxListResults)
 
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query notes for user %s: %w", userID, err)
 	}
 	defer rows.Close()
+	return scanNoteRows(rows)
+}
 
+// scanNoteRows decodes the shared note SELECT column list. List and ListScoped
+// both use it so the nullable-column handling stays in one place.
+func scanNoteRows(rows pgx.Rows) ([]Note, error) {
 	var out []Note
 	for rows.Next() {
 		var (
-			n            Note
-			workspaceID  sql.NullString
-			title        sql.NullString
-			domain       sql.NullString
-			tags         []byte // raw jsonb
-			audioPath    sql.NullString
-			createdAt    sql.NullTime
-			updatedAt    sql.NullTime
+			n           Note
+			workspaceID sql.NullString
+			title       sql.NullString
+			content     sql.NullString
+			snippet     sql.NullString
+			domain      sql.NullString
+			tags        []byte // raw jsonb
+			audioPath   sql.NullString
+			createdAt   sql.NullTime
+			updatedAt   sql.NullTime
 		)
-		if err := rows.Scan(&n.ID, &n.UserID, &workspaceID, &title, &n.ContentType, &domain, &tags, &audioPath, &n.AudioDuration, &n.CreatedByVoice, &createdAt, &updatedAt); err != nil {
-			return nil, err
+		if err := rows.Scan(&n.ID, &n.UserID, &workspaceID, &title, &content, &snippet,
+			&n.ContentType, &domain, &tags, &audioPath, &n.AudioDuration, &n.CreatedByVoice,
+			&createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan note row: %w", err)
 		}
 		if workspaceID.Valid {
 			n.WorkspaceID = workspaceID.String
 		}
 		if title.Valid {
 			n.Title = title.String
+		}
+		if content.Valid {
+			n.Snippet = content.String // Content字段已移除，用Snippet代替
+		}
+		if snippet.Valid {
+			n.Snippet = snippet.String
 		}
 		if domain.Valid {
 			n.Domain = domain.String
@@ -207,7 +267,145 @@ func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error)
 		}
 		out = append(out, n)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate note rows: %w", err)
+	}
+	return out, nil
+}
+
+// GetByID 按 ID 查找单条笔记（不含软删除）。
+//
+// 返回 (nil, nil) 表示不存在（与 email.Store.GetEmailByID 行为一致），让
+// handler 用 `if found == nil` 判断 404 而非依赖 error 类型。
+//
+// 用于替换 handleNoteClassify / handleNoteOperations 的 O(N) List + linear
+// scan 反模式，避免每次 sync classify 都扫整张 notes 表。
+// Deprecated: Use GetByIDScoped for production code with ownership checks.
+func (s *Store) GetByID(ctx context.Context, id string) (*Note, error) {
+	var (
+		n           Note
+		workspaceID sql.NullString
+		title       sql.NullString
+		content     sql.NullString
+		snippet     sql.NullString
+		domain      sql.NullString
+		tags        []byte
+		audioPath   sql.NullString
+		createdAt   sql.NullTime
+		updatedAt   sql.NullTime
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, user_id, workspace_id, title, content, snippet,
+		       content_type, domain, tags, audio_path, audio_duration,
+		       created_by_voice, created_at, updated_at
+		FROM notes WHERE id = $1 AND deleted_at IS NULL
+	`, id).Scan(
+		&n.ID, &n.UserID, &workspaceID, &title, &content, &snippet,
+		&n.ContentType, &domain, &tags, &audioPath, &n.AudioDuration, &n.CreatedByVoice,
+		&createdAt, &updatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get note by id %s: %w", id, err)
+	}
+	if workspaceID.Valid {
+		n.WorkspaceID = workspaceID.String
+	}
+	if title.Valid {
+		n.Title = title.String
+	}
+	if content.Valid {
+		n.Snippet = content.String // Content字段已移除，用Snippet代替
+	}
+	if snippet.Valid {
+		n.Snippet = snippet.String
+	}
+	if domain.Valid {
+		n.Domain = domain.String
+	}
+	if audioPath.Valid {
+		n.AudioPath = audioPath.String
+	}
+	if createdAt.Valid {
+		n.CreatedAt = createdAt.Time.Unix()
+	}
+	if updatedAt.Valid {
+		n.UpdatedAt = updatedAt.Time.Unix()
+	}
+	if len(tags) > 0 {
+		var arr []string
+		if err := json.Unmarshal(tags, &arr); err == nil {
+			b, _ := json.Marshal(arr)
+			n.Tags = string(b)
+		}
+	}
+	return &n, nil
+}
+
+// GetByIDScoped 按 ID 和 workspace 查找单条笔记（不含软删除）。
+func (s *Store) GetByIDScoped(ctx context.Context, id, userID, workspaceID string) (*Note, error) {
+	var (
+		n         Note
+		wsID      sql.NullString
+		title     sql.NullString
+		content   sql.NullString
+		snippet   sql.NullString
+		domain    sql.NullString
+		tags      []byte
+		audioPath sql.NullString
+		createdAt sql.NullTime
+		updatedAt sql.NullTime
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, user_id, workspace_id, title, content, snippet,
+		       content_type, domain, tags, audio_path, audio_duration,
+		       created_by_voice, created_at, updated_at
+		FROM notes WHERE id = $1 AND user_id = $2 AND workspace_id = $3 AND deleted_at IS NULL
+	`, id, userID, workspaceID).Scan(
+		&n.ID, &n.UserID, &wsID, &title, &content, &snippet,
+		&n.ContentType, &domain, &tags, &audioPath, &n.AudioDuration, &n.CreatedByVoice,
+		&createdAt, &updatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get note by id %s: %w", id, err)
+	}
+	if wsID.Valid {
+		n.WorkspaceID = wsID.String
+	}
+	if title.Valid {
+		n.Title = title.String
+	}
+	if content.Valid {
+		n.Snippet = content.String
+	}
+	if snippet.Valid {
+		n.Snippet = snippet.String
+	}
+	if domain.Valid {
+		n.Domain = domain.String
+	}
+	if audioPath.Valid {
+		n.AudioPath = audioPath.String
+	}
+	if createdAt.Valid {
+		n.CreatedAt = createdAt.Time.Unix()
+	}
+	if updatedAt.Valid {
+		n.UpdatedAt = updatedAt.Time.Unix()
+	}
+	if len(tags) > 0 {
+		var arr []string
+		if err := json.Unmarshal(tags, &arr); err == nil {
+			b, _ := json.Marshal(arr)
+			n.Tags = string(b)
+		}
+	}
+	return &n, nil
 }
 
 func (s *Store) Delete(ctx context.Context, id string) error {
@@ -215,9 +413,27 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	// relationships in other tables that may reference notes.id in the
 	// future, and matches the actual schema's idx_notes_* `WHERE
 	// deleted_at IS NULL` partial-index design.
+	// Deprecated: Use DeleteScoped for production code with ownership checks.
 	_, err := s.pool.Exec(ctx, `UPDATE notes SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1`, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("delete note %s: %w", id, err)
+	}
+	return nil
+}
+
+// DeleteScoped soft-deletes a note with ownership verification
+func (s *Store) DeleteScoped(ctx context.Context, id, userID, workspaceID string) error {
+	result, err := s.pool.Exec(ctx, `
+		UPDATE notes SET deleted_at = CURRENT_TIMESTAMP 
+		WHERE id = $1 AND user_id = $2 AND workspace_id = $3 AND deleted_at IS NULL
+	`, id, userID, workspaceID)
+	if err != nil {
+		return fmt.Errorf("delete note %s: %w", id, err)
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("note not found or already deleted")
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return nil }
-

@@ -16,6 +16,11 @@ class WebSocketClient {
     }
 
     try {
+      // 每次连接时更新URL以包含最新的token
+      const token = localStorage.getItem('pocket_token')
+      const baseWsUrl = this.url.split('?')[0]
+      this.url = token ? `${baseWsUrl}?token=${encodeURIComponent(token)}` : baseWsUrl
+      
       this.ws = new WebSocket(this.url)
 
       this.ws.onopen = () => {
@@ -127,10 +132,22 @@ class WebSocketClient {
 
 // 创建全局 WebSocket 实例
 const API_BASE = import.meta.env.VITE_API_BASE || ''
-const WS_URL = API_BASE.replace(/^http/, 'ws') + '/ws'
 const TOKEN_KEY = 'pocket_token'
 
-export const wsClient = new WebSocketClient(WS_URL)
+// 动态构造带token的WebSocket URL
+function getWsUrl(): string {
+  const token = localStorage.getItem(TOKEN_KEY)
+  const baseWsUrl = API_BASE.replace(/^http/, 'ws') + '/ws'
+  
+  // 如果有token，将其作为查询参数附加到URL
+  if (token) {
+    return `${baseWsUrl}?token=${encodeURIComponent(token)}`
+  }
+  
+  return baseWsUrl
+}
+
+export const wsClient = new WebSocketClient(getWsUrl())
 
 /**
  * 延迟建立 WS 连接：仅在已登录（localStorage 中存在 pocket_token）时才 connect。

@@ -62,6 +62,13 @@
         </div>
       </div>
 
+      <MasterPasswordDialog
+        :open="showMasterPasswordDialog"
+        mode="create"
+        @close="showMasterPasswordDialog = false"
+        @success="onMasterPasswordCreated"
+      />
+
       <!-- 版本信息 -->
       <div class="version-info">
         <p>v1.1.0-mobile</p>
@@ -77,6 +84,8 @@ import { useAuthStore } from '../../stores/auth'
 import { http, ApiError } from '../../api/http'
 import { connectWs } from '../../api/websocket'
 import { initLobster, isLobsterReady } from '../../native/lobster-init'
+import MasterPasswordDialog from './MasterPasswordDialog.vue'
+import { useCryptoConfig } from '../../stores/crypto-config'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -90,6 +99,8 @@ const error = ref('')
 // 此时需要用户重新输入主密码解锁本地数据，而非直接跳走。
 const needUnlock = ref(false)
 const unlockPassword = ref('')
+const showMasterPasswordDialog = ref(false)
+const cryptoConfig = useCryptoConfig()
 
 onMounted(() => {
   if (auth.isAuthenticated && !isLobsterReady()) {
@@ -110,7 +121,11 @@ async function unlock() {
   try {
     await initLobster(unlockPassword.value)
     needUnlock.value = false
-    router.push('/ai')
+    unlockPassword.value = ''
+    const redirect = typeof router.currentRoute.value.query.redirect === 'string'
+      ? router.currentRoute.value.query.redirect
+      : '/ai'
+    router.replace(redirect)
   } catch (e: any) {
     error.value = `解锁失败（主密码错误？）：${e.message || e}`
   } finally {
@@ -124,6 +139,14 @@ function logoutAndRelogin() {
   error.value = ''
 }
 
+function onMasterPasswordCreated() {
+  showMasterPasswordDialog.value = false
+  const redirect = typeof router.currentRoute.value.query.redirect === 'string'
+    ? router.currentRoute.value.query.redirect
+    : '/ai'
+  router.replace(redirect)
+}
+
 async function handleLogin() {
   if (!username.value || !password.value) {
     error.value = '请输入用户名和密码'
@@ -135,19 +158,22 @@ async function handleLogin() {
 
   try {
     // Phase C: 服务端无状态认证（只为签发调用 /embed /llm 的 JWT）
-    const res = await http<{ token: string; user: string }>('/api/auth/login', {
+    // S0-A 扩展：后端返回 { token, user, user_id, workspace_id }。
+    const res = await http<{ token: string; user: string; user_id?: string; workspace_id?: string }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username: username.value, password: password.value }),
     })
-    auth.setAuth(res.token, res.user)
+    if (res.user_id && res.workspace_id) {
+      auth.setAuthWithWorkspace(res.token, res.user, res.user_id, res.workspace_id)
+    } else {
+      auth.setAuth(res.token, res.user)
+    }
     // 🦞 认证成功后才建立 WS（此前模块加载不会自动连）
     await connectWs()
-    // 🦞 尝试初始化本地加密库（如失败不阻塞登录，仅影响本地加密功能）
-    try {
-      await initLobster(password.value)
-    } catch (lobsterErr: any) {
-      console.warn('[login] 龙虾初始化失败，将以非加密模式继续:', lobsterErr?.message || lobsterErr)
-      // 不阻塞登录，本地加密功能不可用但服务端功能正常
+    // 本地数据初始化由独立的主密码对话框负责，不把登录密码隐式当作数据库密钥。
+    if (!cryptoConfig.cfg.hasMasterPassword) {
+      showMasterPasswordDialog.value = true
+      return
     }
     router.push('/ai')
   } catch (e: any) {
@@ -162,12 +188,9 @@ async function handleLogin() {
           const legacyToken = 'legacy-token-' + Date.now() // 临时 token 用于兼容性
           auth.setAuth(legacyToken, legacyUser)
           await connectWs()
-          // ✅ 修复：legacy 分支也给 initLobster 包 try/catch，
-          // 否则 native 插件（如 SQLCipher）异常时整个登录流程崩。
-          try {
-            await initLobster(password.value)
-          } catch (lobsterErr: any) {
-            console.warn('[login-legacy] 龙虾初始化失败:', lobsterErr?.message || lobsterErr)
+          if (!cryptoConfig.cfg.hasMasterPassword) {
+            showMasterPasswordDialog.value = true
+            return
           }
           router.push('/ai')
           return
