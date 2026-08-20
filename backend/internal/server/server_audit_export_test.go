@@ -4,8 +4,8 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -33,8 +33,8 @@ func TestAuditExportRequiresAdmin(t *testing.T) {
 	}
 
 	for name, token := range map[string]string{
-		"no_token":      "",
-		"member_token":  memberToken,
+		"no_token":     "",
+		"member_token": memberToken,
 	} {
 		req := mobileRequest(http.MethodGet, "/api/audit/export?format=jsonl", token, "")
 		rr := httptest.NewRecorder()
@@ -144,6 +144,40 @@ func TestAuditExportJSONLWithRangeAndPagination(t *testing.T) {
 	}
 	if tenantCounts["ws-b"] != 0 {
 		t.Fatalf("ws-b entries must not leak into ws-a export, got counts: %+v", tenantCounts)
+	}
+}
+
+func TestAuditExportRejectsAdminWithoutWorkspace(t *testing.T) {
+	srv, _, signer, _ := newMobileRouteServer(t)
+	token, err := signer.Sign("legacy-admin", "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, mobileRequest(http.MethodGet, "/api/audit/export", token, ""))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "workspace") {
+		t.Fatalf("empty workspace must fail closed, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAuditExportRejectsMalformedCursor(t *testing.T) {
+	srv, adminToken := newAuditExportServer(t)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, mobileRequest(http.MethodGet, "/api/audit/export?cursor=bad", adminToken, ""))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("malformed cursor must return 400, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAuditExportJSONAttachment(t *testing.T) {
+	srv, adminToken := newAuditExportServer(t)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, mobileRequest(http.MethodGet, "/api/audit/export?format=json", adminToken, ""))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("json export failed: %d %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Disposition"); got != "attachment; filename=audit-export.json" {
+		t.Fatalf("json export content disposition mismatch: %q", got)
 	}
 }
 
@@ -298,4 +332,3 @@ func nonEmptyLines(s string) []string {
 	}
 	return out
 }
-

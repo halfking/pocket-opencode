@@ -51,6 +51,30 @@ func TestAuditLog_Query(t *testing.T) {
 	}
 }
 
+func TestAuditLog_QueryReturnsCopy(t *testing.T) {
+	store := NewAuditStore()
+	input := &AuditEntry{Action: "original", TenantID: "t1"}
+	if err := store.Record(input); err != nil {
+		t.Fatal(err)
+	}
+	input.Action = "mutated-input"
+	entries, err := store.Query(AuditQuery{TenantID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Action != "original" {
+		t.Fatalf("stored entry must not alias caller input: %+v", entries)
+	}
+	entries[0].Action = "mutated-result"
+	entries, err = store.Query(AuditQuery{TenantID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries[0].Action != "original" {
+		t.Fatalf("query result must be a copy: %+v", entries[0])
+	}
+}
+
 func TestAuditLog_Flush(t *testing.T) {
 	store := NewAuditStore()
 	store.Record(&AuditEntry{Action: "test", UserID: "u1", TenantID: "t1"})
@@ -68,7 +92,7 @@ func TestAuditLog_Flush(t *testing.T) {
 
 func TestAuditLog_NilEntry(t *testing.T) {
 	store := NewAuditStore()
-	
+
 	err := store.Record(nil)
 	if err == nil {
 		t.Error("expected error for nil entry")
@@ -77,12 +101,12 @@ func TestAuditLog_NilEntry(t *testing.T) {
 
 func TestAuditLog_ConcurrentAccess(t *testing.T) {
 	store := NewAuditStore()
-	
+
 	const goroutines = 10
 	const entriesPerGoroutine = 100
-	
+
 	done := make(chan bool, goroutines)
-	
+
 	for i := 0; i < goroutines; i++ {
 		go func(id int) {
 			for j := 0; j < entriesPerGoroutine; j++ {
@@ -95,11 +119,11 @@ func TestAuditLog_ConcurrentAccess(t *testing.T) {
 			done <- true
 		}(i)
 	}
-	
+
 	for i := 0; i < goroutines; i++ {
 		<-done
 	}
-	
+
 	entries, _ := store.Query(AuditQuery{Limit: 10000})
 	if len(entries) != goroutines*entriesPerGoroutine {
 		t.Errorf("expected %d entries, got %d", goroutines*entriesPerGoroutine, len(entries))

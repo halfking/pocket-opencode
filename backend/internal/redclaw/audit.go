@@ -12,7 +12,7 @@ import (
 // AuditEntry 审计日志条目
 type AuditEntry struct {
 	ID         string    `json:"id"`
-	Action     string    `json:"action"`                // chat.send / file.read / session.create
+	Action     string    `json:"action"` // chat.send / file.read / session.create
 	UserID     string    `json:"user_id"`
 	TenantID   string    `json:"tenant_id"`
 	Resource   string    `json:"resource,omitempty"`    // 操作的资源
@@ -25,10 +25,11 @@ type AuditEntry struct {
 
 // AuditQuery 审计查询
 type AuditQuery struct {
-	TenantID string `json:"tenant_id,omitempty"`
-	UserID   string `json:"user_id,omitempty"`
-	Action   string `json:"action,omitempty"`
-	Limit    int    `json:"limit,omitempty"`
+	TenantID      string `json:"tenant_id,omitempty"`
+	UserID        string `json:"user_id,omitempty"`
+	Action        string `json:"action,omitempty"`
+	ExcludeAction string `json:"-"`
+	Limit         int    `json:"limit,omitempty"`
 
 	// 增量导出参数（P1 审计导出）。
 	// StartTime/EndTime 构成闭开区间 [start, end)；零值表示不设界。
@@ -52,6 +53,7 @@ type AuditStore struct {
 	mu      sync.RWMutex
 	entries []*AuditEntry
 	maxSize int
+	seq     uint64
 }
 
 // NewAuditStore creates a new audit log store with default capacity.
@@ -67,17 +69,30 @@ func (s *AuditStore) Record(entry *AuditEntry) error {
 	if entry == nil {
 		return fmt.Errorf("audit entry cannot be nil")
 	}
-	
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entry.ID = fmt.Sprintf("aud_%d_%d", time.Now().UnixNano(), len(s.entries))
-	// 调用方显式提供的时间戳优先（backfill / 测试）；否则取当前时间。
-	// entries 按追加顺序即时间顺序，QueryRange 的二分依赖该不变量。
-	if entry.Timestamp.IsZero() {
-		entry.Timestamp = time.Now()
+	stored := *entry
+	if stored.ID == "" {
+		s.seq++
+		stored.ID = fmt.Sprintf("aud_%d_%d", time.Now().UnixNano(), s.seq)
 	}
-	s.entries = append(s.entries, entry)
+	// 调用方显式提供的时间戳优先（backfill / 测试）；否则取当前时间。
+	if stored.Timestamp.IsZero() {
+		stored.Timestamp = time.Now()
+	}
+	entry.ID = stored.ID
+	entry.Timestamp = stored.Timestamp
+
+	// Keep the same tuple order used by PGAuditStore.QueryRange. This also
+	// keeps backfilled entries compatible with the in-memory fallback.
+	idx := sort.Search(len(s.entries), func(i int) bool {
+		return auditEntryLess(&stored, s.entries[i])
+	})
+	s.entries = append(s.entries, nil)
+	copy(s.entries[idx+1:], s.entries[idx:])
+	s.entries[idx] = &stored
 
 	if len(s.entries) > s.maxSize {
 		s.entries = s.entries[len(s.entries)-s.maxSize/2:]
@@ -107,8 +122,17 @@ func (s *AuditStore) Query(query AuditQuery) ([]*AuditEntry, error) {
 		if query.Action != "" && e.Action != query.Action {
 			continue
 		}
-		result = append(result, e)
+		if query.ExcludeAction != "" && e.Action == query.ExcludeAction {
+			continue
+		}
+		result = append(result, cloneAuditEntry(e))
 	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Timestamp.Equal(result[j].Timestamp) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].Timestamp.After(result[j].Timestamp)
+	})
 
 	if len(result) > limit {
 		result = result[:limit]
@@ -122,7 +146,10 @@ func (s *AuditStore) Flush() []*AuditEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entries := s.entries
+	entries := make([]*AuditEntry, len(s.entries))
+	for i, entry := range s.entries {
+		entries[i] = cloneAuditEntry(entry)
+	}
 	s.entries = make([]*AuditEntry, 0, 1000)
 	return entries
 }
@@ -144,20 +171,61 @@ const (
 // 重新包含，造成跨页重复计数。UnixNano 在内存（ns）与 PG（µs 往返）下都能与
 // 落库值精确对齐，边界条目被严格排除。
 func encodeAuditCursor(e *AuditEntry) string {
-	return strconv.FormatInt(e.Timestamp.UnixNano(), 10) + ":" + e.ID
+	return "v2:" + strconv.FormatInt(e.Timestamp.UnixNano(), 10) + ":" + e.ID
 }
 
-// decodeAuditCursor 解析游标；非法游标返回零值。
-func decodeAuditCursor(cursor string) (time.Time, string) {
-	idx := strings.Index(cursor, ":")
-	if idx <= 0 {
-		return time.Time{}, ""
+// decodeAuditCursor accepts the current v2 UnixNano:id format and the
+// historical bare UnixMilli:id format used before sub-millisecond cursors.
+func decodeAuditCursor(cursor string) (time.Time, string, error) {
+	if cursor == "" {
+		return time.Time{}, "", nil
 	}
-	nano, err := strconv.ParseInt(cursor[:idx], 10, 64)
-	if err != nil {
-		return time.Time{}, ""
+	if strings.TrimSpace(cursor) != cursor {
+		return time.Time{}, "", fmt.Errorf("invalid audit cursor")
 	}
-	return time.Unix(0, nano), cursor[idx+1:]
+	value := cursor
+	unit := "legacy"
+	if strings.HasPrefix(cursor, "v2:") {
+		value = strings.TrimPrefix(cursor, "v2:")
+		unit = "nano"
+	}
+	idx := strings.IndexByte(value, ':')
+	if idx <= 0 || idx == len(value)-1 || strings.Contains(value[idx+1:], ":") {
+		return time.Time{}, "", fmt.Errorf("invalid audit cursor")
+	}
+	n, err := strconv.ParseInt(value[:idx], 10, 64)
+	if err != nil || n < 0 {
+		return time.Time{}, "", fmt.Errorf("invalid audit cursor")
+	}
+	id := value[idx+1:]
+	if strings.TrimSpace(id) != id || strings.ContainsAny(id, "\r\n") {
+		return time.Time{}, "", fmt.Errorf("invalid audit cursor")
+	}
+	if unit == "nano" || (unit == "legacy" && n >= 1_000_000_000_000_000) {
+		return time.Unix(0, n), id, nil
+	}
+	return time.UnixMilli(n), id, nil
+}
+
+// ValidateAuditCursor validates an optional cursor at an API boundary.
+func ValidateAuditCursor(cursor string) error {
+	_, _, err := decodeAuditCursor(cursor)
+	return err
+}
+
+func auditEntryLess(a, b *AuditEntry) bool {
+	if a.Timestamp.Equal(b.Timestamp) {
+		return a.ID < b.ID
+	}
+	return a.Timestamp.Before(b.Timestamp)
+}
+
+func cloneAuditEntry(entry *AuditEntry) *AuditEntry {
+	if entry == nil {
+		return nil
+	}
+	copy := *entry
+	return &copy
 }
 
 // afterCursor 判断 e 是否严格位于游标之后。
@@ -187,7 +255,10 @@ func (s *AuditStore) QueryRange(query AuditQuery) (*AuditPage, error) {
 
 	// 二分：第一个 Timestamp >= StartTime 的位置（entries 按时间升序）。
 	start := query.StartTime
-	cursorTs, cursorID := decodeAuditCursor(query.AfterCursor)
+	cursorTs, cursorID, err := decodeAuditCursor(query.AfterCursor)
+	if err != nil {
+		return nil, err
+	}
 	if !cursorTs.IsZero() && cursorTs.After(start) {
 		// 游标比 StartTime 更靠后时以游标为准（增量语义）。
 		start = cursorTs
@@ -214,9 +285,13 @@ func (s *AuditStore) QueryRange(query AuditQuery) (*AuditPage, error) {
 		if query.Action != "" && e.Action != query.Action {
 			continue
 		}
-		page.Entries = append(page.Entries, e)
-		if len(page.Entries) == limit {
-			page.NextCursor = encodeAuditCursor(e)
+		if query.ExcludeAction != "" && e.Action == query.ExcludeAction {
+			continue
+		}
+		page.Entries = append(page.Entries, cloneAuditEntry(e))
+		if len(page.Entries) == limit+1 {
+			page.Entries = page.Entries[:limit]
+			page.NextCursor = encodeAuditCursor(page.Entries[limit-1])
 			return page, nil
 		}
 	}

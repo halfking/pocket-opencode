@@ -2,6 +2,7 @@ package redclaw
 
 import (
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -172,16 +173,57 @@ func TestQueryRangeLimitClamped(t *testing.T) {
 	}
 }
 
-func TestQueryRangeInvalidCursorIgnoredGracefully(t *testing.T) {
+func TestQueryRangeExactLimitHasNoCursor(t *testing.T) {
 	s := NewAuditStore()
-	base := time.UnixMilli(6_000_000)
-	mustRecord(s, "ws-a", "chat.send", base)
-	page, err := s.QueryRange(AuditQuery{StartTime: base, AfterCursor: "not-a-cursor"})
+	base := time.Unix(1_700_000_000, 0)
+	for i := 0; i < 2; i++ {
+		mustRecord(s, "ws-a", "act", base.Add(time.Duration(i)*time.Second))
+	}
+	page, err := s.QueryRange(AuditQuery{TenantID: "ws-a", StartTime: base, Limit: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Entries) != 1 {
-		t.Fatalf("invalid cursor must degrade to timestamp-only query, got %d", len(page.Entries))
+	if len(page.Entries) != 2 || page.NextCursor != "" {
+		t.Fatalf("exact final page must not expose a cursor: %+v", page)
+	}
+}
+
+func TestQueryRangeInvalidCursorRejected(t *testing.T) {
+	s := NewAuditStore()
+	base := time.UnixMilli(6_000_000)
+	mustRecord(s, "ws-a", "chat.send", base)
+	if _, err := s.QueryRange(AuditQuery{StartTime: base, AfterCursor: "not-a-cursor"}); err == nil {
+		t.Fatal("invalid cursor must return an error")
+	}
+}
+
+func TestQueryRangeLegacyMillisecondCursor(t *testing.T) {
+	s := NewAuditStore()
+	base := time.Unix(1_700_000_000, 0)
+	first := mustRecord(s, "ws-a", "chat.send", base)
+	second := mustRecord(s, "ws-a", "file.read", base.Add(time.Second))
+	legacy := strconv.FormatInt(first.Timestamp.UnixMilli(), 10) + ":" + first.ID
+	page, err := s.QueryRange(AuditQuery{TenantID: "ws-a", StartTime: base, AfterCursor: legacy, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 1 || page.Entries[0].ID != second.ID {
+		t.Fatalf("legacy cursor must resume after first entry, got %+v", page.Entries)
+	}
+}
+
+func TestQueryRangeOutOfOrderTimestamps(t *testing.T) {
+	s := NewAuditStore()
+	base := time.Unix(1_700_000_000, 0)
+	mustRecord(s, "ws-a", "late", base.Add(2*time.Second))
+	mustRecord(s, "ws-a", "backfill", base)
+	mustRecord(s, "ws-a", "current", base.Add(time.Second))
+	page, err := s.QueryRange(AuditQuery{TenantID: "ws-a", StartTime: base, EndTime: base.Add(3 * time.Second), Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 3 || page.Entries[0].Action != "backfill" || page.Entries[2].Action != "late" {
+		t.Fatalf("out-of-order timestamps must be returned in time order, got %+v", page.Entries)
 	}
 }
 

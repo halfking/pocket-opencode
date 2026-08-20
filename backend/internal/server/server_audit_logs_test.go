@@ -242,3 +242,36 @@ func TestAuditLogsNoAuthFailsClosed(t *testing.T) {
 		t.Fatalf("no token must be rejected, got %d body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestAuditLogsRejectsAdminWithoutWorkspace(t *testing.T) {
+	srv, _, signer, _ := newMobileRouteServer(t)
+	h := srv.Handler()
+	if err := srv.auditStore.Record(&redclaw.AuditEntry{Action: "chat.send", TenantID: "ws-a", Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.auditStore.Record(&redclaw.AuditEntry{Action: "chat.send", TenantID: "ws-b", Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	token, err := signer.Sign("legacy-admin", "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, mobileRequest(http.MethodGet, "/api/audit/logs", token, ""))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "workspace") {
+		t.Fatalf("empty workspace must fail closed, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAuditLogsRejectsMalformedCursor(t *testing.T) {
+	srv, _, signer, _ := newMobileRouteServer(t)
+	token, err := signer.SignWithWorkspace("admin-a", "admin", "ws-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, mobileRequest(http.MethodGet, "/api/audit/logs?cursor=not-a-cursor", token, ""))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("malformed cursor must return 400, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}

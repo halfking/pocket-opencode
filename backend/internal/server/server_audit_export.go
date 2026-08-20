@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
@@ -36,9 +37,15 @@ func parseAuditQuery(r *http.Request, attachment bool) (redclaw.AuditQuery, audi
 		return redclaw.AuditQuery{}, "", fmt.Errorf("unauthorized")
 	}
 	q := redclaw.AuditQuery{
-		TenantID:    claims.WorkspaceID,
+		TenantID:    strings.TrimSpace(claims.WorkspaceID),
 		Action:      r.URL.Query().Get("action"),
 		AfterCursor: r.URL.Query().Get("cursor"),
+	}
+	if q.TenantID == "" {
+		return redclaw.AuditQuery{}, "", fmt.Errorf("workspace is required")
+	}
+	if err := redclaw.ValidateAuditCursor(q.AfterCursor); err != nil {
+		return redclaw.AuditQuery{}, "", err
 	}
 	if raw := r.URL.Query().Get("start"); raw != "" {
 		ts, err := time.Parse(time.RFC3339, raw)
@@ -134,13 +141,15 @@ func writeAuditPage(w http.ResponseWriter, page *redclaw.AuditPage, format audit
 			_ = enc.Encode(e)
 		}
 	case auditFormatJSON:
-		fallthrough
-	default:
 		w.Header().Set("Content-Type", "application/json")
+		if attachment {
+			w.Header().Set("Content-Disposition", "attachment; filename=audit-export.json")
+		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"entries": page.Entries,
 			"total":   len(page.Entries),
 		})
+	default:
 	}
 }
 
@@ -182,6 +191,10 @@ func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if query.EndTime.IsZero() {
+		query.EndTime = time.Now()
+	}
+	query.ExcludeAction = "audit.export"
 
 	page, err := s.auditStore.QueryRange(query)
 	if err != nil {
