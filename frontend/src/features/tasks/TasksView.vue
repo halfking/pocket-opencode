@@ -18,6 +18,7 @@
           <span class="badge">{{ activeTasks.length }}</span>
         </h2>
         <button class="link-btn" @click="showCreateModal = true">+ 新任务</button>
+        <button class="link-btn acc-delegate-btn" @click="openAccDelegate">委托 ACC</button>
       </div>
 
       <div v-if="loading" class="skeleton-row">
@@ -277,6 +278,53 @@
         </div>
       </div>
     </div>
+
+    <!-- Delegate to ACC Modal -->
+    <Teleport to="body">
+      <div
+        v-if="showAccModal"
+        class="modal-overlay"
+        @click.self="closeAccDelegate"
+      >
+        <div class="modal-sheet acc-sheet">
+          <div class="modal-handle" />
+          <div class="modal-body">
+            <h2>委托给 ACC</h2>
+            <p class="acc-hint">ACC 会接管后续会话与执行，无需在手机上跟进。</p>
+            <div class="form-group">
+              <label>标题 *</label>
+              <input
+                v-model="accDraft.title"
+                type="text"
+                placeholder="例如：实现登录页面"
+                maxlength="120"
+              />
+            </div>
+            <div class="form-group">
+              <label>描述（可选）</label>
+              <textarea
+                v-model="accDraft.description"
+                placeholder="补充背景、目标或验收标准"
+                rows="3"
+                maxlength="500"
+              />
+              <div class="char-counter">{{ accDraft.description.length }} / 500</div>
+            </div>
+            <div v-if="accStore.error" class="acc-error">{{ accStore.error }}</div>
+            <div class="modal-actions">
+              <button class="btn cancel" :disabled="accStore.submitting" @click="closeAccDelegate">取消</button>
+              <button
+                class="btn primary"
+                :disabled="!accDraft.title.trim() || accStore.submitting"
+                @click="submitAccDelegate"
+              >
+                {{ accStore.submitting ? '提交中…' : '委托给 ACC' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
   </PullToRefresh>
 </template>
@@ -288,6 +336,8 @@ import { api, type Task } from '../../api/client'
 import wsClient from '../../api/websocket'
 import { usePullDownClose } from '../../composables/usePullDownClose'
 import { useVoiceInput } from '../../composables/useVoiceInput'
+import { useToast } from '../../composables/useToast'
+import { useAccTasksStore } from '../../stores/accTasks'
 import { EmptyState, PullToRefresh } from '../../components'
 
 const router = useRouter()
@@ -318,6 +368,51 @@ const newTask = ref({
   priority: 'medium',
   status: 'active',
 })
+
+// ── Delegate to ACC ──
+const toast = useToast()
+const accStore = useAccTasksStore()
+const showAccModal = ref(false)
+const accDraft = ref({ title: '', description: '' })
+
+function openAccDelegate() {
+  accDraft.value = { title: '', description: '' }
+  accStore.reset()
+  showAccModal.value = true
+}
+
+function closeAccDelegate() {
+  showAccModal.value = false
+}
+
+async function submitAccDelegate() {
+  const title = accDraft.value.title.trim()
+  if (!title) return
+  const created = await accStore.createTask({
+    title,
+    description: accDraft.value.description.trim() || undefined,
+  })
+  if (created) {
+    // 追加到本地任务列表，不重新拉取
+    const accTask: Task = {
+      id: created.id || `acc-${Date.now()}`,
+      title: created.title,
+      description: created.description,
+      status: 'active',
+      priority: 'medium',
+      source: 'acc',
+      createdAt: created.createdAt || new Date().toISOString(),
+      updatedAt: created.updatedAt || new Date().toISOString(),
+      sessionCount: 0,
+      instanceName: currentInstance.value?.displayName || currentInstance.value?.name || 'ACC',
+    }
+    tasks.value.unshift(accTask)
+    closeAccDelegate()
+    toast.success(`已委托给 ACC：${created.title}`)
+  } else {
+    toast.error(accStore.error || '委托失败，请重试')
+  }
+}
 
 // ── Computed ──
 const activeTasks = computed(() =>
@@ -645,6 +740,39 @@ function timeAgo(dateStr?: string): string {
   border: none;
   cursor: pointer;
   padding: 4px 8px;
+}
+
+/* ── Delegate to ACC ── */
+.section-header .acc-delegate-btn {
+  margin-left: 8px;
+}
+.acc-sheet {
+  max-width: 560px;
+  margin: 0 auto;
+  width: 100%;
+}
+.acc-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: -8px 0 14px;
+}
+.acc-sheet .form-group input,
+.acc-sheet .form-group textarea {
+  width: 100%;
+}
+.char-counter {
+  text-align: right;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.acc-error {
+  font-size: 12px;
+  color: var(--danger);
+  background: var(--danger-bg, rgba(239, 68, 68, 0.08));
+  padding: 6px 10px;
+  border-radius: 6px;
+  margin: 4px 0 8px;
 }
 
 /* ── Task Cards (Codex compact) ── */
