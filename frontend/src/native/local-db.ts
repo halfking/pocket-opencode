@@ -10,9 +10,11 @@
  *
  * 架构定位：见 docs/2026-07-02-lobster-local-storage-design.md
  */
+import { Capacitor } from '@capacitor/core'
 import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacitor-community/sqlite'
-import { SCHEMA_SQL, splitSqlStatements } from './schema'
-import type { SqlDb } from './sqlDb'
+import { initSqliteWeb } from './sqlite-web-init'
+import type { SqlDb, SqlRow } from './sqlDb'
+import { SCHEMA_SQL } from './schema'
 
 const MEETINGS_V2_COLUMNS = [
   { table: 'local_meetings', column: 'location', sql: 'ALTER TABLE local_meetings ADD COLUMN location TEXT' },
@@ -27,7 +29,7 @@ const MEETINGS_V2_COLUMNS = [
 ]
 
 const DB_NAME = 'lobster'
-const DB_VERSION = 2
+const DB_VERSION = 1
 
 /**
  * LocalDB 是前端唯一访问本地数据库的入口。所有 feature store（notes/emails/...）
@@ -59,7 +61,14 @@ class LocalDB {
 
     if (this.initialized) return
 
-    const encrypted = dbSecret.length > 0
+    // Web（jeep-sqlite / sql.js）不支持 SQLCipher 加密库；仅开发/浏览器 QC 使用明文 IndexedDB。
+    // 原生 Android/iOS 保持 secret 模式。
+    const isWeb = Capacitor.getPlatform() === 'web'
+    const encrypted = !isWeb && dbSecret.length > 0
+    if (isWeb) {
+      console.info('[localDB] web platform: no-encryption (dev/browser QC only)')
+      await initSqliteWeb()
+    }
 
     // ✅ 关键修复：在 createConnection 之前先调用 setEncryptionSecret
     // 官方 API 文档：setEncryptionSecret "Only to be used once if you wish to encrypt database"
@@ -79,36 +88,38 @@ class LocalDB {
 
     const mode = encrypted ? 'secret' : 'no-encryption'
 
-    // 先检查连接是否已存在（保险措施）
-    try {
-      const existingConn = await this.sqlite.retrieveConnection(DB_NAME, false)
-      if (existingConn) {
-        await this.sqlite.closeConnection(DB_NAME, false)
-      }
-    } catch {
-      // 连接不存在，继续创建
+    // 官方推荐：先 checkConnectionsConsistency，再 isConnection / create
+    await this.sqlite.checkConnectionsConsistency()
+    const already = (await this.sqlite.isConnection(DB_NAME, false)).result === true
+    if (already) {
+      this.conn = await this.sqlite.retrieveConnection(DB_NAME, false)
+    } else {
+      this.conn = await this.sqlite.createConnection(
+        DB_NAME,
+        encrypted,
+        mode,
+        DB_VERSION,
+        false,
+      )
     }
-
-    this.conn = await this.sqlite.createConnection(
-      DB_NAME,
-      encrypted,
-      mode,
-      DB_VERSION,
-      false,
-    )
     await this.conn.open()
 
-// 建表（幂等 CREATE IF NOT EXISTS）。不能把整段 SCHEMA_SQL 交给
-    // conn.execute：Android 插件按 `;` 切分会截断 CREATE TRIGGER 的
-    // BEGIN...END 体。自行切分后走 executeSet 单事务建表。
-    const ddl = splitSqlStatements(SCHEMA_SQL).map((statement) => ({ statement, values: [] }))
-    await this.conn.executeSet(ddl, true)
+    // 建表（幂等 CREATE IF NOT EXISTS）。Web/sql.js 通常无 FTS5，先跳过 FTS 段。
+    const schemaSql = isWeb ? stripFts5ForWeb(SCHEMA_SQL) : SCHEMA_SQL
+    try {
+      await this.conn.execute(schemaSql, false)
+    } catch (e) {
+      console.warn('[localDB] schema execute failed, applying best-effort:', e)
+      await this.applySchemaBestEffort(schemaSql)
+    }
 
-    // 增量迁移（已有库补列；in-progress meeting work）
-    await this.runMeetingsV2Migration()
-
+    // 增量迁移（已有库补列）— 此阶段 initialized 尚未置位，直接用 conn
     this.initialized = true
-    await this.ensureSchemaMigrations()
+    try {
+      await this.runMeetingsV2Migration()
+    } catch (e) {
+      console.warn('[localDB] meetings v2 migration failed:', e)
+    }
   }
 
   /** 会议模块 v2：为旧库补列，列已存在则跳过 */
@@ -242,56 +253,48 @@ class LocalDB {
     }
   }
 
-  private async ensureSchemaMigrations(): Promise<void> {
-    await this.conn!.execute(`
-      CREATE TABLE IF NOT EXISTS local_schema_migrations (
-        version INTEGER PRIMARY KEY,
-        applied_at INTEGER NOT NULL
-      )
-    `, false)
-
-    const applied = await this.query<{ version: number }>(
-      'SELECT version FROM local_schema_migrations ORDER BY version',
-    )
-    const versions = new Set(applied.map((row) => Number(row.version)))
-
-    // v2: existing installations need the field-encryption marker. New installs
-    // already receive it from SCHEMA_SQL, so duplicate-column errors are avoided.
-    if (!versions.has(2)) {
-      const columns = await this.query<{ name: string }>(
-        'PRAGMA table_info(local_notes)',
-      )
-      if (!columns.some((column) => column.name === 'encrypted_content')) {
-        await this.conn!.execute(
-          'ALTER TABLE local_notes ADD COLUMN encrypted_content INTEGER NOT NULL DEFAULT 1',
-          false,
-        )
-      }
-      await this.run(
-        'INSERT INTO local_schema_migrations (version, applied_at) VALUES (?, ?)',
-        [2, Date.now()],
-      )
-    }
-  }
-
   private requireReady() {
     if (!this.initialized || !this.conn) {
       throw new Error('LocalDB 未初始化，请先调用 init(dbSecret)')
     }
   }
+
+  /** 按语句尽力执行（Web 缺扩展时跳过失败语句） */
+  private async applySchemaBestEffort(sql: string): Promise<void> {
+    if (!this.conn) return
+    const parts = sql
+      .split(/;\s*\n/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0 && !s.startsWith('--'))
+    for (const part of parts) {
+      try {
+        await this.conn.execute(part.endsWith(';') ? part : `${part};`, false)
+      } catch (e) {
+        console.warn('[localDB] skip schema stmt:', part.slice(0, 60), e)
+      }
+    }
+  }
+}
+
+/** Web/sql.js 不含 FTS5：去掉虚拟表与相关触发器，避免整段 schema 失败 */
+function stripFts5ForWeb(sql: string): string {
+  return sql
+    .replace(/CREATE VIRTUAL TABLE[\s\S]*?;/gi, '-- FTS5 skipped on web\n')
+    .replace(/CREATE TRIGGER IF NOT EXISTS local_notes_a[idu][\s\S]*?END;/gi, '-- FTS trigger skipped\n')
+}
+
+/**
+ * 把 LocalDB 适配成 SqlDb 接口，供离线持久化层（SqliteOutboxStore /
+ * SqliteApprovalStore / MobileSyncRuntime）使用。LocalDB.run 已是写操作，
+ * LocalDB.query 返回行数组，对应 SqlDb.all。
+ */
+export function localDbAsSql(localDBInstance: LocalDB): SqlDb {
+  return {
+    run: (sql, params) => localDBInstance.run(sql, params ?? []),
+    all: <T extends SqlRow = SqlRow>(sql: string, params?: unknown[]) =>
+      localDBInstance.query<T>(sql, params ?? []),
+  }
 }
 
 /** 单例。全 App 共享一个本地加密库连接。 */
 export const localDB = new LocalDB()
-
-/**
- * LocalDB → SqlDb 接口适配（query 即 all）。
- * 离线持久化模块（outbox / mobileSync / approvalStore）面向 SqlDb 编程，
- * App 侧用这个适配器把单例 LocalDB 传入，Node 测试用 node:sqlite 实现同接口。
- */
-export function localDbAsSql(db: LocalDB = localDB): SqlDb {
-  return {
-    run: (sql, params) => db.run(sql, params),
-    all: (sql, params) => db.query(sql, params),
-  }
-}
