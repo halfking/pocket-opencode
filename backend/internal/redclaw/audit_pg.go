@@ -120,6 +120,11 @@ func (s *PGAuditStore) Query(query AuditQuery) ([]*AuditEntry, error) {
 		args = append(args, query.Action)
 		argIdx++
 	}
+	if query.ExcludeAction != "" {
+		where = append(where, fmt.Sprintf("action <> $%d", argIdx))
+		args = append(args, query.ExcludeAction)
+		argIdx++
+	}
 
 	whereSQL := ""
 	if len(where) > 0 {
@@ -130,7 +135,7 @@ func (s *PGAuditStore) Query(query AuditQuery) ([]*AuditEntry, error) {
 SELECT id, action, user_id, tenant_id, resource, detail, duration_ms, success, timestamp, ip
 FROM %s
 %s
-ORDER BY timestamp DESC
+ORDER BY timestamp DESC, id DESC
 LIMIT %d
 `, s.table, whereSQL, limit)
 
@@ -191,6 +196,11 @@ func (s *PGAuditStore) QueryRange(query AuditQuery) (*AuditPage, error) {
 		args = append(args, query.Action)
 		argIdx++
 	}
+	if query.ExcludeAction != "" {
+		where = append(where, fmt.Sprintf("action <> $%d", argIdx))
+		args = append(args, query.ExcludeAction)
+		argIdx++
+	}
 	if !query.StartTime.IsZero() {
 		where = append(where, fmt.Sprintf("timestamp >= $%d", argIdx))
 		args = append(args, query.StartTime)
@@ -203,7 +213,10 @@ func (s *PGAuditStore) QueryRange(query AuditQuery) (*AuditPage, error) {
 	}
 
 	if query.AfterCursor != "" {
-		cursorTs, cursorID := decodeAuditCursor(query.AfterCursor)
+		cursorTs, cursorID, err := decodeAuditCursor(query.AfterCursor)
+		if err != nil {
+			return nil, err
+		}
 		if !cursorTs.IsZero() {
 			where = append(where, fmt.Sprintf("(timestamp, id) > ($%d, $%d)", argIdx, argIdx+1))
 			args = append(args, cursorTs, cursorID)
@@ -222,7 +235,7 @@ FROM %s
 %s
 ORDER BY timestamp ASC, id ASC
 LIMIT %d
-`, s.table, whereSQL, limit)
+`, s.table, whereSQL, limit+1)
 
 	rows, err := s.pool.Query(ctx, querySQL, args...)
 	if err != nil {
@@ -244,9 +257,9 @@ LIMIT %d
 		return nil, err
 	}
 
-	if len(page.Entries) == limit {
-		last := page.Entries[len(page.Entries)-1]
-		page.NextCursor = encodeAuditCursor(last)
+	if len(page.Entries) > limit {
+		page.Entries = page.Entries[:limit]
+		page.NextCursor = encodeAuditCursor(page.Entries[limit-1])
 	}
 	return page, nil
 }
