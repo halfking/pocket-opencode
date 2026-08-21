@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -53,15 +54,28 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	page, err := queryAuditRange(ctx, s.auditStore, query)
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, redclaw.ErrInvalidAuditCursor) {
-			status = http.StatusBadRequest
+		status, message := auditQueryError(err)
+		if status >= http.StatusInternalServerError {
+			log.Printf("[audit] query logs failed: %v", err)
 		}
-		http.Error(w, err.Error(), status)
+		http.Error(w, message, status)
 		return
 	}
 
 	writeAuditPage(w, page, format, false)
+}
+
+func auditQueryError(err error) (int, string) {
+	switch {
+	case errors.Is(err, redclaw.ErrInvalidAuditCursor):
+		return http.StatusBadRequest, "invalid audit cursor"
+	case errors.Is(err, context.DeadlineExceeded):
+		return http.StatusGatewayTimeout, "audit query timed out"
+	case errors.Is(err, context.Canceled):
+		return http.StatusRequestTimeout, "audit query canceled"
+	default:
+		return http.StatusInternalServerError, "internal server error"
+	}
 }
 
 func queryAuditRange(ctx context.Context, store interface {

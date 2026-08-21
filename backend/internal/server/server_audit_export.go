@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -202,11 +202,11 @@ func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	page, err := queryAuditRange(ctx, s.auditStore, query)
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, redclaw.ErrInvalidAuditCursor) {
-			status = http.StatusBadRequest
+		status, message := auditQueryError(err)
+		if status >= http.StatusInternalServerError {
+			log.Printf("[audit] export query failed: %v", err)
 		}
-		http.Error(w, err.Error(), status)
+		http.Error(w, message, status)
 		return
 	}
 

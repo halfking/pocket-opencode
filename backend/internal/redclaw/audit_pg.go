@@ -169,14 +169,32 @@ func (s *PGAuditStore) Flush() []*AuditEntry {
 // QueryRange implements incremental paged query for audit export.
 const auditQueryTimeout = 3 * time.Second
 
+func withAuditQueryTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= auditQueryTimeout {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, auditQueryTimeout)
+}
+
 func (s *PGAuditStore) QueryRange(query AuditQuery) (*AuditPage, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), auditQueryTimeout)
+	ctx, cancel := withAuditQueryTimeout(context.Background())
 	defer cancel()
 	return s.QueryRangeContext(ctx, query)
 }
 
 // QueryRangeContext is the cancellable form used by HTTP handlers and exporters.
 func (s *PGAuditStore) QueryRangeContext(ctx context.Context, query AuditQuery) (*AuditPage, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, auditQueryTimeout)
+		defer cancel()
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
