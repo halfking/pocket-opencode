@@ -27,10 +27,11 @@ type AuditEntry struct {
 
 // AuditQuery 审计查询
 type AuditQuery struct {
-	TenantID string `json:"tenant_id,omitempty"`
-	UserID   string `json:"user_id,omitempty"`
-	Action   string `json:"action,omitempty"`
-	Limit    int    `json:"limit,omitempty"`
+	TenantID      string `json:"tenant_id,omitempty"`
+	UserID        string `json:"user_id,omitempty"`
+	Action        string `json:"action,omitempty"`
+	ExcludeAction string `json:"-"`
+	Limit         int    `json:"limit,omitempty"`
 
 	// 增量导出参数（P1 审计导出）。
 	// StartTime/EndTime 构成闭开区间 [start, end)；零值表示不设界。
@@ -54,6 +55,7 @@ type AuditStore struct {
 	mu      sync.RWMutex
 	entries []*AuditEntry
 	maxSize int
+	seq     uint64
 }
 
 // NewAuditStore creates a new audit log store with default capacity.
@@ -73,13 +75,23 @@ func (s *AuditStore) Record(entry *AuditEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entry.ID = fmt.Sprintf("aud_%d_%d", time.Now().UnixNano(), len(s.entries))
-	// 调用方显式提供的时间戳优先（backfill / 测试）；否则取当前时间。
-	// entries 按追加顺序即时间顺序，QueryRange 的二分依赖该不变量。
-	if entry.Timestamp.IsZero() {
-		entry.Timestamp = time.Now()
+	stored := *entry
+	if stored.ID == "" {
+		s.seq++
+		stored.ID = fmt.Sprintf("aud_%d_%d", time.Now().UnixNano(), s.seq)
 	}
-	s.entries = append(s.entries, entry)
+	if stored.Timestamp.IsZero() {
+		stored.Timestamp = time.Now()
+	}
+	entry.ID = stored.ID
+	entry.Timestamp = stored.Timestamp
+
+	idx := sort.Search(len(s.entries), func(i int) bool {
+		return auditEntryLess(&stored, s.entries[i])
+	})
+	s.entries = append(s.entries, nil)
+	copy(s.entries[idx+1:], s.entries[idx:])
+	s.entries[idx] = &stored
 
 	if len(s.entries) > s.maxSize {
 		s.entries = s.entries[len(s.entries)-s.maxSize/2:]
@@ -109,8 +121,17 @@ func (s *AuditStore) Query(query AuditQuery) ([]*AuditEntry, error) {
 		if query.Action != "" && e.Action != query.Action {
 			continue
 		}
-		result = append(result, e)
+		if query.ExcludeAction != "" && e.Action == query.ExcludeAction {
+			continue
+		}
+		result = append(result, cloneAuditEntry(e))
 	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Timestamp.Equal(result[j].Timestamp) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].Timestamp.After(result[j].Timestamp)
+	})
 
 	if len(result) > limit {
 		result = result[:limit]
@@ -124,7 +145,10 @@ func (s *AuditStore) Flush() []*AuditEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entries := s.entries
+	entries := make([]*AuditEntry, len(s.entries))
+	for i, entry := range s.entries {
+		entries[i] = cloneAuditEntry(entry)
+	}
 	s.entries = make([]*AuditEntry, 0, 1000)
 	return entries
 }
@@ -185,6 +209,21 @@ func decodeAuditCursor(cursor string) (time.Time, string, error) {
 	return time.Unix(0, value), parts[2], nil
 }
 
+func auditEntryLess(a, b *AuditEntry) bool {
+	if a.Timestamp.Equal(b.Timestamp) {
+		return a.ID < b.ID
+	}
+	return a.Timestamp.Before(b.Timestamp)
+}
+
+func cloneAuditEntry(entry *AuditEntry) *AuditEntry {
+	if entry == nil {
+		return nil
+	}
+	copy := *entry
+	return &copy
+}
+
 // afterCursor 判断 e 是否严格位于游标之后。
 func afterCursor(e *AuditEntry, ts time.Time, id string) bool {
 	if e.Timestamp.After(ts) {
@@ -219,7 +258,6 @@ func (s *AuditStore) QueryRangeContext(ctx context.Context, query AuditQuery) (*
 		limit = auditMaxRangeLimit
 	}
 
-	// 二分：第一个 Timestamp >= StartTime 的位置（entries 按时间升序）。
 	start := query.StartTime
 	var cursorTs time.Time
 	var cursorID string
@@ -231,7 +269,6 @@ func (s *AuditStore) QueryRangeContext(ctx context.Context, query AuditQuery) (*
 		}
 	}
 	if !cursorTs.IsZero() && cursorTs.After(start) {
-		// 游标比 StartTime 更靠后时以游标为准（增量语义）。
 		start = cursorTs
 	}
 	lo := sort.Search(len(s.entries), func(i int) bool {
@@ -245,10 +282,10 @@ func (s *AuditStore) QueryRangeContext(ctx context.Context, query AuditQuery) (*
 		}
 		e := s.entries[i]
 		if !query.EndTime.IsZero() && !e.Timestamp.Before(query.EndTime) {
-			return page, nil // 到达 end（闭开区间），必无更多
+			return page, nil
 		}
 		if cursorID != "" && !afterCursor(e, cursorTs, cursorID) {
-			continue // 同时间段内游标之前的记录（含已导出的本批）
+			continue
 		}
 		if query.TenantID != "" && e.TenantID != query.TenantID {
 			continue
@@ -259,9 +296,13 @@ func (s *AuditStore) QueryRangeContext(ctx context.Context, query AuditQuery) (*
 		if query.Action != "" && e.Action != query.Action {
 			continue
 		}
-		page.Entries = append(page.Entries, e)
-		if len(page.Entries) == limit {
-			page.NextCursor = encodeAuditCursor(e)
+		if query.ExcludeAction != "" && e.Action == query.ExcludeAction {
+			continue
+		}
+		page.Entries = append(page.Entries, cloneAuditEntry(e))
+		if len(page.Entries) == limit+1 {
+			page.Entries = page.Entries[:limit]
+			page.NextCursor = encodeAuditCursor(page.Entries[limit-1])
 			return page, nil
 		}
 	}

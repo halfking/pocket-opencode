@@ -74,7 +74,7 @@ func main() {
 		taskStore  *task.Store // nil-safe: nil when pool is nil
 		notesStore *notes.Store
 		emailStore *email.Store
-		vaultStore   *vault.Store
+		vaultStore *vault.Store
 	)
 	if pool != nil {
 		ts, err := task.NewStore(pool)
@@ -690,15 +690,9 @@ func main() {
 		if v, err := strconv.Atoi(os.Getenv("AUDIT_EXPORT_RETENTION_DAYS")); err == nil && v > 0 {
 			retain = v
 		}
-		exporter := redclaw.NewFileExporter(srv.AuditStore(), redclaw.FileExporterConfig{
-			Dir:        auditDir,
-			Interval:   interval,
-			RetainDays: retain,
-		})
-		exporterCtx, exporterCancel := context.WithCancel(context.Background())
-		go exporter.Run(exporterCtx)
-		defer exporterCancel()
-		log.Printf("审计落盘导出已启用：dir=%s interval=%s retain=%dd", auditDir, interval, retain)
+		if exporterCancel, started := startAuditFileExporter(srv.AuditStore(), auditDir, interval, retain); started {
+			defer exporterCancel()
+		}
 	}
 
 	// HTTP server 配置超时，防止 Slowloris 攻击和资源耗尽
@@ -715,6 +709,26 @@ func main() {
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+type auditRangeStore interface {
+	QueryRange(redclaw.AuditQuery) (*redclaw.AuditPage, error)
+}
+
+func startAuditFileExporter(store auditRangeStore, dir string, interval time.Duration, retainDays int) (context.CancelFunc, bool) {
+	if store == nil {
+		log.Printf("WARN: AUDIT_EXPORT_DIR configured but audit storage is unavailable; file export disabled")
+		return nil, false
+	}
+	exporter := redclaw.NewFileExporter(store, redclaw.FileExporterConfig{
+		Dir:        dir,
+		Interval:   interval,
+		RetainDays: retainDays,
+	})
+	exporterCtx, exporterCancel := context.WithCancel(context.Background())
+	go exporter.Run(exporterCtx)
+	log.Printf("审计落盘导出已启用：dir=%s interval=%s retain=%dd", dir, interval, retainDays)
+	return exporterCancel, true
 }
 
 // ---- llm-gateway 适配器（把 llm-gateway OpenAI 兼容协议适配到 aigate 接口）----

@@ -30,7 +30,7 @@ func TestQueryRangeRespectsTimeWindow(t *testing.T) {
 
 	page, err := s.QueryRange(AuditQuery{
 		StartTime: base.Add(2 * time.Second),
-		EndTime:   base.Add(5 * time.Second), // [2s, 5s) → 3 条
+		EndTime:   base.Add(5 * time.Second),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +82,6 @@ func TestQueryRangeCursorPagination(t *testing.T) {
 	if len(collected) != 25 {
 		t.Fatalf("expected all 25 entries across pages, got %d", len(collected))
 	}
-	// 顺序与去重：分页结果必须按时间升序且无重复 id。
 	seen := map[string]bool{}
 	for i, e := range collected {
 		if seen[e.ID] {
@@ -108,7 +107,6 @@ func TestQueryRangeSameTimestampCursorDisambiguates(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		ids = append(ids, mustRecord(s, "ws-a", fmt.Sprintf("act_%d", i), ts).ID)
 	}
-	// 取前两条作为第一页。
 	page1, err := s.QueryRange(AuditQuery{StartTime: ts, Limit: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -128,19 +126,20 @@ func TestQueryRangeSameTimestampCursorDisambiguates(t *testing.T) {
 	}
 }
 
-func TestQueryRangeFiltersTenant(t *testing.T) {
+func TestQueryRangeFiltersTenantAndExclusion(t *testing.T) {
 	s := NewAuditStore()
 	base := time.UnixMilli(4_000_000)
 	mustRecord(s, "ws-a", "chat.send", base)
 	mustRecord(s, "ws-b", "chat.send", base.Add(time.Second))
 	mustRecord(s, "ws-a", "file.read", base.Add(2*time.Second))
+	mustRecord(s, "ws-a", "audit.export", base.Add(3*time.Second))
 
-	page, err := s.QueryRange(AuditQuery{TenantID: "ws-a", StartTime: base})
+	page, err := s.QueryRange(AuditQuery{TenantID: "ws-a", StartTime: base, ExcludeAction: "audit.export"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(page.Entries) != 2 {
-		t.Fatalf("tenant filter expected 2, got %d", len(page.Entries))
+		t.Fatalf("tenant/exclusion filter expected 2, got %d", len(page.Entries))
 	}
 	page, err = s.QueryRange(AuditQuery{TenantID: "ws-a", Action: "file.read", StartTime: base})
 	if err != nil {
@@ -148,6 +147,42 @@ func TestQueryRangeFiltersTenant(t *testing.T) {
 	}
 	if len(page.Entries) != 1 {
 		t.Fatalf("action filter expected 1, got %d", len(page.Entries))
+	}
+}
+
+func TestQueryRangeExactLimitHasNoCursor(t *testing.T) {
+	s := NewAuditStore()
+	base := time.UnixMilli(4_500_000)
+	for i := 0; i < 2; i++ {
+		mustRecord(s, "ws-a", "chat.send", base.Add(time.Duration(i)*time.Second))
+	}
+	page, err := s.QueryRange(AuditQuery{StartTime: base, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 2 || page.NextCursor != "" {
+		t.Fatalf("exact terminal page=%+v, want two entries without a cursor", page)
+	}
+}
+
+func TestQueryRangeOutOfOrderTimestamps(t *testing.T) {
+	s := NewAuditStore()
+	base := time.UnixMilli(4_750_000)
+	mustRecord(s, "ws-a", "chat.send", base.Add(2*time.Second))
+	mustRecord(s, "ws-a", "chat.send", base)
+	mustRecord(s, "ws-a", "chat.send", base.Add(time.Second))
+
+	page, err := s.QueryRange(AuditQuery{StartTime: base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 3 {
+		t.Fatalf("entries=%d, want 3", len(page.Entries))
+	}
+	for i := 1; i < len(page.Entries); i++ {
+		if page.Entries[i].Timestamp.Before(page.Entries[i-1].Timestamp) {
+			t.Fatalf("out-of-order page: %+v", page.Entries)
+		}
 	}
 }
 
@@ -168,7 +203,6 @@ func TestQueryRangeLimitClamped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 零 limit 应用默认 500，不足一页时全量返回且无游标。
 	if len(page.Entries) != 20 || page.NextCursor != "" {
 		t.Fatalf("zero limit must apply default %d and return all entries, got %d", auditDefaultRangeLimit, len(page.Entries))
 	}
