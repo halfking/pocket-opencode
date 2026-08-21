@@ -120,6 +120,11 @@ func (s *PGAuditStore) Query(query AuditQuery) ([]*AuditEntry, error) {
 		args = append(args, query.Action)
 		argIdx++
 	}
+	if query.ExcludeAction != "" {
+		where = append(where, fmt.Sprintf("action <> $%d", argIdx))
+		args = append(args, query.ExcludeAction)
+		argIdx++
+	}
 
 	whereSQL := ""
 	if len(where) > 0 {
@@ -130,7 +135,7 @@ func (s *PGAuditStore) Query(query AuditQuery) ([]*AuditEntry, error) {
 SELECT id, action, user_id, tenant_id, resource, detail, duration_ms, success, timestamp, ip
 FROM %s
 %s
-ORDER BY timestamp DESC
+ORDER BY timestamp DESC, id DESC
 LIMIT %d
 `, s.table, whereSQL, limit)
 
@@ -202,6 +207,11 @@ func (s *PGAuditStore) QueryRangeContext(ctx context.Context, query AuditQuery) 
 		args = append(args, query.Action)
 		argIdx++
 	}
+	if query.ExcludeAction != "" {
+		where = append(where, fmt.Sprintf("action <> $%d", argIdx))
+		args = append(args, query.ExcludeAction)
+		argIdx++
+	}
 	if !query.StartTime.IsZero() {
 		where = append(where, fmt.Sprintf("timestamp >= $%d", argIdx))
 		args = append(args, query.StartTime)
@@ -232,9 +242,9 @@ func (s *PGAuditStore) QueryRangeContext(ctx context.Context, query AuditQuery) 
 SELECT id, action, user_id, tenant_id, resource, detail, duration_ms, success, timestamp, ip
 FROM %s
 %s
-ORDER BY timestamp ASC, id ASC
-LIMIT %d
-`, s.table, whereSQL, limit)
+	ORDER BY timestamp ASC, id ASC
+	LIMIT %d
+	`, s.table, whereSQL, limit+1)
 
 	rows, err := s.pool.Query(ctx, querySQL, args...)
 	if err != nil {
@@ -259,9 +269,9 @@ LIMIT %d
 		return nil, err
 	}
 
-	if len(page.Entries) == limit {
-		last := page.Entries[len(page.Entries)-1]
-		page.NextCursor = encodeAuditCursor(last)
+	if len(page.Entries) > limit {
+		page.Entries = page.Entries[:limit]
+		page.NextCursor = encodeAuditCursor(page.Entries[limit-1])
 	}
 	return page, nil
 }

@@ -4,8 +4,8 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -33,8 +33,8 @@ func TestAuditExportRequiresAdmin(t *testing.T) {
 	}
 
 	for name, token := range map[string]string{
-		"no_token":      "",
-		"member_token":  memberToken,
+		"no_token":     "",
+		"member_token": memberToken,
 	} {
 		req := mobileRequest(http.MethodGet, "/api/audit/export?format=jsonl", token, "")
 		rr := httptest.NewRecorder()
@@ -242,6 +242,39 @@ func TestAuditExportWritesSelfAudit(t *testing.T) {
 	}
 }
 
+func TestAuditExportExcludesPriorSelfAudit(t *testing.T) {
+	srv, adminToken := newAuditExportServer(t)
+	ts := time.Now().Add(-time.Minute)
+	if err := srv.auditStore.Record(&redclaw.AuditEntry{
+		Action: "audit.export", UserID: "admin-1", TenantID: "ws-a", Timestamp: ts,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.auditStore.Record(&redclaw.AuditEntry{
+		Action: "chat.send", UserID: "admin-1", TenantID: "ws-a", Timestamp: ts.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := mobileRequest(http.MethodGet, "/api/audit/export?format=jsonl", adminToken, "")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export failed: %d %s", rr.Code, rr.Body.String())
+	}
+	lines := nonEmptyLines(rr.Body.String())
+	if len(lines) != 1 {
+		t.Fatalf("exported lines=%d, want 1: %s", len(lines), rr.Body.String())
+	}
+	var entry redclaw.AuditEntry
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Action != "chat.send" {
+		t.Fatalf("export included wrong action %q", entry.Action)
+	}
+}
+
 func TestAuditExportIncrementalCursorAcrossNewEntries(t *testing.T) {
 	srv, adminToken := newAuditExportServer(t)
 	h := srv.Handler()
@@ -298,4 +331,3 @@ func nonEmptyLines(s string) []string {
 	}
 	return out
 }
-

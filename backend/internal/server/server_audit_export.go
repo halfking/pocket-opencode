@@ -184,6 +184,10 @@ func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if query.EndTime.IsZero() {
+		query.EndTime = time.Now()
+	}
+	query.ExcludeAction = "audit.export"
 
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
