@@ -19,3 +19,4 @@ deployment-test-*/
 
 # Compiled instance-manager binary (sources live in this repo; build artifact)
 opencode-manager/opencode-instance-manager
+backend/.env
