@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -196,9 +198,15 @@ func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 	}
 	query.ExcludeAction = "audit.export"
 
-	page, err := s.auditStore.QueryRange(query)
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	page, err := queryAuditRange(ctx, s.auditStore, query)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		status := http.StatusInternalServerError
+		if errors.Is(err, redclaw.ErrInvalidAuditCursor) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 

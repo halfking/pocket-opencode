@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -158,6 +160,45 @@ func TestFileExporterCreatesDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "state.json")); err != nil {
 		t.Fatalf("state.json missing: %v", err)
+	}
+}
+
+func TestFileExporterResumesV2CursorState(t *testing.T) {
+	dir := t.TempDir()
+	store := NewAuditStore()
+	base := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
+	first := &AuditEntry{ID: "aud-v2-first", Action: "test.a", TenantID: "ws-a", Timestamp: base}
+	second := &AuditEntry{ID: "aud-v2-second", Action: "test.b", TenantID: "ws-a", Timestamp: base.Add(time.Second)}
+	if err := store.Record(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Record(second); err != nil {
+		t.Fatal(err)
+	}
+	state := exporterState{Cursor: "v2:" + strconv.FormatInt(first.Timestamp.UnixNano(), 10) + ":" + first.ID}
+	rawState, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), rawState, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	exp := NewFileExporter(store, FileExporterConfig{Dir: dir})
+	n, err := exp.ExportOnce(context.Background())
+	if err != nil {
+		t.Fatalf("ExportOnce: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("exported %d entries, want 1", n)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "audit-20260815.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := splitLines(raw)
+	if len(lines) != 1 || !strings.Contains(lines[0], second.ID) {
+		t.Fatalf("expected only second entry after v2 resume, got %q", string(raw))
 	}
 }
 

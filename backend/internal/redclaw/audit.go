@@ -1,6 +1,8 @@
 package redclaw
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -174,14 +176,15 @@ func encodeAuditCursor(e *AuditEntry) string {
 	return "v2:" + strconv.FormatInt(e.Timestamp.UnixNano(), 10) + ":" + e.ID
 }
 
-// decodeAuditCursor accepts the current v2 UnixNano:id format and the
+var ErrInvalidAuditCursor = errors.New("invalid audit cursor")
+
 // historical bare UnixMilli:id format used before sub-millisecond cursors.
 func decodeAuditCursor(cursor string) (time.Time, string, error) {
 	if cursor == "" {
 		return time.Time{}, "", nil
 	}
 	if strings.TrimSpace(cursor) != cursor {
-		return time.Time{}, "", fmt.Errorf("invalid audit cursor")
+		return time.Time{}, "", ErrInvalidAuditCursor
 	}
 	value := cursor
 	unit := "legacy"
@@ -191,15 +194,15 @@ func decodeAuditCursor(cursor string) (time.Time, string, error) {
 	}
 	idx := strings.IndexByte(value, ':')
 	if idx <= 0 || idx == len(value)-1 || strings.Contains(value[idx+1:], ":") {
-		return time.Time{}, "", fmt.Errorf("invalid audit cursor")
+		return time.Time{}, "", ErrInvalidAuditCursor
 	}
 	n, err := strconv.ParseInt(value[:idx], 10, 64)
 	if err != nil || n < 0 {
-		return time.Time{}, "", fmt.Errorf("invalid audit cursor")
+		return time.Time{}, "", ErrInvalidAuditCursor
 	}
 	id := value[idx+1:]
 	if strings.TrimSpace(id) != id || strings.ContainsAny(id, "\r\n") {
-		return time.Time{}, "", fmt.Errorf("invalid audit cursor")
+		return time.Time{}, "", ErrInvalidAuditCursor
 	}
 	if unit == "nano" || (unit == "legacy" && n >= 1_000_000_000_000_000) {
 		return time.Unix(0, n), id, nil
@@ -242,6 +245,14 @@ func afterCursor(e *AuditEntry, ts time.Time, id string) bool {
 // 游标同时编码时间戳与 id：同毫秒多条记录也能精确续传；即使底层 entries
 // 因 maxSize 截断丢失旧记录，游标仍按时间戳正确对齐。
 func (s *AuditStore) QueryRange(query AuditQuery) (*AuditPage, error) {
+	return s.QueryRangeContext(context.Background(), query)
+}
+
+// QueryRangeContext is the cancellable form used by request handlers and exporters.
+func (s *AuditStore) QueryRangeContext(ctx context.Context, query AuditQuery) (*AuditPage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -269,6 +280,9 @@ func (s *AuditStore) QueryRange(query AuditQuery) (*AuditPage, error) {
 
 	page := &AuditPage{Entries: make([]*AuditEntry, 0, limit)}
 	for i := lo; i < len(s.entries); i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		e := s.entries[i]
 		if !query.EndTime.IsZero() && !e.Timestamp.Before(query.EndTime) {
 			return page, nil // 到达 end（闭开区间），必无更多

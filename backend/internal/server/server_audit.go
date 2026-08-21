@@ -1,7 +1,12 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"net/http"
+	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 )
 
 // handleAuditLogs GET /api/audit/logs — admin 视角下的工作区审计分页查询。
@@ -44,11 +49,28 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page, err := s.auditStore.QueryRange(query)
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	page, err := queryAuditRange(ctx, s.auditStore, query)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		status := http.StatusInternalServerError
+		if errors.Is(err, redclaw.ErrInvalidAuditCursor) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 
 	writeAuditPage(w, page, format, false)
+}
+
+func queryAuditRange(ctx context.Context, store interface {
+	QueryRange(redclaw.AuditQuery) (*redclaw.AuditPage, error)
+}, query redclaw.AuditQuery) (*redclaw.AuditPage, error) {
+	if contextual, ok := store.(interface {
+		QueryRangeContext(context.Context, redclaw.AuditQuery) (*redclaw.AuditPage, error)
+	}); ok {
+		return contextual.QueryRangeContext(ctx, query)
+	}
+	return store.QueryRange(query)
 }
