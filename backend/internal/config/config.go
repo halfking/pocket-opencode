@@ -185,7 +185,7 @@ func Load() Config {
 // It enforces security requirements like strong JWT secrets, disabled development flags,
 // and proper TLS configuration. Returns an error if any validation fails.
 func (c Config) Validate() error {
-	if c.Environment != "production" {
+	if !c.IsProduction() {
 		return nil
 	}
 
@@ -376,4 +376,16 @@ func parseStringList(s string) []string {
 		}
 	}
 	return result
+}
+
+// IsProduction reports whether the deployment is running in a production-grade
+// environment. Callers should use this single source of truth to decide whether
+// to fail-closed on missing optional dependencies (audit store, vault, etc.).
+//
+// Accepts both "production" (canonical) and "prod" (legacy alias) and is
+// case-insensitive after trim. Load() normalizes the canonical form, but tests
+// and ad-hoc Config literals may pass any of the aliases.
+func (c Config) IsProduction() bool {
+	value := strings.ToLower(strings.TrimSpace(c.Environment))
+	return value == "production" || value == "prod"
 }

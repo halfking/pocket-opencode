@@ -136,21 +136,16 @@ type Server struct {
 	// RedClaw 企业后端桥接（nil = 未配置，对应 handler 返回 503）
 	redclawBridge *redclaw.Bridge
 
-	// Audit 审计日志存储
-	auditStore interface {
-		Record(entry *redclaw.AuditEntry) error
-		Query(query redclaw.AuditQuery) ([]*redclaw.AuditEntry, error)
-		Flush() []*redclaw.AuditEntry
-		QueryRange(query redclaw.AuditQuery) (*redclaw.AuditPage, error)
-	}
+	// Audit 审计日志存储（nil-safe；production 下若 PG 初始化失败会保持 nil，
+	// 由 main.go 的 fail-closed 检查做兜底）。
+	auditStore redclaw.AuditStoreFull
 
 	// 移动端离线重放的 session create 幂等缓存（SEC-06）
 	mobileCreates *mobileCreateCache
 }
 
 func isProductionConfig(cfg config.Config) bool {
-	value := strings.ToLower(strings.TrimSpace(cfg.Environment))
-	return value == "production" || value == "prod"
+	return cfg.IsProduction()
 }
 
 // New 构造 Server。Phase 0 扩展：新增 notes/email/vault store、STT transcriber、ACC MCP client。
@@ -213,12 +208,7 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 		emailFetcher:     emailFetcher,
 		dataDir:          dataDir,
 		financeStore:     finance.NewStore(),
-		auditStore: func() interface {
-			Record(entry *redclaw.AuditEntry) error
-			Query(query redclaw.AuditQuery) ([]*redclaw.AuditEntry, error)
-			Flush() []*redclaw.AuditEntry
-			QueryRange(query redclaw.AuditQuery) (*redclaw.AuditPage, error)
-		} {
+		auditStore: func() redclaw.AuditStoreFull {
 			production := isProductionConfig(cfg)
 			if pool == nil {
 				if production {
@@ -363,12 +353,7 @@ func (s *Server) WSHub() *ws.Hub { return s.wsHub }
 
 // AuditStore 暴露内部审计存储，供 pocketd 装配旁路导出（如 FileExporter
 // 落盘轮转 / 外部 SIEM 转发）。只读语义由 AuditStore 自身保证。
-func (s *Server) AuditStore() interface {
-	Record(entry *redclaw.AuditEntry) error
-	Query(query redclaw.AuditQuery) ([]*redclaw.AuditEntry, error)
-	Flush() []*redclaw.AuditEntry
-	QueryRange(query redclaw.AuditQuery) (*redclaw.AuditPage, error)
-} {
+func (s *Server) AuditStore() redclaw.RangeStore {
 	return s.auditStore
 }
 

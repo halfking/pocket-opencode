@@ -375,7 +375,7 @@ func main() {
 		emailScheduler, emailFetcher,
 		dataDir, pool)
 	if isProductionConfig(cfg) && srv.AuditStore() == nil {
-		log.Fatal("audit store initialization failed in production")
+		log.Fatal("audit store initialization failed in production: see prior [Server] audit PG initialization log for the root cause (postgres pool nil, or NewPGAuditStore error)")
 	}
 
 	// 把 server 的 WS hub 反向注入 email scheduler，让 OAuth revocation
@@ -686,12 +686,26 @@ func main() {
 	// 可直接 tail 该目录。游标持久化在 state.json，重启不重扫。
 	if auditDir := os.Getenv("AUDIT_EXPORT_DIR"); auditDir != "" {
 		interval := time.Minute
-		if v, err := time.ParseDuration(os.Getenv("AUDIT_EXPORT_INTERVAL")); err == nil && v > 0 {
-			interval = v
+		if raw := os.Getenv("AUDIT_EXPORT_INTERVAL"); raw != "" {
+			v, err := time.ParseDuration(raw)
+			if err != nil || v <= 0 {
+				log.Printf("WARN: AUDIT_EXPORT_INTERVAL=%q invalid, using default %s", raw, interval)
+			} else {
+				interval = v
+			}
 		}
 		retain := 7
-		if v, err := strconv.Atoi(os.Getenv("AUDIT_EXPORT_RETENTION_DAYS")); err == nil && v > 0 {
-			retain = v
+		if raw := os.Getenv("AUDIT_EXPORT_RETENTION_DAYS"); raw != "" {
+			v, err := strconv.Atoi(raw)
+			if err != nil || v <= 0 {
+				log.Printf("WARN: AUDIT_EXPORT_RETENTION_DAYS=%q invalid, using default %d", raw, retain)
+			} else {
+				retain = v
+			}
+		}
+		// 启动期立即验证导出目录可写，避免第一次 tick（最长 1 分钟）才暴雷。
+		if err := os.MkdirAll(auditDir, 0o700); err != nil {
+			log.Fatalf("AUDIT_EXPORT_DIR mkdir %q: %v", auditDir, err)
 		}
 		if exporterCancel, started := startAuditFileExporter(srv.AuditStore(), auditDir, interval, retain); started {
 			defer exporterCancel()
@@ -715,13 +729,10 @@ func main() {
 }
 
 func isProductionConfig(cfg config.Config) bool {
-	value := strings.ToLower(strings.TrimSpace(cfg.Environment))
-	return value == "production" || value == "prod"
+	return cfg.IsProduction()
 }
 
-type auditRangeStore interface {
-	QueryRange(redclaw.AuditQuery) (*redclaw.AuditPage, error)
-}
+type auditRangeStore = redclaw.RangeStore
 
 func startAuditFileExporter(store auditRangeStore, dir string, interval time.Duration, retainDays int) (context.CancelFunc, bool) {
 	if store == nil {

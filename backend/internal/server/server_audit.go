@@ -78,12 +78,8 @@ func auditQueryError(err error) (int, string) {
 	}
 }
 
-func queryAuditRange(ctx context.Context, store interface {
-	QueryRange(redclaw.AuditQuery) (*redclaw.AuditPage, error)
-}, query redclaw.AuditQuery) (*redclaw.AuditPage, error) {
-	if contextual, ok := store.(interface {
-		QueryRangeContext(context.Context, redclaw.AuditQuery) (*redclaw.AuditPage, error)
-	}); ok {
+func queryAuditRange(ctx context.Context, store redclaw.RangeStore, query redclaw.AuditQuery) (*redclaw.AuditPage, error) {
+	if contextual, ok := store.(redclaw.RangeStoreContext); ok {
 		return contextual.QueryRangeContext(ctx, query)
 	}
 	return store.QueryRange(query)

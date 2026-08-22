@@ -12,6 +12,32 @@ import (
 	"time"
 )
 
+// RangeStore is the minimal interface FileExporter needs to drive incremental
+// audit export. Both AuditStore (memory) and PGAuditStore implement it.
+//
+// RangeStoreContext is the optional context-aware variant. FileExporter and
+// HTTP handlers type-assert to it when present so they can honour a deadline
+// or cancellation; otherwise they fall back to RangeStore with a background
+// context (which itself will derive a timeout inside PGAuditStore).
+type RangeStore interface {
+	QueryRange(query AuditQuery) (*AuditPage, error)
+}
+
+type RangeStoreContext interface {
+	RangeStore
+	QueryRangeContext(ctx context.Context, query AuditQuery) (*AuditPage, error)
+}
+
+// AuditStore is the full audit surface (write + read + flush + range).
+// Both AuditStore (memory) and PGAuditStore implement it; this is the
+// canonical type used by Server for handler dispatch.
+type AuditStoreFull interface {
+	RangeStore
+	Record(entry *AuditEntry) error
+	Query(query AuditQuery) ([]*AuditEntry, error)
+	Flush() []*AuditEntry
+}
+
 // FileExporter 把内存审计日志增量落盘为 JSONL 文件（P1 遗留：审计导出落盘轮转）。
 //
 // 语义（对接外部 SIEM 的本地过渡方案）：
@@ -24,10 +50,8 @@ import (
 //
 // 未启用时不产生任何 IO；由宿主（cmd/pocketd）通过 AUDIT_EXPORT_DIR 打开。
 type FileExporter struct {
-	store interface {
-		QueryRange(query AuditQuery) (*AuditPage, error)
-	}
-	cfg FileExporterConfig
+	store RangeStore
+	cfg   FileExporterConfig
 
 	mu    sync.Mutex
 	state exporterState
@@ -47,9 +71,7 @@ type exporterState struct {
 	Cursor string `json:"cursor"`
 }
 
-func NewFileExporter(store interface {
-	QueryRange(query AuditQuery) (*AuditPage, error)
-}, cfg FileExporterConfig) *FileExporter {
+func NewFileExporter(store RangeStore, cfg FileExporterConfig) *FileExporter {
 	if cfg.Interval <= 0 {
 		cfg.Interval = time.Minute
 	}
@@ -62,12 +84,8 @@ func NewFileExporter(store interface {
 	return &FileExporter{store: store, cfg: cfg}
 }
 
-func queryAuditRangeContext(ctx context.Context, store interface {
-	QueryRange(AuditQuery) (*AuditPage, error)
-}, query AuditQuery) (*AuditPage, error) {
-	if contextual, ok := store.(interface {
-		QueryRangeContext(context.Context, AuditQuery) (*AuditPage, error)
-	}); ok {
+func queryAuditRangeContext(ctx context.Context, store RangeStore, query AuditQuery) (*AuditPage, error) {
+	if contextual, ok := store.(RangeStoreContext); ok {
 		return contextual.QueryRangeContext(ctx, query)
 	}
 	return store.QueryRange(query)
