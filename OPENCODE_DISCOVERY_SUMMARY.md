@@ -1,3 +1,10 @@
+> **STATUS: superseded** (2026-08-23)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/新架构v1/04-contracts/pocket-zag-incremental.md`](../docs/新架构v1/04-contracts/pocket-zag-incremental.md)
+> Do NOT use this doc for current implementation decisions.
+>
+> This doc claimed "功能交付总结" at its write time. At supersede time, no replacement evidence was captured in `docs/governance/EVIDENCE-LEDGER.md`. See `docs/governance/REVIEW-QUEUE.md` Q-004.
+
 # OpenCode 实例发现和任务感知 - 功能交付总结
 
 ## 🎯 需求回顾
