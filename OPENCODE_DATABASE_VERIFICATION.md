@@ -1,3 +1,10 @@
+> **STATUS: superseded** (2026-08-23)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/优化v4/reports/audit-pg-docker-integration-2026-08-18.md`](../docs/优化v4/reports/audit-pg-docker-integration-2026-08-18.md), [`docs/governance/EVIDENCE-LEDGER.md`](../docs/governance/EVIDENCE-LEDGER.md) (audit row)
+> Do NOT use this doc for current implementation decisions.
+>
+> This doc claimed DB-level verification at its write time. At supersede time, no DB-verification log was captured for the OpenCode adapter itself; the audit PG row in the ledger is the only credible replacement.
+
 # OpenCode 数据库验证报告
 
 ## 验证时间
