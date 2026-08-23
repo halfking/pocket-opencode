@@ -1,3 +1,10 @@
+> **STATUS: superseded** (2026-08-23)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/新架构v1/03-roadmap/接口规范.md`](../docs/新架构v1/03-roadmap/接口规范.md), [`docs/新架构v1/04-contracts/pocket-adapter-matrix.md`](../docs/新架构v1/04-contracts/pocket-adapter-matrix.md)
+> Do NOT use this doc for current implementation decisions.
+>
+> This doc claimed a "完整 API 能力映射" at its write time. At supersede time, the mapping was not pinned to a specific OpenCode or RedClaw commit SHA. See `docs/governance/EVIDENCE-LEDGER.md`.
+
 # OpenCode 完整 API 能力映射
 
 ## 基于源码分析的完整 API 清单
