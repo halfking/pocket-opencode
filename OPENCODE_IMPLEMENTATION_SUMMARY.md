@@ -1,3 +1,10 @@
+> **STATUS: superseded** (2026-08-23)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/新架构v1/README.md`](../docs/新架构v1/README.md), [`docs/governance/STATUS-MATRIX.md`](../docs/governance/STATUS-MATRIX.md)
+> Do NOT use this doc for current implementation decisions.
+>
+> This doc claimed "完成总结 / 最终交付" at its write time. At supersede time, no contract test or integration log was captured for the OpenCode adapter row in `docs/governance/EVIDENCE-LEDGER.md`.
+
 # OpenCode 适配器实现 - 最终交付
 
 ## 🎉 完成总结
