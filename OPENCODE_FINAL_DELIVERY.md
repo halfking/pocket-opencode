@@ -1,3 +1,10 @@
+> **STATUS: superseded** (2026-08-23)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/新架构v1/README.md`](../docs/新架构v1/README.md), [`docs/governance/STATUS-MATRIX.md`](../docs/governance/STATUS-MATRIX.md)
+> Do NOT use this doc for current implementation decisions.
+>
+> This doc claimed "完全适配" at its write time. At supersede time, no evidence pin or test log was captured in `docs/governance/EVIDENCE-LEDGER.md`. See `docs/governance/REVIEW-QUEUE.md` for open questions.
+
 # OpenCode 适配器修正 - 最终交付报告
 
 ## 执行摘要
