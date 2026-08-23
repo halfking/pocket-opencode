@@ -1,3 +1,10 @@
+> **STATUS: superseded** (2026-08-23)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/governance/STATUS-MATRIX.md`](../docs/governance/STATUS-MATRIX.md)
+> Do NOT use this doc for current implementation decisions.
+>
+> This doc claimed "实例连接状态报告" at 2026-07-06 with no test log. At supersede time, no replacement evidence was captured in `docs/governance/EVIDENCE-LEDGER.md`. See `docs/governance/REVIEW-QUEUE.md` Q-004.
+
 # OpenCode 实例连接状态报告
 
 **日期**: 2026-07-06  
