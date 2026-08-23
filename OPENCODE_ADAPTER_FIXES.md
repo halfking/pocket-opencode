@@ -1,3 +1,10 @@
+> **STATUS: superseded** (2026-08-23)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/新架构v1/04-contracts/pocket-adapter-matrix.md`](../docs/新架构v1/04-contracts/pocket-adapter-matrix.md)
+> Do NOT use this doc for current implementation decisions.
+>
+> This doc claimed "适配器修正总结" at 2026-07-02 with no pinned OpenCode commit. At supersede time, no replacement evidence was captured in `docs/governance/EVIDENCE-LEDGER.md`. See `docs/governance/REVIEW-QUEUE.md` Q-004.
+
 # OpenCode 适配器修正总结
 
 ## 修正日期
