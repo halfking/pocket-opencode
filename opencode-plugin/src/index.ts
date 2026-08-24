@@ -384,18 +384,29 @@ export class OpenCodePocketPlugin extends EventEmitter {
   }
 
   /**
-   * Create a new session —— 调用 OpenCode HTTP API POST /session。
-   * payload 与 adapter/opencode_http_types.go CreateSessionRequest 对齐：
-   * { id?, agent?, model?, location: { directory, workspaceID } }
+   * Create a new session — OpenCode HTTP API POST /session
+   * (see docs/opencode-contract.md §3.3, upstream
+   * packages/opencode/src/server/routes/instance/httpapi/groups/session.ts:87).
+   *
+   * Body matches Session.CreateInput
+   * (packages/opencode/src/session/session.ts:249-259):
+   *   { parentID?, title?, agent?, model?, metadata?, permission?, workspaceID? }
+   *
+   * The pinned contract has NO `id` field at the top level; upstream assigns
+   * the sessionID itself. We accept an optional `id` from the caller for
+   * cross-instance migration tracking but strip it from the wire body.
    */
   private async createSession(data: any): Promise<any> {
     console.log('[OpenCode Pocket] Creating session:', data)
     const base = this.config.opencodeBaseURL.replace(/\/$/, '')
     const payload: any = {
-      id: data?.id,
+      parentID: data?.parentID,
+      title: data?.title,
       agent: data?.agent || data?.agentType,
       model: data?.model,
-      location: data?.location || { directory: data?.workingDirectory || process.cwd() },
+      metadata: data?.metadata,
+      permission: data?.permission,
+      workspaceID: data?.workspaceID,
     }
     const resp = await fetch(`${base}/session`, {
       method: 'POST',
@@ -416,18 +427,23 @@ export class OpenCodePocketPlugin extends EventEmitter {
   }
 
   /**
-   * Send prompt to session —— POST /session/{id}/prompt。
-   * 与 adapter SendPromptRequest 对齐。
+   * Send prompt — OpenCode POST /session/{id}/message
+   * (see docs/opencode-contract.md §3.3, upstream
+   * packages/opencode/src/server/routes/instance/httpapi/groups/session.ts:95
+   * and packages/opencode/src/session/prompt.ts:1579-1601).
+   *
+   * Pinned wire body (PromptPayload):
+   *   { messageID?, model?, agent?, format?, system?, variant?, parts: [...] }
+   * `parts` is REQUIRED and uses the SessionV1.PartInput union (text|file|agent|subtask).
+   * The legacy `{ prompt: { text }, delivery }` shape is NOT accepted by upstream.
    */
   private async sendPrompt(sessionID: string, prompt: string): Promise<any> {
     console.log('[OpenCode Pocket] Sending prompt to session:', sessionID)
     const base = this.config.opencodeBaseURL.replace(/\/$/, '')
     const payload = {
-      id: sessionID,
-      prompt: { text: prompt },
-      delivery: 'broadcast',
+      parts: [{ type: 'text', text: prompt }],
     }
-    const resp = await fetch(`${base}/session/${encodeURIComponent(sessionID)}/prompt`, {
+    const resp = await fetch(`${base}/session/${encodeURIComponent(sessionID)}/message`, {
       method: 'POST',
       headers: this.ocHeaders(),
       body: JSON.stringify(payload),
@@ -435,27 +451,29 @@ export class OpenCodePocketPlugin extends EventEmitter {
     })
     if (!resp.ok) {
       const txt = await resp.text().catch(() => '')
-      throw new Error(`POST /session/${sessionID}/prompt returned ${resp.status}: ${txt}`)
+      throw new Error(`POST /session/${sessionID}/message returned ${resp.status}: ${txt}`)
     }
     const result = (await resp.json()) as any
     return {
       sessionID,
-      messageID: result?.messageID || result?.id,
+      messageID: result?.info?.id || result?.messageID || result?.id,
       status: 'sent',
       raw: result,
     }
   }
 
   /**
-   * Stop a session —— POST /session/{id}/interrupt。
+   * Stop a session — OpenCode POST /session/{id}/abort
+   * (see docs/opencode-contract.md §3.3, upstream
+   * packages/opencode/src/server/routes/instance/httpapi/groups/session.ts:91).
+   * The legacy /interrupt path is removed in pinned upstream.
    */
   private async stopSession(sessionID: string): Promise<any> {
     console.log('[OpenCode Pocket] Stopping session:', sessionID)
     const base = this.config.opencodeBaseURL.replace(/\/$/, '')
-    const resp = await fetch(`${base}/session/${encodeURIComponent(sessionID)}/interrupt`, {
+    const resp = await fetch(`${base}/session/${encodeURIComponent(sessionID)}/abort`, {
       method: 'POST',
       headers: this.ocHeaders(),
-      body: JSON.stringify({ id: sessionID }),
       signal: this.timeoutSignal(5_000),
     })
     if (!resp.ok && resp.status !== 404) {
@@ -602,13 +620,16 @@ export class OpenCodePocketPlugin extends EventEmitter {
   }
 
   /**
-   * Get OpenCode version —— 尝试从 /api/health 读取真实版本，失败则回退 0.1.0。
-   * 该值在 registerInstance 时上报，Pocket 据此展示与版本兼容判断。
+   * Get OpenCode version — OpenCode GET /global/health
+   * (see docs/opencode-contract.md §3.1, upstream
+   * packages/opencode/src/server/routes/instance/httpapi/groups/global.ts:68).
+   * Response: { healthy: true, version: string }.
+   * Falls back to 0.1.0 if the request fails.
    */
   private async getOpenCodeVersion(): Promise<string> {
     try {
       const base = this.config.opencodeBaseURL.replace(/\/$/, '')
-      const resp = await fetch(`${base}/api/health`, {
+      const resp = await fetch(`${base}/global/health`, {
         signal: this.timeoutSignal(2000),
       })
       if (resp.ok) {

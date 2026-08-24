@@ -299,7 +299,10 @@ func (m *InstanceManager) waitForOpenCode() error {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	apiURL := fmt.Sprintf("http://localhost:%d/api/health", m.config.Port)
+	// Pinned contract (docs/opencode-contract.md §3.1): health is served at
+	// GET /global/health, not /api/health. See
+	// packages/opencode/src/server/routes/instance/httpapi/groups/global.ts:68.
+	apiURL := fmt.Sprintf("http://localhost:%d/global/health", m.config.Port)
 
 	for {
 		select {
@@ -537,7 +540,10 @@ func (h *HealthChecker) Check() {
 		return
 	}
 
-	apiURL := fmt.Sprintf("http://localhost:%d/api/health", h.manager.config.Port)
+	// Pinned contract (docs/opencode-contract.md §3.1): health is served at
+	// GET /global/health, not /api/health. See
+	// packages/opencode/src/server/routes/instance/httpapi/groups/global.ts:68.
+	apiURL := fmt.Sprintf("http://localhost:%d/global/health", h.manager.config.Port)
 
 	client := &http.Client{Timeout: h.timeout}
 	resp, err := client.Get(apiURL)
@@ -656,13 +662,20 @@ func buildFallbackPrompt(p *migrationPack) string {
 }
 
 // createOpenCodeSession 调本机 OpenCode POST /session 创建新会话，返回新 sessionID。
+//
+// Pinned contract (docs/opencode-contract.md §3.3, upstream
+// packages/opencode/src/server/routes/instance/httpapi/groups/session.ts:87
+// and packages/opencode/src/session/session.ts:249-259):
+// the body must be Session.CreateInput
+//   { parentID?, title?, agent?, model?, metadata?, permission?, workspaceID? }.
+// The legacy { location: { directory } } shape is NOT accepted by pinned upstream —
+// location.directory is now a top-level `directory` field on Session.Info (read
+// only) and is no longer in the create payload.
 func createOpenCodeSession(baseURL, agent, model, workDir, authToken string) (string, error) {
+	_ = workDir // workspace/directory is set via CWD on the OpenCode process; not part of the wire payload.
 	payload := map[string]interface{}{
 		"agent": agent,
 		"model": model,
-		"location": map[string]string{
-			"directory": workDir,
-		},
 	}
 	body, _ := json.Marshal(payload)
 
@@ -698,16 +711,20 @@ func createOpenCodeSession(baseURL, agent, model, workDir, authToken string) (st
 	return result.ID, nil
 }
 
-// sendOpenCodePrompt 调本机 OpenCode POST /session/{id}/prompt 发送续接 prompt。
+// sendOpenCodePrompt 调本机 OpenCode POST /session/{id}/message 发送续接 prompt。
+//
+// Pinned contract (docs/opencode-contract.md §3.3, upstream
+// packages/opencode/src/server/routes/instance/httpapi/groups/session.ts:95
+// and packages/opencode/src/session/prompt.ts:1579-1601):
+// the body must be PromptPayload and `parts` is REQUIRED. Legacy
+// { id, prompt:{text}, delivery } is NOT accepted.
 func sendOpenCodePrompt(baseURL, sessionID, prompt, authToken string) error {
 	payload := map[string]interface{}{
-		"id":       sessionID,
-		"prompt":   map[string]string{"text": prompt},
-		"delivery": "broadcast",
+		"parts": []map[string]interface{}{{"type": "text", "text": prompt}},
 	}
 	body, _ := json.Marshal(payload)
 
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/session/"+sessionID+"/prompt", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/session/"+sessionID+"/message", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

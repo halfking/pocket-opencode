@@ -24,6 +24,7 @@ func NewOpenCodeHTTPAdapter(timeoutMS int) *OpenCodeHTTPAdapter {
 	}
 }
 
+// status: implemented — OpenCode GET /session (groups/session.ts:79,111-120)
 func (a *OpenCodeHTTPAdapter) ListSessions(ctx context.Context, instanceBaseURL string) ([]OpenCodeSession, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -237,6 +238,7 @@ func (a *OpenCodeHTTPAdapter) ListRemoteTasks(ctx context.Context, instanceBaseU
 }
 
 // GetSessionDetail 获取会话详细信息
+// status: implemented — OpenCode GET /session/:sessionID (groups/session.ts:81,132-142)
 func (a *OpenCodeHTTPAdapter) GetSessionDetail(ctx context.Context, instanceBaseURL, sessionID string) (*OpenCodeSessionInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -282,6 +284,7 @@ func (a *OpenCodeHTTPAdapter) GetSessionDetail(ctx context.Context, instanceBase
 // CreateSession 创建新会话
 // API: POST /session
 // Payload: { id?, agent?, model?, location? }
+// status: implemented — OpenCode POST /session (groups/session.ts:87,203-214)
 func (a *OpenCodeHTTPAdapter) CreateSession(ctx context.Context, instanceBaseURL string, payload *CreateSessionRequest) (*OpenCodeSessionInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -341,6 +344,7 @@ func (a *OpenCodeHTTPAdapter) CreateSession(ctx context.Context, instanceBaseURL
 // SendPrompt 发送 Prompt 到指定会话
 // OpenCode 真实 API: POST /session/:sessionID/message（无 /prompt 后缀）
 // Payload: { id?, prompt, delivery?, resume? }
+// status: implemented — OpenCode POST /session/:sessionID/message (groups/session.ts:95,316-328)
 func (a *OpenCodeHTTPAdapter) SendPrompt(ctx context.Context, instanceBaseURL, sessionID string, payload *SendPromptRequest) (*SendPromptResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -426,6 +430,7 @@ type MessageCursor struct {
 
 // GetSessionMessages 获取会话消息（完整版，支持游标分页）
 // API: GET /session/:sessionID/message?limit=&order=&cursor=
+// status: implemented — OpenCode GET /session/:sessionID/message (groups/session.ts:85,179-190)
 func (a *OpenCodeHTTPAdapter) GetSessionMessages(ctx context.Context, instanceBaseURL, sessionID string, limit int, order string, cursor string) (*SessionMessagesResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -487,6 +492,10 @@ func (a *OpenCodeHTTPAdapter) GetSessionMessages(ctx context.Context, instanceBa
 
 // GetSessionContext 获取会话上下文（最后压缩点之后的所有消息）
 // API: GET /session/:sessionID/context
+// status: drift-from-pinned — no upstream route; OpenCode exposes session
+// history via GET /session/:sessionID/message and summarization via
+// POST /session/:sessionID/summarize. The /context endpoint does not
+// exist on the pinned server. Marked for removal.
 func (a *OpenCodeHTTPAdapter) GetSessionContext(ctx context.Context, instanceBaseURL, sessionID string) ([]OpenCodeMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -519,6 +528,8 @@ func (a *OpenCodeHTTPAdapter) GetSessionContext(ctx context.Context, instanceBas
 
 // InterruptSession 中断 session 当前的 agent 循环
 // API: POST /session/:sessionID/interrupt (V2)
+// status: drift-from-pinned — upstream route is POST /session/:sessionID/abort
+// (groups/session.ts:91,253-264), not /interrupt. Path needs to be renamed.
 func (a *OpenCodeHTTPAdapter) InterruptSession(ctx context.Context, instanceBaseURL, sessionID string) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -544,6 +555,7 @@ func (a *OpenCodeHTTPAdapter) InterruptSession(ctx context.Context, instanceBase
 
 // DeleteSession 删除指定的 session
 // API: DELETE /session/:sessionID (Phase 2.1 新增)
+// status: implemented — OpenCode DELETE /session/:sessionID (groups/session.ts:88,215-226)
 func (a *OpenCodeHTTPAdapter) DeleteSession(ctx context.Context, instanceBaseURL, sessionID string) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -577,6 +589,9 @@ func (a *OpenCodeHTTPAdapter) GetMessages(ctx context.Context, instanceBaseURL, 
 
 // CompactSession 压缩会话
 // API: POST /session/:sessionID/compact
+// status: drift-from-pinned — upstream route is POST /session/:sessionID/summarize
+// with SummarizePayload { providerID, modelID, auto? } (groups/session.ts:94,303-315),
+// not /compact. Needs renaming and body update.
 func (a *OpenCodeHTTPAdapter) CompactSession(ctx context.Context, instanceBaseURL, sessionID string) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -602,6 +617,9 @@ func (a *OpenCodeHTTPAdapter) CompactSession(ctx context.Context, instanceBaseUR
 
 // WaitForSessionIdle 等待会话代理循环变为空闲
 // API: POST /session/:sessionID/wait
+// status: drift-from-pinned — no upstream route exists for /wait. Pinned
+// upstream exposes status via GET /session/status and per-session idle
+// events on /event. Marked for removal.
 func (a *OpenCodeHTTPAdapter) WaitForSessionIdle(ctx context.Context, instanceBaseURL, sessionID string) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -628,6 +646,7 @@ func (a *OpenCodeHTTPAdapter) WaitForSessionIdle(ctx context.Context, instanceBa
 // HealthCheck 检查 OpenCode 实例健康状态。
 // OpenCode 真实端点是 GET /global/health（无 /api 前缀），返回 {"healthy":true,"version":"..."}。
 // 历史代码误用 /api/health，导致扫描找不到真实实例——此处修正。
+// status: implemented — OpenCode GET /global/health (groups/global.ts:68,78-86)
 func (a *OpenCodeHTTPAdapter) HealthCheck(ctx context.Context, instanceBaseURL string) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -705,6 +724,10 @@ type PermissionReplyRequest struct {
 // GetPermissionRequests 获取会话的待审批权限请求列表
 // API: GET /session/:sessionID/permission
 // 响应: { data: PermissionRequest[] }
+// status: drift-from-pinned — no upstream per-session permission list endpoint.
+// Pinned upstream exposes pending permissions at GET /permission (groups/permission.ts:21-29)
+// and the in-process adapter must filter by sessionID. Caller should migrate
+// to GetAllPendingPermissionRequests + local filter.
 func (a *OpenCodeHTTPAdapter) GetPermissionRequests(ctx context.Context, instanceBaseURL, sessionID string) ([]PermissionRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -739,6 +762,7 @@ func (a *OpenCodeHTTPAdapter) GetPermissionRequests(ctx context.Context, instanc
 // GetAllPendingPermissionRequests 获取所有位置下的待审批权限请求
 // API: GET /permission/request?directory=&workspaceID=（OpenCode 路径无 /api 前缀）
 // 响应: Location.response(PermissionRequest[])
+// status: implemented — OpenCode GET /permission (groups/permission.ts:11,21-29)
 func (a *OpenCodeHTTPAdapter) GetAllPendingPermissionRequests(ctx context.Context, instanceBaseURL, directory, workspaceID string) ([]PermissionRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -783,6 +807,7 @@ func (a *OpenCodeHTTPAdapter) GetAllPendingPermissionRequests(ctx context.Contex
 // API: POST /session/:sessionID/permission/:requestID/reply
 // Payload: { reply: "once"|"always"|"reject", message?: string }
 // 响应: 204 No Content
+// status: implemented — OpenCode POST /permission/:requestID/reply (groups/permission.ts:31-45)
 func (a *OpenCodeHTTPAdapter) ReplyPermission(ctx context.Context, instanceBaseURL, sessionID, requestID string, reply PermissionReply, message string) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -861,6 +886,10 @@ type QuestionReplyRequest struct {
 // GetQuestionRequests 获取会话的待回答问题列表
 // API: GET /session/:sessionID/question
 // 响应: { data: QuestionRequest[] }
+// status: drift-from-pinned — no upstream per-session question list endpoint.
+// Pinned upstream exposes pending questions at GET /question (groups/question.ts:11,22-30)
+// and the adapter must filter by sessionID locally. Caller should migrate to
+// GetAllPendingQuestionRequests + local filter.
 func (a *OpenCodeHTTPAdapter) GetQuestionRequests(ctx context.Context, instanceBaseURL, sessionID string) ([]QuestionRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -894,6 +923,7 @@ func (a *OpenCodeHTTPAdapter) GetQuestionRequests(ctx context.Context, instanceB
 
 // GetAllPendingQuestionRequests 获取所有位置下的待回答问题
 // API: GET /api/question/request?directory=&workspaceID=
+// status: implemented — OpenCode GET /question (groups/question.ts:11,22-30)
 func (a *OpenCodeHTTPAdapter) GetAllPendingQuestionRequests(ctx context.Context, instanceBaseURL, directory, workspaceID string) ([]QuestionRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -938,6 +968,7 @@ func (a *OpenCodeHTTPAdapter) GetAllPendingQuestionRequests(ctx context.Context,
 // API: POST /session/:sessionID/question/:requestID/reply
 // Payload: { answers: [[label1, label2], [label3], ...] } —— 每个问题对应一个答案数组
 // 响应: 204 No Content
+// status: implemented — OpenCode POST /question/:requestID/reply (groups/question.ts:32-43)
 func (a *OpenCodeHTTPAdapter) ReplyQuestion(ctx context.Context, instanceBaseURL, sessionID, requestID string, answers []QuestionAnswer) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -972,6 +1003,7 @@ func (a *OpenCodeHTTPAdapter) ReplyQuestion(ctx context.Context, instanceBaseURL
 // RejectQuestion 拒绝回答问题
 // API: POST /session/:sessionID/question/:requestID/reject
 // 响应: 204 No Content
+// status: implemented — OpenCode POST /question/:requestID/reject (groups/question.ts:45-56)
 func (a *OpenCodeHTTPAdapter) RejectQuestion(ctx context.Context, instanceBaseURL, sessionID, requestID string) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
@@ -1018,6 +1050,8 @@ type OpenCodeEvent struct {
 // 协议：每个事件以 "data: <json>\n\n" 分隔的 SSE 格式传输
 //
 // 调用方负责在不再需要时调用返回的 cancel 函数来关闭连接。
+// status: implemented — OpenCode GET /event (groups/event.ts:7-8,14-23) — SSE
+// wire format encoded by handlers/event.ts:12-86
 func (a *OpenCodeHTTPAdapter) SubscribeEvents(ctx context.Context, instanceBaseURL, directory, workspaceID string) (<-chan OpenCodeEvent, func(), error) {
 	// SSE 连接需要长超时，使用独立的 client
 	sseClient := &http.Client{
