@@ -1,6 +1,7 @@
 # OpenPocket Documentation Status Matrix
 
-> **Last updated**: 2026-08-23
+> **Last updated**: 2026-08-24
+> 上一版：2026-08-23 — 本轮逐项核对：DB/网络/ZAG 健康、二进制版本、子模块计数与表内"Status / Evidence Level / Source Evidence"三列一致，未触发漂移事件；故仅刷新时间戳，未改字段含义。
 > **Scope**: Single source of truth for the current implementation status of every architectural component in OpenPocket.
 > **Authority**: This matrix overrides any inline claim of "implemented", "complete", or "verified" found in legacy documents.
 >
