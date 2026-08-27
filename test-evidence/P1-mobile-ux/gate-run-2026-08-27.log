@@ -1,0 +1,83 @@
+# P1 移动端（会话工作台+输入系统+后端事件）门禁运行记录
+# 日期: 2026-08-27 19:59:15 / 执行: 主代理（集成阶段，含 A/B/C 子代理全部改动 + E 分支合并 + internal/security 误提交 WIP 清除）
+# HEAD(working tree): 1aa0e7c + 未提交 P1 改动（见 git status）
+
+===== 1. frontend: npm run typecheck (vue-tsc --noEmit) =====
+
+> typecheck
+> vue-tsc --noEmit
+
+exit=0
+
+===== 2. frontend: 全部 node --test 套件（9 个测试目录） =====
+  duration_ms: 0.045125
+  type: 'test'
+  ...
+1..191
+# tests 191
+# suites 0
+# pass 191
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1087.721584
+exit=0
+
+===== 3. frontend: npm run build (vite) =====
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 2.13s
+exit=0
+
+===== 4. backend: go vet ./... =====
+exit=0
+
+===== 5. backend: go build ./... =====
+exit=0
+
+===== 6. backend: go test ./... -count=1（关键包摘要） =====
+ok  	github.com/halfking/pocket-opencode/backend/cmd/pocketd	0.945s
+ok  	github.com/halfking/pocket-opencode/backend/internal/adapter	1.323s
+ok  	github.com/halfking/pocket-opencode/backend/internal/adapter/composite	0.426s
+ok  	github.com/halfking/pocket-opencode/backend/internal/adapter/disk	1.150s
+ok  	github.com/halfking/pocket-opencode/backend/internal/agent	3.297s
+ok  	github.com/halfking/pocket-opencode/backend/internal/agentbridge	1.847s
+ok  	github.com/halfking/pocket-opencode/backend/internal/auth	1.670s
+ok  	github.com/halfking/pocket-opencode/backend/internal/chat_summary	0.741s
+ok  	github.com/halfking/pocket-opencode/backend/internal/config	1.471s
+ok  	github.com/halfking/pocket-opencode/backend/internal/db	0.587s
+ok  	github.com/halfking/pocket-opencode/backend/internal/email	2.130s
+ok  	github.com/halfking/pocket-opencode/backend/internal/email/rules	2.206s
+ok  	github.com/halfking/pocket-opencode/backend/internal/facade	2.406s
+ok  	github.com/halfking/pocket-opencode/backend/internal/feishu	2.547s
+ok  	github.com/halfking/pocket-opencode/backend/internal/finance	2.649s
+ok  	github.com/halfking/pocket-opencode/backend/internal/identity	2.841s
+ok  	github.com/halfking/pocket-opencode/backend/internal/kxmemory	2.836s
+ok  	github.com/halfking/pocket-opencode/backend/internal/llmbff	2.837s
+ok  	github.com/halfking/pocket-opencode/backend/internal/llmgateway	2.849s
+ok  	github.com/halfking/pocket-opencode/backend/internal/lobster	2.844s
+ok  	github.com/halfking/pocket-opencode/backend/internal/mcp	2.825s
+ok  	github.com/halfking/pocket-opencode/backend/internal/meeting	2.809s
+ok  	github.com/halfking/pocket-opencode/backend/internal/migration	2.830s
+ok  	github.com/halfking/pocket-opencode/backend/internal/notes	2.815s
+ok  	github.com/halfking/pocket-opencode/backend/internal/notifycenter	2.839s
+ok  	github.com/halfking/pocket-opencode/backend/internal/opencode	3.460s
+ok  	github.com/halfking/pocket-opencode/backend/internal/presentation	2.782s
+ok  	github.com/halfking/pocket-opencode/backend/internal/quota	2.838s
+ok  	github.com/halfking/pocket-opencode/backend/internal/redclaw	4.859s
+ok  	github.com/halfking/pocket-opencode/backend/internal/registry	2.888s
+ok  	github.com/halfking/pocket-opencode/backend/internal/server	3.305s
+ok  	github.com/halfking/pocket-opencode/backend/internal/snippet	2.921s
+ok  	github.com/halfking/pocket-opencode/backend/internal/task	3.090s
+ok  	github.com/halfking/pocket-opencode/backend/internal/tasksync	3.226s
+ok  	github.com/halfking/pocket-opencode/backend/internal/vault	3.204s
+ok  	github.com/halfking/pocket-opencode/backend/internal/websocket	3.249s
+ok  	github.com/halfking/pocket-opencode/backend/internal/zagclient	3.152s
+exit=0
+
+===== 7. backend: P1 契约测试定向复跑（-race） =====
+ok  	github.com/halfking/pocket-opencode/backend/internal/opencode	1.350s
+exit=0
+ok  	github.com/halfking/pocket-opencode/backend/internal/agent	3.797s
+exit=0
