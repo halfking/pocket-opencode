@@ -232,3 +232,13 @@
 | 真机验证 | **PASS（V-16..V-22）**——同文件 §8：新底导/面板结构/三路关闭/ai-chat 端到端流式对话/设置页「已配置」；截图 `shots/vivo-p2-01..05.png` |
 | Evidence level | `integration-tested`（真机 + 真实 llmgo 网关端到端） |
 | Status | `integration-tested`。DD-9/10/11 见 `docs/2026-08-27-p1.5-ui-declutter.md` §8 |
+
+## P3 反馈轮门禁与真机运行记录（in-repo，2026-08-28）
+
+| Field | Value |
+|---|---|
+| 覆盖范围 | ①subset-material-symbols.sh 数字字形名反解修复（sticky_note_2 ligature 曾被滤出渲染为原文）+ 字体重生成 52 ligature + 更多面板 3 列；②tokens.css 深色 surface 提档（修"设置页透明看不清"）；③AI 网关：config 表幂等加列 format/preferred_models、GET/POST/`/api/llm/models` 新字段、SettingsLLMGateway 编辑器（格式下拉+常用模型 chips 勾选）、llm-bff listModels preferred 过滤；④双端 models:null 兜底（PG 往返 null 曾致 SettingsView 挂载崩溃） |
+| 绿色运行日志 | `test-evidence/P1.5-mobile-ux/gate-run-2026-08-27.log` §7：前端 193/193 + vue-tsc 0 + `go test ./internal/server/` ok |
+| 真机验证 | **PASS（V-23..V-27）**——同文件 §9；截图 `shots/vivo-p3-03/06/07/08` |
+| Evidence level | `integration-tested`（真机 + 真实网关；preferred 过滤经 API 复核） |
+| Status | `integration-tested`。用户提供的网关 key/baseURL 落库运行时配置（密钥只入 .env/DB 加密列，不入 git）。P2 待办：anthropic-messages/openai-responses 对话链路适配（当前仅 openai-chat 实现，选其他格式有前端提示） |

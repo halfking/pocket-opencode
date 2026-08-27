@@ -309,7 +309,9 @@ watch(showMore, async (v) => {
 
 .more-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* 3 列：真机反馈 4 列过挤（图标与标签拥挤），3 列保证 44px 图标底衬
+     与标签完整展示（P3 反馈轮） */
+  grid-template-columns: repeat(3, 1fr);
   gap: var(--space-2);
 }
 

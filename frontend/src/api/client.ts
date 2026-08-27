@@ -307,6 +307,8 @@ export const api = {
     baseURL: string
     apiKey?: string
     models?: string[]
+    format?: string
+    preferredModels?: string[]
   }): Promise<{ ok: boolean; baseURL: string; models: string[] }> {
     const res = await authFetch(`${API_BASE}/api/llm-gateway/config`, {
       method: 'POST',
@@ -330,6 +332,12 @@ export interface GatewayConfig {
   apiKey: string          // 后端掩码后字符串，如 sk-****5678
   models: string[]
   source: 'pocketd'
+  /** 网关调用协议（llm-gateway-go 端点族；openai-chat 为默认且当前唯一实现） */
+  format?: string
+  /** 用户勾选的常用模型；非空时模型选择器只显示这些 */
+  preferredModels?: string[]
+  /** 服务端支持下拉框选项（GET /config 返回） */
+  formats?: string[]
 }
 
 export interface GatewayTestResult {

@@ -157,7 +157,20 @@ export const llmBffApi = {
    * 用于前端模型选择器动态填充，无需硬编码。
    */
   listModels: async (): Promise<string[]> => {
-    const res = await http<{ models: string[]; source: string; base_url: string }>('/api/llm/models')
+    const res = await http<{
+      models: string[]
+      source: string
+      base_url: string
+      preferred?: string[]
+    }>('/api/llm/models')
+    // 常用模型（设置页勾选）非空时只展示勾选集；勾选里已下线的模型保留
+    // 展示（避免目录刷新后选择器突然清空），实际不存在时由网关报错。
+    const preferred = res.preferred ?? []
+    if (preferred.length > 0) {
+      const set = new Set(preferred)
+      const filtered = (res.models ?? []).filter((m) => set.has(m))
+      return [...new Set([...preferred, ...filtered])]
+    }
     return res.models ?? []
   },
 }

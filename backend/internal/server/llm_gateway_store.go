@@ -53,6 +53,9 @@ func (s *LLMGatewayStore) migrate() error {
 	-- S0-A: workspace_id isolation (idempotent). The active config is scoped
 	-- per workspace so collaborators can carry their own gateway settings.
 	ALTER TABLE llm_gateway_configs ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
+	-- P3 反馈轮：消息格式（openai-chat 默认）与常用模型勾选（空数组 = 不过滤）
+	ALTER TABLE llm_gateway_configs ADD COLUMN IF NOT EXISTS format TEXT NOT NULL DEFAULT 'openai-chat';
+	ALTER TABLE llm_gateway_configs ADD COLUMN IF NOT EXISTS preferred_models JSONB DEFAULT '[]';
 	CREATE INDEX IF NOT EXISTS idx_llm_gw_ws ON llm_gateway_configs(workspace_id);
 	-- At most one active row per workspace. SaveConfig does UPDATE-then-INSERT,
 	-- which under concurrent transactions can leave several rows with
@@ -118,11 +121,16 @@ func (s *LLMGatewayStore) SaveConfig(ctx context.Context, workspaceID string, st
 	}
 
 	modelsJSON, _ := json.Marshal(st.Models)
+	preferredJSON, _ := json.Marshal(st.PreferredModels)
+	format := st.Format
+	if format == "" {
+		format = "openai-chat"
+	}
 
 	_, err = tx.Exec(ctx, `
-			INSERT INTO llm_gateway_configs (workspace_id, base_url, api_key_encrypted, models, is_active, created_at)
-			VALUES ($1, $2, $3, $4, true, NOW())
-		`, workspaceID, st.BaseURL, storedAPIKey, string(modelsJSON))
+			INSERT INTO llm_gateway_configs (workspace_id, base_url, api_key_encrypted, models, format, preferred_models, is_active, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, true, NOW())
+		`, workspaceID, st.BaseURL, storedAPIKey, string(modelsJSON), format, string(preferredJSON))
 
 	if err != nil {
 		return err
@@ -139,7 +147,7 @@ func (s *LLMGatewayStore) LoadConfig(ctx context.Context, workspaceID string) (*
 		workspaceID = "default"
 	}
 	row := s.pool.QueryRow(ctx, `
-		SELECT base_url, api_key_encrypted, models
+		SELECT base_url, api_key_encrypted, models, format, preferred_models
 		FROM llm_gateway_configs
 			WHERE is_active = true AND workspace_id = $1
 			ORDER BY created_at DESC
@@ -149,8 +157,9 @@ func (s *LLMGatewayStore) LoadConfig(ctx context.Context, workspaceID string) (*
 	var st llmGatewayState
 	var modelsJSON string
 	var apiKeyEnc string
+	var preferredJSON string
 
-	err := row.Scan(&st.BaseURL, &apiKeyEnc, &modelsJSON)
+	err := row.Scan(&st.BaseURL, &apiKeyEnc, &modelsJSON, &st.Format, &preferredJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -167,6 +176,15 @@ func (s *LLMGatewayStore) LoadConfig(ctx context.Context, workspaceID string) (*
 	}
 	if st.Models == nil {
 		st.Models = []string{}
+	}
+	if preferredJSON != "" {
+		_ = json.Unmarshal([]byte(preferredJSON), &st.PreferredModels)
+	}
+	if st.PreferredModels == nil {
+		st.PreferredModels = []string{}
+	}
+	if st.Format == "" {
+		st.Format = "openai-chat"
 	}
 	return &st, nil
 }

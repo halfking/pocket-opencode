@@ -44,6 +44,11 @@ type GatewayConfig struct {
 	BaseURL string
 	APIKey  string
 	Models  []string
+	// Format：网关调用协议（openai-chat 当前唯一实现；见 gatewayFormats）。
+	Format string
+	// PreferredModels：用户勾选的常用模型（设置页维护）；/api/llm/models
+	// 透传给前端做模型选择器过滤，空 = 不过滤。
+	PreferredModels []string
 }
 
 // GatewayResolver 按 workspace 返回当前生效的 GatewayConfig。

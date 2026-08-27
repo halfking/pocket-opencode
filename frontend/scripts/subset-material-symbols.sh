@@ -41,8 +41,14 @@ fi
 "$VENV/bin/python" - <<'EOF'
 from fontTools.ttLib import TTFont
 names = set(l.strip() for l in open('/tmp/ms-icons.txt') if l.strip())
+# 组件字形名 → 字符：下划线字形名 'underscore'、数字字形名 'two'/'three'... 均为
+# 全拼，直接拼接会得到 'sticky_note_two' 匹配不上 'sticky_note_2'（真机踩坑：
+# 该 ligature 被滤掉后图标渲染为原文），此处统一反解为字面字符。
+GLYPH_TO_CHAR = {'underscore': '_'}
+for i, word in enumerate(['zero','one','two','three','four','five','six','seven','eight','nine']):
+    GLYPH_TO_CHAR[word] = str(i)
 def lig_name(first, comps):
-    return ''.join('_' if c == 'underscore' else c for c in [first] + list(comps))
+    return ''.join(GLYPH_TO_CHAR.get(c, c) for c in [first] + list(comps))
 f = TTFont('/tmp/ms-sub-star.woff2')
 for lookup in f['GSUB'].table.LookupList.Lookup:
     for st in list(lookup.SubTable):

@@ -1,12 +1,15 @@
 <!--
-  SettingsLLMGateway — Phase 5: 编辑 LLM Gateway 配置。
+  SettingsLLMGateway — AI 网关配置编辑（Phase 5 + P3 反馈轮升级）。
 
-  路由：/settings/llm-gateway?instance_id=xxx
-  - 加载现有 baseURL / apiKey(掩码) / models
-  - 用户输入 baseURL / apiKey / models(逗号分隔)
+  路由：/settings/llm-gateway
+  - baseURL / apiKey / models（原有）
+  - 消息格式下拉框：openai-chat（默认，当前唯一实现）/ anthropic-messages /
+    openai-responses —— 选项对齐 llm-gateway-go 暴露的端点族（GET /config
+    返回 formats，与后端 gatewayFormats 同源）
+  - 常用模型勾选：测试连通后从模型目录多选；保存后 /ai-chat 等模型选择器
+    只展示勾选集（目录过大时降噪），全不选 = 展示全部
   - "测试连接" → POST /api/llm-gateway/test（拉 /v1/models）
   - "保存" → POST /api/llm-gateway/config（触发 OpenCode 热更新）
-  - 顶部 ← 返回，底部保存/取消
 -->
 <template>
   <div class="llm-gateway-view">
@@ -20,7 +23,7 @@
       <button class="back-btn" @click="goBack" aria-label="返回">
         <span class="material-symbols-outlined">arrow_back</span>
       </button>
-      <h1 class="title">AI 模型</h1>
+      <h1 class="title">AI 网关</h1>
       <div class="top-spacer"></div>
       </header>
 
@@ -37,7 +40,7 @@
       @scroll="onScroll"
     >
       <div class="form-section">
-        <label class="form-label" for="gateway-base-url">Gateway Base URL *</label>
+        <label class="form-label" for="gateway-base-url">网关地址 *</label>
         <input
           id="gateway-base-url"
           v-model="form.baseURL"
@@ -74,6 +77,17 @@
       </div>
 
       <div class="form-section">
+        <label class="form-label" for="gateway-format">消息格式</label>
+        <select id="gateway-format" v-model="form.format" class="form-input format-select">
+          <option v-for="f in formatOptions" :key="f.value" :value="f.value">{{ f.label }}</option>
+        </select>
+        <div v-if="form.format !== 'openai-chat'" class="form-hint format-hint">
+          ⚠ 已保存该格式；当前对话链路暂仅实现 OpenAI Chat 端点，其余格式适配中
+        </div>
+        <div v-else class="form-hint">对齐 llm-gateway-go 端点族；默认 OpenAI Chat（/v1/chat/completions）</div>
+      </div>
+
+      <div class="form-section">
         <label class="form-label" for="gateway-models">模型列表（逗号分隔）</label>
         <input
           id="gateway-models"
@@ -92,14 +106,40 @@
         </div>
       </div>
 
+      <!-- 常用模型勾选：非空时模型选择器只显示这些 -->
+      <div class="form-section">
+        <div class="pref-head">
+          <label class="form-label">常用模型</label>
+          <button v-if="preferredSel.size > 0" type="button" class="pref-clear" @click="preferredSel.clear()">清空</button>
+        </div>
+        <div v-if="catalogModels.length === 0" class="form-hint">
+          「测试连接」拉取目录后可勾选常用模型；不勾选 = 显示全部模型
+        </div>
+        <div v-else class="pref-grid" role="group" aria-label="常用模型多选">
+          <button
+            v-for="m in catalogModels"
+            :key="m"
+            type="button"
+            class="pref-chip"
+            :class="{ selected: preferredSel.has(m) }"
+            :aria-pressed="preferredSel.has(m)"
+            @click="togglePreferred(m)"
+          >
+            <span v-if="preferredSel.has(m)" class="material-symbols-outlined chip-check" aria-hidden="true">check_circle</span>
+            <span class="chip-name">{{ m }}</span>
+          </button>
+        </div>
+        <div class="form-hint">已选 {{ preferredSel.size }} 个——聊天等模型选择器将只显示勾选的模型</div>
+      </div>
+
       <!-- 操作按钮 -->
       <div class="action-row">
         <button class="btn-secondary" :disabled="!canTest || testing" @click="onTest">
-          <span v-if="!testing">🧪 测试连接</span>
+          <span v-if="!testing">测试连接</span>
           <span v-else>测试中…</span>
         </button>
         <button class="btn-primary" :disabled="!canSave || saving" @click="onSave">
-          <span v-if="!saving">💾 保存</span>
+          <span v-if="!saving">保存</span>
           <span v-else>保存中…</span>
         </button>
       </div>
@@ -142,12 +182,39 @@ const original = reactive<GatewayConfig>({
   apiKey: '',
   models: [],
   source: 'pocketd',
+  format: 'openai-chat',
+  preferredModels: [],
+  formats: [],
 })
 
 const form = reactive({
   baseURL: '',
   apiKey: '',
+  format: 'openai-chat',
 })
+
+/** 消息格式下拉框（优先服务端 formats，本地兜底同源常量）。 */
+const FORMAT_LABELS: Record<string, string> = {
+  'openai-chat': 'OpenAI Chat（/v1/chat/completions）',
+  'anthropic-messages': 'Anthropic Messages（/v1/messages）',
+  'openai-responses': 'OpenAI Responses（/v1/responses）',
+}
+const formatOptions = computed(() =>
+  (original.formats?.length ?? 0) > 0
+    ? original.formats!.map((f) => ({ value: f, label: FORMAT_LABELS[f] || f }))
+    : Object.entries(FORMAT_LABELS).map(([value, label]) => ({ value, label })),
+)
+
+/** 模型目录（测试连接后填充，勾选常用模型的候选）。 */
+const catalogModels = ref<string[]>([])
+const preferredSel = ref<Set<string>>(new Set())
+
+function togglePreferred(m: string): void {
+  const next = new Set(preferredSel.value)
+  if (next.has(m)) next.delete(m)
+  else next.add(m)
+  preferredSel.value = next
+}
 
 const modelsInput = ref('')
 const showKey = ref(false)
@@ -165,10 +232,15 @@ const canSave = computed(
 onMounted(async () => {
   measureChrome()
   try {
-    const cfg = await api.getGatewayConfig()
+    const raw = await api.getGatewayConfig()
+    const cfg = { ...raw, models: raw.models ?? [], preferredModels: raw.preferredModels ?? [] }
     Object.assign(original, cfg)
     form.baseURL = cfg.baseURL
+    form.format = cfg.format || 'openai-chat'
     modelsInput.value = cfg.models.join(', ')
+    preferredSel.value = new Set(cfg.preferredModels)
+    // 目录已有缓存模型时直接可作为勾选候选
+    if (cfg.models.length > 0) catalogModels.value = cfg.models
   } catch (err: any) {
     setStatus('error', '加载失败：' + (err?.message || err))
   }
@@ -196,16 +268,19 @@ async function onTest() {
         baseURL: form.baseURL,
         apiKey: form.apiKey || undefined,
         models,
+        format: form.format,
+        preferredModels: [...preferredSel.value],
       })
     }
     const r: GatewayTestResult = await api.testGateway()
     if (r.ok) {
       setStatus('success', `✓ 连通 (HTTP ${r.status}) · ${r.models?.length || 0} 个模型`)
-      // 自动刷新 models
+      // 自动刷新 models + 勾选目录候选
       try {
         const cfg = await api.getGatewayConfig()
-        Object.assign(original, cfg)
-        modelsInput.value = cfg.models.join(', ')
+        Object.assign(original, cfg, { models: cfg.models ?? [], preferredModels: cfg.preferredModels ?? [] })
+        modelsInput.value = (cfg.models ?? []).join(', ')
+        if ((cfg.models ?? []).length > 0) catalogModels.value = cfg.models ?? []
       } catch {}
     } else {
       setStatus('error', `✗ 失败：${r.error || r.response || 'HTTP ' + r.status}`)
@@ -225,6 +300,8 @@ async function onSave() {
       baseURL: form.baseURL,
       apiKey: form.apiKey || undefined,
       models,
+      format: form.format,
+      preferredModels: [...preferredSel.value],
     })
     if (r.ok) {
       setStatus('success', '✓ 已保存，OpenCode 配置热更新已触发')
@@ -430,6 +507,72 @@ function goBack() {
   display: flex;
   gap: 12px;
   margin-top: 8px;
+}
+
+/* ── 消息格式下拉 + 常用模型勾选（P3 反馈轮） ── */
+.format-select {
+  font-family: inherit;
+  min-height: 44px;
+  appearance: none;
+  background-image: none;
+}
+
+.format-hint {
+  color: var(--warning);
+}
+
+.pref-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pref-clear {
+  min-height: 32px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.pref-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 36px;
+  padding: var(--space-1) var(--space-2-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.pref-chip.selected {
+  background: var(--brand-bg);
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+  font-weight: var(--font-weight-medium);
+}
+
+.chip-check {
+  font-size: 14px;
+}
+
+.chip-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .btn-secondary,

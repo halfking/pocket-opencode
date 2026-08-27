@@ -41,8 +41,9 @@ func (s *Server) handleLLMBFFModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"models":   ids,
-		"source":   "gateway",
-		"base_url": st.BaseURL,
+		"models":    ids,
+		"source":    "gateway",
+		"base_url":  st.BaseURL,
+		"preferred": st.PreferredModels,
 	})
 }

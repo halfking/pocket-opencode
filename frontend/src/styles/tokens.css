@@ -136,15 +136,17 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    /* 深色层级提升（真机反馈"设置页透明看不清"）：卡片/悬浮层相对底色
+       提高一档可辨识度，边框同步提亮——M3 深色 surface 分层惯例 */
     --bg-base: #0f0f14;
-    --bg-card: #1a1a22;
-    --bg-elevated: #22222c;
-    --bg-subtle: #1f1f28;
+    --bg-card: #1f1f29;
+    --bg-elevated: #262631;
+    --bg-subtle: #24242e;
     --text-primary: #fafafa;    /* 更亮白（原 #f3f4f6） */
     --text-secondary: #a3a3a3;  /* 更亮灰（原 #9ca3af） */
     --text-muted: #6b7280;
-    --border: #2a2a35;
-    --border-strong: #3a3a48;
+    --border: #33333f;
+    --border-strong: #44445a;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);

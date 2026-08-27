@@ -131,3 +131,23 @@
 
 - 设置页恒显"未配置"排查路径：WebView 内 fetch API 正常 + pinia token 正常 + hook console.warn 无输出 → 检查 onMounted 前段：`JSON.parse(localStorage.pocket_user)` 抛错静默中断（Vue onMounted 异步错误不冒泡到此处 warn）
 - 容器重建：compose 项目与现有容器脱管（container_name 相同但项目不同）→ 直接 docker run 同参数替换；`Dockerfile` 需先 COPY third_party（go.mod replace）
+
+---
+
+## 9. P3 反馈轮真机验证（2026-08-28 01:xx）
+
+环境：pocketd 容器 `pocket-local-f6iss-p3`（新增 format/preferredModels 列与出口 + 用户指定 key/baseURL 落库运行时配置）；APK P3 构建。
+
+| # | 验证点 | 方法 | 结果 |
+|---|---|---|---|
+| V-23 | sticky_note_2 字形修复 + 3 列布局 | 打开更多面板读 `.more-icon .material-symbols-outlined` 宽度 | ✅ 7 项全 22px 字形（修复前 286px 原文）、cols=3 |
+| V-24 | 设置页渲染（曾因 models:null 崩溃只剩底栏）+ 深色对比 | 导航 /settings 读状态徽标与背景色 | ✅ "已配置"、card rgb(31,31,41) vs base rgb(15,15,20) |
+| V-25 | 网关编辑器新字段 | /settings/llm-gateway DOM | ✅ 标题"AI 网关"、格式下拉 3 选项默认 openai-chat、URL=https://llmgo.kxpms.cn/v1 |
+| V-26 | 测试连接拉目录 + 勾选 3 模型 + 保存落库 | UI 操作 → API 复核 | ✅ chips=679 → 勾选 claude-fable-5/minimax-m2.1/deepseek-v3.2 → config 落库、/api/llm/models 透传 |
+| V-27 | ai-chat 模型选择器过滤 | 打开模型选择面板 | ✅ 仅 3 个勾选模型，abab 等 676 个不出现 |
+
+### 调试要点追加
+
+- **图标渲染为原文的量化判据**：`.material-symbols-outlined` 元素宽度 ≈ 图标名长度 × 字号（如 sticky_note_2=286px）vs 正常字形 22px——比视觉分析可靠
+- **SettingsView 崩溃排查**：/ai 正常而仅 /settings 空白（content children=0）+ console.error hook 抓 `TypeError: null.length` → 后端 models:null（PG 往返 json.Marshal(nil)="null"）→ 双端兜底
+- 重装 APK 后龙虾锁必现（内存 crypto），/notes 等页被弹 unlock；设置页不受影响——排查渲染问题先解锁排除干扰

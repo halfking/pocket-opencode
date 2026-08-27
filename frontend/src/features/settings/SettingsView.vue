@@ -199,7 +199,8 @@ onMounted(async () => {
 async function refreshGateway() {
   try {
     const cfg = await api.getGatewayConfig()
-    gateway.value = cfg
+    // 后端 PG 往返可能给 null（模板直接读 models.length 会崩挂载），兜底 []
+    gateway.value = { ...cfg, models: cfg.models ?? [] }
   } catch (err) {
     console.warn('Failed to load gateway config:', err)
   }

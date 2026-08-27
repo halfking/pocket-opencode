@@ -17,10 +17,36 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 )
 
+// gatewayFormats 是设置页「消息格式」下拉框的可选项（对齐 llm-gateway-go
+// 暴露的端点族）。pocketd 客户端当前仅实现 openai-chat；其余值先存储与展示，
+// 对话链路适配登记后续（选非默认时前端有提示）。
+var gatewayFormats = map[string]bool{
+	"openai-chat":        true,
+	"anthropic-messages": true,
+	"openai-responses":   true,
+}
+
+const defaultGatewayFormat = "openai-chat"
+
+func normalizeGatewayFormat(f string) string {
+	if f == "" {
+		return defaultGatewayFormat
+	}
+	if gatewayFormats[f] {
+		return f
+	}
+	return defaultGatewayFormat
+}
+
 type llmGatewayState struct {
-	BaseURL string   `json:"baseURL"`
-	APIKey  string   `json:"apiKey"`
+	BaseURL string `json:"baseURL"`
+	APIKey  string `json:"apiKey"`
 	Models  []string `json:"models"`
+	// Format：网关调用协议（见 gatewayFormats）。
+	Format string `json:"format"`
+	// PreferredModels：用户勾选的常用模型；非空时前端模型选择器只展示这些
+	// （模型目录过大时降噪），空 = 展示全部。
+	PreferredModels []string `json:"preferredModels"`
 }
 
 // defaultLLMGatewayState returns the env-backed fallback used when no DB row
@@ -31,6 +57,8 @@ func defaultLLMGatewayState() llmGatewayState {
 		BaseURL: envOr("POCKET_LLM_GATEWAY_URL", opencode.DefaultLLMGatewayBaseURL),
 		APIKey:  os.Getenv("POCKET_LLM_GATEWAY_API_KEY"),
 		Models:  []string{},
+		Format:  defaultGatewayFormat,
+		PreferredModels: []string{},
 	}
 }
 
@@ -58,6 +86,7 @@ func (c *llmGatewayCache) get(workspaceID string) llmGatewayState {
 		c.mu.RLock()
 		copy := *st
 		copy.Models = append([]string(nil), st.Models...)
+		copy.PreferredModels = append([]string(nil), st.PreferredModels...)
 		c.mu.RUnlock()
 		return copy
 	}
@@ -119,7 +148,10 @@ func (s *Server) gatewaySnapshot(workspaceID string) llmGatewayState {
 // 返回 GatewayConfig（已剥离内部缓存结构），调用方据此决定是否需要返回 503。
 func (s *Server) ResolveGateway(workspaceID string) GatewayConfig {
 	st := s.gatewaySnapshot(workspaceID)
-	return GatewayConfig{BaseURL: st.BaseURL, APIKey: st.APIKey, Models: st.Models}
+	return GatewayConfig{
+		BaseURL: st.BaseURL, APIKey: st.APIKey, Models: st.Models,
+		Format: normalizeGatewayFormat(st.Format), PreferredModels: st.PreferredModels,
+	}
 }
 
 func envOr(key, def string) string {
@@ -133,15 +165,28 @@ func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) 
 	switch r.Method {
 	case http.MethodGet:
 		st := s.gatewaySnapshot(s.workspaceIDFromRequest(r))
+		// PG 往返可能把空 slice 变 null（json.Marshal(nil)="null"），出口统一
+		// 兜底为 []——前端模板直接读 models.length，null 会让设置页挂载崩溃
+		// （真机 P3 轮实测）。
+		if st.Models == nil {
+			st.Models = []string{}
+		}
+		if st.PreferredModels == nil {
+			st.PreferredModels = []string{}
+		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"baseURL": st.BaseURL, "apiKeySet": st.APIKey != "", "apiKey": maskKey(st.APIKey),
 			"models": st.Models, "source": "pocketd",
+			"format": normalizeGatewayFormat(st.Format), "preferredModels": st.PreferredModels,
+			"formats": []string{"openai-chat", "anthropic-messages", "openai-responses"},
 		})
 	case http.MethodPost:
 		var req struct {
-			BaseURL string   `json:"baseURL"`
-			APIKey  string   `json:"apiKey"`
-			Models  []string `json:"models"`
+			BaseURL         string   `json:"baseURL"`
+			APIKey          string   `json:"apiKey"`
+			Models          []string `json:"models"`
+			Format          string   `json:"format"`
+			PreferredModels []string `json:"preferredModels"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
@@ -168,6 +213,16 @@ func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) 
 		current.BaseURL = req.BaseURL
 		if req.Models != nil {
 			current.Models = append([]string(nil), req.Models...)
+		}
+		current.Format = normalizeGatewayFormat(req.Format)
+		if req.PreferredModels != nil {
+			current.PreferredModels = append([]string(nil), req.PreferredModels...)
+		}
+		if current.Models == nil {
+			current.Models = []string{}
+		}
+		if current.PreferredModels == nil {
+			current.PreferredModels = []string{}
 		}
 
 		// Order matters: persist first, then publish. If SaveConfig or
