@@ -80,31 +80,29 @@ func ParseAgentFile(path string) (*Agent, error) {
 	}, nil
 }
 
-// ImportBuiltinAgents 从 agency-agents-zh/ 目录批量导入内置角色。
-//
-// 如果 chat_agents 表已有内置角色（is_builtin=1），跳过导入（幂等）。
-// 遍历 repoPath 下的所有 .md 文件，跳过：
-//   - 非角色文件（README/CATALOG/AGENT-LIST/UPSTREAM 等大写文件名）
-//   - 解析失败的文件（记录 warn，继续处理其他文件）
-func (s *Store) ImportBuiltinAgents(ctx context.Context, repoPath string) error {
-	if s.pool == nil {
-		return fmt.Errorf("store not configured")
+// importBuiltin 是 ImportBuiltinAgents 的共享实现，对 StoreIface 都适用。
+// 它只调用接口的 List + Create 方法（不直接接触底层 DB），所以 PG Store
+// 和 SQLiteStore 都能复用同一份遍历 / 解析逻辑。
+func importBuiltin(ctx context.Context, store StoreIface, repoPath string) error {
+	all, err := store.List(ctx, "", "")
+	if err != nil {
+		return fmt.Errorf("list agents: %w", err)
 	}
-
-	// 检查是否已导入过（表中有内置角色）
-	var count int
-	if err := s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM chat_agents WHERE is_builtin = 1").Scan(&count); err != nil {
-		return err
+	builtinCount := 0
+	for _, a := range all {
+		if a.IsBuiltin {
+			builtinCount++
+		}
 	}
-	if count > 0 {
-		log.Printf("[chatagent] %d builtin agents already imported, skipping", count)
+	if builtinCount > 0 {
+		log.Printf("[chatagent] %d builtin agents already imported, skipping", builtinCount)
 		return nil
 	}
 
 	log.Printf("[chatagent] importing builtin agents from %s", repoPath)
 
 	var agents []*Agent
-	err := filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".md") {
 			return nil
 		}
@@ -132,27 +130,23 @@ func (s *Store) ImportBuiltinAgents(ctx context.Context, repoPath string) error 
 		return nil
 	}
 
-	// 批量插入（事务）
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
 	for _, a := range agents {
-		_, err := tx.Exec(ctx, `
-			INSERT INTO chat_agents (id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		`, a.ID, a.WorkspaceID, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt, a.IsBuiltin, a.CreatedAt, a.UpdatedAt)
-		if err != nil {
+		if err := store.Create(ctx, a); err != nil {
 			return fmt.Errorf("insert %s: %w", a.ID, err)
 		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return err
 	}
 
 	log.Printf("[chatagent] imported %d builtin agents", len(agents))
 	return nil
 }
+
+// ImportBuiltinAgents 在 PG Store 上调用：委托给通用 importBuiltin。
+func (s *Store) ImportBuiltinAgents(ctx context.Context, repoPath string) error {
+	if s.pool == nil {
+		return fmt.Errorf("store not configured")
+	}
+	return importBuiltin(ctx, s, repoPath)
+}
+
+// SQLiteStore 上的 ImportBuiltinAgents 留给后续 sprint 合入 SQLiteStore
+// 实现后再启用（依赖 SQLiteStore 自身的 List/Create 接口实现）。
