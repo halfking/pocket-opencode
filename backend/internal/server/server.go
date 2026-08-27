@@ -21,8 +21,8 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
-	"github.com/halfking/pocket-opencode/backend/internal/chatagent"
 	cs "github.com/halfking/pocket-opencode/backend/internal/chat_summary"
+	"github.com/halfking/pocket-opencode/backend/internal/chatagent"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
@@ -91,9 +91,10 @@ type Server struct {
 	quesMgr  *opencode.QuestionManager
 
 	// Auth
-	userStore     *auth.UserStore
-	jwtSigner     *auth.Signer
-	identityStore *identity.Store // nil = S0-A 未启用，handler 降级到单租户
+	userStore      *auth.UserStore
+	jwtSigner      *auth.Signer
+	biometricStore *auth.BiometricStore
+	identityStore  *identity.Store // nil = S0-A 未启用，handler 降级到单租户
 	// S0-B: unified LLM BFF。nil = 未配置（POCKET_LLM_* 未设且无网关配置），handler 返回 503。
 	llmBFF           *llmbff.Service
 	llmBFFSummarizer llmbff.Summarizer
@@ -107,10 +108,10 @@ type Server struct {
 	agentBridge *agentbridge.Bridge
 	agentStore  *agentbridge.Store
 	// S0-E: Notification Center。nil = /api/notifications 返回 503。
-	notifySvc   *notifycenter.Service
+	notifySvc *notifycenter.Service
 	// AI 对话智能体角色管理。nil = /api/chat-agents 返回 503。
 	chatAgentStore *chatagent.Store
-	notifyStore *notifycenter.Store
+	notifyStore    *notifycenter.Store
 
 	// ACP 通用 Agent Adapter Registry（W5 新增，与 s.opencode 并存）。
 	// 老 handler 仍走 s.opencode；新 diagnostics / health-check 用 s.agents。
@@ -301,6 +302,14 @@ func (s *Server) SetMigrationService(svc *migration.Service) {
 	s.migrationSvc = svc
 }
 
+// SetBiometricStore 注入生物识别凭证 store。nil = PG/生物识别功能未启用。
+func (s *Server) SetBiometricStore(store *auth.BiometricStore) {
+	s.biometricStore = store
+}
+
+// BiometricStore 返回生物识别凭证 store，供启动装配和测试使用。
+func (s *Server) BiometricStore() *auth.BiometricStore { return s.biometricStore }
+
 // SetIdentityStore 注入 S0-A Identity Core store。nil = 身份/工作空间功能降级
 // （登录仍可用，但无 workspace 隔离/邀请/设备管理）。
 func (s *Server) SetIdentityStore(store *identity.Store) {
@@ -430,6 +439,12 @@ func (s *Server) Handler() http.Handler {
 	// ---- Phase 0: 个人助理模块路由 ----
 	// 认证
 	mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("/api/auth/biometric/register/begin", s.requireAuth(s.handleBiometricRegisterBegin))
+	mux.HandleFunc("/api/auth/biometric/register/finish", s.requireAuth(s.handleBiometricRegisterFinish))
+	mux.HandleFunc("/api/auth/biometric/login/begin", s.handleBiometricLoginBegin)
+	mux.HandleFunc("/api/auth/biometric/login/finish", s.handleBiometricLoginFinish)
+	mux.HandleFunc("/api/auth/biometric/credentials", s.requireAuth(s.handleBiometricCredentials))
+	mux.HandleFunc("/api/auth/biometric/credentials/", s.requireAuth(s.handleBiometricCredentialOps))
 	// S0-A: Identity Core（工作空间 / 成员 / 设备）
 	mux.HandleFunc("/api/workspaces", s.requireAuth(s.handleWorkspaces))
 	mux.HandleFunc("/api/workspaces/", s.requireAuth(s.handleWorkspaceOps))

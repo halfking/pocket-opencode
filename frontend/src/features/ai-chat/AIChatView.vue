@@ -22,15 +22,13 @@
           <span class="material-symbols-outlined">chat_bubble</span>
           <span class="ctrl-label">{{ active?.title || '新对话' }}</span>
         </button>
-        <!-- 模型选择 -->
-        <button class="ctrl-btn" aria-label="选择模型" @click="openModelSheet">
-          <span class="material-symbols-outlined">psychology</span>
+        <!-- 角色选择 -->
+        <button class="ctrl-btn" aria-label="选择角色" @click="openAgentSheet">
+          <span class="material-symbols-outlined">{{
+            currentAgent ? 'person' : 'psychology'
+          }}</span>
           <span class="ctrl-label">{{
-            compareMode
-              ? '对比模式'
-              : active?.model === AUTO
-                ? 'auto'
-                : (active?.model || '选择')
+            currentAgent ? currentAgent.name : '选择角色'
           }}</span>
         </button>
         <!-- 对比模式 -->
@@ -40,6 +38,10 @@
         <!-- 参数设置 -->
         <button class="icon-btn" aria-label="参数设置" @click="settingsOpen = true">
           <span class="material-symbols-outlined">tune</span>
+        </button>
+        <!-- 账户设置 -->
+        <button class="icon-btn" aria-label="设置" @click="$router.push('/settings')">
+          <span class="material-symbols-outlined">settings</span>
         </button>
       </div>
     </header>
@@ -306,8 +308,28 @@
           />
         </div>
 
+        <!-- 当前角色 -->
         <div class="field">
-          <div class="field-label">系统提示词（可选）</div>
+          <div class="field-label">当前角色</div>
+          <div v-if="currentAgent" class="agent-card">
+            <div class="agent-card-header">
+              <span class="agent-emoji">{{ currentAgent.emoji || '🤖' }}</span>
+              <div class="agent-card-info">
+                <div class="agent-card-name">{{ currentAgent.name }}</div>
+                <div class="agent-card-desc">{{ currentAgent.description }}</div>
+              </div>
+            </div>
+            <button class="agent-change-btn" @click="openAgentSheet">切换角色</button>
+          </div>
+          <div v-else class="no-agent">
+            <p>未选择角色，将使用下方的全局系统提示词</p>
+            <button class="agent-select-btn" @click="openAgentSheet">选择角色</button>
+          </div>
+          <button class="library-link" @click="goToLibrary">浏览完整角色库 →</button>
+        </div>
+
+        <div class="field">
+          <div class="field-label">系统提示词（无角色时兜底）</div>
           <textarea
             v-model="settings.systemPrompt"
             class="sys-input"
@@ -351,6 +373,15 @@
       </div>
     </div>
   </div>
+
+  <!-- 角色选择器 -->
+  <AgentSelectorSheet
+    :show="agentSheetOpen"
+    :current-agent-id="active?.agentId"
+    @update:show="agentSheetOpen = $event"
+    @select="onSelectAgent"
+    @clear="onClearAgent"
+  />
 </template>
 
 <script setup lang="ts">
@@ -365,9 +396,12 @@ import {
 import { renderMarkdown } from '../../utils/markdown'
 import { useToast } from '../../composables/useToast'
 import { useVoiceInput } from '../../composables/useVoiceInput'
+import { useChatAgentStore } from '../../stores/chatAgentStore'
+import AgentSelectorSheet from './AgentSelectorSheet.vue'
 
 const store = useAIChatStore()
 const toast = useToast()
+const agentStore = useChatAgentStore()
 
 // 语音输入：复用全局 STT（本地 sherpa 优先，云转写兜底），转写结果追加到输入框。
 const { isRecording, isTranscribing, sttError, startRecording, stopRecording } = useVoiceInput()
@@ -377,6 +411,7 @@ const draft = ref('')
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const pendingImages = ref<string[]>([])
+const agentSheetOpen = ref(false)
 const scrollEl = ref<HTMLElement | null>(null)
 const modelSheetOpen = ref(false)
 const optimizeOpen = ref(false)
@@ -423,6 +458,40 @@ const composerPlaceholder = computed(() => {
   if (compareMode.value) return '向所选模型并行提问…（Enter 发送）'
   return '输入消息，Enter 发送，Shift+Enter 换行'
 })
+
+// 当前会话绑定的角色
+const currentAgent = computed(() => {
+  if (!active.value?.agentId) return null
+  return agentStore.getAgent(active.value.agentId)
+})
+
+function openAgentSheet() {
+  agentSheetOpen.value = true
+  // 确保角色列表已加载
+  if (agentStore.agents.length === 0) {
+    agentStore.loadAgents()
+  }
+}
+
+function onSelectAgent(agent: any) {
+  if (!active.value) return
+  active.value.agentId = agent.id
+  store.persist()
+  toast.success(`已切换到「${agent.name}」`)
+}
+
+function onClearAgent() {
+  if (!active.value) return
+  active.value.agentId = undefined
+  store.persist()
+  toast.success('已清除角色')
+}
+
+function goToLibrary() {
+  settingsOpen.value = false
+  window.location.hash = '#/agents'
+  // 或用 router.push (需先 import)
+}
 
 /** 发图时实际会用的视觉模型（会话手动选了模型则显示它）。 */
 const visionModelLabel = computed(() => {
@@ -778,7 +847,7 @@ function formatTime(ts: number): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 /* 对比条 */
@@ -1194,4 +1263,80 @@ function formatTime(ts: number): string {
 }
 .sys-input { resize: vertical; font-family: inherit; }
 .num-input:focus, .sys-input:focus, .sel-input:focus { border-color: var(--brand-primary); }
+
+/* 角色卡片 */
+.agent-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--bg-secondary);
+}
+.agent-card-header {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.agent-emoji {
+  font-size: 32px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.agent-card-info {
+  flex: 1;
+  min-width: 0;
+}
+.agent-card-name {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.agent-card-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+.agent-change-btn {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-base);
+  font-size: 14px;
+  cursor: pointer;
+}
+.no-agent {
+  text-align: center;
+  padding: 16px;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+.no-agent p {
+  margin: 0 0 12px 0;
+}
+.agent-select-btn {
+  padding: 10px 20px;
+  border: 1px solid var(--brand-primary);
+  border-radius: 8px;
+  background: var(--bg-base);
+  color: var(--brand-primary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.library-link {
+  width: 100%;
+  margin-top: 12px;
+  padding: 10px;
+  background: transparent;
+  border: none;
+  font-size: 13px;
+  color: var(--brand-primary);
+  cursor: pointer;
+  text-align: center;
+}
+
+.library-link:hover {
+  text-decoration: underline;
+}
 </style>

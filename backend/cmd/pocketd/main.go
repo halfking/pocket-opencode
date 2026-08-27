@@ -16,9 +16,9 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/adapter/disk"
 	"github.com/halfking/pocket-opencode/backend/internal/agent"
 	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
-	"github.com/halfking/pocket-opencode/backend/internal/chatagent"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
+	"github.com/halfking/pocket-opencode/backend/internal/chatagent"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/db"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
@@ -151,6 +151,18 @@ func main() {
 		}
 		jwtSigner = signer
 		log.Println("Dev mode: JWT signer initialized without user store (login disabled)")
+	}
+
+	// ---- Biometric authentication (PG-backed credentials/challenges) ----
+	// The store is optional so remote-only/dev deployments keep their existing behavior.
+	var biometricStore *auth.BiometricStore
+	if pool != nil {
+		bs, err := auth.NewBiometricStore(pool)
+		if err != nil {
+			log.Printf("WARN: biometric store init failed: %v", err)
+		} else {
+			biometricStore = bs
+		}
 	}
 
 	// ---- 后端集成: kxmemory AI 编排服务（分类/SSOT/总结）----
@@ -381,6 +393,10 @@ func main() {
 		emailCrypto, emailPending,
 		emailScheduler, emailFetcher,
 		dataDir, pool)
+	if biometricStore != nil {
+		srv.SetBiometricStore(biometricStore)
+		log.Println("Biometric authentication enabled (PG)")
+	}
 	if isProductionConfig(cfg) && srv.AuditStore() == nil {
 		log.Fatal("audit store initialization failed in production: see prior [Server] audit PG initialization log for the root cause (postgres pool nil, or NewPGAuditStore error)")
 	}
@@ -559,7 +575,7 @@ func main() {
 	// ---- AI 对话智能体角色管理 ----
 	if pool != nil {
 		chatAgentStore := chatagent.NewStore(pool)
-		if err := chatAgentStore.Init(ctx); err != nil {
+		if err := chatAgentStore.Init(context.Background()); err != nil {
 			log.Fatalf("chatagent store init: %v", err)
 		}
 		srv.SetChatAgentStore(chatAgentStore)
@@ -567,7 +583,7 @@ func main() {
 
 		// 启动时自动导入内置角色（agency-agents-zh 仓库路径从环境变量读取）
 		if repoPath := os.Getenv("POCKET_AGENTS_REPO_PATH"); repoPath != "" {
-			if err := chatAgentStore.ImportBuiltinAgents(ctx, repoPath); err != nil {
+			if err := chatAgentStore.ImportBuiltinAgents(context.Background(), repoPath); err != nil {
 				log.Printf("WARN: import builtin agents failed: %v", err)
 			}
 		} else {

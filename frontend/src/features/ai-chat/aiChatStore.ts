@@ -13,6 +13,7 @@ import { ref, computed } from 'vue'
 import { llmBffApi, type ChatMessage } from '../../api/llm-bff'
 import { listNodes, getAvailableModels } from '../../api/gateway'
 import { useToast } from '../../composables/useToast'
+import { useChatAgentStore } from '../../stores/chatAgentStore'
 
 export type ChatRole = 'system' | 'user' | 'assistant'
 
@@ -41,6 +42,8 @@ export interface ChatMsg {
   streaming?: boolean
   /** 错误信息（流式失败 / 网关未配置）。 */
   error?: string
+  /** 页面刷新或应用重启时流被中断。 */
+  interrupted?: boolean
   createdAt: number
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
 }
@@ -54,6 +57,9 @@ export interface Conversation {
   model: string
   mode: ChatMode
   messages: ChatMsg[]
+  agentId?: string           // 绑定的智能体角色 id（优先级高于全局 settings.systemPrompt）
+  customSystemPrompt?: string // 会话级 system prompt 覆盖（最高优先级）
+  archivedAt?: number
   createdAt: number
   updatedAt: number
 }
@@ -61,16 +67,29 @@ export interface Conversation {
 export interface ChatSettings {
   temperature: number
   maxTokens: number
-  systemPrompt: string
+  systemPrompt: string       // 全局 system prompt（无角色时兜底）
   defaultModel: string
+  defaultAgentId?: string    // 新建会话时默认角色
   /** 按模态的默认模型（'auto' = 网关智能路由）。仅在会话模型为 auto 时生效。 */
   modelByModality: Record<ModalityKey, string>
 }
 
-const STORAGE_KEY = 'pocket:ai-chat:v1'
-const SETTINGS_KEY = 'pocket:ai-chat:settings:v1'
+const STORAGE_KEY_PREFIX = 'pocket:ai-chat:v2'
+const SETTINGS_KEY_PREFIX = 'pocket:ai-chat:settings:v2'
+const LEGACY_STORAGE_KEY = 'pocket:ai-chat:v1'
+const LEGACY_SETTINGS_KEY = 'pocket:ai-chat:settings:v1'
 const MAX_HISTORY = 40 // 单轮发送给网关的历史消息上限
 const AUTO = 'auto'
+
+function storageScope(): string {
+  const workspace = localStorage.getItem('pocket_workspace_id') || ''
+  const user = localStorage.getItem('pocket_user') || ''
+  return encodeURIComponent(workspace || user || 'local')
+}
+
+function storageKey(prefix: string): string {
+  return `${prefix}:${storageScope()}`
+}
 
 const DEFAULT_SETTINGS: ChatSettings = {
   temperature: 0.7,
@@ -95,14 +114,21 @@ export function inferModality(id: string): ModalityKey {
 
 function loadConversations(): Conversation[] | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const key = storageKey(STORAGE_KEY_PREFIX)
+    let raw = localStorage.getItem(key)
+    if (!raw) {
+      raw = localStorage.getItem(LEGACY_STORAGE_KEY)
+      if (raw) localStorage.setItem(key, raw)
+    }
     if (!raw) return null
     const parsed = JSON.parse(raw) as Conversation[]
-    // 恢复时清掉残留的流式标记，避免刷新后卡在「正在输入」。
     for (const c of parsed) {
+      if (!Array.isArray(c.messages)) c.messages = []
       for (const m of c.messages) {
-        m.streaming = false
-        if (m.error) m.error = undefined
+        if (m.streaming) {
+          m.streaming = false
+          m.interrupted = true
+        }
       }
     }
     return parsed
@@ -113,7 +139,12 @@ function loadConversations(): Conversation[] | null {
 
 function loadSettings(): ChatSettings {
   try {
-    const raw = localStorage.getItem(SETTINGS_KEY)
+    const key = storageKey(SETTINGS_KEY_PREFIX)
+    let raw = localStorage.getItem(key)
+    if (!raw) {
+      raw = localStorage.getItem(LEGACY_SETTINGS_KEY)
+      if (raw) localStorage.setItem(key, raw)
+    }
     if (!raw) return { ...DEFAULT_SETTINGS }
     const parsed = JSON.parse(raw) as Partial<ChatSettings>
     return {
@@ -161,8 +192,8 @@ export const useAIChatStore = defineStore('ai-chat', () => {
 
   function persist() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations.value))
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings.value))
+      localStorage.setItem(storageKey(STORAGE_KEY_PREFIX), JSON.stringify(conversations.value))
+      localStorage.setItem(storageKey(SETTINGS_KEY_PREFIX), JSON.stringify(settings.value))
     } catch {
       /* 容量超限等忽略 */
     }
@@ -214,6 +245,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
       model: model || AUTO,
       mode: compareMode.value ? 'compare' : 'single',
       messages: [],
+      ...(settings.value.defaultAgentId ? { agentId: settings.value.defaultAgentId } : {}),
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }
@@ -309,12 +341,35 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     }
   }
 
-  /** 把可见对话历史（去掉流式/错误中间态）整理成发给网关的 messages。 */
+  /** 把可见对话历史（去掉流式/错误中间态）整理成发给网关的 messages。
+   * 
+   * System prompt 三层优先级：
+   *   1. 会话的 customSystemPrompt（用户在会话设置里临时覆盖）
+   *   2. 会话绑定的 agent.systemPrompt（选角色后自动带入）
+   *   3. 全局 settings.systemPrompt（无角色时兜底，保持向后兼容）
+   */
   function buildRequestMessages(conv: Conversation, extraUserText?: string, extraImages?: string[]): ChatMessage[] {
     const out: ChatMessage[] = []
-    if (settings.value.systemPrompt.trim()) {
-      out.push({ role: 'system', content: settings.value.systemPrompt.trim() })
+    
+    // 三层优先级解析 system prompt
+    let systemPrompt = ''
+    if (conv.customSystemPrompt?.trim()) {
+      systemPrompt = conv.customSystemPrompt.trim()
+    } else if (conv.agentId) {
+      const agentStore = useChatAgentStore()
+      const agent = agentStore.getAgent(conv.agentId)
+      if (agent) {
+        systemPrompt = agent.system_prompt.trim()
+      }
     }
+    if (!systemPrompt && settings.value.systemPrompt.trim()) {
+      systemPrompt = settings.value.systemPrompt.trim()
+    }
+    
+    if (systemPrompt) {
+      out.push({ role: 'system', content: systemPrompt })
+    }
+    
     const visible = conv.messages.filter((m) => !m.streaming && !m.error)
     for (const m of visible.slice(-MAX_HISTORY)) {
       if (m.role === 'system') continue
@@ -567,6 +622,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     loadModalityCatalog,
     modalityOf,
     resolveModel,
+    persist,
     selectConversation,
     newConversation,
     renameConversation,

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/chatagent"
 )
@@ -77,7 +78,6 @@ func (s *Server) handleChatAgentsCreate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	workspaceID := s.workspaceIDFromRequest(r)
-	userID := s.userIDFromRequest(r)
 
 	// 检查配额
 	count, err := s.chatAgentStore.CountCustom(r.Context(), workspaceID)
@@ -111,7 +111,7 @@ func (s *Server) handleChatAgentsCreate(w http.ResponseWriter, r *http.Request) 
 
 	// 生成 ID（如果未提供）
 	if body.ID == "" {
-		body.ID = fmt.Sprintf("custom-%s-%d", sanitizeID(body.Name), nowUnix())
+		body.ID = fmt.Sprintf("custom-%s-%d", sanitizeID(body.Name), time.Now().Unix())
 	}
 
 	agent := &chatagent.Agent{
@@ -132,7 +132,7 @@ func (s *Server) handleChatAgentsCreate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// 审计
-	s.writeAudit(r, "chat_agent.create", true, fmt.Sprintf("agent_id=%s name=%q", agent.ID, agent.Name))
+	s.auditGateway(r, "chat_agent.create", agent.Name, fmt.Sprintf("agent_id=%s name=%q", agent.ID, agent.Name), true)
 
 	writeJSON(w, http.StatusCreated, agent)
 }
@@ -208,7 +208,7 @@ func (s *Server) handleChatAgentsUpdate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// 审计
-	s.writeAudit(r, "chat_agent.update", true, fmt.Sprintf("agent_id=%s", id))
+	s.auditGateway(r, "chat_agent.update", existing.Name, fmt.Sprintf("agent_id=%s", id), true)
 
 	writeJSON(w, http.StatusOK, existing)
 }
@@ -245,7 +245,7 @@ func (s *Server) handleChatAgentsDelete(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// 审计
-	s.writeAudit(r, "chat_agent.delete", true, fmt.Sprintf("agent_id=%s", id))
+	s.auditGateway(r, "chat_agent.delete", id, fmt.Sprintf("agent_id=%s", id), true)
 
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }

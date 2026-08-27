@@ -66,6 +66,31 @@ const router = createRouter({
       component: () => import('../features/ai-chat/AIChatView.vue'),
       meta: { requiresAuth: true, title: '对话', bottomNav: true }
     },
+    // AI 对话 — 智能体角色库
+    {
+      path: '/agents',
+      name: 'agent-library',
+      component: () => import('../features/agents/AgentLibraryView.vue'),
+      meta: { requiresAuth: true, title: '智能体', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/agents/new',
+      name: 'agent-new',
+      component: () => import('../features/agents/AgentEditView.vue'),
+      meta: { requiresAuth: true, title: '创建角色', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/agents/:agentId/edit',
+      name: 'agent-edit',
+      component: () => import('../features/agents/AgentEditView.vue'),
+      meta: { requiresAuth: true, title: '编辑角色', bottomNav: false, canGoBack: true }
+    },
+    {
+      path: '/agents/:agentId',
+      name: 'agent-detail',
+      component: () => import('../features/agents/AgentDetailView.vue'),
+      meta: { requiresAuth: true, title: '角色详情', bottomNav: false, canGoBack: true }
+    },
     // 个人助理 — 语音笔记
     {
       path: '/notes',
