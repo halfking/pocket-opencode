@@ -75,3 +75,38 @@
 - 手机 App 已更新为 P1.5 构建（本地库与登录态保留，主密码仍为测试值 `p1-verify-2026`——**建议用户改回**）
 - 本机 pocketd 容器/opencode serve/注册守护维持运行（同 P1 交接）
 - P1.5 提交不含 BottomNav.vue / router-mobile.ts / ai-chat 等并行流文件（其属主仍在活跃写入，git status 持续增长）
+
+---
+
+## 7. 追加轮（P1.5+，同日 23:43–23:5x）：距顶修复 + 活跃/归档分区
+
+### 7.1 需求 A：详情页标题距顶（量化前后对照）
+
+| 量测 | 修复前 | 修复后 |
+|---|---|---|
+| 详情页头部距顶 | **90px**（39 body + 39 session-view + 12 content padding） | **39px**（贴状态栏下沿）✅ |
+| /ai 顶栏标题文字 top | ~78px（顶栏内双重 padding） | **51px** ✅ |
+
+全 UI 审计 7 处 safe-area-inset-top（详见设计文档 §7.1 表）：修 AppLayout top-bar + session-view 两处双重；SettingsLLMGateway 为 fixed 自管（正确不动）；并行流 3 文件登记交接。
+
+### 7.2 需求 B：活跃/归档分区（V-11..V-15）
+
+| # | 验证点 | 方法 | 结果 |
+|---|---|---|---|
+| V-11 | 分段切换渲染，默认活跃 | `#/sessions` DOM 读 mode-tab | ✅ 活跃20/归档0，aria-selected=active |
+| V-12 | 归档过滤 | localStorage 注入归档态（真实 loadArchivedIds 读取路径）→ 重进列表 | ✅ 活跃19/归档1 |
+| V-13 | 归档区徽标 + 空态 | 切归档 tab | ✅ "已归档"徽标 1 张卡片；清空后空态提示 |
+| V-14 | 左滑恢复 | 合成 TouchEvent 手势（SwipeableListItem touchstart/move/end，位移 240px）→ 揭示动作 → 点击「恢复」 | ✅ 活跃20/归档0 |
+| V-15 | chrome-sub 五视图工具栏恢复 | `#app-chrome-sub` 目标恢复后 /sessions 渲染 | ✅ 搜索框+分区切换（chrome-sub h=111px） |
+
+截图：`shots/vivo-p15-07-detail-top-fixed.png`（距顶 39px）/ `vivo-p15-08-list-active.png` / `vivo-p15-09-list-archived.png`（归档区） / `vivo-p15-10-archived-restored.png`（恢复后空态）。
+
+### 7.3 连带修复存量 bug
+
+**ScrollChromePortal 目标丢失**（8ddbc43 引入 `#app-chrome-sub`，后续 AppLayout 重构丢失）：sessions/email/instances/meetings/vault 五个视图搜索工具栏静默不渲染。AppLayout 恢复目标元素后真机确认渲染恢复（V-15）。
+
+### 7.4 复现要点追加
+
+- 归档存储 key：`pocket_session_archive_v1:<encodeURIComponent(workspaceId)>:<encodeURIComponent(instanceId|all)>`（workspace 取 `pocket_workspace_id`）
+- 合成滑动手势需构造 Touch/TouchEvent 三段序列（start→move×8→end），位移 ≥ 动作宽 × 0.3 阈值
+- 重装后首次进入需重新输主密码解锁（本次为 `p1-verify-2026`）

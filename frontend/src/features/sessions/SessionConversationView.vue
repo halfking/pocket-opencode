@@ -536,13 +536,13 @@ function goBack() {
   flex-direction: column;
   height: 100vh;
   background: var(--bg-base);
-  padding-top: env(safe-area-inset-top);
+  /* 安全区唯一来源是 body 的 padding-top（styles.css）；此处再加会双重下移
+     （真机实测标题距顶 90px，正确值 39px，P1.5+ 排查）。 */
 }
 
 .session-view.embedded {
   height: 100%;
   min-height: 0;
-  padding-top: 0;
   border-left: 1px solid var(--border);
 }
 

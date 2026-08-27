@@ -17,6 +17,30 @@
           </option>
         </select>
       </div>
+
+      <!-- 活跃 / 归档分区切换（与 Acc 任务视角对齐：默认只看活跃，归档需显式切换） -->
+      <div class="mode-switch" role="tablist" aria-label="会话分区">
+        <button
+          type="button"
+          class="mode-tab"
+          role="tab"
+          :class="{ active: listMode === 'active' }"
+          :aria-selected="listMode === 'active'"
+          @click="listMode = 'active'"
+        >
+          活跃<span class="mode-count">{{ activeCount }}</span>
+        </button>
+        <button
+          type="button"
+          class="mode-tab"
+          role="tab"
+          :class="{ active: listMode === 'archived' }"
+          :aria-selected="listMode === 'archived'"
+          @click="listMode = 'archived'"
+        >
+          归档<span class="mode-count">{{ archivedCount }}</span>
+        </button>
+      </div>
     </ScrollChromePortal>
 
     <PullToRefresh :on-refresh="handleRefresh" class="list-scroll">
@@ -41,8 +65,8 @@
         <EmptyState
           v-if="filteredSessions.length === 0"
           icon="💬"
-          title="暂无会话"
-          hint="在 AI 页面开始新对话，或切换实例筛选"
+          :title="listMode === 'archived' ? '归档区暂无会话' : '暂无会话'"
+          :hint="listMode === 'archived' ? '左滑会话卡片选「归档」，归档的会话会收纳到这里' : '在 AI 页面开始新对话，或切换实例筛选'"
           size="sm"
           variant="inline"
         />
@@ -56,7 +80,13 @@
             <div class="session-card" @click="openSessionDetail(session)">
               <div class="session-header">
                 <h3 class="session-title">{{ session.title }}</h3>
-                <span :class="['status-badge', session.status]">
+                <span
+                  v-if="listMode === 'archived'"
+                  class="status-badge archived"
+                >
+                  已归档
+                </span>
+                <span v-else :class="['status-badge', session.status]">
                   {{ getStatusText(session.status) }}
                 </span>
               </div>
@@ -65,8 +95,8 @@
           </SwipeableListItem>
         </div>
 
-        <!-- 分页 -->
-        <div v-if="total > limit" class="pagination">
+        <!-- 分页（仅活跃分区；归档区跟随当前页数据的本地过滤） -->
+        <div v-if="listMode === 'active' && total > limit" class="pagination">
           <button class="page-btn" :disabled="offset === 0" @click="prevPage">上一页</button>
           <span class="page-info">
             {{ Math.floor(offset / limit) + 1 }} / {{ Math.ceil(total / limit) }}
@@ -82,8 +112,15 @@
 import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
+import { useAuthStore } from '@/stores/auth'
 import { Skeleton, EmptyState, PullToRefresh, SwipeableListItem, type SwipeAction } from '@/components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
+import {
+  readArchivedIds,
+  setSessionArchived,
+  writeArchivedIds,
+  parseArchivedIds,
+} from './sessionArchive'
 
 interface Session {
   id: string
@@ -97,9 +134,17 @@ interface Instance {
   baseURL: string
 }
 
-const ARCHIVE_KEY = 'archived_session_ids'
+/**
+ * 会话两大分区（活跃/归档，与 Acc 任务视角对齐）：
+ *   - 归档是设备侧列表元数据（OpenCode 上游无 archive 写接口——沿 sessionArchive.ts
+ *     既有裁决，P2 E5-S4），按 workspace+instance 分区存 localStorage，fail-open；
+ *   - 旧全局 key `archived_session_ids`（无分区）在此做一次性合并迁移：集合并集
+ *     幂等，旧 key 保留供其他 scope 后续合并，不删除。
+ */
+const LEGACY_ARCHIVE_KEY = 'archived_session_ids'
 
 const router = useRouter()
+const auth = useAuthStore()
 
 const sessions = ref<Session[]>([])
 const instances = ref<Instance[]>([])
@@ -111,22 +156,41 @@ const offset = ref(0)
 const limit = ref(20)
 const total = ref(0)
 const archivedIds = ref<Set<string>>(new Set())
+const listMode = ref<'active' | 'archived'>('active')
+
+function archiveScope() {
+  return {
+    workspaceId: auth.workspaceId,
+    instanceId: selectedInstanceId.value || 'all',
+  }
+}
 
 function loadArchivedIds() {
   try {
-    const raw = localStorage.getItem(ARCHIVE_KEY)
-    archivedIds.value = new Set(raw ? JSON.parse(raw) : [])
+    // 旧全局归档 key 合并迁移（幂等并集；见 LEGACY_ARCHIVE_KEY 注释）
+    const legacy = parseArchivedIds(localStorage.getItem(LEGACY_ARCHIVE_KEY))
+    const current = readArchivedIds(localStorage, archiveScope())
+    if (legacy.size > 0) {
+      const merged = new Set([...current, ...legacy])
+      writeArchivedIds(localStorage, archiveScope(), merged)
+      archivedIds.value = merged
+      return
+    }
+    archivedIds.value = current
   } catch {
     archivedIds.value = new Set()
   }
 }
 
-function saveArchivedIds() {
-  localStorage.setItem(ARCHIVE_KEY, JSON.stringify([...archivedIds.value]))
-}
+const activeSessions = computed(() =>
+  sessions.value.filter((s) => !archivedIds.value.has(s.id)),
+)
 
-const filteredSessions = computed(() => {
-  let list = sessions.value.filter((s) => !archivedIds.value.has(s.id))
+const archivedSessions = computed(() =>
+  sessions.value.filter((s) => archivedIds.value.has(s.id)),
+)
+
+function applySearch(list: Session[]): Session[] {
   if (!searchQuery.value) return list
   const query = searchQuery.value.toLowerCase()
   return list.filter(
@@ -134,7 +198,16 @@ const filteredSessions = computed(() => {
       s.title.toLowerCase().includes(query) ||
       s.id.toLowerCase().includes(query),
   )
-})
+}
+
+const filteredSessions = computed(() =>
+  listMode.value === 'archived'
+    ? applySearch(archivedSessions.value)
+    : applySearch(activeSessions.value),
+)
+
+const activeCount = computed(() => activeSessions.value.length)
+const archivedCount = computed(() => archivedSessions.value.length)
 
 async function loadInstances() {
   try {
@@ -179,6 +252,7 @@ function handleSearch() {
 
 function handleInstanceChange() {
   offset.value = 0
+  loadArchivedIds() // 归档分区按实例切换，重读对应 scope
   loadSessions()
 }
 
@@ -207,8 +281,12 @@ function openSessionDetail(session: Session) {
 }
 
 function archiveSession(session: Session) {
-  archivedIds.value.add(session.id)
-  saveArchivedIds()
+  archivedIds.value = setSessionArchived(localStorage, archiveScope(), session.id, true)
+}
+
+/** 归档分区内的恢复动作：回到活跃分区（服务端会话状态不受影响）。 */
+function unarchiveSession(session: Session) {
+  archivedIds.value = setSessionArchived(localStorage, archiveScope(), session.id, false)
 }
 
 async function deleteSession(session: Session) {
@@ -228,6 +306,25 @@ async function deleteSession(session: Session) {
 }
 
 function getSwipeActions(session: Session): SwipeAction[] {
+  // 活跃分区：归档/删除；归档分区：恢复/删除（破坏性动作保留确认）
+  if (listMode.value === 'archived') {
+    return [
+      {
+        id: 'unarchive',
+        icon: '📦',
+        label: '恢复',
+        type: 'warning',
+        onAction: () => unarchiveSession(session),
+      },
+      {
+        id: 'delete',
+        icon: '🗑',
+        label: '删除',
+        type: 'danger',
+        onAction: () => deleteSession(session),
+      },
+    ]
+  }
   return [
     {
       id: 'archive',
@@ -281,6 +378,51 @@ onActivated(() => {
   display: flex;
   gap: var(--space-2);
   padding: var(--space-3);
+}
+
+/* 活跃/归档分区切换：分段控件，热区 ≥44px */
+.mode-switch {
+  display: flex;
+  gap: var(--space-2);
+  padding: 0 var(--space-3) var(--space-2);
+}
+.mode-tab {
+  flex: 1;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1-5, 6px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+}
+.mode-tab.active {
+  background: var(--brand-primary);
+  border-color: var(--brand-primary);
+  color: var(--text-inverse);
+  font-weight: var(--font-weight-semibold);
+}
+.mode-tab:active {
+  transform: scale(0.98);
+}
+.mode-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.mode-tab.active .mode-count {
+  background: rgba(255, 255, 255, 0.22);
+  color: var(--text-inverse);
 }
 
 .list-scroll {
@@ -385,6 +527,13 @@ onActivated(() => {
 .status-badge.idle {
   background: var(--warning-bg);
   color: var(--warning);
+}
+
+/* 归档分区徽标（设备侧归档态，非上游 session status） */
+.status-badge.archived {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
 }
 
 .session-id {

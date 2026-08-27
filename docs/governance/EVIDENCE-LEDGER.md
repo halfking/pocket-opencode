@@ -212,3 +212,13 @@
 | 真机验证 | **PASS（V-1..V-8）**——`test-evidence/P1.5-mobile-ux/device-verification-2026-08-27.md`：vivo X Fold5 uninstall+install（lastUpdateTime=23:14:43），CDP 驱动 + 截图 `shots/vivo-p15-01..06.png`。双头消除/图标字体渲染/状态图标三态与停续 toggle/快速指令面板/⋮ 抽屉实例信息全部实测通过 |
 | Evidence level | 信号纯函数 `contract-tested`（gate log §1/§4）；P1.5 UI `integration-tested`（真机 V-1..V-8） |
 | Status | `integration-tested`。设计决策 DD-1..DD-6 登记（`docs/2026-08-27-p1.5-ui-declutter.md` §4，含 DD-1 停止无二次确认与 §4.4-2 纪律的显式偏差）。**真机发现的 P1 层存量缺陷登记 P2**：DEFECT-P2-SSE-1（SSE 不投递 assistant 输出且无关闭信号→isStreaming 卡真；opencode 侧轮次已完成 vs App 100s+ 仍运行态的对照证据见真机记录 §4）/ DEFECT-P2-DUP-1（同文 prompt 重复投递一次，需服务端日志定位）。P1.5 未触碰流/store/事件层（diff 全在展示层） |
+
+## P1.5+ 追加轮门禁与真机运行记录（in-repo，2026-08-27 深夜）
+
+| Field | Value |
+|---|---|
+| 覆盖范围 | 用户两反馈落地：①会话详情页标题距顶修复（safe-area 三层叠加审计，AppLayout top-bar/session-view 双重删除，hideAppHeader 全屏页 content padding 归零；SettingsLLMGateway fixed 自管确认正确；并行流 3 文件登记交接）②会话活跃/归档分区（SessionListView 分段切换默认活跃、归档区徽标+左滑恢复、sessionArchive.ts 统一存储+旧 key 幂等迁移；DD-7：Acc 关联为语义对齐，无 session→task 外键不做数据级关联）③连带修复存量 bug：ScrollChromePortal `#app-chrome-sub` Teleport 目标被 AppLayout 重构丢失（8ddbc43 引入），sessions/email/instances/meetings/vault 五视图工具栏静默不渲染 |
+| 绿色运行日志 | `test-evidence/P1.5-mobile-ux/gate-run-2026-08-27.log` §5：node --test 全量 193/193 fail=0 + vue-tsc exit=0 |
+| 真机验证 | **PASS（V-9..V-15）**——同文件 §7：距顶 90→39px 量化对照、/ai 标题 78→51px、分区注入→过滤→徽标→合成手势恢复全链路、chrome-sub 工具栏恢复；截图 `shots/vivo-p15-07..10.png` |
+| Evidence level | `integration-tested`（真机 V-9..V-15） |
+| Status | `integration-tested`。DD-7（归档语义/Acc 边界）、DD-8（safe-area 唯一来源=body）见 `docs/2026-08-27-p1.5-ui-declutter.md` §7。P2 登记追加：session→task 数据级关联（待后端外键）、并行流 3 文件 safe-area 核查 |

@@ -34,12 +34,17 @@
     <!-- 全局状态条：连接 / 同步 / 离线队列（08 §2.2，不用只显示 Toast）。 -->
     <GlobalStatusBar v-if="showTopBar" />
 
+    <!-- ScrollChromePortal 的 Teleport 目标（页级搜索工具栏等 chrome 注入点）。
+         8ddbc43 引入后某次 AppLayout 重构将其丢失，sessions/email/instances/
+         meetings/vault 五个视图的工具栏随之静默不渲染——P1.5+ 轮修复恢复。 -->
+    <div v-if="showTopBar" id="app-chrome-sub" class="chrome-sub"></div>
+
     <main
       id="main"
       ref="mainEl"
       class="content"
       role="main"
-      :class="{ 'has-bottom-nav': showBottomNav }"
+      :class="{ 'has-bottom-nav': showBottomNav, fullscreen: isFullscreen }"
       :aria-label="title"
       tabindex="-1"
     >
@@ -83,6 +88,13 @@ const showBottomNav = computed(() => {
   return true
 })
 const canGoBack = computed(() => Boolean(route.meta.canGoBack))
+
+/**
+ * 全屏自管页（hideAppHeader：会话工作台等自带完整头部/滚动的视图）：
+ * 去掉 .content 常规 padding，让视图头部贴住状态栏下方（body padding 之下），
+ * 否则 12px 内边距叠加在视图自己的头部上方浪费空间（P1.5+ 真机排查）。
+ */
+const isFullscreen = computed(() => route.meta.hideAppHeader === true)
 
 function goBack() {
   if (window.history.length > 1) router.back()
@@ -139,7 +151,8 @@ function focusMain() {
   align-items: center;
   gap: var(--space-2-5);
   padding: 0 var(--space-3);
-  padding-top: env(safe-area-inset-top, 0);
+  /* 安全区唯一来源是 body 的 padding-top（styles.css）；此处再加会双重下移
+     （真机实测标题被压低 39px，P1.5+ 排查）。 */
   background: var(--bg-card);
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -185,6 +198,18 @@ function focusMain() {
 
 .content.has-bottom-nav {
   padding-bottom: calc(var(--bottomnav-height) + var(--space-3));
+}
+
+/* chrome 注入点为空时不占位（无 chrome 的页面零成本）。 */
+.chrome-sub:empty {
+  display: none;
+}
+
+/* 全屏自管页：视图自带头部与滚动，取消常规内容内边距（见 isFullscreen 注释）。 */
+.content.fullscreen {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Foldable expanded / tablet (≥840px): widen content and switch lists to 2-col. */

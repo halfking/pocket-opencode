@@ -28,3 +28,6 @@ typecheck exit=0
 # pass 193
 # fail 0
 sweep exit=0
+
+## §5 P1.5+ round2 (距顶修复+活跃/归档分区): 23:49:53 node --test 全量 + vue-tsc
+
