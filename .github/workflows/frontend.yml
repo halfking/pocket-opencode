@@ -102,6 +102,12 @@ jobs:
         run: npm ci
         working-directory: frontend
 
+      - name: Build web assets
+        # cap sync 会把 webDir(dist) 拷进 android 工程；dist 被 gitignore，
+        # CI 必须先构建，否则 "Could not find the web assets directory: ./dist"。
+        run: npm run build:fast
+        working-directory: frontend
+
       - name: Sync Capacitor (frontend/android only)
         # ADR-009: frontend/android is the single Android source of
         # truth. We never run `npx cap sync` against the root android/
