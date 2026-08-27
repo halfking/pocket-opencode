@@ -189,9 +189,9 @@
 | 契约冻结 | `docs/2026-08-27-p1-contracts-frozen.md` §2/§3（主代理先于实现冻结）；TS 侧唯一类型 `frontend/src/services/sessionEvents.ts`，Go struct 注释互指（approval_broadcaster ↔ approvalEvents.ts 同款模式） |
 | Contract test | Go fixture：`backend/internal/opencode/session_event_broadcaster_test.go`（canonical wire JSON 5 样本，固定时钟确定性断言；节流/合并/防抖/五态/快照/workspace 隔离全覆盖）；TS fixture：`frontend/src/services/__tests__/sessionEvents.test.mjs`（6 用例，与 Go 常量逐字节同义，双层信封字段名锁定）；端点行为：`backend/internal/server/mobile_events_handler_test.go`（401/400/405/503/200 + workspace 过滤） |
 | 绿色运行日志 | `test-evidence/P1-mobile-ux/gate-run-2026-08-27.log` §6/§7：`go test ./... -count=1` 全 ok + 契约定向 `-race` 复跑 ok；TS fixture 6/6 在 §2（191 用例之一） |
-| Evidence level | `contract-tested`（Go↔TS 双向 fixture + 端点行为测试；**未接真实 opencode 上游做集成验证**——上游 V2 事件 payload 无权威 schema，phase/轮次靠事件类型鲁棒、summary/changes 防御式解析可能退化为 0/空，见广播器报告风险项） |
-| Last verified date | 2026-08-27 |
-| Status | **contract-tested** — 提升到 `integration-tested` 需一次真实 opencode 会话的端到端事件流验证（P2 订阅收窄时顺带）。 |
+| Evidence level | **`integration-tested`**（2026-08-27 真机升级：真实 opencode v1.14.33 会话 → 后端事件 → vivo X Fold5 真机时间线渲染 round.completed 摘要"+0/-0 · 0 文件"；`test-evidence/P1-mobile-ux/device-verification-2026-08-27.md` §9。**真机同时抓到并修复两个集成缺陷**：①上游事件信封 v1.14.33 漂移为 `{type,properties}`——adapter `OpenCodeEvent.UnmarshalJSON` 归一化（回归测试 `opencode_event_envelope_test.go`）；②广播器启动单扫漏晚启实例——30s 周期重扫。修复代码门禁见 gate log §8） |
+| Last verified date | 2026-08-27（contract + vivo X Fold5 integration） |
+| Status | **integration-tested** — 已对真实上游+真实设备验证；P2 订阅收窄时补 since 游标行为。 |
 
 ## P1 移动端（会话工作台+输入系统）门禁运行记录（in-repo，2026-08-27）
 
@@ -200,5 +200,5 @@
 | 覆盖范围 | P1 前端四件套（`SessionStatusBar`/`RoundTimeline`/`SessionDetailDrawer`/`useSessionEvents`，A 子代理）+ 输入系统（`SessionComposer`/`useSessionDrafts`/`draftStore`/`local_drafts` 迁移，C 子代理）+ `SessionConversationView.vue` 收敛（1141→637 行，Composer 挂载）+ 旧详情路由 301（发现旧 opencode 路由从未注册，redirect 兜底）+ 上述 pocketd 事件层（B 子代理）+ E 分支合并（`backend/agent_echo` 误提交二进制清除，stdio 测试改源码现场编译）+ `internal/security` 误提交 WIP 清除（handoff 快照 9b7618e 截获的断头测试，git 历史可找回） |
 | 绿色运行日志 | `test-evidence/P1-mobile-ux/gate-run-2026-08-27.log`：8/8 命令 exit=0 —— vue-tsc / node --test 9 目录 **191 用例 fail=0**（新增 37：useSessionEvents 16 + useSessionDrafts 15 + draftStore 4 + sessionEvents fixture 6，统计口径含拆分）/ vite build ✓ / go vet / go build / go test ./... / 契约与 agent 包 `-race` 定向复跑 |
 | 真机验证 | **blocked（无设备）**——`test-evidence/P1-mobile-ux/device-verification-2026-08-27.md`（静态验证 PASS + VITE_API_BASE 前置缺口 + 下次执行清单） |
-| Evidence level | 事件层 `contract-tested`（上行条目）；UI（状态条/时间线/抽屉/Composer/草稿）`source-inspected` + 纯逻辑单测（热区/safe-area 为 CSS 声明，真机效果未验证） |
-| Status | **contract-tested（事件层）**；UI `implemented (unverified)` 待真机。契约两处已裁决偏差备案：草稿表名 `local_drafts`（遵工程 `local_` 前缀原则）、Composer prop `modelTarget`（无 `v-model:target` 简写，P1 只用固定模式）——见 `docs/2026-08-27-p1-contracts-frozen.md` §7 备案。`task.health` 前端消费为 P2（设计 §6 P1 行未要求，TasksView 仍用 P0 近似）。 |
+| Evidence level | 事件层 `integration-tested`（上行条目）；UI（状态条/时间线/抽屉/Composer/草稿）**`integration-tested`（2026-08-27 vivo X Fold5 真机，通知/Deep Link 两子项除外——无真实审批触发源）**；草稿 SQLite 持久化真机杀进程存活验证 PASS（`test-evidence/P1-mobile-ux/device-verification-2026-08-27.md` §9）。真机轮修复 `frontend/src/native/local-db.ts`（splitSqlStatements 接线——Android 全新安装曾静默缺 23 张表）与 `backend/internal/adapter/opencode_http.go`（事件信封归一化） |
+| Status | 事件层 `integration-tested`；UI `integration-tested`（通知触达/Deep Link 点击维持 `pending-evidence`）。契约两处已裁决偏差备案：草稿表名 `local_drafts`（遵工程 `local_` 前缀原则）、Composer prop `modelTarget`（无 `v-model:target` 简写，P1 只用固定模式）——见 `docs/2026-08-27-p1-contracts-frozen.md` §7 备案。`task.health` 前端消费为 P2。P2 登记：旧库升级无迁移机制、同路由组件复用串台、vivo `install -r` 静默失效（环境坑见证据 §10⑥④）。 |

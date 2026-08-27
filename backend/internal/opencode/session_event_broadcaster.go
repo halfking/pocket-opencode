@@ -262,14 +262,25 @@ func (b *SessionEventBroadcaster) Run(ctx context.Context) {
 	log.Println("[session-event-broadcast] started")
 	defer log.Println("[session-event-broadcast] stopped")
 
-	if b.eventMgr != nil && b.registry != nil {
+	// 周期重扫：实例常晚于 pocketd 启动（如 opencode serve 手动拉起、插件
+	// 注册），只在启动时扫一次会让这类实例永远进不了事件管道（2026-08-27
+	// 真机验证实测踩中）。30s 重扫 + 已订阅集合去重，健康窗口错过则下轮补订。
+	subscribed := make(map[string]bool)
+	rescan := func() {
+		if b.eventMgr == nil || b.registry == nil {
+			return
+		}
 		for _, inst := range b.registry.ListInstances() {
-			if inst.Health != "healthy" {
+			if inst.Health != "healthy" || subscribed[inst.ID] {
 				continue
 			}
+			subscribed[inst.ID] = true
 			go b.subscribeInstance(ctx, inst.ID)
 		}
 	}
+	rescan()
+	rescanT := time.NewTicker(30 * time.Second)
+	defer rescanT.Stop()
 
 	flushT := time.NewTicker(b.coalesceWindow)
 	defer flushT.Stop()
@@ -280,6 +291,8 @@ func (b *SessionEventBroadcaster) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-rescanT.C:
+			rescan()
 		case <-flushT.C:
 			b.flush()
 		case <-healthT.C:

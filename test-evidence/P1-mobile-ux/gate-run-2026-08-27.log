@@ -81,3 +81,16 @@ ok  	github.com/halfking/pocket-opencode/backend/internal/opencode	1.350s
 exit=0
 ok  	github.com/halfking/pocket-opencode/backend/internal/agent	3.797s
 exit=0
+
+===== 8. 真机验证轮修复代码复跑（22:50，信封归一化+广播器重扫+schema 接线） =====
+$ cd backend && go vet ./... && go build ./...
+exit=0
+$ go test ./internal/adapter/ ./internal/opencode/ ./internal/server/ -count=1
+ok  internal/adapter   0.592s
+ok  internal/opencode  2.005s
+ok  internal/server    1.574s
+exit=0
+$ cd frontend && npm run typecheck && node --test <全部 9 个测试目录>
+# tests 191 / # pass 191 / # fail 0
+exit=0
+真机终态见同目录 device-verification-2026-08-27.md §9–§12（vivo X Fold5，33 表全量/草稿杀进程存活/round.completed 渲染/SSE 实时流）

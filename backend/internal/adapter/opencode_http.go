@@ -1044,6 +1044,34 @@ type OpenCodeEvent struct {
 	Data     any            `json:"data"`
 }
 
+// UnmarshalJSON 兼容两代事件信封（2026-08-27 真机验证发现 v1.14.33 漂移）：
+//   - 旧格式 {id, type, location, data}：原样解析；
+//   - 新格式 {type, properties:{sessionID, info, ...}}：无 data 字段，把
+//     properties 归一化进 Data，让 extractSessionID / eventBelongsToSession /
+//     session_event_broadcaster 等所有 Data 读取方无需各自感知信封版本。
+// 经此归一化，事件再被 json.Marshal 下发时仍是本结构体的 {type, data} 形状
+// （前端 SSE 客户端按旧形状解析）。
+func (e *OpenCodeEvent) UnmarshalJSON(b []byte) error {
+	type plain OpenCodeEvent
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*e = OpenCodeEvent(p)
+	if e.Data == nil {
+		var env struct {
+			Properties json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(b, &env); err == nil && len(env.Properties) > 0 {
+			var d any
+			if err := json.Unmarshal(env.Properties, &d); err == nil {
+				e.Data = d
+			}
+		}
+	}
+	return nil
+}
+
 // SubscribeEvents 订阅 OpenCode 的事件流（SSE），返回只读 channel。
 // API: GET /api/event
 // Content-Type: text/event-stream

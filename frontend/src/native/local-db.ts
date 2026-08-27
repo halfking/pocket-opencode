@@ -14,7 +14,7 @@ import { Capacitor } from '@capacitor/core'
 import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacitor-community/sqlite'
 import { initSqliteWeb } from './sqlite-web-init'
 import type { SqlDb, SqlRow } from './sqlDb'
-import { SCHEMA_SQL } from './schema'
+import { SCHEMA_SQL, splitSqlStatements } from './schema'
 
 const MEETINGS_V2_COLUMNS = [
   { table: 'local_meetings', column: 'location', sql: 'ALTER TABLE local_meetings ADD COLUMN location TEXT' },
@@ -105,12 +105,29 @@ class LocalDB {
     await this.conn.open()
 
     // 建表（幂等 CREATE IF NOT EXISTS）。Web/sql.js 通常无 FTS5，先跳过 FTS 段。
+    //
+    // 必须用 splitSqlStatements 逐条执行（2026-08-27 真机验证实测）：Android 端
+    // 插件对整段 SQL 按 `;` 机械切分，FTS 触发体 BEGIN...END 内的分号会把语句
+    // 截断，原生批次在首个残缺片段处中止且不向 JS 抛错——SCHEMA_SQL 中位于
+    // FTS 段之后的表（local_outbox / local_drafts / local_todos 等）全部静默
+    // 缺失。schema.ts 的 splitSqlStatements 正是为此而写（触发体整体保留），
+    // 此前没有任何生产消费方。逐条执行 + 单条失败跳过告警，保证后续语句继续。
     const schemaSql = isWeb ? stripFts5ForWeb(SCHEMA_SQL) : SCHEMA_SQL
-    try {
-      await this.conn.execute(schemaSql, false)
-    } catch (e) {
-      console.warn('[localDB] schema execute failed, applying best-effort:', e)
-      await this.applySchemaBestEffort(schemaSql)
+    const statements = splitSqlStatements(schemaSql)
+    let applied = 0
+    let failed = 0
+    for (const stmt of statements) {
+      const one = stmt.endsWith(';') ? stmt : `${stmt};`
+      try {
+        await this.conn.execute(one, false)
+        applied++
+      } catch (e) {
+        failed++
+        console.warn('[localDB] skip schema stmt:', one.slice(0, 60), e)
+      }
+    }
+    if (failed > 0) {
+      console.warn(`[localDB] schema applied ${applied}/${statements.length} statements (${failed} skipped)`)
     }
 
     // 增量迁移（已有库补列）— 此阶段 initialized 尚未置位，直接用 conn
@@ -259,21 +276,8 @@ class LocalDB {
     }
   }
 
-  /** 按语句尽力执行（Web 缺扩展时跳过失败语句） */
-  private async applySchemaBestEffort(sql: string): Promise<void> {
-    if (!this.conn) return
-    const parts = sql
-      .split(/;\s*\n/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0 && !s.startsWith('--'))
-    for (const part of parts) {
-      try {
-        await this.conn.execute(part.endsWith(';') ? part : `${part};`, false)
-      } catch (e) {
-        console.warn('[localDB] skip schema stmt:', part.slice(0, 60), e)
-      }
-    }
-  }
+  // applySchemaBestEffort 已删除（2026-08-27 真机验证）：朴素 split(/;\s*\n/)
+  // 同样会截断 FTS 触发体；建表统一走 open() 里的 splitSqlStatements 逐条执行。
 }
 
 /** Web/sql.js 不含 FTS5：去掉虚拟表与相关触发器，避免整段 schema 失败 */
