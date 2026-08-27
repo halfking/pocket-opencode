@@ -454,13 +454,12 @@ func (s *Server) Handler() http.Handler {
 	// ---- Phase 0: 个人助理模块路由 ----
 	// 认证
 	mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
-	// NOTE: 生物认证路由被另一个会话清理了 handler 文件，这里临时跳过
-	// mux.HandleFunc("/api/auth/biometric/register/begin", s.requireAuth(s.handleBiometricRegisterBegin))
-	// mux.HandleFunc("/api/auth/biometric/register/finish", s.requireAuth(s.handleBiometricRegisterFinish))
-	// mux.HandleFunc("/api/auth/biometric/login/begin", s.handleBiometricLoginBegin)
-	// mux.HandleFunc("/api/auth/biometric/login/finish", s.handleBiometricLoginFinish)
-	// mux.HandleFunc("/api/auth/biometric/credentials", s.requireAuth(s.handleBiometricCredentials))
-	// mux.HandleFunc("/api/auth/biometric/credentials/", s.requireAuth(s.handleBiometricCredentialOps))
+	mux.HandleFunc("/api/auth/biometric/register/begin", s.requireAuth(s.handleBiometricRegisterBegin))
+	mux.HandleFunc("/api/auth/biometric/register/finish", s.requireAuth(s.handleBiometricRegisterFinish))
+	mux.HandleFunc("/api/auth/biometric/login/begin", s.handleBiometricLoginBegin)
+	mux.HandleFunc("/api/auth/biometric/login/finish", s.handleBiometricLoginFinish)
+	mux.HandleFunc("/api/auth/biometric/credentials", s.requireAuth(s.handleBiometricCredentials))
+	mux.HandleFunc("/api/auth/biometric/credentials/", s.requireAuth(s.handleBiometricCredentialOps))
 	// S0-A: Identity Core（工作空间 / 成员 / 设备）
 	mux.HandleFunc("/api/workspaces", s.requireAuth(s.handleWorkspaces))
 	mux.HandleFunc("/api/workspaces/", s.requireAuth(s.handleWorkspaceOps))
