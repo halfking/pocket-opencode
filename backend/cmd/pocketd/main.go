@@ -16,6 +16,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/adapter/disk"
 	"github.com/halfking/pocket-opencode/backend/internal/agent"
 	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
+	"github.com/halfking/pocket-opencode/backend/internal/chatagent"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
@@ -552,6 +553,25 @@ func main() {
 			svc := notifycenter.NewService(ncStore, wsSender)
 			srv.SetNotifyCenter(svc, ncStore)
 			log.Println("Notification Center enabled (inbox + rules + WS foreground push)")
+		}
+	}
+
+	// ---- AI 对话智能体角色管理 ----
+	if pool != nil {
+		chatAgentStore := chatagent.NewStore(pool)
+		if err := chatAgentStore.Init(ctx); err != nil {
+			log.Fatalf("chatagent store init: %v", err)
+		}
+		srv.SetChatAgentStore(chatAgentStore)
+		log.Println("Chat Agent store initialized")
+
+		// 启动时自动导入内置角色（agency-agents-zh 仓库路径从环境变量读取）
+		if repoPath := os.Getenv("POCKET_AGENTS_REPO_PATH"); repoPath != "" {
+			if err := chatAgentStore.ImportBuiltinAgents(ctx, repoPath); err != nil {
+				log.Printf("WARN: import builtin agents failed: %v", err)
+			}
+		} else {
+			log.Println("INFO: POCKET_AGENTS_REPO_PATH not set, builtin agents import skipped (users can still create custom agents)")
 		}
 	}
 

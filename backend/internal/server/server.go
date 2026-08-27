@@ -21,6 +21,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
+	"github.com/halfking/pocket-opencode/backend/internal/chatagent"
 	cs "github.com/halfking/pocket-opencode/backend/internal/chat_summary"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
@@ -107,6 +108,8 @@ type Server struct {
 	agentStore  *agentbridge.Store
 	// S0-E: Notification Center。nil = /api/notifications 返回 503。
 	notifySvc   *notifycenter.Service
+	// AI 对话智能体角色管理。nil = /api/chat-agents 返回 503。
+	chatAgentStore *chatagent.Store
 	notifyStore *notifycenter.Store
 
 	// ACP 通用 Agent Adapter Registry（W5 新增，与 s.opencode 并存）。
@@ -339,6 +342,11 @@ func (s *Server) SetNotifyCenter(svc *notifycenter.Service, store *notifycenter.
 	s.notifyStore = store
 }
 
+// SetChatAgentStore 注入 AI 对话智能体角色管理 store。
+func (s *Server) SetChatAgentStore(store *chatagent.Store) {
+	s.chatAgentStore = store
+}
+
 // SetAgentRegistry 注入 ACP agent registry（W5 新增）。
 func (s *Server) SetAgentRegistry(reg *agent.Registry) {
 	s.agents = reg
@@ -495,6 +503,28 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/notifications", s.requireAuth(s.handleNotifications))
 	mux.HandleFunc("/api/notifications/", s.requireAuth(s.handleNotificationOps))
 	mux.HandleFunc("/api/notifications/rules", s.requireAuth(s.handleNotificationRules))
+
+	// AI 对话智能体角色管理
+	mux.HandleFunc("/api/chat-agents", s.requireAuth(s.handleChatAgentsList))
+	mux.HandleFunc("/api/chat-agents/", s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		// 分发到 GET/:id, POST, PUT/:id, DELETE/:id
+		if r.URL.Path == "/api/chat-agents/" && r.Method == http.MethodPost {
+			s.handleChatAgentsCreate(w, r)
+		} else if strings.HasPrefix(r.URL.Path, "/api/chat-agents/") {
+			switch r.Method {
+			case http.MethodGet:
+				s.handleChatAgentsGet(w, r)
+			case http.MethodPut:
+				s.handleChatAgentsUpdate(w, r)
+			case http.MethodDelete:
+				s.handleChatAgentsDelete(w, r)
+			default:
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
+		} else {
+			writeError(w, http.StatusNotFound, "not found")
+		}
+	}))
 
 	// 会话迁移方案：跨主机迁移 API
 	mux.HandleFunc("/api/migration", s.requireAuth(s.handleMigration))

@@ -12,22 +12,36 @@
       <button class="icon-btn" :aria-label="drawerOpen ? '关闭会话列表' : '打开会话列表'" @click="toggleDrawer">
         <span class="material-symbols-outlined">menu</span>
       </button>
-      <div class="top-title" @click="openModelSheet">
-        <span class="title-text">{{
-          compareMode
-            ? '对比模式'
-            : active?.model === AUTO
-              ? 'auto · 智能路由'
-              : (active?.model || '选择模型')
-        }}</span>
-        <span class="material-symbols-outlined title-caret">expand_more</span>
+      <div class="top-title">
+        <span class="title-text">对话</span>
       </div>
-      <button class="icon-btn" :class="{ active: compareMode }" aria-label="切换对比模式" @click="onToggleCompare">
-        <span class="material-symbols-outlined">balance</span>
-      </button>
-      <button class="icon-btn" aria-label="参数设置" @click="settingsOpen = true">
-        <span class="material-symbols-outlined">tune</span>
-      </button>
+      <!-- 右侧控制组 -->
+      <div class="top-controls">
+        <!-- 会话选择 -->
+        <button class="ctrl-btn" aria-label="选择会话" @click="toggleDrawer">
+          <span class="material-symbols-outlined">chat_bubble</span>
+          <span class="ctrl-label">{{ active?.title || '新对话' }}</span>
+        </button>
+        <!-- 模型选择 -->
+        <button class="ctrl-btn" aria-label="选择模型" @click="openModelSheet">
+          <span class="material-symbols-outlined">psychology</span>
+          <span class="ctrl-label">{{
+            compareMode
+              ? '对比模式'
+              : active?.model === AUTO
+                ? 'auto'
+                : (active?.model || '选择')
+          }}</span>
+        </button>
+        <!-- 对比模式 -->
+        <button class="icon-btn" :class="{ active: compareMode }" aria-label="切换对比模式" @click="onToggleCompare">
+          <span class="material-symbols-outlined">balance</span>
+        </button>
+        <!-- 参数设置 -->
+        <button class="icon-btn" aria-label="参数设置" @click="settingsOpen = true">
+          <span class="material-symbols-outlined">tune</span>
+        </button>
+      </div>
     </header>
 
     <!-- 对比模式选中的模型条 -->
@@ -74,7 +88,7 @@
             <div v-if="a.error" class="msg-error">{{ a.error }}</div>
             <div class="msg-actions">
               <button class="act" @click="copy(a)">复制</button>
-              <button class="act" @click="openOptimize(a)">用模型优化</button>
+              <button class="act" @click="openOptimize(a)">优化</button>
               <button class="act" @click="regenerate(a.id)">重生成</button>
             </div>
           </article>
@@ -85,7 +99,7 @@
           <div v-if="turn.answers[0].error" class="msg-error">{{ turn.answers[0].error }}</div>
           <div class="msg-actions">
             <button class="act" @click="copy(turn.answers[0])">复制</button>
-            <button class="act" @click="openOptimize(turn.answers[0])">用模型优化</button>
+            <button class="act" @click="openOptimize(turn.answers[0])">优化</button>
             <button class="act" @click="regenerate(turn.answers[0].id)">重生成</button>
           </div>
         </div>
@@ -697,15 +711,15 @@ function formatTime(ts: number): string {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 10px 8px;
-  padding-top: calc(10px + env(safe-area-inset-top));
+  gap: 6px;
+  padding: 8px 12px;
+  padding-top: calc(8px + env(safe-area-inset-top));
   background: var(--bg-card);
   border-bottom: 1px solid var(--border);
 }
 .icon-btn {
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   border: none;
   background: transparent;
   color: var(--text-primary);
@@ -714,6 +728,7 @@ function formatTime(ts: number): string {
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  flex-shrink: 0;
 }
 .icon-btn:active { background: var(--bg-subtle); }
 .icon-btn.active { color: var(--brand-primary); }
@@ -721,21 +736,50 @@ function formatTime(ts: number): string {
   flex: 1;
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 2px;
   min-width: 0;
-  cursor: pointer;
 }
 .title-text {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 60vw;
 }
-.title-caret { font-size: 18px; color: var(--text-secondary); }
+
+/* 右侧控制组 */
+.top-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.ctrl-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  border-radius: 16px;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 120px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.ctrl-btn:active { background: var(--bg-subtle); }
+.ctrl-btn .material-symbols-outlined {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.ctrl-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
 
 /* 对比条 */
 .compare-strip {
@@ -743,16 +787,16 @@ function formatTime(ts: number): string {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
+  padding: 6px 12px;
   background: var(--bg-subtle);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
 }
-.cs-label { font-size: 12px; color: var(--text-secondary); flex: none; }
+.cs-label { font-size: 11px; color: var(--text-secondary); flex: none; }
 .cs-chip {
   flex: none;
-  font-size: 11px;
-  padding: 3px 8px;
+  font-size: 10px;
+  padding: 2px 8px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -760,7 +804,7 @@ function formatTime(ts: number): string {
 }
 .cs-edit {
   flex: none;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--brand-primary);
   background: none;
   border: none;
@@ -773,19 +817,19 @@ function formatTime(ts: number): string {
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding: 16px 12px 8px;
+  padding: 12px 0 8px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
-.row { display: flex; }
+.row { display: flex; padding: 0 12px; }
 .row.user { justify-content: flex-end; }
 .row.ai { justify-content: flex-start; flex-direction: column; align-items: flex-start; }
 
 .bubble {
-  max-width: 82%;
-  padding: 10px 13px;
-  border-radius: 16px;
+  max-width: 100%;
+  padding: 10px 14px;
+  border-radius: 14px;
   font-size: 15px;
   line-height: 1.6;
   word-break: break-word;
@@ -819,24 +863,24 @@ function formatTime(ts: number): string {
 @keyframes blink { 50% { opacity: 0; } }
 
 .usage-row, .usage {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
-  margin: 4px 2px 0;
+  margin: 3px 2px 0;
 }
 .msg-error {
   font-size: 12px;
   color: var(--danger);
-  margin-top: 4px;
+  margin-top: 3px;
 }
 .err-text { color: var(--danger); }
 
 .msg-actions {
   display: flex;
-  gap: 12px;
-  margin: 6px 2px 0;
+  gap: 10px;
+  margin: 5px 2px 0;
 }
 .act {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-secondary);
   background: none;
   border: none;
@@ -849,14 +893,15 @@ function formatTime(ts: number): string {
 .compare-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
+  padding: 0 12px;
 }
 .compare-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 10px;
+  border-radius: 10px;
+  padding: 8px;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -865,17 +910,17 @@ function formatTime(ts: number): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 6px;
+  margin-bottom: 5px;
 }
 .cc-model {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--brand-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cc-live { font-size: 10px; color: var(--warning); flex: none; }
+.cc-live { font-size: 9px; color: var(--warning); flex: none; }
 .compare-card .ai-bubble { border: none; padding: 0; background: transparent; max-width: 100%; }
 .compare-card .msg-actions { flex-wrap: wrap; }
 
@@ -884,16 +929,16 @@ function formatTime(ts: number): string {
   margin: auto;
   text-align: center;
   padding: 30px 20px;
-  max-width: 360px;
+  max-width: 100%;
 }
-.empty-emoji { font-size: 44px; }
-.empty-title { font-size: 18px; font-weight: 600; margin: 10px 0 4px; color: var(--text-primary); }
-.empty-sub { font-size: 13px; color: var(--text-secondary); line-height: 1.6; }
-.empty-suggestions { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; }
+.empty-emoji { font-size: 40px; }
+.empty-title { font-size: 17px; font-weight: 600; margin: 8px 0 4px; color: var(--text-primary); }
+.empty-sub { font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
+.empty-suggestions { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
 .sug {
   font-size: 13px;
-  padding: 11px 14px;
-  border-radius: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--text-primary);
@@ -903,9 +948,9 @@ function formatTime(ts: number): string {
 .sug:active { background: var(--bg-subtle); }
 
 /* typing */
-.typing { display: flex; gap: 4px; padding: 4px 6px; }
+.typing { display: flex; gap: 4px; padding: 4px 6px; margin: 0 12px; }
 .dot {
-  width: 7px; height: 7px; border-radius: 50%;
+  width: 6px; height: 6px; border-radius: 50%;
   background: var(--text-secondary);
   animation: bounce 1.2s infinite;
 }
@@ -918,16 +963,16 @@ function formatTime(ts: number): string {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  gap: 6px;
+  padding: 8px 12px;
+  padding-bottom: calc(8px + env(safe-area-inset-bottom));
   background: var(--bg-card);
   border-top: 1px solid var(--border);
 }
 .composer-row {
   display: flex;
   align-items: flex-end;
-  gap: 8px;
+  gap: 6px;
 }
 .attach-btn {
   flex: 0 0 auto;
@@ -939,7 +984,7 @@ function formatTime(ts: number): string {
 }
 @keyframes mic-pulse {
   0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.18); }
+  50% { transform: scale(1.15); }
 }
 .file-input {
   display: none;
@@ -949,16 +994,16 @@ function formatTime(ts: number): string {
 .attach-strip {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   overflow-x: auto;
   padding: 2px 0;
 }
 .attach-thumb {
   position: relative;
   flex: none;
-  width: 56px;
-  height: 56px;
-  border-radius: 10px;
+  width: 50px;
+  height: 50px;
+  border-radius: 8px;
   overflow: hidden;
   border: 1px solid var(--border);
 }
@@ -971,19 +1016,19 @@ function formatTime(ts: number): string {
   position: absolute;
   top: 0;
   right: 0;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   border: none;
-  border-radius: 0 0 0 10px;
+  border-radius: 0 0 0 8px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1;
   cursor: pointer;
 }
 .attach-hint {
   flex: none;
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
   white-space: nowrap;
 }
@@ -1034,18 +1079,18 @@ function formatTime(ts: number): string {
   border: 1px solid var(--border);
   background: var(--bg-base);
   color: var(--text-primary);
-  border-radius: 18px;
-  padding: 11px 14px;
-  font-size: 15px;
+  border-radius: 16px;
+  padding: 10px 14px;
+  font-size: 14px;
   line-height: 1.5;
-  max-height: 140px;
+  max-height: 120px;
   outline: none;
 }
 .composer-input:focus { border-color: var(--brand-primary); }
 .send-btn {
   flex: 0 0 auto;
-  width: 42px;
-  height: 42px;
+  width: 38px;
+  height: 38px;
   border: none;
   border-radius: 50%;
   background: var(--brand-primary, #4c8dff);
@@ -1066,29 +1111,29 @@ function formatTime(ts: number): string {
   display: flex;
 }
 .drawer {
-  width: 80%;
-  max-width: 320px;
+  width: 75%;
+  max-width: 300px;
   height: 100%;
   background: var(--bg-card);
   display: flex;
   flex-direction: column;
-  animation: slide-in 0.22s ease;
+  animation: slide-in 0.2s ease;
 }
 @keyframes slide-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
 .drawer-head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 16px; font-size: 16px; font-weight: 600;
+  padding: 14px 16px; font-size: 15px; font-weight: 600;
   border-bottom: 1px solid var(--border);
 }
-.conv-list { flex: 1; overflow-y: auto; padding: 8px; }
+.conv-list { flex: 1; overflow-y: auto; padding: 6px; }
 .conv-item {
   display: flex; align-items: center; gap: 8px;
-  padding: 12px; border-radius: 10px; cursor: pointer;
+  padding: 10px; border-radius: 8px; cursor: pointer;
 }
 .conv-item.active { background: var(--bg-subtle); }
 .conv-main { flex: 1; min-width: 0; }
 .conv-title {
-  font-size: 14px; font-weight: 500; color: var(--text-primary);
+  font-size: 13px; font-weight: 500; color: var(--text-primary);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .conv-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
@@ -1106,46 +1151,46 @@ function formatTime(ts: number): string {
 .sheet {
   width: 100%;
   background: var(--bg-card);
-  border-radius: 16px 16px 0 0;
-  padding: 16px 16px calc(20px + env(safe-area-inset-bottom));
-  max-height: 80vh;
+  border-radius: 14px 14px 0 0;
+  padding: 14px 16px calc(16px + env(safe-area-inset-bottom));
+  max-height: 75vh;
   overflow-y: auto;
-  animation: sheet-up 0.24s ease;
+  animation: sheet-up 0.22s ease;
 }
 @keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
 .sheet-head {
   display: flex; align-items: center; justify-content: space-between;
-  font-size: 15px; font-weight: 600; margin-bottom: 12px;
+  font-size: 15px; font-weight: 600; margin-bottom: 10px;
 }
-.sheet-state { font-size: 13px; color: var(--text-secondary); padding: 10px 0; line-height: 1.6; }
+.sheet-state { font-size: 13px; color: var(--text-secondary); padding: 8px 0; line-height: 1.5; }
 .link-btn { color: var(--brand-primary); background: none; border: none; cursor: pointer; margin-left: 6px; }
 
-.model-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.model-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; }
 .model-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 12px; border-radius: 10px; cursor: pointer;
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-radius: 8px; cursor: pointer;
   border: 1px solid transparent;
 }
 .model-item.checked { border-color: var(--brand-primary); background: color-mix(in srgb, var(--brand-primary) 8%, transparent); }
 .model-item.plain { justify-content: flex-start; border: 1px solid var(--border); }
-.model-check { width: 18px; height: 18px; accent-color: var(--brand-primary); }
-.model-name { flex: 1; font-size: 14px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-current { font-size: 11px; color: var(--brand-primary); }
+.model-check { width: 16px; height: 16px; accent-color: var(--brand-primary); }
+.model-name { flex: 1; font-size: 13px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-current { font-size: 10px; color: var(--brand-primary); }
 .sheet-confirm {
-  width: 100%; padding: 13px; border: none; border-radius: 999px;
+  width: 100%; padding: 12px; border: none; border-radius: 999px;
   background: var(--brand-primary, #4c8dff); color: #fff; font-size: 15px; font-weight: 600;
   cursor: pointer;
 }
 
 /* 设置字段 */
-.field { margin-bottom: 18px; }
-.field-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
-.field-hint { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+.field { margin-bottom: 16px; }
+.field-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
+.field-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
 .field input[type='range'] { width: 100%; accent-color: var(--brand-primary); }
 .num-input, .sys-input, .sel-input {
-  width: 100%; padding: 10px 12px; font-size: 14px;
+  width: 100%; padding: 9px 12px; font-size: 14px;
   background: var(--bg-base); color: var(--text-primary);
-  border: 1px solid var(--border); border-radius: 10px; outline: none;
+  border: 1px solid var(--border); border-radius: 8px; outline: none;
 }
 .sys-input { resize: vertical; font-family: inherit; }
 .num-input:focus, .sys-input:focus, .sel-input:focus { border-color: var(--brand-primary); }
