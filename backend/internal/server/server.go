@@ -521,6 +521,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/mobile/sessions/", s.requireAuth(s.handleMobileSessionRouter))
 	mux.HandleFunc("/api/mobile/approvals", s.requireAuth(s.handleMobileApprovalRouter))
 	mux.HandleFunc("/api/mobile/approvals/", s.requireAuth(s.handleMobileApprovalRouter))
+	mux.HandleFunc("/api/mobile/events/snapshot", s.requireAuth(s.handleMobileEventsSnapshot))
 
 	// Plugin/Manager WebSocket routes
 	mux.HandleFunc("/plugin/ws", s.requireAuth(s.handlePluginWebSocket))

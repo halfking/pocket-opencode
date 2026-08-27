@@ -474,6 +474,20 @@ CREATE TABLE IF NOT EXISTS local_asset_vectors (
     FOREIGN KEY (asset_id) REFERENCES local_assets(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_asset_vectors_asset ON local_asset_vectors(asset_id);
+
+-- ============================================================
+-- 会话输入草稿（P1 输入系统，设计 v2 §4.4-5 / 契约 §4）
+--
+-- 每会话一条草稿，session_id 为主键（与 local_mobile_sessions.id 或
+-- 上游 session id 对应，由调用方决定 key 语义）。输入 500ms 防抖 upsert
+-- （useSessionDrafts），发送后删行（clearDraft）。表名沿用本文件 local_
+-- 前缀约定（契约文中记作 drafts，字段形状一字不差）。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_drafts (
+    session_id TEXT PRIMARY KEY,
+    text TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL
+);
 `
 
 /**

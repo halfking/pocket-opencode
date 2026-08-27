@@ -225,11 +225,20 @@ const router = createRouter({
       meta: { requiresAuth: true, title: '会话', bottomNav: true }
     },
     {
-      // Phase V3: 实时会话对话视图
+      // Phase V3: 实时会话对话视图（P1 会话工作台：状态条 + 轮次时间线 + 详情抽屉）
       path: '/sessions/:id',
       name: 'session-conversation',
       component: () => import('../features/sessions/SessionConversationView.vue'),
       meta: { requiresAuth: true, requiresLobster: true, title: '会话', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
+    {
+      // P1 旧详情页收敛（设计方案 v2 §4.3-3）：features/opencode/SessionDetailView
+      // 的旧路由 301 到会话工作台，保留 :id 与 query（instance_id/title 等）。
+      // 统计/导出能力已迁入工作台的 SessionDetailDrawer；旧入口链
+      // （opencode/SessionListView 的 router.push）随之收敛。
+      path: '/opencode/sessions/:id',
+      name: 'opencode-session-detail-legacy',
+      redirect: (to) => ({ path: `/sessions/${to.params.id}`, query: to.query }),
     },
     {
       path: '/settings',

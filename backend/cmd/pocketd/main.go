@@ -615,6 +615,16 @@ func main() {
 	go quesMgr.Start(mgrCtx)
 	go approvalBroadcaster.Run(mgrCtx)
 
+	// ---- P1: 会话/轮次/任务健康事件广播（契约 §2 三类事件 + §3 快照端点）----
+	// 订阅 eventMgr 的 DomainEvent 流，按 session 维护 phase/round 状态机，广播
+	// session.activity / round.completed / task.health（WsEnvelopeV1 信封 + 500ms
+	// coalescing），并为 /api/mobile/events/snapshot 提供内存态快照。
+	sessionEvtBroadcaster := opencode.NewSessionEventBroadcaster(reg, eventMgr, permMgr, quesMgr)
+	sessionEvtBroadcaster.SetTaskSessionIndex(server.NewTaskSessionIndex(taskStore))
+	sessionEvtBroadcaster.SetBroadcaster(srv.WSHub())
+	srv.SetMobileEventsBroadcaster(sessionEvtBroadcaster)
+	go sessionEvtBroadcaster.Run(mgrCtx)
+
 	// ---- W5: 注入 ACP agent registry ----
 	// 当前 stage：
 	//   1. OpenCode HTTP adapter（向后兼容）
