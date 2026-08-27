@@ -479,6 +479,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/llm/stream", s.requireAuth(s.handleLLMBFFStream))
 	mux.HandleFunc("/api/llm/usage", s.requireAuth(s.handleLLMBFFUsage))
 	mux.HandleFunc("/api/llm/quota", s.requireAuth(s.handleLLMBFFQuota))
+	mux.HandleFunc("/api/llm/models", s.requireAuth(s.handleLLMBFFModels))
 	mux.HandleFunc("/api/integration/status", s.requireAuth(s.handleIntegrationStatus))
 
 	// OpenCode 管理 API（会话/实例数据属于认证用户可见范围）

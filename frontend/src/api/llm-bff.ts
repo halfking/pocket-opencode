@@ -16,6 +16,8 @@ const API_BASE = import.meta.env.VITE_API_BASE || ''
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
+  /** 多模态：图片附件（https: 外链或 data:image/ 内联），仅 user 消息有意义。 */
+  images?: string[]
 }
 
 export interface ChatStreamDelta {
@@ -149,6 +151,15 @@ export const llmBffApi = {
     http<UsageSummary>(`/api/llm/usage?days=${days}`),
 
   getQuota: () => http<QuotaResponse>('/api/llm/quota'),
+
+  /**
+   * 拉取当前网关下可用模型列表（GET /api/llm/models，由网关实时返回）。
+   * 用于前端模型选择器动态填充，无需硬编码。
+   */
+  listModels: async (): Promise<string[]> => {
+    const res = await http<{ models: string[]; source: string; base_url: string }>('/api/llm/models')
+    return res.models ?? []
+  },
 }
 
 // 局部 http 引用，避免循环依赖（与 ./http.ts 同款）。

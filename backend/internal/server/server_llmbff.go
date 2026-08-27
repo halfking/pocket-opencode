@@ -22,10 +22,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
+)
+
+// 多模态图片限制：单条消息最多 4 张，每张（data URL 或外链）最长 6MB 字符。
+const (
+	maxChatImagesPerMessage = 4
+	maxChatImageBytes       = 6 << 20
 )
 
 // checkQuotaOrAudit 在 BFF 调用前做一次 pre-flight：拉取 Enforcer 决定并
@@ -113,6 +120,22 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 		if len(m.Content) > 32000 {
 			writeError(w, http.StatusBadRequest, "message too long (max 32000 chars)")
 			return
+		}
+		// 多模态图片校验：数量与单张大小限制 + scheme 白名单（只放行
+		// https 外链与 data:image 内联，杜绝 http 明文与其它协议）。
+		if len(m.Images) > maxChatImagesPerMessage {
+			writeError(w, http.StatusBadRequest, "too many images (max 4 per message)")
+			return
+		}
+		for _, img := range m.Images {
+			if len(img) > maxChatImageBytes {
+				writeError(w, http.StatusBadRequest, "image too large (max 6MB)")
+				return
+			}
+			if !strings.HasPrefix(img, "https://") && !strings.HasPrefix(img, "data:image/") {
+				writeError(w, http.StatusBadRequest, "image must be https:// or data:image/ URL")
+				return
+			}
 		}
 	}
 

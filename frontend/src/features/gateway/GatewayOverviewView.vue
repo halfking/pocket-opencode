@@ -23,6 +23,8 @@
       <button class="tab" @click="go('providers')">供应商</button>
       <button class="tab" @click="go('credentials')">凭据</button>
       <button class="tab" @click="go('models')">模型</button>
+      <button class="tab" @click="go('catalog')">目录</button>
+      <button class="tab" @click="go('routing-config')">路由</button>
       <button class="tab" @click="go('live')">实时</button>
     </nav>
 

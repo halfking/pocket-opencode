@@ -267,12 +267,18 @@ func main() {
 	var embedder aigate.Embedder
 	var llm aigate.LLMClient
 
-	if cfg.LLMGatewayURL != "" && cfg.LLMGatewayAPIKey != "" {
+	// 网关 base：显式配置优先，否则回退到默认网关（https://llmgo.kxpms.cn/v1）。
+	// 注意 NewClient 会自动剥离结尾的 /v1，因此无论写不带还是带 /v1 都能正确拼接。
+	gwBase := cfg.LLMGatewayURL
+	if gwBase == "" {
+		gwBase = opencode.DefaultLLMGatewayBaseURL
+	}
+	if gwBase != "" && cfg.LLMGatewayAPIKey != "" {
 		// 企业网关模式：代理到 llm-gateway-go（统一流量治理/审计/限流）
-		gwClient := llmgateway.NewClient(cfg.LLMGatewayURL, cfg.LLMGatewayAPIKey)
+		gwClient := llmgateway.NewClient(gwBase, cfg.LLMGatewayAPIKey)
 		embedder = &llmGatewayEmbedderAdapter{gwClient, cfg.EmbedModel}
 		llm = &llmGatewayLLMAdapter{gwClient}
-		log.Printf("LLM/Embed gateway enabled (enterprise): %s", cfg.LLMGatewayURL)
+		log.Printf("LLM/Embed gateway enabled (enterprise): %s", gwBase)
 	} else {
 		// 直连模式：直接转发 OpenAI/Groq（Phase C 默认）
 		if cfg.EmbedAPIKey != "" {
@@ -467,10 +473,16 @@ func main() {
 
 	// ---- S0-B: Unified LLM BFF (stream + usage tracking) ----
 	// 仅在企业网关模式下启用：BFF 需要一个支持 stream 的 Provider，目前只有
-	// llmgateway.Client 满足。直连模式（aigate）的 BFF 适配器留到后续 sprint。
-	if cfg.LLMGatewayURL != "" && cfg.LLMGatewayAPIKey != "" {
-		gwClientForBFF := llmgateway.NewClient(cfg.LLMGatewayURL, cfg.LLMGatewayAPIKey)
-		provider := server.NewLLMGatewayBFFProvider(gwClientForBFF)
+	// LLM BFF：统一流式 / 用量 / 模型目录端点（/api/llm/stream, /api/llm/usage,
+	// /api/llm/models）。采用「动态 Provider」：每次请求时按 workspace 解析网关配置
+	// （启动环境变量 POCKET_LLM_GATEWAY_URL/_API_KEY 的默认值 + 运行时
+	// /api/llm-gateway/config 保存的配置），因此用户在「设置 → AI 模型」里修改网关
+	// 后，对话功能无需重启 pocketd 即可生效。POCKET_LLM_GATEWAY_API_KEY 仍必须配置
+	// （或在设置里保存），否则对话请求会返回 503。
+	{
+		provider := server.NewDynamicLLMGatewayBFFProvider(func(wsID string) server.GatewayConfig {
+			return srv.ResolveGateway(wsID)
+		})
 		var recorder llmbff.Recorder = llmbff.NoopRecorder{}
 		var summarizer llmbff.Summarizer
 		if pool != nil {
@@ -482,7 +494,7 @@ func main() {
 			}
 		}
 		srv.SetLLMBFF(llmbff.NewService(provider, recorder), summarizer)
-		log.Println("LLM BFF enabled (stream + usage tracking)")
+		log.Println("LLM BFF enabled (stream + usage tracking, dynamic gateway)")
 	}
 
 	// ---- P3: Quota Enforcer (PG-backed budgets, AlwaysAllow strategy) ----

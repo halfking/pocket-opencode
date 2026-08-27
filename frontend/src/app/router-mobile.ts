@@ -59,6 +59,13 @@ const router = createRouter({
       component: TasksView,
       meta: { requiresAuth: true, title: 'AI 工具', bottomNav: true }
     },
+    // 个人助理 — AI 对话（豆包式：多轮会话 / 模型选择 / 流式 / 对比优化）
+    {
+      path: '/ai-chat',
+      name: 'ai-chat',
+      component: () => import('../features/ai-chat/AIChatView.vue'),
+      meta: { requiresAuth: true, title: '对话', bottomNav: true }
+    },
     // 个人助理 — 语音笔记
     {
       path: '/notes',
@@ -299,6 +306,20 @@ meta: { requiresAuth: true, title: 'AI 模型', bottomNav: false, canGoBack: tru
       name: 'gateway-models',
       component: () => import('../features/gateway/GatewayModelsView.vue'),
       meta: { requiresAuth: true, title: '模型路由', bottomNav: false, canGoBack: true }
+    },
+    {
+      // 可用模型目录（按家族/版本，含模态）：App 内「按模态默认模型」的数据源
+      path: '/gateway/:nodeId/catalog',
+      name: 'gateway-catalog',
+      component: () => import('../features/gateway/GatewayAvailableModelsView.vue'),
+      meta: { requiresAuth: true, title: '模型目录', bottomNav: false, canGoBack: true }
+    },
+    {
+      // 路由配置：任务类型（任务识别）+ 默认路由 + 策略/精选模型
+      path: '/gateway/:nodeId/routing-config',
+      name: 'gateway-routing-config',
+      component: () => import('../features/gateway/GatewayRoutingConfigView.vue'),
+      meta: { requiresAuth: true, title: '路由配置', bottomNav: false, canGoBack: true }
     },
     {
       path: '/gateway/:nodeId/live',

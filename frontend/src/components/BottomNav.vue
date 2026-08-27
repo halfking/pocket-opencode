@@ -72,6 +72,7 @@ interface NavItem { to: string; icon: string; label: string; match?: string }
 
 const items: NavItem[] = [
   { to: '/ai', icon: '🤖', label: 'AI', match: '/ai' },
+  { to: '/ai-chat', icon: '💬', label: '对话', match: '/ai-chat' },
   { to: '/notes', icon: '📝', label: '笔记', match: '/notes' },
   { to: '/meetings', icon: '🎙️', label: '会议', match: '/meetings' },
   { to: '/email', icon: '📨', label: '邮件', match: '/email' },

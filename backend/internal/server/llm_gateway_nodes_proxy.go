@@ -28,6 +28,16 @@ func resolveGatewayRoute(method, action string) (gatewayProxyRoute, map[string]s
 		if seg == "" {
 			return gatewayProxyRoute{}, nil, false
 		}
+		// 任务类型 key 是字符串（chat/reasoning/…），不是数字；除保留字 stats
+		// 外统一归一化成 {wkey}。charset 校验挡掉 ".." 这类路径注入。
+		if i > 0 && segments[i-1] == "work-types" && seg != "stats" {
+			if !isWorkTypeKey(seg) {
+				return gatewayProxyRoute{}, nil, false
+			}
+			params["wkey"] = seg
+			segments[i] = "{wkey}"
+			continue
+		}
 		// 只有纯数字 segment 会被当成资源 id。
 		if _, err := strconv.ParseInt(seg, 10, 64); err != nil {
 			continue
@@ -41,6 +51,9 @@ func resolveGatewayRoute(method, action string) (gatewayProxyRoute, map[string]s
 		case i > 0 && segments[i-1] == "providers":
 			params["pid"] = seg
 			segments[i] = "{pid}"
+		case i > 0 && segments[i-1] == "defaults":
+			params["did"] = seg
+			segments[i] = "{did}"
 		default:
 			return gatewayProxyRoute{}, nil, false
 		}
@@ -52,6 +65,21 @@ func resolveGatewayRoute(method, action string) (gatewayProxyRoute, map[string]s
 		return gatewayProxyRoute{}, nil, false
 	}
 	return route, params, true
+}
+
+// isWorkTypeKey 限制任务类型 key 为 [A-Za-z0-9_-]，防止把 ".." 拼进上游路径。
+func isWorkTypeKey(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // substituteParams 把 {cid}/{pid} 填进模板。
@@ -95,7 +123,8 @@ func (s *Server) proxyGatewayNode(w http.ResponseWriter, r *http.Request, worksp
 	}
 
 	var body []byte
-	if route.upstreamMethod == http.MethodPost || route.upstreamMethod == http.MethodPut {
+	// PATCH 也可能携带 JSON body（如任务默认路由的局部更新），统一读取并校验。
+	if route.upstreamMethod == http.MethodPost || route.upstreamMethod == http.MethodPut || route.upstreamMethod == http.MethodPatch {
 		raw, err := io.ReadAll(io.LimitReader(r.Body, maxGatewayRequestBytes+1))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "read request body failed")

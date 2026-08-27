@@ -114,6 +114,14 @@ func (s *Server) gatewaySnapshot(workspaceID string) llmGatewayState {
 	return s.llmGWCache.get(workspaceID)
 }
 
+// ResolveGateway 返回某 workspace 当前生效的网关连接配置（env 默认值与运行时
+// /api/llm-gateway/config 配置合并后的结果），供 LLM BFF 在请求时按需构造客户端。
+// 返回 GatewayConfig（已剥离内部缓存结构），调用方据此决定是否需要返回 503。
+func (s *Server) ResolveGateway(workspaceID string) GatewayConfig {
+	st := s.gatewaySnapshot(workspaceID)
+	return GatewayConfig{BaseURL: st.BaseURL, APIKey: st.APIKey, Models: st.Models}
+}
+
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v

@@ -101,6 +101,60 @@ var gatewayProxyRoutes = map[string]gatewayProxyRoute{
 		allowedQuery:   []string{"model", "client_profile"},
 	},
 
+	// ── 读：可用模型目录（按家族/版本，含 modality / context_window / featured）──
+	// 客户端用它给"按模态默认模型"提供目录：text/vision/audio/video/embedding。
+	"GET catalog/available-models": {
+		upstreamMethod: http.MethodGet,
+		upstreamPath:   "/api/routing/available-models",
+		allowedQuery:   []string{},
+	},
+
+	// ── 读：路由策略 / 精选模型 / 评分权重 / 默认限流 ──
+	"GET routing/policy": {
+		upstreamMethod: http.MethodGet,
+		upstreamPath:   "/api/routing/policy",
+		allowedQuery:   []string{},
+	},
+	"GET routing/featured": {
+		upstreamMethod: http.MethodGet,
+		upstreamPath:   "/api/routing/featured",
+		allowedQuery:   []string{},
+	},
+	"GET routing/scoring-weights": {
+		upstreamMethod: http.MethodGet,
+		upstreamPath:   "/api/routing/scoring-weights",
+		allowedQuery:   []string{},
+	},
+	"GET config/default-limits": {
+		upstreamMethod: http.MethodGet,
+		upstreamPath:   "/api/config/default-limits",
+		allowedQuery:   []string{},
+	},
+
+	// ── 读：任务识别（work_types，8 个 L1 任务类型及其模型路由）──
+	"GET work-types": {
+		upstreamMethod: http.MethodGet,
+		upstreamPath:   "/api/admin/work-types",
+		allowedQuery:   []string{},
+	},
+	"GET work-types/stats": {
+		upstreamMethod: http.MethodGet,
+		upstreamPath:   "/api/admin/work-types/stats",
+		allowedQuery:   []string{},
+	},
+
+	// ── 读：任务默认路由（task_type × profile × tier → canonical_model）──
+	"GET auto-route/defaults": {
+		upstreamMethod: http.MethodGet,
+		upstreamPath:   "/api/admin/auto-route/defaults",
+		allowedQuery:   []string{"active", "task_type", "profile"},
+	},
+	"GET auto-route/defaults/audit": {
+		upstreamMethod: http.MethodGet,
+		upstreamPath:   "/api/admin/auto-route/defaults/audit",
+		allowedQuery:   []string{"limit"},
+	},
+
 	// ── 读：汇总 ──
 	"GET board": {
 		upstreamMethod: http.MethodGet,
@@ -157,6 +211,44 @@ var gatewayProxyRoutes = map[string]gatewayProxyRoute{
 	"POST routing/probe": {
 		upstreamMethod: http.MethodPost,
 		upstreamPath:   "/api/routing/probe",
+		write:          true,
+	},
+
+	// ── 写：任务识别路由（work_types）──
+	// 整体替换某任务类型的模型路由（body: {"routes": [...]}，上游契约）。
+	"PUT work-types/{wkey}/routes": {
+		upstreamMethod: http.MethodPut,
+		upstreamPath:   "/api/admin/work-types/{wkey}/routes",
+		write:          true,
+	},
+	// 更新任务类型配置（描述/启用等）。
+	"PATCH work-types/{wkey}": {
+		upstreamMethod: http.MethodPatch,
+		upstreamPath:   "/api/admin/work-types/{wkey}",
+		write:          true,
+	},
+
+	// ── 写：任务默认路由（task_default_routing CRUD）──
+	"POST auto-route/defaults": {
+		upstreamMethod: http.MethodPost,
+		upstreamPath:   "/api/admin/auto-route/defaults",
+		write:          true,
+	},
+	"PATCH auto-route/defaults/{did}": {
+		upstreamMethod: http.MethodPatch,
+		upstreamPath:   "/api/admin/auto-route/defaults/{did}",
+		write:          true,
+	},
+	"DELETE auto-route/defaults/{did}": {
+		upstreamMethod: http.MethodDelete,
+		upstreamPath:   "/api/admin/auto-route/defaults/{did}",
+		write:          true,
+	},
+
+	// ── 写：精选模型（featured_models）──
+	"POST routing/featured": {
+		upstreamMethod: http.MethodPost,
+		upstreamPath:   "/api/routing/featured",
 		write:          true,
 	},
 }

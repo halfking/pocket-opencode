@@ -14,8 +14,23 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
+
+// normalizeBaseURL 把用户/配置里可能带 /v1 后缀的网关地址收敛为「不含 /v1、
+// 不含结尾斜杠」的基础地址。llmgateway.Client 在拼接 OpenAI 兼容端点时会自行
+// 补上 /v1，因此传入 https://llmgo.kxpms.cn/v1 与 https://llmgo.kxpms.cn
+// 都应得到 https://llmgo.kxpms.cn，避免拼出 /v1/v1/chat/completions 这类双
+// /v1 错误路径（见 internal/opencode/config_writer.go 的默认值）。
+func normalizeBaseURL(baseURL string) string {
+	u := strings.TrimSpace(baseURL)
+	u = strings.TrimRight(u, "/")
+	if strings.HasSuffix(u, "/v1") {
+		u = strings.TrimRight(u[:len(u)-3], "/")
+	}
+	return u
+}
 
 // Client 是 llm-gateway-go 的 HTTP 客户端，OpenAI 兼容协议。
 type Client struct {
@@ -24,19 +39,42 @@ type Client struct {
 	Client  *http.Client
 }
 
-// NewClient 构造 llm-gateway 客户端。
+// NewClient 构造 llm-gateway 客户端。baseURL 会自动归一化（剥离结尾的 /v1 与
+// 斜杠），详见 normalizeBaseURL。
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
-		BaseURL: baseURL,
+		BaseURL: normalizeBaseURL(baseURL),
 		APIKey:  apiKey,
 		Client:  &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
 // ChatMessage 兼容 OpenAI chat completion 消息格式。
+//
+// Content 是 any：纯文本时为 string；多模态（带图）时由 ContentParts 生成
+// OpenAI 的 [{type:text},{type:image_url}] 数组。旧调用方继续传 string 即可。
 type ChatMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
+}
+
+// ContentParts 把"文本 + 图片列表"组装成 OpenAI 多模态 content 数组。
+// images 为空时返回原文本，保持纯文本请求的 wire format 不变。
+func ContentParts(text string, images []string) any {
+	if len(images) == 0 {
+		return text
+	}
+	parts := make([]map[string]any, 0, len(images)+1)
+	if text != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": text})
+	}
+	for _, img := range images {
+		parts = append(parts, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]string{"url": img},
+		})
+	}
+	return parts
 }
 
 // ChatRequest 对应 POST /v1/chat/completions（OpenAI 兼容）
@@ -197,6 +235,40 @@ func (c *Client) Embed(ctx context.Context, req EmbeddingRequest) (*EmbeddingRes
 		return nil, fmt.Errorf("decode embed response: %w", err)
 	}
 	return &out, nil
+}
+
+// ModelInfo 是 GET /v1/models 返回的单个模型元数据（OpenAI 兼容）。
+type ModelInfo struct {
+	ID      string `json:"id"`
+	Object  string `json:"object,omitempty"`
+	OwnedBy string `json:"owned_by,omitempty"`
+}
+
+// ListModels 调用网关的 OpenAI 兼容模型列表接口（GET /v1/models）。
+// 用于前端模型选择器动态填充，避免硬编码可用模型。
+func (c *Client) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	u := c.BaseURL + "/v1/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	resp, err := c.Client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("llm-gateway models: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		r, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("llm-gateway models %d: %s", resp.StatusCode, string(r))
+	}
+	var out struct {
+		Data []ModelInfo `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode models: %w", err)
+	}
+	return out.Data, nil
 }
 
 // =============================================================================

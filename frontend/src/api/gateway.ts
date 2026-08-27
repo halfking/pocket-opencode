@@ -339,3 +339,157 @@ export interface GatewayOverview {
 export function getOverview(nodeId: number, days = 1): Promise<GatewayOverview> {
   return http(`/api/llm-gateway/nodes/${nodeId}/overview?days=${days}`)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 模型目录（按家族/版本，含 modality）— 供"按模态默认模型"与目录页使用
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type ModelModality = 'text' | 'vision' | 'audio' | 'video' | 'multimodal' | 'embedding'
+
+export interface AvailableModelVersion {
+  canonical_name: string
+  display_name?: string
+  modality?: ModelModality | string
+  context_window?: number
+  parameters_b?: number
+  aliases?: string[]
+  raw_names?: string[]
+  provider_count?: number
+  featured?: boolean
+  tags?: string[]
+}
+
+export interface AvailableModelFamily {
+  family: string
+  versions?: AvailableModelVersion[]
+}
+
+export interface AvailableModelsResponse {
+  families?: AvailableModelFamily[]
+}
+
+/** 可用模型目录（含模态/上下文窗口/精选标记）。需要网关节点已配置 admin 凭据。 */
+export function getAvailableModels(nodeId: number): Promise<AvailableModelsResponse> {
+  return http(`/api/llm-gateway/nodes/${nodeId}/catalog/available-models`)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 任务识别（work_types）：8 个 L1 任务类型及其模型路由
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface WorkTypeRoute {
+  model?: string
+  canonical_model?: string
+  weight?: number
+  [k: string]: unknown
+}
+
+export interface WorkType {
+  key: string
+  name?: string
+  description?: string
+  enabled?: boolean
+  routes?: WorkTypeRoute[]
+  [k: string]: unknown
+}
+
+export function getWorkTypes(nodeId: number): Promise<{ work_types?: WorkType[]; [k: string]: unknown }> {
+  return http(`/api/llm-gateway/nodes/${nodeId}/work-types`)
+}
+
+export function getWorkTypeStats(nodeId: number): Promise<any> {
+  return http(`/api/llm-gateway/nodes/${nodeId}/work-types/stats`)
+}
+
+/** 整体替换某任务类型的模型路由（上游 PUT /api/admin/work-types/{key}/routes）。 */
+export function replaceWorkTypeRoutes(nodeId: number, key: string, routes: WorkTypeRoute[]) {
+  return http(`/api/llm-gateway/nodes/${nodeId}/work-types/${key}/routes`, {
+    method: 'PUT',
+    body: JSON.stringify({ routes }),
+  })
+}
+
+/** 更新任务类型配置（描述/启用等，局部字段）。 */
+export function updateWorkType(nodeId: number, key: string, patch: Record<string, unknown>) {
+  return http(`/api/llm-gateway/nodes/${nodeId}/work-types/${key}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 任务默认路由（task_type × profile × tier → canonical_model）
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface TaskDefaultRouting {
+  id: number
+  task_type: string
+  profile?: string
+  tier?: 'primary' | 'secondary' | 'fallback' | string
+  canonical_model: string
+  tenant_id?: string
+  priority?: number
+  reason?: string
+  expires_at?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export function listTaskDefaults(nodeId: number, query?: { active?: string; task_type?: string; profile?: string }) {
+  const q = new URLSearchParams()
+  if (query?.active) q.set('active', query.active)
+  if (query?.task_type) q.set('task_type', query.task_type)
+  if (query?.profile) q.set('profile', query.profile)
+  const qs = q.toString()
+  return http<{ defaults?: TaskDefaultRouting[]; [k: string]: unknown }>(
+    `/api/llm-gateway/nodes/${nodeId}/auto-route/defaults${qs ? '?' + qs : ''}`,
+  )
+}
+
+export function createTaskDefault(
+  nodeId: number,
+  input: { task_type: string; canonical_model: string; profile?: string; tier?: string; priority?: number; reason?: string },
+) {
+  return http(`/api/llm-gateway/nodes/${nodeId}/auto-route/defaults`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function updateTaskDefault(nodeId: number, id: number, patch: Record<string, unknown>) {
+  return http(`/api/llm-gateway/nodes/${nodeId}/auto-route/defaults/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  })
+}
+
+export function deleteTaskDefault(nodeId: number, id: number) {
+  return http(`/api/llm-gateway/nodes/${nodeId}/auto-route/defaults/${id}`, { method: 'DELETE' })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 路由策略 / 精选模型 / 评分权重 / 默认限流
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function getRoutingPolicy(nodeId: number): Promise<any> {
+  return http(`/api/llm-gateway/nodes/${nodeId}/routing/policy`)
+}
+
+export function getFeaturedModels(nodeId: number): Promise<any> {
+  return http(`/api/llm-gateway/nodes/${nodeId}/routing/featured`)
+}
+
+export function setFeaturedModels(nodeId: number, featured_models: string[]) {
+  return http(`/api/llm-gateway/nodes/${nodeId}/routing/featured`, {
+    method: 'POST',
+    body: JSON.stringify({ featured_models }),
+  })
+}
+
+export function getScoringWeights(nodeId: number): Promise<any> {
+  return http(`/api/llm-gateway/nodes/${nodeId}/routing/scoring-weights`)
+}
+
+export function getDefaultLimits(nodeId: number): Promise<any> {
+  return http(`/api/llm-gateway/nodes/${nodeId}/config/default-limits`)
+}

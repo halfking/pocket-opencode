@@ -41,9 +41,15 @@ const (
 )
 
 // Message is one turn in a chat conversation. Mirrors OpenAI/llm-gateway shape.
+//
+// Images carries optional image attachments (https: or data: URLs). The
+// provider adapter folds them into OpenAI multimodal content parts
+// (text + image_url) so vision models can see them; providers that only
+// accept plain strings keep receiving Content.
 type Message struct {
-	Role    Role   `json:"role"`
-	Content string `json:"content"`
+	Role    Role    `json:"role"`
+	Content string  `json:"content"`
+	Images  []string `json:"images,omitempty"`
 }
 
 // ChatRequest is the unified BFF request for a chat completion.
