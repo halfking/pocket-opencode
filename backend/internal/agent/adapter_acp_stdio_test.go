@@ -11,37 +11,19 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	
+
 	"net"
-	"os/exec"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
-
 )
 
-// findAgentEchoPath 查找编译好的 agent_echo 测试桩。
-func findAgentEchoPath(t *testing.T) string {
-	t.Helper()
-	candidates := []string{
-		"./agent_echo",
-		"../../agent_echo",
-		"../../../agent_echo",
-	}
-	for _, c := range candidates {
-		if _, err := exec.LookPath(c); err == nil {
-			abs, _ := filepath.Abs(c)
-			return abs
-		}
-	}
-	t.Skip("agent_echo binary not found; run: go build -o ./agent_echo ./cmd/agent_echo/")
-	return ""
-}
+// fake agent 统一由 buildAgentEcho（agentecho_helper_test.go）从
+// backend/cmd/agent_echo 源码现编译，跨平台一致，不再探测残留二进制。
 
 // TestACPStdioAdapter_SubscribeEvents 验证流式事件订阅。
 func TestACPStdioAdapter_SubscribeEvents(t *testing.T) {
-	agentPath := findAgentEchoPath(t)
+	agentPath := buildAgentEcho(t)
 	adapter := NewACPStdioAdapter()
 	defer adapter.Close()
 

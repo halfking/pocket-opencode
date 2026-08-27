@@ -2,7 +2,7 @@ package agent
 
 // transport_stdio_test.go — StdioTransport 测试
 //
-// 测试策略：用 `cat` 或自己写一个简单的 echo 程序作为 fake agent。
+// 测试策略：用 cmd/agent_echo 现编译的 echo 程序作为 fake agent。
 // 真实 ACP agent 由后续 PR 接入。
 
 import (
@@ -10,37 +10,17 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-// findFakeAgent 找一个可用的"假 agent"。
-//
-// 测试运行时优先看 `agent_echo`（开发者在 backend 根目录 `go build` 后留下的），
-// 否则用 cat 作为最简回显 fake agent（cat 把 stdin 写到 stdout，调用方
-// 自己构造 response 帧写到 stdin 即可）。
-func findFakeAgent(t *testing.T) string {
-	t.Helper()
-	candidates := []string{
-		"./agent_echo",
-		"../../agent_echo",
-	}
-	for _, c := range candidates {
-		if _, err := exec.LookPath(c); err == nil {
-			abs, _ := filepath.Abs(c)
-			return abs
-		}
-	}
-	t.Skip("fake agent binary not found; build cmd/agent_echo first")
-	return ""
-}
+// fake agent 统一由 buildAgentEcho（agentecho_helper_test.go）从
+// backend/cmd/agent_echo 源码现编译，跨平台一致，不再探测残留二进制。
 
 // TestStdioTransport_StartClose 验证 Start/Close 生命周期。
 func TestStdioTransport_StartClose(t *testing.T) {
-	agentPath := findFakeAgent(t)
+	agentPath := buildAgentEcho(t)
 	tr := NewStdioTransport(TransportConfig{
 		AgentPath: agentPath,
 		AgentArgs: []string{"--echo-only"},
@@ -55,7 +35,7 @@ func TestStdioTransport_StartClose(t *testing.T) {
 
 // TestStdioTransport_CallEcho 验证 Call/Recv round-trip。
 func TestStdioTransport_CallEcho(t *testing.T) {
-	agentPath := findFakeAgent(t)
+	agentPath := buildAgentEcho(t)
 	tr := NewStdioTransport(TransportConfig{
 		AgentPath: agentPath,
 		AgentArgs: []string{"-echo"},
@@ -93,7 +73,7 @@ func TestStdioTransport_CallEcho(t *testing.T) {
 
 // TestStdioTransport_Notify 验证 Notify 不等响应。
 func TestStdioTransport_Notify(t *testing.T) {
-	agentPath := findFakeAgent(t)
+	agentPath := buildAgentEcho(t)
 	tr := NewStdioTransport(TransportConfig{
 		AgentPath: agentPath,
 		AgentArgs: []string{"--echo"},
@@ -133,7 +113,7 @@ func TestStdioTransport_StartInvalidPath(t *testing.T) {
 
 // TestStdioTransport_CallAfterClose 验证 Close 后 Call 失败。
 func TestStdioTransport_CallAfterClose(t *testing.T) {
-	agentPath := findFakeAgent(t)
+	agentPath := buildAgentEcho(t)
 	tr := NewStdioTransport(TransportConfig{
 		AgentPath: agentPath,
 		AgentArgs: []string{"--echo"},
@@ -152,7 +132,7 @@ func TestStdioTransport_CallAfterClose(t *testing.T) {
 
 // TestStdioTransport_CallTimeout 验证 ctx 超时。
 func TestStdioTransport_CallTimeout(t *testing.T) {
-	agentPath := findFakeAgent(t)
+	agentPath := buildAgentEcho(t)
 	tr := NewStdioTransport(TransportConfig{
 		AgentPath: agentPath,
 		AgentArgs: []string{"--hang"}, // fake agent 收到任何请求都 hang
@@ -181,7 +161,7 @@ func TestStdioTransport_CallTimeout(t *testing.T) {
 
 // TestStdioTransport_SpawnProcess 验证子进程真的启动了。
 func TestStdioTransport_SpawnProcess(t *testing.T) {
-	agentPath := findFakeAgent(t)
+	agentPath := buildAgentEcho(t)
 	tr := NewStdioTransport(TransportConfig{
 		AgentPath: agentPath,
 		AgentArgs: []string{"--echo"},
@@ -202,7 +182,7 @@ func TestStdioTransport_SpawnProcess(t *testing.T) {
 // TestStdioTransport_SendMalformedFrame 验证发坏 JSON 时 agent 能恢复。
 // fake agent 应该忽略坏帧继续处理后续合法帧。
 func TestStdioTransport_SendMalformedFrame(t *testing.T) {
-	agentPath := findFakeAgent(t)
+	agentPath := buildAgentEcho(t)
 	tr := NewStdioTransport(TransportConfig{
 		AgentPath: agentPath,
 		AgentArgs: []string{"--echo"},
