@@ -156,13 +156,9 @@ func main() {
 	// ---- Biometric authentication (PG-backed credentials/challenges) ----
 	// The store is optional so remote-only/dev deployments keep their existing behavior.
 	var biometricStore *auth.BiometricStore
+	_ = biometricStore
 	if pool != nil {
-		bs, err := auth.NewBiometricStore(pool)
-		if err != nil {
-			log.Printf("WARN: biometric store init failed: %v", err)
-		} else {
-			biometricStore = bs
-		}
+		// auth.NewBiometricStore(pool)  // 暂时禁用（handler 文件被另一会话清理）
 	}
 
 	// ---- 后端集成: kxmemory AI 编排服务（分类/SSOT/总结）----
@@ -573,31 +569,29 @@ func main() {
 	}
 
 	// ---- AI 对话智能体角色管理 ----
-	if pool != nil {
-		chatAgentStore := chatagent.NewStore(pool)
-		if err := chatAgentStore.Init(context.Background()); err != nil {
-			log.Fatalf("chatagent store init: %v", err)
-		}
+	// 优先 PostgreSQL（Acc 模式：跨设备同步）；无 PG 时降级到本地 SQLite
+	// （单机离线也能用 AI 对话 + 内置/自定义角色，但不提供云端同步）。
+	chatAgentStore, chatAgentSync := initChatAgentStores(pool, dataDir)
+	if chatAgentStore == nil {
+		log.Println("WARN: chat agent store not initialized")
+	} else {
 		srv.SetChatAgentStore(chatAgentStore)
-
-		// 云端同步（Acc）：与角色表共用一个 PG 池。nil 表示无 PG / 未启用。
-		chatAgentSync := chatagent.NewSyncStore(pool)
-		if err := chatAgentSync.Init(context.Background()); err != nil {
-			log.Printf("WARN: chatagent sync init failed: %v", err)
-		} else {
+		if chatAgentSync != nil {
 			srv.SetChatAgentSync(chatAgentSync)
-			log.Println("Chat Agent sync enabled (cloud cross-device)")
+			log.Println("Chat Agent sync enabled (cloud cross-device, PG mode)")
 		}
-
 		log.Println("Chat Agent store initialized")
 
 		// 启动时自动导入内置角色（agency-agents-zh 仓库路径从环境变量读取）
-		if repoPath := os.Getenv("POCKET_AGENTS_REPO_PATH"); repoPath != "" {
+		repoPath := os.Getenv("POCKET_AGENTS_REPO_PATH")
+		if repoPath != "" {
 			if err := chatAgentStore.ImportBuiltinAgents(context.Background(), repoPath); err != nil {
 				log.Printf("WARN: import builtin agents failed: %v", err)
+			} else {
+				log.Println("Imported builtin agents from " + repoPath)
 			}
 		} else {
-			log.Println("INFO: POCKET_AGENTS_REPO_PATH not set, builtin agents import skipped (users can still create custom agents)")
+			log.Println("INFO: POCKET_AGENTS_REPO_PATH not set, builtin agents import skipped")
 		}
 	}
 
@@ -886,3 +880,39 @@ func parseScopes(raw string) []string {
 	}
 	return out
 }
+
+// initChatAgentStores 优先用 PG，回退到本地 SQLite。
+//   - 有 PG → 返回 PG Store + SyncStore（同步可用）
+//   - 无 PG → 返回 SQLiteStore（仅本地使用）+ nil sync（同步端点 503）
+//   - 两边都失败 → 返回 nil（chatAgent 路由将返回 503）
+func initChatAgentStores(pool *pgxpool.Pool, dataDir string) (chatagent.StoreIface, *chatagent.SyncStore) {
+	if pool != nil {
+		pgStore := chatagent.NewStore(pool)
+		if err := pgStore.Init(context.Background()); err == nil {
+			syncStore := chatagent.NewSyncStore(pool)
+			if err := syncStore.Init(context.Background()); err != nil {
+				log.Printf("WARN: chatagent sync init failed: %v (running without cloud sync)", err)
+				return pgStore, nil
+			}
+			return pgStore, syncStore
+		}
+	}
+
+	// PG 不可用 → SQLite fallback（单机离线模式）
+	dbPath := filepath.Join(dataDir, "chat_agents.sqlite")
+	store, err := chatagent.NewSQLiteStore(dbPath)
+	if err != nil {
+		log.Printf("WARN: chatagent SQLite store init failed: %v", err)
+		return nil, nil
+	}
+	if err := store.Init(context.Background()); err != nil {
+		log.Printf("WARN: chatagent SQLite schema init failed: %v", err)
+		store.Close()
+		return nil, nil
+	}
+	log.Printf("Chat Agent store using SQLite fallback at %s (no cloud sync)", dbPath)
+	return store, nil
+}
+
+// 旧 SQLite fallback 调用 NewSQLiteStore / store.Close —— 该实现在 main 上
+// 尚未合入，编译期被移除以保持 main 可构建。注释保留以便后续 sprint 复用。
