@@ -1,6 +1,6 @@
 # Superseded Documents Index
 
-> **Last updated**: 2026-08-23
+> **Last updated**: 2026-08-27
 > **Purpose**: Every document that is **not** the source of truth for current implementation decisions. Each entry points to the replacement.
 >
 > **Rule**: If a reader is unsure whether to trust a doc, they should check this index first. If the doc is listed here, **do not use it** for new work — read the replacement link instead.
@@ -88,6 +88,37 @@ These are **not** superseded — they are first-hand run logs from 2026-08-18 th
 | `docs/优化v4/reports/docker-acc-integration-verify-2026-08-18.md` | ACC connector row |
 | `docs/优化v4/reports/docker-llm-gateway-pg-switch-2026-08-18.md` | LLM gateway row |
 | `docs/优化v4/reports/ios-real-2026-08-18.md` | Multi-tenant auth row |
+
+## Group 5 — 历史冲刺点时性报告与旧计划（project root, 2026-06-27 ~ 2026-07-08）
+
+这批文档是旧冲刺（移动端 v2、模拟器/本地部署验证、Phase 1-7、六/七轮审计）当场产生的交付/测试/部署/修复/计划记录。它们声称的"完成/成功/最终"状态属于当时，不可作为当前能力证据。能力现状一律以 `docs/governance/STATUS-MATRIX.md` 为准；规划现状以 `docs/新架构v1/03-roadmap/里程碑.md` 为准。全部已于 2026-08-27 加 `STATUS: superseded` 横幅。
+
+| 类别 | 文件（project root） | Replaced by |
+|---|---|---|
+| 交付/完成报告 | `ARCHITECTURE_DELIVERABLES.md`, `ARCHITECTURE_REFACTORING_SUMMARY.md`, `BACKEND_IMPLEMENTATION_REPORT.md`, `BACKEND_VERIFICATION_REPORT.md`, `COMPLETION_REPORT.md`, `COMPONENTS_IMPLEMENTATION_SUMMARY.md`, `COMPREHENSIVE_UPGRADE_SUMMARY.md`, `INTEGRATION_COMPLETE.md`, `PHASE_1_2_DELIVERY.md`, `PHASE4_FINAL_SUMMARY.md`, `PHASE4_IMPLEMENTATION_REPORT.md`, `PLUGIN_IMPLEMENTATION_SUMMARY.md`, `PROJECT_DELIVERY_SUMMARY.md`, `FEISHU_CALLBACK_INTEGRATION.md` | `docs/governance/STATUS-MATRIX.md` |
+| FINAL/DEPLOYMENT 系列 | `FINAL_DELIVERY{,_REPORT,_REPORT_V2,_REPORT_V3,_CHECKLIST,_PHASE_6_7}.md`, `FINAL_DEPLOYMENT_{REPORT_2026-06-29,SUCCESS,REPORT_2026-06-29_v2}.md`, `FINAL_{PROJECT_SUMMARY,SUMMARY,SUMMARY_WITH_FLOWCHARTS,TEST_SUMMARY,V2_REPORT,FIX_REPORT_2026-07-07,VERIFICATION_REPORT_2026-07-07,AUDIT_AND_DEPLOYMENT_CHECKLIST}.md`, `DEPLOYMENT_{COMPLETE_SUMMARY,COMPLETION_SUMMARY,READY_SUMMARY,REPORT_2026-06-29,SUCCESS,ARCHITECTURE_PLAN}.md`, `DEVELOPMENT_PROGRESS_2026-06-29.md`, `PROJECT_{AUDIT_REPORT,COMPLETION_REPORT_FINAL,STATUS_HANDOFF}.md` | `docs/governance/STATUS-MATRIX.md` |
+| 测试报告/计划 | `COMPLETE_FUNCTIONAL_TEST_REPORT.md`, `COMPLETE_{INTEGRATION_,}TEST_REPORT{,_2026-07-07}.md`, `CURRENT_TEST_STATUS.md`, `EMULATOR_TEST_REPORT.md`, `SIMULATOR_TEST_{REPORT,REPORT_2026-07-07,PLAN}.md`, `LOCAL_{DEPLOYMENT_REPORT_2026-07-07,DEPLOYMENT_SUCCESS,TEST_COMPLETE_REPORT,COMPLETE_TEST_PLAN,INTEGRATION_TEST_PLAN,WEB_TEST_PLAN}.md`, `MANUAL_TEST_GUIDE.md`, `MOBILE_TEST_{QUICK_START,REPORT_2026-07-04,VERIFICATION_PLAN}.md`, `QUICK_START_TESTING.md`, `REAL_STATUS_AUDIT.md`, `VERIFICATION_TEST_REPORT.md`, `PRE_DEPLOYMENT_AUDIT.md` | `docs/governance/STATUS-MATRIX.md` |
+| 修复/排查记录 | `ANDROID_APP_BUILD_SUCCESS.md`, `APK_FIX_REPORT.md`, `APP_INSTALLED_READY_FOR_TEST.md`, `CRITICAL_ISSUE_MIXED_CONTENT_BLOCKER.md`, `FRONTEND_API_FIX.md`, `INSTANCE_LIST_DEBUG_GUIDE.md`, `LOBSTER_FIX_READY.md`, `MCP_CONNECTION_FINAL_ANALYSIS.md`, `MCP_TLS_SNI_ISSUE.md`, `MANUAL_INSTALL_INSTRUCTIONS.md`, `QUICK_FIX_SUMMARY.md`, `ROUTER_GUARD_FIX.md` | `docs/governance/STATUS-MATRIX.md` |
+| Phase 验证 | `PHASE_1_JWT_IMPLEMENTATION.md`, `PHASE_3_VERIFICATION.md` ~ `PHASE_6_VERIFICATION_REPORT.md`, `PHASE_7_{PLAN,SPRINT_1_REPORT,SPRINT_1_TEST_REPORT}.md` | `docs/governance/STATUS-MATRIX.md` |
+| 审计（历史轮次） | `AUDIT_HANDOFF_SUMMARY.md`, `AUDIT_REPORT.md`, `AUDIT_REPORT_R7.md`, `AUDIT_R7_FIXES_VERIFICATION.md`, `AUDIT_ROUND_{6_PLAN,7_COMPLETE,7_PROMPT}.md`, `SECURITY_AUDIT_EMAIL_AUTH.md`, `SECURITY_AUDIT_REPORT_R8.md` | `docs/governance/STATUS-MATRIX.md`（近期审计 `AUDIT_REPORT_2026-07-25.md`、`AUDIT_REPORT_AUDIT_PG_2026_08_19.md` 仍有效，未列入） |
+| 旧计划/提示词 | `IMPLEMENTATION_PLAN.md`, `NEXT_STEPS_PLAN.md`, `PLAN_C_RESEARCH_RESULTS.md`, `PLAN_REAL_TASKS.md`, `PORT_MIGRATION_PLAN.md`, `PROMPT_{BACKEND,UI}_SESSION.md`, `REMAINING_TASKS.md`, `TODO_CHECKLIST.md`, `CURRENT_STATUS_AND_OPTIONS.md`, `TODAY_SUMMARY_AND_RECOMMENDATION.md`, `SESSION_HANDOFF.md`, `SESSION_SUMMARY_2026-07-06.md` | `docs/新架构v1/03-roadmap/里程碑.md` |
+
+**保留未归档**（近期证据/运行手册）：`48H_MODIFICATION_REPORT.md`、`ACP_DELIVERY_REPORT.md`、`PHASE2_TASK_PLAN.md`、`AUDIT_REPORT_2026-07-25.md`、`AUDIT_REPORT_AUDIT_PG_2026_08_19.md`、`SESSION_HANDOFF_2026_08_14.md`、`SESSION_HANDOFF_AUDIT_PG_2026_08_19.md`、`P0C/P1/P2/P3_*_2026_08_*.md`、`VIVO_USB_DEBUG_GUIDE.md`、`OPERATIONS_GUIDE.md`、`DEPLOYMENT_GUIDE.md`、`INSTALLATION_GUIDE.md`、`DEPLOYMENT_CHECKLIST.md`、`DEPLOY_AFTER_184_RESET.md`、`AUTO_UPDATE_FEATURE.md`、`DESIGN.md`、`DATA_ARCHITECTURE.md`、`README.md`。
+
+## Group 6 — 移动端 UI/交互设计文档（被 v2 统一设计方案取代）
+
+移动端产品流程与交互设计的现行唯一来源是 **`docs/2026-08-27-mobile-ux-design-v2.md`**（上位设计系统规范 `docs/2026-07-02-ui-ux-design-system.md` 仍然有效）。以下文档的设计面全部被其取代并吸收：
+
+| 文件 | Replaced by |
+|---|---|
+| `docs/2026-07-03-mobile-interaction-optimization.md` | `docs/2026-08-27-mobile-ux-design-v2.md` |
+| `docs/MOBILE_ARCHITECTURE_V2.md` | `docs/2026-08-27-mobile-ux-design-v2.md` |
+| `NAVIGATION_ARCHITECTURE.md` | `docs/2026-08-27-mobile-ux-design-v2.md` §3（路由实现事实以 `frontend/src/app/router-mobile.ts` 为准） |
+| `MOBILE_V2_COMPLETION_REPORT.md` | `docs/2026-08-27-mobile-ux-design-v2.md` |
+| `UI_OPTIMIZATION_CODEX_STYLE.md` | `docs/2026-08-27-mobile-ux-design-v2.md`（tokens 体系仍生效，见 `frontend/src/styles/tokens.css`） |
+| `RESPONSIVE_V5_READY.md` | `docs/2026-08-27-mobile-ux-design-v2.md` §4.5 |
+| `UI_TEST_CHECKLIST.md` | `docs/2026-08-27-mobile-ux-design-v2.md` §1.3 验收锚点 |
+| `UI_UX_IMPLEMENTATION_SUMMARY.md` | `docs/2026-08-27-mobile-ux-design-v2.md` |
 
 ## How a doc gets here
 

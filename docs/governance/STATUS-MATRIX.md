@@ -1,7 +1,7 @@
 # OpenPocket Documentation Status Matrix
 
-> **Last updated**: 2026-08-24
-> 上一版：2026-08-23 — 本轮逐项核对：DB/网络/ZAG 健康、二进制版本、子模块计数与表内"Status / Evidence Level / Source Evidence"三列一致，未触发漂移事件；故仅刷新时间戳，未改字段含义。
+> **Last updated**: 2026-08-27
+> 上一版：2026-08-24 — 本轮：①新增 Mobile frontend 行（source-inspected，设计规范指针更新为 v2 方案）；②124 份历史文档归档至 SUPERSEDED.md Group 5/6（横幅已加齐）。DB/网络/ZAG 健康未变，未触发漂移事件。
 > **Scope**: Single source of truth for the current implementation status of every architectural component in OpenPocket.
 > **Authority**: This matrix overrides any inline claim of "implemented", "complete", or "verified" found in legacy documents.
 >
@@ -36,6 +36,7 @@
 | WebSocket hub (`pocketd` WS / SSE) | `docs/WEBSOCKET_REALTIME_UPDATE.md`, `docs/新架构v1/01-architecture/数据流与协议.md` | `implemented (unverified)` | `source-inspected` | — | — | `backend/internal/server/ws_*.go`, `docs/superpowers/specs/2026-08-17-task-approval-projection-design.md` |
 | Audit (Postgres-backed PG audit with RLS) | `docs/audits/`, `docs/优化v4/reports/audit-pg-docker-integration-2026-08-18.md`, `docs/security/zag-adr-0007-audit.md` | `integration-tested` | `integration-tested` | — | — | `feat/audit-pg-hardening` branch, `git log main` (post `25727ba`), `docs/优化v4/reports/audit-pg-docker-integration-2026-08-18.md` |
 | Multi-tenant auth (`identity-go`) | `docs/security/zag-adr-0003-authz-model.md`, `docs/2026-07-02-deployment-verification-report.md` | `integration-tested` (JWT/RS256 issuer) | `integration-tested` | — | — | `backend/internal/identity/`, `feat/identity-go-cross-trust` (commit `6892ba5`), `docs/优化v4/reports/ios-real-2026-08-18.md` |
+| Mobile frontend (Vue 3 + Capacitor) | `docs/2026-08-27-mobile-ux-design-v2.md`（产品/交互现行规范）, `docs/2026-07-02-ui-ux-design-system.md`（设计系统） | `implemented (unverified)` | `source-inspected` | `NAVIGATION_ARCHITECTURE.md`, `MOBILE_ARCHITECTURE_V2.md`, `docs/2026-07-03-mobile-interaction-optimization.md`（均 superseded） | — | `frontend/src/app/router-mobile.ts`, `frontend/src/features/`, `frontend/src/composables/useBreakpoint.ts`, `P1_MOBILE_PERSISTENCE_2026_08_15.md`（离线持久化证据） |
 
 ## Components explicitly NOT covered above (see `SUPERSEDED.md` for redirect)
 

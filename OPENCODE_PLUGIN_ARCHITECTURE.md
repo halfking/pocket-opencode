@@ -1,3 +1,9 @@
+> **STATUS: superseded** (2026-08-27)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/新架构v1/02-modules/ide-control.md`](docs/新架构v1/02-modules/ide-control.md)
+> Do NOT use this doc for current implementation decisions.
+> （补横幅：SUPERSEDED.md Group 1 已登记）
+
 # OpenCode 插件 + 管理服务架构方案
 
 **目标**: 实现 OpenCode 实例的全面管理、实时通信和远程控制

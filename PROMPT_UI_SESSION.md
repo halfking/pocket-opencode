@@ -1,3 +1,9 @@
+> **STATUS: superseded** (2026-08-27)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/新架构v1/03-roadmap/里程碑.md`](docs/新架构v1/03-roadmap/里程碑.md)
+> Do NOT use this doc for current implementation decisions.
+> This doc is a historical plan/analysis from a completed sprint; 规划以 v3 里程碑为准。
+
 # 会话 A 提示词：UI 设计与体验优化
 
 > 复制以下内容到新会话

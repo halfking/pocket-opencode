@@ -1,3 +1,9 @@
+> **STATUS: superseded** (2026-08-27)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/新架构v1/03-roadmap/里程碑.md`](docs/新架构v1/03-roadmap/里程碑.md)
+> Do NOT use this doc for current implementation decisions.
+> This doc is a historical plan/analysis from a completed sprint; 规划以 v3 里程碑为准。
+
 # OpenCode Pocket 前端集成 — 审计报告
 
 **审计时间**: 2026-07-03 04:38 AM  

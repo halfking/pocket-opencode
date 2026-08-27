@@ -1,3 +1,9 @@
+> **STATUS: superseded** (2026-08-27)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/2026-08-27-mobile-ux-design-v2.md`](docs/2026-08-27-mobile-ux-design-v2.md)
+> Do NOT use this doc for current implementation decisions.
+> 移动端交互/布局/导航/UI 设计面已由 v2 统一设计方案取代。
+
 # UI 测试验证脚本
 
 ## 环境信息

@@ -1,3 +1,9 @@
+> **STATUS: superseded** (2026-08-27)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/新架构v1/03-roadmap/里程碑.md`](docs/新架构v1/03-roadmap/里程碑.md)
+> Do NOT use this doc for current implementation decisions.
+> This doc is a historical plan/analysis from a completed sprint; 规划以 v3 里程碑为准。
+
 # 第六轮审计修复计划
 
 **目标**: 修复剩余架构级问题中**可以在 Phase 0 完成且不破坏现有功能**的项。

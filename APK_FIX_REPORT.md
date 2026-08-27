@@ -1,3 +1,9 @@
+> **STATUS: superseded** (2026-08-27)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/governance/STATUS-MATRIX.md`](docs/governance/STATUS-MATRIX.md)
+> Do NOT use this doc for current implementation decisions.
+> This doc is a point-in-time sprint report (交付/测试/部署/修复记录); 当前能力以治理矩阵为准。
+
 # 🔧 APK 问题修复报告
 
 **问题发现时间:** 2026-06-29 11:43  

@@ -1,3 +1,9 @@
+> **STATUS: superseded** (2026-08-27)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/2026-08-27-mobile-ux-design-v2.md（七类需求清单已全部吸收）；架构面见 docs/新架构v1/02-modules/mobile-shell.md`](docs/2026-08-27-mobile-ux-design-v2.md)
+> Do NOT use this doc for current implementation decisions.
+> （补横幅：SUPERSEDED.md Group 1 已登记）
+
 # OpenCode 移动端管理系统 - 需求分析与设计方案
 
 ## 项目背景

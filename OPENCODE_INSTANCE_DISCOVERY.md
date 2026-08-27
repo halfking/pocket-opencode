@@ -1,3 +1,9 @@
+> **STATUS: superseded** (2026-08-27)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/新架构v1/02-modules/redclaw-integration.md`](docs/新架构v1/02-modules/redclaw-integration.md)
+> Do NOT use this doc for current implementation decisions.
+> （补横幅：SUPERSEDED.md Group 1 已登记）
+
 # OpenCode 实例发现配置方案
 
 **问题**: Backend 如何感知本地运行的 OpenCode 实例？

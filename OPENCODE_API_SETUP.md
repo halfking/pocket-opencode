@@ -1,3 +1,9 @@
+> **STATUS: superseded** (2026-08-27)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/新架构v1/03-roadmap/接口规范.md`](docs/新架构v1/03-roadmap/接口规范.md)
+> Do NOT use this doc for current implementation decisions.
+> （补横幅：SUPERSEDED.md Group 1 已登记）
+
 # OpenCode API 服务器配置指南
 
 **发现**: ✅ OpenCode 源码位于 `~/workspace/ai/opencode`  

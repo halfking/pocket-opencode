@@ -1,3 +1,9 @@
+> **STATUS: superseded** (2026-08-27)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/governance/STATUS-MATRIX.md`](docs/governance/STATUS-MATRIX.md)
+> Do NOT use this doc for current implementation decisions.
+> This doc is a point-in-time sprint report (交付/测试/部署/修复记录); 当前能力以治理矩阵为准。
+
 # Phase 4 验证报告 — 主题任务抽象 + M3 强化 + 手势返回
 
 **日期**: 2026-07-05

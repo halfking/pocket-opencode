@@ -1,3 +1,9 @@
+> **STATUS: superseded** (2026-08-27)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/新架构v1/02-modules/ide-control.md`](docs/新架构v1/02-modules/ide-control.md)
+> Do NOT use this doc for current implementation decisions.
+> （补横幅：SUPERSEDED.md Group 1 已登记）
+
 # OpenCode 感知及会话管理 - 需求归纳与设计优化
 
 ## 文档版本

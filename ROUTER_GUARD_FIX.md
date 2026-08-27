@@ -1,3 +1,9 @@
+> **STATUS: superseded** (2026-08-27)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/governance/STATUS-MATRIX.md`](docs/governance/STATUS-MATRIX.md)
+> Do NOT use this doc for current implementation decisions.
+> This doc is a point-in-time sprint report (交付/测试/部署/修复记录); 当前能力以治理矩阵为准。
+
 # 路由守卫修复说明
 
 **问题**: 用户登录后，从 AI 模块切换到笔记/邮箱等模块时被强制跳回登录页

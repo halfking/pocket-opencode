@@ -1,3 +1,9 @@
+> **STATUS: superseded** (2026-08-27)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/新架构v1/02-modules/redclaw-integration.md`](docs/新架构v1/02-modules/redclaw-integration.md)
+> Do NOT use this doc for current implementation decisions.
+> （补横幅：SUPERSEDED.md Group 1 已登记）
+
 # 📡 OpenCode 实例自动注册方案
 
 **目标:** 让池前主机上的 OpenCode 实例自动注册到 NPS，供 Pocket 发现和管理

@@ -1,3 +1,9 @@
+> **STATUS: superseded** (2026-08-27)
+> Evidence level at supersede time: `claimed (unverified)`
+> Superseded by: [`docs/governance/STATUS-MATRIX.md`](docs/governance/STATUS-MATRIX.md)
+> Do NOT use this doc for current implementation decisions.
+> This doc is a point-in-time sprint report; 当前能力以治理矩阵为准。
+
 # OpenCode Pocket 部署前自我审计报告
 
 **审计日期**: 2026-07-04 16:39  
