@@ -579,6 +579,16 @@ func main() {
 			log.Fatalf("chatagent store init: %v", err)
 		}
 		srv.SetChatAgentStore(chatAgentStore)
+
+		// 云端同步（Acc）：与角色表共用一个 PG 池。nil 表示无 PG / 未启用。
+		chatAgentSync := chatagent.NewSyncStore(pool)
+		if err := chatAgentSync.Init(context.Background()); err != nil {
+			log.Printf("WARN: chatagent sync init failed: %v", err)
+		} else {
+			srv.SetChatAgentSync(chatAgentSync)
+			log.Println("Chat Agent sync enabled (cloud cross-device)")
+		}
+
 		log.Println("Chat Agent store initialized")
 
 		// 启动时自动导入内置角色（agency-agents-zh 仓库路径从环境变量读取）

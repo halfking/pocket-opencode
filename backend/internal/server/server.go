@@ -111,6 +111,8 @@ type Server struct {
 	notifySvc *notifycenter.Service
 	// AI 对话智能体角色管理。nil = /api/chat-agents 返回 503。
 	chatAgentStore *chatagent.Store
+	// 智能体云端同步（Acc PostgreSQL）。nil = /api/chat-agents/sync/* 返回 503。
+	chatAgentSync *chatagent.SyncStore
 	notifyStore    *notifycenter.Store
 
 	// ACP 通用 Agent Adapter Registry（W5 新增，与 s.opencode 并存）。
@@ -356,6 +358,11 @@ func (s *Server) SetChatAgentStore(store *chatagent.Store) {
 	s.chatAgentStore = store
 }
 
+// SetChatAgentSync 注入智能体云端同步 store（Acc PG）。
+func (s *Server) SetChatAgentSync(sync *chatagent.SyncStore) {
+	s.chatAgentSync = sync
+}
+
 // SetAgentRegistry 注入 ACP agent registry（W5 新增）。
 func (s *Server) SetAgentRegistry(reg *agent.Registry) {
 	s.agents = reg
@@ -521,6 +528,9 @@ func (s *Server) Handler() http.Handler {
 
 	// AI 对话智能体角色管理
 	mux.HandleFunc("/api/chat-agents", s.requireAuth(s.handleChatAgentsList))
+	mux.HandleFunc("/api/chat-agents/sync/upload", s.requireAuth(s.handleChatAgentSyncUpload))
+	mux.HandleFunc("/api/chat-agents/sync/download", s.requireAuth(s.handleChatAgentSyncDownload))
+	mux.HandleFunc("/api/chat-agents/sync/status", s.requireAuth(s.handleChatAgentSyncStatus))
 	mux.HandleFunc("/api/chat-agents/", s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		// 分发到 GET/:id, POST, PUT/:id, DELETE/:id
 		if r.URL.Path == "/api/chat-agents/" && r.Method == http.MethodPost {

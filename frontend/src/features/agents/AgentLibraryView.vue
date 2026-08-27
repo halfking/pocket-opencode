@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChatAgentStore, DEPARTMENTS } from '../../stores/chatAgentStore'
+import AgentSyncSheet from '../ai-chat/AgentSyncSheet.vue'
 
 const router = useRouter()
 const agentStore = useChatAgentStore()
@@ -9,9 +10,18 @@ const agentStore = useChatAgentStore()
 const searchQuery = ref('')
 const selectedDepartment = ref<string>('') // 空字符串 = 全部
 const showOnlyCustom = ref(false)
+const syncSheetOpen = ref(false)
+
+// 同步角标（云端有角色但本地没有 → 显示提醒）
+const hasRemoteAgents = computed(() => {
+  const status = agentStore.syncStatus
+  return status?.has_remote && (status?.agent_count ?? 0) > 0
+})
 
 onMounted(() => {
   agentStore.loadAgents()
+  // 后台探测同步可用性（PG 未启用时静默失败）
+  agentStore.checkSyncAvailable()
 })
 
 // 过滤后的角色列表
@@ -87,6 +97,10 @@ function handleDelete(agentId: string, agentName: string, e: Event) {
         <span class="material-symbols-outlined">arrow_back</span>
       </button>
       <h1 class="title">智能体角色库</h1>
+      <button class="icon-btn" aria-label="云端同步" @click="syncSheetOpen = true">
+        <span class="material-symbols-outlined">cloud_sync</span>
+        <span v-if="hasRemoteAgents" class="sync-badge" aria-label="云端有新内容"></span>
+      </button>
       <button class="icon-btn" aria-label="创建角色" @click="goToCreate">
         <span class="material-symbols-outlined">add</span>
       </button>
@@ -201,6 +215,9 @@ function handleDelete(agentId: string, agentName: string, e: Event) {
         </template>
       </template>
     </main>
+
+    <!-- 同步面板 -->
+    <AgentSyncSheet v-model:show="syncSheetOpen" />
   </div>
 </template>
 
@@ -232,6 +249,18 @@ function handleDelete(agentId: string, agentName: string, e: Event) {
   justify-content: center;
   cursor: pointer;
   color: var(--text-primary);
+  position: relative;
+}
+
+.sync-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--brand-primary, #3b82f6);
+  box-shadow: 0 0 0 2px var(--bg-card, #fff);
 }
 
 .title {

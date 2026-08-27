@@ -35,3 +35,38 @@ export interface ChatAgentUpdateRequest {
   color?: string
   system_prompt?: string
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// Acc 云端同步（PG 启用时）
+// ────────────────────────────────────────────────────────────────────────
+
+export interface SyncPayload {
+  /** 本地已知的服务端版本号；首次上传或未知时可传 0 */
+  version: number
+  /** 要上传的自定义角色列表（仅 is_builtin=false） */
+  agents: ChatAgent[]
+}
+
+export interface SyncResult {
+  /** 服务端新版本号（毫秒时间戳） */
+  version: number
+  /** 本次上传的角色数（已过滤掉内置） */
+  uploaded_count: number
+  /** 是否发生版本冲突 */
+  conflict: boolean
+  /** 冲突时返回服务端当前版本（仅 conflict=true 时有效） */
+  server_version?: number
+  /** 被跳过的角色 id 列表（仅冲突时） */
+  skipped_ids?: string[]
+}
+
+export interface SyncStatus {
+  /** 是否有云端记录 */
+  has_remote: boolean
+  /** 服务端版本号 */
+  server_version: number
+  /** 服务端最后更新时间（毫秒时间戳） */
+  server_updated_at: number
+  /** 服务端角色数量 */
+  agent_count: number
+}
