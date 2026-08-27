@@ -49,9 +49,9 @@ services:
     env_file:
       - .env
     environment:
-      # ---- 容器内 DSN（指向本机 llm-gateway-pg，host.docker.internal:5432） ----
-      # llm-gateway-pg 在 bridge 网络上，不在 acc-local-net；通过 host.docker.internal
-      # （compose extra_hosts 已映射 host-gateway）走宿主 127.0.0.1:5432 转发。
+      # ---- 容器内 DSN（指向 shared-infra 上的 llm-gateway-pg） ----
+      # llm-gateway-pg 与 pocketd 同在 shared-infra，通过容器 DNS 直连，
+      # 不依赖宿主端口转发。
       # 使用 llm-gateway-pg 的 kaixuan DB；pocketd 通过 POCKET_PG_SCHEMA
       # 默认使用 opencode_pocket schema，与共享库中的其他模块表隔离。
       # DSN 必须通过本地 .env 提供，禁止把数据库密码提交到仓库。
@@ -79,6 +79,7 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - acc-local-net
+      - shared-infra
     volumes:
       - pocketd_data:/app/data
     healthcheck:
@@ -112,6 +113,7 @@ services:
       - "${POCKET_FRONTEND_HOST_PORT:-4175}:80"
     networks:
       - acc-local-net
+      - shared-infra
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1/healthz"]
       interval: 30s
@@ -127,3 +129,6 @@ networks:
   acc-local-net:
     external: true
     name: acc-local-net
+  shared-infra:
+    external: true
+    name: shared-infra
