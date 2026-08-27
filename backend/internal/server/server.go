@@ -109,9 +109,10 @@ type Server struct {
 	agentStore  *agentbridge.Store
 	// S0-E: Notification Center。nil = /api/notifications 返回 503。
 	notifySvc *notifycenter.Service
-	// AI 对话智能体角色管理。nil = /api/chat-agents 返回 503。
-	chatAgentStore *chatagent.Store
-	// 智能体云端同步（Acc PostgreSQL）。nil = /api/chat-agents/sync/* 返回 503。
+	// AI 对话智能体角色管理（PG Store 或 SQLiteStore 都实现 StoreIface）。
+	// nil = /api/chat-agents 返回 503。
+	chatAgentStore chatagent.StoreIface
+	// 智能体云端同步（仅 PG 模式可用；SQLite 模式下此字段保持 nil）。
 	chatAgentSync *chatagent.SyncStore
 	notifyStore    *notifycenter.Store
 
@@ -354,7 +355,8 @@ func (s *Server) SetNotifyCenter(svc *notifycenter.Service, store *notifycenter.
 }
 
 // SetChatAgentStore 注入 AI 对话智能体角色管理 store。
-func (s *Server) SetChatAgentStore(store *chatagent.Store) {
+// 接受 chatagent.StoreIface，PG Store 和 SQLiteStore 都满足。
+func (s *Server) SetChatAgentStore(store chatagent.StoreIface) {
 	s.chatAgentStore = store
 }
 
@@ -384,14 +386,20 @@ func (s *Server) AuditStore() redclaw.RangeStore {
 const (
 	maxRequestBodyBytes = 2 << 20
 	maxAudioBodyBytes   = 25 << 20
+	// /api/llm/stream 多模态上限：单消息最多 4 张图、单张 6MB；按 base64
+	// data URL 计算含 JSON 包装后的总量上限约为 4 × 8MB ≈ 32MB。
+	maxChatBodyBytes = 32 << 20
 )
 
 func requestBodyLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limit := int64(maxRequestBodyBytes)
-		if strings.HasPrefix(r.URL.Path, "/api/stt/transcribe") ||
-			(strings.HasPrefix(r.URL.Path, "/api/meetings/") && strings.HasSuffix(r.URL.Path, "/transcribe")) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/stt/transcribe"),
+			strings.HasPrefix(r.URL.Path, "/api/meetings/") && strings.HasSuffix(r.URL.Path, "/transcribe"):
 			limit = maxAudioBodyBytes
+		case r.URL.Path == "/api/llm/stream" && r.Method == http.MethodPost:
+			limit = maxChatBodyBytes
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		next.ServeHTTP(w, r)

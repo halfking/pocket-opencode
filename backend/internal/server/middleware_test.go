@@ -51,6 +51,48 @@ func TestRequestBodyLimitMiddlewareAllowsAudioLimit(t *testing.T) {
 		t.Fatalf("expected 204, got %d", rec.Code)
 	}
 }
+
+// /api/llm/stream 多模态允许超过通用 2 MiB 限额，否则带图请求会被通用中间件
+// 直接拦截——与后端 handler 自身的 image size 校验重复且不一致。
+func TestRequestBodyLimitMiddlewareAllowsChatMultimodalBody(t *testing.T) {
+	// 模拟 4 张 6 MiB 的图片，最坏情况下请求体 ~32 MiB（超出 2 MiB 通用限制）。
+	body := strings.Repeat("x", (maxChatBodyBytes - 1<<10))
+	handler := requestBodyLimitMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.ReadAll(r.Body); err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/stream", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+}
+
+// 防止 /api/llm/stream 的多模态限额被回滚到通用 2 MiB：超出 chat 限额的
+// 请求仍必须被拒绝并产出 MaxBytesError，避免静默截断破坏流式响应头。
+func TestRequestBodyLimitMiddlewareRejectsOversizedChatBody(t *testing.T) {
+	handler := requestBodyLimitMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.ReadAll(r.Body); err == nil {
+			t.Fatal("expected oversized body read to fail")
+		} else if _, ok := err.(*http.MaxBytesError); !ok {
+			t.Fatalf("expected MaxBytesError, got %T: %v", err, err)
+		}
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/stream", strings.NewReader(strings.Repeat("y", maxChatBodyBytes+1)))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", rec.Code)
+	}
+}
 func TestRecoveryMiddleware(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("test panic")
