@@ -19,3 +19,6 @@ deployment-test-*/
 
 # Compiled instance-manager binary (sources live in this repo; build artifact)
 opencode-manager/opencode-instance-manager
+
+# Compiled test fake agent (sources: backend/cmd/agent_echo; build artifact)
+backend/agent_echo
