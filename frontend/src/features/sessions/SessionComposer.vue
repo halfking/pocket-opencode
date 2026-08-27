@@ -11,16 +11,18 @@ export interface SessionComposerTarget {
 
 <script setup lang="ts">
 /**
- * SessionComposer — 会话输入系统（P1，契约 §4 / 设计 v2 §4.4）。
+ * SessionComposer — 会话输入系统（P1，契约 §4 / 设计 v2 §4.4；P1.5 界面减负改造）。
  *
  * 两种目标模式：
- *   - 固定模式（P1 工作台）：sessionId + sessionLabel，chip 仅展示当前会话；
+ *   - 固定模式（P1 工作台）：sessionId + sessionLabel；P1.5 起目标 chip 不再
+ *     常驻（会话标识由工作台头部承担），输入行以 bolt 快速指令按钮开场；
  *   - 可切换模式（契约就绪）：targets + modelTarget，chip 点击弹出切换面板，
  *     选中经 update:target 上抛（v-model 用法见契约注记：prop 名冻结为
  *     modelTarget，父组件用 :model-target + @update:target 绑定）。
  *
  * 行为纪律：
- *   - 指令模板 chips 一点即发（emit send + 清草稿），仅"停下"先二次确认；
+ *   - 指令模板收进 bolt 快速指令面板（P1.5：原常驻 chips 行释放整行高度），
+ *     面板内一点即发（emit send + 清草稿），仅"停下"先二次确认；
  *   - voice/STT 转写只入草稿可编辑（追加，不直发）；
  *   - 草稿按会话存 SQLite（500ms 防抖），send 时清除；
  *   - 发送按钮 44px 热区贴右下，容器 safe-area 适配。
@@ -112,10 +114,15 @@ function send(): void {
   void drafts.clear()
 }
 
+// P1.5：模板 chips 收进快速指令面板（释放常驻整行；面板行内文案完整可读，
+// "停下"二次确认纪律不变）
+const quickPanelVisible = ref(false)
+
 function onCommand(cmd: QuickCommand): void {
   if (props.disabled) return
   // 仅"停下"先二次确认（工程惯例 window.confirm，见 SessionListView 等）
   if (shouldConfirmCommand(cmd) && !window.confirm(cmd.confirmText ?? '')) return
+  quickPanelVisible.value = false
   emit('send', cmd.message)
   void drafts.clear()
 }
@@ -180,34 +187,34 @@ function onKeydown(e: KeyboardEvent): void {
 
 <template>
   <div class="composer" :class="{ disabled: props.disabled }">
-    <!-- 指令模板（契约 §4 冻结文案；一点即发，"停下"二次确认） -->
-    <div class="quick-row" role="toolbar" aria-label="指令模板">
-      <button
-        v-for="cmd in QUICK_COMMANDS"
-        :key="cmd.label"
-        type="button"
-        class="cmd-chip"
-        :class="{ danger: shouldConfirmCommand(cmd) }"
-        :disabled="props.disabled"
-        @click="onCommand(cmd)"
-      >
-        {{ cmd.label }}
-      </button>
-    </div>
-
-    <!-- 输入行：目标 chip + textarea + voice + send（44px 热区贴右下拇指区） -->
+    <!-- 输入行：快速指令(bolt) + textarea + voice + send（44px 热区贴右下拇指区）
+         P1.5：固定目标模式下目标 chip 不再渲染（会话标识由工作台头部承担），
+         指令模板 chips 常驻行收进 bolt 面板，释放整行高度；targets 可切换
+         模式保留 chip（切换职责，契约 §4 就绪）。 -->
     <div class="input-row">
       <button
         type="button"
-        class="target-chip"
-        :class="{ switchable: hasTargets }"
-        :disabled="props.disabled || !hasTargets"
-        :aria-label="hasTargets ? '切换目标会话' : '目标会话'"
+        class="quick-btn"
+        :disabled="props.disabled"
+        aria-haspopup="dialog"
+        :aria-expanded="quickPanelVisible"
+        aria-label="快速指令"
+        @click="quickPanelVisible = true"
+      >
+        <span class="material-symbols-outlined">bolt</span>
+      </button>
+
+      <button
+        v-if="hasTargets"
+        type="button"
+        class="target-chip switchable"
+        :disabled="props.disabled"
+        aria-label="切换目标会话"
         @click="openTargetPicker"
       >
         <span class="material-symbols-outlined chip-icon">forum</span>
         <span class="target-label">{{ targetChipLabel }}</span>
-        <span v-if="hasTargets" class="material-symbols-outlined chip-icon">expand_more</span>
+        <span class="material-symbols-outlined chip-icon">expand_more</span>
       </button>
 
       <textarea
@@ -241,6 +248,27 @@ function onKeydown(e: KeyboardEvent): void {
         <span class="material-symbols-outlined">send</span>
       </button>
     </div>
+
+    <!-- 快速指令面板（P1.5：模板 chips 收纳处；文案完整可读，"停下"保留二次确认） -->
+    <BottomSheet v-model="quickPanelVisible" title="快速指令">
+      <div class="quick-list" role="menu" aria-label="指令模板">
+        <button
+          v-for="cmd in QUICK_COMMANDS"
+          :key="cmd.label"
+          type="button"
+          class="quick-item"
+          :class="{ danger: shouldConfirmCommand(cmd) }"
+          role="menuitem"
+          :disabled="props.disabled"
+          @click="onCommand(cmd)"
+        >
+          <span class="material-symbols-outlined item-icon" aria-hidden="true">
+            {{ cmd.icon ?? 'bolt' }}
+          </span>
+          <span class="item-label">{{ cmd.label }}</span>
+        </button>
+      </div>
+    </BottomSheet>
 
     <!-- 目标切换面板（仅 targets 模式；复用工程既有 BottomSheet） -->
     <BottomSheet v-model="targetPickerVisible" title="切换目标会话">
@@ -277,42 +305,27 @@ function onKeydown(e: KeyboardEvent): void {
   border-top: 1px solid var(--border);
 }
 
-/* ── 指令模板行（可横滑，窄屏不折行） ── */
-.quick-row {
-  display: flex;
-  gap: var(--space-2);
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-}
-.quick-row::-webkit-scrollbar {
-  display: none;
-}
-.cmd-chip {
+/* ── 快速指令按钮（原模板 chips 行收敛为一个入口，释放整行高度） ── */
+.quick-btn {
   flex: 0 0 auto;
-  min-height: 32px;
-  padding: var(--space-1) var(--space-2-5);
-  border: 1px solid var(--border);
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
   border-radius: var(--radius-full);
-  background: var(--bg-subtle);
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-  font-weight: var(--font-weight-medium);
-  white-space: nowrap;
+  background: var(--brand-bg);
+  color: var(--brand-primary);
   cursor: pointer;
+  transition: transform var(--duration-fast) var(--ease-out);
 }
-.cmd-chip:active {
-  background: var(--bg-card);
+.quick-btn:not(:disabled):active {
+  transform: scale(0.92);
 }
-.cmd-chip:disabled {
+.quick-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-/* "停下"：破坏性指令用既有 danger 语义色 */
-.cmd-chip.danger {
-  background: var(--danger-bg);
-  border-color: transparent;
-  color: var(--danger);
 }
 
 /* ── 输入行 ── */
@@ -446,10 +459,52 @@ function onKeydown(e: KeyboardEvent): void {
   line-height: 1;
 }
 
-/* ── 目标切换面板列表 ── */
-.target-list {
+/* ── 目标切换面板列表（targets 模式）+ 快速指令面板列表 ── */
+.target-list,
+.quick-list {
   display: flex;
   flex-direction: column;
+}
+.quick-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 48px; /* 面板行热区 > 44px */
+  padding: var(--space-2) var(--space-2);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-medium);
+  text-align: left;
+  cursor: pointer;
+}
+.quick-item:last-child {
+  border-bottom: none;
+}
+.quick-item:active {
+  background: var(--bg-subtle);
+}
+.quick-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* "停下"：破坏性指令用既有 danger 语义色 */
+.quick-item.danger {
+  color: var(--danger);
+}
+.item-icon {
+  flex: 0 0 auto;
+  font-size: 22px;
+  color: var(--text-secondary);
+}
+.quick-item.danger .item-icon {
+  color: var(--danger);
+}
+.item-label {
+  flex: 1 1 auto;
 }
 .target-option {
   display: flex;

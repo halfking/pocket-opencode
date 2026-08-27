@@ -1,0 +1,30 @@
+# P1.5 gate run — 2026-08-27 23:26:19
+## §1 frontend node --test (sessions)
+# tests 38
+# suites 0
+# pass 38
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1106.223042
+
+## §2 vue-tsc
+> typecheck
+> vue-tsc --noEmit
+
+typecheck exit=0
+
+## §3 vite build (P1.5, no VITE_API_BASE for gate)
+✓ built in 2.55s
+
+## §4 frontend full test sweep (all dirs with tests)
+# tests 38
+# pass 38
+# fail 0
+
+## §4 corrected: full sweep (glob, P1 口径)
+# tests 193
+# pass 193
+# fail 0
+sweep exit=0

@@ -32,21 +32,23 @@ export const CHIP_LABEL_MAX = 12
 // ─────────────────────────────────────────────────────────────
 
 export interface QuickCommand {
-  /** chip 展示文案。 */
+  /** 面板展示文案。 */
   label: string
   /** emit('send', message) 的模板文本。 */
   message: string
   /** 非空 = 点击需先二次确认（仅"停下"）。 */
   confirmText?: string
+  /** 面板行图标（Material Symbols 子集内；P1.5 chips→面板引入）。 */
+  icon?: string
 }
 
-/** 指令模板（契约 §4 冻结文案与顺序）。 */
+/** 指令模板（契约 §4 冻结文案与顺序；P1.5 从常驻 chips 行收进快速指令面板）。 */
 export const QUICK_COMMANDS: readonly QuickCommand[] = [
-  { label: '继续', message: '继续' },
-  { label: '停下', message: '停下', confirmText: '确定要停止当前任务吗？停止后本轮输出不会继续。' },
-  { label: '总结当前进展', message: '总结当前进展' },
-  { label: '跑测试', message: '跑测试' },
-  { label: '忽略错误继续', message: '忽略错误继续' },
+  { label: '继续', message: '继续', icon: 'play_arrow' },
+  { label: '停下', message: '停下', icon: 'stop', confirmText: '确定要停止当前任务吗？停止后本轮输出不会继续。' },
+  { label: '总结当前进展', message: '总结当前进展', icon: 'subject' },
+  { label: '跑测试', message: '跑测试', icon: 'science' },
+  { label: '忽略错误继续', message: '忽略错误继续', icon: 'fast_forward' },
 ]
 
 /** 仅 confirmText 非空的指令（"停下"）需要二次确认。 */

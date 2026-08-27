@@ -64,6 +64,53 @@ export const PHASE_LABELS: Record<SessionPhase, string> = {
 }
 
 // ---------------------------------------------------------------------------
+// 会话状态信号（P1.5 界面减负：状态条收敛为动态图标，纯派生供图标 + 头部副标题共用）
+// ---------------------------------------------------------------------------
+
+/** 信号三态：审批待办 > 运行 > 空闲（§4.1 优先级的会话级投影）。 */
+export type SessionStatusMode = 'approval' | 'running' | 'idle'
+
+export interface SessionStatusInput {
+  /** 事件 phase（或降级推导）；null = 完全未知。 */
+  phase: SessionPhase | null
+  /** SSE 是否仍在流式（事件说 idle 但流未断仍算运行）。 */
+  active: boolean
+  /** 待审批数（权限 + 问答）。 */
+  pendingCount: number
+}
+
+/** 信号三态判定（与旧 SessionStatusBar 内联逻辑等价，提出为纯函数可测）。 */
+export function resolveSessionStatusMode(input: SessionStatusInput): SessionStatusMode {
+  if (input.pendingCount > 0) return 'approval'
+  if (input.phase === null) return input.active ? 'running' : 'idle'
+  if (input.phase === 'idle') return input.active ? 'running' : 'idle'
+  return 'running'
+}
+
+/**
+ * 信号文案：运行态显示 phase 文案（未知 phase 用 active 兜底），空闲弱化。
+ * 审批态文案由调用方拼接（等待审批）。
+ */
+export function sessionStatusLabel(input: SessionStatusInput): string {
+  const mode = resolveSessionStatusMode(input)
+  if (mode === 'approval') return '等待审批'
+  if (mode === 'idle') return PHASE_LABELS.idle
+  if (input.phase === null || input.phase === 'idle') return input.active ? '生成中…' : PHASE_LABELS.idle
+  return PHASE_LABELS[input.phase]
+}
+
+/** 信号时长格式化：<60s 用秒，<60min 用分钟，更长用小时+分钟；非法输入返回空串。 */
+export function formatStatusElapsed(ms: number | null): string {
+  if (ms === null || !Number.isFinite(ms)) return ''
+  const clamped = Math.max(0, ms)
+  if (clamped < 60_000) return `${Math.floor(clamped / 1000)}s`
+  const minutes = Math.floor(clamped / 60_000)
+  if (minutes < 60) return `${minutes} 分钟`
+  const hours = Math.floor(minutes / 60)
+  return `${hours} 小时 ${minutes % 60} 分钟`
+}
+
+// ---------------------------------------------------------------------------
 // 纯函数（node --test 直接覆盖）
 // ---------------------------------------------------------------------------
 

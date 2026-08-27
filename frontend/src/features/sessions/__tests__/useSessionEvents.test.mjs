@@ -10,11 +10,14 @@ import {
   buildSessionMarkdown,
   countRoundEvents,
   deriveFallbackPhase,
+  formatStatusElapsed,
   groupMessagesIntoRounds,
   newerActivityWins,
   phaseFromToolName,
+  resolveSessionStatusMode,
   roundKey,
   roundSummaryFallback,
+  sessionStatusLabel,
   statsFromMessages,
   statsFromRounds,
 } from '../useSessionEvents.ts'
@@ -343,4 +346,65 @@ test('buildSessionMarkdown：统计 + 轮次摘要成稿', () => {
   assert.ok(md.includes('7 条'))
   assert.ok(md.includes('轮 1 [completed] +3/-1 · 2 文件：完成登录页'))
   assert.ok(md.includes('轮 2：跑测试通过'))
+})
+
+// ── P1.5 动态状态图标纯派生（信号三态/文案/时长） ──
+
+test('resolveSessionStatusMode：审批 > 运行 > 空闲；phase null 按 active 兜底；idle+active 算运行', () => {
+  // 审批最高优先级（即使正在流式）
+  assert.equal(
+    resolveSessionStatusMode({ phase: 'file_write', active: true, pendingCount: 1 }),
+    'approval',
+  )
+  // 运行：非 idle phase
+  assert.equal(
+    resolveSessionStatusMode({ phase: 'thinking', active: false, pendingCount: 0 }),
+    'running',
+  )
+  // 事件说 idle 但 SSE 仍在流式 → 仍算运行（避免"空闲"误停入口）
+  assert.equal(
+    resolveSessionStatusMode({ phase: 'idle', active: true, pendingCount: 0 }),
+    'running',
+  )
+  // 空闲：idle 且无流式
+  assert.equal(
+    resolveSessionStatusMode({ phase: 'idle', active: false, pendingCount: 0 }),
+    'idle',
+  )
+  // phase 未知：按 active 兜底
+  assert.equal(resolveSessionStatusMode({ phase: null, active: true, pendingCount: 0 }), 'running')
+  assert.equal(resolveSessionStatusMode({ phase: null, active: false, pendingCount: 0 }), 'idle')
+})
+
+test('sessionStatusLabel：phase 文案映射；未知/矛盾态用生成中兜底；审批态固定文案', () => {
+  assert.equal(
+    sessionStatusLabel({ phase: 'file_write', active: true, pendingCount: 0 }),
+    PHASE_LABELS.file_write,
+  )
+  assert.equal(
+    sessionStatusLabel({ phase: 'idle', active: true, pendingCount: 0 }),
+    '生成中…',
+  )
+  assert.equal(
+    sessionStatusLabel({ phase: null, active: true, pendingCount: 0 }),
+    '生成中…',
+  )
+  assert.equal(
+    sessionStatusLabel({ phase: null, active: false, pendingCount: 0 }),
+    PHASE_LABELS.idle,
+  )
+  assert.equal(
+    sessionStatusLabel({ phase: 'thinking', active: true, pendingCount: 2 }),
+    '等待审批',
+  )
+})
+
+test('formatStatusElapsed：秒/分钟/小时+分钟分级；null 与负数钳制', () => {
+  assert.equal(formatStatusElapsed(null), '')
+  assert.equal(formatStatusElapsed(0), '0s')
+  assert.equal(formatStatusElapsed(40_000), '40s')
+  assert.equal(formatStatusElapsed(5 * 60_000), '5 分钟')
+  assert.equal(formatStatusElapsed(90 * 60_000), '1 小时 30 分钟')
+  // 负数（时钟回拨/近似值乱序）钳制为 0，不显示负时长
+  assert.equal(formatStatusElapsed(-3_000), '0s')
 })

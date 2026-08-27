@@ -4,13 +4,17 @@
  *
  * 路由：/sessions/:id?instance_id=xxx&title=xxx
  *
- * P1 改造（设计方案 v2 §4.3）：
- *  - 顶部状态条（SessionStatusBar）：审批/运行态一行式实时驱动，
- *    数据来自 session.activity 事件（断线降级到 store 消息流推导）；
+ * P1 改造（设计方案 v2 §4.3）+ P1.5 界面减负：
+ *  - 头部收敛（P1.5）：原 top-bar + SessionStatusBar 两行合一——
+ *    [退出] [动态状态图标] 标题+信号副标题（状态·时长） [⋮]；
+ *    壳层顶栏由路由 hideAppHeader 契约修复隐藏（AppLayout 此前未消费）；
+ *  - 动态状态图标（SessionStatusBar，信号即界面 §2.2）：审批呼吸/运行旋转
+ *    （单击=停止）/空闲播放（单击=继续），实例名等非实时信息收进 ⋮ 抽屉；
  *  - 轮次时间线（RoundTimeline）：事件流按轮折叠，轮摘要由 round.completed
  *    事件下发（§6.1），前端不再自行拼接；
- *  - 详情抽屉（SessionDetailDrawer）：旧 opencode 详情页的统计与导出能力收敛于此；
- *  - 输入区（SessionComposer，契约 §4 固定目标模式）：指令模板 chips +
+ *  - 详情抽屉（SessionDetailDrawer，⋮ 触发）：实例信息 + 旧 opencode 详情页
+ *    的统计与导出能力收敛于此；
+ *  - 输入区（SessionComposer，契约 §4 固定目标模式）：快速指令面板 +
  *    语音转写入草稿 + SQLite 草稿持久化（C 交付，此处挂载接线）。
  *
  * 保留：ApprovalPanel / ApprovalBottomSheet（含服务端确认语义）、SSE 流式渲染、
@@ -31,8 +35,10 @@ import SessionDetailDrawer from './SessionDetailDrawer.vue'
 import SessionComposer from './SessionComposer.vue'
 import {
   deriveFallbackPhase,
+  formatStatusElapsed,
   groupMessagesIntoRounds,
   roundSummaryFallback,
+  sessionStatusLabel,
   statsFromMessages,
   statsFromRounds,
   useSessionEvents,
@@ -190,6 +196,35 @@ const barLastEventAt = computed(() => {
   return last ? last.time : null
 })
 
+/**
+ * P1.5 头部副标题（信号文本 = 一句话 + 时长，设计 v2 §4.1）：
+ * 与 SessionStatusBar 图标共用纯派生；1s tick 驱动时长。
+ */
+const nowTick = ref(Date.now())
+let nowTimer: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  nowTimer = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 1000)
+})
+onBeforeUnmount(() => {
+  if (nowTimer !== null) clearInterval(nowTimer)
+})
+
+const statusSubtitle = computed(() => {
+  const base = sessionStatusLabel({
+    phase: barPhase.value,
+    active: store.isStreaming,
+    pendingCount: pendingApprovalCount.value,
+  })
+  const since =
+    pendingApprovalCount.value > 0 && approvalFirstSeenAt.value !== null
+      ? approvalFirstSeenAt.value
+      : barLastEventAt.value
+  const elapsed = formatStatusElapsed(since === null ? null : nowTick.value - since)
+  return elapsed ? `${base} · ${elapsed}` : base
+})
+
 /** 审批待办（状态条 🔴 态）：ApprovalPanel 的数据源（权限 + 问答）。 */
 const pendingApprovalCount = computed(
   () => approvalStore.permissions.length + approvalStore.questions.length,
@@ -343,6 +378,24 @@ async function onApprovalDecision(decision: ApprovalDecision): Promise<void> {
 
 async function stop() {
   await store.interrupt()
+  toast.info('已停止，点击状态图标可继续')
+}
+
+/**
+ * P1.5 动态状态图标·空闲态单击 = 继续（信号即入口）：
+ * 走与 Composer @send 相同的发送路径（滚动跟随 + sending 防抖）。
+ */
+async function continueSession() {
+  if (sending.value) return
+  sending.value = true
+  try {
+    await store.sendPrompt('继续')
+    autoScroll.value = true
+    await nextTick()
+    scrollToBottom(true)
+  } finally {
+    sending.value = false
+  }
 }
 
 // 自动跟随流式输出（RoundTimeline 内部消息变化同样驱动此 watch）
@@ -365,7 +418,9 @@ function goBack() {
 
 <template>
   <div class="session-view" :class="{ embedded: props.embedded }">
-    <!-- Top Bar -->
+    <!-- P1.5 头部收敛：[退出] [动态状态图标] 标题+信号副标题 [⋮]
+         （原 top-bar + SessionStatusBar 两行合一；壳层顶栏由 hideAppHeader 修复隐藏；
+         实例名等非实时信息收进 ⋮ 抽屉，不常驻副标题） -->
     <header class="top-bar">
       <!-- 嵌入双栏时底导隐藏，关闭按钮是详情态的唯一退出路径（08 §2.2）。 -->
       <button v-if="props.embedded" class="back-btn" @click="emit('close')" aria-label="关闭会话详情">
@@ -374,31 +429,33 @@ function goBack() {
       <button v-if="!props.embedded" class="back-btn" @click="goBack" aria-label="返回">
         <span class="material-symbols-outlined">arrow_back</span>
       </button>
+
+      <!-- 动态状态图标（信号即界面 §2.2）：审批呼吸 / 运行旋转（单击停止）/
+           空闲播放（单击继续） -->
+      <SessionStatusBar
+        :phase="barPhase"
+        :last-event-at="barLastEventAt"
+        :active="store.isStreaming"
+        :pending-count="pendingApprovalCount"
+        :approval-first-seen-at="approvalFirstSeenAt"
+        @stop="stop"
+        @continue="continueSession"
+        @view-approvals="viewApprovals"
+      />
+
       <div class="title-block">
         <div class="title">{{ sessionTitle }}</div>
-        <div v-if="selectedInstance?.displayName" class="subtitle">
-          <span class="instance-tag">{{ selectedInstance.displayName }}</span>
-        </div>
+        <div class="subtitle">{{ statusSubtitle }}</div>
       </div>
+
       <button
         class="back-btn detail-btn"
-        aria-label="会话详情"
+        aria-label="更多会话信息"
         @click="detailVisible = true"
       >
-        <span class="material-symbols-outlined">info</span>
+        <span class="material-symbols-outlined">more_vert</span>
       </button>
     </header>
-
-    <!-- P1 顶部状态条（§4.3-1）：审批/运行态一行式实时驱动 -->
-    <SessionStatusBar
-      :phase="barPhase"
-      :last-event-at="barLastEventAt"
-      :active="store.isStreaming"
-      :pending-count="pendingApprovalCount"
-      :approval-first-seen-at="approvalFirstSeenAt"
-      @stop="stop"
-      @view-approvals="viewApprovals"
-    />
 
     <!-- Messages（轮次时间线，§4.3-2） -->
     <main ref="messagesEl" class="messages" @scroll="onScroll">
@@ -448,11 +505,13 @@ function goBack() {
       @decision="onApprovalDecision"
     />
 
-    <!-- P1 详情抽屉（旧详情页统计/导出收敛，§4.3-3） -->
+    <!-- P1.5 详情抽屉（⋮ 收纳：实例信息 + 统计 + 轮摘要 + 导出） -->
     <SessionDetailDrawer
       v-model:visible="detailVisible"
       :session-id="sessionID"
       :session-title="sessionTitle"
+      :instance-name="selectedInstance?.displayName || ''"
+      :instance-id="instanceID"
       :stats="sessionStats"
       :rounds="drawerRounds"
     />
@@ -506,8 +565,8 @@ function goBack() {
 .back-btn,
 .top-spacer {
   flex: 0 0 auto;
-  width: 32px;
-  height: 32px;
+  width: 44px; /* P1.5：触摸热区 ≥44px（原 32px 偏差修正） */
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -535,6 +594,7 @@ function goBack() {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 信号副标题（状态 · 时长）：与左侧动态图标同一数据源 */
 .subtitle {
   font-size: var(--text-xs);
   color: var(--text-secondary);
@@ -542,10 +602,7 @@ function goBack() {
   align-items: center;
   gap: var(--space-1);
   margin-top: 2px;
-}
-.instance-tag {
-  color: var(--text-muted);
-  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Messages */

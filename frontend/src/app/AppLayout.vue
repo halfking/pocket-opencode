@@ -64,7 +64,11 @@ const { isFoldableExpanded } = useBreakpoint()
 const mainEl = ref<HTMLElement | null>(null)
 
 const title = computed(() => (route.meta.title as string) || 'OpenCode Pocket')
-const showTopBar = computed(() => route.meta.showTopBar !== false)
+// hideAppHeader：视图自带全屏头部（会话工作台等）时隐藏壳层顶栏与全局状态条，
+// 避免与视图头部双层堆叠（P1.5 界面减负；meta 契约此前只被 ScrollChromePortal 消费）。
+const showTopBar = computed(
+  () => route.meta.showTopBar !== false && route.meta.hideAppHeader !== true,
+)
 const showBottomNav = computed(() => {
   if (route.meta.bottomNav === false) return false
   // 平板会话工作台选中 detail 后进入详情态，按 08 §2.2 隐藏底部导航。

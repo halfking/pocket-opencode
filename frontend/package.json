@@ -25,6 +25,7 @@
     "fast-xml-parser": "^4.5.7",
     "http-proxy": "^1.18.1",
     "marked": "^18.0.5",
+    "material-symbols": "^0.47.0",
     "otpauth": "^9.5.1",
     "pinia": "^2.2.6",
     "vue": "^3.5.13",

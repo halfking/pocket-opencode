@@ -1,29 +1,40 @@
 <script setup lang="ts">
 /**
- * SessionStatusBar — 会话工作台顶部一行式实时状态条（设计方案 v2 §4.3-1）。
+ * SessionStatusBar — 会话工作台动态状态信号图标（P1.5 界面减负改造）。
  *
- * 展示优先级（§4.1 同款）：
- *   1. 审批待办：`🔴 等待审批 · 5 分钟 [查看]`（审批态来自 approval store，
- *      [查看] 通知父级聚焦既有 ApprovalPanel）
- *   2. 运行态：`🟢 改文件中 · 40s [停止]`（phase 来自 session.activity 事件；
- *      事件不可用时由父级传入消息流推导的降级 phase）
- *   3. 空闲：`⚪ 空闲` 弱化展示
+ * 设计原则「信号即界面」（设计 v2 §2.2）的入口化：原一行式状态条收敛为
+ * 头部 44px 圆形图标按钮，状态与动作合一——
+ *   - 审批待办（最高优先级）：notifications_active + 待办角标，红色呼吸动画，
+ *     单击 = 查看审批（emit view-approvals）；
+ *   - 运行中（phase≠idle 或 SSE 流式）：progress_activity 持续旋转，品牌绿，
+ *     单击 = 停止（emit stop；**无二次确认**——停止可经同一图标恢复，误触
+ *     成本一次点击，两步介入原则优先，见 docs/2026-08-27-p1.5-ui-declutter.md
+ *     设计决策 DD-1；文字模板里的「停下」仍保留二次确认不变）；
+ *   - 空闲/停止：play_arrow 弱化色，单击 = 继续（emit continue）。
  *
- * 时长 = now - lastEventAt 秒表（事件 last_event_at；降级时传最后一条消息时间
- * 近似），1s tick 实时驱动。审批等待时长用客户端首见时间近似（P0 近似，
- * 与 useInstanceApprovals 同款）。
+ * 状态派生（resolveSessionStatusMode/sessionStatusLabel）与时长格式化是
+ * useSessionEvents 导出的纯函数，头部副标题（状态·时长文本）与图标共用。
+ * 时长 = now - lastEventAt（事件 last_event_at，降级为最后一条消息时间近似），
+ * 1s tick 驱动（aria-label 朗读用；可见文本由父级头部副标题渲染）。
  *
- * 触摸纪律：整条高度 44px；动作按钮热区 ≥44px 高、≥56px 宽（无 :hover 依赖）。
+ * 触摸纪律：44px 热区，仅 :active 反馈，无 :hover 依赖；动画遵循全局
+ * prefers-reduced-motion 裁剪。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { PHASE_LABELS, type SessionPhase } from './useSessionEvents'
+import {
+  formatStatusElapsed,
+  resolveSessionStatusMode,
+  sessionStatusLabel,
+  type SessionPhase,
+  type SessionStatusMode,
+} from './useSessionEvents'
 
 const props = defineProps<{
-  /** 当前 phase（事件 or 降级推导）；null = 完全未知（仅显示审批/兜底态）。 */
+  /** 当前 phase（事件 or 降级推导）；null = 完全未知（按 active 兜底）。 */
   phase: SessionPhase | null
   /** phase 对应的起点（epoch ms，事件 last_event_at 或消息流近似）。 */
   lastEventAt: number | null
-  /** 会话是否在流式运行（决定 [停止] 显隐）。 */
+  /** 会话是否在流式运行（决定停止/继续动作与运行图标显隐）。 */
   active: boolean
   /** 待审批数（权限 + 问答）。 */
   pendingCount: number
@@ -33,6 +44,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'stop'): void
+  (e: 'continue'): void
   (e: 'view-approvals'): void
 }>()
 
@@ -48,135 +60,151 @@ onBeforeUnmount(() => {
   if (timer !== null) clearInterval(timer)
 })
 
-/** 事件不可用时的兜底文案（与旧 top-bar 状态一致）。 */
-const fallbackLabel = computed(() => (props.active ? '生成中…' : '空闲'))
+const mode = computed<SessionStatusMode>(() =>
+  resolveSessionStatusMode({
+    phase: props.phase,
+    active: props.active,
+    pendingCount: props.pendingCount,
+  }),
+)
 
-const mode = computed<'approval' | 'running' | 'idle' | 'unknown'>(() => {
-  if (props.pendingCount > 0) return 'approval'
-  if (props.phase === null) return props.active ? 'unknown' : 'idle'
-  if (props.phase === 'idle') return props.active ? 'running' : 'idle'
-  return 'running'
-})
-
-const phaseLabel = computed(() => {
-  if (props.phase === null) return fallbackLabel.value
-  // 事件说 idle 但 SSE 仍在流式：显示生成中文案，避免"空闲 · 40s"矛盾
-  if (props.phase === 'idle') return props.active ? fallbackLabel.value : PHASE_LABELS.idle
-  return PHASE_LABELS[props.phase]
-})
-
-function elapsedSince(since: number | null): string {
-  if (since === null || !Number.isFinite(since)) return ''
-  const ms = Math.max(0, now.value - since)
-  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`
-  const minutes = Math.floor(ms / 60_000)
-  if (minutes < 60) return `${minutes} 分钟`
-  const hours = Math.floor(minutes / 60)
-  return `${hours} 小时 ${minutes % 60} 分钟`
-}
-
-const runningElapsed = computed(() => elapsedSince(props.lastEventAt))
-const approvalElapsed = computed(() => elapsedSince(props.approvalFirstSeenAt))
-
-/** 运行态圆点：🟢；空闲 ⚪；审批 🔴（与设计文档 §4.1 配色语义一致）。 */
-const dot = computed(() => {
-  if (mode.value === 'approval') return '🔴'
-  if (mode.value === 'running') return '🟢'
-  if (mode.value === 'unknown') return props.active ? '🟢' : '⚪'
-  return '⚪'
-})
-
-const label = computed(() => {
-  if (mode.value === 'approval') return '等待审批'
-  if (mode.value === 'idle') return '空闲'
-  return phaseLabel.value
-})
+const label = computed(() =>
+  sessionStatusLabel({ phase: props.phase, active: props.active, pendingCount: props.pendingCount }),
+)
 
 const elapsedText = computed(() => {
-  if (mode.value === 'approval') return approvalElapsed.value
-  if (mode.value === 'running') return runningElapsed.value
+  if (mode.value === 'approval') {
+    return formatStatusElapsed(
+      props.approvalFirstSeenAt === null ? null : now.value - props.approvalFirstSeenAt,
+    )
+  }
+  if (mode.value === 'running') {
+    return formatStatusElapsed(props.lastEventAt === null ? null : now.value - props.lastEventAt)
+  }
   return ''
 })
+
+/** 图标语义（Material Symbols 子集内）：审批=通知、运行=旋转进度、空闲=播放。 */
+const iconName = computed(() => {
+  if (mode.value === 'approval') return 'notifications_active'
+  if (mode.value === 'running') return 'progress_activity'
+  return 'play_arrow'
+})
+
+const actionLabel = computed(() => {
+  if (mode.value === 'approval') return '点击查看审批'
+  if (mode.value === 'running') return '点击停止'
+  return '点击继续'
+})
+
+const ariaLabel = computed(() => {
+  const parts = [label.value]
+  if (elapsedText.value) parts.push(elapsedText.value)
+  if (props.pendingCount > 0) parts.push(`${props.pendingCount} 项待办`)
+  parts.push(actionLabel.value)
+  return parts.join(' · ')
+})
+
+function onTap(): void {
+  if (mode.value === 'approval') emit('view-approvals')
+  else if (mode.value === 'running') emit('stop')
+  else emit('continue')
+}
 </script>
 
 <template>
-  <div class="status-bar" :class="`mode-${mode}`" role="status" :aria-label="`${label}${elapsedText ? ' · ' + elapsedText : ''}`">
-    <span class="dot" aria-hidden="true">{{ dot }}</span>
-    <span class="label">{{ label }}</span>
-    <span v-if="elapsedText" class="elapsed">{{ elapsedText }}</span>
-    <span class="spacer"></span>
-    <button
-      v-if="mode === 'approval'"
-      type="button"
-      class="action"
-      @click="emit('view-approvals')"
-    >
-      查看
-    </button>
-    <button
-      v-else-if="mode === 'running' && active"
-      type="button"
-      class="action stop"
-      @click="emit('stop')"
-    >
-      停止
-    </button>
-  </div>
+  <button
+    type="button"
+    class="status-icon"
+    :class="`mode-${mode}`"
+    role="status"
+    :aria-label="ariaLabel"
+    @click="onTap"
+  >
+    <span class="material-symbols-outlined icon" aria-hidden="true">{{ iconName }}</span>
+    <span v-if="mode === 'approval' && pendingCount > 0 && pendingCount < 10" class="badge" aria-hidden="true">
+      {{ pendingCount }}
+    </span>
+  </button>
 </template>
 
 <style scoped>
-.status-bar {
+/* 44px 圆形热区（信号即入口；无 :hover 依赖） */
+.status-icon {
+  position: relative;
   flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: 44px; /* 整条热区 ≥44px */
-  padding: 0 var(--space-3);
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border);
-  font-size: var(--text-sm);
-  color: var(--text-primary);
-}
-.mode-idle {
-  color: var(--text-muted);
-}
-.dot {
-  font-size: var(--text-sm);
-  line-height: 1;
-}
-.label {
-  font-weight: var(--font-weight-medium);
-  white-space: nowrap;
-}
-.elapsed {
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.spacer {
-  flex: 1 1 auto;
-}
-.action {
-  /* 热区 ≥44px 高（铺满状态条）、≥56px 宽；无 :hover 依赖，仅 :active 反馈 */
-  align-self: stretch;
-  min-width: 56px;
-  padding: 0 var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-card);
-  color: var(--brand-primary);
-  font-size: var(--text-sm);
-  font-weight: var(--font-weight-semibold);
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
-}
-.action.stop {
-  color: var(--danger);
-  border-color: var(--danger);
-}
-.action:active {
+  border-radius: var(--radius-full);
+  border: 1px solid transparent;
   background: var(--bg-subtle);
-  transform: scale(0.97);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.status-icon:active {
+  transform: scale(0.92);
+}
+
+/* 运行中：品牌绿 + 持续旋转（progress_activity 为圆环图标） */
+.status-icon.mode-running {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--success);
+}
+.status-icon.mode-running .icon {
+  animation: status-spin 1.6s linear infinite;
+}
+@keyframes status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 审批待办：danger 语义 + 呼吸提醒 + 待办角标 */
+.status-icon.mode-approval {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+.status-icon.mode-approval .icon {
+  animation: status-pulse 1.2s var(--ease-out) infinite;
+}
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.65;
+    transform: scale(1.12);
+  }
+}
+.badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--radius-full);
+  background: var(--danger);
+  color: var(--text-inverse);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* 空闲：弱化展示（信号即界面——无信号不抢注意力），点击=继续 */
+.status-icon.mode-idle {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+}
+
+.icon {
+  font-size: 24px;
+  line-height: 1;
 }
 </style>

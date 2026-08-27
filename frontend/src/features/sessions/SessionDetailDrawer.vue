@@ -1,8 +1,9 @@
 <script setup lang="ts">
 /**
- * SessionDetailDrawer — 会话工作台头部「详情」抽屉（设计方案 v2 §4.3-3）。
+ * SessionDetailDrawer — 会话工作台头部「⋮」抽屉（设计方案 v2 §4.3-3 + P1.5 界面减负）。
  *
- * 收敛旧 features/opencode/SessionDetailView.vue 的能力：
+ * 收敛旧 features/opencode/SessionDetailView.vue 的能力 + 原头部常驻的非实时信息：
+ *   - 实例信息（P1.5 从头部副标题移入：实例显示名 + instance_id）；
  *   - 代码变更统计（+/- 行数、文件数）+ 消息数（旧页 4 格统计对齐）；
  *   - 导出 markdown（迁移 exportSummary，数据源从 mock session 换成
  *     round.completed 事件累计 / 消息流 diff 推导）。
@@ -15,6 +16,7 @@ import BottomSheet from '../../components/base/BottomSheet.vue'
 import { useToast } from '../../composables/useToast'
 import {
   buildSessionMarkdown,
+  truncate,
   type RoundCompletedData,
   type SessionStats,
 } from './useSessionEvents'
@@ -23,6 +25,10 @@ const props = defineProps<{
   visible: boolean
   sessionId: string
   sessionTitle: string
+  /** 实例显示名（P1.5 从头部副标题收纳至此；空则隐藏区块）。 */
+  instanceName?: string
+  /** 实例 ID（截断展示，运维定位用）。 */
+  instanceId?: string
   stats: SessionStats
   /** 轮摘要导出素材：index 升序；data 为 null 表示该轮无 round.completed 事件。 */
   rounds: Array<{ index: number; data: RoundCompletedData | null; fallbackSummary: string }>
@@ -45,6 +51,11 @@ const deletionsPercentage = computed(() => {
   if (total === 0) return 0
   return (props.stats.removed / total) * 100
 })
+
+/** 实例 ID 展示截断（非实时运维信息，收藏进抽屉不占头部）。 */
+const instanceIdShort = computed(() =>
+  props.instanceId ? truncate(props.instanceId, 20) : '',
+)
 
 function onVisibleChange(v: boolean): void {
   emit('update:visible', v)
@@ -83,6 +94,15 @@ function exportMarkdown(): void {
     aria-label="会话详情"
     @update:model-value="onVisibleChange"
   >
+    <!-- 实例信息（P1.5：原头部副标题收纳于此——非实时信息点击查看，不常驻） -->
+    <section v-if="instanceName || instanceIdShort" class="instance-card">
+      <h3 class="section-title">💻 实例</h3>
+      <div class="instance-row">
+        <span class="instance-name">{{ instanceName || '（未命名实例）' }}</span>
+        <span v-if="instanceIdShort" class="instance-id">{{ instanceIdShort }}</span>
+      </div>
+    </section>
+
     <!-- 代码变更统计（旧详情页 4 格统计对齐） -->
     <section class="stats-card">
       <h3 class="section-title">📊 代码变更统计</h3>
@@ -143,6 +163,33 @@ function exportMarkdown(): void {
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
   margin: 0 0 var(--space-3);
+}
+.instance-card {
+  margin-bottom: var(--space-4);
+}
+.instance-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+.instance-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.instance-id {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-family: 'SF Mono', Menlo, monospace;
 }
 .stats-card {
   margin-bottom: var(--space-4);

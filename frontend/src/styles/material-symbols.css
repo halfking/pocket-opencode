@@ -1,0 +1,43 @@
+/**
+ * Material Symbols Outlined — 自托管子集字体（P1.5）。
+ *
+ * 背景：工程内 15 个文件使用 `material-symbols-outlined` 类写图标
+ * （<span class="material-symbols-outlined">arrow_back</span>），但从未加载
+ * 过该字体——WebView 渲染为 ligature 原文（真机证据：vivo 截图出现
+ * "rrow_back" 文字）。国内设备无法依赖 fonts.googleapis.com，故自托管。
+ *
+ * 字体由 npm 包 material-symbols@0.47.0 的 variable font 固定轴值
+ * （wght=400 FILL=0 GRAD=0 opsz=24）后，按工程在用图标名子集化：
+ * 3.8MB → 4KB（脚本与图标清单见 scripts/subset-material-symbols.sh，
+ * 新增图标时重跑该脚本重新生成）。
+ *
+ * font-display: block —— 本地打包资源加载即时完成，且避免字体就位前
+ * 闪现 ligature 原文（block 期间以不可见文字占位）。
+ */
+@font-face {
+  font-family: 'Material Symbols Outlined';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('../assets/fonts/material-symbols-outlined.woff2') format('woff2');
+}
+
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* ligature：图标由名称文本（如 arrow_back）连字渲染为字形 */
+  font-feature-settings: 'liga';
+  -webkit-font-feature-settings: 'liga';
+}

@@ -202,3 +202,13 @@
 | 真机验证 | **blocked（无设备）**——`test-evidence/P1-mobile-ux/device-verification-2026-08-27.md`（静态验证 PASS + VITE_API_BASE 前置缺口 + 下次执行清单） |
 | Evidence level | 事件层 `integration-tested`（上行条目）；UI（状态条/时间线/抽屉/Composer/草稿）**`integration-tested`（2026-08-27 vivo X Fold5 真机，通知/Deep Link 两子项除外——无真实审批触发源）**；草稿 SQLite 持久化真机杀进程存活验证 PASS（`test-evidence/P1-mobile-ux/device-verification-2026-08-27.md` §9）。真机轮修复 `frontend/src/native/local-db.ts`（splitSqlStatements 接线——Android 全新安装曾静默缺 23 张表）与 `backend/internal/adapter/opencode_http.go`（事件信封归一化） |
 | Status | 事件层 `integration-tested`；UI `integration-tested`（通知触达/Deep Link 点击维持 `pending-evidence`）。契约两处已裁决偏差备案：草稿表名 `local_drafts`（遵工程 `local_` 前缀原则）、Composer prop `modelTarget`（无 `v-model:target` 简写，P1 只用固定模式）——见 `docs/2026-08-27-p1-contracts-frozen.md` §7 备案。`task.health` 前端消费为 P2。P2 登记：旧库升级无迁移机制、同路由组件复用串台、vivo `install -r` 静默失效（环境坑见证据 §10⑥④）。 |
+
+## P1.5 移动端界面减负门禁与真机运行记录（in-repo，2026-08-27）
+
+| Field | Value |
+|---|---|
+| 覆盖范围 | 纯前端：`AppLayout.vue`（hideAppHeader 双头 bug 修复）/ `styles/material-symbols.css` + `assets/fonts/material-symbols-outlined.woff2`（自托管子集字体 3.8MB→4KB，31 ligature）+ `scripts/subset-material-symbols.sh`（再生）/ `SessionStatusBar.vue` 重构（动态状态图标：审批呼吸/运行旋转单击停止/空闲播放单击继续）/ `SessionConversationView.vue` 头部收敛（两行合一 + 实例信息收 ⋮）/ `SessionComposer.vue`（chips 常驻行→bolt 快速指令面板）/ `SessionDetailDrawer.vue`（实例区块）/ `useSessionEvents.ts`（信号三态纯函数 +3 用例）/ `useSessionDrafts.ts`（QuickCommand.icon） |
+| 绿色运行日志 | `test-evidence/P1.5-mobile-ux/gate-run-2026-08-27.log`：node --test 全量 sweep **193/193 fail=0**（P1 基线 191 + 信号纯函数 3 + 口径差 1）/ vue-tsc exit=0 / vite build ✓ |
+| 真机验证 | **PASS（V-1..V-8）**——`test-evidence/P1.5-mobile-ux/device-verification-2026-08-27.md`：vivo X Fold5 uninstall+install（lastUpdateTime=23:14:43），CDP 驱动 + 截图 `shots/vivo-p15-01..06.png`。双头消除/图标字体渲染/状态图标三态与停续 toggle/快速指令面板/⋮ 抽屉实例信息全部实测通过 |
+| Evidence level | 信号纯函数 `contract-tested`（gate log §1/§4）；P1.5 UI `integration-tested`（真机 V-1..V-8） |
+| Status | `integration-tested`。设计决策 DD-1..DD-6 登记（`docs/2026-08-27-p1.5-ui-declutter.md` §4，含 DD-1 停止无二次确认与 §4.4-2 纪律的显式偏差）。**真机发现的 P1 层存量缺陷登记 P2**：DEFECT-P2-SSE-1（SSE 不投递 assistant 输出且无关闭信号→isStreaming 卡真；opencode 侧轮次已完成 vs App 100s+ 仍运行态的对照证据见真机记录 §4）/ DEFECT-P2-DUP-1（同文 prompt 重复投递一次，需服务端日志定位）。P1.5 未触碰流/store/事件层（diff 全在展示层） |

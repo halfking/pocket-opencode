@@ -9,6 +9,7 @@ import i18n from "./i18n"
 import "./styles.css"
 import "./styles/tokens.css"
 import "./styles/responsive.css"
+import "./styles/material-symbols.css"
 
 const pinia = createPinia()
 const app = createApp(App)
