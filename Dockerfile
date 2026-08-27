@@ -1,6 +1,8 @@
 FROM golang:1.26-alpine AS build
 WORKDIR /src
+# go.mod 的 replace 指向 ./third_party/identity-go，模块下载前必须先拷入
 COPY backend/go.mod backend/go.sum ./backend/
+COPY backend/third_party ./backend/third_party
 RUN cd backend && go mod download
 COPY backend ./backend
 RUN cd backend && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/pocketd ./cmd/pocketd

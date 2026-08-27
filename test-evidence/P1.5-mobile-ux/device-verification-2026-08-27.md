@@ -110,3 +110,24 @@
 - 归档存储 key：`pocket_session_archive_v1:<encodeURIComponent(workspaceId)>:<encodeURIComponent(instanceId|all)>`（workspace 取 `pocket_workspace_id`）
 - 合成滑动手势需构造 Touch/TouchEvent 三段序列（start→move×8→end），位移 ≥ 动作宽 × 0.3 阈值
 - 重装后首次进入需重新输主密码解锁（本次为 `p1-verify-2026`）
+
+---
+
+## 8. P2 设计轮真机验证（2026-08-28 00:2x–00:5x）
+
+环境变更：pocketd 容器 → `pocket-local-f6iss-p2`（最新 main + `POCKET_LLM_GATEWAY_URL/_API_KEY` env；`/api/llm/models` 返回完整目录、config apiKeySet=true）。APK 为 P2 设计轮构建（三连装）。
+
+| # | 验证点 | 方法 | 结果 |
+|---|---|---|---|
+| V-16 | 底导 Material 化 + AI 激活 pill + hairline/微阴影 | /ai 截图 | ✅ shots/vivo-p2-01 |
+| V-17 | 更多面板：drag handle + 标题行 + 关闭钮 + 4 列图标网格 + 16px 圆角 | 打开截图 | ✅ shots/vivo-p2-02 |
+| V-18 | backdrop 点击关闭 | 合成 click（target=overlay） | ✅ |
+| V-19 | 下滑关闭 | 合成 touch 手势 150px 下拖 | ✅ |
+| V-20 | 关闭按钮 | `.more-close` click | ✅ |
+| V-21 | ai-chat 打通 | /ai-chat → 模型目录拉取（无配置报错）→ 发"请只回复四个字：链路正常" → 流式回复命中 | ✅ shots/vivo-p2-03 |
+| V-22 | 设置页 AI 网关区块 | 导航 /settings 读状态徽标 | ✅「已配置」+ llmgo 地址（shots/vivo-p2-05；曾恒显"未配置"——根因 `pocket_user` 坏 JSON 中断 onMounted，已修复防御性解析） |
+
+### 调试要点追加
+
+- 设置页恒显"未配置"排查路径：WebView 内 fetch API 正常 + pinia token 正常 + hook console.warn 无输出 → 检查 onMounted 前段：`JSON.parse(localStorage.pocket_user)` 抛错静默中断（Vue onMounted 异步错误不冒泡到此处 warn）
+- 容器重建：compose 项目与现有容器脱管（container_name 相同但项目不同）→ 直接 docker run 同参数替换；`Dockerfile` 需先 COPY third_party（go.mod replace）

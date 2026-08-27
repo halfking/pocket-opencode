@@ -22,7 +22,7 @@ grep -rhoE "material-symbols-outlined[^>]*>\s*[a-z_]+" src --include='*.vue' \
   | grep -oE '[a-z_]+\s*$' | tr -d ' ' | sort -u > /tmp/ms-icons.txt
 grep -rn "material-symbols-outlined" src --include='*.vue' -A2 \
   | grep -oE "'[a-z_]+'|>[a-z_]+<" | tr -d "'><" | sort -u >> /tmp/ms-icons.txt
-EXTRA_ICONS='bolt fast_forward help more_vert notifications_active play_arrow progress_activity science subject'
+EXTRA_ICONS='bolt fast_forward help more_vert notifications_active play_arrow progress_activity science subject smart_toy edit_note mic mail more_horiz sticky_note_2 checklist chat dns computer payments settings hub'
 printf '%s\n' $EXTRA_ICONS >> /tmp/ms-icons.txt
 sort -u /tmp/ms-icons.txt -o /tmp/ms-icons.txt
 echo "图标清单（$(wc -l < /tmp/ms-icons.txt | tr -d ' ') 个）："; cat /tmp/ms-icons.txt

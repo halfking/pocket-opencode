@@ -25,7 +25,7 @@
         aria-label="返回"
         @click="goBack"
       >
-        <span aria-hidden="true">←</span>
+        <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>
       </button>
       <h1 class="title">{{ title }}</h1>
       <slot name="actions" />
@@ -161,12 +161,19 @@ function focusMain() {
 }
 
 .back-btn {
-  font-size: 20px;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--text-primary);
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-full);
   line-height: 1;
   transition: background var(--duration-fast) var(--ease-out);
+}
+
+.back-btn .material-symbols-outlined {
+  font-size: 22px;
 }
 
 .back-btn:active {

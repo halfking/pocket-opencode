@@ -246,7 +246,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
       modelsError.value = e?.message || String(e)
       // 网关未配置时给出温和提示，不阻断 UI。
       if (!models.value.length) {
-        toast.error('模型列表获取失败：请先在「设置 → AI 模型」配置网关密钥')
+        toast.error('模型列表获取失败：请先在「设置 → AI 网关」配置网关密钥')
       }
     } finally {
       modelsLoading.value = false

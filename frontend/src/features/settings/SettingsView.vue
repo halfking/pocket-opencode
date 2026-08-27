@@ -2,115 +2,36 @@
   <div class="settings-view">
     <!-- 设置列表 -->
     <div class="settings-container">
-      <!-- 用户信息 -->
+      <!-- AI 网关（llmgo 网关：/ai-chat 对话流量的出口；未配置时 AI 聊天不可用） -->
       <div class="settings-section">
-        <h2>用户信息</h2>
-        <div class="setting-item">
-          <div class="setting-icon">👤</div>
-          <div class="setting-content">
-            <div class="setting-label">用户名</div>
-            <div class="setting-value">{{ user?.username }}</div>
-          </div>
+        <div class="section-head">
+          <h2>AI 网关</h2>
+          <span :class="['gateway-status', gateway.apiKeySet ? 'ok' : 'off']">
+            {{ gateway.apiKeySet ? '已配置' : '未配置' }}
+          </span>
         </div>
         <div class="setting-item">
-          <div class="setting-icon">🕐</div>
+          <div class="setting-icon"><span class="material-symbols-outlined">hub</span></div>
           <div class="setting-content">
-            <div class="setting-label">登录时间</div>
-            <div class="setting-value">{{ formatLoginTime() }}</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 当前连接 -->
-      <div class="settings-section">
-        <h2>当前连接</h2>
-        <div class="setting-item">
-          <div class="setting-icon">🌐</div>
-          <div class="setting-content">
-            <div class="setting-label">服务器</div>
-            <div class="setting-value">{{ selectedServer?.name || '未选择' }}</div>
-          </div>
-        </div>
-        <div class="setting-item">
-          <div class="setting-icon">💻</div>
-          <div class="setting-content">
-            <div class="setting-label">实例</div>
-            <div class="setting-value">{{ selectedInstance?.displayName || '未选择' }}</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 应用信息 -->
-      <div class="settings-section">
-        <h2>应用信息</h2>
-        <div class="setting-item">
-          <div class="setting-icon">📱</div>
-          <div class="setting-content">
-            <div class="setting-label">应用名称</div>
-            <div class="setting-value">{{ APP_VERSION.name }}</div>
-          </div>
-        </div>
-        <div class="setting-item">
-          <div class="setting-icon">🔖</div>
-          <div class="setting-content">
-            <div class="setting-label">版本号</div>
-            <div class="setting-value">v{{ APP_VERSION.version }} (Build {{ APP_VERSION.buildNumber }})</div>
-          </div>
-        </div>
-        <div class="setting-item">
-          <div class="setting-icon">📅</div>
-          <div class="setting-content">
-            <div class="setting-label">构建日期</div>
-            <div class="setting-value">{{ APP_VERSION.buildDate }}</div>
-          </div>
-        </div>
-        <div class="setting-item">
-          <div class="setting-icon">🌐</div>
-          <div class="setting-content">
-            <div class="setting-label">API 地址</div>
-            <div class="setting-value small">{{ apiOrigin }}</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 操作按钮 -->
-      <div class="settings-section">
-        <button class="action-btn secondary" @click="checkForUpdates">
-          🔄 检查更新
-        </button>
-        <button class="action-btn primary" @click="changeServer">
-          🔄 切换服务器
-        </button>
-        <button class="action-btn danger" @click="handleLogout">
-          🚪 退出登录
-        </button>
-      </div>
-
-      <!-- AI 模型（LLM Gateway） -->
-      <div class="settings-section">
-        <h2>AI 模型</h2>
-        <div class="setting-item">
-          <div class="setting-icon">🌐</div>
-          <div class="setting-content">
-            <div class="setting-label">Gateway URL</div>
+            <div class="setting-label">网关地址</div>
             <div class="setting-value small">{{ gateway.baseURL || '未配置' }}</div>
           </div>
         </div>
         <div class="setting-item">
-          <div class="setting-icon">🔑</div>
+          <div class="setting-icon"><span class="material-symbols-outlined">key</span></div>
           <div class="setting-content">
-            <div class="setting-label">API Key</div>
+            <div class="setting-label">API 密钥</div>
             <div class="setting-value">
-              {{ gateway.apiKeySet ? '✓ 已设置' : '未设置' }}
+              {{ gateway.apiKeySet ? '✓ 已设置' : '未设置 — AI 聊天需要密钥' }}
             </div>
           </div>
         </div>
         <div class="setting-item">
-          <div class="setting-icon">🧠</div>
+          <div class="setting-icon"><span class="material-symbols-outlined">psychology</span></div>
           <div class="setting-content">
             <div class="setting-label">可用模型</div>
             <div class="setting-value">
-              <span v-if="gateway.models.length === 0" class="muted">未配置</span>
+              <span v-if="gateway.models.length === 0" class="muted">未获取（配置后自动拉取）</span>
               <span v-else class="model-row">
                 <code v-for="m in gateway.models.slice(0, 3)" :key="m" class="model-chip">{{ m }}</code>
                 <span v-if="gateway.models.length > 3" class="muted">
@@ -122,15 +43,99 @@
         </div>
         <div class="action-row">
           <button class="action-btn secondary" :disabled="testing" @click="testGateway">
-            {{ testing ? '测试中…' : '🧪 测试连接' }}
+            {{ testing ? '测试中…' : '测试连接' }}
           </button>
           <button class="action-btn primary" @click="openGatewayEditor">
-            ⚙️ 编辑配置
+            编辑配置
           </button>
         </div>
         <div v-if="testResult" :class="['test-result', testResult.ok ? 'ok' : 'fail']">
           {{ testResult.text }}
         </div>
+      </div>
+
+      <!-- 用户信息 -->
+      <div class="settings-section">
+        <h2>用户信息</h2>
+        <div class="setting-item">
+          <div class="setting-icon"><span class="material-symbols-outlined">person</span></div>
+          <div class="setting-content">
+            <div class="setting-label">用户名</div>
+            <div class="setting-value">{{ user?.username }}</div>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-icon"><span class="material-symbols-outlined">calendar_month</span></div>
+          <div class="setting-content">
+            <div class="setting-label">登录时间</div>
+            <div class="setting-value">{{ formatLoginTime() }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 当前连接 -->
+      <div class="settings-section">
+        <h2>当前连接</h2>
+        <div class="setting-item">
+          <div class="setting-icon"><span class="material-symbols-outlined">dns</span></div>
+          <div class="setting-content">
+            <div class="setting-label">服务器</div>
+            <div class="setting-value">{{ selectedServer?.name || '未选择' }}</div>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-icon"><span class="material-symbols-outlined">computer</span></div>
+          <div class="setting-content">
+            <div class="setting-label">实例</div>
+            <div class="setting-value">{{ selectedInstance?.displayName || '未选择' }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 应用信息 -->
+      <div class="settings-section">
+        <h2>应用信息</h2>
+        <div class="setting-item">
+          <div class="setting-icon"><span class="material-symbols-outlined">smartphone</span></div>
+          <div class="setting-content">
+            <div class="setting-label">应用名称</div>
+            <div class="setting-value">{{ APP_VERSION.name }}</div>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-icon"><span class="material-symbols-outlined">info</span></div>
+          <div class="setting-content">
+            <div class="setting-label">版本号</div>
+            <div class="setting-value">v{{ APP_VERSION.version }} (Build {{ APP_VERSION.buildNumber }})</div>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-icon"><span class="material-symbols-outlined">event</span></div>
+          <div class="setting-content">
+            <div class="setting-label">构建日期</div>
+            <div class="setting-value">{{ APP_VERSION.buildDate }}</div>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-icon"><span class="material-symbols-outlined">hub</span></div>
+          <div class="setting-content">
+            <div class="setting-label">API 地址</div>
+            <div class="setting-value small">{{ apiOrigin }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 操作按钮 -->
+      <div class="settings-section">
+        <button class="action-btn secondary" @click="checkForUpdates">
+          检查更新
+        </button>
+        <button class="action-btn secondary" @click="changeServer">
+          切换服务器
+        </button>
+        <button class="action-btn danger" @click="handleLogout">
+          退出登录
+        </button>
       </div>
     </div>
 
@@ -169,23 +174,23 @@ const testing = ref(false)
 const testResult = ref<{ ok: boolean; text: string } | null>(null)
 
 onMounted(async () => {
+  // 历史版本曾把裸用户名（非 JSON）写入 pocket_user，坏值不得中断挂载流程
+  // （曾导致后续 AI 网关配置加载被跳过、区块恒显"未配置"）。
+  const readJSON = <T,>(key: string): T | null => {
+    try {
+      const raw = localStorage.getItem(key)
+      return raw ? (JSON.parse(raw) as T) : null
+    } catch {
+      return null
+    }
+  }
+
   // 加载用户信息
-  const userStr = localStorage.getItem('pocket_user')
-  if (userStr) {
-    user.value = JSON.parse(userStr)
-  }
+  user.value = readJSON('pocket_user')
 
-  // 加载当前服务器
-  const serverStr = localStorage.getItem('selected_server')
-  if (serverStr) {
-    selectedServer.value = JSON.parse(serverStr)
-  }
-
-  // 加载当前实例
-  const instanceStr = localStorage.getItem('selected_instance')
-  if (instanceStr) {
-    selectedInstance.value = JSON.parse(instanceStr)
-  }
+  // 加载当前服务器 / 实例
+  selectedServer.value = readJSON('selected_server')
+  selectedInstance.value = readJSON('selected_instance')
 
   // 加载 LLM Gateway 配置
   await refreshGateway()
@@ -289,6 +294,31 @@ function handleLogout() {
   letter-spacing: 0.5px;
 }
 
+/* 区块头 + 状态徽标（AI 网关配置态一眼可见） */
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 var(--space-3) 0;
+}
+.section-head h2 {
+  margin: 0;
+}
+.gateway-status {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-semibold);
+}
+.gateway-status.ok {
+  background: var(--success-bg);
+  color: var(--success);
+}
+.gateway-status.off {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
 .setting-item {
   display: flex;
   align-items: center;
@@ -302,7 +332,6 @@ function handleLogout() {
 }
 
 .setting-icon {
-  font-size: 20px;
   width: 36px;
   height: 36px;
   display: flex;
@@ -311,6 +340,11 @@ function handleLogout() {
   background: var(--bg-subtle);
   border-radius: var(--radius-sm);
   flex-shrink: 0;
+  color: var(--brand-primary);
+}
+
+.setting-icon .material-symbols-outlined {
+  font-size: 20px;
 }
 
 .setting-content {

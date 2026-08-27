@@ -222,3 +222,13 @@
 | 真机验证 | **PASS（V-9..V-15）**——同文件 §7：距顶 90→39px 量化对照、/ai 标题 78→51px、分区注入→过滤→徽标→合成手势恢复全链路、chrome-sub 工具栏恢复；截图 `shots/vivo-p15-07..10.png` |
 | Evidence level | `integration-tested`（真机 V-9..V-15） |
 | Status | `integration-tested`。DD-7（归档语义/Acc 边界）、DD-8（safe-area 唯一来源=body）见 `docs/2026-08-27-p1.5-ui-declutter.md` §7。P2 登记追加：session→task 数据级关联（待后端外键）、并行流 3 文件 safe-area 核查 |
+
+## P2 设计轮门禁与真机运行记录（in-repo，2026-08-28）
+
+| Field | Value |
+|---|---|
+| 覆盖范围 | ①更多面板交互：backdrop/下滑（72px 阈值+drag handle+touch 跟随）/关闭按钮三路（DD-9：左滑不做）②设置页「AI 网关」区块置顶（状态徽标/地址/密钥态/测试/编辑）+ ai-chat 指引文案 ③底导 emoji→Material Symbols（M3 pill 激活态，DD-10）+ 顶栏 arrow_back 图标 + 设置页图标 Material 化 + 字体子集 44 图标 8KB ④设置页 `pocket_user` 坏 JSON 防御（曾静默中断 onMounted 恒显"未配置"）⑤`Dockerfile` third_party 拷入修复 + pocketd 容器重建 main+网关 env（密钥只入 .env 不入库，DD-11） |
+| 绿色运行日志 | `test-evidence/P1.5-mobile-ux/gate-run-2026-08-27.log` §6：193/193 fail=0 + vue-tsc 0 错 + build ✓ |
+| 真机验证 | **PASS（V-16..V-22）**——同文件 §8：新底导/面板结构/三路关闭/ai-chat 端到端流式对话/设置页「已配置」；截图 `shots/vivo-p2-01..05.png` |
+| Evidence level | `integration-tested`（真机 + 真实 llmgo 网关端到端） |
+| Status | `integration-tested`。DD-9/10/11 见 `docs/2026-08-27-p1.5-ui-declutter.md` §8 |

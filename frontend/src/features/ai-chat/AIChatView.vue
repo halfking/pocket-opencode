@@ -197,7 +197,7 @@
         </div>
         <div v-if="modelsLoading" class="sheet-state">模型加载中…</div>
         <div v-else-if="models.length === 0" class="sheet-state">
-          未获取到模型，请先在「设置 → AI 模型」配置网关密钥。
+          未获取到模型，请先在「设置 → AI 网关」配置网关密钥。
           <button class="link-btn" @click="retryModels">重试</button>
         </div>
         <div v-else class="model-list">
@@ -512,7 +512,7 @@ function onSend(text?: string) {
   const images = text ? [] : [...pendingImages.value]
   if (!value && images.length === 0) return
   if (store.models.length === 0) {
-    toast.error('请先在「设置 → AI 模型」配置网关密钥')
+    toast.error('请先在「设置 → AI 网关」配置网关密钥')
     settingsOpen.value = true
     return
   }
