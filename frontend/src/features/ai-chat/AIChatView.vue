@@ -150,6 +150,7 @@
           rows="1"
           :placeholder="composerPlaceholder"
           @input="autoGrow"
+          @paste="onPaste"
           @keydown.enter.exact.prevent="onSend()"
         ></textarea>
         <button
@@ -181,9 +182,23 @@
             <span class="material-symbols-outlined">add</span>
           </button>
         </div>
+        <div class="drawer-tabs" role="tablist">
+          <button
+            :class="['drawer-tab', { active: drawerTab === 'active' }]"
+            role="tab"
+            :aria-selected="drawerTab === 'active'"
+            @click="drawerTab = 'active'"
+          >活跃 ({{ activeConversations.length }})</button>
+          <button
+            :class="['drawer-tab', { active: drawerTab === 'archived' }]"
+            role="tab"
+            :aria-selected="drawerTab === 'archived'"
+            @click="drawerTab = 'archived'"
+          >归档 ({{ archivedConversations.length }})</button>
+        </div>
         <div class="conv-list">
           <div
-            v-for="c in conversations"
+            v-for="c in displayedConversations"
             :key="c.id"
             class="conv-item"
             :class="{ active: c.id === activeId }"
@@ -191,13 +206,35 @@
           >
             <div class="conv-main">
               <div class="conv-title">{{ c.title }}</div>
-              <div class="conv-meta">{{ c.mode === 'compare' ? '对比' : (c.model || '—') }} · {{ formatTime(c.updatedAt) }}</div>
+              <div class="conv-meta">
+                <span>{{ c.mode === 'compare' ? '对比' : (c.model || '—') }}</span>
+                <span v-if="c.archivedAt"> · 已归档</span>
+                <span> · {{ formatTime(c.archivedAt || c.updatedAt) }}</span>
+              </div>
             </div>
-            <button class="conv-del" aria-label="删除会话" @click.stop="confirmDelete(c)">
+            <button
+              v-if="drawerTab === 'archived'"
+              class="conv-act"
+              aria-label="恢复会话"
+              @click.stop="restoreConversation(c.id)"
+            >
+              <span class="material-symbols-outlined">unarchive</span>
+            </button>
+            <button
+              v-else
+              class="conv-act"
+              aria-label="归档会话"
+              @click.stop="archiveConversation(c.id)"
+            >
+              <span class="material-symbols-outlined">archive</span>
+            </button>
+            <button class="conv-act danger" aria-label="删除会话" @click.stop="confirmDelete(c)">
               <span class="material-symbols-outlined">delete</span>
             </button>
           </div>
-          <div v-if="conversations.length === 0" class="conv-empty">还没有会话</div>
+          <div v-if="displayedConversations.length === 0" class="conv-empty">
+            {{ drawerTab === 'archived' ? '归档区暂无会话' : '还没有会话' }}
+          </div>
         </div>
       </aside>
     </div>
@@ -416,13 +453,17 @@ const scrollEl = ref<HTMLElement | null>(null)
 const modelSheetOpen = ref(false)
 const optimizeOpen = ref(false)
 const optimizeTarget = ref<string | null>(null)
+const drawerTab = ref<'active' | 'archived'>('active')
 // 模型选择 sheet 的临时选中态
 const tempSelection = ref<string[]>([])
 
 // 与后端 /api/llm/stream 的校验保持一致：单条最多 4 张、单张 ≤ 4MB（前端再
-// 压一档，避免 data URL 接近 6MB 上限被拒）。
+// 压一档，避免 data URL 接近 6MB 上限被拒）。同时校验 data URL 字符串长度，
+// 避免 base64 膨胀后超过通用请求体限额。
 const MAX_IMAGES = 4
 const MAX_IMAGE_BYTES = 4 << 20
+const MAX_DATA_URL_CHARS = 6 * 1024 * 1024 // 6MB 上限的字符数
+const MAX_TOTAL_PAYLOAD_CHARS = 32 * 1024 * 1024 // 32MB chat body 上限
 
 const suggestions = [
   '用一句话解释什么是大模型',
@@ -440,6 +481,23 @@ const compareMode = computed(() => store.compareMode)
 const compareModels = computed(() => store.compareModels)
 const settings = computed(() => store.settings)
 const isStreaming = computed(() => store.isStreaming)
+
+const activeConversations = computed(() =>
+  [...conversations.value].filter((c) => !c.archivedAt).sort((a, b) => b.updatedAt - a.updatedAt),
+)
+const archivedConversations = computed(() =>
+  [...conversations.value].filter((c) => c.archivedAt).sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0)),
+)
+const displayedConversations = computed(() =>
+  drawerTab.value === 'archived' ? archivedConversations.value : activeConversations.value,
+)
+
+function archiveConversation(id: string) {
+  store.archiveConversation(id)
+}
+function restoreConversation(id: string) {
+  store.restoreConversation(id)
+}
 const drawerOpen = computed({
   get: () => store.drawerOpen,
   set: (v) => (store.drawerOpen = v),
@@ -611,6 +669,23 @@ function onSend(text?: string) {
 }
 
 // ---- 图片附件 ----
+function addImageDataUrl(value: string, label: string) {
+  if (pendingImages.value.length >= MAX_IMAGES) {
+    toast.error(`最多 ${MAX_IMAGES} 张图片`)
+    return
+  }
+  if (value.length > MAX_DATA_URL_CHARS) {
+    toast.error(`「${label}」图片编码后超过 6MB，已跳过`)
+    return
+  }
+  const total = pendingImages.value.reduce((sum, cur) => sum + cur.length, 0) + value.length
+  if (total > MAX_TOTAL_PAYLOAD_CHARS) {
+    toast.error('附件过大，请减少图片张数后再试')
+    return
+  }
+  pendingImages.value.push(value)
+}
+
 function onPickImages(e: Event) {
   const input = e.target as HTMLInputElement
   const files = Array.from(input.files ?? [])
@@ -627,7 +702,7 @@ function onPickImages(e: Event) {
     }
     const reader = new FileReader()
     reader.onload = () => {
-      if (typeof reader.result === 'string') pendingImages.value.push(reader.result)
+      if (typeof reader.result === 'string') addImageDataUrl(reader.result, f.name)
     }
     reader.readAsDataURL(f)
   }
@@ -635,6 +710,26 @@ function onPickImages(e: Event) {
 
 function removeImage(i: number) {
   pendingImages.value.splice(i, 1)
+}
+
+// 粘贴板图片：微信/截图/复制图片后直接 Ctrl/Cmd+V 到输入框即可发送。
+function onPaste(e: ClipboardEvent) {
+  const items = e.clipboardData?.items
+  if (!items) return
+  for (const item of items) {
+    if (item.kind !== 'file' || !item.type.startsWith('image/')) continue
+    const file = item.getAsFile()
+    if (!file) continue
+    if (file.size > MAX_IMAGE_BYTES) {
+      toast.error('粘贴图片超过 4MB，已跳过')
+      continue
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === 'string') addImageDataUrl(reader.result, '粘贴')
+    }
+    reader.readAsDataURL(file)
+  }
 }
 
 // ---- 语音输入 ----
@@ -822,6 +917,7 @@ function formatTime(ts: number): string {
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
+  min-width: 0;
 }
 .ctrl-btn {
   display: flex;
@@ -835,6 +931,7 @@ function formatTime(ts: number): string {
   font-size: 12px;
   cursor: pointer;
   max-width: 120px;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
 }
@@ -848,6 +945,15 @@ function formatTime(ts: number): string {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 400;
+  min-width: 0;
+}
+
+/* 窄屏（≤380px）顶部控件只保留图标，避免挤压标题 */
+@media (max-width: 380px) {
+  .top-bar { padding: 6px 8px; }
+  .ctrl-btn { padding: 6px; max-width: 36px; gap: 0; justify-content: center; }
+  .ctrl-label { display: none; }
+  .title-text { font-size: 14px; }
 }
 
 /* 对比条 */
@@ -856,24 +962,36 @@ function formatTime(ts: number): string {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
+  padding: 5px 12px;
   background: var(--bg-subtle);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
+  font-family: var(--font-sans);
 }
-.cs-label { font-size: 11px; color: var(--text-secondary); flex: none; }
+.cs-label {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--text-secondary);
+  flex: none;
+}
 .cs-chip {
   flex: none;
-  font-size: 10px;
-  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 500;
+  padding: 4px 10px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--text-primary);
+  white-space: nowrap;
 }
 .cs-edit {
   flex: none;
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 500;
   color: var(--brand-primary);
   background: none;
   border: none;
@@ -1195,8 +1313,29 @@ function formatTime(ts: number): string {
   border-bottom: 1px solid var(--border);
 }
 .conv-list { flex: 1; overflow-y: auto; padding: 6px; }
+.drawer-tabs {
+  display: flex;
+  gap: 0;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.drawer-tab {
+  flex: 1;
+  padding: 8px 4px;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text-secondary);
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.drawer-tab.active {
+  color: var(--brand-primary);
+  border-bottom-color: var(--brand-primary);
+  font-weight: 600;
+}
 .conv-item {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 6px;
   padding: 10px; border-radius: 8px; cursor: pointer;
 }
 .conv-item.active { background: var(--bg-subtle); }
@@ -1206,8 +1345,21 @@ function formatTime(ts: number): string {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .conv-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
-.conv-del { color: var(--text-muted); background: none; border: none; cursor: pointer; }
-.conv-del:active { color: var(--danger); }
+.conv-act {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.conv-act .material-symbols-outlined { font-size: 18px; }
+.conv-act:active { color: var(--brand-primary); background: var(--bg-subtle); }
+.conv-act.danger:active { color: var(--danger); }
 .conv-empty { text-align: center; color: var(--text-muted); padding: 30px; font-size: 13px; }
 
 /* sheet 通用 */

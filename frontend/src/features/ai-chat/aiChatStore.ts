@@ -120,22 +120,16 @@ function loadConversations(): Conversation[] | null {
       raw = localStorage.getItem(LEGACY_STORAGE_KEY)
       if (raw) localStorage.setItem(key, raw)
     }
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Conversation[]
-    for (const c of parsed) {
-      if (!Array.isArray(c.messages)) c.messages = []
-      for (const m of c.messages) {
-        if (m.streaming) {
-          m.streaming = false
-          m.interrupted = true
-        }
-      }
-    }
-    return parsed
+    return raw ? (migrateConversations(JSON.parse(raw)) as Conversation[]) : null
   } catch {
     return null
   }
 }
+
+/** 测试可复用的纯函数：恢复流式消息为「中断」、剔除异常 messages。 */
+export { migrateConversations } from './conversationMigration'
+import { migrateConversations } from './conversationMigration'
+void migrateConversations
 
 function loadSettings(): ChatSettings {
   try {
@@ -286,8 +280,29 @@ export const useAIChatStore = defineStore('ai-chat', () => {
   }
 
   function selectConversation(id: string) {
+    if (!conversations.value.some((c) => c.id === id)) return
     activeId.value = id
     drawerOpen.value = false
+    persist()
+  }
+
+  function archiveConversation(id: string) {
+    const c = conversations.value.find((x) => x.id === id)
+    if (!c) return
+    c.archivedAt = Date.now()
+    c.updatedAt = Date.now()
+    if (activeId.value === id) {
+      activeId.value = conversations.value.find((x) => !x.archivedAt && x.id !== id)?.id ?? null
+      if (!activeId.value) createConversation()
+    }
+    persist()
+  }
+
+  function restoreConversation(id: string) {
+    const c = conversations.value.find((x) => x.id === id)
+    if (!c) return
+    c.archivedAt = undefined
+    c.updatedAt = Date.now()
     persist()
   }
 
@@ -341,45 +356,32 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     }
   }
 
-  /** 把可见对话历史（去掉流式/错误中间态）整理成发给网关的 messages。
-   * 
-   * System prompt 三层优先级：
-   *   1. 会话的 customSystemPrompt（用户在会话设置里临时覆盖）
-   *   2. 会话绑定的 agent.systemPrompt（选角色后自动带入）
-   *   3. 全局 settings.systemPrompt（无角色时兜底，保持向后兼容）
-   */
-  function buildRequestMessages(conv: Conversation, extraUserText?: string, extraImages?: string[]): ChatMessage[] {
+  /** 测试可复用：根据「会话 + 角色列表 + 全局设置」解析最终 systemPrompt。 */
+  function resolveSystemPrompt(
+    conv: Conversation,
+    agents: { id: string; system_prompt: string }[] = [],
+  ): string {
+    if (conv.customSystemPrompt?.trim()) return conv.customSystemPrompt.trim()
+    if (conv.agentId) {
+      const agent = agents.find((a) => a.id === conv.agentId)
+      if (agent) return agent.system_prompt.trim()
+    }
+    return settings.value.systemPrompt.trim()
+  }
+
+  /** 把可见对话历史（去掉流式/错误/中断）整理成发给网关的 messages。 */
+  function buildRequestMessages(
+    conv: Conversation,
+    agents: { id: string; system_prompt: string }[] = [],
+  ): ChatMessage[] {
     const out: ChatMessage[] = []
-    
-    // 三层优先级解析 system prompt
-    let systemPrompt = ''
-    if (conv.customSystemPrompt?.trim()) {
-      systemPrompt = conv.customSystemPrompt.trim()
-    } else if (conv.agentId) {
-      const agentStore = useChatAgentStore()
-      const agent = agentStore.getAgent(conv.agentId)
-      if (agent) {
-        systemPrompt = agent.system_prompt.trim()
-      }
-    }
-    if (!systemPrompt && settings.value.systemPrompt.trim()) {
-      systemPrompt = settings.value.systemPrompt.trim()
-    }
-    
-    if (systemPrompt) {
-      out.push({ role: 'system', content: systemPrompt })
-    }
-    
-    const visible = conv.messages.filter((m) => !m.streaming && !m.error)
+    const systemPrompt = resolveSystemPrompt(conv, agents)
+    if (systemPrompt) out.push({ role: 'system', content: systemPrompt })
+    const visible = conv.messages.filter((m) => !m.streaming && !m.error && !m.interrupted)
     for (const m of visible.slice(-MAX_HISTORY)) {
       if (m.role === 'system') continue
       const msg: ChatMessage = { role: m.role, content: m.content }
       if (m.role === 'user' && m.images?.length) msg.images = m.images
-      out.push(msg)
-    }
-    if (extraUserText) {
-      const msg: ChatMessage = { role: 'user', content: extraUserText }
-      if (extraImages?.length) msg.images = extraImages
       out.push(msg)
     }
     return out
@@ -394,7 +396,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
   function resolveModel(conv: Conversation, hasImages: boolean): string {
     if (conv.model && conv.model !== AUTO) return conv.model
     const key: ModalityKey = hasImages ? 'vision' : 'text'
-    return settings.value.modelByModality[key] || AUTO
+    return settings.value.modelByModality[key] || (key === 'text' ? settings.value.defaultModel : AUTO) || AUTO
   }
 
   function stop() {
@@ -442,19 +444,22 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     }
     conv.updatedAt = Date.now()
 
+    // Snapshot the complete history after appending the user message. Every parallel
+    // model receives the same request and no assistant placeholder is included.
+    const requestMessages = buildRequestMessages(conv)
     if (compareMode.value && compareModels.value.length > 0) {
       conv.mode = 'compare'
       for (const model of compareModels.value) {
-        spawnStream(conv!, model, prompt, imgs)
+        spawnStream(conv, model, requestMessages)
       }
     } else {
       conv.mode = 'single'
-      spawnStream(conv!, resolveModel(conv, imgs.length > 0), prompt, imgs)
+      spawnStream(conv, resolveModel(conv, imgs.length > 0), requestMessages)
     }
     persist()
   }
 
-  function spawnStream(conv: Conversation, model: string, prompt: string, images?: string[]) {
+  function spawnStream(conv: Conversation, model: string, requestMessages: ChatMessage[]) {
     const assistant: ChatMsg = {
       id: uid(),
       role: 'assistant',
@@ -465,11 +470,13 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     }
     conv.messages.push(assistant)
     const streamKey = compareMode.value ? `${conv.id}:${assistant.id}` : conv.id
-    const reqMessages = buildRequestMessages(conv, prompt, images)
 
     const ctrl = llmBffApi.streamChat(
       {
-        messages: reqMessages,
+        messages: requestMessages.map((message) => ({
+          ...message,
+          ...(message.images ? { images: [...message.images] } : {}),
+        })), 
         model: model || undefined,
         temperature: settings.value.temperature,
         max_tokens: settings.value.maxTokens,
@@ -582,21 +589,13 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     if (idx < 0) return
     const msg = conv.messages[idx]
     if (msg.role !== 'assistant') return
-    // 找到对应的问题文本（该助手消息之前最近的一条 user）
-    let question = ''
-    for (let i = idx - 1; i >= 0; i--) {
-      if (conv.messages[i].role === 'user') {
-        question = conv.messages[i].content
-        break
-      }
-    }
-    // 移除该助手消息后重新生成（沿用原问题的图片与当前模型解析规则）
+    // Use the nearest preceding user message by position, preserving duplicate prompts and images.
+    const origin = [...conv.messages.slice(0, idx)].reverse().find((m) => m.role === 'user')
+    if (!origin) return
     conv.messages.splice(idx, 1)
-    if (question) {
-      const origin = conv.messages.find((m) => m.role === 'user' && m.content === question)
-      const hasImages = !!origin?.images?.length
-      spawnStream(conv, msg.model && msg.model !== AUTO ? msg.model : resolveModel(conv, hasImages), question, origin?.images)
-    }
+    const requestMessages = buildRequestMessages(conv)
+    const hasImages = !!origin.images?.length
+    spawnStream(conv, msg.model && msg.model !== AUTO ? msg.model : resolveModel(conv, hasImages), requestMessages)
     persist()
   }
 
@@ -626,6 +625,8 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     selectConversation,
     newConversation,
     renameConversation,
+    archiveConversation,
+    restoreConversation,
     deleteConversation,
     setSettings,
     setCompareModels,
