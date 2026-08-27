@@ -176,7 +176,7 @@
 | Field | Value |
 |---|---|
 | 覆盖范围 | 指挥中心 P0 全部改动：`health.ts` 五态模型（contract-tested，`frontend/src/features/tasks/__tests__/health.test.mjs` 8 用例）、`useInstanceApprovals.ts`、`useApprovalAlerts.ts`、`TasksView.vue`、`SessionConversationView.vue`、`api/client.ts`（interruptSession）、基线修复（`usePendingApprovals.ts` 签名 ×2、`sqlite-web-init.ts`、`SettingsLLMGateway.vue` 模板闭合） |
-| 绿色运行日志 | `test-evidence/P0-mobile-ux/gate-run-2026-08-27.log`（vue-tsc PASS / vite build ✓ / 7 套件 84 用例全 fail=0 / cap sync 4 插件含 local-notifications） |
-| CI 接线 | `.github/workflows/frontend.yml` 新增 health.test.mjs 步骤（推送后由 CI 复验） |
+| 绿色运行日志 | `test-evidence/P0-mobile-ux/gate-run-2026-08-27.log`（vue-tsc PASS / vite build ✓ / 7 套件 84 用例全 fail=0 / cap sync 4 插件含 local-notifications）；审计报告 `test-evidence/P0-mobile-ux/AUDIT-2026-08-27.md` |
+| CI 接线 | `.github/workflows/frontend.yml` 新增 health.test.mjs 步骤；**2026-08-27 审计修正**：CI Node 20 不支持 `.ts` import（ERR_UNKNOWN_FILE_EXTENSION），node-version 已升 "22" 并随审计报告提交，绿色 run 以该次 push 为准 |
 | Evidence level | 健康度模型 `contract-tested`；UI 集成与本地通知 `source-inspected`（真机未验证） |
 | Status | **contract-tested（仅 health 模型）** — UI/通知链路维持 `implemented (unverified)`，待 vivo X Fold5 真机验证。 |
