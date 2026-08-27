@@ -65,6 +65,9 @@ jobs:
       - name: Run session state helper tests (PR7)
         run: node --test src/composables/__tests__/useSessionState.test.mjs
 
+      - name: Run task health model tests (P0 mobile UX)
+        run: node --test src/features/tasks/__tests__/health.test.mjs
+
       - name: Run fault injection harness (PR11)
         run: node ../test-evidence/PR11/fault-injection.mjs
 

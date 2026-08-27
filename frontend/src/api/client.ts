@@ -244,6 +244,19 @@ export const api = {
   },
 
   /**
+   * 中断会话当前 agent 循环（POST /api/mobile/sessions/:id/interrupt，
+   * 服务端经 opencode adapter 调上游 /session/:id/abort）。
+   * 指挥中心长按「停止」走这里（设计方案 v2 §4.2-4 的落地通道）。
+   */
+  async interruptSession(sessionId: string, instanceId: string): Promise<void> {
+    const qs = new URLSearchParams({ instance_id: instanceId })
+    await authFetch(
+      `${API_BASE}/api/mobile/sessions/${encodeURIComponent(sessionId)}/interrupt?${qs}`,
+      { method: 'POST' },
+    )
+  },
+
+  /**
    * 移动会话同步视图。与 GET /api/mobile/sessions 契约一致，返回
    * id/title/status/timeUpdatedMs；instance 是移动控制面必填边界。
    */

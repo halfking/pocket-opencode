@@ -17,7 +17,7 @@ import { ref, type Ref } from 'vue'
 import { ApiError } from '../api/http'
 import {
   listPendingApprovals,
-  replyPermission,
+  replyPermissionFlat,
   type PermissionRequest,
 } from '../api/approvals'
 import { useAuthStore } from '../stores/auth'
@@ -66,7 +66,10 @@ export function usePendingApprovals(args: {
     if (refreshing) return
     refreshing = true
     try {
-      const result = await listPendingApprovals(instanceId, sessionId)
+      const result = await listPendingApprovals({
+        instanceID: instanceId,
+        sessionID: sessionId,
+      })
       pendingPermissions.value = (result.permissions ?? []).filter(
         (p) => typeof p?.id === 'string' && p.id !== '' && p.sessionID === sessionId,
       )
@@ -109,7 +112,7 @@ export function usePendingApprovals(args: {
     }
 
     try {
-      await replyPermission({ instanceId, sessionId, requestId, decision })
+      await replyPermissionFlat({ instanceId, sessionId, requestId, decision })
       pendingPermissions.value = pendingPermissions.value.filter((p) => p.id !== requestId)
       return 'confirmed'
     } catch (err) {

@@ -1,0 +1,59 @@
+# P0 移动端 UX 门禁运行日志
+# 日期: 2026-08-27 18:52:01 +0800
+# 分支: main @ 92e1e4b
+# 工作目录: frontend/
+
+## 1. vue-tsc --noEmit
+PASS exit=0
+
+## 2. vite build (build:fast)
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 2.04s
+
+## 3. node --test src/features/tasks/__tests__/health.test.mjs
+  ...
+1..8
+# tests 8
+# suites 0
+# pass 8
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 64.723041
+
+## 4. 全部既有 node 测试回归
+-- src/utils/__tests__/asyncState.test.mjs
+# tests 15
+# pass 15
+# fail 0
+-- src/app/__tests__/routeGuards.test.mjs
+# tests 13
+# pass 13
+# fail 0
+-- src/services/__tests__/idempotentWsBus.test.mjs
+# tests 12
+# pass 12
+# fail 0
+-- src/composables/__tests__/useSessionState.test.mjs
+# tests 14
+# pass 14
+# fail 0
+-- src/utils/__tests__/diffParse.test.mjs
+# tests 9
+# pass 9
+# fail 0
+-- src/utils/__tests__/outbox.test.mjs
+# tests 13
+# pass 13
+# fail 0
+
+## 5. cap sync android 插件注册
+[info] Found 4 Capacitor plugins for android:
+       @capacitor-community/sqlite@8.1.0
+       @capacitor-community/text-to-speech@8.0.2
+       @capacitor/app@8.1.1
+       @capacitor/local-notifications@8.3.1
+✔ update android in 27.31ms
+[info] Sync finished in 0.056s

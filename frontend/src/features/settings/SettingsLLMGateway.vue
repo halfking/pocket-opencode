@@ -28,6 +28,7 @@
     <div v-if="status" :class="['status-bar', `status-${status.kind}`]" role="status" aria-live="polite">
       {{ status.text }}
     </div>
+    </div><!-- /chrome-shell：fixed 顶栏到此为止，main 为兄弟节点（paddingTop 避让） -->
 
     <main
       ref="scrollRef"

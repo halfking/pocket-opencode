@@ -156,3 +156,27 @@
 | Evidence level | `source-inspected` |
 | Last verified date | — |
 | Status | **pending-evidence** — a dedicated WS contract test must be captured before the WS hub can be cited at `contract-tested`. |
+
+## `@capacitor/local-notifications`（npm 依赖，P0 移动端本地通知）
+
+| Field | Value |
+|---|---|
+| Repo path | `frontend/src/composables/useApprovalAlerts.ts`（唯一消费方，指挥中心 needs-input 超 3min 通知 + Deep Link） |
+| Pinned version | `@capacitor/local-notifications@8.3.1`（`frontend/package.json`，2026-08-27 安装）；`@capacitor/core`/`android` 对齐 `8.5.0`，`cap sync android` 已注册（`frontend/android/capacitor.settings.gradle`） |
+| Endpoint contract reference | 官方插件 API（schedule/cancel/checkPermissions/addListener `localNotificationActionPerformed`）；设计依据 `docs/2026-08-27-mobile-ux-design-v2.md` §4.2-5 |
+| Test log reference | none — 未做真机通知触达验证（Android 13+ POST_NOTIFICATIONS 运行时申请在代码内，未验证） |
+| Evidence level | `source-inspected` |
+| Last verified date | — |
+| Status | **pending-evidence** — 真机（vivo X Fold5）验证通知触达与 Deep Link 弹审批 Sheet 后方可提升。 |
+
+备注（设计偏差记录，2026-08-27）：设计方案 v2 §4.2-4 指定经 `plugin_hub.go` 的 `session.stop` 命令通道下发停止。代码核查发现该链路存在协议缺口：`POST /api/plugin/command`（`backend/internal/server/server_plugin_ws.go:146`）按 `{type:<command>, payload}` 下发，而插件（`opencode-plugin/src/index.ts:321`）只识别 `{type:'command', data:<RemoteCommand>}` 信封，二者不匹配且全仓库无调用方。P0 改用已验证的移动端通道 `POST /api/mobile/sessions/:id/interrupt`（`backend/internal/server/mobile_session_handler.go:659` → opencode adapter `InterruptSession` → 上游 `/session/:id/abort`；会话页停止按钮同一链路）。plugin_hub 命令信封的修复或废弃留待 P1 通讯收窄时决策。
+
+## P0 移动端 UX 门禁运行记录（in-repo，2026-08-27）
+
+| Field | Value |
+|---|---|
+| 覆盖范围 | 指挥中心 P0 全部改动：`health.ts` 五态模型（contract-tested，`frontend/src/features/tasks/__tests__/health.test.mjs` 8 用例）、`useInstanceApprovals.ts`、`useApprovalAlerts.ts`、`TasksView.vue`、`SessionConversationView.vue`、`api/client.ts`（interruptSession）、基线修复（`usePendingApprovals.ts` 签名 ×2、`sqlite-web-init.ts`、`SettingsLLMGateway.vue` 模板闭合） |
+| 绿色运行日志 | `test-evidence/P0-mobile-ux/gate-run-2026-08-27.log`（vue-tsc PASS / vite build ✓ / 7 套件 84 用例全 fail=0 / cap sync 4 插件含 local-notifications） |
+| CI 接线 | `.github/workflows/frontend.yml` 新增 health.test.mjs 步骤（推送后由 CI 复验） |
+| Evidence level | 健康度模型 `contract-tested`；UI 集成与本地通知 `source-inspected`（真机未验证） |
+| Status | **contract-tested（仅 health 模型）** — UI/通知链路维持 `implemented (unverified)`，待 vivo X Fold5 真机验证。 |

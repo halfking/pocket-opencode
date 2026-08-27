@@ -1,7 +1,7 @@
 # OpenPocket Documentation Status Matrix
 
 > **Last updated**: 2026-08-27
-> 上一版：2026-08-24 — 本轮：①新增 Mobile frontend 行（source-inspected，设计规范指针更新为 v2 方案）；②124 份历史文档归档至 SUPERSEDED.md Group 5/6（横幅已加齐）。DB/网络/ZAG 健康未变，未触发漂移事件。
+> 上一版：2026-08-27（设计 v2 发布轮）— 本轮：移动端 P0 落地 —— ①指挥中心 L0 分诊条 + L1 需介入内联审批（`frontend/src/features/tasks/{health.ts,useInstanceApprovals.ts}` + TasksView 改造）；②任务卡健康信号（五态近似）；③长按 停止/继续/归档；④`@capacitor/local-notifications` 本地通知 + `?approval=open` Deep Link；⑤修复 main 上 3 处构建门禁破坏（usePendingApprovals API 签名 ×2、sqlite-web-init 缺失、SettingsLLMGateway 模板缺闭合标签）。停止通道落地为既有 `POST /api/mobile/sessions/:id/interrupt`（plugin_hub `session.stop` 命令信封与插件侧 `{type:'command',data}` 期望不符且无调用方，属设计偏差，已记录）。DB/网络/ZAG 健康未变。
 > **Scope**: Single source of truth for the current implementation status of every architectural component in OpenPocket.
 > **Authority**: This matrix overrides any inline claim of "implemented", "complete", or "verified" found in legacy documents.
 >
@@ -36,7 +36,7 @@
 | WebSocket hub (`pocketd` WS / SSE) | `docs/WEBSOCKET_REALTIME_UPDATE.md`, `docs/新架构v1/01-architecture/数据流与协议.md` | `implemented (unverified)` | `source-inspected` | — | — | `backend/internal/server/ws_*.go`, `docs/superpowers/specs/2026-08-17-task-approval-projection-design.md` |
 | Audit (Postgres-backed PG audit with RLS) | `docs/audits/`, `docs/优化v4/reports/audit-pg-docker-integration-2026-08-18.md`, `docs/security/zag-adr-0007-audit.md` | `integration-tested` | `integration-tested` | — | — | `feat/audit-pg-hardening` branch, `git log main` (post `25727ba`), `docs/优化v4/reports/audit-pg-docker-integration-2026-08-18.md` |
 | Multi-tenant auth (`identity-go`) | `docs/security/zag-adr-0003-authz-model.md`, `docs/2026-07-02-deployment-verification-report.md` | `integration-tested` (JWT/RS256 issuer) | `integration-tested` | — | — | `backend/internal/identity/`, `feat/identity-go-cross-trust` (commit `6892ba5`), `docs/优化v4/reports/ios-real-2026-08-18.md` |
-| Mobile frontend (Vue 3 + Capacitor) | `docs/2026-08-27-mobile-ux-design-v2.md`（产品/交互现行规范）, `docs/2026-07-02-ui-ux-design-system.md`（设计系统） | `implemented (unverified)` | `source-inspected` | `NAVIGATION_ARCHITECTURE.md`, `MOBILE_ARCHITECTURE_V2.md`, `docs/2026-07-03-mobile-interaction-optimization.md`（均 superseded） | — | `frontend/src/app/router-mobile.ts`, `frontend/src/features/`, `frontend/src/composables/useBreakpoint.ts`, `P1_MOBILE_PERSISTENCE_2026_08_15.md`（离线持久化证据） |
+| Mobile frontend (Vue 3 + Capacitor) | `docs/2026-08-27-mobile-ux-design-v2.md`（产品/交互现行规范）, `docs/2026-07-02-ui-ux-design-system.md`（设计系统） | `implemented (unverified)` — P0 已落地（分诊条/健康信号/内联审批/长按控制/本地通知，真机未验证）；P1-P3 未开工 | P0 健康度模型 `contract-tested`（`frontend/src/features/tasks/__tests__/health.test.mjs` 8 用例入 CI，绿色日志 `test-evidence/P0-mobile-ux/gate-run-2026-08-27.log`）；其余 `source-inspected` | `NAVIGATION_ARCHITECTURE.md`, `MOBILE_ARCHITECTURE_V2.md`, `docs/2026-07-03-mobile-interaction-optimization.md`（均 superseded） | — | `frontend/src/features/tasks/{health.ts,useInstanceApprovals.ts,TasksView.vue}`, `frontend/src/composables/useApprovalAlerts.ts`, `frontend/src/features/sessions/SessionConversationView.vue`（`?prompt=`/`?approval=open` Deep Link）, `frontend/src/composables/useBreakpoint.ts`, `P1_MOBILE_PERSISTENCE_2026_08_15.md`（离线持久化证据）。停止通道：`api.interruptSession` → `POST /api/mobile/sessions/:id/interrupt`（设计 §4.2-4 所指 plugin_hub `session.stop` 信封存在协议缺口，见 EVIDENCE-LEDGER 备注） |
 
 ## Components explicitly NOT covered above (see `SUPERSEDED.md` for redirect)
 

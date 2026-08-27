@@ -106,6 +106,10 @@ onMounted(async () => {
     router.replace('/instances')
     return
   }
+  // Deep Link 参数（指挥中心/本地通知进入，设计方案 v2 §4.2-3/§4.2-5）：
+  //   ?prompt=xxx     → 预填输入草稿，可编辑再发送（转写/指令不直发）
+  //   ?approval=open  → 清除"已忽略"记录，强制弹出审批 Bottom Sheet
+  applyDeepLinkQuery()
   await store.open(sessionID.value, instanceID.value, initialTitle.value)
   await nextTick()
   scrollToBottom(true)
@@ -123,6 +127,30 @@ async function scrollToBottom(force = false) {
   await nextTick()
   if (messagesEl.value) {
     messagesEl.value.scrollTop = messagesEl.value.scrollHeight
+  }
+}
+
+/**
+ * 处理 Deep Link 查询参数并从地址栏清除（避免刷新/回退重复触发）：
+ *   prompt=xxx    → 预填草稿（不自动发送，保持"先入草稿可编辑"纪律）
+ *   approval=open → 重置已忽略集合，让 pending 审批 Sheet 立即弹出
+ */
+function applyDeepLinkQuery() {
+  const q = route.query
+  const promptText = typeof q.prompt === 'string' ? q.prompt.trim() : ''
+  if (promptText) {
+    inputText.value = inputText.value
+      ? `${inputText.value.trimEnd()} ${promptText}`
+      : promptText
+  }
+  if (q.approval === 'open') {
+    dismissedApprovalIds.value = new Set()
+  }
+  if (promptText || q.approval !== undefined) {
+    const nextQuery = { ...q }
+    delete nextQuery.prompt
+    delete nextQuery.approval
+    router.replace({ query: nextQuery })
   }
 }
 

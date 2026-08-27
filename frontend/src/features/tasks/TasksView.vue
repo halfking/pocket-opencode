@@ -1,15 +1,87 @@
 <!--
-  TasksView — Codex-style compact dual-panel AI hub
+  TasksView — 指挥中心（设计方案 v2 §3.3/§4.2，路由 /ai）
 
   Layout:
-  A. 运行中 — horizontal compact task cards (active across all instances)
-  B. 会话   — vertical session list (recent AI conversations)
-  C. 已完成 — collapsed expandable section
-  D. Voice bar — fixed above bottom nav
+  L0. 分诊条（sticky）— 聚合计数：需要你 / 疑似卡死 / 全部正常；点击展开 L1
+  L1. 需介入列表   — 审批卡片（内联 批准/拒绝/候选 chips）+ 疑似卡死任务
+  A.  运行中       — 任务卡片第二行 = 健康信号 · 当前动作 · 距上次活动（§4.1 五态）
+  B.  会话         — 最近会话纵列（长按：停止 / 归档）
+  C.  已完成       — collapsed expandable section
+  D.  Voice bar    — 固定于底部导航之上（转写先入草稿可编辑）
 -->
 <template>
   <PullToRefresh :on-refresh="handleRefresh" class="ai-hub-scroll">
   <div class="ai-hub">
+    <!-- L0: Triage Bar (sticky) -->
+    <section class="triage-bar" :class="triage.hasAttention ? 'attention' : 'allclear'">
+      <button class="triage-main" @click="toggleTriage">
+        <template v-if="triage.hasAttention">
+          <span class="triage-icon">🔴</span>
+          <span class="triage-text">
+            <strong>{{ triage.needsInput }} 项需要你</strong>
+            <span v-if="triage.stalled > 0" class="triage-sub"> · {{ triage.stalled }} 疑似卡死</span>
+          </span>
+          <span class="triage-chevron" :class="{ open: showTriage }">›</span>
+        </template>
+        <template v-else>
+          <span class="triage-icon">🟢</span>
+          <span class="triage-text">全部正常 · {{ triage.running }} 在跑</span>
+        </template>
+      </button>
+
+      <!-- L1: Needs-attention list（按等待时长排序） -->
+      <div v-if="showTriage && triage.hasAttention" class="triage-list">
+        <div v-if="attentionItems.length === 0" class="triage-empty">
+          待办明细拉取中，可下拉刷新
+        </div>
+        <div v-for="card in attentionItems" :key="card.key" class="attention-card" :class="card.type">
+          <!-- 审批 / 提问卡片：内联操作（两步介入） -->
+          <template v-if="card.type === 'approval'">
+            <div class="attn-head">
+              <span class="attn-kind" :class="card.item.kind">{{ card.item.kind === 'permission' ? '等审批' : '提问' }}</span>
+              <span class="attn-title">{{ approvalTitle(card.item) }}</span>
+              <span class="attn-wait">等了 {{ formatDuration(card.waitMs) }}</span>
+            </div>
+            <div v-if="card.item.kind === 'permission'" class="attn-actions">
+              <button
+                class="attn-btn primary"
+                :disabled="approvalBusy !== null"
+                @click.stop="inlineReply(card.item, 'once')"
+              >✓ 批准</button>
+              <button
+                class="attn-btn ghost-danger"
+                :disabled="approvalBusy !== null"
+                @click.stop="inlineReply(card.item, 'reject')"
+              >✕ 拒绝</button>
+              <button class="attn-btn ghost" @click.stop="openApprovalDetail(card.item)">详情</button>
+            </div>
+            <div v-else class="attn-actions">
+              <button
+                v-for="opt in questionOptions(card.item)"
+                :key="opt"
+                class="attn-btn chip"
+                :disabled="approvalBusy !== null"
+                @click.stop="inlineAnswer(card.item, opt)"
+              >{{ opt }}</button>
+              <button class="attn-btn ghost" @click.stop="openApprovalDetail(card.item)">详情</button>
+            </div>
+          </template>
+          <!-- 疑似卡死任务卡片 -->
+          <template v-else>
+            <div class="attn-head" @click="viewTask(card.task.id)">
+              <span class="attn-kind stalled">疑似卡死</span>
+              <span class="attn-title">{{ card.task.title }}</span>
+              <span class="attn-wait">{{ formatDuration(card.waitMs) }}无响应</span>
+            </div>
+            <div class="attn-actions">
+              <button class="attn-btn ghost" @click.stop="viewTask(card.task.id)">查看</button>
+              <button class="attn-btn ghost-danger" @click.stop="stopTaskSessions(card.task)">⏹ 停止会话</button>
+            </div>
+          </template>
+        </div>
+      </div>
+    </section>
+
     <!-- Section A: Running Tasks -->
     <section class="section running-section">
       <div class="section-header">
@@ -32,18 +104,17 @@
           class="task-card compact"
           @click="onTaskClick(task.id)"
           @touchstart="onTaskTouchStart(task, $event)"
-          @touchmove="onTaskTouchMove"
-          @touchend="onTaskTouchEnd"
+          @touchmove="onTouchMove"
+          @touchend="onTouchEnd"
         >
           <div class="priority-bar" :class="task.priority" />
           <div class="task-body">
             <div class="task-title">{{ task.title }}</div>
             <div class="task-meta-row">
-              <span v-if="task.instanceName" class="instance-tag">{{ task.instanceName }}</span>
-              <span class="meta-muted">
-                <span class="meta-icon">💬</span>{{ task.sessionCount || 0 }}
+              <span v-if="signalFor(task)" class="health-signal" :class="'tone-' + signalFor(task)!.tone">
+                <span class="health-dot" />{{ signalFor(task)!.action }}<template v-if="signalFor(task)!.since"> · {{ signalFor(task)!.since }}</template>
               </span>
-              <span v-if="task.updatedAt" class="meta-muted time">{{ timeAgo(task.updatedAt) }}</span>
+              <span v-if="task.instanceName" class="instance-tag">{{ task.instanceName }}</span>
             </div>
           </div>
           <span class="chevron">›</span>
@@ -72,15 +143,16 @@
           class="task-card compact blocked-card"
           @click="onTaskClick(task.id)"
           @touchstart="onTaskTouchStart(task, $event)"
-          @touchmove="onTaskTouchMove"
-          @touchend="onTaskTouchEnd"
+          @touchmove="onTouchMove"
+          @touchend="onTouchEnd"
         >
           <div class="priority-bar" :class="task.priority" />
           <div class="task-body">
             <div class="task-title">{{ task.title }}</div>
             <div class="task-meta-row">
-              <span v-if="task.instanceName" class="instance-tag">{{ task.instanceName }}</span>
-              <span class="meta-muted">💬 {{ task.sessionCount || 0 }}</span>
+              <span v-if="signalFor(task)" class="health-signal" :class="'tone-' + signalFor(task)!.tone">
+                <span class="health-dot" />{{ signalFor(task)!.action }}<template v-if="signalFor(task)!.since"> · {{ signalFor(task)!.since }}</template>
+              </span>
             </div>
           </div>
           <span class="chevron">›</span>
@@ -102,12 +174,15 @@
         <div v-for="i in 3" :key="i" class="skeleton-card" />
       </div>
 
-      <div v-else-if="sessions.length > 0" class="session-list">
+      <div v-else-if="visibleSessions.length > 0" class="session-list">
         <div
-          v-for="s in sessions"
+          v-for="s in visibleSessions"
           :key="s.id"
           class="session-item"
           @click="openSession(s)"
+          @touchstart="onSessionTouchStart(s, $event)"
+          @touchmove="onTouchMove"
+          @touchend="onTouchEnd"
         >
           <span class="status-dot" :class="s.status" />
           <div class="session-body">
@@ -149,8 +224,8 @@
           class="task-card compact completed-card"
           @click="onTaskClick(task.id)"
           @touchstart="onTaskTouchStart(task, $event)"
-          @touchmove="onTaskTouchMove"
-          @touchend="onTaskTouchEnd"
+          @touchmove="onTouchMove"
+          @touchend="onTouchEnd"
         >
           <div class="task-body">
             <div class="task-title done">{{ task.title }}</div>
@@ -208,6 +283,12 @@
           <div class="context-actions">
             <button class="ctx-btn" @click="ctxViewDetail">查看详情</button>
             <button
+              v-if="contextTask.status === 'active'"
+              class="ctx-btn danger"
+              @click="ctxStopSessions"
+            >⏹ 停止会话</button>
+            <button class="ctx-btn" @click="ctxResume">▶ 继续跟进</button>
+            <button
               v-if="contextTask.status !== 'active'"
               class="ctx-btn"
               @click="ctxUpdateStatus('active')"
@@ -223,6 +304,24 @@
               @click="ctxUpdateStatus('completed')"
             >✅ 完成</button>
             <button class="ctx-btn danger" @click="ctxDelete">🗑 删除</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Session Context Menu (long-press): 停止 / 归档 -->
+    <div v-if="showSessionMenu && contextSession" class="modal-overlay" @click.self="closeSessionMenu">
+      <div class="modal-sheet context-sheet" @click.stop>
+        <div class="modal-handle" />
+        <div class="modal-body">
+          <h2 class="context-title">{{ contextSession.title || '未命名会话' }}</h2>
+          <div class="context-actions">
+            <button
+              v-if="contextSession.status === 'active' || contextSession.status === 'streaming'"
+              class="ctx-btn danger"
+              @click="ctxStopSession"
+            >⏹ 停止</button>
+            <button class="ctx-btn" @click="ctxArchiveSession">📥 归档（本地）</button>
           </div>
         </div>
       </div>
@@ -337,11 +436,160 @@ import wsClient from '../../api/websocket'
 import { usePullDownClose } from '../../composables/usePullDownClose'
 import { useVoiceInput } from '../../composables/useVoiceInput'
 import { useToast } from '../../composables/useToast'
+import { useApprovalAlerts } from '../../composables/useApprovalAlerts'
 import { useAccTasksStore } from '../../stores/accTasks'
+import { useAuthStore } from '../../stores/auth'
 import { EmptyState, PullToRefresh } from '../../components'
+import { assessHealth, summarizeHealth, formatDuration, type HealthSignal } from './health'
+import { useInstanceApprovals, type PendingItem } from './useInstanceApprovals'
+import {
+  readArchivedIds,
+  setSessionArchived,
+  type ArchiveScope,
+} from '../sessions/sessionArchive'
 
 const router = useRouter()
 const { isRecording, isTranscribing, sttError, startRecording, stopRecording } = useVoiceInput()
+const auth = useAuthStore()
+
+// ── 健康度 / 分诊（设计方案 v2 §4.1/§4.2，P0 近似数据） ──
+const approvals = useInstanceApprovals(() => currentInstance.value?.id || '')
+useApprovalAlerts(approvals.pending, { instanceId: () => currentInstance.value?.id || '' })
+const showTriage = ref(false)
+/** 驱动 "距上次活动" 周期刷新的时钟（30s 一跳，避免整页轮询）。 */
+const nowTick = ref(Date.now())
+let nowTimer: ReturnType<typeof setInterval> | null = null
+const approvalBusy = ref<string | null>(null)
+
+function toggleTriage() {
+  if (!triage.value.hasAttention) return
+  showTriage.value = !showTriage.value
+}
+
+/** 每个任务的健康信号（P0：task.pendingApprovals + updatedAt 近似）。 */
+function signalFor(task: Task): HealthSignal | undefined {
+  if (!task) return undefined
+  return assessHealth({
+    active: task.status === 'active',
+    updatedAt: task.updatedAt,
+    pendingApprovals: task.status === 'active' ? task.pendingApprovals ?? 0 : 0,
+    now: nowTick.value,
+  })
+}
+
+/** L0 分诊条聚合计数：needs-input 以实例待审批拉取为准（最权威），任务信号兜底。 */
+const triage = computed(() => {
+  const signals: HealthSignal[] = []
+  for (const t of activeTasks.value) {
+    const sig = signalFor(t)
+    if (sig) signals.push(sig)
+  }
+  const s = summarizeHealth(signals)
+  const needsInput = Math.max(s.needsInput, approvals.pending.value.length)
+  return {
+    needsInput,
+    stalled: s.stalled,
+    running: s.running,
+    hasAttention: needsInput + s.stalled > 0,
+  }
+})
+
+/** L1 需介入：审批条目 + 疑似卡死任务，按等待时长降序。 */
+const attentionItems = computed(() => {
+  const approvalCards = approvals.pending.value.map((item) => ({
+    type: 'approval' as const,
+    key: item.requestId,
+    waitMs: nowTick.value - item.firstSeenAt,
+    item,
+  }))
+  const stalledCards: Array<{
+    type: 'stalled'
+    key: string
+    waitMs: number
+    task: Task
+  }> = []
+  for (const t of activeTasks.value) {
+    const sig = signalFor(t)
+    if (sig?.state === 'stalled') stalledCards.push({ type: 'stalled', key: `task-${t.id}`, waitMs: sig.sinceMs, task: t })
+  }
+  return [...approvalCards, ...stalledCards].sort((a, b) => b.waitMs - a.waitMs)
+})
+
+/** 审批卡标题：动作 / 问题 + 所属会话。 */
+function approvalTitle(item: PendingItem): string {
+  const base =
+    item.kind === 'permission'
+      ? item.action || '工具调用'
+      : item.question?.question || 'AI 提问'
+  const title = sessionTitleById.value.get(item.sessionId)
+  return title ? `${base} · ${title}` : base
+}
+
+/** 问答候选 chips（最多展示 3 个，其余走详情）。 */
+function questionOptions(item: PendingItem): string[] {
+  return (item.question?.options ?? [])
+    .map((o) => o.label)
+    .filter(Boolean)
+    .slice(0, 3)
+}
+
+const sessionTitleById = computed(
+  () => new Map(sessions.value.map((s) => [s.id, s.title || s.id.slice(0, 8)])),
+)
+
+async function inlineReply(item: PendingItem, decision: 'once' | 'reject') {
+  if (approvalBusy.value) return
+  approvalBusy.value = item.requestId
+  try {
+    const status = await approvals.replyPermission(item, decision)
+    if (status === 'confirmed') toast.success(decision === 'once' ? '已批准' : '已拒绝')
+    else if (status === 'queued-offline') toast.info('当前离线，决定已入队，联网后自动发送')
+    else if (status === 'conflict') toast.error('该请求已过期或已在别处处理')
+    else toast.error('发送失败，请重试')
+  } finally {
+    approvalBusy.value = null
+  }
+}
+
+async function inlineAnswer(item: PendingItem, optionLabel: string) {
+  if (approvalBusy.value) return
+  approvalBusy.value = item.requestId
+  try {
+    const status = await approvals.answerQuestion(item, optionLabel)
+    if (status === 'confirmed') toast.success('已回答')
+    else if (status === 'conflict') toast.error('该提问已过期或已在别处处理')
+    else toast.error('发送失败，请重试')
+  } finally {
+    approvalBusy.value = null
+  }
+}
+
+function openApprovalDetail(item: PendingItem) {
+  router.push({
+    path: `/sessions/${item.sessionId}`,
+    query: { instance_id: currentInstance.value?.id || '', approval: 'open' },
+  })
+}
+
+// ── 会话归档（本地元数据，sessionArchive.ts；归档从指挥中心列表隐藏） ──
+const archivedSets = ref<Map<string, Set<string>>>(new Map())
+
+function archiveScopeFor(instanceId?: string): ArchiveScope {
+  return { workspaceId: auth.workspaceId || 'default', instanceId: instanceId || 'all' }
+}
+
+function loadArchivedSets() {
+  const sets = new Map<string, Set<string>>()
+  const instanceIds = new Set(sessions.value.map((s) => s.instanceId || 'all'))
+  for (const iid of instanceIds) {
+    sets.set(iid, readArchivedIds(localStorage, archiveScopeFor(iid === 'all' ? undefined : iid)))
+  }
+  archivedSets.value = sets
+}
+
+const visibleSessions = computed(() =>
+  sessions.value.filter((s) => !archivedSets.value.get(s.instanceId || 'all')?.has(s.id)),
+)
 
 // ── Context menu (long-press) ──
 const showContextMenu = ref(false)
@@ -441,12 +689,20 @@ onMounted(() => {
   if (instanceStr) currentInstance.value = JSON.parse(instanceStr)
   loadTasks()
   loadSessions()
+  // L0/L1 数据源：实例级待审批实时流（WS 事件驱动 + 首拉）。
+  approvals.startLive()
+  nowTimer = setInterval(() => { nowTick.value = Date.now() }, 30_000)
   wsClient.on('task_created', handleTaskUpdate)
   wsClient.on('task_updated', handleTaskUpdate)
   wsClient.on('session_attached', handleSessionAttached)
 })
 
 onUnmounted(() => {
+  approvals.stopLive()
+  if (nowTimer !== null) {
+    clearInterval(nowTimer)
+    nowTimer = null
+  }
   wsClient.off('task_created', handleTaskUpdate)
   wsClient.off('task_updated', handleTaskUpdate)
   wsClient.off('session_attached', handleSessionAttached)
@@ -454,7 +710,7 @@ onUnmounted(() => {
 
 // ── Data Loading ──
 async function handleRefresh() {
-  await Promise.all([loadTasks(), loadSessions()])
+  await Promise.all([loadTasks(), loadSessions(), approvals.refresh()])
 }
 
 async function loadTasks() {
@@ -488,6 +744,7 @@ async function loadSessions() {
       instanceName: s.instanceName || s.InstanceName || '',
       updatedAt: s.updatedAt || s.UpdatedAt || '',
     }))
+    loadArchivedSets()
   } catch (e) {
     console.error('Failed to load sessions:', e)
     sessions.value = []
@@ -541,20 +798,20 @@ function onTaskClick(taskId: string) {
   viewTask(taskId)
 }
 
-function onTaskTouchStart(task: Task, e: TouchEvent) {
+/** 通用长按：500ms 无移动触发 onFire（振动反馈 + 抑制后续 click）。 */
+function startLongPress(e: TouchEvent, onFire: () => void) {
   const t = e.touches[0]
   if (!t) return
   pressStart = { x: t.clientX, y: t.clientY }
   longPressTimer = setTimeout(() => {
-    contextTask.value = task
-    showContextMenu.value = true
+    onFire()
     suppressClick = true
     if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(12)
     setTimeout(() => { suppressClick = false }, 400)
   }, 500)
 }
 
-function onTaskTouchMove(e: TouchEvent) {
+function onTouchMove(e: TouchEvent) {
   if (!longPressTimer) return
   const t = e.touches[0]
   if (!t) return
@@ -564,11 +821,63 @@ function onTaskTouchMove(e: TouchEvent) {
   }
 }
 
-function onTaskTouchEnd() {
+function onTouchEnd() {
   if (longPressTimer) {
     clearTimeout(longPressTimer)
     longPressTimer = null
   }
+}
+
+function onTaskTouchStart(task: Task, e: TouchEvent) {
+  startLongPress(e, () => {
+    contextTask.value = task
+    showContextMenu.value = true
+  })
+}
+
+// ── 会话长按菜单：停止 / 归档 ──
+const showSessionMenu = ref(false)
+const contextSession = ref<any | null>(null)
+
+function onSessionTouchStart(s: any, e: TouchEvent) {
+  startLongPress(e, () => {
+    contextSession.value = s
+    showSessionMenu.value = true
+  })
+}
+
+function closeSessionMenu() {
+  showSessionMenu.value = false
+  contextSession.value = null
+}
+
+async function ctxStopSession() {
+  const s = contextSession.value
+  if (!s) return
+  closeSessionMenu()
+  try {
+    await api.interruptSession(s.id, s.instanceId || currentInstance.value?.id || '')
+    toast.success('已发送停止指令')
+    loadSessions()
+  } catch (e) {
+    console.error('Failed to interrupt session:', e)
+    toast.error('停止失败，请重试')
+  }
+}
+
+function ctxArchiveSession() {
+  const s = contextSession.value
+  if (!s) return
+  const iid = s.instanceId || 'all'
+  const next = setSessionArchived(
+    localStorage,
+    archiveScopeFor(iid === 'all' ? undefined : iid),
+    s.id,
+    true,
+  )
+  archivedSets.value = new Map(archivedSets.value).set(iid, next)
+  closeSessionMenu()
+  toast.success('已归档（本地隐藏，可在会话列表管理）')
 }
 
 function closeContextMenu() {
@@ -606,6 +915,71 @@ async function ctxDelete() {
   } catch (e) {
     console.error('Failed to delete task:', e)
     alert('删除失败，请重试')
+  }
+}
+
+/**
+ * 停止任务关联的全部会话（POST /api/mobile/sessions/:id/interrupt，服务端经
+ * opencode adapter 调上游 /session/:id/abort —— 设计方案 v2 §4.2-4 的 P0
+ * 落地通道；plugin_hub 的 session.stop 命令信封存在协议缺口且无调用方，
+ * 见 STATUS-MATRIX 备注）。
+ */
+async function stopTaskSessions(task: Task): Promise<void> {
+  if (!confirm(`停止「${task.title}」关联的会话？进行中的 agent 循环将被中断。`)) return
+  try {
+    const links = await api.getTaskSessions(task.id)
+    if (links.length === 0) {
+      toast.error('该任务没有关联会话')
+      return
+    }
+    let stopped = 0
+    let failed = 0
+    for (const link of links) {
+      try {
+        await api.interruptSession(link.sessionId, link.instanceId || currentInstance.value?.id || '')
+        stopped++
+      } catch {
+        failed++
+      }
+    }
+    if (stopped > 0) toast.success(`已停止 ${stopped} 个会话${failed ? `，${failed} 个失败` : ''}`)
+    else toast.error('停止失败，请重试')
+    loadSessions()
+  } catch (e) {
+    console.error('Failed to stop task sessions:', e)
+    toast.error('停止失败，请重试')
+  }
+}
+
+function ctxStopSessions() {
+  const task = contextTask.value
+  if (!task) return
+  closeContextMenu()
+  void stopTaskSessions(task)
+}
+
+/** 继续跟进：跳到任务最近的关联会话并预填「继续」草稿（可编辑再发送）。 */
+async function ctxResume() {
+  const task = contextTask.value
+  if (!task) return
+  closeContextMenu()
+  try {
+    const links = await api.getTaskSessions(task.id)
+    if (links.length > 0) {
+      const link = links[0]
+      router.push({
+        path: `/sessions/${link.sessionId}`,
+        query: {
+          instance_id: link.instanceId || currentInstance.value?.id || '',
+          prompt: '继续',
+        },
+      })
+    } else {
+      viewTask(task.id)
+    }
+  } catch (e) {
+    console.error('Failed to resume task:', e)
+    viewTask(task.id)
   }
 }
 
@@ -671,6 +1045,164 @@ function timeAgo(dateStr?: string): string {
   flex-direction: column;
   gap: 2px;
   padding-bottom: 110px; /* voice-bar + bottom-nav */
+}
+
+/* ── L0 分诊条（sticky，唯一必读层） ── */
+.triage-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin: 8px var(--space-3) 0;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+.triage-bar.attention {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+}
+.triage-bar.allclear {
+  border-color: color-mix(in srgb, var(--success) 25%, var(--border));
+}
+.triage-main {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  min-height: 44px; /* 触摸热区 */
+}
+.triage-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.triage-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.triage-text strong {
+  font-weight: 700;
+}
+.triage-sub {
+  color: var(--warning);
+  font-weight: 600;
+}
+.triage-chevron {
+  font-size: 16px;
+  color: var(--text-muted);
+  transition: transform 200ms;
+}
+.triage-chevron.open {
+  transform: rotate(90deg);
+}
+
+/* ── L1 需介入列表 ── */
+.triage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 10px 10px;
+}
+.triage-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 8px 0;
+}
+.attention-card {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.attention-card.stalled {
+  border-left-color: var(--warning);
+}
+.attn-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.attn-kind {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  line-height: 15px;
+  background: var(--danger-bg, rgba(239, 68, 68, 0.1));
+  color: var(--danger);
+}
+.attn-kind.question,
+.attn-kind.stalled {
+  background: var(--warning-bg, rgba(245, 158, 11, 0.12));
+  color: var(--warning);
+}
+.attn-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attn-wait {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.attn-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.attn-btn {
+  min-height: 36px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.attn-btn:active {
+  transform: scale(0.97);
+}
+.attn-btn:disabled {
+  opacity: 0.5;
+}
+.attn-btn.primary {
+  background: var(--brand-primary);
+  border-color: var(--brand-primary);
+  color: var(--text-inverse);
+}
+.attn-btn.ghost {
+  color: var(--text-secondary);
+}
+.attn-btn.ghost-danger {
+  color: var(--danger);
+  border-color: var(--danger-bg, rgba(239, 68, 68, 0.2));
+}
+.attn-btn.chip {
+  background: var(--brand-bg);
+  border-color: color-mix(in srgb, var(--brand-primary) 25%, var(--border));
+  color: var(--brand-primary);
 }
 
 /* ── Section ── */
@@ -827,6 +1359,42 @@ function timeAgo(dateStr?: string): string {
   align-items: center;
   gap: 6px;
   margin-top: 2px;
+  min-width: 0;
+}
+/* ── 健康信号行（信号即界面：色点 + 当前动作 · 距上次活动） ── */
+.health-signal {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.health-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+.health-signal.tone-danger { color: var(--danger); }
+.health-signal.tone-danger .health-dot { background: var(--danger); animation: pulse 1.6s infinite; }
+.health-signal.tone-warning { color: var(--warning); }
+.health-signal.tone-warning .health-dot { background: var(--warning); }
+.health-signal.tone-success { color: var(--success); }
+.health-signal.tone-success .health-dot { background: var(--success); animation: pulse 2s infinite; }
+.health-signal.tone-muted { color: var(--text-muted); }
+.health-signal.tone-muted .health-dot { background: var(--text-muted); }
+
+/* compact 断点（<560px，与 useBreakpoint 一致）：信号行让位，删实例标签 */
+@media (max-width: 559px) {
+  .task-meta-row .instance-tag {
+    display: none;
+  }
 }
 .instance-tag {
   font-size: 10px;
