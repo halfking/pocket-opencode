@@ -225,6 +225,128 @@ mux.HandleFunc("/api/auth/biometric/credentials/",    s.requireAuth(s.handleBiom
 - ✅ 签名验证核心逻辑（WebAuthnVerifier）
 - ⚠️ 端到端 WebAuthn 流程（需真实浏览器 + Secure Enclave/TPM，手动测试）
 
+### 1.7 RedClaw 用户管理集成（2026-08-28 扩展）
+
+#### 1.7.1 集成方案
+
+**架构选择**：方案 B - Pocket 本地存储 + RedClaw 验证
+
+- **凭证存储**：生物识别凭证（公钥 + counter）存储在 Pocket 的 `BiometricStore`（PostgreSQL）
+- **用户验证**：登录时调用 RedClaw API 验证 `userID` 有效性
+- **降级策略**：RedClaw 不可用时，使用本地 `UserStore` 或拒绝登录（根据配置）
+
+**设计理念**：
+- 生物识别是**认证方式**（authentication），不是**用户身份**（identity）
+- 用户身份管理在 RedClaw，Pocket 仅存储"哪个设备绑定了哪个用户"
+- 凭证与用户松耦合：用户在 RedClaw 中删除/禁用，生物识别登录自动失败
+
+#### 1.7.2 RedClaw VerifyUser API
+
+**新增端点**（需 RedClaw 实现）：
+
+```http
+POST /api/v1/users/verify
+Authorization: Bearer <SECRET>
+X-Tenant-ID: <TENANT_ID>
+Content-Type: application/json
+
+{
+  "user_id": "user-123",
+  "tenant_id": "tenant-1"
+}
+```
+
+**响应**：
+
+```json
+{
+  "valid": true,
+  "user_info": {
+    "user_id": "user-123",
+    "username": "testuser",
+    "email": "test@example.com",
+    "display_name": "Test User",
+    "roles": ["user", "admin"],
+    "tenant_id": "tenant-1",
+    "status": "active"
+  }
+}
+```
+
+**实现**（`backend/internal/redclaw/client.go`）：
+
+```go
+// VerifyUser 验证用户是否在 RedClaw 租户中有效。
+func (c *Client) VerifyUser(userID string) (*VerifyUserResponse, error) {
+    req := VerifyUserRequest{
+        UserID:   userID,
+        TenantID: c.cfg.TenantID,
+    }
+    resp, err := c.doRequest(http.MethodPost, "/api/v1/users/verify", req)
+    // ...
+}
+```
+
+#### 1.7.3 登录流程更新
+
+**完整流程**（`handleBiometricLoginFinish`）：
+
+1. **WebAuthn 签名验证**：验证 assertion response（公钥 + counter）
+2. **RedClaw 用户验证**（如果 `redclawBridge != nil`）：
+   - 调用 `redclawBridge.VerifyUser(storedCred.UserID)`
+   - 验证 `valid == true` 且 `status == "active"`
+   - 从 `UserInfo.Roles` 提取角色信息
+3. **签发 JWT**：使用 RedClaw 返回的角色（或降级到默认 "user"）
+4. **审计日志**：记录验证来源（`verified_by=redclaw` 或 `verified_by=local`）
+
+**降级策略**：
+
+| 场景 | RedClaw 状态 | 行为 |
+|------|------------|------|
+| 生产环境 | 已配置 + 可用 | ✅ 调用 VerifyUser，失败则拒绝登录 |
+| 生产环境 | 已配置 + 不可用 | ❌ 拒绝登录（fail-closed） |
+| 开发环境 | 未配置 | ✅ 跳过验证，直接签发 JWT（role="user"） |
+
+**代码片段**：
+
+```go
+// RedClaw 用户验证（如果 RedClaw 已配置）
+var role string = "user"
+if s.redclawBridge != nil {
+    verifyResp, err := s.redclawBridge.VerifyUser(storedCred.UserID)
+    if err != nil {
+        // RedClaw 不可用或用户无效 → 拒绝登录
+        writeError(w, http.StatusUnauthorized, "user verification failed")
+        return
+    }
+    if !verifyResp.Valid {
+        writeError(w, http.StatusUnauthorized, "user not found or disabled")
+        return
+    }
+    // 使用 RedClaw 返回的角色信息
+    if verifyResp.UserInfo != nil && len(verifyResp.UserInfo.Roles) > 0 {
+        role = verifyResp.UserInfo.Roles[0]
+    }
+}
+
+// 签发 JWT token
+token, err := s.jwtSigner.SignWithWorkspace(storedCred.UserID, role, storedCred.WorkspaceID)
+```
+
+#### 1.7.4 测试覆盖
+
+**新增测试**（`backend/internal/redclaw/verify_user_test.go`）：
+
+- `TestVerifyUser`：4 个场景（有效用户、无效用户、空 userID、服务器错误）
+- `TestBridgeVerifyUser`：Bridge 层集成测试
+- `TestBridgeVerifyUser_NotConnected`：Bridge 未连接错误路径
+
+**覆盖率**：
+- ✅ RedClaw Client VerifyUser API
+- ✅ Bridge 层用户验证
+- ✅ 连接状态检查
+- ⚠️ Server handler 集成测试（需 mock RedClaw Bridge）
+
 ---
 
 ## 2. Chat Agent SQLite 离线模式

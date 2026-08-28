@@ -294,15 +294,39 @@ func (s *Server) handleBiometricLoginFinish(w http.ResponseWriter, r *http.Reque
 			fmt.Printf("WARN: failed to update counter for %s: %v\n", body.CredentialID, err)
 		}
 
+		// RedClaw 用户验证（如果 RedClaw 已配置）
+		var role string = "user"
+		if s.redclawBridge != nil {
+			verifyResp, err := s.redclawBridge.VerifyUser(storedCred.UserID)
+			if err != nil {
+				// RedClaw 不可用或用户无效 → 拒绝登录
+				writeError(w, http.StatusUnauthorized, fmt.Sprintf("user verification failed: %v", err))
+				s.auditGateway(r, "biometric.login.failed", storedCred.ID,
+					fmt.Sprintf("user=%s redclaw_error=%v", storedCred.UserID, err), false)
+				return
+			}
+			if !verifyResp.Valid {
+				writeError(w, http.StatusUnauthorized, "user not found or disabled in RedClaw")
+				s.auditGateway(r, "biometric.login.failed", storedCred.ID,
+					fmt.Sprintf("user=%s reason=invalid", storedCred.UserID), false)
+				return
+			}
+			// 使用 RedClaw 返回的角色信息
+			if verifyResp.UserInfo != nil && len(verifyResp.UserInfo.Roles) > 0 {
+				role = verifyResp.UserInfo.Roles[0] // 取第一个角色
+			}
+		}
+
 		// 签发 JWT token
-		token, err := s.jwtSigner.SignWithWorkspace(storedCred.UserID, "user", storedCred.WorkspaceID)
+		token, err := s.jwtSigner.SignWithWorkspace(storedCred.UserID, role, storedCred.WorkspaceID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to sign JWT")
 			return
 		}
 
 		s.auditGateway(r, "biometric.login", storedCred.ID,
-			fmt.Sprintf("user=%s ws=%s device=%s", storedCred.UserID, storedCred.WorkspaceID, storedCred.DeviceName), true)
+			fmt.Sprintf("user=%s ws=%s device=%s verified_by=%s", storedCred.UserID, storedCred.WorkspaceID, storedCred.DeviceName, 
+				map[bool]string{true: "redclaw", false: "local"}[s.redclawBridge != nil]), true)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"token":        token,
 			"user_id":      storedCred.UserID,

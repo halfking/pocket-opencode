@@ -70,3 +70,26 @@ type BridgeEvent struct {
 	Payload   interface{} `json:"payload"`
 	Timestamp time.Time   `json:"timestamp"`
 }
+
+// UserInfo RedClaw 用户信息
+type UserInfo struct {
+	UserID      string   `json:"user_id"`
+	Username    string   `json:"username"`
+	Email       string   `json:"email"`
+	DisplayName string   `json:"display_name"`
+	Roles       []string `json:"roles"`
+	TenantID    string   `json:"tenant_id"`
+	Status      string   `json:"status"` // "active" | "disabled"
+}
+
+// VerifyUserRequest 验证用户请求
+type VerifyUserRequest struct {
+	UserID   string `json:"user_id"`
+	TenantID string `json:"tenant_id"`
+}
+
+// VerifyUserResponse 验证用户响应
+type VerifyUserResponse struct {
+	Valid    bool      `json:"valid"`
+	UserInfo *UserInfo `json:"user_info,omitempty"`
+}

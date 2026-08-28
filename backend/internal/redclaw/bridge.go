@@ -84,6 +84,19 @@ func (b *Bridge) KnowledgeSearch(req KnowledgeSearchRequest) (*KnowledgeSearchRe
 	return b.client.KnowledgeSearch(req)
 }
 
+// VerifyUser 验证用户是否在 RedClaw 租户中有效（用于生物识别登录）。
+func (b *Bridge) VerifyUser(userID string) (*VerifyUserResponse, error) {
+	b.mu.RLock()
+	connected := b.connected
+	b.mu.RUnlock()
+
+	if !connected {
+		return nil, ErrBridgeNotConnected
+	}
+
+	return b.client.VerifyUser(userID)
+}
+
 // HealthCheck performs a health check against the RedClaw service.
 func (b *Bridge) HealthCheck() bool {
 	_, err := b.client.Health()

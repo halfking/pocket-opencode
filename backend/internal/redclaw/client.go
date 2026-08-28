@@ -122,6 +122,41 @@ func (c *Client) KnowledgeSearch(req KnowledgeSearchRequest) (*KnowledgeSearchRe
 	return &result, nil
 }
 
+// VerifyUser 验证用户是否在 RedClaw 租户中有效。
+//
+// 用途：生物识别登录时，验证存储的 userID 是否仍在 RedClaw 中有效（未删除/禁用）。
+func (c *Client) VerifyUser(userID string) (*VerifyUserResponse, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("redclaw: userID cannot be empty")
+	}
+
+	req := VerifyUserRequest{
+		UserID:   userID,
+		TenantID: c.cfg.TenantID,
+	}
+
+	resp, err := c.doRequest(http.MethodPost, "/api/v1/users/verify", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errResp ErrorResponse
+		body, _ := io.ReadAll(resp.Body)
+		if json.Unmarshal(body, &errResp) == nil {
+			return nil, fmt.Errorf("RedClaw error (code=%d): %s", errResp.Code, errResp.Message)
+		}
+		return nil, fmt.Errorf("RedClaw HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result VerifyUserResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode verify user response: %w", err)
+	}
+	return &result, nil
+}
+
 // doRequest 执行 HTTP 请求
 func (c *Client) doRequest(method, path string, body interface{}) (*http.Response, error) {
 	url := c.cfg.BaseURL + path
