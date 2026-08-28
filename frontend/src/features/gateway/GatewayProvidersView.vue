@@ -81,9 +81,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { ApiError } from '../../api/http'
 import * as gw from '../../api/gateway'
 import type { GatewayProvider } from '../../api/gateway'
+import { useConfirm } from '../../composables/useConfirm'
 
 const route = useRoute()
 const router = useRouter()
+const { confirm } = useConfirm()
 const nodeId = Number(route.params.nodeId)
 
 const providers = ref<GatewayProvider[]>([])
@@ -134,7 +136,7 @@ async function toggle(p: GatewayProvider) {
   const warn = p.enabled
     ? `禁用「${p.display_name}」会让其下所有凭据无法路由，确认继续？`
     : `启用「${p.display_name}」？`
-  if (!window.confirm(warn)) return
+  if (!(await confirm({ title: `${verb}供应商`, message: warn, confirmText: verb, danger: p.enabled }))) return
 
   busy.value = p.id
   error.value = ''

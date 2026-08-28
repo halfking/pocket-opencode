@@ -72,7 +72,7 @@ defineExpose({
   right: 0;
   background: var(--color-bg-surface);
   border-top: 1px solid var(--color-border);
-  z-index: 1000;
+  z-index: var(--z-bottom-nav);
   box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05);
 }
 

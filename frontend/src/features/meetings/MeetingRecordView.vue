@@ -113,6 +113,7 @@ import { WaveformVisualizer } from '@/components'
 import { useMeetingRecorder } from '../../composables/useMeetingRecorder'
 import { useLiveSummary } from '../../composables/useLiveSummary'
 import { useMeetingAlerts } from '../../composables/useMeetingAlerts'
+import { useConfirm } from '../../composables/useConfirm'
 import { getMeeting, updateMeeting } from './meetings-store'
 import TranscriptSegmentList from './TranscriptSegmentList.vue'
 import LiveSummaryPanel from './LiveSummaryPanel.vue'
@@ -122,6 +123,7 @@ import SpeakerLabelSheet from './SpeakerLabelSheet.vue'
 
 const route = useRoute()
 const router = useRouter()
+const { confirm } = useConfirm()
 const meetingId = route.params.id as string
 
 const meta = reactive({
@@ -169,9 +171,9 @@ async function onStop() {
   router.replace({ name: 'meeting-detail', params: { id: meetingId } })
 }
 
-function onBack() {
+async function onBack() {
   if (isRecording.value) {
-    if (confirm('录音进行中，确定离开？')) onStop()
+    if (await confirm({ title: '离开录音', message: '录音进行中，确定离开？', confirmText: '离开', danger: true })) onStop()
   } else {
     router.back()
   }
@@ -304,7 +306,7 @@ onUnmounted(() => {
   border-radius: var(--radius-md);
   font-size: 12px;
   text-align: center;
-  z-index: 90;
+  z-index: var(--z-fab);
 }
 
 .processing-bar {
@@ -318,7 +320,7 @@ onUnmounted(() => {
   border-radius: var(--radius-full);
   font-size: 12px;
   color: var(--text-muted);
-  z-index: 80;
+  z-index: var(--z-fab);
   box-shadow: var(--shadow-sm);
 }
 

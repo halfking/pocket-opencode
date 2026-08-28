@@ -165,8 +165,10 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { APP_VERSION, checkUpdate } from '../../utils/version'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
+import { useConfirm } from '../../composables/useConfirm'
 
 const router = useRouter()
+const { confirm } = useConfirm()
 
 // 暴露给 template（Vue template 不能直接访问 window）
 const apiOrigin = typeof window !== 'undefined' ? window.location.origin : ''
@@ -275,8 +277,8 @@ function goPermissions() {
   router.push('/settings/permissions')
 }
 
-function handleLogout() {
-  if (confirm('确定要退出登录吗？')) {
+async function handleLogout() {
+  if (await confirm({ title: '退出登录', message: '确定要退出登录吗？', confirmText: '退出登录', danger: true })) {
     localStorage.removeItem('pocket_user')
     localStorage.removeItem('selected_server')
     localStorage.removeItem('selected_instance')

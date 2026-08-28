@@ -36,7 +36,7 @@ function icon(type: string): string {
   top: calc(var(--topbar-height, 48px) + var(--space-2));
   left: var(--space-3);
   right: var(--space-3);
-  z-index: 150;
+  z-index: var(--z-fab);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);

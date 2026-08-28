@@ -379,7 +379,7 @@ onUnmounted(() => {
   background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: flex-end;
-  z-index: 50;
+  z-index: var(--z-base);
 }
 .sheet {
   width: 100%;

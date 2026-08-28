@@ -188,9 +188,11 @@ import AppLayout from '../../app/AppLayout.vue'
 import { Skeleton, EmptyState } from '../../components'
 import * as vaultStore from './vault-store'
 import type { VaultEntry } from './vault-store'
+import { useConfirm } from '../../composables/useConfirm'
 
 const route = useRoute()
 const router = useRouter()
+const { confirm } = useConfirm()
 
 const entry = ref<VaultEntry | null>(null)
 const loading = ref(true)
@@ -385,7 +387,7 @@ async function onSave() {
 // ---- delete ----
 async function onDelete() {
   if (!entry.value) return
-  const ok = confirm(`确认删除「${entry.value.title}」？此操作不可撤销。`)
+  const ok = await confirm({ title: '删除条目', message: `确认删除「${entry.value.title}」？此操作不可撤销。`, confirmText: '删除', danger: true })
   if (!ok) return
   deleting.value = true
   try {
@@ -584,7 +586,7 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-md);
   font-size: var(--text-sm); font-weight: var(--font-weight-medium);
   box-shadow: var(--shadow-md);
-  z-index: 100; max-width: 90vw; text-align: center;
+  z-index: var(--z-fab); max-width: 90vw; text-align: center;
 }
 .toast.success { background: var(--success); }
 .state-wrap { padding: var(--space-3) 0; }

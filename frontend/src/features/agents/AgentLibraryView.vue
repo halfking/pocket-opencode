@@ -2,10 +2,12 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChatAgentStore, DEPARTMENTS } from '../../stores/chatAgentStore'
+import { useConfirm } from '../../composables/useConfirm'
 import AgentSyncSheet from '../ai-chat/AgentSyncSheet.vue'
 
 const router = useRouter()
 const agentStore = useChatAgentStore()
+const { confirm } = useConfirm()
 
 const searchQuery = ref('')
 const selectedDepartment = ref<string>('') // 空字符串 = 全部
@@ -80,9 +82,9 @@ function goToCreate() {
   router.push('/agents/new')
 }
 
-function handleDelete(agentId: string, agentName: string, e: Event) {
+async function handleDelete(agentId: string, agentName: string, e: Event) {
   e.stopPropagation()
-  if (!confirm(`确定要删除角色"${agentName}"吗？`)) return
+  if (!(await confirm({ title: '删除角色', message: `确定要删除角色"${agentName}"吗？`, confirmText: '删除', danger: true }))) return
   agentStore.deleteAgent(agentId).catch((err) => {
     alert(`删除失败：${err.message || err}`)
   })

@@ -84,9 +84,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { ApiError } from '../../api/http'
 import * as gw from '../../api/gateway'
 import type { GatewayCredential } from '../../api/gateway'
+import { useConfirm } from '../../composables/useConfirm'
 
 const route = useRoute()
 const router = useRouter()
+const { confirm } = useConfirm()
 const nodeId = Number(route.params.nodeId)
 const providerId = route.query.provider_id ? Number(route.query.provider_id) : undefined
 
@@ -122,7 +124,12 @@ async function act(c: GatewayCredential, kind: 'promote' | 'demote' | 'disable' 
     disable: '停用',
     clear: '恢复',
   }
-  if (!window.confirm(`确认对「${c.label || c.id}」执行${labels[kind]}？该操作会立即改变网关路由。`)) {
+  if (!(await confirm({
+    title: `${labels[kind]}凭据`,
+    message: `确认对「${c.label || c.id}」执行${labels[kind]}？该操作会立即改变网关路由。`,
+    confirmText: labels[kind],
+    danger: kind === 'disable' || kind === 'demote',
+  }))) {
     return
   }
 

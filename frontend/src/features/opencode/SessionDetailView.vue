@@ -334,7 +334,7 @@ function getActorName(actor: string): string {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-base);
 }
 
 .back-btn, .export-btn {

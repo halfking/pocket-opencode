@@ -96,7 +96,7 @@ function typeIcon(type: string): string {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  z-index: 100;
+  z-index: var(--z-fab);
   transition: all 0.3s var(--ease-out, ease);
 }
 
@@ -108,7 +108,7 @@ function typeIcon(type: string): string {
   height: 100vh;
   max-height: none;
   border-radius: 0;
-  z-index: 200;
+  z-index: var(--z-sheet);
 }
 
 .summary-header {

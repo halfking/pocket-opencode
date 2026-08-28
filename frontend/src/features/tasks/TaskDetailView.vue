@@ -146,9 +146,11 @@ import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { api, type Task } from '../../api/client'
 import { EmptyState } from '../../components'
+import { useConfirm } from '../../composables/useConfirm'
 
 const router = useRouter()
 const route = useRoute()
+const { confirm } = useConfirm()
 
 const task = ref<Task | null>(null)
 const sessions = ref<any[]>([])
@@ -179,7 +181,7 @@ async function updateStatus(status: string) {
 }
 
 async function confirmDelete() {
-  if (!task.value || !confirm('确定删除此任务？')) return
+  if (!task.value || !(await confirm({ title: '删除任务', message: `确定删除任务「${task.value.title}」？此操作不可撤销。`, confirmText: '删除', danger: true }))) return
   const deleted = task.value
   try {
     await api.deleteTask(deleted.id)
@@ -445,7 +447,7 @@ function formatDate(d?: string): string {
   background: var(--overlay);
   display: flex;
   align-items: flex-end;
-  z-index: 1000;
+  z-index: var(--z-sheet);
 }
 .modal-sheet {
   background: var(--bg-elevated);

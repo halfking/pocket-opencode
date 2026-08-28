@@ -105,7 +105,7 @@ defineExpose({
 <style scoped>
 .toast {
   position: fixed;
-  bottom: calc(80px + env(safe-area-inset-bottom)); /* 避开底部导航 */
+  bottom: calc(var(--bottomnav-height) + env(safe-area-inset-bottom, 0px) + var(--space-4));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -116,7 +116,7 @@ defineExpose({
   padding: var(--space-4);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
-  z-index: 9999;
+  z-index: var(--z-toast);
   pointer-events: auto;
 }
 

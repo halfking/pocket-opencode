@@ -154,7 +154,7 @@ const handleCancel = () => {
   align-items: center;
   justify-content: center;
   padding: var(--space-4);
-  z-index: 1400;
+  z-index: var(--z-dialog);
 }
 
 .dialog {

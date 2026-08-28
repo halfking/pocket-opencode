@@ -111,6 +111,26 @@
   --topbar-height: 48px;      /* 原 52px */
   --bottomnav-height: 56px;   /* 原 60px */
 
+  /* Z-index 注册表 —— 全局唯一权威。新增浮层必须在此登记，禁止散落字面值。
+     分层语义从低到高：
+       base     页面内普通浮层（下拉、sticky 工具栏）
+       sticky   壳层标题栏 / GlobalStatusBar
+       bottomnav 底部导航
+       fab      悬浮操作按钮（需在导航之上、弹层之下）
+       sheet    BottomSheet 遮罩与面板
+       dialog   Dialog / ConfirmDialog 模态
+       alert    全局警示（MasterPassword 等系统级模态）
+       toast    轻提示（永远最上） */
+  --z-base: 10;
+  --z-sticky: 50;
+  --z-fab: 60;
+  --z-bottom-nav: 70;
+  --z-sheet: 1300;
+  --z-dialog: 1400;
+  --z-alert: 1500;
+  --z-update: 1600;
+  --z-toast: 9999;
+
   /* Motion */
   --duration-fast: 150ms;
   --duration-base: 200ms;

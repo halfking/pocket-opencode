@@ -81,9 +81,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { ApiError } from '../../api/http'
 import * as gw from '../../api/gateway'
 import type { ModelTreeCredential } from '../../api/gateway'
+import { useConfirm } from '../../composables/useConfirm'
 
 const route = useRoute()
 const router = useRouter()
+const { confirm } = useConfirm()
 const nodeId = Number(route.params.nodeId)
 
 interface FlatVariant {
@@ -160,7 +162,7 @@ function toggleExpand(key: string) {
 }
 
 async function probe(model: string) {
-  if (!window.confirm(`对 ${model} 发一次真实请求？会产生上游调用与费用。`)) return
+  if (!(await confirm({ title: '模型探测', message: `对 ${model} 发一次真实请求？会产生上游调用与费用。`, confirmText: '发送' }))) return
 
   probing.value = model
   error.value = ''

@@ -188,6 +188,7 @@ import type { EmailAccount } from './emails-store'
 import { emailApi } from '../../api/email'
 import type { EmailAccount as ApiEmailAccount, EmailCredentialInput } from '../../api/email'
 import { ApiError } from '../../api/http'
+import { useConfirm } from '../../composables/useConfirm'
 
 interface ImapTemplate {
   id: string
@@ -206,6 +207,7 @@ const templates: ImapTemplate[] = [
 
 const accounts = ref<EmailAccount[]>([])
 const loading = ref(true)
+const { confirm } = useConfirm()
 
 const showForm = ref(false)
 const testing = ref(false)
@@ -527,7 +529,7 @@ async function testAndSave() {
 }
 
 async function onDelete(a: EmailAccount) {
-  const ok = confirm(`确认删除账户 ${a.displayName}（${a.emailAddress}）？`)
+  const ok = await confirm({ title: '删除账户', message: `确认删除账户 ${a.displayName}（${a.emailAddress}）？`, confirmText: '删除', danger: true })
   if (!ok) return
   try {
     await emailApi.deleteAccount(a.id)

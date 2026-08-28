@@ -115,6 +115,7 @@ import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { Skeleton, EmptyState, PullToRefresh, SwipeableListItem, type SwipeAction } from '@/components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
+import { useConfirm } from '@/composables/useConfirm'
 import {
   readArchivedIds,
   setSessionArchived,
@@ -145,6 +146,7 @@ const LEGACY_ARCHIVE_KEY = 'archived_session_ids'
 
 const router = useRouter()
 const auth = useAuthStore()
+const { confirm } = useConfirm()
 
 const sessions = ref<Session[]>([])
 const instances = ref<Instance[]>([])
@@ -295,7 +297,7 @@ async function deleteSession(session: Session) {
     alert('请先选择实例再删除会话')
     return
   }
-  if (!confirm(`确定删除会话「${session.title}」？`)) return
+  if (!(await confirm({ title: '删除会话', message: `确定删除会话「${session.title}」？`, confirmText: '删除', danger: true }))) return
   try {
     await api.deleteSession(session.id, instId)
     sessions.value = sessions.value.filter((s) => s.id !== session.id)

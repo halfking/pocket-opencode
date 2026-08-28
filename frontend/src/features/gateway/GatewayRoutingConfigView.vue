@@ -162,10 +162,12 @@ import { useRoute, useRouter } from 'vue-router'
 import * as gw from '../../api/gateway'
 import type { WorkType, TaskDefaultRouting } from '../../api/gateway'
 import { useToast } from '../../composables/useToast'
+import { useConfirm } from '../../composables/useConfirm'
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
+const { confirm } = useConfirm()
 const nodeId = Number(route.params.nodeId)
 
 const TABS = ['任务类型', '默认路由', '策略'] as const
@@ -298,7 +300,12 @@ async function createDefault() {
 }
 
 async function removeDefault(d: TaskDefaultRouting) {
-  if (!confirm(`删除默认路由：${d.task_type} → ${d.canonical_model}？`)) return
+  if (!(await confirm({
+    title: '删除默认路由',
+    message: `删除默认路由：${d.task_type} → ${d.canonical_model}？`,
+    confirmText: '删除',
+    danger: true,
+  }))) return
   saving.value = true
   try {
     await gw.deleteTaskDefault(nodeId, d.id)
@@ -351,7 +358,7 @@ onMounted(reload)
 .title { flex: 1; font-size: 17px; font-weight: 600; margin: 0; }
 .tab-row {
   display: flex; background: var(--bg-card); border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; z-index: 5;
+  position: sticky; top: 0; z-index: var(--z-base);
 }
 .tab {
   flex: 1; padding: 12px 0; font-size: 14px; background: none;

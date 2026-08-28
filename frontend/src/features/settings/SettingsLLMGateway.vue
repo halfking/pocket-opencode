@@ -343,7 +343,7 @@ function goBack() {
   top: 0;
   left: 0;
   right: 0;
-  z-index: 20;
+  z-index: var(--z-sticky);
   will-change: transform;
   padding-top: env(safe-area-inset-top);
   background: var(--bg-card);

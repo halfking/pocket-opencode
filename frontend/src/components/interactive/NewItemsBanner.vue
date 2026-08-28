@@ -69,7 +69,7 @@ function handleClick() {
   /* sticky 在 topbar 下方；topbar 高度用 CSS 变量，默认 56px */
   position: sticky;
   top: var(--topbar-height, 56px);
-  z-index: 5;
+  z-index: var(--z-base);
 
   display: inline-flex;
   align-items: center;

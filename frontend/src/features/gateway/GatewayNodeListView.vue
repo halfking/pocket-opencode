@@ -113,8 +113,10 @@ import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import * as gw from '../../api/gateway'
 import type { GatewayNode } from '../../api/gateway'
+import { useConfirm } from '../../composables/useConfirm'
 
 const router = useRouter()
+const { confirm } = useConfirm()
 
 const nodes = ref<GatewayNode[]>([])
 const allowPrivateHosts = ref(true)
@@ -218,7 +220,12 @@ async function probe(n: GatewayNode) {
 }
 
 async function confirmDelete(n: GatewayNode) {
-  if (!window.confirm(`删除节点「${n.name}」？只影响 pocket 侧的注册信息，不会改动网关本身。`)) {
+  if (!(await confirm({
+    title: '删除节点',
+    message: `删除节点「${n.name}」？只影响 pocket 侧的注册信息，不会改动网关本身。`,
+    confirmText: '删除',
+    danger: true,
+  }))) {
     return
   }
   try {
@@ -415,7 +422,7 @@ onMounted(load)
   background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: flex-end;
-  z-index: 50;
+  z-index: var(--z-base);
 }
 .sheet {
   width: 100%;

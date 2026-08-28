@@ -447,8 +447,10 @@ import {
   setSessionArchived,
   type ArchiveScope,
 } from '../sessions/sessionArchive'
+import { useConfirm } from '../../composables/useConfirm'
 
 const router = useRouter()
+const { confirm } = useConfirm()
 const { isRecording, isTranscribing, sttError, startRecording, stopRecording } = useVoiceInput()
 const auth = useAuthStore()
 
@@ -906,7 +908,7 @@ async function ctxUpdateStatus(status: string) {
 }
 
 async function ctxDelete() {
-  if (!contextTask.value || !confirm(`确定删除「${contextTask.value.title}」？`)) return
+  if (!contextTask.value || !(await confirm({ title: '删除任务', message: `确定删除「${contextTask.value.title}」？此操作不可撤销。`, confirmText: '删除', danger: true }))) return
   const id = contextTask.value.id
   try {
     await api.deleteTask(id)
@@ -925,7 +927,7 @@ async function ctxDelete() {
  * 见 STATUS-MATRIX 备注）。
  */
 async function stopTaskSessions(task: Task): Promise<void> {
-  if (!confirm(`停止「${task.title}」关联的会话？进行中的 agent 循环将被中断。`)) return
+  if (!(await confirm({ title: '停止会话', message: `停止「${task.title}」关联的会话？进行中的 agent 循环将被中断。`, confirmText: '停止', danger: true }))) return
   try {
     const links = await api.getTaskSessions(task.id)
     if (links.length === 0) {
@@ -1051,7 +1053,7 @@ function timeAgo(dateStr?: string): string {
 .triage-bar {
   position: sticky;
   top: 0;
-  z-index: 20;
+  z-index: var(--z-base);
   margin: 8px var(--space-3) 0;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -1570,7 +1572,7 @@ function timeAgo(dateStr?: string): string {
   padding-bottom: calc(6px + env(safe-area-inset-bottom, 0));
   background: var(--bg-card);
   border-top: 1px solid var(--border);
-  z-index: 15;
+  z-index: var(--z-fab);
 }
 .voice-input-wrap {
   display: flex;
@@ -1681,7 +1683,7 @@ function timeAgo(dateStr?: string): string {
   background: var(--overlay);
   display: flex;
   align-items: flex-end;
-  z-index: 1000;
+  z-index: var(--z-sheet);
   animation: fadeIn 150ms ease;
 }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }

@@ -90,8 +90,10 @@ import type { LocalNote } from './notes-store'
 import { http } from '../../api/http'
 import { ErrorState } from '../../components'
 import { useAuthStore } from '../../stores/auth'
+import { useConfirm } from '../../composables/useConfirm'
 
 const route = useRoute()
+const { confirm } = useConfirm()
 const router = useRouter()
 const auth = useAuthStore()
 
@@ -183,7 +185,7 @@ function openNote(id: string) {
 
 async function onDelete() {
   if (!note.value) return
-  const ok = confirm('确认删除这条笔记？此操作不可撤销。')
+  const ok = await confirm({ title: '删除笔记', message: '确认删除这条笔记？此操作不可撤销。', confirmText: '删除', danger: true })
   if (!ok) return
   await notesStore.deleteNote(note.value.id, currentWorkspaceId())
   router.back()

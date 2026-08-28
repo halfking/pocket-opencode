@@ -432,12 +432,14 @@ import {
 } from './aiChatStore'
 import { renderMarkdown } from '../../utils/markdown'
 import { useToast } from '../../composables/useToast'
+import { useConfirm } from '../../composables/useConfirm'
 import { useVoiceInput } from '../../composables/useVoiceInput'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 import AgentSelectorSheet from './AgentSelectorSheet.vue'
 
 const store = useAIChatStore()
 const toast = useToast()
+const { confirm } = useConfirm()
 const agentStore = useChatAgentStore()
 
 // 语音输入：复用全局 STT（本地 sherpa 优先，云转写兜底），转写结果追加到输入框。
@@ -769,8 +771,8 @@ function newConversation() {
   store.newConversation()
   draft.value = ''
 }
-function confirmDelete(c: { id: string; title: string }) {
-  if (confirm(`删除会话「${c.title}」？此操作不可撤销。`)) {
+async function confirmDelete(c: { id: string; title: string }) {
+  if (await confirm({ title: '删除会话', message: `删除会话「${c.title}」？此操作不可撤销。`, confirmText: '删除', danger: true })) {
     store.deleteConversation(c.id)
   }
 }
@@ -1294,7 +1296,7 @@ function formatTime(ts: number): string {
 .drawer-mask {
   position: fixed; inset: 0;
   background: rgba(0, 0, 0, 0.4);
-  z-index: 40;
+  z-index: var(--z-base);
   display: flex;
 }
 .drawer {
@@ -1366,7 +1368,7 @@ function formatTime(ts: number): string {
 .sheet-mask {
   position: fixed; inset: 0;
   background: rgba(0, 0, 0, 0.4);
-  z-index: 50;
+  z-index: var(--z-sheet);
   display: flex; align-items: flex-end;
 }
 .sheet {

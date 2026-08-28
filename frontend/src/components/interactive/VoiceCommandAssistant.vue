@@ -255,7 +255,7 @@ const handleClose = () => {
 .voice-fab {
   position: fixed;
   right: var(--space-4);
-  bottom: calc(80px + var(--space-4)); /* 避开底部导航 */
+  bottom: calc(var(--bottomnav-height) + env(safe-area-inset-bottom, 0px) + var(--space-4));
   width: 64px;
   height: 64px;
   display: flex;
@@ -268,7 +268,7 @@ const handleClose = () => {
   font-size: 32px;
   box-shadow: var(--shadow-xl);
   cursor: pointer;
-  z-index: 1000;
+  z-index: var(--z-fab);
   transition: all var(--duration-base) var(--ease-spring);
   user-select: none;
 }
@@ -327,7 +327,7 @@ const handleClose = () => {
 
 .voice-panel {
   position: fixed;
-  bottom: calc(80px + 80px); /* 底部导航 + FAB */
+  bottom: calc(var(--bottomnav-height) + env(safe-area-inset-bottom, 0px) + 84px);
   right: var(--space-4);
   width: calc(100vw - var(--space-8));
   max-width: 400px;
@@ -336,7 +336,7 @@ const handleClose = () => {
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-2xl);
   overflow: hidden;
-  z-index: 999;
+  z-index: var(--z-fab);
 }
 
 .panel-header {

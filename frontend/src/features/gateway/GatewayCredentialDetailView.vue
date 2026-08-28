@@ -126,9 +126,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { ApiError } from '../../api/http'
 import * as gw from '../../api/gateway'
 import type { CredentialModelStatus, GatewayCredential, ModelEffectiveState } from '../../api/gateway'
+import { useConfirm } from '../../composables/useConfirm'
 
 const route = useRoute()
 const router = useRouter()
+const { confirm } = useConfirm()
 const nodeId = Number(route.params.nodeId)
 const credentialId = Number(route.params.credentialId)
 
@@ -184,7 +186,12 @@ const visibleModels = computed(() => {
 
 async function toggle(m: CredentialModelStatus, action: 'online' | 'offline') {
   const verb = action === 'online' ? '上线' : '下线'
-  if (!window.confirm(`确认将 ${m.raw_model_name} ${verb}？会立即改变网关路由。`)) return
+  if (!(await confirm({
+    title: `${verb}模型`,
+    message: `确认将 ${m.raw_model_name} ${verb}？会立即改变网关路由。`,
+    confirmText: verb,
+    danger: action === 'offline',
+  }))) return
 
   busyModel.value = m.raw_model_name
   error.value = ''

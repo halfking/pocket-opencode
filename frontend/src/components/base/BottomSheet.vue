@@ -152,7 +152,7 @@ const handleTouchEnd = () => {
   inset: 0;
   background: var(--color-bg-overlay);
   backdrop-filter: blur(4px);
-  z-index: 1300;
+  z-index: var(--z-sheet);
   display: flex;
   align-items: flex-end;
 }

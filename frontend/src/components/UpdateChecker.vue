@@ -134,7 +134,7 @@ defineExpose({
   align-items: center;
   justify-content: center;
   padding: var(--space-4);
-  z-index: 2000;
+  z-index: var(--z-update);
   animation: fadeIn 0.3s;
 }
 

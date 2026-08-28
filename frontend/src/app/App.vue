@@ -9,6 +9,8 @@
       <router-view />
     </AppLayout>
     <UpdateChecker ref="updateChecker" />
+    <!-- 全局确认弹窗：useConfirm().confirm() 的唯一渲染挂载点 -->
+    <ConfirmDialog />
   </div>
 </template>
 
@@ -16,6 +18,7 @@
 import { ref, onMounted } from 'vue'
 import AppLayout from './AppLayout.vue'
 import UpdateChecker from '../components/UpdateChecker.vue'
+import ConfirmDialog from '../components/base/ConfirmDialog.vue'
 import { useSwipeBack } from '../composables/useSwipeBack'
 
 const updateChecker = ref<InstanceType<typeof UpdateChecker> | null>(null)
