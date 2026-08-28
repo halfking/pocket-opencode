@@ -80,6 +80,29 @@ func ParseAgentFile(path string) (*Agent, error) {
 	}, nil
 }
 
+// skipDirs 列在遍历时需整目录跳过的非角色目录（避免误把 issue template、
+// IDE 配置、依赖目录里的 .md 当作角色文件解析）。
+// 注意：仓库根目录（"."）不在内，所以仓库自身的根 .md 文件仍会被考虑
+// （由 UPSTREAM.md / 全大写文件名规则进一步过滤）。
+var skipDirs = map[string]struct{}{
+	".git":      {},
+	".github":   {},
+	".vscode":   {},
+	".idea":     {},
+	"node_modules": {},
+}
+
+// isSkippedDir 判断 path 是否位于一个需跳过的目录中（祖先目录命中）。
+func isSkippedDir(path string) bool {
+	// filepath.Walk 不会用 "../" 这种条目；以 "/" 分隔，逐段查表。
+	for _, seg := range strings.Split(filepath.ToSlash(path), "/") {
+		if _, ok := skipDirs[seg]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // importBuiltin 是 ImportBuiltinAgents 的共享实现，对 StoreIface 都适用。
 // 它只调用接口的 List + Create 方法（不直接接触底层 DB），所以 PG Store
 // 和 SQLiteStore 都能复用同一份遍历 / 解析逻辑。
@@ -103,7 +126,17 @@ func importBuiltin(ctx context.Context, store StoreIface, repoPath string) error
 
 	var agents []*Agent
 	err = filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".md") {
+		if err != nil {
+			return nil
+		}
+		// 跳过非角色目录（避免 .github/ISSUE_TEMPLATE、node_modules 等被解析）
+		if info.IsDir() {
+			if isSkippedDir(path) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".md") {
 			return nil
 		}
 
@@ -147,6 +180,3 @@ func (s *Store) ImportBuiltinAgents(ctx context.Context, repoPath string) error 
 	}
 	return importBuiltin(ctx, s, repoPath)
 }
-
-// SQLiteStore 上的 ImportBuiltinAgents 留给后续 sprint 合入 SQLiteStore
-// 实现后再启用（依赖 SQLiteStore 自身的 List/Create 接口实现）。
