@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
 )
@@ -89,11 +90,26 @@ func TestBiometricLoginBeginRejectsNonPost(t *testing.T) {
 }
 
 func TestBiometricLoginFinishIsNotImplemented(t *testing.T) {
-	srv := &Server{}
+	// When webAuthnVerifier is nil AND store+signer are configured, it returns 501
+	signer, _ := auth.NewSigner("test-secret-key-minimum-32-bytes-long", 1*time.Hour)
+	srv := &Server{
+		biometricStore: auth.NewBiometricStore(nil),
+		jwtSigner:      signer,
+	}
 	rec := httptest.NewRecorder()
 	srv.handleBiometricLoginFinish(rec, bioReq(http.MethodPost, "/api/auth/biometric/login/finish", "{}"))
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("expected 501, got %d", rec.Code)
+	}
+}
+
+func TestBiometricLoginFinishReturns503WhenStoreNil(t *testing.T) {
+	// When biometricStore is nil, it returns 503
+	srv := &Server{}
+	rec := httptest.NewRecorder()
+	srv.handleBiometricLoginFinish(rec, bioReq(http.MethodPost, "/api/auth/biometric/login/finish", "{}"))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
 	}
 }
 

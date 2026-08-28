@@ -91,10 +91,11 @@ type Server struct {
 	quesMgr  *opencode.QuestionManager
 
 	// Auth
-	userStore      *auth.UserStore
-	jwtSigner      *auth.Signer
-	biometricStore *auth.BiometricStore
-	identityStore  *identity.Store // nil = S0-A 未启用，handler 降级到单租户
+	userStore         *auth.UserStore
+	jwtSigner         *auth.Signer
+	biometricStore    *auth.BiometricStore
+	webAuthnVerifier  *auth.WebAuthnVerifier // nil = WebAuthn 签名验证未启用（降级到 P0 stub）
+	identityStore     *identity.Store        // nil = S0-A 未启用，handler 降级到单租户
 	// S0-B: unified LLM BFF。nil = 未配置（POCKET_LLM_* 未设且无网关配置），handler 返回 503。
 	llmBFF           *llmbff.Service
 	llmBFFSummarizer llmbff.Summarizer
@@ -308,6 +309,11 @@ func (s *Server) SetMigrationService(svc *migration.Service) {
 // SetBiometricStore 注入生物识别凭证 store。nil = PG/生物识别功能未启用。
 func (s *Server) SetBiometricStore(store *auth.BiometricStore) {
 	s.biometricStore = store
+}
+
+// SetWebAuthnVerifier 注入 WebAuthn 签名验证器。
+func (s *Server) SetWebAuthnVerifier(verifier *auth.WebAuthnVerifier) {
+	s.webAuthnVerifier = verifier
 }
 
 // BiometricStore 返回生物识别凭证 store，供启动装配和测试使用。
