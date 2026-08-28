@@ -46,7 +46,9 @@ type Agent struct {
 }
 ```
 
-### 1.3 SQLite Schema
+### 1.3 数据库 Schema
+
+#### 1.3.1 PostgreSQL Schema（Acc 云端模式）
 
 ```sql
 CREATE TABLE IF NOT EXISTS chat_agents (
@@ -58,7 +60,29 @@ CREATE TABLE IF NOT EXISTS chat_agents (
   emoji         TEXT,
   color         TEXT,
   system_prompt TEXT NOT NULL,
-  is_builtin    INTEGER NOT NULL DEFAULT 0,
+  is_builtin    BOOLEAN NOT NULL DEFAULT false,
+  created_at    BIGINT NOT NULL,
+  updated_at    BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_agents_ws ON chat_agents(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_chat_agents_dept ON chat_agents(department);
+CREATE INDEX IF NOT EXISTS idx_chat_agents_builtin ON chat_agents(is_builtin);
+```
+
+#### 1.3.2 SQLite Schema（单机离线模式）
+
+```sql
+CREATE TABLE IF NOT EXISTS chat_agents (
+  id            TEXT PRIMARY KEY,
+  workspace_id  TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  description   TEXT NOT NULL DEFAULT '',
+  department    TEXT NOT NULL,
+  emoji         TEXT,
+  color         TEXT,
+  system_prompt TEXT NOT NULL,
+  is_builtin    INTEGER NOT NULL DEFAULT 0,  -- SQLite 用 INTEGER 存布尔（0/1）
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
@@ -67,6 +91,22 @@ CREATE INDEX IF NOT EXISTS idx_chat_agents_ws ON chat_agents(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_chat_agents_dept ON chat_agents(department);
 CREATE INDEX IF NOT EXISTS idx_chat_agents_builtin ON chat_agents(is_builtin);
 ```
+
+**存储策略（`backend/cmd/pocketd/main.go:initChatAgentStores`）**：
+
+1. **优先 PostgreSQL**（Acc 云端模式）：
+   - PG Store + SyncStore（完整功能：CRUD + 跨设备同步）
+   - PG Store + nil sync（CRUD 可用，sync 端点 503）
+
+2. **降级 SQLite**（单机离线模式）：
+   - 无 PG 或 PG init 失败 → `modernc.org/sqlite`（pure Go，no CGO）
+   - SQLite Store + nil sync（CRUD 可用，280 个内置角色，sync 端点 503）
+   - DB 路径：`{dataDir}/chat_agents.sqlite`（WAL 模式）
+
+3. **完全失败**：
+   - PG 与 SQLite 均失败 → nil store（所有 chatagent 端点返回 503）
+
+参见 [生物识别认证与 SQLite 离线模式](./2026-08-28-biometric-auth-and-sqlite-fallback.md) 了解 SQLiteStore 实现细节。
 
 ### 1.4 前端数据模型扩展
 
