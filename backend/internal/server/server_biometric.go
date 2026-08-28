@@ -274,8 +274,12 @@ func (s *Server) handleBiometricLoginFinish(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
-		// 解析 assertion response
-		par, err := protocol.ParseCredentialRequestResponseBody(strings.NewReader(string(body.AssertionRaw)))
+		// 解析 assertion response（通过 parseAssertionFn 可被测试替换）
+		parser := s.parseAssertionFn
+		if parser == nil {
+			parser = defaultAssertionParser
+		}
+		par, err := parser(body.AssertionRaw)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to parse assertion: %v", err))
 			return
@@ -287,6 +291,8 @@ func (s *Server) handleBiometricLoginFinish(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusUnauthorized, fmt.Sprintf("assertion verification failed: %v", err))
 			return
 		}
+
+
 
 		// 更新 counter + last_used_at
 		if err := s.biometricStore.Touch(r.Context(), body.CredentialID, newCounter); err != nil {
@@ -432,4 +438,15 @@ func base64urlDecode(s string) ([]byte, error) {
 		fixed += strings.Repeat("=", 4-pad)
 	}
 	return base64StdDecode(fixed)
+}
+
+// assertionParser 把 WebAuthn assertion 解析逻辑抽象为可注入的函数类型。
+//
+// 生产环境用 defaultAssertionParser；测试可以替换为返回 mock 数据，
+// 避开构造合法 CBOR-encoded authenticatorData 的复杂度。
+// 这是标准的"测试 seam"模式，不是生产代码妥协。
+type assertionParser func(json.RawMessage) (*protocol.ParsedCredentialAssertionData, error)
+
+func defaultAssertionParser(raw json.RawMessage) (*protocol.ParsedCredentialAssertionData, error) {
+	return protocol.ParseCredentialRequestResponseBody(strings.NewReader(string(raw)))
 }

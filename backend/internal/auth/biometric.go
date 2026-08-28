@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,11 +21,20 @@ import (
 //   - credential_id 与 user_id + workspace_id 复合定位，删除/重命名按
 //     credential_id 操作。
 //
+// 存储后端：
+//   - pool != nil → PostgreSQL（生产路径，凭证跨进程持久化）
+//   - pool == nil → 内存 map（降级路径；用于无 PG 的本地/测试部署）
+//
 // 本文件为最小可编译骨架（Schema + CRUD），challenge/verify 签名验证
 // 在 handler 侧 stub 返回 501；后续 sprint 接入 identity-go 的
 // webauthn helper 即可平滑升级，存储层无需迁移。
 type BiometricStore struct {
 	pool *pgxpool.Pool
+
+	// memory 是 pool == nil 时的内存存储（测试/单机部署）。
+	// keyed by credential_id (c.ID)。
+	memoryMu sync.RWMutex
+	memory   map[string]*BiometricCredential
 }
 
 // BiometricCredential 是单条已注册凭证。
@@ -40,9 +50,12 @@ type BiometricCredential struct {
 	LastUsedAt   int64  `json:"last_used_at"`
 }
 
-// NewBiometricStore 构造 BiometricStore。pool 为 nil 时返回 noop（CRUD 返 not configured）。
+// NewBiometricStore 构造 BiometricStore。pool 为 nil 时降级到内存存储（测试/单机部署）。
 func NewBiometricStore(pool *pgxpool.Pool) *BiometricStore {
-	return &BiometricStore{pool: pool}
+	return &BiometricStore{
+		pool:   pool,
+		memory: make(map[string]*BiometricCredential),
+	}
 }
 
 const biometricSchema = `
@@ -77,9 +90,6 @@ var ErrBiometricNotFound = errors.New("auth: biometric credential not found")
 
 // Register 写入一条新凭证。同 credential_id 已存在则覆盖（升级场景）。
 func (s *BiometricStore) Register(ctx context.Context, c *BiometricCredential) error {
-	if s.pool == nil {
-		return ErrBiometricNotConfigured
-	}
 	if c.ID == "" || c.UserID == "" || c.WorkspaceID == "" {
 		return fmt.Errorf("id, user_id, workspace_id are required")
 	}
@@ -89,6 +99,14 @@ func (s *BiometricStore) Register(ctx context.Context, c *BiometricCredential) e
 	now := time.Now().Unix()
 	if c.CreatedAt == 0 {
 		c.CreatedAt = now
+	}
+	if s.pool == nil {
+		// 内存路径（测试/单机部署）
+		s.memoryMu.Lock()
+		defer s.memoryMu.Unlock()
+		clone := *c
+		s.memory[c.ID] = &clone
+		return nil
 	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO biometric_credentials (id, user_id, workspace_id, device_name, public_key, counter, transports, created_at, last_used_at)
@@ -105,7 +123,14 @@ func (s *BiometricStore) Register(ctx context.Context, c *BiometricCredential) e
 // Get 按 credential_id 查一条凭证。
 func (s *BiometricStore) Get(ctx context.Context, id string) (*BiometricCredential, error) {
 	if s.pool == nil {
-		return nil, ErrBiometricNotConfigured
+		s.memoryMu.RLock()
+		defer s.memoryMu.RUnlock()
+		c, ok := s.memory[id]
+		if !ok {
+			return nil, ErrBiometricNotFound
+		}
+		clone := *c
+		return &clone, nil
 	}
 	var c BiometricCredential
 	var counter int64
@@ -123,7 +148,19 @@ func (s *BiometricStore) Get(ctx context.Context, id string) (*BiometricCredenti
 // ListByUser 列出指定 user + workspace 下的所有凭证。
 func (s *BiometricStore) ListByUser(ctx context.Context, userID, workspaceID string) ([]*BiometricCredential, error) {
 	if s.pool == nil {
-		return nil, ErrBiometricNotConfigured
+		s.memoryMu.RLock()
+		defer s.memoryMu.RUnlock()
+		var out []*BiometricCredential
+		for _, c := range s.memory {
+			if c.UserID == userID && c.WorkspaceID == workspaceID {
+				clone := *c
+				out = append(out, &clone)
+			}
+		}
+		if out == nil {
+			out = []*BiometricCredential{}
+		}
+		return out, nil
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, user_id, workspace_id, device_name, public_key, counter, transports, created_at, last_used_at
@@ -151,7 +188,13 @@ func (s *BiometricStore) ListByUser(ctx context.Context, userID, workspaceID str
 // Delete 删除一条凭证。返回是否实际删除（false = credential_id 不存在）。
 func (s *BiometricStore) Delete(ctx context.Context, id string) (bool, error) {
 	if s.pool == nil {
-		return false, ErrBiometricNotConfigured
+		s.memoryMu.Lock()
+		defer s.memoryMu.Unlock()
+		if _, ok := s.memory[id]; !ok {
+			return false, nil
+		}
+		delete(s.memory, id)
+		return true, nil
 	}
 	tag, err := s.pool.Exec(ctx, `DELETE FROM biometric_credentials WHERE id = $1`, id)
 	if err != nil {
@@ -163,7 +206,14 @@ func (s *BiometricStore) Delete(ctx context.Context, id string) (bool, error) {
 // Rename 修改凭证的设备别名。
 func (s *BiometricStore) Rename(ctx context.Context, id, deviceName string) (bool, error) {
 	if s.pool == nil {
-		return false, ErrBiometricNotConfigured
+		s.memoryMu.Lock()
+		defer s.memoryMu.Unlock()
+		c, ok := s.memory[id]
+		if !ok {
+			return false, nil
+		}
+		c.DeviceName = deviceName
+		return true, nil
 	}
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE biometric_credentials SET device_name = $2 WHERE id = $1`,
@@ -177,7 +227,15 @@ func (s *BiometricStore) Rename(ctx context.Context, id, deviceName string) (boo
 // Touch 更新凭证的 counter + last_used_at（登录成功后调用）。
 func (s *BiometricStore) Touch(ctx context.Context, id string, counter uint32) error {
 	if s.pool == nil {
-		return ErrBiometricNotConfigured
+		s.memoryMu.Lock()
+		defer s.memoryMu.Unlock()
+		c, ok := s.memory[id]
+		if !ok {
+			return ErrBiometricNotFound
+		}
+		c.Counter = counter
+		c.LastUsedAt = time.Now().Unix()
+		return nil
 	}
 	_, err := s.pool.Exec(ctx,
 		`UPDATE biometric_credentials SET counter = $2, last_used_at = $3 WHERE id = $1`,

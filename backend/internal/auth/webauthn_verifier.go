@@ -277,3 +277,17 @@ func GenerateChallenge() ([]byte, error) {
 	}
 	return buf, nil
 }
+
+// WebAuthnVerifierIface 是 WebAuthn 验证能力的接口抽象。
+//
+// 抽取为接口是为了让 server 层依赖抽象而非具体实现，便于测试时注入
+// mock（如 server_biometric_redclaw_test.go 中的 fakeVerifier），
+// 也方便未来替换底层库（go-webauthn → 其他实现）而不动 handler 代码。
+//
+// *WebAuthnVerifier 自动满足此接口。
+type WebAuthnVerifierIface interface {
+	BeginRegistration(ctx context.Context, userID, displayName string) (string, *protocol.CredentialCreation, error)
+	FinishRegistration(ctx context.Context, challengeB64 string, ccr *protocol.ParsedCredentialCreationData) (string, []byte, uint32, error)
+	BeginLogin(ctx context.Context) (string, *protocol.CredentialAssertion, error)
+	FinishLogin(ctx context.Context, challengeB64, credentialID string, storedPublicKey []byte, storedCounter uint32, par *protocol.ParsedCredentialAssertionData) (uint32, error)
+}

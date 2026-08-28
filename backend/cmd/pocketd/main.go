@@ -156,9 +156,31 @@ func main() {
 	// ---- Biometric authentication (PG-backed credentials/challenges) ----
 	// The store is optional so remote-only/dev deployments keep their existing behavior.
 	var biometricStore *auth.BiometricStore
-	_ = biometricStore
 	if pool != nil {
-		// auth.NewBiometricStore(pool)  // 暂时禁用（handler 文件被另一会话清理）
+		biometricStore = auth.NewBiometricStore(pool)
+		if err := biometricStore.Init(context.Background()); err != nil {
+			log.Printf("WARN: biometric store init: %v — biometric auth disabled", err)
+			biometricStore = nil
+		}
+	}
+
+	// ---- WebAuthn verifier (optional; enables real signature verification) ----
+	// 仅当三个 RP 配置齐全时才启用；否则降级到 P0 stub（仅存储公钥，不验证签名）。
+	var webAuthnVerifier *auth.WebAuthnVerifier
+	if cfg.WebAuthnRPID != "" && cfg.WebAuthnRPOrigin != "" && cfg.WebAuthnRPDisplayName != "" {
+		if biometricStore == nil {
+			log.Println("WARN: WebAuthn RP configured but biometricStore is nil (no PG) — verifier disabled")
+		} else {
+			verifier, err := auth.NewWebAuthnVerifier(cfg.WebAuthnRPDisplayName, cfg.WebAuthnRPID, cfg.WebAuthnRPOrigin)
+			if err != nil {
+				log.Printf("WARN: WebAuthn verifier init: %v — biometric login degraded to P0 stub", err)
+			} else {
+				webAuthnVerifier = verifier
+				log.Printf("WebAuthn verifier enabled (RP=%s origin=%s)", cfg.WebAuthnRPID, cfg.WebAuthnRPOrigin)
+			}
+		}
+	} else {
+		log.Println("INFO: POCKET_WEBAUTHN_RP_* not fully set — biometric flow degraded to P0 stub")
 	}
 
 	// ---- 后端集成: kxmemory AI 编排服务（分类/SSOT/总结）----
@@ -392,6 +414,10 @@ func main() {
 	if biometricStore != nil {
 		srv.SetBiometricStore(biometricStore)
 		log.Println("Biometric authentication enabled (PG)")
+	}
+	if webAuthnVerifier != nil {
+		srv.SetWebAuthnVerifier(webAuthnVerifier)
+		log.Println("WebAuthn signature verification enabled")
 	}
 	if isProductionConfig(cfg) && srv.AuditStore() == nil {
 		log.Fatal("audit store initialization failed in production: see prior [Server] audit PG initialization log for the root cause (postgres pool nil, or NewPGAuditStore error)")

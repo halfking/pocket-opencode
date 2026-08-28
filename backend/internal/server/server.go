@@ -94,7 +94,8 @@ type Server struct {
 	userStore         *auth.UserStore
 	jwtSigner         *auth.Signer
 	biometricStore    *auth.BiometricStore
-	webAuthnVerifier  *auth.WebAuthnVerifier // nil = WebAuthn 签名验证未启用（降级到 P0 stub）
+	webAuthnVerifier  auth.WebAuthnVerifierIface // nil = WebAuthn 签名验证未启用（降级到 P0 stub）
+	parseAssertionFn  assertionParser            // 测试可替换的 WebAuthn assertion 解析器；生产为 nil（走默认）
 	identityStore     *identity.Store        // nil = S0-A 未启用，handler 降级到单租户
 	// S0-B: unified LLM BFF。nil = 未配置（POCKET_LLM_* 未设且无网关配置），handler 返回 503。
 	llmBFF           *llmbff.Service
@@ -312,7 +313,7 @@ func (s *Server) SetBiometricStore(store *auth.BiometricStore) {
 }
 
 // SetWebAuthnVerifier 注入 WebAuthn 签名验证器。
-func (s *Server) SetWebAuthnVerifier(verifier *auth.WebAuthnVerifier) {
+func (s *Server) SetWebAuthnVerifier(verifier auth.WebAuthnVerifierIface) {
 	s.webAuthnVerifier = verifier
 }
 

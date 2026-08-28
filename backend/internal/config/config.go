@@ -100,6 +100,11 @@ type Config struct {
 	RedClawSecret     string // POCKET_REDCLAW_SECRET：共享密钥
 	RedClawTenantID   string // POCKET_REDCLAW_TENANT_ID：当前租户 ID（默认 default）
 	RedClawTimeoutSec int    // POCKET_REDCLAW_TIMEOUT_SEC：HTTP 超时秒数（默认 30）
+
+	// WebAuthn / 生物识别配置（可选；不配置则降级到 P0 stub）
+	WebAuthnRPDisplayName string // POCKET_WEBAUTHN_RP_DISPLAY_NAME：RP 显示名（如 "OpenCode Pocket"）
+	WebAuthnRPID         string // POCKET_WEBAUTHN_RP_ID：RP ID（必须是 origin 的有效域名，如 "pocket.example.com"）
+	WebAuthnRPOrigin     string // POCKET_WEBAUTHN_RP_ORIGIN：客户端 origin（如 "https://pocket.example.com"）
 }
 
 // Load reads all configuration from environment variables and returns a Config instance.
@@ -178,6 +183,10 @@ func Load() Config {
 		RedClawSecret:     getEnv("POCKET_REDCLAW_SECRET", ""),
 		RedClawTenantID:   getEnv("POCKET_REDCLAW_TENANT_ID", "default"),
 		RedClawTimeoutSec: getEnvInt("POCKET_REDCLAW_TIMEOUT_SEC", 30),
+		// WebAuthn / 生物识别
+		WebAuthnRPDisplayName: getEnv("POCKET_WEBAUTHN_RP_DISPLAY_NAME", ""),
+		WebAuthnRPID:         getEnv("POCKET_WEBAUTHN_RP_ID", ""),
+		WebAuthnRPOrigin:     getEnv("POCKET_WEBAUTHN_RP_ORIGIN", ""),
 	}
 }
 
