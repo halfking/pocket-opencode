@@ -3,9 +3,9 @@ pocketd
 *.exe
 
 # Runtime data (SQLite DBs, encryption keys generated at startup)
-data/chat_agents.sqlite
-data/chat_agents.sqlite-shm
-data/chat_agents.sqlite-wal
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
 
 # Go test cache
 *.test
