@@ -285,6 +285,13 @@ const router = createRouter({
       component: () => import('../features/settings/SettingsLLMGateway.vue'),
 meta: { requiresAuth: true, title: 'AI 模型', bottomNav: false, canGoBack: true, hideAppHeader: true }
     },
+    {
+      // 系统权限与隐私：麦克风 / 通知 / 生物识别状态与申请入口（Android 优先）
+      path: '/settings/permissions',
+      name: 'settings-permissions',
+      component: () => import('../features/settings/SettingsPermissionsView.vue'),
+      meta: { requiresAuth: true, title: '权限与隐私', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
     // P3 — 成本与配额只读面板
     {
       path: '/cost',

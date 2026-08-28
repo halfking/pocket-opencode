@@ -1,14 +1,19 @@
 /**
  * useVoiceInput — 共享语音录制 + STT 转写逻辑。
  * 录音使用 MediaRecorder，转写走 sttApi（local sherpa → cloud fallback）。
+ *
+ * 权限闸：先走 useMicPermission().ensure()，被拒时给出可读的 deniedLabel，
+ * 避免 getUserMedia 的 NotAllowedError 直接吞掉。
  */
 import { ref, onBeforeUnmount } from 'vue'
 import { sttApi } from '../api/stt'
+import { useMicPermission } from './useMicPermission'
 
 export function useVoiceInput() {
   const isRecording = ref(false)
   const isTranscribing = ref(false)
   const sttError = ref('')
+  const mic = useMicPermission()
 
   let mediaRecorder: MediaRecorder | null = null
   let mediaStream: MediaStream | null = null
@@ -42,6 +47,14 @@ export function useVoiceInput() {
     if (isRecording.value || isTranscribing.value) return false
     cleanupAudioPath()
     sttError.value = ''
+
+    // 权限前置闸：被拒时直接给友好文案，避免后续 getUserMedia 静默失败。
+    const ok = await mic.ensure()
+    if (!ok) {
+      sttError.value = mic.deniedLabel.value || '麦克风权限被拒绝'
+      return false
+    }
+
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, sampleRate: 16000 },

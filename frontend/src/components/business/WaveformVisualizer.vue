@@ -26,6 +26,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useMicPermission } from '../../composables/useMicPermission'
 
 export interface WaveformVisualizerProps {
   /** 波形数据数组（0-1 之间的归一化值） */
@@ -195,6 +196,13 @@ function getComputedColor(): string {
 // 初始化录音波形监听
 async function initRecordingVisualization() {
   try {
+    // 先走权限探测；被拒时回退到模拟波形（不打扰弹窗）
+    const mic = useMicPermission()
+    const ok = await mic.ensure()
+    if (!ok) {
+      startMockVisualization()
+      return
+    }
     audioContext = new AudioContext()
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     const source = audioContext.createMediaStreamSource(stream)

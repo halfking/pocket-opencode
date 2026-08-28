@@ -125,6 +125,19 @@
         </div>
       </div>
 
+      <!-- 权限与隐私 -->
+      <div class="settings-section">
+        <h2>隐私</h2>
+        <div class="setting-item entry" @click="goPermissions">
+          <div class="setting-icon"><span class="material-symbols-outlined">admin_panel_settings</span></div>
+          <div class="setting-content">
+            <div class="setting-label">权限与隐私</div>
+            <div class="setting-value">麦克风 / 通知 / 生物识别</div>
+          </div>
+          <span class="material-symbols-outlined chevron">chevron_right</span>
+        </div>
+      </div>
+
       <!-- 操作按钮 -->
       <div class="settings-section">
         <button class="action-btn secondary" @click="checkForUpdates">
@@ -256,6 +269,10 @@ async function checkForUpdates() {
 
 function changeServer() {
   router.push('/servers')
+}
+
+function goPermissions() {
+  router.push('/settings/permissions')
 }
 
 function handleLogout() {
@@ -458,5 +475,17 @@ function handleLogout() {
 .muted {
   color: var(--text-muted);
   font-size: var(--text-sm);
+}
+
+/* 二级页跳转 entry（权限与隐私入口） */
+.setting-item.entry {
+  cursor: pointer;
+}
+.setting-item.entry:active {
+  opacity: 0.7;
+}
+.setting-item.entry .chevron {
+  color: var(--text-muted);
+  font-size: 20px;
 }
 </style>

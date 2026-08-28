@@ -43,4 +43,6 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Android 13+ 读取音频文件（语音笔记回放等） -->
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <!-- Android 13+ 推送/本地通知（会议提醒、审批提醒） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>

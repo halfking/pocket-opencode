@@ -1,16 +1,12 @@
 package com.kaixuan.opencode.pocket;
 
-import android.Manifest;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.PermissionRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebChromeClient;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.JSObject;
@@ -20,8 +16,6 @@ import com.getcapacitor.PluginMethod;
 import com.kaixuan.opencode.pocket.plugins.SherpaPlugin;
 
 public class MainActivity extends BridgeActivity {
-    private static final int REQ_RECORD_AUDIO = 1001;
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(AppSettingsPlugin.class);
@@ -37,9 +31,9 @@ public class MainActivity extends BridgeActivity {
             // WebView 录音需要 JS 和 MediaPlayback 不受限
             webSettings.setJavaScriptEnabled(true);
             webSettings.setMediaPlaybackRequiresUserGesture(false);
-            // 关键：批准 WebView 的 media（getUserMedia）权限请求。
-            // Capacitor BridgeActivity 默认不处理 WebChromeClient.onPermissionRequest，
-            // 导致 getUserMedia 即使 app 持有 RECORD_AUDIO 也会被拒（NotAllowedError）。
+            // 批准 WebView 的 media（getUserMedia）权限请求。Capacitor BridgeActivity
+            // 默认不处理 onPermissionRequest，会导致 getUserMedia 始终回落 NotAllowedError。
+            // 当 JS 调 getUserMedia 且 app 尚未持权时，WebView 会触发系统权限弹窗。
             getBridge().getWebView().setWebChromeClient(new WebChromeClient() {
                 @Override
                 public void onPermissionRequest(final PermissionRequest request) {
@@ -54,20 +48,8 @@ public class MainActivity extends BridgeActivity {
             });
         }
 
-        // 主动申请录音运行时权限：会议/语音笔记需要麦克风。
-        // WebView 的 getUserMedia 需要 app 已持有 RECORD_AUDIO，否则会静默失败。
-        ensureRecordAudioPermission();
-    }
-
-    /** 若未授予 RECORD_AUDIO，发起系统授权请求。 */
-    private void ensureRecordAudioPermission() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-                != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(
-                    this,
-                    new String[]{Manifest.permission.RECORD_AUDIO},
-                    REQ_RECORD_AUDIO);
-        }
+        // 麦克风权限：由前端 useMicPermission() 在首次录音前懒申请，
+        // 避免冷启动弹窗打断跳入。
     }
 }
 

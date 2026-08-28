@@ -323,6 +323,14 @@ export const api = {
     const res = await authFetch(`${API_BASE}/api/llm-gateway/models`)
     return res.json()
   },
+
+  // ---- Biometric (WebAuthn) ----
+  /** 列出当前用户已注册的生物识别（指纹/人脸）凭据 */
+  async listBiometricCredentials(): Promise<BiometricCredentialMeta[]> {
+    const res = await authFetch(`${API_BASE}/api/auth/biometric/credentials`)
+    const body = await res.json()
+    return Array.isArray(body?.credentials) ? body.credentials : []
+  },
 }
 
 // ---- Phase 5: LLM Gateway 类型 ----
@@ -346,4 +354,13 @@ export interface GatewayTestResult {
   models?: string[]
   error?: string
   response?: string
+}
+
+// ---- Biometric (WebAuthn) ----
+export interface BiometricCredentialMeta {
+  id: string
+  /** 用户给凭据起的别名（"我的 Pixel" / "公司手机"） */
+  name?: string
+  createdAt?: string
+  lastUsedAt?: string
 }
