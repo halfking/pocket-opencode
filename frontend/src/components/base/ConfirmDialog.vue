@@ -24,7 +24,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, onMounted, onUnmounted } from 'vue'
+import { reactive, nextTick, onMounted, onUnmounted } from 'vue'
 import Dialog from './Dialog.vue'
 import { registerConfirmHandler, unregisterConfirmHandler } from '../../composables/useConfirm'
 
@@ -57,12 +57,15 @@ let resolver: ((v: boolean) => void) | null = null
 
 /**
  * 打开确认框并等待用户选择。
- * 同时只允许一个确认请求；重复调用会先把上一个 resolve(false)。
+ * 同时只允许一个确认请求；重复调用时先把上一个 resolve(false) 并等
+ * Transition 关闭动画跑完（一个 tick），避免两个对话框视觉重叠。
  */
-function ask(options: ConfirmOptions): Promise<boolean> {
+async function ask(options: ConfirmOptions): Promise<boolean> {
   if (resolver) {
     resolver(false)
     resolver = null
+    state.visible = false
+    await nextTick()
   }
   state.title = options.title ?? '确认操作'
   state.message = options.message
