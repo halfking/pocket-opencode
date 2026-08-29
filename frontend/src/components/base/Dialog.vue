@@ -60,8 +60,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import Button from './Button.vue'
+import { useBodyScrollLock } from '../../composables/useBodyScrollLock'
 
 export interface DialogProps {
   modelValue?: boolean
@@ -98,16 +99,14 @@ const emit = defineEmits<{
 }>()
 
 const visible = ref(props.modelValue)
+const scrollLock = useBodyScrollLock()
 
 watch(() => props.modelValue, (val) => {
   visible.value = val
-  if (val) {
-    // 阻止背景滚动
-    document.body.style.overflow = 'hidden'
-  } else {
-    document.body.style.overflow = ''
-  }
+  if (val) scrollLock.acquire()
+  else scrollLock.release()
 })
+onBeforeUnmount(() => scrollLock.release())
 
 const dialogClasses = computed(() => {
   return [`dialog--${props.size}`]

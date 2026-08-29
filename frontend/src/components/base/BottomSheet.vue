@@ -51,7 +51,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { useBodyScrollLock } from '../../composables/useBodyScrollLock'
 
 export interface BottomSheetProps {
   modelValue?: boolean
@@ -79,16 +80,17 @@ const visible = ref(props.modelValue)
 const dragOffset = ref(0)
 const startY = ref(0)
 const isDragging = ref(false)
+const scrollLock = useBodyScrollLock()
 
 watch(() => props.modelValue, (val) => {
   visible.value = val
-  if (val) {
-    document.body.style.overflow = 'hidden'
-  } else {
-    document.body.style.overflow = ''
+  if (val) scrollLock.acquire()
+  else {
+    scrollLock.release()
     dragOffset.value = 0
   }
 })
+onBeforeUnmount(() => scrollLock.release())
 
 const sheetClasses = computed(() => {
   return [`bottom-sheet--${props.height}`]
