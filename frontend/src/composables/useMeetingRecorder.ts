@@ -16,6 +16,7 @@ import {
   getMeeting, type MeetingSegment,
 } from '../features/meetings/meetings-store'
 import { syncMeetingMetadata } from '../features/meetings/meeting-ingest'
+import { useMicPermission } from './useMicPermission'
 
 const LANG_LABELS: Record<string, string> = {
   zh: '中文', en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', de: 'Deutsch',
@@ -61,6 +62,16 @@ export function useMeetingRecorder(meetingId: string) {
       diarizer.loadProfiles(profiles)
     } catch { /* 首次使用，空库 */ }
 
+    // 权限前置闸：首次录音走 getUserMedia 时，MainActivity 的 WebChromeClient
+    // 会拦截 AUDIO_CAPTURE 并调起系统 RECORD_AUDIO 申请；这里再走一遍探测，
+    // 一是为了复用统一文案，二是 getUserMedia 失败时给出可读的 deniedLabel。
+    const mic = useMicPermission()
+    const ok = await mic.ensure()
+    if (!ok) {
+      sttError.value = mic.deniedLabel.value || '麦克风权限被拒绝，请在系统设置中授权后重试'
+      return false
+    }
+
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, sampleRate: 16000 },
@@ -81,7 +92,7 @@ export function useMeetingRecorder(meetingId: string) {
       }, 200)
       return true
     } catch {
-      sttError.value = '麦克风权限被拒绝'
+      sttError.value = mic.deniedLabel.value || '麦克风权限被拒绝'
       cleanupMedia()
       return false
     }

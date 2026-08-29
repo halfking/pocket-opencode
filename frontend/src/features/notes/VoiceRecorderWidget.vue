@@ -30,6 +30,7 @@
 <script setup lang="ts">
 import { ref, onBeforeUnmount } from 'vue'
 import { sttApi } from '../../api/stt'
+import { useMicPermission } from '../../composables/useMicPermission'
 
 const emit = defineEmits<{
   transcribed: [result: { text: string; audioPath: string; durationSec: number }]
@@ -47,10 +48,18 @@ let audioPathTimeout: ReturnType<typeof setTimeout> | null = null
 
 async function start() {
   if (recording.value) return
-  
+
   // 清理前一次录音的 blob URL（防止快速连续录音导致泄漏）
   cleanupAudioPath()
-  
+
+  // 权限前置闸：被拒时走 friendly 文案
+  const mic = useMicPermission()
+  const ok = await mic.ensure()
+  if (!ok) {
+    status.value = mic.deniedLabel.value || '麦克风权限被拒绝'
+    return
+  }
+
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } })
     mediaRecorder = new MediaRecorder(mediaStream)
@@ -61,7 +70,7 @@ async function start() {
     recording.value = true
     status.value = '录音中…'
   } catch (e) {
-    status.value = '麦克风权限被拒绝'
+    status.value = mic.deniedLabel.value || '麦克风权限被拒绝'
     cleanupMedia()
   }
 }
