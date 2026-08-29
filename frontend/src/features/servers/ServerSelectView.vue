@@ -79,7 +79,7 @@ function handleLogout() {
 
 <style scoped>
 .server-select-view {
-  min-height: 100vh;
+  min-height: 100%;
   background: var(--bg-base);
   display: flex;
   flex-direction: column;

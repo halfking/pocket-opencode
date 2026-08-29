@@ -253,7 +253,7 @@ function goBack() {
 </script>
 
 <style scoped>
-.note-edit-view { min-height: 100vh; background: var(--bg-base); }
+.note-edit-view { min-height: 100%; background: var(--bg-base); }
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
 
 .edit-form { display: flex; flex-direction: column; gap: var(--space-4); padding-bottom: 120px; }

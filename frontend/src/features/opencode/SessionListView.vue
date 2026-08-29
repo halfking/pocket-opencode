@@ -193,7 +193,7 @@ function formatLastUpdate(timestamp?: string): string {
 
 <style scoped>
 .session-list-view {
-  min-height: 100vh;
+  min-height: 100%;
   background: #f5f7fa;
   display: flex;
   flex-direction: column;

@@ -319,7 +319,7 @@ function getActorName(actor: string): string {
 
 <style scoped>
 .session-detail-view {
-  min-height: 100vh;
+  min-height: 100%;
   background: #f5f7fa;
   display: flex;
   flex-direction: column;

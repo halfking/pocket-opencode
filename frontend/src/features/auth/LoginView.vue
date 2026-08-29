@@ -210,7 +210,7 @@ async function handleLogin() {
 
 <style scoped>
 .login-view {
-  min-height: 100vh;
+  min-height: 100%;
   background: var(--brand-gradient);
   display: flex;
   align-items: center;

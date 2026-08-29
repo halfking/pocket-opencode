@@ -534,7 +534,7 @@ function goBack() {
 .session-view {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   background: var(--bg-base);
   /* 安全区唯一来源是 body 的 padding-top（styles.css）；此处再加会双重下移
      （真机实测标题距顶 90px，正确值 39px，P1.5+ 排查）。 */

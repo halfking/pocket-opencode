@@ -220,7 +220,7 @@ function formatTime(ms: number) {
 </script>
 
 <style scoped>
-.note-detail-view { min-height: 100vh; background: var(--bg-base); }
+.note-detail-view { min-height: 100%; background: var(--bg-base); }
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
 .note-detail { display: flex; flex-direction: column; gap: var(--space-4); padding-bottom: var(--space-6); }
 .note-header {

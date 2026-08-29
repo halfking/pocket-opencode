@@ -153,7 +153,7 @@ function formatLastSeen(timestamp: string): string {
 
 <style scoped>
 .opencode-hub {
-  min-height: 100vh;
+  min-height: 100%;
   background: #f5f7fa;
   display: flex;
   flex-direction: column;
