@@ -173,151 +173,137 @@
       </div>
     </footer>
 
-    <!-- 会话抽屉 -->
-    <div v-if="drawerOpen" class="drawer-mask" @click.self="drawerOpen = false">
-      <aside class="drawer">
-        <div class="drawer-head">
-          <span>会话</span>
-          <button class="icon-btn" aria-label="新建对话" @click="newConversation">
-            <span class="material-symbols-outlined">add</span>
-          </button>
-        </div>
-        <div class="drawer-tabs" role="tablist">
-          <button
-            :class="['drawer-tab', { active: drawerTab === 'active' }]"
-            role="tab"
-            :aria-selected="drawerTab === 'active'"
-            @click="drawerTab = 'active'"
-          >活跃 ({{ activeConversations.length }})</button>
-          <button
-            :class="['drawer-tab', { active: drawerTab === 'archived' }]"
-            role="tab"
-            :aria-selected="drawerTab === 'archived'"
-            @click="drawerTab = 'archived'"
-          >归档 ({{ archivedConversations.length }})</button>
-        </div>
-        <div class="conv-list">
-          <div
-            v-for="c in displayedConversations"
-            :key="c.id"
-            class="conv-item"
-            :class="{ active: c.id === activeId }"
-            @click="selectConversation(c.id)"
-          >
-            <div class="conv-main">
-              <div class="conv-title">{{ c.title }}</div>
-              <div class="conv-meta">
-                <span>{{ c.mode === 'compare' ? '对比' : (c.model || '—') }}</span>
-                <span v-if="c.archivedAt"> · 已归档</span>
-                <span> · {{ formatTime(c.archivedAt || c.updatedAt) }}</span>
-              </div>
+    <!-- 会话抽屉：统一使用公共 BottomSheet 侧边布局 -->
+    <BottomSheet
+      v-model="drawerOpen"
+      placement="left"
+      title="会话"
+      aria-label="会话列表"
+    >
+      <template #header>
+        <h3 class="sheet-title">会话</h3>
+        <button class="sheet-header-action" type="button" aria-label="新建对话" @click="newConversation">
+          <span class="material-symbols-outlined" aria-hidden="true">add</span>
+        </button>
+      </template>
+      <div class="drawer-tabs" role="tablist">
+        <button
+          :class="['drawer-tab', { active: drawerTab === 'active' }]"
+          role="tab"
+          :aria-selected="drawerTab === 'active'"
+          @click="drawerTab = 'active'"
+        >活跃 ({{ activeConversations.length }})</button>
+        <button
+          :class="['drawer-tab', { active: drawerTab === 'archived' }]"
+          role="tab"
+          :aria-selected="drawerTab === 'archived'"
+          @click="drawerTab = 'archived'"
+        >归档 ({{ archivedConversations.length }})</button>
+      </div>
+      <div class="conv-list">
+        <div
+          v-for="c in displayedConversations"
+          :key="c.id"
+          class="conv-item"
+          :class="{ active: c.id === activeId }"
+          @click="selectConversation(c.id)"
+        >
+          <div class="conv-main">
+            <div class="conv-title">{{ c.title }}</div>
+            <div class="conv-meta">
+              <span>{{ c.mode === 'compare' ? '对比' : (c.model || '—') }}</span>
+              <span v-if="c.archivedAt"> · 已归档</span>
+              <span> · {{ formatTime(c.archivedAt || c.updatedAt) }}</span>
             </div>
-            <button
-              v-if="drawerTab === 'archived'"
-              class="conv-act"
-              aria-label="恢复会话"
-              @click.stop="restoreConversation(c.id)"
-            >
-              <span class="material-symbols-outlined">unarchive</span>
-            </button>
-            <button
-              v-else
-              class="conv-act"
-              aria-label="归档会话"
-              @click.stop="archiveConversation(c.id)"
-            >
-              <span class="material-symbols-outlined">archive</span>
-            </button>
-            <button class="conv-act danger" aria-label="删除会话" @click.stop="confirmDelete(c)">
-              <span class="material-symbols-outlined">delete</span>
-            </button>
           </div>
-          <div v-if="displayedConversations.length === 0" class="conv-empty">
-            {{ drawerTab === 'archived' ? '归档区暂无会话' : '还没有会话' }}
-          </div>
-        </div>
-      </aside>
-    </div>
-
-    <!-- 模型选择 / 对比选择 sheet -->
-    <div v-if="modelSheetOpen" class="sheet-mask" @click.self="modelSheetOpen = false">
-      <div class="sheet">
-        <div class="sheet-head">
-          <span>{{ compareMode ? '选择对比模型（可多选）' : '选择模型' }}</span>
-          <button class="icon-btn" aria-label="关闭" @click="modelSheetOpen = false">
-            <span class="material-symbols-outlined">close</span>
-          </button>
-        </div>
-        <div v-if="modelsLoading" class="sheet-state">模型加载中…</div>
-        <div v-else-if="models.length === 0" class="sheet-state">
-          未获取到模型，请先在「设置 → AI 网关」配置网关密钥。
-          <button class="link-btn" @click="retryModels">重试</button>
-        </div>
-        <div v-else class="model-list">
-          <!-- auto：交给网关智能路由（结合下方"模态默认模型"与网关任务识别） -->
-          <label v-if="!compareMode" class="model-item" :class="{ checked: tempSelection.includes(AUTO) }">
-            <input
-              type="checkbox"
-              class="model-check"
-              :checked="tempSelection.includes(AUTO)"
-              @change="onModelCheck(AUTO, $event)"
-            />
-            <span class="model-name">auto · 智能路由</span>
-            <span class="model-current">{{ autoHint }}</span>
-          </label>
-          <label
-            v-for="m in models"
-            :key="m"
-            class="model-item"
-            :class="{ checked: isModelChecked(m) }"
-          >
-            <input
-              type="checkbox"
-              class="model-check"
-              :checked="isModelChecked(m)"
-              @change="onModelCheck(m, $event)"
-            />
-            <span class="model-name">{{ m }}</span>
-            <span class="modality-badge" :data-mod="modalityOf(m)">{{ modalityOf(m) }}</span>
-            <span v-if="!compareMode && active && active.model === m" class="model-current">当前</span>
-          </label>
-        </div>
-        <button class="sheet-confirm" @click="applyModelSelection">确定</button>
-      </div>
-    </div>
-
-    <!-- 优化：选择模型 sheet -->
-    <div v-if="optimizeOpen" class="sheet-mask" @click.self="optimizeOpen = false">
-      <div class="sheet">
-        <div class="sheet-head">
-          <span>用哪个模型检查并优化？</span>
-          <button class="icon-btn" aria-label="关闭" @click="optimizeOpen = false">
-            <span class="material-symbols-outlined">close</span>
-          </button>
-        </div>
-        <div v-if="models.length === 0" class="sheet-state">暂无可用模型</div>
-        <div v-else class="model-list">
           <button
-            v-for="m in models"
-            :key="m"
-            class="model-item plain"
-            @click="doOptimize(m)"
+            v-if="drawerTab === 'archived'"
+            class="conv-act"
+            aria-label="恢复会话"
+            @click.stop="restoreConversation(c.id)"
           >
-            <span class="model-name">{{ m }}</span>
+            <span class="material-symbols-outlined">unarchive</span>
           </button>
+          <button
+            v-else
+            class="conv-act"
+            aria-label="归档会话"
+            @click.stop="archiveConversation(c.id)"
+          >
+            <span class="material-symbols-outlined">archive</span>
+          </button>
+          <button class="conv-act danger" aria-label="删除会话" @click.stop="confirmDelete(c)">
+            <span class="material-symbols-outlined">delete</span>
+          </button>
+        </div>
+        <div v-if="displayedConversations.length === 0" class="conv-empty">
+          {{ drawerTab === 'archived' ? '归档区暂无会话' : '还没有会话' }}
         </div>
       </div>
-    </div>
+    </BottomSheet>
 
-    <!-- 参数设置 sheet -->
-    <div v-if="settingsOpen" class="sheet-mask" @click.self="settingsOpen = false">
-      <div class="sheet">
-        <div class="sheet-head">
-          <span>对话参数</span>
-          <button class="icon-btn" aria-label="关闭" @click="settingsOpen = false">
-            <span class="material-symbols-outlined">close</span>
-          </button>
-        </div>
+    <!-- 模型选择 / 对比选择：统一使用公共 BottomSheet -->
+    <BottomSheet
+      v-model="modelSheetOpen"
+      :title="compareMode ? '选择对比模型（可多选）' : '选择模型'"
+      height="full"
+    >
+      <div v-if="modelsLoading" class="sheet-state">模型加载中…</div>
+      <div v-else-if="models.length === 0" class="sheet-state">
+        未获取到模型，请先在「设置 → AI 网关」配置网关密钥。
+        <button class="link-btn" @click="retryModels">重试</button>
+      </div>
+      <div v-else class="model-list">
+        <label v-if="!compareMode" class="model-item" :class="{ checked: tempSelection.includes(AUTO) }">
+          <input
+            type="checkbox"
+            class="model-check"
+            :checked="tempSelection.includes(AUTO)"
+            @change="onModelCheck(AUTO, $event)"
+          />
+          <span class="model-name">auto · 智能路由</span>
+          <span class="model-current">{{ autoHint }}</span>
+        </label>
+        <label
+          v-for="m in models"
+          :key="m"
+          class="model-item"
+          :class="{ checked: isModelChecked(m) }"
+        >
+          <input
+            type="checkbox"
+            class="model-check"
+            :checked="isModelChecked(m)"
+            @change="onModelCheck(m, $event)"
+          />
+          <span class="model-name">{{ m }}</span>
+          <span class="modality-badge" :data-mod="modalityOf(m)">{{ modalityOf(m) }}</span>
+          <span v-if="!compareMode && active && active.model === m" class="model-current">当前</span>
+        </label>
+      </div>
+      <template #footer>
+        <button class="sheet-confirm" type="button" @click="applyModelSelection">确定</button>
+      </template>
+    </BottomSheet>
+
+    <!-- 优化：选择模型 -->
+    <BottomSheet v-model="optimizeOpen" title="用哪个模型检查并优化？">
+      <div v-if="models.length === 0" class="sheet-state">暂无可用模型</div>
+      <div v-else class="model-list">
+        <button
+          v-for="m in models"
+          :key="m"
+          class="model-item plain"
+          type="button"
+          @click="doOptimize(m)"
+        >
+          <span class="model-name">{{ m }}</span>
+        </button>
+      </div>
+    </BottomSheet>
+
+    <!-- 参数设置 -->
+    <BottomSheet v-model="settingsOpen" title="对话参数" height="full">
 
         <div class="field">
           <div class="field-label">温度（创造性）· {{ settings.temperature.toFixed(1) }}</div>
@@ -406,9 +392,8 @@
           </div>
         </div>
 
-        <button class="sheet-confirm" @click="settingsOpen = false">完成</button>
-      </div>
-    </div>
+        <button class="sheet-confirm" type="button" @click="settingsOpen = false">完成</button>
+    </BottomSheet>
   </div>
 
   <!-- 角色选择器 -->
@@ -423,6 +408,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   useAIChatStore,
   MODALITY_KEYS,
@@ -436,8 +422,10 @@ import { useConfirm } from '../../composables/useConfirm'
 import { useVoiceInput } from '../../composables/useVoiceInput'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 import AgentSelectorSheet from './AgentSelectorSheet.vue'
+import BottomSheet from '../../components/base/BottomSheet.vue'
 
 const store = useAIChatStore()
+const router = useRouter()
 const toast = useToast()
 const { confirm } = useConfirm()
 const agentStore = useChatAgentStore()
@@ -549,8 +537,7 @@ function onClearAgent() {
 
 function goToLibrary() {
   settingsOpen.value = false
-  window.location.hash = '#/agents'
-  // 或用 router.push (需先 import)
+  router.push('/agents')
 }
 
 /** 发图时实际会用的视觉模型（会话手动选了模型则显示它）。 */
@@ -1291,28 +1278,7 @@ function formatTime(ts: number): string {
 .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .send-btn.stop { background: var(--danger); }
 
-/* 抽屉 */
-.drawer-mask {
-  position: fixed; inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  z-index: var(--z-base);
-  display: flex;
-}
-.drawer {
-  width: 75%;
-  max-width: 300px;
-  height: 100%;
-  background: var(--bg-card);
-  display: flex;
-  flex-direction: column;
-  animation: slide-in 0.2s ease;
-}
-@keyframes slide-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
-.drawer-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 16px; font-size: 15px; font-weight: 600;
-  border-bottom: 1px solid var(--border);
-}
+/* 会话列表业务样式 */
 .conv-list { flex: 1; overflow-y: auto; padding: 6px; }
 .drawer-tabs {
   display: flex;
@@ -1334,6 +1300,18 @@ function formatTime(ts: number): string {
   color: var(--brand-primary);
   border-bottom-color: var(--brand-primary);
   font-weight: 600;
+}
+.sheet-header-action {
+  position: absolute;
+  top: 50%;
+  right: 56px;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
 }
 .conv-item {
   display: flex; align-items: center; gap: 6px;
@@ -1363,27 +1341,6 @@ function formatTime(ts: number): string {
 .conv-act.danger:active { color: var(--danger); }
 .conv-empty { text-align: center; color: var(--text-muted); padding: 30px; font-size: 13px; }
 
-/* sheet 通用 */
-.sheet-mask {
-  position: fixed; inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  z-index: var(--z-sheet);
-  display: flex; align-items: flex-end;
-}
-.sheet {
-  width: 100%;
-  background: var(--bg-card);
-  border-radius: 14px 14px 0 0;
-  padding: 14px 16px calc(16px + env(safe-area-inset-bottom));
-  max-height: 75vh;
-  overflow-y: auto;
-  animation: sheet-up 0.22s ease;
-}
-@keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
-.sheet-head {
-  display: flex; align-items: center; justify-content: space-between;
-  font-size: 15px; font-weight: 600; margin-bottom: 10px;
-}
 .sheet-state { font-size: 13px; color: var(--text-secondary); padding: 8px 0; line-height: 1.5; }
 .link-btn { color: var(--brand-primary); background: none; border: none; cursor: pointer; margin-left: 6px; }
 
