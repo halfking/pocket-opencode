@@ -7,17 +7,13 @@
 -->
 <template>
   <div class="gw-view">
-    <header class="top-bar">
-      <button class="back-btn" @click="router.back()" aria-label="返回">
-        <span class="material-symbols-outlined">arrow_back</span>
-      </button>
-      <h1 class="title">{{ node?.name || '网关' }}</h1>
-      <select v-model.number="days" class="range-select" @change="load">
+    <HeaderActionsPortal>
+      <select v-model.number="days" class="range-select" aria-label="时间范围" @change="load">
         <option :value="1">今天</option>
         <option :value="7">7 天</option>
         <option :value="30">30 天</option>
       </select>
-    </header>
+    </HeaderActionsPortal>
 
     <nav class="tab-nav">
       <button class="tab" @click="go('providers')">供应商</button>
@@ -115,6 +111,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as gw from '../../api/gateway'
 import type { GatewayNode } from '../../api/gateway'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -204,28 +201,8 @@ onMounted(load)
 
 <style scoped>
 .gw-view {
-  min-height: 100vh;
+  min-height: 100%;
   background: var(--bg-base);
-}
-.top-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: var(--space-3);
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border);
-}
-.back-btn {
-  background: none;
-  border: none;
-  color: var(--text-primary);
-  display: flex;
-}
-.title {
-  flex: 1;
-  font-size: 17px;
-  font-weight: 600;
-  margin: 0;
 }
 .range-select {
   background: var(--bg-subtle);

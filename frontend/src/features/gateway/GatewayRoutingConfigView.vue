@@ -10,13 +10,6 @@
 -->
 <template>
   <div class="gw-view">
-    <header class="top-bar">
-      <button class="back-btn" @click="router.back()" aria-label="返回">
-        <span class="material-symbols-outlined">arrow_back</span>
-      </button>
-      <h1 class="title">路由配置</h1>
-    </header>
-
     <div class="tab-row">
       <button v-for="t in TABS" :key="t" :class="['tab', { active: tab === t }]" @click="switchTab(t)">
         {{ t }}
@@ -158,14 +151,13 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import * as gw from '../../api/gateway'
 import type { WorkType, TaskDefaultRouting } from '../../api/gateway'
 import { useToast } from '../../composables/useToast'
 import { useConfirm } from '../../composables/useConfirm'
 
 const route = useRoute()
-const router = useRouter()
 const toast = useToast()
 const { confirm } = useConfirm()
 const nodeId = Number(route.params.nodeId)
@@ -347,15 +339,7 @@ onMounted(reload)
 </script>
 
 <style scoped>
-.gw-view { min-height: 100vh; background: var(--bg-base); }
-.top-bar {
-  display: flex; align-items: center; gap: 8px;
-  padding: var(--space-3);
-  padding-top: calc(var(--space-3) + env(safe-area-inset-top));
-  background: var(--bg-card); border-bottom: 1px solid var(--border);
-}
-.back-btn { background: none; border: none; color: var(--text-primary); display: flex; }
-.title { flex: 1; font-size: 17px; font-weight: 600; margin: 0; }
+.gw-view { min-height: 100%; background: var(--bg-base); }
 .tab-row {
   display: flex; background: var(--bg-card); border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: var(--z-base);

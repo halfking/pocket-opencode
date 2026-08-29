@@ -6,11 +6,8 @@
 -->
 <template>
   <div class="cost-view">
-    <header class="top-bar">
-      <button class="back-btn" @click="router.back()" aria-label="返回">
-        <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>
-      </button>
-      <h1 class="title">成本与配额</h1>
+    <!-- 标题与返回由 AppLayout 统一渲染；时间范围 select 通过 Portal 注入壳层顶栏右侧 -->
+    <HeaderActionsPortal>
       <select
         v-model.number="days"
         class="range-select"
@@ -21,7 +18,7 @@
         <option :value="7">7 天</option>
         <option :value="30">30 天</option>
       </select>
-    </header>
+    </HeaderActionsPortal>
 
     <div v-if="!online" class="status-bar status-warn" role="status" aria-live="polite">
       当前离线，仅展示上次缓存数据。
@@ -143,7 +140,6 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import {
   llmBffApi,
   type QuotaBudget,
@@ -151,8 +147,8 @@ import {
   type UsageSummary,
 } from '../../api/llm-bff'
 import { useConnectivityStore } from '../../stores/connectivity'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
-const router = useRouter()
 const connectivity = useConnectivityStore()
 
 const days = ref(7)
@@ -252,42 +248,8 @@ onUnmounted(() => {
 
 <style scoped>
 .cost-view {
-  min-height: 100vh;
+  min-height: 100%;
   background: var(--bg-base);
-}
-.top-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border);
-}
-.back-btn {
-  background: none;
-  border: none;
-  color: var(--text-primary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-1);
-  border-radius: var(--radius-sm, 8px);
-  min-width: 44px;
-  min-height: 44px;
-}
-.back-btn:active {
-  background: var(--bg-subtle);
-}
-.back-btn:focus-visible {
-  outline: 2px solid var(--brand-primary);
-  outline-offset: 2px;
-}
-.title {
-  flex: 1;
-  font-size: 17px;
-  font-weight: 600;
-  margin: 0;
-  color: var(--text-primary);
 }
 .range-select {
   background: var(--bg-subtle);
@@ -498,7 +460,6 @@ onUnmounted(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .back-btn,
   .range-select,
   .refresh-btn {
     transition: none;

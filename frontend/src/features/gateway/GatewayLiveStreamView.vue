@@ -7,13 +7,13 @@
 -->
 <template>
   <div class="gw-view">
-    <header class="top-bar">
-      <button class="back-btn" @click="router.back()" aria-label="返回">
-        <span class="material-symbols-outlined">arrow_back</span>
-      </button>
-      <h1 class="title">实时请求</h1>
-      <span :class="['conn-dot', connected ? 'conn-ok' : 'conn-off']" :title="connected ? '已连接' : '未连接'" />
-    </header>
+    <HeaderActionsPortal>
+      <span
+        :class="['conn-dot', connected ? 'conn-ok' : 'conn-off']"
+        :title="connected ? '已连接' : '未连接'"
+        :aria-label="connected ? '已连接' : '未连接'"
+      />
+    </HeaderActionsPortal>
 
     <!-- 汇总 -->
     <div class="summary-bar">
@@ -94,13 +94,13 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { GatewayLiveClient } from '../../api/gateway-live'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import type { LiveStreamLane, LiveStreamStats, LiveStreamTile } from '../../api/gateway-live'
 
 const route = useRoute()
-const router = useRouter()
 const auth = useAuthStore()
 const nodeId = Number(route.params.nodeId)
 
@@ -201,28 +201,8 @@ onUnmounted(() => {
 
 <style scoped>
 .gw-view {
-  min-height: 100vh;
+  min-height: 100%;
   background: var(--bg-base);
-}
-.top-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: var(--space-3);
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border);
-}
-.back-btn {
-  background: none;
-  border: none;
-  color: var(--text-primary);
-  display: flex;
-}
-.title {
-  flex: 1;
-  font-size: 17px;
-  font-weight: 600;
-  margin: 0;
 }
 .conn-dot {
   width: 9px;

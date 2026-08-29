@@ -8,10 +8,9 @@
 -->
 <template>
   <div class="gw-view">
-    <header class="top-bar">
-      <h1 class="title">网关节点</h1>
-      <button class="add-btn" @click="openCreate">+ 新增</button>
-    </header>
+    <HeaderActionsPortal>
+      <button type="button" class="gw-add-btn" @click="openCreate">+ 新增</button>
+    </HeaderActionsPortal>
 
     <div v-if="status" :class="['status-bar', `status-${status.kind}`]">{{ status.text }}</div>
 
@@ -114,6 +113,7 @@ import { useRouter } from 'vue-router'
 import * as gw from '../../api/gateway'
 import type { GatewayNode } from '../../api/gateway'
 import { useConfirm } from '../../composables/useConfirm'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -252,27 +252,12 @@ onMounted(load)
 
 <style scoped>
 .gw-view {
-  min-height: 100vh;
+  min-height: 100%;
   background: var(--bg-base);
 }
-.top-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-3);
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border);
-}
-.title {
-  font-size: 17px;
-  font-weight: 600;
-  margin: 0;
-}
-.add-btn {
-  background: none;
-  border: none;
-  color: var(--primary, #4c8dff);
-  font-size: 14px;
+/* Portal 注入到壳层标题栏：颜色用品牌色（保留原 .add-btn 视觉权重） */
+.gw-add-btn {
+  color: var(--brand-primary);
 }
 .status-bar {
   padding: var(--space-2) var(--space-3);

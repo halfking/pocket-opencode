@@ -8,15 +8,11 @@
 -->
 <template>
   <div class="gw-view">
-    <header class="top-bar">
-      <button class="back-btn" @click="router.back()" aria-label="返回">
-        <span class="material-symbols-outlined">arrow_back</span>
-      </button>
-      <h1 class="title">模型目录</h1>
-      <button class="refresh" :disabled="loading" aria-label="刷新" @click="load">
+    <HeaderActionsPortal>
+      <button type="button" class="refresh" :disabled="loading" aria-label="刷新" @click="load">
         <span class="material-symbols-outlined">refresh</span>
       </button>
-    </header>
+    </HeaderActionsPortal>
 
     <!-- 模态筛选 -->
     <div class="filter-row">
@@ -77,6 +73,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getAvailableModels, type AvailableModelFamily } from '../../api/gateway'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -138,18 +135,11 @@ onMounted(load)
 </script>
 
 <style scoped>
-.gw-view { min-height: 100vh; background: var(--bg-base); }
-.top-bar {
-  display: flex; align-items: center; gap: 8px;
-  padding: var(--space-3);
-  padding-top: calc(var(--space-3) + env(safe-area-inset-top));
-  background: var(--bg-card); border-bottom: 1px solid var(--border);
-}
-.back-btn, .refresh {
+.gw-view { min-height: 100%; background: var(--bg-base); }
+.refresh {
   background: none; border: none; color: var(--text-primary);
   display: flex; cursor: pointer; padding: 4px;
 }
-.title { flex: 1; font-size: 17px; font-weight: 600; margin: 0; }
 .filter-row {
   display: flex; gap: 6px; padding: var(--space-2) var(--space-3);
   overflow-x: auto; background: var(--bg-card); border-bottom: 1px solid var(--border);

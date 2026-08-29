@@ -7,15 +7,11 @@
 -->
 <template>
   <div class="gw-view">
-    <header class="top-bar">
-      <button class="back-btn" @click="router.back()" aria-label="返回">
-        <span class="material-symbols-outlined">arrow_back</span>
-      </button>
-      <h1 class="title">凭据</h1>
-      <button class="icon-btn" :disabled="loading" @click="load" aria-label="刷新">
+    <HeaderActionsPortal>
+      <button type="button" class="icon-btn" :disabled="loading" aria-label="刷新" @click="load">
         <span class="material-symbols-outlined">refresh</span>
       </button>
-    </header>
+    </HeaderActionsPortal>
 
     <div v-if="error" class="status-bar status-err">{{ error }}</div>
     <div v-if="notice" class="status-bar status-ok">{{ notice }}</div>
@@ -84,6 +80,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ApiError } from '../../api/http'
 import * as gw from '../../api/gateway'
 import type { GatewayCredential } from '../../api/gateway'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { useConfirm } from '../../composables/useConfirm'
 
 const route = useRoute()
@@ -177,29 +174,14 @@ onMounted(load)
 
 <style scoped>
 .gw-view {
-  min-height: 100vh;
+  min-height: 100%;
   background: var(--bg-base);
 }
-.top-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: var(--space-3);
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border);
-}
-.back-btn,
 .icon-btn {
   background: none;
   border: none;
   color: var(--text-primary);
   display: flex;
-}
-.title {
-  flex: 1;
-  font-size: 17px;
-  font-weight: 600;
-  margin: 0;
 }
 .status-bar {
   padding: var(--space-2) var(--space-3);

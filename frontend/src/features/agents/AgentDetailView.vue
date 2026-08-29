@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useChatAgentStore, DEPARTMENTS } from '../../stores/chatAgentStore'
 import { renderMarkdown } from '../../utils/markdown'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -41,30 +42,21 @@ onMounted(async () => {
 function goToEdit() {
   router.push(`/agents/${agentId.value}/edit`)
 }
-
-function goBack() {
-  router.back()
-}
 </script>
 
 <template>
   <div class="agent-detail-view">
-    <!-- 顶部栏（唯一标题） -->
-    <header class="top-bar">
-      <button class="icon-btn" aria-label="返回" @click="goBack">
-        <span class="material-symbols-outlined">arrow_back</span>
-      </button>
-      <h1 class="title">角色详情</h1>
+    <!-- 标题栏右侧操作经 Portal 注入壳层 top-bar，页面不再自绘 header -->
+    <HeaderActionsPortal>
       <button
         v-if="agent && !agent.is_builtin"
-        class="icon-btn"
-        aria-label="编辑"
+        type="button"
+        aria-label="编辑角色"
         @click="goToEdit"
       >
         <span class="material-symbols-outlined">edit</span>
       </button>
-      <div v-else style="width: 40px"></div>
-    </header>
+    </HeaderActionsPortal>
 
     <div v-if="!agent" class="loading">
       {{ agentStore.loading ? '加载中...' : '角色不存在' }}
@@ -129,40 +121,10 @@ function goBack() {
 
 <style scoped>
 .agent-detail-view {
-  min-height: 100vh;
+  min-height: 100%;
   background: var(--bg-base);
   display: flex;
   flex-direction: column;
-}
-
-.top-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  padding-top: calc(12px + env(safe-area-inset-top));
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border);
-}
-
-.icon-btn {
-  width: 40px;
-  height: 40px;
-  border: none;
-  background: transparent;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: var(--text-primary);
-}
-
-.title {
-  flex: 1;
-  margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-  text-align: center;
 }
 
 .loading {

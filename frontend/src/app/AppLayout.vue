@@ -28,6 +28,10 @@
         <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>
       </button>
       <h1 class="title">{{ title }}</h1>
+      <!-- 页面经 HeaderActionsPortal 注入的标题栏右侧操作区（编辑/保存/筛选等）。
+           与 ScrollChromePortal 同构，消灭 AgentDetail/Edit、CostQuota、MeetingRecord
+           里的双层标题栏。 -->
+      <div id="app-header-actions" class="header-actions"></div>
       <slot name="actions" />
     </header>
 
@@ -56,15 +60,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import BottomNav from '../components/BottomNav.vue'
 import GlobalStatusBar from '../components/GlobalStatusBar.vue'
 import { useBreakpoint } from '../composables/useBreakpoint'
+import { useDevicePosture } from '../composables/useDevicePosture'
 
 const route = useRoute()
 const router = useRouter()
 const { isFoldableExpanded } = useBreakpoint()
+const { hingeRect, hingeOrientation } = useDevicePosture()
 
 const mainEl = ref<HTMLElement | null>(null)
 
@@ -96,9 +102,42 @@ const canGoBack = computed(() => Boolean(route.meta.canGoBack))
  */
 const isFullscreen = computed(() => route.meta.hideAppHeader === true)
 
+/* 折叠屏铰链中线（CSS 变量）：供 SplitLayout 等分屏视图对齐铰链边缘，
+   避免内容跨铰链产生可读性损失。 */
+const foldHingePx = computed(() => {
+  if (hingeOrientation.value !== 'vertical') return null
+  return `${hingeRect.value?.x ?? 0}px`
+})
+watch(foldHingePx, (v) => {
+  if (typeof document === 'undefined') return
+  if (v) document.documentElement.style.setProperty('--fold-hinge-x', v)
+  else document.documentElement.style.removeProperty('--fold-hinge-x')
+}, { immediate: true })
+
+/**
+ * 返回策略：
+ * 1. sessionStorage 标记是否"从首页栈出发"——根路由 `/ai`、`/tasks` 等。
+ * 2. 如果当前就是从首页 push 来的（"isHomeRoot = false"），直接 router.back()
+ *    会回到首页，结果可预测。
+ * 3. 如果当前就在首页根（isHomeRoot = true），router.back() 会落到 entry 空白页，
+ *    应保持 push('/ai') 兜底。
+ *
+ * 这种方式不依赖 window.history.length，避免 Capacitor WebView 启动期
+ * length 起点异常与深链入口干扰。
+ */
 function goBack() {
-  if (window.history.length > 1) router.back()
-  else router.push('/ai')
+  const FALLBACK_HOME = '/ai'
+  if (typeof sessionStorage === 'undefined') {
+    router.push(FALLBACK_HOME)
+    return
+  }
+  const cameFromHome = sessionStorage.getItem('pocket:navigatedFromHome') === '1'
+  if (cameFromHome) {
+    sessionStorage.removeItem('pocket:navigatedFromHome')
+    router.back()
+  } else {
+    router.push(FALLBACK_HOME)
+  }
 }
 
 function focusMain() {
@@ -190,6 +229,50 @@ function focusMain() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 页面注入的右侧操作容器：横向排布，与 back-btn 同侧对齐 */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
+.header-actions:empty {
+  display: none;
+}
+
+/* 页面经 HeaderActionsPortal 注入的按钮统一外观（scoped 穿透 teleport 内容） */
+:deep(.header-actions > *) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  height: 44px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
+}
+
+:deep(.header-actions > *:active) {
+  background: var(--bg-subtle);
+}
+
+:deep(.header-actions > button:disabled) {
+  opacity: 0.5;
+}
+
+:deep(.header-actions .material-symbols-outlined) {
+  font-size: 22px;
+  line-height: 1;
 }
 
 .content {

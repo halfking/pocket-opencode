@@ -1,22 +1,24 @@
 <template>
   <div class="record-view">
-    <!-- 自定义顶栏 -->
-    <header class="record-header">
-      <button type="button" class="back-btn" @click="onBack">←</button>
-      <div class="header-center">
-        <span v-if="isRecording" class="rec-dot" />
-        {{ isRecording ? '录音中' : '准备录音' }}
-        <span class="elapsed">{{ formatElapsed() }}</span>
-      </div>
+    <!-- 顶部栏由壳层统一渲染（标题"开始会议" + 全局返回键）。
+         录音状态 / 计时作为内容区顶部的状态条展示；停止操作注入壳层顶栏右侧。 -->
+    <HeaderActionsPortal>
       <button
         v-if="isRecording"
         type="button"
-        class="stop-btn"
+        class="record-stop-btn"
         @click="onStop"
       >
         停止
       </button>
-    </header>
+    </HeaderActionsPortal>
+
+    <!-- 录音状态条（非标题栏）：录音中红点 + 计时 -->
+    <div class="rec-status" role="status" aria-live="polite">
+      <span v-if="isRecording" class="rec-dot" aria-hidden="true" />
+      {{ isRecording ? '录音中' : '准备录音' }}
+      <span class="elapsed">{{ formatElapsed() }}</span>
+    </div>
 
     <!-- 波形 -->
     <div class="waveform-wrap">
@@ -114,6 +116,7 @@ import { useMeetingRecorder } from '../../composables/useMeetingRecorder'
 import { useLiveSummary } from '../../composables/useLiveSummary'
 import { useMeetingAlerts } from '../../composables/useMeetingAlerts'
 import { useConfirm } from '../../composables/useConfirm'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { getMeeting, updateMeeting } from './meetings-store'
 import TranscriptSegmentList from './TranscriptSegmentList.vue'
 import LiveSummaryPanel from './LiveSummaryPanel.vue'
@@ -171,14 +174,6 @@ async function onStop() {
   router.replace({ name: 'meeting-detail', params: { id: meetingId } })
 }
 
-async function onBack() {
-  if (isRecording.value) {
-    if (await confirm({ title: '离开录音', message: '录音进行中，确定离开？', confirmText: '离开', danger: true })) onStop()
-  } else {
-    router.back()
-  }
-}
-
 async function onMetaSave(data: { title: string; location: string; participants: string[] }) {
   meta.title = data.title || null
   meta.location = data.location || null
@@ -223,62 +218,48 @@ onUnmounted(() => {
 .record-view {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - var(--bottomnav-height, 56px));
+  min-height: 100%;
   background: var(--bg-base);
   position: relative;
 }
 
-.record-header {
+/* 录音状态条（原 record-header 中的视觉元素；录音语义迁移到内容区顶部） */
+.rec-status {
   display: flex;
   align-items: center;
-  padding: var(--space-2) var(--space-3);
-  height: var(--topbar-height, 48px);
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border-subtle);
-  flex-shrink: 0;
-}
-
-.back-btn, .stop-btn {
-  border: none;
-  background: none;
-  font-size: 16px;
-  color: var(--text-primary);
-  cursor: pointer;
-  padding: var(--space-2);
-}
-
-.stop-btn {
-  color: #ef4444;
-  font-weight: 600;
-}
-
-.header-center {
-  flex: 1;
-  text-align: center;
-  font-size: 14px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   gap: var(--space-2);
+  height: 40px;
+  padding: 0 var(--space-3);
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  flex-shrink: 0;
 }
 
 .rec-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #ef4444;
-  animation: blink 1s infinite;
+  background: var(--danger);
+  animation: rec-pulse 1.4s ease-in-out infinite;
 }
 
-@keyframes blink {
-  50% { opacity: 0.3; }
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
 }
 
 .elapsed {
+  margin-left: auto;
   font-variant-numeric: tabular-nums;
-  color: var(--text-muted);
-  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+/* Portal 注入到壳层标题栏的停止按钮（壳层 :deep 规则已给 44px 热区） */
+.record-stop-btn {
+  color: var(--danger);
+  font-weight: var(--font-weight-semibold);
 }
 
 .waveform-wrap {

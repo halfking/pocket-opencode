@@ -8,15 +8,11 @@
 -->
 <template>
   <div class="gw-view">
-    <header class="top-bar">
-      <button class="back-btn" @click="router.back()" aria-label="返回">
-        <span class="material-symbols-outlined">arrow_back</span>
-      </button>
-      <h1 class="title">模型路由</h1>
-      <button class="icon-btn" :disabled="loading" @click="load" aria-label="刷新">
+    <HeaderActionsPortal>
+      <button type="button" class="icon-btn" :disabled="loading" aria-label="刷新" @click="load">
         <span class="material-symbols-outlined">refresh</span>
       </button>
-    </header>
+    </HeaderActionsPortal>
 
     <div class="search-bar">
       <input v-model="query" placeholder="过滤模型名…" />
@@ -82,6 +78,7 @@ import { ApiError } from '../../api/http'
 import * as gw from '../../api/gateway'
 import type { ModelTreeCredential } from '../../api/gateway'
 import { useConfirm } from '../../composables/useConfirm'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -186,29 +183,14 @@ onMounted(load)
 
 <style scoped>
 .gw-view {
-  min-height: 100vh;
+  min-height: 100%;
   background: var(--bg-base);
 }
-.top-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: var(--space-3);
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border);
-}
-.back-btn,
 .icon-btn {
   background: none;
   border: none;
   color: var(--text-primary);
   display: flex;
-}
-.title {
-  flex: 1;
-  font-size: 17px;
-  font-weight: 600;
-  margin: 0;
 }
 .search-bar {
   display: flex;

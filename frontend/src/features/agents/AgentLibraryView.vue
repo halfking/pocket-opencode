@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChatAgentStore, DEPARTMENTS } from '../../stores/chatAgentStore'
 import { useConfirm } from '../../composables/useConfirm'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import AgentSyncSheet from '../ai-chat/AgentSyncSheet.vue'
 
 const router = useRouter()
@@ -93,20 +94,16 @@ async function handleDelete(agentId: string, agentName: string, e: Event) {
 
 <template>
   <div class="agent-library-view">
-    <!-- 顶部栏（唯一标题） -->
-    <header class="top-bar">
-      <button class="icon-btn" aria-label="返回" @click="router.back()">
-        <span class="material-symbols-outlined">arrow_back</span>
-      </button>
-      <h1 class="title">智能体角色库</h1>
-      <button class="icon-btn" aria-label="云端同步" @click="syncSheetOpen = true">
+    <!-- 壳层渲染标题栏与返回键；同步/创建两个操作经 Portal 放入标题栏右侧 -->
+    <HeaderActionsPortal>
+      <button type="button" aria-label="云端同步" @click="syncSheetOpen = true">
         <span class="material-symbols-outlined">cloud_sync</span>
         <span v-if="hasRemoteAgents" class="sync-badge" aria-label="云端有新内容"></span>
       </button>
-      <button class="icon-btn" aria-label="创建角色" @click="goToCreate">
+      <button type="button" aria-label="创建角色" @click="goToCreate">
         <span class="material-symbols-outlined">add</span>
       </button>
-    </header>
+    </HeaderActionsPortal>
 
     <!-- 搜索框 -->
     <div class="search-section">
@@ -225,33 +222,10 @@ async function handleDelete(agentId: string, agentName: string, e: Event) {
 
 <style scoped>
 .agent-library-view {
-  min-height: 100vh;
+  min-height: 100%;
   background: var(--bg-base);
   display: flex;
   flex-direction: column;
-}
-
-.top-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  padding-top: calc(12px + env(safe-area-inset-top));
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border);
-}
-
-.icon-btn {
-  width: 40px;
-  height: 40px;
-  border: none;
-  background: transparent;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: var(--text-primary);
-  position: relative;
 }
 
 .sync-badge {

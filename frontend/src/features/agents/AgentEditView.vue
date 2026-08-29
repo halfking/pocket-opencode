@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useChatAgentStore, DEPARTMENTS } from '../../stores/chatAgentStore'
 import { useToast } from '../../composables/useToast'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -43,14 +44,6 @@ onMounted(async () => {
     }
   }
 })
-
-function goBack() {
-  if (isEditMode.value) {
-    router.push(`/agents/${route.params.agentId}`)
-  } else {
-    router.push('/agents')
-  }
-}
 
 function insertTemplate() {
   // 快速填充模板
@@ -137,20 +130,17 @@ async function handleSave() {
 
 <template>
   <div class="agent-edit-view">
-    <!-- 顶部栏（唯一标题） -->
-    <header class="top-bar">
-      <button class="icon-btn" aria-label="返回" @click="goBack">
-        <span class="material-symbols-outlined">arrow_back</span>
-      </button>
-      <h1 class="title">{{ isEditMode ? '编辑角色' : '创建角色' }}</h1>
+    <!-- 顶部操作经 Portal 注入壳层 top-bar；标题与返回由 AppLayout 统一渲染 -->
+    <HeaderActionsPortal>
       <button
-        class="save-btn"
+        type="button"
+        class="primary-text-btn"
         :disabled="saving"
         @click="handleSave"
       >
-        {{ saving ? '保存中...' : '保存' }}
+        {{ saving ? '保存中…' : '保存' }}
       </button>
-    </header>
+    </HeaderActionsPortal>
 
     <main class="edit-content">
       <!-- 基本信息 -->
@@ -235,56 +225,16 @@ async function handleSave() {
 
 <style scoped>
 .agent-edit-view {
-  min-height: 100vh;
+  min-height: 100%;
   background: var(--bg-base);
   display: flex;
   flex-direction: column;
 }
 
-.top-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  padding-top: calc(12px + env(safe-area-inset-top));
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border);
-}
-
-.icon-btn {
-  width: 40px;
-  height: 40px;
-  border: none;
-  background: transparent;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: var(--text-primary);
-}
-
-.title {
-  flex: 1;
-  margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-  text-align: center;
-}
-
-.save-btn {
-  padding: 8px 16px;
-  background: var(--brand-primary);
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.save-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+/* Portal 注入的文字主按钮外观（左侧颜色块由 AppLayout 的 :deep 规则管热区尺寸） */
+.primary-text-btn {
+  color: var(--brand-primary);
+  font-weight: var(--font-weight-semibold);
 }
 
 .edit-content {
