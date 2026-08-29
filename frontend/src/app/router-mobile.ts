@@ -138,7 +138,7 @@ const router = createRouter({
       path: '/email/summary',
       name: 'email-summary',
       component: EmailSummaryView,
-      meta: { requiresAuth: true, requiresLobster: true, title: '每日摘要', canGoBack: true }
+      meta: { requiresAuth: true, requiresLobster: true, title: '每日摘要', canGoBack: true, bottomNav: false }
     },
     {
       path: '/email/summary/:date',
@@ -151,7 +151,7 @@ const router = createRouter({
       path: '/email/accounts',
       name: 'email-accounts',
       component: EmailAccountSetup,
-      meta: { requiresAuth: true, requiresLobster: true, title: '邮箱账户', canGoBack: true }
+      meta: { requiresAuth: true, requiresLobster: true, title: '邮箱账户', canGoBack: true, bottomNav: false }
     },
     // S2.3 联系人：从邮件/会议来源聚合的本地联系人
     {
@@ -224,13 +224,14 @@ const router = createRouter({
     {
       path: '/login',
       name: 'login',
-      component: LoginView
+      component: LoginView,
+      meta: { title: '登录', bottomNav: false, showTopBar: false }
     },
     {
       path: '/servers',
       name: 'servers',
       component: ServerSelectView,
-      meta: { requiresAuth: true }
+      meta: { requiresAuth: true, title: '选择服务器', canGoBack: true, bottomNav: false }
     },
     {
       path: '/instances',
@@ -385,10 +386,22 @@ meta: { requiresAuth: true, title: 'AI 模型', bottomNav: false, canGoBack: tru
  */
 import { runGuard } from './routeGuards'
 
+/**
+ * "首页栈" 标记：用户在 BottomNav 根 tab 上点击进入子页面后，
+ * sessionStorage 标记 pocket:navigatedFromHome = '1'，AppLayout.goBack
+ * 据此决定 router.back()（回到首页根）vs router.push('/ai')（兜底）。
+ * 直接通过 router.push 进入非首页也置位（避免 entry 空页）。
+ */
+const HOME_ROOTS = new Set(['/ai', '/tasks', '/ai-chat', '/notes', '/meetings', '/email', '/vault', '/pkm/today', '/instances', '/sessions', '/settings'])
+
 router.beforeEach((to, from, next) => {
-  // Phase 7: Auth sync still happens inside evaluateRoute via the
-  // helper, so we delegate the whole decision tree.
+  if (typeof sessionStorage !== 'undefined') {
+    if (HOME_ROOTS.has(to.path)) {
+      sessionStorage.removeItem('pocket:navigatedFromHome')
+    } else {
+      sessionStorage.setItem('pocket:navigatedFromHome', '1')
+    }
+  }
   runGuard(to, next)
 })
-
 export default router
