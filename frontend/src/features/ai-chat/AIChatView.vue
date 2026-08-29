@@ -872,14 +872,13 @@ function formatTime(ts: number): string {
   background: var(--bg-base);
 }
 
-/* 顶部栏 */
+/* 顶部栏。safe-area-top 由 body 全局注入，这里不再叠加（防止双重下移）。 */
 .top-bar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  padding-top: calc(8px + env(safe-area-inset-top));
   background: var(--bg-card);
   border-bottom: 1px solid var(--border);
 }

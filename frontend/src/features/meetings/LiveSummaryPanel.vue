@@ -105,7 +105,7 @@ function typeIcon(type: string): string {
   right: 0;
   width: 100vw;
   max-width: none;
-  height: 100vh;
+  height: 100%;
   max-height: none;
   border-radius: 0;
   z-index: var(--z-sheet);
