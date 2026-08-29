@@ -32,6 +32,7 @@ export interface SessionComposerTarget {
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useVoiceRecording } from '../../composables/useVoiceRecording'
 import { useToast } from '../../composables/useToast'
+import { useConfirm } from '../../composables/useConfirm'
 import { BottomSheet } from '../../components'
 import {
   QUICK_COMMANDS,
@@ -118,10 +119,10 @@ function send(): void {
 // "停下"二次确认纪律不变）
 const quickPanelVisible = ref(false)
 
-function onCommand(cmd: QuickCommand): void {
+async function onCommand(cmd: QuickCommand): Promise<void> {
   if (props.disabled) return
-  // 仅"停下"先二次确认（工程惯例 window.confirm，见 SessionListView 等）
-  if (shouldConfirmCommand(cmd) && !window.confirm(cmd.confirmText ?? '')) return
+  // 仅"停下"先二次确认（统一走全局 ConfirmDialog）
+  if (shouldConfirmCommand(cmd) && !(await confirm({ title: cmd.label, message: cmd.confirmText ?? '', confirmText: '确认', danger: true }))) return
   quickPanelVisible.value = false
   emit('send', cmd.message)
   void drafts.clear()
@@ -143,6 +144,7 @@ function selectTarget(id: string): void {
 
 // ── 语音（复用现有 composable；转写入草稿可编辑，不直发） ──
 const toast = useToast()
+const { confirm } = useConfirm()
 const { isRecording, transcribing, toggleRecording } = useVoiceRecording({
   onTranscribed: (text) => {
     draftText.value = appendToDraft(draftText.value, text)
