@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds all application configuration loaded from environment variables.
@@ -101,6 +102,16 @@ type Config struct {
 	RedClawTenantID   string // POCKET_REDCLAW_TENANT_ID：当前租户 ID（默认 default）
 	RedClawTimeoutSec int    // POCKET_REDCLAW_TIMEOUT_SEC：HTTP 超时秒数（默认 30）
 
+	// Scheduled-task subsystem (Sprint 1+) — controls the in-process
+	// automation scheduler in internal/scheduledtask. When
+	// POCKET_SCHEDULER_ENABLED=false the store is still writable via the
+	// HTTP API (so users can stage definitions), but no tick fires.
+	SchedulerEnabled        bool          // POCKET_SCHEDULER_ENABLED（默认 true）
+	SchedulerTickInterval   time.Duration // POCKET_SCHEDULER_TICK_INTERVAL（默认 5s）
+	SchedulerMaxParallel    int           // POCKET_SCHEDULER_MAX_PARALLEL（默认 4）
+	SchedulerAdvisoryLock   bool          // POCKET_SCHEDULER_ADVISORY_LOCK（默认 true）
+	SchedulerWebhookTimeout time.Duration // POCKET_SCHEDULER_WEBHOOK_TIMEOUT（默认 30s）
+
 	// WebAuthn / 生物识别配置（可选；不配置则降级到 P0 stub）
 	WebAuthnRPDisplayName string // POCKET_WEBAUTHN_RP_DISPLAY_NAME：RP 显示名（如 "OpenCode Pocket"）
 	WebAuthnRPID         string // POCKET_WEBAUTHN_RP_ID：RP ID（必须是 origin 的有效域名，如 "pocket.example.com"）
@@ -183,6 +194,12 @@ func Load() Config {
 		RedClawSecret:     getEnv("POCKET_REDCLAW_SECRET", ""),
 		RedClawTenantID:   getEnv("POCKET_REDCLAW_TENANT_ID", "default"),
 		RedClawTimeoutSec: getEnvInt("POCKET_REDCLAW_TIMEOUT_SEC", 30),
+		// 定时任务子系统（internal/scheduledtask）
+		SchedulerEnabled:        getEnv("POCKET_SCHEDULER_ENABLED", "true") == "true",
+		SchedulerTickInterval:   getEnvDuration("POCKET_SCHEDULER_TICK_INTERVAL", 5*time.Second),
+		SchedulerMaxParallel:    getEnvInt("POCKET_SCHEDULER_MAX_PARALLEL", 4),
+		SchedulerAdvisoryLock:   getEnv("POCKET_SCHEDULER_ADVISORY_LOCK", "true") == "true",
+		SchedulerWebhookTimeout: getEnvDuration("POCKET_SCHEDULER_WEBHOOK_TIMEOUT", 30*time.Second),
 		// WebAuthn / 生物识别
 		WebAuthnRPDisplayName: getEnv("POCKET_WEBAUTHN_RP_DISPLAY_NAME", ""),
 		WebAuthnRPID:         getEnv("POCKET_WEBAUTHN_RP_ID", ""),
@@ -335,6 +352,23 @@ func getEnvInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// getEnvDuration retrieves an environment variable as a time.Duration or
+// returns fallback if not set or invalid. Accepts Go duration syntax
+// ("5s", "1m", "30m", "1h"); bare integers are treated as seconds.
+func getEnvDuration(key string, fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		return d
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		return time.Duration(n) * time.Second
+	}
+	return fallback
 }
 
 // getFirstEnv tries multiple environment variable keys in order and returns the first non-empty value.
