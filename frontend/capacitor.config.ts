@@ -24,6 +24,17 @@ const config: CapacitorConfig = {
       launchShowDuration: 2000,
       backgroundColor: '#ffffff',
     },
+    /**
+     * 状态栏：
+     * - overlaysWebView:false —— Android 上 WebView 布局在状态栏之下，
+     *   这样 env(safe-area-inset-top) 才能拿到非 0 值，配合 body padding 给
+     *   标题栏让出系统状态栏高度。
+     * - style: 'LIGHT' —— 浅色图标；深浅主题切换时由 App.vue 按背景切换。
+     */
+    StatusBar: {
+      overlaysWebView: false,
+      style: 'LIGHT',
+    },
   },
 };
 

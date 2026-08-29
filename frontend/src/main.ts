@@ -11,6 +11,9 @@ import "./styles/tokens.css"
 import "./styles/responsive.css"
 import "./styles/material-symbols.css"
 
+// StatusBar 控制权已迁到 App.vue 的 setup 生命周期（start/stop 绑定组件卸载），
+// 这里只做副作用无关的初始化。
+
 const pinia = createPinia()
 const app = createApp(App)
 app.use(pinia)

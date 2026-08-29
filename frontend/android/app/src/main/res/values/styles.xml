@@ -13,6 +13,9 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <!-- 状态栏透明，由 WebView 内容之下 body padding-top 兑现 safe-area；
+             配合 tokens.css 深浅主题自动适配 -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
     </style>
 
 

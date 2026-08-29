@@ -15,20 +15,27 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import AppLayout from './AppLayout.vue'
 import UpdateChecker from '../components/UpdateChecker.vue'
 import ConfirmDialog from '../components/base/ConfirmDialog.vue'
 import { useSwipeBack } from '../composables/useSwipeBack'
+import { useStatusBar } from '../composables/useStatusBar'
 
 const updateChecker = ref<InstanceType<typeof UpdateChecker> | null>(null)
 
 // Phase 4.3: 全局挂载左缘右滑返回手势（仅 route.meta.canGoBack 启用）
 useSwipeBack({ edgeWidth: 24, thresholdRatio: 0.3, velocityThreshold: 0.4 })
 
+// 状态栏控制权绑定到 App 生命周期：进入页面 start（注册主题监听），
+// 卸载时 stop（清除监听），避免热更新 / 测试时累积孤儿监听器。
+const statusBar = useStatusBar()
 onMounted(() => {
-  // 应用启动时自动检查更新
+  statusBar.start()
   console.log('OpenCode Pocket Mobile Started')
+})
+onBeforeUnmount(() => {
+  statusBar.stop()
 })
 </script>
 
