@@ -275,155 +275,137 @@
     </div>
 
     <!-- Task Context Menu (long-press) -->
-    <div v-if="showContextMenu && contextTask" class="modal-overlay" @click.self="closeContextMenu">
-      <div class="modal-sheet context-sheet" @click.stop>
-        <div class="modal-handle" />
-        <div class="modal-body">
-          <h2 class="context-title">{{ contextTask.title }}</h2>
-          <div class="context-actions">
-            <button class="ctx-btn" @click="ctxViewDetail">查看详情</button>
-            <button
-              v-if="contextTask.status === 'active'"
-              class="ctx-btn danger"
-              @click="ctxStopSessions"
-            >⏹ 停止会话</button>
-            <button class="ctx-btn" @click="ctxResume">▶ 继续跟进</button>
-            <button
-              v-if="contextTask.status !== 'active'"
-              class="ctx-btn"
-              @click="ctxUpdateStatus('active')"
-            >▶ 恢复</button>
-            <button
-              v-if="contextTask.status === 'active'"
-              class="ctx-btn"
-              @click="ctxUpdateStatus('blocked')"
-            >⏸ 暂停</button>
-            <button
-              v-if="contextTask.status !== 'completed'"
-              class="ctx-btn"
-              @click="ctxUpdateStatus('completed')"
-            >✅ 完成</button>
-            <button class="ctx-btn danger" @click="ctxDelete">🗑 删除</button>
-          </div>
-        </div>
+    <BottomSheet
+      :model-value="showContextMenu && !!contextTask"
+      :title="contextTask?.title ?? ''"
+      close-on-overlay
+      @update:model-value="(v) => { if (!v) closeContextMenu() }"
+    >
+      <div class="context-actions">
+        <button class="ctx-btn" @click="ctxViewDetail">查看详情</button>
+        <button
+          v-if="contextTask?.status === 'active'"
+          class="ctx-btn danger"
+          @click="ctxStopSessions"
+        >⏹ 停止会话</button>
+        <button class="ctx-btn" @click="ctxResume">▶ 继续跟进</button>
+        <button
+          v-if="contextTask?.status !== 'active'"
+          class="ctx-btn"
+          @click="ctxUpdateStatus('active')"
+        >▶ 恢复</button>
+        <button
+          v-if="contextTask?.status === 'active'"
+          class="ctx-btn"
+          @click="ctxUpdateStatus('blocked')"
+        >⏸ 暂停</button>
+        <button
+          v-if="contextTask?.status !== 'completed'"
+          class="ctx-btn"
+          @click="ctxUpdateStatus('completed')"
+        >✅ 完成</button>
+        <button class="ctx-btn danger" @click="ctxDelete">🗑 删除</button>
       </div>
-    </div>
+    </BottomSheet>
 
     <!-- Session Context Menu (long-press): 停止 / 归档 -->
-    <div v-if="showSessionMenu && contextSession" class="modal-overlay" @click.self="closeSessionMenu">
-      <div class="modal-sheet context-sheet" @click.stop>
-        <div class="modal-handle" />
-        <div class="modal-body">
-          <h2 class="context-title">{{ contextSession.title || '未命名会话' }}</h2>
-          <div class="context-actions">
-            <button
-              v-if="contextSession.status === 'active' || contextSession.status === 'streaming'"
-              class="ctx-btn danger"
-              @click="ctxStopSession"
-            >⏹ 停止</button>
-            <button class="ctx-btn" @click="ctxArchiveSession">📥 归档（本地）</button>
-          </div>
-        </div>
+    <BottomSheet
+      :model-value="showSessionMenu && !!contextSession"
+      :title="contextSession?.title || '未命名会话'"
+      close-on-overlay
+      @update:model-value="(v) => { if (!v) closeSessionMenu() }"
+    >
+      <div class="context-actions">
+        <button
+          v-if="contextSession?.status === 'active' || contextSession?.status === 'streaming'"
+          class="ctx-btn danger"
+          @click="ctxStopSession"
+        >⏹ 停止</button>
+        <button class="ctx-btn" @click="ctxArchiveSession">📥 归档（本地）</button>
       </div>
-    </div>
+    </BottomSheet>
 
     <!-- Create Task Modal -->
-    <div
-      v-if="showCreateModal"
-      ref="modalRef"
-      class="modal-overlay"
-      @click.self="showCreateModal = false"
+    <BottomSheet
+      :model-value="showCreateModal"
+      title="创建任务"
+      height="auto"
+      @update:model-value="(v) => { showCreateModal = v }"
     >
-      <div
-        ref="modalSheetRef"
-        class="modal-sheet"
-        :style="{ transform: `translateY(${pullDownOffset}px)` }"
-        @touchstart="onSheetTouchStart"
-        @touchmove="onSheetTouchMove"
-        @touchend="onSheetTouchEnd"
-      >
-        <div class="modal-handle" />
-        <div class="modal-body">
-          <h2>创建任务</h2>
-          <div class="form-group">
-            <label>标题 *</label>
-            <input v-model="newTask.title" type="text" placeholder="输入任务标题" />
+      <div class="create-task-form">
+        <div class="form-group">
+          <label>标题 *</label>
+          <input v-model="newTask.title" type="text" placeholder="输入任务标题" />
+        </div>
+        <div class="form-group">
+          <label>描述</label>
+          <textarea v-model="newTask.description" placeholder="输入任务描述" rows="2" />
+        </div>
+        <div class="form-row">
+          <div class="form-group half">
+            <label>优先级</label>
+            <select v-model="newTask.priority">
+              <option value="high">高</option>
+              <option value="medium">中</option>
+              <option value="low">低</option>
+            </select>
           </div>
-          <div class="form-group">
-            <label>描述</label>
-            <textarea v-model="newTask.description" placeholder="输入任务描述" rows="2" />
-          </div>
-          <div class="form-row">
-            <div class="form-group half">
-              <label>优先级</label>
-              <select v-model="newTask.priority">
-                <option value="high">高</option>
-                <option value="medium">中</option>
-                <option value="low">低</option>
-              </select>
-            </div>
-            <div class="form-group half">
-              <label>状态</label>
-              <select v-model="newTask.status">
-                <option value="active">进行中</option>
-                <option value="blocked">已阻塞</option>
-              </select>
-            </div>
-          </div>
-          <div class="modal-actions">
-            <button class="btn cancel" @click="showCreateModal = false">取消</button>
-            <button class="btn primary" :disabled="!newTask.title" @click="handleCreate">创建</button>
+          <div class="form-group half">
+            <label>状态</label>
+            <select v-model="newTask.status">
+              <option value="active">进行中</option>
+              <option value="blocked">已阻塞</option>
+            </select>
           </div>
         </div>
       </div>
-    </div>
+      <template #footer>
+        <button class="btn cancel" @click="showCreateModal = false">取消</button>
+        <button class="btn primary" :disabled="!newTask.title" @click="handleCreate">创建</button>
+      </template>
+    </BottomSheet>
 
     <!-- Delegate to ACC Modal -->
-    <Teleport to="body">
-      <div
-        v-if="showAccModal"
-        class="modal-overlay"
-        @click.self="closeAccDelegate"
-      >
-        <div class="modal-sheet acc-sheet">
-          <div class="modal-handle" />
-          <div class="modal-body">
-            <h2>委托给 ACC</h2>
-            <p class="acc-hint">ACC 会接管后续会话与执行，无需在手机上跟进。</p>
-            <div class="form-group">
-              <label>标题 *</label>
-              <input
-                v-model="accDraft.title"
-                type="text"
-                placeholder="例如：实现登录页面"
-                maxlength="120"
-              />
-            </div>
-            <div class="form-group">
-              <label>描述（可选）</label>
-              <textarea
-                v-model="accDraft.description"
-                placeholder="补充背景、目标或验收标准"
-                rows="3"
-                maxlength="500"
-              />
-              <div class="char-counter">{{ accDraft.description.length }} / 500</div>
-            </div>
-            <div v-if="accStore.error" class="acc-error">{{ accStore.error }}</div>
-            <div class="modal-actions">
-              <button class="btn cancel" :disabled="accStore.submitting" @click="closeAccDelegate">取消</button>
-              <button
-                class="btn primary"
-                :disabled="!accDraft.title.trim() || accStore.submitting"
-                @click="submitAccDelegate"
-              >
-                {{ accStore.submitting ? '提交中…' : '委托给 ACC' }}
-              </button>
-            </div>
-          </div>
+    <BottomSheet
+      :model-value="showAccModal"
+      title="委托给 ACC"
+      close-on-overlay
+      @update:model-value="(v) => { if (!v) closeAccDelegate() }"
+    >
+      <div class="create-task-form">
+        <p class="acc-hint">ACC 会接管后续会话与执行，无需在手机上跟进。</p>
+        <div class="form-group">
+          <label>标题 *</label>
+          <input
+            v-model="accDraft.title"
+            type="text"
+            placeholder="例如：实现登录页面"
+            maxlength="120"
+          />
         </div>
+        <div class="form-group">
+          <label>描述（可选）</label>
+          <textarea
+            v-model="accDraft.description"
+            placeholder="补充背景、目标或验收标准"
+            rows="3"
+            maxlength="500"
+          />
+          <div class="char-counter">{{ accDraft.description.length }} / 500</div>
+        </div>
+        <div v-if="accStore.error" class="acc-error">{{ accStore.error }}</div>
       </div>
-    </Teleport>
+      <template #footer>
+        <button class="btn cancel" :disabled="accStore.submitting" @click="closeAccDelegate">取消</button>
+        <button
+          class="btn primary"
+          :disabled="!accDraft.title.trim() || accStore.submitting"
+          @click="submitAccDelegate"
+        >
+          {{ accStore.submitting ? '提交中…' : '委托给 ACC' }}
+        </button>
+      </template>
+    </BottomSheet>
   </div>
   </PullToRefresh>
 </template>
@@ -433,7 +415,6 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type Task } from '../../api/client'
 import wsClient from '../../api/websocket'
-import { usePullDownClose } from '../../composables/usePullDownClose'
 import { useVoiceInput } from '../../composables/useVoiceInput'
 import { useToast } from '../../composables/useToast'
 import { useApprovalAlerts } from '../../composables/useApprovalAlerts'
@@ -448,6 +429,7 @@ import {
   type ArchiveScope,
 } from '../sessions/sessionArchive'
 import { useConfirm } from '../../composables/useConfirm'
+import BottomSheet from '../../components/base/BottomSheet.vue'
 
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -609,8 +591,6 @@ const sessionsLoading = ref(true)
 const showCreateModal = ref(false)
 const showCompleted = ref(false)
 const quickPrompt = ref('')
-const modalRef = ref<HTMLElement | null>(null)
-const modalSheetRef = ref<HTMLElement | null>(null)
 
 const newTask = ref({
   title: '',
@@ -681,9 +661,7 @@ const completedTasks = computed(() =>
     .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
 )
 
-// ── Pull-down close ──
-const { pullDownOffset, onSheetTouchStart, onSheetTouchMove, onSheetTouchEnd } =
-  usePullDownClose({ threshold: 80, onClose: () => { showCreateModal.value = false } })
+// ── Pull-down close (BottomSheet 已具备内建下拉关闭，无需再外挂) ──
 
 // ── Lifecycle ──
 onMounted(() => {
@@ -1280,19 +1258,10 @@ function timeAgo(dateStr?: string): string {
 .section-header .acc-delegate-btn {
   margin-left: 8px;
 }
-.acc-sheet {
-  max-width: 560px;
-  margin: 0 auto;
-  width: 100%;
-}
 .acc-hint {
   font-size: 12px;
   color: var(--text-muted);
   margin: -8px 0 14px;
-}
-.acc-sheet .form-group input,
-.acc-sheet .form-group textarea {
-  width: 100%;
 }
 .char-counter {
   text-align: right;
@@ -1676,45 +1645,7 @@ function timeAgo(dateStr?: string): string {
   padding: 0 var(--space-2) var(--space-1);
 }
 
-/* ── Modal ── */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--overlay);
-  display: flex;
-  align-items: flex-end;
-  z-index: var(--z-sheet);
-  animation: fadeIn 150ms ease;
-}
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-.modal-sheet {
-  background: var(--bg-elevated);
-  border-radius: 16px 16px 0 0;
-  width: 100%;
-  max-height: 85vh;
-  display: flex;
-  flex-direction: column;
-  animation: slideUp 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  touch-action: none;
-}
-@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
-.modal-handle {
-  width: 36px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--border-strong);
-  margin: 8px auto 4px;
-}
-.modal-body {
-  padding: 8px 20px 20px;
-  overflow-y: auto;
-}
-.modal-body h2 {
-  font-size: 16px;
-  font-weight: 700;
-  margin: 4px 0 16px;
-  color: var(--text-primary);
-}
+/* 表单 / footer 样式（被 BottomSheet 内 slot 消费；已删自绘 modal-* 系列样式） */
 .form-group {
   margin-bottom: 12px;
 }
@@ -1751,11 +1682,6 @@ function timeAgo(dateStr?: string): string {
 .form-group.half {
   flex: 1;
 }
-.modal-actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 16px;
-}
 .btn {
   flex: 1;
   padding: 10px;
@@ -1779,15 +1705,6 @@ function timeAgo(dateStr?: string): string {
 }
 
 /* ── Context menu ── */
-.context-sheet .context-title {
-  font-size: var(--text-md);
-  font-weight: var(--font-weight-semibold);
-  margin: 0 0 var(--space-3);
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .context-actions {
   display: flex;
   flex-direction: column;
