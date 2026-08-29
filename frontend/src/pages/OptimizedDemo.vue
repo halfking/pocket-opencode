@@ -393,6 +393,7 @@ const handleNavChange = (id: string) => {
 <style scoped>
 .optimized-demo {
   height: 100vh;
+  height: 100dvh;
   background: var(--color-bg-base);
 }
 

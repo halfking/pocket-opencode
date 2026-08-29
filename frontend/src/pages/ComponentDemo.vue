@@ -408,6 +408,7 @@ const loadMoreItems = async () => {
 <style scoped>
 .demo-page {
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--color-bg-base);
   padding-bottom: 80px; /* 为底部导航留空间 */
 }

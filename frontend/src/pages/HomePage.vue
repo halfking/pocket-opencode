@@ -354,6 +354,7 @@ const handleNavChange = (id: string) => {
 <style scoped>
 .home-page {
   height: 100vh;
+  height: 100dvh;
   background: var(--color-bg-base);
 }
 

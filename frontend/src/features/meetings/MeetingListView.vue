@@ -128,7 +128,9 @@ onMounted(load)
 }
 
 .list-scroll {
+  /* iOS Safari 100vh 包含 URL bar，会在滚动时跳变；这里双写 fallback 兼容老设备。 */
   min-height: calc(100vh - var(--topbar-height) - var(--bottomnav-height) - 80px);
+  min-height: calc(100dvh - var(--topbar-height) - var(--bottomnav-height) - 80px);
 }
 
 .meeting-list {
