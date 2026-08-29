@@ -436,7 +436,7 @@ func main() {
 	// 单元测试中运行 email 包。
 	email.SetAuditWriter(server.NewEmailAuditWriter(srv))
 
-	// ---- LLM Gateway 配置持久化（PG 可用时从数据库加载）----
+	// ---- LLM Gateway 配置持久化（PG 可用时从数据库加载；无 PG 时走 SQLite 兜底）----
 	// 注意：workspaces 列表在 S0-A Identity Core 装配完之后才可用，
 	// 所以这里只构造 store 并暂存，等 identity 装配完成后回调
 	// LoadLLMGatewayFromDB。
@@ -447,6 +447,22 @@ func main() {
 		} else {
 			srv.SetLLMGatewayStore(lgStore)
 			log.Println("LLM gateway store initialized (PG)")
+		}
+	} else if dataDir != "" {
+		// SQLite fallback: persist gateway config so device settings survive restarts.
+		// We intentionally reuse the chat_agents.sqlite data store because it is
+		// already opened with WAL + foreign keys and backed up by the same dataDir.
+		gwDBPath := filepath.Join(dataDir, "chat_agents.sqlite")
+		// In SQLite fallback there is no email master key (PG-anchored); derive
+		// a dedicated cipher from POCKET_JWT_SECRET/POCKET_DEV_AUTH — this keeps
+		// the read/write path symmetric without depending on email store.
+		cipher := server.NewGatewayCipher(cfg.JWTSecret)
+		lgStore, err := server.NewLLMGatewaySQLiteConfigStore(gwDBPath, cipher)
+		if err != nil {
+			log.Printf("WARN: LLM gateway SQLite store init failed: %v", err)
+		} else {
+			srv.SetLLMGatewayStore(lgStore)
+			log.Printf("LLM gateway store initialized (SQLite fallback at %s)", gwDBPath)
 		}
 	}
 
@@ -465,6 +481,9 @@ func main() {
 
 	// 多租户 LLM 网关配置加载：identity store 就绪后，从 workspaces 表加载
 	// 所有 workspace 的持久化配置；未保存的工作区仍走 env 默认值。
+	// SQLite fallback: loadllm gateway config from persisted store so Settings
+	// surface works after restart without env vars.
+	srv.LoadLLMGatewayFromDB("default")
 	if pool != nil && srv.LLMGatewayStore() != nil {
 		workspaces := []string{"default"}
 		if identStore != nil {

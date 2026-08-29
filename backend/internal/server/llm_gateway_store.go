@@ -26,6 +26,14 @@ type LLMGatewayStore struct {
 	cipher apiKeyCipher
 }
 
+// LLMGatewayConfigStore is the minimal contract both PG and SQLite
+// implementations must satisfy. It is intentionally simple so distinct
+// persistence backends (PG cluster, local SQLite fallback) can plug in.
+type LLMGatewayConfigStore interface {
+	SaveConfig(ctx context.Context, workspaceID string, st llmGatewayState) error
+	LoadConfig(ctx context.Context, workspaceID string) (*llmGatewayState, error)
+}
+
 // NewLLMGatewayStore creates the store and runs idempotent migrations. A
 // non-nil cipher is required because api_key_encrypted must never silently
 // degrade to plaintext storage when the email master key is unavailable.

@@ -131,7 +131,7 @@ type Server struct {
 
 	dataDir string // 数据目录
 
-	llmGWStore *LLMGatewayStore // nil = 无 PG，配置不持久化
+	llmGWStore LLMGatewayConfigStore // nil = 无持久化 backend，配置不写入店内/DB
 	llmGWCache *llmGatewayCache // nil = 仅依赖 env 默认配置
 
 	// LLM Gateway 运维控制面：已注册网关节点 + admin API 客户端。
@@ -279,8 +279,8 @@ func (s *Server) SetOpenCodeManagers(ocMgr *opencode.Manager, eventMgr *opencode
 	s.quesMgr = quesMgr
 }
 
-// SetLLMGatewayStore 注入 LLM 网关配置持久化 store（PG pool 可用时）。
-func (s *Server) SetLLMGatewayStore(store *LLMGatewayStore) {
+// SetLLMGatewayStore 注入 LLM 网关配置持久化 store（PG 或 SQLite fallback）。
+func (s *Server) SetLLMGatewayStore(store LLMGatewayConfigStore) {
 	s.llmGWStore = store
 	if s.llmGWCache == nil {
 		s.llmGWCache = newLLMGatewayCache()
@@ -288,7 +288,7 @@ func (s *Server) SetLLMGatewayStore(store *LLMGatewayStore) {
 }
 
 // LLMGatewayStore 返回内部 store（main 装配阶段判断是否需要预加载）。
-func (s *Server) LLMGatewayStore() *LLMGatewayStore { return s.llmGWStore }
+func (s *Server) LLMGatewayStore() LLMGatewayConfigStore { return s.llmGWStore }
 
 // SetGatewayNodeStore 注入网关节点注册表，并构造配套的 admin API 客户端。
 // store 为 nil 时 /api/llm-gateway/nodes 全部返回 503（无 PG 或缺 master key）。
