@@ -340,12 +340,13 @@ function goBack() {
 
 .chrome-shell {
   position: fixed;
-  top: 0;
+  top: env(safe-area-inset-top, 0);
+  /* safe-area-top 由 body 唯一注入（styles.css:32）；这里改为 top 偏移而非 padding，
+     避免与全局 body padding-top 叠加成两倍状态栏高度。 */
   left: 0;
   right: 0;
   z-index: var(--z-sticky);
   will-change: transform;
-  padding-top: env(safe-area-inset-top);
   background: var(--bg-card);
 }
 

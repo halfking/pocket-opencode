@@ -11,7 +11,9 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 
 const route = useRoute()
-const enabled = computed(() => route.meta.hideAppHeader !== true)
+const enabled = computed(
+  () => route.meta.showTopBar !== false && route.meta.hideAppHeader !== true,
+)
 </script>
 
 <style scoped>
