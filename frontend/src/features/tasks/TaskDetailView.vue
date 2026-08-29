@@ -106,38 +106,37 @@
     </div>
 
     <!-- Attach Modal -->
-    <div v-if="showAttachModal" class="modal-overlay" @click="showAttachModal = false">
-      <div class="modal-sheet" @click.stop>
-        <div class="modal-handle" />
-        <div class="modal-body">
-          <h2>附加会话</h2>
-          <div class="form-group">
-            <label>会话 ID *</label>
-            <input v-model="newSession.sessionId" type="text" placeholder="ses_..." />
-          </div>
-          <div class="form-group">
-            <label>实例 ID *</label>
-            <input v-model="newSession.instanceId" type="text" placeholder="local-dev" />
-          </div>
-          <div class="form-group">
-            <label>角色</label>
-            <select v-model="newSession.role">
-              <option value="primary">主要</option>
-              <option value="supporting">支持</option>
-              <option value="exploratory">探索</option>
-            </select>
-          </div>
-          <div class="modal-actions">
-            <button class="btn cancel" @click="showAttachModal = false">取消</button>
-            <button
-              class="btn primary"
-              :disabled="!newSession.sessionId || !newSession.instanceId"
-              @click="handleAttach"
-            >附加</button>
-          </div>
-        </div>
+    <BottomSheet
+      :model-value="showAttachModal"
+      title="附加会话"
+      close-on-overlay
+      @update:model-value="(v) => { showAttachModal = v }"
+    >
+      <div class="form-group">
+        <label>会话 ID *</label>
+        <input v-model="newSession.sessionId" type="text" placeholder="ses_..." />
       </div>
-    </div>
+      <div class="form-group">
+        <label>实例 ID *</label>
+        <input v-model="newSession.instanceId" type="text" placeholder="local-dev" />
+      </div>
+      <div class="form-group">
+        <label>角色</label>
+        <select v-model="newSession.role">
+          <option value="primary">主要</option>
+          <option value="supporting">支持</option>
+          <option value="exploratory">探索</option>
+        </select>
+      </div>
+      <template #footer>
+        <button class="btn cancel" @click="showAttachModal = false">取消</button>
+        <button
+          class="btn primary"
+          :disabled="!newSession.sessionId || !newSession.instanceId"
+          @click="handleAttach"
+        >附加</button>
+      </template>
+    </BottomSheet>
   </div>
 </template>
 
@@ -147,6 +146,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { api, type Task } from '../../api/client'
 import { EmptyState } from '../../components'
 import { useConfirm } from '../../composables/useConfirm'
+import BottomSheet from '../../components/base/BottomSheet.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -232,7 +232,7 @@ function formatDate(d?: string): string {
 
 <style scoped>
 .task-detail {
-  min-height: 100vh;
+  min-height: 100%;
   background: var(--bg-base);
   padding: 12px var(--space-3);
   padding-bottom: 80px;
@@ -440,38 +440,7 @@ function formatDate(d?: string): string {
   color: var(--text-muted);
 }
 
-/* ── Modal ── */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--overlay);
-  display: flex;
-  align-items: flex-end;
-  z-index: var(--z-sheet);
-}
-.modal-sheet {
-  background: var(--bg-elevated);
-  border-radius: 16px 16px 0 0;
-  width: 100%;
-  animation: slideUp 200ms ease;
-}
-@keyframes slideUp { from { transform: translateY(100%); } }
-.modal-handle {
-  width: 36px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--border-strong);
-  margin: 8px auto 4px;
-}
-.modal-body {
-  padding: 8px 20px 20px;
-}
-.modal-body h2 {
-  font-size: 16px;
-  font-weight: 700;
-  margin: 4px 0 16px;
-  color: var(--text-primary);
-}
+/* 表单 / footer 样式（被 BottomSheet 内 slot 消费；自绘 modal-* 已删） */
 .form-group {
   margin-bottom: 10px;
 }
@@ -497,11 +466,6 @@ function formatDate(d?: string): string {
 .form-group select:focus {
   border-color: var(--brand-primary);
   outline: none;
-}
-.modal-actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 16px;
 }
 .btn {
   flex: 1;
