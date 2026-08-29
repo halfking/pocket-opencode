@@ -56,6 +56,16 @@ var writeTools = []string{ToolCreateTask, ToolTaskClaim, ToolTaskComplete, ToolR
 //
 // 字段命名/语义与 docs/优化v4/04 §7.4 一致；写路径的鉴权与租户隔离由 ACC
 // 侧 MCP server（Bearer token + scope + RLS）负责，pocketd 只透传。
+// TenantID returns the configured ACC tenant. It is intentionally read-only;
+// consumers use it to reject cross-workspace automation before a signed MCP
+// call is issued.
+func (c *Client) TenantID() string {
+	if c == nil {
+		return ""
+	}
+	return c.tenantID
+}
+
 func (c *Client) Capabilities() Capabilities {
 	if c == nil {
 		return Capabilities{}

@@ -42,7 +42,6 @@ const (
 	KindKxmemorySummary  Kind = "kxmemory_summary"
 	KindACCMCP           Kind = "acc_mcp"
 	KindWebhook          Kind = "webhook"
-	KindIntentForward    Kind = "intent_forward"
 )
 
 // AllKinds lists every built-in kind. Used by the API layer to validate
@@ -56,7 +55,6 @@ func AllKinds() []Kind {
 		KindKxmemorySummary,
 		KindACCMCP,
 		KindWebhook,
-		KindIntentForward,
 	}
 }
 
@@ -88,6 +86,7 @@ type Task struct {
 
 	// Scheduler-managed state.
 	NextRunAt  int64     `json:"nextRunAt"`  // unix seconds
+	LeaseUntil int64     `json:"-"`          // internal claim lease; never exposed to clients
 	LastRunAt  int64     `json:"lastRunAt"`  // unix seconds; 0 = never
 	LastStatus RunStatus `json:"lastStatus"` // "" if never run
 	LastError  string    `json:"lastError"`
@@ -104,17 +103,17 @@ type Task struct {
 
 // Run records one execution attempt of a Task. Stored in scheduled_task_runs.
 type Run struct {
-	ID                string          `json:"id"`
-	TaskID            string          `json:"taskId"`
-	WorkspaceID       string          `json:"workspaceId"`
-	UserID            string          `json:"userId"`
-	Status            RunStatus       `json:"status"`
-	StartedAt         int64           `json:"startedAt"`
-	FinishedAt        int64           `json:"finishedAt"`
-	DurationMs        int             `json:"durationMs"`
-	Output            json.RawMessage `json:"output"`
-	Error             string          `json:"error"`
-	ReferencedTaskID  string          `json:"referencedTaskId,omitempty"` // e.g. AgentBridge.created task
+	ID               string          `json:"id"`
+	TaskID           string          `json:"taskId"`
+	WorkspaceID      string          `json:"workspaceId"`
+	UserID           string          `json:"userId"`
+	Status           RunStatus       `json:"status"`
+	StartedAt        int64           `json:"startedAt"`
+	FinishedAt       int64           `json:"finishedAt"`
+	DurationMs       int             `json:"durationMs"`
+	Output           json.RawMessage `json:"output"`
+	Error            string          `json:"error"`
+	ReferencedTaskID string          `json:"referencedTaskId,omitempty"` // e.g. AgentBridge.created task
 }
 
 // Result is what an Executor returns. The scheduler is responsible for

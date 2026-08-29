@@ -13,11 +13,11 @@ import (
 // source of truth — both the scheduler tick and the HTTP preview endpoint
 // call it, so the preview matches what the scheduler actually does.
 type Schedule struct {
-	Kind    ScheduleKind
-	Expr    string
-	TZ      *time.Location // nil → UTC
-	parser  cron.Parser    // 5-field (m h dom mon dow) by default
-	as5     bool           // true → use 5-field parser (cron without seconds)
+	Kind   ScheduleKind
+	Expr   string
+	TZ     *time.Location // nil → UTC
+	parser cron.Parser    // 5-field (m h dom mon dow) by default
+	as5    bool           // true → use 5-field parser (cron without seconds)
 }
 
 // NewSchedule parses a (kind, expr, tz) triple and returns a usable Schedule.

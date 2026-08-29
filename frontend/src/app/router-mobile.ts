@@ -35,6 +35,9 @@ import VaultEntryView from '../features/vault/VaultEntryView.vue'
 import MeetingListView from '../features/meetings/MeetingListView.vue'
 import MeetingRecordView from '../features/meetings/MeetingRecordView.vue'
 import MeetingDetailView from '../features/meetings/MeetingDetailView.vue'
+import ScheduledTaskListView from '../features/scheduled-tasks/ScheduledTaskListView.vue'
+import ScheduledTaskDetailView from '../features/scheduled-tasks/ScheduledTaskDetailView.vue'
+import ScheduledTaskEditView from '../features/scheduled-tasks/ScheduledTaskEditView.vue'
 
 // S1.1 PKM 记事本（TipTap WYSIWYG + 双向链接，基于 S0-C assetStore）
 // 路由级懒加载：TipTap ~200KB 只在进入 /pkm 时才下载，保持首屏精简。
@@ -292,6 +295,30 @@ meta: { requiresAuth: true, title: 'AI 模型', bottomNav: false, canGoBack: tru
       name: 'settings-permissions',
       component: () => import('../features/settings/SettingsPermissionsView.vue'),
       meta: { requiresAuth: true, title: '权限与隐私', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
+    {
+      path: '/settings/scheduled-tasks',
+      name: 'scheduled-tasks',
+      component: ScheduledTaskListView,
+      meta: { requiresAuth: true, title: '定时自动化', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
+    {
+      path: '/settings/scheduled-tasks/new',
+      name: 'scheduled-task-new',
+      component: ScheduledTaskEditView,
+      meta: { requiresAuth: true, title: '创建自动化', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
+    {
+      path: '/settings/scheduled-tasks/:id/edit',
+      name: 'scheduled-task-edit',
+      component: ScheduledTaskEditView,
+      meta: { requiresAuth: true, title: '编辑自动化', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
+    {
+      path: '/settings/scheduled-tasks/:id',
+      name: 'scheduled-task-detail',
+      component: ScheduledTaskDetailView,
+      meta: { requiresAuth: true, title: '自动化详情', bottomNav: false, canGoBack: true, hideAppHeader: true }
     },
     // P3 — 成本与配额只读面板
     {

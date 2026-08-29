@@ -41,6 +41,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
+	"github.com/halfking/pocket-opencode/backend/internal/scheduledtask"
 	"github.com/halfking/pocket-opencode/backend/internal/snippet"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
@@ -64,6 +65,8 @@ type Server struct {
 	nps           adapter.NPSAdapter
 	opencode      adapter.OpenCodeAdapter
 	taskStore     *task.Store
+	scheduledTaskStore     *scheduledtask.Store
+	scheduledTaskScheduler *scheduledtask.Scheduler
 	registry      *registry.Registry
 	configAdapter adapter.OpenCodeConfigAdapter
 	wsHub         *ws.Hub
@@ -355,6 +358,39 @@ func (s *Server) SetAgentBridge(b *agentbridge.Bridge, store *agentbridge.Store)
 	s.agentStore = store
 }
 
+// SetScheduledTaskStore wires the PostgreSQL-backed automation definition
+// store after Server construction. Keeping this as a setter avoids expanding
+// the already compatibility-sensitive New constructor.
+func (s *Server) SetScheduledTaskStore(store *scheduledtask.Store) {
+	s.scheduledTaskStore = store
+}
+
+// SetScheduledTaskScheduler wires manual-trigger access and scheduler
+// observability to the HTTP layer.
+func (s *Server) SetScheduledTaskScheduler(scheduler *scheduledtask.Scheduler) {
+	s.scheduledTaskScheduler = scheduler
+}
+
+func (s *Server) ScheduledTaskStore() *scheduledtask.Store { return s.scheduledTaskStore }
+func (s *Server) ScheduledTaskScheduler() *scheduledtask.Scheduler {
+	return s.scheduledTaskScheduler
+}
+
+// RedClawBridge returns the configured RedClaw bridge for trusted server-side
+// automation wiring. HTTP callers still go through authenticated handlers.
+func (s *Server) RedClawBridge() *redclaw.Bridge { return s.redclawBridge }
+
+// AgentBridge returns the configured OpenCode Agent Bridge for automation
+// executors. The bridge itself enforces workspace-scoped agent lookup.
+func (s *Server) AgentBridge() *agentbridge.Bridge { return s.agentBridge }
+
+// LLMBFF returns the configured unified LLM service for automation executors.
+func (s *Server) LLMBFF() *llmbff.Service { return s.llmBFF }
+
+// KxmemoryClient returns the configured kxmemory client for automation
+// executors. The interface keeps the scheduler independent of HTTP details.
+func (s *Server) KxmemoryClient() kxmemory.Client { return s.kxmemory }
+
 // SetNotifyCenter 注入 S0-E Notification Center。
 func (s *Server) SetNotifyCenter(svc *notifycenter.Service, store *notifycenter.Store) {
 	s.notifySvc = svc
@@ -449,6 +485,8 @@ func (s *Server) Handler() http.Handler {
 	// P1 双向 MCP：委派任务创建到 ACC（acc_create_task）。与 /api/tasks 的
 	// source=acc 只读守卫分开——这里是显式的写路径，返回 ACC 创建的任务。
 	mux.HandleFunc("/api/tasks/delegate", s.requireAuth(s.handleDelegateTask))
+	mux.HandleFunc("/api/scheduled-tasks", s.requireAuth(s.handleScheduledTasks))
+	mux.HandleFunc("/api/scheduled-tasks/", s.requireAuth(s.handleScheduledTaskOperations))
 	mux.HandleFunc("/api/config/models", s.requireAuth(s.handleModelConfig))
 	mux.HandleFunc("/api/config/reload", s.requireAuth(s.handleConfigReload))
 	mux.HandleFunc("/api/config/models/test", s.requireAuth(s.handleModelTest))

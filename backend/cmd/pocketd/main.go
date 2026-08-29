@@ -35,6 +35,8 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
+	"github.com/halfking/pocket-opencode/backend/internal/scheduledtask"
+	scheduledexecutors "github.com/halfking/pocket-opencode/backend/internal/scheduledtask/executors"
 	"github.com/halfking/pocket-opencode/backend/internal/server"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
@@ -72,10 +74,11 @@ func main() {
 
 	// ---- Module stores (all share the pool) ----
 	var (
-		taskStore  *task.Store // nil-safe: nil when pool is nil
-		notesStore *notes.Store
-		emailStore *email.Store
-		vaultStore *vault.Store
+		taskStore          *task.Store // nil-safe: nil when pool is nil
+		scheduledTaskStore *scheduledtask.Store
+		notesStore         *notes.Store
+		emailStore         *email.Store
+		vaultStore         *vault.Store
 	)
 	if pool != nil {
 		ts, err := task.NewStore(pool)
@@ -98,7 +101,12 @@ func main() {
 			log.Fatalf("vault store: %v", err)
 		}
 		vaultStore = vs
-		log.Println("Module stores initialized (PG)")
+		sts, err := scheduledtask.NewStore(context.Background(), pool)
+		if err != nil {
+			log.Fatalf("scheduled task store: %v", err)
+		}
+		scheduledTaskStore = sts
+		log.Println("Module stores initialized (PG, scheduled tasks enabled)")
 	}
 
 	// ---- Auth (multi-user, JWT) ----
@@ -411,6 +419,9 @@ func main() {
 		emailCrypto, emailPending,
 		emailScheduler, emailFetcher,
 		dataDir, pool)
+	if scheduledTaskStore != nil {
+		srv.SetScheduledTaskStore(scheduledTaskStore)
+	}
 	if biometricStore != nil {
 		srv.SetBiometricStore(biometricStore)
 		log.Println("Biometric authentication enabled (PG)")
@@ -600,7 +611,70 @@ func main() {
 		}
 	}
 
-	// ---- S0-E: Notification Center（inbox + rules + 前台 WS 推送）----
+	// ---- Scheduled Tasks: unified automation scheduler ----
+	// All downstream dependencies above are optional; only register the
+	// executors whose clients are actually configured. The HTTP API remains
+	// available for definitions even when the scheduler is disabled.
+	if scheduledTaskStore != nil {
+		sched := scheduledtask.NewScheduler(scheduledTaskStore, cfg.SchedulerEnabled)
+		sched.SetTickInterval(cfg.SchedulerTickInterval)
+		sched.SetMaxParallel(cfg.SchedulerMaxParallel)
+		sched.SetBroadcaster(srv.WSHub())
+		sched.SetAuditWriter(server.NewScheduledTaskAuditWriter(srv))
+		registered := 0
+		if bridge := srv.RedClawBridge(); bridge != nil {
+			if err := sched.Register(scheduledexecutors.NewRedClawChatExecutor(bridge)); err != nil {
+				log.Printf("WARN: register RedClaw chat scheduled executor: %v", err)
+			} else {
+				registered++
+			}
+			if err := sched.Register(scheduledexecutors.NewRedClawKnowledgeExecutor(bridge)); err != nil {
+				log.Printf("WARN: register RedClaw knowledge scheduled executor: %v", err)
+			} else {
+				registered++
+			}
+		}
+		if bridge := srv.AgentBridge(); bridge != nil {
+			if err := sched.Register(scheduledexecutors.NewAgentBridgeExecutor(bridge)); err != nil {
+				log.Printf("WARN: register Agent Bridge scheduled executor: %v", err)
+			} else {
+				registered++
+			}
+		}
+		if svc := srv.LLMBFF(); svc != nil {
+			if err := sched.Register(scheduledexecutors.NewLLMBFFExecutor(svc)); err != nil {
+				log.Printf("WARN: register LLM BFF scheduled executor: %v", err)
+			} else {
+				registered++
+			}
+		}
+		if client := srv.KxmemoryClient(); client != nil {
+			if err := sched.Register(scheduledexecutors.NewKxmemoryExecutor(client)); err != nil {
+				log.Printf("WARN: register kxmemory scheduled executor: %v", err)
+			} else {
+				registered++
+			}
+		}
+		if mcpClient != nil {
+			if err := sched.Register(scheduledexecutors.NewACCMCPExecutor(mcpClient)); err != nil {
+				log.Printf("WARN: register ACC MCP scheduled executor: %v", err)
+			} else {
+				registered++
+			}
+		}
+		allowPrivateWebhook := strings.EqualFold(strings.TrimSpace(os.Getenv("POCKET_SCHEDULER_WEBHOOK_ALLOW_PRIVATE")), "true")
+		if err := sched.Register(scheduledexecutors.NewSafeHTTPWebhookExecutor(cfg.SchedulerWebhookTimeout, allowPrivateWebhook)); err != nil {
+			log.Printf("WARN: register webhook scheduled executor: %v", err)
+		} else {
+			registered++
+		}
+		srv.SetScheduledTaskScheduler(sched)
+		sched.Start(context.Background())
+		defer sched.Stop()
+		log.Printf("Scheduled task scheduler started (enabled=%v, tick=%s, max_parallel=%d, executors=%d)", cfg.SchedulerEnabled, cfg.SchedulerTickInterval, cfg.SchedulerMaxParallel, registered)
+	}
+
+	// ---- S0-E: Notification Center（inbox + 前台 WS 推送）----
 	if pool != nil {
 		if ncStore, err := notifycenter.New(pool); err != nil {
 			log.Printf("WARN: notify center store init failed: %v", err)

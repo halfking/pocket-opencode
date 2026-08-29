@@ -138,6 +138,19 @@
         </div>
       </div>
 
+      <!-- 自动化管理 -->
+      <div class="settings-section">
+        <h2>自动化</h2>
+        <div class="setting-item entry" @click="goScheduledTasks">
+          <div class="setting-icon"><span class="material-symbols-outlined">schedule</span></div>
+          <div class="setting-content">
+            <div class="setting-label">定时自动化</div>
+            <div class="setting-value">创建、编辑和查看自动化任务</div>
+          </div>
+          <span class="material-symbols-outlined chevron">chevron_right</span>
+        </div>
+      </div>
+
       <!-- 操作按钮 -->
       <div class="settings-section">
         <button class="action-btn secondary" @click="checkForUpdates">
@@ -275,6 +288,10 @@ function changeServer() {
 
 function goPermissions() {
   router.push('/settings/permissions')
+}
+
+function goScheduledTasks() {
+  router.push('/settings/scheduled-tasks')
 }
 
 async function handleLogout() {

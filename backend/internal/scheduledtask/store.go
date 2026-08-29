@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
     payload         JSONB NOT NULL DEFAULT '{}'::jsonb,
     enabled         BOOLEAN NOT NULL DEFAULT TRUE,
     next_run_at     BIGINT NOT NULL DEFAULT 0,
+    lease_until     BIGINT NOT NULL DEFAULT 0,
     last_run_at     BIGINT NOT NULL DEFAULT 0,
     last_status     TEXT NOT NULL DEFAULT '',
     last_error      TEXT NOT NULL DEFAULT '',
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
     updated_at      BIGINT NOT NULL
 );
 
+ALTER TABLE scheduled_tasks ADD COLUMN IF NOT EXISTS lease_until BIGINT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_due
     ON scheduled_tasks(next_run_at) WHERE enabled = TRUE;
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_owner
@@ -116,15 +118,15 @@ func (s *Store) CreateTask(ctx context.Context, t *Task) error {
 INSERT INTO scheduled_tasks (
     id, workspace_id, user_id, name, description, kind,
     schedule_kind, schedule_expr, timezone, payload, enabled,
-    next_run_at, last_run_at, last_status, last_error, run_count,
+    next_run_at, lease_until, last_run_at, last_status, last_error, run_count,
     max_runs, cooldown_sec, timeout_sec, created_at, updated_at
 ) VALUES (
     $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
-    $12,$13,$14,$15,$16,$17,$18,$19,$20,$21
-)`,
+    $12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+	)`,
 		t.ID, t.WorkspaceID, t.UserID, t.Name, t.Description, string(t.Kind),
 		string(t.ScheduleKind), t.ScheduleExpr, t.Timezone, t.Payload, t.Enabled,
-		t.NextRunAt, t.LastRunAt, string(t.LastStatus), t.LastError, t.RunCount,
+		t.NextRunAt, t.LeaseUntil, t.LastRunAt, string(t.LastStatus), t.LastError, t.RunCount,
 		t.MaxRuns, t.CooldownSec, t.TimeoutSec, t.CreatedAt, t.UpdatedAt,
 	)
 	return err
@@ -137,10 +139,10 @@ func (s *Store) GetTaskScoped(ctx context.Context, id, userID, workspaceID strin
 		return nil, ErrStoreUnavailable
 	}
 	row := s.pool.QueryRow(ctx, `
-SELECT id, workspace_id, user_id, name, description, kind,
-       schedule_kind, schedule_expr, timezone, payload, enabled,
-       next_run_at, last_run_at, last_status, last_error, run_count,
-       max_runs, cooldown_sec, timeout_sec, created_at, updated_at
+	SELECT id, workspace_id, user_id, name, description, kind,
+	       schedule_kind, schedule_expr, timezone, payload, enabled,
+	       next_run_at, lease_until, last_run_at, last_status, last_error, run_count,
+	       max_runs, cooldown_sec, timeout_sec, created_at, updated_at
   FROM scheduled_tasks
  WHERE id = $1 AND user_id = $2 AND workspace_id = $3
 `, id, userID, workspaceID)
@@ -161,10 +163,10 @@ func (s *Store) ListTasksScoped(ctx context.Context, userID, workspaceID string,
 		limit = 100
 	}
 	q := `
-SELECT id, workspace_id, user_id, name, description, kind,
-       schedule_kind, schedule_expr, timezone, payload, enabled,
-       next_run_at, last_run_at, last_status, last_error, run_count,
-       max_runs, cooldown_sec, timeout_sec, created_at, updated_at
+	SELECT id, workspace_id, user_id, name, description, kind,
+	       schedule_kind, schedule_expr, timezone, payload, enabled,
+	       next_run_at, lease_until, last_run_at, last_status, last_error, run_count,
+	       max_runs, cooldown_sec, timeout_sec, created_at, updated_at
   FROM scheduled_tasks
  WHERE user_id = $1 AND workspace_id = $2`
 	args := []any{userID, workspaceID}
@@ -267,9 +269,10 @@ func (s *Store) DeleteTaskScoped(ctx context.Context, id, userID, workspaceID st
 
 // --- Scheduler-facing queries ---
 
-// ClaimDue atomically picks due tasks, advances their next_run_at to far in
-// the future (so a crashed dispatcher cannot re-fire the same row before the
-// recovery path resolves), and returns them. The caller is expected to call
+// ClaimDue atomically picks due tasks, reserves a bounded lease, and returns
+// them. A crashed dispatcher can therefore be recovered after the lease while
+// long-running tasks retain a lease at least as long as their configured
+// timeout. The caller is expected to call
 // FinishRun + UpdateTaskAfterRun for each claimed row.
 //
 // `nowSec` is the cutoff (unix seconds); rows with next_run_at <= nowSec and
@@ -289,30 +292,33 @@ func (s *Store) ClaimDue(ctx context.Context, nowSec int64, limit int) ([]*Task,
 	if limit <= 0 {
 		limit = 32
 	}
-	// Bump next_run_at far ahead (one year) so the same row cannot be
-	// claimed again until the dispatcher rewrites it after the run finishes.
-	const inflight = int64(60 * 60 * 24 * 365) // 1 year
+	// Bump next_run_at by a bounded lease so the same row cannot be claimed
+	// again until the dispatcher rewrites it, while still recovering after a
+	// crash.
+	// Keep each lease longer than that task's configured timeout, with a
+	// five-minute minimum for crash recovery. Computing this in SQL avoids
+	// using one global lease that is either too short or too long.
 	rows, err := s.pool.Query(ctx, `
 WITH candidates AS (
     SELECT id
       FROM scheduled_tasks
      WHERE enabled = TRUE
-       AND next_run_at > 0
-       AND next_run_at <= $1
+       AND (next_run_at > 0 AND next_run_at <= $1 OR lease_until > 0 AND lease_until <= $1)
        AND (max_runs = 0 OR run_count < max_runs)
      ORDER BY next_run_at, id
      FOR UPDATE SKIP LOCKED
      LIMIT $2
 )
 UPDATE scheduled_tasks AS t
-   SET next_run_at = $1 + $3
+   SET next_run_at = $1 + GREATEST(300, t.timeout_sec + 60),
+       lease_until = $1 + GREATEST(300, t.timeout_sec + 60)
   FROM candidates AS c
  WHERE t.id = c.id
 RETURNING t.id, t.workspace_id, t.user_id, t.name, t.description, t.kind,
           t.schedule_kind, t.schedule_expr, t.timezone, t.payload, t.enabled,
-          t.next_run_at, t.last_run_at, t.last_status, t.last_error, t.run_count,
+          t.next_run_at, t.lease_until, t.last_run_at, t.last_status, t.last_error, t.run_count,
           t.max_runs, t.cooldown_sec, t.timeout_sec, t.created_at, t.updated_at
-`, nowSec, limit, inflight)
+	`, nowSec, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -340,6 +346,7 @@ UPDATE scheduled_tasks SET
     last_run_at = $1, last_status = $2, last_error = $3,
     run_count = run_count + 1,
     next_run_at = $4,
+    lease_until = 0,
     enabled = CASE WHEN $4 = 0 THEN FALSE ELSE enabled END,
     updated_at = $1
  WHERE id = $5
@@ -438,7 +445,7 @@ func scanTask(r scanner) (*Task, error) {
 	if err := r.Scan(
 		&t.ID, &t.WorkspaceID, &t.UserID, &t.Name, &t.Description, &kind,
 		&skind, &t.ScheduleExpr, &t.Timezone, &t.Payload, &t.Enabled,
-		&t.NextRunAt, &t.LastRunAt, &lstatus, &t.LastError, &t.RunCount,
+		&t.NextRunAt, &t.LeaseUntil, &t.LastRunAt, &lstatus, &t.LastError, &t.RunCount,
 		&t.MaxRuns, &t.CooldownSec, &t.TimeoutSec, &t.CreatedAt, &t.UpdatedAt,
 	); err != nil {
 		return nil, err
