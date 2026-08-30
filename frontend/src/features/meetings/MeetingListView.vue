@@ -128,9 +128,15 @@ onMounted(load)
 }
 
 .list-scroll {
-  /* iOS Safari 100vh 包含 URL bar，会在滚动时跳变；这里双写 fallback 兼容老设备。 */
+  /* iOS Safari 100vh 包含 URL bar，会在滚动时跳变；dvh 增强放 @supports——
+     Chrome<108 的 WebView 对 dvh "假有效"，同规则双写会让回退整体失效。 */
   min-height: calc(100vh - var(--topbar-height) - var(--bottomnav-height) - 80px);
-  min-height: calc(100dvh - var(--topbar-height) - var(--bottomnav-height) - 80px);
+}
+
+@supports (min-height: 100dvh) {
+  .list-scroll {
+    min-height: calc(100dvh - var(--topbar-height) - var(--bottomnav-height) - 80px);
+  }
 }
 
 .meeting-list {

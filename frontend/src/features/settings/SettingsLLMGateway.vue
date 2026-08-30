@@ -115,20 +115,43 @@
         <div v-if="catalogModels.length === 0" class="form-hint">
           「测试连接」拉取目录后可勾选常用模型；不勾选 = 显示全部模型
         </div>
-        <div v-else class="pref-grid" role="group" aria-label="常用模型多选">
-          <button
-            v-for="m in catalogModels"
-            :key="m"
-            type="button"
-            class="pref-chip"
-            :class="{ selected: preferredSel.has(m) }"
-            :aria-pressed="preferredSel.has(m)"
-            @click="togglePreferred(m)"
+        <template v-else>
+          <input
+            v-model="modelSearch"
+            class="form-input model-search"
+            type="search"
+            placeholder="搜索模型（共 {{ catalogModels.length }} 个）…"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+          />
+          <details
+            v-for="g in groupedModels"
+            :key="g.name"
+            class="model-group"
+            open
           >
-            <span v-if="preferredSel.has(m)" class="material-symbols-outlined chip-check" aria-hidden="true">check_circle</span>
-            <span class="chip-name">{{ m }}</span>
-          </button>
-        </div>
+            <summary class="group-head">
+              <span class="group-name">{{ g.name }}</span>
+              <span class="group-count">{{ g.models.length }}</span>
+            </summary>
+            <div class="pref-grid" role="group" :aria-label="g.name + ' 模型多选'">
+              <button
+                v-for="m in g.models"
+                :key="m"
+                type="button"
+                class="pref-chip"
+                :class="{ selected: preferredSel.has(m) }"
+                :aria-pressed="preferredSel.has(m)"
+                @click="togglePreferred(m)"
+              >
+                <span v-if="preferredSel.has(m)" class="material-symbols-outlined chip-check" aria-hidden="true">check_circle</span>
+                <span class="chip-name">{{ m }}</span>
+              </button>
+            </div>
+          </details>
+          <div v-if="groupedModels.length === 0" class="form-hint">无匹配「{{ modelSearch }}」的模型</div>
+        </template>
         <div class="form-hint">已选 {{ preferredSel.size }} 个——聊天等模型选择器将只显示勾选的模型</div>
       </div>
 
@@ -208,6 +231,54 @@ const formatOptions = computed(() =>
 /** 模型目录（测试连接后填充，勾选常用模型的候选）。 */
 const catalogModels = ref<string[]>([])
 const preferredSel = ref<Set<string>>(new Set())
+const modelSearch = ref('')
+
+/** 模型 id → 原厂分组。规则按前缀匹配，未识别归入「其他」（排在最后）。 */
+const VENDOR_RULES: [RegExp, string][] = [
+  [/^(gpt|o[134]\b|o[134][-.]|chatgpt|davinci|whisper|tts-|ada|babbage|curie|dall-e|sora)/i, 'OpenAI'],
+  [/^claude/i, 'Anthropic'],
+  [/^(gemini|gemma|imagen|palm|bard)/i, 'Google'],
+  [/^deepseek/i, 'DeepSeek'],
+  [/^(qwen|qwq|qvq)/i, '阿里通义'],
+  [/^glm/i, '智谱 GLM'],
+  [/^doubao|^skylark/i, '字节豆包'],
+  [/^(moonshot|kimi)/i, 'Moonshot'],
+  [/^minimax|^abab/i, 'MiniMax'],
+  [/^(llama|meta-|codellama)/i, 'Meta'],
+  [/^(mistral|mixtral|codestral|pixtral|magistral)/i, 'Mistral'],
+  [/^grok/i, 'xAI'],
+  [/^ernie/i, '百度文心'],
+  [/^hunyuan/i, '腾讯混元'],
+  [/^yi-/i, '零一万物'],
+  [/^spark/i, '讯飞星火'],
+  [/^(phi-|microsoft-)/i, 'Microsoft'],
+  [/^nova/i, 'Amazon'],
+  [/^(jamba|command)/i, 'Cohere'],
+]
+
+function vendorOf(m: string): string {
+  for (const [re, name] of VENDOR_RULES) if (re.test(m)) return name
+  return '其他'
+}
+
+/** 按原厂分组（可被搜索框过滤）；组内字典序，「其他」固定垫底。 */
+const groupedModels = computed(() => {
+  const q = modelSearch.value.trim().toLowerCase()
+  const groups = new Map<string, string[]>()
+  for (const m of catalogModels.value) {
+    if (q && !m.toLowerCase().includes(q)) continue
+    const v = vendorOf(m)
+    if (!groups.has(v)) groups.set(v, [])
+    groups.get(v)!.push(m)
+  }
+  return [...groups.entries()]
+    .map(([name, models]) => ({ name, models: models.sort((a, b) => a.localeCompare(b)) }))
+    .sort((a, b) => {
+      if (a.name === '其他') return 1
+      if (b.name === '其他') return -1
+      return b.models.length - a.models.length || a.name.localeCompare(b.name)
+    })
+})
 
 function togglePreferred(m: string): void {
   const next = new Set(preferredSel.value)
@@ -331,11 +402,21 @@ function goBack() {
 
 <style scoped>
 .llm-gateway-view {
-  height: 100dvh;
+  /* Chrome<108（如 Android 11 系统 WebView 83）不支持 dvh，且对无效声明呈现
+     "CSSOM 假有效"——写在同一规则里的渐进回退链会整体失效，height 塌成 auto，
+     被内容撑开后外层 #app overflow:hidden 裁切 → 整页无法滚动。
+     因此增强声明必须放 @supports 里，老内核只拿到它能解析的前两条。 */
+  height: calc(100vh - var(--android-safe-top, 0px));
   background: var(--bg-base);
   display: flex;
   flex-direction: column;
   padding-bottom: env(safe-area-inset-bottom);
+}
+
+@supports (height: 100dvh) {
+  .llm-gateway-view {
+    height: calc(100dvh - max(env(safe-area-inset-top, 0px), var(--android-safe-top, 0px)));
+  }
 }
 
 .chrome-shell {
@@ -542,6 +623,71 @@ function goBack() {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+/* ── 模型目录分组 + 搜索 ── */
+.model-search {
+  font-family: inherit;
+  min-height: 44px;
+  margin-bottom: 4px;
+}
+
+.model-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.model-group[open] .group-head {
+  border-bottom: 1px solid var(--border);
+}
+
+.group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+  list-style: none; /* 隐藏默认三角，用 ::after 画 */
+  user-select: none;
+}
+
+.group-head::-webkit-details-marker {
+  display: none;
+}
+
+.group-head::after {
+  content: '▾';
+  color: var(--text-muted);
+  font-size: 12px;
+  transition: transform 160ms ease;
+}
+
+.model-group:not([open]) .group-head::after {
+  transform: rotate(-90deg);
+}
+
+.group-name {
+  flex: 1;
+}
+
+.group-count {
+  margin-right: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.model-group .pref-grid {
+  padding: 10px 12px;
 }
 
 .pref-chip {

@@ -98,12 +98,24 @@ function selectSession(session: SelectedSession, instanceId: string): void {
 
 <style scoped>
 .session-workspace {
-  height: calc(100dvh - var(--topbar-height) - var(--bottomnav-height) - var(--space-6));
+  /* Chrome<108 的 WebView 对 dvh 呈现"假有效"，同规则双写回退会整体失效；
+     增强声明放 @supports。 */
+  height: calc(100vh - var(--topbar-height) - var(--bottomnav-height) - var(--space-6));
   min-height: 480px;
 }
 
 .session-workspace.has-detail {
-  height: calc(100dvh - var(--topbar-height) - var(--space-6));
+  height: calc(100vh - var(--topbar-height) - var(--space-6));
+}
+
+@supports (height: 100dvh) {
+  .session-workspace {
+    height: calc(100dvh - var(--topbar-height) - var(--bottomnav-height) - var(--space-6));
+  }
+
+  .session-workspace.has-detail {
+    height: calc(100dvh - var(--topbar-height) - var(--space-6));
+  }
 }
 
 .session-workspace :deep(.master-pane),
