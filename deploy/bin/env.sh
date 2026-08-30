@@ -40,20 +40,25 @@ unset _env_self
 export DEPLOY_ENV="${DEPLOY_ENV:-local}"
 
 case "${DEPLOY_ENV}" in
-  local)
-    : "${DEPLOY_BASE_DIR:=${HOME}/Downloads/kaixuan/opp}"
-    : "${POCKET_PROJECT_NAME:=opencode-pocket-local}"
-    ;;
-  server)
-    : "${DEPLOY_BASE_DIR:=/opt/kaixuan/opp}"
-    : "${POCKET_PROJECT_NAME:=opencode-pocket}"
-    ;;
+  local)  : "${DEPLOY_BASE_DIR:=${HOME}/Downloads/kaixuan/opp}" ;;
+  server) : "${DEPLOY_BASE_DIR:=/opt/kaixuan/opp}" ;;
   *)
     echo "[env.sh] unknown DEPLOY_ENV='${DEPLOY_ENV}' (expected: local|server)" >&2
     return 1 2>/dev/null || exit 1
     ;;
 esac
 export DEPLOY_BASE_DIR
+
+# compose project / 容器名后缀：按 DEPLOY_BASE_DIR 末段派生。
+# 同机多套部署（正式 + 临时测试）即使同一 DEPLOY_ENV，也不同 project，
+# 避免 up --force-recreate 互相踩容器。正式目录 ~/Downloads/kaixuan/opp → -opp。
+OPP_NAME_SUFFIX="$(basename "${DEPLOY_BASE_DIR}" | tr -c 'a-zA-Z0-9-' '-' | sed 's/^-*//;s/-*$//' | cut -c1-12)"
+# 目录名全为非 ASCII 等情况下降级为 DEPLOY_ENV，避免出现 "--" 类怪后缀
+[[ -n "${OPP_NAME_SUFFIX}" ]] || OPP_NAME_SUFFIX="${DEPLOY_ENV}"
+export OPP_NAME_SUFFIX
+export OPP_CONTAINER_SUFFIX="-${OPP_NAME_SUFFIX}"
+: "${POCKET_PROJECT_NAME:=opencode-pocket-${DEPLOY_ENV}${OPP_CONTAINER_SUFFIX}}"
+export POCKET_PROJECT_NAME
 
 # ── 1.5 数据库拓扑（openpocket 唯一权威 PG 在 252 的 docker 中） ──
 #   local  : 宿主 SSH tunnel localhost:15432 → 252 内网 172.16.2.210:5432
@@ -119,8 +124,22 @@ export OPP_NET_EXTERNAL="${OPP_NET_EXTERNAL:-false}"
 # 旧 deploy.sh / verify.sh 读 POCKET_DEPLOY_ENV_FILE；这里同步过去。
 export POCKET_DEPLOY_ENV_FILE="${POCKET_ENV_FILE}"
 
-# ── 5. pocketd 容器内路径（被 docker-compose.override.yml 引用） ──
-export POCKET_DATA_DIR_IN_CONTAINER="/app/data"
+# ── 5. pocketd 容器内路径 ─────────────────────────────────────────
+# （compose 已直接写 /app/data，无需变量注入）
+
+# ── 5.5 共享 helper：HTTP 健康探测（curl 优先，无则 wget） ─────────
+# 252 最小安装可能只有其一；两者皆无时降级为放行并告警。
+http_ok() {
+  local url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -sf "${url}" >/dev/null 2>&1
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O /dev/null "${url}" 2>/dev/null
+  else
+    echo "⚠️  无 curl/wget，跳过 HTTP 探测: ${url}" >&2
+    return 0
+  fi
+}
 
 # ── 6. 调试输出（可选） ──────────────────────────────────────────
 if [[ "${POCKET_ENV_DEBUG:-0}" == "1" ]]; then

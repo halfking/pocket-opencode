@@ -56,28 +56,43 @@ OPP_PG_PASSWORD=<252的PG密码> ./deploy/bin/deploy-local.sh
 ./deploy/bin/stop.sh                  # 停止(保留数据)
 ```
 
-`deploy-local.sh` 每次启动前都会检查 tunnel,未就绪则自动尝试建立。生成的 `.env.local` 已含随机 JWT 密钥与 252 PG 的 DSN。只起后端:`./deploy/bin/start.sh --backend-only`。
+`deploy-local.sh` 每次启动前都会检查 tunnel,未就绪则自动尝试建立。生成的 `.env.local`(权限 600)已含随机 JWT 密钥与 252 PG 的 DSN;密码若为占位符,重跑 `OPP_PG_PASSWORD=<密码> ./deploy/bin/deploy-local.sh` 会自动替换 DSN 行。
 
-### 252 服务器
+- 换端口(8088/4175 被占时):`POCKET_HTTP_PORT=8090 POCKET_FRONTEND_PORT=4176 ./deploy/bin/deploy-local.sh` —— 端口是环境变量,不写进 .env(避免死配置)
+- 只起后端:`./deploy/bin/start.sh --backend-only`
+
+### 252 服务器(所有脚本都要带 `DEPLOY_ENV=server`,否则默认按 local 解析路径)
 
 ```bash
 # ① 本地导出 amd64 镜像(252 是 x86_64,Apple Silicon 本地需 --platform linux/amd64 构建)
 ./deploy/bin/save-images.sh
 
 # ② 传输(镜像默认导出到本地 ~/Downloads/kaixuan/opp/images/)
-scp ~/Downloads/kaixuan/opp/images/*.tar.gz user@252:/opt/kaixuan/opp/images/
-#    252 上需要有本仓库源码(至少 deploy/ 目录):
+scp ~/Downloads/kaixuan/opp/images/*.tar.gz user@252:/tmp/
+#    252 上需要本仓库源码:仅 load/start(不 build)最少要 deploy/ 目录;
+#    若要在 252 现场 --build,需要完整仓库(build context 为仓库根)
 scp -r deploy user@252:<repo-path>/deploy
 
-# ③ 252 上加载镜像 + 填配置 + 启动
-sudo ./deploy/bin/load-images.sh
-sudo vi /opt/kaixuan/opp/config/.env.server   # 必填:POCKET_ENV=production、POCKET_POSTGRES_DSN(直连 172.16.2.210:5432)、JWT_SECRET 等
-sudo ./deploy/bin/deploy-252.sh               # 自动校验 PG 可达 + 生产门禁后启动
+# ③ 252 上:建目录 → 放镜像 → 加载 → 填配置 → 启动
+sudo DEPLOY_ENV=server ./deploy/bin/init-dirs.sh        # 建 /opt/kaixuan/opp/{data,logs,config,images,backup}
+mv /tmp/*.tar.gz /opt/kaixuan/opp/images/
+sudo ./deploy/bin/load-images.sh                        # 默认 DEPLOY_ENV=server,可不带
+sudo vi /opt/kaixuan/opp/config/.env.server             # 必填项见下
+sudo DEPLOY_ENV=server ./deploy/bin/deploy-252.sh       # 自动校验 PG 可达 + 生产门禁后启动(透传 --backend-only)
+
+# 运维(同样带 DEPLOY_ENV=server)
+sudo DEPLOY_ENV=server ./deploy/bin/status.sh
+sudo DEPLOY_ENV=server ./deploy/bin/logs.sh
+sudo DEPLOY_ENV=server ./deploy/bin/stop.sh             # 默认保留数据;数据在 bind mount,--volumes 删不到 data/
 ```
 
-`.env.server` 里的 DSN 示例:
+`.env.server` 必填项(缺任一会被 deploy-252.sh 拒绝):
 
 ```
+POCKET_ENV=production
+POCKET_DEV_AUTH=false
+POCKET_JWT_SECRET=<≥32字节随机>            # 后端 Validate 生产强制
+POCKET_ALLOWED_ORIGINS=https://<前端域名>   # 后端 Validate 生产强制
 POCKET_POSTGRES_DSN=postgresql://llm_gateway:<密码>@172.16.2.210:5432/pocket?sslmode=disable
 POCKET_PG_SCHEMA=opencode_pocket
 ```
@@ -146,5 +161,6 @@ OPP_NET_EXTERNAL=true OPP_NET_NAME=acc-local-net ./deploy/bin/start.sh
 
 ## 变更记录
 
+- 2026-08-31(三):审计修复(P0×1/P1×6/精选 P2)——load-images.sh 默认 `DEPLOY_ENV=server`+空数组保护+mtime 选最新;logs.sh `--follow` 空 service 修复、`--rotate` 尊重 `--service`;deploy-local.sh 占位密码重跑自动重注入 DSN、`.env.local` chmod 600、DSN 行 printf 写入防 shell 展开、模板不再写端口(端口统一环境变量);start.sh `--backend-only` 镜像判定、env file 缺失提示 DEPLOY_ENV=server、curl/wget 双探测、amd64 机器禁 arm64 kx-base 构建;stop/status/logs 同步 252 提示;deploy-252.sh 门禁去引号/去 CRLF、透传参数;init-dirs.sh data/images 自忽略+root 属主提示;tunnel-252.sh 加 StrictHostKeyChecking=accept-new;README 252 流程补 DEPLOY_ENV=server/init-dirs/必填项。
 - 2026-08-31(二):按部署定稿更新——后端 pocketd 部署于本地 + 252;数据库统一为 252 docker 中的 PG(经 tunnel 实测 PG 17.10,选定既有专用 `pocket` 库 + `opencode_pocket` schema);本地经 `tunnel-252.sh` SSH tunnel 访问,252 直连 `172.16.2.210:5432`;`deploy-local.sh` 生成 DSN 指向 252 并在启动前检查/自动建立 tunnel;`deploy-252.sh` 增加 PG 可达性检查与 DSN 必填校验;`start.sh` 新增 `--backend-only`。
 - 2026-08-31(一):初版。新增 `deploy/bin/` 目录外部化部署体系(env/init-dirs/deploy-local/deploy-252/start/stop/status/logs/save-images/load-images + docker-compose.opp.yml);acc-integration 与本地方案栈不受影响。

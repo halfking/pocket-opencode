@@ -57,18 +57,14 @@ for d in "${DIRS[@]}"; do
   [[ -f "${d}/.gitkeep" ]] || : > "${d}/.gitkeep"
 done
 
-# logs/ 自动忽略 *.log；备份目录自动忽略压缩包
-cat > "${POCKET_LOG_DIR}/.gitignore" <<'EOF'
+# logs/ 备份/数据/镜像目录自忽略（防 DEPLOY_BASE_DIR 指进仓库时误提交运行时产物）
+for sub in logs backup data images; do
+  cat > "${POCKET_BASE_DIR:?}/${sub}/.gitignore" <<'EOF'
 *
 !.gitignore
 !.gitkeep
 EOF
-
-cat > "${POCKET_BACKUP_DIR}/.gitignore" <<'EOF'
-*
-!.gitignore
-!.gitkeep
-EOF
+done
 
 # 可写权限校验（init 阶段就要失败，不要等到容器启动才发现）
 for d in "${POCKET_DATA_DIR}" "${POCKET_LOG_DIR}" "${POCKET_CONFIG_DIR}"; do
@@ -81,8 +77,17 @@ done
 
 echo "━━━ 完成 ━━━"
 echo "  新建 ${CREATED} 个目录，跳过 ${SKIPPED} 个已存在目录"
+if [[ "${DEPLOY_ENV}" == "server" ]]; then
+  # Linux 上容器内非 root 用户(pocket)对 bind mount 的可写性依赖宿主属主；
+  # root 建的 755 目录会让运行期写 /app/data 失败。给出 chown 提示。
+  if [[ "$(id -u)" -eq 0 ]]; then
+    echo "  ⚠️  当前以 root 建目录；若容器内进程非 root，确保属主匹配："
+    echo "     docker run --rm opencode-pocket:${OPP_IMAGE_TAG:-pocket-opp} id -u   # 查容器内 uid"
+    echo "     chown -R <uid> ${POCKET_DATA_DIR} ${POCKET_LOG_DIR}"
+  fi
+fi
 if [[ "${DEPLOY_ENV}" == "local" ]]; then
   echo "  下一步: ./deploy/bin/deploy-local.sh（会自动生成 ${POCKET_ENV_FILE}）"
 else
-  echo "  下一步: 手工填写 ${POCKET_ENV_FILE}（生产密钥/DSN），再 ./deploy/bin/deploy-252.sh"
+  echo "  下一步: 手工填写 ${POCKET_ENV_FILE}（生产密钥/DSN），再 sudo DEPLOY_ENV=server ./deploy/bin/deploy-252.sh"
 fi

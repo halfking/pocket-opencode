@@ -33,13 +33,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 command -v docker >/dev/null 2>&1 || { echo "❌ docker 未安装"; exit 1; }
-[[ -f "${POCKET_ENV_FILE}" ]] || {
+docker compose version >/dev/null 2>&1 || { echo "❌ 需要 docker compose v2（docker-compose v1 不支持）"; exit 1; }
+if [[ ! -f "${POCKET_ENV_FILE}" ]]; then
   echo "❌ env file 不存在: ${POCKET_ENV_FILE}" >&2
   echo "   本地: ./deploy/bin/deploy-local.sh 会自动生成" >&2
-  echo "   252 : 手工填入 ${POCKET_CONFIG_DIR}/.env.server" >&2
+  echo "   252 : 手工填 ${POCKET_DEPLOY_HINT:-/opt/kaixuan/opp}/config/.env.server，并用 DEPLOY_ENV=server 运行本脚本" >&2
+  [[ "${DEPLOY_ENV}" == "local" ]] && [[ -f "$(dirname "${POCKET_ENV_FILE}")/.env.server" ]] && \
+    echo "   （检测到 .env.server 存在——是否在服务器上？试试 DEPLOY_ENV=server $0）" >&2
   exit 1
-}
+fi
 [[ -f "${POCKET_COMPOSE_FILE}" ]] || { echo "❌ compose 缺失: ${POCKET_COMPOSE_FILE}"; exit 1; }
+# http_ok 由 env.sh 提供（curl 优先，无则 wget）
 
 DOCKER_COMPOSE=(docker compose
   -p "${POCKET_PROJECT_NAME}"
@@ -59,14 +63,15 @@ kx_base_exists()       { docker image inspect "${KX_BASE_TAG_EFFECTIVE}" >/dev/n
 UP_ARGS=(-d --force-recreate)
 case "${BUILD_MODE}" in
   auto)
-    if backend_image_exists && frontend_image_exists; then
+    if backend_image_exists && { [[ "${BACKEND_ONLY}" == true ]] || frontend_image_exists; }; then
       UP_ARGS+=(--no-build)
       echo "▶ 镜像已存在，直接启动（--no-build；强制重建加 --build）"
     elif kx_base_exists; then
       UP_ARGS+=(--build)
       echo "▶ 镜像缺失但 ${KX_BASE_TAG_EFFECTIVE} 可用，现场构建"
     else
-      echo "❌ 既没有 ${BACKEND_IMAGE}，也没有 ${KX_BASE_TAG_EFFECTIVE}" >&2
+      echo "❌ 既没有所需镜像，也没有 ${KX_BASE_TAG_EFFECTIVE}" >&2
+      [[ "${BACKEND_ONLY}" == true ]] && echo "   （--backend-only：只需 ${BACKEND_IMAGE}）" >&2
       echo "   离线导入: ./deploy/bin/load-images.sh   （tars 放 ${POCKET_IMAGE_DIR}）" >&2
       echo "   或加载 kx-base 后用 --build 现场构建" >&2
       exit 1
@@ -78,11 +83,17 @@ case "${BUILD_MODE}" in
       echo "   docker load -i ~/work/docker-base-images/lang-base/kx-base-go-vue-v2-alpine-slim-arm64.tar.gz" >&2
       exit 1
     }
+    # 离线 kx-base tar 目前只有 arm64；amd64 机器（如 252）现场构建不可行
+    if [[ "$(uname -m)" != "arm64" ]]; then
+      echo "⚠️  本机 $(uname -m)，而 kx-base 离线包是 arm64——构建产物架构可能不符" >&2
+      echo "    amd64 机器请用 save-images.sh 导出的镜像 + load-images.sh 导入，勿现场 --build" >&2
+      exit 1
+    fi
     UP_ARGS+=(--build)
     ;;
   no-build)
     backend_image_exists || { echo "❌ 镜像不存在: ${BACKEND_IMAGE}"; exit 1; }
-    frontend_image_exists || { echo "❌ 镜像不存在: ${FRONTEND_IMAGE}"; exit 1; }
+    [[ "${BACKEND_ONLY}" == true ]] || frontend_image_exists || { echo "❌ 镜像不存在: ${FRONTEND_IMAGE}"; exit 1; }
     UP_ARGS+=(--no-build)
     ;;
 esac
@@ -119,10 +130,10 @@ fi
 echo "▶ 等待 /healthz 通过（最多 60s）…"
 for _ in $(seq 1 30); do
   BE_OK=false; FE_OK=true
-  curl -sf "http://localhost:${POCKET_HTTP_PORT}/healthz" >/dev/null 2>&1 && BE_OK=true
+  http_ok "http://localhost:${POCKET_HTTP_PORT}/healthz" && BE_OK=true
   if [[ "${BACKEND_ONLY}" != true ]]; then
     FE_OK=false
-    curl -sf "http://localhost:${POCKET_FRONTEND_PORT}/healthz" >/dev/null 2>&1 && FE_OK=true
+    http_ok "http://localhost:${POCKET_FRONTEND_PORT}/healthz" && FE_OK=true
   fi
   if [[ "${BE_OK}" == true && "${FE_OK}" == true ]]; then
     echo "  ✅ pocketd   http://localhost:${POCKET_HTTP_PORT}"

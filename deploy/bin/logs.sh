@@ -35,6 +35,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ ! -f "${POCKET_ENV_FILE}" ]]; then
+  echo "❌ env file 不存在: ${POCKET_ENV_FILE}" >&2
+  echo "   252 上请用: DEPLOY_ENV=server $0" >&2
+  exit 1
+fi
+
 mkdir -p "${POCKET_LOG_DIR}"
 
 DOCKER_COMPOSE=(docker compose
@@ -44,12 +50,21 @@ DOCKER_COMPOSE=(docker compose
 )
 
 if [[ "${FOLLOW}" == true ]]; then
-  exec "${DOCKER_COMPOSE[@]}" logs -f "${SERVICE:-}"
+  FOLLOW_ARGS=(logs -f --tail="${TAIL}")
+  if [[ -n "${SERVICE}" ]]; then
+    FOLLOW_ARGS+=("${SERVICE}")
+  fi
+  exec "${DOCKER_COMPOSE[@]}" "${FOLLOW_ARGS[@]}"
 fi
 
 if [[ "${ROTATE}" == true ]]; then
   DATE_TAG="$(date +%Y%m%d-%H%M%S)"
-  for svc in pocketd frontend; do
+  if [[ -n "${SERVICE}" ]]; then
+    SVCS_ROT=("${SERVICE}")
+  else
+    SVCS_ROT=(pocketd frontend)
+  fi
+  for svc in "${SVCS_ROT[@]}"; do
     f="${POCKET_LOG_DIR}/${svc}.log"
     [[ -f "${f}" ]] && mv "${f}" "${f}.${DATE_TAG}"
     : > "${f}"

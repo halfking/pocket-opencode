@@ -18,6 +18,11 @@ source "${SCRIPT_DIR}/env.sh"
 
 echo "━━━ status: ${POCKET_PROJECT_NAME} (${DEPLOY_ENV}) ━━━"
 
+if [[ ! -f "${POCKET_ENV_FILE}" ]]; then
+  echo "⚠️  env file 不存在: ${POCKET_ENV_FILE}（compose 状态查询将失败）"
+  echo "   252 上请用: DEPLOY_ENV=server $0"
+fi
+
 DOCKER_COMPOSE=(docker compose
   -p "${POCKET_PROJECT_NAME}"
   --env-file "${POCKET_ENV_FILE}"
@@ -35,12 +40,12 @@ fi
 # /healthz 探测
 echo
 echo "▶ 健康检查"
-if curl -sf "http://localhost:${POCKET_HTTP_PORT}/healthz" >/dev/null 2>&1; then
+if http_ok "http://localhost:${POCKET_HTTP_PORT}/healthz"; then
   echo "  ✅ pocketd /healthz OK (http://localhost:${POCKET_HTTP_PORT})"
 else
   echo "  ❌ pocketd /healthz 失败"
 fi
-if curl -sf "http://localhost:${POCKET_FRONTEND_PORT}/healthz" >/dev/null 2>&1; then
+if http_ok "http://localhost:${POCKET_FRONTEND_PORT}/healthz"; then
   echo "  ✅ frontend /healthz OK (http://localhost:${POCKET_FRONTEND_PORT})"
 else
   echo "  ⚠️  frontend /healthz 失败（可能未启动或前端不走 /healthz）"

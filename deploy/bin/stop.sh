@@ -25,8 +25,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ ! -f "${POCKET_ENV_FILE}" ]]; then
+  echo "❌ env file 不存在: ${POCKET_ENV_FILE}" >&2
+  echo "   252 上请用: DEPLOY_ENV=server $0" >&2
+  exit 1
+fi
+
 if [[ "${REMOVE_VOLUMES}" == true ]]; then
-  echo "⚠️  --volumes 将删除 ${POCKET_DATA_DIR} 关联的 pocketd_data 命名卷"
+  echo "⚠️  --volumes 将执行 docker compose down --volumes"
+  echo "   注意：数据目录为宿主 bind mount（${POCKET_DATA_DIR}），compose 删不到它；"
+  echo "   如需彻底清数据，请确认后手工 rm -rf ${POCKET_DATA_DIR}"
   read -rp "确认? (yes/no): " ans
   [[ "${ans}" == "yes" ]] || { echo "已取消"; exit 0; }
 fi

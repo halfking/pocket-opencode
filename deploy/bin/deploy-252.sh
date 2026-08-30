@@ -48,14 +48,18 @@ if [[ ! -f "${POCKET_ENV_FILE}" ]]; then
 fi
 
 # 服务器环境强制校验：禁 dev-auth、禁 prod 跑测试密钥
-if grep -qE '^POCKET_DEV_AUTH=true' "${POCKET_ENV_FILE}"; then
+# 读值时统一去 CRLF 与成对引号，避免 POCKET_ENV="production" 写法误判
+read_env_stripped() {
+  awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); gsub(/\r/, ""); gsub(/^"|"$/, ""); print; exit}' "${POCKET_ENV_FILE}"
+}
+if [[ "$(read_env_stripped POCKET_DEV_AUTH)" == "true" ]]; then
   echo "  ❌ 服务器 .env 里 POCKET_DEV_AUTH=true，拒绝启动" >&2
   echo "     生产必须 POCKET_DEV_AUTH=false（或留空）" >&2
   exit 1
 fi
 
 # 服务器必须显式声明 production（与 deploy/deploy.sh 的 prod 门禁一致）
-POCKET_ENV_VALUE="$(awk -F= '$1 == "POCKET_ENV" {sub(/^[^=]*=/, ""); gsub(/\r/, ""); print; exit}' "${POCKET_ENV_FILE}")"
+POCKET_ENV_VALUE="$(read_env_stripped POCKET_ENV)"
 if [[ "${POCKET_ENV_VALUE}" != "production" && "${POCKET_ENV_VALUE}" != "prod" ]]; then
   echo "  ❌ 服务器 .env 必须设置 POCKET_ENV=production（当前: '${POCKET_ENV_VALUE}'）" >&2
   exit 1
@@ -74,5 +78,5 @@ else
   exit 1
 fi
 
-# 3) 拉起服务
-exec "${SCRIPT_DIR}/start.sh"
+# 3) 拉起服务（透传 --backend-only 等参数给 start.sh）
+exec "${SCRIPT_DIR}/start.sh" "$@"

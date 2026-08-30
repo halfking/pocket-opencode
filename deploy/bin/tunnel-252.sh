@@ -69,6 +69,7 @@ case "${ACTION}" in
       -o ServerAliveInterval=30
       -o ServerAliveCountMax=3
       -o ExitOnForwardFailure=yes
+      -o StrictHostKeyChecking=accept-new
       -p "${OPP_252_SSH_PORT}"
       -L "${LOCAL_PORT}:${OPP_252_PG_INTERNAL_HOST}:5432"
       "${OPP_252_SSH_USER}@${OPP_252_SSH_HOST}")

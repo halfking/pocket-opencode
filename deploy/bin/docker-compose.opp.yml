@@ -25,7 +25,9 @@ services:
         RUNTIME_BASE_IMAGE: ${RUNTIME_BASE_IMAGE:-alpine:latest}
     image: opencode-pocket:${OPP_IMAGE_TAG}
     pull_policy: never
-    container_name: opencode-pocket-pocketd-${DEPLOY_ENV}
+    # 容器名带 base-dir 派生后缀（env.sh 的 OPP_CONTAINER_SUFFIX），
+    # 同机多套部署（正式+临时）互不冲突。
+    container_name: opencode-pocket-pocketd-${DEPLOY_ENV}${OPP_CONTAINER_SUFFIX}
     restart: unless-stopped
     env_file:
       - ${POCKET_ENV_FILE}
@@ -63,7 +65,7 @@ services:
       network: host
     image: opencode-pocket-frontend:${OPP_IMAGE_TAG}
     pull_policy: never
-    container_name: opencode-pocket-frontend-${DEPLOY_ENV}
+    container_name: opencode-pocket-frontend-${DEPLOY_ENV}${OPP_CONTAINER_SUFFIX}
     restart: unless-stopped
     depends_on:
       pocketd:
@@ -84,7 +86,7 @@ services:
 
 networks:
   opp_net:
-    # 默认自建网络；若要并入既有 acc-local-net 等外部网络，
-    # 设 OPP_NET_EXTERNAL=true 且 OPP_NET_NAME=acc-local-net。
-    name: ${OPP_NET_NAME:-opp-${DEPLOY_ENV}-net}
+    # 默认自建网络（按 base-dir 派生后缀隔离）；若要并入既有 acc-local-net
+    # 等外部网络，设 OPP_NET_EXTERNAL=true 且 OPP_NET_NAME=acc-local-net。
+    name: ${OPP_NET_NAME:-opp-${DEPLOY_ENV}${OPP_CONTAINER_SUFFIX}-net}
     external: ${OPP_NET_EXTERNAL:-false}
