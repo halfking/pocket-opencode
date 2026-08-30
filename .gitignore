@@ -19,4 +19,17 @@ deployment-test-*/
 
 # Compiled instance-manager binary (sources live in this repo; build artifact)
 opencode-manager/opencode-instance-manager
-backend/.env
+
+# Compiled test fake agent (sources: backend/cmd/agent_echo; build artifact)
+backend/agent_echo
+
+# Compiled pocketd binary (sources: backend/cmd/pocketd; build artifact)
+backend/pocketd
+
+# SQLite database files (local testing / runtime data)
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
