@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/scheduledtask"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestScheduledTaskEndToEnd 验证完整的 create → claim → execute → audit → WebSocket → history 闭环。
@@ -26,7 +27,13 @@ func TestScheduledTaskEndToEnd(t *testing.T) {
 	
 	// 初始化 scheduled task store 和 scheduler
 	ctx := context.Background()
-	store, err := scheduledtask.NewStore(ctx, dsn)
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("failed to connect to PostgreSQL: %v", err)
+	}
+	defer pool.Close()
+	
+	store, err := scheduledtask.NewStore(ctx, pool)
 	if err != nil {
 		t.Fatalf("failed to initialize store: %v", err)
 	}
@@ -51,10 +58,10 @@ func TestScheduledTaskEndToEnd(t *testing.T) {
 	auditor := &testAuditor{}
 	scheduler.SetAuditWriter(auditor)
 	
-	srv.scheduler = scheduler
+	srv.scheduledTaskScheduler = scheduler
 	
 	// 启动 scheduler
-	scheduler.Start()
+	scheduler.Start(ctx)
 	defer scheduler.Stop()
 	
 	h := srv.Handler()
@@ -267,7 +274,13 @@ func TestScheduledTaskTenantIsolation(t *testing.T) {
 	srv, _ := newTestServerWithAuth(t)
 	
 	ctx := context.Background()
-	store, err := scheduledtask.NewStore(ctx, dsn)
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("failed to connect to PostgreSQL: %v", err)
+	}
+	defer pool.Close()
+	
+	store, err := scheduledtask.NewStore(ctx, pool)
 	if err != nil {
 		t.Fatalf("failed to initialize store: %v", err)
 	}
@@ -276,8 +289,8 @@ func TestScheduledTaskTenantIsolation(t *testing.T) {
 	h := srv.Handler()
 	
 	// 创建两个不同 workspace 的 token
-	token1, _ := srv.signer.SignWithWorkspace("user1", "member", "workspace-1")
-	token2, _ := srv.signer.SignWithWorkspace("user2", "member", "workspace-2")
+	token1, _ := srv.jwtSigner.SignWithWorkspace("user1", "member", "workspace-1")
+	token2, _ := srv.jwtSigner.SignWithWorkspace("user2", "member", "workspace-2")
 	
 	// workspace-1 创建任务
 	taskInput := map[string]interface{}{

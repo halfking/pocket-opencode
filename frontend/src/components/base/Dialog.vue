@@ -22,7 +22,7 @@
               v-if="closable"
               class="dialog-close"
               @click="handleClose"
-              aria-label="关闭"
+              :aria-label="t('common.close')"
             >
               ✕
             </button>
@@ -37,19 +37,19 @@
           <div v-if="$slots.footer || showFooter" class="dialog-footer">
             <slot name="footer">
               <Button
-                v-if="cancelText"
+                v-if="displayCancelText"
                 variant="ghost"
                 @click="handleCancel"
               >
-                {{ cancelText }}
+                {{ displayCancelText }}
               </Button>
               <Button
-                v-if="confirmText"
+                v-if="displayConfirmText"
                 :variant="confirmButtonVariant"
                 :loading="loading"
                 @click="handleConfirm"
               >
-                {{ confirmText }}
+                {{ displayConfirmText }}
               </Button>
             </slot>
           </div>
@@ -61,8 +61,11 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Button from './Button.vue'
 import { useBodyScrollLock } from '../../composables/useBodyScrollLock'
+
+const { t } = useI18n()
 
 export interface DialogProps {
   modelValue?: boolean
@@ -85,8 +88,8 @@ const props = withDefaults(defineProps<DialogProps>(), {
   closable: true,
   closeOnOverlay: true,
   showFooter: true,
-  confirmText: '确定',
-  cancelText: '取消',
+  confirmText: '',
+  cancelText: '',
   confirmButtonVariant: 'primary',
   loading: false,
 })
@@ -100,6 +103,10 @@ const emit = defineEmits<{
 
 const visible = ref(props.modelValue)
 const scrollLock = useBodyScrollLock()
+
+// Computed text with i18n fallback
+const displayConfirmText = computed(() => props.confirmText || t('common.confirm'))
+const displayCancelText = computed(() => props.cancelText || t('common.cancel'))
 
 watch(() => props.modelValue, (val) => {
   visible.value = val
