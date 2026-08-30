@@ -34,34 +34,51 @@ case "${ENV}" in
 esac
 export DEPLOY_ENV
 
-# 调用方可显式传入 legacy env 文件；在 source env.sh 前映射到统一变量名。
+# 调用方可显式传入 legacy env 文件；在 source env.sh 前保存覆盖值。
 EXPLICIT_ENV_FILE="${POCKET_DEPLOY_ENV_FILE:-${POCKET_ENV_FILE:-}}"
-HTTP_PORT_WAS_EXPLICIT=false
-[[ -n "${POCKET_HTTP_PORT:-}" ]] && HTTP_PORT_WAS_EXPLICIT=true
+EXPLICIT_HTTP_PORT="${POCKET_HTTP_PORT:-}"
+EXPLICIT_BIND_IP="${POCKET_PORT_BIND_IP:-}"
 if [[ -n "${EXPLICIT_ENV_FILE}" ]]; then
   export POCKET_ENV_FILE="${EXPLICIT_ENV_FILE}"
 fi
 
 # shellcheck disable=SC1091
+source "${LEGACY_SCRIPT_DIR}/legacy-env.sh"
+# shellcheck disable=SC1091
 source "${LEGACY_SCRIPT_DIR}/bin/env.sh"
 ENV_FILE="${POCKET_ENV_FILE}"
+DEFAULT_HTTP_PORT="${POCKET_HTTP_PORT}"
+DEFAULT_BIND_IP="${POCKET_PORT_BIND_IP}"
+
+if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+  echo "❌ 验证需要 curl 或 wget" >&2
+  exit 1
+fi
 
 if [[ "${DEPLOY_ENV}" == "server" && ! -f "${ENV_FILE}" ]]; then
   echo "❌ 生产验证缺少环境文件: ${ENV_FILE}" >&2
   exit 1
 fi
 
+legacy_env_require_canonical_unique "${ENV_FILE}" \
+  POCKET_ENV POCKET_DEV_AUTH POCKET_HTTP_PORT POCKET_PORT_BIND_IP \
+  POCKET_JWT_SECRET POCKET_POSTGRES_DSN POCKET_ALLOWED_ORIGINS \
+  POCKET_MCP_INSECURE_TLS POCKET_MCP_BASE_URL POCKET_MCP_TENANT_ID \
+  POCKET_LLM_BASE_URL POCKET_LLM_API_KEY
+
 read_env_value() {
-  local key="$1"
-  awk -F= -v key="${key}" '$1 == key {sub(/^[^=]*=/, ""); gsub(/\r/, ""); gsub(/^"|"$/, ""); print; exit}' "${ENV_FILE}"
+  legacy_env_value "${ENV_FILE}" "$1"
 }
 
-# legacy deploy.sh 把宿主端口写在 env 文件里；显式 shell 变量优先，
-# 否则兼容读取文件，最后沿用 env.sh 的统一默认值。
-if [[ "${HTTP_PORT_WAS_EXPLICIT}" != true && -f "${ENV_FILE}" ]]; then
-  ENV_HTTP_PORT="$(read_env_value POCKET_HTTP_PORT)"
-  [[ -z "${ENV_HTTP_PORT}" ]] || POCKET_HTTP_PORT="${ENV_HTTP_PORT}"
+ENV_HTTP_PORT="$(read_env_value POCKET_HTTP_PORT)"
+ENV_BIND_IP="$(read_env_value POCKET_PORT_BIND_IP)"
+POCKET_HTTP_PORT="${EXPLICIT_HTTP_PORT:-${ENV_HTTP_PORT:-${DEFAULT_HTTP_PORT}}}"
+POCKET_PORT_BIND_IP="${EXPLICIT_BIND_IP:-${ENV_BIND_IP:-${DEFAULT_BIND_IP}}}"
+if ! legacy_validate_port "${POCKET_HTTP_PORT}"; then
+  echo "❌ POCKET_HTTP_PORT 必须是 1-65535 的整数: ${POCKET_HTTP_PORT}" >&2
+  exit 1
 fi
+POCKET_HTTP_PROBE_HOST="$(legacy_probe_host "${POCKET_PORT_BIND_IP}")"
 BASE_URL="http://${POCKET_HTTP_PROBE_HOST}:${POCKET_HTTP_PORT}"
 
 PASS=0
@@ -129,11 +146,11 @@ if [[ -f "${ENV_FILE}" ]]; then
     fi
 
     JWT_SECRET_VALUE="$(read_env_value POCKET_JWT_SECRET)"
-    if [[ -z "${JWT_SECRET_VALUE}" || "${JWT_SECRET_VALUE}" == "pocket-dev-insecure-secret" ]]; then
-      echo "  ❌ 生产环境 JWT 密钥缺失或仍为默认值"
+    if (( ${#JWT_SECRET_VALUE} < 32 )) || [[ "${JWT_SECRET_VALUE}" == "pocket-dev-insecure-secret" ]]; then
+      echo "  ❌ 生产环境 JWT 密钥必须至少 32 字节且不能使用默认值"
       FAIL=$((FAIL + 1))
     else
-      echo "  ✅ JWT 密钥已自定义"
+      echo "  ✅ JWT 密钥强度符合要求"
       PASS=$((PASS + 1))
     fi
 
@@ -142,6 +159,34 @@ if [[ -f "${ENV_FILE}" ]]; then
       FAIL=$((FAIL + 1))
     else
       echo "  ✅ 开发认证已禁用"
+      PASS=$((PASS + 1))
+    fi
+
+    if [[ "$(read_env_value POCKET_MCP_INSECURE_TLS)" == "true" ]]; then
+      echo "  ❌ 生产环境启用了 MCP insecure TLS"
+      FAIL=$((FAIL + 1))
+    else
+      echo "  ✅ MCP TLS 校验未禁用"
+      PASS=$((PASS + 1))
+    fi
+
+    if [[ -n "$(read_env_value POCKET_LLM_BASE_URL)" || -n "$(read_env_value POCKET_LLM_API_KEY)" ]]; then
+      echo "  ❌ 生产环境禁止直连 LLM provider"
+      FAIL=$((FAIL + 1))
+    else
+      echo "  ✅ 未配置直连 LLM provider"
+      PASS=$((PASS + 1))
+    fi
+
+    check "PostgreSQL DSN 已配置" test -n "$(read_env_value POCKET_POSTGRES_DSN)"
+    check "Allowed origins 已配置" test -n "$(read_env_value POCKET_ALLOWED_ORIGINS)"
+
+    MCP_BASE_URL_VALUE="$(read_env_value POCKET_MCP_BASE_URL)"
+    if [[ -n "${MCP_BASE_URL_VALUE}" && -z "$(read_env_value POCKET_MCP_TENANT_ID)" ]]; then
+      echo "  ❌ 配置 MCP 时必须设置 POCKET_MCP_TENANT_ID"
+      FAIL=$((FAIL + 1))
+    else
+      echo "  ✅ MCP tenant 配置符合要求"
       PASS=$((PASS + 1))
     fi
   fi
@@ -153,7 +198,10 @@ fi
 check "数据目录可写" test -w "${POCKET_DATA_DIR}"
 
 # ── 6. 容器日志检查（无严重错误） ──────────────────────────────────
-if docker logs "${CONTAINER_NAME}" --tail 50 2>&1 | grep -iE "(panic|fatal|error.*database)" >/dev/null 2>&1; then
+if ! CONTAINER_LOGS="$(docker logs "${CONTAINER_NAME}" --tail 50 2>&1)"; then
+  echo "  ❌ 无法读取容器日志"
+  FAIL=$((FAIL + 1))
+elif grep -iE "(panic|fatal|error.*database)" <<<"${CONTAINER_LOGS}" >/dev/null 2>&1; then
   echo "  ⚠️  容器日志中发现错误信息"
   FAIL=$((FAIL + 1))
 else
