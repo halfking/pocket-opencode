@@ -129,6 +129,8 @@ ip rule add pref 8999 from 10.89.7.0/24 lookup main   # opp-server-net 固定子
 | `save-images.sh` | 导出镜像到 `images/`(gzip,带 arch+时间戳) |
 | `load-images.sh` | 加载 `images/` 下全部离线镜像(`--latest` 只加载最新) |
 | `docker-compose.opp.yml` | 本地/252 共用的独立 compose |
+| `../verify.sh` | legacy 部署后验证；复用 `env.sh` 的端口、探测地址、env/data 路径解析，`prod` 作为 `server` 兼容别名 |
+| `../deploy_test.sh` | 部署 contract 门禁；锁定 legacy 与正式 compose 的宿主 8090 → 容器 8088 映射 |
 
 ## 环境变量
 

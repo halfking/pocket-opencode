@@ -2,7 +2,8 @@
 # =====================================================================
 # deploy.sh — opencode-pocket 部署脚本（rule 22 §6.3）
 #
-# 用法: ./deploy/deploy.sh [--env local|prod] [--tag <tag>] [--dry-run]
+# 用法: ./deploy/deploy.sh [--env local|server|prod] [--tag <tag>] [--dry-run]
+#       prod 是 server 的 legacy 兼容别名。
 # 自动验证: 部署后自动调用 verify.sh，失败触发 rollback
 # =====================================================================
 
@@ -23,10 +24,15 @@ while [[ $# -gt 0 ]]; do
     --env) ENV="$2"; shift 2 ;;
     --tag) TAG="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
-    --help) echo "用法: $0 [--env local|prod] [--tag <tag>] [--dry-run]"; exit 0 ;;
+    --help) echo "用法: $0 [--env local|server|prod] [--tag <tag>] [--dry-run]（prod=server 兼容别名）"; exit 0 ;;
     *) echo "未知参数: $1"; exit 1 ;;
   esac
 done
+
+case "${ENV}" in
+  local|server|prod) ;;
+  *) echo "未知环境: ${ENV}（支持 local|server|prod）" >&2; exit 1 ;;
+esac
 
 echo "=== deploy: ${SERVICE_NAME} (env=${ENV}, tag=${TAG}) ==="
 
@@ -42,7 +48,7 @@ read_env_value() {
   awk -F= -v key="${key}" '$1 == key {sub(/^[^=]*=/, ""); gsub(/\r/, ""); print; exit}' "${ENV_FILE}"
 }
 
-if [[ "${ENV}" == "prod" ]]; then
+if [[ "${ENV}" == "prod" || "${ENV}" == "server" ]]; then
   if [[ ! -f "${ENV_FILE}" ]]; then
     echo "❌ 生产部署缺少环境文件: ${ENV_FILE}" >&2
     exit 1
@@ -81,7 +87,7 @@ echo "▶ 拉取镜像: registry.kxpms.cn/kaixuan-platform-${SERVICE_NAME}:${TAG
 # docker pull registry.kxpms.cn/kaixuan-platform-${SERVICE_NAME}:${TAG}
 
 # ── 3. 保存当前版本信息（用于回滚） ────────────────────────────────
-DEPLOY_TRACKER_DIR="/var/lib/deploy-tracker"
+DEPLOY_TRACKER_DIR="${POCKET_DEPLOY_TRACKER_DIR:-/var/lib/deploy-tracker}"
 mkdir -p "${DEPLOY_TRACKER_DIR}"
 # 记录当前运行容器的镜像 tag
 # docker inspect ${CONTAINER_NAME} --format '{{.Config.Image}}' 2>/dev/null \
@@ -120,10 +126,12 @@ echo "✅ 部署完成"
 
 # ── 6. 自动验证 ────────────────────────────────────────────────────
 echo "▶ 运行验证..."
-if "${SCRIPT_DIR}/verify.sh" --env "${ENV}" --tag "${TAG}"; then
+if POCKET_DEPLOY_ENV_FILE="${ENV_FILE}" POCKET_DATA_DIR="${DATA_DIR}" POCKET_PORT_BIND_IP="0.0.0.0" \
+  "${SCRIPT_DIR}/verify.sh" --env "${ENV}" --tag "${TAG}"; then
   echo "✅ 验证通过"
 else
   echo "⚠️  验证失败，触发回滚..."
-  "${SCRIPT_DIR}/rollback.sh" --env "${ENV}"
+  POCKET_DEPLOY_ENV_FILE="${ENV_FILE}" POCKET_DATA_DIR="${DATA_DIR}" POCKET_PORT_BIND_IP="0.0.0.0" \
+    POCKET_DEPLOY_TRACKER_DIR="${DEPLOY_TRACKER_DIR}" "${SCRIPT_DIR}/rollback.sh" --env "${ENV}"
   exit 1
 fi

@@ -2,8 +2,8 @@
 # =====================================================================
 # rollback.sh — opencode-pocket 回滚脚本（rule 22 §8）
 #
-# 用法: ./deploy/rollback.sh [--env local|prod]
-# 说明: 回滚到前一个部署版本（从 /var/lib/deploy-tracker/ 读取）
+# 用法: ./deploy/rollback.sh [--env local|server|prod]
+# 说明: 回滚到前一个部署版本（默认从 /var/lib/deploy-tracker/ 读取）
 # =====================================================================
 
 set -euo pipefail
@@ -16,7 +16,7 @@ ENV="local"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env) ENV="$2"; shift 2 ;;
-    --help) echo "用法: $0 [--env local|prod]"; exit 0 ;;
+    --help) echo "用法: $0 [--env local|server|prod]"; exit 0 ;;
     *) echo "未知参数: $1"; exit 1 ;;
   esac
 done
@@ -24,7 +24,7 @@ done
 echo "━━━ rollback: ${SERVICE_NAME} (env=${ENV}) ━━━"
 
 # ── 1. 读取前一个版本 ──────────────────────────────────────────────
-DEPLOY_TRACKER_DIR="/var/lib/deploy-tracker"
+DEPLOY_TRACKER_DIR="${POCKET_DEPLOY_TRACKER_DIR:-/var/lib/deploy-tracker}"
 PREV_TAG_FILE="${DEPLOY_TRACKER_DIR}/${SERVICE_NAME}_prev_tag"
 
 if [[ ! -f "$PREV_TAG_FILE" ]]; then
@@ -59,7 +59,9 @@ echo "✅ 回滚完成（版本: ${PREV_TAG}）"
 
 # ── 5. 验证回滚后状态 ──────────────────────────────────────────────
 echo "▶ 验证回滚后状态..."
-if "${SCRIPT_DIR}/verify.sh" --env "${ENV}" --tag "${PREV_TAG}"; then
+if POCKET_DEPLOY_ENV_FILE="${POCKET_DEPLOY_ENV_FILE:-}" POCKET_DATA_DIR="${POCKET_DATA_DIR:-}" \
+  POCKET_PORT_BIND_IP="${POCKET_PORT_BIND_IP:-0.0.0.0}" \
+  "${SCRIPT_DIR}/verify.sh" --env "${ENV}" --tag "${PREV_TAG}"; then
   echo "✅ 回滚后验证通过"
 else
   echo "⚠️  回滚后验证失败，请人工介入"
