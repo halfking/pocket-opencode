@@ -61,17 +61,17 @@ func generateUUID() string {
 }
 
 type Server struct {
-	cfg           config.Config
-	nps           adapter.NPSAdapter
-	opencode      adapter.OpenCodeAdapter
-	taskStore     *task.Store
+	cfg                    config.Config
+	nps                    adapter.NPSAdapter
+	opencode               adapter.OpenCodeAdapter
+	taskStore              *task.Store
 	scheduledTaskStore     *scheduledtask.Store
 	scheduledTaskScheduler *scheduledtask.Scheduler
-	registry      *registry.Registry
-	configAdapter adapter.OpenCodeConfigAdapter
-	wsHub         *ws.Hub
-	pluginHub     *ws.PluginHub // Plugin/Manager WebSocket Hub
-	upgrader      websocket.Upgrader
+	registry               *registry.Registry
+	configAdapter          adapter.OpenCodeConfigAdapter
+	wsHub                  *ws.Hub
+	pluginHub              *ws.PluginHub // Plugin/Manager WebSocket Hub
+	upgrader               websocket.Upgrader
 	// Phase 0: 个人助理模块 store 与依赖
 	notesStore       *notes.Store
 	emailStore       *email.Store
@@ -94,12 +94,12 @@ type Server struct {
 	quesMgr  *opencode.QuestionManager
 
 	// Auth
-	userStore         *auth.UserStore
-	jwtSigner         *auth.Signer
-	biometricStore    *auth.BiometricStore
-	webAuthnVerifier  auth.WebAuthnVerifierIface // nil = WebAuthn 签名验证未启用（降级到 P0 stub）
-	parseAssertionFn  assertionParser            // 测试可替换的 WebAuthn assertion 解析器；生产为 nil（走默认）
-	identityStore     *identity.Store        // nil = S0-A 未启用，handler 降级到单租户
+	userStore        *auth.UserStore
+	jwtSigner        *auth.Signer
+	biometricStore   *auth.BiometricStore
+	webAuthnVerifier auth.WebAuthnVerifierIface // nil = WebAuthn 签名验证未启用（降级到 P0 stub）
+	parseAssertionFn assertionParser            // 测试可替换的 WebAuthn assertion 解析器；生产为 nil（走默认）
+	identityStore    *identity.Store            // nil = S0-A 未启用，handler 降级到单租户
 	// S0-B: unified LLM BFF。nil = 未配置（POCKET_LLM_* 未设且无网关配置），handler 返回 503。
 	llmBFF           *llmbff.Service
 	llmBFFSummarizer llmbff.Summarizer
@@ -119,7 +119,7 @@ type Server struct {
 	chatAgentStore chatagent.StoreIface
 	// 智能体云端同步（仅 PG 模式可用；SQLite 模式下此字段保持 nil）。
 	chatAgentSync *chatagent.SyncStore
-	notifyStore    *notifycenter.Store
+	notifyStore   *notifycenter.Store
 
 	// ACP 通用 Agent Adapter Registry（W5 新增，与 s.opencode 并存）。
 	// 老 handler 仍走 s.opencode；新 diagnostics / health-check 用 s.agents。
@@ -135,7 +135,7 @@ type Server struct {
 	dataDir string // 数据目录
 
 	llmGWStore LLMGatewayConfigStore // nil = 无持久化 backend，配置不写入店内/DB
-	llmGWCache *llmGatewayCache // nil = 仅依赖 env 默认配置
+	llmGWCache *llmGatewayCache      // nil = 仅依赖 env 默认配置
 
 	// LLM Gateway 运维控制面：已注册网关节点 + admin API 客户端。
 	// nil = 无 PG 或 master key 缺失，/api/llm-gateway/nodes 返回 503。

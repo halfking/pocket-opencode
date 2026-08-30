@@ -48,9 +48,9 @@ func (s *Server) checkQuotaOrAudit(r *http.Request, action, kind, model string, 
 	}
 	wsID := s.workspaceIDFromRequest(r)
 	in := quota.DecisionInput{
-		WorkspaceID:    wsID,
-		Kind:           kind,
-		Model:          model,
+		WorkspaceID:     wsID,
+		Kind:            kind,
+		Model:           model,
 		EstimatedTokens: estTokens,
 	}
 	dec, err := s.quotaEnforcer.Check(r.Context(), in)
@@ -98,11 +98,11 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Model       string             `json:"model"`
-		Messages    []llmbff.Message   `json:"messages"`
-		Temperature float64            `json:"temperature"`
-		MaxTokens   int                `json:"max_tokens"`
-		Kind        string             `json:"kind"`
+		Model       string           `json:"model"`
+		Messages    []llmbff.Message `json:"messages"`
+		Temperature float64          `json:"temperature"`
+		MaxTokens   int              `json:"max_tokens"`
+		Kind        string           `json:"kind"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")

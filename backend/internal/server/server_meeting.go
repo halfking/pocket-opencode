@@ -183,11 +183,11 @@ func (s *Server) handleSummarizeMeeting(w http.ResponseWriter, r *http.Request, 
 }
 
 type meetingSegmentIn struct {
-	Speaker  string  `json:"speaker"`
-	Text     string  `json:"text"`
-	Lang     string  `json:"lang"`
-	StartMs  int     `json:"start_ms"`
-	EndMs    int     `json:"end_ms"`
+	Speaker string `json:"speaker"`
+	Text    string `json:"text"`
+	Lang    string `json:"lang"`
+	StartMs int    `json:"start_ms"`
+	EndMs   int    `json:"end_ms"`
 }
 
 type meetingMetaIn struct {
@@ -424,10 +424,10 @@ func parseSummaryJSON(content, fallback string) (map[string]any, error) {
 	if err := json.Unmarshal([]byte(extractJSON(content)), &parsed); err != nil {
 		return map[string]any{
 			"summary":        truncateStr(fallback, 500),
-			"key_points":      []any{},
-			"action_items":    []any{},
-			"decisions":       []any{},
-			"open_questions":  []any{},
+			"key_points":     []any{},
+			"action_items":   []any{},
+			"decisions":      []any{},
+			"open_questions": []any{},
 		}, nil
 	}
 	return parsed, nil

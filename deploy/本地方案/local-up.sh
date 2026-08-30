@@ -18,6 +18,12 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
+# 确保 r112_net 网络存在
+if ! docker network inspect r112_net >/dev/null 2>&1; then
+  echo "Creating r112_net network..."
+  docker network create r112_net
+fi
+
 if ! docker image inspect opencode-pocket:pocket-local >/dev/null 2>&1; then
   echo "missing local image opencode-pocket:pocket-local; build or docker load it explicitly" >&2
   exit 1

@@ -76,6 +76,60 @@ OpenCode Pocket 是一款强大的移动端AI编程助手应用，让开发者�
 - **JDK**: 21 (Oracle标准版)
 - **Android SDK**: API 30+
 
+### 部署模式
+
+OpenCode Pocket 提供两种部署模式，根据你的使用场景选择：
+
+#### 1️⃣ 本地方案（推荐新手）
+
+**适用场景**：独立开发、快速测试、完全自包含部署
+
+**特点**：
+- ✅ 完全独立运行，无外部依赖
+- ✅ 使用独立的 PostgreSQL 容器
+- ✅ 使用公共 Docker 镜像（golang:alpine）
+- ✅ 自动创建所需网络
+- ✅ 最小化配置
+
+**快速启动**：
+```bash
+cd deploy/本地方案
+cp .env.example .env
+./local-up.sh
+```
+
+详见：[本地方案文档](deploy/本地方案/) （待补充）
+
+#### 2️⃣ ACC Integration（集成开发）
+
+**适用场景**：与 ACC、LLM Gateway 等服务集成开发
+
+**特点**：
+- 🔗 复用共享的 `llm-gateway-pg` PostgreSQL 容器
+- 🔗 加入 `acc-local-net`、`shared-infra` 网络
+- 📦 需要预加载 `kx-base` 离线镜像
+- 🔧 适合多服务联调
+
+**快速启动**：
+```bash
+cd deploy/acc-integration
+cp .env.example .env
+# 加载离线镜像（首次）
+docker load -i ~/work/docker-base-images/lang-base/kx-base-go-vue-v2-alpine-slim-arm64.tar.gz
+./local-up.sh
+```
+
+详见：[ACC Integration 文档](deploy/acc-integration/README.md)
+
+| 对比项 | 本地方案 | ACC Integration |
+|--------|---------|-----------------|
+| **PostgreSQL** | 独立容器 | 共享 llm-gateway-pg |
+| **Docker 网络** | r112_net | acc-local-net + shared-infra |
+| **基础镜像** | 公共镜像 | 离线 kx-base 镜像 |
+| **外部依赖** | 无 | 需要共享 PG 和镜像 |
+| **启动速度** | 快 | 稍慢（构建优化） |
+| **适用场景** | 独立开发 | 集成开发 |
+
 ### 一键启动
 
 ```bash
@@ -161,6 +215,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 - [**运维指南**](OPERATIONS_GUIDE.md) - 完整的部署和运维文档
 - [**API文档**](docs/API.md) - RESTful API接口说明
 - [**架构文档**](docs/ARCHITECTURE.md) - 系统架构设计
+- [**ACC Integration 部署文档**](deploy/acc-integration/README.md) - 集成开发部署指南
 
 ### 测试报告
 
@@ -168,6 +223,34 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 - [修复验证报告](FINAL_VERIFICATION_REPORT_2026-07-07.md) - 问题修复验证
 - [本地部署报告](LOCAL_DEPLOYMENT_REPORT_2026-07-07.md) - 部署验证结果
 - [集成测试报告](COMPLETE_INTEGRATION_TEST_REPORT_2026-07-07.md) - 完整测试总结
+
+### 外部依赖说明
+
+项目核心代码**完全自包含**，以下依赖均为可选或特定部署模式专用：
+
+#### 🔧 RedClaw 集成测试（可选）
+
+- **文件**：`backend/scripts/test-redclaw-integration.sh`
+- **用途**：测试未来的 RedClaw 集成功能
+- **依赖**：`/Users/xutaohuang/workspace/FreshLab/RedClaw2/enterprise/gateway-go`
+- **说明**：主应用在未配置 `POCKET_REDCLAW_BASE_URL` 时会优雅降级，RedClaw 端点返回 503
+- **影响**：不影响核心应用功能，仅用于集成测试
+
+#### 📦 kx-base Docker 镜像（ACC Integration 专用）
+
+- **位置**：`~/work/docker-base-images/lang-base/kx-base-go-vue-v2-alpine-slim-arm64.tar.gz`
+- **用途**：仅 ACC Integration 部署模式需要
+- **说明**：本地方案使用公共 `golang:alpine` 镜像，无需此依赖
+- **加载方法**：`docker load -i <镜像路径>`
+
+#### 🌐 Docker 网络（自动创建）
+
+以下网络由启动脚本自动创建，无需手动操作：
+- `acc-local-net` - ACC Integration 模式使用
+- `shared-infra` - ACC Integration 模式使用
+- `r112_net` - 本地方案使用
+
+**项目自包含率：98%**（核心应用代码 100% 自包含）
 
 ---
 

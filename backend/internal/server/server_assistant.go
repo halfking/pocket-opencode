@@ -387,14 +387,14 @@ func (s *Server) startEmailOAuth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "email crypto not configured (set POCKET_EMAIL_MASTER_KEY)")
 		return
 	}
-		var body struct {
-			AccountID    string `json:"accountId"`
-			ProviderID   string `json:"providerId"`
-			EmailAddress string `json:"emailAddress"`
-			ClientID     string `json:"clientId"`
-			ClientSecret string `json:"clientSecret"`
-			RedirectURI  string `json:"redirectUri"`
-		}
+	var body struct {
+		AccountID    string `json:"accountId"`
+		ProviderID   string `json:"providerId"`
+		EmailAddress string `json:"emailAddress"`
+		ClientID     string `json:"clientId"`
+		ClientSecret string `json:"clientSecret"`
+		RedirectURI  string `json:"redirectUri"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
@@ -757,7 +757,7 @@ func (s *Server) handleEmailAccountOps(w http.ResponseWriter, r *http.Request) {
 //   - 只有携带 smtpHost 才会写 SMTP 列。单独传 smtpPort/smtpPassword 以前会被
 //     静默丢弃，现在直接返回 400——静默成功比报错更难排查。
 //   - smtpHost 传空字符串表示清空 SMTP 配置，此时 port 一并归零。
-//   - smtpPassword 省略 → 保留原凭证；传 '' → 清空；传非空 → 重新加密写入。
+//   - smtpPassword 省略 → 保留原凭证；传 ” → 清空；传非空 → 重新加密写入。
 func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc *email.Account, workspaceID string) {
 	var body struct {
 		DisplayName     *string `json:"displayName"`
@@ -1044,9 +1044,9 @@ func (s *Server) handleEmailVacationOps(w http.ResponseWriter, r *http.Request) 
 // 探测流程：
 //   - 用 scoped query 取账户 SMTP 配置与明文凭证；
 //   - 调 smtpProbe(host, port, username, password)：
-//       465 → 直接 TLS；
-//       587 → 明文 dial + EHLO，服务器宣告 STARTTLS 时升级；
-//       其它端口 → 同 587 行为；
+//     465 → 直接 TLS；
+//     587 → 明文 dial + EHLO，服务器宣告 STARTTLS 时升级；
+//     其它端口 → 同 587 行为；
 //   - 凭证格式为 "user:password" 时拆分为 username/password；纯密码时
 //     username 取账户的 email_address（RFC 5321 兼容）。
 //   - 任何错误只返回脱敏的阶段信息（smtp/auth/tls），绝不回显明文。
@@ -1659,8 +1659,8 @@ func (s *Server) classifyEmailsAsync(emails []email.Email, userID, workspaceID s
 	// 回写分类结果
 	classified := 0
 	for _, result := range resp.Results {
-if err := s.emailStore.SetClassificationScoped(ctx, result.EmailID, userID, workspaceID,
-				result.Category, result.Importance, result.Summary, result.SuggestedAction); err != nil {
+		if err := s.emailStore.SetClassificationScoped(ctx, result.EmailID, userID, workspaceID,
+			result.Category, result.Importance, result.Summary, result.SuggestedAction); err != nil {
 			log.Printf("[kxmemory] update email %s classification failed: %v", result.EmailID, err)
 			continue
 		}

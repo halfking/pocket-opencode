@@ -42,7 +42,7 @@ import (
 
 // assetSyncRequest 是 /api/assets/sync 的请求体。
 type assetSyncRequest struct {
-	Since  int                  `json:"since"`
+	Since  int                   `json:"since"`
 	Pushes []lobster.AssetMirror `json:"pushes"`
 }
 

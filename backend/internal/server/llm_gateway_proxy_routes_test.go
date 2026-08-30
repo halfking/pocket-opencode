@@ -12,11 +12,11 @@ import (
 
 func TestResolveGatewayRouteWorkTypes(t *testing.T) {
 	cases := []struct {
-		name          string
+		name           string
 		method, action string
-		wantOK        bool
-		wantUpstream  string
-		wantParams    map[string]string
+		wantOK         bool
+		wantUpstream   string
+		wantParams     map[string]string
 	}{
 		{
 			name:         "work-types list",

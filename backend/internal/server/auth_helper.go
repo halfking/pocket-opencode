@@ -39,9 +39,9 @@ func (s *Server) claimsFromContext(r *http.Request) *authClaims {
 // API 无法设置 Authorization header；其它 HTTP 路由不接受 URL 中的 token。
 //
 // 验证路径：
-//   1. IDENTITY_SHARED_SECRET 已配置 → identity-go 多 issuer 校验
-//      (pocket / memora / llm-gateway / redclaw / acc 任意一枚签名 + aud=pocket-api 通过)
-//   2. 否则降级到本地 jwtSigner.Parse（向后兼容窗口期）。
+//  1. IDENTITY_SHARED_SECRET 已配置 → identity-go 多 issuer 校验
+//     (pocket / memora / llm-gateway / redclaw / acc 任意一枚签名 + aud=pocket-api 通过)
+//  2. 否则降级到本地 jwtSigner.Parse（向后兼容窗口期）。
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var raw string

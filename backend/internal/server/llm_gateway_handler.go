@@ -39,8 +39,8 @@ func normalizeGatewayFormat(f string) string {
 }
 
 type llmGatewayState struct {
-	BaseURL string `json:"baseURL"`
-	APIKey  string `json:"apiKey"`
+	BaseURL string   `json:"baseURL"`
+	APIKey  string   `json:"apiKey"`
 	Models  []string `json:"models"`
 	// Format：网关调用协议（见 gatewayFormats）。
 	Format string `json:"format"`
@@ -54,10 +54,10 @@ type llmGatewayState struct {
 // idempotent across requests.
 func defaultLLMGatewayState() llmGatewayState {
 	return llmGatewayState{
-		BaseURL: envOr("POCKET_LLM_GATEWAY_URL", opencode.DefaultLLMGatewayBaseURL),
-		APIKey:  os.Getenv("POCKET_LLM_GATEWAY_API_KEY"),
-		Models:  []string{},
-		Format:  defaultGatewayFormat,
+		BaseURL:         envOr("POCKET_LLM_GATEWAY_URL", opencode.DefaultLLMGatewayBaseURL),
+		APIKey:          os.Getenv("POCKET_LLM_GATEWAY_API_KEY"),
+		Models:          []string{},
+		Format:          defaultGatewayFormat,
 		PreferredModels: []string{},
 	}
 }

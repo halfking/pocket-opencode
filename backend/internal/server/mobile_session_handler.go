@@ -232,9 +232,9 @@ func (s *Server) handleMobileSessionList(w http.ResponseWriter, r *http.Request)
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"data":        rows,
-		"total":       len(rows),
-		"sinceMs":     since,
+		"data":         rows,
+		"total":        len(rows),
+		"sinceMs":      since,
 		"serverTimeMs": time.Now().UnixMilli(),
 	})
 }

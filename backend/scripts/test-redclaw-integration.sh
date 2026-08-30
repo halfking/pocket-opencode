@@ -1,6 +1,14 @@
 #!/bin/bash
 # scripts/test-redclaw-integration.sh
 # 测试 Pocket ↔ RedClaw 集成链路
+#
+# NOTE: 这是一个可选的集成测试脚本，用于测试未来的 RedClaw 集成功能。
+# 主应用在未配置 POCKET_REDCLAW_BASE_URL 时会优雅降级，RedClaw 相关端点返回 503。
+#
+# 前置条件：
+#   - RedClaw2 仓库位于：/Users/xutaohuang/workspace/FreshLab/RedClaw2/enterprise/gateway-go
+#   - 此测试不影响核心应用功能
+#   - 仅用于开发和集成测试场景
 
 set -e
 

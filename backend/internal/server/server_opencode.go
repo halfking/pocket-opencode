@@ -253,11 +253,11 @@ func (s *Server) handleOpenCodeInstanceStats(w http.ResponseWriter, r *http.Requ
 
 	// 统计各状态的会话数
 	stats := map[string]int{
-		"total":  len(sessions),
-		"busy":   0,
-		"idle":   0,
-		"retry":  0,
-		"other":  0,
+		"total": len(sessions),
+		"busy":  0,
+		"idle":  0,
+		"retry": 0,
+		"other": 0,
 	}
 
 	for _, s := range sessions {

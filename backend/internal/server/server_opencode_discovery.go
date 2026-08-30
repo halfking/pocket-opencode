@@ -138,15 +138,15 @@ func (s *Server) handleGetInstanceTasks(w http.ResponseWriter, r *http.Request) 
 
 	// 转换为 API 响应格式
 	type TaskInfo struct {
-		ID           string                 `json:"id"`
-		Title        string                 `json:"title"`
-		Status       string                 `json:"status"`
-		CreatedAt    string                 `json:"createdAt"`
-		UpdatedAt    string                 `json:"updatedAt"`
-		MessageCount int                    `json:"messageCount"`
+		ID           string                    `json:"id"`
+		Title        string                    `json:"title"`
+		Status       string                    `json:"status"`
+		CreatedAt    string                    `json:"createdAt"`
+		UpdatedAt    string                    `json:"updatedAt"`
+		MessageCount int                       `json:"messageCount"`
 		FileChanges  *opencode.FileChangeStats `json:"fileChanges,omitempty"`
-		Duration     int64                  `json:"duration"`
-		Metadata     map[string]interface{} `json:"metadata,omitempty"`
+		Duration     int64                     `json:"duration"`
+		Metadata     map[string]interface{}    `json:"metadata,omitempty"`
 	}
 
 	tasks := make([]TaskInfo, 0, len(filteredSessions))

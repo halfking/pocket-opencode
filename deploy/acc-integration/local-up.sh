@@ -24,11 +24,15 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-# 网络存在性检查
+# 网络存在性检查 - 自动创建
 if ! docker network inspect acc-local-net >/dev/null 2>&1; then
-  echo "[local-up] acc-local-net does not exist. Create it or start the acc-local stack first:"
-  echo "    docker network create acc-local-net"
-  exit 1
+  echo "[local-up] Creating acc-local-net network..."
+  docker network create acc-local-net
+fi
+
+if ! docker network inspect shared-infra >/dev/null 2>&1; then
+  echo "[local-up] Creating shared-infra network..."
+  docker network create shared-infra
 fi
 
 # kx-base 镜像存在性检查（offline-first）

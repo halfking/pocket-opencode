@@ -99,9 +99,9 @@ func TestResolveGatewayRoute(t *testing.T) {
 func TestBuildUpstreamQueryDropsUnlistedParams(t *testing.T) {
 	route := gatewayProxyRoutes["GET credentials"]
 	incoming := url.Values{
-		"provider_id": {"3"},
-		"tenant_id":   {"victim-tenant"}, // 不在 allowedQuery 里
-		"credential_id": {"999"},         // 同样不在，防止绕过 detail 模式的 scope
+		"provider_id":   {"3"},
+		"tenant_id":     {"victim-tenant"}, // 不在 allowedQuery 里
+		"credential_id": {"999"},           // 同样不在，防止绕过 detail 模式的 scope
 	}
 
 	got := buildUpstreamQuery(route, incoming, nil)

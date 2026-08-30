@@ -109,7 +109,7 @@ func (s *Server) handleBiometricRegisterFinish(w http.ResponseWriter, r *http.Re
 	// 路径 1：webAuthnVerifier 可用 → 完整验证 attestation
 	if s.webAuthnVerifier != nil {
 		var body struct {
-			Challenge      string          `json:"challenge"`       // begin 返回的 challenge
+			Challenge      string          `json:"challenge"` // begin 返回的 challenge
 			DeviceName     string          `json:"device_name"`
 			AttestationRaw json.RawMessage `json:"attestation_raw"` // 客户端提交的完整 attestation response
 		}
@@ -254,9 +254,9 @@ func (s *Server) handleBiometricLoginFinish(w http.ResponseWriter, r *http.Reque
 	// 路径 1：webAuthnVerifier 可用 → 完整验证 assertion
 	if s.webAuthnVerifier != nil {
 		var body struct {
-			Challenge     string          `json:"challenge"`      // begin 返回的 challenge
-			CredentialID  string          `json:"credential_id"`  // base64url
-			AssertionRaw  json.RawMessage `json:"assertion_raw"`  // 客户端提交的完整 assertion response
+			Challenge    string          `json:"challenge"`     // begin 返回的 challenge
+			CredentialID string          `json:"credential_id"` // base64url
+			AssertionRaw json.RawMessage `json:"assertion_raw"` // 客户端提交的完整 assertion response
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid body")
@@ -291,8 +291,6 @@ func (s *Server) handleBiometricLoginFinish(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusUnauthorized, fmt.Sprintf("assertion verification failed: %v", err))
 			return
 		}
-
-
 
 		// 更新 counter + last_used_at
 		if err := s.biometricStore.Touch(r.Context(), body.CredentialID, newCounter); err != nil {
@@ -331,7 +329,7 @@ func (s *Server) handleBiometricLoginFinish(w http.ResponseWriter, r *http.Reque
 		}
 
 		s.auditGateway(r, "biometric.login", storedCred.ID,
-			fmt.Sprintf("user=%s ws=%s device=%s verified_by=%s", storedCred.UserID, storedCred.WorkspaceID, storedCred.DeviceName, 
+			fmt.Sprintf("user=%s ws=%s device=%s verified_by=%s", storedCred.UserID, storedCred.WorkspaceID, storedCred.DeviceName,
 				map[bool]string{true: "redclaw", false: "local"}[s.redclawBridge != nil]), true)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"token":        token,
