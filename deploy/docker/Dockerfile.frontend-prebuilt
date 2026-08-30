@@ -1,0 +1,26 @@
+# ── frontend 预编译产物镜像（runtime-only，无编译 stage）──────────────────────
+#
+# 配合 deploy/bin/build-images.sh 使用：dist/ 由宿主机 node 构建（vite 产物
+# 与架构无关），nginx.conf 复用 deploy/本地方案/nginx.conf。构建上下文需包含：
+#   dist/       — vite build 产物
+#   nginx.conf  — 与 Dockerfile.frontend 一致的反代配置
+#
+# 镜像无任何 RUN 步骤，跨架构（amd64/arm64）只是 base 镜像不同，本地无需
+# 模拟器。与 Dockerfile.frontend 的 runtime stage 完全等价。
+#
+# Build args:
+#   FRONTEND_BASE_IMAGE — 默认 nginx:alpine
+#
+# 用法（由 build-images.sh 调用）：
+#   docker build --platform linux/amd64 \
+#     -f deploy/docker/Dockerfile.frontend-prebuilt \
+#     -t opencode-pocket-frontend:<tag> <ctx 目录，内含 dist/ 与 nginx.conf>
+
+ARG FRONTEND_BASE_IMAGE=nginx:alpine
+
+FROM ${FRONTEND_BASE_IMAGE}
+
+COPY dist/ /usr/share/nginx/html/
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80

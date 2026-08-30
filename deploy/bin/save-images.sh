@@ -10,9 +10,9 @@
 #   传输:  scp images/*.tar.gz user@252:/opt/kaixuan/opp/images/
 #   252 :  sudo ./deploy/bin/load-images.sh
 #
-# 注意：252 是 linux/amd64。本地（Apple Silicon）构建时需指定平台：
-#   docker build --platform linux/amd64 ...（参考 deploy/build-image.sh）
-#   或对 arm64 源镜像用 buildx 重建，否则 252 上跑不起来。
+# 注意：252 是 linux/amd64。本地（Apple Silicon）正式构建用：
+#   ./deploy/bin/build-images.sh --arch amd64   # 宿主机交叉编译，无需模拟器
+#   再跑本脚本导出。同 tag 多架构会互相覆盖，amd64 构建后请立即导出。
 #
 # 用法：
 #   ./deploy/bin/save-images.sh                # 导出 backend + frontend（gzip）

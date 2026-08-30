@@ -1,0 +1,34 @@
+# ── pocketd 预编译产物镜像（runtime-only，无编译 stage）───────────────────────
+#
+# 配合 deploy/bin/build-images.sh 使用：二进制由宿主机 go 交叉编译产出
+# （GOOS=linux GOARCH=<arch> CGO_ENABLED=0，静态链接），构建上下文里只放
+# 一个可执行的 `pocketd` 文件。与 Dockerfile.kx-base 的 runtime stage 保持
+# 一致（同用户/目录/健康检查），但基础镜像按 --platform 由 registry 解析
+# 对应架构，因此 amd64 产物不需要模拟器编译，也不依赖 arm64-only 的 kx-base。
+#
+# Build args:
+#   RUNTIME_BASE_IMAGE — 默认 alpine:3.21；锁版本/换源时覆盖
+#
+# 用法（由 build-images.sh 调用）：
+#   docker build --platform linux/amd64 \
+#     -f deploy/docker/Dockerfile.pocketd-prebuilt \
+#     -t opencode-pocket:<tag> <ctx 目录，内含 pocketd 二进制>
+
+ARG RUNTIME_BASE_IMAGE=alpine:3.21
+
+FROM ${RUNTIME_BASE_IMAGE}
+
+RUN apk --no-cache add ca-certificates wget && \
+    addgroup -S pocket && adduser -S -G pocket pocket
+
+WORKDIR /app
+COPY pocketd /app/pocketd
+RUN chmod +x /app/pocketd && mkdir -p /app/data && chown -R pocket:pocket /app
+
+USER pocket
+EXPOSE 8088
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=12 \
+  CMD wget -q -O- http://127.0.0.1:8088/healthz >/dev/null || exit 1
+
+ENTRYPOINT ["/app/pocketd"]

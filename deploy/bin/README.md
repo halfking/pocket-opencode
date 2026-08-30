@@ -64,14 +64,16 @@ OPP_PG_PASSWORD=<252的PG密码> ./deploy/bin/deploy-local.sh
 ### 252 服务器(所有脚本都要带 `DEPLOY_ENV=server`,否则默认按 local 解析路径)
 
 ```bash
-# ① 本地导出 amd64 镜像(252 是 x86_64,Apple Silicon 本地需 --platform linux/amd64 构建)
+# ① 本地构建 amd64 镜像并导出(252 是 x86_64;build-images.sh 走宿主机
+#    交叉编译:go 产静态二进制 + 前端宿主机构建 dist,再打纯 COPY 镜像,
+#    不依赖 arm64-only 的 kx-base,也不用模拟器编译,见 deploy/docker/)
+./deploy/bin/build-images.sh --arch amd64
 ./deploy/bin/save-images.sh
 
 # ② 传输(镜像默认导出到本地 ~/Downloads/kaixuan/opp/images/)
-scp ~/Downloads/kaixuan/opp/images/*.tar.gz user@252:/tmp/
-#    252 上需要本仓库源码:仅 load/start(不 build)最少要 deploy/ 目录;
-#    若要在 252 现场 --build,需要完整仓库(build context 为仓库根)
-scp -r deploy user@252:<repo-path>/deploy
+scp ~/Downloads/kaixuan/opp/images/*amd64*.tar.gz user@252:/opt/kaixuan/opp/images/
+#    252 上需要本仓库脚本:仅 load/start(不 build)最少要 deploy/bin + deploy/docker
+scp -r deploy/bin deploy/docker user@252:<repo-path>/deploy/
 
 # ③ 252 上:建目录 → 放镜像 → 加载 → 填配置 → 启动
 sudo DEPLOY_ENV=server ./deploy/bin/init-dirs.sh        # 建 /opt/kaixuan/opp/{data,logs,config,images,backup}
@@ -106,6 +108,7 @@ POCKET_PG_SCHEMA=opencode_pocket
 | `deploy-local.sh` | 本地一键部署入口(默认 `~/Downloads/kaixuan/opp`,DSN 指向 252 PG) |
 | `deploy-252.sh` | 252 部署入口(默认 `/opt/kaixuan/opp`,root 校验 + PG 可达检查 + 生产门禁) |
 | `tunnel-252.sh` | 本地→252 PG 的 SSH tunnel 管理(up/down/status) |
+| `build-images.sh` | 从最新源码正式构建两镜像(宿主机 go 交叉编译 + 宿主 npm 构建 dist,配 `deploy/docker/*-prebuilt` Dockerfile,支持 amd64/arm64) |
 | `start.sh` | 启动;自动判断 build/no-build(offline-first);`--backend-only` 只起后端 |
 | `stop.sh` | 停止;`--volumes` 才会删数据卷(有确认) |
 | `status.sh` | compose ps + /healthz + 目录占用 |
@@ -161,6 +164,7 @@ OPP_NET_EXTERNAL=true OPP_NET_NAME=acc-local-net ./deploy/bin/start.sh
 
 ## 变更记录
 
+- 2026-08-31(四):新增 `build-images.sh` + `deploy/docker/{Dockerfile.pocketd-prebuilt,Dockerfile.frontend-prebuilt}` 正式构建链路——宿主机 go 交叉编译静态二进制(GOOS=linux GOARCH=amd64/arm64,CGO_ENABLED=0)+ 宿主 npm 构建 dist(架构无关),runtime 镜像纯 COPY(基础镜像按 `--platform` 由 registry 解析),彻底绕开"amd64 需模拟器编译"与"kx-base 离线包仅 arm64"两个限制;镜像打 OCI label(revision/created/version)供审计。当日以该链路完成 252 首次实机部署(amd64 镜像 save→scp→load,`/opt/kaixuan/opp` 落地,双容器 healthy,生产模式真实登录+鉴权 API+前端全通,公网 8088/4175 待阿里云安全组放行,内网 172.16.2.210 可用)与本地 arm64 重建切换。
 - 2026-08-31(三):审计修复(P0×1/P1×6/精选 P2)——load-images.sh 默认 `DEPLOY_ENV=server`+空数组保护+mtime 选最新;logs.sh `--follow` 空 service 修复、`--rotate` 尊重 `--service`;deploy-local.sh 占位密码重跑自动重注入 DSN、`.env.local` chmod 600、DSN 行 printf 写入防 shell 展开、模板不再写端口(端口统一环境变量);start.sh `--backend-only` 镜像判定、env file 缺失提示 DEPLOY_ENV=server、curl/wget 双探测、amd64 机器禁 arm64 kx-base 构建;stop/status/logs 同步 252 提示;deploy-252.sh 门禁去引号/去 CRLF、透传参数;init-dirs.sh data/images 自忽略+root 属主提示;tunnel-252.sh 加 StrictHostKeyChecking=accept-new;README 252 流程补 DEPLOY_ENV=server/init-dirs/必填项。
 - 2026-08-31(二):按部署定稿更新——后端 pocketd 部署于本地 + 252;数据库统一为 252 docker 中的 PG(经 tunnel 实测 PG 17.10,选定既有专用 `pocket` 库 + `opencode_pocket` schema);本地经 `tunnel-252.sh` SSH tunnel 访问,252 直连 `172.16.2.210:5432`;`deploy-local.sh` 生成 DSN 指向 252 并在启动前检查/自动建立 tunnel;`deploy-252.sh` 增加 PG 可达性检查与 DSN 必填校验;`start.sh` 新增 `--backend-only`。
 - 2026-08-31(一):初版。新增 `deploy/bin/` 目录外部化部署体系(env/init-dirs/deploy-local/deploy-252/start/stop/status/logs/save-images/load-images + docker-compose.opp.yml);acc-integration 与本地方案栈不受影响。
