@@ -1,0 +1,24 @@
+=== 阶段 1：策略调整 ===
+时间: 2026-08-30T04:25:00Z
+
+## 问题
+ACC acc-go 直接启动失败：
+- task-assigner 后台 goroutine 在 PG pool 初始化完成前启动
+- 访问 nil pool 导致 panic
+- 需要修复启动顺序或禁用 task-assigner heartbeat
+
+## 调整策略
+改用已运行的 **RedClaw facade (127.0.0.1:27001)**：
+- 容器已运行 2 天，稳定
+- 已配置为 real backend 模式
+- 应该能转发到 ACC canonical tasks API
+- 这正是 OpenPocket → RedClaw → ACC 的设计链路
+
+## 验证步骤
+1. 测试 RedClaw facade capabilities endpoint
+2. 生成 facade JWT (aud=redclaw-facade)
+3. 通过 facade 创建任务
+4. 验证任务是否到达 ACC
+5. 如果 facade → ACC 失败，记录为 blocked 并生成部分报告
+
+此调整符合原计划，只是跳过了直接测试 ACC 的步骤。

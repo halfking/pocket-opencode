@@ -1,0 +1,20 @@
+=== 阶段 1C：RedClaw Facade 无认证测试 ===
+时间: 2026-08-30T04:47:09Z
+
+请求: GET http://127.0.0.1:27001/api/v2/tasks (无 Authorization)
+HTTP 状态: 401
+响应体:
+{
+  "error": {
+    "code": "unauthorized",
+    "message": "missing bearer token",
+    "retryable": false
+  },
+  "request_id": "ba30b34a-db0d-4cc6-8b0c-5b4dd4db6ed4"
+}
+
+Error code: unauthorized
+Request ID: ba30b34a-db0d-4cc6-8b0c-5b4dd4db6ed4
+
+✓ 预期结果：401 Unauthorized
+✓ 错误 envelope 包含 request_id
