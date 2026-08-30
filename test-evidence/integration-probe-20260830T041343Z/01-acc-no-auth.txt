@@ -1,0 +1,17 @@
+=== 阶段 1A：ACC 无认证访问测试 ===
+时间: 2026-08-30T04:17:29Z
+
+请求: GET http://127.0.0.1:8080/api/v2/canonical/tasks
+HTTP 状态: 404
+响应体:
+{
+  "success": false,
+  "data": null,
+  "error": {
+    "code": "RESOURCE_NOT_FOUND",
+    "message": "resource not found"
+  },
+  "request_id": "d0caba2751ef28247c52f8d3c218b4e5"
+}
+
+⚠ 非预期状态码：404（预期 401）

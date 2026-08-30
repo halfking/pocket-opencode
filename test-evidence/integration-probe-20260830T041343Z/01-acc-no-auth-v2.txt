@@ -1,0 +1,11 @@
+=== 阶段 1A：ACC canonical tasks 无认证访问测试 ===
+时间: 2026-08-30T04:20:17Z
+ACC 端口: 18100
+
+请求: GET http://127.0.0.1:18100/api/v2/canonical/tasks
+HTTP 状态: 000
+响应体:
+
+提取的 request_id: 无
+
+⚠ 非预期状态码：000

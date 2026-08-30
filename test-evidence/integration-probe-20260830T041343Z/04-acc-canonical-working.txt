@@ -1,0 +1,18 @@
+=== ACC Canonical Tasks 端点测试（数据库已连接） ===
+时间: 2026-08-30T05:05:22Z
+
+请求: GET http://127.0.0.1:18100/api/v2/canonical/tasks
+HTTP 状态: 401
+响应体:
+{
+  "error": {
+    "code": "unauthorized",
+    "message": "missing bearer token",
+    "retryable": false
+  },
+  "request_id": "4de01ea5-361f-4e0f-90fd-1b8c692ba76a"
+}
+
+✓✓✓ ACC canonical tasks API 已挂载并工作正常！
+✓ Error code: unauthorized
+✓ Request ID: 4de01ea5-361f-4e0f-90fd-1b8c692ba76a

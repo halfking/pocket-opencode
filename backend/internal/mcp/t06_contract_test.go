@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -67,17 +68,7 @@ func TestContract_GetRemoteTasksRPCError(t *testing.T) {
 	defer srv.Close()
 
 	_, err := NewClient(srv.URL, "key", false).GetRemoteTasks(context.Background(), "", 1)
-	if err == nil || !contains(err.Error(), "acc_get_tasks failed") {
+	if err == nil || !strings.Contains(err.Error(), "acc_get_tasks failed") {
 		t.Fatalf("expected wrapped acc_get_tasks error, got %v", err)
 	}
-}
-
-func contains(s, sub string) bool { return len(s) >= len(sub) && stringContains(s, sub) }
-func stringContains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

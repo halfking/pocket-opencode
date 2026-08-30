@@ -1,0 +1,52 @@
+=== 阶段 2：创建真实任务 ===
+时间: 2026-08-30T04:48:43Z
+
+任务唯一标识符:
+  Idempotency-Key: probe-task-9248a995-1417-4f8c-b9a5-a982594de72e
+  Correlation-ID: probe-corr-9248a995-1417-4f8c-b9a5-a982594de72e
+  Client-Ref: probe-client-9248a995-1417-4f8c-b9a5-a982594de72e
+
+请求: POST http://127.0.0.1:27001/api/v2/tasks
+Headers:
+  Authorization: Bearer <token前20字符>eyJhbGciOiJIUzI1NiIs...
+  Idempotency-Key: probe-task-9248a995-1417-4f8c-b9a5-a982594de72e
+  X-Correlation-ID: probe-corr-9248a995-1417-4f8c-b9a5-a982594de72e
+  Content-Type: application/json
+
+请求体（脱敏）:
+{
+  "project_id": "probe-project-001",
+  "title": "Integration probe task",
+  "description": "Minimal real integration probe for OpenPocket→RedClaw→ACC→Memora chain",
+  "task_contract": {
+    "type": "manual",
+    "risk_level": "low",
+    "acceptance": [
+      "Task is created and visible in ACC canonical API"
+    ]
+  },
+  "client_ref": "probe-client-9248a995-1417-4f8c-b9a5-a982594de72e"
+}
+
+HTTP 状态: 401
+响应体:
+{
+  "correlation_id": "probe-corr-9248a995-1417-4f8c-b9a5-a982594de72e",
+  "error": {
+    "code": "invalid_token",
+    "message": "bearer token is invalid: token signature is invalid: signature is invalid",
+    "retryable": false
+  },
+  "request_id": "f3906775-40d9-4e6d-b2f8-72fe45bf5287"
+}
+
+=== 提取的字段 ===
+task_id: 未返回
+operation_id: 未返回
+status: 未返回
+request_id: f3906775-40d9-4e6d-b2f8-72fe45bf5287
+correlation_id: probe-corr-9248a995-1417-4f8c-b9a5-a982594de72e
+
+✗ 任务创建失败（HTTP 401）
+错误码: invalid_token
+错误信息: bearer token is invalid: token signature is invalid: signature is invalid

@@ -1,0 +1,92 @@
+# =============================================================================
+# opencode-pocket — deploy/bin/docker-compose.opp.yml
+#
+# 本地（~/Downloads/kaixuan/opp）与 252 服务器（/opt/kaixuan/opp）共用的
+# 独立部署 compose。与 deploy/acc-integration/docker-compose.yml 互不影响：
+#   - acc-integration：开发期 acc 联调栈（保留原样，勿动）。
+#   - 本文件：目录外部化的运行部署，config/data/logs 全部来自
+#     DEPLOY_BASE_DIR（由 deploy/bin/env.sh 注入）。
+#
+# 所有 ${VAR} 均来自 deploy/bin/env.sh + ${POCKET_CONFIG_DIR}/.env.{local,server}。
+# 不写死任何宿主路径。
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # pocketd backend
+  # ===========================================================================
+  pocketd:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.kx-base
+      network: host
+      args:
+        KX_BASE_TAG: ${KX_BASE_TAG:-kx-base:go-vue-optimized}
+        RUNTIME_BASE_IMAGE: ${RUNTIME_BASE_IMAGE:-alpine:latest}
+    image: opencode-pocket:${OPP_IMAGE_TAG}
+    pull_policy: never
+    # 容器名带 base-dir 派生后缀（env.sh 的 OPP_CONTAINER_SUFFIX），
+    # 同机多套部署（正式+临时）互不冲突。
+    container_name: opencode-pocket-pocketd-${DEPLOY_ENV}${OPP_CONTAINER_SUFFIX}
+    restart: unless-stopped
+    env_file:
+      - ${POCKET_ENV_FILE}
+    environment:
+      POCKET_DATA_DIR: /app/data
+      # 后端把 POCKET_HTTP_PORT 当监听端口读；compose environment 优先级
+      # 高于 env_file，固定容器内监听 8088，宿主端口只由 ports 映射决定。
+      POCKET_HTTP_PORT: "8088"
+    ports:
+      - "${POCKET_HTTP_PORT:-8088}:8088"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - opp_net
+    volumes:
+      # 数据目录外部化：sqlite / 上传附件等全部落在宿主 data/
+      - ${POCKET_DATA_DIR:?POCKET_DATA_DIR must be set}:/app/data
+      # 日志目录外部化：当前 pocketd 日志走 stderr（docker logs），
+      # logs.sh 会拉取落盘；此挂载留给后续文件日志直写，避免重复改 compose。
+      - ${POCKET_LOG_DIR:?POCKET_LOG_DIR must be set}:/var/log/pocketd
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8088/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 25s
+
+  # ===========================================================================
+  # frontend (nginx serving the Vite-built dist/)
+  # ===========================================================================
+  frontend:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.frontend
+      network: host
+    image: opencode-pocket-frontend:${OPP_IMAGE_TAG}
+    pull_policy: never
+    container_name: opencode-pocket-frontend-${DEPLOY_ENV}${OPP_CONTAINER_SUFFIX}
+    restart: unless-stopped
+    depends_on:
+      pocketd:
+        condition: service_healthy
+    environment:
+      # nginx 同源反代到 pocketd，浏览器端无 CORS 问题
+      BACKEND_UPSTREAM: http://pocketd:8088
+    ports:
+      - "${POCKET_FRONTEND_PORT:-4175}:80"
+    networks:
+      - opp_net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  opp_net:
+    # 默认自建网络（按 base-dir 派生后缀隔离）；若要并入既有 acc-local-net
+    # 等外部网络，设 OPP_NET_EXTERNAL=true 且 OPP_NET_NAME=acc-local-net。
+    name: ${OPP_NET_NAME:-opp-${DEPLOY_ENV}${OPP_CONTAINER_SUFFIX}-net}
+    external: ${OPP_NET_EXTERNAL:-false}

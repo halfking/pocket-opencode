@@ -1,0 +1,16 @@
+=== ACC 修复后测试 ===
+时间: 2026-08-30T04:59:42Z
+
+测试: GET http://127.0.0.1:18100/api/v2/canonical/tasks (无认证)
+HTTP 状态: 404
+响应体:
+{
+  "error": {
+    "code": "not_found",
+    "message": "Not Found",
+    "retryable": false
+  },
+  "request_id": "b1388b4d-af70-43fd-9860-4e71c633ad00"
+}
+
+✗ 路由仍未挂载（404）

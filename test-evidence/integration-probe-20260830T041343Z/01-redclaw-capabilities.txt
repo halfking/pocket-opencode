@@ -1,0 +1,49 @@
+=== 阶段 1B：RedClaw Facade 可达性测试 ===
+时间: 2026-08-30T04:22:57Z
+
+请求: GET http://127.0.0.1:27001/api/v2/capabilities
+HTTP 状态: 200
+响应体:
+{
+  "dependencies": {
+    "acc": {
+      "required_features": [
+        "canonical_tasks",
+        "gate"
+      ],
+      "status": "configured"
+    },
+    "gateway": {
+      "required_features": [
+        "llm_data_plane"
+      ],
+      "status": "mock"
+    },
+    "memora": {
+      "required_features": [
+        "memory_retrieval_v2"
+      ],
+      "status": "configured"
+    }
+  },
+  "features": {
+    "acc_adapter": "configured",
+    "approval.decision": "partial",
+    "approval.read": "partial",
+    "events.subscribe": "partial",
+    "memora_proxy": "configured",
+    "memory.search": "supported",
+    "notifications.ack": "partial",
+    "notifications.read": "partial",
+    "task.read": "supported",
+    "task.write": "supported"
+  },
+  "request_id": "c0623f6a-3dde-4d71-b524-fe8d1aa5b98d",
+  "service": "redclaw-facade",
+  "status": "partial",
+  "version": "v1-draft"
+}
+
+Backend 模式: 未识别
+
+✓ RedClaw facade 可达

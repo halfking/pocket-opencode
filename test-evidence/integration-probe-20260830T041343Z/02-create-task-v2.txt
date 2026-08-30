@@ -1,0 +1,34 @@
+=== 阶段 2：创建真实任务（重试，使用正确 JWT） ===
+时间: 2026-08-30T04:52:11Z
+
+使用的标识符（与首次尝试相同）:
+  Idempotency-Key: probe-task-9248a995-1417-4f8c-b9a5-a982594de72e
+  Correlation-ID: probe-corr-9248a995-1417-4f8c-b9a5-a982594de72e
+  Client-Ref: probe-client-9248a995-1417-4f8c-b9a5-a982594de72e
+
+请求: POST http://127.0.0.1:27001/api/v2/tasks
+Headers: Authorization Bearer <valid-token>, Idempotency-Key, X-Correlation-ID
+
+HTTP 状态: 503
+响应体:
+{
+  "correlation_id": "probe-corr-9248a995-1417-4f8c-b9a5-a982594de72e",
+  "error": {
+    "code": "dependency_unavailable",
+    "message": "acc request failed",
+    "retryable": true
+  },
+  "request_id": "f4801dd2-e3fb-4640-8f40-bc20530522cd"
+}
+
+=== 提取的字段 ===
+task_id: 未返回
+operation_id: 未返回
+status: 未返回
+status_url: 未返回
+request_id: f4801dd2-e3fb-4640-8f40-bc20530522cd
+correlation_id: probe-corr-9248a995-1417-4f8c-b9a5-a982594de72e
+
+✗ 任务创建失败（HTTP 503）
+错误码: dependency_unavailable
+错误信息: acc request failed

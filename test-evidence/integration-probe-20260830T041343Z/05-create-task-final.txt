@@ -1,0 +1,30 @@
+=== 阶段 2 重试：通过 RedClaw Facade 创建任务（ACC 现已运行） ===
+时间: 2026-08-30T05:07:13Z
+
+新的唯一标识符:
+  Idempotency-Key: probe-task-dde02382-0b48-45ec-a20b-473292c8754f
+  Correlation-ID: probe-corr-dde02382-0b48-45ec-a20b-473292c8754f
+  Client-Ref: probe-client-dde02382-0b48-45ec-a20b-473292c8754f
+
+请求: POST http://127.0.0.1:27001/api/v2/tasks
+
+HTTP 状态: 502
+响应体:
+{
+  "correlation_id": "probe-corr-dde02382-0b48-45ec-a20b-473292c8754f",
+  "error": {
+    "code": "dependency_auth_failed",
+    "message": "downstream service authentication failed",
+    "retryable": false
+  },
+  "request_id": "10805c57-730e-4165-8e34-96cbabc9fdd1"
+}
+
+=== 提取的字段 ===
+task_id: 未返回
+operation_id: 未返回
+status: 未返回
+request_id: 10805c57-730e-4165-8e34-96cbabc9fdd1
+error_code: dependency_auth_failed
+
+✗ 任务创建失败（HTTP 502）

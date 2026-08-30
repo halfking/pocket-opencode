@@ -1,0 +1,32 @@
+# 环境配置键名（脱敏，不含值）
+# 生成时间: 2026-08-30T04:13:43Z
+
+## 本地 Docker 服务
+- PostgreSQL: llm-gateway-pg (127.0.0.1:5432)
+- Qdrant: memora-stack-qdrant (127.0.0.1:26333)
+- Redis: nbjl-redis (127.0.0.1:16379)
+- RedClaw facade: redclaw-facade (127.0.0.1:27001)
+
+## 共享环境变量键名
+- IDENTITY_SHARED_SECRET (已配置，所有仓库统一)
+- IDENTITY_ISSUER_ALLOWLIST (已配置：redclaw,memora,llm-gateway,pocket,acc)
+- IDENTITY_SHADOW_DSN (已配置)
+
+## 数据库连接
+- DSN 模式: postgres://llm_gateway:***@127.0.0.1:5432/llm_gateway?sslmode=disable
+- 数据库名: llm_gateway
+- 用户名: llm_gateway
+
+## 仓库路径
+- openpocket: /Users/xutaohuang/workspace/ai-native-tools/openpocket
+- RedClaw: /Users/xutaohuang/workspace/ai-native-tools/RedClaw
+- agent-control-center: /Users/xutaohuang/workspace/ai-native-tools/agent-control-center
+- memora: /Users/xutaohuang/workspace/ai-native-tools/memora
+
+## Git 工作树状态
+- openpocket: 有修改（M backend/internal/mcp/t06_contract_test.go）
+- RedClaw: 有修改（identity-go 相关）和新增文件
+- agent-control-center: 有修改（runtime control 相关）
+- memora: 仅新增文件，无修改
+
+所有改动均为本次会话相关，无他人未提交文件冲突。
