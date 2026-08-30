@@ -1,0 +1,150 @@
+# deploy/bin — OpenPocket 目录外部化部署（本地 & 252）
+
+Docker 部署,但**镜像文件、日志、数据、配置、启停脚本全部放在 docker 外的指定目录**,由环境变量驱动,可动态调整。
+
+- 本地(macOS):`~/Downloads/kaixuan/opp`
+- 服务器(252):`/opt/kaixuan/opp`
+
+**后端 pocketd 在本地与 252 都部署**(前端默认随两端一起起,可用 `--backend-only` 只起后端);**数据库统一存放在 252 的 docker PG 中**(本地经 SSH tunnel 访问,见下文"数据库拓扑")。
+
+## 目录结构(deploy 外部)
+
+```
+${DEPLOY_BASE_DIR}/              # ~/Downloads/kaixuan/opp 或 /opt/kaixuan/opp
+├── data/          # 容器 /app/data 的 bind 挂载源(sqlite、上传附件等)
+├── logs/          # pocketd.log / frontend.log(docker logs 拉取落盘)+ 状态时间戳
+├── config/        # .env.local / .env.server(唯一容器 env 来源,含密钥,勿提交)
+├── images/        # 离线镜像 *.tar.gz(save-images.sh 导出、load-images.sh 导入)
+└── backup/        # 预留:sqlite/配置快照
+```
+
+## 数据库拓扑
+
+openpocket 的**唯一权威 PG 在 252 的 docker 中**(内网 `172.16.2.210:5432`,PG 17 + Citus;252 上所有服务均为 docker 部署):
+
+```
+┌─ 252 ─────────────────────────────────────────────┐
+│  docker: opencode-pocket-pocketd-server ──┐        │
+│  docker: (其它 kaixuan 服务)              ├─▶ PG (docker, 172.16.2.210:5432)
+└───────────────────────────────────────────┼────────┘
+                                            │
+┌─ 本地 Mac ────────────────────────────────┴────────┐
+│  docker: opencode-pocket-pocketd-local             │
+│    └─▶ host.docker.internal:15432 (宿主)           │
+│           └─▶ SSH tunnel(tunnel-252.sh)─▶ 252 PG   │
+└─────────────────────────────────────────────────────┘
+```
+
+- **252 上的 pocketd**:DSN 直连 `172.16.2.210:5432`,容器经 bridge 出网即可,无需特殊网络。
+- **本地 pocketd**:252 的 PG 不对公网开 5432,必须走 SSH tunnel(`tunnel-252.sh` 管理,宿主 `localhost:15432` → 252 内网 PG;容器内 DSN 用 `host.docker.internal:15432`,compose 已配 host-gateway)。
+- 默认库/用户/schema:`pocket` / `llm_gateway` / `opencode_pocket`。2026-08-31 经 tunnel 实测确认:252 PG(PG 17.10)已有专用 `pocket` 库,其 public schema 里有一套**零数据**的旧空表(users/tasks/notes/emails 等,早期尝试遗留);本次部署不用它,表由后端 migration 建在 `opencode_pocket` schema,与库内其它对象隔离。public 旧空表可在稳定后手工清理。
+- **密码不入库**:生成 `.env.local` 时用 `OPP_PG_PASSWORD=<密码> ./deploy/bin/deploy-local.sh` 注入,或手工编辑 `.env`(在外部目录,不会进 git)。
+- tunnel 凭据:推荐 `ssh-copy-id -p 25022 root@115.29.212.252` 配好 SSH key 免密;或 `SSHPASS` 环境变量 + sshpass。
+
+## 快速开始
+
+### 本地
+
+```bash
+# 0) 首次:建 SSH tunnel 到 252 PG(需 key 或 SSHPASS + sshpass)
+./deploy/bin/tunnel-252.sh up
+
+# 1) 一键部署(建目录 + 生成 .env.local[DSN 指向 252 PG] + tunnel 检查 + 启动)
+OPP_PG_PASSWORD=<252的PG密码> ./deploy/bin/deploy-local.sh
+./deploy/bin/status.sh                # 容器状态 + /healthz + 目录占用
+./deploy/bin/logs.sh                  # docker logs 拉取落盘到 logs/*.log
+./deploy/bin/stop.sh                  # 停止(保留数据)
+```
+
+`deploy-local.sh` 每次启动前都会检查 tunnel,未就绪则自动尝试建立。生成的 `.env.local` 已含随机 JWT 密钥与 252 PG 的 DSN。只起后端:`./deploy/bin/start.sh --backend-only`。
+
+### 252 服务器
+
+```bash
+# ① 本地导出 amd64 镜像(252 是 x86_64,Apple Silicon 本地需 --platform linux/amd64 构建)
+./deploy/bin/save-images.sh
+
+# ② 传输(镜像默认导出到本地 ~/Downloads/kaixuan/opp/images/)
+scp ~/Downloads/kaixuan/opp/images/*.tar.gz user@252:/opt/kaixuan/opp/images/
+#    252 上需要有本仓库源码(至少 deploy/ 目录):
+scp -r deploy user@252:<repo-path>/deploy
+
+# ③ 252 上加载镜像 + 填配置 + 启动
+sudo ./deploy/bin/load-images.sh
+sudo vi /opt/kaixuan/opp/config/.env.server   # 必填:POCKET_ENV=production、POCKET_POSTGRES_DSN(直连 172.16.2.210:5432)、JWT_SECRET 等
+sudo ./deploy/bin/deploy-252.sh               # 自动校验 PG 可达 + 生产门禁后启动
+```
+
+`.env.server` 里的 DSN 示例:
+
+```
+POCKET_POSTGRES_DSN=postgresql://llm_gateway:<密码>@172.16.2.210:5432/pocket?sslmode=disable
+POCKET_PG_SCHEMA=opencode_pocket
+```
+
+## 脚本清单
+
+| 脚本 | 作用 |
+|---|---|
+| `env.sh` | 环境变量中心(被其余脚本 source,勿直接执行) |
+| `init-dirs.sh` | 幂等创建 data/logs/config/images/backup 子目录 |
+| `deploy-local.sh` | 本地一键部署入口(默认 `~/Downloads/kaixuan/opp`,DSN 指向 252 PG) |
+| `deploy-252.sh` | 252 部署入口(默认 `/opt/kaixuan/opp`,root 校验 + PG 可达检查 + 生产门禁) |
+| `tunnel-252.sh` | 本地→252 PG 的 SSH tunnel 管理(up/down/status) |
+| `start.sh` | 启动;自动判断 build/no-build(offline-first);`--backend-only` 只起后端 |
+| `stop.sh` | 停止;`--volumes` 才会删数据卷(有确认) |
+| `status.sh` | compose ps + /healthz + 目录占用 |
+| `logs.sh` | 拉取日志落盘 / `--follow` 跟随 / `--rotate` 轮转 |
+| `save-images.sh` | 导出镜像到 `images/`(gzip,带 arch+时间戳) |
+| `load-images.sh` | 加载 `images/` 下全部离线镜像(`--latest` 只加载最新) |
+| `docker-compose.opp.yml` | 本地/252 共用的独立 compose |
+
+## 环境变量
+
+输入(执行前设置即生效):
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `DEPLOY_ENV` | `local` | `local` / `server`,决定默认根目录与 project 名 |
+| `DEPLOY_BASE_DIR` | 本地 `~/Downloads/kaixuan/opp`;server `/opt/kaixuan/opp` | 顶层根目录,覆盖默认值 |
+| `POCKET_DATA_DIR` 等 | `${DEPLOY_BASE_DIR}/<sub>` | 单独覆盖某个子目录 |
+| `POCKET_HTTP_PORT` | `8088` | 后端宿主端口 |
+| `POCKET_FRONTEND_PORT` | `4175` | 前端宿主端口 |
+| `OPP_IMAGE_TAG` | `pocket-opp` | 镜像 tag(save/load/compose 共用) |
+| `OPP_NET_NAME` | `opp-<env>-net` | compose 网络名 |
+| `OPP_NET_EXTERNAL` | `false` | `true` 时并入既有外部网络(见下) |
+| `POCKET_ENV_DEBUG` | `0` | `1` 时 env.sh 打印全部生效路径 |
+| `OPP_PG_HOST` | local `host.docker.internal`;server `172.16.2.210` | 252 docker PG 地址 |
+| `OPP_PG_PORT` | local `15432`(tunnel);server `5432` | PG 端口 |
+| `OPP_PG_DB` / `OPP_PG_USER` | `pocket` / `llm_gateway` | 库名/用户(252 专用 pocket 库) |
+| `OPP_PG_SCHEMA` | `opencode_pocket` | openpocket 表所在 schema |
+| `OPP_PG_PASSWORD` | 无 | 生成 `.env.local` 时注入 DSN 密码(不入库) |
+| `OPP_252_SSH_HOST/PORT/USER` | `115.29.212.252`/`25022`/`root` | tunnel-252.sh 的 SSH 目标 |
+
+派生输出(由 `env.sh` 导出,脚本/compose 共用):`POCKET_ENV_FILE`、`POCKET_COMPOSE_FILE`、`POCKET_PROJECT_NAME`、`POCKET_HOST_PORT`(acc 命名别名)等。
+
+## 与 acc-integration 的关系
+
+`deploy/acc-integration/`(local-up.sh 等)是**开发期 acc 联调栈**,依赖其目录内未跟踪的 `.env` 与 `acc-local-net`/`shared-infra` 外部网络,保持原样不动。
+
+本目录是**目录外部化的运行部署**,自带 `docker-compose.opp.yml` + 自建网络,不依赖 acc-integration 的任何本地文件。两者可并存(容器名带 `-local`/`-server` 后缀区分)。
+
+如需让本部署加入 acc 联调网络:
+
+```bash
+OPP_NET_EXTERNAL=true OPP_NET_NAME=acc-local-net ./deploy/bin/start.sh
+```
+
+(要求网络已存在;compose 不会代建 external 网络。)
+
+## 设计说明
+
+- **日志**:pocketd 目前日志只写 stderr(后端无文件日志配置),`logs.sh` 负责从 `docker logs` 拉取追加到 `logs/pocketd.log`;compose 已把 `/var/log/pocketd` 挂到外部 `logs/`,后端未来支持文件日志时无需改 compose。
+- **数据**:`/app/data` 由命名卷改为 bind 挂载 `data/`,容器重建不丢数据;`stop.sh` 默认不删任何数据。业务数据(任务/笔记/邮件/用户等)统一存 252 docker PG 的 `opencode_pocket` schema,本地与 252 的后端连同一个库。
+- **镜像**:`pull_policy: never`,完全 offline-first;`start.sh` 自动判断"已有镜像直接跑 / 缺镜像且有 kx-base 则现场构建 / 都没有则报错指路"。
+- **生产门禁**(deploy-252.sh):`/opt`、`/srv` 下必须 root;`.env.server` 必须存在且 `POCKET_ENV=production`;`POCKET_DEV_AUTH=true` 拒绝启动。
+
+## 变更记录
+
+- 2026-08-31(二):按部署定稿更新——后端 pocketd 部署于本地 + 252;数据库统一为 252 docker 中的 PG(经 tunnel 实测 PG 17.10,选定既有专用 `pocket` 库 + `opencode_pocket` schema);本地经 `tunnel-252.sh` SSH tunnel 访问,252 直连 `172.16.2.210:5432`;`deploy-local.sh` 生成 DSN 指向 252 并在启动前检查/自动建立 tunnel;`deploy-252.sh` 增加 PG 可达性检查与 DSN 必填校验;`start.sh` 新增 `--backend-only`。
+- 2026-08-31(一):初版。新增 `deploy/bin/` 目录外部化部署体系(env/init-dirs/deploy-local/deploy-252/start/stop/status/logs/save-images/load-images + docker-compose.opp.yml);acc-integration 与本地方案栈不受影响。
