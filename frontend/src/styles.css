@@ -28,8 +28,10 @@ body {
   -moz-osx-font-smoothing: grayscale;
   /* Avoid scroll chaining: page scroll never pulls the body underneath a modal. */
   overscroll-behavior-y: none;
-  /* Safe-area top padding so the status bar never overlaps content. */
-  padding-top: env(safe-area-inset-top, 0);
+  /* Safe-area top padding so the status bar never overlaps content.
+     Android WebView 不实现 env(safe-area-inset-top)（恒为 0），由
+     MainActivity 注入 --android-safe-top（状态栏物理高度换算的 CSS px）兜底。 */
+  padding-top: max(env(safe-area-inset-top, 0px), var(--android-safe-top, 0px));
   text-size-adjust: 100%;
   -webkit-text-size-adjust: 100%;
 }

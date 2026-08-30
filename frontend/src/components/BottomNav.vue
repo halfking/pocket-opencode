@@ -110,12 +110,9 @@ const items: NavItem[] = [
 const more: NavItem[] = [
   { to: '/pkm/today', icon: 'sticky_note_2', label: t('nav.pkmNotes') },
   { to: '/vault', icon: 'lock', label: t('nav.vault') },
-  { to: '/tasks', icon: 'checklist', label: t('nav.tasks') },
-  { to: '/sessions', icon: 'chat', label: t('nav.sessions') },
-  { to: '/instances', icon: 'dns', label: t('nav.instances') },
-  { to: '/cost', icon: 'payments', label: t('nav.costQuota') },
-  // 设置入口收敛到顶栏左 ≡ → SettingsMenuDrawer（业界惯例：tab bar 不放设置）。
-  // 路由 /settings 仍存在（深链可访问），路由元数据保持 bottomNav: true 兼容。
+  // 入口收敛：tasks/sessions/instances/cost 已统一到顶栏 ≡ 菜单抽屉「运维与高级」，
+  // 不再在「更多」面板重复暴露；设置入口同样收敛到 ≡（tab bar 不放设置）。
+  // 各路由本身仍存在（深链可访问）。
 ]
 
 function isActive(item: NavItem) {

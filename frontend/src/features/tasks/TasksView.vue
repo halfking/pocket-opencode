@@ -33,7 +33,7 @@
             <span v-if="triage.stalled > 0" class="triage-sub"> · {{ triage.stalled }} 卡</span>
           </template>
           <template v-else>
-            全部正常 · {{ triage.running }}
+            <span class="triage-label">全部正常 · </span>{{ triage.running }}
           </template>
         </span>
       </button>
@@ -1091,6 +1091,8 @@ function timeAgo(dateStr?: string): string {
 /* 窄屏 pill 收紧（<380px 只保留点+数字，去掉"全部正常"等文字）。 */
 @media (max-width: 380px) {
   .triage-pill { padding: 0 8px; }
+  /* 窄屏只保留 点+数字：整体隐藏"全部正常 ·"文字标签，避免半截截断 */
+  .triage-label { display: none; }
   .triage-text { max-width: 6ch; }
 }
 

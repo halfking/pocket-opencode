@@ -94,6 +94,11 @@ import { Capacitor } from '@capacitor/core'
 import { useMicPermission } from '../../composables/useMicPermission'
 import { useNotificationPermission } from '../../composables/useNotificationPermission'
 import { useBiometricStatus } from '../../composables/useBiometricStatus'
+import {
+  isBiometricAvailable,
+  hasBiometricCredential,
+  unbindBiometricCredential,
+} from '../../native/biometricAuth'
 import { useAppSettings } from '../../composables/useAppSettings'
 
 const router = useRouter()
@@ -103,6 +108,22 @@ const bio = useBiometricStatus()
 const appSettings = useAppSettings()
 
 const refreshing = ref(false)
+
+// --- 指纹登录绑定（原生壳：本机绑定态；Web：服务端 WebAuthn 凭据数） ---
+const nativeBiometricAvailable = ref(false)
+const nativeBiometricBound = ref(false)
+
+async function refreshBiometricBinding() {
+  if (!Capacitor.isNativePlatform()) {
+    nativeBiometricAvailable.value = false
+    nativeBiometricBound.value = false
+    return
+  }
+  nativeBiometricAvailable.value = await isBiometricAvailable()
+  nativeBiometricBound.value = nativeBiometricAvailable.value
+    ? await hasBiometricCredential()
+    : false
+}
 
 // --- 麦克风 ---
 const micLabel = computed(() => {
@@ -130,6 +151,12 @@ const notifStateClass = computed(() => {
 
 // --- 生物识别 ---
 const biometricLabel = computed(() => {
+  // 原生壳：以本机指纹登录绑定态为准
+  if (Capacitor.isNativePlatform()) {
+    if (!nativeBiometricAvailable.value) return '不支持'
+    return nativeBiometricBound.value ? '已绑定' : '未绑定'
+  }
+  // Web：服务端 WebAuthn 凭据数
   const a = bio.availability.value
   if (a === 'loading') return '查询中…'
   if (a === 'ready') return bio.credentialCount.value > 0 ? `已注册 ${bio.credentialCount.value} 个` : '未启用'
@@ -138,6 +165,10 @@ const biometricLabel = computed(() => {
   return '检测中'
 })
 const biometricStateClass = computed(() => {
+  if (Capacitor.isNativePlatform()) {
+    if (nativeBiometricBound.value) return 'ok'
+    return nativeBiometricAvailable.value ? 'warn' : 'muted'
+  }
   const a = bio.availability.value
   if (a === 'ready' && bio.credentialCount.value > 0) return 'ok'
   if (a === 'ready' || a === 'unauthenticated') return 'warn'
@@ -147,10 +178,11 @@ const biometricSubtitle = computed(() => {
   if (!Capacitor.isNativePlatform()) {
     return '当前为 Web 环境；生物识别需 Android 原生壳或受支持的浏览器（WebAuthn）。'
   }
-  const a = bio.availability.value
-  if (a === 'ready' && bio.credentialCount.value === 0) return '尚未注册生物凭据，点击前往密码箱开启'
-  if (a === 'ready') return `已注册 ${bio.credentialCount.value} 个生物凭据，可去密码箱管理`
-  return '使用指纹或人脸快速解锁应用与密码箱'
+  if (!nativeBiometricAvailable.value) {
+    return '设备未录入指纹/人脸（或系统不支持），请先在系统设置中录入'
+  }
+  if (nativeBiometricBound.value) return '指纹登录已开启：登录页可直接指纹登录；点击可解绑'
+  return '密码登录成功后会自动绑定指纹；绑定后登录页可用指纹一键登录'
 })
 
 // --- 交互 ---
@@ -161,7 +193,10 @@ function goBack() {
 async function refreshAll() {
   refreshing.value = true
   try {
-    await Promise.all([mic.recheck(), notif.recheck(), bio.refresh()])
+    const jobs: Promise<unknown>[] = [mic.recheck(), notif.recheck(), refreshBiometricBinding()]
+    // 服务端 WebAuthn 凭据数只在 Web 分支展示，原生平台不发这次（可能 401 的）请求
+    if (!Capacitor.isNativePlatform()) jobs.push(bio.refresh())
+    await Promise.all(jobs)
   } finally {
     refreshing.value = false
   }
@@ -186,9 +221,24 @@ async function handleNotificationClick() {
   }
 }
 
-function handleBiometricClick() {
-  // 生物识别是功能入口而非系统权限；统一跳到密码箱（先解锁/初始化，内有生物识别注册流程）
-  router.push('/vault')
+async function handleBiometricClick() {
+  // Web 环境无原生绑定，仅提示
+  if (!Capacitor.isNativePlatform()) {
+    alert('当前为 Web 环境，指纹登录需在 Android App 中使用。')
+    return
+  }
+  if (!nativeBiometricAvailable.value) {
+    alert('设备未录入指纹/人脸。请先在系统设置中录入后重试。')
+    return
+  }
+  if (nativeBiometricBound.value) {
+    if (confirm('解绑后登录页将不再出现指纹登录，需重新用密码登录并绑定。确定解绑？')) {
+      await unbindBiometricCredential()
+      await refreshBiometricBinding()
+    }
+    return
+  }
+  alert('还未绑定：退出登录后在登录页用密码登录一次，将自动弹出指纹验证完成绑定。')
 }
 
 function showComingSoon(label: string) {

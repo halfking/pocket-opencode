@@ -49,7 +49,19 @@
           />
         </div>
 
-        <button 
+        <button
+          v-if="bioReady"
+          class="login-btn bio-btn"
+          :disabled="loading"
+          @click="biometricLogin"
+        >
+          <span class="material-symbols-outlined" aria-hidden="true">fingerprint</span>
+          {{ loading ? '登录中...' : '指纹登录' }}
+        </button>
+
+        <div v-if="bioReady" class="bio-divider"><span>或使用密码登录</span></div>
+
+        <button
           class="login-btn"
           :disabled="!username || !password || loading"
           @click="handleLogin"
@@ -84,6 +96,13 @@ import { useAuthStore } from '../../stores/auth'
 import { http, ApiError } from '../../api/http'
 import { connectWs } from '../../api/websocket'
 import { initLobster, isLobsterReady } from '../../native/lobster-init'
+import {
+  isBiometricAvailable,
+  hasBiometricCredential,
+  bindBiometricCredential,
+  getBiometricCredential,
+  unbindBiometricCredential,
+} from '../../native/biometricAuth'
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
 import { useCryptoConfig } from '../../stores/crypto-config'
 
@@ -91,9 +110,12 @@ const router = useRouter()
 const auth = useAuthStore()
 
 const username = ref('admin')
-const password = ref('admin')
+const password = ref('')
 const loading = ref(false)
 const error = ref('')
+
+// 指纹登录（仅 Android 原生壳 + 已绑定凭据时出现）
+const bioReady = ref(false)
 
 // 场景：刷新页面后 token 持久（localStorage），但龙虾（crypto + SQLCipher）未初始化
 // 此时需要用户重新输入主密码解锁本地数据，而非直接跳走。
@@ -102,7 +124,14 @@ const unlockPassword = ref('')
 const showMasterPasswordDialog = ref(false)
 const cryptoConfig = useCryptoConfig()
 
-onMounted(() => {
+onMounted(async () => {
+  // 指纹登录入口：原生壳 + 设备已录入生物特征 + 本机已绑定凭据，三者齐备才显示
+  try {
+    if (await isBiometricAvailable() && await hasBiometricCredential()) {
+      bioReady.value = true
+    }
+  } catch { /* 生物识别不可用时静默降级为密码登录 */ }
+
   if (auth.isAuthenticated && !isLobsterReady()) {
     needUnlock.value = true
   } else if (auth.isAuthenticated && isLobsterReady()) {
@@ -152,7 +181,33 @@ async function handleLogin() {
     error.value = '请输入用户名和密码'
     return
   }
+  await doLogin(username.value, password.value, { fromBiometric: false })
+}
 
+/** 指纹登录：验证通过后取回本机绑定凭据走同一登录流程。 */
+async function biometricLogin() {
+  loading.value = true
+  error.value = ''
+  let cred: { username: string; password: string }
+  try {
+    cred = await getBiometricCredential('使用指纹登录 OpenCode Pocket')
+  } catch (e: any) {
+    loading.value = false
+    // 用户取消（系统弹窗 error code 13 = USER_CANCELED）不打扰；其它失败提示并降级为密码登录
+    if (!(e?.message || '').includes('biometric error 13')) {
+      error.value = `指纹验证失败：${e?.message || e}`
+    }
+    return
+  }
+  await doLogin(cred.username, cred.password, { fromBiometric: true })
+}
+
+/**
+ * 统一登录流程。密码登录成功后顺手做指纹绑定（设备支持且未绑定时，
+ * 尽力而为不阻塞）；指纹登录 401 说明绑定凭据已过期（服务端密码已改），
+ * 自动解绑并提示改用密码。
+ */
+async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
   loading.value = true
   error.value = ''
 
@@ -161,7 +216,7 @@ async function handleLogin() {
     // S0-A 扩展：后端返回 { token, user, user_id, workspace_id }。
     const res = await http<{ token: string; user: string; user_id?: string; workspace_id?: string }>('/api/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ username: username.value, password: password.value }),
+      body: JSON.stringify({ username: u, password: p }),
     })
     if (res.user_id && res.workspace_id) {
       auth.setAuthWithWorkspace(res.token, res.user, res.user_id, res.workspace_id)
@@ -170,6 +225,18 @@ async function handleLogin() {
     }
     // 🦞 认证成功后才建立 WS（此前模块加载不会自动连）
     await connectWs()
+
+    // 密码登录成功后绑定指纹：后台尽力而为，不阻塞进入应用
+    // （凭据明文只在闭包内短暂持有；用户取消或失败则下次登录再试）
+    if (!opts.fromBiometric && !bioReady.value) {
+      void (async () => {
+        if (await isBiometricAvailable() && !(await hasBiometricCredential())) {
+          const ok = await bindBiometricCredential(u, p)
+          bioReady.value = ok
+        }
+      })()
+    }
+
     // 本地数据初始化由独立的主密码对话框负责，不把登录密码隐式当作数据库密钥。
     if (!cryptoConfig.cfg.hasMasterPassword) {
       showMasterPasswordDialog.value = true
@@ -179,11 +246,17 @@ async function handleLogin() {
   } catch (e: any) {
     if (e instanceof ApiError) {
       if (e.status === 401) {
-        // 认证失败：用户名密码错误，或后端未开启 POCKET_DEV_AUTH=true（admin/admin 需此 gate）
-        error.value = '登录失败：凭据错误或后端未开启开发登录（需设置 POCKET_DEV_AUTH=true）'
+        if (opts.fromBiometric) {
+          // 绑定的凭据已被服务端拒绝（密码修改过）→ 解绑并引导密码登录
+          await unbindBiometricCredential()
+          bioReady.value = false
+          error.value = '指纹凭据已失效（密码可能已修改），已自动解绑，请用密码重新登录'
+        } else {
+          error.value = '登录失败：用户名或密码错误'
+        }
       } else if (e.status === 404) {
         // 后端尚未部署 auth 路由时，回退到 legacy localStorage 兼容模式。
-        if (username.value === 'admin' && password.value === 'admin') {
+        if (u === 'admin' && p === 'admin') {
           const legacyUser = JSON.stringify({ username: 'admin', loginTime: new Date().toISOString() })
           const legacyToken = 'legacy-token-' + Date.now() // 临时 token 用于兼容性
           auth.setAuth(legacyToken, legacyUser)
@@ -305,6 +378,35 @@ async function handleLogin() {
 .login-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* 指纹登录按钮复用 .login-btn，这里只补图标排版 */
+.bio-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.bio-btn .material-symbols-outlined {
+  font-size: 22px;
+}
+
+.bio-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0;
+  color: var(--text-tertiary, #999);
+  font-size: 12px;
+}
+
+.bio-divider::before,
+.bio-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border, #ddd);
 }
 
 .error-message {

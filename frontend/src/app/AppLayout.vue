@@ -75,9 +75,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { App as CapApp } from '@capacitor/app'
+import { Capacitor } from '@capacitor/core'
 import BottomNav from '../components/BottomNav.vue'
 import GlobalStatusBar from '../components/GlobalStatusBar.vue'
 import SettingsMenuDrawer from '../components/base/SettingsMenuDrawer.vue'
@@ -117,6 +119,27 @@ if (import.meta.env.DEV && route.query.openMenu) {
 }
 
 const title = computed(() => (route.meta.title as string) || 'OpenCode Pocket')
+
+/* Android 系统返回：抽屉开着时先关抽屉，而不是把返回事件交给 WebView
+   （默认行为会导航后退甚至退出应用，抽屉仍留在屏幕上）。仅原生壳生效。 */
+if (Capacitor.isNativePlatform()) {
+  const backSub = CapApp.addListener('backButton', () => {
+    if (menuOpen.value) {
+      menuOpen.value = false
+      return
+    }
+    // 有历史则后退；栈空（根页面）时退出应用——接管了 backButton 就必须
+    // 兜底 Capacitor 被覆盖的默认退出行为，否则用户无法退出。
+    if (window.history.state?.back == null) {
+      void CapApp.exitApp()
+    } else {
+      window.history.back()
+    }
+  })
+  onUnmounted(() => {
+    void backSub.then(h => h.remove()).catch(() => {})
+  })
+}
 // hideAppHeader：视图自带全屏头部（会话工作台等）时隐藏壳层顶栏与全局状态条，
 // 避免与视图头部双层堆叠（P1.5 界面减负；meta 契约此前只被 ScrollChromePortal 消费）。
 const showTopBar = computed(
