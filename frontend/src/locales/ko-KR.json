@@ -27,5 +27,22 @@
   "layout": {
     "skipToMain": "메인 콘텐츠로 건너뛰기",
     "backButton": "뒤로"
+  },
+  "nav": {
+    "mainNavigation": "주 탐색",
+    "ai": "AI",
+    "aiChat": "대화",
+    "notes": "노트",
+    "meetings": "회의",
+    "email": "이메일",
+    "more": "더보기",
+    "moreFeatures": "더 많은 기능",
+    "pkmNotes": "PKM 노트",
+    "vault": "비밀번호 관리",
+    "tasks": "작업",
+    "sessions": "세션",
+    "instances": "인스턴스",
+    "costQuota": "비용 및 할당량",
+    "settings": "설정"
   }
 }

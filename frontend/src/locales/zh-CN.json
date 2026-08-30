@@ -27,5 +27,22 @@
   "layout": {
     "skipToMain": "跳到主要内容",
     "backButton": "返回"
+  },
+  "nav": {
+    "mainNavigation": "主导航",
+    "ai": "AI",
+    "aiChat": "对话",
+    "notes": "笔记",
+    "meetings": "会议",
+    "email": "邮箱",
+    "more": "更多",
+    "moreFeatures": "更多功能",
+    "pkmNotes": "PKM笔记",
+    "vault": "密码箱",
+    "tasks": "任务",
+    "sessions": "会话",
+    "instances": "实例",
+    "costQuota": "成本与配额",
+    "settings": "设置"
   }
 }

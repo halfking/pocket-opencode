@@ -27,5 +27,22 @@
   "layout": {
     "skipToMain": "Zum Hauptinhalt springen",
     "backButton": "Zurück"
+  },
+  "nav": {
+    "mainNavigation": "Hauptnavigation",
+    "ai": "AI",
+    "aiChat": "Chat",
+    "notes": "Notizen",
+    "meetings": "Meetings",
+    "email": "E-Mail",
+    "more": "Mehr",
+    "moreFeatures": "Weitere Funktionen",
+    "pkmNotes": "PKM-Notizen",
+    "vault": "Passwort-Manager",
+    "tasks": "Aufgaben",
+    "sessions": "Sitzungen",
+    "instances": "Instanzen",
+    "costQuota": "Kosten & Kontingent",
+    "settings": "Einstellungen"
   }
 }

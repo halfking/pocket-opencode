@@ -27,5 +27,22 @@
   "layout": {
     "skipToMain": "メインコンテンツへスキップ",
     "backButton": "戻る"
+  },
+  "nav": {
+    "mainNavigation": "メインナビゲーション",
+    "ai": "AI",
+    "aiChat": "チャット",
+    "notes": "ノート",
+    "meetings": "会議",
+    "email": "メール",
+    "more": "もっと見る",
+    "moreFeatures": "その他の機能",
+    "pkmNotes": "PKMノート",
+    "vault": "パスワード管理",
+    "tasks": "タスク",
+    "sessions": "セッション",
+    "instances": "インスタンス",
+    "costQuota": "コストと割り当て",
+    "settings": "設定"
   }
 }

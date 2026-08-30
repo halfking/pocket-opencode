@@ -15,7 +15,7 @@
   - 更多按钮 aria-haspopup + aria-expanded；面板 role="dialog" + aria-modal。
 -->
 <template>
-  <nav class="bottom-nav" aria-label="主导航">
+  <nav class="bottom-nav" :aria-label="t('nav.mainNavigation')">
     <router-link
       v-for="item in items"
       :key="item.to"
@@ -41,7 +41,7 @@
       <span class="icon-pill" aria-hidden="true">
         <span class="material-symbols-outlined icon">more_horiz</span>
       </span>
-      <span class="label">更多</span>
+      <span class="label">{{ t('nav.more') }}</span>
     </button>
 
     <div
@@ -49,7 +49,7 @@
       class="more-sheet"
       role="dialog"
       aria-modal="true"
-      aria-label="更多功能"
+      :aria-label="t('nav.moreFeatures')"
       @click.self="closeMore"
     >
       <div
@@ -62,8 +62,8 @@
       >
         <div class="drag-handle" aria-hidden="true"></div>
         <div class="more-head">
-          <span class="more-title">更多功能</span>
-          <button type="button" class="more-close" aria-label="关闭" @click="closeMore">
+          <span class="more-title">{{ t('nav.moreFeatures') }}</span>
+          <button type="button" class="more-close" :aria-label="t('common.close')" @click="closeMore">
             <span class="material-symbols-outlined">close</span>
           </button>
         </div>
@@ -90,29 +90,31 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 
 const route = useRoute()
+const { t } = useI18n()
 const showMore = ref(false)
 const morePanelEl = ref<HTMLElement | null>(null)
 
 interface NavItem { to: string; icon: string; label: string; match?: string }
 
 const items: NavItem[] = [
-  { to: '/ai', icon: 'smart_toy', label: 'AI', match: '/ai' },
-  { to: '/ai-chat', icon: 'forum', label: '对话', match: '/ai-chat' },
-  { to: '/notes', icon: 'edit_note', label: '笔记', match: '/notes' },
-  { to: '/meetings', icon: 'mic', label: '会议', match: '/meetings' },
-  { to: '/email', icon: 'mail', label: '邮件', match: '/email' },
+  { to: '/ai', icon: 'smart_toy', label: t('nav.ai'), match: '/ai' },
+  { to: '/ai-chat', icon: 'forum', label: t('nav.aiChat'), match: '/ai-chat' },
+  { to: '/notes', icon: 'edit_note', label: t('nav.notes'), match: '/notes' },
+  { to: '/meetings', icon: 'mic', label: t('nav.meetings'), match: '/meetings' },
+  { to: '/email', icon: 'mail', label: t('nav.email'), match: '/email' },
 ]
 
 const more: NavItem[] = [
-  { to: '/pkm/today', icon: 'sticky_note_2', label: 'PKM笔记' },
-  { to: '/vault', icon: 'lock', label: '密码箱' },
-  { to: '/tasks', icon: 'checklist', label: '任务' },
-  { to: '/sessions', icon: 'chat', label: '会话' },
-  { to: '/instances', icon: 'dns', label: '实例' },
-  { to: '/cost', icon: 'payments', label: '成本与配额' },
-  { to: '/settings', icon: 'settings', label: '设置' },
+  { to: '/pkm/today', icon: 'sticky_note_2', label: t('nav.pkmNotes') },
+  { to: '/vault', icon: 'lock', label: t('nav.vault') },
+  { to: '/tasks', icon: 'checklist', label: t('nav.tasks') },
+  { to: '/sessions', icon: 'chat', label: t('nav.sessions') },
+  { to: '/instances', icon: 'dns', label: t('nav.instances') },
+  { to: '/cost', icon: 'payments', label: t('nav.costQuota') },
+  { to: '/settings', icon: 'settings', label: t('nav.settings') },
 ]
 
 function isActive(item: NavItem) {
