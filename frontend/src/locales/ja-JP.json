@@ -17,10 +17,15 @@
     "success": "成功",
     "error": "エラー",
     "warning": "警告",
-    "info": "情報"
+    "info": "情報",
+    "close": "閉じる"
   },
   "app": {
     "title": "OpenCode Pocket",
     "welcome": "ようこそ"
+  },
+  "layout": {
+    "skipToMain": "メインコンテンツへスキップ",
+    "backButton": "戻る"
   }
 }

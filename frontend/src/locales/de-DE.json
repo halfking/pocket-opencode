@@ -17,10 +17,15 @@
     "success": "Erfolgreich",
     "error": "Fehler",
     "warning": "Warnung",
-    "info": "Info"
+    "info": "Info",
+    "close": "Schließen"
   },
   "app": {
     "title": "OpenCode Pocket",
     "welcome": "Willkommen"
+  },
+  "layout": {
+    "skipToMain": "Zum Hauptinhalt springen",
+    "backButton": "Zurück"
   }
 }

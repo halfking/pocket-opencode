@@ -17,10 +17,15 @@
     "success": "성공",
     "error": "오류",
     "warning": "경고",
-    "info": "정보"
+    "info": "정보",
+    "close": "닫기"
   },
   "app": {
     "title": "OpenCode Pocket",
     "welcome": "환영합니다"
+  },
+  "layout": {
+    "skipToMain": "메인 콘텐츠로 건너뛰기",
+    "backButton": "뒤로"
   }
 }

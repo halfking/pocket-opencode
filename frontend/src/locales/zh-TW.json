@@ -17,10 +17,15 @@
     "success": "操作成功",
     "error": "操作失敗",
     "warning": "警告",
-    "info": "提示"
+    "info": "提示",
+    "close": "關閉"
   },
   "app": {
     "title": "OpenCode Pocket",
     "welcome": "歡迎使用"
+  },
+  "layout": {
+    "skipToMain": "跳到主要內容",
+    "backButton": "返回"
   }
 }

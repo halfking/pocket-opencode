@@ -15,14 +15,14 @@
 -->
 <template>
   <div class="app-layout">
-    <a href="#main" class="skip-link" @click.prevent="focusMain">跳到主要内容</a>
+    <a href="#main" class="skip-link" @click.prevent="focusMain">{{ t('layout.skipToMain') }}</a>
 
     <header v-if="showTopBar" class="top-bar" role="banner">
       <button
         v-if="canGoBack"
         class="back-btn"
         type="button"
-        aria-label="返回"
+        :aria-label="t('layout.backButton')"
         @click="goBack"
       >
         <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>
@@ -62,10 +62,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import BottomNav from '../components/BottomNav.vue'
 import GlobalStatusBar from '../components/GlobalStatusBar.vue'
 import { useBreakpoint } from '../composables/useBreakpoint'
 import { useDevicePosture } from '../composables/useDevicePosture'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const router = useRouter()
