@@ -41,7 +41,7 @@
               ref="closeButtonEl"
               class="sheet-close"
               type="button"
-              aria-label="关闭"
+              :aria-label="t('common.close')"
               @click="handleClose"
             >
               <span class="material-symbols-outlined" aria-hidden="true">close</span>
@@ -63,7 +63,10 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useBodyScrollLock } from '../../composables/useBodyScrollLock'
+
+const { t } = useI18n()
 
 export interface BottomSheetProps {
   modelValue?: boolean
