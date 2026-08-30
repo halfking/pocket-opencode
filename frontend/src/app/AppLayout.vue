@@ -19,6 +19,17 @@
 
     <header v-if="showTopBar" class="top-bar" role="banner">
       <button
+        v-if="showMenuButton"
+        class="menu-btn"
+        type="button"
+        :aria-label="t('layout.openMenu')"
+        aria-haspopup="dialog"
+        :aria-expanded="menuOpen"
+        @click="menuOpen = true"
+      >
+        <span class="material-symbols-outlined" aria-hidden="true">menu</span>
+      </button>
+      <button
         v-if="canGoBack"
         class="back-btn"
         type="button"
@@ -55,16 +66,21 @@
       <slot />
     </main>
 
+    <!-- 统一菜单抽屉：所有页面左 ≡ 都打开这个（业界惯例：账户 + 设置入口集中）。
+         meta.menu=false 的页面（设置详情、登录等）隐藏触发按钮。 -->
+    <SettingsMenuDrawer v-if="showMenuButton" v-model="menuOpen" />
+
     <BottomNav v-if="showBottomNav" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import BottomNav from '../components/BottomNav.vue'
 import GlobalStatusBar from '../components/GlobalStatusBar.vue'
+import SettingsMenuDrawer from '../components/base/SettingsMenuDrawer.vue'
 import { useBreakpoint } from '../composables/useBreakpoint'
 import { useDevicePosture } from '../composables/useDevicePosture'
 
@@ -76,6 +92,29 @@ const { isFoldableExpanded } = useBreakpoint()
 const { hingeRect, hingeOrientation } = useDevicePosture()
 
 const mainEl = ref<HTMLElement | null>(null)
+const menuOpen = ref(false)
+
+/* 测试钩子（仅 dev）：允许通过 JS 触发菜单打开或 URL 参数 `?openMenu=1` 自动打开。
+   用途：模拟器无 UI 自动化时，可用 simctl openurl 打开菜单抽屉验证视觉。 */
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  ;(window as unknown as { __openMenu?: () => void }).__openMenu = () => {
+    menuOpen.value = true
+  }
+}
+
+/** URL `#/ai?openMenu=1` 自动打开（仅 dev，便于无 UI 自动化后端时验证）。
+    清参必须走 history.replaceState：走 router.replace 会触发下面的
+    fullPath watch 把刚打开的抽屉立即关掉。 */
+if (import.meta.env.DEV && route.query.openMenu) {
+  nextTick(() => {
+    const [hashPath, hashQuery = ''] = window.location.hash.slice(1).split('?')
+    const params = new URLSearchParams(hashQuery)
+    params.delete('openMenu')
+    const clean = params.toString()
+    window.history.replaceState(null, '', `#${hashPath}${clean ? `?${clean}` : ''}`)
+    menuOpen.value = true
+  })
+}
 
 const title = computed(() => (route.meta.title as string) || 'OpenCode Pocket')
 // hideAppHeader：视图自带全屏头部（会话工作台等）时隐藏壳层顶栏与全局状态条，
@@ -97,6 +136,15 @@ const showBottomNav = computed(() => {
   return true
 })
 const canGoBack = computed(() => Boolean(route.meta.canGoBack))
+
+/**
+ * 顶栏左 ≡ 菜单触发按钮：业界惯例（iOS HIG / Material 3）每个主页面都应有菜单入口，
+ * 把"账户 / 设置 / 次要功能"集中到 SettingsMenuDrawer。
+ * meta.menu=false 的页面（设置详情、登录、服务器选择）隐藏此按钮，避免冗余。
+ * 路由切换时关闭抽屉（防止深链打开后旧抽屉卡住）。
+ */
+const showMenuButton = computed(() => route.meta.menu !== false)
+watch(() => route.fullPath, () => { menuOpen.value = false })
 
 /**
  * 全屏自管页（hideAppHeader：会话工作台等自带完整头部/滚动的视图）：
@@ -220,6 +268,30 @@ function focusMain() {
 
 .back-btn:active {
   background: var(--bg-subtle);
+}
+
+/* 顶栏左 ≡：与 back-btn 同尺寸，业界惯例菜单入口。 */
+.menu-btn {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.menu-btn:active {
+  background: var(--bg-subtle);
+}
+
+.menu-btn .material-symbols-outlined {
+  font-size: 22px;
 }
 
 .title {

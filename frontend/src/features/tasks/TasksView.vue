@@ -12,73 +12,86 @@
 <template>
   <PullToRefresh :on-refresh="handleRefresh" class="ai-hub-scroll">
   <div class="ai-hub">
-    <!-- L0: Triage Bar (sticky) -->
-    <section class="triage-bar" :class="triage.hasAttention ? 'attention' : 'allclear'">
-      <button class="triage-main" @click="toggleTriage">
-        <template v-if="triage.hasAttention">
-          <span class="triage-icon">🔴</span>
-          <span class="triage-text">
-            <strong>{{ triage.needsInput }} 项需要你</strong>
-            <span v-if="triage.stalled > 0" class="triage-sub"> · {{ triage.stalled }} 疑似卡死</span>
-          </span>
-          <span class="triage-chevron" :class="{ open: showTriage }">›</span>
-        </template>
-        <template v-else>
-          <span class="triage-icon">🟢</span>
-          <span class="triage-text">全部正常 · {{ triage.running }} 在跑</span>
-        </template>
-      </button>
-
-      <!-- L1: Needs-attention list（按等待时长排序） -->
-      <div v-if="showTriage && triage.hasAttention" class="triage-list">
-        <div v-if="attentionItems.length === 0" class="triage-empty">
-          待办明细拉取中，可下拉刷新
-        </div>
-        <div v-for="card in attentionItems" :key="card.key" class="attention-card" :class="card.type">
-          <!-- 审批 / 提问卡片：内联操作（两步介入） -->
-          <template v-if="card.type === 'approval'">
-            <div class="attn-head">
-              <span class="attn-kind" :class="card.item.kind">{{ card.item.kind === 'permission' ? '等审批' : '提问' }}</span>
-              <span class="attn-title">{{ approvalTitle(card.item) }}</span>
-              <span class="attn-wait">等了 {{ formatDuration(card.waitMs) }}</span>
-            </div>
-            <div v-if="card.item.kind === 'permission'" class="attn-actions">
-              <button
-                class="attn-btn primary"
-                :disabled="approvalBusy !== null"
-                @click.stop="inlineReply(card.item, 'once')"
-              >✓ 批准</button>
-              <button
-                class="attn-btn ghost-danger"
-                :disabled="approvalBusy !== null"
-                @click.stop="inlineReply(card.item, 'reject')"
-              >✕ 拒绝</button>
-              <button class="attn-btn ghost" @click.stop="openApprovalDetail(card.item)">详情</button>
-            </div>
-            <div v-else class="attn-actions">
-              <button
-                v-for="opt in questionOptions(card.item)"
-                :key="opt"
-                class="attn-btn chip"
-                :disabled="approvalBusy !== null"
-                @click.stop="inlineAnswer(card.item, opt)"
-              >{{ opt }}</button>
-              <button class="attn-btn ghost" @click.stop="openApprovalDetail(card.item)">详情</button>
-            </div>
+    <!-- 状态徽章注入到 AppLayout 标题栏右侧（消灭双层标题栏）。
+         原来 L0 sticky 分诊条的全部信息收敛到此按钮：🟢 全部正常·N 在跑 /
+         🔴 N 项需要你 / 疑似卡死时一并显示。点击切换下方 triage 折叠区。 -->
+    <HeaderActionsPortal>
+      <button
+        class="triage-pill"
+        :class="triage.hasAttention ? 'attention' : 'allclear'"
+        type="button"
+        :aria-expanded="showTriage"
+        :aria-label="triage.hasAttention ? '需要你介入' : '全部正常'"
+        @click="toggleTriage"
+      >
+        <span class="triage-dot" aria-hidden="true">
+          {{ triage.hasAttention ? '🔴' : '🟢' }}
+        </span>
+        <span class="triage-text">
+          <template v-if="triage.hasAttention">
+            <strong>{{ triage.needsInput }}</strong>
+            <span v-if="triage.stalled > 0" class="triage-sub"> · {{ triage.stalled }} 卡</span>
           </template>
-          <!-- 疑似卡死任务卡片 -->
           <template v-else>
-            <div class="attn-head" @click="viewTask(card.task.id)">
-              <span class="attn-kind stalled">疑似卡死</span>
-              <span class="attn-title">{{ card.task.title }}</span>
-              <span class="attn-wait">{{ formatDuration(card.waitMs) }}无响应</span>
-            </div>
-            <div class="attn-actions">
-              <button class="attn-btn ghost" @click.stop="viewTask(card.task.id)">查看</button>
-              <button class="attn-btn ghost-danger" @click.stop="stopTaskSessions(card.task)">⏹ 停止会话</button>
-            </div>
+            全部正常 · {{ triage.running }}
           </template>
-        </div>
+        </span>
+      </button>
+    </HeaderActionsPortal>
+
+    <!-- L1: Needs-attention list（原 sticky triage 折叠区，改为内联卡片） -->
+    <section v-if="showTriage && triage.hasAttention" class="triage-card">
+      <div class="triage-card-head">
+        <span>需要你介入</span>
+        <button class="link-btn" @click="showTriage = false">收起</button>
+      </div>
+      <div v-if="attentionItems.length === 0" class="triage-empty">
+        待办明细拉取中，可下拉刷新
+      </div>
+      <div v-for="card in attentionItems" :key="card.key" class="attention-card" :class="card.type">
+        <!-- 审批 / 提问卡片：内联操作（两步介入） -->
+        <template v-if="card.type === 'approval'">
+          <div class="attn-head">
+            <span class="attn-kind" :class="card.item.kind">{{ card.item.kind === 'permission' ? '等审批' : '提问' }}</span>
+            <span class="attn-title">{{ approvalTitle(card.item) }}</span>
+            <span class="attn-wait">等了 {{ formatDuration(card.waitMs) }}</span>
+          </div>
+          <div v-if="card.item.kind === 'permission'" class="attn-actions">
+            <button
+              class="attn-btn primary"
+              :disabled="approvalBusy !== null"
+              @click.stop="inlineReply(card.item, 'once')"
+            >✓ 批准</button>
+            <button
+              class="attn-btn ghost-danger"
+              :disabled="approvalBusy !== null"
+              @click.stop="inlineReply(card.item, 'reject')"
+            >✕ 拒绝</button>
+            <button class="attn-btn ghost" @click.stop="openApprovalDetail(card.item)">详情</button>
+          </div>
+          <div v-else class="attn-actions">
+            <button
+              v-for="opt in questionOptions(card.item)"
+              :key="opt"
+              class="attn-btn chip"
+              :disabled="approvalBusy !== null"
+              @click.stop="inlineAnswer(card.item, opt)"
+            >{{ opt }}</button>
+            <button class="attn-btn ghost" @click.stop="openApprovalDetail(card.item)">详情</button>
+          </div>
+        </template>
+        <!-- 疑似卡死任务卡片 -->
+        <template v-else>
+          <div class="attn-head" @click="viewTask(card.task.id)">
+            <span class="attn-kind stalled">疑似卡死</span>
+            <span class="attn-title">{{ card.task.title }}</span>
+            <span class="attn-wait">{{ formatDuration(card.waitMs) }}无响应</span>
+          </div>
+          <div class="attn-actions">
+            <button class="attn-btn ghost" @click.stop="viewTask(card.task.id)">查看</button>
+            <button class="attn-btn ghost-danger" @click.stop="stopTaskSessions(card.task)">⏹ 停止会话</button>
+          </div>
+        </template>
       </div>
     </section>
 
@@ -411,7 +424,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type Task } from '../../api/client'
 import wsClient from '../../api/websocket'
@@ -421,6 +434,7 @@ import { useApprovalAlerts } from '../../composables/useApprovalAlerts'
 import { useAccTasksStore } from '../../stores/accTasks'
 import { useAuthStore } from '../../stores/auth'
 import { EmptyState, PullToRefresh } from '../../components'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { assessHealth, summarizeHealth, formatDuration, type HealthSignal } from './health'
 import { useInstanceApprovals, type PendingItem } from './useInstanceApprovals'
 import {
@@ -449,6 +463,14 @@ function toggleTriage() {
   if (!triage.value.hasAttention) return
   showTriage.value = !showTriage.value
 }
+
+/** 状态从无变有"需要你"时自动展开折叠区（业界即时提醒惯例）。 */
+watch(
+  () => triage.value.hasAttention,
+  (has) => {
+    if (has && !showTriage.value) showTriage.value = true
+  },
+)
 
 /** 每个任务的健康信号（P0：task.pendingApprovals + updatedAt 近似）。 */
 function signalFor(task: Task): HealthSignal | undefined {
@@ -1027,71 +1049,71 @@ function timeAgo(dateStr?: string): string {
   padding-bottom: 110px; /* voice-bar + bottom-nav */
 }
 
-/* ── L0 分诊条（sticky，唯一必读层） ── */
-.triage-bar {
-  position: sticky;
-  top: 0;
-  z-index: var(--z-base);
-  margin: 8px var(--space-3) 0;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  overflow: hidden;
-}
-.triage-bar.attention {
-  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
-}
-.triage-bar.allclear {
-  border-color: color-mix(in srgb, var(--success) 25%, var(--border));
-}
-.triage-main {
-  width: 100%;
-  display: flex;
+/* ── 状态徽章（注入 AppLayout 标题栏右侧）+ 内联 triage 卡 ── */
+/* 顶栏 pill：44px 触摸热区，与 AppLayout header-actions 通用风格一致 */
+.triage-pill {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  background: none;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  min-height: 44px; /* 触摸热区 */
-}
-.triage-icon {
-  font-size: 14px;
-  flex-shrink: 0;
-}
-.triage-text {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
+  gap: 6px;
+  min-width: 44px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
   color: var(--text-primary);
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+.triage-pill:active { background: var(--bg-subtle); }
+.triage-pill.allclear {
+  border-color: color-mix(in srgb, var(--success) 25%, var(--border));
+  background: color-mix(in srgb, var(--success) 8%, var(--bg-card));
+}
+.triage-pill.attention {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-card));
+}
+.triage-dot { font-size: 10px; line-height: 1; }
+.triage-text {
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 14ch;
 }
-.triage-text strong {
-  font-weight: 700;
-}
-.triage-sub {
-  color: var(--warning);
-  font-weight: 600;
-}
-.triage-chevron {
-  font-size: 16px;
-  color: var(--text-muted);
-  transition: transform 200ms;
-}
-.triage-chevron.open {
-  transform: rotate(90deg);
+.triage-text strong { font-weight: 700; }
+.triage-sub { color: var(--warning); font-weight: 600; }
+
+/* 窄屏 pill 收紧（<380px 只保留点+数字，去掉"全部正常"等文字）。 */
+@media (max-width: 380px) {
+  .triage-pill { padding: 0 8px; }
+  .triage-text { max-width: 6ch; }
 }
 
-/* ── L1 需介入列表 ── */
-.triage-list {
+/* 内联 triage 折叠卡（在 main 内容区最顶部，不是 sticky） */
+.triage-card {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 4px 10px 10px;
+  margin: 0 0 var(--space-3);
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 25%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--danger) 4%, var(--bg-card));
 }
+.triage-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: var(--font-weight-semibold);
+  color: var(--danger);
+}
+.triage-card-head .link-btn { font-size: 11px; }
 .triage-empty {
   font-size: 12px;
   color: var(--text-muted);

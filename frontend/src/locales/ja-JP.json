@@ -26,7 +26,8 @@
   },
   "layout": {
     "skipToMain": "メインコンテンツへスキップ",
-    "backButton": "戻る"
+    "backButton": "戻る",
+    "openMenu": "メニューを開く"
   },
   "nav": {
     "mainNavigation": "メインナビゲーション",
@@ -87,5 +88,13 @@
     "newVersionAvailable": "新しいバージョン v{version} が利用可能です！\n\n変更内容:\n{changelog}",
     "alreadyLatest": "最新バージョンです！",
     "checkUpdateFailed": "更新の確認に失敗しました。後でもう一度お試しください"
+  },
+  "settingsMenu": {
+    "title": "メニュー",
+    "notLoggedIn": "未ログイン",
+    "viewAccount": "アカウントと設定を表示",
+    "groupSettings": "設定",
+    "groupOps": "運用・詳細",
+    "versionFootnote": "OpenCode Pocket · v{version}"
   }
 }

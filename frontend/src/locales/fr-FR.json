@@ -26,7 +26,8 @@
   },
   "layout": {
     "skipToMain": "Aller au contenu principal",
-    "backButton": "Retour"
+    "backButton": "Retour",
+    "openMenu": "Ouvrir le menu"
   },
   "nav": {
     "mainNavigation": "Navigation principale",
@@ -87,5 +88,13 @@
     "newVersionAvailable": "New version v{version} available!\n\nChangelog:\n{changelog}",
     "alreadyLatest": "Already on the latest version!",
     "checkUpdateFailed": "Failed to check for updates, please try again later"
+  },
+  "settingsMenu": {
+    "title": "Menu",
+    "notLoggedIn": "Non connecté",
+    "viewAccount": "Voir compte et réglages",
+    "groupSettings": "Réglages",
+    "groupOps": "Opérations & avancé",
+    "versionFootnote": "OpenCode Pocket · v{version}"
   }
 }

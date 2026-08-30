@@ -9,12 +9,14 @@
   - TOTP 每秒刷新当前 6 位动态码（otpauth 库）
 -->
 <template>
-  <AppLayout>
-    <template #actions>
-      <span class="header-extra">
-        <span class="entry-icon">{{ categoryIcon(entry?.category) }}</span>
-      </span>
-    </template>
+  <!-- App.vue 已全局包 AppLayout；右侧操作经 HeaderActionsPortal 注入全局顶栏，
+       避免嵌套壳层造成双顶栏 + 重复 #app-header-actions。 -->
+  <HeaderActionsPortal>
+    <span class="header-extra">
+      <span class="entry-icon">{{ categoryIcon(entry?.category) }}</span>
+    </span>
+  </HeaderActionsPortal>
+
 
     <div v-if="loading" class="state-wrap"><Skeleton :count="3" /></div>
 
@@ -177,14 +179,13 @@
         {{ toast.msg }}
       </div>
     </transition>
-  </AppLayout>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { TOTP, Secret } from 'otpauth'
-import AppLayout from '../../app/AppLayout.vue'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { Skeleton, EmptyState } from '../../components'
 import * as vaultStore from './vault-store'
 import type { VaultEntry } from './vault-store'

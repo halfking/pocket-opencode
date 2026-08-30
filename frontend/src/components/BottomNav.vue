@@ -114,7 +114,8 @@ const more: NavItem[] = [
   { to: '/sessions', icon: 'chat', label: t('nav.sessions') },
   { to: '/instances', icon: 'dns', label: t('nav.instances') },
   { to: '/cost', icon: 'payments', label: t('nav.costQuota') },
-  { to: '/settings', icon: 'settings', label: t('nav.settings') },
+  // 设置入口收敛到顶栏左 ≡ → SettingsMenuDrawer（业界惯例：tab bar 不放设置）。
+  // 路由 /settings 仍存在（深链可访问），路由元数据保持 bottomNav: true 兼容。
 ]
 
 function isActive(item: NavItem) {
