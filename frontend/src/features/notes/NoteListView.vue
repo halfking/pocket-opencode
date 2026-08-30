@@ -4,37 +4,68 @@
 -->
 <template>
   <div class="notes-view">
-    <AppLayout>
-      <DbLockedState
-        v-if="dbNotReady"
-        hint="笔记功能需要本地加密数据库"
-        @relogin="goToLogin"
+    <!-- App.vue 已全局包 AppLayout（壳层=唯一顶栏/底导航），此处不再嵌套，
+         否则出现双顶栏 + 两个 #app-header-actions（HeaderActionsPortal 只会命中文档序第一个）。 -->
+    <HeaderActionsPortal>
+      <button
+        class="notes-action"
+        type="button"
+        :aria-label="'搜索'"
+        :aria-pressed="showSearch"
+        @click="showSearch = !showSearch"
+      >
+        <span class="material-symbols-outlined" aria-hidden="true">{{ showSearch ? 'search_off' : 'search' }}</span>
+      </button>
+      <button class="notes-action" type="button" aria-label="新建笔记" @click="goCreate">
+        <span class="material-symbols-outlined" aria-hidden="true">add</span>
+      </button>
+    </HeaderActionsPortal>
+
+    <DbLockedState
+      v-if="dbNotReady"
+      hint="笔记功能需要本地加密数据库"
+      @relogin="goToLogin"
+    />
+
+    <template v-else>
+      <!-- "第二层"：领域筛选（与对话页 context-row 等价；DB 未解锁时不渲染） -->
+      <div class="context-row">
+        <button
+          v-for="d in DOMAINS"
+          :key="d.value"
+          class="chip"
+          :class="[`domain-${d.value}`, { active: domain === d.value }]"
+          type="button"
+          @click="setDomain(d.value)"
+        >
+          <span class="chip-icon" aria-hidden="true">{{ d.emoji }}</span>
+          <span class="chip-label">{{ d.label }}</span>
+        </button>
+      </div>
+
+      <div v-if="showSearch" class="search-bar">
+        <input v-model="query" placeholder="搜索笔记…" @keyup.enter="onSearch" />
+        <select v-model="searchMode" @change="onSearch" class="search-mode">
+          <option value="list">全部</option>
+          <option value="fts">全文</option>
+          <option value="semantic">语义</option>
+          <option value="hybrid">混合</option>
+        </select>
+      </div>
+
+      <div v-if="loading" class="state"><Skeleton :count="3" /></div>
+      <EmptyState
+        v-else-if="filteredNotes.length === 0"
+        icon="📝"
+        :title="domain === 'all' ? '还没有笔记' : '该分类暂无笔记'"
+        :hint="domain === 'all' ? '长按右下角麦克风开始语音录入' : '试试切换到其他分类'"
+        size="sm"
+        variant="inline"
       />
 
-      <template v-else>
-        <div class="search-bar">
-          <input v-model="query" placeholder="搜索笔记…" @keyup.enter="onSearch" />
-          <select v-model="searchMode" @change="onSearch" class="search-mode">
-            <option value="list">全部</option>
-            <option value="fts">全文</option>
-            <option value="semantic">语义</option>
-            <option value="hybrid">混合</option>
-          </select>
-        </div>
-
-        <div v-if="loading" class="state"><Skeleton :count="3" /></div>
-        <EmptyState
-          v-else-if="notes.length === 0"
-          icon="📝"
-          title="还没有笔记"
-          hint="长按右下角麦克风开始语音录入"
-          size="sm"
-          variant="inline"
-        />
-
-        <div v-else class="note-list">
+      <div v-else class="note-list">
         <div
-          v-for="n in notes"
+          v-for="n in filteredNotes"
           :key="n.id"
           class="note-card"
           :class="`domain-${n.domain || 'work'}`"
@@ -51,15 +82,14 @@
       </div>
 
       <VoiceRecorderWidget @transcribed="onTranscribed" />
-      </template>
-    </AppLayout>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import AppLayout from '../../app/AppLayout.vue'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import VoiceRecorderWidget from './VoiceRecorderWidget.vue'
 import { Skeleton, EmptyState, DbLockedState } from '../../components'
 import * as notesStore from './notes-store'
@@ -71,9 +101,29 @@ const loading = ref(true)
 const query = ref('')
 const searchMode = ref<'list' | 'fts' | 'semantic' | 'hybrid'>('list')
 const dbNotReady = ref(false)
+const showSearch = ref(false)
+type Domain = 'all' | 'work' | 'study' | 'life' | 'idea'
+const domain = ref<Domain>('all')
+
+interface DomainMeta { value: Domain; label: string; emoji: string }
+const DOMAINS: DomainMeta[] = [
+  { value: 'all',   label: '全部', emoji: '🗂' },
+  { value: 'work',  label: '工作', emoji: '💼' },
+  { value: 'study', label: '学习', emoji: '📚' },
+  { value: 'life',  label: '生活', emoji: '🌱' },
+  { value: 'idea',  label: '想法', emoji: '💡' },
+]
 
 function goToLogin() {
   router.push('/login')
+}
+
+function goCreate() {
+  router.push('/notes/new')
+}
+
+function setDomain(d: Domain) {
+  domain.value = d
 }
 
 async function load() {
@@ -145,15 +195,76 @@ function relTime(ms: number) {
   return `${Math.floor(hr / 24)}天前`
 }
 
-const searchLabel = computed(() =>
-  ({ list: '全部', fts: '全文', semantic: '语义', hybrid: '混合' }[searchMode.value]),
-)
+/** 当前领域过滤后的笔记列表（"全部"不过滤） */
+const filteredNotes = computed(() => {
+  if (domain.value === 'all') return notes.value
+  return notes.value.filter((n) => (n.domain || 'work') === domain.value)
+})
 
-import { computed } from 'vue'
 onMounted(load)
 </script>
 
 <style scoped>
+/* 顶栏"搜索 / 新建"按钮（注入 AppLayout header-actions） */
+:deep(.notes-action) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+:deep(.notes-action[aria-pressed='true']) {
+  background: var(--brand-bg);
+  color: var(--brand-primary);
+  border-color: var(--brand-primary);
+}
+:deep(.notes-action:active) { background: var(--bg-subtle); }
+:deep(.notes-action .material-symbols-outlined) { font-size: 20px; }
+
+/* "第二层"领域筛选 chip 行（与对话页 context-row 等价） */
+.context-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px var(--space-3);
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.context-row::-webkit-scrollbar { display: none; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+.chip:active { background: var(--bg-subtle); }
+.chip.active {
+  color: var(--text-primary);
+  background: var(--brand-bg);
+  border-color: var(--brand-primary);
+}
+.chip-icon { font-size: 14px; line-height: 1; }
+.chip-label { white-space: nowrap; }
+
 .search-bar input {
   width: 100%;
   padding: var(--space-2-5) var(--space-3); /* 修改：10px 12px（原 12px 16px） */

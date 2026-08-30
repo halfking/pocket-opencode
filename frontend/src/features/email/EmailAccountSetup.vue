@@ -181,7 +181,6 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import AppLayout from '../../app/AppLayout.vue'
 import { Skeleton, EmptyState } from '../../components'
 import * as emailsStore from './emails-store'
 import type { EmailAccount } from './emails-store'

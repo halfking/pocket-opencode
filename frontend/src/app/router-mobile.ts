@@ -234,7 +234,7 @@ const router = createRouter({
       path: '/servers',
       name: 'servers',
       component: ServerSelectView,
-      meta: { requiresAuth: true, title: '选择服务器', canGoBack: true, bottomNav: false }
+      meta: { requiresAuth: true, title: '选择服务器', canGoBack: true, bottomNav: false, menu: false }
     },
     {
       path: '/instances',
@@ -280,7 +280,8 @@ const router = createRouter({
       path: '/settings',
       name: 'settings',
       component: SettingsView,
-      meta: { requiresAuth: true, title: '设置', bottomNav: true }
+      // menu:false — 设置页自身就在抽屉菜单的目标里，隐藏 ≡ 避免自引用冗余
+      meta: { requiresAuth: true, title: '设置', bottomNav: true, menu: false }
     },
     {
       // Phase 5: LLM Gateway 配置编辑

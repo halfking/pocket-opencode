@@ -26,7 +26,16 @@
   },
   "layout": {
     "skipToMain": "Skip to main content",
-    "backButton": "Back"
+    "backButton": "Back",
+    "openMenu": "Open menu"
+  },
+  "settingsMenu": {
+    "title": "Menu",
+    "notLoggedIn": "Not signed in",
+    "viewAccount": "View account & settings",
+    "groupSettings": "Settings",
+    "groupOps": "Operations & advanced",
+    "versionFootnote": "OpenCode Pocket · v{version}"
   },
   "nav": {
     "mainNavigation": "Main navigation",
@@ -44,6 +53,17 @@
     "instances": "Instances",
     "costQuota": "Cost & Quota",
     "settings": "Settings"
+  },
+  "routes": {
+    "settings": "Settings",
+    "aiModels": "AI Models",
+    "scheduledTasks": "Scheduled Automation",
+    "permissionsPrivacy": "Permissions & Privacy",
+    "costQuota": "Cost & Quota",
+    "gatewayNodes": "Gateway Nodes",
+    "instances": "Instances",
+    "tasks": "Tasks",
+    "sessions": "Sessions"
   },
   "settings": {
     "aiGateway": "AI Gateway",

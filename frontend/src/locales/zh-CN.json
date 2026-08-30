@@ -26,7 +26,16 @@
   },
   "layout": {
     "skipToMain": "跳到主要内容",
-    "backButton": "返回"
+    "backButton": "返回",
+    "openMenu": "打开菜单"
+  },
+  "settingsMenu": {
+    "title": "菜单",
+    "notLoggedIn": "未登录",
+    "viewAccount": "查看账户与设置",
+    "groupSettings": "设置",
+    "groupOps": "运维与高级",
+    "versionFootnote": "OpenCode Pocket · v{version}"
   },
   "nav": {
     "mainNavigation": "主导航",

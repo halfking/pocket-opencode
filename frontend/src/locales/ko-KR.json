@@ -26,7 +26,8 @@
   },
   "layout": {
     "skipToMain": "메인 콘텐츠로 건너뛰기",
-    "backButton": "뒤로"
+    "backButton": "뒤로",
+    "openMenu": "메뉴 열기"
   },
   "nav": {
     "mainNavigation": "주 탐색",
@@ -87,5 +88,13 @@
     "newVersionAvailable": "New version v{version} available!\n\nChangelog:\n{changelog}",
     "alreadyLatest": "Already on the latest version!",
     "checkUpdateFailed": "Failed to check for updates, please try again later"
+  },
+  "settingsMenu": {
+    "title": "메뉴",
+    "notLoggedIn": "로그인되지 않음",
+    "viewAccount": "계정 및 설정 보기",
+    "groupSettings": "설정",
+    "groupOps": "운영 및 고급",
+    "versionFootnote": "OpenCode Pocket · v{version}"
   }
 }

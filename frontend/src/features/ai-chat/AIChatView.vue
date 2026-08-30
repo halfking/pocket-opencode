@@ -7,44 +7,70 @@
 -->
 <template>
   <div class="ai-chat">
-    <!-- 顶部栏 -->
-    <header class="top-bar">
-      <button class="icon-btn" :aria-label="drawerOpen ? '关闭会话列表' : '打开会话列表'" @click="toggleDrawer">
-        <span class="material-symbols-outlined">menu</span>
+    <!-- 顶部"会话/角色/操作"栏：合并到 AppLayout 单层标题栏的右侧 chrome
+         (HeaderActionsPortal)，左侧 ≡/返回由壳层提供；消灭原双层顶栏。 -->
+    <HeaderActionsPortal>
+      <button
+        v-if="conversations.length > 1 || active"
+        class="chat-convo-btn"
+        type="button"
+        :aria-label="'切换会话'"
+        @click="toggleDrawer"
+      >
+        <span class="material-symbols-outlined" aria-hidden="true">chat_bubble</span>
+        <span class="convo-label">{{ active?.title || '新对话' }}</span>
       </button>
-      <div class="top-title">
-        <span class="title-text">对话</span>
-      </div>
-      <!-- 右侧控制组 -->
-      <div class="top-controls">
-        <!-- 会话选择 -->
-        <button class="ctrl-btn" aria-label="选择会话" @click="toggleDrawer">
-          <span class="material-symbols-outlined">chat_bubble</span>
-          <span class="ctrl-label">{{ active?.title || '新对话' }}</span>
-        </button>
-        <!-- 角色选择 -->
-        <button class="ctrl-btn" aria-label="选择角色" @click="openAgentSheet">
-          <span class="material-symbols-outlined">{{
-            currentAgent ? 'person' : 'psychology'
-          }}</span>
-          <span class="ctrl-label">{{
-            currentAgent ? currentAgent.name : '选择角色'
-          }}</span>
-        </button>
-        <!-- 对比模式 -->
-        <button class="icon-btn" :class="{ active: compareMode }" aria-label="切换对比模式" @click="onToggleCompare">
-          <span class="material-symbols-outlined">balance</span>
-        </button>
-        <!-- 参数设置 -->
-        <button class="icon-btn" aria-label="参数设置" @click="settingsOpen = true">
-          <span class="material-symbols-outlined">tune</span>
-        </button>
-        <!-- 账户设置 -->
-        <button class="icon-btn" aria-label="设置" @click="$router.push('/settings')">
-          <span class="material-symbols-outlined">settings</span>
-        </button>
-      </div>
-    </header>
+      <button
+        class="chat-icon-btn"
+        :class="{ active: compareMode }"
+        type="button"
+        aria-label="切换对比模式"
+        @click="onToggleCompare"
+      >
+        <span class="material-symbols-outlined" aria-hidden="true">balance</span>
+      </button>
+      <button
+        class="chat-icon-btn"
+        type="button"
+        aria-label="对话参数"
+        @click="settingsOpen = true"
+      >
+        <span class="material-symbols-outlined" aria-hidden="true">tune</span>
+      </button>
+      <button
+        class="chat-icon-btn"
+        type="button"
+        aria-label="新建对话"
+        @click="newConversation"
+      >
+        <span class="material-symbols-outlined" aria-hidden="true">add</span>
+      </button>
+    </HeaderActionsPortal>
+
+    <!-- 第二层"角色 / 模型"信息行：内联 chip，点击切换。
+         把"角色选择"从原顶栏下放到此行，腾出标题栏空间。 -->
+    <div class="context-row">
+      <button
+        class="chip"
+        type="button"
+        :aria-label="'切换角色'"
+        @click="openAgentSheet"
+      >
+        <span class="material-symbols-outlined chip-icon" aria-hidden="true">{{
+          currentAgent ? 'person' : 'psychology'
+        }}</span>
+        <span class="chip-label">{{ currentAgent ? currentAgent.name : '选择角色' }}</span>
+      </button>
+      <button
+        class="chip ghost"
+        type="button"
+        :aria-label="'切换模型'"
+        @click="openModelSheet"
+      >
+        <span class="material-symbols-outlined chip-icon" aria-hidden="true">model_training</span>
+        <span class="chip-label">{{ modelChipLabel }}</span>
+      </button>
+    </div>
 
     <!-- 对比模式选中的模型条 -->
     <div v-if="compareMode" class="compare-strip">
@@ -408,7 +434,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   useAIChatStore,
   MODALITY_KEYS,
@@ -423,9 +449,11 @@ import { useVoiceInput } from '../../composables/useVoiceInput'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 import AgentSelectorSheet from './AgentSelectorSheet.vue'
 import BottomSheet from '../../components/base/BottomSheet.vue'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
 const store = useAIChatStore()
 const router = useRouter()
+const route = useRoute()
 const toast = useToast()
 const { confirm } = useConfirm()
 const agentStore = useChatAgentStore()
@@ -614,6 +642,28 @@ function escapeHtml(s: string): string {
 onMounted(() => {
   store.init()
   nextTick(autoGrow)
+  syncRouteTitle()
+})
+
+/**
+ * 标题合并：原"对话"标题 + 当前会话标题 = 单层完整标题（用户要求"第二层放第一层"）。
+ * 通过修改 route.meta.title 让 AppLayout 渲染时同步显示。
+ * 注意：vue-router 每次导航都会从路由记录重新 merge meta，因此无需在卸载时
+ * "恢复"标题——卸载时 route 已指向新路由，恢复动作反而会污染落地页标题。
+ */
+const ORIGINAL_TITLE = '对话'
+function syncRouteTitle() {
+  const conv = store.active
+  const t = conv?.title?.trim()
+  route.meta.title = t ? `${ORIGINAL_TITLE} · ${t}` : ORIGINAL_TITLE
+}
+watch(() => store.active?.title, syncRouteTitle, { immediate: true })
+
+/** 模型 chip 标签：会话模型 > 默认模型 > auto */
+const modelChipLabel = computed(() => {
+  const m = active.value?.model
+  if (m && m !== AUTO) return m
+  return settings.value.defaultModel || AUTO
 })
 
 // 新消息或流式内容变化时自动滚到底
@@ -855,20 +905,12 @@ function formatTime(ts: number): string {
 .ai-chat {
   display: flex;
   flex-direction: column;
-  height: 100dvh;
+  height: 100%;
   background: var(--bg-base);
 }
 
-/* 顶部栏。safe-area-top 由 body 全局注入，这里不再叠加（防止双重下移）。 */
-.top-bar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border);
-}
+/* 输入区图标按钮（加图/麦克风）基础形态：原顶栏 .icon-btn 样式随顶栏删除，
+   但 composer 仍在使用，这里保留等价定义。 */
 .icon-btn {
   width: 36px;
   height: 36px;
@@ -884,64 +926,83 @@ function formatTime(ts: number): string {
 }
 .icon-btn:active { background: var(--bg-subtle); }
 .icon-btn.active { color: var(--brand-primary); }
-.top-title {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-.title-text {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
-/* 右侧控制组 */
-.top-controls {
+/* 顶栏由 AppLayout 提供；这里只渲染"会话名 / 角色 / 模型"chip 行 */
+.context-row {
   display: flex;
   align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-  min-width: 0;
+  gap: 8px;
+  padding: 8px var(--space-3);
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
 }
-.ctrl-btn {
-  display: flex;
+.context-row::-webkit-scrollbar { display: none; }
+
+.chip {
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 10px;
+  padding: 5px 10px;
+  border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--bg-base);
   color: var(--text-primary);
-  border-radius: 16px;
   font-size: 12px;
+  font-weight: var(--font-weight-medium);
   cursor: pointer;
-  max-width: 120px;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-}
-.ctrl-btn:active { background: var(--bg-subtle); }
-.ctrl-btn .material-symbols-outlined {
-  font-size: 16px;
   flex-shrink: 0;
+  white-space: nowrap;
+  max-width: 50vw;
 }
-.ctrl-label {
+.chip:active { background: var(--bg-subtle); }
+.chip.ghost { background: transparent; color: var(--text-secondary); }
+.chip-icon { font-size: 14px; flex-shrink: 0; }
+.chip-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 400;
   min-width: 0;
 }
 
-/* 窄屏（≤380px）顶部控件只保留图标，避免挤压标题 */
+/* 注入 AppLayout header-actions 的按钮样式（与 AppLayout 默认 :deep 样式叠加，
+   但我们要更紧凑、可显示文字标签）。 */
+:deep(.chat-convo-btn) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 50vw;
+  padding: 0 10px;
+  height: 36px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
+  overflow: hidden;
+}
+:deep(.chat-convo-btn:active) { background: var(--border); }
+:deep(.chat-convo-btn .material-symbols-outlined) { font-size: 16px; flex-shrink: 0; }
+:deep(.chat-convo-btn .convo-label) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+:deep(.chat-icon-btn.active) { color: var(--brand-primary); background: var(--brand-bg); }
+
+/* 窄屏（≤380px）隐藏 chip 文字标签，只保留图标，腾出更多空间给标题 */
 @media (max-width: 380px) {
-  .top-bar { padding: 6px 8px; }
-  .ctrl-btn { padding: 6px; max-width: 36px; gap: 0; justify-content: center; }
-  .ctrl-label { display: none; }
-  .title-text { font-size: 14px; }
+  .context-row { padding: 6px var(--space-3); gap: 6px; }
+  .chip-label { display: none; }
+  :deep(.chat-convo-btn .convo-label) { display: none; }
 }
 
 /* 对比条 */

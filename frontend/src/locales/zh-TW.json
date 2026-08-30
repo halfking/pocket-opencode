@@ -26,7 +26,8 @@
   },
   "layout": {
     "skipToMain": "跳到主要內容",
-    "backButton": "返回"
+    "backButton": "返回",
+    "openMenu": "開啟選單"
   },
   "nav": {
     "mainNavigation": "主導航",
@@ -87,5 +88,13 @@
     "newVersionAvailable": "發現新版本 v{version}！\n\n更新內容:\n{changelog}",
     "alreadyLatest": "目前已是最新版本！",
     "checkUpdateFailed": "檢查更新失敗，請稍後重試"
+  },
+  "settingsMenu": {
+    "title": "選單",
+    "notLoggedIn": "未登入",
+    "viewAccount": "查看帳戶與設定",
+    "groupSettings": "設定",
+    "groupOps": "維運與進階",
+    "versionFootnote": "OpenCode Pocket · v{version}"
   }
 }
