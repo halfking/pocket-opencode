@@ -19,6 +19,7 @@ import { renderMarkdown } from '../../utils/markdown'
 import { useSpeech } from '../../composables/useSpeech'
 import { useToast } from '../../composables/useToast'
 import DiffBlock from '../../components/business/DiffBlock.vue'
+import JsonBlock from '../../components/base/JsonBlock.vue'
 import { extractDiffText } from '../../utils/diffParse.ts'
 import {
   countRoundEvents,
@@ -175,76 +176,8 @@ async function copyOutput(output: unknown): Promise<void> {
   }
 }
 
-// ── JSON pretty printing（迁移自 SessionConversationView，含 HTML 转义着色） ──
-function renderJson(value: unknown): string {
-  let json: string
-  try {
-    json = JSON.stringify(value, null, 2) ?? ''
-  } catch {
-    json = String(value)
-  }
-  let out: string = json
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-
-  let i = 0
-  let result = ''
-  let inStr = false
-  while (i < out.length) {
-    const ch = out[i]
-    if (inStr) {
-      if (ch === '\\' && i + 1 < out.length) {
-        result += ch + out[i + 1]
-        i += 2
-        continue
-      }
-      if (ch === '"') {
-        inStr = false
-        result += ch
-        i++
-        continue
-      }
-      result += ch
-      i++
-      continue
-    }
-    if (ch === '"') {
-      const prev = result.trimEnd().slice(-1)
-      const isJsonString = prev === '{' || prev === '[' || prev === ',' || prev === ':'
-      inStr = true
-      if (isJsonString) {
-        const trimmed = result.trimEnd()
-        const isValue = trimmed.endsWith(':')
-        const cls = isValue ? 'json-str' : 'json-key'
-        result += `<span class="${cls}">`
-        let j = i + 1
-        while (j < out.length) {
-          const c = out[j]
-          if (c === '\\' && j + 1 < out.length) {
-            j += 2
-            continue
-          }
-          if (c === '"') break
-          j++
-        }
-        result += out.slice(i, j + 1)
-        result += '</span>'
-        inStr = false
-        i = j + 1
-        continue
-      }
-      result += ch
-      i++
-      continue
-    }
-    result += ch
-    i++
-  }
-  out = result
-  out = out.replace(/([\[\,:]\s*)(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\b/g, '$1<span class="json-num">$2</span>')
-  out = out.replace(/([\[\,:]\s*)(true|false|null)\b/g, '$1<span class="json-bool">$2</span>')
-  return out
+function hasToolValue(value: unknown): boolean {
+  return value !== undefined && value !== null
 }
 
 function formatDuration(ms: number): string {
@@ -358,12 +291,11 @@ function cachedDiffText(output: unknown): string | null {
                           }}
                         </span>
                       </summary>
-                      <div v-if="c.input" class="tool-section">
+                      <div v-if="hasToolValue(c.input)" class="tool-section">
                         <div class="tool-section-title">输入</div>
-                        <!-- eslint-disable-next-line vue/no-v-html -->
-                        <pre v-html="renderJson(c.input)"></pre>
+                        <JsonBlock :data="c.input" />
                       </div>
-                      <div v-if="c.output" class="tool-section">
+                      <div v-if="hasToolValue(c.output)" class="tool-section">
                         <div class="tool-section-title-row">
                           <div class="tool-section-title">输出</div>
                           <button type="button" class="copy-btn" @click="copyOutput(c.output)">
@@ -383,8 +315,7 @@ function cachedDiffText(output: unknown): string | null {
                         </div>
                         <template v-else>
                           <DiffBlock v-if="cachedDiffText(c.output)" :diff="cachedDiffText(c.output)!" />
-                          <!-- eslint-disable-next-line vue/no-v-html -->
-                          <pre v-else v-html="renderJson(c.output)"></pre>
+                          <JsonBlock v-else :data="c.output" />
                           <button
                             type="button"
                             class="copy-btn block-copy"
@@ -675,10 +606,6 @@ function cachedDiffText(output: unknown): string | null {
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
 }
-.tool-section pre :deep(.json-key) { color: var(--brand-primary); }
-.tool-section pre :deep(.json-str) { color: var(--success); }
-.tool-section pre :deep(.json-num) { color: var(--warning); }
-.tool-section pre :deep(.json-bool) { color: var(--info); }
 
 /* 折叠态输出预览：2 行截断（设计 §4.3-2） */
 .output-preview {
