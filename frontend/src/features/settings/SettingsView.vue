@@ -5,37 +5,37 @@
       <!-- AI 网关（llmgo 网关：/ai-chat 对话流量的出口；未配置时 AI 聊天不可用） -->
       <div class="settings-section">
         <div class="section-head">
-          <h2>AI 网关</h2>
+          <h2>{{ t('settings.aiGateway') }}</h2>
           <span :class="['gateway-status', gateway.apiKeySet ? 'ok' : 'off']">
-            {{ gateway.apiKeySet ? '已配置' : '未配置' }}
+            {{ gateway.apiKeySet ? t('settings.configured') : t('settings.notConfigured') }}
           </span>
         </div>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">hub</span></div>
           <div class="setting-content">
-            <div class="setting-label">网关地址</div>
-            <div class="setting-value small">{{ gateway.baseURL || '未配置' }}</div>
+            <div class="setting-label">{{ t('settings.gatewayAddress') }}</div>
+            <div class="setting-value small">{{ gateway.baseURL || t('settings.notConfigured') }}</div>
           </div>
         </div>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">key</span></div>
           <div class="setting-content">
-            <div class="setting-label">API 密钥</div>
+            <div class="setting-label">{{ t('settings.apiKey') }}</div>
             <div class="setting-value">
-              {{ gateway.apiKeySet ? '✓ 已设置' : '未设置 — AI 聊天需要密钥' }}
+              {{ gateway.apiKeySet ? t('settings.apiKeySet') : t('settings.apiKeyNotSet') }}
             </div>
           </div>
         </div>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">psychology</span></div>
           <div class="setting-content">
-            <div class="setting-label">可用模型</div>
+            <div class="setting-label">{{ t('settings.availableModels') }}</div>
             <div class="setting-value">
-              <span v-if="gateway.models.length === 0" class="muted">未获取（配置后自动拉取）</span>
+              <span v-if="gateway.models.length === 0" class="muted">{{ t('settings.modelsNotFetched') }}</span>
               <span v-else class="model-row">
                 <code v-for="m in gateway.models.slice(0, 3)" :key="m" class="model-chip">{{ m }}</code>
                 <span v-if="gateway.models.length > 3" class="muted">
-                  +{{ gateway.models.length - 3 }}
+                  {{ t('settings.moreModels', { count: gateway.models.length - 3 }) }}
                 </span>
               </span>
             </div>
@@ -43,10 +43,10 @@
         </div>
         <div class="action-row">
           <button class="action-btn secondary" :disabled="testing" @click="testGateway">
-            {{ testing ? '测试中…' : '测试连接' }}
+            {{ testing ? t('settings.testing') : t('settings.testConnection') }}
           </button>
           <button class="action-btn primary" @click="openGatewayEditor">
-            编辑配置
+            {{ t('settings.editConfig') }}
           </button>
         </div>
         <div v-if="testResult" :class="['test-result', testResult.ok ? 'ok' : 'fail']">
@@ -56,18 +56,18 @@
 
       <!-- 用户信息 -->
       <div class="settings-section">
-        <h2>用户信息</h2>
+        <h2>{{ t('settings.userInfo') }}</h2>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">person</span></div>
           <div class="setting-content">
-            <div class="setting-label">用户名</div>
+            <div class="setting-label">{{ t('settings.username') }}</div>
             <div class="setting-value">{{ user?.username }}</div>
           </div>
         </div>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">calendar_month</span></div>
           <div class="setting-content">
-            <div class="setting-label">登录时间</div>
+            <div class="setting-label">{{ t('settings.loginTime') }}</div>
             <div class="setting-value">{{ formatLoginTime() }}</div>
           </div>
         </div>
@@ -75,51 +75,51 @@
 
       <!-- 当前连接 -->
       <div class="settings-section">
-        <h2>当前连接</h2>
+        <h2>{{ t('settings.currentConnection') }}</h2>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">dns</span></div>
           <div class="setting-content">
-            <div class="setting-label">服务器</div>
-            <div class="setting-value">{{ selectedServer?.name || '未选择' }}</div>
+            <div class="setting-label">{{ t('settings.server') }}</div>
+            <div class="setting-value">{{ selectedServer?.name || t('settings.notSelected') }}</div>
           </div>
         </div>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">computer</span></div>
           <div class="setting-content">
-            <div class="setting-label">实例</div>
-            <div class="setting-value">{{ selectedInstance?.displayName || '未选择' }}</div>
+            <div class="setting-label">{{ t('settings.instance') }}</div>
+            <div class="setting-value">{{ selectedInstance?.displayName || t('settings.notSelected') }}</div>
           </div>
         </div>
       </div>
 
       <!-- 应用信息 -->
       <div class="settings-section">
-        <h2>应用信息</h2>
+        <h2>{{ t('settings.appInfo') }}</h2>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">smartphone</span></div>
           <div class="setting-content">
-            <div class="setting-label">应用名称</div>
+            <div class="setting-label">{{ t('settings.appName') }}</div>
             <div class="setting-value">{{ APP_VERSION.name }}</div>
           </div>
         </div>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">info</span></div>
           <div class="setting-content">
-            <div class="setting-label">版本号</div>
-            <div class="setting-value">v{{ APP_VERSION.version }} (Build {{ APP_VERSION.buildNumber }})</div>
+            <div class="setting-label">{{ t('settings.version') }}</div>
+            <div class="setting-value">{{ t('settings.versionFormat', { version: APP_VERSION.version, buildNumber: APP_VERSION.buildNumber }) }}</div>
           </div>
         </div>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">event</span></div>
           <div class="setting-content">
-            <div class="setting-label">构建日期</div>
+            <div class="setting-label">{{ t('settings.buildDate') }}</div>
             <div class="setting-value">{{ APP_VERSION.buildDate }}</div>
           </div>
         </div>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">hub</span></div>
           <div class="setting-content">
-            <div class="setting-label">API 地址</div>
+            <div class="setting-label">{{ t('settings.apiAddress') }}</div>
             <div class="setting-value small">{{ apiOrigin }}</div>
           </div>
         </div>
@@ -127,12 +127,12 @@
 
       <!-- 权限与隐私 -->
       <div class="settings-section">
-        <h2>隐私</h2>
+        <h2>{{ t('settings.privacy') }}</h2>
         <div class="setting-item entry" @click="goPermissions">
           <div class="setting-icon"><span class="material-symbols-outlined">admin_panel_settings</span></div>
           <div class="setting-content">
-            <div class="setting-label">权限与隐私</div>
-            <div class="setting-value">麦克风 / 通知 / 生物识别</div>
+            <div class="setting-label">{{ t('settings.permissionsPrivacy') }}</div>
+            <div class="setting-value">{{ t('settings.permissionsDesc') }}</div>
           </div>
           <span class="material-symbols-outlined chevron">chevron_right</span>
         </div>
@@ -140,12 +140,12 @@
 
       <!-- 自动化管理 -->
       <div class="settings-section">
-        <h2>自动化</h2>
+        <h2>{{ t('settings.automation') }}</h2>
         <div class="setting-item entry" @click="goScheduledTasks">
           <div class="setting-icon"><span class="material-symbols-outlined">schedule</span></div>
           <div class="setting-content">
-            <div class="setting-label">定时自动化</div>
-            <div class="setting-value">创建、编辑和查看自动化任务</div>
+            <div class="setting-label">{{ t('settings.scheduledTasks') }}</div>
+            <div class="setting-value">{{ t('settings.scheduledTasksDesc') }}</div>
           </div>
           <span class="material-symbols-outlined chevron">chevron_right</span>
         </div>
@@ -154,13 +154,13 @@
       <!-- 操作按钮 -->
       <div class="settings-section">
         <button class="action-btn secondary" @click="checkForUpdates">
-          检查更新
+          {{ t('settings.checkUpdates') }}
         </button>
         <button class="action-btn secondary" @click="changeServer">
-          切换服务器
+          {{ t('settings.changeServer') }}
         </button>
         <button class="action-btn danger" @click="handleLogout">
-          退出登录
+          {{ t('settings.logout') }}
         </button>
       </div>
     </div>
@@ -176,12 +176,14 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { APP_VERSION, checkUpdate } from '../../utils/version'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
 import { useConfirm } from '../../composables/useConfirm'
 
 const router = useRouter()
 const { confirm } = useConfirm()
+const { t } = useI18n()
 
 // 暴露给 template（Vue template 不能直接访问 window）
 const apiOrigin = typeof window !== 'undefined' ? window.location.origin : ''
@@ -242,13 +244,13 @@ async function testGateway() {
     if (r.ok) {
       testResult.value = {
         ok: true,
-        text: `✓ 连通 · ${r.models?.length || 0} 个模型`,
+        text: t('settings.testSuccess', { count: r.models?.length || 0 }),
       }
       await refreshGateway()
     } else {
       testResult.value = {
         ok: false,
-        text: `✗ 失败：${r.error || r.response || 'HTTP ' + r.status}`,
+        text: t('settings.testFailed', { error: r.error || r.response || 'HTTP ' + r.status }),
       }
     }
   } catch (err: any) {
@@ -272,13 +274,16 @@ async function checkForUpdates() {
   try {
     const response = await checkUpdate()
     if (response.hasUpdate) {
-      alert(`发现新版本 v${response.latest?.version}！\n\n更新内容:\n${response.latest?.changelog.join('\n')}`)
+      alert(t('settings.newVersionAvailable', { 
+        version: response.latest?.version,
+        changelog: response.latest?.changelog.join('\n')
+      }))
     } else {
-      alert('当前已是最新版本！')
+      alert(t('settings.alreadyLatest'))
     }
   } catch (error) {
     console.error('检查更新失败:', error)
-    alert('检查更新失败，请稍后重试')
+    alert(t('settings.checkUpdateFailed'))
   }
 }
 
@@ -295,7 +300,7 @@ function goScheduledTasks() {
 }
 
 async function handleLogout() {
-  if (await confirm({ title: '退出登录', message: '确定要退出登录吗？', confirmText: '退出登录', danger: true })) {
+  if (await confirm({ title: t('settings.logout'), message: t('settings.logoutConfirm'), confirmText: t('settings.logout'), danger: true })) {
     localStorage.removeItem('pocket_user')
     localStorage.removeItem('selected_server')
     localStorage.removeItem('selected_instance')
