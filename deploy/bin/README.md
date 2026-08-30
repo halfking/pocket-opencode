@@ -58,7 +58,7 @@ OPP_PG_PASSWORD=<252的PG密码> ./deploy/bin/deploy-local.sh
 
 `deploy-local.sh` 每次启动前都会检查 tunnel,未就绪则自动尝试建立。生成的 `.env.local`(权限 600)已含随机 JWT 密钥与 252 PG 的 DSN;密码若为占位符,重跑 `OPP_PG_PASSWORD=<密码> ./deploy/bin/deploy-local.sh` 会自动替换 DSN 行。
 
-- 换端口(8088/4175 被占时):`POCKET_HTTP_PORT=8090 POCKET_FRONTEND_PORT=4176 ./deploy/bin/deploy-local.sh` —— 端口是环境变量,不写进 .env(避免死配置)
+- 换前端端口(4175 被占时):`POCKET_FRONTEND_PORT=4176 ./deploy/bin/deploy-local.sh`；后端默认宿主端口为 8090，如需临时覆盖可设置 `POCKET_HTTP_PORT=<port>` —— 端口是环境变量，不写进 `.env`(避免死配置)
 - 只起后端:`./deploy/bin/start.sh --backend-only`
 
 ### 252 服务器(所有脚本都要带 `DEPLOY_ENV=server`,否则默认按 local 解析路径)

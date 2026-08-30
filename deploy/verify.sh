@@ -46,8 +46,8 @@ ENV_FILE="${POCKET_DEPLOY_ENV_FILE:-${DEPLOY_DIR}/.env}"
 if [[ ! -f "${ENV_FILE}" ]]; then
   ENV_FILE="${SCRIPT_DIR}/../backend/.env"
 fi
-PORT=$(grep "^POCKET_HTTP_PORT=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 || echo "8088")
-PORT=${PORT:-8088}
+PORT=$(grep "^POCKET_HTTP_PORT=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 || echo "8090")
+PORT=${PORT:-8090}
 
 # ── 1. 容器存活检查 ────────────────────────────────────────────────
 check "容器运行状态" docker ps --filter "name=${CONTAINER_NAME}" --format "{{.Status}}" | grep -q "Up"

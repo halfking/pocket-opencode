@@ -99,9 +99,9 @@ echo "▶ 启动新容器: ${CONTAINER_NAME}"
 # 读取 .env 文件获取配置（如果存在）
 # ENV_FILE 已在前置配置检查阶段解析并复用。
 
-# 从 .env 读取端口（默认 8088）
-PORT=$(grep "^POCKET_HTTP_PORT=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 || echo "8088")
-PORT=${PORT:-8088}
+# 从 .env 读取宿主端口（默认 8090；容器内 pocketd 固定监听 8088）
+PORT=$(grep "^POCKET_HTTP_PORT=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 || echo "8090")
+PORT=${PORT:-8090}
 
 # 数据卷挂载路径
 DATA_DIR="${SCRIPT_DIR}/../data"
@@ -110,7 +110,7 @@ mkdir -p "${DATA_DIR}"
 docker run -d \
   --name "${CONTAINER_NAME}" \
   --restart always \
-  -p "${PORT}:${PORT}" \
+  -p "${PORT}:8088" \
   --env-file "${ENV_FILE}" \
   --network kaixuan_local_net \
   -v "${DATA_DIR}:/app/data" \
