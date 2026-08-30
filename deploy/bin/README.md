@@ -99,6 +99,19 @@ POCKET_POSTGRES_DSN=postgresql://llm_gateway:<密码>@172.16.2.210:5432/pocket?s
 POCKET_PG_SCHEMA=opencode_pocket
 ```
 
+### 252 网络注意事项(mihomo 透明代理)
+
+252 上 systemd 的 `mihomo.service` 起 Meta TUN 并注入 `ip rule`(pref 9000+),会把**所有非本机进程发起的转发流量**(即容器对外回包)吸进代理隧道丢弃——症状:容器端口从公网/外部访问 SYN 到达但零回包(超时),而主机本机 curl 正常。**不是安全组问题**(tcpdump eth0 有 SYN 无 SYN-ACK 即可确诊)。
+
+修复:更高优先级的直连规则 + systemd 持久化(252 上已配置):
+
+```bash
+ip rule add pref 8999 from 10.89.7.0/24 lookup main   # opp-server-net 固定子网(CNI conflist)
+# 持久化单元: /etc/systemd/system/opp-direct-egress.service(oneshot 幂等,开机自动恢复)
+```
+
+代价:该网段容器出网不再经 mihomo 代理(当前 pocketd 只连 VPC 内 PG,无影响;若未来容器需代理出网需重新评估)。
+
 ## 脚本清单
 
 | 脚本 | 作用 |
@@ -126,8 +139,9 @@ POCKET_PG_SCHEMA=opencode_pocket
 | `DEPLOY_ENV` | `local` | `local` / `server`,决定默认根目录与 project 名 |
 | `DEPLOY_BASE_DIR` | 本地 `~/Downloads/kaixuan/opp`;server `/opt/kaixuan/opp` | 顶层根目录,覆盖默认值 |
 | `POCKET_DATA_DIR` 等 | `${DEPLOY_BASE_DIR}/<sub>` | 单独覆盖某个子目录 |
-| `POCKET_HTTP_PORT` | `8088` | 后端宿主端口 |
+| `POCKET_HTTP_PORT` | `8090` | 后端宿主端口(8088 已弃用;2026-08-31 定稿) |
 | `POCKET_FRONTEND_PORT` | `4175` | 前端宿主端口 |
+| `POCKET_PORT_BIND_IP` | 本地 `0.0.0.0`;server `172.16.2.210` | 宿主端口绑定 IP(252 的 127.0.0.1:8090 被 kxpms-cert-manager 占用,须绑 eth0 IP;健康探测地址自动跟随) |
 | `OPP_IMAGE_TAG` | `pocket-opp` | 镜像 tag(save/load/compose 共用) |
 | `OPP_NET_NAME` | `opp-<env>-net` | compose 网络名 |
 | `OPP_NET_EXTERNAL` | `false` | `true` 时并入既有外部网络(见下) |
@@ -164,6 +178,7 @@ OPP_NET_EXTERNAL=true OPP_NET_NAME=acc-local-net ./deploy/bin/start.sh
 
 ## 变更记录
 
+- 2026-08-31(五):端口定稿与生产凭据切换——8088 全面弃用,`POCKET_HTTP_PORT` 默认改 8090;新增 `POCKET_PORT_BIND_IP`(默认本地 0.0.0.0/server 172.16.2.210,252 的 127.0.0.1:8090 被 kxpms-cert-manager 占用,pocketd 绑 eth0 IP 规避,compose 端口映射与 start/status 健康探测同步适配);admin 密码随机化(bcrypt 直接更新共享库 `opencode_pocket.users`,新值记入两端 env 文件 `POCKET_AUTH_PASS`,生产鉴权走 DB 哈希不受影响)。公网 8090/4175 打通——安全组本就放行,真正根因是 252 的 mihomo Meta-TUN 策略路由吞掉容器对外回包,以 `ip rule pref 8999 from 10.89.7.0/24 lookup main` + systemd `opp-direct-egress.service` 持久化解决(详见"252 网络注意事项")。
 - 2026-08-31(四):新增 `build-images.sh` + `deploy/docker/{Dockerfile.pocketd-prebuilt,Dockerfile.frontend-prebuilt}` 正式构建链路——宿主机 go 交叉编译静态二进制(GOOS=linux GOARCH=amd64/arm64,CGO_ENABLED=0)+ 宿主 npm 构建 dist(架构无关),runtime 镜像纯 COPY(基础镜像按 `--platform` 由 registry 解析),彻底绕开"amd64 需模拟器编译"与"kx-base 离线包仅 arm64"两个限制;镜像打 OCI label(revision/created/version)供审计。当日以该链路完成 252 首次实机部署(amd64 镜像 save→scp→load,`/opt/kaixuan/opp` 落地,双容器 healthy,生产模式真实登录+鉴权 API+前端全通,公网 8088/4175 待阿里云安全组放行,内网 172.16.2.210 可用)与本地 arm64 重建切换。
 - 2026-08-31(三):审计修复(P0×1/P1×6/精选 P2)——load-images.sh 默认 `DEPLOY_ENV=server`+空数组保护+mtime 选最新;logs.sh `--follow` 空 service 修复、`--rotate` 尊重 `--service`;deploy-local.sh 占位密码重跑自动重注入 DSN、`.env.local` chmod 600、DSN 行 printf 写入防 shell 展开、模板不再写端口(端口统一环境变量);start.sh `--backend-only` 镜像判定、env file 缺失提示 DEPLOY_ENV=server、curl/wget 双探测、amd64 机器禁 arm64 kx-base 构建;stop/status/logs 同步 252 提示;deploy-252.sh 门禁去引号/去 CRLF、透传参数;init-dirs.sh data/images 自忽略+root 属主提示;tunnel-252.sh 加 StrictHostKeyChecking=accept-new;README 252 流程补 DEPLOY_ENV=server/init-dirs/必填项。
 - 2026-08-31(二):按部署定稿更新——后端 pocketd 部署于本地 + 252;数据库统一为 252 docker 中的 PG(经 tunnel 实测 PG 17.10,选定既有专用 `pocket` 库 + `opencode_pocket` schema);本地经 `tunnel-252.sh` SSH tunnel 访问,252 直连 `172.16.2.210:5432`;`deploy-local.sh` 生成 DSN 指向 252 并在启动前检查/自动建立 tunnel;`deploy-252.sh` 增加 PG 可达性检查与 DSN 必填校验;`start.sh` 新增 `--backend-only`。

@@ -40,8 +40,8 @@ fi
 # /healthz 探测
 echo
 echo "▶ 健康检查"
-if http_ok "http://localhost:${POCKET_HTTP_PORT}/healthz"; then
-  echo "  ✅ pocketd /healthz OK (http://localhost:${POCKET_HTTP_PORT})"
+if http_ok "http://${POCKET_HTTP_PROBE_HOST}:${POCKET_HTTP_PORT}/healthz"; then
+  echo "  ✅ pocketd /healthz OK (http://${POCKET_HTTP_PROBE_HOST}:${POCKET_HTTP_PORT})"
 else
   echo "  ❌ pocketd /healthz 失败"
 fi

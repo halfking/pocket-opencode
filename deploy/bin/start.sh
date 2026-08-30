@@ -117,7 +117,7 @@ echo "  COMPOSE   = ${POCKET_COMPOSE_FILE}"
 echo "  DATA_DIR  = ${POCKET_DATA_DIR}"
 echo "  LOG_DIR   = ${POCKET_LOG_DIR}"
 echo "  NET       = ${OPP_NET_NAME} (external=${OPP_NET_EXTERNAL})"
-echo "  HTTP_PORT = ${POCKET_HTTP_PORT}  FRONTEND_PORT = ${POCKET_FRONTEND_PORT}"
+echo "  HTTP_PORT = ${POCKET_HTTP_PORT}@${POCKET_PORT_BIND_IP}  FRONTEND_PORT = ${POCKET_FRONTEND_PORT}"
 
 echo "▶ docker compose up ${UP_ARGS[*]}$([[ "${BACKEND_ONLY}" == true ]] && echo ' pocketd')"
 if [[ "${BACKEND_ONLY}" == true ]]; then
@@ -130,13 +130,13 @@ fi
 echo "▶ 等待 /healthz 通过（最多 60s）…"
 for _ in $(seq 1 30); do
   BE_OK=false; FE_OK=true
-  http_ok "http://localhost:${POCKET_HTTP_PORT}/healthz" && BE_OK=true
+  http_ok "http://${POCKET_HTTP_PROBE_HOST}:${POCKET_HTTP_PORT}/healthz" && BE_OK=true
   if [[ "${BACKEND_ONLY}" != true ]]; then
     FE_OK=false
     http_ok "http://localhost:${POCKET_FRONTEND_PORT}/healthz" && FE_OK=true
   fi
   if [[ "${BE_OK}" == true && "${FE_OK}" == true ]]; then
-    echo "  ✅ pocketd   http://localhost:${POCKET_HTTP_PORT}"
+    echo "  ✅ pocketd   http://${POCKET_HTTP_PROBE_HOST}:${POCKET_HTTP_PORT}"
     [[ "${BACKEND_ONLY}" == true ]] || echo "  ✅ frontend  http://localhost:${POCKET_FRONTEND_PORT}"
     echo "${START_TS}" > "${POCKET_LOG_DIR}/.last-healthy"
     "${DOCKER_COMPOSE[@]}" ps

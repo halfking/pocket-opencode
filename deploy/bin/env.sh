@@ -92,9 +92,23 @@ export POCKET_BASE_DIR POCKET_DATA_DIR POCKET_LOG_DIR \
        POCKET_CONFIG_DIR POCKET_IMAGE_DIR POCKET_BACKUP_DIR
 
 # ── 3. 端口 & compose project（可按环境覆盖） ────────────────────
-: "${POCKET_HTTP_PORT:=8088}"
+# 端口定稿（2026-08-31）：8088 不再使用，后端宿主端口统一默认 8090。
+# 另：252 上 kxpms-cert-manager 常驻 127.0.0.1:8090（loopback），
+# pocketd 的宿主端口须绑 eth0 内网 IP 规避冲突（与 pg-252-pg17 同款绑法），
+# 公网/内网访问均经 172.16.2.210:8090。本地默认 0.0.0.0 全接口。
+if [[ "${DEPLOY_ENV}" == "server" ]]; then
+  : "${POCKET_PORT_BIND_IP:=172.16.2.210}"
+fi
+: "${POCKET_HTTP_PORT:=8090}"
 : "${POCKET_FRONTEND_PORT:=4175}"
-export POCKET_HTTP_PORT POCKET_FRONTEND_PORT
+: "${POCKET_PORT_BIND_IP:=0.0.0.0}"
+export POCKET_HTTP_PORT POCKET_FRONTEND_PORT POCKET_PORT_BIND_IP
+# 健康探测主机：绑定了具体 IP 时 localhost 探不到，用绑定 IP 本身
+if [[ "${POCKET_PORT_BIND_IP}" != "0.0.0.0" ]]; then
+  export POCKET_HTTP_PROBE_HOST="${POCKET_PORT_BIND_IP}"
+else
+  export POCKET_HTTP_PROBE_HOST="localhost"
+fi
 # 别名：acc-integration compose 用 *_HOST_PORT 命名，这里同步导出，
 # 方便同一批变量在两套 compose 间复用。
 export POCKET_HOST_PORT="${POCKET_HOST_PORT:-${POCKET_HTTP_PORT}}"
