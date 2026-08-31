@@ -156,6 +156,9 @@ function uid(): string {
 }
 
 export const useAIChatStore = defineStore('ai-chat', () => {
+  // 角色库：send/regenerate 构造请求消息时解析会话绑定角色的 system prompt。
+  // （此前未传 agents 列表，导致选中的角色提示词实际不会注入。）
+  const agentStore = useChatAgentStore()
   const toast = useToast()
 
   const conversations = ref<Conversation[]>([])
@@ -446,7 +449,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
 
     // Snapshot the complete history after appending the user message. Every parallel
     // model receives the same request and no assistant placeholder is included.
-    const requestMessages = buildRequestMessages(conv)
+    const requestMessages = buildRequestMessages(conv, agentStore.agents)
     if (compareMode.value && compareModels.value.length > 0) {
       conv.mode = 'compare'
       for (const model of compareModels.value) {
@@ -593,7 +596,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     const origin = [...conv.messages.slice(0, idx)].reverse().find((m) => m.role === 'user')
     if (!origin) return
     conv.messages.splice(idx, 1)
-    const requestMessages = buildRequestMessages(conv)
+    const requestMessages = buildRequestMessages(conv, agentStore.agents)
     const hasImages = !!origin.images?.length
     spawnStream(conv, msg.model && msg.model !== AUTO ? msg.model : resolveModel(conv, hasImages), requestMessages)
     persist()

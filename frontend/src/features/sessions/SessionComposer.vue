@@ -29,14 +29,11 @@ export interface SessionComposerTarget {
  *
  * 本组件由 A（SessionConversationView）挂载，接线由主代理完成。
  */
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { useVoiceRecording } from '../../composables/useVoiceRecording'
-import { useToast } from '../../composables/useToast'
+import { computed, ref, watch } from 'vue'
 import { useConfirm } from '../../composables/useConfirm'
-import { BottomSheet } from '../../components'
+import { BottomSheet, UnifiedComposer } from '../../components'
 import {
   QUICK_COMMANDS,
-  appendToDraft,
   applyInitialText,
   shouldConfirmCommand,
   truncateChipLabel,
@@ -115,6 +112,12 @@ function send(): void {
   void drafts.clear()
 }
 
+/** 统一输入组件提交入口（契约不变：send(text)）。 */
+function onComposerSubmit(payload: { text: string }): void {
+  draftText.value = payload.text
+  send()
+}
+
 // P1.5：模板 chips 收进快速指令面板（释放常驻整行；面板行内文案完整可读，
 // "停下"二次确认纪律不变）
 const quickPanelVisible = ref(false)
@@ -142,58 +145,15 @@ function selectTarget(id: string): void {
   emit('update:target', id)
 }
 
-// ── 语音（复用现有 composable；转写入草稿可编辑，不直发） ──
-const toast = useToast()
+// ── 确认弹窗（"停下"指令二次确认） ──
 const { confirm } = useConfirm()
-const { isRecording, transcribing, toggleRecording } = useVoiceRecording({
-  onTranscribed: (text) => {
-    draftText.value = appendToDraft(draftText.value, text)
-  },
-  onError: (message) => {
-    toast.error(message)
-  },
-})
-
-// ── 输入框状态 ──
-const inputDisabled = computed(() => props.disabled || isRecording.value || transcribing.value)
-const canSend = computed(() => !props.disabled && draftText.value.trim() !== '')
-const placeholder = computed(() =>
-  isRecording.value ? '🎙 录音中...' : transcribing.value ? '识别中...' : '输入消息…',
-)
-
-// textarea 自适应行高（1-4 行）：JS 撑高 + CSS max-height 截断
-const textareaEl = ref<HTMLTextAreaElement | null>(null)
-
-async function autoResize(): Promise<void> {
-  const el = textareaEl.value
-  if (!el) return
-  await nextTick()
-  el.style.height = 'auto'
-  el.style.height = `${el.scrollHeight}px`
-}
-
-watch(draftText, () => {
-  void autoResize()
-})
-onMounted(() => {
-  void autoResize()
-})
-
-function onKeydown(e: KeyboardEvent): void {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault()
-    send()
-  }
-}
 </script>
 
 <template>
   <div class="composer" :class="{ disabled: props.disabled }">
-    <!-- 输入行：快速指令(bolt) + textarea + voice + send（44px 热区贴右下拇指区）
-         P1.5：固定目标模式下目标 chip 不再渲染（会话标识由工作台头部承担），
-         指令模板 chips 常驻行收进 bolt 面板，释放整行高度；targets 可切换
-         模式保留 chip（切换职责，契约 §4 就绪）。 -->
-    <div class="input-row">
+    <!-- 紧凑上下文行：快速指令(bolt) + 可切换目标 chip（targets 模式）。
+         P1.5：固定目标模式下目标 chip 不再渲染（会话标识由工作台头部承担）。 -->
+    <div class="ctx-row">
       <button
         type="button"
         class="quick-btn"
@@ -218,38 +178,18 @@ function onKeydown(e: KeyboardEvent): void {
         <span class="target-label">{{ targetChipLabel }}</span>
         <span class="material-symbols-outlined chip-icon">expand_more</span>
       </button>
-
-      <textarea
-        ref="textareaEl"
-        v-model="draftText"
-        class="input"
-        rows="1"
-        :placeholder="placeholder"
-        :disabled="inputDisabled"
-        @keydown="onKeydown"
-      ></textarea>
-
-      <button
-        type="button"
-        class="voice-btn"
-        :class="{ recording: isRecording }"
-        :disabled="props.disabled"
-        :aria-label="isRecording ? '停止录音' : '语音输入'"
-        @click="toggleRecording"
-      >
-        {{ isRecording ? '⏹' : '🎙' }}
-      </button>
-
-      <button
-        type="button"
-        class="send-btn"
-        :disabled="!canSend"
-        aria-label="发送"
-        @click="send"
-      >
-        <span class="material-symbols-outlined">send</span>
-      </button>
     </div>
+
+    <!-- 统一输入：宽文本区（可全屏）+ 语音/优化/发送 独立工具行。
+         契约不变：send(text) / 草稿按会话持久化 / 指令面板一点即发。 -->
+    <UnifiedComposer
+      v-model="draftText"
+      placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
+      :enable="{ voice: true, image: false, camera: false, file: false, agent: false, optimize: true }"
+      :submitting="props.disabled"
+      submit-label="发送"
+      @submit="onComposerSubmit"
+    />
 
     <!-- 快速指令面板（P1.5：模板 chips 收纳处；文案完整可读，"停下"保留二次确认） -->
     <BottomSheet v-model="quickPanelVisible" title="快速指令">
@@ -330,10 +270,10 @@ function onKeydown(e: KeyboardEvent): void {
   cursor: not-allowed;
 }
 
-/* ── 输入行 ── */
-.input-row {
+/* ── 紧凑上下文行（快速指令 + 可切换目标 chip） ── */
+.ctx-row {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: var(--space-2);
 }
 
@@ -369,88 +309,6 @@ function onKeydown(e: KeyboardEvent): void {
 }
 .chip-icon {
   font-size: 16px;
-}
-
-.input {
-  flex: 1 1 auto;
-  min-width: 0;
-  resize: none;
-  /* 自适应 1-4 行：JS 撑高，4 行封顶（line-height 1.5 × 4 + 上下 padding） */
-  max-height: calc(var(--text-base) * 1.5 * 4 + var(--space-2) * 2);
-  overflow-y: auto;
-  padding: var(--space-2) var(--space-2-5);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  font-size: var(--text-base);
-  line-height: 1.5;
-  font-family: inherit;
-  background: var(--bg-subtle);
-  color: var(--text-primary);
-  outline: none;
-  transition: border-color var(--duration-fast) var(--ease-out);
-}
-.input::placeholder {
-  color: var(--text-muted);
-}
-.input:focus {
-  border-color: var(--brand-primary);
-  background: var(--bg-card);
-}
-.input:disabled {
-  opacity: 0.6;
-}
-
-/* ── 语音 / 发送按钮：44px 热区，贴右下拇指区 ── */
-.voice-btn,
-.send-btn {
-  flex: 0 0 auto;
-  width: 44px;
-  height: 44px;
-  border: none;
-  border-radius: var(--radius-full);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  font-size: 16px;
-  transition: transform var(--duration-fast) var(--ease-out);
-}
-.voice-btn {
-  background: var(--bg-subtle);
-  color: var(--text-secondary);
-}
-.voice-btn.recording {
-  background: var(--danger);
-  color: var(--text-inverse);
-  animation: pulse-voice 1s infinite;
-}
-@keyframes pulse-voice {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.7;
-    transform: scale(1.05);
-  }
-}
-.voice-btn:disabled,
-.send-btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-.voice-btn:not(:disabled):active,
-.send-btn:not(:disabled):active {
-  transform: scale(0.95);
-}
-.send-btn {
-  background: var(--brand-primary);
-  color: var(--text-inverse);
-}
-.send-btn:disabled {
-  background: var(--bg-subtle);
-  color: var(--text-muted);
 }
 
 .material-symbols-outlined {

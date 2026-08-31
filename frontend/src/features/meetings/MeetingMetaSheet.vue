@@ -5,7 +5,15 @@
 
       <label class="field">
         <span>标题</span>
-        <input v-model="form.title" placeholder="自动生成或手动输入" />
+        <UnifiedComposer
+          v-model="form.title"
+          single-line
+          placeholder="自动生成或手动输入（🎙 可语音，✨ 可 AI 优化）"
+          :enable="{ voice: true, image: false, camera: false, file: false, agent: false, optimize: true }"
+          :allow-fullscreen="false"
+          submit-label="保存"
+          @submit="save"
+        />
       </label>
 
       <label class="field">
@@ -34,7 +42,7 @@
 
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue'
-import { BottomSheet } from '@/components'
+import { BottomSheet, UnifiedComposer } from '@/components'
 
 const props = defineProps<{
   open: boolean

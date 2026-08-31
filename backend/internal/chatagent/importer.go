@@ -122,10 +122,31 @@ func importBuiltin(ctx context.Context, store StoreIface, repoPath string) error
 		return nil
 	}
 
-	log.Printf("[chatagent] importing builtin agents from %s", repoPath)
+	agents, err := CollectBuiltinAgents(repoPath)
+	if err != nil {
+		return err
+	}
+	if len(agents) == 0 {
+		log.Printf("[chatagent] no valid agent files found in %s", repoPath)
+		return nil
+	}
 
+	for _, a := range agents {
+		if err := store.Create(ctx, a); err != nil {
+			return fmt.Errorf("insert %s: %w", a.ID, err)
+		}
+	}
+
+	log.Printf("[chatagent] imported %d builtin agents", len(agents))
+	return nil
+}
+
+// CollectBuiltinAgents 遍历角色仓库并解析出全部内置角色（不落库）。
+// 导出供 gen-agent-seed 生成种子 SQL 复用，保证"运行时导入"与
+// "种子文件"两条路径使用完全相同的遍历/过滤/解析规则。
+func CollectBuiltinAgents(repoPath string) ([]*Agent, error) {
 	var agents []*Agent
-	err = filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -155,22 +176,9 @@ func importBuiltin(ctx context.Context, store StoreIface, repoPath string) error
 		return nil
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	if len(agents) == 0 {
-		log.Printf("[chatagent] no valid agent files found in %s", repoPath)
-		return nil
-	}
-
-	for _, a := range agents {
-		if err := store.Create(ctx, a); err != nil {
-			return fmt.Errorf("insert %s: %w", a.ID, err)
-		}
-	}
-
-	log.Printf("[chatagent] imported %d builtin agents", len(agents))
-	return nil
+	return agents, nil
 }
 
 // ImportBuiltinAgents 在 PG Store 上调用：委托给通用 importBuiltin。

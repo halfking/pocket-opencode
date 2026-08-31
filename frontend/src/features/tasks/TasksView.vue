@@ -248,43 +248,17 @@
       </div>
     </section>
 
-    <!-- Voice Input Bar -->
+    <!-- 统一快速提问输入：宽文本区 + 语音/角色/AI优化/提交 独立工具行 -->
     <div class="voice-bar">
-      <div v-if="isRecording" class="recording-indicator">
-        <span class="rec-dot" />
-        <span class="rec-bars"><i /><i /><i /><i /><i /></span>
-        <span class="rec-label">录音中…</span>
-      </div>
-      <div v-else-if="isTranscribing" class="recording-indicator transcribing">
-        <span class="rec-label">转写中…</span>
-      </div>
-      <div v-if="sttError" class="stt-error">{{ sttError }}</div>
-      <div class="voice-input-wrap">
-        <textarea
-          v-model="quickPrompt"
-          class="voice-textarea"
-          :placeholder="isRecording ? '🎙 录音中...' : isTranscribing ? '转写中...' : '快速提问...'"
-          rows="1"
-          @keydown.enter.exact.prevent="sendQuickPrompt"
-          :disabled="isRecording || isTranscribing"
-        />
-        <button
-          class="voice-btn"
-          :class="{ recording: isRecording }"
-          @click="toggleVoice"
-          @touchstart.prevent="onVoiceTouchStart"
-          @touchend.prevent="onVoiceTouchEnd"
-        >
-          {{ isRecording ? '⏹' : '🎙' }}
-        </button>
-        <button
-          v-if="quickPrompt.trim()"
-          class="send-btn"
-          @click="sendQuickPrompt"
-        >
-          ↑
-        </button>
-      </div>
+      <UnifiedComposer
+        v-model="quickPrompt"
+        placeholder="快速提问..."
+        :enable="{ voice: true, image: false, camera: false, file: false, agent: true, optimize: true }"
+        submit-label="提问"
+        :agent-id="quickAgentId"
+        @update:agent-id="quickAgentId = $event"
+        @submit="sendQuickPrompt"
+      />
     </div>
 
     <!-- Task Context Menu (long-press) -->
@@ -428,12 +402,11 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type Task } from '../../api/client'
 import wsClient from '../../api/websocket'
-import { useVoiceInput } from '../../composables/useVoiceInput'
 import { useToast } from '../../composables/useToast'
 import { useApprovalAlerts } from '../../composables/useApprovalAlerts'
 import { useAccTasksStore } from '../../stores/accTasks'
 import { useAuthStore } from '../../stores/auth'
-import { EmptyState, PullToRefresh } from '../../components'
+import { EmptyState, PullToRefresh, UnifiedComposer } from '../../components'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { assessHealth, summarizeHealth, formatDuration, type HealthSignal } from './health'
 import { useInstanceApprovals, type PendingItem } from './useInstanceApprovals'
@@ -447,7 +420,8 @@ import BottomSheet from '../../components/base/BottomSheet.vue'
 
 const router = useRouter()
 const { confirm } = useConfirm()
-const { isRecording, isTranscribing, sttError, startRecording, stopRecording } = useVoiceInput()
+// 快速提问的专家角色（统一输入组件工具行内选择；随 prompt 传给目标会话）
+const quickAgentId = ref<string | undefined>(undefined)
 const auth = useAuthStore()
 
 // ── 健康度 / 分诊（设计方案 v2 §4.1/§4.2，P0 近似数据） ──
@@ -993,28 +967,22 @@ function openSession(s: any) {
   })
 }
 
-// ── Voice ──
-async function toggleVoice() {
-  if (isRecording.value) {
-    const text = await stopRecording()
-    if (text) quickPrompt.value = text
-  } else {
-    await startRecording()
-  }
-}
+// ── Voice（语音输入已由 UnifiedComposer 内置） ──
 
-function onVoiceTouchStart() { /* long-press future */ }
-function onVoiceTouchEnd() { /* noop */ }
-
-function sendQuickPrompt() {
-  const text = quickPrompt.value.trim()
+function sendQuickPrompt(payload: { text: string }) {
+  const text = payload.text.trim()
   if (!text) return
   // Find the most recent active session, or navigate to sessions
   const activeSession = sessions.value.find((s) => s.status === 'active') || sessions.value[0]
   if (activeSession) {
     router.push({
       path: `/sessions/${activeSession.id}`,
-      query: { instance_id: activeSession.instanceId, title: activeSession.title, prompt: text },
+      query: {
+        instance_id: activeSession.instanceId,
+        title: activeSession.title,
+        prompt: text,
+        ...(quickAgentId.value ? { agent_id: quickAgentId.value } : {}),
+      },
     })
   } else {
     router.push('/sessions')

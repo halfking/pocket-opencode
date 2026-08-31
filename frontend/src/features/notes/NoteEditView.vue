@@ -19,31 +19,34 @@
       />
 
       <form v-else class="edit-form" @submit.prevent="onSave">
-        <!-- 标题 -->
+        <!-- 标题：单行统一输入（语音 / AI 优化） -->
         <div class="form-group">
           <label for="note-title">标题</label>
-          <input
-            id="note-title"
-            ref="titleInput"
+          <UnifiedComposer
             v-model="form.title"
-            type="text"
+            single-line
             placeholder="一句话概括…"
-            class="title-input"
+            :enable="{ voice: true, image: false, camera: false, file: false, agent: false, optimize: true }"
+            :allow-fullscreen="false"
+            submit-label="保存"
+            @submit="onSave"
           />
         </div>
 
-        <!-- 正文 -->
+        <!-- 正文：统一输入（宽文本 + 全屏文章编辑 + 语音/文件/优化） -->
         <div class="form-group">
           <label for="note-content">
             正文
-            <span class="hint">支持 Markdown · 语音录入自动填入</span>
+            <span class="hint">支持 Markdown · 可全屏编辑 · 语音录入自动填入</span>
           </label>
-          <textarea
-            id="note-content"
+          <UnifiedComposer
             v-model="form.content"
-            rows="20"
-            placeholder="长按下方麦克风开始语音录入，或直接输入文本…"
-            class="content-input"
+            placeholder="点击 ⛶ 全屏编辑，🎙 语音录入，或直接输入文本…"
+            :submit-on-enter="false"
+            :enable="{ voice: true, image: false, camera: false, file: true, agent: false, optimize: true }"
+            submit-label="保存"
+            :submitting="saving"
+            @submit="onSave"
           />
         </div>
 
@@ -88,18 +91,15 @@
         </div>
         <p v-if="saveError" class="form-error" role="alert">{{ saveError }}</p>
       </form>
-
-      <VoiceRecorderWidget @transcribed="onTranscribed" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import VoiceRecorderWidget from './VoiceRecorderWidget.vue'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
-import { ErrorState } from '../../components'
+import { ErrorState, UnifiedComposer } from '../../components'
 import { useAuthStore } from '../../stores/auth'
 
 const route = useRoute()
@@ -119,7 +119,6 @@ const loading = ref(true)
 const saving = ref(false)
 const saveError = ref('')
 const loadError = ref('')
-const titleInput = ref<HTMLInputElement | null>(null)
 
 interface FormState {
   title: string
@@ -162,7 +161,6 @@ onMounted(() => load())
 async function load() {
   if (isNew.value) {
     loading.value = false
-    await focusTitle()
     return
   }
 
@@ -176,7 +174,6 @@ async function load() {
     loadError.value = e?.message || '加载笔记失败，请稍后重试。'
   } finally {
     loading.value = false
-    await focusTitle()
   }
 }
 
@@ -189,24 +186,8 @@ function hydrate(n: LocalNote) {
   form.audioDurationMs = n.audioDurationMs
 }
 
-async function focusTitle() {
-  await nextTick()
-  titleInput.value?.focus()
-}
-
 function currentWorkspaceId(): string {
   return auth.workspaceId || 'default'
-}
-
-function onTranscribed(result: { text: string; audioPath: string; durationSec: number }) {
-  // 把转写文本追加到 content 末尾，用两个换行分隔
-  if (form.content.trim()) {
-    form.content = `${form.content.trim()}\n\n${result.text}`
-  } else {
-    form.content = result.text
-  }
-  form.audioPath = result.audioPath
-  form.audioDurationMs = Math.round(result.durationSec * 1000)
 }
 
 async function onSave() {

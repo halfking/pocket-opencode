@@ -129,6 +129,8 @@ ip rule add pref 8999 from 10.89.7.0/24 lookup main   # opp-server-net 固定子
 | `save-images.sh` | 导出镜像到 `images/`(gzip,带 arch+时间戳) |
 | `load-images.sh` | 加载 `images/` 下全部离线镜像(`--latest` 只加载最新) |
 | `docker-compose.opp.yml` | 本地/252 共用的独立 compose |
+| `rebuild-db-local.sh` | 本地 llm-gateway-pg 整库重建(kaixuan/opencode_pocket) + 内置角色种子入库 |
+| `../sql/chat_agents_seed.sql` | 内置专家角色(提示词)种子,由 `backend/cmd/gen-agent-seed` 生成,请勿手改 |
 | `../verify.sh` | legacy 部署后验证；复用 `env.sh` 的端口、探测地址、env/data 路径解析，`prod` 作为 `server` 兼容别名 |
 | `../deploy_test.sh` | 部署 contract 门禁；锁定 legacy 与正式 compose 的宿主 8090 → 容器 8088 映射 |
 
@@ -156,6 +158,25 @@ ip rule add pref 8999 from 10.89.7.0/24 lookup main   # opp-server-net 固定子
 | `OPP_252_SSH_HOST/PORT/USER` | `115.29.212.252`/`25022`/`root` | tunnel-252.sh 的 SSH 目标 |
 
 派生输出(由 `env.sh` 导出,脚本/compose 共用):`POCKET_ENV_FILE`、`POCKET_COMPOSE_FILE`、`POCKET_PROJECT_NAME`、`POCKET_HOST_PORT`(acc 命名别名)等。
+
+## 本地 llm-gateway-pg 重建(专家角色内置数据库)
+
+`rebuild-db-local.sh` 按 2026-08-18 原方案在本地共享容器 `llm-gateway-pg` 中重建 openpocket 数据库:
+
+```bash
+./deploy/bin/rebuild-db-local.sh          # 交互确认
+./deploy/bin/rebuild-db-local.sh --yes    # 自动化
+```
+
+流程:预检容器/身份 → 自动备份现有 `opencode_pocket` schema(若有表) → 建专用应用角色 `pocket_app`(随机密码,写入 `config/rebuild-local.env`,权限 600,不入库) → `DROP/CREATE SCHEMA opencode_pocket` → 临时启动一次 pocketd 建全表(33 张) → 以 app 角色应用 `sql/chat_agents_seed.sql`(277 个内置角色,提示词非空) → 校验表数/角色数。
+
+约束与说明:
+
+- **只动本服务 schema**:`kaixuan` 库缺失时会按原方案创建,其他库(`acc_db`/`llm_gateway`/`postgres`)与共享角色 `llm_gateway` 一律不碰;绝不 DROP DATABASE。
+- 宿主 `127.0.0.1` 上 `5432` 是 Homebrew PG,**本容器映射在 `15432`**;脚本内全部管理操作走 `docker exec`(socket trust),应用连接走 `pocket_app` 凭据。
+- 种子更新:角色仓库变化时执行 `cd backend && go run ./cmd/gen-agent-seed -repo <agency-agents-zh 路径> -o ../deploy/sql/chat_agents_seed.sql` 后提交,再重跑重建。
+- 运行时 `POCKET_AGENTS_REPO_PATH` 导入仍可用:种子已写入 builtin 行,幂等条件自动跳过,两者不冲突。
+- 回滚:`gunzip -c backup/opencode_pocket-*.sql.gz | docker exec -i llm-gateway-pg psql -U llm_gateway -d kaixuan`。
 
 ## 与 acc-integration 的关系
 

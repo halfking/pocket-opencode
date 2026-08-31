@@ -12,6 +12,18 @@
     />
 
     <template v-else>
+      <!-- 标题栏右侧：邮箱设置（账户 / 过滤策略 / 处理逻辑） -->
+      <HeaderActionsPortal>
+        <button
+          class="chat-icon-btn"
+          type="button"
+          aria-label="邮箱设置"
+          @click="router.push('/email/settings')"
+        >
+          <span class="material-symbols-outlined" aria-hidden="true">settings</span>
+        </button>
+      </HeaderActionsPortal>
+
       <ScrollChromePortal>
         <div class="filters">
           <button
@@ -82,6 +94,7 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Skeleton, EmptyState, PullToRefresh, DbLockedState } from '../../components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
+import HeaderActionsPortal from '@/components/layout/HeaderActionsPortal.vue'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
 
@@ -155,6 +168,21 @@ onMounted(load)
   height: 100%;
   min-height: 0;
 }
+
+/* 标题栏右侧设置入口（与 AIChatView 的 chat-icon-btn 同款视觉） */
+.chat-icon-btn {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.chat-icon-btn:active { background: var(--bg-hover); }
 
 .filters {
   display: flex;

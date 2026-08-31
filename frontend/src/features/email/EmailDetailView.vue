@@ -84,6 +84,21 @@
         </button>
       </div>
 
+      <!-- 回复：统一输入（语音 / 角色语气 / AI 优化 / 发送 独立工具行） -->
+      <section class="reply-card">
+        <div class="reply-title">✉️ 回复 {{ email.fromName || email.fromAddress }}</div>
+        <UnifiedComposer
+          v-model="replyBody"
+          placeholder="写回复…（✨ 可 AI 润色，🎙 可语音输入）"
+          :enable="{ voice: true, image: false, camera: false, file: false, agent: true, optimize: true }"
+          :submit-on-enter="false"
+          submit-label="发送"
+          :submitting="replying"
+          @submit="sendReply"
+        />
+        <p v-if="replyError" class="reply-error" role="alert">{{ replyError }}</p>
+      </section>
+
       <p class="hint" v-if="!bodyLoaded">完整正文需要按需从 IMAP 拉取（已支持缓存）。</p>
     </article>
 </template>
@@ -94,7 +109,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '../../api/client'
 import { emailApi } from '../../api/email'
 import { useToast } from '../../composables/useToast'
-import { ErrorState } from '../../components'
+import { ErrorState, UnifiedComposer } from '../../components'
 import { findContactByEmail } from '../contact/contacts-store'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
@@ -206,6 +221,35 @@ async function navigateToContact() {
     }
   } catch (error: any) {
     toast.error(error?.message || '查找联系人失败')
+  }
+}
+
+// ---- 回复（后端 /api/email/send 已就绪，此前缺 UI） ----
+const replyBody = ref('')
+const replying = ref(false)
+const replyError = ref('')
+
+async function sendReply(payload: { text: string }) {
+  const mail = email.value
+  const body = payload.text.trim()
+  if (!mail || !body || replying.value) return
+  replying.value = true
+  replyError.value = ''
+  const original = mail.subject || ''
+  const subject = /^re:/i.test(original) ? original : `Re: ${original}`
+  try {
+    await emailApi.sendEmail({
+      accountId: mail.accountId,
+      to: [mail.fromAddress],
+      subject,
+      body,
+    })
+    toast.success('回复已发送')
+    replyBody.value = ''
+  } catch (e: any) {
+    replyError.value = e?.message || '发送失败，请检查 SMTP 配置'
+  } finally {
+    replying.value = false
   }
 }
 
@@ -331,6 +375,23 @@ onMounted(load)
 .muted { color: var(--text-muted); }
 
 .actions { display: flex; gap: var(--space-2); }
+.reply-card {
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  box-shadow: var(--shadow-sm);
+}
+.reply-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-2);
+}
+.reply-error {
+  margin: var(--space-2) 0 0;
+  color: var(--danger);
+  font-size: 12px;
+}
 .action-btn {
   flex: 1;
   padding: var(--space-3);

@@ -30,6 +30,7 @@ export { default as EmailCard } from './business/EmailCard.vue'
 export { default as AIThinkingIndicator } from './business/AIThinkingIndicator.vue'
 export { default as SessionCard } from './business/SessionCard.vue'
 export { default as WaveformVisualizer } from './business/WaveformVisualizer.vue'
+export { default as UnifiedComposer } from './business/UnifiedComposer.vue'
 
 // 类型导出
 export type { ButtonProps } from './base/Button.vue'

@@ -138,65 +138,40 @@
       </div>
     </main>
 
-    <!-- 输入区 -->
+    <!-- 输入区：统一输入组件（宽文本区 + 多模态/角色/优化/提交独立工具行） -->
     <footer class="composer">
-      <!-- 待发送图片缩略图 -->
-      <div v-if="pendingImages.length" class="attach-strip">
-        <div v-for="(img, i) in pendingImages" :key="i" class="attach-thumb">
-          <img :src="img" alt="待发送图片" />
-          <button class="attach-del" :aria-label="`移除图片 ${i + 1}`" @click="removeImage(i)">×</button>
-        </div>
-        <div v-if="pendingImages.length" class="attach-hint">将使用视觉模型：{{ visionModelLabel }}</div>
-      </div>
-      <div class="composer-row">
-        <button class="icon-btn attach-btn" aria-label="添加图片" @click="fileInput?.click()">
-          <span class="material-symbols-outlined">image</span>
-        </button>
-        <input
-          ref="fileInput"
-          type="file"
-          accept="image/*"
-          multiple
-          class="file-input"
-          @change="onPickImages"
-        />
-        <button
-          class="icon-btn attach-btn"
-          :class="{ recording: isRecording }"
-          :aria-label="isRecording ? '结束录音' : '语音输入'"
-          :disabled="isTranscribing"
-          @click="onMic"
-        >
-          <span class="material-symbols-outlined">{{ isRecording ? 'stop_circle' : 'mic' }}</span>
-        </button>
-        <textarea
-          ref="inputEl"
-          v-model="draft"
-          class="composer-input"
-          rows="1"
-          :placeholder="composerPlaceholder"
-          @input="autoGrow"
-          @paste="onPaste"
-          @keydown.enter.exact.prevent="onSend()"
-        ></textarea>
-        <button
-          v-if="isStreaming"
-          class="send-btn stop"
-          aria-label="停止生成"
-          @click="stop"
-        >
-          <span class="material-symbols-outlined">stop</span>
-        </button>
-        <button
-          v-else
-          class="send-btn"
-          :disabled="!canSend"
-          aria-label="发送"
-          @click="onSend()"
-        >
-          <span class="material-symbols-outlined">send</span>
-        </button>
-      </div>
+      <UnifiedComposer
+        ref="composerRef"
+        v-model="draft"
+        :placeholder="composerPlaceholder"
+        :agent-id="active?.agentId"
+        :submitting="isStreaming"
+        :enable="{ voice: true, image: true, camera: true, file: false, agent: true, optimize: true }"
+        @update:agent-id="onComposerAgent"
+        @submit="onComposerSubmit"
+      >
+        <template #submit>
+          <button
+            v-if="isStreaming"
+            class="send-btn stop"
+            type="button"
+            aria-label="停止生成"
+            @click="stop"
+          >
+            <span class="material-symbols-outlined">stop</span>
+          </button>
+          <button
+            v-else
+            class="send-btn"
+            type="button"
+            aria-label="发送"
+            :disabled="!composerCanSubmit"
+            @click="composerRef?.submit()"
+          >
+            <span class="material-symbols-outlined">send</span>
+          </button>
+        </template>
+      </UnifiedComposer>
     </footer>
 
     <!-- 会话抽屉：统一使用公共 BottomSheet 侧边布局 -->
@@ -445,11 +420,11 @@ import {
 import { renderMarkdown } from '../../utils/markdown'
 import { useToast } from '../../composables/useToast'
 import { useConfirm } from '../../composables/useConfirm'
-import { useVoiceInput } from '../../composables/useVoiceInput'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 import AgentSelectorSheet from './AgentSelectorSheet.vue'
 import BottomSheet from '../../components/base/BottomSheet.vue'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
+import UnifiedComposer from '../../components/business/UnifiedComposer.vue'
 
 const store = useAIChatStore()
 const router = useRouter()
@@ -458,14 +433,12 @@ const toast = useToast()
 const { confirm } = useConfirm()
 const agentStore = useChatAgentStore()
 
-// 语音输入：复用全局 STT（本地 sherpa 优先，云转写兜底），转写结果追加到输入框。
-const { isRecording, isTranscribing, sttError, startRecording, stopRecording } = useVoiceInput()
+// 统一输入组件引用（提交/重置/内部 canSubmit）
+const composerRef = ref<InstanceType<typeof UnifiedComposer> | null>(null)
+const composerCanSubmit = computed(() => composerRef.value?.canSubmit ?? false)
 
 const AUTO = 'auto'
 const draft = ref('')
-const inputEl = ref<HTMLTextAreaElement | null>(null)
-const fileInput = ref<HTMLInputElement | null>(null)
-const pendingImages = ref<string[]>([])
 const agentSheetOpen = ref(false)
 const scrollEl = ref<HTMLElement | null>(null)
 const modelSheetOpen = ref(false)
@@ -475,13 +448,8 @@ const drawerTab = ref<'active' | 'archived'>('active')
 // 模型选择 sheet 的临时选中态
 const tempSelection = ref<string[]>([])
 
-// 与后端 /api/llm/stream 的校验保持一致：单条最多 4 张、单张 ≤ 4MB（前端再
-// 压一档，避免 data URL 接近 6MB 上限被拒）。同时校验 data URL 字符串长度，
-// 避免 base64 膨胀后超过通用请求体限额。
-const MAX_IMAGES = 4
-const MAX_IMAGE_BYTES = 4 << 20
-const MAX_DATA_URL_CHARS = 6 * 1024 * 1024 // 6MB 上限的字符数
-const MAX_TOTAL_PAYLOAD_CHARS = 32 * 1024 * 1024 // 32MB chat body 上限
+// 与后端 /api/llm/stream 的校验保持一致（统一由 UnifiedComposer 的
+// useAttachments 执行：4 张 / 单张 4MB / 总 32MB）。
 
 const suggestions = [
   '用一句话解释什么是大模型',
@@ -525,12 +493,7 @@ const settingsOpen = computed({
   set: (v) => (store.settingsOpen = v),
 })
 
-const canSend = computed(
-  () => (draft.value.trim().length > 0 || pendingImages.value.length > 0) && !isStreaming.value,
-)
 const composerPlaceholder = computed(() => {
-  if (isRecording.value) return '正在录音，再点麦克风结束…'
-  if (isTranscribing.value) return '转写中…'
   if (compareMode.value) return '向所选模型并行提问…（Enter 发送）'
   return '输入消息，Enter 发送，Shift+Enter 换行'
 })
@@ -563,17 +526,19 @@ function onClearAgent() {
   toast.success('已清除角色')
 }
 
+/** 统一输入组件工具行内的角色 chip 同步到当前会话。 */
+function onComposerAgent(agentId: string | undefined) {
+  if (!active.value) return
+  active.value.agentId = agentId
+  store.persist()
+  const name = agentId ? agentStore.getAgent(agentId)?.name : ''
+  toast.success(agentId ? `已切换到「${name}」` : '已清除角色')
+}
+
 function goToLibrary() {
   settingsOpen.value = false
   router.push('/agents')
 }
-
-/** 发图时实际会用的视觉模型（会话手动选了模型则显示它）。 */
-const visionModelLabel = computed(() => {
-  const conv = active.value
-  if (conv?.model && conv.model !== AUTO) return conv.model
-  return settings.value.modelByModality.vision || AUTO
-})
 
 /** auto 选项的副标签：一眼看到当前两个关键模态的默认。 */
 const autoHint = computed(() => {
@@ -641,7 +606,6 @@ function escapeHtml(s: string): string {
 // ---- 生命周期 ----
 onMounted(() => {
   store.init()
-  nextTick(autoGrow)
   syncRouteTitle()
 })
 
@@ -680,117 +644,31 @@ function scrollToBottom() {
 }
 
 // ---- 输入处理 ----
-function autoGrow() {
-  const el = inputEl.value
-  if (!el) return
-  el.style.height = 'auto'
-  el.style.height = Math.min(el.scrollHeight, 140) + 'px'
-}
 
+/** 空态建议问题直发（无附件）。 */
 function onSend(text?: string) {
   const value = (text ?? draft.value).trim()
-  const images = text ? [] : [...pendingImages.value]
-  if (!value && images.length === 0) return
+  if (!value) return
   if (store.models.length === 0) {
     toast.error('请先在「设置 → AI 网关」配置网关密钥')
     settingsOpen.value = true
     return
   }
-  store.send(value || '（请描述这张图片）', images)
-  if (!text) {
-    draft.value = ''
-    pendingImages.value = []
-  }
-  nextTick(() => {
-    autoGrow()
-    scrollToBottom()
-  })
+  store.send(value, [])
+  if (!text) draft.value = ''
+  nextTick(scrollToBottom)
 }
 
-// ---- 图片附件 ----
-function addImageDataUrl(value: string, label: string) {
-  if (pendingImages.value.length >= MAX_IMAGES) {
-    toast.error(`最多 ${MAX_IMAGES} 张图片`)
+/** 统一输入组件提交（文本 + 图片附件）。 */
+function onComposerSubmit(payload: { text: string; images: string[] }) {
+  if (store.models.length === 0) {
+    toast.error('请先在「设置 → AI 网关」配置网关密钥')
+    settingsOpen.value = true
     return
   }
-  if (value.length > MAX_DATA_URL_CHARS) {
-    toast.error(`「${label}」图片编码后超过 6MB，已跳过`)
-    return
-  }
-  const total = pendingImages.value.reduce((sum, cur) => sum + cur.length, 0) + value.length
-  if (total > MAX_TOTAL_PAYLOAD_CHARS) {
-    toast.error('附件过大，请减少图片张数后再试')
-    return
-  }
-  pendingImages.value.push(value)
-}
-
-function onPickImages(e: Event) {
-  const input = e.target as HTMLInputElement
-  const files = Array.from(input.files ?? [])
-  input.value = '' // 允许重复选择同一张
-  for (const f of files) {
-    if (pendingImages.value.length >= MAX_IMAGES) {
-      toast.error(`最多 ${MAX_IMAGES} 张图片`)
-      break
-    }
-    if (!f.type.startsWith('image/')) continue
-    if (f.size > MAX_IMAGE_BYTES) {
-      toast.error(`「${f.name}」超过 4MB，已跳过`)
-      continue
-    }
-    const reader = new FileReader()
-    reader.onload = () => {
-      if (typeof reader.result === 'string') addImageDataUrl(reader.result, f.name)
-    }
-    reader.readAsDataURL(f)
-  }
-}
-
-function removeImage(i: number) {
-  pendingImages.value.splice(i, 1)
-}
-
-// 粘贴板图片：微信/截图/复制图片后直接 Ctrl/Cmd+V 到输入框即可发送。
-function onPaste(e: ClipboardEvent) {
-  const items = e.clipboardData?.items
-  if (!items) return
-  for (const item of items) {
-    if (item.kind !== 'file' || !item.type.startsWith('image/')) continue
-    const file = item.getAsFile()
-    if (!file) continue
-    if (file.size > MAX_IMAGE_BYTES) {
-      toast.error('粘贴图片超过 4MB，已跳过')
-      continue
-    }
-    const reader = new FileReader()
-    reader.onload = () => {
-      if (typeof reader.result === 'string') addImageDataUrl(reader.result, '粘贴')
-    }
-    reader.readAsDataURL(file)
-  }
-}
-
-// ---- 语音输入 ----
-async function onMic() {
-  if (isTranscribing.value) return
-  if (isRecording.value) {
-    const text = await stopRecording()
-    if (text && text.trim()) {
-      draft.value = draft.value ? `${draft.value} ${text.trim()}` : text.trim()
-      nextTick(() => {
-        autoGrow()
-        inputEl.value?.focus()
-      })
-    } else if (sttError.value) {
-      toast.error('语音识别失败：' + sttError.value)
-    }
-    return
-  }
-  const ok = await startRecording()
-  if (!ok && sttError.value) {
-    toast.error('无法开始录音：' + sttError.value)
-  }
+  store.send(payload.text.trim() || '（请描述这张图片）', payload.images)
+  composerRef.value?.reset()
+  nextTick(scrollToBottom)
 }
 
 function stop() {
