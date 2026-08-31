@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useChatAgentStore, DEPARTMENTS } from '../../stores/chatAgentStore'
+import { useChatAgentStore, departmentLabel } from '../../stores/chatAgentStore'
 import { useToast } from '../../composables/useToast'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
@@ -16,12 +16,29 @@ const editingAgent = computed(() => {
   return agentStore.getAgent(route.params.agentId as string)
 })
 
+// 专家人头像快选（职业化 emoji，也可在输入框自定义）
+const AVATAR_EMOJIS = [
+  '👤', '👨‍💼', '👩‍💼', '🧑‍💼', '👨‍💻', '👩‍💻', '🧑‍💻',
+  '👨‍⚕️', '👩‍⚕️', '🧑‍⚕️', '👨‍🏫', '👩‍🏫', '🧑‍🏫',
+  '👨‍🔬', '👩‍🔬', '🧑‍🔬', '🧑‍🎨', '🧑‍⚖️', '🧑‍🔧',
+  '🧑‍🌾', '🕵️', '🧑‍🚀', '🧑‍✈️', '🧙', '🦸',
+]
+
+// 部门选项：实际存在的部门（动态计算）+ 兜底当前值（自定义角色可能用了新部门）
+const departmentOptions = computed(() => {
+  const list = agentStore.departments.map((d) => ({ key: d.key, label: d.label }))
+  if (form.value.department && !list.some((d) => d.key === form.value.department)) {
+    list.unshift({ key: form.value.department, label: departmentLabel(form.value.department) })
+  }
+  return list
+})
+
 // 表单字段
 const form = ref({
   name: '',
   description: '',
   department: 'engineering',
-  emoji: '🤖',
+  emoji: '👤',
   color: 'blue',
   system_prompt: '',
 })
@@ -38,7 +55,7 @@ onMounted(async () => {
       name: editingAgent.value.name,
       description: editingAgent.value.description,
       department: editingAgent.value.department,
-      emoji: editingAgent.value.emoji || '🤖',
+      emoji: editingAgent.value.emoji || '👤',
       color: editingAgent.value.color || 'blue',
       system_prompt: editingAgent.value.system_prompt,
     }
@@ -143,6 +160,11 @@ async function handleSave() {
     </HeaderActionsPortal>
 
     <main class="edit-content">
+      <!-- 编辑内置角色提示：修改全局生效 -->
+      <div v-if="isEditMode && editingAgent?.is_builtin" class="builtin-hint">
+        正在编辑内置专家角色，保存后对全部用户生效。
+      </div>
+
       <!-- 基本信息 -->
       <section class="section">
         <label class="field">
@@ -167,27 +189,37 @@ async function handleSave() {
           ></textarea>
         </label>
 
-        <div class="field-row">
-          <label class="field">
-            <span class="field-label">Emoji</span>
-            <input
-              v-model="form.emoji"
-              type="text"
-              class="input emoji-input"
-              maxlength="4"
-              placeholder="🤖"
-            />
-          </label>
+        <label class="field">
+          <span class="field-label">头像 Emoji</span>
+          <div class="emoji-picker" role="listbox" aria-label="选择头像">
+            <button
+              v-for="e in AVATAR_EMOJIS"
+              :key="e"
+              type="button"
+              :class="['emoji-option', { active: form.emoji === e }]"
+              :aria-label="`头像 ${e}`"
+              @click="form.emoji = e"
+            >
+              {{ e }}
+            </button>
+          </div>
+          <input
+            v-model="form.emoji"
+            type="text"
+            class="input emoji-input"
+            maxlength="8"
+            placeholder="👤"
+          />
+        </label>
 
-          <label class="field">
-            <span class="field-label">部门 <span class="required">*</span></span>
-            <select v-model="form.department" class="input">
-              <option v-for="dept in DEPARTMENTS" :key="dept.key" :value="dept.key">
-                {{ dept.label }}
-              </option>
-            </select>
-          </label>
-        </div>
+        <label class="field">
+          <span class="field-label">部门 <span class="required">*</span></span>
+          <select v-model="form.department" class="input">
+            <option v-for="dept in departmentOptions" :key="dept.key" :value="dept.key">
+              {{ dept.label }}
+            </option>
+          </select>
+        </label>
 
         <label class="field">
           <span class="field-label">主题色</span>
@@ -263,6 +295,44 @@ async function handleSave() {
   display: grid;
   grid-template-columns: 1fr 2fr;
   gap: 12px;
+}
+
+/* 内置角色编辑提示 */
+.builtin-hint {
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 12px;
+}
+
+/* 头像快选 */
+.emoji-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.emoji-option {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-base);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+.emoji-option.active {
+  border-color: var(--brand-primary);
+  background: var(--brand-bg);
 }
 
 .field-label {

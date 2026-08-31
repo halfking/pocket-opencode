@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useChatAgentStore, DEPARTMENTS } from '../../stores/chatAgentStore'
+import { useChatAgentStore, departmentLabel } from '../../stores/chatAgentStore'
 import { renderMarkdown } from '../../utils/markdown'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
@@ -15,11 +15,9 @@ const agent = computed(() => agentStore.getAgent(agentId.value))
 const showFullPrompt = ref(false)
 
 // 部门标签
-const departmentLabel = computed(() => {
-  if (!agent.value) return ''
-  const dept = DEPARTMENTS.find((d) => d.key === agent.value!.department)
-  return dept?.label || agent.value.department
-})
+const departmentLabelText = computed(() =>
+  agent.value ? departmentLabel(agent.value.department) : ''
+)
 
 // Markdown 渲染（截取前 500 字符预览）
 const promptPreview = computed(() => {
@@ -46,10 +44,11 @@ function goToEdit() {
 
 <template>
   <div class="agent-detail-view">
-    <!-- 标题栏右侧操作经 Portal 注入壳层 top-bar，页面不再自绘 header -->
+    <!-- 标题栏右侧操作经 Portal 注入壳层 top-bar，页面不再自绘 header。
+         内置角色同样可编辑——专家库允许维护性修改。 -->
     <HeaderActionsPortal>
       <button
-        v-if="agent && !agent.is_builtin"
+        v-if="agent"
         type="button"
         aria-label="编辑角色"
         @click="goToEdit"
@@ -65,13 +64,14 @@ function goToEdit() {
     <main v-else class="detail-content">
       <!-- 角色基本信息 -->
       <div class="role-header">
-        <div class="role-emoji">{{ agent.emoji || '🤖' }}</div>
+        <div class="role-emoji">{{ agent.emoji || '👤' }}</div>
         <div class="role-info">
           <div class="role-name-row">
             <h2 class="role-name">{{ agent.name }}</h2>
             <span v-if="!agent.is_builtin" class="custom-badge">自定义</span>
+            <span v-else class="custom-badge builtin-badge">内置</span>
           </div>
-          <div class="role-dept">{{ departmentLabel }}</div>
+          <div class="role-dept">{{ departmentLabelText }}</div>
         </div>
       </div>
 
@@ -104,7 +104,7 @@ function goToEdit() {
         </div>
         <div class="meta-row">
           <span class="meta-label">部门</span>
-          <span class="meta-value">{{ departmentLabel }}</span>
+          <span class="meta-value">{{ departmentLabelText }}</span>
         </div>
         <div v-if="agent.color" class="meta-row">
           <span class="meta-label">主题色</span>
@@ -183,6 +183,12 @@ function goToEdit() {
   background: var(--brand-primary);
   color: white;
   border-radius: 4px;
+}
+
+/* 内置角色徽标（专家库原生角色，可维护） */
+.builtin-badge {
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
 }
 
 .role-dept {

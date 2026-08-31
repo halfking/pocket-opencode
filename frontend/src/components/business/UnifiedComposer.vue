@@ -79,7 +79,7 @@
           :aria-label="agent ? '切换角色' : '选择角色'"
           @click="agentSheetOpen = true"
         >
-          <span class="uc-chip-emoji">{{ agent?.emoji || '🧠' }}</span>
+          <span class="uc-chip-emoji">{{ agent?.emoji || '👤' }}</span>
           <span class="uc-chip-label">{{ agent ? agent.name : '角色' }}</span>
         </button>
         <button
@@ -173,7 +173,7 @@
             type="button"
             @click="agentSheetOpen = true"
           >
-            <span class="uc-chip-emoji">{{ agent?.emoji || '🧠' }}</span>
+            <span class="uc-chip-emoji">{{ agent?.emoji || '👤' }}</span>
             <span class="uc-chip-label">{{ agent ? agent.name : '角色' }}</span>
           </button>
           <button

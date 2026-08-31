@@ -14,9 +14,15 @@ const maxCustomAgentsPerWorkspace = 100
 
 // handleChatAgentsList 列出所有角色（内置 + 当前 workspace 的自定义角色）。
 // GET /api/chat-agents?department=engineering
+// POST /api/chat-agents → 创建角色（与 /api/chat-agents/ 分发器一致；
+// 前端 create 走的是无尾斜杠路径，此前会 405 导致"新增专家"不可用）。
 func (s *Server) handleChatAgentsList(w http.ResponseWriter, r *http.Request) {
 	if s.chatAgentStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "chat agent store not configured")
+		return
+	}
+	if r.Method == http.MethodPost {
+		s.handleChatAgentsCreate(w, r)
 		return
 	}
 	if r.Method != http.MethodGet {

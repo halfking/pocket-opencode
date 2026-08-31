@@ -719,16 +719,12 @@ func main() {
 		}
 		log.Println("Chat Agent store initialized")
 
-		// 启动时自动导入内置角色（agency-agents-zh 仓库路径从环境变量读取）
-		repoPath := os.Getenv("POCKET_AGENTS_REPO_PATH")
-		if repoPath != "" {
-			if err := chatAgentStore.ImportBuiltinAgents(context.Background(), repoPath); err != nil {
-				log.Printf("WARN: import builtin agents failed: %v", err)
-			} else {
-				log.Println("Imported builtin agents from " + repoPath)
-			}
-		} else {
-			log.Println("INFO: POCKET_AGENTS_REPO_PATH not set, builtin agents import skipped")
+		// 启动时保证专家库已初始化（幂等）。默认使用编译期内置的
+		// agency-agents-zh 种子（chatagent/seed/agents.json）；设置
+		// POCKET_AGENTS_REPO_PATH 时优先从本地仓库目录导入最新角色，
+		// 失败自动回落内嵌种子。
+		if err := chatagent.EnsureBuiltinAgents(context.Background(), chatAgentStore, os.Getenv("POCKET_AGENTS_REPO_PATH")); err != nil {
+			log.Printf("WARN: ensure builtin agents failed: %v", err)
 		}
 	}
 

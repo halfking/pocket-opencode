@@ -6,6 +6,16 @@
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#667eea" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0f0f14" media="(prefers-color-scheme: dark)" />
+    <!-- 首帧前恢复皮肤偏好（与 stores/theme.ts 的 app_theme 键同步），避免强制主题下冷启动闪错色 -->
+    <script>
+      try {
+        var t = localStorage.getItem('app_theme')
+        if (t === 'dark' || t === 'light') {
+          document.documentElement.setAttribute('data-theme', t)
+          document.documentElement.style.colorScheme = t
+        }
+      } catch (e) {}
+    </script>
     <meta name="description" content="OpenCode Pocket — 移动端 OpenCode 实例管理与个人助理（笔记 / 会议 / 邮件 / 密码箱）。" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

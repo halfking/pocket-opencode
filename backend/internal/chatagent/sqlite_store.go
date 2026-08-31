@@ -132,15 +132,14 @@ func (s *SQLiteStore) List(ctx context.Context, workspaceID, department string) 
 	return agents, nil
 }
 
+// Update 更新角色（自定义与内置均可——内置专家库允许维护）。自定义角色
+// 仅允许所属 workspace 修改；内置行按其自身 workspace_id（''）定位。
 func (s *SQLiteStore) Update(ctx context.Context, workspaceID string, a *Agent) error {
 	existing, err := s.Get(ctx, workspaceID, a.ID)
 	if err != nil {
 		return err
 	}
-	if existing.IsBuiltin {
-		return fmt.Errorf("builtin agent cannot be modified")
-	}
-	if existing.WorkspaceID != workspaceID {
+	if !existing.IsBuiltin && existing.WorkspaceID != workspaceID {
 		return fmt.Errorf("agent does not belong to workspace %s", workspaceID)
 	}
 	a.UpdatedAt = time.Now().Unix()
@@ -148,22 +147,20 @@ func (s *SQLiteStore) Update(ctx context.Context, workspaceID string, a *Agent) 
 		UPDATE chat_agents
 		SET name = ?, description = ?, department = ?, emoji = ?, color = ?, system_prompt = ?, updated_at = ?
 		WHERE id = ? AND workspace_id = ?
-	`, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt, a.UpdatedAt, a.ID, workspaceID)
+	`, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt, a.UpdatedAt, a.ID, existing.WorkspaceID)
 	return err
 }
 
+// Delete 删除角色（自定义与内置均可——内置专家库允许维护性删除）。
 func (s *SQLiteStore) Delete(ctx context.Context, workspaceID, id string) error {
 	existing, err := s.Get(ctx, workspaceID, id)
 	if err != nil {
 		return err
 	}
-	if existing.IsBuiltin {
-		return fmt.Errorf("builtin agent cannot be deleted")
-	}
-	if existing.WorkspaceID != workspaceID {
+	if !existing.IsBuiltin && existing.WorkspaceID != workspaceID {
 		return fmt.Errorf("agent does not belong to workspace %s", workspaceID)
 	}
-	_, err = s.db.ExecContext(ctx, "DELETE FROM chat_agents WHERE id = ? AND workspace_id = ?", id, workspaceID)
+	_, err = s.db.ExecContext(ctx, "DELETE FROM chat_agents WHERE id = ? AND workspace_id = ?", id, existing.WorkspaceID)
 	return err
 }
 

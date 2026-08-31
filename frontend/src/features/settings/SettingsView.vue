@@ -73,6 +73,28 @@
         </div>
       </div>
 
+      <!-- 皮肤（亮色 / 暗色 / 跟随系统，选择即生效并持久化） -->
+      <div class="settings-section">
+        <h2>{{ t('settings.appearance') }}</h2>
+        <div class="setting-item">
+          <div class="setting-icon"><span class="material-symbols-outlined">palette</span></div>
+          <div class="setting-content">
+            <div class="setting-label">{{ t('settings.theme') }}</div>
+            <div class="theme-options">
+              <button
+                v-for="opt in themeOptions"
+                :key="opt.value"
+                :class="['theme-option', { active: theme.preference === opt.value }]"
+                @click="theme.setPreference(opt.value)"
+              >
+                <span class="material-symbols-outlined">{{ opt.icon }}</span>
+                <span>{{ opt.label }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- 当前连接 -->
       <div class="settings-section">
         <h2>{{ t('settings.currentConnection') }}</h2>
@@ -180,10 +202,19 @@ import { useI18n } from 'vue-i18n'
 import { APP_VERSION, checkUpdate } from '../../utils/version'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
 import { useConfirm } from '../../composables/useConfirm'
+import { useThemeStore, type ThemePreference } from '../../stores/theme'
 
 const router = useRouter()
 const { confirm } = useConfirm()
 const { t } = useI18n()
+const theme = useThemeStore()
+
+// 皮肤三选项（图标 + 词条），选中即调用 setPreference 全局生效
+const themeOptions: { value: ThemePreference; label: string; icon: string }[] = [
+  { value: 'light', label: t('settings.themeLight'), icon: 'light_mode' },
+  { value: 'dark', label: t('settings.themeDark'), icon: 'dark_mode' },
+  { value: 'system', label: t('settings.themeSystem'), icon: 'brightness_auto' },
+]
 
 // 暴露给 template（Vue template 不能直接访问 window）
 const apiOrigin = typeof window !== 'undefined' ? window.location.origin : ''
@@ -410,6 +441,40 @@ async function handleLogout() {
   font-size: var(--text-xs);
   font-family: monospace;
   word-break: break-all;
+}
+
+/* 皮肤三选项分段控件 */
+.theme-options {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.theme-option {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  transition: border-color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+.theme-option .material-symbols-outlined {
+  font-size: 18px;
+}
+
+.theme-option.active {
+  background: var(--brand-bg);
+  color: var(--brand-primary);
+  border-color: var(--brand-primary);
+  font-weight: var(--font-weight-semibold);
 }
 
 .action-btn {

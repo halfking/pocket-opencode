@@ -51,11 +51,13 @@ html {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, 
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: #f5f7fa;
+  /* 走 token 以跟随亮/暗皮肤（styles.css 有同款规则，此处去硬编码） */
+  background: var(--bg-base, #f7f7fa);
+  color: var(--text-primary, #0a0a0a);
   height: 100%;
   overflow: hidden;
 }
@@ -81,12 +83,12 @@ input:focus, textarea:focus, select:focus {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #ccc;
+  background: var(--border-strong, #d1d5db);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #999;
+  background: var(--text-muted, #a3a3a3);
 }
 
 /* 触摸反馈 */

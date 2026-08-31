@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useChatAgentStore, DEPARTMENTS } from '../../stores/chatAgentStore'
+import { useChatAgentStore } from '../../stores/chatAgentStore'
 import { useConfirm } from '../../composables/useConfirm'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import AgentSyncSheet from '../ai-chat/AgentSyncSheet.vue'
@@ -66,10 +66,10 @@ const groupedAgents = computed(() => {
   return groups
 })
 
-// 部门标签映射
+// 部门标签映射（动态部门列表自带 label，未知部门回退原文）
 const departmentLabels = computed(() => {
   const map: Record<string, string> = {}
-  for (const d of DEPARTMENTS) {
+  for (const d of agentStore.departments) {
     map[d.key] = d.label
   }
   return map
@@ -83,9 +83,12 @@ function goToCreate() {
   router.push('/agents/new')
 }
 
-async function handleDelete(agentId: string, agentName: string, e: Event) {
+async function handleDelete(agentId: string, agentName: string, isBuiltin: boolean, e: Event) {
   e.stopPropagation()
-  if (!(await confirm({ title: '删除角色', message: `确定要删除角色"${agentName}"吗？`, confirmText: '删除', danger: true }))) return
+  const message = isBuiltin
+    ? `「${agentName}」是内置专家角色，删除后将从专家库永久移除（其他设备也不再可见）。确定删除吗？`
+    : `确定要删除角色"${agentName}"吗？`
+  if (!(await confirm({ title: '删除角色', message, confirmText: '删除', danger: true }))) return
   agentStore.deleteAgent(agentId).catch((err) => {
     alert(`删除失败：${err.message || err}`)
   })
@@ -124,7 +127,7 @@ async function handleDelete(agentId: string, agentName: string, e: Event) {
         全部
       </button>
       <button
-        v-for="dept in DEPARTMENTS"
+        v-for="dept in agentStore.departments"
         :key="dept.key"
         :class="['dept-chip', { active: selectedDepartment === dept.key }]"
         @click="selectedDepartment = dept.key"
@@ -160,7 +163,7 @@ async function handleDelete(agentId: string, agentName: string, e: Event) {
             class="agent-card"
             @click="goToDetail(agent.id)"
           >
-            <div class="agent-emoji">{{ agent.emoji || '🤖' }}</div>
+            <div class="agent-emoji">{{ agent.emoji || '👤' }}</div>
             <div class="agent-info">
               <div class="agent-name-row">
                 <span class="agent-name">{{ agent.name }}</span>
@@ -170,10 +173,9 @@ async function handleDelete(agentId: string, agentName: string, e: Event) {
               <div class="agent-dept">{{ departmentLabels[agent.department] || agent.department }}</div>
             </div>
             <button
-              v-if="!agent.is_builtin"
               class="delete-btn"
               aria-label="删除"
-              @click="handleDelete(agent.id, agent.name, $event)"
+              @click="handleDelete(agent.id, agent.name, agent.is_builtin, $event)"
             >
               <span class="material-symbols-outlined">delete</span>
             </button>
@@ -193,7 +195,7 @@ async function handleDelete(agentId: string, agentName: string, e: Event) {
               class="agent-card"
               @click="goToDetail(agent.id)"
             >
-              <div class="agent-emoji">{{ agent.emoji || '🤖' }}</div>
+              <div class="agent-emoji">{{ agent.emoji || '👤' }}</div>
               <div class="agent-info">
                 <div class="agent-name-row">
                   <span class="agent-name">{{ agent.name }}</span>
@@ -202,10 +204,9 @@ async function handleDelete(agentId: string, agentName: string, e: Event) {
                 <div class="agent-desc">{{ agent.description }}</div>
               </div>
               <button
-                v-if="!agent.is_builtin"
                 class="delete-btn"
                 aria-label="删除"
-                @click="handleDelete(agent.id, agent.name, $event)"
+                @click="handleDelete(agent.id, agent.name, agent.is_builtin, $event)"
               >
                 <span class="material-symbols-outlined">delete</span>
               </button>

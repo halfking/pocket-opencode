@@ -3,7 +3,7 @@
 // 智能体（Chat Agent）是预设的专家角色，每个角色包含：
 //   - 基本信息：name, department, description, emoji, color
 //   - systemPrompt：完整的角色设定（从 agency-agents-zh/*.md 提取）
-//   - isBuiltin：true=内置角色（不可修改/删除），false=用户自定义
+//   - isBuiltin：true=内置角色（专家库种子，可维护修改/删除），false=用户自定义
 //
 // 存储：
 //   - 本地：SQLite chat_agents 表（workspace 隔离）
@@ -148,20 +148,18 @@ func (s *Store) List(ctx context.Context, workspaceID, department string) ([]*Ag
 	return agents, rows.Err()
 }
 
-// Update 更新一个自定义角色（is_builtin=false）。内置角色禁止修改。
+// Update 更新角色（自定义与内置均可——内置专家库允许维护：管理员可直接
+// 修正提示词/名称/部门；更新不影响 is_builtin 与归属）。自定义角色仅允许
+// 所属 workspace 修改。
 func (s *Store) Update(ctx context.Context, workspaceID string, a *Agent) error {
 	if s.pool == nil {
 		return fmt.Errorf("store not configured")
 	}
-	// 先检查是否为内置角色
 	existing, err := s.Get(ctx, workspaceID, a.ID)
 	if err != nil {
 		return err
 	}
-	if existing.IsBuiltin {
-		return fmt.Errorf("builtin agent cannot be modified")
-	}
-	if existing.WorkspaceID != workspaceID {
+	if !existing.IsBuiltin && existing.WorkspaceID != workspaceID {
 		return fmt.Errorf("agent does not belong to workspace %s", workspaceID)
 	}
 
@@ -170,11 +168,12 @@ func (s *Store) Update(ctx context.Context, workspaceID string, a *Agent) error 
 		UPDATE chat_agents
 		SET name = $1, description = $2, department = $3, emoji = $4, color = $5, system_prompt = $6, updated_at = $7
 		WHERE id = $8 AND workspace_id = $9
-	`, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt, a.UpdatedAt, a.ID, workspaceID)
+	`, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt, a.UpdatedAt, a.ID, existing.WorkspaceID)
 	return err
 }
 
-// Delete 删除一个自定义角色（is_builtin=false）。内置角色禁止删除。
+// Delete 删除角色（自定义与内置均可——内置专家库允许维护性删除）。
+// 自定义角色仅允许所属 workspace 删除。
 func (s *Store) Delete(ctx context.Context, workspaceID, id string) error {
 	if s.pool == nil {
 		return fmt.Errorf("store not configured")
@@ -183,14 +182,11 @@ func (s *Store) Delete(ctx context.Context, workspaceID, id string) error {
 	if err != nil {
 		return err
 	}
-	if existing.IsBuiltin {
-		return fmt.Errorf("builtin agent cannot be deleted")
-	}
-	if existing.WorkspaceID != workspaceID {
+	if !existing.IsBuiltin && existing.WorkspaceID != workspaceID {
 		return fmt.Errorf("agent does not belong to workspace %s", workspaceID)
 	}
 
-	_, err = s.pool.Exec(ctx, "DELETE FROM chat_agents WHERE id = $1 AND workspace_id = $2", id, workspaceID)
+	_, err = s.pool.Exec(ctx, "DELETE FROM chat_agents WHERE id = $1 AND workspace_id = $2", id, existing.WorkspaceID)
 	return err
 }
 

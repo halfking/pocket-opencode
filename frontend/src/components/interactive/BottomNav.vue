@@ -145,9 +145,14 @@ defineExpose({
   white-space: nowrap;
 }
 
+/* 深色阴影：跟随系统（未强制亮色）或手动强制暗色，与 tokens.css 判定保持一致 */
 @media (prefers-color-scheme: dark) {
-  .bottom-nav {
+  :root:not([data-theme='light']) .bottom-nav {
     box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.3);
   }
+}
+
+:root[data-theme='dark'] .bottom-nav {
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.3);
 }
 </style>

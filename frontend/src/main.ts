@@ -5,6 +5,7 @@ import router from "./app/router-mobile"
 import { initWsBus } from "./services/ws-bus"
 import { connectWs } from "./api/websocket"
 import { useConnectivityStore } from "./stores/connectivity"
+import { useThemeStore } from "./stores/theme"
 import i18n from "./i18n"
 import "./styles.css"
 import "./styles/tokens.css"
@@ -15,6 +16,8 @@ import "./styles/material-symbols.css"
 // 这里只做副作用无关的初始化。
 
 const pinia = createPinia()
+// 首帧前应用持久化的皮肤偏好（html[data-theme] / color-scheme），避免暗色闪白
+useThemeStore(pinia)
 const app = createApp(App)
 app.use(pinia)
 app.use(router)

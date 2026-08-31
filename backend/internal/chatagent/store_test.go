@@ -2,7 +2,6 @@ package chatagent
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -127,7 +126,7 @@ func TestStore_List_WorkspaceIsolation(t *testing.T) {
 	}
 }
 
-func TestStore_Update_BuiltinRefused(t *testing.T) {
+func TestStore_Update_BuiltinAllowed(t *testing.T) {
 	store, ctx := setupTestStore(t)
 
 	builtin := &Agent{
@@ -137,15 +136,26 @@ func TestStore_Update_BuiltinRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 尝试更新内置角色应该被拒绝
+	// 内置角色允许维护性修改（专家库可维护）
 	builtin.Name = "Modified"
-	err := store.Update(ctx, "", builtin)
-	if err == nil || !strings.Contains(err.Error(), "builtin agent cannot be modified") {
-		t.Errorf("expected builtin modify error, got %v", err)
+	builtin.SystemPrompt = "updated"
+	if err := store.Update(ctx, "ws-any", builtin); err != nil {
+		t.Fatalf("builtin modify should be allowed, got %v", err)
+	}
+
+	got, err := store.Get(ctx, "ws-any", "builtin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "Modified" || got.SystemPrompt != "updated" {
+		t.Errorf("builtin update not persisted: %+v", got)
+	}
+	if !got.IsBuiltin {
+		t.Error("builtin flag should be preserved after update")
 	}
 }
 
-func TestStore_Delete_BuiltinRefused(t *testing.T) {
+func TestStore_Delete_BuiltinAllowed(t *testing.T) {
 	store, ctx := setupTestStore(t)
 
 	builtin := &Agent{
@@ -155,9 +165,12 @@ func TestStore_Delete_BuiltinRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := store.Delete(ctx, "", "builtin")
-	if err == nil || !strings.Contains(err.Error(), "builtin agent cannot be deleted") {
-		t.Errorf("expected builtin delete error, got %v", err)
+	if err := store.Delete(ctx, "ws-any", "builtin"); err != nil {
+		t.Fatalf("builtin delete should be allowed, got %v", err)
+	}
+
+	if _, err := store.Get(ctx, "ws-any", "builtin"); err == nil {
+		t.Error("deleted builtin still exists")
 	}
 }
 

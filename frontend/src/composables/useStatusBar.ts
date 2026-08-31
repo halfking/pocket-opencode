@@ -5,20 +5,20 @@
  * 真正的执行单元，绑定到组件生命周期。这样多个调用方（App.vue / UpdateChecker
  * 等）独立 teardown，深浅主题切换监听也能在组件 unmount 时彻底清理。
  *
+ * 深浅判定不再直接读 prefers-color-scheme，而是订阅 theme store 的生效主题
+ * （settings.theme 手动覆盖优先），保证状态栏与页面皮肤一致。
+ *
  * Web / dev 环境全部 no-op。
  */
+import { watch, type WatchStopHandle } from 'vue'
 import { Capacitor } from '@capacitor/core'
 import { StatusBar, Style } from '@capacitor/status-bar'
+import { useThemeStore } from '../stores/theme'
 
-function detectDark(): boolean {
-  return typeof window !== 'undefined'
-    && window.matchMedia?.('(prefers-color-scheme: dark)').matches
-}
-
-async function applyStyleForTheme() {
+async function applyStyleForTheme(dark: boolean) {
   if (!Capacitor.isNativePlatform()) return
   try {
-    await StatusBar.setStyle({ style: detectDark() ? Style.Dark : Style.Light })
+    await StatusBar.setStyle({ style: dark ? Style.Dark : Style.Light })
   } catch (err) {
     console.warn('[StatusBar] setStyle failed', err)
   }
@@ -33,10 +33,9 @@ export interface StatusBarController {
 
 export function useStatusBar(): StatusBarController {
   let started = false
-  let mql: MediaQueryList | null = null
+  let stopWatch: WatchStopHandle | null = null
   let navPosture: Navigator['devicePosture'] | null = null
   let navPostureOnChange: ((ev: Event) => void) | null = null
-  let mqOnChange: ((ev: MediaQueryListEvent) => void) | null = null
 
   function start() {
     if (started || typeof window === 'undefined') return
@@ -44,30 +43,30 @@ export function useStatusBar(): StatusBarController {
 
     if (!Capacitor.isNativePlatform()) return
 
-    mql = window.matchMedia('(prefers-color-scheme: dark)')
-    mqOnChange = () => { void applyStyleForTheme() }
-    mql.addEventListener?.('change', mqOnChange)
+    // start() 在组件生命周期内调用，此时 pinia 已激活
+    const theme = useThemeStore()
+    stopWatch = watch(
+      () => theme.isDark,
+      dark => { void applyStyleForTheme(dark) }
+    )
 
     // devicePosture.onchange 在折叠屏切换时也常伴随系统栏高度变化，
     // 触发一次再校准以应对某些 OEM 在折叠后调整 inset-top。
     navPosture = (navigator as Navigator).devicePosture ?? null
     if (navPosture && 'onchange' in navPosture) {
-      navPostureOnChange = () => { void applyStyleForTheme() }
+      navPostureOnChange = () => { void applyStyleForTheme(theme.isDark) }
       ;(navPosture as unknown as { onchange: unknown }).onchange = navPostureOnChange
     }
 
-    void applyStyleForTheme()
+    void applyStyleForTheme(theme.isDark)
   }
 
   function stop() {
     if (!started) return
     started = false
 
-    if (mql && mqOnChange) {
-      mql.removeEventListener?.('change', mqOnChange)
-    }
-    mql = null
-    mqOnChange = null
+    stopWatch?.()
+    stopWatch = null
 
     if (navPosture && navPostureOnChange && 'onchange' in navPosture) {
       ;(navPosture as unknown as { onchange: unknown }).onchange = null

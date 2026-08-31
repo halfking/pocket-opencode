@@ -3,28 +3,43 @@ import { ref, computed } from 'vue'
 import { chatAgentApi } from '../api/chatAgent'
 import type { ChatAgent, SyncPayload, SyncResult, SyncStatus } from '../types/chatAgent'
 
-// 部门清单（与后端 agency-agents-zh 统计一致）
-export const DEPARTMENTS = [
-  { key: 'specialized', label: '专业领域', count: 46 },
-  { key: 'marketing', label: '营销', count: 36 },
-  { key: 'engineering', label: '工程', count: 35 },
-  { key: 'game-development', label: '游戏开发', count: 20 },
-  { key: 'strategy', label: '策略', count: 16 },
-  { key: 'integrations', label: '集成', count: 13 },
-  { key: 'testing', label: '测试', count: 9 },
-  { key: 'sales', label: '销售', count: 8 },
-  { key: 'finance', label: '财务', count: 8 },
-  { key: 'design', label: '设计', count: 8 },
-  { key: 'support', label: '支持', count: 7 },
-  { key: 'paid-media', label: '付费媒体', count: 7 },
-  { key: 'spatial-computing', label: '空间计算', count: 6 },
-  { key: 'project-management', label: '项目管理', count: 6 },
-  { key: 'academic', label: '学术', count: 6 },
-  { key: 'supply-chain', label: '供应链', count: 5 },
-  { key: 'product', label: '产品', count: 5 },
-  { key: 'legal', label: '法律', count: 2 },
-  { key: 'hr', label: '人力资源', count: 2 },
-] as const
+// 部门中文标签（key = agency-agents-zh 仓库目录名，含自定义角色可能出现的部门）。
+// 不再硬编码数量：部门列表与计数由 store.departments 按实际加载的角色动态计算。
+export const DEPARTMENT_LABELS: Record<string, string> = {
+  specialized: '专业领域',
+  marketing: '营销',
+  engineering: '工程',
+  gis: '地理信息',
+  design: '设计',
+  security: '安全',
+  finance: '财务',
+  sales: '销售',
+  testing: '测试',
+  company: '公司高管',
+  'paid-media': '付费媒体',
+  'project-management': '项目管理',
+  support: '客户支持',
+  academic: '学术',
+  'spatial-computing': '空间计算',
+  'game-development': '游戏开发',
+  product: '产品',
+  'supply-chain': '供应链',
+  'unreal-engine': 'Unreal 引擎',
+  unity: 'Unity',
+  godot: 'Godot',
+  'roblox-studio': 'Roblox Studio',
+  blender: 'Blender',
+  hr: '人力资源',
+  legal: '法律',
+  'mcp-memory': '记忆管理',
+  integrations: '集成',
+  strategy: '战略',
+}
+
+/** 部门 key → 中文标签（未知 key 原样显示） */
+export function departmentLabel(key: string): string {
+  return DEPARTMENT_LABELS[key] || key
+}
 
 export const useChatAgentStore = defineStore('chatAgent', () => {
   const agents = ref<ChatAgent[]>([])
@@ -55,6 +70,18 @@ export const useChatAgentStore = defineStore('chatAgent', () => {
 
   // 自定义角色
   const customAgents = computed(() => agents.value.filter((a) => !a.is_builtin))
+
+  // 动态部门列表：按实际加载的角色分布计算（内置 + 自定义），
+  // 数量多的部门排前面；未知部门 key 回退显示原文。
+  const departments = computed(() => {
+    const counts = new Map<string, number>()
+    for (const a of agents.value) {
+      counts.set(a.department, (counts.get(a.department) || 0) + 1)
+    }
+    return Array.from(counts.entries())
+      .map(([key, count]) => ({ key, count, label: departmentLabel(key) }))
+      .sort((x, y) => y.count - x.count || x.label.localeCompare(y.label, 'zh'))
+  })
 
   /**
    * 加载所有角色（内置 + 自定义）
@@ -267,6 +294,7 @@ export const useChatAgentStore = defineStore('chatAgent', () => {
     byDepartment,
     builtinAgents,
     customAgents,
+    departments,
     loadAgents,
     getAgent,
     createAgent,

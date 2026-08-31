@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { useChatAgentStore, DEPARTMENTS } from '../../stores/chatAgentStore'
+import { useChatAgentStore } from '../../stores/chatAgentStore'
 import type { ChatAgent } from '../../types/chatAgent'
 
 const props = defineProps<{
@@ -52,10 +52,10 @@ const groupedAgents = computed(() => {
   return groups
 })
 
-// 部门显示名映射
+// 部门显示名映射（动态部门列表自带 label，未知部门回退原文）
 const departmentLabels = computed(() => {
   const map: Record<string, string> = {}
-  for (const d of DEPARTMENTS) {
+  for (const d of agentStore.departments) {
     map[d.key] = d.label
   }
   return map
@@ -104,7 +104,7 @@ function close() {
           全部
         </button>
         <button
-          v-for="dept in DEPARTMENTS"
+          v-for="dept in agentStore.departments"
           :key="dept.key"
           :class="['dept-chip', { active: selectedDepartment === dept.key }]"
           @click="selectedDepartment = dept.key"
@@ -128,7 +128,7 @@ function close() {
               :class="['agent-item', { active: agent.id === currentAgentId }]"
               @click="handleSelect(agent)"
             >
-              <div class="agent-emoji">{{ agent.emoji || '🤖' }}</div>
+              <div class="agent-emoji">{{ agent.emoji || '👤' }}</div>
               <div class="agent-info">
                 <div class="agent-name">{{ agent.name }}</div>
                 <div class="agent-desc">{{ agent.description }}</div>
@@ -147,7 +147,7 @@ function close() {
                 :class="['agent-item', { active: agent.id === currentAgentId }]"
                 @click="handleSelect(agent)"
               >
-                <div class="agent-emoji">{{ agent.emoji || '🤖' }}</div>
+                <div class="agent-emoji">{{ agent.emoji || '👤' }}</div>
                 <div class="agent-info">
                   <div class="agent-name">{{ agent.name }}</div>
                   <div class="agent-desc">{{ agent.description }}</div>
@@ -170,7 +170,7 @@ function close() {
 .agent-selector-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay);
   z-index: var(--z-sheet);
   display: flex;
   align-items: flex-end;
@@ -179,8 +179,9 @@ function close() {
 .agent-selector-sheet {
   width: 100%;
   max-height: 85vh;
-  background: var(--bg-primary, #fff);
+  background: var(--bg-card);
   border-radius: 16px 16px 0 0;
+  box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -191,13 +192,14 @@ function close() {
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  border-bottom: 1px solid var(--border-color, #e5e7eb);
+  border-bottom: 1px solid var(--border);
 }
 
 .sheet-header h2 {
   margin: 0;
   font-size: 18px;
   font-weight: 600;
+  color: var(--text-primary);
 }
 
 .close-btn {
@@ -207,21 +209,27 @@ function close() {
   background: transparent;
   font-size: 28px;
   line-height: 1;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   cursor: pointer;
 }
 
 .search-section {
   padding: 12px 20px;
-  border-bottom: 1px solid var(--border-color, #e5e7eb);
+  border-bottom: 1px solid var(--border);
 }
 
 .search-input {
   width: 100%;
   padding: 10px 16px;
-  border: 1px solid var(--border-color, #e5e7eb);
+  border: 1px solid var(--border);
   border-radius: 8px;
   font-size: 15px;
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+}
+
+.search-input::placeholder {
+  color: var(--text-muted);
 }
 
 .department-filter {
@@ -229,14 +237,15 @@ function close() {
   gap: 8px;
   padding: 12px 20px;
   overflow-x: auto;
-  border-bottom: 1px solid var(--border-color, #e5e7eb);
+  border-bottom: 1px solid var(--border);
 }
 
 .dept-chip {
   padding: 6px 14px;
-  border: 1px solid var(--border-color, #e5e7eb);
+  border: 1px solid var(--border);
   border-radius: 16px;
-  background: var(--bg-primary, #fff);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
   font-size: 14px;
   white-space: nowrap;
   cursor: pointer;
@@ -244,9 +253,9 @@ function close() {
 }
 
 .dept-chip.active {
-  background: var(--primary-color, #3b82f6);
-  color: white;
-  border-color: var(--primary-color, #3b82f6);
+  background: var(--brand-primary);
+  color: var(--text-inverse);
+  border-color: var(--brand-primary);
 }
 
 .agents-list {
@@ -259,7 +268,7 @@ function close() {
 .empty {
   text-align: center;
   padding: 32px 20px;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
 }
 
 .department-group {
@@ -269,7 +278,7 @@ function close() {
 .group-header {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   margin-bottom: 8px;
   padding-left: 4px;
 }
@@ -284,12 +293,12 @@ function close() {
 }
 
 .agent-item:hover {
-  background: var(--bg-hover, #f3f4f6);
+  background: var(--bg-subtle);
 }
 
 .agent-item.active {
-  background: var(--primary-color-light, #eff6ff);
-  border: 1px solid var(--primary-color, #3b82f6);
+  background: var(--brand-bg);
+  border: 1px solid var(--brand-primary);
 }
 
 .agent-emoji {
@@ -307,11 +316,12 @@ function close() {
   font-size: 15px;
   font-weight: 500;
   margin-bottom: 4px;
+  color: var(--text-primary);
 }
 
 .agent-desc {
   font-size: 13px;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
@@ -321,17 +331,17 @@ function close() {
 
 .sheet-footer {
   padding: 16px 20px;
-  border-top: 1px solid var(--border-color, #e5e7eb);
+  border-top: 1px solid var(--border);
 }
 
 .clear-btn {
   width: 100%;
   padding: 12px;
-  border: 1px solid var(--border-color, #e5e7eb);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: white;
+  background: var(--bg-elevated);
   font-size: 15px;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   cursor: pointer;
 }
 </style>

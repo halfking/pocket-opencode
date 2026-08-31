@@ -14,6 +14,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -30,11 +31,12 @@ const SEED_TS int64 = 1756569600 // 2026-08-31 00:00:00 UTC
 
 func main() {
 	repoPath := flag.String("repo", "", "agency-agents-zh 仓库路径（必填）")
-	outPath := flag.String("o", "", "输出 SQL 文件路径（缺省打印到 stdout）")
+	outPath := flag.String("o", "", "输出文件路径（缺省打印到 stdout）")
+	format := flag.String("format", "sql", "输出格式：sql（deploy 种子）或 json（go:embed 内嵌种子）")
 	flag.Parse()
 
 	if *repoPath == "" {
-		fmt.Fprintln(os.Stderr, "用法: gen-agent-seed -repo /path/to/agency-agents-zh [-o out.sql]")
+		fmt.Fprintln(os.Stderr, "用法: gen-agent-seed -repo /path/to/agency-agents-zh [-o out] [-format sql|json]")
 		os.Exit(1)
 	}
 	abs, err := filepath.Abs(*repoPath)
@@ -56,7 +58,40 @@ func main() {
 		}
 		return agents[i].ID < agents[j].ID
 	})
+	// 两条产物路径共用固定时间戳，保证确定性（Create 落库时仅 CreatedAt 被保留）。
+	for _, a := range agents {
+		a.CreatedAt = SEED_TS
+		a.UpdatedAt = SEED_TS
+	}
 
+	var out []byte
+	switch *format {
+	case "json":
+		out, err = json.MarshalIndent(agents, "", "  ")
+		if err != nil {
+			fatal(err)
+		}
+		out = append(out, '\n')
+	case "sql":
+		out = []byte(renderSQL(agents))
+	default:
+		fatal(fmt.Errorf("unknown format: %s (want sql|json)", *format))
+	}
+
+	if *outPath == "" {
+		os.Stdout.Write(out)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(*outPath), 0o755); err != nil {
+		fatal(err)
+	}
+	if err := os.WriteFile(*outPath, out, 0o644); err != nil {
+		fatal(err)
+	}
+	fmt.Fprintf(os.Stderr, "[gen-agent-seed] %d agents (%s) -> %s\n", len(agents), *format, *outPath)
+}
+
+func renderSQL(agents []*chatagent.Agent) string {
 	var b strings.Builder
 	b.WriteString("-- ============================================================\n")
 	b.WriteString("-- chat_agents 种子数据（内置专家角色 / 提示词）\n")
@@ -102,18 +137,7 @@ CREATE INDEX IF NOT EXISTS idx_chat_agents_builtin ON chat_agents(is_builtin);
 	}
 
 	b.WriteString("\nCOMMIT;\n")
-
-	if *outPath == "" {
-		os.Stdout.WriteString(b.String())
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(*outPath), 0o755); err != nil {
-		fatal(err)
-	}
-	if err := os.WriteFile(*outPath, []byte(b.String()), 0o644); err != nil {
-		fatal(err)
-	}
-	fmt.Fprintf(os.Stderr, "[gen-agent-seed] %d agents -> %s\n", len(agents), *outPath)
+	return b.String()
 }
 
 // sqlEscape 单引号转义（PostgreSQL 字符串字面量）。

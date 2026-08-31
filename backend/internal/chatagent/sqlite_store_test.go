@@ -76,16 +76,14 @@ func TestSQLiteStore_CRUD(t *testing.T) {
 		t.Errorf("update failed: %q", got2.Name)
 	}
 
-	// Cannot modify builtin
+	// Builtin 可维护：允许修改与删除（专家库维护语义）
 	if err := store.Update(ctx, "ws-1", &Agent{
-		ID: "builtin-1", Name: "X", Department: "test", SystemPrompt: "x",
-	}); err == nil {
-		t.Error("expected builtin update to fail")
+		ID: "builtin-1", Name: "内置（维护更新）", Department: "test", SystemPrompt: "x",
+	}); err != nil {
+		t.Errorf("builtin update should be allowed: %v", err)
 	}
-
-	// Cannot delete builtin
-	if err := store.Delete(ctx, "ws-1", "builtin-1"); err == nil {
-		t.Error("expected builtin delete to fail")
+	if err := store.Delete(ctx, "ws-1", "builtin-1"); err != nil {
+		t.Errorf("builtin delete should be allowed: %v", err)
 	}
 
 	// Delete custom OK
