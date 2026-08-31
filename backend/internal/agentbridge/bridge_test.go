@@ -119,15 +119,18 @@ func TestSend_AutoAttachesTask(t *testing.T) {
 	if c.taskID != "task_abc" || c.instanceID != "inst1" || c.sessionID != "ses_123" || c.role != "primary" || c.workspaceID != "ws" {
 		t.Errorf("attach call mismatch: %+v", c)
 	}
-	// Agent should have been marked busy after a successful dispatch.
-	foundBusy := false
+	// Agent should have been marked online after a successful dispatch — a
+	// session was created and prompted, confirming the instance is reachable.
+	// (Previously this asserted "busy", which the dispatch never cleared —
+	// every successful Send left the agent stuck at busy forever.)
+	foundOnline := false
 	for _, u := range store.statusUpdates {
-		if u == "a1=busy" {
-			foundBusy = true
+		if u == "a1=online" {
+			foundOnline = true
 		}
 	}
-	if !foundBusy {
-		t.Error("agent should be marked busy after dispatch")
+	if !foundOnline {
+		t.Error("agent should be marked online after a successful dispatch")
 	}
 }
 

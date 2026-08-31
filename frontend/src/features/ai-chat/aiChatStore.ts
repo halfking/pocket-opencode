@@ -411,12 +411,15 @@ export const useAIChatStore = defineStore('ai-chat', () => {
       }
     }
     // 把仍处于 streaming 的消息标记为完成
+    let changed = false
     for (const m of active.value.messages) {
       if (m.streaming) {
         m.streaming = false
         if (!m.content) m.content = '（已停止）'
+        changed = true
       }
     }
+    if (changed) persist()
   }
 
   /**

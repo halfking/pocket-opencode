@@ -124,6 +124,12 @@ func (b *Bridge) Send(ctx context.Context, agentID, prompt string, opts SendOpti
 		return nil, fmt.Errorf("lookup agent: %w", err)
 	}
 
+	// 1b. Fall back to the agent record when the caller didn't override —
+	//     lets HTTP callers pass zero values and still get a working dispatch.
+	if opts.AgentName == "" {
+		opts.AgentName = agent.Name
+	}
+
 	// 2. Resolve instance → API base URL for the caller's workspace.
 	apiBase, err := b.resolver.ResolveAPIBaseForWorkspace(opts.WorkspaceID, agent.InstanceID)
 	if err != nil {
@@ -140,21 +146,28 @@ func (b *Bridge) Send(ctx context.Context, agentID, prompt string, opts SendOpti
 	}
 	info, err := b.creator.CreateSessionOnInstance(ctx, apiBase, createIn)
 	if err != nil {
-		_ = b.store.UpdateStatus(ctx, agentID, StatusBusy)
+		// 创建会话失败不等同于实例离线——可能只是单次资源竞争。标记
+		// unknown 让下一次健康探测重新评估，而不是误判为 offline/busy。
+		_ = b.store.UpdateStatus(ctx, agentID, StatusUnknown)
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 	if info == nil || info.ID == "" {
+		_ = b.store.UpdateStatus(ctx, agentID, StatusUnknown)
 		return nil, fmt.Errorf("create session returned empty id")
 	}
 
 	// 4. Send the prompt.
 	sendIn := &SendPromptInput{Agent: opts.AgentName, Text: prompt}
 	if err := b.creator.SendPromptToSession(ctx, apiBase, info.ID, sendIn); err != nil {
+		// 会话已创建（实例可达）但本轮提示发送失败 → busy 而非 offline。
+		_ = b.store.UpdateStatus(ctx, agentID, StatusBusy)
 		return nil, fmt.Errorf("send prompt: %w", err)
 	}
 
-	// 5. Mark agent busy (a session is now active).
-	_ = b.store.UpdateStatus(ctx, agentID, StatusBusy)
+	// 5. Mark agent online — a session was created and prompted successfully,
+	//    so the instance is confirmed reachable (previously this incorrectly
+	//    left the agent stuck at "busy" after every successful dispatch).
+	_ = b.store.UpdateStatus(ctx, agentID, StatusOnline)
 
 	// 6. THE S0 FIX: auto-attach session to task if task_id was given.
 	res := &SendResult{

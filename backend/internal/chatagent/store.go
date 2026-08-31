@@ -34,8 +34,16 @@ type Agent struct {
 	Color        string `json:"color,omitempty" db:"color"`       // 角色主题色（如 'purple'）
 	SystemPrompt string `json:"system_prompt" db:"system_prompt"` // 完整角色设定（Markdown 正文）
 	IsBuiltin    bool   `json:"is_builtin" db:"is_builtin"`       // 是否为内置角色（true=不可修改/删除）
-	CreatedAt    int64  `json:"created_at" db:"created_at"`
-	UpdatedAt    int64  `json:"updated_at" db:"updated_at"`
+
+	// 市场化支持字段（可选）：从 marketplace 安装或用户自定义时填充。
+	MarketplaceID string   `json:"marketplace_id,omitempty" db:"marketplace_id"` // 关联的市场包 ID
+	SkillRefs     []string `json:"skill_refs,omitempty" db:"skill_refs"`         // 绑定的技能 ID 列表
+	Publisher     string   `json:"publisher,omitempty" db:"publisher"`           // 发布者
+	Version       string   `json:"version,omitempty" db:"version"`               // 版本号（semver）
+	Tags          []string `json:"tags,omitempty" db:"tags"`                     // 标签
+
+	CreatedAt int64 `json:"created_at" db:"created_at"`
+	UpdatedAt int64 `json:"updated_at" db:"updated_at"`
 }
 
 // Store 管理智能体角色的持久化（SQLite）。
@@ -97,7 +105,7 @@ func (s *Store) Create(ctx context.Context, a *Agent) error {
 	return err
 }
 
-// Get 根据 id 查询单个角色。内置角色（workspace_id=''）全局可见；自定义角色需 workspace 匹配。
+// Get 根据 id 查询单个角色。内置角色（workspace_id=”）全局可见；自定义角色需 workspace 匹配。
 func (s *Store) Get(ctx context.Context, workspaceID, id string) (*Agent, error) {
 	if s.pool == nil {
 		return nil, fmt.Errorf("store not configured")

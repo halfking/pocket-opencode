@@ -41,6 +41,6 @@ volumes:
 networks:
   pocket_local:
     name: opencode_pocket_local
-  r112_net:
+  shared-infra:
     external: true
-    name: r112_net
+    name: shared-infra

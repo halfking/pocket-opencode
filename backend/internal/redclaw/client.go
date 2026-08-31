@@ -26,7 +26,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if cfg.TenantID == "" {
 		return nil, fmt.Errorf("redclaw: TenantID cannot be empty")
 	}
-	
+
 	timeout := cfg.TimeoutSec
 	if timeout <= 0 {
 		timeout = 30
@@ -59,7 +59,7 @@ func (c *Client) Chat(req ChatRequest) (*ChatResponse, error) {
 	if len(req.Messages) == 0 {
 		return nil, fmt.Errorf("redclaw: chat request must contain at least one message")
 	}
-	
+
 	// Enforce tenant isolation: override with client's tenant ID
 	if req.TenantID != "" && req.TenantID != c.cfg.TenantID {
 		return nil, fmt.Errorf("redclaw: tenant ID mismatch (request=%s, client=%s)", req.TenantID, c.cfg.TenantID)
@@ -93,7 +93,7 @@ func (c *Client) KnowledgeSearch(req KnowledgeSearchRequest) (*KnowledgeSearchRe
 	if req.Query == "" {
 		return nil, fmt.Errorf("redclaw: search query cannot be empty")
 	}
-	
+
 	// Enforce tenant isolation: override with client's tenant ID
 	if req.TenantID != "" && req.TenantID != c.cfg.TenantID {
 		return nil, fmt.Errorf("redclaw: tenant ID mismatch (request=%s, client=%s)", req.TenantID, c.cfg.TenantID)
@@ -177,7 +177,11 @@ func (c *Client) doRequest(method, path string, body interface{}) (*http.Respons
 
 	req.Header.Set("Authorization", "Bearer "+c.cfg.Secret)
 	req.Header.Set("X-Tenant-ID", c.cfg.TenantID)
-	req.Header.Set("Content-Type", "application/json")
+	// Content-Type 只在有 body 时才有意义；GET 请求不设置，避免调用方看到
+	// 一个没有载荷的 "Content-Type: application/json"。
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	return c.httpDo.Do(req)
 }
