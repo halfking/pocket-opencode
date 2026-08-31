@@ -4,14 +4,14 @@
 
 ## ⚠️ 本地 PG 共享策略（强约束）
 
-> **本工作区统一规定：本地只有一套共享 PG 实例，由 `llm-gateway-go` Compose 创建并命名为 `r112_postgres`，宿主端口 `15432`；`acc-integration` 模式下共用 ACC 启动的 `llm-gateway-pg`（宿主端口 `5432`）。其他任何 PG 容器（PostgreSQL / Citus / `postgres:*` 等）一律不得再启动，且不得删除/重建/降级 `r112_postgres` 或 `llm-gateway-pg`——它们承载了真实业务数据。**
+> **本工作区统一规定：本地只有一套共享 PG 实例。openpocket 本地方案接入 `r112_postgres`（宿主端口 `15432`，由 llm-gateway-go Compose 创建），acc-integration / 其他服务接入 `llm-gateway-pg`（宿主端口 `5432`，由 llm-gateway / ACC 启动）。其他任何 PG 容器（PostgreSQL / Citus / `postgres:*` 等）一律不得再启动，且不得删除/重建/降级 `r112_postgres` 或 `llm-gateway-pg`——它们承载了真实业务数据。**
 
 具体规则：
 
-1. **禁止新启 PG 实例**：本地方案 / acc-integration 模式下，禁止在仓库内任何 `docker-compose.*.yml` 或脚本中声明 `image: postgres*` / `image: *citus*` / `container_name: *postgres*` / `container_name: *pg*` 等容器。所有应用层必须复用上面两个共享 PG 之一。
-2. **禁止删除共享 PG**：禁止对 `r112_postgres`、`llm-gateway-pg` 执行 `docker stop / rm / down / volume rm / pg_dropcluster` 等销毁性操作；禁止运行 `docker volume prune` 等可能影响其 `pg-data` 卷的命令。
-3. **禁止 reset / drop 数据库**：禁止 `DROP DATABASE`、`TRUNCATE`、`pg_resetwal`；如需清空业务数据，需走先备份后人工确认的流程，并仅限 `pocket_local` / 业务 schema，禁止触碰 `postgres`、`kaixuan`、`llm_gateway`、`kxmemory_rls` 等共享库。
-4. **冲突时优先保留共享 PG**：若发现本地有同名/同端口的孤儿 PG 容器（例如来自旧 demo），先停掉应用再由维护者确认后再清理，**绝不允许直接 `docker rm -f`**。
+1. **禁止新启 PG 实例**：本目录及仓库任何 `docker-compose.*.yml` 与脚本不得声明 `image: postgres*`、`image: *citus*`、任何带 `postgres` / `pg` / `citus` 字样的 `container_name`，也不得引入新的 `pg-data` 卷。
+2. **禁止删除共享 PG**：禁止对 `r112_postgres` 与 `llm-gateway-pg` 执行 `docker stop / rm / down / volume rm / docker system prune` 等销毁性操作；本目录脚本不得调用任何 `docker rm` / `docker volume rm` / `docker compose down --volumes` 命令。
+3. **禁止 reset / drop 数据库**：禁止 `DROP DATABASE` / `TRUNCATE` / `pg_resetwal`；清空数据仅限本服务业务 schema / 角色（如 `pocket_local`、`kaixuan` 下的业务 schema、`memora`/`kxmemory_rls` 等），禁止触碰 `postgres` / `kaixuan`、`llm_gateway`、`kxmemory_rls` 等其他共享库。
+4. **冲突时优先保留共享 PG**：发现同名 / 同端口的孤儿 PG 容器必须先停应用再由维护者确认后再清理，**绝不允许直接 `docker rm -f llm-gateway-pg` 或 `docker rm -f r112_postgres`**。
 
 违反以上任一条会导致其他依赖 `llm-gateway-pg` / `r112_postgres` 的服务（llm-gateway-go、ACC、memora、kxmemory、RedClaw、openpocket 自身）出现级联数据丢失。
 
