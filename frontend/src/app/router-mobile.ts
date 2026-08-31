@@ -45,6 +45,12 @@ import ScheduledTaskEditView from '../features/scheduled-tasks/ScheduledTaskEdit
 const PkmTodayView = () => import('../features/pkm/PkmTodayView.vue')
 const PkmNoteView = () => import('../features/pkm/PkmNoteView.vue')
 
+// Phase 4: 移动分布式 AI 工作平台 · 市场三大入口（skill / agent / workflow）。
+// 全部懒加载，避免首屏 JS 体积膨胀。
+const SkillMarketView = () => import('../features/marketplace/SkillMarketView.vue')
+const AgentMarketView = () => import('../features/marketplace/AgentMarketView.vue')
+const WorkbuddyView = () => import('../features/marketplace/WorkbuddyView.vue')
+
 // 🦞 守卫所需：登录态 + 龙虾初始化态
 // PR4: 守卫逻辑已抽取到 ./routeGuards.ts；本文件保留路由表，避免在
 // 创建 router 之前 import pinia/native 引发的副作用。
@@ -310,6 +316,25 @@ const router = createRouter({
       name: 'settings-permissions',
       component: () => import('../features/settings/SettingsPermissionsView.vue'),
       meta: { requiresAuth: true, title: '权限与隐私', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
+    // ---- Phase 4: 移动分布式 AI 工作平台 · 市场三大入口 ----
+    {
+      path: '/marketplace/skills',
+      name: 'marketplace-skills',
+      component: SkillMarketView,
+      meta: { requiresAuth: true, title: '技能市场', bottomNav: false, canGoBack: true, hideAppHeader: true },
+    },
+    {
+      path: '/marketplace/agents',
+      name: 'marketplace-agents',
+      component: AgentMarketView,
+      meta: { requiresAuth: true, title: '智能体市场', bottomNav: false, canGoBack: true, hideAppHeader: true },
+    },
+    {
+      path: '/marketplace/workbuddies',
+      name: 'marketplace-workbuddies',
+      component: WorkbuddyView,
+      meta: { requiresAuth: true, title: '工作搭子', bottomNav: false, canGoBack: true, hideAppHeader: true },
     },
     {
       path: '/settings/scheduled-tasks',

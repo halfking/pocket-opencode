@@ -17,6 +17,8 @@ package chatagent
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -67,12 +69,18 @@ CREATE TABLE IF NOT EXISTS chat_agents (
 	color         TEXT,
 	system_prompt TEXT NOT NULL,
 	is_builtin    INTEGER NOT NULL DEFAULT 0,
+	marketplace_id TEXT,
+	skill_refs     JSONB DEFAULT '[]',
+	publisher      TEXT,
+	version        TEXT,
+	tags           JSONB DEFAULT '[]',
 	created_at    INTEGER NOT NULL,
 	updated_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chat_agents_ws ON chat_agents(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_chat_agents_dept ON chat_agents(department);
 CREATE INDEX IF NOT EXISTS idx_chat_agents_builtin ON chat_agents(is_builtin);
+CREATE INDEX IF NOT EXISTS idx_chat_agents_marketplace ON chat_agents(marketplace_id) WHERE marketplace_id IS NOT NULL;
 `
 
 // Init 初始化 chat_agents 表。
@@ -98,10 +106,13 @@ func (s *Store) Create(ctx context.Context, a *Agent) error {
 	}
 	a.UpdatedAt = now
 
+	skillRefsJSON := encodeStringSlice(a.SkillRefs)
+	tagsJSON := encodeStringSlice(a.Tags)
+
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO chat_agents (id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, a.ID, a.WorkspaceID, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt, a.IsBuiltin, a.CreatedAt, a.UpdatedAt)
+		INSERT INTO chat_agents (id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin, marketplace_id, skill_refs, publisher, version, tags, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+	`, a.ID, a.WorkspaceID, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt, a.IsBuiltin, nullIfEmpty(a.MarketplaceID), skillRefsJSON, nullIfEmpty(a.Publisher), nullIfEmpty(a.Version), tagsJSON, a.CreatedAt, a.UpdatedAt)
 	return err
 }
 
@@ -111,13 +122,34 @@ func (s *Store) Get(ctx context.Context, workspaceID, id string) (*Agent, error)
 		return nil, fmt.Errorf("store not configured")
 	}
 	var a Agent
+	var skillRefsJSON, tagsJSON []byte
+	var marketplaceID, publisher, version sql.NullString
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin, created_at, updated_at
+		SELECT id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin,
+		       marketplace_id, skill_refs, publisher, version, tags,
+		       created_at, updated_at
 		FROM chat_agents
 		WHERE id = $1 AND (workspace_id = '' OR workspace_id = $2)
-	`, id, workspaceID).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Department, &a.Emoji, &a.Color, &a.SystemPrompt, &a.IsBuiltin, &a.CreatedAt, &a.UpdatedAt)
+	`, id, workspaceID).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Department, &a.Emoji, &a.Color, &a.SystemPrompt, &a.IsBuiltin,
+		&marketplaceID, &skillRefsJSON, &publisher, &version, &tagsJSON,
+		&a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return nil, err
+	}
+	if marketplaceID.Valid {
+		a.MarketplaceID = marketplaceID.String
+	}
+	if publisher.Valid {
+		a.Publisher = publisher.String
+	}
+	if version.Valid {
+		a.Version = version.String
+	}
+	if err := decodeStringSlice(skillRefsJSON, &a.SkillRefs); err != nil {
+		return nil, fmt.Errorf("decode skill_refs: %w", err)
+	}
+	if err := decodeStringSlice(tagsJSON, &a.Tags); err != nil {
+		return nil, fmt.Errorf("decode tags: %w", err)
 	}
 	return &a, nil
 }
@@ -128,7 +160,9 @@ func (s *Store) List(ctx context.Context, workspaceID, department string) ([]*Ag
 		return nil, fmt.Errorf("store not configured")
 	}
 	query := `
-		SELECT id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin, created_at, updated_at
+		SELECT id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin,
+		       marketplace_id, skill_refs, publisher, version, tags,
+		       created_at, updated_at
 		FROM chat_agents
 		WHERE (workspace_id = '' OR workspace_id = $1)
 	`
@@ -148,8 +182,27 @@ func (s *Store) List(ctx context.Context, workspaceID, department string) ([]*Ag
 	var agents []*Agent
 	for rows.Next() {
 		var a Agent
-		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Department, &a.Emoji, &a.Color, &a.SystemPrompt, &a.IsBuiltin, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		var skillRefsJSON, tagsJSON []byte
+		var marketplaceID, publisher, version sql.NullString
+		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Department, &a.Emoji, &a.Color, &a.SystemPrompt, &a.IsBuiltin,
+			&marketplaceID, &skillRefsJSON, &publisher, &version, &tagsJSON,
+			&a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if marketplaceID.Valid {
+			a.MarketplaceID = marketplaceID.String
+		}
+		if publisher.Valid {
+			a.Publisher = publisher.String
+		}
+		if version.Valid {
+			a.Version = version.String
+		}
+		if err := decodeStringSlice(skillRefsJSON, &a.SkillRefs); err != nil {
+			return nil, fmt.Errorf("decode skill_refs: %w", err)
+		}
+		if err := decodeStringSlice(tagsJSON, &a.Tags); err != nil {
+			return nil, fmt.Errorf("decode tags: %w", err)
 		}
 		agents = append(agents, &a)
 	}
@@ -172,11 +225,17 @@ func (s *Store) Update(ctx context.Context, workspaceID string, a *Agent) error 
 	}
 
 	a.UpdatedAt = time.Now().Unix()
+	skillRefsJSON := encodeStringSlice(a.SkillRefs)
+	tagsJSON := encodeStringSlice(a.Tags)
 	_, err = s.pool.Exec(ctx, `
 		UPDATE chat_agents
-		SET name = $1, description = $2, department = $3, emoji = $4, color = $5, system_prompt = $6, updated_at = $7
-		WHERE id = $8 AND workspace_id = $9
-	`, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt, a.UpdatedAt, a.ID, existing.WorkspaceID)
+		SET name = $1, description = $2, department = $3, emoji = $4, color = $5, system_prompt = $6,
+		    marketplace_id = $7, skill_refs = $8, publisher = $9, version = $10, tags = $11,
+		    updated_at = $12
+		WHERE id = $13 AND workspace_id = $14
+	`, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt,
+		nullIfEmpty(a.MarketplaceID), skillRefsJSON, nullIfEmpty(a.Publisher), nullIfEmpty(a.Version), tagsJSON,
+		a.UpdatedAt, a.ID, existing.WorkspaceID)
 	return err
 }
 
@@ -206,4 +265,47 @@ func (s *Store) CountCustom(ctx context.Context, workspaceID string) (int, error
 	var count int
 	err := s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM chat_agents WHERE workspace_id = $1 AND is_builtin = 0", workspaceID).Scan(&count)
 	return count, err
+}
+
+// ---- JSON 序列化辅助 ----
+
+// encodeStringSlice 把字符串切片序列化为 JSON 数组。
+// nil/空切片都序列化为 "[]"，避免 NULL 列导致的下游解析分支。
+func encodeStringSlice(in []string) []byte {
+	if in == nil {
+		in = []string{}
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		// 不应该发生（string 切片总能序列化），但万一出错也降级为 []
+		return []byte("[]")
+	}
+	return b
+}
+
+// decodeStringSlice 从 JSONB/TEXT 列反序列化为字符串切片。
+// 空 / NULL 字节流按空切片处理（不报错）。
+func decodeStringSlice(raw []byte, out *[]string) error {
+	if len(raw) == 0 {
+		*out = []string{}
+		return nil
+	}
+	var v []string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return err
+	}
+	if v == nil {
+		v = []string{}
+	}
+	*out = v
+	return nil
+}
+
+// nullIfEmpty 把空字符串转换为 nil，便于写入 nullable TEXT 列。
+// 保留空字符串语义需要的话, 改用 sql.NullString 是另一条路径。
+func nullIfEmpty(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
 }

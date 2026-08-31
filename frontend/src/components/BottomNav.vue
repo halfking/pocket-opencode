@@ -137,6 +137,10 @@ const items: NavItem[] = [
 const more: NavItem[] = [
   { to: '/pkm/today', icon: 'sticky_note_2', label: t('nav.pkmNotes') },
   { to: '/vault', icon: 'lock', label: t('nav.vault') },
+  // Phase 4: 移动分布式 AI 工作平台 · 三大市场入口。
+  { to: '/marketplace/skills', icon: 'extension', label: t('nav.skillMarket') },
+  { to: '/marketplace/agents', icon: 'smart_toy', label: t('nav.agentMarket') },
+  { to: '/marketplace/workbuddies', icon: 'handshake', label: t('nav.workbuddy') },
   // 入口收敛：tasks/sessions/instances/cost 已统一到顶栏 ≡ 菜单抽屉「运维与高级」，
   // 不再在「更多」面板重复暴露；设置入口同样收敛到 ≡（tab bar 不放设置）。
   // 各路由本身仍存在（深链可访问）。

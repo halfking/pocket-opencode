@@ -97,13 +97,18 @@ func (s *Server) handleChatAgentsCreate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var body struct {
-		ID           string `json:"id"`
-		Name         string `json:"name"`
-		Description  string `json:"description"`
-		Department   string `json:"department"`
-		Emoji        string `json:"emoji"`
-		Color        string `json:"color"`
-		SystemPrompt string `json:"system_prompt"`
+		ID            string   `json:"id"`
+		Name          string   `json:"name"`
+		Description   string   `json:"description"`
+		Department    string   `json:"department"`
+		Emoji         string   `json:"emoji"`
+		Color         string   `json:"color"`
+		SystemPrompt  string   `json:"system_prompt"`
+		MarketplaceID string   `json:"marketplace_id"`
+		SkillRefs     []string `json:"skill_refs"`
+		Publisher     string   `json:"publisher"`
+		Version       string   `json:"version"`
+		Tags          []string `json:"tags"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -121,15 +126,20 @@ func (s *Server) handleChatAgentsCreate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	agent := &chatagent.Agent{
-		ID:           body.ID,
-		WorkspaceID:  workspaceID,
-		Name:         body.Name,
-		Description:  body.Description,
-		Department:   body.Department,
-		Emoji:        body.Emoji,
-		Color:        body.Color,
-		SystemPrompt: body.SystemPrompt,
-		IsBuiltin:    false,
+		ID:            body.ID,
+		WorkspaceID:   workspaceID,
+		Name:          body.Name,
+		Description:   body.Description,
+		Department:    body.Department,
+		Emoji:         body.Emoji,
+		Color:         body.Color,
+		SystemPrompt:  body.SystemPrompt,
+		IsBuiltin:     false,
+		MarketplaceID: body.MarketplaceID,
+		SkillRefs:     body.SkillRefs,
+		Publisher:     body.Publisher,
+		Version:       body.Version,
+		Tags:          body.Tags,
 	}
 
 	if err := s.chatAgentStore.Create(r.Context(), agent); err != nil {
@@ -165,12 +175,17 @@ func (s *Server) handleChatAgentsUpdate(w http.ResponseWriter, r *http.Request) 
 	workspaceID := s.workspaceIDFromRequest(r)
 
 	var body struct {
-		Name         string `json:"name"`
-		Description  string `json:"description"`
-		Department   string `json:"department"`
-		Emoji        string `json:"emoji"`
-		Color        string `json:"color"`
-		SystemPrompt string `json:"system_prompt"`
+		Name          string   `json:"name"`
+		Description   string   `json:"description"`
+		Department    string   `json:"department"`
+		Emoji         string   `json:"emoji"`
+		Color         string   `json:"color"`
+		SystemPrompt  string   `json:"system_prompt"`
+		MarketplaceID *string  `json:"marketplace_id"`
+		SkillRefs     []string `json:"skill_refs"`
+		Publisher     *string  `json:"publisher"`
+		Version       *string  `json:"version"`
+		Tags          []string `json:"tags"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -202,6 +217,22 @@ func (s *Server) handleChatAgentsUpdate(w http.ResponseWriter, r *http.Request) 
 	}
 	if body.SystemPrompt != "" {
 		existing.SystemPrompt = body.SystemPrompt
+	}
+	// 市场化字段使用指针语义：nil 表示"不修改"，空字符串表示"显式清空"。
+	if body.MarketplaceID != nil {
+		existing.MarketplaceID = *body.MarketplaceID
+	}
+	if body.SkillRefs != nil {
+		existing.SkillRefs = body.SkillRefs
+	}
+	if body.Publisher != nil {
+		existing.Publisher = *body.Publisher
+	}
+	if body.Version != nil {
+		existing.Version = *body.Version
+	}
+	if body.Tags != nil {
+		existing.Tags = body.Tags
 	}
 
 	if err := s.chatAgentStore.Update(r.Context(), workspaceID, existing); err != nil {

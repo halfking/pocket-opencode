@@ -31,6 +31,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/lobster"
+	"github.com/halfking/pocket-opencode/backend/internal/marketplace"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/meeting"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
@@ -39,6 +40,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/notify"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
+	"github.com/halfking/pocket-opencode/backend/internal/orchestrator"
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
@@ -102,8 +104,8 @@ type Server struct {
 	parseAssertionFn assertionParser            // 测试可替换的 WebAuthn assertion 解析器；生产为 nil（走默认）
 	identityStore    *identity.Store            // nil = S0-A 未启用，handler 降级到单租户
 	// C3/C4: 邮箱注册 + 验证码登录 + 忘记密码。nil = 未启用（handler 返回 503）
-	codeStore   *auth.CodeStore
-	smtpClient  *notify.Client
+	codeStore  *auth.CodeStore
+	smtpClient *notify.Client
 	// C5: RedClaw auth-agent 镜像客户端（可选；nil = 镜像路径 disabled）
 	redclawAuthClient *redclaw.AuthClient
 	// S0-B: unified LLM BFF。nil = 未配置（POCKET_LLM_* 未设且无网关配置），handler 返回 503。
@@ -123,6 +125,9 @@ type Server struct {
 	// AI 对话智能体角色管理（PG Store 或 SQLiteStore 都实现 StoreIface）。
 	// nil = /api/chat-agents 返回 503。
 	chatAgentStore chatagent.StoreIface
+	// 技能市场（marketplace）。nil = /api/marketplace/* 返回 503。
+	// 当前仅 PG 实现可用；SQLite 实现留待后续 sprint。
+	marketplaceStore marketplace.Service
 	// 智能体云端同步（仅 PG 模式可用；SQLite 模式下此字段保持 nil）。
 	chatAgentSync *chatagent.SyncStore
 	notifyStore   *notifycenter.Store
@@ -160,6 +165,11 @@ type Server struct {
 
 	// 移动端离线重放的 session create 幂等缓存（SEC-06）
 	mobileCreates *mobileCreateCache
+
+	// Phase 4: 编排器（本地 + 云端）。nil = /api/scheduled-tasks 创建
+	// local_agent / cloud_dispatch 类型时会拒绝。orchestrator.LocalDispatcher
+	// / CloudDispatcher 暴露给 scheduledtask executor 注册使用。
+	orchestrator *orchestrator.Orchestrator
 }
 
 func isProductionConfig(cfg config.Config) bool {
@@ -393,6 +403,17 @@ func (s *Server) SetScheduledTaskScheduler(scheduler *scheduledtask.Scheduler) {
 	s.scheduledTaskScheduler = scheduler
 }
 
+// SetOrchestrator 注入 Phase 4 编排器。scheduledtask 的 local_agent /
+// cloud_dispatch executor 通过此入口访问 Local/Cloud Dispatcher。
+func (s *Server) SetOrchestrator(o *orchestrator.Orchestrator) {
+	s.orchestrator = o
+}
+
+// Orchestrator 返回已注入的编排器；为 nil 时由调用方按需拒绝。
+func (s *Server) Orchestrator() *orchestrator.Orchestrator {
+	return s.orchestrator
+}
+
 func (s *Server) ScheduledTaskStore() *scheduledtask.Store { return s.scheduledTaskStore }
 func (s *Server) ScheduledTaskScheduler() *scheduledtask.Scheduler {
 	return s.scheduledTaskScheduler
@@ -428,6 +449,13 @@ func (s *Server) SetChatAgentStore(store chatagent.StoreIface) {
 // SetChatAgentSync 注入智能体云端同步 store（Acc PG）。
 func (s *Server) SetChatAgentSync(sync *chatagent.SyncStore) {
 	s.chatAgentSync = sync
+}
+
+// SetMarketplaceStore 注入技能市场 service。
+// 当前仅 PG Store 实现满足 marketplace.Service；store 为 nil 时
+// /api/marketplace/* 返回 503，由各 handler 自检。
+func (s *Server) SetMarketplaceStore(store marketplace.Service) {
+	s.marketplaceStore = store
 }
 
 // SetAgentRegistry 注入 ACP agent registry（W5 新增）。
@@ -632,6 +660,13 @@ func (s *Server) Handler() http.Handler {
 			writeError(w, http.StatusNotFound, "not found")
 		}
 	}))
+
+	// Phase 4: 移动分布式 AI 工作平台 · 技能市场（Skill Marketplace）。
+	// 当前所有路由由 marketplaceStore 守门；store 未配置时返回 503。
+	mux.HandleFunc("/api/marketplace/packages", s.requireAuth(s.handleMarketplacePackages))
+	mux.HandleFunc("/api/marketplace/releases", s.requireAuth(s.handleMarketplaceReleases))
+	mux.HandleFunc("/api/marketplace/packages/", s.requireAuth(s.handleMarketplacePackageVersions))
+	mux.HandleFunc("/api/marketplace/", s.requireAuth(s.handleMarketplaceRouter))
 
 	// 会话迁移方案：跨主机迁移 API
 	mux.HandleFunc("/api/migration", s.requireAuth(s.handleMigration))

@@ -3,11 +3,13 @@ package executors
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
+	"github.com/halfking/pocket-opencode/backend/internal/orchestrator"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/scheduledtask"
 )
@@ -150,5 +152,139 @@ func TestWebhookExecutorNon2xxFails(t *testing.T) {
 	_, err := e.Execute(context.Background(), &scheduledtask.Task{Payload: json.RawMessage(`{"url":"https://example.com/hook"}`)})
 	if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// local_agent / cloud_dispatch — Phase 4 移动分布式 AI 工作平台。
+// ---------------------------------------------------------------------------
+
+// stubLocalDispatcher 直接实现 orchestrator.LocalDispatcher 接口（与
+// CloudDispatcher 形状相同），便于在测试中替换真实分发器。
+type stubLocalDispatcher struct {
+	available bool
+	captured  *orchestrator.Task
+	result    *orchestrator.Result
+	err       error
+}
+
+func (d *stubLocalDispatcher) Dispatch(_ context.Context, t *orchestrator.Task) (*orchestrator.Result, error) {
+	d.captured = t
+	if d.err != nil {
+		return nil, d.err
+	}
+	if !d.available {
+		return nil, errors.New("local not available")
+	}
+	return d.result, nil
+}
+func (d *stubLocalDispatcher) IsAvailable() bool { return d.available }
+
+// stubLocalProvider / stubCloudProvider 把同一 stub 暴露为两种接口。
+type stubLocalProvider struct{ d *stubLocalDispatcher }
+
+func (p *stubLocalProvider) Local() orchestrator.LocalDispatcher { return p.d }
+
+type stubCloudProvider struct{ d *stubLocalDispatcher }
+
+func (p *stubCloudProvider) Cloud() orchestrator.CloudDispatcher { return p.d }
+
+func TestLocalAgentExecutorDispatches(t *testing.T) {
+	stub := &stubLocalDispatcher{
+		available: true,
+		result:    &orchestrator.Result{TaskID: "t-1", Status: "success", Output: "ok"},
+	}
+	e := NewLocalAgentExecutor(&stubLocalProvider{d: stub})
+	res, err := e.Execute(context.Background(), &scheduledtask.Task{
+		ID: "sched-1", UserID: "u-1", WorkspaceID: "ws-1",
+		Name:    "n",
+		Payload: json.RawMessage(`{"prompt":"hello","type":"text","skills":["s1"],"max_tokens":256}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(res.Output) {
+		t.Fatalf("output not JSON: %s", res.Output)
+	}
+	if stub.captured == nil || stub.captured.Prompt != "hello" {
+		t.Fatalf("dispatcher did not receive task: %+v", stub.captured)
+	}
+	if stub.captured.WorkspaceID != "ws-1" || stub.captured.UserID != "u-1" {
+		t.Errorf("workspace/user mismatch: %+v", stub.captured)
+	}
+	if stub.captured.Metadata["source"] != "scheduled_task" {
+		t.Errorf("metadata.source missing: %+v", stub.captured.Metadata)
+	}
+}
+
+func TestLocalAgentExecutorRejectsMissingPrompt(t *testing.T) {
+	stub := &stubLocalDispatcher{available: true, result: &orchestrator.Result{}}
+	e := NewLocalAgentExecutor(&stubLocalProvider{d: stub})
+	_, err := e.Execute(context.Background(), &scheduledtask.Task{
+		UserID: "u", WorkspaceID: "w",
+		Payload: json.RawMessage(`{}`),
+	})
+	if err == nil {
+		t.Fatal("expected error for empty prompt")
+	}
+}
+
+func TestLocalAgentExecutorRejectsUnavailable(t *testing.T) {
+	stub := &stubLocalDispatcher{available: false}
+	e := NewLocalAgentExecutor(&stubLocalProvider{d: stub})
+	_, err := e.Execute(context.Background(), &scheduledtask.Task{
+		UserID: "u", WorkspaceID: "w",
+		Payload: json.RawMessage(`{"prompt":"hi"}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("expected unavailable error, got %v", err)
+	}
+}
+
+func TestLocalAgentExecutorRejectsMissingIdentity(t *testing.T) {
+	stub := &stubLocalDispatcher{available: true, result: &orchestrator.Result{}}
+	e := NewLocalAgentExecutor(&stubLocalProvider{d: stub})
+	_, err := e.Execute(context.Background(), &scheduledtask.Task{
+		Payload: json.RawMessage(`{"prompt":"hi"}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "workspace and user") {
+		t.Fatalf("expected identity error, got %v", err)
+	}
+}
+
+func TestCloudDispatchExecutorDispatches(t *testing.T) {
+	stub := &stubLocalDispatcher{
+		available: true,
+		result:    &orchestrator.Result{TaskID: "t-2", Status: "success", Output: "cloud-ok"},
+	}
+	e := NewCloudDispatchExecutor(&stubCloudProvider{d: stub})
+	res, err := e.Execute(context.Background(), &scheduledtask.Task{
+		ID: "sched-2", UserID: "u-1", WorkspaceID: "ws-1",
+		Payload: json.RawMessage(`{"prompt":"cloud hello","type":"complex"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(res.Output) {
+		t.Fatalf("output not JSON: %s", res.Output)
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(res.Output, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decoded["executed_by"]; !ok {
+		t.Errorf("expected executed_by field in output, got %v", decoded)
+	}
+}
+
+func TestCloudDispatchExecutorRejectsUnavailable(t *testing.T) {
+	stub := &stubLocalDispatcher{available: false}
+	e := NewCloudDispatchExecutor(&stubCloudProvider{d: stub})
+	_, err := e.Execute(context.Background(), &scheduledtask.Task{
+		UserID: "u", WorkspaceID: "w",
+		Payload: json.RawMessage(`{"prompt":"hi"}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("expected unavailable error, got %v", err)
 	}
 }

@@ -42,6 +42,11 @@ const (
 	KindKxmemorySummary  Kind = "kxmemory_summary"
 	KindACCMCP           Kind = "acc_mcp"
 	KindWebhook          Kind = "webhook"
+	// Phase 4: 移动分布式 AI 工作平台 · 编排器接入。
+	// local_agent / cloud_dispatch 由 internal/scheduledtask/executors
+	// 包提供，分别落到 orchestrator.LocalDispatcher / CloudDispatcher。
+	KindLocalAgent    Kind = "local_agent"
+	KindCloudDispatch Kind = "cloud_dispatch"
 )
 
 // AllKinds lists every built-in kind. Used by the API layer to validate
@@ -55,6 +60,8 @@ func AllKinds() []Kind {
 		KindKxmemorySummary,
 		KindACCMCP,
 		KindWebhook,
+		KindLocalAgent,
+		KindCloudDispatch,
 	}
 }
 

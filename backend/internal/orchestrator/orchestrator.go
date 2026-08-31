@@ -310,31 +310,9 @@ func (d *LocalAgentDispatcher) IsAvailable() bool {
 }
 
 // ---------------------------------------------------------------------------
-// ACCDispatcher — 云端 ACC 分发器骨架（真实 ACC 集成留待后续 sprint）。
+// ACCDispatcher — 真实实现见 acc_dispatcher.go（基于 internal/mcp.Client）。
 // ---------------------------------------------------------------------------
-
-// ACCDispatcher 云端 ACC 分发器骨架。
-type ACCDispatcher struct {
-	baseURL string
-	apiKey  string
-}
-
-// NewACCDispatcher 创建 ACC 分发器骨架。
-func NewACCDispatcher(baseURL, apiKey string) *ACCDispatcher {
-	return &ACCDispatcher{baseURL: baseURL, apiKey: apiKey}
-}
-
-func (d *ACCDispatcher) Dispatch(ctx context.Context, task *Task) (*Result, error) {
-	// TODO: 真实 ACC API 调用：
-	//   1. POST {baseURL}/api/v1/tasks { workspace_id, user_id, prompt, ... }
-	//   2. 轮询或订阅任务状态
-	//   3. 转换为 Result 返回
-	return nil, errors.New("cloud dispatcher: ACC integration not implemented yet")
-}
-
-func (d *ACCDispatcher) IsAvailable() bool {
-	return d.baseURL != "" && d.apiKey != ""
-}
+// （旧的 baseURL/apiKey 字段版本已删除；新版接受 *mcp.Client。）
 
 // ---------------------------------------------------------------------------
 // MockCloudDispatcher — 用于测试。

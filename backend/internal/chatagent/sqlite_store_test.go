@@ -92,6 +92,116 @@ func TestSQLiteStore_CRUD(t *testing.T) {
 	}
 }
 
+// TestSQLiteStore_MarketplaceFields 验证 marketplace_id / skill_refs /
+// publisher / version / tags 五个市场化字段能正确写入与读回，包括 NULL
+// 默认值和 JSON 数组的反序列化。
+func TestSQLiteStore_MarketplaceFields(t *testing.T) {
+	tmp, err := os.CreateTemp("", "chatagent-mkt-*.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp.Close()
+	defer os.Remove(tmp.Name())
+
+	store, err := NewSQLiteStore(tmp.Name())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// 1. 不带 marketplace 字段的角色：所有字段应为空字符串 / 空切片。
+	if err := store.Create(ctx, &Agent{
+		ID: "plain-1", WorkspaceID: "ws-mkt", Name: "普通角色", Department: "test",
+		SystemPrompt: "x", IsBuiltin: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(ctx, "ws-mkt", "plain-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MarketplaceID != "" || got.Publisher != "" || got.Version != "" {
+		t.Errorf("expected empty optional fields, got marketplace=%q publisher=%q version=%q",
+			got.MarketplaceID, got.Publisher, got.Version)
+	}
+	if got.SkillRefs == nil || len(got.SkillRefs) != 0 {
+		t.Errorf("expected empty SkillRefs slice, got %#v", got.SkillRefs)
+	}
+	if got.Tags == nil || len(got.Tags) != 0 {
+		t.Errorf("expected empty Tags slice, got %#v", got.Tags)
+	}
+
+	// 2. 完整 marketplace 字段：应能 round-trip。
+	installed := &Agent{
+		ID:            "mkt-1",
+		WorkspaceID:   "ws-mkt",
+		Name:          "市场角色",
+		Department:    "test",
+		SystemPrompt:  "p",
+		IsBuiltin:     false,
+		MarketplaceID: "ws-remote/cool-agent",
+		SkillRefs:     []string{"skill-a", "skill-b"},
+		Publisher:     "alice@org",
+		Version:       "1.2.3",
+		Tags:          []string{"productivity", "code"},
+	}
+	if err := store.Create(ctx, installed); err != nil {
+		t.Fatal(err)
+	}
+	got2, err := store.Get(ctx, "ws-mkt", "mkt-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.MarketplaceID != installed.MarketplaceID {
+		t.Errorf("MarketplaceID: got %q want %q", got2.MarketplaceID, installed.MarketplaceID)
+	}
+	if got2.Publisher != installed.Publisher || got2.Version != installed.Version {
+		t.Errorf("publisher/version mismatch: got %q/%q want %q/%q",
+			got2.Publisher, got2.Version, installed.Publisher, installed.Version)
+	}
+	if len(got2.SkillRefs) != 2 || got2.SkillRefs[0] != "skill-a" || got2.SkillRefs[1] != "skill-b" {
+		t.Errorf("SkillRefs mismatch: %#v", got2.SkillRefs)
+	}
+	if len(got2.Tags) != 2 || got2.Tags[0] != "productivity" {
+		t.Errorf("Tags mismatch: %#v", got2.Tags)
+	}
+
+	// 3. Update：清空 MarketplaceID / 替换 Tags / 替换 SkillRefs。
+	installed.MarketplaceID = ""
+	installed.Tags = []string{"updated"}
+	installed.SkillRefs = []string{}
+	if err := store.Update(ctx, "ws-mkt", installed); err != nil {
+		t.Fatal(err)
+	}
+	got3, err := store.Get(ctx, "ws-mkt", "mkt-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got3.MarketplaceID != "" {
+		t.Errorf("MarketplaceID should be cleared, got %q", got3.MarketplaceID)
+	}
+	if len(got3.Tags) != 1 || got3.Tags[0] != "updated" {
+		t.Errorf("Tags should be replaced: %#v", got3.Tags)
+	}
+	if got3.SkillRefs == nil || len(got3.SkillRefs) != 0 {
+		t.Errorf("SkillRefs should be cleared: %#v", got3.SkillRefs)
+	}
+
+	// 4. List：两个角色均应可见，且 marketplace_id 列对 plain-1 仍为 NULL。
+	list, err := store.List(ctx, "ws-mkt", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 {
+		t.Errorf("List: expected 2 agents, got %d", len(list))
+	}
+}
+
 func TestSQLiteStore_ImportBuiltin(t *testing.T) {
 	tmp, err := os.CreateTemp("", "chatagent-import-*.sqlite")
 	if err != nil {

@@ -51,12 +51,18 @@ CREATE TABLE IF NOT EXISTS chat_agents (
 	color         TEXT,
 	system_prompt TEXT NOT NULL,
 	is_builtin    INTEGER NOT NULL DEFAULT 0,
+	marketplace_id TEXT,
+	skill_refs     TEXT DEFAULT '[]',
+	publisher      TEXT,
+	version        TEXT,
+	tags           TEXT DEFAULT '[]',
 	created_at    INTEGER NOT NULL,
 	updated_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chat_agents_ws ON chat_agents(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_chat_agents_dept ON chat_agents(department);
 CREATE INDEX IF NOT EXISTS idx_chat_agents_builtin ON chat_agents(is_builtin);
+CREATE INDEX IF NOT EXISTS idx_chat_agents_marketplace ON chat_agents(marketplace_id) WHERE marketplace_id IS NOT NULL;
 `
 
 func (s *SQLiteStore) Init(ctx context.Context) error {
@@ -73,32 +79,57 @@ func (s *SQLiteStore) Create(ctx context.Context, a *Agent) error {
 		a.CreatedAt = now
 	}
 	a.UpdatedAt = now
+	skillRefsJSON := encodeStringSlice(a.SkillRefs)
+	tagsJSON := encodeStringSlice(a.Tags)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO chat_agents (id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, a.ID, a.WorkspaceID, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt, a.IsBuiltin, a.CreatedAt, a.UpdatedAt)
+		INSERT INTO chat_agents (id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin, marketplace_id, skill_refs, publisher, version, tags, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, a.ID, a.WorkspaceID, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt, a.IsBuiltin, nullIfEmpty(a.MarketplaceID), string(skillRefsJSON), nullIfEmpty(a.Publisher), nullIfEmpty(a.Version), string(tagsJSON), a.CreatedAt, a.UpdatedAt)
 	return err
 }
 
 func (s *SQLiteStore) Get(ctx context.Context, workspaceID, id string) (*Agent, error) {
 	var a Agent
+	var skillRefsJSON, tagsJSON []byte
+	var marketplaceID, publisher, version sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin, created_at, updated_at
+		SELECT id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin,
+		       marketplace_id, skill_refs, publisher, version, tags,
+		       created_at, updated_at
 		FROM chat_agents
 		WHERE id = ? AND (workspace_id = '' OR workspace_id = ?)
-	`, id, workspaceID).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Department, &a.Emoji, &a.Color, &a.SystemPrompt, &a.IsBuiltin, &a.CreatedAt, &a.UpdatedAt)
+	`, id, workspaceID).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Department, &a.Emoji, &a.Color, &a.SystemPrompt, &a.IsBuiltin,
+		&marketplaceID, &skillRefsJSON, &publisher, &version, &tagsJSON,
+		&a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("chatagent: agent not found: %s", id)
 		}
 		return nil, err
 	}
+	if marketplaceID.Valid {
+		a.MarketplaceID = marketplaceID.String
+	}
+	if publisher.Valid {
+		a.Publisher = publisher.String
+	}
+	if version.Valid {
+		a.Version = version.String
+	}
+	if err := decodeStringSlice(skillRefsJSON, &a.SkillRefs); err != nil {
+		return nil, fmt.Errorf("decode skill_refs: %w", err)
+	}
+	if err := decodeStringSlice(tagsJSON, &a.Tags); err != nil {
+		return nil, fmt.Errorf("decode tags: %w", err)
+	}
 	return &a, nil
 }
 
 func (s *SQLiteStore) List(ctx context.Context, workspaceID, department string) ([]*Agent, error) {
 	query := `
-		SELECT id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin, created_at, updated_at
+		SELECT id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin,
+		       marketplace_id, skill_refs, publisher, version, tags,
+		       created_at, updated_at
 		FROM chat_agents
 		WHERE (workspace_id = '' OR workspace_id = ?)
 	`
@@ -117,8 +148,27 @@ func (s *SQLiteStore) List(ctx context.Context, workspaceID, department string) 
 	var agents []*Agent
 	for rows.Next() {
 		var a Agent
-		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Department, &a.Emoji, &a.Color, &a.SystemPrompt, &a.IsBuiltin, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		var skillRefsJSON, tagsJSON []byte
+		var marketplaceID, publisher, version sql.NullString
+		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Department, &a.Emoji, &a.Color, &a.SystemPrompt, &a.IsBuiltin,
+			&marketplaceID, &skillRefsJSON, &publisher, &version, &tagsJSON,
+			&a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if marketplaceID.Valid {
+			a.MarketplaceID = marketplaceID.String
+		}
+		if publisher.Valid {
+			a.Publisher = publisher.String
+		}
+		if version.Valid {
+			a.Version = version.String
+		}
+		if err := decodeStringSlice(skillRefsJSON, &a.SkillRefs); err != nil {
+			return nil, fmt.Errorf("decode skill_refs: %w", err)
+		}
+		if err := decodeStringSlice(tagsJSON, &a.Tags); err != nil {
+			return nil, fmt.Errorf("decode tags: %w", err)
 		}
 		agents = append(agents, &a)
 	}
@@ -133,7 +183,7 @@ func (s *SQLiteStore) List(ctx context.Context, workspaceID, department string) 
 }
 
 // Update 更新角色（自定义与内置均可——内置专家库允许维护）。自定义角色
-// 仅允许所属 workspace 修改；内置行按其自身 workspace_id（''）定位。
+// 仅允许所属 workspace 修改；内置行按其自身 workspace_id（”）定位。
 func (s *SQLiteStore) Update(ctx context.Context, workspaceID string, a *Agent) error {
 	existing, err := s.Get(ctx, workspaceID, a.ID)
 	if err != nil {
@@ -143,11 +193,17 @@ func (s *SQLiteStore) Update(ctx context.Context, workspaceID string, a *Agent) 
 		return fmt.Errorf("agent does not belong to workspace %s", workspaceID)
 	}
 	a.UpdatedAt = time.Now().Unix()
+	skillRefsJSON := encodeStringSlice(a.SkillRefs)
+	tagsJSON := encodeStringSlice(a.Tags)
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE chat_agents
-		SET name = ?, description = ?, department = ?, emoji = ?, color = ?, system_prompt = ?, updated_at = ?
+		SET name = ?, description = ?, department = ?, emoji = ?, color = ?, system_prompt = ?,
+		    marketplace_id = ?, skill_refs = ?, publisher = ?, version = ?, tags = ?,
+		    updated_at = ?
 		WHERE id = ? AND workspace_id = ?
-	`, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt, a.UpdatedAt, a.ID, existing.WorkspaceID)
+	`, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt,
+		nullIfEmpty(a.MarketplaceID), string(skillRefsJSON), nullIfEmpty(a.Publisher), nullIfEmpty(a.Version), string(tagsJSON),
+		a.UpdatedAt, a.ID, existing.WorkspaceID)
 	return err
 }
 
