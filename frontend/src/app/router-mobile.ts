@@ -239,6 +239,12 @@ const router = createRouter({
       meta: { title: '登录', bottomNav: false, showTopBar: false }
     },
     {
+      path: '/forgot-password',
+      name: 'forgot-password',
+      component: () => import('../features/auth/ForgotPasswordView.vue'),
+      meta: { title: '忘记密码', bottomNav: false, showTopBar: false, canGoBack: true }
+    },
+    {
       path: '/servers',
       name: 'servers',
       component: ServerSelectView,

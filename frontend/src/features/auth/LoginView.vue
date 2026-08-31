@@ -29,45 +29,168 @@
 
       <!-- 登录表单 -->
       <div v-else class="login-form">
-        <div class="form-group">
-          <label>用户名</label>
-          <input
-            v-model="username"
-            type="text"
-            placeholder="输入用户名"
-            @keyup.enter="handleLogin"
-          />
+        <!-- 模式切换 Tab -->
+        <div class="tab-bar" role="tablist">
+          <button
+            v-for="t in tabs"
+            :key="t.id"
+            type="button"
+            role="tab"
+            :aria-selected="activeTab === t.id"
+            :class="['tab', { active: activeTab === t.id }]"
+            @click="activeTab = t.id"
+          >
+            {{ t.label }}
+          </button>
         </div>
 
-        <div class="form-group">
-          <label>密码</label>
-          <input
-            v-model="password"
-            type="password"
-            placeholder="输入密码"
-            @keyup.enter="handleLogin"
-          />
-        </div>
+        <!-- 密码登录 -->
+        <template v-if="activeTab === 'password'">
+          <div class="form-group">
+            <label>用户名</label>
+            <input
+              v-model="username"
+              type="text"
+              placeholder="输入用户名"
+              @keyup.enter="handleLogin"
+            />
+          </div>
 
-        <button
-          v-if="bioReady"
-          class="login-btn bio-btn"
-          :disabled="loading"
-          @click="biometricLogin"
-        >
-          <span class="material-symbols-outlined" aria-hidden="true">fingerprint</span>
-          {{ loading ? '登录中...' : '指纹登录' }}
-        </button>
+          <div class="form-group">
+            <label>密码</label>
+            <input
+              v-model="password"
+              type="password"
+              placeholder="输入密码"
+              @keyup.enter="handleLogin"
+            />
+          </div>
 
-        <div v-if="bioReady" class="bio-divider"><span>或使用密码登录</span></div>
+          <button
+            v-if="bioReady"
+            class="login-btn bio-btn"
+            :disabled="loading"
+            @click="biometricLogin"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">fingerprint</span>
+            {{ loading ? '登录中...' : '指纹登录' }}
+          </button>
 
-        <button
-          class="login-btn"
-          :disabled="!username || !password || loading"
-          @click="handleLogin"
-        >
-          {{ loading ? '登录中...' : '登录' }}
-        </button>
+          <div v-if="bioReady" class="bio-divider"><span>或使用密码登录</span></div>
+
+          <button
+            class="login-btn"
+            :disabled="!username || !password || loading"
+            @click="handleLogin"
+          >
+            {{ loading ? '登录中...' : '登录' }}
+          </button>
+
+          <p class="forgot-link">
+            <router-link to="/forgot-password">忘记密码？</router-link>
+          </p>
+        </template>
+
+        <!-- 邮箱验证码登录 -->
+        <template v-else-if="activeTab === 'code'">
+          <div class="form-group">
+            <label>邮箱</label>
+            <input
+              v-model="codeEmail"
+              type="email"
+              placeholder="输入注册邮箱"
+              @keyup.enter="requestCode('login')"
+            />
+          </div>
+          <button
+            type="button"
+            class="login-btn secondary-btn"
+            :disabled="!codeEmail || codeCooldown > 0 || loading"
+            @click="requestCode('login')"
+          >
+            {{ codeCooldown > 0 ? `${codeCooldown}s 后可重发` : (codeSent ? '重新发送验证码' : '发送验证码') }}
+          </button>
+          <div class="form-group" v-if="codeSent">
+            <label>验证码</label>
+            <input
+              v-model="codeValue"
+              type="text"
+              inputmode="numeric"
+              maxlength="6"
+              placeholder="6 位数字验证码"
+              @keyup.enter="handleCodeLogin"
+            />
+            <p v-if="debugCode" class="hint">调试模式：验证码 = <code>{{ debugCode }}</code></p>
+          </div>
+          <button
+            v-if="codeSent"
+            class="login-btn"
+            :disabled="!codeValue || loading"
+            @click="handleCodeLogin"
+          >
+            {{ loading ? '登录中...' : '登录' }}
+          </button>
+        </template>
+
+        <!-- 注册 -->
+        <template v-else-if="activeTab === 'register'">
+          <div class="form-group">
+            <label>邮箱</label>
+            <input
+              v-model="regEmail"
+              type="email"
+              placeholder="用作登录账号"
+              @keyup.enter="requestCode('register')"
+            />
+          </div>
+          <button
+            type="button"
+            class="login-btn secondary-btn"
+            :disabled="!regEmail || codeCooldown > 0 || loading"
+            @click="requestCode('register')"
+          >
+            {{ codeCooldown > 0 ? `${codeCooldown}s 后可重发` : (codeSent ? '重新发送验证码' : '发送注册验证码') }}
+          </button>
+          <template v-if="codeSent">
+            <div class="form-group">
+              <label>验证码</label>
+              <input
+                v-model="codeValue"
+                type="text"
+                inputmode="numeric"
+                maxlength="6"
+                placeholder="6 位数字验证码"
+                @keyup.enter="focusRegUsername"
+              />
+              <p v-if="debugCode" class="hint">调试模式：验证码 = <code>{{ debugCode }}</code></p>
+            </div>
+            <div class="form-group">
+              <label>用户名</label>
+              <input
+                ref="regUsernameRef"
+                v-model="regUsername"
+                type="text"
+                placeholder="3-32 字符，字母/数字/_.-"
+              />
+            </div>
+            <div class="form-group">
+              <label>密码</label>
+              <input
+                v-model="regPassword"
+                type="password"
+                placeholder="≥8 位，含字母与数字"
+                @keyup.enter="handleRegister"
+              />
+            </div>
+            <button
+              class="login-btn"
+              :disabled="!regEmail || !codeValue || !regUsername || !regPassword || loading"
+              @click="handleRegister"
+            >
+              {{ loading ? '注册中...' : '注册并登录' }}
+            </button>
+          </template>
+        </template>
 
         <div v-if="error" class="error-message">
           {{ error }}
@@ -105,6 +228,7 @@ import {
 } from '../../native/biometricAuth'
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
 import { useCryptoConfig } from '../../stores/crypto-config'
+import { sendCode, registerUser, codeLogin } from '../../api/auth'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -123,6 +247,125 @@ const needUnlock = ref(false)
 const unlockPassword = ref('')
 const showMasterPasswordDialog = ref(false)
 const cryptoConfig = useCryptoConfig()
+// ----- C6：登录模式 Tab + 验证码状态 -----
+type TabId = 'password' | 'code' | 'register'
+const tabs: { id: TabId; label: string }[] = [
+  { id: 'password', label: '密码登录' },
+  { id: 'code', label: '验证码登录' },
+  { id: 'register', label: '注册' },
+]
+const activeTab = ref<TabId>('password')
+
+const codeEmail = ref('')
+const regEmail = ref('')
+const regUsername = ref('')
+const regPassword = ref('')
+const codeValue = ref('')
+const codeSent = ref(false)
+const codeCooldown = ref(0)
+const debugCode = ref('')
+const regUsernameRef = ref<HTMLInputElement | null>(null)
+let cooldownTimer: ReturnType<typeof setInterval> | null = null
+
+function focusRegUsername() {
+  regUsernameRef.value?.focus()
+}
+
+function startCooldown() {
+  codeCooldown.value = 60
+  if (cooldownTimer) clearInterval(cooldownTimer)
+  cooldownTimer = setInterval(() => {
+    codeCooldown.value--
+    if (codeCooldown.value <= 0 && cooldownTimer) {
+      clearInterval(cooldownTimer)
+      cooldownTimer = null
+    }
+  }, 1000)
+}
+
+async function requestCode(purpose: 'register' | 'login') {
+  error.value = ''
+  const targetEmail = purpose === 'register' ? regEmail.value : codeEmail.value
+  if (!targetEmail) {
+    error.value = '请输入邮箱'
+    return
+  }
+  loading.value = true
+  try {
+    const res = await sendCode(targetEmail, purpose)
+    codeSent.value = true
+    codeValue.value = ''
+    debugCode.value = res.debug_code || ''
+    startCooldown()
+  } catch (e: any) {
+    error.value = e?.body?.error || e?.message || '发送验证码失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+async function handleCodeLogin() {
+  if (!codeEmail.value || !codeValue.value) {
+    error.value = '请输入邮箱和验证码'
+    return
+  }
+  loading.value = true
+  error.value = ''
+  try {
+    const res = await codeLogin(codeEmail.value, codeValue.value)
+    await completeAuth(res.token, res.user, res.user_id, res.workspace_id)
+  } catch (e: any) {
+    error.value = e?.body?.error || e?.message || '验证码登录失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+async function handleRegister() {
+  if (!regEmail.value || !codeValue.value || !regUsername.value || !regPassword.value) {
+    error.value = '请完整填写邮箱、验证码、用户名和密码'
+    return
+  }
+  loading.value = true
+  error.value = ''
+  try {
+    const res = await registerUser({
+      email: regEmail.value,
+      code: codeValue.value,
+      username: regUsername.value,
+      password: regPassword.value,
+    })
+    await completeAuth(res.token, res.user, res.user_id, res.workspace_id)
+  } catch (e: any) {
+    if (e?.body?.error) {
+      error.value = e.body.error
+    } else if (e?.status === 409) {
+      error.value = '邮箱或用户名已被注册'
+    } else {
+      error.value = e?.message || '注册失败'
+    }
+  } finally {
+    loading.value = false
+  }
+}
+
+/**
+ * 登录/注册成功后统一收尾：setAuth → connectWs → 指纹绑定 → 主密码弹窗 → 跳转。
+ */
+async function completeAuth(token: string, user: string, userId?: string, workspaceId?: string) {
+  if (userId && workspaceId) {
+    auth.setAuthWithWorkspace(token, user, userId, workspaceId)
+  } else {
+    auth.setAuth(token, user)
+  }
+  await connectWs()
+  if (!cryptoConfig.cfg.hasMasterPassword) {
+    showMasterPasswordDialog.value = true
+    return
+  }
+  router.push('/ai')
+}
+
 
 onMounted(async () => {
   // 指纹登录入口：原生壳 + 设备已录入生物特征 + 本机已绑定凭据，三者齐备才显示
@@ -445,5 +688,63 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
   background: var(--brand-bg);
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
+}
+
+/* C6: Tab 切换 */
+.tab-bar {
+  display: flex;
+  gap: var(--space-1);
+  margin-bottom: var(--space-4);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-md);
+  padding: 4px;
+}
+.tab {
+  flex: 1;
+  padding: 8px 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.tab.active {
+  background: var(--bg-card);
+  color: var(--brand-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 验证码 Tab 用：与主按钮同款但浅色 */
+.secondary-btn {
+  background: var(--bg-subtle);
+  color: var(--brand-primary);
+  border: 1px solid var(--border);
+}
+.secondary-btn:active:not(:disabled) {
+  opacity: 0.85;
+}
+
+.forgot-link {
+  text-align: right;
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+}
+.forgot-link a {
+  color: var(--brand-primary);
+  text-decoration: none;
+}
+.forgot-link a:active {
+  opacity: 0.7;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--bg-subtle);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.95em;
 }
 </style>
