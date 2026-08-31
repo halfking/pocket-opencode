@@ -14,7 +14,11 @@
   - <nav> in BottomNav carries aria-label="主导航".
 -->
 <template>
-  <div class="app-layout">
+  <div
+    class="app-layout"
+    :class="{ 'chrome-snapping': chromeSnapping, 'chrome-hidden': chromeSettledHidden }"
+    :style="chromeVars"
+  >
     <a href="#main" class="skip-link" @click.prevent="focusMain">{{ t('layout.skipToMain') }}</a>
 
     <header v-if="showTopBar" class="top-bar" role="banner">
@@ -65,6 +69,9 @@
       ]"
       :aria-label="title"
       tabindex="-1"
+      @click="onContentTap"
+      @focusin="onContentFocusIn"
+      @focusout="onContentFocusOut"
     >
       <slot />
     </main>
@@ -78,7 +85,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, nextTick, onUnmounted } from 'vue'
+import { computed, ref, watch, watchEffect, nextTick, onUnmounted, provide } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { App as CapApp } from '@capacitor/app'
@@ -88,6 +95,8 @@ import GlobalStatusBar from '../components/GlobalStatusBar.vue'
 import SettingsMenuDrawer from '../components/base/SettingsMenuDrawer.vue'
 import { useBreakpoint } from '../composables/useBreakpoint'
 import { useDevicePosture } from '../composables/useDevicePosture'
+import { createScrollHideChrome, bindScrollHideChrome } from '../composables/useScrollHideChrome'
+import { SCROLL_CHROME_KEY, isChromeToggleTap } from '../composables/scroll-chrome'
 
 const { t } = useI18n()
 
@@ -171,6 +180,71 @@ const scrollMode = computed<ScrollMode>(() => {
   return 'shell'
 })
 
+/* ── 滚动联动底部 chrome（tabbar + 视图输入区）：iOS Safari 工具栏模式 ──
+   上滑一定距离 → 输入区与 tabbar 跟手下移并吸附隐藏；下滑/内容区点击/
+   聚焦输入框 → 从底部唤出。引擎由壳层持有并 provide：
+   - BottomNav 上报自身高度（bottomNavHeight）；
+   - 视图上报自有输入区高度（bottomInsetHeight：/ai-chat composer、
+     /ai voice-bar）；
+   - 滚动容器上报增量：shell 页面绑定下方 <main>；自管滚动页面由
+     PullToRefresh（内置）/ AIChatView .msg-area 上报。
+   隐藏量经 --bottom-chrome-hide 变量下发，上述消费方统一读取位移。 */
+const bottomNavHeight = ref(0)
+const bottomInsetHeight = ref(0)
+const chromeEnabled = computed(() => showBottomNav.value)
+const chrome = createScrollHideChrome(() =>
+  chromeEnabled.value ? bottomNavHeight.value + bottomInsetHeight.value : 0,
+)
+const chromeSnapping = chrome.snapping
+const chromeSettledHidden = chrome.hidden
+const chromeVars = computed(() => ({
+  '--bottom-chrome-hide': `${chrome.hiddenOffset.value}px`,
+  // 视图输入区（composer/voice-bar）实高：吸附落定后的布局让位量
+  '--bottom-chrome-inset': `${bottomInsetHeight.value}px`,
+}))
+
+provide(SCROLL_CHROME_KEY, {
+  ...chrome,
+  chromeTotalHeight: computed(() => bottomNavHeight.value + bottomInsetHeight.value),
+  bottomNavHeight,
+  bottomInsetHeight,
+  enabled: chromeEnabled,
+  topHiddenPx: ref(0),
+  bottomHiddenPx: chrome.hiddenOffset,
+})
+
+/* 导航不渲染的页面（详情/编辑等）冻结隐藏态 */
+watch(chromeEnabled, (v) => {
+  if (!v) chrome.reset()
+})
+
+/* shell 滚动页：把 <main> 的滚动喂给引擎；self/split 页由视图自管上报 */
+watchEffect((onCleanup) => {
+  if (scrollMode.value !== 'shell' || !chromeEnabled.value) return
+  const el = mainEl.value
+  if (!el) return
+  onCleanup(bindScrollHideChrome(el, chrome))
+})
+
+/* 内容区点击唤出：非链接/按钮/输入区的点击（消息气泡、卡片留白）触发 */
+function onContentTap(e: MouseEvent) {
+  if (!chromeEnabled.value || chrome.hiddenOffset.value <= 0) return
+  if (!isChromeToggleTap(e.target as HTMLElement)) return
+  chrome.reveal()
+}
+
+/* 聚焦输入类控件：唤出并钉住（键盘在场时输入区不能藏；
+   也避免浏览器为露出光标产生的程序化滚动误触发隐藏） */
+const TEXT_INPUT_SEL = 'input,textarea,select,[contenteditable]'
+function onContentFocusIn(e: FocusEvent) {
+  const target = e.target as HTMLElement | null
+  if (!target?.matches?.(TEXT_INPUT_SEL)) return
+  chrome.setPinned(true)
+}
+function onContentFocusOut() {
+  chrome.setPinned(false)
+}
+
 /**
  * 顶栏左 ≡ 菜单触发按钮：业界惯例（iOS HIG / Material 3）每个主页面都应有菜单入口，
  * 把"账户 / 设置 / 次要功能"集中到 SettingsMenuDrawer。
@@ -178,7 +252,11 @@ const scrollMode = computed<ScrollMode>(() => {
  * 路由切换时关闭抽屉（防止深链打开后旧抽屉卡住）。
  */
 const showMenuButton = computed(() => route.meta.menu !== false)
-watch(() => route.fullPath, () => { menuOpen.value = false })
+watch(() => route.fullPath, () => {
+  menuOpen.value = false
+  chrome.reset()
+  bottomInsetHeight.value = 0
+})
 
 /**
  * 全屏自管页（hideAppHeader：会话工作台等自带完整头部/滚动的视图）：
@@ -401,6 +479,17 @@ function focusMain() {
 
 .content.has-bottom-nav {
   padding-bottom: calc(var(--bottom-chrome-height) + var(--space-3));
+}
+
+/* 吸附落定为全隐后，导航条占位让给内容（离散切换，配合吸附动画过渡；
+   跟手阶段纯 transform 不动布局，避免「位移+槽位收缩」叠加下移过快）。 */
+.app-layout.chrome-hidden .content.has-bottom-nav {
+  padding-bottom: var(--space-3);
+}
+
+/* 吸附阶段动画；prefers-reduced-motion 由 styles.css 全局降级 */
+.app-layout.chrome-snapping .content.has-bottom-nav {
+  transition: padding-bottom var(--duration-chrome) var(--ease-chrome);
 }
 
 .content.scroll-self,

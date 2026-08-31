@@ -80,7 +80,7 @@
     </div>
 
     <!-- 消息区 -->
-    <main ref="scrollEl" class="msg-area">
+    <main ref="scrollEl" class="msg-area" @scroll="onMsgScroll">
       <div v-if="turns.length === 0" class="empty">
         <div class="empty-emoji">💬</div>
         <p class="empty-title">开始你的 AI 对话</p>
@@ -138,8 +138,15 @@
       </div>
     </main>
 
-    <!-- 输入区：统一输入组件（宽文本区 + 多模态/角色/优化/提交独立工具行） -->
-    <footer class="composer">
+    <!-- 输入区：统一输入组件（宽文本区 + 多模态/角色/优化/提交独立工具行）。
+         滚动联动：随 tabbar 一起下移（--bottom-chrome-hide，跟手 1:1）；
+         吸附落定为全隐后负 margin 把槽位让给消息区（离散切换 + 过渡）。 -->
+    <footer
+      ref="composerEl"
+      class="composer"
+      :class="{ snapping: chromeSnapping, 'chrome-hidden': composerHidden }"
+      :inert="composerInert"
+    >
       <UnifiedComposer
         ref="composerRef"
         v-model="draft"
@@ -337,7 +344,7 @@
           <div class="field-label">当前角色</div>
           <div v-if="currentAgent" class="agent-card">
             <div class="agent-card-header">
-              <span class="agent-emoji">{{ currentAgent.emoji || '🤖' }}</span>
+              <span class="agent-emoji">{{ currentAgent.emoji || '👤' }}</span>
               <div class="agent-card-info">
                 <div class="agent-card-name">{{ currentAgent.name }}</div>
                 <div class="agent-card-desc">{{ currentAgent.description }}</div>
@@ -408,7 +415,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, inject, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   useAIChatStore,
@@ -421,6 +428,8 @@ import { renderMarkdown } from '../../utils/markdown'
 import { useToast } from '../../composables/useToast'
 import { useConfirm } from '../../composables/useConfirm'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
+import { bindScrollHideChrome } from '../../composables/useScrollHideChrome'
+import { SCROLL_CHROME_KEY } from '../../composables/scroll-chrome'
 import AgentSelectorSheet from './AgentSelectorSheet.vue'
 import BottomSheet from '../../components/base/BottomSheet.vue'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
@@ -436,6 +445,25 @@ const agentStore = useChatAgentStore()
 // 统一输入组件引用（提交/重置/内部 canSubmit）
 const composerRef = ref<InstanceType<typeof UnifiedComposer> | null>(null)
 const composerCanSubmit = computed(() => composerRef.value?.canSubmit ?? false)
+
+/* ── 滚动联动底部 chrome：composer 随 tabbar 下移隐藏/上滑唤出 ──
+   滚动增量上报给壳层引擎；composer 高度（textarea 自增高会变）经
+   ResizeObserver 上报参与隐藏距离。 */
+const chromeCtx = inject(SCROLL_CHROME_KEY, null)
+const chromeSnapping = chromeCtx?.snapping ?? ref(false)
+const composerHidden = chromeCtx?.hidden ?? ref(false)
+const composerEl = ref<HTMLElement | null>(null)
+// 绑定吸附落定态：跟手过程（hiddenOffset 临时峰值）不应让 inert 闪烁，
+// 仅在引擎判定全隐后整体从 Tab 焦点链路中切出。
+const composerInert = computed(() => composerHidden.value)
+
+// 距底 < 50px 才自动跟随：用户上翻阅读历史时，流式输出不打扰
+const autoScroll = ref(true)
+function onMsgScroll() {
+  const el = scrollEl.value
+  if (!el) return
+  autoScroll.value = el.scrollHeight - el.scrollTop - el.clientHeight < 50
+}
 
 const AUTO = 'auto'
 const draft = ref('')
@@ -604,9 +632,28 @@ function escapeHtml(s: string): string {
 }
 
 // ---- 生命周期 ----
+let unbindChromeScroll: (() => void) | null = null
+let composerRO: ResizeObserver | null = null
 onMounted(() => {
   store.init()
   syncRouteTitle()
+  if (scrollEl.value && chromeCtx) {
+    unbindChromeScroll = bindScrollHideChrome(scrollEl.value, chromeCtx)
+  }
+  const comp = composerEl.value
+  if (comp && chromeCtx) {
+    const measure = () => {
+      chromeCtx.bottomInsetHeight.value = comp.offsetHeight
+    }
+    measure()
+    composerRO = new ResizeObserver(measure)
+    composerRO.observe(comp)
+  }
+})
+onUnmounted(() => {
+  unbindChromeScroll?.()
+  composerRO?.disconnect()
+  if (chromeCtx) chromeCtx.bottomInsetHeight.value = 0
 })
 
 /**
@@ -630,13 +677,16 @@ const modelChipLabel = computed(() => {
   return settings.value.defaultModel || AUTO
 })
 
-// 新消息或流式内容变化时自动滚到底
+// 新消息或流式内容变化时自动滚到底（仅当用户本就停在底部附近）
 watch(
   () => [active.value?.messages.length, active.value?.messages.map((m) => m.content.length).join(',')],
   () => scrollToBottom(),
   { deep: false },
 )
-function scrollToBottom() {
+function scrollToBottom(force = false) {
+  if (!force && !autoScroll.value) return
+  // 程序化滚动：抑制上报，避免滚动事件被引擎误判为用户上滑而隐藏输入区
+  chromeCtx?.suppress()
   nextTick(() => {
     const el = scrollEl.value
     if (el) el.scrollTop = el.scrollHeight
@@ -656,7 +706,8 @@ function onSend(text?: string) {
   }
   store.send(value, [])
   if (!text) draft.value = ''
-  nextTick(scrollToBottom)
+  chromeCtx?.reveal()
+  scrollToBottom(true)
 }
 
 /** 统一输入组件提交（文本 + 图片附件）。 */
@@ -668,7 +719,8 @@ function onComposerSubmit(payload: { text: string; images: string[] }) {
   }
   store.send(payload.text.trim() || '（请描述这张图片）', payload.images)
   composerRef.value?.reset()
-  nextTick(scrollToBottom)
+  chromeCtx?.reveal()
+  scrollToBottom(true)
 }
 
 function stop() {
@@ -1082,6 +1134,22 @@ function formatTime(ts: number): string {
   padding-bottom: calc(8px + var(--app-safe-bottom));
   background: var(--bg-card);
   border-top: 1px solid var(--border);
+  /* 滚动联动：随 tabbar 一起下移（--bottom-chrome-hide 由 AppLayout 下发），
+     跟手阶段纯 transform 不动布局。 */
+  will-change: transform;
+  transform: translate3d(0, var(--bottom-chrome-hide, 0px), 0);
+}
+
+/* 吸附落定为全隐：槽位让给消息区（离散切换，与吸附动画同步过渡） */
+.composer.chrome-hidden {
+  margin-bottom: calc(-1 * var(--bottom-chrome-inset, 0px));
+}
+
+/* 吸附阶段的过渡（跟手 1:1 时无过渡） */
+.composer.snapping {
+  transition:
+    transform var(--duration-chrome) var(--ease-chrome),
+    margin-bottom var(--duration-chrome) var(--ease-chrome);
 }
 .composer-row {
   display: flex;

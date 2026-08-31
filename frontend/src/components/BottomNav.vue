@@ -15,7 +15,13 @@
   - 更多按钮 aria-haspopup + aria-expanded；面板 role="dialog" + aria-modal。
 -->
 <template>
-  <nav class="bottom-nav" :aria-label="t('nav.mainNavigation')">
+  <nav
+    ref="navEl"
+    class="bottom-nav"
+    :class="{ snapping: chromeSnapping }"
+    :inert="fullyHidden"
+    :aria-label="t('nav.mainNavigation')"
+  >
     <router-link
       v-for="item in items"
       :key="item.to"
@@ -88,14 +94,35 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { SCROLL_CHROME_KEY } from '../composables/scroll-chrome'
 
 const route = useRoute()
 const { t } = useI18n()
 const showMore = ref(false)
 const morePanelEl = ref<HTMLElement | null>(null)
+
+/* 滚动联动：向壳层引擎上报自身高度（参与 maxHide），读取吸附态开过渡。
+   全隐时 inert——滑出屏幕的导航不应再吃键盘 Tab 焦点（绑定落定态避免
+   跟手过程中 hiddenOffset 短暂峰值导致的 inert 闪烁）。 */
+const chromeCtx = inject(SCROLL_CHROME_KEY, null)
+const navEl = ref<HTMLElement | null>(null)
+const chromeSnapping = chromeCtx?.snapping ?? ref(false)
+const fullyHidden = computed(() => chromeCtx?.hidden.value ?? false)
+let navRO: ResizeObserver | null = null
+onMounted(() => {
+  const el = navEl.value
+  if (!el || !chromeCtx) return
+  const measure = () => {
+    chromeCtx.bottomNavHeight.value = el.offsetHeight
+  }
+  measure()
+  navRO = new ResizeObserver(measure)
+  navRO.observe(el)
+})
+onUnmounted(() => navRO?.disconnect())
 
 interface NavItem { to: string; icon: string; label: string; match?: string }
 
@@ -186,6 +213,11 @@ watch(showMore, async (v) => {
   z-index: var(--z-bottom-nav, 20);
   will-change: transform;
   transform: translate3d(0, var(--bottom-chrome-hide, 0px), 0);
+}
+
+/* 滚动吸附阶段的位移过渡（跟手阶段 1:1 无过渡）；曲线与时长见 tokens.css */
+.bottom-nav.snapping {
+  transition: transform var(--duration-chrome) var(--ease-chrome);
 }
 
 .nav-item {

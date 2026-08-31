@@ -11,7 +11,7 @@
 -->
 <template>
   <PullToRefresh :on-refresh="handleRefresh" class="ai-hub-scroll">
-  <div class="ai-hub">
+  <div class="ai-hub" :class="{ snapping: chromeSnapping, 'chrome-hidden': chromeHidden }">
     <!-- 状态徽章注入到 AppLayout 标题栏右侧（消灭双层标题栏）。
          原来 L0 sticky 分诊条的全部信息收敛到此按钮：🟢 全部正常·N 在跑 /
          🔴 N 项需要你 / 疑似卡死时一并显示。点击切换下方 triage 折叠区。 -->
@@ -248,8 +248,14 @@
       </div>
     </section>
 
-    <!-- 统一快速提问输入：宽文本区 + 语音/角色/AI优化/提交 独立工具行 -->
-    <div class="voice-bar">
+    <!-- 统一快速提问输入：宽文本区 + 语音/角色/AI优化/提交 独立工具行。
+         随 tabbar 滚动联动下移隐藏（bottom 读取 --bottom-chrome-hide）。 -->
+    <div
+      ref="voiceBarEl"
+      class="voice-bar"
+      :class="{ snapping: chromeSnapping, 'chrome-hidden': chromeHidden }"
+      :inert="voiceBarInert"
+    >
       <UnifiedComposer
         v-model="quickPrompt"
         placeholder="快速提问..."
@@ -398,7 +404,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type Task } from '../../api/client'
 import wsClient from '../../api/websocket'
@@ -417,9 +423,19 @@ import {
 } from '../sessions/sessionArchive'
 import { useConfirm } from '../../composables/useConfirm'
 import BottomSheet from '../../components/base/BottomSheet.vue'
+import { SCROLL_CHROME_KEY } from '../../composables/scroll-chrome'
 
 const router = useRouter()
 const { confirm } = useConfirm()
+
+/* ── 滚动联动底部 chrome：滚动上报已由 PullToRefresh 内置（inject 同一
+   context），这里只把 voice-bar 高度上报给引擎（参与隐藏距离与让位）。 */
+const chromeCtx = inject(SCROLL_CHROME_KEY, null)
+const chromeSnapping = chromeCtx?.snapping ?? ref(false)
+const chromeHidden = chromeCtx?.hidden ?? ref(false)
+const voiceBarEl = ref<HTMLElement | null>(null)
+const voiceBarInert = computed(() => chromeHidden.value)
+let voiceBarRO: ResizeObserver | null = null
 // 快速提问的专家角色（统一输入组件工具行内选择；随 prompt 传给目标会话）
 const quickAgentId = ref<string | undefined>(undefined)
 const auth = useAuthStore()
@@ -671,6 +687,15 @@ onMounted(() => {
   wsClient.on('task_created', handleTaskUpdate)
   wsClient.on('task_updated', handleTaskUpdate)
   wsClient.on('session_attached', handleSessionAttached)
+  const vb = voiceBarEl.value
+  if (vb && chromeCtx) {
+    const measure = () => {
+      chromeCtx.bottomInsetHeight.value = vb.offsetHeight
+    }
+    measure()
+    voiceBarRO = new ResizeObserver(measure)
+    voiceBarRO.observe(vb)
+  }
 })
 
 onUnmounted(() => {
@@ -682,6 +707,8 @@ onUnmounted(() => {
   wsClient.off('task_created', handleTaskUpdate)
   wsClient.off('task_updated', handleTaskUpdate)
   wsClient.off('session_attached', handleSessionAttached)
+  voiceBarRO?.disconnect()
+  if (chromeCtx) chromeCtx.bottomInsetHeight.value = 0
 })
 
 // ── Data Loading ──
@@ -1014,7 +1041,21 @@ function timeAgo(dateStr?: string): string {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding-bottom: calc(var(--bottom-chrome-height) + 54px + var(--space-3)); /* voice-bar + bottom-nav */
+  /* voice-bar + bottom-nav 的滚动预留 */
+  padding-bottom: calc(var(--bottom-chrome-height) + 54px + var(--space-3));
+}
+
+/* 吸附落定为全隐：chrome 占位让给内容（离散切换，配合吸附动画过渡） */
+.ai-hub.chrome-hidden {
+  padding-bottom: max(
+    var(--space-3),
+    calc(var(--bottom-chrome-height) + 54px + var(--space-3) - var(--bottom-chrome-inset, 0px) - var(--bottomnav-height))
+  );
+}
+
+/* 滚动吸附阶段的让位过渡（跟手 1:1 时无过渡） */
+.ai-hub.snapping {
+  transition: padding-bottom var(--duration-chrome) var(--ease-chrome);
 }
 
 /* ── 状态徽章（注入 AppLayout 标题栏右侧）+ 内联 triage 卡 ── */
@@ -1534,6 +1575,17 @@ function timeAgo(dateStr?: string): string {
   background: var(--bg-card);
   border-top: 1px solid var(--border);
   z-index: var(--z-fab);
+}
+
+/* 滚动吸附阶段的位移过渡（跟手 1:1 时无过渡） */
+.voice-bar.snapping {
+  transition: bottom var(--duration-chrome) var(--ease-chrome);
+}
+
+/* 吸附落定为全隐：整体移出。voice-bar 因 PullToRefresh 的 transform 成为
+   .refresh-content（其底边=视口底-space-3）的包含块，需多补 space-3 才不剩细条 */
+.voice-bar.chrome-hidden {
+  bottom: calc(-1 * (var(--bottom-chrome-inset, 0px) + var(--space-3)));
 }
 .voice-input-wrap {
   display: flex;
