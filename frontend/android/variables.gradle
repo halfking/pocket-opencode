@@ -1,6 +1,7 @@
 ext {
     minSdkVersion = 24
-    compileSdkVersion = 35
+    // @capacitor/camera@8.2.3 拉入 androidx.core:1.17.0，AAR 元数据要求 compile against API 36+
+    compileSdkVersion = 36
     targetSdkVersion = 35
     androidxActivityVersion = '1.9.0'
     androidxAppCompatVersion = '1.6.1'

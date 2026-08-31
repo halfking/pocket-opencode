@@ -1,0 +1,20 @@
+2026/08/31 15:03:26 Postgres pool initialized (schema="opencode_pocket")
+2026/08/31 15:03:26 Module stores initialized (PG, scheduled tasks enabled)
+2026/08/31 15:03:26 Bootstrap: created first admin user "admin"
+2026/08/31 15:03:26 Auth: user store + JWT signer initialized
+2026/08/31 15:03:26 INFO: POCKET_WEBAUTHN_RP_* not fully set — biometric flow degraded to P0 stub
+2026/08/31 15:03:26 INFO: POCKET_KXMEMORY_BASE_URL not set; AI classification/SSOT disabled
+2026/08/31 15:03:26 WARN: POCKET_EMAIL_MASTER_KEY not set; auto-generated key persisted to data/email_master.key
+2026/08/31 15:03:26 Email scheduler started (fetch_enabled=true, kxmemory=false, tz_offset=28800s, oauth_providers=0)
+2026/08/31 15:03:26 WARNING: POCKET_GROQ_API_KEY not set; STT cloud fallback disabled
+2026/08/31 15:03:26 WARNING: POCKET_EMBED_API_KEY not set; /api/embed disabled
+2026/08/31 15:03:26 WARNING: POCKET_LLM_API_KEY not set; /api/llm/chat disabled
+2026/08/31 15:03:26 Using static NPS adapter (demo mode)
+2026/08/31 15:03:26 Using OpenCode HTTP adapter (timeout: 5000ms)
+2026/08/31 15:03:26 [PluginHub] Starting...
+2026/08/31 15:03:26 ✅ 启动 OpenCode 实例自动发现（间隔: 1m0s）
+2026/08/31 15:03:26 Biometric authentication enabled (PG)
+2026/08/31 15:03:26 LLM gateway store initialized (PG)
+2026/08/31 15:03:26 Identity Core enabled (workspaces/members/devices)
+2026/08/31 15:03:26 [llm-gateway] default-seed inserted for workspace=default baseURL=https://llm.kxpms.cn/v1 preferred=9
+2026/08/31 15:03:26 [llm-gateway] loaded config from DB: workspace=default baseURL=https://llm.kxpms.cn/v1 models=9
