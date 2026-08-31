@@ -1,39 +1,39 @@
 === RUN   TestC8_1_SendCode_HappyPath
-2026/09/01 01:28:47 [PluginHub] Starting...
-2026/09/01 01:28:47 INFO: [send-code] smtp not configured; code=817792 email=alice+redclaw@example.com purpose=register
---- PASS: TestC8_1_SendCode_HappyPath (0.10s)
+2026/09/01 06:20:59 [PluginHub] Starting...
+2026/09/01 06:21:00 INFO: [send-code] smtp not configured; code=976094 email=alice+redclaw@example.com purpose=register
+--- PASS: TestC8_1_SendCode_HappyPath (0.30s)
 === RUN   TestC8_2_SendCode_RateLimited
-2026/09/01 01:28:47 [PluginHub] Starting...
-2026/09/01 01:28:47 INFO: [send-code] smtp not configured; code=519427 email=alice+redclaw@example.com purpose=register
---- PASS: TestC8_2_SendCode_RateLimited (0.09s)
+2026/09/01 06:21:00 [PluginHub] Starting...
+2026/09/01 06:21:00 INFO: [send-code] smtp not configured; code=840011 email=alice+redclaw@example.com purpose=register
+--- PASS: TestC8_2_SendCode_RateLimited (0.19s)
 === RUN   TestC8_3_Register_BadCode
-2026/09/01 01:28:47 [PluginHub] Starting...
---- PASS: TestC8_3_Register_BadCode (0.02s)
+2026/09/01 06:21:00 [PluginHub] Starting...
+--- PASS: TestC8_3_Register_BadCode (0.40s)
 === RUN   TestC8_4_Register_Success
-2026/09/01 01:28:47 [PluginHub] Starting...
-2026/09/01 01:28:47 INFO: [send-code] smtp not configured; code=445446 email=alice+redclaw@example.com purpose=register
-2026/09/01 01:28:47 INFO IDENTITY_SHADOW_DSN not set; shadow recording disabled component=identity-shadow
---- PASS: TestC8_4_Register_Success (0.20s)
+2026/09/01 06:21:00 [PluginHub] Starting...
+2026/09/01 06:21:00 INFO: [send-code] smtp not configured; code=848949 email=alice+redclaw@example.com purpose=register
+2026/09/01 06:21:01 INFO IDENTITY_SHADOW_DSN not set; shadow recording disabled component=identity-shadow
+--- PASS: TestC8_4_Register_Success (0.73s)
 === RUN   TestC8_5_CodeLogin_Success
-2026/09/01 01:28:47 [PluginHub] Starting...
-2026/09/01 01:28:47 INFO: [send-code] smtp not configured; code=648536 email=alice+redclaw@example.com purpose=register
-2026/09/01 01:28:47 INFO: [send-code] smtp not configured; code=373269 email=alice+redclaw@example.com purpose=login
---- PASS: TestC8_5_CodeLogin_Success (0.32s)
+2026/09/01 06:21:01 [PluginHub] Starting...
+2026/09/01 06:21:01 INFO: [send-code] smtp not configured; code=828787 email=alice+redclaw@example.com purpose=register
+2026/09/01 06:21:01 INFO: [send-code] smtp not configured; code=313190 email=alice+redclaw@example.com purpose=login
+--- PASS: TestC8_5_CodeLogin_Success (0.63s)
 === RUN   TestC8_6_ForgotPassword_Success
-2026/09/01 01:28:47 [PluginHub] Starting...
-2026/09/01 01:28:47 INFO: [send-code] smtp not configured; code=832560 email=alice+redclaw@example.com purpose=reset
---- PASS: TestC8_6_ForgotPassword_Success (0.20s)
+2026/09/01 06:21:02 [PluginHub] Starting...
+2026/09/01 06:21:02 INFO: [send-code] smtp not configured; code=422337 email=alice+redclaw@example.com purpose=reset
+--- PASS: TestC8_6_ForgotPassword_Success (0.22s)
 === RUN   TestC8_7_OldPasswordLogin_Regression
-2026/09/01 01:28:47 [PluginHub] Starting...
-2026/09/01 01:28:47 INFO: [send-code] smtp not configured; code=170058 email=regression@example.com purpose=register
---- PASS: TestC8_7_OldPasswordLogin_Regression (0.25s)
+2026/09/01 06:21:02 [PluginHub] Starting...
+2026/09/01 06:21:02 INFO: [send-code] smtp not configured; code=226752 email=regression@example.com purpose=register
+--- PASS: TestC8_7_OldPasswordLogin_Regression (0.48s)
 === RUN   TestC8_8_Register_RejectsBadUsername
-2026/09/01 01:28:48 [PluginHub] Starting...
-2026/09/01 01:28:48 INFO: [send-code] smtp not configured; code=384430 email=baduser@example.com purpose=register
---- PASS: TestC8_8_Register_RejectsBadUsername (0.07s)
+2026/09/01 06:21:02 [PluginHub] Starting...
+2026/09/01 06:21:02 INFO: [send-code] smtp not configured; code=827236 email=baduser@example.com purpose=register
+--- PASS: TestC8_8_Register_RejectsBadUsername (0.09s)
 === RUN   TestC8_9_Register_RejectsWeakPassword
-2026/09/01 01:28:48 [PluginHub] Starting...
-2026/09/01 01:28:48 INFO: [send-code] smtp not configured; code=791183 email=weakpw@example.com purpose=register
---- PASS: TestC8_9_Register_RejectsWeakPassword (0.08s)
+2026/09/01 06:21:02 [PluginHub] Starting...
+2026/09/01 06:21:02 INFO: [send-code] smtp not configured; code=398749 email=weakpw@example.com purpose=register
+--- PASS: TestC8_9_Register_RejectsWeakPassword (0.10s)
 PASS
 ok  	github.com/halfking/pocket-opencode/backend/internal/server	(cached)
