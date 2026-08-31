@@ -3,10 +3,10 @@
 **移动端AI编程助手** - 随时随地进行AI辅助编程
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)]()
-[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)]()
+[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)]()
 [![Node Version](https://img.shields.io/badge/Node-18+-339933?logo=node.js)]()
 [![Vue](https://img.shields.io/badge/Vue-3.x-4FC08D?logo=vue.js)]()
-[![Android](https://img.shields.io/badge/Android-API%2030+-3DDC84?logo=android)]()
+[![Android](https://img.shields.io/badge/Android-API%2024+-3DDC84?logo=android)]()
 
 ---
 
@@ -71,7 +71,7 @@ OpenCode Pocket 是一款强大的移动端AI编程助手应用，让开发者�
 
 ### 环境要求
 
-- **Go**: 1.22+
+- **Go**: 1.25+
 - **Node.js**: 18+
 - **JDK**: 21 (Oracle标准版)
 - **Android SDK**: API 30+
@@ -85,10 +85,9 @@ OpenCode Pocket 提供两种部署模式，根据你的使用场景选择：
 **适用场景**：独立开发、快速测试、完全自包含部署
 
 **特点**：
-- ✅ 完全独立运行，无外部依赖
-- ✅ 使用独立的 PostgreSQL 容器
-- ✅ 使用公共 Docker 镜像（golang:alpine）
-- ✅ 自动创建所需网络
+- ✅ 复用宿主上的 `r112_postgres` PostgreSQL 容器（共享 llm-gateway-pg）
+- ✅ 使用内网 `kx-base:go-vue-optimized` 基础镜像（由 `Dockerfile.kx-base` 构建）
+- ✅ 自动加入 `r112_net` 共享网络
 - ✅ 最小化配置
 
 **快速启动**：
@@ -213,8 +212,8 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 ### 主要文档
 
 - [**运维指南**](OPERATIONS_GUIDE.md) - 完整的部署和运维文档
-- [**API文档**](docs/API.md) - RESTful API接口说明
-- [**架构文档**](docs/ARCHITECTURE.md) - 系统架构设计
+- [**API 契约参考**](docs/opencode-contract.md) - OpenCode 兼容层 API 契约
+- [**移动端架构**](docs/MOBILE_ARCHITECTURE_V2.md) - 移动端架构设计
 - [**ACC Integration 部署文档**](deploy/acc-integration/README.md) - 集成开发部署指南
 
 ### 测试报告
@@ -258,8 +257,8 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 
 ### Backend
 
-- **语言**: Go 1.22+
-- **框架**: 标准库 + gorilla/websocket
+- **语言**: Go 1.25+
+- **框架**: Echo v4 + gorilla/websocket
 - **认证**: JWT (golang-jwt)
 - **数据库**: PostgreSQL (可选)
 
@@ -273,7 +272,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 
 ### Android
 
-- **最低API**: 30
+- **最低API**: 24
 - **目标API**: 35
 - **构建工具**: Gradle 8.14
 - **WebView**: 系统WebView
