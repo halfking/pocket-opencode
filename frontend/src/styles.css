@@ -16,6 +16,12 @@ body {
   height: 100%;
 }
 
+:root {
+  --app-safe-top: max(env(safe-area-inset-top, 0px), var(--android-safe-top, 0px));
+  --app-safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--android-safe-bottom, 0px));
+  --bottom-chrome-height: calc(var(--bottomnav-height) + var(--app-safe-bottom));
+}
+
 body {
   /* Use tokens so dark mode flips automatically. */
   background: var(--bg-base, #f7f7fa);
@@ -30,15 +36,17 @@ body {
   overscroll-behavior-y: none;
   /* Safe-area top padding so the status bar never overlaps content.
      Android WebView 不实现 env(safe-area-inset-top)（恒为 0），由
-     MainActivity 注入 --android-safe-top（状态栏物理高度换算的 CSS px）兜底。 */
-  padding-top: max(env(safe-area-inset-top, 0px), var(--android-safe-top, 0px));
+     MainActivity 注入 --android-safe-top（状态栏物理高度换算的 CSS px）兜底。
+     底部固定控件通过 --app-safe-bottom 消费同一套系统 inset。 */
+  padding-top: var(--app-safe-top);
   text-size-adjust: 100%;
   -webkit-text-size-adjust: 100%;
 }
 
 #app {
-  min-height: 100vh;
-  min-height: 100dvh;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* Inputs should inherit the page font stack. */

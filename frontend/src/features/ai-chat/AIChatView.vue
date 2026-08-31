@@ -1079,7 +1079,7 @@ function formatTime(ts: number): string {
   flex-direction: column;
   gap: 6px;
   padding: 8px 12px;
-  padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  padding-bottom: calc(8px + var(--app-safe-bottom));
   background: var(--bg-card);
   border-top: 1px solid var(--border);
 }

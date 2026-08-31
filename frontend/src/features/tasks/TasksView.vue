@@ -1014,7 +1014,7 @@ function timeAgo(dateStr?: string): string {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding-bottom: 110px; /* voice-bar + bottom-nav */
+  padding-bottom: calc(var(--bottom-chrome-height) + 54px + var(--space-3)); /* voice-bar + bottom-nav */
 }
 
 /* ── 状态徽章（注入 AppLayout 标题栏右侧）+ 内联 triage 卡 ── */
@@ -1526,11 +1526,11 @@ function timeAgo(dateStr?: string): string {
 /* ── Voice Bar ── */
 .voice-bar {
   position: fixed;
-  bottom: calc(var(--bottomnav-height) - var(--bottom-chrome-hide, 0px));
+  bottom: calc(var(--bottom-chrome-height) - var(--bottom-chrome-hide, 0px));
   left: 0;
   right: 0;
   padding: 6px 12px;
-  padding-bottom: calc(6px + env(safe-area-inset-bottom, 0));
+  padding-bottom: calc(6px + var(--app-safe-bottom));
   background: var(--bg-card);
   border-top: 1px solid var(--border);
   z-index: var(--z-fab);

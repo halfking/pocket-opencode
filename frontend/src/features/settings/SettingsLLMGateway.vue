@@ -406,22 +406,22 @@ function goBack() {
      "CSSOM 假有效"——写在同一规则里的渐进回退链会整体失效，height 塌成 auto，
      被内容撑开后外层 #app overflow:hidden 裁切 → 整页无法滚动。
      因此增强声明必须放 @supports 里，老内核只拿到它能解析的前两条。 */
-  height: calc(100vh - var(--android-safe-top, 0px));
+  height: 100%;
+  min-height: 0;
   background: var(--bg-base);
   display: flex;
   flex-direction: column;
-  padding-bottom: env(safe-area-inset-bottom);
 }
 
 @supports (height: 100dvh) {
   .llm-gateway-view {
-    height: calc(100dvh - max(env(safe-area-inset-top, 0px), var(--android-safe-top, 0px)));
+    height: 100%;
   }
 }
 
 .chrome-shell {
   position: fixed;
-  top: env(safe-area-inset-top, 0);
+  top: var(--app-safe-top);
   /* safe-area-top 由 body 唯一注入（styles.css:32）；这里改为 top 偏移而非 padding，
      避免与全局 body padding-top 叠加成两倍状态栏高度。 */
   left: 0;
@@ -502,6 +502,7 @@ function goBack() {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   padding: 16px;
+  padding-bottom: calc(16px + var(--app-safe-bottom));
   display: flex;
   flex-direction: column;
   gap: 20px;

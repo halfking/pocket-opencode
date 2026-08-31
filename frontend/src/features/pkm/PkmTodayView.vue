@@ -255,7 +255,7 @@ onMounted(loadRecent)
 .fab {
   position: fixed;
   right: var(--space-5);
-  bottom: calc(var(--bottomnav-height) + env(safe-area-inset-bottom, 0px) + var(--space-5));
+  bottom: calc(var(--bottom-chrome-height) + var(--space-5));
   width: 52px;
   height: 52px;
   border-radius: 50%;

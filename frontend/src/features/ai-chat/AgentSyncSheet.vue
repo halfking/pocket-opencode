@@ -172,7 +172,7 @@ function formatTime(ms: number): string {
   width: 100%;
   background: var(--bg-primary, #fff);
   border-radius: 16px 16px 0 0;
-  padding: 16px 20px calc(20px + env(safe-area-inset-bottom));
+  padding: 16px 20px calc(20px + var(--app-safe-bottom));
   max-height: 85vh;
   overflow-y: auto;
 }

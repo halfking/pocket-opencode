@@ -145,7 +145,7 @@ onBeforeUnmount(() => {
 .recorder-fab {
   position: fixed;
   right: var(--space-5);
-  bottom: calc(var(--bottomnav-height) + var(--space-4));
+  bottom: calc(var(--bottom-chrome-height) + var(--space-4));
   z-index: var(--z-fab);
   display: flex;
   flex-direction: column;

@@ -62,15 +62,8 @@ body {
 
 #app {
   height: 100%;
+  min-height: 0;
   overflow: hidden;
-}
-
-/* Chrome<108 的 WebView 对 dvh 呈现"CSSOM 假有效"，与 100% 同规则双写会让
-   回退整体失效；dvh 增强必须隔离在 @supports 里。 */
-@supports (height: 100dvh) {
-  #app {
-    height: 100dvh;
-  }
 }
 
 input, textarea, select, button {

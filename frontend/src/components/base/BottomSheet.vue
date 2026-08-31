@@ -213,9 +213,15 @@ onBeforeUnmount(() => {
   max-height: none;
   height: 100%;
   border-radius: 0 var(--radius-xl) var(--radius-xl) 0;
+  padding-top: var(--app-safe-top);
+  padding-right: 0;
+  padding-bottom: var(--app-safe-bottom);
   padding-left: env(safe-area-inset-left, 0px);
 }
-.bottom-sheet--left .sheet-body { min-height: 0; }
+.bottom-sheet--left .sheet-body {
+  min-height: 0;
+  padding-bottom: var(--space-6);
+}
 
 .sheet-handle {
   padding: var(--space-3) 0;
@@ -303,8 +309,8 @@ onBeforeUnmount(() => {
   .side-sheet-leave-active { transition: none; }
 }
 
-@supports (padding-bottom: env(safe-area-inset-bottom)) {
-  .sheet-body,
-  .sheet-footer { padding-bottom: calc(var(--space-6) + env(safe-area-inset-bottom)); }
+.sheet-body,
+.sheet-footer {
+  padding-bottom: calc(var(--space-6) + var(--app-safe-bottom));
 }
 </style>

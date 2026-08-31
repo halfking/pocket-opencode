@@ -124,19 +124,15 @@ onMounted(load)
 <style scoped>
 .meetings-page {
   position: relative;
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .list-scroll {
-  /* iOS Safari 100vh 包含 URL bar，会在滚动时跳变；dvh 增强放 @supports——
-     Chrome<108 的 WebView 对 dvh "假有效"，同规则双写会让回退整体失效。 */
-  min-height: calc(100vh - var(--topbar-height) - var(--bottomnav-height) - 80px);
-}
-
-@supports (min-height: 100dvh) {
-  .list-scroll {
-    min-height: calc(100dvh - var(--topbar-height) - var(--bottomnav-height) - 80px);
-  }
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .meeting-list {
@@ -200,7 +196,7 @@ onMounted(load)
 .fab {
   position: fixed;
   right: var(--space-4);
-  bottom: calc(var(--bottomnav-height, 56px) + var(--space-4));
+  bottom: calc(var(--bottom-chrome-height) + var(--space-4));
   width: 56px;
   height: 56px;
   border-radius: 50%;

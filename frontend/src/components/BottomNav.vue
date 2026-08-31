@@ -173,9 +173,9 @@ watch(showMore, async (v) => {
   bottom: 0;
   left: 0;
   right: 0;
-  height: var(--bottomnav-height);
-  /* Respect the home indicator on notched devices. */
-  padding-bottom: env(safe-area-inset-bottom, 0);
+  height: var(--bottom-chrome-height);
+  /* Keep application tabs above Android/iOS system navigation gestures. */
+  padding-bottom: var(--app-safe-bottom);
   background: var(--bg-card);
   /* hairline 顶边 + 轻阴影替代生硬边框（M3 elevation 惯例） */
   border-top: 1px solid var(--border);
@@ -258,7 +258,7 @@ watch(showMore, async (v) => {
   border-radius: 16px 16px 0 0;
   padding: var(--space-2) var(--space-4) var(--space-4);
   /* FAB 与 home indicator 不压 tiles */
-  padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom, 0px) + 60px);
+  padding-bottom: calc(var(--space-4) + var(--app-safe-bottom) + 60px);
   max-height: 70vh;
   overflow-y: auto;
   overscroll-behavior: contain;

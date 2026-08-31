@@ -535,6 +535,7 @@ function goBack() {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   background: var(--bg-base);
   /* 安全区唯一来源是 body 的 padding-top（styles.css）；此处再加会双重下移
      （真机实测标题距顶 90px，正确值 39px，P1.5+ 排查）。 */
@@ -608,6 +609,7 @@ function goBack() {
 /* Messages */
 .messages {
   flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;

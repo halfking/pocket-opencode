@@ -105,7 +105,7 @@ defineExpose({
 <style scoped>
 .toast {
   position: fixed;
-  bottom: calc(var(--bottomnav-height) + env(safe-area-inset-bottom, 0px) + var(--space-4));
+  bottom: calc(var(--bottom-chrome-height) + var(--space-4));
   left: 50%;
   transform: translateX(-50%);
   display: flex;

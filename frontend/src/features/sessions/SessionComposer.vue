@@ -242,7 +242,7 @@ const { confirm } = useConfirm()
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   /* 刘海屏既有方案沿用：底部安全区（设计 §4.4-4） */
-  padding-bottom: calc(var(--space-2-5) + env(safe-area-inset-bottom));
+  padding-bottom: calc(var(--space-2-5) + var(--app-safe-bottom));
   background: var(--bg-card);
   border-top: 1px solid var(--border);
 }

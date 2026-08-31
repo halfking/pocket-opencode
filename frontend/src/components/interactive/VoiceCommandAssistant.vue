@@ -255,7 +255,7 @@ const handleClose = () => {
 .voice-fab {
   position: fixed;
   right: var(--space-4);
-  bottom: calc(var(--bottomnav-height) + env(safe-area-inset-bottom, 0px) + var(--space-4));
+  bottom: calc(var(--bottom-chrome-height) + var(--space-4));
   width: 64px;
   height: 64px;
   display: flex;
@@ -327,7 +327,7 @@ const handleClose = () => {
 
 .voice-panel {
   position: fixed;
-  bottom: calc(var(--bottomnav-height) + env(safe-area-inset-bottom, 0px) + 84px);
+  bottom: calc(var(--bottom-chrome-height) + 84px);
   right: var(--space-4);
   width: calc(100vw - var(--space-8));
   max-width: 400px;

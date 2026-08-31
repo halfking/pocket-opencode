@@ -19,7 +19,7 @@
 
     <header v-if="showTopBar" class="top-bar" role="banner">
       <button
-        v-if="showMenuButton"
+        v-if="showMenuButton && !canGoBack"
         class="menu-btn"
         type="button"
         :aria-label="t('layout.openMenu')"
@@ -59,7 +59,10 @@
       ref="mainEl"
       class="content"
       role="main"
-      :class="{ 'has-bottom-nav': showBottomNav, fullscreen: isFullscreen }"
+      :class="[
+        `scroll-${scrollMode}`,
+        { 'has-bottom-nav': showBottomNav, fullscreen: isFullscreen },
+      ]"
       :aria-label="title"
       tabindex="-1"
     >
@@ -160,6 +163,14 @@ const showBottomNav = computed(() => {
 })
 const canGoBack = computed(() => Boolean(route.meta.canGoBack))
 
+type ScrollMode = 'shell' | 'self' | 'split'
+const scrollMode = computed<ScrollMode>(() => {
+  const mode = route.meta.scrollMode as ScrollMode | undefined
+  if (mode === 'self') return 'self'
+  if (mode === 'split') return isFoldableExpanded.value ? 'split' : 'shell'
+  return 'shell'
+})
+
 /**
  * 顶栏左 ≡ 菜单触发按钮：业界惯例（iOS HIG / Material 3）每个主页面都应有菜单入口，
  * 把"账户 / 设置 / 次要功能"集中到 SettingsMenuDrawer。
@@ -223,8 +234,8 @@ function focusMain() {
 
 <style scoped>
 .app-layout {
-  min-height: 100vh;
-  min-height: 100dvh;
+  height: 100%;
+  min-height: 0;
   width: 100%;
   background: var(--bg-base);
   color: var(--text-primary);
@@ -374,8 +385,12 @@ function focusMain() {
 }
 
 .content {
-  flex: 1;
+  flex: 1 1 auto;
   width: 100%;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   /* Large screens (foldable expanded / tablet): center and cap width. */
   max-width: var(--content-max, 100%);
   margin: 0 auto;
@@ -385,7 +400,13 @@ function focusMain() {
 }
 
 .content.has-bottom-nav {
-  padding-bottom: calc(var(--bottomnav-height) + var(--space-3));
+  padding-bottom: calc(var(--bottom-chrome-height) + var(--space-3));
+}
+
+.content.scroll-self,
+.content.scroll-split,
+.content.fullscreen {
+  overflow-y: hidden;
 }
 
 /* chrome 注入点为空时不占位（无 chrome 的页面零成本）。 */

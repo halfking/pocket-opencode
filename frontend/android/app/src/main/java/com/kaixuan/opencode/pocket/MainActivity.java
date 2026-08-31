@@ -25,16 +25,20 @@ public class MainActivity extends BridgeActivity {
     private static final int REQ_PERMISSIONS = 1001;
     private static final String[] WEB_MIC_RESOURCES = {"android.webkit.resource.AUDIO_CAPTURE"};
 
-    /** 最近一次状态栏 insets（CSS px）。insets 在 WebView 加载前就会派发一次，
-        那次 evaluateJavascript 会随页面加载丢失，所以缓存下来在 onResume 重放。 */
+    /** 最近一次系统栏 insets（CSS px）。insets 在 WebView 加载前就会派发一次，
+        那次 evaluateJavascript 会随页面加载丢失，所以缓存下来在窗口获得焦点时重放。 */
     private float lastSafeTopCssPx = -1f;
+    private float lastSafeBottomCssPx = -1f;
 
-    private void injectSafeTop() {
-        if (lastSafeTopCssPx < 0) return;
+    private void injectSafeInsets() {
+        if (lastSafeTopCssPx < 0 && lastSafeBottomCssPx < 0) return;
         if (getBridge() != null && getBridge().getWebView() != null) {
-            getBridge().getWebView().evaluateJavascript(
-                    "document.documentElement.style.setProperty('--android-safe-top','"
-                            + lastSafeTopCssPx + "px')", null);
+            String script = ""
+                    + "document.documentElement.style.setProperty('--android-safe-top','"
+                    + lastSafeTopCssPx + "px');"
+                    + "document.documentElement.style.setProperty('--android-safe-bottom','"
+                    + lastSafeBottomCssPx + "px')";
+            getBridge().getWebView().evaluateJavascript(script, null);
         }
     }
 
@@ -43,7 +47,7 @@ public class MainActivity extends BridgeActivity {
         super.onWindowFocusChanged(hasFocus);
         // BridgeActivity#onResume 是 final；用窗口焦点回调兜底：页面就绪获得焦点时
         // 重放 insets，消除首启动 evaluateJavascript 早于页面加载而丢失的竞态。
-        if (hasFocus) injectSafeTop();
+        if (hasFocus) injectSafeInsets();
     }
 
     /** 等待系统权限回调时挂起的 WebView 请求；grant 后需要 resume() 它 */
@@ -63,10 +67,14 @@ public class MainActivity extends BridgeActivity {
         android.view.View contentView = findViewById(android.R.id.content);
         if (contentView != null) {
             androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(contentView, (v, insets) -> {
-                int top = insets.getInsets(
-                        androidx.core.view.WindowInsetsCompat.Type.statusBars()).top;
-                lastSafeTopCssPx = top / getResources().getDisplayMetrics().density;
-                injectSafeTop();
+                androidx.core.graphics.Insets systemBars = insets.getInsets(
+                        androidx.core.view.WindowInsetsCompat.Type.systemBars());
+                androidx.core.graphics.Insets gestures = insets.getInsets(
+                        androidx.core.view.WindowInsetsCompat.Type.mandatorySystemGestures());
+                float density = getResources().getDisplayMetrics().density;
+                lastSafeTopCssPx = systemBars.top / density;
+                lastSafeBottomCssPx = Math.max(systemBars.bottom, gestures.bottom) / density;
+                injectSafeInsets();
                 return insets;
             });
         }

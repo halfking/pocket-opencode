@@ -218,7 +218,8 @@ onUnmounted(() => {
 .record-view {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
   background: var(--bg-base);
   position: relative;
 }
@@ -268,7 +269,8 @@ onUnmounted(() => {
 }
 
 .transcript-area {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -278,7 +280,7 @@ onUnmounted(() => {
 
 .offline-banner {
   position: fixed;
-  bottom: calc(var(--bottomnav-height) + 60px);
+  bottom: calc(var(--app-safe-bottom) + var(--space-3));
   left: var(--space-3);
   right: var(--space-3);
   padding: 8px 12px;
@@ -292,7 +294,7 @@ onUnmounted(() => {
 
 .processing-bar {
   position: fixed;
-  bottom: calc(var(--bottomnav-height) + 52px);
+  bottom: calc(var(--app-safe-bottom) + var(--space-3));
   left: 50%;
   transform: translateX(-50%);
   padding: 4px 12px;

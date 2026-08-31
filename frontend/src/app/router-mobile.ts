@@ -61,14 +61,14 @@ const router = createRouter({
       path: '/ai',
       name: 'ai',
       component: TasksView,
-      meta: { requiresAuth: true, title: 'AI 工具', bottomNav: true }
+      meta: { requiresAuth: true, title: 'AI 工具', bottomNav: true, scrollMode: 'self' }
     },
     // 个人助理 — AI 对话（豆包式：多轮会话 / 模型选择 / 流式 / 对比优化）
     {
       path: '/ai-chat',
       name: 'ai-chat',
       component: () => import('../features/ai-chat/AIChatView.vue'),
-      meta: { requiresAuth: true, title: '对话', bottomNav: true }
+      meta: { requiresAuth: true, title: '对话', bottomNav: true, scrollMode: 'self' }
     },
     // AI 对话 — 智能体角色库
     {
@@ -218,13 +218,13 @@ const router = createRouter({
       path: '/meetings',
       name: 'meetings',
       component: () => import('../features/meetings/MeetingListView.vue'),
-      meta: { requiresAuth: true, requiresLobster: true, title: '会议', bottomNav: true },
+      meta: { requiresAuth: true, requiresLobster: true, title: '会议', bottomNav: true, scrollMode: 'self' },
     },
     {
       path: '/meetings/new',
       name: 'meeting-new',
       component: () => import('../features/meetings/MeetingRecordView.vue'),
-      meta: { requiresAuth: true, requiresLobster: true, title: '开始会议', bottomNav: false, canGoBack: true },
+      meta: { requiresAuth: true, requiresLobster: true, title: '开始会议', bottomNav: false, canGoBack: true, scrollMode: 'self' },
     },
     {
       path: '/meetings/:id',
@@ -266,14 +266,14 @@ const router = createRouter({
       path: '/sessions',
       name: 'sessions',
       component: SessionWorkspaceView,
-      meta: { requiresAuth: true, title: '会话', bottomNav: true }
+      meta: { requiresAuth: true, title: '会话', bottomNav: true, scrollMode: 'split' }
     },
     {
       // Phase V3: 实时会话对话视图（P1 会话工作台：状态条 + 轮次时间线 + 详情抽屉）
       path: '/sessions/:id',
       name: 'session-conversation',
       component: () => import('../features/sessions/SessionConversationView.vue'),
-      meta: { requiresAuth: true, requiresLobster: true, title: '会话', bottomNav: false, canGoBack: true, hideAppHeader: true }
+      meta: { requiresAuth: true, requiresLobster: true, title: '会话', bottomNav: false, canGoBack: true, hideAppHeader: true, scrollMode: 'self' }
     },
     {
       // P1 旧详情页收敛（设计方案 v2 §4.3-3）：features/opencode/SessionDetailView
@@ -289,14 +289,14 @@ const router = createRouter({
       name: 'settings',
       component: SettingsView,
       // menu:false — 设置页自身就在抽屉菜单的目标里，隐藏 ≡ 避免自引用冗余
-      meta: { requiresAuth: true, title: '设置', bottomNav: true, menu: false }
+      meta: { requiresAuth: true, title: '设置', bottomNav: true, menu: false, scrollMode: 'shell' }
     },
     {
       // Phase 5: LLM Gateway 配置编辑
       path: '/settings/llm-gateway',
       name: 'settings-llm-gateway',
       component: () => import('../features/settings/SettingsLLMGateway.vue'),
-meta: { requiresAuth: true, title: 'AI 模型', bottomNav: false, canGoBack: true, hideAppHeader: true }
+      meta: { requiresAuth: true, title: 'AI 模型', bottomNav: false, canGoBack: true, hideAppHeader: true, scrollMode: 'self' }
     },
     {
       // 系统权限与隐私：麦克风 / 通知 / 生物识别状态与申请入口（Android 优先）
