@@ -142,7 +142,13 @@ func (o *Orchestrator) Dispatch(ctx context.Context, task *Task, strategy Strate
 func (o *Orchestrator) dispatchLocalFirst(ctx context.Context, task *Task, startTime time.Time) (*Result, error) {
 	if o.local != nil && o.local.IsAvailable() {
 		result, err := o.dispatchLocal(ctx, task, startTime)
-		if err == nil && result.Status == "success" {
+		// 兜底链触发条件:本地执行出错 或 结果状态非 success。
+		// 此前仅看 err==nil && status=="success",在 status=="error" 但
+		// err==nil 的情况下(error result 是某些 dispatcher 的合法返回,
+		// 例如 LocalAgentDispatcher.Runtime.Execute 返回带 error 状态的
+		// AgentResult)不会触发兜底 — 这是 bug。
+		localSucceeded := err == nil && result != nil && result.Status == "success"
+		if localSucceeded {
 			return result, nil
 		}
 		if o.config.EnableFallback && o.cloud != nil && o.cloud.IsAvailable() {
@@ -165,7 +171,8 @@ func (o *Orchestrator) dispatchLocalFirst(ctx context.Context, task *Task, start
 func (o *Orchestrator) dispatchCloudFirst(ctx context.Context, task *Task, startTime time.Time) (*Result, error) {
 	if o.cloud != nil && o.cloud.IsAvailable() {
 		result, err := o.dispatchCloud(ctx, task, startTime)
-		if err == nil && result.Status == "success" {
+		cloudSucceeded := err == nil && result != nil && result.Status == "success"
+		if cloudSucceeded {
 			return result, nil
 		}
 		if o.config.EnableFallback && o.local != nil && o.local.IsAvailable() {
@@ -228,13 +235,10 @@ func (o *Orchestrator) dispatchLocal(ctx context.Context, task *Task, startTime 
 
 	result, err := o.local.Dispatch(timeoutCtx, task)
 	if err != nil {
-		return &Result{
-			TaskID:     task.ID,
-			Status:     "error",
-			Error:      err.Error(),
-			ExecutedBy: "local",
-			DurationMs: time.Since(startTime).Milliseconds(),
-		}, err
+		// 错误时仅返回 err,不再构造 Result{Status:error, Error:...} —
+		// 调用方依靠 err 判断与走兜底链;Result.Error 容易在 WS / 审计层
+		// 意外暴露底层 dispatcher 内部错误文本。
+		return nil, err
 	}
 
 	result.DurationMs = time.Since(startTime).Milliseconds()
@@ -251,13 +255,10 @@ func (o *Orchestrator) dispatchCloud(ctx context.Context, task *Task, startTime 
 
 	result, err := o.cloud.Dispatch(timeoutCtx, task)
 	if err != nil {
-		return &Result{
-			TaskID:     task.ID,
-			Status:     "error",
-			Error:      err.Error(),
-			ExecutedBy: "cloud",
-			DurationMs: time.Since(startTime).Milliseconds(),
-		}, err
+		// 错误时不构造带 Error 文本的 result — 调用方只通过 err 判断。
+		// 避免把底层 dispatcher(可能是 ACC)的内部错误文本泄露到上层
+		// Result.Error 字段,被序列化进 WS 事件或审计日志。
+		return nil, err
 	}
 
 	result.DurationMs = time.Since(startTime).Milliseconds()

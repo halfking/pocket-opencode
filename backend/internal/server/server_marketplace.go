@@ -28,6 +28,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -43,6 +44,20 @@ func (s *Server) requireMarketplaceStore(w http.ResponseWriter, r *http.Request)
 		return false
 	}
 	return true
+}
+
+// sanitizeAuditDetail 把用户可控字符串安全地嵌入审计 detail 字段。
+//
+// 1. 用 %q 转义(Go 语法字符串)去除控制字符 / 引号;
+// 2. 截断到 maxAuditDetailBytes(1024)防止巨型 reason 撑爆审计存储。
+//
+// 调用方应在拼接 detail 时通过此函数包装任何来自 body 的字符串,
+// 避免日志注入。
+func sanitizeAuditDetail(s string) string {
+	if len(s) > 1024 {
+		s = s[:1024]
+	}
+	return fmt.Sprintf("%q", s)
 }
 
 // decodeMarketplaceJSON 解析请求体，限制最大 1MB 并拒绝未知字段。
@@ -131,6 +146,13 @@ func (s *Server) handleMarketplacePackageVersions(w http.ResponseWriter, r *http
 		return
 	}
 
+	// 路径必须以 /versions 收尾,否则该路径不属于本 handler 的语义
+	// (Go ServeMux 把 /api/marketplace/packages/ 子树所有请求都路由到这里)。
+	if !strings.HasSuffix(r.URL.Path, "/versions") {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
 	id := extractMarketplacePackageID(r.URL.Path, "/api/marketplace/packages/", "/versions")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "invalid package id")
@@ -178,9 +200,13 @@ func (s *Server) handleMarketplaceSubmit(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// workspace_id 与 publisher 严格来自认证上下文，绝不信任 body。
+	// workspace_id、publisher、package_id 严格来自认证上下文 / 派生,
+	// 绝不信任 body 中的同名字段。caller 提交的 package_id 若形如
+	// "other-ws/some-pkg" 会污染本 workspace 命名空间,故此处清空,
+	// 让下游 store 统一派生为 "<workspaceID>/<name>"。
 	workspaceID := s.workspaceIDFromRequest(r)
 	body.WorkspaceID = workspaceID
+	body.PackageID = ""
 	if body.Publisher == "" {
 		body.Publisher = s.userIDFromRequest(r)
 	}
@@ -192,7 +218,7 @@ func (s *Server) handleMarketplaceSubmit(w http.ResponseWriter, r *http.Request)
 	}
 
 	s.auditGateway(r, "marketplace.submit", version.PackageID,
-		"version="+version.Version+" kind="+body.Kind, true)
+		"version="+sanitizeAuditDetail(version.Version)+" kind="+body.Kind, true)
 	writeJSON(w, http.StatusCreated, version)
 }
 
@@ -233,7 +259,8 @@ func (s *Server) handleMarketplaceReview(w http.ResponseWriter, r *http.Request)
 	}
 
 	s.auditGateway(r, "marketplace.review", body.VersionID,
-		"approved="+strconv.FormatBool(body.Approved), true)
+		"approved="+strconv.FormatBool(body.Approved)+
+			" comment="+sanitizeAuditDetail(body.Comment), true)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"reviewed": true})
 }
 
@@ -275,7 +302,7 @@ func (s *Server) handleMarketplacePublish(w http.ResponseWriter, r *http.Request
 	}
 
 	s.auditGateway(r, "marketplace.publish", release.ReleaseID,
-		"version_id="+body.VersionID+" channel="+body.Channel, true)
+		"version_id="+body.VersionID+" channel="+sanitizeAuditDetail(body.Channel), true)
 	writeJSON(w, http.StatusCreated, release)
 }
 
@@ -315,7 +342,7 @@ func (s *Server) handleMarketplaceInstall(w http.ResponseWriter, r *http.Request
 	}
 
 	s.auditGateway(r, "marketplace.install", inst.InstallationID,
-		"release_id="+body.ReleaseID+" target="+body.TargetEnv, true)
+		"release_id="+body.ReleaseID+" target="+sanitizeAuditDetail(body.TargetEnv), true)
 	writeJSON(w, http.StatusCreated, inst)
 }
 
@@ -353,7 +380,7 @@ func (s *Server) handleMarketplaceRevoke(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	s.auditGateway(r, "marketplace.revoke", body.ReleaseID, "reason="+body.Reason, true)
+	s.auditGateway(r, "marketplace.revoke", body.ReleaseID, "reason="+sanitizeAuditDetail(body.Reason), true)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"revoked": true})
 }
 
@@ -394,7 +421,7 @@ func (s *Server) handleMarketplaceRate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.auditGateway(r, "marketplace.rate", body.ReleaseID,
-		"score="+strconv.Itoa(body.Score), true)
+		"score="+strconv.Itoa(body.Score)+" comment="+sanitizeAuditDetail(body.Comment), true)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"recorded": true})
 }
 

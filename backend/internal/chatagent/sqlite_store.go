@@ -66,11 +66,17 @@ CREATE INDEX IF NOT EXISTS idx_chat_agents_marketplace ON chat_agents(marketplac
 `
 
 func (s *SQLiteStore) Init(ctx context.Context) error {
+	if s.db == nil {
+		return fmt.Errorf("sqlite store: db not configured")
+	}
 	_, err := s.db.ExecContext(ctx, sqliteSchema)
 	return err
 }
 
 func (s *SQLiteStore) Create(ctx context.Context, a *Agent) error {
+	if s.db == nil {
+		return fmt.Errorf("sqlite store: db not configured")
+	}
 	if a.ID == "" || a.Name == "" || a.Department == "" || a.SystemPrompt == "" {
 		return fmt.Errorf("id, name, department, system_prompt are required")
 	}
@@ -89,6 +95,9 @@ func (s *SQLiteStore) Create(ctx context.Context, a *Agent) error {
 }
 
 func (s *SQLiteStore) Get(ctx context.Context, workspaceID, id string) (*Agent, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("sqlite store: db not configured")
+	}
 	var a Agent
 	var skillRefsJSON, tagsJSON []byte
 	var marketplaceID, publisher, version sql.NullString
@@ -126,6 +135,9 @@ func (s *SQLiteStore) Get(ctx context.Context, workspaceID, id string) (*Agent, 
 }
 
 func (s *SQLiteStore) List(ctx context.Context, workspaceID, department string) ([]*Agent, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("sqlite store: db not configured")
+	}
 	query := `
 		SELECT id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin,
 		       marketplace_id, skill_refs, publisher, version, tags,
@@ -185,6 +197,9 @@ func (s *SQLiteStore) List(ctx context.Context, workspaceID, department string) 
 // Update 更新角色（自定义与内置均可——内置专家库允许维护）。自定义角色
 // 仅允许所属 workspace 修改；内置行按其自身 workspace_id（”）定位。
 func (s *SQLiteStore) Update(ctx context.Context, workspaceID string, a *Agent) error {
+	if s.db == nil {
+		return fmt.Errorf("sqlite store: db not configured")
+	}
 	existing, err := s.Get(ctx, workspaceID, a.ID)
 	if err != nil {
 		return err
@@ -209,6 +224,9 @@ func (s *SQLiteStore) Update(ctx context.Context, workspaceID string, a *Agent) 
 
 // Delete 删除角色（自定义与内置均可——内置专家库允许维护性删除）。
 func (s *SQLiteStore) Delete(ctx context.Context, workspaceID, id string) error {
+	if s.db == nil {
+		return fmt.Errorf("sqlite store: db not configured")
+	}
 	existing, err := s.Get(ctx, workspaceID, id)
 	if err != nil {
 		return err
@@ -221,6 +239,9 @@ func (s *SQLiteStore) Delete(ctx context.Context, workspaceID, id string) error 
 }
 
 func (s *SQLiteStore) CountCustom(ctx context.Context, workspaceID string) (int, error) {
+	if s.db == nil {
+		return 0, fmt.Errorf("sqlite store: db not configured")
+	}
 	var count int
 	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM chat_agents WHERE workspace_id = ? AND is_builtin = 0", workspaceID).Scan(&count)
 	return count, err

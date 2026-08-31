@@ -21,7 +21,7 @@ package orchestrator
 
 import (
 	"context"
-	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -59,7 +59,13 @@ func (d *ACCDispatcher) Dispatch(ctx context.Context, task *Task) (*Result, erro
 	if task.WorkspaceID == "" || task.UserID == "" {
 		return nil, errors.New("acc dispatcher: workspace_id and user_id required")
 	}
-	if tenant := d.client.TenantID(); tenant != "" && tenant != task.WorkspaceID {
+	// 强制 tenant 配置:未配置时拒绝转发,避免任意 workspace 的 task
+	// 被发送到任意 ACC endpoint(数据隔离失效)。
+	tenant := d.client.TenantID()
+	if tenant == "" {
+		return nil, errors.New("acc dispatcher: tenant not configured")
+	}
+	if tenant != task.WorkspaceID {
 		return nil, fmt.Errorf("acc dispatcher: workspace %q does not match configured tenant %q",
 			task.WorkspaceID, tenant)
 	}
@@ -82,14 +88,12 @@ func (d *ACCDispatcher) Dispatch(ctx context.Context, task *Task) (*Result, erro
 	out, err := d.client.CreateTask(ctx, args)
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
-		return &Result{
-			TaskID:     task.ID,
-			Status:     "error",
-			Error:      err.Error(),
-			ExecutedBy: "cloud",
-			DurationMs: duration,
-			Metadata:   map[string]interface{}{"remote_error": true},
-		}, err
+		// 失败时统一返回 (nil, err):与 orchestrator.go 的
+		// dispatchCloud / dispatchLocalFirst 对齐 — 调用方通过 err != nil
+		// 决策是否走 fallback,不读 result.Error(避免把 ACC 内部栈泄漏给
+		// 上游 / 审计 / WS 广播)。duration 仅作为内部观测,不入 result。
+		_ = duration
+		return nil, err
 	}
 
 	return &Result{
@@ -109,20 +113,32 @@ func (d *ACCDispatcher) IsAvailable() bool {
 	if d == nil || d.client == nil {
 		return false
 	}
+	// 与 Dispatch 中的 tenant 检查对齐:未配置 tenant 视为不可用。
 	return d.client.TenantID() != ""
 }
 
 // idempotencyKey 为同一个 orchestrator.Task 派生稳定的幂等键。
-// - 优先使用 task.ID；
-// - ID 为空时使用 (workspaceID + userID + 类型 + prompt 前 64 字节) 哈希。
+//   - 优先使用 task.ID;
+//   - ID 为空时基于 (workspaceID + userID + type + prompt[:64]) SHA-256 派生,
+//     保证同输入同 key、避免把用户原文 prompt 直接送 ACC 审计。
 //
-// 该键被 acc_create_task 用于去重；同 key 的二次提交不会在 ACC 侧产生
-// 重复任务，但本 dispatcher 不保证 ACC 侧的语义（由 ACC MCP 实施）。
+// 该键被 acc_create_task 用于去重;同 key 的二次提交不会在 ACC 侧产生
+// 重复任务,但本 dispatcher 不保证 ACC 侧的语义(由 ACC MCP 实施)。
 func idempotencyKey(t *Task) string {
 	if t.ID != "" {
 		return "t-" + t.ID
 	}
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return "k-" + t.WorkspaceID + "-" + t.UserID + "-" + t.Type + "-" + hex.EncodeToString(b)
+	h := sha256.New()
+	h.Write([]byte(t.WorkspaceID))
+	h.Write([]byte{'|'})
+	h.Write([]byte(t.UserID))
+	h.Write([]byte{'|'})
+	h.Write([]byte(t.Type))
+	h.Write([]byte{'|'})
+	prompt := t.Prompt
+	if len(prompt) > 64 {
+		prompt = prompt[:64]
+	}
+	h.Write([]byte(prompt))
+	return "k-" + hex.EncodeToString(h.Sum(nil)[:16])
 }

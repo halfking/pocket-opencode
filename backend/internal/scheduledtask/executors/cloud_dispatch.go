@@ -66,8 +66,9 @@ func (e *CloudDispatchExecutor) Execute(ctx context.Context, t *scheduledtask.Ta
 		Context:     p.Context,
 		Skills:      p.Skills,
 		Metadata: map[string]interface{}{
-			"source":    "scheduled_task",
-			"task_name": t.Name,
+			"source":     "scheduled_task",
+			"task_name":  t.Name,
+			"max_tokens": p.MaxTokens,
 		},
 	}
 

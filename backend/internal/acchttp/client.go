@@ -114,9 +114,12 @@ func (c *Client) Do(ctx context.Context, method, path string, headers map[string
 	if c == nil {
 		return nil, errors.New("acchttp: client is nil")
 	}
-	if !isSafeMethod(method) && c.cfg.MaxRetries > 0 {
-		// 不安全方法禁用重试（避免重复扣费/重复创建）。
-		c.cfg.MaxRetries = 0
+	// 不在共享 cfg 上原地改写 MaxRetries:之前实现并发调用时 goroutine A 写
+	// POST 把 cfg.MaxRetries 改 0,goroutine B 并发的 GET 会拿到改后的值,
+	// 导致 GET 永远不重试。改为局部变量。
+	maxRetries := c.cfg.MaxRetries
+	if !isSafeMethod(method) {
+		maxRetries = 0
 	}
 
 	fullURL, err := c.resolveURL(path)
@@ -125,7 +128,7 @@ func (c *Client) Do(ctx context.Context, method, path string, headers map[string
 	}
 
 	var lastErr error
-	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			// 指数退避，但尊重 ctx 取消。
 			delay := c.cfg.RetryBackoff * (1 << (attempt - 1))
@@ -236,13 +239,25 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, heade
 		req.Header.Set("X-Pocket-Tenant", c.cfg.TenantID)
 	}
 	for k, v := range headers {
-		// 不允许覆盖鉴权头与 request id；调用方如果尝试覆盖会保持原值。
-		if k == "Authorization" || k == "X-Pocket-Request-ID" || k == "X-Pocket-Tenant" {
+		// 不允许覆盖鉴权头与 request id；HTTP header 大小写不敏感，
+		// 必须用 EqualFold 比对,否则小写的 "authorization" 会绕开检查并
+		// 注入第二个 Authorization 头。
+		if isReservedHeader(k) {
 			continue
 		}
 		req.Header.Set(k, v)
 	}
 	return req, nil
+}
+
+// isReservedHeader 列出不允许调用方覆盖的 header(大小写不敏感)。
+func isReservedHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "authorization", "x-pocket-request-id", "x-pocket-tenant":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Client) resolveURL(path string) (string, error) {
@@ -253,6 +268,12 @@ func (c *Client) resolveURL(path string) (string, error) {
 	rel, err := url.Parse(path)
 	if err != nil {
 		return "", err
+	}
+	// 显式拒绝绝对 URL — 若 caller 误把外部 URL 当 path 传入,
+	// url.ResolveReference 会原样返回该 URL,绕过 BaseURL 沙箱,导致
+	// SSRF / 跨域走私。强制 path 必须为相对路径。
+	if rel.IsAbs() {
+		return "", errors.New("acchttp: path must be relative")
 	}
 	return base.ResolveReference(rel).String(), nil
 }
@@ -275,14 +296,16 @@ func isSafeMethod(method string) bool {
 	}
 }
 
-// redactPath 把 query 参数从 URL 中剥离再写日志，
-// 避免误把 tenant / api_key 之类的明文参数落盘。
+// redactPath 把 query、UserInfo、Fragment 全部剥离再写日志,
+// 避免误把 tenant / api_key 之类的明文参数、URL 内嵌凭据落盘。
 func redactPath(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "<unparseable-url>"
 	}
+	u.User = nil
 	u.RawQuery = ""
+	u.Fragment = ""
 	if u.Path == "" {
 		return "/"
 	}

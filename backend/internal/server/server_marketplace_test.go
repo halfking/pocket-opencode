@@ -319,3 +319,113 @@ func TestWriteMarketplaceError(t *testing.T) {
 		}
 	}
 }
+
+// TestMarketplace_CrossWorkspaceIsolation 验证 workspace A 创建的
+// package/version/release 不能被 workspace B 通过 list 接口看到。
+func TestMarketplace_CrossWorkspaceIsolation(t *testing.T) {
+	ctx := context.Background()
+	store := marketplace.NewMemoryStore()
+
+	v, err := store.Submit(ctx, marketplace.SubmitRequest{
+		WorkspaceID: "ws-a", Name: "private-skill", Kind: "skill", Version: "1.0.0", Digest: "d",
+		Manifest: marketplace.Manifest{Version: "1.0.0", Digest: "d"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pkgs, err := store.ListPackages(ctx, "ws-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pkgs) != 0 {
+		t.Errorf("ws-b should not see ws-a packages; got %d", len(pkgs))
+	}
+
+	versions, err := store.ListVersions(ctx, "ws-b", v.PackageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 0 {
+		t.Errorf("ws-b should not see ws-a versions; got %d", len(versions))
+	}
+}
+
+// TestMarketplace_DuplicateVersionConflicts 验证同名 workspace + name +
+// version 的二次 Submit 返回 ErrMarketplaceConflict。
+func TestMarketplace_DuplicateVersionConflicts(t *testing.T) {
+	ctx := context.Background()
+	store := marketplace.NewMemoryStore()
+	req := marketplace.SubmitRequest{
+		WorkspaceID: "ws-x", Name: "dup", Kind: "skill", Version: "1.0.0", Digest: "d",
+		Manifest: marketplace.Manifest{Version: "1.0.0", Digest: "d"},
+	}
+	if _, err := store.Submit(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	_, err := store.Submit(ctx, req)
+	if !errors.Is(err, marketplace.ErrMarketplaceConflict) {
+		t.Fatalf("duplicate submit: want ErrMarketplaceConflict, got %v", err)
+	}
+}
+
+// TestMarketplace_PackageIDForcedFromClaims 验证 handler 在 body 提供
+// package_id 时仍覆盖为空,下游 store 派生为 "<workspace>/<name>",
+// 不允许 caller 跨 workspace 污染命名空间。
+func TestMarketplace_PackageIDForcedFromClaims(t *testing.T) {
+	s := newMarketplaceTestServer()
+
+	body := marketplace.SubmitRequest{
+		Name:        "fresh",
+		Kind:        "skill",
+		Version:     "1.0.0",
+		Digest:      "d",
+		Manifest:    marketplace.Manifest{Version: "1.0.0", Digest: "d"},
+		PackageID:   "evil-ws/hostile-pkg",
+		WorkspaceID: "evil-ws",
+	}
+	r := withClaims(newRequest(t, http.MethodPost, "/api/marketplace/submit", body), "u", "ws-real")
+	w := httptest.NewRecorder()
+	s.handleMarketplaceSubmit(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit status=%d body=%s", w.Code, w.Body.String())
+	}
+	var v marketplace.PackageVersion
+	if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
+		t.Fatal(err)
+	}
+	if v.PackageID != "ws-real/fresh" {
+		t.Errorf("package_id should be derived from claims workspace: got %q", v.PackageID)
+	}
+}
+
+// TestMarketplace_PackageVersionsRequiresSuffix 验证 handleMarketplacePackageVersions
+// 对非 /versions 后缀的路径返回 404。
+func TestMarketplace_PackageVersionsRequiresSuffix(t *testing.T) {
+	s := newMarketplaceTestServer()
+	r := withClaims(newRequest(t, http.MethodGet, "/api/marketplace/packages/ws-a/foo", nil), "u", "ws")
+	w := httptest.NewRecorder()
+	s.handleMarketplacePackageVersions(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("want 404 for non-/versions path, got %d", w.Code)
+	}
+}
+
+// TestSanitizeAuditDetail 验证 audit detail 字符串的转义与截断。
+func TestSanitizeAuditDetail(t *testing.T) {
+	got := sanitizeAuditDetail("hello world")
+	if !strings.Contains(got, `"hello world"`) {
+		t.Errorf("basic escape failed: %q", got)
+	}
+
+	got = sanitizeAuditDetail("line1\nline2\ttab")
+	if strings.Contains(got, "\n") || strings.Contains(got, "\t") {
+		t.Errorf("control characters not escaped: %q", got)
+	}
+
+	big := strings.Repeat("x", 2000)
+	got = sanitizeAuditDetail(big)
+	if len(got) > 1024+3 {
+		t.Errorf("detail not truncated: len=%d", len(got))
+	}
+}
