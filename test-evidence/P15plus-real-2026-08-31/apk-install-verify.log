@@ -1,0 +1,26 @@
+# APK 安装核验日志 — 2026-08-31 19:21 CST
+
+```
+$ adb devices -l
+List of devices attached
+10AF6H1MLM003HF        device usb:0-1 product:PD2436 model:V2436A device:PD2436 transport_id:21
+
+$ adb uninstall com.kaixuan.opencode.pocket
+Success
+
+$ adb install /Users/xutaohuang/workspace/official-deploy/services/opencode-pocket/frontend/android/app/build/outputs/apk/debug/app-debug.apk
+Performing Streamed Install
+Success
+
+$ adb shell dumpsys package com.kaixuan.opencode.pocket | grep -E "versionName|versionCode|lastUpdateTime|firstInstallTime"
+    versionCode=1 minSdk=24 targetSdk=35
+    versionName=1.0
+    lastUpdateTime=2026-08-31 19:21:29
+      firstInstallTime=2026-08-31 19:21:29
+```
+
+## 结论
+
+- **uninstall + install 路径**(避免 vivo `adb install -r` 静默不更新缺陷,P1 缺陷④)
+- `lastUpdateTime=firstInstallTime=2026-08-31 19:21:29` → 全新安装确认
+- versionCode=1 / versionName=1.0 / minSdk=24 / targetSdk=35
