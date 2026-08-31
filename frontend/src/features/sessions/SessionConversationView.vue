@@ -654,7 +654,7 @@ function goBack() {
 /* Error banner */
 .error-banner {
   flex: 0 0 auto;
-  background: rgba(239, 68, 68, 0.1);
+  background: var(--danger-bg);
   color: var(--danger);
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);

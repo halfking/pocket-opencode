@@ -305,7 +305,7 @@ function formatTime(ms: number): string {
 
 .action-btn.primary {
   background: var(--primary-color, #3b82f6);
-  color: white;
+  color: var(--text-inverse);
   border-color: var(--primary-color, #3b82f6);
 }
 

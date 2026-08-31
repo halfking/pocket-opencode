@@ -216,7 +216,7 @@ onUnmounted(() => {
 .recorder-icon {
   width: 32px;
   height: 32px;
-  color: white;
+  color: var(--text-inverse);
   transition: all var(--duration-base) var(--ease-out);
 }
 
@@ -269,7 +269,7 @@ onUnmounted(() => {
   backdrop-filter: blur(10px);
   border-radius: var(--radius-lg);
   padding: var(--space-4);
-  color: white;
+  color: var(--text-inverse);
   max-height: 200px;
   overflow-y: auto;
   box-shadow: var(--shadow-xl);

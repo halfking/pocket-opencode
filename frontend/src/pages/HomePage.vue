@@ -396,7 +396,7 @@ const handleNavChange = (id: string) => {
   padding: var(--space-4);
   background: var(--gradient-primary);
   border-radius: var(--radius-lg);
-  color: white;
+  color: var(--text-inverse);
   text-align: center;
   cursor: pointer;
   transition: all var(--duration-base) var(--ease-out);
@@ -546,7 +546,7 @@ const handleNavChange = (id: string) => {
 
 .ai-suggestion-btn:hover {
   background: var(--color-primary);
-  color: white;
+  color: var(--text-inverse);
   border-color: var(--color-primary);
 }
 

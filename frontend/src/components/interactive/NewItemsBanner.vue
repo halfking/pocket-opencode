@@ -84,7 +84,7 @@ function handleClick() {
   padding: var(--space-2) var(--space-4);
 
   background: var(--color-primary);
-  color: #fff;
+  color: var(--text-inverse);
   border: none;
   border-radius: var(--radius-full);
 

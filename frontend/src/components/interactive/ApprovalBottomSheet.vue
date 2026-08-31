@@ -254,7 +254,7 @@ function onReject(): void {
 }
 .btn-primary {
   background: var(--primary, #2563eb);
-  color: #fff;
+  color: var(--text-inverse);
 }
 .btn-outline {
   background: transparent;

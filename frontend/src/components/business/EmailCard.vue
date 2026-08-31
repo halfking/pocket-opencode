@@ -192,12 +192,12 @@ const handleClick = () => {
 
 .email-tag--category {
   background: var(--color-primary);
-  color: white;
+  color: var(--text-inverse);
 }
 
 .email-tag--important {
   background: var(--color-error);
-  color: white;
+  color: var(--text-inverse);
 }
 
 .email-tag--attachment {

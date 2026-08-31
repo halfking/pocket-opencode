@@ -312,7 +312,7 @@ defineExpose({
   align-items: center;
   justify-content: center;
   background: var(--gradient-primary);
-  color: white;
+  color: var(--text-inverse);
   border: none;
   border-radius: 50%;
   font-size: 20px;

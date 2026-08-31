@@ -262,7 +262,7 @@ const handleClose = () => {
   align-items: center;
   justify-content: center;
   background: var(--gradient-primary);
-  color: white;
+  color: var(--text-inverse);
   border: none;
   border-radius: 50%;
   font-size: 32px;
@@ -350,7 +350,7 @@ const handleClose = () => {
 .status-text {
   font-size: 14px;
   font-weight: var(--font-weight-medium);
-  color: white;
+  color: var(--text-inverse);
 }
 
 .panel-close {
@@ -362,7 +362,7 @@ const handleClose = () => {
   background: rgba(255, 255, 255, 0.1);
   border: none;
   border-radius: var(--radius-full);
-  color: white;
+  color: var(--text-inverse);
   font-size: 16px;
   cursor: pointer;
 }
@@ -378,7 +378,7 @@ const handleClose = () => {
 .transcription-text {
   font-size: 16px;
   line-height: 1.6;
-  color: white;
+  color: var(--text-inverse);
   margin: 0;
   text-align: center;
 }
@@ -414,7 +414,7 @@ const handleClose = () => {
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: var(--radius-full);
-  color: white;
+  color: var(--text-inverse);
   font-size: 13px;
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-out);
@@ -440,7 +440,7 @@ const handleClose = () => {
 .result-text {
   flex: 1;
   font-size: 14px;
-  color: white;
+  color: var(--text-inverse);
 }
 
 /* 动画 */

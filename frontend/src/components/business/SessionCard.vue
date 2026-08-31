@@ -142,7 +142,7 @@ const handleClick = () => {
   height: 20px;
   padding: 0 6px;
   background: var(--color-error);
-  color: white;
+  color: var(--text-inverse);
   border-radius: var(--radius-full);
   font-size: 11px;
   font-weight: var(--font-weight-bold);

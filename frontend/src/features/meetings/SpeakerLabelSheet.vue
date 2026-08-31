@@ -173,7 +173,7 @@ function save() {
   width: 100%;
   padding: 12px;
   background: var(--brand-primary);
-  color: #fff;
+  color: var(--text-inverse);
   border: none;
   border-radius: var(--radius-md);
   font-size: 15px;

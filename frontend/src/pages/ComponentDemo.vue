@@ -415,7 +415,7 @@ const loadMoreItems = async () => {
 
 .page-header {
   background: var(--gradient-primary);
-  color: white;
+  color: var(--text-inverse);
   padding: var(--space-6) var(--space-4);
   text-align: center;
 }

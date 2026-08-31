@@ -465,7 +465,7 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: 0 0 0 var(--radius-md, 8px);
   background: rgba(0, 0, 0, 0.55);
-  color: #fff;
+  color: var(--text-inverse);
   font-size: 14px;
   line-height: 20px;
   cursor: pointer;
@@ -510,8 +510,8 @@ onBeforeUnmount(() => {
 .uc-tool:active { background: var(--color-bg-hover); }
 .uc-tool:disabled { opacity: 0.45; cursor: default; }
 .uc-tool--rec {
-  background: rgba(239, 68, 68, 0.12);
-  color: #ef4444;
+  background: var(--danger-bg);
+  color: var(--danger);
   animation: uc-pulse 1.2s ease-in-out infinite;
 }
 @keyframes uc-pulse {
@@ -561,8 +561,8 @@ onBeforeUnmount(() => {
   padding: 0 var(--space-3, 12px);
   border: none;
   border-radius: var(--radius-full, 999px);
-  background: rgba(124, 108, 245, 0.12);
-  color: #7c6cf5;
+  background: var(--brand-bg);
+  color: var(--brand-primary);
   font-size: 13px;
   cursor: pointer;
 }
@@ -580,7 +580,7 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: var(--radius-full, 999px);
   background: var(--color-primary, #4f6ef7);
-  color: #fff;
+  color: var(--text-inverse);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;

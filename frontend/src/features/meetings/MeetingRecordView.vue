@@ -284,8 +284,8 @@ onUnmounted(() => {
   left: var(--space-3);
   right: var(--space-3);
   padding: 8px 12px;
-  background: rgba(251, 191, 36, 0.9);
-  color: #78350f;
+  background: var(--warning-bg);
+  color: var(--text-primary);
   border-radius: var(--radius-md);
   font-size: 12px;
   text-align: center;
@@ -329,13 +329,13 @@ onUnmounted(() => {
 
 .footer-btn.primary {
   background: var(--brand-primary);
-  color: #fff;
+  color: var(--text-inverse);
   border-color: transparent;
 }
 
 .footer-btn.danger {
-  background: #ef4444;
-  color: #fff;
+  background: var(--danger);
+  color: var(--text-inverse);
   border-color: transparent;
 }
 </style>

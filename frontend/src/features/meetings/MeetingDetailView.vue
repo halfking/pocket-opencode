@@ -259,7 +259,7 @@ onUnmounted(() => { if (audioEl) { audioEl.pause(); audioEl = null } })
   border-radius: 50%;
   border: none;
   background: var(--brand-primary);
-  color: #fff;
+  color: var(--text-inverse);
   font-size: 16px;
   cursor: pointer;
   flex-shrink: 0;
@@ -309,11 +309,11 @@ onUnmounted(() => { if (audioEl) { audioEl.pause(); audioEl = null } })
 .ingest-banner {
   padding: 10px 14px;
   margin-bottom: var(--space-3);
-  background: rgba(34, 197, 94, 0.12);
+  background: var(--success-bg);
   border: 1px solid rgba(34, 197, 94, 0.3);
   border-radius: var(--radius-md);
   font-size: 13px;
-  color: #15803d;
+  color: var(--success);
 }
 
 .note-link-row {

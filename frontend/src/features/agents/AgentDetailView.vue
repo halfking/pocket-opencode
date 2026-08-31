@@ -181,7 +181,7 @@ function goToEdit() {
   font-size: 11px;
   padding: 3px 8px;
   background: var(--brand-primary);
-  color: white;
+  color: var(--text-inverse);
   border-radius: 4px;
 }
 

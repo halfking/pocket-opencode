@@ -1003,7 +1003,7 @@ function formatTime(ts: number): string {
 }
 .user-bubble {
   background: var(--brand-primary, #4c8dff);
-  color: #fff;
+  color: var(--text-inverse);
   border-bottom-right-radius: 4px;
 }
 .ai-bubble {
@@ -1203,7 +1203,7 @@ function formatTime(ts: number): string {
   border: none;
   border-radius: 0 0 0 8px;
   background: rgba(0, 0, 0, 0.55);
-  color: #fff;
+  color: var(--text-inverse);
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
@@ -1227,7 +1227,7 @@ function formatTime(ts: number): string {
   max-height: 180px;
   object-fit: cover;
   border-radius: 10px;
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--overlay-subtle);
 }
 
 /* 模态徽标 & 设置行 */
@@ -1276,7 +1276,7 @@ function formatTime(ts: number): string {
   border: none;
   border-radius: 50%;
   background: var(--brand-primary, #4c8dff);
-  color: #fff;
+  color: var(--text-inverse);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1364,7 +1364,7 @@ function formatTime(ts: number): string {
 .model-current { font-size: 10px; color: var(--brand-primary); }
 .sheet-confirm {
   width: 100%; padding: 12px; border: none; border-radius: 999px;
-  background: var(--brand-primary, #4c8dff); color: #fff; font-size: 15px; font-weight: 600;
+  background: var(--brand-primary, #4c8dff); color: var(--text-inverse); font-size: 15px; font-weight: 600;
   cursor: pointer;
 }
 

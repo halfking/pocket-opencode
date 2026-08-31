@@ -138,7 +138,7 @@ function formatTime(ts: number): string {
   padding: 12px;
   margin-top: var(--space-2);
   background: var(--brand-primary);
-  color: #fff;
+  color: var(--text-inverse);
   border: none;
   border-radius: var(--radius-md);
   font-size: 15px;

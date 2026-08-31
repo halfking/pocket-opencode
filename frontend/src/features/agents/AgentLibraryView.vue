@@ -292,7 +292,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
 
 .dept-chip.active {
   background: var(--brand-primary);
-  color: white;
+  color: var(--text-inverse);
   border-color: var(--brand-primary);
 }
 
@@ -329,7 +329,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
   margin-top: 16px;
   padding: 10px 20px;
   background: var(--brand-primary);
-  color: white;
+  color: var(--text-inverse);
   border: none;
   border-radius: 8px;
   font-size: 14px;
@@ -397,7 +397,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
   font-size: 10px;
   padding: 2px 6px;
   background: var(--brand-primary);
-  color: white;
+  color: var(--text-inverse);
   border-radius: 4px;
 }
 

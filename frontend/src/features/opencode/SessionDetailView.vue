@@ -320,18 +320,18 @@ function getActorName(actor: string): string {
 <style scoped>
 .session-detail-view {
   min-height: 100%;
-  background: #f5f7fa;
+  background: var(--bg-base);
   display: flex;
   flex-direction: column;
 }
 
 .top-bar {
-  background: white;
+  background: var(--bg-elevated);
   padding: 16px 20px;
   display: flex;
   align-items: center;
   gap: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  box-shadow: var(--shadow-md);
   position: sticky;
   top: 0;
   z-index: var(--z-base);
@@ -341,14 +341,14 @@ function getActorName(actor: string): string {
   padding: 8px 12px;
   font-size: 14px;
   background: transparent;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border);
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.3s;
 }
 
 .back-btn:active, .export-btn:active {
-  background: #f5f7fa;
+  background: var(--bg-subtle);
   transform: scale(0.95);
 }
 
@@ -356,6 +356,7 @@ function getActorName(actor: string): string {
   flex: 1;
   font-size: 20px;
   font-weight: 600;
+  color: var(--text-primary);
   margin: 0;
 }
 
@@ -371,8 +372,8 @@ function getActorName(actor: string): string {
 .spinner {
   width: 40px;
   height: 40px;
-  border: 4px solid #f3f3f3;
-  border-top: 4px solid #667eea;
+  border: 4px solid var(--border);
+  border-top: 4px solid var(--brand-primary);
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin-bottom: 16px;
@@ -397,11 +398,11 @@ function getActorName(actor: string): string {
 }
 
 .info-card, .stats-card, .summary-card, .timeline-card {
-  background: white;
+  background: var(--bg-card);
   border-radius: 16px;
   padding: 20px;
   margin-bottom: 16px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-md);
 }
 
 .info-header {
@@ -415,7 +416,7 @@ function getActorName(actor: string): string {
   font-size: 20px;
   font-weight: 600;
   margin: 0;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .status-badge {
@@ -426,13 +427,13 @@ function getActorName(actor: string): string {
 }
 
 .status-badge.busy {
-  background: #ffe5e5;
-  color: #ff4757;
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 
 .status-badge.idle {
-  background: #f0f0f0;
-  color: #999;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
 }
 
 .info-grid {
@@ -449,26 +450,26 @@ function getActorName(actor: string): string {
 
 .info-item .label {
   font-size: 13px;
-  color: #999;
+  color: var(--text-muted);
 }
 
 .info-item .value {
   font-size: 15px;
-  color: #333;
+  color: var(--text-primary);
   font-weight: 500;
 }
 
 .info-item .value.code {
   font-family: monospace;
   font-size: 13px;
-  color: #667eea;
+  color: var(--brand-primary);
 }
 
 .stats-card h3, .summary-card h3, .timeline-card h3 {
   font-size: 16px;
   font-weight: 600;
   margin: 0 0 16px 0;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .stats-grid {
@@ -485,15 +486,15 @@ function getActorName(actor: string): string {
 }
 
 .stat-item.additions {
-  background: linear-gradient(135deg, #d4f4dd 0%, #c8f0d4 100%);
+  background: var(--success-bg);
 }
 
 .stat-item.deletions {
-  background: linear-gradient(135deg, #ffe5e5 0%, #ffd5d5 100%);
+  background: var(--danger-bg);
 }
 
 .stat-item.files, .stat-item.messages {
-  background: linear-gradient(135deg, #e8f0fe 0%, #d5e5fc 100%);
+  background: var(--brand-bg);
 }
 
 .stat-value {
@@ -503,54 +504,54 @@ function getActorName(actor: string): string {
 }
 
 .stat-item.additions .stat-value {
-  color: #2ed573;
+  color: var(--success);
 }
 
 .stat-item.deletions .stat-value {
-  color: #ff4757;
+  color: var(--danger);
 }
 
 .stat-item.files .stat-value, .stat-item.messages .stat-value {
-  color: #667eea;
+  color: var(--brand-primary);
 }
 
 .stat-label {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .change-bar {
   height: 8px;
-  background: #f0f0f0;
+  background: var(--bg-subtle);
   border-radius: 4px;
   display: flex;
   overflow: hidden;
 }
 
 .change-additions {
-  background: #2ed573;
+  background: var(--success);
   transition: width 0.3s;
 }
 
 .change-deletions {
-  background: #ff4757;
+  background: var(--danger);
   transition: width 0.3s;
 }
 
 .summary-content {
   padding: 16px;
-  background: #f8f9fa;
+  background: var(--bg-subtle);
   border-radius: 8px;
   line-height: 1.6;
-  color: #555;
+  color: var(--text-secondary);
   margin-bottom: 12px;
 }
 
 .refresh-summary-btn {
   padding: 8px 16px;
   font-size: 13px;
-  background: #667eea;
-  color: white;
+  background: var(--brand-primary);
+  color: var(--text-inverse);
   border: none;
   border-radius: 6px;
   cursor: pointer;
@@ -566,8 +567,8 @@ function getActorName(actor: string): string {
 .timeline-count {
   font-size: 13px;
   padding: 4px 10px;
-  background: #e8f0fe;
-  color: #667eea;
+  background: var(--brand-bg);
+  color: var(--brand-primary);
   border-radius: 10px;
   font-weight: 600;
 }
@@ -584,7 +585,7 @@ function getActorName(actor: string): string {
   top: 0;
   bottom: 0;
   width: 2px;
-  background: #e0e0e0;
+  background: var(--border);
 }
 
 .timeline-event {
@@ -597,8 +598,8 @@ function getActorName(actor: string): string {
   left: -40px;
   width: 32px;
   height: 32px;
-  background: white;
-  border: 2px solid #e0e0e0;
+  background: var(--bg-card);
+  border: 2px solid var(--border);
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -607,27 +608,27 @@ function getActorName(actor: string): string {
 }
 
 .timeline-event.message .event-icon {
-  border-color: #667eea;
-  background: #e8f0fe;
+  border-color: var(--brand-primary);
+  background: var(--brand-bg);
 }
 
 .timeline-event.edit .event-icon {
-  border-color: #ffa502;
-  background: #fff4e5;
+  border-color: var(--warning);
+  background: var(--warning-bg);
 }
 
 .timeline-event.test .event-icon {
-  border-color: #2ed573;
-  background: #d4f4dd;
+  border-color: var(--success);
+  background: var(--success-bg);
 }
 
 .timeline-event.error .event-icon {
-  border-color: #ff4757;
-  background: #ffe5e5;
+  border-color: var(--danger);
+  background: var(--danger-bg);
 }
 
 .event-content {
-  background: #f8f9fa;
+  background: var(--bg-subtle);
   padding: 12px 16px;
   border-radius: 8px;
 }
@@ -647,28 +648,28 @@ function getActorName(actor: string): string {
 }
 
 .event-actor.user {
-  background: #e8f0fe;
-  color: #667eea;
+  background: var(--brand-bg);
+  color: var(--brand-primary);
 }
 
 .event-actor.ai {
-  background: #d4f4dd;
-  color: #2ed573;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .event-actor.system {
-  background: #f0f0f0;
-  color: #999;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
 }
 
 .event-time {
   font-size: 12px;
-  color: #999;
+  color: var(--text-muted);
 }
 
 .event-body {
   font-size: 14px;
-  color: #555;
+  color: var(--text-secondary);
   line-height: 1.5;
   margin-bottom: 8px;
 }
@@ -679,12 +680,12 @@ function getActorName(actor: string): string {
   gap: 8px;
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border);
 }
 
 .metadata-item {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .metadata-key {
@@ -695,7 +696,7 @@ function getActorName(actor: string): string {
 .timeline-loading, .timeline-empty {
   text-align: center;
   padding: 40px;
-  color: #999;
+  color: var(--text-muted);
 }
 
 .error-state {
@@ -705,7 +706,7 @@ function getActorName(actor: string): string {
   align-items: center;
   justify-content: center;
   padding: 40px;
-  color: #ff4757;
+  color: var(--danger);
 }
 
 .error-icon {
@@ -717,8 +718,8 @@ function getActorName(actor: string): string {
   padding: 12px 24px;
   font-size: 14px;
   font-weight: 600;
-  color: white;
-  background: #667eea;
+  color: var(--text-inverse);
+  background: var(--brand-primary);
   border: none;
   border-radius: 8px;
   cursor: pointer;

@@ -123,25 +123,25 @@ defineExpose({
 /* Success */
 .toast--success {
   background: var(--color-success);
-  color: white;
+  color: var(--text-inverse);
 }
 
 /* Error */
 .toast--error {
   background: var(--color-error);
-  color: white;
+  color: var(--text-inverse);
 }
 
 /* Warning */
 .toast--warning {
   background: var(--color-warning);
-  color: white;
+  color: var(--text-inverse);
 }
 
 /* Info */
 .toast--info {
   background: var(--color-primary);
-  color: white;
+  color: var(--text-inverse);
 }
 
 .toast-icon {

@@ -48,21 +48,21 @@ const handleLocaleChange = () => {
 
 .locale-select {
   padding: 8px 12px;
-  border: 1px solid #dcdfe6;
-  border-radius: 4px;
-  background-color: #fff;
-  color: #606266;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-card);
+  color: var(--text-primary);
   font-size: 14px;
   cursor: pointer;
   transition: border-color 0.3s;
 }
 
 .locale-select:hover {
-  border-color: #409eff;
+  border-color: var(--brand-primary);
 }
 
 .locale-select:focus {
   outline: none;
-  border-color: #409eff;
+  border-color: var(--brand-primary);
 }
 </style>

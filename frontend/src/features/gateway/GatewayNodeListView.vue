@@ -394,7 +394,7 @@ onMounted(load)
   background: var(--primary, #4c8dff);
   border: none;
   border-radius: var(--radius-sm, 8px);
-  color: #fff;
+  color: var(--text-inverse);
 }
 .footnote {
   margin-top: var(--space-3);

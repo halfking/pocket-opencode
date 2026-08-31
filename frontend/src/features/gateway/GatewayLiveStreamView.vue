@@ -261,7 +261,7 @@ onUnmounted(() => {
 }
 .dim.active {
   background: var(--primary, #4c8dff);
-  color: #fff;
+  color: var(--text-inverse);
   border-color: transparent;
 }
 .status-bar {
@@ -399,6 +399,6 @@ onUnmounted(() => {
   background: var(--primary, #4c8dff);
   border: none;
   border-radius: var(--radius-sm, 8px);
-  color: #fff;
+  color: var(--text-inverse);
 }
 </style>

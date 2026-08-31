@@ -150,7 +150,7 @@ function onTap(): void {
 
 /* 运行中：品牌绿 + 持续旋转（progress_activity 为圆环图标） */
 .status-icon.mode-running {
-  background: rgba(16, 185, 129, 0.12);
+  background: var(--success-bg);
   color: var(--success);
 }
 .status-icon.mode-running .icon {

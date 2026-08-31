@@ -428,7 +428,7 @@ const handleNavChange = (id: string) => {
 
 .layout-toggle:hover {
   background: var(--color-primary);
-  color: white;
+  color: var(--text-inverse);
   border-color: var(--color-primary);
 }
 
@@ -535,7 +535,7 @@ const handleNavChange = (id: string) => {
 
 .chat-message--user .message-content {
   background: var(--color-primary);
-  color: white;
+  color: var(--text-inverse);
 }
 
 .suggestion-cards {

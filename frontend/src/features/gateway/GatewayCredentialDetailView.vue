@@ -347,7 +347,7 @@ onMounted(load)
 }
 .filter.active {
   background: var(--primary, #4c8dff);
-  color: #fff;
+  color: var(--text-inverse);
   border-color: transparent;
 }
 .filter-count {

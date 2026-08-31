@@ -95,7 +95,7 @@ const handleClick = (event: MouseEvent) => {
 /* Primary 变体 */
 .button--primary {
   background: var(--gradient-primary);
-  color: white;
+  color: var(--text-inverse);
 }
 
 .button--primary:hover:not(.button--disabled):not(.button--loading) {
@@ -129,7 +129,7 @@ const handleClick = (event: MouseEvent) => {
 }
 
 .button--ghost:hover:not(.button--disabled):not(.button--loading) {
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--overlay-subtle);
 }
 
 .button--ghost:active:not(.button--disabled):not(.button--loading) {
@@ -139,7 +139,7 @@ const handleClick = (event: MouseEvent) => {
 /* Danger 变体 */
 .button--danger {
   background: var(--color-error);
-  color: white;
+  color: var(--text-inverse);
 }
 
 .button--danger:hover:not(.button--disabled):not(.button--loading) {

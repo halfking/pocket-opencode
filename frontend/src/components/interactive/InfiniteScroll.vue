@@ -172,7 +172,7 @@ defineExpose({
 .retry-button {
   padding: var(--space-2) var(--space-4);
   background: var(--color-primary);
-  color: white;
+  color: var(--text-inverse);
   border: none;
   border-radius: var(--radius-md);
   font-size: 14px;

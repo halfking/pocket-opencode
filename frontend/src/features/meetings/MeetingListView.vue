@@ -173,8 +173,8 @@ onMounted(load)
 }
 
 .status-badge.recording {
-  background: rgba(239, 68, 68, 0.15);
-  color: #ef4444;
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 
 .card-summary {
@@ -202,7 +202,7 @@ onMounted(load)
   border-radius: 50%;
   border: none;
   background: var(--brand-gradient, linear-gradient(135deg, #667eea, #764ba2));
-  color: #fff;
+  color: var(--text-inverse);
   font-size: 24px;
   box-shadow: var(--shadow-lg, 0 4px 20px rgba(0,0,0,0.2));
   cursor: pointer;

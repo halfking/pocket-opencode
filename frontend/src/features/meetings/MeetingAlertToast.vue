@@ -58,9 +58,9 @@ function icon(type: string): string {
   max-width: 360px;
 }
 
-.alert-toast--action_item { border-left-color: #22c55e; }
-.alert-toast--deadline { border-left-color: #f59e0b; }
-.alert-toast--info { border-left-color: #3b82f6; }
+.alert-toast--action_item { border-left-color: var(--success); }
+.alert-toast--deadline { border-left-color: var(--warning); }
+.alert-toast--info { border-left-color: var(--info); }
 
 @keyframes slide-in {
   from { opacity: 0; transform: translateY(-8px); }

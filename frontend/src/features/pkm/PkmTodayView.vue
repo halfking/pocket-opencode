@@ -185,7 +185,7 @@ onMounted(loadRecent)
   align-items: center;
   justify-content: center;
   background: var(--accent, #2563eb);
-  color: #fff;
+  color: var(--text-inverse);
   border-radius: 12px;
   width: 56px;
   height: 56px;
@@ -260,7 +260,7 @@ onMounted(loadRecent)
   height: 52px;
   border-radius: 50%;
   background: var(--accent, #2563eb);
-  color: #fff;
+  color: var(--text-inverse);
   font-size: 26px;
   border: none;
   box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4);

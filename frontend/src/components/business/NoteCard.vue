@@ -120,7 +120,7 @@ const handleClick = () => {
   font-size: 12px;
   padding: 2px 8px;
   background: var(--gradient-primary);
-  color: white;
+  color: var(--text-inverse);
   border-radius: var(--radius-full);
   font-weight: var(--font-weight-medium);
 }

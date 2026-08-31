@@ -378,7 +378,7 @@ function formatTime(ms: number) {
   margin: 0;
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-md);
-  background: rgba(239, 68, 68, 0.1);
+  background: var(--danger-bg);
   color: var(--danger);
   font-size: 13px;
   font-weight: 500;

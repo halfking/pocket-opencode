@@ -221,7 +221,7 @@ defineExpose({ reset })
   justify-content: center;
   gap: 4px;
   border: none;
-  color: white;
+  color: var(--text-inverse);
   font-size: 12px;
   cursor: pointer;
   transition: all 0.2s ease;

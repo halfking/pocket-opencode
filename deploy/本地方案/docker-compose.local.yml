@@ -7,12 +7,12 @@ services:
     env_file:
       - .env.local
     ports:
-      - "${POCKET_HTTP_PORT:-8088}:8088"
+      - "${POCKET_HTTP_PORT:-8090}:8088"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - pocket_local
-      - r112_net
+      - shared-infra
     volumes:
       - pocket_local_data:/app/data
     healthcheck:

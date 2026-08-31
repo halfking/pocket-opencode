@@ -154,18 +154,18 @@ function formatLastSeen(timestamp: string): string {
 <style scoped>
 .opencode-hub {
   min-height: 100%;
-  background: #f5f7fa;
+  background: var(--bg-base);
   display: flex;
   flex-direction: column;
 }
 
 .top-bar {
-  background: white;
+  background: var(--bg-elevated);
   padding: 16px 20px;
   display: flex;
   align-items: center;
   gap: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  box-shadow: var(--shadow-md);
   position: sticky;
   top: 0;
   z-index: var(--z-base);
@@ -175,14 +175,14 @@ function formatLastSeen(timestamp: string): string {
   padding: 8px 12px;
   font-size: 14px;
   background: transparent;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border);
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.3s;
 }
 
 .back-btn:active, .refresh-btn:active {
-  background: #f5f7fa;
+  background: var(--bg-subtle);
   transform: scale(0.95);
 }
 
@@ -190,7 +190,7 @@ function formatLastSeen(timestamp: string): string {
   flex: 1;
   font-size: 20px;
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
   margin: 0;
 }
 
@@ -206,8 +206,8 @@ function formatLastSeen(timestamp: string): string {
 .spinner {
   width: 40px;
   height: 40px;
-  border: 4px solid #f3f3f3;
-  border-top: 4px solid #667eea;
+  border: 4px solid var(--border);
+  border-top: 4px solid var(--brand-primary);
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin-bottom: 16px;
@@ -219,7 +219,7 @@ function formatLastSeen(timestamp: string): string {
 }
 
 .error-state {
-  color: #ff4757;
+  color: var(--danger);
 }
 
 .error-icon {
@@ -231,8 +231,8 @@ function formatLastSeen(timestamp: string): string {
   padding: 12px 24px;
   font-size: 14px;
   font-weight: 600;
-  color: white;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: var(--text-inverse);
+  background: var(--brand-gradient);
   border: none;
   border-radius: 8px;
   cursor: pointer;
@@ -260,15 +260,15 @@ function formatLastSeen(timestamp: string): string {
 .group-header h2 {
   font-size: 18px;
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
   margin: 0;
 }
 
 .instance-count {
   font-size: 14px;
   padding: 4px 12px;
-  background: #e8f0fe;
-  color: #667eea;
+  background: var(--brand-bg);
+  color: var(--brand-primary);
   border-radius: 12px;
   font-weight: 600;
 }
@@ -280,10 +280,10 @@ function formatLastSeen(timestamp: string): string {
 }
 
 .instance-card {
-  background: white;
+  background: var(--bg-card);
   border-radius: 16px;
   padding: 20px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-md);
   display: flex;
   align-items: center;
   gap: 16px;
@@ -292,17 +292,17 @@ function formatLastSeen(timestamp: string): string {
 
 .instance-card.online {
   cursor: pointer;
-  border-left: 4px solid #2ed573;
+  border-left: 4px solid var(--success);
 }
 
 .instance-card.online:active {
   transform: scale(0.98);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-lg);
 }
 
 .instance-card.offline {
   opacity: 0.6;
-  border-left: 4px solid #ff4757;
+  border-left: 4px solid var(--danger);
 }
 
 .instance-icon {
@@ -312,7 +312,7 @@ function formatLastSeen(timestamp: string): string {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #667eea20 0%, #764ba220 100%);
+  background: var(--brand-bg);
   border-radius: 16px;
   flex-shrink: 0;
 }
@@ -325,13 +325,13 @@ function formatLastSeen(timestamp: string): string {
 .instance-info h3 {
   font-size: 17px;
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
   margin: 0 0 4px 0;
 }
 
 .instance-id {
   font-size: 12px;
-  color: #999;
+  color: var(--text-muted);
   margin: 0 0 12px 0;
   font-family: monospace;
 }
@@ -347,7 +347,7 @@ function formatLastSeen(timestamp: string): string {
   align-items: center;
   gap: 4px;
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .stat-icon {
@@ -355,13 +355,13 @@ function formatLastSeen(timestamp: string): string {
 }
 
 .offline-text {
-  color: #999;
+  color: var(--text-muted);
   font-style: italic;
 }
 
 .instance-arrow {
   font-size: 28px;
-  color: #ccc;
+  color: var(--border-strong);
   flex-shrink: 0;
 }
 
@@ -371,7 +371,7 @@ function formatLastSeen(timestamp: string): string {
   align-items: center;
   justify-content: center;
   padding: 60px 20px;
-  color: #999;
+  color: var(--text-muted);
 }
 
 .empty-icon {
@@ -386,6 +386,6 @@ function formatLastSeen(timestamp: string): string {
 
 .empty-hint {
   font-size: 14px;
-  color: #bbb;
+  color: var(--text-muted);
 }
 </style>

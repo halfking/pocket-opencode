@@ -158,7 +158,7 @@ onBeforeUnmount(() => {
   border-radius: 50%;
   border: none;
   background: var(--brand-gradient);
-  color: white;
+  color: var(--text-inverse);
   font-size: 24px;
   box-shadow: var(--shadow-lg);
   cursor: pointer;
