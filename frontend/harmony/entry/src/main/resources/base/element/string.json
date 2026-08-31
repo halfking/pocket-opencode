@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "OpenCode Pocket HarmonyOS module" },
+    { "name": "EntryAbility_desc", "value": "OpenCode Pocket" },
+    { "name": "EntryAbility_label", "value": "OpenCode Pocket" }
+  ]
+}

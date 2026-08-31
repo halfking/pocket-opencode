@@ -1,3 +1,5 @@
+import { runtimePlatform } from '../native/runtime-platform'
+
 // 应用版本配置
 export const APP_VERSION = {
   version: '1.2.0',
@@ -37,7 +39,7 @@ export async function checkUpdate(): Promise<CheckUpdateResponse> {
     body: JSON.stringify({
       currentVersion: APP_VERSION.version,
       currentBuild: APP_VERSION.buildNumber,
-      platform: 'android',
+      platform: runtimePlatform(),
       deviceModel: navigator.userAgent
     })
   })
@@ -49,9 +51,16 @@ export async function checkUpdate(): Promise<CheckUpdateResponse> {
   return response.json()
 }
 
-// 下载 APK
-export function downloadAPK(url: string) {
+/** Only Android currently has an APK delivery channel. iOS uses App Store
+ * distribution and HarmonyOS Phase A has no HAP delivery channel yet. */
+export function canDownloadApk(): boolean {
+  return runtimePlatform() === 'android'
+}
+
+export function downloadAPK(url: string): boolean {
+  if (!canDownloadApk()) return false
   window.open(url, '_blank')
+  return true
 }
 
 // 格式化文件大小

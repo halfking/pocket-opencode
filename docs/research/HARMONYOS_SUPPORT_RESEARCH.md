@@ -184,7 +184,7 @@ services/opencode-pocket/
 │   ├── android/                    # 现有 Android 壳
 │   ├── ios/                        # 现有 iOS 壳
 │   └── capacitor.config.ts
-└── frontend-harmony/               # 新增：鸿蒙壳工程（独立）
+    └── harmony/                    # 新增：鸿蒙壳工程（独立，非 Capacitor platform）
     ├── AppScope/                   # 包名 com.kaixuan.opencode.pocket
     ├── entry/                      # UIAbility
     │   └── src/main/ets/
@@ -195,88 +195,25 @@ services/opencode-pocket/
     └── package.json
 ```
 
-**关键点**：`frontend-harmony/` 内的 `rawfile/` 目录通过构建脚本从 `frontend/dist/` 同步，或在 CI 中执行：
+**关键点**：`frontend/harmony/` 内的 `rawfile/` 是派生产物（不入库），由独立构建脚本从 `frontend/dist/` 清理后同步。Android/iOS 继续使用 Capacitor `cap sync`，鸿蒙**不**进入 Capacitor 平台注册：
 
 ```bash
-npm run build && cp -r frontend/dist/* frontend-harmony/entry/src/main/resources/rawfile/
+cd frontend
+VITE_API_BASE=https://device-reachable.example node scripts/build-harmony.mjs dev
 ```
 
-### 4.2 鸿蒙壳的核心代码（约 150 行）
+### 4.2 Phase A 鸿蒙壳（已实现，未做 HAP/真机验证）
 
-```ets
-// EntryAbility.ets
-import UIAbility from '@ohos.app.ability.UIAbility';
-import webview from '@ohos.web.webview';
+实际代码位于 `frontend/harmony/`：`EntryAbility.ets` 创建 ArkUI 页面，`pages/Index.ets` 使用 `Web({ src: $rawfile('index.html') })` 加载同一份 Vite bundle。壳在页面完成加载后注入私有协议对象 `window.__OPENCODE_POCKET_HARMONY__`，协议版本固定为 `1`，所有原生能力初始均为 `false`。页面启动期仍按 Web fallback 运行；只有协议成功注入后才可识别为 Harmony runtime，避免注入失败时误开启平台专属逻辑。
 
-export default class EntryAbility extends UIAbility {
-  onCreate(want, launchParam) {
-    // 注册自定义 URL scheme / scheme prefix 用于 JS↔ArkTS 桥
-    webview.WebviewController.setWebGestureAccess(true);
-  }
-}
-```
+这不是 Capacitor 兼容层：不注入 `window.Capacitor`、`androidBridge` 或 iOS bridge，也不把鸿蒙伪装为 Android/iOS。`frontend/src/native/runtime-platform.ts` 只接受版本、host 与 capability 都严格匹配的协议；无效协议或 bridge 调用失败均退回 Web 路径。
 
-```ets
-// pages/Index.ets
-import webview from '@ohos.web.webview';
+### 4.3 JS 侧最小改动（已实现）
 
-@Entry
-@Component
-struct Index {
-  controller: webview.WebviewController = new webview.WebviewController();
-  // …构建时从 .env 注入
-  private static readonly API_BASE = 'http://192.168.31.45:8088';
-
-  aboutToAppear() {
-    this.controller.on('message', (event) => {
-      // 收到来自 JS 的桥请求，分发到 ArkTS 端
-      const { id, plugin, method, args } = JSON.parse(event.data as string);
-      this.handleBridge(id, plugin, method, args);
-    });
-  }
-
-  build() {
-    Column() {
-      Web({
-        src: $rawfile('index.html'),
-        controller: this.controller
-      })
-      .javaScriptAccess(true)
-      .domStorageAccess(true)
-      .onPageEnd((event) => {
-        // 注入 API_BASE
-        this.controller.runJavaScript(
-          `window.__HARMONY_API_BASE__ = "${Index.API_BASE}";`
-        );
-      })
-    }
-  }
-}
-```
-
-### 4.3 JS 侧最小改动（`frontend/src/native/harmony-bridge.ts` 新增）
-
-```ts
-import { Capacitor } from '@capacitor/core'
-
-declare global { interface Window { __HARMONY_BRIDGE__?: boolean } }
-
-/**
- * 鸿蒙桥：复用 Capacitor 的 registerPlugin 抽象，
- * 但底层走 window.webkit.messageHandlers / postMessage 而非原生 Activity。
- * 行为契约必须与 @capacitor/* 一致，以便上层业务代码不感知。
- */
-export function isHarmonyPlatform(): boolean {
-  return !!(typeof window !== 'undefined' && (window as any).__HARMONY_BRIDGE__)
-}
-
-export async function invokeHarmony<T>(plugin: string, method: string, args?: any): Promise<T> {
-  // 通过 location.href 触发自定义 URL，或通过 window.webkit.messageHandlers 通道
-  // 由 ArkTS 端 webview controller 的 on('message') 接收并回执
-  // 此处省略具体序列化逻辑
-  throw new Error('not implemented')
-}
-```
+- `frontend/src/native/runtime-platform.ts`：运行时识别、逐能力 fail-closed gate 与桥调用封装。
+- `frontend/src/native/local-db.ts`：鸿蒙强制使用现有 `jeep-sqlite`/IndexedDB 分支，绝不调用 Capacitor SQLite/SQLCipher。
+- `frontend/src/native/capabilities.ts`：鸿蒙首版硬性关闭录音、生物识别、硬件安全存储、后台任务与推送，即使上层传入静态 probe 也不提升能力。
+- `frontend/src/utils/version.ts` 与 `UpdateChecker.vue`：更新请求携带实际平台，APK 分发仅允许 Android；iOS 使用 App Store 分发，鸿蒙 HAP 分发留待 Phase B。
 
 ### 4.4 feature flag 收紧策略
 
@@ -289,21 +226,13 @@ export async function invokeHarmony<T>(plugin: string, method: string, args?: an
 | `notifications.push_v1` | on | **off** | 鸿蒙 Web 端走浏览器通知，鸿蒙原生通知留到下版本 |
 | `background.task_v1` | on | **off** | 鸿蒙 NEXT 暂不实现前台服务 |
 
-可通过 `capacitor.config.ts` 里加 `platforms: { harmony: { ... } }` 或者直接在 `App.vue` 里读 `import.meta.env.VITE_TARGET_PLATFORM` 决定初始化哪个 flag 集合。
+不要在 `capacitor.config.ts` 中增加鸿蒙平台字段。构建时使用独立 `build-harmony.mjs`，运行时仅通过私有 ArkTS bridge 协议识别；feature flag 仍保持原有默认值，能力收敛由 `runtime-platform.ts` 完成。
 
 ### 4.5 CI / 构建脚本
 
-新增 `frontend/package.json` 脚本：
+已新增 `frontend/package.json` 中的 `build:harmony`，以及 `frontend/scripts/build-harmony.mjs`。脚本构建 Vite bundle、清空旧的 hash 资源、同步至 `frontend/harmony/entry/src/main/resources/rawfile/`，并验证 `index.html` 与至少一个 JS asset 存在。
 
-```json
-{
-  "scripts": {
-    "build:harmony": "vite build && node scripts/copy-dist-to-harmony.mjs"
-  }
-}
-```
-
-`scripts/copy-dist-to-harmony.mjs` 负责把 `frontend/dist/` 拷到 `frontend-harmony/entry/src/main/resources/rawfile/`，并把 `VITE_API_BASE` 注入到 `.env.harmony`。
+`frontend/harmony.env.example` 是可追踪模板；真实设备构建必须复制为 `.env.harmony-dev`（已忽略）或通过环境变量设置可从设备访问的 HTTPS/WSS API 地址。
 
 ### 4.6 验证与质量门槛
 
@@ -317,8 +246,9 @@ export async function invokeHarmony<T>(plugin: string, method: string, args?: an
 
 1. **华为开发者联盟资质**：上架鸿蒙应用市场需要企业开发者账号与软著。建议先评估"是否真有商业化鸿蒙版"的需求，再决定要不要做上架。
 2. **WebView 兼容性**：鸿蒙 NEXT 的 ArkWeb（基于 Chromium 内核）已自报支持绝大多数现代 Web API，但建议在目标机型（如 Mate 60 / Pura 70）真机跑一遍核心流程。
-4. **Capacitor 跨 WebView 桥的语义差异**：iOS WKWebView / Android 系统 WebView / ArkWeb 在 cookie、缓存、跨域策略上略有不同，**核心 API 是 HTTPS+JSON+WSS**，受影响有限；但如果未来引入 OAuth 第三方登录（涉及 cookie 持久化），需要回归测试。
-5. **插件替代品的鸿蒙实现深度**：本研究的方案 A 假设"先 Web 降级，后续按需补原生"。如果某个能力（如指纹绑定）必须做鸿蒙原生版，单个能力的补齐成本约 1-2 人周。
+3. **Capacitor 跨 WebView 桥的语义差异**：iOS WKWebView / Android 系统 WebView / ArkWeb 在 cookie、缓存、跨域策略上略有不同，**核心 API 是 HTTPS+JSON+WSS**，受影响有限；但如果未来引入 OAuth 第三方登录（涉及 cookie 持久化），需要回归测试。
+4. **插件替代品的鸿蒙实现深度**：本研究的方案 A 假设"先 Web 降级，后续按需补原生"。如果某个能力（如指纹绑定）必须做鸿蒙原生版，单个能力的补齐成本约 1-2 人周。
+5. **Phase A 验证边界**：当前仅完成 TypeScript、Vite bundle 与 rawfile 同步的本机验证。DevEco/Hvigor、签名、HAP 安装、ArkWeb 网络与目标机真机测试均未执行，不能据此宣称鸿蒙应用可发布。
 
 ---
 
@@ -330,7 +260,7 @@ export async function invokeHarmony<T>(plugin: string, method: string, args?: an
 | Capacitor 能直接支持鸿蒙吗？ | ❌ Ionic 官方明确拒绝（issue #7173/#7818 均关闭并锁帖）；社区也无成熟方案 |
 | 推荐的鸿蒙方案是什么？ | **保留 Android/iOS 不动；新增轻量 ArkTS 壳加载现有 `dist/`，原生能力缺失部分走 feature flag 降级为 Web 实现** |
 | 工作量多大？ | 2-3 人周（壳 + 最小桥 + 上架材料），可单人一个月交付 |
-| 是否需要重写前端？ | **不需要**。前端 95% 复用，仅在 `frontend/src/native/` 新增一个 `harmony-bridge.ts` |
+| 是否需要重写前端？ | **不需要**。前端复用现有 Vite bundle；新增 `frontend/harmony/` 壳和 `frontend/src/native/runtime-platform.ts` 安全适配层 |
 | 是否可以再演进？ | 可以。先 Web 降级跑起来，再按用户需求逐项把 `keystore` / `notifications` / `sqlite` 用 ArkTS 重写 |
 
 **研究结论**：在不动现有 Vue 3 + Capacitor + Go 后端的前提下，通过 **"鸿蒙 ArkTS 壳 + WebView 加载 dist/"** 这条路径，可以在 **约 2-3 人周** 内实现 Android / iOS / HarmonyOS NEXT 三端覆盖，且对原项目侵入最小、风险最低。

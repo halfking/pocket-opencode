@@ -233,6 +233,17 @@
 | Evidence level | `integration-tested`（真机 + 真实 llmgo 网关端到端） |
 | Status | `integration-tested`。DD-9/10/11 见 `docs/2026-08-27-p1.5-ui-declutter.md` §8 |
 
+## HarmonyOS Phase A（in-repo，2026-09-01）
+
+| Field | Value |
+|---|---|
+| Repo path | `frontend/harmony/`, `frontend/scripts/build-harmony.mjs`, `frontend/src/native/runtime-platform.ts` |
+| Contract reference | `docs/research/HARMONYOS_SUPPORT_RESEARCH.md`, `docs/harmonyos-build-and-test.md` |
+| Test log reference | `test-evidence/2026-09-01-harmonyos-phase-a/verification.md`; audit `docs/audits/2026-09-01-harmonyos-phase-a.md` |
+| Evidence level | `contract-tested` for runtime/capability guards; `source-inspected` for ArkTS shell and asset-sync path |
+| Last verified date | 2026-09-01 |
+| Status | **implemented (unverified)** — local TypeScript/Vite/rawfile checks pass; the audit blocker for missing production API configuration was fixed and re-tested. DevEco/Hvigor, signing, HAP installation, ArkWeb networking, and HarmonyOS NEXT device validation are blocked and must not be represented as complete. |
+
 ## P3 反馈轮门禁与真机运行记录（in-repo，2026-08-28）
 
 | Field | Value |

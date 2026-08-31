@@ -199,7 +199,8 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { APP_VERSION, checkUpdate } from '../../utils/version'
+import { APP_VERSION, canDownloadApk, checkUpdate } from '../../utils/version'
+import { runtimePlatform } from '../../native/runtime-platform'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
 import { useConfirm } from '../../composables/useConfirm'
 import { useThemeStore, type ThemePreference } from '../../stores/theme'
@@ -304,8 +305,10 @@ function formatLoginTime(): string {
 async function checkForUpdates() {
   try {
     const response = await checkUpdate()
-    if (response.hasUpdate) {
-      alert(t('settings.newVersionAvailable', { 
+    if (response.hasUpdate && !canDownloadApk()) {
+      alert(`当前平台（${runtimePlatform()}）暂无可用的应用内更新渠道`)
+    } else if (response.hasUpdate) {
+      alert(t('settings.newVersionAvailable', {
         version: response.latest?.version,
         changelog: response.latest?.changelog.join('\n')
       }))

@@ -13,6 +13,7 @@
 import { Capacitor } from '@capacitor/core'
 import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacitor-community/sqlite'
 import { initSqliteWeb } from './sqlite-web-init'
+import { isWebFallbackRuntime } from './runtime-platform'
 import type { SqlDb, SqlRow } from './sqlDb'
 import { SCHEMA_SQL, splitSqlStatements } from './schema'
 
@@ -61,12 +62,13 @@ class LocalDB {
 
     if (this.initialized) return
 
-    // Web（jeep-sqlite / sql.js）不支持 SQLCipher 加密库；仅开发/浏览器 QC 使用明文 IndexedDB。
+    // Web（jeep-sqlite / sql.js）不支持 SQLCipher 加密库；HarmonyOS Phase A
+    // 同样固定走这条路径，直到 ArkTS RDB bridge 经真机验证后才可启用原生加密库。
     // 原生 Android/iOS 保持 secret 模式。
-    const isWeb = Capacitor.getPlatform() === 'web'
+    const isWeb = isWebFallbackRuntime()
     const encrypted = !isWeb && dbSecret.length > 0
     if (isWeb) {
-      console.info('[localDB] web platform: no-encryption (dev/browser QC only)')
+      console.info('[localDB] web fallback runtime: no-encryption (browser/HarmonyOS Phase A)')
       await initSqliteWeb()
     }
 

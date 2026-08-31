@@ -1,0 +1,10 @@
+.hvigor/
+.idea/
+local.properties
+build/
+entry/build/
+entry/src/main/resources/rawfile/
+*.hap
+*.app
+*.hsp
+*.har
