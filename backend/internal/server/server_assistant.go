@@ -2064,6 +2064,21 @@ func (s *Server) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	content, err := s.llm.Chat(r.Context(), model, body.Messages)
+	// 2026-09-01 AI 网关测试修复：当 llm-gateway-go 返回 no_candidate（用户选的 model
+	// 没可用 provider）时，按 workspace 的 preferred 列表依次回退重试，让
+	// /api/llm/chat 与 /api/llm/stream 行为一致——BFF 路径已实现此回退，
+	// 此处补齐非流式路径。
+	if err != nil && isNoCandidateError(err) {
+		wsID := s.workspaceIDFromRequest(r)
+		gw := s.ResolveGateway(wsID)
+		if fallback := pickFallbackModel(model, gw.PreferredModels, gw.Models); fallback != "" {
+			log.Printf("llm.chat: %s no_candidate, falling back to %s", model, fallback)
+			content, err = s.llm.Chat(r.Context(), fallback, body.Messages)
+			if err == nil {
+				model = fallback
+			}
+		}
+	}
 	// 审计：模型调用事件（P3 §2「模型调用…有可检索审计事件」）。
 	// detail 只含 model 与消息条数，绝不写消息内容。
 	s.Write(r, "llm.chat", "llm:chat", AuditFields{
