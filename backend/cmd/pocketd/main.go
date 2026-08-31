@@ -30,6 +30,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
+	"github.com/halfking/pocket-opencode/backend/internal/notify"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
@@ -161,12 +162,52 @@ func main() {
 		log.Println("Dev mode: JWT signer initialized without user store (login disabled)")
 	}
 
-	// ---- Phase C 数据层就绪（handlers 落地前不 wire-up）----
-	// 数据层（auth.CodeStore / notify.Client / config.RedClawAuthURL）已就绪。
-	// 但对应的 HTTP handler（/api/auth/send-code、/api/auth/code-login、
-	// /api/auth/forgot-password）以及 srv.SetAuthExt(...) 仍在 Phase C 后续
-	// sprint 落地；当前不在这里 wire-up，避免 srv.SetAuthExt / redclaw.AuthClient
-	// 等未导出符号造成编译失败。
+	// ---- C3/C4: 邮箱验证码（PG-backed，依赖 userStore）----
+	var (
+		codeStore  *auth.CodeStore
+		smtpClient *notify.Client
+	)
+	if pool != nil {
+		cs, err := auth.NewCodeStore(pool)
+		if err != nil {
+			log.Fatalf("code store: %v", err)
+		}
+		codeStore = cs
+		smtpClient = notify.NewClient(notify.Config{
+			Host:     cfg.SMTPHost,
+			Port:     cfg.SMTPPort,
+			User:     cfg.SMTPUser,
+			Password: cfg.SMTPPassword,
+			From:     cfg.SMTPFrom,
+			TLSMode:  cfg.SMTPTLSMode,
+		})
+		if smtpClient != nil {
+			log.Printf("SMTP: configured host=%s:%d tls=%s debug=%v", cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPTLSMode, cfg.SMTPDebugEcho)
+		} else if cfg.SMTPDebugEcho {
+			log.Println("SMTP: not configured; POCKET_SMTP_DEBUG_ECHO will surface codes in HTTP responses")
+		}
+	}
+
+	// ---- C5: RedClaw auth-agent 镜像客户端（可选）----
+	var redclawAuthClient *redclaw.AuthClient
+	if cfg.RedClawAuthURL != "" {
+		timeout := cfg.RedClawAuthTimeoutSec
+		if timeout <= 0 {
+			timeout = 5
+		}
+		ac, err := redclaw.NewAuthClient(redclaw.AuthClientConfig{
+			BaseURL:    cfg.RedClawAuthURL,
+			Secret:     cfg.RedClawAuthSecret,
+			TenantID:   cfg.RedClawTenantID,
+			TimeoutSec: timeout,
+		})
+		if err != nil {
+			log.Printf("WARN: redclaw auth client: %v — mirror disabled", err)
+		} else {
+			redclawAuthClient = ac
+			log.Printf("RedClaw auth mirror: enabled url=%s timeout=%ds", cfg.RedClawAuthURL, timeout)
+		}
+	}
 
 	// ---- Biometric authentication (PG-backed credentials/challenges) ----
 	// The store is optional so remote-only/dev deployments keep their existing behavior.
@@ -429,7 +470,7 @@ func main() {
 	if scheduledTaskStore != nil {
 		srv.SetScheduledTaskStore(scheduledTaskStore)
 	}
-	// Phase C 数据层就绪，HTTP handler 仍在后续 sprint 落地；不调用 srv.SetAuthExt。
+	srv.SetAuthExt(codeStore, smtpClient, redclawAuthClient)
 	if biometricStore != nil {
 		srv.SetBiometricStore(biometricStore)
 		log.Println("Biometric authentication enabled (PG)")
