@@ -85,7 +85,7 @@ OpenCode Pocket 提供两种部署模式，根据你的使用场景选择：
 **适用场景**：独立开发、快速测试、完全自包含部署
 
 **特点**：
-- ✅ 复用宿主上的 `r112_postgres` PostgreSQL 容器（共享 llm-gateway-pg）
+- ✅ 复用宿主上由 `llm-gateway-go` 启动的 `r112_postgres` PostgreSQL 容器（宿主端口 `15432`，不接管其生命周期）
 - ✅ 使用内网 `kx-base:go-vue-optimized` 基础镜像（由 `Dockerfile.kx-base` 构建）
 - ✅ 自动加入 `r112_net` 共享网络
 - ✅ 最小化配置
