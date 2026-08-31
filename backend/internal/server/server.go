@@ -36,6 +36,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
+	"github.com/halfking/pocket-opencode/backend/internal/notify"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
@@ -100,6 +101,11 @@ type Server struct {
 	webAuthnVerifier auth.WebAuthnVerifierIface // nil = WebAuthn 签名验证未启用（降级到 P0 stub）
 	parseAssertionFn assertionParser            // 测试可替换的 WebAuthn assertion 解析器；生产为 nil（走默认）
 	identityStore    *identity.Store            // nil = S0-A 未启用，handler 降级到单租户
+	// C3/C4: 邮箱注册 + 验证码登录 + 忘记密码。nil = 未启用（handler 返回 503）
+	codeStore   *auth.CodeStore
+	smtpClient  *notify.Client
+	// C5: RedClaw auth-agent 镜像客户端（可选；nil = 镜像路径 disabled）
+	redclawAuthClient *redclaw.AuthClient
 	// S0-B: unified LLM BFF。nil = 未配置（POCKET_LLM_* 未设且无网关配置），handler 返回 503。
 	llmBFF           *llmbff.Service
 	llmBFFSummarizer llmbff.Summarizer
@@ -310,6 +316,22 @@ func (s *Server) SetMigrationService(svc *migration.Service) {
 	s.migrationSvc = svc
 }
 
+// SetAuthExt 注入 Phase C 邮箱验证码扩展依赖。三个参数均允许 nil：
+//
+//	codeStore        — 必填才能让 send-code/code-login/register/forgot-password 工作；
+//	                   nil 时对应 handler 返回 503（PG 未初始化）。
+//	smtpClient       — 可选；nil 表示 SMTP 未配置，此时 send-code 仍可生成验证码
+//	                   并入库，但不发邮件（POCKET_SMTP_DEBUG_ECHO 可让响应回显）。
+//	redclawAuthClient — 可选；nil 或调用失败时镜像路径 fail-soft，不阻塞本地。
+func (s *Server) SetAuthExt(codeStore *auth.CodeStore, smtpClient *notify.Client, redclawAuthClient *redclaw.AuthClient) {
+	s.codeStore = codeStore
+	s.smtpClient = smtpClient
+	s.redclawAuthClient = redclawAuthClient
+}
+
+// CodeStore 返回注入的验证码 store（nil = 未注入）。供装配期判断。
+func (s *Server) CodeStore() *auth.CodeStore { return s.codeStore }
+
 // SetBiometricStore 注入生物识别凭证 store。nil = PG/生物识别功能未启用。
 func (s *Server) SetBiometricStore(store *auth.BiometricStore) {
 	s.biometricStore = store
@@ -499,6 +521,12 @@ func (s *Server) Handler() http.Handler {
 	// ---- Phase 0: 个人助理模块路由 ----
 	// 认证
 	mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
+	// Phase C: 邮箱验证码 / 注册 / 忘记密码 / 验证码登录 / 已登录改密码
+	mux.HandleFunc("/api/auth/send-code", s.handleAuthSendCode)
+	mux.HandleFunc("/api/auth/register", s.handleAuthRegister)
+	mux.HandleFunc("/api/auth/code-login", s.handleAuthCodeLogin)
+	mux.HandleFunc("/api/auth/forgot-password", s.handleAuthForgotPassword)
+	mux.HandleFunc("/api/auth/reset-password", s.requireAuth(s.handleAuthResetPassword))
 	// 生物认证（server_biometric.go；webAuthnVerifier 未配置时降级为 P0 stub）
 	mux.HandleFunc("/api/auth/biometric/register/begin", s.requireAuth(s.handleBiometricRegisterBegin))
 	mux.HandleFunc("/api/auth/biometric/register/finish", s.requireAuth(s.handleBiometricRegisterFinish))
