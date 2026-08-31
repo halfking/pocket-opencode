@@ -46,7 +46,7 @@
           v-model="form.baseURL"
           class="form-input"
           type="text"
-          placeholder="https://llmgo.kxpms.cn/v1"
+          placeholder="https://llm.kxpms.cn/v1"
           autocapitalize="off"
           autocorrect="off"
           spellcheck="false"

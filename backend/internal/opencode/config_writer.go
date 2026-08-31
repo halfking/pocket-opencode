@@ -7,7 +7,34 @@ import (
 
 // DefaultLLMGatewayBaseURL 默认 LLM Gateway 端点（OpenAI 兼容 /v1/...）。
 // 用户可在 SettingsView 修改后通过 POST /api/llm-gateway/config 热更新。
-const DefaultLLMGatewayBaseURL = "https://llmgo.kxpms.cn/v1"
+//
+// 2026-08-31 调整为 https://llm.kxpms.cn/v1（与内部门关服务 .kxpms.cn 路径一致）；
+// POCKET_LLM_GATEWAY_URL 仍可覆盖。reset 后首次启动 pocketd 会自动写 seed。
+const DefaultLLMGatewayBaseURL = "https://llm.kxpms.cn/v1"
+
+// DefaultLLMGatewayAPIKey 默认 LLM Gateway 租户 API Key（仅在 dev/seed 路径使用）。
+// 真实部署应通过 POCKET_LLM_GATEWAY_API_KEY env 注入；此处常量用于确保 reset
+// 之后的 dev 实例仍然有可用默认网关，避免前端首次进入设置页全空。
+//
+// 注意：这是租户共享密钥，仓库提交；生产 portal 上线后请替换为 KMS 引用。
+const DefaultLLMGatewayAPIKey = "sk-6tGLjzlzUIOuMxh6qhOVRK9eznOTVAkQ3JxRZrvWECrK51YV"
+
+// DefaultLLMGatewayPreferredModels 默认「常用模型」列表，逗号分隔的原文顺序作为
+// preferredModels 初始值写入 seed；models（catalog）首版为空，由用户首次
+// 「测试连接」→ POST /api/llm-gateway/test 拉取 {baseURL}/v1/models 后写入。
+//
+// 与 SettingsLLMGateway.vue VENDOR_RULES 配合渲染「按原厂分组」的常用模型区。
+var DefaultLLMGatewayPreferredModels = []string{
+	"glm-5.2",
+	"minimax-m3",
+	"kimi-k3",
+	"claude-sonnet-5",
+	"gpt-5.6-terra",
+	"claude-opus-5",
+	"claude-fable-5",
+	"gpt-5.6-sol",
+	"gemini-3.5-flash",
+}
 
 // LLMGatewayConfig 描述注入到 OpenCode 的 LLM Gateway 配置。
 //
@@ -15,7 +42,7 @@ const DefaultLLMGatewayBaseURL = "https://llmgo.kxpms.cn/v1"
 // 即可让 OpenCode 把所有 LLM 请求通过这个 baseURL 走。对应到 llm-gateway-go 的
 // OpenAI 兼容 /v1/chat/completions、/v1/models 等端点。
 type LLMGatewayConfig struct {
-	BaseURL string   `json:"baseURL"` // e.g. https://llmgo.kxpms.cn/v1
+	BaseURL string   `json:"baseURL"` // e.g. https://llm.kxpms.cn/v1
 	APIKey  string   `json:"apiKey"`  // sk-...
 	Models  []string `json:"models"`  // 可用模型 id 列表；为空时使用 gateway 返回的 /v1/models
 }

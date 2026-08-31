@@ -494,6 +494,24 @@ func main() {
 	// 所有 workspace 的持久化配置；未保存的工作区仍走 env 默认值。
 	// SQLite fallback: loadllm gateway config from persisted store so Settings
 	// surface works after restart without env vars.
+	//
+	// 2026-08-31: 在 LoadLLMGatewayFromDB 之前先 EnsureLLMGatewayDefaults，幂等地
+	// 为已知 workspace 写入默认 baseURL/apiKey/preferred 9 模型 seed，避免 reset 后
+	// dev 用户首次进入设置页面临全空。
+	defaultWorkspaces := []string{"default"}
+	if pool != nil && srv.LLMGatewayStore() != nil {
+		if identStore != nil {
+			if list, lerr := identStore.ListAllWorkspaceIDs(context.Background()); lerr == nil {
+				for _, id := range list {
+					if id == "" || id == "default" {
+						continue
+					}
+					defaultWorkspaces = append(defaultWorkspaces, id)
+				}
+			}
+		}
+		srv.EnsureLLMGatewayDefaults(defaultWorkspaces...)
+	}
 	srv.LoadLLMGatewayFromDB("default")
 	if pool != nil && srv.LLMGatewayStore() != nil {
 		workspaces := []string{"default"}

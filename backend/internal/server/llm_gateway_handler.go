@@ -52,13 +52,71 @@ type llmGatewayState struct {
 // defaultLLMGatewayState returns the env-backed fallback used when no DB row
 // has been persisted for the workspace. We keep it deterministic so GET is
 // idempotent across requests.
+//
+// 2026-08-31: 优先 POCKET_LLM_GATEWAY_URL env；未设置时回落到
+// opencode.DefaultLLMGatewayBaseURL（已切换为 https://llm.kxpms.cn/v1）。APIKey
+// 同样 env-first，常量 DefaultLLMGatewayAPIKey 仅作为 dev seed 兜底；preferred
+// 模型列表来自 opencode.DefaultLLMGatewayPreferredModels。
 func defaultLLMGatewayState() llmGatewayState {
+	models := append([]string(nil), opencode.DefaultLLMGatewayPreferredModels...)
+	preferred := append([]string(nil), opencode.DefaultLLMGatewayPreferredModels...)
 	return llmGatewayState{
 		BaseURL:         envOr("POCKET_LLM_GATEWAY_URL", opencode.DefaultLLMGatewayBaseURL),
-		APIKey:          os.Getenv("POCKET_LLM_GATEWAY_API_KEY"),
-		Models:          []string{},
+		APIKey:          pickAPIKey(os.Getenv("POCKET_LLM_GATEWAY_API_KEY"), opencode.DefaultLLMGatewayAPIKey),
+		Models:          models,
 		Format:          defaultGatewayFormat,
-		PreferredModels: []string{},
+		PreferredModels: preferred,
+	}
+}
+
+// pickAPIKey returns the first non-empty candidate; falls back to the bundled
+// dev default so a freshly-bootstrapped instance still has a working gateway
+// without forcing operators to set POCKET_LLM_GATEWAY_API_KEY in env.
+func pickAPIKey(primary, fallback string) string {
+	if strings.TrimSpace(primary) != "" {
+		return primary
+	}
+	return fallback
+}
+
+// EnsureLLMGatewayDefaults seeds a default config for any workspace that has no
+// active row yet. Idempotent: existing active rows are skipped, returning
+// (already, false). The cache is updated in-place so a subsequent LoadConfig
+// never re-reads a stale row.
+//
+// This runs once during boot from cmd/pocketd/main.go before LoadLLMGatewayFromDB
+// to guarantee that dev / reset instances receive the bundled defaults without
+// forcing every operator to ship their own env.
+func (s *Server) EnsureLLMGatewayDefaults(workspaceIDs ...string) {
+	if s.llmGWStore == nil {
+		return
+	}
+	def := defaultLLMGatewayState()
+	seen := make(map[string]struct{}, len(workspaceIDs))
+	for _, wsID := range workspaceIDs {
+		wsID = strings.TrimSpace(wsID)
+		if wsID == "" {
+			wsID = "default"
+		}
+		if _, dup := seen[wsID]; dup {
+			continue
+		}
+		seen[wsID] = struct{}{}
+
+		existing, err := s.llmGWStore.LoadConfig(context.Background(), wsID)
+		if err != nil {
+			log.Printf("[llm-gateway] default-seed LoadConfig failed for %s: %v", wsID, err)
+			continue
+		}
+		if existing != nil {
+			continue // 已有 row，幂等跳过
+		}
+
+		if err := s.llmGWStore.SaveConfig(context.Background(), wsID, def); err != nil {
+			log.Printf("[llm-gateway] default-seed SaveConfig failed for %s: %v", wsID, err)
+			continue
+		}
+		log.Printf("[llm-gateway] default-seed inserted for workspace=%s baseURL=%s preferred=%d", wsID, def.BaseURL, len(def.PreferredModels))
 	}
 }
 
