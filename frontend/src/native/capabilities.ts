@@ -24,6 +24,7 @@
  */
 
 import { useFeatureFlag } from '../config/featureFlags'
+import { clampHarmonyNativeCapabilities } from './runtime-platform'
 
 /** Capability flags surfaced to UI and feature stores. */
 export interface NativeCapabilities {
@@ -70,7 +71,7 @@ export function detectCapabilities(env: CapabilityEnv = {}): NativeCapabilities 
   if (!useFeatureFlag('notifications.push_v1')) out.push = false
   if (!useFeatureFlag('background.task_v1')) out.backgroundTask = false
 
-  return out
+  return clampHarmonyNativeCapabilities(out)
 }
 
 /** Environment passed to detectCapabilities. */

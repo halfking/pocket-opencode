@@ -6,6 +6,7 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "build:fast": "vite build",
+    "build:harmony": "node scripts/build-harmony.mjs prod",
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview --host 0.0.0.0 --port 4173"
   },

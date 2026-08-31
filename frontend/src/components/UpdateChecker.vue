@@ -65,7 +65,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { checkUpdate, downloadAPK, APP_VERSION, formatFileSize, type VersionInfo } from '../utils/version'
+import { canDownloadApk, checkUpdate, downloadAPK, APP_VERSION, formatFileSize, type VersionInfo } from '../utils/version'
 
 const showUpdateDialog = ref(false)
 const updateInfo = ref<VersionInfo | null>(null)
@@ -83,7 +83,7 @@ async function performUpdateCheck() {
   try {
     const response = await checkUpdate()
     
-    if (response.hasUpdate && response.latest) {
+    if (response.hasUpdate && response.latest && canDownloadApk()) {
       updateInfo.value = response.latest
       forceUpdate.value = response.forceUpdate
       showUpdateDialog.value = true
@@ -98,8 +98,12 @@ function handleUpdate() {
   
   downloading.value = true
   
-  // 下载 APK
-  downloadAPK(updateInfo.value.downloadUrl)
+  // HarmonyOS Phase A has no HAP distribution channel. It can report a
+  // release but must never initiate an APK download.
+  if (!downloadAPK(updateInfo.value.downloadUrl)) {
+    downloading.value = false
+    return
+  }
   
   // 延迟重置状态
   setTimeout(() => {

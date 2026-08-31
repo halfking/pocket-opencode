@@ -71,6 +71,12 @@ jobs:
       - name: Run fault injection harness (PR11)
         run: node ../test-evidence/PR11/fault-injection.mjs
 
+      - name: Run HarmonyOS runtime guard tests
+        run: node --test src/native/__tests__/runtime-platform.test.mjs src/native/__tests__/capabilities-harmony.test.mjs
+
+      - name: Build HarmonyOS ArkWeb assets
+        run: MOBILE_FAST=1 VITE_API_BASE=https://harmony-ci.example.invalid node scripts/build-harmony.mjs dev
+
   android-assemble:
     name: android assembleDebug (frontend/android)
     runs-on: ubuntu-latest
