@@ -3,7 +3,7 @@ export const APP_VERSION = {
   version: '1.2.0',
   buildNumber: 2,
   buildDate: '2026-06-29',
-  name: 'OpenCode Pocket Mobile'
+  name: 'Redclaw Mobile'
 }
 
 // 版本信息接口

@@ -21,7 +21,7 @@
     "close": "關閉"
   },
   "app": {
-    "title": "OpenCode Pocket",
+    "title": "Redclaw",
     "welcome": "歡迎使用"
   },
   "layout": {
@@ -100,6 +100,6 @@
     "viewAccount": "查看帳戶與設定",
     "groupSettings": "設定",
     "groupOps": "維運與進階",
-    "versionFootnote": "OpenCode Pocket · v{version}"
+    "versionFootnote": "Redclaw · v{version}"
   }
 }

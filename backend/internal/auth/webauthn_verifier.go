@@ -109,7 +109,7 @@ func (s *challengeStore) Close() {
 
 // NewWebAuthnVerifier 构造 WebAuthn 验证器。
 //
-// rpDisplayName: 显示名称（如 "OpenCode Pocket"）
+// rpDisplayName: 显示名称（如 "Redclaw"）
 // rpID: RP 标识符（如 "pocket.kaixuan.com"，必须是 origin 的有效域名）
 // rpOrigin: 客户端 origin（如 "https://pocket.kaixuan.com"）
 func NewWebAuthnVerifier(rpDisplayName, rpID, rpOrigin string) (*WebAuthnVerifier, error) {

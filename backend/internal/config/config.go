@@ -113,9 +113,23 @@ type Config struct {
 	SchedulerWebhookTimeout time.Duration // POCKET_SCHEDULER_WEBHOOK_TIMEOUT（默认 30s）
 
 	// WebAuthn / 生物识别配置（可选；不配置则降级到 P0 stub）
-	WebAuthnRPDisplayName string // POCKET_WEBAUTHN_RP_DISPLAY_NAME：RP 显示名（如 "OpenCode Pocket"）
+	WebAuthnRPDisplayName string // POCKET_WEBAUTHN_RP_DISPLAY_NAME：RP 显示名（如 "Redclaw"）
 	WebAuthnRPID         string // POCKET_WEBAUTHN_RP_ID：RP ID（必须是 origin 的有效域名，如 "pocket.example.com"）
 	WebAuthnRPOrigin     string // POCKET_WEBAUTHN_RP_ORIGIN：客户端 origin（如 "https://pocket.example.com"）
+
+	// SMTP 验证码邮件发送（可选；不配置则 send-code 仅写库、不发邮件）
+	SMTPHost       string // POCKET_SMTP_HOST：SMTP 服务器主机
+	SMTPPort       int    // POCKET_SMTP_PORT：SMTP 端口（默认 587）
+	SMTPUser       string // POCKET_SMTP_USER：SMTP 认证用户名（空 = 不认证）
+	SMTPPassword   string // POCKET_SMTP_PASSWORD：SMTP 认证密码
+	SMTPFrom       string // POCKET_SMTP_FROM：发件人地址（默认 SMTPUser）
+	SMTPTLSMode    string // POCKET_SMTP_TLS_MODE：none | starttls | tls（默认 starttls）
+	SMTPDebugEcho  bool   // POCKET_SMTP_DEBUG_ECHO：true 时把验证码写进响应 body（仅 dev）
+
+	// RedClaw auth-agent 镜像客户端（可选；空 BaseURL = 镜像路径 disabled）
+	RedClawAuthURL       string // POCKET_REDCLAW_AUTH_URL：auth-agent base URL（如 http://host:27092）
+	RedClawAuthSecret    string // POCKET_REDCLAW_AUTH_SECRET：共享密钥
+	RedClawAuthTimeoutSec int   // POCKET_REDCLAW_AUTH_TIMEOUT_SEC（默认 5）
 }
 
 // Load reads all configuration from environment variables and returns a Config instance.
@@ -204,6 +218,18 @@ func Load() Config {
 		WebAuthnRPDisplayName: getEnv("POCKET_WEBAUTHN_RP_DISPLAY_NAME", ""),
 		WebAuthnRPID:         getEnv("POCKET_WEBAUTHN_RP_ID", ""),
 		WebAuthnRPOrigin:     getEnv("POCKET_WEBAUTHN_RP_ORIGIN", ""),
+		// SMTP 验证码邮件
+		SMTPHost:      getEnv("POCKET_SMTP_HOST", ""),
+		SMTPPort:      getEnvInt("POCKET_SMTP_PORT", 587),
+		SMTPUser:      getEnv("POCKET_SMTP_USER", ""),
+		SMTPPassword:  getEnv("POCKET_SMTP_PASSWORD", ""),
+		SMTPFrom:      getEnv("POCKET_SMTP_FROM", ""),
+		SMTPTLSMode:   getEnv("POCKET_SMTP_TLS_MODE", "starttls"),
+		SMTPDebugEcho: getEnv("POCKET_SMTP_DEBUG_ECHO", "") == "true",
+		// RedClaw auth-agent 镜像
+		RedClawAuthURL:        getEnv("POCKET_REDCLAW_AUTH_URL", ""),
+		RedClawAuthSecret:     getEnv("POCKET_REDCLAW_AUTH_SECRET", ""),
+		RedClawAuthTimeoutSec: getEnvInt("POCKET_REDCLAW_AUTH_TIMEOUT_SEC", 5),
 	}
 }
 

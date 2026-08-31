@@ -21,7 +21,7 @@
     "close": "Close"
   },
   "app": {
-    "title": "OpenCode Pocket",
+    "title": "Redclaw",
     "welcome": "Welcome"
   },
   "layout": {
@@ -35,7 +35,7 @@
     "viewAccount": "View account & settings",
     "groupSettings": "Settings",
     "groupOps": "Operations & advanced",
-    "versionFootnote": "OpenCode Pocket · v{version}"
+    "versionFootnote": "Redclaw · v{version}"
   },
   "nav": {
     "mainNavigation": "Main navigation",

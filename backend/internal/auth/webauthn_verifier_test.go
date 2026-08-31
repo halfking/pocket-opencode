@@ -15,7 +15,7 @@ func TestNewWebAuthnVerifier(t *testing.T) {
 	}{
 		{
 			name:          "valid config",
-			rpDisplayName: "OpenCode Pocket",
+			rpDisplayName: "Redclaw",
 			rpID:          "localhost",
 			rpOrigin:      "http://localhost:3000",
 			wantErr:       false,
@@ -29,14 +29,14 @@ func TestNewWebAuthnVerifier(t *testing.T) {
 		},
 		{
 			name:          "missing rpID",
-			rpDisplayName: "OpenCode Pocket",
+			rpDisplayName: "Redclaw",
 			rpID:          "",
 			rpOrigin:      "http://localhost:3000",
 			wantErr:       true,
 		},
 		{
 			name:          "missing rpOrigin",
-			rpDisplayName: "OpenCode Pocket",
+			rpDisplayName: "Redclaw",
 			rpID:          "localhost",
 			rpOrigin:      "",
 			wantErr:       true,

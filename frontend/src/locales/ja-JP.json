@@ -21,7 +21,7 @@
     "close": "閉じる"
   },
   "app": {
-    "title": "OpenCode Pocket",
+    "title": "Redclaw",
     "welcome": "ようこそ"
   },
   "layout": {
@@ -100,6 +100,6 @@
     "viewAccount": "アカウントと設定を表示",
     "groupSettings": "設定",
     "groupOps": "運用・詳細",
-    "versionFootnote": "OpenCode Pocket · v{version}"
+    "versionFootnote": "Redclaw · v{version}"
   }
 }

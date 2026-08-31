@@ -12,12 +12,84 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
 )
+
+// llmGatewayNoCandidateBody 是 llm-gateway-go 在「没有可用 provider」时返回的
+// 错误体（HTTP 503 + JSON）。需要稳定识别——dynamicGatewayBFFProvider 依赖它
+// 触发「auto → preferred 下一个 model」回退。
+//
+// 实际线上抓到的 body：
+//
+//	{"error":{"code":"no_candidate","kind":"no_candidate",
+//	          "message":"No available provider for model '...'",
+//	          "request_id":"...","type":"server_error"}}
+type llmGatewayNoCandidateBody struct {
+	Error struct {
+		Code string `json:"code"`
+		Kind string `json:"kind"`
+	} `json:"error"`
+}
+
+// isNoCandidateError 探测 llmgateway 返回的 error 是否对应 gateway 的
+// no_candidate（HTTP 503 + JSON 中 code=="no_candidate"）。
+//
+// Stream 路径上 503 在写任何 SSE chunk 之前就返回，所以 fn 不会被调用过；
+// 收到此错误即可安全地用下一个候选 model 重试。
+func isNoCandidateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	idx := strings.Index(msg, "{")
+	if idx < 0 {
+		return false
+	}
+	body := llmGatewayNoCandidateBody{}
+	if jerr := json.Unmarshal([]byte(msg[idx:]), &body); jerr != nil {
+		return false
+	}
+	return body.Error.Code == "no_candidate"
+}
+
+// pickFallbackModel 从 workspace 的 preferred 列表里挑一个「在 catalog 内且
+// 不是 original」的 model id，作为 auto / no_candidate 时的下一候选。
+//
+// 返回空字符串表示没有可回退的候选——此时调用方应把原始 no_candidate 错误
+// 直接返给前端，让用户感知到「网关确实没货」。
+func pickFallbackModel(original string, preferred, catalog []string) string {
+	if len(preferred) == 0 {
+		return ""
+	}
+	inCatalog := func(id string) bool {
+		if len(catalog) == 0 {
+			// catalog 为空（/v1/models 还没拉过）时不强制过滤，
+			// 避免因 catalog 陈旧把可用的 preferred 也挡掉。
+			return true
+		}
+		for _, c := range catalog {
+			if c == id {
+				return true
+			}
+		}
+		return false
+	}
+	for _, m := range preferred {
+		if m == "" || m == original {
+			continue
+		}
+		if inCatalog(m) {
+			return m
+		}
+	}
+	return ""
+}
 
 // Compile-time checks that the adapters satisfy the Provider interface.
 var (
@@ -79,12 +151,43 @@ func (p *dynamicGatewayBFFProvider) clientFor(wsID string) (*llmgateway.Client, 
 	return llmgateway.NewClient(cfg.BaseURL, cfg.APIKey), nil
 }
 
+// resolveChatModel 处理前端传过来的 model：
+//   - 空 / "auto" → 用 workspace 的 preferred 列表第一个；
+//   - "auto" 且 preferred 为空 → 仍发 "auto"，由网关自行路由（兜底）。
+//
+// 设计动机：网关侧 "auto" 当前会路由到 claude-sonnet-4.5，但该 model 在我们的
+// 默认网关上没有可用 provider，直接发 "auto" 会得到 no_candidate。本地按
+// preferred 解析可以保证对话"开箱即用"，并与设置页的常用模型一致。
+func (p *dynamicGatewayBFFProvider) resolveChatModel(req llmbff.ChatRequest) llmbff.ChatRequest {
+	if req.Model != "" && req.Model != "auto" {
+		return req
+	}
+	cfg := p.resolve(req.WorkspaceID)
+	if len(cfg.PreferredModels) > 0 && cfg.PreferredModels[0] != "" {
+		req.Model = cfg.PreferredModels[0]
+	} else if len(cfg.Models) > 0 && cfg.Models[0] != "" {
+		req.Model = cfg.Models[0]
+	} else {
+		req.Model = "auto" // 兜底：让网关尝试它的内置路由
+	}
+	return req
+}
+
 func (p *dynamicGatewayBFFProvider) Chat(ctx context.Context, req llmbff.ChatRequest) (*llmbff.ChatResponse, error) {
 	c, err := p.clientFor(req.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}
-	return (&llmGatewayBFFProvider{client: c}).Chat(ctx, req)
+	req = p.resolveChatModel(req)
+	resp, err := (&llmGatewayBFFProvider{client: c}).Chat(ctx, req)
+	if err != nil && isNoCandidateError(err) {
+		// 用户显式选了一个 model 但当前没 provider：用 preferred 的下一个兜底。
+		if fallback := p.fallbackModel(req.WorkspaceID, req.Model); fallback != "" {
+			req.Model = fallback
+			return (&llmGatewayBFFProvider{client: c}).Chat(ctx, req)
+		}
+	}
+	return resp, err
 }
 
 func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatRequest, fn func(llmbff.Delta) bool) (*llmbff.Usage, error) {
@@ -92,7 +195,23 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 	if err != nil {
 		return nil, err
 	}
-	return (&llmGatewayBFFProvider{client: c}).Stream(ctx, req, fn)
+	req = p.resolveChatModel(req)
+	usage, err := (&llmGatewayBFFProvider{client: c}).Stream(ctx, req, fn)
+	if err != nil && isNoCandidateError(err) {
+		// 503 no_candidate 出现在任何 chunk 之前，所以 fn 不会被调用过，
+		// 可以安全地以另一个 model 重试。
+		if fallback := p.fallbackModel(req.WorkspaceID, req.Model); fallback != "" {
+			req.Model = fallback
+			return (&llmGatewayBFFProvider{client: c}).Stream(ctx, req, fn)
+		}
+	}
+	return usage, err
+}
+
+// fallbackModel 在 no_candidate 触发时挑下一个候选 model（不含 current）。
+func (p *dynamicGatewayBFFProvider) fallbackModel(wsID, current string) string {
+	cfg := p.resolve(wsID)
+	return pickFallbackModel(current, cfg.PreferredModels, cfg.Models)
 }
 
 func (p *dynamicGatewayBFFProvider) Embed(ctx context.Context, req llmbff.EmbedRequest) (*llmbff.EmbedResponse, error) {

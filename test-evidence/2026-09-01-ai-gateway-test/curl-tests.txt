@@ -1,0 +1,19 @@
+=== Test 1: Direct gateway with key ===
+=== /api/auth/login ===
+{"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidXNlci1hZG1pbiIsInJvbGUiOiJhZG1pbiIsIndvcmtzcGFjZV9pZCI6ImRlZmF1bHQiLCJpc3MiOiJwb2NrZXQiLCJhdWQiOlsicG9ja2V0LWFwaSJdLCJleHAiOjE3ODgyODU3NjAsIm5iZiI6MTc4ODE5OTM2MCwiaWF0IjoxNzg4MTk5MzYwfQ.7jS6_r1dPFaoBo-V6BEGMmDJTaQgWhQCPFWQtRX9H_c","user
+=== /api/llm/chat (NON-streaming, 502) ===
+{"error":"llm failed: llm-gateway chat 503: {\"error\":{\"code\":\"no_candidate\",\"kind\":\"no_candidate\",\"message\":\"No available provider for model 'claude-haiku-4.5'\",\"request_id\":\"9b8daebdeaf43fefecb51377975cbb18\",\"type\":\"server_error\"}}\n"}
+
+=== /api/llm/stream (STREAMING, 200) ===
+data: {"content":"1 + 1 = 2","done":false}
+
+data: {"done":true,"finish_reason":"stop"}
+
+data: {"done":true,"usage":{"prompt_tokens":16,"completion_tokens":71,"total_tokens":87,"cost_usd":0.000229}}
+
+data: [DONE]
+
+
+=== Direct gateway curl (sanity) ===
+{"error":{"code":"no_candidate","kind":"no_candidate","message":"No available provider for model 'claude-haiku-4.5'","request_id":"aaea295b897ff8ffb85ead89bf0167cb","type":"server_error"}}
+

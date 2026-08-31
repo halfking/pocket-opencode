@@ -32,7 +32,7 @@ useSwipeBack({ edgeWidth: 24, thresholdRatio: 0.3, velocityThreshold: 0.4 })
 const statusBar = useStatusBar()
 onMounted(() => {
   statusBar.start()
-  console.log('OpenCode Pocket Mobile Started')
+  console.log('Redclaw Mobile Started')
 })
 onBeforeUnmount(() => {
   statusBar.stop()

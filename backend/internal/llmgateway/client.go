@@ -41,11 +41,25 @@ type Client struct {
 
 // NewClient 构造 llm-gateway 客户端。baseURL 会自动归一化（剥离结尾的 /v1 与
 // 斜杠），详见 normalizeBaseURL。
+//
+// 超时策略：
+//   - 整体 Timeout 90s，留给长回答/流式首 token 充分时间；
+//   - Transport.ResponseHeaderTimeout 30s，避免上游对个别 model 挂死握手时
+//     整体请求一路等满 Timeout，导致前端聊天一直转圈。
+//     实测 2026-08-31：llm.kxpms.cn 在 preferred 模型里有两个 model 对
+//     /v1/chat/completions 既不返结果也不返错误（连接挂死），此前无该上限时
+//     会让前端等满 60s；加 ResponseHeaderTimeout 后能 30s 内即触发 client
+//     错误，handler 再把错误作为 SSE error 事件写回。
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		BaseURL: normalizeBaseURL(baseURL),
 		APIKey:  apiKey,
-		Client:  &http.Client{Timeout: 60 * time.Second},
+		Client: &http.Client{
+			Timeout: 90 * time.Second,
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 30 * time.Second,
+			},
+		},
 	}
 }
 

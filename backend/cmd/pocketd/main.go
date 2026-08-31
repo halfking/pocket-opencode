@@ -137,7 +137,7 @@ func main() {
 				}
 			}
 			if pass != "" {
-				if err := us.InsertUser(context.Background(), &auth.User{ID: "user-" + user, Username: user, Role: "admin"}, pass); err != nil {
+				if err := us.InsertUser(context.Background(), &auth.User{ID: "user-" + user, Username: user, Role: "admin"}, pass, ""); err != nil {
 					log.Printf("WARN: bootstrap first user %q: %v", user, err)
 				} else {
 					log.Printf("Bootstrap: created first admin user %q", user)
@@ -160,6 +160,13 @@ func main() {
 		jwtSigner = signer
 		log.Println("Dev mode: JWT signer initialized without user store (login disabled)")
 	}
+
+	// ---- Phase C 数据层就绪（handlers 落地前不 wire-up）----
+	// 数据层（auth.CodeStore / notify.Client / config.RedClawAuthURL）已就绪。
+	// 但对应的 HTTP handler（/api/auth/send-code、/api/auth/code-login、
+	// /api/auth/forgot-password）以及 srv.SetAuthExt(...) 仍在 Phase C 后续
+	// sprint 落地；当前不在这里 wire-up，避免 srv.SetAuthExt / redclaw.AuthClient
+	// 等未导出符号造成编译失败。
 
 	// ---- Biometric authentication (PG-backed credentials/challenges) ----
 	// The store is optional so remote-only/dev deployments keep their existing behavior.
@@ -422,6 +429,7 @@ func main() {
 	if scheduledTaskStore != nil {
 		srv.SetScheduledTaskStore(scheduledTaskStore)
 	}
+	// Phase C 数据层就绪，HTTP handler 仍在后续 sprint 落地；不调用 srv.SetAuthExt。
 	if biometricStore != nil {
 		srv.SetBiometricStore(biometricStore)
 		log.Println("Biometric authentication enabled (PG)")

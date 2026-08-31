@@ -21,7 +21,7 @@
     "close": "닫기"
   },
   "app": {
-    "title": "OpenCode Pocket",
+    "title": "Redclaw",
     "welcome": "환영합니다"
   },
   "layout": {
@@ -100,6 +100,6 @@
     "viewAccount": "계정 및 설정 보기",
     "groupSettings": "설정",
     "groupOps": "운영 및 고급",
-    "versionFootnote": "OpenCode Pocket · v{version}"
+    "versionFootnote": "Redclaw · v{version}"
   }
 }

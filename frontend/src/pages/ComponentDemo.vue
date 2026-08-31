@@ -2,7 +2,7 @@
   <div class="demo-page">
     <!-- 顶部标题 -->
     <div class="page-header">
-      <h1>OpenCode Pocket 组件展示</h1>
+      <h1>Redclaw 组件展示</h1>
       <p class="subtitle">16 个组件全部就绪 🎉</p>
     </div>
 
