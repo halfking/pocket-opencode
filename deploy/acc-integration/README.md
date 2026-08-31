@@ -2,6 +2,19 @@
 
 本部署方案用于将 OpenCode Pocket 集成到 ACC（AI Coding Center）本地开发环境中，与其他服务共享基础设施。
 
+## ⚠️ 本地 PG 共享策略（强约束）
+
+> **本工作区统一规定：本地只有一套共享 PG 实例。acc-integration 模式下唯一允许接入的是 `llm-gateway-pg`（宿主端口 `5432`，由 ACC / llm-gateway 启动），其中包含真实业务库 `kaixuan`（用户名 `llm_gateway`）。本仓库及本目录任何脚本/Compose 一律不得再启动任何 PG 容器（`postgres:*` / `*citus*` / 自定义 PG），且不得删除/重建 `llm-gateway-pg`。**
+
+具体规则：
+
+1. **禁止新启 PG 实例**：本目录的 `docker-compose.*.yml` 与所有 `*.sh` 脚本中禁止出现 `image: postgres*`、`image: *citus*`、任何带 `postgres`/`pg`/`citus` 字样的 `container_name`、或独立 `pg-data` 卷。
+2. **禁止删除共享 PG**：禁止对 `llm-gateway-pg` 执行 `docker stop / rm / down / volume rm / docker system prune` 等销毁性操作；本目录脚本不得调用任何 `docker rm` / `docker volume rm` / `docker compose down --volumes` 命令。
+3. **禁止 reset / drop 数据库**：禁止 `DROP DATABASE`、`TRUNCATE`、`pg_resetwal`；如需清空业务数据，仅限 `kaixuan` 下的 Pocket 业务 schema，禁止触碰 `postgres` / `llm_gateway` / `kxmemory_rls` 等共享库。
+4. **冲突时优先保留共享 PG**：若发现本地有同名/同端口的孤儿 PG 容器，先停掉应用再由维护者确认后再清理，**绝不允许直接 `docker rm -f llm-gateway-pg`**。
+
+违反以上任一条会导致其他依赖 `llm-gateway-pg` 的服务（llm-gateway-go、ACC、memora、kxmemory、RedClaw、openpocket 自身）出现级联数据丢失。
+
 ## 🎯 方案定位
 
 **ACC Integration** 是为本地开发和集成测试设计的部署模式，与 **本地方案**（`deploy/本地方案/`）的主要区别：
