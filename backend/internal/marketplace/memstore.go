@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -115,8 +116,13 @@ func (s *MemoryStore) Review(ctx context.Context, cmd ReviewCommand) error {
 	return nil
 }
 
-// Publish 发布已审核版本。
+// Publish 发布已审核版本。与 Store 行为对齐：要求版本属于调用方 workspace，
+// 否则返回 NotFound（防止跨租户发布别人家的版本）。sync.Mutex 已经提供
+// 进程内串行化，等价于 Store 的 FOR UPDATE 行锁效果。
 func (s *MemoryStore) Publish(ctx context.Context, cmd PublishCommand) (ReleaseRef, error) {
+	if cmd.WorkspaceID == "" {
+		return ReleaseRef{}, errors.New("marketplace: workspace_id required")
+	}
 	channel := cmd.Channel
 	if channel == "" {
 		channel = "stable"
@@ -124,7 +130,7 @@ func (s *MemoryStore) Publish(ctx context.Context, cmd PublishCommand) (ReleaseR
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v, ok := s.versions[cmd.VersionID]
-	if !ok {
+	if !ok || v.WorkspaceID != cmd.WorkspaceID {
 		return ReleaseRef{}, ErrMarketplaceNotFound
 	}
 	if v.Status != VersionApproved {
@@ -143,15 +149,39 @@ func (s *MemoryStore) Publish(ctx context.Context, cmd PublishCommand) (ReleaseR
 	return *rel, nil
 }
 
-// Install 记录一次安装。
+// Install 记录一次安装。幂等：同一 (workspace, release) 对的重复 install
+// 返回首次的 InstallationRef。同时校验目标 release 的 package 对当前
+// workspace 可见（同 workspace 或 visibility='public'）。
 func (s *MemoryStore) Install(ctx context.Context, cmd InstallCommand) (InstallationRef, error) {
 	if cmd.WorkspaceID == "" || cmd.ReleaseID == "" {
 		return InstallationRef{}, errors.New("marketplace: workspace_id and release_id required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.releases[cmd.ReleaseID]; !ok {
+	rel, ok := s.releases[cmd.ReleaseID]
+	if !ok {
 		return InstallationRef{}, ErrMarketplaceNotFound
+	}
+	v, ok := s.versions[rel.VersionID]
+	if !ok {
+		return InstallationRef{}, ErrMarketplaceNotFound
+	}
+	pkg, ok := s.packages[v.PackageID]
+	if !ok {
+		return InstallationRef{}, ErrMarketplaceNotFound
+	}
+	if pkg.WorkspaceID != cmd.WorkspaceID && pkg.Visibility != "public" {
+		return InstallationRef{}, ErrMarketplaceNotFound
+	}
+	// 幂等：若已存在 (workspace, release) 安装记录，直接返回。
+	for _, existing := range s.installs {
+		if existing.ReleaseID == cmd.ReleaseID && existing.InstalledAt.Unix() >= 0 {
+			// 没有 workspace_id 字段在 InstallationRef 上；用 installID 前缀推断。
+			// installID 格式："<workspace>-<release>-<nano>"
+			if strings.HasPrefix(existing.InstallationID, cmd.WorkspaceID+"-") {
+				return *existing, nil
+			}
+		}
 	}
 	instID := fmt.Sprintf("%s-%s-%d", cmd.WorkspaceID, cmd.ReleaseID, time.Now().UnixNano())
 	inst := &InstallationRef{
@@ -199,13 +229,14 @@ func (s *MemoryStore) Rate(ctx context.Context, cmd RatingCommand) error {
 	return nil
 }
 
-// ListPackages 列出 workspace 的所有包。
+// ListPackages 列出 workspace 可见的所有包：同 workspace 任意 visibility +
+// 外部 workspace 的 visibility='public'。与 Store 的 SQL 语义对齐。
 func (s *MemoryStore) ListPackages(ctx context.Context, workspaceID string) ([]Package, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Package, 0)
 	for _, p := range s.packages {
-		if p.WorkspaceID == workspaceID {
+		if p.WorkspaceID == workspaceID || p.Visibility == "public" {
 			out = append(out, *p)
 		}
 	}
@@ -213,13 +244,22 @@ func (s *MemoryStore) ListPackages(ctx context.Context, workspaceID string) ([]P
 	return out, nil
 }
 
-// ListReleases 列出 workspace 关联的所有 release。
+// ListReleases 列出 workspace 可见的所有 release：版本属于本 workspace 或
+// 其 package visibility='public'。与 Store 的 SQL 语义对齐。
 func (s *MemoryStore) ListReleases(ctx context.Context, workspaceID string) ([]ReleaseRef, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]ReleaseRef, 0)
 	for _, rel := range s.releases {
-		if v, ok := s.versions[rel.VersionID]; ok && v.WorkspaceID == workspaceID {
+		v, ok := s.versions[rel.VersionID]
+		if !ok {
+			continue
+		}
+		pkg, ok := s.packages[v.PackageID]
+		if !ok {
+			continue
+		}
+		if v.WorkspaceID == workspaceID || pkg.Visibility == "public" {
 			out = append(out, *rel)
 		}
 	}

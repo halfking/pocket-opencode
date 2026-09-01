@@ -170,3 +170,117 @@ func TestMemoryStore_InstallUnknownRelease(t *testing.T) {
 // errorIs 已被标准库 errors.Is 替代,这里保留旧函数名仅为向后兼容(避免
 // 在重构时反复改名)。新代码请直接使用 errors.Is。
 func errorIs(err, target error) bool { return errors.Is(err, target) }
+
+// TestMemoryStore_PublishCrossWorkspace 校验 Publish 的租户边界：调用方
+// 不能用别人的 workspace_id 发布人家审核通过的版本。memory store 必须与
+// pg Store 行为一致。
+func TestMemoryStore_PublishCrossWorkspace(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	v, err := store.Submit(ctx, SubmitRequest{
+		WorkspaceID: "ws-owner", Name: "s", Kind: "skill", Version: "1.0.0", Digest: "d",
+		Manifest: Manifest{Version: "1.0.0", Digest: "d"}, Publisher: "alice",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if err := store.Review(ctx, ReviewCommand{
+		WorkspaceID: "ws-owner", VersionID: v.VersionID, Reviewer: "bob", Approved: true,
+	}); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	_, err = store.Publish(ctx, PublishCommand{WorkspaceID: "ws-attacker", VersionID: v.VersionID})
+	if !errors.Is(err, ErrMarketplaceNotFound) {
+		t.Fatalf("cross-workspace publish must return NotFound, got %v", err)
+	}
+}
+
+// TestMemoryStore_InstallIdempotent 校验 Install 对同一 (workspace, release)
+// 重复调用返回首次的 InstallationRef,不会插入第二行。
+func TestMemoryStore_InstallIdempotent(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	v, _ := store.Submit(ctx, SubmitRequest{
+		WorkspaceID: "ws-1", Name: "s", Kind: "skill", Version: "1.0.0", Digest: "d",
+		Manifest: Manifest{Version: "1.0.0", Digest: "d"}, Publisher: "alice",
+	})
+	_ = store.Review(ctx, ReviewCommand{WorkspaceID: "ws-1", VersionID: v.VersionID, Reviewer: "r", Approved: true})
+	rel, err := store.Publish(ctx, PublishCommand{WorkspaceID: "ws-1", VersionID: v.VersionID})
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	first, err := store.Install(ctx, InstallCommand{WorkspaceID: "ws-1", ReleaseID: rel.ReleaseID, InstalledBy: "u"})
+	if err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	second, err := store.Install(ctx, InstallCommand{WorkspaceID: "ws-1", ReleaseID: rel.ReleaseID, InstalledBy: "u"})
+	if err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if first.InstallationID != second.InstallationID {
+		t.Errorf("idempotent install must reuse id, got %q vs %q", first.InstallationID, second.InstallationID)
+	}
+}
+
+// TestMemoryStore_InstallPrivateReleaseCrossWorkspace 校验 Install 不能跨租户
+// 装入"幽灵"版本：私有 visibility 的 package release 对外部 workspace 必须
+// 返回 NotFound。
+func TestMemoryStore_InstallPrivateReleaseCrossWorkspace(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	v, _ := store.Submit(ctx, SubmitRequest{
+		WorkspaceID: "ws-owner", Name: "s", Kind: "skill", Version: "1.0.0", Digest: "d",
+		Manifest: Manifest{Version: "1.0.0", Digest: "d"}, Publisher: "alice",
+		Visibility: "workspace",
+	})
+	_ = store.Review(ctx, ReviewCommand{WorkspaceID: "ws-owner", VersionID: v.VersionID, Reviewer: "r", Approved: true})
+	rel, _ := store.Publish(ctx, PublishCommand{WorkspaceID: "ws-owner", VersionID: v.VersionID})
+	_, err := store.Install(ctx, InstallCommand{WorkspaceID: "ws-other", ReleaseID: rel.ReleaseID, InstalledBy: "u"})
+	if !errors.Is(err, ErrMarketplaceNotFound) {
+		t.Fatalf("private release cross-workspace install must return NotFound, got %v", err)
+	}
+}
+
+// TestMemoryStore_ListVisibility 校验 ListPackages/ListReleases 的可见性规则：
+//   - 本 workspace 所有包/发布；
+//   - visibility='public' 的外部包/发布；
+//   - 外部私有 visibility 必须不可见。
+func TestMemoryStore_ListVisibility(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+
+	privV, _ := store.Submit(ctx, SubmitRequest{
+		WorkspaceID: "ws-A", Name: "priv", Kind: "skill", Version: "1.0.0", Digest: "d",
+		Manifest: Manifest{Version: "1.0.0", Digest: "d"}, Publisher: "a", Visibility: "workspace",
+	})
+	_ = store.Review(ctx, ReviewCommand{WorkspaceID: "ws-A", VersionID: privV.VersionID, Reviewer: "r", Approved: true})
+	_, _ = store.Publish(ctx, PublishCommand{WorkspaceID: "ws-A", VersionID: privV.VersionID})
+
+	pubV, _ := store.Submit(ctx, SubmitRequest{
+		WorkspaceID: "ws-A", Name: "pub", Kind: "skill", Version: "1.0.0", Digest: "d",
+		Manifest: Manifest{Version: "1.0.0", Digest: "d"}, Publisher: "a", Visibility: "public",
+	})
+	_ = store.Review(ctx, ReviewCommand{WorkspaceID: "ws-A", VersionID: pubV.VersionID, Reviewer: "r", Approved: true})
+	_, _ = store.Publish(ctx, PublishCommand{WorkspaceID: "ws-A", VersionID: pubV.VersionID})
+
+	pkgs, err := store.ListPackages(ctx, "ws-B")
+	if err != nil {
+		t.Fatalf("ListPackages: %v", err)
+	}
+	if len(pkgs) != 1 || pkgs[0].Name != "pub" {
+		t.Errorf("ws-B should see only public package, got %+v", pkgs)
+	}
+
+	releases, err := store.ListReleases(ctx, "ws-B")
+	if err != nil {
+		t.Fatalf("ListReleases: %v", err)
+	}
+	if len(releases) != 1 {
+		t.Errorf("ws-B should see only public release, got %d", len(releases))
+	}
+
+	pkgsA, _ := store.ListPackages(ctx, "ws-A")
+	if len(pkgsA) != 2 {
+		t.Errorf("ws-A should see both packages, got %d", len(pkgsA))
+	}
+}

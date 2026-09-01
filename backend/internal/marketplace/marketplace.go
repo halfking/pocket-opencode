@@ -215,6 +215,11 @@ CREATE TABLE IF NOT EXISTS marketplace_installations (
 	installed_at    BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_marketplace_inst_ws ON marketplace_installations(workspace_id);
+-- Idempotency guarantee: one (workspace, release) pair may have at most one
+-- installation row. The handler treats the second call as "already installed"
+-- and returns the original record.
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_marketplace_inst_ws_rel
+	ON marketplace_installations(workspace_id, release_id);
 `
 
 // Init 初始化 marketplace 表。
@@ -320,6 +325,9 @@ func (s *Store) Review(ctx context.Context, cmd ReviewCommand) error {
 }
 
 // Publish 发布已批准的版本到一个 release channel。
+//
+// 并发安全：在事务里对版本行加 FOR UPDATE 行锁，避免两个并发 Publish 同时
+// 通过 approved 校验并各自插入 release。锁随事务结束释放。
 func (s *Store) Publish(ctx context.Context, cmd PublishCommand) (ReleaseRef, error) {
 	if s.pool == nil {
 		return ReleaseRef{}, fmt.Errorf("marketplace: pool not configured")
@@ -336,7 +344,7 @@ func (s *Store) Publish(ctx context.Context, cmd PublishCommand) (ReleaseRef, er
 	defer tx.Rollback(ctx)
 
 	var status string
-	err = tx.QueryRow(ctx, `SELECT status FROM marketplace_versions WHERE version_id = $1 AND workspace_id = $2`,
+	err = tx.QueryRow(ctx, `SELECT status FROM marketplace_versions WHERE version_id = $1 AND workspace_id = $2 FOR UPDATE`,
 		cmd.VersionID, cmd.WorkspaceID).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReleaseRef{}, ErrMarketplaceNotFound
@@ -374,7 +382,12 @@ func (s *Store) Publish(ctx context.Context, cmd PublishCommand) (ReleaseRef, er
 	}, nil
 }
 
-// Install 记录一次安装。
+// Install 记录一次安装。语义上幂等：同一 workspace 对同一 release 的重复
+// install 调用会返回首次的 InstallationRef，不会插入新行。
+//
+// 额外校验：目标 release 所属 package 必须对当前 workspace 可见
+// （同 workspace，或 visibility='public'）。私有 package 的 release
+// 对外部 workspace 不可见，避免跨租户装入"幽灵"版本。
 func (s *Store) Install(ctx context.Context, cmd InstallCommand) (InstallationRef, error) {
 	if s.pool == nil {
 		return InstallationRef{}, fmt.Errorf("marketplace: pool not configured")
@@ -383,27 +396,59 @@ func (s *Store) Install(ctx context.Context, cmd InstallCommand) (InstallationRe
 		return InstallationRef{}, errors.New("marketplace: workspace_id and release_id required")
 	}
 
-	var versionID string
-	if err := s.pool.QueryRow(ctx, `SELECT version_id FROM marketplace_releases WHERE release_id = $1`,
-		cmd.ReleaseID).Scan(&versionID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return InstallationRef{}, ErrMarketplaceNotFound
-		}
+	var visible bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM marketplace_releases r
+			JOIN marketplace_versions v ON r.version_id = v.version_id
+			JOIN marketplace_packages p ON v.package_id = p.package_id
+			WHERE r.release_id = $1
+			  AND (p.workspace_id = $2 OR p.visibility = 'public')
+		)
+	`, cmd.ReleaseID, cmd.WorkspaceID).Scan(&visible)
+	if err != nil {
 		return InstallationRef{}, err
 	}
+	if !visible {
+		return InstallationRef{}, ErrMarketplaceNotFound
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return InstallationRef{}, err
+	}
+	defer tx.Rollback(ctx)
 
 	installID := fmt.Sprintf("%s-%s-%d", cmd.WorkspaceID, cmd.ReleaseID, time.Now().UnixNano())
 	now := time.Now().Unix()
-	if _, err := s.pool.Exec(ctx, `
+
+	var returnedID string
+	var returnedAt int64
+	err = tx.QueryRow(ctx, `
 		INSERT INTO marketplace_installations (installation_id, release_id, workspace_id, installed_by, installed_at)
 		VALUES ($1, $2, $3, $4, $5)
-	`, installID, cmd.ReleaseID, cmd.WorkspaceID, cmd.InstalledBy, now); err != nil {
+		ON CONFLICT (workspace_id, release_id) DO NOTHING
+		RETURNING installation_id, installed_at
+	`, installID, cmd.ReleaseID, cmd.WorkspaceID, cmd.InstalledBy, now).Scan(&returnedID, &returnedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// 冲突：之前已安装过。回查并返回首次的记录，保证幂等。
+		err = tx.QueryRow(ctx, `
+			SELECT installation_id, installed_at FROM marketplace_installations
+			WHERE workspace_id = $1 AND release_id = $2
+		`, cmd.WorkspaceID, cmd.ReleaseID).Scan(&returnedID, &returnedAt)
+	}
+	if err != nil {
 		return InstallationRef{}, err
 	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return InstallationRef{}, err
+	}
+
 	return InstallationRef{
-		InstallationID: installID,
+		InstallationID: returnedID,
 		ReleaseID:      cmd.ReleaseID,
-		InstalledAt:    time.Unix(now, 0),
+		InstalledAt:    time.Unix(returnedAt, 0),
 	}, nil
 }
 
@@ -447,14 +492,20 @@ func (s *Store) Rate(ctx context.Context, cmd RatingCommand) error {
 	return nil
 }
 
-// ListPackages 列出 workspace 可见的所有包。
+// ListPackages 列出 workspace 可见的所有包：
+//   - 同 workspace 的所有包（任何 visibility）；
+//   - visibility='public' 的外部包。
+//
+// visibility 过滤真正下推到 store 层，handler 仅做入参白名单校验。
 func (s *Store) ListPackages(ctx context.Context, workspaceID string) ([]Package, error) {
 	if s.pool == nil {
 		return nil, fmt.Errorf("marketplace: pool not configured")
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT package_id, workspace_id, name, kind, publisher, visibility, created_at
-		FROM marketplace_packages WHERE workspace_id = $1 ORDER BY created_at DESC
+		FROM marketplace_packages
+		WHERE workspace_id = $1 OR visibility = 'public'
+		ORDER BY created_at DESC
 	`, workspaceID)
 	if err != nil {
 		return nil, err
@@ -474,7 +525,8 @@ func (s *Store) ListPackages(ctx context.Context, workspaceID string) ([]Package
 	return out, rows.Err()
 }
 
-// ListReleases 列出 workspace 可见的所有发布。
+// ListReleases 列出 workspace 可见的所有 release：同 workspace 或其 package
+// visibility='public'。与 ListPackages 保持同一可见性规则。
 func (s *Store) ListReleases(ctx context.Context, workspaceID string) ([]ReleaseRef, error) {
 	if s.pool == nil {
 		return nil, fmt.Errorf("marketplace: pool not configured")
@@ -482,8 +534,10 @@ func (s *Store) ListReleases(ctx context.Context, workspaceID string) ([]Release
 	rows, err := s.pool.Query(ctx, `
 		SELECT r.release_id, r.version_id, r.channel, r.published_at
 		FROM marketplace_releases r
-		INNER JOIN marketplace_versions v ON r.version_id = v.version_id
-		WHERE v.workspace_id = $1 ORDER BY r.published_at DESC
+		JOIN marketplace_versions v ON r.version_id = v.version_id
+		JOIN marketplace_packages p ON v.package_id = p.package_id
+		WHERE v.workspace_id = $1 OR p.visibility = 'public'
+		ORDER BY r.published_at DESC
 	`, workspaceID)
 	if err != nil {
 		return nil, err
