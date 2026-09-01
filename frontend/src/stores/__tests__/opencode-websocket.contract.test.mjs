@@ -13,3 +13,10 @@ test('OpenCode realtime updates fail closed without an endpoint or token', () =>
   assert.match(source, /if \(!wsUrl\)/)
   assert.match(source, /if \(!token\)/)
 })
+
+test('OpenCode history and summary use the configured API client', () => {
+  assert.match(source, /http<\{ timeline\?: HistoryEvent\[\] \}>/)
+  assert.match(source, /http<\{ summary\?: string \}>/)
+  assert.doesNotMatch(source, /fetch\(`\/api\/opencode\/sessions/)
+  assert.match(source, /encodeURIComponent\(sessionId\)/)
+})

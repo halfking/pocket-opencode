@@ -10,8 +10,8 @@
 |---|---|---|
 | `npm ci` in `frontend/` | PASS | Installed the lockfile dependencies successfully (227 packages); ignored `node_modules/` only. |
 | `npm run typecheck` | PASS | `vue-tsc --noEmit` exited 0 after the WebSocket URL changes. |
-| `node --test <all frontend/src/**/__tests__/*.test.mjs>` | PASS | 236 tests passed, 0 failed. Includes five URL-helper tests and two OpenCode WebSocket source-contract tests. |
-| `node --test src/api/__tests__/websocket-url.test.mjs src/native/__tests__/runtime-platform.test.mjs src/native/__tests__/capabilities-harmony.test.mjs` | PASS | 11 tests passed, 0 failed. URL conversion, token encoding, rawfile-origin separation, and Harmony fail-closed guards passed. |
+| `node --test <all frontend/src/**/__tests__/*.test.mjs>` | PASS | 238 tests passed, 0 failed. Includes six URL-helper tests and three OpenCode network/source-contract tests. |
+| `node --test src/api/__tests__/websocket-url.test.mjs src/native/__tests__/runtime-platform.test.mjs src/native/__tests__/capabilities-harmony.test.mjs` | PASS | 13 tests passed, 0 failed. URL conversion, token encoding, rawfile-origin separation, OpenCode API-client routing, and Harmony fail-closed guards passed. |
 | `MOBILE_FAST=1 VITE_API_BASE=https://harmony-test.example.invalid node scripts/build-harmony.mjs dev` | PASS (asset-only) | Vite generated `dist/`; the script removed and copied `dist/` to ignored `harmony/entry/src/main/resources/rawfile/` and verified the API base was embedded in JavaScript. The `.invalid` endpoint is deliberately non-routable and is not network evidence. |
 | `MOBILE_FAST=1 node scripts/build-mobile.mjs android dev` | PASS | Capacitor Android sync completed and found the existing six Android plugins. A temporary ignored `.env.android-dev` used only the non-secret placeholder `https://pocket.example.invalid`. |
 | `ANDROID_HOME=/Users/xutaohuang/Library/Android/sdk ANDROID_SDK_ROOT=/Users/xutaohuang/Library/Android/sdk ./gradlew --no-daemon assembleDebug` | PASS | Android Gradle reported `BUILD SUCCESSFUL` (279 actionable tasks). The SDK path was supplied in the process environment; no local path file was added. |
@@ -21,9 +21,9 @@
 
 ## Code change under test
 
-`frontend/src/api/websocket-url.ts` now validates an absolute HTTP(S) API base, converts it to WS/WSS, normalizes the `/ws` endpoint, and encodes an optional token. The shared WebSocket client and `frontend/src/stores/opencode.ts` use this helper. OpenCode realtime updates no longer derive their endpoint from `window.location.host`, which could resolve to the ArkWeb rawfile origin.
+`frontend/src/api/websocket-url.ts` now validates an absolute HTTP(S) API base, converts it to WS/WSS, normalizes the `/ws` endpoint, and encodes an optional token. The shared WebSocket client and `frontend/src/stores/opencode.ts` use this helper. OpenCode realtime updates no longer derive their endpoint from `window.location.host`, which could resolve to the ArkWeb rawfile origin. OpenCode history and summary requests now use the shared HTTP client, including the configured API base, Bearer authentication, and encoded session IDs.
 
-When the API base or authentication token is unavailable, the OpenCode subscription and shared client fail closed without opening an empty or unauthenticated WebSocket connection. HarmonyOS marker capabilities remain disabled; no ArkTS bridge or Capacitor platform behavior was changed.
+When the API base or authentication token is unavailable, the OpenCode subscription and shared client fail closed without opening an empty or unauthenticated WebSocket connection, including during reconnect. HarmonyOS marker capabilities remain disabled; no ArkTS bridge or Capacitor platform behavior was changed.
 
 ## Toolchain readiness
 

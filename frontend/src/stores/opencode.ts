@@ -4,7 +4,7 @@
  */
 import { defineStore } from 'pinia'
 import { api } from '../api/client'
-import { apiBase } from '../api/http'
+import { http, apiBase } from '../api/http'
 import { buildWebSocketUrl } from '../api/websocket-url'
 import type { Instance, Session, Task } from '../api/client'
 
@@ -192,11 +192,9 @@ export const useOpenCodeStore = defineStore('opencode', {
       this.error = null
       try {
         // TODO: 后端需要实现 /api/opencode/sessions/{id}/history
-        const response = await fetch(`/api/opencode/sessions/${sessionId}/history`)
-        if (!response.ok) {
-          throw new Error(`Failed to load history: ${response.statusText}`)
-        }
-        const data = await response.json()
+        const data = await http<{ timeline?: HistoryEvent[] }>(
+          `/api/opencode/sessions/${encodeURIComponent(sessionId)}/history`,
+        )
         this.sessionHistory[sessionId] = data.timeline || []
         
         console.log('✅ 加载历史成功:', sessionId)
@@ -216,11 +214,9 @@ export const useOpenCodeStore = defineStore('opencode', {
     async getSessionSummary(sessionId: string): Promise<string> {
       try {
         // TODO: 后端需要实现 /api/opencode/sessions/{id}/summary
-        const response = await fetch(`/api/opencode/sessions/${sessionId}/summary`)
-        if (!response.ok) {
-          throw new Error(`Failed to get summary: ${response.statusText}`)
-        }
-        const data = await response.json()
+        const data = await http<{ summary?: string }>(
+          `/api/opencode/sessions/${encodeURIComponent(sessionId)}/summary`,
+        )
         return data.summary || '暂无摘要'
       } catch (err: any) {
         console.error('❌ 获取摘要失败:', err)

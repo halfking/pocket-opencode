@@ -33,3 +33,10 @@ test('returns a safe null result for missing or unsupported API bases', () => {
 test('omits the token query when no token is available', () => {
   assert.equal(buildWebSocketUrl('https://api.example.test', null), 'wss://api.example.test/ws')
 })
+
+test('preserves an API base path without inheriting its query or hash', () => {
+  assert.equal(
+    buildWebSocketUrl('https://api.example.test/pocket?tenant=demo#ignored', 'jwt'),
+    'wss://api.example.test/pocket/ws?token=jwt',
+  )
+})

@@ -21,9 +21,14 @@ class WebSocketClient {
       return
     }
 
+    const token = localStorage.getItem('pocket_token')
+    if (!token) {
+      console.warn('WebSocket connection skipped: authentication token is missing')
+      return
+    }
+
     try {
       // 每次连接时更新URL以包含最新的token
-      const token = localStorage.getItem('pocket_token')
       const baseWsUrl = this.url.split('?')[0]
       this.url = token ? `${baseWsUrl}?token=${encodeURIComponent(token)}` : baseWsUrl
       
