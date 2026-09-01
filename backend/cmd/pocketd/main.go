@@ -27,12 +27,14 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
 	"github.com/halfking/pocket-opencode/backend/internal/lobster"
+	"github.com/halfking/pocket-opencode/backend/internal/marketplace"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/notify"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
+	"github.com/halfking/pocket-opencode/backend/internal/orchestrator"
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
@@ -80,6 +82,7 @@ func main() {
 		notesStore         *notes.Store
 		emailStore         *email.Store
 		vaultStore         *vault.Store
+		marketplaceStore   *marketplace.Store
 	)
 	if pool != nil {
 		ts, err := task.NewStore(pool)
@@ -107,7 +110,12 @@ func main() {
 			log.Fatalf("scheduled task store: %v", err)
 		}
 		scheduledTaskStore = sts
-		log.Println("Module stores initialized (PG, scheduled tasks enabled)")
+		ms, err := initMarketplaceStore(context.Background(), pool)
+		if err != nil {
+			log.Fatalf("marketplace store: %v", err)
+		}
+		marketplaceStore = ms
+		log.Println("Module stores initialized (PG, scheduled tasks and marketplace enabled)")
 	}
 
 	// ---- Auth (multi-user, JWT) ----
@@ -470,6 +478,16 @@ func main() {
 	if scheduledTaskStore != nil {
 		srv.SetScheduledTaskStore(scheduledTaskStore)
 	}
+	if marketplaceStore != nil {
+		srv.SetMarketplaceStore(marketplaceStore)
+	}
+	phase4Orchestrator := newCloudOrchestrator(mcpClient)
+	if phase4Orchestrator != nil {
+		srv.SetOrchestrator(phase4Orchestrator)
+		log.Println("Phase 4 orchestrator enabled (ACC cloud dispatcher; local runtime unavailable)")
+	} else {
+		log.Println("INFO: Phase 4 local runtime unavailable and ACC cloud dispatcher not configured")
+	}
 	srv.SetAuthExt(codeStore, smtpClient, redclawAuthClient)
 	if biometricStore != nil {
 		srv.SetBiometricStore(biometricStore)
@@ -729,6 +747,11 @@ func main() {
 				registered++
 			}
 		}
+		if err := registerPhase4Executors(sched, phase4Orchestrator); err != nil {
+			log.Printf("WARN: register Phase 4 cloud dispatch scheduled executor: %v", err)
+		} else if phase4Orchestrator != nil && phase4Orchestrator.Cloud() != nil && phase4Orchestrator.Cloud().IsAvailable() {
+			registered++
+		}
 		allowPrivateWebhook := strings.EqualFold(strings.TrimSpace(os.Getenv("POCKET_SCHEDULER_WEBHOOK_ALLOW_PRIVATE")), "true")
 		if err := sched.Register(scheduledexecutors.NewSafeHTTPWebhookExecutor(cfg.SchedulerWebhookTimeout, allowPrivateWebhook)); err != nil {
 			log.Printf("WARN: register webhook scheduled executor: %v", err)
@@ -757,7 +780,10 @@ func main() {
 	// ---- AI 对话智能体角色管理 ----
 	// 优先 PostgreSQL（Acc 模式：跨设备同步）；无 PG 时降级到本地 SQLite
 	// （单机离线也能用 AI 对话 + 内置/自定义角色，但不提供云端同步）。
-	chatAgentStore, chatAgentSync := initChatAgentStores(pool, dataDir)
+	chatAgentStore, chatAgentSync, err := initChatAgentStores(pool, dataDir)
+	if err != nil {
+		log.Fatalf("chat agent marketplace migration: %v", err)
+	}
 	if chatAgentStore == nil {
 		log.Println("WARN: chat agent store not initialized")
 	} else {
@@ -1063,21 +1089,65 @@ func parseScopes(raw string) []string {
 	return out
 }
 
+// initMarketplaceStore initializes the PostgreSQL-backed marketplace when a
+// local database is configured. Remote-only deployments intentionally leave it
+// nil so marketplace handlers retain their explicit 503 behavior.
+func initMarketplaceStore(ctx context.Context, pool *pgxpool.Pool) (*marketplace.Store, error) {
+	if pool == nil {
+		return nil, nil
+	}
+	store := marketplace.NewStore(pool)
+	if err := store.Init(ctx); err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+// newCloudOrchestrator enables only the ACC-backed side of Phase 4 execution.
+// Local execution is deliberately omitted until a non-mock localagent backend
+// is available for production use.
+func newCloudOrchestrator(client *mcp.Client) *orchestrator.Orchestrator {
+	cloud := orchestrator.NewACCDispatcher(client)
+	if cloud == nil || !cloud.IsAvailable() {
+		return nil
+	}
+	return orchestrator.New(nil, cloud, orchestrator.DefaultConfig())
+}
+
+// registerPhase4Executors registers only executors backed by production-ready
+// dependencies. The local_agent kind remains unavailable until a real local
+// runtime is introduced; registering a MockBackend would misrepresent a demo
+// response as completed automation.
+func registerPhase4Executors(scheduler *scheduledtask.Scheduler, orch *orchestrator.Orchestrator) error {
+	if scheduler == nil || orch == nil || orch.Cloud() == nil || !orch.Cloud().IsAvailable() {
+		return nil
+	}
+	return scheduler.Register(scheduledexecutors.NewCloudDispatchExecutor(orch))
+}
+
 // initChatAgentStores 优先用 PG，回退到本地 SQLite。
 //   - 有 PG → 返回 PG Store + SyncStore（同步可用）
 //   - 无 PG → 返回 SQLiteStore（仅本地使用）+ nil sync（同步端点 503）
 //   - 两边都失败 → 返回 nil（chatAgent 路由将返回 503）
-func initChatAgentStores(pool *pgxpool.Pool, dataDir string) (chatagent.StoreIface, *chatagent.SyncStore) {
+//
+// Marketplace schema migration errors are returned instead of silently falling
+// back to SQLite: a configured PostgreSQL deployment must not run with a
+// partially upgraded chat_agents table.
+func initChatAgentStores(pool *pgxpool.Pool, dataDir string) (chatagent.StoreIface, *chatagent.SyncStore, error) {
 	if pool != nil {
 		pgStore := chatagent.NewStore(pool)
-		if err := pgStore.Init(context.Background()); err == nil {
-			syncStore := chatagent.NewSyncStore(pool)
-			if err := syncStore.Init(context.Background()); err != nil {
-				log.Printf("WARN: chatagent sync init failed: %v (running without cloud sync)", err)
-				return pgStore, nil
-			}
-			return pgStore, syncStore
+		if err := pgStore.Init(context.Background()); err != nil {
+			return nil, nil, err
 		}
+		if err := chatagent.RunMarketplaceMigration(context.Background(), pool); err != nil {
+			return nil, nil, err
+		}
+		syncStore := chatagent.NewSyncStore(pool)
+		if err := syncStore.Init(context.Background()); err != nil {
+			log.Printf("WARN: chatagent sync init failed: %v (running without cloud sync)", err)
+			return pgStore, nil, nil
+		}
+		return pgStore, syncStore, nil
 	}
 
 	// PG 不可用 → SQLite fallback（单机离线模式）
@@ -1085,15 +1155,15 @@ func initChatAgentStores(pool *pgxpool.Pool, dataDir string) (chatagent.StoreIfa
 	store, err := chatagent.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Printf("WARN: chatagent SQLite store init failed: %v", err)
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err := store.Init(context.Background()); err != nil {
 		log.Printf("WARN: chatagent SQLite schema init failed: %v", err)
 		store.Close()
-		return nil, nil
+		return nil, nil, nil
 	}
 	log.Printf("Chat Agent store using SQLite fallback at %s (no cloud sync)", dbPath)
-	return store, nil
+	return store, nil, nil
 }
 
 // 旧 SQLite fallback 调用 NewSQLiteStore / store.Close —— 该实现在 main 上

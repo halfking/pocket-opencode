@@ -112,6 +112,24 @@ func New(local LocalDispatcher, cloud CloudDispatcher, config *Config) *Orchestr
 	return &Orchestrator{local: local, cloud: cloud, config: config}
 }
 
+// Local exposes the configured local dispatcher to adapters such as the
+// scheduled-task executor. A nil orchestrator has no local dispatcher.
+func (o *Orchestrator) Local() LocalDispatcher {
+	if o == nil {
+		return nil
+	}
+	return o.local
+}
+
+// Cloud exposes the configured cloud dispatcher to adapters such as the
+// scheduled-task executor. A nil orchestrator has no cloud dispatcher.
+func (o *Orchestrator) Cloud() CloudDispatcher {
+	if o == nil {
+		return nil
+	}
+	return o.cloud
+}
+
 // Dispatch 按策略分发任务。strategy 为空时使用 config.DefaultStrategy。
 func (o *Orchestrator) Dispatch(ctx context.Context, task *Task, strategy Strategy) (*Result, error) {
 	if task == nil {

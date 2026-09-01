@@ -5,7 +5,9 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/config"
+	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
+	"github.com/halfking/pocket-opencode/backend/internal/scheduledtask"
 )
 
 func TestStartAuditFileExporterSkipsUnavailableStore(t *testing.T) {
@@ -37,5 +39,48 @@ func TestProductionConfigRecognized(t *testing.T) {
 	}
 	if isProductionConfig(config.Config{Environment: "development"}) {
 		t.Fatal("development must not be production")
+	}
+}
+
+func TestNewCloudOrchestratorRequiresConfiguredTenant(t *testing.T) {
+	if got := newCloudOrchestrator(nil); got != nil {
+		t.Fatal("nil MCP client must not create an orchestrator")
+	}
+
+	clientWithoutTenant := mcp.NewClientWithAuth("https://acc.example.test", "secret", "", nil, false)
+	if got := newCloudOrchestrator(clientWithoutTenant); got != nil {
+		t.Fatal("MCP client without tenant must not create an orchestrator")
+	}
+}
+
+func TestRegisterPhase4ExecutorsRegistersCloudOnly(t *testing.T) {
+	client := mcp.NewClientWithAuth("https://acc.example.test", "secret", "workspace-1", nil, false)
+	orch := newCloudOrchestrator(client)
+	if orch == nil || orch.Cloud() == nil {
+		t.Fatal("configured ACC client must create a cloud orchestrator")
+	}
+	if orch.Local() != nil {
+		t.Fatal("production Phase 4 wiring must not configure a mock local runtime")
+	}
+
+	scheduler := scheduledtask.NewScheduler(nil, false)
+	if err := registerPhase4Executors(scheduler, orch); err != nil {
+		t.Fatalf("register phase 4 executors: %v", err)
+	}
+	if !scheduler.HasExecutor(scheduledtask.KindCloudDispatch) {
+		t.Fatal("cloud_dispatch executor must be registered for configured ACC")
+	}
+	if scheduler.HasExecutor(scheduledtask.KindLocalAgent) {
+		t.Fatal("local_agent executor must remain disabled without a production runtime")
+	}
+}
+
+func TestRegisterPhase4ExecutorsSkipsUnavailableDependencies(t *testing.T) {
+	scheduler := scheduledtask.NewScheduler(nil, false)
+	if err := registerPhase4Executors(scheduler, nil); err != nil {
+		t.Fatalf("nil orchestrator must be a no-op: %v", err)
+	}
+	if scheduler.HasExecutor(scheduledtask.KindCloudDispatch) {
+		t.Fatal("cloud_dispatch executor must not register without an orchestrator")
 	}
 }

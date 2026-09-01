@@ -45,6 +45,10 @@ func (s *Server) handleScheduledTasks(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := s.validateTaskExecutionAvailability(input.Kind); err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
 		sch, _ := scheduledtask.NewSchedule(input.ScheduleKind, input.ScheduleExpr, input.Timezone)
 		now := time.Now().Unix()
 		t := &scheduledtask.Task{
@@ -153,6 +157,10 @@ func (s *Server) handleScheduledTaskItem(w http.ResponseWriter, r *http.Request,
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := s.validateTaskExecutionAvailability(input.Kind); err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
 		sch, _ := scheduledtask.NewSchedule(input.ScheduleKind, input.ScheduleExpr, input.Timezone)
 		next := int64(0)
 		if input.Enabled != nil && *input.Enabled && sch != nil {
@@ -216,6 +224,27 @@ func decodeScheduledTaskJSON(r *http.Request, dst interface{}) error {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		return fmt.Errorf("invalid request body: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) validateTaskExecutionAvailability(kind scheduledtask.Kind) error {
+	if kind != scheduledtask.KindLocalAgent && kind != scheduledtask.KindCloudDispatch {
+		return nil
+	}
+	if s == nil || s.orchestrator == nil {
+		return fmt.Errorf("%s execution is not configured", kind)
+	}
+	if kind == scheduledtask.KindLocalAgent {
+		local := s.orchestrator.Local()
+		if local == nil || !local.IsAvailable() {
+			return fmt.Errorf("local_agent execution is not configured")
+		}
+		return nil
+	}
+	cloud := s.orchestrator.Cloud()
+	if cloud == nil || !cloud.IsAvailable() {
+		return fmt.Errorf("cloud_dispatch execution is not configured")
 	}
 	return nil
 }

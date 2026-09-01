@@ -146,6 +146,12 @@ func (s *Scheduler) executor(kind Kind) Executor {
 	return e
 }
 
+// HasExecutor reports whether an executor has been registered for kind. It is
+// useful for bootstrap verification and does not expose the executor itself.
+func (s *Scheduler) HasExecutor(kind Kind) bool {
+	return s.executor(kind) != nil
+}
+
 func (s *Scheduler) workerSemaphore() chan struct{} {
 	s.semMu.Lock()
 	defer s.semMu.Unlock()
