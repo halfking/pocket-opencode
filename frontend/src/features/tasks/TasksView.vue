@@ -1012,7 +1012,15 @@ function sendQuickPrompt(payload: { text: string }) {
       },
     })
   } else {
-    router.push('/sessions')
+    // 无任何会话时不能丢掉用户输入：跳 AI 聊天页新建对话并预填草稿。
+    // 旧实现 router.push('/sessions') 会静默丢弃文本，导致「提问」无任何响应。
+    router.push({
+      path: '/ai-chat',
+      query: {
+        prompt: text,
+        ...(quickAgentId.value ? { agent_id: quickAgentId.value } : {}),
+      },
+    })
   }
   quickPrompt.value = ''
 }

@@ -25,17 +25,19 @@ const DefaultLLMGatewayAPIKey = "sk-6tGLjzlzUIOuMxh6qhOVRK9eznOTVAkQ3JxRZrvWECrK
 //
 // 与 SettingsLLMGateway.vue VENDOR_RULES 配合渲染「按原厂分组」的常用模型区。
 //
-// 注意：seed 仅纳入经实测对当前默认网关（llm.kxpms.cn）可正常返回的模型 id。
-// 2026-08-31 实测中，`minimax-m3` 与 `kimi-k3` 在该网关的 /v1/chat/completions
-// 上会挂死（既不返结果也不返错误，导致前端聊天 60s 超时），已从 seed 中移除；
-// 真实部署替换网关或恢复这些模型路由后再加回。
+// 2026-09-01 用户显式启用 minimax-m3 / kimi-k3 / gemini-3.5-flash：
+// 这三个 id 在 https://llm.kxpms.cn/v1 网关已经验证可路由，
+// 重新加入 preferred seed。
 var DefaultLLMGatewayPreferredModels = []string{
 	"glm-5.2",
+	"minimax-m3",
+	"kimi-k3",
 	"claude-sonnet-5",
 	"gpt-5.6-terra",
 	"claude-opus-5",
 	"claude-fable-5",
 	"gpt-5.6-sol",
+	"gemini-3.5-flash",
 }
 
 // LLMGatewayConfig 描述注入到 OpenCode 的 LLM Gateway 配置。

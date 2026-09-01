@@ -570,7 +570,10 @@ func main() {
 	// 为已知 workspace 写入默认 baseURL/apiKey/preferred 9 模型 seed，避免 reset 后
 	// dev 用户首次进入设置页面临全空。
 	defaultWorkspaces := []string{"default"}
-	if pool != nil && srv.LLMGatewayStore() != nil {
+	// 2026-09-01：seed gate 由 `pool != nil` 改为 `srv.LLMGatewayStore() != nil`，
+	// 让 SQLite fallback 路径（无 PG）也能写入默认 baseURL/apiKey/preferred 9 模型 seed。
+	// 之前 gate 限制下 reset 后的 dev 实例（仅 SQLite）永远拿不到 seed。
+	if srv.LLMGatewayStore() != nil {
 		if identStore != nil {
 			if list, lerr := identStore.ListAllWorkspaceIDs(context.Background()); lerr == nil {
 				for _, id := range list {
@@ -584,7 +587,7 @@ func main() {
 		srv.EnsureLLMGatewayDefaults(defaultWorkspaces...)
 	}
 	srv.LoadLLMGatewayFromDB("default")
-	if pool != nil && srv.LLMGatewayStore() != nil {
+	if srv.LLMGatewayStore() != nil {
 		workspaces := []string{"default"}
 		if identStore != nil {
 			if list, lerr := identStore.ListAllWorkspaceIDs(context.Background()); lerr == nil {
@@ -594,7 +597,11 @@ func main() {
 			}
 		}
 		srv.LoadLLMGatewayFromDB(workspaces...)
-		log.Println("LLM gateway config persistence enabled (PG)")
+		if pool != nil {
+			log.Println("LLM gateway config persistence enabled (PG)")
+		} else {
+			log.Println("LLM gateway config persistence enabled (SQLite fallback)")
+		}
 	}
 
 	// ---- 网关运维控制面：节点注册表 ----

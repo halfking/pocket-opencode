@@ -55,9 +55,9 @@ type Config struct {
 	MCPScopeString string // POCKET_MCP_SCOPES：逗号分隔，默认 "tasks,sessions"
 	// 认证（Phase 0）
 	JWTSecret   string // POCKET_JWT_SECRET：签发/校验 app JWT
-	DevAuth     bool   // POCKET_DEV_AUTH：允许 admin/admin 开发登录（生产必须不设或 false）
-	DevAuthUser string // POCKET_AUTH_USER：首用户 bootstrap 用户名（缺省 admin）
-	DevAuthPass string // POCKET_AUTH_PASS：首用户 bootstrap 密码（缺省 admin；仅 POCKET_DEV_AUTH=true 时生效）
+	DevAuth     bool   // POCKET_DEV_AUTH：允许 dev bootstrap 用户登录（生产必须不设或 false）
+	DevAuthUser string // POCKET_AUTH_USER：dev bootstrap 用户名（缺省 admin）
+	DevAuthPass string // POCKET_AUTH_PASS：dev bootstrap 密码（缺省 Veritrans&9527；仅 POCKET_DEV_AUTH=true 时生效）
 
 	// 邮箱 OAuth + IMAP fetch
 	EmailGoogleClientID        string // POCKET_EMAIL_GOOGLE_CLIENT_ID

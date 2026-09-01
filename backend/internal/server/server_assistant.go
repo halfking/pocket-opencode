@@ -9,6 +9,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -116,10 +117,25 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		userID = u.ID
 		role = u.Role
-	} else if s.cfg.DevAuth && body.Username == "admin" && body.Password == "admin" {
-		// 路径 2（dev 兼容）：POCKET_DEV_AUTH=true 时 admin/admin。
-		userID = "user-admin"
-		role = "admin"
+	} else if s.cfg.DevAuth {
+		// 路径 2（dev 兼容）：POCKET_DEV_AUTH=true 时按 cfg.DevAuthUser/DevAuthPass
+		// 校验（缺省 admin / Veritrans&9527）。允许通过 env 覆盖，避免再次硬编码。
+		devUser := s.cfg.DevAuthUser
+		if devUser == "" {
+			devUser = "admin"
+		}
+		devPass := s.cfg.DevAuthPass
+		if devPass == "" {
+			devPass = "Veritrans&9527"
+		}
+		if subtle.ConstantTimeCompare([]byte(body.Username), []byte(devUser)) == 1 &&
+			subtle.ConstantTimeCompare([]byte(body.Password), []byte(devPass)) == 1 {
+			userID = "user-admin"
+			role = "admin"
+		} else {
+			writeError(w, http.StatusUnauthorized, "invalid credentials")
+			return
+		}
 	} else {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return

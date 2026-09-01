@@ -637,6 +637,11 @@ let composerRO: ResizeObserver | null = null
 onMounted(() => {
   store.init()
   syncRouteTitle()
+  // 从 AI 工具页「快速提问」跳转进来时预填草稿（无会话场景的新对话入口）。
+  const prefill = route.query.prompt
+  if (typeof prefill === 'string' && prefill.trim()) {
+    draft.value = prefill.trim()
+  }
   if (scrollEl.value && chromeCtx) {
     unbindChromeScroll = bindScrollHideChrome(scrollEl.value, chromeCtx)
   }
