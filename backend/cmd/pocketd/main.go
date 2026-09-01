@@ -115,7 +115,11 @@ func main() {
 			log.Fatalf("marketplace store: %v", err)
 		}
 		marketplaceStore = ms
-		log.Println("Module stores initialized (PG, scheduled tasks and marketplace enabled)")
+		if marketplaceStore != nil {
+			log.Println("Module stores initialized (PG, scheduled tasks and marketplace enabled)")
+		} else {
+			log.Println("Module stores initialized (PG, scheduled tasks enabled; marketplace remote-only)")
+		}
 	}
 
 	// ---- Auth (multi-user, JWT) ----
@@ -348,13 +352,13 @@ func main() {
 	var mcpClient *mcp.Client
 	if cfg.MCPBaseURL != "" {
 		if cfg.MCPTenantID == "" {
-			log.Printf("WARN: POCKET_MCP_TENANT_ID empty; ACC JWT tenant_id will be empty (ACC may reject)")
+			log.Printf("WARN: POCKET_MCP_TENANT_ID empty; ACC MCP client disabled (Phase 4 cloud dispatcher will not activate)")
+		} else if cfg.MCPAPIKey == "" {
+			log.Printf("WARN: POCKET_MCP_API_KEY empty; ACC MCP client disabled (Phase 4 cloud dispatcher will not activate)")
+		} else {
+			mcpClient = mcp.NewClientWithAuth(cfg.MCPBaseURL, cfg.MCPAPIKey, cfg.MCPTenantID, mcpScopes, cfg.MCPInsecureTLS)
+			log.Printf("ACC MCP client configured: %s (tenant=%q scopes=%v)", cfg.MCPBaseURL, cfg.MCPTenantID, mcpScopes)
 		}
-		if cfg.MCPAPIKey == "" {
-			log.Printf("WARN: POCKET_MCP_API_KEY empty; ACC JWT cannot be signed")
-		}
-		mcpClient = mcp.NewClientWithAuth(cfg.MCPBaseURL, cfg.MCPAPIKey, cfg.MCPTenantID, mcpScopes, cfg.MCPInsecureTLS)
-		log.Printf("ACC MCP client configured: %s (tenant=%q scopes=%v)", cfg.MCPBaseURL, cfg.MCPTenantID, mcpScopes)
 	}
 
 	// ---- Phase C: 无状态 AI 网关（嵌入/LLM 代理，不存用户数据）----
@@ -740,18 +744,21 @@ func main() {
 				registered++
 			}
 		}
-		if mcpClient != nil {
+		if mcpClient != nil && mcpClient.TenantID() != "" {
 			if err := sched.Register(scheduledexecutors.NewACCMCPExecutor(mcpClient)); err != nil {
 				log.Printf("WARN: register ACC MCP scheduled executor: %v", err)
 			} else {
 				registered++
 			}
 		}
+		phase4Registered := false
 		if err := registerPhase4Executors(sched, phase4Orchestrator); err != nil {
 			log.Printf("WARN: register Phase 4 cloud dispatch scheduled executor: %v", err)
 		} else if phase4Orchestrator != nil && phase4Orchestrator.Cloud() != nil && phase4Orchestrator.Cloud().IsAvailable() {
+			phase4Registered = true
 			registered++
 		}
+		_ = phase4Registered
 		allowPrivateWebhook := strings.EqualFold(strings.TrimSpace(os.Getenv("POCKET_SCHEDULER_WEBHOOK_ALLOW_PRIVATE")), "true")
 		if err := sched.Register(scheduledexecutors.NewSafeHTTPWebhookExecutor(cfg.SchedulerWebhookTimeout, allowPrivateWebhook)); err != nil {
 			log.Printf("WARN: register webhook scheduled executor: %v", err)
@@ -780,10 +787,7 @@ func main() {
 	// ---- AI 对话智能体角色管理 ----
 	// 优先 PostgreSQL（Acc 模式：跨设备同步）；无 PG 时降级到本地 SQLite
 	// （单机离线也能用 AI 对话 + 内置/自定义角色，但不提供云端同步）。
-	chatAgentStore, chatAgentSync, err := initChatAgentStores(pool, dataDir)
-	if err != nil {
-		log.Fatalf("chat agent marketplace migration: %v", err)
-	}
+	chatAgentStore, chatAgentSync := initChatAgentStores(pool, dataDir)
 	if chatAgentStore == nil {
 		log.Println("WARN: chat agent store not initialized")
 	} else {
@@ -1130,24 +1134,24 @@ func registerPhase4Executors(scheduler *scheduledtask.Scheduler, orch *orchestra
 //   - 无 PG → 返回 SQLiteStore（仅本地使用）+ nil sync（同步端点 503）
 //   - 两边都失败 → 返回 nil（chatAgent 路由将返回 503）
 //
-// Marketplace schema migration errors are returned instead of silently falling
-// back to SQLite: a configured PostgreSQL deployment must not run with a
-// partially upgraded chat_agents table.
-func initChatAgentStores(pool *pgxpool.Pool, dataDir string) (chatagent.StoreIface, *chatagent.SyncStore, error) {
+// base schema 初始化失败时 PG 路径视为 fatal,避免 PG 已配置却以 SQLite
+// 启动造成的认知偏差;marketplace schema migration 失败降级为 warning,
+// 因为 marketplace 是独立可选特性,缺失它不应阻断 chatagent 启动。
+func initChatAgentStores(pool *pgxpool.Pool, dataDir string) (chatagent.StoreIface, *chatagent.SyncStore) {
 	if pool != nil {
 		pgStore := chatagent.NewStore(pool)
 		if err := pgStore.Init(context.Background()); err != nil {
-			return nil, nil, err
+			log.Fatalf("chat agent store: %v", err)
 		}
 		if err := chatagent.RunMarketplaceMigration(context.Background(), pool); err != nil {
-			return nil, nil, err
+			log.Printf("WARN: chatagent marketplace migration skipped: %v", err)
 		}
 		syncStore := chatagent.NewSyncStore(pool)
 		if err := syncStore.Init(context.Background()); err != nil {
 			log.Printf("WARN: chatagent sync init failed: %v (running without cloud sync)", err)
-			return pgStore, nil, nil
+			return pgStore, nil
 		}
-		return pgStore, syncStore, nil
+		return pgStore, syncStore
 	}
 
 	// PG 不可用 → SQLite fallback（单机离线模式）
@@ -1155,15 +1159,15 @@ func initChatAgentStores(pool *pgxpool.Pool, dataDir string) (chatagent.StoreIfa
 	store, err := chatagent.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Printf("WARN: chatagent SQLite store init failed: %v", err)
-		return nil, nil, nil
+		return nil, nil
 	}
 	if err := store.Init(context.Background()); err != nil {
 		log.Printf("WARN: chatagent SQLite schema init failed: %v", err)
 		store.Close()
-		return nil, nil, nil
+		return nil, nil
 	}
 	log.Printf("Chat Agent store using SQLite fallback at %s (no cloud sync)", dbPath)
-	return store, nil, nil
+	return store, nil
 }
 
 // 旧 SQLite fallback 调用 NewSQLiteStore / store.Close —— 该实现在 main 上

@@ -157,9 +157,14 @@ func (s *Server) handleScheduledTaskItem(w http.ResponseWriter, r *http.Request,
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := s.validateTaskExecutionAvailability(input.Kind); err != nil {
-			writeError(w, http.StatusServiceUnavailable, err.Error())
-			return
+		// PATCH 路径只在客户端真正修改 Kind 时校验执行能力,避免对未改动
+		// kind 的 PATCH 返回误导性的 503。Defaults() 留作 POST 专属语义:
+		// PATCH 不应把未提供的字段清零或补默认。
+		if patch.Kind != nil {
+			if err := s.validateTaskExecutionAvailability(input.Kind); err != nil {
+				writeError(w, http.StatusServiceUnavailable, err.Error())
+				return
+			}
 		}
 		sch, _ := scheduledtask.NewSchedule(input.ScheduleKind, input.ScheduleExpr, input.Timezone)
 		next := int64(0)
