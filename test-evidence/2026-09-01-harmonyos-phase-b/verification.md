@@ -1,6 +1,7 @@
 # HarmonyOS Phase B Verification
 
 **Worktree:** `feat/harmonyos-phase-b` from `origin/main` at `50f172b`
+**Commits:** `b0a60ce`, `86db98e`
 **Run date:** 2026-09-01
 **Scope:** HarmonyOS rawfile WebSocket endpoint correction, frontend regression, Android/iOS non-regression, and local toolchain readiness.
 
