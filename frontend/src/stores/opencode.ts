@@ -4,6 +4,8 @@
  */
 import { defineStore } from 'pinia'
 import { api } from '../api/client'
+import { apiBase } from '../api/http'
+import { buildWebSocketUrl } from '../api/websocket-url'
 import type { Instance, Session, Task } from '../api/client'
 
 export interface OpenCodeSession extends Session {
@@ -245,8 +247,17 @@ export const useOpenCodeStore = defineStore('opencode', {
      * 订阅 WebSocket 实时更新
      */
     subscribeToRealTimeUpdates() {
-      // WebSocket 连接
-      const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
+      const token = localStorage.getItem('pocket_token')
+      const wsUrl = buildWebSocketUrl(apiBase, token)
+      if (!wsUrl) {
+        console.warn('⚠️ WebSocket 未配置有效的 API 地址')
+        return null
+      }
+      if (!token) {
+        console.warn('⚠️ WebSocket 未连接：缺少认证 token')
+        return null
+      }
+
       const ws = new WebSocket(wsUrl)
 
       ws.onopen = () => {

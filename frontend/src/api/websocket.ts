@@ -1,4 +1,6 @@
 // WebSocket 客户端管理
+import { buildWebSocketUrl } from './websocket-url'
+
 class WebSocketClient {
   private ws: WebSocket | null = null
   private reconnectTimer: number | null = null
@@ -11,6 +13,10 @@ class WebSocketClient {
   }
 
   connect() {
+    if (!this.url) {
+      console.warn('WebSocket connection skipped: API base is not configured')
+      return
+    }
     if (this.ws?.readyState === WebSocket.OPEN) {
       return
     }
@@ -133,21 +139,9 @@ class WebSocketClient {
 // 创建全局 WebSocket 实例
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 const TOKEN_KEY = 'pocket_token'
+const wsUrl = buildWebSocketUrl(API_BASE, localStorage.getItem(TOKEN_KEY))
 
-// 动态构造带token的WebSocket URL
-function getWsUrl(): string {
-  const token = localStorage.getItem(TOKEN_KEY)
-  const baseWsUrl = API_BASE.replace(/^http/, 'ws') + '/ws'
-  
-  // 如果有token，将其作为查询参数附加到URL
-  if (token) {
-    return `${baseWsUrl}?token=${encodeURIComponent(token)}`
-  }
-  
-  return baseWsUrl
-}
-
-export const wsClient = new WebSocketClient(getWsUrl())
+export const wsClient = new WebSocketClient(wsUrl ?? '')
 
 /**
  * 延迟建立 WS 连接：仅在已登录（localStorage 中存在 pocket_token）时才 connect。
