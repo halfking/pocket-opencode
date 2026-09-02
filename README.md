@@ -154,7 +154,7 @@ cd opencode-pocket
 cd backend
 
 # 配置环境变量
-export JWT_SECRET="your-secret-key"
+export POCKET_JWT_SECRET="your-secret-key"
 export POCKET_HTTP_PORT=8088
 export POCKET_DEV_AUTH=true
 
@@ -317,7 +317,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 openssl rand -base64 32
 
 # 配置环境变量
-export JWT_SECRET="$(openssl rand -base64 32)"
+export POCKET_JWT_SECRET="$(openssl rand -base64 32)"
 
 # 定期轮换密钥
 # 建议每30-90天轮换一次
