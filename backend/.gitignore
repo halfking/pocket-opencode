@@ -1,5 +1,5 @@
 # Build artifacts
-pocketd
+/pocketd
 *.exe
 
 # Runtime data (SQLite DBs, encryption keys generated at startup)

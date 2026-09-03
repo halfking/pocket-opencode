@@ -488,9 +488,12 @@ func main() {
 	phase4Orchestrator := newCloudOrchestrator(mcpClient)
 	if phase4Orchestrator != nil {
 		srv.SetOrchestrator(phase4Orchestrator)
-		log.Println("Phase 4 orchestrator enabled (ACC cloud dispatcher; local runtime unavailable)")
+		log.Println("✓ Phase 4 orchestrator enabled (ACC cloud dispatcher)")
+		log.Println("  Note: Local runtime is unavailable; all executions are dispatched to ACC cloud")
 	} else {
-		log.Println("INFO: Phase 4 local runtime unavailable and ACC cloud dispatcher not configured")
+		log.Println("⚠ Phase 4 Warning: Local runtime is unavailable")
+		log.Println("  ACC cloud dispatcher not configured (missing POCKET_MCP_TENANT_ID or POCKET_MCP_API_KEY)")
+		log.Println("  Phase 4 execution features will not work until cloud dispatcher is configured")
 	}
 	srv.SetAuthExt(codeStore, smtpClient, redclawAuthClient)
 	if biometricStore != nil {

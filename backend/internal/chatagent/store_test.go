@@ -2,6 +2,7 @@ package chatagent
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -12,11 +13,15 @@ func setupTestStore(t *testing.T) (*Store, context.Context) {
 	t.Helper()
 	ctx := context.Background()
 	
-	// 尝试连接测试 PostgreSQL（需要手动配置 POCKET_TEST_DB_URL）
-	dbURL := "postgres://localhost/pocket_test?sslmode=disable"
+	// 从环境变量读取数据库连接字符串
+	dbURL := os.Getenv("POCKET_TEST_POSTGRES_DSN")
+	if dbURL == "" {
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set")
+	}
+	
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		t.Skipf("PostgreSQL not available (set POCKET_TEST_DB_URL): %v", err)
+		t.Skipf("PostgreSQL not available: %v", err)
 	}
 	t.Cleanup(func() { pool.Close() })
 

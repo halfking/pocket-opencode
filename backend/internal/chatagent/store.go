@@ -112,7 +112,7 @@ func (s *Store) Create(ctx context.Context, a *Agent) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO chat_agents (id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin, marketplace_id, skill_refs, publisher, version, tags, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-	`, a.ID, a.WorkspaceID, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt, a.IsBuiltin, nullIfEmpty(a.MarketplaceID), skillRefsJSON, nullIfEmpty(a.Publisher), nullIfEmpty(a.Version), tagsJSON, a.CreatedAt, a.UpdatedAt)
+	`, a.ID, a.WorkspaceID, a.Name, a.Description, a.Department, a.Emoji, a.Color, a.SystemPrompt, boolToInt(a.IsBuiltin), nullIfEmpty(a.MarketplaceID), skillRefsJSON, nullIfEmpty(a.Publisher), nullIfEmpty(a.Version), tagsJSON, a.CreatedAt, a.UpdatedAt)
 	return err
 }
 
@@ -308,4 +308,12 @@ func nullIfEmpty(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+// boolToInt 将 Go bool 转换为 int，以兼容 PG 的 INTEGER 类型。
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
