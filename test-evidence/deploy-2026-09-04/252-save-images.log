@@ -1,0 +1,8 @@
+▶ docker save opencode-pocket:pocket-opp → /Users/xutaohuang/kaixuan/openpocket/images/opencode-pocket_pocket-opp_amd64_20260905-002846.tar
+▶ gzip /Users/xutaohuang/kaixuan/openpocket/images/opencode-pocket_pocket-opp_amd64_20260905-002846.tar
+ 23M	/Users/xutaohuang/kaixuan/openpocket/images/opencode-pocket_pocket-opp_amd64_20260905-002846.tar.gz
+▶ docker save opencode-pocket-frontend:pocket-opp → /Users/xutaohuang/kaixuan/openpocket/images/opencode-pocket-frontend_pocket-opp_amd64_20260905-002846.tar
+▶ gzip /Users/xutaohuang/kaixuan/openpocket/images/opencode-pocket-frontend_pocket-opp_amd64_20260905-002846.tar
+ 28M	/Users/xutaohuang/kaixuan/openpocket/images/opencode-pocket-frontend_pocket-opp_amd64_20260905-002846.tar.gz
+✅ 导出完成 → /Users/xutaohuang/kaixuan/openpocket/images/
+   252 加载: sudo ./deploy/bin/load-images.sh

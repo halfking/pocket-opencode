@@ -1,0 +1,304 @@
+━━━ build-images: rev=8a331c7 tag=pocket-opp arches=[amd64] ━━━
+▶ [frontend] npm ci + npm run build（host node v22.22.3）
+
+> build
+> vue-tsc --noEmit && vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 537 modules transformed.
+rendering chunks...
+[plugin:vite:reporter] [plugin vite:reporter] 
+(!) /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/node_modules/@capacitor/core/dist/index.js is dynamically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/native/keystore.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/native/util.ts but also statically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/node_modules/@capacitor-community/sqlite/dist/esm/index.js, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/node_modules/@capacitor-community/sqlite/dist/esm/web.js, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/node_modules/@capacitor-community/text-to-speech/dist/esm/index.js, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/node_modules/@capacitor-community/text-to-speech/dist/esm/web.js, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/node_modules/@capacitor/app/dist/esm/index.js, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/node_modules/@capacitor/app/dist/esm/web.js, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/node_modules/@capacitor/camera/dist/esm/index.js, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/node_modules/@capacitor/camera/dist/esm/web.js, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/node_modules/@capacitor/local-notifications/dist/esm/index.js, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/node_modules/@capacitor/local-notifications/dist/esm/web.js, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/node_modules/@capacitor/status-bar/dist/esm/index.js, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/app/AppLayout.vue?vue&type=script&setup=true&lang.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/composables/useAppSettings.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/composables/useApprovalAlerts.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/composables/useCameraCapture.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/composables/useNotificationPermission.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/composables/useSpeech.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/composables/useStatusBar.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/settings/SettingsPermissionsView.vue?vue&type=script&setup=true&lang.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/native/biometricAuth.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/native/runtime-platform.ts, dynamic import will not move module into another chunk.
+
+[plugin:vite:reporter] [plugin vite:reporter] 
+(!) /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/node_modules/@capacitor/app/dist/esm/index.js is dynamically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/native/mobileSyncRuntime.ts but also statically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/app/AppLayout.vue?vue&type=script&setup=true&lang.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/settings/SettingsPermissionsView.vue?vue&type=script&setup=true&lang.ts, dynamic import will not move module into another chunk.
+
+[plugin:vite:reporter] [plugin vite:reporter] 
+(!) /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/api/http.ts is dynamically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/sessions/useSessionEvents.ts but also statically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/api/accTasks.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/api/approvals.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/api/auth.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/api/chatAgent.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/api/client.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/api/email.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/api/gateway.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/api/meetings.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/api/stt.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/composables/usePendingApprovals.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/auth/LoginView.vue?vue&type=script&setup=true&lang.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/email/EmailAccountSetup.vue?vue&type=script&setup=true&lang.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/email/EmailSummaryView.vue?vue&type=script&setup=true&lang.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/gateway/GatewayCredentialDetailView.vue?vue&type=script&setup=true&lang.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/gateway/GatewayCredentialsView.vue?vue&type=script&setup=true&lang.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/gateway/GatewayModelsView.vue?vue&type=script&setup=true&lang.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/gateway/GatewayProvidersView.vue?vue&type=script&setup=true&lang.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/marketplace/api.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/notes/NoteDetailView.vue?vue&type=script&setup=true&lang.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/notes/notes-store.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/scheduled-tasks/api.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/tasks/useInstanceApprovals.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/vault/sync-store.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/stores/connectivity.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/stores/session.ts, dynamic import will not move module into another chunk.
+
+[plugin:vite:reporter] [plugin vite:reporter] 
+(!) /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/native/local-db.ts is dynamically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/sessions/useSessionDrafts.ts but also statically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/composables/usePendingApprovals.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/contact/contacts-store.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/email/emails-store.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/meetings/meeting-ingest.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/meetings/meetings-store.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/meetings/voiceprints-store.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/notes/notes-store.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/pkm/pkm-store.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/vault/vault-store.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/native/asset-store.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/native/lobster-init.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/native/vector.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/stores/connectivity.ts, dynamic import will not move module into another chunk.
+
+[plugin:vite:reporter] [plugin vite:reporter] 
+(!) /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/native/lobster-init.ts is dynamically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/sessions/useSessionDrafts.ts but also statically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/app/routeGuards.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/composables/usePendingApprovals.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/auth/LoginView.vue?vue&type=script&setup=true&lang.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/auth/MasterPasswordDialog.vue?vue&type=script&setup=true&lang.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/sessions/SessionWorkspaceView.vue?vue&type=script&setup=true&lang.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/stores/connectivity.ts, dynamic import will not move module into another chunk.
+
+[plugin:vite:reporter] [plugin vite:reporter] 
+(!) /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/native/outboxStore.ts is dynamically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/stores/connectivity.ts but also statically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/composables/usePendingApprovals.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/native/mobileSyncRuntime.ts, dynamic import will not move module into another chunk.
+
+[plugin:vite:reporter] [plugin vite:reporter] 
+(!) /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/services/idempotentWsBus.ts is dynamically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/sessions/useSessionEvents.ts but also statically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/composables/usePendingApprovals.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/tasks/useInstanceApprovals.ts, /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/stores/approval.ts, dynamic import will not move module into another chunk.
+
+[plugin:vite:reporter] [plugin vite:reporter] 
+(!) /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/sessions/SessionConversationView.vue is dynamically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/app/router-mobile.ts but also statically imported by /Users/xutaohuang/workspace/ai-native-tools/openpocket/frontend/src/features/sessions/SessionWorkspaceView.vue?vue&type=script&setup=true&lang.ts, dynamic import will not move module into another chunk.
+
+computing gzip size...
+dist/index.html                                         1.34 kB │ gzip:   0.81 kB
+dist/assets/material-symbols-outlined-CNROmbfF.woff2    5.47 kB
+dist/assets/SsoCallbackView-C9eTt5hm.css                0.50 kB │ gzip:   0.32 kB
+dist/assets/TranscriptSegmentList-BVlyNwvw.css          1.17 kB │ gzip:   0.51 kB
+dist/assets/MeetingListView-dWltSTc0.css                1.55 kB │ gzip:   0.61 kB
+dist/assets/ContactDetailView-B8Nw9ftb.css              1.82 kB │ gzip:   0.59 kB
+dist/assets/PkmTodayView-CpLeybCh.css                   1.91 kB │ gzip:   0.70 kB
+dist/assets/ContactListView-CmZ3usFR.css                1.95 kB │ gzip:   0.64 kB
+dist/assets/PkmNoteView-B24fUgJB.css                    2.06 kB │ gzip:   0.76 kB
+dist/assets/MeetingDetailView-qVk7bdSt.css              2.11 kB │ gzip:   0.65 kB
+dist/assets/AgentEditView-CSp2x-Qq.css                  2.11 kB │ gzip:   0.71 kB
+dist/assets/GatewayAvailableModelsView-bcYEddE1.css     2.33 kB │ gzip:   0.73 kB
+dist/assets/GatewayOverviewView-CemKI3iu.css            2.43 kB │ gzip:   0.71 kB
+dist/assets/GatewayCredentialsView-BU8XiXIy.css         2.50 kB │ gzip:   0.70 kB
+dist/assets/GatewayModelsView-DtlLo4Zu.css              2.78 kB │ gzip:   0.77 kB
+dist/assets/WorkbuddyView-CgUcDXQz.css                  2.90 kB │ gzip:   0.71 kB
+dist/assets/AgentDetailView-BrYW_tRD.css                3.13 kB │ gzip:   0.80 kB
+dist/assets/SkillMarketView-BgE9xYuH.css                3.13 kB │ gzip:   0.75 kB
+dist/assets/AgentMarketView-KbX_Ms9O.css                3.21 kB │ gzip:   0.74 kB
+dist/assets/GatewayProvidersView-CpFq7Rv4.css           3.21 kB │ gzip:   0.81 kB
+dist/assets/SettingsPermissionsView-qSKHsysV.css        3.35 kB │ gzip:   0.86 kB
+dist/assets/ForgotPasswordView-NFWDo5MP.css             3.54 kB │ gzip:   0.93 kB
+dist/assets/GatewayLiveStreamView-BlYa7_1c.css          3.71 kB │ gzip:   1.03 kB
+dist/assets/GatewayNodeListView-BPYOaexO.css            3.73 kB │ gzip:   0.99 kB
+dist/assets/GatewayRoutingConfigView-CB0ZR8c6.css       4.02 kB │ gzip:   1.08 kB
+dist/assets/GatewayCredentialDetailView-KGzXV7zN.css    4.07 kB │ gzip:   0.99 kB
+dist/assets/CostQuotaView-Y1uKUJSZ.css                  4.10 kB │ gzip:   1.05 kB
+dist/assets/SettingsLLMGateway-tBBvkOGh.css             6.00 kB │ gzip:   1.53 kB
+dist/assets/AgentLibraryView-DVp2YeYa.css               6.17 kB │ gzip:   1.53 kB
+dist/assets/MeetingRecordView-BOMbUvPj.css              8.34 kB │ gzip:   1.94 kB
+dist/assets/AIChatView-Dc1_2fgB.css                    14.50 kB │ gzip:   2.95 kB
+dist/assets/index-B237CrBk.css                        192.83 kB │ gzip:  29.20 kB
+dist/assets/index-BGjQXmjy.js                           0.45 kB │ gzip:   0.31 kB
+dist/assets/Loading-B50wYmI1.js                         0.67 kB │ gzip:   0.46 kB
+dist/assets/web-Ds74G5JC.js                             0.84 kB │ gzip:   0.40 kB
+dist/assets/SsoCallbackView-CUwetgJj.js                 1.16 kB │ gzip:   0.84 kB
+dist/assets/web-CffkpaRU.js                             1.68 kB │ gzip:   0.69 kB
+dist/assets/ContactDetailView-B9fbtyRY.js               2.17 kB │ gzip:   1.29 kB
+dist/assets/MeetingListView-CIKk_oDe.js                 2.47 kB │ gzip:   1.52 kB
+dist/assets/ContactListView-aidyQBBV.js                 2.52 kB │ gzip:   1.56 kB
+dist/assets/store-ULsjOlGA.js                           2.65 kB │ gzip:   1.09 kB
+dist/assets/AgentDetailView-C0gZqTLf.js                 2.65 kB │ gzip:   1.33 kB
+dist/assets/pkm-store-zuFaGrYL.js                       2.71 kB │ gzip:   1.04 kB
+dist/assets/PkmTodayView-D8Oxspu2.js                    2.80 kB │ gzip:   1.66 kB
+dist/assets/WorkbuddyView-DawZZYEk.js                   3.09 kB │ gzip:   1.73 kB
+dist/assets/gateway-C5zqJNxc.js                         3.11 kB │ gzip:   0.78 kB
+dist/assets/SkillMarketView-O0O6jZkb.js                 3.41 kB │ gzip:   1.87 kB
+dist/assets/GatewayAvailableModelsView-BGSWA79e.js      3.43 kB │ gzip:   1.75 kB
+dist/assets/AgentMarketView-CnL36Hcq.js                 3.79 kB │ gzip:   2.06 kB
+dist/assets/ForgotPasswordView-BtXFuhVb.js              3.79 kB │ gzip:   1.86 kB
+dist/assets/GatewayProvidersView-B9p76fJm.js            4.00 kB │ gzip:   2.12 kB
+dist/assets/meeting-audio-CtZ0QnVY.js                   4.26 kB │ gzip:   1.59 kB
+dist/assets/MeetingDetailView-D4J2GCNo.js               4.28 kB │ gzip:   2.11 kB
+dist/assets/GatewayCredentialsView-Hjbuw9Nn.js          4.30 kB │ gzip:   2.13 kB
+dist/assets/web-CHRBhRcW.js                             4.59 kB │ gzip:   1.36 kB
+dist/assets/GatewayModelsView-CbaH3aY9.js               4.62 kB │ gzip:   2.36 kB
+dist/assets/GatewayOverviewView-C7UONnNJ.js             5.27 kB │ gzip:   2.23 kB
+dist/assets/AgentEditView-DuYWy-yO.js                   5.29 kB │ gzip:   2.48 kB
+dist/assets/CostQuotaView-CyPf1q5l.js                   5.53 kB │ gzip:   2.56 kB
+dist/assets/GatewayNodeListView-D4LdbMp0.js             5.88 kB │ gzip:   2.92 kB
+dist/assets/GatewayCredentialDetailView-C_btl1zK.js     5.88 kB │ gzip:   2.62 kB
+dist/assets/GatewayLiveStreamView-Clz7oASF.js           6.24 kB │ gzip:   2.87 kB
+dist/assets/SettingsPermissionsView-IlyYUFxn.js         7.39 kB │ gzip:   3.19 kB
+dist/assets/AgentLibraryView-Cgjce8qH.js                7.83 kB │ gzip:   3.37 kB
+dist/assets/GatewayRoutingConfigView-MqFjgaNt.js        8.67 kB │ gzip:   3.39 kB
+dist/assets/SettingsLLMGateway-DOAt4vE5.js              9.43 kB │ gzip:   4.39 kB
+dist/assets/web-D0sOJ8II.js                             9.63 kB │ gzip:   1.34 kB
+dist/assets/index-C5lClEyZ.js                          10.18 kB │ gzip:   3.34 kB
+dist/assets/TranscriptSegmentList-DpiwPqwx.js          10.57 kB │ gzip:   4.33 kB
+dist/assets/index-CPWjYeqP.js                          15.03 kB │ gzip:   6.42 kB
+dist/assets/MeetingRecordView-Bq5V3FQO.js              19.98 kB │ gzip:   8.55 kB
+dist/assets/AIChatView-CAfOmkVS.js                     26.37 kB │ gzip:  10.22 kB
+dist/assets/jeep-sqlite.entry-sMvc6707.js             299.99 kB │ gzip:  84.49 kB
+dist/assets/PkmNoteView-D8iR9dpE.js                   398.90 kB │ gzip: 127.59 kB
+dist/assets/index-DTE1bZKL.js                         685.73 kB │ gzip: 230.92 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 2.70s
+▶ [pocketd amd64] go build
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile.pocketd-prebuilt
+#1 transferring dockerfile: 1.45kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/alpine:3.21
+#2 DONE 2.2s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/5] FROM docker.io/library/alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+#4 resolve docker.io/library/alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d done
+#4 sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d 9.22kB / 9.22kB done
+#4 sha256:f27cad9117495d32d067133afff942cb2dc745dfe9163e949f6bfe8a6a245339 1.02kB / 1.02kB done
+#4 sha256:2607caa9805847fac4de202017bb1b830deb09f4c07dc9964a0157abbc604577 611B / 611B done
+#4 sha256:897d797d2723cf0e318402f4d6f37d51b011517e5cf09246b22155f0fa90dc81 0B / 3.65MB 0.1s
+#4 ...
+
+#5 [internal] load build context
+#5 transferring context: 24.17MB 0.2s done
+#5 DONE 0.2s
+
+#4 [1/5] FROM docker.io/library/alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+#4 sha256:897d797d2723cf0e318402f4d6f37d51b011517e5cf09246b22155f0fa90dc81 1.05MB / 3.65MB 1.4s
+#4 sha256:897d797d2723cf0e318402f4d6f37d51b011517e5cf09246b22155f0fa90dc81 2.10MB / 3.65MB 1.6s
+#4 extracting sha256:897d797d2723cf0e318402f4d6f37d51b011517e5cf09246b22155f0fa90dc81
+#4 sha256:897d797d2723cf0e318402f4d6f37d51b011517e5cf09246b22155f0fa90dc81 3.65MB / 3.65MB 1.7s done
+#4 extracting sha256:897d797d2723cf0e318402f4d6f37d51b011517e5cf09246b22155f0fa90dc81 0.1s done
+#4 DONE 1.8s
+
+#6 [2/5] RUN apk --no-cache add ca-certificates wget &&     addgroup -S pocket && adduser -S -G pocket pocket
+#6 0.093 fetch https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/APKINDEX.tar.gz
+#6 2.199 fetch https://dl-cdn.alpinelinux.org/alpine/v3.21/community/x86_64/APKINDEX.tar.gz
+#6 3.518 (1/5) Installing ca-certificates (20260413-r0)
+#6 3.820 (2/5) Installing libunistring (1.2-r0)
+#6 4.160 (3/5) Installing libidn2 (2.3.7-r0)
+#6 4.489 (4/5) Installing pcre2 (10.43-r0)
+#6 4.831 (5/5) Installing wget (1.25.0-r0)
+#6 5.167 Executing busybox-1.37.0-r14.trigger
+#6 5.203 Executing ca-certificates-20260413-r0.trigger
+#6 5.331 OK: 10 MiB in 20 packages
+#6 DONE 5.8s
+
+#7 [3/5] WORKDIR /app
+#7 DONE 0.5s
+
+#8 [4/5] COPY pocketd /app/pocketd
+#8 DONE 0.2s
+
+#9 [5/5] RUN chmod +x /app/pocketd && mkdir -p /app/data && chown -R pocket:pocket /app
+#9 DONE 0.5s
+
+#10 exporting to image
+#10 exporting layers
+#10 exporting layers 0.3s done
+#10 writing image sha256:b1d5d16235a3445f4a23afac9c74038891916c937a5fc8bf32783a22a1ec6c55
+#10 writing image sha256:b1d5d16235a3445f4a23afac9c74038891916c937a5fc8bf32783a22a1ec6c55 0.0s done
+#10 naming to docker.io/library/opencode-pocket:pocket-opp 0.0s done
+#10 DONE 0.4s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/k5rzp2jfenbhjuc3oks6qxif5
+▶ [frontend amd64] 打 nginx 镜像（复用同一份 dist）
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile.frontend-prebuilt
+#1 transferring dockerfile: 1.12kB done
+#1 DONE 0.1s
+
+#2 [internal] load metadata for docker.io/library/nginx:alpine
+#2 DONE 3.5s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [internal] load build context
+#4 transferring context: 2.21MB 0.0s done
+#4 DONE 0.1s
+
+#5 [1/3] FROM docker.io/library/nginx:alpine@sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3
+#5 resolve docker.io/library/nginx:alpine@sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3 done
+#5 sha256:bd43d3d8fdbbe597c36fea489886796466a9ea5b662e8c50897d53e190c88a3d 2.50kB / 2.50kB done
+#5 sha256:850bf2dcecff7924b238f0b7cbae7b456e5206453b784fe6b4adfc949add274a 0B / 4.40MB 0.1s
+#5 sha256:af7dd138f4591521064c208da6af07f487ebc3e5b350989c0ec2017b3e5208e3 0B / 628B 0.1s
+#5 sha256:58c524ea09ced2269cb14533d95b80de9fea9532abbf171585d8acee413893f2 0B / 956B 0.1s
+#5 sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3 10.33kB / 10.33kB done
+#5 sha256:1b595815db669d0c994a880f3d091111b803dec3eb4c7624f0dbe50cee60dd48 12.32kB / 12.32kB done
+#5 sha256:af7dd138f4591521064c208da6af07f487ebc3e5b350989c0ec2017b3e5208e3 628B / 628B 0.6s done
+#5 sha256:bc98d76756163f687c200ed6114df3904623bbb5e7698b420efaf8ef3c81dfcf 0B / 404B 0.7s
+#5 sha256:58c524ea09ced2269cb14533d95b80de9fea9532abbf171585d8acee413893f2 956B / 956B 1.0s done
+#5 sha256:51900e10fb9cfad93aa74360e5f938efcbe6d3396a380867b7561c84e5cd2daf 0B / 1.21kB 1.2s
+#5 sha256:bc98d76756163f687c200ed6114df3904623bbb5e7698b420efaf8ef3c81dfcf 404B / 404B 1.9s done
+#5 sha256:51900e10fb9cfad93aa74360e5f938efcbe6d3396a380867b7561c84e5cd2daf 1.21kB / 1.21kB 1.9s done
+#5 sha256:8f924cf5086c7b8a67e8b3e03b22851c1de8e11b0433c21904ef340d89e5014e 0B / 1.40kB 2.1s
+#5 sha256:6636b9fc203ce74d0b07a1d3f48cfa0151b23fa5e787232908e560673a66b553 0B / 20.52MB 2.1s
+#5 sha256:850bf2dcecff7924b238f0b7cbae7b456e5206453b784fe6b4adfc949add274a 1.05MB / 4.40MB 2.6s
+#5 sha256:850bf2dcecff7924b238f0b7cbae7b456e5206453b784fe6b4adfc949add274a 2.10MB / 4.40MB 2.8s
+#5 sha256:850bf2dcecff7924b238f0b7cbae7b456e5206453b784fe6b4adfc949add274a 3.15MB / 4.40MB 2.9s
+#5 sha256:8f924cf5086c7b8a67e8b3e03b22851c1de8e11b0433c21904ef340d89e5014e 1.40kB / 1.40kB 2.8s done
+#5 extracting sha256:850bf2dcecff7924b238f0b7cbae7b456e5206453b784fe6b4adfc949add274a
+#5 sha256:850bf2dcecff7924b238f0b7cbae7b456e5206453b784fe6b4adfc949add274a 4.40MB / 4.40MB 2.9s done
+#5 extracting sha256:850bf2dcecff7924b238f0b7cbae7b456e5206453b784fe6b4adfc949add274a 0.1s done
+#5 extracting sha256:af7dd138f4591521064c208da6af07f487ebc3e5b350989c0ec2017b3e5208e3
+#5 extracting sha256:af7dd138f4591521064c208da6af07f487ebc3e5b350989c0ec2017b3e5208e3 done
+#5 extracting sha256:58c524ea09ced2269cb14533d95b80de9fea9532abbf171585d8acee413893f2 done
+#5 extracting sha256:bc98d76756163f687c200ed6114df3904623bbb5e7698b420efaf8ef3c81dfcf done
+#5 sha256:6636b9fc203ce74d0b07a1d3f48cfa0151b23fa5e787232908e560673a66b553 1.05MB / 20.52MB 3.8s
+#5 extracting sha256:51900e10fb9cfad93aa74360e5f938efcbe6d3396a380867b7561c84e5cd2daf done
+#5 sha256:6636b9fc203ce74d0b07a1d3f48cfa0151b23fa5e787232908e560673a66b553 2.10MB / 20.52MB 4.0s
+#5 extracting sha256:8f924cf5086c7b8a67e8b3e03b22851c1de8e11b0433c21904ef340d89e5014e done
+#5 sha256:6636b9fc203ce74d0b07a1d3f48cfa0151b23fa5e787232908e560673a66b553 3.15MB / 20.52MB 4.1s
+#5 sha256:6636b9fc203ce74d0b07a1d3f48cfa0151b23fa5e787232908e560673a66b553 7.34MB / 20.52MB 4.5s
+#5 sha256:6636b9fc203ce74d0b07a1d3f48cfa0151b23fa5e787232908e560673a66b553 11.53MB / 20.52MB 4.6s
+#5 sha256:6636b9fc203ce74d0b07a1d3f48cfa0151b23fa5e787232908e560673a66b553 15.73MB / 20.52MB 4.9s
+#5 sha256:6636b9fc203ce74d0b07a1d3f48cfa0151b23fa5e787232908e560673a66b553 19.92MB / 20.52MB 5.0s
+#5 extracting sha256:6636b9fc203ce74d0b07a1d3f48cfa0151b23fa5e787232908e560673a66b553
+#5 sha256:6636b9fc203ce74d0b07a1d3f48cfa0151b23fa5e787232908e560673a66b553 20.52MB / 20.52MB 5.0s done
+#5 extracting sha256:6636b9fc203ce74d0b07a1d3f48cfa0151b23fa5e787232908e560673a66b553 0.4s done
+#5 DONE 5.7s
+
+#6 [2/3] COPY dist/ /usr/share/nginx/html/
+#6 DONE 0.1s
+
+#7 [3/3] COPY nginx.conf /etc/nginx/conf.d/default.conf
+#7 DONE 0.0s
+
+#8 exporting to image
+#8 exporting layers
+#8 exporting layers 0.0s done
+#8 writing image sha256:252b739526dbaaca341b54077f8fe30cc3e4f00d456789e9a684b7489e4a1a60 done
+#8 naming to docker.io/library/opencode-pocket-frontend:pocket-opp done
+#8 DONE 0.0s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/d4l8dnllctt070aw8wwpbvnja
+━━━ 构建完成 ━━━
+opencode-pocket:${OPP_IMAGE_TAG}  arch=amd64  rev=8a331c7
+opencode-pocket-frontend:${OPP_IMAGE_TAG}  arch=amd64  rev=8a331c7
+  ⚠️  同 tag 多架构会互相覆盖：252 发布请 --arch amd64 构建后立即 ./deploy/bin/save-images.sh
+  252 导出: ./deploy/bin/save-images.sh   本地重启: POCKET_HTTP_PORT=8090 POCKET_FRONTEND_PORT=4176 ./deploy/bin/deploy-local.sh
+━━━ build-images: rev=a7d261e tag=pocket-opp arches=[amd64] ━━━
+▶ [pocketd amd64] go build
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile.pocketd-prebuilt
+#1 transferring dockerfile: 1.45kB 0.0s done
+#1 DONE 0.1s
+
+#2 [internal] load metadata for docker.io/library/alpine:3.21
+#2 DONE 0.2s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/5] FROM docker.io/library/alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 24.17MB 0.3s done
+#5 DONE 0.4s
+
+#6 [2/5] RUN apk --no-cache add ca-certificates wget &&     addgroup -S pocket && adduser -S -G pocket pocket
+#6 CACHED
+
+#7 [3/5] WORKDIR /app
+#7 CACHED
+
+#8 [4/5] COPY pocketd /app/pocketd
+#8 DONE 0.1s
+
+#9 [5/5] RUN chmod +x /app/pocketd && mkdir -p /app/data && chown -R pocket:pocket /app
+#9 DONE 0.2s
+
+#10 exporting to image
+#10 exporting layers 0.1s done
+#10 writing image sha256:0b266f77d6b2f3399366da6319d8ba15a086a642f83e8737587cf6b8031d3dca 0.0s done
+#10 naming to docker.io/library/opencode-pocket:pocket-opp done
+#10 DONE 0.1s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/t1wu0254uuz1as3rftbg6rft3
+━━━ 构建完成 ━━━
+opencode-pocket:${OPP_IMAGE_TAG}  arch=amd64  rev=a7d261e
+  ⚠️  同 tag 多架构会互相覆盖：252 发布请 --arch amd64 构建后立即 ./deploy/bin/save-images.sh
+  252 导出: ./deploy/bin/save-images.sh   本地重启: POCKET_HTTP_PORT=8090 POCKET_FRONTEND_PORT=4176 ./deploy/bin/deploy-local.sh
