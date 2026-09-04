@@ -1,0 +1,14 @@
+HTTP/1.1 302 Found
+Access-Control-Allow-Headers: Content-Type, Authorization
+Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS
+Access-Control-Max-Age: 3600
+Content-Type: text/html; charset=utf-8
+Location: /auth/sso/callback?sso_code=9a52b5dc765d338b03e2e14551b15c7c1d3f1468460548822600f4d1de8bed9f
+Referrer-Policy: no-referrer
+Set-Cookie: pocket_sso_txn=; Path=/api/auth/sso/; Max-Age=0; HttpOnly; SameSite=Lax
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+X-Request-Id: f7ac004fb7018ab6bdc98ced4d54aba3
+Date: Fri, 04 Sep 2026 22:20:37 GMT
+Content-Length: 115
+

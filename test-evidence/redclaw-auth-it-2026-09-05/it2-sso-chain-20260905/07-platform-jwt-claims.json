@@ -1,0 +1,1 @@
+{"sub": "sso-it-user-001", "email": "sso-it@it.local", "tenant_id": "default", "session_id": "80d980cc-1d4b-4c81-8b1a-1f285552533c", "auth_method": "sso", "iss": "redclaw", "aud": ["redclaw", "redclaw-api"], "exp": 1788561337, "nbf": 1788560407, "iat": 1788560437}

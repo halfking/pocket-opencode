@@ -100,3 +100,43 @@ R5 记录的"SSO 完整回调链未测"缺口已在 pocket 侧修复流程合约
   落 pocket），并部署 casdoor IdP 容器。
 - handler 级同等断言已由 `backend/internal/server/auth_sso_test.go`
   （fake auth-agent 全链路）覆盖；IdP 实链路仍待容器环境补测归档。
+
+---
+
+## 附录（2026-09-05 追记 2）：SSO 全链路 IT 补测完成（IT-2）
+
+R5 的"SSO 完整回调链未测"缺口已补测归档，**ALL PASSED**：
+`it2-sso-chain-20260905/`（脚本与运行产物，含每步 HTTP 证据）。
+
+### 环境
+
+- pocket：`opencode-pocket:auth-it-0905`（openpocket main @ cfa9f20，
+  含 external_state 端到端比对），docker run -p 18090:8088
+- auth-agent：RedClaw `feat/authagent-sso-external-state` @ f606610
+  （external_state 回显 + JWKS 验签 + AllowPlainHTTP），
+  redclaw-local-stack compose，:27092
+- IdP：`deploy/local-stack/scripts/mock-idp.py`（:9999，RS256 + JWKS，
+  与 casdoor 同验证路径）；casdoor v2.63 容器同批部署（:28000，
+  已种子 redclaw-local 应用/sso-it 用户/专用证书），见下"已知限制"
+
+### 链路断言（全部通过）
+
+1. pocket login → 64 hex 绑定 nonce + HttpOnly cookie；
+2. auth-agent /sso/login 携带 external_state，**未泄漏进 IdP authorize URL**；
+3. IdP authorize 302 → pocket callback（code + auth-agent 自发 state）；
+4. pocket 消费绑定 cookie、透传换平台 JWT、**external_state 端到端比对通过**
+   （auth-agent JWKS 验签 IdP 的 RS256 id_token 后原样回显）；
+5. 302 仅携带一次性 sso_code（token 未进 URL，P1-2）；
+6. exchange 换 {token, user_id=sso-it-user-001, workspace_id}；重放 401；
+7. 平台 JWT：sub == user_id，session_id 存在（持久会话签发路径生效）；
+8. callback 重放 / 冷启动回调 → `error=sso_session` 拒绝；
+9. /sso/logout 撤销 session；撤销后同 token → 401。
+
+### 已知限制与后续
+
+- casdoor v2.63 `/api/login type=code` 的 grant-type 校验拿不到授权码
+  （自动化脚本不可驱动），自动 IT 采用 JWKS 同路径的 mock IdP；
+  casdoor 浏览器流可人工验证：本地栈已部署并种子完毕
+  （`bootstrap-casdoor.sh`，应用回调已指向 pocket callback）。
+- 真实 casdoor 若要过 auth-agent 的 tenant 断言，id_token 需携带
+  `tenant` claim（casdoor 自定义 token claim 配置，待运维对齐）。

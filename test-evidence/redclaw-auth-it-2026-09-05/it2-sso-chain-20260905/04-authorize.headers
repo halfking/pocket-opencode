@@ -1,0 +1,5 @@
+HTTP/1.0 302 Found
+Server: BaseHTTP/0.6 Python/3.14.3
+Date: Fri, 04 Sep 2026 22:20:37 GMT
+Location: http://localhost:18090/api/auth/sso/callback?code=7703dc7d9e8a48049ae26439058e0b09&state=_Xsi9ez1jU9H652ZlXp9m4VyTq3SGWfzmpcWRKXnBRI
+

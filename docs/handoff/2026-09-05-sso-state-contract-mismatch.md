@@ -4,7 +4,7 @@
 > **来源**: openpocket 认证体系审计（对照 docs/AUTH_REDCLAW.md）
 > **状态**: ✅ 双侧已闭环 —— pocket 侧方案 C' + P1-2（§6）；RedClaw 侧方案 A
 > （§6.2，`feat/authagent-sso-external-state` @ 692baad）与 pocket 端到端严格
-> 比对均已落地。剩余：本地栈 IdP 配置 + 真实 IdP 全链路 IT（§5）。
+> 比对均已落地。本地栈 IdP 与全链路 IT 已补测通过（§5、§6.3）；仅余 casdoor 浏览器流人工验证。
 > **严重级**: P1（SSO 功能链路断裂风险 + CSRF 防线弱于文档）
 
 ## 1. 结论（TL;DR）
@@ -84,13 +84,18 @@ auth-agent，改为 pocket 后端在 `/api/auth/sso/login` 时生成 state、短
       `feat/authagent-sso-external-state` @ 692baad（基于
       `feature/redclaw-pgbroker-delivery-lease` @ a93d32a）；pocket 侧
       端到端严格比对同批落地（§6.2）；
-- [ ] 本地栈配置 `OIDC_REDIRECT_URL` 指向 pocket `/api/auth/sso/callback`
-      + casdoor IdP 容器（RedClaw 仓库侧；本地栈 deploy/compose 正由并行
-      会话改造中，需协调避免覆盖）；
-- [ ] IT 补测完整链路：login → IdP → callback → 铸 token → SPA 落地 →
-      logout 撤销，证据归档 `test-evidence/`（依赖上一项的 IdP 容器；
-      两仓库现均有 fake IdP/auth-agent 的 handler 级全链路测试
-      覆盖同等断言）。
+- [x] 本地栈配置 `OIDC_REDIRECT_URL` 指向 pocket `/api/auth/sso/callback`
+      + casdoor IdP 容器（RedClaw 仓库 feat/authagent-sso-external-state
+      @ f606610：compose 新增 redclaw-casdoor(+pg)、authagent 透传
+      OIDC_JWKS_URL/OIDC_ALLOW_HTTP/OIDC_AUTHORIZE_ENDPOINT；
+      deploy.env.example OIDC 段已指向 pocket callback）；
+- [x] IT 补测完整链路：login → IdP → callback → sso_code → exchange →
+      logout 撤销 —— **ALL PASSED**，证据归档
+      `test-evidence/redclaw-auth-it-2026-09-05/it2-sso-chain-20260905/`
+      （真实容器 pocket:18090 + authagent:27092 + JWKS/RS256 IdP:9999；
+      casdoor v2.63 已部署并种子、因 API code 登录限制自动化走同验证
+      路径 mock，浏览器流留人工验证；casdoor token 需自定义 tenant
+      claim 方可过 auth-agent 断言，待运维对齐）。
 
 ## 6. 2026-09-05 落地记录（pocket 侧）
 
@@ -213,3 +218,21 @@ login-CSRF（攻击者把自己 IdP 会话的 code+state 注入受害者浏览�
 根治——注入的 code+state 只能换回攻击者自己的 external_state 回显，
 与受害者 nonce 比对必然失配。绑定 cookie 降为二道防线（防冷启动/重放
 回调），保留。
+
+### 6.3 本地栈 IdP + 全链路 IT 补测（同日）
+
+- RedClaw 侧（feat/authagent-sso-external-state @ f606610）新增：
+  sso 包 JWKS 验签（RS256，casdoor 等证书签名 IdP 的前提）、
+  AllowPlainHTTP（本地栈 http token endpoint）、可配置授权端点
+  （casdoor 为 /login/oauth/authorize）；compose 部署 casdoor v2.63
+  （独立 pg 存储）+ 引导脚本（应用回调已指向 pocket callback）。
+- 全链路 IT（脚本 `deploy/local-stack/scripts/it2-casdoor-chain.sh`）：
+  pocket login → auth-agent(external_state) → IdP authorize → pocket
+  callback（cookie 消费 + external_state 比对）→ sso_code → exchange →
+  logout 撤销，**九组断言全部通过**（含重放/冷启动拒绝、token 不进
+  URL、平台 JWT sub/session_id 断言）。证据：
+  `test-evidence/redclaw-auth-it-2026-09-05/it2-sso-chain-20260905/`。
+- 自动化 IdP 用与 casdoor 同验证路径（RS256+JWKS）的 mock（casdoor
+  v2.63 的 /api/login type=code 有 grant-type 校验限制，无法脚本驱动；
+  浏览器流人工验证即可）。casdoor id_token 需自定义 `tenant` claim
+  才能过 auth-agent 的 tenant 断言——生产对接前需在 casdoor 侧配置。

@@ -1,0 +1,7 @@
+HTTP/1.1 302 Found
+Content-Type: text/html; charset=utf-8
+Location: http://localhost:9999/oidc/authorize?client_id=redclaw-local-client&nonce=RSKC6JLmGt6-Sc8N9svK-A&redirect_uri=http%3A%2F%2Flocalhost%3A18090%2Fapi%2Fauth%2Fsso%2Fcallback&response_mode=query&response_type=code&scope=openid+profile+email&state=_Xsi9ez1jU9H652ZlXp9m4VyTq3SGWfzmpcWRKXnBRI
+X-Request-Id: b26def82-6dfc-421a-be2e-260a2d55c824
+Date: Fri, 04 Sep 2026 22:20:37 GMT
+Content-Length: 333
+

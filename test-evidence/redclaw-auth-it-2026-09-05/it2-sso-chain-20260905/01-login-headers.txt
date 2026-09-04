@@ -1,0 +1,1 @@
+Set-Cookie: pocket_sso_txn=b927ace76c83e5ba0b649e6abc719ecffde1f7d2f1bd0656e3c654ebf4a15b88; Path=/api/auth/sso/; Max-Age=600; HttpOnly; SameSite=Lax
