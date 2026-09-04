@@ -80,4 +80,4 @@ done
 
 echo "✅ 加载完成；验证："
 docker images | grep -E "opencode-pocket" || true
-echo "   下一步: sudo DEPLOY_ENV=server ./deploy/bin/deploy-252.sh"
+echo "   下一步: sudo ./deploy-252.sh   # 254/245 同理（按服务器角色选）"

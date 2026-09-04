@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
 # =====================================================================
-# deploy-252.sh — 252 服务器部署入口
+# deploy-252.sh — ⚠️ DEPRECATED：旧版 252 入口，已被根级 ./deploy-252.sh 取代
+#
+# 本文件保留仅作向后兼容；新部署请使用仓库根的 ./deploy-252.sh（与
+# deploy-154.sh / deploy-245.sh 同结构、同调用风格、同 OPP_SERVER_NAME）。
+#
+# 旧版差异：
+#   - 不设置 OPP_SERVER_NAME=252（env.sh 走 172.16.2.210 默认分支）
+#   - 用 POCKET_BASE_DIR 而非 DEPLOY_BASE_DIR 判断路径
+#   - 不走 blue-green 的 bin/current 派生逻辑（直接 init-dirs 后 start.sh）
 #
 # 默认根目录: /opt/kaixuan/opp
-# 网络:       acc-server-net（或 kaixuan_net，按 .env 决定）
 # Profile:    server（关闭 dev-auth、POCKET_ENV=production）
 #
-# 注意：
-#   - 需要 root 或 sudo（/opt/kaixuan 通常属 root:kaixuan）
-#   - 如 252 走 sudo，请加 sudo ./deploy/bin/deploy-252.sh
-#   - 服务器上不会自动生成 .env，必须由运维手工填入（含生产密钥）
-#
 # 用法：
-#   ./deploy/bin/deploy-252.sh
+#   ./deploy/bin/deploy-252.sh              # 旧路径，仍可用
 #   sudo DEPLOY_BASE_DIR=/srv/kaixuan/opp ./deploy/bin/deploy-252.sh
+#
+# 推荐改用：
+#   sudo ./deploy-252.sh                    # 新路径，与 154/245 同构
 # =====================================================================
 
 set -euo pipefail

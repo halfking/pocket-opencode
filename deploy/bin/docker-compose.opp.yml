@@ -50,6 +50,12 @@ services:
       # 日志目录外部化：当前 pocketd 日志走 stderr（docker logs），
       # logs.sh 会拉取落盘；此挂载留给后续文件日志直写，避免重复改 compose。
       - ${POCKET_LOG_DIR:?POCKET_LOG_DIR must be set}:/var/log/pocketd
+      # 原始日志（未加工，应用层 stderr 直写；2026-09-03 重构新增）
+      - ${POCKET_RAW_LOG_DIR:?POCKET_RAW_LOG_DIR must be set}:/var/log/pocketd-raw
+      # 附件目录（导出文件、用户上传等）
+      - ${POCKET_ATTACHMENTS_DIR:?POCKET_ATTACHMENTS_DIR must be set}:/app/data/attachments
+      # 运行期 PID / lock / state（与容器外 run/ 共享）
+      - ${POCKET_RUN_DIR:?POCKET_RUN_DIR must be set}:/var/run/pocketd
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8088/healthz"]
       interval: 10s
