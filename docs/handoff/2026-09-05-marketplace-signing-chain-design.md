@@ -177,8 +177,19 @@ config 新增字段 `MarketplaceRootPubKey`（`POCKET_MARKETPLACE_ROOT_PUBKEY`�
 
 ## 10. 未来工作（本 sprint 不做）
 
-- blob HTTP 上传端点 + 配额/计费；
+> 2026-09-05 更新：以下两项已在后续提交中落地（同日）：
+>
+> - ~~blob HTTP 上传端点 + 配额~~：`PUT /api/marketplace/blobs/{digest}`（内容寻址
+>   上传，正文即内容）+ `GET /api/marketplace/blobs/{digest}` 按 digest 下载 +
+>   `GET /api/marketplace/blobs` 用量查询；配额为 workspace 级归属计量（新表
+>   `marketplace_blob_uploads`，去重不等于免计费），env
+>   `POCKET_MARKETPLACE_BLOB_QUOTA_BYTES` 配置（默认 1 GiB/workspace，<=0 不限）。
+>   **计费**（按量统计/出账）仍属后续。
+> - ~~publisher key 注册/吊销 HTTP API~~：`POST/GET /api/marketplace/signing/keys`
+>   与 `DELETE /api/marketplace/signing/keys/{key_id}`，publisher 严格绑定 JWT
+>   userID（与 Submit 的 publisher 派生一致）；key_id 形状约束
+>   `[A-Za-z0-9][A-Za-z0-9._-]{0,127}` 且保留字 `root` 拒绝注册。
+
 - semver 区间依赖、override/lockfile；
 - root 公钥轮换（双 key 并存窗口）；
-- publisher key 注册/吊销 HTTP API（当前 store 级）；
 - S3/MinIO blob 后端。

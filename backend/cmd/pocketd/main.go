@@ -524,6 +524,24 @@ func main() {
 	}
 	if marketplaceStore != nil {
 		srv.SetMarketplaceStore(marketplaceStore)
+
+		// Blob 上传配额（ADR §5/§10）：POCKET_MARKETPLACE_BLOB_QUOTA_BYTES，
+		// 单 workspace 归属用量上限（字节），<=0 不限，缺省 1 GiB。
+		// 配额不是信任锚，非法值 WARN 后取默认即可，不像 root 公钥那样 fatal。
+		quota := marketplace.DefaultBlobQuotaBytes
+		if raw := strings.TrimSpace(os.Getenv("POCKET_MARKETPLACE_BLOB_QUOTA_BYTES")); raw != "" {
+			if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil {
+				quota = parsed
+			} else {
+				log.Printf("WARN: POCKET_MARKETPLACE_BLOB_QUOTA_BYTES %q is not an integer; using default %d", raw, quota)
+			}
+		}
+		srv.SetMarketplaceBlobQuota(quota)
+		if quota > 0 {
+			log.Printf("MARKETPLACE: blob upload quota %d bytes/workspace", quota)
+		} else {
+			log.Println("MARKETPLACE: blob upload quota unlimited")
+		}
 	}
 	phase4Orchestrator := newCloudOrchestrator(mcpClient)
 	if phase4Orchestrator != nil {

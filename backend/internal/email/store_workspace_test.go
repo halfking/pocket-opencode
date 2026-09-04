@@ -58,7 +58,7 @@ func newWorkspaceTestStore(t *testing.T) (*Store, func()) {
 	if err != nil {
 		t.Fatalf("parse dsn: %v", err)
 	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("scoped pool: %v", err)

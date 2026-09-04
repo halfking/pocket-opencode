@@ -55,7 +55,7 @@ func newTestPGAuditStore(t *testing.T) (*PGAuditStore, func()) {
 		rootPool.Close()
 		t.Fatalf("parse dsn: %v", err)
 	}
-	scopedCfg.ConnConfig.RuntimeParams["search_path"] = schema
+	scopedCfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
 	scopedPool, err := pgxpool.NewWithConfig(ctx, scopedCfg)
 	if err != nil {
 		rootPool.Close()

@@ -24,8 +24,18 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// queryRow 抽象 *pgxpool.Pool 与 pgx.Tx 共有的 QueryRow 能力，
+// 使 meta 读取辅助函数可同时用于事务内外。
+type queryRow interface {
+	QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row
+}
+
 // MaxBlobSize 是单个 blob 的防御性大小上限（64 MiB）。
 const MaxBlobSize int64 = 64 << 20
+
+// DefaultBlobQuotaBytes 是 workspace 级 blob 存储配额的缺省值（1 GiB）。
+// 部署可用 POCKET_MARKETPLACE_BLOB_QUOTA_BYTES 覆盖；<=0 表示不限额。
+const DefaultBlobQuotaBytes int64 = 1 << 30
 
 // BlobMeta 描述一个内容寻址 blob 的元数据。
 type BlobMeta struct {
@@ -41,6 +51,8 @@ var (
 	ErrBlobDigestMismatch = errors.New("marketplace: blob digest mismatch")
 	// ErrBlobTooLarge：内容超过 MaxBlobSize。
 	ErrBlobTooLarge = errors.New("marketplace: blob too large")
+	// ErrBlobQuotaExceeded：上传会使上传方 workspace 的归属用量超过配额。
+	ErrBlobQuotaExceeded = errors.New("marketplace: blob quota exceeded")
 )
 
 // blobDigestKey 把任意合法 digest 入参规范化为 blob 表主键格式：
@@ -58,6 +70,30 @@ func blobDigestKey(digest string) (string, error) {
 	return d, nil
 }
 
+// NormalizeBlobDigest 把任意合法 digest 入参规范化为 blob 表主键格式，
+// 供 HTTP 层在读取请求体之前提前校验路径参数（400 语义）。
+func NormalizeBlobDigest(digest string) (string, error) {
+	return blobDigestKey(digest)
+}
+
+// validateBlobUpload 校验一次 blob 上传声明：digest 规范化 → sha256(content)
+// 必须与声明 digest 一致（内容寻址的完整性根锚）→ 大小上限。返回规范化主键。
+func validateBlobUpload(digest string, content []byte) (string, error) {
+	key, err := blobDigestKey(digest)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(content)
+	if hex.EncodeToString(sum[:]) != key {
+		return "", fmt.Errorf("%w: content sha256 %s != declared %s",
+			ErrBlobDigestMismatch, hex.EncodeToString(sum[:]), key)
+	}
+	if int64(len(content)) > MaxBlobSize {
+		return "", fmt.Errorf("%w: %d bytes exceeds limit %d", ErrBlobTooLarge, len(content), MaxBlobSize)
+	}
+	return key, nil
+}
+
 // PutBlob 上传（或幂等复用）一个内容寻址 blob。
 //
 // 校验顺序（ADR §5）：digest 规范化 → sha256(content) 必须与声明 digest 一致
@@ -70,17 +106,9 @@ func (s *Store) PutBlob(ctx context.Context, digest string, content []byte, cont
 	if s.pool == nil {
 		return BlobMeta{}, fmt.Errorf("marketplace: pool not configured")
 	}
-	key, err := blobDigestKey(digest)
+	key, err := validateBlobUpload(digest, content)
 	if err != nil {
 		return BlobMeta{}, err
-	}
-	sum := sha256.Sum256(content)
-	if hex.EncodeToString(sum[:]) != key {
-		return BlobMeta{}, fmt.Errorf("%w: content sha256 %s != declared %s",
-			ErrBlobDigestMismatch, hex.EncodeToString(sum[:]), key)
-	}
-	if int64(len(content)) > MaxBlobSize {
-		return BlobMeta{}, fmt.Errorf("%w: %d bytes exceeds limit %d", ErrBlobTooLarge, len(content), MaxBlobSize)
 	}
 	if contentType == "" {
 		contentType = "application/octet-stream"
@@ -109,6 +137,163 @@ func (s *Store) PutBlob(ctx context.Context, digest string, content []byte, cont
 	}
 	meta.CreatedAt = time.Unix(createdAt, 0)
 	return meta, nil
+}
+
+// PutBlobForWorkspace 是 HTTP 上传端点的 store 级入口：在 PutBlob 的内容寻址
+// 校验之上叠加 workspace 归属与配额（ADR §5/§10）。
+//
+// 语义：
+//   - 返回值 created 表示本次调用是否新建了 blob 内容行：同 workspace 幂等
+//     重放、或其他 workspace 已上传过同 digest（内容寻址去重命中）→ false，
+//     HTTP 层映射为 200 而非 201；
+//   - 同一 workspace 重复上传同 digest：不重复计量，直接返回既有 meta；
+//   - 其他 workspace 上传已存在的同 digest blob：不重传内容，但按既有 size
+//     计入该 workspace 的用量（内容寻址去重不等于免计费）；
+//   - quotaBytes <= 0 表示不限额；配额检查与写入在同一事务内，并发上传存在
+//     小概率轻微超额（advisory quota，精确硬限需串行化，MVP 不做）；
+//   - 超额 → ErrBlobQuotaExceeded，事务回滚（blob 与归属都不落库）。
+func (s *Store) PutBlobForWorkspace(ctx context.Context, workspaceID, digest string, content []byte, contentType string, quotaBytes int64) (BlobMeta, bool, error) {
+	if s.pool == nil {
+		return BlobMeta{}, false, fmt.Errorf("marketplace: pool not configured")
+	}
+	if workspaceID == "" {
+		return BlobMeta{}, false, errors.New("marketplace: workspace_id required")
+	}
+	key, err := validateBlobUpload(digest, content)
+	if err != nil {
+		return BlobMeta{}, false, err
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return BlobMeta{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// 归属已存在 → 幂等重放：用量不变，跳过配额检查直接返回既有 meta。
+	var attributionExists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM marketplace_blob_uploads WHERE workspace_id = $1 AND digest = $2
+		)
+	`, workspaceID, key).Scan(&attributionExists); err != nil {
+		return BlobMeta{}, false, err
+	}
+	if attributionExists {
+		meta, err := getBlobMetaByKey(ctx, tx, key)
+		if err != nil {
+			return BlobMeta{}, false, err
+		}
+		return meta, false, nil
+	}
+
+	// 计费口径：blob 已存在按既有 size（内容不重存），否则按本次 len(content)。
+	var (
+		meta       BlobMeta
+		blobExists bool
+		charge     int64 = int64(len(content))
+	)
+	var existingSize int64
+	var existingType string
+	var existingAt int64
+	err = tx.QueryRow(ctx, `
+		SELECT size, content_type, created_at FROM marketplace_blobs WHERE digest = $1
+	`, key).Scan(&existingSize, &existingType, &existingAt)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// 全新 blob。
+	case err != nil:
+		return BlobMeta{}, false, err
+	default:
+		blobExists = true
+		charge = existingSize
+		meta = BlobMeta{Digest: key, Size: existingSize, ContentType: existingType, CreatedAt: time.Unix(existingAt, 0)}
+	}
+
+	if quotaBytes > 0 {
+		var used int64
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(b.size), 0)
+			FROM marketplace_blob_uploads u
+			JOIN marketplace_blobs b ON u.digest = b.digest
+			WHERE u.workspace_id = $1
+		`, workspaceID).Scan(&used); err != nil {
+			return BlobMeta{}, false, err
+		}
+		if used+charge > quotaBytes {
+			return BlobMeta{}, false, fmt.Errorf("%w: workspace %q using %d bytes, need %d more, quota %d",
+				ErrBlobQuotaExceeded, workspaceID, used, charge, quotaBytes)
+		}
+	}
+
+	if !blobExists {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO marketplace_blobs (digest, content, size, content_type, created_at)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (digest) DO NOTHING
+		`, key, content, len(content), contentType, time.Now().Unix()); err != nil {
+			return BlobMeta{}, false, err
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO marketplace_blob_uploads (workspace_id, digest, uploaded_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (workspace_id, digest) DO NOTHING
+	`, workspaceID, key, time.Now().Unix()); err != nil {
+		return BlobMeta{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return BlobMeta{}, false, err
+	}
+	// created 以"本次是否新建 blob 内容行"为准；归属行的新建不算
+	// （跨 workspace 去重命中时客户端应得到 200 语义）。
+	if !blobExists {
+		meta, err = getBlobMetaByKey(ctx, s.pool, key)
+		if err != nil {
+			return BlobMeta{}, false, err
+		}
+	}
+	return meta, !blobExists, nil
+}
+
+// getBlobMetaByKey 读取 blob 元数据（不含 content）。
+func getBlobMetaByKey(ctx context.Context, q queryRow, key string) (BlobMeta, error) {
+	var meta BlobMeta
+	var createdAt int64
+	err := q.QueryRow(ctx, `
+		SELECT digest, size, content_type, created_at FROM marketplace_blobs WHERE digest = $1
+	`, key).Scan(&meta.Digest, &meta.Size, &meta.ContentType, &createdAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// 归属行存在但 blob 行缺失：状态不一致（不应发生），按 NotFound 处理。
+		return BlobMeta{}, ErrMarketplaceNotFound
+	}
+	if err != nil {
+		return BlobMeta{}, err
+	}
+	meta.CreatedAt = time.Unix(createdAt, 0)
+	return meta, nil
+}
+
+// WorkspaceBlobUsage 返回 workspace 名下归属 blob 的总字节数（配额计量口径，
+// 与 PutBlobForWorkspace 的 used 计算一致）。无归属 → 0。
+func (s *Store) WorkspaceBlobUsage(ctx context.Context, workspaceID string) (int64, error) {
+	if s.pool == nil {
+		return 0, fmt.Errorf("marketplace: pool not configured")
+	}
+	if workspaceID == "" {
+		return 0, errors.New("marketplace: workspace_id required")
+	}
+	var used int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(b.size), 0)
+		FROM marketplace_blob_uploads u
+		JOIN marketplace_blobs b ON u.digest = b.digest
+		WHERE u.workspace_id = $1
+	`, workspaceID).Scan(&used)
+	return used, err
 }
 
 // GetBlob 按 digest 读取 blob。无行 → ErrMarketplaceNotFound。

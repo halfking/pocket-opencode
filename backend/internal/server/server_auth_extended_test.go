@@ -54,8 +54,10 @@ func mustTestPool(t *testing.T) *pgxpool.Pool {
 	schema := cfg.ConnConfig.RuntimeParams["search_path"]
 	if schema == "" {
 		schema = fmt.Sprintf("c8_auth_test_%d", time.Now().UnixNano())
-		cfg.ConnConfig.RuntimeParams["search_path"] = schema
 	}
+	// Citus 集群上 CREATE TABLE 的钩子会调用 public.columnar_insert_only_parents()，
+	// search_path 不含 public 时报 42883（2026-09-05 llm-gateway-pg 容器换新后暴露）。
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
 	rootCfg := cfg.Copy()
 	delete(rootCfg.ConnConfig.RuntimeParams, "search_path")
 	rootPool, err := pgxpool.NewWithConfig(context.Background(), rootCfg)

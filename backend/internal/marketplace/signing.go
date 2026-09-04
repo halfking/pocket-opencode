@@ -324,6 +324,61 @@ func (s *Store) VerifyVersion(ctx context.Context, versionID string) error {
 	return s.verifyWithKeyID(ctx, publisher, *keyID, m, digest, *signature)
 }
 
+// PublisherKey 是 publisher_signing_keys 的一行投影（HTTP 列表用）。
+// PublicKey 为 base64 std 编码的原始 32 字节公钥——公钥非机密，回传便于
+// 客户端在本地自行验签；吊销行保留（status=revoked），供审计展示。
+type PublisherKey struct {
+	PublisherID string     `json:"publisher_id"`
+	KeyID       string     `json:"key_id"`
+	Alg         string     `json:"alg"`
+	Status      string     `json:"status"`
+	PublicKey   string     `json:"public_key"`
+	CreatedAt   time.Time  `json:"created_at"`
+	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+}
+
+// ListPublisherKeys 列出一个 publisher 的全部签名公钥（含已吊销行，
+// 按 created_at、key_id 排序）。publisher 无任何密钥 → 空切片而非错误。
+func (s *Store) ListPublisherKeys(ctx context.Context, publisherID string) ([]PublisherKey, error) {
+	if s.pool == nil {
+		return nil, fmt.Errorf("marketplace: pool not configured")
+	}
+	if publisherID == "" {
+		return nil, errors.New("marketplace: publisher_id required")
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT publisher_id, key_id, alg, status, public_key, created_at, revoked_at
+		FROM publisher_signing_keys
+		WHERE publisher_id = $1
+		ORDER BY created_at, key_id
+	`, publisherID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	keys := []PublisherKey{}
+	for rows.Next() {
+		var (
+			k         PublisherKey
+			rawPub    []byte
+			createdAt int64
+			revokedAt *int64
+		)
+		if err := rows.Scan(&k.PublisherID, &k.KeyID, &k.Alg, &k.Status, &rawPub, &createdAt, &revokedAt); err != nil {
+			return nil, err
+		}
+		k.PublicKey = base64.StdEncoding.EncodeToString(rawPub)
+		k.CreatedAt = time.Unix(createdAt, 0)
+		if revokedAt != nil {
+			t := time.Unix(*revokedAt, 0)
+			k.RevokedAt = &t
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
 // RegisterPublisherKey 注册 publisher 公钥（active 状态）。重复注册同一
 // (publisher_id, key_id) 触发唯一键冲突，收敛为 ErrMarketplaceConflict。
 func (s *Store) RegisterPublisherKey(ctx context.Context, publisherID, keyID, publicKeyRaw, alg string) error {

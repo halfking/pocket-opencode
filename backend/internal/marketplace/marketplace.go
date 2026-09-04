@@ -251,6 +251,17 @@ CREATE TABLE IF NOT EXISTS marketplace_blobs (
 	created_at   BIGINT NOT NULL
 );
 
+-- blob 上传归属（HTTP 上传端点的 workspace 级配额计量，ADR §5/§10）。
+-- 内容寻址 blob 本身全局共享，归属表记录"哪个 workspace 上传过哪个 digest"，
+-- 配额 = SUM(归属 blob 的 size)；同 workspace 重复上传同 digest 只记一行，
+-- 不重复计费。独立于 marketplace_blobs 生命周期（blob 行删归属行才有意义）。
+CREATE TABLE IF NOT EXISTS marketplace_blob_uploads (
+	workspace_id TEXT NOT NULL,
+	digest       TEXT NOT NULL,
+	uploaded_at  BIGINT NOT NULL,
+	PRIMARY KEY (workspace_id, digest)
+);
+
 ALTER TABLE marketplace_versions ADD COLUMN IF NOT EXISTS signing_key_id TEXT;
 `
 

@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"testing"
@@ -291,5 +292,71 @@ func TestPGSigning_VerifyVersionPaths(t *testing.T) {
 	}
 	if err := s.VerifyVersion(ctx, signed.VersionID); !errors.Is(err, ErrSigningKeyRevoked) {
 		t.Fatalf("verify after revoke: want ErrSigningKeyRevoked, got %v", err)
+	}
+}
+
+// TestPGSigning_PublisherKeyListLifecycle 覆盖 ListPublisherKeys（HTTP 列表
+// 端点的 store 基座，ADR §10）：注册多把密钥 → 列表按序返回（公钥回传为
+// base64）→ 吊销后 status/revoked_at 正确 → 未知 publisher 返回空切片。
+func TestPGSigning_PublisherKeyListLifecycle(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	pub1, _ := mustKeypair(t)
+	pub2, _ := mustKeypair(t)
+
+	if err := s.RegisterPublisherKey(ctx, "alice", "k1", base64.StdEncoding.EncodeToString(pub1), AlgEd25519); err != nil {
+		t.Fatalf("register k1: %v", err)
+	}
+	if err := s.RegisterPublisherKey(ctx, "alice", "k2", base64.StdEncoding.EncodeToString(pub2), AlgEd25519); err != nil {
+		t.Fatalf("register k2: %v", err)
+	}
+
+	keys, err := s.ListPublisherKeys(ctx, "alice")
+	if err != nil {
+		t.Fatalf("ListPublisherKeys: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("want 2 keys, got %d: %+v", len(keys), keys)
+	}
+	if keys[0].KeyID != "k1" || keys[1].KeyID != "k2" {
+		t.Errorf("keys not ordered by key_id: %+v", keys)
+	}
+	for _, k := range keys {
+		if k.PublisherID != "alice" || k.Status != "active" || k.Alg != AlgEd25519 {
+			t.Errorf("key %s malformed: %+v", k.KeyID, k)
+		}
+		if k.RevokedAt != nil {
+			t.Errorf("active key %s has revoked_at: %+v", k.KeyID, k)
+		}
+	}
+	want1 := base64.StdEncoding.EncodeToString(pub1)
+	if keys[0].PublicKey != want1 {
+		t.Errorf("k1 public key roundtrip: want %q, got %q", want1, keys[0].PublicKey)
+	}
+
+	// 吊销 k1：行保留，status 转 revoked 且 revoked_at 落值。
+	if err := s.RevokePublisherKey(ctx, "alice", "k1"); err != nil {
+		t.Fatalf("RevokePublisherKey: %v", err)
+	}
+	keys, err = s.ListPublisherKeys(ctx, "alice")
+	if err != nil {
+		t.Fatalf("ListPublisherKeys after revoke: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("revoked row must be retained: got %d keys", len(keys))
+	}
+	if keys[0].KeyID != "k1" || keys[0].Status != "revoked" || keys[0].RevokedAt == nil {
+		t.Errorf("k1 not marked revoked: %+v", keys[0])
+	}
+	if keys[1].Status != "active" || keys[1].RevokedAt != nil {
+		t.Errorf("k2 must stay active: %+v", keys[1])
+	}
+
+	// 未知 publisher → 空切片，无错误。
+	empty, err := s.ListPublisherKeys(ctx, "nobody")
+	if err != nil || len(empty) != 0 {
+		t.Errorf("unknown publisher: want empty, got %d keys err=%v", len(empty), err)
 	}
 }

@@ -42,7 +42,7 @@ func newTestStore(t *testing.T) (*Store, func()) {
 		t.Fatalf("create schema: %v", err)
 	}
 	cfg, _ := pgxpool.ParseConfig(dsn)
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		rootPool.Close()

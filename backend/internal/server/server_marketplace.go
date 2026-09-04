@@ -21,6 +21,14 @@ package server
 //                                          （release_id 可含 /，见 handler 注释）
 //   GET    /api/marketplace/packages/{id}/versions
 //                                          列出一个包的全部版本
+//   PUT    /api/marketplace/blobs/{digest}     内容寻址 blob 上传（正文即内容，
+//                                          workspace 级配额，ADR §5/§10）
+//   GET    /api/marketplace/blobs/{digest}     按 digest 下载 blob
+//   GET    /api/marketplace/blobs              查询当前 workspace 的 blob 用量
+//   POST   /api/marketplace/signing/keys       注册 publisher 签名公钥
+//   GET    /api/marketplace/signing/keys       列出本人的签名公钥
+//   DELETE /api/marketplace/signing/keys/{key_id}
+//                                          吊销本人的签名公钥
 //   POST   /api/marketplace/submit             提交新版本（draft）
 //   POST   /api/marketplace/review             审核一个版本
 //   POST   /api/marketplace/publish            发布一个已审核版本
@@ -34,6 +42,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -47,6 +56,22 @@ func (s *Server) requireMarketplaceStore(w http.ResponseWriter, r *http.Request)
 		return false
 	}
 	return true
+}
+
+// requirePGMarketplaceStore 在 requireMarketplaceStore 之上再要求 store 是
+// PG-backed 的 *marketplace.Store。签名公钥与内容寻址 blob 只有 PG 实现提供
+// （memstore 无密钥/blob 设施，ADR §4.4 注明的不对称性），此时返回 501 而非
+// 静默 404，便于客户端区分"不支持"与"不存在"。
+func (s *Server) requirePGMarketplaceStore(w http.ResponseWriter, r *http.Request) (*marketplace.Store, bool) {
+	if !s.requireMarketplaceStore(w, r) {
+		return nil, false
+	}
+	store, ok := s.marketplaceStore.(*marketplace.Store)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "this capability requires the PG-backed marketplace store")
+		return nil, false
+	}
+	return store, true
 }
 
 // sanitizeAuditDetail 把用户可控字符串安全地嵌入审计 detail 字段。
@@ -466,6 +491,35 @@ func (s *Server) handleMarketplaceRouter(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		writeError(w, http.StatusNotFound, "not found")
+	case "blobs":
+		// GET /api/marketplace/blobs              当前 workspace 的 blob 用量
+		// PUT|GET /api/marketplace/blobs/{digest} 上传 / 下载内容寻址 blob
+		// digest 是 64 位 hex，不含 /，超过两段即非法形状。
+		switch {
+		case len(parts) == 1:
+			s.handleMarketplaceBlobUsage(w, r)
+		case len(parts) == 2:
+			s.handleMarketplaceBlobByDigest(w, r, parts[1])
+		default:
+			writeError(w, http.StatusNotFound, "not found")
+		}
+	case "signing":
+		// POST   /api/marketplace/signing/keys        注册 publisher 公钥
+		// GET    /api/marketplace/signing/keys        列出本人公钥
+		// DELETE /api/marketplace/signing/keys/{key_id} 吊销本人公钥
+		// key_id 受 marketplaceKeyIDPattern 约束，不含 /，最多三段。
+		if len(parts) < 2 || parts[1] != "keys" {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		switch len(parts) {
+		case 2:
+			s.handleMarketplaceSigningKeys(w, r)
+		case 3:
+			s.handleMarketplaceSigningKey(w, r, parts[2])
+		default:
+			writeError(w, http.StatusNotFound, "not found")
+		}
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
@@ -491,9 +545,8 @@ func (s *Server) handleMarketplaceReleaseBlob(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
-	store, ok := s.marketplaceStore.(*marketplace.Store)
+	store, ok := s.requirePGMarketplaceStore(w, r)
 	if !ok {
-		writeError(w, http.StatusNotImplemented, "blob download requires the PG-backed marketplace store")
 		return
 	}
 
@@ -517,6 +570,237 @@ func (s *Server) handleMarketplaceReleaseBlob(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
 	w.Header().Set("X-Digest", meta.Digest)
 	_, _ = w.Write(content)
+}
+
+// marketplaceKeyIDPattern 约束 publisher key_id 的形状：字母/数字开头，
+// 可含 .、_、-，长度 1..128。key_id 出现在 URL 路径段中（DELETE 路由按段
+// 分发），必须不含 /；同时防止注册 key_id="root" 与平台根密钥语义冲突
+// （verifyWithKeyID 对 "root" 走平台公钥分支，publisher 行永远无法生效）。
+var marketplaceKeyIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// handleMarketplaceBlobUsage GET /api/marketplace/blobs
+//
+// 返回当前 workspace 的 blob 归属用量与生效配额，供客户端在上传前自检。
+func (s *Server) handleMarketplaceBlobUsage(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMarketplaceStore(w, r) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	store, ok := s.requirePGMarketplaceStore(w, r)
+	if !ok {
+		return
+	}
+	used, err := store.WorkspaceBlobUsage(r.Context(), s.workspaceIDFromRequest(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"used_bytes":  used,
+		"quota_bytes": s.marketplaceBlobQuota,
+	})
+}
+
+// handleMarketplaceBlobByDigest 分发 /api/marketplace/blobs/{digest}：
+//
+//	PUT  内容寻址上传（正文即内容，非 JSON）。workspace 来自 JWT claim，
+//	     配额来自装配期配置；digest 与内容 sha256 不符 → 400，超配额 → 507。
+//	GET  按 digest 下载。blob 是内容寻址存储：digest 即内容的哈希承诺，
+//	     持有 digest 等价于持有内容承诺（与 OCI registry / IPFS 同语义），
+//	     故不做 release 级可见性判定；release 的受控下载走
+//	     /releases/{release_id}/blob（可见性与 Install 一致）。
+func (s *Server) handleMarketplaceBlobByDigest(w http.ResponseWriter, r *http.Request, digest string) {
+	if !s.requireMarketplaceStore(w, r) {
+		return
+	}
+	switch r.Method {
+	case http.MethodPut:
+		store, ok := s.requirePGMarketplaceStore(w, r)
+		if !ok {
+			return
+		}
+		s.handleMarketplaceBlobUpload(w, r, store, digest)
+	case http.MethodGet:
+		store, ok := s.requirePGMarketplaceStore(w, r)
+		if !ok {
+			return
+		}
+		s.handleMarketplaceBlobDownload(w, r, store, digest)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "PUT or GET only")
+	}
+}
+
+// handleMarketplaceBlobUpload PUT /api/marketplace/blobs/{digest}
+func (s *Server) handleMarketplaceBlobUpload(w http.ResponseWriter, r *http.Request, store *marketplace.Store, digest string) {
+	// 提前校验 digest 形状，避免为明显非法的请求读入大 body。
+	if _, err := marketplace.NormalizeBlobDigest(digest); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// 上限 MaxBlobSize + 1：超出即读失败（MaxBytesError），不会缓冲 64MiB+。
+	limited := http.MaxBytesReader(w, r.Body, marketplace.MaxBlobSize+1)
+	content, err := io.ReadAll(limited)
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("blob exceeds limit %d bytes", marketplace.MaxBlobSize))
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	workspaceID := s.workspaceIDFromRequest(r)
+	meta, created, err := store.PutBlobForWorkspace(r.Context(), workspaceID, digest,
+		content, r.Header.Get("Content-Type"), s.marketplaceBlobQuota)
+	if err != nil {
+		writeMarketplaceError(w, err)
+		return
+	}
+	used, err := store.WorkspaceBlobUsage(r.Context(), workspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// digest 经 NormalizeBlobDigest 校验为 64 位小写 hex、size 为数字，
+	// 均不可注入控制字符，无需 sanitizeAuditDetail。
+	s.auditGateway(r, "marketplace.blob_upload", meta.Digest,
+		"size="+strconv.FormatInt(meta.Size, 10)+
+			" created="+strconv.FormatBool(created)+
+			" workspace="+sanitizeAuditDetail(workspaceID), true)
+
+	status := http.StatusCreated
+	if !created {
+		// 幂等重放（同 workspace 同 digest）：200 而非 201。
+		status = http.StatusOK
+	}
+	w.Header().Set("X-Digest", meta.Digest)
+	writeJSON(w, status, map[string]interface{}{
+		"blob": meta,
+		"usage": map[string]interface{}{
+			"used_bytes":  used,
+			"quota_bytes": s.marketplaceBlobQuota,
+		},
+	})
+}
+
+// handleMarketplaceBlobDownload GET /api/marketplace/blobs/{digest}
+func (s *Server) handleMarketplaceBlobDownload(w http.ResponseWriter, r *http.Request, store *marketplace.Store, digest string) {
+	meta, content, err := store.GetBlob(r.Context(), digest)
+	if err != nil {
+		writeMarketplaceError(w, err)
+		return
+	}
+	s.auditGateway(r, "marketplace.blob_download", meta.Digest,
+		"size="+strconv.FormatInt(meta.Size, 10), true)
+	w.Header().Set("Content-Type", meta.ContentType)
+	w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
+	w.Header().Set("X-Digest", meta.Digest)
+	_, _ = w.Write(content)
+}
+
+// handleMarketplaceSigningKeys 分发 /api/marketplace/signing/keys：
+//
+//	POST 注册 publisher 公钥（publisher 绑定 JWT userID，与 Submit 的
+//	     publisher 派生一致，绝不信任 body 中的 publisher 字段）；
+//	GET  列出本人的全部公钥（含已吊销行，供审计）。
+func (s *Server) handleMarketplaceSigningKeys(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMarketplaceStore(w, r) {
+		return
+	}
+	userID := s.userIDFromRequest(r)
+	switch r.Method {
+	case http.MethodPost:
+		store, ok := s.requirePGMarketplaceStore(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			KeyID     string `json:"key_id"`
+			PublicKey string `json:"public_key"`
+			Alg       string `json:"alg"`
+		}
+		if err := decodeMarketplaceJSON(r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if body.KeyID == "" || body.PublicKey == "" {
+			writeError(w, http.StatusBadRequest, "key_id and public_key are required")
+			return
+		}
+		if !marketplaceKeyIDPattern.MatchString(body.KeyID) {
+			writeError(w, http.StatusBadRequest, "key_id must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+			return
+		}
+		if body.KeyID == marketplace.RootKeyID {
+			writeError(w, http.StatusBadRequest,
+				`key_id "root" is reserved for the platform root key`)
+			return
+		}
+		if body.Alg == "" {
+			body.Alg = marketplace.AlgEd25519
+		}
+		if err := store.RegisterPublisherKey(r.Context(), userID, body.KeyID, body.PublicKey, body.Alg); err != nil {
+			writeMarketplaceError(w, err)
+			return
+		}
+		s.auditGateway(r, "marketplace.signing_key_register", userID,
+			"key_id="+sanitizeAuditDetail(body.KeyID)+" alg="+body.Alg, true)
+		writeJSON(w, http.StatusCreated, map[string]interface{}{
+			"registered": true,
+			"publisher":  userID,
+			"key_id":     body.KeyID,
+		})
+	case http.MethodGet:
+		store, ok := s.requirePGMarketplaceStore(w, r)
+		if !ok {
+			return
+		}
+		keys, err := store.ListPublisherKeys(r.Context(), userID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"keys": keys})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "POST or GET only")
+	}
+}
+
+// handleMarketplaceSigningKey DELETE /api/marketplace/signing/keys/{key_id}
+//
+// 吊销本人的公钥：行保留作审计，吊销后用该 key 的既有版本验签即失败
+// （fail-closed，ADR §3）。只能吊销 active 行，重复吊销 → 404。
+func (s *Server) handleMarketplaceSigningKey(w http.ResponseWriter, r *http.Request, keyID string) {
+	if !s.requireMarketplaceStore(w, r) {
+		return
+	}
+	if r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "DELETE only")
+		return
+	}
+	store, ok := s.requirePGMarketplaceStore(w, r)
+	if !ok {
+		return
+	}
+	if !marketplaceKeyIDPattern.MatchString(keyID) {
+		writeError(w, http.StatusBadRequest, "key_id must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+		return
+	}
+	userID := s.userIDFromRequest(r)
+	if err := store.RevokePublisherKey(r.Context(), userID, keyID); err != nil {
+		writeMarketplaceError(w, err)
+		return
+	}
+	s.auditGateway(r, "marketplace.signing_key_revoke", userID,
+		"key_id="+sanitizeAuditDetail(keyID), true)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"revoked": true})
 }
 
 // extractMarketplacePackageID 从 /api/marketplace/packages/{id}/versions 之类的
@@ -559,6 +843,9 @@ func writeMarketplaceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, marketplace.ErrBlobTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
+	case errors.Is(err, marketplace.ErrBlobQuotaExceeded):
+		// 507 Insufficient Storage：请求本身合法，是服务端侧的存储配额约束。
+		writeError(w, http.StatusInsufficientStorage, err.Error())
 	case errors.Is(err, marketplace.ErrBlobDigestMismatch):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, marketplace.ErrSignatureMissing),

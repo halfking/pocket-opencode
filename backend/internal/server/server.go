@@ -130,6 +130,13 @@ type Server struct {
 	// 技能市场（marketplace）。nil = /api/marketplace/* 返回 503。
 	// 当前仅 PG 实现可用；SQLite 实现留待后续 sprint。
 	marketplaceStore marketplace.Service
+	// marketplace blob 上传的 workspace 级存储配额（字节）。<=0 = 不限。
+	// 由 pocketd 依据 POCKET_MARKETPLACE_BLOB_QUOTA_BYTES 装配（ADR §5/§10）。
+	marketplaceBlobQuota int64
+	// SSO 服务端绑定状态（auth_sso_state.go）：登录绑定 nonce + 一次性
+	// 换 token 的 code。进程内存表，随 Server 构造初始化，无需装配。
+	ssoTxns *ssoTxnStore
+	ssoXchg *ssoExchangeStore
 	// 智能体云端同步（仅 PG 模式可用；SQLite 模式下此字段保持 nil）。
 	chatAgentSync *chatagent.SyncStore
 	notifyStore   *notifycenter.Store
@@ -259,6 +266,8 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 		}(),
 		mobileCreates: newMobileCreateCache(),
 		llmGWCache:    newLLMGatewayCache(),
+		ssoTxns:       newSSOTxnStore(ssoTxnTTL, ssoTxnCap),
+		ssoXchg:       newSSOExchangeStore(ssoExchangeTTL, ssoExchangeCap),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -469,6 +478,12 @@ func (s *Server) SetMarketplaceStore(store marketplace.Service) {
 	s.marketplaceStore = store
 }
 
+// SetMarketplaceBlobQuota 设置 workspace 级 blob 存储配额（字节；<=0 不限）。
+// 仅对 PG-backed marketplace store 的 HTTP 上传端点生效。
+func (s *Server) SetMarketplaceBlobQuota(quota int64) {
+	s.marketplaceBlobQuota = quota
+}
+
 // SetAgentRegistry 注入 ACP agent registry（W5 新增）。
 func (s *Server) SetAgentRegistry(reg *agent.Registry) {
 	s.agents = reg
@@ -571,6 +586,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/auth/me", s.requireAuth(s.handleAuthMe))
 	mux.HandleFunc("/api/auth/sso/login", s.handleAuthSsoLogin)
 	mux.HandleFunc("/api/auth/sso/callback", s.handleAuthSsoCallback)
+	mux.HandleFunc("/api/auth/sso/exchange", s.handleAuthSsoExchange)
 	// 生物认证（server_biometric.go；webAuthnVerifier 未配置时降级为 P0 stub）
 	mux.HandleFunc("/api/auth/biometric/register/begin", s.requireAuth(s.handleBiometricRegisterBegin))
 	mux.HandleFunc("/api/auth/biometric/register/finish", s.requireAuth(s.handleBiometricRegisterFinish))

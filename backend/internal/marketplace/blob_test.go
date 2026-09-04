@@ -302,3 +302,108 @@ func TestPGBlob_GetByRelease(t *testing.T) {
 		t.Errorf("release without blob: want ErrMarketplaceNotFound, got %v", err)
 	}
 }
+
+// TestPGBlob_PutForWorkspaceQuota 覆盖 HTTP 上传端点的 store 语义（ADR §5/§10）：
+//   - 归属 + 配额计量：usage = SUM(归属 blob size)；
+//   - 同 workspace 重复上传同 digest：幂等（created=false，用量不变）；
+//   - 配额不足 → ErrBlobQuotaExceeded，blob 与归属都不落库；
+//   - quotaBytes <= 0 → 不限额。
+func TestPGBlob_PutForWorkspaceQuota(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	a := []byte("blob-a-contents") // 15 bytes
+	b := []byte("blob-b-contents") // 15 bytes
+	da, db := blobDigestOf(a), blobDigestOf(b)
+
+	// 配额恰好容纳两个 blob。
+	meta, created, err := s.PutBlobForWorkspace(ctx, "ws-1", da, a, "text/plain", 30)
+	if err != nil || !created {
+		t.Fatalf("first upload: created=%v err=%v", created, err)
+	}
+	if meta.Digest != da || meta.Size != int64(len(a)) {
+		t.Errorf("first meta malformed: %+v", meta)
+	}
+	if used, _ := s.WorkspaceBlobUsage(ctx, "ws-1"); used != int64(len(a)) {
+		t.Errorf("usage after first upload: want %d, got %d", len(a), used)
+	}
+
+	// 同 workspace 幂等重放：created=false，用量不变。
+	if _, created, err := s.PutBlobForWorkspace(ctx, "ws-1", da, a, "text/plain", 30); err != nil || created {
+		t.Errorf("idempotent replay: created=%v err=%v", created, err)
+	}
+	if used, _ := s.WorkspaceBlobUsage(ctx, "ws-1"); used != int64(len(a)) {
+		t.Errorf("usage after replay: want %d, got %d", len(a), used)
+	}
+
+	// 第二个 blob 落地后用量累计。
+	if _, _, err := s.PutBlobForWorkspace(ctx, "ws-1", db, b, "", 30); err != nil {
+		t.Fatalf("second upload: %v", err)
+	}
+	if used, _ := s.WorkspaceBlobUsage(ctx, "ws-1"); used != 30 {
+		t.Errorf("usage after second upload: want 30, got %d", used)
+	}
+
+	// 配额已满：第三个 blob 被拒，且不产生任何残留。
+	c := []byte("blob-c-contents")
+	if _, _, err := s.PutBlobForWorkspace(ctx, "ws-1", blobDigestOf(c), c, "", 30); !errors.Is(err, ErrBlobQuotaExceeded) {
+		t.Fatalf("quota exceeded: want ErrBlobQuotaExceeded, got %v", err)
+	}
+	if used, _ := s.WorkspaceBlobUsage(ctx, "ws-1"); used != 30 {
+		t.Errorf("usage after rejected upload: want 30, got %d", used)
+	}
+	if _, _, err := s.GetBlob(ctx, blobDigestOf(c)); !errors.Is(err, ErrMarketplaceNotFound) {
+		t.Errorf("rejected blob must not persist: got %v", err)
+	}
+
+	// 配额为 0 → 不限额。
+	d := []byte("blob-d-contents")
+	if _, _, err := s.PutBlobForWorkspace(ctx, "ws-1", blobDigestOf(d), d, "", 0); err != nil {
+		t.Errorf("unlimited quota upload: %v", err)
+	}
+}
+
+// TestPGBlob_PutForWorkspaceSharedBlob 验证内容寻址去重与计费的关系：
+// 其他 workspace 已上传的同 digest blob 不重存内容，但按既有 size 计入
+// 新上传方的用量（去重 ≠ 免计费）；新上传方配额不足时同样被拒。
+func TestPGBlob_PutForWorkspaceSharedBlob(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	content := []byte("shared-blob-content")
+	digest := blobDigestOf(content)
+
+	if _, created, err := s.PutBlobForWorkspace(ctx, "ws-1", digest, content, "", 0); err != nil || !created {
+		t.Fatalf("ws-1 upload: created=%v err=%v", created, err)
+	}
+
+	// ws-2 配额不足（配额 = size-1）→ 拒绝。
+	if _, _, err := s.PutBlobForWorkspace(ctx, "ws-2", digest, content, "", int64(len(content)-1)); !errors.Is(err, ErrBlobQuotaExceeded) {
+		t.Fatalf("ws-2 underquota: want ErrBlobQuotaExceeded, got %v", err)
+	}
+	if used, _ := s.WorkspaceBlobUsage(ctx, "ws-2"); used != 0 {
+		t.Errorf("ws-2 usage after reject: want 0, got %d", used)
+	}
+
+	// 配额足够 → created=false（内容未重存），但 ws-2 被计入既有 size。
+	meta, created, err := s.PutBlobForWorkspace(ctx, "ws-2", digest, content, "", 0)
+	if err != nil || created {
+		t.Fatalf("ws-2 upload: created=%v err=%v", created, err)
+	}
+	if meta.Size != int64(len(content)) {
+		t.Errorf("shared meta size: want %d, got %d", len(content), meta.Size)
+	}
+	if used, _ := s.WorkspaceBlobUsage(ctx, "ws-2"); used != int64(len(content)) {
+		t.Errorf("ws-2 usage: want %d, got %d", len(content), used)
+	}
+	if used, _ := s.WorkspaceBlobUsage(ctx, "ws-1"); used != int64(len(content)) {
+		t.Errorf("ws-1 usage unchanged: want %d, got %d", len(content), used)
+	}
+
+	// 空 workspace 用量为 0。
+	if used, _ := s.WorkspaceBlobUsage(ctx, "ws-none"); used != 0 {
+		t.Errorf("empty workspace usage: want 0, got %d", used)
+	}
+}

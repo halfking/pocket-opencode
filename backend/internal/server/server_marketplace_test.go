@@ -11,6 +11,11 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -473,5 +478,313 @@ func TestMarketplace_ReleaseBlobRequiresAuth(t *testing.T) {
 	h(w, r)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("unauthenticated blob download: want 401, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// newBlobRequest 构造一个 raw-body 请求（blob 上传正文不是 JSON）。
+func newBlobRequest(t *testing.T, method, target string, content []byte) *http.Request {
+	t.Helper()
+	r := httptest.NewRequest(method, target, bytes.NewReader(content))
+	r.Header.Set("Content-Type", "application/octet-stream")
+	return r
+}
+
+// blobDigestOf 计算测试内容的 sha256 hex。
+func blobDigestOf(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
+
+// newPGMarketplaceTestServer 构造 PG-backed marketplace 的 Server（复用
+// mustTestPool 的随机 schema 隔离）。DSN 不可用时 skip。
+func newPGMarketplaceTestServer(t *testing.T, blobQuota int64) (*Server, *marketplace.Store) {
+	t.Helper()
+	pool := mustTestPool(t)
+	store := marketplace.NewStore(pool)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("marketplace Init: %v", err)
+	}
+	s := &Server{}
+	s.SetMarketplaceStore(store)
+	s.SetMarketplaceBlobQuota(blobQuota)
+	return s, store
+}
+
+// TestMarketplace_BlobAndSigningRoutesNotPG 验证新端点在非 PG store 下的降级
+// （ADR §10：memstore 无密钥/blob 设施）：一律 501，方法不符 405，路由形状
+// 不符 404。
+func TestMarketplace_BlobAndSigningRoutesNotPG(t *testing.T) {
+	s := newMarketplaceTestServer()
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		expect int
+	}{
+		{"blob upload via memstore", http.MethodPut, "/api/marketplace/blobs/" + blobDigestOf([]byte("x")), "x", http.StatusNotImplemented},
+		{"blob download via memstore", http.MethodGet, "/api/marketplace/blobs/" + blobDigestOf([]byte("x")), "", http.StatusNotImplemented},
+		{"blob usage via memstore", http.MethodGet, "/api/marketplace/blobs", "", http.StatusNotImplemented},
+		{"key register via memstore", http.MethodPost, "/api/marketplace/signing/keys", `{"key_id":"k1","public_key":"AAAA"}`, http.StatusNotImplemented},
+		{"key list via memstore", http.MethodGet, "/api/marketplace/signing/keys", "", http.StatusNotImplemented},
+		{"key revoke via memstore", http.MethodDelete, "/api/marketplace/signing/keys/k1", "", http.StatusNotImplemented},
+		{"blob digest too short", http.MethodPut, "/api/marketplace/blobs/abc", "x", http.StatusNotImplemented},
+		{"signing subroute unknown", http.MethodPost, "/api/marketplace/signing/other", `{}`, http.StatusNotFound},
+		{"blob path too deep", http.MethodGet, "/api/marketplace/blobs/aa/bb", "", http.StatusNotFound},
+		{"blob upload wrong method", http.MethodPost, "/api/marketplace/blobs/" + blobDigestOf([]byte("x")), `{}`, http.StatusMethodNotAllowed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var r *http.Request
+			switch {
+			case tc.method == http.MethodPut:
+				r = newBlobRequest(t, tc.method, tc.path, []byte(tc.body))
+			case tc.body == "":
+				r = httptest.NewRequest(tc.method, tc.path, nil)
+			default:
+				r = newRequest(t, tc.method, tc.path, json.RawMessage(tc.body))
+			}
+			r = withClaims(r, "user-1", "ws-a")
+			w := httptest.NewRecorder()
+			s.handleMarketplaceRouter(w, r)
+			if w.Code != tc.expect {
+				t.Errorf("%s %s: want %d, got %d body=%s", tc.method, tc.path, tc.expect, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestMarketplace_BlobUploadDownloadPG 端到端验证 blob 上传/下载/用量
+// （PG-backed）：内容寻址校验、幂等语义、X-Digest 回显、配额超限 507。
+func TestMarketplace_BlobUploadDownloadPG(t *testing.T) {
+	s, _ := newPGMarketplaceTestServer(t, 1<<20)
+	h := s.handleMarketplaceRouter
+
+	content := []byte("hello content-addressed world")
+	digest := blobDigestOf(content)
+
+	// 1. 上传成功 → 201 + X-Digest + 用量。
+	r := withClaims(newBlobRequest(t, http.MethodPut, "/api/marketplace/blobs/"+digest, content), "user-1", "ws-a")
+	w := httptest.NewRecorder()
+	h(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("upload: want 201, got %d body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-Digest"); got != digest {
+		t.Errorf("X-Digest: want %q, got %q", digest, got)
+	}
+	var upResp struct {
+		Blob  marketplace.BlobMeta `json:"blob"`
+		Usage struct {
+			UsedBytes  int64 `json:"used_bytes"`
+			QuotaBytes int64 `json:"quota_bytes"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &upResp); err != nil {
+		t.Fatal(err)
+	}
+	if upResp.Blob.Size != int64(len(content)) || upResp.Usage.UsedBytes != int64(len(content)) {
+		t.Errorf("upload meta/usage malformed: %+v", upResp)
+	}
+
+	// 2. 同 workspace 幂等重放 → 200。
+	r = withClaims(newBlobRequest(t, http.MethodPut, "/api/marketplace/blobs/"+digest, content), "user-1", "ws-a")
+	w = httptest.NewRecorder()
+	h(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("idempotent replay: want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	// 3. digest 与内容不符 → 400。
+	r = withClaims(newBlobRequest(t, http.MethodPut, "/api/marketplace/blobs/"+digest, []byte("tampered")), "user-1", "ws-a")
+	w = httptest.NewRecorder()
+	h(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("digest mismatch: want 400, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	// 4. digest 形状非法 → 400。
+	r = withClaims(newBlobRequest(t, http.MethodPut, "/api/marketplace/blobs/not-a-digest", content), "user-1", "ws-a")
+	w = httptest.NewRecorder()
+	h(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("bad digest: want 400, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	// 5. 按 digest 下载 → 内容与头一致。
+	r = withClaims(httptest.NewRequest(http.MethodGet, "/api/marketplace/blobs/"+digest, nil), "user-1", "ws-a")
+	w = httptest.NewRecorder()
+	h(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("download: want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Body.Bytes(); !bytes.Equal(got, content) {
+		t.Errorf("download content mismatch: %q", got)
+	}
+	if got := w.Header().Get("X-Digest"); got != digest {
+		t.Errorf("download X-Digest: want %q, got %q", digest, got)
+	}
+
+	// 6. 不存在的 digest（合法 hex）→ 404。
+	missing := blobDigestOf([]byte("never uploaded anywhere"))
+	r = withClaims(httptest.NewRequest(http.MethodGet, "/api/marketplace/blobs/"+missing, nil), "user-1", "ws-a")
+	w = httptest.NewRecorder()
+	h(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("missing blob: want 404, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	// 7. 用量端点。
+	r = withClaims(httptest.NewRequest(http.MethodGet, "/api/marketplace/blobs", nil), "user-1", "ws-a")
+	w = httptest.NewRecorder()
+	h(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("usage: want 200, got %d", w.Code)
+	}
+	var usage struct {
+		UsedBytes  int64 `json:"used_bytes"`
+		QuotaBytes int64 `json:"quota_bytes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage.UsedBytes != int64(len(content)) || usage.QuotaBytes != 1<<20 {
+		t.Errorf("usage malformed: %+v", usage)
+	}
+
+	// 8. 配额超限 → 507（用尽配额后上传第二个 distinct blob）。
+	s2, _ := newPGMarketplaceTestServer(t, int64(len(content)))
+	h2 := s2.handleMarketplaceRouter
+	r = withClaims(newBlobRequest(t, http.MethodPut, "/api/marketplace/blobs/"+digest, content), "user-1", "ws-a")
+	w = httptest.NewRecorder()
+	h2(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("quota baseline upload: want 201, got %d body=%s", w.Code, w.Body.String())
+	}
+	other := []byte("another distinct blob")
+	r = withClaims(newBlobRequest(t, http.MethodPut, "/api/marketplace/blobs/"+blobDigestOf(other), other), "user-1", "ws-a")
+	w = httptest.NewRecorder()
+	h2(w, r)
+	if w.Code != http.StatusInsufficientStorage {
+		t.Errorf("quota exceeded: want 507, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestMarketplace_SigningKeysPG 端到端验证 publisher key HTTP 生命周期
+// （ADR §10：注册/列表/吊销从 store 级提升到 HTTP）：publisher 绑定 JWT
+// userID；key_id 形状与保留字校验；吊销后列表可见 revoked。
+func TestMarketplace_SigningKeysPG(t *testing.T) {
+	s, _ := newPGMarketplaceTestServer(t, 0)
+	h := s.handleMarketplaceRouter
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB64 := base64.StdEncoding.EncodeToString(priv.Public().(ed25519.PublicKey))
+
+	// 1. 注册 → 201。
+	r := withClaims(newRequest(t, http.MethodPost, "/api/marketplace/signing/keys", map[string]string{
+		"key_id": "k1", "public_key": pubB64,
+	}), "alice", "ws-a")
+	w := httptest.NewRecorder()
+	h(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("register: want 201, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	// 2. 重复注册同 key_id → 409。
+	r = withClaims(newRequest(t, http.MethodPost, "/api/marketplace/signing/keys", map[string]string{
+		"key_id": "k1", "public_key": pubB64,
+	}), "alice", "ws-a")
+	w = httptest.NewRecorder()
+	h(w, r)
+	if w.Code != http.StatusConflict {
+		t.Errorf("duplicate register: want 409, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	// 3. key_id="root" 保留字 → 400；非法形状 → 400。
+	for _, bad := range []string{"root", "bad/id", ""} {
+		body := map[string]string{"key_id": bad, "public_key": pubB64}
+		r = withClaims(newRequest(t, http.MethodPost, "/api/marketplace/signing/keys", body), "alice", "ws-a")
+		w = httptest.NewRecorder()
+		h(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("register key_id %q: want 400, got %d body=%s", bad, w.Code, w.Body.String())
+		}
+	}
+
+	// 4. 列表 → 本人 1 把 active，公钥回传一致。
+	r = withClaims(httptest.NewRequest(http.MethodGet, "/api/marketplace/signing/keys", nil), "alice", "ws-a")
+	w = httptest.NewRecorder()
+	h(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list: want 200, got %d", w.Code)
+	}
+	var listResp struct {
+		Keys []marketplace.PublisherKey `json:"keys"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp.Keys) != 1 || listResp.Keys[0].KeyID != "k1" ||
+		listResp.Keys[0].Status != "active" || listResp.Keys[0].PublicKey != pubB64 {
+		t.Errorf("list malformed: %+v", listResp.Keys)
+	}
+	if listResp.Keys[0].PublisherID != "alice" {
+		t.Errorf("publisher must bind to JWT userID: %+v", listResp.Keys[0])
+	}
+
+	// 5. 其他用户的列表隔离。
+	r = withClaims(httptest.NewRequest(http.MethodGet, "/api/marketplace/signing/keys", nil), "bob", "ws-a")
+	w = httptest.NewRecorder()
+	h(w, r)
+	var bobResp struct {
+		Keys []marketplace.PublisherKey `json:"keys"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &bobResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(bobResp.Keys) != 0 {
+		t.Errorf("bob must see no keys: %+v", bobResp.Keys)
+	}
+
+	// 6. 吊销 → 200；重复吊销 → 404；吊销后列表 status=revoked。
+	r = withClaims(httptest.NewRequest(http.MethodDelete, "/api/marketplace/signing/keys/k1", nil), "alice", "ws-a")
+	w = httptest.NewRecorder()
+	h(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("revoke: want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	r = withClaims(httptest.NewRequest(http.MethodDelete, "/api/marketplace/signing/keys/k1", nil), "alice", "ws-a")
+	w = httptest.NewRecorder()
+	h(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("double revoke: want 404, got %d body=%s", w.Code, w.Body.String())
+	}
+	r = withClaims(httptest.NewRequest(http.MethodGet, "/api/marketplace/signing/keys", nil), "alice", "ws-a")
+	w = httptest.NewRecorder()
+	h(w, r)
+	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp.Keys) != 1 || listResp.Keys[0].Status != "revoked" || listResp.Keys[0].RevokedAt == nil {
+		t.Errorf("key not marked revoked after DELETE: %+v", listResp.Keys)
+	}
+
+	// 7. 非法 key_id 的 DELETE → 400。
+	r = withClaims(httptest.NewRequest(http.MethodDelete, "/api/marketplace/signing/keys/bad/id", nil), "alice", "ws-a")
+	w = httptest.NewRecorder()
+	h(w, r)
+	// "bad/id" 占两段，路由层就不会到 DELETE 分支 → 404；换成非法单段验证 400。
+	if w.Code != http.StatusNotFound {
+		t.Errorf("deep key path: want 404, got %d", w.Code)
+	}
+	r = withClaims(httptest.NewRequest(http.MethodDelete, "/api/marketplace/signing/keys/%E4%B8%AD", nil), "alice", "ws-a")
+	w = httptest.NewRecorder()
+	h(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("non-ascii key_id: want 400, got %d body=%s", w.Code, w.Body.String())
 	}
 }
