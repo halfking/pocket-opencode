@@ -187,6 +187,10 @@ func (s *Store) PutBlobForWorkspace(ctx context.Context, workspaceID, digest str
 		if err != nil {
 			return BlobMeta{}, false, err
 		}
+		// 幂等路径虽为只读，但仍需 commit 清理事务资源（否则 defer Rollback）。
+		if err := tx.Commit(ctx); err != nil {
+			return BlobMeta{}, false, err
+		}
 		return meta, false, nil
 	}
 
