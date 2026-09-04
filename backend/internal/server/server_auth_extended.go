@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log"
@@ -384,22 +385,20 @@ func (s *Server) handleAuthSsoStatus(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthSsoLogin — GET /api/auth/sso/login
 //
-// 返回 { "url": "https://redclaw/.../api/v1/sso/login?state=...&redirect_url=..." }，
+// 返回 { "url": "https://redclaw/.../api/v1/sso/login?external_state=...&redirect_url=..." }，
 // 前端用 window.location 跳转。
 //
-// state 合约（2026-09-05 修复，见 docs/handoff/2026-09-05-sso-state-contract-mismatch.md）：
-// RedClaw auth-agent 目前忽略外部传入的 state、自行生成并由 IdP 原样带回，
-// 原先"前端 sessionStorage 严格比对"必然失败。修复后 CSRF 绑定由 pocket
-// 服务端持有：
+// state 合约（2026-09-05 方案 A 双侧落地，见 docs/handoff/2026-09-05-sso-state-contract-mismatch.md）：
+// RedClaw auth-agent /sso/login 接受 external_state 并存入 replay 表，
+// /sso/callback 在响应中原样回显。pocket 的 CSRF 绑定因此是双层的：
 //  1. 本 handler 生成 32 字节随机 nonce，写入待消费表并落 HttpOnly +
-//     SameSite=Lax cookie（Path 收窄到 /api/auth/sso/）；
-//  2. /api/auth/sso/callback 必须带回并单次消费该 nonce，冷启动 / 重放
-//     的回调直接拒绝；
-//  3. IdP 带回的 state（auth-agent 自发）仅透传给 auth-agent 校验，
-//     pocket 不再比对。
+//     SameSite=Lax cookie（Path 收窄到 /api/auth/sso/），并以 external_state
+//     参数传给 auth-agent；
+//  2. /api/auth/sso/callback 消费该 cookie（防冷启动 / 重放回调），并把
+//     auth-agent 回显的 external_state 与 nonce 做常量时间严格比对
+//     （防 login-CSRF：失败 302 error=sso_state，fail-closed，无兼容开关
+//     —— 需与 RedClaw auth-agent 同版本部署）。
 //
-// nonce 同时作为 state 参数传给 auth-agent：当前被忽略，RedClaw 若落地
-// handoff 方案 A（external_state 透传）即可无缝升级为端到端比对。
 // 兼容：旧前端带的 state query 参数不再使用，仅忽略。
 func (s *Server) handleAuthSsoLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -435,8 +434,9 @@ func (s *Server) handleAuthSsoLogin(w http.ResponseWriter, r *http.Request) {
 //
 // IdP 完成认证后浏览器被带回本端点（OIDC redirect_uri 指向 pocket，
 // 或 auth-agent 登录成功后重定向回 pocket）。流程：
-//  1. 校验并单次消费 /api/auth/sso/login 落下的绑定 cookie（CSRF 绑定）；
-//  2. 透传 code+state 给 auth-agent /sso/callback 换平台 JWT；
+//  1. 校验并单次消费 /api/auth/sso/login 落下的绑定 cookie（CSRF 绑定 1/2）；
+//  2. 透传 code+state 给 auth-agent /sso/callback 换平台 JWT，并严格比对
+//     其回显的 external_state == login nonce（CSRF 绑定 2/2，login-CSRF 根治）；
 //  3. 签发一次性短时 code，302 到 SPA /#/auth/sso/callback?sso_code=...。
 //     token 不再进 URL（P1-2：浏览器历史 / 访问日志泄露面），前端拿 code
 //     POST /api/auth/sso/exchange 换登录结果。
@@ -457,6 +457,7 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 		s.ssoRedirectError(w, r, "sso_session")
 		return
 	}
+	nonce := ck.Value // 绑定 nonce，callback 结束前用于 external_state 端到端比对
 	s.clearSsoTxnCookie(w, r)
 
 	// 2. IdP 侧错误（如 casdoor 回传 error=...）原样转成 SPA 可展示的错误码。
@@ -477,8 +478,8 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. 透传给 auth-agent 换平台 JWT。state 是 auth-agent 自发并由 IdP
-	// 带回的那份，由它的 replayGuard 单次校验；upstream 失败细节只进日志，
-	// 不进重定向 URL。
+	//    带回的那份，由它的 replayGuard 单次校验；upstream 失败细节只进日志，
+	//    不进重定向 URL。
 	res, err := s.redclawAdminClient.SsoCallback(r.Context(), code, state)
 	if err != nil {
 		log.Printf("WARN: redclaw sso callback failed: %v", err)
@@ -486,21 +487,31 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 		s.ssoRedirectError(w, r, "sso_upstream")
 		return
 	}
-	if res.Employee == nil || res.Employee.ID == "" {
+	// 3b. 端到端 state 比对（login-CSRF 根治项）：auth-agent 必须原样回显
+	//     login 时我方传入的 external_state。旧版 auth-agent 无回显（空串）
+	//     或值不符一律 fail-closed——部署上要求 RedClaw auth-agent 同版本。
+	if subtle.ConstantTimeCompare([]byte(res.ExternalState), []byte(nonce)) != 1 {
+		log.Printf("WARN: sso callback external_state mismatch (len=%d)", len(res.ExternalState))
+		s.auditGateway(r, "auth.sso.callback", "-", "reason=external_state_mismatch", false)
+		s.ssoRedirectError(w, r, "sso_state")
+		return
+	}
+	if res.Claims.Sub == "" {
 		// 不允许空 user_id:所有 SSO 用户若共用一个 sentinel id 会互相冒充。
-		log.Printf("WARN: redclaw sso callback returned empty employee id")
+		//（SsoCallback 客户端已拒绝空 sub，这里是语义兜底。）
+		log.Printf("WARN: redclaw sso callback returned empty subject")
 		s.auditGateway(r, "auth.sso.callback", "-", "reason=empty_employee_id", false)
 		s.ssoRedirectError(w, r, "sso_no_user")
 		return
 	}
-	userID := res.Employee.ID
+	userID := res.Claims.Sub
 	wsID := s.ensureWorkspaceForRedClawUser(r.Context(), userID)
-	auth.RecordShadow("redclaw", userID, wsID, res.Employee.Name, res.Employee.Email)
+	auth.RecordShadow("redclaw", userID, wsID, res.Claims.Name, res.Claims.Email)
 
 	// 4. 签发一次性 code，302 到 SPA。
 	ssoCode, err := s.ssoXchg.Put(ssoHandoff{
-		Token:       res.Token,
-		User:        res.Employee.Name,
+		Token:       res.JWT,
+		User:        res.Claims.Name,
 		UserID:      userID,
 		WorkspaceID: wsID,
 	})

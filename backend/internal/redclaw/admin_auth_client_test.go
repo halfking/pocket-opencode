@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -227,11 +228,18 @@ func TestAdminAuthClient_SsoLoginURL(t *testing.T) {
 	if !strings.Contains(got, "/api/v1/sso/login") {
 		t.Errorf("missing sso path: %s", got)
 	}
-	if !strings.Contains(got, "state=abc-state") {
-		t.Errorf("missing state: %s", got)
+	if !strings.Contains(got, "external_state=abc-state") {
+		t.Errorf("missing external_state: %s", got)
+	}
+	if u, err := url.Parse(got); err != nil || u.Query().Get("state") != "" {
+		t.Errorf("legacy state param must not be sent: %s", got)
 	}
 	if !strings.Contains(got, "redirect_url=") {
 		t.Errorf("missing redirect_url: %s", got)
+	}
+	// 空 state 时 external_state 参数整体省略。
+	if got := c.SsoLoginURL("", ""); strings.Contains(got, "external_state") {
+		t.Errorf("empty state must omit external_state: %s", got)
 	}
 }
 
@@ -243,9 +251,12 @@ func TestAdminAuthClient_SsoCallback_Success(t *testing.T) {
 		if r.URL.Query().Get("code") != "idp-code" {
 			t.Errorf("bad code: %s", r.URL.Query().Get("code"))
 		}
-		_ = json.NewEncoder(w).Encode(LoginResult{
-			Token:    "sso-tok",
-			Employee: &EmployeeInfo{ID: "user-sso"},
+		// 真实 auth-agent 的响应形状：{jwt, claims, next, external_state}。
+		_ = json.NewEncoder(w).Encode(SsoCallbackResult{
+			JWT:           "sso-tok",
+			Claims:        SsoCallbackClaims{Sub: "user-sso", Name: "Alice", Tenant: "default"},
+			Next:          "/",
+			ExternalState: "relay-nonce",
 		})
 	}))
 	defer srv.Close()
@@ -254,8 +265,20 @@ func TestAdminAuthClient_SsoCallback_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SsoCallback: %v", err)
 	}
-	if res.Token != "sso-tok" || res.Employee.ID != "user-sso" {
+	if res.JWT != "sso-tok" || res.Claims.Sub != "user-sso" || res.ExternalState != "relay-nonce" {
 		t.Errorf("bad sso result: %+v", res)
+	}
+}
+
+func TestAdminAuthClient_SsoCallback_EmptyJWTRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 模拟异常 upstream：200 但缺 jwt —— 必须当作 upstream 错误。
+		_ = json.NewEncoder(w).Encode(map[string]any{"claims": map[string]any{"sub": "u1"}})
+	}))
+	defer srv.Close()
+	c := newTestAdminClient(t, srv)
+	if _, err := c.SsoCallback(context.Background(), "idp-code", "state-1"); !errors.Is(err, ErrRedClawUnavailable) {
+		t.Fatalf("empty jwt must be ErrRedClawUnavailable, got %v", err)
 	}
 }
 

@@ -2,7 +2,9 @@
 
 > **日期**: 2026-09-05
 > **来源**: openpocket 认证体系审计（对照 docs/AUTH_REDCLAW.md）
-> **状态**: pocket 侧已落地（方案 C' + P1-2 修复，见 §6）；RedClaw 侧协同项（方案 A 升级、本地栈 IdP）待办
+> **状态**: ✅ 双侧已闭环 —— pocket 侧方案 C' + P1-2（§6）；RedClaw 侧方案 A
+> （§6.2，`feat/authagent-sso-external-state` @ 692baad）与 pocket 端到端严格
+> 比对均已落地。剩余：本地栈 IdP 配置 + 真实 IdP 全链路 IT（§5）。
 > **严重级**: P1（SSO 功能链路断裂风险 + CSRF 防线弱于文档）
 
 ## 1. 结论（TL;DR）
@@ -77,18 +79,24 @@ auth-agent，改为 pocket 后端在 `/api/auth/sso/login` 时生成 state、短
 
 ## 5. 验收标准
 
-- [x] pocket 侧落地（本仓库可独立完成的部分，见 §6）；
-      RedClaw 侧方案 A（external_state 透传）仍待两仓库对齐后升级；
+- [x] pocket 侧落地（§6，方案 C' + P1-2）；
+- [x] RedClaw 侧方案 A（external_state 透传 + 回显）——§6.2，
+      `feat/authagent-sso-external-state` @ 692baad（基于
+      `feature/redclaw-pgbroker-delivery-lease` @ a93d32a）；pocket 侧
+      端到端严格比对同批落地（§6.2）；
 - [ ] 本地栈配置 `OIDC_REDIRECT_URL` 指向 pocket `/api/auth/sso/callback`
-      + casdoor IdP 容器（RedClaw 仓库侧）；
+      + casdoor IdP 容器（RedClaw 仓库侧；本地栈 deploy/compose 正由并行
+      会话改造中，需协调避免覆盖）；
 - [ ] IT 补测完整链路：login → IdP → callback → 铸 token → SPA 落地 →
       logout 撤销，证据归档 `test-evidence/`（依赖上一项的 IdP 容器；
-      本仓库已有 fake auth-agent 的 handler 级全链路测试
-      `backend/internal/server/auth_sso_test.go` 覆盖同等断言）。
+      两仓库现均有 fake IdP/auth-agent 的 handler 级全链路测试
+      覆盖同等断言）。
 
 ## 6. 2026-09-05 落地记录（pocket 侧）
 
-RedClaw 仓库不在本机、方案 A 需其配合，故按 §3 方案 C 的思路做 pocket
+（交接记录称 RedClaw 仓库不在本机，事后核实仓库在本机
+`~/workspace/ai-native-tools/RedClaw`，方案 A 已于同日 §6.2 直接落地。）
+按 §3 方案 C 的思路做 pocket
 侧可独立落地的变体（**方案 C'**），并同批修掉 P1-2。核心：承认 state
 所有权归 auth-agent（吸收方案 B 的结论），pocket 的 CSRF 绑定改由
 **服务端持有的浏览器绑定**承担，而不是比对 IdP 带回的 state。
@@ -158,3 +166,50 @@ RedClaw 仓库不在本机、方案 A 需其配合，故按 §3 方案 C 的思�
    callback 会拼出相对 URL。收敛为构造期解析的 `authBase` 共用。
 5. 测试用 `New()` 起 hub goroutine（泄漏），改 `newServer(startHubs=false)`。
 6. 绑定 cookie 非法路径未清 cookie，补 `clearSsoTxnCookie`。
+
+### 6.2 方案 A 双侧落地（同日，本节记录端到端绑定）
+
+RedClaw 仓库在本机核实后，方案 A 直接落地并双侧闭环：
+
+**RedClaw 侧**（`feat/authagent-sso-external-state` @ 692baad，基于
+`feature/redclaw-pgbroker-delivery-lease` @ a93d32a，已推送 origin）：
+
+- `internal/authagent/sso/replay.go`：replay entry 增加 `external` 槽位，
+  `Store(state, nonce, external)` / `Consume(state) (nonce, external, ok)`。
+- `sso.go`：`LoginURL(origin, externalState)`——external_state 经
+  `normalizeExternalState` 校验（TrimSpace、≤256B、禁控制字符，空值=
+  未提供），**不进 authorize URL（IdP 不可见）**；`HandleCallback` 返回值
+  增加 externalState 回显。
+- `handlers.go`：`/sso/login` 读 `external_state` 参数（非法 400）；
+  `/sso/callback` JSON 响应增加 `external_state` 字段（旧调用方可忽略）。
+- 测试：normalize 边界、Login 存取 + IdP URL 不泄露、callback 回显、
+  gin handler 级 login→callback 全链路。
+
+**pocket 侧**（openpocket main，与本文档同批提交）：
+
+- `redclaw/admin_auth_client.go`：`SsoLoginURL` 改传 `external_state`
+  参数；**修正 SSO callback 响应形状错配**（review 发现的存量缺陷）：
+  auth-agent 真实返回 `{jwt, claims, next, external_state}`，此前误按
+  Admin /auth/login 的 `LoginResult{token, employee}` 解码，真实链路会在
+  "empty token" 处断裂。现以专用 `SsoCallbackResult` 解码，空 jwt/空
+  sub 视为 upstream 错误。
+- `server/server_auth_extended.go`：`handleAuthSsoCallback` 在 upstream
+  成功后做 `subtle.ConstantTimeCompare(res.ExternalState, nonce)` 严格
+  比对，失配 → 审计 `external_state_mismatch` + 302 `error=sso_state`。
+  **fail-closed、无兼容开关**：旧版 auth-agent 不回显（空串）同样拒绝。
+  用户身份取自 `claims.sub`（原 `employee.id`）。
+- 前端 `SsoCallbackView.vue`：`sso_state` 错误码文案。
+- 测试：fake auth-agent 补 `/sso/login` 捕获 + 回显行为；全链路用例补
+  「浏览器访问 agent login」步；新增失配用例（回显值不符 / 回显缺失
+  两种，均断言打到 upstream、拒绝签发 sso_code）。
+
+**部署顺序约束（重要）**：pocket 的严格比对要求 RedClaw auth-agent
+**先**部署本方案版本。若 pocket 先升级而 auth-agent 未升级，所有 SSO
+登录将 302 `sso_state` 失败（fail-closed 属预期行为）。当前真实 IdP
+链路尚未在任何环境打通（本地栈缺 IdP），无线上回归风险。
+
+**CSRF 语义（替换 §6 的过渡说明）**：external_state 端到端比对落地后，
+login-CSRF（攻击者把自己 IdP 会话的 code+state 注入受害者浏览器）已
+根治——注入的 code+state 只能换回攻击者自己的 external_state 回显，
+与受害者 nonce 比对必然失配。绑定 cookie 降为二道防线（防冷启动/重放
+回调），保留。

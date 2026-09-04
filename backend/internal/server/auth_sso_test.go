@@ -128,13 +128,24 @@ func newSSOTestServer(t *testing.T, fakeAgent *httptest.Server, ssoEnabled bool)
 // 返回的记录器保存最后一次收到的 code/state/secret，便于断言透传行为。
 type fakeAgentRecorder struct {
 	code, state, secret string
+	externalState       string // /sso/login 捕获的 external_state
 	callbackCalled      bool
 	failWith            int
+	// echoOverride 非空时替换回显值（模拟失配）；suppressEcho 为 true 时
+	// 不带 external_state 字段（模拟未升级的旧版 auth-agent）。
+	echoOverride string
+	suppressEcho bool
 }
 
 func fakeAuthAgent(t *testing.T, rec *fakeAgentRecorder) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/sso/login") {
+			rec.externalState = r.URL.Query().Get("external_state")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"url": "https://idp.example.com/authorize?state=fake-idp-state"})
+			return
+		}
 		if !strings.HasPrefix(r.URL.Path, "/api/v1/sso/callback") {
 			http.Error(w, `{"error":{"code":"not_found","message":"no route"}}`, http.StatusNotFound)
 			return
@@ -147,14 +158,23 @@ func fakeAuthAgent(t *testing.T, rec *fakeAgentRecorder) *httptest.Server {
 			http.Error(w, `{"error":{"code":"invalid_state","message":"state mismatch"}}`, rec.failWith)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"token":              "fake-platform-jwt",
-			"mustChangePassword": false,
-			"employee": map[string]any{
-				"id": "emp-42", "name": "Alice", "role": "user", "email": "alice@example.com",
+		// 真实 RedClaw auth-agent 的响应形状：{jwt, claims, next, external_state}。
+		payload := map[string]any{
+			"jwt": "fake-platform-jwt",
+			"claims": map[string]any{
+				"sub": "emp-42", "name": "Alice", "email": "alice@example.com", "tenant": "default",
 			},
-		})
+			"next": "/",
+		}
+		if !rec.suppressEcho {
+			echo := rec.externalState
+			if rec.echoOverride != "" {
+				echo = rec.echoOverride
+			}
+			payload["external_state"] = echo
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(payload)
 	}))
 }
 
@@ -180,6 +200,24 @@ func getSsoLoginURL(t *testing.T, srv *Server) (bodyURL string, txnCookie *http.
 	return resp.URL, txnCookie
 }
 
+// visitAgentLogin 模拟浏览器访问 auth-agent /sso/login——真实链路中这一步
+// 让 auth-agent 捕获 external_state 并签发自己的 IdP state（方案 A 合约）。
+func visitAgentLogin(t *testing.T, agentURL string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, agentURL, nil)
+	if err != nil {
+		t.Fatalf("build agent login request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("agent login unreachable: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("agent login expected 200, got %d", resp.StatusCode)
+	}
+}
+
 func TestSSO_FullChain_LoginCallbackExchange(t *testing.T) {
 	rec := &fakeAgentRecorder{}
 	fake := fakeAuthAgent(t, rec)
@@ -201,16 +239,26 @@ func TestSSO_FullChain_LoginCallbackExchange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse agent url: %v", err)
 	}
-	if got := u.Query().Get("state"); got != ck.Value {
-		t.Errorf("agent url state should carry the binding nonce")
+	if got := u.Query().Get("external_state"); got != ck.Value {
+		t.Errorf("agent url external_state should carry the binding nonce")
+	}
+	if u.Query().Get("state") != "" {
+		t.Errorf("legacy state param must no longer be sent")
 	}
 	if got := u.Query().Get("redirect_url"); got != "http://app.example.com/api/auth/sso/callback" {
 		t.Errorf("agent url redirect_url = %q", got)
 	}
 
+	// 1b. 浏览器步：访问 auth-agent /sso/login（fake 捕获 external_state，
+	//     等价真实链路中 IdP 只认 auth-agent 自发的 state）。
+	visitAgentLogin(t, agentURL)
+	if rec.externalState != ck.Value {
+		t.Fatalf("agent login must capture external_state=%q, got %q", ck.Value, rec.externalState)
+	}
+
 	// 2. callback：带 cookie 回来 → 消费 cookie，透传 code+state 给 auth-agent，
 	//    302 到 SPA 只带一次性 sso_code（token 不进 URL，P1-2）
-	req := httptest.NewRequest(http.MethodGet, "/api/auth/sso/callback?code=authz-code&state=agent-owned-state", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/sso/callback?code=authz-code&state=fake-idp-state", nil)
 	req.AddCookie(&http.Cookie{Name: ssoTxnCookie, Value: ck.Value})
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -228,12 +276,15 @@ func TestSSO_FullChain_LoginCallbackExchange(t *testing.T) {
 	if loc.Query().Get("token") != "" || loc.Query().Get("user") != "" {
 		t.Fatal("redirect must NOT carry token/user (P1-2)")
 	}
-	if !rec.callbackCalled || rec.code != "authz-code" || rec.state != "agent-owned-state" {
+	if !rec.callbackCalled || rec.code != "authz-code" || rec.state != "fake-idp-state" {
 		t.Errorf("auth-agent relay mismatch: rec=%+v", rec)
+	}
+	if rec.externalState != ck.Value {
+		t.Errorf("auth-agent should have received external_state=%q, got %q", ck.Value, rec.externalState)
 	}
 
 	// 2b. 绑定 cookie 已被消费：重放同一回调 → 拒绝
-	req2 := httptest.NewRequest(http.MethodGet, "/api/auth/sso/callback?code=authz-code&state=agent-owned-state", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/auth/sso/callback?code=authz-code&state=fake-idp-state", nil)
 	req2.AddCookie(&http.Cookie{Name: ssoTxnCookie, Value: ck.Value})
 	rr2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr2, req2)
@@ -280,6 +331,49 @@ func TestSSO_Callback_WithoutBindingCookie(t *testing.T) {
 	}
 	if rec.callbackCalled {
 		t.Error("auth-agent must not be reached without binding cookie")
+	}
+}
+
+// TestSSO_Callback_ExternalStateStrictCompare 端到端 state 比对 fail-closed：
+// auth-agent 回显缺失（旧版本未升级）或值不符（login-CSRF 场景）都不允许
+// 完成登录——只回稳定错误码 sso_state，不签发 sso_code。
+func TestSSO_Callback_ExternalStateStrictCompare(t *testing.T) {
+	cases := []struct {
+		name string
+		rec  fakeAgentRecorder
+	}{
+		{"echo mismatch", fakeAgentRecorder{echoOverride: "attacker-nonce"}},
+		{"echo missing (legacy agent)", fakeAgentRecorder{suppressEcho: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := tc.rec
+			fake := fakeAuthAgent(t, &rec)
+			defer fake.Close()
+			srv := newSSOTestServer(t, fake, true)
+
+			agentURL, ck := getSsoLoginURL(t, srv)
+			if ck == nil {
+				t.Fatal("no binding cookie")
+			}
+			// 浏览器步：让 fake 捕获我方 nonce，回显阶段才能区分
+			// 「值不符」与「缺失」两种失配。
+			visitAgentLogin(t, agentURL)
+			req := httptest.NewRequest(http.MethodGet, "/api/auth/sso/callback?code=c&state=s", nil)
+			req.AddCookie(&http.Cookie{Name: ssoTxnCookie, Value: ck.Value})
+			rr := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rr, req)
+			if rr.Code != http.StatusFound || !strings.Contains(rr.Header().Get("Location"), "error=sso_state") {
+				t.Fatalf("mismatched echo must redirect with sso_state, got %d %q", rr.Code, rr.Header().Get("Location"))
+			}
+			if !rec.callbackCalled {
+				t.Error("upstream should have been reached (rejection happens at echo comparison)")
+			}
+			loc, _ := url.Parse(rr.Header().Get("Location"))
+			if loc.Query().Get("sso_code") != "" {
+				t.Error("no sso_code may be issued on state mismatch")
+			}
+		})
 	}
 }
 
@@ -370,4 +464,3 @@ func TestSSO_Disabled_Returns404(t *testing.T) {
 		}
 	}
 }
-

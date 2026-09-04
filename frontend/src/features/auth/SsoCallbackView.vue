@@ -16,9 +16,9 @@
            URL，防浏览器历史 / 访问日志泄露）
          - 落 store，跳到 /ai
 
-  state 合约（2026-09-05 修复）：RedClaw auth-agent 自行生成 state 并由 IdP
-  原样带回，前端 sessionStorage 严格比对永远不成立（旧实现死路），CSRF
-  绑定已改由后端绑定 cookie 承担。见
+  state 合约（2026-09-05 方案 A 双侧落地）：pocket 服务端生成登录绑定
+  nonce（HttpOnly cookie + auth-agent external_state），回调时后端做
+  端到端严格比对，前端不再持有 state。见
   docs/handoff/2026-09-05-sso-state-contract-mismatch.md。
 -->
 <template>
@@ -43,6 +43,7 @@ const error = ref('')
 /** 后端 ssoRedirectError 的稳定错误码 → 用户可读文案。 */
 const ERROR_MESSAGES: Record<string, string> = {
   sso_session: '登录会话校验失败（绑定已失效或回调被重放），请回到登录页重新发起',
+  sso_state: 'SSO 登录链路校验失败（state 端到端比对不符），请重新发起登录；若持续出现请联系管理员检查 RedClaw 版本',
   sso_idp: '身份提供商认证失败或已取消，请重试',
   sso_invalid: '回调参数不完整，请重新发起登录',
   sso_upstream: 'RedClaw 平台换取凭据失败，请稍后重试',

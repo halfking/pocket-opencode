@@ -42,9 +42,9 @@ type AdminAuthClientConfig struct {
 // 向上返回 error——因为登录路径必须明确告诉调用方"成功/失败"，不能像
 // 镜像那样静默吞掉。
 type AdminAuthClient struct {
-	cfg         AdminAuthClientConfig
-	adminHTTP   *http.Client
-	authHTTP    *http.Client
+	cfg       AdminAuthClientConfig
+	adminHTTP *http.Client
+	authHTTP  *http.Client
 	// authBase 解析后的 Auth Agent 基址（AuthAgentURL 为空时回落 AdminURL，
 	// 单进程部署场景）。SsoLoginURL / SsoCallback 必须共用同一解析结果，
 	// 否则 login 带了 fallback 而 callback 拿空 base 拼出相对 URL。
@@ -93,21 +93,45 @@ type LoginRequest struct {
 
 // LoginResult RedClaw Admin /auth/login 的响应。
 type LoginResult struct {
-	Token              string         `json:"token"`
-	MustChangePassword bool           `json:"mustChangePassword"`
-	Employee           *EmployeeInfo  `json:"employee"`
+	Token              string        `json:"token"`
+	MustChangePassword bool          `json:"mustChangePassword"`
+	Employee           *EmployeeInfo `json:"employee"`
+}
+
+// SsoCallbackClaims 是 auth-agent /sso/callback 响应中 claims 字段的形状
+// （解析自 id_token 的受信声明）。
+type SsoCallbackClaims struct {
+	Sub    string `json:"sub"`
+	Email  string `json:"email"`
+	Name   string `json:"name"`
+	Tenant string `json:"tenant"`
+}
+
+// SsoCallbackResult 是 RedClaw auth-agent /sso/callback 的真实响应形状：
+// {"jwt","claims","next","external_state"}。注意这与 Admin /auth/login 的
+// LoginResult（token+employee）不同——此前误按 Login 形状解码，真实链路
+// 会在 empty token 处断裂（2026-09-05 review 发现并修正）。
+type SsoCallbackResult struct {
+	JWT    string            `json:"jwt"`
+	Claims SsoCallbackClaims `json:"claims"`
+	Next   string            `json:"next"`
+	// ExternalState 是 auth-agent 对 login 时 external_state 参数的回显
+	//（见 SsoLoginURL）。pocket 的 handleAuthSsoCallback 用它与本地绑定
+	// nonce 做常量时间比对；空值即失配（旧版 auth-agent 无回显，严格比对
+	// fail-closed）。
+	ExternalState string `json:"external_state"`
 }
 
 // EmployeeInfo 是 RedClaw Admin 返回的当前用户画像（camelCase 与前端 AuthUser 对齐）。
 type EmployeeInfo struct {
-	ID                string   `json:"id"`
-	Name              string   `json:"name"`
-	Role              string   `json:"role"`
-	Email             string   `json:"email"`
-	DepartmentID      string   `json:"departmentId"`
-	PositionID        string   `json:"positionId"`
-	AgentID           string   `json:"agentId"`
-	Channels          []string `json:"channels"`
+	ID                 string   `json:"id"`
+	Name               string   `json:"name"`
+	Role               string   `json:"role"`
+	Email              string   `json:"email"`
+	DepartmentID       string   `json:"departmentId"`
+	PositionID         string   `json:"positionId"`
+	AgentID            string   `json:"agentId"`
+	Channels           []string `json:"channels"`
 	MustChangePassword bool     `json:"mustChangePassword"`
 }
 
@@ -283,8 +307,9 @@ func (c *AdminAuthClient) Logout(ctx context.Context, token string) error {
 // =====================================================================
 
 // SsoLoginURL 拼出 RedClaw Auth Agent 的 SSO 登录入口 URL。
-// state 由调用方生成（pocket 现传登录绑定 nonce；auth-agent 当前会忽略，
-// 见 docs/handoff/2026-09-05-sso-state-contract-mismatch.md），空则省略参数。
+// state 由 pocket 生成（登录绑定 nonce），以 external_state 参数传给
+// auth-agent：RedClaw 侧（2026-09-05 方案 A）把它存入 replay 表并在
+// /sso/callback 响应中原样回显，pocket 据此做端到端比对。空则省略参数。
 func (c *AdminAuthClient) SsoLoginURL(state, redirectURL string) string {
 	u, err := url.Parse(c.authBase + "/api/v1/sso/login")
 	if err != nil {
@@ -292,7 +317,7 @@ func (c *AdminAuthClient) SsoLoginURL(state, redirectURL string) string {
 	}
 	q := u.Query()
 	if state != "" {
-		q.Set("state", state)
+		q.Set("external_state", state)
 	}
 	if redirectURL != "" {
 		q.Set("redirect_url", redirectURL)
@@ -301,9 +326,9 @@ func (c *AdminAuthClient) SsoLoginURL(state, redirectURL string) string {
 	return u.String()
 }
 
-// SsoCallback 用 IdP 返回的 code + state 调 RedClaw /sso/callback，
-// 成功返回与 Login 等价的 LoginResult。
-func (c *AdminAuthClient) SsoCallback(ctx context.Context, code, state string) (*LoginResult, error) {
+// SsoCallback 用 IdP 返回的 code + state 调 RedClaw auth-agent /sso/callback，
+// 成功返回平台 JWT + 受信 claims（+ external_state 回显，供端到端比对）。
+func (c *AdminAuthClient) SsoCallback(ctx context.Context, code, state string) (*SsoCallbackResult, error) {
 	if code == "" || state == "" {
 		return nil, fmt.Errorf("redclaw admin: code and state are required")
 	}
@@ -339,12 +364,15 @@ func (c *AdminAuthClient) SsoCallback(ctx context.Context, code, state string) (
 		return nil, c.parseAdminError(resp.StatusCode, resp.Body)
 	}
 
-	var out LoginResult
+	var out SsoCallbackResult
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("%w: decode sso callback: %v", ErrRedClawUnavailable, err)
 	}
-	if out.Token == "" {
-		return nil, fmt.Errorf("%w: empty token in sso callback", ErrRedClawUnavailable)
+	if out.JWT == "" {
+		return nil, fmt.Errorf("%w: empty jwt in sso callback", ErrRedClawUnavailable)
+	}
+	if out.Claims.Sub == "" {
+		return nil, fmt.Errorf("%w: empty sub in sso callback claims", ErrRedClawUnavailable)
 	}
 	return &out, nil
 }
