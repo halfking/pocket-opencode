@@ -3,7 +3,33 @@ package auth
 import (
 	"testing"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
+
+// mintExpired 签发一个 exp 早于 30s leeway 窗口的 token，用于验证
+// Parse/Middleware 真正拒绝过期凭证（1ms TTL + 短 sleep 的旧写法始终
+// 落在 leeway 内，无法覆盖过期路径）。
+func mintExpired(t *testing.T, secret, userID, role string) string {
+	t.Helper()
+	now := time.Now()
+	claims := Claims{
+		UserID: userID,
+		Role:   role,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    IssuerName,
+			Audience:  jwt.ClaimStrings{AudienceName},
+			ExpiresAt: jwt.NewNumericDate(now.Add(-time.Minute)),
+			IssuedAt:  jwt.NewNumericDate(now.Add(-2 * time.Minute)),
+			NotBefore: jwt.NewNumericDate(now.Add(-2 * time.Minute)),
+		},
+	}
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("sign expired token: %v", err)
+	}
+	return signed
+}
 
 func TestJWTSignAndParse(t *testing.T) {
 	secret := "test-secret-key-at-least-32-bytes-long"
@@ -52,19 +78,12 @@ func TestJWTInvalidToken(t *testing.T) {
 
 func TestJWTExpiredToken(t *testing.T) {
 	secret := "test-secret-key-at-least-32-bytes-long"
-	ttl := 1 * time.Millisecond // Very short TTL
-	signer, err := NewSigner(secret, ttl)
+	signer, err := NewSigner(secret, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("NewSigner failed: %v", err)
 	}
 
-	token, err := signer.Sign("testuser", "user")
-	if err != nil {
-		t.Fatalf("Sign failed: %v", err)
-	}
-
-	// Wait for token to expire
-	time.Sleep(10 * time.Millisecond)
+	token := mintExpired(t, secret, "testuser", "user")
 
 	_, err = signer.Parse(token)
 	if err == nil {

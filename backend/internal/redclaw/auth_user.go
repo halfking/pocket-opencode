@@ -34,9 +34,15 @@ type AuthClient struct {
 }
 
 // NewAuthClient 构造 AuthClient。BaseURL 为空返回 nil（调用方须 nil-safe）。
+// Secret 必填：镜像端点承载用户注册/邮箱等 PII 事件，与文档 §8.2.3 的
+// Pocket 共享密钥合约对齐；密钥为空时返回 error，由调用方降级停用镜像
+// （main.go 会 WARN 并 disable），避免无鉴权明发用户事件。
 func NewAuthClient(cfg AuthClientConfig) (*AuthClient, error) {
 	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("redclaw auth: BaseURL cannot be empty")
+	}
+	if cfg.Secret == "" {
+		return nil, fmt.Errorf("redclaw auth: Secret cannot be empty (mirror would send user events unauthenticated)")
 	}
 	timeout := cfg.TimeoutSec
 	if timeout <= 0 {

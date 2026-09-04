@@ -9,6 +9,12 @@ import (
 	"time"
 )
 
+// DevDefaultJWTSecret 是未设置 POCKET_JWT_SECRET 时的开发默认值。
+// 注意：它必须 ≥32 字节，否则 auth.NewSigner 会直接 Fatal（历史默认值
+// "pocket-dev-insecure-secret" 只有 26 字节，属于永远起不来的死配置）。
+// 该值仅供开发；生产 Validate() 会显式拒绝它。
+const DevDefaultJWTSecret = "pocket-dev-insecure-secret-0000000000"
+
 // Config holds all application configuration loaded from environment variables.
 // It supports multiple deployment phases including personal assistant features,
 // AI gateway integration, email processing, and enterprise backend connectivity.
@@ -194,7 +200,7 @@ func Load() Config {
 		MCPInsecureTLS:             getEnv("POCKET_MCP_INSECURE_TLS", "") == "true",
 		MCPTenantID:                getEnv("POCKET_MCP_TENANT_ID", ""),
 		MCPScopeString:             getEnv("POCKET_MCP_SCOPES", "tasks,sessions"),
-		JWTSecret:                  getEnv("POCKET_JWT_SECRET", "pocket-dev-insecure-secret"),
+			JWTSecret:                  getEnv("POCKET_JWT_SECRET", DevDefaultJWTSecret),
 		DevAuth:                    getEnv("POCKET_DEV_AUTH", "") == "true",
 		DevAuthUser:                getEnv("POCKET_AUTH_USER", ""),
 		DevAuthPass:                getEnv("POCKET_AUTH_PASS", ""),
@@ -273,7 +279,10 @@ func (c Config) Validate() error {
 	}
 
 	// Security: JWT secret must be strong and not use development default
-	if len([]byte(c.JWTSecret)) < 32 || c.JWTSecret == "pocket-dev-insecure-secret" {
+	// （同时拒绝历史 26 字节死默认值，防止旧配置文件残留）
+	if len([]byte(c.JWTSecret)) < 32 ||
+		c.JWTSecret == DevDefaultJWTSecret ||
+		c.JWTSecret == "pocket-dev-insecure-secret" {
 		return fmt.Errorf("POCKET_JWT_SECRET must be at least 32 bytes and must not use the development default")
 	}
 

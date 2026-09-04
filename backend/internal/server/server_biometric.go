@@ -319,6 +319,16 @@ func (s *Server) handleBiometricLoginFinish(w http.ResponseWriter, r *http.Reque
 			if verifyResp.UserInfo != nil && len(verifyResp.UserInfo.Roles) > 0 {
 				role = verifyResp.UserInfo.Roles[0] // 取第一个角色
 			}
+		} else if s.redclawAdminClient != nil {
+			// RedClaw 认证为主权威源（redclawAdminClient 已配置）但 gateway bridge
+			// 未配置时无法核验用户在 RedClaw 侧是否仍有效（未禁用/删除）。
+			// fail-closed：拒绝生物识别登录，防止已被禁用的用户凭本地生物凭证绕过
+			// RedClaw 账号状态检查。修复路径：配置 POCKET_REDCLAW_BASE_URL/SECRET。
+			s.auditGateway(r, "biometric.login.failed", storedCred.ID,
+				fmt.Sprintf("user=%s reason=redclaw_bridge_unconfigured", storedCred.UserID), false)
+			writeError(w, http.StatusServiceUnavailable,
+				"biometric login requires RedClaw gateway (POCKET_REDCLAW_BASE_URL) when RedClaw auth is primary")
+			return
 		}
 
 		// 签发 JWT token

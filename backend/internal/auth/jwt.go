@@ -94,13 +94,23 @@ func (s *Signer) SignWithWorkspace(userID, role, workspaceID string) (string, er
 }
 
 // Parse 校验 JWT 并返回 claims。
+//
+// 对齐 AUTH_REDCLAW.md L1 要求：
+//   - 只接受 HS256（本 Signer 只产 HS256，拒绝 HS384/512 及 alg 混淆）；
+//   - 显式校验 iss=pocket、aud=pocket-api（存量无这两个 claim 的旧 token
+//     将被拒绝——向后兼容窗口期就此关闭，用户需重新登录一次）；
+//   - 30s leeway 容忍时钟偏移。
 func (s *Signer) Parse(tokenString string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return s.secret, nil
-	})
+	}, jwt.WithValidMethods([]string{"HS256"}),
+		jwt.WithIssuer(IssuerName),
+		jwt.WithAudience(AudienceName),
+		jwt.WithLeeway(30*time.Second),
+	)
 	if err != nil {
 		return nil, err
 	}

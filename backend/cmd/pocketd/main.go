@@ -188,6 +188,16 @@ func main() {
 		log.Println("Dev mode: JWT signer initialized without user store (login disabled)")
 	}
 
+	if jwtSigner != nil && strings.TrimSpace(os.Getenv("IDENTITY_SHARED_SECRET")) == "" {
+		// 未配置跨项目互信密钥时，requireAuth 退化为本地单密钥校验：
+		// 本地签发 token（dev 旁路 / legacy 登录 / 生物识别）不受 RedClaw
+		// 会话撤销覆盖，logout 也无法使其失效（AUTH_REDCLAW.md L3 缺口）。
+		// RedClaw 集成部署必须设置，与 RedClaw ADMIN_JWT_SIGNING_KEY 同源。
+		log.Println("WARN: IDENTITY_SHARED_SECRET not set — JWT verification is local-key only; " +
+			"locally-issued tokens are NOT covered by RedClaw session revocation. " +
+			"Set IDENTITY_SHARED_SECRET for RedClaw-integrated deployments.")
+	}
+
 	// ---- C3/C4: 邮箱验证码（PG-backed，依赖 userStore）----
 	var (
 		codeStore  *auth.CodeStore

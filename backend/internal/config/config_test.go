@@ -20,7 +20,7 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Environment != "development" {
 		t.Fatalf("expected development environment, got %q", cfg.Environment)
 	}
-	if cfg.JWTSecret != "pocket-dev-insecure-secret" {
+	if cfg.JWTSecret != DevDefaultJWTSecret {
 		t.Fatalf("unexpected default JWT secret: %q", cfg.JWTSecret)
 	}
 	if cfg.HTTPPort != "8088" {
@@ -71,7 +71,8 @@ func TestProductionConfigValidation(t *testing.T) {
 		name   string
 		mutate func(*Config)
 	}{
-		{name: "default secret", mutate: func(c *Config) { c.JWTSecret = "pocket-dev-insecure-secret" }},
+		{name: "default secret", mutate: func(c *Config) { c.JWTSecret = DevDefaultJWTSecret }},
+		{name: "legacy dead default secret", mutate: func(c *Config) { c.JWTSecret = "pocket-dev-insecure-secret" }},
 		{name: "short secret", mutate: func(c *Config) { c.JWTSecret = "too-short" }},
 		{name: "dev auth", mutate: func(c *Config) { c.DevAuth = true }},
 		{name: "insecure MCP TLS", mutate: func(c *Config) { c.MCPInsecureTLS = true }},

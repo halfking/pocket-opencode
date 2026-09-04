@@ -96,22 +96,13 @@ func TestMiddleware(t *testing.T) {
 	})
 
 	t.Run("expired token", func(t *testing.T) {
-		shortSigner, err := NewSigner(secret, 1*time.Millisecond)
-		if err != nil {
-			t.Fatalf("NewSigner failed: %v", err)
-		}
-		token, err := shortSigner.Sign("testuser", "admin")
-		if err != nil {
-			t.Fatalf("Sign failed: %v", err)
-		}
-
-		time.Sleep(10 * time.Millisecond)
+		token := mintExpired(t, secret, "testuser", "admin")
 
 		req := httptest.NewRequest("GET", "/test", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 
-		shortMiddleware := Middleware(shortSigner, testHandler)
+		shortMiddleware := Middleware(signer, testHandler)
 		shortMiddleware.ServeHTTP(w, req)
 
 		if w.Code != http.StatusUnauthorized {
