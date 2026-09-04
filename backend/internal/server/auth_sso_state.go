@@ -31,6 +31,10 @@ const (
 	ssoTxnTTL      = 10 * time.Minute
 	ssoExchangeTTL = 90 * time.Second
 	ssoTxnCap      = 4096
+	// ssoTxnPerIPCap 单来源并发 pending 上限：login 每请求铸一个 nonce，
+	// 无 per-IP 限额时单 IP 可在 TTL 内灌满全局表，让所有 SSO 登录 500。
+	// 32 足以覆盖单个 NAT 出口的正常并发登录流。
+	ssoTxnPerIPCap = 32
 	ssoExchangeCap = 1024
 )
 
@@ -41,28 +45,38 @@ type ssoTxnStore struct {
 	mu  sync.Mutex
 	ttl time.Duration
 	cap int
-	m   map[string]time.Time
+	// perIPCap 限制同一来源的并发 pending 数（防灌表 DoS）；来源取
+	// clientIP(r)（XFF 感知）。直连暴露时可被 XFF 伪造绕过，此时仍有
+	// 全局 cap 兜底内存。
+	perIPCap int
+	m        map[string]ssoTxnEntry
+}
+
+type ssoTxnEntry struct {
+	ip  string
+	exp time.Time
 }
 
 func newSSOTxnStore(ttl time.Duration, cap int) *ssoTxnStore {
-	return &ssoTxnStore{ttl: ttl, cap: cap, m: make(map[string]time.Time)}
+	return &ssoTxnStore{ttl: ttl, cap: cap, perIPCap: ssoTxnPerIPCap, m: make(map[string]ssoTxnEntry)}
 }
 
-// Issue 签发新 nonce。表满时先清一遍过期项，仍满则报错（正常流量下不可达）。
-func (st *ssoTxnStore) Issue() (string, error) {
+// Issue 签发新 nonce。全局表满或单来源 pending 超 perIPCap 时先清一遍
+// 过期项，仍超则报错（正常流量下不可达）。
+func (st *ssoTxnStore) Issue(ip string) (string, error) {
 	nonce, err := randomHex(32)
 	if err != nil {
 		return "", err
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if len(st.m) >= st.cap {
+	if len(st.m) >= st.cap || st.countByIPLocked(ip) >= st.perIPCap {
 		st.sweepLocked()
-		if len(st.m) >= st.cap {
+		if len(st.m) >= st.cap || st.countByIPLocked(ip) >= st.perIPCap {
 			return "", errSSOStoreFull
 		}
 	}
-	st.m[nonce] = time.Now().Add(st.ttl)
+	st.m[nonce] = ssoTxnEntry{ip: ip, exp: time.Now().Add(st.ttl)}
 	return nonce, nil
 }
 
@@ -73,12 +87,12 @@ func (st *ssoTxnStore) Consume(nonce string) bool {
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	exp, ok := st.m[nonce]
+	e, ok := st.m[nonce]
 	if !ok {
 		return false
 	}
 	delete(st.m, nonce) // 无论是否过期都移除：过期 nonce 没有复活的价值
-	return !time.Now().After(exp)
+	return !time.Now().After(e.exp)
 }
 
 // ssoHandoff 一次性 code 换回的登录结果（等价旧 302 query 载荷）。
@@ -144,11 +158,24 @@ func (st *ssoExchangeStore) Take(code string) (ssoHandoff, bool) {
 
 func (st *ssoTxnStore) sweepLocked() {
 	now := time.Now()
-	for k, exp := range st.m {
-		if now.After(exp) {
+	for k, e := range st.m {
+		if now.After(e.exp) {
 			delete(st.m, k)
 		}
 	}
+}
+
+func (st *ssoTxnStore) countByIPLocked(ip string) int {
+	if ip == "" {
+		return 0 // 无来源信息时不做 per-IP 限制（退回全局 cap 兜底）
+	}
+	n := 0
+	for _, e := range st.m {
+		if e.ip == ip {
+			n++
+		}
+	}
+	return n
 }
 
 func (st *ssoExchangeStore) sweepLocked() {

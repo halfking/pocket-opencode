@@ -19,7 +19,7 @@ import (
 
 func TestSSOTxnStore_SingleUseAndExpiry(t *testing.T) {
 	st := newSSOTxnStore(time.Minute, 16)
-	nonce, err := st.Issue()
+	nonce, err := st.Issue("1.2.3.4")
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestSSOTxnStore_SingleUseAndExpiry(t *testing.T) {
 	}
 
 	expired := newSSOTxnStore(-time.Second, 16) // 已过期
-	n2, _ := expired.Issue()
+	n2, _ := expired.Issue("1.2.3.4")
 	if expired.Consume(n2) {
 		t.Fatal("expired nonce must fail")
 	}
@@ -46,13 +46,32 @@ func TestSSOTxnStore_SingleUseAndExpiry(t *testing.T) {
 func TestSSOTxnStore_Cap(t *testing.T) {
 	st := newSSOTxnStore(time.Minute, 2)
 	for i := 0; i < 2; i++ {
-		if _, err := st.Issue(); err != nil {
+		if _, err := st.Issue("1.2.3.4"); err != nil {
 			t.Fatalf("Issue #%d: %v", i, err)
 		}
 	}
-	if _, err := st.Issue(); err == nil {
+	if _, err := st.Issue("1.2.3.4"); err == nil {
 		t.Fatal("issue beyond cap must fail")
 	}
+}
+
+func TestSSOTxnStore_PerIPCap(t *testing.T) {
+	st := newSSOTxnStore(time.Minute, 4096)
+	// 同一来源灌到 per-IP 上限后必须拒绝，且不影响其他来源。
+	for i := 0; i < ssoTxnPerIPCap; i++ {
+		if _, err := st.Issue("10.0.0.1"); err != nil {
+			t.Fatalf("Issue #%d for 10.0.0.1: %v", i, err)
+		}
+	}
+	if _, err := st.Issue("10.0.0.1"); err == nil {
+		t.Fatal("per-IP cap must reject same source")
+	}
+	if _, err := st.Issue("10.0.0.2"); err != nil {
+		t.Fatalf("other source must be unaffected: %v", err)
+	}
+	// 消费后额度立即释放。
+	nonce, _ := st.Issue("10.0.0.3")
+	st.Consume(nonce)
 }
 
 func TestSSOExchangeStore_SingleUseAndExpiry(t *testing.T) {
@@ -87,8 +106,9 @@ func TestSSOExchangeStore_SingleUseAndExpiry(t *testing.T) {
 func newSSOTestServer(t *testing.T, fakeAgent *httptest.Server, ssoEnabled bool) *Server {
 	t.Helper()
 	cfg := config.Config{RedClawSsoEnabled: ssoEnabled}
-	srv := New(cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, nil, nil, nil, "", nil)
+	// startHubs=false：handler 测试不跑 websocket/plugin hub，避免泄漏 goroutine。
+	srv := newServer(cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, "", false, nil)
 	if fakeAgent != nil {
 		client, err := redclaw.NewAdminAuthClient(redclaw.AdminAuthClientConfig{
 			AdminURL:     fakeAgent.URL,
@@ -311,12 +331,32 @@ func TestSSO_Callback_ErrorPaths(t *testing.T) {
 	}
 }
 
+func TestSSO_Status_NoSideEffects(t *testing.T) {
+	fake := fakeAuthAgent(t, &fakeAgentRecorder{})
+	defer fake.Close()
+	srv := newSSOTestServer(t, fake, true)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/sso/status", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status expected 200, got %d", rr.Code)
+	}
+	if cookies := rr.Result().Cookies(); len(cookies) != 0 {
+		t.Errorf("status probe must not set cookies, got %v", cookies)
+	}
+	if got := srv.ssoTxns.countByIPLocked("192.0.2.9"); got != 0 {
+		t.Errorf("status probe must not mint nonces, pending=%d", got)
+	}
+}
+
 func TestSSO_Disabled_Returns404(t *testing.T) {
 	fake := fakeAuthAgent(t, &fakeAgentRecorder{})
 	defer fake.Close()
 	srv := newSSOTestServer(t, fake, false) // SSO 关闭
 
 	paths := []struct{ method, path string }{
+		{http.MethodGet, "/api/auth/sso/status"},
 		{http.MethodGet, "/api/auth/sso/login"},
 		{http.MethodGet, "/api/auth/sso/callback?code=c&state=s"},
 		{http.MethodPost, "/api/auth/sso/exchange"},

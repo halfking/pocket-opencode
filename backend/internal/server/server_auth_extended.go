@@ -365,6 +365,23 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+// handleAuthSsoStatus — GET /api/auth/sso/status
+//
+// 无副作用的启用探测端点：LoginView 每次加载都探测一次，若走
+// /api/auth/sso/login 会铸 nonce + 落 cookie（audit 修复项：探测应有
+// 零副作用）。200 = 启用，404 = 未启用。
+func (s *Server) handleAuthSsoStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	if s.redclawAdminClient == nil || !s.cfg.RedClawSsoEnabled {
+		writeError(w, http.StatusNotFound, "sso not enabled")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"enabled": true})
+}
+
 // handleAuthSsoLogin — GET /api/auth/sso/login
 //
 // 返回 { "url": "https://redclaw/.../api/v1/sso/login?state=...&redirect_url=..." }，
@@ -393,7 +410,7 @@ func (s *Server) handleAuthSsoLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "sso not enabled")
 		return
 	}
-	nonce, err := s.ssoTxns.Issue()
+	nonce, err := s.ssoTxns.Issue(clientIP(r))
 	if err != nil {
 		log.Printf("WARN: sso login issue nonce: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to start sso login")
@@ -436,6 +453,7 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 	ck, err := r.Cookie(ssoTxnCookie)
 	if err != nil || !s.ssoTxns.Consume(ck.Value) {
 		s.auditGateway(r, "auth.sso.callback", "-", "reason=invalid_binding_cookie", false)
+		s.clearSsoTxnCookie(w, r)
 		s.ssoRedirectError(w, r, "sso_session")
 		return
 	}
@@ -443,8 +461,9 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 
 	// 2. IdP 侧错误（如 casdoor 回传 error=...）原样转成 SPA 可展示的错误码。
 	if e := r.URL.Query().Get("error"); e != "" {
-		log.Printf("WARN: sso callback: IdP returned error=%s", e)
-		s.auditGateway(r, "auth.sso.callback", "-", "reason=idp_error:"+e, false)
+		// IdP error 值用户可控，进日志/审计前必须清洗（防控制字符注入）。
+		log.Printf("WARN: sso callback: IdP returned error=%s", sanitizeAuditDetail(e))
+		s.auditGateway(r, "auth.sso.callback", "-", "reason=idp_error:"+sanitizeAuditDetail(e), false)
 		s.ssoRedirectError(w, r, "sso_idp")
 		return
 	}

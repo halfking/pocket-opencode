@@ -45,6 +45,10 @@ type AdminAuthClient struct {
 	cfg         AdminAuthClientConfig
 	adminHTTP   *http.Client
 	authHTTP    *http.Client
+	// authBase 解析后的 Auth Agent 基址（AuthAgentURL 为空时回落 AdminURL，
+	// 单进程部署场景）。SsoLoginURL / SsoCallback 必须共用同一解析结果，
+	// 否则 login 带了 fallback 而 callback 拿空 base 拼出相对 URL。
+	authBase string
 }
 
 // NewAdminAuthClient 构造 AdminAuthClient。
@@ -58,9 +62,9 @@ func NewAdminAuthClient(cfg AdminAuthClientConfig) (*AdminAuthClient, error) {
 	if cfg.TenantID == "" {
 		cfg.TenantID = "default"
 	}
-	authURL := cfg.AuthAgentURL
-	if authURL == "" {
-		authURL = cfg.AdminURL
+	authBase := strings.TrimRight(cfg.AuthAgentURL, "/")
+	if authBase == "" {
+		authBase = strings.TrimRight(cfg.AdminURL, "/")
 	}
 	timeout := cfg.TimeoutSec
 	if timeout <= 0 {
@@ -70,6 +74,7 @@ func NewAdminAuthClient(cfg AdminAuthClientConfig) (*AdminAuthClient, error) {
 		cfg:       cfg,
 		adminHTTP: &http.Client{Timeout: time.Duration(timeout) * time.Second},
 		authHTTP:  &http.Client{Timeout: time.Duration(timeout) * time.Second},
+		authBase:  authBase,
 	}, nil
 }
 
@@ -281,11 +286,7 @@ func (c *AdminAuthClient) Logout(ctx context.Context, token string) error {
 // state 由调用方生成（pocket 现传登录绑定 nonce；auth-agent 当前会忽略，
 // 见 docs/handoff/2026-09-05-sso-state-contract-mismatch.md），空则省略参数。
 func (c *AdminAuthClient) SsoLoginURL(state, redirectURL string) string {
-	base := c.cfg.AuthAgentURL
-	if base == "" {
-		base = c.cfg.AdminURL
-	}
-	u, err := url.Parse(strings.TrimRight(base, "/") + "/api/v1/sso/login")
+	u, err := url.Parse(c.authBase + "/api/v1/sso/login")
 	if err != nil {
 		return ""
 	}
@@ -306,7 +307,7 @@ func (c *AdminAuthClient) SsoCallback(ctx context.Context, code, state string) (
 	if code == "" || state == "" {
 		return nil, fmt.Errorf("redclaw admin: code and state are required")
 	}
-	u, err := url.Parse(strings.TrimRight(c.cfg.AuthAgentURL, "/") + "/api/v1/sso/callback")
+	u, err := url.Parse(c.authBase + "/api/v1/sso/callback")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrRedClawUnavailable, err)
 	}

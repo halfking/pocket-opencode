@@ -141,3 +141,20 @@ RedClaw 仓库不在本机、方案 A 需其配合，故按 §3 方案 C 的思�
   发起过 SSO 且 nonce 未被消费），作为过渡纵深。
 - 存储为进程内存表：多副本部署时 login 与 callback 必须落在同一实例
   （当前 compose 单实例部署不受影响）；丢失的最坏后果是用户重试登录。
+
+### 6.1 落地后审计修正（同日）
+
+自查发现并修复 6 项：
+
+1. LoginView 每次加载都调 `/api/auth/sso/login` 探测启用状态——铸 nonce
+   + 落 cookie 的副作用探测，且旧签名参数误入 `redirect_url`。新增
+   零副作用 `GET /api/auth/sso/status` 专供探测。
+2. pending nonce 表无 per-IP 限额，单 IP 可在 TTL 内灌满全局表（4096）
+   使所有 SSO 登录 500。补 per-IP 并发上限 32（`ssoTxnPerIPCap`）。
+3. IdP 回调 `error` 参数（用户可控）未清洗进日志与审计 detail，存在
+   控制字符注入面。统一过 `sanitizeAuditDetail`。
+4. `AdminAuthClient.SsoCallback` 缺 AuthAgentURL→AdminURL 回落
+   （SsoLoginURL 有，构造函数里 authURL 算完即丢），单进程部署下
+   callback 会拼出相对 URL。收敛为构造期解析的 `authBase` 共用。
+5. 测试用 `New()` 起 hub goroutine（泄漏），改 `newServer(startHubs=false)`。
+6. 绑定 cookie 非法路径未清 cookie，补 `clearSsoTxnCookie`。

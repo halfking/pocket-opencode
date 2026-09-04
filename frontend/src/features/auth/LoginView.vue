@@ -240,7 +240,7 @@ import {
 } from '../../native/biometricAuth'
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
 import { useCryptoConfig } from '../../stores/crypto-config'
-import { sendCode, registerUser, codeLogin, fetchSsoLoginUrl } from '../../api/auth'
+import { sendCode, registerUser, codeLogin, fetchSsoLoginUrl, fetchSsoStatus } from '../../api/auth'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -268,8 +268,8 @@ const tabs: { id: TabId; label: string }[] = [
 ]
 const activeTab = ref<TabId>('password')
 
-// Phase 1: RedClaw SSO 入口开关。生产由后端 /api/auth/sso/login 探测
-// （404 即视为未启用）；开发可在 onMounted 期间 force-on 调试。
+// Phase 1: RedClaw SSO 入口开关。生产由后端 /api/auth/sso/status 探测
+// （404 即视为未启用，零副作用）；开发可在 onMounted 期间 force-on 调试。
 const ssoEnabled = ref(false)
 
 const codeEmail = ref('')
@@ -391,12 +391,10 @@ onMounted(async () => {
     }
   } catch { /* 生物识别不可用时静默降级为密码登录 */ }
 
-  // Phase 1: 探测 RedClaw SSO 是否启用。后端 POCKET_REDCLAW_SSO_ENABLED=true
-  // 时会成功返回 redirect URL；未启用时返回 404。失败时静默关闭按钮。
+  // Phase 1: 探测 RedClaw SSO 是否启用。走专用 /api/auth/sso/status
+  // （零副作用）；404/网络错误时静默关闭按钮。
   try {
-    const probeState = 'probe-' + Math.random().toString(36).slice(2, 10)
-    await fetchSsoLoginUrl(probeState)
-    ssoEnabled.value = true
+    ssoEnabled.value = await fetchSsoStatus()
   } catch {
     ssoEnabled.value = false
   }

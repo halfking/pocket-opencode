@@ -108,6 +108,16 @@ export async function fetchMe(): Promise<EmployeeProfile> {
   return http<EmployeeProfile>('/api/auth/me', { method: 'GET' })
 }
 
+/** SSO 启用探测（无副作用）：不铸 nonce、不落 cookie，登录页每次加载调用。 */
+export async function fetchSsoStatus(): Promise<boolean> {
+  try {
+    await http<{ enabled: boolean }>('/api/auth/sso/status', { method: 'GET' })
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
  * SSO 登录入口：拿 RedClaw 跳转 URL，浏览器 location.href 跳过去。
  * CSRF 绑定由后端在响应里落 HttpOnly cookie（pocket_sso_txn），前端不再

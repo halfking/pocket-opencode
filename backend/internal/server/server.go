@@ -584,6 +584,7 @@ func (s *Server) Handler() http.Handler {
 	// 一期新增:登出 / 当前用户 / SSO 入口
 	mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
 	mux.HandleFunc("/api/auth/me", s.requireAuth(s.handleAuthMe))
+	mux.HandleFunc("/api/auth/sso/status", s.handleAuthSsoStatus)
 	mux.HandleFunc("/api/auth/sso/login", s.handleAuthSsoLogin)
 	mux.HandleFunc("/api/auth/sso/callback", s.handleAuthSsoCallback)
 	mux.HandleFunc("/api/auth/sso/exchange", s.handleAuthSsoExchange)
