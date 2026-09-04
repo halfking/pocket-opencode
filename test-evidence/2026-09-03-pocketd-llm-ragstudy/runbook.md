@@ -421,12 +421,83 @@ Related historical runbooks in the same `test-evidence/` tree:
 
 ### 14.6 遗留问题（未在本次修复）
 
-1. `internal/chatagent/store_test.go` 硬编码 `postgres://localhost/pocket_test`，无 PG 时
-   `pgxpool.New` 惰性成功 → `Init` 阶段才失败（应改为连接失败即 `t.Skip`）。预置问题。
-2. `/api/llm/chat`（旧非流式路径）仍走启动时静态 `s.llm`，不消费动态网关配置
-   （`server_assistant.go:2040` 附近；`server_llmbff.go:9-11` 注释已声明 SHOULD migrate）。
-3. JWT 默认 15min 过期 + 无刷新机制，移动端长会话会反复 401（产品决策项）。
-4. 网关上游单候选慢失败（非 no_candidate）时，20s 超时内前端仍无进度提示；
-   可选优化：回退重试时下发 `data: {"retry":"<next-model>"}` 进度帧。
+> 2026-09-05 第二轮收尾已处理其中 4 项，状态标注见各条；新增遗留移至 §15.5。
+
+1. ~~`internal/chatagent/store_test.go` 硬编码 PG DSN~~ **已解决**：该文件现读
+   `POCKET_TEST_POSTGRES_DSN`（未设即 Skip）；本轮再补「Ping 2s 失败即 Skip」
+   （`pgxpool.New` 惰性建连，DSN 设了但 PG 不可达要到 Ping 才能发现）。
+2. ~~`/api/llm/chat` 仍走启动时静态 `s.llm`~~ **已解决**：见 §15.1 任务 1。
+3. JWT 默认 15min 过期 + 无刷新机制 → **评估完成，结论见 §15.2**（推荐滑动
+   续期；代码未动，等产品拍板）。
+4. 网关上游单候选慢失败时无进度提示 → **已解决**：见 §15.1 任务 4（retry 帧）。
 5. `pocket_test` AVD 缺 arm64 系统镜像（avdmanager 列表报 Missing system image）；
-   当前用 `Medium_Phone_API_36.1` 替代。
+   当前用 `Medium_Phone_API_36.1` 替代。**未变**。
+
+---
+
+## 15. 2026-09-05 会话补充（二）：AI 网关移动端收尾
+
+> 本轮按 §14.6 优先级推进遗留问题。任务 1/2/4 已落地并全量回归绿；
+> 任务 3 仅交付评估结论（产品决策项，代码未动）。所有密钥均掩码。
+
+### 15.1 完成清单
+
+| # | 文件 | 改动 |
+|---|---|---|
+| 1 | `backend/internal/server/server_assistant.go` | `handleLLMChat` 迁移动态网关：`llmBFF` 已装配时转投 `llmChatViaBFF`（新增，`llmbff.Service.Chat` + `dynamicGatewayBFFProvider` 按 workspace 实时解析 `/api/llm-gateway/config`；空/"auto" model 由 preferred 列表解析，不再 400）；`s.llm` 仅在 BFF 未装配的部署兜底。**消除「启动时未配 POCKET_LLM_API_KEY → 恒 503」旧分支**。响应形状不变 `{"content","model"}`。新增回归测试 `TestLLMChatViaBFFWorksWithoutStaticLLM`（s.llm=nil 必 200）、`TestLLMChatUnconfiguredGatewayReturns503`（网关未配置 503 指向配置入口） |
+| 1 | `backend/internal/server/server_llmbff.go` | 头注释更新：/api/llm/chat 已迁移；/api/embed 仍走静态 s.embedder 待迁 |
+| 2 | `backend/internal/chatagent/store_test.go` | `setupTestStore` 补 `pool.Ping`（2s 超时）失败即 `t.Skip`——`pgxpool.New` 惰性建连，DSN 设了但 PG 不可达原会在 `Init` 阶段 Fatalf |
+| 4 | `backend/internal/llmbff/service.go` | `Delta` 新增 `Retry string \`json:"retry,omitempty"\``（回退重试进度帧：无 content、非终态，客户端继续读流） |
+| 4 | `backend/internal/server/llmbff_provider_adapters.go` | `Stream` 回退循环：选中 fallback 后先发 `fn(Delta{Retry: fallback})`（客户端断开则终止），再以新候选重试；超时预算不变。新增测试 `TestDynamicGatewayStreamEmitsRetryProgressFrame`（fake 上游首帧 no_candidate → 断言 Retry 帧 → 二次成功） |
+| 4 | `frontend/src/api/llm-bff.ts` | 解析循环识别 `retry` 帧 → 新可选回调 `onRetry(model)`；不算坏帧/不触发 onError/不计入 sawDelta；旧调用方不传回调时静默兼容 |
+| 4 | `frontend/src/features/ai-chat/aiChatStore.ts` | `spawnStream`/`optimize` 接 `onRetry`，把「上游模型不可用，已切换到 <model> 重试…」写入 live assistant 代理的 `retryHint`（沿用 fix3 代理引用写法） |
+| 4 | `frontend/src/features/ai-chat/AIChatView.vue` | 气泡内渲染 `retryHint`（`.msg-retry` 12px 灰字，与 `.msg-error` 同风格不告警），正文到达后保留一行小字 |
+| 补 | `backend/start-dev.sh` | 导出 `POCKET_AUTH_LEGACY_ONLY`（缺省 true，可覆盖）——349a14e 加固后 legacy 路径需显式开关，否则脚本启动即 Fatal 要求 RedClaw URL。**上一轮 start-dev.sh 修复不完整，本轮实测复现并补齐** |
+
+### 15.2 JWT 15min 过期评估结论（产品决策项，代码未动）
+
+现状事实：
+- 生产 token 由 RedClaw 签发、pocketd 透传，15min 可配（`docs/AUTH_REDCLAW.md`）；
+  本地 legacy signer TTL 硬编码 24h（`cmd/pocketd/main.go`），无 env。
+- 349a14e 基线：Parse 只收 HS256 + 显式 iss/aud + 30s leeway，拒弱密钥；
+  短 TTL 是撤销窗口的补偿——本地签发 token 不受 RedClaw 撤销覆盖。
+- 前端 401 无全局拦截（`frontend/src/api/http.ts` 抛 ApiError 即止），token 存
+  localStorage；离线队列 401 直接死信。
+- 可复用：生物识别免密重登可换新 token；RedClaw 会话模型自带「凭当前 token 重签」。
+
+三方案对比：a) 经典 refresh token——RedClaw 明确不用，需 RedClaw 侧改造 + 移动端
+长期凭据，泄露面扩大，与加固方向冲突，**否**；b) 延长 TTL——生产 token 是 RedClaw
+签的，改 pocketd 无效，且拉长撤销窗口，**否**（仅 legacy 应急）；c) **滑动续期
+（推荐）**——pocketd 新增 `POST /api/auth/refresh`：requireAuth 验当前 token →
+`Me` 复检撤销状态 → 复用 `issueTokenAndRespond` 重签短 TTL。每枚 token 仍短命、
+撤销检查保留，与 349a14e 完全兼容。
+
+落地最小清单（待拍板后实施）：`server_auth_extended.go` 新增 handleAuthRefresh；
+`server.go` 注册路由；`frontend/src/api/auth.ts` 加 refresh()；`stores/auth.ts`
+解析 exp、剩余 <5min 主动续期；`http.ts` 401 单飞 refresh 一次重放，失败才登出。
+
+### 15.3 本轮验证记录
+
+- `go test ./...` 全绿（含新增 3 个测试）；`vue-tsc --noEmit` 通过；
+  `node scripts/build-mobile.mjs android dev` 构建通过（retry 提示可进 APK）。
+- 后端冒烟（迁移后二进制，start-dev.sh :8088）：
+  - `/api/auth/login` 200；`/api/llm-gateway/config` 200；
+  - `/api/llm/chat` model=glm-5.2 → `{"content":"PONG","model":"glm-5.2"}`（动态 BFF 路径）；
+  - `/api/llm/chat` model=auto → 自动解析为 preferred 首选 glm-5.2 → 200；
+  - `/api/llm/stream` model=auto → SSE 正常（content 帧 + done/usage 帧 + `[DONE]`）。
+- 说明：retry 进度帧的真机 E2E 需可构造的 no_candidate 场景 + 重建 APK，见 §15.5。
+
+### 15.4 安全卫生备注（未改动，建议后续处理）
+
+`backend/internal/server/server_auth_extended_test.go:36` 硬编码了含密码样式的
+PG DSN（凭据此处不引用）。虽然仅测试文件，建议改为读 env（同 chatagent 模式）
+并轮换该凭据。
+
+### 15.5 遗留（下一轮续接）
+
+1. retry 进度帧真机 E2E：重建 APK（本轮已验证 build-mobile 通过，未装模拟器）；
+   需构造稳定 no_candidate 场景（如把 preferredModels 首位设为不存在的 model）。
+2. `server_meeting.go` 会议摘要仍直用静态 `s.llm`（2 处）+ `/api/embed` 走静态
+   `s.embedder`——同一模式待迁移（本轮范围外）。
+3. JWT 滑动续期（§15.2）待产品拍板后实施。
+4. §15.4 凭据轮换 + 测试 DSN env 化。

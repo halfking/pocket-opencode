@@ -95,6 +95,11 @@ type Delta struct {
 	Done        bool   `json:"done"`
 	FinishReason string `json:"finish_reason,omitempty"`
 	Usage       *Usage `json:"usage,omitempty"`
+	// Retry 是 auto 回退重试的进度帧：当前候选返回 no_candidate、Provider
+	// 即将改用 Retry 指向的下一候选 model 重试时发出。该帧不带 content、
+	// 非终态（Done=false），客户端收到后应继续读流——正文仍会以普通
+	// Delta 追加（2026-09-05：此前回退重试期间 SSE 零字节，前端只见转圈）。
+	Retry string `json:"retry,omitempty"`
 }
 
 // EmbedRequest is the unified embedding request.

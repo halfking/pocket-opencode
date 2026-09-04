@@ -42,6 +42,8 @@ export interface ChatMsg {
   streaming?: boolean
   /** 错误信息（流式失败 / 网关未配置）。 */
   error?: string
+  /** 回退重试提示：后端 auto 链切换候选 model 时下发 retry 帧的展示文案。 */
+  retryHint?: string
   /** 页面刷新或应用重启时流被中断。 */
   interrupted?: boolean
   createdAt: number
@@ -497,6 +499,11 @@ export const useAIChatStore = defineStore('ai-chat', () => {
           if (d.content) liveAssistant.content += d.content
           if (d.usage) liveAssistant.usage = d.usage
         },
+        // 后端 auto 回退链切换候选 model：气泡内先给一行进度提示，
+        // 正文仍继续追加到同一条消息。
+        onRetry: (model) => {
+          liveAssistant.retryHint = `上游模型不可用，已切换到 ${model} 重试…`
+        },
         onDone: (usage) => {
           liveAssistant.streaming = false
           if (usage) liveAssistant.usage = usage
@@ -574,6 +581,10 @@ export const useAIChatStore = defineStore('ai-chat', () => {
         onDelta: (d) => {
           if (d.content) liveAssistant.content += d.content
           if (d.usage) liveAssistant.usage = d.usage
+        },
+        // 同 spawnStream：回退重试进度写进同一条消息的 retryHint。
+        onRetry: (model) => {
+          liveAssistant.retryHint = `上游模型不可用，已切换到 ${model} 重试…`
         },
         onDone: (usage) => {
           liveAssistant.streaming = false

@@ -29,6 +29,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
@@ -2155,11 +2156,13 @@ func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
 //
 // 请求: { "messages": [{ "role": "user", "content": "..." }], "model"? }
 // 响应: { "content": "...", "model": "..." }
+//
+// 2026-09-05 迁移动态网关：llmBFF 已装配时转投 BFF（dynamicGatewayBFFProvider
+// 按 workspace 实时解析 /api/llm-gateway/config 的运行时配置，空/"auto" model
+// 用 preferred 列表本地解析，no_candidate 自动回退），消除「启动时未配
+// POCKET_LLM_API_KEY → 静态 s.llm 恒 503」的旧分支。s.llm 仅在 BFF 未装配的
+// 部署里兜底（server_meeting.go 仍直接依赖 s.llm，后续单独迁移）。
 func (s *Server) handleLLMChat(w http.ResponseWriter, r *http.Request) {
-	if s.llm == nil {
-		writeError(w, http.StatusServiceUnavailable, "llm not configured (set POCKET_LLM_API_KEY)")
-		return
-	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
@@ -2188,6 +2191,15 @@ func (s *Server) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if s.llmBFF != nil {
+		s.llmChatViaBFF(w, r, body.Messages, body.Model)
+		return
+	}
+
+	if s.llm == nil {
+		writeError(w, http.StatusServiceUnavailable, "llm not configured (set POCKET_LLM_GATEWAY_URL/_API_KEY or POCKET_LLM_API_KEY)")
+		return
+	}
 	model := body.Model
 	if model == "" {
 		model = s.cfg.LLMModel
@@ -2224,6 +2236,47 @@ func (s *Server) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": content, "model": model})
+}
+
+// llmChatViaBFF 把非流式 chat 转投 S0-B BFF：provider 按 workspace 动态解析
+// 网关连接（env 默认值 + 运行时 /api/llm-gateway/config），空/"auto" model 由
+// preferred 列表解析，no_candidate 自动回退，usage 计量走 Recorder。响应形状
+// 与旧 s.llm 路径完全一致（{"content","model"}），前端无需改动。
+func (s *Server) llmChatViaBFF(w http.ResponseWriter, r *http.Request, msgs []aigate.ChatMessage, reqModel string) {
+	model := reqModel
+	if model == "" {
+		// 部署级缺省仍生效；两者皆空时交给 provider 解析 preferred[0]/兜底 auto，
+		// 不再像旧路径那样 400——动态网关下「开箱即用」优先。
+		model = s.cfg.LLMModel
+	}
+	bffMsgs := make([]llmbff.Message, len(msgs))
+	for i, m := range msgs {
+		bffMsgs[i] = llmbff.Message{Role: llmbff.Role(m.Role), Content: m.Content}
+	}
+	resp, err := s.llmBFF.Chat(r.Context(), llmbff.ChatRequest{
+		WorkspaceID: s.workspaceIDFromRequest(r),
+		Model:       model,
+		Messages:    bffMsgs,
+		User:        s.userIDFromRequest(r),
+	}, "chat")
+	// 审计：与旧路径同构；成功时用 provider 实际使用的 model（含回退）。
+	auditModel := model
+	if resp != nil {
+		auditModel = resp.Model
+	}
+	s.Write(r, "llm.chat", "llm:chat", AuditFields{
+		Success: err == nil,
+		Detail:  fmt.Sprintf("model=%s messages=%d", auditModel, len(msgs)),
+	})
+	if err != nil {
+		if errors.Is(err, llmbff.ErrNotConfigured) {
+			writeError(w, http.StatusServiceUnavailable, "llm gateway not configured (set POCKET_LLM_GATEWAY_URL/_API_KEY or POST /api/llm-gateway/config)")
+			return
+		}
+		writeError(w, http.StatusBadGateway, "llm failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"content": resp.Content, "model": resp.Model})
 }
 
 // =====================================================================

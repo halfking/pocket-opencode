@@ -30,6 +30,8 @@ export interface ChatStreamDelta {
     total_tokens: number
   }
   error?: string
+  /** 回退重试进度帧：auto 链切换候选 model 时后端下发（无 content、非终态，流会继续）。 */
+  retry?: string
 }
 
 export interface UsageSummary {
@@ -64,6 +66,8 @@ export interface StreamHandlers {
   onDelta: (delta: ChatStreamDelta) => void
   onError?: (err: Error) => void
   onDone?: (finalUsage?: ChatStreamDelta['usage']) => void
+  /** 可选：auto 回退重试进度帧（切到 retry 指向的候选 model）。旧调用方不传完全兼容。 */
+  onRetry?: (model: string) => void
 }
 
 export const llmBffApi = {
@@ -144,6 +148,14 @@ export const llmBffApi = {
               clearTimeout(watchdog)
               handlers.onError?.(new Error(delta.error))
               return
+            }
+            // 回退重试进度帧（形如 {"retry":"<model>"}，无 content、非终态）：
+            // 交给 onRetry 透传为气泡内提示，不算坏帧也不触发 onError；不计入
+            // sawDelta（纯进度不等于有正文，流若就此中断仍走空流错误）。
+            // 旧调用方未传 onRetry 时静默跳过，回调契约不变。
+            if (delta.retry && !delta.content && !delta.done) {
+              handlers.onRetry?.(delta.retry)
+              continue
             }
             if (delta.usage) finalUsage = delta.usage
             sawDelta = true

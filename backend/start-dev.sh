@@ -18,6 +18,9 @@ fi
 
 # 设置环境变量
 export POCKET_DEV_AUTH=true
+# 349a14e 认证加固后：legacy 本地 JWT 路径需显式 POCKET_AUTH_LEGACY_ONLY=true，
+# 否则启动即要求 POCKET_REDCLAW_ADMIN_URL。dev 脚本缺省走 legacy（可被外部覆盖）。
+export POCKET_AUTH_LEGACY_ONLY="${POCKET_AUTH_LEGACY_ONLY:-true}"
 export POCKET_JWT_SECRET=test-secret-key-for-phase7-validation
 export POCKET_HTTP_PORT=8088
 export POCKET_DB_PATH=./data/pocket.sqlite

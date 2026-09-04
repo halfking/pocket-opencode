@@ -41,8 +41,10 @@ type llmGatewayNoCandidateBody struct {
 // isNoCandidateError 探测 llmgateway 返回的 error 是否对应 gateway 的
 // no_candidate（HTTP 503 + JSON 中 code=="no_candidate"）。
 //
-// Stream 路径上 503 在写任何 SSE chunk 之前就返回，所以 fn 不会被调用过；
-// 收到此错误即可安全地用下一个候选 model 重试。
+// Stream 路径上 503 在写任何 SSE chunk 之前就返回，所以出错的那次尝试
+// 本身没有通过 fn 输出过内容；收到此错误即可安全地用下一个候选 model
+// 重试（重试间隙由 dynamicGatewayBFFProvider.Stream 经 fn 发一帧 Retry
+// 进度，见该函数注释）。
 func isNoCandidateError(err error) bool {
 	if err == nil {
 		return false
@@ -222,10 +224,19 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		if err == nil || !isNoCandidateError(err) {
 			return usage, err
 		}
-		// 503 no_candidate 出现在任何 chunk 之前，所以 fn 不会被调用过，
-		// 可以安全地以另一个 model 重试。
+		// 单次尝试内 503 no_candidate 出现在任何 chunk 之前（该次尝试没有
+		// 通过 fn 写过内容），可以安全地以另一个 model 重试。注意：切换到
+		// 新候选前会先经 fn 发一帧 Retry 进度（见下），所以整条链上 fn 可
+		// 能已被调用过——只要它返回 true（客户端仍在线）就继续重试。
 		fallback := p.fallbackModel(req.WorkspaceID, req.Model)
 		if fallback == "" || ctx.Err() != nil || !time.Now().Before(deadline) {
+			return usage, err
+		}
+		// 候选切换间隙发一帧回退重试进度（无 content、非终态）：让前端在
+		// 整链重试期间能看到「已切换到 <model> 重试」，而不是零字节转圈
+		// （2026-09-05 移动端 E2E 反馈）。fn 返回 false 说明客户端已断开，
+		// 直接放弃重试。
+		if !fn(llmbff.Delta{Retry: fallback}) {
 			return usage, err
 		}
 		req.Model = fallback

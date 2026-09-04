@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -23,6 +24,15 @@ func setupTestStore(t *testing.T) (*Store, context.Context) {
 	if err != nil {
 		t.Skipf("PostgreSQL not available: %v", err)
 	}
+	// pgxpool.New 只解析 DSN 不建连：DSN 已设但 PG 不可达时要到 Ping 才能发现。
+	// 连接失败与环境未设 DSN 同待遇 t.Skip，避免预置问题污染 CI。
+	pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second)
+	if perr := pool.Ping(pingCtx); perr != nil {
+		pingCancel()
+		pool.Close()
+		t.Skipf("PostgreSQL not reachable: %v", perr)
+	}
+	pingCancel()
 	t.Cleanup(func() { pool.Close() })
 
 	store := NewStore(pool)

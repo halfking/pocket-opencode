@@ -112,6 +112,8 @@
               <span v-if="a.streaming" class="cc-live">生成中…</span>
             </header>
             <div class="bubble ai-bubble" v-html="rendered(a)"></div>
+            <!-- auto 回退重试进度：正文到达前/后都以一行灰色小字透出 -->
+            <div v-if="a.retryHint" class="msg-retry">{{ a.retryHint }}</div>
             <footer v-if="a.usage" class="usage">≈ {{ a.usage.total_tokens }} tokens</footer>
             <div v-if="a.error" class="msg-error">{{ a.error }}</div>
             <div class="msg-actions">
@@ -123,6 +125,8 @@
         </div>
         <div v-else-if="turn.answers.length === 1" class="row ai">
           <div class="bubble ai-bubble" v-html="rendered(turn.answers[0])"></div>
+          <!-- auto 回退重试进度：正文到达前/后都以一行灰色小字透出 -->
+          <div v-if="turn.answers[0].retryHint" class="msg-retry">{{ turn.answers[0].retryHint }}</div>
           <div v-if="turn.answers[0].usage" class="usage-row">≈ {{ turn.answers[0].usage?.total_tokens }} tokens</div>
           <div v-if="turn.answers[0].error" class="msg-error">{{ turn.answers[0].error }}</div>
           <div class="msg-actions">
@@ -1041,6 +1045,12 @@ function formatTime(ts: number): string {
 .msg-error {
   font-size: 12px;
   color: var(--danger);
+  margin-top: 3px;
+}
+/* auto 回退重试进度提示（retry 帧）：灰色小字，风格同 msg-error 但不告警 */
+.msg-retry {
+  font-size: 12px;
+  color: var(--text-muted);
   margin-top: 3px;
 }
 .err-text { color: var(--danger); }
