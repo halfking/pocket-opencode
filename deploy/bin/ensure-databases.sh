@@ -82,7 +82,13 @@ _ensure_db() {
   if [[ "${deploy_value}" == "true" ]]; then
     echo "  🆕 ${name}: 未发现外部实例，按 OPP_DEPLOY_${name^^}=true 起容器化实例"
     mkdir -p "${data_dir}"
-    _start_container_db "${name}" "${image}" "${data_dir}" "${host}" "${port}"
+    # 容器化失败必须中止部署（如端口被占）：没有 DB 就没有可用服务，
+    # 静默继续会让应用以无 DB 状态启动。
+    if ! _start_container_db "${name}" "${image}" "${data_dir}" "${host}" "${port}"; then
+      export "${mode}=failed"
+      echo "  ❌ ${name}: 容器化失败（检查端口占用 / docker 状态）" >&2
+      return 1
+    fi
     export "${mode}=container"
     return 0
   fi
@@ -148,10 +154,17 @@ ensure_pg()      { _ensure_db postgres detect_pg_external      OPP_PG_HOST      
 ensure_redis()   { _ensure_db redis    detect_redis_external   OPP_REDIS_HOST   OPP_REDIS_PORT   OPP_DEPLOY_REDIS   "${POCKET_REDIS_DATA_DIR}"   "redis:7"     6379 ; }
 ensure_mysql()   { _ensure_db mysql    detect_mysql_external   OPP_MYSQL_HOST   OPP_MYSQL_PORT   OPP_DEPLOY_MYSQL   "${POCKET_MYSQL_DATA_DIR}"   "mysql:8"     3306 ; }
 
-# 按开关依次执行（只有 true 或 external 才跑 detect / 容器化；false/unset 跳过）
-[[ "${OPP_DEPLOY_PG}" == "true" || "${OPP_DEPLOY_PG}" == "external" ]]      && ensure_pg      || true
-[[ "${OPP_DEPLOY_REDIS}" == "true" || "${OPP_DEPLOY_REDIS}" == "external" ]] && ensure_redis   || true
-[[ "${OPP_DEPLOY_MYSQL}" == "true" || "${OPP_DEPLOY_MYSQL}" == "external" ]] && ensure_mysql   || true
+# 按开关依次执行（只有 true 或 external 才跑 detect / 容器化；false/unset 跳过）。
+# 失败必须传导为非零退出：调用方（deploy-*.sh）依赖 set -e 中止无 DB 的部署。
+if [[ "${OPP_DEPLOY_PG}" == "true" || "${OPP_DEPLOY_PG}" == "external" ]]; then
+  ensure_pg || exit 1
+fi
+if [[ "${OPP_DEPLOY_REDIS}" == "true" || "${OPP_DEPLOY_REDIS}" == "external" ]]; then
+  ensure_redis || exit 1
+fi
+if [[ "${OPP_DEPLOY_MYSQL}" == "true" || "${OPP_DEPLOY_MYSQL}" == "external" ]]; then
+  ensure_mysql || exit 1
+fi
 
 # 重新 export 状态供后续脚本读取
 export OPP_PG_MODE OPP_REDIS_MODE OPP_MYSQL_MODE

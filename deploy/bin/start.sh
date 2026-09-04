@@ -100,11 +100,18 @@ if [[ -z "${OPP_VERSION_BUILD}" ]]; then
 fi
 bg_init
 
-# current 不存在 → 自动 stage 一个新的（兼容老环境首次升级）
-if [[ ! -L "${POCKET_BIN_DIR}/current" ]]; then
-  echo "  🆕 bin/current 不存在，自动 stage ${OPP_VERSION_BUILD}"
+# 每次部署都 stage 一个新版本目录（bg_stage 会把当前 current 记为 previous）。
+# switch 推迟到健康检查通过之后：失败时 current 不动，无需回滚。
+BG_SWITCHED_EARLY=false
+if [[ ! -e "${POCKET_BIN_DIR}/${OPP_VERSION_BUILD}" ]] && [[ ! -L "${POCKET_BIN_DIR}/current" ]]; then
+  # 首次部署（无 current）：stage 后立即切换，让 compose snippet 等引用就位
+  echo "  🆕 bin/current 不存在，stage ${OPP_VERSION_BUILD} 并切换"
   bg_stage "${OPP_VERSION_BUILD}"
   bg_switch "${OPP_VERSION_BUILD}" "" >/dev/null
+  BG_SWITCHED_EARLY=true
+elif [[ ! -e "${POCKET_BIN_DIR}/${OPP_VERSION_BUILD}" ]]; then
+  echo "  🧩 stage 新版本 ${OPP_VERSION_BUILD}（current 保持不动，健康通过后切换）"
+  bg_stage "${OPP_VERSION_BUILD}"
 fi
 
 # 把 compose snippet（如果存在）拼到主 compose 上
@@ -148,7 +155,8 @@ case "${BUILD_MODE}" in
   build)
     kx_base_exists || {
       echo "❌ 构建需要 ${KX_BASE_TAG_EFFECTIVE}，当前未加载" >&2
-      echo "   docker load -i ~/work/docker-base-images/lang-base/kx-base-go-vue-v2-alpine-slim-arm64.tar.gz" >&2
+      echo "   开发机: docker load -i ~/work/docker-base-images/lang-base/kx-base-go-vue-v2-alpine-slim-arm64.tar.gz" >&2
+      echo "   服务器（amd64）: 勿现场构建；在 Mac 上 ./deploy/bin/build-images.sh --arch amd64 → save-images.sh → scp → load-images.sh" >&2
       exit 1
     }
     check_arch_for_build || exit 1
@@ -218,6 +226,9 @@ for _ in $(seq 1 30); do
     echo "  ✅ pocketd   http://${POCKET_HTTP_PROBE_HOST}:${POCKET_HTTP_PORT}"
     [[ "${BACKEND_ONLY}" == true ]] || echo "  ✅ frontend  http://localhost:${POCKET_FRONTEND_PORT}"
     echo "${START_TS}" > "${POCKET_LOG_DIR}/.last-healthy"
+    if [[ "${BG_SWITCHED_EARLY}" != "true" ]]; then
+      bg_switch "${OPP_VERSION_BUILD}" >/dev/null && echo "  🔀 bin/current → ${OPP_VERSION_BUILD}"
+    fi
     bg_mark_healthy "${OPP_VERSION_BUILD}"
     "${DOCKER_COMPOSE[@]}" ps
     exit 0
@@ -225,11 +236,15 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 
-# 健康检查失败 → 自动 rollback（如果有 previous）
+# 健康检查失败：current 从未切换（除首次 bootstrap），只需标记失败版本
 echo "❌ 启动超时（60s），pocketd 最后 80 行日志：" >&2
 "${DOCKER_COMPOSE[@]}" logs --tail=80 pocketd || true
-if [[ -n "${OPP_PREVIOUS_BUILD}" ]] && [[ -d "${POCKET_BIN_DIR}/${OPP_PREVIOUS_BUILD}" ]]; then
-  echo "  🔁 尝试自动回滚到 ${OPP_PREVIOUS_BUILD}"
+if [[ "${BG_SWITCHED_EARLY}" != "true" ]] && [[ -d "${POCKET_BIN_DIR}/${OPP_VERSION_BUILD}" ]]; then
+  mv "${POCKET_BIN_DIR}/${OPP_VERSION_BUILD}" "${POCKET_BIN_DIR}/${OPP_VERSION_BUILD}.failed" 2>/dev/null || true
+  echo "  🏷  失败版本已标记 ${OPP_VERSION_BUILD}.failed（current 未受影响）" >&2
+fi
+if [[ -n "${OPP_PREVIOUS_BUILD}" ]] && [[ -d "${POCKET_BIN_DIR}/${OPP_PREVIOUS_BUILD}" ]] && [[ ! -L "${POCKET_BIN_DIR}/current" ]]; then
+  echo "  🔁 尝试恢复 current → ${OPP_PREVIOUS_BUILD}"
   bg_rollback || true
 fi
 exit 1

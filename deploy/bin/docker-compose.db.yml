@@ -1,0 +1,65 @@
+# =============================================================================
+# docker-compose.db.yml — OpenPocket 容器化 DB 部署片段
+#
+# 仅当 OPP_DEPLOY_<PG|REDIS|MYSQL>=true 且 detect 未命中外部实例时启动。
+# 数据持久化到 ${DEPLOY_BASE_DIR}/<db>/（通过 DOCKER_DB_DATA_DIR 注入）。
+# 端口绑 127.0.0.1，避免对外暴露。
+#
+# 调用：ensure-databases.sh 用环境变量注入参数，例如：
+#   DOCKER_DB_HOST=127.0.0.1 \
+#   DOCKER_DB_PORT=5432 \
+#   DOCKER_DB_IMAGE=postgres:17 \
+#   DOCKER_DB_DATA_DIR=/Users/xutaohuang/kaixuan/openpocket/postgres \
+#   docker compose -p opp-db-postgres -f docker-compose.db.yml up -d postgres
+# =============================================================================
+
+x-db-common: &db-common
+  restart: unless-stopped
+  network_mode: bridge
+  # 注意：只绑 127.0.0.1，对外不暴露；容器间通信通过 DOCKER_DB_HOST=host.docker.internal
+  ports:
+    - "127.0.0.1:${DOCKER_DB_PORT:?DOCKER_DB_PORT must be set}:${DOCKER_DB_PORT}"
+
+services:
+  postgres:
+    image: ${DOCKER_DB_IMAGE:-postgres:17}
+    container_name: opp-db-postgres
+    <<: *db-common
+    environment:
+      POSTGRES_USER: ${OPP_PG_USER:-llm_gateway}
+      POSTGRES_PASSWORD: ${OPP_PG_PASSWORD:-changeme}
+      POSTGRES_DB: ${OPP_PG_DB:-pocket}
+    volumes:
+      - ${DOCKER_DB_DATA_DIR:?DOCKER_DB_DATA_DIR must be set}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${OPP_PG_USER:-llm_gateway} -d ${OPP_PG_DB:-pocket}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: ${DOCKER_DB_IMAGE:-redis:7}
+    container_name: opp-db-redis
+    <<: *db-common
+    volumes:
+      - ${DOCKER_DB_DATA_DIR:?DOCKER_DB_DATA_DIR must be set}:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  mysql:
+    image: ${DOCKER_DB_IMAGE:-mysql:8}
+    container_name: opp-db-mysql
+    <<: *db-common
+    environment:
+      MYSQL_ROOT_PASSWORD: ${OPP_MYSQL_PASSWORD:-changeme}
+      MYSQL_DATABASE: ${OPP_MYSQL_DB:-openpocket}
+    volumes:
+      - ${DOCKER_DB_DATA_DIR:?DOCKER_DB_DATA_DIR must be set}:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12

@@ -210,9 +210,11 @@ if [[ "${DEPLOY_ENV}" == "server" ]]; then
       : "${POCKET_FRONTEND_PORT:=4176}"
       ;;
     252)
-      # 252 是后端 API 宿主 + PG 宿主（DSN 走 172.16.2.210:5432 本机内网）；
-      # 端口 8092 / 4177 与 154 (8090/4175)、245 (8091/4176) 错开。
-      : "${POCKET_PORT_BIND_IP:=172.16.2.252}"
+      # 252 是后端 API 宿主 + PG 宿主。注意：服务器名"252"来自公网 IP
+      # 115.29.212.252，其 eth0 内网 IP 实为 172.16.2.210（2026-09-04 实测确认，
+      # 与 PG 容器 pg-252-pg17 的绑 IP 一致）；绑 172.16.2.252 会 bind 失败。
+      # 端口 8092 / 4177 与已被占用 8090（kxpms-cert-manager）/4175 错开。
+      : "${POCKET_PORT_BIND_IP:=172.16.2.210}"
       : "${POCKET_HTTP_PORT:=8092}"
       : "${POCKET_FRONTEND_PORT:=4177}"
       ;;
@@ -282,7 +284,8 @@ export POCKET_DEPLOY_ENV_FILE="${POCKET_ENV_FILE}"
 # （compose 已直接写 /app/data，无需变量注入）
 
 # ── 5.5 共享 helper：HTTP 健康探测（curl 优先，无则 wget） ─────────
-# 252 最小安装可能只有其一；两者皆无时降级为放行并告警。
+# 健康门禁必须诚实：curl/wget 皆无时返回失败（绝不放行），
+# 提示安装后重跑，避免把"探不了"当成"健康"。
 http_ok() {
   local url="$1"
   if command -v curl >/dev/null 2>&1; then
@@ -290,8 +293,9 @@ http_ok() {
   elif command -v wget >/dev/null 2>&1; then
     wget -q -O /dev/null "${url}" 2>/dev/null
   else
-    echo "⚠️  无 curl/wget，跳过 HTTP 探测: ${url}" >&2
-    return 0
+    echo "❌ 无 curl/wget，无法执行 HTTP 健康探测: ${url}" >&2
+    echo "   请先安装其一（yum install -y curl 或 apt install -y curl）后重跑" >&2
+    return 1
   fi
 }
 

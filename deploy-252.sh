@@ -5,7 +5,8 @@
 # 默认配置（与 154 / 245 同构，端口和绑 IP 不同）：
 #   - DEPLOY_BASE_DIR=/opt/kaixuan/openpocket
 #   - OPP_SERVER_NAME=252
-#   - 绑 eth0 IP 172.16.2.252（与 154/245 错开；三机并存时不冲突）
+#   - 绑 eth0 内网 IP 172.16.2.210（服务器名"252"来自公网 115.29.212.252，
+#     内网 IP 实为 172.16.2.210；8090/4175 已被其它服务占用，故错开）
 #   - HTTP_PORT=8092  FRONTEND_PORT=4177
 #   - PG 在 252 本机 docker 中（172.16.2.210:5432，由 .env.252 注入）
 #   - OPP_DEPLOY_PG/REDIS/MYSQL 全部 false（DSN 由 .env.252 提供）
@@ -99,6 +100,11 @@ fi
 if ! grep -q '^POCKET_POSTGRES_DSN=' "${POCKET_ENV_FILE}"; then
   echo "  ❌ 服务器 .env 缺少 POCKET_POSTGRES_DSN" >&2
   echo "     252 连本机 PG 示例: postgresql://${OPP_PG_USER}:<密码>@${OPP_PG_HOST}:${OPP_PG_PORT}/${OPP_PG_DB}?sslmode=disable" >&2
+  exit 1
+fi
+# PG 主机/端口白名单校验：防 env 注入特殊字符进 /dev/tcp 探测串
+if ! [[ "${OPP_PG_HOST}" =~ ^[A-Za-z0-9._-]+$ ]] || ! [[ "${OPP_PG_PORT}" =~ ^[0-9]+$ ]]; then
+  echo "  ❌ OPP_PG_HOST/OPP_PG_PORT 含非法字符: '${OPP_PG_HOST}:${OPP_PG_PORT}'" >&2
   exit 1
 fi
 # dry-run 跳过 PG TCP 探测（演练环境本机通常不在 252 内网）

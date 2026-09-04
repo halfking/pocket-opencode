@@ -30,7 +30,7 @@ done
 
 if [[ ! -d "${POCKET_IMAGE_DIR}" ]]; then
   echo "❌ images 目录不存在: ${POCKET_IMAGE_DIR}" >&2
-  echo "   当前 DEPLOY_ENV=${DEPLOY_ENV}；252 上请确认已 scp 到 /opt/kaixuan/opp/images/" >&2
+  echo "   当前 DEPLOY_ENV=${DEPLOY_ENV}；252 上请确认已 scp 到 ${POCKET_IMAGE_DIR}" >&2
   echo "   本地复用请显式: DEPLOY_ENV=local $0" >&2
   exit 1
 fi
@@ -80,4 +80,4 @@ done
 
 echo "✅ 加载完成；验证："
 docker images | grep -E "opencode-pocket" || true
-echo "   下一步: sudo ./deploy-252.sh   # 254/245 同理（按服务器角色选）"
+echo "   下一步: sudo ./deploy-252.sh   # 154/245 同理（按服务器角色选）"

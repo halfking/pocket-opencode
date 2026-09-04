@@ -27,6 +27,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${ROOT_DIR}"
 export DEPLOY_ENV="${DEPLOY_ENV:-local}"
 
+# ── 本地开关：必须在 source env.sh 之前预设 ──────────────────────
+# env.sh 对这些变量用 `:=` 兜底，若在 source 之后再赋值会因"已非空"而不生效
+# （实测导致 OPP_DEPLOY_PG 恒为 false、PG 端口恒为 15432，DSN 不写入）。
+export OPP_DEPLOY_PG="${OPP_DEPLOY_PG:-true}"
+export OPP_DEPLOY_REDIS="${OPP_DEPLOY_REDIS:-false}"
+export OPP_DEPLOY_MYSQL="${OPP_DEPLOY_MYSQL:-false}"
+# 本机 PG 走 host.docker.internal 让容器访问宿主端口（避免绑 0.0.0.0:5432）
+export OPP_PG_HOST="${OPP_PG_HOST:-host.docker.internal}"
+export OPP_PG_PORT="${OPP_PG_PORT:-5432}"
+
 # shellcheck disable=SC1091
 source "${ROOT_DIR}/deploy/bin/env.sh"
 
@@ -57,13 +67,7 @@ case "${OPP_OS_KIND}" in
     ;;
 esac
 
-# ── 本地开关：默认 PG 容器化、其它 DB 关 ─────────────────────────
-export OPP_DEPLOY_PG="${OPP_DEPLOY_PG:-true}"
-export OPP_DEPLOY_REDIS="${OPP_DEPLOY_REDIS:-false}"
-export OPP_DEPLOY_MYSQL="${OPP_DEPLOY_MYSQL:-false}"
-# 本机 PG 走 host.docker.internal 让容器访问宿主端口（避免绑 0.0.0.0:5432）
-export OPP_PG_HOST="${OPP_PG_HOST:-host.docker.internal}"
-export OPP_PG_PORT="${OPP_PG_PORT:-5432}"
+echo "  PG 拓扑: deploy=${OPP_DEPLOY_PG} target=${OPP_PG_HOST}:${OPP_PG_PORT}"
 
 # ── 1) 建目录 ──────────────────────────────────────────────────────
 "${SCRIPT_DIR}/deploy/bin/init-dirs.sh"
@@ -88,7 +92,13 @@ urlencode() {
 
 write_env_template() {
   echo "  📝 生成本地 .env 模板: ${POCKET_ENV_FILE}"
-  read -r DEV_JWT_SECRET _ < <(openssl rand -hex 24 2>/dev/null || echo "local-pocket-jwt-secret-012345678901234567890")
+  # JWT 密钥必须真随机；openssl 缺失时拒绝生成（不可降级为可预测字符串）
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "  ❌ 生成 JWT 密钥需要 openssl，当前不可用" >&2
+    echo "     安装后重跑（macOS 自带；Linux: apt/yum install openssl）" >&2
+    exit 1
+  fi
+  read -r DEV_JWT_SECRET _ < <(openssl rand -hex 24)
   cat > "${POCKET_ENV_FILE}" <<EOF
 # openpocket 本地部署 .env（deploy-local.sh 自动生成，请按需修改）
 # 加 POCKET_ENV_DEBUG=1 或 OPP_DEBUG=1 重跑可看到生效路径。密码等敏感项勿提交仓库。
@@ -104,6 +114,8 @@ POCKET_JWT_SECRET=${DEV_JWT_SECRET}
 POCKET_DEV_AUTH=true
 POCKET_AUTH_USER=admin
 POCKET_AUTH_PASS=admin-local-dev-only
+# 新版 auth 要求 RedClaw Admin 或显式 legacy 开关；本地 dev 走 legacy
+POCKET_AUTH_LEGACY_ONLY=true
 
 # ---- 数据库 ----
 # 检测到外部 PG：${OPP_PG_MODE}（${OPP_PG_HOST}:${OPP_PG_PORT}/${OPP_PG_DB}）
