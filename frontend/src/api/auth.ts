@@ -81,3 +81,37 @@ export async function resetPassword(body: {
     body: JSON.stringify(body),
   })
 }
+
+// =============================================================================
+// Phase 1 RedClaw 切换新增
+// =============================================================================
+
+/** 当前用户画像（RedClaw 透传）。 */
+export interface EmployeeProfile {
+  id: string
+  name: string
+  role: string
+  email: string
+  departmentId?: string
+  positionId?: string
+  agentId?: string
+  mustChangePassword?: boolean
+}
+
+/** 登出：调后端 /api/auth/logout 让 RedClaw 撤销 session。401 视作幂等成功。 */
+export async function logoutRemote(): Promise<OkResponse> {
+  return http<OkResponse>('/api/auth/logout', { method: 'POST' })
+}
+
+/** 拉取当前 RedClaw employee 画像；用于 token 续期校验与 UI 头像。 */
+export async function fetchMe(): Promise<EmployeeProfile> {
+  return http<EmployeeProfile>('/api/auth/me', { method: 'GET' })
+}
+
+/** SSO 登录入口：拿 RedClaw 跳转 URL，浏览器 location.href 跳过去。 */
+export async function fetchSsoLoginUrl(state: string, redirectUrl?: string): Promise<string> {
+  const q = new URLSearchParams({ state })
+  if (redirectUrl) q.set('redirect_url', redirectUrl)
+  const r = await http<{ url: string }>(`/api/auth/sso/login?${q.toString()}`, { method: 'GET' })
+  return r.url
+}

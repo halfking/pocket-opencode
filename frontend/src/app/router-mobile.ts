@@ -251,6 +251,16 @@ const router = createRouter({
       meta: { title: '忘记密码', bottomNav: false, showTopBar: false, canGoBack: true }
     },
     {
+      path: '/auth/sso/callback',
+      name: 'sso-callback',
+      // Phase 1: RedClaw SSO 回调落点。注意：浏览器从 IdP 跳到 openpocket
+      // 的 /api/auth/sso/callback 会被后端代理拦截并 200 + token 注入；
+      // SPA 路由层面用这个 path 仅用于"显式声明"，实际是后端写
+      // localStorage 后 window.location.replace('/ai')。
+      component: () => import('../features/auth/SsoCallbackView.vue'),
+      meta: { title: 'SSO 登录中', bottomNav: false, showTopBar: false }
+    },
+    {
       path: '/servers',
       name: 'servers',
       component: ServerSelectView,

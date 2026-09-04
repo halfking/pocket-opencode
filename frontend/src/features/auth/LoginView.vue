@@ -89,6 +89,18 @@
           <p class="forgot-link">
             <router-link to="/forgot-password">忘记密码？</router-link>
           </p>
+
+          <!-- Phase 1: RedClaw SSO 入口（仅当后端 POCKET_REDCLAW_SSO_ENABLED=true） -->
+          <div v-if="ssoEnabled" class="sso-divider"><span>或使用企业账号</span></div>
+          <button
+            v-if="ssoEnabled"
+            class="login-btn sso-btn"
+            :disabled="loading"
+            @click="ssoLogin"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">shield</span>
+            {{ loading ? '跳转中...' : '企业 SSO 登录' }}
+          </button>
         </template>
 
         <!-- 邮箱验证码登录 -->
@@ -228,7 +240,7 @@ import {
 } from '../../native/biometricAuth'
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
 import { useCryptoConfig } from '../../stores/crypto-config'
-import { sendCode, registerUser, codeLogin } from '../../api/auth'
+import { sendCode, registerUser, codeLogin, fetchSsoLoginUrl } from '../../api/auth'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -255,6 +267,10 @@ const tabs: { id: TabId; label: string }[] = [
   { id: 'register', label: '注册' },
 ]
 const activeTab = ref<TabId>('password')
+
+// Phase 1: RedClaw SSO 入口开关。生产由后端 /api/auth/sso/login 探测
+// （404 即视为未启用）；开发可在 onMounted 期间 force-on 调试。
+const ssoEnabled = ref(false)
 
 const codeEmail = ref('')
 const regEmail = ref('')
@@ -375,6 +391,16 @@ onMounted(async () => {
     }
   } catch { /* 生物识别不可用时静默降级为密码登录 */ }
 
+  // Phase 1: 探测 RedClaw SSO 是否启用。后端 POCKET_REDCLAW_SSO_ENABLED=true
+  // 时会成功返回 redirect URL；未启用时返回 404。失败时静默关闭按钮。
+  try {
+    const probeState = 'probe-' + Math.random().toString(36).slice(2, 10)
+    await fetchSsoLoginUrl(probeState)
+    ssoEnabled.value = true
+  } catch {
+    ssoEnabled.value = false
+  }
+
   if (auth.isAuthenticated && !isLobsterReady()) {
     needUnlock.value = true
   } else if (auth.isAuthenticated && isLobsterReady()) {
@@ -382,6 +408,29 @@ onMounted(async () => {
     router.push('/ai')
   }
 })
+
+/**
+ * Phase 1: RedClaw SSO 登录。生成一次性 state 落到 sessionStorage，
+ * 浏览器跳转到 RedClaw Auth Agent；用户在 IdP 完成登录后由 RedClaw
+ * 回调 /api/auth/sso/callback（后端代理），后端 302 到 SPA
+ * /auth/sso/callback?token=...，SsoCallbackView 落 store + 跳首页。
+ */
+async function ssoLogin() {
+  loading.value = true
+  error.value = ''
+  try {
+    const state = 'sso-' + Math.random().toString(36).slice(2, 14) + '-' + Date.now()
+    sessionStorage.setItem('pocket_sso_state', state)
+    // redirect_url 必须是后端路径，RedClaw 拿到 token 后会跳到这里，
+    // 后端再 302 到 SPA 路径 /auth/sso/callback。
+    const redirectUrl = window.location.origin + '/api/auth/sso/callback'
+    const url = await fetchSsoLoginUrl(state, redirectUrl)
+    window.location.href = url
+  } catch (e: any) {
+    error.value = `SSO 登录失败：${e?.message || e}`
+    loading.value = false
+  }
+}
 
 async function unlock() {
   if (!unlockPassword.value) {
@@ -457,14 +506,21 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
   try {
     // Phase C: 服务端无状态认证（只为签发调用 /embed /llm 的 JWT）
     // S0-A 扩展：后端返回 { token, user, user_id, workspace_id }。
-    const res = await http<{ token: string; user: string; user_id?: string; workspace_id?: string }>('/api/auth/login', {
+    const res = await http<{
+      token: string
+      user: string
+      user_id?: string
+      workspace_id?: string
+      auth_method?: string
+    }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username: u, password: p }),
     })
+    const method = res.auth_method || 'redclaw'
     if (res.user_id && res.workspace_id) {
-      auth.setAuthWithWorkspace(res.token, res.user, res.user_id, res.workspace_id)
+      auth.setAuthWithWorkspace(res.token, res.user, res.user_id, res.workspace_id, method)
     } else {
-      auth.setAuth(res.token, res.user)
+      auth.setAuth(res.token, res.user, method)
     }
     // 🦞 认证成功后才建立 WS（此前模块加载不会自动连）
     await connectWs()
@@ -650,6 +706,37 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
   flex: 1;
   height: 1px;
   background: var(--border, #ddd);
+}
+
+/* Phase 1: SSO 入口与分隔线（复用 .bio-divider 视觉样式） */
+.sso-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 8px;
+  color: var(--text-tertiary, #999);
+  font-size: 12px;
+}
+.sso-divider::before,
+.sso-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border, #ddd);
+}
+.sso-btn {
+  background: linear-gradient(135deg, #4f46e5, #7c3aed);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.sso-btn:disabled {
+  opacity: 0.6;
+}
+.sso-btn .material-symbols-outlined {
+  font-size: 18px;
 }
 
 .error-message {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -393,8 +394,9 @@ func (s *Server) handleAuthSsoLogin(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthSsoCallback — GET /api/auth/sso/callback
 //
-// 浏览器从 IdP 跳回 openpocket，openpocket 再把 code/state 透传给 RedClaw
-// 换取 token。原样吐回 RedClaw token。
+// 浏览器从 RedClaw Auth Agent 跳回 openpocket（RedClaw 已完成 IdP token
+// exchange 并铸造平台 JWT）。openpocket 拿到 RedClaw token 后 302 到 SPA
+// 路径 /#/auth/sso/callback?token=...，由前端 SsoCallbackView 落 localStorage。
 func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
@@ -421,14 +423,17 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	wsID := s.ensureWorkspaceForRedClawUser(r.Context(), userID)
 	auth.RecordShadow("redclaw-sso", userID, wsID, res.Employee.Name, res.Employee.Email)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"token":        res.Token,
-		"user":         res.Employee.Name,
-		"user_id":      userID,
-		"workspace_id": wsID,
-		"role":         res.Employee.Role,
-		"auth_method":  "redclaw-sso",
-	})
+	// 302 到 SPA 路径 + query 带 token。前端 SsoCallbackView 负责落 store。
+	// 之所以用 query(不是 fragment):openpocket 用的是 vue-router history
+	// 模式，fragment 不会被后端看到，但会被 vue-router 看到；为了简化，让
+	// 后端用 query 注入 token，前端用 URLSearchParams 读取。
+	redirect := "/auth/sso/callback"
+	q := url.Values{}
+	q.Set("token", res.Token)
+	q.Set("user", res.Employee.Name)
+	q.Set("user_id", userID)
+	q.Set("workspace_id", wsID)
+	http.Redirect(w, r, redirect+"?"+q.Encode(), http.StatusFound)
 }
 
 // extractBearerToken 复用 requireAuth 的 token 解析规则。

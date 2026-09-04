@@ -4,7 +4,7 @@
       <div class="header">
         <div class="logo">🔴</div>
         <h1 class="title">重置密码</h1>
-        <p class="subtitle">通过邮箱验证码重置 Redclaw 密码</p>
+        <p class="subtitle">通过邮箱验证码重置 Redclaw 密码（密码统一由 RedClaw 管理）</p>
       </div>
 
       <ol class="steps" aria-label="重置步骤">
