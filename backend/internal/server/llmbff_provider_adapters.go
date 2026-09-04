@@ -222,11 +222,14 @@ func (p *dynamicGatewayBFFProvider) Chat(ctx context.Context, req llmbff.ChatReq
 
 // auto 回退链的超时预算。网关客户端自身有 90s 总超时 / 30s 响应头超时，
 // 但回退链是逐候选串行重试的：N 个候选都挂住时最坏 N×30s，前端一直转圈。
-// 这里限制：单次尝试 20s（覆盖首 token 正常延迟），整链预算 45s。
+// 这里限制：单次尝试 20s（覆盖首 token 正常延迟），整链预算 60s——按
+// 「两个挂死候选耗满 40s + 最终可用候选仍有完整 20s 首 token 窗口」取值
+// （45s 时第三候选只分到 5s，kimi-k3 实测来不及出首 token，2026-09-05）。
+// 回退期间客户端持续收到 Retry 进度帧，等待可见，非 §14.2 的零字节转圈。
 // var 而非 const：测试用短预算驱动超时回退路径。
 var (
 	autoFallbackAttemptTimeout = 20 * time.Second
-	autoFallbackTotalBudget    = 45 * time.Second
+	autoFallbackTotalBudget    = 60 * time.Second
 )
 
 // Stream 实现 BFF 的流式 chat。auto / no_candidate 时按 preferred 列表
@@ -239,6 +242,9 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 	}
 	req = p.resolveChatModel(req)
 	deadline := time.Now().Add(autoFallbackTotalBudget)
+	// 已尝试过的候选集合（含初始解析结果）：nextFallbackModel 据此跳过，
+	// 防止挂死候选反复超时时链在两个死候选间成环。
+	tried := map[string]bool{req.Model: true}
 	for {
 		attemptCtx := ctx
 		var cancel context.CancelFunc
@@ -266,7 +272,7 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		// 重试。注意：切换到新候选前会先经 fn 发一帧 Retry 进度（见下），
 		// 所以整条链上 fn 可能已被调用过——只要它返回 true（客户端仍在线）
 		// 就继续重试。
-		fallback := p.fallbackModel(req.WorkspaceID, req.Model)
+		fallback := p.nextFallbackModel(req.WorkspaceID, tried)
 		if fallback == "" || ctx.Err() != nil || !time.Now().Before(deadline) {
 			log.Printf("[llm-auto] stop fallback chain: model=%s err=%v wrote_content=%v "+
 				"fallback=%q ctx_err=%v budget_left=%s",
@@ -274,6 +280,7 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 				time.Until(deadline).Round(time.Millisecond))
 			return usage, err
 		}
+		tried[fallback] = true
 		log.Printf("[llm-auto] %s -> fallback %s (%v)", req.Model, fallback, err)
 		// 候选切换间隙发一帧回退重试进度（无 content、非终态）：让前端在
 		// 整链重试期间能看到「已切换到 <model> 重试」，而不是零字节转圈
@@ -305,6 +312,33 @@ func streamAttemptFallbackEligible(err error, wroteContent bool) bool {
 func (p *dynamicGatewayBFFProvider) fallbackModel(wsID, current string) string {
 	cfg := p.resolve(wsID)
 	return pickFallbackModel(current, cfg.PreferredModels, cfg.Models)
+}
+
+// nextFallbackModel 在 tried 之外的 preferred 里按顺序挑下一个候选（catalog
+// 过滤语义同 pickFallbackModel）。Stream 回退链会连续换多个候选，而
+// fallbackModel 只排除 current——挂死候选反复超时时链会
+// glm-5.2 → minimax-m3 → glm-5.2 成环、永远到不了 kimi-k3（2026-09-05
+// 实测：auto 流 40s 内两次 fallback 日志均指向已试过的 glm-5.2）。
+func (p *dynamicGatewayBFFProvider) nextFallbackModel(wsID string, tried map[string]bool) string {
+	cfg := p.resolve(wsID)
+	inCatalog := func(id string) bool {
+		if len(cfg.Models) == 0 {
+			return true
+		}
+		for _, c := range cfg.Models {
+			if c == id {
+				return true
+			}
+		}
+		return false
+	}
+	for _, m := range cfg.PreferredModels {
+		if m == "" || tried[m] || !inCatalog(m) {
+			continue
+		}
+		return m
+	}
+	return ""
 }
 
 func (p *dynamicGatewayBFFProvider) Embed(ctx context.Context, req llmbff.EmbedRequest) (*llmbff.EmbedResponse, error) {
