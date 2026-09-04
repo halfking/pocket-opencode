@@ -3,7 +3,8 @@
 
 set -e
 
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 echo "=========================================="
 echo "启动 OpenCode Pocket Backend (开发模式)"
@@ -31,7 +32,7 @@ export POCKET_AUTH_USER="${POCKET_AUTH_USER:-admin}"
 export POCKET_AUTH_PASS="${POCKET_AUTH_PASS:-Veritrans&9527}"
 
 # AI 网关配置：从仓库根 .env 读取（不回显密钥），保证 /api/llm/* 开箱可用。
-ROOT_ENV="$(cd "$(dirname "$0")/.." && pwd)/.env"
+ROOT_ENV="$(cd "$SCRIPT_DIR/.." && pwd)/.env"
 read_env_key() {
   python3 - "$ROOT_ENV" "$1" <<'PY'
 import sys, re, pathlib

@@ -680,3 +680,51 @@ halfking 确认后执行：
    不引用值，可保持）；
 4. 因历史提交含旧凭据，确认废止旧口令即可视为闭环（不做历史重写——
    会改写并行协作的提交链，风险大于收益）。
+
+## 18. 2026-09-05 会话补充（五）：移动端收尾执行记录
+
+### 18.1 DSN/provider 协作边界
+
+- 已在仓库 GitHub Issue #14 联系提交者 `halfking`，请求以非敏感方式确认：
+  历史测试 DSN 角色轮换/废止、`POCKET_TEST_POSTGRES_DSN` 注入源更新、
+  `glm-5.2`/`minimax-m3` provider 配置，以及 embedding provider 配置。
+- 本地未持有可执行的 PG 管理凭据，因此没有猜测、生成或回显新 DSN；在提交者
+  确认前，凭据轮换和上游 provider 配置保持待办状态。
+- HEAD 与新增代码中未发现历史完整 DSN；本轮 grep 仅命中已脱敏的示例、CI
+  占位和环境变量名。旧完整值仍只存在于历史提交，按清单废止旧口令即可闭环，
+  不进行历史重写。
+
+### 18.2 start-dev.sh 根因与修复
+
+- 根目录执行 `bash backend/start-dev.sh` 首次失败：脚本先切换到 `backend/`，
+  再用相对 `$0` 计算 `backend/..`，路径解析依赖当前工作目录。
+- 修复为基于 `${BASH_SOURCE[0]}` 求脚本绝对目录，并复用 `SCRIPT_DIR` 读取根
+  `.env`。修复后从仓库根目录执行成功：网关变量已注入（仅显示“已注入”）、
+  pocketd 健康检查通过、dev 登录冒烟通过。
+- `bash -n backend/start-dev.sh` 通过。服务运行中的 `logs/backend-dev.log`
+  已重新生成启动记录；日志文件由当前进程持有，空闲期间大小不变，健康请求和
+  启动输出均可落盘，未发现本轮新增密钥泄漏。
+
+### 18.3 会议纪要 UI 落地
+
+- `frontend/src/features/meetings/meetings-ai.ts` 的 `summarizeMeeting` 增加可选
+  `onRetry` 回调，保留旧调用兼容性，并把回退模型提示透传给页面。
+- `frontend/src/features/meetings/MeetingDetailView.vue` 新增“生成纪要/重新生成纪要”
+  操作：将分段转写按说话人拼接后调用 `summarizeMeeting`，结果通过
+  `updateMeeting(..., { summary })` 写回本地并 reload；无转写时禁用按钮，并展示
+  加载、空状态、失败和模型回退提示。
+- 新 APK 已构建、安装并启动到 `emulator-5554`；截图归档为
+  `test-evidence/2026-09-05-meeting-summary-ui.png`。当前现场为 AI 工具首页，
+  说明应用启动链路正常；尚未有可用历史会议数据，未执行生成纪要点击回归。
+
+### 18.4 本轮验证
+
+- `go test ./...`：通过（后端全部包；无本地 PG DSN 时集成测试按既有约定 Skip）。
+- `frontend/` 内 `npm run typecheck`：通过。
+- `node frontend/scripts/build-mobile.mjs android dev`：通过。
+- `frontend/android/` `./gradlew assembleDebug`：通过，APK 已安装并启动。
+- `curl http://127.0.0.1:8088/healthz`：返回 `ok`。
+- `git diff --check`：通过。
+- 环境观察仍未改变：`glm-5.2`/`minimax-m3` 上游返回 `model_not_found`，
+  `/api/embed` 上游返回 `no_provider`；这两项需要提交者/网关运维侧配置，
+  本仓没有凭据或 provider 控制面可安全代办。

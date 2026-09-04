@@ -15,6 +15,14 @@
         <div class="detail-toolbar">
           <button
             type="button"
+            class="summary-btn"
+            :disabled="summarizing || !data.segments.length"
+            @click="onSummarize"
+          >
+            {{ summarizing ? '纪要生成中…' : (data.meeting.summary ? '重新生成纪要' : '生成纪要') }}
+          </button>
+          <button
+            type="button"
             class="refine-btn"
             :disabled="refining"
             @click="onRefine"
@@ -58,9 +66,13 @@
         </div>
 
         <!-- AI 纪要 -->
-        <section v-if="data.meeting.summary || data.meeting.liveSummary" class="section">
+        <section class="section">
           <h3 class="section-title">📋 会议纪要</h3>
-          <p class="summary-text">
+          <p v-if="summaryError" class="summary-error">{{ summaryError }}</p>
+          <p v-if="!data.meeting.summary && !data.meeting.liveSummary && !summarizing && !summaryError" class="summary-empty">
+            暂无纪要，点击上方“生成纪要”。
+          </p>
+          <p v-if="data.meeting.summary || data.meeting.liveSummary" class="summary-text">
             {{ data.meeting.summary || data.meeting.liveSummary?.summary }}
           </p>
           <ul v-if="data.meeting.liveSummary?.actionItems?.length" class="action-list">
@@ -95,6 +107,7 @@ import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 import { meetingsApi } from '../../api/meetings'
 import { loadMeetingAudio } from '../../native/meeting-audio'
 import { ingestMeetingArtifacts } from './meeting-ingest'
+import { summarizeMeeting } from './meetings-ai'
 import {
   getMeetingWithSegments, updateMeeting,
   type LocalMeeting, type MeetingSegment,
@@ -107,6 +120,8 @@ const meetingId = route.params.id as string
 
 const loading = ref(true)
 const refining = ref(false)
+const summarizing = ref(false)
+const summaryError = ref('')
 const ingestMsg = ref('')
 const data = ref<{ meeting: LocalMeeting; segments: MeetingSegment[] } | null>(null)
 const waveWidth = ref(window.innerWidth - 32)
@@ -152,6 +167,28 @@ function togglePlay() {
 
 function seekTo(time: number) {
   if (audioEl) audioEl.currentTime = time
+}
+
+async function onSummarize() {
+  if (!data.value || data.value.segments.length === 0) return
+  summarizing.value = true
+  summaryError.value = ''
+  try {
+    const transcript = data.value.segments
+      .map((segment) => `[${segment.speakerLabel || '说话人'}] ${segment.text}`)
+      .join('\n')
+    const summary = await summarizeMeeting(transcript, {
+      onRetry(model) {
+        summaryError.value = `上游模型不可用，已切换到 ${model} 重试…`
+      },
+    })
+    await updateMeeting(meetingId, { summary })
+    await load()
+  } catch (err) {
+    summaryError.value = err instanceof Error ? err.message : '纪要生成失败'
+  } finally {
+    summarizing.value = false
+  }
 }
 
 async function onRefine() {
@@ -206,9 +243,11 @@ onUnmounted(() => { if (audioEl) { audioEl.pause(); audioEl = null } })
 .detail-toolbar {
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
 }
 
+.summary-btn,
 .refine-btn {
   padding: 6px 14px;
   border: 1px solid var(--brand-primary);
@@ -220,6 +259,7 @@ onUnmounted(() => { if (audioEl) { audioEl.pause(); audioEl = null } })
   cursor: pointer;
 }
 
+.summary-btn:disabled,
 .refine-btn:disabled {
   opacity: 0.5;
 }
@@ -281,6 +321,21 @@ onUnmounted(() => { if (audioEl) { audioEl.pause(); audioEl = null } })
   line-height: 1.7;
   color: var(--text-primary);
   margin: 0;
+}
+
+.summary-empty,
+.summary-error {
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.summary-empty {
+  color: var(--text-muted);
+}
+
+.summary-error {
+  color: var(--danger, #dc2626);
 }
 
 .action-list {

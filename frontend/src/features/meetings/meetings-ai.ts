@@ -6,7 +6,10 @@
  */
 import { llmBffApi, type ChatStreamDelta } from '../../api/llm-bff'
 
-export async function summarizeMeeting(transcript: string): Promise<string> {
+export async function summarizeMeeting(
+  transcript: string,
+  handlers: { onRetry?: (model: string) => void } = {},
+): Promise<string> {
   if (!transcript.trim()) throw new Error('会议转写为空，无法生成纪要')
 
   const chunks: string[] = []
@@ -32,6 +35,7 @@ export async function summarizeMeeting(transcript: string): Promise<string> {
         },
         onRetry(model: string) {
           retriedModels.add(model)
+          handlers.onRetry?.(model)
         },
         onError: reject,
         onDone: () => resolve(),
