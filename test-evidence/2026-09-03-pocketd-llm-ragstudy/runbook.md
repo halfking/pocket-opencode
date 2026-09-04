@@ -728,3 +728,41 @@ halfking 确认后执行：
 - 环境观察仍未改变：`glm-5.2`/`minimax-m3` 上游返回 `model_not_found`，
   `/api/embed` 上游返回 `no_provider`；这两项需要提交者/网关运维侧配置，
   本仓没有凭据或 provider 控制面可安全代办。
+
+## 19. 2026-09-05 会话补充（六）：会议纪要 UI 提交核对 + 类型回归闭环
+
+### 19.1 远端同步与并行改动核对
+
+- `git fetch origin --prune` 后核对：本地 `main` HEAD 与 `origin/main` 一致
+  （均为 ef7f072），无分叉、无待拉取提交。
+- 上一轮并行会议纪要 UI 改动核对：`frontend/src/features/meetings/MeetingDetailView.vue`
+  与 `meetings-ai.ts` 均已随 ef7f072 正式提交，两文件工作区无未提交差异。
+  按约定只读核对，未收编、未编辑。
+- 结论：会议纪要 UI 已正式立项落地（ef7f072 即“接入生成入口”），
+  `summarizeMeeting` 不再是孤儿函数——已经 `onSummarize` 接入生成/重新生成
+  入口，`onRetry` 回退提示与结果写回（`updateMeeting`）均在提交版本内。
+
+### 19.2 vue-tsc 失败点闭环（以提交后版本为准）
+
+- 前一轮记录的 `vue-tsc` 唯一失败（`MeetingDetailView` 模板引用
+  `summarizing`/`onSummarize`）经核对已随 ef7f072 提交自愈：`summarizing`、
+  `summaryError` ref 与 `onSummarize` 函数在提交版本中均已定义，模板与脚本
+  一致，本轮无需再改代码。
+- 本轮对上述两文件零编辑，回归全部基于 ef7f072 提交版本执行。
+
+### 19.3 本轮验证
+
+- `frontend/` 内 `npx vue-tsc --noEmit`：通过（退出码 0，无错误输出）。
+- `npm run build`（vue-tsc + vite build）：通过（2.67s；仅既有 chunk >500kB
+  警告，非错误）。
+- `curl http://127.0.0.1:8088/healthz`：返回 `ok`，运行中栈仍健康。上一轮
+  全链路冒烟（health/login/refresh/kimi-k3 chat+SSE）结论不变，本轮未重复。
+- `go test ./...` 上一轮已全绿，本轮无后端代码改动，未重复执行。
+
+### 19.4 外部协调待办（未变，仍阻塞在本仓之外）
+
+- 请网关维护方恢复 `glm-5.2`/`minimax-m3` provider（当前上游 `model_not_found`）。
+- 请配置 embedding provider，配置后复验 `/api/embed`（当前上游 `no_provider`）。
+- `POCKET_TEST_POSTGRES_DSN` 轮换：仅在 halfking 于 Issue #14 明确确认后按
+  §17.6 清单执行；本轮未触碰任何凭据，工作区遗留的后端适配器改动仍保持
+  未提交状态，未纳入本次提交。
