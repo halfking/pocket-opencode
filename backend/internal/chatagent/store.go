@@ -58,6 +58,10 @@ func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
+// schema 只含 base 表结构与 base 索引；marketplace 列与
+// idx_chat_agents_marketplace 索引由 RunMarketplaceMigration 补齐（幂等）。
+// base schema 不得引用 marketplace 列：升级库走 Init→迁移 顺序，
+// 先建索引会在补列前失败（SQLSTATE 42703），阻塞整个启动。
 const schema = `
 CREATE TABLE IF NOT EXISTS chat_agents (
 	id            TEXT PRIMARY KEY,
@@ -80,7 +84,6 @@ CREATE TABLE IF NOT EXISTS chat_agents (
 CREATE INDEX IF NOT EXISTS idx_chat_agents_ws ON chat_agents(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_chat_agents_dept ON chat_agents(department);
 CREATE INDEX IF NOT EXISTS idx_chat_agents_builtin ON chat_agents(is_builtin);
-CREATE INDEX IF NOT EXISTS idx_chat_agents_marketplace ON chat_agents(marketplace_id) WHERE marketplace_id IS NOT NULL;
 `
 
 // Init 初始化 chat_agents 表。
