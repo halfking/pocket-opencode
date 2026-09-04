@@ -12,13 +12,13 @@ import (
 func setupTestStore(t *testing.T) (*Store, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	
+
 	// 从环境变量读取数据库连接字符串
 	dbURL := os.Getenv("POCKET_TEST_POSTGRES_DSN")
 	if dbURL == "" {
 		t.Skip("POCKET_TEST_POSTGRES_DSN not set")
 	}
-	
+
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
 		t.Skipf("PostgreSQL not available: %v", err)
@@ -30,8 +30,8 @@ func setupTestStore(t *testing.T) (*Store, context.Context) {
 		t.Fatalf("Init failed: %v", err)
 	}
 
-	// 清空测试数据
-	if _, err := pool.Exec(ctx, "DELETE FROM chat_agents WHERE id LIKE 'test-%' OR id LIKE 'custom-%' OR id = 'builtin' OR id = 'builtin-agent'"); err != nil {
+	// 清空测试数据（'custom%' 覆盖精确 id 'custom' 与 'custom-a/b' 等变体）
+	if _, err := pool.Exec(ctx, "DELETE FROM chat_agents WHERE id LIKE 'test-%' OR id LIKE 'custom%' OR id IN ('builtin', 'builtin-agent', 'c1', 'c2')"); err != nil {
 		t.Logf("cleanup warning: %v", err)
 	}
 

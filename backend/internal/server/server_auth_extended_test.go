@@ -26,7 +26,12 @@ func testDSN() string {
 	if v := sharedTestDSN.Load(); v != nil {
 		return *v
 	}
-	dsn := os.Getenv("POCKET_TEST_PG_DSN")
+	// 与仓库其余 PG 集成测试保持同一约定（POCKET_TEST_POSTGRES_DSN）；
+	// POCKET_TEST_PG_DSN 保留为兼容别名。
+	dsn := os.Getenv("POCKET_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		dsn = os.Getenv("POCKET_TEST_PG_DSN")
+	}
 	if dsn == "" {
 		dsn = "postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@localhost:5432/llm_gateway?sslmode=disable&search_path=redclaw_test_2026_09_01"
 	}
@@ -43,15 +48,40 @@ func mustTestPool(t *testing.T) *pgxpool.Pool {
 		t.Skipf("skip: parse pgx config: %v", err)
 	}
 	cfg.MaxConns = 4
+	// search_path 指向的 schema 必须真实存在，否则 CREATE TABLE 会报
+	// 3F000 (no schema has been selected to create in)。这里显式建好并在
+	// cleanup 时 CASCADE 清理；DSN 未带 search_path 时生成随机 schema。
+	schema := cfg.ConnConfig.RuntimeParams["search_path"]
+	if schema == "" {
+		schema = fmt.Sprintf("c8_auth_test_%d", time.Now().UnixNano())
+		cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	}
+	rootCfg := cfg.Copy()
+	delete(rootCfg.ConnConfig.RuntimeParams, "search_path")
+	rootPool, err := pgxpool.NewWithConfig(context.Background(), rootCfg)
+	if err != nil {
+		t.Skipf("skip: pgx connect (root): %v", err)
+	}
+	defer rootPool.Close()
+	if _, err := rootPool.Exec(context.Background(), "CREATE SCHEMA IF NOT EXISTS "+schema); err != nil {
+		t.Skipf("skip: create schema %s: %v", schema, err)
+	}
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		t.Skipf("skip: pgx connect: %v", err)
 	}
+	t.Cleanup(func() {
+		pool.Close()
+		rp, rerr := pgxpool.NewWithConfig(context.Background(), rootCfg)
+		if rerr == nil {
+			_, _ = rp.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
+			rp.Close()
+		}
+	})
 	if err := auth.EnsureSchema(context.Background(), pool); err != nil {
 		pool.Close()
 		t.Fatalf("EnsureSchema: %v", err)
 	}
-	t.Cleanup(pool.Close)
 	return pool
 }
 

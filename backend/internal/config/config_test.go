@@ -41,6 +41,9 @@ func TestLoadProductionAlias(t *testing.T) {
 	t.Setenv("POCKET_POSTGRES_DSN", "postgres://user:pass@localhost/pocket")
 	t.Setenv("POCKET_PG_SCHEMA", "tenant_schema")
 	t.Setenv("POCKET_EMAIL_FETCH_ENABLED", "false")
+	// RedClaw auth authority: production requires it unless legacy-only.
+	t.Setenv("POCKET_REDCLAW_ADMIN_URL", "http://redclaw-admin.internal:28081")
+	t.Setenv("POCKET_REDCLAW_ADMIN_SECRET", "0123456789abcdef0123456789abcdef-redclaw")
 	// PK-3.1: direct LLM env must be cleared so this test does not depend on
 	// the host machine's environment.
 	t.Setenv("POCKET_LLM_BASE_URL", "")
@@ -98,6 +101,8 @@ func TestValidateProductionLLMDirectAccessRejected(t *testing.T) {
 		OpenCodeTimeoutMS:        "5000",
 		WSHeartbeatMS:            "15000",
 		ReminderCheckIntervalSec: "60",
+		RedClawAdminURL:          "http://redclaw-admin.internal:28081",
+		RedClawAdminSecret:       "0123456789abcdef0123456789abcdef-redclaw",
 		JWTSecret:                "01234567890123456789012345678901",
 		PostgresDSN:              "postgres://user:pass@localhost/pocket",
 		AllowedOrigins:           "https://app.example.com",
@@ -343,6 +348,8 @@ func TestProductionValidationSuccess(t *testing.T) {
 		ReminderCheckIntervalSec: "60",
 		TimezoneOffsetSec:        28800,
 		RedClawTimeoutSec:        30,
+		RedClawAdminURL:          "http://redclaw-admin.internal:28081",
+		RedClawAdminSecret:       "0123456789abcdef0123456789abcdef-redclaw",
 		EmailFetchEnabled:        false,
 	}
 
@@ -363,6 +370,8 @@ func TestProductionValidationWithEmailEnabled(t *testing.T) {
 		ReminderCheckIntervalSec: "60",
 		TimezoneOffsetSec:        28800,
 		RedClawTimeoutSec:        30,
+		RedClawAdminURL:          "http://redclaw-admin.internal:28081",
+		RedClawAdminSecret:       "0123456789abcdef0123456789abcdef-redclaw",
 		EmailFetchEnabled:        true,
 		EmailMasterKey:           "secure-master-key-for-encryption",
 	}

@@ -124,18 +124,20 @@ func (s *Store) Get(ctx context.Context, workspaceID, id string) (*Agent, error)
 	var a Agent
 	var skillRefsJSON, tagsJSON []byte
 	var marketplaceID, publisher, version sql.NullString
+	var isBuiltin int
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin,
 		       marketplace_id, skill_refs, publisher, version, tags,
 		       created_at, updated_at
 		FROM chat_agents
 		WHERE id = $1 AND (workspace_id = '' OR workspace_id = $2)
-	`, id, workspaceID).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Department, &a.Emoji, &a.Color, &a.SystemPrompt, &a.IsBuiltin,
+	`, id, workspaceID).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Department, &a.Emoji, &a.Color, &a.SystemPrompt, &isBuiltin,
 		&marketplaceID, &skillRefsJSON, &publisher, &version, &tagsJSON,
 		&a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	a.IsBuiltin = isBuiltin != 0
 	if marketplaceID.Valid {
 		a.MarketplaceID = marketplaceID.String
 	}
@@ -184,11 +186,13 @@ func (s *Store) List(ctx context.Context, workspaceID, department string) ([]*Ag
 		var a Agent
 		var skillRefsJSON, tagsJSON []byte
 		var marketplaceID, publisher, version sql.NullString
-		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Department, &a.Emoji, &a.Color, &a.SystemPrompt, &a.IsBuiltin,
+		var isBuiltin int
+		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Department, &a.Emoji, &a.Color, &a.SystemPrompt, &isBuiltin,
 			&marketplaceID, &skillRefsJSON, &publisher, &version, &tagsJSON,
 			&a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
+		a.IsBuiltin = isBuiltin != 0
 		if marketplaceID.Valid {
 			a.MarketplaceID = marketplaceID.String
 		}
