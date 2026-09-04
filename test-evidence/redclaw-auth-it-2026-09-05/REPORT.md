@@ -1,7 +1,7 @@
 # openpocket × RedClaw 认证联调报告
 
-> 日期:2026-09-05  
-> 结论:**10/10 测试通过**,认证链路打通并具备降级与一键回滚能力  
+> 日期:2026-09-05
+> 结论:**历史阶段 10/10 测试通过**；后续 IT-2（见附录）已补齐 external_state、一次性 exchange code 与 JWKS/RS256 验证路径。
 > 拓扑:pocketd 容器(arm64, port 18090) ⇄ host.docker.internal ⇄ RedClaw local-stack 容器组(dal:27080 / gateway:27081 / authagent:27092 / admin:27093)
 
 ## 1. 联调环境
@@ -52,7 +52,7 @@ token claims 实测:`sub=u-pocket-admin-001, tenant_id=default, session_id=…, 
 
 ## 4. 已知边界(不阻塞,记录在案)
 
-1. **SSO 完整回调链未测**:本机无 OIDC IdP 容器,`/sso/login` URL 生成已验证,IdP→callback→铸 token 链路需接真实 IdP(casdoor 容器在 252 库中存在,可作二期)。
+1. **[历史记录，已由 IT-2 覆盖] SSO 完整回调链未测**：这是早期基线，不代表当前状态。
 2. **token 撤销的旁路**:pocketd `requireAuth` 只验签名+过期,登出后旧 token 打普通受保护 API 仍 200(仅 `/api/auth/me` 因代理 RedClaw 而 401)。前端以 me 判活即可兜底;彻底闭环需 pocketd 增加会话校验(RedClaw SessionValidator 同款)。
 3. **RedClaw gateway `/api/v1/users/verify` 未启用**:local-stack compose 未配 `REDCLAW_SHARED_SECRET`(空则端点不注册),生物识别的 RedClaw 用户校验分支暂走本地。需要时在 compose 加 `REDCLAW_SHARED_SECRET`(≥32B)并同步 `POCKET_REDCLAW_SECRET`。
 4. **JWT TTL 2h**:前端 1h50m 静默续期尚未做(迁移文档 §12 待办)。
@@ -87,7 +87,7 @@ curl -X POST localhost:18090/api/auth/login -H 'Content-Type: application/json' 
 
 ---
 
-## 附录（2026-09-05 追记）：SSO 回调链修复后待补测项
+## 附录（2026-09-05 追记，历史）：SSO 回调链修复后待补测项（已由 IT-2 覆盖）
 
 R5 记录的"SSO 完整回调链未测"缺口已在 pocket 侧修复流程合约
 （见 `docs/handoff/2026-09-05-sso-state-contract-mismatch.md` §6）：

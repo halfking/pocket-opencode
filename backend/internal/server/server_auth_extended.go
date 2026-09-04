@@ -467,9 +467,8 @@ func (s *Server) handleAuthSsoLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		Secure:   requestIsHTTPS(r),
 	})
-	redirectURL := r.URL.Query().Get("redirect_url")
 	writeJSON(w, http.StatusOK, map[string]string{
-		"url": s.redclawAdminClient.SsoLoginURL(nonce, redirectURL),
+		"url": s.redclawAdminClient.SsoLoginURL(nonce, ""),
 	})
 }
 

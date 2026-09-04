@@ -309,7 +309,11 @@ func (c *AdminAuthClient) Logout(ctx context.Context, token string) error {
 // SsoLoginURL 拼出 RedClaw Auth Agent 的 SSO 登录入口 URL。
 // state 由 pocket 生成（登录绑定 nonce），以 external_state 参数传给
 // auth-agent：RedClaw 侧（2026-09-05 方案 A）把它存入 replay 表并在
-// /sso/callback 响应中原样回显，pocket 据此做端到端比对。空则省略参数。
+// /sso/callback 响应中原样回显，pocket 据此做端到端比对。
+//
+// redirectURL 参数保留用于兼容旧调用方，但不再序列化进请求。回调地址
+// 必须由 auth-agent 的服务端 OIDC_REDIRECT_URL 固定，避免用户输入形成
+// 开放重定向或劫持 OAuth 授权码。
 func (c *AdminAuthClient) SsoLoginURL(state, redirectURL string) string {
 	u, err := url.Parse(c.authBase + "/api/v1/sso/login")
 	if err != nil {
@@ -318,9 +322,6 @@ func (c *AdminAuthClient) SsoLoginURL(state, redirectURL string) string {
 	q := u.Query()
 	if state != "" {
 		q.Set("external_state", state)
-	}
-	if redirectURL != "" {
-		q.Set("redirect_url", redirectURL)
 	}
 	u.RawQuery = q.Encode()
 	return u.String()

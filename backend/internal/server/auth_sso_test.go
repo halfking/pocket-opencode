@@ -245,8 +245,8 @@ func TestSSO_FullChain_LoginCallbackExchange(t *testing.T) {
 	if u.Query().Get("state") != "" {
 		t.Errorf("legacy state param must no longer be sent")
 	}
-	if got := u.Query().Get("redirect_url"); got != "http://app.example.com/api/auth/sso/callback" {
-		t.Errorf("agent url redirect_url = %q", got)
+	if got := u.Query().Get("redirect_url"); got != "" {
+		t.Errorf("caller-controlled redirect_url must be omitted, got %q", got)
 	}
 
 	// 1b. 浏览器步：访问 auth-agent /sso/login（fake 捕获 external_state，

@@ -2,9 +2,10 @@
 
 > **日期**: 2026-09-05
 > **来源**: openpocket 认证体系审计（对照 docs/AUTH_REDCLAW.md）
-> **状态**: ✅ 双侧已闭环 —— pocket 侧方案 C' + P1-2（§6）；RedClaw 侧方案 A
-> （§6.2，`feat/authagent-sso-external-state` @ 692baad）与 pocket 端到端严格
-> 比对均已落地。本地栈 IdP 与全链路 IT 已补测通过（§5、§6.3）；仅余 casdoor 浏览器流人工验证。
+ > **状态**: ✅ 双侧已闭环 —— 当前方案为 pocket 服务端绑定 cookie +
+> RedClaw `external_state` 回显 + 一次性 `sso_code` exchange。RedClaw 的
+> JWKS/Casdoor/IT 能力来自 `feat/authagent-sso-external-state`，待合入主线；
+> 本地栈 IdP 与全链路 IT 已补测通过，Casdoor 浏览器授权码流仍需人工验收。
 > **严重级**: P1（SSO 功能链路断裂风险 + CSRF 防线弱于文档）
 
 ## 1. 结论（TL;DR）
@@ -101,8 +102,8 @@ auth-agent，改为 pocket 后端在 `/api/auth/sso/login` 时生成 state、短
 
 （交接记录称 RedClaw 仓库不在本机，事后核实仓库在本机
 `~/workspace/ai-native-tools/RedClaw`，方案 A 已于同日 §6.2 直接落地。）
-按 §3 方案 C 的思路做 pocket
-侧可独立落地的变体（**方案 C'**），并同批修掉 P1-2。核心：承认 state
+按 §3 方案 C 的思路做 pocket 侧变体（**方案 C'，已 superseded**），并同批修掉 P1-2。
+本节只保留历史决策记录；当前部署不得按本节的旧 `state=<nonce>` 方案实施。核心：承认 state
 所有权归 auth-agent（吸收方案 B 的结论），pocket 的 CSRF 绑定改由
 **服务端持有的浏览器绑定**承担，而不是比对 IdP 带回的 state。
 
@@ -113,7 +114,7 @@ auth-agent，改为 pocket 后端在 `/api/auth/sso/login` 时生成 state、短
 → GET /api/auth/sso/login
   ← pocket 生成 32B 随机 nonce → pending 表（10min TTL）
   ← 落 HttpOnly+SameSite=Lax cookie pocket_sso_txn（Path=/api/auth/sso/）
-  ← 返回 {authagent}/api/v1/sso/login?state=<nonce>&redirect_url=...
+  ← 返回 {authagent}/api/v1/sso/login?external_state=<nonce>（旧方案示意，已废弃）
      （nonce 现被 auth-agent 忽略；方案 A 落地后可无缝升级为端到端比对）
 → auth-agent 生成 state Y → 302 IdP（state=Y）
 → IdP 回调 redirect_uri（须指向 pocket /api/auth/sso/callback）

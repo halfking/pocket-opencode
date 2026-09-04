@@ -234,8 +234,8 @@ func TestAdminAuthClient_SsoLoginURL(t *testing.T) {
 	if u, err := url.Parse(got); err != nil || u.Query().Get("state") != "" {
 		t.Errorf("legacy state param must not be sent: %s", got)
 	}
-	if !strings.Contains(got, "redirect_url=") {
-		t.Errorf("missing redirect_url: %s", got)
+	if u, err := url.Parse(got); err != nil || u.Query().Get("redirect_url") != "" {
+		t.Errorf("caller-controlled redirect_url must not be sent: %s", got)
 	}
 	// 空 state 时 external_state 参数整体省略。
 	if got := c.SsoLoginURL("", ""); strings.Contains(got, "external_state") {
