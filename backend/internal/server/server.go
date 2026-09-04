@@ -108,6 +108,8 @@ type Server struct {
 	smtpClient *notify.Client
 	// C5: RedClaw auth-agent 镜像客户端（可选；nil = 镜像路径 disabled）
 	redclawAuthClient *redclaw.AuthClient
+	// RedClaw Admin 客户端：一期切换后承担登录/SSO/改密/登出主路径（可选；nil = 走本地 dev 旁路）
+	redclawAdminClient *redclaw.AdminAuthClient
 	// S0-B: unified LLM BFF。nil = 未配置（POCKET_LLM_* 未设且无网关配置），handler 返回 503。
 	llmBFF           *llmbff.Service
 	llmBFFSummarizer llmbff.Summarizer
@@ -339,6 +341,15 @@ func (s *Server) SetAuthExt(codeStore *auth.CodeStore, smtpClient *notify.Client
 	s.redclawAuthClient = redclawAuthClient
 }
 
+// SetRedClawAdmin 注入 RedClaw Admin 客户端（一期切换后承担主认证路径）。
+// nil = 走本地 dev 旁路（要求 cfg.DevAuth=true 且 cfg.AuthLegacyOnly=true）。
+func (s *Server) SetRedClawAdmin(c *redclaw.AdminAuthClient) {
+	s.redclawAdminClient = c
+}
+
+// RedClawAdmin 返回 RedClaw Admin 客户端（nil 表示未注入），供测试与运维查询。
+func (s *Server) RedClawAdmin() *redclaw.AdminAuthClient { return s.redclawAdminClient }
+
 // CodeStore 返回注入的验证码 store（nil = 未注入）。供装配期判断。
 func (s *Server) CodeStore() *auth.CodeStore { return s.codeStore }
 
@@ -555,6 +566,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/auth/code-login", s.handleAuthCodeLogin)
 	mux.HandleFunc("/api/auth/forgot-password", s.handleAuthForgotPassword)
 	mux.HandleFunc("/api/auth/reset-password", s.requireAuth(s.handleAuthResetPassword))
+	// 一期新增:登出 / 当前用户 / SSO 入口
+	mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
+	mux.HandleFunc("/api/auth/me", s.requireAuth(s.handleAuthMe))
+	mux.HandleFunc("/api/auth/sso/login", s.handleAuthSsoLogin)
+	mux.HandleFunc("/api/auth/sso/callback", s.handleAuthSsoCallback)
 	// 生物认证（server_biometric.go；webAuthnVerifier 未配置时降级为 P0 stub）
 	mux.HandleFunc("/api/auth/biometric/register/begin", s.requireAuth(s.handleBiometricRegisterBegin))
 	mux.HandleFunc("/api/auth/biometric/register/finish", s.requireAuth(s.handleBiometricRegisterFinish))

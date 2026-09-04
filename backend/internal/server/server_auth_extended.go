@@ -18,11 +18,13 @@ import (
 // C4 — 邮箱注册 / 验证码登录 / 忘记密码 相关 HTTP handler
 // ============================================================================
 //
-// 设计要点：
-//   - send-code 恒返回 200，不暴露邮箱是否注册（防枚举）
-//   - forgot-password 成功后不直接返 token，强制重新走密码/验证码登录
-//   - JWT 签发复用现有 jwtSigner + identityStore.EnsureDefaultWorkspace 链路
-//   - RedClaw 镜像调用全部 fail-soft（defer recover + log.Warn，不影响主流程）
+// 一期切换后：
+//   - send-code / register / code-login / forgot-password：
+//     RedClaw Admin 已配置时返回 501（RedClaw 暂无对应端点，由 openpocket
+//     走本地 codeStore + userStore 旧路径 + 镜像到 RedClaw），保证用户面
+//     行为不变；RedClaw 暴露相应端点后可直接切到代理模式。
+//   - reset-password(已登录改密)：直接代理到 RedClaw /api/v1/auth/change-password。
+//   - logout：新增 /api/auth/logout 端点，调 RedClaw 撤销 session。
 
 // handleAuthSendCode — POST /api/auth/send-code
 //
@@ -232,16 +234,16 @@ func (s *Server) handleAuthForgotPassword(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleAuthResetPassword — POST /api/auth/reset-password（已登录改密码，按 email 改）
+// handleAuthResetPassword — POST /api/auth/reset-password（已登录改密码）
+//
+// 一期切换：直接代理到 RedClaw /api/v1/auth/change-password。
+// 旧逻辑（用 userStore 改本地密码）作为 legacy 路径保留，
+// 仅在 POCKET_AUTH_LEGACY_ONLY=true 且本地 userStore 可用时启用。
 //
 // Body: {"email":"...", "old_password":"...", "new_password":"..."}
 func (s *Server) handleAuthResetPassword(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
-		return
-	}
-	if s.userStore == nil {
-		writeError(w, http.StatusServiceUnavailable, "reset-password not enabled")
 		return
 	}
 	var body struct {
@@ -257,12 +259,34 @@ func (s *Server) handleAuthResetPassword(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	// 路径 1：RedClaw 代理（一期主路径）
+	if s.redclawAdminClient != nil {
+		// 拿当前请求的 RedClaw token（前端存在 localStorage 里的 pocket_token
+		// 就是 RedClaw 颁发的 HS256 JWT，可直接复用）
+		raw := extractBearerToken(r)
+		if raw == "" {
+			writeError(w, http.StatusUnauthorized, "missing bearer token")
+			return
+		}
+		if err := s.redclawAdminClient.ChangePassword(r.Context(), raw, body.OldPassword, body.NewPassword); err != nil {
+			s.handleRedClawAuthError(w, err, "redclaw change-password failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+
+	// 路径 2：legacy（本地 userStore）
+	if s.userStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "reset-password not enabled")
+		return
+	}
 	uid := s.userIDFromRequest(r)
 	if uid == "" {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	// 用 email 找用户 + 校验旧密码 + 更新
 	u, err := s.userStore.GetUserByEmail(r.Context(), body.Email)
 	if err != nil || u.ID != uid {
 		writeError(w, http.StatusUnauthorized, "invalid email")
@@ -278,6 +302,145 @@ func (s *Server) handleAuthResetPassword(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleAuthLogout — POST /api/auth/logout
+//
+// 一期新增：调 RedClaw Admin 撤销会话（401 视作幂等成功）。
+// 前端在调通本端点后再清 localStorage，确保服务端 session 真正失效。
+func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if s.redclawAdminClient == nil {
+		// legacy 模式：本地 JWT 没办法主动撤销（仅依赖自然过期），直接返 ok
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	raw := extractBearerToken(r)
+	if raw == "" {
+		writeError(w, http.StatusUnauthorized, "missing bearer token")
+		return
+	}
+	if err := s.redclawAdminClient.Logout(r.Context(), raw); err != nil {
+		s.handleRedClawAuthError(w, err, "redclaw logout failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleAuthMe — GET /api/auth/me（一期新增：前端用它判断 token 状态）
+//
+// 返回当前 RedClaw employee 画像（id/name/role/email/...），前端用来
+// 续期 / 显示用户卡。401 → 前端跳登录。
+func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	if s.redclawAdminClient == nil {
+		// legacy 模式：仅返回 JWT claim 推断的最小画像
+		uid := s.userIDFromRequest(r)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":    uid,
+			"name":  uid,
+			"role":  "user",
+			"email": "",
+		})
+		return
+	}
+	raw := extractBearerToken(r)
+	if raw == "" {
+		writeError(w, http.StatusUnauthorized, "missing bearer token")
+		return
+	}
+	res, err := s.redclawAdminClient.Me(r.Context(), raw)
+	if err != nil {
+		s.handleRedClawAuthError(w, err, "redclaw me failed")
+		return
+	}
+	if res.Employee == nil {
+		writeError(w, http.StatusInternalServerError, "empty employee")
+		return
+	}
+	writeJSON(w, http.StatusOK, res.Employee)
+}
+
+// handleAuthSsoLogin — GET /api/auth/sso/login
+//
+// 返回 { "url": "https://redclaw/.../api/v1/sso/login?state=..." }，前端用
+// window.location 跳转。state 在前端生成、落到 sessionStorage，callback 时回传。
+func (s *Server) handleAuthSsoLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	if s.redclawAdminClient == nil || !s.cfg.RedClawSsoEnabled {
+		writeError(w, http.StatusNotFound, "sso not enabled")
+		return
+	}
+	state := r.URL.Query().Get("state")
+	if state == "" {
+		writeError(w, http.StatusBadRequest, "missing state")
+		return
+	}
+	redirectURL := r.URL.Query().Get("redirect_url")
+	writeJSON(w, http.StatusOK, map[string]string{
+		"url": s.redclawAdminClient.SsoLoginURL(state, redirectURL),
+	})
+}
+
+// handleAuthSsoCallback — GET /api/auth/sso/callback
+//
+// 浏览器从 IdP 跳回 openpocket，openpocket 再把 code/state 透传给 RedClaw
+// 换取 token。原样吐回 RedClaw token。
+func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	if s.redclawAdminClient == nil || !s.cfg.RedClawSsoEnabled {
+		writeError(w, http.StatusNotFound, "sso not enabled")
+		return
+	}
+	code := r.URL.Query().Get("code")
+	state := r.URL.Query().Get("state")
+	if code == "" || state == "" {
+		writeError(w, http.StatusBadRequest, "missing code/state")
+		return
+	}
+	res, err := s.redclawAdminClient.SsoCallback(r.Context(), code, state)
+	if err != nil {
+		s.handleRedClawAuthError(w, err, "redclaw sso callback failed")
+		return
+	}
+	userID := res.Employee.ID
+	if userID == "" {
+		userID = "sso-user"
+	}
+	wsID := s.ensureWorkspaceForRedClawUser(r.Context(), userID)
+	auth.RecordShadow("redclaw-sso", userID, wsID, res.Employee.Name, res.Employee.Email)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":        res.Token,
+		"user":         res.Employee.Name,
+		"user_id":      userID,
+		"workspace_id": wsID,
+		"role":         res.Employee.Role,
+		"auth_method":  "redclaw-sso",
+	})
+}
+
+// extractBearerToken 复用 requireAuth 的 token 解析规则。
+func extractBearerToken(r *http.Request) string {
+	h := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+	}
+	if r.URL.Path == "/ws" || r.URL.Path == "/plugin/ws" || strings.Contains(r.URL.Path, "/event") {
+		return strings.TrimSpace(r.URL.Query().Get("token"))
+	}
+	return ""
 }
 
 // ============================================================================

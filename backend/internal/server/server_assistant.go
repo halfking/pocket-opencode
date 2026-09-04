@@ -30,6 +30,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
+	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
 
@@ -85,13 +86,16 @@ func (s *Server) userIDFromRequest(r *http.Request) string {
 
 // handleAuthLogin — Phase 0 真实 JWT 登录入口。
 //
-// S0-A 扩展：登录成功后，
-//  1. 若 identityStore 可用，EnsureDefaultWorkspace 自动为用户建一个
-//     "ws_<userID>" 默认 workspace（幂等）。
-//  2. 用 SignWithWorkspace 签发带 workspace_id claim 的 JWT，让后续 handler
-//     可以从 JWT 拿到隔离边界。
+// 一期切换后，三条登录路径按优先级：
+//  1. RedClaw Admin 已配置（生产默认）：把 username/password 透传到
+//     RedClaw /api/v1/auth/login,拿到 RedClaw 颁发的 HS256 JWT 后原样
+//     回给前端（前端存进 localStorage 的 pocket_token）。
+//  2. RedClaw 不可达 + POCKET_DEV_AUTH=true（开发/故障恢复）：
+//     走本地 dev 旁路（admin / Veritrans&9527），本地 jwtSigner 签发。
+//  3. legacy 模式（POCKET_AUTH_LEGACY_ONLY=true）：直接走原本地 users 表。
 //
-// 兼容性：identityStore 或 jwtSigner 未配置时降级到原 Sign 行为，老前端无感。
+// 兼容性：legacy/dev 模式仍保留 EnsureDefaultWorkspace + RecordShadow
+// 副作用（workspace 影子表维护）。
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
@@ -106,20 +110,47 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 路径 1（生产）：真实 UserStore 校验。
-	var userID string
-	var role string
-	if s.userStore != nil {
-		u, err := s.userStore.VerifyPassword(r.Context(), body.Username, body.Password)
+	// 路径 1：RedClaw Admin 代理（一期主路径）
+	if s.redclawAdminClient != nil {
+		res, err := s.redclawAdminClient.Login(r.Context(), body.Username, body.Password)
 		if err != nil {
-			writeError(w, http.StatusUnauthorized, "invalid credentials")
+			s.handleRedClawAuthError(w, err, "redclaw login failed")
 			return
 		}
-		userID = u.ID
-		role = u.Role
-	} else if s.cfg.DevAuth {
-		// 路径 2（dev 兼容）：POCKET_DEV_AUTH=true 时按 cfg.DevAuthUser/DevAuthPass
-		// 校验（缺省 admin / Veritrans&9527）。允许通过 env 覆盖，避免再次硬编码。
+		// RedClaw 返回的 token 直接透传；user_id / role 从 employee 抽取
+		userID := body.Username
+		role := "user"
+		displayName := body.Username
+		email := ""
+		if res.Employee != nil {
+			if res.Employee.ID != "" {
+				userID = res.Employee.ID
+			}
+			if res.Employee.Role != "" {
+				role = res.Employee.Role
+			}
+			if res.Employee.Name != "" {
+				displayName = res.Employee.Name
+			}
+			email = res.Employee.Email
+		}
+		// workspace_id：openpocket 仍按用户 ID 维护一个影子 workspace
+		wsID := s.ensureWorkspaceForRedClawUser(r.Context(), userID)
+		auth.RecordShadow("redclaw", userID, wsID, displayName, email)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token":         res.Token,
+			"user":          displayName,
+			"user_id":       userID,
+			"workspace_id":  wsID,
+			"role":          role,
+			"auth_method":   "redclaw",
+			"must_change":   res.MustChangePassword,
+		})
+		return
+	}
+
+	// 路径 2：dev 旁路（仅当 POCKET_DEV_AUTH=true）
+	if s.cfg.DevAuth {
 		devUser := s.cfg.DevAuthUser
 		if devUser == "" {
 			devUser = "admin"
@@ -130,50 +161,106 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		if subtle.ConstantTimeCompare([]byte(body.Username), []byte(devUser)) == 1 &&
 			subtle.ConstantTimeCompare([]byte(body.Password), []byte(devPass)) == 1 {
-			userID = "user-admin"
-			role = "admin"
-		} else {
-			writeError(w, http.StatusUnauthorized, "invalid credentials")
+			s.devPathIssueToken(w, r, "user-admin", "admin", "admin", "")
 			return
 		}
-	} else {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
+	// 路径 3：legacy 模式（直接读本地 users 表）
+	if s.userStore != nil {
+		u, err := s.userStore.VerifyPassword(r.Context(), body.Username, body.Password)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid credentials")
+			return
+		}
+		s.legacyPathIssueToken(w, r, u.ID, u.Role, u.Username, u.Email)
+		return
+	}
+
+	writeError(w, http.StatusUnauthorized, "invalid credentials")
+}
+
+// ensureWorkspaceForRedClawUser 为 RedClaw 用户在 openpocket 影子表里
+// 创建一个默认 workspace（幂等）。失败降级到 "default" 字面量。
+func (s *Server) ensureWorkspaceForRedClawUser(ctx context.Context, userID string) string {
+	if s.identityStore == nil {
+		return "default"
+	}
+	ws, err := s.identityStore.EnsureDefaultWorkspace(ctx, userID)
+	if err != nil {
+		log.Printf("WARN: EnsureDefaultWorkspace for %s failed: %v (falling back to 'default')", userID, err)
+		return "default"
+	}
+	if ws != nil && ws.ID != "" {
+		return ws.ID
+	}
+	return "default"
+}
+
+// devPathIssueToken 用本地 jwtSigner 颁发一个临时 token（仅 dev 旁路）。
+func (s *Server) devPathIssueToken(w http.ResponseWriter, r *http.Request, userID, role, username, email string) {
 	if s.jwtSigner == nil {
 		writeError(w, http.StatusInternalServerError, "JWT signer not configured")
 		return
 	}
-
-	// S0-A: 确保有默认 workspace，并把 workspace_id 写进 JWT claim。
-	wsID := "default"
-	if s.identityStore != nil {
-		ws, err := s.identityStore.EnsureDefaultWorkspace(r.Context(), userID)
-		if err != nil {
-			// EnsureDefaultWorkspace 失败不阻断登录——降级到 "default"。
-			log.Printf("WARN: EnsureDefaultWorkspace for %s failed: %v (falling back to 'default')", userID, err)
-		} else if ws != nil {
-			wsID = ws.ID
-		}
-	}
-
-	token, err := s.jwtSigner.SignWithWorkspace(userID, role, wsID)
+	wsID := s.ensureWorkspaceForRedClawUser(r.Context(), userID)
+	tok, err := s.jwtSigner.SignWithWorkspace(userID, role, wsID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to sign JWT")
 		return
 	}
-
-	// Shadow 映射：本地 user_id → identity_shadow(provider=pocket, subject=userID)
-	// 在请求结束前异步写；DSN 未配置时 RecordShadow 直接 noop。
-	auth.RecordShadow("pocket", userID, wsID, body.Username, "")
-
-	writeJSON(w, http.StatusOK, map[string]string{
-		"token":        token,
-		"user":         body.Username,
+	auth.RecordShadow("pocket", userID, wsID, username, email)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":        tok,
+		"user":         username,
 		"user_id":      userID,
 		"workspace_id": wsID,
+		"role":         role,
+		"auth_method":  "dev-bypass",
 	})
+}
+
+// legacyPathIssueToken 用本地 jwtSigner 颁发一个 token（legacy 模式）。
+func (s *Server) legacyPathIssueToken(w http.ResponseWriter, r *http.Request, userID, role, username, email string) {
+	if s.jwtSigner == nil {
+		writeError(w, http.StatusInternalServerError, "JWT signer not configured")
+		return
+	}
+	wsID := s.ensureWorkspaceForRedClawUser(r.Context(), userID)
+	tok, err := s.jwtSigner.SignWithWorkspace(userID, role, wsID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to sign JWT")
+		return
+	}
+	auth.RecordShadow("pocket", userID, wsID, username, email)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":        tok,
+		"user":         username,
+		"user_id":      userID,
+		"workspace_id": wsID,
+		"role":         role,
+		"auth_method":  "legacy",
+	})
+}
+
+// handleRedClawAuthError 统一把 RedClaw admin 错误翻译为 HTTP 响应。
+// 401/403 → 401 invalid credentials；tenant_mismatch → 403；
+// 其它（5xx/网络/解析）→ 503 + 提示"RedClaw 不可用"，让前端展示降级。
+func (s *Server) handleRedClawAuthError(w http.ResponseWriter, err error, fallback string) {
+	switch {
+	case errors.Is(err, redclaw.ErrInvalidCredentials):
+		writeError(w, http.StatusUnauthorized, "invalid credentials")
+	case errors.Is(err, redclaw.ErrTenantMismatch):
+		writeError(w, http.StatusForbidden, "tenant mismatch")
+	case errors.Is(err, redclaw.ErrRedClawUnavailable):
+		log.Printf("WARN: %s: %v (redclaw unavailable)", fallback, err)
+		writeError(w, http.StatusServiceUnavailable, "redclaw auth unavailable, please retry")
+	default:
+		log.Printf("WARN: %s: %v", fallback, err)
+		writeError(w, http.StatusBadGateway, err.Error())
+	}
 }
 
 // =====================================================================

@@ -221,6 +221,32 @@ func main() {
 		}
 	}
 
+	// ---- 一期切换:RedClaw Admin 认证主权威源（必配,除非 legacy 模式）----
+	var redclawAdminClient *redclaw.AdminAuthClient
+	if !cfg.AuthLegacyOnly {
+		if cfg.RedClawAdminURL == "" {
+			log.Fatalf("POCKET_REDCLAW_ADMIN_URL must be set (or set POCKET_AUTH_LEGACY_ONLY=true for dev-only fallback)")
+		}
+		if len(cfg.RedClawAdminSecret) < 32 {
+			log.Fatalf("POCKET_REDCLAW_ADMIN_SECRET must be at least 32 bytes when RedClaw auth is enabled")
+		}
+		ac, err := redclaw.NewAdminAuthClient(redclaw.AdminAuthClientConfig{
+			AdminURL:     cfg.RedClawAdminURL,
+			AuthAgentURL: cfg.RedClawAuthAgentURL,
+			Secret:       cfg.RedClawAdminSecret,
+			TenantID:     cfg.RedClawTenantID,
+			TimeoutSec:   cfg.RedClawAdminTimeoutSec,
+		})
+		if err != nil {
+			log.Fatalf("RedClaw admin client init failed: %v", err)
+		}
+		redclawAdminClient = ac
+		log.Printf("RedClaw auth PRIMARY: enabled admin=%s auth_agent=%s sso=%v",
+			cfg.RedClawAdminURL, cfg.RedClawAuthAgentURL, cfg.RedClawSsoEnabled)
+	} else {
+		log.Println("WARN: POCKET_AUTH_LEGACY_ONLY=true — using local JWT legacy path (not for production)")
+	}
+
 	// ---- Biometric authentication (PG-backed credentials/challenges) ----
 	// The store is optional so remote-only/dev deployments keep their existing behavior.
 	var biometricStore *auth.BiometricStore
@@ -496,6 +522,7 @@ func main() {
 		log.Println("  Phase 4 execution features will not work until cloud dispatcher is configured")
 	}
 	srv.SetAuthExt(codeStore, smtpClient, redclawAuthClient)
+	srv.SetRedClawAdmin(redclawAdminClient)
 	if biometricStore != nil {
 		srv.SetBiometricStore(biometricStore)
 		log.Println("Biometric authentication enabled (PG)")

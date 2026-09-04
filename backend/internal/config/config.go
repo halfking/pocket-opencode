@@ -130,6 +130,21 @@ type Config struct {
 	RedClawAuthURL       string // POCKET_REDCLAW_AUTH_URL：auth-agent base URL（如 http://host:27092）
 	RedClawAuthSecret    string // POCKET_REDCLAW_AUTH_SECRET：共享密钥
 	RedClawAuthTimeoutSec int   // POCKET_REDCLAW_AUTH_TIMEOUT_SEC（默认 5）
+
+	// —— RedClaw 认证主权威源（一期切换）——
+	// 改造后 openpocket 不再自签 JWT；密码登录、SSO、token 撤销都走 RedClaw。
+	// 留空时：若 POCKET_DEV_AUTH=true 走本地 dev 旁路；否则启动失败。
+	RedClawAdminURL      string // POCKET_REDCLAW_ADMIN_URL：RedClaw Admin 后端（如 http://host:28081）
+	RedClawAdminSecret   string // POCKET_REDCLAW_ADMIN_SECRET：HS256 共享密钥（必填，≥32 字节）
+	RedClawAuthAgentURL  string // POCKET_REDCLAW_AUTH_AGENT_URL：Auth Agent（SSO 入口；空 = 与 Admin 同址）
+	RedClawAdminTimeoutSec int  // POCKET_REDCLAW_ADMIN_TIMEOUT_SEC（默认 10）
+
+	// —— 一键回滚开关 ——
+	// 紧急回滚到原本地 JWT 流程（不走 RedClaw），用于故障恢复。
+	AuthLegacyOnly bool // POCKET_AUTH_LEGACY_ONLY=true 时强制走本地 auth.Signer
+
+	// —— RedClaw SSO（OIDC）配置 ——
+	RedClawSsoEnabled  bool   // POCKET_REDCLAW_SSO_ENABLED=true 时 LoginView 多出 SSO Tab
 }
 
 // Load reads all configuration from environment variables and returns a Config instance.
@@ -230,6 +245,15 @@ func Load() Config {
 		RedClawAuthURL:        getEnv("POCKET_REDCLAW_AUTH_URL", ""),
 		RedClawAuthSecret:     getEnv("POCKET_REDCLAW_AUTH_SECRET", ""),
 		RedClawAuthTimeoutSec: getEnvInt("POCKET_REDCLAW_AUTH_TIMEOUT_SEC", 5),
+		// RedClaw 认证主权威源
+		RedClawAdminURL:        getEnv("POCKET_REDCLAW_ADMIN_URL", ""),
+		RedClawAdminSecret:     getEnv("POCKET_REDCLAW_ADMIN_SECRET", ""),
+		RedClawAuthAgentURL:    getEnv("POCKET_REDCLAW_AUTH_AGENT_URL", ""),
+		RedClawAdminTimeoutSec: getEnvInt("POCKET_REDCLAW_ADMIN_TIMEOUT_SEC", 10),
+		// 一键回滚
+		AuthLegacyOnly: getEnv("POCKET_AUTH_LEGACY_ONLY", "") == "true",
+		// SSO
+		RedClawSsoEnabled: getEnv("POCKET_REDCLAW_SSO_ENABLED", "") == "true",
 	}
 }
 
@@ -274,6 +298,16 @@ func (c Config) Validate() error {
 	// Database: PostgreSQL is required for production
 	if strings.TrimSpace(c.PostgresDSN) == "" {
 		return fmt.Errorf("POCKET_POSTGRES_DSN must be configured in production")
+	}
+
+	// RedClaw 认证权威源：POCKET_AUTH_LEGACY_ONLY=false 时必须配齐
+	if !c.AuthLegacyOnly {
+		if strings.TrimSpace(c.RedClawAdminURL) == "" {
+			return fmt.Errorf("POCKET_REDCLAW_ADMIN_URL must be configured in production (or set POCKET_AUTH_LEGACY_ONLY=true for dev-only fallback)")
+		}
+		if len([]byte(c.RedClawAdminSecret)) < 32 {
+			return fmt.Errorf("POCKET_REDCLAW_ADMIN_SECRET must be at least 32 bytes when RedClaw auth is enabled")
+		}
 	}
 
 	// Security: CORS origins must be explicitly configured
