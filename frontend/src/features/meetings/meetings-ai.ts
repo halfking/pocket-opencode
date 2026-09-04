@@ -10,6 +10,9 @@ export async function summarizeMeeting(transcript: string): Promise<string> {
   if (!transcript.trim()) throw new Error('会议转写为空，无法生成纪要')
 
   const chunks: string[] = []
+  // 非流式 UI 没有气泡灰字渲染位：onRetry 只记录回退轨迹，正文到达即静默，
+  // 与 ai-chat 的 retry 提示语义对齐（runbook §16.6-2：全调用方接入 retry 帧）。
+  const retriedModels = new Set<string>()
   await new Promise<void>((resolve, reject) => {
     llmBffApi.streamChat(
       {
@@ -27,10 +30,16 @@ export async function summarizeMeeting(transcript: string): Promise<string> {
         onDelta(delta: ChatStreamDelta) {
           if (delta.content) chunks.push(delta.content)
         },
+        onRetry(model: string) {
+          retriedModels.add(model)
+        },
         onError: reject,
         onDone: () => resolve(),
       },
     )
   })
+  if (chunks.length === 0 && retriedModels.size > 0) {
+    throw new Error(`上游模型不可用（已重试 ${[...retriedModels].join('、')}），未返回纪要内容`)
+  }
   return chunks.join('')
 }

@@ -98,15 +98,29 @@ export const llmBffApi = {
       const STREAM_WATCHDOG_MS = 120_000
       const watchdog = setTimeout(() => ctrl.abort(), STREAM_WATCHDOG_MS)
       try {
-        const res = await fetch(`${API_BASE}/api/llm/stream`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(auth.token ? { Authorization: `Bearer ${auth.token}` } : {}),
-          },
-          body: JSON.stringify(input),
-          signal: ctrl.signal,
-        })
+        // 流式路径不走共享 http()，滑动续期在此补齐：token 临期先单飞续期
+        // （失败不阻塞，401 兜底还有一次重放机会）。
+        try {
+          await auth.maybeRefresh()
+        } catch {
+          // maybeRefresh 内部已吞错
+        }
+        const doFetch = () =>
+          fetch(`${API_BASE}/api/llm/stream`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(auth.token ? { Authorization: `Bearer ${auth.token}` } : {}),
+            },
+            body: JSON.stringify(input),
+            signal: ctrl.signal,
+          })
+        let res = await doFetch()
+        // 401 → 单飞续期一次并用新 token 重放；refresh 失败维持原 401 报错
+        // （与 http.ts 的重放语义一致：每请求至多重放一次）。
+        if (res.status === 401 && (await auth.refreshSession())) {
+          res = await doFetch()
+        }
         if (!res.ok || !res.body) {
           throw new Error(`stream failed: ${res.status} ${res.statusText}`)
         }

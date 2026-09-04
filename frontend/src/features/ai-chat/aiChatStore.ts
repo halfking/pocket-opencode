@@ -455,14 +455,25 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     // Snapshot the complete history after appending the user message. Every parallel
     // model receives the same request and no assistant placeholder is included.
     const requestMessages = buildRequestMessages(conv, agentStore.agents)
-    if (compareMode.value && compareModels.value.length > 0) {
-      conv.mode = 'compare'
-      for (const model of compareModels.value) {
-        spawnStream(conv, model, requestMessages)
+    // push 之后的任何同步异常都会留下「用户气泡在列表、stream 却未发出」的悬空态
+    // （runbook §16.6-1 观察过一次）：这里兜底回滚 userMsg 并给用户明确报错，
+    // 保证「气泡入列表」与「流已发起」要么同时发生、要么都不发生。
+    try {
+      if (compareMode.value && compareModels.value.length > 0) {
+        conv.mode = 'compare'
+        for (const model of compareModels.value) {
+          spawnStream(conv, model, requestMessages)
+        }
+      } else {
+        conv.mode = 'single'
+        spawnStream(conv, resolveModel(conv, imgs.length > 0), requestMessages)
       }
-    } else {
-      conv.mode = 'single'
-      spawnStream(conv, resolveModel(conv, imgs.length > 0), requestMessages)
+    } catch (err) {
+      const idx = conv.messages.indexOf(userMsg)
+      if (idx >= 0) conv.messages.splice(idx, 1)
+      toast.error('发送失败：' + (err instanceof Error ? err.message : String(err)))
+      console.error('[ai-chat] send failed after user bubble pushed', err)
+      return
     }
     persist()
   }
