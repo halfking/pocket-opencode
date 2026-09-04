@@ -27,13 +27,12 @@ func testDSN() string {
 		return *v
 	}
 	// 与仓库其余 PG 集成测试保持同一约定（POCKET_TEST_POSTGRES_DSN）；
-	// POCKET_TEST_PG_DSN 保留为兼容别名。
+	// POCKET_TEST_PG_DSN 保留为兼容别名。未设置时返回空串，由调用方 Skip
+	// ——2026-09-05 安全卫生移除历史硬编码回退 DSN（该凭据已入 git 历史，
+	// 保留在源码中等于持续泄露，需轮换；见 runbook §15.4）。
 	dsn := os.Getenv("POCKET_TEST_POSTGRES_DSN")
 	if dsn == "" {
 		dsn = os.Getenv("POCKET_TEST_PG_DSN")
-	}
-	if dsn == "" {
-		dsn = "postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@localhost:5432/llm_gateway?sslmode=disable&search_path=redclaw_test_2026_09_01"
 	}
 	sharedTestDSN.Store(&dsn)
 	return dsn
@@ -43,6 +42,9 @@ func testDSN() string {
 func mustTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := testDSN()
+	if dsn == "" {
+		t.Skip("skip: POCKET_TEST_POSTGRES_DSN not set (PG integration test)")
+	}
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Skipf("skip: parse pgx config: %v", err)

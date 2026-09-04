@@ -154,3 +154,92 @@ func TestDynamicGatewayStreamEmitsRetryProgressFrame(t *testing.T) {
 		t.Errorf("final delta = %+v, want done + finish_reason=stop", last)
 	}
 }
+
+// TestIsModelUnavailableError invalid_model（HTTP 400，模型 id 不存在/未上架）
+// 与 no_candidate 一样应视为「该 model 无货」并触发 preferred 回退
+// （2026-09-05 E2E 实测：preferred 首位设为不存在模型时网关回 400 invalid_model）。
+func TestIsModelUnavailableError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"plain error without json", errors.New("connection refused"), false},
+		{"400 invalid_model body", errors.New(
+			`llm-gateway stream 400: {"error":{"code":"invalid_model","message":"Model 'no-such-model-e2e' not found","request_id":"t"}}`,
+		), true},
+		{"503 no_candidate body", fakeNoCandidateErr(), true},
+		{"503 rate_limit body", errors.New(
+			`llm-gateway stream 503: {"error":{"code":"rate_limit","message":"slow down"}}`,
+		), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isModelUnavailableError(tc.err); got != tc.want {
+				t.Errorf("isModelUnavailableError = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDynamicGatewayStreamFallsBackOnInvalidModel 同
+// TestDynamicGatewayStreamEmitsRetryProgressFrame，但首试错误是 400
+// invalid_model（非 503 no_candidate）——回退链必须同样触发 Retry 帧。
+func TestDynamicGatewayStreamFallsBackOnInvalidModel(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		var req llmgateway.ChatRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if n == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":{"code":"invalid_model",`+
+				`"message":"Model 'no-such-model-e2e' not found","request_id":"t"}}`)
+			return
+		}
+		if req.Model != "model-b" {
+			t.Errorf("retry attempt model = %q, want model-b", req.Model)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"+
+				"\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n"+
+				"data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+		return GatewayConfig{
+			BaseURL:         srv.URL,
+			APIKey:          "k",
+			PreferredModels: []string{"no-such-model-e2e", "model-b"},
+		}
+	})
+
+	var got []llmbff.Delta
+	usage, err := p.Stream(context.Background(), llmbff.ChatRequest{
+		WorkspaceID: "ws",
+		Model:       "auto",
+	}, func(d llmbff.Delta) bool {
+		got = append(got, d)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+	if usage == nil || usage.TotalTokens != 2 {
+		t.Fatalf("usage = %+v, want total_tokens=2", usage)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("upstream calls = %d, want 2", n)
+	}
+	if first := got[0]; first.Retry != "model-b" || first.Content != "" || first.Done {
+		t.Errorf("first delta = %+v, want retry=model-b, no content, not done", first)
+	}
+	if last := got[len(got)-1]; !last.Done || last.FinishReason != "stop" {
+		t.Errorf("final delta = %+v, want done + finish_reason=stop", last)
+	}
+}

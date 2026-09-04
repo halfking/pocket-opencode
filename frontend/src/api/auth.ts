@@ -148,3 +148,13 @@ export async function exchangeSsoCode(code: string): Promise<SsoExchangeResponse
     body: JSON.stringify({ code }),
   })
 }
+
+/**
+ * JWT 滑动续期（runbook §15.2 方案 c，2026-09-05 落地）：
+ * 携当前 token 调 POST /api/auth/refresh，后端 requireAuth 验证 + RedClaw 模式
+ * 复检撤销状态后重签短 TTL token。响应形状与登录一致。
+ * 供 stores/auth 单飞调用（临期主动续期 / 401 后重放一次），勿在别处直接调。
+ */
+export async function refreshAuth(): Promise<AuthSuccessResponse> {
+  return http<AuthSuccessResponse>('/api/auth/refresh', { method: 'POST' })
+}

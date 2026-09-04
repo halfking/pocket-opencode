@@ -7,6 +7,9 @@ import { useAuthStore } from '../stores/auth'
 
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 
+/** refresh 端点本身 401 时不得再触发续期重放（防自引用循环）。 */
+const REFRESH_PATH = '/api/auth/refresh'
+
 export class ApiError extends Error {
   /** 响应 body 解析后的对象（若有）。让调用方能拿到 409 等结构化错误信息。 */
   body?: any
@@ -17,11 +20,19 @@ export class ApiError extends Error {
   }
 }
 
+/** 发请求前临期主动续期（内部仍单飞）；失败不阻塞本次请求（会再走 401 兜底）。 */
+async function maybeRefreshBeforeRequest(path: string): Promise<void> {
+  if (path === REFRESH_PATH) return
+  try {
+    const auth = useAuthStore()
+    await auth.maybeRefresh()
+  } catch {
+    // 忽略：maybeRefresh 内部已吞错
+  }
+}
+
 /** Wrapper around fetch that injects the Bearer token and parses JSON. */
-export async function http<T = any>(
-  path: string,
-  opts: RequestInit = {},
-): Promise<T> {
+async function httpOnce<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   const auth = useAuthStore()
   const headers: Record<string, string> = {
     ...(opts.headers as Record<string, string> | undefined),
@@ -46,6 +57,28 @@ export async function http<T = any>(
   // 204 No Content
   if (res.status === 204) return undefined as unknown as T
   return res.json() as Promise<T>
+}
+
+/**
+ * http = httpOnce + JWT 滑动续期（runbook §15.2）：
+ *  1. 请求前 token 临期（<5min）主动单飞续期；
+ *  2. 收到 401 时单飞 refresh 一次并用新 token 重放；refresh 失败才让
+ *     401 透传（调用方维持原有错误处理；登出仍由各视图自行决定）。
+ * refresh 端点自身与未登录（无 token）请求不参与续期。
+ */
+export async function http<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
+  await maybeRefreshBeforeRequest(path)
+  try {
+    return await httpOnce<T>(path, opts)
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401 && path !== REFRESH_PATH) {
+      const auth = useAuthStore()
+      if (auth.token && (await auth.refreshSession())) {
+        return httpOnce<T>(path, opts)
+      }
+    }
+    throw e
+  }
 }
 
 export const apiBase = API_BASE

@@ -61,6 +61,30 @@ func isNoCandidateError(err error) bool {
 	return body.Error.Code == "no_candidate"
 }
 
+// isModelUnavailableError 在 no_candidate 之外再覆盖 invalid_model
+// （HTTP 400 + code=="invalid_model"）：网关对「模型 id 不存在/未上架」返回的
+// 是 400 invalid_model 而非 503 no_candidate（2026-09-05 E2E 实测：preferred
+// 首位设为不存在模型时整链直接报错、不回退）。二者对用户语义等价——
+// 「这个 model 现在没货」，都应触发 preferred 下一候选的回退重试。
+func isModelUnavailableError(err error) bool {
+	if isNoCandidateError(err) {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	idx := strings.Index(msg, "{")
+	if idx < 0 {
+		return false
+	}
+	body := llmGatewayNoCandidateBody{}
+	if jerr := json.Unmarshal([]byte(msg[idx:]), &body); jerr != nil {
+		return false
+	}
+	return body.Error.Code == "invalid_model"
+}
+
 // pickFallbackModel 从 workspace 的 preferred 列表里挑一个「在 catalog 内且
 // 不是 original」的 model id，作为 auto / no_candidate 时的下一候选。
 //
@@ -183,8 +207,9 @@ func (p *dynamicGatewayBFFProvider) Chat(ctx context.Context, req llmbff.ChatReq
 	}
 	req = p.resolveChatModel(req)
 	resp, err := (&llmGatewayBFFProvider{client: c}).Chat(ctx, req)
-	if err != nil && isNoCandidateError(err) {
-		// 用户显式选了一个 model 但当前没 provider：用 preferred 的下一个兜底。
+	if err != nil && isModelUnavailableError(err) {
+		// 用户显式选了一个 model 但当前没 provider（no_candidate）或模型 id
+		// 不存在/未上架（invalid_model）：用 preferred 的下一个兜底。
 		if fallback := p.fallbackModel(req.WorkspaceID, req.Model); fallback != "" {
 			req.Model = fallback
 			return (&llmGatewayBFFProvider{client: c}).Chat(ctx, req)
@@ -221,13 +246,14 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		}
 		usage, err := (&llmGatewayBFFProvider{client: c}).Stream(attemptCtx, req, fn)
 		cancel()
-		if err == nil || !isNoCandidateError(err) {
+		if err == nil || !isModelUnavailableError(err) {
 			return usage, err
 		}
-		// 单次尝试内 503 no_candidate 出现在任何 chunk 之前（该次尝试没有
-		// 通过 fn 写过内容），可以安全地以另一个 model 重试。注意：切换到
-		// 新候选前会先经 fn 发一帧 Retry 进度（见下），所以整条链上 fn 可
-		// 能已被调用过——只要它返回 true（客户端仍在线）就继续重试。
+		// 单次尝试内 no_candidate(503)/invalid_model(400) 都出现在任何 chunk
+		// 之前（该次尝试没有通过 fn 写过内容），可以安全地以另一个 model
+		// 重试。注意：切换到新候选前会先经 fn 发一帧 Retry 进度（见下），
+		// 所以整条链上 fn 可能已被调用过——只要它返回 true（客户端仍在线）
+		// 就继续重试。
 		fallback := p.fallbackModel(req.WorkspaceID, req.Model)
 		if fallback == "" || ctx.Err() != nil || !time.Now().Before(deadline) {
 			return usage, err

@@ -6,10 +6,10 @@ package server
 //   POST /api/llm/stream   流式 chat completion（SSE，OpenAI delta shape）
 //   GET  /api/llm/usage     当前 workspace 的用量汇总（S3 dashboard 数据源）
 //
-// Note: /api/llm/chat (non-stream, server_assistant.go) 已于 2026-09-05 迁移到
-// BFF（llmBFF 已装配时走 dynamicGatewayBFFProvider，未装配时保留旧 s.llm 兜底）；
-// /api/embed 仍走静态 s.embedder，SHOULD migrate 同一模式。此改动不破坏既有
-// 请求/响应形状。
+// Note: /api/llm/chat (non-stream, server_assistant.go)、/api/embed 与
+// server_meeting.go 的摘要/润色（经 llmChatOnce）已于 2026-09-05 迁移到 BFF
+// （llmBFF 已装配时走 dynamicGatewayBFFProvider，未装配时保留旧静态路径兜底）。
+// 这些改动不破坏既有请求/响应形状。
 //
 // Security: the gateway admin token lives only in the server (Provider holds
 // it); it never appears in any request/response here (spec §6 risk R6).

@@ -501,3 +501,80 @@ PG DSN（凭据此处不引用）。虽然仅测试文件，建议改为读 env�
    `s.embedder`——同一模式待迁移（本轮范围外）。
 3. JWT 滑动续期（§15.2）待产品拍板后实施。
 4. §15.4 凭据轮换 + 测试 DSN env 化。
+
+---
+
+## 16. 2026-09-05 会话补充（三）：retry 帧真机 E2E + JWT 滑动续期 + 动态网关全量迁移
+
+> 本轮收口 §15.5 全部 4 项遗留。任务中途发现并修复一个回退链真实缺口
+> （invalid_model 不触发回退，见 16.2）。所有证据脱敏，密钥零引用。
+
+### 16.1 完成清单
+
+| # | 文件 | 改动 |
+|---|---|---|
+| 1 | `backend/internal/server/llmbff_provider_adapters.go` | **根因修复**：新增 `isModelUnavailableError`（no_candidate ∪ invalid_model），Chat/Stream 回退链改用它。上游对「preferred 首位是不存在模型」回的是 HTTP 400 `invalid_model` 而非 503 `no_candidate`，旧逻辑整链直接报错、retry 帧永不触发（E2E 首测复现，见 16.2）。新增 `TestIsModelUnavailableError`、`TestDynamicGatewayStreamFallsBackOnInvalidModel` |
+| 2 | `backend/internal/server/server_meeting.go` | 摘要/润色 2 处静态 `s.llm.Chat` 迁移：新增统一入口 `llmChatOnce`（`server_assistant.go`；llmBFF 装配时走动态网关 kind=meeting，否则静态兜底），两 handler 的 `s.llm==nil` 503 守卫改为 `s.llmBFF==nil && s.llm==nil` |
+| 3 | `backend/internal/server/server_assistant.go` | `handleEmbed` 迁移动态网关：BFF 装配时走 `llmBFF.Embed`（kind=embed，Provider 侧 dynamicGateway.Embed 早已就绪），静态 `s.embedder` 兜底；响应形状不变 `{"embedding","model","dim"}`。守卫顺序调整：先方法/入参校验再分支 |
+| 4 | `backend/internal/server/server_auth_extended.go` + `server.go` | **JWT 滑动续期落地**（§15.2 方案 c，本轮拍板实施）：`POST /api/auth/refresh`（requireAuth）——claims 取身份 → RedClaw 模式经 `Me` 复检撤销状态（fail-closed）→ `issueTokenAndRespond` 重签短 TTL；响应形状与 login 一致 |
+| 5 | `frontend/src/api/auth.ts` | 新增 `refreshAuth()` |
+| 6 | `frontend/src/stores/auth.ts` | `tokenExpiresAtMs()`（解析 JWT exp）+ `refreshSession()`（模块级单飞 promise，并发调用共享）+ `maybeRefresh()`（剩余 <5min 主动续期）；显示名不因 refresh 漂移（legacy 端点只能从 claims 反推 user 字段） |
+| 7 | `frontend/src/api/http.ts` | `http` = 请求前 `maybeRefresh` + 401 单飞 refresh 一次重放；refresh 端点自身 401 不重放（防自引用）；refresh 失败 401 原样透传 |
+| 8 | `backend/internal/server/server_auth_extended_test.go` | **安全卫生（§15.4）**：`testDSN()` 删除历史硬编码回退 DSN（该凭据已入 git 历史，必须轮换），未设 `POCKET_TEST_POSTGRES_DSN` 时返回空串、`mustTestPool` Skip。实测无 DSN 时 C8 系列全部干净 SKIP |
+| 9 | `backend/internal/server/server_llmbff.go` 等 | 头注释同步（/api/embed、meeting 已迁移） |
+
+新增测试文件：`server_gateway_migration_test.go`（embed BFF 无静态 embedder 必 200、meeting summary 走 BFF、refresh 换新 token 且新 token 可过 requireAuth、垃圾 token 401）。
+
+### 16.2 E2E 中途发现的根因：invalid_model 不触发回退（已修复）
+
+按 §15.5 构造场景（POST /api/llm-gateway/config 把 preferredModels 首位设为
+`no-such-model-e2e`）后，curl 实测 `/api/llm/stream` **直接返回错误帧**：
+`llm-gateway stream 400: {"error":{"code":"invalid_model",...}}`——上一轮
+设计的回退链只识别 503 `no_candidate`，而真实上游对未知模型 id 回 400
+`invalid_model`。修复后同场景帧序列（`test-evidence/2026-09-05-retry-frame-e2e/sse-frames.txt`）：
+
+```
+data: {"done":false,"retry":"glm-5.2"}     ← 回退重试进度帧
+data: {"content":"E2E-RETRY-E","done":false}
+data: {"content":"VIDENCE","done":false}
+data: {"done":true,"finish_reason":"stop"}
+data: {"done":true,"usage":{...}}
+data: [DONE]
+```
+
+### 16.3 真机（模拟器）E2E 验证（全部通过）
+
+环境：同 §14.1（Medium_Phone_API_36.1 / emulator-5554；**模拟器 SystemUI
+持续 ANR，quick boot 快照损坏，改 `-no-snapshot` 冷启动后恢复**）。
+
+- 场景：preferredModels 首位 = 不存在模型，App 内 auto 模型连发两条英文消息；
+- **气泡内灰字提示**：「上游模型不可用，已切换到 glm-5.2 重试…」（12px 灰字）
+  与回退成功正文同框渲染（`bubble-retry-hint-first.png` / `bubbles-retry-hint-final.png`，
+  两条均复现，≈115/177 tokens）；
+- 后端日志：`[SLOW] POST /api/llm/stream - 200 (2.5~2.8s)`；
+- `POST /api/auth/refresh` 线上冒烟 200（legacy 模式，换新 token 成功）；
+- `POST /api/embed` 迁移路径冒烟：请求正确经动态网关达上游，上游 503
+  `no_provider`（网关无 embedding 供应商；企业模式下旧静态 embedder 同样走
+  该网关，行为对齐非回退）。
+
+### 16.4 验证记录
+
+- `go test ./...` 46 包 ok（新增 6 个测试全绿）；`vue-tsc --noEmit` 通过；
+- `node scripts/build-mobile.mjs android dev` + `gradlew assembleDebug` 通过并装模拟器；
+- 网关配置已恢复原状（preferredModels 首位复原 glm-5.2）。
+
+### 16.5 安全卫生与提醒
+
+- §15.4 已落地：测试 DSN 硬编码回退删除（改 env + Skip）。**该 DSN 凭据已进
+  git 历史（本文件不引用），轮换需与提交者确认后执行**——本轮未轮换，仅提醒。
+- 新增证据与代码零密钥引用（已 grep 校验）。
+
+### 16.6 遗留（下一轮续接）
+
+1. "say" 消息（burst 尾帧）出现过「用户气泡已入列表但 stream 请求未发出」的
+   一次观察（复现 0/1，后一条消息正常）；若再遇可查输入框 Enter/发送双通道竞态。
+2. 离线队列重放路径（非 spawnStream 调用方）未接 `onRetry`——队列重放的消息
+   在回退期间无灰字提示（静默兼容，可低优先级补齐）。
+3. 模拟器 quick boot 快照已损坏：下次 E2E 直接 `-no-snapshot` 冷启动省时。
+4. embed 上游无 provider：`/api/embed` 链路健康但网关侧需配 embedding 供应商
+   才能真正可用（部署项，非代码项）。

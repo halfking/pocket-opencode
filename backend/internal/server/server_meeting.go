@@ -233,12 +233,13 @@ func (s *Server) handleMeetingSummary(w http.ResponseWriter, r *http.Request, me
 		log.Printf("[meeting] kxmemory summary fallback for %s: %v", meetingID, err)
 	}
 
-	// LLM fallback
-	if s.llm == nil {
+	// LLM fallback（2026-09-05 迁移动态网关：llmBFF 已装配时 llmMeetingSummary
+	// 内部走 llmChatOnce → BFF；s.llm 仅在 BFF 未装配的部署兜底）
+	if s.llmBFF == nil && s.llm == nil {
 		writeError(w, http.StatusServiceUnavailable, "llm not configured")
 		return
 	}
-	result, err := s.llmMeetingSummary(ctx, body.Segments, body.PrevSummary)
+	result, err := s.llmMeetingSummary(ctx, r, body.Segments, body.PrevSummary)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "summary failed: "+err.Error())
 		return
@@ -327,11 +328,12 @@ func (s *Server) handleMeetingRefine(w http.ResponseWriter, r *http.Request, mee
 		log.Printf("[meeting] kxmemory refine fallback for %s: %v", meetingID, err)
 	}
 
-	if s.llm == nil {
+	// LLM fallback（同 summary：llmBFF 装配时走 llmChatOnce → 动态网关）
+	if s.llmBFF == nil && s.llm == nil {
 		writeError(w, http.StatusServiceUnavailable, "llm not configured")
 		return
 	}
-	result, err := s.llmMeetingRefine(ctx, body.Segments, body.TargetLangs)
+	result, err := s.llmMeetingRefine(ctx, r, body.Segments, body.TargetLangs)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "refine failed: "+err.Error())
 		return
@@ -351,7 +353,7 @@ func toKxSegments(segs []meetingSegmentIn) []kxmemory.MeetingSegment {
 	return out
 }
 
-func (s *Server) llmMeetingSummary(ctx context.Context, segs []meetingSegmentIn, prev string) (map[string]any, error) {
+func (s *Server) llmMeetingSummary(ctx context.Context, r *http.Request, segs []meetingSegmentIn, prev string) (map[string]any, error) {
 	transcript := segmentsToText(segs)
 	prompt := fmt.Sprintf(
 		"请为以下会议转写生成摘要，严格返回 JSON（不要 markdown）：{\"summary\":\"\",\"key_points\":[],\"action_items\":[{\"text\":\"\",\"assignee\":\"\",\"due\":\"\"}],\"decisions\":[],\"open_questions\":[]}\n\n转写：\n%s",
@@ -364,14 +366,14 @@ func (s *Server) llmMeetingSummary(ctx context.Context, segs []meetingSegmentIn,
 		)
 	}
 	model := s.cfg.LLMModel
-	content, err := s.llm.Chat(ctx, model, []aigate.ChatMessage{{Role: "user", Content: prompt}})
+	content, _, err := s.llmChatOnce(ctx, r, model, []aigate.ChatMessage{{Role: "user", Content: prompt}})
 	if err != nil {
 		return nil, err
 	}
 	return parseSummaryJSON(content, transcript)
 }
 
-func (s *Server) llmMeetingRefine(ctx context.Context, segs []meetingSegmentIn, langs []string) (map[string]any, error) {
+func (s *Server) llmMeetingRefine(ctx context.Context, r *http.Request, segs []meetingSegmentIn, langs []string) (map[string]any, error) {
 	transcript := segmentsToText(segs)
 	langHint := ""
 	if len(langs) > 0 {
@@ -382,7 +384,7 @@ func (s *Server) llmMeetingRefine(ctx context.Context, segs []meetingSegmentIn, 
 		langHint, transcript,
 	)
 	model := s.cfg.LLMModel
-	content, err := s.llm.Chat(ctx, model, []aigate.ChatMessage{{Role: "user", Content: prompt}})
+	content, _, err := s.llmChatOnce(ctx, r, model, []aigate.ChatMessage{{Role: "user", Content: prompt}})
 	if err != nil {
 		return nil, err
 	}

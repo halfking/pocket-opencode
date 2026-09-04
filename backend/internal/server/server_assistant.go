@@ -2110,10 +2110,6 @@ var _ = notes.Note{} // keep import if temporarily unused
 // 请求: { "text": "..." }
 // 响应: { "embedding": [0.1, ...], "model": "text-embedding-3-small" }
 func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
-	if s.embedder == nil {
-		writeError(w, http.StatusServiceUnavailable, "embedder not configured (set POCKET_EMBED_API_KEY)")
-		return
-	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
@@ -2134,6 +2130,45 @@ func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 2026-09-05 迁移动态网关：llmBFF 已装配时走 BFF Embed（与 /api/llm/chat
+	// 同源：按 workspace 实时解析 /api/llm-gateway/config，usage 计量走
+	// Recorder），静态 s.embedder 仅在 BFF 未装配的部署兜底。响应形状不变。
+	if s.llmBFF != nil {
+		resp, err := s.llmBFF.Embed(r.Context(), llmbff.EmbedRequest{
+			WorkspaceID: s.workspaceIDFromRequest(r),
+			Model:       s.cfg.EmbedModel,
+			Input:       body.Text,
+		}, "embed")
+		auditModel := s.cfg.EmbedModel
+		if resp != nil {
+			auditModel = resp.Model
+		}
+		// 审计：模型调用事件；detail 只含 model 与字符数，绝不记 body.Text。
+		s.Write(r, "llm.embed", "llm:embed", AuditFields{
+			Success: err == nil,
+			Detail:  fmt.Sprintf("model=%s chars=%d", auditModel, len(body.Text)),
+		})
+		if err != nil {
+			if errors.Is(err, llmbff.ErrNotConfigured) {
+				writeError(w, http.StatusServiceUnavailable, "embed gateway not configured (set POCKET_LLM_GATEWAY_URL/_API_KEY or POST /api/llm-gateway/config)")
+				return
+			}
+			writeError(w, http.StatusBadGateway, "embed failed: "+err.Error())
+			return
+		}
+		// 注意：绝不记 body.Text 内容
+		writeJSON(w, http.StatusOK, map[string]any{
+			"embedding": resp.Embedding,
+			"model":     resp.Model,
+			"dim":       len(resp.Embedding),
+		})
+		return
+	}
+
+	if s.embedder == nil {
+		writeError(w, http.StatusServiceUnavailable, "embedder not configured (set POCKET_EMBED_API_KEY)")
+		return
+	}
 	embedding, model, err := s.embedder.Embed(r.Context(), body.Text)
 	// 审计：模型调用事件；detail 只含 model 与字符数，绝不记 body.Text。
 	s.Write(r, "llm.embed", "llm:embed", AuditFields{
@@ -2161,7 +2196,7 @@ func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
 // 按 workspace 实时解析 /api/llm-gateway/config 的运行时配置，空/"auto" model
 // 用 preferred 列表本地解析，no_candidate 自动回退），消除「启动时未配
 // POCKET_LLM_API_KEY → 静态 s.llm 恒 503」的旧分支。s.llm 仅在 BFF 未装配的
-// 部署里兜底（server_meeting.go 仍直接依赖 s.llm，后续单独迁移）。
+// 部署里兜底（server_meeting.go 经 llmChatOnce、/api/embed 经 BFF Embed 同日迁移）。
 func (s *Server) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
@@ -2277,6 +2312,34 @@ func (s *Server) llmChatViaBFF(w http.ResponseWriter, r *http.Request, msgs []ai
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": resp.Content, "model": resp.Model})
+}
+
+// llmChatOnce — meeting 摘要/润色等后端内部一次性 chat 的统一入口：
+// llmBFF 已装配时走动态网关（与 /api/llm/chat 同源：按 workspace 实时解析
+// /api/llm-gateway/config，空 model 用 preferred 首选，no_candidate 自动回退），
+// 否则回退静态 s.llm。返回 (content, provider 实际使用的 model, err)。
+func (s *Server) llmChatOnce(ctx context.Context, r *http.Request, model string, msgs []aigate.ChatMessage) (string, string, error) {
+	if s.llmBFF != nil {
+		bffMsgs := make([]llmbff.Message, len(msgs))
+		for i, m := range msgs {
+			bffMsgs[i] = llmbff.Message{Role: llmbff.Role(m.Role), Content: m.Content}
+		}
+		resp, err := s.llmBFF.Chat(ctx, llmbff.ChatRequest{
+			WorkspaceID: s.workspaceIDFromRequest(r),
+			Model:       model,
+			Messages:    bffMsgs,
+			User:        s.userIDFromRequest(r),
+		}, "meeting")
+		if err != nil {
+			return "", "", err
+		}
+		return resp.Content, resp.Model, nil
+	}
+	if s.llm == nil {
+		return "", "", llmbff.ErrNotConfigured
+	}
+	content, err := s.llm.Chat(ctx, model, msgs)
+	return content, model, err
 }
 
 // =====================================================================
