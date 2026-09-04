@@ -410,21 +410,21 @@ onMounted(async () => {
 })
 
 /**
- * Phase 1: RedClaw SSO 登录。生成一次性 state 落到 sessionStorage，
- * 浏览器跳转到 RedClaw Auth Agent；用户在 IdP 完成登录后由 RedClaw
- * 回调 /api/auth/sso/callback（后端代理），后端 302 到 SPA
- * /auth/sso/callback?token=...，SsoCallbackView 落 store + 跳首页。
+ * Phase 1: RedClaw SSO 登录。CSRF 绑定由后端签发 HttpOnly cookie
+ * （pocket_sso_txn）承担，前端不再生成/比对 state（见
+ * docs/handoff/2026-09-05-sso-state-contract-mismatch.md）。
+ * 浏览器跳转到 RedClaw Auth Agent；用户在 IdP 完成登录后回到
+ * /api/auth/sso/callback，后端 302 到 SPA /auth/sso/callback?sso_code=...，
+ * SsoCallbackView 用 code 换 token 后落 store + 跳首页。
  */
 async function ssoLogin() {
   loading.value = true
   error.value = ''
   try {
-    const state = 'sso-' + Math.random().toString(36).slice(2, 14) + '-' + Date.now()
-    sessionStorage.setItem('pocket_sso_state', state)
-    // redirect_url 必须是后端路径，RedClaw 拿到 token 后会跳到这里，
+    // redirect_url 必须是后端路径，IdP/auth-agent 完成认证后跳到这里，
     // 后端再 302 到 SPA 路径 /auth/sso/callback。
     const redirectUrl = window.location.origin + '/api/auth/sso/callback'
-    const url = await fetchSsoLoginUrl(state, redirectUrl)
+    const url = await fetchSsoLoginUrl(redirectUrl)
     window.location.href = url
   } catch (e: any) {
     error.value = `SSO 登录失败：${e?.message || e}`

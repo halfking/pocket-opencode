@@ -3,22 +3,27 @@
 
   浏览器流程：
     1. 用户在 LoginView 点 SSO → 前端拿 /api/auth/sso/login 给的 URL
-       (redirect_url=本组件路径) → window.location 跳到 RedClaw Auth Agent
-    2. RedClaw 把用户带到 IdP；IdP 认证后回调 RedClaw /sso/callback
-    3. RedClaw 颁发平台 JWT 后，浏览器被 302 到本组件 path（含 #/auth/sso/callback）
+       (redirect_url=本组件上游的 /api/auth/sso/callback 路径) →
+       window.location 跳到 RedClaw Auth Agent，同时后端已落下
+       HttpOnly 绑定 cookie（pocket_sso_txn）
+    2. RedClaw 把用户带到 IdP；IdP 认证后回调 /api/auth/sso/callback
+    3. 后端消费绑定 cookie、透传 code+state 给 auth-agent 换平台 JWT，
+       签发一次性 sso_code 后 302 到本组件 path
+       （/auth/sso/callback?sso_code=...；失败时 ?error=...）
     4. 本组件在 mount 时：
-         - 校验 sessionStorage 里留下的 state
-         - 调 /api/auth/me 拿 employee 画像
-         - token 是 RedClaw 颁发并已存到 localStorage（由后端 handleAuthSsoCallback 落）
-         - 把 user/workspace_id 写进 store，跳到 /ai
+         - error → 展示稳定错误码对应文案
+         - sso_code → POST /api/auth/sso/exchange 换 token（token 不走
+           URL，防浏览器历史 / 访问日志泄露）
+         - 落 store，跳到 /ai
 
-  注意：RedClaw 把 token 放在哪（body / cookie / URL fragment）由
-  RedClaw handleAuthSsoCallback 决定；本组件只负责"展示中转页"与
-  校验 state、落 store、跳转。
+  state 合约（2026-09-05 修复）：RedClaw auth-agent 自行生成 state 并由 IdP
+  原样带回，前端 sessionStorage 严格比对永远不成立（旧实现死路），CSRF
+  绑定已改由后端绑定 cookie 承担。见
+  docs/handoff/2026-09-05-sso-state-contract-mismatch.md。
 -->
 <template>
   <div class="sso-callback">
-    <div class="spinner" />
+    <div v-if="!error" class="spinner" />
     <p class="hint">{{ status }}</p>
     <p v-if="error" class="error">{{ error }}</p>
   </div>
@@ -28,51 +33,66 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
-import { fetchMe } from '../../api/auth'
+import { fetchMe, exchangeSsoCode } from '../../api/auth'
 
 const router = useRouter()
 const auth = useAuthStore()
 const status = ref('正在完成企业账号登录…')
 const error = ref('')
 
+/** 后端 ssoRedirectError 的稳定错误码 → 用户可读文案。 */
+const ERROR_MESSAGES: Record<string, string> = {
+  sso_session: '登录会话校验失败（绑定已失效或回调被重放），请回到登录页重新发起',
+  sso_idp: '身份提供商认证失败或已取消，请重试',
+  sso_invalid: '回调参数不完整，请重新发起登录',
+  sso_upstream: 'RedClaw 平台换取凭据失败，请稍后重试',
+  sso_no_user: 'RedClaw 未返回有效用户身份，请联系管理员',
+}
+
+function fail(msg: string) {
+  error.value = msg
+  status.value = '登录失败'
+}
+
 onMounted(async () => {
-  // 1. 校验 state（防 CSRF）：后端 /api/auth/sso/callback 会原样回传 state,
-  // 与 sessionStorage 中登录前落下的值必须严格相等,缺失或不等一律拒绝。
-  const expected = sessionStorage.getItem('pocket_sso_state')
   const params = new URLSearchParams(window.location.search)
-  const got = params.get('state')
-  if (!expected || !got || expected !== got) {
-    error.value = 'state 校验失败，可能为 CSRF 攻击或 session 已过期'
-    status.value = '登录失败'
-    sessionStorage.removeItem('pocket_sso_state')
+  const errCode = params.get('error')
+  const ssoCode = params.get('sso_code')
+  // 无论成败先把一次性 code 从地址栏清掉（code 已消费或即将消费，
+  // 留在历史/地址栏只会诱导刷新重放）。
+  window.history.replaceState({}, '', window.location.pathname)
+
+  if (errCode) {
+    fail(ERROR_MESSAGES[errCode] || `SSO 登录失败（${errCode}）`)
     return
   }
-  sessionStorage.removeItem('pocket_sso_state')
-
-  // 2. 从 query 拿 token（后端 handleAuthSsoCallback 302 注入）
-  const token = params.get('token')
-  const user = params.get('user') || ''
-  const userId = params.get('user_id') || user
-  const workspaceId = params.get('workspace_id') || 'default'
-  if (!token) {
-    error.value = '未拿到 token（RedClaw 回调失败？）'
-    status.value = '登录失败'
+  if (!ssoCode) {
+    fail('未拿到登录凭据（回调链路中断？），请重新发起登录')
     return
   }
-  auth.setAuthWithWorkspace(token, user, userId, workspaceId, 'redclaw-sso')
 
-  // 3. 拉取 employee 画像更新 UI（失败不阻塞：登入已成功）
+  // 1. 一次性 code 换登录结果（90s TTL、单次有效）
+  let handoff
+  try {
+    handoff = await exchangeSsoCode(ssoCode)
+  } catch (e: any) {
+    console.debug('sso exchange failed:', e)
+    fail('登录凭据已过期或无效，请重新发起登录')
+    return
+  }
+  auth.setAuthWithWorkspace(handoff.token, handoff.user, handoff.user_id, handoff.workspace_id || 'default', 'redclaw-sso')
+
+  // 2. 拉取 employee 画像更新 UI（失败不阻塞：登入已成功）
   try {
     const me = await fetchMe()
     if (me.name || me.email) {
-      auth.setAuthWithWorkspace(token, me.name || user, me.id || userId, workspaceId, 'redclaw-sso')
+      auth.setAuthWithWorkspace(handoff.token, me.name || handoff.user, me.id || handoff.user_id, handoff.workspace_id || 'default', 'redclaw-sso')
     }
   } catch (e) {
     console.debug('fetchMe after SSO failed (non-fatal):', e)
   }
 
   status.value = '登录成功，正在进入…'
-  // 清掉 URL 上的 token（避免刷新页面把 token 重新触发 fetchMe 之类）
   router.replace('/ai')
 })
 </script>

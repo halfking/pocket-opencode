@@ -108,10 +108,33 @@ export async function fetchMe(): Promise<EmployeeProfile> {
   return http<EmployeeProfile>('/api/auth/me', { method: 'GET' })
 }
 
-/** SSO 登录入口：拿 RedClaw 跳转 URL，浏览器 location.href 跳过去。 */
-export async function fetchSsoLoginUrl(state: string, redirectUrl?: string): Promise<string> {
-  const q = new URLSearchParams({ state })
+/**
+ * SSO 登录入口：拿 RedClaw 跳转 URL，浏览器 location.href 跳过去。
+ * CSRF 绑定由后端在响应里落 HttpOnly cookie（pocket_sso_txn），前端不再
+ * 生成/比对 state（见 docs/handoff/2026-09-05-sso-state-contract-mismatch.md）。
+ */
+export async function fetchSsoLoginUrl(redirectUrl?: string): Promise<string> {
+  const q = new URLSearchParams()
   if (redirectUrl) q.set('redirect_url', redirectUrl)
-  const r = await http<{ url: string }>(`/api/auth/sso/login?${q.toString()}`, { method: 'GET' })
+  const qs = q.toString()
+  const r = await http<{ url: string }>(`/api/auth/sso/login${qs ? `?${qs}` : ''}`, { method: 'GET' })
   return r.url
+}
+
+export interface SsoExchangeResponse {
+  token: string
+  user: string
+  user_id: string
+  workspace_id: string
+}
+
+/**
+ * 一次性 code 换登录结果（token 不走 URL，P1-2 修复）。
+ * code 由后端 /api/auth/sso/callback 302 注入 SPA 回调页，90s TTL、单次有效。
+ */
+export async function exchangeSsoCode(code: string): Promise<SsoExchangeResponse> {
+  return http<SsoExchangeResponse>('/api/auth/sso/exchange', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  })
 }

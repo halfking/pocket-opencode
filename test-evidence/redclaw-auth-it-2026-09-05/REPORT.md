@@ -84,3 +84,19 @@ curl -X POST localhost:18090/api/auth/login -H 'Content-Type: application/json' 
 
 关键环境变量(`POCKET_REDCLAW_ADMIN_SECRET` = `IDENTITY_SHARED_SECRET` = RedClaw `ADMIN_JWT_SIGNING_KEY`):
 见 `/tmp/pocket-redclaw-it.env`(联调现场文件,密钥不入库)。
+
+---
+
+## 附录（2026-09-05 追记）：SSO 回调链修复后待补测项
+
+R5 记录的"SSO 完整回调链未测"缺口已在 pocket 侧修复流程合约
+（见 `docs/handoff/2026-09-05-sso-state-contract-mismatch.md` §6）：
+
+- pocket `/api/auth/sso/callback` 现要求绑定 cookie（`/api/auth/sso/login`
+  签发），302 只携带一次性 `sso_code`；token 经
+  `POST /api/auth/sso/exchange` 交付，不再进 URL。
+- 因此补测时 **RedClaw 本地栈必须把 `OIDC_REDIRECT_URL` 指向
+  `http://localhost:18090/api/auth/sso/callback`**（IdP 浏览器重定向
+  落 pocket），并部署 casdoor IdP 容器。
+- handler 级同等断言已由 `backend/internal/server/auth_sso_test.go`
+  （fake auth-agent 全链路）覆盖；IdP 实链路仍待容器环境补测归档。

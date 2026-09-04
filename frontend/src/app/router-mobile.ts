@@ -253,10 +253,10 @@ const router = createRouter({
     {
       path: '/auth/sso/callback',
       name: 'sso-callback',
-      // Phase 1: RedClaw SSO 回调落点。注意：浏览器从 IdP 跳到 openpocket
-      // 的 /api/auth/sso/callback 会被后端代理拦截并 200 + token 注入；
-      // SPA 路由层面用这个 path 仅用于"显式声明"，实际是后端写
-      // localStorage 后 window.location.replace('/ai')。
+      // Phase 1: RedClaw SSO 回调落点。浏览器从 IdP 跳到 openpocket 的
+      // /api/auth/sso/callback，后端消费绑定 cookie 并换到平台 JWT 后，
+      // 302 到本 SPA path（sso_code=... 或 error=...）；本页用 code 调
+      // /api/auth/sso/exchange 换 token 后落 store，token 不走 URL。
       component: () => import('../features/auth/SsoCallbackView.vue'),
       meta: { title: 'SSO 登录中', bottomNav: false, showTopBar: false }
     },

@@ -367,8 +367,23 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthSsoLogin — GET /api/auth/sso/login
 //
-// 返回 { "url": "https://redclaw/.../api/v1/sso/login?state=..." }，前端用
-// window.location 跳转。state 在前端生成、落到 sessionStorage，callback 时回传。
+// 返回 { "url": "https://redclaw/.../api/v1/sso/login?state=...&redirect_url=..." }，
+// 前端用 window.location 跳转。
+//
+// state 合约（2026-09-05 修复，见 docs/handoff/2026-09-05-sso-state-contract-mismatch.md）：
+// RedClaw auth-agent 目前忽略外部传入的 state、自行生成并由 IdP 原样带回，
+// 原先"前端 sessionStorage 严格比对"必然失败。修复后 CSRF 绑定由 pocket
+// 服务端持有：
+//  1. 本 handler 生成 32 字节随机 nonce，写入待消费表并落 HttpOnly +
+//     SameSite=Lax cookie（Path 收窄到 /api/auth/sso/）；
+//  2. /api/auth/sso/callback 必须带回并单次消费该 nonce，冷启动 / 重放
+//     的回调直接拒绝；
+//  3. IdP 带回的 state（auth-agent 自发）仅透传给 auth-agent 校验，
+//     pocket 不再比对。
+//
+// nonce 同时作为 state 参数传给 auth-agent：当前被忽略，RedClaw 若落地
+// handoff 方案 A（external_state 透传）即可无缝升级为端到端比对。
+// 兼容：旧前端带的 state query 参数不再使用，仅忽略。
 func (s *Server) handleAuthSsoLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
@@ -378,22 +393,36 @@ func (s *Server) handleAuthSsoLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "sso not enabled")
 		return
 	}
-	state := r.URL.Query().Get("state")
-	if state == "" {
-		writeError(w, http.StatusBadRequest, "missing state")
+	nonce, err := s.ssoTxns.Issue()
+	if err != nil {
+		log.Printf("WARN: sso login issue nonce: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to start sso login")
 		return
 	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     ssoTxnCookie,
+		Value:    nonce,
+		Path:     "/api/auth/sso/",
+		MaxAge:   int(ssoTxnTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+	})
 	redirectURL := r.URL.Query().Get("redirect_url")
 	writeJSON(w, http.StatusOK, map[string]string{
-		"url": s.redclawAdminClient.SsoLoginURL(state, redirectURL),
+		"url": s.redclawAdminClient.SsoLoginURL(nonce, redirectURL),
 	})
 }
 
 // handleAuthSsoCallback — GET /api/auth/sso/callback
 //
-// 浏览器从 RedClaw Auth Agent 跳回 openpocket（RedClaw 已完成 IdP token
-// exchange 并铸造平台 JWT）。openpocket 拿到 RedClaw token 后 302 到 SPA
-// 路径 /#/auth/sso/callback?token=...，由前端 SsoCallbackView 落 localStorage。
+// IdP 完成认证后浏览器被带回本端点（OIDC redirect_uri 指向 pocket，
+// 或 auth-agent 登录成功后重定向回 pocket）。流程：
+//  1. 校验并单次消费 /api/auth/sso/login 落下的绑定 cookie（CSRF 绑定）；
+//  2. 透传 code+state 给 auth-agent /sso/callback 换平台 JWT；
+//  3. 签发一次性短时 code，302 到 SPA /#/auth/sso/callback?sso_code=...。
+//     token 不再进 URL（P1-2：浏览器历史 / 访问日志泄露面），前端拿 code
+//     POST /api/auth/sso/exchange 换登录结果。
 func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
@@ -403,39 +432,124 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "sso not enabled")
 		return
 	}
+	// 1. 绑定 cookie：缺失 / 未知 / 已消费 / 已过期一律拒绝。
+	ck, err := r.Cookie(ssoTxnCookie)
+	if err != nil || !s.ssoTxns.Consume(ck.Value) {
+		s.auditGateway(r, "auth.sso.callback", "-", "reason=invalid_binding_cookie", false)
+		s.ssoRedirectError(w, r, "sso_session")
+		return
+	}
+	s.clearSsoTxnCookie(w, r)
+
+	// 2. IdP 侧错误（如 casdoor 回传 error=...）原样转成 SPA 可展示的错误码。
+	if e := r.URL.Query().Get("error"); e != "" {
+		log.Printf("WARN: sso callback: IdP returned error=%s", e)
+		s.auditGateway(r, "auth.sso.callback", "-", "reason=idp_error:"+e, false)
+		s.ssoRedirectError(w, r, "sso_idp")
+		return
+	}
+
 	code := r.URL.Query().Get("code")
 	state := r.URL.Query().Get("state")
 	if code == "" || state == "" {
-		writeError(w, http.StatusBadRequest, "missing code/state")
+		s.auditGateway(r, "auth.sso.callback", "-", "reason=missing_code_or_state", false)
+		s.ssoRedirectError(w, r, "sso_invalid")
 		return
 	}
+
+	// 3. 透传给 auth-agent 换平台 JWT。state 是 auth-agent 自发并由 IdP
+	// 带回的那份，由它的 replayGuard 单次校验；upstream 失败细节只进日志，
+	// 不进重定向 URL。
 	res, err := s.redclawAdminClient.SsoCallback(r.Context(), code, state)
 	if err != nil {
-		s.handleRedClawAuthError(w, err, "redclaw sso callback failed")
+		log.Printf("WARN: redclaw sso callback failed: %v", err)
+		s.auditGateway(r, "auth.sso.callback", "-", "reason=upstream_rejected", false)
+		s.ssoRedirectError(w, r, "sso_upstream")
 		return
 	}
 	if res.Employee == nil || res.Employee.ID == "" {
 		// 不允许空 user_id:所有 SSO 用户若共用一个 sentinel id 会互相冒充。
 		log.Printf("WARN: redclaw sso callback returned empty employee id")
-		writeError(w, http.StatusBadGateway, "redclaw sso returned no user id")
+		s.auditGateway(r, "auth.sso.callback", "-", "reason=empty_employee_id", false)
+		s.ssoRedirectError(w, r, "sso_no_user")
 		return
 	}
 	userID := res.Employee.ID
 	wsID := s.ensureWorkspaceForRedClawUser(r.Context(), userID)
 	auth.RecordShadow("redclaw", userID, wsID, res.Employee.Name, res.Employee.Email)
-	// 302 到 SPA 路径 + query 带 token。前端 SsoCallbackView 负责落 store。
-	// 之所以用 query(不是 fragment):openpocket 用的是 vue-router history
-	// 模式，fragment 不会被后端看到，但会被 vue-router 看到；为了简化，让
-	// 后端用 query 注入 token，前端用 URLSearchParams 读取。
-	// state 原样回传,SsoCallbackView 与 sessionStorage 中的值做 CSRF 比对。
-	redirect := "/auth/sso/callback"
-	q := url.Values{}
-	q.Set("token", res.Token)
-	q.Set("user", res.Employee.Name)
-	q.Set("user_id", userID)
-	q.Set("workspace_id", wsID)
-	q.Set("state", state)
-	http.Redirect(w, r, redirect+"?"+q.Encode(), http.StatusFound)
+
+	// 4. 签发一次性 code，302 到 SPA。
+	ssoCode, err := s.ssoXchg.Put(ssoHandoff{
+		Token:       res.Token,
+		User:        res.Employee.Name,
+		UserID:      userID,
+		WorkspaceID: wsID,
+	})
+	if err != nil {
+		log.Printf("WARN: sso issue exchange code: %v", err)
+		s.ssoRedirectError(w, r, "sso_upstream")
+		return
+	}
+	s.auditGateway(r, "auth.sso.callback", userID, "sso login completed", true)
+	http.Redirect(w, r, "/auth/sso/callback?"+url.Values{"sso_code": {ssoCode}}.Encode(), http.StatusFound)
+}
+
+// handleAuthSsoExchange — POST /api/auth/sso/exchange
+//
+// Body: {"code": "..."}。一次性 code（90s TTL、单次消费）换回登录结果，
+// 响应形状与旧 302 query 载荷一致：{token, user, user_id, workspace_id}。
+// P1-2 修复的一半：token 只出现在这个 POST 响应体里，不再进浏览器历史。
+func (s *Server) handleAuthSsoExchange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if s.redclawAdminClient == nil || !s.cfg.RedClawSsoEnabled {
+		writeError(w, http.StatusNotFound, "sso not enabled")
+		return
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	h, ok := s.ssoXchg.Take(body.Code)
+	if !ok {
+		s.auditGateway(r, "auth.sso.exchange", "-", "reason=invalid_or_expired_code", false)
+		writeError(w, http.StatusUnauthorized, "invalid or expired sso code")
+		return
+	}
+	s.auditGateway(r, "auth.sso.exchange", h.UserID, "sso token exchanged", true)
+	writeJSON(w, http.StatusOK, h)
+}
+
+// ssoRedirectError 把失败重定向到 SPA 回调页（SsoCallbackView 展示错误码）。
+// 只回传稳定错误码，不回传 upstream 细节；错误码文案映射见前端 SsoCallbackView。
+func (s *Server) ssoRedirectError(w http.ResponseWriter, r *http.Request, code string) {
+	http.Redirect(w, r, "/auth/sso/callback?"+url.Values{"error": {code}}.Encode(), http.StatusFound)
+}
+
+// clearSsoTxnCookie 清掉已消费的绑定 cookie（Path 必须与签发时一致）。
+func (s *Server) clearSsoTxnCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     ssoTxnCookie,
+		Value:    "",
+		Path:     "/api/auth/sso/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+	})
+}
+
+// requestIsHTTPS 依据直连 TLS 或反代头判断是否走 HTTPS（决定 cookie Secure 位）。
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 // extractBearerToken 复用 requireAuth 的 token 解析规则。

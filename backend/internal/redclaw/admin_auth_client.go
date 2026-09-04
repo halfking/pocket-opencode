@@ -278,7 +278,8 @@ func (c *AdminAuthClient) Logout(ctx context.Context, token string) error {
 // =====================================================================
 
 // SsoLoginURL 拼出 RedClaw Auth Agent 的 SSO 登录入口 URL。
-// state 由 openpocket 生成（建议为每会话一次性随机串）。
+// state 由调用方生成（pocket 现传登录绑定 nonce；auth-agent 当前会忽略，
+// 见 docs/handoff/2026-09-05-sso-state-contract-mismatch.md），空则省略参数。
 func (c *AdminAuthClient) SsoLoginURL(state, redirectURL string) string {
 	base := c.cfg.AuthAgentURL
 	if base == "" {
@@ -289,7 +290,9 @@ func (c *AdminAuthClient) SsoLoginURL(state, redirectURL string) string {
 		return ""
 	}
 	q := u.Query()
-	q.Set("state", state)
+	if state != "" {
+		q.Set("state", state)
+	}
 	if redirectURL != "" {
 		q.Set("redirect_url", redirectURL)
 	}
