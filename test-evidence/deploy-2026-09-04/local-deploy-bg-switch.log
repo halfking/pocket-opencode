@@ -1,0 +1,25 @@
+  ENV_FILE  = /tmp/opp-local-test/config/.env.local
+  COMPOSE   = /Users/xutaohuang/workspace/ai-native-tools/openpocket/deploy/bin/docker-compose.opp.yml
+  DATA_DIR  = /tmp/opp-local-test/data
+  LOG_DIR   = /tmp/opp-local-test/logs
+  NET       = opp-local-net (external=false)
+  HTTP_PORT = 8090@0.0.0.0  FRONTEND_PORT = 4175
+▶ docker compose up -d --force-recreate --no-build
+time="2026-09-04T08:14:29+08:00" level=warning msg="/tmp/opp-local-test/bin/pocket-opp-pa348560-20260904081344/pocketd-compose-snippet.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+ Container opencode-pocket-pocketd-local-opp-local-te Recreate 
+ Container opencode-pocket-pocketd-local-opp-local-te Recreated 
+ Container opencode-pocket-frontend-local-opp-local-te Recreate 
+ Container opencode-pocket-frontend-local-opp-local-te Recreated 
+ Container opencode-pocket-pocketd-local-opp-local-te Starting 
+ Container opencode-pocket-pocketd-local-opp-local-te Started 
+ Container opencode-pocket-pocketd-local-opp-local-te Waiting 
+ Container opencode-pocket-pocketd-local-opp-local-te Healthy 
+ Container opencode-pocket-frontend-local-opp-local-te Starting 
+ Container opencode-pocket-frontend-local-opp-local-te Started 
+▶ 等待 /healthz 通过（最多 60s）…
+  ✅ pocketd   http://localhost:8090
+  ✅ frontend  http://localhost:4175
+time="2026-09-04T08:14:45+08:00" level=warning msg="/tmp/opp-local-test/bin/pocket-opp-pa348560-20260904081344/pocketd-compose-snippet.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+NAME                                          IMAGE                                 COMMAND                   SERVICE    CREATED          STATUS                                     PORTS
+opencode-pocket-frontend-local-opp-local-te   opencode-pocket-frontend:pocket-opp   "/docker-entrypoint.…"   frontend   15 seconds ago   Up Less than a second (health: starting)   0.0.0.0:4175->80/tcp, [::]:4175->80/tcp
+opencode-pocket-pocketd-local-opp-local-te    opencode-pocket:pocket-opp            "/app/pocketd"            pocketd    16 seconds ago   Up 5 seconds (healthy)                     0.0.0.0:8090->8088/tcp

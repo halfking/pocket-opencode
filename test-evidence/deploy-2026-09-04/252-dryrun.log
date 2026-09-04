@@ -1,0 +1,39 @@
+━━━ deploy-252 ━━━
+  OS_KIND         = linux
+  DEPLOY_BASE_DIR = /tmp/opp-252-test
+  HTTP_PORT       = 8092@172.16.2.252
+  FRONTEND_PORT   = 4177
+━━━ init-dirs: DEPLOY_ENV=server OS=linux ━━━
+  DEPLOY_BASE_DIR = /tmp/opp-252-test
+  OPP_SERVER_NAME = 252
+  ✅ mkdir /tmp/opp-252-test/data
+  ✅ mkdir /tmp/opp-252-test/logs
+  ✅ mkdir /tmp/opp-252-test/raw-logs
+  ✅ mkdir /tmp/opp-252-test/images
+  ✅ mkdir /tmp/opp-252-test/backups
+  ✅ mkdir /tmp/opp-252-test/attachments
+  ✅ mkdir /tmp/opp-252-test/bin
+  ✅ mkdir /tmp/opp-252-test/run
+━━━ 完成 ━━━
+  新建 8 个目录，跳过 2 个已存在目录
+  下一步: 填写 /tmp/opp-252-test/config/.env.252（生产密钥/DSN），再 ./deploy-252.sh
+
+━━━ ensure-databases 总结 ━━━
+  PG    : mode=uninit              target=172.16.2.210:5432  deploy=false
+  Redis : mode=uninit              target=127.0.0.1:6379  deploy=false
+  MySQL : mode=uninit              target=127.0.0.1:3306  deploy=false
+  ⏭  --dry-run: 跳过 PG TCP 探测（演练环境无法连 252 内网）
+  🆕 bin/current 不存在，自动 stage pocket-opp-pa348560-20260904081610
+[blue-green] staged bin/pocket-opp-pa348560-20260904081610/
+[blue-green] bin/current → pocket-opp-pa348560-20260904081610（previous=<none>）
+▶ 镜像已存在，直接启动（--no-build；强制重建加 --build）
+━━━ start: opencode-pocket-server-252 (server) ━━━
+  ENV_FILE  = /tmp/opp-252-test/config/.env.252
+  COMPOSE   = /Users/xutaohuang/workspace/ai-native-tools/openpocket/deploy/bin/docker-compose.opp.yml
+  DATA_DIR  = /tmp/opp-252-test/data
+  LOG_DIR   = /tmp/opp-252-test/logs
+  NET       = opp-server-net (external=false)
+  HTTP_PORT = 8092@172.16.2.252  FRONTEND_PORT = 4177
+▶ docker compose up -d --force-recreate --no-build
+  🧪 --dry-run: 跳过 docker compose up，仅打印预期命令
+    docker     compose     -p     opencode-pocket-server-252     --env-file     /tmp/opp-252-test/config/.env.252     -f     /Users/xutaohuang/workspace/ai-native-tools/openpocket/deploy/bin/docker-compose.opp.yml     -f     /tmp/opp-252-test/bin/pocket-opp-pa348560-20260904081610/pocketd-compose-snippet.yml  -d --force-recreate --no-build pocketd
