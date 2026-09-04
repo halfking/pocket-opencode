@@ -632,3 +632,51 @@ retry 帧对其无意义；真正的未接 `onRetry` 调用方是：
 3. 上游网关 glm-5.2/minimax-m3 无可用 provider：部署侧为网关配置 provider（本仓无代码可改）。
 4. 模拟器 quick boot 快照损坏 → E2E 用 `-no-snapshot` 冷启动（§16.6 #3 沿用）。
 5. embed 上游 provider 配置（§16.6 #4 沿用，部署项）。
+
+### 17.5 并行会话（五）：§16.6 #1 发送竞态审计 + 防御落地 + 双通道 E2E 回归
+
+> 与会话四同一时间窗并行工作，代码改动经会话四 735f686 收编提交（消息已注明）。
+> 本节补记审计结论与真机验证证据。零密钥。
+
+**代码审计结论（§16.6 #1「气泡入列表但 stream 未发出」，复现 0/1）**：
+
+发送双通道实为同一入口：Enter（`UnifiedComposer.onKeydown`）与外部发送按钮
+（AIChatView `composerRef?.submit()`）都走 `onSubmit()` → `emit('submit')` →
+`onComposerSubmit` → `store.send()`。JS 单线程同步链路下第二发会被
+`canSubmit`（草稿已 reset）或 `isStreaming` 挡住，双触发本身不产生异常态。
+唯一能造成「用户气泡已 push、流却未发起」的是 **send() 中段同步异常悬空态**
+（userMsg push 之后、spawnStream 完成之前任何同步 throw：气泡留下、流没有、
+且 `composerRef.reset()` 不执行——草稿残留，用户重发即「后一条消息正常」，与
+§16.6 #1 的观察形态完全吻合）。
+
+**防御修复**（经 735f686 提交）：
+- `aiChatStore.send`：spawnStream 段 try/catch——异常时回滚 userMsg + toast
+  「发送失败」+ console.error，保证「气泡入列表」与「流已发起」原子性；
+- `UnifiedComposer.onKeydown`：过滤 `e.repeat`（长按/Gboard 语音听写收尾合成
+  的重复 Enter），双通道竞态的标准防御。
+
+**真机 E2E 回归**（emulator-5554，`test-evidence/2026-09-05-send-race/`）：
+- 输入 `race-check-alphal` 后**快速连点发送按钮两次**（模拟双通道双触发）：
+  仅一条用户气泡 + 一条流（`06-double-tap.png`），草稿正常清空，无重复消息；
+- 流以「context deadline exceeded」终态结束（`07-stream-done.png`）——上游
+  glm-5.2 当前无可用 provider（§17.3 同因，环境问题非回归），而错误终态本身
+  证明流已发出；悬空态未再复现；
+- 前置回归：vue-tsc、ai-chat 契约测试、go test ./... 46 包全绿。
+
+**环境观察**：`logs/backend-dev.log` 在 pocketd（PID 5930）存活期间被外部
+截断（mtime 停 05:57、fd 写入偏移超前于文件尾），06:00 后日志观测失效。本轮
+未重启服务（避免干扰并行会话），下轮 `bash start-dev.sh` 重启即恢复。
+
+### 17.6 DSN 凭据轮换执行清单（§16.5，待提交者 halfking 确认后执行）
+
+状态：**未轮换**（按规约需先与 halfking 确认；本轮未联系上，仅固化清单）。
+凭据样式的 PG DSN 曾硬编码于 `server_auth_extended_test.go`（5ca02cf 已删除
+回退、改 `POCKET_TEST_POSTGRES_DSN` env + Skip），但**仍存在于 git 历史**。
+halfking 确认后执行：
+
+1. 在 PG 侧为该测试库创建新口令（或直接废止涉事角色）；
+2. 更新本地/CI 的 `POCKET_TEST_POSTGRES_DSN` 注入源（不进仓库）；
+3. `git grep` 复核 HEAD 与新增文档零引用（本文件历轮均只写「已泄露」事实、
+   不引用值，可保持）；
+4. 因历史提交含旧凭据，确认废止旧口令即可视为闭环（不做历史重写——
+   会改写并行协作的提交链，风险大于收益）。
