@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/marketplace"
 )
@@ -653,17 +654,24 @@ func TestMarketplace_BlobUploadDownloadPG(t *testing.T) {
 		t.Errorf("usage malformed: %+v", usage)
 	}
 
-	// 8. 配额超限 → 507（用尽配额后上传第二个 distinct blob）。
-	s2, _ := newPGMarketplaceTestServer(t, int64(len(content)))
+	// 8. 配额超限 → 507（基线上传恰好用尽配额后，第二个 distinct blob 被拒）。
+	uniq := time.Now().Format(time.RFC3339Nano)
+	wsQuota := "ws-quota-" + uniq
+	fresh := []byte("quota baseline " + uniq)
+	s2, _ := newPGMarketplaceTestServer(t, int64(len(fresh)))
 	h2 := s2.handleMarketplaceRouter
-	r = withClaims(newBlobRequest(t, http.MethodPut, "/api/marketplace/blobs/"+digest, content), "user-1", "ws-a")
+	// 配额基线必须用"内容表里从未出现"的 blob + 全新 workspace：blob 行
+	// 跨 workspace 全局去重（created 以内容行新建为准），归属行按
+	// (workspace, digest) 计量，而测试 DSN 固定 schema、数据跨测试运行
+	// 共享——复用 content/ws-a 都会撞上历史数据（幂等 200 或配额 507）。
+	r = withClaims(newBlobRequest(t, http.MethodPut, "/api/marketplace/blobs/"+blobDigestOf(fresh), fresh), "user-1", wsQuota)
 	w = httptest.NewRecorder()
 	h2(w, r)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("quota baseline upload: want 201, got %d body=%s", w.Code, w.Body.String())
 	}
-	other := []byte("another distinct blob")
-	r = withClaims(newBlobRequest(t, http.MethodPut, "/api/marketplace/blobs/"+blobDigestOf(other), other), "user-1", "ws-a")
+	other := []byte("another distinct blob " + uniq)
+	r = withClaims(newBlobRequest(t, http.MethodPut, "/api/marketplace/blobs/"+blobDigestOf(other), other), "user-1", wsQuota)
 	w = httptest.NewRecorder()
 	h2(w, r)
 	if w.Code != http.StatusInsufficientStorage {
