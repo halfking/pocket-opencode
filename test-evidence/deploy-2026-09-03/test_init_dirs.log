@@ -1,0 +1,42 @@
+  [32mPASS[0m always: attachments/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/attachments
+  [32mPASS[0m always: bin/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/bin
+  [32mPASS[0m always: backups/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/backups
+  [32mPASS[0m always: logs/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/logs
+  [32mPASS[0m always: raw-logs/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/raw-logs
+  [32mPASS[0m always: run/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/run
+  [32mPASS[0m always: data/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/data
+  [32mPASS[0m always: config/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/config
+  [32mPASS[0m always: images/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/images
+  [32mPASS[0m conditional: postgres/ NOT created: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/postgres (correctly absent)
+  [32mPASS[0m conditional: redis/ NOT created: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/redis (correctly absent)
+  [32mPASS[0m conditional: mysql/ NOT created: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/mysql (correctly absent)
+  [32mPASS[0m .gitkeep in attachments/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/attachments/.gitkeep
+  [32mPASS[0m .gitignore in attachments/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/attachments/.gitignore
+  [32mPASS[0m .gitkeep in bin/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/bin/.gitkeep
+  [32mPASS[0m .gitignore in bin/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/bin/.gitignore
+  [32mPASS[0m .gitkeep in backups/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/backups/.gitkeep
+  [32mPASS[0m .gitignore in backups/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/backups/.gitignore
+  [32mPASS[0m .gitkeep in logs/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/logs/.gitkeep
+  [32mPASS[0m .gitignore in logs/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/logs/.gitignore
+  [32mPASS[0m .gitkeep in raw-logs/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/raw-logs/.gitkeep
+  [32mPASS[0m .gitignore in raw-logs/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/raw-logs/.gitignore
+  [32mPASS[0m .gitkeep in run/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/run/.gitkeep
+  [32mPASS[0m .gitignore in run/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/run/.gitignore
+  [32mPASS[0m .gitkeep in data/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/data/.gitkeep
+  [32mPASS[0m .gitignore in data/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/data/.gitignore
+  [32mPASS[0m .gitkeep in config/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/config/.gitkeep
+  [32mPASS[0m .gitignore in config/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/config/.gitignore
+  [32mPASS[0m .gitkeep in images/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/images/.gitkeep
+  [32mPASS[0m .gitignore in images/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/images/.gitignore
+  [32mPASS[0m bin/.gitignore has wildcard: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/bin/.gitignore
+  [32mPASS[0m conditional: postgres/ created when PG=true: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test2.XXXXXX.oyYcwGqase/postgres
+  [32mPASS[0m conditional: redis/ created when REDIS=true: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test2.XXXXXX.oyYcwGqase/redis
+  [32mPASS[0m conditional: mysql/ created when MYSQL=true: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test2.XXXXXX.oyYcwGqase/mysql
+  [32mPASS[0m idempotent: attachments/ still exists: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/attachments
+  [32mPASS[0m idempotent: bin/ still exists: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.qDbKXg7rxU/bin
+  [32mPASS[0m 154: attachments/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test3.XXXXXX.qYIP7wdyWH/attachments
+  [32mPASS[0m 154: bin/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test3.XXXXXX.qYIP7wdyWH/bin
+  SKIP: write-permission test (root-unfriendly)
+
+━━━ test_init_dirs ━━━
+  PASS: 38  FAIL: 0

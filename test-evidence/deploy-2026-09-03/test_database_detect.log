@@ -1,0 +1,10 @@
+  [32mPASS[0m PG detect via docker: 'docker:127.0.0.1:15432'
+  [32mPASS[0m Redis detect via docker: 'docker:127.0.0.1:6379'
+  [32mPASS[0m MySQL detect via docker: 'docker:127.0.0.1:3306'
+  [32mPASS[0m PG detect via systemd: 'system:127.0.0.1:15432'
+  [32mPASS[0m PG detect via local port: 'local-port:127.0.0.1:15432'
+  [32mPASS[0m PG detect: nothing found returns empty
+  [32mPASS[0m PG detect: remote unreachable returns empty
+
+━━━ test_database_detect ━━━
+  PASS: 7  FAIL: 0

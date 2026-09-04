@@ -1,0 +1,223 @@
+
+════════════════════════════════════════════════════════════════
+  ▶ test_blue_green.sh
+════════════════════════════════════════════════════════════════
+  [32mPASS[0m bg_init creates .gitkeep + .gitignore: 'OK'
+  [32mPASS[0m bg_compute_id default contains tag+rev: contains 'pocket-opp-p'
+  [32mPASS[0m bg_compute_id explicit version.build: '1.2.3.005'
+[blue-green] staged bin/1.0.0.001/
+  [32mPASS[0m bg_stage creates dir + subdirs + version.json + snippet: 'OK'
+[blue-green] staged bin/1.0.0.001/
+[blue-green] bin/current → 1.0.0.001（previous=<none>）
+  [32mPASS[0m bg_switch creates current → id1 symlink: 'OK'
+[blue-green] staged bin/1.0.0.001/
+[blue-green] bin/current → 1.0.0.001（previous=<none>）
+[blue-green] staged bin/1.0.0.002/
+[blue-green] bin/current → 1.0.0.002（previous=1.0.0.001）
+  [32mPASS[0m bg_switch records previous = id1: '1.0.0.001'
+[blue-green] staged bin/2.0.0.100/
+[blue-green] bin/current → 2.0.0.100（previous=<none>）
+  [32mPASS[0m bg_current returns active id: '2.0.0.100'
+[blue-green] staged bin/1.0.0.001/
+[blue-green] bin/current → 1.0.0.001（previous=<none>）
+[blue-green] staged bin/1.0.0.002/
+[blue-green] bin/current → 1.0.0.002（previous=1.0.0.001）
+[blue-green] rollback: bin/current → 1.0.0.001（原 1.0.0.002）
+[blue-green] 失败版本已移到 bin/1.0.0.002.failed/
+  [32mPASS[0m bg_rollback switches current back + marks old as .failed: 'OK'
+[blue-green] prune: moved 2 → /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-bg-test.XXXXXX.Oza9qW0wZ0/case8/backups/bin-pruned-20260903-232402
+  [32mPASS[0m bg_prune 5 → keeps 5, prunes 2: '7:5'
+[blue-green] staged bin/9.9.9.999/
+  [32mPASS[0m bg_stage refuses to overwrite existing id: 'OK'
+[blue-green] staged bin/3.0.0.010/
+  [32mPASS[0m bg_compose_snippet returns full path: contains 'bin/3.0.0.010/pocketd-compose-snippet.yml'
+[blue-green] staged bin/3.0.0.011/
+[blue-green] bin/current → 3.0.0.011（previous=<none>）
+  [32mPASS[0m bg_compose_snippet falls back to current: contains 'bin/3.0.0.011/pocketd-compose-snippet.yml'
+
+━━━ test_blue_green ━━━
+  PASS: 12  FAIL: 0
+
+════════════════════════════════════════════════════════════════
+  ▶ test_database_detect.sh
+════════════════════════════════════════════════════════════════
+  [32mPASS[0m PG detect via docker: 'docker:127.0.0.1:15432'
+  [32mPASS[0m Redis detect via docker: 'docker:127.0.0.1:6379'
+  [32mPASS[0m MySQL detect via docker: 'docker:127.0.0.1:3306'
+  [32mPASS[0m PG detect via systemd: 'system:127.0.0.1:15432'
+  [32mPASS[0m PG detect via local port: 'local-port:127.0.0.1:15432'
+  [32mPASS[0m PG detect: nothing found returns empty
+  [32mPASS[0m PG detect: remote unreachable returns empty
+
+━━━ test_database_detect ━━━
+  PASS: 7  FAIL: 0
+
+════════════════════════════════════════════════════════════════
+  ▶ test_init_dirs.sh
+════════════════════════════════════════════════════════════════
+  [32mPASS[0m always: attachments/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/attachments
+  [32mPASS[0m always: bin/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/bin
+  [32mPASS[0m always: backups/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/backups
+  [32mPASS[0m always: logs/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/logs
+  [32mPASS[0m always: raw-logs/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/raw-logs
+  [32mPASS[0m always: run/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/run
+  [32mPASS[0m always: data/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/data
+  [32mPASS[0m always: config/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/config
+  [32mPASS[0m always: images/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/images
+  [32mPASS[0m conditional: postgres/ NOT created: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/postgres (correctly absent)
+  [32mPASS[0m conditional: redis/ NOT created: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/redis (correctly absent)
+  [32mPASS[0m conditional: mysql/ NOT created: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/mysql (correctly absent)
+  [32mPASS[0m .gitkeep in attachments/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/attachments/.gitkeep
+  [32mPASS[0m .gitignore in attachments/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/attachments/.gitignore
+  [32mPASS[0m .gitkeep in bin/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/bin/.gitkeep
+  [32mPASS[0m .gitignore in bin/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/bin/.gitignore
+  [32mPASS[0m .gitkeep in backups/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/backups/.gitkeep
+  [32mPASS[0m .gitignore in backups/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/backups/.gitignore
+  [32mPASS[0m .gitkeep in logs/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/logs/.gitkeep
+  [32mPASS[0m .gitignore in logs/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/logs/.gitignore
+  [32mPASS[0m .gitkeep in raw-logs/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/raw-logs/.gitkeep
+  [32mPASS[0m .gitignore in raw-logs/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/raw-logs/.gitignore
+  [32mPASS[0m .gitkeep in run/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/run/.gitkeep
+  [32mPASS[0m .gitignore in run/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/run/.gitignore
+  [32mPASS[0m .gitkeep in data/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/data/.gitkeep
+  [32mPASS[0m .gitignore in data/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/data/.gitignore
+  [32mPASS[0m .gitkeep in config/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/config/.gitkeep
+  [32mPASS[0m .gitignore in config/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/config/.gitignore
+  [32mPASS[0m .gitkeep in images/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/images/.gitkeep
+  [32mPASS[0m .gitignore in images/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/images/.gitignore
+  [32mPASS[0m bin/.gitignore has wildcard: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/bin/.gitignore
+  [32mPASS[0m conditional: postgres/ created when PG=true: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test2.XXXXXX.t9HLxL6LOy/postgres
+  [32mPASS[0m conditional: redis/ created when REDIS=true: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test2.XXXXXX.t9HLxL6LOy/redis
+  [32mPASS[0m conditional: mysql/ created when MYSQL=true: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test2.XXXXXX.t9HLxL6LOy/mysql
+  [32mPASS[0m idempotent: attachments/ still exists: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/attachments
+  [32mPASS[0m idempotent: bin/ still exists: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test1.XXXXXX.6oGIOxDT9J/bin
+  [32mPASS[0m 154: attachments/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test3.XXXXXX.ENwCn2htLk/attachments
+  [32mPASS[0m 154: bin/: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-init-test3.XXXXXX.ENwCn2htLk/bin
+  SKIP: write-permission test (root-unfriendly)
+
+━━━ test_init_dirs ━━━
+  PASS: 38  FAIL: 0
+
+════════════════════════════════════════════════════════════════
+  ▶ test_os_detect.sh
+════════════════════════════════════════════════════════════════
+  [32mPASS[0m macOS os_kind: 'darwin'
+  [32mPASS[0m macOS base dir: '/Users/test/kaixuan/openpocket'
+  [32mPASS[0m macOS os_is_macos: '0'
+  [32mPASS[0m macOS os_is_windows: '1'
+  [32mPASS[0m macOS PATH separator: ':'
+  [32mPASS[0m linux os_kind: 'linux'
+  [32mPASS[0m linux base dir: '/opt/kaixuan/openpocket'
+  [32mPASS[0m linux os_is_linux_native: '0'
+  [32mPASS[0m linux not wsl: '1'
+  [32mPASS[0m wsl os_kind: 'wsl'
+  [32mPASS[0m wsl base dir: '/opt/kaixuan/openpocket'
+  [32mPASS[0m wsl os_is_wsl: '0'
+  [32mPASS[0m wsl is linux_native: '0'
+  [32mPASS[0m windows os_is_windows: '0'
+  [32mPASS[0m windows PATH separator: ';'
+  [32mPASS[0m windows /d → D:: 'D:/kaixuan/foo'
+  [32mPASS[0m windows /c → C:: 'C:/Users/x'
+  [32mPASS[0m non-windows path passthrough: '/home/x/foo'
+  [32mPASS[0m unknown os kind passthrough: 'plan9'
+  [32mPASS[0m unknown OS uses home-based path: '/tmp/kaixuan/openpocket'
+
+━━━ test_os_detect ━━━
+  PASS: 20  FAIL: 0
+
+════════════════════════════════════════════════════════════════
+  ▶ tests/deploy-integration-test.sh
+════════════════════════════════════════════════════════════════
+━━━ 1. dry-run: deploy-local.sh (PG=true) ━━━
+━━━ deploy-local ━━━
+  OS_KIND         = darwin
+  DEPLOY_BASE_DIR = /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs
+  HTTP_PORT       = 8090@0.0.0.0
+  FRONTEND_PORT   = 4175
+  ✅ OS 适配: darwin（原生支持）
+━━━ init-dirs: DEPLOY_ENV=local OS=darwin ━━━
+  DEPLOY_BASE_DIR = /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs
+  OPP_SERVER_NAME = <none>
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs/data
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs/logs
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs/raw-logs
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs/config
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs/images
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs/backups
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs/attachments
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs/bin
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs/run
+━━━ 完成 ━━━
+  新建 9 个目录，跳过 1 个已存在目录
+  下一步: ./deploy-local.sh（会自动生成 /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs/config/.env.local）
+
+━━━ ensure-databases 总结 ━━━
+  PG    : mode=uninit              target=host.docker.internal:15432  deploy=false
+  Redis : mode=uninit              target=127.0.0.1:6379  deploy=false
+  MySQL : mode=uninit              target=127.0.0.1:3306  deploy=false
+  📝 生成本地 .env 模板: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs/config/.env.local
+  🆕 bin/current 不存在，自动 stage pocket-opp-pa348560-20260903232446
+[blue-green] staged bin/pocket-opp-pa348560-20260903232446/
+[blue-green] bin/current → pocket-opp-pa348560-20260903232446（previous=<none>）
+❌ 既没有所需镜像，也没有 kx-base:go-vue-optimized
+   离线导入: ./deploy/bin/load-images.sh   （tars 放 /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs/images）
+   或加载 kx-base 后用 --build 现场构建
+  [32mPASS[0m base dir created: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.fT3fo8ZTQs
+  [32mPASS[0m attachments/
+  [32mPASS[0m bin/
+  [32mPASS[0m backups/
+  [32mPASS[0m logs/
+  [32mPASS[0m raw-logs/
+  [32mPASS[0m run/
+  [32mPASS[0m data/
+  [32mPASS[0m config/
+  [32mPASS[0m images/
+  [32mPASS[0m postgres/ correctly absent (OPP_DEPLOY_PG=false)
+  [32mPASS[0m bin/.gitkeep
+  [32mPASS[0m bin/.gitignore
+  [32mPASS[0m bin/current is a symlink (auto-staged by start.sh)
+  [32mPASS[0m bin/current → pocket-opp-pa348560-20260903232446 (dir exists)
+  [32mPASS[0m config/.env.local auto-generated
+  [32mPASS[0m .env.local has POCKET_JWT_SECRET
+  ⏭  DSN 注入检查跳过（OPP_DEPLOY_PG=false 走 remote-required；DSN 由 .env 注入）
+  [32mPASS[0m bin/ has at least one version directory
+
+━━━ 2. dry-run: deploy-154.sh 派生 ━━━
+POCKET_PORT_BIND_IP=172.16.2.154
+POCKET_HTTP_PORT=8090
+POCKET_ENV_FILE=/var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-154.XXXXXX.DM3QCf7b5D/config/.env.154
+POCKET_PROJECT_NAME=opencode-pocket-server-154
+OPP_PG_HOST=172.16.2.210
+  [32mPASS[0m 154 mode: POCKET_ENV_FILE = .env.154
+  [32mPASS[0m 154 mode: bind IP = 172.16.2.154
+
+━━━ 3. dry-run: deploy-245.sh 派生 ━━━
+POCKET_PORT_BIND_IP=172.16.2.245
+POCKET_HTTP_PORT=8091
+POCKET_FRONTEND_PORT=4176
+POCKET_ENV_FILE=/var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-245.XXXXXX.1PBKLTDl6g/config/.env.245
+POCKET_PROJECT_NAME=opencode-pocket-server-245
+  [32mPASS[0m 245 mode: bind IP = 172.16.2.245
+  [32mPASS[0m 245 mode: HTTP port = 8091
+  [32mPASS[0m 245 mode: frontend port = 4176
+  [32mPASS[0m 245 mode: POCKET_ENV_FILE = .env.245
+
+━━━ 4. dry-run: OPP_DEPLOY_PG=true → postgres/ 创建 ━━━
+  [32mPASS[0m OPP_DEPLOY_PG=true → postgres/ created
+  [32mPASS[0m redis/ correctly absent (OPP_DEPLOY_REDIS=false)
+  [32mPASS[0m mysql/ correctly absent (OPP_DEPLOY_MYSQL=false)
+
+━━━ integration dry-run ━━━
+  PASS: 27  FAIL: 0
+  Log:  /Users/xutaohuang/workspace/ai-native-tools/openpocket/test-evidence/deploy-2026-09-03/integration-test.log
+
+════════════════════════════════════════════════════════════════
+  ▶ 单元合约测试 + 集成 dry-run 汇总
+════════════════════════════════════════════════════════════════
+  test_blue_green.sh:   PASS: 12  FAIL: 0
+  test_database_detect.sh:   PASS: 7  FAIL: 0
+  test_init_dirs.sh:   PASS: 38  FAIL: 0
+  test_os_detect.sh:   PASS: 20  FAIL: 0
+  deploy-integration-test.sh:   PASS: 27  FAIL: 0
+
+✅ 全部测试通过

@@ -1,0 +1,23 @@
+  [32mPASS[0m macOS os_kind: 'darwin'
+  [32mPASS[0m macOS base dir: '/Users/test/kaixuan/openpocket'
+  [32mPASS[0m macOS os_is_macos: '0'
+  [32mPASS[0m macOS os_is_windows: '1'
+  [32mPASS[0m macOS PATH separator: ':'
+  [32mPASS[0m linux os_kind: 'linux'
+  [32mPASS[0m linux base dir: '/opt/kaixuan/openpocket'
+  [32mPASS[0m linux os_is_linux_native: '0'
+  [32mPASS[0m linux not wsl: '1'
+  [32mPASS[0m wsl os_kind: 'wsl'
+  [32mPASS[0m wsl base dir: '/opt/kaixuan/openpocket'
+  [32mPASS[0m wsl os_is_wsl: '0'
+  [32mPASS[0m wsl is linux_native: '0'
+  [32mPASS[0m windows os_is_windows: '0'
+  [32mPASS[0m windows PATH separator: ';'
+  [32mPASS[0m windows /d → D:: 'D:/kaixuan/foo'
+  [32mPASS[0m windows /c → C:: 'C:/Users/x'
+  [32mPASS[0m non-windows path passthrough: '/home/x/foo'
+  [32mPASS[0m unknown os kind passthrough: 'plan9'
+  [32mPASS[0m unknown OS uses home-based path: '/tmp/kaixuan/openpocket'
+
+━━━ test_os_detect ━━━
+  PASS: 20  FAIL: 0

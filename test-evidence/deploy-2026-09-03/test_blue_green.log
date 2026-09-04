@@ -1,0 +1,35 @@
+  [32mPASS[0m bg_init creates .gitkeep + .gitignore: 'OK'
+  [32mPASS[0m bg_compute_id default contains tag+rev: contains 'pocket-opp-p'
+  [32mPASS[0m bg_compute_id explicit version.build: '1.2.3.005'
+[blue-green] staged bin/1.0.0.001/
+  [32mPASS[0m bg_stage creates dir + subdirs + version.json + snippet: 'OK'
+[blue-green] staged bin/1.0.0.001/
+[blue-green] bin/current → 1.0.0.001（previous=<none>）
+  [32mPASS[0m bg_switch creates current → id1 symlink: 'OK'
+[blue-green] staged bin/1.0.0.001/
+[blue-green] bin/current → 1.0.0.001（previous=<none>）
+[blue-green] staged bin/1.0.0.002/
+[blue-green] bin/current → 1.0.0.002（previous=1.0.0.001）
+  [32mPASS[0m bg_switch records previous = id1: '1.0.0.001'
+[blue-green] staged bin/2.0.0.100/
+[blue-green] bin/current → 2.0.0.100（previous=<none>）
+  [32mPASS[0m bg_current returns active id: '2.0.0.100'
+[blue-green] staged bin/1.0.0.001/
+[blue-green] bin/current → 1.0.0.001（previous=<none>）
+[blue-green] staged bin/1.0.0.002/
+[blue-green] bin/current → 1.0.0.002（previous=1.0.0.001）
+[blue-green] rollback: bin/current → 1.0.0.001（原 1.0.0.002）
+[blue-green] 失败版本已移到 bin/1.0.0.002.failed/
+  [32mPASS[0m bg_rollback switches current back + marks old as .failed: 'OK'
+[blue-green] prune: moved 2 → /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-bg-test.XXXXXX.8OdQpwFmIB/case8/backups/bin-pruned-20260903-232521
+  [32mPASS[0m bg_prune 5 → keeps 5, prunes 2: '7:5'
+[blue-green] staged bin/9.9.9.999/
+  [32mPASS[0m bg_stage refuses to overwrite existing id: 'OK'
+[blue-green] staged bin/3.0.0.010/
+  [32mPASS[0m bg_compose_snippet returns full path: contains 'bin/3.0.0.010/pocketd-compose-snippet.yml'
+[blue-green] staged bin/3.0.0.011/
+[blue-green] bin/current → 3.0.0.011（previous=<none>）
+  [32mPASS[0m bg_compose_snippet falls back to current: contains 'bin/3.0.0.011/pocketd-compose-snippet.yml'
+
+━━━ test_blue_green ━━━
+  PASS: 12  FAIL: 0
