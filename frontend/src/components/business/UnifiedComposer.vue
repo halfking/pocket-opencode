@@ -68,6 +68,7 @@
           <span class="material-symbols-outlined" aria-hidden="true">attach_file</span>
         </button>
         <span v-if="isTranscribing" class="uc-hint">转写中…</span>
+          <span v-if="optimizeRetryHint" class="uc-hint">{{ optimizeRetryHint }}</span>
       </div>
 
       <div class="uc-tools-right">
@@ -164,6 +165,7 @@
             <span class="material-symbols-outlined" aria-hidden="true">attach_file</span>
           </button>
           <span v-if="isTranscribing" class="uc-hint">转写中…</span>
+          <span v-if="optimizeRetryHint" class="uc-hint">{{ optimizeRetryHint }}</span>
         </div>
         <div class="uc-tools-right">
           <button
@@ -276,7 +278,7 @@ const fileInput = ref<HTMLInputElement | null>(null)
 
 const { isRecording, isTranscribing, toggleRecording } = useVoiceInput()
 const { pickImage } = useCameraCapture()
-const { optimize: runOptimize, abort: abortOptimize, isOptimizing } = usePromptOptimizer()
+const { optimize: runOptimize, abort: abortOptimize, isOptimizing, optimizeRetryHint } = usePromptOptimizer()
 
 // ---- 角色 ----
 const agentStore = useChatAgentStore()
@@ -304,6 +306,10 @@ function onInput(e: Event) {
 }
 
 function onKeydown(e: KeyboardEvent) {
+  // e.repeat：长按/输入法（如 Gboard 语音听写收尾）合成的重复 Enter 只应提交
+  // 一次——第二发会被发送侧 isStreaming/canSubmit 挡住，但直接过滤更明确
+  // （runbook §16.6-1「气泡入列表但流未发出」的一次性观察，防御双通道竞态）。
+  if (e.repeat) return
   if (e.key === 'Enter' && props.submitOnEnter && !e.shiftKey) {
     e.preventDefault()
     onSubmit()

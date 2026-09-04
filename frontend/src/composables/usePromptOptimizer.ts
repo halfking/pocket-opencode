@@ -21,6 +21,8 @@ export interface PromptOptimizerOptions {
 export function usePromptOptimizer(options: PromptOptimizerOptions = {}) {
   const isOptimizing = ref(false)
   const optimizeError = ref('')
+  /** auto 回退重试进度帧（runbook §15.1 任务 4），非终态，正文到达后清空。 */
+  const optimizeRetryHint = ref('')
   let controller: AbortController | null = null
 
   /**
@@ -33,12 +35,14 @@ export function usePromptOptimizer(options: PromptOptimizerOptions = {}) {
       onDelta: (accumulated: string) => void
       onDone?: (finalText: string) => void
       onError?: (err: Error) => void
+      onRetry?: (model: string) => void
     },
   ): void {
     const text = draft.trim()
     if (!text || isOptimizing.value) return
     isOptimizing.value = true
     optimizeError.value = ''
+    optimizeRetryHint.value = ''
     let accumulated = ''
 
     const messages: ChatMessage[] = [
@@ -59,13 +63,19 @@ export function usePromptOptimizer(options: PromptOptimizerOptions = {}) {
             handlers.onDelta(accumulated)
           }
         },
+        onRetry: (model) => {
+          optimizeRetryHint.value = `上游模型不可用，已切换到 ${model} 重试…`
+          handlers.onRetry?.(model)
+        },
         onDone: () => {
           isOptimizing.value = false
+          optimizeRetryHint.value = ''
           controller = null
           handlers.onDone?.(accumulated)
         },
         onError: (err) => {
           isOptimizing.value = false
+          optimizeRetryHint.value = ''
           controller = null
           optimizeError.value = err.message || String(err)
           handlers.onError?.(err)
@@ -78,7 +88,8 @@ export function usePromptOptimizer(options: PromptOptimizerOptions = {}) {
     controller?.abort()
     controller = null
     isOptimizing.value = false
+    optimizeRetryHint.value = ''
   }
 
-  return { optimize, abort, isOptimizing, optimizeError }
+  return { optimize, abort, isOptimizing, optimizeError, optimizeRetryHint }
 }

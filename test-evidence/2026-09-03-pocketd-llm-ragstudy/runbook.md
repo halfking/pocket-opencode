@@ -578,3 +578,57 @@ data: [DONE]
 3. 模拟器 quick boot 快照已损坏：下次 E2E 直接 `-no-snapshot` 冷启动省时。
 4. embed 上游无 provider：`/api/embed` 链路健康但网关侧需配 embedding 供应商
    才能真正可用（部署项，非代码项）。
+
+---
+
+## 17. 2026-09-05 会话补充（四）：目标核对 + 收尾杂项清零
+
+> 本轮续接提示词基于 §14.6 列出 4 项目标，但其中全部 4 项已在会话二/三
+> （445517e、5ca02cf）完成并推送。本轮先独立核实该结论，再清掉 §16.6 中
+> 唯一可落地的代码遗留（优化按钮的回退提示）。零密钥引用。
+
+### 17.1 目标核对（防"提交信息声明 ≠ 代码落地"）
+
+对 HEAD 5ca02cf 独立复核，4 项目标全部确认已落地：
+
+| 目标（原提示词） | 实际状态 | 核实方式 |
+|---|---|---|
+| 1. /api/llm/chat 迁移动态网关 | ✅ §15.1 已完成 | `llmChatViaBFF`（server_assistant.go:2280）在位；实测 503 错误带 `gateway_debug` 即动态路径特征 |
+| 2. chatagent PG 测试连通性跳过 | ✅ §15.1 已完成 | `setupTestStore` 含 `pool.Ping` 2s 超时 Skip；本轮 `go test ./...` 无 DSN 环境全绿 |
+| 3. JWT 15min 无刷新评估 | ✅ 超出预期：不止评估，方案 c（滑动续期）已实施（§16.1 #4~7） | `handleAuthRefresh`（server_auth_extended.go:378）在位；实测 `POST /api/auth/refresh` 200 |
+| 4. SSE retry 进度帧 | ✅ §15.1/§16.1 已完成含真机 E2E | `Delta.Retry`、`isModelUnavailableError`、前端 `onRetry`/`retryHint` 全在位 |
+
+本轮独立验证：`go build` + `go test ./...` 全绿（44+ 包）；`vue-tsc --noEmit` 通过。
+
+### 17.2 本轮新改动：优化按钮补回退提示（§16.6 #2 收口）
+
+排查澄清：§16.6 #2 所述"离线队列重放路径"实为 outbox（`src/native/outboxDrain.ts`），
+其重放 `/api/mobile/sessions/:id/prompt`（opencode 会话路径），**不经过 /api/llm/stream**，
+retry 帧对其无意义；真正的未接 `onRetry` 调用方是：
+
+| 文件 | 处理 |
+|---|---|
+| `frontend/src/composables/usePromptOptimizer.ts` | **已接**：新增 `optimizeRetryHint` ref（开始/done/error/abort 时清空）+ `onRetry` 回调透传 |
+| `frontend/src/components/business/UnifiedComposer.vue` | **已接**：两处工具栏（常规/全屏）复用现有 `.uc-hint` 样式渲染 `上游模型不可用，已切换到 <model> 重试…`，与「转写中…」同行同风格 |
+| `frontend/src/features/meetings/meetings-ai.ts` | **本轮未接**：`summarizeMeeting` 当时无调用方（孤儿函数），无 UI 呈现位。注：本轮收尾时观察到并行会话在同目录为其接入 onRetry（未提交），后续以其提交为准 |
+
+验证：`vue-tsc --noEmit` 通过。
+
+### 17.3 本轮冒烟记录（运行中的 pocketd :8088，即 5ca02cf 代码）
+
+- `POST /api/auth/login` 200；`GET /api/llm-gateway/config` 200（key 掩码 sk-6**）；
+- `POST /api/llm/chat` model=kimi-k3 → 200 `{"content":"pong 🏓...","model":"kimi-k3"}`（动态网关路径）；
+- `POST /api/llm/stream` model=kimi-k3 → SSE 正常（content 帧 + stop + usage + `[DONE]`）；
+- `POST /api/auth/refresh` 200；
+- **环境观察（非回归）**：model=glm-5.2 / minimax-m3 当前上游返回
+  `model_not_found: No available provider ... All N candidates failed`——上游网关
+  侧无可用 provider（与 §16.3 embed `no_provider` 同类，部署项）。链路本身健康：
+  请求正确到达网关、错误结构化返回。kimi-k3 可用即证。
+
+### 17.4 遗留（下一轮续接，更新版）
+
+1. §16.6 #1 "say" burst 竞态：复现 0/1，维持"再遇再查"。
+2. `summarizeMeeting` 孤儿函数：无调用方；会议纪要 UI 落地时接 `onRetry` 并接入页面。
+3. 上游网关 glm-5.2/minimax-m3 无可用 provider：部署侧为网关配置 provider（本仓无代码可改）。
+4. 模拟器 quick boot 快照损坏 → E2E 用 `-no-snapshot` 冷启动（§16.6 #3 沿用）。
+5. embed 上游 provider 配置（§16.6 #4 沿用，部署项）。
