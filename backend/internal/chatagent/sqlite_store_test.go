@@ -254,3 +254,76 @@ body content
 		t.Errorf("expected 1 imported agent, got %d", len(list))
 	}
 }
+
+// TestSQLiteStore_LegacyTableMigration 模拟 Phase 4 之前的 11 列旧库：
+// Init 必须幂等补齐 marketplace 5 列并建好索引，而不是报
+// "no such column: marketplace_id" 后放弃初始化（2026-09-05 现场复现）。
+func TestSQLiteStore_LegacyTableMigration(t *testing.T) {
+	tmp, err := os.CreateTemp("", "chatagent-legacy-*.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp.Close()
+	defer os.Remove(tmp.Name())
+
+	store, err := NewSQLiteStore(tmp.Name())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	// 先造一个旧 schema（无 marketplace_id / skill_refs / publisher / version / tags）
+	legacy := `
+	CREATE TABLE chat_agents (
+		id            TEXT PRIMARY KEY,
+		workspace_id  TEXT NOT NULL,
+		name          TEXT NOT NULL,
+		description   TEXT NOT NULL DEFAULT '',
+		department    TEXT NOT NULL,
+		emoji         TEXT,
+		color         TEXT,
+		system_prompt TEXT NOT NULL,
+		is_builtin    INTEGER NOT NULL DEFAULT 0,
+		created_at    INTEGER NOT NULL,
+		updated_at    INTEGER NOT NULL
+	);
+	INSERT INTO chat_agents (id, workspace_id, name, description, department, system_prompt, is_builtin, created_at, updated_at)
+	VALUES ('legacy-1', 'ws-legacy', '旧角色', '', 'test', 'old prompt', 1, 1, 1);
+	`
+	if _, err := store.db.ExecContext(ctx, legacy); err != nil {
+		t.Fatalf("seed legacy schema: %v", err)
+	}
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init on legacy table: %v", err)
+	}
+
+	// 补列后旧行可见且新列可查询/写入
+	got, err := store.Get(ctx, "ws-legacy", "legacy-1")
+	if err != nil {
+		t.Fatalf("Get legacy row: %v", err)
+	}
+	if got.Name != "旧角色" {
+		t.Errorf("legacy row Name=%q", got.Name)
+	}
+	if err := store.Create(ctx, &Agent{
+		ID: "new-1", WorkspaceID: "ws-legacy", Name: "新角色", Department: "test",
+		SystemPrompt: "new prompt", MarketplaceID: "mp-1",
+		SkillRefs: []string{"skill-a"}, Tags: []string{"t1"},
+	}); err != nil {
+		t.Fatalf("Create after migration: %v", err)
+	}
+	mp, err := store.Get(ctx, "ws-legacy", "new-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mp.MarketplaceID != "mp-1" {
+		t.Errorf("MarketplaceID=%q, want mp-1", mp.MarketplaceID)
+	}
+
+	// 二次 Init 幂等
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("second Init: %v", err)
+	}
+}

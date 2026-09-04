@@ -22,6 +22,35 @@ export POCKET_JWT_SECRET=test-secret-key-for-phase7-validation
 export POCKET_HTTP_PORT=8088
 export POCKET_DB_PATH=./data/pocket.sqlite
 
+# dev 登录冒烟凭据：脚本原先从不导出 POCKET_AUTH_PASS，登录测试一直发空密码。
+# 未显式设置时回退到后端 dev 缺省（admin / Veritrans&9527）。
+export POCKET_AUTH_USER="${POCKET_AUTH_USER:-admin}"
+export POCKET_AUTH_PASS="${POCKET_AUTH_PASS:-Veritrans&9527}"
+
+# AI 网关配置：从仓库根 .env 读取（不回显密钥），保证 /api/llm/* 开箱可用。
+ROOT_ENV="$(cd "$(dirname "$0")/.." && pwd)/.env"
+read_env_key() {
+  python3 - "$ROOT_ENV" "$1" <<'PY'
+import sys, re, pathlib
+p, key = pathlib.Path(sys.argv[1]), sys.argv[2]
+for line in p.read_text().splitlines():
+    s = line.strip()
+    if not s or s.startswith('#'):
+        continue
+    m = re.match(r'^([A-Z0-9_]+)\s*=\s*(.*)$', s)
+    if m and m.group(1) == key:
+        print(m.group(2).strip().strip('"\''), end='')
+        break
+PY
+}
+if [ -f "$ROOT_ENV" ]; then
+  GW_URL="$(read_env_key POCKET_LLM_GATEWAY_URL)"
+  GW_KEY="$(read_env_key POCKET_LLM_GATEWAY_API_KEY)"
+  export POCKET_LLM_GATEWAY_URL="${POCKET_LLM_GATEWAY_URL:-$GW_URL}"
+  export POCKET_LLM_GATEWAY_API_KEY="${POCKET_LLM_GATEWAY_API_KEY:-$GW_KEY}"
+  echo "AI 网关: ${POCKET_LLM_GATEWAY_URL:-<未配置>} (key: ${POCKET_LLM_GATEWAY_API_KEY:+已注入})"
+fi
+
 # ✨ 新增：配置本地 OpenCode 实例
 export POCKET_OPENCODE_INSTANCES='[
   {

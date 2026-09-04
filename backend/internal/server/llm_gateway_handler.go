@@ -105,7 +105,13 @@ func (s *Server) EnsureLLMGatewayDefaults(workspaceIDs ...string) {
 
 		existing, err := s.llmGWStore.LoadConfig(context.Background(), wsID)
 		if err != nil {
-			log.Printf("[llm-gateway] default-seed LoadConfig failed for %s: %v", wsID, err)
+			// 密文不可解（如 JWT secret 轮换后 cipher 校验失败）或行损坏：
+			// 用 env 默认配置覆写毒化行，而不是永远跳过——否则每次启动都
+			// 解密失败并静默回退，租户配置再也救不回来。
+			log.Printf("[llm-gateway] default-seed LoadConfig failed for %s: %v; self-healing with env defaults", wsID, err)
+			if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, def); saveErr != nil {
+				log.Printf("[llm-gateway] default-seed self-heal SaveConfig failed for %s: %v", wsID, saveErr)
+			}
 			continue
 		}
 		if existing != nil {
@@ -511,8 +517,15 @@ func (s *Server) LoadLLMGatewayFromDB(workspaceIDs ...string) {
 		}
 		st, err := s.llmGWStore.LoadConfig(context.Background(), wsID)
 		if err != nil {
-			log.Printf("[llm-gateway] load from DB failed for %s: %v", wsID, err)
-			continue
+			// 与 EnsureLLMGatewayDefaults 同理：不可解密/损坏的行自愈为
+			// env 默认配置，避免每次启动重复解密失败且无法恢复。
+			log.Printf("[llm-gateway] load from DB failed for %s: %v; self-healing with env defaults", wsID, err)
+			def := defaultLLMGatewayState()
+			if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, def); saveErr != nil {
+				log.Printf("[llm-gateway] self-heal SaveConfig failed for %s: %v", wsID, saveErr)
+				continue
+			}
+			st = &def
 		}
 		if st == nil {
 			continue

@@ -475,6 +475,10 @@ export const useAIChatStore = defineStore('ai-chat', () => {
       createdAt: Date.now(),
     }
     conv.messages.push(assistant)
+    // 异步增量必须写入「响应式代理」：push 进数组后模板读到的是代理，
+    // 而上面的 assistant 是原始对象——直接改原始对象不会触发模板更新，
+    // 表现为流式期间气泡永远空白、重启后才从持久化里显示内容。
+    const liveAssistant = conv.messages[conv.messages.length - 1]
     const streamKey = compareMode.value ? `${conv.id}:${assistant.id}` : conv.id
 
     const ctrl = llmBffApi.streamChat(
@@ -490,19 +494,19 @@ export const useAIChatStore = defineStore('ai-chat', () => {
       },
       {
         onDelta: (d) => {
-          if (d.content) assistant.content += d.content
-          if (d.usage) assistant.usage = d.usage
+          if (d.content) liveAssistant.content += d.content
+          if (d.usage) liveAssistant.usage = d.usage
         },
         onDone: (usage) => {
-          assistant.streaming = false
-          if (usage) assistant.usage = usage
+          liveAssistant.streaming = false
+          if (usage) liveAssistant.usage = usage
           controllers.delete(streamKey)
           conv.updatedAt = Date.now()
           persist()
         },
         onError: (err) => {
-          assistant.streaming = false
-          assistant.error = err.message || String(err)
+          liveAssistant.streaming = false
+          liveAssistant.error = err.message || String(err)
           controllers.delete(streamKey)
           conv.updatedAt = Date.now()
           persist()
@@ -552,6 +556,8 @@ export const useAIChatStore = defineStore('ai-chat', () => {
       createdAt: Date.now(),
     }
     conv.messages.push(assistant)
+    // 同 spawnStream：增量写入走代理引用（原因见 spawnStream 注释）。
+    const liveAssistant = conv.messages[conv.messages.length - 1]
     conv.updatedAt = Date.now()
 
     const streamKey = `${conv.id}:opt:${assistant.id}`
@@ -566,19 +572,19 @@ export const useAIChatStore = defineStore('ai-chat', () => {
       },
       {
         onDelta: (d) => {
-          if (d.content) assistant.content += d.content
-          if (d.usage) assistant.usage = d.usage
+          if (d.content) liveAssistant.content += d.content
+          if (d.usage) liveAssistant.usage = d.usage
         },
         onDone: (usage) => {
-          assistant.streaming = false
-          if (usage) assistant.usage = usage
+          liveAssistant.streaming = false
+          if (usage) liveAssistant.usage = usage
           controllers.delete(streamKey)
           conv!.updatedAt = Date.now()
           persist()
         },
         onError: (err) => {
-          assistant.streaming = false
-          assistant.error = err.message || String(err)
+          liveAssistant.streaming = false
+          liveAssistant.error = err.message || String(err)
           controllers.delete(streamKey)
           persist()
           toast.error('优化失败：' + (err.message || String(err)))

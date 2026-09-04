@@ -59,18 +59,77 @@ CREATE TABLE IF NOT EXISTS chat_agents (
 	created_at    INTEGER NOT NULL,
 	updated_at    INTEGER NOT NULL
 );
+`
+
+// sqliteIndexSchema 在补列完成之后执行：marketplace 部分索引依赖
+// marketplace_id 列，旧库必须先 ALTER 再建索引。
+const sqliteIndexSchema = `
 CREATE INDEX IF NOT EXISTS idx_chat_agents_ws ON chat_agents(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_chat_agents_dept ON chat_agents(department);
 CREATE INDEX IF NOT EXISTS idx_chat_agents_builtin ON chat_agents(is_builtin);
 CREATE INDEX IF NOT EXISTS idx_chat_agents_marketplace ON chat_agents(marketplace_id) WHERE marketplace_id IS NOT NULL;
 `
 
+// sqliteMarketplaceColumns 是 Phase 4 市场化新增的列。旧库（11 列版
+// chat_agents）没有这些列，CREATE TABLE IF NOT EXISTS 不会补齐，Init 直接
+// 报 "no such column: marketplace_id"（2026-09-05 启动日志现场复现）。
+// SQLite 无 ADD COLUMN IF NOT EXISTS，按 PRAGMA table_info 幂等补列。
+var sqliteMarketplaceColumns = []struct {
+	name string
+	ddl  string
+}{
+	{"marketplace_id", "ALTER TABLE chat_agents ADD COLUMN marketplace_id TEXT"},
+	{"skill_refs", "ALTER TABLE chat_agents ADD COLUMN skill_refs TEXT DEFAULT '[]'"},
+	{"publisher", "ALTER TABLE chat_agents ADD COLUMN publisher TEXT"},
+	{"version", "ALTER TABLE chat_agents ADD COLUMN version TEXT"},
+	{"tags", "ALTER TABLE chat_agents ADD COLUMN tags TEXT DEFAULT '[]'"},
+}
+
 func (s *SQLiteStore) Init(ctx context.Context) error {
 	if s.db == nil {
 		return fmt.Errorf("sqlite store: db not configured")
 	}
-	_, err := s.db.ExecContext(ctx, sqliteSchema)
+	if _, err := s.db.ExecContext(ctx, sqliteSchema); err != nil {
+		return err
+	}
+	if err := s.migrateMarketplaceColumns(ctx); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, sqliteIndexSchema)
 	return err
+}
+
+// migrateMarketplaceColumns 旧库补列：SQLite 无 ADD COLUMN IF NOT EXISTS，
+// 按 PRAGMA table_info 幂等判断。
+func (s *SQLiteStore) migrateMarketplaceColumns(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(chat_agents)`)
+	if err != nil {
+		return err
+	}
+	existing := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, ctype string
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[name] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, col := range sqliteMarketplaceColumns {
+		if existing[col.name] {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, col.ddl); err != nil {
+			return fmt.Errorf("migrate chat_agents add %s: %w", col.name, err)
+		}
+	}
+	return nil
 }
 
 func (s *SQLiteStore) Create(ctx context.Context, a *Agent) error {
@@ -102,7 +161,7 @@ func (s *SQLiteStore) Get(ctx context.Context, workspaceID, id string) (*Agent, 
 	var skillRefsJSON, tagsJSON []byte
 	var marketplaceID, publisher, version sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin,
+		SELECT id, workspace_id, name, description, department, COALESCE(emoji, '') AS emoji, COALESCE(color, '') AS color, system_prompt, is_builtin,
 		       marketplace_id, skill_refs, publisher, version, tags,
 		       created_at, updated_at
 		FROM chat_agents
@@ -139,7 +198,7 @@ func (s *SQLiteStore) List(ctx context.Context, workspaceID, department string) 
 		return nil, fmt.Errorf("sqlite store: db not configured")
 	}
 	query := `
-		SELECT id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin,
+		SELECT id, workspace_id, name, description, department, COALESCE(emoji, '') AS emoji, COALESCE(color, '') AS color, system_prompt, is_builtin,
 		       marketplace_id, skill_refs, publisher, version, tags,
 		       created_at, updated_at
 		FROM chat_agents

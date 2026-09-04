@@ -129,7 +129,7 @@ func (s *Store) Get(ctx context.Context, workspaceID, id string) (*Agent, error)
 	var marketplaceID, publisher, version sql.NullString
 	var isBuiltin int
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin,
+		SELECT id, workspace_id, name, description, department, COALESCE(emoji, '') AS emoji, COALESCE(color, '') AS color, system_prompt, is_builtin,
 		       marketplace_id, skill_refs, publisher, version, tags,
 		       created_at, updated_at
 		FROM chat_agents
@@ -165,7 +165,7 @@ func (s *Store) List(ctx context.Context, workspaceID, department string) ([]*Ag
 		return nil, fmt.Errorf("store not configured")
 	}
 	query := `
-		SELECT id, workspace_id, name, description, department, emoji, color, system_prompt, is_builtin,
+		SELECT id, workspace_id, name, description, department, COALESCE(emoji, '') AS emoji, COALESCE(color, '') AS color, system_prompt, is_builtin,
 		       marketplace_id, skill_refs, publisher, version, tags,
 		       created_at, updated_at
 		FROM chat_agents

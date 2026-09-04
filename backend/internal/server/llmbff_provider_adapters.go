@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
@@ -190,22 +191,45 @@ func (p *dynamicGatewayBFFProvider) Chat(ctx context.Context, req llmbff.ChatReq
 	return resp, err
 }
 
+// auto 回退链的超时预算。网关客户端自身有 90s 总超时 / 30s 响应头超时，
+// 但回退链是逐候选串行重试的：N 个候选都挂住时最坏 N×30s，前端一直转圈。
+// 这里限制：单次尝试 20s（覆盖首 token 正常延迟），整链预算 45s。
+const (
+	autoFallbackAttemptTimeout = 20 * time.Second
+	autoFallbackTotalBudget    = 45 * time.Second
+)
+
+// Stream 实现 BFF 的流式 chat。auto / no_candidate 时按 preferred 列表
+// 本地回退重试；每次尝试与整链都受超时预算约束，保证错误及时浮出
+// （2026-09-05 移动端 E2E：上游挂死时 SSE 长时间零字节，前端空气泡转圈）。
 func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatRequest, fn func(llmbff.Delta) bool) (*llmbff.Usage, error) {
 	c, err := p.clientFor(req.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}
 	req = p.resolveChatModel(req)
-	usage, err := (&llmGatewayBFFProvider{client: c}).Stream(ctx, req, fn)
-	if err != nil && isNoCandidateError(err) {
+	deadline := time.Now().Add(autoFallbackTotalBudget)
+	for {
+		attemptCtx := ctx
+		var cancel context.CancelFunc
+		if remaining := time.Until(deadline); remaining < autoFallbackAttemptTimeout {
+			attemptCtx, cancel = context.WithTimeout(ctx, remaining)
+		} else {
+			attemptCtx, cancel = context.WithTimeout(ctx, autoFallbackAttemptTimeout)
+		}
+		usage, err := (&llmGatewayBFFProvider{client: c}).Stream(attemptCtx, req, fn)
+		cancel()
+		if err == nil || !isNoCandidateError(err) {
+			return usage, err
+		}
 		// 503 no_candidate 出现在任何 chunk 之前，所以 fn 不会被调用过，
 		// 可以安全地以另一个 model 重试。
-		if fallback := p.fallbackModel(req.WorkspaceID, req.Model); fallback != "" {
-			req.Model = fallback
-			return (&llmGatewayBFFProvider{client: c}).Stream(ctx, req, fn)
+		fallback := p.fallbackModel(req.WorkspaceID, req.Model)
+		if fallback == "" || ctx.Err() != nil || !time.Now().Before(deadline) {
+			return usage, err
 		}
+		req.Model = fallback
 	}
-	return usage, err
 }
 
 // fallbackModel 在 no_candidate 触发时挑下一个候选 model（不含 current）。

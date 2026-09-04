@@ -89,6 +89,10 @@ export const llmBffApi = {
     const auth = useAuthStore()
 
    ;(async () => {
+      // 流级看门狗：后端 auto 回退链上游挂死时（观察过 35s+ 无任何字节），
+      // 必须保证 onError 最终触发，否则 UI 永远转圈。
+      const STREAM_WATCHDOG_MS = 120_000
+      const watchdog = setTimeout(() => ctrl.abort(), STREAM_WATCHDOG_MS)
       try {
         const res = await fetch(`${API_BASE}/api/llm/stream`, {
           method: 'POST',
@@ -107,6 +111,7 @@ export const llmBffApi = {
         const decoder = new TextDecoder()
         let buf = ''
         let finalUsage: ChatStreamDelta['usage']
+        let sawDelta = false
 
         while (true) {
           const { done, value } = await reader.read()
@@ -124,23 +129,42 @@ export const llmBffApi = {
               handlers.onDone?.(finalUsage)
               return
             }
+            let delta: ChatStreamDelta
             try {
-              const delta = JSON.parse(data) as ChatStreamDelta
-              if (delta.error) {
-                throw new Error(delta.error)
-              }
-              if (delta.usage) finalUsage = delta.usage
-              handlers.onDelta(delta)
+              delta = JSON.parse(data) as ChatStreamDelta
             } catch (parseErr) {
               // 单帧解析失败不中断流
               console.warn('[llm-bff] bad SSE frame:', data)
+              continue
             }
+            // 后端错误帧形如 {"error":"...","delta":{"done":true,...}}。
+            // 必须走 onError 让 UI 停止转圈并提示——不能 throw 进上面的
+            // 解析 catch（历史上被当坏帧吞掉，用户只看到空气泡）。
+            if (delta.error) {
+              clearTimeout(watchdog)
+              handlers.onError?.(new Error(delta.error))
+              return
+            }
+            if (delta.usage) finalUsage = delta.usage
+            sawDelta = true
+            handlers.onDelta(delta)
           }
+        }
+        // 流正常关闭但一帧都没有：视为错误而非静默成功（空气泡陷阱）。
+        if (!sawDelta && !finalUsage) {
+          handlers.onError?.(new Error('模型未返回内容（空流）'))
+          return
         }
         handlers.onDone?.(finalUsage)
       } catch (err) {
-        if ((err as Error).name === 'AbortError') return
+        if ((err as Error).name === 'AbortError') {
+          // 看门狗触发时用户并未手动取消，也要给 UI 一个终态。
+          handlers.onError?.(new Error(`响应超时（${STREAM_WATCHDOG_MS / 1000}s 无响应）`))
+          return
+        }
         handlers.onError?.(err as Error)
+      } finally {
+        clearTimeout(watchdog)
       }
     })()
 
