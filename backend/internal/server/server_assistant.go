@@ -114,6 +114,18 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if s.redclawAdminClient != nil {
 		res, err := s.redclawAdminClient.Login(r.Context(), body.Username, body.Password)
 		if err != nil {
+			// RedClaw 不可达（网络/5xx/超时）+ dev 旁路开启 → 降级到本地
+			// dev 登录，保证 RedClaw 故障时开发/故障恢复环境不被锁死。
+			// 401/403（凭据错误）不降级——那是真实的认证失败。
+			if errors.Is(err, redclaw.ErrRedClawUnavailable) && s.cfg.DevAuth {
+				log.Printf("WARN: redclaw unavailable (%v); falling back to dev bypass", err)
+				if u, ok := s.devBypassCredentials(body.Username, body.Password); ok {
+					s.devPathIssueToken(w, r, u.id, u.role, u.username, u.email)
+					return
+				}
+				writeError(w, http.StatusUnauthorized, "invalid credentials")
+				return
+			}
 			s.handleRedClawAuthError(w, err, "redclaw login failed")
 			return
 		}
@@ -151,17 +163,8 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 	// 路径 2：dev 旁路（仅当 POCKET_DEV_AUTH=true）
 	if s.cfg.DevAuth {
-		devUser := s.cfg.DevAuthUser
-		if devUser == "" {
-			devUser = "admin"
-		}
-		devPass := s.cfg.DevAuthPass
-		if devPass == "" {
-			devPass = "Veritrans&9527"
-		}
-		if subtle.ConstantTimeCompare([]byte(body.Username), []byte(devUser)) == 1 &&
-			subtle.ConstantTimeCompare([]byte(body.Password), []byte(devPass)) == 1 {
-			s.devPathIssueToken(w, r, "user-admin", "admin", "admin", "")
+		if u, ok := s.devBypassCredentials(body.Username, body.Password); ok {
+			s.devPathIssueToken(w, r, u.id, u.role, u.username, u.email)
 			return
 		}
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
@@ -180,6 +183,34 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeError(w, http.StatusUnauthorized, "invalid credentials")
+}
+
+// devCreds 是 dev 旁路匹配到的账号信息。
+type devCreds struct {
+	id       string
+	role     string
+	username string
+	email    string
+}
+
+// devBypassCredentials 按 POCKET_AUTH_USER/PASS（缺省 admin / Veritrans&9527）
+// constant-time 校验 dev 旁路凭据。仅当 POCKET_DEV_AUTH=true 时由调用方触发。
+func (s *Server) devBypassCredentials(username, password string) (devCreds, bool) {
+	devUser := s.cfg.DevAuthUser
+	if devUser == "" {
+		devUser = "admin"
+	}
+	devPass := s.cfg.DevAuthPass
+	if devPass == "" {
+		// 未显式配置密码时给出一次性告警,便于审计发现默认凭据在用。
+		devPass = "Veritrans&9527"
+		log.Printf("WARN: POCKET_AUTH_PASS not set; using built-in dev default password")
+	}
+	if subtle.ConstantTimeCompare([]byte(username), []byte(devUser)) == 1 &&
+		subtle.ConstantTimeCompare([]byte(password), []byte(devPass)) == 1 {
+		return devCreds{id: "user-admin", role: "admin", username: "admin"}, true
+	}
+	return devCreds{}, false
 }
 
 // ensureWorkspaceForRedClawUser 为 RedClaw 用户在 openpocket 影子表里

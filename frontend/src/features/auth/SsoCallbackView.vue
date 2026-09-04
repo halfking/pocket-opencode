@@ -36,13 +36,15 @@ const status = ref('正在完成企业账号登录…')
 const error = ref('')
 
 onMounted(async () => {
-  // 1. 校验 state（防 CSRF）：RedClaw 会原样回传
+  // 1. 校验 state（防 CSRF）：后端 /api/auth/sso/callback 会原样回传 state,
+  // 与 sessionStorage 中登录前落下的值必须严格相等,缺失或不等一律拒绝。
   const expected = sessionStorage.getItem('pocket_sso_state')
   const params = new URLSearchParams(window.location.search)
   const got = params.get('state')
-  if (expected && got && expected !== got) {
+  if (!expected || !got || expected !== got) {
     error.value = 'state 校验失败，可能为 CSRF 攻击或 session 已过期'
     status.value = '登录失败'
+    sessionStorage.removeItem('pocket_sso_state')
     return
   }
   sessionStorage.removeItem('pocket_sso_state')

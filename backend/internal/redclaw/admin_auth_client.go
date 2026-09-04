@@ -106,10 +106,12 @@ type EmployeeInfo struct {
 	MustChangePassword bool     `json:"mustChangePassword"`
 }
 
-// MeResult RedClaw Admin /auth/me 的响应（与 LoginResult 同形，提取 employee 即可）。
-type MeResult struct {
-	Employee *EmployeeInfo `json:"employee"`
-}
+// MeResult RedClaw Admin /auth/me 的响应。
+//
+// 注意:RedClaw 的 /auth/me 返回顶层扁平的 employee 字段
+// ({"id":..,"name":..,"role":..} 而非 {"employee":{...}}),与 /login 的
+// 嵌套结构不同,所以这里直接解到 EmployeeInfo。
+type MeResult = EmployeeInfo
 
 // ChangePasswordRequest RedClaw Admin /auth/change-password 的请求。
 type ChangePasswordRequest struct {

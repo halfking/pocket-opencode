@@ -144,7 +144,7 @@ func TestAdminAuthClient_Me_Success(t *testing.T) {
 		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer user-tok") {
 			t.Errorf("Me should use user token, got: %s", r.Header.Get("Authorization"))
 		}
-		_ = json.NewEncoder(w).Encode(MeResult{Employee: &EmployeeInfo{ID: "user-1", Role: "admin"}})
+		_ = json.NewEncoder(w).Encode(EmployeeInfo{ID: "user-1", Role: "admin"})
 	}))
 	defer srv.Close()
 	c := newTestAdminClient(t, srv)
@@ -152,8 +152,8 @@ func TestAdminAuthClient_Me_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Me: %v", err)
 	}
-	if res.Employee.Role != "admin" {
-		t.Errorf("bad role: %s", res.Employee.Role)
+	if res.Role != "admin" {
+		t.Errorf("bad role: %s", res.Role)
 	}
 }
 

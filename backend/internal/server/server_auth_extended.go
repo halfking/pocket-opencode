@@ -361,11 +361,8 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		s.handleRedClawAuthError(w, err, "redclaw me failed")
 		return
 	}
-	if res.Employee == nil {
-		writeError(w, http.StatusInternalServerError, "empty employee")
-		return
-	}
-	writeJSON(w, http.StatusOK, res.Employee)
+	// MeResult 即扁平的 EmployeeInfo(RedClaw /auth/me 顶层结构)
+	writeJSON(w, http.StatusOK, res)
 }
 
 // handleAuthSsoLogin — GET /api/auth/sso/login
@@ -417,22 +414,27 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 		s.handleRedClawAuthError(w, err, "redclaw sso callback failed")
 		return
 	}
-	userID := res.Employee.ID
-	if userID == "" {
-		userID = "sso-user"
+	if res.Employee == nil || res.Employee.ID == "" {
+		// 不允许空 user_id:所有 SSO 用户若共用一个 sentinel id 会互相冒充。
+		log.Printf("WARN: redclaw sso callback returned empty employee id")
+		writeError(w, http.StatusBadGateway, "redclaw sso returned no user id")
+		return
 	}
+	userID := res.Employee.ID
 	wsID := s.ensureWorkspaceForRedClawUser(r.Context(), userID)
-	auth.RecordShadow("redclaw-sso", userID, wsID, res.Employee.Name, res.Employee.Email)
+	auth.RecordShadow("redclaw", userID, wsID, res.Employee.Name, res.Employee.Email)
 	// 302 到 SPA 路径 + query 带 token。前端 SsoCallbackView 负责落 store。
 	// 之所以用 query(不是 fragment):openpocket 用的是 vue-router history
 	// 模式，fragment 不会被后端看到，但会被 vue-router 看到；为了简化，让
 	// 后端用 query 注入 token，前端用 URLSearchParams 读取。
+	// state 原样回传,SsoCallbackView 与 sessionStorage 中的值做 CSRF 比对。
 	redirect := "/auth/sso/callback"
 	q := url.Values{}
 	q.Set("token", res.Token)
 	q.Set("user", res.Employee.Name)
 	q.Set("user_id", userID)
 	q.Set("workspace_id", wsID)
+	q.Set("state", state)
 	http.Redirect(w, r, redirect+"?"+q.Encode(), http.StatusFound)
 }
 
