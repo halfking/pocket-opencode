@@ -59,6 +59,12 @@ type Config struct {
 	DevAuthUser string // POCKET_AUTH_USER：dev bootstrap 用户名（缺省 admin）
 	DevAuthPass string // POCKET_AUTH_PASS：dev bootstrap 密码（缺省 Veritrans&9527；仅 POCKET_DEV_AUTH=true 时生效）
 
+	// Marketplace 签名链路（ADR: docs/handoff/2026-09-05-marketplace-signing-chain-design.md）
+	// POCKET_MARKETPLACE_ROOT_PUBKEY：平台级 root ed25519 公钥（base64 或 hex 的
+	// 32 字节）。空 = 签名校验关闭（仅记录，不阻断既有流程）；非空但解析失败 =
+	// pocketd 启动 fatal（fail-fast，拒绝带错误信任锚启动）。
+	MarketplaceRootPubKey string
+
 	// 邮箱 OAuth + IMAP fetch
 	EmailGoogleClientID        string // POCKET_EMAIL_GOOGLE_CLIENT_ID
 	EmailGoogleClientSecret    string // POCKET_EMAIL_GOOGLE_CLIENT_SECRET
@@ -114,37 +120,37 @@ type Config struct {
 
 	// WebAuthn / 生物识别配置（可选；不配置则降级到 P0 stub）
 	WebAuthnRPDisplayName string // POCKET_WEBAUTHN_RP_DISPLAY_NAME：RP 显示名（如 "Redclaw"）
-	WebAuthnRPID         string // POCKET_WEBAUTHN_RP_ID：RP ID（必须是 origin 的有效域名，如 "pocket.example.com"）
-	WebAuthnRPOrigin     string // POCKET_WEBAUTHN_RP_ORIGIN：客户端 origin（如 "https://pocket.example.com"）
+	WebAuthnRPID          string // POCKET_WEBAUTHN_RP_ID：RP ID（必须是 origin 的有效域名，如 "pocket.example.com"）
+	WebAuthnRPOrigin      string // POCKET_WEBAUTHN_RP_ORIGIN：客户端 origin（如 "https://pocket.example.com"）
 
 	// SMTP 验证码邮件发送（可选；不配置则 send-code 仅写库、不发邮件）
-	SMTPHost       string // POCKET_SMTP_HOST：SMTP 服务器主机
-	SMTPPort       int    // POCKET_SMTP_PORT：SMTP 端口（默认 587）
-	SMTPUser       string // POCKET_SMTP_USER：SMTP 认证用户名（空 = 不认证）
-	SMTPPassword   string // POCKET_SMTP_PASSWORD：SMTP 认证密码
-	SMTPFrom       string // POCKET_SMTP_FROM：发件人地址（默认 SMTPUser）
-	SMTPTLSMode    string // POCKET_SMTP_TLS_MODE：none | starttls | tls（默认 starttls）
-	SMTPDebugEcho  bool   // POCKET_SMTP_DEBUG_ECHO：true 时把验证码写进响应 body（仅 dev）
+	SMTPHost      string // POCKET_SMTP_HOST：SMTP 服务器主机
+	SMTPPort      int    // POCKET_SMTP_PORT：SMTP 端口（默认 587）
+	SMTPUser      string // POCKET_SMTP_USER：SMTP 认证用户名（空 = 不认证）
+	SMTPPassword  string // POCKET_SMTP_PASSWORD：SMTP 认证密码
+	SMTPFrom      string // POCKET_SMTP_FROM：发件人地址（默认 SMTPUser）
+	SMTPTLSMode   string // POCKET_SMTP_TLS_MODE：none | starttls | tls（默认 starttls）
+	SMTPDebugEcho bool   // POCKET_SMTP_DEBUG_ECHO：true 时把验证码写进响应 body（仅 dev）
 
 	// RedClaw auth-agent 镜像客户端（可选；空 BaseURL = 镜像路径 disabled）
-	RedClawAuthURL       string // POCKET_REDCLAW_AUTH_URL：auth-agent base URL（如 http://host:27092）
-	RedClawAuthSecret    string // POCKET_REDCLAW_AUTH_SECRET：共享密钥
-	RedClawAuthTimeoutSec int   // POCKET_REDCLAW_AUTH_TIMEOUT_SEC（默认 5）
+	RedClawAuthURL        string // POCKET_REDCLAW_AUTH_URL：auth-agent base URL（如 http://host:27092）
+	RedClawAuthSecret     string // POCKET_REDCLAW_AUTH_SECRET：共享密钥
+	RedClawAuthTimeoutSec int    // POCKET_REDCLAW_AUTH_TIMEOUT_SEC（默认 5）
 
 	// —— RedClaw 认证主权威源（一期切换）——
 	// 改造后 openpocket 不再自签 JWT；密码登录、SSO、token 撤销都走 RedClaw。
 	// 留空时：若 POCKET_DEV_AUTH=true 走本地 dev 旁路；否则启动失败。
-	RedClawAdminURL      string // POCKET_REDCLAW_ADMIN_URL：RedClaw Admin 后端（如 http://host:28081）
-	RedClawAdminSecret   string // POCKET_REDCLAW_ADMIN_SECRET：HS256 共享密钥（必填，≥32 字节）
-	RedClawAuthAgentURL  string // POCKET_REDCLAW_AUTH_AGENT_URL：Auth Agent（SSO 入口；空 = 与 Admin 同址）
-	RedClawAdminTimeoutSec int  // POCKET_REDCLAW_ADMIN_TIMEOUT_SEC（默认 10）
+	RedClawAdminURL        string // POCKET_REDCLAW_ADMIN_URL：RedClaw Admin 后端（如 http://host:28081）
+	RedClawAdminSecret     string // POCKET_REDCLAW_ADMIN_SECRET：HS256 共享密钥（必填，≥32 字节）
+	RedClawAuthAgentURL    string // POCKET_REDCLAW_AUTH_AGENT_URL：Auth Agent（SSO 入口；空 = 与 Admin 同址）
+	RedClawAdminTimeoutSec int    // POCKET_REDCLAW_ADMIN_TIMEOUT_SEC（默认 10）
 
 	// —— 一键回滚开关 ——
 	// 紧急回滚到原本地 JWT 流程（不走 RedClaw），用于故障恢复。
 	AuthLegacyOnly bool // POCKET_AUTH_LEGACY_ONLY=true 时强制走本地 auth.Signer
 
 	// —— RedClaw SSO（OIDC）配置 ——
-	RedClawSsoEnabled  bool   // POCKET_REDCLAW_SSO_ENABLED=true 时 LoginView 多出 SSO Tab
+	RedClawSsoEnabled bool // POCKET_REDCLAW_SSO_ENABLED=true 时 LoginView 多出 SSO Tab
 }
 
 // Load reads all configuration from environment variables and returns a Config instance.
@@ -192,6 +198,7 @@ func Load() Config {
 		DevAuth:                    getEnv("POCKET_DEV_AUTH", "") == "true",
 		DevAuthUser:                getEnv("POCKET_AUTH_USER", ""),
 		DevAuthPass:                getEnv("POCKET_AUTH_PASS", ""),
+		MarketplaceRootPubKey:      getEnv("POCKET_MARKETPLACE_ROOT_PUBKEY", ""),
 		EmailGoogleClientID:        getEnv("POCKET_EMAIL_GOOGLE_CLIENT_ID", ""),
 		EmailGoogleClientSecret:    getEnv("POCKET_EMAIL_GOOGLE_CLIENT_SECRET", ""),
 		EmailMicrosoftClientID:     getEnv("POCKET_EMAIL_MICROSOFT_CLIENT_ID", ""),
@@ -231,8 +238,8 @@ func Load() Config {
 		SchedulerWebhookTimeout: getEnvDuration("POCKET_SCHEDULER_WEBHOOK_TIMEOUT", 30*time.Second),
 		// WebAuthn / 生物识别
 		WebAuthnRPDisplayName: getEnv("POCKET_WEBAUTHN_RP_DISPLAY_NAME", ""),
-		WebAuthnRPID:         getEnv("POCKET_WEBAUTHN_RP_ID", ""),
-		WebAuthnRPOrigin:     getEnv("POCKET_WEBAUTHN_RP_ORIGIN", ""),
+		WebAuthnRPID:          getEnv("POCKET_WEBAUTHN_RP_ID", ""),
+		WebAuthnRPOrigin:      getEnv("POCKET_WEBAUTHN_RP_ORIGIN", ""),
 		// SMTP 验证码邮件
 		SMTPHost:      getEnv("POCKET_SMTP_HOST", ""),
 		SMTPPort:      getEnvInt("POCKET_SMTP_PORT", 587),

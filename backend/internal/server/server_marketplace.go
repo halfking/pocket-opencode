@@ -16,6 +16,9 @@ package server
 //
 //   GET    /api/marketplace/packages           列出当前 workspace 可见的包
 //   GET    /api/marketplace/releases           列出当前 workspace 可见的 release
+//   GET    /api/marketplace/releases/{release_id}/blob
+//                                          下载 release 对应版本的内容 blob
+//                                          （release_id 可含 /，见 handler 注释）
 //   GET    /api/marketplace/packages/{id}/versions
 //                                          列出一个包的全部版本
 //   POST   /api/marketplace/submit             提交新版本（draft）
@@ -450,9 +453,70 @@ func (s *Server) handleMarketplaceRouter(w http.ResponseWriter, r *http.Request)
 		s.handleMarketplaceRevoke(w, r)
 	case "rate":
 		s.handleMarketplaceRate(w, r)
+	case "releases":
+		// GET /api/marketplace/releases/{release_id}/blob
+		//
+		// release_id 形如 "ws/name@1.0.0-stable-..."（package_id 本身含 /，
+		// 加 @version 与 channel/timestamp 后缀），不能按段 split，而是按
+		// "前缀 releases/ + 后缀 /blob" 截取：parts = ["releases", ...release_id
+		// 各段..., "blob"]，len(parts)>=3 且末段恰为 "blob" 才是合法形状。
+		if len(parts) >= 3 && parts[len(parts)-1] == "blob" {
+			releaseID := strings.Join(parts[1:len(parts)-1], "/")
+			s.handleMarketplaceReleaseBlob(w, r, releaseID)
+			return
+		}
+		writeError(w, http.StatusNotFound, "not found")
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
+}
+
+// handleMarketplaceReleaseBlob GET /api/marketplace/releases/{release_id}/blob
+//
+// 输出一个 release 对应版本的内容 blob。可见性与 Install 完全一致
+// （同 workspace 或 package visibility='public'），不可见 → 404 不泄露存在性。
+//
+// MVP 实现说明：blob 存于 PG bytea，这里把内容整体读入内存后再写出；
+// 大小受 marketplace.MaxBlobSize（64 MiB）上限约束。真流式（chunked 读出）
+// 留待 S3/MinIO blob 后端（ADR §5/§10）。
+//
+// blob 能力目前仅由 PG 后端的 *marketplace.Store 提供；memstore 等其他
+// Service 实现没有内容寻址存储，显式返回 501 而非静默 404，便于客户端
+// 区分"不支持"与"不存在"。
+func (s *Server) handleMarketplaceReleaseBlob(w http.ResponseWriter, r *http.Request, releaseID string) {
+	if !s.requireMarketplaceStore(w, r) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	store, ok := s.marketplaceStore.(*marketplace.Store)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "blob download requires the PG-backed marketplace store")
+		return
+	}
+
+	workspaceID := s.workspaceIDFromRequest(r)
+	meta, content, err := store.GetBlobByRelease(r.Context(), workspaceID, releaseID)
+	if err != nil {
+		if errors.Is(err, marketplace.ErrMarketplaceNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 审计 detail 无自由文本：digest 经 PutBlob 校验为 64 位小写 hex，
+	// size 为数字，均不可注入控制字符，故无需 sanitizeAuditDetail。
+	s.auditGateway(r, "marketplace.blob_download", releaseID,
+		"digest="+meta.Digest+" size="+strconv.FormatInt(meta.Size, 10), true)
+
+	w.Header().Set("Content-Type", meta.ContentType)
+	w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
+	w.Header().Set("X-Digest", meta.Digest)
+	_, _ = w.Write(content)
 }
 
 // extractMarketplacePackageID 从 /api/marketplace/packages/{id}/versions 之类的
@@ -479,6 +543,11 @@ func extractMarketplacePackageID(rawPath, prefix, suffix string) string {
 }
 
 // writeMarketplaceError 把 marketplace 包内的 sentinel 错误翻译为合适的 HTTP 状态。
+//
+// 签名/依赖类失败映射为 422：请求语法合法但语义不可接受（签名无效、依赖
+// 不可解析）。注意 Publish 侧的签名/依赖失败已被包一层 ErrMarketplaceConflict，
+// 会先命中上面的 409 分支——这是有意的：发布闸门失败属于状态冲突，提交时
+// 失败属于载荷问题。
 func writeMarketplaceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, marketplace.ErrMarketplaceNotFound):
@@ -488,6 +557,22 @@ func writeMarketplaceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, marketplace.ErrMarketplaceRateOutOfRange):
 		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, marketplace.ErrBlobTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
+	case errors.Is(err, marketplace.ErrBlobDigestMismatch):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, marketplace.ErrSignatureMissing),
+		errors.Is(err, marketplace.ErrSignatureInvalid),
+		errors.Is(err, marketplace.ErrSigningUnavailable),
+		errors.Is(err, marketplace.ErrSigningKeyNotFound),
+		errors.Is(err, marketplace.ErrSigningKeyRevoked),
+		errors.Is(err, marketplace.ErrUnsupportedAlg),
+		errors.Is(err, marketplace.ErrInvalidPublicKey),
+		errors.Is(err, marketplace.ErrDependencyCycle),
+		errors.Is(err, marketplace.ErrDependencyTooDeep),
+		errors.Is(err, marketplace.ErrDependenciesUnresolved),
+		errors.Is(err, marketplace.ErrDependencyConflict):
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
 	}

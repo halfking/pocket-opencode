@@ -429,3 +429,49 @@ func TestSanitizeAuditDetail(t *testing.T) {
 		t.Errorf("detail not truncated: len=%d", len(got))
 	}
 }
+
+// TestMarketplace_ReleaseBlobRoute 验证 blob 下载路由（Agent B, 签名链路 ADR §5）：
+//   - release_id 含 / 时按 "前缀 releases/ + 后缀 /blob" 截取，能正确到达 handler；
+//   - 形状不符（缺 release_id / 末段不是 blob）→ 404；
+//   - memstore 等非 PG Store 没有内容寻址 blob 能力 → 501；
+//   - 非 GET 方法 → 405。
+func TestMarketplace_ReleaseBlobRoute(t *testing.T) {
+	s := newMarketplaceTestServer()
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		expect int
+	}{
+		// release_id = "ws-a/skill-x@1.0.0-stable-1700000000000"（含 /）。
+		{"release id with slash", http.MethodGet, "/api/marketplace/releases/ws-a/skill-x@1.0.0-stable-1700000000000/blob", http.StatusNotImplemented},
+		{"missing release id", http.MethodGet, "/api/marketplace/releases/blob", http.StatusNotFound},
+		{"extra suffix after blob", http.MethodGet, "/api/marketplace/releases/ws-a/pkg@1.0.0/blob/extra", http.StatusNotFound},
+		{"not blob suffix", http.MethodGet, "/api/marketplace/releases/ws-a/pkg@1.0.0/versions", http.StatusNotFound},
+		{"post not allowed", http.MethodPost, "/api/marketplace/releases/ws-a/pkg@1.0.0/blob", http.StatusMethodNotAllowed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := withClaims(newRequest(t, tc.method, tc.path, nil), "u", "ws-a")
+			w := httptest.NewRecorder()
+			s.handleMarketplaceRouter(w, r)
+			if w.Code != tc.expect {
+				t.Errorf("%s %s: want %d, got %d body=%s", tc.method, tc.path, tc.expect, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestMarketplace_ReleaseBlobRequiresAuth 验证 blob 端点挂在 requireAuth
+// 之后：未携带 Authorization → 401（与其它 marketplace 路由一致）。
+func TestMarketplace_ReleaseBlobRequiresAuth(t *testing.T) {
+	s := newMarketplaceTestServer()
+	h := s.requireAuth(s.handleMarketplaceRouter)
+	r := httptest.NewRequest(http.MethodGet, "/api/marketplace/releases/ws-a/pkg@1.0.0-stable-1/blob", nil)
+	w := httptest.NewRecorder()
+	h(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("unauthenticated blob download: want 401, got %d body=%s", w.Code, w.Body.String())
+	}
+}

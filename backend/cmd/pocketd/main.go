@@ -122,6 +122,20 @@ func main() {
 		}
 	}
 
+	// ---- Marketplace 签名策略（ADR: docs/handoff/2026-09-05-marketplace-signing-chain-design.md）----
+	// root 公钥未配置 = 签名校验关闭（仅记录语义，不阻断既有流程）；
+	// 配置了但解析失败 = fatal，拒绝带错误信任锚启动。
+	if marketplaceStore != nil && cfg.MarketplaceRootPubKey != "" {
+		if err := marketplaceStore.SetRootPublicKey(cfg.MarketplaceRootPubKey); err != nil {
+			log.Fatalf("marketplace root public key: %v", err)
+		}
+	}
+	if marketplaceStore != nil && marketplaceStore.RootKeyConfigured() {
+		log.Println("SIGNING: enabled (root key configured)")
+	} else {
+		log.Println("SIGNING: disabled (public key not configured)")
+	}
+
 	// ---- Auth (multi-user, JWT) ----
 	var (
 		userStore *auth.UserStore

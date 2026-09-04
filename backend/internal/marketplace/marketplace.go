@@ -2,6 +2,7 @@ package marketplace
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,17 +55,18 @@ type Dependency struct {
 
 // PackageVersion 是包的不可变版本。
 type PackageVersion struct {
-	VersionID   string        `json:"version_id"`
-	PackageID   string        `json:"package_id"`
-	WorkspaceID string        `json:"workspace_id"`
-	Version     string        `json:"version"`
-	Digest      string        `json:"digest"`
-	Manifest    Manifest      `json:"manifest"`
-	Status      VersionStatus `json:"status"`
-	Signature   string        `json:"signature,omitempty"`
-	Reviewer    string        `json:"reviewer,omitempty"`
-	SubmittedAt time.Time     `json:"submitted_at"`
-	PublishedAt *time.Time    `json:"published_at,omitempty"`
+	VersionID    string        `json:"version_id"`
+	PackageID    string        `json:"package_id"`
+	WorkspaceID  string        `json:"workspace_id"`
+	Version      string        `json:"version"`
+	Digest       string        `json:"digest"`
+	Manifest     Manifest      `json:"manifest"`
+	Status       VersionStatus `json:"status"`
+	Signature    string        `json:"signature,omitempty"`
+	SigningKeyID string        `json:"signing_key_id,omitempty"`
+	Reviewer     string        `json:"reviewer,omitempty"`
+	SubmittedAt  time.Time     `json:"submitted_at"`
+	PublishedAt  *time.Time    `json:"published_at,omitempty"`
 }
 
 // VersionStatus 版本生命周期。
@@ -82,16 +84,17 @@ const (
 
 // SubmitRequest 提交包版本。
 type SubmitRequest struct {
-	WorkspaceID string   `json:"workspace_id"`
-	PackageID   string   `json:"package_id,omitempty"`
-	Name        string   `json:"name"`
-	Kind        string   `json:"kind"`
-	Version     string   `json:"version"`
-	Digest      string   `json:"digest"`
-	Manifest    Manifest `json:"manifest"`
-	Publisher   string   `json:"publisher"`
-	Signature   string   `json:"signature,omitempty"`
-	Visibility  string   `json:"visibility,omitempty"`
+	WorkspaceID  string   `json:"workspace_id"`
+	PackageID    string   `json:"package_id,omitempty"`
+	Name         string   `json:"name"`
+	Kind         string   `json:"kind"`
+	Version      string   `json:"version"`
+	Digest       string   `json:"digest"`
+	Manifest     Manifest `json:"manifest"`
+	Publisher    string   `json:"publisher"`
+	Signature    string   `json:"signature,omitempty"`
+	SigningKeyID string   `json:"signing_key_id,omitempty"`
+	Visibility   string   `json:"visibility,omitempty"`
 }
 
 // ReviewCommand 审核版本。
@@ -166,6 +169,11 @@ type Service interface {
 // Store 是市场数据的 PostgreSQL 持久化实现。
 type Store struct {
 	pool *pgxpool.Pool
+
+	// 平台级 root 公钥（由 SetRootPublicKey 配置，见 signing.go）。
+	// 零值 = 未配置 → 签名强制关闭，保持"仅记录"语义。
+	rootPubKey        ed25519.PublicKey
+	rootKeyConfigured bool
 }
 
 // NewStore 创建 Store。
@@ -220,6 +228,30 @@ CREATE INDEX IF NOT EXISTS idx_marketplace_inst_ws ON marketplace_installations(
 -- and returns the original record.
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_marketplace_inst_ws_rel
 	ON marketplace_installations(workspace_id, release_id);
+
+-- 签名链路（ADR: docs/handoff/2026-09-05-marketplace-signing-chain-design.md）：
+-- per-publisher 公钥表，(publisher_id, key_id) 唯一；吊销保留行仅改 status。
+CREATE TABLE IF NOT EXISTS publisher_signing_keys (
+	publisher_id TEXT NOT NULL,
+	key_id       TEXT NOT NULL,
+	public_key   BYTEA NOT NULL,
+	alg          TEXT NOT NULL DEFAULT 'ed25519',
+	status       TEXT NOT NULL DEFAULT 'active',
+	created_at   BIGINT NOT NULL,
+	revoked_at   BIGINT,
+	PRIMARY KEY (publisher_id, key_id)
+);
+
+-- 内容寻址 blob（sha256 hex 主键）：同 digest 重复上传天然去重。
+CREATE TABLE IF NOT EXISTS marketplace_blobs (
+	digest       TEXT PRIMARY KEY,
+	content      BYTEA NOT NULL,
+	size         BIGINT NOT NULL,
+	content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+	created_at   BIGINT NOT NULL
+);
+
+ALTER TABLE marketplace_versions ADD COLUMN IF NOT EXISTS signing_key_id TEXT;
 `
 
 // Init 初始化 marketplace 表。
@@ -241,6 +273,15 @@ func (s *Store) Submit(ctx context.Context, req SubmitRequest) (PackageVersion, 
 	}
 	if req.Digest == "" {
 		return PackageVersion{}, errors.New("marketplace: digest required")
+	}
+
+	// 提交闸门（fail-closed）：仅在平台配置了 root 公钥时强制验签；未配置
+	// 保持"仅记录"语义，不阻断既有流程（ADR §4.4）。错误保留 sentinel
+	// 链（%w），由 server 层翻译为 422。
+	if s.rootKeyConfigured {
+		if err := s.VerifySubmission(ctx, req.Publisher, req.Manifest, req.Digest, req.Signature, req.SigningKeyID); err != nil {
+			return PackageVersion{}, fmt.Errorf("marketplace: submission signature rejected: %w", err)
+		}
 	}
 
 	pkgID := req.PackageID
@@ -276,9 +317,9 @@ func (s *Store) Submit(ctx context.Context, req SubmitRequest) (PackageVersion, 
 	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO marketplace_versions (version_id, package_id, workspace_id, version, digest, manifest, status, signature, submitted_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`, versionID, pkgID, req.WorkspaceID, req.Version, req.Digest, manifestJSON, VersionDraft, req.Signature, now); err != nil {
+		INSERT INTO marketplace_versions (version_id, package_id, workspace_id, version, digest, manifest, status, signature, signing_key_id, submitted_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`, versionID, pkgID, req.WorkspaceID, req.Version, req.Digest, manifestJSON, VersionDraft, req.Signature, req.SigningKeyID, now); err != nil {
 		return PackageVersion{}, err
 	}
 
@@ -287,15 +328,16 @@ func (s *Store) Submit(ctx context.Context, req SubmitRequest) (PackageVersion, 
 	}
 
 	return PackageVersion{
-		VersionID:   versionID,
-		PackageID:   pkgID,
-		WorkspaceID: req.WorkspaceID,
-		Version:     req.Version,
-		Digest:      req.Digest,
-		Manifest:    req.Manifest,
-		Status:      VersionDraft,
-		Signature:   req.Signature,
-		SubmittedAt: time.Unix(now, 0),
+		VersionID:    versionID,
+		PackageID:    pkgID,
+		WorkspaceID:  req.WorkspaceID,
+		Version:      req.Version,
+		Digest:       req.Digest,
+		Manifest:     req.Manifest,
+		Status:       VersionDraft,
+		Signature:    req.Signature,
+		SigningKeyID: req.SigningKeyID,
+		SubmittedAt:  time.Unix(now, 0),
 	}, nil
 }
 
@@ -344,8 +386,9 @@ func (s *Store) Publish(ctx context.Context, cmd PublishCommand) (ReleaseRef, er
 	defer tx.Rollback(ctx)
 
 	var status string
-	err = tx.QueryRow(ctx, `SELECT status FROM marketplace_versions WHERE version_id = $1 AND workspace_id = $2 FOR UPDATE`,
-		cmd.VersionID, cmd.WorkspaceID).Scan(&status)
+	var manifestJSON []byte
+	err = tx.QueryRow(ctx, `SELECT status, manifest FROM marketplace_versions WHERE version_id = $1 AND workspace_id = $2 FOR UPDATE`,
+		cmd.VersionID, cmd.WorkspaceID).Scan(&status, &manifestJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReleaseRef{}, ErrMarketplaceNotFound
 	}
@@ -354,6 +397,22 @@ func (s *Store) Publish(ctx context.Context, cmd PublishCommand) (ReleaseRef, er
 	}
 	if status != string(VersionApproved) {
 		return ReleaseRef{}, fmt.Errorf("%w: version must be approved to publish, got %s", ErrMarketplaceConflict, status)
+	}
+
+	// 发布闸门（fail-closed，仅 root 公钥已配置时生效）：在行锁内重验存储态
+	// 签名与依赖可解析，杜绝"提交通过校验、发布前密钥被吊销/依赖被删"的窗口。
+	// 签名/依赖失败包 ErrMarketplaceConflict（server 层翻译为 409）。
+	if s.rootKeyConfigured {
+		if err := s.VerifyVersion(ctx, cmd.VersionID); err != nil {
+			return ReleaseRef{}, fmt.Errorf("%w: signature verification failed: %w", ErrMarketplaceConflict, err)
+		}
+		var m Manifest
+		if err := json.Unmarshal(manifestJSON, &m); err != nil {
+			return ReleaseRef{}, fmt.Errorf("marketplace: unmarshal manifest: %w", err)
+		}
+		if _, err := ResolveDependenciesWithStore(ctx, s, m, DefaultMaxDependencyDepth); err != nil {
+			return ReleaseRef{}, fmt.Errorf("%w: dependency resolution failed: %w", ErrMarketplaceConflict, err)
+		}
 	}
 
 	releaseID := fmt.Sprintf("%s-%s-%d", cmd.VersionID, channel, time.Now().UnixNano())
@@ -563,7 +622,7 @@ func (s *Store) ListVersions(ctx context.Context, workspaceID, packageID string)
 		return nil, fmt.Errorf("marketplace: pool not configured")
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT version_id, package_id, workspace_id, version, digest, manifest, status, signature, reviewer, submitted_at, published_at
+		SELECT version_id, package_id, workspace_id, version, digest, manifest, status, signature, signing_key_id, reviewer, submitted_at, published_at
 		FROM marketplace_versions WHERE package_id = $1 AND workspace_id = $2 ORDER BY submitted_at DESC
 	`, packageID, workspaceID)
 	if err != nil {
@@ -578,7 +637,7 @@ func (s *Store) ListVersions(ctx context.Context, workspaceID, packageID string)
 		var submittedAt int64
 		var publishedAt *int64
 		if err := rows.Scan(&v.VersionID, &v.PackageID, &v.WorkspaceID, &v.Version, &v.Digest, &manifestJSON,
-			&v.Status, &v.Signature, &v.Reviewer, &submittedAt, &publishedAt); err != nil {
+			&v.Status, &v.Signature, &v.SigningKeyID, &v.Reviewer, &submittedAt, &publishedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(manifestJSON, &v.Manifest); err != nil {
