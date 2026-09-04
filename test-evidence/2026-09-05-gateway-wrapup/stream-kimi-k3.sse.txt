@@ -1,0 +1,32 @@
+data: {"content":"1","done":false}
+
+data: {"content":",","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"2","done":false}
+
+data: {"content":",","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"3","done":false}
+
+data: {"content":",","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"4","done":false}
+
+data: {"content":",","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"5","done":false}
+
+data: {"done":true,"finish_reason":"stop"}
+
+data: {"done":true,"usage":{"prompt_tokens":92,"completion_tokens":28,"total_tokens":120,"cost_usd":0.000176}}
+
+data: [DONE]
+

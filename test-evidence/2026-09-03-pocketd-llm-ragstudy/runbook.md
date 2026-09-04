@@ -875,3 +875,111 @@ CDP 探针（WebView 页面上下文，§14.5 工具箱）：
 3. §16.6 #1 悬空态：防御已落地（7485b8a/§17.5），双通道 E2E 复现 0/2，
    维持「再遇再查」。
 4. `/api/embed` 无 provider 同 §16.6 #4。
+
+---
+
+## 22. 2026-09-05 会话补充（九）：Issue #14 复核 + 显式模型三通道存档 + 会议纪要生成真机 E2E + embed 降级验证
+
+> 与 §19~§21 会话并行窗口内的收尾验证轮。工作面互补不重叠：§20/§21 完成
+> 流式回退链修复与其 E2E（764f323、7ecf9ed 已推送）；本轮聚焦 ①Issue #14
+> 状态复核 ②grep 脱敏复核 ③显式 model 请求的三通道 curl 存档 ④**会议纪要
+> 生成的真机 E2E**（§18.3 只落了 UI，生成链路首次真机回归）⑤**embed 应用
+> 内降级路径**验证。全程零密钥，响应体存档经 `sk-*`/Bearer 掩码。
+
+### 22.1 Issue #14 状态复核（结论：服务侧动作仍未发生）
+
+- API 复查评论区：**0 条评论**；时间线仅一次 referenced（ef7f072 提交信息
+  引用）。halfking 未回告任何"已完成"非敏感标识。
+- 因此 §17.6 清单执行前提（halfking 确认）未满足：PG 侧轮换未发生；
+  `POCKET_TEST_POSTGRES_DSN` 本地/环境均未设置（符合"轮换后才注入"的既定
+  顺序，无新值可注入）；本轮不伪造运维结果。
+- 07:33~07:45 实测（§22.3）与 halfking 发 issue 时（2026-09-04）的三个
+  上游缺口完全一致，交叉印证网关侧 provider 配置仍未发生。
+
+### 22.2 git grep 脱敏复核结论（工作树全量）
+
+- 本轮新增产物（证据目录、runbook 本节、截图）零密钥。
+- 存量命中分类（均非本轮引入）：
+  - `internal/opencode/config_writer.go` `DefaultLLMGatewayAPIKey`：b1f9943
+    **有意提交**的租户共享 dev/seed key（注释自述生产上线后换 KMS）。注意
+    其值与当前 llm.kxpms.cn 线上网关 key 同族（§17.3 掩码 sk-6\*\*），即
+    **共享租户 key 长期有效且已入库**——建议 halfking 在 Issue #14 的 DSN
+    轮换中一并评估该 key 的轮换/边界。
+  - `start-with-postgres.sh`、`third_party/identity-go/README.md`：本地
+    dev 样例 DSN（localhost 明文样例口令），低风险，维持现状。
+  - 测试 fixture 假值（`user:pass@localhost`、`p4ssw0rd` 类）：不计。
+- 历史完整 DSN（§15.4/§16.5）确认仅存在于 git 历史，工作树零引用。
+
+### 22.3 显式 model 三通道验证（curl 存档 `test-evidence/2026-09-05-gateway-wrapup/`）
+
+运行实例：pocketd PID 38324（07:20:08 启动，含 764f323 的 deadline 回退，
+不含 7ecf9ed 的防成环/Unwrap/60s 预算——如实注明代码版本对应关系）。
+
+| 通道 | 请求 | 结果 | 存档 |
+|---|---|---|---|
+| /api/llm/chat | kimi-k3 | **200** `{"content":"pong","model":"kimi-k3"}` | chat-kimi-k3.txt |
+| /api/llm/chat | glm-5.2 | **502**（内层上游 503 `model_not_found`/`no_candidates`） | chat-glm-52.txt |
+| /api/llm/chat | minimax-m3 | **502**（同上） | chat-minimax-m3.txt |
+| /api/embed | text 32B | **502**（内层 503 `no_provider`） | embed-basic.txt |
+| /api/llm/stream | kimi-k3 | **200** 6s/16 帧/`finish_reason:stop` | stream-kimi-k3.sse.txt |
+| /api/llm/stream | glm-5.2 | **200** 45s：glm 挂 20s → `retry:"kimi-k3"` → `retry:"minimax-m3"` → 规整错误终态 `context deadline exceeded`+`finish_reason:error` | stream-glm-52.sse.txt |
+| /api/llm/stream | auto | 38s 连接被掐（curl 18）——按 §21.2 #3 即 SSE 30s WriteTimeout 豁免失效（该实例未含 7ecf9ed），与本表其他帧序互为修复前后对照 | stream-auto.sse.txt |
+
+结论：链路健康（错误结构化、回退带进度帧、终态必达）；三个上游缺口
+（glm-5.2/minimax-m3/embedding）与 Issue #14 请求时一致。显式 model 的
+外层 502 是 pocketd 对上游失败的包装，内层保留网关原始错误码。
+
+### 22.4 真机 E2E：会议纪要生成（首次生成链路回归）+ 种子数据新方法
+
+环境：emulator-5554，ef7f072 debug APK（§18.3 已装）。App 冷启动停主密码
+解锁屏，dev 主密码与 start-dev.sh 默认一致（值不引用），解锁正常。
+
+**种子方法沉淀（§14.5 CDP 探针的进阶）**：会议转写依赖 STT（Groq 未配、
+模拟器无 STT），录制链路无法产段。本轮经 CDP `Runtime.evaluate` 在页面
+上下文直接调用 `CapacitorSQLite` 原生桥：`createConnection({mode:'secret'})`
++ `open()` **无需知道主密码**——插件 open() 自动从自身 secure store 取
+SQLCipher PRAGMA key（App 首启 setEncryptionSecret 已存）。三个坑：
+原生桥无 `isConnection`（JS 包装层方法）；批量 execute 首条后静默中止
+（schema.ts splitSqlStatements 注释同款坑），必须 JS 循环逐条执行；
+programmatic `el.click()` 对部分 Vue 组件链不可靠，用 CDP
+`Input.dispatchMouseEvent`（受信任点击）+ `getBoundingClientRect` 定位。
+探针脚本归档于证据目录 `tools/`（cdp_eval.py / cdp_click.py / 种子 SQL）。
+
+生成纪要两轮实测（MeetingDetailView，截图 04~11）：
+- 生成中态：按钮「纪要生成中…」禁用样式 ✅；
+- **retry 提示态**：纪要区「上游模型不可用，已切换到 kimi-k3 重试…」——
+  meetings-ai onRetry → 页面回退提示**真机复现**（07/09，与转写同框）✅；
+- 终态：两轮均 `context deadline exceeded` 红字终态、按钮恢复、无无限
+  转圈 ✅。原因：auto 首选 glm-5.2 挂死 + kimi-k3 对长 prompt（纪要
+  system+全文）在 20s 尝试窗内不回（§21.1 记录的时延波动；短 prompt
+  独立请求 6s 正常），旧 45s 预算耗尽。§21.2 #4 的 60s 预算 + provider
+  恢复后，成功态（retry 提示+纪要正文同框）留待复现，种子/脚本已备。
+
+### 22.5 真机 E2E：ai-chat 成功态 + retry 灰字同框；embed 降级
+
+- ai-chat 快速提问 `reply with one word pong` → auto 链回退后 kimi-k3
+  回复 `pong`（≈349 tokens，13/14 截图）；同屏历史气泡（§21.3 的测试
+  消息）完整渲染**灰色 retry 提示 + 错误终态**——UI 提示在真实气泡流
+  再证 ✅。
+- embed 应用内降级：Notes 新建笔记保存成功（15 截图，hash 跳详情页）；
+  异步 `embedAndStore` 得 no_provider 被 `.catch` 静默捕获
+  （notes-store.ts:99 设计行为）；页面侧验证 `local_note_vectors` 计数
+  0、笔记本体完好、App 无崩溃——增强功能降级不阻断主流程 ✅
+  （§21.6 #4 的应用内侧收口；上游 provider 仍待配置）。
+
+### 22.6 环境观察
+
+- logs/backend-dev.log fd 外部截断再现（§17.5 同类）：PID 38324 存活期间
+  07:30 后写入丢失（mtime 停 07:07），本轮为不干扰并行会话未重启；
+  服务侧观测以 curl 存档为准。
+- kimi-k3 时延双态：短 prompt 6s 正常、长 prompt（纪要）20s 窗内不回，
+  与 §21.1「首 token 5~12s 波动、双链并发 >20s」一致。
+
+### 22.7 遗留（下一轮续接，增量更新 §21.6）
+
+1. Issue #14 三项（DSN 轮换+注入源、glm/minimax provider、embedding
+   provider）：仍阻塞在 halfking/网关维护侧；**新增建议**：顺带评估
+   §22.2 的共享租户 gateway key 轮换。
+2. 纪要生成成功态真机留证：依赖 provider 恢复 + 60s 预算实例重启；
+   种子方法与脚本已备（§22.4）。
+3. 其余沿用 §21.6（kimi 时延调优项、悬空态维持观察）。
