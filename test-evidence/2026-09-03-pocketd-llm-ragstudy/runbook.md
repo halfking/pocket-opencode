@@ -766,3 +766,32 @@ halfking 确认后执行：
 - `POCKET_TEST_POSTGRES_DSN` 轮换：仅在 halfking 于 Issue #14 明确确认后按
   §17.6 清单执行；本轮未触碰任何凭据，工作区遗留的后端适配器改动仍保持
   未提交状态，未纳入本次提交。
+
+## 20. 2026-09-05 会话补充（七）：流式回退超时修复与回归
+
+### 20.1 改动范围
+
+- `backend/internal/server/llmbff_provider_adapters.go`：动态网关 `Stream` 的
+  auto 回退链增加单次尝试超时与整链预算；无正文且遇到尝试级 deadline 时允许切换
+  preferred 候选，已输出正文后不重复作答；保留 retry 进度帧与结构化日志。
+- `backend/internal/server/llmbff_provider_adapters_test.go`：新增两组测试，覆盖
+  “首候选流式挂死后超时回退成功”与“正文已输出后超时不得回退”。测试将超时预算
+  缩短到 100ms，不依赖真实上游或凭据。
+- 另发现并修正一处测试辅助日志 goroutine 生命周期问题：请求成功时传入的
+  `context.Background()` 不会结束，原实现会永久等待并造成 goroutine 泄漏；已移除
+  该非必要 goroutine，不影响回退链日志或业务语义。
+
+### 20.2 回归记录
+
+- `gofmt -w`：通过；`git diff --check`：通过。
+- `go test ./internal/server -run 'TestDynamicGatewayStream|TestIsModelUnavailableError' -count=1`：通过。
+- `go test ./...`：通过，所有后端包通过或按既有约定无测试文件。
+- 本轮尝试认证读取 `/api/llm-gateway/config` 与复验 `/api/embed`：dev 登录返回
+  `invalid credentials`，未获得 token，因此未绕过认证、未猜测密码，也未回显任何凭据。
+  provider 恢复与 embedding provider 配置仍属于网关维护侧待办。
+
+### 20.3 提交边界
+
+- 仅纳入上述两个后端源文件、对应测试与本 runbook 记录；`logs/backend-dev.log`
+  及其他截图/运行产物保持未提交，不收编。
+

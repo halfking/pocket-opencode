@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
@@ -152,6 +153,123 @@ func TestDynamicGatewayStreamEmitsRetryProgressFrame(t *testing.T) {
 	}
 	if last := got[len(got)-1]; !last.Done || last.FinishReason != "stop" {
 		t.Errorf("final delta = %+v, want done + finish_reason=stop", last)
+	}
+}
+
+// TestDynamicGatewayStreamFallsBackOnAttemptDeadline 首位候选在流式路径上
+// 挂死（不返回响应头，直到客户端超时断开）：尝试级 20s 超时产生
+// context.DeadlineExceeded，旧逻辑不属于 isModelUnavailableError、整链直接
+// 报错，auto 永远到不了可用候选（2026-09-05 实测：glm-5.2 无 provider 时
+// chat 600ms 快速失败可回退、stream 挂满 20s 后直接终态）。修复后：超时
+// 且未写出正文 → 发 Retry 帧换下一候选，第二候选成功则整流成功。
+func TestDynamicGatewayStreamFallsBackOnAttemptDeadline(t *testing.T) {
+	oldAttempt, oldBudget := autoFallbackAttemptTimeout, autoFallbackTotalBudget
+	autoFallbackAttemptTimeout, autoFallbackTotalBudget = 100*time.Millisecond, 10*time.Second
+	defer func() { autoFallbackAttemptTimeout, autoFallbackTotalBudget = oldAttempt, oldBudget }()
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		var req llmgateway.ChatRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if n == 1 {
+			<-r.Context().Done() // 模拟上游挂死：直到客户端超时断开都不响应
+			return
+		}
+		if req.Model != "model-b" {
+			t.Errorf("retry attempt model = %q, want model-b", req.Model)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"after-deadline\"}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"+
+				"\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n"+
+				"data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+		return GatewayConfig{
+			BaseURL:         srv.URL,
+			APIKey:          "k",
+			PreferredModels: []string{"model-a", "model-b"},
+		}
+	})
+
+	var got []llmbff.Delta
+	usage, err := p.Stream(context.Background(), llmbff.ChatRequest{
+		WorkspaceID: "ws",
+		Model:       "auto",
+	}, func(d llmbff.Delta) bool {
+		got = append(got, d)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+	if usage == nil || usage.TotalTokens != 2 {
+		t.Fatalf("usage = %+v, want total_tokens=2", usage)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("upstream calls = %d, want 2", n)
+	}
+	if first := got[0]; first.Retry != "model-b" || first.Content != "" || first.Done {
+		t.Errorf("first delta = %+v, want retry=model-b, no content, not done", first)
+	}
+	if last := got[len(got)-1]; !last.Done || last.FinishReason != "stop" {
+		t.Errorf("final delta = %+v, want done + finish_reason=stop", last)
+	}
+}
+
+// TestDynamicGatewayStreamNoFallbackAfterContent 首位候选已写出正文后才
+// 挂死超时：换候选重试会在同一气泡里重复作答，必须原样上抛错误、不再回退。
+func TestDynamicGatewayStreamNoFallbackAfterContent(t *testing.T) {
+	oldAttempt, oldBudget := autoFallbackAttemptTimeout, autoFallbackTotalBudget
+	autoFallbackAttemptTimeout, autoFallbackTotalBudget = 100*time.Millisecond, 10*time.Second
+	defer func() { autoFallbackAttemptTimeout, autoFallbackTotalBudget = oldAttempt, oldBudget }()
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			<-r.Context().Done() // 正文后挂死直到客户端超时
+			return
+		}
+		t.Error("second attempt must not happen after content was streamed")
+	}))
+	defer srv.Close()
+
+	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+		return GatewayConfig{
+			BaseURL:         srv.URL,
+			APIKey:          "k",
+			PreferredModels: []string{"model-a", "model-b"},
+		}
+	})
+
+	var got []llmbff.Delta
+	_, err := p.Stream(context.Background(), llmbff.ChatRequest{
+		WorkspaceID: "ws",
+		Model:       "auto",
+	}, func(d llmbff.Delta) bool {
+		got = append(got, d)
+		return true
+	})
+	if err == nil {
+		t.Fatal("Stream returned nil error, want deadline error after partial content")
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("upstream calls = %d, want 1 (no fallback after content)", n)
+	}
+	for _, d := range got {
+		if d.Retry != "" {
+			t.Errorf("unexpected retry frame after content: %+v", d)
+		}
 	}
 }
 

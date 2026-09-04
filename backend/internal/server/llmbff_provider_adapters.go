@@ -13,7 +13,9 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -221,7 +223,8 @@ func (p *dynamicGatewayBFFProvider) Chat(ctx context.Context, req llmbff.ChatReq
 // auto 回退链的超时预算。网关客户端自身有 90s 总超时 / 30s 响应头超时，
 // 但回退链是逐候选串行重试的：N 个候选都挂住时最坏 N×30s，前端一直转圈。
 // 这里限制：单次尝试 20s（覆盖首 token 正常延迟），整链预算 45s。
-const (
+// var 而非 const：测试用短预算驱动超时回退路径。
+var (
 	autoFallbackAttemptTimeout = 20 * time.Second
 	autoFallbackTotalBudget    = 45 * time.Second
 )
@@ -244,9 +247,18 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		} else {
 			attemptCtx, cancel = context.WithTimeout(ctx, autoFallbackAttemptTimeout)
 		}
-		usage, err := (&llmGatewayBFFProvider{client: c}).Stream(attemptCtx, req, fn)
+		// 记录本次尝试是否已向客户端写出正文：已写出正文的尝试不能换候选
+		// 重试（会在同一气泡里重复作答），错误只能原样上抛。
+		wroteContent := false
+		attemptFn := func(d llmbff.Delta) bool {
+			if d.Content != "" {
+				wroteContent = true
+			}
+			return fn(d)
+		}
+		usage, err := (&llmGatewayBFFProvider{client: c}).Stream(attemptCtx, req, attemptFn)
 		cancel()
-		if err == nil || !isModelUnavailableError(err) {
+		if err == nil || !streamAttemptFallbackEligible(err, wroteContent) {
 			return usage, err
 		}
 		// 单次尝试内 no_candidate(503)/invalid_model(400) 都出现在任何 chunk
@@ -256,8 +268,13 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		// 就继续重试。
 		fallback := p.fallbackModel(req.WorkspaceID, req.Model)
 		if fallback == "" || ctx.Err() != nil || !time.Now().Before(deadline) {
+			log.Printf("[llm-auto] stop fallback chain: model=%s err=%v wrote_content=%v "+
+				"fallback=%q ctx_err=%v budget_left=%s",
+				req.Model, err, wroteContent, fallback, ctx.Err(),
+				time.Until(deadline).Round(time.Millisecond))
 			return usage, err
 		}
+		log.Printf("[llm-auto] %s -> fallback %s (%v)", req.Model, fallback, err)
 		// 候选切换间隙发一帧回退重试进度（无 content、非终态）：让前端在
 		// 整链重试期间能看到「已切换到 <model> 重试」，而不是零字节转圈
 		// （2026-09-05 移动端 E2E 反馈）。fn 返回 false 说明客户端已断开，
@@ -267,6 +284,21 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		}
 		req.Model = fallback
 	}
+}
+
+// streamAttemptFallbackEligible 判断一次 Stream 尝试失败后能否换候选重试：
+// ① isModelUnavailableError（no_candidate/invalid_model，出现在任何 chunk
+// 之前，该次尝试未写过正文）；② 尝试级超时（context.DeadlineExceeded）且
+// 本次尝试未写出任何正文——上游对无 provider 的模型在流式路径上可能挂死
+// 而非快速失败（2026-09-05 实测：glm-5.2 无 provider 时 chat 路径 503
+// 600ms 快速返回、stream 路径挂满 20s 尝试超时），deadline 错误若不回退，
+// auto 整链必死在首位挂死候选上、永远到不了可用候选。已写出正文后超时
+// 视为答案中断，不可重试（避免重复作答）。
+func streamAttemptFallbackEligible(err error, wroteContent bool) bool {
+	if isModelUnavailableError(err) {
+		return true
+	}
+	return !wroteContent && errors.Is(err, context.DeadlineExceeded)
 }
 
 // fallbackModel 在 no_candidate 触发时挑下一个候选 model（不含 current）。
