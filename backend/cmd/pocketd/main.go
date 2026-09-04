@@ -1011,6 +1011,19 @@ func main() {
 		log.Printf("Registered ACP stdio agent: Claude CLI at %s", claudePath)
 	}
 
+	// 3. 注册 pi coding agent adapter（headless JSONL 驱动，非 ACP）。
+	// pi 没有 ACP 控制面，走独立的 PiAdapter：每次 SendPrompt 拉起一次
+	// `pi --mode json` 子进程。PI_CLI_PATH 设置时才注册，缺省不注册。
+	if piPath := os.Getenv("PI_CLI_PATH"); piPath != "" {
+		piAdapter := agent.NewPiAdapter(piPath, "")
+		_ = agentReg.Register(
+			agent.AgentRef{Type: "pi", Target: piPath},
+			piAdapter,
+			"pi-1", // instance_id
+		)
+		log.Printf("Registered pi coding agent at %s", piPath)
+	}
+
 	srv.SetAgentRegistry(agentReg)
 	log.Printf("ACP agent registry wired: %d adapter(s)", len(agentReg.All()))
 
