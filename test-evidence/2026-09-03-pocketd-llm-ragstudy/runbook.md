@@ -795,3 +795,83 @@ halfking 确认后执行：
 - 仅纳入上述两个后端源文件、对应测试与本 runbook 记录；`logs/backend-dev.log`
   及其他截图/运行产物保持未提交，不收编。
 
+
+---
+
+## 21. 2026-09-05 会话补充（八）：auto 回退链三重修复 E2E 收口 + JWT 滑动续期真机验证
+
+> 本节与会话七（§20/764f323）在同一工作区交错进行：764f323 收编的正是本轮
+> 工作区里未提交的 deadline 回退 WIP（§20.1「移除诊断 goroutine」即本轮为
+> 排查 40s 截断临时加的探针）；本节 7886fcd 在其上叠加剩余三层修复并完成
+> 全链路 E2E。零密钥引用。
+
+### 21.1 上游探测结论（任务②定论）
+
+- `glm-5.2`/`minimax-m3`：`POST /api/llm/chat` 均 `no_candidates`（0 candidates，
+  ~600ms 快速失败）——**仍未恢复**，preferredModels 首选回归不做，维持部署侧
+  观察项（§17.3/§18.4/§19.4 同源）。
+- 关键不对称（本轮新发现）：chat 路径快速失败可回退，**stream 路径对无
+  provider 的模型会挂死到 20s 尝试超时**——这是 auto 模式整链崩死的入口。
+- `kimi-k3` 可用但首 token 时延波动大：直连 SSE 实测 5~12s，App 内双链并发
+  时曾 >20s。
+
+### 21.2 三重修复（764f323 + 7886fcd 合并视角）
+
+| # | 缺陷 | 修复 | 文件 |
+|---|---|---|---|
+| 1 | 尝试级 20s deadline 不触发回退（不属于 isModelUnavailableError），auto 整链死在首位挂死候选 | `streamAttemptFallbackEligible`：deadline 且本次尝试未写出正文 → 视同「候选无货」回退；已写出正文后超时不重试（防同气泡重复作答） | llmbff_provider_adapters.go（764f323） |
+| 2 | 回退链成环：fallbackModel 只排除 current，实测 glm-5.2 → minimax-m3 → **glm-5.2**，kimi-k3 永远轮不到 | `nextFallbackModel(wsID, tried)` 以已试集合按 preferred 顺序取下一候选 | llmbff_provider_adapters.go（7886fcd） |
+| 3 | **SSE 30s WriteTimeout 豁免静默失效**：loggingMiddleware 的 responseWriter 包装器缺 `Unwrap()`，`http.ResponseController` 穿不透 → longLivedPathMiddleware 的 `SetWriteDeadline(time.Time{})` 失败被 `_` 丢弃 → 30s 写死线仍在。实测：20s 首帧正常送达，40s（30s 后首次写）第二帧写失败、请求 ctx 被 canceled、连接掐断——45s/60s 预算的回退链永远走不完。§14.4/§16.3 的 E2E 全部短于 30s，故此前未暴露 | responseWriter 补 `Unwrap()`；/api/mobile/sessions 等同享 | middleware.go（7886fcd） |
+| 4 | 整链预算 45s：两个挂死候选耗 40s 后最终候选仅剩 5s，实测 kimi-k3 来不及出首 token | 60s（2×20s 挂死 + 最终候选完整 20s 窗口；retry 帧使等待可见，非 §14.2 零字节转圈） | llmbff_provider_adapters.go（7886fcd） |
+| 5 | 回退行为不可观测 | `[llm-auto]` 日志：每次切换（model、错误、tried）与终止（原因、budget_left） | llmbff_provider_adapters.go（764f323） |
+
+新增测试：`TestDynamicGatewayStreamFallsBackOnAttemptDeadline`、
+`TestDynamicGatewayStreamNoFallbackAfterContent`（764f323）、
+`TestDynamicGatewayStreamChainVisitsEachCandidateOnce`（7886fcd，三候选链
+不重访断言）。超时预算 var 化，测试内缩到 100ms。
+
+### 21.3 E2E 验证（运行中 :8088 + emulator-5554，-no-snapshot 冷启动沿用）
+
+- **curl 全成功路径**：`/api/llm/stream` model=auto → T+20s retry 帧
+  `minimax-m3` → T+40s retry 帧 `kimi-k3` → T+45s 正文 `CHAIN-FIXED-OK` +
+  usage + `[DONE]`（45.0s，200）。上游双死场景 auto 模型恢复可用。
+- **App 内**（`test-evidence/2026-09-05-send-race/08~11`）：auto 连发两条，
+  每次回退跳变时气泡内灰字「上游模型不可用，已切换到 kimi-k3 重试…」实时
+  渲染（08 捕获跳变瞬间、09/11 捕获终态）；当 kimi-k3 首 token 也超 20s 时
+  以红色 `context deadline exceeded` 干净终态（无转圈、无悬空气泡）——
+  终态正确性本身即为 §16.6 #1 所需的「流已发出」证据。
+- 结论：回退链行为与 UI 提示全部符合设计；剩余失败均为上游时延/无
+  provider（部署侧），非代码缺陷。
+
+### 21.4 JWT 滑动续期真机验证（§16.1 #4~7 的运行时收口）
+
+CDP 探针（WebView 页面上下文，§14.5 工具箱）：
+
+- 存量 token（legacy 24h TTL，余 1121min）→ `POST /api/auth/refresh` 200，
+  新 token 余 1440min（滑动满额）；
+- `maybeRefresh` 门槛语义：余 >5min 时主动续期不触发（`maybeRefreshWouldSkip:
+  true`），不会无谓刷新；
+- 新 token 写回 `localStorage.pocket_token` 后，页面内带新 token 调
+  `/api/llm-gateway/config` → 200，会话无缝延续。
+- 流式路径的临期预刷新（7485b8a 的 streamChat maybeRefresh + 401 重放）随
+  本轮全部 App 内发送隐式回归：预刷新对 24h TTL 为 no-op，不破坏任何流。
+- 说明：`<5min 触发`的真实临期场景需短 TTL 部署（legacy TTL 硬编码 24h），
+  运行时无法自然复现；门槛逻辑已由上述探测 + 代码路径覆盖，留待生产
+  RedClaw 15min token 环境天然验证。
+
+### 21.5 验证记录
+
+- `go build ./...` + `go test ./...` 全绿（46 包；含新增 3 测试）。
+- `npx vue-tsc --noEmit` 通过（§19.2 后无前端改动，本节再次确认）。
+- 后端冒烟：login/refresh/llm-gateway config 200；kimi-k3 直连 SSE 正常。
+
+### 21.6 遗留（下一轮续接，更新版）
+
+1. 上游 provider（glm-5.2/minimax-m3/embedding）与 DSN 轮换：仍阻塞在网关
+   维护侧/提交者确认（Issue #14），本仓无代码可改。
+2. kimi-k3 首 token 时延波动（5~12s，偶发 >20s）：若上游恢复后仍慢，可考虑
+   「最终候选不设尝试超时（仅整链预算兜底）」或把尝试超时改为参数化配置。
+   当前 60s 预算在「2 死候选 + 1 慢可用候选」场景偏紧，属调优项非缺陷。
+3. §16.6 #1 悬空态：防御已落地（7485b8a/§17.5），双通道 E2E 复现 0/2，
+   维持「再遇再查」。
+4. `/api/embed` 无 provider 同 §16.6 #4。
