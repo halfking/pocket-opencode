@@ -193,3 +193,69 @@
 2026/09/05 16:42:01 Warning: version config not found at config/version.json, using defaults: open config/version.json: no such file or directory
 2026/09/05 16:42:07 WebSocket client connected: 192.168.31.32:48090 (total: 1)
 2026/09/05 16:42:08 [SLOW] GET /api/chat-agents - 200 (505.164583ms)
+2026/09/05 17:02:32 WebSocket client disconnected: 192.168.31.32:48090 (total: 0)
+2026/09/05 17:29:30 WebSocket client connected: 192.168.31.32:44400 (total: 1)
+2026/09/05 17:29:30 Warning: version config not found at config/version.json, using defaults: open config/version.json: no such file or directory
+2026/09/05 17:29:31 [SLOW] GET /api/chat-agents - 200 (516.217208ms)
+2026/09/05 17:40:27 [llm-auto] stop fallback chain: model=abab5.5-chat err=context deadline exceeded answered=false fallback="" ctx_err=<nil> budget_left=39.999s
+2026/09/05 17:40:27 [SLOW] POST /api/llm/stream - 200 (20.284476708s)
+2026/09/05 17:40:57 Postgres pool initialized (schema="opencode_pocket")
+2026/09/05 17:40:57 Module stores initialized (PG, scheduled tasks and marketplace enabled)
+2026/09/05 17:40:57 SIGNING: disabled (public key not configured)
+2026/09/05 17:40:57 Auth: user store + JWT signer initialized
+2026/09/05 17:40:57 WARN: IDENTITY_SHARED_SECRET not set — JWT verification is local-key only; locally-issued tokens are NOT covered by RedClaw session revocation. Set IDENTITY_SHARED_SECRET for RedClaw-integrated deployments.
+2026/09/05 17:40:57 WARN: POCKET_AUTH_LEGACY_ONLY=true — using local JWT legacy path (not for production)
+2026/09/05 17:40:57 INFO: POCKET_WEBAUTHN_RP_* not fully set — biometric flow degraded to P0 stub
+2026/09/05 17:40:57 INFO: POCKET_KXMEMORY_BASE_URL not set; AI classification/SSOT disabled
+2026/09/05 17:40:57 WARN: POCKET_EMAIL_MASTER_KEY not set; auto-generated key persisted to data/email_master.key
+2026/09/05 17:40:57 Email scheduler started (fetch_enabled=true, kxmemory=false, tz_offset=28800s, oauth_providers=0)
+2026/09/05 17:40:57 WARNING: POCKET_GROQ_API_KEY not set; STT cloud fallback disabled
+2026/09/05 17:40:57 WARNING: POCKET_EMBED_API_KEY not set; /api/embed disabled
+2026/09/05 17:40:57 WARNING: POCKET_LLM_API_KEY not set; /api/llm/chat disabled
+2026/09/05 17:40:57 Using static NPS adapter (demo mode)
+2026/09/05 17:40:57 Using OpenCode HTTP adapter (timeout: 5000ms)
+2026/09/05 17:40:57 ✅ 启动 OpenCode 实例自动发现（间隔: 1m0s）
+2026/09/05 17:40:57 [PluginHub] Starting...
+2026/09/05 17:40:57 MARKETPLACE: blob upload quota 1073741824 bytes/workspace
+2026/09/05 17:40:57 ⚠ Phase 4 Warning: Local runtime is unavailable
+2026/09/05 17:40:57   ACC cloud dispatcher not configured (missing POCKET_MCP_TENANT_ID or POCKET_MCP_API_KEY)
+2026/09/05 17:40:57   Phase 4 execution features will not work until cloud dispatcher is configured
+2026/09/05 17:40:57 Biometric authentication enabled (PG)
+2026/09/05 17:40:57 LLM gateway store initialized (PG)
+2026/09/05 17:40:57 Identity Core enabled (workspaces/members/devices)
+2026/09/05 17:40:57 [llm-gateway] loaded config from DB: workspace=default baseURL=https://llm.kxpms.cn/v1 models=9
+2026/09/05 17:40:57 [llm-gateway] loaded config from DB: workspace=default baseURL=https://llm.kxpms.cn/v1 models=9
+2026/09/05 17:40:57 [llm-gateway] loaded config from DB: workspace=ws_user-admin baseURL=https://llm.kxpms.cn/v1 models=0
+2026/09/05 17:40:57 LLM gateway config persistence enabled (PG)
+2026/09/05 17:40:57 Imported legacy LLM gateway config as node (workspace=ws_user-admin); admin credentials still required
+2026/09/05 17:40:57 Gateway node registry enabled (PG, allow_private_hosts=false)
+2026/09/05 17:40:57 LLM BFF enabled (stream + usage tracking, dynamic gateway)
+2026/09/05 17:40:57 Quota enforcer enabled (PG store, AlwaysAllow strategy)
+2026/09/05 17:40:57 Lobster Vault sync enabled (e2ee asset mirror)
+2026/09/05 17:40:57 Agent Bridge enabled (unified agent dispatch)
+2026/09/05 17:40:57 Scheduled task scheduler started (enabled=true, tick=5s, max_parallel=4, executors=3)
+2026/09/05 17:40:57 Notification Center enabled (inbox + rules + WS foreground push)
+2026/09/05 17:40:57 Chat Agent sync enabled (cloud cross-device, PG mode)
+2026/09/05 17:40:57 Chat Agent store initialized
+2026/09/05 17:40:57 [chatagent] builtin agents already present, seed skipped
+2026/09/05 17:40:57 OpenCode domain managers wired: eventMgr + permMgr + quesMgr + ocMgr (refreshStatus 30s)
+2026/09/05 17:40:57 ACP agent registry wired: 0 adapter(s)
+2026/09/05 17:40:57 会话迁移服务已装配（/api/migration, /api/migration/preview）
+2026/09/05 17:40:57 [tasksync] disabled (mcpClient or taskStore not configured)
+2026/09/05 17:40:57 [disksession-sync] disabled (disk adapter or mcp client not configured)
+2026/09/05 17:40:57 [approval-broadcast] started
+2026/09/05 17:40:57 [question-mgr] starting in event-driven mode
+2026/09/05 17:40:57 [permission-mgr] starting in event-driven mode
+2026/09/05 17:40:57 [session-event-broadcast] started
+2026/09/05 17:40:57 pocketd listening on :8090
+2026/09/05 17:40:59 WebSocket client connected: 192.168.31.32:46690 (total: 1)
+2026/09/05 17:41:07 INFO IDENTITY_SHADOW_DSN not set; shadow recording disabled component=identity-shadow
+2026/09/05 17:42:46 WebSocket client disconnected: 192.168.31.32:46690 (total: 0)
+2026/09/05 17:48:01 WebSocket client connected: 192.168.31.32:35284 (total: 1)
+2026/09/05 17:51:14 WebSocket client disconnected: 192.168.31.32:35284 (total: 0)
+2026/09/05 17:51:17 WebSocket client connected: 192.168.31.32:54416 (total: 1)
+2026/09/05 17:51:43 WebSocket client disconnected: 192.168.31.32:54416 (total: 0)
+2026/09/05 18:53:22 WebSocket client connected: 192.168.31.32:58236 (total: 1)
+2026/09/05 18:55:46 WebSocket client disconnected: 192.168.31.32:58236 (total: 0)
+2026/09/05 21:00:00 [email/scheduler] daily summary trigger fired at 2026-09-05T21:00:00+08:00 (date=2026-09-05)
+2026/09/05 21:00:00 [email/scheduler] kxmemory not configured; skipping AI summary generation

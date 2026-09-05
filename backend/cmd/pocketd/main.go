@@ -22,6 +22,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/db"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
+	"github.com/halfking/pocket-opencode/backend/internal/finance"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
@@ -76,51 +77,58 @@ func main() {
 	}
 
 	// ---- Module stores (all share the pool) ----
-	var (
-		taskStore          *task.Store // nil-safe: nil when pool is nil
-		scheduledTaskStore *scheduledtask.Store
-		notesStore         *notes.Store
-		emailStore         *email.Store
-		vaultStore         *vault.Store
-		marketplaceStore   *marketplace.Store
-	)
-	if pool != nil {
-		ts, err := task.NewStore(pool)
-		if err != nil {
-			log.Fatalf("task store: %v", err)
+		var (
+			taskStore          *task.Store
+			notesStore         *notes.Store
+			emailStore         *email.Store
+			vaultStore         *vault.Store
+			scheduledTaskStore *scheduledtask.Store
+			marketplaceStore   *marketplace.Store
+			financeStore       finance.FinanceStore
+		)
+		if pool != nil {
+			ts, err := task.NewStore(pool)
+			if err != nil {
+				log.Fatalf("task store: %v", err)
+			}
+			taskStore = ts
+			ns, err := notes.NewStore(pool)
+			if err != nil {
+				log.Fatalf("notes store: %v", err)
+			}
+			notesStore = ns
+			es, err := email.NewStore(pool)
+			if err != nil {
+				log.Fatalf("email store: %v", err)
+			}
+			emailStore = es
+			vs, err := vault.NewStore(pool)
+			if err != nil {
+				log.Fatalf("vault store: %v", err)
+			}
+			vaultStore = vs
+			sts, err := scheduledtask.NewStore(context.Background(), pool)
+			if err != nil {
+				log.Fatalf("scheduled task store: %v", err)
+			}
+			scheduledTaskStore = sts
+			fs, err := finance.NewPGStore(context.Background(), pool)
+			if err != nil {
+				log.Fatalf("finance store: %v", err)
+			}
+			financeStore = fs
+			ms, err := initMarketplaceStore(context.Background(), pool)
+			if err != nil {
+				log.Fatalf("marketplace store: %v", err)
+			}
+			marketplaceStore = ms
+			if marketplaceStore != nil {
+				log.Println("Module stores initialized (PG, scheduled tasks and marketplace enabled)")
+			} else {
+				log.Println("Module stores initialized (PG, scheduled tasks enabled; marketplace remote-only)")
+			}
 		}
-		taskStore = ts
-		ns, err := notes.NewStore(pool)
-		if err != nil {
-			log.Fatalf("notes store: %v", err)
-		}
-		notesStore = ns
-		es, err := email.NewStore(pool)
-		if err != nil {
-			log.Fatalf("email store: %v", err)
-		}
-		emailStore = es
-		vs, err := vault.NewStore(pool)
-		if err != nil {
-			log.Fatalf("vault store: %v", err)
-		}
-		vaultStore = vs
-		sts, err := scheduledtask.NewStore(context.Background(), pool)
-		if err != nil {
-			log.Fatalf("scheduled task store: %v", err)
-		}
-		scheduledTaskStore = sts
-		ms, err := initMarketplaceStore(context.Background(), pool)
-		if err != nil {
-			log.Fatalf("marketplace store: %v", err)
-		}
-		marketplaceStore = ms
-		if marketplaceStore != nil {
-			log.Println("Module stores initialized (PG, scheduled tasks and marketplace enabled)")
-		} else {
-			log.Println("Module stores initialized (PG, scheduled tasks enabled; marketplace remote-only)")
-		}
-	}
+		// 无 PG 时 financeStore 保持 nil：server 内部默认内存版实现。
 
 	// ---- Marketplace 签名策略（ADR: docs/handoff/2026-09-05-marketplace-signing-chain-design.md）----
 	// root 公钥未配置 = 签名校验关闭（仅记录语义，不阻断既有流程）；
@@ -529,6 +537,9 @@ func main() {
 		emailCrypto, emailPending,
 		emailScheduler, emailFetcher,
 		dataDir, pool)
+	if financeStore != nil {
+		srv.SetFinanceStore(financeStore)
+	}
 	if scheduledTaskStore != nil {
 		srv.SetScheduledTaskStore(scheduledTaskStore)
 	}
@@ -720,6 +731,16 @@ func main() {
 		provider := server.NewDynamicLLMGatewayBFFProvider(func(wsID string) server.GatewayConfig {
 			return srv.ResolveGateway(wsID)
 		})
+		// RedClaw LLM 兜底：企业网关不可用/请求失败时自动切换 RedClaw
+		// pocket chat 通道（POCKET_REDCLAW_LLM_FALLBACK=true 且 Bridge 已配置）。
+		if cfg.RedClawLLMFallback {
+			if rcProvider := server.NewRedClawBFFProvider(srv.RedClawBridge()); rcProvider != nil {
+				provider = server.NewFallbackBFFProvider(provider, rcProvider)
+				log.Println("LLM BFF: RedClaw fallback provider enabled (POCKET_REDCLAW_LLM_FALLBACK=true)")
+			} else {
+				log.Println("WARN: POCKET_REDCLAW_LLM_FALLBACK=true but RedClaw bridge not configured; fallback disabled")
+			}
+		}
 		var recorder llmbff.Recorder = llmbff.NoopRecorder{}
 		var summarizer llmbff.Summarizer
 		if pool != nil {

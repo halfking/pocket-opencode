@@ -1,6 +1,11 @@
 <template>
   <div class="page">
-    <HeaderActionsPortal><button type="button" class="save-link" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button></HeaderActionsPortal>
+    <HeaderActionsPortal>
+      <button type="button" class="back-btn" @click="router.back()" aria-label="返回">
+        <span class="material-symbols-outlined">arrow_back</span>
+      </button>
+      <button type="button" class="save-link" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
+    </HeaderActionsPortal>
     <form class="form" @submit.prevent="save">
       <label>名称 *<input v-model="form.name" required maxlength="120" placeholder="例如：工作日晨报" /></label>
       <label>描述<textarea v-model="form.description" rows="2" placeholder="可选说明" /></label>
@@ -53,7 +58,9 @@ watch(taskId, (id, previous) => { if (id && id !== previous) void load() })
 </script>
 
 <style scoped>
-.page { min-height: 100%; background: var(--bg-base); } .save-link { color: var(--brand-primary); font-weight: 600; }
+.page { min-height: 100%; background: var(--bg-base); }
+.back-btn { background: none; border: none; color: var(--text-primary); display: flex; align-items: center; padding: 4px; cursor: pointer; }
+.save-link { color: var(--brand-primary); font-weight: 600; }
 .form { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-4) var(--space-3) 100px; } label, legend { font-size: 13px; font-weight: 600; color: var(--text-secondary); } label { display: flex; flex-direction: column; gap: 6px; }
 input, textarea, select { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); font: inherit; font-size: 14px; } textarea { resize: vertical; } fieldset { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); } small { color: var(--text-muted); font-weight: 400; }
 .chips { display: flex; gap: 7px; } .chips button, .actions button { padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); cursor: pointer; } .chips button { flex: 1; } .chips button.active { background: var(--brand-primary); color: var(--text-inverse); border-color: var(--brand-primary); }

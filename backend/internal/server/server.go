@@ -150,7 +150,7 @@ type Server struct {
 	emailPending   *email.PendingOAuth
 	emailScheduler *email.Scheduler
 	emailFetcher   *email.Fetcher
-	financeStore   *finance.Store
+	financeStore   finance.FinanceStore
 
 	dataDir string // 数据目录
 
@@ -191,6 +191,7 @@ func isProductionConfig(cfg config.Config) bool {
 // OpenCode 扩展：新增 opencodeManager（实例和会话管理）。
 // Auth + Email: 新增 userStore/jwtSigner/emailCrypto/emailPending/emailScheduler/emailFetcher/dataDir。
 // 这些依赖都允许为 nil（对应功能降级），由各 handler 自行判断。
+// 记账存储经 SetFinanceStore 注入（PG 版），未注入时默认内存版。
 func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore vaultSyncStorer, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string, pool *pgxpool.Pool) *Server {
 	return newServer(cfg, nps, opencode, taskStore, reg, configAdapter, notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, opencodeManager, userStore, jwtSigner, emailCrypto, emailPending, emailScheduler, emailFetcher, dataDir, true, pool)
 }
@@ -244,7 +245,8 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 		emailScheduler:   emailScheduler,
 		emailFetcher:     emailFetcher,
 		dataDir:          dataDir,
-		financeStore:     finance.NewStore(),
+		// 默认内存版记账存储；main.go 在 PG 就绪时经 SetFinanceStore 换成 PG 版。
+		financeStore: finance.NewStore(),
 		auditStore: func() redclaw.AuditStoreFull {
 			production := isProductionConfig(cfg)
 			if pool == nil {
@@ -443,6 +445,14 @@ func (s *Server) ScheduledTaskScheduler() *scheduledtask.Scheduler {
 // automation wiring. HTTP callers still go through authenticated handlers.
 func (s *Server) RedClawBridge() *redclaw.Bridge { return s.redclawBridge }
 
+// SetFinanceStore 注入 PG 版记账存储（main.go 在 PG 就绪时调用）。
+// 不注入时保留 newServer 里的内存版实现，开发/测试环境零依赖可用。
+func (s *Server) SetFinanceStore(fs finance.FinanceStore) {
+	if fs != nil {
+		s.financeStore = fs
+	}
+}
+
 // AgentBridge returns the configured OpenCode Agent Bridge for automation
 // executors. The bridge itself enforces workspace-scoped agent lookup.
 func (s *Server) AgentBridge() *agentbridge.Bridge { return s.agentBridge }
@@ -626,6 +636,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/email/send", s.requireAuth(s.handleEmailSend))
 	mux.HandleFunc("/api/emails", s.requireAuth(s.handleEmails))
 	mux.HandleFunc("/api/emails/sync", s.requireAuth(s.handleEmailSync))
+	// 发票自动整理（列表 + 按邮件手动提取；须在 /api/emails/ 子树之前声明）
+	mux.HandleFunc("/api/emails/invoices", s.requireAuth(s.handleEmailInvoices))
+	mux.HandleFunc("/api/emails/invoices/", s.requireAuth(s.handleEmailInvoiceDispatch))
 	mux.HandleFunc("/api/emails/", s.requireAuth(s.handleEmailOps))
 	// /api/email/accounts/test-smtp is intentionally NOT registered — the
 	// {id}/test-smtp path is dispatched by handleEmailAccountOps so the

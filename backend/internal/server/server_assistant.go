@@ -361,6 +361,12 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 		s.handleNoteClassify(w, r, realID)
 		return
 	}
+	// /api/notes/{id}/summarize — generate AI summary (POST).
+	if strings.HasSuffix(id, "/summarize") {
+		realID := strings.TrimSuffix(id, "/summarize")
+		s.handleNoteSummarize(w, r, realID)
+		return
+	}
 
 	// Get authenticated user identity
 	uid := s.userIDFromRequest(r)
@@ -463,6 +469,77 @@ func (s *Server) handleNoteClassify(w http.ResponseWriter, r *http.Request, id s
 	})
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleNoteSummarize — POST /api/notes/{id}/summarize
+//
+// 对笔记内容调用 LLM 生成总结。适用于长语音笔记转写后的精炼摘要。
+// 返回 { summary: string }。需要 llmBFF 已配置。
+func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if s.notesStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "notes store not configured")
+		return
+	}
+	if s.llmBFF == nil {
+		writeError(w, http.StatusServiceUnavailable, "llm not configured")
+		return
+	}
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing note id")
+		return
+	}
+
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
+	found, err := s.notesStore.GetByIDScoped(r.Context(), id, uid, wsID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if found == nil {
+		writeError(w, http.StatusNotFound, "note not found")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+
+	prompt := fmt.Sprintf(
+		"请为以下笔记内容生成一段简洁的总结（3-5句话）：\n\n%s",
+		found.Snippet,
+	)
+	req := llmbff.ChatRequest{
+		WorkspaceID: wsID,
+		Model:       "auto", // 智能路由
+		Messages: []llmbff.Message{
+			{Role: "user", Content: prompt},
+		},
+		Temperature: 0.3,
+		MaxTokens:   300,
+		User:        uid,
+	}
+
+	resp, err := s.llmBFF.Chat(ctx, req, "note_summary")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("summarize failed: %v", err))
+		return
+	}
+
+	summary := resp.Content
+	// 可选：回写到 note.ai_summary 字段（如果 notes 表有该列）
+	// found.AISummary = summary
+	// _ = s.notesStore.Upsert(context.Background(), found)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"summary": summary,
+		"model":   resp.Model,
+		"usage":   resp.Usage,
+	})
 }
 
 // handleEmailOAuthCallback — GET /callback/email/oauth
@@ -1760,6 +1837,10 @@ func (s *Server) handleEmailSyncStatus(w http.ResponseWriter, r *http.Request) {
 
 // classifyEmailsAsync 异步调 kxmemory 批量分类邮件（IMAP 同步后触发）
 func (s *Server) classifyEmailsAsync(emails []email.Email, userID, workspaceID string) {
+	// 发票自动提取：纯规则、不依赖 kxmemory，主题/摘要命中即提取落库。
+	// Best-effort：失败只记日志，不影响分类主流程。
+	s.extractInvoicesAsync(emails, userID, workspaceID)
+
 	if s.kxmemory == nil {
 		return // kxmemory 未配置，跳过
 	}

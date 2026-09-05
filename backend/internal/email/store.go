@@ -32,6 +32,9 @@ func NewStore(pool *pgxpool.Pool) (*Store, error) {
 	if err := s.migrate(); err != nil {
 		return nil, fmt.Errorf("email migrate: %w", err)
 	}
+	if err := s.migrateInvoices(context.Background()); err != nil {
+		return nil, fmt.Errorf("email invoice migrate: %w", err)
+	}
 	return s, nil
 }
 

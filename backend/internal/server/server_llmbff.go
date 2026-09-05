@@ -165,6 +165,13 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 
+	// SSE 长连接：绕过 http.Server 的 WriteTimeout（30s），允许流最多 150s。
+	// 每次 flush 后更新 deadline，确保有数据传输时连接不会被服务器超时关闭。
+	const sseStreamTimeout = 150 * time.Second
+	if conn, ok := w.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = conn.SetWriteDeadline(time.Now().Add(sseStreamTimeout))
+	}
+
 	req := llmbff.ChatRequest{
 		WorkspaceID: s.workspaceIDFromRequest(r),
 		Model:       body.Model,
@@ -188,6 +195,10 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 		payload, _ := json.Marshal(d)
 		fmt.Fprintf(w, "data: %s\n\n", payload)
 		flusher.Flush()
+		// 每次 flush 后重置 write deadline，让流在有进展时不会被超时杀死。
+		if conn, ok := w.(interface{ SetWriteDeadline(time.Time) error }); ok {
+			_ = conn.SetWriteDeadline(time.Now().Add(sseStreamTimeout))
+		}
 		return true
 	})
 

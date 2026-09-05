@@ -221,4 +221,60 @@ export const emailApi = {
   getSummary(date: string): Promise<DailySummary> {
     return http(`/api/email/summaries/${date}`)
   },
+
+  // ── 发票自动整理 ──────────────────────────────────────────────────────
+  // 后端规则提取（subject/snippet/缓存正文），分类为 bill 的邮件同步后自动提取；
+  // 这里提供列表/手动提取/归档/删除。
+  listInvoices(status?: 'new' | 'filed', limit?: number): Promise<EmailInvoiceListResult> {
+    const qs = new URLSearchParams()
+    if (status) qs.set('status', status)
+    if (limit) qs.set('limit', String(limit))
+    const q = qs.toString()
+    return http(`/api/emails/invoices${q ? `?${q}` : ''}`)
+  },
+  extractInvoice(emailId: string): Promise<EmailInvoiceExtractResult> {
+    return http('/api/emails/invoices/extract', {
+      method: 'POST',
+      body: JSON.stringify({ emailId }),
+    })
+  },
+  setInvoiceStatus(id: string, status: 'new' | 'filed'): Promise<void> {
+    return http(`/api/emails/invoices/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) })
+  },
+  deleteInvoice(id: string): Promise<void> {
+    return http(`/api/emails/invoices/${id}`, { method: 'DELETE' })
+  },
+}
+
+/** 从邮件提取出的结构化发票/账单记录（对齐后端 email.Invoice）。 */
+export interface EmailInvoice {
+  id: string
+  emailId: string
+  accountId: string
+  kind: string // e-invoice | vat-special | paper | receipt | bill
+  category: string // 餐饮 | 交通 | 住宿 | 通信 | 办公 | 其他
+  title: string
+  seller: string
+  amount: number
+  currency: string
+  invoiceNo?: string
+  invoiceDate?: string
+  subject: string
+  status: 'new' | 'filed'
+  extractedBy: 'rule' | 'llm'
+  createdAt: number
+  updatedAt: number
+}
+
+export interface EmailInvoiceListResult {
+  invoices: EmailInvoice[]
+  total: number
+  filed: number
+  amount: number
+}
+
+export interface EmailInvoiceExtractResult {
+  matched: boolean
+  message?: string
+  invoice?: EmailInvoice
 }

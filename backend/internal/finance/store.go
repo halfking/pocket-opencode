@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+// FinanceStore 记账存储接口，支持内存和 PostgreSQL 两种实现
+type FinanceStore interface {
+	CreateScoped(req CreateTransactionRequest, ownerID, workspaceID string) (*Transaction, error)
+	GetScoped(id, ownerID, workspaceID string) (*Transaction, error)
+	ListScoped(ownerID, workspaceID string) ([]*Transaction, error)
+	DeleteScoped(id, ownerID, workspaceID string) error
+	GetStatsScoped(query StatsQuery, ownerID, workspaceID string) (*MonthlyStats, error)
+}
+
 // legacyOwnerID / legacyWorkspaceID are the identity defaults used by the
 // deprecated non-scoped API, matching the handler fallback for requests
 // without authenticated claims.

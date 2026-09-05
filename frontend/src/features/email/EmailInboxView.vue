@@ -12,8 +12,16 @@
     />
 
     <template v-else>
-      <!-- 标题栏右侧：邮箱设置（账户 / 过滤策略 / 处理逻辑） -->
+      <!-- 标题栏右侧：发票整理 / 邮箱设置（账户 / 过滤策略 / 处理逻辑） -->
       <HeaderActionsPortal>
+        <button
+          class="chat-icon-btn"
+          type="button"
+          aria-label="发票整理"
+          @click="router.push('/email/invoices')"
+        >
+          <span class="material-symbols-outlined" aria-hidden="true">receipt_long</span>
+        </button>
         <button
           class="chat-icon-btn"
           type="button"

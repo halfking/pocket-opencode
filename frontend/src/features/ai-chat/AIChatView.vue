@@ -116,6 +116,7 @@
             <div v-if="a.retryHint" class="msg-retry">{{ a.retryHint }}</div>
             <footer v-if="a.usage" class="usage">≈ {{ a.usage.total_tokens }} tokens</footer>
             <div v-if="a.error" class="msg-error">{{ a.error }}</div>
+            <div v-if="a.interrupted" class="msg-interrupted">⚠️ 生成被中断（页面刷新或应用重启）</div>
             <div class="msg-actions">
               <button class="act" @click="copy(a)">复制</button>
               <button class="act" @click="openOptimize(a)">优化</button>
@@ -129,6 +130,7 @@
           <div v-if="turn.answers[0].retryHint" class="msg-retry">{{ turn.answers[0].retryHint }}</div>
           <div v-if="turn.answers[0].usage" class="usage-row">≈ {{ turn.answers[0].usage?.total_tokens }} tokens</div>
           <div v-if="turn.answers[0].error" class="msg-error">{{ turn.answers[0].error }}</div>
+          <div v-if="turn.answers[0].interrupted" class="msg-interrupted">⚠️ 生成被中断</div>
           <div class="msg-actions">
             <button class="act" @click="copy(turn.answers[0])">复制</button>
             <button class="act" @click="openOptimize(turn.answers[0])">优化</button>
@@ -277,7 +279,7 @@
           <span class="model-current">{{ autoHint }}</span>
         </label>
         <label
-          v-for="m in models"
+          v-for="m in sortedModels"
           :key="m"
           class="model-item"
           :class="{ checked: isModelChecked(m) }"
@@ -288,7 +290,10 @@
             :checked="isModelChecked(m)"
             @change="onModelCheck(m, $event)"
           />
-          <span class="model-name">{{ m }}</span>
+          <span class="model-name">
+            <span v-if="store.isFeatured(m)" class="star" title="精选">★</span>
+            {{ m }}
+          </span>
           <span class="modality-badge" :data-mod="modalityOf(m)">{{ modalityOf(m) }}</span>
           <span v-if="!compareMode && active && active.model === m" class="model-current">当前</span>
         </label>
@@ -303,13 +308,16 @@
       <div v-if="models.length === 0" class="sheet-state">暂无可用模型</div>
       <div v-else class="model-list">
         <button
-          v-for="m in models"
+          v-for="m in sortedModels"
           :key="m"
           class="model-item plain"
           type="button"
           @click="doOptimize(m)"
         >
-          <span class="model-name">{{ m }}</span>
+          <span class="model-name">
+            <span v-if="store.isFeatured(m)" class="star" title="精选">★</span>
+            {{ m }}
+          </span>
         </button>
       </div>
     </BottomSheet>
@@ -378,7 +386,9 @@
           <div class="field-label">默认模型</div>
           <select v-model="settings.defaultModel" class="sel-input" @change="saveSettings">
             <option value="auto">auto · 智能路由</option>
-            <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
+            <option v-for="m in sortedModels" :key="m" :value="m">
+              {{ store.isFeatured(m) ? '★ ' : '' }}{{ m }}
+            </option>
             <option v-if="models.length === 0" value="">（未加载）</option>
           </select>
         </div>
@@ -584,14 +594,25 @@ function modalityOf(m: string) {
   return store.modalityOf(m)
 }
 
+/** 模型列表（精选优先排序）。 */
+const sortedModels = computed(() => {
+  const list = [...models.value]
+  return list.sort((a, b) => {
+    const aFeat = store.isFeatured(a)
+    const bFeat = store.isFeatured(b)
+    if (aFeat !== bFeat) return aFeat ? -1 : 1
+    return a.localeCompare(b)
+  })
+})
+
 /** 某模态"推荐"的模型（目录模态匹配优先，命名启发式兜底）。 */
 function modelsForModality(mk: ModalityKey): string[] {
-  return models.value.filter((m) => store.modalityOf(m) === mk)
+  return sortedModels.value.filter((m) => store.modalityOf(m) === mk)
 }
 
-/** 不属于该模态、但兜底可选的模型（排在推荐之后）。 */
+/** 不属于该模态、但兜底可选的模型（排在推荐之后，已排序）。 */
 function otherModels(mk: ModalityKey): string[] {
-  return models.value.filter((m) => store.modalityOf(m) !== mk).slice(0, 30)
+  return sortedModels.value.filter((m) => store.modalityOf(m) !== mk).slice(0, 30)
 }
 
 function onModalityDefault(mk: ModalityKey, e: Event) {
@@ -1055,6 +1076,11 @@ function formatTime(ts: number): string {
   color: var(--danger);
   margin-top: 3px;
 }
+.msg-interrupted {
+  font-size: 12px;
+  color: var(--warning, #f59e0b);
+  margin-top: 3px;
+}
 /* auto 回退重试进度提示（retry 帧）：灰色小字，风格同 msg-error 但不告警 */
 .msg-retry {
   font-size: 12px;
@@ -1384,6 +1410,7 @@ function formatTime(ts: number): string {
 .model-item.plain { justify-content: flex-start; border: 1px solid var(--border); }
 .model-check { width: 16px; height: 16px; accent-color: var(--brand-primary); }
 .model-name { flex: 1; font-size: 13px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-name .star { color: var(--warning, #f59e0b); margin-right: 2px; }
 .model-current { font-size: 10px; color: var(--brand-primary); }
 .sheet-confirm {
   width: 100%; padding: 12px; border: none; border-radius: 999px;
@@ -1479,4 +1506,18 @@ function formatTime(ts: number): string {
 .library-link:hover {
   text-decoration: underline;
 }
+
+.modality-badge {
+  flex: none; font-size: 9px; padding: 2px 6px; border-radius: 999px;
+  background: var(--bg-subtle); color: var(--text-secondary); border: 1px solid var(--border);
+  text-transform: uppercase;
+}
+.modality-badge[data-mod='vision'] { color: var(--primary, #4c8dff); }
+.modality-badge[data-mod='audio'] { color: var(--success, #10b981); }
+.modality-badge[data-mod='video'] { color: var(--warning, #f59e0b); }
+.modality-badge[data-mod='embedding'] { color: var(--text-muted); }
+
+.modality-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.modality-name { flex: none; font-size: 12px; color: var(--text-secondary); min-width: 80px; }
+.modality-sel { flex: 1; }
 </style>

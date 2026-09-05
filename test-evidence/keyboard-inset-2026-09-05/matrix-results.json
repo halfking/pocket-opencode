@@ -1,0 +1,392 @@
+[
+ {
+  "name": "01-ai-home",
+  "hash": "#/ai",
+  "landed": "/ai",
+  "default": {
+   "hasBar": true,
+   "barBottom": 778,
+   "tabbarTop": 778,
+   "navPresent": true,
+   "innerH": 866,
+   "inputCount": 1,
+   "firstInputId": "textarea"
+  },
+  "focusResult": "focused",
+  "keyboard": {
+   "kbOpen": true,
+   "innerH": 554,
+   "vvH": 554,
+   "fieldVisible": true,
+   "fieldBottom": 452,
+   "barBottom": 542,
+   "occluded": false
+  },
+  "restored": {
+   "kbOpen": false,
+   "innerH": 866,
+   "barBottom": 778,
+   "tabbarTop": 778
+  }
+ },
+ {
+  "name": "02-ai-chat",
+  "hash": "#/ai-chat",
+  "landed": "/ai-chat",
+  "default": {
+   "hasBar": true,
+   "barBottom": 778,
+   "tabbarTop": 778,
+   "navPresent": true,
+   "innerH": 866,
+   "inputCount": 1,
+   "firstInputId": "textarea"
+  },
+  "focusResult": "focused",
+  "keyboard": {
+   "kbOpen": true,
+   "innerH": 554,
+   "vvH": 554,
+   "fieldVisible": true,
+   "fieldBottom": 450,
+   "barBottom": 542,
+   "occluded": false
+  },
+  "restored": {
+   "kbOpen": false,
+   "innerH": 866,
+   "barBottom": 778,
+   "tabbarTop": 778
+  }
+ },
+ {
+  "name": "03-sessions-detail",
+  "hash": "#/sessions/e2e-probe",
+  "landed": "/login?returnTo=/sessions/e2e-probe&unlock=1",
+  "default": {
+   "hasBar": false,
+   "barBottom": null,
+   "tabbarTop": null,
+   "navPresent": false,
+   "innerH": 866,
+   "inputCount": 1,
+   "firstInputId": "password"
+  },
+  "focusResult": "focused",
+  "keyboard": {
+   "kbOpen": true,
+   "innerH": 554,
+   "vvH": 554,
+   "fieldVisible": true,
+   "fieldBottom": 386,
+   "barBottom": null,
+   "occluded": false
+  },
+  "restored": {
+   "kbOpen": false,
+   "innerH": 866,
+   "barBottom": null,
+   "tabbarTop": null
+  }
+ },
+ {
+  "name": "04-notes-new",
+  "hash": "#/notes/new",
+  "landed": "/login?returnTo=/notes/new&unlock=1",
+  "default": {
+   "hasBar": false,
+   "barBottom": null,
+   "tabbarTop": null,
+   "navPresent": false,
+   "innerH": 866,
+   "inputCount": 1,
+   "firstInputId": "password"
+  },
+  "focusResult": "focused",
+  "keyboard": {
+   "kbOpen": true,
+   "innerH": 554,
+   "vvH": 554,
+   "fieldVisible": true,
+   "fieldBottom": 386,
+   "barBottom": null,
+   "occluded": false
+  },
+  "restored": {
+   "kbOpen": false,
+   "innerH": 866,
+   "barBottom": null,
+   "tabbarTop": null
+  }
+ },
+ {
+  "name": "05-email-detail",
+  "hash": "#/email/e2e-probe",
+  "landed": "/login?returnTo=/email/e2e-probe&unlock=1",
+  "default": {
+   "hasBar": false,
+   "barBottom": null,
+   "tabbarTop": null,
+   "navPresent": false,
+   "innerH": 866,
+   "inputCount": 1,
+   "firstInputId": "password"
+  },
+  "focusResult": "focused",
+  "keyboard": {
+   "kbOpen": true,
+   "innerH": 554,
+   "vvH": 554,
+   "fieldVisible": true,
+   "fieldBottom": 386,
+   "barBottom": null,
+   "occluded": false
+  },
+  "restored": {
+   "kbOpen": false,
+   "innerH": 866,
+   "barBottom": null,
+   "tabbarTop": null
+  }
+ },
+ {
+  "name": "06-meetings-new",
+  "hash": "#/meetings/new",
+  "landed": "/login?returnTo=/meetings/new&unlock=1",
+  "default": {
+   "hasBar": false,
+   "barBottom": null,
+   "tabbarTop": null,
+   "navPresent": false,
+   "innerH": 866,
+   "inputCount": 1,
+   "firstInputId": "password"
+  },
+  "focusResult": "focused",
+  "keyboard": {
+   "kbOpen": true,
+   "innerH": 554,
+   "vvH": 554,
+   "fieldVisible": true,
+   "fieldBottom": 386,
+   "barBottom": null,
+   "occluded": false
+  },
+  "restored": {
+   "kbOpen": false,
+   "innerH": 866,
+   "barBottom": null,
+   "tabbarTop": null
+  }
+ },
+ {
+  "name": "07-register",
+  "hash": "#/register",
+  "landed": "/register",
+  "default": {
+   "hasBar": false,
+   "barBottom": null,
+   "tabbarTop": null,
+   "navPresent": false,
+   "innerH": 866,
+   "inputCount": 1,
+   "firstInputId": "email"
+  },
+  "focusResult": "focused",
+  "keyboard": {
+   "kbOpen": true,
+   "innerH": 554,
+   "vvH": 554,
+   "fieldVisible": true,
+   "fieldBottom": 373,
+   "barBottom": null,
+   "occluded": false
+  },
+  "restored": {
+   "kbOpen": false,
+   "innerH": 866,
+   "barBottom": null,
+   "tabbarTop": null
+  }
+ },
+ {
+  "name": "08-login",
+  "hash": "#/login",
+  "landed": "/login",
+  "default": {
+   "hasBar": false,
+   "barBottom": null,
+   "tabbarTop": null,
+   "navPresent": false,
+   "innerH": 866,
+   "inputCount": 1,
+   "firstInputId": "password"
+  },
+  "focusResult": "focused",
+  "keyboard": {
+   "kbOpen": true,
+   "innerH": 554,
+   "vvH": 554,
+   "fieldVisible": true,
+   "fieldBottom": 386,
+   "barBottom": null,
+   "occluded": false
+  },
+  "restored": {
+   "kbOpen": false,
+   "innerH": 866,
+   "barBottom": null,
+   "tabbarTop": null
+  }
+ },
+ {
+  "name": "09-forgot-password",
+  "hash": "#/forgot-password",
+  "landed": "/forgot-password",
+  "default": {
+   "hasBar": false,
+   "barBottom": null,
+   "tabbarTop": null,
+   "navPresent": false,
+   "innerH": 866,
+   "inputCount": 1,
+   "firstInputId": "email"
+  },
+  "focusResult": "focused",
+  "keyboard": {
+   "kbOpen": true,
+   "innerH": 554,
+   "vvH": 554,
+   "fieldVisible": true,
+   "fieldBottom": 382,
+   "barBottom": null,
+   "occluded": false
+  },
+  "restored": {
+   "kbOpen": false,
+   "innerH": 866,
+   "barBottom": null,
+   "tabbarTop": null
+  }
+ },
+ {
+  "name": "10-llm-gateway",
+  "hash": "#/settings/llm-gateway",
+  "landed": "/settings/llm-gateway",
+  "default": {
+   "hasBar": false,
+   "barBottom": null,
+   "tabbarTop": null,
+   "navPresent": false,
+   "innerH": 866,
+   "inputCount": 3,
+   "firstInputId": "gateway-base-url"
+  },
+  "focusResult": "focused",
+  "keyboard": {
+   "kbOpen": true,
+   "innerH": 554,
+   "vvH": 554,
+   "fieldVisible": true,
+   "fieldBottom": 152,
+   "barBottom": null,
+   "occluded": false
+  },
+  "restored": {
+   "kbOpen": false,
+   "innerH": 866,
+   "barBottom": null,
+   "tabbarTop": null
+  }
+ },
+ {
+  "name": "11-scheduled-new",
+  "hash": "#/settings/scheduled-tasks/new",
+  "landed": "/settings/scheduled-tasks/new",
+  "default": {
+   "hasBar": false,
+   "barBottom": null,
+   "tabbarTop": null,
+   "navPresent": false,
+   "innerH": 866,
+   "inputCount": 9,
+   "firstInputId": "text"
+  },
+  "focusResult": "focused",
+  "keyboard": {
+   "kbOpen": true,
+   "innerH": 554,
+   "vvH": 554,
+   "fieldVisible": true,
+   "fieldBottom": 106,
+   "barBottom": null,
+   "occluded": false
+  },
+  "restored": {
+   "kbOpen": false,
+   "innerH": 866,
+   "barBottom": null,
+   "tabbarTop": null
+  }
+ },
+ {
+  "name": "12-agents-new",
+  "hash": "#/agents/new",
+  "landed": "/agents/new",
+  "default": {
+   "hasBar": false,
+   "barBottom": null,
+   "tabbarTop": null,
+   "navPresent": false,
+   "innerH": 866,
+   "inputCount": 4,
+   "firstInputId": "text"
+  },
+  "focusResult": "focused",
+  "keyboard": {
+   "kbOpen": true,
+   "innerH": 554,
+   "vvH": 554,
+   "fieldVisible": true,
+   "fieldBottom": 164,
+   "barBottom": null,
+   "occluded": false
+  },
+  "restored": {
+   "kbOpen": false,
+   "innerH": 866,
+   "barBottom": null,
+   "tabbarTop": null
+  }
+ },
+ {
+  "name": "13-email-accounts",
+  "hash": "#/email/accounts",
+  "landed": "/login?returnTo=/email/accounts&unlock=1",
+  "default": {
+   "hasBar": false,
+   "barBottom": null,
+   "tabbarTop": null,
+   "navPresent": false,
+   "innerH": 866,
+   "inputCount": 1,
+   "firstInputId": "password"
+  },
+  "focusResult": "focused",
+  "keyboard": {
+   "kbOpen": true,
+   "innerH": 554,
+   "vvH": 554,
+   "fieldVisible": true,
+   "fieldBottom": 386,
+   "barBottom": null,
+   "occluded": false
+  },
+  "restored": {
+   "kbOpen": false,
+   "innerH": 866,
+   "barBottom": null,
+   "tabbarTop": null
+  }
+ }
+]

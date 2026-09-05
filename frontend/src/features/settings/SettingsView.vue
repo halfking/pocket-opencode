@@ -112,6 +112,19 @@
             <div class="setting-value">{{ selectedInstance?.displayName || t('settings.notSelected') }}</div>
           </div>
         </div>
+        <!-- RedClaw 企业后端桥接：认证主权威源 / 知识库 / LLM 兜底通道 -->
+        <div class="setting-item">
+          <div class="setting-icon"><span class="material-symbols-outlined">hub</span></div>
+          <div class="setting-content">
+            <div class="setting-label">RedClaw 集成</div>
+            <div class="setting-value">
+              <span v-if="redclaw.connected === true" class="rc-ok">● 已连接</span>
+              <span v-else-if="redclaw.connected === false" class="rc-down">● 已配置 · 连接异常</span>
+              <span v-else class="rc-off">● 未启用</span>
+              <template v-if="redclaw.tenantId"> · 租户 {{ redclaw.tenantId }}</template>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- 应用信息 -->
@@ -202,6 +215,7 @@ import { useI18n } from 'vue-i18n'
 import { APP_VERSION, canDownloadApk, checkUpdate } from '../../utils/version'
 import { runtimePlatform } from '../../native/runtime-platform'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
+import { http } from '../../api/http'
 import { useConfirm } from '../../composables/useConfirm'
 import { useThemeStore, type ThemePreference } from '../../stores/theme'
 
@@ -235,6 +249,12 @@ const gateway = ref<GatewayConfig>({
 const testing = ref(false)
 const testResult = ref<{ ok: boolean; text: string } | null>(null)
 
+// RedClaw 集成状态（/api/redclaw/health；未配置时 503 → 显示「未启用」）
+const redclaw = ref<{ connected: boolean | null; tenantId: string }>({
+  connected: null,
+  tenantId: '',
+})
+
 onMounted(async () => {
   // 历史版本曾把裸用户名（非 JSON）写入 pocket_user，坏值不得中断挂载流程
   // （曾导致后续 AI 网关配置加载被跳过、区块恒显"未配置"）。
@@ -256,6 +276,14 @@ onMounted(async () => {
 
   // 加载 LLM Gateway 配置
   await refreshGateway()
+
+  // RedClaw 集成状态：best-effort，失败静默（未配置时后端 503）
+  try {
+    const res = await http<{ connected: boolean; tenant_id?: string }>('/api/redclaw/health')
+    redclaw.value = { connected: Boolean(res.connected), tenantId: res.tenant_id || '' }
+  } catch {
+    redclaw.value = { connected: null, tenantId: '' }
+  }
 })
 
 async function refreshGateway() {
@@ -580,4 +608,9 @@ async function handleLogout() {
   color: var(--text-muted);
   font-size: 20px;
 }
+
+/* RedClaw 集成状态 */
+.rc-ok { color: var(--success, #10b981); }
+.rc-down { color: var(--danger); }
+.rc-off { color: var(--text-muted); }
 </style>

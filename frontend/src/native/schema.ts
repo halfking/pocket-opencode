@@ -166,6 +166,32 @@ CREATE INDEX IF NOT EXISTS idx_emails_date ON local_emails(date DESC);
 CREATE INDEX IF NOT EXISTS idx_emails_unread ON local_emails(is_read) WHERE is_read = 0;
 
 -- ============================================================
+-- 发票本地镜像（服务端 /api/emails/invoices 的离线缓存）
+-- 注：只镜像结构化字段（销售方/金额/日期/发票号），不存邮件正文——
+-- 正文遵循本地库零知识原则仍留在服务端加密缓存里。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_email_invoices (
+    id TEXT PRIMARY KEY,             -- 服务端 invoice id
+    email_id TEXT NOT NULL,          -- 来源邮件
+    account_id TEXT,
+    kind TEXT,                       -- e-invoice / vat-special / paper / receipt / bill
+    category TEXT,                   -- 餐饮 / 交通 / 住宿 / 通信 / 办公 / 其他
+    title TEXT,                      -- 发票抬头
+    seller TEXT,
+    amount REAL DEFAULT 0,
+    currency TEXT DEFAULT 'CNY',
+    invoice_no TEXT,
+    invoice_date TEXT,               -- YYYY-MM-DD
+    subject TEXT,
+    status TEXT DEFAULT 'new',       -- new / filed
+    extracted_by TEXT DEFAULT 'rule',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_invoices_status ON local_email_invoices(status);
+CREATE INDEX IF NOT EXISTS idx_email_invoices_date ON local_email_invoices(invoice_date DESC);
+
+-- ============================================================
 -- 密码箱条目（敏感度最高，VeK 加密的密文存此处）
 -- 注：cap-keystore 原生插件管理加解密，本表存的是已加密 blob
 -- ============================================================

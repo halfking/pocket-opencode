@@ -31,6 +31,7 @@ import EmailDetailView from '../features/email/EmailDetailView.vue'
 import EmailSummaryView from '../features/email/EmailSummaryView.vue'
 import EmailAccountSetup from '../features/email/EmailAccountSetup.vue'
 import EmailSettingsView from '../features/email/EmailSettingsView.vue'
+import EmailInvoiceListView from '../features/email/InvoiceListView.vue'
 import VaultListView from '../features/vault/VaultListView.vue'
 import VaultEntryView from '../features/vault/VaultEntryView.vue'
 import MeetingListView from '../features/meetings/MeetingListView.vue'
@@ -142,6 +143,13 @@ const router = createRouter({
       name: 'email-settings',
       component: EmailSettingsView,
       meta: { requiresAuth: true, requiresLobster: true, title: '邮箱设置', canGoBack: true, bottomNav: false, hideAppHeader: true }
+    },
+    // 邮箱 — 发票自动整理（同样须在 /email/:id 之前声明）
+    {
+      path: '/email/invoices',
+      name: 'email-invoices',
+      component: EmailInvoiceListView,
+      meta: { requiresAuth: true, requiresLobster: true, title: '发票整理', canGoBack: true, bottomNav: false }
     },
     // 邮箱 — 邮件详情
     {

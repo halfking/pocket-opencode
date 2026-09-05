@@ -11,7 +11,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { llmBffApi, type ChatMessage } from '../../api/llm-bff'
-import { listNodes, getAvailableModels } from '../../api/gateway'
+import { listNodes, getAvailableModels, getFeaturedModels } from '../../api/gateway'
 import { useToast } from '../../composables/useToast'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 
@@ -170,6 +170,8 @@ export const useAIChatStore = defineStore('ai-chat', () => {
   const modelsError = ref('')
   /** 模型 id → 模态。优先来自网关 available-models，缺失时用启发式推断。 */
   const modalityMap = ref<Record<string, ModalityKey>>({})
+  /** 网关标记的精选模型名集合（canonical 名 + 别名 + 原始名），用于对话模型选择器打 ★。 */
+  const featuredNames = ref<Set<string>>(new Set())
   const catalogLoaded = ref(false)
   const drawerOpen = ref(false)
   const settingsOpen = ref(false)
@@ -203,8 +205,34 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     return modalityMap.value[modelId] ?? inferModality(modelId)
   }
 
+  /** 对话里展示的模型 id 是否为网关精选（canonical 名、别名或原始名命中）。 */
+  function isFeatured(modelId: string): boolean {
+    if (featuredNames.value.size === 0) return false
+    if (featuredNames.value.has(modelId)) return true
+    // 容错：网关目录按 canonical 名标记精选，而 /v1/models 常带日期后缀
+    // （如 gpt-4o → gpt-4o-2024-08-06），按「canonical 名 + 分隔符」前缀匹配。
+    for (const name of featuredNames.value) {
+      if (!name) continue
+      if (modelId.startsWith(`${name}-`) || modelId.startsWith(`${name}@`)) return true
+    }
+    return false
+  }
+
+  /** 从网关精选配置接口解析模型名列表（不同版本字段名有出入，逐个兜底）。 */
+  function parseFeaturedPayload(payload: any): string[] {
+    const raw =
+      payload?.featured_models ??
+      payload?.models ??
+      payload?.featured ??
+      (Array.isArray(payload) ? payload : [])
+    if (!Array.isArray(raw)) return []
+    return raw
+      .map((it: any) => (typeof it === 'string' ? it : it?.model || it?.canonical_name || ''))
+      .filter((s: string) => !!s)
+  }
+
   /**
-   * 拉取网关的可用模型目录（含官方 modality 标注）。
+   * 拉取网关的可用模型目录（含官方 modality 标注与精选标记）。
    * 需要已配置带 admin 凭据的网关节点；失败时静默回退到启发式（modalityMap
    * 保持为空，modalityOf 会兜底），不打断对话主流程。
    */
@@ -215,17 +243,31 @@ export const useAIChatStore = defineStore('ai-chat', () => {
       const { nodes } = await listNodes()
       const node = (nodes ?? []).find((n) => n.enabled)
       if (!node) return
-      const res = await getAvailableModels(node.id)
+      const [res, featuredFromConfig] = await Promise.all([
+        getAvailableModels(node.id),
+        // 精选列表与目录是两个上游端点：目录里有 featured 字段但可能为空，
+        // routing/featured 是权威配置源，两者合并；失败互不影响。
+        getFeaturedModels(node.id)
+          .then((f) => parseFeaturedPayload(f))
+          .catch(() => [] as string[]),
+      ])
       const map: Record<string, ModalityKey> = {}
+      const featured = new Set<string>(featuredFromConfig)
       for (const fam of res.families ?? []) {
         for (const v of fam.versions ?? []) {
           const mod = String(v.modality ?? '').toLowerCase()
           if (v.canonical_name && MODALITY_KEYS.includes(mod as ModalityKey)) {
             map[v.canonical_name] = mod as ModalityKey
           }
+          if (v.canonical_name && v.featured) {
+            featured.add(v.canonical_name)
+            for (const a of v.aliases ?? []) if (a) featured.add(a)
+            for (const r of v.raw_names ?? []) if (r) featured.add(r)
+          }
         }
       }
       modalityMap.value = map
+      featuredNames.value = featured
     } catch {
       // 目录是增强信息：拿不到就用启发式，不提示打扰。
     }
@@ -654,6 +696,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     loadModels,
     loadModalityCatalog,
     modalityOf,
+    isFeatured,
     resolveModel,
     persist,
     selectConversation,

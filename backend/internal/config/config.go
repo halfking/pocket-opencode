@@ -157,6 +157,11 @@ type Config struct {
 
 	// —— RedClaw SSO（OIDC）配置 ——
 	RedClawSsoEnabled bool // POCKET_REDCLAW_SSO_ENABLED=true 时 LoginView 多出 SSO Tab
+
+	// —— RedClaw LLM 兜底 ——
+	// 企业网关（POCKET_LLM_GATEWAY_URL / 运行时网关配置）请求失败时，
+	// 自动切换 RedClaw /api/v1/pocket/llm/chat 作为兜底对话通道。
+	RedClawLLMFallback bool // POCKET_REDCLAW_LLM_FALLBACK=true 启用
 }
 
 // Load reads all configuration from environment variables and returns a Config instance.
@@ -267,6 +272,7 @@ func Load() Config {
 		AuthLegacyOnly: getEnv("POCKET_AUTH_LEGACY_ONLY", "") == "true",
 		// SSO
 		RedClawSsoEnabled: getEnv("POCKET_REDCLAW_SSO_ENABLED", "") == "true",
+		RedClawLLMFallback: getEnv("POCKET_REDCLAW_LLM_FALLBACK", "") == "true",
 	}
 }
 
