@@ -452,8 +452,10 @@ async function unlock() {
   }
 }
 
-function logoutAndRelogin() {
-  auth.logout()
+// 退出重新登录：必须 await 服务端撤销 + 本地清理完成后才放行重新登录，
+// 否则在途的 logout 清理会与用户的新登录写入竞态（审计 P3）。
+async function logoutAndRelogin() {
+  await auth.logout()
   needUnlock.value = false
   error.value = ''
 }
