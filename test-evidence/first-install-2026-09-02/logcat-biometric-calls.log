@@ -1,0 +1,4 @@
+09-05 16:36:58.292 10152 10152 I chromium: [INFO:CONSOLE:348] "%cnative %cBiometricAuth.saveCredential (#111195818) font-weight: lighter; color: gray font-weight: bold; color: #000", source:  (348)
+09-05 16:37:31.605 10152 10152 I chromium: [INFO:CONSOLE:328] "%cresult %cBiometricAuth.saveCredential (#111195818) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444", source:  (328)
+09-05 16:42:05.173 18129 18129 I chromium: [INFO:CONSOLE:348] "%cnative %cBiometricAuth.getCredential (#132198458) font-weight: lighter; color: gray font-weight: bold; color: #000", source:  (348)
+09-05 16:42:07.451 18129 18129 I chromium: [INFO:CONSOLE:328] "%cresult %cBiometricAuth.getCredential (#132198458) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444", source:  (328)
