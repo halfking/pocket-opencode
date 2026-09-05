@@ -1,0 +1,25 @@
+ M internal/server/llmbff_provider_adapters_test.go
+ M ../logs/backend-dev.log
+?? ../.run/
+?? ../01-back-ai.png
+?? ../Dockerfile.frontend.local-rebuild
+?? test-evidence/
+?? ../ios_build_logs/
+?? ../pocketd.log
+?? ../screenshots/
+?? ../test-evidence/2026-09-01-ai-gateway-retest/
+?? ../test-evidence/2026-09-01-android-screenshots/
+?? ../test-evidence/2026-09-01-redclaw-mobile-auth/android-screenshots-v2/
+?? ../test-evidence/2026-09-01-redclaw-mobile-auth/android-screenshots/
+?? ../test-evidence/2026-09-01-redclaw-mobile-auth/current-state-2.png
+?? ../test-evidence/2026-09-01-redclaw-mobile-auth/current-state.png
+?? ../test-evidence/2026-09-01-redclaw-mobile-auth/screenshots/
+?? ../test-evidence/2026-09-01-redclaw-mobile-auth/state-after-close-sheet.png
+?? ../test-evidence/2026-09-01/
+?? ../test-evidence/2026-09-02-ai-gateway-debug/
+?? ../test-evidence/2026-09-02-ai-gateway-roundtrip/
+?? ../test-evidence/2026-09-02-pocketd-smoke/
+?? ../test-evidence/2026-09-02-redclaw-android-screenshots/
+?? ../test-evidence/2026-09-05-budget60-restart/
+?? ../test-evidence/2026-09-05-current-state.png
+?? ../test-evidence/2026-09-05-final-candidate-tuning/

@@ -1,0 +1,37 @@
+=== RUN   TestDynamicGatewayStreamEmitsRetryProgressFrame
+2026/09/05 15:16:01 [llm-auto] model-a -> fallback model-b (llm-gateway stream 503: {"error":{"code":"no_candidate","kind":"no_candidate","message":"No available provider for model 'model-a'","request_id":"t","type":"server_error"}})
+--- PASS: TestDynamicGatewayStreamEmitsRetryProgressFrame (0.00s)
+=== RUN   TestDynamicGatewayStreamFallsBackOnAttemptDeadline
+2026/09/05 15:16:02 [llm-auto] model-a -> fallback model-b (llm-gateway stream: Post "http://127.0.0.1:59365/v1/chat/completions": context deadline exceeded)
+--- PASS: TestDynamicGatewayStreamFallsBackOnAttemptDeadline (0.10s)
+=== RUN   TestDynamicGatewayStreamNoFallbackAfterContent
+--- PASS: TestDynamicGatewayStreamNoFallbackAfterContent (0.10s)
+=== RUN   TestDynamicGatewayStreamNoFallbackAfterDoneFrame
+--- PASS: TestDynamicGatewayStreamNoFallbackAfterDoneFrame (0.10s)
+=== RUN   TestDynamicGatewayStreamChainVisitsEachCandidateOnce
+2026/09/05 15:16:02 [llm-auto] model-a -> fallback model-b (llm-gateway stream: Post "http://127.0.0.1:59374/v1/chat/completions": context deadline exceeded)
+2026/09/05 15:16:02 [llm-auto] model-b -> fallback model-c (llm-gateway stream: Post "http://127.0.0.1:59374/v1/chat/completions": context deadline exceeded)
+--- PASS: TestDynamicGatewayStreamChainVisitsEachCandidateOnce (0.20s)
+=== RUN   TestIsModelUnavailableError
+=== RUN   TestIsModelUnavailableError/nil
+=== RUN   TestIsModelUnavailableError/plain_error_without_json
+=== RUN   TestIsModelUnavailableError/400_invalid_model_body
+=== RUN   TestIsModelUnavailableError/503_no_candidate_body
+=== RUN   TestIsModelUnavailableError/503_rate_limit_body
+--- PASS: TestIsModelUnavailableError (0.00s)
+    --- PASS: TestIsModelUnavailableError/nil (0.00s)
+    --- PASS: TestIsModelUnavailableError/plain_error_without_json (0.00s)
+    --- PASS: TestIsModelUnavailableError/400_invalid_model_body (0.00s)
+    --- PASS: TestIsModelUnavailableError/503_no_candidate_body (0.00s)
+    --- PASS: TestIsModelUnavailableError/503_rate_limit_body (0.00s)
+=== RUN   TestDynamicGatewayStreamFallsBackOnInvalidModel
+2026/09/05 15:16:02 [llm-auto] no-such-model-e2e -> fallback model-b (llm-gateway stream 400: {"error":{"code":"invalid_model","message":"Model 'no-such-model-e2e' not found","request_id":"t"}})
+--- PASS: TestDynamicGatewayStreamFallsBackOnInvalidModel (0.00s)
+=== RUN   TestDynamicGatewayStreamFinalCandidateGetsFullRemainingBudget
+2026/09/05 15:16:02 [llm-auto] model-a -> fallback model-b (llm-gateway stream: Post "http://127.0.0.1:59380/v1/chat/completions": context deadline exceeded)
+--- PASS: TestDynamicGatewayStreamFinalCandidateGetsFullRemainingBudget (0.60s)
+=== RUN   TestDynamicGatewayStreamFinalCandidateStillBoundedByChainBudget
+2026/09/05 15:16:03 [llm-auto] stop fallback chain: model=only-model err=llm-gateway stream: Post "http://127.0.0.1:59383/v1/chat/completions": context deadline exceeded answered=false fallback="" ctx_err=<nil> budget_left=0s
+--- PASS: TestDynamicGatewayStreamFinalCandidateStillBoundedByChainBudget (0.60s)
+PASS
+ok  	github.com/halfking/pocket-opencode/backend/internal/server	2.149s

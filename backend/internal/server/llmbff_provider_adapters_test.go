@@ -570,6 +570,11 @@ func TestDynamicGatewayStreamFinalCandidateStillBoundedByChainBudget(t *testing.
 	defer func() { autoFallbackAttemptTimeout, autoFallbackTotalBudget = oldAttempt, oldBudget }()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 必须先消费 body：net/http 服务端在 body 读到 EOF 后才启动
+		// background read 感知客户端断连；不读 body 则客户端超时断开后
+		// r.Context() 永不触发，handler 与下面的 srv.Close() 全部挂死。
+		var req llmgateway.ChatRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		<-r.Context().Done() // 唯一候选无限挂死
 	}))
 	defer srv.Close()
@@ -590,6 +595,9 @@ func TestDynamicGatewayStreamFinalCandidateStillBoundedByChainBudget(t *testing.
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("Stream returned nil error, want chain-budget deadline error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want DeadlineExceeded", err)
 	}
 	if elapsed < 600*time.Millisecond {
 		t.Fatalf("Stream returned in %s, want >= chain budget 600ms (attempt window must not short-circuit final candidate)",

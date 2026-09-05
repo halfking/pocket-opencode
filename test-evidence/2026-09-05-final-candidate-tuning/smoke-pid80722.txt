@@ -1,0 +1,11 @@
+# probe @ 2026-09-05 15:15:50 against PID 80722 (HEAD 12d7f3a code, before this round's tuning is built in)
+## healthz
+ok
+## login
+HTTP 200
+## gateway config (masked)
+{"url": null, "model": null, "apiKey": "sk-6***"}
+## chat auto (all providers dead -> structured error expected)
+{"error":"llm failed: llm-gateway chat 429: {\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit exceeded\",\"request_id\":\"0033c4e1131457cda2ebfdeff8b38ed2\",\"type\":\"rate_limit_error\"}}\n"}
+
+HTTP 502 0.135812s

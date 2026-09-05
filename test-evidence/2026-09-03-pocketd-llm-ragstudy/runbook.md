@@ -1111,3 +1111,95 @@ programmatic `el.click()` 对部分 Vue 组件链不可靠，用 CDP
    不变；本地 TTL 硬编码 24h，不为验证改认证代码）。
 4. 9a74236 的实例级验证（90s 链 curl/真机存档）归并行会话验证窗口。
 5. §16.6 #1 悬空态：维持「再遇再查」。会议纪要 markdown 渲染（低优）。
+
+---
+
+## 25. 2026-09-05 会话补充（十二）：§21.6 #2 调优实现与挂死测试修复（与 §23/§24 并行交错）
+
+> 本会话与 §23（会话十）、§24（会话十一）在同一工作区并行交错。本会话
+> 产出的核心代码改动（最终候选免尝试超时 + 整链预算 90s + 两个新测试）
+> 经并行会话收编，提交为 9a74236；08ff3e6/5212806/18293ae 为并行会话
+> 自身改动。本节补记本会话视角的实现、调试与遗留缺口。零密钥。
+
+### 25.1 环境核对（15:00 前后）
+
+- `git fetch` 后 HEAD = origin/main = 12d7f3a，无分叉；轮末重查已前移
+  至 9a74236（并行会话推送）。
+- Issue #14 复查：仍 **0 评论**，halfking 无动作（§22.1 结论不变）。
+- 上游探测：glm-5.2/minimax-m3 `no_candidates` 之外，**kimi-k3 也转为
+  no_candidates**（§22.3 时还可用）——15:00 探测时点上游零可用 provider
+  （§24.1 记载 14:55 起 glm/minimax 已恢复，与本探测窗口交错）；
+  `/api/embed` 仍 `no_provider`；轮末一次探测回 429 rate_limit_exceeded
+  （网关侧状态持续变动，部署侧观察项）。
+- 运行实例核对：:8088 为 PID 80722（14:48 并行会话以 HEAD 二进制启动）；
+  另有 :8090 PID 67860（连 PostgreSQL，并行会话的 PG 形态）。均不干扰。
+
+### 25.2 本会话代码改动（§21.6 #2 调优项落地，已随 9a74236 在库）
+
+1. **Stream 回退链最终候选免尝试级超时**：最终候选（其后无 fallback
+   可退）窗口放宽为整链剩余预算——它在链上只有一次机会，20s 窗会误杀
+   慢而可用的候选（kimi-k3 长 prompt 首 token >20s，§22.4 纪要生成因此
+   终态失败）。非最终候选 20s 尝试窗不变（尽快淘汰挂死候选）。
+2. **整链预算 60s→90s**：按「2×20s 死候选 + 最终候选分到 50s」取值
+   （60s 时最终候选恰剩 20s、与尝试窗重合，放宽形同虚设）；最坏 90s
+   仍低于前端 120s 流级看门狗（§14.3 fix1）。
+3. 新增测试 `TestDynamicGatewayStreamFinalCandidateGetsFullRemainingBudget`
+   （首候选挂死耗掉尝试窗 → 慢候选 500ms > 尝试窗 100ms、在剩余预算内
+   出正文 → 整流成功；旧逻辑此处必败）与
+   `TestDynamicGatewayStreamFinalCandidateStillBoundedByChainBudget`
+   （唯一候选无限挂死 → 错误恰在整链预算处浮出，放宽不破坏兜底）。
+
+### 25.3 调试插曲与关键修复（本会话独有，待提交）
+
+- **挂死根因（产品代码无辜）**：Bounded 测试首版把测试进程挂死 600s
+  （吃满 `-test.timeout`）。定位链：`sample` 近零 CPU → SIGQUIT 全栈 →
+  客户端侧全部返回、服务端 handler 卡 `<-r.Context().Done()`、
+  `srv.Close()`（WaitGroup.Wait）永久阻塞 → 15s 短超时重跑拿到关键日志
+  `[llm-auto] stop fallback chain ... budget_left=0s`——整链预算处
+  DeadlineExceeded 准点返回，放宽语义正确。
+- **根因**：Go `net/http` 服务端要等 request body 读到 EOF 后才启动
+  background read 感知客户端断连；handler 不读 body 直接挂死 → 客户端
+  ctx 超时断开后服务端永远不知道 → `r.Context()` 永不触发。同文件既有
+  挂死式 handler 都先 `json.NewDecoder(r.Body).Decode(&req)` 消费 body
+  （故此前从未暴露），本会话新写时漏了。
+- **重要**：并行会话收编（9a74236）时尚未包含本修复，**HEAD 上该测试
+  为挂死版**（跑 `go test ./...` 会对该包挂满超时后 FAIL）。工作区已备
+  8 行修复（handler 先消费 body + `errors.Is(err, context.DeadlineExceeded)`
+  断言加强），随本节同批提交。教训已写入测试注释：**httptest 挂死式
+  handler 必须先消费 request body**。
+
+### 25.4 回归记录
+
+- 回退链定向测试 9 个全绿（含新增 2 个 + §23 的 DoneFrame 测试；
+  存档 `fallback-chain-tests.txt`）。
+- `go test ./...`（混合工作区）：46 包 ok；唯一失败
+  `TestPiAdapter_InterruptSession` 为负载偶发（失败窗口与另一项目 nbjl
+  集成测试并发期重叠，单跑 ×3 全过，与本轮改动无关）。
+- `gofmt`：本轮文件干净；`server_assistant.go` /
+  `scheduled_task_integration_test.go` 为 HEAD 存量未格式化（§23.2 同
+  记录），未收编。
+
+### 25.5 冒烟与重启边界
+
+- 冒烟对象 PID 80722（12d7f3a 代码）：healthz ok、login 200、config 200
+  （key 掩码）、chat auto 结构化错误终态（存档 `smoke-pid80722.txt`，
+  已脱敏）。
+- **本会话未重启服务**：并行会话 14:48 刚重启 :8088、15:08 另起 :8090
+  PG 实例，活跃窗口内不干扰（沿 §17.5/§22.6 先例）。90s 预算 + 最终
+  候选放宽运行时生效待下次重启（编译已由全量测试隐含验证）。
+
+### 25.6 遗留（下一轮续接，增量更新 §22.7/§23/§24）
+
+1. **随本节提交**：挂死测试 8 行修复（HEAD 上该测试当前为挂死版，
+   见 §25.3，合入后 `go test ./...` 恢复正常时长）。
+2. 重启 :8088 dev 实例，带入 90s 预算/最终候选放宽（并行窗口结束后；
+   §21.2 #4 的 60s 注记届时由 §25.2 取代）。
+3. 纪要生成成功态真机留证：**已由 §24.3 收口**（gen#1 灰字+正文同框、
+   gen#2 直达，跑在 60s/20s 旧实例上）；剩余为在 9a74236（90s 预算）
+   实例上复验——与遗留 #2 重启合并执行。
+4. Issue #14 三项 + 共享租户 gateway key 评估（§22.7 #1 沿用）：仍
+   阻塞在 halfking/网关维护侧（本轮复查仍 0 评论）。
+5. 沿用观察项：kimi 时延（若 90s 预算下仍紧，再议「尝试超时参数化」）、
+   §16.6 #1 悬空态、embed/DSN 外部项（§21.6）。
+
+---

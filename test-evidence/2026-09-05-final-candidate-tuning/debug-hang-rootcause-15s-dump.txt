@@ -1,0 +1,55 @@
+=== RUN   TestDynamicGatewayStreamFinalCandidateStillBoundedByChainBudget
+2026/09/05 15:08:17 [llm-auto] stop fallback chain: model=only-model err=llm-gateway stream: Post "http://127.0.0.1:50774/v1/chat/completions": context deadline exceeded answered=false fallback="" ctx_err=<nil> budget_left=-1ms
+2026/09/05 15:08:22 httptest.Server blocked in Close after 5 seconds, waiting for connections:
+  *net.TCPConn 0x60baf659e0f8 127.0.0.1:50775 in state active
+panic: test timed out after 15s
+	running tests:
+		TestDynamicGatewayStreamFinalCandidateStillBoundedByChainBudget (15s)
+
+goroutine 52 [running]:
+testing.(*M).startAlarm.func1()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/testing/testing.go:2959 +0x2c4
+created by time.goFunc
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/time/sleep.go:182 +0x38
+
+goroutine 1 [chan receive]:
+testing.(*T).Run(0x60baf672a6c8, {0x100b72d6d?, 0x60baf67f1a88?}, 0x1014f8af0)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/testing/testing.go:2266 +0x3cc
+testing.runTests.func1(0x60baf672a6c8)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/testing/testing.go:2742 +0x38
+testing.tRunner(0x60baf672a6c8, 0x60baf67f1bb8)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/testing/testing.go:2193 +0xc4
+testing.runTests({0x100b632cc, 0x2b}, {0x100b70ba8, 0x3b}, 0x60baf65ac648, {0x1015a7390, 0xff, 0xff}, {0x60baf67f1c58?, 0x60baf6977520?, ...})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/testing/testing.go:2740 +0x400
+testing.(*M).Run(0x60baf6679040)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/testing/testing.go:2600 +0x578
+main.main()
+	_testmain.go:554 +0x80
+
+goroutine 21 [sync.WaitGroup.Wait]:
+sync.runtime_SemacquireWaitGroup(0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/sema.go:114 +0x38
+sync.(*WaitGroup).Wait(0x60baf66793d0)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/sync/waitgroup.go:206 +0xa4
+net/http/httptest.(*Server).Close(0x60baf6679360)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/net/http/httptest/server.go:524 +0x2ac
+github.com/halfking/pocket-opencode/backend/internal/server.TestDynamicGatewayStreamFinalCandidateStillBoundedByChainBudget(0x60baf672a908)
+	/Users/xutaohuang/workspace/official-deploy/services/opencode-pocket/backend/internal/server/llmbff_provider_adapters_test.go:601 +0x254
+testing.tRunner(0x60baf672a908, 0x1014f8af0)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/testing/testing.go:2193 +0xc4
+created by testing.(*T).Run in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/testing/testing.go:2258 +0x3b8
+
+goroutine 35 [chan receive]:
+github.com/halfking/pocket-opencode/backend/internal/server.TestDynamicGatewayStreamFinalCandidateStillBoundedByChainBudget.func2({0x100a13f80?, 0x60baf66793e0?}, 0x60baf6999af8?)
+	/Users/xutaohuang/workspace/official-deploy/services/opencode-pocket/backend/internal/server/llmbff_provider_adapters_test.go:573 +0x40
+net/http.HandlerFunc.ServeHTTP(0x1000000000000?, {0x1014f4470?, 0x60baf6aee000?}, 0x60baf6999ae0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/net/http/server.go:2338 +0x38
+net/http.serverHandler.ServeHTTP({0x10?}, {0x1014f4470?, 0x60baf6aee000?}, 0x1?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/net/http/server.go:3413 +0xb0
+net/http.(*conn).serve(0x60baf66a8090, {0x1014f60a8, 0x60baf66a0120})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/net/http/server.go:2137 +0x5a0
+created by net/http.(*Server).Serve in goroutine 22
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/net/http/server.go:3581 +0x3e8
+FAIL	github.com/halfking/pocket-opencode/backend/internal/server	15.604s
+FAIL
