@@ -7,11 +7,16 @@
   A.  运行中       — 任务卡片第二行 = 健康信号 · 当前动作 · 距上次活动（§4.1 五态）
   B.  会话         — 最近会话纵列（长按：停止 / 归档）
   C.  已完成       — collapsed expandable section
-  D.  Voice bar    — 固定于底部导航之上（转写先入草稿可编辑）
+  D.  Voice bar    — 停靠 footer：默认 dock tabbar 上沿，键盘弹出改 dock 键盘
 -->
 <template>
+  <!-- flex 根容器：滚动区（PullToRefresh）+ 停靠 footer（快速提问）。
+       voice-bar 必须在滚动容器之外——PullToRefresh 的 .refresh-content 带
+       inline transform，fixed 后代会以它为包含块而非视口，导致输入区
+       浮在内容流末尾而不是 dock 到 tabbar。 -->
+  <div class="ai-view">
   <PullToRefresh :on-refresh="handleRefresh" class="ai-hub-scroll">
-  <div class="ai-hub" :class="{ snapping: chromeSnapping, 'chrome-hidden': chromeHidden }">
+  <div class="ai-hub">
     <!-- 状态徽章注入到 AppLayout 标题栏右侧（消灭双层标题栏）。
          原来 L0 sticky 分诊条的全部信息收敛到此按钮：🟢 全部正常·N 在跑 /
          🔴 N 项需要你 / 疑似卡死时一并显示。点击切换下方 triage 折叠区。 -->
@@ -248,25 +253,6 @@
       </div>
     </section>
 
-    <!-- 统一快速提问输入：宽文本区 + 语音/角色/AI优化/提交 独立工具行。
-         随 tabbar 滚动联动下移隐藏（bottom 读取 --bottom-chrome-hide）。 -->
-    <div
-      ref="voiceBarEl"
-      class="voice-bar"
-      :class="{ snapping: chromeSnapping, 'chrome-hidden': chromeHidden }"
-      :inert="voiceBarInert"
-    >
-      <UnifiedComposer
-        v-model="quickPrompt"
-        placeholder="快速提问..."
-        :enable="{ voice: true, image: false, camera: false, file: false, agent: true, optimize: true }"
-        submit-label="提问"
-        :agent-id="quickAgentId"
-        @update:agent-id="quickAgentId = $event"
-        @submit="sendQuickPrompt"
-      />
-    </div>
-
     <!-- Task Context Menu (long-press) -->
     <BottomSheet
       :model-value="showContextMenu && !!contextTask"
@@ -401,6 +387,27 @@
     </BottomSheet>
   </div>
   </PullToRefresh>
+
+  <!-- 统一快速提问输入：宽文本区 + 语音/角色/AI优化/提交 独立工具行。
+       停靠 footer：默认 dock tabbar 上沿，键盘弹出时随根布局收缩 dock 键盘；
+       滚动联动下移隐藏（transform 读取 --bottom-chrome-hide，吸附后负 margin 让位）。 -->
+  <div
+    ref="voiceBarEl"
+    class="voice-bar"
+    :class="{ snapping: chromeSnapping, 'chrome-hidden': chromeHidden }"
+    :inert="voiceBarInert"
+  >
+    <UnifiedComposer
+      v-model="quickPrompt"
+      placeholder="快速提问..."
+      :enable="{ voice: true, image: false, camera: false, file: false, agent: true, optimize: true }"
+      submit-label="提问"
+      :agent-id="quickAgentId"
+      @update:agent-id="quickAgentId = $event"
+      @submit="sendQuickPrompt"
+    />
+  </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -1040,30 +1047,27 @@ function timeAgo(dateStr?: string): string {
 </script>
 
 <style scoped>
-.ai-hub-scroll {
+/* flex 根：滚动区占满剩余高度，快速提问框作为停靠 footer 落在内容盒底
+   （= tabbar 上沿；键盘弹出时根布局收缩，自动改 dock 键盘）。 */
+.ai-view {
   height: 100%;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ai-hub-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* 覆盖 PullToRefresh 自带的 height:100%（flex 子项高度由 flex 决定） */
+  height: auto;
 }
 .ai-hub {
   background: var(--bg-base);
   display: flex;
   flex-direction: column;
   gap: 2px;
-  /* voice-bar + bottom-nav 的滚动预留 */
-  padding-bottom: calc(var(--bottom-chrome-height) + 54px + var(--space-3));
-}
-
-/* 吸附落定为全隐：chrome 占位让给内容（离散切换，配合吸附动画过渡） */
-.ai-hub.chrome-hidden {
-  padding-bottom: max(
-    var(--space-3),
-    calc(var(--bottom-chrome-height) + 54px + var(--space-3) - var(--bottom-chrome-inset, 0px) - var(--bottomnav-height))
-  );
-}
-
-/* 滚动吸附阶段的让位过渡（跟手 1:1 时无过渡） */
-.ai-hub.snapping {
-  transition: padding-bottom var(--duration-chrome) var(--ease-chrome);
+  /* tabbar 已在滚动区之外（.content 槽位 + footer），列表末尾仅留呼吸间距 */
+  padding-bottom: var(--space-3);
 }
 
 /* ── 状态徽章（注入 AppLayout 标题栏右侧）+ 内联 triage 卡 ── */
@@ -1572,28 +1576,29 @@ function timeAgo(dateStr?: string): string {
   justify-content: space-between;
 }
 
-/* ── Voice Bar ── */
+/* ── Voice Bar：停靠 footer（非 fixed）── */
 .voice-bar {
-  position: fixed;
-  bottom: calc(var(--bottom-chrome-height) - var(--bottom-chrome-hide, 0px));
-  left: 0;
-  right: 0;
+  flex: 0 0 auto;
   padding: 6px 12px;
   padding-bottom: calc(6px + var(--app-safe-bottom));
   background: var(--bg-card);
   border-top: 1px solid var(--border);
-  z-index: var(--z-fab);
+  /* 滚动联动：随 tabbar 一起下移（--bottom-chrome-hide 由 AppLayout 下发），
+     跟手阶段纯 transform 不动布局。 */
+  will-change: transform;
+  transform: translate3d(0, var(--bottom-chrome-hide, 0px), 0);
 }
 
-/* 滚动吸附阶段的位移过渡（跟手 1:1 时无过渡） */
+/* 滚动吸附阶段的过渡（跟手 1:1 时无过渡） */
 .voice-bar.snapping {
-  transition: bottom var(--duration-chrome) var(--ease-chrome);
+  transition:
+    transform var(--duration-chrome) var(--ease-chrome),
+    margin-bottom var(--duration-chrome) var(--ease-chrome);
 }
 
-/* 吸附落定为全隐：整体移出。voice-bar 因 PullToRefresh 的 transform 成为
-   .refresh-content（其底边=视口底-space-3）的包含块，需多补 space-3 才不剩细条 */
+/* 吸附落定为全隐：槽位让给滚动区（离散切换，与吸附动画同步过渡） */
 .voice-bar.chrome-hidden {
-  bottom: calc(-1 * (var(--bottom-chrome-inset, 0px) + var(--space-3)));
+  margin-bottom: calc(-1 * var(--bottom-chrome-inset, 0px));
 }
 .voice-input-wrap {
   display: flex;

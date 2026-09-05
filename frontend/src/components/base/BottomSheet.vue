@@ -182,7 +182,9 @@ onBeforeUnmount(() => {
 <style scoped>
 .bottom-sheet-overlay {
   position: fixed;
-  inset: 0;
+  /* 底边随 --kb-inset 抬升（useKeyboardInset 下发）：键盘在场时 sheet 贴住
+     键盘上沿，sheet 内输入不被遮。resize 路径 WebView 已缩、var=0，行为一致。 */
+  inset: 0 0 var(--kb-inset, 0px) 0;
   background: var(--color-bg-overlay);
   backdrop-filter: blur(4px);
   z-index: var(--z-sheet);
