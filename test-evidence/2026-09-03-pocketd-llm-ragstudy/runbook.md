@@ -1342,3 +1342,110 @@ retry 路径真机态依赖 kimi 恢复或 glm 慢相，属上游时序非代码
    markdown 渲染（⑤）、kimi 时延参数化议题（§25.6 #5）。
 5. 新经验：上游网关对并发突发敏感（429），探测/验证一律串行小间隔；
    SSE 存档管道勿接 head/tail（SIGPIPE 连锁掐断 curl，先落盘后查看）。
+
+---
+
+## 28. 2026-09-05 会话补充（十五）：上游缺口复探 + 真机空流发现「空流透传不回退」缺口并修复
+
+> 接手时 HEAD=bd4156c（与远端一致，无并行新提交）。本轮前三件事（①embed
+> 复探 ②kimi 恢复观察 ③纪要真机复验）因上游相位连续落空，但在 ③ 过程中
+> **真机复现并修复一个新回退缺口：上游「200+零帧空流」被当成功透传**。
+> 运行实例经 start-dev.sh 按端口重启至修复版（PID 40182，17:19），:8090
+> 姊妹仓进程全程无恙。零密钥。
+
+### 28.1 上游复探（串行小间隔，存档 `test-evidence/2026-09-05-recovery-probes/`）
+
+| 时刻 | 探测 | 结果 |
+|---|---|---|
+| 16:54 | /api/embed 小文本 | `503 no_provider` 0.34s——①维持待上游 |
+| 16:55 | 显式 kimi-k3 chat | 200 3.8s 但 `model:"glm-5.2"`——kimi 仍无 provider，经 8240062 回退链落 glm（缺口修复持续在线生效） |
+| 16:52 / 16:53 | 显式 glm 长 prompt ×2（5652 tokens，stream） | TTFT 8.13s / 总 8.42s、总 9.04s——glm 稳定快相，**慢最终候选存活版 R4 两次未触成**（存档 r1surv-glm-final.sse.ts.txt） |
+| 17:09 | 会议同形请求（auto，system+转写） | 200 40.0s：`retry:"minimax-m3"` → minimax 流式出正文 20s 后被尝试窗杀 → T+40s 规整错误终态（glm 窗 20s + minimax 窗 20s，非 90s 预算耗尽） |
+| 17:20 / 17:31 | chat auto | `502 no_candidate` 1.1s——上游进入全灭相（14:47/15:00 同款），随后真机验证全程维持 |
+
+结论：①②前提依旧不满足（embed/kimi 未恢复 + glm 快相），且 17:06 起上游
+进入当日第三轮全灭窗。相位横跳节奏同 §26.4。
+
+### 28.2 ③ 的执行与并行争用（改独立模拟器）
+
+- 运行实例确认：:8088 = PID 16346（§27 同实例），healthz ok；网关配置
+  终态与 §27 一致（glm 首选，逐字段核对）。
+- 模拟器 emulator-5554 上的 App 于 16:55:17 被**并行会话更新安装**（HEAD
+  含 a48fcf4），本轮种子/生成期间页面状态反复漂移（哈希自行回 #/ai、
+  保险库二次锁定）——判定并行会话正在同一模拟器上活跃操作，**不与其
+  争用**，改在独立 AVD `pocket_test2`（android-36.1 arm64，:5556，
+  -no-snapshot 冷启动）上以 HEAD=bd4156c 现场构建 APK 复验（17:27 构建）。
+- CDP 种子三坑（§22.4/§24.3）本轮完整重踩并沉淀为可执行脚本
+  （`2026-09-05-recovery-probes/tools/`）：原生桥无 `isConnection`（直调
+  createConnection，「already exists」即复用）；批量 execute 静默中止
+  （逐条 `run`）；`--` 头注释须剥离。种子会议
+  `meeting-e2e-budget90-1788599084177`（4 段转写）入库核验一致。
+
+### 28.3 真机空流复现 → 新缺口：空流透传不回退（已修复）
+
+17:06 在 emulator-5554 上首次点击「生成纪要」：≤3s 即终态红字
+**「模型未返回内容（空流）」**，无 retry 帧、无网络重试痕迹。同形请求
+curl 复核（17:09）链路行为正常（有 retry 帧有正文）。对照代码定位：
+
+- `llmgateway/stream.go` parseSSEStream：上游只回 `[DONE]`/keepalive
+  （或非 SSE 体）时**零回调 + err=nil**（§26.4「glm 空回复」的流式形态）；
+- `llmbff_provider_adapters.go` Stream 回退链 `err == nil` 即返回成功
+  ——空流被当**成功**透传，客户端拿到「200+零帧」，前端空流兜底报错，
+  回退链完全没用上。
+
+**修复**（最小改动，同文件）：
+
+1. attemptFn 计上游帧数 `attemptFrames`；`err==nil && attemptFrames==0`
+   时合成 `errEmptyStreamAttempt`（新哨兵错误）；
+2. `streamAttemptFallbackEligible` 增列空流为回退资格（必然未作答，无
+   重复作答风险）——非最终候选换候选重试并出 retry 帧；最终候选以
+   errEmptyStreamAttempt 返回，由 handler 落**结构化错误终态帧**（不再
+   静默空透传）。
+
+测试：新增 `TestDynamicGatewayStreamFallsBackOnEmptyStream`（首位候选
+[DONE]-only → 回退 model-b、首帧 retry、正文+终态正常）与
+`TestDynamicGatewayStreamFinalCandidateEmptyStreamIsError`（单候选空流 →
+errEmptyStreamAttempt、不多打上游、零 delta）。`go build` + 定向回退链
+全家全绿（2.4s）+ `go test ./...` **46 包全绿零失败**（full-suite 存档
+/tmp/full-suite-empty-stream.txt）。
+
+### 28.4 修复版实例重启与真机复验（pocket_clone，:5556）
+
+- 17:19 经 `backend/start-dev.sh` 按端口重启 :8088（新 PID 40182，含
+  空流修复）：healthz/登录冒烟通过；日志通道随重启恢复写入（§27.1 的
+  fd 截断问题同步消除）；:8090 姊妹仓进程无恙。
+- 独立模拟器落地过程：avdmanager（SDK XML v4 不兼容告警）创建的 AVD
+  两次首启挂死（30min 不出 boot）——**克隆法**可用：复制正常 AVD 的
+  config.ini + `.ini` 指针（`pocket_clone`），30s 上线。APK 以 HEAD
+  bd4156c 现场构建（17:27）。App 全新安装：登录 admin → 首启创建主密码
+  （值同 dev 约定不引用）→ CDP 种子会议（同 §28.2 脚本）→ 列表重挂载
+  后可见（种子后须离开/重进 #/meetings 才重查 DB）。
+- **配置漂移记录**：本轮期间（16:59 后）并行方把 preferredModels 改为
+  `[]`（17:59 备份存档 config-before-recovery-round.json）——auto 解析
+  落到 catalog 首个 abab5.5-chat，即席最终候选。本轮未 POST 过配置、
+  不代为恢复（归属并行方）。
+
+### 28.5 真机结果（§28.3 修复版实例上）
+
+| 场景 | 实测 | 结论 |
+|---|---|---|
+| 全灭相（chat auto 502 no_candidate 持续）下点「生成纪要」 | SSE 存活 **90.0018s** 准点收敛：`[llm-auto] stop fallback chain: model=abab5.5-chat err=context deadline exceeded answered=false budget_left=-1ms`；真机红字 `context deadline exceeded` 终态、按钮恢复、无悬挂；`local_meetings.summary` 保持 NULL（无幻影写入） | §27 R4「最终候选免窗+90s 预算兜底」经 **App 路径**意外实证 ✅（截图 07） |
+| 空流→回退成功路径 | 确定性复验被 **SSRF 守卫阻断**：`validateOutboundURL` 拒绝 loopback/私网 baseURL（ssrf.go:144，设计如此）——配置切换到本地假上游的方案不可行；假上游工具已归档（tools/fake_upstream.py）。空流修复以 **双单测**（回退+最终候选两态）+ 实例部署为验证口径；自然复现（glm 空流形态再现时）应表现为「已切换到 X 重试…」灰字而非空流红字——列入下轮观察 | 单测级 ✅ / 实例级留观 |
+
+### 28.6 遗留（下一轮续接，增量更新 §27.5）
+
+1. **空流修复的实例级留观**：上游恢复后，凡遇 glm 空流形态（§26.4），
+   纪要/ai-chat 应出现回退灰字并成功收尾，而非「模型未返回内容（空流）」
+   红字；若再现空流红字即修复失效，优先复查。
+2. embed provider（①）：仍待上游（18:05 复探仍 `no_provider`）；恢复后
+   /api/embed 冒烟 + `local_note_vectors` 计数 >0（§16.6 #4 全链收口）。
+3. 慢最终候选存活版 R4（②）：仍待 kimi 恢复或 glm 慢相；本节 abab5.5-chat
+   挂死 90s 收敛已从「失败侧」实证同一条免窗预算语义。
+4. 纪要真机成功态（快相直达 / retry 灰字+正文同框）：种子/克隆模拟器
+   方法已备（pocket_clone + tools/），待上游恢复窗。
+5. 沿用：JWT 临期（RedClaw/生产 15min 环境）、Issue #14 三项（halfking）、
+   纪要 markdown 渲染（产品侧）、§16.6 #1 悬空态、kimi 时延参数化。
+6. 环境注记：并行方本轮将 preferredModels 清空（§28.4）——下一轮接手
+   先 GET /api/llm-gateway/config 核对当前值再设计场景；avdmanager 建新
+   AVD 在本机不可用（XML v4），用克隆法（§28.4）。
+

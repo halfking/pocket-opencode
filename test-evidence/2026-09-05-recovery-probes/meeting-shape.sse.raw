@@ -1,0 +1,348 @@
+data: {"done":false,"retry":"minimax-m3"}
+
+data: {"content":"#","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"会议","done":false}
+
+data: {"content":"纪","done":false}
+
+data: {"content":"要","done":false}
+
+data: {"content":"\n\n","done":false}
+
+data: {"content":"##","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"会议","done":false}
+
+data: {"content":"摘要","done":false}
+
+data: {"content":"\n","done":false}
+
+data: {"content":"本次","done":false}
+
+data: {"content":"会议","done":false}
+
+data: {"content":"围绕","done":false}
+
+data: {"content":"会议","done":false}
+
+data: {"content":"摘要","done":false}
+
+data: {"content":"（","done":false}
+
+data: {"content":"meeting","done":false}
+
+data: {"content":" summaries","done":false}
+
+data: {"content":"）","done":false}
+
+data: {"content":"功能的","done":false}
+
+data: {"content":"预算","done":false}
+
+data: {"content":"与","done":false}
+
+data: {"content":"实例","done":false}
+
+data: {"content":"验证","done":false}
+
+data: {"content":"展开","done":false}
+
+data: {"content":"。","done":false}
+
+data: {"content":"讨论","done":false}
+
+data: {"content":"确认","done":false}
+
+data: {"content":"了","done":false}
+
+data: {"content":"候选","done":false}
+
+data: {"content":"实例","done":false}
+
+data: {"content":"的","done":false}
+
+data: {"content":"预算","done":false}
+
+data: {"content":"配置","done":false}
+
+data: {"content":"（","done":false}
+
+data: {"content":"总","done":false}
+
+data: {"content":"链路","done":false}
+
+data: {"content":"预算","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"90","done":false}
+
+data: {"content":" 秒","done":false}
+
+data: {"content":"，无","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"22","done":false}
+
+data: {"content":" 秒","done":false}
+
+data: {"content":"重","done":false}
+
+data: {"content":"试","done":false}
+
+data: {"content":"窗口","done":false}
+
+data: {"content":"），","done":false}
+
+data: {"content":"并","done":false}
+
+data: {"content":"明确了","done":false}
+
+data: {"content":"摘要","done":false}
+
+data: {"content":"生成","done":false}
+
+data: {"content":"需","done":false}
+
+data: {"content":"直接","done":false}
+
+data: {"content":"落在","done":false}
+
+data: {"content":" fast","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"阶段","done":false}
+
+data: {"content":"进行","done":false}
+
+data: {"content":"验证","done":false}
+
+data: {"content":"。同时","done":false}
+
+data: {"content":"识别","done":false}
+
+data: {"content":"出","done":false}
+
+data: {"content":"嵌入","done":false}
+
+data: {"content":"（","done":false}
+
+data: {"content":"embed","done":false}
+
+data: {"content":"）","done":false}
+
+data: {"content":"提供","done":false}
+
+data: {"content":"方","done":false}
+
+data: {"content":"上游","done":false}
+
+data: {"content":"缺失","done":false}
+
+data: {"content":"的问题","done":false}
+
+data: {"content":"，导致","done":false}
+
+data: {"content":"向量","done":false}
+
+data: {"content":"存储","done":false}
+
+data: {"content":"处于","done":false}
+
+data: {"content":"降","done":false}
+
+data: {"content":"级","done":false}
+
+data: {"content":"运行","done":false}
+
+data: {"content":"状态","done":false}
+
+data: {"content":"。\n\n","done":false}
+
+data: {"content":"##","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"关键","done":false}
+
+data: {"content":"决策","done":false}
+
+data: {"content":"\n","done":false}
+
+data: {"content":"-","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"候选","done":false}
+
+data: {"content":"实例","done":false}
+
+data: {"content":"的","done":false}
+
+data: {"content":"会议","done":false}
+
+data: {"content":"摘要","done":false}
+
+data: {"content":"链路","done":false}
+
+data: {"content":"总","done":false}
+
+data: {"content":"预算","done":false}
+
+data: {"content":"设定","done":false}
+
+data: {"content":"为","done":false}
+
+data: {"content":" **","done":false}
+
+data: {"content":"90","done":false}
+
+data: {"content":" 秒","done":false}
+
+data: {"content":"**，","done":false}
+
+data: {"content":"取消","done":false}
+
+data: {"content":" **","done":false}
+
+data: {"content":"22","done":false}
+
+data: {"content":" 秒","done":false}
+
+data: {"content":"**","done":false}
+
+data: {"content":" 的","done":false}
+
+data: {"content":"二次","done":false}
+
+data: {"content":"重","done":false}
+
+data: {"content":"试","done":false}
+
+data: {"content":"窗口","done":false}
+
+data: {"content":"。\n","done":false}
+
+data: {"content":"-","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"摘要","done":false}
+
+data: {"content":"生成","done":false}
+
+data: {"content":"（","done":false}
+
+data: {"content":"summary","done":false}
+
+data: {"content":" generation","done":false}
+
+data: {"content":"）","done":false}
+
+data: {"content":"需","done":false}
+
+data: {"content":"在","done":false}
+
+data: {"content":" **","done":false}
+
+data: {"content":"fast","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"阶段","done":false}
+
+data: {"content":"**","done":false}
+
+data: {"content":"直接","done":false}
+
+data: {"content":"落地","done":false}
+
+data: {"content":"验证","done":false}
+
+data: {"content":"。\n","done":false}
+
+data: {"content":"-","done":false}
+
+data: {"content":" 向","done":false}
+
+data: {"content":"量","done":false}
+
+data: {"content":"存储","done":false}
+
+data: {"content":"（","done":false}
+
+data: {"content":"vector","done":false}
+
+data: {"content":" storage","done":false}
+
+data: {"content":"）在","done":false}
+
+data: {"content":"嵌入","done":false}
+
+data: {"content":"提供","done":false}
+
+data: {"content":"方","done":false}
+
+data: {"content":"恢复","done":false}
+
+data: {"content":"前","done":false}
+
+data: {"content":"保持","done":false}
+
+data: {"content":" **","done":false}
+
+data: {"content":"降","done":false}
+
+data: {"content":"级","done":false}
+
+data: {"content":"运行","done":false}
+
+data: {"content":"（","done":false}
+
+data: {"content":"de","done":false}
+
+data: {"content":"graded","done":false}
+
+data: {"content":" gracefully","done":false}
+
+data: {"content":"）","done":false}
+
+data: {"content":"**","done":false}
+
+data: {"content":"。\n\n","done":false}
+
+data: {"content":"##","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"行动","done":false}
+
+data: {"content":"项","done":false}
+
+data: {"content":"\n","done":false}
+
+data: {"content":"|","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"负责人","done":false}
+
+data: {"content":" |","done":false}
+
+data: {"content":" ","done":false}
+
+data: {"content":"行动","done":false}
+
+data: {"content":"项","done":false}
+
+data: {"content":" |","done":false}
+
+data: {"delta":{"done":true,"finish_reason":"error"},"error":"context deadline exceeded"}
+

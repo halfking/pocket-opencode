@@ -1,0 +1,2 @@
+2026/09/05 18:04:59 [llm-auto] stop fallback chain: model=abab5.5-chat err=context deadline exceeded answered=false fallback="" ctx_err=<nil> budget_left=-1ms
+2026/09/05 18:04:59 [SLOW] POST /api/llm/stream - 200 (1m30.001803375s)
