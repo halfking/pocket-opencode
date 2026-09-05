@@ -20,6 +20,9 @@ body {
   --app-safe-top: max(env(safe-area-inset-top, 0px), var(--android-safe-top, 0px));
   --app-safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--android-safe-bottom, 0px));
   --bottom-chrome-height: calc(var(--bottomnav-height) + var(--app-safe-bottom));
+  /* 软键盘净高（useKeyboardInset 写入；0 = 键盘不在场）。
+     消费方：#app 高度收缩、全屏编辑器 .uc-fs 底边等。 */
+  --kb-inset: 0px;
 }
 
 body {
@@ -44,9 +47,24 @@ body {
 }
 
 #app {
-  height: 100%;
+  /* 软键盘避让：键盘弹起时根布局收缩（与 App.vue 同款规则，双写保证
+     两处样式表注入顺序无关），flex 停靠的输入区贴住键盘上沿。 */
+  height: calc(100% - var(--kb-inset, 0px));
   min-height: 0;
   overflow: hidden;
+}
+
+/* 键盘在场时 tabbar 已被键盘覆盖：内容区不再为它预留底部槽位，
+   聚焦字段可以贴到键盘上沿（输入区上沿）之上。 */
+html.kb-open .content.has-bottom-nav {
+  padding-bottom: var(--space-3);
+}
+
+/* 键盘在场时底部导航滑走（业界惯例：tabbar 不与键盘同屏）。
+   resize 路径 WebView 已缩到键盘上沿，fixed 的 tabbar 会停留在
+   键盘上方一整条，必须显式移出；overlay 路径键盘已盖住它，规则无害。 */
+html.kb-open .bottom-nav {
+  transform: translate3d(0, calc(100% + var(--app-safe-bottom)), 0);
 }
 
 /* Inputs should inherit the page font stack. */

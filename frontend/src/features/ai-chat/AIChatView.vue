@@ -434,6 +434,7 @@ import { useConfirm } from '../../composables/useConfirm'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 import { bindScrollHideChrome } from '../../composables/useScrollHideChrome'
 import { SCROLL_CHROME_KEY } from '../../composables/scroll-chrome'
+import { useKeyboardInset } from '../../composables/useKeyboardInset'
 import AgentSelectorSheet from './AgentSelectorSheet.vue'
 import BottomSheet from '../../components/base/BottomSheet.vue'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
@@ -456,6 +457,7 @@ const composerCanSubmit = computed(() => composerRef.value?.canSubmit ?? false)
 const chromeCtx = inject(SCROLL_CHROME_KEY, null)
 const chromeSnapping = chromeCtx?.snapping ?? ref(false)
 const composerHidden = chromeCtx?.hidden ?? ref(false)
+const { keyboardHeight } = useKeyboardInset()
 const composerEl = ref<HTMLElement | null>(null)
 // 绑定吸附落定态：跟手过程（hiddenOffset 临时峰值）不应让 inert 闪烁，
 // 仅在引擎判定全隐后整体从 Tab 焦点链路中切出。
@@ -692,6 +694,12 @@ watch(
   () => scrollToBottom(),
   { deep: false },
 )
+
+// 键盘弹起/收起改变 msg-area 可视高度：若用户本就停在底部，重新贴底，
+// 让最新内容对齐在输入区（贴键盘上沿）之上——软键盘避让的聊天页约定。
+watch(keyboardHeight, (now, prev) => {
+  if (now > prev) scrollToBottom(true)
+})
 function scrollToBottom(force = false) {
   if (!force && !autoScroll.value) return
   // 程序化滚动：抑制上报，避免滚动事件被引擎误判为用户上滑而隐藏输入区

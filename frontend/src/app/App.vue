@@ -21,8 +21,13 @@ import UpdateChecker from '../components/UpdateChecker.vue'
 import ConfirmDialog from '../components/base/ConfirmDialog.vue'
 import { useSwipeBack } from '../composables/useSwipeBack'
 import { useStatusBar } from '../composables/useStatusBar'
+import { installKeyboardInset } from '../composables/useKeyboardInset'
 
 const updateChecker = ref<InstanceType<typeof UpdateChecker> | null>(null)
+
+// 全局软键盘避让（App 级单例）：键盘弹起时输入区贴键盘上沿 + 页面上滑对齐
+// 聚焦字段。install 幂等，桌面浏览器 visualViewport 恒等 innerHeight 自动 no-op。
+installKeyboardInset()
 
 // Phase 4.3: 全局挂载左缘右滑返回手势（仅 route.meta.canGoBack 启用）
 useSwipeBack({ edgeWidth: 24, thresholdRatio: 0.3, velocityThreshold: 0.4 })
@@ -63,7 +68,10 @@ body {
 }
 
 #app {
-  height: 100%;
+  /* 软键盘避让：--kb-inset 由 useKeyboardInset 实时写入（visualViewport
+     高度差）。键盘弹起时根布局收缩，flex 停靠的输入区贴住键盘上沿，
+     滚动容器随之收缩供聚焦字段对齐到输入区上沿之上。 */
+  height: calc(100% - var(--kb-inset, 0px));
   min-height: 0;
   overflow: hidden;
 }
