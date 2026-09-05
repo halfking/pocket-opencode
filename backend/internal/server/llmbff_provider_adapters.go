@@ -253,18 +253,20 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		} else {
 			attemptCtx, cancel = context.WithTimeout(ctx, autoFallbackAttemptTimeout)
 		}
-		// 记录本次尝试是否已向客户端写出正文：已写出正文的尝试不能换候选
-		// 重试（会在同一气泡里重复作答），错误只能原样上抛。
-		wroteContent := false
+		// 记录本次尝试是否已向客户端给出作答：已给出作答的尝试不能换候选
+		// 重试（会在同一气泡里重复作答），错误只能原样上抛。终态帧（finish/
+		// usage）也要计入——SSE 解析在终态帧后仍会等 [DONE]，上游在此间隙
+		// 挂死时错误同样是尝试级超时，只按正文判定会误判"未作答"而重复作答。
+		answered := false
 		attemptFn := func(d llmbff.Delta) bool {
-			if d.Content != "" {
-				wroteContent = true
+			if d.Content != "" || d.Done {
+				answered = true
 			}
 			return fn(d)
 		}
 		usage, err := (&llmGatewayBFFProvider{client: c}).Stream(attemptCtx, req, attemptFn)
 		cancel()
-		if err == nil || !streamAttemptFallbackEligible(err, wroteContent) {
+		if err == nil || !streamAttemptFallbackEligible(err, answered) {
 			return usage, err
 		}
 		// 单次尝试内 no_candidate(503)/invalid_model(400) 都出现在任何 chunk
@@ -274,9 +276,9 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		// 就继续重试。
 		fallback := p.nextFallbackModel(req.WorkspaceID, tried)
 		if fallback == "" || ctx.Err() != nil || !time.Now().Before(deadline) {
-			log.Printf("[llm-auto] stop fallback chain: model=%s err=%v wrote_content=%v "+
+			log.Printf("[llm-auto] stop fallback chain: model=%s err=%v answered=%v "+
 				"fallback=%q ctx_err=%v budget_left=%s",
-				req.Model, err, wroteContent, fallback, ctx.Err(),
+				req.Model, err, answered, fallback, ctx.Err(),
 				time.Until(deadline).Round(time.Millisecond))
 			return usage, err
 		}
@@ -295,17 +297,17 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 
 // streamAttemptFallbackEligible 判断一次 Stream 尝试失败后能否换候选重试：
 // ① isModelUnavailableError（no_candidate/invalid_model，出现在任何 chunk
-// 之前，该次尝试未写过正文）；② 尝试级超时（context.DeadlineExceeded）且
-// 本次尝试未写出任何正文——上游对无 provider 的模型在流式路径上可能挂死
-// 而非快速失败（2026-09-05 实测：glm-5.2 无 provider 时 chat 路径 503
-// 600ms 快速返回、stream 路径挂满 20s 尝试超时），deadline 错误若不回退，
-// auto 整链必死在首位挂死候选上、永远到不了可用候选。已写出正文后超时
-// 视为答案中断，不可重试（避免重复作答）。
-func streamAttemptFallbackEligible(err error, wroteContent bool) bool {
+// 之前，该次尝试未给出作答）；② 尝试级超时（context.DeadlineExceeded）且
+// 本次尝试未给出作答（无正文、无终态帧）——上游对无 provider 的模型在流式
+// 路径上可能挂死而非快速失败（2026-09-05 实测：glm-5.2 无 provider 时
+// chat 路径 503 600ms 快速返回、stream 路径挂满 20s 尝试超时），deadline
+// 错误若不回退，auto 整链必死在首位挂死候选上、永远到不了可用候选。
+// 已给出作答后超时视为答案中断，不可重试（避免重复作答）。
+func streamAttemptFallbackEligible(err error, answered bool) bool {
 	if isModelUnavailableError(err) {
 		return true
 	}
-	return !wroteContent && errors.Is(err, context.DeadlineExceeded)
+	return !answered && errors.Is(err, context.DeadlineExceeded)
 }
 
 // fallbackModel 在 no_candidate 触发时挑下一个候选 model（不含 current）。

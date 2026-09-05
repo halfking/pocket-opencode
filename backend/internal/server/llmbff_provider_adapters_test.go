@@ -273,6 +273,61 @@ func TestDynamicGatewayStreamNoFallbackAfterContent(t *testing.T) {
 	}
 }
 
+// TestDynamicGatewayStreamNoFallbackAfterDoneFrame 首位候选已发出 finish/usage
+// 终态帧后才挂死（未发 [DONE]）：SSE 解析仍会阻塞到尝试级超时，但客户端已
+// 收到完整作答，换候选重试会在同一气泡里重复作答，必须原样上抛错误、不再回退。
+func TestDynamicGatewayStreamNoFallbackAfterDoneFrame(t *testing.T) {
+	oldAttempt, oldBudget := autoFallbackAttemptTimeout, autoFallbackTotalBudget
+	autoFallbackAttemptTimeout, autoFallbackTotalBudget = 100*time.Millisecond, 10*time.Second
+	defer func() { autoFallbackAttemptTimeout, autoFallbackTotalBudget = oldAttempt, oldBudget }()
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w,
+				"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"+
+					"\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			<-r.Context().Done() // 终态帧后挂死直到客户端超时
+			return
+		}
+		t.Error("second attempt must not happen after a done frame was streamed")
+	}))
+	defer srv.Close()
+
+	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+		return GatewayConfig{
+			BaseURL:         srv.URL,
+			APIKey:          "k",
+			PreferredModels: []string{"model-a", "model-b"},
+		}
+	})
+
+	var got []llmbff.Delta
+	_, err := p.Stream(context.Background(), llmbff.ChatRequest{
+		WorkspaceID: "ws",
+		Model:       "auto",
+	}, func(d llmbff.Delta) bool {
+		got = append(got, d)
+		return true
+	})
+	if err == nil {
+		t.Fatal("Stream returned nil error, want deadline error after done frame")
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("upstream calls = %d, want 1 (no fallback after done frame)", n)
+	}
+	for _, d := range got {
+		if d.Retry != "" {
+			t.Errorf("unexpected retry frame after done frame: %+v", d)
+		}
+	}
+}
+
 // TestDynamicGatewayStreamChainVisitsEachCandidateOnce 前两个候选都挂死超时、
 // 第三个成功：链必须按 preferred 顺序走到第三个候选，且不得重访已试过的
 // 候选（旧逻辑只排除 current，会 glm-5.2 → minimax-m3 → glm-5.2 成环，

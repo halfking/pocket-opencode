@@ -983,3 +983,58 @@ programmatic `el.click()` 对部分 Vue 组件链不可靠，用 CDP
 2. 纪要生成成功态真机留证：依赖 provider 恢复 + 60s 预算实例重启；
    种子方法与脚本已备（§22.4）。
 3. 其余沿用 §21.6（kimi 时延调优项、悬空态维持观察）。
+
+---
+
+## 23. 2026-09-05 会话补充（十）：任务审计（双轴自审）+ 终态帧防重复作答整改
+
+> 应收口要求对 §19~§22 任务做整体审计。触发 session-audit-gate 技能后按其
+> 规则确认：仓库无 `.acc-session-policy`（未 opt-in），依技能自身规定降级为
+> 轻量双轴自审（Standards + Spec），降级原因记录于此，不静默。
+
+### 23.1 特性需求清单（整理）
+
+| # | 需求 | 状态 |
+|---|---|---|
+| 1 | 移动端 AI 网关收尾：流式可用、超时兜底、回退提示可见 | 已落地（7485b8a/764f323/7ecf9ed，§21.3 E2E） |
+| 2 | auto 回退链：挂死候选不阻塞整链、候选不重访（防成环） | 已落地+测试（764f323/7ecf9ed） |
+| 3 | 已作答后不换候选重试（防同气泡重复作答） | 本轮补齐终态帧边界（§23.4） |
+| 4 | 会议纪要生成：`summarizeMeeting` 接入 UI + onRetry 提示 | 已落地（ef7f072），真机 E2E（§22.4） |
+| 5 | 前端类型/构建回归基线 | vue-tsc + vite build 全绿（§19.3/§21.5） |
+| 6 | 上游 provider 恢复（glm-5.2/minimax-m3）+ embedding provider | 阻塞在网关维护侧（§21.1/§22.1，Issue #14 无回复） |
+| 7 | `POCKET_TEST_POSTGRES_DSN` 轮换 | gated on halfking 确认（§17.6/§22.1） |
+
+### 23.2 Standards 轴（规范/异味/机械检查）
+
+- `go vet ./...` 通过；两个改动文件 gofmt 干净；`git diff --check` 通过。
+- 定向测试 `-race` 通过（7 项，含本轮新增）；`go test ./...` exit 0（46 包，无 FAIL）。
+- 已提交区间密钥扫描无命中；`.env` 未被 git 跟踪（仅 `.env.example`）。
+- 历史遗留（非本任务，不收编、不改）：
+  `internal/server/scheduled_task_integration_test.go`、`server_assistant.go`
+  gofmt 未格式化，留后续卫生轮处理。
+
+### 23.3 Spec 轴（忠于需求/无越界）
+
+- 提交信息声明 ↔ 代码落地逐项核对一致（§17.1 方法论沿用）：
+  764f323/7ecf9ed/182648e/12d7f3a 内容与 runbook 记载吻合。
+- 与并行会话（§21/§22）交错期间零编辑冲突：本轮整改仅触及 attemptFn 判定、
+  终止日志字段与 helper 签名，未触碰 7ecf9ed 的 tried/nextFallbackModel
+  逻辑；测试插入点独立、无重名。
+- §20.2 记载的 dev 登录 `invalid credentials` 为瞬态环境观察：§21.5 同窗
+  并行会话 login/refresh/config 200，结论以后者为准，本轮不重复验证。
+
+### 23.4 发现并整改
+
+- 【已修复·代码】终态帧后挂死的重复作答边界：SSE 解析在 finish/usage 帧后
+  仍会等 `[DONE]`（llmgateway/stream.go 仅遇 `[DONE]` break），原判定只统计
+  正文帧——此时尝试级超时会误判「未作答」→ 换候选在同一气泡重复作答；
+  §21.2 #3 修复 SSE 30s 写死线后长流更易落入该窗口。整改为 `answered`
+  （正文或终态帧均计入），日志字段同步 `answered=`，新增回归
+  `TestDynamicGatewayStreamNoFallbackAfterDoneFrame`（终态帧后挂死：仅 1 次
+  上游调用、无 retry 帧、错误原样上抛）。
+- 【记录·不改】历史遗留 gofmt 两文件（见 §23.2）。
+
+### 23.5 判定
+
+- Standards 轴：通过；Spec 轴：通过（整改后全量测试复跑 exit 0）。
+- GO：允许提交并推送。
