@@ -492,11 +492,13 @@ func postWithAuth(ctx context.Context, client *http.Client, url, token string) e
 	return nil
 }
 
+// maskKey 返回设置页展示用的掩码：保留 sk- 前缀 + 末 6 位，多把 key 并存时
+// 借此识别当前绑定的是哪一把。短 key 露出前后缀会泄漏过多内容，整体打码。
 func maskKey(s string) string {
-	if len(s) <= 8 {
-		return "****"
+	if len(s) < 12 {
+		return "******"
 	}
-	return s[:4] + "****" + s[len(s)-4:]
+	return s[:3] + "******" + s[len(s)-6:]
 }
 
 // LoadLLMGatewayFromDB reloads the per-workspace config for every workspace
