@@ -130,6 +130,7 @@ function fmtDate(iso: string): string {
 function sourceLabel(s?: string): string {
   if (s === 'auto') return '笔记自动'
   if (s === 'voice') return '语音'
+  if (s === 'invoice') return '发票'
   return ''
 }
 
@@ -140,12 +141,13 @@ async function load() {
   error.value = ''
   statsError.value = ''
   try {
-    // 本地时区拼「本月」，不能用 toISOString（UTC 会在月初凌晨错位到上月）
+    // 本地时区拼「本月」，不能用 toISOString（UTC 会在月初凌晨错位到上月）；
+    // tz 让服务端按同一时区分桶，跨时区部署时统计不再错位
     const now = new Date()
     const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
     const [listRes, statRes] = await Promise.all([
       financeApi.list(),
-      financeApi.stats(month).catch(() => null),
+      financeApi.stats(month, undefined, -now.getTimezoneOffset()).catch(() => null),
     ])
     txs.value = listRes.transactions ?? []
     if (statRes) {

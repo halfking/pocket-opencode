@@ -89,6 +89,7 @@ func (s *Server) handleEmailInvoiceDispatch(w http.ResponseWriter, r *http.Reque
 
 // extractInvoicesAsync 对一批邮件做规则提取并幂等落库（异步调用，fire-and-forget）。
 // 已有发票记录的邮件直接跳过；kxmemory 未配置时本函数是发票整理的唯一自动入口。
+// 主题+摘要命中关键词但提取失败时，追加读缓存正文（已下载过的邮件才有）做二次提取。
 func (s *Server) extractInvoicesAsync(emails []email.Email, userID, workspaceID string) {
 	if s.emailStore == nil || len(emails) == 0 {
 		return
@@ -96,6 +97,8 @@ func (s *Server) extractInvoicesAsync(emails []email.Email, userID, workspaceID 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		// 缓存正文解密依赖主密钥与数据目录；未配置时退化为纯主题+摘要提取
+		bodyEnhance := s.emailCrypto != nil && s.dataDir != ""
 		extracted := 0
 		for i := range emails {
 			e := emails[i]
@@ -103,6 +106,13 @@ func (s *Server) extractInvoicesAsync(emails []email.Email, userID, workspaceID 
 				continue // 已提取过
 			}
 			inv, hit := email.ExtractInvoice(e, "")
+			if !hit && bodyEnhance && email.InvoiceCandidate(e) {
+				if body, berr := s.readCachedEmailBody(ctx, e.ID, e.UID); berr == nil && len(body) > 0 {
+					if inv, hit = email.ExtractInvoice(e, string(body)); hit {
+						log.Printf("[email/invoice] body-enhanced extraction email=%s", e.ID)
+					}
+				}
+			}
 			if !hit {
 				continue
 			}

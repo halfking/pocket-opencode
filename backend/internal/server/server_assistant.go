@@ -152,13 +152,13 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		wsID := s.ensureWorkspaceForRedClawUser(r.Context(), userID)
 		auth.RecordShadow("redclaw", userID, wsID, displayName, email)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"token":         res.Token,
-			"user":          displayName,
-			"user_id":       userID,
-			"workspace_id":  wsID,
-			"role":          role,
-			"auth_method":   "redclaw",
-			"must_change":   res.MustChangePassword,
+			"token":        res.Token,
+			"user":         displayName,
+			"user_id":      userID,
+			"workspace_id": wsID,
+			"role":         role,
+			"auth_method":  "redclaw",
+			"must_change":  res.MustChangePassword,
 		})
 		return
 	}
@@ -534,9 +534,10 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 	summary := resp.Content
 
 	// 自动记账：笔记内容命中金额/收支/类目关键词时自动入账（source=auto）。
-	// Best-effort：记账失败不影响总结返回；重复总结会重复入账，前端提示里
-	// 已带笔记标题便于人工核对删除。
+	// 幂等：以 note:<id> 为 note_ref 幂等键，重复总结返回既有记录，不再重复入账。
+	// Best-effort：记账失败不影响总结返回。
 	autoTx := []*finance.Transaction{}
+	bookkeeping := ""
 	if s.financeStore != nil {
 		if parsed := finance.NewRecognizer().Parse(found.Snippet); parsed != nil {
 			noteRef := found.Title
@@ -547,17 +548,26 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 			if runes := []rune(noteRef); len(runes) > 60 {
 				noteRef = string(runes[:60])
 			}
-			tx, cerr := s.financeStore.CreateScoped(finance.CreateTransactionRequest{
+			idempotencyKey := "note:" + found.ID
+			// 先查幂等键：已入过账直接返回既有记录，避免重复入账
+			if existing, gerr := s.financeStore.GetByNoteRefScoped(idempotencyKey, uid, wsID); gerr != nil {
+				log.Printf("[note/summarize] idempotency check failed (note=%s): %v", found.ID, gerr)
+			} else if existing != nil {
+				autoTx = append(autoTx, existing)
+				bookkeeping = "existing"
+			} else if tx, cerr := s.financeStore.CreateScoped(finance.CreateTransactionRequest{
 				Type:     parsed.Type,
 				Amount:   parsed.Amount,
 				Category: parsed.Category,
 				Note:     fmt.Sprintf("[笔记] %s｜%s", noteRef, parsed.Note),
 				Source:   "auto",
-			}, uid, wsID)
-			if cerr != nil {
+				NoteRef:  idempotencyKey,
+			}, uid, wsID); cerr != nil {
 				log.Printf("[note/summarize] auto bookkeeping failed (note=%s): %v", found.ID, cerr)
 			} else if tx != nil {
+				// CreateScoped 内部按 note_ref 去重，是并发场景下的第二道保险
 				autoTx = append(autoTx, tx)
+				bookkeeping = "created"
 			}
 		}
 	}
@@ -567,6 +577,7 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 		"model":        resp.Model,
 		"usage":        resp.Usage,
 		"transactions": autoTx,
+		"bookkeeping":  bookkeeping,
 	})
 }
 

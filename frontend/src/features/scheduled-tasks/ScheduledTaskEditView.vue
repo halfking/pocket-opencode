@@ -18,6 +18,11 @@
         <input v-model="form.scheduleExpr" required :placeholder="scheduleHint" />
         <small>{{ scheduleHint }}</small>
         <input v-model="form.timezone" placeholder="时区，例如 Asia/Shanghai" />
+        <div v-if="previewTimes.length" class="preview">
+          <span class="preview-label">未来执行：</span>
+          <span v-for="(t, i) in previewTimes.slice(0, 3)" :key="i" class="preview-time">{{ formatTimestamp(t) }}</span>
+        </div>
+        <small v-else-if="previewError" class="preview-err">{{ previewError }}</small>
       </fieldset>
       <label>Payload（JSON）<textarea v-model="form.payloadText" rows="8" spellcheck="false" placeholder='{"message":"Hello"}' /></label>
       <details class="advanced">
@@ -33,11 +38,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { useScheduledTasksStore } from './store'
-import { SCHEDULE_KINDS, TASK_KINDS, formatPayload, type ScheduleKind, type ScheduledTask } from './types'
+import { scheduledTasksApi } from './api'
+import { SCHEDULE_KINDS, TASK_KINDS, formatPayload, formatTimestamp, type ScheduleKind, type ScheduledTask } from './types'
 
 const route = useRoute(); const router = useRouter(); const store = useScheduledTasksStore()
 const taskId = computed(() => route.params.id as string | undefined)
@@ -76,6 +82,32 @@ async function save() {
 }
 onMounted(load)
 watch(taskId, (id, previous) => { if (id && id !== previous) void load() })
+
+// ── 执行时间预览：表达式/时区变化后 500ms 防抖调 preview API，展示未来 3 次 ──
+const previewTimes = ref<number[]>([])
+const previewError = ref('')
+let previewTimer: ReturnType<typeof setTimeout> | null = null
+
+function requestPreview() {
+  previewError.value = ''
+  if (previewTimer) clearTimeout(previewTimer)
+  const { scheduleKind, scheduleExpr, timezone } = form
+  if (!scheduleExpr.trim()) { previewTimes.value = []; return }
+  previewTimer = setTimeout(async () => {
+    try {
+      const res = await scheduledTasksApi.preview({ scheduleKind, scheduleExpr: scheduleExpr.trim(), timezone: timezone.trim() || 'Asia/Shanghai' })
+      // 输入在请求期间又变了：丢弃过期结果，watcher 会再触发
+      if (scheduleKind !== form.scheduleKind || scheduleExpr !== form.scheduleExpr || timezone !== form.timezone) return
+      previewTimes.value = res.next ?? []
+    } catch {
+      previewTimes.value = []
+      previewError.value = '表达式无法解析，请检查格式'
+    }
+  }, 500)
+}
+
+watch(() => [form.scheduleKind, form.scheduleExpr, form.timezone], requestPreview)
+onBeforeUnmount(() => { if (previewTimer) clearTimeout(previewTimer) })
 </script>
 
 <style scoped>
@@ -88,4 +120,5 @@ input, textarea, select { width: 100%; box-sizing: border-box; padding: 10px 12p
 .chips.presets { flex-wrap: wrap; } .chips.presets button { flex: none; font-size: 12px; padding: 6px 10px; }
 .advanced { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); } .advanced summary { font-size: 13px; font-weight: 600; color: var(--text-secondary); cursor: pointer; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); } .checkbox { flex-direction: row; align-items: center; } .checkbox input { width: auto; } .actions { display: flex; gap: var(--space-3); } .actions button { flex: 1; } .actions .primary { color: var(--text-inverse); background: var(--brand-gradient); border: 0; } .error { margin: 0; padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); }
+.preview { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--text-muted); } .preview-time { padding: 3px 8px; background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 999px; color: var(--text-secondary); font-size: 11px; } .preview-err { color: var(--warning, #f59e0b); }
 </style>

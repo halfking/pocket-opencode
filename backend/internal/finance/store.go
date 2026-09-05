@@ -15,6 +15,8 @@ type FinanceStore interface {
 	ListScoped(ownerID, workspaceID string) ([]*Transaction, error)
 	DeleteScoped(id, ownerID, workspaceID string) error
 	GetStatsScoped(query StatsQuery, ownerID, workspaceID string) (*MonthlyStats, error)
+	// GetByNoteRefScoped 按幂等键查找入账记录；不存在返回 (nil, nil)。
+	GetByNoteRefScoped(noteRef, ownerID, workspaceID string) (*Transaction, error)
 }
 
 // legacyOwnerID / legacyWorkspaceID are the identity defaults used by the
@@ -49,6 +51,7 @@ func (s *Store) Create(req CreateTransactionRequest) (*Transaction, error) {
 }
 
 // CreateScoped 创建新的交易记录with ownership
+// NoteRef 非空时作为幂等键：同 owner+workspace 下已有同键记录则直接返回既有记录。
 func (s *Store) CreateScoped(req CreateTransactionRequest, ownerID, workspaceID string) (*Transaction, error) {
 	if req.Amount <= 0 {
 		return nil, fmt.Errorf("amount must be positive, got: %f", req.Amount)
@@ -69,6 +72,12 @@ func (s *Store) CreateScoped(req CreateTransactionRequest, ownerID, workspaceID 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if req.NoteRef != "" {
+		if existing := s.findByNoteRefLocked(req.NoteRef, ownerID, workspaceID); existing != nil {
+			return copyTransaction(existing), nil
+		}
+	}
+
 	id := s.counter.Add(1)
 	source := req.Source
 	if source == "" {
@@ -85,11 +94,44 @@ func (s *Store) CreateScoped(req CreateTransactionRequest, ownerID, workspaceID 
 		Tags:        req.Tags,
 		ProjectID:   req.ProjectID,
 		Source:      source,
+		NoteRef:     req.NoteRef,
 		CreatedAt:   time.Now(),
 	}
 
 	s.transactions[tx.ID] = tx
 	return copyTransaction(tx), nil
+}
+
+// GetByNoteRefScoped 按幂等键查找入账记录；不存在返回 (nil, nil)。
+func (s *Store) GetByNoteRefScoped(noteRef, ownerID, workspaceID string) (*Transaction, error) {
+	if noteRef == "" {
+		return nil, fmt.Errorf("note_ref is required")
+	}
+	if ownerID == "" {
+		return nil, fmt.Errorf("owner_id is required")
+	}
+	if workspaceID == "" {
+		return nil, fmt.Errorf("workspace_id is required")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tx := s.findByNoteRefLocked(noteRef, ownerID, workspaceID)
+	if tx == nil {
+		return nil, nil
+	}
+	return copyTransaction(tx), nil
+}
+
+// findByNoteRefLocked 按幂等键在内存中查找；调用方须已持锁。
+func (s *Store) findByNoteRefLocked(noteRef, ownerID, workspaceID string) *Transaction {
+	for _, tx := range s.transactions {
+		if tx.NoteRef == noteRef && tx.OwnerID == ownerID && tx.WorkspaceID == workspaceID {
+			return tx
+		}
+	}
+	return nil
 }
 
 // Get 根据 ID 获取交易记录
@@ -103,7 +145,7 @@ func (s *Store) Get(id string) (*Transaction, error) {
 	if !ok {
 		return nil, fmt.Errorf("transaction not found: %s", id)
 	}
-	
+
 	return copyTransaction(tx), nil
 }
 
@@ -123,7 +165,7 @@ func (s *Store) GetScoped(id, ownerID, workspaceID string) (*Transaction, error)
 	if !ok || tx.OwnerID != ownerID || tx.WorkspaceID != workspaceID {
 		return nil, fmt.Errorf("transaction not found")
 	}
-	
+
 	return copyTransaction(tx), nil
 }
 
@@ -225,7 +267,7 @@ func (s *Store) GetStats(query StatsQuery) (*MonthlyStats, error) {
 		} else {
 			stats.TotalExpense += tx.Amount
 		}
-		
+
 		stats.ByCategory[tx.Category] += tx.Amount
 		stats.Count++
 	}
@@ -251,6 +293,14 @@ func (s *Store) GetStatsScoped(query StatsQuery, ownerID, workspaceID string) (*
 		ByCategory: make(map[string]float64),
 	}
 
+	// 客户端显式传时区偏移时，按用户本地日历月筛选；nil 保持旧行为（时间自带的本地时区）。
+	monthOf := func(t time.Time) string {
+		if query.TZOffsetMinutes != nil {
+			return t.UTC().In(time.FixedZone("", *query.TZOffsetMinutes*60)).Format("2006-01")
+		}
+		return t.Format("2006-01")
+	}
+
 	for _, tx := range s.transactions {
 		// Filter by ownership
 		if tx.OwnerID != ownerID || tx.WorkspaceID != workspaceID {
@@ -259,8 +309,7 @@ func (s *Store) GetStatsScoped(query StatsQuery, ownerID, workspaceID string) (*
 
 		// 按月份筛选
 		if query.Month != "" {
-			txMonth := tx.CreatedAt.Format("2006-01")
-			if txMonth != query.Month {
+			if monthOf(tx.CreatedAt) != query.Month {
 				continue
 			}
 		}
@@ -275,7 +324,7 @@ func (s *Store) GetStatsScoped(query StatsQuery, ownerID, workspaceID string) (*
 		} else {
 			stats.TotalExpense += tx.Amount
 		}
-		
+
 		stats.ByCategory[tx.Category] += tx.Amount
 		stats.Count++
 	}
@@ -289,10 +338,10 @@ func copyTransaction(tx *Transaction) *Transaction {
 	if tx == nil {
 		return nil
 	}
-	
+
 	tagsCopy := make([]string, len(tx.Tags))
 	copy(tagsCopy, tx.Tags)
-	
+
 	return &Transaction{
 		ID:          tx.ID,
 		OwnerID:     tx.OwnerID,
@@ -304,6 +353,7 @@ func copyTransaction(tx *Transaction) *Transaction {
 		Tags:        tagsCopy,
 		ProjectID:   tx.ProjectID,
 		Source:      tx.Source,
+		NoteRef:     tx.NoteRef,
 		CreatedAt:   tx.CreatedAt,
 	}
 }

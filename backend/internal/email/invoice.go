@@ -29,9 +29,9 @@ type Invoice struct {
 	Currency    string  `json:"currency,omitempty"`  // CNY/USD…（默认 CNY）
 	InvoiceNo   string  `json:"invoiceNo,omitempty"` // 发票号码
 	InvoiceDate string  `json:"invoiceDate,omitempty"`
-	Subject     string  `json:"subject"`             // 来源邮件主题（便于回溯）
-	Status      string  `json:"status"`              // new | filed（待整理 | 已归档）
-	ExtractedBy string  `json:"extractedBy"`         // rule | llm
+	Subject     string  `json:"subject"`     // 来源邮件主题（便于回溯）
+	Status      string  `json:"status"`      // new | filed（待整理 | 已归档）
+	ExtractedBy string  `json:"extractedBy"` // rule | llm
 	CreatedAt   int64   `json:"createdAt"`
 	UpdatedAt   int64   `json:"updatedAt"`
 }
@@ -66,6 +66,12 @@ func invoiceKeywordHit(text string) bool {
 		}
 	}
 	return false
+}
+
+// InvoiceCandidate 判断邮件主题+摘要是否命中发票/账单关键词。
+// 供自动提取链路决定是否值得读缓存正文做二次提取（正文 IO/解密较贵，只对候选做）。
+func InvoiceCandidate(e Email) bool {
+	return invoiceKeywordHit(e.Subject + "\n" + e.Snippet)
 }
 
 // classifyInvoiceKind 按关键词判断票据种类。

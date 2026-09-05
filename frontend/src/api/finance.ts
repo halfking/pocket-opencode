@@ -2,12 +2,12 @@
  * finance.ts — 记账 API（自动记账 + 手动记账）。
  *
  * 数据在服务端 PostgreSQL（finance_transactions）；来源 source:
- *   manual 手动 | voice 语音解析 | auto 笔记自动记账。
+ *   manual 手动 | voice 语音解析 | auto 笔记自动记账 | invoice 发票入账。
  */
 import { http } from './http'
 
 export type FinanceTxType = 'income' | 'expense'
-export type FinanceTxSource = 'manual' | 'voice' | 'auto'
+export type FinanceTxSource = 'manual' | 'voice' | 'auto' | 'invoice'
 
 export interface FinanceTransaction {
   id: string
@@ -49,10 +49,15 @@ export const financeApi = {
   list(): Promise<{ transactions: FinanceTransaction[]; total: number }> {
     return http('/api/finance')
   },
-  stats(month?: string, category?: string): Promise<FinanceStats> {
+  /**
+   * 月度统计。tzOffsetMinutes 为本地时区相对 UTC 的分钟偏移（-getTimezoneOffset()，
+   * 东八区=480）；显式传给服务端按用户本地日历月分桶，避免跨时区统计错位。
+   */
+  stats(month?: string, category?: string, tzOffsetMinutes?: number): Promise<FinanceStats> {
     const qs = new URLSearchParams()
     if (month) qs.set('month', month)
     if (category) qs.set('category', category)
+    if (tzOffsetMinutes !== undefined) qs.set('tz', String(tzOffsetMinutes))
     const q = qs.toString()
     return http(`/api/finance/stats${q ? `?${q}` : ''}`)
   },

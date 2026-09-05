@@ -4,11 +4,15 @@
   路由：/email/invoices
   数据源：/api/emails/invoices（后端规则提取：subject/snippet/缓存正文）。
   邮件同步 + AI 分类为 bill 后自动提取落库；本页提供浏览、归档、删除，
-  以及「手动整理」（提取结果为空时引导去邮件详情触发）。
+  「入账」一键转入记账（/finance），CSV 导出，以及「手动整理」
+  （提取结果为空时引导去邮件详情触发）。
 -->
 <template>
   <div class="page">
     <HeaderActionsPortal>
+      <button type="button" class="icon-btn" aria-label="导出 CSV" @click="exportCsv">
+        <span class="material-symbols-outlined">download</span>
+      </button>
       <button type="button" class="icon-btn" :disabled="loading" aria-label="刷新" @click="load">
         <span class="material-symbols-outlined">refresh</span>
       </button>
@@ -60,6 +64,13 @@
             {{ inv.status === 'filed' ? '已归档' : '待整理' }}
           </span>
           <button
+            v-if="bookable(inv)"
+            class="act-btn primary"
+            type="button"
+            :disabled="bookingId === inv.id"
+            @click="book(inv)"
+          >{{ bookingId === inv.id ? '入账中…' : '入账' }}</button>
+          <button
             v-if="inv.status === 'new'"
             class="act-btn"
             type="button"
@@ -81,6 +92,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { emailApi, type EmailInvoice } from '../../api/email'
+import { financeApi } from '../../api/finance'
 import * as invoiceStore from './invoices-store'
 import { useToast } from '../../composables/useToast'
 import { wsClient } from '../../api/websocket'
@@ -93,6 +105,7 @@ const error = ref('')
 const filter = ref<'' | 'new' | 'filed'>('')
 const all = ref<EmailInvoice[]>([])
 const summary = ref({ total: 0, filed: 0, amount: 0 })
+const bookingId = ref('')
 
 /** 展示列表 = 当前筛选下的子集（汇总永远基于全量）。 */
 const invoices = computed(() =>
@@ -200,6 +213,77 @@ async function markNew(inv: EmailInvoice) {
   }
 }
 
+/** 可入账：有金额且是人民币（记账金额为 CNY 语义，外币发票不做本币入账）。 */
+function bookable(inv: EmailInvoice): boolean {
+  return (Number(inv.amount) || 0) > 0 && (!inv.currency || inv.currency === 'CNY')
+}
+
+/** 一键入账：发票视为支出，类目沿用发票推断；入账后自动归档。 */
+async function book(inv: EmailInvoice) {
+  if (bookingId.value) return
+  bookingId.value = inv.id
+  try {
+    await financeApi.create({
+      type: 'expense',
+      amount: Number(inv.amount) || 0,
+      category: inv.category || '其他',
+      note: `[发票] ${inv.seller || inv.subject || '未知销售方'}${inv.invoiceNo ? `｜No.${inv.invoiceNo}` : ''}`,
+      source: 'invoice',
+    })
+    if (inv.status !== 'filed') {
+      try {
+        await emailApi.setInvoiceStatus(inv.id, 'filed')
+        inv.status = 'filed'
+        applySummary(all.value)
+        try { await invoiceStore.setLocalStatus(inv.id, 'filed') } catch { /* 本地镜像可选 */ }
+      } catch { /* 归档失败不影响入账结果 */ }
+    }
+    toast.success(`已入账 ¥${formatAmount(inv.amount)}，可在记账中查看`)
+  } catch (e: any) {
+    toast.error(e?.message || '入账失败')
+  } finally {
+    bookingId.value = ''
+  }
+}
+
+// ── CSV 导出（当前筛选列表；带 BOM，Excel 直接打开不乱码） ────────────────
+function csvCell(v: string | number): string {
+  const s = String(v ?? '')
+  return `"${s.replace(/"/g, '""')}"`
+}
+
+async function exportCsv() {
+  const rows = invoices.value
+  if (rows.length === 0) {
+    toast.error('当前没有可导出的发票')
+    return
+  }
+  const header = ['日期', '销售方', '金额', '发票号', '类目', '状态']
+  const lines = [header.map(csvCell).join(',')]
+  for (const inv of rows) {
+    lines.push([
+      inv.invoiceDate || '',
+      inv.seller || '',
+      (Number(inv.amount) || 0).toFixed(2),
+      inv.invoiceNo || '',
+      inv.category || '其他',
+      inv.status === 'filed' ? '已归档' : '待整理',
+    ].map(csvCell).join(','))
+  }
+  const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  a.href = url
+  a.download = `openpocket-invoices-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}.csv`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+  toast.success(`已导出 ${rows.length} 张发票`)
+}
+
 async function remove(inv: EmailInvoice) {
   try {
     await emailApi.deleteInvoice(inv.id)
@@ -288,5 +372,9 @@ onMounted(load)
   color: var(--text-primary); cursor: pointer;
 }
 .act-btn + .act-btn { margin-left: 0; }
+.act-btn.primary {
+  background: var(--brand-primary, #4c8dff); border-color: transparent; color: #fff;
+}
+.act-btn.primary:disabled { opacity: 0.6; }
 .act-btn.danger { color: var(--danger); }
 </style>

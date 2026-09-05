@@ -4,6 +4,8 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/halfking/pocket-opencode/backend/internal/finance"
 )
@@ -152,6 +154,16 @@ func (s *Server) handleFinanceStats(w http.ResponseWriter, r *http.Request) {
 	query := finance.StatsQuery{
 		Month:    r.URL.Query().Get("month"),
 		Category: r.URL.Query().Get("category"),
+	}
+	// tz = 客户端时区偏移分钟数（东八区=480，-getTimezoneOffset()）。显式提供时
+	// 服务端按用户本地日历月分桶，避免跨时区部署统计错位。
+	if raw := strings.TrimSpace(r.URL.Query().Get("tz")); raw != "" {
+		tz, err := strconv.Atoi(raw)
+		if err != nil || tz < -720 || tz > 840 {
+			http.Error(w, `{"error":"tz must be an integer offset in minutes (-720..840)"}`, http.StatusBadRequest)
+			return
+		}
+		query.TZOffsetMinutes = &tz
 	}
 
 	stats, err := s.financeStore.GetStatsScoped(query, uid, wsID)

@@ -57,7 +57,7 @@
           <div v-if="summary" class="summary-card">
             <p class="summary-text">{{ summary }}</p>
             <div v-if="summaryTxs.length > 0" class="summary-txs">
-              <div class="txs-title">已自动入账</div>
+              <div class="txs-title">{{ bookkeeping === 'existing' ? '已自动入账（此前已记，未重复）' : '已自动入账' }}</div>
               <div v-for="tx in summaryTxs" :key="tx.id" class="tx-line">
                 <span>{{ tx.type === 'income' ? '收入' : '支出' }} · {{ tx.category }}</span>
                 <span class="tx-amt" :class="tx.type">
@@ -240,31 +240,25 @@ async function reclassify() {
 const summarizing = ref(false)
 const summary = ref('')
 const summaryTxs = ref<Array<{ id: string; type: string; amount: number; category: string }>>([])
+// created=本次新入账；existing=该笔记此前已入账，本次返回既有记录（按笔记幂等）
+const bookkeeping = ref<'' | 'created' | 'existing'>('')
 const summaryError = ref('')
 
 interface NoteSummarizeResp {
   summary?: string
   transactions?: Array<{ id: string; type: string; amount: number; category: string }>
+  bookkeeping?: 'created' | 'existing'
 }
 
 async function summarize() {
   if (!note.value || summarizing.value) return
-  // 自动记账目前按次入账、不做 note 幂等：重新总结会再记一笔，
-  // 已产生过自动入账时先确认，避免静默制造重复账单。
-  if (summaryTxs.value.length > 0) {
-    const ok = await confirm({
-      title: '重新总结',
-      message: '本次内容此前已自动入账，重新总结可能再次入账。继续？',
-      confirmText: '继续',
-    })
-    if (!ok) return
-  }
   summarizing.value = true
   summaryError.value = ''
   try {
     const res = await http<NoteSummarizeResp>(`/api/notes/${note.value.id}/summarize`, { method: 'POST' })
     summary.value = res.summary || ''
     summaryTxs.value = res.transactions ?? []
+    bookkeeping.value = res.bookkeeping ?? ''
     if (!summary.value) summaryError.value = '模型未返回内容，请稍后重试'
   } catch (e: any) {
     summaryError.value = e?.message || '总结生成失败（需要已配置 LLM 网关）'
