@@ -73,8 +73,11 @@ func (s *PGStore) CreateScoped(req CreateTransactionRequest, ownerID, workspaceI
 		Note:        req.Note,
 		Tags:        req.Tags,
 		ProjectID:   req.ProjectID,
-		Source:      "manual",
+		Source:      req.Source,
 		CreatedAt:   time.Now(),
+	}
+	if tx.Source == "" {
+		tx.Source = "manual"
 	}
 
 	q := `INSERT INTO finance_transactions
@@ -90,6 +93,21 @@ func (s *PGStore) CreateScoped(req CreateTransactionRequest, ownerID, workspaceI
 	return tx, nil
 }
 
+const financeTxSelectCols = `id, owner_id, workspace_id, type, amount, category,
+	COALESCE(note, ''), COALESCE(tags, '[]'::jsonb) AS tags, COALESCE(project_id, ''), source, created_at`
+
+func scanTransaction(row pgx.Row) (*Transaction, error) {
+	var tx Transaction
+	err := row.Scan(
+		&tx.ID, &tx.OwnerID, &tx.WorkspaceID, &tx.Type, &tx.Amount,
+		&tx.Category, &tx.Note, &tx.Tags, &tx.ProjectID, &tx.Source, &tx.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &tx, nil
+}
+
 func (s *PGStore) GetScoped(id, ownerID, workspaceID string) (*Transaction, error) {
 	if ownerID == "" || workspaceID == "" {
 		return nil, fmt.Errorf("owner_id and workspace_id are required")
@@ -97,21 +115,17 @@ func (s *PGStore) GetScoped(id, ownerID, workspaceID string) (*Transaction, erro
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	var tx Transaction
-	q := `SELECT id, owner_id, workspace_id, type, amount, category, note, tags, project_id, source, created_at
+	q := `SELECT ` + financeTxSelectCols + `
 		FROM finance_transactions
 		WHERE id=$1 AND owner_id=$2 AND workspace_id=$3`
-	err := s.pool.QueryRow(ctx, q, id, ownerID, workspaceID).Scan(
-		&tx.ID, &tx.OwnerID, &tx.WorkspaceID, &tx.Type, &tx.Amount,
-		&tx.Category, &tx.Note, &tx.Tags, &tx.ProjectID, &tx.Source, &tx.CreatedAt,
-	)
+	tx, err := scanTransaction(s.pool.QueryRow(ctx, q, id, ownerID, workspaceID))
 	if err == pgx.ErrNoRows {
 		return nil, fmt.Errorf("transaction not found")
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &tx, nil
+	return tx, nil
 }
 
 func (s *PGStore) ListScoped(ownerID, workspaceID string) ([]*Transaction, error) {
@@ -121,7 +135,7 @@ func (s *PGStore) ListScoped(ownerID, workspaceID string) ([]*Transaction, error
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	q := `SELECT id, owner_id, workspace_id, type, amount, category, note, tags, project_id, source, created_at
+	q := `SELECT ` + financeTxSelectCols + `
 		FROM finance_transactions
 		WHERE owner_id=$1 AND workspace_id=$2
 		ORDER BY created_at DESC LIMIT 500`
@@ -133,14 +147,11 @@ func (s *PGStore) ListScoped(ownerID, workspaceID string) ([]*Transaction, error
 
 	var result []*Transaction
 	for rows.Next() {
-		var tx Transaction
-		if err := rows.Scan(
-			&tx.ID, &tx.OwnerID, &tx.WorkspaceID, &tx.Type, &tx.Amount,
-			&tx.Category, &tx.Note, &tx.Tags, &tx.ProjectID, &tx.Source, &tx.CreatedAt,
-		); err != nil {
+		tx, err := scanTransaction(rows)
+		if err != nil {
 			return nil, err
 		}
-		result = append(result, &tx)
+		result = append(result, tx)
 	}
 	return result, rows.Err()
 }

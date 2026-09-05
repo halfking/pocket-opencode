@@ -35,6 +35,8 @@ type CreateTransactionRequest struct {
 	Note      string   `json:"note,omitempty"`
 	Tags      []string `json:"tags,omitempty"`
 	ProjectID string   `json:"project_id,omitempty"`
+	// Source 入账来源：manual（默认）| voice（语音解析）| auto（笔记自动记账）。
+	Source string `json:"source,omitempty"`
 }
 
 // Budget 预算配置

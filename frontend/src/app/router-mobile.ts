@@ -32,6 +32,7 @@ import EmailSummaryView from '../features/email/EmailSummaryView.vue'
 import EmailAccountSetup from '../features/email/EmailAccountSetup.vue'
 import EmailSettingsView from '../features/email/EmailSettingsView.vue'
 import EmailInvoiceListView from '../features/email/InvoiceListView.vue'
+import FinanceView from '../features/finance/FinanceView.vue'
 import VaultListView from '../features/vault/VaultListView.vue'
 import VaultEntryView from '../features/vault/VaultEntryView.vue'
 import MeetingListView from '../features/meetings/MeetingListView.vue'
@@ -150,6 +151,13 @@ const router = createRouter({
       name: 'email-invoices',
       component: EmailInvoiceListView,
       meta: { requiresAuth: true, requiresLobster: true, title: '发票整理', canGoBack: true, bottomNav: false }
+    },
+    // 记账（手动 + 笔记自动入账）
+    {
+      path: '/finance',
+      name: 'finance',
+      component: FinanceView,
+      meta: { requiresAuth: true, title: '记账', canGoBack: true, bottomNav: false }
     },
     // 邮箱 — 邮件详情
     {

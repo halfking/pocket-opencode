@@ -40,10 +40,15 @@ export async function listLocal(status?: 'new' | 'filed'): Promise<LocalInvoice[
   return rows.map(rowToInvoice)
 }
 
-/** 拉取服务端全量并重建本地镜像（全量覆盖，数据量小；失败抛给调用方）。 */
-export async function syncFromServer(): Promise<number> {
-  const res = await emailApi.listInvoices()
-  const invoices = res.invoices ?? []
+/**
+ * 重建本地镜像（全量覆盖，数据量小；失败抛给调用方）。
+ * invoices 省略时自行拉取；调用方已持有列表时传入以省一次请求。
+ */
+export async function syncFromServer(invoices?: EmailInvoice[]): Promise<number> {
+  if (!invoices) {
+    const res = await emailApi.listInvoices()
+    invoices = res.invoices ?? []
+  }
   const stmts = invoices.map((inv) => ({
     statement: `INSERT OR REPLACE INTO local_email_invoices
       (id, email_id, account_id, kind, category, title, seller, amount, currency,

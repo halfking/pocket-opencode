@@ -70,6 +70,10 @@ func (s *Store) CreateScoped(req CreateTransactionRequest, ownerID, workspaceID 
 	defer s.mu.Unlock()
 
 	id := s.counter.Add(1)
+	source := req.Source
+	if source == "" {
+		source = "manual"
+	}
 	tx := &Transaction{
 		ID:          fmt.Sprintf("txn_%d_%d", time.Now().UnixNano(), id),
 		OwnerID:     ownerID,
@@ -80,7 +84,7 @@ func (s *Store) CreateScoped(req CreateTransactionRequest, ownerID, workspaceID 
 		Note:        req.Note,
 		Tags:        req.Tags,
 		ProjectID:   req.ProjectID,
-		Source:      "manual",
+		Source:      source,
 		CreatedAt:   time.Now(),
 	}
 

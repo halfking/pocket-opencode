@@ -1,7 +1,7 @@
 <template>
   <div class="page">
     <HeaderActionsPortal>
-      <button type="button" class="back-btn" @click="router.back()" aria-label="返回">
+      <button type="button" class="back-btn" @click="goBack" aria-label="返回">
         <span class="material-symbols-outlined">arrow_back</span>
       </button>
       <button type="button" class="save-link" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
@@ -12,16 +12,22 @@
       <label>自动化类型<select v-model="form.kind"><option v-for="item in TASK_KINDS" :key="item.value" :value="item.value">{{ item.label }}</option></select></label>
       <fieldset><legend>执行计划</legend>
         <div class="chips"><button v-for="item in SCHEDULE_KINDS" :key="item.value" type="button" :class="{ active: form.scheduleKind === item.value }" @click="form.scheduleKind = item.value">{{ item.label }}</button></div>
+        <div v-if="form.scheduleKind === 'cron'" class="chips presets">
+          <button v-for="p in SCHEDULE_PRESETS" :key="p.expr" type="button" :class="{ active: form.scheduleExpr === p.expr }" @click="form.scheduleExpr = p.expr">{{ p.label }}</button>
+        </div>
         <input v-model="form.scheduleExpr" required :placeholder="scheduleHint" />
         <small>{{ scheduleHint }}</small>
         <input v-model="form.timezone" placeholder="时区，例如 Asia/Shanghai" />
       </fieldset>
       <label>Payload（JSON）<textarea v-model="form.payloadText" rows="8" spellcheck="false" placeholder='{"message":"Hello"}' /></label>
-      <div class="grid"><label>最大运行次数<input v-model.number="form.maxRuns" type="number" min="0" /></label><label>冷却（秒）<input v-model.number="form.cooldownSec" type="number" min="0" /></label></div>
-      <label>超时（秒）<input v-model.number="form.timeoutSec" type="number" min="1" max="86400" /></label>
+      <details class="advanced">
+        <summary>高级选项（最大次数 / 冷却 / 超时）</summary>
+        <div class="grid"><label>最大运行次数<input v-model.number="form.maxRuns" type="number" min="0" /></label><label>冷却（秒）<input v-model.number="form.cooldownSec" type="number" min="0" /></label></div>
+        <label>超时（秒）<input v-model.number="form.timeoutSec" type="number" min="1" max="86400" /></label>
+      </details>
       <label class="checkbox"><input v-model="form.enabled" type="checkbox" /> 创建后启用</label>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <div class="actions"><button type="button" @click="router.back()">取消</button><button class="primary" type="submit" :disabled="saving">{{ isEdit ? '保存修改' : '创建自动化' }}</button></div>
+      <div class="actions"><button type="button" @click="goBack">取消</button><button class="primary" type="submit" :disabled="saving">{{ isEdit ? '保存修改' : '创建自动化' }}</button></div>
     </form>
   </div>
 </template>
@@ -39,6 +45,21 @@ const isEdit = computed(() => Boolean(taskId.value))
 const saving = ref(false); const error = ref('')
 const form = reactive({ name: '', description: '', kind: TASK_KINDS[0].value, scheduleKind: 'cron' as ScheduleKind, scheduleExpr: '0 9 * * 1-5', timezone: 'Asia/Shanghai', payloadText: '{}', enabled: true, maxRuns: 0, cooldownSec: 0, timeoutSec: 120 })
 const scheduleHint = computed(() => SCHEDULE_KINDS.find((item) => item.value === form.scheduleKind)?.hint || '')
+
+/** 深链直达时 history 无上一页，回退到列表而非退出应用。 */
+function goBack() {
+  if (window.history.length > 1 && window.history.state?.back) router.back()
+  else router.push('/settings/scheduled-tasks')
+}
+
+/** cron 常用预设：一键填充，降低手写表达式的门槛。 */
+const SCHEDULE_PRESETS = [
+  { label: '工作日早9点', expr: '0 9 * * 1-5' },
+  { label: '每天9点', expr: '0 9 * * *' },
+  { label: '每小时', expr: '0 * * * *' },
+  { label: '每周一9点', expr: '0 9 * * 1' },
+  { label: '每月1号', expr: '0 9 1 * *' },
+]
 
 function hydrate(task: ScheduledTask) { Object.assign(form, { name: task.name, description: task.description || '', kind: task.kind, scheduleKind: task.scheduleKind, scheduleExpr: task.scheduleExpr, timezone: task.timezone || 'Asia/Shanghai', payloadText: formatPayload(task.payload), enabled: task.enabled, maxRuns: task.maxRuns || 0, cooldownSec: task.cooldownSec || 0, timeoutSec: task.timeoutSec || 120 }) }
 async function load() { if (!taskId.value) return; try { hydrate(await store.loadOne(taskId.value)) } catch (e: any) { error.value = e?.message || '加载失败' } }
@@ -64,5 +85,7 @@ watch(taskId, (id, previous) => { if (id && id !== previous) void load() })
 .form { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-4) var(--space-3) 100px; } label, legend { font-size: 13px; font-weight: 600; color: var(--text-secondary); } label { display: flex; flex-direction: column; gap: 6px; }
 input, textarea, select { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); font: inherit; font-size: 14px; } textarea { resize: vertical; } fieldset { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); } small { color: var(--text-muted); font-weight: 400; }
 .chips { display: flex; gap: 7px; } .chips button, .actions button { padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); cursor: pointer; } .chips button { flex: 1; } .chips button.active { background: var(--brand-primary); color: var(--text-inverse); border-color: var(--brand-primary); }
+.chips.presets { flex-wrap: wrap; } .chips.presets button { flex: none; font-size: 12px; padding: 6px 10px; }
+.advanced { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); } .advanced summary { font-size: 13px; font-weight: 600; color: var(--text-secondary); cursor: pointer; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); } .checkbox { flex-direction: row; align-items: center; } .checkbox input { width: auto; } .actions { display: flex; gap: var(--space-3); } .actions button { flex: 1; } .actions .primary { color: var(--text-inverse); background: var(--brand-gradient); border: 0; } .error { margin: 0; padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); }
 </style>

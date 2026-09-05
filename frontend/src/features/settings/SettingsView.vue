@@ -184,6 +184,14 @@
           </div>
           <span class="material-symbols-outlined chevron">chevron_right</span>
         </div>
+        <div class="setting-item entry" @click="router.push('/finance')">
+          <div class="setting-icon"><span class="material-symbols-outlined">account_balance_wallet</span></div>
+          <div class="setting-content">
+            <div class="setting-label">记账</div>
+            <div class="setting-value">手动 + 笔记自动入账 · 月度收支统计</div>
+          </div>
+          <span class="material-symbols-outlined chevron">chevron_right</span>
+        </div>
       </div>
 
       <!-- 操作按钮 -->

@@ -209,13 +209,18 @@ export const useAIChatStore = defineStore('ai-chat', () => {
   function isFeatured(modelId: string): boolean {
     if (featuredNames.value.size === 0) return false
     if (featuredNames.value.has(modelId)) return true
-    // 容错：网关目录按 canonical 名标记精选，而 /v1/models 常带日期后缀
-    // （如 gpt-4o → gpt-4o-2024-08-06），按「canonical 名 + 分隔符」前缀匹配。
+    // 容错：网关目录按 canonical 名标记精选，而 /v1/models 常带日期/版本后缀
+    // （如 gpt-4o → gpt-4o-2024-08-06）。仅认「canonical 名 + 分隔符 + 数字」
+    // 形态，避免 o3 → o3-mini、claude-3 → claude-3-5 这类兄弟版本误标 ★。
     for (const name of featuredNames.value) {
       if (!name) continue
-      if (modelId.startsWith(`${name}-`) || modelId.startsWith(`${name}@`)) return true
+      if (new RegExp(`^${escapeRegExp(name)}[-@]\\d`).test(modelId)) return true
     }
     return false
+  }
+
+  function escapeRegExp(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   }
 
   /** 从网关精选配置接口解析模型名列表（不同版本字段名有出入，逐个兜底）。 */

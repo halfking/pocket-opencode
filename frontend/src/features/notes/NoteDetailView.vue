@@ -45,6 +45,33 @@
         <!-- Markdown 正文 -->
         <article class="markdown-body" v-html="renderedMarkdown" />
 
+        <!-- AI 总结 + 自动记账 -->
+        <section class="summary-section">
+          <div class="summary-head">
+            <h2 class="section-title">AI 总结</h2>
+            <button class="action-btn ghost" :disabled="summarizing" @click="summarize">
+              {{ summarizing ? '生成中…' : (summary ? '🔄 重新总结' : '✨ 生成总结') }}
+            </button>
+          </div>
+          <p v-if="summaryError" class="form-error" role="alert">{{ summaryError }}</p>
+          <div v-if="summary" class="summary-card">
+            <p class="summary-text">{{ summary }}</p>
+            <div v-if="summaryTxs.length > 0" class="summary-txs">
+              <div class="txs-title">已自动入账</div>
+              <div v-for="tx in summaryTxs" :key="tx.id" class="tx-line">
+                <span>{{ tx.type === 'income' ? '收入' : '支出' }} · {{ tx.category }}</span>
+                <span class="tx-amt" :class="tx.type">
+                  {{ tx.type === 'income' ? '+' : '-' }}¥{{ tx.amount.toFixed(2) }}
+                </span>
+              </div>
+              <router-link to="/finance" class="txs-link">查看记账 →</router-link>
+            </div>
+          </div>
+          <p v-else-if="!summarizing && !summaryError" class="summary-hint">
+            由网关模型生成 3-5 句摘要；内容含金额时会自动记账（可在记账页核对删除）。
+          </p>
+        </section>
+
         <!-- 关联推荐 -->
         <section v-if="related.length > 0" class="related-section">
           <h2 class="section-title">相关笔记</h2>
@@ -206,6 +233,43 @@ async function reclassify() {
     reclassifyError.value = e?.message || '重新分类失败，请稍后重试'
   } finally {
     reclassifying.value = false
+  }
+}
+
+// ---- AI 总结 + 自动记账 ----
+const summarizing = ref(false)
+const summary = ref('')
+const summaryTxs = ref<Array<{ id: string; type: string; amount: number; category: string }>>([])
+const summaryError = ref('')
+
+interface NoteSummarizeResp {
+  summary?: string
+  transactions?: Array<{ id: string; type: string; amount: number; category: string }>
+}
+
+async function summarize() {
+  if (!note.value || summarizing.value) return
+  // 自动记账目前按次入账、不做 note 幂等：重新总结会再记一笔，
+  // 已产生过自动入账时先确认，避免静默制造重复账单。
+  if (summaryTxs.value.length > 0) {
+    const ok = await confirm({
+      title: '重新总结',
+      message: '本次内容此前已自动入账，重新总结可能再次入账。继续？',
+      confirmText: '继续',
+    })
+    if (!ok) return
+  }
+  summarizing.value = true
+  summaryError.value = ''
+  try {
+    const res = await http<NoteSummarizeResp>(`/api/notes/${note.value.id}/summarize`, { method: 'POST' })
+    summary.value = res.summary || ''
+    summaryTxs.value = res.transactions ?? []
+    if (!summary.value) summaryError.value = '模型未返回内容，请稍后重试'
+  } catch (e: any) {
+    summaryError.value = e?.message || '总结生成失败（需要已配置 LLM 网关）'
+  } finally {
+    summarizing.value = false
   }
 }
 
@@ -384,4 +448,30 @@ function formatTime(ms: number) {
   font-weight: 500;
   line-height: 1.5;
 }
+
+/* AI 总结 + 自动记账 */
+.summary-section { padding: 0 var(--space-5); }
+.summary-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: var(--space-2);
+}
+.summary-head .section-title { margin: 0; }
+.summary-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: var(--space-3) var(--space-4);
+}
+.summary-text { margin: 0; font-size: 13px; line-height: 1.7; color: var(--text-primary); white-space: pre-wrap; }
+.summary-txs {
+  margin-top: var(--space-3); padding-top: var(--space-3);
+  border-top: 1px dashed var(--border);
+}
+.txs-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
+.tx-line {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; color: var(--text-secondary); padding: 3px 0;
+}
+.tx-amt.income { color: var(--success, #10b981); font-weight: 600; }
+.tx-amt.expense { color: var(--danger); font-weight: 600; }
+.txs-link { display: inline-block; margin-top: 8px; font-size: 12px; color: var(--brand-primary); text-decoration: none; }
+.summary-hint { margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
 </style>

@@ -79,10 +79,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { emailApi, type EmailInvoice } from '../../api/email'
 import * as invoiceStore from './invoices-store'
 import { useToast } from '../../composables/useToast'
+import { wsClient } from '../../api/websocket'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
 const toast = useToast()
@@ -129,12 +130,12 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    // 服务端 SSOT：拉全量并重建本地镜像（离线兜底 + 下次首屏加速）
-    const res = await emailApi.listInvoices()
+    // limit=500（后端上限）：汇总与镜像基于全量，避免默认 200 截断失真
+    const res = await emailApi.listInvoices(undefined, 500)
     all.value = res.invoices ?? []
     applySummary(all.value)
     try {
-      await invoiceStore.syncFromServer()
+      await invoiceStore.syncFromServer(all.value)
     } catch {
       // 镜像是增强能力（web 无本地库时跳过）
     }
@@ -151,6 +152,17 @@ async function load() {
     loading.value = false
   }
 }
+
+// 服务端自动提取完成后广播 email.invoice.extracted，此处刷新列表
+function onInvoiceExtracted() {
+  void load()
+}
+onMounted(() => {
+  wsClient.on('email.invoice.extracted', onInvoiceExtracted)
+})
+onUnmounted(() => {
+  wsClient.off('email.invoice.extracted', onInvoiceExtracted)
+})
 
 async function syncAndReload() {
   syncing.value = true

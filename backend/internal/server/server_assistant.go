@@ -28,6 +28,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
+	"github.com/halfking/pocket-opencode/backend/internal/finance"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
@@ -531,14 +532,41 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 	}
 
 	summary := resp.Content
-	// 可选：回写到 note.ai_summary 字段（如果 notes 表有该列）
-	// found.AISummary = summary
-	// _ = s.notesStore.Upsert(context.Background(), found)
+
+	// 自动记账：笔记内容命中金额/收支/类目关键词时自动入账（source=auto）。
+	// Best-effort：记账失败不影响总结返回；重复总结会重复入账，前端提示里
+	// 已带笔记标题便于人工核对删除。
+	autoTx := []*finance.Transaction{}
+	if s.financeStore != nil {
+		if parsed := finance.NewRecognizer().Parse(found.Snippet); parsed != nil {
+			noteRef := found.Title
+			if noteRef == "" {
+				noteRef = found.Snippet
+			}
+			// 按 rune 截断，避免切在多字节中间产生乱码入账
+			if runes := []rune(noteRef); len(runes) > 60 {
+				noteRef = string(runes[:60])
+			}
+			tx, cerr := s.financeStore.CreateScoped(finance.CreateTransactionRequest{
+				Type:     parsed.Type,
+				Amount:   parsed.Amount,
+				Category: parsed.Category,
+				Note:     fmt.Sprintf("[笔记] %s｜%s", noteRef, parsed.Note),
+				Source:   "auto",
+			}, uid, wsID)
+			if cerr != nil {
+				log.Printf("[note/summarize] auto bookkeeping failed (note=%s): %v", found.ID, cerr)
+			} else if tx != nil {
+				autoTx = append(autoTx, tx)
+			}
+		}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"summary": summary,
-		"model":   resp.Model,
-		"usage":   resp.Usage,
+		"summary":      summary,
+		"model":        resp.Model,
+		"usage":        resp.Usage,
+		"transactions": autoTx,
 	})
 }
 
