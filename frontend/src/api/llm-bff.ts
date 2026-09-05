@@ -10,6 +10,7 @@
  * Authorization header）。每行 "data: {...}\n\n" 直到 "data: [DONE]"。
  */
 import { useAuthStore } from '../stores/auth'
+import { assertNotHTML } from './jsonGuard'
 
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 
@@ -124,6 +125,14 @@ export const llmBffApi = {
         if (!res.ok || !res.body) {
           throw new Error(`stream failed: ${res.status} ${res.statusText}`)
         }
+        // 事故形态兜底：漏注入 API base 时这里拿到的是 HTML（有 body），
+        // 流解析不出任何 SSE 帧，用户只会看到"空流"。读流前先识别。
+        const ct = (res.headers.get('content-type') || '').toLowerCase()
+        if (ct.includes('text/html')) {
+          throw new Error(
+            '对话流返回了 HTML 页面而非 SSE 流：多为移动端打包漏注入 VITE_API_BASE，请检查打包配置',
+          )
+        }
 
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
@@ -232,5 +241,5 @@ async function http<T>(path: string): Promise<T> {
     headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {},
   })
   if (!res.ok) throw new Error(`usage failed: ${res.status}`)
-  return res.json() as Promise<T>
+  return assertNotHTML(res).json() as Promise<T>
 }

@@ -4,6 +4,10 @@
  * instead of calling fetch() directly, so auth headers stay consistent.
  */
 import { useAuthStore } from '../stores/auth'
+import { assertNotHTML } from './jsonGuard'
+
+// 再导出：client.ts 等既有调用方统一从 ./http 取守卫。
+export { assertNotHTML }
 
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 
@@ -56,7 +60,7 @@ async function httpOnce<T = any>(path: string, opts: RequestInit = {}): Promise<
   }
   // 204 No Content
   if (res.status === 204) return undefined as unknown as T
-  return res.json() as Promise<T>
+  return assertNotHTML(res).json() as Promise<T>
 }
 
 /**

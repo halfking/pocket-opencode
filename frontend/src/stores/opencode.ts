@@ -5,6 +5,7 @@
 import { defineStore } from 'pinia'
 import { api } from '../api/client'
 import type { Instance, Session, Task } from '../api/client'
+import { assertNotHTML } from '../api/jsonGuard'
 
 export interface OpenCodeSession extends Session {
   instanceId: string
@@ -194,7 +195,7 @@ export const useOpenCodeStore = defineStore('opencode', {
         if (!response.ok) {
           throw new Error(`Failed to load history: ${response.statusText}`)
         }
-        const data = await response.json()
+        const data = await assertNotHTML(response).json()
         this.sessionHistory[sessionId] = data.timeline || []
         
         console.log('✅ 加载历史成功:', sessionId)
@@ -218,7 +219,7 @@ export const useOpenCodeStore = defineStore('opencode', {
         if (!response.ok) {
           throw new Error(`Failed to get summary: ${response.statusText}`)
         }
-        const data = await response.json()
+        const data = await assertNotHTML(response).json()
         return data.summary || '暂无摘要'
       } catch (err: any) {
         console.error('❌ 获取摘要失败:', err)

@@ -111,13 +111,16 @@ jobs:
       - name: Build web assets
         # cap sync 会把 webDir(dist) 拷进 android 工程；dist 被 gitignore，
         # CI 必须先构建，否则 "Could not find the web assets directory: ./dist"。
-        run: npm run build:fast
+        # 统一走 build-mobile.mjs 以强制经过 VITE_API_BASE 空值守卫
+        # （2026-09-05 真机事故：空 base 的 APK 所有 /api 请求拿到 index.html）。
+        # CI 无真实后端可指向，故显式 opt-out——此 APK 仅做构建完整性验证。
+        run: MOBILE_FAST=1 MOBILE_ALLOW_EMPTY_API_BASE=1 node scripts/build-mobile.mjs android prod
         working-directory: frontend
 
       - name: Sync Capacitor (frontend/android only)
         # ADR-009: frontend/android is the single Android source of
         # truth. We never run `npx cap sync` against the root android/
-        # directory.
+        # directory. build-mobile.mjs 内部已 sync 一次，此处幂等重跑。
         run: npx cap sync android
         working-directory: frontend
 

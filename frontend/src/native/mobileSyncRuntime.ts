@@ -286,7 +286,19 @@ export function createRuntimeFetch(deps: RuntimeDeps, auth: RuntimeAuth): Author
     })
     return {
       status: res.status,
-      json: () => res.json() as Promise<unknown>,
+      json: () => {
+        // 内联 HTML 守卫而非复用 api/jsonGuard：Node 测试用假 Response 实现，
+        // headers 未必存在（可选链兜底）；本模块也不得 import Pinia 系模块。
+        const ct = (res.headers?.get?.('content-type') || '').toLowerCase()
+        if (ct.includes('text/html')) {
+          return Promise.reject(
+            new Error(
+              'API 返回了 HTML 页面而非 JSON：通常是移动端打包漏注入 VITE_API_BASE（请求落到 WebView 本地 index.html）。请用 scripts/build-mobile.mjs 并确认 VITE_API_BASE 已注入',
+            ),
+          )
+        }
+        return res.json() as Promise<unknown>
+      },
     }
   }
 }
