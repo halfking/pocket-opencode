@@ -5,8 +5,8 @@
   设置入口 + 次要功能"集中到一个菜单抽屉；这样每个页面顶栏是单层，左 ≡ 打开此抽屉，
   tab bar 不必再放设置 tab。
 
-  依赖 BottomSheet（placement="left"）的现成动画/手势，列表按"个人中心 / 设置 / 高级"
-  分组；点击即跳路由并关闭抽屉。
+  依赖 BottomSheet（placement="left"）的现成动画/手势，列表按"个人中心 /
+  设置 / 更多功能 / 高级"分组；点击即跳路由并关闭抽屉。
 -->
 <template>
   <BottomSheet
@@ -84,6 +84,18 @@ const groups = computed<MenuGroup[]>(() => [
       { to: '/settings/llm-gateway', icon: 'model_training', label: t('routes.aiModels') },
       { to: '/settings/scheduled-tasks', icon: 'schedule', label: t('routes.scheduledTasks') },
       { to: '/settings/permissions', icon: 'privacy_tip', label: t('routes.permissionsPrivacy') },
+    ],
+  },
+  {
+    // 2026-09-05 入口收敛：原 TabBar「更多」面板的次要功能入口统一迁入本组，
+    // tab bar 只保留 5 个一级目的地（见 BottomNav 头注释）。
+    title: t('nav.moreFeatures'),
+    items: [
+      { to: '/pkm/today', icon: 'sticky_note_2', label: t('nav.pkmNotes') },
+      { to: '/vault', icon: 'lock', label: t('nav.vault') },
+      { to: '/marketplace/skills', icon: 'extension', label: t('nav.skillMarket') },
+      { to: '/marketplace/agents', icon: 'smart_toy', label: t('nav.agentMarket') },
+      { to: '/marketplace/workbuddies', icon: 'handshake', label: t('nav.workbuddy') },
     ],
   },
   {

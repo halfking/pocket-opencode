@@ -29,7 +29,7 @@
 
       <!-- 登录表单 -->
       <div v-else class="login-form">
-        <!-- 模式切换 Tab -->
+        <!-- 模式切换 Tab（注册走独立页 /register，见 RegisterView） -->
         <div class="tab-bar" role="tablist">
           <button
             v-for="t in tabs"
@@ -86,7 +86,8 @@
             {{ loading ? '登录中...' : '登录' }}
           </button>
 
-          <p class="forgot-link">
+          <p class="auth-links">
+            <router-link to="/register">注册新账号</router-link>
             <router-link to="/forgot-password">忘记密码？</router-link>
           </p>
 
@@ -111,14 +112,14 @@
               v-model="codeEmail"
               type="email"
               placeholder="输入注册邮箱"
-              @keyup.enter="requestCode('login')"
+              @keyup.enter="requestCode"
             />
           </div>
           <button
             type="button"
             class="login-btn secondary-btn"
             :disabled="!codeEmail || codeCooldown > 0 || loading"
-            @click="requestCode('login')"
+            @click="requestCode"
           >
             {{ codeCooldown > 0 ? `${codeCooldown}s 后可重发` : (codeSent ? '重新发送验证码' : '发送验证码') }}
           </button>
@@ -142,66 +143,6 @@
           >
             {{ loading ? '登录中...' : '登录' }}
           </button>
-        </template>
-
-        <!-- 注册 -->
-        <template v-else-if="activeTab === 'register'">
-          <div class="form-group">
-            <label>邮箱</label>
-            <input
-              v-model="regEmail"
-              type="email"
-              placeholder="用作登录账号"
-              @keyup.enter="requestCode('register')"
-            />
-          </div>
-          <button
-            type="button"
-            class="login-btn secondary-btn"
-            :disabled="!regEmail || codeCooldown > 0 || loading"
-            @click="requestCode('register')"
-          >
-            {{ codeCooldown > 0 ? `${codeCooldown}s 后可重发` : (codeSent ? '重新发送验证码' : '发送注册验证码') }}
-          </button>
-          <template v-if="codeSent">
-            <div class="form-group">
-              <label>验证码</label>
-              <input
-                v-model="codeValue"
-                type="text"
-                inputmode="numeric"
-                maxlength="6"
-                placeholder="6 位数字验证码"
-                @keyup.enter="focusRegUsername"
-              />
-              <p v-if="debugCode" class="hint">调试模式：验证码 = <code>{{ debugCode }}</code></p>
-            </div>
-            <div class="form-group">
-              <label>用户名</label>
-              <input
-                ref="regUsernameRef"
-                v-model="regUsername"
-                type="text"
-                placeholder="3-32 字符，字母/数字/_.-"
-              />
-            </div>
-            <div class="form-group">
-              <label>密码</label>
-              <input
-                v-model="regPassword"
-                type="password"
-                placeholder="≥8 位，含字母与数字"
-                @keyup.enter="handleRegister"
-              />
-            </div>
-            <button
-              class="login-btn"
-              :disabled="!regEmail || !codeValue || !regUsername || !regPassword || loading"
-              @click="handleRegister"
-            >
-              {{ loading ? '注册中...' : '注册并登录' }}
-            </button>
-          </template>
         </template>
 
         <div v-if="error" class="error-message">
@@ -240,7 +181,7 @@ import {
 } from '../../native/biometricAuth'
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
 import { useCryptoConfig } from '../../stores/crypto-config'
-import { sendCode, registerUser, codeLogin, fetchSsoLoginUrl, fetchSsoStatus } from '../../api/auth'
+import { sendCode, codeLogin, fetchSsoLoginUrl, fetchSsoStatus } from '../../api/auth'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -259,12 +200,11 @@ const needUnlock = ref(false)
 const unlockPassword = ref('')
 const showMasterPasswordDialog = ref(false)
 const cryptoConfig = useCryptoConfig()
-// ----- C6：登录模式 Tab + 验证码状态 -----
-type TabId = 'password' | 'code' | 'register'
+// ----- C6：登录模式 Tab + 验证码状态（注册已独立为 /register 页） -----
+type TabId = 'password' | 'code'
 const tabs: { id: TabId; label: string }[] = [
   { id: 'password', label: '密码登录' },
   { id: 'code', label: '验证码登录' },
-  { id: 'register', label: '注册' },
 ]
 const activeTab = ref<TabId>('password')
 
@@ -273,19 +213,11 @@ const activeTab = ref<TabId>('password')
 const ssoEnabled = ref(false)
 
 const codeEmail = ref('')
-const regEmail = ref('')
-const regUsername = ref('')
-const regPassword = ref('')
 const codeValue = ref('')
 const codeSent = ref(false)
 const codeCooldown = ref(0)
 const debugCode = ref('')
-const regUsernameRef = ref<HTMLInputElement | null>(null)
 let cooldownTimer: ReturnType<typeof setInterval> | null = null
-
-function focusRegUsername() {
-  regUsernameRef.value?.focus()
-}
 
 function startCooldown() {
   codeCooldown.value = 60
@@ -299,16 +231,15 @@ function startCooldown() {
   }, 1000)
 }
 
-async function requestCode(purpose: 'register' | 'login') {
+async function requestCode() {
   error.value = ''
-  const targetEmail = purpose === 'register' ? regEmail.value : codeEmail.value
-  if (!targetEmail) {
+  if (!codeEmail.value) {
     error.value = '请输入邮箱'
     return
   }
   loading.value = true
   try {
-    const res = await sendCode(targetEmail, purpose)
+    const res = await sendCode(codeEmail.value, 'login')
     codeSent.value = true
     codeValue.value = ''
     debugCode.value = res.debug_code || ''
@@ -332,34 +263,6 @@ async function handleCodeLogin() {
     await completeAuth(res.token, res.user, res.user_id, res.workspace_id)
   } catch (e: any) {
     error.value = e?.body?.error || e?.message || '验证码登录失败'
-  } finally {
-    loading.value = false
-  }
-}
-
-async function handleRegister() {
-  if (!regEmail.value || !codeValue.value || !regUsername.value || !regPassword.value) {
-    error.value = '请完整填写邮箱、验证码、用户名和密码'
-    return
-  }
-  loading.value = true
-  error.value = ''
-  try {
-    const res = await registerUser({
-      email: regEmail.value,
-      code: codeValue.value,
-      username: regUsername.value,
-      password: regPassword.value,
-    })
-    await completeAuth(res.token, res.user, res.user_id, res.workspace_id)
-  } catch (e: any) {
-    if (e?.body?.error) {
-      error.value = e.body.error
-    } else if (e?.status === 409) {
-      error.value = '邮箱或用户名已被注册'
-    } else {
-      error.value = e?.message || '注册失败'
-    }
   } finally {
     loading.value = false
   }
@@ -814,16 +717,18 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
   opacity: 0.85;
 }
 
-.forgot-link {
-  text-align: right;
+/* 登录辅助链接行：注册入口（左） + 忘记密码（右） */
+.auth-links {
+  display: flex;
+  justify-content: space-between;
   margin-top: var(--space-2);
   font-size: var(--text-sm);
 }
-.forgot-link a {
+.auth-links a {
   color: var(--brand-primary);
   text-decoration: none;
 }
-.forgot-link a:active {
+.auth-links a:active {
   opacity: 0.7;
 }
 

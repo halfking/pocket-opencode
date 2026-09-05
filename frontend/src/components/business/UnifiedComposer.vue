@@ -11,7 +11,9 @@
   - 标准模式：自适应增高（上限 40vh 后滚动）
   - 全屏模式：文章编辑式整页覆盖（大字号 + 字数统计 + 同一工具行）
   - 多模态：语音(STT) / 图片 / 拍照(@capacitor/camera) / 文件
-  - 专家角色：内嵌 AgentSelectorSheet，选中经 update:agentId 上抛
+  - 专家角色：内嵌 AgentSelectorSheet，选中经 update:agentId 上抛；
+    未选角色时 chip 显示专家人员图标 support_agent（2026-09-05 起，
+    替代原 👤 emoji；已选角色仍展示该角色自己的 emoji 头像）
   - AI 优化：经 llm-bff 流式润色草稿并回填，不自动提交
 -->
 <template>
@@ -80,7 +82,8 @@
           :aria-label="agent ? '切换角色' : '选择角色'"
           @click="agentSheetOpen = true"
         >
-          <span class="uc-chip-emoji">{{ agent?.emoji || '👤' }}</span>
+          <span v-if="agent" class="uc-chip-emoji" aria-hidden="true">{{ agent.emoji }}</span>
+          <span v-else class="material-symbols-outlined uc-chip-icon" aria-hidden="true">support_agent</span>
           <span class="uc-chip-label">{{ agent ? agent.name : '角色' }}</span>
         </button>
         <button
@@ -175,7 +178,8 @@
             type="button"
             @click="agentSheetOpen = true"
           >
-            <span class="uc-chip-emoji">{{ agent?.emoji || '👤' }}</span>
+            <span v-if="agent" class="uc-chip-emoji" aria-hidden="true">{{ agent.emoji }}</span>
+            <span v-else class="material-symbols-outlined uc-chip-icon" aria-hidden="true">support_agent</span>
             <span class="uc-chip-label">{{ agent ? agent.name : '角色' }}</span>
           </button>
           <button
@@ -552,6 +556,8 @@ onBeforeUnmount(() => {
   color: var(--color-primary, #4f6ef7);
 }
 .uc-chip-emoji { font-size: 15px; }
+/* 未选角色时的专家人员图标（与全 App Material Symbols 图标语言统一） */
+.uc-chip-icon { font-size: 17px; flex-shrink: 0; }
 .uc-chip-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -600,7 +606,8 @@ onBeforeUnmount(() => {
 /* 全屏“文章编辑”模式 */
 .uc-fs {
   position: fixed;
-  inset: 0;
+  /* 底边随 --kb-inset 抬升：键盘弹起时整页编辑器贴住键盘上沿（input 工具行可见） */
+  inset: 0 0 var(--kb-inset, 0px) 0;
   z-index: var(--z-sheet, 1000);
   display: flex;
   flex-direction: column;
