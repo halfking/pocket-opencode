@@ -1,0 +1,3 @@
+[23:10:11] kimi-final => {"error":"llm failed: llm-gateway chat 503: {\"error\":{\"code\":\"model_not_found\",\"gateway_debug\":{\"attempts\":null,\"kind\":\"\",\"retryable\":false,\"stage\":\"execution\",\"tried\":0},\"kind\":\"no_candidates\",\"message\":\"No available provider for model 'kimi-k3'. All 0 candidates failed.\",\"request_id\":\"aae3d4542cc3231ee58f02244ea61e66\",\"type\":\"server_error\"}}
+"}
+HTTP=502 T=0.837369s

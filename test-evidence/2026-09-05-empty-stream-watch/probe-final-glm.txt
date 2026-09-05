@@ -1,0 +1,4 @@
+[23:09:56] glm-final => {"error":"llm failed: llm-gateway chat 503: {\"error\":{\"code\":\"model_not_found\",\"gateway_debug\":{\"attempts\":null,\"kind\":\"\",\"retryable\":false,\"stage\":\"execution\",\"tried\":0},\"kind\":\"no_candidates\",\"message\":\"No available provider for model 'glm-5.2'. All 0 candidates failed.\",\"request_id\":\"6d2990a2402dbc62fdd8c46950fa852d\",\"type\":\"server_error\"}}
+"}
+
+HTTP=502 T=0.419413s

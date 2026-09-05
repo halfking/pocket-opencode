@@ -1449,3 +1449,89 @@ errEmptyStreamAttempt、不多打上游、零 delta）。`go build` + 定向回�
    先 GET /api/llm-gateway/config 核对当前值再设计场景；avdmanager 建新
    AVD 在本机不可用（XML v4），用克隆法（§28.4）。
 
+
+---
+
+## 29. 2026-09-05 会话补充（十六）：全灭长窗守候留观 + 环境整备（任务①②③④前提全程未开）
+
+> 接手时 HEAD=bd44c74（与远端一致，无并行新提交）。本轮为 §28.6 #1
+> 空流修复实例级留观轮：上游全灭相自 17:06（§28.1）持续至收口（23:10），
+> 守候 3 小时+ 任一模型未恢复，①②③④前提全程未开，均维持待上游。
+> 零代码改动、零配置 POST；因日志通道再遭外部截断按端口重启一次
+> （19:46 起 PID 95713，同一修复版二进制）。零密钥。
+
+### 29.1 接手核对与运行实例
+
+- git status / log 与起手快照一致；GET /api/llm-gateway/config 逐字段
+  核对：`preferredModels=[]`（§28.4 并行方终态）维持不代改，baseURL/
+  format/apiKeySet 与 §28 一致，apiKey 掩码 sk-h****3QIv。
+- 运行实例 :8088 = PID 40182（§28 修复版）；:8090 姊妹仓无恙。
+- **日志通道外部截断再发**（§17.5/§22.6/§24.4 同款，18:11 发生）：
+  mtime 停 18:11、`lsof` fd 偏移 17170 > 文件 8437 字节——19:02 起的
+  探测一度不可落盘。19:46 经 `backend/start-dev.sh` 按端口重启（仅杀
+  :8088 监听者），新 PID 95713，`backend/pocketd`（mtime 17:19）未重建，
+  空流修复与 90s 预算语义不变；重启后 fd 偏移=文件大小，通道恢复，
+  DB 配置加载核对一致（baseURL 不变）。此为 §28.4 同法的第三次应用。
+
+### 29.2 串行探测与守候（存档 `test-evidence/2026-09-05-empty-stream-watch/`）
+
+| 时刻 | 探测 | 结果 |
+|---|---|---|
+| 19:02 | embed / glm / kimi / auto（串行） | `no_provider` / `no_candidates`×2（0.4~0.6s 快速失败）/ auto `no_candidate`（abab5.5-chat） |
+| 19:43~19:45 | 复探同上 | 仍全灭 |
+| 19:47~20:19 | 守候 8 轮：glm+auto 双发/轮、4.5min 间隔（单连接串行规避 429，§27.1 新经验） | 16 发全灭 |
+| 20:03 | embed | `no_provider` |
+| 23:09~23:10 | 终态快照 glm/kimi/minimax/auto/embed（串行） | 全灭（auto 同窗口已解析为 claude-sonnet-4.5，见 29.3） |
+
+全灭相下「200+零帧空流」形态无由产生（无任何候选可接请求），§28.6 #1
+的留观在相位上不可能触发——非修复失效信号，判定留观窗口未开。
+
+### 29.3 新观察：auto 即席最终候选随上游 catalog 漂移
+
+同配置（`preferredModels=[]`）下，auto 的即席最终候选 19:02~20:19 为
+catalog 首个 `abab5.5-chat`，23:10 终态快照变为 `claude-sonnet-4.5`
+（网关 POST 终态逐字段未变）——上游 `/models` 目录顺序漂移所致。含义：
+「空首选」场景的最终候选不稳定，下一轮设计 auto 场景与判读 no_candidate
+错误消息时，须以当次 GET config + 实际探测解析为准，勿沿用上轮候选名。
+
+### 29.4 环境整备（下轮零预热）
+
+- **pocket_clone（:5556）**：-no-snapshot 冷启动 20s 上线（克隆法 §28.4
+  再证可用）；App 解锁（主密码 start-dev.sh 默认同值约定，经变量注入
+  不引用）；§28 种子会议在列且详情完好（4 段转写、纪要空缺、按钮就位，
+  截图 01-clone-meeting-detail.png）。
+- **CDP 基线固定**（桥法 §22.4/§28.2：`window.Capacitor.Plugins.
+  CapacitorSQLite`，库 `lobster`；cdp-baseline-counts.txt）：
+  `local_note_vectors=0, local_notes=0, meetings_with_summary=0`。
+  下轮 ② 恢复后应用内新建/编辑笔记即触发 `embedAndStore`
+  （`notes-store.ts:99/156` → /api/embed → `vectorIndex.add`），vec 应
+  >0；④ 成功后 meetings_with_summary 应转 1。
+- **守候工具沉淀**：`probe_watch.sh`（glm+auto 双发/轮串行守候，任一
+  200 即退出码 0 供无人值守挂起）——注意 auto 随 catalog 漂移（29.3），
+  恢复判定以 glm 发为主。
+- **前端新合入提示**：收口前远端新增 b39714d（frontend API base 空注
+  入双重加固，纯前端 9 文件）并经 4bb9f99 与 bd44c74 汇合。clone 上
+  现装 APK 为 17:27 bd4156c 前端构建——下轮 App 路径验证前须以最新
+  HEAD 现场重建 APK（§28.4 法），后端无涉、修复实例继续有效。
+
+### 29.5 任务清单收口状态（接续 §28.6）
+
+| 事项 | 状态 |
+|---|---|
+| ① 空流修复实例级留观 | **窗口未开**（全灭相 17:06 起持续，无空流形态由头）；修复双单测+实例部署口径不变 |
+| ② embed 恢复 + 向量入库 | 仍待上游（19:02/20:03/23:10 三次 `no_provider`）；基线已固定（29.4） |
+| ③ 存活版 R4 | 仍待 kimi 恢复或 glm 慢相（glm/kimi/minimax 终态全 `no_candidates` 快速失败） |
+| ④ 纪要真机成功态 | 仍待任一模型恢复；真机/种子/基线已就绪（29.4） |
+| ⑤⑥ 沿用 | JWT 临期（RedClaw/生产）、Issue #14（halfking）——未动 |
+
+### 29.6 遗留（下一轮续接，增量更新 §28.6）
+
+1. 沿用 §28.6 #1~#5 全部事项，前提判定一律先跑 `probe_watch.sh` 或
+   串行快照（glm 为主，auto 仅参考——catalog 漂移，29.3）。
+2. 下轮 App 路径验证前置：以含 b39714d 的最新 HEAD 现场重建 APK 装入
+   pocket_clone（旧 APK 为 17:27 前端构建）。
+3. auto 即席候选漂移议题：`preferredModels=[]` 下最终候选不受本仓控制，
+   建议并行方/halfking 评估是否恢复显式 preferredModels（§28.4 归属
+   并行方，本轮未代改）。
+4. 环境注记：日志通道外部截断已三次发生（18:11 / §24.4 / §22.6），
+   观测前先 `ls -la` + `lsof` fd 偏移比对，异常即按端口重启恢复。

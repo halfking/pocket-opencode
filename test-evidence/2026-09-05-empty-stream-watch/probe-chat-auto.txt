@@ -1,0 +1,4 @@
+[19:02:57] auto => {"error":"llm failed: llm-gateway chat 503: {\"error\":{\"code\":\"no_candidate\",\"kind\":\"no_candidate\",\"message\":\"No available provider for model 'abab5.5-chat'\",\"request_id\":\"eacc05df5cfcfbdf0e6891be430f64ee\",\"type\":\"server_error\"}}
+"}
+
+HTTP=502 T=1.148462s

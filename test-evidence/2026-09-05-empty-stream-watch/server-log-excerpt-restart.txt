@@ -1,0 +1,5 @@
+2026/09/05 19:46:35 LLM/Embed gateway enabled (enterprise): https://llm.kxpms.cn/v1
+2026/09/05 19:46:35 ✅ 启动 OpenCode 实例自动发现（间隔: 1m0s）
+2026/09/05 19:46:35 [llm-gateway] loaded config from DB: workspace=default baseURL=https://llm.kxpms.cn/v1 models=0
+2026/09/05 19:46:35 [llm-gateway] loaded config from DB: workspace=default baseURL=https://llm.kxpms.cn/v1 models=0
+2026/09/05 19:46:35 pocketd listening on :8088

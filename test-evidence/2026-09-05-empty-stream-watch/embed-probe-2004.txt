@@ -1,0 +1,4 @@
+[20:03:56] embed => {"error":"embed failed: llm-gateway embed 503: {\"error\":{\"code\":\"no_provider\",\"message\":\"No embedding provider available\",\"request_id\":\"c4834e1256db93c51389559e4893f478\",\"type\":\"server_error\"}}
+"}
+
+HTTP=502 T=1.125415s
