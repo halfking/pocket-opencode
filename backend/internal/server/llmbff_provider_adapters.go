@@ -222,19 +222,24 @@ func (p *dynamicGatewayBFFProvider) Chat(ctx context.Context, req llmbff.ChatReq
 
 // auto 回退链的超时预算。网关客户端自身有 90s 总超时 / 30s 响应头超时，
 // 但回退链是逐候选串行重试的：N 个候选都挂住时最坏 N×30s，前端一直转圈。
-// 这里限制：单次尝试 20s（覆盖首 token 正常延迟），整链预算 60s——按
-// 「两个挂死候选耗满 40s + 最终可用候选仍有完整 20s 首 token 窗口」取值
-// （45s 时第三候选只分到 5s，kimi-k3 实测来不及出首 token，2026-09-05）。
-// 回退期间客户端持续收到 Retry 进度帧，等待可见，非 §14.2 的零字节转圈。
+// 这里限制：非最终候选单次尝试 20s（覆盖首 token 正常延迟，尽快淘汰挂死
+// 候选）；最终候选（其后无 fallback 可退）不设尝试级超时，只受整链剩余
+// 预算约束——它在链上只有一次机会，20s 窗会误杀慢而可用的候选（kimi-k3
+// 长 prompt 首 token 实测 >20s，§22.4 纪要生成因此终态失败，2026-09-05）。
+// 整链预算 90s：按「两个挂死候选耗满 40s + 最终可用候选分到 50s」取值
+// （60s 时最终候选只剩恰好 20s，与尝试窗重合、放宽形同虚设）；最坏 90s
+// 仍低于前端 120s 流级看门狗（§14.3 fix1）。回退期间客户端持续收到 Retry
+// 进度帧，等待可见，非 §14.2 的零字节转圈。
 // var 而非 const：测试用短预算驱动超时回退路径。
 var (
 	autoFallbackAttemptTimeout = 20 * time.Second
-	autoFallbackTotalBudget    = 60 * time.Second
+	autoFallbackTotalBudget    = 90 * time.Second
 )
 
 // Stream 实现 BFF 的流式 chat。auto / no_candidate 时按 preferred 列表
 // 本地回退重试；每次尝试与整链都受超时预算约束，保证错误及时浮出
 // （2026-09-05 移动端 E2E：上游挂死时 SSE 长时间零字节，前端空气泡转圈）。
+// 最终候选例外：其后已无可退候选，不叠加尝试级超时，窗口即整链剩余预算。
 func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatRequest, fn func(llmbff.Delta) bool) (*llmbff.Usage, error) {
 	c, err := p.clientFor(req.WorkspaceID)
 	if err != nil {
@@ -248,9 +253,15 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 	for {
 		attemptCtx := ctx
 		var cancel context.CancelFunc
-		if remaining := time.Until(deadline); remaining < autoFallbackAttemptTimeout {
-			attemptCtx, cancel = context.WithTimeout(ctx, remaining)
-		} else {
+		switch {
+		case p.nextFallbackModel(req.WorkspaceID, tried) == "":
+			// 最终候选：失败即整链终止，20s 尝试窗只是无谓的自我设限
+			// ——慢而可用的候选（首 token 偶发 >20s）会被误杀。窗口放宽
+			// 为剩余整链预算，链终止语义由循环底部的 fallback=="" 保证。
+			attemptCtx, cancel = context.WithTimeout(ctx, time.Until(deadline))
+		case time.Until(deadline) < autoFallbackAttemptTimeout:
+			attemptCtx, cancel = context.WithTimeout(ctx, time.Until(deadline))
+		default:
 			attemptCtx, cancel = context.WithTimeout(ctx, autoFallbackAttemptTimeout)
 		}
 		// 记录本次尝试是否已向客户端给出作答：已给出作答的尝试不能换候选

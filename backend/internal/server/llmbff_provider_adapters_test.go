@@ -492,3 +492,110 @@ func TestDynamicGatewayStreamFallsBackOnInvalidModel(t *testing.T) {
 		t.Errorf("final delta = %+v, want done + finish_reason=stop", last)
 	}
 }
+
+// TestDynamicGatewayStreamFinalCandidateGetsFullRemainingBudget 最终候选
+// 不叠加尝试级超时：首位候选挂死耗掉一个尝试窗后，最终候选慢于尝试窗但
+// 在整链剩余预算内出首 token，应成功而非被 20s（测试中 100ms）尝试窗误杀
+// （§21.6 #2 / §22.4：kimi-k3 长 prompt 首 token >20s，旧逻辑整链终态失败）。
+func TestDynamicGatewayStreamFinalCandidateGetsFullRemainingBudget(t *testing.T) {
+	oldAttempt, oldBudget := autoFallbackAttemptTimeout, autoFallbackTotalBudget
+	autoFallbackAttemptTimeout, autoFallbackTotalBudget = 100*time.Millisecond, 2*time.Second
+	defer func() { autoFallbackAttemptTimeout, autoFallbackTotalBudget = oldAttempt, oldBudget }()
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		var req llmgateway.ChatRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if n == 1 {
+			<-r.Context().Done() // 首位候选挂死：耗掉一个尝试窗后触发回退
+			return
+		}
+		if req.Model != "model-b" {
+			t.Errorf("retry attempt model = %q, want model-b", req.Model)
+		}
+		time.Sleep(500 * time.Millisecond) // 慢于尝试窗(100ms)、快于剩余预算
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"slow-but-alive\"}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"+
+				"\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n"+
+				"data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+		return GatewayConfig{
+			BaseURL:         srv.URL,
+			APIKey:          "k",
+			PreferredModels: []string{"model-a", "model-b"},
+		}
+	})
+
+	var got []llmbff.Delta
+	start := time.Now()
+	usage, err := p.Stream(context.Background(), llmbff.ChatRequest{
+		WorkspaceID: "ws",
+		Model:       "auto",
+	}, func(d llmbff.Delta) bool {
+		got = append(got, d)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v (elapsed %s)", err, time.Since(start).Round(time.Millisecond))
+	}
+	if usage == nil || usage.TotalTokens != 2 {
+		t.Fatalf("usage = %+v, want total_tokens=2", usage)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("upstream calls = %d, want 2", n)
+	}
+	if first := got[0]; first.Retry != "model-b" || first.Content != "" || first.Done {
+		t.Errorf("first delta = %+v, want retry=model-b, no content, not done", first)
+	}
+	if got[1].Content != "slow-but-alive" {
+		t.Errorf("second delta content = %q, want slow-but-alive", got[1].Content)
+	}
+	if last := got[len(got)-1]; !last.Done || last.FinishReason != "stop" {
+		t.Errorf("final delta = %+v, want done + finish_reason=stop", last)
+	}
+}
+
+// TestDynamicGatewayStreamFinalCandidateStillBoundedByChainBudget 最终候选
+// 免尝试超时后仍受整链预算兜底：唯一候选无限挂死时，错误必须在整链预算
+// 处浮出（晚于尝试窗、远早于无限期），不得因放宽而悬挂。
+func TestDynamicGatewayStreamFinalCandidateStillBoundedByChainBudget(t *testing.T) {
+	oldAttempt, oldBudget := autoFallbackAttemptTimeout, autoFallbackTotalBudget
+	autoFallbackAttemptTimeout, autoFallbackTotalBudget = 100*time.Millisecond, 600*time.Millisecond
+	defer func() { autoFallbackAttemptTimeout, autoFallbackTotalBudget = oldAttempt, oldBudget }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done() // 唯一候选无限挂死
+	}))
+	defer srv.Close()
+
+	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+		return GatewayConfig{
+			BaseURL:         srv.URL,
+			APIKey:          "k",
+			PreferredModels: []string{"only-model"},
+		}
+	})
+
+	start := time.Now()
+	_, err := p.Stream(context.Background(), llmbff.ChatRequest{
+		WorkspaceID: "ws",
+		Model:       "auto",
+	}, func(llmbff.Delta) bool { return true })
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Stream returned nil error, want chain-budget deadline error")
+	}
+	if elapsed < 600*time.Millisecond {
+		t.Fatalf("Stream returned in %s, want >= chain budget 600ms (attempt window must not short-circuit final candidate)",
+			elapsed.Round(time.Millisecond))
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("Stream returned in %s, want ~chain budget 600ms (must stay bounded)", elapsed.Round(time.Millisecond))
+	}
+}
