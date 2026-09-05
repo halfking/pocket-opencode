@@ -54,8 +54,16 @@ body {
   overflow: hidden;
 }
 
+/* 自管滚动 + 带 tabbar 的视图（/ai-chat 等）：内容盒直接落在 tabbar 上沿，
+   底部输入区默认 dock tabbar。列表视图（/ai、/meetings）的内部滚动区
+   自带留白，不受影响。 */
+.content.scroll-self.has-bottom-nav {
+  padding-bottom: var(--bottom-chrome-height);
+}
+
 /* 键盘在场时 tabbar 已被键盘覆盖：内容区不再为它预留底部槽位，
-   聚焦字段可以贴到键盘上沿（输入区上沿）之上。 */
+   聚焦字段可以贴到键盘上沿（输入区上沿）之上——输入区改 dock 键盘。
+   放在 scroll-self 规则之后：同特异性下键盘态必须胜出。 */
 html.kb-open .content.has-bottom-nav {
   padding-bottom: var(--space-3);
 }
