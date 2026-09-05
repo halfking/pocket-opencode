@@ -256,7 +256,8 @@ export interface EmailInvoice {
   title: string
   seller: string
   amount: number
-  currency: string
+  /** 后端 omitempty，运行时可能缺省（缺省视为 CNY） */
+  currency?: string
   invoiceNo?: string
   invoiceDate?: string
   subject: string

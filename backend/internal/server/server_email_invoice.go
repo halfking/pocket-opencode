@@ -107,9 +107,15 @@ func (s *Server) extractInvoicesAsync(emails []email.Email, userID, workspaceID 
 			}
 			inv, hit := email.ExtractInvoice(e, "")
 			if !hit && bodyEnhance && email.InvoiceCandidate(e) {
-				if body, berr := s.readCachedEmailBody(ctx, e.ID, e.UID); berr == nil && len(body) > 0 {
-					if inv, hit = email.ExtractInvoice(e, string(body)); hit {
-						log.Printf("[email/invoice] body-enhanced extraction email=%s", e.ID)
+				// 正文增强以 DB 权威 body_path 为门槛：客户端推送的 Email 结构体
+				// BodyPath 恒空（json:"-"），必须重载落库行确认缓存确由服务端写入，
+				// 防止伪造 email ID 命中他人已删邮件的残留缓存（跨租户读取）。
+				if row, gerr := s.emailStore.GetEmailByID(ctx, e.ID); gerr == nil && row != nil &&
+					row.BodyPath != "" && row.AccountID == e.AccountID {
+					if body, berr := s.readCachedEmailBody(ctx, row.ID, row.UID); berr == nil && len(body) > 0 {
+						if inv, hit = email.ExtractInvoice(e, string(body)); hit {
+							log.Printf("[email/invoice] body-enhanced extraction email=%s", e.ID)
+						}
 					}
 				}
 			}

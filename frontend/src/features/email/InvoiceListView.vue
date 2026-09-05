@@ -67,7 +67,7 @@
             v-if="bookable(inv)"
             class="act-btn primary"
             type="button"
-            :disabled="bookingId === inv.id"
+            :disabled="bookingId !== '' && bookingId !== inv.id"
             @click="book(inv)"
           >{{ bookingId === inv.id ? '入账中…' : '入账' }}</button>
           <button
@@ -95,6 +95,7 @@ import { emailApi, type EmailInvoice } from '../../api/email'
 import { financeApi } from '../../api/finance'
 import * as invoiceStore from './invoices-store'
 import { useToast } from '../../composables/useToast'
+import { runtimePlatform } from '../../native/runtime-platform'
 import { wsClient } from '../../api/websocket'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
@@ -218,7 +219,8 @@ function bookable(inv: EmailInvoice): boolean {
   return (Number(inv.amount) || 0) > 0 && (!inv.currency || inv.currency === 'CNY')
 }
 
-/** 一键入账：发票视为支出，类目沿用发票推断；入账后自动归档。 */
+/** 一键入账：发票视为支出，类目沿用发票推断；入账后自动归档。
+ *  带 note_ref 幂等键（invoice:<id>）：归档失败重试/取消归档后再入账都不会重复记账。 */
 async function book(inv: EmailInvoice) {
   if (bookingId.value) return
   bookingId.value = inv.id
@@ -229,6 +231,7 @@ async function book(inv: EmailInvoice) {
       category: inv.category || '其他',
       note: `[发票] ${inv.seller || inv.subject || '未知销售方'}${inv.invoiceNo ? `｜No.${inv.invoiceNo}` : ''}`,
       source: 'invoice',
+      note_ref: `invoice:${inv.id}`,
     })
     if (inv.status !== 'filed') {
       try {
@@ -240,7 +243,7 @@ async function book(inv: EmailInvoice) {
     }
     toast.success(`已入账 ¥${formatAmount(inv.amount)}，可在记账中查看`)
   } catch (e: any) {
-    toast.error(e?.message || '入账失败')
+    toast.error(e?.body?.error || e?.message || '入账失败')
   } finally {
     bookingId.value = ''
   }
@@ -248,10 +251,14 @@ async function book(inv: EmailInvoice) {
 
 // ── CSV 导出（当前筛选列表；带 BOM，Excel 直接打开不乱码） ────────────────
 function csvCell(v: string | number): string {
-  const s = String(v ?? '')
+  let s = String(v ?? '')
+  // 公式注入防护：Excel/WPS 会把 =+-@ 开头的单元格当公式执行（值来自入站邮件，不可信）
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
   return `"${s.replace(/"/g, '""')}"`
 }
 
+/** 原生 WebView（Android/iOS/鸿蒙）不支持 blob + a[download]，点了不会有文件产生，
+ *  明确提示而不是假报成功；web 端走标准下载。 */
 async function exportCsv() {
   const rows = invoices.value
   if (rows.length === 0) {
@@ -271,6 +278,10 @@ async function exportCsv() {
     ].map(csvCell).join(','))
   }
   const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
+  if (runtimePlatform() !== 'web') {
+    toast.error('当前环境不支持导出文件，请在网页版使用')
+    return
+  }
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   const now = new Date()
@@ -280,7 +291,8 @@ async function exportCsv() {
   document.body.appendChild(a)
   a.click()
   a.remove()
-  URL.revokeObjectURL(url)
+  // 延迟回收，规避旧 WebView 取 blob 前引用被回收的竞态
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
   toast.success(`已导出 ${rows.length} 张发票`)
 }
 
@@ -375,6 +387,6 @@ onMounted(load)
 .act-btn.primary {
   background: var(--brand-primary, #4c8dff); border-color: transparent; color: #fff;
 }
-.act-btn.primary:disabled { opacity: 0.6; }
+.act-btn.primary:disabled { opacity: 0.6; cursor: not-allowed; }
 .act-btn.danger { color: var(--danger); }
 </style>

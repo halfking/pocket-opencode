@@ -43,6 +43,11 @@ export interface FinanceCreateInput {
   category: string
   note?: string
   source?: FinanceTxSource
+  /**
+   * 幂等键（对齐后端 note_ref 列，snake_case）：同 owner+workspace 下非空且已存在时
+   * 返回既有记录而不重复入账。发票入账用 `invoice:<id>`，防归档失败重试/重复点击双记账。
+   */
+  note_ref?: string
 }
 
 export const financeApi = {
