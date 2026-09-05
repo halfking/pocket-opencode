@@ -1,0 +1,1 @@
+kimi-k3 http=502 0s {"error":"llm failed: llm-gateway chat 503: {\"error\":{\"code\":\"model_not_found\",\"gateway_debug\":{\"attempts\":null,\"kind\":\"\",\"retryable\":false,\"stage\":\"execution\",\"tried\":0},\"kind\

@@ -1,0 +1,8 @@
+data: {"done":false,"retry":"glm-5.2"}
+
+data: {"content":"pong","done":false}
+
+data: {"done":true,"finish_reason":"stop","usage":{"prompt_tokens":17,"completion_tokens":46,"total_tokens":63,"cost_usd":0.000155}}
+
+data: [DONE]
+

@@ -1,0 +1,9 @@
+[T+  0.37s] data: {"done":false,"retry":"glm-5.2"}
+[T+  0.37s] 
+[T+ 15.38s] data: {"content":"pong","done":false}
+[T+ 15.38s] 
+[T+ 15.39s] data: {"done":true,"finish_reason":"stop","usage":{"prompt_tokens":17,"completion_tokens":69,"total_tokens":86,"cost_usd":0.000224}}
+[T+ 15.39s] 
+[T+ 15.39s] data: [DONE]
+[T+ 15.39s] 
+[T+ 15.39s] === EOF ===

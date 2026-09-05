@@ -1,0 +1,9 @@
+2026/09/05 16:31:03 [SLOW] POST /api/llm/stream - 200 (8.89366525s)
+2026/09/05 16:32:23 [SLOW] POST /api/llm/stream - 200 (6.535059875s)
+2026/09/05 16:33:52 [llm-auto] kimi-k3 -> fallback glm-5.2 (context deadline exceeded)
+2026/09/05 16:33:54 [SLOW] POST /api/llm/stream - 200 (22.006502875s)
+2026/09/05 16:36:26 [llm-auto] stop fallback chain: model=kimi-k3 err=context deadline exceeded answered=false fallback="" ctx_err=<nil> budget_left=-1ms
+2026/09/05 16:36:26 [SLOW] POST /api/llm/stream - 200 (1m30.001259167s)
+2026/09/05 16:36:45 [llm-auto] no-such-model-r3 -> fallback glm-5.2 (llm-gateway stream 400: {"error":{"code":"invalid_model","message":"Model 'no-such-model-r3' is not supported by this gateway","request_id":"fecd82c8f670f8904fee4909ac636a3e","type":"invalid_request_error"}}
+2026/09/05 16:37:00 [SLOW] POST /api/llm/stream - 200 (15.402184375s)
+2026/09/05 16:37:28 [SLOW] POST /api/llm/stream - 200 (14.930028625s)

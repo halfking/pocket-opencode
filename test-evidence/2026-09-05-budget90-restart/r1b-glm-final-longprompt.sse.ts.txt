@@ -1,0 +1,37 @@
+[T+ 14.77s] data: {"content":"产品","done":false}
+[T+ 14.77s] 
+[T+ 14.77s] data: {"content":"技术","done":false}
+[T+ 14.77s] 
+[T+ 14.77s] data: {"content":"周","done":false}
+[T+ 14.77s] 
+[T+ 14.77s] data: {"content":"会","done":false}
+[T+ 14.77s] 
+[T+ 14.77s] data: {"content":"：","done":false}
+[T+ 14.77s] 
+[T+ 14.77s] data: {"content":"逐","done":false}
+[T+ 14.77s] 
+[T+ 14.77s] data: {"content":"项","done":false}
+[T+ 14.77s] 
+[T+ 14.77s] data: {"content":"复盘","done":false}
+[T+ 14.77s] 
+[T+ 14.77s] data: {"content":"多","done":false}
+[T+ 14.77s] 
+[T+ 14.92s] data: {"content":"议题","done":false}
+[T+ 14.92s] 
+[T+ 14.92s] data: {"content":"进展","done":false}
+[T+ 14.92s] 
+[T+ 14.92s] data: {"content":"，","done":false}
+[T+ 14.92s] 
+[T+ 14.92s] data: {"content":"识别","done":false}
+[T+ 14.92s] 
+[T+ 14.92s] data: {"content":"风险","done":false}
+[T+ 14.92s] 
+[T+ 14.92s] data: {"content":"，","done":false}
+[T+ 14.92s] 
+[T+ 14.92s] data: {"content":"落实行动项。","done":false}
+[T+ 14.92s] 
+[T+ 14.92s] data: {"done":true,"finish_reason":"stop","usage":{"prompt_tokens":5652,"completion_tokens":412,"total_tokens":6064,"cost_usd":0.006888}}
+[T+ 14.92s] 
+[T+ 14.92s] data: [DONE]
+[T+ 14.92s] 
+[T+ 14.92s] === EOF ===

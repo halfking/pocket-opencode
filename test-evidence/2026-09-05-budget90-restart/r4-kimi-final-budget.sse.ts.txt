@@ -1,0 +1,3 @@
+[T+ 89.98s] data: {"delta":{"done":true,"finish_reason":"error"},"error":"context deadline exceeded"}
+[T+ 89.98s] 
+[T+ 89.98s] === EOF ===
