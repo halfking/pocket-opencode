@@ -690,3 +690,111 @@ func TestDynamicGatewayChatFallsBackOnModelNotFound(t *testing.T) {
 		t.Fatalf("upstream calls = %d, want 2", n)
 	}
 }
+
+// TestDynamicGatewayStreamFallsBackOnEmptyStream 首位候选 200 干净关闭但零
+// delta（只回 [DONE]，§26.4「glm 空回复」的流式透传形态）：按候选失败处理，
+// 换下一候选重试并给出 Retry 进度帧，而不是把「200+零帧」透传给前端
+// （2026-09-05 真机纪要空流复现）。
+func TestDynamicGatewayStreamFallsBackOnEmptyStream(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		var req llmgateway.ChatRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if n == 1 {
+			if req.Model != "model-a" {
+				t.Errorf("first attempt model = %q, want model-a", req.Model)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+		if req.Model != "model-b" {
+			t.Errorf("fallback attempt model = %q, want model-b", req.Model)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"+
+				"\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n"+
+				"data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+		return GatewayConfig{
+			BaseURL:         srv.URL,
+			APIKey:          "k",
+			PreferredModels: []string{"model-a", "model-b"},
+		}
+	})
+
+	var got []llmbff.Delta
+	usage, err := p.Stream(context.Background(), llmbff.ChatRequest{
+		WorkspaceID: "ws",
+		Model:       "auto",
+	}, func(d llmbff.Delta) bool {
+		got = append(got, d)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+	if usage == nil || usage.TotalTokens != 3 {
+		t.Fatalf("usage = %+v, want total_tokens=3", usage)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("upstream calls = %d, want 2", n)
+	}
+	if len(got) < 3 {
+		t.Fatalf("fn got %d deltas, want >= 3: %+v", len(got), got)
+	}
+	if first := got[0]; first.Retry != "model-b" || first.Content != "" || first.Done {
+		t.Errorf("first delta = %+v, want retry=model-b, no content, not done", first)
+	}
+	if got[1].Content != "hello" {
+		t.Errorf("second delta content = %q, want hello", got[1].Content)
+	}
+}
+
+// TestDynamicGatewayStreamFinalCandidateEmptyStreamIsError 单一最终候选空流：
+// 无候选可换，必须以 errEmptyStreamAttempt 结构化错误收尾（handler 据此落
+// 错误终态帧），而不是 err==nil 静默零帧成功。
+func TestDynamicGatewayStreamFinalCandidateEmptyStreamIsError(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+		return GatewayConfig{
+			BaseURL:         srv.URL,
+			APIKey:          "k",
+			PreferredModels: []string{"only-model"},
+		}
+	})
+
+	var got []llmbff.Delta
+	usage, err := p.Stream(context.Background(), llmbff.ChatRequest{
+		WorkspaceID: "ws",
+		Model:       "auto",
+	}, func(d llmbff.Delta) bool {
+		got = append(got, d)
+		return true
+	})
+	if !errors.Is(err, errEmptyStreamAttempt) {
+		t.Fatalf("err = %v, want errEmptyStreamAttempt", err)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("upstream calls = %d, want 1 (final candidate, no fallback)", n)
+	}
+	if len(got) != 0 {
+		t.Fatalf("fn got %d deltas, want 0: %+v", len(got), got)
+	}
+	if usage == nil {
+		t.Fatal("usage = nil, want non-nil zero usage")
+	}
+}

@@ -246,6 +246,14 @@ var (
 // 本地回退重试；每次尝试与整链都受超时预算约束，保证错误及时浮出
 // （2026-09-05 移动端 E2E：上游挂死时 SSE 长时间零字节，前端空气泡转圈）。
 // 最终候选例外：其后已无可退候选，不叠加尝试级超时，窗口即整链剩余预算。
+
+// errEmptyStreamAttempt 标记一次上游尝试 200 干净关闭但零 delta（只回
+// [DONE]/keepalive 或非 SSE 体，§26.4「glm 空回复」的流式形态）。空流既无
+// 正文也无 usage，透传给客户端只会得到「200+零帧」——前端按空流错误兜底、
+// 纪要等收集型调用方拿到红字终态。按候选失败处理：非最终候选换候选重试，
+// 最终候选以结构化错误终态收尾（不再静默空透传）。
+var errEmptyStreamAttempt = errors.New("llm-gateway stream: empty stream (no deltas)")
+
 func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatRequest, fn func(llmbff.Delta) bool) (*llmbff.Usage, error) {
 	c, err := p.clientFor(req.WorkspaceID)
 	if err != nil {
@@ -275,14 +283,21 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		// usage）也要计入——SSE 解析在终态帧后仍会等 [DONE]，上游在此间隙
 		// 挂死时错误同样是尝试级超时，只按正文判定会误判"未作答"而重复作答。
 		answered := false
+		attemptFrames := 0
 		attemptFn := func(d llmbff.Delta) bool {
 			if d.Content != "" || d.Done {
 				answered = true
 			}
+			attemptFrames++
 			return fn(d)
 		}
 		usage, err := (&llmGatewayBFFProvider{client: c}).Stream(attemptCtx, req, attemptFn)
 		cancel()
+		// 上游零帧干净关闭（err==nil）按候选失败上抛：换候选才有产出机会，
+		// 最终候选则由 handler 落成结构化错误终态（2026-09-05 真机空流复现）。
+		if err == nil && attemptFrames == 0 {
+			err = errEmptyStreamAttempt
+		}
 		if err == nil || !streamAttemptFallbackEligible(err, answered) {
 			return usage, err
 		}
@@ -318,10 +333,15 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 // 本次尝试未给出作答（无正文、无终态帧）——上游对无 provider 的模型在流式
 // 路径上可能挂死而非快速失败（2026-09-05 实测：glm-5.2 无 provider 时
 // chat 路径 503 600ms 快速返回、stream 路径挂满 20s 尝试超时），deadline
-// 错误若不回退，auto 整链必死在首位挂死候选上、永远到不了可用候选。
+// 错误若不回退，auto 整链必死在首位挂死候选上、永远到不了可用候选；
+// ③ 空流（errEmptyStreamAttempt：200 干净关闭零 delta）——必然未作答，
+// 透传只是把空流问题原样丢给前端（2026-09-05 真机纪要空流复现）。
 // 已给出作答后超时视为答案中断，不可重试（避免重复作答）。
 func streamAttemptFallbackEligible(err error, answered bool) bool {
 	if isModelUnavailableError(err) {
+		return true
+	}
+	if errors.Is(err, errEmptyStreamAttempt) {
 		return true
 	}
 	return !answered && errors.Is(err, context.DeadlineExceeded)

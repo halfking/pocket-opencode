@@ -1,0 +1,1 @@
+{"error":"llm failed: llm-gateway chat 503: {\"error\":{\"code\":\"no_candidate\",\"kind\":\"no_candidate\",\"message\":\"No available provider for model 'abab5.5-chat'\",\"request_id\":\"0adc5b943fc497975a0d16c084d4fb4b\",\"type\":\"server_error\"}}\n"}

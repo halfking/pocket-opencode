@@ -1,0 +1,49 @@
+[T+  8.13s] data: {"content":"**","done":false}
+[T+  8.13s] 
+[T+  8.16s] data: {"content":"概括","done":false}
+[T+  8.16s] 
+[T+  8.21s] data: {"content":"：","done":false}
+[T+  8.21s] 
+[T+  8.21s] data: {"content":"**","done":false}
+[T+  8.21s] 
+[T+  8.25s] data: {"content":" 产品","done":false}
+[T+  8.25s] 
+[T+  8.25s] data: {"content":"技术","done":false}
+[T+  8.25s] 
+[T+  8.25s] data: {"content":"周","done":false}
+[T+  8.25s] 
+[T+  8.25s] data: {"content":"会","done":false}
+[T+  8.25s] 
+[T+  8.25s] data: {"content":"复盘","done":false}
+[T+  8.25s] 
+[T+  8.25s] data: {"content":"十","done":false}
+[T+  8.25s] 
+[T+  8.29s] data: {"content":"项","done":false}
+[T+  8.29s] 
+[T+  8.29s] data: {"content":"议题","done":false}
+[T+  8.29s] 
+[T+  8.33s] data: {"content":"进度","done":false}
+[T+  8.33s] 
+[T+  8.33s] data: {"content":"，","done":false}
+[T+  8.33s] 
+[T+  8.36s] data: {"content":"识别","done":false}
+[T+  8.36s] 
+[T+  8.37s] data: {"content":"风险","done":false}
+[T+  8.37s] 
+[T+  8.37s] data: {"content":"并","done":false}
+[T+  8.37s] 
+[T+  8.37s] data: {"content":"拆","done":false}
+[T+  8.37s] 
+[T+  8.37s] data: {"content":"解","done":false}
+[T+  8.37s] 
+[T+  8.37s] data: {"content":"行动","done":false}
+[T+  8.37s] 
+[T+  8.41s] data: {"content":"项。","done":false}
+[T+  8.41s] 
+[T+  8.41s] data: {"done":true,"finish_reason":"stop","usage":{"prompt_tokens":5652,"completion_tokens":594,"total_tokens":6246,"cost_usd":0.007434}}
+[T+  8.41s] 
+[T+  8.41s] data: [DONE]
+[T+  8.41s] 
+[T+  8.41s] 
+[T+  8.41s] [http:200 total:8.427016s]
+[T+  8.41s] === EOF ===

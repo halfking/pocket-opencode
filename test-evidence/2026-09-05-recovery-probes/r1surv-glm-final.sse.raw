@@ -1,0 +1,40 @@
+data: {"content":"多","done":false}
+
+data: {"content":"项目","done":false}
+
+data: {"content":"进展","done":false}
+
+data: {"content":"复盘","done":false}
+
+data: {"content":"：","done":false}
+
+data: {"content":"进度","done":false}
+
+data: {"content":"符合","done":false}
+
+data: {"content":"预期","done":false}
+
+data: {"content":"，","done":false}
+
+data: {"content":"风险","done":false}
+
+data: {"content":"拆","done":false}
+
+data: {"content":"解","done":false}
+
+data: {"content":"子","done":false}
+
+data: {"content":"任务","done":false}
+
+data: {"content":"、","done":false}
+
+data: {"content":"定","done":false}
+
+data: {"content":"人","done":false}
+
+data: {"content":"跟进。","done":false}
+
+data: {"done":true,"finish_reason":"stop","usage":{"prompt_tokens":5652,"completion_tokens":649,"total_tokens":6301,"cost_usd":0.007599}}
+
+data: [DONE]
+
