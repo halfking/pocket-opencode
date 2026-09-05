@@ -1,0 +1,5 @@
+T+3.87s data: {"content":"PREFERRED-OK","done":false}
+T+3.87s data: {"done":true,"finish_reason":"stop"}
+T+3.87s data: {"done":true,"usage":{"prompt_tokens":20,"completion_tokens":120,"total_tokens":140,"cost_usd":0.00038}}
+T+3.87s data: [DONE]
+# http=200 total=3.863544s frames=4

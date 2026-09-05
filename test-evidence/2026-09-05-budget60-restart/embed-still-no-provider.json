@@ -1,0 +1,1 @@
+{"error":"embed failed: llm-gateway embed 503: {\"error\":{\"code\":\"no_provider\",\"message\":\"No embedding provider available\",\"request_id\":\"51841436a1f220fc6c68a9fa09cadab5\",\"type\":\"server_error\"}}\n"}

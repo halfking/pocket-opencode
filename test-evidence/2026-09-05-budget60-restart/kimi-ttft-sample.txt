@@ -1,0 +1,12 @@
+# kimi-k3 TTFT 量化采样（2026-09-05 14:52~14:54, :8088 /api/llm/stream 显式 model=kimi-k3）
+# 注：原文件在 15:05~15:07 间随证据目录被外部删除，本文件自会话转录原样重建（数值未改动）。
+--- short prompt x6 ---
+short#1: ttft=6.49s total=6.49s done=True err=None
+short#2: ttft=13.58s total=14.25s done=True err=None
+short#3: ttft=11.79s total=15.52s done=True err=None
+short#4: ttft=15.16s total=15.16s done=True err=None
+short#5: ttft=14.44s total=14.44s done=True err=None
+short#6: ttft=4.49s total=4.49s done=True err=None
+--- long prompt x2 ---
+long#1: ttft=27.14s total=27.21s done=True err=None
+long#2: ttft=32.87s total=32.96s done=True err=None

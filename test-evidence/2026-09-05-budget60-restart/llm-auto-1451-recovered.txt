@@ -1,0 +1,7 @@
+# pocketd PID 80722（14:48 HEAD=12d7f3a 启动）stream 显式 glm-5.2 短 prompt（60s 预算实例首跑）
+# 三候选链逐个访问、不成环、budget_left=0s 终止 —— §21.2 #2/#4/#5 的运行时确认。
+# 注：logs/backend-dev.log 在 15:05 后被外部截断且 fd 写入丢失（§22.6 同类加重），
+# 以下三行自会话转录原样重建（14:51 实时 grep 所得）。
+2026/09/05 14:50:58 [llm-auto] glm-5.2 -> fallback minimax-m3 (context deadline exceeded)
+2026/09/05 14:51:18 [llm-auto] minimax-m3 -> fallback kimi-k3 (context deadline exceeded)
+2026/09/05 14:51:38 [llm-auto] stop fallback chain: model=kimi-k3 err=context deadline exceeded wrote_content=false fallback="claude-sonnet-5" ctx_err=<nil> budget_left=0s

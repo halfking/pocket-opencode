@@ -1,0 +1,10 @@
+T+13.49s data: {"content":"1. 会议重点讨论了AI","done":false}
+T+13.49s data: {"content":"网关的provider配置方案。\n2","done":false}
+T+13.49s data: {"content":". 评估了embedding服务的可用性","done":false}
+T+13.49s data: {"content":"及相关问题。\n3.","done":false}
+T+13.49s data: {"content":" 制定了针对移动端的降级策略","done":false}
+T+13.49s data: {"content":"以保障系统体验。","done":false}
+T+13.49s data: {"done":true,"finish_reason":"stop"}
+T+13.49s data: {"done":true,"usage":{"prompt_tokens":865,"completion_tokens":329,"total_tokens":1194,"cost_usd":0.001852}}
+T+13.49s data: [DONE]
+# frames=9 wall=13.49s
