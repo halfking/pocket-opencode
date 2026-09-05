@@ -1,5 +1,5 @@
 import { useAuthStore } from '../stores/auth'
-import { ApiError } from './http'
+import { ApiError, assertNotHTML } from './http'
 
 const API_BASE = import.meta.env.VITE_API_BASE || ""
 
@@ -31,8 +31,10 @@ async function authFetch(input: string, init: RequestInit = {}): Promise<Respons
     }
     throw new ApiError(response.status, message)
   }
-  
-  return response
+
+  // 2xx 但为 HTML（如移动端漏注入 API base 时 Capacitor 返回 index.html）
+  // 也要拦下，否则调用方 res.json() 只会抛难懂的 "Unexpected token"。
+  return assertNotHTML(response)
 }
 
 export interface Task {

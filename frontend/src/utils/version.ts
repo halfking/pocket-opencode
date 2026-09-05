@@ -1,4 +1,5 @@
 import { runtimePlatform } from '../native/runtime-platform'
+import { assertNotHTML } from '../api/jsonGuard'
 
 // 应用版本配置
 export const APP_VERSION = {
@@ -30,7 +31,7 @@ export interface CheckUpdateResponse {
 // 检查更新
 export async function checkUpdate(): Promise<CheckUpdateResponse> {
   const API_BASE = import.meta.env.VITE_API_BASE || ''
-  
+
   const response = await fetch(`${API_BASE}/api/app/check-update`, {
     method: 'POST',
     headers: {
@@ -48,7 +49,9 @@ export async function checkUpdate(): Promise<CheckUpdateResponse> {
     throw new Error('Failed to check update')
   }
 
-  return response.json()
+  // 裸 fetch 也可能拿到 HTML（移动端漏注入 API base 时 Capacitor 返回 index.html），
+  // 统一经 assertNotHTML 换成可定位的错误。
+  return assertNotHTML(response).json()
 }
 
 /** Only Android currently has an APK delivery channel. iOS uses App Store
