@@ -1203,3 +1203,70 @@ programmatic `el.click()` 对部分 Vue 组件链不可靠，用 CDP
    §16.6 #1 悬空态、embed/DSN 外部项（§21.6）。
 
 ---
+
+## 26. 2026-09-05 会话补充（十三）：start-dev.sh 端口化修复 + 90s 预算实例重启 + 网关新错误形状回退缺口修复
+
+> 本轮执行 §25.6 遗留 #2（重启带入 90s 预算）。过程中发现并修复两个
+> 独立缺陷：启动脚本的姊妹仓误杀，与网关改版后的回退失配。零密钥。
+
+### 26.1 start-dev.sh 两缺陷修复（重启前置）
+
+| # | 缺陷 | 修复 |
+|---|---|---|
+| 1 | `killall pocketd` 按名全杀——本机 :8090 常驻**姊妹仓** `ai-native-tools/openpocket` 的同名 pocketd（本轮实测确认，§24 曾误记为"本仓 PG 形态"），重启本仓会误伤它 | 停止/验证/停止提示三处全部改为按 `POCKET_HTTP_PORT` 用 lsof 精确定位 |
+| 2 | 启动验证固定 `sleep 2`——16:18 现场实测从拉起到 listening 耗 8s+，检查必然失败、误报「Backend 启动失败」（进程实际正常） | 轮询 healthz（最多 30s），PID 按端口取 |
+
+修复后从仓库根执行全套通过：按端口停旧 → 新实例 → 健康检查 → 登录
+冒烟 → 实例列表；:8090 姊妹仓进程全程无恙。`bash -n` 通过。
+
+### 26.2 回退缺口：网关新错误形状不触发回退（已修复）
+
+重启后线上复验发现：显式 `kimi-k3`（无 provider）`/api/llm/chat` 直接
+503 透传、**未按设计回退**到 preferred 下一候选。根因：网关对无 provider
+模型的错误形状已改版——`code` 从 `no_candidate` 改为 **`model_not_found`**、
+`kind` 用复数 **`no_candidates`**（修复前实测体存档 §22.3 显式 glm 502
+同形状，当时未对照回退设计），而 `isModelUnavailableError` 只认
+`code=="no_candidate"`/`"invalid_model"`。
+
+修复：匹配扩展为 `code∈{no_candidate(经 isNoCandidateError), invalid_model,
+model_not_found} ∪ kind=="no_candidates"`。新增测试
+`TestIsModelUnavailableErrorGatewayShapes`（四个真实形状用例，含反例
+rate_limit_exceeded 不得误判）与
+`TestDynamicGatewayChatFallsBackOnModelNotFound`（显式无货 model → Chat
+回退到 preferred 下一候选成功）。
+
+### 26.3 重启与运行时复验（PID 16346：90s 预算 + 全部修复）
+
+- **显式 kimi-k3（无 provider）→ 回退 glm-5.2 成功**：`{"content":"pong",
+  "model":"glm-5.2"}` 200（修复前此处 503）——缺口修复线上验证 ✅；
+- chat auto → glm 直达 200；stream auto → SSE 正常（content 帧 + stop +
+  usage + `[DONE]`），**零 retry 帧**（preferredModels 首选命中不触碰
+  回退链），`[llm-auto]` 日志零条，行为符合设计 ✅；
+- `/api/embed` 上游仍 `no_provider`（三缺口中唯一未恢复项，部署侧）。
+- 存档：`test-evidence/2026-09-05-restart-and-fallback-shapes/`。
+
+### 26.4 上游状态观察（日内反复横跳）
+
+14:47 三通道全灭（§24.1）→ 14:55 glm/minimax 恢复（§24.1）→ 15:00
+全灭（§25.1）→ 16:14 glm 空回复 30s + kimi no_candidates → 16:20 glm
+恢复、kimi 仍 no_candidates。**kimi-k3 provider 至今未恢复**（§17.3
+时可用），网关侧 provider 配置稳定性属部署侧观察项；本仓链路对各形态
+（快速失败/挂死/空回复）均以结构化错误或回退收敛，无悬挂。
+
+### 26.5 回归记录
+
+- 定向：回退链全家（含新增 2 测试）全绿（2.3s）。
+- `go test ./...`：全绿零失败（`full-suite.txt` 存档）。
+- `bash -n backend/start-dev.sh` 通过；重启后 healthz/login/config/
+  chat/stream 全通。
+
+### 26.6 遗留（下一轮续接，增量更新 §25.6）
+
+1. embed provider：唯一剩余上游缺口（部署侧，Issue #14 范围）。
+2. kimi-k3 provider 恢复：网关侧待配（§26.4）；恢复后 auto 链第三候选
+   重新可用。
+3. Issue #14（DSN 轮换 + 注入源 + 共享租户 gateway key 评估）：仍阻塞
+   在 halfking（本轮未复查，§22.1/§25.1 结论沿用）。
+4. 90s 预算下「2 死候选 + 慢最终候选」的确定性成功场景：glm 恢复后
+   auto 直达、回退链少被自然触发，留观；§22.4 种子方法已备可随时复验。
+5. 沿用：§16.6 #1 悬空态观察；kimi 时延参数化议题（§25.6 #5）。

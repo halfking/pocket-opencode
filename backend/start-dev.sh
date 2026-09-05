@@ -10,13 +10,6 @@ echo "=========================================="
 echo "启动 OpenCode Pocket Backend (开发模式)"
 echo "=========================================="
 
-# 停止已有进程
-if pgrep -f pocketd > /dev/null; then
-    echo "停止现有 backend 进程..."
-    killall pocketd 2>/dev/null || true
-    sleep 1
-fi
-
 # 设置环境变量
 export POCKET_DEV_AUTH=true
 # 349a14e 认证加固后：legacy 本地 JWT 路径需显式 POCKET_AUTH_LEGACY_ONLY=true，
@@ -25,6 +18,16 @@ export POCKET_AUTH_LEGACY_ONLY="${POCKET_AUTH_LEGACY_ONLY:-true}"
 export POCKET_JWT_SECRET=test-secret-key-for-phase7-validation
 export POCKET_HTTP_PORT=8088
 export POCKET_DB_PATH=./data/pocket.sqlite
+
+# 停止已有实例：只杀监听 POCKET_HTTP_PORT 的进程。不能 killall pocketd——
+# 姊妹仓（ai-native-tools/openpocket）有同名进程，2026-09-05 实测其 pocketd
+# 常驻本机 :8090，按名全杀会误伤。
+OLD_PIDS="$(lsof -nP -tiTCP:"$POCKET_HTTP_PORT" -sTCP:LISTEN 2>/dev/null || true)"
+if [ -n "$OLD_PIDS" ]; then
+    echo "停止监听端口 $POCKET_HTTP_PORT 的现有 backend (PID: $(echo $OLD_PIDS | tr '\n' ' '))..."
+    kill $OLD_PIDS 2>/dev/null || true
+    sleep 1
+fi
 
 # dev 登录冒烟凭据：脚本原先从不导出 POCKET_AUTH_PASS，登录测试一直发空密码。
 # 未显式设置时回退到后端 dev 缺省（admin / Veritrans&9527）。
@@ -82,9 +85,18 @@ nohup ./pocketd > ../logs/backend-dev.log 2>&1 &
 
 sleep 2
 
-# 验证启动
-if pgrep -f pocketd > /dev/null; then
-    PID=$(pgrep -f pocketd | head -1)
+# 验证启动（按端口找 PID：本机可能并存其他仓库的同名 pocketd 进程；
+# 轮询 healthz——初始化实测可耗 8s+（16:18 现场），固定 sleep 2 会误报失败）
+PID=""
+for _ in $(seq 1 30); do
+    PID="$(lsof -nP -tiTCP:"$POCKET_HTTP_PORT" -sTCP:LISTEN 2>/dev/null | head -1)"
+    if [ -n "$PID" ] && curl -sf "http://localhost:$POCKET_HTTP_PORT/healthz" > /dev/null 2>&1; then
+        break
+    fi
+    PID=""
+    sleep 1
+done
+if [ -n "$PID" ]; then
     echo "✅ Backend 启动成功 (PID: $PID)"
     
     # 健康检查
@@ -135,7 +147,7 @@ if pgrep -f pocketd > /dev/null; then
     echo ""
     echo "日志文件: ../logs/backend-dev.log"
     echo "查看日志: tail -f ../logs/backend-dev.log"
-    echo "停止服务: killall pocketd"
+    echo "停止服务: lsof -tiTCP:$POCKET_HTTP_PORT -sTCP:LISTEN | xargs kill"
     echo ""
 else
     echo "❌ Backend 启动失败"

@@ -1,0 +1,22 @@
+# 2026-09-05 16:2x PID 16346 (c45e825 + fallback-shapes fix, start-dev.sh port-scoped restart)
+## chat explicit kimi-k3 (no provider) -> fallback to glm-5.2 (was 503 passthrough before fix)
+{"content":"pong","model":"glm-5.2"}
+
+HTTP 200 3.651425s
+## chat auto -> glm direct
+{"content":"pong","model":"glm-5.2"}
+
+HTTP 200 2.822256s
+## stream auto -> SSE frames
+data: {"content":"PONG","done":false}
+
+data: {"done":true,"finish_reason":"stop","usage":{"prompt_tokens":15,"completion_tokens":71,"total_tokens":86,"cost_usd":0.000228}}
+
+data: [DONE]
+
+
+HTTP 200 7.850274s
+## embed (expected upstream no_provider, gateway-side gap)
+{"error":"embed failed: llm-gateway embed 503: {\"error\":{\"code\":\"no_provider\",\"message\":\"No embedding provider available\",\"request_id\":\"4f321f94ce89a087459e3bd62f310c4c\",\"type\":\"server_error\"}}\n"}
+
+HTTP 502

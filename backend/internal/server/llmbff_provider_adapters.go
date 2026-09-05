@@ -68,6 +68,10 @@ func isNoCandidateError(err error) bool {
 // 是 400 invalid_model 而非 503 no_candidate（2026-09-05 E2E 实测：preferred
 // 首位设为不存在模型时整链直接报错、不回退）。二者对用户语义等价——
 // 「这个 model 现在没货」，都应触发 preferred 下一候选的回退重试。
+// 2026-09-05 下午网关侧改版后再添两个同义形状（显式 kimi-k3 无 provider
+// 实测 503 不回退暴露）：code=="model_not_found" 与 kind=="no_candidates"
+// （复数）——网关对无 provider 模型的 code 已从 no_candidate 改为
+// model_not_found，kind 用复数 no_candidates。
 func isModelUnavailableError(err error) bool {
 	if isNoCandidateError(err) {
 		return true
@@ -84,7 +88,9 @@ func isModelUnavailableError(err error) bool {
 	if jerr := json.Unmarshal([]byte(msg[idx:]), &body); jerr != nil {
 		return false
 	}
-	return body.Error.Code == "invalid_model"
+	return body.Error.Code == "invalid_model" ||
+		body.Error.Code == "model_not_found" ||
+		body.Error.Kind == "no_candidates"
 }
 
 // pickFallbackModel 从 workspace 的 preferred 列表里挑一个「在 catalog 内且

@@ -607,3 +607,86 @@ func TestDynamicGatewayStreamFinalCandidateStillBoundedByChainBudget(t *testing.
 		t.Fatalf("Stream returned in %s, want ~chain budget 600ms (must stay bounded)", elapsed.Round(time.Millisecond))
 	}
 }
+
+// TestIsModelUnavailableErrorGatewayShapes 网关侧错误形状改版回归：
+// 2026-09-05 下午实测显式 kimi-k3（无 provider）chat 503 直接透传、不回退——
+// 网关对无 provider 模型的 code 已从 "no_candidate" 改为 "model_not_found"、
+// kind 用复数 "no_candidates"，旧匹配两形态都不认识。三个新形状必须视为
+// 「该 model 无货」触发 preferred 回退。
+func TestIsModelUnavailableErrorGatewayShapes(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"503 model_not_found + kind no_candidates (2026-09-05 observed)", errors.New(
+			`llm-gateway chat 503: {"error":{"code":"model_not_found","gateway_debug":{"attempts":null,"kind":"","retryable":false,"stage":"execution","tried":0},"kind":"no_candidates","message":"No available provider for model 'kimi-k3'. All 0 candidates failed.","request_id":"x","type":"server_error"}}`,
+		), true},
+		{"code model_not_found without kind", errors.New(
+			`llm-gateway chat 503: {"error":{"code":"model_not_found","message":"nope"}}`,
+		), true},
+		{"kind no_candidates with other code", errors.New(
+			`llm-gateway chat 503: {"error":{"code":"whatever","kind":"no_candidates"}}`,
+		), true},
+		{"unrelated error keeps old behavior", errors.New(
+			`llm-gateway chat 503: {"error":{"code":"rate_limit_exceeded","kind":"rate_limit_error"}}`,
+		), false},
+	}
+	for _, tc := range cases {
+		if got := isModelUnavailableError(tc.err); got != tc.want {
+			t.Errorf("%s: isModelUnavailableError = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestDynamicGatewayChatFallsBackOnModelNotFound 显式 model 无 provider
+// （网关新版 503 model_not_found/no_candidates 形状）时 Chat 路径同样回退
+// 到 preferred 下一候选，而不是把错误直接透传（2026-09-05 16:20 实测缺口）。
+func TestDynamicGatewayChatFallsBackOnModelNotFound(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		var req llmgateway.ChatRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if n == 1 {
+			if req.Model != "model-a" {
+				t.Errorf("first attempt model = %q, want model-a", req.Model)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"error":{"code":"model_not_found","kind":"no_candidates",`+
+				`"message":"No available provider for model 'model-a'. All 0 candidates failed.","request_id":"t","type":"server_error"}}`)
+			return
+		}
+		if req.Model != "model-b" {
+			t.Errorf("fallback attempt model = %q, want model-b", req.Model)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"pong"}}],`+
+			`"model":"model-b","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer srv.Close()
+
+	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+		return GatewayConfig{
+			BaseURL:         srv.URL,
+			APIKey:          "k",
+			PreferredModels: []string{"model-a", "model-b"},
+		}
+	})
+
+	resp, err := p.Chat(context.Background(), llmbff.ChatRequest{
+		WorkspaceID: "ws",
+		Model:       "model-a",
+		Messages:    []llmbff.Message{{Role: "user", Content: "ping"}},
+	})
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if resp.Content != "pong" {
+		t.Fatalf("content = %q, want pong", resp.Content)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("upstream calls = %d, want 2", n)
+	}
+}
