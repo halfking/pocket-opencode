@@ -56,7 +56,17 @@ async function httpOnce<T = any>(path: string, opts: RequestInit = {}): Promise<
     } catch {
       parsedBody = undefined
     }
-    throw new ApiError(res.status, `Request failed: ${res.statusText}`, parsedBody)
+    // 服务端结构化错误统一为 {error: "..."}：直接作为 message，
+    // 让各视图既有 catch 的 e.message 展示可读原因而非 "Request failed: Internal Server Error"
+    const serverMsg =
+      typeof parsedBody?.error === 'string' && parsedBody.error.trim()
+        ? parsedBody.error.trim()
+        : ''
+    throw new ApiError(
+      res.status,
+      serverMsg || `Request failed: ${res.statusText}`,
+      parsedBody,
+    )
   }
   // 204 No Content
   if (res.status === 204) return undefined as unknown as T

@@ -144,10 +144,13 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useOpenCodeStore } from '../../stores/opencode'
 import type { OpenCodeSession, HistoryEvent } from '../../stores/opencode'
+import { useToast } from '../../composables/useToast'
+import { downloadTextFile, DownloadUnsupportedError } from '../../utils/download'
 
 const router = useRouter()
 const route = useRoute()
 const openCodeStore = useOpenCodeStore()
+const toast = useToast()
 
 const session = ref<OpenCodeSession | null>(null)
 const history = ref<HistoryEvent[]>([])
@@ -228,7 +231,7 @@ async function loadSummary() {
   }
 }
 
-function exportSummary() {
+async function exportSummary() {
   if (!session.value) return
 
   const content = `
@@ -252,14 +255,21 @@ ${summary.value || '暂无摘要'}
 ${history.value.map(e => `- [${formatTime(e.timestamp)}] ${getActorName(e.actor)}: ${e.content}`).join('\n')}
   `.trim()
 
-  // 下载为文件
-  const blob = new Blob([content], { type: 'text/markdown' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `session-${sessionId.value}.md`
-  a.click()
-  URL.revokeObjectURL(url)
+  // 下载为文件（原生端明确提示不支持，不走假成功路径）
+  try {
+    await downloadTextFile({
+      filename: `session-${sessionId.value}.md`,
+      content,
+      mimeType: 'text/markdown',
+    })
+    toast.success('已导出')
+  } catch (e) {
+    if (e instanceof DownloadUnsupportedError) {
+      toast.error(e.message)
+      return
+    }
+    toast.error('导出失败')
+  }
 }
 
 function goBack() {

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/mail"
 	"os"
@@ -538,6 +539,8 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 	// Best-effort：记账失败不影响总结返回。
 	autoTx := []*finance.Transaction{}
 	bookkeeping := ""
+	// 笔记内容可能已修改：本次解析与已入账记录不一致时提示前端（金额/方向以记账页为准）
+	bookkeepingMismatch := false
 	if s.financeStore != nil {
 		if parsed := finance.NewRecognizer().Parse(found.Snippet); parsed != nil {
 			noteRef := found.Title
@@ -555,6 +558,10 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 			} else if existing != nil {
 				autoTx = append(autoTx, existing)
 				bookkeeping = "existing"
+				// 金额按分精度比较，规避浮点噪声；方向不一致同样提示
+				if noteBookkeepingMismatch(parsed.Type, parsed.Amount, existing) {
+					bookkeepingMismatch = true
+				}
 			} else if tx, cerr := s.financeStore.CreateScoped(finance.CreateTransactionRequest{
 				Type:     parsed.Type,
 				Amount:   parsed.Amount,
@@ -573,12 +580,23 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"summary":      summary,
-		"model":        resp.Model,
-		"usage":        resp.Usage,
-		"transactions": autoTx,
-		"bookkeeping":  bookkeeping,
+		"summary":              summary,
+		"model":                resp.Model,
+		"usage":                resp.Usage,
+		"transactions":         autoTx,
+		"bookkeeping":          bookkeeping,
+		"bookkeeping_mismatch": bookkeepingMismatch,
 	})
+}
+
+// noteBookkeepingMismatch — 重新总结解析出的记账与该笔记已入账记录是否不一致
+// （金额按分精度比较规避浮点噪声；收支方向不同同样算不一致）。用于前端提示
+// 「笔记内容与已入账记录不一致」，由用户到记账页核对，不做静默改账。
+func noteBookkeepingMismatch(parsedType string, parsedAmount float64, tx *finance.Transaction) bool {
+	if tx == nil {
+		return false
+	}
+	return math.Round(parsedAmount*100) != math.Round(tx.Amount*100) || parsedType != tx.Type
 }
 
 // handleEmailOAuthCallback — GET /callback/email/oauth

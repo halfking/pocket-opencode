@@ -95,7 +95,7 @@ import { emailApi, type EmailInvoice } from '../../api/email'
 import { financeApi } from '../../api/finance'
 import * as invoiceStore from './invoices-store'
 import { useToast } from '../../composables/useToast'
-import { runtimePlatform } from '../../native/runtime-platform'
+import { downloadTextFile, DownloadUnsupportedError } from '../../utils/download'
 import { wsClient } from '../../api/websocket'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
@@ -257,8 +257,7 @@ function csvCell(v: string | number): string {
   return `"${s.replace(/"/g, '""')}"`
 }
 
-/** 原生 WebView（Android/iOS/鸿蒙）不支持 blob + a[download]，点了不会有文件产生，
- *  明确提示而不是假报成功；web 端走标准下载。 */
+/** 原生端不支持导出由 downloadTextFile 统一抛 DownloadUnsupportedError，调用方提示。 */
 async function exportCsv() {
   const rows = invoices.value
   if (rows.length === 0) {
@@ -277,23 +276,22 @@ async function exportCsv() {
       inv.status === 'filed' ? '已归档' : '待整理',
     ].map(csvCell).join(','))
   }
-  const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
-  if (runtimePlatform() !== 'web') {
-    toast.error('当前环境不支持导出文件，请在网页版使用')
-    return
-  }
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
   const now = new Date()
   const pad = (n: number) => String(n).padStart(2, '0')
-  a.href = url
-  a.download = `openpocket-invoices-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}.csv`
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  // 延迟回收，规避旧 WebView 取 blob 前引用被回收的竞态
-  setTimeout(() => URL.revokeObjectURL(url), 10_000)
-  toast.success(`已导出 ${rows.length} 张发票`)
+  try {
+    await downloadTextFile({
+      filename: `openpocket-invoices-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}.csv`,
+      content: '\uFEFF' + lines.join('\r\n'),
+      mimeType: 'text/csv;charset=utf-8',
+    })
+    toast.success(`已导出 ${rows.length} 张发票`)
+  } catch (e) {
+    if (e instanceof DownloadUnsupportedError) {
+      toast.error(e.message)
+      return
+    }
+    toast.error('导出失败')
+  }
 }
 
 async function remove(inv: EmailInvoice) {

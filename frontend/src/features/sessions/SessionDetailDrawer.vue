@@ -20,6 +20,7 @@ import {
   type RoundCompletedData,
   type SessionStats,
 } from './useSessionEvents'
+import { downloadTextFile, DownloadUnsupportedError } from '../../utils/download'
 
 const props = defineProps<{
   visible: boolean
@@ -61,8 +62,9 @@ function onVisibleChange(v: boolean): void {
   emit('update:visible', v)
 }
 
-/** 导出 markdown 并触发下载（迁移自旧 SessionDetailView.exportSummary）。 */
-function exportMarkdown(): void {
+/** 导出 markdown 并触发下载（迁移自旧 SessionDetailView.exportSummary）。
+ *  原生端由 downloadTextFile 抛 DownloadUnsupportedError，明确提示而非假成功。 */
+async function exportMarkdown(): Promise<void> {
   const content = buildSessionMarkdown({
     title: props.sessionTitle || props.sessionId,
     sessionId: props.sessionId,
@@ -70,15 +72,17 @@ function exportMarkdown(): void {
     rounds: props.rounds,
   })
   try {
-    const blob = new Blob([content], { type: 'text/markdown' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `session-${props.sessionId}.md`
-    a.click()
-    URL.revokeObjectURL(url)
+    await downloadTextFile({
+      filename: `session-${props.sessionId}.md`,
+      content,
+      mimeType: 'text/markdown',
+    })
     toast.success('已导出')
-  } catch {
+  } catch (e) {
+    if (e instanceof DownloadUnsupportedError) {
+      toast.error(e.message)
+      return
+    }
     toast.error('导出失败')
   }
 }

@@ -58,6 +58,9 @@
             <p class="summary-text">{{ summary }}</p>
             <div v-if="summaryTxs.length > 0" class="summary-txs">
               <div class="txs-title">{{ bookkeeping === 'existing' ? '已自动入账（此前已记，未重复）' : '已自动入账' }}</div>
+              <p v-if="bookkeepingMismatch" class="txs-mismatch" role="note">
+                ⚠ 笔记内容与已入账记录不一致（金额或收支方向），请到记账页核对调整
+              </p>
               <div v-for="tx in summaryTxs" :key="tx.id" class="tx-line">
                 <span>{{ tx.type === 'income' ? '收入' : '支出' }} · {{ tx.category }}</span>
                 <span class="tx-amt" :class="tx.type">
@@ -242,12 +245,15 @@ const summary = ref('')
 const summaryTxs = ref<Array<{ id: string; type: string; amount: number; category: string }>>([])
 // created=本次新入账；existing=该笔记此前已入账，本次返回既有记录（按笔记幂等）
 const bookkeeping = ref<'' | 'created' | 'existing'>('')
+// existing 且本次解析的金额/方向与已入账记录不一致（笔记内容改过）时提示核对
+const bookkeepingMismatch = ref(false)
 const summaryError = ref('')
 
 interface NoteSummarizeResp {
   summary?: string
   transactions?: Array<{ id: string; type: string; amount: number; category: string }>
   bookkeeping?: 'created' | 'existing'
+  bookkeeping_mismatch?: boolean
 }
 
 async function summarize() {
@@ -259,6 +265,7 @@ async function summarize() {
     summary.value = res.summary || ''
     summaryTxs.value = res.transactions ?? []
     bookkeeping.value = res.bookkeeping ?? ''
+    bookkeepingMismatch.value = res.bookkeeping_mismatch ?? false
     if (!summary.value) summaryError.value = '模型未返回内容，请稍后重试'
   } catch (e: any) {
     summaryError.value = e?.message || '总结生成失败（需要已配置 LLM 网关）'
@@ -460,6 +467,10 @@ function formatTime(ms: number) {
   border-top: 1px dashed var(--border);
 }
 .txs-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
+.txs-mismatch {
+  margin: 0 0 6px; font-size: 12px; line-height: 1.6;
+  color: var(--warning, #d97706);
+}
 .tx-line {
   display: flex; align-items: center; justify-content: space-between;
   font-size: 12px; color: var(--text-secondary); padding: 3px 0;
