@@ -82,6 +82,11 @@ class LocalDB {
     if (isWeb) {
       console.info('[localDB] web fallback runtime: no-encryption (browser/HarmonyOS Phase A)')
       await initSqliteWeb()
+      // Web 端必须显式 initWebStore：插件的 jeepSqliteElement 引用只在
+      // initWebStore() 里捕获，漏掉这一步则后续所有操作都抛
+      // "The jeep-sqlite element is not present in the DOM!"，浏览器上
+      // 本地库永远无法建立（ISSUES #19 深度遍历排障中定位）。
+      await this.sqlite.initWebStore()
     }
 
     // ✅ 关键修复：在 createConnection 之前先调用 setEncryptionSecret
