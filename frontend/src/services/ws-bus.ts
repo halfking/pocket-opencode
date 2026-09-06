@@ -40,14 +40,15 @@ let _initialized = false
  * 把服务器推送的 note 字段规整成 LocalNote（兼容 snake_case / camelCase）。
  * 不写磁盘：本地已有这条笔记的原始数据，只更新内存/索引。
  */
-function normalizeTags(value: ServerNotePayload['tags']): string[] | null {
+function normalizeTags(value: ServerNotePayload['tags'], depth = 0): string[] | null {
+  if (depth > 10) return null  // 防止恶意构造的深层嵌套字符串导致栈溢出
   if (Array.isArray(value)) {
     const tags = value.filter((tag): tag is string => typeof tag === 'string')
     return tags.length > 0 ? tags : null
   }
   if (typeof value !== 'string' || !value.trim()) return null
   try {
-    return normalizeTags(JSON.parse(value))
+    return normalizeTags(JSON.parse(value), depth + 1)
   } catch {
     return null
   }

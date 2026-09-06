@@ -114,6 +114,8 @@ func (s *PGStore) CreateScopedWithStatus(req CreateTransactionRequest, ownerID, 
 		if existing, gerr := s.getByNoteRef(ctx, req.NoteRef, ownerID, workspaceID); gerr == nil && existing != nil {
 			return existing, false, nil
 		}
+		// 回查失败：冲突时记录应存在，理论上不应到达此分支（除非并发删除）
+		return nil, false, fmt.Errorf("insert conflict on note_ref=%s but record not found on retry", req.NoteRef)
 	}
 	return tx, true, nil
 }

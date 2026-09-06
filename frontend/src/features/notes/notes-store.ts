@@ -406,14 +406,15 @@ function readAssetTimestamp(value: unknown, fallback: number): number {
   }
   return fallback
 }
-function parseTags(value: string | string[] | null | undefined): string[] | null {
+function parseTags(value: string | string[] | null | undefined, depth = 0): string[] | null {
+  if (depth > 10) return null  // 防止恶意构造的深层嵌套字符串导致栈溢出
   if (Array.isArray(value)) {
     const tags = value.filter((tag): tag is string => typeof tag === 'string')
     return tags.length > 0 ? tags : null
   }
   if (typeof value !== 'string' || !value.trim()) return null
   try {
-    return parseTags(JSON.parse(value))
+    return parseTags(JSON.parse(value), depth + 1)
   } catch {
     return null
   }

@@ -108,7 +108,11 @@ func (s *Server) handleCreateFinance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+	if created {
+		w.WriteHeader(http.StatusCreated) // 201: 真实新建
+	} else {
+		w.WriteHeader(http.StatusOK) // 200: 幂等命中
+	}
 	response := struct {
 		*finance.Transaction
 		Created bool `json:"created"`

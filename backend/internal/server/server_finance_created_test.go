@@ -56,10 +56,10 @@ func TestFinanceCreateScoped_CreatedField(t *testing.T) {
 		t.Errorf("first create: unexpected data amount=%v note_ref=%s", res1.Amount, res1.NoteRef)
 	}
 
-	// 同幂等键重复入账：created=false，返回同一记录
+	// 同幂等键重复入账：created=false，返回同一记录，HTTP 200
 	rr2 := serveWorkspaceJSON(t, h, http.MethodPost, "/api/finance", tokenA, payload1)
-	if rr2.Code != http.StatusCreated {
-		t.Fatalf("second create status=%d body=%s", rr2.Code, rr2.Body.String())
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("second create status=%d (expected 200), body=%s", rr2.Code, rr2.Body.String())
 	}
 	var res2 struct {
 		finance.Transaction
