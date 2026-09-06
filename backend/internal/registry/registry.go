@@ -22,6 +22,9 @@ type InstanceConfig struct {
 	APIBaseURL  string `json:"apiBaseURL"`
 	ConfigPath  string `json:"configPath,omitempty"`
 	Environment string `json:"environment"`
+	// WorkspaceID 声明该实例归属的租户工作区；空 = 运维共享资源（写路径不可用）。
+	// 与 model.PocketInstance.WorkspaceID 的 json tag 保持一致。
+	WorkspaceID string `json:"workspaceId,omitempty"`
 
 	// —— 迁移方案扩展（可选，发现/注册时填充）——
 	Hostname string            `json:"hostname,omitempty"` // 主机名
@@ -313,7 +316,7 @@ func (r *Registry) LoadFromConfig(configs []InstanceConfig) error {
 			LastHeartbeatAt: time.Now().UTC().Format(time.RFC3339),
 			APIBaseURL:      cfg.APIBaseURL,
 			ConfigPath:      cfg.ConfigPath,
-			WorkspaceID:     "",
+			WorkspaceID:     cfg.WorkspaceID,
 		}
 		applyConfigFields(instance, cfg)
 		if instance.Origin == "" {

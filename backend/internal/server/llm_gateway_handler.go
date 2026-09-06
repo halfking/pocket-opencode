@@ -260,7 +260,7 @@ func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, "baseURL required", http.StatusBadRequest)
 			return
 		}
-		if err := validateOutboundURL(req.BaseURL); err != nil {
+		if err := validateGatewayURL(req.BaseURL); err != nil {
 			http.Error(w, "invalid baseURL: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -302,9 +302,11 @@ func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 		}
+		// push 到上游 OpenCode 实例是尽力而为的下游同步：配置本身已持久化，
+		// push 失败（如未配 POCKET_OPENCODE_CONFIG_TOKEN、实例离线）不应让
+		// 保存请求整体失败——否则设置页永远报错且缓存不刷新（2026-09-07 E2E）。
 		if err := s.pushConfigToOpenCode(r, workspaceID, current); err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
+			log.Printf("[llm-gateway] push config to opencode instances failed (non-fatal): %v", err)
 		}
 		if s.llmGWCache != nil {
 			s.llmGWCache.replace(workspaceID, current)

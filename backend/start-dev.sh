@@ -63,7 +63,8 @@ export POCKET_OPENCODE_INSTANCES='[
   {
     "id": "local-opencode",
     "displayName": "本地 OpenCode 实例",
-    "baseURL": "http://localhost:4096",
+    "apiBaseURL": "http://localhost:4096",
+    "workspaceId": "default",
     "environment": "development",
     "capabilities": ["session", "summary", "pty"]
   }
