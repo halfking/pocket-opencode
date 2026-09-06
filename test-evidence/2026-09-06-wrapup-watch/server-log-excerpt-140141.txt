@@ -1,0 +1,12 @@
+# 补录:14:20:51 并行方按端口重启 :8088 时 start-dev.sh 以 `>` 覆写
+# logs/backend-dev.log,以下关键行在我方实例(PID 95890)日志中已被冲掉,
+# 按读数时点逐字补录(观测时刻 14:01~14:02,与 App ai-chat terra 挂相配套):
+
+2026/09/06 14:01:41 [llm-auto] stop fallback chain: model=gpt-5.6-terra err=context deadline exceeded answered=false fallback="" ctx_err=<nil> budget_left=0s
+2026/09/06 14:01:41 [SLOW] POST /api/llm/stream - 200 (1m30.000416458s)
+
+# 上下文行(同一日志):
+2026/09/06 13:55:21 [SLOW] POST /api/llm/stream - 200 (1.976844208s)     # API 级 terra SSE 短 prompt
+2026/09/06 13:55:39 [SLOW] POST /api/llm/stream - 200 (2.438491167s)     # API 级 terra SSE 长 prompt(7122 tok)
+2026/09/06 13:59:24 [SLOW] POST /api/llm/chat - 502 (520.359042ms)       # 守候 glm(彼时 BFF 仍为我方实例)
+2026/09/06 13:59:28 [SLOW] POST /api/llm/chat - 502 (515.859791ms)       # 守候 auto

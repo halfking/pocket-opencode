@@ -1,0 +1,73 @@
+[T+  1.61s] data: {"content":"口","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"袋","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"笔","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"记","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"是一","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"款","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"便","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"捷","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"高","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"效","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"的","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"随","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"身","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"记录","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"应用","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"，","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"支持","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"随","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"时","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"记录","done":false}
+[T+  1.61s] 
+[T+  1.61s] data: {"content":"灵","done":false}
+[T+  1.61s] 
+[T+  1.63s] data: {"content":"感","done":false}
+[T+  1.63s] 
+[T+  1.65s] data: {"content":"、","done":false}
+[T+  1.65s] 
+[T+  1.67s] data: {"content":"整理","done":false}
+[T+  1.67s] 
+[T+  1.69s] data: {"content":"信息","done":false}
+[T+  1.69s] 
+[T+  1.71s] data: {"content":"，让","done":false}
+[T+  1.71s] 
+[T+  1.73s] data: {"content":"重要","done":false}
+[T+  1.73s] 
+[T+  1.75s] data: {"content":"内容","done":false}
+[T+  1.75s] 
+[T+  1.77s] data: {"content":"触","done":false}
+[T+  1.77s] 
+[T+  1.79s] data: {"content":"手","done":false}
+[T+  1.79s] 
+[T+  1.80s] data: {"content":"可","done":false}
+[T+  1.80s] 
+[T+  1.82s] data: {"content":"及","done":false}
+[T+  1.82s] 
+[T+  1.96s] data: {"content":"。","done":false}
+[T+  1.96s] 
+[T+  1.96s] data: {"done":true,"finish_reason":"stop"}
+[T+  1.96s] 
+[T+  1.96s] data: {"done":true,"usage":{"prompt_tokens":15,"completion_tokens":37,"total_tokens":52,"cost_usd":0.000126}}
+[T+  1.96s] 
+[T+  1.96s] data: [DONE]
+[T+  1.96s] 
+[T+  1.96s] === EOF ===

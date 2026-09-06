@@ -1,0 +1,43 @@
+[T+  2.43s] data: {"content":"围","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"绕","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"多","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"项","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"业务","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"议","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"题","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"对","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"齐","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"进","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"展","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"、","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"风险","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"及","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"后","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"续","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"行动","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"content":"项","done":false}
+[T+  2.43s] 
+[T+  2.43s] data: {"done":true,"finish_reason":"stop"}
+[T+  2.43s] 
+[T+  2.43s] data: {"done":true,"usage":{"prompt_tokens":7122,"completion_tokens":22,"total_tokens":7144,"cost_usd":0.007188}}
+[T+  2.43s] 
+[T+  2.43s] data: [DONE]
+[T+  2.43s] 
+[T+  2.43s] === EOF ===

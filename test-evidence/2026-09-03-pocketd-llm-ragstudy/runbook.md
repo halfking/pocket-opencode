@@ -1624,3 +1624,114 @@ catalog 首个 `abab5.5-chat`，23:10 终态快照变为 `claude-sonnet-4.5`
    （30.3/30.5 附）；App 解锁可零预热（cdp_unlock.py 沉淀）。
 4. 日志通道外部截断已五次；观测前 `ls -la` + `lsof` fd 偏移比对不变，
    异常即按端口重启。
+
+---
+
+## §31 2026-09-06 午后收尾轮：gpt-5.6-terra 短恢复窗 + Catalog 漂移形态学 + ①App ai-chat 全链路对照（90s 兜底意外实证）
+
+> 接手时 HEAD=7444874（与远端一致）。本轮窗口 13:44~14:35。判明网关
+> catalog 大漂移（glm 同代 alternatives 目录上线、kimi-k2 退役、terra
+> 短窗存活 ≈7min）；①留观于 App ai-chat 做成首个「存活模型」正向对照，
+> 意外获得「最终候选免窗+90s 预算兜底」在 ai-chat 路径的实证。14:20:51
+> 并行方重启接管 ：8088（认证变更），BFF 探测通道自此不可用，本轮提前
+> 收口。零配置 POST，preferredModels=[] 全程未动。
+
+### 31.1 接手核对与运行实例
+
+- git / 远端一致；GET /api/llm-gateway/config 逐字段与 §30 一致：
+  baseURL https://llm.kxpms.cn/v1 / format openai-chat / 掩码 sk-h****3QIv /
+  **preferredModels=[]**（并行方终态）维持。
+- **日志通道第六次外部截断**（接手即见：fd 偏移 59973 > 文件 46797、
+  mtime 停 11:06）——13:45 按端口重启（start-dev.sh，新 PID 95890），
+  通道恢复（fd 偏移==文件大小复核）。累计六次，按端口重启法第五次应用有效。
+- 另：14:20:51 并行方重启 ：8088 时以 `>` 覆写 logs/backend-dev.log，
+  我方实例 14:01:41 关键日志行被冲掉——已按读数时点逐字补录
+  （2026-09-06-wrapup-watch/server-log-excerpt-140141.txt）。通道累计
+  异常按七次计（第六次截断 + 本次重启覆写）。
+
+### 31.2 相位全程（存档 `test-evidence/2026-09-06-wrapup-watch/`）
+
+| 时刻 | 探测 | 结果 |
+|---|---|---|
+| 13:47 | 串行 glm/auto/embed/kimi | 全灭：glm 503 **新形态**；auto→claude-sonnet-4.5 no_candidate；embed no_provider；kimi-k2-turbo-preview invalid_model（**已退役**） |
+| 13:48 | alternatives 目录复核 + 新候选逐一 pong | kimi-k3、claude-sonnet-5 **在册但 model_not_found（列表≠可路由）**；**gpt-5.6-terra 200 pong** |
+| 13:54/13:55 | terra 复探 ×2 + SSE 短/长 | 200×2；SSE 短 1.96s、长（7122 tok）2.43s 干净收尾——快相 |
+| 13:59~14:02 | App ai-chat 显式 terra 发消息 | 上游挂相：单尝试挂满 90s 预算，14:01:41 准点收敛（31.3） |
+| 14:03 | terra 直探 | 快速失败 503——**存活窗 ≈7min（13:48~13:55）关闭** |
+| 13:54~14:17 | 守候 v2（glm+auto）×4 → v3（glm+auto+terra）×4 | 全灭（try#5 起 401 为 JWT 临期，无效轮） |
+| 14:17:24 | 最后一轮有效 BFF 终态快照 | glm/auto/terra 全灭（503 alternatives 形态） |
+| 14:20:51 | — | **并行方重启 :8088（PID 73100，同一 17:19 二进制）**：admin/Veritrans&9527 → invalid credentials；根 .env 网关变量 14:20 被改指本地。疑似 RedClaw 认证/本地 mock 上游试验（对应 ⑤ 方向），按规约未干预 |
+
+- **Catalog 漂移形态学（本轮新知）**：① glm 503 错误体现在携带
+  `alternatives` 目录（requested_model + featured 候选清单）——错误体即
+  目录快照，新候选可从中直接发现（terra 即由此发现）；② 模型生命周期
+  三态：`invalid_model`（退役）→ `model_not_found`（在册未路由）→
+  200/挂相/503（可路由三态）；③ 存活窗可短至分钟级（terra ≈7min vs
+  glm 00:34 窗 ≥69min），高漂移相下守候判据应 glm+新目录候选双发
+  （v3 脚本沉淀）。
+- **App 模型解析路径再确认（代码走读）**：minutes 无 model 请求 →
+  `resolveChatModel`：preferred[0] → 缓存 Models[0] → "auto"；缓存
+  Models 仅由设置页 test 端点 `updateModels` 填充（`/api/llm/models`
+  BFF 端点只透传不写缓存），重启后为空 → minutes 落 auto → 网关侧
+  claude-sonnet-4.5（灭）。§30.3 结论机制层核实。
+
+### 31.3 ① 空流修复留观：App ai-chat 全链路正向对照 + 90s 兜底意外实证
+
+- 前置：pocket_clone（emulator-5556）在线零预热复用（§30 已装正确构建
+  APK、已解锁）；CDP 桥（webview_devtools_remote_6946 → tcp:9223）。
+- **模型选择 UI 全链路首次走通**：ai-chat 模型 sheet 列出实时目录
+  **679 个模型**（preferredModels=[] 不过滤），DOM 事件勾选
+  gpt-5.6-terra → 确定 → chip 生效（app-state-1.png）。
+- 发送「用一句话介绍你自己」：流式正常启动（光标 + stop 按钮）。
+  发送后 ~20s 上游 terra 进入挂相（连接挂起无响应），BFF 侧最终候选
+  免窗单尝试挂满整链预算：`[llm-auto] stop fallback chain:
+  model=gpt-5.6-terra err=context deadline exceeded answered=false
+  fallback="" ctx_err=<nil> budget_left=0s`、`POST /api/llm/stream -
+  200 (1m30.000416458s)`——**90.0004s 准点收敛**。
+- App 终态：红字 `context deadline exceeded`、按钮恢复（send 回归）、
+  无悬挂、无幻影正文（app-aichat-terra-deadline.png）。**「最终候选
+  免窗+90s 预算兜底」（§27 R4）首次在 App ai-chat 路径实证**——此前
+  仅 §28.7 纪要路径单一路径证据；候选切换灰字未触发属语义正确
+  （单候选无 fallback 可切，fn(Retry) 不应发）。
+- 空流形态（200+零帧）全程未现（挂相≠空流），修复无失效信号，留观
+  续期。注意：aiChatStore 模态选择落 `pocket:ai-chat:settings:v2:<scope>`
+  localStorage，App 侧残留 text=gpt-5.6-terra，下轮需显式改选。
+
+### 31.4 ②③④ 本轮状态
+
+- **② embed**：13:47 / 14:04 两探均 `no_provider`；CDP 桥基线复确认
+  `local_note_vectors=0, local_notes=0, meetings_with_summary=0`。
+  前提未开，待上游上架 embedding provider。
+- **③ 存活版 R4**：kimi 未恢复（k2 退役、k3 在册未路由），glm 直接灭
+  非慢相——前提未开。terra 存活窗内为快相（长 prompt 2.43s），不构成
+  慢相；其挂相窗口恰被 App 请求撞上（31.3），90s 兜底已顺势实证。
+- **④ 纪要真机成功态**：前提（auto 链候选恢复 / preferredModels 显式
+  含可用模型）仍未满足，§30.3 结构性不可达结论沿用，本轮未再触发。
+
+### 31.5 任务清单收口状态（接续 §30.5）
+
+| 事项 | 状态 |
+|---|---|
+| ① 空流修复留观 | 恢复窗（terra）做成 App ai-chat 正向对照；空流形态未现、修复无失效信号；**90s 兜底 ai-chat 路径实证**（31.3） |
+| ② embed 恢复+向量入库 | 仍待上游（no_provider）；基线 0/0/0 维持 |
+| ③ 存活版 R4 | 前提未开（kimi 退役/未路由、glm 灭非慢相）；terra 快相画像已存档 |
+| ④ 纪要真机成功态 | 前提仍未满足，§30.3 结论沿用 |
+| ⑤⑥ 沿用 | JWT 临期（dev 生命周期 ≈32min 本轮实测）；Issue #14——未动 |
+| 新：catalog 漂移形态学 | 31.2 三态模型 + alternatives 错误体即目录快照 |
+| 新：:8088 归属 | 14:20:51 起并行方实例（认证变更）——下轮接手先核 |
+
+### 31.6 遗留（下一轮续接，增量更新 §30.6）
+
+1. **:8088 现归并行方**（PID 73100，14:20:51 起，同一 17:19 二进制、
+   认证非 admin/Veritrans&9527、根 .env 网关变量被改指本地）：接手先
+   `lsof -nP -tiTCP:8088` 核 PID + 登录探测凭据语义，勿假定缺省值；
+   若并行方交还，按 start-dev.sh 重启并核对网关配置逐字段。
+2. 上游高漂移相：catalog 三态生命周期（invalid_model / model_not_found /
+   可路由）+ 分钟级存活窗；守候建议 v3 三发（glm 为主判据 + auto 参考
+   + 新目录候选），候选发现看 503 alternatives 错误体。
+3. ①留观续期：App text 模态残留 gpt-5.6-terra，恢复窗内显式改选
+   glm-5.2（aiChatStore modelByModality / 模型 sheet）；空流修复无失效
+   信号，自然复现应现「已切换到 X 重试…」灰字。
+4. dev JWT 生命周期 ≈32min（13:45 签发 → 14:18~14:21 间失效）实测：
+   长守候脚本需轮内重登录刷新 token（现有脚本启动时读一次 .token，需改进）。
+5. ④ 达成依赖 + APK 构建规约（§30.3/30.5 附）不变；⑤⑥ 沿用。
