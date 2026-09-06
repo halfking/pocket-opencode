@@ -25,6 +25,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '../../stores/session'
 import { useApprovalStore } from '../../stores/approval'
 import { useToast } from '../../composables/useToast'
+import { useElapsedNow } from '../../composables/useElapsedNow'
 import { useFeatureFlag } from '../../config/featureFlags'
 import { usePendingApprovals } from '../../composables/usePendingApprovals'
 import { ApprovalBottomSheet, type ApprovalDecision } from '../../components'
@@ -198,18 +199,14 @@ const barLastEventAt = computed(() => {
 
 /**
  * P1.5 头部副标题（信号文本 = 一句话 + 时长，设计 v2 §4.1）：
- * 与 SessionStatusBar 图标共用纯派生；1s tick 驱动时长。
+ * 与 SessionStatusBar 图标共用纯派生；nowTick 由 useElapsedNow 自适应节拍
+ * 驱动（ISSUES #20：时长文本只有前 60s 是秒级，之后分钟粒度；空闲会话
+ * 完全不启定时器，消灭"每秒重绘头部"的周期性重渲染源）。
  */
-const nowTick = ref(Date.now())
-let nowTimer: ReturnType<typeof setInterval> | null = null
-onMounted(() => {
-  nowTimer = setInterval(() => {
-    nowTick.value = Date.now()
-  }, 1000)
-})
-onBeforeUnmount(() => {
-  if (nowTimer !== null) clearInterval(nowTimer)
-})
+const nowTick = useElapsedNow(() => [
+  pendingApprovalCount.value > 0 ? approvalFirstSeenAt.value : null,
+  barLastEventAt.value,
+])
 
 const statusSubtitle = computed(() => {
   const base = sessionStatusLabel({

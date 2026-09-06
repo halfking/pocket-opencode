@@ -15,12 +15,13 @@
  * 状态派生（resolveSessionStatusMode/sessionStatusLabel）与时长格式化是
  * useSessionEvents 导出的纯函数，头部副标题（状态·时长文本）与图标共用。
  * 时长 = now - lastEventAt（事件 last_event_at，降级为最后一条消息时间近似），
- * 1s tick 驱动（aria-label 朗读用；可见文本由父级头部副标题渲染）。
+ * 由 useElapsedNow 自适应节拍驱动（ISSUES #20：空闲态零定时器，不再每秒重绘）。
  *
  * 触摸纪律：44px 热区，仅 :active 反馈，无 :hover 依赖；动画遵循全局
  * prefers-reduced-motion 裁剪。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed } from 'vue'
+import { useElapsedNow } from '../../composables/useElapsedNow'
 import {
   formatStatusElapsed,
   resolveSessionStatusMode,
@@ -48,17 +49,8 @@ const emit = defineEmits<{
   (e: 'view-approvals'): void
 }>()
 
-const now = ref(Date.now())
-let timer: ReturnType<typeof setInterval> | null = null
-
-onMounted(() => {
-  timer = setInterval(() => {
-    now.value = Date.now()
-  }, 1000)
-})
-onBeforeUnmount(() => {
-  if (timer !== null) clearInterval(timer)
-})
+/** 自适应"当前时间"：只在有时长可显示时跳表（ISSUES #20 修复）。 */
+const now = useElapsedNow(() => [props.approvalFirstSeenAt, props.lastEventAt])
 
 const mode = computed<SessionStatusMode>(() =>
   resolveSessionStatusMode({

@@ -461,14 +461,6 @@ function toggleTriage() {
   showTriage.value = !showTriage.value
 }
 
-/** 状态从无变有"需要你"时自动展开折叠区（业界即时提醒惯例）。 */
-watch(
-  () => triage.value.hasAttention,
-  (has) => {
-    if (has && !showTriage.value) showTriage.value = true
-  },
-)
-
 /** 每个任务的健康信号（P0：task.pendingApprovals + updatedAt 近似）。 */
 function signalFor(task: Task): HealthSignal | undefined {
   if (!task) return undefined
@@ -681,6 +673,17 @@ const completedTasks = computed(() =>
 )
 
 // ── Pull-down close (BottomSheet 已具备内建下拉关闭，无需再外挂) ──
+
+/** 状态从无变有"需要你"时自动展开折叠区（业界即时提醒惯例）。
+ *  注意必须放在 triage/activeTasks 等全部依赖声明之后：watch 注册时会
+ *  立即求值 getter，提前声明会触发 TDZ ReferenceError（ISSUES #20 排查
+ *  中发现：原位置在 const triage 之前，该 watcher 因 TDZ 从未生效）。 */
+watch(
+  () => triage.value.hasAttention,
+  (has) => {
+    if (has && !showTriage.value) showTriage.value = true
+  },
+)
 
 // ── Lifecycle ──
 onMounted(() => {
