@@ -165,3 +165,8 @@ Tick each box as it completes. Group by phase. Companion to `PLAN.md`.
 **Phase 8 提交**：✅ 见 git log（本文件所在提交）。
 
 执行中修复 4 项（详见 evidence/README.md）：start-dev.sh apiBaseURL/workspaceId、registry workspaceId 字段、网关配置校验对齐 validateGatewayURL、push 失败非致命化。
+
+### 补测轮结果（同日追加）
+- **Phase 2 注册链路**：✅ register→login→401 边界→409 重复→400 弱密码→users 落库（api/03-register-suite.md）；修复 dev 模式吞 legacy 登录 bug。
+- **Phase 5 网页层**：✅ 三断点截图（web-375/768/1280）+ 桌面宽 AI 对话 E2E（web-1280-chat）+ WS 真实断线重连 + SSE 首连/重连（ui/web-reconnect-log.md）。
+- 遗留：web 端 jeep-sqlite 未挂载（vault 门不可用，可取消绕过）；折叠屏/多麦克风仍 N/A。

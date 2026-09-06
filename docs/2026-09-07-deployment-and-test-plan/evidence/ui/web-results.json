@@ -1,0 +1,37 @@
+[
+  {
+    "name": "web-login",
+    "pass": false,
+    "detail": "url=http://localhost:5174/#/login?returnTo=/ai"
+  },
+  {
+    "name": "web-breakpoint-375",
+    "pass": true,
+    "detail": "viewport 375x667 截图已存 web-375.png"
+  },
+  {
+    "name": "web-breakpoint-768",
+    "pass": true,
+    "detail": "viewport 768x1024 截图已存 web-768.png"
+  },
+  {
+    "name": "web-breakpoint-1280",
+    "pass": true,
+    "detail": "viewport 1280x800 截图已存 web-1280.png"
+  },
+  {
+    "name": "web-ai-chat",
+    "pass": true,
+    "detail": "页面出现助手回复"
+  },
+  {
+    "name": "web-ws-reconnect",
+    "pass": false,
+    "detail": "offline 前 WS=2，恢复后新连接=2（ws://localhost:8088/ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidXNlci1hZG1pbiIsInJvbGUiOiJhZG1pbiIsIndvcmtzcGFjZV9pZCI6IndzX3VzZXItYWRtaW4iLCJpc3MiOiJwb2NrZXQiLCJhdWQiOlsicG9ja2V0LWFwaSJdLCJleHAiOjE3ODg4MjI0NjEsIm5iZiI6MTc4ODczNjA2MSwiaWF0IjoxNzg4NzM2MDYxfQ.L23t4hGqQ69sTOtehTlalB8oR2_AsFIFU-7d_9z1lZA）"
+  },
+  {
+    "name": "web-sse-reconnect",
+    "pass": false,
+    "detail": "首次=timeout 重连=timeout (session=undefined)"
+  }
+]

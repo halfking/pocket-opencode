@@ -49,3 +49,20 @@
 - `pushConfigToOpenCode` 需 `POCKET_OPENCODE_CONFIG_TOKEN` 才能同步模型配置到上游实例（现降级为告警，功能不受阻）。
 - 对话参数抽屉中「默认模型 (未加载)」文案在 models 已加载时仍显示未加载态——待跟进（前端展示项，非阻塞）。
 - Flow B/C 的正路径（真实 permission/question 事件）依赖上游工具调用产生审批，mock 文本模型不触发；已用负向契约（409/400）+ 代码路径确认覆盖。
+
+## 补测轮（2026-09-07 追加）
+
+### ① 注册与认证流程（api/03-register-suite.md + 01-auth-suite.md）
+PG 模式（一次性测试库）跑通注册全链路：send-code→register→me→login→401 边界→重复 409→弱密码 400→users 落库。
+**新修复 Bug #5**：dev 模式登录吞掉 legacy 路径（register 200→login 401），已修复并回归（admin 旁路 200）。
+
+### ② 网页层交互测试（ui/web-*.png + ui/web-reconnect-log.md）
+- 工具：playwright-core + Chrome headless；页面 = Vite dev :5174（IAB guest 跨端口 fetch 受限，见 reconnect-log 备注）。
+- 三断点截图：`web-375.png` / `web-768.png` / `web-1280.png`（响应式登录页）+ `web-1280-chat.png`（**桌面宽 AI 对话 E2E**：发送→glm-5.2 流式回复→复制/优化/重新生成）。
+- WS 重连 ✅：真实后端重启断线 → 页面自动重连（close→open 事件序列见 web-reconnect-log.md）。
+- SSE 重连 ✅：页面内 EventSource 首次 `server.connected` + 断开后重连 `server.connected` 双 PASS。
+- **新发现（非阻塞）**：web 平台主密码确认报 `jeep-sqlite element is not present in the DOM`（@capacitor-community/sqlite web 载体未挂载）——vault 功能在纯 web 不可用，需挂载 jeep-sqlite 或按 `docs/2026-08-28-biometric-auth-and-sqlite-fallback.md` 走 fallback；已可「取消」绕过，AI/会话等非 vault 模块不受影响。
+
+### 环境变更记录
+- 一次性测试容器 `pocket-e2e-pg`(15434) 已在收尾删除；`ai-native-postgres` 曾在本轮被拉起（原为停止态）。
+- Vite dev :5174 为临时验证进程。

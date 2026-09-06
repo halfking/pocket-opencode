@@ -164,14 +164,15 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 路径 2：dev 旁路（仅当 POCKET_DEV_AUTH=true）
+	// 路径 2：dev 旁路（仅当 POCKET_DEV_AUTH=true）。
+	// 未命中 dev 凭据时不在此返回 401——继续尝试路径 3 的本地 users 表，
+	// 否则 dev 模式下 /api/auth/register 注册的用户将永远无法登录
+	//（2026-09-07 E2E 发现：register 200 → login 401）。
 	if s.cfg.DevAuth {
 		if u, ok := s.devBypassCredentials(body.Username, body.Password); ok {
 			s.devPathIssueToken(w, r, u.id, u.role, u.username, u.email)
 			return
 		}
-		writeError(w, http.StatusUnauthorized, "invalid credentials")
-		return
 	}
 
 	// 路径 3：legacy 模式（直接读本地 users 表）

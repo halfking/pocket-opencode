@@ -219,3 +219,65 @@ HTTP_STATUS:404
 {"code":"not_found","error":"resource not found","request_id":"678262012a454ba907565bcafd826263","retryable":false}
 
 HTTP_STATUS:404
+
+## Register suite — PG-backed (/api/auth/register) 2026-09-06T22:46:39Z
+环境：POCKET_POSTGRES_DSN → pocket-e2e-pg:15434/pocket_e2e（一次性测试库）；POCKET_SMTP_DEBUG_ECHO=true
+
+### R1. send-code（SMTP 未配置，debug 回显验证码）
+{"debug_code":"903755","ok":true,"ttl_sec":300}
+
+200
+code=903755
+
+### R2. register（新用户）→ 200 + token
+{"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.<sig-redacted>","user":"e2euser","user_id":"user-e2e-user@example.com","workspace_id":"ws_user-e2e-user@example.com"}
+
+200
+
+### R3. /api/auth/me（新注册用户）
+{
+  "email": "",
+  "id": "user-e2e-user@example.com",
+  "name": "user-e2e-user@example.com",
+  "role": "user"
+}
+
+### R4. login（新用户名+密码，legacy VerifyPassword 路径）→ 200
+HTTP 401
+### R5. login（新用户+错误密码）→ 401
+HTTP 401
+
+### R6. 重复注册（同邮箱+重发新 code）→ 409 邮箱已被注册
+{"error":"验证码错误或已过期"}
+
+HTTP 400
+### R7. 弱密码（<8 位）→ 400
+{"error":"密码至少 8 位"}
+
+HTTP 400
+### R8. 数据闭环：users 表落库
+ERROR:  relation "users" does not exist
+LINE 1: ...CT id, username, email, email_verified, role FROM users WHER...
+                                                             ^
+
+## Register suite 续（修复后复测，dev 旁路 fall-through fix + 代码夹具）2026-09-06T22:49:57Z
+
+### R4r. login（注册用户 e2euser，修复后）→ 期望 200
+{"auth_method":"legacy","role":"user","token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.<sig-redacted>","user":"e2euser","user_id":"user-e2e-user@example.com","workspace_id":"ws_user-e2e-user@example.com"}
+
+HTTP 200
+### R5r. login（e2euser + 错误密码）→ 401
+HTTP 401
+### R6r. 重复注册（种库验证码 654321）→ 409 邮箱已被注册
+{"error":"邮箱已被注册"}
+
+HTTP 409
+### R8r. 数据闭环：users 表（schema opencode_pocket）
+            id             | username |        email         | email_verified | role  
+---------------------------+----------+----------------------+----------------+-------
+ user-admin                | admin    |                      | f              | admin
+ user-e2e-user@example.com | e2euser  | e2e-user@example.com | t              | user
+(2 rows)
+
+### R9. admin 登录回归（dev 旁路仍命中）→ 200
+HTTP 200
