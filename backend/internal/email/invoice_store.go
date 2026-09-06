@@ -52,6 +52,11 @@ func (s *Store) UpsertInvoice(ctx context.Context, inv *Invoice, userID, workspa
 	if inv.ID == "" {
 		inv.ID = newInvoiceID()
 	}
+	// 存储层兜底：调用方未赋 Status 时落 new，避免违反 status check 约束
+	//（该约束违规会让整条提取静默失败）。
+	if inv.Status == "" {
+		inv.Status = "new"
+	}
 	inv.UserID = userID
 	inv.WorkspaceID = workspaceID
 	inv.CreatedAt = now

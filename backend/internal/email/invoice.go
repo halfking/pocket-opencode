@@ -157,6 +157,9 @@ func ExtractInvoice(e Email, bodyText string) (*Invoice, bool) {
 		Kind:      classifyInvoiceKind(joined),
 		Category:  classifyInvoiceCategory(subject, snippet, e.FromName, e.FromAddress),
 		Currency:  "CNY",
+		// 提取产物初始为待整理；留空会违反 email_invoices 的 status check 约束
+		//（UpsertInvoice 直接透传该列），导致每次提取落库必然失败。
+		Status: "new",
 	}
 
 	if m := reInvoiceNo.FindStringSubmatch(joined); m != nil {
