@@ -561,6 +561,7 @@ function toLocal(a: ApiEmailAccount): EmailAccount {
     lastSyncedAt: a.lastSyncedAt ? a.lastSyncedAt * 1000 : null,
     enabled: a.enabled,
     createdAt: a.createdAt ? a.createdAt * 1000 : Date.now(),
+    updatedAt: a.updatedAt ? a.updatedAt * 1000 : Date.now(),
   }
 }
 

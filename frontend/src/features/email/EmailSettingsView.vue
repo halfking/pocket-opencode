@@ -237,6 +237,7 @@ import { useRouter } from 'vue-router'
 import { emailApi, type EmailAccount, type VacationReply } from '../../api/email'
 import type { EmailRuleActionName, EmailRuleActionSpec, EmailRuleEntry } from '../../api/email'
 import { parseRules, isLegacyRules, serializeRules } from './rules-format'
+import { syncAccountsFromServer } from './account-sync'
 import { EmptyState } from '../../components'
 import { useToast } from '../../composables/useToast'
 import { useConfirm } from '../../composables/useConfirm'
@@ -285,6 +286,8 @@ async function loadAll() {
   loading.value = true
   loadError.value = ''
   try {
+    // LWW：先做服务端→本地镜像（含 updated_at 对齐），再列服务端账户作为权威 UI 数据源。
+    const sync = await syncAccountsFromServer()
     const [accRes, vacRes] = await Promise.all([
       emailApi.listAccounts(),
       emailApi.listVacations(),
@@ -295,6 +298,10 @@ async function loadAll() {
     for (const a of accounts.value) next[a.id] = parseRules(a.rules)
     rulesByAccount.value = next
     vacDrafts.value = {}
+    if (sync.error) {
+      // 服务端拉取失败时只提示，不影响列表（云端拿不到就吃离线列表，但 settings 必走云端）。
+      loadError.value = sync.error
+    }
   } catch (e: any) {
     loadError.value = e?.message || '加载邮箱设置失败'
   } finally {

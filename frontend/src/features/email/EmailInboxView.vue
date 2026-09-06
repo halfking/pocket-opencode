@@ -105,6 +105,7 @@ import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 import HeaderActionsPortal from '@/components/layout/HeaderActionsPortal.vue'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
+import { emailApi } from '../../api/email'
 
 const router = useRouter()
 const emails = ref<LocalEmail[]>([])
@@ -119,6 +120,8 @@ function goToLogin() {
 
 const categories: { label: string; value: string }[] = [
   { label: '全部', value: '' },
+  { label: '重要', value: '__important' },         // 虚拟类目：importance='high'
+  { label: '垃圾', value: '__spam' },             // 虚拟类目：category='spam'
   { label: '工作', value: 'work' },
   { label: '账单', value: 'bill' },
   { label: '私人', value: 'personal' },
@@ -130,9 +133,22 @@ async function load() {
   loadError.value = ''
   dbNotReady.value = false
   try {
-    emails.value = await emailsStore.listEmails(
-      activeCategory.value ? { category: activeCategory.value } : {},
-    )
+    // 在线时先从服务端拉一遍最近邮件，upsert 到本地库（imap_fetch 后置 UX）；
+    // 离线时只吃本地镜像。失败一次不阻塞后续 listEmails。
+    try {
+      await emailsStore.syncEmailsFromServer(200)
+    } catch (e: any) {
+      console.warn('[email] sync from server:', e?.message || e)
+    }
+    const cat = activeCategory.value
+    const filter = cat === '__important'
+      ? { importance: 'high' }
+      : cat === '__spam'
+        ? { category: 'spam' }
+        : cat
+          ? { category: cat }
+          : {}
+    emails.value = await emailsStore.listEmails(filter)
   } catch (e: any) {
     if (e?.message?.includes('LocalDB 未初始化')) {
       dbNotReady.value = true

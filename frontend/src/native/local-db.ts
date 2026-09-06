@@ -29,6 +29,18 @@ const MEETINGS_V2_COLUMNS = [
   { table: 'local_meetings', column: 'note_id', sql: 'ALTER TABLE local_meetings ADD COLUMN note_id TEXT' },
 ]
 
+// 邮箱配置 LWW 同步 + 发票文件采集字段（2026-09-07）：
+// 服务端 email_accounts.updated_at 是 SSOT 时间锚，本地镜像用它做
+// last-write-wins；发票镜像补文件状态，离线时也能看到采集进度。
+const EMAIL_SYNC_V1_COLUMNS = [
+  { table: 'local_email_accounts', column: 'updated_at', sql: 'ALTER TABLE local_email_accounts ADD COLUMN updated_at INTEGER DEFAULT 0' },
+  { table: 'local_email_invoices', column: 'file_name', sql: "ALTER TABLE local_email_invoices ADD COLUMN file_name TEXT DEFAULT ''" },
+  { table: 'local_email_invoices', column: 'file_source', sql: "ALTER TABLE local_email_invoices ADD COLUMN file_source TEXT DEFAULT ''" },
+  { table: 'local_email_invoices', column: 'attempts', sql: 'ALTER TABLE local_email_invoices ADD COLUMN attempts INTEGER DEFAULT 0' },
+  { table: 'local_email_invoices', column: 'last_error', sql: "ALTER TABLE local_email_invoices ADD COLUMN last_error TEXT DEFAULT ''" },
+  { table: 'local_email_invoices', column: 'feishu_sent_at', sql: 'ALTER TABLE local_email_invoices ADD COLUMN feishu_sent_at INTEGER DEFAULT 0' },
+]
+
 const DB_NAME = 'lobster'
 const DB_VERSION = 1
 
@@ -139,6 +151,11 @@ class LocalDB {
     } catch (e) {
       console.warn('[localDB] meetings v2 migration failed:', e)
     }
+    try {
+      await this.runEmailSyncV1Migration()
+    } catch (e) {
+      console.warn('[localDB] email sync v1 migration failed:', e)
+    }
   }
 
   /** 会议模块 v2：为旧库补列，列已存在则跳过 */
@@ -180,6 +197,39 @@ class LocalDB {
       INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at)
       VALUES ('2026-07-15-meetings-v2', '会议模块扩展字段', strftime('%s', 'now') * 1000);
     `, false)
+  }
+
+  /** 邮箱配置 LWW 同步 + 发票文件字段（2026-09-07）：旧库补列。 */
+  private async runEmailSyncV1Migration(): Promise<void> {
+    if (!this.conn) return
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        version TEXT PRIMARY KEY,
+        description TEXT,
+        applied_at INTEGER NOT NULL
+      );
+    `, false)
+    const done = await this.queryOne<{ version: string }>(
+      "SELECT version FROM _schema_migrations WHERE version = '2026-09-07-email-sync-v1'",
+    )
+    if (done) return
+
+    for (const col of EMAIL_SYNC_V1_COLUMNS) {
+      const exists = await this.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
+        [col.column],
+      )
+      if (exists && exists.cnt > 0) continue
+      try {
+        await this.conn.execute(col.sql, false)
+      } catch {
+        // 列可能已存在
+      }
+    }
+    await this.conn.execute(
+      "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-07-email-sync-v1', '邮箱配置 LWW + 发票文件字段', strftime('%s', 'now') * 1000);",
+      false,
+    )
   }
 
   /** 关闭并清理连接，允许重新初始化 */

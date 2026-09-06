@@ -3,6 +3,7 @@
  * and daily summaries. See docs/2026-07-02-email-assistant-design.md.
  */
 import { http } from './http'
+import { useAuthStore } from '../stores/auth'
 
 export type EmailCategory =
   | 'work' | 'bill' | 'notification' | 'personal' | 'marketing' | 'spam'
@@ -23,6 +24,8 @@ export interface EmailAccount {
   lastSyncedAt?: number
   /** Unix 秒。 */
   createdAt?: number
+  /** 配置最后修改时间（Unix 秒）。LWW 同步：与服务端/本地库比新旧，新者胜。 */
+  updatedAt?: number
   rules?: EmailRules
   enabled: boolean
 }
@@ -224,8 +227,8 @@ export const emailApi = {
 
   // ── 发票自动整理 ──────────────────────────────────────────────────────
   // 后端规则提取（subject/snippet/缓存正文），分类为 bill 的邮件同步后自动提取；
-  // 这里提供列表/手动提取/归档/删除。
-  listInvoices(status?: 'new' | 'filed', limit?: number): Promise<EmailInvoiceListResult> {
+  // 这里提供列表/手动提取/归档/删除 + 文件采集/导出/推送。
+  listInvoices(status?: EmailInvoiceStatus, limit?: number): Promise<EmailInvoiceListResult> {
     const qs = new URLSearchParams()
     if (status) qs.set('status', status)
     if (limit) qs.set('limit', String(limit))
@@ -238,15 +241,62 @@ export const emailApi = {
       body: JSON.stringify({ emailId }),
     })
   },
-  setInvoiceStatus(id: string, status: 'new' | 'filed'): Promise<void> {
+  setInvoiceStatus(id: string, status: EmailInvoiceStatus): Promise<void> {
     return http(`/api/emails/invoices/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) })
   },
   deleteInvoice(id: string): Promise<void> {
     return http(`/api/emails/invoices/${id}`, { method: 'DELETE' })
   },
+  /**
+   * 下载单张已采集发票 PDF（带鉴权的 blob；配合 utils/download.downloadFile
+   * 落盘/分享）。
+   */
+  async fetchInvoiceFile(id: string): Promise<Blob> {
+    const auth = useAuthStore()
+    const res = await fetch(`/api/emails/invoices/${encodeURIComponent(id)}/file`, {
+      headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined,
+    })
+    if (!res.ok) throw new Error(`下载失败（${res.status}）`)
+    return res.blob()
+  },
+  /** 合并导出 A4 网格 PDF（grid=2 → 2x2 每页 4 张；3 → 3x3 每页 9 张）。 */
+  exportInvoicesGrid(ids: string[], grid: 2 | 3): Promise<EmailInvoiceExportResult> {
+    return http('/api/emails/invoices/export', {
+      method: 'POST',
+      body: JSON.stringify({ ids, grid }),
+    })
+  },
+  async fetchInvoiceExport(file: string): Promise<Blob> {
+    const auth = useAuthStore()
+    const res = await fetch(
+      `/api/emails/invoices/export/download?file=${encodeURIComponent(file)}`,
+      { headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined },
+    )
+    if (!res.ok) throw new Error(`下载失败（${res.status}）`)
+    return res.blob()
+  },
+  /** 推送发票到飞书；ids 省略 = 全部已下载未推送。失败回退共享汇总文档。 */
+  pushInvoicesToFeishu(ids?: string[]): Promise<EmailInvoicePushResult> {
+    return http('/api/emails/invoices/push', {
+      method: 'POST',
+      body: JSON.stringify(ids ? { ids } : {}),
+    })
+  },
+  /** 共享汇总清单（CSV + Markdown 文档路径 + 行数据 + 合计金额）。 */
+  invoiceSummary(): Promise<EmailInvoiceSummary> {
+    return http('/api/emails/invoices/summary')
+  },
+
+  // ── 邮件处理流水线 ──────────────────────────────────────────────────
+  /** 手动触发一轮：收信 → 清理垃圾 → 重要提醒 → 发票采集 → 飞书/汇总。 */
+  runPipeline(): Promise<EmailPipelineReport> {
+    return http('/api/email/pipeline/run', { method: 'POST', body: '{}' })
+  },
 }
 
 /** 从邮件提取出的结构化发票/账单记录（对齐后端 email.Invoice）。 */
+export type EmailInvoiceStatus = 'new' | 'pending' | 'downloaded' | 'failed' | 'filed'
+
 export interface EmailInvoice {
   id: string
   emailId: string
@@ -261,10 +311,22 @@ export interface EmailInvoice {
   invoiceNo?: string
   invoiceDate?: string
   subject: string
-  status: 'new' | 'filed'
+  status: EmailInvoiceStatus
   extractedBy: 'rule' | 'llm'
   createdAt: number
   updatedAt: number
+  /** 文件采集产物：规范名 {费用类型}-{对方单位}-{金额}-{日期}.pdf。 */
+  fileName?: string
+  filePath?: string
+  /** attachment=邮件附件 | pdf-url=正文链接直下 | xml-render=XML 解析重渲染 */
+  fileSource?: string
+  /** 下载尝试次数（部分平台需多次操作，pending 时由流水线自动重试）。 */
+  attempts?: number
+  lastError?: string
+  /** Unix 秒；进入 A4 网格导出的最近时间。 */
+  exportedAt?: number
+  /** Unix 秒；>0 = 已推送飞书。 */
+  feishuSentAt?: number
 }
 
 export interface EmailInvoiceListResult {
@@ -278,4 +340,66 @@ export interface EmailInvoiceExtractResult {
   matched: boolean
   message?: string
   invoice?: EmailInvoice
+}
+
+export interface EmailInvoiceExportResult {
+  file: string
+  count: number
+  grid: number
+  url: string
+}
+
+export interface EmailInvoicePushResult {
+  pushed: number
+  failed: number
+  errors?: string[]
+  shareDocCsv?: string
+  shareDocMd?: string
+  message?: string
+}
+
+export interface EmailInvoiceSummary {
+  count: number
+  amountTotal: number
+  downloaded: number
+  pending: number
+  failed: number
+  rows: {
+    id: string
+    category: string
+    seller: string
+    amount: number
+    currency?: string
+    invoiceNo: string
+    invoiceDate: string
+    status: EmailInvoiceStatus
+    fileName: string
+    feishuSent: boolean
+  }[]
+  shareDocCsv?: string
+  shareDocMd?: string
+}
+
+/** 一轮流水线的执行报告（对齐后端 email.PipelineReport）。 */
+export interface EmailPipelineReport {
+  startedAt: number
+  finishedAt: number
+  durationMs: number
+  accountsSynced: number
+  newEmails: number
+  spamMoved: number
+  spamLocalOnly: number
+  remindersSent: number
+  invoices: {
+    processed: number
+    downloaded: number
+    pending: number
+    failed: number
+    skipped: number
+  }
+  feishuPushed: number
+  feishuFailed: number
+  shareDocCsv?: string
+  shareDocMd?: string
+  errors?: string[]
 }

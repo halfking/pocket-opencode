@@ -19,6 +19,8 @@ export interface EmailAccount {
   lastSyncedAt: number | null
   enabled: boolean
   createdAt: number
+  /** 服务端 = SSOT 的最后修改时间；0 = 服务端未返回或本地旧版。LWW 同步：本地比服务端旧时拉服务端覆盖。 */
+  updatedAt: number
 }
 
 export interface LocalEmail {
@@ -53,7 +55,7 @@ export interface ListFilter {
 export async function listAccounts(): Promise<EmailAccount[]> {
   const rows = await localDB.query<any>(
     `SELECT id, display_name, email_address, imap_host, imap_port, auth_type,
-            sync_interval_min, last_synced_uid, last_synced_at, enabled, created_at
+            sync_interval_min, last_synced_uid, last_synced_at, enabled, created_at, updated_at
      FROM local_email_accounts ORDER BY created_at`,
   )
   return rows.map(rowToAccount)
@@ -86,10 +88,10 @@ export async function getAccount(id: string): Promise<EmailAccount | null> {
     id: string; display_name: string; email_address: string; imap_host: string;
     imap_port: number; auth_type: string; sync_interval_min: number;
     last_synced_uid: number | null; last_synced_at: number | null;
-    enabled: number; created_at: number
+    enabled: number; created_at: number; updated_at: number | null
   }>(
     `SELECT id, display_name, email_address, imap_host, imap_port, auth_type,
-            sync_interval_min, last_synced_uid, last_synced_at, enabled, created_at
+            sync_interval_min, last_synced_uid, last_synced_at, enabled, created_at, updated_at
      FROM local_email_accounts WHERE id = ?`,
     [id],
   )
@@ -111,8 +113,51 @@ export async function updateAccount(id: string, patch: Partial<EmailAccount>): P
   if (patch.syncIntervalMin !== undefined) { sets.push('sync_interval_min = ?'); vals.push(patch.syncIntervalMin) }
   if (patch.enabled !== undefined) { sets.push('enabled = ?'); vals.push(patch.enabled ? 1 : 0) }
   if (sets.length === 0) return
+  // 任何本地编辑都刷新 updated_at（服务端 SSOT 视角下的"已修改"）。
+  const now = Date.now()
+  sets.push('updated_at = ?')
+  vals.push(patch.updatedAt ?? now)
   vals.push(id)
   await localDB.run(`UPDATE local_email_accounts SET ${sets.join(', ')} WHERE id = ?`, vals)
+}
+
+/**
+ * 写回本地账户（被 syncAccountsFromServer 使用，覆盖策略：LWW）。
+ *
+ * 必须字段：服务端 updatedAt > 本地 updatedAt 才覆盖（更新方是更新方），
+ * 否则跳过——让本地的离线编辑继续上行至服务端时再 wins。
+ */
+export async function writeAccountIfNewer(acc: {
+  id: string
+  displayName: string
+  emailAddress: string
+  imapHost: string
+  imapPort: number
+  authType: string
+  syncIntervalMin: number
+  enabled: boolean
+  updatedAt: number
+}): Promise<boolean> {
+  const local = await getAccount(acc.id)
+  if (local && local.updatedAt >= acc.updatedAt) return false
+  await localDB.run(
+    `INSERT INTO local_email_accounts
+       (id, display_name, email_address, imap_host, imap_port, auth_type,
+        sync_interval_min, enabled, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(id) DO UPDATE SET
+        display_name=excluded.display_name,
+        email_address=excluded.email_address,
+        imap_host=excluded.imap_host,
+        imap_port=excluded.imap_port,
+        auth_type=excluded.auth_type,
+        sync_interval_min=excluded.sync_interval_min,
+        enabled=excluded.enabled,
+        updated_at=excluded.updated_at`,
+    [acc.id, acc.displayName, acc.emailAddress, acc.imapHost, acc.imapPort, acc.authType,
+     acc.syncIntervalMin, acc.enabled ? 1 : 0, local?.createdAt ?? Date.now(), acc.updatedAt],
+  )
+  return true
 }
 
 // ---- 邮件 ----
@@ -138,7 +183,20 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
          (id, account_id, message_id, uid, from_address, from_name, subject, snippet,
           date, is_read, is_starred, category, importance, ai_summary, suggested_action,
           has_attachments, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET
+         subject=excluded.subject,
+         snippet=excluded.snippet,
+         from_name=excluded.from_name,
+         category=excluded.category,
+         importance=excluded.importance,
+         ai_summary=excluded.ai_summary,
+         suggested_action=excluded.suggested_action,
+         has_attachments=excluded.has_attachments,
+         is_read=excluded.is_read,
+         is_starred=excluded.is_starred,
+         uid=COALESCE(excluded.uid, local_emails.uid),
+         message_id=COALESCE(excluded.message_id, local_emails.message_id)`,
       [id, e.accountId, e.messageId ?? null, e.uid ?? null, e.fromAddress, e.fromName ?? null,
        e.subject ?? null, e.snippet ?? null, e.date, e.isRead ? 1 : 0, e.isStarred ? 1 : 0,
        e.category ?? null, e.importance ?? null, e.aiSummary ?? null, e.suggestedAction ?? null,
@@ -146,9 +204,41 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
     )
     return true
   } catch {
-    // UNIQUE(account_id, message_id) 冲突 = 已存在，忽略
     return false
   }
+}
+
+/**
+ * 从服务端全量拉取近端邮件并 upsert 到本地镜像（用于收件箱离线浏览）。
+ * 上游必须带 category / importance（kxmemory 分类完成前的邮件为 NULL，会
+ * 在 WS 收到 email.classified 后由 handleClassifiedEvent 补齐）。
+ */
+export async function syncEmailsFromServer(limit = 200): Promise<number> {
+  const { emailApi } = await import('../../api/email')
+  const res = await emailApi.listEmails({})
+  let n = 0
+  for (const e of (res.emails ?? []).slice(0, limit)) {
+    const ok = await upsertEmail({
+      id: e.id,
+      accountId: e.accountId,
+      messageId: null,
+      uid: null,
+      fromAddress: e.fromAddress,
+      fromName: e.fromName ?? null,
+      subject: e.subject,
+      snippet: e.snippet,
+      date: typeof e.date === 'number' ? e.date : Date.parse(e.date) || Date.now(),
+      isRead: !!e.isRead,
+      isStarred: !!e.isStarred,
+      category: e.category ?? null,
+      importance: e.importance ?? null,
+      aiSummary: e.aiSummary ?? null,
+      suggestedAction: e.suggestedAction ?? null,
+      hasAttachments: !!e.hasAttachments,
+    })
+    if (ok) n++
+  }
+  return n
 }
 
 export async function markRead(id: string, read: boolean): Promise<void> {
@@ -263,6 +353,7 @@ function rowToAccount(r: any): EmailAccount {
     imapHost: r.imap_host, imapPort: r.imap_port, authType: r.auth_type,
     syncIntervalMin: r.sync_interval_min, lastSyncedUid: r.last_synced_uid,
     lastSyncedAt: r.last_synced_at, enabled: r.enabled === 1, createdAt: r.created_at,
+    updatedAt: r.updated_at ?? 0,
   }
 }
 

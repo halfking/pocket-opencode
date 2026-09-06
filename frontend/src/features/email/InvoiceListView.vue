@@ -22,17 +22,53 @@
     <div class="summary-card">
       <div class="summary-main">
         <span class="summary-amount">¥{{ formatAmount(summary.amount) }}</span>
-        <span class="summary-label">共 {{ summary.total }} 张 · 已归档 {{ summary.filed }}</span>
+        <span class="summary-label">
+          共 {{ summary.total }} 张 · 已归档 {{ summary.filed }}
+          <template v-if="summary.downloaded > 0">· 文件 {{ summary.downloaded }}</template>
+          <template v-if="summary.pending > 0">· 待下载 {{ summary.pending }}</template>
+          <template v-if="summary.failed > 0">· 失败 {{ summary.failed }}</template>
+        </span>
+        <span v-if="shareDocName" class="summary-doc" :title="shareDocName">共享清单：{{ shareDocName }}</span>
       </div>
-      <button class="sync-btn" :disabled="syncing" @click="syncAndReload">
-        {{ syncing ? '同步中…' : '同步邮箱' }}
+      <div class="summary-actions">
+        <button class="sync-btn" :disabled="syncing" @click="runPipeline">
+          {{ syncing ? '处理中…' : '收信整理' }}
+        </button>
+        <button class="sync-btn" :disabled="syncing" @click="syncAndReload">同步</button>
+      </div>
+    </div>
+
+    <!-- 文件操作行：多选导出 A4 / 推送飞书 -->
+    <div class="file-ops">
+      <button class="chip" :class="{ active: selectMode }" @click="toggleSelectMode">
+        {{ selectMode ? '取消选择' : '选择' }}
       </button>
+      <button v-if="selectMode" class="chip" @click="selectAllDownloaded">选已下载</button>
+      <div class="spacer" />
+      <button
+        class="chip export"
+        :disabled="exporting || downloadableSelection().length === 0"
+        @click="exportGrid(2)"
+      >{{ exporting ? '导出中…' : '导出 A4 2×2' }}</button>
+      <button
+        class="chip export"
+        :disabled="exporting || downloadableSelection().length === 0"
+        @click="exportGrid(3)"
+      >3×3</button>
+      <button
+        class="chip feishu"
+        :disabled="pushing"
+        @click="pushFeishu()"
+      >{{ pushing ? '推送中…' : '推送飞书' }}</button>
     </div>
 
     <!-- 状态筛选 -->
     <div class="filter-row">
       <button :class="['chip', { active: filter === '' }]" @click="setFilter('')">全部</button>
       <button :class="['chip', { active: filter === 'new' }]" @click="setFilter('new')">待整理</button>
+      <button :class="['chip', { active: filter === 'pending' }]" @click="setFilter('pending')">待下载</button>
+      <button :class="['chip', { active: filter === 'downloaded' }]" @click="setFilter('downloaded')">已下载</button>
+      <button :class="['chip', { active: filter === 'failed' }]" @click="setFilter('failed')">失败</button>
       <button :class="['chip', { active: filter === 'filed' }]" @click="setFilter('filed')">已归档</button>
     </div>
 
@@ -48,6 +84,14 @@
       <article v-for="inv in invoices" :key="inv.id" class="inv-card" :class="{ filed: inv.status === 'filed' }">
         <div class="inv-main">
           <div class="inv-top">
+            <label v-if="selectMode" class="pick">
+              <input
+                v-model="selected"
+                type="checkbox"
+                :value="inv.id"
+                :disabled="!inv.fileName"
+              >
+            </label>
             <span class="inv-seller">{{ inv.seller || '未知销售方' }}</span>
             <span class="inv-amount">¥{{ formatAmount(inv.amount) }}</span>
           </div>
@@ -56,13 +100,28 @@
             <span v-if="inv.invoiceDate">{{ inv.invoiceDate }}</span>
             <span v-if="inv.invoiceNo" class="mono">No.{{ inv.invoiceNo }}</span>
             <span v-if="inv.kind && inv.kind !== 'bill'" class="kind-badge">{{ kindLabel(inv.kind) }}</span>
+            <span v-if="inv.feishuSentAt" class="fs-badge">飞书✓</span>
+          </div>
+          <div v-if="inv.fileName" class="inv-file mono" :title="inv.lastError || inv.fileName">
+            {{ inv.fileName }}
+            <span v-if="inv.fileSource" class="src-tag">{{ fileSourceLabel(inv.fileSource) }}</span>
+          </div>
+          <div v-else-if="inv.status === 'pending' && inv.lastError" class="inv-err">
+            待重试（第 {{ inv.attempts || 0 }} 次）：{{ inv.lastError }}
+          </div>
+          <div v-else-if="inv.status === 'failed'" class="inv-err">
+            失败：{{ inv.lastError || '无法获取文件' }}
           </div>
           <div v-if="inv.subject" class="inv-subject" :title="inv.subject">{{ inv.subject }}</div>
         </div>
         <div class="inv-actions">
-          <span :class="['status-pill', inv.status]">
-            {{ inv.status === 'filed' ? '已归档' : '待整理' }}
-          </span>
+          <span :class="['status-pill', inv.status]">{{ statusLabel(inv) }}</span>
+          <button
+            v-if="inv.fileName"
+            class="act-btn"
+            type="button"
+            @click="downloadInvoice(inv)"
+          >下载 PDF</button>
           <button
             v-if="bookable(inv)"
             class="act-btn primary"
@@ -71,7 +130,7 @@
             @click="book(inv)"
           >{{ bookingId === inv.id ? '入账中…' : '入账' }}</button>
           <button
-            v-if="inv.status === 'new'"
+            v-if="inv.status !== 'filed'"
             class="act-btn"
             type="button"
             @click="markFiled(inv)"
@@ -91,22 +150,28 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { emailApi, type EmailInvoice } from '../../api/email'
+import { emailApi, type EmailInvoice, type EmailInvoiceStatus } from '../../api/email'
 import { financeApi } from '../../api/finance'
 import * as invoiceStore from './invoices-store'
 import { useToast } from '../../composables/useToast'
-import { downloadTextFile, DownloadUnsupportedError } from '../../utils/download'
+import { downloadTextFile, downloadFile, DownloadUnsupportedError } from '../../utils/download'
 import { wsClient } from '../../api/websocket'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
 const toast = useToast()
 const loading = ref(false)
 const syncing = ref(false)
+const exporting = ref(false)
+const pushing = ref(false)
 const error = ref('')
-const filter = ref<'' | 'new' | 'filed'>('')
+const filter = ref<'' | EmailInvoiceStatus>('')
 const all = ref<EmailInvoice[]>([])
-const summary = ref({ total: 0, filed: 0, amount: 0 })
+const summary = ref({ total: 0, filed: 0, amount: 0, downloaded: 0, pending: 0, failed: 0 })
 const bookingId = ref('')
+const shareDocName = ref('')
+// 多选导出
+const selectMode = ref(false)
+const selected = ref<string[]>([])
 
 /** 展示列表 = 当前筛选下的子集（汇总永远基于全量）。 */
 const invoices = computed(() =>
@@ -118,6 +183,9 @@ function applySummary(list: EmailInvoice[]) {
     total: list.length,
     filed: list.filter((i) => i.status === 'filed').length,
     amount: list.reduce((s, i) => s + (Number(i.amount) || 0), 0),
+    downloaded: list.filter((i) => !!i.fileName).length,
+    pending: list.filter((i) => i.status === 'pending' || i.status === 'new').length,
+    failed: list.filter((i) => i.status === 'failed').length,
   }
 }
 
@@ -136,8 +204,132 @@ function kindLabel(kind: string): string {
   return map[kind] ?? kind
 }
 
-function setFilter(f: '' | 'new' | 'filed') {
+function setFilter(f: '' | EmailInvoiceStatus) {
   filter.value = f
+}
+
+// ── 状态/来源标签 ─────────────────────────────────────────────────────
+function statusLabel(inv: EmailInvoice): string {
+  const map: Record<EmailInvoiceStatus, string> = {
+    new: '待整理',
+    pending: '待下载',
+    downloaded: '已下载',
+    failed: '失败',
+    filed: '已归档',
+  }
+  return map[inv.status] ?? inv.status
+}
+
+function fileSourceLabel(src: string): string {
+  const map: Record<string, string> = {
+    attachment: '附件',
+    'pdf-url': '链接',
+    'xml-render': 'XML 重渲染',
+  }
+  return map[src] ?? src
+}
+
+// ── 收信整理：完整流水线（收信→清垃圾→提醒→发票采集→飞书/汇总） ────────────
+async function runPipeline() {
+  syncing.value = true
+  try {
+    const rep = await emailApi.runPipeline()
+    const bits: string[] = [`新邮件 ${rep.newEmails ?? 0}`]
+    if (rep.spamMoved) bits.push(`垃圾清理 ${rep.spamMoved}`)
+    if (rep.remindersSent) bits.push(`提醒 ${rep.remindersSent}`)
+    if (rep.invoices?.downloaded) bits.push(`发票落盘 ${rep.invoices.downloaded}`)
+    if (rep.invoices?.pending) bits.push(`待重试 ${rep.invoices.pending}`)
+    if (rep.feishuPushed) bits.push(`已推飞书 ${rep.feishuPushed}`)
+    toast.success(`整理完成：${bits.join(' · ')}`)
+    await load()
+  } catch (e: any) {
+    toast.error(e?.message || '整理失败')
+  } finally {
+    syncing.value = false
+  }
+}
+
+async function syncAndReload() {
+  syncing.value = true
+  try {
+    await emailApi.syncNow()
+    toast.success('邮箱同步完成，正在提取发票…')
+    await load()
+  } catch (e: any) {
+    toast.error(e?.message || '同步失败')
+  } finally {
+    syncing.value = false
+  }
+}
+
+// ── 文件操作 ──────────────────────────────────────────────────────────
+function toggleSelectMode() {
+  selectMode.value = !selectMode.value
+  selected.value = []
+}
+
+function selectAllDownloaded() {
+  selected.value = all.value.filter((i) => !!i.fileName).map((i) => i.id)
+}
+
+/** 导出候选：多选优先，未选时取全部已下载文件。 */
+function downloadableSelection(): string[] {
+  if (selected.value.length > 0) {
+    return selected.value.filter((id) => all.value.some((i) => i.id === id && !!i.fileName))
+  }
+  return all.value.filter((i) => !!i.fileName).map((i) => i.id)
+}
+
+async function exportGrid(grid: 2 | 3) {
+  const ids = downloadableSelection()
+  if (ids.length === 0) {
+    toast.error('没有已下载发票文件的记录可导出')
+    return
+  }
+  exporting.value = true
+  try {
+    const res = await emailApi.exportInvoicesGrid(ids, grid)
+    const blob = await emailApi.fetchInvoiceExport(res.file)
+    await downloadFile(res.file, blob, 'application/pdf')
+    toast.success(`已导出 ${res.count} 张发票 → A4 ${grid}×${grid}`)
+    await load()
+  } catch (e: any) {
+    if (e instanceof DownloadUnsupportedError) toast.error(e.message)
+    else toast.error(e?.body?.error || e?.message || '导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
+
+async function pushFeishu() {
+  pushing.value = true
+  try {
+    const res = await emailApi.pushInvoicesToFeishu(selected.value.length ? selected.value : undefined)
+    if (res.pushed > 0) {
+      toast.success(`已推送 ${res.pushed} 张发票到飞书`)
+    } else {
+      // 兜底路径：服务端已生成共享汇总文档
+      toast.info(res.message || '未推送任何发票（飞书未配置或无可推文件），已生成共享汇总清单')
+    }
+    if (res.failed > 0) toast.error(`${res.failed} 张推送失败：${(res.errors || []).join('；')}`)
+    await load()
+  } catch (e: any) {
+    toast.error(e?.body?.error || e?.message || '推送失败')
+  } finally {
+    pushing.value = false
+  }
+}
+
+async function downloadInvoice(inv: EmailInvoice) {
+  try {
+    const blob = await emailApi.fetchInvoiceFile(inv.id)
+    const name = inv.fileName || `invoice-${inv.id}.pdf`
+    await downloadFile(name, blob, 'application/pdf')
+    toast.success(`已下载 ${name}`)
+  } catch (e: any) {
+    if (e instanceof DownloadUnsupportedError) toast.error(e.message)
+    else toast.error(e?.message || '下载失败')
+  }
 }
 
 async function load() {
@@ -148,6 +340,10 @@ async function load() {
     const res = await emailApi.listInvoices(undefined, 500)
     all.value = res.invoices ?? []
     applySummary(all.value)
+    try {
+      const sum = await emailApi.invoiceSummary()
+      shareDocName.value = sum.shareDocMd || sum.shareDocCsv || ''
+    } catch { /* 汇总文档是增强信息，失败不打扰 */ }
     try {
       await invoiceStore.syncFromServer(all.value)
     } catch {
@@ -167,29 +363,21 @@ async function load() {
   }
 }
 
-// 服务端自动提取完成后广播 email.invoice.extracted，此处刷新列表
+// 服务端广播：发票提取完成 / A4 导出完成 → 刷新列表
 function onInvoiceExtracted() {
+  void load()
+}
+function onInvoicesExported() {
   void load()
 }
 onMounted(() => {
   wsClient.on('email.invoice.extracted', onInvoiceExtracted)
+  wsClient.on('email.invoices.exported', onInvoicesExported)
 })
 onUnmounted(() => {
   wsClient.off('email.invoice.extracted', onInvoiceExtracted)
+  wsClient.off('email.invoices.exported', onInvoicesExported)
 })
-
-async function syncAndReload() {
-  syncing.value = true
-  try {
-    await emailApi.syncNow()
-    toast.success('邮箱同步完成，正在提取发票…')
-    await load()
-  } catch (e: any) {
-    toast.error(e?.message || '同步失败')
-  } finally {
-    syncing.value = false
-  }
-}
 
 async function markFiled(inv: EmailInvoice) {
   try {
@@ -376,7 +564,47 @@ onMounted(load)
 }
 .status-pill { font-size: 11px; }
 .status-pill.new { color: var(--warning, #f59e0b); }
+.status-pill.pending { color: var(--warning, #f59e0b); }
+.status-pill.downloaded { color: var(--success, #10b981); }
+.status-pill.failed { color: var(--danger); }
 .status-pill.filed { color: var(--success, #10b981); }
+.file-ops {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 0 var(--space-3) var(--space-2);
+}
+.file-ops .spacer { flex: 1; }
+.chip.export {
+  border-color: color-mix(in srgb, var(--brand-primary, #4c8dff) 40%, transparent);
+  color: var(--brand-primary, #4c8dff);
+}
+.chip.export:disabled { opacity: 0.5; cursor: not-allowed; }
+.chip.feishu {
+  border-color: color-mix(in srgb, var(--success, #10b981) 40%, transparent);
+  color: var(--success, #10b981);
+}
+.chip.feishu:disabled { opacity: 0.5; cursor: not-allowed; }
+.pick { display: flex; align-items: center; margin-right: 8px; }
+.summary-actions { display: flex; flex-direction: column; gap: 6px; flex: none; }
+.summary-doc {
+  font-size: 10px; color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;
+}
+.inv-file {
+  margin-top: 6px; font-size: 11px; color: var(--text-secondary); word-break: break-all;
+}
+.src-tag {
+  margin-left: 6px; padding: 1px 6px; border-radius: 999px; font-size: 9px;
+  background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text-secondary);
+}
+.fs-badge {
+  padding: 1px 6px; border-radius: 999px; font-size: 9px;
+  background: color-mix(in srgb, var(--success, #10b981) 12%, transparent);
+  color: var(--success, #10b981);
+}
+.inv-err {
+  margin-top: 6px; font-size: 11px; color: var(--danger);
+  word-break: break-all;
+}
 .act-btn {
   margin-left: auto; padding: 5px 12px; font-size: 12px;
   background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 8px;
