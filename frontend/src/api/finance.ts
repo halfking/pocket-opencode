@@ -37,6 +37,10 @@ export interface FinanceParseResult {
   note: string
 }
 
+export interface FinanceCreateResponse extends FinanceTransaction {
+  created: boolean
+}
+
 export interface FinanceCreateInput {
   type: FinanceTxType
   amount: number
@@ -66,7 +70,7 @@ export const financeApi = {
     const q = qs.toString()
     return http(`/api/finance/stats${q ? `?${q}` : ''}`)
   },
-  create(input: FinanceCreateInput): Promise<FinanceTransaction> {
+  create(input: FinanceCreateInput): Promise<FinanceCreateResponse> {
     return http('/api/finance', { method: 'POST', body: JSON.stringify(input) })
   },
   remove(id: string): Promise<void> {

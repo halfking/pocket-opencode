@@ -51,17 +51,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_finance_txn_note_ref
 }
 
 func (s *PGStore) CreateScoped(req CreateTransactionRequest, ownerID, workspaceID string) (*Transaction, error) {
+	tx, _, err := s.CreateScopedWithStatus(req, ownerID, workspaceID)
+	return tx, err
+}
+
+// CreateScopedWithStatus creates a transaction and reports whether a new row was inserted.
+func (s *PGStore) CreateScopedWithStatus(req CreateTransactionRequest, ownerID, workspaceID string) (*Transaction, bool, error) {
 	if req.Amount <= 0 {
-		return nil, fmt.Errorf("amount must be positive, got: %f", req.Amount)
+		return nil, false, fmt.Errorf("amount must be positive, got: %f", req.Amount)
 	}
 	if req.Type != TransactionTypeIncome && req.Type != TransactionTypeExpense {
-		return nil, fmt.Errorf("type must be income or expense, got: %s", req.Type)
+		return nil, false, fmt.Errorf("type must be income or expense, got: %s", req.Type)
 	}
 	if req.Category == "" {
 		req.Category = "其他"
 	}
 	if ownerID == "" || workspaceID == "" {
-		return nil, fmt.Errorf("owner_id and workspace_id are required")
+		return nil, false, fmt.Errorf("owner_id and workspace_id are required")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -70,7 +76,7 @@ func (s *PGStore) CreateScoped(req CreateTransactionRequest, ownerID, workspaceI
 	// 幂等键命中：直接返回既有记录（预检 + 插入冲突双保险，防并发重复入账）
 	if req.NoteRef != "" {
 		if existing, err := s.getByNoteRef(ctx, req.NoteRef, ownerID, workspaceID); err == nil && existing != nil {
-			return existing, nil
+			return existing, false, nil
 		}
 	}
 
@@ -100,16 +106,16 @@ func (s *PGStore) CreateScoped(req CreateTransactionRequest, ownerID, workspaceI
 		tx.ID, tx.OwnerID, tx.WorkspaceID, tx.Type, tx.Amount,
 		tx.Category, tx.Note, tx.Tags, tx.ProjectID, tx.Source, tx.NoteRef, tx.CreatedAt,
 	)
-	if err != nil {
-		return nil, fmt.Errorf("insert transaction: %w", err)
-	}
+		if err != nil {
+			return nil, false, fmt.Errorf("insert transaction: %w", err)
+		}
 	if tag.RowsAffected() == 0 && req.NoteRef != "" {
 		// 并发下另一请求已插入：返回那条既有记录
 		if existing, gerr := s.getByNoteRef(ctx, req.NoteRef, ownerID, workspaceID); gerr == nil && existing != nil {
-			return existing, nil
+			return existing, false, nil
 		}
 	}
-	return tx, nil
+	return tx, true, nil
 }
 
 // getByNoteRef 按幂等键查找；不存在返回 (nil, nil)。

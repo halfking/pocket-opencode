@@ -101,7 +101,7 @@ func (s *Server) handleCreateFinance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := s.financeStore.CreateScoped(req, uid, wsID)
+	tx, created, err := s.financeStore.CreateScopedWithStatus(req, uid, wsID)
 	if err != nil {
 		http.Error(w, `{"error":"failed to create transaction"}`, http.StatusBadRequest)
 		return
@@ -109,7 +109,11 @@ func (s *Server) handleCreateFinance(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(tx); err != nil {
+	response := struct {
+		*finance.Transaction
+		Created bool `json:"created"`
+	}{Transaction: tx, Created: created}
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
 	}
 }

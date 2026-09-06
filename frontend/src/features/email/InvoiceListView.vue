@@ -225,7 +225,7 @@ async function book(inv: EmailInvoice) {
   if (bookingId.value) return
   bookingId.value = inv.id
   try {
-    await financeApi.create({
+    const res = await financeApi.create({
       type: 'expense',
       amount: Number(inv.amount) || 0,
       category: inv.category || '其他',
@@ -241,7 +241,8 @@ async function book(inv: EmailInvoice) {
         try { await invoiceStore.setLocalStatus(inv.id, 'filed') } catch { /* 本地镜像可选 */ }
       } catch { /* 归档失败不影响入账结果 */ }
     }
-    toast.success(`已入账 ¥${formatAmount(inv.amount)}，可在记账中查看`)
+    const verb = res.created ? '已入账' : '该发票已入账'
+    toast.success(`${verb} ¥${formatAmount(inv.amount)}，可在记账中查看`)
   } catch (e: any) {
     toast.error(e?.body?.error || e?.message || '入账失败')
   } finally {

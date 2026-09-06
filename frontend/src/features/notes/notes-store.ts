@@ -308,10 +308,12 @@ export function registerNoteServerHandler(cb: (note: LocalNote) => void): () => 
 export async function handleServerEvent(note: LocalNote): Promise<void> {
   if (!note || !note.id) return
 
-  const existing = await getNote(note.id, true)
+  const workspaceId = note.workspaceId ?? 'default'
+  const existing = await getNote(note.id, true, workspaceId)
   const merged: LocalNote = existing
     ? {
         ...existing,
+        workspaceId,
         title: note.title ?? existing.title,
         content: note.content || existing.content,
         contentType: note.contentType || existing.contentType,
@@ -320,7 +322,7 @@ export async function handleServerEvent(note: LocalNote): Promise<void> {
         tags: note.tags ?? existing.tags,
         updatedAt: note.updatedAt || existing.updatedAt,
       }
-    : { ...note }
+    : { ...note, workspaceId }
 
   if (existing) {
     const shouldEncrypt = useCryptoConfig().shouldEncryptField()
@@ -329,11 +331,11 @@ export async function handleServerEvent(note: LocalNote): Promise<void> {
       `UPDATE local_notes
          SET title = ?, content = ?, encrypted_content = ?, content_type = ?, domain = ?,
              category = ?, tags = ?, updated_at = ?
-       WHERE id = ?`,
+       WHERE id = ? AND workspace_id = ?`,
       [
         merged.title, storedContent, shouldEncrypt ? 1 : 0, merged.contentType, merged.domain,
         merged.category, merged.tags ? JSON.stringify(merged.tags) : null,
-        merged.updatedAt, merged.id,
+        merged.updatedAt, merged.id, workspaceId,
       ],
     )
   } else {
@@ -345,7 +347,7 @@ export async function handleServerEvent(note: LocalNote): Promise<void> {
           audio_path, audio_duration_ms, created_by_voice, encrypted_content, created_at, updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
-        merged.id, merged.workspaceId, merged.title, storedContent, merged.contentType,
+        merged.id, workspaceId, merged.title, storedContent, merged.contentType,
         merged.domain, merged.category, merged.tags ? JSON.stringify(merged.tags) : null,
         merged.audioPath, merged.audioDurationMs, merged.createdByVoice ? 1 : 0,
         shouldEncrypt ? 1 : 0, merged.createdAt, merged.updatedAt,
@@ -404,6 +406,19 @@ function readAssetTimestamp(value: unknown, fallback: number): number {
   }
   return fallback
 }
+function parseTags(value: string | string[] | null | undefined): string[] | null {
+  if (Array.isArray(value)) {
+    const tags = value.filter((tag): tag is string => typeof tag === 'string')
+    return tags.length > 0 ? tags : null
+  }
+  if (typeof value !== 'string' || !value.trim()) return null
+  try {
+    return parseTags(JSON.parse(value))
+  } catch {
+    return null
+  }
+}
+
 async function rowToNote(r: NoteRow | null): Promise<LocalNote | null> {
   if (!r) return null
   
@@ -420,7 +435,7 @@ async function rowToNote(r: NoteRow | null): Promise<LocalNote | null> {
   return {
     id: r.id, workspaceId: r.workspace_id, title: r.title, content: decryptedContent,
     contentType: r.content_type, domain: r.domain, category: r.category,
-    tags: r.tags ? JSON.parse(r.tags) : null, audioPath: r.audio_path,
+    tags: parseTags(r.tags), audioPath: r.audio_path,
     audioDurationMs: r.audio_duration_ms, createdByVoice: r.created_by_voice === 1,
     createdAt: r.created_at, updatedAt: r.updated_at,
     storage: 'local_notes',

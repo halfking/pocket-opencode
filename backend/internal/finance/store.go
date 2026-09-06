@@ -11,6 +11,7 @@ import (
 // FinanceStore 记账存储接口，支持内存和 PostgreSQL 两种实现
 type FinanceStore interface {
 	CreateScoped(req CreateTransactionRequest, ownerID, workspaceID string) (*Transaction, error)
+	CreateScopedWithStatus(req CreateTransactionRequest, ownerID, workspaceID string) (*Transaction, bool, error)
 	GetScoped(id, ownerID, workspaceID string) (*Transaction, error)
 	ListScoped(ownerID, workspaceID string) ([]*Transaction, error)
 	DeleteScoped(id, ownerID, workspaceID string) error
@@ -53,20 +54,26 @@ func (s *Store) Create(req CreateTransactionRequest) (*Transaction, error) {
 // CreateScoped 创建新的交易记录with ownership
 // NoteRef 非空时作为幂等键：同 owner+workspace 下已有同键记录则直接返回既有记录。
 func (s *Store) CreateScoped(req CreateTransactionRequest, ownerID, workspaceID string) (*Transaction, error) {
+	tx, _, err := s.CreateScopedWithStatus(req, ownerID, workspaceID)
+	return tx, err
+}
+
+// CreateScopedWithStatus creates a transaction and reports whether a new row was inserted.
+func (s *Store) CreateScopedWithStatus(req CreateTransactionRequest, ownerID, workspaceID string) (*Transaction, bool, error) {
 	if req.Amount <= 0 {
-		return nil, fmt.Errorf("amount must be positive, got: %f", req.Amount)
+		return nil, false, fmt.Errorf("amount must be positive, got: %f", req.Amount)
 	}
 	if req.Type != TransactionTypeIncome && req.Type != TransactionTypeExpense {
-		return nil, fmt.Errorf("type must be income or expense, got: %s", req.Type)
+		return nil, false, fmt.Errorf("type must be income or expense, got: %s", req.Type)
 	}
 	if req.Category == "" {
 		req.Category = "其他"
 	}
 	if ownerID == "" {
-		return nil, fmt.Errorf("owner_id is required")
+		return nil, false, fmt.Errorf("owner_id is required")
 	}
 	if workspaceID == "" {
-		return nil, fmt.Errorf("workspace_id is required")
+		return nil, false, fmt.Errorf("workspace_id is required")
 	}
 
 	s.mu.Lock()
@@ -74,7 +81,7 @@ func (s *Store) CreateScoped(req CreateTransactionRequest, ownerID, workspaceID 
 
 	if req.NoteRef != "" {
 		if existing := s.findByNoteRefLocked(req.NoteRef, ownerID, workspaceID); existing != nil {
-			return copyTransaction(existing), nil
+			return copyTransaction(existing), false, nil
 		}
 	}
 
@@ -99,7 +106,7 @@ func (s *Store) CreateScoped(req CreateTransactionRequest, ownerID, workspaceID 
 	}
 
 	s.transactions[tx.ID] = tx
-	return copyTransaction(tx), nil
+	return copyTransaction(tx), true, nil
 }
 
 // GetByNoteRefScoped 按幂等键查找入账记录；不存在返回 (nil, nil)。
