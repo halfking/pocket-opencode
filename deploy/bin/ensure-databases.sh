@@ -154,17 +154,12 @@ ensure_pg()      { _ensure_db postgres detect_pg_external      OPP_PG_HOST      
 ensure_redis()   { _ensure_db redis    detect_redis_external   OPP_REDIS_HOST   OPP_REDIS_PORT   OPP_DEPLOY_REDIS   "${POCKET_REDIS_DATA_DIR}"   "redis:7"     6379 ; }
 ensure_mysql()   { _ensure_db mysql    detect_mysql_external   OPP_MYSQL_HOST   OPP_MYSQL_PORT   OPP_DEPLOY_MYSQL   "${POCKET_MYSQL_DATA_DIR}"   "mysql:8"     3306 ; }
 
-# 按开关依次执行（只有 true 或 external 才跑 detect / 容器化；false/unset 跳过）。
+# 依次执行检测。v5 Phase 0 (D2)：探测无条件运行——默认 false 时只探测复用、
+# 绝不容器化；容器化仍仅在 OPP_DEPLOY_*=true 时发生（显式 opt-in）。
 # 失败必须传导为非零退出：调用方（deploy-*.sh）依赖 set -e 中止无 DB 的部署。
-if [[ "${OPP_DEPLOY_PG}" == "true" || "${OPP_DEPLOY_PG}" == "external" ]]; then
-  ensure_pg || exit 1
-fi
-if [[ "${OPP_DEPLOY_REDIS}" == "true" || "${OPP_DEPLOY_REDIS}" == "external" ]]; then
-  ensure_redis || exit 1
-fi
-if [[ "${OPP_DEPLOY_MYSQL}" == "true" || "${OPP_DEPLOY_MYSQL}" == "external" ]]; then
-  ensure_mysql || exit 1
-fi
+ensure_pg    || exit 1
+ensure_redis || exit 1
+ensure_mysql || exit 1
 
 # 重新 export 状态供后续脚本读取
 export OPP_PG_MODE OPP_REDIS_MODE OPP_MYSQL_MODE

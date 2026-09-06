@@ -7,8 +7,9 @@
 #      - macOS:   ${HOME}/kaixuan/openpocket
 #      - Windows: D:/kaixuan/openpocket（如 D 盘存在且可写），否则 C:/
 #      - Linux:   /opt/kaixuan/openpocket（dev 用，非典型）
-#   2. 默认 OPP_DEPLOY_PG=true；其它 DB 容器化默认关闭
-#   3. PG 走容器化（除非本机已有 docker postgres 或 5432 被占）
+#   2. 默认 OPP_DEPLOY_PG=false：复用共享 llm-gateway-pg（integration 模式，
+#      docker/groups.yaml 登记口径，v5 Phase 0 D2）；自建 PG 仅 OPP_DEPLOY_PG=true 显式 opt-in
+#   3. 其它 DB（redis/mysql）容器化默认关闭
 #   4. 启动流程：init-dirs → ensure-databases → start
 #
 # 用法：
@@ -30,7 +31,7 @@ export DEPLOY_ENV="${DEPLOY_ENV:-local}"
 # ── 本地开关：必须在 source env.sh 之前预设 ──────────────────────
 # env.sh 对这些变量用 `:=` 兜底，若在 source 之后再赋值会因"已非空"而不生效
 # （实测导致 OPP_DEPLOY_PG 恒为 false、PG 端口恒为 15432，DSN 不写入）。
-export OPP_DEPLOY_PG="${OPP_DEPLOY_PG:-true}"
+export OPP_DEPLOY_PG="${OPP_DEPLOY_PG:-false}"
 export OPP_DEPLOY_REDIS="${OPP_DEPLOY_REDIS:-false}"
 export OPP_DEPLOY_MYSQL="${OPP_DEPLOY_MYSQL:-false}"
 # 本机 PG 走 host.docker.internal 让容器访问宿主端口（避免绑 0.0.0.0:5432）
