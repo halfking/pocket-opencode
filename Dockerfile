@@ -1,4 +1,4 @@
-FROM golang:1.26-alpine AS build
+FROM golang:1.27.1-alpine AS build
 WORKDIR /src
 # go.mod 的 replace 指向 ./third_party/identity-go，模块下载前必须先拷入
 COPY backend/go.mod backend/go.sum ./backend/

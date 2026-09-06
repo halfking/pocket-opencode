@@ -3,7 +3,7 @@
 **移动端AI编程助手** - 随时随地进行AI辅助编程
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)]()
-[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)]()
+[![Go Version](https://img.shields.io/badge/Go-1.27+-00ADD8?logo=go)]()
 [![Node Version](https://img.shields.io/badge/Node-18+-339933?logo=node.js)]()
 [![Vue](https://img.shields.io/badge/Vue-3.x-4FC08D?logo=vue.js)]()
 [![Android](https://img.shields.io/badge/Android-API%2024+-3DDC84?logo=android)]()
@@ -64,6 +64,7 @@ OpenCode Pocket 是一款强大的移动端AI编程助手应用，让开发者�
 | **WebSocket Hub** | 定向广播 (UserID/WorkspaceID)，支持流式事件 |
 | **Email Module** | OAuth2 + IMAP 邮件同步，kxmemory AI 分类 |
 | **AI Gateway** | 无状态嵌入/LLM 代理，支持企业网关 |
+| **Zagent Gateway** | `services/zagent-gateway`（request_id / X-Correlation-ID 链路） |
 
 ---
 
@@ -71,7 +72,7 @@ OpenCode Pocket 是一款强大的移动端AI编程助手应用，让开发者�
 
 ### 环境要求
 
-- **Go**: 1.25+
+- **Go**: 1.27+
 - **Node.js**: 18+
 - **JDK**: 21 (Oracle标准版)
 - **Android SDK**: API 30+
@@ -215,6 +216,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 - [**API 契约参考**](docs/opencode-contract.md) - OpenCode 兼容层 API 契约
 - [**移动端架构**](docs/MOBILE_ARCHITECTURE_V2.md) - 移动端架构设计
 - [**ACC Integration 部署文档**](deploy/acc-integration/README.md) - 集成开发部署指南
+- [**邮箱数据本地化与发票自动整理方案**](docs/2026-09-06-email-local-invoice.md) - 邮件发票提取与入账闭环（2026-09-06）
 
 ### 测试报告
 
@@ -257,7 +259,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 
 ### Backend
 
-- **语言**: Go 1.25+
+- **语言**: Go 1.27+
 - **框架**: Echo v4 + gorilla/websocket
 - **认证**: JWT (golang-jwt)
 - **数据库**: PostgreSQL (可选)
@@ -265,7 +267,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 ### Frontend
 
 - **框架**: Vue 3 + TypeScript
-- **构建**: Vite 5.4
+- **构建**: Vite 6
 - **移动桥接**: Capacitor
 - **状态管理**: Pinia
 - **UI组件**: 自定义组件
@@ -413,6 +415,8 @@ DSN 时则明确跳过。
 - [ ] Email OAuth 完整集成
 - [ ] IMAP 同步优化
 - [ ] kxmemory AI 编排完善
+- [x] 邮件发票提取与入账闭环（20d3d14、87c8b55）
+- [x] 财务 PG 记账与统计时区化（87c8b55）
 
 ### v2.0 (未来) 🔮
 
@@ -527,4 +531,4 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 **Built with ❤️ by the OpenCode Pocket Team**
 
-*Last Updated: 2026-07-24*
+*Last Updated: 2026-09-07*

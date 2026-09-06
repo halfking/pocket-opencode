@@ -99,7 +99,7 @@ func TestSlowConsumerBackpressure(t *testing.T) {
 		},
 	})
 	for i := uint64(1); i <= 3; i++ {
-		if _, err := c.Deliver("consumer-1", mkEvent(i, "id")); err != nil {
+		if _, err := c.Deliver("consumer-1", mkEvent(i, fmt.Sprintf("id-%d", i))); err != nil {
 			if !errors.Is(err, ErrBackpressure) {
 				t.Fatalf("seq %d: %v", i, err)
 			}
@@ -152,7 +152,7 @@ func TestAggregateMismatchRejected(t *testing.T) {
 func TestResumeReturnsHighSeq(t *testing.T) {
 	c := NewCursor(CursorConfig{TenantID: "tenant-1", AggregateID: "sess-1"})
 	for i := uint64(1); i <= 4; i++ {
-		c.Deliver("consumer-1", mkEvent(i, "id"))
+		c.Deliver("consumer-1", mkEvent(i, fmt.Sprintf("id-%d", i)))
 	}
 	if got := c.Resume("consumer-1"); got != 4 {
 		t.Fatalf("expected high seq 4, got %d", got)
@@ -165,7 +165,7 @@ func TestResumeReturnsHighSeq(t *testing.T) {
 func TestGCReducesDedupWindow(t *testing.T) {
 	c := NewCursor(CursorConfig{TenantID: "tenant-1", AggregateID: "sess-1"})
 	for i := uint64(1); i <= 10; i++ {
-		c.Deliver("consumer-1", mkEvent(i, "id"))
+		c.Deliver("consumer-1", mkEvent(i, fmt.Sprintf("id-%d", i)))
 	}
 	if removed := c.GC(5); removed != 5 {
 		t.Fatalf("expected 5 removed, got %d", removed)
