@@ -80,11 +80,24 @@ func atoiSafe(s string) int {
 
 func (s *Server) handleEmailInvoiceDispatch(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/emails/invoices/")
-	if rest == "extract" {
+	switch {
+	case rest == "extract":
 		s.handleEmailInvoiceExtract(w, r)
-		return
+	case rest == "export":
+		s.handleEmailInvoiceExport(w, r)
+	case rest == "push":
+		s.handleEmailInvoicePush(w, r)
+	case rest == "summary":
+		s.handleEmailInvoiceSummary(w, r)
+	case strings.HasPrefix(rest, "export/"):
+		// export/download?file=...（导出文件下载）
+		s.handleEmailInvoiceExportDownload(w, r)
+	case strings.HasSuffix(rest, "/file"):
+		// {id}/file（单张发票 PDF 下载）
+		s.handleEmailInvoiceFile(w, r, strings.TrimSuffix(rest, "/file"))
+	default:
+		s.handleEmailInvoiceOps(w, r)
 	}
-	s.handleEmailInvoiceOps(w, r)
 }
 
 // extractInvoicesAsync 对一批邮件做规则提取并幂等落库（异步调用，fire-and-forget）。
@@ -172,11 +185,33 @@ func (s *Server) handleEmailInvoiceExtract(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	inv, hit := email.ExtractInvoice(*e, "")
+inv, hit := email.ExtractInvoice(*e, "")
+	log.Printf("[email/extract] enter email=%s uid=%d first_hit=%v fetcherNil=%v", e.ID, e.UID, hit, s.emailFetcher == nil)
 	if !hit {
-		// 摘要没命中时尝试已缓存的正文（解密失败按未命中处理）
-		if bodyBytes, berr := s.readCachedEmailBody(r.Context(), e.ID, e.UID); berr == nil && len(bodyBytes) > 0 {
+		// 摘要/主题没命中时拉正文：先 AES-GCM 缓存，无缓存主动从 IMAP
+		// 拉整封原文（避免「Sync 没落 BODY[TEXT]」导致规则提取永远失败）。
+		var bodyBytes []byte
+		if b, berr := s.readCachedEmailBody(r.Context(), e.ID, e.UID); berr == nil && len(b) > 0 {
+			bodyBytes = b
+			log.Printf("[email/extract] cache hit email=%s bytes=%d", e.ID, len(b))
+		}
+		if len(bodyBytes) == 0 && e.UID > 0 && s.emailFetcher != nil {
+			log.Printf("[email/extract] raw fetch fallback email=%s account=%s uid=%d fetcherNil=%v", e.ID, e.AccountID, e.UID, s.emailFetcher == nil)
+			if raw, ferr := s.emailFetcher.FetchMessageRaw(r.Context(), e.AccountID, e.UID); ferr == nil {
+				log.Printf("[email/extract] raw fetch ok bytes=%d", len(raw))
+				if parsed, perr := email.ParseMIMEMessage(raw); perr == nil {
+					bodyBytes = []byte(parsed.TextBody + "\n" + parsed.HTMLBody)
+					log.Printf("[email/extract] parsed textLen=%d htmlLen=%d", len(parsed.TextBody), len(parsed.HTMLBody))
+				} else {
+					log.Printf("[email/extract] parse err=%v", perr)
+				}
+			} else {
+				log.Printf("[email/extract] raw fetch err=%v", ferr)
+			}
+		}
+		if len(bodyBytes) > 0 {
 			inv, hit = email.ExtractInvoice(*e, string(bodyBytes))
+			log.Printf("[email/extract] re-extract hit=%v", hit)
 		}
 	}
 	if !hit {

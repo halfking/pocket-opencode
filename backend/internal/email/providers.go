@@ -1,6 +1,6 @@
 package email
 
-// Provider 定义邮件服务商的配置（IMAP + OAuth2 参数）。
+// Provider 定义邮件服务商的配置（IMAP + OAuth2 + POP3 备用参数）。
 type Provider struct {
 	ID             string
 	DisplayName    string
@@ -10,6 +10,11 @@ type Provider struct {
 	OAuth2AuthURL  string
 	OAuth2TokenURL string
 	OAuth2Scopes   []string
+	// POP3 备用通道：当 IMAP 被风控阻断（如 163 的 `NO SELECT Unsafe Login`）
+	// 时，fetcher 走 POP3 RETR 拉原文。空字符串 = 不支持 POP3 降级。
+	POP3Host string
+	POP3Port int
+	POP3TLS  bool
 }
 
 // 预定义的 7 个主流邮件服务商。
@@ -33,6 +38,7 @@ var providers = []Provider{
 		OAuth2AuthURL:  "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
 		OAuth2TokenURL: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
 		OAuth2Scopes:   []string{"https://outlook.office.com/IMAP.AccessAsUser.All", "offline_access"},
+		// Outlook 也有 POP3 但默认关闭，保留空。
 	},
 	{
 		ID:             "qq",
@@ -40,6 +46,10 @@ var providers = []Provider{
 		IMAPHost:       "imap.qq.com",
 		IMAPPort:       993,
 		SupportsOAuth2: false,
+		// QQ 邮箱 IMAP 链路最稳定；保留 POP3 备用。
+		POP3Host: "pop.qq.com",
+		POP3Port: 995,
+		POP3TLS:  true,
 	},
 	{
 		ID:             "163",
@@ -47,6 +57,10 @@ var providers = []Provider{
 		IMAPHost:       "imap.163.com",
 		IMAPPort:       993,
 		SupportsOAuth2: false,
+		// 163 IMAP 对陌生 IP 经常 `NO SELECT Unsafe Login`，POP3 是稳定的备用。
+		POP3Host: "pop.163.com",
+		POP3Port: 995,
+		POP3TLS:  true,
 	},
 	{
 		ID:             "126",
@@ -54,6 +68,9 @@ var providers = []Provider{
 		IMAPHost:       "imap.126.com",
 		IMAPPort:       993,
 		SupportsOAuth2: false,
+		POP3Host: "pop.126.com",
+		POP3Port: 995,
+		POP3TLS:  true,
 	},
 	{
 		ID:             "aliyun",
@@ -61,6 +78,9 @@ var providers = []Provider{
 		IMAPHost:       "imap.aliyun.com",
 		IMAPPort:       993,
 		SupportsOAuth2: false,
+		POP3Host: "pop.aliyun.com",
+		POP3Port: 995,
+		POP3TLS:  true,
 	},
 	{
 		ID:             "custom",

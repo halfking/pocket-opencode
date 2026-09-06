@@ -30,10 +30,24 @@ type Invoice struct {
 	InvoiceNo   string  `json:"invoiceNo,omitempty"` // 发票号码
 	InvoiceDate string  `json:"invoiceDate,omitempty"`
 	Subject     string  `json:"subject"`     // 来源邮件主题（便于回溯）
-	Status      string  `json:"status"`      // new | filed（待整理 | 已归档）
+	Status      string  `json:"status"`      // new | pending | downloaded | failed | filed
 	ExtractedBy string  `json:"extractedBy"` // rule | llm
 	CreatedAt   int64   `json:"createdAt"`
 	UpdatedAt   int64   `json:"updatedAt"`
+
+	// —— 发票文件采集（Harvest 流水线维护）——
+	// FileName 落盘文件名，格式 {费用类型}-{对方单位}-{金额}-{日期}.pdf。
+	// FilePath 服务端磁盘相对路径（dataDir 下）。FileSource 标记来源：
+	// attachment（邮件附件）/ pdf-url（正文链接直下）/ xml-render（XML 解析后重渲染）。
+	// Attempts 记录下载尝试次数——部分发票平台要多次点击才能拿到文件，
+	// 流水线每轮对 pending 的记录重试，超过上限转 failed。
+	FileName     string `json:"fileName,omitempty"`
+	FilePath     string `json:"filePath,omitempty"`
+	FileSource   string `json:"fileSource,omitempty"`
+	Attempts     int    `json:"attempts,omitempty"`
+	LastError    string `json:"lastError,omitempty"`
+	ExportedAt   int64  `json:"exportedAt,omitempty"`   // 最近一次进入 A4 网格导出的时间
+	FeishuSentAt int64  `json:"feishuSentAt,omitempty"` // 推送飞书成功时间；0 = 未推送
 }
 
 // invoice 金额单位符号 → 币种

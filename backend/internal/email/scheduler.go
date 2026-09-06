@@ -45,6 +45,12 @@ type IntentExecutor interface {
 	Execute(ctx context.Context, intent ActionIntent) error
 }
 
+// PipelineRunner 执行一轮完整邮件流水线（收信→清垃圾→提醒→发票采集→推送）。
+// server 包注入（server.RunEmailPipeline），依赖在 server 侧装配。
+type PipelineRunner interface {
+	RunEmailPipeline(ctx context.Context) *PipelineReport
+}
+
 // ErrSkipIntent 由 IntentExecutor 返回时，调度器把意图标为 skipped（终态、不重试），
 // 而非 failed。用于 route-folder 这类本期只记录、不真实执行 IMAP MOVE 的场景。
 var ErrSkipIntent = errors.New("email: skip intent (terminal, no retry)")
@@ -60,6 +66,8 @@ type Scheduler struct {
 	broadcaster    OAuthBroadcaster               // optional；nil 跳过 WS 推送（保留 log）
 	vacationSender VacationSender                 // optional；nil 跳过自动回复投递
 	intentExecutor IntentExecutor                 // optional；nil 跳过 action_intents 消费
+	pipelineRunner PipelineRunner                 // optional；nil 跳过每日流水线
+	pipelineHour   int                            // 每日流水线触发小时（本地时区；<0 关闭）
 	stop           chan struct{}
 	enabled        bool
 	// tzOffsetSec 用户时区偏移（秒），用于按"日"聚合邮件。
@@ -141,6 +149,13 @@ func (s *Scheduler) SetIntentExecutor(executor IntentExecutor) {
 	s.intentExecutor = executor
 }
 
+// SetPipelineRunner 注入每日流水线执行器；hour<0 表示关闭定时触发
+// （手动 API 仍可用）。不注入 runner 时 loop 不启动。
+func (s *Scheduler) SetPipelineRunner(runner PipelineRunner, hour int) {
+	s.pipelineRunner = runner
+	s.pipelineHour = hour
+}
+
 // SetTimezoneOffset 设置用户时区偏移（秒），用于 DailySummary 的"日"边界。
 // 中国大陆默认 28800（UTC+8）。
 func (s *Scheduler) SetTimezoneOffset(sec int) {
@@ -168,6 +183,9 @@ func (s *Scheduler) Start(ctx context.Context) {
 	}
 	if s.refresher != nil {
 		go s.refreshLoop(ctx)
+	}
+	if s.pipelineRunner != nil && s.pipelineHour >= 0 {
+		go s.pipelineLoop(ctx)
 	}
 }
 
@@ -561,6 +579,35 @@ func (s *Scheduler) tick(ctx context.Context) {
 				log.Printf("[email/scheduler] sync %s failed: %v", accountID, err)
 			}
 		}()
+	}
+}
+
+// pipelineLoop 每日在 pipelineHour 点（本地时区）触发一轮完整流水线。
+// 与 dailySummaryLoop 相同的 nextTime 模式：触发后立即排下一天。
+func (s *Scheduler) pipelineLoop(ctx context.Context) {
+	for {
+		hour := s.pipelineHour
+		if hour < 0 {
+			return
+		}
+		if hour > 23 {
+			hour = 23
+		}
+		next := nextTime(hour, 0, 0)
+		log.Printf("[email/scheduler] pipeline scheduled at %s", next.Format(time.RFC3339))
+		select {
+		case <-s.stop:
+			return
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Until(next)):
+		}
+		runCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		rep := s.pipelineRunner.RunEmailPipeline(runCtx)
+		cancel()
+		if rep != nil && len(rep.Errors) > 0 {
+			log.Printf("[email/scheduler] pipeline finished with %d errors: %v", len(rep.Errors), rep.Errors)
+		}
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -124,6 +125,9 @@ type Server struct {
 	agentStore  *agentbridge.Store
 	// S0-E: Notification Center。nil = /api/notifications 返回 503。
 	notifySvc *notifycenter.Service
+	// 邮件流水线（收信→清理垃圾→提醒→发票采集→飞书/汇总）。惰性构造单例。
+	emailPipeline     *email.Pipeline
+	emailPipelineOnce sync.Once
 	// AI 对话智能体角色管理（PG Store 或 SQLiteStore 都实现 StoreIface）。
 	// nil = /api/chat-agents 返回 503。
 	chatAgentStore chatagent.StoreIface
@@ -636,6 +640,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/email/send", s.requireAuth(s.handleEmailSend))
 	mux.HandleFunc("/api/emails", s.requireAuth(s.handleEmails))
 	mux.HandleFunc("/api/emails/sync", s.requireAuth(s.handleEmailSync))
+	// 邮件处理流水线：手动触发一轮（收信→清垃圾→提醒→发票采集→飞书/汇总）
+	mux.HandleFunc("/api/email/pipeline/run", s.requireAuth(s.handleEmailPipelineRun))
 	// 发票自动整理（列表 + 按邮件手动提取；须在 /api/emails/ 子树之前声明）
 	mux.HandleFunc("/api/emails/invoices", s.requireAuth(s.handleEmailInvoices))
 	mux.HandleFunc("/api/emails/invoices/", s.requireAuth(s.handleEmailInvoiceDispatch))

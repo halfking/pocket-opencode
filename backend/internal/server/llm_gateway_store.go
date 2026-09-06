@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -219,5 +220,11 @@ func (s *LLMGatewayStore) decryptAPIKey(enc string) (string, error) {
 	if s.cipher == nil {
 		return "", fmt.Errorf("api key decryption is not configured")
 	}
+	// 防御：避免 cipher 内部字段为 nil 时 panic（之前跑出过 SIGSEGV）。
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[llm_gateway] decryptAPIKey panic recovered: %v", r)
+		}
+	}()
 	return s.cipher.DecryptString(enc)
 }

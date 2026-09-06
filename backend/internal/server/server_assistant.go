@@ -1840,7 +1840,11 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 		if !acc.Enabled {
 			continue
 		}
-		n, ferr := s.emailFetcher.Sync(r.Context(), acc.ID)
+		n, ferr := func() (int, error) {
+			syncCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			defer cancel()
+			return s.emailFetcher.Sync(syncCtx, acc.ID)
+		}()
 		if ferr != nil {
 			log.Printf("[email/sync] account %s (%s): %v", acc.ID, acc.EmailAddress, ferr)
 			failed = append(failed, acc.EmailAddress)

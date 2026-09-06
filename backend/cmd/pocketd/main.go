@@ -351,7 +351,7 @@ func main() {
 				emailPending = email.NewPendingOAuth()
 				go emailPending.GCLoop(context.Background())
 				if emailStore != nil {
-					emailFetcher = email.NewFetcher(emailStore, emailCrypto)
+					emailFetcher = email.NewFetcherWithOptions(emailStore, emailCrypto, cfg.EmailIMAPInsecureSkipVerify, cfg.EmailIMAPUseStartTLS)
 					emailScheduler = email.NewScheduler(emailStore, emailFetcher, cfg.EmailFetchEnabled)
 					// 注入 kxmemory 客户端（可选）：未配置时 DailySummary 自动降级到 log-only。
 					if kxmem != nil {

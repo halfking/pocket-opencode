@@ -23,6 +23,10 @@ type Account struct {
 	Rules           string `json:"rules,omitempty"` // JSON
 	Enabled         bool   `json:"enabled"`
 	CreatedAt       int64  `json:"createdAt"`
+	// UpdatedAt 是配置的最后修改时间（Unix 秒）。服务端为 SSOT：任何写路径
+	// （创建/更新/凭证变更）都会刷新该值；客户端本地库按它与服务端做
+	// LWW（last-write-wins）同步，时间新的一方覆盖旧的一方。
+	UpdatedAt int64 `json:"updatedAt"`
 }
 
 // Email is the cached envelope + AI classification result.

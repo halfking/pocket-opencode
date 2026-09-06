@@ -142,6 +142,16 @@ func (s *Store) migrate() error {
 		CREATE INDEX IF NOT EXISTS idx_email_oauth_tokens_expires ON email_oauth_tokens(expires_at);
 		CREATE INDEX IF NOT EXISTS idx_email_oauth_tokens_ws ON email_oauth_tokens(workspace_id);
 
+		-- POP3 备用同步的 UIDL 已读集合（POP3 没有 UID/MessageID，需用 UIDL
+		-- 实现增量：拉过的 UIDL 写入此表，下次跳过）。
+		CREATE TABLE IF NOT EXISTS email_pop3_seen (
+			account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+			uidl TEXT NOT NULL,
+			seen_at BIGINT NOT NULL,
+			PRIMARY KEY (account_id, uidl)
+		);
+		CREATE INDEX IF NOT EXISTS idx_email_pop3_seen_acct ON email_pop3_seen(account_id);
+
 	CREATE INDEX IF NOT EXISTS idx_email_accounts_ws ON email_accounts(workspace_id);
 	CREATE INDEX IF NOT EXISTS idx_emails_ws ON emails(workspace_id);
 	-- Repair emails.workspace_id against its authoritative source.
@@ -164,6 +174,11 @@ func (s *Store) migrate() error {
 	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS smtp_host TEXT NOT NULL DEFAULT '';
 	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS smtp_port INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS smtp_credential_encrypted TEXT NOT NULL DEFAULT '';
+	-- 配置同步（LWW）：updated_at 是账户配置的最后修改时间，服务端写路径一律
+	-- 刷新；客户端本地库以它为准覆盖旧的一侧。notified_at 记录重要邮件提醒
+	-- 已派发的时间，防止流水线每轮重复推送同一封邮件。
+	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS updated_at BIGINT NOT NULL DEFAULT 0;
+	ALTER TABLE emails ADD COLUMN IF NOT EXISTS notified_at BIGINT NOT NULL DEFAULT 0;
 	CREATE TABLE IF NOT EXISTS email_vacation_replies (
 		id TEXT PRIMARY KEY,
 		account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
@@ -228,7 +243,7 @@ func (s *Store) migrate() error {
 
 func (s *Store) ListAccounts(ctx context.Context, userID string) ([]Account, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, user_id, display_name, email_address, imap_host, imap_port, auth_type, sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at
+		SELECT id, user_id, display_name, email_address, imap_host, imap_port, auth_type, sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at, updated_at
 		FROM email_accounts WHERE user_id = $1 ORDER BY created_at
 	`, userID)
 	if err != nil {
@@ -240,7 +255,7 @@ func (s *Store) ListAccounts(ctx context.Context, userID string) ([]Account, err
 		var a Account
 		var lastUID, lastAt sql.NullInt64
 		var rules sql.NullString
-		if err := rows.Scan(&a.ID, &a.UserID, &a.DisplayName, &a.EmailAddress, &a.IMAPHost, &a.IMAPPort, &a.AuthType, &a.SyncIntervalMin, &lastUID, &lastAt, &rules, &a.Enabled, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.UserID, &a.DisplayName, &a.EmailAddress, &a.IMAPHost, &a.IMAPPort, &a.AuthType, &a.SyncIntervalMin, &lastUID, &lastAt, &rules, &a.Enabled, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if lastUID.Valid {
@@ -345,15 +360,19 @@ func (s *Store) MarkStarred(ctx context.Context, id string, starred bool) error 
 func (s *Store) GetEmailByID(ctx context.Context, id string) (*Email, error) {
 	var e Email
 	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction sql.NullString
+	var uid sql.NullInt64
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, account_id, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments
+		SELECT id, account_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments
 		FROM emails WHERE id = $1
-	`, id).Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments)
+	`, id).Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	if uid.Valid {
+		e.UID = uid.Int64
 	}
 	if fromName.Valid {
 		e.FromName = fromName.String
@@ -454,7 +473,7 @@ func (s *Store) InsertEmail(ctx context.Context, e Email) error {
 		// e.Date 只会复制 date 并丢掉入库时间，因此保持 time.Now()。
 		`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments, created_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-			 ON CONFLICT DO NOTHING`,
+			 ON CONFLICT (id) DO NOTHING`,
 		e.ID, e.AccountID, defaultWorkspace(e.WorkspaceID), nullStr(e.MessageID), e.UID,
 		e.FromAddress, e.FromName, e.Subject, e.Snippet, e.Date,
 		e.IsRead, e.IsStarred, e.Category, e.Importance, e.AISummary, e.SuggestedAction,
@@ -678,30 +697,35 @@ func joinStr(parts []string, sep string) string {
 
 // --- Extended CRUD methods for PR #6 ---
 
-// InsertAccount 插入新账户。
+// InsertAccount 插入新账户。updated_at 是配置同步（LWW）的时间锚点，
+// 创建即视为一次修改。
 func (s *Store) InsertAccount(ctx context.Context, a *Account, credentialEncrypted string) error {
+	if a.UpdatedAt <= 0 {
+		a.UpdatedAt = time.Now().Unix()
+	}
 	_, err := s.pool.Exec(ctx, `
 			INSERT INTO email_accounts
 				(id, user_id, workspace_id, display_name, email_address, imap_host, imap_port, auth_type,
-				 credential_encrypted, sync_interval_min, rules, enabled, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+				 credential_encrypted, sync_interval_min, rules, enabled, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		`,
 		a.ID, a.UserID, defaultWorkspace(a.WorkspaceID), a.DisplayName, a.EmailAddress, a.IMAPHost, a.IMAPPort,
 		a.AuthType, credentialEncrypted, a.SyncIntervalMin,
-		nullStr(a.Rules), a.Enabled, a.CreatedAt)
+		nullStr(a.Rules), a.Enabled, a.CreatedAt, a.UpdatedAt)
 
 	return err
 }
 
-// UpdateAccount 更新账户元数据（不包括 credential）。
+// UpdateAccount 更新账户元数据（不包括 credential），并刷新 updated_at。
 func (s *Store) UpdateAccount(ctx context.Context, a *Account) error {
+	a.UpdatedAt = time.Now().Unix()
 	_, err := s.pool.Exec(ctx, `
 		UPDATE email_accounts SET
 			display_name = $2, imap_host = $3, imap_port = $4,
-			sync_interval_min = $5, rules = $6, enabled = $7
+			sync_interval_min = $5, rules = $6, enabled = $7, updated_at = $8
 		WHERE id = $1
 	`, a.ID, a.DisplayName, a.IMAPHost, a.IMAPPort, a.SyncIntervalMin,
-		nullStr(a.Rules), a.Enabled)
+		nullStr(a.Rules), a.Enabled, a.UpdatedAt)
 	return err
 }
 
@@ -736,11 +760,11 @@ func (s *Store) GetAccountByID(ctx context.Context, id string) (*Account, string
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, user_id, workspace_id, display_name, email_address, imap_host, imap_port, auth_type,
 		       credential_encrypted, sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at,
-		       smtp_host, smtp_port
+		       smtp_host, smtp_port, updated_at
 		FROM email_accounts WHERE id = $1
 	`, id).Scan(&a.ID, &a.UserID, &a.WorkspaceID, &a.DisplayName, &a.EmailAddress, &a.IMAPHost, &a.IMAPPort,
 		&a.AuthType, &cred, &a.SyncIntervalMin, &lastUID, &lastAt, &rules, &a.Enabled, &a.CreatedAt,
-		&smtpHost, &smtpPort)
+		&smtpHost, &smtpPort, &a.UpdatedAt)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1276,7 +1300,7 @@ func (s *Store) ListAccountsScoped(ctx context.Context, userID, workspaceID stri
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, user_id, workspace_id, display_name, email_address, imap_host, imap_port, auth_type,
 		       sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at,
-		       smtp_host, smtp_port
+		       smtp_host, smtp_port, updated_at
 		FROM email_accounts WHERE user_id = $1 AND workspace_id = $2 ORDER BY created_at
 	`, userID, workspaceID)
 	if err != nil {
@@ -1292,7 +1316,7 @@ func (s *Store) ListAccountsScoped(ctx context.Context, userID, workspaceID stri
 		var smtpPort sql.NullInt64
 		if err := rows.Scan(&a.ID, &a.UserID, &a.WorkspaceID, &a.DisplayName, &a.EmailAddress, &a.IMAPHost,
 			&a.IMAPPort, &a.AuthType, &a.SyncIntervalMin, &lastUID, &lastAt, &rules, &a.Enabled, &a.CreatedAt,
-			&smtpHost, &smtpPort); err != nil {
+			&smtpHost, &smtpPort, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if lastUID.Valid {
@@ -1330,11 +1354,11 @@ func (s *Store) GetAccountByIDScoped(ctx context.Context, id, userID, workspaceI
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, user_id, workspace_id, display_name, email_address, imap_host, imap_port, auth_type,
 		       credential_encrypted, sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at,
-		       smtp_host, smtp_port
+		       smtp_host, smtp_port, updated_at
 		FROM email_accounts WHERE id = $1 AND user_id = $2 AND workspace_id = $3
 	`, id, userID, workspaceID).Scan(&a.ID, &a.UserID, &a.WorkspaceID, &a.DisplayName, &a.EmailAddress,
 		&a.IMAPHost, &a.IMAPPort, &a.AuthType, &cred, &a.SyncIntervalMin, &lastUID, &lastAt,
-		&rules, &a.Enabled, &a.CreatedAt, &smtpHost, &smtpPort)
+		&rules, &a.Enabled, &a.CreatedAt, &smtpHost, &smtpPort, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", ErrNotFound
 	}
@@ -1361,19 +1385,21 @@ func (s *Store) GetAccountByIDScoped(ctx context.Context, id, userID, workspaceI
 
 // UpdateAccountScoped atomically updates account metadata and, when provided,
 // its encrypted credential. Ownership is part of the UPDATE predicate.
+// 每次写都刷新 updated_at（服务端时钟），供客户端 LWW 同步。
 func (s *Store) UpdateAccountScoped(ctx context.Context, a *Account, userID, workspaceID, credential string, updateCredential bool) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	a.UpdatedAt = time.Now().Unix()
 	query := `UPDATE email_accounts SET display_name=$1, imap_host=$2, imap_port=$3,
-		auth_type=$4, sync_interval_min=$5, rules=$6, enabled=$7 WHERE id=$8 AND user_id=$9 AND workspace_id=$10`
-	args := []any{a.DisplayName, a.IMAPHost, a.IMAPPort, a.AuthType, a.SyncIntervalMin, nullStr(a.Rules), a.Enabled, a.ID, userID, workspaceID}
+		auth_type=$4, sync_interval_min=$5, rules=$6, enabled=$7, updated_at=$8 WHERE id=$9 AND user_id=$10 AND workspace_id=$11`
+	args := []any{a.DisplayName, a.IMAPHost, a.IMAPPort, a.AuthType, a.SyncIntervalMin, nullStr(a.Rules), a.Enabled, a.UpdatedAt, a.ID, userID, workspaceID}
 	if updateCredential {
 		query = `UPDATE email_accounts SET display_name=$1, imap_host=$2, imap_port=$3,
-			auth_type=$4, sync_interval_min=$5, rules=$6, enabled=$7, credential_encrypted=$8 WHERE id=$9 AND user_id=$10 AND workspace_id=$11`
-		args = []any{a.DisplayName, a.IMAPHost, a.IMAPPort, a.AuthType, a.SyncIntervalMin, nullStr(a.Rules), a.Enabled, credential, a.ID, userID, workspaceID}
+			auth_type=$4, sync_interval_min=$5, rules=$6, enabled=$7, updated_at=$8, credential_encrypted=$9 WHERE id=$10 AND user_id=$11 AND workspace_id=$12`
+		args = []any{a.DisplayName, a.IMAPHost, a.IMAPPort, a.AuthType, a.SyncIntervalMin, nullStr(a.Rules), a.Enabled, a.UpdatedAt, credential, a.ID, userID, workspaceID}
 	}
 	res, err := tx.Exec(ctx, query, args...)
 	if err != nil {
@@ -1814,7 +1840,7 @@ func (s *Store) ListEmailsByDayScoped(ctx context.Context, userID, workspaceID, 
 func (s *Store) ListEnabledAccountsWithWorkspace(ctx context.Context) ([]Account, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, user_id, workspace_id, display_name, email_address, imap_host, imap_port,
-		       auth_type, sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at
+		       auth_type, sync_interval_min, last_synced_uid, last_synced_at, rules, enabled, created_at, updated_at
 		FROM email_accounts WHERE enabled = TRUE ORDER BY created_at
 	`)
 	if err != nil {
@@ -1828,7 +1854,7 @@ func (s *Store) ListEnabledAccountsWithWorkspace(ctx context.Context) ([]Account
 		var rules sql.NullString
 		if err := rows.Scan(&a.ID, &a.UserID, &a.WorkspaceID, &a.DisplayName, &a.EmailAddress,
 			&a.IMAPHost, &a.IMAPPort, &a.AuthType, &a.SyncIntervalMin, &lastUID, &lastAt,
-			&rules, &a.Enabled, &a.CreatedAt); err != nil {
+			&rules, &a.Enabled, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if lastUID.Valid {
@@ -1886,4 +1912,21 @@ func nullStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+// GetAccountPasswordFallback 读账户的 smtp_credential_encrypted 列作为 IMAP
+// 密码回退（无 userID/workspaceID 范围——fetcher 路径用）。
+func (s *Store) GetAccountPasswordFallback(ctx context.Context, id string) (string, error) {
+	var cred sql.NullString
+	err := s.pool.QueryRow(ctx, `SELECT smtp_credential_encrypted FROM email_accounts WHERE id=$1`, id).Scan(&cred)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if !cred.Valid || cred.String == "" {
+		return "", nil
+	}
+	return cred.String, nil
 }

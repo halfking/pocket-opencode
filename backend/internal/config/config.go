@@ -78,7 +78,17 @@ type Config struct {
 	EmailMicrosoftClientSecret string // POCKET_EMAIL_MICROSOFT_CLIENT_SECRET
 	EmailOAuthRedirectURL      string // POCKET_EMAIL_OAUTH_REDIRECT_URL（默认 http://localhost:8088/callback/email/oauth）
 	EmailFetchEnabled          bool   // POCKET_EMAIL_FETCH_ENABLED（默认 true；CI/dev 可关闭）
+	EmailIMAPInsecureSkipVerify bool  // POCKET_EMAIL_IMAP_INSECURE_SKIP_VERIFY：跳过自签 IMAPS 证书校验（仅测试用）
+	EmailIMAPUseStartTLS bool           // POCKET_EMAIL_IMAP_USE_STARTTLS：走明文 IMAP 143 + STARTTLS 升级（自签测试 server 用）
 	TimezoneOffsetSec          int    // POCKET_TIMEZONE_OFFSET_SEC：用户时区偏移秒（默认 28800 = UTC+8）
+
+	// 邮件流水线（收信→清理垃圾→提醒→发票采集→飞书/汇总）
+	EmailPipelineHour int    // POCKET_EMAIL_PIPELINE_HOUR：每日触发小时（本地时区，默认 8；<0 关闭定时）
+	EmailExecutionMode string // POCKET_EMAIL_EXECUTION_MODE：local（默认，设备本地执行）| server（委托远端编排）
+	EmailServerPipelineURL string // POCKET_EMAIL_SERVER_PIPELINE_URL：server 模式的远端流水线 URL
+
+	// 飞书出站（发票推送）：复用回调的 AppID/Secret，另需接收群 chat_id
+	FeishuInvoiceChatID string // POCKET_FEISHU_INVOICE_CHAT_ID：发票文件推送目标群
 
 	// ---- Phase C: 龙虾无状态 AI 网关 ----
 	// pocketd 作为无状态代理：只转发嵌入/LLM 请求，不存任何用户数据。
@@ -216,7 +226,15 @@ func Load() Config {
 		EmailMicrosoftClientSecret: getEnv("POCKET_EMAIL_MICROSOFT_CLIENT_SECRET", ""),
 		EmailOAuthRedirectURL:      getEnv("POCKET_EMAIL_OAUTH_REDIRECT_URL", "http://localhost:8088/callback/email/oauth"),
 		EmailFetchEnabled:          getEnv("POCKET_EMAIL_FETCH_ENABLED", "true") == "true",
+		EmailIMAPInsecureSkipVerify: getEnv("POCKET_EMAIL_IMAP_INSECURE_SKIP_VERIFY", "") == "true",
+		EmailIMAPUseStartTLS:       getEnv("POCKET_EMAIL_IMAP_USE_STARTTLS", "") == "true",
 		TimezoneOffsetSec:          getEnvInt("POCKET_TIMEZONE_OFFSET_SEC", 28800),
+		// 邮件流水线
+		EmailPipelineHour:      getEnvInt("POCKET_EMAIL_PIPELINE_HOUR", 8),
+		EmailExecutionMode:     getEnv("POCKET_EMAIL_EXECUTION_MODE", "local"),
+		EmailServerPipelineURL: getEnv("POCKET_EMAIL_SERVER_PIPELINE_URL", ""),
+		// 飞书出站（发票推送）
+		FeishuInvoiceChatID: getEnv("POCKET_FEISHU_INVOICE_CHAT_ID", ""),
 		// Phase C 无状态 AI 网关
 		EmbedBaseURL: getEnv("POCKET_EMBED_BASE_URL", ""),
 		EmbedAPIKey:  getFirstEnv([]string{"POCKET_EMBED_API_KEY", "POCKET_OPENAI_API_KEY"}, ""),
