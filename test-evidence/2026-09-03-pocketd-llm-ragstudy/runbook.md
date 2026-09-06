@@ -1535,3 +1535,92 @@ catalog 首个 `abab5.5-chat`，23:10 终态快照变为 `claude-sonnet-4.5`
    并行方，本轮未代改）。
 4. 环境注记：日志通道外部截断已三次发生（18:11 / §24.4 / §22.6），
    观测前先 `ls -la` + `lsof` fd 偏移比对，异常即按端口重启恢复。
+
+## 30. 2026-09-06 会话补充（十七）：glm 恢复窗观测 + ④结构性不可达判明 + APK 构建纠偏（守候命中一次）
+
+> 接手时 HEAD=f339be4（与远端一致）。本轮以守候+快照覆盖了上游
+> 「全灭 → glm 独活（00:34~01:43+，≥69min）→ 再灭」完整漂移；
+> 判明 ④ 纪要真机成功态在当前相位组合下结构性不可达（非 App 缺陷）；
+> 修正 APK 构建方法误用。零配置 POST，preferredModels=[] 全程未动；
+> 日志通道外部截断第五次发生（累计五次），两次按端口重启均恢复。
+
+### 30.1 接手核对与运行实例
+
+- git status / log 与起手快照一致；GET /api/llm-gateway/config 逐字段
+  核对：`preferredModels=[]`（并行方终态）维持不代改，baseURL
+  https://llm.kxpms.cn/v1 / format openai-chat / 掩码 sk-h****3QIv
+  与 §29 一致。
+- **日志通道外部截断第四次**（§29.6 同款，接手即见）：fd 偏移
+  25745 > 文件 22118、mtime 停 09-05 23:23——00:07 按端口重启
+  （新 PID 75266），通道恢复、DB 配置加载核对一致。
+- 本轮中段 **第五次截断**（01:41 发现：fd 12577 > 文件 1034、mtime 停
+  00:20，纪要请求日志全程未落盘）——01:41 再按端口重启（PID 56956）。
+  累计五次（§22.6/§24.4/§29.1×3 + 本轮×2），按端口重启法四次应用全部有效。
+
+### 30.2 相位全程（存档 `test-evidence/2026-09-06-phase-probe/`）
+
+| 时刻 | 探测 | 结果 |
+|---|---|---|
+| 00:08~00:10 | glm/kimi/embed/auto 串行 | 全灭（glm `no_candidates` 0 候选；kimi `invalid_model`；embed `no_provider`；auto→claude-sonnet-4.5 `no_candidate`，§29.3 漂移延续） |
+| 00:11 | 挂 `probe_watch.sh`（glm+auto 双发/轮 ×8） | — |
+| **00:34:11** | **守候 try#6 命中：glm-5.2 恢复 200** `{"content":"Pong"}` | auto 仍灭；probe-watch.txt |
+| 00:39 / 01:43 | glm 复探 | 200×2（恢复窗内稳定） |
+| 02:0x | SSE glm `/api/llm/stream`（App 同链路） | 0.19s 快速失败：上游 nginx 502 终态正常收敛 |
+| 10:43~10:45 | 终态快照 glm×2/auto/embed | **全灭**，形态变化：502 Bad Gateway（nginx 层，有候选被路由、上游入口挂）替代此前 503 no_candidates |
+
+- glm 恢复窗 ≥69 分钟（00:34~01:43+），随会话长暂停后（10:43 视角）已灭。
+  「空首选场景最终候选随 catalog 漂移」（§29.3）再证：恢复判定以 glm 为主的
+  守候法在本轮命中一次，沉淀有效。
+
+### 30.3 ④ 纪要真机成功态：结构性不可达判明（本轮主要结论）
+
+- 前置达成：pocket_clone（emulator-5556，在线）装入**最新 HEAD 正确构建
+  APK**（01:21，含 b39714d），解锁（tools/cdp_unlock.py 沉淀：口令经
+  start-dev.sh 缺省约定间接提取注入，不经命令行/落盘明文）、种子会议在列。
+- **APK 构建纠偏**：`npm run build`（mode=production）会把 `.env.production`
+  占位域名 `https://pocket.example.com` 打进 bundle → App 全部 API
+  `Failed to fetch`（01:15 首轮踩中）。正法：
+  `node scripts/build-mobile.mjs android dev`（mode=android-dev →
+  `10.0.2.2:8088`，脚本含 sanity check 校验 bundle 含正确 base）——
+  b39714d 注释早已写明此约束，构建命令必须走 build-mobile.mjs。
+- App 纪要路径（MeetingDetailView → summarizeMeeting → streamChat
+  kind=meeting_summary → POST /api/llm/stream **无 model 字段**）：BFF 端
+  空 model → preferred 首选 → `[]` → auto → claude-sonnet-4.5（灭）→
+  90s 预算耗尽。三轮实测均 `context deadline exceeded` 红字终态、按钮
+  恢复、无悬挂；`meetings_with_summary=0` 无幻影写入（CDP 桥法核对）。
+- **`POCKET_LLM_MODEL` 注入实验（02:02，PID 70783）**：只影响后端内部
+  一次性 chat（llmChatOnce，server_meeting.go API 级路径），不影响 BFF
+  流式路径——App 纪要仍 90s 超时；02:11 回滚标准 env（PID 83845）。
+- **结论**：④ 成功态在「preferredModels=[] + auto 灭 + 仅 glm 独活」相位
+  组合下结构性不可达，非 App 缺陷。达成条件二选一：auto 链候选恢复；
+  或并行方恢复显式 preferredModels 含可用模型（归属并行方，§28.4/§29.6 #3）。
+
+### 30.4 ① 空流修复留观（窗口未开，修复未现失效信号）
+
+- 恢复窗内 glm 全部正常 200（pong ×3），未现空流形态；灭相期 chat/SSE
+  均为快速失败（no_candidates / invalid_model / 502，0.2~0.6s），「200+零帧」
+  由头未现。修复继续以双单测+实例部署为口径，自然复现应现「已切换到 X
+  重试…」灰字——列入下轮，恢复窗内于 App ai-chat（可显式选 glm-5.2，
+  aiChatStore modelByModality）与纪要双路径观察。
+
+### 30.5 任务清单收口状态（接续 §29.5）
+
+| 事项 | 状态 |
+|---|---|
+| ① 空流修复留观 | 窗口未开（恢复窗内 glm 正常无空流形态；修复未现失效信号） |
+| ② embed 恢复+向量入库 | 仍待上游（no_provider → 终态 502）；基线 0/0/0 维持 |
+| ③ 存活版 R4 | 仍待 kimi 恢复或 glm 慢相（恢复窗内 glm 快速 200，未构成慢相） |
+| ④ 纪要真机成功态 | **结构性不可达判明**（30.3）——待 auto 链恢复或 preferredModels 显式化；App 链路自身 90s 收敛/无幻影再次实证 |
+| ⑤⑥ 沿用 | JWT 临期、Issue #14（halfking）——未动 |
+| 附：APK 构建规约 | `npm run build` 禁用于移动构建（占位域名入包）；一律 `build-mobile.mjs android dev`（30.3） |
+
+### 30.6 遗留（下一轮续接，增量更新 §29.6）
+
+1. 前提判定一律先跑 `probe_watch.sh` 或串行快照（glm 为主）；本轮守候法
+   首次自然命中（try#6），恢复窗内按 30.4 双路径观察空流形态。
+2. 上游 502 形态学：本轮末段全灭呈 nginx 502（有候选被路由）而非
+   503 no_candidates（无候选）——判读时注意两类「灭」的层位差异。
+3. ④ 达成依赖（auto 链恢复 / preferredModels 显式化）+ APK 构建规约
+   （30.3/30.5 附）；App 解锁可零预热（cdp_unlock.py 沉淀）。
+4. 日志通道外部截断已五次；观测前 `ls -la` + `lsof` fd 偏移比对不变，
+   异常即按端口重启。

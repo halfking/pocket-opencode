@@ -1,0 +1,1 @@
+{"error":"llm failed: llm-gateway chat 503: {\"error\":{\"code\":\"no_candidate\",\"kind\":\"no_candidate\",\"message\":\"No available provider for model 'claude-sonnet-4.5'\",\"request_id\":\"62e38d95d66148a0935f34a213d56d3b\",\"type\":\"server_error\"}}\n"}

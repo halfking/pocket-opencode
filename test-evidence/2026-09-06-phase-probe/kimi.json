@@ -1,0 +1,1 @@
+{"error":"llm failed: llm-gateway chat 400: {\"error\":{\"code\":\"invalid_model\",\"message\":\"Model 'kimi-k2-turbo-preview' is not supported by this gateway\",\"request_id\":\"ada83e87454dc0949272c17713ecabf6\",\"type\":\"invalid_request_error\"}}\n"}
