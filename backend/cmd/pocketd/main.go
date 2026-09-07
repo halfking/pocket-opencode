@@ -45,6 +45,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
 	"github.com/halfking/pocket-opencode/backend/internal/tasksync"
+	"github.com/halfking/pocket-opencode/backend/internal/usersetting"
 	"github.com/halfking/pocket-opencode/backend/internal/vault"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -77,58 +78,58 @@ func main() {
 	}
 
 	// ---- Module stores (all share the pool) ----
-		var (
-			taskStore          *task.Store
-			notesStore         *notes.Store
-			emailStore         *email.Store
-			vaultStore         *vault.Store
-			scheduledTaskStore *scheduledtask.Store
-			marketplaceStore   *marketplace.Store
-			financeStore       finance.FinanceStore
-		)
-		if pool != nil {
-			ts, err := task.NewStore(pool)
-			if err != nil {
-				log.Fatalf("task store: %v", err)
-			}
-			taskStore = ts
-			ns, err := notes.NewStore(pool)
-			if err != nil {
-				log.Fatalf("notes store: %v", err)
-			}
-			notesStore = ns
-			es, err := email.NewStore(pool)
-			if err != nil {
-				log.Fatalf("email store: %v", err)
-			}
-			emailStore = es
-			vs, err := vault.NewStore(pool)
-			if err != nil {
-				log.Fatalf("vault store: %v", err)
-			}
-			vaultStore = vs
-			sts, err := scheduledtask.NewStore(context.Background(), pool)
-			if err != nil {
-				log.Fatalf("scheduled task store: %v", err)
-			}
-			scheduledTaskStore = sts
-			fs, err := finance.NewPGStore(context.Background(), pool)
-			if err != nil {
-				log.Fatalf("finance store: %v", err)
-			}
-			financeStore = fs
-			ms, err := initMarketplaceStore(context.Background(), pool)
-			if err != nil {
-				log.Fatalf("marketplace store: %v", err)
-			}
-			marketplaceStore = ms
-			if marketplaceStore != nil {
-				log.Println("Module stores initialized (PG, scheduled tasks and marketplace enabled)")
-			} else {
-				log.Println("Module stores initialized (PG, scheduled tasks enabled; marketplace remote-only)")
-			}
+	var (
+		taskStore          *task.Store
+		notesStore         *notes.Store
+		emailStore         *email.Store
+		vaultStore         *vault.Store
+		scheduledTaskStore *scheduledtask.Store
+		marketplaceStore   *marketplace.Store
+		financeStore       finance.FinanceStore
+	)
+	if pool != nil {
+		ts, err := task.NewStore(pool)
+		if err != nil {
+			log.Fatalf("task store: %v", err)
 		}
-		// 无 PG 时 financeStore 保持 nil：server 内部默认内存版实现。
+		taskStore = ts
+		ns, err := notes.NewStore(pool)
+		if err != nil {
+			log.Fatalf("notes store: %v", err)
+		}
+		notesStore = ns
+		es, err := email.NewStore(pool)
+		if err != nil {
+			log.Fatalf("email store: %v", err)
+		}
+		emailStore = es
+		vs, err := vault.NewStore(pool)
+		if err != nil {
+			log.Fatalf("vault store: %v", err)
+		}
+		vaultStore = vs
+		sts, err := scheduledtask.NewStore(context.Background(), pool)
+		if err != nil {
+			log.Fatalf("scheduled task store: %v", err)
+		}
+		scheduledTaskStore = sts
+		fs, err := finance.NewPGStore(context.Background(), pool)
+		if err != nil {
+			log.Fatalf("finance store: %v", err)
+		}
+		financeStore = fs
+		ms, err := initMarketplaceStore(context.Background(), pool)
+		if err != nil {
+			log.Fatalf("marketplace store: %v", err)
+		}
+		marketplaceStore = ms
+		if marketplaceStore != nil {
+			log.Println("Module stores initialized (PG, scheduled tasks and marketplace enabled)")
+		} else {
+			log.Println("Module stores initialized (PG, scheduled tasks enabled; marketplace remote-only)")
+		}
+	}
+	// 无 PG 时 financeStore 保持 nil：server 内部默认内存版实现。
 
 	// ---- Marketplace 签名策略（ADR: docs/handoff/2026-09-05-marketplace-signing-chain-design.md）----
 	// root 公钥未配置 = 签名校验关闭（仅记录语义，不阻断既有流程）；
@@ -546,6 +547,14 @@ func main() {
 	}
 	if scheduledTaskStore != nil {
 		srv.SetScheduledTaskStore(scheduledTaskStore)
+	}
+	if pool != nil {
+		if us, err := usersetting.NewStore(pool); err != nil {
+			log.Printf("WARN: user settings store: %v", err)
+		} else {
+			srv.SetUserSettingsStore(us)
+			log.Println("User settings dual-store enabled (PG)")
+		}
 	}
 	if marketplaceStore != nil {
 		srv.SetMarketplaceStore(marketplaceStore)

@@ -12,32 +12,21 @@ import (
 // POCKET_LLM_GATEWAY_URL 仍可覆盖。reset 后首次启动 pocketd 会自动写 seed。
 const DefaultLLMGatewayBaseURL = "https://llm.kxpms.cn/v1"
 
-// DefaultLLMGatewayAPIKey 默认 LLM Gateway 租户 API Key（仅在 dev/seed 路径使用）。
-// 真实部署应通过 POCKET_LLM_GATEWAY_API_KEY env 注入；此处常量用于确保 reset
-// 之后的 dev 实例仍然有可用默认网关，避免前端首次进入设置页全空。
-//
-// 注意：这是租户共享密钥，仓库提交；生产 portal 上线后请替换为 KMS 引用。
-const DefaultLLMGatewayAPIKey = "sk-6tGLjzlzUIOuMxh6qhOVRK9eznOTVAkQ3JxRZrvWECrK51YV"
-
-// DefaultLLMGatewayPreferredModels 默认「常用模型」列表，逗号分隔的原文顺序作为
-// preferredModels 初始值写入 seed；models（catalog）首版为空，由用户首次
-// 「测试连接」→ POST /api/llm-gateway/test 拉取 {baseURL}/v1/models 后写入。
-//
-// 与 SettingsLLMGateway.vue VENDOR_RULES 配合渲染「按原厂分组」的常用模型区。
-//
-// 2026-09-01 用户显式启用 minimax-m3 / kimi-k3 / gemini-3.5-flash：
-// 这三个 id 在 https://llm.kxpms.cn/v1 网关已经验证可路由，
-// 重新加入 preferred seed。
+// DefaultLLMGatewayPreferredModels 默认「常用模型」列表，写入 seed 的
+// preferredModels。catalog models 仍由「测试连接」拉取后写入。
+// API Key 只从 POCKET_LLM_GATEWAY_API_KEY 注入，禁止把租户密钥写进仓库。
 var DefaultLLMGatewayPreferredModels = []string{
+	"claude-fable-5",
+	"claude-opus-4-8",
+	"claude-sonnet-4-6",
+	"claude-sonnet-5",
+	"gpt-5.6",
+	"gpt-5.5",
+	"gpt-5.4",
 	"glm-5.2",
 	"minimax-m3",
-	"kimi-k3",
-	"claude-sonnet-5",
-	"gpt-5.6-terra",
-	"claude-opus-5",
-	"claude-fable-5",
-	"gpt-5.6-sol",
-	"gemini-3.5-flash",
+	"deepseek-v4-pro",
+	"mimo-v2.5-pro",
 }
 
 // LLMGatewayConfig 描述注入到 OpenCode 的 LLM Gateway 配置。

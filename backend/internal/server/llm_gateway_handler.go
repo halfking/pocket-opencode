@@ -46,6 +46,7 @@ type llmGatewayState struct {
 	// PreferredModels：用户勾选的常用模型；非空时前端模型选择器只展示这些
 	// （模型目录过大时降噪），空 = 展示全部。
 	PreferredModels []string `json:"preferredModels"`
+	UpdatedAt       int64    `json:"updatedAt,omitempty"`
 }
 
 // defaultLLMGatewayState returns the env-backed fallback used when no DB row
@@ -54,23 +55,27 @@ type llmGatewayState struct {
 //
 // 2026-08-31: 优先 POCKET_LLM_GATEWAY_URL env；未设置时回落到
 // opencode.DefaultLLMGatewayBaseURL（已切换为 https://llm.kxpms.cn/v1）。APIKey
-// 同样 env-first，常量 DefaultLLMGatewayAPIKey 仅作为 dev seed 兜底；preferred
+// 同样 env-first：API Key 只读 POCKET_LLM_GATEWAY_API_KEY；preferred
 // 模型列表来自 opencode.DefaultLLMGatewayPreferredModels。
 func defaultLLMGatewayState() llmGatewayState {
 	models := append([]string(nil), opencode.DefaultLLMGatewayPreferredModels...)
 	preferred := append([]string(nil), opencode.DefaultLLMGatewayPreferredModels...)
 	return llmGatewayState{
 		BaseURL:         envOr("POCKET_LLM_GATEWAY_URL", opencode.DefaultLLMGatewayBaseURL),
-		APIKey:          pickAPIKey(os.Getenv("POCKET_LLM_GATEWAY_API_KEY"), opencode.DefaultLLMGatewayAPIKey),
+		APIKey:          strings.TrimSpace(os.Getenv("POCKET_LLM_GATEWAY_API_KEY")),
 		Models:          models,
 		Format:          defaultGatewayFormat,
 		PreferredModels: preferred,
 	}
 }
 
-// pickAPIKey returns the first non-empty candidate; falls back to the bundled
-// dev default so a freshly-bootstrapped instance still has a working gateway
-// without forcing operators to set POCKET_LLM_GATEWAY_API_KEY in env.
+// obsoleteLocalGatewayURL 识别本机 docker 旧默认（8782）。
+// 切到 kaixuan 网关后，已有行不能再幂等跳过，否则会一直打旧地址。
+func obsoleteLocalGatewayURL(u string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(u)), "llm-gateway-local-8782")
+}
+
+// pickAPIKey 取第一个非空候选。不再回退仓库内写死的租户 key。
 func pickAPIKey(primary, fallback string) string {
 	if strings.TrimSpace(primary) != "" {
 		return primary
@@ -114,7 +119,14 @@ func (s *Server) EnsureLLMGatewayDefaults(workspaceIDs ...string) {
 			continue
 		}
 		if existing != nil {
-			continue // 已有 row，幂等跳过
+			if obsoleteLocalGatewayURL(existing.BaseURL) && !obsoleteLocalGatewayURL(def.BaseURL) {
+				if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, def); saveErr != nil {
+					log.Printf("[llm-gateway] replace obsolete local gateway failed for %s: %v", wsID, saveErr)
+				} else {
+					log.Printf("[llm-gateway] replaced obsolete local gateway for workspace=%s baseURL=%s", wsID, def.BaseURL)
+				}
+			}
+			continue
 		}
 
 		if err := s.llmGWStore.SaveConfig(context.Background(), wsID, def); err != nil {
@@ -123,6 +135,7 @@ func (s *Server) EnsureLLMGatewayDefaults(workspaceIDs ...string) {
 		}
 		log.Printf("[llm-gateway] default-seed inserted for workspace=%s baseURL=%s preferred=%d", wsID, def.BaseURL, len(def.PreferredModels))
 	}
+	s.seedAdminGatewaySetting(def)
 }
 
 // llmGatewayCache holds the per-workspace gateway state. The map is keyed by
@@ -241,7 +254,8 @@ func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) 
 			"baseURL": st.BaseURL, "apiKeySet": st.APIKey != "", "apiKey": maskKey(st.APIKey),
 			"models": st.Models, "source": "pocketd",
 			"format": normalizeGatewayFormat(st.Format), "preferredModels": st.PreferredModels,
-			"formats": []string{"openai-chat", "anthropic-messages", "openai-responses"},
+			"formats":   []string{"openai-chat", "anthropic-messages", "openai-responses"},
+			"updatedAt": st.UpdatedAt,
 		})
 	case http.MethodPost:
 		var req struct {
