@@ -1,28 +1,30 @@
 /**
- * useMeetingRecorder — VAD 分段 + STT + 声纹说话人识别
- *
- * Sprint 3: Web Audio VAD 替代固定 5s 切片；增量声纹聚类区分说话人。
- * cap-sherpa 原生就绪后 extractEmbedding / startListening 自动优先。
+ * useMeetingRecorder — VAD 分段 + STT + 声纹；Android 走 BackgroundMic 前台服务。
  */
-import { ref, onBeforeUnmount } from 'vue'
-import { sttApi } from '../api/stt'
+import { ref, unref, onBeforeUnmount, type MaybeRef } from 'vue'
+import { Capacitor } from '@capacitor/core'
 import { saveMeetingAudio } from '../native/meeting-audio'
 import { VadSegmenter } from '../native/vad-segmenter'
-import { extractEmbedding } from '../native/speaker-embedding'
 import { SpeakerDiarizer } from '../native/speaker-diarization'
 import { loadSpeakerProfiles, saveVoiceprint } from '../features/meetings/voiceprints-store'
 import {
-  saveSegment, updateMeeting, updateTranscript, updateSegmentSpeaker,
-  getMeeting, type MeetingSegment,
+  updateMeeting, updateSegmentSpeaker, getMeeting, type MeetingSegment,
 } from '../features/meetings/meetings-store'
 import { syncMeetingMetadata } from '../features/meetings/meeting-ingest'
+import { ingestSpeechBlob } from '../features/meetings/ingest-speech'
 import { useMicPermission } from './useMicPermission'
+import { openPreferredMicStream, listAudioInputs, type AudioInput } from '../native/audio-inputs'
+import {
+  isBackgroundMicSupported, listNativeMicInputs, startBackgroundMic,
+  stopBackgroundMic, listenBackgroundMicParts, nativePartToBlob,
+} from '../native/background-mic'
+import { useToast } from './useToast'
 
 const LANG_LABELS: Record<string, string> = {
   zh: '中文', en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', de: 'Deutsch',
 }
 
-export function useMeetingRecorder(meetingId: string) {
+export function useMeetingRecorder(meetingId: MaybeRef<string>) {
   const isRecording = ref(false)
   const isPaused = ref(false)
   const elapsedMs = ref(0)
@@ -30,41 +32,57 @@ export function useMeetingRecorder(meetingId: string) {
   const sttError = ref('')
   const speakers = ref<{ profileId: string; label: string }[]>([])
   const processingCount = ref(0)
+  const inputs = ref<AudioInput[]>([])
+  const selectedInput = ref<AudioInput | undefined>()
+  const toast = useToast()
 
   let mediaStream: MediaStream | null = null
   let vadSegmenter: VadSegmenter | null = null
   let diarizer: SpeakerDiarizer | null = null
   let startTime = 0
   let elapsedTimer: ReturnType<typeof setInterval> | null = null
-  /** segmentId → profileId，用于标注 */
   const segmentProfiles = new Map<string, string>()
+  let partSeq = 0
+  let unlistenNative: (() => void) | null = null
+  let nativeMode = false
 
-  function cleanupMedia() {
+  async function cleanupMedia() {
     if (mediaStream) {
       mediaStream.getTracks().forEach((t) => t.stop())
       mediaStream = null
     }
     vadSegmenter = null
+    if (unlistenNative) { unlistenNative(); unlistenNative = null }
+    if (nativeMode) await stopBackgroundMic()
+    nativeMode = false
+    document.removeEventListener('visibilitychange', onHidden)
+    navigator.mediaDevices?.removeEventListener?.('devicechange', onDeviceChange)
   }
 
-  async function start(): Promise<boolean> {
-    if (isRecording.value) return false
+  function onHidden() {
+    if (document.visibilityState !== 'hidden' || !isRecording.value || nativeMode) return
+    toast.error('浏览器无法在后台继续录音，请保持应用在前台或使用 Android 客户端')
+  }
+
+  async function start(opts?: { deviceId?: string; resume?: boolean }): Promise<boolean> {
+    if (isRecording.value || !unref(meetingId)) return false
     sttError.value = ''
-    segments.value = []
-    speakers.value = []
-    segmentProfiles.clear()
-    elapsedMs.value = 0
-    processingCount.value = 0
+    if (!opts?.resume) {
+      segments.value = []
+      speakers.value = []
+      segmentProfiles.clear()
+      elapsedMs.value = 0
+      processingCount.value = 0
+      partSeq = 0
+    }
+    if (!opts?.resume || !diarizer) {
+      diarizer = new SpeakerDiarizer(0.72)
+      try {
+        const profiles = await loadSpeakerProfiles()
+        diarizer.loadProfiles(profiles)
+      } catch { /* 空库 */ }
+    }
 
-    diarizer = new SpeakerDiarizer(0.72)
-    try {
-      const profiles = await loadSpeakerProfiles()
-      diarizer.loadProfiles(profiles)
-    } catch { /* 首次使用，空库 */ }
-
-    // 权限前置闸：首次录音走 getUserMedia 时，MainActivity 的 WebChromeClient
-    // 会拦截 AUDIO_CAPTURE 并调起系统 RECORD_AUDIO 申请；这里再走一遍探测，
-    // 一是为了复用统一文案，二是 getUserMedia 失败时给出可读的 deniedLabel。
     const mic = useMicPermission()
     const ok = await mic.ensure()
     if (!ok) {
@@ -73,64 +91,85 @@ export function useMeetingRecorder(meetingId: string) {
     }
 
     try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, sampleRate: 16000 },
-      })
-
-      vadSegmenter = new VadSegmenter({
-        silenceMs: 1500,
-        minSpeechMs: 400,
-        energyThreshold: 0.012,
-        onSegment: (seg) => { void processSegment(seg.blob, seg.startMs, seg.endMs) },
-      })
-      await vadSegmenter.start(mediaStream)
+      nativeMode = false
+      if (isBackgroundMicSupported()) {
+        const nativeInputs = await listNativeMicInputs()
+        if (nativeInputs.length) inputs.value = nativeInputs
+        nativeMode = await startBackgroundMic({
+          meetingId: unref(meetingId),
+          deviceId: opts?.deviceId,
+        })
+        if (nativeMode) {
+          selectedInput.value = inputs.value.find((i) => i.deviceId === opts?.deviceId)
+            || inputs.value[0]
+          unlistenNative = await listenBackgroundMicParts((part) => {
+            void processSegment(nativePartToBlob(part), part.startMs, part.endMs)
+          }, (msg) => { sttError.value = msg })
+        }
+      }
+      if (!nativeMode) {
+        const opened = await openPreferredMicStream(opts?.deviceId)
+        mediaStream = opened.stream
+        inputs.value = opened.inputs
+        selectedInput.value = opened.selected
+        vadSegmenter = new VadSegmenter({
+          silenceMs: 1500,
+          minSpeechMs: 400,
+          energyThreshold: 0.012,
+          onSegment: (seg) => { void processSegment(seg.blob, seg.startMs, seg.endMs) },
+        })
+        await vadSegmenter.start(mediaStream)
+        document.addEventListener('visibilitychange', onHidden)
+      }
 
       startTime = Date.now()
       isRecording.value = true
       elapsedTimer = setInterval(() => {
         if (!isPaused.value) elapsedMs.value = Date.now() - startTime
       }, 200)
+      navigator.mediaDevices?.addEventListener?.('devicechange', onDeviceChange)
       return true
     } catch {
       sttError.value = mic.deniedLabel.value || '麦克风权限被拒绝'
-      cleanupMedia()
+      void cleanupMedia()
       return false
     }
+  }
+
+  async function onDeviceChange() {
+    const next = Capacitor.isNativePlatform()
+      ? await listNativeMicInputs()
+      : await listAudioInputs()
+    if (!next.length) return
+    inputs.value = next
+    const best = next[0]
+    if (selectedInput.value && best.deviceId !== selectedInput.value.deviceId && best.rank < selectedInput.value.rank) {
+      toast.success(`检测到更好的麦克风：${best.label}，可在录音条切换`)
+    }
+  }
+
+  async function switchDevice(deviceId: string) {
+    if (!isRecording.value) return start({ deviceId })
+    if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
+    const keptElapsed = elapsedMs.value
+    vadSegmenter?.stop()
+    await cleanupMedia()
+    isRecording.value = false
+    const ok = await start({ deviceId, resume: true })
+    if (ok) elapsedMs.value = keptElapsed
+    return ok
   }
 
   async function processSegment(blob: Blob, startMs: number, endMs: number) {
     if (!diarizer) return
     processingCount.value++
-    const audioPath = URL.createObjectURL(blob)
-
     try {
-      const [sttResult, embedding] = await Promise.all([
-        sttApi.transcribe({ audioPath }),
-        extractEmbedding(blob),
-      ])
-      URL.revokeObjectURL(audioPath)
-      if (!sttResult.text.trim()) return
-
-      const { profileId, label, isNew } = diarizer.identify(embedding)
+      partSeq += 1
+      await ingestSpeechBlob({
+        meetingId, blob, startMs, endMs, seq: partSeq, diarizer,
+        segments: segments.value, segmentProfiles,
+      })
       syncSpeakers()
-
-      const seg: Omit<MeetingSegment, 'id'> = {
-        meetingId,
-        speakerLabel: label,
-        lang: detectLang(sttResult.text),
-        confidence: sttResult.confidence,
-        startMs,
-        endMs,
-        text: sttResult.text.trim(),
-      }
-      const id = await saveSegment(seg)
-      segmentProfiles.set(id, profileId)
-      segments.value.push({ id, ...seg })
-      await syncTranscript()
-
-      if (isNew) {
-        // 新说话人：暂存 embedding，等用户标注后写入 voiceprints
-      }
     } catch (e) {
       sttError.value = '转写失败，将在下一段重试'
       console.warn('[meeting-recorder] segment failed:', e)
@@ -141,67 +180,44 @@ export function useMeetingRecorder(meetingId: string) {
 
   function syncSpeakers() {
     if (!diarizer) return
-    speakers.value = diarizer.getProfiles().map((p) => ({
-      profileId: p.id,
-      label: p.label,
-    }))
+    speakers.value = diarizer.getProfiles().map((p) => ({ profileId: p.id, label: p.label }))
   }
 
-  async function syncTranscript() {
-    const full = segments.value.map((s) =>
-      `[${s.speakerLabel}] ${s.text}`,
-    ).join('\n')
-    await updateTranscript(meetingId, full)
-  }
-
-  /** 用户标注说话人 */
   async function labelSpeaker(profileId: string, displayName: string) {
     if (!diarizer) return
     diarizer.labelProfile(profileId, displayName)
     syncSpeakers()
-
     const profile = diarizer.getProfile(profileId)
-    if (profile) {
-      await saveVoiceprint({ id: profileId, displayName, embedding: profile.embedding })
-    }
-
-    // 更新所有属于该 profile 的 segment
+    if (profile) await saveVoiceprint({ id: profileId, displayName, embedding: profile.embedding })
     for (const [segId, pid] of segmentProfiles) {
       if (pid !== profileId) continue
       await updateSegmentSpeaker(segId, displayName)
       const seg = segments.value.find((s) => s.id === segId)
       if (seg) seg.speakerLabel = displayName
     }
-    await syncTranscript()
   }
 
   async function stop(): Promise<{ audioPath: string; durationMs: number } | null> {
     if (!isRecording.value) return null
     isRecording.value = false
     if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
+    navigator.mediaDevices?.removeEventListener?.('devicechange', onDeviceChange)
 
     const fullBlob = vadSegmenter?.stop() ?? null
-    cleanupMedia()
-
+    await cleanupMedia()
     const durationMs = elapsedMs.value
     let audioPath = ''
     if (fullBlob && fullBlob.size > 0) {
       audioPath = URL.createObjectURL(fullBlob)
-      try { await saveMeetingAudio(meetingId, fullBlob) } catch { /* ok */ }
+      try { await saveMeetingAudio(unref(meetingId), fullBlob) } catch { /* ok */ }
     }
-
-    await updateMeeting(meetingId, {
+    await updateMeeting(unref(meetingId), {
       audioPath: audioPath || null,
       durationMs,
       status: 'completed',
     })
-
-    // 后台云同步元数据（不含音频）
-    void getMeeting(meetingId).then((m) => {
-      if (m) syncMeetingMetadata(m)
-    })
-
-    return audioPath ? { audioPath, durationMs } : { audioPath: '', durationMs }
+    void getMeeting(unref(meetingId)).then((m) => { if (m) syncMeetingMetadata(m) })
+    return { audioPath, durationMs }
   }
 
   function formatElapsed(): string {
@@ -215,23 +231,15 @@ export function useMeetingRecorder(meetingId: string) {
 
   onBeforeUnmount(() => {
     if (elapsedTimer) clearInterval(elapsedTimer)
-    cleanupMedia()
+    navigator.mediaDevices?.removeEventListener?.('devicechange', onDeviceChange)
+    void cleanupMedia()
   })
 
   return {
     isRecording, isPaused, elapsedMs, segments, sttError, speakers, processingCount,
-    start, stop, formatElapsed, labelSpeaker, langLabels: LANG_LABELS,
+    inputs, selectedInput,
+    start, stop, switchDevice, formatElapsed, labelSpeaker, langLabels: LANG_LABELS,
   }
 }
 
 function pad(n: number): string { return n.toString().padStart(2, '0') }
-
-function detectLang(text: string): string {
-  const cjk = (text.match(/[\u4e00-\u9fff\u3400-\u4dbf]/g) || []).length
-  const latin = (text.match(/[a-zA-Z]/g) || []).length
-  const total = text.length || 1
-  if (cjk / total > 0.3 && latin / total > 0.3) return 'mixed'
-  if (cjk / total > 0.15) return 'zh'
-  if (latin / total > 0.3) return 'en'
-  return 'zh'
-}

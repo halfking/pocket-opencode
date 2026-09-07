@@ -30,6 +30,16 @@ export interface SttOptions {
   minConfidence?: number
 }
 
+export const CLOUD_STT_NEED_BLOB =
+  '本地语音识别未完成时，需要可上传的音频数据才能使用云端转写'
+
+/** Cloud STT requires the actual blob; a blob: URL is not a native file path. */
+export function requireCloudAudioBlob(opts: SttOptions): Blob {
+  if (opts.audioBlob) return opts.audioBlob
+  if (opts.audioPath) throw new Error(CLOUD_STT_NEED_BLOB)
+  throw new Error('sttApi.transcribe: provide audioBlob or audioPath')
+}
+
 function filenameForMimeType(mimeType: string): string {
   const normalized = mimeType.toLowerCase().split(';', 1)[0]
   const extension = {
@@ -65,20 +75,12 @@ export const sttApi = {
       }
     }
 
-    // Cloud fallback via pocketd -> Groq Whisper Large v3 Turbo.
-    // Send audio as base64 JSON (works in both web and native).
-    let body: string
-    if (opts.audioBlob) {
-      const base64 = await blobToBase64(opts.audioBlob)
-      body = JSON.stringify({
-        audioBase64: base64,
-        filename: filenameForMimeType(opts.audioBlob.type || 'audio/webm'),
-      })
-    } else if (opts.audioPath) {
-      throw new Error('本地语音识别未完成时，需要可上传的音频数据才能使用云端转写')
-    } else {
-      throw new Error('sttApi.transcribe: provide audioBlob or audioPath')
-    }
+    const audioBlob = requireCloudAudioBlob(opts)
+    const base64 = await blobToBase64(audioBlob)
+    const body = JSON.stringify({
+      audioBase64: base64,
+      filename: filenameForMimeType(audioBlob.type || 'audio/webm'),
+    })
 
     const res = await http<{ text: string; confidence: number; costCents?: number }>(
       '/api/stt/transcribe',

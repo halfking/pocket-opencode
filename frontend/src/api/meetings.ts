@@ -179,13 +179,16 @@ async function fallbackSummarize(
   ).join('\n')
 
   const prompt = prevSummary
-    ? `以下是会议转写的新增内容，请在已有摘要基础上更新：\n\n已有摘要：\n${prevSummary}\n\n新增转写：\n${transcript}\n\n请返回 JSON：{"summary":"","key_points":[],"action_items":[],"decisions":[],"open_questions":[]}`
-    : `请为以下会议转写生成摘要，返回 JSON：{"summary":"","key_points":[],"action_items":[],"decisions":[],"open_questions":[]}\n\n转写：\n${transcript}`
+    ? `你是会议记录助手。只根据转写更新摘要，禁止编造。结合已有摘要与新增转写，返回 JSON：{"tldr":"","topics":[],"summary":"","key_points":[],"action_items":[{"text":"","assignee":"","due":""}],"decisions":[],"open_questions":[]}\n\n已有摘要：\n${prevSummary}\n\n新增转写：\n${transcript}`
+    : `你是会议记录助手。只根据转写生成摘要，禁止编造。返回 JSON：{"tldr":"","topics":[],"summary":"","key_points":[],"action_items":[{"text":"","assignee":"","due":""}],"decisions":[],"open_questions":[]}\n\n转写：\n${transcript}`
 
   try {
     const res = await http<{ content: string }>('/api/llm/chat', {
       method: 'POST',
-      body: JSON.stringify({ messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({
+        kind: 'meeting_summary',
+        messages: [{ role: 'user', content: prompt }],
+      }),
     })
     return parseSummaryJson(res.content)
   } catch {
@@ -208,9 +211,10 @@ async function fallbackRefine(segments: MeetingSegment[]): Promise<RefineResult>
     const res = await http<{ content: string }>('/api/llm/chat', {
       method: 'POST',
       body: JSON.stringify({
+        kind: 'meeting_refine',
         messages: [{
           role: 'user',
-          content: `请润色以下会议转写，返回 JSON：{"refined_transcript":"","translations":{},"structured_minutes":{"agenda":[],"decisions":[],"action_items":[],"next_meeting":null},"todos":[]}\n\n${transcript}`,
+          content: `请润色以下会议转写（语篇规整 + 中英对照），返回 JSON：{"refined_transcript":"","translations":{},"structured_minutes":{"agenda":[],"decisions":[],"action_items":[],"next_meeting":null},"todos":[]}\n\n${transcript}`,
         }],
       }),
     })
@@ -240,8 +244,8 @@ function parseSummaryJson(content: string): SummaryResult {
   try {
     const parsed = JSON.parse(extractJson(content))
     return {
-      summary: parsed.summary ?? '',
-      keyPoints: parsed.key_points ?? parsed.keyPoints ?? [],
+      summary: parsed.summary ?? parsed.tldr ?? '',
+      keyPoints: parsed.key_points ?? parsed.keyPoints ?? parsed.topics ?? [],
       actionItems: (parsed.action_items ?? parsed.actionItems ?? []).map((a: ActionItem | string) =>
         typeof a === 'string' ? { text: a } : a,
       ),

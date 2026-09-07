@@ -1,15 +1,16 @@
 /**
  * useLiveSummary — 会议实时摘要 + 推荐，节流更新
  */
-import { ref, watch, type Ref } from 'vue'
+import { ref, watch, unref, type MaybeRef, type Ref } from 'vue'
 import { meetingsApi, toLiveSummary } from '../api/meetings'
 import { updateMeeting, type LiveSummary, type MeetingSegment, type RecommendItem } from '../features/meetings/meetings-store'
+import { topicShift } from '../features/meetings/topic-change'
 
 const SUMMARY_INTERVAL_MS = 30_000
 const SUMMARY_SEGMENT_THRESHOLD = 3
 
 export function useLiveSummary(
-  meetingId: string,
+  meetingId: MaybeRef<string>,
   segments: Ref<MeetingSegment[]>,
   opts?: {
     onUpdated?: (summary: LiveSummary) => void
@@ -24,15 +25,21 @@ export function useLiveSummary(
   let lastUpdateAt = 0
 
   async function refresh(force = false) {
-    if (segments.value.length === 0) return
+    const id = unref(meetingId)
+    if (!id || segments.value.length === 0) return
+    const last = segments.value[segments.value.length - 1]
+    const topicChanged = topicShift(
+      liveSummary.value?.keyPoints?.[0] ?? liveSummary.value?.summary,
+      last?.text ?? '',
+    )
     const newCount = segments.value.length - lastSegmentCount.value
     const elapsed = Date.now() - lastUpdateAt
-    if (!force && newCount < SUMMARY_SEGMENT_THRESHOLD && elapsed < SUMMARY_INTERVAL_MS) return
+    if (!force && !topicChanged && newCount < SUMMARY_SEGMENT_THRESHOLD && elapsed < SUMMARY_INTERVAL_MS) return
 
     isUpdating.value = true
     try {
       const result = await meetingsApi.summarize(
-        meetingId,
+        id,
         segments.value,
         liveSummary.value?.summary,
         opts?.meta?.value,
@@ -41,13 +48,13 @@ export function useLiveSummary(
       lastSegmentCount.value = segments.value.length
       lastUpdateAt = Date.now()
 
-      await updateMeeting(meetingId, { liveSummary: liveSummary.value, summary: result.summary })
+      await updateMeeting(id, { liveSummary: liveSummary.value, summary: result.summary })
       opts?.onUpdated?.(liveSummary.value)
 
-      const recs = await meetingsApi.recommend(meetingId, segments.value, result.summary)
+      const recs = await meetingsApi.recommend(id, segments.value, result.summary)
       if (recs.length > 0) {
         recommendations.value = recs
-        await updateMeeting(meetingId, { recommendations: recs })
+        await updateMeeting(id, { recommendations: recs })
       }
     } catch (e) {
       console.warn('[live-summary] update failed:', e)

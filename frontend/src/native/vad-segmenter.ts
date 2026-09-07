@@ -35,7 +35,8 @@ export class VadSegmenter {
   private stream: MediaStream | null = null
   private recorder: MediaRecorder | null = null
   private audioCtx: AudioContext | null = null
-  private analyser: AnalyserNode | null = null
+  private analyserL: AnalyserNode | null = null
+  private analyserR: AnalyserNode | null = null
   private rafId = 0
   private startTime = 0
   private speechStartMs = 0
@@ -58,9 +59,14 @@ export class VadSegmenter {
 
     this.audioCtx = new AudioContext({ sampleRate: 16000 })
     const source = this.audioCtx.createMediaStreamSource(stream)
-    this.analyser = this.audioCtx.createAnalyser()
-    this.analyser.fftSize = 512
-    source.connect(this.analyser)
+    const splitter = this.audioCtx.createChannelSplitter(2)
+    this.analyserL = this.audioCtx.createAnalyser()
+    this.analyserR = this.audioCtx.createAnalyser()
+    this.analyserL.fftSize = 512
+    this.analyserR.fftSize = 512
+    source.connect(splitter)
+    splitter.connect(this.analyserL, 0)
+    splitter.connect(this.analyserR, 1)
 
     this.recorder = new MediaRecorder(stream)
     this.recorder.ondataavailable = (e) => {
@@ -77,16 +83,21 @@ export class VadSegmenter {
     this.tick()
   }
 
-  private tick = () => {
-    if (!this.analyser) return
-    const data = new Uint8Array(this.analyser.frequencyBinCount)
-    this.analyser.getByteTimeDomainData(data)
+  private channelRms(analyser: AnalyserNode | null): number {
+    if (!analyser) return 0
+    const data = new Uint8Array(analyser.frequencyBinCount)
+    analyser.getByteTimeDomainData(data)
     let sum = 0
     for (let i = 0; i < data.length; i++) {
       const v = (data[i] - 128) / 128
       sum += v * v
     }
-    const rms = Math.sqrt(sum / data.length)
+    return Math.sqrt(sum / data.length)
+  }
+
+  private tick = () => {
+    if (!this.analyserL) return
+    const rms = Math.max(this.channelRms(this.analyserL), this.channelRms(this.analyserR))
     const now = Date.now() - this.startTime
 
     if (rms >= this.opts.energyThreshold) {
@@ -131,7 +142,8 @@ export class VadSegmenter {
       this.audioCtx.close()
       this.audioCtx = null
     }
-    this.analyser = null
+    this.analyserL = null
+    this.analyserR = null
     if (this.fullChunks.length === 0) return null
     return new Blob(this.fullChunks, { type: 'audio/webm' })
   }

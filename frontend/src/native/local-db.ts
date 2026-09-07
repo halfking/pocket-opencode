@@ -32,6 +32,12 @@ const MEETINGS_V2_COLUMNS = [
 // 邮箱配置 LWW 同步 + 发票文件采集字段（2026-09-07）：
 // 服务端 email_accounts.updated_at 是 SSOT 时间锚，本地镜像用它做
 // last-write-wins；发票镜像补文件状态，离线时也能看到采集进度。
+const LIVE_RECORD_V1_COLUMNS = [
+  { table: 'local_meetings', column: 'session_id', sql: 'ALTER TABLE local_meetings ADD COLUMN session_id TEXT' },
+  { table: 'local_meeting_segments', column: 'translation', sql: 'ALTER TABLE local_meeting_segments ADD COLUMN translation TEXT' },
+  { table: 'local_meeting_audio_parts', column: 'file_path', sql: 'ALTER TABLE local_meeting_audio_parts ADD COLUMN file_path TEXT' },
+]
+
 const EMAIL_SYNC_V1_COLUMNS = [
   { table: 'local_email_accounts', column: 'updated_at', sql: 'ALTER TABLE local_email_accounts ADD COLUMN updated_at INTEGER DEFAULT 0' },
   { table: 'local_email_invoices', column: 'file_name', sql: "ALTER TABLE local_email_invoices ADD COLUMN file_name TEXT DEFAULT ''" },
@@ -161,6 +167,11 @@ class LocalDB {
     } catch (e) {
       console.warn('[localDB] email sync v1 migration failed:', e)
     }
+    try {
+      await this.runLiveRecordV1Migration()
+    } catch (e) {
+      console.warn('[localDB] live record v1 migration failed:', e)
+    }
   }
 
   /** 会议模块 v2：为旧库补列，列已存在则跳过 */
@@ -233,6 +244,47 @@ class LocalDB {
     }
     await this.conn.execute(
       "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-07-email-sync-v1', '邮箱配置 LWW + 发票文件字段', strftime('%s', 'now') * 1000);",
+      false,
+    )
+  }
+
+  /** 会话听见式录音：session_id / 句级译文 / 分片路径。 */
+  private async runLiveRecordV1Migration(): Promise<void> {
+    if (!this.conn) return
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        version TEXT PRIMARY KEY,
+        description TEXT,
+        applied_at INTEGER NOT NULL
+      );
+    `, false)
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS local_meeting_audio_parts (
+        id TEXT PRIMARY KEY,
+        meeting_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        mime_type TEXT NOT NULL,
+        data_base64 TEXT NOT NULL,
+        file_path TEXT,
+        created_at INTEGER NOT NULL
+      );
+    `, false)
+    await this.conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_meetings_session ON local_meetings(session_id);',
+      false,
+    )
+    for (const col of LIVE_RECORD_V1_COLUMNS) {
+      const exists = await this.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
+        [col.column],
+      )
+      if (exists && exists.cnt > 0) continue
+      try {
+        await this.conn.execute(col.sql, false)
+      } catch { /* 列可能已存在 */ }
+    }
+    await this.conn.execute(
+      "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-08-live-record-v1', '会话录音 session_id/译文/分片路径', strftime('%s', 'now') * 1000);",
       false,
     )
   }

@@ -99,6 +99,7 @@ type ChatRequest struct {
 	MaxTokens   int           `json:"max_tokens,omitempty"`
 	Stream      bool          `json:"stream,omitempty"`
 	User        string        `json:"user,omitempty"` // 用户标识（审计用）
+	WorkType    string        `json:"work_type,omitempty"`
 }
 
 // ChatResponse 对应 chat completion 响应（非流式）
@@ -132,6 +133,9 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if req.WorkType != "" {
+		httpReq.Header.Set("X-Gw-Work-Type", req.WorkType)
+	}
 
 	resp, err := c.Client.Do(httpReq)
 	if err != nil {
@@ -171,8 +175,7 @@ type StreamDelta struct {
 // 请求自动设置 stream=true 和 stream_options.include_usage=true。
 func (c *Client) Stream(ctx context.Context, req ChatRequest, fn func(StreamDelta) bool) (*StreamDelta, error) {
 	req.Stream = true
-	// 注：ChatRequest 没有 stream_options 字段；这里通过包装 body 注入。
-	body, _ := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"model":       req.Model,
 		"messages":    req.Messages,
 		"temperature": req.Temperature,
@@ -180,7 +183,11 @@ func (c *Client) Stream(ctx context.Context, req ChatRequest, fn func(StreamDelt
 		"stream":      true,
 		"user":        req.User,
 		"stream_options": map[string]bool{"include_usage": true},
-	})
+	}
+	if req.WorkType != "" {
+		payload["work_type"] = req.WorkType
+	}
+	body, _ := json.Marshal(payload)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -188,6 +195,9 @@ func (c *Client) Stream(ctx context.Context, req ChatRequest, fn func(StreamDelt
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
 	httpReq.Header.Set("Accept", "text/event-stream")
+	if req.WorkType != "" {
+		httpReq.Header.Set("X-Gw-Work-Type", req.WorkType)
+	}
 
 	resp, err := c.Client.Do(httpReq)
 	if err != nil {

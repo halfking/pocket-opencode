@@ -34,6 +34,8 @@ import SessionStatusBar from './SessionStatusBar.vue'
 import RoundTimeline from './RoundTimeline.vue'
 import SessionDetailDrawer from './SessionDetailDrawer.vue'
 import SessionComposer from './SessionComposer.vue'
+import SessionLiveRecordPanel from './SessionLiveRecordPanel.vue'
+import { useSessionLiveRecord } from './useSessionLiveRecord'
 import {
   deriveFallbackPhase,
   formatStatusElapsed,
@@ -93,6 +95,8 @@ const sessionTitle = computed(() => {
   // 用 ID 截断作为 fallback
   return sessionID.value.slice(0, 8)
 })
+
+const liveRecord = useSessionLiveRecord(() => sessionID.value, () => sessionTitle.value)
 
 onMounted(async () => {
   if (!instanceID.value) {
@@ -517,12 +521,20 @@ function goBack() {
     <ApprovalPanel ref="approvalPanelEl" :instance-id="instanceID" :session-id="sessionID" />
 
     <!-- Input（SessionComposer，契约 §4 固定目标模式；@send 走 store.sendPrompt） -->
+    <SessionLiveRecordPanel
+      v-if="liveRecord.active.value"
+      :recorder="liveRecord.recorder"
+      :summary="liveRecord.summary"
+      @stop="liveRecord.toggle"
+    />
     <SessionComposer
       :session-id="sessionID"
       :session-label="sessionTitle"
       :disabled="sending"
       :initial-text="composerInitialText"
+      :live-recording="liveRecord.recorder.isRecording.value"
       @send="onComposerSend"
+      @live-record="liveRecord.toggle"
     />
   </div>
 </template>

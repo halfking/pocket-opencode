@@ -52,13 +52,16 @@
         <button
           v-if="enable.voice"
           class="uc-tool"
-          :class="{ 'uc-tool--rec': isRecording }"
+          :class="{ 'uc-tool--rec': recActive }"
           type="button"
-          :aria-label="isRecording ? '结束录音' : '语音输入'"
+          :aria-label="micAria"
           :disabled="isTranscribing"
           @click="onMic"
+          @pointerdown="onMicDown"
+          @pointerup="onMicUp"
+          @pointercancel="onMicCancel"
         >
-          <span class="material-symbols-outlined" aria-hidden="true">{{ isRecording ? 'stop_circle' : 'mic' }}</span>
+          <span class="material-symbols-outlined" aria-hidden="true">{{ recActive ? 'stop_circle' : 'mic' }}</span>
         </button>
         <button v-if="enable.image" class="uc-tool" type="button" aria-label="选择图片" @click="imageInput?.click()">
           <span class="material-symbols-outlined" aria-hidden="true">image</span>
@@ -70,6 +73,7 @@
           <span class="material-symbols-outlined" aria-hidden="true">attach_file</span>
         </button>
         <span v-if="isTranscribing" class="uc-hint">转写中…</span>
+          <span v-if="sttError" class="uc-hint uc-hint--err">{{ sttError }}</span>
           <span v-if="optimizeRetryHint" class="uc-hint">{{ optimizeRetryHint }}</span>
       </div>
 
@@ -150,13 +154,16 @@
           <button
             v-if="enable.voice"
             class="uc-tool"
-            :class="{ 'uc-tool--rec': isRecording }"
+            :class="{ 'uc-tool--rec': recActive }"
             type="button"
-            :aria-label="isRecording ? '结束录音' : '语音输入'"
+            :aria-label="micAria"
             :disabled="isTranscribing"
             @click="onMic"
+            @pointerdown="onMicDown"
+            @pointerup="onMicUp"
+            @pointercancel="onMicCancel"
           >
-            <span class="material-symbols-outlined" aria-hidden="true">{{ isRecording ? 'stop_circle' : 'mic' }}</span>
+            <span class="material-symbols-outlined" aria-hidden="true">{{ recActive ? 'stop_circle' : 'mic' }}</span>
           </button>
           <button v-if="enable.image" class="uc-tool" type="button" aria-label="选择图片" @click="imageInput?.click()">
             <span class="material-symbols-outlined" aria-hidden="true">image</span>
@@ -168,6 +175,7 @@
             <span class="material-symbols-outlined" aria-hidden="true">attach_file</span>
           </button>
           <span v-if="isTranscribing" class="uc-hint">转写中…</span>
+          <span v-if="sttError" class="uc-hint uc-hint--err">{{ sttError }}</span>
           <span v-if="optimizeRetryHint" class="uc-hint">{{ optimizeRetryHint }}</span>
         </div>
         <div class="uc-tools-right">
@@ -222,6 +230,8 @@ export interface UnifiedComposerEnable {
   file?: boolean
   agent?: boolean
   optimize?: boolean
+  /** 点按开始会话实时录音；长按仍走语音输入草稿。 */
+  liveRecord?: boolean
 }
 
 const props = withDefaults(
@@ -240,6 +250,8 @@ const props = withDefaults(
     submitLabel?: string
     /** 提交禁用的外部强制态（如流式生成中）。 */
     submitting?: boolean
+    /** 会话实时录音进行中（红点，与短语音输入互斥展示）。 */
+    liveRecording?: boolean
   }>(),
   {
     placeholder: '',
@@ -250,6 +262,7 @@ const props = withDefaults(
     agentId: undefined,
     submitLabel: '发送',
     submitting: false,
+    liveRecording: false,
   },
 )
 
@@ -258,6 +271,7 @@ const emit = defineEmits<{
   (e: 'update:agentId', value: string | undefined): void
   (e: 'submit', payload: { text: string; images: string[] }): void
   (e: 'optimized'): void
+  (e: 'live-record'): void
 }>()
 
 const slots = useSlots()
@@ -271,6 +285,7 @@ const enable = computed(() => {
     file: e.file ?? true,
     agent: e.agent ?? true,
     optimize: e.optimize ?? true,
+    liveRecord: e.liveRecord ?? false,
   }
 })
 
@@ -280,7 +295,48 @@ const attachments = attachment.attachments
 const imageInput = ref<HTMLInputElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 
-const { isRecording, isTranscribing, toggleRecording } = useVoiceInput()
+const { isRecording, isTranscribing, sttError, startRecording, stopRecording, toggleRecording } = useVoiceInput()
+const recActive = computed(() => isRecording.value || props.liveRecording)
+const micAria = computed(() => {
+  if (props.liveRecording) return '结束实时录音'
+  if (isRecording.value) return '结束语音输入'
+  if (enable.value.liveRecord) return '点按开始实时录音，长按语音输入'
+  return '语音输入'
+})
+
+let pressTimer: ReturnType<typeof setTimeout> | null = null
+let didLongPress = false
+
+function onMicCancel() {
+  if (pressTimer) { clearTimeout(pressTimer); pressTimer = null }
+}
+
+function onMicDown() {
+  if (!enable.value.liveRecord || props.liveRecording || isRecording.value) return
+  didLongPress = false
+  pressTimer = setTimeout(() => {
+    didLongPress = true
+    void startRecording()
+  }, 400)
+}
+
+async function onMicUp() {
+  if (!enable.value.liveRecord) return
+  onMicCancel()
+  if (didLongPress || isRecording.value) {
+    const text = await stopRecording()
+    if (text) insertAtCursor(text)
+    didLongPress = false
+    return
+  }
+  emit('live-record')
+}
+
+async function onMic() {
+  if (enable.value.liveRecord) return
+  const text = await toggleRecording()
+  if (text) insertAtCursor(text)
+}
 const { pickImage } = useCameraCapture()
 const { optimize: runOptimize, abort: abortOptimize, isOptimizing, optimizeRetryHint } = usePromptOptimizer()
 
@@ -338,11 +394,6 @@ function insertAtCursor(text: string) {
     const pos = start + text.length
     target.setSelectionRange(pos, pos)
   })
-}
-
-async function onMic() {
-  const text = await toggleRecording()
-  if (text) insertAtCursor(text)
 }
 
 async function onCamera() {
@@ -404,6 +455,7 @@ defineExpose({ reset, insertAtCursor, openFullscreen, closeFullscreen, submit: o
 
 onBeforeUnmount(() => {
   abortOptimize()
+  if (pressTimer) clearTimeout(pressTimer)
   if (fullscreen.value) scrollLock.release()
 })
 </script>
@@ -535,6 +587,7 @@ onBeforeUnmount(() => {
   color: var(--color-text-tertiary);
   white-space: nowrap;
 }
+.uc-hint--err { color: var(--danger, #ef4444); }
 
 /* 角色chip */
 .uc-chip {

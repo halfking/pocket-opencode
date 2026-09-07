@@ -11,6 +11,7 @@
         <span class="time">{{ formatMs(seg.startMs) }}</span>
       </div>
       <p class="segment-text">{{ seg.text }}</p>
+      <p v-if="seg.translation" class="segment-tr">{{ seg.translation }}</p>
     </div>
 
     <div v-if="segments.length === 0 && isRecording" class="listening">
@@ -103,6 +104,12 @@ watch(() => props.segments.length, async () => {
   font-size: 15px;
   line-height: 1.6;
   color: var(--text-primary);
+}
+.segment-tr {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
 }
 
 .listening {

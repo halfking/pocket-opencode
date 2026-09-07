@@ -65,6 +65,7 @@ type ChatRequest struct {
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Stream      bool      `json:"stream,omitempty"`
 	User        string    `json:"user,omitempty"` // end-user id for abuse/audit
+	Kind        string    `json:"kind,omitempty"` // quota + gateway work-type
 }
 
 // ChatResponse is the non-streaming completion result. Usage is always
