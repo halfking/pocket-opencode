@@ -38,6 +38,9 @@
             android:name=".plugins.MeetingRecordService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+        <receiver
+            android:name=".plugins.EmailFetchReceiver"
+            android:exported="false" />
     </application>
 
     <!-- Permissions -->

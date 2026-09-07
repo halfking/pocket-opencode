@@ -46,3 +46,9 @@ Whitelist categories; ads→marketing. Purge SQL + body file delete. Sequential 
 ## Task 6 — Inbox UI
 
 Header: search / label / delete / more. Chips + search chrome. Checkboxes. Progress banner. Detail: 正文已清除.
+
+## Task 7 — Native background fetch
+
+- Android `EmailFetchPlugin` + `AlarmManager`：后台 HTTP `POST /api/emails/sync` + `/classify`
+- WebView 不碰 IMAP；H5 回退 JS `syncNow`
+- pocketd Scheduler 仍是服务端常驻收信/归类

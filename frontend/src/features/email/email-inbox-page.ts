@@ -15,12 +15,23 @@ export async function readInboxPage(category: string, offset: number): Promise<L
   })
 }
 
-export async function syncInboxFromServer(): Promise<string> {
+/** 只拉账户和列表；IMAP 收信走原生插件或 syncInboxFromServer。 */
+export async function pullInboxFromServer(): Promise<void> {
   try {
     await syncAccountsFromServer()
   } catch (e: unknown) {
     console.warn('[email] account sync:', e instanceof Error ? e.message : e)
   }
+  try {
+    const since = await emailsStore.maxEmailUpdatedAt()
+    await emailsStore.syncEmailsFromServer(200, since)
+  } catch (e: unknown) {
+    console.warn('[email] sync from server:', e instanceof Error ? e.message : e)
+  }
+}
+
+export async function syncInboxFromServer(): Promise<string> {
+  await pullInboxFromServer()
   let hint = ''
   try {
     const r = await emailApi.syncNow()
@@ -30,7 +41,8 @@ export async function syncInboxFromServer(): Promise<string> {
     hint = e instanceof Error && e.message ? `同步失败：${e.message}` : '同步失败'
   }
   try {
-    await emailsStore.syncEmailsFromServer(200)
+    const since = await emailsStore.maxEmailUpdatedAt()
+    await emailsStore.syncEmailsFromServer(200, since)
   } catch (e: unknown) {
     console.warn('[email] sync from server:', e instanceof Error ? e.message : e)
   }
