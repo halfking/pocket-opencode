@@ -261,6 +261,14 @@ export const emailApi = {
     if (!res.ok) throw new Error(`下载失败（${res.status}）`)
     return res.blob()
   },
+  async fetchInvoiceThumb(id: string): Promise<Blob> {
+    const auth = useAuthStore()
+    const res = await fetch(`/api/emails/invoices/${encodeURIComponent(id)}/thumb`, {
+      headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined,
+    })
+    if (!res.ok) throw new Error(`缩略图不可用（${res.status}）`)
+    return res.blob()
+  },
   /** 合并导出 A4 网格 PDF（grid=2 → 2x2 每页 4 张；3 → 3x3 每页 9 张）。 */
   exportInvoicesGrid(ids: string[], grid: 2 | 3): Promise<EmailInvoiceExportResult> {
     return http('/api/emails/invoices/export', {
@@ -312,6 +320,8 @@ export interface EmailInvoice {
   currency?: string
   invoiceNo?: string
   invoiceDate?: string
+  /** 来源邮件收到时间（Unix 秒）。列表按它倒排。 */
+  emailDate?: number
   subject: string
   status: EmailInvoiceStatus
   extractedBy: 'rule' | 'llm'

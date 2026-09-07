@@ -129,18 +129,18 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 		return h.markRetry(ctx, inv, fmt.Sprintf("parse mime: %v", err))
 	}
 
-	// 1) PDF 附件
+	// 1) PDF / 图片附件（拍照发票常见 jpg/png）
 	for _, att := range parsed.Attachments {
-		if isPDFBytes(att.Data) {
-			return h.savePDF(ctx, inv, att.Data, "attachment")
+		if isPDFBytes(att.Data) || isImageBytes(att.Data) {
+			return h.saveInvoiceFile(ctx, inv, att.Data, "attachment")
 		}
 	}
 
 	// 2) 正文链接（HTML href 优先，纯文本 URL 兜底）
 	for _, u := range extractInvoiceURLs(parsed.HTMLBody + "\n" + parsed.TextBody) {
 		data, dlErr := h.downloadPDF(ctx, u)
-		if dlErr == nil && isPDFBytes(data) {
-			return h.savePDF(ctx, inv, data, "pdf-url")
+		if dlErr == nil && (isPDFBytes(data) || isImageBytes(data)) {
+			return h.saveInvoiceFile(ctx, inv, data, "pdf-url")
 		}
 		if dlErr != nil {
 			log.Printf("[email/invoice-harvest] link download failed invoice=%s url=%s: %v", inv.ID, u, dlErr)
@@ -158,7 +158,7 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 		if h.XMLRenderer != nil {
 			pdfBytes, rerr := h.XMLRenderer(inv.InvoiceNo, inv, att.Data)
 			if rerr == nil && isPDFBytes(pdfBytes) {
-				return h.savePDF(ctx, inv, pdfBytes, "xml-render")
+				return h.saveInvoiceFile(ctx, inv, pdfBytes, "xml-render")
 			}
 			log.Printf("[email/invoice-harvest] xml render failed invoice=%s: %v", inv.ID, rerr)
 		}
@@ -185,9 +185,20 @@ func (h *InvoiceHarvester) markRetry(ctx context.Context, inv *Invoice, msg stri
 	return "pending"
 }
 
-// savePDF 以规范文件名落盘并置 downloaded。
+// saveInvoiceFile 以规范文件名落盘并置 downloaded。图片保留原扩展名。
 func (h *InvoiceHarvester) savePDF(ctx context.Context, inv *Invoice, data []byte, source string) string {
-	name := InvoiceFileName(inv)
+	return h.saveInvoiceFile(ctx, inv, data, source)
+}
+
+func (h *InvoiceHarvester) saveInvoiceFile(ctx context.Context, inv *Invoice, data []byte, source string) string {
+	if inv.InvoiceDate == "" {
+		inv.InvoiceDate = ParseInvoiceDateFromBytes(data)
+	}
+	_, ext := DetectInvoiceMedia(data)
+	if ext == "" {
+		ext = ".pdf"
+	}
+	name := InvoiceFileNameWithExt(inv, ext)
 	dir := filepath.Join(h.DataDir, "email-invoices", defaultWorkspace(inv.WorkspaceID))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return h.markRetry(ctx, inv, "mkdir: "+err.Error())

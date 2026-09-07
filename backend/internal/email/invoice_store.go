@@ -131,7 +131,7 @@ func scanInvoice(row pgx.Row) (*Invoice, error) {
 	return &inv, nil
 }
 
-// ListInvoicesScoped 列出当前用户/工作区的发票记录，按创建时间倒序。
+// ListInvoicesScoped 列出当前用户/工作区的发票记录，按来源邮件收到时间倒序。
 // status 为空时返回全部；limit<=0 时默认 200。
 func (s *Store) ListInvoicesScoped(ctx context.Context, userID, workspaceID, status string, limit int) ([]Invoice, error) {
 	if workspaceID == "" {
@@ -162,7 +162,14 @@ func (s *Store) ListInvoicesScoped(ctx context.Context, userID, workspaceID, sta
 		}
 		out = append(out, *inv)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.attachEmailDates(ctx, out); err != nil {
+		return nil, err
+	}
+	SortInvoicesByReceived(out)
+	return out, nil
 }
 
 // GetInvoiceByIDScoped 按 id 取发票（workspace 隔离）。
@@ -264,10 +271,15 @@ func (s *Store) UpdateInvoiceHarvest(ctx context.Context, inv *Invoice) error {
 	tag, err := s.pool.Exec(ctx, `
 UPDATE email_invoices SET
 	status=$1, file_name=$2, file_path=$3, file_source=$4,
-	attempts=$5, last_error=$6, updated_at=$7
-WHERE id=$8`,
+	attempts=$5, last_error=$6, updated_at=$7,
+	invoice_date = CASE WHEN $8 <> '' THEN $8 ELSE invoice_date END,
+	invoice_no   = CASE WHEN $9 <> '' THEN $9 ELSE invoice_no END,
+	seller       = CASE WHEN $10 <> '' THEN $10 ELSE seller END,
+	amount       = CASE WHEN $11 > 0 THEN $11 ELSE amount END
+WHERE id=$12`,
 		inv.Status, inv.FileName, inv.FilePath, inv.FileSource,
-		inv.Attempts, inv.LastError, inv.UpdatedAt, inv.ID)
+		inv.Attempts, inv.LastError, inv.UpdatedAt,
+		inv.InvoiceDate, inv.InvoiceNo, inv.Seller, inv.Amount, inv.ID)
 	if err != nil {
 		return err
 	}
