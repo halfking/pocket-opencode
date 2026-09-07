@@ -165,10 +165,12 @@ export async function updateNote(
       })
       bodyPath = written.bodyPath
       mediaJson = written.files.length ? JSON.stringify(written.files) : null
-      if (written.audioPath) audioPath = written.audioPath
+      // 旧媒体目录已整体删除：本次未重写出的引用（如旧音频）不能再保留
+      audioPath = written.audioPath
     } else {
       bodyPath = null
-      if (!existing.audioPath) mediaJson = null
+      mediaJson = null
+      audioPath = null
     }
   }
 
@@ -186,7 +188,8 @@ export async function updateNote(
       nextTags ? JSON.stringify(nextTags) : null,
       patch.status ?? existing.status ?? 'saved',
       decided.tier, decided.summary, decided.searchText, bodyPath, mediaJson,
-      audioPath, patch.audioDurationMs ?? existing.audioDurationMs, Date.now(),
+      audioPath, audioPath ? (patch.audioDurationMs ?? existing.audioDurationMs) : (patch.audioDurationMs ?? 0),
+      Date.now(),
       id, workspaceId,
     ],
   )
