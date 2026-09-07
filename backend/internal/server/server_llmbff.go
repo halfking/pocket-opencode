@@ -182,6 +182,7 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 		MaxTokens:   body.MaxTokens,
 		Stream:      true,
 		User:        s.userIDFromRequest(r),
+		Kind:        body.Kind,
 	}
 
 	ctx := r.Context()

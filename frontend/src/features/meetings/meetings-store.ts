@@ -18,6 +18,7 @@ export interface LocalMeeting {
   refinedTranscript: string | null
   recommendations: RecommendItem[]
   noteId: string | null
+  sessionId: string | null
   status: MeetingStatus
   startedAt: number
   createdAt: number
@@ -33,6 +34,7 @@ export interface MeetingSegment {
   startMs: number
   endMs: number
   text: string
+  translation?: string | null
 }
 
 export interface LiveSummary {
@@ -65,6 +67,7 @@ export async function createMeeting(input: {
   audioPath?: string
   durationMs?: number
   startedAt?: number
+  sessionId?: string
 }): Promise<LocalMeeting> {
   const now = Date.now()
   const m: LocalMeeting = {
@@ -80,6 +83,7 @@ export async function createMeeting(input: {
     refinedTranscript: null,
     recommendations: [],
     noteId: null,
+    sessionId: input.sessionId ?? null,
     status: 'recording',
     startedAt: input.startedAt ?? now,
     createdAt: now,
@@ -88,11 +92,11 @@ export async function createMeeting(input: {
   await localDB.run(
     `INSERT INTO local_meetings
      (id, title, location, participants, audio_path, duration_ms, transcript, summary,
-      live_summary, refined_transcript, recommendations, note_id, status, started_at, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      live_summary, refined_transcript, recommendations, note_id, status, started_at, created_at, session_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       m.id, m.title, m.location, JSON.stringify(m.participants), m.audioPath,
-      m.durationMs, null, null, null, null, null, null, m.status, m.startedAt, m.createdAt,
+      m.durationMs, null, null, null, null, null, null, m.status, m.startedAt, m.createdAt, m.sessionId,
     ],
   )
   return m
@@ -168,10 +172,10 @@ export async function saveSegment(seg: Omit<MeetingSegment, 'id'>): Promise<stri
   const id = `seg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   await localDB.run(
     `INSERT INTO local_meeting_segments
-     (id, meeting_id, speaker_label, lang, confidence, start_ms, end_ms, text)
-     VALUES (?,?,?,?,?,?,?,?)`,
+     (id, meeting_id, speaker_label, lang, confidence, start_ms, end_ms, text, translation)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
     [id, seg.meetingId, seg.speakerLabel, seg.lang, seg.confidence,
-      seg.startMs, seg.endMs, seg.text],
+      seg.startMs, seg.endMs, seg.text, seg.translation ?? null],
   )
   return id
 }
@@ -207,6 +211,7 @@ function rowToMeeting(r: Record<string, unknown>): LocalMeeting {
     refinedTranscript: (r.refined_transcript as string) ?? null,
     recommendations: parseJson(r.recommendations as string, []),
     noteId: (r.note_id as string) ?? null,
+    sessionId: (r.session_id as string) ?? null,
     status: (r.status as MeetingStatus) ?? 'completed',
     startedAt: r.started_at as number,
     createdAt: r.created_at as number,
@@ -224,6 +229,7 @@ function rowToSegment(r: Record<string, unknown>): MeetingSegment {
     startMs: r.start_ms as number,
     endMs: r.end_ms as number,
     text: r.text as string,
+    translation: (r.translation as string) ?? null,
   }
 }
 

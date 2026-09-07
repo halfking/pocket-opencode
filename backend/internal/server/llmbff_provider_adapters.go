@@ -403,6 +403,7 @@ func (p *llmGatewayBFFProvider) Chat(ctx context.Context, req llmbff.ChatRequest
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
 		User:        req.User,
+		WorkType:    llmbff.WorkTypeFromKind(req.Kind),
 	})
 	if err != nil {
 		return nil, err
@@ -431,6 +432,7 @@ func (p *llmGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatReque
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
 		User:        req.User,
+		WorkType:    llmbff.WorkTypeFromKind(req.Kind),
 	}, func(d llmgateway.StreamDelta) bool {
 		delta := llmbff.Delta{
 			Content:      d.Content,

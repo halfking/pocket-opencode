@@ -225,11 +225,13 @@ CREATE TABLE IF NOT EXISTS local_meetings (
     refined_transcript TEXT,         -- 精翻后全文
     recommendations TEXT,            -- 推荐 JSON
     note_id TEXT,                    -- 关联笔记（精翻后）
+    session_id TEXT,                 -- 绑定工作台会话（听见式实时录音）
     status TEXT DEFAULT 'recording', -- recording|completed|processing|refined
     started_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
     deleted_at INTEGER
 );
+CREATE INDEX IF NOT EXISTS idx_meetings_session ON local_meetings(session_id);
 
 -- ============================================================
 -- 会议分段（声纹 + 时间戳）
@@ -243,6 +245,7 @@ CREATE TABLE IF NOT EXISTS local_meeting_segments (
     start_ms INTEGER NOT NULL,
     end_ms INTEGER NOT NULL,
     text TEXT NOT NULL,
+    translation TEXT,                -- 听见式句级译文
     FOREIGN KEY (meeting_id) REFERENCES local_meetings(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_segments_meeting ON local_meeting_segments(meeting_id, start_ms);
@@ -264,6 +267,7 @@ CREATE TABLE IF NOT EXISTS local_meeting_audio_parts (
     seq INTEGER NOT NULL,            -- 分片序号（拼接顺序）
     mime_type TEXT NOT NULL,
     data_base64 TEXT NOT NULL,
+    file_path TEXT,                  -- 原生落盘路径；Web 可空，靠 data_base64
     created_at INTEGER NOT NULL,
     FOREIGN KEY (meeting_id) REFERENCES local_meetings(id) ON DELETE CASCADE
 );
