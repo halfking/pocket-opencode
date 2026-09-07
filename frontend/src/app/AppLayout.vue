@@ -97,6 +97,7 @@ import { useBreakpoint } from '../composables/useBreakpoint'
 import { useDevicePosture } from '../composables/useDevicePosture'
 import { createScrollHideChrome, bindScrollHideChrome } from '../composables/useScrollHideChrome'
 import { SCROLL_CHROME_KEY, isChromeToggleTap } from '../composables/scroll-chrome'
+import { headerTitleOverride } from '../composables/useAppHeaderTitle'
 
 const { t } = useI18n()
 
@@ -130,7 +131,7 @@ if (import.meta.env.DEV && route.query.openMenu) {
   })
 }
 
-const title = computed(() => (route.meta.title as string) || 'Redclaw')
+const title = computed(() => headerTitleOverride.value || (route.meta.title as string) || 'Redclaw')
 
 /* Android 系统返回：抽屉开着时先关抽屉，而不是把返回事件交给 WebView
    （默认行为会导航后退甚至退出应用，抽屉仍留在屏幕上）。仅原生壳生效。 */
@@ -256,6 +257,7 @@ watch(() => route.fullPath, () => {
   menuOpen.value = false
   chrome.reset()
   bottomInsetHeight.value = 0
+  headerTitleOverride.value = null
 })
 
 /**

@@ -451,7 +451,7 @@ function reset() {
   attachment.clear()
 }
 
-defineExpose({ reset, insertAtCursor, openFullscreen, closeFullscreen, submit: onSubmit, canSubmit })
+defineExpose({ reset, insertAtCursor, openFullscreen, closeFullscreen, submit: onSubmit, canSubmit, attachments })
 
 onBeforeUnmount(() => {
   abortOptimize()
