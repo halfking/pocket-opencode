@@ -101,7 +101,7 @@
             v-model="modelSearch"
             class="form-input model-search"
             type="search"
-            placeholder="搜索模型（共 {{ catalogModels.length }} 个）…"
+            :placeholder="`搜索模型（共 ${catalogModels.length} 个）…`"
             autocapitalize="off"
             autocorrect="off"
             spellcheck="false"
