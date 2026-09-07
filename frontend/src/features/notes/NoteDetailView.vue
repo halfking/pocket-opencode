@@ -173,6 +173,7 @@ async function load() {
   loadError.value = ''
   try {
     const fetched = await notesStore.getNote(id, false, currentWorkspaceId())
+    if (fetched) fetched.content = await notesStore.loadFullContent(fetched)
     note.value = fetched
     if (fetched) await loadRelated(fetched)
   } catch (e: any) {
