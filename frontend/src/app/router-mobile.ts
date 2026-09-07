@@ -298,7 +298,7 @@ const router = createRouter({
       path: '/servers',
       name: 'servers',
       component: ServerSelectView,
-      meta: { requiresAuth: true, title: '选择服务器', canGoBack: true, bottomNav: false, menu: false }
+      meta: { title: '后端服务器', canGoBack: true, bottomNav: false, menu: false }
     },
     {
       path: '/instances',

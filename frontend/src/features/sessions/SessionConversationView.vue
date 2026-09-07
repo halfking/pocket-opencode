@@ -27,6 +27,7 @@ import { useApprovalStore } from '../../stores/approval'
 import { useToast } from '../../composables/useToast'
 import { useElapsedNow } from '../../composables/useElapsedNow'
 import { useFeatureFlag } from '../../config/featureFlags'
+import { readSelectedInstance } from '../../config/selected-instance'
 import { usePendingApprovals } from '../../composables/usePendingApprovals'
 import { ApprovalBottomSheet, type ApprovalDecision } from '../../components'
 import ApprovalPanel from './ApprovalPanel.vue'
@@ -69,7 +70,7 @@ const approvalStore = useApprovalStore()
 const toast = useToast()
 
 const sessionID = computed(() => props.sessionId || (route.params.id as string) || '')
-const instanceID = computed(() => props.instanceId || (route.query.instance_id as string) || localStorage.getItem('selected_instance_id') || '')
+const instanceID = computed(() => props.instanceId || (route.query.instance_id as string) || readSelectedInstance()?.id || '')
 const initialTitle = computed(() => props.title || (route.query.title as string) || '')
 
 const sending = ref(false)
@@ -80,14 +81,7 @@ const approvalPanelEl = ref<InstanceType<typeof ApprovalPanel> | null>(null)
 /** ?prompt= 深链一次性预填（传入 SessionComposer 的 initialText）。 */
 const composerInitialText = ref('')
 
-const selectedInstance = computed(() => {
-  try {
-    const raw = localStorage.getItem('selected_instance')
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
-})
+const selectedInstance = computed(() => readSelectedInstance())
 
 const sessionTitle = computed(() => {
   if (store.title) return store.title

@@ -1,5 +1,6 @@
 import { runtimePlatform } from '../native/runtime-platform'
 import { assertNotHTML } from '../api/jsonGuard'
+import { resolveApiBase } from '../config/api-base'
 
 // 应用版本配置
 export const APP_VERSION = {
@@ -30,9 +31,7 @@ export interface CheckUpdateResponse {
 
 // 检查更新
 export async function checkUpdate(): Promise<CheckUpdateResponse> {
-  const API_BASE = import.meta.env.VITE_API_BASE || ''
-
-  const response = await fetch(`${API_BASE}/api/app/check-update`, {
+  const response = await fetch(`${resolveApiBase()}/api/app/check-update`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'

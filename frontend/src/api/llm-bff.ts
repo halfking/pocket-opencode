@@ -12,7 +12,7 @@
 import { useAuthStore } from '../stores/auth'
 import { assertNotHTML } from './jsonGuard'
 
-const API_BASE = import.meta.env.VITE_API_BASE || ''
+import { resolveApiBase } from '../config/api-base'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -109,7 +109,7 @@ export const llmBffApi = {
           // maybeRefresh 内部已吞错
         }
         const doFetch = () =>
-          fetch(`${API_BASE}/api/llm/stream`, {
+          fetch(`${resolveApiBase()}/api/llm/stream`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -239,7 +239,7 @@ export const llmBffApi = {
 // 局部 http 引用，避免循环依赖（与 ./http.ts 同款）。
 async function http<T>(path: string): Promise<T> {
   const auth = useAuthStore()
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${resolveApiBase()}${path}`, {
     headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {},
   })
   if (!res.ok) throw new Error(`usage failed: ${res.status}`)

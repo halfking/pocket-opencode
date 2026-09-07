@@ -12,6 +12,7 @@
  *   - session.next.compaction.*
  *   - error / upstream.closed
  */
+import { resolveApiBase } from '../config/api-base'
 
 export interface SessionEvent {
   type: string
@@ -26,8 +27,6 @@ export interface SessionSSEHandlers {
   onError?: (err: Event | Error) => void
   onClose?: () => void
 }
-
-const API_BASE = import.meta.env.VITE_API_BASE || ''
 
 export class SessionSSEClient {
   private es: EventSource | null = null
@@ -73,7 +72,7 @@ export class SessionSSEClient {
     if (this.lastSeq !== undefined) {
       params.set('after', String(this.lastSeq))
     }
-    const url = `${API_BASE}/api/mobile/sessions/${encodeURIComponent(this.sessionID)}/event?${params}`
+    const url = `${resolveApiBase()}/api/mobile/sessions/${encodeURIComponent(this.sessionID)}/event?${params}`
 
     // EventSource 不支持自定义 header；token 走 query string（开发模式）
     // 生产应由 server 端做 JWT cookie 鉴权。当前 dev 模式 token 注入 query。

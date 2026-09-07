@@ -167,9 +167,12 @@
         @success="onMasterPasswordCreated"
       />
 
-      <!-- 版本信息 -->
+      <!-- 版本信息 + 当前 pocketd 基址（与设置页同一 SSOT） -->
       <div class="version-info">
         <p>v1.1.0-mobile</p>
+        <button type="button" class="api-base-link" @click="router.push('/servers')">
+          后端服务器 · {{ backendDisplay }}
+        </button>
       </div>
     </div>
   </div>
@@ -205,9 +208,11 @@ import {
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
 import { useCryptoConfig } from '../../stores/crypto-config'
 import { sendCode, codeLogin, fetchSsoLoginUrl, fetchSsoStatus } from '../../api/auth'
+import { displayApiBase } from '../../config/api-base'
 
 const router = useRouter()
 const auth = useAuthStore()
+const backendDisplay = displayApiBase()
 
 const username = ref('admin')
 const password = ref('')
@@ -707,6 +712,18 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
 
 .version-info p {
   margin: var(--space-1) 0;
+}
+
+.api-base-link {
+  display: inline-block;
+  margin-top: var(--space-1);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--brand-primary);
+  font-size: var(--text-xs);
+  word-break: break-all;
+  cursor: pointer;
 }
 
 .hint {

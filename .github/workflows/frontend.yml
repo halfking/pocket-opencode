@@ -80,6 +80,9 @@ jobs:
       - name: Run master-password biometric unlock tests
         run: node --test src/features/auth/__tests__/unlock-auth.test.mjs src/native/__tests__/biometric-errors.test.ts
 
+      - name: Run backend connection settings tests
+        run: node --test src/config/api-base.test.ts src/config/selected-instance.test.ts
+
       - name: Build HarmonyOS ArkWeb assets
         run: MOBILE_FAST=1 VITE_API_BASE=https://harmony-ci.example.invalid node scripts/build-harmony.mjs dev
 

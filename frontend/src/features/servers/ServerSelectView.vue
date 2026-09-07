@@ -1,231 +1,259 @@
 <template>
   <div class="server-select-view">
-    <div class="top-bar">
-      <h1>选择服务器</h1>
-      <button class="logout-btn" @click="handleLogout">退出</button>
-    </div>
+    <p class="lead">{{ t('settings.backendHint') }}</p>
 
-    <div class="server-list">
-      <div
-        v-for="server in servers"
-        :key="server.id"
-        class="server-card"
-        @click="selectServer(server)"
+    <div class="preset-list">
+      <button
+        v-if="buildDefault"
+        type="button"
+        :class="['preset', { active: kind === 'build' }]"
+        @click="kind = 'build'"
       >
-        <div class="server-icon">🌐</div>
-        <div class="server-info">
-          <h3>{{ server.name }}</h3>
-          <p class="server-url">{{ server.url }}</p>
-          <p class="server-desc">{{ server.description }}</p>
-        </div>
-        <div class="server-status" :class="server.status">
-          <span class="status-dot" />
-          {{ server.statusText }}
-        </div>
-      </div>
+        <span class="preset-title">{{ t('settings.buildDefault') }}</span>
+        <span class="preset-url">{{ buildDefault }}</span>
+      </button>
+      <button type="button" :class="['preset', { active: kind === 'origin' }]" @click="kind = 'origin'">
+        <span class="preset-title">{{ t('settings.sameOrigin') }}</span>
+        <span class="preset-url">{{ pageOrigin || '—' }}</span>
+      </button>
+      <button
+        type="button"
+        :class="['preset', { active: kind === 'production' }]"
+        @click="kind = 'production'"
+      >
+        <span class="preset-title">{{ t('settings.productionServer') }}</span>
+        <span class="preset-url">{{ PRODUCTION_API_BASE }}</span>
+      </button>
+      <button type="button" :class="['preset', { active: kind === 'custom' }]" @click="kind = 'custom'">
+        <span class="preset-title">{{ t('settings.customServer') }}</span>
+        <span class="preset-url">{{ customUrl || t('settings.customServerHint') }}</span>
+      </button>
     </div>
 
-    <div class="footer-hint">
-      <p>选择一个服务器节点以查看 OpenCode 实例</p>
+    <div v-if="kind === 'custom'" class="custom-box">
+      <label class="form-label" for="custom-api-base">{{ t('settings.apiAddress') }}</label>
+      <input
+        id="custom-api-base"
+        v-model="customUrl"
+        class="form-input"
+        type="url"
+        inputmode="url"
+        autocapitalize="off"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="https://pocket.example.com"
+      />
+    </div>
+
+    <div v-if="formError" class="test-result fail">{{ formError }}</div>
+    <div v-if="testResult" :class="['test-result', testResult.ok ? 'ok' : 'fail']">
+      {{ testResult.text }}
+    </div>
+
+    <div class="actions">
+      <button class="action-btn secondary" type="button" :disabled="testing" @click="testConnection">
+        {{ testing ? t('settings.testing') : t('settings.testConnection') }}
+      </button>
+      <button class="action-btn primary" type="button" :disabled="saving" @click="saveAndUse">
+        {{ saving ? t('settings.saving') : t('settings.saveAndUse') }}
+      </button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
+import {
+  PRODUCTION_API_BASE,
+  normalizeApiBase,
+  persistApiBase,
+  probeHealthz,
+  readApiBaseOverride,
+  resolveApiBase,
+} from '../../config/api-base'
+import { clearSelectedInstance } from '../../config/selected-instance'
+import { useAuthStore } from '../../stores/auth'
 
+type Kind = 'build' | 'origin' | 'production' | 'custom'
+
+const { t } = useI18n()
 const router = useRouter()
+const auth = useAuthStore()
 
-interface Server {
-  id: string
-  name: string
-  url: string
-  description: string
-  status: 'online' | 'offline'
-  statusText: string
+const pageOrigin = typeof window !== 'undefined' ? window.location.origin : ''
+const buildDefault = String(import.meta.env.VITE_API_BASE || '')
+
+function detectKind(): { kind: Kind; custom: string } {
+  const override = readApiBaseOverride()
+  if (override === null) return { kind: buildDefault ? 'build' : 'origin', custom: '' }
+  if (override === '') return { kind: 'origin', custom: '' }
+  if (override === PRODUCTION_API_BASE) return { kind: 'production', custom: '' }
+  return { kind: 'custom', custom: override }
 }
 
-const servers = ref<Server[]>([
-  {
-    id: 'nps-56',
-    name: 'NPS 56 服务器',
-    url: 'https://code.kxpms.cn',
-    description: '主服务器 (14.103.169.56)',
-    status: 'online',
-    statusText: '在线',
-  },
-  {
-    id: 'nps-252',
-    name: 'NPS 252 服务器',
-    url: 'https://code.itestu.cn',
-    description: '备用服务器 (115.29.212.252)',
-    status: 'online',
-    statusText: '在线',
-  },
-])
+const initial = detectKind()
+const kind = ref<Kind>(initial.kind)
+const customUrl = ref(initial.custom)
+const testing = ref(false)
+const saving = ref(false)
+const formError = ref('')
+const testResult = ref<{ ok: boolean; text: string } | null>(null)
 
-function selectServer(server: Server) {
-  localStorage.setItem('selected_server', JSON.stringify(server))
-  router.push('/instances')
+function previewBase(): string {
+  if (kind.value === 'build') return buildDefault ? normalizeApiBase(buildDefault) : ''
+  if (kind.value === 'origin') return ''
+  if (kind.value === 'production') return PRODUCTION_API_BASE
+  return normalizeApiBase(customUrl.value, pageOrigin)
 }
 
-function handleLogout() {
-  localStorage.removeItem('pocket_user')
-  localStorage.removeItem('selected_server')
-  router.push('/login')
+function persistChoice(): string {
+  if (kind.value === 'build') return persistApiBase(null)
+  if (kind.value === 'origin') return persistApiBase('')
+  if (kind.value === 'production') return persistApiBase(PRODUCTION_API_BASE)
+  return persistApiBase(normalizeApiBase(customUrl.value, pageOrigin))
+}
+
+async function testConnection() {
+  formError.value = ''
+  testResult.value = null
+  testing.value = true
+  try {
+    const base = previewBase()
+    const probeAt = base || pageOrigin
+    const result = await probeHealthz(probeAt)
+    testResult.value = result.ok
+      ? { ok: true, text: t('settings.healthOk') }
+      : { ok: false, text: t('settings.testFailed', { error: result.error }) }
+  } catch (err) {
+    formError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    testing.value = false
+  }
+}
+
+async function saveAndUse() {
+  formError.value = ''
+  saving.value = true
+  try {
+    const previous = resolveApiBase()
+    persistChoice()
+    const next = resolveApiBase()
+    if (previous !== next) {
+      clearSelectedInstance()
+      localStorage.removeItem('selected_server')
+      if (auth.isAuthenticated) await auth.logout()
+      if (typeof window !== 'undefined') {
+        window.location.assign(`${window.location.pathname}${window.location.search}#/login`)
+        window.location.reload()
+        return
+      }
+      router.replace('/login')
+      return
+    }
+    if (auth.isAuthenticated) router.replace('/settings')
+    else router.replace('/login')
+  } catch (err) {
+    formError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    saving.value = false
+  }
 }
 </script>
 
 <style scoped>
 .server-select-view {
   min-height: 100%;
-  background: var(--bg-base);
-  display: flex;
-  flex-direction: column;
-}
-
-.top-bar {
-  background: var(--bg-card);
-  padding: var(--space-3) var(--space-4);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid var(--border);
-}
-
-.top-bar h1 {
-  font-size: var(--text-lg);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
-  margin: 0;
-}
-
-.logout-btn {
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm);
-  color: var(--brand-primary);
-  background: transparent;
-  border: 1px solid var(--brand-primary);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.logout-btn:active {
-  background: var(--brand-primary);
-  color: var(--text-inverse);
-}
-
-.server-list {
-  flex: 1;
   padding: var(--space-3);
-  overflow-y: auto;
+}
+.lead {
+  margin: 0 0 var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+.preset-list {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-list-gap);
+  gap: var(--space-2);
 }
-
-.server-card {
-  background: var(--bg-card);
+.preset {
+  text-align: left;
+  padding: var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: var(--spacing-card-padding);
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  cursor: pointer;
-  transition: background 120ms;
-  min-height: 56px;
-  max-height: 66px;
-}
-
-.server-card:active {
-  background: var(--bg-subtle);
-}
-
-.server-icon {
-  font-size: 20px;
-  width: 36px;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--brand-gradient);
-  border-radius: var(--radius-sm);
-  flex-shrink: 0;
-}
-
-.server-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.server-info h3 {
-  font-size: var(--text-base);
-  font-weight: var(--font-weight-semibold);
+  background: var(--bg-card);
   color: var(--text-primary);
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
-
-.server-url {
+.preset.active {
+  border-color: var(--brand-primary);
+  background: var(--brand-bg);
+}
+.preset-title {
+  display: block;
+  font-weight: var(--font-weight-semibold);
+}
+.preset-url {
+  display: block;
+  margin-top: 2px;
   font-size: var(--text-xs);
-  color: var(--brand-primary);
-  margin: 0;
   font-family: monospace;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.server-desc {
-  font-size: var(--text-xs);
   color: var(--text-muted);
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-all;
 }
-
-.server-status {
+.custom-box {
+  margin-top: var(--space-3);
+}
+.form-label {
+  display: block;
+  margin-bottom: var(--space-1);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
+}
+.form-input {
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+.actions {
   display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--text-xs);
-  font-weight: var(--font-weight-medium);
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-full);
-  flex-shrink: 0;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
 }
-
-.server-status.online {
+.action-btn {
+  flex: 1;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  font-weight: var(--font-weight-semibold);
+  border: 1px solid var(--border);
+}
+.action-btn.primary {
+  background: var(--brand-gradient);
+  color: var(--text-inverse);
+  border: none;
+}
+.action-btn.secondary {
+  background: var(--brand-bg);
+  color: var(--brand-primary);
+}
+.action-btn:disabled {
+  opacity: 0.6;
+}
+.test-result {
+  margin-top: var(--space-3);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+.test-result.ok {
   background: var(--success-bg);
   color: var(--success);
 }
-
-.server-status.offline {
+.test-result.fail {
   background: var(--danger-bg);
   color: var(--danger);
-}
-
-.status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.footer-hint {
-  padding: var(--space-4);
-  text-align: center;
-  color: var(--text-muted);
-  font-size: var(--text-sm);
-  border-top: 1px solid var(--border);
-}
-
-.footer-hint p {
-  margin: 0;
 }
 </style>

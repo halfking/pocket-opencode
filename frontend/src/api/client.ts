@@ -1,7 +1,6 @@
+import { resolveApiBase } from '../config/api-base'
 import { useAuthStore } from '../stores/auth'
 import { ApiError, assertNotHTML } from './http'
-
-const API_BASE = import.meta.env.VITE_API_BASE || ""
 
 /**
  * fetch 包装：注入 Bearer token + 统一错误处理。
@@ -134,7 +133,7 @@ export const api = {
     instanceId?: string,
     opts: { workstreamId?: string; source?: 'acc' | 'opencode' | 'local' } = {},
   ): Promise<Task[]> {
-    const url = new URL(`${API_BASE}/api/tasks`, window.location.origin)
+    const url = new URL(`${resolveApiBase()}/api/tasks`, window.location.origin)
     if (instanceId) url.searchParams.set('instance_id', instanceId)
     if (opts.workstreamId) url.searchParams.set('workstream_id', opts.workstreamId)
     if (opts.source) url.searchParams.set('source', opts.source)
@@ -144,12 +143,12 @@ export const api = {
   },
 
   async getTask(id: string): Promise<Task> {
-    const res = await authFetch(`${API_BASE}/api/tasks/${id}`)
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${id}`)
     return res.json()
   },
 
   async createTask(task: Partial<Task>): Promise<Task> {
-    const res = await authFetch(`${API_BASE}/api/tasks`, {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(task),
@@ -158,7 +157,7 @@ export const api = {
   },
 
   async updateTask(id: string, data: Partial<Task>): Promise<Task> {
-    const res = await authFetch(`${API_BASE}/api/tasks/${id}`, {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -167,32 +166,32 @@ export const api = {
   },
 
   async deleteTask(id: string): Promise<void> {
-    await authFetch(`${API_BASE}/api/tasks/${id}`, {
+    await authFetch(`${resolveApiBase()}/api/tasks/${id}`, {
       method: "DELETE",
     })
   },
 
   async getTaskSessions(taskId: string): Promise<SessionLink[]> {
-    const res = await authFetch(`${API_BASE}/api/tasks/${taskId}/sessions`)
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/sessions`)
     const data = await res.json()
     return data.sessions || []
   },
 
   async getInstances(): Promise<Instance[]> {
-    const res = await authFetch(`${API_BASE}/api/instances`)
+    const res = await authFetch(`${resolveApiBase()}/api/instances`)
     const data = await res.json()
     return data.instances || []
   },
 
   async getSessions(instanceBaseURL: string): Promise<Session[]> {
-    const url = `${API_BASE}/api/sessions/?instance=${encodeURIComponent(instanceBaseURL)}`
+    const url = `${resolveApiBase()}/api/sessions/?instance=${encodeURIComponent(instanceBaseURL)}`
     const res = await authFetch(url)
     const data = await res.json()
     return data.sessions || []
   },
 
   async attachSession(taskId: string, instanceId: string, sessionId: string, role: string = "primary"): Promise<void> {
-    const res = await authFetch(`${API_BASE}/api/tasks/${taskId}/attach-session`, {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/attach-session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ instanceId, sessionId, role }),
@@ -200,13 +199,13 @@ export const api = {
   },
 
   async getModelConfig(instanceId: string): Promise<ModelConfig> {
-    const res = await authFetch(`${API_BASE}/api/config/models?instance_id=${instanceId}`)
+    const res = await authFetch(`${resolveApiBase()}/api/config/models?instance_id=${instanceId}`)
     const data = await res.json()
     return data.config
   },
 
   async updateModelConfig(instanceId: string, config: ModelConfig): Promise<void> {
-    const res = await authFetch(`${API_BASE}/api/config/models?instance_id=${instanceId}`, {
+    const res = await authFetch(`${resolveApiBase()}/api/config/models?instance_id=${instanceId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ config }),
@@ -214,13 +213,13 @@ export const api = {
   },
 
   async reloadConfig(instanceId: string): Promise<void> {
-    const res = await authFetch(`${API_BASE}/api/config/reload?instance_id=${instanceId}`, {
+    const res = await authFetch(`${resolveApiBase()}/api/config/reload?instance_id=${instanceId}`, {
       method: "POST",
     })
   },
 
   async testModel(instanceId: string, providerId: string, modelId: string): Promise<void> {
-    const res = await authFetch(`${API_BASE}/api/config/models/test?instance_id=${instanceId}`, {
+    const res = await authFetch(`${resolveApiBase()}/api/config/models/test?instance_id=${instanceId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ providerId, modelId }),
@@ -234,7 +233,7 @@ export const api = {
     params.append('limit', limit.toString())
     params.append('offset', offset.toString())
 
-    const res = await authFetch(`${API_BASE}/api/sessions?${params}`)
+    const res = await authFetch(`${resolveApiBase()}/api/sessions?${params}`)
     return res.json()
   },
 
@@ -242,7 +241,7 @@ export const api = {
   async deleteSession(sessionId: string, instanceId: string): Promise<void> {
     const qs = new URLSearchParams({ instance_id: instanceId })
     await authFetch(
-      `${API_BASE}/api/mobile/sessions/${encodeURIComponent(sessionId)}?${qs}`,
+      `${resolveApiBase()}/api/mobile/sessions/${encodeURIComponent(sessionId)}?${qs}`,
       { method: 'DELETE' },
     )
   },
@@ -255,7 +254,7 @@ export const api = {
   async interruptSession(sessionId: string, instanceId: string): Promise<void> {
     const qs = new URLSearchParams({ instance_id: instanceId })
     await authFetch(
-      `${API_BASE}/api/mobile/sessions/${encodeURIComponent(sessionId)}/interrupt?${qs}`,
+      `${resolveApiBase()}/api/mobile/sessions/${encodeURIComponent(sessionId)}/interrupt?${qs}`,
       { method: 'POST' },
     )
   },
@@ -266,20 +265,20 @@ export const api = {
    */
   async getMobileSessions(instanceId: string): Promise<MobileSessionListResponse> {
     const params = new URLSearchParams({ instance_id: instanceId })
-    const res = await authFetch(`${API_BASE}/api/mobile/sessions?${params}`)
+    const res = await authFetch(`${resolveApiBase()}/api/mobile/sessions?${params}`)
     return res.json()
   },
 
   /** 服务端会话搜索（标题/ID 子串），仅在已选择 instance 时使用。 */
   async searchMobileSessions(instanceId: string, query: string): Promise<MobileSessionSearchResponse> {
     const params = new URLSearchParams({ instance_id: instanceId, q: query })
-    const res = await authFetch(`${API_BASE}/api/mobile/sessions/search?${params}`)
+    const res = await authFetch(`${resolveApiBase()}/api/mobile/sessions/search?${params}`)
     return res.json()
   },
 
   // 附加会话到任务
   async attachSessionToTask(taskId: string, sessionId: string, instanceId: string): Promise<void> {
-    const res = await authFetch(`${API_BASE}/api/tasks/${taskId}/attach-session`, {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/attach-session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -293,13 +292,13 @@ export const api = {
   // ---- Phase 5: LLM Gateway 配置管理 ----
   /** 读当前 LLM Gateway 配置（API Key 已被后端掩码） */
   async getGatewayConfig(): Promise<GatewayConfig> {
-    const res = await authFetch(`${API_BASE}/api/llm-gateway/config`)
+    const res = await authFetch(`${resolveApiBase()}/api/llm-gateway/config`)
     return res.json()
   },
 
   /** 连通性测试：拉一次 /v1/models 验证 baseURL + apiKey */
   async testGateway(): Promise<GatewayTestResult> {
-    const res = await authFetch(`${API_BASE}/api/llm-gateway/test`, { method: 'POST' })
+    const res = await authFetch(`${resolveApiBase()}/api/llm-gateway/test`, { method: 'POST' })
     return res.json()
   },
 
@@ -314,7 +313,7 @@ export const api = {
     format?: string
     preferredModels?: string[]
   }): Promise<{ ok: boolean; baseURL: string; models: string[] }> {
-    const res = await authFetch(`${API_BASE}/api/llm-gateway/config`, {
+    const res = await authFetch(`${resolveApiBase()}/api/llm-gateway/config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -324,14 +323,14 @@ export const api = {
 
   /** 读已缓存的模型列表 */
   async getGatewayModels(): Promise<{ baseURL: string; models: string[] }> {
-    const res = await authFetch(`${API_BASE}/api/llm-gateway/models`)
+    const res = await authFetch(`${resolveApiBase()}/api/llm-gateway/models`)
     return res.json()
   },
 
   // ---- Biometric (WebAuthn) ----
   /** 列出当前用户已注册的生物识别（指纹/人脸）凭据 */
   async listBiometricCredentials(): Promise<BiometricCredentialMeta[]> {
-    const res = await authFetch(`${API_BASE}/api/auth/biometric/credentials`)
+    const res = await authFetch(`${resolveApiBase()}/api/auth/biometric/credentials`)
     const body = await res.json()
     return Array.isArray(body?.credentials) ? body.credentials : []
   },
