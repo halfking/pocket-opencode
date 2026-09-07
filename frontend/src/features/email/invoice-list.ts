@@ -44,3 +44,19 @@ export function invoiceFileKind(fileName?: string): InvoiceFileKind {
 export function invoiceHasFile(inv: Pick<EmailInvoice, 'fileName'>): boolean {
   return !!(inv.fileName && inv.fileName.trim())
 }
+
+export const INVOICE_PAGE_SIZE = 30
+
+/** 分页追加：去重后按收到日期倒排，避免后一页打乱前一页顺序。 */
+export function mergeInvoicePages<T extends Pick<EmailInvoice, 'id' | 'emailDate' | 'createdAt'>>(
+  existing: T[],
+  incoming: T[],
+): T[] {
+  const seen = new Set(existing.map((i) => i.id))
+  const added = incoming.filter((i) => i.id && !seen.has(i.id))
+  return sortInvoicesByReceived([...existing, ...added])
+}
+
+export function invoicePageHasMore(pageLen: number, pageSize = INVOICE_PAGE_SIZE): boolean {
+  return pageLen >= pageSize
+}

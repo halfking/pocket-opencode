@@ -230,10 +230,11 @@ export const emailApi = {
   // ── 发票自动整理 ──────────────────────────────────────────────────────
   // 后端规则提取（subject/snippet/缓存正文），分类为 bill 的邮件同步后自动提取；
   // 这里提供列表/手动提取/归档/删除 + 文件采集/导出/推送。
-  listInvoices(status?: EmailInvoiceStatus, limit?: number): Promise<EmailInvoiceListResult> {
+  listInvoices(status?: EmailInvoiceStatus, limit?: number, offset?: number): Promise<EmailInvoiceListResult> {
     const qs = new URLSearchParams()
     if (status) qs.set('status', status)
     if (limit) qs.set('limit', String(limit))
+    if (offset) qs.set('offset', String(offset))
     const q = qs.toString()
     return http(`/api/emails/invoices${q ? `?${q}` : ''}`)
   },
@@ -346,6 +347,8 @@ export interface EmailInvoiceListResult {
   total: number
   filed: number
   amount: number
+  hasMore?: boolean
+  offset?: number
 }
 
 export interface EmailInvoiceExtractResult {

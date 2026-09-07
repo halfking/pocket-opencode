@@ -76,6 +76,11 @@
         @unfile="markNew(inv)"
         @remove="remove(inv)"
       />
+      <div v-if="invoices.length > 0" ref="moreEl" class="more">
+        <span v-if="loadingMore">加载中…</span>
+        <span v-else-if="hasMore">上拉加载更多</span>
+        <span v-else>没有更多了</span>
+      </div>
     </main>
     <InvoicePreviewSheet
       :open="!!preview"
@@ -90,7 +95,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { wsClient } from '../../api/websocket'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import ScrollChromePortal from '../../components/layout/ScrollChromePortal.vue'
@@ -99,22 +104,34 @@ import InvoicePreviewSheet from './InvoicePreviewSheet.vue'
 import { useInvoiceList } from './use-invoice-list'
 
 const {
-  loading, syncing, exporting, pushing, error, filter, summary, bookingId,
+  loading, loadingMore, hasMore, syncing, exporting, pushing, error, filter, summary, bookingId,
   selectMode, selected, thumbs, preview, invoices, previewSrc, previewKind, previewTitle,
   formatAmount, statusLabel, bookable, toggleSelectMode, selectAllDownloaded, togglePick,
-  downloadableSelection, openEmail, openPreview, closePreview, load, runPipeline,
+  downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline,
   syncAndReload, exportGrid, pushFeishu, downloadInvoice, markFiled, markNew, book,
   exportCsv, remove,
 } = useInvoiceList()
+
+const moreEl = ref<HTMLElement | null>(null)
+let moreObs: IntersectionObserver | null = null
 
 onMounted(() => {
   wsClient.on('email.invoice.extracted', load)
   wsClient.on('email.invoices.exported', load)
   void load()
+  moreObs = new IntersectionObserver((ents) => {
+    if (ents.some((e) => e.isIntersecting)) void loadMore()
+  }, { rootMargin: '120px' })
+})
+watch(moreEl, (el, prev) => {
+  if (!moreObs) return
+  if (prev) moreObs.unobserve(prev)
+  if (el) moreObs.observe(el)
 })
 onUnmounted(() => {
   wsClient.off('email.invoice.extracted', load)
   wsClient.off('email.invoices.exported', load)
+  moreObs?.disconnect()
 })
 </script>
 
@@ -136,4 +153,5 @@ onUnmounted(() => {
 .body { padding: 0 var(--space-3) 100px; display: flex; flex-direction: column; gap: var(--space-2); }
 .state { padding: 40px 20px; text-align: center; color: var(--text-secondary); }
 .hint { font-size: 12px; margin-top: 8px; }
+.more { padding: 16px 0 24px; text-align: center; font-size: 12px; color: var(--text-muted); }
 </style>

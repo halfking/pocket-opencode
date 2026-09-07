@@ -1,11 +1,14 @@
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { emailApi, type EmailInvoice, type EmailInvoiceStatus } from '../../api/email'
 import { financeApi } from '../../api/finance'
 import { useToast } from '../../composables/useToast'
 import { downloadTextFile, downloadFile, DownloadUnsupportedError } from '../../utils/download'
 import * as invoiceStore from './invoices-store'
-import { invoiceFileKind, invoiceHasFile, sortInvoicesByReceived, type InvoiceFileKind } from './invoice-list'
+import {
+  INVOICE_PAGE_SIZE, invoiceFileKind, invoiceHasFile, invoicePageHasMore,
+  mergeInvoicePages, sortInvoicesByReceived, type InvoiceFileKind,
+} from './invoice-list'
 
 export function useInvoiceList() {
   const toast = useToast()
@@ -23,19 +26,20 @@ export function useInvoiceList() {
   const selected = ref<string[]>([])
   const thumbs = ref<Record<string, string>>({})
   const preview = ref<{ inv: EmailInvoice; src: string } | null>(null)
+  const hasMore = ref(false)
+  const loadingMore = ref(false)
+  const nextOffset = ref(0)
 
-  const invoices = computed(() =>
-    sortInvoicesByReceived(filter.value ? all.value.filter((i) => i.status === filter.value) : all.value),
-  )
+  const invoices = computed(() => all.value)
   const previewSrc = computed(() => preview.value?.src || '')
   const previewKind = computed<InvoiceFileKind>(() => invoiceFileKind(preview.value?.inv.fileName))
   const previewTitle = computed(() => preview.value?.inv.seller || '发票预览')
 
-  function applySummary(list: EmailInvoice[]) {
+  function applySummary(list: EmailInvoice[], totals?: { total: number; filed: number; amount: number }) {
     summary.value = {
-      total: list.length,
-      filed: list.filter((i) => i.status === 'filed').length,
-      amount: list.reduce((s, i) => s + (Number(i.amount) || 0), 0),
+      total: totals?.total ?? list.length,
+      filed: totals?.filed ?? list.filter((i) => i.status === 'filed').length,
+      amount: totals?.amount ?? list.reduce((s, i) => s + (Number(i.amount) || 0), 0),
       downloaded: list.filter(invoiceHasFile).length,
       pending: list.filter((i) => i.status === 'pending' || i.status === 'new').length,
       failed: list.filter((i) => i.status === 'failed').length,
@@ -71,9 +75,9 @@ export function useInvoiceList() {
     thumbs.value = {}
   }
   async function loadThumbs(list: EmailInvoice[]) {
-    revokeThumbs()
-    const next: Record<string, string> = {}
-    for (const inv of list.filter(invoiceHasFile).slice(0, 40)) {
+    const next = { ...thumbs.value }
+    for (const inv of list.filter(invoiceHasFile)) {
+      if (next[inv.id]) continue
       try {
         next[inv.id] = URL.createObjectURL(await emailApi.fetchInvoiceThumb(inv.id))
       } catch { /* 无嵌入图时卡片走文档图标 */ }
@@ -104,22 +108,45 @@ export function useInvoiceList() {
   async function load() {
     loading.value = true
     error.value = ''
+    nextOffset.value = 0
+    hasMore.value = false
     try {
-      const res = await emailApi.listInvoices(undefined, 500)
-      all.value = sortInvoicesByReceived(res.invoices ?? [])
-      applySummary(all.value)
-      try { await invoiceStore.syncFromServer(all.value) } catch { /* 离线镜像可选 */ }
-      void loadThumbs(all.value)
+      const res = await emailApi.listInvoices(filter.value || undefined, INVOICE_PAGE_SIZE, 0)
+      const page = res.invoices ?? []
+      all.value = sortInvoicesByReceived(page)
+      nextOffset.value = page.length
+      hasMore.value = res.hasMore ?? invoicePageHasMore(page.length)
+      applySummary(all.value, { total: res.total, filed: res.filed, amount: res.amount })
+      revokeThumbs()
+      void loadThumbs(page)
     } catch (e: any) {
       try {
         all.value = sortInvoicesByReceived(await invoiceStore.listLocal())
         applySummary(all.value)
+        hasMore.value = false
         if (all.value.length === 0) error.value = e?.message || '加载失败'
       } catch {
         error.value = e?.message || '加载失败'
       }
     } finally {
       loading.value = false
+    }
+  }
+  async function loadMore() {
+    if (loading.value || loadingMore.value || !hasMore.value) return
+    loadingMore.value = true
+    try {
+      const res = await emailApi.listInvoices(filter.value || undefined, INVOICE_PAGE_SIZE, nextOffset.value)
+      const page = res.invoices ?? []
+      all.value = mergeInvoicePages(all.value, page)
+      nextOffset.value += page.length
+      hasMore.value = res.hasMore ?? invoicePageHasMore(page.length)
+      applySummary(all.value, { total: res.total, filed: res.filed, amount: res.amount })
+      void loadThumbs(page)
+    } catch (e: any) {
+      toast.error(e?.message || '加载更多失败')
+    } finally {
+      loadingMore.value = false
     }
   }
   async function runPipeline() {
@@ -248,15 +275,16 @@ export function useInvoiceList() {
       toast.error(e?.message || '删除失败')
     }
   }
+  watch(filter, () => { void load() })
   onUnmounted(() => {
     revokeThumbs()
     closePreview()
   })
   return {
-    loading, syncing, exporting, pushing, error, filter, summary, bookingId,
+    loading, loadingMore, hasMore, syncing, exporting, pushing, error, filter, summary, bookingId,
     selectMode, selected, thumbs, preview, invoices, previewSrc, previewKind, previewTitle,
     formatAmount, statusLabel, bookable, toggleSelectMode, selectAllDownloaded, togglePick,
-    downloadableSelection, openEmail, openPreview, closePreview, load, runPipeline,
+    downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline,
     syncAndReload, exportGrid, pushFeishu, downloadInvoice, markFiled, markNew, book,
     exportCsv, remove,
   }

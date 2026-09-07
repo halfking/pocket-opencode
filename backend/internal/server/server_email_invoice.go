@@ -3,7 +3,7 @@ package server
 // server_email_invoice.go — 邮件发票自动整理 HTTP handlers。
 //
 // 路由（server.go 注册）：
-//   GET    /api/emails/invoices          列表（?status=new|filed&limit=）
+//   GET    /api/emails/invoices          列表（?status=&limit=&offset=；按收到日期倒排）
 //   POST   /api/emails/invoices/extract  对指定邮件做一次规则提取 {emailId}
 //   PATCH  /api/emails/invoices/{id}     归档状态 {status: new|filed}
 //   DELETE /api/emails/invoices/{id}     删除记录（不影响邮件）
@@ -36,28 +36,22 @@ func (s *Server) handleEmailInvoices(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		status := strings.TrimSpace(r.URL.Query().Get("status"))
 		limit := atoiSafe(strings.TrimSpace(r.URL.Query().Get("limit")))
-		list, err := s.emailStore.ListInvoicesScoped(r.Context(), userID, wsID, status, limit)
+		offset := atoiSafe(strings.TrimSpace(r.URL.Query().Get("offset")))
+		page, err := s.emailStore.ListInvoicesPage(r.Context(), userID, wsID, status, limit, offset)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if list == nil {
-			list = []email.Invoice{}
-		}
-		// 汇总统计（本期金额），前端头部展示用
-		var total float64
-		var filed int
-		for _, inv := range list {
-			if inv.Status == "filed" {
-				filed++
-			}
-			total += inv.Amount
+		if page.Invoices == nil {
+			page.Invoices = []email.Invoice{}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"invoices": list,
-			"total":    len(list),
-			"filed":    filed,
-			"amount":   total,
+			"invoices": page.Invoices,
+			"total":    page.Total,
+			"filed":    page.Filed,
+			"amount":   page.Amount,
+			"hasMore":  page.HasMore,
+			"offset":   offset,
 		})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
