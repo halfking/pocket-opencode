@@ -2,6 +2,7 @@ package email
 
 import (
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,7 +30,10 @@ type Invoice struct {
 	Currency    string  `json:"currency,omitempty"`  // CNY/USD…（默认 CNY）
 	InvoiceNo   string  `json:"invoiceNo,omitempty"` // 发票号码
 	InvoiceDate string  `json:"invoiceDate,omitempty"`
-	Subject     string  `json:"subject"`     // 来源邮件主题（便于回溯）
+	// EmailDate 是来源邮件的收到时间（Unix 秒）。列表按它倒排；
+	// 不落 email_invoices 列，由 JOIN emails.date 填入。
+	EmailDate int64  `json:"emailDate,omitempty"`
+	Subject   string `json:"subject"` // 来源邮件主题（便于回溯）
 	Status      string  `json:"status"`      // new | pending | downloaded | failed | filed
 	ExtractedBy string  `json:"extractedBy"` // rule | llm
 	CreatedAt   int64   `json:"createdAt"`
@@ -59,7 +63,8 @@ var invoiceCurrencySymbols = map[string]string{
 
 var (
 	reInvoiceNo   = regexp.MustCompile(`(?:发票号码|发票号|票据号码|Invoice\s*(?:No\.?|Number)?|Bill\s*No\.?)[:：\s]*([A-Za-z0-9\-]{8,32})`)
-	reInvoiceDate = regexp.MustCompile(`(?:开票日期|日期|Date)[:：\s]*(\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2})日?`)
+	reInvoiceDate = regexp.MustCompile(`(?:开票日期|发票日期|开票时间|日期|Date)[:：\s]*(\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}|\d{8})日?`)
+	reLooseCNDate = regexp.MustCompile(`(\d{4}年\d{1,2}月\d{1,2})日?`)
 	// 价税合计优先，其次 合计/总额/Amount；金额允许千分位
 	reAmountTotal = regexp.MustCompile(`(?:价税合计|合计金额|合计|总额|Amount\s*(?:Due|Total)?)[:：（(]?(?:小写[)）]?)?[:：\s]*[¥￥$€£]?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
 	reAnyAmount   = regexp.MustCompile(`[¥￥]\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
@@ -134,15 +139,68 @@ func normalizeInvoiceAmount(raw string) float64 {
 }
 
 func normalizeInvoiceDate(raw string) string {
-	// 2026年09月05日 / 2026-09-05 / 2026/9/5 → 2026-09-05
+	// 2026年09月05日 / 2026-09-05 / 2026/9/5 / 20260901 → 2026-09-05
 	r := strings.NewReplacer("年", "-", "月", "-", "日", "", ".", "-", "/", "-")
-	s := r.Replace(raw)
+	s := strings.TrimSpace(r.Replace(raw))
+	if len(s) == 8 && isDigits(s) {
+		s = s[:4] + "-" + s[4:6] + "-" + s[6:]
+	}
 	for _, layout := range []string{"2006-01-02", "2006-1-2"} {
 		if t, err := time.Parse(layout, s); err == nil {
 			return t.Format("2006-01-02")
 		}
 	}
 	return s
+}
+
+func isDigits(s string) bool {
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// ParseInvoiceDate 从发票/邮件文本里抽出开票日期并归一化为 YYYY-MM-DD。
+// 先匹配带「开票日期」等标签的写法，再兜底中文年月日。
+func ParseInvoiceDate(text string) string {
+	if m := reInvoiceDate.FindStringSubmatch(text); m != nil {
+		return normalizeInvoiceDate(m[1])
+	}
+	if m := reLooseCNDate.FindStringSubmatch(text); m != nil {
+		return normalizeInvoiceDate(m[1])
+	}
+	return ""
+}
+
+// ParseInvoiceDateFromBytes 扫描文件字节（PDF 未压缩文本 / 图片旁路无效）。
+func ParseInvoiceDateFromBytes(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	if len(raw) > 64<<10 {
+		raw = raw[:64<<10]
+	}
+	return ParseInvoiceDate(string(raw))
+}
+
+func invoiceReceivedKey(inv Invoice) int64 {
+	if inv.EmailDate > 0 {
+		return inv.EmailDate
+	}
+	return inv.CreatedAt
+}
+
+// SortInvoicesByReceived 按来源邮件收到时间倒排；没有 emailDate 时用 createdAt。
+func SortInvoicesByReceived(invoices []Invoice) {
+	sort.SliceStable(invoices, func(i, j int) bool {
+		di, dj := invoiceReceivedKey(invoices[i]), invoiceReceivedKey(invoices[j])
+		if di != dj {
+			return di > dj
+		}
+		return invoices[i].CreatedAt > invoices[j].CreatedAt
+	})
 }
 
 // ExtractInvoice 用规则从邮件中提取发票信息。第二个返回值表示是否命中。
@@ -179,9 +237,7 @@ func ExtractInvoice(e Email, bodyText string) (*Invoice, bool) {
 	if m := reInvoiceNo.FindStringSubmatch(joined); m != nil {
 		inv.InvoiceNo = strings.TrimSpace(m[1])
 	}
-	if m := reInvoiceDate.FindStringSubmatch(joined); m != nil {
-		inv.InvoiceDate = normalizeInvoiceDate(m[1])
-	}
+	inv.InvoiceDate = ParseInvoiceDate(joined)
 	if m := reSeller.FindStringSubmatch(joined); m != nil {
 		inv.Seller = strings.TrimSpace(m[1])
 	}

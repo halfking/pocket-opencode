@@ -23,6 +23,7 @@ function rowToInvoice(r: any): LocalInvoice {
     currency: r.currency ?? 'CNY',
     invoiceNo: r.invoice_no || undefined,
     invoiceDate: r.invoice_date || undefined,
+    emailDate: Number(r.email_date) || 0,
     subject: r.subject ?? '',
     status: (r.status as 'new' | 'filed') ?? 'new',
     extractedBy: (r.extracted_by as 'rule' | 'llm') ?? 'rule',
@@ -34,8 +35,15 @@ function rowToInvoice(r: any): LocalInvoice {
 /** 读本地镜像（离线可用）。status 为空返回全部。 */
 export async function listLocal(status?: 'new' | 'filed'): Promise<LocalInvoice[]> {
   const sql = status
-    ? 'SELECT * FROM local_email_invoices WHERE status = ? ORDER BY created_at DESC'
-    : 'SELECT * FROM local_email_invoices ORDER BY created_at DESC'
+    ? `SELECT i.*, e.date AS email_date
+       FROM local_email_invoices i
+       LEFT JOIN local_emails e ON e.id = i.email_id
+       WHERE i.status = ?
+       ORDER BY COALESCE(e.date, i.created_at) DESC`
+    : `SELECT i.*, e.date AS email_date
+       FROM local_email_invoices i
+       LEFT JOIN local_emails e ON e.id = i.email_id
+       ORDER BY COALESCE(e.date, i.created_at) DESC`
   const rows = await localDB.query<any>(sql, status ? [status] : [])
   return rows.map(rowToInvoice)
 }

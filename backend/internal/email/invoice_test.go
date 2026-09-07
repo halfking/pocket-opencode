@@ -80,3 +80,48 @@ func TestExtractInvoiceNotAMatch(t *testing.T) {
 		t.Fatal("normal email should not match")
 	}
 }
+
+func TestParseInvoiceDateFormats(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"开票日期：2026年09月01日", "2026-09-01"},
+		{"发票日期 2026/9/5", "2026-09-05"},
+		{"开票时间:20260901", "2026-09-01"},
+		{"电子发票 2026年8月3日 已开具", "2026-08-03"},
+		{"Date: 2026-09-02", "2026-09-02"},
+		{"no date here", ""},
+	}
+	for _, c := range cases {
+		if got := ParseInvoiceDate(c.in); got != c.want {
+			t.Fatalf("ParseInvoiceDate(%q)=%q want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestExtractInvoiceFillsDateFromLooseBody(t *testing.T) {
+	e := Email{
+		ID: "em-date", AccountID: "acc1", FromAddress: "a@b.com",
+		Subject: "电子发票已开具",
+		Snippet: "价税合计：¥12.00 发票号码：25612000000987654321",
+	}
+	inv, hit := ExtractInvoice(e, "本发票开具于2026年07月18日，请查收")
+	if !hit {
+		t.Fatal("expected hit")
+	}
+	if inv.InvoiceDate != "2026-07-18" {
+		t.Fatalf("invoiceDate=%q want 2026-07-18", inv.InvoiceDate)
+	}
+}
+
+func TestSortInvoicesByReceivedDesc(t *testing.T) {
+	invoices := []Invoice{
+		{ID: "old", EmailDate: 100, CreatedAt: 999},
+		{ID: "new", EmailDate: 300, CreatedAt: 1},
+		{ID: "mid", EmailDate: 0, CreatedAt: 200},
+	}
+	SortInvoicesByReceived(invoices)
+	if invoices[0].ID != "new" || invoices[1].ID != "mid" || invoices[2].ID != "old" {
+		t.Fatalf("order=%s,%s,%s", invoices[0].ID, invoices[1].ID, invoices[2].ID)
+	}
+}

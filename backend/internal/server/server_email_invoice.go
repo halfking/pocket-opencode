@@ -93,8 +93,10 @@ func (s *Server) handleEmailInvoiceDispatch(w http.ResponseWriter, r *http.Reque
 		// export/download?file=...（导出文件下载）
 		s.handleEmailInvoiceExportDownload(w, r)
 	case strings.HasSuffix(rest, "/file"):
-		// {id}/file（单张发票 PDF 下载）
+		// {id}/file（单张发票文件下载/预览）
 		s.handleEmailInvoiceFile(w, r, strings.TrimSuffix(rest, "/file"))
+	case strings.HasSuffix(rest, "/thumb"):
+		s.handleEmailInvoiceThumb(w, r, strings.TrimSuffix(rest, "/thumb"))
 	default:
 		s.handleEmailInvoiceOps(w, r)
 	}

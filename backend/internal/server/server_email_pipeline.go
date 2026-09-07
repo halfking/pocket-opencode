@@ -180,37 +180,6 @@ func (s *Server) handleEmailPipelineRun(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, rep)
 }
 
-// handleEmailInvoiceFile — GET /api/emails/invoices/{id}/file
-// 下载采集好的发票 PDF（workspace 隔离：发票必须属于当前用户）。
-func (s *Server) handleEmailInvoiceFile(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "GET only")
-		return
-	}
-	inv, err := s.emailStore.GetInvoiceByIDScoped(r.Context(), id, s.userIDFromRequest(r), s.workspaceIDFromRequest(r))
-	if err != nil {
-		if err == email.ErrNotFound {
-			writeError(w, http.StatusNotFound, "invoice not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if inv.FilePath == "" {
-		writeError(w, http.StatusNotFound, "invoice file not harvested yet")
-		return
-	}
-	abs := filepath.Join(s.dataDir, inv.FilePath)
-	// 防路径逃逸：FilePath 来自库内数据，仍校验解析后仍在数据目录下
-	if !strings.HasPrefix(filepath.Clean(abs), filepath.Clean(s.dataDir)+string(filepath.Separator)) {
-		writeError(w, http.StatusBadRequest, "invalid file path")
-		return
-	}
-	w.Header().Set("Content-Type", "application/pdf")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", inv.FileName))
-	http.ServeFile(w, r, abs)
-}
-
 // handleEmailInvoiceExport — POST /api/emails/invoices/export {ids:[], grid:2|3}
 // 把已下载发票合并为 A4 网格单 PDF（2=2x2，3=3x3），打印后剪裁即凭证。
 func (s *Server) handleEmailInvoiceExport(w http.ResponseWriter, r *http.Request) {
