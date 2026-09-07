@@ -6,6 +6,7 @@ import { initWsBus } from "./services/ws-bus"
 import { connectWs } from "./api/websocket"
 import { useConnectivityStore } from "./stores/connectivity"
 import { useThemeStore } from "./stores/theme"
+import { startEmailConfigSync } from "./features/email/account-sync"
 import i18n from "./i18n"
 import "./styles.css"
 import "./styles/tokens.css"
@@ -27,6 +28,7 @@ app.mount("#app")
 // 离线同步接线（P1）：网络恢复 / App 回前台时自动 drain outbox + 同步会话
 // 与审批快照；全局状态条读取该 store。未登录 / 本地库未解锁时静默跳过。
 useConnectivityStore(pinia).init()
+startEmailConfigSync()
 
 // 🦞 启动 WS 事件集中路由层：把所有需要监听的服务端推送一次性订阅好，
 // 后续各 store / view 只跟 ws-bus 打交道。

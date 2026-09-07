@@ -1,26 +1,39 @@
 #!/usr/bin/env bash
-# scripts/seed_email_accounts.sh — 把目标邮箱配置种子到 admin（PG SSOT）。
-#
-# 默认账户来自 docs/2026-09-07-email-pipeline/inputs.md（见目标用户原文）。
-# 凭证从同名 .env 读：SEED_<SLUG>_PASSWORD / SEED_<SLUG>_AUTHCODE，避免
-# 把明文密码硬编进仓库。脚本幂等：同 email_address 的账户已存在则跳过。
+# 把 envs 里的目标邮箱种子到 pocketd PG（SSOT）。
+# 凭证只从 envs loader / 环境变量读，不写进仓库。
+# 幂等：同 emailAddress 已存在则 PUT 刷新 IMAP/SMTP 配置与授权码。
 #
 # 用法：
-#   SEED_KAIXUAN_PASSWORD=h8 \
-#   SEED_KAIXUAN_AUTHCODE=SFNe2ARJqJJKRyUV \
-#   SEED_QQ_PASSWORD=nregisttdabdbjej \
-#   SEED_163_FK_PASSWORD=YHjRfBvpW7qaxv7x \
-#   SEED_163_FK1_PASSWORD=EKjUVjagn5y6ghja \
-#   SEED_163_KH_PASSWORD=VJgqfnG8A8Atjadp \
 #   POCKET_API_BASE=http://127.0.0.1:8090 \
 #   POCKET_ADMIN_PASS=<admin-password> \
 #   bash scripts/seed_email_accounts.sh
-
 set -euo pipefail
 
 API_BASE="${POCKET_API_BASE:-http://127.0.0.1:8090}"
 ADMIN_USER="${POCKET_ADMIN_USER:-admin}"
-ADMIN_PASS="${POCKET_ADMIN_PASS:-${POCKET_AUTH_PASS:-d18db57a2e35e792b5223e562be2c3ea}}"
+ADMIN_PASS="${POCKET_ADMIN_PASS:-${POCKET_AUTH_PASS:-}}"
+ENVS_LOADER="${ENVS_LOADER:-$HOME/workspace/ai-native-tools/envs/loader.sh}"
+
+if [ -z "$ADMIN_PASS" ]; then
+  echo "[seed] POCKET_ADMIN_PASS / POCKET_AUTH_PASS is required" >&2
+  exit 1
+fi
+
+env_get() {
+  local key="$1"
+  local raw=""
+  if [ -x "$ENVS_LOADER" ]; then
+    raw="$(bash "$ENVS_LOADER" query "$key" 2>/dev/null || true)"
+  fi
+  # loader 偶发把 YAML 行尾注释带出来，只取第一个 token
+  printf '%s' "$raw" | awk '{print $1}'
+}
+
+SEED_KAIXUAN_PASSWORD="${SEED_KAIXUAN_PASSWORD:-$(env_get KAIXUAN_EMAIL_AUTH_CODE)}"
+SEED_QQ_PASSWORD="${SEED_QQ_PASSWORD:-$(env_get QQ_EMAIL_AUTH_CODE)}"
+SEED_163_FK_PASSWORD="${SEED_163_FK_PASSWORD:-$(env_get EMAIL_163_FEIKEMANAGER_AUTH_CODE)}"
+SEED_163_FK1_PASSWORD="${SEED_163_FK1_PASSWORD:-$(env_get EMAIL_163_FEIKEMANAGER1_AUTH_CODE)}"
+SEED_163_KH_PASSWORD="${SEED_163_KH_PASSWORD:-$(env_get EMAIL_163_KIMMY_AUTH_CODE)}"
 
 login() {
   curl -fsS -X POST "$API_BASE/api/auth/login" \
@@ -32,52 +45,54 @@ login() {
 TOKEN="$(login)"
 AUTH="Authorization: Bearer $TOKEN"
 
-# 列表查询：避免重复插入；返回第一个匹配账户 id
 account_id_for() {
   curl -fsS "$API_BASE/api/email/accounts" -H "$AUTH" \
     | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((a['id'] for a in d.get('accounts',[]) if a.get('emailAddress')==sys.argv[1]),''))" "$1"
 }
 
 upsert() {
-  local label="$1" email="$2" imap="$3" port="$4" smtp="$5" smtp_port="$6" pass_env="$7" auth_env="${8:-}"
+  local label="$1" email="$2" imap="$3" port="$4" smtp="$5" smtp_port="$6" pass="$7"
+  if [ -z "$pass" ]; then
+    echo "[seed] missing password for $email" >&2
+    return 1
+  fi
   local existing; existing="$(account_id_for "$email")"
+  local body
+  body="$(SEED_LABEL="$label" SEED_EMAIL="$email" SEED_IMAP="$imap" SEED_PORT="$port" \
+    SEED_SMTP="$smtp" SEED_SMTP_PORT="$smtp_port" SEED_PASS="$pass" python3 - <<'PY'
+import json, os
+print(json.dumps({
+  "displayName": os.environ["SEED_LABEL"],
+  "emailAddress": os.environ["SEED_EMAIL"],
+  "imapHost": os.environ["SEED_IMAP"],
+  "imapPort": int(os.environ["SEED_PORT"]),
+  "authType": "password",
+  "syncIntervalMin": 15,
+  "enabled": True,
+  "smtpHost": os.environ["SEED_SMTP"],
+  "smtpPort": int(os.environ["SEED_SMTP_PORT"]),
+  "password": os.environ["SEED_PASS"],
+  "smtpPassword": os.environ["SEED_PASS"],
+}))
+PY
+)"
   if [ -n "$existing" ]; then
-    echo "[seed] $email already exists (id=$existing) — skip"
+    curl -fsS -X PUT "$API_BASE/api/email/accounts/$existing" -H "$AUTH" \
+      -H 'Content-Type: application/json' -d "$body" >/dev/null \
+      || { echo "[seed] FAILED update $email"; return 1; }
+    echo "[seed] updated $email"
     return 0
   fi
-  local auth_type="password"
-  local token_field="\"password\": \"${!pass_env:-}\""
-  if [ -n "$auth_env" ] && [ -n "${!auth_env:-}" ]; then
-    auth_type="oauth2"
-    token_field="\"oauthToken\": \"${!auth_env}\""
-  fi
-  local body
-  body="$(cat <<EOF
-{
-  "displayName": "$label",
-  "emailAddress": "$email",
-  "imapHost": "$imap",
-  "imapPort": $port,
-  "authType": "$auth_type",
-  "syncIntervalMin": 15,
-  "enabled": true,
-  "smtpHost": "$smtp",
-  "smtpPort": $smtp_port,
-  $token_field
-}
-EOF
-)"
-  curl -fsS -X POST "$API_BASE/api/email/accounts" -H "$AUTH" -H 'Content-Type: application/json' -d "$body" >/dev/null \
-    || { echo "[seed] FAILED $email"; return 1; }
+  curl -fsS -X POST "$API_BASE/api/email/accounts" -H "$AUTH" \
+    -H 'Content-Type: application/json' -d "$body" >/dev/null \
+    || { echo "[seed] FAILED create $email"; return 1; }
   echo "[seed] created $email"
 }
 
-# 启用手工定时收信（默认 POCKET_EMAIL_FETCH_ENABLED 已是 true）。
 echo "== seeding admin email accounts =="
-upsert "凯轩企业邮"  "huangxutao@kxpms.cn"  "imap.exmail.qq.com" 993 "smtp.exmail.qq.com" 465 SEED_KAIXUAN_PASSWORD
-upsert "QQ 私人"       "56551681@qq.com"    "imap.qq.com"         993 "smtp.qq.com"         465 SEED_QQ_PASSWORD
-upsert "163 / feikemanager"  "feikemanager@163.com"  "imap.163.com" 993 "smtp.163.com" 25 SEED_163_FK_PASSWORD
-upsert "163 / feikemanager1" "feikemanager1@163.com" "imap.163.com" 993 "smtp.163.com" 25 SEED_163_FK1_PASSWORD
-upsert "163 / kimmy.huang"   "kimmy.huang@163.com"   "imap.163.com" 993 "smtp.163.com" 25 SEED_163_KH_PASSWORD
-
+upsert "凯轩企业邮" "huangxutao@kxpms.cn" "imap.exmail.qq.com" 993 "smtp.exmail.qq.com" 465 "$SEED_KAIXUAN_PASSWORD"
+upsert "QQ 私人" "56551681@qq.com" "imap.qq.com" 993 "smtp.qq.com" 465 "$SEED_QQ_PASSWORD"
+upsert "163 / feikemanager" "feikemanager@163.com" "imap.163.com" 993 "smtp.163.com" 465 "$SEED_163_FK_PASSWORD"
+upsert "163 / feikemanager1" "feikemanager1@163.com" "imap.163.com" 993 "smtp.163.com" 465 "$SEED_163_FK1_PASSWORD"
+upsert "163 / kimmy.huang" "kimmy.huang@163.com" "imap.163.com" 993 "smtp.163.com" 465 "$SEED_163_KH_PASSWORD"
 echo "== done =="

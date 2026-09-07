@@ -106,6 +106,7 @@ import HeaderActionsPortal from '@/components/layout/HeaderActionsPortal.vue'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
 import { emailApi } from '../../api/email'
+import { syncAccountsFromServer } from './account-sync'
 
 const router = useRouter()
 const emails = ref<LocalEmail[]>([])
@@ -133,8 +134,12 @@ async function load() {
   loadError.value = ''
   dbNotReady.value = false
   try {
-    // 在线时先从服务端拉一遍最近邮件，upsert 到本地库（imap_fetch 后置 UX）；
-    // 离线时只吃本地镜像。失败一次不阻塞后续 listEmails。
+    // 启动/进页：先对齐账户配置（PG SSOT ↔ 本地镜像），再拉最近邮件。
+    try {
+      await syncAccountsFromServer()
+    } catch (e: any) {
+      console.warn('[email] account sync:', e?.message || e)
+    }
     try {
       await emailsStore.syncEmailsFromServer(200)
     } catch (e: any) {
