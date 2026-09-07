@@ -14,9 +14,17 @@
       <p v-if="seg.translation" class="segment-tr">{{ seg.translation }}</p>
     </div>
 
-    <div v-if="segments.length === 0 && isRecording" class="listening">
+    <div v-if="interimText" class="segment interim">
+      <div class="segment-meta"><span class="speaker">即时</span></div>
+      <p class="segment-text">{{ interimText }}</p>
+    </div>
+    <div v-else-if="segments.length === 0 && isRecording" class="listening">
       <span class="pulse-dot" /> 正在聆听…
     </div>
+    <form class="composer" @submit.prevent="onAppend">
+      <input v-model="draft" :placeholder="composerHint" aria-label="补一句转写" />
+      <button type="submit" :disabled="!draft.trim()">写入</button>
+    </form>
   </div>
 </template>
 
@@ -24,10 +32,22 @@
 import { ref, watch, nextTick } from 'vue'
 import type { MeetingSegment } from './meetings-store'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   segments: MeetingSegment[]
   isRecording?: boolean
-}>()
+  interimText?: string
+}>(), { interimText: '' })
+
+const emit = defineEmits<{ append: [text: string] }>()
+const draft = ref('')
+const composerHint = '补一句转写，回车写入左栏并刷新右侧总结'
+
+function onAppend() {
+  const text = draft.value.trim()
+  if (!text) return
+  emit('append', text)
+  draft.value = ''
+}
 
 const containerRef = ref<HTMLElement>()
 
@@ -133,4 +153,19 @@ watch(() => props.segments.length, async () => {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
 }
+
+.interim .segment-text { color: var(--text-secondary); }
+.composer {
+  display: flex; gap: 8px; margin-top: auto; padding-top: var(--space-2);
+  position: sticky; bottom: 0; background: var(--bg-base);
+}
+.composer input {
+  flex: 1; min-height: 40px; padding: 0 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-md); background: var(--bg-card); color: var(--text-primary);
+}
+.composer button {
+  padding: 0 12px; border: none; border-radius: var(--radius-md);
+  background: var(--brand-primary); color: var(--text-inverse); font-weight: 600;
+}
+.composer button:disabled { opacity: 0.4; }
 </style>

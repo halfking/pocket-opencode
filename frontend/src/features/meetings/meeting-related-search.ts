@@ -51,7 +51,7 @@ export async function searchRelatedMeetings(
   }
 }
 
-export async function searchRelatedWeb(query: string): Promise<RecommendItem[]> {
+async function fetchWikipedia(query: string): Promise<RecommendItem[]> {
   const url = wikipediaSearchUrl(query)
   if (!url) return []
   try {
@@ -61,6 +61,14 @@ export async function searchRelatedWeb(query: string): Promise<RecommendItem[]> 
   } catch {
     return []
   }
+}
+
+export async function searchRelatedWeb(query: string): Promise<RecommendItem[]> {
+  const primary = await fetchWikipedia(query)
+  if (primary.length) return primary
+  const fallback = query.split(/\s+/).filter(Boolean).pop() || ''
+  if (!fallback || fallback === query) return []
+  return fetchWikipedia(fallback)
 }
 
 export async function searchRelatedContext(

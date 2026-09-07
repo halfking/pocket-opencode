@@ -212,10 +212,20 @@ CREATE TABLE IF NOT EXISTS local_email_invoices (
     status TEXT DEFAULT 'new',       -- new / filed
     extracted_by TEXT DEFAULT 'rule',
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    file_name TEXT DEFAULT '',
+    file_source TEXT DEFAULT '',
+    attempts INTEGER DEFAULT 0,
+    last_error TEXT DEFAULT '',
+    feishu_sent_at INTEGER DEFAULT 0,
+    email_date INTEGER DEFAULT 0,
+    dirty INTEGER DEFAULT 0,
+    client_id TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_email_invoices_status ON local_email_invoices(status);
 CREATE INDEX IF NOT EXISTS idx_email_invoices_date ON local_email_invoices(invoice_date DESC);
+CREATE INDEX IF NOT EXISTS idx_email_invoices_email_date ON local_email_invoices(email_date DESC);
+CREATE INDEX IF NOT EXISTS idx_email_invoices_dirty ON local_email_invoices(dirty);
 
 -- ============================================================
 -- 密码箱条目（敏感度最高，VeK 加密的密文存此处）

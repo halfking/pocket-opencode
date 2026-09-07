@@ -43,7 +43,7 @@ export function accHandoffInput(draft: MeetingTodoDraft, meetingTitle: string) {
     kind: 'redclaw_chat' as const,
     scheduleKind: 'at' as const,
     scheduleExpr: new Date(Date.now() + 60_000).toISOString(),
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
+    timezone: 'UTC',
     payload: { prompt, source: 'meeting-todo' },
     maxRuns: 1,
     enabled: true,

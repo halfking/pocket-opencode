@@ -32,7 +32,12 @@
 
       <div class="split">
         <section class="transcript">
-          <TranscriptSegmentList :segments="displaySegments" :is-recording="micOn" />
+          <TranscriptSegmentList
+            :segments="displaySegments"
+            :is-recording="micOn"
+            :interim-text="interimCaption"
+            @append="onAppendUtterance"
+          />
         </section>
         <MeetingInsightPanel
           :summary="liveSummary || meeting.liveSummary"
@@ -114,7 +119,7 @@ const noteRecs = ref<RecommendItem[]>([])
 let relatedTimer: ReturnType<typeof setTimeout> | null = null
 
 const {
-  isRecording, segments, sttError, speakers, start, stop, formatElapsed, labelSpeaker,
+  isRecording, segments, sttError, interimCaption, speakers, start, stop, appendText, formatElapsed, labelSpeaker,
 } = useMeetingRecorder(meetingId)
 const { liveSummary, recommendations, isUpdating, refresh } = useLiveSummary(meetingId, segments, {
   meta: computed(() => ({
@@ -190,6 +195,13 @@ async function onSummarize() {
   } finally { summarizing.value = false }
 }
 
+async function onAppendUtterance(text: string) {
+  const saved = await appendText(text)
+  if (!saved) return
+  storedSegments.value = [...displaySegments.value]
+  await refreshRelated()
+}
+
 async function onSpeakerLabel(profileId: string, displayName: string) {
   await labelSpeaker(profileId, displayName)
 }
@@ -202,14 +214,22 @@ async function onMetaSave(data: {
 }
 
 async function onShareTodo(draft: MeetingTodoDraft) {
-  await shareTodoWithPerson(draft, meeting.value?.title || '')
-  toast.success('已生成转交内容')
+  try {
+    await shareTodoWithPerson(draft, meeting.value?.title || '')
+    toast.success('已生成转交内容')
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '转交失败')
+  }
 }
 
 async function onAccTodo(draft: MeetingTodoDraft) {
-  const task = await handoffTodoToAcc(draft, meeting.value?.title || '')
-  toast.success('已转交 ACC')
-  router.push(`/settings/scheduled-tasks/${task.id}`)
+  try {
+    const task = await handoffTodoToAcc(draft, meeting.value?.title || '')
+    toast.success('已转交 ACC')
+    router.push(`/settings/scheduled-tasks/${task.id}`)
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '转交 ACC 失败')
+  }
 }
 
 function onOpenRelated(item: RecommendItem) {

@@ -64,6 +64,12 @@ const EMAIL_SYNC_V1_COLUMNS = [
   { table: 'local_email_invoices', column: 'feishu_sent_at', sql: 'ALTER TABLE local_email_invoices ADD COLUMN feishu_sent_at INTEGER DEFAULT 0' },
 ]
 
+const LIST_SYNC_V1_COLUMNS = [
+  { table: 'local_email_invoices', column: 'email_date', sql: 'ALTER TABLE local_email_invoices ADD COLUMN email_date INTEGER DEFAULT 0' },
+  { table: 'local_email_invoices', column: 'dirty', sql: 'ALTER TABLE local_email_invoices ADD COLUMN dirty INTEGER DEFAULT 0' },
+  { table: 'local_email_invoices', column: 'client_id', sql: "ALTER TABLE local_email_invoices ADD COLUMN client_id TEXT DEFAULT ''" },
+]
+
 const DB_NAME = 'lobster'
 const DB_VERSION = 1
 
@@ -199,6 +205,11 @@ class LocalDB {
     } catch (e) {
       console.warn('[localDB] meetings studio v1 migration failed:', e)
     }
+    try {
+      await this.runListSyncV1Migration()
+    } catch (e) {
+      console.warn('[localDB] list sync v1 migration failed:', e)
+    }
   }
 
   /** 会议模块 v2：为旧库补列，列已存在则跳过 */
@@ -271,6 +282,34 @@ class LocalDB {
     }
     await this.conn.execute(
       "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-07-email-sync-v1', '邮箱配置 LWW + 发票文件字段', strftime('%s', 'now') * 1000);",
+      false,
+    )
+  }
+
+  /** 列表本地优先：发票 email_date / dirty / client_id。 */
+  private async runListSyncV1Migration(): Promise<void> {
+    if (!this.conn) return
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        version TEXT PRIMARY KEY,
+        description TEXT,
+        applied_at INTEGER NOT NULL
+      );
+    `, false)
+    for (const col of LIST_SYNC_V1_COLUMNS) {
+      const exists = await this.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
+        [col.column],
+      )
+      if (exists && exists.cnt > 0) continue
+      try {
+        await this.conn.execute(col.sql, false)
+      } catch { /* 列可能已存在 */ }
+    }
+    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_email_invoices_email_date ON local_email_invoices(email_date DESC);', false).catch(() => {})
+    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_email_invoices_dirty ON local_email_invoices(dirty);', false).catch(() => {})
+    await this.conn.execute(
+      "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-08-list-sync-v1', '列表本地优先 dirty/email_date/client_id', strftime('%s', 'now') * 1000);",
       false,
     )
   }

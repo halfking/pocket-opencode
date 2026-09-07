@@ -53,6 +53,11 @@
               </div>
             </div>
           </SwipeableListItem>
+          <div v-if="meetings.length > 0" ref="moreEl" class="more">
+            <span v-if="loadingMore">加载中…</span>
+            <span v-else-if="hasMore">上拉加载更多</span>
+            <span v-else>没有更多了</span>
+          </div>
         </div>
       </PullToRefresh>
 
@@ -71,11 +76,13 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useListSentinel } from '../../composables/use-list-sentinel'
+import { DEFAULT_LIST_PAGE_SIZE, pageHasMore } from '../../native/list-sync/page'
 import {
   Skeleton, EmptyState, DbLockedState, PullToRefresh, SwipeableListItem,
 } from '@/components'
 import {
-  listMeetings, createMeeting, deleteMeeting, archiveMeeting, unarchiveMeeting,
+  listMeetings, createMeeting, deleteMeeting, archiveMeeting, unarchiveMeeting, updateMeeting,
   type LocalMeeting,
 } from './meetings-store'
 import { deleteMeetingAudio } from '../../native/meeting-audio'
@@ -88,6 +95,8 @@ import { captureDeviceLocation, formatCapturedTitle } from './meeting-meta'
 const router = useRouter()
 const dbNotReady = ref(false)
 const loading = ref(true)
+const loadingMore = ref(false)
+const hasMore = ref(false)
 const starting = ref(false)
 const filter = ref<MeetingListFilter>('active')
 const meetings = ref<LocalMeeting[]>([])
@@ -100,7 +109,12 @@ async function load() {
   loading.value = true
   dbNotReady.value = false
   try {
-    meetings.value = await listMeetings(50, { archived: filter.value === 'archived' })
+    const page = await listMeetings(DEFAULT_LIST_PAGE_SIZE, {
+      archived: filter.value === 'archived',
+      offset: 0,
+    })
+    meetings.value = page
+    hasMore.value = pageHasMore(page.length)
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
     if (msg.includes('LocalDB 未初始化')) dbNotReady.value = true
@@ -108,6 +122,24 @@ async function load() {
     loading.value = false
   }
 }
+
+async function loadMore() {
+  if (loading.value || loadingMore.value || !hasMore.value) return
+  loadingMore.value = true
+  try {
+    const page = await listMeetings(DEFAULT_LIST_PAGE_SIZE, {
+      archived: filter.value === 'archived',
+      offset: meetings.value.length,
+    })
+    const seen = new Set(meetings.value.map((m) => m.id))
+    meetings.value = [...meetings.value, ...page.filter((m) => !seen.has(m.id))]
+    hasMore.value = pageHasMore(page.length)
+  } finally {
+    loadingMore.value = false
+  }
+}
+
+const { moreEl } = useListSentinel(loadMore)
 
 async function onFilter(next: MeetingListFilter) {
   filter.value = next
@@ -119,11 +151,16 @@ async function startNewMeeting() {
   starting.value = true
   try {
     const startedAt = Date.now()
-    const location = await captureDeviceLocation()
     const m = await createMeeting({
       startedAt,
-      location: location ?? undefined,
-      title: formatCapturedTitle({ startedAt, location }),
+      title: formatCapturedTitle({ startedAt }),
+    })
+    void captureDeviceLocation().then(async (location) => {
+      if (!location) return
+      await updateMeeting(m.id, {
+        location,
+        title: formatCapturedTitle({ startedAt, location }),
+      })
     })
     await router.push({ name: 'meeting-detail', params: { id: m.id }, query: { record: '1' } })
   } finally {
@@ -180,4 +217,5 @@ onMounted(load)
 }
 .fab.recording { background: var(--danger); }
 .fab:disabled { opacity: 0.7; }
+.more { padding: 16px 0 24px; text-align: center; font-size: 12px; color: var(--text-muted); }
 </style>

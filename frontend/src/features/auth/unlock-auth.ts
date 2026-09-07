@@ -42,3 +42,13 @@ export function unlockHint(biometricBound: boolean): string {
 export function unlockPasswordPlaceholder(biometricBound: boolean): string {
   return biometricBound ? '可留空，点认证使用指纹或人脸' : '输入主密码解锁'
 }
+
+export function unlockRedirectPath(
+  query: Record<string, unknown>,
+  fallback = '/ai',
+): string {
+  const raw = query.returnTo ?? query.redirect
+  if (typeof raw !== 'string') return fallback
+  if (!raw.startsWith('/') || raw.startsWith('//')) return fallback
+  return raw
+}

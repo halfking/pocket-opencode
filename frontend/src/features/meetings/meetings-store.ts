@@ -118,13 +118,17 @@ export async function createMeeting(input: {
   return m
 }
 
-export async function listMeetings(limit = 50, opts?: { archived?: boolean }): Promise<LocalMeeting[]> {
+export async function listMeetings(
+  limit = 30,
+  opts?: { archived?: boolean; offset?: number },
+): Promise<LocalMeeting[]> {
   const archived = opts?.archived === true
+  const offset = opts?.offset ?? 0
   const rows = await localDB.query<any>(
     archived
-      ? `SELECT * FROM local_meetings WHERE deleted_at IS NULL AND IFNULL(archived_at, 0) > 0 ORDER BY started_at DESC LIMIT ?`
-      : `SELECT * FROM local_meetings WHERE deleted_at IS NULL AND IFNULL(archived_at, 0) = 0 ORDER BY started_at DESC LIMIT ?`,
-    [limit],
+      ? `SELECT * FROM local_meetings WHERE deleted_at IS NULL AND IFNULL(archived_at, 0) > 0 ORDER BY started_at DESC LIMIT ? OFFSET ?`
+      : `SELECT * FROM local_meetings WHERE deleted_at IS NULL AND IFNULL(archived_at, 0) = 0 ORDER BY started_at DESC LIMIT ? OFFSET ?`,
+    [limit, offset],
   )
   return rows.map(rowToMeeting)
 }

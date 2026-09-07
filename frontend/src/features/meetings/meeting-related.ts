@@ -1,8 +1,22 @@
 import type { RecommendItem } from './meetings-store'
 
+const RELATED_STOP = new Set([
+  '今天', '明天', '昨天', '下周', '我们', '进行', '以及', '这个', '那个', '负责', '提交', '方案',
+])
+
 export function relatedQueryFromTranscript(texts: string[]): string {
   const joined = texts.map((t) => t.trim()).filter(Boolean).slice(-6).join(' ')
-  return joined.replace(/\s+/g, ' ').slice(0, 80)
+  const compact = joined.replace(/\s+/g, ' ').trim()
+  if (!compact) return ''
+  if (compact.length <= 16) return compact.slice(0, 40)
+  const clause = compact.split(/[，。；;！？!?、]/).find((part) => part.trim().length >= 4) || compact
+  const tokens = clause.match(/[A-Za-z][A-Za-z0-9]{1,}|[\u4e00-\u9fff]{2,4}/g) || []
+  const kept: string[] = []
+  for (const token of tokens) {
+    if (RELATED_STOP.has(token) || kept.includes(token)) continue
+    kept.push(token)
+  }
+  return (kept.slice(-2).join(' ') || clause).slice(0, 40)
 }
 
 export function wikipediaSearchUrl(query: string): string {

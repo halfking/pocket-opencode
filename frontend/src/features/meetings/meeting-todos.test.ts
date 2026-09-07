@@ -26,6 +26,7 @@ describe('meeting-todos', () => {
     assert.equal(acc.kind, 'redclaw_chat')
     assert.equal(acc.scheduleKind, 'at')
     assert.equal(acc.maxRuns, 1)
+    assert.equal(acc.timezone, 'UTC')
     assert.match(String((acc.payload as { prompt: string }).prompt), /架构评审/)
   })
 })

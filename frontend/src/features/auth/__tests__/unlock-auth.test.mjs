@@ -5,6 +5,7 @@ import {
   unlockButtonLabel,
   unlockHint,
   unlockPasswordPlaceholder,
+  unlockRedirectPath,
   unlockSubmitMode,
 } from '../unlock-auth.ts'
 
@@ -42,5 +43,15 @@ describe('unlock copy', () => {
   it('asks for the master password when unbound', () => {
     assert.match(unlockHint(false), /请重新输入主密码/)
     assert.equal(unlockPasswordPlaceholder(false), '输入主密码解锁')
+  })
+})
+
+describe('unlockRedirectPath', () => {
+  it('prefers returnTo over redirect and rejects open redirects', () => {
+    assert.equal(unlockRedirectPath({ returnTo: '/meetings', redirect: '/ai' }), '/meetings')
+    assert.equal(unlockRedirectPath({ redirect: '/notes' }), '/notes')
+    assert.equal(unlockRedirectPath({ returnTo: 'https://evil.example' }), '/ai')
+    assert.equal(unlockRedirectPath({ returnTo: '//evil.example' }), '/ai')
+    assert.equal(unlockRedirectPath({}), '/ai')
   })
 })

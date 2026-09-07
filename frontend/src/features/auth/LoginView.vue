@@ -203,6 +203,7 @@ import {
   unlockButtonLabel,
   unlockHint,
   unlockPasswordPlaceholder,
+  unlockRedirectPath,
   unlockSubmitMode,
 } from './unlock-auth'
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
@@ -395,10 +396,7 @@ async function unlock() {
     }
     needUnlock.value = false
     unlockPassword.value = ''
-    const redirect = typeof router.currentRoute.value.query.redirect === 'string'
-      ? router.currentRoute.value.query.redirect
-      : '/ai'
-    router.replace(redirect)
+    router.replace(unlockRedirectPath(router.currentRoute.value.query))
   } catch (e: any) {
     error.value = `解锁失败（主密码错误？）：${e.message || e}`
   } finally {
@@ -416,10 +414,7 @@ async function logoutAndRelogin() {
 
 function onMasterPasswordCreated() {
   showMasterPasswordDialog.value = false
-  const redirect = typeof router.currentRoute.value.query.redirect === 'string'
-    ? router.currentRoute.value.query.redirect
-    : '/ai'
-  router.replace(redirect)
+  router.replace(unlockRedirectPath(router.currentRoute.value.query))
 }
 
 async function handleLogin() {

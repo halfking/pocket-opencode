@@ -8,6 +8,10 @@ describe('meeting-related', () => {
   it('builds a short query from the latest utterances', () => {
     assert.equal(relatedQueryFromTranscript(['', '预算', '发布窗口']), '预算 发布窗口')
     assert.equal(relatedQueryFromTranscript([]), '')
+    assert.equal(
+      relatedQueryFromTranscript(['今天评审第三季度预算，李四下周提交方案。']),
+      '第三季度 预算',
+    )
   })
 
   it('dedupes recommendations by type+id', () => {
