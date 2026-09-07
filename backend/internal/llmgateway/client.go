@@ -143,7 +143,7 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		r, _ := io.ReadAll(resp.Body)
+		r, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("llm-gateway chat %d: %s", resp.StatusCode, string(r))
 	}
 
@@ -251,7 +251,7 @@ func (c *Client) Embed(ctx context.Context, req EmbeddingRequest) (*EmbeddingRes
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		r, _ := io.ReadAll(resp.Body)
+		r, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("llm-gateway embed %d: %s", resp.StatusCode, string(r))
 	}
 

@@ -11,6 +11,7 @@ interface NoteIndexRow {
   tags: string | null
   search_text: string | null
   encrypted_content: number
+  storage_tier?: 'inline' | 'file' | null
 }
 
 function parseTags(raw: string | null): string[] {
@@ -41,12 +42,16 @@ export async function ensureNotesSearchIndex(): Promise<void> {
     if (done) return
 
     const rows = await localDB.query<NoteIndexRow>(
-      `SELECT id, title, content, tags, search_text, encrypted_content
+      `SELECT id, title, content, tags, search_text, encrypted_content, storage_tier
          FROM local_notes WHERE deleted_at IS NULL`,
     )
     let changed = 0
     let lockedSkipped = 0
     for (const row of rows) {
+      // file 层笔记的 content 只是摘要，全文语料创建时已写入 search_text；
+      // 用 content 重建会把全文检索降级成摘要检索，跳过已有语料的行。
+      // 这是永久性跳过（非解锁后可重试），不计入 lockedSkipped。
+      if (row.storage_tier === 'file' && (row.search_text ?? '') !== '') continue
       let plain = row.content ?? ''
       if (row.encrypted_content === 1) {
         try {

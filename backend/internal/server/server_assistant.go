@@ -1579,6 +1579,16 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 // bodyCacheDirName 缓存目录名；放在 dataDir 内、模式 0700，仅进程可读。
 const bodyCacheDirName = "email-bodies"
 
+// emailIDPathSafe 报告 email ID 是否可安全用于拼接缓存文件路径。
+// 客户端推送路径允许自带 ID，含路径分隔符（或 ".."）的 ID 会把
+// email-bodies 缓存的读写引到目录之外。
+func emailIDPathSafe(id string) bool {
+	if id == "" || id == "." || id == ".." {
+		return false
+	}
+	return !strings.ContainsAny(id, `/\`)
+}
+
 // bodyCacheRelativePath 返回相对 dataDir 的稳定路径，供 emails.body_path 存储。
 // 用 email ID 而非 UID：UID 可能在 sync 时变化；缓存失效则重拉并覆盖原文件。
 func bodyCacheRelativePath(emailID string) string {
@@ -1599,6 +1609,9 @@ func (s *Server) bodyCacheDir() (string, error) {
 // readCachedEmailBody 读缓存并解密；不存在 / 损坏 / UID 不匹配时返回 nil+nil。
 // 缓存头部写入 8 字节 UID，便于账号迁移后定位旧 UID 失效。
 func (s *Server) readCachedEmailBody(ctx context.Context, emailID string, expectedUID int64) ([]byte, error) {
+	if !emailIDPathSafe(emailID) {
+		return nil, nil
+	}
 	dir, err := s.bodyCacheDir()
 	if err != nil {
 		return nil, err
@@ -1628,6 +1641,9 @@ func (s *Server) readCachedEmailBody(ctx context.Context, emailID string, expect
 
 // writeCachedEmailBody 原子写入（临时文件 + rename），避免 reader 撞上半文件。
 func (s *Server) writeCachedEmailBody(ctx context.Context, emailID string, body []byte) error {
+	if !emailIDPathSafe(emailID) {
+		return fmt.Errorf("email id not safe for cache path")
+	}
 	dir, err := s.bodyCacheDir()
 	if err != nil {
 		return err
@@ -1788,6 +1804,9 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 		for i := range body.Emails {
 			if body.Emails[i].ID == "" {
 				body.Emails[i].ID = randomID("email")
+			} else if !emailIDPathSafe(body.Emails[i].ID) {
+				writeError(w, http.StatusBadRequest, "invalid email id")
+				return
 			}
 			if body.Emails[i].AccountID == "" {
 				writeError(w, http.StatusBadRequest, "accountId required for pushed email")

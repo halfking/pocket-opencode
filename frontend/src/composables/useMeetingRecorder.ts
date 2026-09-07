@@ -52,6 +52,9 @@ export function useMeetingRecorder(meetingId: MaybeRef<string>) {
   let unlistenNative: (() => void) | null = null
   let nativeMode = false
   let stopCaption: (() => void) | null = null
+  // 在途分段转写 promise：stop() 必须等它们落库，否则 refine 拿到的
+  // transcript 缺尾巴，晚到的 updateTranscript 还会与 completed 状态竞争。
+  const inFlightSegments = new Set<Promise<void>>()
 
   async function cleanupMedia() {
     if (mediaStream) {
@@ -208,18 +211,26 @@ export function useMeetingRecorder(meetingId: MaybeRef<string>) {
   async function processSegment(blob: Blob, startMs: number, endMs: number) {
     if (!diarizer) return
     processingCount.value++
+    const task = (async () => {
+      try {
+        partSeq += 1
+        await ingestSpeechBlob({
+          meetingId, blob, startMs, endMs, seq: partSeq, diarizer,
+          segments: segments.value, segmentProfiles,
+        })
+        syncSpeakers()
+      } catch (e) {
+        sttError.value = '转写失败，将在下一段重试'
+        console.warn('[meeting-recorder] segment failed:', e)
+      } finally {
+        processingCount.value--
+      }
+    })()
+    inFlightSegments.add(task)
     try {
-      partSeq += 1
-      await ingestSpeechBlob({
-        meetingId, blob, startMs, endMs, seq: partSeq, diarizer,
-        segments: segments.value, segmentProfiles,
-      })
-      syncSpeakers()
-    } catch (e) {
-      sttError.value = '转写失败，将在下一段重试'
-      console.warn('[meeting-recorder] segment failed:', e)
+      await task
     } finally {
-      processingCount.value--
+      inFlightSegments.delete(task)
     }
   }
 
@@ -255,6 +266,13 @@ export function useMeetingRecorder(meetingId: MaybeRef<string>) {
     if (fullBlob && fullBlob.size > 0) {
       audioPath = URL.createObjectURL(fullBlob)
       try { await saveMeetingAudio(unref(meetingId), fullBlob) } catch { /* ok */ }
+    }
+    // 等在途分段转写落库再置 completed；上限 10s，防止个别请求挂死卡住停止流程。
+    if (inFlightSegments.size) {
+      await Promise.race([
+        Promise.allSettled([...inFlightSegments]),
+        new Promise((resolve) => setTimeout(resolve, 10_000)),
+      ])
     }
     await updateMeeting(unref(meetingId), {
       audioPath: audioPath || null,

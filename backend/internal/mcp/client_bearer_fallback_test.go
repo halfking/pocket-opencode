@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,6 +52,7 @@ func TestDoRaw_FallsBackToRawBearerOn401(t *testing.T) {
 	}
 }
 
+// JWT 经 nginx 时常见空 body 的 400，同样要回退 raw secret。
 func TestDoRaw_FallsBackToRawBearerOn400(t *testing.T) {
 	var auths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +85,35 @@ func TestDoRaw_FallsBackToRawBearerOn400(t *testing.T) {
 	}
 	if len(auths) < 2 {
 		t.Fatalf("expected JWT then raw bearer, got %d auths", len(auths))
+	}
+	if auths[1] != "acc-api-key" {
+		t.Fatalf("second auth should be raw key")
+	}
+}
+
+// 非 401/400（如网关 5xx）的错误页正文即使碰巧包含 "HTTP 401" 字样，
+// 也不得触发 raw-secret 回退——回退只由结构化状态码 401/400 决定。
+func TestDoRaw_NoFallbackOnNon401BodyMentioning401(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("<html>upstream said HTTP 401, try again</html>"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL, "acc-api-key", false)
+	_, _, err := c.doRaw(context.Background(), []byte(`{"jsonrpc":"2.0","method":"initialize","id":1}`))
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if calls != 1 {
+		t.Fatalf("expected exactly 1 attempt (no fallback), got %d", calls)
+	}
+	var statusErr *httpStatusError
+	if !errors.As(err, &statusErr) || statusErr.Status != http.StatusBadGateway {
+		t.Fatalf("expected httpStatusError 502, got %v", err)
 	}
 }
 

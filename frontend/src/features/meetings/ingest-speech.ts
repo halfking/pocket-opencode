@@ -45,13 +45,19 @@ export async function ingestSpeechBlob(opts: {
   const id = await saveSegment(seg)
   opts.segmentProfiles.set(id, profileId)
   const saved: MeetingSegment = { id, ...seg }
-  opts.segments.push(saved)
+  // 按 startMs 有序插入：分段并发转写，完成顺序 ≠ 说话顺序，
+  // 直接 push 会让 transcript 与实时列表乱序。
+  let at = opts.segments.length
+  while (at > 0 && opts.segments[at - 1].startMs > saved.startMs) at--
+  opts.segments.splice(at, 0, saved)
   await updateTranscript(meetingId, opts.segments.map((s) => `[${s.speakerLabel}] ${s.text}`).join('\n'))
 
-  void liveTranslate(saved.text, lang).then((translation) => {
-    if (!translation) return
-    saved.translation = translation
-    return updateSegmentTranslation(id, translation)
-  })
+  void liveTranslate(saved.text, lang)
+    .then((translation) => {
+      if (!translation) return
+      saved.translation = translation
+      return updateSegmentTranslation(id, translation)
+    })
+    .catch(() => {})
   return saved
 }
