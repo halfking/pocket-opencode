@@ -310,7 +310,7 @@ Context: 458K / 1M (45.8%) · 3 compactions so far
 > **⚠️ DEPRECATED (2026-08-23)**：本文档是 v1 方案（自建 Pi Agent Adapter），已被 v2 方案取代。
 >
 > **v2 方案**：Pi Agent 作为可选 Harness dialect 加在 acc-go 的 `internal/agent/harness/pi.go`（约 200 行 Go），复用 acc-go 现有的 Agent Loop 框架。详见：
-> - [compute-pod-as-acc-worker.md §4](compute-pod-as-acc-worker.md)
+> - [compute-pod-as-acc-worker.md §4](compute-pod-as-acc-worker.v2-deprecated.md)
 > - [architecture-decision-records.md §ADR-004](../architecture-decision-records.md)
 >
 > 本文件保留作为"v1 设计思路"的参考，但不构成当前方案。
