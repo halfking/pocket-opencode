@@ -92,7 +92,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { Skeleton, EmptyState, DbLockedState, WaveformVisualizer } from '../../components'
@@ -156,7 +156,11 @@ async function load() {
   loading.value = true
   dbNotReady.value = false
   try {
-    const page = await notesStore.listNotes({ limit: DEFAULT_LIST_PAGE_SIZE, offset: 0 })
+    const page = await notesStore.listNotes({
+      limit: DEFAULT_LIST_PAGE_SIZE,
+      offset: 0,
+      domain: domain.value === 'all' ? undefined : domain.value,
+    })
     notes.value = page
     hasMore.value = pageHasMore(page.length)
     const drafts = await notesStore.listDraftNotes()
@@ -172,7 +176,11 @@ async function loadMore() {
   if (loading.value || loadingMore.value || !hasMore.value || query.value.trim()) return
   loadingMore.value = true
   try {
-    const page = await notesStore.listNotes({ limit: DEFAULT_LIST_PAGE_SIZE, offset: notes.value.length })
+    const page = await notesStore.listNotes({
+      limit: DEFAULT_LIST_PAGE_SIZE,
+      offset: notes.value.length,
+      domain: domain.value === 'all' ? undefined : domain.value,
+    })
     const seen = new Set(notes.value.map((n) => n.id))
     notes.value = [...notes.value, ...page.filter((n) => !seen.has(n.id))]
     hasMore.value = pageHasMore(page.length)
@@ -232,6 +240,7 @@ async function onMetaDelete() {
   await load()
 }
 
+watch(domain, () => { void load() })
 onMounted(load)
 </script>
 

@@ -19,18 +19,28 @@ export const useScheduledTasksStore = defineStore('scheduledTasks', () => {
   async function load(enabledOnly = false) {
     loading.value = true
     error.value = ''
+    const applyFilter = (rows: ScheduledTask[]) => enabledOnly ? rows.filter((t) => t.enabled) : rows
     try {
-      tasks.value = await scheduledTasksApi.list(enabledOnly)
-      for (const task of tasks.value) {
+      const local = (await listLocalSettings()).filter((row) => row.namespace === 'scheduled_task')
+      if (local.length) {
+        tasks.value = applyFilter(local.map((row) => row.payload as ScheduledTask))
+        loading.value = false
+      }
+    } catch { /* 无本地库时继续拉服务端 */ }
+    try {
+      const remote = await scheduledTasksApi.list(enabledOnly)
+      for (const task of remote) {
         await writeLocalIfNewer({
           namespace: 'scheduled_task', id: task.id, payload: task, updatedAt: task.updatedAt || 0,
         })
       }
+      tasks.value = remote
+      error.value = ''
     } catch (e: any) {
-      const local = (await listLocalSettings()).filter((row) => row.namespace === 'scheduled_task')
-      tasks.value = local.map((row) => row.payload as ScheduledTask)
-      error.value = tasks.value.length ? '' : (e?.message || '加载自动化失败')
-      if (!tasks.value.length) throw e
+      if (!tasks.value.length) {
+        error.value = e?.message || '加载自动化失败'
+        throw e
+      }
     } finally { loading.value = false }
   }
 
