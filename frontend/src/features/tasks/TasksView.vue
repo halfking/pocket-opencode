@@ -7,7 +7,7 @@
   A.  运行中       — 任务卡片第二行 = 健康信号 · 当前动作 · 距上次活动（§4.1 五态）
   B.  会话         — 最近会话纵列（长按：停止 / 归档）
   C.  已完成       — collapsed expandable section
-  D.  Voice bar    — 停靠 footer：默认 dock tabbar 上沿，键盘弹出改 dock 键盘
+  D.  Voice bar    — 默认隐藏；点「提问」才展开，dock tabbar 上沿
 -->
 <template>
   <!-- flex 根容器：滚动区（PullToRefresh）+ 停靠 footer（快速提问）。
@@ -21,6 +21,15 @@
          原来 L0 sticky 分诊条的全部信息收敛到此按钮：🟢 全部正常·N 在跑 /
          🔴 N 项需要你 / 疑似卡死时一并显示。点击切换下方 triage 折叠区。 -->
     <HeaderActionsPortal>
+      <button
+        type="button"
+        :class="{ active: quickPromptOpen }"
+        :aria-pressed="quickPromptOpen"
+        aria-label="快速提问"
+        @click="onToggleQuickPrompt"
+      >
+        <span class="material-symbols-outlined" aria-hidden="true">forum</span>
+      </button>
       <button
         class="triage-pill"
         :class="triage.hasAttention ? 'attention' : 'allclear'"
@@ -185,6 +194,7 @@
           <span class="dot session" />会话
           <span class="badge">{{ sessions.length }}</span>
         </h2>
+        <button class="link-btn" @click="onToggleQuickPrompt">提问</button>
         <button class="link-btn" @click="router.push('/sessions')">全部</button>
       </div>
 
@@ -214,11 +224,11 @@
         </div>
       </div>
 
-      <div v-else class="empty-inline">
+      <div v-else class="empty-inline" role="button" tabindex="0" @click="onToggleQuickPrompt" @keydown.enter="onToggleQuickPrompt">
         <EmptyState
           icon="💬"
           title="暂无会话"
-          hint="开始新对话后会显示在这里"
+          hint="点这里提问，开始新对话"
           size="sm"
           variant="inline"
         />
@@ -388,15 +398,20 @@
   </div>
   </PullToRefresh>
 
-  <!-- 统一快速提问输入：宽文本区 + 语音/角色/AI优化/提交 独立工具行。
-       停靠 footer：默认 dock tabbar 上沿，键盘弹出时随根布局收缩 dock 键盘；
-       滚动联动下移隐藏（transform 读取 --bottom-chrome-hide，吸附后负 margin 让位）。 -->
+  <!-- 快速提问：默认不占位，点标题栏/会话区「提问」才展开。 -->
   <div
+    v-if="quickPromptOpen"
     ref="voiceBarEl"
     class="voice-bar"
     :class="{ snapping: chromeSnapping, 'chrome-hidden': chromeHidden }"
     :inert="voiceBarInert"
   >
+    <div class="voice-bar-head">
+      <span>快速提问</span>
+      <button type="button" aria-label="关闭输入框" @click="onCloseQuickPrompt">
+        <span class="material-symbols-outlined" aria-hidden="true">close</span>
+      </button>
+    </div>
     <UnifiedComposer
       v-model="quickPrompt"
       placeholder="快速提问..."
@@ -411,7 +426,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, inject, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type Task } from '../../api/client'
 import { readSelectedInstance } from '../../config/selected-instance'
@@ -432,6 +447,12 @@ import {
 import { useConfirm } from '../../composables/useConfirm'
 import BottomSheet from '../../components/base/BottomSheet.vue'
 import { SCROLL_CHROME_KEY } from '../../composables/scroll-chrome'
+import {
+  QUICK_PROMPT_DEFAULT,
+  closeQuickPrompt,
+  quickPromptInset,
+  toggleQuickPrompt,
+} from './quick-prompt'
 
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -444,6 +465,8 @@ const chromeHidden = chromeCtx?.hidden ?? ref(false)
 const voiceBarEl = ref<HTMLElement | null>(null)
 const voiceBarInert = computed(() => chromeHidden.value)
 let voiceBarRO: ResizeObserver | null = null
+const quickPromptState = ref(QUICK_PROMPT_DEFAULT)
+const quickPromptOpen = computed(() => quickPromptState.value === 'open')
 // 快速提问的专家角色（统一输入组件工具行内选择；随 prompt 传给目标会话）
 const quickAgentId = ref<string | undefined>(undefined)
 const auth = useAuthStore()
@@ -697,15 +720,6 @@ onMounted(() => {
   wsClient.on('task_created', handleTaskUpdate)
   wsClient.on('task_updated', handleTaskUpdate)
   wsClient.on('session_attached', handleSessionAttached)
-  const vb = voiceBarEl.value
-  if (vb && chromeCtx) {
-    const measure = () => {
-      chromeCtx.bottomInsetHeight.value = vb.offsetHeight
-    }
-    measure()
-    voiceBarRO = new ResizeObserver(measure)
-    voiceBarRO.observe(vb)
-  }
 })
 
 onUnmounted(() => {
@@ -1001,7 +1015,46 @@ function openSession(s: any) {
   })
 }
 
-// ── Voice（语音输入已由 UnifiedComposer 内置） ──
+// ── Voice（语音输入已由 UnifiedComposer 内置；输入框按需展开） ──
+
+function bindVoiceBarChrome() {
+  voiceBarRO?.disconnect()
+  voiceBarRO = null
+  const vb = voiceBarEl.value
+  if (!vb || !chromeCtx) {
+    if (chromeCtx) chromeCtx.bottomInsetHeight.value = 0
+    return
+  }
+  const measure = () => {
+    chromeCtx.bottomInsetHeight.value = quickPromptInset(
+      quickPromptState.value,
+      vb.offsetHeight,
+    )
+  }
+  measure()
+  voiceBarRO = new ResizeObserver(measure)
+  voiceBarRO.observe(vb)
+  vb.querySelector<HTMLTextAreaElement>('textarea')?.focus()
+}
+
+function onToggleQuickPrompt() {
+  quickPromptState.value = toggleQuickPrompt(quickPromptState.value)
+}
+
+function onCloseQuickPrompt() {
+  quickPromptState.value = closeQuickPrompt(quickPromptState.value)
+}
+
+watch(quickPromptOpen, async (open) => {
+  if (!open) {
+    voiceBarRO?.disconnect()
+    voiceBarRO = null
+    if (chromeCtx) chromeCtx.bottomInsetHeight.value = 0
+    return
+  }
+  await nextTick()
+  bindVoiceBarChrome()
+})
 
 function sendQuickPrompt(payload: { text: string }) {
   const text = payload.text.trim()
@@ -1030,6 +1083,7 @@ function sendQuickPrompt(payload: { text: string }) {
     })
   }
   quickPrompt.value = ''
+  onCloseQuickPrompt()
 }
 
 // ── Utils ──
@@ -1576,7 +1630,29 @@ function timeAgo(dateStr?: string): string {
   justify-content: space-between;
 }
 
-/* ── Voice Bar：停靠 footer（非 fixed）── */
+/* ── Voice Bar：按需展开的停靠 footer（非 fixed）── */
+.voice-bar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 2px 6px;
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+}
+.voice-bar-head button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.voice-bar-head .material-symbols-outlined { font-size: 20px; }
 .voice-bar {
   flex: 0 0 auto;
   padding: 6px 12px;
