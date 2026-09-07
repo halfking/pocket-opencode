@@ -30,7 +30,7 @@ func TestResolveRejectsUntrustedLocators(t *testing.T) {
 			t.Errorf("IsLocator(%q) must be false", bad)
 		}
 	}
-	if !IsLocator(LocatorClaude) || !IsLocator(LocatorCodex) {
+	if !IsLocator(LocatorClaude) || !IsLocator(LocatorCodex) || !IsLocator(LocatorCursor) || !IsLocator(LocatorZcode) || !IsLocator(LocatorOpencode) {
 		t.Error("built-in locators must be recognised")
 	}
 }

@@ -125,6 +125,19 @@ if [[ -n "${COMPOSE_SNIPPET}" ]]; then
   DOCKER_COMPOSE+=(-f "${COMPOSE_SNIPPET}")
 fi
 
+# 本机切流：把宿主 home 只读挂进 pocketd，才能扫到 Cursor / ZCode / OpenCode 落盘会话。
+if [[ "${DEPLOY_ENV:-local}" == "local" ]] && grep -q '^POCKET_DISK_SESSIONS_ENABLED=true' "${POCKET_ENV_FILE}" 2>/dev/null; then
+  export POCKET_DISK_HOST_HOME="${POCKET_DISK_HOST_HOME:-${HOME}}"
+  mkdir -p \
+    "${POCKET_DISK_HOST_HOME}/.cursor/projects" \
+    "${POCKET_DISK_HOST_HOME}/.zcode/cli/agents" \
+    "${POCKET_DISK_HOST_HOME}/.local/share/opencode" \
+    "${POCKET_DISK_HOST_HOME}/.claude/projects" \
+    "${POCKET_DISK_HOST_HOME}/.codex/sessions"
+  DOCKER_COMPOSE+=(-f "${SCRIPT_DIR}/docker-compose.disk-sessions.yml")
+  echo "  📂 disk sessions: host home ${POCKET_DISK_HOST_HOME} → /host-home (ro)"
+fi
+
 # ── 镜像策略判定 ──────────────────────────────────────────────────
 BACKEND_IMAGE="opencode-pocket:${OPP_IMAGE_TAG}"
 FRONTEND_IMAGE="opencode-pocket-frontend:${OPP_IMAGE_TAG}"

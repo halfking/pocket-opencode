@@ -501,13 +501,17 @@ func main() {
 	// 作用域，绝不信任客户端传来的地址；DiskSessionsWorkspace 留空时注册为
 	// 运维共享只读资源（写操作解析器会拒绝这类实例）。
 	if cfg.DiskSessionsEnabled {
-		diskAdapter := disk.New()
+		home := cfg.DiskHome
+		if home == "" {
+			home, _ = os.UserHomeDir()
+		}
+		diskAdapter := disk.NewWithHome(home)
 		ids, err := diskAdapter.Register(reg, cfg.DiskSessionsWorkspace)
 		if err != nil {
 			log.Printf("WARN: disk session adapter registration: %v", err)
 		}
 		if len(ids) == 0 {
-			log.Println("Disk session adapter enabled but no agent data directory detected (~/.claude/projects, ~/.codex)")
+			log.Println("Disk session adapter enabled but no agent data directory detected (claude/codex/cursor/zcode/opencode)")
 		} else {
 			log.Printf("Disk session adapter enabled (read-only): instances=%v workspace=%q", ids, cfg.DiskSessionsWorkspace)
 		}

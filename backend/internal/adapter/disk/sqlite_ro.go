@@ -63,7 +63,11 @@ func openSQLiteRO(ctx context.Context, dbPath, tag string) (*sqliteRO, error) {
 		_ = db.Close()
 	}
 
-	// 2) 拷贝降级：db 三件套一起拷（缺 -wal 会丢最近的提交）。
+	// 直开失败才拷贝。超过 64MB 禁止拷贝降级（OpenCode 的 opencode.db 可达数 GB）。
+	const maxCopyBytes int64 = 64 << 20
+	if info.Size() > maxCopyBytes {
+		return nil, fmt.Errorf("sqlite %s: read-only open failed and copy skipped (size %d > %d)", tag, info.Size(), maxCopyBytes)
+	}
 	tmpDir, err := os.MkdirTemp("", "pocketd-disk-"+tag+"-")
 	if err != nil {
 		return nil, fmt.Errorf("sqlite %s: create temp dir: %w", tag, err)

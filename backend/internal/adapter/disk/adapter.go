@@ -20,11 +20,17 @@ import (
 // 由 registry 按 workspace 作用域返回。Adapter 只接受这两个常量值，客户端传来的
 // 任何字符串都无法变成路径或 URL（沿用 pocketd「绝不信任客户端 URL」原则）。
 const (
-	InstanceClaude = "disk-claude"
-	InstanceCodex  = "disk-codex"
+	InstanceClaude   = "disk-claude"
+	InstanceCodex    = "disk-codex"
+	InstanceCursor   = "disk-cursor"
+	InstanceZcode    = "disk-zcode"
+	InstanceOpencode = "disk-opencode"
 
-	LocatorClaude = "disk://claude"
-	LocatorCodex  = "disk://codex"
+	LocatorClaude   = "disk://claude"
+	LocatorCodex    = "disk://codex"
+	LocatorCursor   = "disk://cursor"
+	LocatorZcode    = "disk://zcode"
+	LocatorOpencode = "disk://opencode"
 )
 
 // ErrNotSupported 表示该操作对磁盘会话聚合无意义。磁盘 agent 没有控制面：
@@ -63,8 +69,11 @@ func New() *Adapter {
 // NewWithHome 允许注入 home 目录（测试用）。
 func NewWithHome(home string) *Adapter {
 	return &Adapter{readers: map[string]reader{
-		LocatorClaude: newClaudeReader(home),
-		LocatorCodex:  newCodexReader(home),
+		LocatorClaude:   newClaudeReader(home),
+		LocatorCodex:    newCodexReader(home),
+		LocatorCursor:   newCursorReader(home),
+		LocatorZcode:    newZcodeReader(home),
+		LocatorOpencode: newOpencodeReader(home),
 	}}
 }
 
@@ -84,6 +93,9 @@ var instanceLocators = []struct {
 }{
 	{InstanceClaude, LocatorClaude},
 	{InstanceCodex, LocatorCodex},
+	{InstanceCursor, LocatorCursor},
+	{InstanceZcode, LocatorZcode},
+	{InstanceOpencode, LocatorOpencode},
 }
 
 // DetectedInstances 返回本机真实存在数据目录的 disk 实例（未安装的 agent 不注册）。
@@ -158,8 +170,8 @@ func (a *Adapter) Register(reg InstanceRegistrar, workspaceID string) ([]string,
 func (a *Adapter) resolve(instanceBaseURL string) (reader, error) {
 	r, ok := a.readers[strings.TrimSpace(instanceBaseURL)]
 	if !ok {
-		return nil, fmt.Errorf("disk adapter: unknown locator %q (expected %s or %s)",
-			instanceBaseURL, LocatorClaude, LocatorCodex)
+		return nil, fmt.Errorf("disk adapter: unknown locator %q (expected a built-in disk:// locator)",
+			instanceBaseURL)
 	}
 	if !r.detect() {
 		return nil, fmt.Errorf("disk adapter: %s data directory not found: %s", r.agent(), r.dataPath())
@@ -171,7 +183,7 @@ func (a *Adapter) resolve(instanceBaseURL string) (reader, error) {
 // 调用方（路由层）可用它决定把请求交给 disk 适配器还是 HTTP 适配器。
 func IsLocator(instanceBaseURL string) bool {
 	switch strings.TrimSpace(instanceBaseURL) {
-	case LocatorClaude, LocatorCodex:
+	case LocatorClaude, LocatorCodex, LocatorCursor, LocatorZcode, LocatorOpencode:
 		return true
 	default:
 		return false
@@ -191,7 +203,7 @@ func (a *Adapter) ListSessions(ctx context.Context, instanceBaseURL string) ([]a
 		out = append(out, adapter.OpenCodeSession{
 			ID:          meta.ID,
 			Title:       meta.Title,
-			Status:      sessionStatus(meta.UpdatedAt),
+			Status:      sessionStatus(meta),
 			TimeUpdated: meta.UpdatedAt,
 		})
 	}
@@ -241,7 +253,7 @@ func (a *Adapter) ListRemoteTasks(ctx context.Context, instanceBaseURL, status s
 	}
 	out := make([]adapter.RemoteTask, 0, len(metas))
 	for _, meta := range metas {
-		st := sessionStatus(meta.UpdatedAt)
+		st := sessionStatus(meta)
 		if status != "" && status != st {
 			continue
 		}
@@ -381,8 +393,11 @@ func (a *Adapter) GetAllPendingQuestionRequests(ctx context.Context, instanceBas
 // ---- 归一化输出 ----
 
 // sessionStatus 按最近更新时间推断 active/idle（与 parseSessionList 同规则）。
-func sessionStatus(updatedAtMS int64) string {
-	if updatedAtMS > 0 && time.Since(time.UnixMilli(updatedAtMS)) < 5*time.Minute {
+func sessionStatus(meta SessionMeta) string {
+	if meta.Archived {
+		return "archived"
+	}
+	if meta.UpdatedAt > 0 && time.Since(time.UnixMilli(meta.UpdatedAt)) < 5*time.Minute {
 		return "active"
 	}
 	return "idle"

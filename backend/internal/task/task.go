@@ -18,6 +18,7 @@ type Task struct {
 	// to DefaultWorkspaceID at the store layer.
 	WorkspaceID  string `json:"workspaceId"`
 	WorkstreamID string `json:"workstreamId"`
+	InstanceName string `json:"instanceName,omitempty"`
 	// Source identifies which task system the row came from. Phase 5 unifies
 	// three sources into one view: "acc" (ACC system via MCP), "opencode"
 	// (per-instance HTTP), "local" (this Postgres store). Defaults to "local".

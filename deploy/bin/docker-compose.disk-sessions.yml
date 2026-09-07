@@ -1,0 +1,9 @@
+# 本机 Docker 只读挂载宿主 agent 数据目录，供 disk-cursor / disk-zcode / disk-opencode 使用。
+# 由 start.sh 在 DEPLOY_ENV=local 且 POCKET_DISK_SESSIONS_ENABLED=true 时追加 -f。
+# POCKET_DISK_HOST_HOME 必须是宿主 home（例如 /Users/you），容器内映射为 /host-home。
+services:
+  pocketd:
+    environment:
+      POCKET_DISK_HOME: /host-home
+    volumes:
+      - ${POCKET_DISK_HOST_HOME:?POCKET_DISK_HOST_HOME must be set}:/host-home:ro

@@ -112,6 +112,7 @@ type Config struct {
 	// （disk-claude / disk-codex）。严格只读；默认关闭，需显式开启。
 	DiskSessionsEnabled   bool   // POCKET_DISK_SESSIONS_ENABLED=true 启用
 	DiskSessionsWorkspace string // POCKET_DISK_SESSIONS_WORKSPACE：留空=运维共享只读；填 workspace id=限定该租户
+	DiskHome              string // POCKET_DISK_HOME：agent 数据根（容器内挂载的宿主 home）；空则用进程 HOME
 
 	// —— 会话迁移方案：实例感知增强配置 ——
 	DiscoveryFullSubnet bool     // POCKET_DISCOVERY_FULL_SUBNET：true=扫描完整 /24（默认 false 仅本机+网关）
@@ -250,6 +251,7 @@ func Load() Config {
 		// 磁盘会话聚合（只读）
 		DiskSessionsEnabled:   getEnv("POCKET_DISK_SESSIONS_ENABLED", "") == "true",
 		DiskSessionsWorkspace: getEnv("POCKET_DISK_SESSIONS_WORKSPACE", ""),
+		DiskHome:              getEnv("POCKET_DISK_HOME", ""),
 		// 会话迁移方案：实例感知增强
 		DiscoveryFullSubnet: getEnv("POCKET_DISCOVERY_FULL_SUBNET", "") == "true",
 		DiscoveryPorts:      parseIntList(getEnv("POCKET_DISCOVERY_PORTS", "")),
