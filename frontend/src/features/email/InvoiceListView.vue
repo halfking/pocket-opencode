@@ -10,11 +10,14 @@
 <template>
   <div class="page">
     <HeaderActionsPortal>
+      <button type="button" class="icon-btn" :disabled="syncing" aria-label="收信整理" @click="runPipeline">
+        <span class="material-symbols-outlined">auto_awesome</span>
+      </button>
+      <button type="button" class="icon-btn" :disabled="syncing" aria-label="同步" @click="syncAndReload">
+        <span class="material-symbols-outlined">sync</span>
+      </button>
       <button type="button" class="icon-btn" aria-label="导出 CSV" @click="exportCsv">
         <span class="material-symbols-outlined">download</span>
-      </button>
-      <button type="button" class="icon-btn" :disabled="loading" aria-label="刷新" @click="load">
-        <span class="material-symbols-outlined">refresh</span>
       </button>
     </HeaderActionsPortal>
 
@@ -29,12 +32,6 @@
           <template v-if="summary.failed > 0">· 失败 {{ summary.failed }}</template>
         </span>
         <span v-if="shareDocName" class="summary-doc" :title="shareDocName">共享清单：{{ shareDocName }}</span>
-      </div>
-      <div class="summary-actions">
-        <button class="sync-btn" :disabled="syncing" @click="runPipeline">
-          {{ syncing ? '处理中…' : '收信整理' }}
-        </button>
-        <button class="sync-btn" :disabled="syncing" @click="syncAndReload">同步</button>
       </div>
     </div>
 
@@ -62,15 +59,16 @@
       >{{ pushing ? '推送中…' : '推送飞书' }}</button>
     </div>
 
-    <!-- 状态筛选 -->
-    <div class="filter-row">
-      <button :class="['chip', { active: filter === '' }]" @click="setFilter('')">全部</button>
-      <button :class="['chip', { active: filter === 'new' }]" @click="setFilter('new')">待整理</button>
-      <button :class="['chip', { active: filter === 'pending' }]" @click="setFilter('pending')">待下载</button>
-      <button :class="['chip', { active: filter === 'downloaded' }]" @click="setFilter('downloaded')">已下载</button>
-      <button :class="['chip', { active: filter === 'failed' }]" @click="setFilter('failed')">失败</button>
-      <button :class="['chip', { active: filter === 'filed' }]" @click="setFilter('filed')">已归档</button>
-    </div>
+    <ScrollChromePortal>
+      <div class="filter-row">
+        <button :class="['chip', { active: filter === '' }]" @click="setFilter('')">全部</button>
+        <button :class="['chip', { active: filter === 'new' }]" @click="setFilter('new')">待整理</button>
+        <button :class="['chip', { active: filter === 'pending' }]" @click="setFilter('pending')">待下载</button>
+        <button :class="['chip', { active: filter === 'downloaded' }]" @click="setFilter('downloaded')">已下载</button>
+        <button :class="['chip', { active: filter === 'failed' }]" @click="setFilter('failed')">失败</button>
+        <button :class="['chip', { active: filter === 'filed' }]" @click="setFilter('filed')">已归档</button>
+      </div>
+    </ScrollChromePortal>
 
     <div v-if="error" class="status-err">{{ error }}</div>
 
@@ -157,6 +155,7 @@ import { useToast } from '../../composables/useToast'
 import { downloadTextFile, downloadFile, DownloadUnsupportedError } from '../../utils/download'
 import { wsClient } from '../../api/websocket'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
+import ScrollChromePortal from '../../components/layout/ScrollChromePortal.vue'
 
 const toast = useToast()
 const loading = ref(false)
@@ -512,11 +511,6 @@ onMounted(load)
 .summary-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .summary-amount { font-size: 20px; font-weight: 700; color: var(--text-primary); }
 .summary-label { font-size: 11px; color: var(--text-secondary); }
-.sync-btn {
-  flex: none; padding: 8px 14px; font-size: 12px; border-radius: 999px;
-  border: none; background: var(--brand-primary, #4c8dff); color: #fff; cursor: pointer;
-}
-.sync-btn:disabled { opacity: 0.6; }
 .filter-row {
   display: flex; gap: 6px; padding: 0 var(--space-3) var(--space-2);
 }
@@ -584,7 +578,6 @@ onMounted(load)
 }
 .chip.feishu:disabled { opacity: 0.5; cursor: not-allowed; }
 .pick { display: flex; align-items: center; margin-right: 8px; }
-.summary-actions { display: flex; flex-direction: column; gap: 6px; flex: none; }
 .summary-doc {
   font-size: 10px; color: var(--text-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;

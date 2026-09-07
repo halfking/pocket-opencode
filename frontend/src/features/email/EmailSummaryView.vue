@@ -8,11 +8,6 @@
 <template>
   <div class="view-root">
     <template v-if="mode === 'list'">
-      <div class="header-row">
-        <h2 class="page-title">邮件摘要</h2>
-        <span v-if="!loading" class="count">{{ summaries.length }} 天</span>
-      </div>
-
       <div v-if="loading" class="state">加载中…</div>
       <div v-else-if="summaries.length === 0" class="state">
         <p>暂无摘要。</p>
@@ -43,7 +38,6 @@
       <div v-else-if="!summary" class="state">
         <p>{{ date }} 当日的摘要暂未生成。</p>
         <p class="hint">每日 21:00 cron 自动生成，或手动触发抓取后会触发总结。</p>
-        <button class="back-link" @click="goList">← 返回摘要列表</button>
       </div>
 
       <article v-else class="detail">
@@ -70,7 +64,6 @@
           </ul>
         </div>
 
-        <button class="back-link" @click="goList">← 返回摘要列表</button>
       </article>
     </template>
   </div>
@@ -180,21 +173,11 @@ function open(d: string) {
   router.push(`/email/summary/${d}`)
 }
 
-function goList() {
-  router.push('/email/summary')
-}
-
 watch(() => route.fullPath, loadByMode)
 onMounted(loadByMode)
 </script>
 
 <style scoped>
-.header-row {
-  display: flex; align-items: baseline; justify-content: space-between;
-  margin-bottom: var(--space-3);
-}
-.page-title { font-size: 18px; font-weight: 600; margin: 0; color: var(--text-primary); }
-.count { font-size: 12px; color: var(--text-muted); }
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
 .hint { font-size: 12px; color: var(--text-muted); margin-top: var(--space-2); }
 
@@ -278,13 +261,4 @@ onMounted(loadByMode)
 .todo-list li .check { color: var(--text-muted); }
 .todo-list li.done .text { text-decoration: line-through; color: var(--text-muted); }
 
-.back-link {
-  align-self: flex-start;
-  border: none;
-  background: transparent;
-  color: var(--brand-primary);
-  font-size: 14px;
-  cursor: pointer;
-  padding: var(--space-2) 0;
-}
 </style>
