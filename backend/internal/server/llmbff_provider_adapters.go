@@ -158,8 +158,8 @@ type GatewayConfig struct {
 	PreferredModels []string
 }
 
-// GatewayResolver 按 workspace 返回当前生效的 GatewayConfig。
-type GatewayResolver func(workspaceID string) GatewayConfig
+// GatewayResolver 按 workspace + user 返回当前生效的 GatewayConfig。
+type GatewayResolver func(workspaceID, userID string) GatewayConfig
 
 // NewDynamicLLMGatewayBFFProvider 构造一个「每次请求时按 workspace 解析网关配置」
 // 的 Provider。这样对话流量既可使用启动时的环境变量（POCKET_LLM_GATEWAY_URL/_
@@ -178,8 +178,8 @@ type dynamicGatewayBFFProvider struct {
 	resolve GatewayResolver
 }
 
-func (p *dynamicGatewayBFFProvider) clientFor(wsID string) (*llmgateway.Client, error) {
-	cfg := p.resolve(wsID)
+func (p *dynamicGatewayBFFProvider) clientFor(wsID, userID string) (*llmgateway.Client, error) {
+	cfg := p.resolve(wsID, userID)
 	if cfg.BaseURL == "" || cfg.APIKey == "" {
 		return nil, llmbff.ErrNotConfigured
 	}
@@ -197,7 +197,7 @@ func (p *dynamicGatewayBFFProvider) resolveChatModel(req llmbff.ChatRequest) llm
 	if req.Model != "" && req.Model != "auto" {
 		return req
 	}
-	cfg := p.resolve(req.WorkspaceID)
+	cfg := p.resolve(req.WorkspaceID, req.User)
 	if len(cfg.PreferredModels) > 0 && cfg.PreferredModels[0] != "" {
 		req.Model = cfg.PreferredModels[0]
 	} else if len(cfg.Models) > 0 && cfg.Models[0] != "" {
@@ -209,7 +209,7 @@ func (p *dynamicGatewayBFFProvider) resolveChatModel(req llmbff.ChatRequest) llm
 }
 
 func (p *dynamicGatewayBFFProvider) Chat(ctx context.Context, req llmbff.ChatRequest) (*llmbff.ChatResponse, error) {
-	c, err := p.clientFor(req.WorkspaceID)
+	c, err := p.clientFor(req.WorkspaceID, req.User)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +218,7 @@ func (p *dynamicGatewayBFFProvider) Chat(ctx context.Context, req llmbff.ChatReq
 	if err != nil && isModelUnavailableError(err) {
 		// 用户显式选了一个 model 但当前没 provider（no_candidate）或模型 id
 		// 不存在/未上架（invalid_model）：用 preferred 的下一个兜底。
-		if fallback := p.fallbackModel(req.WorkspaceID, req.Model); fallback != "" {
+		if fallback := p.fallbackModel(req.WorkspaceID, req.User, req.Model); fallback != "" {
 			req.Model = fallback
 			return (&llmGatewayBFFProvider{client: c}).Chat(ctx, req)
 		}
@@ -255,7 +255,7 @@ var (
 var errEmptyStreamAttempt = errors.New("llm-gateway stream: empty stream (no deltas)")
 
 func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatRequest, fn func(llmbff.Delta) bool) (*llmbff.Usage, error) {
-	c, err := p.clientFor(req.WorkspaceID)
+	c, err := p.clientFor(req.WorkspaceID, req.User)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +274,7 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		attemptCtx := ctx
 		var cancel context.CancelFunc
 		switch {
-		case p.nextFallbackModel(req.WorkspaceID, tried) == "":
+		case p.nextFallbackModel(req.WorkspaceID, req.User, tried) == "":
 			// 最终候选：失败即整链终止，20s 尝试窗只是无谓的自我设限
 			// ——慢而可用的候选（首 token 偶发 >20s）会被误杀。窗口放宽
 			// 为剩余整链预算，链终止语义由循环底部的 fallback=="" 保证。
@@ -310,7 +310,7 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		// 重试。注意：切换到新候选前会先经 fn 发一帧 Retry 进度（见下），
 		// 所以整条链上 fn 可能已被调用过——只要它返回 true（客户端仍在线）
 		// 就继续重试。
-		fallback := p.nextFallbackModel(req.WorkspaceID, tried)
+		fallback := p.nextFallbackModel(req.WorkspaceID, req.User, tried)
 		if fallback == "" || ctx.Err() != nil || !time.Now().Before(deadline) {
 			log.Printf("[llm-auto] stop fallback chain: model=%s err=%v answered=%v "+
 				"fallback=%q ctx_err=%v budget_left=%s",
@@ -352,8 +352,8 @@ func streamAttemptFallbackEligible(err error, answered bool) bool {
 }
 
 // fallbackModel 在 no_candidate 触发时挑下一个候选 model（不含 current）。
-func (p *dynamicGatewayBFFProvider) fallbackModel(wsID, current string) string {
-	cfg := p.resolve(wsID)
+func (p *dynamicGatewayBFFProvider) fallbackModel(wsID, userID, current string) string {
+	cfg := p.resolve(wsID, userID)
 	return pickFallbackModel(current, cfg.PreferredModels, cfg.Models)
 }
 
@@ -362,8 +362,8 @@ func (p *dynamicGatewayBFFProvider) fallbackModel(wsID, current string) string {
 // fallbackModel 只排除 current——挂死候选反复超时时链会
 // glm-5.2 → minimax-m3 → glm-5.2 成环、永远到不了 kimi-k3（2026-09-05
 // 实测：auto 流 40s 内两次 fallback 日志均指向已试过的 glm-5.2）。
-func (p *dynamicGatewayBFFProvider) nextFallbackModel(wsID string, tried map[string]bool) string {
-	cfg := p.resolve(wsID)
+func (p *dynamicGatewayBFFProvider) nextFallbackModel(wsID, userID string, tried map[string]bool) string {
+	cfg := p.resolve(wsID, userID)
 	inCatalog := func(id string) bool {
 		if len(cfg.Models) == 0 {
 			return true
@@ -385,7 +385,7 @@ func (p *dynamicGatewayBFFProvider) nextFallbackModel(wsID string, tried map[str
 }
 
 func (p *dynamicGatewayBFFProvider) Embed(ctx context.Context, req llmbff.EmbedRequest) (*llmbff.EmbedResponse, error) {
-	c, err := p.clientFor(req.WorkspaceID)
+	c, err := p.clientFor(req.WorkspaceID, "")
 	if err != nil {
 		return nil, err
 	}

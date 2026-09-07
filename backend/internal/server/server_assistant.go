@@ -2401,7 +2401,7 @@ func (s *Server) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 	// 此处补齐非流式路径。
 	if err != nil && isNoCandidateError(err) {
 		wsID := s.workspaceIDFromRequest(r)
-		gw := s.ResolveGateway(wsID)
+		gw := s.ResolveGatewayForUser(s.userIDFromRequest(r), wsID)
 		if fallback := pickFallbackModel(model, gw.PreferredModels, gw.Models); fallback != "" {
 			log.Printf("llm.chat: %s no_candidate, falling back to %s", model, fallback)
 			content, err = s.llm.Chat(r.Context(), fallback, body.Messages)

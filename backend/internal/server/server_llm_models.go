@@ -23,7 +23,7 @@ func (s *Server) handleLLMBFFModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
-	st := s.ResolveGateway(s.workspaceIDFromRequest(r))
+	st := s.ResolveGatewayForUser(s.userIDFromRequest(r), s.workspaceIDFromRequest(r))
 	if st.BaseURL == "" || st.APIKey == "" {
 		writeError(w, http.StatusServiceUnavailable, "gateway not configured")
 		return

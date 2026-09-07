@@ -125,7 +125,7 @@ func TestDynamicGatewayStreamEmitsRetryProgressFrame(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+	p := NewDynamicLLMGatewayBFFProvider(func(string, string) GatewayConfig {
 		return GatewayConfig{
 			BaseURL:         srv.URL,
 			APIKey:          "k",
@@ -198,7 +198,7 @@ func TestDynamicGatewayStreamFallsBackOnAttemptDeadline(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+	p := NewDynamicLLMGatewayBFFProvider(func(string, string) GatewayConfig {
 		return GatewayConfig{
 			BaseURL:         srv.URL,
 			APIKey:          "k",
@@ -255,7 +255,7 @@ func TestDynamicGatewayStreamNoFallbackAfterContent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+	p := NewDynamicLLMGatewayBFFProvider(func(string, string) GatewayConfig {
 		return GatewayConfig{
 			BaseURL:         srv.URL,
 			APIKey:          "k",
@@ -311,7 +311,7 @@ func TestDynamicGatewayStreamNoFallbackAfterDoneFrame(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+	p := NewDynamicLLMGatewayBFFProvider(func(string, string) GatewayConfig {
 		return GatewayConfig{
 			BaseURL:         srv.URL,
 			APIKey:          "k",
@@ -371,7 +371,7 @@ func TestDynamicGatewayStreamChainVisitsEachCandidateOnce(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+	p := NewDynamicLLMGatewayBFFProvider(func(string, string) GatewayConfig {
 		return GatewayConfig{
 			BaseURL:         srv.URL,
 			APIKey:          "k",
@@ -473,7 +473,7 @@ func TestDynamicGatewayStreamFallsBackOnInvalidModel(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+	p := NewDynamicLLMGatewayBFFProvider(func(string, string) GatewayConfig {
 		return GatewayConfig{
 			BaseURL:         srv.URL,
 			APIKey:          "k",
@@ -538,7 +538,7 @@ func TestDynamicGatewayStreamFinalCandidateGetsFullRemainingBudget(t *testing.T)
 	}))
 	defer srv.Close()
 
-	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+	p := NewDynamicLLMGatewayBFFProvider(func(string, string) GatewayConfig {
 		return GatewayConfig{
 			BaseURL:         srv.URL,
 			APIKey:          "k",
@@ -594,7 +594,7 @@ func TestDynamicGatewayStreamFinalCandidateStillBoundedByChainBudget(t *testing.
 	}))
 	defer srv.Close()
 
-	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+	p := NewDynamicLLMGatewayBFFProvider(func(string, string) GatewayConfig {
 		return GatewayConfig{
 			BaseURL:         srv.URL,
 			APIKey:          "k",
@@ -682,7 +682,7 @@ func TestDynamicGatewayChatFallsBackOnModelNotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+	p := NewDynamicLLMGatewayBFFProvider(func(string, string) GatewayConfig {
 		return GatewayConfig{
 			BaseURL:         srv.URL,
 			APIKey:          "k",
@@ -736,7 +736,7 @@ func TestDynamicGatewayStreamFallsBackOnEmptyStream(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+	p := NewDynamicLLMGatewayBFFProvider(func(string, string) GatewayConfig {
 		return GatewayConfig{
 			BaseURL:         srv.URL,
 			APIKey:          "k",
@@ -785,7 +785,7 @@ func TestDynamicGatewayStreamFinalCandidateEmptyStreamIsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewDynamicLLMGatewayBFFProvider(func(string) GatewayConfig {
+	p := NewDynamicLLMGatewayBFFProvider(func(string, string) GatewayConfig {
 		return GatewayConfig{
 			BaseURL:         srv.URL,
 			APIKey:          "k",

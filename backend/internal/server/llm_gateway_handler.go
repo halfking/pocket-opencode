@@ -61,7 +61,7 @@ func defaultLLMGatewayState() llmGatewayState {
 	models := append([]string(nil), opencode.DefaultLLMGatewayPreferredModels...)
 	preferred := append([]string(nil), opencode.DefaultLLMGatewayPreferredModels...)
 	return llmGatewayState{
-		BaseURL:         envOr("POCKET_LLM_GATEWAY_URL", opencode.DefaultLLMGatewayBaseURL),
+		BaseURL:         canonicalGatewayURL(envOr("POCKET_LLM_GATEWAY_URL", opencode.DefaultLLMGatewayBaseURL)),
 		APIKey:          strings.TrimSpace(os.Getenv("POCKET_LLM_GATEWAY_API_KEY")),
 		Models:          models,
 		Format:          defaultGatewayFormat,
@@ -119,7 +119,7 @@ func (s *Server) EnsureLLMGatewayDefaults(workspaceIDs ...string) {
 			continue
 		}
 		if existing != nil {
-			if obsoleteLocalGatewayURL(existing.BaseURL) && !obsoleteLocalGatewayURL(def.BaseURL) {
+			if obsoleteLocalGatewayURL(existing.BaseURL) {
 				if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, def); saveErr != nil {
 					log.Printf("[llm-gateway] replace obsolete local gateway failed for %s: %v", wsID, saveErr)
 				} else {
@@ -223,11 +223,7 @@ func (s *Server) gatewaySnapshot(workspaceID string) llmGatewayState {
 // /api/llm-gateway/config 配置合并后的结果），供 LLM BFF 在请求时按需构造客户端。
 // 返回 GatewayConfig（已剥离内部缓存结构），调用方据此决定是否需要返回 503。
 func (s *Server) ResolveGateway(workspaceID string) GatewayConfig {
-	st := s.gatewaySnapshot(workspaceID)
-	return GatewayConfig{
-		BaseURL: st.BaseURL, APIKey: st.APIKey, Models: st.Models,
-		Format: normalizeGatewayFormat(st.Format), PreferredModels: st.PreferredModels,
-	}
+	return s.ResolveGatewayForUser("", workspaceID)
 }
 
 func envOr(key, def string) string {
@@ -240,7 +236,7 @@ func envOr(key, def string) string {
 func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		st := s.gatewaySnapshot(s.workspaceIDFromRequest(r))
+		st := s.effectiveGatewayState(s.userIDFromRequest(r), s.workspaceIDFromRequest(r))
 		// PG 往返可能把空 slice 变 null（json.Marshal(nil)="null"），出口统一
 		// 兜底为 []——前端模板直接读 models.length，null 会让设置页挂载崩溃
 		// （真机 P3 轮实测）。
@@ -405,7 +401,7 @@ func (s *Server) handleLLMGatewayModels(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	st := s.gatewaySnapshot(s.workspaceIDFromRequest(r))
+	st := s.effectiveGatewayState(s.userIDFromRequest(r), s.workspaceIDFromRequest(r))
 	writeJSON(w, http.StatusOK, map[string]interface{}{"baseURL": st.BaseURL, "models": st.Models})
 }
 
@@ -442,26 +438,24 @@ func (s *Server) pushConfigToOpenCode(r *http.Request, workspaceID string, st ll
 	if len(instances) == 0 {
 		return nil
 	}
-	token := strings.TrimSpace(os.Getenv("POCKET_OPENCODE_CONFIG_TOKEN"))
-	if token == "" {
-		return fmt.Errorf("OpenCode config push requires POCKET_OPENCODE_CONFIG_TOKEN")
-	}
-	patch := buildPocketProviderPatch(st)
-
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	client := gatewayHTTPClient(10 * time.Second)
-
 	for _, inst := range instances {
-		baseURL := strings.TrimRight(inst.APIBaseURL, "/")
-		if baseURL == "" {
-			return fmt.Errorf("OpenCode instance %s has no API base URL", inst.ID)
-		}
-		if err := patchGlobalConfigWithAuth(ctx, client, baseURL+"/global/config", patch, token); err != nil {
+		if err := s.pushGatewayToInstance(ctx, inst.APIBaseURL, st); err != nil {
 			return fmt.Errorf("push config to %s: %w", inst.ID, err)
 		}
 	}
 	return nil
+}
+
+func (s *Server) pushGatewayToInstance(ctx context.Context, apiBaseURL string, st llmGatewayState) error {
+	baseURL := strings.TrimRight(strings.TrimSpace(apiBaseURL), "/")
+	if baseURL == "" {
+		return fmt.Errorf("OpenCode instance has no API base URL")
+	}
+	token := strings.TrimSpace(os.Getenv("POCKET_OPENCODE_CONFIG_TOKEN"))
+	client := gatewayHTTPClient(10 * time.Second)
+	return patchGlobalConfigWithAuth(ctx, client, baseURL+"/global/config", buildPocketProviderPatch(st), token)
 }
 
 // pocketProviderID 是 Pocket 网关在上游实例配置里的 provider 键，与
@@ -503,7 +497,9 @@ func patchGlobalConfigWithAuth(ctx context.Context, client *http.Client, url str
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
+	if strings.TrimSpace(token) != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -564,10 +560,18 @@ func (s *Server) LoadLLMGatewayFromDB(workspaceIDs ...string) {
 		if st == nil {
 			continue
 		}
+		rewritten := rewriteObsoleteGateway(*st)
+		if rewritten.BaseURL != st.BaseURL && s.llmGWStore != nil {
+			if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, rewritten); saveErr != nil {
+				log.Printf("[llm-gateway] rewrite obsolete URL persist failed for %s: %v", wsID, saveErr)
+			} else {
+				log.Printf("[llm-gateway] rewrote obsolete local gateway for workspace=%s baseURL=%s", wsID, rewritten.BaseURL)
+			}
+		}
 		if s.llmGWCache == nil {
 			s.llmGWCache = newLLMGatewayCache()
 		}
-		s.llmGWCache.replace(wsID, *st)
-		log.Printf("[llm-gateway] loaded config from DB: workspace=%s baseURL=%s models=%d", wsID, st.BaseURL, len(st.Models))
+		s.llmGWCache.replace(wsID, rewritten)
+		log.Printf("[llm-gateway] loaded config from DB: workspace=%s baseURL=%s models=%d", wsID, rewritten.BaseURL, len(rewritten.Models))
 	}
 }

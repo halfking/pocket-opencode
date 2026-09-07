@@ -171,3 +171,49 @@ func TestPushConfigSurfacesUpstreamStatus(t *testing.T) {
 		t.Fatalf("error should carry upstream status, got: %v", err)
 	}
 }
+
+// 本地 OpenCode 通常未开鉴权，也未配 POCKET_OPENCODE_CONFIG_TOKEN。
+// 缺 token 时仍应 PATCH，否则设置页保存永远推不上去，会话继续打旧网关。
+func TestPushConfigAllowsMissingToken(t *testing.T) {
+	t.Setenv("POCKET_OPENCODE_CONFIG_TOKEN", "")
+	t.Setenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE", "true")
+	captured := &capturedPush{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.observe(r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"$schema":"https://opencode.ai/config.json"}`)
+	}))
+	defer upstream.Close()
+
+	reg := registry.NewRegistry()
+	if err := reg.RegisterRegisteredInstance(model.RegisteredInstanceInfo{
+		ID:          "inst-a",
+		WorkspaceID: "ws-a",
+		APIBaseURL:  upstream.URL,
+	}); err != nil {
+		t.Fatalf("register instance: %v", err)
+	}
+	srv := newPushTestServer(t, reg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/llm-gateway/config", nil)
+	if err := srv.pushConfigToOpenCode(req, "ws-a", llmGatewayState{
+		BaseURL: "https://llm.kxpms.cn/v1",
+		APIKey:  "sk-from-settings",
+	}); err != nil {
+		t.Fatalf("missing token must still push to local instance, got %v", err)
+	}
+	captured.mu.Lock()
+	defer captured.mu.Unlock()
+	if !captured.visible {
+		t.Fatal("upstream received no request")
+	}
+	if captured.auth != "" {
+		t.Fatalf("empty token must not send Authorization, got %q", captured.auth)
+	}
+	provider, _ := captured.body["provider"].(map[string]interface{})
+	entry, _ := provider["openai-compatible-pocket"].(map[string]interface{})
+	opts, _ := entry["options"].(map[string]interface{})
+	if opts["baseURL"] != "https://llm.kxpms.cn/v1" {
+		t.Fatalf("pushed baseURL = %v", opts["baseURL"])
+	}
+}

@@ -741,8 +741,8 @@ func main() {
 	// 后，对话功能无需重启 pocketd 即可生效。POCKET_LLM_GATEWAY_API_KEY 仍必须配置
 	// （或在设置里保存），否则对话请求会返回 503。
 	{
-		provider := server.NewDynamicLLMGatewayBFFProvider(func(wsID string) server.GatewayConfig {
-			return srv.ResolveGateway(wsID)
+		provider := server.NewDynamicLLMGatewayBFFProvider(func(wsID, userID string) server.GatewayConfig {
+			return srv.ResolveGatewayForUser(userID, wsID)
 		})
 		// RedClaw LLM 兜底：企业网关不可用/请求失败时自动切换 RedClaw
 		// pocket chat 通道（POCKET_REDCLAW_LLM_FALLBACK=true 且 Bridge 已配置）。

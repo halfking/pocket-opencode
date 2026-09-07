@@ -174,6 +174,7 @@ func (s *Server) handleMobileSessionCreate(w http.ResponseWriter, r *http.Reques
 	_ = req.ParentID
 	payload := &adapter.CreateSessionRequest{Agent: req.Agent}
 	payload.Location = &adapter.LocationRefRef{WorkspaceID: &workspaceID}
+	s.syncGatewayToInstance(r.Context(), apiBaseURL, s.userIDFromRequest(r), workspaceID)
 
 	info, err := s.opencode.CreateSession(r.Context(), apiBaseURL, payload)
 	if err != nil {
@@ -619,10 +620,11 @@ func (s *Server) handleMobileSessionPrompt(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	instanceID := r.URL.Query().Get("instance_id")
-	apiBaseURL, _, ok := s.resolveMobileInstance(w, r, instanceID, true)
+	apiBaseURL, workspaceID, ok := s.resolveMobileInstance(w, r, instanceID, true)
 	if !ok {
 		return
 	}
+	s.syncGatewayToInstance(r.Context(), apiBaseURL, s.userIDFromRequest(r), workspaceID)
 
 	var req struct {
 		Text  string                 `json:"text"`
