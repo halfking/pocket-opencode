@@ -14,3 +14,10 @@ export type EmailFetchStage = 'native-sync' | 'js-sync' | 'pull-list'
 export function emailFetchStages(nativeAvailable: boolean): EmailFetchStage[] {
   return nativeAvailable ? ['native-sync', 'pull-list'] : ['js-sync', 'pull-list']
 }
+
+/** Capacitor 上 resolveApiBase 可能被空覆盖成 ''；原生收信必须有绝对地址。 */
+export function resolveFetchApiBase(resolved: string, nativeFallback: string): string {
+  const base = (resolved || '').trim()
+  if (base) return base.replace(/\/$/, '')
+  return (nativeFallback || '').replace(/\/$/, '')
+}

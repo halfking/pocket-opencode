@@ -1,6 +1,6 @@
-import { resolveApiBase } from '../../config/api-base'
+import { PRODUCTION_API_BASE, resolveApiBase } from '../../config/api-base'
 import { useAuthStore } from '../../stores/auth'
-import { shouldRunBackgroundFetch } from './email-fetch-plan'
+import { resolveFetchApiBase, shouldRunBackgroundFetch } from './email-fetch-plan'
 import { configureNativeEmailFetch, scheduleNativeEmailFetch } from './email-fetch-native'
 import { runDelegatedEmailFetch } from './email-fetch-run'
 
@@ -11,7 +11,10 @@ let started = false
 async function bindNative(): Promise<void> {
   const auth = useAuthStore()
   if (!auth.token) return
-  const ok = await configureNativeEmailFetch(resolveApiBase(), auth.token)
+  const ok = await configureNativeEmailFetch(
+    resolveFetchApiBase(resolveApiBase(), PRODUCTION_API_BASE),
+    auth.token,
+  )
   if (ok) await scheduleNativeEmailFetch(GAP_MS)
 }
 

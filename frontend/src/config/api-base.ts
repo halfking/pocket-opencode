@@ -76,8 +76,10 @@ export function resolveApiBase(opts?: {
   storage?: Storage
 }): string {
   const override = opts && 'override' in opts ? opts.override : readApiBaseOverride(opts?.storage)
-  if (override !== null && override !== undefined) {
-    return normalizeApiBase(override, opts?.pageOrigin)
+  // 空串覆盖会吞掉 VITE_API_BASE，真机 https://localhost 上收信/归类会 Failed to fetch
+  if (override !== null && override !== undefined && String(override).trim() !== '') {
+    const normalized = normalizeApiBase(override, opts?.pageOrigin)
+    if (normalized) return normalized
   }
   const build = opts?.buildDefault ?? buildDefaultFromEnv()
   return build ? normalizeApiBase(build, opts?.pageOrigin) : ''

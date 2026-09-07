@@ -1,7 +1,7 @@
 import { emailApi } from '../../api/email'
-import { resolveApiBase } from '../../config/api-base'
+import { PRODUCTION_API_BASE, resolveApiBase } from '../../config/api-base'
 import { useAuthStore } from '../../stores/auth'
-import { formatFetchHint } from './email-fetch-plan'
+import { formatFetchHint, resolveFetchApiBase } from './email-fetch-plan'
 import { configureNativeEmailFetch, runNativeEmailFetch } from './email-fetch-native'
 import { pullInboxFromServer, syncInboxFromServer } from './email-inbox-page'
 
@@ -10,7 +10,7 @@ export { formatFetchHint, shouldRunBackgroundFetch } from './email-fetch-plan'
 async function prepareNative(): Promise<boolean> {
   const auth = useAuthStore()
   if (!auth.token) return false
-  return configureNativeEmailFetch(resolveApiBase(), auth.token)
+  return configureNativeEmailFetch(resolveFetchApiBase(resolveApiBase(), PRODUCTION_API_BASE), auth.token)
 }
 
 export async function runDelegatedEmailFetch(opts?: { classify?: boolean }): Promise<{ hint: string; classified: number }> {

@@ -3,7 +3,7 @@
  */
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { emailFetchStages, formatFetchHint, shouldRunBackgroundFetch } from './email-fetch-plan.ts'
+import { emailFetchStages, formatFetchHint, resolveFetchApiBase, shouldRunBackgroundFetch } from './email-fetch-plan.ts'
 
 describe('delegated email fetch', () => {
   it('formats sync hint and optional classify count', () => {
@@ -20,5 +20,10 @@ describe('delegated email fetch', () => {
   it('uses native HTTP on device and JS fetch on H5', () => {
     assert.deepEqual(emailFetchStages(true), ['native-sync', 'pull-list'])
     assert.deepEqual(emailFetchStages(false), ['js-sync', 'pull-list'])
+  })
+
+  it('falls back to pocket host when resolved API base is empty', () => {
+    assert.equal(resolveFetchApiBase('', 'https://pocket.itestu.cn'), 'https://pocket.itestu.cn')
+    assert.equal(resolveFetchApiBase('https://pocket.itestu.cn/', 'x'), 'https://pocket.itestu.cn')
   })
 })
