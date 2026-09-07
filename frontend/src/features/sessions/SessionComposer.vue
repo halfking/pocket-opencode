@@ -11,29 +11,30 @@ export interface SessionComposerTarget {
 
 <script setup lang="ts">
 /**
- * SessionComposer — 会话输入系统（P1，契约 §4 / 设计 v2 §4.4；P1.5 界面减负改造）。
+ * SessionComposer — 会话输入面板（契约 §4；2026-09-08 会话详情页改版）。
  *
- * 两种目标模式：
- *   - 固定模式（P1 工作台）：sessionId + sessionLabel；P1.5 起目标 chip 不再
- *     常驻（会话标识由工作台头部承担），输入行以 bolt 快速指令按钮开场；
- *   - 可切换模式（契约就绪）：targets + modelTarget，chip 点击弹出切换面板，
- *     选中经 update:target 上抛（v-model 用法见契约注记：prop 名冻结为
- *     modelTarget，父组件用 :model-target + @update:target 绑定）。
+ * 形态（改版）：页面默认不显示输入框，本组件渲染为右下 FAB 唤起的
+ * 「会话操作 + 消息输入」浮动卡片（收起/展开与滚动隐藏由父级驱动，
+ * 经 collapse 事件回收为 FAB）。
  *
- * 行为纪律：
- *   - 指令模板收进 bolt 快速指令面板（P1.5：原常驻 chips 行释放整行高度），
- *     面板内一点即发（emit send + 清草稿），仅"停下"先二次确认；
+ * 快捷指令（改版）：
+ *   - PRIMARY_QUICK_COMMANDS（继续 / 提交代码并推送合并到主分支 /
+ *     开启Goal模式 / 拉取最新代码）= 输入框底部工具行**最左侧**的
+ *     44×44 方形图形按钮（经 UnifiedComposer 的 tools-left-prefix 插槽注入）；
+ *   - 其余指令（停下/总结当前进展/跑测试/忽略错误继续）收进「更多指令」面板，
+ *     面板行内文案完整可读；仅"停下"先二次确认（纪律不变）。
+ *
+ * 行为纪律（不变）：
  *   - voice/STT 转写只入草稿可编辑（追加，不直发）；
  *   - 草稿按会话存 SQLite（500ms 防抖），send 时清除；
- *   - 发送按钮 44px 热区贴右下，容器 safe-area 适配。
- *
- * 本组件由 A（SessionConversationView）挂载，接线由主代理完成。
+ *   - targets 可切换模式仅契约就绪（chip 行按需渲染）。
  */
 import { computed, ref, watch } from 'vue'
 import { useConfirm } from '../../composables/useConfirm'
 import { BottomSheet, UnifiedComposer } from '../../components'
 import {
-  QUICK_COMMANDS,
+  PRIMARY_QUICK_COMMANDS,
+  SECONDARY_QUICK_COMMANDS,
   applyInitialText,
   shouldConfirmCommand,
   truncateChipLabel,
@@ -69,6 +70,7 @@ const emit = defineEmits<{
   (e: 'send', text: string): void
   (e: 'update:target', id: string): void
   (e: 'live-record'): void
+  (e: 'collapse'): void
 }>()
 
 // ── 目标解析（固定 / 可切换两模式统一为 activeTargetId） ──
@@ -121,15 +123,15 @@ function onComposerSubmit(payload: { text: string }): void {
   send()
 }
 
-// P1.5：模板 chips 收进快速指令面板（释放常驻整行；面板行内文案完整可读，
-// "停下"二次确认纪律不变）
-const quickPanelVisible = ref(false)
+// 快捷指令：primary 方形按钮一点即发；其余在「更多指令」面板
+// （面板行文案完整可读；"停下"二次确认纪律不变）
+const quickSheetVisible = ref(false)
 
 async function onCommand(cmd: QuickCommand): Promise<void> {
   if (props.disabled) return
   // 仅"停下"先二次确认（统一走全局 ConfirmDialog）
   if (shouldConfirmCommand(cmd) && !(await confirm({ title: cmd.label, message: cmd.confirmText ?? '', confirmText: '确认', danger: true }))) return
-  quickPanelVisible.value = false
+  quickSheetVisible.value = false
   emit('send', cmd.message)
   void drafts.clear()
 }
@@ -153,24 +155,20 @@ const { confirm } = useConfirm()
 </script>
 
 <template>
-  <div class="composer" :class="{ disabled: props.disabled }">
-    <!-- 紧凑上下文行：快速指令(bolt) + 可切换目标 chip（targets 模式）。
-         P1.5：固定目标模式下目标 chip 不再渲染（会话标识由工作台头部承担）。 -->
-    <div class="ctx-row">
-      <button
-        type="button"
-        class="quick-btn"
-        :disabled="props.disabled"
-        aria-haspopup="dialog"
-        :aria-expanded="quickPanelVisible"
-        aria-label="快速指令"
-        @click="quickPanelVisible = true"
-      >
-        <span class="material-symbols-outlined">bolt</span>
-      </button>
+  <div class="composer-card" :class="{ disabled: props.disabled }">
+    <!-- 收起把手：点按把输入面板收回为右下 FAB（热区经 ::after 扩展到 ~44px） -->
+    <button
+      type="button"
+      class="dock-handle"
+      aria-label="收起输入面板"
+      @click="emit('collapse')"
+    >
+      <span class="material-symbols-outlined handle-icon" aria-hidden="true">keyboard_arrow_down</span>
+    </button>
 
+    <!-- targets 可切换模式（契约保留）：目标 chip 行（固定目标模式不渲染） -->
+    <div v-if="hasTargets" class="ctx-row">
       <button
-        v-if="hasTargets"
         type="button"
         class="target-chip switchable"
         :disabled="props.disabled"
@@ -183,8 +181,8 @@ const { confirm } = useConfirm()
       </button>
     </div>
 
-    <!-- 统一输入：宽文本区（可全屏）+ 语音/优化/发送 独立工具行。
-         契约不变：send(text) / 草稿按会话持久化 / 指令面板一点即发。 -->
+    <!-- 统一输入：宽文本区（可全屏）+ 工具行。
+         快捷指令经 tools-left-prefix 注入工具行最左侧（44×44 方形）。 -->
     <UnifiedComposer
       v-model="draftText"
       placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
@@ -194,13 +192,42 @@ const { confirm } = useConfirm()
       submit-label="发送"
       @submit="onComposerSubmit"
       @live-record="emit('live-record')"
-    />
+    >
+      <template #tools-left-prefix>
+        <div class="qc-strip" role="group" aria-label="会话快捷指令">
+          <button
+            v-for="cmd in PRIMARY_QUICK_COMMANDS"
+            :key="cmd.label"
+            type="button"
+            class="qc-btn"
+            :disabled="props.disabled"
+            :aria-label="cmd.label"
+            :title="cmd.label"
+            @click="onCommand(cmd)"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">{{ cmd.icon ?? 'bolt' }}</span>
+          </button>
+          <button
+            type="button"
+            class="qc-btn qc-more"
+            :disabled="props.disabled"
+            aria-label="更多指令"
+            title="更多指令"
+            aria-haspopup="dialog"
+            :aria-expanded="quickSheetVisible"
+            @click="quickSheetVisible = true"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">bolt</span>
+          </button>
+        </div>
+      </template>
+    </UnifiedComposer>
 
-    <!-- 快速指令面板（P1.5：模板 chips 收纳处；文案完整可读，"停下"保留二次确认） -->
-    <BottomSheet v-model="quickPanelVisible" title="快速指令">
+    <!-- 更多指令面板（非 primary 收纳处；文案完整可读，"停下"保留二次确认） -->
+    <BottomSheet v-model="quickSheetVisible" title="更多指令">
       <div class="quick-list" role="menu" aria-label="指令模板">
         <button
-          v-for="cmd in QUICK_COMMANDS"
+          v-for="cmd in SECONDARY_QUICK_COMMANDS"
           :key="cmd.label"
           type="button"
           class="quick-item"
@@ -240,48 +267,55 @@ const { confirm } = useConfirm()
 </template>
 
 <style scoped>
-.composer {
-  flex: 0 0 auto;
+/* ── 浮动卡片（父级 dock 负责外边距与滚动隐藏位移） ── */
+.composer-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  /* 刘海屏既有方案沿用：底部安全区（设计 §4.4-4） */
-  padding-bottom: calc(var(--space-2-5) + var(--app-safe-bottom));
+  gap: var(--space-1);
+  padding: 0 var(--space-2-5) var(--space-2);
   background: var(--bg-card);
-  border-top: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+.composer-card.disabled {
+  opacity: 0.85;
 }
 
-/* ── 快速指令按钮（原模板 chips 行收敛为一个入口，释放整行高度） ── */
-.quick-btn {
+/* ── 收起把手（视觉 26px；::after 把热区纵向扩到 ~44px） ── */
+.dock-handle {
+  position: relative;
   flex: 0 0 auto;
-  width: 44px;
-  height: 44px;
+  height: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: var(--radius-full);
-  background: var(--brand-bg);
-  color: var(--brand-primary);
+  background: transparent;
+  color: var(--text-muted);
   cursor: pointer;
-  transition: transform var(--duration-fast) var(--ease-out);
 }
-.quick-btn:not(:disabled):active {
-  transform: scale(0.92);
+.dock-handle::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -9px;
+  bottom: -9px;
 }
-.quick-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.dock-handle:active {
+  color: var(--text-secondary);
+}
+.handle-icon {
+  font-size: 22px;
 }
 
-/* ── 紧凑上下文行（快速指令 + 可切换目标 chip） ── */
+/* ── targets 模式目标 chip（契约保留；固定目标模式不渲染） ── */
 .ctx-row {
   display: flex;
   align-items: center;
   gap: var(--space-2);
 }
-
 .target-chip {
   flex: 0 0 auto;
   max-width: 132px;
@@ -304,9 +338,6 @@ const { confirm } = useConfirm()
 .target-chip:disabled {
   opacity: 0.6;
 }
-.target-chip:disabled.switchable {
-  cursor: not-allowed;
-}
 .target-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -314,6 +345,57 @@ const { confirm } = useConfirm()
 }
 .chip-icon {
   font-size: 16px;
+}
+
+/* ── 快捷指令：工具行最左侧的 44×44 方形按钮条（横向可滚，mic/全屏不被挤走） ── */
+.qc-strip {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-right: 2px;
+}
+.qc-strip::-webkit-scrollbar {
+  display: none;
+}
+.qc-btn {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 12px; /* 方形圆角：与气泡语言区分的"工具"质感 */
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    transform var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+.qc-btn .material-symbols-outlined {
+  font-size: 22px;
+}
+.qc-btn:not(:disabled):active {
+  transform: scale(0.9);
+  background: var(--brand-bg);
+  color: var(--brand-primary);
+  border-color: color-mix(in srgb, var(--brand-primary) 35%, transparent);
+}
+.qc-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.qc-more {
+  background: var(--brand-bg);
+  border-color: transparent;
+  color: var(--brand-primary);
 }
 
 .material-symbols-outlined {
@@ -324,7 +406,7 @@ const { confirm } = useConfirm()
   line-height: 1;
 }
 
-/* ── 目标切换面板列表（targets 模式）+ 快速指令面板列表 ── */
+/* ── 更多指令面板 / 目标切换面板列表 ── */
 .target-list,
 .quick-list {
   display: flex;

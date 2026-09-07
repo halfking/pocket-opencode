@@ -4,18 +4,21 @@
  *
  * 路由：/sessions/:id?instance_id=xxx&title=xxx
  *
- * P1 改造（设计方案 v2 §4.3）+ P1.5 界面减负：
- *  - 头部收敛（P1.5）：原 top-bar + SessionStatusBar 两行合一——
- *    [退出] [动态状态图标] 标题+信号副标题（状态·时长） [⋮]；
- *    壳层顶栏由路由 hideAppHeader 契约修复隐藏（AppLayout 此前未消费）；
- *  - 动态状态图标（SessionStatusBar，信号即界面 §2.2）：审批呼吸/运行旋转
- *    （单击=停止）/空闲播放（单击=继续），实例名等非实时信息收进 ⋮ 抽屉；
- *  - 轮次时间线（RoundTimeline）：事件流按轮折叠，轮摘要由 round.completed
- *    事件下发（§6.1），前端不再自行拼接；
- *  - 详情抽屉（SessionDetailDrawer，⋮ 触发）：实例信息 + 旧 opencode 详情页
- *    的统计与导出能力收敛于此；
- *  - 输入区（SessionComposer，契约 §4 固定目标模式）：快速指令面板 +
- *    语音转写入草稿 + SQLite 草稿持久化（C 交付，此处挂载接线）。
+ * P1 改造（设计方案 v2 §4.3）+ P1.5 界面减负 + 2026-09-08 会话详情改版：
+ *  - 头部收敛（P1.5）：[退出] [动态状态图标] 标题+信号副标题 [⋮]；
+ *    壳层顶栏由路由 hideAppHeader 契约修复隐藏；
+ *  - 输入系统（09-08 改版）：页面默认**不显示输入框**，右下角 FAB 唤起
+ *    「会话操作 + 消息输入」浮动卡片（SessionComposer）；面板打开后随消息
+ *    滚动 1:1 下移隐藏 / 下滑唤出（与 AI 列表页同款引擎；因路由 bottomNav:false，
+ *    AppLayout 全局 chrome 不启用，此处自建 createScrollHideChrome 私有实例）；
+ *  - 左缘提示词索引条（RoundIndexRail）：每根条 = 一轮用户提示词，
+ *    条高 ∝ 提示词字数，点按 / 滑动 scrub 快速定位；
+ *  - 右缘会话总结条（SessionSummaryRail）：浅黄纸面色条，点击展开
+ *    会话统计 + 各轮摘要（可跳转）；
+ *  - 轮次时间线（RoundTimeline）：事件流按轮折叠；详情抽屉（⋮）收纳
+ *    实例信息 + 统计 + 导出；
+ *  - 输入区快捷指令：primary 4 条为输入框工具行最左侧 44×44 方形按钮，
+ *    其余收进「更多指令」面板（详见 SessionComposer）。
  *
  * 保留：ApprovalPanel / ApprovalBottomSheet（含服务端确认语义）、SSE 流式渲染、
  * 离线审批入队、自动滚底（用户上滚暂停）。
@@ -29,10 +32,13 @@ import { useElapsedNow } from '../../composables/useElapsedNow'
 import { useFeatureFlag } from '../../config/featureFlags'
 import { readSelectedInstance } from '../../config/selected-instance'
 import { usePendingApprovals } from '../../composables/usePendingApprovals'
+import { createScrollHideChrome, bindScrollHideChrome } from '../../composables/useScrollHideChrome'
 import { ApprovalBottomSheet, type ApprovalDecision } from '../../components'
 import ApprovalPanel from './ApprovalPanel.vue'
 import SessionStatusBar from './SessionStatusBar.vue'
 import RoundTimeline from './RoundTimeline.vue'
+import RoundIndexRail from './RoundIndexRail.vue'
+import SessionSummaryRail from './SessionSummaryRail.vue'
 import SessionDetailDrawer from './SessionDetailDrawer.vue'
 import SessionComposer from './SessionComposer.vue'
 import SessionLiveRecordPanel from './SessionLiveRecordPanel.vue'
@@ -83,6 +89,57 @@ const composerInitialText = ref('')
 
 const selectedInstance = computed(() => readSelectedInstance())
 
+// ── 输入面板（2026-09-08 改版）：默认收起为右下 FAB，唤起后随滚动隐藏/唤出 ──
+// 路由 bottomNav:false → 全局 chrome 引擎（AppLayout）不启用；本视图自建
+// 同款引擎实例（与 AI 列表页同一交互规格：跟手 1:1 + 吸附 + 快甩），
+// 隐藏距离 = 输入面板实高（textarea 自增高经 ResizeObserver 跟随）。
+const composerOpen = ref(false)
+const dockEl = ref<HTMLElement | null>(null)
+const dockInset = ref(0)
+const localChrome = createScrollHideChrome(() => dockInset.value)
+const dockOffset = localChrome.hiddenOffset
+const dockSnapping = localChrome.snapping
+const dockFullyHidden = localChrome.hidden
+const fabVisible = computed(() => !composerOpen.value || dockFullyHidden.value)
+
+function openComposer() {
+  composerOpen.value = true
+  // FAB → 面板：从底部唤出（覆盖可能的滚动隐藏态）
+  void nextTick(() => localChrome.reveal())
+}
+
+function collapseComposer() {
+  composerOpen.value = false
+  localChrome.reset()
+}
+
+// 聚焦输入框期间钉住展示（键盘在场时面板不能被滚走，与壳层 onContentFocusIn 同纪律）
+function onDockFocusIn() {
+  localChrome.setPinned(true)
+}
+function onDockFocusOut() {
+  localChrome.setPinned(false)
+}
+
+// 面板挂/卸载时维护实高上报（隐藏吸附后负 margin 让位的依据）
+let dockRO: ResizeObserver | null = null
+watch(composerOpen, async (open) => {
+  dockRO?.disconnect()
+  dockRO = null
+  if (!open) {
+    dockInset.value = 0
+    return
+  }
+  await nextTick()
+  const el = dockEl.value
+  if (!el) return
+  dockInset.value = el.offsetHeight
+  dockRO = new ResizeObserver(() => {
+    dockInset.value = dockEl.value?.offsetHeight ?? 0
+  })
+  dockRO.observe(el)
+})
+
 const sessionTitle = computed(() => {
   if (store.title) return store.title
   if (initialTitle.value) return initialTitle.value
@@ -99,27 +156,37 @@ onMounted(async () => {
     return
   }
   // Deep Link 参数（指挥中心/本地通知进入，设计方案 v2 §4.2-3/§4.2-5）：
-  //   ?prompt=xxx     → 预填输入草稿，可编辑再发送（转写/指令不直发）
+  //   ?prompt=xxx     → 预填输入草稿，可编辑再发送（转写/指令不直发）；并唤起输入面板
   //   ?approval=open  → 清除"已忽略"记录，强制弹出审批 Bottom Sheet
   applyDeepLinkQuery()
   await store.open(sessionID.value, instanceID.value, initialTitle.value)
   await nextTick()
   scrollToBottom(true)
+  // 滚动联动：输入面板隐藏/唤出引擎绑定到消息滚动容器（与 AI 列表页同款）
+  if (messagesEl.value) {
+    unbindLocalChrome = bindScrollHideChrome(messagesEl.value, localChrome)
+  }
   // 审批 Bottom Sheet（feature flag 暗Launch）：进入会话即查一次 pending 并轮询。
   if (approvalSheetEnabled) startApprovalPolling()
   // P1：session.activity / round.completed 事件订阅 + 快照追赶（§4.3-1/2）
   sessionEvents.startLive()
 })
 
+let unbindLocalChrome: (() => void) | null = null
+
 onBeforeUnmount(() => {
   stopApprovalPolling()
   sessionEvents.stopLive()
+  unbindLocalChrome?.()
+  dockRO?.disconnect()
   store.close()
 })
 
 async function scrollToBottom(force = false) {
   if (!autoScroll.value && !force) return
   await nextTick()
+  // 程序化滚动：抑制本地引擎上报，避免流式跟滚被误判为用户上滑而隐藏输入面板
+  localChrome.suppress()
   if (messagesEl.value) {
     messagesEl.value.scrollTop = messagesEl.value.scrollHeight
   }
@@ -135,6 +202,8 @@ function applyDeepLinkQuery() {
   const promptText = typeof q.prompt === 'string' ? q.prompt.trim() : ''
   if (promptText) {
     composerInitialText.value = promptText
+    // 深链预填意图就是输入：唤起输入面板（默认收起态看不到草稿）
+    composerOpen.value = true
   }
   if (q.approval === 'open') {
     dismissedApprovalIds.value = new Set()
@@ -147,12 +216,55 @@ function applyDeepLinkQuery() {
   }
 }
 
+// ── 左缘提示词索引（RoundIndexRail 数据 + 当前轮跟踪 + 定位） ──
+const promptRounds = computed(() =>
+  groupMessagesIntoRounds(store.messages).map((g) => ({
+    index: g.index,
+    text: g.messages.find((m) => m.role === 'user')?.text ?? '',
+  })),
+)
+
+const activeRoundIndex = ref(1)
+
+/** 视口上沿 1/3 处所在轮 = 当前轮（getBoundingClientRect 相对容器，避免 offsetParent 歧义）。 */
+function updateActiveRound() {
+  const el = messagesEl.value
+  if (!el) return
+  const sections = el.querySelectorAll<HTMLElement>('[data-round-index]')
+  if (sections.length === 0) {
+    activeRoundIndex.value = 1
+    return
+  }
+  const probeY = el.getBoundingClientRect().top + el.clientHeight * 0.33
+  let current = Number(sections[0].dataset.roundIndex) || 1
+  for (const section of sections) {
+    if (section.getBoundingClientRect().top > probeY) break
+    current = Number(section.dataset.roundIndex) || current
+  }
+  activeRoundIndex.value = current
+}
+
+/** 索引条 / 总结面板点击：滚动定位到该轮（程序化滚动抑制引擎上报）。 */
+function seekRound(index: number) {
+  const el = messagesEl.value
+  if (!el) return
+  const section = el.querySelector<HTMLElement>(`[data-round-index="${index}"]`)
+  if (!section) return
+  autoScroll.value = false
+  // smooth 滚动全程可能超 400ms：加长抑制窗口，避免定位滚动被误判为用户上滑
+  localChrome.suppress(1200)
+  const delta = section.getBoundingClientRect().top - el.getBoundingClientRect().top
+  el.scrollTop += delta - 8
+  activeRoundIndex.value = index
+}
+
 // 用户上滚 → 暂停自动滚动；触底 → 恢复（RoundTimeline 新事件遵循同一纪律）
 function onScroll() {
   if (!messagesEl.value) return
   const el = messagesEl.value
   const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
   autoScroll.value = distanceToBottom < 50
+  updateActiveRound()
 }
 
 /** SessionComposer @send（契约 §4）：组件内已清草稿，这里只走发送与滚动。 */
@@ -162,6 +274,7 @@ async function onComposerSend(text: string) {
   try {
     await store.sendPrompt(text)
     autoScroll.value = true
+    localChrome.reveal()
     await nextTick()
     scrollToBottom(true)
   } finally {
@@ -386,6 +499,7 @@ async function continueSession() {
   try {
     await store.sendPrompt('继续')
     autoScroll.value = true
+    localChrome.reveal()
     await nextTick()
     scrollToBottom(true)
   } finally {
@@ -452,30 +566,48 @@ function goBack() {
       </button>
     </header>
 
-    <!-- Messages（轮次时间线，§4.3-2） -->
-    <main ref="messagesEl" class="messages" @scroll="onScroll">
-      <div v-if="store.messages.length === 0" class="empty">
-        <div class="empty-icon">💬</div>
-        <p class="empty-text">开始一个新的对话</p>
-        <p class="empty-hint">在下方输入框输入你的问题或任务</p>
-      </div>
-
-      <RoundTimeline
-        v-else
-        :messages="store.messages"
-        :rounds="sessionEvents.roundsByIndex.value"
+    <!-- 内容区：左缘提示词索引条 | 消息流（轮次时间线） | 右缘会话总结条。
+         rails 贴窗口边缘、与内容区等高（body-row 拉伸）。 -->
+    <div class="body-row">
+      <RoundIndexRail
+        v-if="promptRounds.length > 0"
+        :rounds="promptRounds"
+        :active-index="activeRoundIndex"
+        @seek="seekRound"
       />
 
-      <!-- Scroll-to-bottom button -->
-      <button
-        v-if="!autoScroll && store.messages.length > 3"
-        class="scroll-bottom-btn"
-        @click="scrollToBottom(true)"
-        aria-label="滚动到底部"
-      >
-        <span class="material-symbols-outlined">arrow_downward</span>
-      </button>
-    </main>
+      <!-- Messages（轮次时间线，§4.3-2） -->
+      <main ref="messagesEl" class="messages" @scroll="onScroll">
+        <div v-if="store.messages.length === 0" class="empty">
+          <div class="empty-icon">💬</div>
+          <p class="empty-text">开始一个新的对话</p>
+          <p class="empty-hint">点击右下角按钮输入你的问题或任务</p>
+        </div>
+
+        <RoundTimeline
+          v-else
+          :messages="store.messages"
+          :rounds="sessionEvents.roundsByIndex.value"
+        />
+
+        <!-- Scroll-to-bottom button -->
+        <button
+          v-if="!autoScroll && store.messages.length > 3"
+          class="scroll-bottom-btn"
+          @click="scrollToBottom(true)"
+          aria-label="滚动到底部"
+        >
+          <span class="material-symbols-outlined">arrow_downward</span>
+        </button>
+      </main>
+
+      <SessionSummaryRail
+        v-if="store.messages.length > 0"
+        :stats="sessionStats"
+        :rounds="drawerRounds"
+        @seek="seekRound"
+      />
+    </div>
 
     <!-- Error banner -->
     <div v-if="store.errorMessage" class="error-banner">
@@ -514,27 +646,54 @@ function goBack() {
     <!-- Human-in-the-loop 审批面板（权限/问答） -->
     <ApprovalPanel ref="approvalPanelEl" :instance-id="instanceID" :session-id="sessionID" />
 
-    <!-- Input（SessionComposer，契约 §4 固定目标模式；@send 走 store.sendPrompt） -->
+    <!-- 输入面板 dock（SessionComposer，契约 §4；默认收起为 FAB，
+         打开后随滚动 1:1 下移隐藏 / 下滑唤出——与 AI 列表页同款引擎） -->
     <SessionLiveRecordPanel
       v-if="liveRecord.active.value"
       :recorder="liveRecord.recorder"
       :summary="liveRecord.summary"
       @stop="liveRecord.toggle"
     />
-    <SessionComposer
-      :session-id="sessionID"
-      :session-label="sessionTitle"
-      :disabled="sending"
-      :initial-text="composerInitialText"
-      :live-recording="liveRecord.recorder.isRecording.value"
-      @send="onComposerSend"
-      @live-record="liveRecord.toggle"
-    />
+    <footer
+      v-if="composerOpen"
+      ref="dockEl"
+      class="composer-dock"
+      :class="{ snapping: dockSnapping, 'dock-hidden': dockFullyHidden }"
+      :style="{ transform: `translate3d(0, ${dockOffset}px, 0)`, '--dock-inset': `${dockInset}px` }"
+      :inert="dockFullyHidden"
+      @focusin="onDockFocusIn"
+      @focusout="onDockFocusOut"
+    >
+      <SessionComposer
+        :session-id="sessionID"
+        :session-label="sessionTitle"
+        :disabled="sending"
+        :initial-text="composerInitialText"
+        :live-recording="liveRecord.recorder.isRecording.value"
+        @send="onComposerSend"
+        @live-record="liveRecord.toggle"
+        @collapse="collapseComposer"
+      />
+    </footer>
+
+    <!-- 右下浮动按钮：唤起「会话操作 + 消息输入」面板（面板收起或被滚动隐藏时显示） -->
+    <Transition name="fab">
+      <button
+        v-if="fabVisible"
+        type="button"
+        class="composer-fab"
+        aria-label="打开会话操作与消息输入"
+        @click="openComposer"
+      >
+        <span class="material-symbols-outlined" aria-hidden="true">edit</span>
+      </button>
+    </Transition>
   </div>
 </template>
 
 <style scoped>
 .session-view {
+  position: relative; /* 右下 FAB 的定位基准 */
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -609,10 +768,19 @@ function goBack() {
   font-variant-numeric: tabular-nums;
 }
 
+/* 内容区行：左缘提示词索引条 | 消息流 | 右缘会话总结条。
+   rails 是 body-row 的首/末子元素 → 贴窗口边缘且与内容区等高。 */
+.body-row {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
 /* Messages */
 .messages {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
@@ -695,5 +863,59 @@ function goBack() {
   font-style: normal;
   font-size: 20px;
   line-height: 1;
+}
+
+/* ── 输入面板 dock：浮动卡片外边距 + 滚动联动位移。
+   跟手阶段纯 transform 不动布局；吸附落定为全隐后负 margin 把槽位
+   让给消息区（与 AIChatView .composer 同一套机制，引擎为本视图私有实例）。 */
+.composer-dock {
+  flex: 0 0 auto;
+  margin: var(--space-2) var(--space-2) 0;
+  padding-bottom: calc(var(--space-2) + var(--app-safe-bottom));
+  will-change: transform;
+}
+.composer-dock.dock-hidden {
+  margin-bottom: calc(-1 * var(--dock-inset, 0px));
+}
+.composer-dock.snapping {
+  transition:
+    transform var(--duration-chrome) var(--ease-chrome),
+    margin-bottom var(--duration-chrome) var(--ease-chrome);
+}
+
+/* ── 右下 FAB：唤起输入面板（方形圆角，与 qc-btn 同一图标语言） ── */
+.composer-fab {
+  position: absolute;
+  right: var(--space-4);
+  bottom: calc(var(--app-safe-bottom) + var(--space-4));
+  z-index: var(--z-fab, 60);
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 16px;
+  background: var(--brand-gradient, var(--brand-primary));
+  color: var(--text-inverse);
+  cursor: pointer;
+  box-shadow: var(--shadow-lg);
+}
+.composer-fab:active {
+  transform: scale(0.92);
+}
+.composer-fab .material-symbols-outlined {
+  font-size: 26px;
+}
+.fab-enter-active,
+.fab-leave-active {
+  transition:
+    opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+.fab-enter-from,
+.fab-leave-to {
+  opacity: 0;
+  transform: scale(0.6) translateY(8px);
 }
 </style>

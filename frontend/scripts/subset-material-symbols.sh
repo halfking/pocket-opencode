@@ -18,11 +18,14 @@ mkdir -p src/assets/fonts
 
 # 图标清单 = 源码里实际使用的图标名（模板静态文本 + 动态绑定字面量）
 # + EXTRA_ICONS（本次迭代新增、尚未落进模板扫描范围的名字）。
+# 2026-09-08 会话详情改版新增：merge / sports_score / cloud_download（快捷指令，
+# 图标名在 useSessionDrafts.ts 的 QUICK_COMMANDS 数据里，模板扫描抓不到）、
+# edit（输入面板 FAB）、keyboard_arrow_down（收起把手）、summarize（会话总结条）。
 grep -rhoE "material-symbols-outlined[^>]*>\s*[a-z_]+" src --include='*.vue' \
   | grep -oE '[a-z_]+\s*$' | tr -d ' ' | sort -u > /tmp/ms-icons.txt
 grep -rn "material-symbols-outlined" src --include='*.vue' -A2 \
   | grep -oE "'[a-z_]+'|>[a-z_]+<" | tr -d "'><" | sort -u >> /tmp/ms-icons.txt
-EXTRA_ICONS='bolt fast_forward help more_vert notifications_active play_arrow progress_activity science subject smart_toy edit_note mic mail more_horiz sticky_note_2 checklist chat dns computer payments settings hub'
+EXTRA_ICONS='bolt fast_forward help more_vert notifications_active play_arrow progress_activity science subject smart_toy edit_note mic mail more_horiz sticky_note_2 checklist chat dns computer payments settings hub merge sports_score cloud_download edit keyboard_arrow_down summarize'
 printf '%s\n' $EXTRA_ICONS >> /tmp/ms-icons.txt
 sort -u /tmp/ms-icons.txt -o /tmp/ms-icons.txt
 echo "图标清单（$(wc -l < /tmp/ms-icons.txt | tr -d ' ') 个）："; cat /tmp/ms-icons.txt

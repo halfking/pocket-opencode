@@ -37,9 +37,11 @@
       @keydown="onKeydown"
     ></textarea>
 
-    <!-- 工具行：多模态 + 全屏 | 角色 + AI优化 + 提交（独立成行） -->
+    <!-- 工具行：多模态 + 全屏 | 角色 + AI优化 + 提交（独立成行）。
+         tools-left-prefix：场景注入的常驻按钮（如会话快捷指令），置于工具行最左 -->
     <div class="uc-toolbar">
       <div class="uc-tools-left">
+        <slot name="tools-left-prefix" />
         <button
           v-if="allowFullscreen && !singleLine"
           class="uc-tool"
@@ -151,6 +153,7 @@
       ></textarea>
       <div class="uc-toolbar uc-fs-toolbar">
         <div class="uc-tools-left">
+          <slot name="tools-left-prefix" />
           <button
             v-if="enable.voice"
             class="uc-tool"

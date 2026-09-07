@@ -13,7 +13,9 @@ import { ref } from 'vue'
 
 import {
   DRAFT_SAVE_DEBOUNCE_MS,
+  PRIMARY_QUICK_COMMANDS,
   QUICK_COMMANDS,
+  SECONDARY_QUICK_COMMANDS,
   appendToDraft,
   applyInitialText,
   shouldConfirmCommand,
@@ -24,13 +26,35 @@ import { MemoryDraftStore } from '../../../native/draftStore.ts'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-// ── 指令模板（契约 §4 冻结） ──
+// ── 指令模板（契约 §4；2026-09-08 改版：前 4 条 primary 常驻输入框左下） ──
 
 test('指令模板：文案与顺序按契约 §4 冻结', () => {
   assert.deepEqual(
     QUICK_COMMANDS.map((c) => c.label),
-    ['继续', '停下', '总结当前进展', '跑测试', '忽略错误继续'],
+    [
+      '继续',
+      '提交代码并推送合并到主分支',
+      '开启Goal模式',
+      '拉取最新代码',
+      '停下',
+      '总结当前进展',
+      '跑测试',
+      '忽略错误继续',
+    ],
   )
+})
+
+test('指令模板：primary 前 4 条常驻输入框左下，其余收进更多指令面板', () => {
+  assert.deepEqual(
+    PRIMARY_QUICK_COMMANDS.map((c) => c.label),
+    ['继续', '提交代码并推送合并到主分支', '开启Goal模式', '拉取最新代码'],
+  )
+  assert.deepEqual(
+    SECONDARY_QUICK_COMMANDS.map((c) => c.label),
+    ['停下', '总结当前进展', '跑测试', '忽略错误继续'],
+  )
+  // 两个视图互斥且并集完整
+  assert.equal(PRIMARY_QUICK_COMMANDS.length + SECONDARY_QUICK_COMMANDS.length, QUICK_COMMANDS.length)
 })
 
 test('指令模板：一点即发的模板文本 = chip 文案', () => {

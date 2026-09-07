@@ -210,6 +210,7 @@ function cachedDiffText(output: unknown): string | null {
       :key="group.index"
       class="round"
       :class="{ last: gi === groups.length - 1 }"
+      :data-round-index="group.index"
     >
       <button
         type="button"

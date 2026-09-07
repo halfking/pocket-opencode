@@ -40,16 +40,30 @@ export interface QuickCommand {
   confirmText?: string
   /** 面板行图标（Material Symbols 子集内；P1.5 chips→面板引入）。 */
   icon?: string
+  /** 输入框底部工具行最左侧的 44×44 常驻方形按钮（其余收进"更多指令"面板）。 */
+  primary?: boolean
 }
 
-/** 指令模板（契约 §4 冻结文案与顺序；P1.5 从常驻 chips 行收进快速指令面板）。 */
+/**
+ * 指令模板（契约 §4；2026-09-08 会话详情页改版：新增 git/Goal 运维指令，
+ * 前 4 条 primary 常驻输入框左下，其余收进"更多指令"面板；模板文本仍 = label）。
+ */
 export const QUICK_COMMANDS: readonly QuickCommand[] = [
-  { label: '继续', message: '继续', icon: 'play_arrow' },
+  { label: '继续', message: '继续', icon: 'play_arrow', primary: true },
+  { label: '提交代码并推送合并到主分支', message: '提交代码并推送合并到主分支', icon: 'merge', primary: true },
+  { label: '开启Goal模式', message: '开启Goal模式', icon: 'sports_score', primary: true },
+  { label: '拉取最新代码', message: '拉取最新代码', icon: 'cloud_download', primary: true },
   { label: '停下', message: '停下', icon: 'stop', confirmText: '确定要停止当前任务吗？停止后本轮输出不会继续。' },
   { label: '总结当前进展', message: '总结当前进展', icon: 'subject' },
   { label: '跑测试', message: '跑测试', icon: 'science' },
   { label: '忽略错误继续', message: '忽略错误继续', icon: 'fast_forward' },
 ]
+
+/** primary 常驻按钮（输入框左下 44×44 方形；顺序同 QUICK_COMMANDS）。 */
+export const PRIMARY_QUICK_COMMANDS = QUICK_COMMANDS.filter((c) => c.primary === true)
+
+/** "更多指令"面板（非 primary 收纳处）。 */
+export const SECONDARY_QUICK_COMMANDS = QUICK_COMMANDS.filter((c) => c.primary !== true)
 
 /** 仅 confirmText 非空的指令（"停下"）需要二次确认。 */
 export function shouldConfirmCommand(cmd: QuickCommand): boolean {
