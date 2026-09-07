@@ -15,7 +15,7 @@
  * 后端做字节级透传，不解析信封，所以这里直接消费上游契约。
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE || ''
+import { resolveApiBase } from '../config/api-base'
 
 export interface LiveStreamStats {
   total: number
@@ -134,7 +134,7 @@ export class GatewayLiveClient {
     const token = this.getToken()
     const params = new URLSearchParams()
     if (token) params.set('token', token)
-    const url = `${API_BASE}/api/llm-gateway/nodes/${this.nodeId}/live/event?${params}`
+    const url = `${resolveApiBase()}/api/llm-gateway/nodes/${this.nodeId}/live/event?${params}`
 
     this.es = new EventSource(url)
 

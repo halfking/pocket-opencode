@@ -21,7 +21,7 @@
       :style="{ transform: `translateX(${translateX}px)` }"
       @touchstart="handleTouchStart"
       @touchmove="handleTouchMove"
-      @touchend="handleTouchEnd"
+          @touchend="handleTouchEnd($event)"
       @mousedown="handleMouseDown"
     >
       <slot />
@@ -67,6 +67,8 @@ const props = withDefaults(defineProps<SwipeableListItemProps>(), {
   threshold: 0.3,
 })
 
+const emit = defineEmits<{ activate: [] }>()
+
 const containerRef = ref<HTMLElement>()
 const contentRef = ref<HTMLElement>()
 const translateX = ref(0)
@@ -103,32 +105,30 @@ const handleTouchMove = (e: TouchEvent) => {
   translateX.value = newTranslateX
 }
 
-const handleTouchEnd = () => {
+const TAP_PX = 10
+
+function finishDrag(endX: number) {
   if (!isDragging.value) return
   isDragging.value = false
+  const moved = Math.abs(endX - startX.value)
+  if (moved < TAP_PX && Math.abs(currentX.value) < TAP_PX) emit('activate')
 
   const absTranslateX = Math.abs(translateX.value)
   const direction = translateX.value > 0 ? 'left' : 'right'
 
   if (direction === 'left') {
-    // 左滑
-    if (translateX.value > leftActionsWidth.value * props.threshold) {
-      // 完全展开
-      translateX.value = leftActionsWidth.value
-    } else {
-      // 回弹
-      translateX.value = 0
-    }
+    translateX.value = translateX.value > leftActionsWidth.value * props.threshold
+      ? leftActionsWidth.value
+      : 0
   } else {
-    // 右滑
-    if (absTranslateX > rightActionsWidth.value * props.threshold) {
-      // 完全展开
-      translateX.value = -rightActionsWidth.value
-    } else {
-      // 回弹
-      translateX.value = 0
-    }
+    translateX.value = absTranslateX > rightActionsWidth.value * props.threshold
+      ? -rightActionsWidth.value
+      : 0
   }
+}
+
+const handleTouchEnd = (e: TouchEvent) => {
+  finishDrag(e.changedTouches?.[0]?.clientX ?? startX.value)
 }
 
 const handleMouseDown = (e: MouseEvent) => {
@@ -154,8 +154,8 @@ const handleMouseDown = (e: MouseEvent) => {
     translateX.value = newTranslateX
   }
 
-  const handleMouseUp = () => {
-    handleTouchEnd()
+  const handleMouseUp = (up: MouseEvent) => {
+    finishDrag(up.clientX)
     document.removeEventListener('mousemove', handleMouseMove)
     document.removeEventListener('mouseup', handleMouseUp)
   }

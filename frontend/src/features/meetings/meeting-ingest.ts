@@ -41,7 +41,7 @@ export async function ingestMeetingArtifacts(
     ...refine.todos,
     ...(meeting.liveSummary?.actionItems ?? []),
   ]
-  todosCreated = await createLocalTodos(todos, noteId)
+  todosCreated = await createLocalTodos(todos, noteId, meeting.id)
 
   await updateMeeting(meeting.id, {
     refinedTranscript: refine.refinedTranscript,
@@ -72,7 +72,7 @@ export async function ingestMeetingArtifacts(
   return { noteId, todosCreated, cloudSynced }
 }
 
-async function createLocalTodos(items: ActionItem[], noteId: string | null): Promise<number> {
+async function createLocalTodos(items: ActionItem[], noteId: string | null, meetingId?: string): Promise<number> {
   const unique = dedupeTodos(items)
   let count = 0
   const now = Date.now()
@@ -81,11 +81,11 @@ async function createLocalTodos(items: ActionItem[], noteId: string | null): Pro
     const id = `todo-${now}-${Math.random().toString(36).slice(2, 6)}`
     await localDB.run(
       `INSERT INTO local_todos
-       (id, note_id, title, description, status, priority, due_at, extracted_from_voice, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+       (id, note_id, title, description, status, priority, due_at, extracted_from_voice, meeting_id, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       [
         id, noteId, item.text, item.assignee ? `负责人：${item.assignee}` : null,
-        'pending', mapPriority(item), parseDue(item.due), 1, now, now,
+        'pending', mapPriority(item), parseDue(item.due), 1, meetingId ?? null, now, now,
       ],
     )
     count++

@@ -41,17 +41,37 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 
 // Health performs a health check against the RedClaw service.
 func (c *Client) Health() (*HealthResponse, error) {
-	resp, err := c.doRequest(http.MethodGet, "/health", nil)
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for _, path := range []string{"/healthz", "/health"} {
+		resp, err := c.doRequest(http.MethodGet, path, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			lastErr = fmt.Errorf("redclaw: health %s HTTP %d", path, resp.StatusCode)
+			continue
+		}
+		var result HealthResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			lastErr = fmt.Errorf("decode health response: %w", err)
+			continue
+		}
+		if result.Status == "" {
+			result.Status = "ok"
+		}
+		return &result, nil
 	}
-	defer resp.Body.Close()
-
-	var result HealthResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode health response: %w", err)
+	if lastErr == nil {
+		lastErr = fmt.Errorf("redclaw: health check failed")
 	}
-	return &result, nil
+	return nil, lastErr
 }
 
 // Chat sends a chat request to the LLM service with tenant isolation enforcement.
@@ -73,12 +93,8 @@ func (c *Client) Chat(req ChatRequest) (*ChatResponse, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		var errResp ErrorResponse
 		body, _ := io.ReadAll(resp.Body)
-		if json.Unmarshal(body, &errResp) == nil {
-			return nil, fmt.Errorf("RedClaw error (code=%d): %s", errResp.Code, errResp.Message)
-		}
-		return nil, fmt.Errorf("RedClaw HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, decodeRedClawError(resp.StatusCode, body)
 	}
 
 	var result ChatResponse
@@ -107,12 +123,8 @@ func (c *Client) KnowledgeSearch(req KnowledgeSearchRequest) (*KnowledgeSearchRe
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		var errResp ErrorResponse
 		body, _ := io.ReadAll(resp.Body)
-		if json.Unmarshal(body, &errResp) == nil {
-			return nil, fmt.Errorf("RedClaw error (code=%d): %s", errResp.Code, errResp.Message)
-		}
-		return nil, fmt.Errorf("RedClaw HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, decodeRedClawError(resp.StatusCode, body)
 	}
 
 	var result KnowledgeSearchResponse
@@ -142,12 +154,8 @@ func (c *Client) VerifyUser(userID string) (*VerifyUserResponse, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		var errResp ErrorResponse
 		body, _ := io.ReadAll(resp.Body)
-		if json.Unmarshal(body, &errResp) == nil {
-			return nil, fmt.Errorf("RedClaw error (code=%d): %s", errResp.Code, errResp.Message)
-		}
-		return nil, fmt.Errorf("RedClaw HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, decodeRedClawError(resp.StatusCode, body)
 	}
 
 	var result VerifyUserResponse

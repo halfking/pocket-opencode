@@ -414,6 +414,7 @@
 import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type Task } from '../../api/client'
+import { readSelectedInstance } from '../../config/selected-instance'
 import wsClient from '../../api/websocket'
 import { useToast } from '../../composables/useToast'
 import { useApprovalAlerts } from '../../composables/useApprovalAlerts'
@@ -687,8 +688,7 @@ watch(
 
 // ── Lifecycle ──
 onMounted(() => {
-  const instanceStr = localStorage.getItem('selected_instance')
-  if (instanceStr) currentInstance.value = JSON.parse(instanceStr)
+  currentInstance.value = readSelectedInstance()
   loadTasks()
   loadSessions()
   // L0/L1 数据源：实例级待审批实时流（WS 事件驱动 + 首拉）。

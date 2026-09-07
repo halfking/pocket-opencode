@@ -167,9 +167,12 @@
         @success="onMasterPasswordCreated"
       />
 
-      <!-- 版本信息 -->
+      <!-- 版本信息 + 当前 pocketd 基址（与设置页同一 SSOT） -->
       <div class="version-info">
         <p>v1.1.0-mobile</p>
+        <button type="button" class="api-base-link" @click="router.push('/servers')">
+          后端服务器 · {{ backendDisplay }}
+        </button>
       </div>
     </div>
   </div>
@@ -200,14 +203,17 @@ import {
   unlockButtonLabel,
   unlockHint,
   unlockPasswordPlaceholder,
+  unlockRedirectPath,
   unlockSubmitMode,
 } from './unlock-auth'
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
 import { useCryptoConfig } from '../../stores/crypto-config'
 import { sendCode, codeLogin, fetchSsoLoginUrl, fetchSsoStatus } from '../../api/auth'
+import { displayApiBase } from '../../config/api-base'
 
 const router = useRouter()
 const auth = useAuthStore()
+const backendDisplay = displayApiBase()
 
 const username = ref('admin')
 const password = ref('')
@@ -390,10 +396,7 @@ async function unlock() {
     }
     needUnlock.value = false
     unlockPassword.value = ''
-    const redirect = typeof router.currentRoute.value.query.redirect === 'string'
-      ? router.currentRoute.value.query.redirect
-      : '/ai'
-    router.replace(redirect)
+    router.replace(unlockRedirectPath(router.currentRoute.value.query))
   } catch (e: any) {
     error.value = `解锁失败（主密码错误？）：${e.message || e}`
   } finally {
@@ -411,10 +414,7 @@ async function logoutAndRelogin() {
 
 function onMasterPasswordCreated() {
   showMasterPasswordDialog.value = false
-  const redirect = typeof router.currentRoute.value.query.redirect === 'string'
-    ? router.currentRoute.value.query.redirect
-    : '/ai'
-  router.replace(redirect)
+  router.replace(unlockRedirectPath(router.currentRoute.value.query))
 }
 
 async function handleLogin() {
@@ -707,6 +707,18 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
 
 .version-info p {
   margin: var(--space-1) 0;
+}
+
+.api-base-link {
+  display: inline-block;
+  margin-top: var(--space-1);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--brand-primary);
+  font-size: var(--text-xs);
+  word-break: break-all;
+  cursor: pointer;
 }
 
 .hint {

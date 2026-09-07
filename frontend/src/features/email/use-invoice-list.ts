@@ -4,9 +4,12 @@ import { emailApi, type EmailInvoice, type EmailInvoiceStatus } from '../../api/
 import { financeApi } from '../../api/finance'
 import { useToast } from '../../composables/useToast'
 import { downloadTextFile, downloadFile, DownloadUnsupportedError } from '../../utils/download'
+import { remapRecordMap } from '../../native/list-sync/id-align'
+import { isLocalOnlyId } from '../../native/list-sync/planner'
 import * as invoiceStore from './invoices-store'
+import { pullInvoiceServerPage, pushDirtyInvoices } from './invoice-list-pull'
 import {
-  INVOICE_PAGE_SIZE, invoiceFileKind, invoiceHasFile, invoicePageHasMore,
+  INVOICE_PAGE_SIZE, invoiceFileKind, invoiceHasFile,
   mergeInvoicePages, sortInvoicesByReceived, type InvoiceFileKind,
 } from './invoice-list'
 
@@ -105,44 +108,70 @@ export function useInvoiceList() {
       toast.error(e?.message || '无法打开发票文件')
     }
   }
+  function applyRemaps(remaps: { localId: string; serverId: string }[]) {
+    for (const remap of remaps) {
+      thumbs.value = remapRecordMap(thumbs.value, remap)
+      selected.value = selected.value.map((id) => (id === remap.localId ? remap.serverId : id))
+    }
+  }
+  async function pullServerPage(offset: number) {
+    const pulled = await pullInvoiceServerPage({
+      status: filter.value || undefined,
+      offset,
+      current: all.value,
+    })
+    applyRemaps(pulled.remaps)
+    all.value = pulled.rows
+    nextOffset.value = pulled.rows.length
+    hasMore.value = pulled.hasMore
+    applySummary(pulled.rows, pulled.totals)
+    void loadThumbs(pulled.rows)
+  }
   async function load() {
     loading.value = true
     error.value = ''
     nextOffset.value = 0
     hasMore.value = false
     try {
-      const res = await emailApi.listInvoices(filter.value || undefined, INVOICE_PAGE_SIZE, 0)
-      const page = res.invoices ?? []
-      all.value = sortInvoicesByReceived(page)
-      nextOffset.value = page.length
-      hasMore.value = res.hasMore ?? invoicePageHasMore(page.length)
-      applySummary(all.value, { total: res.total, filed: res.filed, amount: res.amount })
+      const page = await invoiceStore.listLocalPage({
+        status: filter.value || undefined,
+        limit: INVOICE_PAGE_SIZE,
+        offset: 0,
+      })
+      all.value = sortInvoicesByReceived(page.rows)
+      nextOffset.value = page.rows.length
+      hasMore.value = page.hasMore
+      applySummary(all.value)
       revokeThumbs()
-      void loadThumbs(page)
+      void loadThumbs(page.rows)
+      if (page.rows.length) loading.value = false
+    } catch { /* 本地库未就绪时仍拉服务端 */ }
+    try {
+      await pullServerPage(0)
     } catch (e: any) {
-      try {
-        all.value = sortInvoicesByReceived(await invoiceStore.listLocal())
-        applySummary(all.value)
-        hasMore.value = false
-        if (all.value.length === 0) error.value = e?.message || '加载失败'
-      } catch {
-        error.value = e?.message || '加载失败'
-      }
+      if (all.value.length === 0) error.value = e?.message || '加载失败'
     } finally {
       loading.value = false
     }
+    void pushDirtyInvoices().catch(() => {})
   }
   async function loadMore() {
     if (loading.value || loadingMore.value || !hasMore.value) return
     loadingMore.value = true
+    const offset = nextOffset.value
     try {
-      const res = await emailApi.listInvoices(filter.value || undefined, INVOICE_PAGE_SIZE, nextOffset.value)
-      const page = res.invoices ?? []
-      all.value = mergeInvoicePages(all.value, page)
-      nextOffset.value += page.length
-      hasMore.value = res.hasMore ?? invoicePageHasMore(page.length)
-      applySummary(all.value, { total: res.total, filed: res.filed, amount: res.amount })
-      void loadThumbs(page)
+      const local = await invoiceStore.listLocalPage({
+        status: filter.value || undefined,
+        limit: INVOICE_PAGE_SIZE,
+        offset,
+      })
+      if (local.rows.length) {
+        all.value = mergeInvoicePages(all.value, local.rows)
+        nextOffset.value = all.value.length
+        hasMore.value = local.hasMore
+        void loadThumbs(local.rows)
+      }
+      await pullServerPage(offset)
     } catch (e: any) {
       toast.error(e?.message || '加载更多失败')
     } finally {
@@ -210,20 +239,28 @@ export function useInvoiceList() {
     }
   }
   async function markFiled(inv: EmailInvoice) {
+    inv.status = 'filed'
+    applySummary(all.value)
     try {
-      await emailApi.setInvoiceStatus(inv.id, 'filed')
-      inv.status = 'filed'
-      applySummary(all.value)
+      await invoiceStore.setLocalStatus(inv.id, 'filed')
+      if (!isLocalOnlyId(inv.id)) {
+        await emailApi.setInvoiceStatus(inv.id, 'filed')
+        await invoiceStore.clearDirty(inv.id)
+      }
       toast.success('已归档')
     } catch (e: any) {
       toast.error(e?.message || '操作失败')
     }
   }
   async function markNew(inv: EmailInvoice) {
+    inv.status = 'new'
+    applySummary(all.value)
     try {
-      await emailApi.setInvoiceStatus(inv.id, 'new')
-      inv.status = 'new'
-      applySummary(all.value)
+      await invoiceStore.setLocalStatus(inv.id, 'new')
+      if (!isLocalOnlyId(inv.id)) {
+        await emailApi.setInvoiceStatus(inv.id, 'new')
+        await invoiceStore.clearDirty(inv.id)
+      }
     } catch (e: any) {
       toast.error(e?.message || '操作失败')
     }
@@ -267,9 +304,10 @@ export function useInvoiceList() {
   }
   async function remove(inv: EmailInvoice) {
     try {
-      await emailApi.deleteInvoice(inv.id)
+      await invoiceStore.removeLocal(inv.id)
       all.value = all.value.filter((i) => i.id !== inv.id)
       applySummary(all.value)
+      if (!isLocalOnlyId(inv.id)) await emailApi.deleteInvoice(inv.id)
       toast.success('已删除')
     } catch (e: any) {
       toast.error(e?.message || '删除失败')

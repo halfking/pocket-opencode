@@ -95,22 +95,29 @@
         </div>
       </div>
 
-      <!-- 当前连接 -->
+      <!-- 当前连接：后端服务器 = pocketd API 基址；实例是其下游 -->
       <div class="settings-section">
         <h2>{{ t('settings.currentConnection') }}</h2>
-        <div class="setting-item">
+        <div class="setting-item entry" @click="changeServer">
           <div class="setting-icon"><span class="material-symbols-outlined">dns</span></div>
           <div class="setting-content">
-            <div class="setting-label">{{ t('settings.server') }}</div>
-            <div class="setting-value">{{ selectedServer?.name || t('settings.notSelected') }}</div>
+            <div class="setting-label">{{ t('settings.backendServer') }}</div>
+            <div class="setting-value small">
+              <span v-if="backendHealth === 'ok'" class="rc-ok">● {{ t('settings.healthOk') }}</span>
+              <span v-else-if="backendHealth === 'down'" class="rc-down">● {{ t('settings.healthDown') }}</span>
+              <span v-else class="rc-off">● {{ t('settings.healthUnknown') }}</span>
+              · {{ backendDisplay }}
+            </div>
           </div>
+          <span class="material-symbols-outlined chevron">chevron_right</span>
         </div>
-        <div class="setting-item">
+        <div class="setting-item entry" @click="changeInstance">
           <div class="setting-icon"><span class="material-symbols-outlined">computer</span></div>
           <div class="setting-content">
             <div class="setting-label">{{ t('settings.instance') }}</div>
             <div class="setting-value">{{ selectedInstance?.displayName || t('settings.notSelected') }}</div>
           </div>
+          <span class="material-symbols-outlined chevron">chevron_right</span>
         </div>
         <!-- RedClaw 企业后端桥接：认证主权威源 / 知识库 / LLM 兜底通道 -->
         <div class="setting-item">
@@ -149,13 +156,6 @@
           <div class="setting-content">
             <div class="setting-label">{{ t('settings.buildDate') }}</div>
             <div class="setting-value">{{ APP_VERSION.buildDate }}</div>
-          </div>
-        </div>
-        <div class="setting-item">
-          <div class="setting-icon"><span class="material-symbols-outlined">hub</span></div>
-          <div class="setting-content">
-            <div class="setting-label">{{ t('settings.apiAddress') }}</div>
-            <div class="setting-value small">{{ apiOrigin }}</div>
           </div>
         </div>
       </div>
@@ -224,6 +224,8 @@ import { APP_VERSION, canDownloadApk, checkUpdate } from '../../utils/version'
 import { runtimePlatform } from '../../native/runtime-platform'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
 import { http } from '../../api/http'
+import { displayApiBase, probeHealthz, resolveApiBase } from '../../config/api-base'
+import { clearSelectedInstance, readSelectedInstance } from '../../config/selected-instance'
 import { useConfirm } from '../../composables/useConfirm'
 import { useThemeStore, type ThemePreference } from '../../stores/theme'
 
@@ -239,12 +241,10 @@ const themeOptions: { value: ThemePreference; label: string; icon: string }[] = 
   { value: 'system', label: t('settings.themeSystem'), icon: 'brightness_auto' },
 ]
 
-// 暴露给 template（Vue template 不能直接访问 window）
-const apiOrigin = typeof window !== 'undefined' ? window.location.origin : ''
-
 const user = ref<any>(null)
-const selectedServer = ref<any>(null)
-const selectedInstance = ref<any>(null)
+const selectedInstance = ref(readSelectedInstance())
+const backendDisplay = displayApiBase()
+const backendHealth = ref<'ok' | 'down' | 'unknown'>('unknown')
 
 // Phase 5: LLM Gateway 状态
 const gateway = ref<GatewayConfig>({
@@ -278,9 +278,14 @@ onMounted(async () => {
   // 加载用户信息
   user.value = readJSON('pocket_user')
 
-  // 加载当前服务器 / 实例
-  selectedServer.value = readJSON('selected_server')
-  selectedInstance.value = readJSON('selected_instance')
+  selectedInstance.value = readSelectedInstance()
+  const probeAt = resolveApiBase() || (typeof window !== 'undefined' ? window.location.origin : '')
+  try {
+    const health = await probeHealthz(probeAt)
+    backendHealth.value = health.ok ? 'ok' : 'down'
+  } catch {
+    backendHealth.value = 'down'
+  }
 
   // 加载 LLM Gateway 配置
   await refreshGateway()
@@ -361,6 +366,10 @@ function changeServer() {
   router.push('/servers')
 }
 
+function changeInstance() {
+  router.push('/instances')
+}
+
 function goPermissions() {
   router.push('/settings/permissions')
 }
@@ -373,7 +382,7 @@ async function handleLogout() {
   if (await confirm({ title: t('settings.logout'), message: t('settings.logoutConfirm'), confirmText: t('settings.logout'), danger: true })) {
     localStorage.removeItem('pocket_user')
     localStorage.removeItem('selected_server')
-    localStorage.removeItem('selected_instance')
+    clearSelectedInstance()
     router.push('/login')
   }
 }

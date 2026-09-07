@@ -62,6 +62,7 @@ export const useThemeStore = defineStore('theme', () => {
       // 存不进去也照常生效（本次会话内）
     }
     applyTheme()
+    import('../native/config-sync/prefs').then((m) => m.persistAppPrefs()).catch(() => {})
   }
 
   // 跟随系统模式下监听系统深浅变化（store 为应用级单例，监听随应用存活）

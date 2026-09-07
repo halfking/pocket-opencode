@@ -10,7 +10,7 @@
  */
 import { defineStore } from 'pinia'
 import { useAuthStore } from './auth'
-import { apiBase } from '../api/http'
+import { resolveApiBase } from '../config/api-base'
 import { isLobsterReady } from '../native/lobster-init'
 import { localDB, localDbAsSql } from '../native/local-db'
 import { MobileSyncRuntime, type RuntimeEvent } from '../native/mobileSyncRuntime'
@@ -63,7 +63,7 @@ export const useConnectivityStore = defineStore('connectivity', {
         },
         db: () => (isLobsterReady() ? localDbAsSql(localDB) : null),
         fetchImpl: (...args: Parameters<typeof fetch>) => fetch(...args),
-        apiBase,
+        apiBase: resolveApiBase(),
         onEvent: (event) => this.applyRuntimeEvent(event),
       })
       this.runtime.start()

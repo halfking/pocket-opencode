@@ -42,20 +42,16 @@ func (s *Server) handleRedClawChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Force tenant and user from authenticated JWT; ignore request body values
+	// User comes from JWT. Tenant: single-tenant pocketd maps every
+	// authenticated workspace onto POCKET_REDCLAW_TENANT_ID (pocket
+	// workspace ids like ws_user-admin are not RedClaw tenants).
 	claims := s.claimsFromContext(r)
 	if claims == nil {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	req.TenantID = claims.WorkspaceID
+	req.TenantID = s.redclawTenantID(claims)
 	req.UserID = claims.UserID
-
-	// Validate against configured tenant if single-tenant deployment
-	if s.cfg.RedClawTenantID != "" && req.TenantID != s.cfg.RedClawTenantID {
-		http.Error(w, `{"error":"tenant mismatch"}`, http.StatusForbidden)
-		return
-	}
 
 	resp, err := s.redclawBridge.Chat(req)
 	if err != nil {
@@ -89,13 +85,12 @@ func (s *Server) handleRedClawKnowledgeSearch(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Force tenant from authenticated JWT
 	claims := s.claimsFromContext(r)
 	if claims == nil {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	req.TenantID = claims.WorkspaceID
+	req.TenantID = s.redclawTenantID(claims)
 
 	resp, err := s.redclawBridge.KnowledgeSearch(req)
 	if err != nil {
@@ -105,4 +100,17 @@ func (s *Server) handleRedClawKnowledgeSearch(w http.ResponseWriter, r *http.Req
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// redclawTenantID maps an authenticated pocket workspace onto the RedClaw
+// tenant this pocketd is wired to. Single-tenant deploys always use
+// POCKET_REDCLAW_TENANT_ID so JWT workspace ids never 403 the bridge.
+func (s *Server) redclawTenantID(claims *authClaims) string {
+	if s.cfg.RedClawTenantID != "" {
+		return s.cfg.RedClawTenantID
+	}
+	if claims != nil {
+		return claims.WorkspaceID
+	}
+	return ""
 }

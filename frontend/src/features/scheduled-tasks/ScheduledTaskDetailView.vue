@@ -7,8 +7,8 @@
     <div v-else-if="store.error" class="state error">{{ store.error }}<button @click="load">重试</button></div>
     <main v-else-if="task" class="content">
       <section class="hero"><div class="title-row"><h1>{{ task.name }}</h1><span :class="['status', task.enabled ? 'on' : 'off']">{{ task.enabled ? '启用' : '停用' }}</span></div><p v-if="task.description">{{ task.description }}</p><div class="chips"><span>{{ taskKindLabel(task.kind) }}</span><span>{{ scheduleKindLabel(task.scheduleKind) }}</span></div></section>
-      <section class="section"><h2>执行计划</h2><dl><dt>表达式</dt><dd><code>{{ task.scheduleExpr }}</code></dd><dt>时区</dt><dd>{{ task.timezone }}</dd><dt>下次运行</dt><dd>{{ formatTimestamp(task.nextRunAt) }}</dd><dt>运行次数</dt><dd>{{ task.runCount }}{{ task.maxRuns ? ` / ${task.maxRuns}` : '' }}</dd></dl></section>
-      <section class="section"><h2>Payload</h2><pre>{{ formatPayload(task.payload) }}</pre></section>
+      <section class="section"><h2>执行计划</h2><dl><dt>计划</dt><dd>{{ describeTaskSchedule(task.scheduleKind, task.scheduleExpr) }}</dd><dt>下次运行</dt><dd>{{ formatTimestamp(task.nextRunAt) }}</dd><dt>运行次数</dt><dd>{{ task.runCount }}{{ task.maxRuns ? ` / ${task.maxRuns}` : '' }}</dd></dl></section>
+      <section class="section"><h2>任务内容</h2><pre>{{ formatPayload(task.payload) }}</pre></section>
       <section class="section"><h2>最近运行</h2><div v-if="store.runs.length === 0" class="muted">尚无运行记录</div><div v-else class="runs"><div v-for="run in store.runs" :key="run.id" class="run"><span :class="['run-status', run.status]">{{ run.status }}</span><span>{{ formatTimestamp(run.startedAt) }}</span><span v-if="run.durationMs">{{ run.durationMs }}ms</span><span v-if="run.error" class="run-error">{{ run.error }}</span></div></div></section>
       <div class="actions"><button @click="runNow" :disabled="running">{{ running ? '执行中…' : '立即执行' }}</button><button @click="toggle">{{ task.enabled ? '停用自动化' : '启用自动化' }}</button><button class="danger" @click="remove">删除自动化</button></div>
     </main>
@@ -21,6 +21,7 @@ import { useRoute, useRouter } from 'vue-router'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { useScheduledTasksStore } from './store'
 import { formatPayload, formatTimestamp, scheduleKindLabel, taskKindLabel } from './types'
+import { describeTaskSchedule } from './schedule-plan'
 
 const route = useRoute(); const router = useRouter(); const store = useScheduledTasksStore()
 const taskId = computed(() => route.params.id as string)

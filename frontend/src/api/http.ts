@@ -3,13 +3,16 @@
  * New per-feature api modules (notes.ts, email.ts, vault.ts) build on this
  * instead of calling fetch() directly, so auth headers stay consistent.
  */
+import { resolveApiBase } from '../config/api-base'
 import { useAuthStore } from '../stores/auth'
 import { assertNotHTML } from './jsonGuard'
 
 // 再导出：client.ts 等既有调用方统一从 ./http 取守卫。
 export { assertNotHTML }
 
-const API_BASE = import.meta.env.VITE_API_BASE || ''
+export function getApiBase(): string {
+  return resolveApiBase()
+}
 
 /** refresh 端点本身 401 时不得再触发续期重放（防自引用循环）。 */
 const REFRESH_PATH = '/api/auth/refresh'
@@ -46,7 +49,7 @@ async function httpOnce<T = any>(path: string, opts: RequestInit = {}): Promise<
     headers['Content-Type'] = 'application/json'
   }
 
-  const res = await fetch(`${API_BASE}${path}`, { ...opts, headers })
+  const res = await fetch(`${resolveApiBase()}${path}`, { ...opts, headers })
   if (!res.ok) {
     // 尝试解析响应 body，让调用方能拿到结构化错误（如 409 conflict 的 server_version）
     let parsedBody: any
@@ -95,4 +98,3 @@ export async function http<T = any>(path: string, opts: RequestInit = {}): Promi
   }
 }
 
-export const apiBase = API_BASE

@@ -404,6 +404,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
   function setSettings(patch: Partial<ChatSettings>) {
     Object.assign(settings.value, patch)
     persist()
+    import('../../native/config-sync/prefs').then((m) => m.persistChatSettings(settings.value)).catch(() => {})
   }
 
   function setCompareModels(list: string[]) {

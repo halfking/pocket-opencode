@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -65,6 +66,7 @@ func (s *LLMGatewayStore) migrate() error {
 	-- P3 反馈轮：消息格式（openai-chat 默认）与常用模型勾选（空数组 = 不过滤）
 	ALTER TABLE llm_gateway_configs ADD COLUMN IF NOT EXISTS format TEXT NOT NULL DEFAULT 'openai-chat';
 	ALTER TABLE llm_gateway_configs ADD COLUMN IF NOT EXISTS preferred_models JSONB DEFAULT '[]';
+	ALTER TABLE llm_gateway_configs ADD COLUMN IF NOT EXISTS updated_at BIGINT NOT NULL DEFAULT 0;
 	CREATE INDEX IF NOT EXISTS idx_llm_gw_ws ON llm_gateway_configs(workspace_id);
 	-- At most one active row per workspace. SaveConfig does UPDATE-then-INSERT,
 	-- which under concurrent transactions can leave several rows with
@@ -136,10 +138,14 @@ func (s *LLMGatewayStore) SaveConfig(ctx context.Context, workspaceID string, st
 		format = "openai-chat"
 	}
 
+	updatedAt := st.UpdatedAt
+	if updatedAt <= 0 {
+		updatedAt = time.Now().Unix()
+	}
 	_, err = tx.Exec(ctx, `
-			INSERT INTO llm_gateway_configs (workspace_id, base_url, api_key_encrypted, models, format, preferred_models, is_active, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, true, NOW())
-		`, workspaceID, st.BaseURL, storedAPIKey, string(modelsJSON), format, string(preferredJSON))
+			INSERT INTO llm_gateway_configs (workspace_id, base_url, api_key_encrypted, models, format, preferred_models, is_active, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, true, NOW(), $7)
+		`, workspaceID, st.BaseURL, storedAPIKey, string(modelsJSON), format, string(preferredJSON), updatedAt)
 
 	if err != nil {
 		return err

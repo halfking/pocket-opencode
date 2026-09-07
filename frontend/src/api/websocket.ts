@@ -1,3 +1,5 @@
+import { resolveApiBase } from '../config/api-base'
+
 // WebSocket 客户端管理
 class WebSocketClient {
   private ws: WebSocket | null = null
@@ -16,11 +18,8 @@ class WebSocketClient {
     }
 
     try {
-      // 每次连接时更新URL以包含最新的token
-      const token = localStorage.getItem('pocket_token')
-      const baseWsUrl = this.url.split('?')[0]
-      this.url = token ? `${baseWsUrl}?token=${encodeURIComponent(token)}` : baseWsUrl
-      
+      // 每次连接用当前 pocketd 基址 + 最新 token（设置里改基址后 reload 即可）
+      this.url = getWsUrl()
       this.ws = new WebSocket(this.url)
 
       this.ws.onopen = () => {
@@ -130,14 +129,15 @@ class WebSocketClient {
   }
 }
 
-// 创建全局 WebSocket 实例
-const API_BASE = import.meta.env.VITE_API_BASE || ''
 const TOKEN_KEY = 'pocket_token'
 
-// 动态构造带token的WebSocket URL
+function wsHttpBase(): string {
+  return resolveApiBase() || (typeof window !== 'undefined' ? window.location.origin : '')
+}
+
 function getWsUrl(): string {
   const token = localStorage.getItem(TOKEN_KEY)
-  const baseWsUrl = API_BASE.replace(/^http/, 'ws') + '/ws'
+  const baseWsUrl = wsHttpBase().replace(/^http/, 'ws') + '/ws'
   
   // 如果有token，将其作为查询参数附加到URL
   if (token) {

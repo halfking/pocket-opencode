@@ -67,43 +67,15 @@
       </button>
     </div>
 
-    <!-- Sessions Section -->
-    <div class="sessions-section">
-      <div class="section-header">
-        <h3>关联会话 <span class="badge">{{ sessions.length }}</span></h3>
-        <button class="link-btn" @click="showAttachModal = true">+ 附加</button>
-      </div>
-
-      <div v-if="sessions.length > 0" class="session-list">
-        <div
-          v-for="s in sessions"
-          :key="s.sessionId"
-          class="session-row"
-          @click="openSession(s)"
-        >
-          <span class="status-dot" />
-          <div class="session-info">
-            <div class="session-id">{{ s.sessionId.slice(0, 16) }}…</div>
-            <div class="session-tags">
-              <span class="tag">{{ s.role }}</span>
-              <span class="tag">{{ s.instanceId }}</span>
-            </div>
-          </div>
-          <span class="chevron">›</span>
-        </div>
-      </div>
-
-      <EmptyState
-        v-else
-        icon="💬"
-        title="暂无关联会话"
-        hint="点击「附加」将会话关联到此任务"
-        size="sm"
-        variant="inline"
-        action-label="附加会话"
-        @action="showAttachModal = true"
-      />
-    </div>
+    <TaskSessionPanel
+      :current="bundle.current"
+      :historical="bundle.historical"
+      :local-only="bundle.localOnly"
+      :usage="bundle.usageTotals"
+      @open="openRow = $event"
+      @attach="showAttachModal = true"
+    />
+    <TaskSessionSheet :task-id="task?.id || ''" :row="openRow" @close="openRow = null" />
 
     <!-- Attach Modal -->
     <BottomSheet
@@ -141,31 +113,68 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { api, type Task } from '../../api/client'
-import { EmptyState } from '../../components'
+import { api, type Task, type TaskSessionBundle, type TaskSessionBundleRow } from '../../api/client'
 import { useConfirm } from '../../composables/useConfirm'
 import BottomSheet from '../../components/base/BottomSheet.vue'
+import TaskSessionPanel from './TaskSessionPanel.vue'
+import TaskSessionSheet from './TaskSessionSheet.vue'
 
 const router = useRouter()
 const route = useRoute()
 const { confirm } = useConfirm()
 
 const task = ref<Task | null>(null)
-const sessions = ref<any[]>([])
+const bundle = ref<TaskSessionBundle>({
+  current: [],
+  historical: [],
+  localOnly: [],
+  usageTotals: { input: 0, output: 0, cache: null },
+})
 const showAttachModal = ref(false)
+const openRow = ref<TaskSessionBundleRow | null>(null)
 const newSession = ref({ sessionId: '', instanceId: '', role: 'primary' })
 
-onMounted(async () => {
+async function loadBundle(taskId: string) {
+  try {
+    bundle.value = await api.getTaskSessionBundle(taskId)
+  } catch (e) {
+    console.error('Failed to load session bundle:', e)
+    const sessions = await api.getTaskSessions(taskId)
+    bundle.value = {
+      current: [],
+      historical: [],
+      localOnly: sessions.map((s) => ({
+        id: s.sessionId,
+        title: s.sessionId,
+        lane: 'local' as const,
+        agentSessionId: s.sessionId,
+        instanceId: s.instanceId,
+        role: s.role,
+        tokensIn: 0,
+        tokensOut: 0,
+        tokensCache: null,
+      })),
+      usageTotals: { input: 0, output: 0, cache: null },
+    }
+  }
+}
+
+async function loadTask() {
   const taskId = route.params.id as string
+  if (!taskId) return
   try {
     task.value = await api.getTask(taskId)
-    sessions.value = await api.getTaskSessions(taskId)
+    await loadBundle(taskId)
   } catch (e) {
     console.error('Failed to load task:', e)
+    task.value = null
   }
-})
+}
+
+onMounted(loadTask)
+watch(() => route.params.id, loadTask)
 
 async function updateStatus(status: string) {
   if (!task.value) return
@@ -201,19 +210,12 @@ async function handleAttach() {
       newSession.value.sessionId,
       newSession.value.role,
     )
-    sessions.value = await api.getTaskSessions(task.value.id)
+    await loadBundle(task.value.id)
     newSession.value = { sessionId: '', instanceId: '', role: 'primary' }
     showAttachModal.value = false
   } catch (e) {
     console.error('Failed to attach session:', e)
   }
-}
-
-function openSession(s: any) {
-  router.push({
-    path: `/sessions/${s.sessionId}`,
-    query: { instance_id: s.instanceId },
-  })
 }
 
 function priorityText(p?: string): string {

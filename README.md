@@ -212,7 +212,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 
 ### 主要文档
 
-- [**运维指南**](OPERATIONS_GUIDE.md) - 完整的部署和运维文档
+- [**运维指南**](docs/guides/OPERATIONS_GUIDE.md) - 完整的部署和运维文档
 - [**API 契约参考**](docs/opencode-contract.md) - OpenCode 兼容层 API 契约
 - [**移动端架构**](docs/MOBILE_ARCHITECTURE_V2.md) - 移动端架构设计
 - [**ACC Integration 部署文档**](deploy/acc-integration/README.md) - 集成开发部署指南
@@ -379,7 +379,7 @@ DSN 时则明确跳过。
 
 ### 生产环境
 
-详见 [运维指南](OPERATIONS_GUIDE.md)
+详见 [运维指南](docs/guides/OPERATIONS_GUIDE.md)
 
 主要步骤：
 1. 配置HTTPS/WSS

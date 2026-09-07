@@ -49,6 +49,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/snippet"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
+	"github.com/halfking/pocket-opencode/backend/internal/usersetting"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -71,6 +72,8 @@ type Server struct {
 	taskStore              *task.Store
 	scheduledTaskStore     *scheduledtask.Store
 	scheduledTaskScheduler *scheduledtask.Scheduler
+	userSettings           usersetting.Repository
+	companion              *CompanionClient
 	registry               *registry.Registry
 	configAdapter          adapter.OpenCodeConfigAdapter
 	wsHub                  *ws.Hub
@@ -730,6 +733,8 @@ func (s *Server) Handler() http.Handler {
 
 	// ---- Phase V3: LLM Gateway 配置管理 ----
 	// 用户在 Settings 改 llmgo.kxpms.cn URL / API Key；pocketd 写入 OpenCode 配置
+	mux.HandleFunc("/api/user-settings", s.requireAuth(s.handleUserSettings))
+	mux.HandleFunc("/api/user-settings/", s.requireAuth(s.handleUserSettingItem))
 	mux.HandleFunc("/api/llm-gateway/config", s.requireAuth(s.handleLLMGatewayConfig))
 	mux.HandleFunc("/api/llm-gateway/test", s.requireAuth(s.handleLLMGatewayTest))
 	mux.HandleFunc("/api/llm-gateway/models", s.requireAuth(s.handleLLMGatewayModels))

@@ -31,10 +31,13 @@ ENV GOPROXY=https://goproxy.cn,direct \
 
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./backend/
+COPY backend/third_party ./backend/third_party
 RUN cd backend && go mod download
 
 COPY backend ./backend
-RUN cd backend && go build -trimpath -ldflags='-s -w' -o /out/pocketd ./cmd/pocketd
+# 2026-09-08: user_settings dual-store + kaixuan gateway seed
+RUN cd backend && go build -trimpath -ldflags='-s -w' -o /out/pocketd ./cmd/pocketd && \
+    grep -q user-settings /out/pocketd || (echo 'pocketd missing /api/user-settings' >&2; exit 1)
 
 # ── Runtime Stage ────────────────────────────────────────────────────────────
 FROM ${RUNTIME_BASE_IMAGE}

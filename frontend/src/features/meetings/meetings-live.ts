@@ -25,6 +25,10 @@ function rowToMeeting(r: Record<string, unknown>): LocalMeeting {
     createdAt: r.created_at as number,
     deletedAt: (r.deleted_at as number) ?? null,
     sessionId: (r.session_id as string) ?? null,
+    archivedAt: (r.archived_at as number) ?? null,
+    tags: parseJson(r.tags as string, []),
+    topic: (r.topic as string) ?? null,
+    summarySkill: (r.summary_skill as string) || 'meeting-minutes',
   }
 }
 

@@ -25,6 +25,18 @@ type DiskSessionScheduler struct {
 	mu       sync.Mutex
 	reported map[string]int64 // "<instanceID>:<sessionID>" → 上次上报的 UpdatedAt(ms)
 	lastErr  time.Time
+	lookup   TaskIDLookup
+}
+
+// TaskIDLookup 把 disk session id 映射到 ACC/本地任务 id；空串表示未关联。
+type TaskIDLookup func(ctx context.Context, sessionID string) string
+
+// SetTaskIDLookup 在上报前解析 task_id。未设置则继续报空。
+func (s *DiskSessionScheduler) SetTaskIDLookup(fn TaskIDLookup) {
+	if s == nil {
+		return
+	}
+	s.lookup = fn
 }
 
 // NewDiskSessionScheduler 构造调度器。diskAdapter 或 mcpClient 为 nil 时
@@ -96,15 +108,21 @@ func (s *DiskSessionScheduler) runOnce(ctx context.Context) {
 			s.reported[key] = m.UpdatedAt
 			s.mu.Unlock()
 
+			taskID := ""
+			if s.lookup != nil {
+				taskID = s.lookup(ctx, m.ID)
+			}
 			args := map[string]interface{}{
-				"gateway_type": inst.Agent,
-				"device_name":  inst.DisplayName,
-				"agent_id":     inst.Agent,
-				"session_id":   m.ID,
-				"task_id":      "",
-				"input":        m.Title,
-				"output":       "",
-				"model_id":     m.Model,
+				"gateway_type":      "custom-agent",
+				"device_name":       inst.DisplayName,
+				"agent_id":          inst.Agent,
+				"agent_kind":        inst.Agent,
+				"agent_session_id":  m.ID,
+				"session_path":      m.FilePath,
+				"task_id":           taskID,
+				"input":             m.Title,
+				"output":            "",
+				"model_id":          m.Model,
 			}
 			if _, err := s.mcpClient.ReportSession(ctx, args); err != nil {
 				if time.Since(s.lastErr) > time.Minute {

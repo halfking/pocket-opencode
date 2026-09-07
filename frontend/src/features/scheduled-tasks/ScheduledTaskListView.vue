@@ -17,7 +17,7 @@
       <article v-for="task in store.tasks" :key="task.id" class="card" @click="open(task.id)">
         <div class="card-head"><h2>{{ task.name }}</h2><span :class="['status', task.enabled ? 'on' : 'off']">{{ task.enabled ? '启用' : '停用' }}</span></div>
         <p v-if="task.description" class="description">{{ task.description }}</p>
-        <div class="meta"><span>{{ taskKindLabel(task.kind) }}</span><span>{{ scheduleKindLabel(task.scheduleKind) }} · {{ task.scheduleExpr }}</span></div>
+        <div class="meta"><span>{{ taskKindLabel(task.kind) }}</span><span>{{ describeTaskSchedule(task.scheduleKind, task.scheduleExpr) }}</span></div>
         <div class="meta secondary"><span>下次 {{ formatTimestamp(task.nextRunAt) }}</span><span v-if="task.lastStatus">上次 {{ task.lastStatus }}</span></div>
         <div class="card-actions" @click.stop>
           <button type="button" @click="toggle(task)">{{ task.enabled ? '停用' : '启用' }}</button>
@@ -34,7 +34,8 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { useScheduledTasksStore } from './store'
-import { formatTimestamp, scheduleKindLabel, taskKindLabel, type ScheduledTask } from './types'
+import { formatTimestamp, taskKindLabel, type ScheduledTask } from './types'
+import { describeTaskSchedule } from './schedule-plan'
 
 const router = useRouter()
 const store = useScheduledTasksStore()

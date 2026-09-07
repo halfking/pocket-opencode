@@ -5,5 +5,7 @@ services:
   pocketd:
     environment:
       POCKET_DISK_HOME: /host-home
+      POCKET_COMPANION_URL: ${POCKET_COMPANION_URL:-http://agent-companion-local:8080}
+      POCKET_COMPANION_SECRET: ${POCKET_COMPANION_SECRET:-}
     volumes:
       - ${POCKET_DISK_HOST_HOME:?POCKET_DISK_HOST_HOME must be set}:/host-home:ro

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -361,6 +362,26 @@ func (s *Store) ListSessionsForTask(ctx context.Context, taskID string) ([]Sessi
 // its instance/session IDs.
 func (s *Store) ListSessionsForTaskScoped(ctx context.Context, taskID, wsID string) ([]SessionLink, error) {
 	return s.listSessionsForTask(ctx, taskID, normalizeWorkspace(wsID))
+}
+
+// FindTaskIDBySessionID returns the most recently attached task for a session.
+func (s *Store) FindTaskIDBySessionID(ctx context.Context, sessionID string) (string, error) {
+	if s == nil || strings.TrimSpace(sessionID) == "" {
+		return "", nil
+	}
+	var taskID string
+	err := s.pool.QueryRow(ctx, `
+		SELECT task_id FROM task_session_links
+		 WHERE session_id = $1
+		 ORDER BY attached_at DESC
+		 LIMIT 1`, sessionID).Scan(&taskID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return taskID, nil
 }
 
 func (s *Store) listSessionsForTask(ctx context.Context, taskID, wsID string) ([]SessionLink, error) {

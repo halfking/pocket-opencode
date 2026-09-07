@@ -8,10 +8,15 @@ import { VadSegmenter } from '../native/vad-segmenter'
 import { SpeakerDiarizer } from '../native/speaker-diarization'
 import { loadSpeakerProfiles, saveVoiceprint } from '../features/meetings/voiceprints-store'
 import {
-  updateMeeting, updateSegmentSpeaker, getMeeting, type MeetingSegment,
+  updateMeeting, updateSegmentSpeaker, getMeeting, saveSegment, updateTranscript,
+  type MeetingSegment,
 } from '../features/meetings/meetings-store'
 import { syncMeetingMetadata } from '../features/meetings/meeting-ingest'
 import { ingestSpeechBlob } from '../features/meetings/ingest-speech'
+import {
+  applyCaptionResult, createLiveCaption, pickSpeechRecognition, type SpeechRecLike,
+} from '../features/meetings/meeting-live-caption'
+import { buildUtteranceSegment } from '../features/meetings/meeting-utterance'
 import { useMicPermission } from './useMicPermission'
 import { openPreferredMicStream, listAudioInputs, type AudioInput } from '../native/audio-inputs'
 import {
@@ -30,6 +35,7 @@ export function useMeetingRecorder(meetingId: MaybeRef<string>) {
   const elapsedMs = ref(0)
   const segments = ref<MeetingSegment[]>([])
   const sttError = ref('')
+  const interimCaption = ref('')
   const speakers = ref<{ profileId: string; label: string }[]>([])
   const processingCount = ref(0)
   const inputs = ref<AudioInput[]>([])
@@ -45,6 +51,7 @@ export function useMeetingRecorder(meetingId: MaybeRef<string>) {
   let partSeq = 0
   let unlistenNative: (() => void) | null = null
   let nativeMode = false
+  let stopCaption: (() => void) | null = null
 
   async function cleanupMedia() {
     if (mediaStream) {
@@ -55,6 +62,9 @@ export function useMeetingRecorder(meetingId: MaybeRef<string>) {
     if (unlistenNative) { unlistenNative(); unlistenNative = null }
     if (nativeMode) await stopBackgroundMic()
     nativeMode = false
+    stopCaption?.()
+    stopCaption = null
+    interimCaption.value = ''
     document.removeEventListener('visibilitychange', onHidden)
     navigator.mediaDevices?.removeEventListener?.('devicechange', onDeviceChange)
   }
@@ -122,6 +132,7 @@ export function useMeetingRecorder(meetingId: MaybeRef<string>) {
         document.addEventListener('visibilitychange', onHidden)
       }
 
+      startLiveCaption()
       startTime = Date.now()
       isRecording.value = true
       elapsedTimer = setInterval(() => {
@@ -158,6 +169,40 @@ export function useMeetingRecorder(meetingId: MaybeRef<string>) {
     const ok = await start({ deviceId, resume: true })
     if (ok) elapsedMs.value = keptElapsed
     return ok
+  }
+
+  function startLiveCaption() {
+    const Rec = pickSpeechRecognition(typeof window === 'undefined' ? null : (window as unknown as {
+      SpeechRecognition?: new () => SpeechRecLike
+      webkitSpeechRecognition?: new () => SpeechRecLike
+    }))
+    if (!Rec) return
+    const caption = createLiveCaption({
+      recognition: new Rec(),
+      onResult: (result) => {
+        applyCaptionResult(result, {
+          setInterim: (text) => { interimCaption.value = text },
+          commit: (text) => { void appendText(text) },
+        })
+      },
+    })
+    if (caption.start()) stopCaption = caption.stop
+  }
+
+  async function appendText(text: string): Promise<MeetingSegment | null> {
+    const last = segments.value[segments.value.length - 1]
+    const lastEnd = last?.endMs ?? elapsedMs.value
+    const draft = buildUtteranceSegment({
+      meetingId: unref(meetingId),
+      text,
+      startMs: lastEnd,
+    })
+    if (!draft) return null
+    const id = await saveSegment(draft)
+    const saved: MeetingSegment = { id, ...draft }
+    segments.value.push(saved)
+    await updateTranscript(unref(meetingId), segments.value.map((s) => `[${s.speakerLabel}] ${s.text}`).join('\n'))
+    return saved
   }
 
   async function processSegment(blob: Blob, startMs: number, endMs: number) {
@@ -236,9 +281,9 @@ export function useMeetingRecorder(meetingId: MaybeRef<string>) {
   })
 
   return {
-    isRecording, isPaused, elapsedMs, segments, sttError, speakers, processingCount,
+    isRecording, isPaused, elapsedMs, segments, sttError, interimCaption, speakers, processingCount,
     inputs, selectedInput,
-    start, stop, switchDevice, formatElapsed, labelSpeaker, langLabels: LANG_LABELS,
+    start, stop, switchDevice, appendText, formatElapsed, labelSpeaker, langLabels: LANG_LABELS,
   }
 }
 

@@ -50,6 +50,8 @@ export interface ListFilter {
   category?: string
   importance?: string
   unreadOnly?: boolean
+  limit?: number
+  offset?: number
 }
 
 // ---- 账户 ----
@@ -116,7 +118,7 @@ export async function updateAccount(id: string, patch: Partial<EmailAccount>): P
   if (patch.enabled !== undefined) { sets.push('enabled = ?'); vals.push(patch.enabled ? 1 : 0) }
   if (sets.length === 0) return
   // 任何本地编辑都刷新 updated_at（服务端 SSOT 视角下的"已修改"）。
-  const now = Date.now()
+  const now = Math.floor(Date.now() / 1000)
   sets.push('updated_at = ?')
   vals.push(patch.updatedAt ?? now)
   vals.push(id)
@@ -160,7 +162,8 @@ export async function listEmails(filter: ListFilter = {}): Promise<LocalEmail[]>
   if (filter.category) { sql += ' AND category = ?'; vals.push(filter.category) }
   if (filter.importance) { sql += ' AND importance = ?'; vals.push(filter.importance) }
   if (filter.unreadOnly) { sql += ' AND is_read = 0' }
-  sql += ' ORDER BY date DESC LIMIT 200'
+  sql += ' ORDER BY date DESC LIMIT ? OFFSET ?'
+  vals.push(filter.limit ?? 200, filter.offset ?? 0)
   const rows = await localDB.query<any>(sql, vals)
   return rows.map(rowToEmail)
 }

@@ -38,6 +38,14 @@ const LIVE_RECORD_V1_COLUMNS = [
   { table: 'local_meeting_audio_parts', column: 'file_path', sql: 'ALTER TABLE local_meeting_audio_parts ADD COLUMN file_path TEXT' },
 ]
 
+const MEETINGS_STUDIO_V1_COLUMNS = [
+  { table: 'local_meetings', column: 'archived_at', sql: 'ALTER TABLE local_meetings ADD COLUMN archived_at INTEGER' },
+  { table: 'local_meetings', column: 'tags', sql: 'ALTER TABLE local_meetings ADD COLUMN tags TEXT' },
+  { table: 'local_meetings', column: 'topic', sql: 'ALTER TABLE local_meetings ADD COLUMN topic TEXT' },
+  { table: 'local_meetings', column: 'summary_skill', sql: "ALTER TABLE local_meetings ADD COLUMN summary_skill TEXT DEFAULT 'meeting-minutes'" },
+  { table: 'local_todos', column: 'meeting_id', sql: 'ALTER TABLE local_todos ADD COLUMN meeting_id TEXT' },
+]
+
 const NOTES_CAPTURE_V1_COLUMNS = [
   { table: 'local_notes', column: 'status', sql: "ALTER TABLE local_notes ADD COLUMN status TEXT DEFAULT 'saved'" },
   { table: 'local_notes', column: 'storage_tier', sql: "ALTER TABLE local_notes ADD COLUMN storage_tier TEXT DEFAULT 'inline'" },
@@ -54,6 +62,12 @@ const EMAIL_SYNC_V1_COLUMNS = [
   { table: 'local_email_invoices', column: 'attempts', sql: 'ALTER TABLE local_email_invoices ADD COLUMN attempts INTEGER DEFAULT 0' },
   { table: 'local_email_invoices', column: 'last_error', sql: "ALTER TABLE local_email_invoices ADD COLUMN last_error TEXT DEFAULT ''" },
   { table: 'local_email_invoices', column: 'feishu_sent_at', sql: 'ALTER TABLE local_email_invoices ADD COLUMN feishu_sent_at INTEGER DEFAULT 0' },
+]
+
+const LIST_SYNC_V1_COLUMNS = [
+  { table: 'local_email_invoices', column: 'email_date', sql: 'ALTER TABLE local_email_invoices ADD COLUMN email_date INTEGER DEFAULT 0' },
+  { table: 'local_email_invoices', column: 'dirty', sql: 'ALTER TABLE local_email_invoices ADD COLUMN dirty INTEGER DEFAULT 0' },
+  { table: 'local_email_invoices', column: 'client_id', sql: "ALTER TABLE local_email_invoices ADD COLUMN client_id TEXT DEFAULT ''" },
 ]
 
 const DB_NAME = 'lobster'
@@ -164,8 +178,8 @@ class LocalDB {
       console.warn(`[localDB] schema applied ${applied}/${statements.length} statements (${failed} skipped)`)
     }
 
-    // 增量迁移（已有库补列）— 此阶段 initialized 尚未置位，直接用 conn
-    this.initialized = true
+    // 增量迁移（已有库补列）— initialized 在全部迁移完成后才置位，
+    // 避免旧库在补列完成前被 requireReady() 放行、查询撞 no such column
     try {
       await this.runMeetingsV2Migration()
     } catch (e) {
@@ -186,6 +200,17 @@ class LocalDB {
     } catch (e) {
       console.warn('[localDB] notes capture v1 migration failed:', e)
     }
+    try {
+      await this.runMeetingsStudioV1Migration()
+    } catch (e) {
+      console.warn('[localDB] meetings studio v1 migration failed:', e)
+    }
+    try {
+      await this.runListSyncV1Migration()
+    } catch (e) {
+      console.warn('[localDB] list sync v1 migration failed:', e)
+    }
+    this.initialized = true
   }
 
   /** 会议模块 v2：为旧库补列，列已存在则跳过 */
@@ -258,6 +283,34 @@ class LocalDB {
     }
     await this.conn.execute(
       "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-07-email-sync-v1', '邮箱配置 LWW + 发票文件字段', strftime('%s', 'now') * 1000);",
+      false,
+    )
+  }
+
+  /** 列表本地优先：发票 email_date / dirty / client_id。 */
+  private async runListSyncV1Migration(): Promise<void> {
+    if (!this.conn) return
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        version TEXT PRIMARY KEY,
+        description TEXT,
+        applied_at INTEGER NOT NULL
+      );
+    `, false)
+    for (const col of LIST_SYNC_V1_COLUMNS) {
+      const exists = await this.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
+        [col.column],
+      )
+      if (exists && exists.cnt > 0) continue
+      try {
+        await this.conn.execute(col.sql, false)
+      } catch { /* 列可能已存在 */ }
+    }
+    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_email_invoices_email_date ON local_email_invoices(email_date DESC);', false).catch(() => {})
+    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_email_invoices_dirty ON local_email_invoices(dirty);', false).catch(() => {})
+    await this.conn.execute(
+      "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-08-list-sync-v1', '列表本地优先 dirty/email_date/client_id', strftime('%s', 'now') * 1000);",
       false,
     )
   }
@@ -346,7 +399,7 @@ class LocalDB {
       'CREATE INDEX IF NOT EXISTS idx_note_files_note ON local_note_files(note_id);',
       false,
     )
-    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_status ON local_notes(status);', false).catch(() => {})
+    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_status ON local_notes(status) WHERE deleted_at IS NULL;', false).catch(() => {})
 
     try {
       await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_ai;', false)
@@ -378,6 +431,32 @@ class LocalDB {
 
     await this.conn.execute(
       "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-08-notes-capture-v1', '笔记草稿/分级存储/附件', strftime('%s', 'now') * 1000);",
+      false,
+    )
+  }
+
+  /** 会议工作台：归档 / 标签 / 主题 / 总结技能 / 待办关联。 */
+  private async runMeetingsStudioV1Migration(): Promise<void> {
+    if (!this.conn) return
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        version TEXT PRIMARY KEY,
+        description TEXT,
+        applied_at INTEGER NOT NULL
+      );
+    `, false)
+    for (const col of MEETINGS_STUDIO_V1_COLUMNS) {
+      const exists = await this.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
+        [col.column],
+      )
+      if (exists && exists.cnt > 0) continue
+      try {
+        await this.conn.execute(col.sql, false)
+      } catch { /* 列可能已存在 */ }
+    }
+    await this.conn.execute(
+      "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-08-meetings-studio-v1', '会议归档/标签/主题/技能/待办关联', strftime('%s', 'now') * 1000);",
       false,
     )
   }
