@@ -25,6 +25,7 @@ backend/agent_echo
 
 # Compiled pocketd binary (sources: backend/cmd/pocketd; build artifact)
 backend/pocketd
+backend/bin/
 
 # SQLite database files (local testing / runtime data)
 *.sqlite
