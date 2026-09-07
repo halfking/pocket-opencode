@@ -78,8 +78,7 @@ export function useMicPermission() {
       const result = await appSettings.requestPermission('microphone')
       if (result) {
         applyNativeStatus(result.status)
-        if (result.status === 'granted') return probe()
-        return false
+        return result.status === 'granted'
       }
     }
     return probe()
@@ -90,8 +89,7 @@ export function useMicPermission() {
       const result = await appSettings.checkPermission('microphone')
       if (result) {
         applyNativeStatus(result.status)
-        if (result.status === 'granted') return probe()
-        return false
+        return result.status === 'granted'
       }
     }
     return probe()

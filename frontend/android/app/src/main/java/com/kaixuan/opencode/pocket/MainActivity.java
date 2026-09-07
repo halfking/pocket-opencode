@@ -9,6 +9,7 @@ import android.webkit.WebView;
 import android.webkit.WebChromeClient;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import java.util.ArrayList;
 import androidx.core.view.WindowCompat;
 import com.getcapacitor.BridgeActivity;
 import com.kaixuan.opencode.pocket.plugins.AppSettingsPlugin;
@@ -17,7 +18,8 @@ import com.kaixuan.opencode.pocket.plugins.BiometricAuthPlugin;
 
 public class MainActivity extends BridgeActivity {
     private static final int REQ_PERMISSIONS = 1001;
-    private static final String[] WEB_MIC_RESOURCES = {"android.webkit.resource.AUDIO_CAPTURE"};
+    private static final String WEB_AUDIO_CAPTURE = "android.webkit.resource.AUDIO_CAPTURE";
+    private static final String WEB_VIDEO_CAPTURE = "android.webkit.resource.VIDEO_CAPTURE";
 
     /** 最近一次系统栏 insets（CSS px）。insets 在 WebView 加载前就会派发一次，
         那次 evaluateJavascript 会随页面加载丢失，所以缓存下来在窗口获得焦点时重放。 */
@@ -52,6 +54,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(AppSettingsPlugin.class);
         registerPlugin(SherpaPlugin.class);
         registerPlugin(BiometricAuthPlugin.class);
+        registerPlugin(com.kaixuan.opencode.pocket.plugins.BackgroundMicPlugin.class);
         super.onCreate(savedInstanceState);
         // edge-to-edge：让 WebView 内容延伸至状态栏之下。Android WebView 不提供
         // env(safe-area-inset-top)（iOS 才有），所以这里把系统 insets 换算成 CSS px
@@ -82,19 +85,16 @@ public class MainActivity extends BridgeActivity {
             // WebView 录音需要 JS 和 MediaPlayback 不受限
             webSettings.setJavaScriptEnabled(true);
             webSettings.setMediaPlaybackRequiresUserGesture(false);
-            // 拦截 WebChromeClient.onPermissionRequest：getUserMedia 时若 app 未持 RECORD_AUDIO
-            // 会直接 NotAllowedError。这里在 grant 前先确保 RECORD_AUDIO 已获授权，
-            // 已被系统拒绝时让 WebView 走失败分支（UI 跳系统设置）。
+            // 拦截 WebChromeClient.onPermissionRequest：getUserMedia 时若 app 未持
+            // RECORD_AUDIO / CAMERA 会直接 NotAllowedError。grant 前先申请对应运行时权限。
             getBridge().getWebView().setWebChromeClient(new WebChromeClient() {
                 @Override
                 public void onPermissionRequest(final PermissionRequest request) {
                     runOnUiThread(() -> {
-                        if (needsAudioCapturePermission(request) && !hasRecordAudioPermission()) {
+                        String[] needed = androidPermissionsFor(request);
+                        if (needed.length > 0) {
                             pendingPermissionRequest = request;
-                            ActivityCompat.requestPermissions(
-                                MainActivity.this,
-                                new String[]{Manifest.permission.RECORD_AUDIO},
-                                REQ_PERMISSIONS);
+                            ActivityCompat.requestPermissions(MainActivity.this, needed, REQ_PERMISSIONS);
                         } else {
                             request.grant(request.getResources());
                         }
@@ -104,37 +104,36 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
-    /** WebView 的 AUDIO_CAPTURE 是否属于"需要 RECORD_AUDIO"的场景 */
-    private boolean needsAudioCapturePermission(PermissionRequest request) {
+    private boolean hasWebResource(PermissionRequest request, String resource) {
         for (String res : request.getResources()) {
-            for (String mic : WEB_MIC_RESOURCES) {
-                if (mic.equals(res)) return true;
-            }
+            if (resource.equals(res)) return true;
         }
         return false;
     }
 
-    private boolean hasRecordAudioPermission() {
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-                == PackageManager.PERMISSION_GRANTED;
+    private boolean hasAndroidPermission(String permission) {
+        return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** WebView 资源对应的、尚未授予的 Android 运行时权限。 */
+    private String[] androidPermissionsFor(PermissionRequest request) {
+        ArrayList<String> needed = new ArrayList<>();
+        if (hasWebResource(request, WEB_AUDIO_CAPTURE) && !hasAndroidPermission(Manifest.permission.RECORD_AUDIO)) {
+            needed.add(Manifest.permission.RECORD_AUDIO);
+        }
+        if (hasWebResource(request, WEB_VIDEO_CAPTURE) && !hasAndroidPermission(Manifest.permission.CAMERA)) {
+            needed.add(Manifest.permission.CAMERA);
+        }
+        return needed.toArray(new String[0]);
     }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQ_PERMISSIONS && pendingPermissionRequest != null) {
-            boolean audioGranted = false;
-            for (int i = 0; i < permissions.length; i++) {
-                if (Manifest.permission.RECORD_AUDIO.equals(permissions[i])
-                        && grantResults[i] == PackageManager.PERMISSION_GRANTED) {
-                    audioGranted = true;
-                }
-            }
-            if (audioGranted) {
-                // 用户刚刚授权：补发 WebView 的请求，避免 JS 端再次触发 getUserMedia。
+            if (androidPermissionsFor(pendingPermissionRequest).length == 0) {
                 pendingPermissionRequest.grant(pendingPermissionRequest.getResources());
             } else {
-                // 必须 deny：否则 WebView PermissionRequest 悬挂，后续无法再次发起申请。
                 pendingPermissionRequest.deny();
             }
             pendingPermissionRequest = null;

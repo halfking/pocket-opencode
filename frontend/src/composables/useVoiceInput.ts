@@ -7,6 +7,7 @@
  */
 import { ref, onBeforeUnmount } from 'vue'
 import { sttApi } from '../api/stt'
+import { openPreferredMicStream } from '../native/audio-inputs'
 import { useMicPermission } from './useMicPermission'
 
 export function useVoiceInput() {
@@ -56,9 +57,8 @@ export function useVoiceInput() {
     }
 
     try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, sampleRate: 16000 },
-      })
+      const opened = await openPreferredMicStream()
+      mediaStream = opened.stream
       mediaRecorder = new MediaRecorder(mediaStream)
       audioChunks = []
       mediaRecorder.ondataavailable = (e) => {
@@ -89,7 +89,7 @@ export function useVoiceInput() {
     audioPath = URL.createObjectURL(blob)
 
     try {
-      const result = await sttApi.transcribe({ audioPath })
+      const result = await sttApi.transcribe({ audioBlob: blob })
       return result.text
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
