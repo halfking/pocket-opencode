@@ -2,12 +2,14 @@
  * Scroll-linked chrome hide/show — 底部输入区 + tabbar 跟手 1:1 下移/回弹，
  * 停手后按位移比例或快甩速度吸附到位（iOS 18 Safari 底部工具栏模式）。
  *
- * 交互规格（2026-08-31 定稿）：
+ * 交互规格（2026-08-31 定稿，2026-09-08 贴底回弹修订）：
  * - 跟手：滚动增量直接映射 chrome 位移（clamp [0, maxHide]），无过渡；
  * - 吸附：滚动静止 SNAP_DELAY_MS 后，位移 ≥ 35% 全隐 / < 35% 全显；
  * - 快甩优先：FLICK_WINDOW_MS 内累计位移达阈值则无视比例直接吸附
  *   （唤出阈值低于隐藏阈值——iOS 的不对称性：回看时更容易唤出）；
- * - 顶部（含下拉刷新区）与底部橡皮筋过度滚动强制展示；
+ * - 顶部：停留 EDGE_REVEAL_DELAY_MS 后才展示（回弹振荡重置计时）；
+ * - 贴底/橡皮筋：触及尽头后 BOUNCE_GUARD_MS 内忽略唤出方向 delta，
+ *   已隐藏时回弹不得唤出（避免 chrome 显隐改布局 → 再回弹的死循环）；
  * - pin：聚焦输入框期间钉住展示（浏览器为露出光标产生的程序化滚动
  *   不应触发隐藏）；
  * - suppress：业务侧程序化滚动（如 scrollToBottom）前后抑制上报。
@@ -17,8 +19,10 @@ import { ref, type Ref } from 'vue'
 export interface ScrollReport {
   scrollTop: number
   delta: number
-  /** 底部橡皮筋过度滚动（iOS bounce，scrollTop 超出滚动范围）：强制露出 chrome */
+  /** 底部橡皮筋过度滚动（iOS bounce，scrollTop 超出滚动范围） */
   overscrollBottom?: boolean
+  /** 已贴底（含尚未越界的最后一屏，或回弹夹紧中） */
+  atBottom?: boolean
 }
 
 export interface ScrollHideChrome {
@@ -42,6 +46,10 @@ export interface ScrollHideChrome {
 const SNAP_DELAY_MS = 100
 /** 吸附动画时长：与 tokens.css --duration-chrome 保持一致 */
 export const CHROME_SNAP_DURATION_MS = 280
+/** 贴边回弹守卫：触及尽头后这段时间内忽略唤出方向 delta */
+export const BOUNCE_GUARD_MS = 360
+/** 顶部停留这么久才唤出（回弹振荡会重置计时） */
+export const EDGE_REVEAL_DELAY_MS = 280
 /** 位移比例吸附阈值（占 maxHide） */
 const SNAP_THRESHOLD_RATIO = 0.35
 /** 快甩判定窗口与阈值：窗口内累计位移达阈值则无视比例直接吸附 */
@@ -49,6 +57,17 @@ const FLICK_WINDOW_MS = 120
 const FLICK_REVEAL_PX = 32
 const FLICK_HIDE_PX = 48
 const SUPPRESS_DEFAULT_MS = 400
+
+/** 由滚动容器几何计算贴底 / 橡皮筋越界，供 bind 与 PullToRefresh 共用。 */
+export function scrollEdgeFlags(
+  el: { clientHeight: number; scrollHeight: number },
+  top: number,
+): { overscrollBottom: boolean; atBottom: boolean } {
+  return {
+    overscrollBottom: top + el.clientHeight > el.scrollHeight + 1,
+    atBottom: top + el.clientHeight >= el.scrollHeight - 1,
+  }
+}
 
 export function createScrollHideChrome(getMaxHide: () => number): ScrollHideChrome {
   const hiddenOffset = ref(0)
@@ -58,6 +77,7 @@ export function createScrollHideChrome(getMaxHide: () => number): ScrollHideChro
   let snapTimer: ReturnType<typeof setTimeout> | null = null
   let snapEndTimer: ReturnType<typeof setTimeout> | null = null
   let suppressUntil = 0
+  let edgeGuardUntil = 0
   let flickSamples: Array<{ t: number; d: number }> = []
 
   function clearSnapTimers() {
@@ -87,7 +107,7 @@ export function createScrollHideChrome(getMaxHide: () => number): ScrollHideChro
     return flickSamples.reduce((sum, s) => sum + s.d, 0)
   }
 
-  function reportScroll({ scrollTop, delta, overscrollBottom }: ScrollReport) {
+  function reportScroll({ scrollTop, delta, overscrollBottom, atBottom }: ScrollReport) {
     const max = getMaxHide()
     if (max <= 0) return
     // 抑制窗口（程序化滚动）与 pin（输入聚焦）内不参与跟手，
@@ -100,11 +120,27 @@ export function createScrollHideChrome(getMaxHide: () => number): ScrollHideChro
     flickSum(now)
     flickSamples.push({ t: now, d: delta })
 
-    // 顶部（含下拉刷新）与底部橡皮筋：强制展示——顶部即「最新」，
-    // 底部 bounce 提示已无更多内容（Safari 同款）。
-    if (scrollTop <= 1 || overscrollBottom) {
-      hiddenOffset.value = 0
-      hidden.value = false
+    const atTop = scrollTop <= 1
+    const atEnd = Boolean(overscrollBottom || atBottom)
+    // 撞顶/撞底或已隐藏贴底：武装回弹守卫，避免橡皮筋负 delta 被当成唤出
+    if (overscrollBottom || (atEnd && delta > 0) || (atTop && delta < 0) || (hidden.value && atEnd && !atTop)) {
+      edgeGuardUntil = Math.max(edgeGuardUntil, now + BOUNCE_GUARD_MS)
+    }
+    const guarded = now < edgeGuardUntil
+
+    // 顶部优先：延迟展示，振荡事件重置计时（含「内容刚好一屏」时 atEnd 同真）
+    if (atTop && delta <= 0 && hiddenOffset.value > 0) {
+      snapTimer = setTimeout(() => animateTo(0), EDGE_REVEAL_DELAY_MS)
+      return
+    }
+
+    // 已隐藏且贴底：回弹/夹紧不得唤出（点内容仍走 reveal）
+    if (hidden.value && atEnd && delta <= 0) {
+      return
+    }
+
+    // 守卫期内的唤出方向：保持隐藏
+    if (delta <= 0 && hiddenOffset.value > 0 && guarded) {
       return
     }
 
@@ -149,6 +185,7 @@ export function createScrollHideChrome(getMaxHide: () => number): ScrollHideChro
     hidden.value = false
     pinned.value = false
     suppressUntil = 0
+    edgeGuardUntil = 0
     flickSamples = []
   }
 
@@ -166,9 +203,7 @@ export function bindScrollHideChrome(
     const top = el.scrollTop
     const delta = top - lastTop
     lastTop = top
-    // iOS WKWebView 橡皮筋：scrollTop 可短暂超出滚动范围
-    const overscrollBottom = top + el.clientHeight > el.scrollHeight + 1
-    chrome.reportScroll({ scrollTop: top, delta, overscrollBottom })
+    chrome.reportScroll({ scrollTop: top, delta, ...scrollEdgeFlags(el, top) })
   }
 
   el.addEventListener('scroll', onScroll, { passive: true })

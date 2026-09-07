@@ -2,12 +2,18 @@
  * useScrollHideChrome — 滚动联动底部 chrome 引擎单测。
  * 运行：node --experimental-strip-types --test src/composables/__tests__/useScrollHideChrome.test.mjs
  *
- * 覆盖：跟手 1:1、比例吸附（隐/显）、快甩优先、顶部/底部边界强制展示、
- * suppress 程序化滚动抑制、pin 输入聚焦钉住、reveal/reset、maxHide=0 守卫。
+ * 覆盖：跟手 1:1、比例吸附（隐/显）、快甩优先、顶部延迟展示、
+ * 贴底/橡皮筋回弹不得唤出、bounce-guard、suppress、pin、reveal/reset、
+ * maxHide=0 守卫、scrollEdgeFlags。
  */
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { createScrollHideChrome } from '../useScrollHideChrome.ts'
+import {
+  BOUNCE_GUARD_MS,
+  createScrollHideChrome,
+  EDGE_REVEAL_DELAY_MS,
+  scrollEdgeFlags,
+} from '../useScrollHideChrome.ts'
 
 const SNAP_DELAY = 100
 const SNAP_DURATION = 280
@@ -82,24 +88,80 @@ test('快甩优先：120ms 内累计下甩 ≥48px 无视比例直接隐藏', as
   assert.equal(chrome.hiddenOffset.value, 200)
 })
 
-test('顶部（scrollTop≤1）强制展示', async () => {
+test('顶部：回弹不立即唤出，需停留 EDGE_REVEAL_DELAY 后才展示', async () => {
   const chrome = create(120)
   await scrollBy(chrome, 100, 1)
   await sleep(SNAP_DELAY + 15)
   assert.equal(chrome.hiddenOffset.value, 120)
 
   chrome.reportScroll({ scrollTop: 0, delta: -3 })
+  assert.equal(chrome.hiddenOffset.value, 120, '顶部回弹不得立刻唤出')
+  await sleep(EDGE_REVEAL_DELAY_MS + 15)
   assert.equal(chrome.hiddenOffset.value, 0)
 })
 
-test('底部橡皮筋过度滚动强制展示', async () => {
+test('顶部：延迟期内再有滚动则重置计时，避免振荡误唤出', async () => {
+  const chrome = create(120)
+  await scrollBy(chrome, 100, 1)
+  await sleep(SNAP_DELAY + 15)
+
+  chrome.reportScroll({ scrollTop: 0, delta: -3 })
+  await sleep(EDGE_REVEAL_DELAY_MS - 80)
+  chrome.reportScroll({ scrollTop: 0, delta: -1 })
+  await sleep(EDGE_REVEAL_DELAY_MS - 80)
+  assert.equal(chrome.hiddenOffset.value, 120, '振荡期间保持隐藏')
+  await sleep(EDGE_REVEAL_DELAY_MS + 15)
+  assert.equal(chrome.hiddenOffset.value, 0)
+})
+
+test('底部橡皮筋：已隐藏时过度滚动不得唤出', async () => {
   const chrome = create(120)
   await scrollBy(chrome, 100, 1)
   await sleep(SNAP_DELAY + 15)
   assert.equal(chrome.hiddenOffset.value, 120)
+  assert.equal(chrome.hidden.value, true)
 
   chrome.reportScroll({ scrollTop: 500, delta: 3, overscrollBottom: true })
+  assert.equal(chrome.hiddenOffset.value, 120)
+  chrome.reportScroll({ scrollTop: 498, delta: -8, overscrollBottom: true, atBottom: true })
+  assert.equal(chrome.hiddenOffset.value, 120, '回弹负 delta 不得跟手唤出')
+  await sleep(SNAP_DELAY + 15)
+  assert.equal(chrome.hiddenOffset.value, 120)
+  assert.equal(chrome.hidden.value, true)
+})
+
+test('贴底死循环：触及尽头后 guard 内回弹不得唤出', async () => {
+  const chrome = create(120)
+  await scrollBy(chrome, 100, 1, 800)
+  await sleep(SNAP_DELAY + 15)
+  assert.equal(chrome.hidden.value, true)
+
+  // 上滑撞底（正向）再橡皮筋回弹（负向）——旧逻辑会唤出并改布局
+  chrome.reportScroll({ scrollTop: 900, delta: 40, atBottom: true })
+  chrome.reportScroll({ scrollTop: 880, delta: -20, atBottom: true })
+  chrome.reportScroll({ scrollTop: 870, delta: -10, atBottom: true })
+  assert.equal(chrome.hiddenOffset.value, 120)
+  await sleep(SNAP_DELAY + 15)
+  assert.equal(chrome.hiddenOffset.value, 120, 'guard 内吸附也不得改为全显')
+})
+
+test('bounce-guard 过期后，非贴底上滑仍可唤出', async () => {
+  const chrome = create(120)
+  await scrollBy(chrome, 100, 1, 800)
+  await sleep(SNAP_DELAY + 15)
+  chrome.reportScroll({ scrollTop: 900, delta: 40, atBottom: true })
+  await sleep(BOUNCE_GUARD_MS + 20)
+  await scrollBy(chrome, -20, 2, 400)
+  await sleep(SNAP_DELAY + 15)
   assert.equal(chrome.hiddenOffset.value, 0)
+})
+
+test('scrollEdgeFlags：贴底与橡皮筋越界', () => {
+  const el = { clientHeight: 100, scrollHeight: 500 }
+  assert.deepEqual(scrollEdgeFlags(el, 398), { overscrollBottom: false, atBottom: false })
+  assert.deepEqual(scrollEdgeFlags(el, 399), { overscrollBottom: false, atBottom: true })
+  assert.deepEqual(scrollEdgeFlags(el, 400), { overscrollBottom: false, atBottom: true })
+  assert.deepEqual(scrollEdgeFlags(el, 402), { overscrollBottom: true, atBottom: true })
 })
 
 test('suppress：程序化滚动窗口内不跟手也不吸附', async () => {
