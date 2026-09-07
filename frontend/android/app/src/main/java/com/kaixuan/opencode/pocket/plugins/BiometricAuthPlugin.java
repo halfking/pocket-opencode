@@ -23,28 +23,15 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 
 /**
- * BiometricAuth — 指纹登录绑定桥。
- *
- * 把「username\u0000password」整块用 AndroidKeyStore 的 AES-GCM 密钥加密后
- * 存在本地 SharedPreferences；写入（绑定）与读取（登录）都必须先通过
- * BiometricPrompt 验证指纹/人脸。
- *
- * 安全模型权衡：CryptoObject 与密钥 per-operation 绑定要求 Class 3 (Strong)
- * 生物特征，大量设备（含模拟器、多数中端机）只有 Class 2，会直接抛
- * "Crypto-based authentication is not supported for Class 2 biometrics"。
- * 因此这里采用「指纹门 + 硬件密钥加密」：密钥由 Keystore 保护且不出安全硬件，
- * 但不做 per-op auth 绑定；生物验证只作为读取前的强制 UX 门。
- * 已知缺口（接受）：设备未锁屏或 root 提取 + 新录入指纹的场景下，本地密文
- * 缺少"指纹重录即失效"（setInvalidatedByBiometricEnrollment）防护——该 API
- * 依赖 auth-bound 密钥。设备生态升级到全 STRONG 后可切回 CryptoObject 路径。
- *
- * WebView 侧只在验证通过后短暂拿到明文用于调 /api/auth/login。
- * Web 平台无此插件，前端按"不可用"降级。
+ * 指纹/人脸门 + Keystore AES-GCM 密文。登录凭据读写都弹 BiometricPrompt；
+ * 主密码仅读取弹窗（写入在密码解锁成功后静默完成）。不用 CryptoObject：
+ * Class 2 设备不支持 per-op auth 绑定。
  */
 @CapacitorPlugin(name = "BiometricAuth")
 public class BiometricAuthPlugin extends Plugin {
     private static final String PREFS = "biometric_auth";
     private static final String KEY_CRED = "cred_blob";
+    private static final String KEY_MASTER = "master_blob";
     // v2：v1 曾用 setUserAuthenticationRequired(true)（CryptoObject 方案），
     // Keystore 残留的旧密钥会抛 UserNotAuthenticated；换别名一次重建。
     private static final String KEYSTORE_ALIAS = "pocket_biometric_key_v2";
@@ -133,6 +120,55 @@ public class BiometricAuthPlugin extends Plugin {
     public void deleteCredential(PluginCall call) {
         wipe();
         call.resolve();
+    }
+
+    @PluginMethod
+    public void hasMasterSecret(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("has", prefs().contains(KEY_MASTER));
+        call.resolve(ret);
+    }
+
+    /** 密码解锁成功后静默写入；读取仍走 BiometricPrompt。 */
+    @PluginMethod
+    public void saveMasterSecret(PluginCall call) {
+        String password = call.getString("password", "");
+        if (password.isEmpty()) {
+            call.reject("invalid master password");
+            return;
+        }
+        try {
+            ensureKey();
+            Cipher cipher = Cipher.getInstance(TRANSFORM);
+            cipher.init(Cipher.ENCRYPT_MODE, loadKey());
+            byte[] ct = cipher.doFinal(password.getBytes(StandardCharsets.UTF_8));
+            String blob = Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP) + ":"
+                    + Base64.encodeToString(ct, Base64.NO_WRAP);
+            prefs().edit().putString(KEY_MASTER, blob).apply();
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("crypto failed: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void getMasterSecret(PluginCall call) {
+        String[] ivAndCt = blob(KEY_MASTER);
+        if (ivAndCt == null) {
+            call.reject("no master secret bound");
+            return;
+        }
+        FragmentActivity activity = fragmentActivity();
+        if (activity == null) {
+            call.reject("biometric not supported on this platform");
+            return;
+        }
+        withBiometricCipher(call, activity, Cipher.DECRYPT_MODE, ivAndCt[0], cipher -> {
+            byte[] pt = cipher.doFinal(Base64.decode(ivAndCt[1], Base64.NO_WRAP));
+            JSObject ret = new JSObject();
+            ret.put("password", new String(pt, StandardCharsets.UTF_8));
+            call.resolve(ret);
+        });
     }
 
     // ---- internals ----
@@ -236,13 +272,17 @@ public class BiometricAuthPlugin extends Plugin {
         return key;
     }
 
-    /** 返回 [iv, ciphertext]；无凭据或格式损坏返回 null（损坏时顺带清空）。 */
+    /** 返回 [iv, ciphertext]；无凭据或格式损坏返回 null（损坏时清该 key）。 */
     private String[] blob() {
-        String blob = prefs().getString(KEY_CRED, null);
+        return blob(KEY_CRED);
+    }
+
+    private String[] blob(String key) {
+        String blob = prefs().getString(key, null);
         if (blob == null) return null;
         String[] parts = blob.split(":", 2);
         if (parts.length != 2 || parts[0].isEmpty() || parts[1].isEmpty()) {
-            wipe();
+            prefs().edit().remove(key).apply();
             return null;
         }
         return parts;

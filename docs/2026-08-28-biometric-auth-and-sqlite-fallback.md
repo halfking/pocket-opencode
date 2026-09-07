@@ -2,6 +2,8 @@
 
 本文档记录 WebAuthn 生物识别认证基础设施与 Chat Agent SQLite 离线存储的设计与实现。
 
+Android 原生壳另有本机指纹/人脸绑定（登录凭据 + 主密码解锁），见 [2026-09-08-master-password-biometric-unlock.md](./2026-09-08-master-password-biometric-unlock.md)。
+
 ## 1. 生物识别认证（BiometricStore）
 
 ### 1.1 动机
@@ -580,6 +582,8 @@ curl -X POST http://localhost:8080/api/auth/biometric/register/begin \
 ## 5. 后续工作
 
 ### 5.1 生物识别认证（P1 实现）
+
+Android 解锁屏免密认证（已绑定指纹/人脸 → 点认证 → 可取消再输主密码）已实现，见 `docs/2026-09-08-master-password-biometric-unlock.md`。
 
 - [ ] 接入 `identity-go` 的 WebAuthn helper
   - Challenge-session 绑定（Redis/in-memory TTL map）

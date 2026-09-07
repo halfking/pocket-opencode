@@ -10,18 +10,28 @@
 
       <!-- 解锁界面（已登录但刷新后 crypto 未初始化）-->
       <div v-if="needUnlock" class="login-form">
-        <p class="unlock-hint">检测到已有登录态，但本地加密库未解锁。<br />请重新输入主密码以访问本地数据。</p>
+        <p class="unlock-hint">{{ unlockHint(bioReady) }}</p>
         <div class="form-group">
           <label>主密码</label>
           <input
             v-model="unlockPassword"
             type="password"
-            placeholder="输入主密码解锁"
+            :placeholder="unlockPasswordPlaceholder(bioReady)"
             @keyup.enter="unlock"
           />
         </div>
-        <button class="login-btn" :disabled="!unlockPassword || loading" @click="unlock">
-          {{ loading ? '解锁中...' : '🔓 解锁' }}
+        <button
+          class="login-btn"
+          :class="{ 'bio-btn': bioReady && !unlockPassword.trim() }"
+          :disabled="!unlockButtonEnabled({ password: unlockPassword, biometricBound: bioReady, loading })"
+          @click="unlock"
+        >
+          <span
+            v-if="bioReady && !unlockPassword.trim()"
+            class="material-symbols-outlined"
+            aria-hidden="true"
+          >fingerprint</span>
+          {{ unlockButtonLabel({ loading, biometricBound: bioReady, password: unlockPassword }) }}
         </button>
         <div v-if="error" class="error-message">{{ error }}</div>
         <p class="hint" style="margin-top: 20px; cursor: pointer;" @click="logoutAndRelogin">退出重新登录 →</p>
@@ -166,7 +176,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { http, ApiError } from '../../api/http'
@@ -177,8 +187,21 @@ import {
   hasBiometricCredential,
   bindBiometricCredential,
   getBiometricCredential,
+  getMasterSecret,
+  persistMasterSecretIfBound,
   unbindBiometricCredential,
 } from '../../native/biometricAuth'
+import {
+  isBiometricUserCancel,
+  isMissingMasterSecret,
+} from '../../native/biometric-errors'
+import {
+  unlockButtonEnabled,
+  unlockButtonLabel,
+  unlockHint,
+  unlockPasswordPlaceholder,
+  unlockSubmitMode,
+} from './unlock-auth'
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
 import { useCryptoConfig } from '../../stores/crypto-config'
 import { sendCode, codeLogin, fetchSsoLoginUrl, fetchSsoStatus } from '../../api/auth'
@@ -334,14 +357,37 @@ async function ssoLogin() {
 }
 
 async function unlock() {
-  if (!unlockPassword.value) {
+  const mode = unlockSubmitMode({
+    password: unlockPassword.value,
+    biometricBound: bioReady.value,
+  })
+  if (mode === 'need-password') {
     error.value = '请输入主密码以解锁本地数据'
     return
   }
   loading.value = true
   error.value = ''
   try {
-    await initLobster(unlockPassword.value)
+    let secret = unlockPassword.value
+    if (mode === 'biometric') {
+      try {
+        secret = (await getMasterSecret('使用指纹或人脸解锁本地数据')).password
+      } catch (cause: unknown) {
+        loading.value = false
+        const message = cause instanceof Error ? cause.message : String(cause)
+        if (isBiometricUserCancel(message)) return
+        if (isMissingMasterSecret(message)) {
+          error.value = '请先输入主密码解锁一次，之后即可用指纹或人脸认证'
+          return
+        }
+        error.value = `认证失败：${message}`
+        return
+      }
+    }
+    await initLobster(secret)
+    if (mode === 'password') {
+      void persistMasterSecretIfBound(secret)
+    }
     needUnlock.value = false
     unlockPassword.value = ''
     const redirect = typeof router.currentRoute.value.query.redirect === 'string'
@@ -388,9 +434,9 @@ async function biometricLogin() {
     cred = await getBiometricCredential('使用指纹登录 OpenCode Pocket')
   } catch (e: any) {
     loading.value = false
-    // 用户取消（系统弹窗 error code 13 = USER_CANCELED）不打扰；其它失败提示并降级为密码登录
-    if (!(e?.message || '').includes('biometric error 13')) {
-      error.value = `指纹验证失败：${e?.message || e}`
+    const message = e?.message || ''
+    if (!isBiometricUserCancel(message)) {
+      error.value = `指纹验证失败：${message || e}`
     }
     return
   }

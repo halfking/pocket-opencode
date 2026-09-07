@@ -20,6 +20,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { initLobster } from '../../native/lobster-init'
+import { persistMasterSecretIfBound } from '../../native/biometricAuth'
 import { useCryptoConfig } from '../../stores/crypto-config'
 
 withDefaults(defineProps<{ open: boolean; mode: 'create' | 'change' }>(), { mode: 'create' })
@@ -50,6 +51,7 @@ async function submit() {
   try {
     await initLobster(password.value)
     cryptoConfig.setMasterPassword(hint.value.trim() || null)
+    await persistMasterSecretIfBound(password.value)
     emit('success', password.value)
     password.value = ''
     confirm.value = ''

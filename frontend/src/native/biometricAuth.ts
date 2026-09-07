@@ -2,8 +2,10 @@
  * BiometricAuth plugin TypeScript bindings（Android 原生指纹登录绑定桥）。
  *
  * 原生实现：frontend/android/.../plugins/BiometricAuthPlugin.java。
- * 语义：绑定 = 指纹验证后用 AndroidKeyStore auth-bound AES-GCM 加密存储登录
- * 凭据；登录 = 再次指纹验证后解密返回凭据（仅用于调 /api/auth/login）。
+ * 语义：绑定 = 指纹验证后用 AndroidKeyStore AES-GCM 加密存储登录凭据；
+ * 登录 = 再次指纹验证后解密返回凭据（仅用于调 /api/auth/login）。
+ * 主密码另存 master_blob：写入在密码解锁成功后静默完成，读取必须先过
+ * BiometricPrompt，供冷启动解锁屏免密认证。
  *
  * Web / iOS 平台无此插件：registerPlugin 的调用会 reject（"not implemented"），
  * 调用方用 isSupported() 做门控，UI 按"不支持"降级。
@@ -19,8 +21,14 @@ export interface BiometricAuthPlugin {
   saveCredential(opts: { username: string; password: string; reason?: string }): Promise<void>
   /** 指纹验证通过后返回存储的凭据 */
   getCredential(opts?: { reason?: string }): Promise<{ username: string; password: string }>
-  /** 解绑 */
+  /** 解绑（同时清除登录凭据与主密码密文） */
   deleteCredential(): Promise<void>
+  /** 本机是否已保存主密码密文（用于解锁屏免密认证） */
+  hasMasterSecret(): Promise<{ has: boolean }>
+  /** 密码解锁成功后静默加密主密码；不弹 BiometricPrompt */
+  saveMasterSecret(opts: { password: string }): Promise<void>
+  /** 指纹/人脸通过后返回主密码 */
+  getMasterSecret(opts?: { reason?: string }): Promise<{ password: string }>
 }
 
 let _plugin: BiometricAuthPlugin | null = null
@@ -86,6 +94,19 @@ export function bindBiometricCredential(
 }
 
 /**
+ * 设置页绑定：失败要抛给调用方（取消 / 未录入 / 密码无效），不能静默。
+ */
+export async function bindBiometricLogin(
+  username: string,
+  password: string,
+  reason = '绑定指纹登录',
+): Promise<void> {
+  await ensureLoaded()
+  if (!_plugin) throw new Error('biometric not supported on this platform')
+  await _plugin.saveCredential({ username, password, reason })
+}
+
+/**
  * 指纹验证后取回凭据；失败抛原始错误（调用方提示并降级到密码登录）。
  * 注意不走 withPlugin 的吞错路径——调用方需要区分"取消/失败"。
  */
@@ -102,4 +123,46 @@ export async function unbindBiometricCredential(): Promise<void> {
   await withPlugin(async p => {
     await p.deleteCredential()
   }, undefined)
+}
+
+/** 本机是否已保存主密码密文（无插件/失败返回 false）。 */
+export function hasMasterSecret(): Promise<boolean> {
+  return withPlugin(async p => !!(await p.hasMasterSecret()).has, false)
+}
+
+/** 密码解锁成功后静默写入主密码密文（尽力而为）。 */
+export function persistMasterSecret(password: string): Promise<boolean> {
+  if (!password) return Promise.resolve(false)
+  return withPlugin(
+    async p => {
+      await p.saveMasterSecret({ password })
+      return true
+    },
+    false,
+  )
+}
+
+/**
+ * 已绑定登录生物认证时，把刚验证过的主密码写入本机密文。
+ * 失败不抛：下次密码解锁再试。
+ */
+export async function persistMasterSecretIfBound(password: string): Promise<void> {
+  try {
+    if (await isBiometricAvailable() && await hasBiometricCredential()) {
+      await persistMasterSecret(password)
+    }
+  } catch {
+    /* 下次密码解锁再试 */
+  }
+}
+
+/**
+ * 指纹/人脸通过后取回主密码；失败抛原始错误（取消/未写入需由调用方处理）。
+ */
+export async function getMasterSecret(
+  reason = '使用指纹或人脸解锁',
+): Promise<{ password: string }> {
+  await ensureLoaded()
+  if (!_plugin) throw new Error('biometric not supported on this platform')
+  return _plugin.getMasterSecret({ reason })
 }
