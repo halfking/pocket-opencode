@@ -9,6 +9,7 @@ interface NoteIndexRow {
   content: string
   tags: string | null
   search_text: string | null
+  storage_tier?: 'inline' | 'file' | null
 }
 
 function parseTags(raw: string | null): string[] {
@@ -32,9 +33,12 @@ export async function ensureNotesSearchIndex(): Promise<void> {
     if (done) return
 
     const rows = await localDB.query<NoteIndexRow>(
-      `SELECT id, title, content, tags, search_text FROM local_notes WHERE deleted_at IS NULL`,
+      `SELECT id, title, content, tags, search_text, storage_tier FROM local_notes WHERE deleted_at IS NULL`,
     )
     for (const row of rows) {
+      // file 层笔记的 content 只是摘要，全文语料创建时已写入 search_text；
+      // 用 content 重建会把全文检索降级成摘要检索，跳过已有语料的行。
+      if (row.storage_tier === 'file' && (row.search_text ?? '') !== '') continue
       const next = buildSearchText(row.title, row.content ?? '', parseTags(row.tags))
       if (next === (row.search_text ?? '')) continue
       await localDB.run('UPDATE local_notes SET search_text = ? WHERE id = ?', [next, row.id])

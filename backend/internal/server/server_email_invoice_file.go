@@ -23,6 +23,10 @@ func (s *Server) invoiceFileAbs(inv *email.Invoice) (string, error) {
 }
 
 func (s *Server) loadScopedInvoiceFile(w http.ResponseWriter, r *http.Request, id string) (*email.Invoice, []byte, bool) {
+	if s.emailStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "email store not configured")
+		return nil, nil, false
+	}
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
 		return nil, nil, false

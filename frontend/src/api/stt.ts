@@ -11,6 +11,11 @@
 import { sherpa } from '../native/sherpa'
 import { http } from './http'
 import { blobToBase64 } from '../utils/base64'
+import {
+  CLOUD_STT_NEED_BLOB,
+  requireCloudAudioBlob,
+  type SttOptions,
+} from './stt-cloud.ts'
 
 export interface SttResult {
   text: string
@@ -19,26 +24,8 @@ export interface SttResult {
   costCents?: number
 }
 
-export interface SttOptions {
-  /** Audio blob from MediaRecorder (web). */
-  audioBlob?: Blob
-  /** File path for native sherpa-onnx (Capacitor Android). */
-  audioPath?: string
-  /** Force a specific engine. */
-  forceEngine?: 'local' | 'cloud'
-  /** Confidence below which we retry on cloud. Default 0.7. */
-  minConfidence?: number
-}
-
-export const CLOUD_STT_NEED_BLOB =
-  '本地语音识别未完成时，需要可上传的音频数据才能使用云端转写'
-
-/** Cloud STT requires the actual blob; a blob: URL is not a native file path. */
-export function requireCloudAudioBlob(opts: SttOptions): Blob {
-  if (opts.audioBlob) return opts.audioBlob
-  if (opts.audioPath) throw new Error(CLOUD_STT_NEED_BLOB)
-  throw new Error('sttApi.transcribe: provide audioBlob or audioPath')
-}
+export type { SttOptions }
+export { CLOUD_STT_NEED_BLOB, requireCloudAudioBlob }
 
 function filenameForMimeType(mimeType: string): string {
   const normalized = mimeType.toLowerCase().split(';', 1)[0]

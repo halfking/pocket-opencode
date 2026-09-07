@@ -36,6 +36,10 @@ export function useSessionLiveRecord(sessionId: () => string, sessionTitle: () =
     meetingId.value = m.id
     const ok = await recorder.start()
     if (!ok) {
+      // 采集没起来就把会议标记结束，否则遗留的 recording 状态会在每次
+      // 进入会话时触发"上次录音未正常结束"警告。
+      await updateMeeting(m.id, { status: 'completed' }).catch(() => {})
+      meetingId.value = ''
       toast.error(recorder.sttError.value || '无法开始录音')
       return
     }

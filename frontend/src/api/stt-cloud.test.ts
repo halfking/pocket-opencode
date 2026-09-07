@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { CLOUD_STT_NEED_BLOB, requireCloudAudioBlob } from './stt.ts'
+import { CLOUD_STT_NEED_BLOB, requireCloudAudioBlob } from './stt-cloud.ts'
 
 describe('requireCloudAudioBlob', () => {
   it('throws when only a blob URL path is given', () => {

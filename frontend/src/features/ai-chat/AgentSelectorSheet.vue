@@ -26,17 +26,18 @@ onMounted(() => {
 
 const filteredAgents = computed(() => {
   let list = agentStore.agents
-  
+
   // 部门筛选
   if (selectedDepartment.value) {
     list = list.filter(a => a.department === selectedDepartment.value)
   }
-  
-  // 搜索
+
+  // 搜索（在当前部门筛选结果内搜，搜索不能丢掉部门限定）
   if (searchQuery.value) {
-    list = agentStore.searchAgents(searchQuery.value)
+    const hits = new Set(agentStore.searchAgents(searchQuery.value).map(a => a.id))
+    list = list.filter(a => hits.has(a.id))
   }
-  
+
   return list
 })
 
