@@ -155,11 +155,10 @@ async function load() {
     const page = await readInboxPage(activeCategory.value, 0)
     emails.value = page
     hasMore.value = inboxHasMore(page.length)
+    if (page.length) loading.value = false
   } catch (e: any) {
     if (e?.message?.includes('LocalDB 未初始化')) dbNotReady.value = true
     else loadError.value = e?.message || '加载邮件失败'
-  } finally {
-    loading.value = false
   }
   void syncInboxFromServer().then(async (hint) => {
     syncHint.value = hint
@@ -168,6 +167,7 @@ async function load() {
       emails.value = page
       hasMore.value = inboxHasMore(page.length)
     } catch { /* 保持已上屏的本地列表 */ }
+    loading.value = false
   })
 }
 
