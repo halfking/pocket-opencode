@@ -1,8 +1,10 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import type { PermissionStatus } from './permission-action'
 import { canRequestPermissionAgain } from './permission-action'
+import type { SettingsPermissionName } from './permission-settings'
 
-export type RuntimePermissionName = 'microphone' | 'notifications'
+export type RuntimePermissionName = 'microphone' | 'notifications' | 'camera' | 'photos'
+export type { SettingsPermissionName }
 
 export interface RuntimePermissionResult {
   name: RuntimePermissionName
@@ -11,7 +13,7 @@ export interface RuntimePermissionResult {
 }
 
 interface AppSettingsPlugin {
-  openAppDetails(): Promise<void>
+  openAppDetails(options?: { name?: SettingsPermissionName }): Promise<{ opened?: boolean }>
   check(options: { name: RuntimePermissionName }): Promise<RuntimePermissionResult>
   request(options: { name: RuntimePermissionName }): Promise<RuntimePermissionResult>
 }
@@ -31,20 +33,24 @@ function normalizeResult(
 }
 
 export function useAppSettings() {
-  async function openAppDetails(): Promise<boolean> {
+  async function openPermissionSettings(name?: SettingsPermissionName): Promise<boolean> {
     try {
-      if (Capacitor.getPlatform() === 'android') {
-        await appSettings.openAppDetails()
-        return true
-      }
       if (Capacitor.getPlatform() === 'ios') {
         window.location.href = 'app-settings:'
         return true
+      }
+      if (Capacitor.isNativePlatform()) {
+        const result = await appSettings.openAppDetails(name ? { name } : undefined)
+        return result?.opened !== false
       }
     } catch (error) {
       console.warn('[settings] unable to open app settings', error)
     }
     return false
+  }
+
+  async function openAppDetails(): Promise<boolean> {
+    return openPermissionSettings()
   }
 
   async function checkPermission(name: RuntimePermissionName): Promise<RuntimePermissionResult | null> {
@@ -68,5 +74,5 @@ export function useAppSettings() {
     }
   }
 
-  return { openAppDetails, checkPermission, requestPermission }
+  return { openAppDetails, openPermissionSettings, checkPermission, requestPermission }
 }

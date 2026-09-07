@@ -31,12 +31,19 @@ CREATE TABLE IF NOT EXISTS local_notes (
     embedding_model TEXT,            -- 生成向量用的模型，便于重建
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    deleted_at INTEGER
+    deleted_at INTEGER,
+    status TEXT DEFAULT 'saved',     -- draft | saved
+    storage_tier TEXT DEFAULT 'inline', -- inline | file
+    summary TEXT,
+    search_text TEXT,                -- FTS 语料（标题+全文+标签）
+    body_path TEXT,
+    media_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_notes_domain ON local_notes(domain) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_notes_updated ON local_notes(updated_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_notes_workspace ON local_notes(workspace_id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_notes_status ON local_notes(status) WHERE deleted_at IS NULL;
 
 -- FTS5 全文索引（外部内容表，与 local_notes 同步）
 CREATE VIRTUAL TABLE IF NOT EXISTS local_notes_fts USING fts5(
@@ -44,17 +51,35 @@ CREATE VIRTUAL TABLE IF NOT EXISTS local_notes_fts USING fts5(
     tokenize='unicode61 remove_diacritics 2'
 );
 
--- 笔记增删改时同步 FTS 的触发器
+-- FTS 写入 search_text（全文语料）；缺省回退 content（兼容旧行）
 CREATE TRIGGER IF NOT EXISTS local_notes_ai AFTER INSERT ON local_notes BEGIN
-    INSERT INTO local_notes_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
+    INSERT INTO local_notes_fts(rowid, title, content)
+    VALUES (new.rowid, new.title, COALESCE(NULLIF(new.search_text, ''), new.content));
 END;
 CREATE TRIGGER IF NOT EXISTS local_notes_ad AFTER DELETE ON local_notes BEGIN
-    INSERT INTO local_notes_fts(local_notes_fts, rowid, title, content) VALUES ('delete', old.rowid, old.title, old.content);
+    INSERT INTO local_notes_fts(local_notes_fts, rowid, title, content)
+    VALUES ('delete', old.rowid, old.title, COALESCE(NULLIF(old.search_text, ''), old.content));
 END;
 CREATE TRIGGER IF NOT EXISTS local_notes_au AFTER UPDATE ON local_notes BEGIN
-    INSERT INTO local_notes_fts(local_notes_fts, rowid, title, content) VALUES ('delete', old.rowid, old.title, old.content);
-    INSERT INTO local_notes_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
+    INSERT INTO local_notes_fts(local_notes_fts, rowid, title, content)
+    VALUES ('delete', old.rowid, old.title, COALESCE(NULLIF(old.search_text, ''), old.content));
+    INSERT INTO local_notes_fts(rowid, title, content)
+    VALUES (new.rowid, new.title, COALESCE(NULLIF(new.search_text, ''), new.content));
 END;
+
+CREATE TABLE IF NOT EXISTS local_note_files (
+    id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    rel_path TEXT,
+    mime TEXT,
+    size_bytes INTEGER DEFAULT 0,
+    duration_ms INTEGER DEFAULT 0,
+    data_base64 TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (note_id) REFERENCES local_notes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_note_files_note ON local_note_files(note_id);
 
 -- ============================================================
 -- 笔记向量（与 local_notes 1:1，独立存储便于重建）
@@ -112,6 +137,7 @@ CREATE TABLE IF NOT EXISTS local_todos (
     completed_at INTEGER,
     tags TEXT,
     extracted_from_voice INTEGER DEFAULT 0,
+    meeting_id TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     FOREIGN KEY (note_id) REFERENCES local_notes(id) ON DELETE SET NULL
@@ -229,7 +255,11 @@ CREATE TABLE IF NOT EXISTS local_meetings (
     status TEXT DEFAULT 'recording', -- recording|completed|processing|refined
     started_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
-    deleted_at INTEGER
+    deleted_at INTEGER,
+    archived_at INTEGER,             -- 非 NULL/非 0 = 已归档
+    tags TEXT,                       -- JSON string[]
+    topic TEXT,                      -- 会议主题（可与标题不同）
+    summary_skill TEXT DEFAULT 'meeting-minutes'
 );
 CREATE INDEX IF NOT EXISTS idx_meetings_session ON local_meetings(session_id);
 
@@ -504,6 +534,37 @@ CREATE TABLE IF NOT EXISTS local_asset_vectors (
     FOREIGN KEY (asset_id) REFERENCES local_assets(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_asset_vectors_asset ON local_asset_vectors(asset_id);
+
+-- ============================================================
+-- 用户配置双写镜像（与 PG user_settings LWW）
+-- ============================================================
+-- 用户可编辑配置双写（updated_at 用 Unix 秒，与主库 LWW 对齐）
+CREATE TABLE IF NOT EXISTS local_user_settings (
+    namespace TEXT NOT NULL,
+    id TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    secret_encrypted TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL,
+    dirty INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (namespace, id)
+);
+CREATE INDEX IF NOT EXISTS idx_local_user_settings_dirty
+    ON local_user_settings(dirty) WHERE dirty = 1;
+
+CREATE TABLE IF NOT EXISTS local_config_outbox (
+    id TEXT PRIMARY KEY,
+    namespace TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    secret TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    state TEXT NOT NULL DEFAULT 'queued'
+);
+CREATE INDEX IF NOT EXISTS idx_config_outbox_ready
+    ON local_config_outbox(state, created_at) WHERE state = 'queued';
 
 -- ============================================================
 -- 会话输入草稿（P1 输入系统，设计 v2 §4.4-5 / 契约 §4）

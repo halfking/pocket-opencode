@@ -2,6 +2,9 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { chatAgentApi } from '../api/chatAgent'
 import type { ChatAgent, SyncPayload, SyncResult, SyncStatus } from '../types/chatAgent'
+import { enqueueConfigPush } from '../native/config-sync/outbox'
+import { nowUnixSec } from '../native/config-sync/planner'
+import { listLocalSettings, writeLocalIfNewer, writeLocalSetting } from '../native/config-sync/settings-store'
 
 // 部门中文标签（key = agency-agents-zh 仓库目录名，含自定义角色可能出现的部门）。
 // 不再硬编码数量：部门列表与计数由 store.departments 按实际加载的角色动态计算。
@@ -91,9 +94,20 @@ export const useChatAgentStore = defineStore('chatAgent', () => {
     error.value = ''
     try {
       agents.value = await chatAgentApi.list(department)
+      for (const agent of agents.value.filter((a) => !a.is_builtin)) {
+        await writeLocalIfNewer({
+          namespace: 'chat_agent', id: agent.id, payload: agent, updatedAt: agent.updated_at || 0,
+        })
+      }
     } catch (e: any) {
-      error.value = e?.message || String(e)
-      throw e
+      const local = (await listLocalSettings()).filter((row) => row.namespace === 'chat_agent')
+      if (local.length > 0) {
+        agents.value = local.map((row) => row.payload as ChatAgent)
+        error.value = ''
+      } else {
+        error.value = e?.message || String(e)
+        throw e
+      }
     } finally {
       loading.value = false
     }
@@ -112,16 +126,34 @@ export const useChatAgentStore = defineStore('chatAgent', () => {
   async function createAgent(
     req: Omit<ChatAgent, 'id' | 'workspace_id' | 'is_builtin' | 'created_at' | 'updated_at'>,
   ): Promise<ChatAgent> {
-    const created = await chatAgentApi.create({
+    const body = {
       name: req.name,
       description: req.description,
       department: req.department,
       emoji: req.emoji,
       color: req.color,
       system_prompt: req.system_prompt,
-    })
-    agents.value.push(created)
-    return created
+    }
+    try {
+      const created = await chatAgentApi.create(body)
+      await writeLocalSetting({ namespace: 'chat_agent', id: created.id, payload: created, dirty: 0, updatedAt: created.updated_at })
+      agents.value.push(created)
+      return created
+    } catch {
+      const now = nowUnixSec()
+      const created: ChatAgent = {
+        id: `local-${now}`,
+        workspace_id: '',
+        is_builtin: false,
+        created_at: now,
+        updated_at: now,
+        ...req,
+      }
+      await writeLocalSetting({ namespace: 'chat_agent', id: created.id, payload: created, dirty: 1, updatedAt: now })
+      await enqueueConfigPush({ namespace: 'chat_agent', id: created.id, payload: body, updatedAt: now })
+      agents.value.push(created)
+      return created
+    }
   }
 
   /**
@@ -131,19 +163,30 @@ export const useChatAgentStore = defineStore('chatAgent', () => {
     id: string,
     updates: Partial<Omit<ChatAgent, 'id' | 'workspace_id' | 'is_builtin'>>,
   ): Promise<ChatAgent> {
-    const updated = await chatAgentApi.update(id, {
+    const body = {
       name: updates.name,
       description: updates.description,
       department: updates.department,
       emoji: updates.emoji,
       color: updates.color,
       system_prompt: updates.system_prompt,
-    })
-    const idx = agents.value.findIndex((a) => a.id === id)
-    if (idx >= 0) {
-      agents.value[idx] = updated
     }
-    return updated
+    try {
+      const updated = await chatAgentApi.update(id, body)
+      await writeLocalSetting({ namespace: 'chat_agent', id: updated.id, payload: updated, dirty: 0, updatedAt: updated.updated_at })
+      const idx = agents.value.findIndex((a) => a.id === id)
+      if (idx >= 0) agents.value[idx] = updated
+      return updated
+    } catch {
+      const now = nowUnixSec()
+      const current = agents.value.find((a) => a.id === id)
+      const updated = { ...current, ...updates, id, updated_at: now } as ChatAgent
+      await writeLocalSetting({ namespace: 'chat_agent', id, payload: updated, dirty: 1, updatedAt: now })
+      await enqueueConfigPush({ namespace: 'chat_agent', id, payload: body, updatedAt: now })
+      const idx = agents.value.findIndex((a) => a.id === id)
+      if (idx >= 0) agents.value[idx] = updated
+      return updated
+    }
   }
 
   /**

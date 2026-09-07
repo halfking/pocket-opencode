@@ -261,10 +261,19 @@ const router = createRouter({
       meta: { requiresAuth: true, requiresLobster: true, title: '开始会议', bottomNav: false, canGoBack: true, scrollMode: 'self' },
     },
     {
+      path: '/meetings/:id/record',
+      name: 'meeting-record',
+      redirect: (to) => ({
+        name: 'meeting-detail',
+        params: { id: to.params.id },
+        query: { ...to.query, record: '1' },
+      }),
+    },
+    {
       path: '/meetings/:id',
       name: 'meeting-detail',
       component: () => import('../features/meetings/MeetingDetailView.vue'),
-      meta: { requiresAuth: true, requiresLobster: true, title: '会议详情', bottomNav: false, canGoBack: true },
+      meta: { requiresAuth: true, requiresLobster: true, title: '会议详情', bottomNav: false, canGoBack: true, scrollMode: 'self' },
     },
     {
       path: '/login',
@@ -384,25 +393,25 @@ const router = createRouter({
       path: '/settings/scheduled-tasks',
       name: 'scheduled-tasks',
       component: ScheduledTaskListView,
-      meta: { requiresAuth: true, title: '定时自动化', bottomNav: false, canGoBack: true, hideAppHeader: true }
+      meta: { requiresAuth: true, title: '定时任务', bottomNav: false, canGoBack: true, hideAppHeader: true }
     },
     {
       path: '/settings/scheduled-tasks/new',
       name: 'scheduled-task-new',
       component: ScheduledTaskEditView,
-      meta: { requiresAuth: true, title: '创建自动化', bottomNav: false, canGoBack: true, hideAppHeader: true }
+      meta: { requiresAuth: true, title: '创建定时任务', bottomNav: false, canGoBack: true, hideAppHeader: true }
     },
     {
       path: '/settings/scheduled-tasks/:id/edit',
       name: 'scheduled-task-edit',
       component: ScheduledTaskEditView,
-      meta: { requiresAuth: true, title: '编辑自动化', bottomNav: false, canGoBack: true, hideAppHeader: true }
+      meta: { requiresAuth: true, title: '编辑定时任务', bottomNav: false, canGoBack: true, hideAppHeader: true }
     },
     {
       path: '/settings/scheduled-tasks/:id',
       name: 'scheduled-task-detail',
       component: ScheduledTaskDetailView,
-      meta: { requiresAuth: true, title: '自动化详情', bottomNav: false, canGoBack: true, hideAppHeader: true }
+      meta: { requiresAuth: true, title: '定时任务详情', bottomNav: false, canGoBack: true, hideAppHeader: true }
     },
     // P3 — 成本与配额只读面板
     {

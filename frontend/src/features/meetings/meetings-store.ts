@@ -23,6 +23,10 @@ export interface LocalMeeting {
   startedAt: number
   createdAt: number
   deletedAt: number | null
+  archivedAt: number | null
+  tags: string[]
+  topic: string | null
+  summarySkill: string
 }
 
 export interface MeetingSegment {
@@ -52,12 +56,15 @@ export interface ActionItem {
   due?: string
 }
 
+export type RecommendType = 'note' | 'email' | 'meeting' | 'contact' | 'web' | 'knowledge'
+
 export interface RecommendItem {
-  type: 'note' | 'email' | 'meeting' | 'contact'
+  type: RecommendType
   id: string
   title: string
   snippet: string
   score: number
+  url?: string
 }
 
 export async function createMeeting(input: {
@@ -68,6 +75,9 @@ export async function createMeeting(input: {
   durationMs?: number
   startedAt?: number
   sessionId?: string
+  topic?: string
+  tags?: string[]
+  summarySkill?: string
 }): Promise<LocalMeeting> {
   const now = Date.now()
   const m: LocalMeeting = {
@@ -88,23 +98,32 @@ export async function createMeeting(input: {
     startedAt: input.startedAt ?? now,
     createdAt: now,
     deletedAt: null,
+    archivedAt: null,
+    tags: input.tags ?? [],
+    topic: input.topic ?? null,
+    summarySkill: input.summarySkill ?? 'meeting-minutes',
   }
   await localDB.run(
     `INSERT INTO local_meetings
      (id, title, location, participants, audio_path, duration_ms, transcript, summary,
-      live_summary, refined_transcript, recommendations, note_id, status, started_at, created_at, session_id)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      live_summary, refined_transcript, recommendations, note_id, status, started_at, created_at, session_id,
+      archived_at, tags, topic, summary_skill)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       m.id, m.title, m.location, JSON.stringify(m.participants), m.audioPath,
       m.durationMs, null, null, null, null, null, null, m.status, m.startedAt, m.createdAt, m.sessionId,
+      null, JSON.stringify(m.tags), m.topic, m.summarySkill,
     ],
   )
   return m
 }
 
-export async function listMeetings(limit = 50): Promise<LocalMeeting[]> {
+export async function listMeetings(limit = 50, opts?: { archived?: boolean }): Promise<LocalMeeting[]> {
+  const archived = opts?.archived === true
   const rows = await localDB.query<any>(
-    `SELECT * FROM local_meetings WHERE deleted_at IS NULL ORDER BY started_at DESC LIMIT ?`,
+    archived
+      ? `SELECT * FROM local_meetings WHERE deleted_at IS NULL AND IFNULL(archived_at, 0) > 0 ORDER BY started_at DESC LIMIT ?`
+      : `SELECT * FROM local_meetings WHERE deleted_at IS NULL AND IFNULL(archived_at, 0) = 0 ORDER BY started_at DESC LIMIT ?`,
     [limit],
   )
   return rows.map(rowToMeeting)
@@ -129,7 +148,7 @@ export async function updateMeeting(
   patch: Partial<Pick<LocalMeeting,
     'title' | 'location' | 'participants' | 'audioPath' | 'durationMs' |
     'transcript' | 'summary' | 'liveSummary' | 'refinedTranscript' |
-    'recommendations' | 'status' | 'noteId'
+    'recommendations' | 'status' | 'noteId' | 'archivedAt' | 'tags' | 'topic' | 'summarySkill'
   >>,
 ): Promise<void> {
   const sets: string[] = []
@@ -147,6 +166,10 @@ export async function updateMeeting(
     recommendations: patch.recommendations ? JSON.stringify(patch.recommendations) : undefined,
     note_id: patch.noteId,
     status: patch.status,
+    archived_at: patch.archivedAt,
+    tags: patch.tags !== undefined ? JSON.stringify(patch.tags) : undefined,
+    topic: patch.topic,
+    summary_skill: patch.summarySkill,
   }
   for (const [col, val] of Object.entries(map)) {
     if (val !== undefined) { sets.push(`${col} = ?`); vals.push(val) }
@@ -166,6 +189,14 @@ export async function updateSummary(id: string, summary: string): Promise<void> 
 
 export async function deleteMeeting(id: string): Promise<void> {
   await localDB.run('UPDATE local_meetings SET deleted_at = ? WHERE id = ?', [Date.now(), id])
+}
+
+export async function archiveMeeting(id: string): Promise<void> {
+  await updateMeeting(id, { archivedAt: Date.now() })
+}
+
+export async function unarchiveMeeting(id: string): Promise<void> {
+  await updateMeeting(id, { archivedAt: 0 })
 }
 
 export async function saveSegment(seg: Omit<MeetingSegment, 'id'>): Promise<string> {
@@ -216,6 +247,10 @@ function rowToMeeting(r: Record<string, unknown>): LocalMeeting {
     startedAt: r.started_at as number,
     createdAt: r.created_at as number,
     deletedAt: (r.deleted_at as number) ?? null,
+    archivedAt: (r.archived_at as number) ?? null,
+    tags: parseJson(r.tags as string, []),
+    topic: (r.topic as string) ?? null,
+    summarySkill: (r.summary_skill as string) || 'meeting-minutes',
   }
 }
 

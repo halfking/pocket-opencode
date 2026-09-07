@@ -68,19 +68,19 @@ export interface SchedulePreview {
 }
 
 export const SCHEDULE_KINDS: Array<{ value: ScheduleKind; label: string; hint: string }> = [
-  { value: 'cron', label: 'Cron', hint: '5 字段，例如 0 9 * * 1-5' },
-  { value: 'interval', label: '间隔', hint: 'Go duration，例如 30m、6h' },
-  { value: 'at', label: '一次性', hint: 'RFC3339，例如 2026-09-01T09:00:00Z' },
+  { value: 'cron', label: '周期性', hint: '按天、工作日、每周或每月重复' },
+  { value: 'interval', label: '每隔一段时间', hint: '按分钟、小时或天重复' },
+  { value: 'at', label: '一次性', hint: '到选定的日期时间执行一次' },
 ]
 
 export const TASK_KINDS: Array<{ value: ScheduledTaskKind; label: string }> = [
-  { value: 'redclaw_chat', label: 'RedClaw 对话' },
-  { value: 'redclaw_knowledge', label: 'RedClaw 知识库' },
-  { value: 'agent_bridge', label: 'Agent Bridge' },
-  { value: 'llmbff_summary', label: 'LLM 摘要' },
-  { value: 'kxmemory_summary', label: 'KXMemory 摘要' },
-  { value: 'acc_mcp', label: 'ACC MCP' },
-  { value: 'webhook', label: 'Webhook' },
+  { value: 'redclaw_chat', label: '智能对话' },
+  { value: 'redclaw_knowledge', label: '知识库检索' },
+  { value: 'agent_bridge', label: '专家助手' },
+  { value: 'llmbff_summary', label: 'AI 摘要' },
+  { value: 'kxmemory_summary', label: '记忆摘要' },
+  { value: 'acc_mcp', label: '系统工具' },
+  { value: 'webhook', label: '外部通知' },
 ]
 
 export function taskKindLabel(kind: string): string {

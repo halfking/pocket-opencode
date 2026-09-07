@@ -156,6 +156,18 @@ export async function pushAccountToServer(_a: ServerAccount): Promise<boolean> {
     })
     return true
   } catch {
+    void import('../../native/config-sync/outbox').then((m) =>
+      m.enqueueConfigPush({
+        namespace: 'email_account',
+        id: _a.id,
+        payload: {
+          displayName: _a.displayName,
+          syncIntervalMin: _a.syncIntervalMin,
+          enabled: _a.enabled,
+        },
+        updatedAt: _a.updatedAt ?? Math.floor(Date.now() / 1000),
+      }),
+    )
     return false
   }
 }

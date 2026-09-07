@@ -62,7 +62,7 @@
 import { ref, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../../api/client'
-import { writeSelectedInstance } from '../../config/selected-instance'
+import { persistSelectedInstance } from '../../native/config-sync/prefs'
 import { Skeleton, EmptyState } from '../../components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 
@@ -115,7 +115,7 @@ async function loadInstances() {
 }
 
 function selectInstance(instance: Instance) {
-  writeSelectedInstance({
+  persistSelectedInstance({
     id: instance.id,
     displayName: instance.displayName,
     environment: instance.environment,

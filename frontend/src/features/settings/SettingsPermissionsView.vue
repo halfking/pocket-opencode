@@ -38,24 +38,24 @@
           <div :class="['status-chip', notifStateClass]">{{ notifLabel }}</div>
         </div>
 
-        <!-- 相机（占位） -->
-        <div class="setting-item clickable" @click="showComingSoon('相机')">
+        <!-- 相机 -->
+        <div class="setting-item clickable" @click="handleCameraClick">
           <div class="setting-icon"><span class="material-symbols-outlined">photo_camera</span></div>
           <div class="setting-content">
             <div class="setting-label">相机</div>
-            <div class="setting-value">即将支持：扫码、拍摄附件</div>
+            <div class="setting-value">扫码、拍摄附件需要相机</div>
           </div>
-          <div class="status-chip placeholder">即将支持</div>
+          <div :class="['status-chip', camera.stateClass]">{{ camera.label }}</div>
         </div>
 
-        <!-- 相册（占位） -->
-        <div class="setting-item clickable" @click="showComingSoon('相册')">
+        <!-- 相册 -->
+        <div class="setting-item clickable" @click="handlePhotosClick">
           <div class="setting-icon"><span class="material-symbols-outlined">photo_library</span></div>
           <div class="setting-content">
             <div class="setting-label">相册</div>
-            <div class="setting-value">即将支持：当前发图走系统文件选择器，无需授权</div>
+            <div class="setting-value">发送图片、选择附件需要访问相册</div>
           </div>
-          <div class="status-chip placeholder">即将支持</div>
+          <div :class="['status-chip', photos.stateClass]">{{ photos.label }}</div>
         </div>
       </div>
 
@@ -71,16 +71,39 @@
           <div :class="['status-chip', biometricStateClass]">{{ biometricLabel }}</div>
         </div>
         <p class="hint">
-          Android 的指纹与人脸共用同一个系统能力，由 WebAuthn 在系统弹窗中自动选择；
-          生物识别数据不会上传到服务器，仅用于本地解锁密码箱与登录。
+          Android 的指纹与人脸共用同一个系统能力，点击未绑定项会弹出系统验证并完成本机绑定；
+          生物识别数据不会上传到服务器，仅用于登录、主密码解锁与本地密码箱。
         </p>
       </div>
 
       <!-- 帮助提示 -->
       <div class="settings-section note-section">
         <p class="hint">
-          未授权时点击即可再次弹出系统申请。若已选择「不再询问」，才会打开系统设置让你手动打开。
+          未授权时点击可再次弹出系统申请。已被禁止的项会打开对应的系统设置并定位到本应用，便于手动开启。
         </p>
+      </div>
+    </div>
+
+    <div v-if="bindOpen" class="bind-overlay" @click.self="closeBind">
+      <div class="bind-card" role="dialog" aria-modal="true" aria-labelledby="bind-title">
+        <h2 id="bind-title">绑定指纹 / 人脸</h2>
+        <p class="bind-copy">输入当前账号的登录密码，随后在系统弹窗中验证指纹或人脸。</p>
+        <input
+          v-model="bindPassword"
+          class="bind-input"
+          type="password"
+          autocomplete="current-password"
+          placeholder="登录密码"
+          :disabled="bindBusy"
+          @keyup.enter="confirmBind"
+        />
+        <p v-if="bindError" class="bind-error">{{ bindError }}</p>
+        <div class="bind-actions">
+          <button class="bind-btn ghost" type="button" :disabled="bindBusy" @click="closeBind">取消</button>
+          <button class="bind-btn primary" type="button" :disabled="bindBusy || !bindPassword" @click="confirmBind">
+            {{ bindBusy ? '绑定中…' : '绑定' }}
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -93,21 +116,41 @@ import { App } from '@capacitor/app'
 import { Capacitor } from '@capacitor/core'
 import { useMicPermission } from '../../composables/useMicPermission'
 import { useNotificationPermission } from '../../composables/useNotificationPermission'
+import { useNativePermission } from '../../composables/useNativePermission'
 import { useBiometricStatus } from '../../composables/useBiometricStatus'
 import {
   isBiometricAvailable,
   hasBiometricCredential,
   unbindBiometricCredential,
+  bindBiometricLogin,
 } from '../../native/biometricAuth'
-import { useAppSettings } from '../../composables/useAppSettings'
+import {
+  isBiometricUserCancel,
+  loginDisplayName,
+  needsBiometricEnrollment,
+} from '../../native/biometric-errors'
+import { useAuthStore } from '../../stores/auth'
+import { useAppSettings, type RuntimePermissionName } from '../../composables/useAppSettings'
+import {
+  permissionRowClickAction,
+  type SettingsPermissionName,
+} from '../../composables/permission-settings'
+import type { PermissionStatus } from '../../composables/permission-action'
 
 const router = useRouter()
 const mic = useMicPermission()
 const notif = useNotificationPermission()
+const camera = useNativePermission('camera')
+const photos = useNativePermission('photos')
 const bio = useBiometricStatus()
 const appSettings = useAppSettings()
+const auth = useAuthStore()
 
 const refreshing = ref(false)
+const bindOpen = ref(false)
+const bindPassword = ref('')
+const bindError = ref('')
+const bindBusy = ref(false)
 
 // --- 指纹登录绑定（原生壳：本机绑定态；Web：服务端 WebAuthn 凭据数） ---
 const nativeBiometricAvailable = ref(false)
@@ -179,10 +222,10 @@ const biometricSubtitle = computed(() => {
     return '当前为 Web 环境；生物识别需 Android 原生壳或受支持的浏览器（WebAuthn）。'
   }
   if (!nativeBiometricAvailable.value) {
-    return '设备未录入指纹/人脸（或系统不支持），请先在系统设置中录入'
+    return '设备未录入指纹/人脸（或系统不支持），点击可打开系统设置录入'
   }
-  if (nativeBiometricBound.value) return '指纹登录已开启：登录页可直接指纹登录；点击可解绑'
-  return '密码登录成功后会自动绑定指纹；绑定后登录页可用指纹一键登录'
+  if (nativeBiometricBound.value) return '已开启：登录可用指纹，解锁主密码也可点认证；点击可解绑'
+  return '点击后输入登录密码，验证指纹/人脸即可绑定'
 })
 
 // --- 交互 ---
@@ -193,7 +236,13 @@ function goBack() {
 async function refreshAll() {
   refreshing.value = true
   try {
-    const jobs: Promise<unknown>[] = [mic.recheck(), notif.recheck(), refreshBiometricBinding()]
+    const jobs: Promise<unknown>[] = [
+      mic.recheck(),
+      notif.recheck(),
+      camera.recheck(),
+      photos.recheck(),
+      refreshBiometricBinding(),
+    ]
     // 服务端 WebAuthn 凭据数只在 Web 分支展示，原生平台不发这次（可能 401 的）请求
     if (!Capacitor.isNativePlatform()) jobs.push(bio.refresh())
     await Promise.all(jobs)
@@ -202,34 +251,73 @@ async function refreshAll() {
   }
 }
 
-async function handleMicClick() {
-  const s = mic.state.value
-  if (s === 'granted' || s === 'unavailable') return
-  if (s === 'denied' && !mic.canRequestAgain.value) {
-    await appSettings.openAppDetails()
+async function openSystemSettings(name: SettingsPermissionName) {
+  const opened = await appSettings.openPermissionSettings(name)
+  if (!opened) {
+    alert('无法打开系统设置。请到系统设置中找到本应用后手动开启对应权限。')
+  }
+}
+
+function runtimeFollowUp(name: RuntimePermissionName): {
+  status: PermissionStatus | 'unknown'
+  canRequestAgain: boolean
+} {
+  if (name === 'microphone') return { status: mic.state.value, canRequestAgain: mic.canRequestAgain.value }
+  if (name === 'notifications') return { status: notif.state.value, canRequestAgain: notif.canRequestAgain.value }
+  if (name === 'camera') return { status: camera.state.value, canRequestAgain: camera.canRequestAgain.value }
+  return { status: photos.state.value, canRequestAgain: photos.canRequestAgain.value }
+}
+
+async function handleRuntimeClick(
+  name: RuntimePermissionName,
+  status: PermissionStatus | 'unknown',
+  canRequestAgain: boolean,
+  ensure: () => Promise<unknown>,
+) {
+  const action = permissionRowClickAction({ kind: name, status, canRequestAgain })
+  if (action === 'none') return
+  if (action === 'open-settings') {
+    await openSystemSettings(name)
     return
   }
-  await mic.ensure()
+  await ensure()
+  const followUp = runtimeFollowUp(name)
+  if (
+    permissionRowClickAction({
+      kind: name,
+      status: followUp.status,
+      canRequestAgain: followUp.canRequestAgain,
+      afterRequest: true,
+    }) === 'open-settings'
+  ) {
+    await openSystemSettings(name)
+  }
+}
+
+async function handleMicClick() {
+  await handleRuntimeClick('microphone', mic.state.value, mic.canRequestAgain.value, () => mic.ensure())
 }
 
 async function handleNotificationClick() {
-  const s = notif.state.value
-  if (s === 'granted' || s === 'unavailable') return
-  if (s === 'denied' && !notif.canRequestAgain.value) {
-    await appSettings.openAppDetails()
-    return
-  }
-  await notif.ensure()
+  await handleRuntimeClick(
+    'notifications',
+    notif.state.value,
+    notif.canRequestAgain.value,
+    () => notif.ensure(),
+  )
+}
+
+async function handleCameraClick() {
+  await handleRuntimeClick('camera', camera.state.value, camera.canRequestAgain.value, () => camera.ensure())
+}
+
+async function handlePhotosClick() {
+  await handleRuntimeClick('photos', photos.state.value, photos.canRequestAgain.value, () => photos.ensure())
 }
 
 async function handleBiometricClick() {
-  // Web 环境无原生绑定，仅提示
   if (!Capacitor.isNativePlatform()) {
     alert('当前为 Web 环境，指纹登录需在 Android App 中使用。')
-    return
-  }
-  if (!nativeBiometricAvailable.value) {
-    alert('设备未录入指纹/人脸。请先在系统设置中录入后重试。')
     return
   }
   if (nativeBiometricBound.value) {
@@ -239,11 +327,50 @@ async function handleBiometricClick() {
     }
     return
   }
-  alert('还未绑定：退出登录后在登录页用密码登录一次，将自动弹出指纹验证完成绑定。')
+  bindPassword.value = ''
+  bindError.value = ''
+  bindOpen.value = true
 }
 
-function showComingSoon(label: string) {
-  alert(`${label}功能尚未上线。后续版本会在这里提供授权入口。`)
+function closeBind() {
+  if (bindBusy.value) return
+  bindOpen.value = false
+  bindPassword.value = ''
+  bindError.value = ''
+}
+
+async function confirmBind() {
+  const username = loginDisplayName(auth.user || '')
+  const password = bindPassword.value.trim()
+  if (!username) {
+    bindError.value = '未找到当前登录账号，请重新登录后再绑定'
+    return
+  }
+  if (!password) {
+    bindError.value = '请输入登录密码'
+    return
+  }
+  bindBusy.value = true
+  bindError.value = ''
+  try {
+    await bindBiometricLogin(username, password, '绑定指纹 / 人脸登录')
+    bindOpen.value = false
+    bindPassword.value = ''
+    await refreshBiometricBinding()
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e)
+    if (isBiometricUserCancel(message)) return
+    if (needsBiometricEnrollment(message) || !(await isBiometricAvailable())) {
+      bindOpen.value = false
+      await openSystemSettings('biometric')
+      return
+    }
+    bindError.value = message.includes('invalid username or password')
+      ? '密码不能为空，请重新输入'
+      : '绑定失败，请确认密码正确后重试'
+  } finally {
+    bindBusy.value = false
+  }
 }
 
 onMounted(async () => {
@@ -439,5 +566,80 @@ onMounted(async () => {
   background: transparent;
   border: none;
   padding: var(--space-2);
+}
+
+.bind-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: var(--color-bg-overlay, rgba(0, 0, 0, 0.45));
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: var(--space-3);
+}
+
+.bind-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-card-padding);
+  margin-bottom: var(--space-4);
+}
+
+.bind-card h2 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-lg);
+}
+
+.bind-copy,
+.bind-error {
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  margin: 0 0 var(--space-3);
+  color: var(--text-secondary);
+}
+
+.bind-error {
+  color: var(--danger);
+}
+
+.bind-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  margin-bottom: var(--space-3);
+}
+
+.bind-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.bind-btn {
+  flex: 1;
+  padding: var(--space-3);
+  border: none;
+  border-radius: var(--radius-md);
+  font-weight: var(--font-weight-semibold);
+}
+
+.bind-btn.ghost {
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+}
+
+.bind-btn.primary {
+  background: var(--brand-gradient);
+  color: var(--text-inverse);
+}
+
+.bind-btn:disabled {
+  opacity: 0.5;
 }
 </style>

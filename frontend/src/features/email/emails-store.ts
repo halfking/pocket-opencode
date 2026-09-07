@@ -116,7 +116,7 @@ export async function updateAccount(id: string, patch: Partial<EmailAccount>): P
   if (patch.enabled !== undefined) { sets.push('enabled = ?'); vals.push(patch.enabled ? 1 : 0) }
   if (sets.length === 0) return
   // 任何本地编辑都刷新 updated_at（服务端 SSOT 视角下的"已修改"）。
-  const now = Date.now()
+  const now = Math.floor(Date.now() / 1000)
   sets.push('updated_at = ?')
   vals.push(patch.updatedAt ?? now)
   vals.push(id)

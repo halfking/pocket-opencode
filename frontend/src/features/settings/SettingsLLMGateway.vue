@@ -87,25 +87,6 @@
         <div v-else class="form-hint">对齐 llm-gateway-go 端点族；默认 OpenAI Chat（/v1/chat/completions）</div>
       </div>
 
-      <div class="form-section">
-        <label class="form-label" for="gateway-models">模型列表（逗号分隔）</label>
-        <input
-          id="gateway-models"
-          v-model="modelsInput"
-          class="form-input"
-          type="text"
-          placeholder="deepseek-v3, claude-sonnet-4-6, gpt-4o"
-        />
-        <div class="form-hint">
-          测试连接后自动填充。当前：
-          <span v-if="original.models.length === 0" class="hint-empty">未配置</span>
-          <span v-else>
-            <code v-for="m in original.models.slice(0, 5)" :key="m" class="model-chip">{{ m }}</code>
-            <span v-if="original.models.length > 5" class="hint-extra">+{{ original.models.length - 5 }}</span>
-          </span>
-        </div>
-      </div>
-
       <!-- 常用模型勾选：非空时模型选择器只显示这些 -->
       <div class="form-section">
         <div class="pref-head">
@@ -175,6 +156,7 @@ import { ref, computed, onMounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
 import { createScrollHideChrome } from '../../composables/useScrollHideChrome'
+import { saveSettingLocalFirst } from '../../native/config-sync/runtime'
 
 const router = useRouter()
 
@@ -287,7 +269,6 @@ function togglePreferred(m: string): void {
   preferredSel.value = next
 }
 
-const modelsInput = ref('')
 const showKey = ref(false)
 const testing = ref(false)
 const saving = ref(false)
@@ -308,7 +289,6 @@ onMounted(async () => {
     Object.assign(original, cfg)
     form.baseURL = cfg.baseURL
     form.format = cfg.format || 'openai-chat'
-    modelsInput.value = cfg.models.join(', ')
     preferredSel.value = new Set(cfg.preferredModels)
     // 目录已有缓存模型时直接可作为勾选候选
     if (cfg.models.length > 0) catalogModels.value = cfg.models
@@ -333,25 +313,18 @@ async function onTest() {
     // 先临时保存（不持久化），或者直接 GET — 这里用 test endpoint
     // 后端的 /api/llm-gateway/test 用的是 currentLLMGateway 状态，
     // 所以测试前需要先 POST 当前表单到 /config（apiKey 留空保留旧值）
-    const models = parseModels(modelsInput.value)
+    const models = catalogModels.value.length > 0 ? catalogModels.value : original.models
     if (form.apiKey || original.apiKeySet) {
-      await api.saveGatewayConfig({
-        baseURL: form.baseURL,
-        apiKey: form.apiKey || undefined,
-        models,
-        format: form.format,
-        preferredModels: [...preferredSel.value],
-      })
+      await persistGateway(models)
     }
     const r: GatewayTestResult = await api.testGateway()
     if (r.ok) {
       setStatus('success', `✓ 连通 (HTTP ${r.status}) · ${r.models?.length || 0} 个模型`)
-      // 自动刷新 models + 勾选目录候选
       try {
         const cfg = await api.getGatewayConfig()
         Object.assign(original, cfg, { models: cfg.models ?? [], preferredModels: cfg.preferredModels ?? [] })
-        modelsInput.value = (cfg.models ?? []).join(', ')
         if ((cfg.models ?? []).length > 0) catalogModels.value = cfg.models ?? []
+        if ((r.models ?? []).length > 0) catalogModels.value = r.models ?? catalogModels.value
       } catch {}
     } else {
       setStatus('error', `✗ 失败：${r.error || r.response || 'HTTP ' + r.status}`)
@@ -366,20 +339,10 @@ async function onTest() {
 async function onSave() {
   saving.value = true
   try {
-    const models = parseModels(modelsInput.value)
-    const r = await api.saveGatewayConfig({
-      baseURL: form.baseURL,
-      apiKey: form.apiKey || undefined,
-      models,
-      format: form.format,
-      preferredModels: [...preferredSel.value],
-    })
-    if (r.ok) {
-      setStatus('success', '✓ 已保存，OpenCode 配置热更新已触发')
-      setTimeout(() => router.back(), 800)
-    } else {
-      setStatus('error', '保存失败')
-    }
+    const models = catalogModels.value.length > 0 ? catalogModels.value : original.models
+    await persistGateway(models)
+    setStatus('success', '✓ 已保存到本地，并同步服务端')
+    setTimeout(() => router.back(), 800)
   } catch (err: any) {
     setStatus('error', '保存失败：' + (err?.message || err))
   } finally {
@@ -387,11 +350,25 @@ async function onSave() {
   }
 }
 
-function parseModels(s: string): string[] {
-  return s
-    .split(',')
-    .map((m) => m.trim())
-    .filter((m) => m.length > 0)
+async function persistGateway(models: string[]): Promise<void> {
+  const payload = {
+    baseURL: form.baseURL,
+    format: form.format,
+    models,
+    preferredModels: [...preferredSel.value],
+  }
+  await saveSettingLocalFirst('llm_gateway', 'default', payload, form.apiKey || undefined)
+  try {
+    await api.saveGatewayConfig({
+      baseURL: form.baseURL,
+      apiKey: form.apiKey || undefined,
+      models,
+      format: form.format,
+      preferredModels: [...preferredSel.value],
+    })
+  } catch {
+    // 离线时本地已写入，联网后 outbox / LWW 补推
+  }
 }
 
 function goBack() {

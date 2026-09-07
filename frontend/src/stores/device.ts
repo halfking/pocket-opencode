@@ -27,10 +27,12 @@ export const useDeviceStore = defineStore('device', {
     setTier(t: DeviceTier) {
       this.tier = t
       localStorage.setItem('pocket_device_tier', t)
+      import('../native/config-sync/prefs').then((m) => m.persistAppPrefs()).catch(() => {})
     },
     setSttPreference(p: 'local' | 'cloud' | 'auto') {
       this.sttPreference = p
       localStorage.setItem('pocket_stt_pref', p)
+      import('../native/config-sync/prefs').then((m) => m.persistAppPrefs()).catch(() => {})
     },
   },
 })

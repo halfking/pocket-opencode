@@ -99,6 +99,43 @@ export interface SessionLink {
   role: string
 }
 
+export interface TaskSessionBundle {
+  current: TaskSessionBundleRow[]
+  historical: TaskSessionBundleRow[]
+  localOnly: TaskSessionBundleRow[]
+  usageTotals: { input: number; output: number; cache: number | null }
+}
+
+export interface TaskSessionBundleRow {
+  id: string
+  title: string
+  lane: 'current' | 'historical' | 'local'
+  agentKind?: string
+  agentSessionId?: string
+  gwSessionId?: string
+  instanceId?: string
+  role?: string
+  startedAt?: string
+  endedAt?: string
+  tokensIn: number
+  tokensOut: number
+  tokensCache: number | null
+}
+
+export interface TaskSessionMessage {
+  id: string
+  ts: number
+  type: string
+  role: string
+  name?: string
+  text: string
+}
+
+export interface TaskSessionTranscript {
+  session?: { id: string; title: string; kind?: string }
+  messages: TaskSessionMessage[]
+}
+
 export interface ModelConfig {
   providers: Provider[]
   defaultProvider?: string
@@ -175,6 +212,30 @@ export const api = {
     const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/sessions`)
     const data = await res.json()
     return data.sessions || []
+  },
+
+  async getTaskSessionBundle(taskId: string): Promise<TaskSessionBundle> {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/session-bundle`)
+    return res.json()
+  },
+
+  async getTaskSessionTranscript(taskId: string, sessionId: string, types?: string, kind?: string): Promise<TaskSessionTranscript> {
+    const q = new URLSearchParams()
+    if (types) q.set("types", types)
+    if (kind) q.set("kind", kind)
+    const qs = q.toString() ? `?${q.toString()}` : ""
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/sessions/${encodeURIComponent(sessionId)}/transcript${qs}`)
+    return res.json()
+  },
+
+  async extractTaskSessionTitle(taskId: string, sessionId: string): Promise<{ title: string }> {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/sessions/${encodeURIComponent(sessionId)}/extract-title`, { method: "POST" })
+    return res.json()
+  },
+
+  async summarizeTaskSession(taskId: string, sessionId: string): Promise<{ summary: string }> {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/sessions/${encodeURIComponent(sessionId)}/summarize`, { method: "POST" })
+    return res.json()
   },
 
   async getInstances(): Promise<Instance[]> {

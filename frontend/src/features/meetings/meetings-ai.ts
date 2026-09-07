@@ -8,7 +8,7 @@ import { llmBffApi, type ChatStreamDelta } from '../../api/llm-bff'
 
 export async function summarizeMeeting(
   transcript: string,
-  handlers: { onRetry?: (model: string) => void } = {},
+  handlers: { onRetry?: (model: string) => void; skillPrompt?: string } = {},
 ): Promise<string> {
   if (!transcript.trim()) throw new Error('会议转写为空，无法生成纪要')
 
@@ -16,16 +16,14 @@ export async function summarizeMeeting(
   // 非流式 UI 没有气泡灰字渲染位：onRetry 只记录回退轨迹，正文到达即静默，
   // 与 ai-chat 的 retry 提示语义对齐（runbook §16.6-2：全调用方接入 retry 帧）。
   const retriedModels = new Set<string>()
+  const system = handlers.skillPrompt?.trim() ||
+    '你是会议记录助手。请用中文输出结构化会议纪要，包含：会议摘要、关键决策、行动项（负责人/截止时间若能识别）、待确认问题。不要编造转写中不存在的信息。'
   await new Promise<void>((resolve, reject) => {
     llmBffApi.streamChat(
       {
         kind: 'meeting_summary',
         messages: [
-          {
-            role: 'system',
-            content:
-              '你是会议记录助手。请用中文输出结构化会议纪要，包含：会议摘要、关键决策、行动项（负责人/截止时间若能识别）、待确认问题。不要编造转写中不存在的信息。',
-          },
+          { role: 'system', content: system },
           { role: 'user', content: transcript.slice(0, 60000) },
         ],
       },

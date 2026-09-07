@@ -38,6 +38,23 @@ const LIVE_RECORD_V1_COLUMNS = [
   { table: 'local_meeting_audio_parts', column: 'file_path', sql: 'ALTER TABLE local_meeting_audio_parts ADD COLUMN file_path TEXT' },
 ]
 
+const MEETINGS_STUDIO_V1_COLUMNS = [
+  { table: 'local_meetings', column: 'archived_at', sql: 'ALTER TABLE local_meetings ADD COLUMN archived_at INTEGER' },
+  { table: 'local_meetings', column: 'tags', sql: 'ALTER TABLE local_meetings ADD COLUMN tags TEXT' },
+  { table: 'local_meetings', column: 'topic', sql: 'ALTER TABLE local_meetings ADD COLUMN topic TEXT' },
+  { table: 'local_meetings', column: 'summary_skill', sql: "ALTER TABLE local_meetings ADD COLUMN summary_skill TEXT DEFAULT 'meeting-minutes'" },
+  { table: 'local_todos', column: 'meeting_id', sql: 'ALTER TABLE local_todos ADD COLUMN meeting_id TEXT' },
+]
+
+const NOTES_CAPTURE_V1_COLUMNS = [
+  { table: 'local_notes', column: 'status', sql: "ALTER TABLE local_notes ADD COLUMN status TEXT DEFAULT 'saved'" },
+  { table: 'local_notes', column: 'storage_tier', sql: "ALTER TABLE local_notes ADD COLUMN storage_tier TEXT DEFAULT 'inline'" },
+  { table: 'local_notes', column: 'summary', sql: 'ALTER TABLE local_notes ADD COLUMN summary TEXT' },
+  { table: 'local_notes', column: 'search_text', sql: 'ALTER TABLE local_notes ADD COLUMN search_text TEXT' },
+  { table: 'local_notes', column: 'body_path', sql: 'ALTER TABLE local_notes ADD COLUMN body_path TEXT' },
+  { table: 'local_notes', column: 'media_json', sql: 'ALTER TABLE local_notes ADD COLUMN media_json TEXT' },
+]
+
 const EMAIL_SYNC_V1_COLUMNS = [
   { table: 'local_email_accounts', column: 'updated_at', sql: 'ALTER TABLE local_email_accounts ADD COLUMN updated_at INTEGER DEFAULT 0' },
   { table: 'local_email_invoices', column: 'file_name', sql: "ALTER TABLE local_email_invoices ADD COLUMN file_name TEXT DEFAULT ''" },
@@ -172,6 +189,16 @@ class LocalDB {
     } catch (e) {
       console.warn('[localDB] live record v1 migration failed:', e)
     }
+    try {
+      await this.runNotesCaptureV1Migration()
+    } catch (e) {
+      console.warn('[localDB] notes capture v1 migration failed:', e)
+    }
+    try {
+      await this.runMeetingsStudioV1Migration()
+    } catch (e) {
+      console.warn('[localDB] meetings studio v1 migration failed:', e)
+    }
   }
 
   /** 会议模块 v2：为旧库补列，列已存在则跳过 */
@@ -285,6 +312,111 @@ class LocalDB {
     }
     await this.conn.execute(
       "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-08-live-record-v1', '会话录音 session_id/译文/分片路径', strftime('%s', 'now') * 1000);",
+      false,
+    )
+  }
+
+  /** 笔记捕捉：草稿/分级存储列 + 附件表 + FTS 改索引 search_text。 */
+  private async runNotesCaptureV1Migration(): Promise<void> {
+    if (!this.conn) return
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        version TEXT PRIMARY KEY,
+        description TEXT,
+        applied_at INTEGER NOT NULL
+      );
+    `, false)
+    const done = await this.queryOne<{ version: string }>(
+      "SELECT version FROM _schema_migrations WHERE version = '2026-09-08-notes-capture-v1'",
+    )
+    if (done) return
+
+    for (const col of NOTES_CAPTURE_V1_COLUMNS) {
+      const exists = await this.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
+        [col.column],
+      )
+      if (exists && exists.cnt > 0) continue
+      try {
+        await this.conn.execute(col.sql, false)
+      } catch { /* 列可能已存在 */ }
+    }
+
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS local_note_files (
+        id TEXT PRIMARY KEY,
+        note_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        rel_path TEXT,
+        mime TEXT,
+        size_bytes INTEGER DEFAULT 0,
+        duration_ms INTEGER DEFAULT 0,
+        data_base64 TEXT,
+        created_at INTEGER NOT NULL
+      );
+    `, false)
+    await this.conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_note_files_note ON local_note_files(note_id);',
+      false,
+    )
+    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_status ON local_notes(status);', false).catch(() => {})
+
+    try {
+      await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_ai;', false)
+      await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_ad;', false)
+      await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_au;', false)
+      await this.conn.execute(`
+        CREATE TRIGGER IF NOT EXISTS local_notes_ai AFTER INSERT ON local_notes BEGIN
+          INSERT INTO local_notes_fts(rowid, title, content)
+          VALUES (new.rowid, new.title, COALESCE(NULLIF(new.search_text, ''), new.content));
+        END;
+      `, false)
+      await this.conn.execute(`
+        CREATE TRIGGER IF NOT EXISTS local_notes_ad AFTER DELETE ON local_notes BEGIN
+          INSERT INTO local_notes_fts(local_notes_fts, rowid, title, content)
+          VALUES ('delete', old.rowid, old.title, COALESCE(NULLIF(old.search_text, ''), old.content));
+        END;
+      `, false)
+      await this.conn.execute(`
+        CREATE TRIGGER IF NOT EXISTS local_notes_au AFTER UPDATE ON local_notes BEGIN
+          INSERT INTO local_notes_fts(local_notes_fts, rowid, title, content)
+          VALUES ('delete', old.rowid, old.title, COALESCE(NULLIF(old.search_text, ''), old.content));
+          INSERT INTO local_notes_fts(rowid, title, content)
+          VALUES (new.rowid, new.title, COALESCE(NULLIF(new.search_text, ''), new.content));
+        END;
+      `, false)
+    } catch (e) {
+      console.warn('[localDB] notes FTS trigger rebuild skipped:', e)
+    }
+
+    await this.conn.execute(
+      "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-08-notes-capture-v1', '笔记草稿/分级存储/附件', strftime('%s', 'now') * 1000);",
+      false,
+    )
+  }
+
+  /** 会议工作台：归档 / 标签 / 主题 / 总结技能 / 待办关联。 */
+  private async runMeetingsStudioV1Migration(): Promise<void> {
+    if (!this.conn) return
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        version TEXT PRIMARY KEY,
+        description TEXT,
+        applied_at INTEGER NOT NULL
+      );
+    `, false)
+    for (const col of MEETINGS_STUDIO_V1_COLUMNS) {
+      const exists = await this.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
+        [col.column],
+      )
+      if (exists && exists.cnt > 0) continue
+      try {
+        await this.conn.execute(col.sql, false)
+      } catch { /* 列可能已存在 */ }
+    }
+    await this.conn.execute(
+      "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-08-meetings-studio-v1', '会议归档/标签/主题/技能/待办关联', strftime('%s', 'now') * 1000);",
       false,
     )
   }

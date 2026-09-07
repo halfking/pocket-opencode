@@ -18,6 +18,7 @@ export const useLocaleStore = defineStore('locale', () => {
     
     // 更新 html lang 属性
     document.documentElement.lang = locale
+    import('../native/config-sync/prefs').then((m) => m.persistAppPrefs()).catch(() => {})
   }
 
   // 初始化时设置 html lang
