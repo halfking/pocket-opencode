@@ -35,7 +35,7 @@ AUTH="Authorization: Bearer $TOKEN"
 # 列表查询：避免重复插入；返回第一个匹配账户 id
 account_id_for() {
   curl -fsS "$API_BASE/api/email/accounts" -H "$AUTH" \
-    | python3 -c "import json,sys,urllib.parse as u;d=json.load(sys.stdin);print(next((a['id'] for a in d.get('accounts',[]) if a.get('emailAddress')==u.quote(sys.argv[1])),''))" "$1"
+    | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((a['id'] for a in d.get('accounts',[]) if a.get('emailAddress')==sys.argv[1]),''))" "$1"
 }
 
 upsert() {

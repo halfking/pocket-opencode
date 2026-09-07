@@ -99,6 +99,9 @@ func (p *Pipeline) Run(ctx context.Context) *PipelineReport {
 		rep.NewEmails += n
 	}
 
+	// 1.5) 发票候选自动建档（供第 4 步采集下载；背景见函数注释）
+	p.extractInvoiceCandidates(ctx, accounts, rep)
+
 	// 2) 垃圾清理
 	p.cleanSpam(ctx, rep)
 
@@ -131,6 +134,63 @@ func (p *Pipeline) Run(ctx context.Context) *PipelineReport {
 		}
 	}
 	return rep
+}
+
+// extractInvoiceCandidates 把近期入库、命中发票关键词但尚未建档的邮件自动
+// 建发票记录，供第 4 步 HarvestAll 下载附件。
+//
+// 背景缺陷：发票自动提取原本只接在客户端推送路径（handleEmailSync 模式 B 的
+// classifyEmailsAsync）；服务端 IMAP 抓取（模式 A）与定时 pipeline 都不触发，
+// 导致「收取发票类邮件并解析整理、下载发票文件」对纯服务端部署永远不发生。
+// IMAP 路径只落 envelope（snippet 为空、金额/发票号在正文里），因此候选命中
+// 后需 FetchMessageRaw 拉原文做二次提取（与手动提取端点同路径）。
+func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Account, rep *PipelineReport) {
+	emails, _, err := p.Store.ListEmailsSince(ctx, rep.StartedAt-86400, 500)
+	if err != nil {
+		rep.AddError("invoice candidates list: %v", err)
+		return
+	}
+	scope := make(map[string][2]string, len(accounts))
+	for _, a := range accounts {
+		if a.UserID != "" {
+			scope[a.ID] = [2]string{a.UserID, defaultWorkspace(a.WorkspaceID)}
+		}
+	}
+	created := 0
+	for i := range emails {
+		e := emails[i]
+		sc, ok := scope[e.AccountID]
+		if !ok {
+			continue
+		}
+		if _, err := p.Store.GetInvoiceByEmailID(ctx, e.ID); err == nil {
+			continue // 已建档，幂等跳过
+		}
+		inv, hit := ExtractInvoice(e, "")
+		// 正文二次提取只对关键词命中的候选做：24h 窗口内 miss 邮件可能有
+		// 几十封，每封拉一次完整 IMAP 会话会把流水线拖到分钟级甚至触发
+		// 服务商连接频控。与 server 侧 extractInvoicesAsync 的门槛一致。
+		if !hit && e.UID > 0 && p.Fetcher != nil && InvoiceCandidate(e) {
+			raw, ferr := p.Fetcher.FetchMessageRaw(ctx, e.AccountID, e.UID)
+			if ferr != nil {
+				continue
+			}
+			if parsed, perr := ParseMIMEMessage(raw); perr == nil {
+				inv, hit = ExtractInvoice(e, parsed.TextBody+"\n"+parsed.HTMLBody)
+			}
+		}
+		if !hit {
+			continue
+		}
+		if _, err := p.Store.UpsertInvoice(ctx, inv, sc[0], sc[1]); err != nil {
+			rep.AddError("invoice upsert email=%s: %v", e.ID, err)
+			continue
+		}
+		created++
+	}
+	if created > 0 {
+		log.Printf("[email/pipeline] auto-created %d invoice candidates", created)
+	}
 }
 
 // cleanSpam 扫描近期邮件，把广告/垃圾移进 IMAP 垃圾箱并落本地标记。

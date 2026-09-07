@@ -194,6 +194,7 @@ func (f *Fetcher) FetchBody(ctx context.Context, accountID string, uid int64, ma
 	if err := f.login(client, *acc, cred); err != nil {
 		return nil, fmt.Errorf("login %s: %w", acc.EmailAddress, err)
 	}
+	sendClientID(client, acc.EmailAddress)
 	if _, err := client.Select("INBOX", nil).Wait(); err != nil {
 		return nil, fmt.Errorf("select INBOX: %w", err)
 	}
@@ -281,6 +282,24 @@ func findBodySection(sections []imapclient.FetchBodySectionBuffer) ([]byte, erro
 //   - IMAP 优先（标准 IMAP4rev1，envelope + UIDSearch + BODY[]）；
 //   - IMAP 失败（典型：163 `NO SELECT Unsafe Login`、企业邮 OAuth 不可用）
 //     自动降级到 POP3 RETR（仅在 store 探测到 Provider 的 POP3Host 时）。
+// sendClientID 发送 RFC 2971 ID 命令声明客户端身份。
+//
+// 网易 Coremail（163/126）在 SELECT 前要求 ID，否则返回
+// `NO SELECT Unsafe Login. Please contact kefu@188.com`——这不是 IP 风控
+// 一条原因，缺客户端标识同样触发。ID 是扩展命令，服务器 CAPABILITY 里
+// 没有 ID 时会返回 BAD（如 Greenmail），因此失败仅记日志、不阻断同步。
+func sendClientID(client *imapclient.Client, emailAddress string) {
+	_, err := client.ID(&imap.IDData{
+		Name:    "pocketd",
+		Version: "1.0.0",
+		Vendor:  "openpocket",
+		Address: emailAddress,
+	}).Wait()
+	if err != nil {
+		log.Printf("[email/fetcher] imap ID %s not accepted (continuing): %v", emailAddress, err)
+	}
+}
+
 func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 	if f.store == nil {
 		return 0, fmt.Errorf("email: store not configured")
@@ -312,11 +331,12 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		log.Printf("[email/fetcher] imap login %s failed: %v — trying POP3 fallback", acc.EmailAddress, err)
 		return f.syncPOP3Fallback(ctx, acc, cred)
 	}
+	sendClientID(client, acc.EmailAddress)
 
 	mbox, err := client.Select("INBOX", nil).Wait()
 	if err != nil {
-		// 163 等服务对陌生 IP 经常 `NO SELECT Unsafe Login`，IMAP 链路
-		// 在 SELECT 处死，降级 POP3 RETR（同样是明文/SSL，单一 RETR 抓原文）。
+		// 163 等服务在 ID 未发/陌生 IP 时 `NO SELECT Unsafe Login`（ID 已在
+		// sendClientID 发过，仍失败多为 IP 风控），降级 POP3 RETR。
 		log.Printf("[email/fetcher] imap select %s failed: %v — trying POP3 fallback", acc.EmailAddress, err)
 		return f.syncPOP3Fallback(ctx, acc, cred)
 	}
@@ -338,7 +358,10 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 	}
 	uids := searchData.AllUIDs()
 	if len(uids) == 0 {
-		_ = f.store.UpdateSyncState(ctx, accountID, int64(uidNext), time.Now().Unix())
+		// 无新邮件时不推进 LastSyncedUID：语义是「已拉到的最大 UID」。若
+		// 写成 uidNext（下一封的预分配 UID），下轮从 uidNext+1 起搜会永久
+		// 跳过恰好分到 uidNext 的那封新邮件（真实踩中：QQ 首轮同步后投递
+		// 的发票邮件再没被拉到）。
 		return 0, nil
 	}
 	if len(uids) > 50 {
@@ -350,8 +373,9 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		uidSet.AddNum(u)
 	}
 	fetchOpts := &imap.FetchOptions{
-		Envelope: true,
-		UID:      true,
+		Envelope:     true,
+		UID:          true,
+		InternalDate: true,
 		// 部分 IMAP server（如 Greenmail）对 BODY[TEXT]<0.1024> 的响应缺
 		// SP 分隔符导致 imapwire 解析失败，因此仅 envelope + UID 起步，
 		// 完整正文由后续 harvester 通过 FetchMessageRaw 按需单封拉取。
@@ -381,7 +405,17 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		}
 		subject := m.Envelope.Subject
 		uid := m.UID
+		// 缺 Date 头的邮件（少数自动化系统）envelope Date 是 Go 零值，直接
+		// .Unix() 会落成 -62135596800 这类负值，该邮件从此进不了任何 date
+		// 时间窗口扫描（发票提取/垃圾清理/提醒），这里按 INTERNALDATE 兜底。
 		date := m.Envelope.Date.Unix()
+		if m.Envelope.Date.IsZero() {
+			if !m.InternalDate.IsZero() {
+				date = m.InternalDate.Unix()
+			} else {
+				date = time.Now().Unix()
+			}
+		}
 		var snippet string
 		for _, bs := range m.BodySection {
 			snippet = strings.TrimSpace(string(bs.Bytes))

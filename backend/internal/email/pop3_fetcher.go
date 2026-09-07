@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
@@ -75,52 +74,79 @@ func FetchPOP3Mailbox(ctx context.Context, host string, useTLS bool, user, pass 
 		}
 		rawConn = tlsConn
 	}
+	defer rawConn.Close()
 
-	tp := textproto.NewConn(rawConn)
-	defer tp.Close()
+	// 整个会话共用一个 bufio.Reader：此前状态行走 textproto.Conn 的内部
+	// bufio、正文又另建一层 bufio 包 rawConn，两层缓冲会互相吞数据。
+	br := bufio.NewReader(rawConn)
+	writeLine := func(format string, args ...any) error {
+		_, err := fmt.Fprintf(rawConn, format+"\r\n", args...)
+		return err
+	}
+	readLine := func() (string, error) {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimRight(line, "\r\n"), nil
+	}
+	// readStatus 读单行状态响应（RFC 1939 §4："+OK ..."/"-ERR ..."）。
+	// 不能用 textproto.ReadResponse：它只认 HTTP 风格数字 code，对 POP3 的
+	// "+OK greeting" 报 `invalid response code`（163 真实服务器即踩中）。
+	readStatus := func(op string) (string, error) {
+		line, err := readLine()
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", op, err)
+		}
+		switch {
+		case line == "+OK" || strings.HasPrefix(line, "+OK "):
+			return strings.TrimPrefix(line, "+OK"), nil
+		case line == "-ERR" || strings.HasPrefix(line, "-ERR "):
+			return "", fmt.Errorf("%s rejected: %s", op, strings.TrimPrefix(line, "-ERR"))
+		default:
+			return "", fmt.Errorf("%s: unexpected response %q", op, line)
+		}
+	}
 
-	// 1. read greeting
-	if _, _, err := tp.ReadResponse(200); err != nil {
+	// 1. greeting
+	if _, err := readStatus("greeting"); err != nil {
 		return nil, nil, fmt.Errorf("read greeting: %w", err)
 	}
 
 	// 2. USER / PASS
-	if err := tp.PrintfLine("USER %s", user); err != nil {
+	if err := writeLine("USER %s", user); err != nil {
 		return nil, nil, fmt.Errorf("USER: %w", err)
 	}
-	if _, _, err := tp.ReadResponse(200); err != nil {
-		return nil, nil, fmt.Errorf("USER response: %w", err)
+	if _, err := readStatus("USER"); err != nil {
+		return nil, nil, err
 	}
-	if err := tp.PrintfLine("PASS %s", pass); err != nil {
+	if err := writeLine("PASS %s", pass); err != nil {
 		return nil, nil, fmt.Errorf("PASS: %w", err)
 	}
-	code, _, err := tp.ReadResponse(200)
-	if err != nil {
-		return nil, nil, fmt.Errorf("PASS response: %w", err)
-	}
-	if code != 200 {
-		return nil, nil, fmt.Errorf("PASS rejected: %d", code)
+	if _, err := readStatus("PASS"); err != nil {
+		return nil, nil, err
 	}
 
 	// 3. STAT（总条数 / 字节数，用于快速分页跳过空邮箱）
-	if err := tp.PrintfLine("STAT"); err != nil {
-		return nil, nil, fmt.Errorf("STAT: %w", err)
-	}
-	if _, msg, err := tp.ReadResponse(200); err == nil {
-		log.Printf("[email/pop3] STAT %s", strings.TrimSpace(msg))
+	if err := writeLine("STAT"); err == nil {
+		if msg, err := readStatus("STAT"); err == nil {
+			log.Printf("[email/pop3] STAT %s", strings.TrimSpace(msg))
+		}
 	}
 
 	// 4. UIDL 拿所有稳定 ID
-	if err := tp.PrintfLine("UIDL"); err != nil {
+	if err := writeLine("UIDL"); err != nil {
 		return nil, nil, fmt.Errorf("UIDL: %w", err)
+	}
+	if _, err := readStatus("UIDL"); err != nil {
+		return nil, nil, err
 	}
 	var uidlLines []string
 	for {
-		_, line, err := tp.ReadResponse(200)
+		line, err := readLine()
 		if err != nil {
 			return nil, nil, fmt.Errorf("UIDL read: %w", err)
 		}
-		line = strings.TrimSpace(line)
 		if line == "." {
 			break
 		}
@@ -130,7 +156,6 @@ func FetchPOP3Mailbox(ctx context.Context, host string, useTLS bool, user, pass 
 	// 5. RETR 新邮件
 	var newUIDLs []string
 	var payloads [][]byte
-	br := bufio.NewReader(rawConn)
 	for _, line := range uidlLines {
 		// line 形如 "1 abcdef" — index + UIDL；只取 UIDL 段
 		parts := strings.SplitN(line, " ", 2)
@@ -146,16 +171,16 @@ func FetchPOP3Mailbox(ctx context.Context, host string, useTLS bool, user, pass 
 			continue
 		}
 		// RETR <idx>
-		if err := tp.PrintfLine("RETR %d", idx); err != nil {
+		if err := writeLine("RETR %d", idx); err != nil {
 			log.Printf("[email/pop3] RETR %d err: %v", idx, err)
 			continue
 		}
 		// RETR 响应是 `+OK` + 多行 body + `.`
-		if _, _, err := tp.ReadResponse(200); err != nil {
+		if _, err := readStatus("RETR"); err != nil {
 			log.Printf("[email/pop3] RETR %d resp: %v", idx, err)
 			continue
 		}
-		// 读字节流直到 "." 单行
+		// 读字节流直到 "." 单行（与状态行共用同一个 br）
 		payload, err := readPOP3Message(br)
 		if err != nil {
 			log.Printf("[email/pop3] RETR %d read err: %v", idx, err)
@@ -167,11 +192,7 @@ func FetchPOP3Mailbox(ctx context.Context, host string, useTLS bool, user, pass 
 
 	// 6. QUIT（NOOP 不删；DELE 真正删，但 IMAP 同步不会自动删 IMAP 端，
 	//    所以本客户端不调 DELE——避免 POP3 拉过 = IMAP 也丢的风险。）
-	if err := tp.PrintfLine("QUIT"); err != nil {
-		// QUIT 失败无所谓
-		_ = err
-	}
-	_ = br
+	_ = writeLine("QUIT")
 
 	return newUIDLs, payloads, nil
 }

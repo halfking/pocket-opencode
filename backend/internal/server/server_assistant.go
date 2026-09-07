@@ -1836,7 +1836,6 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 	totalSaved := 0
 	synced := 0
 	failed := []string{}
-	var allNew []email.Email
 	for _, acc := range accounts {
 		if !acc.Enabled {
 			continue
@@ -1854,11 +1853,14 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 		totalSaved += n
 		synced++
 	}
-	// 有新邮件就异步分类
+	// 有新邮件就触发发票自动提取。Sync 只返回数量，这里按邮件日期把近期
+	// 邮件拉回来（extractInvoicesAsync 内部 GetInvoiceByEmailID 幂等，纯规
+	// 则零外呼）。注意邮件 date 是头日期而非入库时间，可能早于本轮（缺
+	// Date 头时甚至可能重复），窗口放宽到 24h 保证覆盖。
 	if totalSaved > 0 {
-		// classifyEmailsAsync 需要具体邮件列表；这里简化：分类靠 scheduler 定时扫，
-		// 或前端刷新列表时各自触发。v1.0 先不在此处批量拉新邮件列表。
-		_ = allNew
+		if recent, _, lerr := s.emailStore.ListEmailsSince(r.Context(), time.Now().Unix()-86400, 200); lerr == nil && len(recent) > 0 {
+			go s.extractInvoicesAsync(recent, userID, wsID)
+		}
 	}
 
 	result := map[string]any{

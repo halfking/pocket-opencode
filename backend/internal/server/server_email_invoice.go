@@ -123,12 +123,26 @@ func (s *Server) extractInvoicesAsync(emails []email.Email, userID, workspaceID 
 				// 正文增强以 DB 权威 body_path 为门槛：客户端推送的 Email 结构体
 				// BodyPath 恒空（json:"-"），必须重载落库行确认缓存确由服务端写入，
 				// 防止伪造 email ID 命中他人已删邮件的残留缓存（跨租户读取）。
+				var body []byte
 				if row, gerr := s.emailStore.GetEmailByID(ctx, e.ID); gerr == nil && row != nil &&
 					row.BodyPath != "" && row.AccountID == e.AccountID {
-					if body, berr := s.readCachedEmailBody(ctx, row.ID, row.UID); berr == nil && len(body) > 0 {
-						if inv, hit = email.ExtractInvoice(e, string(body)); hit {
-							log.Printf("[email/invoice] body-enhanced extraction email=%s", e.ID)
+					if b, berr := s.readCachedEmailBody(ctx, row.ID, row.UID); berr == nil {
+						body = b
+					}
+				}
+				// 无缓存时主动拉 IMAP 原文：服务端 IMAP 抓取只落 envelope（snippet
+				// 空、金额/发票号在正文），不拉原文则关键词候选永远提取不到金额。
+				// 与手动提取端点（handleEmailInvoiceExtract）的 raw fetch fallback 同路径。
+				if len(body) == 0 && s.emailFetcher != nil {
+					if raw, ferr := s.emailFetcher.FetchMessageRaw(ctx, e.AccountID, e.UID); ferr == nil {
+						if parsed, perr := email.ParseMIMEMessage(raw); perr == nil {
+							body = []byte(parsed.TextBody + "\n" + parsed.HTMLBody)
 						}
+					}
+				}
+				if len(body) > 0 {
+					if inv, hit = email.ExtractInvoice(e, string(body)); hit {
+						log.Printf("[email/invoice] body-enhanced extraction email=%s", e.ID)
 					}
 				}
 			}
