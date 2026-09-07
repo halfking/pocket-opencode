@@ -6,6 +6,7 @@ import { encryptString } from '../../native/crypto'
 import { useCryptoConfig } from '../../stores/crypto-config'
 import { getNote, listNotes as listNotesRaw } from './notes-persist'
 import { ensureNotesSearchIndex } from './notes-fts-ready'
+import { buildSearchText } from './note-storage-policy'
 import type { LocalNote } from './notes-types'
 
 export type { LocalNote, SearchResult, CreateNoteInput, NoteMediaInput } from './notes-types'
@@ -51,11 +52,12 @@ export async function handleServerEvent(note: LocalNote): Promise<void> {
     await localDB.run(
       `UPDATE local_notes
          SET title = ?, content = ?, encrypted_content = ?, content_type = ?, domain = ?,
-             category = ?, tags = ?, updated_at = ?
+             category = ?, tags = ?, search_text = ?, updated_at = ?
        WHERE id = ? AND workspace_id = ?`,
       [
         merged.title, storedContent, shouldEncrypt ? 1 : 0, merged.contentType, merged.domain,
         merged.category, merged.tags ? JSON.stringify(merged.tags) : null,
+        buildSearchText(merged.title, merged.content, merged.tags),
         merged.updatedAt, merged.id, workspaceId,
       ],
     )

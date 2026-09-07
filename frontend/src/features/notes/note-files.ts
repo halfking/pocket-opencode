@@ -19,6 +19,9 @@ export interface PersistNotePayloadResult {
   audioPath: string | null
 }
 
+/** 单个附件入库上限：base64 后膨胀约 1/3，整块读进内存再写 SQLite。 */
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+
 function extFromMime(mime: string, fallback: string): string {
   const map: Record<string, string> = {
     'audio/webm': 'webm',
@@ -82,6 +85,10 @@ export async function persistNotePayload(input: PersistNotePayloadInput): Promis
   }
 
   for (const media of input.media) {
+    if (media.blob.size > MAX_ATTACHMENT_BYTES) {
+      console.warn(`[note-files] 附件超过 ${MAX_ATTACHMENT_BYTES} 字节上限，跳过: ${media.kind} ${media.blob.size}`)
+      continue
+    }
     counters[media.kind] = (counters[media.kind] || 0) + 1
     const mime = media.mime || media.blob.type || 'application/octet-stream'
     const ext = media.ext || extFromMime(mime, 'bin')

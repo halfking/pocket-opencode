@@ -44,36 +44,46 @@ export async function ensureNotesSearchIndex(): Promise<void> {
       `SELECT id, title, content, tags, search_text, encrypted_content
          FROM local_notes WHERE deleted_at IS NULL`,
     )
+    let changed = 0
+    let lockedSkipped = 0
     for (const row of rows) {
       let plain = row.content ?? ''
       if (row.encrypted_content === 1) {
         try {
           plain = await decryptString(row.content)
-        } catch (e) {
-          console.warn(`[notes] search index backfill: note ${row.id} 解密失败，跳过`, e)
+        } catch {
+          // 主密码尚未解锁：记下并整轮不写迁移版本号，下次 listNotes 再重试
+          lockedSkipped++
           continue
         }
       }
       const next = buildSearchText(row.title, plain, parseTags(row.tags))
       if (next === (row.search_text ?? '')) continue
       await localDB.run('UPDATE local_notes SET search_text = ? WHERE id = ?', [next, row.id])
+      changed++
     }
 
-    try {
-      await localDB.execute("INSERT INTO local_notes_fts(local_notes_fts) VALUES('delete-all')")
-      await localDB.execute(
-        `INSERT INTO local_notes_fts(rowid, title, content)
-           SELECT rowid, title, COALESCE(NULLIF(search_text, ''), content)
-             FROM local_notes WHERE deleted_at IS NULL`,
+    if (changed > 0) {
+      try {
+        await localDB.execute("INSERT INTO local_notes_fts(local_notes_fts) VALUES('delete-all')")
+        await localDB.execute(
+          `INSERT INTO local_notes_fts(rowid, title, content)
+             SELECT rowid, title, COALESCE(NULLIF(search_text, ''), content)
+               FROM local_notes WHERE deleted_at IS NULL`,
+        )
+      } catch {
+        // Web/sql.js 没有 FTS5；Android SQLCipher 带 FTS5，重灌后 MATCH 才跟得上 search_text。
+      }
+    }
+
+    if (lockedSkipped === 0) {
+      await localDB.run(
+        `INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES (?, ?, ?)`,
+        [MIGRATION, '回填 search_text 双字词并重灌 FTS', Date.now()],
       )
-    } catch {
-      // Web/sql.js 没有 FTS5；Android SQLCipher 带 FTS5，重灌后 MATCH 才跟得上 search_text。
+    } else {
+      console.warn(`[notes] search index backfill: ${lockedSkipped} 条加密笔记待解锁后重试`)
     }
-
-    await localDB.run(
-      `INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES (?, ?, ?)`,
-      [MIGRATION, '回填 search_text 双字词并重灌 FTS', Date.now()],
-    )
   } catch (e) {
     console.warn('[notes] search index backfill skipped:', e)
   }
