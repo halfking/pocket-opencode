@@ -55,17 +55,20 @@ const props = withDefaults(
     disabled?: boolean
     /** ?prompt= 深链一次性预填（追加，不覆盖已有输入）。 */
     initialText?: string
+    liveRecording?: boolean
   }>(),
   {
     sessionLabel: '',
     disabled: false,
     initialText: '',
+    liveRecording: false,
   },
 )
 
 const emit = defineEmits<{
   (e: 'send', text: string): void
   (e: 'update:target', id: string): void
+  (e: 'live-record'): void
 }>()
 
 // ── 目标解析（固定 / 可切换两模式统一为 activeTargetId） ──
@@ -185,10 +188,12 @@ const { confirm } = useConfirm()
     <UnifiedComposer
       v-model="draftText"
       placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
-      :enable="{ voice: true, image: false, camera: false, file: false, agent: false, optimize: true }"
+      :enable="{ voice: true, image: false, camera: false, file: false, agent: false, optimize: true, liveRecord: true }"
       :submitting="props.disabled"
+      :live-recording="props.liveRecording"
       submit-label="发送"
       @submit="onComposerSubmit"
+      @live-record="emit('live-record')"
     />
 
     <!-- 快速指令面板（P1.5：模板 chips 收纳处；文案完整可读，"停下"保留二次确认） -->
