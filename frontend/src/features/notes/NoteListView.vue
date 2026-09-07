@@ -68,6 +68,11 @@
               <span class="time">{{ relTime(n.updatedAt) }}</span>
             </div>
           </div>
+          <div v-if="notes.length > 0" ref="moreEl" class="more">
+            <span v-if="loadingMore">加载中…</span>
+            <span v-else-if="hasMore">上拉加载更多</span>
+            <span v-else>没有更多了</span>
+          </div>
         </div>
       </template>
 
@@ -97,12 +102,16 @@ import NoteMetaSheet from './NoteMetaSheet.vue'
 import NoteSearchBrief from './NoteSearchBrief.vue'
 import { useNoteRecording } from './useNoteRecording'
 import { searchNotesWithIntent, type NoteSearchBriefing } from './note-search'
+import { useListSentinel } from '../../composables/use-list-sentinel'
+import { DEFAULT_LIST_PAGE_SIZE, pageHasMore } from '../../native/list-sync/page'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
 
 const router = useRouter()
 const notes = ref<LocalNote[]>([])
 const loading = ref(true)
+const loadingMore = ref(false)
+const hasMore = ref(false)
 const query = ref('')
 const dbNotReady = ref(false)
 const showSearch = ref(false)
@@ -147,7 +156,9 @@ async function load() {
   loading.value = true
   dbNotReady.value = false
   try {
-    notes.value = await notesStore.listNotes({ limit: 100 })
+    const page = await notesStore.listNotes({ limit: DEFAULT_LIST_PAGE_SIZE, offset: 0 })
+    notes.value = page
+    hasMore.value = pageHasMore(page.length)
     const drafts = await notesStore.listDraftNotes()
     draftBanner.value = drafts[0] ?? null
   } catch (e: unknown) {
@@ -156,6 +167,21 @@ async function load() {
     loading.value = false
   }
 }
+
+async function loadMore() {
+  if (loading.value || loadingMore.value || !hasMore.value || query.value.trim()) return
+  loadingMore.value = true
+  try {
+    const page = await notesStore.listNotes({ limit: DEFAULT_LIST_PAGE_SIZE, offset: notes.value.length })
+    const seen = new Set(notes.value.map((n) => n.id))
+    notes.value = [...notes.value, ...page.filter((n) => !seen.has(n.id))]
+    hasMore.value = pageHasMore(page.length)
+  } finally {
+    loadingMore.value = false
+  }
+}
+
+const { moreEl } = useListSentinel(loadMore)
 
 async function onSearch() {
   const q = query.value.trim()
@@ -249,4 +275,5 @@ onMounted(load)
 }
 .note-meta { display: flex; gap: 8px; margin-top: 8px; font-size: 10px; color: var(--text-muted); }
 .time { margin-left: auto; }
+.more { padding: 16px 0 24px; text-align: center; font-size: 12px; color: var(--text-muted); }
 </style>

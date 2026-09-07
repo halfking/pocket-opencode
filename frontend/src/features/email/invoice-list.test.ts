@@ -9,6 +9,7 @@ import {
   mergeInvoicePages,
   sortInvoicesByReceived,
 } from './invoice-list.ts'
+import { alignInvoiceList, matchInvoiceForAlign } from './invoice-list-sync.ts'
 import type { EmailInvoice } from '../../api/email'
 
 function inv(partial: Partial<EmailInvoice>): EmailInvoice {
@@ -64,5 +65,17 @@ describe('invoice-list', () => {
     assert.deepEqual(mergeInvoicePages(first, second).map((r) => r.id), ['new', 'mid', 'old'])
     assert.equal(invoicePageHasMore(30), true)
     assert.equal(invoicePageHasMore(29), false)
+  })
+
+  it('aligns a local-only invoice to the server id by email and invoice no', () => {
+    const remaps = matchInvoiceForAlign(
+      [inv({ id: 'local-inv-1', emailId: 'e1', invoiceNo: 'A1' })],
+      [inv({ id: 'inv_9', emailId: 'e1', invoiceNo: 'A1' })],
+    )
+    assert.deepEqual(remaps, [{ localId: 'local-inv-1', serverId: 'inv_9' }])
+    assert.deepEqual(
+      alignInvoiceList([inv({ id: 'local-inv-1', invoiceNo: 'A1' })], remaps).map((r) => r.id),
+      ['inv_9'],
+    )
   })
 })

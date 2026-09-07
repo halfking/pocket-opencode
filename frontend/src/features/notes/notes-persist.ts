@@ -228,18 +228,22 @@ export async function loadFullContent(note: LocalNote): Promise<string> {
 export async function listNotes(opts: {
   domain?: string
   limit?: number
+  offset?: number
   workspaceId?: string
   includeDrafts?: boolean
 } = {}): Promise<LocalNote[]> {
+  const limit = opts.limit ?? 30
+  const offset = opts.offset ?? 0
   let sql = 'SELECT * FROM local_notes WHERE workspace_id = ? AND deleted_at IS NULL'
   const vals: unknown[] = [opts.workspaceId ?? 'default']
   if (!opts.includeDrafts) sql += " AND (status IS NULL OR status = 'saved')"
   if (opts.domain) { sql += ' AND domain = ?'; vals.push(opts.domain) }
-  sql += ' ORDER BY updated_at DESC LIMIT ?'
-  vals.push(opts.limit ?? 100)
+  sql += ' ORDER BY updated_at DESC LIMIT ? OFFSET ?'
+  vals.push(limit, offset)
   const rows = await localDB.query<NoteRow>(sql, vals)
   const localNotes = (await Promise.all(rows.map(rowToNote))).filter((n): n is LocalNote => n !== null)
-  return mergeImportedNotes(localNotes, opts.workspaceId ?? 'default', opts.limit ?? 100)
+  if (offset > 0) return localNotes
+  return mergeImportedNotes(localNotes, opts.workspaceId ?? 'default', limit)
 }
 
 export async function listDraftNotes(workspaceId = 'default'): Promise<LocalNote[]> {

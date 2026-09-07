@@ -340,6 +340,10 @@ export interface EmailInvoice {
   exportedAt?: number
   /** Unix 秒；>0 = 已推送飞书。 */
   feishuSentAt?: number
+  /** 本地未回推的改动（归档等）。 */
+  dirty?: boolean
+  /** 对齐前的本地临时 id。 */
+  clientId?: string
 }
 
 export interface EmailInvoiceListResult {

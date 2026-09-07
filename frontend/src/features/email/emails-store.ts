@@ -50,6 +50,8 @@ export interface ListFilter {
   category?: string
   importance?: string
   unreadOnly?: boolean
+  limit?: number
+  offset?: number
 }
 
 // ---- 账户 ----
@@ -160,7 +162,8 @@ export async function listEmails(filter: ListFilter = {}): Promise<LocalEmail[]>
   if (filter.category) { sql += ' AND category = ?'; vals.push(filter.category) }
   if (filter.importance) { sql += ' AND importance = ?'; vals.push(filter.importance) }
   if (filter.unreadOnly) { sql += ' AND is_read = 0' }
-  sql += ' ORDER BY date DESC LIMIT 200'
+  sql += ' ORDER BY date DESC LIMIT ? OFFSET ?'
+  vals.push(filter.limit ?? 200, filter.offset ?? 0)
   const rows = await localDB.query<any>(sql, vals)
   return rows.map(rowToEmail)
 }

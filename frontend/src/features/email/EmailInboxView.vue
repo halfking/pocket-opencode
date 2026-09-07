@@ -100,6 +100,11 @@
           >标为已读</button>
         </div>
       </div>
+      <div v-if="emails.length > 0" ref="moreEl" class="more">
+        <span v-if="loadingMore">加载中…</span>
+        <span v-else-if="hasMore">上拉加载更多</span>
+        <span v-else>没有更多了</span>
+      </div>
     </div>
     </PullToRefresh>
     </template>
@@ -112,15 +117,17 @@ import { useRouter } from 'vue-router'
 import { Skeleton, EmptyState, PullToRefresh, DbLockedState } from '../../components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 import HeaderActionsPortal from '@/components/layout/HeaderActionsPortal.vue'
+import { useListSentinel } from '../../composables/use-list-sentinel'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
-import { emailApi } from '../../api/email'
-import { syncAccountsFromServer } from './account-sync'
+import { inboxHasMore, readInboxPage, syncInboxFromServer } from './email-inbox-page'
 import { formatEmailRelTime } from './cleanup-filter'
 
 const router = useRouter()
 const emails = ref<LocalEmail[]>([])
 const loading = ref(true)
+const loadingMore = ref(false)
+const hasMore = ref(false)
 const loadError = ref('')
 const activeCategory = ref<string>('')
 const dbNotReady = ref(false)
@@ -145,44 +152,38 @@ async function load() {
   loadError.value = ''
   dbNotReady.value = false
   try {
-    // 启动/进页：先对齐账户配置（PG SSOT ↔ 本地镜像），再拉最近邮件。
-    try {
-      await syncAccountsFromServer()
-    } catch (e: any) {
-      console.warn('[email] account sync:', e?.message || e)
-    }
-    try {
-      const r = await emailApi.syncNow()
-      const fail = r.failed?.length ? `，失败 ${r.failed.length}` : ''
-      syncHint.value = `已同步 ${r.synced ?? 0} 个账户，新邮件 ${r.new ?? 0}${fail}`
-    } catch (e: any) {
-      syncHint.value = e?.message ? `同步失败：${e.message}` : '同步失败'
-    }
-    try {
-      await emailsStore.syncEmailsFromServer(200)
-    } catch (e: any) {
-      console.warn('[email] sync from server:', e?.message || e)
-    }
-    const cat = activeCategory.value
-    const filter = cat === '__important'
-      ? { importance: 'high' }
-      : cat === '__spam'
-        ? { category: 'spam' }
-        : cat
-          ? { category: cat }
-          : {}
-    emails.value = await emailsStore.listEmails(filter)
+    const page = await readInboxPage(activeCategory.value, 0)
+    emails.value = page
+    hasMore.value = inboxHasMore(page.length)
   } catch (e: any) {
-    if (e?.message?.includes('LocalDB 未初始化')) {
-      dbNotReady.value = true
-    } else {
-      loadError.value = e?.message || '加载邮件失败'
-      console.error('[email] 加载失败:', e)
-    }
+    if (e?.message?.includes('LocalDB 未初始化')) dbNotReady.value = true
+    else loadError.value = e?.message || '加载邮件失败'
   } finally {
     loading.value = false
   }
+  void syncInboxFromServer().then(async (hint) => {
+    syncHint.value = hint
+    try {
+      const page = await readInboxPage(activeCategory.value, 0)
+      emails.value = page
+      hasMore.value = inboxHasMore(page.length)
+    } catch { /* 保持已上屏的本地列表 */ }
+  })
 }
+
+async function loadMore() {
+  if (loading.value || loadingMore.value || !hasMore.value) return
+  loadingMore.value = true
+  try {
+    const page = await readInboxPage(activeCategory.value, emails.value.length)
+    emails.value = [...emails.value, ...page.filter((m) => !emails.value.some((e) => e.id === m.id))]
+    hasMore.value = inboxHasMore(page.length)
+  } finally {
+    loadingMore.value = false
+  }
+}
+
+const { moreEl } = useListSentinel(loadMore)
 function setCategory(c: string) {
   activeCategory.value = c
   load()
@@ -284,4 +285,5 @@ onMounted(load)
 }
 .read-btn:active { background: var(--bg-subtle); }
 .sync-hint { margin: 0 var(--space-3) var(--space-2); font-size: 11px; color: var(--text-muted); }
+.more { padding: 16px 0 24px; text-align: center; font-size: 12px; color: var(--text-muted); }
 </style>
