@@ -112,13 +112,16 @@
 
 ### 4.1 非阻塞遗留（功能完整，待优化）
 
-1. **`pushConfigToOpenCode` 同步**
-   - **现状**：需 `POCKET_OPENCODE_CONFIG_TOKEN` 才能同步模型配置到上游实例，现降级为告警
-   - **影响**：功能不受阻，配置保存正常，仅上游实例不自动刷新
-   - **后续**：生产环境配置该 token
-   - **2026-09-07 下午复核**：本地可行性已验证——机制本身完整（token 鉴权、租户实例过滤、10s 超时、SSF 防护客户端），但 **stock opencode（:4096）未实现 `PUT /api/config/models` / `POST /api/config/reload` 契约**（其 SPA 兜底对任意路径返回 200 HTML）。两个连带结论：
-     1. 仅配 token 无法完成真实同步，上游实例必须实现该契约（opencode-plugin 只实现了 WS 注册/心跳，未实现 HTTP 配置契约）；
-     2. `putJSONWithAuth`/`postWithAuth`（`llm_gateway_handler.go:458/477`）只校验 2xx 状态码不校验响应体，对 stock opencode 会产生**假成功**。建议后续加 Content-Type/响应体校验。
+1. **`pushConfigToOpenCode` 同步** —— **已闭环（2026-09-07 晚，见 evidence/api/04-config-contract-hardening.md）**
+   - **原状**：需 `POCKET_OPENCODE_CONFIG_TOKEN` 才能同步模型配置到上游实例；且 stock opencode（:4096）未实现 `PUT /api/config/models` / `POST /api/config/reload` 契约（SPA 兜底对任意路径返回 200 HTML），推送只校验状态码会产生假成功
+   - **处理**：pocketd 全部切到 stock OpenCode **官方**运行时配置契约 `GET/PATCH /global/config`（docs/opencode-contract.md §3.1，本机 1.14.33 实测 merge 语义 + 即时生效 + 持久化）：
+     1. `pushConfigToOpenCode` 改为 `PATCH /global/config`（只合并 provider 子文档，不覆盖实例默认 model），删除 `putJSONWithAuth`/`postWithAuth`；
+     2. 成功判定加固为「2xx + Content-Type=application/json + 响应体可解析 JSON」，SPA 兜底 200 HTML 一律判失败（单测覆盖）；
+     3. `internal/adapter` 四方法（实例配置代理 Get/Update/Reload/TestModel）同套契约 + 校验，前端 `client.ts` 类型零改动；
+     4. 出站 client 由硬禁私网的 `safeOutboundHTTPClient` 换为 `gatewayHTTPClient`（受 `POCKET_LLM_GATEWAY_ALLOW_PRIVATE` 控制，云元数据始终拦截、DNS 重绑定防护保留）——否则本地/内网实例永远推不到；
+     5. **opencode-plugin 无需实现配置契约**：stock opencode 原生支持 /global/config，插件保持 WS 注册/心跳/远程命令职责不变
+   - **生产启用**：pocketd 设 `POCKET_OPENCODE_CONFIG_TOKEN`；实例在内网/本机时同时设 `POCKET_LLM_GATEWAY_ALLOW_PRIVATE=true`
+   - **验证**：`go build/vet/test` 46 包全绿（含 8 条新用例：SPA 假成功必须失败、PATCH 语义/合并断言、401 透传等）；契约行为对真实 stock opencode 实测
 
 2. **对话参数抽屉文案**
    - **现状**：~~「默认模型 (未加载)」文案在 models 已加载时仍显示未加载态~~ **已修复（2026-09-07 下午）**
@@ -167,7 +170,7 @@
 
 ### 6.1 立即可做
 - [x] 在主分支拉取最新代码，确认本轮修复已合并（2026-09-07 下午复核：main 与 origin/main 同步，5 处修复均在代码中）
-- [ ] 生产环境配置 `POCKET_OPENCODE_CONFIG_TOKEN`（使模型配置自动同步至上游）——**前置条件见 §4.1.1 复核：上游实例须先实现 config 契约，且推送成功判定需加固**
+- [x] 生产环境配置 `POCKET_OPENCODE_CONFIG_TOKEN`（使模型配置自动同步至上游）——**代码侧前置条件已于 2026-09-07 晚闭环**（上游契约改走官方 /global/config + 推送判定加固，见 §4.1.1 与 evidence/api/04-config-contract-hardening.md）。生产落地 = pocketd 侧设置该 token；实例在内网/本机时同时设 `POCKET_LLM_GATEWAY_ALLOW_PRIVATE=true`
 - [x] 优化对话参数抽屉文案状态管理（2026-09-07 下午完成，见 §4.1.2）
 
 ### 6.2 依赖外部条件
@@ -210,7 +213,9 @@ cd docs/2026-09-07-deployment-and-test-plan
 | `docs/2026-09-07-deployment-and-test-plan/evidence/README.md` | 证据索引与结论总览 |
 | `backend/start-dev.sh` | 修复 #1（种子实例配置） |
 | `backend/internal/registry/registry.go` | 修复 #2（租户归属声明） |
-| `backend/internal/server/llm_gateway_handler.go` | 修复 #3（网关配置校验） |
+| `backend/internal/server/llm_gateway_handler.go` | 修复 #3（网关配置校验）；2026-09-07 晚：推送改走官方 /global/config 契约 + JSON 判定加固 |
+| `backend/internal/adapter/opencode_config.go` | 2026-09-07 晚：实例配置代理四方法切到官方 /global/config 契约（对外 API 形状不变） |
+| `evidence/api/04-config-contract-hardening.md` | 契约实测、设计决策、验证与生产启用清单 |
 | `backend/internal/auth/auth.go` | 修复 #5（dev 模式登录） |
 | `~/.config/opencode/opencode.json` | 修复 #4（上游 provider 配置） |
 

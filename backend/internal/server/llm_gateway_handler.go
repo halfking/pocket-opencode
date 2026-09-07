@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/halfking/pocket-opencode/backend/internal/adapter"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 )
@@ -396,12 +395,21 @@ func (s *Server) handleLLMGatewayModels(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"baseURL": st.BaseURL, "models": st.Models})
 }
 
-// pushConfigToOpenCode uses the authenticated Pocket config contract. A
-// missing token is an explicit failure when instances are configured.
+// pushConfigToOpenCode 把工作区网关配置同步到本工作区自有的 OpenCode 实例，
+// 走 stock OpenCode 的官方运行时配置契约 PATCH /global/config（merge 语义、
+// 立即生效并持久化，见 docs/opencode-contract.md §3.1）。早先对接的
+// PUT /api/config/models + POST /api/config/reload 在 stock opencode 上并不
+// 存在——其 SPA 兜底对任意未知路径返回 200 text/html，只看状态码会假成功
+// （2026-09-07 复核结论，HANDOFF §4.1.1）。
 //
-// All HTTP calls share a single request context with a hard 10s deadline
-// and reuse safeOutboundHTTPClient so untrusted instance URLs go through
-// the same SSRF defenses as /api/llm-gateway/test.
+// 成功判定：2xx 且 Content-Type 为 application/json 且响应体是合法 JSON 对象。
+// A missing token is an explicit failure when instances are configured.
+//
+// 出站走 gatewayHTTPClient（而非硬禁私网的 safeOutboundHTTPClient）：注册实例
+// 本就常驻内网/本机（本地部署即 127.0.0.1:4096），硬禁会让同步功能在任何本地
+// 形态下都无法工作。与 fix #3 的 validateGatewayURL 同一开关语义——
+// POCKET_LLM_GATEWAY_ALLOW_PRIVATE 显式放行私网/loopback；云元数据端点无论
+// 开关与否始终拦截，DNS 重绑定防护保留。
 func (s *Server) pushConfigToOpenCode(r *http.Request, workspaceID string, st llmGatewayState) error {
 	if s.registry == nil || s.opencode == nil {
 		return nil
@@ -424,43 +432,59 @@ func (s *Server) pushConfigToOpenCode(r *http.Request, workspaceID string, st ll
 	if token == "" {
 		return fmt.Errorf("OpenCode config push requires POCKET_OPENCODE_CONFIG_TOKEN")
 	}
-	cfg := adapter.ModelConfig{
-		DefaultProvider: "openai-compatible-pocket",
-		Providers: []adapter.Provider{{
-			ID: "openai-compatible-pocket", Name: "Pocket LLM Gateway", Enabled: true,
-			APIKey: st.APIKey, BaseURL: st.BaseURL,
-			Models: make([]adapter.ModelDefinition, 0, len(st.Models)),
-		}},
-	}
-	for _, modelID := range st.Models {
-		cfg.Providers[0].Models = append(cfg.Providers[0].Models, adapter.ModelDefinition{ID: modelID, DisplayName: modelID, Enabled: true})
-	}
+	patch := buildPocketProviderPatch(st)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	client := safeOutboundHTTPClient()
+	client := gatewayHTTPClient(10 * time.Second)
 
 	for _, inst := range instances {
 		baseURL := strings.TrimRight(inst.APIBaseURL, "/")
 		if baseURL == "" {
 			return fmt.Errorf("OpenCode instance %s has no API base URL", inst.ID)
 		}
-		if err := putJSONWithAuth(ctx, client, baseURL+"/api/config/models", cfg, token); err != nil {
+		if err := patchGlobalConfigWithAuth(ctx, client, baseURL+"/global/config", patch, token); err != nil {
 			return fmt.Errorf("push config to %s: %w", inst.ID, err)
-		}
-		if err := postWithAuth(ctx, client, baseURL+"/api/config/reload", token); err != nil {
-			return fmt.Errorf("reload config on %s: %w", inst.ID, err)
 		}
 	}
 	return nil
 }
 
-func putJSONWithAuth(ctx context.Context, client *http.Client, url string, body interface{}, token string) error {
-	data, err := json.Marshal(map[string]interface{}{"config": body})
+// pocketProviderID 是 Pocket 网关在上游实例配置里的 provider 键，与
+// internal/opencode.BuildOpenCodeConfigContent 的 seed 保持一致。
+const pocketProviderID = "openai-compatible-pocket"
+
+// buildPocketProviderPatch 构造 PATCH /global/config 的合并文档：只提交
+// provider 子文档，不触碰实例上的其他配置（含用户自选的默认 model）。
+func buildPocketProviderPatch(st llmGatewayState) map[string]interface{} {
+	models := make(map[string]interface{}, len(st.Models))
+	for _, modelID := range st.Models {
+		models[modelID] = map[string]interface{}{"name": modelID}
+	}
+	return map[string]interface{}{
+		"provider": map[string]interface{}{
+			pocketProviderID: map[string]interface{}{
+				"name": "Pocket LLM Gateway",
+				"npm":  "@ai-sdk/openai-compatible",
+				"options": map[string]interface{}{
+					"baseURL": st.BaseURL,
+					"apiKey":  st.APIKey,
+				},
+				"models": models,
+			},
+		},
+	}
+}
+
+// patchGlobalConfigWithAuth 提交合并文档并按"真 JSON 契约"校验响应：
+// 2xx 且 Content-Type 为 application/json 且响应体可解析为 JSON 对象——
+// stock opencode 的 SPA 兜底会对未知路径返回 200 text/html，必须判为失败。
+func patchGlobalConfigWithAuth(ctx context.Context, client *http.Client, url string, doc interface{}, token string) error {
+	data, err := json.Marshal(doc)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, strings.NewReader(string(data)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, strings.NewReader(string(data)))
 	if err != nil {
 		return err
 	}
@@ -472,24 +496,16 @@ func putJSONWithAuth(ctx context.Context, client *http.Client, url string, body 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
 	}
-	return nil
-}
-
-func postWithAuth(ctx context.Context, client *http.Client, url, token string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
-	if err != nil {
-		return err
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "application/json") {
+		return fmt.Errorf("upstream responded %s (Content-Type %q, want application/json) — not an OpenCode JSON API endpoint (SPA fallback?)", resp.Status, ct)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	var out map[string]interface{}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&out); err != nil {
+		return fmt.Errorf("response body is not a JSON object: %w", err)
 	}
 	return nil
 }
