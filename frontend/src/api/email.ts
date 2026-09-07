@@ -50,6 +50,8 @@ export interface VacationReply {
   endAt: number
   subject: string
   bodyText: string
+  createdAt?: number
+  updatedAt?: number
 }
 
 export interface EmailRules {
@@ -102,10 +104,25 @@ export interface EmailSendResult {
 
 export interface EmailBodyResult {
   emailId: string
-  /** cache | imap — 缓存命中或 IMAP 实时拉取，便于前端展示刷新状态。 */
-  source: 'cache' | 'imap'
+  /** cache | imap | purged — 伪删除后正文已清空，不再回源 IMAP。 */
+  source: 'cache' | 'imap' | 'purged'
   bytes: number
   body: string
+  purged?: boolean
+}
+
+export interface EmailClassifyResult {
+  emailId: string
+  category?: string
+  importance?: string
+  summary?: string
+  error?: string
+}
+
+export interface EmailClassifyReport {
+  classified: number
+  remaining: number
+  results: EmailClassifyResult[]
 }
 
 export interface Email {
@@ -123,6 +140,8 @@ export interface Email {
   aiSummary?: string
   suggestedAction?: string
   hasAttachments: boolean
+  /** 服务端变更时间（Unix ms）；缺省时客户端回退到 date。 */
+  updatedAt?: number
 }
 
 export interface DailySummary {
@@ -132,6 +151,8 @@ export interface DailySummary {
   importantCount: number
   content: string
   actionItems?: { text: string; done: boolean }[]
+  createdAt?: number
+  lastUpdatedAt?: number
 }
 
 export interface EmailFilter {
@@ -140,12 +161,15 @@ export interface EmailFilter {
   importance?: EmailImportance
   unreadOnly?: boolean
   limit?: number
+  /** 只拉 updatedAt > since 的变更（Unix ms）。 */
+  since?: number
 }
 
 export const emailApi = {
   // Accounts
-  listAccounts(): Promise<{ accounts: EmailAccount[] }> {
-    return http('/api/email/accounts')
+  listAccounts(since = 0): Promise<{ accounts: EmailAccount[] }> {
+    const qs = since > 0 ? `?since=${since}` : ''
+    return http(`/api/email/accounts${qs}`)
   },
   addAccount(input: Omit<EmailAccount, 'id'> & EmailCredentialInput): Promise<EmailAccount> {
     return http('/api/email/accounts', { method: 'POST', body: JSON.stringify(input) })
@@ -169,9 +193,12 @@ export const emailApi = {
 
   // Vacation replies: configuration CRUD. 投递由后端 scheduler.vacationLoop 自动消费
   // （对入站邮件按时间窗 + 幂等规则触发 SMTP 自动回复）。前端尚无配置 UI。
-  listVacations(accountId?: string): Promise<{ vacations: VacationReply[] }> {
-    const qs = accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''
-    return http(`/api/email/vacations${qs}`)
+  listVacations(accountId?: string, since = 0): Promise<{ vacations: VacationReply[] }> {
+    const qs = new URLSearchParams()
+    if (accountId) qs.set('account_id', accountId)
+    if (since > 0) qs.set('since', String(since))
+    const q = qs.toString()
+    return http(`/api/email/vacations${q ? `?${q}` : ''}`)
   },
   upsertVacation(v: VacationReply): Promise<VacationReply> {
     return http('/api/email/vacations', { method: 'POST', body: JSON.stringify(v) })
@@ -188,6 +215,7 @@ export const emailApi = {
     if (filter.importance) qs.set('importance', filter.importance)
     if (filter.unreadOnly) qs.set('unread', '1')
     if (filter.limit) qs.set('limit', String(filter.limit))
+    if (filter.since && filter.since > 0) qs.set('since', String(filter.since))
     const q = qs.toString()
     return http(`/api/emails${q ? `?${q}` : ''}`)
   },
@@ -218,10 +246,23 @@ export const emailApi = {
       body: JSON.stringify(accountId ? { account_id: accountId } : {}),
     })
   },
+  classifyInbox(limit = 20): Promise<EmailClassifyReport> {
+    return http('/api/emails/classify', {
+      method: 'POST',
+      body: JSON.stringify({ limit }),
+    })
+  },
+  purgeEmails(ids: string[]): Promise<{ purged: number }> {
+    return http('/api/emails/purge', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    })
+  },
 
   // Daily summaries
-  listSummaries(): Promise<{ summaries: DailySummary[] }> {
-    return http('/api/email/summaries')
+  listSummaries(since = 0): Promise<{ summaries: DailySummary[] }> {
+    const qs = since > 0 ? `?since=${since}` : ''
+    return http(`/api/email/summaries${qs}`)
   },
   getSummary(date: string): Promise<DailySummary> {
     return http(`/api/email/summaries/${date}`)
@@ -230,11 +271,12 @@ export const emailApi = {
   // ── 发票自动整理 ──────────────────────────────────────────────────────
   // 后端规则提取（subject/snippet/缓存正文），分类为 bill 的邮件同步后自动提取；
   // 这里提供列表/手动提取/归档/删除 + 文件采集/导出/推送。
-  listInvoices(status?: EmailInvoiceStatus, limit?: number, offset?: number): Promise<EmailInvoiceListResult> {
+  listInvoices(status?: EmailInvoiceStatus, limit?: number, offset?: number, since?: number): Promise<EmailInvoiceListResult> {
     const qs = new URLSearchParams()
     if (status) qs.set('status', status)
     if (limit) qs.set('limit', String(limit))
     if (offset) qs.set('offset', String(offset))
+    if (since && since > 0) qs.set('since', String(since))
     const q = qs.toString()
     return http(`/api/emails/invoices${q ? `?${q}` : ''}`)
   },

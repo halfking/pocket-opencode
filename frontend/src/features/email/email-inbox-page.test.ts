@@ -11,6 +11,8 @@ describe('inboxListFilter', () => {
     assert.deepEqual(inboxListFilter('__important'), { importance: 'high' })
     assert.deepEqual(inboxListFilter('__spam'), { category: 'spam' })
     assert.deepEqual(inboxListFilter('work'), { category: 'work' })
+    assert.deepEqual(inboxListFilter('__none'), { uncategorized: true })
+    assert.deepEqual(inboxListFilter('marketing'), { category: 'marketing' })
   })
 
   it('treats a full page as having more', () => {

@@ -722,6 +722,7 @@ func (s *Server) handleEmailAccounts(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		list = filterEmailAccountsSince(list, parseSinceQuery(r.URL.Query().Get("since")))
 		writeJSON(w, http.StatusOK, map[string]any{"accounts": list})
 	case http.MethodPost:
 		// Phase 2: 加密 credential、写库；IMAP 连通性验证交给 scheduler
@@ -1229,6 +1230,11 @@ func (s *Server) handleEmails(w http.ResponseWriter, r *http.Request) {
 			f.Limit = n
 		}
 	}
+	if v := r.URL.Query().Get("since"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			f.Since = n
+		}
+	}
 	list, err := s.emailStore.ListEmailsScoped(r.Context(), f, s.userIDFromRequest(r), s.workspaceIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -1253,6 +1259,7 @@ func (s *Server) handleEmailVacations(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		list = filterVacationsSince(list, parseSinceQuery(r.URL.Query().Get("since")))
 		writeJSON(w, http.StatusOK, map[string]any{"vacations": list})
 	case http.MethodPost:
 		var v email.VacationReply
@@ -1536,6 +1543,16 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 		writeError(w, http.StatusUnprocessableEntity, "email missing account id")
 		return
 	}
+	if purged, perr := s.emailStore.IsEmailBodyPurged(r.Context(), emailID, s.userIDFromRequest(r), s.workspaceIDFromRequest(r)); perr == nil && purged {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"emailId": emailID,
+			"source":  "purged",
+			"bytes":   0,
+			"body":    "",
+			"purged":  true,
+		})
+		return
+	}
 
 	const maxBodyBytes = 256 * 1024
 	ctx := r.Context()
@@ -1544,22 +1561,31 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 	//    （em.BodyPath 来自 GetEmailByIDScoped 的 body_path 列；旧逻辑每次盲试文件。）
 	if em.BodyPath != "" {
 		if cached, _ := s.readCachedEmailBody(ctx, emailID, em.UID); cached != nil {
+			display := email.ExtractDisplayBody(cached)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"emailId": emailID,
 				"source":  "cache",
-				"bytes":   len(cached),
-				"body":    string(cached),
+				"bytes":   len(display),
+				"body":    display,
 			})
 			return
 		}
 	}
 
-	// 2) 未命中 → IMAP 拉取
+	// 2) 未命中 → IMAP 拉取。TEXT part 失败时降级整封原文（quirk server）。
+	if em.UID <= 0 {
+		writeError(w, http.StatusUnprocessableEntity, "email missing imap uid")
+		return
+	}
 	body, err := s.emailFetcher.FetchBody(ctx, em.AccountID, em.UID, maxBodyBytes)
 	if err != nil {
-		log.Printf("[email/body] imap fetch email=%s account=%s uid=%d: %v", emailID, em.AccountID, em.UID, err)
-		writeError(w, http.StatusBadGateway, "imap fetch failed")
-		return
+		raw, rawErr := s.emailFetcher.FetchMessageRaw(ctx, em.AccountID, em.UID)
+		if rawErr != nil {
+			log.Printf("[email/body] imap fetch email=%s account=%s uid=%d: %v; raw: %v", emailID, em.AccountID, em.UID, err, rawErr)
+			writeError(w, http.StatusBadGateway, "imap fetch failed")
+			return
+		}
+		body = raw
 	}
 	if writeErr := s.writeCachedEmailBody(ctx, emailID, body); writeErr != nil {
 		log.Printf("[email/body] cache write email=%s: %v", emailID, writeErr)
@@ -1568,11 +1594,12 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 	if markErr := s.emailStore.MarkEmailBodyCached(ctx, emailID, bodyCacheRelativePath(emailID), len(body)); markErr != nil && !errors.Is(markErr, email.ErrNotFound) {
 		log.Printf("[email/body] mark body cached email=%s: %v", emailID, markErr)
 	}
+	display := email.ExtractDisplayBody(body)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"emailId": emailID,
 		"source":  "imap",
-		"bytes":   len(body),
-		"body":    string(body),
+		"bytes":   len(display),
+		"body":    display,
 	})
 }
 
@@ -1862,10 +1889,17 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 	// 邮件拉回来（extractInvoicesAsync 内部 GetInvoiceByEmailID 幂等，纯规
 	// 则零外呼）。注意邮件 date 是头日期而非入库时间，可能早于本轮（缺
 	// Date 头时甚至可能重复），窗口放宽到 24h 保证覆盖。
-	if totalSaved > 0 {
-		if recent, _, lerr := s.emailStore.ListEmailsSince(r.Context(), time.Now().Unix()-86400, 200); lerr == nil && len(recent) > 0 {
-			go s.extractInvoicesAsync(recent, userID, wsID)
-		}
+	if email.ShouldProcessAfterFetch(synced, totalSaved) {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if _, err := email.ClassifyUnclassified(ctx, s.emailStore, s.kxmemory, userID, wsID, 20); err != nil {
+				log.Printf("[email/sync] classify after fetch: %v", err)
+			}
+			if recent, _, lerr := s.emailStore.ListEmailsSince(ctx, time.Now().Unix()-86400, 200); lerr == nil && len(recent) > 0 {
+				s.extractInvoicesAsync(recent, userID, wsID)
+			}
+		}()
 	}
 
 	result := map[string]any{
@@ -1981,6 +2015,7 @@ func (s *Server) handleEmailSummaries(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []email.DailySummary{}
 	}
+	list = filterEmailSummariesSince(list, parseSinceQuery(r.URL.Query().Get("since")))
 	writeJSON(w, http.StatusOK, map[string]any{"summaries": list})
 }
 

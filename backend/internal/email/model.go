@@ -41,6 +41,7 @@ type Email struct {
 	Subject         string `json:"subject"`
 	Snippet         string `json:"snippet"`
 	Date            int64  `json:"date"`
+	UpdatedAt       int64  `json:"updatedAt,omitempty"`
 	IsRead          bool   `json:"isRead"`
 	IsStarred       bool   `json:"isStarred"`
 	Category        string `json:"category,omitempty"`
@@ -53,6 +54,9 @@ type Email struct {
 	// BodyPath 是完整正文的加密缓存相对路径（见 MarkEmailBodyCached）。仅内部用于
 	// 判断缓存命中，不回显前端（json:"-"）。空 = 尚未缓存。
 	BodyPath string `json:"-"`
+	// DeletedAt > 0 表示伪删除；BodyPurged 表示正文已清空且禁止回源。
+	DeletedAt  int64 `json:"deletedAt,omitempty"`
+	BodyPurged bool  `json:"bodyPurged,omitempty"`
 }
 
 // VacationReply represents a configured auto-reply window.
@@ -141,8 +145,13 @@ type ListFilter struct {
 	Category   string
 	Importance string
 	UnreadOnly bool
+	// Uncategorized 只返回 category 为空的行（收件箱「未分类」+ 归类批次）。
+	Uncategorized bool
 	// Limit 默认 200，上限 500。5 个真实账户各拉一批后，100 会截断收件箱。
 	Limit int
+	// Since 只返回 GREATEST(date, processed_at, created_at) 更大的行。
+	// Unix 秒；若传入毫秒（>1e12）会先除以 1000。
+	Since int64
 }
 
 // AccountSyncStatus reports per-account sync state for the front-end

@@ -35,6 +35,9 @@ func NewStore(pool *pgxpool.Pool) (*Store, error) {
 	if err := s.migrateInvoices(context.Background()); err != nil {
 		return nil, fmt.Errorf("email invoice migrate: %w", err)
 	}
+	if err := s.migrateInboxPurge(context.Background()); err != nil {
+		return nil, fmt.Errorf("email inbox purge migrate: %w", err)
+	}
 	return s, nil
 }
 
@@ -296,6 +299,10 @@ func (s *Store) ListEmails(ctx context.Context, filter ListFilter) ([]Email, err
 	if filter.UnreadOnly {
 		where = append(where, "is_read = FALSE")
 	}
+	if filter.Uncategorized {
+		where = append(where, "(category IS NULL OR category = '')")
+	}
+	where = append(where, "COALESCE(deleted_at, 0) = 0")
 	if len(where) > 0 {
 		q += " WHERE " + joinStr(where, " AND ")
 	}
@@ -1428,7 +1435,7 @@ func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID,
 	q := `SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet, e.date,
 		e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
-		WHERE a.user_id=$1 AND a.workspace_id=$2`
+		WHERE a.user_id=$1 AND a.workspace_id=$2 AND COALESCE(e.deleted_at, 0)=0`
 	args := []any{userID, workspaceID}
 	if filter.AccountID != "" {
 		q += fmt.Sprintf(" AND e.account_id=$%d", len(args)+1)
@@ -1444,6 +1451,23 @@ func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID,
 	}
 	if filter.UnreadOnly {
 		q += " AND e.is_read=FALSE"
+	}
+	if filter.Uncategorized {
+		q += " AND (e.category IS NULL OR e.category = '')"
+	}
+	if filter.Since > 0 {
+		sinceSec, sinceMs := filter.Since, filter.Since
+		if sinceMs > 1_000_000_000_000 {
+			sinceSec = sinceMs / 1000
+		} else if sinceSec > 1_000_000_000 {
+			sinceMs = sinceSec * 1000
+		}
+		stamp := "GREATEST(e.date, COALESCE(e.processed_at, 0), e.created_at)"
+		q += fmt.Sprintf(
+			" AND ((%s > 1000000000000 AND %s > $%d) OR (%s <= 1000000000000 AND %s > $%d))",
+			stamp, stamp, len(args)+1, stamp, stamp, len(args)+2,
+		)
+		args = append(args, sinceMs, sinceSec)
 	}
 	limit := filter.Limit
 	if limit <= 0 {
@@ -1465,6 +1489,12 @@ func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID,
 		if err != nil {
 			return nil, err
 		}
+		if e.UpdatedAt == 0 {
+			e.UpdatedAt = e.Date
+			if e.UpdatedAt > 0 && e.UpdatedAt < 1_000_000_000_000 {
+				e.UpdatedAt *= 1000
+			}
+		}
 		out = append(out, *e)
 	}
 	return out, rows.Err()
@@ -1472,23 +1502,27 @@ func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID,
 
 // GetEmailByIDScoped returns a message only within the requested scope.
 //
-// 比 scanEmail 多读一列 body_path：handleEmailBody 用它判断完整正文是否已缓存，
-// 避免每次都做一次文件探测。其余 list 路径不需要 body_path，仍走 scanEmail。
+// 比 scanEmail 多读 uid + body_path：handleEmailBody 用 uid 拉 IMAP 正文，
+// 用 body_path 判断加密缓存是否已落盘。其余 list 路径不需要这两列。
 func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID string) (*Email, error) {
 	var e Email
 	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath sql.NullString
-	err := s.pool.QueryRow(ctx, `SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet,
+	var uid sql.NullInt64
+	err := s.pool.QueryRow(ctx, `SELECT e.id, e.account_id, e.uid, e.from_address, e.from_name, e.subject, e.snippet,
 		e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments,
 		e.body_path
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
 		WHERE e.id=$1 AND a.user_id=$2 AND a.workspace_id=$3`, id, userID, workspaceID).
-		Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead,
+		Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead,
 			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPath)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	if uid.Valid {
+		e.UID = uid.Int64
 	}
 	if fromName.Valid {
 		e.FromName = fromName.String
@@ -1798,6 +1832,7 @@ func (s *Store) ListEmailsByDayScoped(ctx context.Context, userID, workspaceID, 
 		FROM emails e
 		JOIN email_accounts a ON a.id = e.account_id
 		WHERE a.user_id = $1 AND a.workspace_id = $2 AND e.date >= $3 AND e.date < $4
+		  AND COALESCE(e.deleted_at, 0) = 0
 		ORDER BY e.date DESC
 		LIMIT 500
 	`, userID, defaultWorkspace(workspaceID), startUnix, endUnix)

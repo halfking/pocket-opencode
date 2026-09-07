@@ -66,7 +66,7 @@ func (s *Store) ListEmailsSince(ctx context.Context, since int64, limit int) ([]
 		limit = 500
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+pipelineEmailCols+` FROM emails WHERE date >= $1 ORDER BY date DESC LIMIT $2`, since, limit)
+		`SELECT `+pipelineEmailCols+` FROM emails WHERE date >= $1 AND COALESCE(deleted_at, 0)=0 ORDER BY date DESC LIMIT $2`, since, limit)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -14,36 +14,51 @@
     <template v-else>
       <!-- 标题栏右侧：发票整理 / 邮箱设置（账户 / 过滤策略 / 处理逻辑） -->
       <HeaderActionsPortal>
-        <button
-          class="chat-icon-btn"
-          type="button"
-          aria-label="发票整理"
-          @click="router.push('/email/invoices')"
-        >
-          <span class="material-symbols-outlined" aria-hidden="true">receipt_long</span>
-        </button>
-        <button
-          class="chat-icon-btn"
-          type="button"
-          aria-label="清理垃圾邮件"
-          @click="router.push('/email/cleanup')"
-        >
-          <span class="material-symbols-outlined" aria-hidden="true">delete_sweep</span>
-        </button>
-        <button
-          class="chat-icon-btn"
-          type="button"
-          aria-label="邮箱设置"
-          @click="router.push('/email/settings')"
-        >
-          <span class="material-symbols-outlined" aria-hidden="true">settings</span>
-        </button>
+        <template v-if="inbox.selectMode.value">
+          <button class="chat-icon-btn" type="button" aria-label="取消选择" @click="inbox.exitSelect()">
+            <span class="material-symbols-outlined" aria-hidden="true">close</span>
+          </button>
+          <button
+            class="chat-icon-btn"
+            type="button"
+            :aria-label="`删除已选 ${inbox.selectedCount.value} 封`"
+            :disabled="!inbox.selectedCount.value || inbox.purgeBusy.value"
+            @click="onPurge"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">delete</span>
+          </button>
+        </template>
+        <template v-else>
+          <button class="chat-icon-btn" type="button" aria-label="搜索" @click="inbox.toggleSearch()">
+            <span class="material-symbols-outlined" aria-hidden="true">search</span>
+          </button>
+          <button
+            class="chat-icon-btn"
+            type="button"
+            aria-label="归类"
+            :disabled="inbox.classifying.value"
+            @click="onClassify"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">label</span>
+          </button>
+          <button class="chat-icon-btn" type="button" aria-label="删除" @click="inbox.enterSelect()">
+            <span class="material-symbols-outlined" aria-hidden="true">delete</span>
+          </button>
+          <button class="chat-icon-btn" type="button" aria-label="更多" @click="inbox.moreOpen.value = !inbox.moreOpen.value">
+            <span class="material-symbols-outlined" aria-hidden="true">more_vert</span>
+          </button>
+        </template>
       </HeaderActionsPortal>
+      <div v-if="inbox.moreOpen.value && !inbox.selectMode.value" class="more-menu">
+        <button type="button" @click="go('/email/invoices')">发票整理</button>
+        <button type="button" @click="go('/email/cleanup')">清理垃圾</button>
+        <button type="button" @click="go('/email/settings')">邮箱设置</button>
+      </div>
 
       <ScrollChromePortal>
         <div class="filters">
           <button
-            v-for="c in categories"
+            v-for="c in categoryChips"
             :key="c.value || 'all'"
             class="chip"
             :class="{ active: activeCategory === c.value }"
@@ -52,9 +67,20 @@
             {{ c.label }}
           </button>
         </div>
+        <div v-if="inbox.searchOpen.value" class="search-bar">
+          <input v-model="inbox.search.value.q" class="search-input" placeholder="发件人 / 标题 / 关键字" />
+          <input v-model="inbox.search.value.from" class="search-input slim" placeholder="发件人" />
+          <input v-model="inbox.search.value.subject" class="search-input slim" placeholder="标题" />
+          <input v-model="sinceLocal" type="date" class="search-input slim" />
+          <input v-model="untilLocal" type="date" class="search-input slim" />
+        </div>
       </ScrollChromePortal>
 
       <PullToRefresh :on-refresh="load" class="inbox-scroll">
+    <p v-if="inbox.classifyHint.value" class="sync-hint">
+      {{ inbox.classifyHint.value }}
+      <button v-if="inbox.classifying.value" type="button" class="linkish" @click="inbox.classifyCancel.value = true">取消</button>
+    </p>
     <p v-if="syncHint" class="sync-hint">{{ syncHint }}</p>
     <div v-if="loading" class="state-wrap"><Skeleton :count="5" /></div>
     <EmptyState
@@ -66,7 +92,7 @@
       @action="load"
     />
     <EmptyState
-      v-else-if="emails.length === 0"
+      v-else-if="shownEmails.length === 0"
       icon="📧"
       title="暂无邮件"
       hint="下拉刷新会从邮箱服务器同步。若仍为空，请检查账户授权码。"
@@ -76,12 +102,16 @@
 
     <div v-else class="email-list">
       <div
-        v-for="m in emails"
+        v-for="m in shownEmails"
         :key="m.id"
         class="email-card"
         :class="{ high: m.importance === 'high', unread: !m.isRead }"
-        @click="open(m.id)"
+        @click="inbox.selectMode.value ? inbox.toggle(m.id) : open(m.id)"
       >
+        <label v-if="inbox.selectMode.value" class="pick" @click.stop>
+          <input type="checkbox" :checked="inbox.selected.value.has(m.id)" @change="inbox.toggle(m.id)" />
+        </label>
+        <div class="card-main">
         <div class="row1">
           <span class="from">{{ m.fromName || m.fromAddress }}</span>
           <span class="time">{{ formatEmailRelTime(m.date) }}</span>
@@ -93,11 +123,8 @@
           <span v-if="m.category" class="tag" :class="`cat-${m.category}`">{{ catLabel(m.category) }}</span>
           <span v-if="m.importance === 'high'" class="importance">⭐ 重要</span>
           <span v-if="m.hasAttachments" class="attach">📎</span>
-          <button
-            v-if="!m.isRead"
-            class="read-btn"
-            @click.stop="markRead(m, true)"
-          >标为已读</button>
+          <button v-if="!m.isRead" class="read-btn" @click.stop="markRead(m, true)">标为已读</button>
+        </div>
         </div>
       </div>
       <div v-if="emails.length > 0" ref="moreEl" class="more">
@@ -112,7 +139,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Skeleton, EmptyState, PullToRefresh, DbLockedState } from '../../components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
@@ -120,8 +147,11 @@ import HeaderActionsPortal from '@/components/layout/HeaderActionsPortal.vue'
 import { useListSentinel } from '../../composables/use-list-sentinel'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
-import { inboxHasMore, readInboxPage, syncInboxFromServer } from './email-inbox-page'
+import { inboxHasMore, readInboxPage } from './email-inbox-page'
+import { runDelegatedEmailFetch } from './email-fetch-run'
 import { formatEmailRelTime } from './cleanup-filter'
+import { INBOX_CATEGORY_CHIPS, catLabel } from './email-categories'
+import { useEmailInbox } from './use-email-inbox'
 
 const router = useRouter()
 const emails = ref<LocalEmail[]>([])
@@ -132,20 +162,39 @@ const loadError = ref('')
 const activeCategory = ref<string>('')
 const dbNotReady = ref(false)
 const syncHint = ref('')
+const inbox = useEmailInbox()
+const categoryChips = INBOX_CATEGORY_CHIPS
+const sinceLocal = ref('')
+const untilLocal = ref('')
+const shownEmails = computed(() => inbox.visibleEmails(emails.value))
 
 function goToLogin() {
   router.push('/login')
 }
+function go(path: string) {
+  inbox.moreOpen.value = false
+  router.push(path)
+}
 
-const categories: { label: string; value: string }[] = [
-  { label: '全部', value: '' },
-  { label: '重要', value: '__important' },         // 虚拟类目：importance='high'
-  { label: '垃圾', value: '__spam' },             // 虚拟类目：category='spam'
-  { label: '工作', value: 'work' },
-  { label: '账单', value: 'bill' },
-  { label: '私人', value: 'personal' },
-  { label: '通知', value: 'notification' },
-]
+watch([sinceLocal, untilLocal], () => {
+  inbox.search.value = {
+    ...inbox.search.value,
+    sinceMs: sinceLocal.value ? Date.parse(sinceLocal.value) : undefined,
+    untilMs: untilLocal.value ? Date.parse(untilLocal.value) + 86_399_000 : undefined,
+  }
+})
+
+async function onClassify() {
+  emails.value = await inbox.runClassify(emails.value)
+  await load()
+}
+
+async function onPurge() {
+  if (!inbox.selectedCount.value) return
+  if (!window.confirm(`删除选中的 ${inbox.selectedCount.value} 封邮件？正文将清空，仅保留标题和摘要。`)) return
+  await inbox.confirmPurge()
+  await load()
+}
 
 async function load() {
   loading.value = true
@@ -160,7 +209,7 @@ async function load() {
     if (e?.message?.includes('LocalDB 未初始化')) dbNotReady.value = true
     else loadError.value = e?.message || '加载邮件失败'
   }
-  void syncInboxFromServer().then(async (hint) => {
+  void runDelegatedEmailFetch({ classify: true }).then(async ({ hint }) => {
     syncHint.value = hint
     try {
       const page = await readInboxPage(activeCategory.value, 0)
@@ -190,9 +239,6 @@ function setCategory(c: string) {
 }
 function open(id: string) { router.push(`/email/${id}`) }
 
-const catLabel = (c: string | null) =>
-  ({ work: '工作', bill: '账单', notification: '通知', personal: '私人', marketing: '营销', spam: '垃圾' }[c || ''] || c)
-
 async function markRead(m: LocalEmail, read: boolean) {
   await emailsStore.markRead(m.id, read)
   m.isRead = read
@@ -202,59 +248,24 @@ onMounted(load)
 </script>
 
 <style scoped>
-.inbox-page {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-}
-
-/* 标题栏右侧设置入口（与 AIChatView 的 chat-icon-btn 同款视觉） */
-.chat-icon-btn {
-  width: 40px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
+.inbox-page { display: flex; flex-direction: column; height: 100%; min-height: 0; position: relative; }
+.chat-icon-btn { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border: none; border-radius: var(--radius-md); background: transparent; color: var(--text-secondary); }
 .chat-icon-btn:active { background: var(--bg-hover); }
-
-.filters {
-  display: flex;
-  gap: var(--space-2);
-  overflow-x: auto;
-  padding: var(--space-3);
-}
-.chip {
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text-secondary);
-  font-size: 12px;
-  white-space: nowrap;
-  cursor: pointer;
-}
+.more-menu { position: absolute; right: 8px; top: 8px; z-index: 4; display: flex; flex-direction: column; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.more-menu button { border: none; background: transparent; text-align: left; padding: 10px 14px; color: var(--text-primary); }
+.search-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 var(--space-3) var(--space-2); }
+.search-input { flex: 1 1 140px; min-height: 36px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 8px; background: var(--bg-card); color: var(--text-primary); font-size: 13px; }
+.search-input.slim { flex: 0 1 110px; }
+.pick { display: flex; align-items: center; margin-right: 8px; }
+.card-main { flex: 1; min-width: 0; }
+.linkish { border: none; background: none; color: var(--brand-primary); font-size: 11px; }
+.filters { display: flex; gap: var(--space-2); overflow-x: auto; padding: var(--space-3); }
+.chip { padding: var(--space-1) var(--space-3); border-radius: var(--radius-full); border: 1px solid var(--border); background: var(--bg-card); color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
 .chip.active { background: var(--brand-primary); color: var(--text-inverse); border-color: var(--brand-primary); }
-.inbox-scroll {
-  flex: 1;
-  min-height: 0;
-}
+.inbox-scroll { flex: 1; min-height: 0; }
 .state-wrap { padding: var(--space-2) 0; }
 .email-list { display: flex; flex-direction: column; gap: var(--spacing-list-gap); }
-.email-card {
-  background: var(--bg-card);
-  border-radius: var(--radius-md);
-  padding: var(--spacing-card-padding);
-  border: 1px solid var(--border);
-  cursor: pointer;
-  border-left: 3px solid transparent;
-}
+.email-card { display: flex; background: var(--bg-card); border-radius: var(--radius-md); padding: var(--spacing-card-padding); border: 1px solid var(--border); border-left: 3px solid transparent; }
 .email-card.high { border-left-color: var(--danger); }
 .email-card.unread { background: var(--bg-elevated); }
 .row1 { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 2px; }
@@ -272,18 +283,7 @@ onMounted(load)
 .cat-marketing { background: var(--cat-marketing-bg); color: var(--cat-marketing); }
 .cat-spam { background: var(--cat-spam-bg); color: var(--cat-spam); }
 .importance { font-size: 11px; color: var(--warning); }
-.attach { font-size: 12px; }
-.read-btn {
-  margin-left: auto;
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--brand-primary);
-  cursor: pointer;
-}
-.read-btn:active { background: var(--bg-subtle); }
+.read-btn { margin-left: auto; font-size: 11px; padding: 2px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-card); color: var(--brand-primary); }
 .sync-hint { margin: 0 var(--space-3) var(--space-2); font-size: 11px; color: var(--text-muted); }
 .more { padding: 16px 0 24px; text-align: center; font-size: 12px; color: var(--text-muted); }
 </style>

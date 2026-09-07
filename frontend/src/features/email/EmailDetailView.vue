@@ -35,7 +35,8 @@
       <h1 class="subject">{{ email.subject || '(无主题)' }}</h1>
     </header>
     <p v-if="email.aiSummary" class="ai">{{ email.aiSummary }}</p>
-    <div v-if="bodyLoading && !displayBody" class="state slim">正在加载正文…</div>
+    <div v-if="email.bodyPurged" class="state slim">正文已清除，仅保留标题和摘要。</div>
+    <div v-else-if="bodyLoading && !displayBody" class="state slim">正在加载正文…</div>
     <div v-else-if="htmlBody" class="body html" v-html="htmlBody"></div>
     <pre v-else class="body text">{{ displayBody || '(无正文)' }}</pre>
     <p v-if="bodyError" class="body-error">{{ bodyError }}</p>
@@ -75,12 +76,13 @@ import { useToast } from '../../composables/useToast'
 import { ErrorState } from '../../components'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { findContactByEmail } from '../contact/contacts-store'
+import { pickEmailDetailBody, readEmailBodyLocal, writeEmailBodyLocal } from './email-body-cache'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
 import EmailComposeSheet from './EmailComposeSheet.vue'
 import EmailDetailMenus from './EmailDetailMenus.vue'
 import { defaultForwardSubject, defaultReplySubject, todoFromDraft, toggleCompose, type ComposeKind } from './compose-mode'
-import { emailCatLabel, formatEmailDate, quotedForwardBody } from './email-body-format'
+import { emailCatLabel, extractEmailBody, formatEmailDate, quotedForwardBody } from './email-body-format'
 import { sanitizeEmailHtml } from './email-detail-format'
 import {
   langShortLabel,
@@ -127,11 +129,28 @@ async function load() {
     if (found && !found.isRead) {
       try { await emailsStore.markRead(found.id, true); found.isRead = true } catch { /* 不挡正文 */ }
     }
-    if (found) {
+    if (found?.bodyPurged) {
+      bodyText.value = ''
+    } else if (found) {
       bodyLoading.value = true
-      try { bodyText.value = (await emailApi.getEmailBody(found.id)).body }
-      catch (e: any) { bodyError.value = e?.message || '正文拉取失败' }
-      finally { bodyLoading.value = false }
+      try {
+        const cached = await readEmailBodyLocal(found.id)
+        if (cached) {
+          bodyText.value = cached
+          bodyLoading.value = false
+        }
+        const remoteBody = await emailApi.getEmailBody(found.id)
+        if (remoteBody.purged || remoteBody.source === 'purged') {
+          bodyText.value = ''
+          found.bodyPurged = true
+        } else {
+          const remote = extractEmailBody(remoteBody.body)
+          bodyText.value = pickEmailDetailBody(cached, remote)
+          if (remote) await writeEmailBodyLocal(found.id, remote)
+        }
+      } catch (e: any) {
+        if (!bodyText.value) bodyError.value = e?.message || '正文拉取失败'
+      } finally { bodyLoading.value = false }
     }
   } catch (e: any) {
     loadError.value = e?.message || '加载邮件失败，请稍后重试。'
