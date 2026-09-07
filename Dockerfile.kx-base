@@ -20,6 +20,9 @@ ARG RUNTIME_BASE_IMAGE=alpine:latest
 
 FROM ${KX_BASE_TAG} AS builder
 
+# kx-base metadata may set USER appuser without a matching passwd entry.
+USER root
+
 # China network: proxy.golang.org unreachable in some build envs; goproxy.cn is
 # the standard fallback. The kx-base image already has Go installed.
 ENV GOPROXY=https://goproxy.cn,direct \
