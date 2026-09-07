@@ -1,177 +1,237 @@
-<!--
-  EmailDetailView — single email detail page.
-  Loads via emailsStore.listEmails() + filter (temporary until prompt 6
-  adds emailsStore.getEmail; replace the lookup once available).
-  Auto-marks unread → read on open. Star / mark-read / turn-to-todo actions.
--->
+<!-- 邮件详情：主区正文；语言/回复/更多在导航栏；输入框按需弹出。 -->
 <template>
-      <div v-if="loading" class="state" role="status">加载中…</div>
-    <ErrorState
-      v-else-if="loadError"
-      title="邮件加载失败"
-      :message="loadError"
-      @retry="load"
-    />
-    <div v-else-if="!email" class="state">
-      <p>未找到该邮件（可能已被删除）。</p>
-      <button class="link-btn" @click="goBack">返回邮箱</button>
-    </div>
+  <HeaderActionsPortal>
+    <button type="button" :aria-label="`切换语言（当前 ${langShortLabel(lang)}）`" @click="langOpen = true">
+      <span class="material-symbols-outlined" aria-hidden="true">translate</span>
+    </button>
+    <button type="button" aria-label="回复" @click="openCompose('reply')">
+      <span class="material-symbols-outlined" aria-hidden="true">reply</span>
+    </button>
+    <button type="button" aria-label="更多操作" @click="moreOpen = true">
+      <span class="material-symbols-outlined" aria-hidden="true">more_vert</span>
+    </button>
+  </HeaderActionsPortal>
 
-    <article v-else class="detail">
-      <header class="meta-card">
-        <div class="from-row">
-          <div class="from-block" @click="navigateToContact">
-            <span class="from-name">{{ email.fromName || email.fromAddress }}</span>
-            <span v-if="email.fromName" class="from-addr">&lt;{{ email.fromAddress }}&gt;</span>
-          </div>
-          <button
-            class="star-btn"
-            :class="{ active: email.isStarred }"
-            @click="toggleStar"
-            :aria-label="email.isStarred ? '取消星标' : '加星'"
-          >{{ email.isStarred ? '⭐' : '☆' }}</button>
-        </div>
-        <h2 class="subject">{{ email.subject || '(无主题)' }}</h2>
-        <div class="date-row">
-          <span class="date">{{ formatDate(email.date) }}</span>
-          <span v-if="email.hasAttachments" class="attach">📎 有附件</span>
-        </div>
-        <div class="tag-row">
-          <span v-if="email.category" class="tag" :class="`cat-${email.category}`">
-            {{ catLabel(email.category) }}
-          </span>
-          <span v-if="email.importance === 'high'" class="importance">⭐ 重要</span>
-          <span v-else-if="email.importance === 'medium'" class="importance low">一般</span>
-          <span v-else-if="email.importance === 'low'" class="importance low">低优</span>
-        </div>
-      </header>
+  <div v-if="loading" class="state" role="status">加载中…</div>
+  <ErrorState v-else-if="loadError" title="邮件加载失败" :message="loadError" @retry="load" />
+  <div v-else-if="!email" class="state">
+    <p>未找到该邮件（可能已被删除）。</p>
+    <button class="link-btn" @click="goBack">返回邮箱</button>
+  </div>
 
-      <section v-if="email.aiSummary" class="ai-card">
-        <div class="ai-title">💡 AI 摘要</div>
-        <div class="ai-body">{{ email.aiSummary }}</div>
-        <div v-if="email.suggestedAction" class="ai-action">
-          <span class="action-label">建议操作</span>
-          <span class="action-text">{{ actionLabel(email.suggestedAction) }}</span>
-        </div>
-      </section>
-
-      <section class="snippet-card">
-        <div class="snippet-label">
-          正文预览
-          <span class="body-source" v-if="bodySource">{{ bodySource === 'cache' ? '（缓存）' : '（IMAP 实时）' }}</span>
-          <button v-if="!bodyLoaded && !bodyLoading" class="link-btn" @click="loadBody">查看完整正文</button>
-          <button v-else-if="bodyLoaded" class="link-btn" @click="collapseBody">收起正文</button>
-        </div>
-        <div class="snippet-body">
-          <template v-if="email.snippet">{{ email.snippet }}</template>
-          <span v-else class="muted">(无正文预览)</span>
-        </div>
-        <div v-if="bodyLoading" class="body-loading">正在加载完整正文…</div>
-        <pre v-else-if="bodyLoaded && bodyText" class="body-full">{{ bodyText }}</pre>
-        <p v-else-if="bodyError" class="body-error">{{ bodyError }}</p>
-      </section>
-
-      <div class="actions">
-        <button
-          class="action-btn"
-          :class="{ done: email.isRead }"
-          @click="toggleRead"
-        >
-          {{ email.isRead ? '✓ 已读' : '标为已读' }}
-        </button>
-        <button class="action-btn" :disabled="converting" @click="convertToTodo">
-          {{ converting ? '创建中…' : '转 Todo' }}
-        </button>
+  <article v-else class="detail">
+    <header class="meta">
+      <div class="from" @click="navigateToContact">
+        <span class="from-name">{{ email.fromName || email.fromAddress }}</span>
+        <span v-if="email.fromName" class="from-addr">{{ email.fromAddress }}</span>
       </div>
+      <div class="subline">
+        <time>{{ formatEmailDate(email.date) }}</time>
+        <span v-if="email.hasAttachments">附件</span>
+        <span v-if="email.category" class="tag" :class="`cat-${email.category}`">{{ emailCatLabel(email.category) }}</span>
+        <span v-if="translating" class="lang-hint">翻译中…</span>
+        <span v-else-if="lang !== 'original'" class="lang-hint">{{ langShortLabel(lang) }}</span>
+      </div>
+      <h1 class="subject">{{ email.subject || '(无主题)' }}</h1>
+    </header>
+    <p v-if="email.aiSummary" class="ai">{{ email.aiSummary }}</p>
+    <div v-if="bodyLoading && !displayBody" class="state slim">正在加载正文…</div>
+    <div v-else-if="htmlBody" class="body html" v-html="htmlBody"></div>
+    <pre v-else class="body text">{{ displayBody || '(无正文)' }}</pre>
+    <p v-if="bodyError" class="body-error">{{ bodyError }}</p>
+  </article>
 
-      <!-- 回复：统一输入（语音 / 角色语气 / AI 优化 / 发送 独立工具行） -->
-      <section class="reply-card">
-        <div class="reply-title">✉️ 回复 {{ email.fromName || email.fromAddress }}</div>
-        <UnifiedComposer
-          v-model="replyBody"
-          placeholder="写回复…（✨ 可 AI 润色，🎙 可语音输入）"
-          :enable="{ voice: true, image: false, camera: false, file: false, agent: true, optimize: true }"
-          :submit-on-enter="false"
-          submit-label="发送"
-          :submitting="replying"
-          @submit="sendReply"
-        />
-        <p v-if="replyError" class="reply-error" role="alert">{{ replyError }}</p>
-      </section>
-
-      <p class="hint" v-if="!bodyLoaded">完整正文需要按需从 IMAP 拉取（已支持缓存）。</p>
-    </article>
+  <EmailDetailMenus
+    v-model:lang-open="langOpen"
+    v-model:more-open="moreOpen"
+    :lang="lang"
+    :starred="!!email?.isStarred"
+    :is-read="!!email?.isRead"
+    :converting="converting"
+    @choose-lang="chooseLang"
+    @forward="openCompose('forward'); moreOpen = false"
+    @todo="openCompose('todo'); moreOpen = false"
+    @star="toggleStar(); moreOpen = false"
+    @read="toggleRead(); moreOpen = false"
+  />
+  <EmailComposeSheet
+    :kind="composeKind"
+    :from-name="email?.fromName || email?.fromAddress || ''"
+    :seed="composeSeed"
+    :submitting="sending"
+    :error="composeError"
+    @close="composeKind = 'hidden'"
+    @submit="onComposeSubmit"
+  />
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../../api/client'
 import { emailApi } from '../../api/email'
+import { http } from '../../api/http'
 import { useToast } from '../../composables/useToast'
-import { ErrorState, UnifiedComposer } from '../../components'
+import { ErrorState } from '../../components'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { findContactByEmail } from '../contact/contacts-store'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
+import EmailComposeSheet from './EmailComposeSheet.vue'
+import EmailDetailMenus from './EmailDetailMenus.vue'
+import { defaultForwardSubject, defaultReplySubject, todoFromDraft, toggleCompose, type ComposeKind } from './compose-mode'
+import { emailCatLabel, formatEmailDate, quotedForwardBody } from './email-body-format'
+import { sanitizeEmailHtml } from './email-detail-format'
+import {
+  langShortLabel,
+  resolveDisplayBody,
+  translateEmailBody,
+  type EmailLang,
+} from './translate-email'
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
-
 const email = ref<LocalEmail | null>(null)
 const loading = ref(true)
-const converting = ref(false)
 const loadError = ref('')
-// Body 懒加载状态：默认仅展示 snippet，点击“查看完整正文”才走 GET /body。
-const bodyLoaded = ref(false)
 const bodyLoading = ref(false)
 const bodyText = ref('')
-const bodySource = ref<'' | 'cache' | 'imap'>('')
 const bodyError = ref('')
+const lang = ref<EmailLang>('original')
+const langCache = ref<Record<string, string>>({})
+const translating = ref(false)
+const langOpen = ref(false)
+const moreOpen = ref(false)
+const composeKind = ref<ComposeKind>('hidden')
+const composeSeed = ref('')
+const composeError = ref('')
+const sending = ref(false)
+const converting = ref(false)
 
-async function loadBody() {
-  if (!email.value || bodyLoading.value) return
-  bodyLoading.value = true
-  bodyError.value = ''
-  try {
-    const result = await emailApi.getEmailBody(email.value.id)
-    bodyText.value = result.body
-    bodySource.value = result.source
-    bodyLoaded.value = true
-  } catch (e: any) {
-    bodyError.value = e?.message || '正文拉取失败，请检查网络或账户登录态'
-  } finally {
-    bodyLoading.value = false
-  }
-}
-function collapseBody() {
-  bodyLoaded.value = false
-  bodyText.value = ''
-  bodySource.value = ''
-  bodyError.value = ''
-}
+const sourceBody = computed(() => bodyText.value || email.value?.snippet || '')
+const displayBody = computed(() => resolveDisplayBody(sourceBody.value, langCache.value, lang.value))
+const htmlBody = computed(() => sanitizeEmailHtml(displayBody.value))
 
 async function load() {
-  const id = route.params.id as string
   loading.value = true
   loadError.value = ''
+  bodyText.value = ''
+  bodyError.value = ''
+  lang.value = 'original'
+  langCache.value = {}
+  composeKind.value = 'hidden'
   try {
-    // 使用 getEmail（emails-store 已提供）
-    const found = await emailsStore.getEmail(id)
+    const found = await emailsStore.getEmail(route.params.id as string)
     email.value = found
     if (found && !found.isRead) {
-      // 自动标已读（后台触发，不阻塞 UI）
-      try {
-        await emailsStore.markRead(found.id, true)
-        found.isRead = true
-      } catch (e) {
-        console.warn('[email] 自动标记已读失败:', e)
-      }
+      try { await emailsStore.markRead(found.id, true); found.isRead = true } catch { /* 不挡正文 */ }
+    }
+    if (found) {
+      bodyLoading.value = true
+      try { bodyText.value = (await emailApi.getEmailBody(found.id)).body }
+      catch (e: any) { bodyError.value = e?.message || '正文拉取失败' }
+      finally { bodyLoading.value = false }
     }
   } catch (e: any) {
     loadError.value = e?.message || '加载邮件失败，请稍后重试。'
   } finally {
     loading.value = false
+  }
+}
+
+async function chooseLang(next: EmailLang) {
+  langOpen.value = false
+  if (next === 'original' || langCache.value[next] || !sourceBody.value) {
+    lang.value = next
+    return
+  }
+  translating.value = true
+  try {
+    const out = await translateEmailBody(sourceBody.value, next, async (prompt) => {
+      const res = await http<{ content: string }>('/api/llm/chat', {
+        method: 'POST',
+        body: JSON.stringify({ messages: [{ role: 'user', content: prompt }] }),
+      })
+      return res.content
+    })
+    langCache.value = { ...langCache.value, [next]: out }
+    lang.value = next
+  } catch (e: any) {
+    toast.error(e?.message || '翻译失败')
+  } finally {
+    translating.value = false
+  }
+}
+
+function openCompose(kind: ComposeKind) {
+  const mail = email.value
+  composeError.value = ''
+  if (kind === 'forward' && mail) {
+    composeSeed.value = quotedForwardBody({
+      from: mail.fromName ? `${mail.fromName} <${mail.fromAddress}>` : mail.fromAddress,
+      date: formatEmailDate(mail.date),
+      subject: mail.subject || '(无主题)',
+      body: displayBody.value,
+    })
+  } else if (kind === 'todo' && mail) {
+    composeSeed.value = `${mail.subject || '(无主题)'}\n\n${displayBody.value}`.trim()
+  } else {
+    composeSeed.value = ''
+  }
+  composeKind.value = toggleCompose(composeKind.value, kind)
+}
+
+async function onComposeSubmit(payload: { text: string; to: string[] }) {
+  const mail = email.value
+  if (!mail || sending.value) return
+  const text = payload.text.trim()
+  if (!text) return
+  if (composeKind.value === 'todo') return createTodo(text)
+  if (composeKind.value === 'forward' && payload.to.length === 0) {
+    composeError.value = '请填写转发收件人'
+    return
+  }
+  sending.value = true
+  composeError.value = ''
+  try {
+    const reply = composeKind.value === 'reply'
+    await emailApi.sendEmail({
+      accountId: mail.accountId,
+      to: reply ? [mail.fromAddress] : payload.to,
+      subject: reply ? defaultReplySubject(mail.subject || '') : defaultForwardSubject(mail.subject || ''),
+      body: text,
+    })
+    toast.success(reply ? '回复已发送' : '转发已发送')
+    composeKind.value = 'hidden'
+  } catch (e: any) {
+    composeError.value = e?.message || '发送失败'
+  } finally {
+    sending.value = false
+  }
+}
+
+async function createTodo(text: string) {
+  if (!email.value || converting.value) return
+  converting.value = true
+  sending.value = true
+  try {
+    const draft = todoFromDraft(text, email.value.subject || '(无主题)')
+    const task = await api.createTask({
+      title: draft.title,
+      description: draft.description,
+      source: 'local',
+      status: 'active',
+      priority: email.value.importance === 'high' ? 'high' : 'medium',
+    })
+    toast.success(`已转为任务：${task.title}`)
+    composeKind.value = 'hidden'
+    router.push(`/tasks/${task.id}`)
+  } catch (e: any) {
+    composeError.value = e?.message || '创建任务失败'
+  } finally {
+    converting.value = false
+    sending.value = false
   }
 }
 
@@ -188,68 +248,14 @@ async function toggleStar() {
   await emailsStore.setStarred(email.value.id, email.value.isStarred)
 }
 
-async function convertToTodo() {
-  if (!email.value || converting.value) return
-  converting.value = true
-  const subject = email.value.subject || '(无主题)'
-  const from = email.value.fromName || email.value.fromAddress
-  try {
-    const task = await api.createTask({
-      title: subject,
-      description: `${email.value.snippet || ''}\n\n来自：${from}`.trim(),
-      source: 'local',
-      status: 'active',
-      priority: email.value.importance === 'high' ? 'high' : 'medium',
-    })
-    toast.success(`已转为任务：${task.title}`)
-    router.push(`/tasks/${task.id}`)
-  } catch (e: any) {
-    toast.error(e?.message || '创建任务失败')
-  } finally {
-    converting.value = false
-  }
-}
-
 async function navigateToContact() {
   if (!email.value?.fromAddress) return
   try {
     const contact = await findContactByEmail(email.value.fromAddress)
-    if (contact) {
-      router.push(`/contacts/${contact.id}`)
-    } else {
-      toast.info('联系人不存在，请先在联系人页面聚合')
-    }
-  } catch (error: any) {
-    toast.error(error?.message || '查找联系人失败')
-  }
-}
-
-// ---- 回复（后端 /api/email/send 已就绪，此前缺 UI） ----
-const replyBody = ref('')
-const replying = ref(false)
-const replyError = ref('')
-
-async function sendReply(payload: { text: string }) {
-  const mail = email.value
-  const body = payload.text.trim()
-  if (!mail || !body || replying.value) return
-  replying.value = true
-  replyError.value = ''
-  const original = mail.subject || ''
-  const subject = /^re:/i.test(original) ? original : `Re: ${original}`
-  try {
-    await emailApi.sendEmail({
-      accountId: mail.accountId,
-      to: [mail.fromAddress],
-      subject,
-      body,
-    })
-    toast.success('回复已发送')
-    replyBody.value = ''
+    if (contact) router.push(`/contacts/${contact.id}`)
+    else toast.info('联系人不存在，请先在联系人页面聚合')
   } catch (e: any) {
-    replyError.value = e?.message || '发送失败，请检查 SMTP 配置'
-  } finally {
-    replying.value = false
+    toast.error(e?.message || '查找联系人失败')
   }
 }
 
@@ -258,152 +264,34 @@ function goBack() {
   else router.push('/email')
 }
 
-function formatDate(ms: number) {
-  const d = new Date(ms)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-const catLabel = (c: string | null) =>
-  ({
-    work: '工作', bill: '账单', notification: '通知',
-    personal: '私人', marketing: '营销', spam: '垃圾',
-  }[c || ''] || c || '')
-
-const actionLabel = (a: string) =>
-  ({ reply: '回复', archive: '归档', todo: '待办', ignore: '忽略' }[a] || a)
-
+watch(() => route.params.id, load)
 onMounted(load)
 </script>
 
+
 <style scoped>
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
-.link-btn {
-  margin-top: var(--space-3);
-  background: transparent;
-  border: none;
-  color: var(--brand-primary);
-  font-size: 14px;
-  cursor: pointer;
-}
+.state.slim { padding: var(--space-4); }
+.link-btn { background: none; border: none; color: var(--brand-primary); cursor: pointer; }
 .detail { display: flex; flex-direction: column; gap: var(--space-3); padding-bottom: var(--space-6); }
-.meta-card {
-  background: var(--bg-card);
-  border-radius: var(--radius-md);
-  padding: var(--space-4);
-  box-shadow: var(--shadow-sm);
-}
-.from-row { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-2); }
-.from-block { display: flex; flex-direction: column; min-width: 0; }
-.from-name { font-weight: 600; color: var(--text-primary); font-size: 15px; }
-.from-addr { color: var(--text-muted); font-size: 12px; word-break: break-all; }
-.star-btn {
-  border: none;
-  background: transparent;
-  font-size: 20px;
-  cursor: pointer;
-  padding: 0 var(--space-1);
-  color: var(--text-muted);
-}
-.star-btn.active { color: var(--warning); }
-.subject { font-size: 18px; font-weight: 600; margin: var(--space-2) 0; color: var(--text-primary); line-height: 1.4; }
-.date-row { display: flex; align-items: center; gap: var(--space-3); color: var(--text-secondary); font-size: 12px; }
-.attach { color: var(--text-muted); }
-.tag-row { display: flex; gap: var(--space-2); margin-top: var(--space-2); flex-wrap: wrap; }
-.tag {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: var(--radius-sm);
-}
+.meta { padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }
+.from { display: flex; flex-direction: column; min-width: 0; }
+.from-name { font-weight: 600; font-size: 15px; color: var(--text-primary); }
+.from-addr { font-size: 12px; color: var(--text-muted); word-break: break-all; }
+.subline { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
+.subject { font-size: 20px; font-weight: 650; margin: var(--space-2) 0 0; line-height: 1.35; color: var(--text-primary); }
+.tag { font-size: 11px; padding: 1px 6px; border-radius: var(--radius-sm); }
 .cat-work { background: var(--cat-work-bg); color: var(--cat-work); }
 .cat-bill { background: var(--cat-bill-bg); color: var(--cat-bill); }
 .cat-personal { background: var(--cat-personal-bg); color: var(--cat-personal); }
 .cat-notification { background: var(--cat-notification-bg); color: var(--cat-notification); }
 .cat-marketing { background: var(--cat-marketing-bg); color: var(--cat-marketing); }
 .cat-spam { background: var(--cat-spam-bg); color: var(--cat-spam); }
-.importance { font-size: 11px; color: var(--warning); }
-.importance.low { color: var(--text-muted); }
-
-.ai-card {
-  background: var(--bg-subtle);
-  border-left: 3px solid var(--brand-primary);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-}
-.ai-title { font-size: 13px; font-weight: 600; color: var(--brand-primary); margin-bottom: var(--space-1); }
-.ai-body { font-size: 14px; color: var(--text-primary); line-height: 1.5; }
-.ai-action { margin-top: var(--space-2); display: flex; gap: var(--space-2); align-items: center; }
-.action-label { font-size: 11px; color: var(--text-muted); }
-.action-text { font-size: 13px; color: var(--text-primary); }
-
-.snippet-card {
-  background: var(--bg-card);
-  border-radius: var(--radius-md);
-  padding: var(--space-4);
-  box-shadow: var(--shadow-sm);
-}
-.snippet-label {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-bottom: var(--space-2);
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.body-source {
-  font-size: 10px;
-  color: var(--text-muted);
-  background: var(--bg-subtle);
-  padding: 1px 6px;
-  border-radius: 4px;
-}
-.body-loading { color: var(--text-muted); font-size: 12px; margin-top: var(--space-2); }
-.body-error { color: var(--danger); font-size: 12px; margin-top: var(--space-2); }
-.body-full {
-  font-size: 14px;
-  color: var(--text-primary);
-  white-space: pre-wrap;
-  line-height: 1.6;
-  word-break: break-word;
-  margin-top: var(--space-3);
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--border);
-  max-height: 60vh;
-  overflow-y: auto;
-}
-.snippet-body { font-size: 14px; color: var(--text-primary); white-space: pre-wrap; line-height: 1.6; word-break: break-word; }
-.muted { color: var(--text-muted); }
-
-.actions { display: flex; gap: var(--space-2); }
-.reply-card {
-  background: var(--bg-card);
-  border-radius: var(--radius-md);
-  padding: var(--space-4);
-  box-shadow: var(--shadow-sm);
-}
-.reply-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin-bottom: var(--space-2);
-}
-.reply-error {
-  margin: var(--space-2) 0 0;
-  color: var(--danger);
-  font-size: 12px;
-}
-.action-btn {
-  flex: 1;
-  padding: var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font-size: 14px;
-  cursor: pointer;
-}
-.action-btn:active { background: var(--bg-subtle); }
-.action-btn.done { color: var(--success); border-color: var(--success); }
-.hint { font-size: 12px; color: var(--text-muted); text-align: center; padding: 0 var(--space-3); }
-.hint code { font-family: ui-monospace, SFMono-Regular, monospace; background: var(--bg-subtle); padding: 1px 4px; border-radius: 4px; }
+.lang-hint { color: var(--brand-primary); }
+.ai { margin: 0; font-size: 13px; line-height: 1.5; color: var(--text-secondary); padding: var(--space-2) var(--space-3); background: var(--bg-subtle); border-radius: var(--radius-md); }
+.body { margin: 0; font-size: 15px; line-height: 1.7; color: var(--text-primary); word-break: break-word; }
+.body.text { white-space: pre-wrap; font-family: inherit; }
+.body.html :deep(img) { max-width: 100%; height: auto; }
+.body.html :deep(a) { color: var(--brand-primary); }
+.body-error { color: var(--danger); font-size: 13px; }
 </style>

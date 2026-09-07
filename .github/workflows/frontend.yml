@@ -74,6 +74,9 @@ jobs:
       - name: Run HarmonyOS runtime guard tests
         run: node --test src/native/__tests__/runtime-platform.test.mjs src/native/__tests__/capabilities-harmony.test.mjs
 
+      - name: Run email content-first helper tests
+        run: node --test src/features/email/__tests__/compose-mode.test.mjs src/features/email/__tests__/translate-email.test.mjs src/features/email/__tests__/email-body-format.test.mjs
+
       - name: Build HarmonyOS ArkWeb assets
         run: MOBILE_FAST=1 VITE_API_BASE=https://harmony-ci.example.invalid node scripts/build-harmony.mjs dev
 
