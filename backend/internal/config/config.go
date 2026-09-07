@@ -113,6 +113,8 @@ type Config struct {
 	DiskSessionsEnabled   bool   // POCKET_DISK_SESSIONS_ENABLED=true 启用
 	DiskSessionsWorkspace string // POCKET_DISK_SESSIONS_WORKSPACE：留空=运维共享只读；填 workspace id=限定该租户
 	DiskHome              string // POCKET_DISK_HOME：agent 数据根（容器内挂载的宿主 home）；空则用进程 HOME
+	CompanionURL          string // POCKET_COMPANION_URL：本机 agent-companion
+	CompanionSecret       string // POCKET_COMPANION_SECRET：companion inbound API secret
 
 	// —— 会话迁移方案：实例感知增强配置 ——
 	DiscoveryFullSubnet bool     // POCKET_DISCOVERY_FULL_SUBNET：true=扫描完整 /24（默认 false 仅本机+网关）
@@ -179,6 +181,7 @@ type Config struct {
 // It applies sensible defaults for development environments. For production deployments,
 // call Validate() on the returned Config to ensure all required fields are properly set.
 func Load() Config {
+	loadCompanionOverlay()
 	environment := strings.ToLower(strings.TrimSpace(getEnv("POCKET_ENV", "development")))
 	if environment == "prod" {
 		environment = "production"
@@ -252,6 +255,8 @@ func Load() Config {
 		DiskSessionsEnabled:   getEnv("POCKET_DISK_SESSIONS_ENABLED", "") == "true",
 		DiskSessionsWorkspace: getEnv("POCKET_DISK_SESSIONS_WORKSPACE", ""),
 		DiskHome:              getEnv("POCKET_DISK_HOME", ""),
+		CompanionURL:          getEnv("POCKET_COMPANION_URL", ""),
+		CompanionSecret:       getEnv("POCKET_COMPANION_SECRET", ""),
 		// 会话迁移方案：实例感知增强
 		DiscoveryFullSubnet: getEnv("POCKET_DISCOVERY_FULL_SUBNET", "") == "true",
 		DiscoveryPorts:      parseIntList(getEnv("POCKET_DISCOVERY_PORTS", "")),
@@ -533,4 +538,30 @@ func parseStringList(s string) []string {
 func (c Config) IsProduction() bool {
 	value := strings.ToLower(strings.TrimSpace(c.Environment))
 	return value == "production" || value == "prod"
+}
+
+func loadCompanionOverlay() {
+	dataDir := strings.TrimSpace(os.Getenv("POCKET_DATA_DIR"))
+	if dataDir == "" {
+		dataDir = "/app/data"
+	}
+	b, err := os.ReadFile(dataDir + "/companion.env")
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if k == "" || os.Getenv(k) != "" {
+			continue
+		}
+		_ = os.Setenv(k, v)
+	}
 }

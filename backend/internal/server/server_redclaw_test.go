@@ -119,6 +119,95 @@ func TestRedClawChat(t *testing.T) {
 	}
 }
 
+func TestRedClawChat_SingleTenantMapsPocketWorkspace(t *testing.T) {
+	var gotTenant string
+	mockRedClaw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body redclaw.ChatRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotTenant = body.TenantID
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(redclaw.ChatResponse{
+			Message:   redclaw.Message{Role: "assistant", Content: "mapped"},
+			ModelUsed: "test",
+		})
+	}))
+	defer mockRedClaw.Close()
+
+	client, err := redclaw.NewClient(redclaw.ClientConfig{
+		BaseURL:    mockRedClaw.URL,
+		Secret:     "test-secret",
+		TenantID:   "default",
+		TimeoutSec: 5,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create RedClaw client: %v", err)
+	}
+	bridge := redclaw.NewBridge(client, nil)
+	bridge.Start()
+	defer bridge.Stop()
+
+	s := &Server{redclawBridge: bridge}
+	s.cfg.RedClawTenantID = "default"
+
+	body, _ := json.Marshal(redclaw.ChatRequest{
+		Messages: []redclaw.Message{{Role: "user", Content: "Hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/redclaw/chat", bytes.NewReader(body))
+	req = withTestClaims(req, "user-admin", "user", "ws_user-admin")
+	rec := httptest.NewRecorder()
+	s.handleRedClawChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotTenant != "default" {
+		t.Fatalf("expected upstream tenant default, got %q", gotTenant)
+	}
+}
+
+func TestRedClawKnowledgeSearch_SingleTenantMapsPocketWorkspace(t *testing.T) {
+	var gotTenant string
+	mockRedClaw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body redclaw.KnowledgeSearchRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotTenant = body.TenantID
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(redclaw.KnowledgeSearchResponse{
+			Results: []redclaw.KnowledgeResult{{Title: "hit", Content: "ok", Score: 1}},
+		})
+	}))
+	defer mockRedClaw.Close()
+
+	client, err := redclaw.NewClient(redclaw.ClientConfig{
+		BaseURL:    mockRedClaw.URL,
+		Secret:     "test-secret",
+		TenantID:   "default",
+		TimeoutSec: 5,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create RedClaw client: %v", err)
+	}
+	bridge := redclaw.NewBridge(client, nil)
+	bridge.Start()
+	defer bridge.Stop()
+
+	s := &Server{redclawBridge: bridge}
+	s.cfg.RedClawTenantID = "default"
+
+	body, _ := json.Marshal(redclaw.KnowledgeSearchRequest{Query: "openpocket"})
+	req := httptest.NewRequest(http.MethodPost, "/api/redclaw/knowledge/search", bytes.NewReader(body))
+	req = withTestClaims(req, "user-admin", "user", "ws_user-admin")
+	rec := httptest.NewRecorder()
+	s.handleRedClawKnowledgeSearch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotTenant != "default" {
+		t.Fatalf("expected upstream tenant default, got %q", gotTenant)
+	}
+}
+
 func TestRedClawChat_NotConfigured(t *testing.T) {
 	s := &Server{redclawBridge: nil}
 

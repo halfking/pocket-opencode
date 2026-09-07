@@ -41,6 +41,7 @@ const (
 	ToolTaskClaim     = "acc_task_claim"
 	ToolTaskComplete  = "acc_task_complete"
 	ToolReportSession = "acc_report_session"
+	ToolListSessions  = "acc_list_sessions"
 )
 
 // writeTools 是 pocketd 会主动调用的 ACC 写 tool 列表（Capabilities 与
@@ -70,8 +71,8 @@ func (c *Client) Capabilities() Capabilities {
 	if c == nil {
 		return Capabilities{}
 	}
-	tools := make([]string, 0, 1+len(writeTools))
-	tools = append(tools, ToolGetTasks)
+	tools := make([]string, 0, 2+len(writeTools))
+	tools = append(tools, ToolGetTasks, ToolListSessions)
 	tools = append(tools, writeTools...)
 	return Capabilities{
 		Connector: "acc",
@@ -204,13 +205,19 @@ func parseSSEResponse(data string) (json.RawMessage, error) {
 }
 
 // doRaw 发送原始 HTTP 请求并返回完整响应体 + 响应头。
-// acc-go 吃 HS256 JWT；本机 Node ACC 吃 api_keys 静态 Bearer。JWT 401 时回退 raw secret。
+// acc-go 吃 HS256 JWT；本机 Node ACC 吃 api_keys 静态 Bearer。
+// JWT 在 Node 上是 401，经 nginx 时常见空 body 的 400，两种都回退 raw secret。
 func (c *Client) doRaw(ctx context.Context, payload []byte) ([]byte, http.Header, error) {
 	body, headers, err := c.doRawWithBearer(ctx, payload, true)
-	if err != nil && strings.Contains(err.Error(), "HTTP 401") {
+	if err != nil && jwtRejected(err) {
 		return c.doRawWithBearer(ctx, payload, false)
 	}
 	return body, headers, err
+}
+
+func jwtRejected(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "HTTP 401") || strings.Contains(msg, "HTTP 400")
 }
 
 func (c *Client) doRawWithBearer(ctx context.Context, payload []byte, useJWT bool) ([]byte, http.Header, error) {
@@ -558,6 +565,44 @@ func (c *Client) CompleteTask(ctx context.Context, args map[string]interface{}) 
 // disk adapter（internal/adapter/disk）产出的会话元数据经此上送。
 func (c *Client) ReportSession(ctx context.Context, args map[string]interface{}) (string, error) {
 	return c.callWriteTool(ctx, ToolReportSession, args)
+}
+
+// AccSession is one row from acc_list_sessions.
+type AccSession struct {
+	SessionID     string          `json:"session_id"`
+	TaskID        string          `json:"task_id"`
+	GatewayType   string          `json:"gateway_type"`
+	AgentID       string          `json:"agent_id"`
+	DeviceName    string          `json:"device_name"`
+	ModelID       string          `json:"model_id"`
+	Input         string          `json:"input"`
+	InputTokens   int             `json:"input_tokens"`
+	OutputTokens  int             `json:"output_tokens"`
+	StartedAt     string          `json:"started_at"`
+	EndedAt       string          `json:"ended_at"`
+	Metadata      json.RawMessage `json:"metadata"`
+}
+
+// ListSessions 按 task_id 拉 ACC 已上报会话。
+func (c *Client) ListSessions(ctx context.Context, taskID string, limit int) ([]AccSession, error) {
+	if c == nil {
+		return nil, fmt.Errorf("%s failed: MCP client not configured", ToolListSessions)
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	text, err := c.CallTool(ctx, ToolListSessions, map[string]interface{}{
+		"task_id": taskID,
+		"limit":   limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s failed: %w", ToolListSessions, err)
+	}
+	var rows []AccSession
+	if err := json.Unmarshal([]byte(text), &rows); err != nil {
+		return nil, fmt.Errorf("%s parse: %w", ToolListSessions, err)
+	}
+	return rows, nil
 }
 
 func min(a, b int) int {

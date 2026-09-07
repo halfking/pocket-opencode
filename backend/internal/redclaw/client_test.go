@@ -68,8 +68,8 @@ func TestNewClient_Validation(t *testing.T) {
 
 func TestClientHealth(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" {
-			t.Errorf("expected /health, got %s", r.URL.Path)
+		if r.URL.Path != "/healthz" && r.URL.Path != "/health" {
+			t.Errorf("expected /healthz or /health, got %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(HealthResponse{

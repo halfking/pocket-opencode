@@ -69,3 +69,16 @@ func TestDiskSessionScheduler_StartStop(t *testing.T) {
 	cancel()
 	s.Stop()
 }
+
+func TestDiskSessionScheduler_Lookup(t *testing.T) {
+	s := NewDiskSessionScheduler(nil, nil, time.Minute)
+	s.SetTaskIDLookup(func(_ context.Context, sessionID string) string {
+		if sessionID == "s1" {
+			return "task-9"
+		}
+		return ""
+	})
+	if s.lookup == nil || s.lookup(context.Background(), "s1") != "task-9" {
+		t.Fatal("lookup not wired")
+	}
+}

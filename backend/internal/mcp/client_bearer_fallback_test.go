@@ -51,6 +51,41 @@ func TestDoRaw_FallsBackToRawBearerOn401(t *testing.T) {
 	}
 }
 
+func TestDoRaw_FallsBackToRawBearerOn400(t *testing.T) {
+	var auths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		auths = append(auths, auth)
+		if strings.Count(auth, ".") == 2 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if auth != "acc-api-key" {
+			http.Error(w, "forbidden", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("mcp-session-id", "sess-node")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL, "acc-api-key", false)
+	body, headers, err := c.doRaw(context.Background(), []byte(`{"jsonrpc":"2.0","method":"initialize","id":1}`))
+	if err != nil {
+		t.Fatalf("doRaw: %v", err)
+	}
+	if headers.Get("mcp-session-id") != "sess-node" {
+		t.Fatalf("session header = %q", headers.Get("mcp-session-id"))
+	}
+	if !strings.Contains(string(body), `"result"`) {
+		t.Fatalf("body = %s", body)
+	}
+	if len(auths) < 2 {
+		t.Fatalf("expected JWT then raw bearer, got %d auths", len(auths))
+	}
+}
+
 func TestGetRemoteTasks_NodeACCBearerFallback(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
