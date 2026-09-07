@@ -36,6 +36,7 @@
 <script setup lang="ts">
 import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
 import { SCROLL_CHROME_KEY } from '@/composables/scroll-chrome'
+import { scrollEdgeFlags } from '@/composables/useScrollHideChrome'
 
 export interface PullToRefreshProps {
   onRefresh: () => Promise<void>
@@ -65,7 +66,7 @@ function onContentScroll() {
   const top = el.scrollTop
   const delta = top - lastScrollTop
   lastScrollTop = top
-  scrollChrome.reportScroll({ scrollTop: top, delta })
+  scrollChrome.reportScroll({ scrollTop: top, delta, ...scrollEdgeFlags(el, top) })
 }
 
 onMounted(() => {
