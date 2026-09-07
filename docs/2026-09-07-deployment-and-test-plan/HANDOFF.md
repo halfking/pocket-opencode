@@ -116,11 +116,14 @@
    - **现状**：需 `POCKET_OPENCODE_CONFIG_TOKEN` 才能同步模型配置到上游实例，现降级为告警
    - **影响**：功能不受阻，配置保存正常，仅上游实例不自动刷新
    - **后续**：生产环境配置该 token
+   - **2026-09-07 下午复核**：本地可行性已验证——机制本身完整（token 鉴权、租户实例过滤、10s 超时、SSF 防护客户端），但 **stock opencode（:4096）未实现 `PUT /api/config/models` / `POST /api/config/reload` 契约**（其 SPA 兜底对任意路径返回 200 HTML）。两个连带结论：
+     1. 仅配 token 无法完成真实同步，上游实例必须实现该契约（opencode-plugin 只实现了 WS 注册/心跳，未实现 HTTP 配置契约）；
+     2. `putJSONWithAuth`/`postWithAuth`（`llm_gateway_handler.go:458/477`）只校验 2xx 状态码不校验响应体，对 stock opencode 会产生**假成功**。建议后续加 Content-Type/响应体校验。
 
 2. **对话参数抽屉文案**
-   - **现状**：「默认模型 (未加载)」文案在 models 已加载时仍显示未加载态
-   - **影响**：前端展示项，功能不受影响
-   - **后续**：前端状态管理优化
+   - **现状**：~~「默认模型 (未加载)」文案在 models 已加载时仍显示未加载态~~ **已修复（2026-09-07 下午）**
+   - **修复**：移除 `value=""` 的「（未加载）」占位 option；`ensureDefaultModel` 增加过期模型名回正 + `watch` 响应式兜底（`aiChatStore.ts`）；打开抽屉时模型为空自动重拉 + 未加载提示/重试按钮（`AIChatView.vue`）
+   - **验证**：vue-tsc 通过 + vite build 通过 + 浏览器 E2E（抽屉显示 auto·智能路由 + 网关 9 模型、发送消息 auto 路由到 glm-5.2 流式回复正常），证据 `evidence/ui/19-default-model-fixed.png`
 
 3. **Flow B/C 正路径覆盖**
    - **现状**：真实 permission/question 事件依赖上游工具调用，mock 文本模型不触发
@@ -163,9 +166,9 @@
 ## 六、后续工作建议
 
 ### 6.1 立即可做
-- [ ] 在主分支拉取最新代码，确认本轮修复已合并
-- [ ] 生产环境配置 `POCKET_OPENCODE_CONFIG_TOKEN`（使模型配置自动同步至上游）
-- [ ] 优化对话参数抽屉文案状态管理
+- [x] 在主分支拉取最新代码，确认本轮修复已合并（2026-09-07 下午复核：main 与 origin/main 同步，5 处修复均在代码中）
+- [ ] 生产环境配置 `POCKET_OPENCODE_CONFIG_TOKEN`（使模型配置自动同步至上游）——**前置条件见 §4.1.1 复核：上游实例须先实现 config 契约，且推送成功判定需加固**
+- [x] 优化对话参数抽屉文案状态管理（2026-09-07 下午完成，见 §4.1.2）
 
 ### 6.2 依赖外部条件
 - [ ] 安装 iOS runtime，复跑 CHECKLIST §9.2（iOS 模拟器全量测试）

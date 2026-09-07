@@ -46,8 +46,8 @@
 
 ## 遗留事项
 
-- `pushConfigToOpenCode` 需 `POCKET_OPENCODE_CONFIG_TOKEN` 才能同步模型配置到上游实例（现降级为告警，功能不受阻）。
-- 对话参数抽屉中「默认模型 (未加载)」文案在 models 已加载时仍显示未加载态——待跟进（前端展示项，非阻塞）。
+- `pushConfigToOpenCode` 需 `POCKET_OPENCODE_CONFIG_TOKEN` 才能同步模型配置到上游实例（现降级为告警，功能不受阻）。**2026-09-07 下午复核**：stock opencode 未实现 config 契约（SPA 兜底对任意路径 200），推送成功判定需加固，详见 HANDOFF §4.1.1。
+- ~~对话参数抽屉中「默认模型 (未加载)」文案在 models 已加载时仍显示未加载态~~ **已修复（2026-09-07 下午）**：移除占位 option + store 状态回正（watch 兜底）+ 抽屉打开自动重拉；浏览器 E2E 验证通过（证据 `evidence/ui/19-default-model-fixed.png`，含发送回归）。
 - Flow B/C 的正路径（真实 permission/question 事件）依赖上游工具调用产生审批，mock 文本模型不触发；已用负向契约（409/400）+ 代码路径确认覆盖。
 
 ## 补测轮（2026-09-07 追加）

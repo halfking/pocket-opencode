@@ -9,7 +9,7 @@
  *   - 流式输出通过 llmBffApi.streamChat 消费 SSE，按消息增量追加。
  */
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { llmBffApi, type ChatMessage } from '../../api/llm-bff'
 import { listNodes, getAvailableModels, getFeaturedModels } from '../../api/gateway'
 import { useToast } from '../../composables/useToast'
@@ -278,11 +278,22 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     }
   }
 
+  /**
+   * 默认模型回正：空值或已不在当前模型列表中的名字都回落到 auto。
+   * models 为空时不校验名字（无从判断是否过期，展示层有独立空态提示）。
+   */
   function ensureDefaultModel() {
-    if (!settings.value.defaultModel && models.value.length > 0) {
+    const cur = settings.value.defaultModel
+    if (cur && models.value.length === 0) return
+    if (!cur || (cur !== AUTO && !models.value.includes(cur))) {
       settings.value.defaultModel = AUTO
+      persist()
     }
   }
+
+  // models 异步到达/变化与 settings 变更时都回正一次：
+  // 避免「默认模型（未加载）」占位态在 models 加载完成后滞留（2026-09-07 E2E 遗留）。
+  watch([models, () => settings.value.defaultModel], () => ensureDefaultModel())
 
   function createConversation(model?: string): Conversation {
     const conv: Conversation = {

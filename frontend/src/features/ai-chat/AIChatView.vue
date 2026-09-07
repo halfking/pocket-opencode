@@ -389,8 +389,12 @@
             <option v-for="m in sortedModels" :key="m" :value="m">
               {{ store.isFeatured(m) ? '★ ' : '' }}{{ m }}
             </option>
-            <option v-if="models.length === 0" value="">（未加载）</option>
           </select>
+          <div v-if="modelsLoading && models.length === 0" class="field-hint">模型列表加载中…</div>
+          <div v-else-if="models.length === 0" class="field-hint">
+            模型未加载：请先在「设置 → AI 网关」配置网关密钥，
+            <button class="link-btn" type="button" @click="store.loadModels()">重试</button>
+          </div>
         </div>
 
         <!-- 按模态默认模型：会话模型为 auto 时，按消息模态选用；
@@ -661,6 +665,13 @@ function escapeHtml(s: string): string {
 // ---- 生命周期 ----
 let unbindChromeScroll: (() => void) | null = null
 let composerRO: ResizeObserver | null = null
+
+// 打开参数抽屉时若模型列表此前加载失败（如网关后配置），自动重试一次，
+// 避免默认模型下拉一直停留在未加载态。
+watch(settingsOpen, (open) => {
+  if (open && models.value.length === 0 && !modelsLoading.value) store.loadModels()
+})
+
 onMounted(() => {
   store.init()
   syncRouteTitle()
