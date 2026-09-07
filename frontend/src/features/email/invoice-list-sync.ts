@@ -1,6 +1,6 @@
-import type { EmailInvoice } from '../../api/email'
-import { applyIdRemap, type IdRemap } from '../../native/list-sync/id-align'
-import { isLocalOnlyId, type ListStamp } from '../../native/list-sync/planner'
+import type { EmailInvoice } from '../../api/email.ts'
+import { applyIdRemap, type IdRemap } from '../../native/list-sync/id-align.ts'
+import { isLocalOnlyId, type ListStamp } from '../../native/list-sync/planner.ts'
 
 export function invoiceToStamp(inv: Pick<EmailInvoice, 'id' | 'updatedAt'> & { dirty?: boolean }): ListStamp {
   return { id: inv.id, updatedAt: inv.updatedAt || 0, dirty: !!inv.dirty }

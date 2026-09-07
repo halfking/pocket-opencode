@@ -1,4 +1,4 @@
-import { pageHasMore } from '../../native/list-sync/page'
+import { pageHasMore } from '../../native/list-sync/page.ts'
 
 export function inboxListFilter(category: string) {
   if (category === '__important') return { importance: 'high' as const }

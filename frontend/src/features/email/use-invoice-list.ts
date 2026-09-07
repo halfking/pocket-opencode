@@ -144,12 +144,14 @@ export function useInvoiceList() {
       applySummary(all.value)
       revokeThumbs()
       void loadThumbs(page.rows)
+      if (page.rows.length) loading.value = false
     } catch { /* 本地库未就绪时仍拉服务端 */ }
-    loading.value = false
     try {
       await pullServerPage(0)
     } catch (e: any) {
       if (all.value.length === 0) error.value = e?.message || '加载失败'
+    } finally {
+      loading.value = false
     }
     void pushDirtyInvoices().catch(() => {})
   }
