@@ -3,8 +3,10 @@ import { describe, it } from 'node:test'
 import {
   invoiceFileKind,
   invoiceIssueDateLabel,
+  invoicePageHasMore,
   invoiceReceivedLabel,
   invoiceReceivedSortKey,
+  mergeInvoicePages,
   sortInvoicesByReceived,
 } from './invoice-list.ts'
 import type { EmailInvoice } from '../../api/email'
@@ -54,5 +56,13 @@ describe('invoice-list', () => {
     assert.equal(invoiceFileKind('a.PNG'), 'image')
     assert.equal(invoiceFileKind('a.pdf'), 'pdf')
     assert.equal(invoiceFileKind(''), 'unknown')
+  })
+
+  it('appends a later page without duplicating or breaking received desc', () => {
+    const first = [inv({ id: 'new', emailDate: 300 }), inv({ id: 'mid', emailDate: 200 })]
+    const second = [inv({ id: 'mid', emailDate: 200 }), inv({ id: 'old', emailDate: 50, createdAt: 999 })]
+    assert.deepEqual(mergeInvoicePages(first, second).map((r) => r.id), ['new', 'mid', 'old'])
+    assert.equal(invoicePageHasMore(30), true)
+    assert.equal(invoicePageHasMore(29), false)
   })
 })

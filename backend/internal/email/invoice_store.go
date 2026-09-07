@@ -131,45 +131,13 @@ func scanInvoice(row pgx.Row) (*Invoice, error) {
 	return &inv, nil
 }
 
-// ListInvoicesScoped 列出当前用户/工作区的发票记录，按来源邮件收到时间倒序。
-// status 为空时返回全部；limit<=0 时默认 200。
+// ListInvoicesScoped 列出当前用户/工作区的发票（第一页）。分页请用 ListInvoicesPage。
 func (s *Store) ListInvoicesScoped(ctx context.Context, userID, workspaceID, status string, limit int) ([]Invoice, error) {
-	if workspaceID == "" {
-		return nil, fmt.Errorf("email: workspace_id required")
-	}
-	if limit <= 0 || limit > 500 {
-		limit = 200
-	}
-	q := `SELECT ` + invoiceSelectCols + ` FROM email_invoices WHERE workspace_id=$1 AND user_id=$2`
-	args := []any{workspaceID, userID}
-	if status != "" {
-		q += ` AND status=$3`
-		args = append(args, status)
-	}
-	q += ` ORDER BY created_at DESC LIMIT $` + fmt.Sprint(len(args)+1)
-	args = append(args, limit)
-
-	rows, err := s.pool.Query(ctx, q, args...)
+	page, err := s.ListInvoicesPage(ctx, userID, workspaceID, status, limit, 0)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Invoice
-	for rows.Next() {
-		inv, err := scanInvoice(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *inv)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if err := s.attachEmailDates(ctx, out); err != nil {
-		return nil, err
-	}
-	SortInvoicesByReceived(out)
-	return out, nil
+	return page.Invoices, nil
 }
 
 // GetInvoiceByIDScoped 按 id 取发票（workspace 隔离）。
