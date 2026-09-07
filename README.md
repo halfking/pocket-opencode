@@ -98,7 +98,7 @@ cp .env.example .env
 ./local-up.sh
 ```
 
-详见：[本地方案文档](deploy/本地方案/) （待补充）
+详见：[本地方案文档](deploy/本地方案/README.md)
 
 #### 2️⃣ ACC Integration（集成开发）
 
@@ -218,12 +218,12 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 - [**ACC Integration 部署文档**](deploy/acc-integration/README.md) - 集成开发部署指南
 - [**邮箱数据本地化与发票自动整理方案**](docs/2026-09-06-email-local-invoice.md) - 邮件发票提取与入账闭环（2026-09-06）
 
-### 测试报告
+### 测试报告（已归档至 docs/archive/2026-07/）
 
-- [完整测试报告](COMPLETE_TEST_REPORT_2026-07-07.md) - 初始测试结果
-- [修复验证报告](FINAL_VERIFICATION_REPORT_2026-07-07.md) - 问题修复验证
-- [本地部署报告](LOCAL_DEPLOYMENT_REPORT_2026-07-07.md) - 部署验证结果
-- [集成测试报告](COMPLETE_INTEGRATION_TEST_REPORT_2026-07-07.md) - 完整测试总结
+- [完整测试报告](docs/archive/2026-07/COMPLETE_TEST_REPORT_2026-07-07.md) - 初始测试结果
+- [修复验证报告](docs/archive/2026-07/FINAL_VERIFICATION_REPORT_2026-07-07.md) - 问题修复验证
+- [本地部署报告](docs/archive/2026-07/LOCAL_DEPLOYMENT_REPORT_2026-07-07.md) - 部署验证结果
+- [集成测试报告](docs/archive/2026-07/COMPLETE_INTEGRATION_TEST_REPORT_2026-07-07.md) - 完整测试总结
 
 ### 外部依赖说明
 
@@ -345,12 +345,9 @@ POCKET_TEST_POSTGRES_DSN='postgres://user:password@127.0.0.1:5432/pocket_test?ss
 # 未设置任一 PostgreSQL DSN 时，目标会输出 SKIP 并成功退出
 make test-pg
 
-# 前端测试
+# 前端类型检查
 cd frontend
-npm run test
-
-# E2E测试
-npm run test:e2e
+npm run typecheck
 ```
 
 PostgreSQL 集成测试会为每个测试创建独立 schema，并在清理阶段删除。`make test-pg` 会运行

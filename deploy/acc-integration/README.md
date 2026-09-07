@@ -291,9 +291,9 @@ cd ../本地方案
 ## 📝 相关文档
 
 - [OpenCode Pocket 主文档](../../README.md)
-- [运维指南](../../OPERATIONS_GUIDE.md)
+- [运维指南](../../docs/guides/OPERATIONS_GUIDE.md)
 - [API 文档](../../docs/API.md)
-- [本地方案文档](../本地方案/README.md)（待创建）
+- [本地方案文档](../本地方案/README.md)
 
 ---
 

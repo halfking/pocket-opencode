@@ -347,7 +347,7 @@ echo $ACC_MCP_TENANT
 ## 参考资料
 
 - [Scheduled Task System Documentation](./scheduled-task-system.md)
-- [Audit Report](./audit-scheduled-task-20260830.md)
+- [Audit Report](./archive/2026-08/audit-scheduled-task-20260830.md)
 - 后端实现: `backend/internal/scheduledtask/`
 - API 实现: `backend/internal/server/scheduled_task_handler.go`
 - 前端 UI: `frontend/src/features/scheduled-tasks/`

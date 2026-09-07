@@ -410,7 +410,7 @@ PocketFleet 的 Executor Bridge 是 **更通用的远程协议** —— 不限�
 > **⚠️ DEPRECATED (2026-08-23)**：本文档是 v1 方案（自建 ComputePod + Executor Bridge），已被 v2 方案取代。
 >
 > **v2 方案**：算力舱 = 一台跑 acc-go worker 模式的机器，复用 acc-go 现有的 agentspawner + harness + A2A + orchestration v3 + taskgate。详见：
-> - [compute-pod-as-acc-worker.md](compute-pod-as-acc-worker.md)
+> - [compute-pod-as-acc-worker.md](compute-pod-as-acc-worker.v2-deprecated.md)
 > - [architecture-decision-records.md §ADR-004](../architecture-decision-records.md)
 >
 > 本文件保留作为"v1 设计思路"的参考，但不构成当前方案。
