@@ -74,7 +74,7 @@ EOF
 
 # 启用手工定时收信（默认 POCKET_EMAIL_FETCH_ENABLED 已是 true）。
 echo "== seeding admin email accounts =="
-upsert "凯轩企业邮"  "huangxutao@kxpms.cn"  "imap.exmail.qq.com" 993 "smtp.exmail.qq.com" 465 SEED_KAIXUAN_PASSWORD SEED_KAIXUAN_AUTHCODE
+upsert "凯轩企业邮"  "huangxutao@kxpms.cn"  "imap.exmail.qq.com" 993 "smtp.exmail.qq.com" 465 SEED_KAIXUAN_PASSWORD
 upsert "QQ 私人"       "56551681@qq.com"    "imap.qq.com"         993 "smtp.qq.com"         465 SEED_QQ_PASSWORD
 upsert "163 / feikemanager"  "feikemanager@163.com"  "imap.163.com" 993 "smtp.163.com" 25 SEED_163_FK_PASSWORD
 upsert "163 / feikemanager1" "feikemanager1@163.com" "imap.163.com" 993 "smtp.163.com" 25 SEED_163_FK1_PASSWORD
