@@ -640,6 +640,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/email/send", s.requireAuth(s.handleEmailSend))
 	mux.HandleFunc("/api/emails", s.requireAuth(s.handleEmails))
 	mux.HandleFunc("/api/emails/sync", s.requireAuth(s.handleEmailSync))
+	// 批量清垃圾须在 /api/emails/ 子树之前，避免被 {id} 吃掉。
+	mux.HandleFunc("/api/emails/cleanup", s.requireAuth(s.handleEmailCleanup))
 	// 邮件处理流水线：手动触发一轮（收信→清垃圾→提醒→发票采集→飞书/汇总）
 	mux.HandleFunc("/api/email/pipeline/run", s.requireAuth(s.handleEmailPipelineRun))
 	// 发票自动整理（列表 + 按邮件手动提取；须在 /api/emails/ 子树之前声明）

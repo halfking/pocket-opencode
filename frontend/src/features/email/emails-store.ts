@@ -6,6 +6,8 @@
  */
 import { localDB } from '../../native/local-db'
 import { encryptString } from '../../native/crypto'
+import { buildMirrorAccountWrite } from './account-mirror-write'
+import { emailDateToMs } from './cleanup-filter'
 
 export interface EmailAccount {
   id: string
@@ -140,23 +142,12 @@ export async function writeAccountIfNewer(acc: {
 }): Promise<boolean> {
   const local = await getAccount(acc.id)
   if (local && local.updatedAt >= acc.updatedAt) return false
-  await localDB.run(
-    `INSERT INTO local_email_accounts
-       (id, display_name, email_address, imap_host, imap_port, auth_type,
-        sync_interval_min, enabled, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?)
-     ON CONFLICT(id) DO UPDATE SET
-        display_name=excluded.display_name,
-        email_address=excluded.email_address,
-        imap_host=excluded.imap_host,
-        imap_port=excluded.imap_port,
-        auth_type=excluded.auth_type,
-        sync_interval_min=excluded.sync_interval_min,
-        enabled=excluded.enabled,
-        updated_at=excluded.updated_at`,
-    [acc.id, acc.displayName, acc.emailAddress, acc.imapHost, acc.imapPort, acc.authType,
-     acc.syncIntervalMin, acc.enabled ? 1 : 0, local?.createdAt ?? Date.now(), acc.updatedAt],
+  const stmt = buildMirrorAccountWrite(
+    local ? { createdAt: local.createdAt } : null,
+    acc,
+    local?.createdAt ?? Date.now(),
   )
+  await localDB.run(stmt.sql, stmt.values)
   return true
 }
 
@@ -213,9 +204,16 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
  * 上游必须带 category / importance（kxmemory 分类完成前的邮件为 NULL，会
  * 在 WS 收到 email.classified 后由 handleClassifiedEvent 补齐）。
  */
+export async function deleteEmailsByIds(ids: string[]): Promise<void> {
+  for (const id of ids) {
+    if (!id) continue
+    await localDB.run('DELETE FROM local_emails WHERE id = ?', [id])
+  }
+}
+
 export async function syncEmailsFromServer(limit = 200): Promise<number> {
   const { emailApi } = await import('../../api/email')
-  const res = await emailApi.listEmails({})
+  const res = await emailApi.listEmails({ limit })
   let n = 0
   for (const e of (res.emails ?? []).slice(0, limit)) {
     const ok = await upsertEmail({
@@ -227,7 +225,7 @@ export async function syncEmailsFromServer(limit = 200): Promise<number> {
       fromName: e.fromName ?? null,
       subject: e.subject,
       snippet: e.snippet,
-      date: typeof e.date === 'number' ? e.date : Date.parse(e.date) || Date.now(),
+      date: emailDateToMs(typeof e.date === 'number' ? e.date : Date.parse(String(e.date)) || 0) || Date.now(),
       isRead: !!e.isRead,
       isStarred: !!e.isStarred,
       category: e.category ?? null,

@@ -1224,6 +1224,11 @@ func (s *Server) handleEmails(w http.ResponseWriter, r *http.Request) {
 		Importance: r.URL.Query().Get("importance"),
 		UnreadOnly: r.URL.Query().Get("unread") == "1",
 	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			f.Limit = n
+		}
+	}
 	list, err := s.emailStore.ListEmailsScoped(r.Context(), f, s.userIDFromRequest(r), s.workspaceIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

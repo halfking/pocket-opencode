@@ -143,7 +143,7 @@ const router = createRouter({
       path: '/email/settings',
       name: 'email-settings',
       component: EmailSettingsView,
-      meta: { requiresAuth: true, requiresLobster: true, title: '邮箱设置', canGoBack: true, bottomNav: false, hideAppHeader: true }
+      meta: { requiresAuth: true, requiresLobster: true, title: '邮箱设置', canGoBack: true, bottomNav: false, hideAppHeader: true, scrollMode: 'self' }
     },
     // 邮箱 — 发票自动整理（同样须在 /email/:id 之前声明）
     {
@@ -159,14 +159,26 @@ const router = createRouter({
       component: FinanceView,
       meta: { requiresAuth: true, title: '记账', canGoBack: true, bottomNav: false }
     },
-    // 邮箱 — 邮件详情
+    // 邮箱 — 账户路由必须在 /email/:id 之前，否则 accounts 会被当成邮件 id。
     {
-      path: '/email/:id',
-      name: 'email-detail',
-      component: EmailDetailView,
-      meta: { requiresAuth: true, requiresLobster: true, title: '邮件详情', canGoBack: true, bottomNav: false }
+      path: '/email/cleanup',
+      name: 'email-cleanup',
+      component: () => import('../features/email/EmailSpamCleanupView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '清理垃圾邮件', canGoBack: true, bottomNav: false, hideAppHeader: true, scrollMode: 'self' }
     },
-    // 邮箱 — 每日摘要（列表 + 按日期详情，由组件内判断）
+    {
+      path: '/email/accounts/new',
+      name: 'email-account-add',
+      component: () => import('../features/email/EmailAccountAddView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '新增邮箱账户', canGoBack: true, bottomNav: false, hideAppHeader: true, scrollMode: 'self' }
+    },
+    {
+      path: '/email/accounts',
+      name: 'email-accounts',
+      component: EmailAccountSetup,
+      meta: { requiresAuth: true, requiresLobster: true, title: '邮箱账户', canGoBack: true, bottomNav: false }
+    },
+    // 邮箱 — 每日摘要须在 /email/:id 之前，否则 summary 会被当成邮件 id。
     {
       path: '/email/summary',
       name: 'email-summary',
@@ -179,12 +191,12 @@ const router = createRouter({
       component: EmailSummaryView,
       meta: { requiresAuth: true, requiresLobster: true, title: '摘要详情', canGoBack: true, bottomNav: false }
     },
-    // 邮箱 — 账户配置
+    // 邮箱 — 邮件详情
     {
-      path: '/email/accounts',
-      name: 'email-accounts',
-      component: EmailAccountSetup,
-      meta: { requiresAuth: true, requiresLobster: true, title: '邮箱账户', canGoBack: true, bottomNav: false }
+      path: '/email/:id',
+      name: 'email-detail',
+      component: EmailDetailView,
+      meta: { requiresAuth: true, requiresLobster: true, title: '邮件详情', canGoBack: true, bottomNav: false }
     },
     // S2.3 联系人：从邮件/会议来源聚合的本地联系人
     {

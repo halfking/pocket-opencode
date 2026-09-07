@@ -25,6 +25,14 @@
         <button
           class="chat-icon-btn"
           type="button"
+          aria-label="清理垃圾邮件"
+          @click="router.push('/email/cleanup')"
+        >
+          <span class="material-symbols-outlined" aria-hidden="true">delete_sweep</span>
+        </button>
+        <button
+          class="chat-icon-btn"
+          type="button"
           aria-label="邮箱设置"
           @click="router.push('/email/settings')"
         >
@@ -47,6 +55,7 @@
       </ScrollChromePortal>
 
       <PullToRefresh :on-refresh="load" class="inbox-scroll">
+    <p v-if="syncHint" class="sync-hint">{{ syncHint }}</p>
     <div v-if="loading" class="state-wrap"><Skeleton :count="5" /></div>
     <EmptyState
       v-else-if="loadError"
@@ -60,7 +69,7 @@
       v-else-if="emails.length === 0"
       icon="📧"
       title="暂无邮件"
-      hint="添加邮箱账户并同步后即可在此查看"
+      hint="下拉刷新会从邮箱服务器同步。若仍为空，请检查账户授权码。"
       size="sm"
       variant="inline"
     />
@@ -75,7 +84,7 @@
       >
         <div class="row1">
           <span class="from">{{ m.fromName || m.fromAddress }}</span>
-          <span class="time">{{ relTime(m.date) }}</span>
+          <span class="time">{{ formatEmailRelTime(m.date) }}</span>
         </div>
         <div class="subject">{{ m.subject }}</div>
         <div class="snippet">{{ m.snippet }}</div>
@@ -107,6 +116,7 @@ import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
 import { emailApi } from '../../api/email'
 import { syncAccountsFromServer } from './account-sync'
+import { formatEmailRelTime } from './cleanup-filter'
 
 const router = useRouter()
 const emails = ref<LocalEmail[]>([])
@@ -114,6 +124,7 @@ const loading = ref(true)
 const loadError = ref('')
 const activeCategory = ref<string>('')
 const dbNotReady = ref(false)
+const syncHint = ref('')
 
 function goToLogin() {
   router.push('/login')
@@ -139,6 +150,13 @@ async function load() {
       await syncAccountsFromServer()
     } catch (e: any) {
       console.warn('[email] account sync:', e?.message || e)
+    }
+    try {
+      const r = await emailApi.syncNow()
+      const fail = r.failed?.length ? `，失败 ${r.failed.length}` : ''
+      syncHint.value = `已同步 ${r.synced ?? 0} 个账户，新邮件 ${r.new ?? 0}${fail}`
+    } catch (e: any) {
+      syncHint.value = e?.message ? `同步失败：${e.message}` : '同步失败'
     }
     try {
       await emailsStore.syncEmailsFromServer(200)
@@ -177,14 +195,6 @@ const catLabel = (c: string | null) =>
 async function markRead(m: LocalEmail, read: boolean) {
   await emailsStore.markRead(m.id, read)
   m.isRead = read
-}
-
-function relTime(ms: number) {
-  const diff = Date.now() - ms
-  const hr = Math.floor(diff / 3600000)
-  if (hr < 1) return `${Math.floor(diff / 60000)}分钟前`
-  if (hr < 24) return `${hr}小时前`
-  return `${Math.floor(hr / 24)}天前`
 }
 
 onMounted(load)
@@ -273,4 +283,5 @@ onMounted(load)
   cursor: pointer;
 }
 .read-btn:active { background: var(--bg-subtle); }
+.sync-hint { margin: 0 var(--space-3) var(--space-2); font-size: 11px; color: var(--text-muted); }
 </style>

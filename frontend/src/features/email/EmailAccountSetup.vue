@@ -1,30 +1,28 @@
 <!--
-  EmailAccountSetup — email account list + add wizard.
-  Uses emailApi.addAccount / syncNow for the cloud-side happy path; falls back
-  to localDB-backed emailsStore.saveAccount (when no backend) so it still works.
+  EmailAccountSetup — 已有账户列表 + 编辑。
+  新增走独立页 /email/accounts/new，本页不再展开添加向导。
 
   Note: prompts 6 will add emailsStore.getAccount — current list relies on
   listAccounts() only.
 -->
 <template>
-      <div class="header-row">
-      <h2 class="page-title">邮箱账户</h2>
-      <button class="add-toggle" @click="showForm = !showForm">
-        {{ showForm ? '收起' : '＋ 添加' }}
+    <HeaderActionsPortal>
+      <button type="button" aria-label="添加邮箱账户" @click="router.push('/email/accounts/new')">
+        <span class="material-symbols-outlined" aria-hidden="true">add</span>
       </button>
-    </div>
+    </HeaderActionsPortal>
 
     <!-- 已有账户列表 -->
     <div v-if="loading" class="state-wrap"><Skeleton :count="2" /></div>
     <EmptyState
-      v-else-if="accounts.length === 0 && !showForm"
+      v-else-if="accounts.length === 0"
       icon="📬"
       title="尚未添加邮箱账户"
       hint="点击右上角「＋ 添加」配置 IMAP"
       size="sm"
       variant="inline"
       action-label="添加账户"
-      @action="showForm = true"
+      @action="router.push('/email/accounts/new')"
     />
 
     <div v-else class="account-list">
@@ -47,27 +45,13 @@
       </div>
     </div>
 
-    <!-- 添加账户向导 -->
-    <section v-if="showForm" class="wizard">
-      <h3 class="form-title">{{ editId ? '编辑账户' : '添加账户' }}</h3>
-
-      <div v-if="!editId" class="templates">
-        <div class="templates-label">选择邮箱类型（预设 IMAP）</div>
-        <div class="template-grid">
-          <button
-            v-for="t in templates"
-            :key="t.id"
-            class="tpl-btn"
-            :class="{ selected: form.imapHost === t.host }"
-            @click="applyTemplate(t)"
-          >
-            <div class="tpl-icon">{{ t.icon }}</div>
-            <div class="tpl-name">{{ t.label }}</div>
-            <div class="tpl-host">{{ t.host }}</div>
-          </button>
-        </div>
-      </div>
-
+    <BottomSheet
+      v-model="showForm"
+      title="编辑账户"
+      height="full"
+      aria-label="编辑邮箱账户"
+      @close="cancelEdit"
+    >
       <div class="form-fields">
         <label class="field">
           <span class="field-label">显示名</span>
@@ -176,12 +160,15 @@
           </button>
         </div>
       </div>
-    </section>
+    </BottomSheet>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { Skeleton, EmptyState } from '../../components'
+import { useRouter } from 'vue-router'
+import { Skeleton, EmptyState, BottomSheet } from '../../components'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
+import { isLocalTestAddress } from './providers'
 import * as emailsStore from './emails-store'
 import type { EmailAccount } from './emails-store'
 import { emailApi } from '../../api/email'
@@ -189,21 +176,7 @@ import type { EmailAccount as ApiEmailAccount, EmailCredentialInput } from '../.
 import { ApiError } from '../../api/http'
 import { useConfirm } from '../../composables/useConfirm'
 
-interface ImapTemplate {
-  id: string
-  label: string
-  icon: string
-  host: string
-  port: number
-}
-
-const templates: ImapTemplate[] = [
-  { id: 'gmail', label: 'Gmail', icon: '📧', host: 'imap.gmail.com', port: 993 },
-  { id: 'qq', label: 'QQ 邮箱', icon: '🐧', host: 'imap.qq.com', port: 993 },
-  { id: '163', label: '163 邮箱', icon: '🟠', host: 'imap.163.com', port: 993 },
-  { id: 'outlook', label: 'Outlook', icon: '🟦', host: 'outlook.office365.com', port: 993 },
-]
-
+const router = useRouter()
 const accounts = ref<EmailAccount[]>([])
 const loading = ref(true)
 const { confirm } = useConfirm()
@@ -273,7 +246,9 @@ async function loadList() {
     merged.set(a.id, toLocal(a))
   }
   // 按创建时间排序，避免顺序随两个来源的合并次序漂移。
-  accounts.value = [...merged.values()].sort((a, b) => a.createdAt - b.createdAt)
+  accounts.value = [...merged.values()]
+    .filter((a) => !isLocalTestAddress(a.emailAddress))
+    .sort((a, b) => a.createdAt - b.createdAt)
   loading.value = false
 }
 
@@ -288,24 +263,6 @@ async function refreshCloudSnapshot() {
     }
     cloudAccounts.value = new Map()
   }
-}
-
-function applyTemplate(t: ImapTemplate) {
-  form.imapHost = t.host
-  form.imapPort = t.port
-  // 预设显示名（邮箱地址还没填就跳过）
-  if (!form.displayName && form.emailAddress) {
-    form.displayName = inferDisplayName(form.emailAddress)
-  }
-}
-
-function inferDisplayName(addr: string) {
-  if (!addr) return ''
-  if (addr.includes('@gmail.com')) return 'Gmail'
-  if (addr.includes('@qq.com')) return 'QQ 邮箱'
-  if (addr.includes('@163.com')) return '163 邮箱'
-  if (addr.includes('@outlook.com') || addr.includes('@hotmail.com')) return 'Outlook'
-  return ''
 }
 
 function resetForm() {
@@ -582,22 +539,6 @@ onMounted(loadList)
 </script>
 
 <style scoped>
-.header-row {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: var(--space-3);
-}
-.page-title { font-size: 18px; font-weight: 600; margin: 0; color: var(--text-primary); }
-.add-toggle {
-  border: 1px solid var(--brand-primary);
-  background: transparent;
-  color: var(--brand-primary);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-full);
-  font-size: 13px;
-  cursor: pointer;
-}
-.add-toggle:active { background: var(--brand-primary); color: var(--text-inverse); }
-
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
 .hint { font-size: 12px; color: var(--text-muted); margin-top: var(--space-2); }
 
@@ -647,7 +588,7 @@ onMounted(loadList)
 .tpl-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
 .tpl-host { font-size: 11px; color: var(--text-muted); }
 
-.form-fields { display: flex; flex-direction: column; gap: var(--space-3); margin-top: var(--space-4); }
+.form-fields { display: flex; flex-direction: column; gap: var(--space-3); margin-top: 0; }
 .field { display: flex; flex-direction: column; gap: var(--space-1); }
 .field-label { font-size: 12px; color: var(--text-secondary); }
 .hint-inline { font-size: 11px; color: var(--text-muted); margin-left: var(--space-1); }

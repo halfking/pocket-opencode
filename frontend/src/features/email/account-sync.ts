@@ -15,7 +15,9 @@ import { watch } from 'vue'
 import { emailApi, type EmailAccount as ServerAccount } from '../../api/email'
 import { lobsterReady } from '../../native/lobster-init'
 import { useAuthStore } from '../../stores/auth'
-import { listAccounts, writeAccountIfNewer } from './emails-store'
+import { localDB } from '../../native/local-db'
+import { deleteAccount, listAccounts, writeAccountIfNewer } from './emails-store'
+import { isLocalTestAddress } from './providers'
 
 export interface SyncReport {
   fetched: number
@@ -69,25 +71,44 @@ export async function syncAccountsBidirectional(): Promise<SyncReport> {
     const remote = res.accounts ?? []
     let applied = 0
     let skipped = 0
-    for (const a of remote) {
-      const updatedAt = a.updatedAt ?? a.createdAt ?? 0
-      const won = await writeAccountIfNewer({
-        id: a.id,
-        displayName: a.displayName,
-        emailAddress: a.emailAddress,
-        imapHost: a.imapHost,
-        imapPort: a.imapPort,
-        authType: a.authType,
-        syncIntervalMin: a.syncIntervalMin ?? 15,
-        enabled: !!a.enabled,
-        updatedAt,
-      })
-      if (won) applied++
-      else skipped++
-    }
-
     let pushed = 0
+    // 网页未解锁 / jeep-sqlite 未挂时本地库不可用：只以服务端列表为准，
+    // 不把「LocalDB 未初始化」当成同步失败，否则设置页会整页被错误态盖住。
+    if (!localDB.isReady()) {
+      return { fetched: remote.length, applied, skipped, pushed, online: true }
+    }
     try {
+      for (const a of remote) {
+        if (isLocalTestAddress(a.emailAddress)) {
+          skipped++
+          continue
+        }
+        try {
+          const updatedAt = a.updatedAt ?? a.createdAt ?? 0
+          const won = await writeAccountIfNewer({
+            id: a.id,
+            displayName: a.displayName,
+            emailAddress: a.emailAddress,
+            imapHost: a.imapHost,
+            imapPort: a.imapPort,
+            authType: a.authType,
+            syncIntervalMin: a.syncIntervalMin ?? 15,
+            enabled: !!a.enabled,
+            updatedAt,
+          })
+          if (won) applied++
+          else skipped++
+        } catch (e: unknown) {
+          skipped++
+          console.warn('[email] mirror account write skipped:', a.emailAddress, e)
+        }
+      }
+
+      for (const a of await listAccounts()) {
+        if (isLocalTestAddress(a.emailAddress)) {
+          await deleteAccount(a.id)
+        }
+      }
       const local = await listAccounts()
       const plan = planAccountSync(
         local.map((a) => ({ id: a.id, emailAddress: a.emailAddress, updatedAt: a.updatedAt })),
@@ -113,10 +134,11 @@ export async function syncAccountsBidirectional(): Promise<SyncReport> {
         })
         if (ok) pushed++
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
+      // 本地镜像写入失败不否掉服务端结果；设置页仍以远程列表为准。
       return {
         fetched: remote.length, applied, skipped, pushed, online: true,
-        error: e?.message,
+        error: e instanceof Error ? e.message : String(e),
       }
     }
     return { fetched: remote.length, applied, skipped, pushed, online: true }
@@ -151,7 +173,12 @@ export function startEmailConfigSync(): void {
     ([ready, authed]) => {
       if (!ready || !authed) return
       if (inflight) return
-      inflight = syncAccountsBidirectional().finally(() => { inflight = null })
+      inflight = syncAccountsBidirectional()
+        .catch((e: unknown) => ({
+          fetched: 0, applied: 0, skipped: 0, pushed: 0, online: false,
+          error: e instanceof Error ? e.message : String(e),
+        }))
+        .finally(() => { inflight = null })
     },
     { immediate: true },
   )
