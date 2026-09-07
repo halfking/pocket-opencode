@@ -1,15 +1,6 @@
-<!--
-  NoteEditView — 笔记新建 / 编辑表单。
-
-  - /notes/new → 新建模式（id === 'new'）
-  - /notes/:id/edit → 编辑模式
-  - 复用 VoiceRecorderWidget（在 NoteListView 也用的那个）
-  - 表单字段：title / content / domain (chip) / tags（逗号分隔）
-  - 编辑模式读取已有笔记的字段初始化
--->
 <template>
   <div class="note-edit-view">
-          <div v-if="loading" class="state" role="status">加载中…</div>
+      <div v-if="loading" class="state" role="status">加载中…</div>
 
       <ErrorState
         v-else-if="loadError"
@@ -19,7 +10,6 @@
       />
 
       <form v-else class="edit-form" @submit.prevent="onSave">
-        <!-- 标题：单行统一输入（语音 / AI 优化） -->
         <div class="form-group">
           <label for="note-title">标题</label>
           <UnifiedComposer
@@ -33,24 +23,23 @@
           />
         </div>
 
-        <!-- 正文：统一输入（宽文本 + 全屏文章编辑 + 语音/文件/优化） -->
         <div class="form-group">
           <label for="note-content">
             正文
             <span class="hint">支持 Markdown · 可全屏编辑 · 语音录入自动填入</span>
           </label>
           <UnifiedComposer
+            ref="composerRef"
             v-model="form.content"
             placeholder="点击 ⛶ 全屏编辑，🎙 语音录入，或直接输入文本…"
             :submit-on-enter="false"
-            :enable="{ voice: true, image: false, camera: false, file: true, agent: false, optimize: true }"
+            :enable="{ voice: true, image: true, camera: true, file: true, agent: false, optimize: true }"
             submit-label="保存"
             :submitting="saving"
             @submit="onSave"
           />
         </div>
 
-        <!-- 域 -->
         <div class="form-group">
           <label>分类</label>
           <div class="domain-chips">
@@ -70,19 +59,25 @@
           </div>
         </div>
 
-        <!-- 标签 -->
         <div class="form-group">
           <label for="note-tags">标签 <span class="hint">逗号分隔</span></label>
-          <input
-            id="note-tags"
-            v-model="form.tagsInput"
-            type="text"
-            placeholder="如：项目周会, OKR"
-            class="tags-input"
-          />
+          <div class="tag-row">
+            <input
+              id="note-tags"
+              v-model="form.tagsInput"
+              type="text"
+              placeholder="如：项目周会, OKR"
+              class="tags-input"
+            />
+            <button type="button" class="extract-btn" :disabled="extracting" @click="onExtractTags">
+              {{ extracting ? '提取中…' : '一键提取' }}
+            </button>
+          </div>
+          <input ref="videoInput" type="file" accept="video/*" class="hidden-file" @change="onPickVideo" />
+          <button type="button" class="video-btn" @click="videoInput?.click()">添加视频</button>
+          <p v-if="pendingMedia.length" class="media-hint">已选 {{ pendingMedia.length }} 个附件</p>
         </div>
 
-        <!-- 操作 -->
         <div class="form-actions">
           <button type="button" class="action-btn ghost" @click="goBack">取消</button>
           <button type="submit" class="action-btn primary" :disabled="saving || !canSave">
@@ -98,9 +93,16 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as notesStore from './notes-store'
-import type { LocalNote } from './notes-store'
+import type { LocalNote, NoteMediaInput } from './notes-store'
 import { ErrorState, UnifiedComposer } from '../../components'
 import { useAuthStore } from '../../stores/auth'
+import {
+  attachmentsToMedia,
+  extractTagsForForm,
+  fileToVideoMedia,
+  parseTagsInput,
+  tagsFromArray,
+} from './note-edit-helpers'
 
 const route = useRoute()
 const router = useRouter()
@@ -119,6 +121,10 @@ const loading = ref(true)
 const saving = ref(false)
 const saveError = ref('')
 const loadError = ref('')
+const extracting = ref(false)
+const pendingMedia = ref<NoteMediaInput[]>([])
+const videoInput = ref<HTMLInputElement | null>(null)
+const composerRef = ref<{ attachments?: { value: { dataUrl: string; name: string }[] } } | null>(null)
 
 interface FormState {
   title: string
@@ -145,15 +151,30 @@ const isNew = computed(
 
 const canSave = computed(() => form.content.trim().length > 0)
 
-function parseTagsInput(raw: string): string[] {
-  return raw
-    .split(/[,，]/)
-    .map((t) => t.trim())
-    .filter(Boolean)
+function collectComposerMedia(): NoteMediaInput[] {
+  const exposed = composerRef.value?.attachments as unknown
+  const raw = Array.isArray(exposed)
+    ? exposed
+    : (exposed as { value?: { dataUrl: string; name: string }[] } | undefined)?.value ?? []
+  return attachmentsToMedia(raw)
 }
 
-function tagsFromArray(tags: string[] | null | undefined): string {
-  return tags && tags.length ? tags.join(', ') : ''
+function onPickVideo(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (file) pendingMedia.value.push(fileToVideoMedia(file))
+}
+
+async function onExtractTags() {
+  extracting.value = true
+  try {
+    const extracted = await extractTagsForForm(form.content, form.tagsInput)
+    form.tagsInput = extracted.tagsInput
+    if (!form.title) form.title = extracted.title
+  } finally {
+    extracting.value = false
+  }
 }
 
 onMounted(() => load())
@@ -169,7 +190,10 @@ async function load() {
   loadError.value = ''
   try {
     const existing = await notesStore.getNote(routeId.value, false, currentWorkspaceId())
-    if (existing) hydrate(existing)
+    if (existing) {
+      existing.content = await notesStore.loadFullContent(existing)
+      hydrate(existing)
+    }
   } catch (e: any) {
     loadError.value = e?.message || '加载笔记失败，请稍后重试。'
   } finally {
@@ -195,6 +219,7 @@ async function onSave() {
   saving.value = true
   saveError.value = ''
 
+  const media = [...pendingMedia.value, ...collectComposerMedia()]
   const payload = {
     title: form.title.trim() || undefined,
     content: form.content.trim(),
@@ -203,23 +228,23 @@ async function onSave() {
     audioPath: form.audioPath ?? undefined,
     audioDurationMs: form.audioDurationMs,
     workspaceId: currentWorkspaceId(),
+    createdByVoice: false,
+    media,
   }
 
   try {
-    let savedId: string
     if (isNew.value) {
-      const created = await notesStore.createNote(payload)
-      savedId = created.id
+      await notesStore.createNote(payload)
     } else {
       await notesStore.updateNote(routeId.value, {
         title: form.title.trim() || null,
         content: form.content.trim(),
         domain: form.domain,
         tags: parseTagsInput(form.tagsInput),
+        media,
       }, currentWorkspaceId())
-      savedId = routeId.value
     }
-    router.push(`/notes/${savedId}`)
+    router.replace('/notes')
   } catch (e: any) {
     console.warn('[note] 保存失败:', e)
     saving.value = false
@@ -236,109 +261,38 @@ function goBack() {
 <style scoped>
 .note-edit-view { min-height: 100%; background: var(--bg-base); }
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
-
 .edit-form { display: flex; flex-direction: column; gap: var(--space-4); padding-bottom: 120px; }
-
 .form-group { display: flex; flex-direction: column; gap: var(--space-2); }
-.form-group label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
+.form-group label { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
 .form-group .hint { font-size: 11px; font-weight: 400; color: var(--text-muted); }
-
-.title-input,
 .tags-input {
-  width: 100%;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font-size: 15px;
-  box-sizing: border-box;
-  outline: none;
+  flex: 1; padding: var(--space-3); border-radius: var(--radius-md);
+  border: 1px solid var(--border); background: var(--bg-card); color: var(--text-primary);
 }
-.title-input:focus,
-.tags-input:focus,
-.content-input:focus {
-  border-color: var(--brand-primary);
+.tag-row { display: flex; gap: 8px; }
+.extract-btn, .video-btn {
+  padding: 8px 12px; border-radius: var(--radius-md);
+  border: 1px solid var(--border); background: var(--bg-subtle); font-size: 12px;
 }
-.tags-input { font-size: 13px; }
-
-.content-input {
-  width: 100%;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font-size: 15px;
-  line-height: 1.6;
-  resize: vertical;
-  font-family: inherit;
-  box-sizing: border-box;
-  outline: none;
-}
-
-.domain-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
+.hidden-file { display: none; }
+.media-hint { margin: 4px 0 0; font-size: 12px; color: var(--text-muted); }
+.domain-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .chip {
-  padding: var(--space-2) var(--space-4);
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text-secondary);
-  font-size: 13px;
-  cursor: pointer;
-  transition: background var(--duration-fast), color var(--duration-fast), border-color var(--duration-fast), transform var(--duration-fast);
+  padding: var(--space-2) var(--space-4); border-radius: var(--radius-full);
+  border: 1px solid var(--border); background: var(--bg-card); color: var(--text-secondary);
 }
-.chip:active { transform: scale(0.97); }
 .chip.active { color: var(--text-inverse); border-color: transparent; }
 .chip.domain-work.active { background: var(--cat-work); }
 .chip.domain-study.active { background: var(--cat-study); }
 .chip.domain-life.active { background: var(--cat-life); }
 .chip.domain-idea.active { background: var(--cat-idea); }
-
-.form-actions {
-  display: flex;
-  gap: var(--space-3);
-  padding-top: var(--space-2);
-}
+.form-actions { display: flex; gap: var(--space-3); }
 .action-btn {
-  flex: 1;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  color: var(--text-primary);
+  flex: 1; padding: var(--space-3); border-radius: var(--radius-md);
+  border: 1px solid var(--border); background: var(--bg-card); font-weight: 600;
 }
-.action-btn:active { opacity: 0.7; }
-.action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.action-btn.primary {
-  background: var(--brand-gradient);
-  color: var(--text-inverse);
-  border: none;
-}
+.action-btn:disabled { opacity: 0.5; }
+.action-btn.primary { background: var(--brand-gradient); color: var(--text-inverse); border: none; }
 .action-btn.ghost { background: var(--bg-subtle); }
-
-.form-error {
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1.5;
-}
+.form-error { margin: 0; padding: var(--space-3); border-radius: var(--radius-md); background: var(--danger-bg); color: var(--danger); }
 </style>
