@@ -154,12 +154,13 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 // Content is the incremental text; Usage is only present on the final chunk
 // when the request set stream_options.include_usage.
 type StreamDelta struct {
-	Content      string `json:"content"`
-	FinishReason string `json:"finish_reason"`
-	Done         bool   `json:"done"`
-	PromptTokens     int `json:"prompt_tokens,omitempty"`
-	CompletionTokens int `json:"completion_tokens,omitempty"`
-	TotalTokens      int `json:"total_tokens,omitempty"`
+	Content          string `json:"content"`
+	FinishReason     string `json:"finish_reason"`
+	Done             bool   `json:"done"`
+	Model            string `json:"model,omitempty"`
+	PromptTokens     int    `json:"prompt_tokens,omitempty"`
+	CompletionTokens int    `json:"completion_tokens,omitempty"`
+	TotalTokens      int    `json:"total_tokens,omitempty"`
 }
 
 // Stream 调用 llm-gateway 的 chat completion（流式 SSE）。

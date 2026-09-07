@@ -55,6 +55,33 @@ data: {"choices":[{"delta":{"content":"B"}}]}
 	}
 }
 
+func TestParseSSEStream_ModelOnlyFrame(t *testing.T) {
+	body := strings.NewReader(`data: {"model":"kimi-k2","choices":[{"delta":{}}]}
+
+data: {"model":"kimi-k2","choices":[{"delta":{"content":"hi"}}]}
+
+data: [DONE]
+`)
+	var models []string
+	var content string
+	_, err := parseSSEStream(body, func(d StreamDelta) bool {
+		if d.Model != "" {
+			models = append(models, d.Model)
+		}
+		content += d.Content
+		return true
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if content != "hi" {
+		t.Errorf("content=%q want hi", content)
+	}
+	if len(models) < 1 || models[0] != "kimi-k2" {
+		t.Errorf("models=%v want first kimi-k2", models)
+	}
+}
+
 func TestParseSSEStream_MalformedSkipped(t *testing.T) {
 	// A malformed line should not abort the stream.
 	body := strings.NewReader(`data: {not json}

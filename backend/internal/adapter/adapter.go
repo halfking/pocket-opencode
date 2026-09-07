@@ -23,12 +23,12 @@ type NPSAdapter interface {
 }
 
 type OpenCodeSession struct {
-	ID     string
-	Title  string
-	Status string
-	// TimeUpdated is the upstream session time.updated (Unix ms). It backs
-	// the mobile incremental-sync cursor; 0 when the upstream omits it.
-	TimeUpdated int64
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Status       string `json:"status"`
+	TimeUpdated  int64  `json:"updatedAt,omitempty"`
+	InstanceID   string `json:"instanceId,omitempty"`
+	InstanceName string `json:"instanceName,omitempty"`
 }
 
 // RemoteTask 从 OpenCode 实例的 Session API 获取的任务（一个 Session = 一个开发任务）

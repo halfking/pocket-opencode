@@ -203,8 +203,17 @@ func parseSSEResponse(data string) (json.RawMessage, error) {
 	return nil, fmt.Errorf("no JSON data found in SSE response: %s", data[:min(100, len(data))])
 }
 
-// doRaw 发送原始 HTTP 请求并返回完整响应体 + 响应头
+// doRaw 发送原始 HTTP 请求并返回完整响应体 + 响应头。
+// acc-go 吃 HS256 JWT；本机 Node ACC 吃 api_keys 静态 Bearer。JWT 401 时回退 raw secret。
 func (c *Client) doRaw(ctx context.Context, payload []byte) ([]byte, http.Header, error) {
+	body, headers, err := c.doRawWithBearer(ctx, payload, true)
+	if err != nil && strings.Contains(err.Error(), "HTTP 401") {
+		return c.doRawWithBearer(ctx, payload, false)
+	}
+	return body, headers, err
+}
+
+func (c *Client) doRawWithBearer(ctx context.Context, payload []byte, useJWT bool) ([]byte, http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create request: %w", err)
@@ -213,13 +222,15 @@ func (c *Client) doRaw(ctx context.Context, payload []byte) ([]byte, http.Header
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 
-	// Gap 3: ACC 要求 HMAC 签名的内部 JWT（HS256），而非静态 bearer。
-	// 每次请求重新签署（TTL 15min），claims 携带 tenant_id 与 scopes。
-	token, err := c.signJWT(ctx)
-	if err != nil {
-		return nil, nil, err
+	if useJWT {
+		token, err := c.signJWT(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+c.secret)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
 
 	c.mu.Lock()
 	if c.sessionID != "" {

@@ -992,25 +992,18 @@ func (s *Server) handleAllSessions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		sessions, err := s.opencode.ListSessions(r.Context(), instanceBaseURL)
+		instCtx, cancel := context.WithTimeout(r.Context(), listSessionsTimeout(instanceBaseURL))
+		sessions, err := s.opencode.ListSessions(instCtx, instanceBaseURL)
+		cancel()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// 应用分页
-		start := offset
-		end := offset + limit
-		if start > len(sessions) {
-			start = len(sessions)
-		}
-		if end > len(sessions) {
-			end = len(sessions)
-		}
-
+		paged := pageSessions(sessions, offset, limit)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"sessions": sessions[start:end],
+			"sessions": paged,
 			"total":    len(sessions),
 			"limit":    limit,
 			"offset":   offset,
@@ -1021,39 +1014,14 @@ func (s *Server) handleAllSessions(w http.ResponseWriter, r *http.Request) {
 	// 获取所有实例的会话（如果没有指定 instance_id）
 	var allSessions []adapter.OpenCodeSession
 	if s.registry != nil {
-		instances := s.registry.ListInstancesForWorkspace(s.workspaceIDFromRequest(r))
-
-		for _, inst := range instances {
-			// 通过 registry 获取实例的 API base URL
-			apiBase, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), inst.ID)
-
-			if err != nil {
-				log.Printf("Failed to get API base for instance %s: %v", inst.ID, err)
-				continue
-			}
-
-			sessions, err := s.opencode.ListSessions(r.Context(), apiBase)
-			if err != nil {
-				log.Printf("Failed to list sessions for instance %s: %v", inst.ID, err)
-				continue
-			}
-			allSessions = append(allSessions, sessions...)
-		}
+		wsID := s.workspaceIDFromRequest(r)
+		allSessions = s.listSessionsAcrossInstances(r.Context(), wsID, s.registry.ListInstancesForWorkspace(wsID))
 	}
 
-	// 应用分页
-	start := offset
-	end := offset + limit
-	if start > len(allSessions) {
-		start = len(allSessions)
-	}
-	if end > len(allSessions) {
-		end = len(allSessions)
-	}
-
+	paged := pageSessions(allSessions, offset, limit)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"sessions": allSessions[start:end],
+		"sessions": paged,
 		"total":    len(allSessions),
 		"limit":    limit,
 		"offset":   offset,
@@ -1140,27 +1108,53 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// 2. OpenCode 实例会话（HTTP adapter）
-		if (source == "" || source == "opencode") && instanceID != "" && s.opencode != nil && s.registry != nil {
-			apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(s.workspaceIDFromRequest(r), instanceID)
-			if err == nil {
-				remoteTasks, err := s.opencode.ListRemoteTasks(r.Context(), apiBaseURL, "", limit)
-				if err != nil {
-					log.Printf("Failed to fetch OpenCode sessions for instance %s: %v", instanceID, err)
-				} else {
-					now := time.Now().Unix()
-					for _, rt := range remoteTasks {
-						allTasks = append(allTasks, task.Task{
-							ID:           rt.ID,
-							Title:        rt.Title,
-							Status:       rt.Status,
-							Priority:     "normal",
-							WorkstreamID: instanceID, // OpenCode 实例 ID 即 workstream
-							Source:       "opencode",
-							CreatedAt:    time.Unix(now, 0),
-							UpdatedAt:    time.Unix(now, 0),
-						})
+		// 2. OpenCode / disk 实例会话。instance_id 为空时扫全部已注册实例
+		// （含 disk-cursor / disk-zcode / disk-opencode），这样才能在任务页
+		// 看到本机 IDE 的活跃+归档会话。
+		if (source == "" || source == "opencode") && s.opencode != nil && s.registry != nil {
+			wsID := s.workspaceIDFromRequest(r)
+			instances := s.registry.ListInstancesForWorkspace(wsID)
+			if instanceID != "" {
+				filtered := instances[:0]
+				for _, inst := range instances {
+					if inst.ID == instanceID {
+						filtered = append(filtered, inst)
 					}
+				}
+				instances = filtered
+			}
+			now := time.Now().Unix()
+			for _, inst := range instances {
+				if instanceID == "" && !shouldAggregateSessions(inst) {
+					continue
+				}
+				apiBaseURL, err := s.registry.GetInstanceAPIBaseForWorkspace(wsID, inst.ID)
+				if err != nil {
+					continue
+				}
+				instCtx, cancel := context.WithTimeout(r.Context(), listSessionsTimeout(apiBaseURL))
+				remoteTasks, err := s.opencode.ListRemoteTasks(instCtx, apiBaseURL, "", limit)
+				cancel()
+				if err != nil {
+					log.Printf("Failed to fetch OpenCode sessions for instance %s: %v", inst.ID, err)
+					continue
+				}
+				name := inst.DisplayName
+				if name == "" {
+					name = inst.ID
+				}
+				for _, rt := range remoteTasks {
+					allTasks = append(allTasks, task.Task{
+						ID:           rt.ID,
+						Title:        rt.Title,
+						Status:       rt.Status,
+						Priority:     "normal",
+						WorkstreamID: inst.ID,
+						InstanceName: name,
+						Source:       "opencode",
+						CreatedAt:    time.Unix(now, 0),
+						UpdatedAt:    time.Unix(now, 0),
+					})
 				}
 			}
 		}

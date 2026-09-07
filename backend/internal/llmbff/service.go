@@ -91,10 +91,13 @@ type Usage struct {
 // Usage is populated on that final chunk when the provider supports
 // stream_options.include_usage.
 type Delta struct {
-	Content     string `json:"content,omitempty"`
-	Done        bool   `json:"done"`
+	Content      string `json:"content,omitempty"`
+	Done         bool   `json:"done"`
 	FinishReason string `json:"finish_reason,omitempty"`
-	Usage       *Usage `json:"usage,omitempty"`
+	Usage        *Usage `json:"usage,omitempty"`
+	// Model 是本帧对应的真实上游模型。auto 路由会在首 token 前先发一帧
+	// 只有 model、没有 content 的进度，让客户端立刻显示命中名而不是 "auto"。
+	Model string `json:"model,omitempty"`
 	// Retry 是 auto 回退重试的进度帧：当前候选返回 no_candidate、Provider
 	// 即将改用 Retry 指向的下一候选 model 重试时发出。该帧不带 content、
 	// 非终态（Done=false），客户端收到后应继续读流——正文仍会以普通

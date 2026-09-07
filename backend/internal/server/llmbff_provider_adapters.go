@@ -260,6 +260,12 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		return nil, err
 	}
 	req = p.resolveChatModel(req)
+	// auto 解析后立刻下发真实候选名：前端 chip/气泡不必等首 token。
+	if req.Model != "" {
+		if !fn(llmbff.Delta{Model: req.Model}) {
+			return nil, ctx.Err()
+		}
+	}
 	deadline := time.Now().Add(autoFallbackTotalBudget)
 	// 已尝试过的候选集合（含初始解析结果）：nextFallbackModel 据此跳过，
 	// 防止挂死候选反复超时时链在两个死候选间成环。
@@ -283,19 +289,17 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		// usage）也要计入——SSE 解析在终态帧后仍会等 [DONE]，上游在此间隙
 		// 挂死时错误同样是尝试级超时，只按正文判定会误判"未作答"而重复作答。
 		answered := false
-		attemptFrames := 0
 		attemptFn := func(d llmbff.Delta) bool {
-			if d.Content != "" || d.Done {
+			if d.Content != "" {
 				answered = true
 			}
-			attemptFrames++
 			return fn(d)
 		}
 		usage, err := (&llmGatewayBFFProvider{client: c}).Stream(attemptCtx, req, attemptFn)
 		cancel()
 		// 上游零帧干净关闭（err==nil）按候选失败上抛：换候选才有产出机会，
 		// 最终候选则由 handler 落成结构化错误终态（2026-09-05 真机空流复现）。
-		if err == nil && attemptFrames == 0 {
+		if err == nil && !answered {
 			err = errEmptyStreamAttempt
 		}
 		if err == nil || !streamAttemptFallbackEligible(err, answered) {
@@ -320,7 +324,7 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		// 整链重试期间能看到「已切换到 <model> 重试」，而不是零字节转圈
 		// （2026-09-05 移动端 E2E 反馈）。fn 返回 false 说明客户端已断开，
 		// 直接放弃重试。
-		if !fn(llmbff.Delta{Retry: fallback}) {
+		if !fn(llmbff.Delta{Retry: fallback, Model: fallback}) {
 			return usage, err
 		}
 		req.Model = fallback
@@ -432,6 +436,10 @@ func (p *llmGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatReque
 			Content:      d.Content,
 			FinishReason: d.FinishReason,
 			Done:         d.FinishReason != "" || d.TotalTokens > 0,
+			Model:        d.Model,
+		}
+		if delta.Model == "" {
+			delta.Model = req.Model
 		}
 		if d.TotalTokens > 0 {
 			u := quota.ApplyCost(req.Model, llmbff.Usage{

@@ -15,6 +15,15 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
 )
 
+// dropModelProgress 跳过 auto 解析后立刻下发的纯 model 进度帧，后续断言仍看 Retry/正文。
+func dropModelProgress(got []llmbff.Delta) []llmbff.Delta {
+	i := 0
+	for i < len(got) && got[i].Retry == "" && got[i].Content == "" && !got[i].Done && got[i].Usage == nil {
+		i++
+	}
+	return got[i:]
+}
+
 func TestIsNoCandidateError(t *testing.T) {
 	cases := []struct {
 		name string
@@ -141,6 +150,7 @@ func TestDynamicGatewayStreamEmitsRetryProgressFrame(t *testing.T) {
 	if n := calls.Load(); n != 2 {
 		t.Fatalf("upstream calls = %d, want 2", n)
 	}
+	got = dropModelProgress(got)
 	if len(got) < 3 {
 		t.Fatalf("fn got %d deltas, want >= 3: %+v", len(got), got)
 	}
@@ -213,6 +223,7 @@ func TestDynamicGatewayStreamFallsBackOnAttemptDeadline(t *testing.T) {
 	if n := calls.Load(); n != 2 {
 		t.Fatalf("upstream calls = %d, want 2", n)
 	}
+	got = dropModelProgress(got)
 	if first := got[0]; first.Retry != "model-b" || first.Content != "" || first.Done {
 		t.Errorf("first delta = %+v, want retry=model-b, no content, not done", first)
 	}
@@ -287,7 +298,8 @@ func TestDynamicGatewayStreamNoFallbackAfterDoneFrame(t *testing.T) {
 		if n == 1 {
 			w.Header().Set("Content-Type", "text/event-stream")
 			fmt.Fprint(w,
-				"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"+
+				"data: {\"choices\":[{\"delta\":{\"content\":\"done-then-hang\"}}]}\n\n"+
+					"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"+
 					"\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n")
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
@@ -387,6 +399,7 @@ func TestDynamicGatewayStreamChainVisitsEachCandidateOnce(t *testing.T) {
 	if seen["model-c"] != 1 {
 		t.Fatalf("model-c visits = %d, want 1", seen["model-c"])
 	}
+	got = dropModelProgress(got)
 	if len(got) < 4 {
 		t.Fatalf("fn got %d deltas, want >= 4: %+v", len(got), got)
 	}
@@ -485,6 +498,7 @@ func TestDynamicGatewayStreamFallsBackOnInvalidModel(t *testing.T) {
 	if n := calls.Load(); n != 2 {
 		t.Fatalf("upstream calls = %d, want 2", n)
 	}
+	got = dropModelProgress(got)
 	if first := got[0]; first.Retry != "model-b" || first.Content != "" || first.Done {
 		t.Errorf("first delta = %+v, want retry=model-b, no content, not done", first)
 	}
@@ -550,6 +564,7 @@ func TestDynamicGatewayStreamFinalCandidateGetsFullRemainingBudget(t *testing.T)
 	if n := calls.Load(); n != 2 {
 		t.Fatalf("upstream calls = %d, want 2", n)
 	}
+	got = dropModelProgress(got)
 	if first := got[0]; first.Retry != "model-b" || first.Content != "" || first.Done {
 		t.Errorf("first delta = %+v, want retry=model-b, no content, not done", first)
 	}
@@ -746,6 +761,7 @@ func TestDynamicGatewayStreamFallsBackOnEmptyStream(t *testing.T) {
 	if n := calls.Load(); n != 2 {
 		t.Fatalf("upstream calls = %d, want 2", n)
 	}
+	got = dropModelProgress(got)
 	if len(got) < 3 {
 		t.Fatalf("fn got %d deltas, want >= 3: %+v", len(got), got)
 	}
@@ -791,6 +807,7 @@ func TestDynamicGatewayStreamFinalCandidateEmptyStreamIsError(t *testing.T) {
 	if n := calls.Load(); n != 1 {
 		t.Fatalf("upstream calls = %d, want 1 (final candidate, no fallback)", n)
 	}
+	got = dropModelProgress(got)
 	if len(got) != 0 {
 		t.Fatalf("fn got %d deltas, want 0: %+v", len(got), got)
 	}
