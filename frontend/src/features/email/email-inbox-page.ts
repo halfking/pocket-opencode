@@ -1,14 +1,11 @@
 import { emailApi } from '../../api/email'
-import { DEFAULT_LIST_PAGE_SIZE, pageHasMore } from '../../native/list-sync/page'
+import { DEFAULT_LIST_PAGE_SIZE } from '../../native/list-sync/page'
 import { syncAccountsFromServer } from './account-sync'
+import { inboxListFilter } from './email-inbox-filter'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
 
-export function inboxListFilter(category: string) {
-  if (category === '__important') return { importance: 'high' as const }
-  if (category === '__spam') return { category: 'spam' }
-  return category ? { category } : {}
-}
+export { inboxHasMore, inboxListFilter } from './email-inbox-filter'
 
 export async function readInboxPage(category: string, offset: number): Promise<LocalEmail[]> {
   return emailsStore.listEmails({
@@ -38,8 +35,4 @@ export async function syncInboxFromServer(): Promise<string> {
     console.warn('[email] sync from server:', e instanceof Error ? e.message : e)
   }
   return hint
-}
-
-export function inboxHasMore(pageLen: number): boolean {
-  return pageHasMore(pageLen)
 }

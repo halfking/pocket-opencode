@@ -75,7 +75,7 @@ jobs:
         run: node --test src/native/__tests__/runtime-platform.test.mjs src/native/__tests__/capabilities-harmony.test.mjs
 
       - name: Run email content-first helper tests
-        run: node --test src/features/email/__tests__/compose-mode.test.mjs src/features/email/__tests__/translate-email.test.mjs src/features/email/__tests__/email-body-format.test.mjs src/features/email/invoice-list.test.ts
+        run: node --test src/features/email/__tests__/compose-mode.test.mjs src/features/email/__tests__/translate-email.test.mjs src/features/email/__tests__/email-body-format.test.mjs src/features/email/invoice-list.test.ts src/features/email/email-inbox-page.test.ts src/native/list-sync/planner.test.ts src/native/list-sync/id-align.test.ts src/native/list-sync/page.test.ts
 
       - name: Run master-password biometric unlock tests
         run: node --test src/features/auth/__tests__/unlock-auth.test.mjs src/native/__tests__/biometric-errors.test.ts
