@@ -178,8 +178,8 @@ class LocalDB {
       console.warn(`[localDB] schema applied ${applied}/${statements.length} statements (${failed} skipped)`)
     }
 
-    // 增量迁移（已有库补列）— 此阶段 initialized 尚未置位，直接用 conn
-    this.initialized = true
+    // 增量迁移（已有库补列）— initialized 在全部迁移完成后才置位，
+    // 避免旧库在补列完成前被 requireReady() 放行、查询撞 no such column
     try {
       await this.runMeetingsV2Migration()
     } catch (e) {
@@ -210,6 +210,7 @@ class LocalDB {
     } catch (e) {
       console.warn('[localDB] list sync v1 migration failed:', e)
     }
+    this.initialized = true
   }
 
   /** 会议模块 v2：为旧库补列，列已存在则跳过 */
@@ -398,7 +399,7 @@ class LocalDB {
       'CREATE INDEX IF NOT EXISTS idx_note_files_note ON local_note_files(note_id);',
       false,
     )
-    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_status ON local_notes(status);', false).catch(() => {})
+    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_status ON local_notes(status) WHERE deleted_at IS NULL;', false).catch(() => {})
 
     try {
       await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_ai;', false)
