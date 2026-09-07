@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -204,20 +205,30 @@ func parseSSEResponse(data string) (json.RawMessage, error) {
 	return nil, fmt.Errorf("no JSON data found in SSE response: %s", data[:min(100, len(data))])
 }
 
+// httpStatusError 携带结构化的 HTTP 状态码，供 doRaw 判断是否回退 Bearer，
+// 避免对错误字符串做子串匹配（响应体由远端控制，可能碰巧包含 "HTTP 401"）。
+type httpStatusError struct {
+	Status int
+	Body   string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("HTTP %d: %s", e.Status, e.Body)
+}
+
 // doRaw 发送原始 HTTP 请求并返回完整响应体 + 响应头。
 // acc-go 吃 HS256 JWT；本机 Node ACC 吃 api_keys 静态 Bearer。
 // JWT 在 Node 上是 401，经 nginx 时常见空 body 的 400，两种都回退 raw secret。
+// 按结构化状态码判定（httpStatusError），不对错误字符串做子串匹配——
+// 响应体由远端控制，可能碰巧包含 "HTTP 401" 等字样而误触发回退。
 func (c *Client) doRaw(ctx context.Context, payload []byte) ([]byte, http.Header, error) {
 	body, headers, err := c.doRawWithBearer(ctx, payload, true)
-	if err != nil && jwtRejected(err) {
+	var statusErr *httpStatusError
+	if err != nil && errors.As(err, &statusErr) &&
+		(statusErr.Status == http.StatusUnauthorized || statusErr.Status == http.StatusBadRequest) {
 		return c.doRawWithBearer(ctx, payload, false)
 	}
 	return body, headers, err
-}
-
-func jwtRejected(err error) bool {
-	msg := err.Error()
-	return strings.Contains(msg, "HTTP 401") || strings.Contains(msg, "HTTP 400")
 }
 
 func (c *Client) doRawWithBearer(ctx context.Context, payload []byte, useJWT bool) ([]byte, http.Header, error) {
@@ -257,7 +268,12 @@ func (c *Client) doRawWithBearer(ctx context.Context, payload []byte, useJWT boo
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		// 错误信息只截取前 512 字节，防止远端返回超大响应体把错误字符串撑爆。
+		msg := body
+		if len(msg) > 512 {
+			msg = msg[:512]
+		}
+		return nil, nil, &httpStatusError{Status: resp.StatusCode, Body: string(msg)}
 	}
 
 	return body, resp.Header, nil

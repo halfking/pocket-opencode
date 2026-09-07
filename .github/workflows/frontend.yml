@@ -92,6 +92,12 @@ jobs:
       - name: Run user-config LWW planner tests
         run: node --test src/native/config-sync/planner.test.ts
 
+      - name: Run notes/meetings/permission helper tests
+        run: node --test src/features/notes/*.test.ts src/features/meetings/topic-change.test.ts src/features/meetings/gateway-kind.test.ts src/composables/permission-action.test.ts src/native/audio-inputs.test.ts src/native/detect-lang.test.ts src/api/stt-cloud.test.ts
+
+      - name: Run email account/cleanup helper tests
+        run: node --test src/features/email/__tests__/account-mirror-write.test.mjs src/features/email/__tests__/account-sync.test.mjs src/features/email/__tests__/cleanup-filter.test.mjs src/features/email/__tests__/providers.test.mjs
+
       - name: Build HarmonyOS ArkWeb assets
         run: MOBILE_FAST=1 VITE_API_BASE=https://harmony-ci.example.invalid node scripts/build-harmony.mjs dev
 

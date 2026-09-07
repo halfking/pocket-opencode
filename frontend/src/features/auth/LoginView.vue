@@ -143,7 +143,7 @@
               placeholder="6 位数字验证码"
               @keyup.enter="handleCodeLogin"
             />
-            <p v-if="debugCode" class="hint">调试模式：验证码 = <code>{{ debugCode }}</code></p>
+            <p v-if="isDevBuild && debugCode" class="hint">调试模式：验证码 = <code>{{ debugCode }}</code></p>
           </div>
           <button
             v-if="codeSent"
@@ -246,6 +246,9 @@ const codeValue = ref('')
 const codeSent = ref(false)
 const codeCooldown = ref(0)
 const debugCode = ref('')
+// 调试验证码只在 dev 构建显示：生产后端若误开 debug_code，
+// 前端不再把验证码直接展示出来（知道邮箱即可登录的降级路径）。
+const isDevBuild = import.meta.env.DEV
 let cooldownTimer: ReturnType<typeof setInterval> | null = null
 
 function startCooldown() {

@@ -78,7 +78,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { emailApi, type EmailAccount } from '../../api/email'
 import { previewEmailCleanup, runEmailCleanup, type EmailCleanupItem } from '../../api/email-cleanup'
@@ -99,6 +99,9 @@ const syncMsg = ref('')
 const busy = ref(false)
 const formError = ref('')
 const previewed = ref(false)
+// 预览成功时的过滤器快照：删除必须按用户确认过的那组条件执行，
+// 不能在确认前改输入框偷换成更大的匹配集。
+const previewedFilter = ref<ReturnType<typeof currentFilter> | null>(null)
 const matched = ref(0)
 const rows = ref<EmailCleanupItem[]>([])
 const failed = ref<string[]>([])
@@ -145,10 +148,20 @@ async function syncFirst() {
   }
 }
 
+function resetPreview() {
+  previewed.value = false
+  previewedFilter.value = null
+  matched.value = 0
+  rows.value = []
+}
+
+// 过滤条件一旦变化，旧预览即作废，必须重新预览才能执行删除。
+watch([subject, from, sinceLocal, untilLocal, accountId], resetPreview)
+
 async function preview() {
   formError.value = ''
   resultMsg.value = ''
-  previewed.value = false
+  resetPreview()
   const f = currentFilter()
   if (!hasCleanupConstraint(f)) {
     formError.value = '请至少填写主题、来源或日期范围，避免误删全部邮件'
@@ -159,6 +172,7 @@ async function preview() {
     const r = await previewEmailCleanup(f)
     matched.value = r.matched
     rows.value = r.emails ?? []
+    previewedFilter.value = f
     previewed.value = true
     resultMsg.value = r.matched === 0 ? '没有匹配的邮件' : `将处理 ${r.matched} 封`
     resultOk.value = true
@@ -170,8 +184,8 @@ async function preview() {
 }
 
 async function confirmDelete() {
-  const f = currentFilter()
-  if (!hasCleanupConstraint(f) || !previewed.value) return
+  const f = previewedFilter.value
+  if (!f || !previewed.value) return
   if (!window.confirm(`确认把 ${matched.value} 封邮件移到垃圾箱？此操作会同步到邮箱服务器。`)) return
   busy.value = true
   formError.value = ''
@@ -183,8 +197,7 @@ async function confirmDelete() {
     failed.value = r.failed ?? []
     resultOk.value = (r.failed?.length ?? 0) === 0
     resultMsg.value = `已移动 ${r.moved}，删除 ${r.deleted}`
-    previewed.value = false
-    rows.value = []
+    resetPreview()
   } catch (e) {
     resultOk.value = false
     resultMsg.value = e instanceof ApiError ? e.message : (e instanceof Error ? e.message : '清理失败')

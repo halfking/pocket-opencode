@@ -1313,15 +1313,18 @@ func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
-	if s.taskStore == nil {
-		http.Error(w, "task store not configured", http.StatusServiceUnavailable)
-		return
-	}
-
 	// Parse task ID from path: /api/tasks/{id}/...
 	path := r.URL.Path[len("/api/tasks/"):]
 	if path == "" {
 		http.Error(w, "missing task id", http.StatusBadRequest)
+		return
+	}
+
+	// 磁盘/OpenCode 会话是只读合成任务，GET 单个不需要本地任务库；
+	// 写路径与子资源仍要求任务库，remote-only 模式保持 503。
+	isSubresource := len(splitPath(path)) == 2
+	if s.taskStore == nil && (r.Method != http.MethodGet || isSubresource) {
+		http.Error(w, "task store not configured", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -1345,13 +1348,22 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 	// GET /api/tasks/{id}
 	if r.Method == http.MethodGet {
 		taskID := path
-		task, err := s.taskStore.GetTaskScoped(r.Context(), taskID, s.workspaceIDFromRequest(r))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
+		workspaceID := s.workspaceIDFromRequest(r)
+		if s.taskStore != nil {
+			task, err := s.taskStore.GetTaskScoped(r.Context(), taskID, workspaceID)
+			if err == nil {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(task)
+				return
+			}
+		}
+		// 本地库未配置或未命中：按 LIST 同款语义回退磁盘/OpenCode 会话合成任务。
+		if synthetic := s.lookupDiskSessionTask(r.Context(), workspaceID, taskID); synthetic != nil {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(synthetic)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(task)
+		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
 
