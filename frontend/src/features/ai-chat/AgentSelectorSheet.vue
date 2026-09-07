@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 import type { ChatAgent } from '../../types/chatAgent'
-
+import BottomSheet from '../../components/base/BottomSheet.vue'
 const props = defineProps<{
   show: boolean
   currentAgentId?: string
@@ -77,13 +77,14 @@ function close() {
 </script>
 
 <template>
-  <div v-if="show" class="agent-selector-overlay" @click="close">
-    <div class="agent-selector-sheet" @click.stop>
-      <!-- 标题栏（只有一个标题） -->
-      <div class="sheet-header">
-        <h2>选择智能体角色</h2>
-        <button class="close-btn" @click="close" aria-label="关闭">×</button>
-      </div>
+  <BottomSheet
+    :model-value="show"
+    title="选择智能体角色"
+    height="full"
+    swipeable
+    @update:model-value="emit('update:show', $event)"
+    @close="close"
+  >
 
       <!-- 搜索框 -->
       <div class="search-section">
@@ -158,61 +159,13 @@ function close() {
         </template>
       </div>
 
-      <!-- 底部操作 -->
-      <div class="sheet-footer">
-        <button class="clear-btn" @click="handleClear">清除角色</button>
-      </div>
-    </div>
-  </div>
+    <template #footer>
+      <button class="clear-btn" type="button" @click="handleClear">清除角色</button>
+    </template>
+  </BottomSheet>
 </template>
 
 <style scoped>
-.agent-selector-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--overlay);
-  z-index: var(--z-sheet);
-  display: flex;
-  align-items: flex-end;
-}
-
-.agent-selector-sheet {
-  width: 100%;
-  max-height: 85vh;
-  background: var(--bg-card);
-  border-radius: 16px 16px 0 0;
-  box-shadow: var(--shadow-lg);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.sheet-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
-}
-
-.sheet-header h2 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.close-btn {
-  width: 32px;
-  height: 32px;
-  border: none;
-  background: transparent;
-  font-size: 28px;
-  line-height: 1;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
 .search-section {
   padding: 12px 20px;
   border-bottom: 1px solid var(--border);

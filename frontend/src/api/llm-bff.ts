@@ -25,6 +25,8 @@ export interface ChatStreamDelta {
   content?: string
   done: boolean
   finish_reason?: string
+  /** 真实上游模型（auto 路由命中名；可能早于首段正文到达）。 */
+  model?: string
   usage?: {
     prompt_tokens: number
     completion_tokens: number

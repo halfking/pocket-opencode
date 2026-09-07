@@ -90,7 +90,10 @@
                   {{ getStatusText(session.status) }}
                 </span>
               </div>
-              <p class="session-id">{{ session.id.slice(0, 20) }}…</p>
+              <p class="session-meta">
+                <span v-if="session.instanceName" class="instance-tag">{{ session.instanceName }}</span>
+                <span class="session-id">{{ session.id.slice(0, 20) }}…</span>
+              </p>
             </div>
           </SwipeableListItem>
         </div>
@@ -127,12 +130,16 @@ interface Session {
   id: string
   title: string
   status: string
+  instanceId?: string
+  instanceName?: string
 }
 
 interface Instance {
   id: string
   name: string
   baseURL: string
+  health?: string
+  origin?: string
 }
 
 /**
@@ -185,11 +192,11 @@ function loadArchivedIds() {
 }
 
 const activeSessions = computed(() =>
-  sessions.value.filter((s) => !archivedIds.value.has(s.id)),
+  sessions.value.filter((s) => !archivedIds.value.has(s.id) && s.status !== 'archived'),
 )
 
 const archivedSessions = computed(() =>
-  sessions.value.filter((s) => archivedIds.value.has(s.id)),
+  sessions.value.filter((s) => archivedIds.value.has(s.id) || s.status === 'archived'),
 )
 
 function applySearch(list: Session[]): Session[] {
@@ -214,11 +221,15 @@ const archivedCount = computed(() => archivedSessions.value.length)
 async function loadInstances() {
   try {
     const data = await api.getInstances()
-    instances.value = (data || []).map((i: any) => ({
-      id: i.id,
-      name: i.displayName || i.name || i.id,
-      baseURL: i.baseURL || i.apiBaseURL || '',
-    }))
+    instances.value = (data || [])
+      .map((i: any) => ({
+        id: i.id,
+        name: i.displayName || i.name || i.id,
+        baseURL: i.baseURL || i.apiBaseURL || '',
+        health: i.health || '',
+        origin: i.origin || '',
+      }))
+      .filter((i: Instance) => i.origin === 'disk' || i.health === 'healthy')
   } catch (err: any) {
     console.error('Failed to load instances:', err)
   }
@@ -234,6 +245,8 @@ async function loadSessions() {
       id: s.id || s.ID || '',
       title: s.title || s.Title || '未命名会话',
       status: s.status || s.Status || 'idle',
+      instanceId: s.instanceId || s.InstanceID || '',
+      instanceName: s.instanceName || s.InstanceName || '',
     }))
     total.value = data.total || 0
   } catch (err: any) {
@@ -276,7 +289,7 @@ function openSessionDetail(session: Session) {
   router.push({
     path: `/sessions/${session.id}`,
     query: {
-      instance_id: selectedInstanceId.value,
+      instance_id: selectedInstanceId.value || session.instanceId || '',
       title: session.title || '',
     },
   })
@@ -352,6 +365,7 @@ function getStatusText(status: string): string {
     empty: '空会话',
     idle: '空闲',
     streaming: '生成中',
+    archived: '已归档',
   }
   return statusMap[status] || status
 }
@@ -538,11 +552,33 @@ onActivated(() => {
   border: 1px solid var(--border);
 }
 
-.session-id {
+.session-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   margin: var(--space-1) 0 0;
+  min-width: 0;
+}
+
+.instance-tag {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  padding: 0 var(--space-2);
+  line-height: 1.6;
+}
+
+.session-id {
+  margin: 0;
   font-size: var(--text-xs);
   color: var(--text-muted);
   font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pagination {

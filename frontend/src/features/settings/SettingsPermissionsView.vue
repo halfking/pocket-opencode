@@ -79,7 +79,7 @@
       <!-- 帮助提示 -->
       <div class="settings-section note-section">
         <p class="hint">
-          如果某项权限显示"未授权"，点击该项即可重新申请；已被系统拒绝的权限会引导你到系统设置开启。
+          未授权时点击即可再次弹出系统申请。若已选择「不再询问」，才会打开系统设置让你手动打开。
         </p>
       </div>
     </div>
@@ -129,7 +129,7 @@ async function refreshBiometricBinding() {
 const micLabel = computed(() => {
   const s = mic.state.value
   if (s === 'granted') return '已授权'
-  if (s === 'denied') return '未授权'
+  if (s === 'denied') return mic.canRequestAgain.value ? '未授权' : '已拒绝'
   if (s === 'unavailable') return '不支持'
   return '未检测'
 })
@@ -145,8 +145,8 @@ const notifLabel = computed(() => notif.label.value)
 const notifStateClass = computed(() => {
   const s = notif.state.value
   if (s === 'granted') return 'ok'
-  if (s === 'denied') return 'warn'
-  return 'muted'
+  if (s === 'unavailable' || s === 'unknown') return 'muted'
+  return 'warn'
 })
 
 // --- 生物识别 ---
@@ -205,20 +205,21 @@ async function refreshAll() {
 async function handleMicClick() {
   const s = mic.state.value
   if (s === 'granted' || s === 'unavailable') return
-  // 未授权：先尝试系统弹窗；若已彻底被拒（NotAllowedError 后状态保持 denied），跳系统设置
-  const ok = await mic.ensure()
-  if (!ok && mic.state.value === 'denied') {
+  if (s === 'denied' && !mic.canRequestAgain.value) {
     await appSettings.openAppDetails()
+    return
   }
+  await mic.ensure()
 }
 
 async function handleNotificationClick() {
   const s = notif.state.value
   if (s === 'granted' || s === 'unavailable') return
-  const result = await notif.ensure()
-  if (result === 'denied') {
+  if (s === 'denied' && !notif.canRequestAgain.value) {
     await appSettings.openAppDetails()
+    return
   }
+  await notif.ensure()
 }
 
 async function handleBiometricClick() {

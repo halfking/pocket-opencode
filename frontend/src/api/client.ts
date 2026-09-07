@@ -70,6 +70,8 @@ export interface Session {
   title: string
   status: string
   timeUpdatedMs?: number
+  instanceId?: string
+  instanceName?: string
 }
 
 export interface MobileSessionListResponse {

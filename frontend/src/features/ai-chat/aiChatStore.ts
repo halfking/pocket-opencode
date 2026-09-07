@@ -541,7 +541,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
       id: uid(),
       role: 'assistant',
       content: '',
-      model: compareMode.value ? model : undefined,
+      model: model || undefined,
       streaming: true,
       createdAt: Date.now(),
     }
@@ -566,12 +566,14 @@ export const useAIChatStore = defineStore('ai-chat', () => {
       {
         onDelta: (d) => {
           if (d.content) liveAssistant.content += d.content
+          if (d.model) liveAssistant.model = d.model
           if (d.usage) liveAssistant.usage = d.usage
         },
         // 后端 auto 回退链切换候选 model：气泡内先给一行进度提示，
         // 正文仍继续追加到同一条消息。
-        onRetry: (model) => {
-          liveAssistant.retryHint = `上游模型不可用，已切换到 ${model} 重试…`
+        onRetry: (nextModel) => {
+          liveAssistant.model = nextModel
+          liveAssistant.retryHint = `上游模型不可用，已切换到 ${nextModel} 重试…`
         },
         onDone: (usage) => {
           liveAssistant.streaming = false
@@ -649,11 +651,13 @@ export const useAIChatStore = defineStore('ai-chat', () => {
       {
         onDelta: (d) => {
           if (d.content) liveAssistant.content += d.content
+          if (d.model) liveAssistant.model = d.model
           if (d.usage) liveAssistant.usage = d.usage
         },
         // 同 spawnStream：回退重试进度写进同一条消息的 retryHint。
-        onRetry: (model) => {
-          liveAssistant.retryHint = `上游模型不可用，已切换到 ${model} 重试…`
+        onRetry: (nextModel) => {
+          liveAssistant.model = nextModel
+          liveAssistant.retryHint = `上游模型不可用，已切换到 ${nextModel} 重试…`
         },
         onDone: (usage) => {
           liveAssistant.streaming = false

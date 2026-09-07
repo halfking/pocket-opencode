@@ -2,7 +2,7 @@
   <div class="mic-status" :class="`mic-${state}`">
     <span class="mic-dot" aria-hidden="true"></span>
     <span>{{ label }}</span>
-    <button v-if="state === 'denied'" class="mic-action" @click="$emit('settings')">去设置</button>
+    <button v-if="state === 'denied'" class="mic-action" @click="$emit('retry')">重新申请</button>
     <button v-else-if="state !== 'granted'" class="mic-action" @click="$emit('retry')">检查权限</button>
   </div>
 </template>
@@ -12,7 +12,7 @@ import { computed } from 'vue'
 import type { MicState } from '../composables/useMicPermission'
 
 const props = defineProps<{ state: MicState }>()
-defineEmits<{ (event: 'settings'): void; (event: 'retry'): void }>()
+defineEmits<{ (event: 'retry'): void }>()
 const label = computed(() => ({
   unknown: '麦克风权限待确认',
   granted: '麦克风已就绪',

@@ -729,13 +729,10 @@ async function handleRefresh() {
 async function loadTasks() {
   loading.value = true
   try {
-    if (!currentInstance.value) { tasks.value = []; return }
-    const instanceTasks = await api.getTasks(currentInstance.value.id, {
-      workstreamId: currentInstance.value.id,
-    })
+    const instanceTasks = await api.getTasks(undefined, { source: 'opencode' })
     tasks.value = (instanceTasks || []).map((t: any) => ({
       ...t,
-      instanceName: currentInstance.value?.displayName || currentInstance.value?.name || '',
+      instanceName: t.instanceName || currentInstance.value?.displayName || currentInstance.value?.name || '',
     }))
   } catch (e) {
     console.error('Failed to load tasks:', e)

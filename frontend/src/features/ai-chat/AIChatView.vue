@@ -125,6 +125,7 @@
           </article>
         </div>
         <div v-else-if="turn.answers.length === 1" class="row ai">
+          <div v-if="turn.answers[0].model" class="msg-model">{{ turn.answers[0].model }}</div>
           <div class="bubble ai-bubble" v-html="rendered(turn.answers[0])"></div>
           <!-- auto 回退重试进度：正文到达前/后都以一行灰色小字透出 -->
           <div v-if="turn.answers[0].retryHint" class="msg-retry">{{ turn.answers[0].retryHint }}</div>
@@ -713,10 +714,12 @@ function syncRouteTitle() {
 }
 watch(() => store.active?.title, syncRouteTitle, { immediate: true })
 
-/** 模型 chip 标签：会话模型 > 默认模型 > auto */
+/** 模型 chip：会话选 auto 时叠真实命中名（流式首帧即可出现）。 */
 const modelChipLabel = computed(() => {
-  const m = active.value?.model
-  if (m && m !== AUTO) return m
+  const selected = active.value?.model
+  const live = [...(active.value?.messages || [])].reverse().find((m) => m.role === 'assistant' && m.model)?.model
+  if (selected && selected !== AUTO) return selected
+  if (live && live !== AUTO) return `${AUTO} · ${live}`
   return settings.value.defaultModel || AUTO
 })
 
@@ -1076,6 +1079,13 @@ function formatTime(ts: number): string {
 .ai-bubble :deep(ul), .ai-bubble :deep(ol) { padding-left: 20px; margin: 6px 0; }
 .caret { animation: blink 1s step-end infinite; color: var(--brand-primary); }
 @keyframes blink { 50% { opacity: 0; } }
+
+.msg-model {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--brand-primary);
+  margin: 0 4px 4px;
+}
 
 .usage-row, .usage {
   font-size: 10px;

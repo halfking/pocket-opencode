@@ -1,9 +1,7 @@
 package com.kaixuan.opencode.pocket;
 
 import android.Manifest;
-import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.PermissionRequest;
 import android.webkit.WebSettings;
@@ -13,11 +11,7 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.view.WindowCompat;
 import com.getcapacitor.BridgeActivity;
-import com.getcapacitor.Plugin;
-import com.getcapacitor.JSObject;
-import com.getcapacitor.annotation.CapacitorPlugin;
-import com.getcapacitor.PluginCall;
-import com.getcapacitor.PluginMethod;
+import com.kaixuan.opencode.pocket.plugins.AppSettingsPlugin;
 import com.kaixuan.opencode.pocket.plugins.SherpaPlugin;
 import com.kaixuan.opencode.pocket.plugins.BiometricAuthPlugin;
 
@@ -139,20 +133,11 @@ public class MainActivity extends BridgeActivity {
             if (audioGranted) {
                 // 用户刚刚授权：补发 WebView 的请求，避免 JS 端再次触发 getUserMedia。
                 pendingPermissionRequest.grant(pendingPermissionRequest.getResources());
+            } else {
+                // 必须 deny：否则 WebView PermissionRequest 悬挂，后续无法再次发起申请。
+                pendingPermissionRequest.deny();
             }
-            // 未授权：什么都不做，WebView 会因未 grant 而自动走 NotAllowedError，UI 引导去系统设置。
             pendingPermissionRequest = null;
         }
-    }
-}
-
-@CapacitorPlugin(name = "AppSettings")
-class AppSettingsPlugin extends Plugin {
-    @PluginMethod
-    public void openAppDetails(PluginCall call) {
-        Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-        intent.setData(Uri.parse("package:" + getContext().getPackageName()));
-        getContext().startActivity(intent);
-        call.resolve(new JSObject());
     }
 }
