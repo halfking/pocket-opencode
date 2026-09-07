@@ -89,58 +89,69 @@ func baseMailboxName(name string) string {
 // err == ErrNoJunkMailbox 表示服务器没有垃圾箱也建不出来：调用方可以只做
 // 本地标记。部分 UID 失败不影响其余（逐条 MOVE，幂等可重放）。
 func (f *Fetcher) MoveEmailsToJunk(ctx context.Context, accountID string, uids []int64) (int, error) {
+	moved, err := f.MoveUIDsToJunk(ctx, accountID, uids)
+	return len(moved), err
+}
+
+// MoveUIDsToJunk 同 MoveEmailsToJunk，但返回实际 MOVE 成功的 UID，
+// 供批量清理只删库成功行（失败行必须留在 PG）。
+func (f *Fetcher) MoveUIDsToJunk(ctx context.Context, accountID string, uids []int64) ([]int64, error) {
 	if len(uids) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	acc, encryptedCred, err := f.store.GetAccountByID(ctx, accountID)
 	if err != nil {
-		return 0, fmt.Errorf("load account: %w", err)
+		return nil, fmt.Errorf("load account: %w", err)
 	}
 	if !acc.Enabled {
-		return 0, fmt.Errorf("account disabled")
+		return nil, fmt.Errorf("account disabled")
 	}
 	cred, err := f.crypto.DecryptString(encryptedCred)
 	if err != nil {
-		return 0, fmt.Errorf("decrypt credential: %w", err)
+		return nil, fmt.Errorf("decrypt credential: %w", err)
 	}
 	addr := fmt.Sprintf("%s:%d", acc.IMAPHost, acc.IMAPPort)
 	client, err := f.dial(addr)
 	if err != nil {
-		return 0, fmt.Errorf("dial %s: %w", addr, err)
+		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}
 	defer client.Close()
 	if err := f.login(client, *acc, cred); err != nil {
-		return 0, fmt.Errorf("login %s: %w", acc.EmailAddress, err)
+		return nil, fmt.Errorf("login %s: %w", acc.EmailAddress, err)
 	}
 
 	junkBox, err := findJunkMailbox(client)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if junkBox == "" {
 		if cerr := client.Create("Junk", nil).Wait(); cerr != nil {
-			return 0, fmt.Errorf("%w: create failed: %v", ErrNoJunkMailbox, cerr)
+			return nil, fmt.Errorf("%w: create failed: %v", ErrNoJunkMailbox, cerr)
 		}
 		junkBox = "Junk"
 		log.Printf("[email/junk] created junk mailbox for %s", acc.EmailAddress)
 	}
 
 	if _, err := client.Select("INBOX", nil).Wait(); err != nil {
-		return 0, fmt.Errorf("select INBOX: %w", err)
+		return nil, fmt.Errorf("select INBOX: %w", err)
 	}
-	moved := 0
+	var moved []int64
 	var moveErrs []string
 	for _, uid := range uids {
+		if uid <= 0 {
+			moveErrs = append(moveErrs, fmt.Sprintf("uid=%d: missing", uid))
+			continue
+		}
 		var uidSet imap.UIDSet
 		uidSet.AddNum(imap.UID(uid))
 		if _, merr := client.Move(uidSet, junkBox).Wait(); merr != nil {
 			moveErrs = append(moveErrs, fmt.Sprintf("uid=%d: %v", uid, merr))
 			continue
 		}
-		moved++
+		moved = append(moved, uid)
 	}
 	if len(moveErrs) > 0 {
-		return moved, fmt.Errorf("moved %d/%d (%s)", moved, len(uids), strings.Join(moveErrs, "; "))
+		return moved, fmt.Errorf("moved %d/%d (%s)", len(moved), len(uids), strings.Join(moveErrs, "; "))
 	}
 	return moved, nil
 }

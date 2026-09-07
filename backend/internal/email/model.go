@@ -141,6 +141,8 @@ type ListFilter struct {
 	Category   string
 	Importance string
 	UnreadOnly bool
+	// Limit 默认 200，上限 500。5 个真实账户各拉一批后，100 会截断收件箱。
+	Limit int
 }
 
 // AccountSyncStatus reports per-account sync state for the front-end

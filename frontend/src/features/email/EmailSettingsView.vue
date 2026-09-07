@@ -3,7 +3,7 @@
 
   三个分区：
     1. 账户管理：列表 + 启用开关 + 立即同步 / 测试 SMTP / 删除；
-       新增与完整编辑复用既有向导页（/email/accounts）。
+       新增走 /email/accounts/new（选服务商 + 授权码）；编辑走 /email/accounts。
     2. 过滤策略：每账户可视化规则编辑器（对齐后端 rules/engine.go 的
        6 类型 / 5 动作），保存序列化为新格式 JSON 写回账户。
     3. 处理逻辑：同步间隔、自动回复（vacation）、延迟动作队列说明。
@@ -17,9 +17,13 @@
         <span class="material-symbols-outlined">arrow_back</span>
       </button>
       <h2 class="page-title">邮箱设置</h2>
-      <button class="reload-btn" type="button" aria-label="刷新" @click="loadAll">
-        <span class="material-symbols-outlined">refresh</span>
-      </button>
+      <div class="head-actions">
+        <button class="mini-btn" type="button" @click="router.push('/email/accounts')">管理</button>
+        <button class="primary-btn" type="button" @click="router.push('/email/accounts/new')">新增</button>
+        <button class="reload-btn" type="button" aria-label="刷新" @click="loadAll">
+          <span class="material-symbols-outlined">refresh</span>
+        </button>
+      </div>
     </header>
 
     <div v-if="loading" class="state">加载中…</div>
@@ -31,12 +35,6 @@
     <main v-else class="sections">
       <!-- ── 1. 账户管理 ── -->
       <section class="card">
-        <div class="card-head">
-          <h3>账户</h3>
-          <button class="primary-btn" type="button" @click="router.push('/email/accounts')">
-            + 新增 / 管理账户
-          </button>
-        </div>
         <EmptyState
           v-if="accounts.length === 0"
           icon="📧"
@@ -238,6 +236,7 @@ import { emailApi, type EmailAccount, type VacationReply } from '../../api/email
 import type { EmailRuleActionName, EmailRuleActionSpec, EmailRuleEntry } from '../../api/email'
 import { parseRules, isLegacyRules, serializeRules } from './rules-format'
 import { syncAccountsFromServer } from './account-sync'
+import { isLocalTestAddress } from './providers'
 import { EmptyState } from '../../components'
 import { useToast } from '../../composables/useToast'
 import { useConfirm } from '../../composables/useConfirm'
@@ -292,14 +291,13 @@ async function loadAll() {
       emailApi.listAccounts(),
       emailApi.listVacations(),
     ])
-    accounts.value = accRes.accounts ?? []
+    accounts.value = (accRes.accounts ?? []).filter((a) => !isLocalTestAddress(a.emailAddress))
     vacations.value = vacRes.vacations ?? []
     const next: Record<string, EmailRuleEntry[]> = {}
     for (const a of accounts.value) next[a.id] = parseRules(a.rules)
     rulesByAccount.value = next
     vacDrafts.value = {}
-    if (sync.error) {
-      // 服务端拉取失败时只提示，不影响列表（云端拿不到就吃离线列表，但 settings 必走云端）。
+    if (!sync.online && sync.error) {
       loadError.value = sync.error
     }
   } catch (e: any) {
@@ -498,24 +496,35 @@ function goBack() {
 
 <style scoped>
 .email-settings {
-  min-height: 100%;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
   background: var(--bg-base);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 .page-head {
-  position: sticky;
-  top: 0;
+  flex-shrink: 0;
   z-index: 5;
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  padding-top: calc(var(--space-3) + env(safe-area-inset-top, 0px));
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  padding-top: calc(var(--space-2) + env(safe-area-inset-top, 0px));
   background: var(--bg-card);
   border-bottom: 1px solid var(--border);
 }
-.page-title { flex: 1; font-size: 17px; font-weight: 600; margin: 0; }
+.page-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .back-btn, .reload-btn {
   width: 40px; height: 40px;
   display: flex; align-items: center; justify-content: center;
@@ -528,10 +537,14 @@ function goBack() {
 
 .sections {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-4);
+  gap: var(--space-3);
+  padding: var(--space-3);
   padding-bottom: calc(var(--space-8) + env(safe-area-inset-bottom, 0px));
   max-width: 760px;
   width: 100%;
@@ -541,28 +554,29 @@ function goBack() {
 .card {
   background: var(--bg-card);
   border-radius: var(--radius-md);
-  padding: var(--space-4);
+  padding: var(--space-3);
   box-shadow: var(--shadow-sm);
 }
 .card-head {
   display: flex; align-items: center; justify-content: space-between;
-  gap: var(--space-2); margin-bottom: var(--space-3);
+  gap: var(--space-2); margin-bottom: var(--space-2);
 }
 .card-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.head-actions { display: flex; align-items: center; gap: var(--space-1); flex-shrink: 0; }
 .head-hint { font-size: 11px; color: var(--text-muted); }
 
 .primary-btn {
   border: none; border-radius: var(--radius-md);
   background: var(--brand-primary); color: var(--text-inverse);
-  padding: var(--space-2) var(--space-3);
-  font-size: 13px; font-weight: 600; cursor: pointer;
+  padding: 6px 10px;
+  font-size: 12px; font-weight: 600; cursor: pointer;
 }
 .primary-btn.slim { margin-top: var(--space-2); }
 .primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .acct-row {
-  display: flex; flex-direction: column; gap: var(--space-2);
-  padding: var(--space-3) 0;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: var(--space-2) 0;
   border-bottom: 1px solid var(--border-subtle);
 }
 .acct-row:last-child { border-bottom: none; }

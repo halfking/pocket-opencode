@@ -139,6 +139,7 @@ export interface EmailFilter {
   category?: EmailCategory
   importance?: EmailImportance
   unreadOnly?: boolean
+  limit?: number
 }
 
 export const emailApi = {
@@ -186,6 +187,7 @@ export const emailApi = {
     if (filter.category) qs.set('category', filter.category)
     if (filter.importance) qs.set('importance', filter.importance)
     if (filter.unreadOnly) qs.set('unread', '1')
+    if (filter.limit) qs.set('limit', String(filter.limit))
     const q = qs.toString()
     return http(`/api/emails${q ? `?${q}` : ''}`)
   },

@@ -1445,7 +1445,15 @@ func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID,
 	if filter.UnreadOnly {
 		q += " AND e.is_read=FALSE"
 	}
-	q += " ORDER BY e.date DESC LIMIT 100"
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	q += fmt.Sprintf(" ORDER BY e.date DESC LIMIT $%d", len(args)+1)
+	args = append(args, limit)
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
