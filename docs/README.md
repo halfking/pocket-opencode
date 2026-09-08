@@ -13,6 +13,7 @@
 | [scheduled-task-system.md](scheduled-task-system.md) | 计划任务系统 |
 | [MOBILE_ARCHITECTURE_V2.md](MOBILE_ARCHITECTURE_V2.md) | 移动端架构 v2 |
 | [DESIGN.md](DESIGN.md) / [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md) / [NAVIGATION_ARCHITECTURE.md](NAVIGATION_ARCHITECTURE.md) | 设计 / 数据架构 / 导航架构 |
+| [2026-09-08-meetings-studio.md](2026-09-08-meetings-studio.md) | 会议工作台现行产品面（列表 / 详情 / ACC） |
 
 ## 指南（guides/）
 

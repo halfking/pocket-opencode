@@ -2,8 +2,11 @@
 
 **版本**: v1.0.0  
 **日期**: 2026-07-15  
-**状态**: 设计方案 → 实施中  
+**状态**: 架构 / 隐私 / API 参考（UI 面已被工作室 as-built 取代）  
 **归属**: OpenCode Pocket 个人助理 APP — 会议模块
+
+> **2026-09-08**：用户可见信息架构以 [`2026-09-08-meetings-studio.md`](./2026-09-08-meetings-studio.md) 为准。  
+> 本文保留采集闭环、智能体分工、隐私与 pocketd API 契约。列表/工作台交互不要再按 §UI 设计实现。
 
 > 配套：主方案 [`2026-07-02-android-personal-assistant-plan.md`](./2026-07-02-android-personal-assistant-plan.md)  
 > STT 评估：[`2026-07-02-android-stt-evaluation.md`](./2026-07-02-android-stt-evaluation.md)  
@@ -160,7 +163,9 @@
 
 ## 📱 UI 设计
 
-### 页面结构
+> **已过时**：下列独立录音页 /「今天本周全部」筛选不要再实现。现行面见 [`2026-09-08-meetings-studio.md`](./2026-09-08-meetings-studio.md)。
+
+### 页面结构（历史草案）
 
 ```
 /meetings              → MeetingListView（列表 + FAB 新会议）

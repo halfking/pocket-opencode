@@ -217,6 +217,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 - [**移动端架构**](docs/MOBILE_ARCHITECTURE_V2.md) - 移动端架构设计
 - [**ACC Integration 部署文档**](deploy/acc-integration/README.md) - 集成开发部署指南
 - [**邮箱数据本地化与发票自动整理方案**](docs/2026-09-06-email-local-invoice.md) - 邮件发票提取与入账闭环（2026-09-06）
+- [**会议工作台（As-built）**](docs/2026-09-08-meetings-studio.md) - 听见式列表 / 详情 / 总结 / ACC 下达（2026-09-08）
 
 ### 测试报告（已归档至 docs/archive/2026-07/）
 
