@@ -96,6 +96,7 @@ import * as notesStore from './notes-store'
 import type { LocalNote, NoteMediaInput } from './notes-store'
 import { ErrorState, UnifiedComposer } from '../../components'
 import { useAuthStore } from '../../stores/auth'
+import { markListDirty } from '../../composables/list-scene-store'
 import {
   attachmentsToMedia,
   extractTagsForForm,
@@ -244,6 +245,7 @@ async function onSave() {
         media,
       }, currentWorkspaceId())
     }
+    markListDirty('notes')
     router.replace('/notes')
   } catch (e: any) {
     console.warn('[note] 保存失败:', e)

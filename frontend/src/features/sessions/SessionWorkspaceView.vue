@@ -13,6 +13,8 @@ import { isLobsterReady, lobsterReady } from '../../native/lobster-init'
 import SessionListView from './SessionListView.vue'
 import SessionConversationView from './SessionConversationView.vue'
 
+defineOptions({ name: 'SessionWorkspaceView' })
+
 interface SelectedSession {
   id: string
   title: string

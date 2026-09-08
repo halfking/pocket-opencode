@@ -90,6 +90,7 @@ import { createMeetingTodos, handoffTodoToAcc, shareTodoWithPerson } from './mee
 import type { MeetingTodoDraft } from './meeting-todos'
 import type { MeetingStudioAction } from './meeting-page-actions'
 import { useMeetingStudio } from './use-meeting-studio'
+import { markListDirty } from '../../composables/list-scene-store'
 import TranscriptSegmentList from './TranscriptSegmentList.vue'
 import MeetingInsightPanel from './MeetingInsightPanel.vue'
 import MeetingMicDock from './MeetingMicDock.vue'
@@ -188,6 +189,7 @@ async function onSummarize() {
     await updateMeeting(meetingId.value, { summary })
     const items = liveSummary.value?.actionItems ?? []
     if (items.length) await createMeetingTodos(meetingId.value, items, meeting.value.noteId)
+    markListDirty('meetings')
     await load()
     toast.success('已生成当前总结')
   } catch (e) {
@@ -210,6 +212,7 @@ async function onMetaSave(data: {
   title: string; topic: string; location: string; participants: string[]; tags: string[]; summarySkill: string
 }) {
   await updateMeeting(meetingId.value, data)
+  markListDirty('meetings')
   await load()
 }
 

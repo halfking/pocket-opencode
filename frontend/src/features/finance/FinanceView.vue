@@ -99,6 +99,8 @@ import { financeApi, type FinanceStats, type FinanceTransaction, type FinancePar
 import { useToast } from '../../composables/useToast'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
+defineOptions({ name: 'FinanceView' })
+
 const toast = useToast()
 const loading = ref(false)
 const error = ref('')

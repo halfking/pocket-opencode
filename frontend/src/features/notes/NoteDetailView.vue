@@ -121,6 +121,7 @@ import { http } from '../../api/http'
 import { ErrorState } from '../../components'
 import { useAuthStore } from '../../stores/auth'
 import { useConfirm } from '../../composables/useConfirm'
+import { markListDirty } from '../../composables/list-scene-store'
 
 const route = useRoute()
 const { confirm } = useConfirm()
@@ -219,6 +220,7 @@ async function onDelete() {
   const ok = await confirm({ title: '删除笔记', message: '确认删除这条笔记？此操作不可撤销。', confirmText: '删除', danger: true })
   if (!ok) return
   await notesStore.deleteNote(note.value.id, currentWorkspaceId())
+  markListDirty('notes')
   router.back()
 }
 
@@ -231,6 +233,7 @@ async function reclassify() {
     // 后端当前 stub；刷新本地数据以拿最新分类
     const refreshed = await notesStore.getNote(note.value.id, false, currentWorkspaceId())
     if (refreshed) note.value = refreshed
+    markListDirty('notes')
     reclassifyError.value = ''
   } catch (e: any) {
     console.warn('[note] 重新分类失败:', e)

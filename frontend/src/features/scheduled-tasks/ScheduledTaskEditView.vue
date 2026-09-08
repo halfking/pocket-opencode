@@ -60,6 +60,7 @@ import { defaultSchedulePlan, encodeSchedule, parseSchedule } from './schedule-p
 import { applyPrompt, extractPrompt, promptFieldForKind } from './task-prompt'
 import PromptOptimizeField from './PromptOptimizeField.vue'
 import SchedulePlanFields from './SchedulePlanFields.vue'
+import { markListDirty } from '../../composables/list-scene-store'
 
 const route = useRoute()
 const router = useRouter()
@@ -144,6 +145,7 @@ async function save() {
       timeoutSec: form.timeoutSec || 120,
     }
     const saved = isEdit.value ? await store.update(taskId.value!, input) : await store.create(input)
+    markListDirty('scheduled-tasks')
     router.replace(`/settings/scheduled-tasks/${saved.id}`)
   } catch (e: any) { error.value = e?.message || '保存失败' }
   finally { saving.value = false }

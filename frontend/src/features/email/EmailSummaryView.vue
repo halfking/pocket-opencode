@@ -78,6 +78,8 @@ import { emailApi } from '../../api/email'
 import type { DailySummary } from '../../api/email'
 import { ApiError } from '../../api/http'
 
+defineOptions({ name: 'EmailSummaryView' })
+
 const route = useRoute()
 const router = useRouter()
 

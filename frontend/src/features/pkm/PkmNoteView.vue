@@ -31,6 +31,7 @@ import PkmEditor from './PkmEditor.vue'
 import BacklinksPanel from './BacklinksPanel.vue'
 import { getNote, saveNote, type PkmNote } from './pkm-store'
 import { useWikilinkNav } from './use-wikilink-nav'
+import { markListDirty } from '../../composables/list-scene-store'
 
 const route = useRoute()
 const router = useRouter()
@@ -67,6 +68,7 @@ async function loadOrCreate(id: string) {
 function onSaved(note: PkmNote) {
   currentTitle.value = note.title
   refreshTick.value++
+  markListDirty('pkm-today')
 }
 
 async function onNavigate(target: string) {

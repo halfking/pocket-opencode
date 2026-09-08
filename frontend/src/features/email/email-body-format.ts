@@ -95,8 +95,10 @@ function decodeTransfer(body: string, encoding: string): string {
 }
 
 function decodeBase64(compact: string): string {
-  if (typeof Buffer !== 'undefined') {
-    return Buffer.from(compact, 'base64').toString('utf8')
+  // Node 环境走 Buffer（运行时探测，避免引入 @types/node 依赖）；浏览器走 atob。
+  const NodeBuffer = (globalThis as { Buffer?: { from(s: string, enc: string): { toString(enc: string): string } } }).Buffer
+  if (NodeBuffer) {
+    return NodeBuffer.from(compact, 'base64').toString('utf8')
   }
   const bin = atob(compact)
   return new TextDecoder('utf-8').decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)))

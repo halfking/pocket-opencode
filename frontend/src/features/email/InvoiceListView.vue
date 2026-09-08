@@ -102,6 +102,9 @@ import ScrollChromePortal from '../../components/layout/ScrollChromePortal.vue'
 import InvoiceCard from './InvoiceCard.vue'
 import InvoicePreviewSheet from './InvoicePreviewSheet.vue'
 import { useInvoiceList } from './use-invoice-list'
+import { useListScene } from '../../composables/use-list-scene'
+
+defineOptions({ name: 'InvoiceListView' })
 
 const {
   loading, loadingMore, hasMore, syncing, exporting, pushing, error, filter, summary, bookingId,
@@ -123,6 +126,8 @@ onMounted(() => {
     if (ents.some((e) => e.isIntersecting)) void loadMore()
   }, { rootMargin: '120px' })
 })
+/* KeepAlive 现场保持：filter 筛选/选择集保留；返回时按需刷新 + 恢复滚动 */
+useListScene('email-invoices', load)
 watch(moreEl, (el, prev) => {
   if (!moreObs) return
   if (prev) moreObs.unobserve(prev)

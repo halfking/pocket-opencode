@@ -106,6 +106,9 @@ import { useListSentinel } from '../../composables/use-list-sentinel'
 import { DEFAULT_LIST_PAGE_SIZE, pageHasMore } from '../../native/list-sync/page'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
+import { useListScene } from '../../composables/use-list-scene'
+
+defineOptions({ name: 'NoteListView' })
 
 const router = useRouter()
 const notes = ref<LocalNote[]>([])
@@ -242,6 +245,8 @@ async function onMetaDelete() {
 
 watch(domain, () => { void load() })
 onMounted(load)
+/* KeepAlive 现场保持：domain 筛选/搜索词保留；仅当笔记数据被详情页修改过才刷新 */
+useListScene('notes', load)
 </script>
 
 <style scoped>

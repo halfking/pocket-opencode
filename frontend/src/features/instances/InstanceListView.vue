@@ -66,6 +66,8 @@ import { persistSelectedInstance } from '../../native/config-sync/prefs'
 import { Skeleton, EmptyState } from '../../components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 
+defineOptions({ name: 'InstanceListView' })
+
 const router = useRouter()
 
 interface Instance {

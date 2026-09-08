@@ -22,6 +22,7 @@ import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue
 import { useScheduledTasksStore } from './store'
 import { formatPayload, formatTimestamp, scheduleKindLabel, taskKindLabel } from './types'
 import { describeTaskSchedule } from './schedule-plan'
+import { markListDirty } from '../../composables/list-scene-store'
 
 const route = useRoute(); const router = useRouter(); const store = useScheduledTasksStore()
 const taskId = computed(() => route.params.id as string)
@@ -33,8 +34,8 @@ async function runNow() {
   running.value = true
   try { await store.run(task.value.id); await load() } catch (e: any) { store.error = e?.message || '执行失败' } finally { running.value = false }
 }
-async function toggle() { if (task.value) await store.update(task.value.id, { enabled: !task.value.enabled }) }
-async function remove() { if (!task.value || !window.confirm(`删除自动化「${task.value.name}」？`)) return; await store.remove(task.value.id); router.replace('/settings/scheduled-tasks') }
+async function toggle() { if (task.value) { await store.update(task.value.id, { enabled: !task.value.enabled }); markListDirty('scheduled-tasks') } }
+async function remove() { if (!task.value || !window.confirm(`删除自动化「${task.value.name}」？`)) return; await store.remove(task.value.id); markListDirty('scheduled-tasks'); router.replace('/settings/scheduled-tasks') }
 onMounted(load)
 watch(taskId, (id, previous) => { if (id && id !== previous) void load() })
 </script>

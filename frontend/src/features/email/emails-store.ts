@@ -203,8 +203,10 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
          ai_summary=excluded.ai_summary,
          suggested_action=excluded.suggested_action,
          has_attachments=excluded.has_attachments,
-         is_read=excluded.is_read,
-         is_starred=excluded.is_starred,
+         -- 已读/星标是本地用户操作状态：服务端不做权威回传（IMAP seen 不同步），
+         -- 同步覆盖会把用户刚在详情页标记的状态抹掉，故保留本地值。
+         is_read=local_emails.is_read,
+         is_starred=local_emails.is_starred,
          uid=COALESCE(excluded.uid, local_emails.uid),
          message_id=COALESCE(excluded.message_id, local_emails.message_id),
          updated_at=excluded.updated_at`,

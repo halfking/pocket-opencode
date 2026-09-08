@@ -151,6 +151,9 @@ import { INBOX_CATEGORY_CHIPS, catLabel } from './email-categories'
 import { formatInboxSearchLabel } from './email-inbox-search'
 import { useEmailInbox } from './use-email-inbox'
 import { setHeaderTitle } from '../../composables/useAppHeaderTitle'
+import { useListScene } from '../../composables/use-list-scene'
+
+defineOptions({ name: 'EmailInboxView' })
 
 const router = useRouter()
 const emails = ref<LocalEmail[]>([])
@@ -251,6 +254,9 @@ watch(() => inbox.search.value, (s) => {
   setHeaderTitle(formatInboxSearchLabel(s) || null)
 }, { deep: true })
 onMounted(load)
+/* KeepAlive 现场保持：筛选/分类保留在组件实例上；仅当详情页登记过
+   email 数据变更（已读/加星等）才刷新，并恢复滚动位置。 */
+useListScene('email', load)
 onUnmounted(() => setHeaderTitle(null))
 </script>
 

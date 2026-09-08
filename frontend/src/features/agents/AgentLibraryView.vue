@@ -6,6 +6,8 @@ import { useConfirm } from '../../composables/useConfirm'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import AgentSyncSheet from '../ai-chat/AgentSyncSheet.vue'
 
+defineOptions({ name: 'AgentLibraryView' })
+
 const router = useRouter()
 const agentStore = useChatAgentStore()
 const { confirm } = useConfirm()

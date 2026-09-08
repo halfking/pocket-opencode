@@ -36,6 +36,9 @@ import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue
 import { useScheduledTasksStore } from './store'
 import { formatTimestamp, taskKindLabel, type ScheduledTask } from './types'
 import { describeTaskSchedule } from './schedule-plan'
+import { useListScene } from '../../composables/use-list-scene'
+
+defineOptions({ name: 'ScheduledTaskListView' })
 
 const router = useRouter()
 const store = useScheduledTasksStore()
@@ -49,6 +52,8 @@ async function remove(task: ScheduledTask) {
 }
 function open(id: string) { router.push(`/settings/scheduled-tasks/${id}`) }
 onMounted(load)
+/* KeepAlive 现场保持：仅显示启用筛选保留；详情页改动过任务才刷新 */
+useListScene('scheduled-tasks', load)
 </script>
 
 <style scoped>

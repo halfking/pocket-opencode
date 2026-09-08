@@ -16,17 +16,20 @@ async function prepareNative(): Promise<boolean> {
 
 export async function runDelegatedEmailFetch(opts?: { classify?: boolean }): Promise<{ hint: string; classified: number }> {
   await pullInboxFromServer()
-  if (await prepareNative()) {
-    const native = await runNativeEmailFetch()
-    if (native.used) {
-      await pullInboxFromServer()
-      return {
-        hint: sanitizeFetchHint(formatFetchHint(
-          `已同步 ${native.synced} 个账户，新邮件 ${native.newCount}`,
-          native.classified,
-        )),
-        classified: native.classified,
-      }
+  // 原生 EmailFetch 插件未实现/配置失败时静默降级为仅服务端拉取；
+  // reject 不能冒泡打断调用方 load() 里后续的 showLocal 刷新。
+  let native: { used: boolean; synced: number; newCount: number; classified: number } | null = null
+  if (await prepareNative().catch(() => false)) {
+    native = await runNativeEmailFetch().catch(() => null)
+  }
+  if (native?.used) {
+    await pullInboxFromServer()
+    return {
+      hint: sanitizeFetchHint(formatFetchHint(
+        `已同步 ${native.synced} 个账户，新邮件 ${native.newCount}`,
+        native.classified,
+      )),
+      classified: native.classified,
     }
   }
   // 真机不走 WebView IMAP（长请求会 Failed to fetch）；只保留已拉到的列表。

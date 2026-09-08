@@ -6,7 +6,13 @@
       任务/会话/实例/设置 旧 4模块 Tab 遮住了设计的 5模块 BottomNav）。
     -->
     <AppLayout>
-      <router-view />
+      <!-- KeepAlive 白名单只缓存列表页（LIST_CACHE_NAMES）：列表→详情→返回时
+           筛选/分类/状态保留原现场；详情页不在名单内，每次进入都重新挂载拉最新。 -->
+      <router-view v-slot="{ Component }">
+        <KeepAlive :include="LIST_CACHE_NAMES">
+          <component :is="Component" />
+        </KeepAlive>
+      </router-view>
     </AppLayout>
     <UpdateChecker ref="updateChecker" />
     <!-- 全局确认弹窗：useConfirm().confirm() 的唯一渲染挂载点 -->
@@ -19,6 +25,7 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import AppLayout from './AppLayout.vue'
 import UpdateChecker from '../components/UpdateChecker.vue'
 import ConfirmDialog from '../components/base/ConfirmDialog.vue'
+import { LIST_CACHE_NAMES } from '../composables/use-list-scene'
 import { useSwipeBack } from '../composables/useSwipeBack'
 import { useStatusBar } from '../composables/useStatusBar'
 import { installKeyboardInset } from '../composables/useKeyboardInset'

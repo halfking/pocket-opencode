@@ -454,6 +454,8 @@ import {
   toggleQuickPrompt,
 } from './quick-prompt'
 
+defineOptions({ name: 'TasksView' })
+
 const router = useRouter()
 const { confirm } = useConfirm()
 

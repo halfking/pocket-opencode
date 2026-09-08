@@ -93,6 +93,9 @@ import {
   MEETING_LIST_FILTERS, type MeetingListFilter,
 } from './meeting-list'
 import { captureDeviceLocation, formatCapturedTitle } from './meeting-meta'
+import { useListScene } from '../../composables/use-list-scene'
+
+defineOptions({ name: 'MeetingListView' })
 
 const router = useRouter()
 const dbNotReady = ref(false)
@@ -188,6 +191,8 @@ async function onDelete(id: string) {
 }
 
 onMounted(load)
+/* KeepAlive 现场保持：active/archived 筛选保留；详情页改动过会议才刷新 */
+useListScene('meetings', load)
 </script>
 
 <style scoped>

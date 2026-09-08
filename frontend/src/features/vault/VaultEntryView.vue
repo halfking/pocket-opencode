@@ -190,6 +190,7 @@ import { Skeleton, EmptyState } from '../../components'
 import * as vaultStore from './vault-store'
 import type { VaultEntry } from './vault-store'
 import { useConfirm } from '../../composables/useConfirm'
+import { markListDirty } from '../../composables/list-scene-store'
 
 const route = useRoute()
 const router = useRouter()
@@ -377,6 +378,7 @@ async function onSave() {
       },
     })
     showToast('已保存', 'success')
+    markListDirty('vault')
     router.push(`/vault/${entry.value.id}`)
   } catch (e: any) {
     showToast(`保存失败：${e.message || e}`, 'danger')
@@ -398,6 +400,7 @@ async function onDelete() {
     }
     await vaultStore.deleteEntry(entry.value.id)
     showToast('已删除', 'success')
+    markListDirty('vault')
     router.push('/vault')
   } catch (e: any) {
     showToast(`删除失败：${e.message || e}`, 'danger')

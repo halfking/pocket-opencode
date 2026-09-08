@@ -79,6 +79,9 @@ import {
 } from './pkm-store'
 import { useAuthStore } from '../../stores/auth'
 import { EmptyState, ErrorState, Loading } from '../../components'
+import { useListScene } from '../../composables/use-list-scene'
+
+defineOptions({ name: 'PkmTodayView' })
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -160,6 +163,8 @@ function formatTime(ts: number): string {
 }
 
 onMounted(loadRecent)
+/* KeepAlive 现场保持：搜索词保留；笔记被编辑/新建过才刷新最近列表 */
+useListScene('pkm-today', loadRecent)
 </script>
 
 <style scoped>

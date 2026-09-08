@@ -90,6 +90,7 @@ import {
   translateEmailBody,
   type EmailLang,
 } from './translate-email'
+import { markListDirty } from '../../composables/list-scene-store'
 
 const route = useRoute()
 const router = useRouter()
@@ -127,7 +128,7 @@ async function load() {
     const found = await emailsStore.getEmail(route.params.id as string)
     email.value = found
     if (found && !found.isRead) {
-      try { await emailsStore.markRead(found.id, true); found.isRead = true } catch { /* 不挡正文 */ }
+      try { await emailsStore.markRead(found.id, true); found.isRead = true; markListDirty('email') } catch { /* 不挡正文 */ }
     }
     if (found?.bodyPurged) {
       bodyText.value = ''
@@ -259,12 +260,14 @@ async function toggleRead() {
   const next = !email.value.isRead
   await emailsStore.markRead(email.value.id, next)
   email.value.isRead = next
+  markListDirty('email')
 }
 
 async function toggleStar() {
   if (!email.value) return
   email.value.isStarred = !email.value.isStarred
   await emailsStore.setStarred(email.value.id, email.value.isStarred)
+  markListDirty('email')
 }
 
 async function navigateToContact() {

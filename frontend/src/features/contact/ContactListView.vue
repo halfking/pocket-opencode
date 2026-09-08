@@ -56,6 +56,9 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { EmptyState, ErrorState, Loading } from '../../components'
 import { listContacts, syncContactsFromEmails, type Contact } from './contacts-store'
+import { useListScene } from '../../composables/use-list-scene'
+
+defineOptions({ name: 'ContactListView' })
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -104,6 +107,8 @@ function open(id: string) { router.push(`/contacts/${id}`) }
 function initials(name: string) { return name.trim().slice(0, 2).toUpperCase() || '?' }
 
 onMounted(load)
+/* KeepAlive 现场保持：搜索词保留；联系人数据只读聚合，返回无需刷新 */
+useListScene('contacts')
 </script>
 
 <style scoped>

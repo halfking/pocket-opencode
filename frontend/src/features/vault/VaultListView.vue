@@ -91,6 +91,9 @@ import * as vaultStore from './vault-store'
 import * as syncStore from './sync-store'
 import { isCryptoReady } from '../../native/crypto'
 import type { VaultEntryMeta } from './vault-store'
+import { useListScene } from '../../composables/use-list-scene'
+
+defineOptions({ name: 'VaultListView' })
 
 const initialized = ref(false)
 const unlocked = ref(false)
@@ -221,6 +224,8 @@ const categoryIcon = (c?: string | null) =>
   ({ login: '🔑', card: '💳', note: '🗒', identity: '🪪' }[c || 'login'] || '🔑')
 
 onMounted(probe)
+/* KeepAlive 现场保持：新增表单开关/解锁态保留；条目被编辑或删除过才刷新 */
+useListScene('vault', load)
 </script>
 
 <style scoped>
