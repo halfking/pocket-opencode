@@ -382,12 +382,8 @@ class LocalDB {
         applied_at INTEGER NOT NULL
       );
     `, false)
+    // 不用 queryOne：init 期间 initialized=false，requireReady 会抛错，旧库永远补不上列。
     for (const col of EMAIL_INBOX_V1_COLUMNS) {
-      const exists = await this.queryOne<{ cnt: number }>(
-        `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
-        [col.column],
-      )
-      if (exists && exists.cnt > 0) continue
       try { await this.conn.execute(col.sql, false) } catch { /* 列可能已存在 */ }
     }
     await this.conn.execute(
