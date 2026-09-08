@@ -85,6 +85,20 @@ export function resolveApiBase(opts?: {
   return build ? normalizeApiBase(build, opts?.pageOrigin) : ''
 }
 
+/** Capacitor WebView origin 是 https://localhost；空 base 时回退生产入口，避免 /api 打到本地壳。 */
+export function resolveRuntimeApiBase(opts?: {
+  override?: string | null
+  buildDefault?: string
+  pageOrigin?: string
+  storage?: Storage
+}): string {
+  const resolved = resolveApiBase(opts)
+  if (resolved) return resolved
+  const origin = pageOriginFallback(opts?.pageOrigin)
+  if (origin === 'https://localhost' || origin === 'capacitor://localhost') return PRODUCTION_API_BASE
+  return ''
+}
+
 export function displayApiBase(opts?: {
   resolved?: string
   pageOrigin?: string

@@ -3,7 +3,7 @@
  */
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { hasInboxSearch, matchInboxSearch } from './email-inbox-search.ts'
+import { formatInboxSearchLabel, hasInboxSearch, matchInboxSearch } from './email-inbox-search.ts'
 
 const mail = {
   fromAddress: 'promo@shop.com',
@@ -34,5 +34,11 @@ describe('inbox search', () => {
     assert.equal(matchInboxSearch(mail, { subject: '账单' }), true)
     assert.equal(matchInboxSearch(mail, { sinceMs: 1_600_000_000_000, untilMs: 1_800_000_000_000 }), true)
     assert.equal(matchInboxSearch(mail, { untilMs: 1_600_000_000_000 }), false)
+  })
+
+  it('abbreviates applied conditions for the nav title', () => {
+    assert.equal(formatInboxSearchLabel({}), '')
+    assert.equal(formatInboxSearchLabel({ q: '发票', from: 'shop.com' }), '发票 · shop.com')
+    assert.ok(formatInboxSearchLabel({ q: '这是一段非常长的关键字用来挤标题栏中间' }, 10).endsWith('…'))
   })
 })

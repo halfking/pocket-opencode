@@ -1,5 +1,6 @@
 import { emailApi } from '../../api/email'
 import { DEFAULT_LIST_PAGE_SIZE } from '../../native/list-sync/page'
+import { shouldRetryFullListPull } from './email-fetch-plan'
 import { syncAccountsFromServer } from './account-sync'
 import { inboxListFilter } from './email-inbox-filter'
 import * as emailsStore from './emails-store'
@@ -24,7 +25,11 @@ export async function pullInboxFromServer(): Promise<void> {
   }
   try {
     const since = await emailsStore.maxEmailUpdatedAt()
-    await emailsStore.syncEmailsFromServer(200, since)
+    const pulled = await emailsStore.syncEmailsFromServer(200, since)
+    const local = await emailsStore.listEmails({ limit: 1, offset: 0 })
+    if (shouldRetryFullListPull(local.length, pulled, since)) {
+      await emailsStore.syncEmailsFromServer(200, 0)
+    }
   } catch (e: unknown) {
     console.warn('[email] sync from server:', e instanceof Error ? e.message : e)
   }

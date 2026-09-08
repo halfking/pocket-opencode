@@ -21,3 +21,15 @@ export function resolveFetchApiBase(resolved: string, nativeFallback: string): s
   if (base) return base.replace(/\/$/, '')
   return (nativeFallback || '').replace(/\/$/, '')
 }
+
+export function sanitizeFetchHint(raw: string): string {
+  if (!raw) return ''
+  if (/failed to fetch/i.test(raw) || /networkerror/i.test(raw)) {
+    return '后台收信未完成，已显示已同步邮件'
+  }
+  return raw
+}
+
+export function shouldRetryFullListPull(localCount: number, pulled: number, since: number): boolean {
+  return localCount <= 0 && pulled <= 0 && since > 0
+}

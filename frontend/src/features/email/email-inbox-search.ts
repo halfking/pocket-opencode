@@ -43,3 +43,19 @@ export function matchInboxSearch(e: InboxSearchMail, s: InboxSearch): boolean {
   if (s.untilMs && s.untilMs > 0 && ms > s.untilMs) return false
   return true
 }
+
+/** 导航栏中间的缩略条件；空表示未搜索。 */
+export function formatInboxSearchLabel(s: InboxSearch, max = 18): string {
+  if (!hasInboxSearch(s)) return ''
+  const parts: string[] = []
+  if (s.q?.trim()) parts.push(s.q.trim())
+  if (s.from?.trim()) parts.push(s.from.trim())
+  if (s.subject?.trim()) parts.push(s.subject.trim())
+  if ((s.sinceMs && s.sinceMs > 0) || (s.untilMs && s.untilMs > 0)) {
+    const a = s.sinceMs && s.sinceMs > 0 ? new Date(s.sinceMs).toISOString().slice(5, 10) : ''
+    const b = s.untilMs && s.untilMs > 0 ? new Date(s.untilMs).toISOString().slice(5, 10) : ''
+    parts.push([a, b].filter(Boolean).join('~') || '日期')
+  }
+  const joined = parts.join(' · ')
+  return joined.length > max ? `${joined.slice(0, max - 1)}…` : joined
+}

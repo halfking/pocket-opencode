@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import { emailApi } from '../../api/email'
 import { normalizeEmailCategory } from './email-categories'
 import { applyClassifyResult, classifyProgressLabel, isUncategorized } from './email-classify-run'
+import { sanitizeFetchHint } from './email-fetch-plan'
 import { hasInboxSearch, matchInboxSearch, type InboxSearch } from './email-inbox-search'
 import { selectedIdList, toggleSelect } from './email-inbox-select'
 import { purgeEmailsLocal } from './email-soft-delete'
@@ -43,7 +44,16 @@ export function useEmailInbox() {
 
   function toggleSearch() {
     searchOpen.value = !searchOpen.value
-    if (!searchOpen.value) search.value = {}
+    moreOpen.value = false
+  }
+
+  function confirmSearch() {
+    searchOpen.value = false
+  }
+
+  function clearSearch() {
+    search.value = {}
+    searchOpen.value = false
   }
 
   async function confirmPurge(): Promise<string[]> {
@@ -86,7 +96,8 @@ export function useEmailInbox() {
       const leftover = next.filter((m) => isUncategorized(m.category)).length
       classifyHint.value = leftover ? `已暂停，仍有 ${leftover} 封未归类` : '归类完成'
     } catch (e) {
-      classifyHint.value = e instanceof Error ? e.message : '归类失败'
+      const raw = e instanceof Error ? e.message : '归类失败'
+      classifyHint.value = sanitizeFetchHint(raw) === raw ? raw : '归类中断，已保存已完成的分类'
     } finally {
       classifying.value = false
     }
@@ -96,6 +107,6 @@ export function useEmailInbox() {
   return {
     selectMode, selected, selectedCount, searchOpen, search, moreOpen,
     classifying, classifyHint, classifyCancel, purgeBusy,
-    visibleEmails, enterSelect, exitSelect, toggle, toggleSearch, confirmPurge, runClassify,
+    visibleEmails, enterSelect, exitSelect, toggle, toggleSearch, confirmSearch, clearSearch, confirmPurge, runClassify,
   }
 }

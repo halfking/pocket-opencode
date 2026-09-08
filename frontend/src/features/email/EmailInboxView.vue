@@ -1,8 +1,3 @@
-<!--
-  EmailInboxView — aggregated inbox across IMAP accounts with AI category
-  and importance filters. Skeleton page; full body rendering + account
-  setup wizard come later.
--->
 <template>
   <div class="inbox-page">
     <DbLockedState
@@ -12,7 +7,6 @@
     />
 
     <template v-else>
-      <!-- 标题栏右侧：发票整理 / 邮箱设置（账户 / 过滤策略 / 处理逻辑） -->
       <HeaderActionsPortal>
         <template v-if="inbox.selectMode.value">
           <button class="chat-icon-btn" type="button" aria-label="取消选择" @click="inbox.exitSelect()">
@@ -73,6 +67,8 @@
           <input v-model="inbox.search.value.subject" class="search-input slim" placeholder="标题" />
           <input v-model="sinceLocal" type="date" class="search-input slim" />
           <input v-model="untilLocal" type="date" class="search-input slim" />
+          <button type="button" class="search-ok" @click="inbox.confirmSearch()">完成</button>
+          <button type="button" class="search-ok ghost" @click="inbox.clearSearch()">清除</button>
         </div>
       </ScrollChromePortal>
 
@@ -139,7 +135,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Skeleton, EmptyState, PullToRefresh, DbLockedState } from '../../components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
@@ -147,11 +143,14 @@ import HeaderActionsPortal from '@/components/layout/HeaderActionsPortal.vue'
 import { useListSentinel } from '../../composables/use-list-sentinel'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
-import { inboxHasMore, readInboxPage } from './email-inbox-page'
+import { inboxHasMore, pullInboxFromServer, readInboxPage } from './email-inbox-page'
 import { runDelegatedEmailFetch } from './email-fetch-run'
+import { sanitizeFetchHint } from './email-fetch-plan'
 import { formatEmailRelTime } from './cleanup-filter'
 import { INBOX_CATEGORY_CHIPS, catLabel } from './email-categories'
+import { formatInboxSearchLabel } from './email-inbox-search'
 import { useEmailInbox } from './use-email-inbox'
+import { setHeaderTitle } from '../../composables/useAppHeaderTitle'
 
 const router = useRouter()
 const emails = ref<LocalEmail[]>([])
@@ -186,7 +185,7 @@ watch([sinceLocal, untilLocal], () => {
 
 async function onClassify() {
   emails.value = await inbox.runClassify(emails.value)
-  await load()
+  await showLocal()
 }
 
 async function onPurge() {
@@ -196,28 +195,32 @@ async function onPurge() {
   await load()
 }
 
+async function showLocal() {
+  const page = await readInboxPage(activeCategory.value, 0)
+  emails.value = page
+  hasMore.value = inboxHasMore(page.length)
+}
+
 async function load() {
-  loading.value = true
+  loading.value = emails.value.length === 0
   loadError.value = ''
   dbNotReady.value = false
   try {
-    const page = await readInboxPage(activeCategory.value, 0)
-    emails.value = page
-    hasMore.value = inboxHasMore(page.length)
-    if (page.length) loading.value = false
+    await showLocal()
   } catch (e: any) {
     if (e?.message?.includes('LocalDB 未初始化')) dbNotReady.value = true
-    else loadError.value = e?.message || '加载邮件失败'
+    else loadError.value = sanitizeFetchHint(e?.message || '') || '加载邮件失败'
   }
-  void runDelegatedEmailFetch({ classify: true }).then(async ({ hint }) => {
-    syncHint.value = hint
+  loading.value = false
+  void (async () => {
     try {
-      const page = await readInboxPage(activeCategory.value, 0)
-      emails.value = page
-      hasMore.value = inboxHasMore(page.length)
-    } catch { /* 保持已上屏的本地列表 */ }
-    loading.value = false
-  })
+      await pullInboxFromServer()
+      await showLocal()
+    } catch { /* 保持本地列表 */ }
+    const { hint } = await runDelegatedEmailFetch({ classify: false })
+    if (hint) syncHint.value = hint
+    try { await showLocal() } catch { /* 保持本地列表 */ }
+  })()
 }
 
 async function loadMore() {
@@ -244,7 +247,11 @@ async function markRead(m: LocalEmail, read: boolean) {
   m.isRead = read
 }
 
+watch(() => inbox.search.value, (s) => {
+  setHeaderTitle(formatInboxSearchLabel(s) || null)
+}, { deep: true })
 onMounted(load)
+onUnmounted(() => setHeaderTitle(null))
 </script>
 
 <style scoped>
@@ -256,6 +263,8 @@ onMounted(load)
 .search-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 var(--space-3) var(--space-2); }
 .search-input { flex: 1 1 140px; min-height: 36px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 8px; background: var(--bg-card); color: var(--text-primary); font-size: 13px; }
 .search-input.slim { flex: 0 1 110px; }
+.search-ok { min-height: 36px; padding: 0 12px; border: none; border-radius: var(--radius-sm); background: var(--brand-primary); color: var(--text-inverse); }
+.search-ok.ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
 .pick { display: flex; align-items: center; margin-right: 8px; }
 .card-main { flex: 1; min-width: 0; }
 .linkish { border: none; background: none; color: var(--brand-primary); font-size: 11px; }
