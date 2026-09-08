@@ -161,7 +161,8 @@ CREATE TABLE IF NOT EXISTS local_email_accounts (
     last_synced_at INTEGER,
     rules TEXT,                      -- JSON: {whitelist, keywords, blacklist}
     enabled INTEGER DEFAULT 1,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT 0
 );
 
 -- ============================================================
@@ -185,10 +186,14 @@ CREATE TABLE IF NOT EXISTS local_emails (
     suggested_action TEXT,
     has_attachments INTEGER DEFAULT 0,
     created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    deleted_at INTEGER NOT NULL DEFAULT 0,
+    body_purged INTEGER NOT NULL DEFAULT 0,
     UNIQUE(account_id, message_id),
     FOREIGN KEY (account_id) REFERENCES local_email_accounts(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_emails_date ON local_emails(date DESC);
+CREATE INDEX IF NOT EXISTS idx_emails_updated ON local_emails(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_emails_unread ON local_emails(is_read) WHERE is_read = 0;
 
 -- ============================================================
@@ -265,6 +270,7 @@ CREATE TABLE IF NOT EXISTS local_meetings (
     status TEXT DEFAULT 'recording', -- recording|completed|processing|refined
     started_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT 0,
     deleted_at INTEGER,
     archived_at INTEGER,             -- 非 NULL/非 0 = 已归档
     tags TEXT,                       -- JSON string[]
@@ -272,6 +278,7 @@ CREATE TABLE IF NOT EXISTS local_meetings (
     summary_skill TEXT DEFAULT 'meeting-minutes'
 );
 CREATE INDEX IF NOT EXISTS idx_meetings_session ON local_meetings(session_id);
+CREATE INDEX IF NOT EXISTS idx_meetings_updated ON local_meetings(updated_at DESC) WHERE deleted_at IS NULL;
 
 -- ============================================================
 -- 会议分段（声纹 + 时间戳）
@@ -324,7 +331,8 @@ CREATE TABLE IF NOT EXISTS local_chat_messages (
     text TEXT NOT NULL,
     ts INTEGER NOT NULL,
     is_outgoing INTEGER DEFAULT 0,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_chat_conv ON local_chat_messages(conversation_id, ts);
 
@@ -334,7 +342,8 @@ CREATE TABLE IF NOT EXISTS local_chat_conversations (
     name TEXT,
     last_message_at INTEGER,
     unread_count INTEGER DEFAULT 0,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT 0
 );
 
 -- ============================================================
@@ -589,6 +598,46 @@ CREATE TABLE IF NOT EXISTS local_drafts (
     text TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL
 );
+
+-- 远程列表的本地镜像（财务 / 网关 / 市场等）：只存元数据 JSON。
+CREATE TABLE IF NOT EXISTS local_list_snapshots (
+    namespace TEXT NOT NULL,
+    id TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    updated_at INTEGER NOT NULL,
+    dirty INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (namespace, id)
+);
+CREATE INDEX IF NOT EXISTS idx_list_snapshots_ns
+    ON local_list_snapshots(namespace, updated_at DESC);
+
+-- AI 对话列表与正文拆开：列表只读会话行，消息进详情。
+CREATE TABLE IF NOT EXISTS local_ai_conversations (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT 'auto',
+    mode TEXT NOT NULL DEFAULT 'single',
+    agent_id TEXT,
+    custom_system_prompt TEXT,
+    archived_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_conversations_updated
+    ON local_ai_conversations(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS local_ai_messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES local_ai_conversations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ai_messages_conv
+    ON local_ai_messages(conversation_id, created_at);
 `
 
 /**

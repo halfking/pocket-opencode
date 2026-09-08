@@ -43,6 +43,9 @@ export interface LocalEmail {
   suggestedAction: string | null
   hasAttachments: boolean
   createdAt: number
+  updatedAt: number
+  deletedAt: number
+  bodyPurged: boolean
 }
 
 export interface ListFilter {
@@ -50,6 +53,7 @@ export interface ListFilter {
   category?: string
   importance?: string
   unreadOnly?: boolean
+  uncategorized?: boolean
   limit?: number
   offset?: number
 }
@@ -71,13 +75,14 @@ export async function saveAccount(input: {
 }): Promise<string> {
   const id = `acct-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const encrypted = await encryptCredential(input.password)
+  const now = Date.now()
   await localDB.run(
     `INSERT INTO local_email_accounts
        (id, display_name, email_address, imap_host, imap_port, auth_type, credential_encrypted,
-        sync_interval_min, enabled, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        sync_interval_min, enabled, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
     [id, input.displayName, input.emailAddress, input.imapHost, input.imapPort ?? 993,
-     input.authType ?? 'password', encrypted, input.syncIntervalMin ?? 15, 1, Date.now()],
+     input.authType ?? 'password', encrypted, input.syncIntervalMin ?? 15, 1, now, now],
   )
   return id
 }
@@ -162,6 +167,8 @@ export async function listEmails(filter: ListFilter = {}): Promise<LocalEmail[]>
   if (filter.category) { sql += ' AND category = ?'; vals.push(filter.category) }
   if (filter.importance) { sql += ' AND importance = ?'; vals.push(filter.importance) }
   if (filter.unreadOnly) { sql += ' AND is_read = 0' }
+  if (filter.uncategorized) { sql += " AND (category IS NULL OR category = '')" }
+  sql += ' AND IFNULL(deleted_at, 0) = 0'
   sql += ' ORDER BY date DESC LIMIT ? OFFSET ?'
   vals.push(filter.limit ?? 200, filter.offset ?? 0)
   const rows = await localDB.query<any>(sql, vals)
@@ -171,13 +178,22 @@ export async function listEmails(filter: ListFilter = {}): Promise<LocalEmail[]>
 /** 插入/更新邮件（IMAP 抓取后调用）。返回 true=新插入。 */
 export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; fromAddress: string; date: number }): Promise<boolean> {
   const id = e.id || `email-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const now = Date.now()
+  const updatedAt = e.updatedAt && e.updatedAt > 0 ? e.updatedAt : now
+  const existing = await localDB.queryOne<{ deleted_at: number | null; body_purged: number | null }>(
+    'SELECT deleted_at, body_purged FROM local_emails WHERE id = ?',
+    [id],
+  )
+  if (existing && (Number(existing.deleted_at) > 0 || Number(existing.body_purged) === 1)) {
+    return false
+  }
   try {
     await localDB.run(
       `INSERT INTO local_emails
          (id, account_id, message_id, uid, from_address, from_name, subject, snippet,
           date, is_read, is_starred, category, importance, ai_summary, suggested_action,
-          has_attachments, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          has_attachments, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET
          subject=excluded.subject,
          snippet=excluded.snippet,
@@ -190,11 +206,12 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
          is_read=excluded.is_read,
          is_starred=excluded.is_starred,
          uid=COALESCE(excluded.uid, local_emails.uid),
-         message_id=COALESCE(excluded.message_id, local_emails.message_id)`,
+         message_id=COALESCE(excluded.message_id, local_emails.message_id),
+         updated_at=excluded.updated_at`,
       [id, e.accountId, e.messageId ?? null, e.uid ?? null, e.fromAddress, e.fromName ?? null,
        e.subject ?? null, e.snippet ?? null, e.date, e.isRead ? 1 : 0, e.isStarred ? 1 : 0,
        e.category ?? null, e.importance ?? null, e.aiSummary ?? null, e.suggestedAction ?? null,
-       e.hasAttachments ? 1 : 0, Date.now()],
+       e.hasAttachments ? 1 : 0, now, updatedAt],
     )
     return true
   } catch {
@@ -214,11 +231,19 @@ export async function deleteEmailsByIds(ids: string[]): Promise<void> {
   }
 }
 
-export async function syncEmailsFromServer(limit = 200): Promise<number> {
+export async function maxEmailUpdatedAt(): Promise<number> {
+  const row = await localDB.queryOne<{ m: number | null }>(
+    'SELECT MAX(updated_at) AS m FROM local_emails',
+  )
+  return Number(row?.m) || 0
+}
+
+export async function syncEmailsFromServer(limit = 200, since = 0): Promise<number> {
   const { emailApi } = await import('../../api/email')
-  const res = await emailApi.listEmails({ limit })
+  const res = await emailApi.listEmails({ limit, since: since > 0 ? since : undefined })
   let n = 0
   for (const e of (res.emails ?? []).slice(0, limit)) {
+    const dateMs = emailDateToMs(typeof e.date === 'number' ? e.date : Date.parse(String(e.date)) || 0) || Date.now()
     const ok = await upsertEmail({
       id: e.id,
       accountId: e.accountId,
@@ -228,7 +253,7 @@ export async function syncEmailsFromServer(limit = 200): Promise<number> {
       fromName: e.fromName ?? null,
       subject: e.subject,
       snippet: e.snippet,
-      date: emailDateToMs(typeof e.date === 'number' ? e.date : Date.parse(String(e.date)) || 0) || Date.now(),
+      date: dateMs,
       isRead: !!e.isRead,
       isStarred: !!e.isStarred,
       category: e.category ?? null,
@@ -236,6 +261,7 @@ export async function syncEmailsFromServer(limit = 200): Promise<number> {
       aiSummary: e.aiSummary ?? null,
       suggestedAction: e.suggestedAction ?? null,
       hasAttachments: !!e.hasAttachments,
+      updatedAt: e.updatedAt && e.updatedAt > 0 ? e.updatedAt : dateMs,
     })
     if (ok) n++
   }
@@ -366,6 +392,9 @@ function rowToEmail(r: any): LocalEmail {
     category: r.category, importance: r.importance, aiSummary: r.ai_summary,
     suggestedAction: r.suggested_action, hasAttachments: r.has_attachments === 1,
     createdAt: r.created_at,
+    updatedAt: r.updated_at ?? 0,
+    deletedAt: Number(r.deleted_at) || 0,
+    bodyPurged: r.body_purged === 1,
   }
 }
 

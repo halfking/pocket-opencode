@@ -564,6 +564,8 @@ func (s *Scheduler) tick(ctx context.Context) {
 			continue
 		}
 		accountID := a.ID
+		userID := a.UserID
+		wsID := defaultWorkspace(a.WorkspaceID)
 		go func() {
 			// 这是个裸 goroutine，panic 会直接带走整个进程。IMAP 解析在
 			// go-imap 里有多处 panic 路径（例如 NumSetKind 对非法 NumSet 直接
@@ -575,8 +577,16 @@ func (s *Scheduler) tick(ctx context.Context) {
 			}()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
-			if _, err := s.fetcher.Sync(ctx, accountID); err != nil {
+			n, err := s.fetcher.Sync(ctx, accountID)
+			if err != nil {
 				log.Printf("[email/scheduler] sync %s failed: %v", accountID, err)
+				return
+			}
+			if s.kxmem == nil || userID == "" || !ShouldProcessAfterFetch(1, n) {
+				return
+			}
+			if _, cerr := ClassifyUnclassified(ctx, s.store, s.kxmem, userID, wsID, 20); cerr != nil {
+				log.Printf("[email/scheduler] classify %s: %v", accountID, cerr)
 			}
 		}()
 	}

@@ -645,6 +645,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/emails/sync", s.requireAuth(s.handleEmailSync))
 	// 批量清垃圾须在 /api/emails/ 子树之前，避免被 {id} 吃掉。
 	mux.HandleFunc("/api/emails/cleanup", s.requireAuth(s.handleEmailCleanup))
+	mux.HandleFunc("/api/emails/classify", s.requireAuth(s.handleEmailClassify))
+	mux.HandleFunc("/api/emails/purge", s.requireAuth(s.handleEmailPurge))
 	// 邮件处理流水线：手动触发一轮（收信→清垃圾→提醒→发票采集→飞书/汇总）
 	mux.HandleFunc("/api/email/pipeline/run", s.requireAuth(s.handleEmailPipelineRun))
 	// 发票自动整理（列表 + 按邮件手动提取；须在 /api/emails/ 子树之前声明）
@@ -910,6 +912,7 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 	if len(instances) == 0 {
 		instances = s.collectInstances(r)
 	}
+	instances = filterInstancesSince(instances, parseSinceQuery(r.URL.Query().Get("since")))
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
@@ -969,6 +972,7 @@ func (s *Server) handleAllSessions(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.URL.Query().Get("instance_id")
 	limitStr := r.URL.Query().Get("limit")
 	offsetStr := r.URL.Query().Get("offset")
+	since := parseSinceQuery(r.URL.Query().Get("since"))
 
 	limit := 20
 	offset := 0
@@ -1006,6 +1010,8 @@ func (s *Server) handleAllSessions(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		sessions = s.enrichSessionsFromCompanion(sessions)
+		sessions = filterSessionsSince(sessions, since)
 
 		paged := pageSessions(sessions, offset, limit)
 		w.Header().Set("Content-Type", "application/json")
@@ -1024,6 +1030,9 @@ func (s *Server) handleAllSessions(w http.ResponseWriter, r *http.Request) {
 		wsID := s.workspaceIDFromRequest(r)
 		allSessions = s.listSessionsAcrossInstances(r.Context(), wsID, s.registry.ListInstancesForWorkspace(wsID))
 	}
+
+	allSessions = s.enrichSessionsFromCompanion(allSessions)
+	allSessions = filterSessionsSince(allSessions, since)
 
 	paged := pageSessions(allSessions, offset, limit)
 	w.Header().Set("Content-Type", "application/json")
@@ -1160,7 +1169,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 						InstanceName: name,
 						Source:       "opencode",
 						CreatedAt:    time.Unix(now, 0),
-						UpdatedAt:    time.Unix(now, 0),
+						UpdatedAt:    remoteTaskUpdatedAt(rt.UpdatedAt, now),
 					})
 				}
 			}
@@ -1179,6 +1188,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		allTasks = filterTasksSince(allTasks, parseSinceQuery(r.URL.Query().Get("since")))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"tasks": allTasks})
 

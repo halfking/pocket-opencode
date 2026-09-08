@@ -16,6 +16,7 @@ import { initSqliteWeb } from './sqlite-web-init'
 import { isWebFallbackRuntime } from './runtime-platform'
 import type { SqlDb, SqlRow } from './sqlDb'
 import { SCHEMA_SQL, splitSqlStatements } from './schema'
+import { localDbNeedsOpen } from './local-db-init'
 
 const MEETINGS_V2_COLUMNS = [
   { table: 'local_meetings', column: 'location', sql: 'ALTER TABLE local_meetings ADD COLUMN location TEXT' },
@@ -64,10 +65,19 @@ const EMAIL_SYNC_V1_COLUMNS = [
   { table: 'local_email_invoices', column: 'feishu_sent_at', sql: 'ALTER TABLE local_email_invoices ADD COLUMN feishu_sent_at INTEGER DEFAULT 0' },
 ]
 
+const EMAIL_INBOX_V1_COLUMNS = [
+  { table: 'local_emails', column: 'deleted_at', sql: 'ALTER TABLE local_emails ADD COLUMN deleted_at INTEGER DEFAULT 0' },
+  { table: 'local_emails', column: 'body_purged', sql: 'ALTER TABLE local_emails ADD COLUMN body_purged INTEGER DEFAULT 0' },
+]
+
 const LIST_SYNC_V1_COLUMNS = [
   { table: 'local_email_invoices', column: 'email_date', sql: 'ALTER TABLE local_email_invoices ADD COLUMN email_date INTEGER DEFAULT 0' },
   { table: 'local_email_invoices', column: 'dirty', sql: 'ALTER TABLE local_email_invoices ADD COLUMN dirty INTEGER DEFAULT 0' },
   { table: 'local_email_invoices', column: 'client_id', sql: "ALTER TABLE local_email_invoices ADD COLUMN client_id TEXT DEFAULT ''" },
+  { table: 'local_emails', column: 'updated_at', sql: 'ALTER TABLE local_emails ADD COLUMN updated_at INTEGER DEFAULT 0' },
+  { table: 'local_meetings', column: 'updated_at', sql: 'ALTER TABLE local_meetings ADD COLUMN updated_at INTEGER DEFAULT 0' },
+  { table: 'local_chat_conversations', column: 'updated_at', sql: 'ALTER TABLE local_chat_conversations ADD COLUMN updated_at INTEGER DEFAULT 0' },
+  { table: 'local_chat_messages', column: 'updated_at', sql: 'ALTER TABLE local_chat_messages ADD COLUMN updated_at INTEGER DEFAULT 0' },
 ]
 
 const DB_NAME = 'lobster'
@@ -91,7 +101,8 @@ class LocalDB {
    * 幂等：重复调用安全。
    */
   async init(dbSecret: string): Promise<void> {
-    // 关键修复：如果已有连接，先关闭它，防止重复createConnection报错
+    if (!localDbNeedsOpen(this.initialized, this.conn !== null)) return
+    this.initialized = false
     if (this.conn) {
       try {
         await this.sqlite.closeConnection(DB_NAME, false)
@@ -100,8 +111,6 @@ class LocalDB {
       }
       this.conn = null
     }
-
-    if (this.initialized) return
 
     // Web（jeep-sqlite / sql.js）不支持 SQLCipher 加密库；HarmonyOS Phase A
     // 同样固定走这条路径，直到 ArkTS RDB bridge 经真机验证后才可启用原生加密库。
@@ -210,6 +219,11 @@ class LocalDB {
     } catch (e) {
       console.warn('[localDB] list sync v1 migration failed:', e)
     }
+    try {
+      await this.runEmailInboxV1Migration()
+    } catch (e) {
+      console.warn('[localDB] email inbox v1 migration failed:', e)
+    }
     this.initialized = true
   }
 
@@ -309,8 +323,71 @@ class LocalDB {
     }
     await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_email_invoices_email_date ON local_email_invoices(email_date DESC);', false).catch(() => {})
     await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_email_invoices_dirty ON local_email_invoices(dirty);', false).catch(() => {})
+    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_emails_updated ON local_emails(updated_at DESC);', false).catch(() => {})
+    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_meetings_updated ON local_meetings(updated_at DESC);', false).catch(() => {})
+    await this.conn.execute(
+      'UPDATE local_emails SET updated_at = COALESCE(NULLIF(updated_at, 0), date, created_at) WHERE IFNULL(updated_at, 0) = 0;',
+      false,
+    ).catch(() => {})
+    await this.conn.execute(
+      'UPDATE local_meetings SET updated_at = COALESCE(NULLIF(updated_at, 0), started_at, created_at) WHERE IFNULL(updated_at, 0) = 0;',
+      false,
+    ).catch(() => {})
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS local_list_snapshots (
+        namespace TEXT NOT NULL,
+        id TEXT NOT NULL,
+        payload TEXT NOT NULL DEFAULT '{}',
+        updated_at INTEGER NOT NULL,
+        dirty INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (namespace, id)
+      );
+    `, false).catch(() => {})
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS local_ai_conversations (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT 'auto',
+        mode TEXT NOT NULL DEFAULT 'single',
+        agent_id TEXT,
+        custom_system_prompt TEXT,
+        archived_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `, false).catch(() => {})
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS local_ai_messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        payload TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `, false).catch(() => {})
     await this.conn.execute(
       "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-08-list-sync-v1', '列表本地优先 dirty/email_date/client_id', strftime('%s', 'now') * 1000);",
+      false,
+    )
+  }
+
+  private async runEmailInboxV1Migration(): Promise<void> {
+    if (!this.conn) return
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        version TEXT PRIMARY KEY,
+        description TEXT,
+        applied_at INTEGER NOT NULL
+      );
+    `, false)
+    // 不用 queryOne：init 期间 initialized=false，requireReady 会抛错，旧库永远补不上列。
+    for (const col of EMAIL_INBOX_V1_COLUMNS) {
+      try { await this.conn.execute(col.sql, false) } catch { /* 列可能已存在 */ }
+    }
+    await this.conn.execute(
+      "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-08-email-inbox-v1', '邮件伪删除 deleted_at/body_purged', strftime('%s', 'now') * 1000);",
       false,
     )
   }

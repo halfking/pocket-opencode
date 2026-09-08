@@ -76,11 +76,27 @@ export function resolveApiBase(opts?: {
   storage?: Storage
 }): string {
   const override = opts && 'override' in opts ? opts.override : readApiBaseOverride(opts?.storage)
-  if (override !== null && override !== undefined) {
-    return normalizeApiBase(override, opts?.pageOrigin)
+  // 空串覆盖会吞掉 VITE_API_BASE，真机 https://localhost 上收信/归类会 Failed to fetch
+  if (override !== null && override !== undefined && String(override).trim() !== '') {
+    const normalized = normalizeApiBase(override, opts?.pageOrigin)
+    if (normalized) return normalized
   }
   const build = opts?.buildDefault ?? buildDefaultFromEnv()
   return build ? normalizeApiBase(build, opts?.pageOrigin) : ''
+}
+
+/** Capacitor WebView origin 是 https://localhost；空 base 时回退生产入口，避免 /api 打到本地壳。 */
+export function resolveRuntimeApiBase(opts?: {
+  override?: string | null
+  buildDefault?: string
+  pageOrigin?: string
+  storage?: Storage
+}): string {
+  const resolved = resolveApiBase(opts)
+  if (resolved) return resolved
+  const origin = pageOriginFallback(opts?.pageOrigin)
+  if (origin === 'https://localhost' || origin === 'capacitor://localhost') return PRODUCTION_API_BASE
+  return ''
 }
 
 export function displayApiBase(opts?: {

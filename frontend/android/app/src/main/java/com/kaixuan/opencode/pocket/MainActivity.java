@@ -55,6 +55,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(SherpaPlugin.class);
         registerPlugin(BiometricAuthPlugin.class);
         registerPlugin(com.kaixuan.opencode.pocket.plugins.BackgroundMicPlugin.class);
+        registerPlugin(com.kaixuan.opencode.pocket.plugins.EmailFetchPlugin.class);
         super.onCreate(savedInstanceState);
         // edge-to-edge：让 WebView 内容延伸至状态栏之下。Android WebView 不提供
         // env(safe-area-inset-top)（iOS 才有），所以这里把系统 insets 换算成 CSS px

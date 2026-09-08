@@ -14,6 +14,7 @@ import { resolveApiBase } from '../config/api-base'
 import { isLobsterReady } from '../native/lobster-init'
 import { localDB, localDbAsSql } from '../native/local-db'
 import { MobileSyncRuntime, type RuntimeEvent } from '../native/mobileSyncRuntime'
+import { startEmailFetchHost } from '../features/email/email-fetch-host'
 
 export const useConnectivityStore = defineStore('connectivity', {
   state: () => ({
@@ -67,6 +68,7 @@ export const useConnectivityStore = defineStore('connectivity', {
         onEvent: (event) => this.applyRuntimeEvent(event),
       })
       this.runtime.start()
+      startEmailFetchHost()
     },
     applyRuntimeEvent(event: RuntimeEvent) {
       switch (event.type) {

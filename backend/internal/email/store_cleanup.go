@@ -41,7 +41,7 @@ func (s *Store) ListEmailsForCleanupScoped(ctx context.Context, f CleanupFilter,
 	}
 	q := `SELECT ` + cleanupEmailCols + `
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
-		WHERE a.user_id=$1 AND a.workspace_id=$2`
+		WHERE a.user_id=$1 AND a.workspace_id=$2 AND COALESCE(e.deleted_at, 0)=0`
 	args := []any{userID, workspaceID}
 	if f.AccountID != "" {
 		q += fmt.Sprintf(" AND e.account_id=$%d", len(args)+1)
