@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
-  filterMeetings, formatDuration, formatLocationLine, formatParticipants, isArchived, statusText,
+  filterMeetings, formatDuration, formatLocationLine, formatParticipants, isArchived, MEETING_LIST_FILTERS, statusText,
 } from './meeting-list.ts'
 import type { LocalMeeting } from './meetings-store.ts'
 
@@ -41,5 +41,12 @@ describe('meeting-list', () => {
     assert.equal(statusText('recording'), '录音中')
     assert.equal(formatDuration(90_000), '1分30秒')
     assert.equal(formatDuration(0), '')
+  })
+
+  it('keeps active/archived filters for the header', () => {
+    assert.deepEqual(MEETING_LIST_FILTERS, [
+      { id: 'active', label: '进行中' },
+      { id: 'archived', label: '已归档' },
+    ])
   })
 })

@@ -1,6 +1,7 @@
 import { localDB } from '../../native/local-db'
 import { scheduledTasksApi } from '../scheduled-tasks/api'
 import type { ActionItem } from './meetings-store'
+import { meetingAccDispatchInput } from './meeting-page-actions'
 import { accHandoffInput, draftsFromActionItems, personShareText, type MeetingTodoDraft } from './meeting-todos'
 
 export async function createMeetingTodos(meetingId: string, items: ActionItem[], noteId: string | null = null): Promise<number> {
@@ -37,6 +38,10 @@ export async function listMeetingTodos(meetingId: string): Promise<MeetingTodoDr
 
 export async function handoffTodoToAcc(draft: MeetingTodoDraft, meetingTitle: string) {
   return scheduledTasksApi.create(accHandoffInput(draft, meetingTitle))
+}
+
+export async function handoffMeetingToAcc(meeting: Parameters<typeof meetingAccDispatchInput>[0]) {
+  return scheduledTasksApi.create(meetingAccDispatchInput(meeting))
 }
 
 export async function shareTodoWithPerson(draft: MeetingTodoDraft, meetingTitle: string): Promise<void> {

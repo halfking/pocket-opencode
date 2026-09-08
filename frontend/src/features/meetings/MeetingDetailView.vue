@@ -9,23 +9,15 @@
       @action="router.push('/meetings')"
     />
     <template v-else>
-      <HeaderActionsPortal>
-        <WaveformVisualizer
-          v-if="micOn"
-          :is-recording="true"
-          :width="88"
-          :height="28"
-          color="var(--danger)"
-          :show-time="false"
-          :show-progress="false"
-        />
-        <button type="button" class="hdr" :disabled="summarizing || !displaySegments.length" @click="onSummarize">
-          {{ summarizing ? '总结中' : '总结' }}
-        </button>
-        <button type="button" class="hdr icon" aria-label="会议设置" @click="showSettings = true">
-          <span class="material-symbols-outlined">settings</span>
-        </button>
-      </HeaderActionsPortal>
+      <MeetingStudioMenu
+        :archived="!!meeting.archivedAt"
+        :recording="micOn"
+        :summarizing="summarizing"
+        :summarize-disabled="summarizing || !displaySegments.length"
+        :can-dispatch="canDispatch"
+        @summarize="onSummarize"
+        @action="onMenuAction"
+      />
 
       <p v-if="statusLine" class="status" role="status">{{ statusLine }}</p>
       <p v-if="sttError" class="err" role="alert">{{ sttError }}</p>
@@ -84,8 +76,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { EmptyState, Skeleton, WaveformVisualizer } from '@/components'
-import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
+import { EmptyState, Skeleton } from '@/components'
 import { useMeetingRecorder } from '../../composables/useMeetingRecorder'
 import { useLiveSummary } from '../../composables/useLiveSummary'
 import { useToast } from '../../composables/useToast'
@@ -97,10 +88,13 @@ import { mergeRecommendations, relatedQueryFromTranscript } from './meeting-rela
 import { searchRelatedContext } from './meeting-related-search'
 import { createMeetingTodos, handoffTodoToAcc, shareTodoWithPerson } from './meeting-todo-persist'
 import type { MeetingTodoDraft } from './meeting-todos'
+import type { MeetingStudioAction } from './meeting-page-actions'
+import { useMeetingStudio } from './use-meeting-studio'
 import TranscriptSegmentList from './TranscriptSegmentList.vue'
 import MeetingInsightPanel from './MeetingInsightPanel.vue'
 import MeetingMicDock from './MeetingMicDock.vue'
 import MeetingSettingsSheet from './MeetingSettingsSheet.vue'
+import MeetingStudioMenu from './MeetingStudioMenu.vue'
 import SpeakerLabelSheet from './SpeakerLabelSheet.vue'
 
 const route = useRoute()
@@ -144,6 +138,12 @@ async function load() {
   meeting.value = data?.meeting ?? null
   storedSegments.value = data?.segments ?? []
   loading.value = false
+}
+
+const { canDispatch, onStudioAction } = useMeetingStudio(meeting, load)
+
+async function onMenuAction(id: MeetingStudioAction) {
+  if (await onStudioAction(id) === 'classify') showSettings.value = true
 }
 
 async function captureContext(m: LocalMeeting) {
@@ -282,12 +282,6 @@ onUnmounted(() => {
   grid-template-columns: minmax(0, 7fr) minmax(140px, 3fr);
 }
 .transcript { min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
-.hdr {
-  min-height: 36px; padding: 0 10px; border: none; background: transparent;
-  color: var(--brand-primary); font-weight: 600; font-size: 13px;
-}
-.hdr.icon { width: 44px; }
-.hdr:disabled { opacity: 0.45; }
 .speakers-btn {
   position: fixed; left: var(--space-4); bottom: calc(var(--app-safe-bottom, 12px) + var(--space-4));
   height: 40px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--border);

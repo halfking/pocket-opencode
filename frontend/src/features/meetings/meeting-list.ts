@@ -2,6 +2,11 @@ import type { LocalMeeting, MeetingStatus } from './meetings-store'
 
 export type MeetingListFilter = 'active' | 'archived'
 
+export const MEETING_LIST_FILTERS: Array<{ id: MeetingListFilter; label: string }> = [
+  { id: 'active', label: '进行中' },
+  { id: 'archived', label: '已归档' },
+]
+
 export function isArchived(meeting: Pick<LocalMeeting, 'archivedAt'>): boolean {
   return meeting.archivedAt != null && meeting.archivedAt > 0
 }

@@ -7,16 +7,17 @@
     />
 
     <template v-else>
-      <div class="filter-row">
+      <HeaderActionsPortal>
         <button
           v-for="f in filters"
           :key="f.id"
           type="button"
-          class="chip"
+          class="hdr-filter"
           :class="{ active: filter === f.id }"
+          :aria-pressed="filter === f.id"
           @click="onFilter(f.id)"
         >{{ f.label }}</button>
-      </div>
+      </HeaderActionsPortal>
 
       <PullToRefresh :on-refresh="load" class="list-scroll">
         <div v-if="loading" class="state"><Skeleton :count="4" /></div>
@@ -38,7 +39,7 @@
             :right-actions="[{ id: 'delete', icon: '🗑', label: '删除', type: 'danger', onAction: () => onDelete(m.id) }]"
             @activate="openMeeting(m)"
           >
-            <div class="meeting-card">
+            <div class="meeting-card" role="link" tabindex="0" @click="openMeeting(m)" @keydown.enter="openMeeting(m)">
               <div class="card-header">
                 <h3 class="card-title">{{ m.title || '未命名会议' }}</h3>
                 <span class="status-badge" :class="m.status">{{ statusText(m.status) }}</span>
@@ -81,6 +82,7 @@ import { DEFAULT_LIST_PAGE_SIZE, pageHasMore } from '../../native/list-sync/page
 import {
   Skeleton, EmptyState, DbLockedState, PullToRefresh, SwipeableListItem,
 } from '@/components'
+import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import {
   listMeetings, createMeeting, deleteMeeting, archiveMeeting, unarchiveMeeting, updateMeeting,
   type LocalMeeting,
@@ -88,7 +90,7 @@ import {
 import { deleteMeetingAudio } from '../../native/meeting-audio'
 import {
   formatDuration, formatLocationLine, formatMeetingWhen, formatParticipants, statusText,
-  type MeetingListFilter,
+  MEETING_LIST_FILTERS, type MeetingListFilter,
 } from './meeting-list'
 import { captureDeviceLocation, formatCapturedTitle } from './meeting-meta'
 
@@ -100,10 +102,7 @@ const hasMore = ref(false)
 const starting = ref(false)
 const filter = ref<MeetingListFilter>('active')
 const meetings = ref<LocalMeeting[]>([])
-const filters: Array<{ id: MeetingListFilter; label: string }> = [
-  { id: 'active', label: '进行中' },
-  { id: 'archived', label: '已归档' },
-]
+const filters = MEETING_LIST_FILTERS
 
 async function load() {
   loading.value = true
@@ -193,15 +192,11 @@ onMounted(load)
 
 <style scoped>
 .meetings-page { position: relative; height: 100%; min-height: 0; display: flex; flex-direction: column; }
-.filter-row { display: flex; gap: 8px; padding: var(--space-3) var(--space-3) 0; flex-shrink: 0; }
-.chip {
-  padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border);
-  background: var(--bg-card); color: var(--text-secondary); font-size: 13px;
-}
-.chip.active { background: var(--brand-bg); color: var(--brand-primary); border-color: var(--brand-primary); }
+.hdr-filter { font-size: 13px; color: var(--text-secondary); }
+.hdr-filter.active { color: var(--brand-primary); font-weight: 700; }
 .list-scroll { flex: 1 1 auto; min-height: 0; }
 .meeting-list { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
-.meeting-card { padding: var(--space-3); background: var(--bg-card); }
+.meeting-card { padding: var(--space-3); background: var(--bg-card); cursor: pointer; }
 .card-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .card-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text-primary); }
 .status-badge { font-size: 11px; padding: 2px 8px; border-radius: var(--radius-full); background: var(--bg-subtle); color: var(--text-muted); flex-shrink: 0; }
