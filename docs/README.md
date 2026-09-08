@@ -2,6 +2,33 @@
 
 > 本目录为 openpocket（pocket-opencode）文档中心。现行文档在本文件与各子目录 README 中索引；历史过程文档统一归档于 `archive/`，只归档不删除。
 
+## 现行总览（2026-09-08 三件套）
+
+| 文档 | 说明 |
+|---|---|
+| [2026-09-08-feature-inventory.md](2026-09-08-feature-inventory.md) | 全功能特性大盘：前端 24 域 + 后端 46 模块 + 原生 35+ 能力位 |
+| [2026-09-08-requirements-design.md](2026-09-08-requirements-design.md) | 反向整理的需求与设计（As-built 现行方案） |
+| [2026-09-08-native-and-cross-platform.md](2026-09-08-native-and-cross-platform.md) | 原生效果分析 + iOS / Android / HarmonyOS 跨平台路线图 |
+
+## 专题现行方案
+
+| 文档 | 说明 |
+|---|---|
+| [2026-08-27-mobile-ux-design-v2.md](2026-08-27-mobile-ux-design-v2.md) | 移动端 UX / IA v2.0（design-accepted） |
+| [2026-09-08-meetings-studio.md](2026-09-08-meetings-studio.md) | 会议工作台现行产品面（列表 / 详情 / ACC） |
+| [2026-09-08-master-password-biometric-unlock.md](2026-09-08-master-password-biometric-unlock.md) | 主密码与生物认证解锁 |
+| [2026-09-08-task-session-detail.md](2026-09-08-task-session-detail.md) | 任务/会话详情 |
+| [2026-09-07-local-cutover/](2026-09-07-local-cutover/) | 真机切流（252 nginx 同源代理） |
+| [2026-09-07-deployment-and-test-plan/](2026-09-07-deployment-and-test-plan/) | 部署与测试计划 |
+| [2026-09-07-email-pipeline/](2026-09-07-email-pipeline/) | 邮件流水线（输入 + 行为定义） |
+| [2026-09-06-email-local-invoice.md](2026-09-06-email-local-invoice.md) | 邮件本地化与发票自动整理方案 |
+| [2026-08-28-multi-agent-workbench-design.md](2026-08-28-multi-agent-workbench-design.md) | 多 agent 工作台设计 |
+| [2026-08-28-biometric-auth-and-sqlite-fallback.md](2026-08-28-biometric-auth-and-sqlite-fallback.md) | 生物认证与 SQLite 离线兜底 |
+| [2026-08-27-p1.5-ui-declutter.md](2026-08-27-p1.5-ui-declutter.md) · [2026-08-27-ai-chat-and-gateway-management.md](2026-08-27-ai-chat-and-gateway-management.md) | UI 收敛 · AI 对话 / 网关管理 |
+| [2026-07-02-ui-ux-design-system.md](2026-07-02-ui-ux-design-system.md) · [2026-07-03-mobile-interaction-optimization.md](2026-07-03-mobile-interaction-optimization.md) | 设计系统 · 移动端交互 |
+| [2026-07-02-kxmemory-api-contract.md](2026-07-02-kxmemory-api-contract.md) · [2026-07-02-meeting-recording-design.md](2026-07-02-meeting-recording-design.md) | kxmemory API 契约 · 会议录制设计 |
+| [harmonyos-build-and-test.md](harmonyos-build-and-test.md) · [MOBILE_ARCHITECTURE_V2.md](MOBILE_ARCHITECTURE_V2.md) | HarmonyOS 构建 · 移动端架构 v2（已 superseded） |
+
 ## 入口
 
 | 文档 | 说明 |
@@ -11,9 +38,7 @@
 | [opencode-contract.md](opencode-contract.md) | OpenCode 适配契约（现行事实以此为准） |
 | [v5-integration.md](v5-integration.md) | v5 平台整合对齐（最高层对齐依据） |
 | [scheduled-task-system.md](scheduled-task-system.md) | 计划任务系统 |
-| [MOBILE_ARCHITECTURE_V2.md](MOBILE_ARCHITECTURE_V2.md) | 移动端架构 v2 |
 | [DESIGN.md](DESIGN.md) / [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md) / [NAVIGATION_ARCHITECTURE.md](NAVIGATION_ARCHITECTURE.md) | 设计 / 数据架构 / 导航架构 |
-| [2026-09-08-meetings-studio.md](2026-09-08-meetings-studio.md) | 会议工作台现行产品面（列表 / 详情 / ACC） |
 
 ## 指南（guides/）
 

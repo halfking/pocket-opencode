@@ -212,9 +212,13 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 
 ### 主要文档
 
+- [**文档索引**](docs/README.md) - docs 目录总入口
+- [**功能特性大盘（As-built）**](docs/2026-09-08-feature-inventory.md) - 前端 24 域 + 后端 46 模块 + 原生 35+ 能力位
+- [**需求与设计（As-built）**](docs/2026-09-08-requirements-design.md) - 反向整理的需求清单与现行架构设计
+- [**原生化与跨平台路线图**](docs/2026-09-08-native-and-cross-platform.md) - iOS / Android / HarmonyOS 平台补齐方案
 - [**运维指南**](docs/guides/OPERATIONS_GUIDE.md) - 完整的部署和运维文档
 - [**API 契约参考**](docs/opencode-contract.md) - OpenCode 兼容层 API 契约
-- [**移动端架构**](docs/MOBILE_ARCHITECTURE_V2.md) - 移动端架构设计
+- [**移动端 UX 设计 v2**](docs/2026-08-27-mobile-ux-design-v2.md) - 移动端架构设计（design-accepted）
 - [**ACC Integration 部署文档**](deploy/acc-integration/README.md) - 集成开发部署指南
 - [**邮箱数据本地化与发票自动整理方案**](docs/2026-09-06-email-local-invoice.md) - 邮件发票提取与入账闭环（2026-09-06）
 - [**会议工作台（As-built）**](docs/2026-09-08-meetings-studio.md) - 听见式列表 / 详情 / 总结 / ACC 下达（2026-09-08）
