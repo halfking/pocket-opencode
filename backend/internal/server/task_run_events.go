@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-
-	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 )
 
 // handleTaskRunEvents projects canonical ACC history through Pocket. The
@@ -52,5 +50,3 @@ func (s *Server) handleTaskRunEvents(w http.ResponseWriter, r *http.Request, tas
 		f.Flush()
 	}
 }
-
-var _ = mcp.AccRunEvent{}
