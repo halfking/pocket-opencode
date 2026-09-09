@@ -24,8 +24,16 @@ export interface LifecyclePlatform {
   document: Document | null
   /** 注入 window；测试场景下可替换为 null。 */
   window: Window | null
-  /** 注入 Capacitor App 加载器；测试场景下永远 reject 即跳过原生通道。 */
-  loadCapacitorApp(): Promise<{ addListener(name: 'appStateChange', cb: (s: { isActive: boolean }) => void): Promise<{ remove(): Promise<void> }> }>
+  /**
+   * 注入 Capacitor App 加载器；测试场景下永远 reject 即跳过原生通道。
+   * ⚠️ 必须返回 { app } 信封而非 App 插件对象本身：Capacitor 插件 proxy 对
+   * 未知属性（含 .then）会 reject「not implemented」，而 async 返回值被 await
+   * 时 Promise 解约会读取 .then（thenable 检查）→ Capacitor 通道永远初始化失败。
+   * 这是 2026-09-10 Android 真机验证发现的坑（AI 流 keepalive 不触发的根因之一）。
+   */
+  loadCapacitorApp(): Promise<{
+    app: { addListener(name: 'appStateChange', cb: (s: { isActive: boolean }) => void): Promise<{ remove(): Promise<void> }> }
+  }>
 }
 
 /** 单例：main.ts 启动一次，runtime 全局订阅。 */
@@ -137,14 +145,15 @@ class AppLifecycleHub {
       window: typeof window !== 'undefined' ? window : null,
       loadCapacitorApp: async () => {
         const mod = await import('@capacitor/app')
-        return mod.App
+        return { app: mod.App }
       },
     }
   }
 
   private async registerCapacitor(platform: LifecyclePlatform): Promise<void> {
     try {
-      const App = await platform.loadCapacitorApp()
+      // 信封解包：见 LifecyclePlatform.loadCapacitorApp 注释（thenable 陷阱）。
+      const { app: App } = await platform.loadCapacitorApp()
       const sub = await App.addListener('appStateChange', (state: { isActive: boolean }) => {
         this.emit(state.isActive ? 'visible' : 'hidden')
       })

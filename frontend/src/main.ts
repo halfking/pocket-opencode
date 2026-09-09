@@ -10,6 +10,7 @@ import { startEmailConfigSync } from "./features/email/account-sync"
 import { startUserConfigSync } from "./native/config-sync/runtime"
 import { appLifecycleHub } from "./native/appLifecycleHub.ts"
 import { installLlmBffStreamRuntime } from "./api/llm-bff"
+import { startAiStreamKeepalive } from "./native/aiStreamKeepalive.ts"
 import {
   ApprovalsRuntime,
   setApprovalsRuntime,
@@ -62,6 +63,9 @@ connectWs()
 // 让"切后台 → 暂停 120s watchdog → 切回前台续命"在首条流之前就生效。
 appLifecycleHub.start()
 installLlmBffStreamRuntime()
+// M5/T2（2026-09-10）：Android 前台服务保活 —「活跃流 + 已切后台」时拉起
+// AiStreamService。仅 Android Capacitor 生效；Web/iOS 检测后 no-op。
+startAiStreamKeepalive()
 
 // M2（2026-09-09）：审批轮询上移到 approvalsRuntime（进程级 singleton）。
 // 组件级 usePendingApprovals 仅订阅本视图的 pendingPermissions；切走/切回页面
