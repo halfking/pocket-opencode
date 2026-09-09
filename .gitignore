@@ -68,3 +68,10 @@ backend/test-evidence/
 # subdirs stay tracked because git does not un-track already-added files
 # via .gitignore.
 test-evidence/
+
+
+# One-off local APK evidence snapshots (too large for git; keep on disk only)
+docs/artifacts/
+
+# Scratchpad for ad-hoc agent session notes (not source-of-truth docs)
+tmp/
