@@ -18,6 +18,10 @@
 | [2026-09-08-meetings-studio.md](2026-09-08-meetings-studio.md) | 会议工作台现行产品面（列表 / 详情 / ACC） |
 | [2026-09-08-rss.md](2026-09-08-rss.md) | RSS 订阅 & 一键分享（订阅源管理、自动发现、过滤、微博/朋友圈深链分享） |
 | [2026-09-09-ai-async-background-survival.md](2026-09-09-ai-async-background-survival.md) | AI 操作全异步 + 切窗口/标签不中断（AiStreamRuntime + iOS/Android 后台保活，Draft） |
+| [2026-09-09-fonts-subset.md](design/2026-09-09-fonts-subset.md) | 字体子集 + 去 Google Fonts + CJK fallback 决策（`aae01a7`） |
+| [2026-09-10-android-ai-stream-fgs.md](design/2026-09-10-android-ai-stream-fgs.md) | Android AiStreamService（dataSync FGS）落地与 AVD 验证（含 thenable 陷阱修复） |
+| [2026-09-10-sse-120s-watchdog-diagnosis.md](design/2026-09-10-sse-120s-watchdog-diagnosis.md) | AI 流 120s 看门狗真因诊断（全链路超时审计 + SSE 实测；nginx buffering 缺陷） |
+| [2026-09-10-ios-safari-sse-decision.md](design/2026-09-10-ios-safari-sse-decision.md) | iOS Safari/WKWebView 流后台续传方案决策（A 现状 / B Native 桥 / 否决 WS） |
 | [2026-09-08-master-password-biometric-unlock.md](2026-09-08-master-password-biometric-unlock.md) | 主密码与生物认证解锁 |
 | [2026-09-08-task-session-detail.md](2026-09-08-task-session-detail.md) | 任务/会话详情 |
 | [2026-09-07-local-cutover/](2026-09-07-local-cutover/) | 真机切流（252 nginx 同源代理） |
