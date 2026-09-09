@@ -32,7 +32,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -767,7 +766,7 @@ func (s *Server) handleRSSShareCard(w http.ResponseWriter, r *http.Request, id s
 	if theme != "dark" {
 		theme = "light"
 	}
-	png, err := renderShareCard(it, src, theme)
+	png, err := renderShareCard(*it, src, theme)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "share card render: "+err.Error())
 		return
@@ -836,7 +835,7 @@ func rssPathTail(rawPath, prefix string) string {
 
 // renderShareCard 是 sharecard.go 的 server 侧入口；该文件实现在 internal/rss/sharecard.go。
 func renderShareCard(it rss.Item, src *rss.Source, theme string) ([]byte, error) {
-	return RenderShareCard(context.Background(), it, src, theme)
+	return rss.RenderShareCard(context.Background(), it, src, theme)
 }
 
 // ===== 路由分发器 =====
