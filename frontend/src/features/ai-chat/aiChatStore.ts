@@ -7,10 +7,14 @@
  *   - 支持单模型对话 + 多模型「对比模式」：同一问题并行发给多个模型，分别渲染。
  *   - 每条助手消息可「用另一模型检查/优化」：把原问题与回答交给选定模型评审并改进。
  *   - 流式输出通过 llmBffApi.streamChat 消费 SSE，按消息增量追加。
+ *
+ * M1（2026-09-09）：流所有权上移到 aiStreamRuntime，本 store 仅持有 stream handle
+ * 用于"用户主动停止"和"删除会话时清理"。组件 unmount 不再 abort 流。
  */
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { llmBffApi, type ChatMessage } from '../../api/llm-bff'
+import type { ChatStreamHandle } from '../../native/aiStreamRuntime'
 import { listNodes, getAvailableModels, getFeaturedModels } from '../../api/gateway'
 import { useToast } from '../../composables/useToast'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
@@ -180,8 +184,10 @@ export const useAIChatStore = defineStore('ai-chat', () => {
 
   const settings = ref<ChatSettings>(loadSettings())
 
-  // 运行时的 AbortController 集合（不持久化）。
-  const controllers = new Map<string, AbortController>()
+  // 流 handle 注册表（M1：所有权归 runtime；本表仅用于主动 stop / 删除会话清理）。
+  // key 由调用方生成（conv.id 或 conv.id:msgId 或 conv.id:opt:msgId），
+  // 保证新助手消息的流不会与既有流撞 key（撞了 runtime 会复用 handle，这是错的）。
+  const streamHandles = new Map<string, ChatStreamHandle>()
 
   const active = computed<Conversation | null>(
     () => conversations.value.find((c) => c.id === activeId.value) ?? null,
@@ -386,11 +392,11 @@ export const useAIChatStore = defineStore('ai-chat', () => {
   function deleteConversation(id: string) {
     const idx = conversations.value.findIndex((x) => x.id === id)
     if (idx < 0) return
-    // 中止该对话可能存在的流
-    for (const [k, ctrl] of controllers) {
+    // 中止该对话可能存在的流（M1：handle.abort 走 runtime，user reason）
+    for (const [k, handle] of streamHandles) {
       if (k.startsWith(id)) {
-        ctrl.abort()
-        controllers.delete(k)
+        handle.abort()
+        streamHandles.delete(k)
       }
     }
     conversations.value.splice(idx, 1)
@@ -465,10 +471,10 @@ export const useAIChatStore = defineStore('ai-chat', () => {
 
   function stop() {
     if (!active.value) return
-    for (const [k, ctrl] of controllers) {
+    for (const [k, handle] of streamHandles) {
       if (k.startsWith(active.value.id)) {
-        ctrl.abort()
-        controllers.delete(k)
+        handle.abort()
+        streamHandles.delete(k)
       }
     }
     // 把仍处于 streaming 的消息标记为完成
@@ -551,14 +557,19 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     // 而上面的 assistant 是原始对象——直接改原始对象不会触发模板更新，
     // 表现为流式期间气泡永远空白、重启后才从持久化里显示内容。
     const liveAssistant = conv.messages[conv.messages.length - 1]
-    const streamKey = compareMode.value ? `${conv.id}:${assistant.id}` : conv.id
+    // streamKey 始终包含 assistant.id，避免单模型模式下「新轮」的流撞到「旧轮」
+    // （runtime 对相同 id 是幂等的，撞了会复用旧 handle，旧轮的 onDelta
+    // 闭包仍写到旧 assistant，对新轮而言就丢了；这是错的）。
+    const streamKey = compareMode.value
+      ? `${conv.id}:${assistant.id}`
+      : `${conv.id}:${assistant.id}`
 
-    const ctrl = llmBffApi.streamChat(
+    const handle = llmBffApi.streamChat(
       {
         messages: requestMessages.map((message) => ({
           ...message,
           ...(message.images ? { images: [...message.images] } : {}),
-        })), 
+        })),
         model: model || undefined,
         temperature: settings.value.temperature,
         max_tokens: settings.value.maxTokens,
@@ -579,21 +590,23 @@ export const useAIChatStore = defineStore('ai-chat', () => {
         onDone: (usage) => {
           liveAssistant.streaming = false
           if (usage) liveAssistant.usage = usage
-          controllers.delete(streamKey)
+          streamHandles.delete(streamKey)
           conv.updatedAt = Date.now()
           persist()
         },
         onError: (err) => {
           liveAssistant.streaming = false
+          // M1：错误文案透传 runtime 的 reason 区分；UI 文案由上层 toast 决定。
           liveAssistant.error = err.message || String(err)
-          controllers.delete(streamKey)
+          streamHandles.delete(streamKey)
           conv.updatedAt = Date.now()
           persist()
           toast.error('生成失败：' + (err.message || String(err)))
         },
       },
+      streamKey,
     )
-    controllers.set(streamKey, ctrl)
+    streamHandles.set(streamKey, handle)
   }
 
   /**
@@ -640,7 +653,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     conv.updatedAt = Date.now()
 
     const streamKey = `${conv.id}:opt:${assistant.id}`
-    const ctrl = llmBffApi.streamChat(
+    const handle = llmBffApi.streamChat(
       {
         // 优化请求不带入原对话历史，只发该次评审上下文
         messages: [{ role: 'user', content: metaPrompt }],
@@ -663,20 +676,21 @@ export const useAIChatStore = defineStore('ai-chat', () => {
         onDone: (usage) => {
           liveAssistant.streaming = false
           if (usage) liveAssistant.usage = usage
-          controllers.delete(streamKey)
+          streamHandles.delete(streamKey)
           conv!.updatedAt = Date.now()
           persist()
         },
         onError: (err) => {
           liveAssistant.streaming = false
           liveAssistant.error = err.message || String(err)
-          controllers.delete(streamKey)
+          streamHandles.delete(streamKey)
           persist()
           toast.error('优化失败：' + (err.message || String(err)))
         },
       },
+      streamKey,
     )
-    controllers.set(streamKey, ctrl)
+    streamHandles.set(streamKey, handle)
   }
 
   function regenerate(messageId: string) {

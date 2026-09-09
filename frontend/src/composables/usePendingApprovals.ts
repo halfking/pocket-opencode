@@ -1,35 +1,34 @@
 /**
- * usePendingApprovals — 会话页待审批请求的拉取与回复（08 §3.3、§4.5）。
+ * usePendingApprovals — 会话页待审批请求的拉取与回复（M2 薄包装）。
  *
- * 实时来源：WS 审批推送事件（approval.permission.pending /
- * approval.question.pending / approval.resolved，经 idempotentWsBus 幂等投递），
- * 事件命中当前 instance+session 即触发对齐刷新。
- * 轮询兜底：WS 断线时退回 pollMs 轮询；重连后补拉一次，覆盖断线窗口内
- * 错过的事件。进入会话时始终先拉一次（事件只覆盖增量）。
+ * M2（2026-09-09）改造：原 composable自己拥有 timer + WS 订阅，
+ * 组件 unmount 时被 stopPolling 整体清掉。改为薄包装：所有"轮询 + WS 订阅"
+ * 都委托给 `approvalsRuntime`（进程级 singleton），组件只持有
+ * pendingPermissions 的本地 ref 并订阅该 (instanceId, sessionId)。
  *
- * 回复分两条路径：
- *   - 在线：直接 POST，服务端确认（confirmed）后才算完成；
- *   - 离线（本地库已解锁）：写本地决定 + 入 outbox 队列，网络恢复后由
- *     MobileSyncRuntime drain 重放并回写终态（sent / expired）。
- * 409 = 请求不再 pending（在别处处理/过期），返回 'conflict' 由 UI 提示。
+ * 调用契约不变：
+ *   startPolling() → 订阅 runtime（路由进入/审批 sheet 唤起时调）
+ *   stopPolling()  → 退订（组件 unmount 时调）
+ *
+ * 实时来源 + 兜底逻辑（与原版一致）全部下沉到 approvalsRuntime：
+ *   - WS 审批推送事件 → 250ms 去抖对齐刷新
+ *   - WS 断线时回到 10s 轮询
+ *   - 切换会话 / 离开页面 → runtime 继续跑；用户回来时直接拿到最新列表
  */
 import { ref, type Ref } from 'vue'
 import { ApiError } from '../api/http'
 import {
-  listPendingApprovals,
   replyPermissionFlat,
   type PermissionRequest,
-} from '../api/approvals'
+} from '../api/approvals.ts'
 import { useAuthStore } from '../stores/auth'
 import { useConnectivityStore } from '../stores/connectivity'
-import { isLobsterReady } from '../native/lobster-init'
-import { localDB, localDbAsSql } from '../native/local-db'
-import { SqliteOutboxStore } from '../native/outboxStore'
-import { SqliteApprovalStore } from '../native/approvalStore'
-import { enqueueApprovalReplyLocally } from '../native/mobileOffline'
-import wsClient from '../api/websocket'
-import { initIdempotentWsBus, subscribe } from '../services/idempotentWsBus'
-import { APPROVAL_EVENT_TYPES, parseApprovalEvent } from '../services/approvalEvents'
+import { isLobsterReady } from '../native/lobster-init.ts'
+import { localDB, localDbAsSql } from '../native/local-db.ts'
+import { SqliteOutboxStore } from '../native/outboxStore.ts'
+import { SqliteApprovalStore } from '../native/approvalStore.ts'
+import { enqueueApprovalReplyLocally } from '../native/mobileOffline.ts'
+import { getApprovalsRuntime } from '../native/approvalsRuntime.ts'
 
 export type ReplyStatus = 'confirmed' | 'queued-offline' | 'conflict' | 'failed'
 
@@ -38,48 +37,34 @@ export interface UsePendingApprovalsReturn {
   loadError: Ref<string>
   refresh(): Promise<void>
   reply(requestId: string, decision: 'once' | 'always' | 'reject'): Promise<ReplyStatus>
+  /** 订阅当前 (instanceId, sessionId)；M2 下沉到 runtime，幂等。 */
   startPolling(): void
+  /** 退订；M2 下沉到 runtime，幂等。 */
   stopPolling(): void
 }
-
-const DEFAULT_POLL_MS = 10_000
 
 export function usePendingApprovals(args: {
   instanceId: () => string
   sessionId: () => string
-  pollMs?: number
 }): UsePendingApprovalsReturn {
   const conn = useConnectivityStore()
   const auth = useAuthStore()
   const pendingPermissions = ref<PermissionRequest[]>([])
   const loadError = ref('')
-  let timer: ReturnType<typeof setInterval> | null = null
-  let refreshing = false
-  let eventHandles: Array<ReturnType<typeof subscribe>> = []
-  let refreshDebounce: ReturnType<typeof setTimeout> | null = null
-  let wasWsConnected = false
+  let unsubscribe: (() => void) | null = null
+
+  // runtime 回调：每次 list 变化或拉取失败都同步到本地 ref
+  function onChange(list: PermissionRequest[], err: string): void {
+    pendingPermissions.value = list
+    loadError.value = err
+  }
 
   async function refresh(): Promise<void> {
     const instanceId = args.instanceId()
     const sessionId = args.sessionId()
     if (!instanceId || !sessionId || !conn.online) return
-    if (refreshing) return
-    refreshing = true
-    try {
-      const result = await listPendingApprovals({
-        instanceID: instanceId,
-        sessionID: sessionId,
-      })
-      pendingPermissions.value = (result.permissions ?? []).filter(
-        (p) => typeof p?.id === 'string' && p.id !== '' && p.sessionID === sessionId,
-      )
-      loadError.value = ''
-    } catch (err) {
-      // 拉取失败不打断会话：保留上次列表，页内可重试。
-      loadError.value = err instanceof Error ? err.message : '审批状态拉取失败'
-    } finally {
-      refreshing = false
-    }
+    // 走 runtime.refresh()（依赖注入下可单独调用），无需重新订阅
+    await getApprovalsRuntime()?.refresh()
   }
 
   async function reply(requestId: string, decision: 'once' | 'always' | 'reject'): Promise<ReplyStatus> {
@@ -103,7 +88,6 @@ export function usePendingApprovals(args: {
           },
         })
         await conn.refreshCounts()
-        // 从本地待处理列表移除，避免重复弹窗；终态由 drain 回写。
         pendingPermissions.value = pendingPermissions.value.filter((p) => p.id !== requestId)
         return 'queued-offline'
       } catch {
@@ -122,58 +106,26 @@ export function usePendingApprovals(args: {
       }
       return 'failed'
     } finally {
-      void refresh()
+      // 触发一次对齐刷新
+      void getApprovalsRuntime()?.refresh()
     }
-  }
-
-  /** 事件触发的对齐刷新做 250ms 去抖：一轮连发事件只拉一次。 */
-  function scheduleEventRefresh(): void {
-    if (refreshDebounce !== null) return
-    refreshDebounce = setTimeout(() => {
-      refreshDebounce = null
-      void refresh()
-    }, 250)
-  }
-
-  function onApprovalEvent(env: unknown): void {
-    const info = parseApprovalEvent(env)
-    if (!info) return
-    if (info.instanceId !== args.instanceId() || info.sessionId !== args.sessionId()) return
-    if ((env as { type?: string }).type === 'approval.resolved') {
-      // 服务端确认的终态：立即从列表移除，再对齐拉取其余条目。
-      pendingPermissions.value = pendingPermissions.value.filter((p) => p.id !== info.requestId)
-    }
-    scheduleEventRefresh()
   }
 
   function startPolling(): void {
-    if (timer !== null) return
-    initIdempotentWsBus()
-    if (eventHandles.length === 0) {
-      eventHandles = APPROVAL_EVENT_TYPES.map((t) => subscribe(t, onApprovalEvent))
-    }
+    const instanceId = args.instanceId()
+    const sessionId = args.sessionId()
+    if (!instanceId || !sessionId) return
+    if (unsubscribe) return // 幂等：已订阅不重复
+    unsubscribe = getApprovalsRuntime()?.subscribe(instanceId, sessionId, onChange) ?? null
+    // 进入页面立即拉一次（与原 usePendingApprovals 行为一致）
     void refresh()
-    wasWsConnected = wsClient.isConnected()
-    timer = setInterval(() => {
-      const connected = wsClient.isConnected()
-      if (connected && wasWsConnected) return // WS 在线：事件驱动，跳过轮询
-      wasWsConnected = connected
-      // 断线兜底轮询；断线→重连的跳变补拉一次，覆盖错过的事件。
-      void refresh()
-    }, args.pollMs ?? DEFAULT_POLL_MS)
   }
 
   function stopPolling(): void {
-    if (timer !== null) {
-      clearInterval(timer)
-      timer = null
+    if (unsubscribe) {
+      unsubscribe()
+      unsubscribe = null
     }
-    if (refreshDebounce !== null) {
-      clearTimeout(refreshDebounce)
-      refreshDebounce = null
-    }
-    for (const h of eventHandles) h.unsubscribe()
-    eventHandles = []
   }
 
   return { pendingPermissions, loadError, refresh, reply, startPolling, stopPolling }

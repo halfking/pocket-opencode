@@ -160,6 +160,9 @@ onMounted(async () => {
   //   ?approval=open  → 清除"已忽略"记录，强制弹出审批 Bottom Sheet
   applyDeepLinkQuery()
   await store.open(sessionID.value, instanceID.value, initialTitle.value)
+  // M2（2026-09-09）：同会话复用时 SSE 已在跑；reattach 重算 currentAssistantId
+  // 即可，**不**重启 SSE / 重新订阅，避免切回时的重连风暴。
+  store.reattach()
   await nextTick()
   scrollToBottom(true)
   // 滚动联动：输入面板隐藏/唤出引擎绑定到消息滚动容器（与 AI 列表页同款）
@@ -167,6 +170,7 @@ onMounted(async () => {
     unbindLocalChrome = bindScrollHideChrome(messagesEl.value, localChrome)
   }
   // 审批 Bottom Sheet（feature flag 暗Launch）：进入会话即查一次 pending 并轮询。
+  // M2：轮询已下沉到 approvalsRuntime，本调用仅订阅本视图的 pendingPermissions。
   if (approvalSheetEnabled) startApprovalPolling()
   // P1：session.activity / round.completed 事件订阅 + 快照追赶（§4.3-1/2）
   sessionEvents.startLive()
@@ -175,11 +179,15 @@ onMounted(async () => {
 let unbindLocalChrome: (() => void) | null = null
 
 onBeforeUnmount(() => {
+  // M2：审批轮询已下沉到 approvalsRuntime（进程级 singleton），本视图退订即可，
+  // runtime 仍在跑（其他订阅方继续拿更新 / 用户切回页面时 runtime 已 ready）。
   stopApprovalPolling()
   sessionEvents.stopLive()
   unbindLocalChrome?.()
   dockRO?.disconnect()
-  store.close()
+  // M2：切走页面 ≠ 关闭会话；SSE 在后台继续跑、消息持续累积到 store。
+  // 真正 close() 仅在 store.open() 切换不同 sid+iid / 删除会话 / 登出时调用。
+  store.detach()
 })
 
 async function scrollToBottom(force = false) {

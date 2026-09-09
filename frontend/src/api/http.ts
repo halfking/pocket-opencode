@@ -20,9 +20,11 @@ const REFRESH_PATH = '/api/auth/refresh'
 export class ApiError extends Error {
   /** 响应 body 解析后的对象（若有）。让调用方能拿到 409 等结构化错误信息。 */
   body?: any
-  constructor(public status: number, message: string, body?: any) {
+  status: number
+  constructor(status: number, message: string, body?: any) {
     super(message)
     this.name = 'ApiError'
+    this.status = status
     this.body = body
   }
 }

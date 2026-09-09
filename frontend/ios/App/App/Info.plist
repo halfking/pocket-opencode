@@ -51,5 +51,15 @@
 	<string>需要使用麦克风录制语音笔记和语音输入</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>需要使用语音识别将录音转换为文字</string>
+	<!-- M3（2026-09-09）：AI 流后台保活 — 详见 docs/design/2026-09-09-ai-async-background-survival.md §D5。
+	     - fetch：BGTaskScheduler 短任务拉数据（M3+ 接入，按需使用）。
+	     - remote-notification：APNs 静默 push 拉醒（依赖后端推送通道，M3+ 接入）。
+	     故意不加 `processing`：Apple 审核对 `processing` 的"用户可见长时间任务"要求严苛，
+	     滥用会被拒；M3 仅靠系统默认 ~30s 后台缓冲 + 推送拉醒方案。 -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>remote-notification</string>
+	</array>
 </dict>
 </plist>

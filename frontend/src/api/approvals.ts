@@ -12,7 +12,7 @@
  * 数据结构与后端 opencode.PermissionManager / QuestionManager 的
  * ListPending 返回保持一致（adapter.PermissionRequest / QuestionRequest）。
  */
-import { http } from './http'
+import { http } from './http.ts'
 
 /** 权限决策：once=本次批准，always=始终批准，reject=拒绝 */
 export type PermissionDecision = 'once' | 'always' | 'reject'

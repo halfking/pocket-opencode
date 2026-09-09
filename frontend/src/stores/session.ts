@@ -67,30 +67,47 @@ export const useSessionStore = defineStore('session', () => {
   )
 
   async function open(sid: string, iid: string, initialTitle?: string) {
-    close() // 清理上一个会话
+    // M2（2026-09-09）：流所有权上移 — 同 sid+iid 已有活跃 SSE 时跳过 close()
+    // 复用现有 SSE 连接；切回同一会话不会丢事件、不会重连风暴。
+    const sameSession = sessionID.value === sid && instanceID.value === iid && sseClient.value
+    if (!sameSession) {
+      close() // 清理上一个会话（不同 sid+iid）
+    } else {
+      // 同会话：只清 UI 瞬态；messages / status 保持原样，reattach 会重算
+      // currentAssistantId，让用户在切回时立刻看到流式进展（不闪空、不打断后台 SSE）。
+      currentAssistantId.value = null
+      errorMessage.value = null
+    }
     sessionID.value = sid
     instanceID.value = iid
-    title.value = initialTitle || ''
-    status.value = 'idle'
-    messages.value = []
-    errorMessage.value = null
+    if (initialTitle) title.value = initialTitle
 
-    // 1. 拉取历史消息
-    try {
-      const qs = new URLSearchParams({ instance_id: iid, limit: '100' })
-      const data = await http<{ messages: any[] }>(
-        `/api/mobile/sessions/${encodeURIComponent(sid)}/messages?${qs}`,
-      )
-      // 转换消息格式
-      for (const m of data.messages || []) {
-        const msg = normalizeMessage(m)
-        if (msg) messages.value.push(msg)
+    // 仅在切换到不同会话时才重置历史；同会话重入保留 messages/status，
+    // 避免切回瞬间把 SSE 在后台累积的消息清掉（设计 D3：切走 ≠ 关）。
+    if (!sameSession) {
+      status.value = 'idle'
+      messages.value = []
+      errorMessage.value = null
+
+      // 1. 拉取历史消息
+      try {
+        const qs = new URLSearchParams({ instance_id: iid, limit: '100' })
+        const data = await http<{ messages: any[] }>(
+          `/api/mobile/sessions/${encodeURIComponent(sid)}/messages?${qs}`,
+        )
+        // 转换消息格式
+        for (const m of data.messages || []) {
+          const msg = normalizeMessage(m)
+          if (msg) messages.value.push(msg)
+        }
+      } catch (err: any) {
+        errorMessage.value = `加载历史失败: ${err?.message || err}`
       }
-    } catch (err: any) {
-      errorMessage.value = `加载历史失败: ${err?.message || err}`
     }
 
-    // 2. 订阅 SSE
+    // 2. 订阅 SSE（同 sid+iid 时跳过：sseClient 已在跑）
+    if (sameSession) return
+
     const token = localStorage.getItem('pocket_token')
     sseClient.value = new SessionSSEClient(sid, iid, () => token, {
       onOpen: () => {
@@ -295,6 +312,39 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  /**
+   * M2（2026-09-09）：切走当前会话页时调用，**不**关 SSE（流继续在后台跑）。
+   *
+   * 与 close() 的区别：
+   *   - detach()：UI 瞬态清理 + 重置 SSE 句柄引用但保留 SSE 实例在内存中继续推消息。
+   *     数据（sessionID / messages / status）保留；用户切回同一会话时 reattach()。
+   *     实际上当前 SessionStore 是 Pinia singleton，组件 unmount 时数据本身不会被
+   *     Vue 回收；detach 的语义主要为"标记 UI 不再活跃"，**不**做实质操作。
+   *     SSE 实例继续推送 → messages.value 持续累积。
+   *   - close()：真正关 SSE。仅在切换不同 sid+iid / 删除会话 / 登出时调用。
+   *
+   * 配合 useSessionEvents.stopLive / usePendingApprovals.stopPolling：
+   *   - 那些钩子也应在 detach 时不再清理订阅（详见 SessionConversationView 改造）。
+   *   - 但因 M1 之后 approvalsRuntime 已进程级；本页"stopPolling"现只是退订本视图的
+   *     pendingPermissions 引用，SSE 仍持续被 approvalsRuntime 转发给其他订阅方。
+   */
+  function detach(): void {
+    // intentionally no-op for M2：UI 瞬态（dismissedApprovalIds、composerInitialText
+    // 等）是组件本地 ref，在 SessionConversationView.onBeforeUnmount 自己清。
+    // 这里保留方法名作为契约位，便于 M3+ 真后台场景下补"通知/快照"逻辑。
+  }
+
+  /**
+   * 用户切回当前会话页时调用（与 detach 配对）。
+   * 重算 currentAssistantId（最后一条 streaming=true 的消息）；status 由消息状态决定。
+   */
+  function reattach(): void {
+    if (!sessionID.value) return
+    const streaming = [...messages.value].reverse().find((m) => m.streaming)
+    currentAssistantId.value = streaming?.id ?? null
+    if (status.value !== 'streaming' && streaming) status.value = 'streaming'
+  }
+
   function close() {
     if (sseClient.value) {
       sseClient.value.close()
@@ -316,6 +366,8 @@ export const useSessionStore = defineStore('session', () => {
     isStreaming,
     lastMessage,
     open,
+    detach,
+    reattach,
     close,
     sendPrompt,
     interrupt,

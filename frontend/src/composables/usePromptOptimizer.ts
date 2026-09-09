@@ -4,9 +4,14 @@
  * 经统一 llm-bff 通道（/api/llm/stream）发送固定优化 system prompt，
  * 流式回填回调；不自动提交，用户可继续编辑。与 aiChatStore 的
  * "答案侧 optimize"（评审某条回答）不同，这里只润色草稿文本。
+ *
+ * M1（2026-09-09）：流所有权归 aiStreamRuntime，本 composable 只持有 handle
+ * 用于"用户主动 abort"。组件 unmount 不再 abort（与目标"切窗口不中断"一致；
+ * 如需取消，调方显式调 abort()）。
  */
 import { ref } from 'vue'
 import { llmBffApi, type ChatMessage } from '../api/llm-bff'
+import type { ChatStreamHandle } from '../native/aiStreamRuntime'
 
 const OPTIMIZE_SYSTEM_PROMPT =
   '你是一个文本润色助手。用户会给你一段草稿，请在保持原意与语言（中文/英文跟随原文）的前提下，' +
@@ -23,11 +28,11 @@ export function usePromptOptimizer(options: PromptOptimizerOptions = {}) {
   const optimizeError = ref('')
   /** auto 回退重试进度帧（runbook §15.1 任务 4），非终态，正文到达后清空。 */
   const optimizeRetryHint = ref('')
-  let controller: AbortController | null = null
+  let handle: ChatStreamHandle | null = null
 
   /**
    * 优化草稿。onDelta 流式回传累积文本；结束/出错分别回调。
-   * 返回 abort 函数（组件卸载或用户编辑时取消）。
+   * 返回 abort 函数（用户主动停；组件卸载不再 abort）。
    */
   function optimize(
     draft: string,
@@ -49,7 +54,7 @@ export function usePromptOptimizer(options: PromptOptimizerOptions = {}) {
       { role: 'system', content: OPTIMIZE_SYSTEM_PROMPT },
       { role: 'user', content: text },
     ]
-    controller = llmBffApi.streamChat(
+    handle = llmBffApi.streamChat(
       {
         messages,
         model: options.model || undefined,
@@ -70,13 +75,13 @@ export function usePromptOptimizer(options: PromptOptimizerOptions = {}) {
         onDone: () => {
           isOptimizing.value = false
           optimizeRetryHint.value = ''
-          controller = null
+          handle = null
           handlers.onDone?.(accumulated)
         },
         onError: (err) => {
           isOptimizing.value = false
           optimizeRetryHint.value = ''
-          controller = null
+          handle = null
           optimizeError.value = err.message || String(err)
           handlers.onError?.(err)
         },
@@ -85,8 +90,8 @@ export function usePromptOptimizer(options: PromptOptimizerOptions = {}) {
   }
 
   function abort() {
-    controller?.abort()
-    controller = null
+    handle?.abort()
+    handle = null
     isOptimizing.value = false
     optimizeRetryHint.value = ''
   }

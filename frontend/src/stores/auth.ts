@@ -11,7 +11,7 @@
  *  - authMethod records the login path (password / sso / dev-bypass / legacy)
  */
 import { defineStore } from 'pinia'
-import { logoutRemote, refreshAuth } from '../api/auth'
+import { logoutRemote, refreshAuth } from '../api/auth.ts'
 
 const TOKEN_KEY = 'pocket_token'
 const USER_KEY = 'pocket_user'
