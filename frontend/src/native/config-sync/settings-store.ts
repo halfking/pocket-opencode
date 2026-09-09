@@ -99,3 +99,12 @@ export async function markSettingClean(namespace: string, id: string): Promise<v
     [namespace, id],
   )
 }
+
+/** 删除本地镜像行（增量同步墓碑：其他端已删除的行不再留在本地）。 */
+export async function deleteLocalSetting(namespace: string, id: string): Promise<void> {
+  if (!localDB.isReady()) return
+  await localDB.run(
+    'DELETE FROM local_user_settings WHERE namespace = ? AND id = ?',
+    [namespace, id],
+  )
+}

@@ -36,3 +36,45 @@ data/*.sqlite-shm
 data/*.sqlite-wal
 data/email-invoices/
 deploy-local.sh.bak-*
+
+# === 2026-09-09 list-sync-rules plan-cleanup ===
+# Local-only dev/runtime artifacts, build logs, and stray test evidence that
+# are NOT part of the shipped product nor the validated plan.
+
+# Stray local screenshots / top-level debugging artifacts
+01-back-ai.png
+screenshots/
+.run/
+
+# Build log / dockerfile variants
+Dockerfile.frontend.local-rebuild
+ios_build_logs/
+
+# Local dev mock used during runbook probes (per memory: not source-of-truth)
+mock-llm-gateway.js
+
+# Local server log (sources: backend/cmd/pocketd runtime; not a build artifact)
+pocketd.log
+
+# Backend compiled artifacts (gen-jwt was a local CLI build; pocketd/agent_echo
+# already covered above). backend/test-evidence holds transient probe output
+# from local runs and is not part of the shipped product.
+backend/gen-jwt
+backend/test-evidence/
+
+# Untracked historical test-evidence subdirs (not part of the list-sync-rules
+# plan; their tracked siblings stay intact). Patterns intentionally narrow so
+# they don't shadow future evidence we DO want to commit.
+test-evidence/2026-09-01
+test-evidence/2026-09-01-ai-gateway-retest
+test-evidence/2026-09-01-android-screenshots
+test-evidence/2026-09-01-redclaw-mobile-auth
+test-evidence/2026-09-02-ai-gateway-debug
+test-evidence/2026-09-02-ai-gateway-roundtrip
+test-evidence/2026-09-02-pocketd-smoke
+test-evidence/2026-09-02-redclaw-android-screenshots
+test-evidence/2026-09-05-current-state.png
+test-evidence/2026-09-06-ai-chat-conversation.png
+test-evidence/2026-09-06-ai-chat-testing.md
+test-evidence/2026-09-06-ai-gateway-diagnosis.md
+test-evidence/2026-09-09-email-scene/

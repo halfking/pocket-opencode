@@ -14,17 +14,20 @@
     <div v-if="store.loading" class="state">加载中…</div>
     <div v-else-if="store.tasks.length === 0" class="state"><p>还没有自动化任务</p><button class="primary" @click="router.push('/settings/scheduled-tasks/new')">创建自动化</button></div>
     <main v-else class="list">
-      <article v-for="task in store.tasks" :key="task.id" class="card" @click="open(task.id)">
-        <div class="card-head"><h2>{{ task.name }}</h2><span :class="['status', task.enabled ? 'on' : 'off']">{{ task.enabled ? '启用' : '停用' }}</span></div>
-        <p v-if="task.description" class="description">{{ task.description }}</p>
-        <div class="meta"><span>{{ taskKindLabel(task.kind) }}</span><span>{{ describeTaskSchedule(task.scheduleKind, task.scheduleExpr) }}</span></div>
-        <div class="meta secondary"><span>下次 {{ formatTimestamp(task.nextRunAt) }}</span><span v-if="task.lastStatus">上次 {{ task.lastStatus }}</span></div>
-        <div class="card-actions" @click.stop>
-          <button type="button" @click="toggle(task)">{{ task.enabled ? '停用' : '启用' }}</button>
-          <button type="button" @click="router.push(`/settings/scheduled-tasks/${task.id}/edit`)">编辑</button>
-          <button type="button" class="danger" @click="remove(task)">删除</button>
-        </div>
-      </article>
+      <!-- TransitionGroup：增量同步落库后的新增/删除/启停以动画呈现 -->
+      <TransitionGroup name="tlist" tag="div" class="list-inner">
+        <article v-for="task in store.tasks" :key="task.id" class="card" @click="open(task.id)">
+          <div class="card-head"><h2>{{ task.name }}</h2><span :class="['status', task.enabled ? 'on' : 'off']">{{ task.enabled ? '启用' : '停用' }}</span></div>
+          <p v-if="task.description" class="description">{{ task.description }}</p>
+          <div class="meta"><span>{{ taskKindLabel(task.kind) }}</span><span>{{ describeTaskSchedule(task.scheduleKind, task.scheduleExpr) }}</span></div>
+          <div class="meta secondary"><span>下次 {{ formatTimestamp(task.nextRunAt) }}</span><span v-if="task.lastStatus">上次 {{ task.lastStatus }}</span></div>
+          <div class="card-actions" @click.stop>
+            <button type="button" @click="toggle(task)">{{ task.enabled ? '停用' : '启用' }}</button>
+            <button type="button" @click="router.push(`/settings/scheduled-tasks/${task.id}/edit`)">编辑</button>
+            <button type="button" class="danger" @click="remove(task)">删除</button>
+          </div>
+        </article>
+      </TransitionGroup>
     </main>
   </div>
 </template>
@@ -63,6 +66,13 @@ useListScene('scheduled-tasks', load)
 .filter { color: var(--text-secondary); font-size: 13px; display: flex; gap: 8px; align-items: center; }
 .refresh, .card-actions button, .primary, .error button { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); padding: 7px 12px; cursor: pointer; }
 .list { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
+.list-inner { display: flex; flex-direction: column; gap: var(--space-2); position: relative; }
+/* 增量同步动画（docs/2026-09-09-list-sync-rules.md §7） */
+.tlist-enter-active { transition: opacity 0.3s ease, transform 0.3s ease; }
+.tlist-enter-from { opacity: 0; transform: translateY(-8px); }
+.tlist-leave-active { transition: opacity 0.25s ease, transform 0.25s ease; position: absolute; left: 0; right: 0; }
+.tlist-leave-to { opacity: 0; transform: translateX(28px); }
+.tlist-move { transition: transform 0.3s ease; }
 .card { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); cursor: pointer; }
 .card-head { display: flex; align-items: center; gap: 8px; } h2 { flex: 1; margin: 0; font-size: 15px; color: var(--text-primary); }
 .status { font-size: 11px; padding: 3px 8px; border-radius: 999px; } .status.on { color: var(--success); background: var(--success-bg); } .status.off { color: var(--text-secondary); background: var(--bg-subtle); }

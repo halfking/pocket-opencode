@@ -25,9 +25,23 @@ function unwrapRuns(body: unknown): ScheduledTaskRun[] {
 }
 
 export const scheduledTasksApi = {
-  async list(enabledOnly = false): Promise<ScheduledTask[]> {
-    const query = enabledOnly ? '?enabled=true' : ''
-    return unwrapTasks(await http<unknown>(`${base}${query}`))
+  // 增量同步信封（docs/2026-09-09-list-sync-rules.md §3.2）：
+  // since（秒）只回传变更行；deletedIds 为其他端删除的墓碑。
+  async list(enabledOnly = false, since?: number): Promise<{ tasks: ScheduledTask[]; deletedIds?: string[]; serverTimeMs?: number }> {
+    const params = new URLSearchParams()
+    if (enabledOnly) params.set('enabled', 'true')
+    if (since && since > 0) params.set('since', String(since))
+    const query = params.toString()
+    const body = await http<unknown>(`${base}${query ? `?${query}` : ''}`)
+    if (body && typeof body === 'object' && !Array.isArray(body)) {
+      const env = body as { tasks?: unknown; deletedIds?: unknown; serverTimeMs?: unknown }
+      return {
+        tasks: unwrapTasks(env),
+        deletedIds: Array.isArray(env.deletedIds) ? (env.deletedIds as string[]) : [],
+        serverTimeMs: typeof env.serverTimeMs === 'number' ? env.serverTimeMs : undefined,
+      }
+    }
+    return { tasks: unwrapTasks(body) }
   },
   async get(id: string): Promise<ScheduledTask> {
     return http<ScheduledTask>(`${base}/${encodeURIComponent(id)}`)

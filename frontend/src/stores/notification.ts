@@ -29,7 +29,22 @@ export const useNotificationStore = defineStore('notification', {
     async loadInbox(opts: { limit?: number; unread?: boolean } = {}) {
       this.loading = true
       try {
-        this.inbox = await notificationsApi.list(opts)
+        // 增量拉取：已有 inbox 时带 since 只取新通知，合并后按时间倒序，
+        // 避免每次全量替换导致列表闪烁/滚动跳动。
+        const since = this.inbox.length
+          ? Math.max(...this.inbox.map((n) => n.created_at || 0))
+          : 0
+        const res = await notificationsApi.list({ limit: 50, ...opts, since })
+        const fresh = res.notifications ?? []
+        if (!this.inbox.length) {
+          this.inbox = fresh
+        } else {
+          const seen = new Set(this.inbox.map((n) => n.id))
+          const additions = fresh.filter((n) => !seen.has(n.id))
+          this.inbox = [...additions, ...this.inbox].sort(
+            (a, b) => (b.created_at || 0) - (a.created_at || 0),
+          )
+        }
       } finally {
         this.loading = false
       }

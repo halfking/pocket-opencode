@@ -317,7 +317,21 @@ func (s *Server) handleNotes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"notes": list})
+		// 增量同步信封（docs/2026-09-09-list-sync-rules.md §3.2）
+		since := parseSinceQuery(r.URL.Query().Get("since"))
+		resp := map[string]any{
+			"notes":        filterNotesSince(list, since),
+			"serverTimeMs": time.Now().UnixMilli(),
+		}
+		if since > 0 {
+			deletedIDs, err := s.notesStore.ListDeletedIDsScoped(r.Context(), uid, wsID, since, 500)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			resp["deletedIds"] = deletedIDs
+		}
+		writeJSON(w, http.StatusOK, resp)
 	case http.MethodPost:
 		var n notes.Note
 		if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
@@ -1240,7 +1254,21 @@ func (s *Server) handleEmails(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"emails": list})
+	// 增量同步信封：serverTimeMs 供客户端校正时钟漂移；带 since 时附带
+	// 软删除墓碑（deletedIds），客户端据此移除本地缓存行（无刷新删除）。
+	resp := map[string]any{
+		"emails":       list,
+		"serverTimeMs": time.Now().UnixMilli(),
+	}
+	if f.Since > 0 {
+		deletedIDs, err := s.emailStore.ListDeletedEmailIDsScoped(r.Context(), f.Since, s.userIDFromRequest(r), s.workspaceIDFromRequest(r), 500)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		resp["deletedIds"] = deletedIDs
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleEmailVacations — GET /api/email/vacations

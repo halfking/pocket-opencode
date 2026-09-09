@@ -72,10 +72,15 @@ func (s *Server) handleListChatSummaries(w http.ResponseWriter, r *http.Request)
 		summaries = []*cs.ChatSummary{}
 	}
 
+	// 增量同步信封：摘要行创建后基本不可变，按 created_at 增量。
+	since := parseSinceQuery(r.URL.Query().Get("since"))
+	summaries = filterChatSummariesSince(summaries, since)
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
-		"summaries": summaries,
-		"total":     len(summaries),
+		"summaries":    summaries,
+		"total":        len(summaries),
+		"serverTimeMs": time.Now().UnixMilli(),
 	}); err != nil {
 		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
 	}

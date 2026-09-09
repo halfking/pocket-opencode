@@ -71,7 +71,8 @@
           variant="inline"
         />
 
-        <div v-else class="session-list">
+        <!-- TransitionGroup：删除/归档等变更以动画呈现，位置移动平滑过渡 -->
+        <TransitionGroup v-else name="slist" tag="div" class="session-list">
           <SwipeableListItem
             v-for="session in filteredSessions"
             :key="session.id"
@@ -96,7 +97,7 @@
               </p>
             </div>
           </SwipeableListItem>
-        </div>
+        </TransitionGroup>
 
         <!-- 分页（仅活跃分区；归档区跟随当前页数据的本地过滤） -->
         <div v-if="listMode === 'active' && total > limit" class="pagination">
@@ -119,6 +120,8 @@ import { useAuthStore } from '@/stores/auth'
 import { Skeleton, EmptyState, PullToRefresh, SwipeableListItem, type SwipeAction } from '@/components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 import { useConfirm } from '@/composables/useConfirm'
+import { useListScene } from '@/composables/use-list-scene'
+import { listSnapshots, upsertSnapshots } from '@/native/list-sync/snapshot-store'
 import {
   readArchivedIds,
   setSessionArchived,
@@ -236,24 +239,65 @@ async function loadInstances() {
 }
 
 async function loadSessions() {
-  loading.value = true
+  loading.value = sessions.value.length === 0
   error.value = ''
   try {
     const instId = selectedInstanceId.value || undefined
     const data = await api.getAllSessions(instId, limit.value, offset.value)
-    sessions.value = (data.sessions || []).map((s: any) => ({
+    const mapped = (data.sessions || []).map((s: any) => ({
       id: s.id || s.ID || '',
       title: s.title || s.Title || '未命名会话',
       status: s.status || s.Status || 'idle',
       instanceId: s.instanceId || s.InstanceID || '',
       instanceName: s.instanceName || s.InstanceName || '',
     }))
+    sessions.value = mapped
     total.value = data.total || 0
+    void writeSessionsSnapshot({ sessions: mapped, total: total.value })
   } catch (err: any) {
-    error.value = err.message || '加载会话失败'
+    // 网络失败时回退本地快照（fail-open）；快照也没有才报错。
+    const snap = await readSessionsSnapshot()
+    if (snap && snap.sessions.length > 0 && sessions.value.length === 0) {
+      sessions.value = snap.sessions
+      total.value = snap.total
+    } else {
+      error.value = err.message || '加载会话失败'
+    }
   } finally {
     loading.value = false
   }
+}
+
+// ---- 本地快照（stale-while-revalidate）----
+// 会话列表元数据小且稳定：先读快照立即渲染（首屏不白屏），随后网络刷新覆盖，
+// 失败时快照兜底。见 docs/2026-09-09-list-sync-rules.md §本地第一轮加载。
+const SNAPSHOT_NS = 'opencode-sessions'
+
+interface SessionSnapshot {
+  sessions: Session[]
+  total: number
+}
+
+function snapshotKey(): string {
+  return `ws:${auth.workspaceId || 'default'}:inst:${selectedInstanceId.value || 'all'}`
+}
+
+async function readSessionsSnapshot(): Promise<SessionSnapshot | null> {
+  try {
+    const rows = await listSnapshots<SessionSnapshot>(SNAPSHOT_NS)
+    const hit = rows.find((r) => r.id === snapshotKey())
+    return hit?.payload ?? null
+  } catch {
+    return null
+  }
+}
+
+async function writeSessionsSnapshot(payload: SessionSnapshot): Promise<void> {
+  try {
+    await upsertSnapshots(SNAPSHOT_NS, [
+      { id: snapshotKey(), updatedAt: Date.now(), dirty: false, payload },
+    ])
+  } catch { /* 快照属尽力而为的缓存，失败静默 */ }
 }
 
 async function handleRefresh() {
@@ -370,13 +414,25 @@ function getStatusText(status: string): string {
   return statusMap[status] || status
 }
 
-onMounted(() => {
+onMounted(async () => {
   loadArchivedIds()
   loadInstances()
+  // 本地第一轮：快照命中则立即渲染，随后的 loadSessions 网络刷新覆盖。
+  const snap = await readSessionsSnapshot()
+  if (snap && snap.sessions.length > 0) {
+    sessions.value = snap.sessions
+    total.value = snap.total
+  }
   loadSessions()
 })
 
 onActivated(() => {
+  loadArchivedIds()
+})
+
+/* KeepAlive 现场保持：工作台（SessionWorkspaceView）已缓存本列表，
+   返回时只在详情侧登记过数据变更才刷新，否则保留筛选/分页/滚动。 */
+useListScene('sessions', () => {
   loadArchivedIds()
   loadSessions()
 })
@@ -484,7 +540,16 @@ onActivated(() => {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-list-gap);
+  position: relative;
 }
+
+/* 列表项动画：删除/归档滑出并让位，其余项平滑补位 */
+.slist-enter-active { transition: opacity 0.3s ease, transform 0.3s ease; }
+.slist-enter-from { opacity: 0; transform: translateY(-8px); }
+.slist-leave-active { transition: opacity 0.25s ease, transform 0.25s ease; position: absolute; left: 0; right: 0; }
+.slist-leave-to { opacity: 0; transform: translateX(28px); }
+.slist-move { transition: transform 0.3s ease; }
+
 
 .session-card {
   background: var(--bg-card);

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -44,6 +45,7 @@ type companionSession struct {
 }
 
 type companionMessage struct {
+	Seq  int    `json:"seq"`
 	ID   string `json:"id"`
 	TS   int64  `json:"ts"`
 	Type string `json:"type"`
@@ -91,12 +93,26 @@ func nativeAgentKind(kind string) string {
 }
 
 func (c *CompanionClient) GetTranscript(kind, id, types string) (companionSession, []companionMessage, error) {
+	return c.GetTranscriptPage(kind, id, types, 0, 0)
+}
+
+// GetTranscriptPage 增量/分页读取会话正文：afterSeq 为 keyset 游标
+// （只返回 Seq > afterSeq 的行，0 = 从头），limit<=0 时由 companion 决定。
+// 客户端以返回行的最大 seq 作为下一次的 afterSeq，实现断点续传增量同步
+// （docs/2026-09-09-list-sync-rules.md §4.1 会话正文按需/增量加载）。
+func (c *CompanionClient) GetTranscriptPage(kind, id, types string, afterSeq, limit int) (companionSession, []companionMessage, error) {
 	q := url.Values{}
 	if k := nativeAgentKind(kind); k != "" {
 		q.Set("kind", k)
 	}
 	if types != "" {
 		q.Set("types", types)
+	}
+	if afterSeq > 0 {
+		q.Set("after_seq", strconv.Itoa(afterSeq))
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
 	}
 	var out struct {
 		Session  companionSession   `json:"session"`

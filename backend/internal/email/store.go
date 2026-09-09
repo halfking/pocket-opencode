@@ -1500,6 +1500,42 @@ func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID,
 	return out, rows.Err()
 }
 
+// ListDeletedEmailIDsScoped 返回 deleted_at 晚于 since 的软删除邮件 id
+// （墓碑清单），供客户端把「其他端已删除」的行从本地缓存移除。
+// since 语义与 ListFilter.Since 一致：Unix 秒；毫秒（>1e12）自动归一。
+// deleted_at 由 SoftDeleteEmailsScoped 以毫秒写入，这里统一按毫秒比较。
+func (s *Store) ListDeletedEmailIDsScoped(ctx context.Context, since int64, userID, workspaceID string, limit int) ([]string, error) {
+	if since <= 0 {
+		return nil, nil
+	}
+	if since < 1_000_000_000_000 {
+		since *= 1000
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT e.id FROM emails e JOIN email_accounts a ON a.id=e.account_id
+		WHERE a.user_id=$1 AND a.workspace_id=$2 AND e.deleted_at > $3
+		ORDER BY e.deleted_at ASC LIMIT $4`, userID, workspaceID, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // GetEmailByIDScoped returns a message only within the requested scope.
 //
 // 比 scanEmail 多读 uid + body_path：handleEmailBody 用 uid 拉 IMAP 正文，

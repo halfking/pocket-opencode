@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,9 @@ func (s *Server) handleMeetings(w http.ResponseWriter, r *http.Request) {
 
 // handleListMeetings returns the workspace-scoped list with a total counter so
 // the mobile UI can render pagination without a second round-trip.
+//
+// 增量同步：可选 since（Unix 秒或毫秒）只返回 UpdatedAt 更晚的行，并附带
+// deletedIds 墓碑与 serverTimeMs，供客户端做无刷新差异合并。
 func (s *Server) handleListMeetings(w http.ResponseWriter, r *http.Request) {
 	uid := s.userIDFromRequest(r)
 	workspaceID := s.workspaceIDFromRequest(r)
@@ -44,10 +48,34 @@ func (s *Server) handleListMeetings(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []*meeting.Meeting{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"meetings": list,
-		"total":    len(list),
-	})
+	var since time.Time
+	if v := r.URL.Query().Get("since"); v != "" {
+		if n, parseErr := strconv.ParseInt(v, 10, 64); parseErr == nil && n > 0 {
+			if n > 1_000_000_000_000 {
+				since = time.UnixMilli(n)
+			} else {
+				since = time.Unix(n, 0)
+			}
+		}
+	}
+	if !since.IsZero() {
+		filtered := make([]*meeting.Meeting, 0, len(list))
+		for _, m := range list {
+			if m.UpdatedAt.After(since) {
+				filtered = append(filtered, m)
+			}
+		}
+		list = filtered
+	}
+	resp := map[string]any{
+		"meetings":     list,
+		"total":        len(list),
+		"serverTimeMs": time.Now().UnixMilli(),
+	}
+	if !since.IsZero() {
+		resp["deletedIds"] = s.meetingStore.DeletedIDsSince(uid, workspaceID, since)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleCreateMeeting decodes the request body and stores a new meeting in the

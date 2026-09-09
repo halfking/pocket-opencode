@@ -37,6 +37,9 @@ type RemoteTask struct {
 	Title  string `json:"title"`
 	Status string `json:"status"`
 	Owner  string `json:"owner"`
+	// UpdatedAt 会话最后更新时间（Unix 毫秒）；0 表示实例未提供，
+	// 调用方需自行退化（见 server.remoteTaskUpdatedAt）。
+	UpdatedAt int64 `json:"updatedAt,omitempty"`
 }
 
 type OpenCodeAdapter interface {

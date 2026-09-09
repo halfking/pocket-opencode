@@ -208,7 +208,9 @@ export const emailApi = {
   },
 
   // Emails
-  listEmails(filter: EmailFilter = {}): Promise<{ emails: Email[] }> {
+  // 响应信封：带 since 时附 deletedIds（软删除墓碑）与 serverTimeMs（服务器时钟），
+  // 客户端据此做无刷新差异合并。见 docs/2026-09-09-list-sync-rules.md §增量同步协议。
+  listEmails(filter: EmailFilter = {}): Promise<{ emails: Email[]; deletedIds?: string[]; serverTimeMs?: number }> {
     const qs = new URLSearchParams()
     if (filter.accountId) qs.set('account_id', filter.accountId)
     if (filter.category) qs.set('category', filter.category)

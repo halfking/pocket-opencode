@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 )
@@ -64,10 +65,16 @@ func (s *Server) handleOpenCodeSessions(w http.ResponseWriter, r *http.Request) 
 		sessions = sessions[:limit]
 	}
 
+	// 增量同步信封：缓存会话按 UpdatedAt 增量；会话缓存由 manager 刷新，
+	// 无删除语义故无墓碑（重启后缓存重建，客户端以全量对账兜底）。
+	since := parseSinceQuery(r.URL.Query().Get("since"))
+	sessions = filterCachedSessionsSince(sessions, since)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"sessions": sessions,
-		"total":    len(sessions),
+		"sessions":     sessions,
+		"total":        len(sessions),
+		"serverTimeMs": time.Now().UnixMilli(),
 	})
 }
 

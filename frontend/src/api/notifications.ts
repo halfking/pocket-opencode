@@ -38,14 +38,17 @@ export interface NotificationRule {
 }
 
 export const notificationsApi = {
-  list: (opts: { limit?: number; unread?: boolean } = {}) => {
+  // 增量同步信封（docs/2026-09-09-list-sync-rules.md §3.2）：since（秒）
+  // 只回传 created_at 更晚的通知；serverTimeMs 供时钟校正。
+  list: (opts: { limit?: number; unread?: boolean; since?: number } = {}) => {
     const p = new URLSearchParams()
     if (opts.limit) p.set('limit', String(opts.limit))
     if (opts.unread) p.set('unread', '1')
+    if (opts.since && opts.since > 0) p.set('since', String(opts.since))
     const qs = p.toString()
-    return http<{ notifications: Notification[] }>(
+    return http<{ notifications: Notification[]; serverTimeMs?: number }>(
       `/api/notifications${qs ? '?' + qs : ''}`,
-    ).then((r) => r.notifications)
+    )
   },
 
   markRead: (id?: string) =>

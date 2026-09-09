@@ -437,3 +437,37 @@ func (s *Store) DeleteScoped(ctx context.Context, id, userID, workspaceID string
 }
 
 func (s *Store) Close() error { return nil }
+
+// ListDeletedIDsScoped 返回 deleted_at 晚于 sinceSec（epoch 秒）的软删除
+// 笔记 id（墓碑清单），供客户端把「其他端已删除」的行从本地缓存移除。
+// 见 docs/2026-09-09-list-sync-rules.md §3.2。
+func (s *Store) ListDeletedIDsScoped(ctx context.Context, userID, workspaceID string, sinceSec int64, limit int) ([]string, error) {
+	if sinceSec <= 0 {
+		return nil, nil
+	}
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id FROM notes
+		WHERE user_id = $1 AND workspace_id = $2
+		  AND deleted_at IS NOT NULL AND deleted_at > to_timestamp($3)
+		ORDER BY deleted_at ASC LIMIT $4`,
+		userID, workspaceID, sinceSec, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query deleted note ids: %w", err)
+	}
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

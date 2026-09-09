@@ -433,3 +433,24 @@ func decodeCharset(data []byte, charset string) ([]byte, error) {
 		return data, nil
 	}
 }
+// ExtractDisplayBody 从整封原文提取可直接展示的正文文本：
+// 优先 text/plain 聚合，其次 text/html，解析失败退回原文本身。
+// 超长截断到 256KB，与 /api/emails/{id}/body 的拉取上限一致。
+func ExtractDisplayBody(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	if msg, err := ParseMIMEMessage(raw); err == nil {
+		if t := strings.TrimSpace(msg.TextBody); t != "" {
+			return t
+		}
+		if h := strings.TrimSpace(msg.HTMLBody); h != "" {
+			return h
+		}
+	}
+	const maxDisplay = 256 * 1024
+	if len(raw) > maxDisplay {
+		raw = raw[:maxDisplay]
+	}
+	return string(raw)
+}

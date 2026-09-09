@@ -20,12 +20,22 @@ const (
 type Store struct {
 	mu       sync.RWMutex
 	meetings map[string]*Meeting
+	// tombstones 记录已删除会议的墓碑（删除时间 + 归属），供增量同步
+	// 下发 deletedIds；内存实现重启即清空，客户端以全量对账兜底。
+	tombstones map[string]meetingTombstone
+}
+
+type meetingTombstone struct {
+	ownerID     string
+	workspaceID string
+	at          time.Time
 }
 
 // NewStore creates a new in-memory meeting store
 func NewStore() *Store {
 	return &Store{
-		meetings: make(map[string]*Meeting),
+		meetings:   make(map[string]*Meeting),
+		tombstones: make(map[string]meetingTombstone),
 	}
 }
 
@@ -229,7 +239,25 @@ func (s *Store) DeleteScoped(id, ownerID, workspaceID string) error {
 		return fmt.Errorf("meeting not found")
 	}
 	delete(s.meetings, id)
+	s.tombstones[id] = meetingTombstone{ownerID: ownerID, workspaceID: workspaceID, at: time.Now()}
 	return nil
+}
+
+// DeletedIDsSince returns ids of meetings deleted after since for the
+// requested scope (增量同步墓碑清单)。
+func (s *Store) DeletedIDsSince(ownerID, workspaceID string, since time.Time) []string {
+	if ownerID == "" || workspaceID == "" {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0)
+	for id, t := range s.tombstones {
+		if t.ownerID == ownerID && t.workspaceID == workspaceID && (since.IsZero() || t.at.After(since)) {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // copyMeeting creates a deep copy of a meeting to prevent data races

@@ -33,7 +33,22 @@ func (s *Server) handleScheduledTasks(w http.ResponseWriter, r *http.Request) {
 			writeScheduledTaskStoreError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"tasks": items})
+		// 增量同步信封（docs/2026-09-09-list-sync-rules.md §3.2）：
+		// since 只回传 updated_at 更晚的行；删除经墓碑表下发 deletedIds。
+		since := parseSinceQuery(r.URL.Query().Get("since"))
+		resp := map[string]interface{}{
+			"tasks":        filterScheduledTasksSince(items, since),
+			"serverTimeMs": time.Now().UnixMilli(),
+		}
+		if since > 0 {
+			deletedIDs, err := s.scheduledTaskStore.ListDeletedTaskIDsScoped(r.Context(), userID, workspaceID, since, 500)
+			if err != nil {
+				writeScheduledTaskStoreError(w, err)
+				return
+			}
+			resp["deletedIds"] = deletedIDs
+		}
+		writeJSON(w, http.StatusOK, resp)
 	case http.MethodPost:
 		var input scheduledtask.TaskInput
 		if err := decodeScheduledTaskJSON(r, &input); err != nil {

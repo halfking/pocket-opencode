@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -34,7 +35,12 @@ func (s *Server) handleTaskSessionTranscript(w http.ResponseWriter, r *http.Requ
 	}
 	kind := r.URL.Query().Get("kind")
 	types := r.URL.Query().Get("types")
-	sess, msgs, err := s.companion.GetTranscript(kind, sessionID, types)
+	// 增量续传（docs/2026-09-09-list-sync-rules.md §4.1）：after_seq 为客户端
+	// 已持有的最大消息 seq（keyset 游标），limit 限制单批行数。两者缺省时
+	// 行为与旧契约完全一致（全量、companion 默认 limit）。
+	afterSeq, _ := strconv.Atoi(r.URL.Query().Get("after_seq"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	sess, msgs, err := s.companion.GetTranscriptPage(kind, sessionID, types, afterSeq, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

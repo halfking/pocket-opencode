@@ -39,7 +39,14 @@ func (s *Server) handleChatAgentsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"agents": agents})
+	// 增量同步信封（docs/2026-09-09-list-sync-rules.md §3.2，仿 chat summaries）：
+	// since（秒）按 UpdatedAt 内存过滤；自定义角色的删除经 chatagent 云同步
+	// 协议（server_chatagent_sync.go 版本比对）传播，列表 API 不带 deletedIds。
+	since := parseSinceQuery(r.URL.Query().Get("since"))
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"agents":       filterChatAgentsSince(agents, since),
+		"serverTimeMs": time.Now().UnixMilli(),
+	})
 }
 
 // handleChatAgentsGet 获取单个角色详情。

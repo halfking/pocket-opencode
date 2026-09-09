@@ -19,6 +19,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 )
@@ -44,7 +45,12 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "list notifications: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"notifications": notifs})
+	// 增量同步信封：通知行不可变，按 created_at 增量；无删除语义故无墓碑。
+	since := parseSinceQuery(r.URL.Query().Get("since"))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"notifications": filterNotificationsSince(notifs, since),
+		"serverTimeMs":  time.Now().UnixMilli(),
+	})
 }
 
 // handleNotificationOps: POST /api/notifications/mark-read

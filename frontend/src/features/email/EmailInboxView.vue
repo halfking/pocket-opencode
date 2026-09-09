@@ -96,39 +96,43 @@
       variant="inline"
     />
 
-    <div v-else class="email-list">
-      <div
-        v-for="m in shownEmails"
-        :key="m.id"
-        class="email-card"
-        :class="{ high: m.importance === 'high', unread: !m.isRead }"
-        @click="inbox.selectMode.value ? inbox.toggle(m.id) : open(m.id)"
-      >
-        <label v-if="inbox.selectMode.value" class="pick" @click.stop>
-          <input type="checkbox" :checked="inbox.selected.value.has(m.id)" @change="inbox.toggle(m.id)" />
-        </label>
-        <div class="card-main">
-        <div class="row1">
-          <span class="from">{{ m.fromName || m.fromAddress }}</span>
-          <span class="time">{{ formatEmailRelTime(m.date) }}</span>
+    <!-- TransitionGroup：增量同步落库后的新增/更新/删除以动画呈现（无刷新更新可感知）。
+         "more" 哨兵不带 key，放在 TransitionGroup 外避免 move 类误伤。 -->
+    <template v-else>
+      <TransitionGroup name="elist" tag="div" class="email-list">
+        <div
+          v-for="m in shownEmails"
+          :key="m.id"
+          class="email-card"
+          :class="{ high: m.importance === 'high', unread: !m.isRead }"
+          @click="inbox.selectMode.value ? inbox.toggle(m.id) : open(m.id)"
+        >
+          <label v-if="inbox.selectMode.value" class="pick" @click.stop>
+            <input type="checkbox" :checked="inbox.selected.value.has(m.id)" @change="inbox.toggle(m.id)" />
+          </label>
+          <div class="card-main">
+          <div class="row1">
+            <span class="from">{{ m.fromName || m.fromAddress }}</span>
+            <span class="time">{{ formatEmailRelTime(m.date) }}</span>
+          </div>
+          <div class="subject">{{ m.subject }}</div>
+          <div class="snippet">{{ m.snippet }}</div>
+          <div v-if="m.aiSummary" class="ai-summary">💡 {{ m.aiSummary }}</div>
+          <div class="row-meta">
+            <span v-if="m.category" class="tag" :class="`cat-${m.category}`">{{ catLabel(m.category) }}</span>
+            <span v-if="m.importance === 'high'" class="importance">⭐ 重要</span>
+            <span v-if="m.hasAttachments" class="attach">📎</span>
+            <button v-if="!m.isRead" class="read-btn" @click.stop="markRead(m, true)">标为已读</button>
+          </div>
+          </div>
         </div>
-        <div class="subject">{{ m.subject }}</div>
-        <div class="snippet">{{ m.snippet }}</div>
-        <div v-if="m.aiSummary" class="ai-summary">💡 {{ m.aiSummary }}</div>
-        <div class="row-meta">
-          <span v-if="m.category" class="tag" :class="`cat-${m.category}`">{{ catLabel(m.category) }}</span>
-          <span v-if="m.importance === 'high'" class="importance">⭐ 重要</span>
-          <span v-if="m.hasAttachments" class="attach">📎</span>
-          <button v-if="!m.isRead" class="read-btn" @click.stop="markRead(m, true)">标为已读</button>
-        </div>
-        </div>
-      </div>
+      </TransitionGroup>
       <div v-if="emails.length > 0" ref="moreEl" class="more">
         <span v-if="loadingMore">加载中…</span>
         <span v-else-if="hasMore">上拉加载更多</span>
         <span v-else>没有更多了</span>
       </div>
-    </div>
+    </template>
     </PullToRefresh>
     </template>
   </div>
@@ -279,7 +283,13 @@ onUnmounted(() => setHeaderTitle(null))
 .chip.active { background: var(--brand-primary); color: var(--text-inverse); border-color: var(--brand-primary); }
 .inbox-scroll { flex: 1; min-height: 0; }
 .state-wrap { padding: var(--space-2) 0; }
-.email-list { display: flex; flex-direction: column; gap: var(--spacing-list-gap); }
+.email-list { display: flex; flex-direction: column; gap: var(--spacing-list-gap); position: relative; }
+/* 增量同步动画：新邮件自上滑入、删除滑出并让位、其余项平滑上移补位 */
+.elist-enter-active { transition: opacity 0.35s ease, transform 0.35s ease; }
+.elist-enter-from { opacity: 0; transform: translateY(-10px); }
+.elist-leave-active { transition: opacity 0.25s ease, transform 0.25s ease; position: absolute; left: 0; right: 0; }
+.elist-leave-to { opacity: 0; transform: translateX(28px); }
+.elist-move { transition: transform 0.3s ease; }
 .email-card { display: flex; background: var(--bg-card); border-radius: var(--radius-md); padding: var(--spacing-card-padding); border: 1px solid var(--border); border-left: 3px solid transparent; }
 .email-card.high { border-left-color: var(--danger); }
 .email-card.unread { background: var(--bg-elevated); }

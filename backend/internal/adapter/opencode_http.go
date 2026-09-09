@@ -227,10 +227,11 @@ func (a *OpenCodeHTTPAdapter) ListRemoteTasks(ctx context.Context, instanceBaseU
 		}
 
 		rt := RemoteTask{
-			ID:     s.ID,
-			Title:  s.Title,
-			Owner:  owner,
-			Status: sessionStatus,
+			ID:        s.ID,
+			Title:     s.Title,
+			Owner:     owner,
+			Status:    sessionStatus,
+			UpdatedAt: s.Time.Updated,
 		}
 		tasks = append(tasks, rt)
 	}

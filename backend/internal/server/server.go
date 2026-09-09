@@ -1339,6 +1339,24 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			s.handleTaskSessions(w, r, parts[0])
 			return
 		}
+		if r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "session-bundle" {
+			s.handleTaskSessionBundle(w, r, parts[0])
+			return
+		}
+		// 任务详情会话正文（companion 透传，支持 after_seq 增量续传）
+		if len(parts) == 4 && parts[1] == "sessions" {
+			switch {
+			case r.Method == http.MethodGet && parts[3] == "transcript":
+				s.handleTaskSessionTranscript(w, r, parts[0], parts[2])
+				return
+			case r.Method == http.MethodPost && parts[3] == "extract-title":
+				s.handleExtractTitle(w, r, parts[0], parts[2])
+				return
+			case r.Method == http.MethodPost && parts[3] == "summarize":
+				s.handleSessionSummarize(w, r, parts[0], parts[2])
+				return
+			}
+		}
 		if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "accept" {
 			s.handleAcceptTask(w, r, parts[0])
 			return

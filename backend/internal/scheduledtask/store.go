@@ -91,6 +91,17 @@ CREATE TABLE IF NOT EXISTS scheduled_task_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_task ON scheduled_task_runs(task_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_owner ON scheduled_task_runs(user_id, workspace_id, started_at DESC);
+
+-- 增量同步墓碑：任务硬删除时记录 (id, deleted_at)，供 GET 列表带 since 时
+-- 下发 deletedIds。任务行本身被删除，独立表才能持久保留删除事实。
+CREATE TABLE IF NOT EXISTS scheduled_task_tombstones (
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    workspace_id    TEXT NOT NULL,
+    deleted_at      BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_tombstones_owner
+    ON scheduled_task_tombstones(user_id, workspace_id, deleted_at);
 `)
 	return err
 }
@@ -251,7 +262,8 @@ UPDATE scheduled_tasks SET
 	return current, nil
 }
 
-// DeleteTaskScoped removes a task (cascading to runs via FK).
+// DeleteTaskScoped removes a task (cascading to runs via FK) and records a
+// tombstone so incremental clients learn about the deletion (deletedIds).
 func (s *Store) DeleteTaskScoped(ctx context.Context, id, userID, workspaceID string) error {
 	if s == nil || s.pool == nil {
 		return ErrStoreUnavailable
@@ -264,7 +276,44 @@ func (s *Store) DeleteTaskScoped(ctx context.Context, id, userID, workspaceID st
 	if tag.RowsAffected() == 0 {
 		return ErrTaskNotFound
 	}
+	_, _ = s.pool.Exec(ctx, `
+		INSERT INTO scheduled_task_tombstones (id, user_id, workspace_id, deleted_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (id) DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
+		id, userID, workspaceID, time.Now().Unix())
 	return nil
+}
+
+// ListDeletedTaskIDsScoped returns ids of tasks deleted after sinceSec
+// (epoch seconds) for the requested owner scope (增量同步墓碑清单)。
+func (s *Store) ListDeletedTaskIDsScoped(ctx context.Context, userID, workspaceID string, sinceSec int64, limit int) ([]string, error) {
+	if s == nil || s.pool == nil {
+		return nil, ErrStoreUnavailable
+	}
+	if sinceSec <= 0 {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id FROM scheduled_task_tombstones
+		WHERE user_id = $1 AND workspace_id = $2 AND deleted_at > $3
+		ORDER BY deleted_at ASC LIMIT $4`,
+		userID, workspaceID, sinceSec, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // --- Scheduler-facing queries ---

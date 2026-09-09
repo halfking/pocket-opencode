@@ -240,6 +240,15 @@ export async function maxEmailUpdatedAt(): Promise<number> {
   return Number(row?.m) || 0
 }
 
+/**
+ * 从服务端增量拉取邮件并写入本地镜像。
+ *
+ * 增量同步协议（docs/2026-09-09-list-sync-rules.md）：
+ * - since 取本地最大 updated_at，只回传变更行；
+ * - 响应带 deletedIds（软删除墓碑）时同步移除本地行，做到「其他端删除、
+ *   本端无刷新消失」，并防止墓碑行被再次回填；
+ * - 写入路径始终先落本地 SQLite，列表随后从本地读（本地优先）。
+ */
 export async function syncEmailsFromServer(limit = 200, since = 0): Promise<number> {
   const { emailApi } = await import('../../api/email')
   const res = await emailApi.listEmails({ limit, since: since > 0 ? since : undefined })
@@ -266,6 +275,12 @@ export async function syncEmailsFromServer(limit = 200, since = 0): Promise<numb
       updatedAt: e.updatedAt && e.updatedAt > 0 ? e.updatedAt : dateMs,
     })
     if (ok) n++
+  }
+  const tombstones = res.deletedIds ?? []
+  if (tombstones.length > 0) {
+    // 与本端软删除同一语义：保留标题/摘要、清正文缓存、deleted_at 阻止回填。
+    const { purgeEmailsLocal } = await import('./email-soft-delete')
+    await purgeEmailsLocal(tombstones)
   }
   return n
 }
