@@ -644,7 +644,9 @@ func (c *Client) ListRunEvents(ctx context.Context, runID string, after uint64) 
 	if err != nil {
 		return nil, err
 	}
-	u := strings.TrimRight(c.baseURL, "/") + "/api/v2/orchestration/runs/" + url.PathEscape(runID) + "/events"
+	base := strings.TrimRight(c.baseURL, "/")
+	base = strings.TrimSuffix(base, "/api/v2/mcp")
+	u := base + "/api/v2/orchestration/runs/" + url.PathEscape(runID) + "/events"
 	if after > 0 {
 		u += "?after=" + strconv.FormatUint(after, 10)
 	}
