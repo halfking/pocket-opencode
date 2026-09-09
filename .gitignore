@@ -62,19 +62,9 @@ pocketd.log
 backend/gen-jwt
 backend/test-evidence/
 
-# Untracked historical test-evidence subdirs (not part of the list-sync-rules
-# plan; their tracked siblings stay intact). Patterns intentionally narrow so
-# they don't shadow future evidence we DO want to commit.
-test-evidence/2026-09-01
-test-evidence/2026-09-01-ai-gateway-retest
-test-evidence/2026-09-01-android-screenshots
-test-evidence/2026-09-01-redclaw-mobile-auth
-test-evidence/2026-09-02-ai-gateway-debug
-test-evidence/2026-09-02-ai-gateway-roundtrip
-test-evidence/2026-09-02-pocketd-smoke
-test-evidence/2026-09-02-redclaw-android-screenshots
-test-evidence/2026-09-05-current-state.png
-test-evidence/2026-09-06-ai-chat-conversation.png
-test-evidence/2026-09-06-ai-chat-testing.md
-test-evidence/2026-09-06-ai-gateway-diagnosis.md
-test-evidence/2026-09-09-email-scene/
+# Test evidence — only ship the deliberately-traced dated subdirs (e.g.
+# 2026-09-09-list-sync-verify); ignore the rest at the root so future dated
+# snapshots are auto-skipped without .gitignore churn. Already-tracked
+# subdirs stay tracked because git does not un-track already-added files
+# via .gitignore.
+test-evidence/
