@@ -1286,6 +1286,8 @@ func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 		Kind        string `json:"kind"`
 		Title       string `json:"title"`
 		Description string `json:"description"`
+		RunID       string `json:"run_id"`
+		OperationID string `json:"operation_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -1296,7 +1298,14 @@ func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	args := map[string]interface{}{"title": req.Title}
+	if strings.TrimSpace(req.RunID) == "" {
+		http.Error(w, "run_id is required for canonical task binding", http.StatusBadRequest)
+		return
+	}
+	args := map[string]interface{}{"title": req.Title, "run_id": req.RunID}
+	if req.OperationID != "" {
+		args["operation_id"] = req.OperationID
+	}
 	if req.Kind != "" {
 		args["kind"] = req.Kind
 	}
@@ -1311,12 +1320,23 @@ func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ACC 以 toolJSON 返回 JSON 字符串；原样回传，并附 source=acc 标识。
+	result, err := mcp.ParseCanonicalTaskResult(out)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if result.RunID != req.RunID {
+		http.Error(w, "ACC run_id does not match requested binding", http.StatusBadGateway)
+		return
+	}
+	if s.taskStore != nil {
+		if err := s.taskStore.PutTaskRunBinding(r.Context(), task.TaskRunBinding{WorkspaceID: s.workspaceIDFromRequest(r), TaskID: result.TaskID, RunID: result.RunID, OperationID: result.OperationID}); err != nil {
+			http.Error(w, "persist task run binding: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"source": "acc",
-		"raw":    out,
-	})
+	_ = json.NewEncoder(w).Encode(map[string]any{"source": "acc", "task_id": result.TaskID, "run_id": result.RunID, "operation_id": result.OperationID, "status": result.Status, "raw": out})
 }
 
 func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
@@ -1348,6 +1368,10 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "session-bundle" {
 			s.handleTaskSessionBundle(w, r, parts[0])
+			return
+		}
+		if r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "events" {
+			s.handleTaskRunEvents(w, r, parts[0])
 			return
 		}
 		// 任务详情会话正文（companion 透传，支持 after_seq 增量续传）

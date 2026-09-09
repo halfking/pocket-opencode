@@ -28,6 +28,16 @@ type SessionLink struct {
 	Role       string `json:"role"` // primary, supporting, exploratory, duplicate
 }
 
+// TaskRunBinding is the durable association between a Pocket task and the
+// canonical ACC run that owns its execution. Workspace is part of every key.
+type TaskRunBinding struct {
+	WorkspaceID string    `json:"workspace_id"`
+	TaskID      string    `json:"task_id"`
+	RunID       string    `json:"run_id"`
+	OperationID string    `json:"operation_id,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 // NewStore accepts the shared Postgres pool and runs idempotent migrations.
 func NewStore(pool *pgxpool.Pool) (*Store, error) {
 	s := &Store{pool: pool}
@@ -35,6 +45,29 @@ func NewStore(pool *pgxpool.Pool) (*Store, error) {
 		return nil, fmt.Errorf("task migrate: %w", err)
 	}
 	return s, nil
+}
+
+func (s *Store) PutTaskRunBinding(ctx context.Context, binding TaskRunBinding) error {
+	ws := normalizeWorkspace(binding.WorkspaceID)
+	if strings.TrimSpace(binding.TaskID) == "" || strings.TrimSpace(binding.RunID) == "" {
+		return errors.New("task run binding requires task_id and run_id")
+	}
+	if binding.CreatedAt.IsZero() {
+		binding.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO task_run_bindings (workspace_id, task_id, run_id, operation_id, created_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (workspace_id, task_id) DO UPDATE SET run_id=EXCLUDED.run_id, operation_id=EXCLUDED.operation_id`, ws, binding.TaskID, binding.RunID, binding.OperationID, binding.CreatedAt.Unix())
+	return err
+}
+
+func (s *Store) GetTaskRunBinding(ctx context.Context, workspaceID, taskID string) (*TaskRunBinding, error) {
+	var b TaskRunBinding
+	var ts int64
+	err := s.pool.QueryRow(ctx, `SELECT workspace_id, task_id, run_id, operation_id, created_at FROM task_run_bindings WHERE workspace_id=$1 AND task_id=$2`, normalizeWorkspace(workspaceID), taskID).Scan(&b.WorkspaceID, &b.TaskID, &b.RunID, &b.OperationID, &ts)
+	if err != nil {
+		return nil, err
+	}
+	b.CreatedAt = time.Unix(ts, 0).UTC()
+	return &b, nil
 }
 
 func (s *Store) migrate() error {
@@ -53,14 +86,25 @@ func (s *Store) migrate() error {
 		session_count INTEGER DEFAULT 0
 	);
 
-	CREATE TABLE IF NOT EXISTS task_session_links (
-		task_id TEXT NOT NULL,
-		instance_id TEXT NOT NULL,
-		session_id TEXT NOT NULL,
-		role TEXT NOT NULL,
-		attached_at BIGINT NOT NULL,
-		PRIMARY KEY (task_id, instance_id, session_id)
-	);
+		CREATE TABLE IF NOT EXISTS task_session_links (
+			task_id TEXT NOT NULL,
+			instance_id TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			attached_at BIGINT NOT NULL,
+			PRIMARY KEY (task_id, instance_id, session_id)
+		);
+		CREATE TABLE IF NOT EXISTS task_run_bindings (
+			workspace_id TEXT NOT NULL,
+			task_id TEXT NOT NULL,
+			run_id TEXT NOT NULL,
+			operation_id TEXT NOT NULL DEFAULT '',
+			created_at BIGINT NOT NULL,
+			PRIMARY KEY (workspace_id, task_id),
+			UNIQUE (workspace_id, run_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_task_run_bindings_run ON task_run_bindings(workspace_id, run_id);
+
 	-- S0-A: workspace_id isolation (idempotent on existing DBs).
 	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
 	ALTER TABLE task_session_links ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';

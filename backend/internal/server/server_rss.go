@@ -1,6 +1,7 @@
 // server_rss.go — RSS 订阅、过滤、详情、分享的 HTTP handlers。
 //
 // 路由（server.go 注册，全部走 requireAuth）：
+//
 //	GET    /api/rss/sources                  列出当前用户的 RSS 源
 //	POST   /api/rss/sources                  新增源（自动 discover → first-fetch）
 //	GET    /api/rss/sources/seeds            返回内置种子源（中文常见资讯/科技）
@@ -32,7 +33,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -303,12 +303,12 @@ func (s *Server) handleRSSSourceItem(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPatch:
 		var body struct {
-			Title         *string        `json:"title"`
-			Description   *string        `json:"description"`
-			SiteURL       *string        `json:"siteUrl"`
-			Language      *string        `json:"language"`
-			Enabled       *bool          `json:"enabled"`
-			FetchInterval *time.Duration `json:"fetchInterval"`
+			Title         *string           `json:"title"`
+			Description   *string           `json:"description"`
+			SiteURL       *string           `json:"siteUrl"`
+			Language      *string           `json:"language"`
+			Enabled       *bool             `json:"enabled"`
+			FetchInterval *time.Duration    `json:"fetchInterval"`
 			Status        *rss.SourceStatus `json:"status"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -360,9 +360,9 @@ func (s *Server) handleRSSSourceRefresh(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"fetched":    true,
-		"newItems":   res.NewItems,
-		"duplicates": res.DuplicateItems,
+		"fetched":     true,
+		"newItems":    res.NewItems,
+		"duplicates":  res.DuplicateItems,
 		"notModified": res.NotModified,
 	})
 }
@@ -370,21 +370,21 @@ func (s *Server) handleRSSSourceRefresh(w http.ResponseWriter, r *http.Request, 
 // ===== /items =====
 
 type rssItemDTO struct {
-	ID          string   `json:"id"`
-	SourceID    string   `json:"sourceId"`
-	GUID        string   `json:"guid"`
-	Title       string   `json:"title"`
-	Author      string   `json:"author"`
-	URL         string   `json:"url"`
-	Summary     string   `json:"summary"`
-	Content       string   `json:"content,omitempty"`
-	Language    string   `json:"language"`
-	Categories  []string `json:"categories"`
-	PublishedAt *string  `json:"publishedAt,omitempty"`
-	FetchedAt   string   `json:"fetchedAt"`
-	Relevance   float64  `json:"relevance"`
+	ID           string   `json:"id"`
+	SourceID     string   `json:"sourceId"`
+	GUID         string   `json:"guid"`
+	Title        string   `json:"title"`
+	Author       string   `json:"author"`
+	URL          string   `json:"url"`
+	Summary      string   `json:"summary"`
+	Content      string   `json:"content,omitempty"`
+	Language     string   `json:"language"`
+	Categories   []string `json:"categories"`
+	PublishedAt  *string  `json:"publishedAt,omitempty"`
+	FetchedAt    string   `json:"fetchedAt"`
+	Relevance    float64  `json:"relevance"`
 	MatchReasons []string `json:"matchReasons"`
-	Status      string   `json:"status"`
+	Status       string   `json:"status"`
 }
 
 func toItemDTO(it rss.Item) rssItemDTO {
@@ -414,7 +414,8 @@ func toItemDTO(it rss.Item) rssItemDTO {
 }
 
 // handleRSSItems 列表（GET）。支持 query 参数：
-//   sourceId, status (unread|read|starred|archived), q, since, until, limit, offset
+//
+//	sourceId, status (unread|read|starred|archived), q, since, until, limit, offset
 func (s *Server) handleRSSItems(w http.ResponseWriter, r *http.Request) {
 	st := s.requireRSSStore(w)
 	if st == nil {
@@ -617,9 +618,9 @@ func (s *Server) handleRSSApplyFilters(w http.ResponseWriter, r *http.Request, i
 	}
 	res := rss.Evaluate(*it, rules)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"matched":     res.Matched,
-		"relevance":   res.Relevance,
-		"reasons":     res.MatchReasons,
+		"matched":   res.Matched,
+		"relevance": res.Relevance,
+		"reasons":   res.MatchReasons,
 	})
 }
 
@@ -767,7 +768,7 @@ func (s *Server) handleRSSShareCard(w http.ResponseWriter, r *http.Request, id s
 	if theme != "dark" {
 		theme = "light"
 	}
-	png, err := renderShareCard(it, src, theme)
+	png, err := renderShareCard(*it, src, theme)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "share card render: "+err.Error())
 		return
@@ -791,7 +792,7 @@ func (s *Server) handleRSSShare(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 	var body struct {
-		Dest   string `json:"dest"`   // "wechat" | "weibo" | "clipboard" | "download"
+		Dest    string `json:"dest"` // "wechat" | "weibo" | "clipboard" | "download"
 		Caption string `json:"caption"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
@@ -836,7 +837,7 @@ func rssPathTail(rawPath, prefix string) string {
 
 // renderShareCard 是 sharecard.go 的 server 侧入口；该文件实现在 internal/rss/sharecard.go。
 func renderShareCard(it rss.Item, src *rss.Source, theme string) ([]byte, error) {
-	return RenderShareCard(context.Background(), it, src, theme)
+	return rss.RenderShareCard(context.Background(), it, src, theme)
 }
 
 // ===== 路由分发器 =====
