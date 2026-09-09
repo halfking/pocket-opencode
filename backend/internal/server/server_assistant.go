@@ -1546,8 +1546,12 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 //
 // 任意阶段账户/工作区不匹配返回 404，不暴露其他 workspace 的存在性。
 func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID string) {
-	if s.emailFetcher == nil {
-		writeError(w, http.StatusServiceUnavailable, "email fetcher not configured")
+	// 依赖分两层：缓存读路径只要求 emailStore + emailCrypto + dataDir；IMAP
+	// 回源路径才需要 emailFetcher。把 fetcher 检查挪到回源前，避免 IMAP 未
+	// 装配时把已缓存正文一并拒掉——真机/远程仅启用 Postgres 但 IMAP 凭证
+	// 失效时，缓存读会一直报 503，邮件详情不可用。
+	if s.emailStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "email store not configured")
 		return
 	}
 	if s.emailCrypto == nil {
@@ -1600,7 +1604,12 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 		}
 	}
 
-	// 2) 未命中 → IMAP 拉取。TEXT part 失败时降级整封原文（quirk server）。
+	// 2) 未命中 → IMAP 拉取。这一步才真正要求 fetcher：IMAP 未装配的部署
+	//    （如仅启用缓存层、不开邮件收发）会落到此分支并明确提示。
+	if s.emailFetcher == nil {
+		writeError(w, http.StatusServiceUnavailable, "email fetcher not configured")
+		return
+	}
 	if em.UID <= 0 {
 		writeError(w, http.StatusUnprocessableEntity, "email missing imap uid")
 		return
