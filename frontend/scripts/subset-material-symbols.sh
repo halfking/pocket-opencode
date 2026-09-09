@@ -25,6 +25,12 @@ grep -rhoE "material-symbols-outlined[^>]*>\s*[a-z_]+" src --include='*.vue' \
   | grep -oE '[a-z_]+\s*$' | tr -d ' ' | sort -u > /tmp/ms-icons.txt
 grep -rn "material-symbols-outlined" src --include='*.vue' -A2 \
   | grep -oE "'[a-z_]+'|>[a-z_]+<" | tr -d "'><" | sort -u >> /tmp/ms-icons.txt
+# 图标名也常写在 JS 数据里（如 BottomNav 的 { icon: 'rss_feed' }），与类名距离
+# 超出上面的 -A2 窗口（2026-09-10 踩坑：RSS tab 显示原文 "RSS_FEED"），单独扫。
+grep -rhoE "icon: '[a-z_]+'" src --include='*.vue' --include='*.ts' \
+  | grep -oE "'[a-z_]+'" | tr -d "'" | sort -u >> /tmp/ms-icons.txt
+grep -rhoE "icon='[a-z_]+'|icon=\"[a-z_]+\"" src --include='*.vue' \
+  | grep -oE '[a-z_]+",?$' | tr -d '",' | sort -u >> /tmp/ms-icons.txt
 EXTRA_ICONS='bolt fast_forward help more_vert notifications_active play_arrow progress_activity science subject smart_toy edit_note mic mail more_horiz sticky_note_2 checklist chat dns computer payments settings hub merge sports_score cloud_download edit keyboard_arrow_down summarize'
 printf '%s\n' $EXTRA_ICONS >> /tmp/ms-icons.txt
 sort -u /tmp/ms-icons.txt -o /tmp/ms-icons.txt

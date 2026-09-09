@@ -29,8 +29,12 @@ body {
   /* Use tokens so dark mode flips automatically. */
   background: var(--bg-base, #f7f7fa);
   color: var(--text-primary, #0a0a0a);
+  /* 显式列出 CJK 字体名（PingFang SC 等）：真机上系统 fallback 本可兜底，
+     但 iOS 26.3 模拟器 WebKit 的 per-character fallback 有缺陷（命中
+     SF Pro 后对 CJK 直接 .notdef，不再尝试后续族），显式名可让
+     -apple-system 未命中 CJK 时立即命中 PingFang（2026-09-10 字体排查）。 */
   font-family: var(--font-sans, Inter, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif);
+    "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif);
   font-size: var(--text-base, 14px);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
