@@ -73,6 +73,7 @@ const items: NavItem[] = [
   { to: '/ai-chat', icon: 'forum', label: t('nav.aiChat'), match: '/ai-chat' },
   { to: '/notes', icon: 'edit_note', label: t('nav.notes'), match: '/notes' },
   { to: '/meetings', icon: 'mic', label: t('nav.meetings'), match: '/meetings' },
+  { to: '/rss', icon: 'rss_feed', label: t('nav.rss'), match: '/rss' },
   { to: '/email', icon: 'mail', label: t('nav.email'), match: '/email' },
 ]
 

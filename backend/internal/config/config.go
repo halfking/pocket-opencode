@@ -15,6 +15,25 @@ import (
 // 该值仅供开发；生产 Validate() 会显式拒绝它。
 const DevDefaultJWTSecret = "pocket-dev-insecure-secret-0000000000"
 
+// RSSConfig controls feed discovery, polling, retention and publishing.
+// Durations and limits are validated at startup so a bad deployment cannot
+// accidentally create an unbounded outbound fetcher.
+type RSSConfig struct {
+	Enabled                 bool
+	FetchInterval           time.Duration
+	DefaultSourceInterval   time.Duration
+	HTTPTimeout             time.Duration
+	MaxBodyBytes            int64
+	MaxConcurrency          int
+	RetentionDays           int
+	DiscoverySearchURL      string
+	DiscoverySearchAPIKey   string
+	PublishMode             string // share_only | weibo
+	WeiboClientID           string
+	WeiboClientSecret       string
+	WeiboRedirectURL        string
+}
+
 // Config holds all application configuration loaded from environment variables.
 // It supports multiple deployment phases including personal assistant features,
 // AI gateway integration, email processing, and enterprise backend connectivity.
@@ -137,10 +156,11 @@ type Config struct {
 	SchedulerAdvisoryLock   bool          // POCKET_SCHEDULER_ADVISORY_LOCK（默认 true）
 	SchedulerWebhookTimeout time.Duration // POCKET_SCHEDULER_WEBHOOK_TIMEOUT（默认 30s）
 
-	// WebAuthn / 生物识别配置（可选；不配置则降级到 P0 stub）
-	WebAuthnRPDisplayName string // POCKET_WEBAUTHN_RP_DISPLAY_NAME：RP 显示名（如 "Redclaw"）
+	// RSS 信息订阅与发布（独立于 scheduledtask，按源定时抓取）
+	RSS                        RSSConfig
 	WebAuthnRPID          string // POCKET_WEBAUTHN_RP_ID：RP ID（必须是 origin 的有效域名，如 "pocket.example.com"）
 	WebAuthnRPOrigin      string // POCKET_WEBAUTHN_RP_ORIGIN：客户端 origin（如 "https://pocket.example.com"）
+	WebAuthnRPDisplayName string // POCKET_WEBAUTHN_RP_DISPLAY_NAME：RP 展示名（用户看到的"登录为 xxx"）
 
 	// SMTP 验证码邮件发送（可选；不配置则 send-code 仅写库、不发邮件）
 	SMTPHost      string // POCKET_SMTP_HOST：SMTP 服务器主机
@@ -272,6 +292,21 @@ func Load() Config {
 		SchedulerMaxParallel:    getEnvInt("POCKET_SCHEDULER_MAX_PARALLEL", 4),
 		SchedulerAdvisoryLock:   getEnv("POCKET_SCHEDULER_ADVISORY_LOCK", "true") == "true",
 		SchedulerWebhookTimeout: getEnvDuration("POCKET_SCHEDULER_WEBHOOK_TIMEOUT", 30*time.Second),
+		RSS: RSSConfig{
+			Enabled:               getEnv("POCKET_RSS_ENABLED", "true") == "true",
+			FetchInterval:         getEnvDuration("POCKET_RSS_FETCH_INTERVAL", 60*time.Second),
+			DefaultSourceInterval: getEnvDuration("POCKET_RSS_SOURCE_INTERVAL", 15*time.Minute),
+			HTTPTimeout:           getEnvDuration("POCKET_RSS_HTTP_TIMEOUT", 15*time.Second),
+			MaxBodyBytes:          int64(getEnvInt("POCKET_RSS_MAX_BODY_BYTES", 4<<20)),
+			MaxConcurrency:        getEnvInt("POCKET_RSS_MAX_CONCURRENCY", 4),
+			RetentionDays:         getEnvInt("POCKET_RSS_RETENTION_DAYS", 30),
+			DiscoverySearchURL:    getEnv("POCKET_RSS_DISCOVERY_SEARCH_URL", ""),
+			DiscoverySearchAPIKey: getEnv("POCKET_RSS_DISCOVERY_SEARCH_API_KEY", ""),
+			PublishMode:           getEnv("POCKET_RSS_PUBLISH_MODE", "share_only"),
+			WeiboClientID:         getEnv("POCKET_RSS_WEIBO_CLIENT_ID", ""),
+			WeiboClientSecret:     getEnv("POCKET_RSS_WEIBO_CLIENT_SECRET", ""),
+			WeiboRedirectURL:      getEnv("POCKET_RSS_WEIBO_REDIRECT_URL", ""),
+		},
 		// WebAuthn / 生物识别
 		WebAuthnRPDisplayName: getEnv("POCKET_WEBAUTHN_RP_DISPLAY_NAME", ""),
 		WebAuthnRPID:          getEnv("POCKET_WEBAUTHN_RP_ID", ""),
@@ -394,6 +429,19 @@ func (c Config) Validate() error {
 	// Email: Master key must be set if email fetch is enabled
 	if c.EmailFetchEnabled && strings.TrimSpace(c.EmailMasterKey) == "" {
 		return fmt.Errorf("POCKET_EMAIL_MASTER_KEY must be configured when POCKET_EMAIL_FETCH_ENABLED is true")
+	}
+
+	// RSS publish-mode sanity: we never directly write to social platforms,
+	// but if the operator opts into the (experimental) weibo-direct mode we
+	// must at least have the OAuth client wired in.
+	if c.RSS.PublishMode == "weibo_direct" && (strings.TrimSpace(c.RSS.WeiboClientID) == "" || strings.TrimSpace(c.RSS.WeiboClientSecret) == "") {
+		return fmt.Errorf("POCKET_RSS_WEIBO_CLIENT_ID and POCKET_RSS_WEIBO_CLIENT_SECRET must be configured when POCKET_RSS_PUBLISH_MODE=weibo_direct")
+	}
+	if c.RSS.HTTPTimeout <= 0 {
+		return fmt.Errorf("POCKET_RSS_HTTP_TIMEOUT must be positive")
+	}
+	if c.RSS.MaxConcurrency < 1 {
+		return fmt.Errorf("POCKET_RSS_MAX_CONCURRENCY must be >= 1")
 	}
 
 	return nil

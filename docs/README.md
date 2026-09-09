@@ -16,6 +16,7 @@
 |---|---|
 | [2026-08-27-mobile-ux-design-v2.md](2026-08-27-mobile-ux-design-v2.md) | 移动端 UX / IA v2.0（design-accepted） |
 | [2026-09-08-meetings-studio.md](2026-09-08-meetings-studio.md) | 会议工作台现行产品面（列表 / 详情 / ACC） |
+| [2026-09-08-rss.md](2026-09-08-rss.md) | RSS 订阅 & 一键分享（订阅源管理、自动发现、过滤、微博/朋友圈深链分享） |
 | [2026-09-08-master-password-biometric-unlock.md](2026-09-08-master-password-biometric-unlock.md) | 主密码与生物认证解锁 |
 | [2026-09-08-task-session-detail.md](2026-09-08-task-session-detail.md) | 任务/会话详情 |
 | [2026-09-07-local-cutover/](2026-09-07-local-cutover/) | 真机切流（252 nginx 同源代理） |
@@ -48,6 +49,8 @@
 
 | 目录 | 说明 |
 |---|---|
+| [requirements/](requirements/) | 各专题需求说明（含 [2026-09-08-rss.md](requirements/2026-09-08-rss.md) 等） |
+| [design/](design/) | 各专题现行方案（[2026-09-08-rss.md](design/2026-09-08-rss.md) 等） |
 | [新架构v1/](新架构v1/) | 新架构方案全集（含子目录索引 README） |
 | [优化v4/](优化v4/) | 优化 v4 方案与报告 |
 | [security/](security/) | 威胁模型与安全 ADR |

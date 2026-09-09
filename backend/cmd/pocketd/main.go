@@ -39,6 +39,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
+	"github.com/halfking/pocket-opencode/backend/internal/rss"
 	"github.com/halfking/pocket-opencode/backend/internal/scheduledtask"
 	scheduledexecutors "github.com/halfking/pocket-opencode/backend/internal/scheduledtask/executors"
 	"github.com/halfking/pocket-opencode/backend/internal/server"
@@ -86,6 +87,7 @@ func main() {
 		scheduledTaskStore *scheduledtask.Store
 		marketplaceStore   *marketplace.Store
 		financeStore       finance.FinanceStore
+		rssStore           *rss.Store
 	)
 	if pool != nil {
 		ts, err := task.NewStore(pool)
@@ -123,6 +125,16 @@ func main() {
 			log.Fatalf("marketplace store: %v", err)
 		}
 		marketplaceStore = ms
+		// RSS 订阅持久化（自管 schema migrations）。
+		// rss.NewStore 内部调用 s.migrate(ctx)，建表 rss_sources / rss_items / rss_filter_rules /
+		// rss_drafts / rss_publish_attempts 与索引；fail-fast（PG 已存在则 IF NOT EXISTS）。
+		rssCtx, rssCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		rs, err := rss.NewStore(rssCtx, pool)
+		rssCancel()
+		if err != nil {
+			log.Fatalf("rss store: %v", err)
+		}
+		rssStore = rs
 		if marketplaceStore != nil {
 			log.Println("Module stores initialized (PG, scheduled tasks and marketplace enabled)")
 		} else {
@@ -547,6 +559,25 @@ func main() {
 	}
 	if scheduledTaskStore != nil {
 		srv.SetScheduledTaskStore(scheduledTaskStore)
+	}
+	// RSS：注入 store + 构造后台 scheduler（与 emailScheduler 同 lifecycle 模式）。
+	// 关闭条件：RSS 开关显式为 false 或 store 构造失败；默认 POCKET_RSS_ENABLED=true 时启用。
+	if rssStore != nil && cfg.RSS.Enabled {
+		srv.SetRSSStore(rssStore)
+		fetcher := rss.NewFetcher(rssStore, nil)
+		// Scheduler 作用域：使用 default workspace + 全局兜底 user（"local"）。
+		// 因为 RSS 项属于单租户场景；多租户上下文已在 store.Scope 上强制注入。
+		rssSched := rss.NewScheduler(rssStore, fetcher, rss.Scope{
+			UserID:      "local",
+			WorkspaceID: "default",
+		})
+		rssSched.SetInterval(cfg.RSS.FetchInterval)
+		rssSched.SetMaxParallel(cfg.RSS.MaxConcurrency)
+		srv.SetRSSScheduler(rssSched)
+		rssSched.Start(context.Background())
+		defer rssSched.Stop()
+		log.Printf("RSS scheduler started (enabled=%v, tick=%s, max_parallel=%d, source_interval=%s)",
+			cfg.RSS.Enabled, cfg.RSS.FetchInterval, cfg.RSS.MaxConcurrency, cfg.RSS.DefaultSourceInterval)
 	}
 	if pool != nil {
 		if us, err := usersetting.NewStore(pool); err != nil {

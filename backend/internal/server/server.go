@@ -45,6 +45,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
+	"github.com/halfking/pocket-opencode/backend/internal/rss"
 	"github.com/halfking/pocket-opencode/backend/internal/scheduledtask"
 	"github.com/halfking/pocket-opencode/backend/internal/snippet"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
@@ -88,6 +89,10 @@ type Server struct {
 	chatSummaryStore *cs.Store
 	transcriber      *stt.Transcriber // nil = 云端 STT 兜底未配置
 	mcpClient        *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
+	// RSS 订阅与分享（PG store + 后台 scheduler）。nil = 关闭模块。
+	// 由 cmd/pocketd/main.go 通过 SetRSSStore / SetRSSScheduler 注入。
+	rssStore     *rss.Store
+	rssScheduler *rss.Scheduler
 	// Phase C: 无状态 AI 网关（嵌入/LLM 代理）。nil = 未配置，对应 handler 返回 503。
 	embedder aigate.Embedder
 	llm      aigate.LLMClient
@@ -667,6 +672,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/stt/transcribe", s.requireAuth(s.handleSttTranscribe))
 	mux.HandleFunc("/api/meetings", s.requireAuth(s.handleMeetings))
 	mux.HandleFunc("/api/meetings/", s.requireAuth(s.handleMeetingRouter))
+	// RSS 订阅：sources / items / filters / share 一棵子树。
+	mux.HandleFunc("/api/rss/", s.requireAuth(s.handleRSSRouter))
 	// 记账
 	mux.HandleFunc("/api/finance", s.requireAuth(s.handleFinance))
 	mux.HandleFunc("/api/finance/", s.requireAuth(s.handleFinanceOps))

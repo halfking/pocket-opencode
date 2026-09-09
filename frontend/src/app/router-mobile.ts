@@ -275,6 +275,25 @@ const router = createRouter({
       component: () => import('../features/meetings/MeetingDetailView.vue'),
       meta: { requiresAuth: true, requiresLobster: true, title: '会议详情', bottomNav: false, canGoBack: true, scrollMode: 'self' },
     },
+    // RSS 订阅：源管理 + 信息流 + 详情 + 一键分享
+    {
+      path: '/rss',
+      name: 'rss',
+      component: () => import('../features/rss/RssListView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: 'RSS 订阅', bottomNav: true, scrollMode: 'self' },
+    },
+    {
+      path: '/rss/add',
+      name: 'rss-add',
+      component: () => import('../features/rss/RssAddSource.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '添加订阅', bottomNav: false, canGoBack: true, scrollMode: 'self' },
+    },
+    {
+      path: '/rss/items/:id',
+      name: 'rss-item',
+      component: () => import('../features/rss/RssItemDetail.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '条目详情', bottomNav: false, canGoBack: true, scrollMode: 'self' },
+    },
     {
       path: '/login',
       name: 'login',
