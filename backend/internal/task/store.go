@@ -134,11 +134,20 @@ func scanTask(row interface {
 	var createdAt, updatedAt int64
 	var acceptedAt *int64
 	var acceptedBy *string
+	// description / workstream_id 在 schema 上可空（UpsertTask 的
+	// NULLIF 语义会写 NULL），必须用指针接，否则 NULL 行读取直接报错。
+	var description, workstreamID *string
 	var evidenceBundleRaw []byte
-	if err := row.Scan(&t.ID, &t.WorkspaceID, &t.Title, &t.Description, &t.Status, &t.Priority,
-		&t.WorkstreamID, &t.Source, &createdAt, &updatedAt, &t.PendingApprovals, &t.SessionCount,
+	if err := row.Scan(&t.ID, &t.WorkspaceID, &t.Title, &description, &t.Status, &t.Priority,
+		&workstreamID, &t.Source, &createdAt, &updatedAt, &t.PendingApprovals, &t.SessionCount,
 		&acceptedAt, &acceptedBy, &evidenceBundleRaw); err != nil {
 		return nil, err
+	}
+	if description != nil {
+		t.Description = *description
+	}
+	if workstreamID != nil {
+		t.WorkstreamID = *workstreamID
 	}
 	t.CreatedAt = time.Unix(createdAt, 0)
 	t.UpdatedAt = time.Unix(updatedAt, 0)
@@ -172,6 +181,49 @@ func (s *Store) CreateTask(ctx context.Context, task *Task) error {
 	`, task.ID, task.WorkspaceID, task.Title, task.Description, task.Status, task.Priority, task.WorkstreamID, task.Source, now, now, task.PendingApprovals, task.SessionCount)
 
 	return err
+}
+
+// UpsertTask writes a remote task into the local cache, creating or updating.
+//
+// tasksync 每个周期都会重放同一批远程任务；CreateTask 的纯 INSERT 会在
+// 第二个周期起持续触发 PG duplicate key（tasks_pkey）错误——错误虽被调用方
+// 按 23505 吞掉，但 PostgreSQL 服务端日志每次都记录。同步路径改走本方法：
+// ON CONFLICT (id) 只刷新远程拥有的列（title/status/priority/updated_at），
+// 不动 workspace_id、accepted_*、evidence_bundle 等本地状态。
+// 远端不携带的列保持原值；description/workstream_id 由 COALESCE 语义保护：
+// 传空串视为"远端没有该字段"，不覆盖本地值。
+func (s *Store) UpsertTask(ctx context.Context, task *Task) error {
+	if task == nil || strings.TrimSpace(task.ID) == "" {
+		return fmt.Errorf("upsert task: id is required")
+	}
+	now := time.Now().Unix()
+	task.CreatedAt = time.Unix(now, 0)
+	task.UpdatedAt = time.Unix(now, 0)
+	if task.Source == "" {
+		task.Source = "local"
+	}
+	task.WorkspaceID = normalizeWorkspace(task.WorkspaceID)
+	task.PendingApprovals = 0
+
+	tag, err := s.pool.Exec(ctx, `
+		INSERT INTO tasks (id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count)
+		VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, NULLIF($7, ''), $8, $9, $10, $11, $12)
+		ON CONFLICT (id) DO UPDATE SET
+			title         = EXCLUDED.title,
+			description   = COALESCE(NULLIF(EXCLUDED.description, ''), tasks.description),
+			status        = EXCLUDED.status,
+			priority      = EXCLUDED.priority,
+			workstream_id = COALESCE(NULLIF(EXCLUDED.workstream_id, ''), tasks.workstream_id),
+			updated_at    = EXCLUDED.updated_at
+	`, task.ID, task.WorkspaceID, task.Title, task.Description, task.Status, task.Priority, task.WorkstreamID, task.Source, now, now, task.PendingApprovals, task.SessionCount)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// ON CONFLICT DO UPDATE 理论上不会 0 行受影响；防御性兜底。
+		return fmt.Errorf("upsert task %s: no rows affected", task.ID)
+	}
+	return nil
 }
 
 // GetTask fetches a task by ID with no tenant check.
@@ -274,11 +326,16 @@ func (s *Store) attachSession(ctx context.Context, link SessionLink, wsID string
 		return fmt.Errorf("task not found: %s", link.TaskID)
 	}
 	now := time.Now().Unix()
+	// attached_at 用毫秒：同一 session 先后挂到两个任务时秒级会并列，
+	// FindTaskIDBySessionID 的 ORDER BY attached_at DESC 在并列下顺序不定
+	// （store_session_lookup_test 曾因此 flaky）。旧秒级行值恒小于毫秒行，
+	// 排序语义不受影响。
+	attachedAt := time.Now().UnixMilli()
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO task_session_links (task_id, workspace_id, instance_id, session_id, role, attached_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (task_id, instance_id, session_id) DO UPDATE SET role = EXCLUDED.role, attached_at = EXCLUDED.attached_at`,
-		link.TaskID, workspaceID, link.InstanceID, link.SessionID, link.Role, now); err != nil {
+		link.TaskID, workspaceID, link.InstanceID, link.SessionID, link.Role, attachedAt); err != nil {
 		return fmt.Errorf("insert task session link: %w", err)
 	}
 	if err := applyObservedApprovalsForTask(ctx, tx, link.TaskID, workspaceID, link.InstanceID, link.SessionID); err != nil {

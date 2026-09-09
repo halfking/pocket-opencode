@@ -597,3 +597,83 @@ func TestListTasksCursorScoped_TenantIsolation(t *testing.T) {
 		}
 	}
 }
+
+// TestUpsertTask_InsertThenUpdate 锁定 tasksync 同步路径的语义：
+// 首次写入创建行；同 id 重放走 ON CONFLICT 更新远程拥有的列（title/status/
+// priority/updated_at），不碰本地状态（accepted_*、workspace_id）。
+// 回归背景：tasksync 曾用纯 INSERT 重放同一批 ACC 任务，从第二个周期起
+// 持续触发 PG duplicate key tasks_pkey（2026-09-08~09 日志 508 条）。
+func TestUpsertTask_InsertThenUpdate(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	remote := &Task{ID: "acc-1", WorkspaceID: "default", Title: "v1", Status: "queue", Source: "acc"}
+	if err := s.UpsertTask(ctx, remote); err != nil {
+		t.Fatalf("first UpsertTask: %v", err)
+	}
+	got, err := s.GetTaskScoped(ctx, "acc-1", "default")
+	if err != nil {
+		t.Fatalf("GetTaskScoped after insert: %v", err)
+	}
+	if got.Title != "v1" || got.Status != "queue" || got.Source != "acc" {
+		t.Fatalf("after insert, task = %+v", got)
+	}
+
+	remote.Title = "v2"
+	remote.Status = "review"
+	if err := s.UpsertTask(ctx, remote); err != nil {
+		t.Fatalf("second UpsertTask (conflict path): %v", err)
+	}
+	got, err = s.GetTaskScoped(ctx, "acc-1", "default")
+	if err != nil {
+		t.Fatalf("GetTaskScoped after update: %v", err)
+	}
+	if got.Title != "v2" || got.Status != "review" {
+		t.Errorf("conflict path should refresh remote columns, got title=%q status=%q", got.Title, got.Status)
+	}
+	if got.Source != "acc" || got.WorkspaceID != "default" {
+		t.Errorf("source/workspace must be preserved, got %+v", got)
+	}
+	if got.PendingApprovals != 0 {
+		t.Errorf("pending approvals must stay 0, got %d", got.PendingApprovals)
+	}
+}
+
+// TestUpsertTask_EmptyDescriptionKeepsExisting 远端 description/workstream_id
+// 为空时不得抹掉本地已有值（COALESCE(NULLIF(...)) 保护）。
+func TestUpsertTask_EmptyDescriptionKeepsExisting(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	full := &Task{ID: "acc-2", Title: "t", Status: "queue", Description: "keep me", WorkstreamID: "ws-9", Source: "acc"}
+	if err := s.UpsertTask(ctx, full); err != nil {
+		t.Fatalf("first UpsertTask: %v", err)
+	}
+	thin := &Task{ID: "acc-2", Title: "t2", Status: "work", Source: "acc"}
+	if err := s.UpsertTask(ctx, thin); err != nil {
+		t.Fatalf("second UpsertTask: %v", err)
+	}
+	got, err := s.GetTaskScoped(ctx, "acc-2", "default")
+	if err != nil {
+		t.Fatalf("GetTaskScoped: %v", err)
+	}
+	if got.Description != "keep me" {
+		t.Errorf("description = %q, want preserved %q", got.Description, "keep me")
+	}
+	if got.WorkstreamID != "ws-9" {
+		t.Errorf("workstreamID = %q, want ws-9", got.WorkstreamID)
+	}
+}
+
+// TestUpsertTask_RequiresID 空 id 直接报错，与 2026-09-09 垃圾 id 事故的
+// 防线一致（解析层跳过空 id，存储层兜底拒绝）。
+func TestUpsertTask_RequiresID(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	if err := s.UpsertTask(context.Background(), &Task{Title: "x"}); err == nil {
+		t.Fatal("UpsertTask with empty id should fail")
+	}
+}

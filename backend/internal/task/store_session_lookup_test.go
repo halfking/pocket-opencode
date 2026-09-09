@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestFindTaskIDBySessionID_LatestAttachWins(t *testing.T) {
@@ -16,6 +17,9 @@ func TestFindTaskIDBySessionID_LatestAttachWins(t *testing.T) {
 	}, "ws-owner"); err != nil {
 		t.Fatal(err)
 	}
+	// attached_at 为毫秒级；间隔 2ms 保证两次 attach 的时间戳严格递增，
+	// 使 "最新 attach 胜出" 的断言确定（不受同毫秒并列影响）。
+	time.Sleep(2 * time.Millisecond)
 	if err := s.AttachSessionScoped(ctx, SessionLink{
 		TaskID: "t-new", InstanceID: "disk-cursor", SessionID: "sess-1", Role: "primary",
 	}, "ws-owner"); err != nil {

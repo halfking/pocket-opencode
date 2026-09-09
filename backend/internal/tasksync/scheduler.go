@@ -91,20 +91,24 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 	saved := 0
 	for _, p := range parsed {
 		t := task.Task{
-			ID:               p.ID,
-			Title:            p.Title,
-			Status:           p.Status,
-			Priority:         "normal",
-			Source:           "acc",
-			CreatedAt:        now,
-			UpdatedAt:        now,
+			ID:        p.ID,
+			Title:     p.Title,
+			Status:    p.Status,
+			Priority:  "normal",
+			Source:    "acc",
+			CreatedAt: now,
+			UpdatedAt: now,
 		}
-		if err := s.taskStore.CreateTask(ctx, &t); err != nil {
+		// Upsert 而非纯 INSERT：ACC 任务每个周期都会重放，纯 INSERT 从第二个
+		// 周期起持续触发 PG duplicate key（tasks_pkey）——调用方虽按 23505
+		// 静默跳过，但 PG 服务端日志每次都记录（2026-09-08~09 累计 508 条）。
+		// Upsert 同时让本地缓存跟随 ACC 的 title/status 变化。
+		if err := s.taskStore.UpsertTask(ctx, &t); err != nil {
 			// PostgreSQL UNIQUE 冲突错误码 23505 = 已存在，静默跳过
 			// 其他错误（连接断开、schema 问题等）记录日志，避免静默吞掉真实故障
 			errStr := err.Error()
 			if !strings.Contains(errStr, "23505") && !strings.Contains(errStr, "duplicate key") {
-				log.Printf("[tasksync] create ACC task %s failed: %v", p.ID, err)
+				log.Printf("[tasksync] upsert ACC task %s failed: %v", p.ID, err)
 				recordAudit("", systemTenantID(), "tasksync.sync.error", "acc_task:"+p.ID,
 					AuditFields{Success: false, Detail: "create_failed"})
 			}

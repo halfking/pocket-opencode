@@ -460,8 +460,98 @@ func (c *Client) Call(ctx context.Context, method string, params interface{}) (j
 	return resp.Result, nil
 }
 
-// ParseToolTasks 解析 acc_get_tasks 返回的文本列表为结构化任务
+// ParseToolTasks 解析 acc_get_tasks 返回的文本列表为结构化任务。
+//
+// 2026-09-09 修复：ACC 的 tool 现在返回 JSON（数组或含任务数组的对象），
+// 旧的按行解析器会把 JSON 文本当作 "[status] id: title" 逐行拆——在 JSON
+// 字符串值内部的 ": "（如 note 正文 "heartbeat: GP2b"）处切开，产出
+// id=JSON 碎片、title=整段 JSON 的垃圾任务。tasksync 把垃圾 id 写进
+// pocket.opencode_pocket.tasks 后，每次同步重插同一 id，PG 日志持续报
+// duplicate key tasks_pkey（2026-09-08 04:53 起约 42 小时 508 次）。
+// 因此先按 JSON 解析，失败才回退旧文本格式。
 func ParseToolTasks(text string) []ParsedTask {
+	if tasks, ok := parseToolTasksJSON(text); ok {
+		return tasks
+	}
+	return parseToolTasksLegacyLines(text)
+}
+
+// parseToolTasksJSON 尝试把 tool 文本按 JSON 解析。接受三种形态：
+//   - 任务对象数组：[{"id":...,"title":...}, ...]
+//   - 包一层任务数组：{"tasks":[...]} / {"data":[...]}
+//   - 单个任务对象：{"id":...,"title":...}
+//
+// 解析成功（且至少识别出 JSON 结构）返回 ok=true；文本不是 JSON 时
+// ok=false，由调用方回退旧格式。
+func parseToolTasksJSON(text string) ([]ParsedTask, bool) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || (trimmed[0] != '[' && trimmed[0] != '{') {
+		return nil, false
+	}
+
+	// accTask 的字段映射按 ACC acc_get_tasks 实际返回（id/title/status/phase/
+	// owner/agent_id）；status 缺失时回退 phase（ACC 以 phase 驱动看板）。
+	type accTask struct {
+		ID      string `json:"id"`
+		Title   string `json:"title"`
+		Status  string `json:"status"`
+		Phase   string `json:"phase"`
+		Owner   string `json:"owner"`
+		AgentID string `json:"agent_id"`
+	}
+	mapTasks := func(rows []accTask) []ParsedTask {
+		tasks := make([]ParsedTask, 0, len(rows))
+		for _, r := range rows {
+			if strings.TrimSpace(r.ID) == "" {
+				continue
+			}
+			status := r.Status
+			if status == "" {
+				status = r.Phase
+			}
+			owner := r.Owner
+			if owner == "" {
+				owner = r.AgentID
+			}
+			tasks = append(tasks, ParsedTask{
+				ID:     strings.TrimSpace(r.ID),
+				Title:  r.Title,
+				Status: status,
+				Owner:  owner,
+			})
+		}
+		return tasks
+	}
+
+	var rows []accTask
+	if err := json.Unmarshal([]byte(trimmed), &rows); err == nil {
+		return mapTasks(rows), true
+	}
+
+	var wrapped struct {
+		Tasks []accTask `json:"tasks"`
+		Data  []accTask `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &wrapped); err == nil {
+		if wrapped.Tasks != nil {
+			return mapTasks(wrapped.Tasks), true
+		}
+		if wrapped.Data != nil {
+			return mapTasks(wrapped.Data), true
+		}
+	}
+
+	var single accTask
+	if err := json.Unmarshal([]byte(trimmed), &single); err == nil && strings.TrimSpace(single.ID) != "" {
+		return mapTasks([]accTask{single}), true
+	}
+	return nil, false
+}
+
+// parseToolTasksLegacyLines 保留 ACC 旧文本格式的解析：
+//
+//	[status] task-id: title (owner: xxx)
+func parseToolTasksLegacyLines(text string) []ParsedTask {
 	lines := strings.Split(text, "\n")
 	tasks := make([]ParsedTask, 0, len(lines))
 
