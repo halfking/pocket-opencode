@@ -1,0 +1,12 @@
+{
+  "name": "@openpocket/e2e-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenPocket web 端 Playwright E2E 测试套件（dev server: http://127.0.0.1:4174）",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0"
+  }
+}

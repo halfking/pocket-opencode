@@ -1,0 +1,104 @@
+name: e2e-web
+
+# web E2E（Playwright）：登录 → AI 流式 → 审批页 → RSS 冒烟。
+# 运行前提（见 docs/guides/E2E_CI.md）：
+#   - 后端 pocketd 用本地存储模式（无 PG 依赖）跑在 127.0.0.1:8090
+#   - 前端 vite dev server（同源 /api、/ws 代理）跑在 127.0.0.1:4174
+# 已知环境依赖：AI 流式用例需要后端配置 LLM 网关；未配置时该用例自动 skip（不是失败）。
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "e2e/web/**"
+      - "frontend/src/**"
+      - "frontend/vite.config.ts"
+      - "backend/**"
+      - ".github/workflows/e2e-web.yml"
+
+jobs:
+  e2e-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      E2E_BASE_URL: http://127.0.0.1:4174
+      E2E_USERNAME: admin
+      E2E_PASSWORD: ${{ secrets.E2E_POCKET_AUTH_PASS || 'admin-e2e-pass' }}
+      POCKET_HTTP_PORT: "8090"
+      POCKET_AUTH_USER: admin
+      POCKET_AUTH_PASS: ${{ secrets.E2E_POCKET_AUTH_PASS || 'admin-e2e-pass' }}
+      POCKET_JWT_SECRET: ${{ secrets.E2E_POCKET_JWT_SECRET || 'e2e-only-jwt-secret-0123456789abcdef' }}
+      POCKET_DATA_DIR: /tmp/pocketd-e2e
+      POCKET_DB_PATH: /tmp/pocketd-e2e/pocket.sqlite
+      POCKET_AUTH_LEGACY_ONLY: "true"
+      POCKET_DEV_AUTH: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build backend
+        run: cd backend && go build -o pocketd ./cmd/pocketd
+
+      - name: Start backend
+        run: |
+          mkdir -p /tmp/pocketd-e2e
+          ./backend/pocketd > /tmp/pocketd.log 2>&1 &
+          echo $! > /tmp/pocketd.pid
+
+      - name: Wait for backend healthz
+        run: |
+          for i in $(seq 1 30); do
+            if [ "$(curl -s http://127.0.0.1:8090/healthz)" = "ok" ]; then
+              echo "backend ready"; exit 0
+            fi
+            sleep 1
+          done
+          echo "backend not ready"; tail -50 /tmp/pocketd.log; exit 1
+
+      - name: Install frontend deps
+        run: cd frontend && npm ci
+
+      - name: Start frontend dev server
+        run: |
+          cd frontend && npx vite --port 4174 --strictPort > /tmp/vite.log 2>&1 &
+          echo $! > /tmp/vite.pid
+
+      - name: Wait for frontend
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4174/)
+            if [ "$code" = "200" ]; then echo "frontend ready"; exit 0; fi
+            sleep 1
+          done
+          echo "frontend not ready"; tail -50 /tmp/vite.log; exit 1
+
+      - name: Install E2E deps
+        run: cd e2e/web && npm install && npx playwright install --with-deps chromium
+
+      - name: Run web E2E
+        run: cd e2e/web && npx playwright test
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            e2e/web/playwright-report/
+            e2e/web/test-results/
+          retention-days: 7
+
+      - name: Stop services
+        if: always()
+        run: |
+          [ -f /tmp/vite.pid ] && kill "$(cat /tmp/vite.pid)" 2>/dev/null || true
+          [ -f /tmp/pocketd.pid ] && kill "$(cat /tmp/pocketd.pid)" 2>/dev/null || true
