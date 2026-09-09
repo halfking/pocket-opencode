@@ -104,6 +104,14 @@ export class GatewayLiveClient {
     private handlers: GatewayLiveHandlers = {},
   ) {}
 
+  /**
+   * M4（2026-09-09）：切走页面不关流 — 复用已有 client 时重绑 handlers，
+   * 让事件改写到当前挂载组件的 ref。见 GatewayLiveStreamView 的模块级缓存。
+   */
+  setHandlers(handlers: GatewayLiveHandlers): void {
+    this.handlers = handlers
+  }
+
   open() {
     this.closed = false
     this.connect()

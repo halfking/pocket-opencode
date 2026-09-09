@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { rssApi, type RSSItem } from '../api/rss'
+import { rssApi, type RSSItem } from '../../api/rss'
 
 const route = useRoute()
 const router = useRouter()

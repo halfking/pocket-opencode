@@ -7,6 +7,11 @@ import { api } from '../api/client'
 import type { Instance, Session, Task } from '../api/client'
 import { assertNotHTML } from '../api/jsonGuard'
 
+// M4（2026-09-09）：实时更新 WS 的进程级单例引用 + 重连排期句柄。
+// 此前每次 subscribeToRealTimeUpdates() 都新建连接且递归重连，导致连接堆积。
+let realtimeWs: WebSocket | null = null
+let realtimeReconnectTimer: ReturnType<typeof setTimeout> | null = null
+
 export interface OpenCodeSession extends Session {
   instanceId: string
   messageCount?: number
@@ -244,11 +249,22 @@ export const useOpenCodeStore = defineStore('opencode', {
 
     /**
      * 订阅 WebSocket 实时更新
+     *
+     * M4（2026-09-09）泄漏修复：此前每次调用都 new WebSocket 且 onclose 里
+     * 递归重连，多次调用会产生多条并行连接 + 指数级重连风暴。
+     * 现在连接收口到模块级单例：已有连接（或正在重连）时直接复用。
      */
     subscribeToRealTimeUpdates() {
+      // 已有活跃连接 / 已有排期的重连 → 不再新建
+      if (realtimeWs && (realtimeWs.readyState === WebSocket.OPEN || realtimeWs.readyState === WebSocket.CONNECTING)) {
+        return realtimeWs
+      }
+      if (realtimeReconnectTimer !== null) return realtimeWs // 重连已排期
+
       // WebSocket 连接
       const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
       const ws = new WebSocket(wsUrl)
+      realtimeWs = ws
 
       ws.onopen = () => {
         console.log('✅ WebSocket 已连接')
@@ -257,13 +273,13 @@ export const useOpenCodeStore = defineStore('opencode', {
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data)
-          
+
           switch (message.type) {
             case 'session_started':
             case 'session_updated':
               this.updateRealTimeStatus(message.sessionId, message.status)
               break
-              
+
             case 'session_completed':
               this.updateRealTimeStatus(message.sessionId, 'completed')
               // 可以触发会话列表刷新
@@ -282,8 +298,13 @@ export const useOpenCodeStore = defineStore('opencode', {
       }
 
       ws.onclose = () => {
+        if (realtimeWs !== ws) return // 已被新连接取代，旧连接的 close 不再排期重连
+        realtimeWs = null
         console.log('⚠️ WebSocket 已断开，5秒后重连...')
-        setTimeout(() => this.subscribeToRealTimeUpdates(), 5000)
+        realtimeReconnectTimer = window.setTimeout(() => {
+          realtimeReconnectTimer = null
+          this.subscribeToRealTimeUpdates()
+        }, 5000)
       }
 
       return ws

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { rssApi, type RSSSeed, type RSSCandidate } from '../api/rss'
+import { rssApi, type RSSSeed, type RSSCandidate } from '../../api/rss'
 
 const router = useRouter()
 const step = ref<'input' | 'discover' | 'confirm'>('input')

@@ -160,8 +160,8 @@ export const rssApi = {
     return res.filters ?? []
   },
 
-  async shareCardUrl(id: string): Promise<string> {
-    // 直接返回路径，前端用 <img :src="..."> 即可
+  shareCardUrl(id: string): string {
+    // 直接返回路径，前端用 <img :src="..."> 即可（同步：computed 绑定需要纯 string）
     return `/api/rss/items/${encodeURIComponent(id)}/share-card?theme=light`
   },
 

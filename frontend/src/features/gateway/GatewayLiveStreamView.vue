@@ -96,7 +96,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
-import { GatewayLiveClient } from '../../api/gateway-live'
+import { GatewayLiveClient, type GatewayLiveHandlers } from '../../api/gateway-live'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import type { LiveStreamLane, LiveStreamStats, LiveStreamTile } from '../../api/gateway-live'
 
@@ -112,6 +112,11 @@ const activeDim = ref('')
 const selected = ref<LiveStreamTile | null>(null)
 
 let client: GatewayLiveClient | null = null
+
+// M4（2026-09-09）：切走页面不关 SSE — client 按 nodeId 缓存在模块级（≈进程级），
+// 事件通过 setHandlers 重绑写到当前挂载组件的 ref；用户切走再回来不需要重连。
+// 观察用途的流，节点数有限，缓存上限可控。
+const liveClients = new Map<number, GatewayLiveClient>()
 
 const dimensionKeys = computed(() => Object.keys(dimensions.value))
 
@@ -163,38 +168,49 @@ function mergeLanes(changed: Record<string, LiveStreamLane[]>) {
 }
 
 onMounted(() => {
-  client = new GatewayLiveClient(
-    nodeId,
-    () => auth.token,
-    {
-      onOpen: () => {
-        connected.value = true
-        error.value = ''
-      },
-      onEnvelope: (env) => {
-        if (env.snapshot) {
-          // 优先用 detail_dimensions（含每条 tile 的完整字段）。
-          const dims = env.snapshot.detail_dimensions ?? env.snapshot.dimensions ?? {}
-          dimensions.value = dims
-          summary.value = env.snapshot.summary ?? summary.value
-          if (!activeDim.value) activeDim.value = Object.keys(dims)[0] ?? ''
-        }
-        if (env.delta) {
-          if (env.delta.changed_lanes) mergeLanes(env.delta.changed_lanes)
-          if (env.delta.summary) summary.value = env.delta.summary
-        }
-      },
-      onError: () => {
-        connected.value = false
-        error.value = '连接中断，正在重试…'
-      },
+  const handlers: GatewayLiveHandlers = {
+    onOpen: () => {
+      connected.value = true
+      error.value = ''
     },
-  )
-  client.open()
+    onEnvelope: (env) => {
+      if (env.snapshot) {
+        // 优先用 detail_dimensions（含每条 tile 的完整字段）。
+        const dims = env.snapshot.detail_dimensions ?? env.snapshot.dimensions ?? {}
+        dimensions.value = dims
+        summary.value = env.snapshot.summary ?? summary.value
+        if (!activeDim.value) activeDim.value = Object.keys(dims)[0] ?? ''
+      }
+      if (env.delta) {
+        if (env.delta.changed_lanes) mergeLanes(env.delta.changed_lanes)
+        if (env.delta.summary) summary.value = env.delta.summary
+      }
+    },
+    onError: () => {
+      connected.value = false
+      error.value = '连接中断，正在重试…'
+    },
+  }
+
+  // M4：同节点已有活连接 → 只重绑 handlers（不重连，无重连风暴）。
+  const cached = liveClients.get(nodeId)
+  if (cached) {
+    cached.setHandlers(handlers)
+    client = cached
+    // 若连接早已建立，补一次 connected 状态（避免回页面时误显"连接中断"）。
+    connected.value = true
+    error.value = ''
+    return
+  }
+
+  const created = new GatewayLiveClient(nodeId, () => auth.token, handlers)
+  liveClients.set(nodeId, created)
+  client = created
+  created.open()
 })
 
+// M4：切走只解绑本组件引用，**不** close —— 流在模块级缓存里继续跑。
 onUnmounted(() => {
-  client?.close()
   client = null
 })
 </script>
