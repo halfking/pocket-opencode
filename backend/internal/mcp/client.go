@@ -572,19 +572,30 @@ type CanonicalTaskResult struct {
 	RunID       string `json:"run_id"`
 	OperationID string `json:"operation_id"`
 	Status      string `json:"status"`
+	ID          string `json:"id,omitempty"`
 }
 
 // ParseCanonicalTaskResult accepts a JSON tool payload, including common data envelopes.
 func ParseCanonicalTaskResult(text string) (CanonicalTaskResult, error) {
 	var direct CanonicalTaskResult
-	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &direct); err == nil && direct.TaskID != "" && direct.RunID != "" {
-		return direct, nil
+	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &direct); err == nil {
+		if direct.TaskID == "" {
+			direct.TaskID = direct.ID
+		}
+		if direct.TaskID != "" {
+			return direct, nil
+		}
 	}
 	var env struct {
 		Data CanonicalTaskResult `json:"data"`
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &env); err == nil && env.Data.TaskID != "" && env.Data.RunID != "" {
-		return env.Data, nil
+	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &env); err == nil {
+		if env.Data.TaskID == "" {
+			env.Data.TaskID = env.Data.ID
+		}
+		if env.Data.TaskID != "" {
+			return env.Data, nil
+		}
 	}
 	return CanonicalTaskResult{}, fmt.Errorf("ACC create task response missing task_id and run_id")
 }

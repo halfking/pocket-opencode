@@ -17,8 +17,8 @@ func TestParseCanonicalTaskResult(t *testing.T) {
 }
 
 func TestParseCanonicalTaskResultFailsClosed(t *testing.T) {
-	if _, err := ParseCanonicalTaskResult(`{"task_id":"task-1"}`); err == nil {
-		t.Fatal("missing run_id must fail")
+	if _, err := ParseCanonicalTaskResult(`{"run_id":"run-1"}`); err == nil {
+		t.Fatal("missing task id must fail")
 	}
 }
 

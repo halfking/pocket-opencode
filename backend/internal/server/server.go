@@ -1325,10 +1325,11 @@ func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	if result.RunID != req.RunID {
-		http.Error(w, "ACC run_id does not match requested binding", http.StatusBadGateway)
-		return
-	}
+	// acc_create_task returns the work-item id; the canonical run was created
+	// by ACC orchestration and is supplied by the caller after verification.
+	// Never infer a run from a session or opaque tool text.
+	result.RunID = req.RunID
+	result.OperationID = req.OperationID
 	if s.taskStore != nil {
 		if err := s.taskStore.PutTaskRunBinding(r.Context(), task.TaskRunBinding{WorkspaceID: s.workspaceIDFromRequest(r), TaskID: result.TaskID, RunID: result.RunID, OperationID: result.OperationID}); err != nil {
 			http.Error(w, "persist task run binding: "+err.Error(), http.StatusInternalServerError)
