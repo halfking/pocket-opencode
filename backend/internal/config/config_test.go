@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoadDefaults(t *testing.T) {
 	for _, key := range []string{
@@ -108,6 +111,7 @@ func TestValidateProductionLLMDirectAccessRejected(t *testing.T) {
 		PostgresDSN:              "postgres://user:pass@localhost/pocket",
 		AllowedOrigins:           "https://app.example.com",
 		RedClawTimeoutSec:        30,
+		RSS:                      RSSConfig{HTTPTimeout: 15 * time.Second, MaxConcurrency: 4},
 	}
 
 	t.Run("production with direct LLM endpoint rejected", func(t *testing.T) {
@@ -352,6 +356,7 @@ func TestProductionValidationSuccess(t *testing.T) {
 		RedClawAdminURL:          "http://redclaw-admin.internal:28081",
 		RedClawAdminSecret:       "0123456789abcdef0123456789abcdef-redclaw",
 		EmailFetchEnabled:        false,
+		RSS:                      RSSConfig{HTTPTimeout: 15 * time.Second, MaxConcurrency: 4},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -375,6 +380,7 @@ func TestProductionValidationWithEmailEnabled(t *testing.T) {
 		RedClawAdminSecret:       "0123456789abcdef0123456789abcdef-redclaw",
 		EmailFetchEnabled:        true,
 		EmailMasterKey:           "secure-master-key-for-encryption",
+		RSS:                      RSSConfig{HTTPTimeout: 15 * time.Second, MaxConcurrency: 4},
 	}
 
 	if err := cfg.Validate(); err != nil {

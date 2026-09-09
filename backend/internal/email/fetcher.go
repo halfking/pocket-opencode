@@ -276,6 +276,34 @@ func findBodySection(sections []imapclient.FetchBodySectionBuffer) ([]byte, erro
 	return nil, fmt.Errorf("empty body section")
 }
 
+// fetchSnippetOnConnected 在已建立的 IMAP 连接上按 UID 单封拉 BODY[TEXT]
+// （Peek，不带 partial），返回截断后的 snippet；任何失败都返回空串——调用方
+// （Sync 循环）只是补齐摘要，不应因摘要失败丢邮件。
+func (f *Fetcher) fetchSnippetOnConnected(client *imapclient.Client, uid imap.UID) string {
+	uidSet := imap.UIDSet{}
+	uidSet.AddNum(uid)
+	messages, err := client.Fetch(uidSet, &imap.FetchOptions{
+		UID: true,
+		BodySection: []*imap.FetchItemBodySection{{
+			Specifier: imap.PartSpecifierText,
+			Peek:      true,
+		}},
+	}).Collect()
+	if err != nil {
+		log.Printf("[email/fetcher] snippet fetch uid=%d: %v", uid, err)
+		return ""
+	}
+	if len(messages) == 0 {
+		return ""
+	}
+	for _, bs := range messages[0].BodySection {
+		if len(bs.Bytes) > 0 {
+			return truncateStr(strings.TrimSpace(string(bs.Bytes)), 500)
+		}
+	}
+	return ""
+}
+
 // Sync 同步一个账户的新邮件。返回 (新增邮件数, error)。
 //
 // 协议选择：
@@ -423,6 +451,12 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		}
 		if len(snippet) > 500 {
 			snippet = snippet[:500]
+		}
+		if snippet == "" {
+			// 批量 fetch 只取 envelope（Greenmail 对 BODY[TEXT]<partial> 响应
+			// 缺 SP 分隔符），snippet 在此复用同一连接按需单封补拉；失败仅
+			// 留空，不阻塞落库。
+			snippet = f.fetchSnippetOnConnected(client, uid)
 		}
 		messageID := ""
 		if m.Envelope.MessageID != "" {

@@ -297,8 +297,11 @@ func TestDailySummaryUniqueIndexIsWorkspaceAware(t *testing.T) {
 
 	var legacy int
 	if err := store.pool.QueryRow(ctx, `
-		SELECT COUNT(*) FROM pg_constraint
-		WHERE conname = 'daily_summaries_user_id_summary_date_key'
+		SELECT COUNT(*) FROM pg_constraint c
+		JOIN pg_class t ON c.conrelid = t.oid
+		JOIN pg_namespace n ON t.relnamespace = n.oid
+		WHERE c.conname = 'daily_summaries_user_id_summary_date_key'
+		  AND n.nspname = current_schema()
 	`).Scan(&legacy); err != nil {
 		t.Fatalf("query legacy constraint: %v", err)
 	}
