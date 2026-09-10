@@ -35,6 +35,8 @@ type TaskRunBinding struct {
 	TaskID      string    `json:"task_id"`
 	RunID       string    `json:"run_id"`
 	OperationID string    `json:"operation_id,omitempty"`
+	TenantID    string    `json:"tenant_id"`
+	Watermark   uint64    `json:"watermark"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
@@ -47,22 +49,22 @@ func NewStore(pool *pgxpool.Pool) (*Store, error) {
 	return s, nil
 }
 
+func validateBinding(b TaskRunBinding) error {
+	if strings.TrimSpace(b.WorkspaceID) == "" || strings.TrimSpace(b.TaskID) == "" || strings.TrimSpace(b.RunID) == "" || strings.TrimSpace(b.TenantID) == "" {
+		return errors.New("task run binding requires workspace, task, run, and tenant")
+	}
+	return nil
+}
+
+// PutTaskRunBinding is retained only for compatibility; unverified bindings are forbidden.
 func (s *Store) PutTaskRunBinding(ctx context.Context, binding TaskRunBinding) error {
-	ws := normalizeWorkspace(binding.WorkspaceID)
-	if strings.TrimSpace(binding.TaskID) == "" || strings.TrimSpace(binding.RunID) == "" {
-		return errors.New("task run binding requires task_id and run_id")
-	}
-	if binding.CreatedAt.IsZero() {
-		binding.CreatedAt = time.Now().UTC()
-	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO task_run_bindings (workspace_id, task_id, run_id, operation_id, created_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (workspace_id, task_id) DO UPDATE SET run_id=EXCLUDED.run_id, operation_id=EXCLUDED.operation_id`, ws, binding.TaskID, binding.RunID, binding.OperationID, binding.CreatedAt.Unix())
-	return err
+	return errors.New("unverified task run binding rejected; use BindVerifiedRun")
 }
 
 func (s *Store) GetTaskRunBinding(ctx context.Context, workspaceID, taskID string) (*TaskRunBinding, error) {
 	var b TaskRunBinding
 	var ts int64
-	err := s.pool.QueryRow(ctx, `SELECT workspace_id, task_id, run_id, operation_id, created_at FROM task_run_bindings WHERE workspace_id=$1 AND task_id=$2`, normalizeWorkspace(workspaceID), taskID).Scan(&b.WorkspaceID, &b.TaskID, &b.RunID, &b.OperationID, &ts)
+	err := s.pool.QueryRow(ctx, `SELECT workspace_id,task_id,run_id,operation_id,tenant_id,watermark,created_at FROM task_run_bindings WHERE workspace_id=$1 AND task_id=$2`, normalizeWorkspace(workspaceID), taskID).Scan(&b.WorkspaceID, &b.TaskID, &b.RunID, &b.OperationID, &b.TenantID, &b.Watermark, &ts)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +105,12 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (workspace_id, task_id),
 			UNIQUE (workspace_id, run_id)
 		);
-		CREATE INDEX IF NOT EXISTS idx_task_run_bindings_run ON task_run_bindings(workspace_id, run_id);
+			ALTER TABLE task_run_bindings ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+			ALTER TABLE task_run_bindings ADD COLUMN IF NOT EXISTS watermark BIGINT NOT NULL DEFAULT 0;
+			ALTER TABLE task_run_bindings DROP CONSTRAINT IF EXISTS task_run_bindings_workspace_id_run_id_key;
+			CREATE INDEX IF NOT EXISTS idx_task_run_bindings_run ON task_run_bindings(workspace_id, run_id);
+			CREATE TABLE IF NOT EXISTS pocket_run_events (tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, run_id TEXT NOT NULL, event_id TEXT NOT NULL, event_type TEXT NOT NULL, task_id TEXT NOT NULL, sequence BIGINT NOT NULL, raw JSONB NOT NULL, PRIMARY KEY (workspace_id, run_id, sequence), UNIQUE (workspace_id, run_id, event_id));
+			CREATE TABLE IF NOT EXISTS pocket_run_cursors (workspace_id TEXT NOT NULL, task_id TEXT NOT NULL, user_id TEXT NOT NULL, consumer_id TEXT NOT NULL, sequence BIGINT NOT NULL, PRIMARY KEY(workspace_id, task_id, user_id, consumer_id));
 
 	-- S0-A: workspace_id isolation (idempotent on existing DBs).
 	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';

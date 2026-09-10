@@ -1334,15 +1334,26 @@ func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 		ws := s.workspaceIDFromRequest(r)
 		// Keep a workspace-scoped local projection so a mobile reconnect can
 		// resolve the ACC task without treating Pocket as the task authority.
-		if err := s.taskStore.CreateTask(r.Context(), &task.Task{ID: result.TaskID, WorkspaceID: ws, Title: req.Title, Description: req.Description, Status: "queued", Priority: "normal", Source: "acc"}); err != nil {
-			// Replays may already have the projection; only a conflicting row is fatal.
-			if _, getErr := s.taskStore.GetTaskScoped(r.Context(), result.TaskID, ws); getErr != nil {
-				http.Error(w, "persist task projection: "+err.Error(), http.StatusInternalServerError)
+		if s.mcpClient == nil {
+			http.Error(w, "ACC event client not configured", http.StatusServiceUnavailable)
+			return
+		}
+		runEvents, err := s.mcpClient.ListRunEvents(r.Context(), result.RunID, 0)
+		if err != nil {
+			http.Error(w, "verify ACC run events: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		projectionEvents := make([]task.RunProjectionEvent, 0, len(runEvents))
+		for _, ev := range runEvents {
+			raw, marshalErr := json.Marshal(ev)
+			if marshalErr != nil {
+				http.Error(w, "encode ACC run event: "+marshalErr.Error(), http.StatusBadGateway)
 				return
 			}
+			projectionEvents = append(projectionEvents, task.RunProjectionEvent{EventID: ev.EventID, EventType: ev.EventType, TenantID: s.mcpClient.TenantID(), RunID: ev.RunID, TaskID: ev.TaskID, Sequence: ev.Sequence, Raw: raw})
 		}
-		if err := s.taskStore.PutTaskRunBinding(r.Context(), task.TaskRunBinding{WorkspaceID: ws, TaskID: result.TaskID, RunID: result.RunID, OperationID: result.OperationID}); err != nil {
-			http.Error(w, "persist task run binding: "+err.Error(), http.StatusInternalServerError)
+		if bindErr := s.taskStore.BindVerifiedRun(r.Context(), task.TaskRunBinding{WorkspaceID: ws, TenantID: s.mcpClient.TenantID(), TaskID: result.TaskID, RunID: result.RunID, OperationID: result.OperationID}, req.Title, projectionEvents); bindErr != nil {
+			http.Error(w, "verify/persist task run binding: "+bindErr.Error(), http.StatusBadGateway)
 			return
 		}
 	}
