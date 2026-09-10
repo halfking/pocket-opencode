@@ -566,6 +566,14 @@ func (c *Client) CreateTask(ctx context.Context, args map[string]interface{}) (s
 	return c.callWriteTool(ctx, ToolCreateTask, args)
 }
 
+// ResolveTaskRun validates and returns an existing canonical ACC task/run.
+func (c *Client) ResolveTaskRun(ctx context.Context, taskID, runID string) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("%s failed: MCP client not configured", "acc_resolve_task_run")
+	}
+	return c.CallTool(ctx, "acc_resolve_task_run", map[string]interface{}{"task_id": taskID, "run_id": runID})
+}
+
 // CanonicalTaskResult is the structured subset required for Pocket binding.
 type CanonicalTaskResult struct {
 	TaskID      string `json:"task_id"`
@@ -639,6 +647,7 @@ type AccSession struct {
 type AccRunEvent struct {
 	EventID   string          `json:"event_id"`
 	EventType string          `json:"event_type"`
+	TenantID  string          `json:"tenant_id"`
 	RunID     string          `json:"run_id"`
 	TaskID    string          `json:"task_id,omitempty"`
 	Sequence  uint64          `json:"sequence"`
