@@ -27,8 +27,11 @@ func checkEvents(b TaskRunBinding, events []RunProjectionEvent) error {
 	}
 	last := uint64(0)
 	for i, e := range events {
-		if e.TenantID != b.TenantID || e.RunID != b.RunID || e.Sequence == 0 || e.TaskID == "" || len(e.Raw) == 0 || !json.Valid(e.Raw) {
+		if e.TenantID != b.TenantID || e.RunID != b.RunID || e.Sequence == 0 || len(e.Raw) == 0 || !json.Valid(e.Raw) {
 			return fmt.Errorf("invalid event at %d", i)
+		}
+		if e.TaskID != "" && e.TaskID != b.TaskID && strings.HasPrefix(e.EventType, "task.") {
+			return fmt.Errorf("event task mismatch at %d", i)
 		}
 		if i > 0 && e.Sequence <= last {
 			return errors.New("events must be strictly ordered")
