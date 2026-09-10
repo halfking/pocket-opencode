@@ -175,7 +175,7 @@ func normalizeWorkspace(wsID string) string {
 
 // taskColumns is the shared SELECT list; workspace_id is included so the model
 // round-trips its tenant instead of dropping it.
-const taskColumns = `id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count, accepted_at, accepted_by, evidence_bundle`
+const taskColumns = `id, workspace_id, title, description, status, priority, COALESCE(workstream_id, ''), source, created_at, updated_at, pending_approvals, session_count, accepted_at, accepted_by, evidence_bundle`
 
 // scanTask reads one row in taskColumns order.
 func scanTask(row interface {
