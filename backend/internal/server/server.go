@@ -1331,7 +1331,17 @@ func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 	result.RunID = req.RunID
 	result.OperationID = req.OperationID
 	if s.taskStore != nil {
-		if err := s.taskStore.PutTaskRunBinding(r.Context(), task.TaskRunBinding{WorkspaceID: s.workspaceIDFromRequest(r), TaskID: result.TaskID, RunID: result.RunID, OperationID: result.OperationID}); err != nil {
+		ws := s.workspaceIDFromRequest(r)
+		// Keep a workspace-scoped local projection so a mobile reconnect can
+		// resolve the ACC task without treating Pocket as the task authority.
+		if err := s.taskStore.CreateTask(r.Context(), &task.Task{ID: result.TaskID, WorkspaceID: ws, Title: req.Title, Description: req.Description, Status: "queued", Priority: "normal", Source: "acc"}); err != nil {
+			// Replays may already have the projection; only a conflicting row is fatal.
+			if _, getErr := s.taskStore.GetTaskScoped(r.Context(), result.TaskID, ws); getErr != nil {
+				http.Error(w, "persist task projection: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if err := s.taskStore.PutTaskRunBinding(r.Context(), task.TaskRunBinding{WorkspaceID: ws, TaskID: result.TaskID, RunID: result.RunID, OperationID: result.OperationID}); err != nil {
 			http.Error(w, "persist task run binding: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
