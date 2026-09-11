@@ -74,6 +74,16 @@ func (s *Store) migrate() error {
 	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS evidence_bundle JSONB;
 	CREATE INDEX IF NOT EXISTS idx_tasks_accepted_status ON tasks(workspace_id, status) WHERE status = 'accepted';
 
+	-- Pocket↔ACC canonical ID binding (idempotent on existing DBs). All five
+	-- columns are nullable; the only writer is SetACCBinding (authoritative
+	-- local state — remote task sync must never clobber it).
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_task_id TEXT;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_run_id TEXT;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_dispatch_id TEXT;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_source_ref TEXT;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_correlation_id TEXT;
+	CREATE INDEX IF NOT EXISTS idx_tasks_acc_dispatch ON tasks(acc_dispatch_id) WHERE acc_dispatch_id IS NOT NULL;
+
 	CREATE TABLE IF NOT EXISTS approval_observations (
 		workspace_id TEXT NOT NULL,
 		instance_id TEXT NOT NULL,
@@ -123,8 +133,9 @@ func normalizeWorkspace(wsID string) string {
 }
 
 // taskColumns is the shared SELECT list; workspace_id is included so the model
-// round-trips its tenant instead of dropping it.
-const taskColumns = `id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count, accepted_at, accepted_by, evidence_bundle`
+// round-trips its tenant instead of dropping it, and the acc_* columns so the
+// Pocket↔ACC canonical binding survives every read path.
+const taskColumns = `id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count, accepted_at, accepted_by, evidence_bundle, acc_task_id, acc_run_id, acc_dispatch_id, acc_source_ref, acc_correlation_id`
 
 // scanTask reads one row in taskColumns order.
 func scanTask(row interface {
@@ -138,9 +149,12 @@ func scanTask(row interface {
 	// NULLIF 语义会写 NULL），必须用指针接，否则 NULL 行读取直接报错。
 	var description, workstreamID *string
 	var evidenceBundleRaw []byte
+	// acc_* 绑定列全部可空（SetACCBinding 之外的写入路径不会填它们）。
+	var accTaskID, accRunID, accDispatchID, accSourceRef, accCorrelationID *string
 	if err := row.Scan(&t.ID, &t.WorkspaceID, &t.Title, &description, &t.Status, &t.Priority,
 		&workstreamID, &t.Source, &createdAt, &updatedAt, &t.PendingApprovals, &t.SessionCount,
-		&acceptedAt, &acceptedBy, &evidenceBundleRaw); err != nil {
+		&acceptedAt, &acceptedBy, &evidenceBundleRaw,
+		&accTaskID, &accRunID, &accDispatchID, &accSourceRef, &accCorrelationID); err != nil {
 		return nil, err
 	}
 	if description != nil {
@@ -160,6 +174,21 @@ func scanTask(row interface {
 		}
 		t.EvidenceBundle = &bundle
 	}
+	if accTaskID != nil {
+		t.ACCTaskID = *accTaskID
+	}
+	if accRunID != nil {
+		t.ACCRunID = *accRunID
+	}
+	if accDispatchID != nil {
+		t.ACCDispatchID = *accDispatchID
+	}
+	if accSourceRef != nil {
+		t.ACCSourceRef = *accSourceRef
+	}
+	if accCorrelationID != nil {
+		t.ACCCorrelationID = *accCorrelationID
+	}
 	return t, nil
 }
 
@@ -176,9 +205,10 @@ func (s *Store) CreateTask(ctx context.Context, task *Task) error {
 	task.PendingApprovals = 0
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO tasks (id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-	`, task.ID, task.WorkspaceID, task.Title, task.Description, task.Status, task.Priority, task.WorkstreamID, task.Source, now, now, task.PendingApprovals, task.SessionCount)
+		INSERT INTO tasks (id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count, acc_task_id, acc_run_id, acc_dispatch_id, acc_source_ref, acc_correlation_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''), NULLIF($17, ''))
+	`, task.ID, task.WorkspaceID, task.Title, task.Description, task.Status, task.Priority, task.WorkstreamID, task.Source, now, now, task.PendingApprovals, task.SessionCount,
+		task.ACCTaskID, task.ACCRunID, task.ACCDispatchID, task.ACCSourceRef, task.ACCCorrelationID)
 
 	return err
 }
@@ -927,6 +957,58 @@ func joinStrings(ss []string, sep string) string {
 		result += s
 	}
 	return result
+}
+
+// SetACCBinding writes the authoritative Pocket↔ACC canonical ID binding for
+// one task inside a workspace. This is the only writer of the acc_* columns
+// besides CreateTask: remote task sync (UpsertTask) deliberately never
+// touches them, so a remote replay cannot sever a live binding. Pass a zero
+// Binding to clear all five fields.
+func (s *Store) SetACCBinding(ctx context.Context, workspaceID, taskID string, binding Binding) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE tasks SET
+			acc_task_id        = NULLIF($3, ''),
+			acc_run_id         = NULLIF($4, ''),
+			acc_dispatch_id    = NULLIF($5, ''),
+			acc_source_ref     = NULLIF($6, ''),
+			acc_correlation_id = NULLIF($7, ''),
+			updated_at         = $8
+		WHERE id = $1 AND workspace_id = $2`,
+		taskID, normalizeWorkspace(workspaceID),
+		binding.TaskID, binding.RunID, binding.DispatchID, binding.SourceRef, binding.CorrelationID,
+		time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("set acc binding: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("task not found: %s", taskID)
+	}
+	return nil
+}
+
+// FindTaskBySessionScoped resolves the most recently attached task for an
+// (instance, session) pair inside one workspace — the trusted join used by
+// the approval path to decide whether a reply must be gated by ACC. A
+// missing link returns (nil, nil); only genuine store failures return an
+// error so callers can distinguish "unbound" from "cannot know".
+func (s *Store) FindTaskBySessionScoped(ctx context.Context, wsID, instanceID, sessionID string) (*Task, error) {
+	wsID = normalizeWorkspace(wsID)
+	var taskID string
+	err := s.pool.QueryRow(ctx, `
+		SELECT l.task_id
+		FROM task_session_links l
+		JOIN tasks t ON t.id = l.task_id
+		WHERE l.workspace_id = $1 AND l.instance_id = $2 AND l.session_id = $3
+		  AND t.workspace_id = $1
+		ORDER BY l.attached_at DESC
+		LIMIT 1`, wsID, instanceID, sessionID).Scan(&taskID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("find task by session: %w", err)
+	}
+	return s.GetTaskScoped(ctx, taskID, wsID)
 }
 
 func (s *Store) Close() error {
