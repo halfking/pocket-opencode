@@ -59,6 +59,7 @@ export interface Task {
   accDispatchId?: string
   accSourceRef?: string
   accCorrelationId?: string
+  accHolderId?: string
 }
 
 export interface Instance {

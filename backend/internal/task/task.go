@@ -45,6 +45,11 @@ type Task struct {
 	ACCDispatchID    string `json:"accDispatchId,omitempty"`
 	ACCSourceRef     string `json:"accSourceRef,omitempty"`
 	ACCCorrelationID string `json:"accCorrelationId,omitempty"`
+	// ACCHolderID is the runtime-control lease holder (companion runtime id)
+	// recorded at binding time. ACC's cancel endpoint is holder-fenced and
+	// rejects holder-less cancels with 400, so cancel stays fail-closed
+	// without it.
+	ACCHolderID string `json:"accHolderId,omitempty"`
 }
 
 // Binding is the authoritative ACC canonical ID set for one task.
@@ -54,6 +59,7 @@ type Binding struct {
 	DispatchID    string `json:"accDispatchId,omitempty"`    // ACC command/dispatch id
 	SourceRef     string `json:"accSourceRef,omitempty"`     // data-loop source_ref
 	CorrelationID string `json:"accCorrelationId,omitempty"` // data-loop correlation_id
+	HolderID      string `json:"accHolderId,omitempty"`      // runtime-control lease holder
 }
 
 // Bound reports whether the binding carries any canonical ID. Callers gate
@@ -61,7 +67,7 @@ type Binding struct {
 // marks the task as ACC-owned even before a dispatch is assigned.
 func (b Binding) Bound() bool {
 	return b.TaskID != "" || b.RunID != "" || b.DispatchID != "" ||
-		b.SourceRef != "" || b.CorrelationID != ""
+		b.SourceRef != "" || b.CorrelationID != "" || b.HolderID != ""
 }
 
 // ACCBinding returns the task's ACC canonical ID binding.
@@ -75,6 +81,7 @@ func ACCBinding(t *Task) Binding {
 		DispatchID:    t.ACCDispatchID,
 		SourceRef:     t.ACCSourceRef,
 		CorrelationID: t.ACCCorrelationID,
+		HolderID:      t.ACCHolderID,
 	}
 }
 

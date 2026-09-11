@@ -124,20 +124,24 @@ func (c *Client) AnswerPermission(ctx context.Context, d PermissionDecision) err
 }
 
 // CancelCommand posts POST /api/v2/runtime/commands/{command_id}/cancel
-// with a {"reason"} body. The Idempotency-Key header is
-// "pocket-cancel-"+commandID so ACC's orchestration plane dedupes
-// retries of the same cancel intent.
-func (c *Client) CancelCommand(ctx context.Context, commandID, reason string) error {
+// with a {"holder_id","reason"} body. ACC's cancel endpoint is
+// holder-fenced: an empty holderID fails client-side (fail-closed, no wire
+// call). The Idempotency-Key header is "pocket-cancel-"+commandID so ACC's
+// orchestration plane dedupes retries of the same cancel intent.
+func (c *Client) CancelCommand(ctx context.Context, commandID, holderID, reason string) error {
 	if err := c.ready(); err != nil {
 		return err
 	}
 	if strings.TrimSpace(commandID) == "" {
 		return errors.New("accruntime: cancel command: command_id is required")
 	}
+	if strings.TrimSpace(holderID) == "" {
+		return errors.New("accruntime: cancel command: holder_id is required (holder-fenced endpoint)")
+	}
 	headers := map[string]string{"Idempotency-Key": "pocket-cancel-" + commandID}
 	resp, err := c.http.Post(ctx,
 		"/api/v2/runtime/commands/"+url.PathEscape(commandID)+"/cancel", headers,
-		map[string]string{"reason": reason})
+		map[string]string{"holder_id": holderID, "reason": reason})
 	if err != nil {
 		return fmt.Errorf("accruntime: cancel command %s: %w", commandID, err)
 	}

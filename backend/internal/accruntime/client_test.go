@@ -219,7 +219,7 @@ func TestCancelCommand_SendsReasonAndIdempotencyKey(t *testing.T) {
 	defer ts.Close()
 
 	c := newTestClient(t, ts)
-	if err := c.CancelCommand(context.Background(), "disp-9", "operator aborted"); err != nil {
+	if err := c.CancelCommand(context.Background(), "disp-9", "holder-1", "operator aborted"); err != nil {
 		t.Fatalf("CancelCommand: %v", err)
 	}
 	if gotMethod != http.MethodPost || gotPath != "/api/v2/runtime/commands/disp-9/cancel" {
@@ -230,6 +230,9 @@ func TestCancelCommand_SendsReasonAndIdempotencyKey(t *testing.T) {
 	}
 	if gotBody["reason"] != "operator aborted" {
 		t.Errorf("reason body = %v", gotBody)
+	}
+	if gotBody["holder_id"] != "holder-1" {
+		t.Errorf("holder_id body = %v", gotBody)
 	}
 }
 
@@ -242,7 +245,7 @@ func TestCancelCommand_RequiresCommandID(t *testing.T) {
 	defer ts.Close()
 
 	c := newTestClient(t, ts)
-	if err := c.CancelCommand(context.Background(), "", "x"); err == nil {
+	if err := c.CancelCommand(context.Background(), "", "holder-1", "x"); err == nil {
 		t.Fatal("expected validation error")
 	}
 	if hit {
@@ -258,7 +261,7 @@ func TestCancelCommand_HTTPErrorWraps(t *testing.T) {
 	defer ts.Close()
 
 	c := newTestClient(t, ts)
-	err := c.CancelCommand(context.Background(), "disp-1", "late")
+	err := c.CancelCommand(context.Background(), "disp-1", "holder-1", "late")
 	if err == nil {
 		t.Fatal("expected error")
 	}

@@ -40,7 +40,7 @@ func TestCancelTask_ACCSuccessThenLocalCancelled(t *testing.T) {
 	srv, _, tokens := newACCGateServer(t, stub)
 	srv.taskStore = store
 	seedBoundTask(t, store, "task-cancel-1", &task.Binding{
-		TaskID: "acc-9", DispatchID: "disp-7", SourceRef: "ref-1", CorrelationID: "corr-1",
+		TaskID: "acc-9", DispatchID: "disp-7", SourceRef: "ref-1", CorrelationID: "corr-1", HolderID: "runtime-1",
 	})
 
 	rr := cancelTask(srv, tokens["ws-a"], "task-cancel-1", `{"reason":"mobile cancel"}`)
@@ -63,7 +63,7 @@ func TestCancelTask_ACCFailureIsFailClosed(t *testing.T) {
 	srv, _, tokens := newACCGateServer(t, stub)
 	srv.taskStore = store
 	seedBoundTask(t, store, "task-cancel-2", &task.Binding{
-		TaskID: "acc-9", DispatchID: "disp-7", SourceRef: "ref-1", CorrelationID: "corr-1",
+		TaskID: "acc-9", DispatchID: "disp-7", SourceRef: "ref-1", CorrelationID: "corr-1", HolderID: "runtime-1",
 	})
 
 	rr := cancelTask(srv, tokens["ws-a"], "task-cancel-2", `{"reason":"x"}`)
@@ -106,7 +106,7 @@ func TestCancelTask_BoundWithoutRuntimeIs503(t *testing.T) {
 	srv, _, _, tokens := newMobileRouteServer(t)
 	srv.taskStore = store
 	seedBoundTask(t, store, "task-cancel-4", &task.Binding{
-		TaskID: "acc-9", DispatchID: "disp-7", SourceRef: "ref-1", CorrelationID: "corr-1",
+		TaskID: "acc-9", DispatchID: "disp-7", SourceRef: "ref-1", CorrelationID: "corr-1", HolderID: "runtime-1",
 	})
 
 	rr := cancelTask(srv, tokens["ws-a"], "task-cancel-4", `{}`)
@@ -114,6 +114,33 @@ func TestCancelTask_BoundWithoutRuntimeIs503(t *testing.T) {
 		t.Fatalf("status = %d, want 503; body=%s", rr.Code, rr.Body.String())
 	}
 	if got := seededStatus(t, store, "task-cancel-4"); got != "open" {
+		t.Fatalf("local status = %q, want unchanged open", got)
+	}
+}
+
+func TestCancelTask_BoundWithoutHolderIsFailClosed(t *testing.T) {
+	store, cleanup := newACCGateTaskStore(t)
+	defer cleanup()
+	stub := &accPermissionStub{status: http.StatusOK}
+	srv, _, tokens := newACCGateServer(t, stub)
+	srv.taskStore = store
+	seedBoundTask(t, store, "task-cancel-5", &task.Binding{
+		TaskID: "acc-9", DispatchID: "disp-7", SourceRef: "ref-1", CorrelationID: "corr-1",
+	})
+
+	rr := cancelTask(srv, tokens["ws-a"], "task-cancel-5", `{}`)
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body=%s", rr.Code, rr.Body.String())
+	}
+	body := decodeStructured(t, rr)
+	requireCode(t, body, "acc_cancel_unavailable")
+	if body["gate_class"] != "binding_incomplete" {
+		t.Fatalf("gate_class = %v", body["gate_class"])
+	}
+	if calls, _, _, _ := stub.snapshot(); calls != 0 {
+		t.Fatalf("holder-less cancel must not reach ACC, calls=%d", calls)
+	}
+	if got := seededStatus(t, store, "task-cancel-5"); got != "open" {
 		t.Fatalf("local status = %q, want unchanged open", got)
 	}
 }

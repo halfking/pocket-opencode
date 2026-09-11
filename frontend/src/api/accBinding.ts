@@ -19,6 +19,7 @@ export interface AccBindingRef {
   accDispatchId?: string
   accSourceRef?: string
   accCorrelationId?: string
+  accHolderId?: string
 }
 
 /**
@@ -35,6 +36,7 @@ export function accBindingPassthrough(
   if (binding.accDispatchId) out.acc_dispatch_id = binding.accDispatchId
   if (binding.accSourceRef) out.acc_source_ref = binding.accSourceRef
   if (binding.accCorrelationId) out.acc_correlation_id = binding.accCorrelationId
+  if (binding.accHolderId) out.acc_holder_id = binding.accHolderId
   return out
 }
 
@@ -49,5 +51,6 @@ export function accBindingOf(
   if (task.accDispatchId) out.accDispatchId = task.accDispatchId
   if (task.accSourceRef) out.accSourceRef = task.accSourceRef
   if (task.accCorrelationId) out.accCorrelationId = task.accCorrelationId
+  if (task.accHolderId) out.accHolderId = task.accHolderId
   return out
 }

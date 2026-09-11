@@ -44,7 +44,26 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request, taskID
 				"task is ACC-bound but ACC runtime client is not configured")
 			return
 		}
-		if err := s.accRuntime.CancelCommand(r.Context(), current.ACCDispatchID, body.Reason); err != nil {
+		// ACC 的 cancel 端点按 holder（runtime lease 持有方）围栏：绑定缺
+		// holder_id 时无法构造合法请求，与 ACC 失败同样 fail-closed。
+		if current.ACCHolderID == "" {
+			s.Write(r, "mobile.task.acc_cancel_unavailable",
+				"task:"+taskID+"/dispatch:"+current.ACCDispatchID,
+				AuditFields{Detail: "class=binding_incomplete reason=" + body.Reason, Success: false})
+			envelope := map[string]any{
+				"error":           "ACC binding incomplete (missing holder_id); local cancel withheld fail-closed",
+				"code":            "acc_cancel_unavailable",
+				"retryable":       false,
+				"gate_class":      "binding_incomplete",
+				"task_id":         taskID,
+				"acc_task_id":     current.ACCTaskID,
+				"acc_dispatch_id": current.ACCDispatchID,
+			}
+			envelope["request_id"] = s.requestIDFromContext(r)
+			writeJSON(w, http.StatusBadGateway, envelope)
+			return
+		}
+		if err := s.accRuntime.CancelCommand(r.Context(), current.ACCDispatchID, current.ACCHolderID, body.Reason); err != nil {
 			s.Write(r, "mobile.task.acc_cancel_unavailable",
 				"task:"+taskID+"/dispatch:"+current.ACCDispatchID,
 				AuditFields{Detail: "reason=" + body.Reason, Success: false})

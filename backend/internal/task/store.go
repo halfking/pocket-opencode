@@ -82,6 +82,7 @@ func (s *Store) migrate() error {
 	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_dispatch_id TEXT;
 	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_source_ref TEXT;
 	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_correlation_id TEXT;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_holder_id TEXT;
 	CREATE INDEX IF NOT EXISTS idx_tasks_acc_dispatch ON tasks(acc_dispatch_id) WHERE acc_dispatch_id IS NOT NULL;
 
 	CREATE TABLE IF NOT EXISTS approval_observations (
@@ -135,7 +136,7 @@ func normalizeWorkspace(wsID string) string {
 // taskColumns is the shared SELECT list; workspace_id is included so the model
 // round-trips its tenant instead of dropping it, and the acc_* columns so the
 // Pocket↔ACC canonical binding survives every read path.
-const taskColumns = `id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count, accepted_at, accepted_by, evidence_bundle, acc_task_id, acc_run_id, acc_dispatch_id, acc_source_ref, acc_correlation_id`
+const taskColumns = `id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count, accepted_at, accepted_by, evidence_bundle, acc_task_id, acc_run_id, acc_dispatch_id, acc_source_ref, acc_correlation_id, acc_holder_id`
 
 // scanTask reads one row in taskColumns order.
 func scanTask(row interface {
@@ -150,11 +151,11 @@ func scanTask(row interface {
 	var description, workstreamID *string
 	var evidenceBundleRaw []byte
 	// acc_* 绑定列全部可空（SetACCBinding 之外的写入路径不会填它们）。
-	var accTaskID, accRunID, accDispatchID, accSourceRef, accCorrelationID *string
+	var accTaskID, accRunID, accDispatchID, accSourceRef, accCorrelationID, accHolderID *string
 	if err := row.Scan(&t.ID, &t.WorkspaceID, &t.Title, &description, &t.Status, &t.Priority,
 		&workstreamID, &t.Source, &createdAt, &updatedAt, &t.PendingApprovals, &t.SessionCount,
 		&acceptedAt, &acceptedBy, &evidenceBundleRaw,
-		&accTaskID, &accRunID, &accDispatchID, &accSourceRef, &accCorrelationID); err != nil {
+		&accTaskID, &accRunID, &accDispatchID, &accSourceRef, &accCorrelationID, &accHolderID); err != nil {
 		return nil, err
 	}
 	if description != nil {
@@ -189,6 +190,9 @@ func scanTask(row interface {
 	if accCorrelationID != nil {
 		t.ACCCorrelationID = *accCorrelationID
 	}
+	if accHolderID != nil {
+		t.ACCHolderID = *accHolderID
+	}
 	return t, nil
 }
 
@@ -205,10 +209,10 @@ func (s *Store) CreateTask(ctx context.Context, task *Task) error {
 	task.PendingApprovals = 0
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO tasks (id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count, acc_task_id, acc_run_id, acc_dispatch_id, acc_source_ref, acc_correlation_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''), NULLIF($17, ''))
+		INSERT INTO tasks (id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count, acc_task_id, acc_run_id, acc_dispatch_id, acc_source_ref, acc_correlation_id, acc_holder_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''), NULLIF($17, ''), NULLIF($18, ''))
 	`, task.ID, task.WorkspaceID, task.Title, task.Description, task.Status, task.Priority, task.WorkstreamID, task.Source, now, now, task.PendingApprovals, task.SessionCount,
-		task.ACCTaskID, task.ACCRunID, task.ACCDispatchID, task.ACCSourceRef, task.ACCCorrelationID)
+		task.ACCTaskID, task.ACCRunID, task.ACCDispatchID, task.ACCSourceRef, task.ACCCorrelationID, task.ACCHolderID)
 
 	return err
 }
@@ -972,10 +976,11 @@ func (s *Store) SetACCBinding(ctx context.Context, workspaceID, taskID string, b
 			acc_dispatch_id    = NULLIF($5, ''),
 			acc_source_ref     = NULLIF($6, ''),
 			acc_correlation_id = NULLIF($7, ''),
-			updated_at         = $8
+			acc_holder_id      = NULLIF($8, ''),
+			updated_at         = $9
 		WHERE id = $1 AND workspace_id = $2`,
 		taskID, normalizeWorkspace(workspaceID),
-		binding.TaskID, binding.RunID, binding.DispatchID, binding.SourceRef, binding.CorrelationID,
+		binding.TaskID, binding.RunID, binding.DispatchID, binding.SourceRef, binding.CorrelationID, binding.HolderID,
 		time.Now().Unix())
 	if err != nil {
 		return fmt.Errorf("set acc binding: %w", err)
