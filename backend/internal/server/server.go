@@ -1378,6 +1378,10 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "cancel" {
+			s.handleCancelTask(w, r, parts[0])
+			return
+		}
 		if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "accept" {
 			s.handleAcceptTask(w, r, parts[0])
 			return
@@ -1562,7 +1566,7 @@ func (s *Server) pendingApprovalsForTask(ctx context.Context, taskID, workspaceI
 
 func isValidTaskStatus(status string) bool {
 	switch status {
-	case "active", "blocked", "completed":
+	case "active", "blocked", "completed", "cancelled":
 		return true
 	default:
 		return false
