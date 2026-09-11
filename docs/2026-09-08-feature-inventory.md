@@ -21,7 +21,7 @@
 
 ---
 
-## 1. 业务 Feature 域（前端 24 个）
+## 1. 业务 Feature 域（前端 25 个）
 
 ### 1.1 AI & 编排（5）
 
@@ -33,7 +33,7 @@
 | `marketplace`（市场） | skill / agent / workbuddy 三大懒加载入口 | `/market/{skills,agents,workbuddy}` | `features/marketplace/{SkillMarket,AgentMarket,Workbuddy}View.vue` | ✅ |
 | `cost`（成本/配额） | 配额展示 / 用量统计 / 上限提示 | `/cost` | `features/cost/CostQuotaView.vue`、`api/llm-bff.ts` | ✅ |
 
-### 1.2 个人助理（7）
+### 1.2 个人助理（8）
 
 | 域 | 已落地能力 | 入口路由 | 主要文件 | 状态 |
 |---|---|---|---|---|
@@ -44,6 +44,7 @@
 | `vault`（密码箱） | 凭据加密存储 / 列表 / 详情 / 生物认证解锁 | `/vault`, `/vault/:id` | `features/vault/*.vue`、`api/vault.ts`、`native/biometricAuth.ts`、`native/keystore.ts` | ✅ |
 | `meetings`（会议工作台） | 听见式录音 / 实时转写 / 总结 / 待办 / ACC 下达 | `/meetings/*`（13+ 组件） | `features/meetings/*.vue`、`api/meetings.ts`、`composables/useMeetingRecorder.ts` | ✅ |
 | `scheduled-tasks`（计划任务） | 列表 / 详情 / 编辑 / 提示词优化 / 计划字段 / ACC 调度 | `/scheduled-tasks/*` | `features/scheduled-tasks/*.vue`、`api/accTasks.ts` | ✅ |
+| `rss`（RSS 订阅） | 订阅源管理 / 自动发现 / 过滤规则 / 信息流（已读 / 星标）/ 微博·朋友圈深链分享 + PNG 分享卡（commit `069efb9` 已上线） | `/rss`, `/rss/add`, `/rss/items/:id` | `features/rss/Rss*.vue` | ✅ |
 
 ### 1.3 协作 & 通讯（3）
 
@@ -69,7 +70,7 @@
 
 ---
 
-## 2. 后端能力模块（46 个 internal 包）
+## 2. 后端能力模块（47 个 internal 包）
 
 | 模块 | 关键职责 | 关键文件 | 状态 |
 |---|---|---|---|
@@ -118,6 +119,7 @@
 | `config` | 配置加载 | 2 个文件 | ✅ |
 | `registry` | 实例/插件注册中心 | 6 个文件 | ✅ |
 | `audit_writer` / 审计存储 | 审计写入器（按域拆 5+ 测试） | `audit_writer*.go`, `audit_*.go` | ✅ |
+| `rss` | RSS 订阅：订阅源管理 / 自动发现 / 抓取调度 / 过滤 / 分享卡与一键分享；`server_rss.go` 注册 `/api/rss/*` 路由（commit `069efb9` 已上线） | 16 个文件 | ✅ |
 
 ---
 
@@ -190,5 +192,5 @@
 ## 8. 一句话总结
 
 > OpenPocket 是一个 **Vue 3 + Capacitor + Go Echo** 的"分布式 AI 编程助手"移动工作台：
-> **40+ 业务域、24 个前端 feature、46 个后端模块、35+ 原生能力位**——已经把"AI 编排 / 笔记 / 邮件 / 财务 / 密码箱 / 会议 / 计划任务 / 网关"等近 10 条产品线全部在 Android 上跑通；
+> **40+ 业务域、25 个前端 feature、47 个后端模块、35+ 原生能力位**——已经把"AI 编排 / 笔记 / 邮件 / 财务 / 密码箱 / 会议 / 计划任务 / 网关"等近 10 条产品线全部在 Android 上跑通；
 > iOS 与 HarmonyOS 仍是占位脚手架（<10% 工作量），是当前"半原生"状态的主要差距。
