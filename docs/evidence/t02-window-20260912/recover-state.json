@@ -1,0 +1,38 @@
+{
+  "offline_elapsed_s": 1937.3,
+  "task_after_recovery": {
+    "id": "t02-pocket-task-w1",
+    "title": "T02 offline-window task",
+    "description": "",
+    "status": "queued",
+    "priority": "normal",
+    "workspaceId": "ws_user-admin",
+    "workstreamId": "",
+    "source": "acc",
+    "createdAt": "2026-09-12T03:37:13+08:00",
+    "updatedAt": "2026-09-12T03:37:13+08:00",
+    "pendingApprovals": 0,
+    "sessionCount": 0
+  },
+  "replayed_sequences": [
+    3,
+    4,
+    5
+  ],
+  "replay_events": {
+    "raw": "id: 3\nevent: dispatch.created\ndata: {\"event_id\":\"evt_9ea8085c-43e5-4a12-a37c-de5736da232c\",\"event_type\":\"dispatch.created\",\"tenant_id\":\"t16d-tenant\",\"run_id\":\"run_d18ba3f2-541f-4322-862b-85d0185d1247\",\"task_id\":\"t02-pocket-task-w1\",\"sequence\":3}\n\nid: 4\nevent: dispatch.leased\ndata: {\"event_id\":\"evt_917996ee-26da-45cc-ae1d-33ae5d8eebdf\",\"event_type\":\"dispatch.leased\",\"tenant_id\":\"t16d-tenant\",\"run_id\":\"run_d18ba3f2-541f-4322-862b-85d0185d1247\",\"task_id\":\"t02-pocket-task-w1\",\"sequence\":4}\n\nid: 5\nev"
+  },
+  "full_replay_note": "initial urllib read (first request after restart) truncated at seq 5; curl and subsequent urllib reads return all 10 events (seq 3..12); replay-full.sse is the authoritative capture",
+  "full_replay_sequences": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12
+  ]
+}
