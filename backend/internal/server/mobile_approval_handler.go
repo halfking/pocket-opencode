@@ -76,14 +76,18 @@ func (s *Server) listMobileApprovals(w http.ResponseWriter, r *http.Request) {
 // mobilePermissionReplyBody is the decoded POST body of a permission reply.
 // The acc_* fields are an optional client echo of the task binding for
 // audit reconciliation only — the authoritative binding always comes from
-// the task store (SetACCBinding is the sole writer).
+// the task store (SetACCBinding is the sole writer). All five echo fields
+// are accepted because mobile bodies decode with DisallowUnknownFields.
 type mobilePermissionReplyBody struct {
-	InstanceID    string `json:"instance_id"`
-	SessionID     string `json:"session_id"`
-	Decision      string `json:"decision"`
-	Message       string `json:"message"`
-	ACCTaskID     string `json:"acc_task_id,omitempty"`
-	ACCDispatchID string `json:"acc_dispatch_id,omitempty"`
+	InstanceID       string `json:"instance_id"`
+	SessionID        string `json:"session_id"`
+	Decision         string `json:"decision"`
+	Message          string `json:"message"`
+	ACCTaskID        string `json:"acc_task_id,omitempty"`
+	ACCRunID         string `json:"acc_run_id,omitempty"`
+	ACCDispatchID    string `json:"acc_dispatch_id,omitempty"`
+	ACCSourceRef     string `json:"acc_source_ref,omitempty"`
+	ACCCorrelationID string `json:"acc_correlation_id,omitempty"`
 }
 
 func (s *Server) replyMobilePermission(w http.ResponseWriter, r *http.Request, requestID string) {

@@ -13,6 +13,7 @@
  * ListPending 返回保持一致（adapter.PermissionRequest / QuestionRequest）。
  */
 import { http } from './http.ts'
+import { accBindingPassthrough, type AccBindingRef } from './accBinding.ts'
 
 /** 权限决策：once=本次批准，always=始终批准，reject=拒绝 */
 export type PermissionDecision = 'once' | 'always' | 'reject'
@@ -83,7 +84,8 @@ export function listPendingApprovals(params: {
   )
 }
 
-/** 批准 / 拒绝一个权限请求。decision ∈ {once, always, reject} */
+/** 批准 / 拒绝一个权限请求。decision ∈ {once, always, reject}
+ * （可选透传 ACC 绑定，仅用于服务端审计对账）。 */
 export function replyPermission(
   requestID: string,
   body: {
@@ -91,14 +93,20 @@ export function replyPermission(
     sessionID: string
     decision: PermissionDecision
     message?: string
-  },
+  } & AccBindingRef,
 ): Promise<ReplyResult> {
   return http<ReplyResult>(
     `/api/mobile/approvals/permission/${encodeURIComponent(requestID)}/reply`,
     {
       method: 'POST',
       headers: { 'Idempotency-Key': `appr_permission_${requestID}` },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        instance_id: body.instanceID,
+        session_id: body.sessionID,
+        decision: body.decision,
+        ...(body.message !== undefined ? { message: body.message } : {}),
+        ...accBindingPassthrough(body),
+      }),
     },
   )
 }
@@ -149,7 +157,7 @@ export function rejectQuestion(
 // 下面这套扁平签名是适配层，路由/URL 与上面完全一致（最终都打到
 // /api/mobile/approvals）。
 
-export interface PermissionReplyArgsFlat {
+export interface PermissionReplyArgsFlat extends AccBindingRef {
   instanceId: string
   sessionId: string
   requestId: string
@@ -170,6 +178,9 @@ export async function replyPermissionFlat(
         session_id: args.sessionId,
         decision: args.decision,
         ...(args.message !== undefined ? { message: args.message } : {}),
+        // Pocket↔ACC 绑定透传（acc_task_id/acc_dispatch_id/…，空值省略），
+        // 服务端仅作审计对账，gate 决策使用 task store 的权威绑定。
+        ...accBindingPassthrough(args),
       }),
     },
   )

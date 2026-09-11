@@ -143,6 +143,12 @@ export interface ApprovalReplyPayload {
   decision?: string
   message?: string
   answers?: unknown
+  /** Pocket↔ACC 绑定透传（permission reply 仅服务端审计对账；空值不发送）。 */
+  accTaskId?: string
+  accRunId?: string
+  accDispatchId?: string
+  accSourceRef?: string
+  accCorrelationId?: string
 }
 
 async function sendJson(
@@ -249,6 +255,13 @@ export function createMobileOutboxSenders(args: {
       if (payload.kind === 'permission') {
         body.decision = payload.decision ?? 'once'
         if (payload.message !== undefined) body.message = payload.message
+        // Pocket↔ACC 绑定透传（snake_case，空值省略；DisallowUnknownFields
+        // 契约字段，见 api/accBinding.ts）。
+        if (payload.accTaskId) body.acc_task_id = payload.accTaskId
+        if (payload.accRunId) body.acc_run_id = payload.accRunId
+        if (payload.accDispatchId) body.acc_dispatch_id = payload.accDispatchId
+        if (payload.accSourceRef) body.acc_source_ref = payload.accSourceRef
+        if (payload.accCorrelationId) body.acc_correlation_id = payload.accCorrelationId
       } else if (suffix === 'reply') {
         body.answers = payload.answers ?? []
       }
