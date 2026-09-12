@@ -1286,6 +1286,9 @@ func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 		Kind        string `json:"kind"`
 		Title       string `json:"title"`
 		Description string `json:"description"`
+		RunID       string `json:"run_id"`
+		TaskID      string `json:"task_id"`
+		OperationID string `json:"operation_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -1296,7 +1299,14 @@ func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	args := map[string]interface{}{"title": req.Title}
+	if strings.TrimSpace(req.RunID) == "" {
+		http.Error(w, "run_id is required for canonical task binding", http.StatusBadRequest)
+		return
+	}
+	args := map[string]interface{}{"title": req.Title, "run_id": req.RunID, "task_id": req.TaskID}
+	if req.OperationID != "" {
+		args["operation_id"] = req.OperationID
+	}
 	if req.Kind != "" {
 		args["kind"] = req.Kind
 	}
@@ -1304,19 +1314,56 @@ func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 		args["description"] = req.Description
 	}
 
-	out, err := s.mcpClient.CreateTask(r.Context(), args)
+	out, err := s.mcpClient.ResolveTaskRun(r.Context(), req.TaskID, req.RunID)
 	if err != nil {
 		log.Printf("[tasks/delegate] CreateTask failed: %v", err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 
-	// ACC 以 toolJSON 返回 JSON 字符串；原样回传，并附 source=acc 标识。
+	result, err := mcp.ParseCanonicalTaskResult(out)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	// acc_create_task returns the work-item id; the canonical run was created
+	// by ACC orchestration and is supplied by the caller after verification.
+	// Never infer a run from a session or opaque tool text.
+	result.RunID = req.RunID
+	result.OperationID = req.OperationID
+	if req.TaskID != "" && result.TaskID != req.TaskID {
+		http.Error(w, "ACC task_id does not match requested binding", http.StatusBadGateway)
+		return
+	}
+	if s.taskStore != nil {
+		ws := s.workspaceIDFromRequest(r)
+		// Keep a workspace-scoped local projection so a mobile reconnect can
+		// resolve the ACC task without treating Pocket as the task authority.
+		if s.mcpClient == nil {
+			http.Error(w, "ACC event client not configured", http.StatusServiceUnavailable)
+			return
+		}
+		runEvents, err := s.mcpClient.ListRunEvents(r.Context(), result.RunID, 0)
+		if err != nil {
+			http.Error(w, "verify ACC run events: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		projectionEvents := make([]task.RunProjectionEvent, 0, len(runEvents))
+		for _, ev := range runEvents {
+			raw, marshalErr := json.Marshal(ev)
+			if marshalErr != nil {
+				http.Error(w, "encode ACC run event: "+marshalErr.Error(), http.StatusBadGateway)
+				return
+			}
+			projectionEvents = append(projectionEvents, task.RunProjectionEvent{EventID: ev.EventID, EventType: ev.EventType, TenantID: ev.TenantID, RunID: ev.RunID, TaskID: ev.TaskID, Sequence: ev.Sequence, Raw: raw})
+		}
+		if bindErr := s.taskStore.BindVerifiedRun(r.Context(), task.TaskRunBinding{WorkspaceID: ws, TenantID: s.mcpClient.TenantID(), TaskID: result.TaskID, RunID: result.RunID, OperationID: result.OperationID}, req.Title, projectionEvents); bindErr != nil {
+			http.Error(w, "verify/persist task run binding: "+bindErr.Error(), http.StatusBadGateway)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"source": "acc",
-		"raw":    out,
-	})
+	_ = json.NewEncoder(w).Encode(map[string]any{"source": "acc", "task_id": result.TaskID, "run_id": result.RunID, "operation_id": result.OperationID, "status": result.Status, "raw": out})
 }
 
 func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
@@ -1348,6 +1395,10 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "session-bundle" {
 			s.handleTaskSessionBundle(w, r, parts[0])
+			return
+		}
+		if r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "events" {
+			s.handleTaskRunEvents(w, r, parts[0])
 			return
 		}
 		// 任务详情会话正文（companion 透传，支持 after_seq 增量续传）

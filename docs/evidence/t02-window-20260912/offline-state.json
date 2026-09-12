@@ -1,0 +1,25 @@
+{
+  "run_id": "run_d18ba3f2-541f-4322-862b-85d0185d1247",
+  "task_id": "t02-pocket-task-w1",
+  "initial_cursor": 2,
+  "initial_sequences": [
+    1,
+    2
+  ],
+  "initial_task": {
+    "id": "t02-pocket-task-w1",
+    "title": "T02 offline-window task",
+    "description": "",
+    "status": "queued",
+    "priority": "normal",
+    "workspaceId": "ws_user-admin",
+    "workstreamId": "",
+    "source": "acc",
+    "createdAt": "2026-09-12T03:37:13+08:00",
+    "updatedAt": "2026-09-12T03:37:13+08:00",
+    "pendingApprovals": 0,
+    "sessionCount": 0
+  },
+  "offline_start_utc": "2026-09-11T19:37:12Z",
+  "offline_start_epoch": 1789155432.7684639
+}

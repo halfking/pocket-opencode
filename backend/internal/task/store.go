@@ -28,6 +28,18 @@ type SessionLink struct {
 	Role       string `json:"role"` // primary, supporting, exploratory, duplicate
 }
 
+// TaskRunBinding is the durable association between a Pocket task and the
+// canonical ACC run that owns its execution. Workspace is part of every key.
+type TaskRunBinding struct {
+	WorkspaceID string    `json:"workspace_id"`
+	TaskID      string    `json:"task_id"`
+	RunID       string    `json:"run_id"`
+	OperationID string    `json:"operation_id,omitempty"`
+	TenantID    string    `json:"tenant_id"`
+	Watermark   uint64    `json:"watermark"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 // NewStore accepts the shared Postgres pool and runs idempotent migrations.
 func NewStore(pool *pgxpool.Pool) (*Store, error) {
 	s := &Store{pool: pool}
@@ -35,6 +47,29 @@ func NewStore(pool *pgxpool.Pool) (*Store, error) {
 		return nil, fmt.Errorf("task migrate: %w", err)
 	}
 	return s, nil
+}
+
+func validateBinding(b TaskRunBinding) error {
+	if strings.TrimSpace(b.WorkspaceID) == "" || strings.TrimSpace(b.TaskID) == "" || strings.TrimSpace(b.RunID) == "" || strings.TrimSpace(b.TenantID) == "" {
+		return errors.New("task run binding requires workspace, task, run, and tenant")
+	}
+	return nil
+}
+
+// PutTaskRunBinding is retained only for compatibility; unverified bindings are forbidden.
+func (s *Store) PutTaskRunBinding(ctx context.Context, binding TaskRunBinding) error {
+	return errors.New("unverified task run binding rejected; use BindVerifiedRun")
+}
+
+func (s *Store) GetTaskRunBinding(ctx context.Context, workspaceID, taskID string) (*TaskRunBinding, error) {
+	var b TaskRunBinding
+	var ts int64
+	err := s.pool.QueryRow(ctx, `SELECT workspace_id,task_id,run_id,operation_id,tenant_id,watermark,created_at FROM task_run_bindings WHERE workspace_id=$1 AND task_id=$2`, normalizeWorkspace(workspaceID), taskID).Scan(&b.WorkspaceID, &b.TaskID, &b.RunID, &b.OperationID, &b.TenantID, &b.Watermark, &ts)
+	if err != nil {
+		return nil, err
+	}
+	b.CreatedAt = time.Unix(ts, 0).UTC()
+	return &b, nil
 }
 
 func (s *Store) migrate() error {
@@ -53,14 +88,30 @@ func (s *Store) migrate() error {
 		session_count INTEGER DEFAULT 0
 	);
 
-	CREATE TABLE IF NOT EXISTS task_session_links (
-		task_id TEXT NOT NULL,
-		instance_id TEXT NOT NULL,
-		session_id TEXT NOT NULL,
-		role TEXT NOT NULL,
-		attached_at BIGINT NOT NULL,
-		PRIMARY KEY (task_id, instance_id, session_id)
-	);
+		CREATE TABLE IF NOT EXISTS task_session_links (
+			task_id TEXT NOT NULL,
+			instance_id TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			attached_at BIGINT NOT NULL,
+			PRIMARY KEY (task_id, instance_id, session_id)
+		);
+		CREATE TABLE IF NOT EXISTS task_run_bindings (
+			workspace_id TEXT NOT NULL,
+			task_id TEXT NOT NULL,
+			run_id TEXT NOT NULL,
+			operation_id TEXT NOT NULL DEFAULT '',
+			created_at BIGINT NOT NULL,
+			PRIMARY KEY (workspace_id, task_id),
+			UNIQUE (workspace_id, run_id)
+		);
+			ALTER TABLE task_run_bindings ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+			ALTER TABLE task_run_bindings ADD COLUMN IF NOT EXISTS watermark BIGINT NOT NULL DEFAULT 0;
+			ALTER TABLE task_run_bindings DROP CONSTRAINT IF EXISTS task_run_bindings_workspace_id_run_id_key;
+			CREATE INDEX IF NOT EXISTS idx_task_run_bindings_run ON task_run_bindings(workspace_id, run_id);
+			CREATE TABLE IF NOT EXISTS pocket_run_events (tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, run_id TEXT NOT NULL, event_id TEXT NOT NULL, event_type TEXT NOT NULL, task_id TEXT NOT NULL, sequence BIGINT NOT NULL, raw JSONB NOT NULL, PRIMARY KEY (workspace_id, run_id, sequence), UNIQUE (workspace_id, run_id, event_id));
+			CREATE TABLE IF NOT EXISTS pocket_run_cursors (workspace_id TEXT NOT NULL, task_id TEXT NOT NULL, user_id TEXT NOT NULL, consumer_id TEXT NOT NULL, sequence BIGINT NOT NULL, PRIMARY KEY(workspace_id, task_id, user_id, consumer_id));
+
 	-- S0-A: workspace_id isolation (idempotent on existing DBs).
 	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
 	ALTER TABLE task_session_links ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
@@ -124,7 +175,7 @@ func normalizeWorkspace(wsID string) string {
 
 // taskColumns is the shared SELECT list; workspace_id is included so the model
 // round-trips its tenant instead of dropping it.
-const taskColumns = `id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count, accepted_at, accepted_by, evidence_bundle`
+const taskColumns = `id, workspace_id, title, description, status, priority, COALESCE(workstream_id, ''), source, created_at, updated_at, pending_approvals, session_count, accepted_at, accepted_by, evidence_bundle`
 
 // scanTask reads one row in taskColumns order.
 func scanTask(row interface {

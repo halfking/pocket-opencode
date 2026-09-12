@@ -10,6 +10,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -649,9 +651,51 @@ func (c *Client) callWriteTool(ctx context.Context, toolName string, args map[st
 }
 
 // CreateTask 在 ACC 建任务（acc_create_task）。
-// 常用 args：kind / title / description。
+// args 由调用方按 canonical contract 传递；返回 ACC tool 文本载荷。
 func (c *Client) CreateTask(ctx context.Context, args map[string]interface{}) (string, error) {
 	return c.callWriteTool(ctx, ToolCreateTask, args)
+}
+
+// ResolveTaskRun validates and returns an existing canonical ACC task/run.
+func (c *Client) ResolveTaskRun(ctx context.Context, taskID, runID string) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("%s failed: MCP client not configured", "acc_resolve_task_run")
+	}
+	return c.CallTool(ctx, "acc_resolve_task_run", map[string]interface{}{"task_id": taskID, "run_id": runID})
+}
+
+// CanonicalTaskResult is the structured subset required for Pocket binding.
+type CanonicalTaskResult struct {
+	TaskID      string `json:"task_id"`
+	RunID       string `json:"run_id"`
+	OperationID string `json:"operation_id"`
+	Status      string `json:"status"`
+	ID          string `json:"id,omitempty"`
+}
+
+// ParseCanonicalTaskResult accepts a JSON tool payload, including common data envelopes.
+func ParseCanonicalTaskResult(text string) (CanonicalTaskResult, error) {
+	var direct CanonicalTaskResult
+	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &direct); err == nil {
+		if direct.TaskID == "" {
+			direct.TaskID = direct.ID
+		}
+		if direct.TaskID != "" {
+			return direct, nil
+		}
+	}
+	var env struct {
+		Data CanonicalTaskResult `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &env); err == nil {
+		if env.Data.TaskID == "" {
+			env.Data.TaskID = env.Data.ID
+		}
+		if env.Data.TaskID != "" {
+			return env.Data, nil
+		}
+	}
+	return CanonicalTaskResult{}, fmt.Errorf("ACC create task response missing task_id and run_id")
 }
 
 // ClaimTask 为本机 agent 认领 ACC 任务（acc_task_claim）。
@@ -675,21 +719,71 @@ func (c *Client) ReportSession(ctx context.Context, args map[string]interface{})
 
 // AccSession is one row from acc_list_sessions.
 type AccSession struct {
-	SessionID     string          `json:"session_id"`
-	TaskID        string          `json:"task_id"`
-	GatewayType   string          `json:"gateway_type"`
-	AgentID       string          `json:"agent_id"`
-	DeviceName    string          `json:"device_name"`
-	ModelID       string          `json:"model_id"`
-	Input         string          `json:"input"`
-	InputTokens   int             `json:"input_tokens"`
-	OutputTokens  int             `json:"output_tokens"`
-	StartedAt     string          `json:"started_at"`
-	EndedAt       string          `json:"ended_at"`
-	Metadata      json.RawMessage `json:"metadata"`
+	SessionID    string          `json:"session_id"`
+	TaskID       string          `json:"task_id"`
+	GatewayType  string          `json:"gateway_type"`
+	AgentID      string          `json:"agent_id"`
+	DeviceName   string          `json:"device_name"`
+	ModelID      string          `json:"model_id"`
+	Input        string          `json:"input"`
+	InputTokens  int             `json:"input_tokens"`
+	OutputTokens int             `json:"output_tokens"`
+	StartedAt    string          `json:"started_at"`
+	EndedAt      string          `json:"ended_at"`
+	Metadata     json.RawMessage `json:"metadata"`
 }
 
 // ListSessions 按 task_id 拉 ACC 已上报会话。
+type AccRunEvent struct {
+	EventID   string          `json:"event_id"`
+	EventType string          `json:"event_type"`
+	TenantID  string          `json:"tenant_id"`
+	RunID     string          `json:"run_id"`
+	TaskID    string          `json:"task_id,omitempty"`
+	Sequence  uint64          `json:"sequence"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
+}
+
+// ListRunEvents reads canonical ACC orchestration history. The endpoint is
+// intentionally HTTP, because ACC's durable event stream is not an MCP tool.
+func (c *Client) ListRunEvents(ctx context.Context, runID string, after uint64) ([]AccRunEvent, error) {
+	if c == nil || strings.TrimSpace(c.baseURL) == "" {
+		return nil, fmt.Errorf("ACC event client not configured")
+	}
+	tok, err := c.signJWT(ctx)
+	if err != nil {
+		return nil, err
+	}
+	base := strings.TrimRight(c.baseURL, "/")
+	base = strings.TrimSuffix(base, "/api/v2/mcp")
+	u := base + "/api/v2/orchestration/runs/" + url.PathEscape(runID) + "/events"
+	if after > 0 {
+		u += "?after=" + strconv.FormatUint(after, 10)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ACC events request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, fmt.Errorf("ACC events HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var envelope struct {
+		Events []AccRunEvent `json:"events"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("ACC events decode: %w", err)
+	}
+	return envelope.Events, nil
+}
+
 func (c *Client) ListSessions(ctx context.Context, taskID string, limit int) ([]AccSession, error) {
 	if c == nil {
 		return nil, fmt.Errorf("%s failed: MCP client not configured", ToolListSessions)
