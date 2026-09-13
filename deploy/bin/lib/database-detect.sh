@@ -63,6 +63,51 @@ _db_systemd_service_active() {
   systemctl is-active "${svc}" >/dev/null 2>&1
 }
 
+# ── 登录验证（deploy-lib/reuse-probe.sh SSOT，可用则增强）─────────
+# "有服务"还不够，必须"能登录访问"才算可复用：docker 容器命中后用容器内
+# 握手（psql SELECT 1 / redis-cli PING / mysqladmin ping）二次验证。
+# SSOT 缺失时退回旧语义（仅容器名/端口命中），不阻断部署。
+if [[ -z "${__OPP_DB_DETECT_SOURCED_REUSE:-}" ]]; then
+  if [[ -z "${AIAN_DEPLOY_LIB:-}" ]]; then
+    _opp_lib="$HOME/workspace/ai-native-tools/deploy-lib"
+    [[ -d "$_opp_lib" ]] && AIAN_DEPLOY_LIB="$_opp_lib"
+  fi
+  if [[ -n "${AIAN_DEPLOY_LIB:-}" && -f "$AIAN_DEPLOY_LIB/reuse-probe.sh" ]]; then
+    # shellcheck source=../../../../../deploy-lib/reuse-probe.sh
+    source "$AIAN_DEPLOY_LIB/reuse-probe.sh"
+    _OPP_REUSE_PROBE=1
+  else
+    _OPP_REUSE_PROBE=0
+  fi
+  __OPP_DB_DETECT_SOURCED_REUSE=1
+fi
+
+# _db_docker_login_verified <keyword> — docker 命中后逐容器登录验证
+# 找到第一个 image 匹配 keyword 且容器内握手成功的容器名；无 SSOT 恒成功。
+_db_docker_login_verified() {
+  local keyword="$1"
+  [[ "${_OPP_REUSE_PROBE:-0}" == "1" ]] || return 0
+  local line cname image login_fn
+  case "$keyword" in
+    postgres) login_fn=_rp_pg_login_container ;;
+    redis)    login_fn=_rp_redis_login_container ;;
+    mysql)    login_fn=_rp_mysql_login_container ;;
+    *) return 0 ;;
+  esac
+  command -v docker >/dev/null 2>&1 || return 1
+  while IFS=$'\t' read -r cname image; do
+    [[ -z "$cname" ]] && continue
+    if [[ "$image" =~ (^|/)${keyword} ]]; then
+      if "$login_fn" "$cname"; then
+        _db_log "login verified for container ${cname} (${keyword})"
+        return 0
+      fi
+      _db_log "container ${cname} running but login failed; keep scanning"
+    fi
+  done < <(docker ps --format '{{.Names}}\t{{.Image}}' 2>/dev/null)
+  return 1
+}
+
 # loopback 兜底探测：配置的 host 是别名（如 host.docker.internal）时，
 # 宿主侧可能不可解析/不可达（macOS Docker Desktop 新版不再写 /etc/hosts），
 # 补探 127.0.0.1 避免本机已有实例被漏检、误走容器化路径撞端口。
@@ -84,11 +129,14 @@ detect_pg_external() {
   local host="${OPP_PG_HOST:-127.0.0.1}"
   local port="${OPP_PG_PORT:-5432}"
 
-  # 1) docker 容器（pg / postgres / postgresql 都算）
+  # 1) docker 容器（pg / postgres / postgresql 都算；命中后登录验证）
   if _db_docker_container_running "postgres"; then
-    printf 'docker:%s:%s\n' "${host}" "${port}"
-    _db_log "PG: docker container matched (host=${host} port=${port})"
-    return 0
+    if _db_docker_login_verified "postgres"; then
+      printf 'docker:%s:%s\n' "${host}" "${port}"
+      _db_log "PG: docker container matched + login verified (host=${host} port=${port})"
+      return 0
+    fi
+    _db_log "PG: docker containers matched but none passed login; fallthrough"
   fi
 
   # 2) systemd 服务
@@ -119,9 +167,12 @@ detect_redis_external() {
   local port="${OPP_REDIS_PORT:-6379}"
 
   if _db_docker_container_running "redis"; then
-    printf 'docker:%s:%s\n' "${host}" "${port}"
-    _db_log "Redis: docker container matched"
-    return 0
+    if _db_docker_login_verified "redis"; then
+      printf 'docker:%s:%s\n' "${host}" "${port}"
+      _db_log "Redis: docker container matched + login verified"
+      return 0
+    fi
+    _db_log "Redis: docker containers matched but none passed login; fallthrough"
   fi
 
   if _db_systemd_service_active "redis" || _db_systemd_service_active "redis-server"; then
@@ -147,9 +198,12 @@ detect_mysql_external() {
   local port="${OPP_MYSQL_PORT:-3306}"
 
   if _db_docker_container_running "mysql"; then
-    printf 'docker:%s:%s\n' "${host}" "${port}"
-    _db_log "MySQL: docker container matched"
-    return 0
+    if _db_docker_login_verified "mysql"; then
+      printf 'docker:%s:%s\n' "${host}" "${port}"
+      _db_log "MySQL: docker container matched + login verified"
+      return 0
+    fi
+    _db_log "MySQL: docker containers matched but none passed login; fallthrough"
   fi
 
   if _db_systemd_service_active "mysql" || _db_systemd_service_active "mysqld"; then
