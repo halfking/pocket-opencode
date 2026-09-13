@@ -107,16 +107,33 @@ if ! [[ "${OPP_PG_HOST}" =~ ^[A-Za-z0-9._-]+$ ]] || ! [[ "${OPP_PG_PORT}" =~ ^[0
   echo "  ❌ OPP_PG_HOST/OPP_PG_PORT 含非法字符: '${OPP_PG_HOST}:${OPP_PG_PORT}'" >&2
   exit 1
 fi
-# dry-run 跳过 PG TCP 探测（演练环境本机通常不在 252 内网）
+# dry-run 跳过 PG 探测（演练环境本机通常不在 252 内网）
 if [[ "${DRY_RUN:-false}" == "true" ]]; then
-  echo "  ⏭  --dry-run: 跳过 PG TCP 探测（演练环境无法连 252 内网）"
+  echo "  ⏭  --dry-run: 跳过 PG 探测（演练环境无法连 252 内网）"
 else
-  if timeout 3 bash -c "</dev/tcp/${OPP_PG_HOST}/${OPP_PG_PORT}" >/dev/null 2>&1; then
-    echo "  ✅ PG 可达: ${OPP_PG_HOST}:${OPP_PG_PORT}"
-  else
-    echo "  ❌ PG 不可达: ${OPP_PG_HOST}:${OPP_PG_PORT}（252 本机 docker PG 未启动？）" >&2
-    exit 1
+  # PG 复用探测：reuse-probe SSOT 可用时做登录验证（pg_isready/psql 协议握手，
+  # "有服务且能登录"口径）；SSOT/PG 客户端缺失时回退原 TCP 可达性检查（硬门禁不变）
+  _OPP_PG_PROBED=0
+  _OPP_LIB="${AIAN_DEPLOY_LIB:-$HOME/workspace/ai-native-tools/deploy-lib}"
+  if [[ -f "${_OPP_LIB}/reuse-probe.sh" ]]; then
+    # shellcheck disable=SC1090
+    source "${_OPP_LIB}/reuse-probe.sh"
+    REUSE_PG_ADDR="${OPP_PG_HOST}:${OPP_PG_PORT}"
+    if _OPP_PROBE_OUT=$(_rp_env_endpoint REUSE_PG_ADDR _rp_pg_login_host 5432); then
+      echo "  ✅ PG 登录验证通过 (reuse-probe): ${_OPP_PROBE_OUT} @ ${OPP_PG_HOST}:${OPP_PG_PORT}"
+      _OPP_PG_PROBED=1
+    fi
+    unset REUSE_PG_ADDR _OPP_PROBE_OUT
   fi
+  if [[ "${_OPP_PG_PROBED}" != "1" ]]; then
+    if timeout 3 bash -c "</dev/tcp/${OPP_PG_HOST}/${OPP_PG_PORT}" >/dev/null 2>&1; then
+      echo "  ✅ PG 可达: ${OPP_PG_HOST}:${OPP_PG_PORT}（本机无 reuse-probe/PG 客户端, 仅 TCP 验证）"
+    else
+      echo "  ❌ PG 不可达: ${OPP_PG_HOST}:${OPP_PG_PORT}（252 本机 docker PG 未启动？）" >&2
+      exit 1
+    fi
+  fi
+  unset _OPP_PG_PROBED _OPP_LIB
 fi
 
 # ── 4) 拉起服务（透传 --backend-only / --rollback 等参数）────
