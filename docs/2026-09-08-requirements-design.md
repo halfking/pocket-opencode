@@ -3,7 +3,7 @@
 **日期**: 2026-09-08  
 **状态**: 现行方案（as-built reverse-engineered plan）  
 **上游盘点**: [`2026-09-08-feature-inventory.md`](./2026-09-08-feature-inventory.md)  
-**取代关系**: 取代 `MOBILE_ARCHITECTURE_V2.md` 的"双屏布局 / 双屏检测 / 双屏 Presentation API"段落（与 v2 移动 UX 不冲突，本方案补齐 native 层）；其它专题以原文档为准：
+**取代关系**: 取代 `archive/2026-07/MOBILE_ARCHITECTURE_V2.md` 的"双屏布局 / 双屏检测 / 双屏 Presentation API"段落（与 v2 移动 UX 不冲突，本方案补齐 native 层）；其它专题以原文档为准：
 - 移动 UX 总纲 → [`2026-08-27-mobile-ux-design-v2.md`](./2026-08-27-mobile-ux-design-v2.md)
 - 会议工作台 → [`2026-09-08-meetings-studio.md`](./2026-09-08-meetings-studio.md)
 - 邮件流水线 → `docs/2026-09-06-email-local-invoice.md`
@@ -217,7 +217,7 @@ online 后 → outboxDrain → idempotent key → server 幂等响应 → UI 收
 
 | 文档 | 处置 |
 |---|---|
-| `MOBILE_ARCHITECTURE_V2.md` 双屏布局章节 | 已 superseded（v2 移动 UX 取代）；本文补齐 native 切片 |
+| `archive/2026-07/MOBILE_ARCHITECTURE_V2.md` 双屏布局章节 | 已 superseded（v2 移动 UX 取代）；本文补齐 native 切片 |
 | `OPENCODE_MOBILE_MANAGEMENT_PLAN.md`（root） | 已归档（需求吸收进 §1） |
-| `NAVIGATION_ARCHITECTURE.md`（root） | 已归档（路由以 `router-mobile.ts` 为准） |
+| `archive/2026-07/NAVIGATION_ARCHITECTURE.md` | 已归档（路由以 `router-mobile.ts` 为准） |
 

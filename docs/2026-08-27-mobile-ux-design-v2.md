@@ -13,11 +13,11 @@
 
 | 来源文档 | 吸收内容 | 处置 |
 |---|---|---|
-| `docs/2026-07-02-ui-ux-design-system.md` | 设计原则、导航规范、组件规范 | 继续作为上位规范，不取代 |
-| `docs/MOBILE_ARCHITECTURE_V2.md` | 双屏布局、语音交互、审批 Bottom Sheet + 滑动手势 | 本文取代（已存档） |
-| `docs/2026-07-03-mobile-interaction-optimization.md` | 信息密度、语音优先、分组折叠 | 本文取代（已存档） |
+| `docs/2026-07-02-ui-ux-design-system.md` | 设计原则、导航规范、组件规范 | 原上位规范；文件已随 89ea1be 退役删除，待重建 |
+| `docs/archive/2026-07/MOBILE_ARCHITECTURE_V2.md` | 双屏布局、语音交互、审批 Bottom Sheet + 滑动手势 | 本文取代（已存档） |
+| `docs/archive/2026-07/2026-07-03-mobile-interaction-optimization.md` | 信息密度、语音优先、分组折叠 | 本文取代（已存档） |
 | `OPENCODE_MOBILE_MANAGEMENT_PLAN.md`（root，已存档） | 会话管理/操作/审批/配置/分析/消息/实时监控 七类需求清单 | 全部吸收进 §3-§6 |
-| `NAVIGATION_ARCHITECTURE.md`（root，已存档） | 现有路由结构 | 以 `frontend/src/app/router-mobile.ts` 实际代码为准，本文 §3 重定义 IA |
+| `docs/archive/2026-07/NAVIGATION_ARCHITECTURE.md`（已存档） | 现有路由结构 | 以 `frontend/src/app/router-mobile.ts` 实际代码为准，本文 §3 重定义 IA |
 | P0C/P1/P2/P3 报告（2026-08-15~17） | 设备门、SQLite 离线持久化、outbox 离线队列、diff 性能基线、iOS 验证 | 作为既有能力直接复用 |
 | `docs/新架构v1/02-modules/mobile-shell.md` | PocketFleet v3 目标态（Live 页、Build Live View、通知分级、性能指标） | 本文是其"现有 App 渐进演进"路径 |
 | 2026-08-27 会话优化分析（本文 §4-§6 的直接来源） | 健康度模型、轮次时间线、折叠屏策略、WS 事件粒度 | — |

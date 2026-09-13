@@ -23,7 +23,7 @@ An item is removed only when one of:
 
 ## Items
 
-### Q-001 — `docs/优化v4/11-并行执行提示词.md`
+### Q-001 — `docs/archive/2026-08/优化v4/11-并行执行提示词.md`
 
 - **What it is**: a set of parallel-execution prompts written for an earlier sprint. The v3 audit does not re-issue them; the new `docs/新架构v1/03-roadmap/里程碑.md` is narrower in scope.
 - **Uncertainty**: are any of the parallel-execution prompts in `优化v4/11` still useful as **inputs** to v3 sub-agents, even though v3 doesn't ship them as-is?

@@ -129,7 +129,7 @@
 
 ### 3.1 审计文档生成
 
-**文档**: `docs/FEATURE_AUDIT_2026Q1.md`（693 行）
+**文档**: `docs/archive/2026-09/FEATURE_AUDIT_2026Q1.md`（693 行）
 
 涵盖内容：
 1. **特性需求概述**：背景、需求、目标
@@ -228,7 +228,7 @@ if created {
 
 ### 4.2 文档清单
 
-- **特性审计报告**: `docs/FEATURE_AUDIT_2026Q1.md`（693 行）
+- **特性审计报告**: `docs/archive/2026-09/FEATURE_AUDIT_2026Q1.md`（693 行）
   - 需求分析、实现方案、测试覆盖、问题识别、修复记录
   - 可直接用于技术评审、代码 review、知识传承
 
@@ -253,7 +253,7 @@ if created {
 
 **文档**（Markdown）
 - 新增文件: 1
-  - `docs/FEATURE_AUDIT_2026Q1.md`（693 行）
+  - `docs/archive/2026-09/FEATURE_AUDIT_2026Q1.md`（693 行）
 
 **总计**: 16 files changed, +1,010 -37
 

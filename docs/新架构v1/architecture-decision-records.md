@@ -468,7 +468,7 @@ snapshot/diff/revert/compact/ACP
 - RedClaw façade：`/Users/xutaohuang/workspace/ai-native-tools/RedClaw/services/platform-go/internal/facade/`
 - RedClaw agentcontainer：`/Users/xutaohuang/workspace/ai-native-tools/RedClaw/services/platform-go/internal/agentcontainer/`
 - Pocket OpenCode adapter：`backend/internal/adapter/opencode_http.go`
-- Pocket当前事实审计：`docs/优化v4/01-现状审计与差距.md`
+- Pocket当前事实审计：`docs/archive/2026-08/优化v4/01-现状审计与差距.md`
 
 **状态**：✅ 已采纳
 

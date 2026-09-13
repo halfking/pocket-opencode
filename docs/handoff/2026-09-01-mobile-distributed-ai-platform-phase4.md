@@ -2,7 +2,7 @@
 
 ## 1. 任务概要（Mission Summary）
 
-在 `2026-08-31-mobile-distributed-ai-platform.md` 留下的 Phase 4 骨架基础上,
+在 `docs/archive/2026-08/2026-08-31-mobile-distributed-ai-platform.md` 留下的 Phase 4 骨架基础上,
 完成"技能市场 HTTP / chatagent 字段 SQL / scheduled task executor / ACC HTTP
 客户端 / 前端市场页面 / 测试"六项落地,并补齐审计修复与本次交付的交接
 文档。所有改动均通过 `go build` / `go vet` / `gofmt` / `vue-tsc` 与本批新

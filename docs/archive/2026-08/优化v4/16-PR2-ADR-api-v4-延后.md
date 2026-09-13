@@ -14,7 +14,7 @@ Accepted（继承自 PR1 §6 决议，并在本文档中固化触发条件与重
 
 ## 2. 背景
 
-`/api/v4` 是 docs/优化v4/04-目标架构与领域拆分.md §3 设定的目标 control-plane 合同：把 Action / Run / Approval / Question / Event 五类对象统一为前后端可消费的资源。理论上它能：
+`/api/v4` 是 docs/archive/2026-08/优化v4/04-目标架构与领域拆分.md §3 设定的目标 control-plane 合同：把 Action / Run / Approval / Question / Event 五类对象统一为前后端可消费的资源。理论上它能：
 
 - 给前端一个稳定的 WS envelope + REST 资源入口；
 - 让 Action/Approval/Event/Audit 共享同一套 correlation id；
@@ -22,7 +22,7 @@ Accepted（继承自 PR1 §6 决议，并在本文档中固化触发条件与重
 
 但当前 `/api/v4` 仅是设计文档：
 
-1. **现状事实**：仓库代码无 `/api/v4` 路由；`docs/优化v4/` 也明确指出该合同是“目标设计”，不是“已实现”。
+1. **现状事实**：仓库代码无 `/api/v4` 路由；`docs/archive/2026-08/优化v4/` 也明确指出该合同是“目标设计”，不是“已实现”。
 2. **既有替代**：现有端点（Notes / Email / Vault / Sessions / Mobile Session）已在 PR6、PR9 中加入作用域、错误码和审计字段。直接把这些端点对齐 envelope 与 capability，比引入第二个 URL 空间对前端更轻。
 3. **P0 容量**：首批 P0 PR 的范围已经在 14 §2 列出 13 个主题；`/api/v4` 落地会引入新 DTO、新事件、新测试、新文档、新错误码，对 4 周内完成的 P0 目标风险过高。
 
@@ -70,10 +70,10 @@ Accepted（继承自 PR1 §6 决议，并在本文档中固化触发条件与重
 
 ## 7. ADR 与文档索引
 
-- 状态：`docs/优化v4/12-ADR与风险台账.md` ADR-011（已在 PR1 中升级为 Accepted）。
-- 设计背景：`docs/优化v4/04-目标架构与领域拆分.md` §3。
-- P0 范围：`docs/优化v4/14-首批PR与执行顺序.md` §2（PR1 行决议）。
-- 错误码：`docs/优化v4/15-PR1-契约冻结与发布前置.md` §10。
+- 状态：`docs/archive/2026-08/优化v4/12-ADR与风险台账.md` ADR-011（已在 PR1 中升级为 Accepted）。
+- 设计背景：`docs/archive/2026-08/优化v4/04-目标架构与领域拆分.md` §3。
+- P0 范围：`docs/archive/2026-08/优化v4/14-首批PR与执行顺序.md` §2（PR1 行决议）。
+- 错误码：`docs/archive/2026-08/优化v4/15-PR1-契约冻结与发布前置.md` §10。
 - 触发重新打开：本文件 §4。
 
 ## 8. 验收
@@ -87,7 +87,7 @@ Accepted（继承自 PR1 §6 决议，并在本文档中固化触发条件与重
 
 ### 9.1 范围
 
-- 新增本文件 `docs/优化v4/16-PR2-ADR-api-v4-延后.md`。
+- 新增本文件 `docs/archive/2026-08/优化v4/16-PR2-ADR-api-v4-延后.md`。
 - 不写任何后端 facade、不引入 v4 路由、不修改前端 store。
 
 ### 9.2 非目标

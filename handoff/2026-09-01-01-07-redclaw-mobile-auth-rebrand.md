@@ -227,7 +227,7 @@ M frontend/android/variables.gradle
   - `POST /api/auth/login` 旧密码登录 → 200（回归）
   - `POST /api/auth/biometric/login/finish` → 200（生物识别回归）
 - Android 模拟器截图 4 张：登录页 3 Tab、忘记密码页 → `test-evidence/2026-09-01-redclaw-mobile-auth/`
-- 写 `docs/handoff/2026-09-01-redclaw-mobile-auth-summary.md` 验收报告
+- 写 `docs/archive/2026-09/2026-09-01-redclaw-mobile-auth-summary.md` 验收报告
 
 ---
 
@@ -301,6 +301,6 @@ M frontend/android/variables.gradle
 - **会话类型**：方案设计 + handoff 创建
 - **交接方**：本会话（agent）→ 新会话（handoff 接力）
 - **下游协调**：RedClaw 仓库（FreshLab/RedClaw2）需在 readyz 修复后补 register / OTP 能力；本任务不阻塞其修复
-- **文档维护**：本 handoff 由新会话执行完 Phase C 后，将验收报告追加到 §4 末尾并归档到 `docs/handoff/2026-09-01-redclaw-mobile-auth-summary.md`
+- **文档维护**：本 handoff 由新会话执行完 Phase C 后，将验收报告追加到 §4 末尾并归档到 `docs/archive/2026-09/2026-09-01-redclaw-mobile-auth-summary.md`
 
 **EOF**

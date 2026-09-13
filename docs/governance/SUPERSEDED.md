@@ -51,31 +51,31 @@ These predate the v3 audit (`docs/新架构v1/00-research/RedClaw作为OpenCode�
 | `docs/superpowers/specs/2026-07-27-pocket-foldable-redclaw-integration-design.md` | `docs/新架构v1/02-modules/mobile-shell.md` |
 | `docs/superpowers/specs/2026-07-24-opencode-supreme-programmer-mobile-platform-design.md` | `docs/新架构v1/README.md` |
 
-## Group 4 — `docs/优化v4/` (entire directory)
+## Group 4 — `docs/优化v4/` plan files(2026-08-27 判定 superseded;2026-09-14 归档至 `docs/archive/2026-08/优化v4/`,`优化v4/reports/` 证据保留原位)
 
 The `docs/优化v4/` plan pre-dates the v3 audit and the ZAG redesign. The functional claims in `优化v4/reports/` are kept as **historical evidence** for the things that were actually run on 2026-08-18 (audit/PG, Docker, iOS real-device), but the **plan / product / architecture / roadmap** files are superseded.
 
-### `优化v4/` plan files (superseded — see v3 replacements)
+### `优化v4/` plan files(superseded — see v3 replacements;已归档至 `docs/archive/2026-08/优化v4/`)
 
 | File | Replaced by |
 |---|---|
-| `docs/优化v4/README.md` | `docs/新架构v1/README.md` |
-| `docs/优化v4/01-现状审计与差距.md` | `docs/新架构v1/00-research/现有服务能力盘点.md`, `docs/新架构v1/01-architecture/系统总览.md` |
-| `docs/优化v4/02-安全审计与整改清单.md` | `docs/新架构v1/01-architecture/安全模型.md`, `docs/security/zag-adr-0001..0007.md` |
-| `docs/优化v4/03-产品蓝图与信息架构.md` | `docs/新架构v1/01-architecture/系统总览.md`, `docs/新架构v1/02-modules/mobile-shell.md` |
-| `docs/优化v4/04-目标架构与领域拆分.md` | `docs/新架构v1/01-architecture/系统总览.md`, `docs/新架构v1/02-modules/zagent-gateway.md` |
-| `docs/优化v4/05-数据模型与本地云同步.md` | `docs/新架构v1/01-architecture/数据流与协议.md` |
-| `docs/优化v4/06-隐私安全与凭据边界.md` | `docs/新架构v1/01-architecture/安全模型.md`, `docs/security/zag-adr-0003-authz-model.md` |
-| `docs/优化v4/07-AI编排与智能体控制面.md` | `docs/新架构v1/02-modules/redclaw-integration.md`, `docs/新架构v1/02-modules/zagent-gateway.md` |
-| `docs/优化v4/08-移动端UI与交互规范.md` | `docs/新架构v1/02-modules/mobile-shell.md` |
-| `docs/优化v4/09-实施路线图与验收标准.md` | `docs/新架构v1/03-roadmap/里程碑.md`, `docs/新架构v1/03-roadmap/接口规范.md` |
-| `docs/优化v4/10-任务拆解与依赖图.md` | `docs/新架构v1/03-roadmap/里程碑.md` |
-| `docs/优化v4/11-并行执行提示词.md` | (deferred — see `REVIEW-QUEUE.md`) |
-| `docs/优化v4/12-ADR与风险台账.md` | `docs/新架构v1/architecture-decision-records.md` |
-| `docs/优化v4/13-竞品与一手资料对标.md` | `docs/新架构v1/00-research/竞品分析.md` |
-| `docs/优化v4/14-首批PR与执行顺序.md` | `docs/新架构v1/03-roadmap/里程碑.md` |
-| `docs/优化v4/15-PR1-契约冻结与发布前置.md` | `docs/新架构v1/04-contracts/pocket-zag-incremental.md` |
-| `docs/优化v4/16-PR2-ADR-api-v4-延后.md` | `docs/新架构v1/architecture-decision-records.md` |
+| `docs/archive/2026-08/优化v4/README.md` | `docs/新架构v1/README.md` |
+| `docs/archive/2026-08/优化v4/01-现状审计与差距.md` | `docs/新架构v1/00-research/现有服务能力盘点.md`, `docs/新架构v1/01-architecture/系统总览.md` |
+| `docs/archive/2026-08/优化v4/02-安全审计与整改清单.md` | `docs/新架构v1/01-architecture/安全模型.md`, `docs/security/zag-adr-0001..0007.md` |
+| `docs/archive/2026-08/优化v4/03-产品蓝图与信息架构.md` | `docs/新架构v1/01-architecture/系统总览.md`, `docs/新架构v1/02-modules/mobile-shell.md` |
+| `docs/archive/2026-08/优化v4/04-目标架构与领域拆分.md` | `docs/新架构v1/01-architecture/系统总览.md`, `docs/新架构v1/02-modules/zagent-gateway.md` |
+| `docs/archive/2026-08/优化v4/05-数据模型与本地云同步.md` | `docs/新架构v1/01-architecture/数据流与协议.md` |
+| `docs/archive/2026-08/优化v4/06-隐私安全与凭据边界.md` | `docs/新架构v1/01-architecture/安全模型.md`, `docs/security/zag-adr-0003-authz-model.md` |
+| `docs/archive/2026-08/优化v4/07-AI编排与智能体控制面.md` | `docs/新架构v1/02-modules/redclaw-integration.md`, `docs/新架构v1/02-modules/zagent-gateway.md` |
+| `docs/archive/2026-08/优化v4/08-移动端UI与交互规范.md` | `docs/新架构v1/02-modules/mobile-shell.md` |
+| `docs/archive/2026-08/优化v4/09-实施路线图与验收标准.md` | `docs/新架构v1/03-roadmap/里程碑.md`, `docs/新架构v1/03-roadmap/接口规范.md` |
+| `docs/archive/2026-08/优化v4/10-任务拆解与依赖图.md` | `docs/新架构v1/03-roadmap/里程碑.md` |
+| `docs/archive/2026-08/优化v4/11-并行执行提示词.md` | (deferred — see `REVIEW-QUEUE.md`) |
+| `docs/archive/2026-08/优化v4/12-ADR与风险台账.md` | `docs/新架构v1/architecture-decision-records.md` |
+| `docs/archive/2026-08/优化v4/13-竞品与一手资料对标.md` | `docs/新架构v1/00-research/竞品分析.md` |
+| `docs/archive/2026-08/优化v4/14-首批PR与执行顺序.md` | `docs/新架构v1/03-roadmap/里程碑.md` |
+| `docs/archive/2026-08/优化v4/15-PR1-契约冻结与发布前置.md` | `docs/新架构v1/04-contracts/pocket-zag-incremental.md` |
+| `docs/archive/2026-08/优化v4/16-PR2-ADR-api-v4-延后.md` | `docs/新架构v1/architecture-decision-records.md` |
 
 ### `优化v4/reports/` (kept as historical evidence, not superseded)
 
@@ -95,7 +95,7 @@ These are **not** superseded — they are first-hand run logs from 2026-08-18 th
 
 | 类别 | 文件（project root） | Replaced by |
 |---|---|---|
-| 交付/完成报告 | `ARCHITECTURE_DELIVERABLES.md`, `ARCHITECTURE_REFACTORING_SUMMARY.md`, `BACKEND_IMPLEMENTATION_REPORT.md`, `BACKEND_VERIFICATION_REPORT.md`, `COMPLETION_REPORT.md`, `COMPONENTS_IMPLEMENTATION_SUMMARY.md`, `COMPREHENSIVE_UPGRADE_SUMMARY.md`, `INTEGRATION_COMPLETE.md`, `PHASE_1_2_DELIVERY.md`, `PHASE4_FINAL_SUMMARY.md`, `PHASE4_IMPLEMENTATION_REPORT.md`, `PLUGIN_IMPLEMENTATION_SUMMARY.md`, `PROJECT_DELIVERY_SUMMARY.md`, `FEISHU_CALLBACK_INTEGRATION.md` | `docs/governance/STATUS-MATRIX.md` |
+| 交付/完成报告 | `ARCHITECTURE_DELIVERABLES.md`, `ARCHITECTURE_REFACTORING_SUMMARY.md`, `BACKEND_IMPLEMENTATION_REPORT.md`, `BACKEND_VERIFICATION_REPORT.md`, `COMPLETION_REPORT.md`, `COMPONENTS_IMPLEMENTATION_SUMMARY.md`, `COMPREHENSIVE_UPGRADE_SUMMARY.md`, `INTEGRATION_COMPLETE.md`, `PHASE_1_2_DELIVERY.md`, `PHASE4_FINAL_SUMMARY.md`, `PHASE4_IMPLEMENTATION_REPORT.md`, `PLUGIN_IMPLEMENTATION_SUMMARY.md`, `PROJECT_DELIVERY_SUMMARY.md`, `docs/archive/2026-07/FEISHU_CALLBACK_INTEGRATION.md` | `docs/governance/STATUS-MATRIX.md` |
 | FINAL/DEPLOYMENT 系列 | `FINAL_DELIVERY{,_REPORT,_REPORT_V2,_REPORT_V3,_CHECKLIST,_PHASE_6_7}.md`, `FINAL_DEPLOYMENT_{REPORT_2026-06-29,SUCCESS,REPORT_2026-06-29_v2}.md`, `FINAL_{PROJECT_SUMMARY,SUMMARY,SUMMARY_WITH_FLOWCHARTS,TEST_SUMMARY,V2_REPORT,FIX_REPORT_2026-07-07,VERIFICATION_REPORT_2026-07-07,AUDIT_AND_DEPLOYMENT_CHECKLIST}.md`, `DEPLOYMENT_{COMPLETE_SUMMARY,COMPLETION_SUMMARY,READY_SUMMARY,REPORT_2026-06-29,SUCCESS,ARCHITECTURE_PLAN}.md`, `DEVELOPMENT_PROGRESS_2026-06-29.md`, `PROJECT_{AUDIT_REPORT,COMPLETION_REPORT_FINAL,STATUS_HANDOFF}.md` | `docs/governance/STATUS-MATRIX.md` |
 | 测试报告/计划 | `COMPLETE_FUNCTIONAL_TEST_REPORT.md`, `COMPLETE_{INTEGRATION_,}TEST_REPORT{,_2026-07-07}.md`, `CURRENT_TEST_STATUS.md`, `EMULATOR_TEST_REPORT.md`, `SIMULATOR_TEST_{REPORT,REPORT_2026-07-07,PLAN}.md`, `LOCAL_{DEPLOYMENT_REPORT_2026-07-07,DEPLOYMENT_SUCCESS,TEST_COMPLETE_REPORT,COMPLETE_TEST_PLAN,INTEGRATION_TEST_PLAN,WEB_TEST_PLAN}.md`, `MANUAL_TEST_GUIDE.md`, `MOBILE_TEST_{QUICK_START,REPORT_2026-07-04,VERIFICATION_PLAN}.md`, `QUICK_START_TESTING.md`, `REAL_STATUS_AUDIT.md`, `VERIFICATION_TEST_REPORT.md`, `PRE_DEPLOYMENT_AUDIT.md` | `docs/governance/STATUS-MATRIX.md` |
 | 修复/排查记录 | `ANDROID_APP_BUILD_SUCCESS.md`, `APK_FIX_REPORT.md`, `APP_INSTALLED_READY_FOR_TEST.md`, `CRITICAL_ISSUE_MIXED_CONTENT_BLOCKER.md`, `FRONTEND_API_FIX.md`, `INSTANCE_LIST_DEBUG_GUIDE.md`, `LOBSTER_FIX_READY.md`, `MCP_CONNECTION_FINAL_ANALYSIS.md`, `MCP_TLS_SNI_ISSUE.md`, `MANUAL_INSTALL_INSTRUCTIONS.md`, `QUICK_FIX_SUMMARY.md`, `ROUTER_GUARD_FIX.md` | `docs/governance/STATUS-MATRIX.md` |
@@ -111,9 +111,9 @@ These are **not** superseded — they are first-hand run logs from 2026-08-18 th
 
 | 文件 | Replaced by |
 |---|---|
-| `docs/2026-07-03-mobile-interaction-optimization.md` | `docs/2026-08-27-mobile-ux-design-v2.md` |
-| `docs/MOBILE_ARCHITECTURE_V2.md` | `docs/2026-08-27-mobile-ux-design-v2.md` |
-| `NAVIGATION_ARCHITECTURE.md` | `docs/2026-08-27-mobile-ux-design-v2.md` §3（路由实现事实以 `frontend/src/app/router-mobile.ts` 为准） |
+| `docs/archive/2026-07/2026-07-03-mobile-interaction-optimization.md` | `docs/2026-08-27-mobile-ux-design-v2.md` |
+| `docs/archive/2026-07/MOBILE_ARCHITECTURE_V2.md` | `docs/2026-08-27-mobile-ux-design-v2.md` |
+| `docs/archive/2026-07/NAVIGATION_ARCHITECTURE.md` | `docs/2026-08-27-mobile-ux-design-v2.md` §3（路由实现事实以 `frontend/src/app/router-mobile.ts` 为准） |
 | `MOBILE_V2_COMPLETION_REPORT.md` | `docs/2026-08-27-mobile-ux-design-v2.md` |
 | `UI_OPTIMIZATION_CODEX_STYLE.md` | `docs/2026-08-27-mobile-ux-design-v2.md`（tokens 体系仍生效，见 `frontend/src/styles/tokens.css`） |
 | `RESPONSIVE_V5_READY.md` | `docs/2026-08-27-mobile-ux-design-v2.md` §4.5 |

@@ -181,7 +181,7 @@
 | 层 | 路径 | 内容 |
 |---|---|---|
 | 顶层 | `README.md`, `docs/README.md` | 项目门面 + 索引 |
-| 现行方案 | `docs/2026-09-*.md`, `docs/MOBILE_ARCHITECTURE_V2.md`（已 superseded） | 工具/会议/邮件/部署 |
+| 现行方案 | `docs/2026-09-*.md`, `docs/archive/2026-07/MOBILE_ARCHITECTURE_V2.md`（已 superseded） | 工具/会议/邮件/部署 |
 | 移动 UX | `docs/2026-08-27-mobile-ux-design-v2.md` | 设计定稿 v2.0 |
 | 备份 | `docs/archive/2026-{07,08,09}/` | 历史报告/交接 |
 | 治理 | `docs/governance/{STATUS-MATRIX,REVIEW-PROCESS,EVIDENCE-LEDGER,SUPERSEDED}.md` | 状态矩阵 / 评审 / 证据账本 |

@@ -17,13 +17,16 @@
 | [2026-08-27-mobile-ux-design-v2.md](2026-08-27-mobile-ux-design-v2.md) | 移动端 UX / IA v2.0（design-accepted） |
 | [2026-09-08-meetings-studio.md](2026-09-08-meetings-studio.md) | 会议工作台现行产品面（列表 / 详情 / ACC） |
 | [2026-09-08-rss.md](design/2026-09-08-rss.md) | RSS 订阅 & 一键分享（订阅源管理、自动发现、过滤、微博/朋友圈深链分享） |
-| [2026-09-09-ai-async-background-survival.md](2026-09-09-ai-async-background-survival.md) | AI 操作全异步 + 切窗口/标签不中断（AiStreamRuntime + iOS/Android 后台保活，Draft） |
+| [2026-09-09-ai-async-background-survival.md](design/2026-09-09-ai-async-background-survival.md) | AI 操作全异步 + 切窗口/标签不中断（AiStreamRuntime + iOS/Android 后台保活，Draft） |
 | [2026-09-09-fonts-subset.md](design/2026-09-09-fonts-subset.md) | 字体子集 + 去 Google Fonts + CJK fallback 决策（`aae01a7`） |
 | [2026-09-10-android-ai-stream-fgs.md](design/2026-09-10-android-ai-stream-fgs.md) | Android AiStreamService（dataSync FGS）落地与 AVD 验证（含 thenable 陷阱修复） |
 | [2026-09-10-sse-120s-watchdog-diagnosis.md](design/2026-09-10-sse-120s-watchdog-diagnosis.md) | AI 流 120s 看门狗真因诊断（全链路超时审计 + SSE 实测；nginx buffering 缺陷） |
 | [2026-09-10-ios-safari-sse-decision.md](design/2026-09-10-ios-safari-sse-decision.md) | iOS Safari/WKWebView 流后台续传方案决策（A 现状 / B Native 桥 / 否决 WS） |
 | [2026-09-08-master-password-biometric-unlock.md](2026-09-08-master-password-biometric-unlock.md) | 主密码与生物认证解锁 |
-| [2026-09-08-task-session-detail.md](2026-09-08-task-session-detail.md) | 任务/会话详情 |
+| [2026-09-08-task-session-detail/](2026-09-08-task-session-detail/) | 任务/会话详情（[PLAN.md](2026-09-08-task-session-detail/PLAN.md)） |
+| [2026-09-09-list-sync-rules.md](2026-09-09-list-sync-rules.md) | 列表数据拉取与更新同步规则（规范 v1） |
+| [2026-09-08-pi-agent-in-app-architecture.md](2026-09-08-pi-agent-in-app-architecture.md) | Pi 智能体内嵌架构（方案稿 v1） |
+| [DESIGN-register-tabbar-role-icon-2026-09-05.md](DESIGN-register-tabbar-role-icon-2026-09-05.md) | 注册流程独立页 · TabBar 收敛 · 角色 chip 图标（设计记录） |
 | [2026-09-07-local-cutover/](2026-09-07-local-cutover/) | 真机切流（252 nginx 同源代理） |
 | [2026-09-07-deployment-and-test-plan/](2026-09-07-deployment-and-test-plan/) | 部署与测试计划 |
 | [2026-09-07-email-pipeline/](2026-09-07-email-pipeline/) | 邮件流水线（输入 + 行为定义） |
@@ -31,9 +34,8 @@
 | [2026-08-28-multi-agent-workbench-design.md](2026-08-28-multi-agent-workbench-design.md) | 多 agent 工作台设计 |
 | [2026-08-28-biometric-auth-and-sqlite-fallback.md](2026-08-28-biometric-auth-and-sqlite-fallback.md) | 生物认证与 SQLite 离线兜底 |
 | [2026-08-27-p1.5-ui-declutter.md](2026-08-27-p1.5-ui-declutter.md) · [2026-08-27-ai-chat-and-gateway-management.md](2026-08-27-ai-chat-and-gateway-management.md) | UI 收敛 · AI 对话 / 网关管理 |
-| [2026-07-02-ui-ux-design-system.md](2026-07-02-ui-ux-design-system.md) · [2026-07-03-mobile-interaction-optimization.md](2026-07-03-mobile-interaction-optimization.md) | 设计系统 · 移动端交互 |
 | [2026-07-02-kxmemory-api-contract.md](2026-07-02-kxmemory-api-contract.md) · [2026-07-02-meeting-recording-design.md](2026-07-02-meeting-recording-design.md) | kxmemory API 契约 · 会议录制设计 |
-| [harmonyos-build-and-test.md](harmonyos-build-and-test.md) · [MOBILE_ARCHITECTURE_V2.md](MOBILE_ARCHITECTURE_V2.md) | HarmonyOS 构建 · 移动端架构 v2（已 superseded） |
+| [harmonyos-build-and-test.md](harmonyos-build-and-test.md) | HarmonyOS 构建与测试（移动端架构 v2、导航架构、移动端交互优化已 superseded，见 `archive/2026-07/`） |
 
 ## 入口
 
@@ -44,11 +46,11 @@
 | [opencode-contract.md](opencode-contract.md) | OpenCode 适配契约（现行事实以此为准） |
 | [v5-integration.md](v5-integration.md) | v5 平台整合对齐（最高层对齐依据） |
 | [scheduled-task-system.md](scheduled-task-system.md) | 计划任务系统 |
-| [DESIGN.md](DESIGN.md) / [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md) / [NAVIGATION_ARCHITECTURE.md](NAVIGATION_ARCHITECTURE.md) | 设计 / 数据架构 / 导航架构 |
+| [DESIGN.md](DESIGN.md) / [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md) | 设计 / 数据架构（导航架构已归档至 `archive/2026-07/`） |
 
 ## 指南（guides/）
 
-[OPERATIONS_GUIDE.md](guides/OPERATIONS_GUIDE.md) · [DEPLOYMENT_GUIDE.md](guides/DEPLOYMENT_GUIDE.md) · [INSTALLATION_GUIDE.md](guides/INSTALLATION_GUIDE.md) · [DEPLOYMENT_CHECKLIST.md](guides/DEPLOYMENT_CHECKLIST.md)
+[OPERATIONS_GUIDE.md](guides/OPERATIONS_GUIDE.md) · [DEPLOYMENT_GUIDE.md](guides/DEPLOYMENT_GUIDE.md) · [INSTALLATION_GUIDE.md](guides/INSTALLATION_GUIDE.md) · [DEPLOYMENT_CHECKLIST.md](guides/DEPLOYMENT_CHECKLIST.md) · [E2E_CI.md](guides/E2E_CI.md)
 
 ## 专题子目录
 
@@ -57,7 +59,7 @@
 | [requirements/](requirements/) | 各专题需求说明（含 [2026-09-08-rss.md](requirements/2026-09-08-rss.md) · [2026-09-09-ai-async-background-survival.md](requirements/2026-09-09-ai-async-background-survival.md) 等） |
 | [design/](design/) | 各专题现行方案（[2026-09-08-rss.md](design/2026-09-08-rss.md) · [2026-09-09-ai-async-background-survival.md](design/2026-09-09-ai-async-background-survival.md) 等） |
 | [新架构v1/](新架构v1/) | 新架构方案全集（含子目录索引 README） |
-| [优化v4/](优化v4/) | 优化 v4 方案与报告 |
+| [优化v4/reports/](优化v4/reports/) | 优化 v4 运行报告（2026-08-18 证据，STATUS-MATRIX 引用；方案文件已归档至 `archive/2026-08/优化v4/`） |
 | [security/](security/) | 威胁模型与安全 ADR |
 | [governance/](governance/) | 文档治理：[SUPERSEDED.md](governance/SUPERSEDED.md)（被取代文档索引）、[STATUS-MATRIX.md](governance/STATUS-MATRIX.md)、[EVIDENCE-LEDGER.md](governance/EVIDENCE-LEDGER.md) |
 | [redclaw-mapping/](redclaw-mapping/) | RedClaw 映射分析 |
@@ -69,8 +71,8 @@
 
 一次性交付/测试/审计报告与被取代方案，按归档年份月份存放，只增不删：
 
-- `archive/2026-07/` — 2026 年 6–7 月开发期报告（部署/交付/测试/OpenCode 适配系列）、I18N 实施报告
-- `archive/2026-08/` — 8 月审计与交接（AUDIT_ROUND_7、SECURITY_AUDIT_R8、P0–P3 移动端验证）、`全面优化v1/`、`v4-融合对齐.md`、`AUTH_REDCLAW_MIGRATION.md`
-- `archive/2026-09/` — 9 月一次性审计报告
+- `archive/2026-07/` — 2026 年 6–7 月开发期报告（部署/交付/测试/OpenCode 适配系列）、I18N 实施报告；被取代的 `MOBILE_ARCHITECTURE_V2.md`、`NAVIGATION_ARCHITECTURE.md`、`2026-07-03-mobile-interaction-optimization.md`、`FEISHU_CALLBACK_INTEGRATION.md`
+- `archive/2026-08/` — 8 月审计与交接（AUDIT_ROUND_7、SECURITY_AUDIT_R8、P0–P3 移动端验证）、`全面优化v1/`、`v4-融合对齐.md`、`AUTH_REDCLAW_MIGRATION.md`、`优化v4/`（被 `新架构v1/` 取代的方案文件；运行报告仍在 `docs/优化v4/reports/`）、8 月底分布式 AI 平台 / JSON 查看会话交接
+- `archive/2026-09/` — 9 月一次性审计报告（`AUDIT_REPORT_2026-09-05.md`、`FEATURE_AUDIT_2026Q1.md`、`HANDOVER_2026Q1.md`、RedClaw 移动端认证验收报告）
 
 > 归档约定：被 `governance/SUPERSEDED.md` 标记或使命完结的过程文档移入对应月份目录；现行契约/方案保持原位。
