@@ -2,7 +2,7 @@
 
 > **状态**：与 `docs/新架构v1/01-architecture/安全模型.md` 配套的实施前威胁建档。
 > 引用每条威胁映射到的 ADR 或合约文档。所有威胁 ID 形如 `T-<维度>-<序号>`，
-> 在 `test-matrix.md` 与 `release-gate.md` 中通过同一 ID 引用。
+> 在 `test-matrix.md` 与 `release-gate.md`（未创建）中通过同一 ID 引用。
 
 ---
 
@@ -46,7 +46,7 @@
   - ADR-0001 §3 强制 `alg ∈ {EdDSA, RS256}`；解析前拒绝其他。
   - 测试 `TestAuthTokenRejectsAlgSubstitution` 必须通过。
 - **剩余风险**：依赖第三方 JWT 库未来不会引入新默认算法；CI 必须锁版本。
-- **关联 ADR/合约**：`docs/security/zag-adr-0001-token-format.md` §3、`docs/adr/2026-08-20-jwks-migration.md`。
+- **关联 ADR/合约**：`docs/security/zag-adr-0001-token-format.md` §3、`docs/adr/2026-08-20-jwks-migration.md`（已删除，同内容见 RedClaw 仓同名文件）。
 
 #### T-S-03：mTLS 缺失降级（fallback to HMAC）
 - **资产**：服务间 mTLS 通道。

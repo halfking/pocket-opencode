@@ -8,8 +8,8 @@
 > **2026-09-08**：用户可见信息架构以 [`2026-09-08-meetings-studio.md`](./2026-09-08-meetings-studio.md) 为准。  
 > 本文保留采集闭环、智能体分工、隐私与 pocketd API 契约。列表/工作台交互不要再按 §UI 设计实现。
 
-> 配套：主方案 [`2026-07-02-android-personal-assistant-plan.md`](./2026-07-02-android-personal-assistant-plan.md)  
-> STT 评估：[`2026-07-02-android-stt-evaluation.md`](./2026-07-02-android-stt-evaluation.md)  
+> 配套：主方案 2026-07-02-android-personal-assistant-plan.md（已删除）  
+> STT 评估：2026-07-02-android-stt-evaluation.md（已删除）  
 > kxmemory 契约：[`2026-07-02-kxmemory-api-contract.md`](./2026-07-02-kxmemory-api-contract.md)  
 > 实施规划：[`.scratch/meetings/01-implementation-plan.md`](../.scratch/meetings/01-implementation-plan.md)
 

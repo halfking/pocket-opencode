@@ -659,7 +659,6 @@ Android 解锁屏免密认证（已绑定指纹/人脸 → 点认证 → 可取�
 
 - [AI 对话与网关管理（2026-08-27）](./2026-08-27-ai-chat-and-gateway-management.md)：LLM BFF + 多模态 + 网关管理扩展
 - [多智能体工作台设计方案（2026-08-28）](./2026-08-28-multi-agent-workbench-design.md)：Chat Agent 数据模型 + CRUD API + Acc 云端同步
-- [架构重构计划（2026-07-02）](./2026-07-02-app-architecture-refactoring-plan.md)：整体架构演进路线图
 
 ---
 

@@ -496,8 +496,6 @@ tar -xzf config_backup_20260707.tar.gz -C /
 ### 文档资源
 
 - 技术文档: `docs/`
-- API文档: `docs/API.md`
-- 架构文档: `docs/ARCHITECTURE.md`
 - 测试报告: `*.md`
 
 ---

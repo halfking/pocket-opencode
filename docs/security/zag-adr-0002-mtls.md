@@ -94,7 +94,7 @@ When the offline root rotates:
 4. Demote the old root to "retired"; remove from the bundle.
 5. Destroy the old root key in a witnessed ceremony.
 
-This is a standard SPIRE rollover and is exercised by the chaos tests in `docs/security/zag-test-matrix.md`.
+This is a standard SPIRE rollover and is exercised by the chaos tests in `docs/security/zag-test-matrix.md`（未创建）.
 
 ### 8. Failure mode (fail-closed)
 

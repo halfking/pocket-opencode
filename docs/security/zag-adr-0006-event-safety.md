@@ -134,7 +134,7 @@ The gateway MUST emit events for at minimum:
 - `audit.decision.recorded`
 
 Additional event types MAY be added; each MUST follow the envelope in
-section 1 and be listed in `zag-contract.md`.
+section 1 and be listed in `zag-contract.md`（未创建）.
 
 ### 8. Failure modes (mandatory section)
 

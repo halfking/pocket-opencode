@@ -487,7 +487,7 @@ func main() {
 - [ ] `features/ai-chat/AIChatView.vue`：顶栏改为「角色选择器」+ 设置 sheet 增加「当前角色」卡片
 
 ### 8.3 文档与测试（1-2 小时）
-- [ ] `docs/2026-08-29-multi-agent-workbench.md`：架构/数据模型/迁移路径/安全边界
+- [ ] `docs/2026-08-29-multi-agent-workbench.md`（未创建）：架构/数据模型/迁移路径/安全边界
 - [ ] 端到端验证：导入内置角色 → 前端选角色 → 发消息验证 system prompt 注入 → 创建自定义角色 → 切换角色
 
 **总计**：8-11 小时（可分 2-3 个会话完成）

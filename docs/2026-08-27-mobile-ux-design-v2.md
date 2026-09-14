@@ -3,7 +3,7 @@
 > **版本**: v2.0（取代 2026-07-03《移动端交互优化方案》v2.0 及 2026-07-05 前后的全部 UI 优化报告）
 > **日期**: 2026-08-27
 > **状态**: 设计定稿（design-accepted）；实现状态以 `docs/governance/STATUS-MATRIX.md` 为准，本文不声称任何功能"已完成"
-> **上位规范**: `docs/2026-07-02-ui-ux-design-system.md`（设计系统：颜色/排版/组件/动效）继续有效，本方案在其约束下定义产品流程与交互
+> **上位规范**: `docs/2026-07-02-ui-ux-design-system.md`（设计系统：颜色/排版/组件/动效；已随 89ea1be 退役删除，待重建），本方案延续其约束定义产品流程与交互
 > **目标架构对齐**: `docs/新架构v1/02-modules/mobile-shell.md`（PocketFleet v3）、`docs/新架构v1/03-roadmap/里程碑.md`
 > **核心用户目标**（用户 2026-08-27 确认）: **快速地了解并处理，看得明白，输入方便**
 
@@ -16,7 +16,7 @@
 | `docs/2026-07-02-ui-ux-design-system.md` | 设计原则、导航规范、组件规范 | 原上位规范；文件已随 89ea1be 退役删除，待重建 |
 | `docs/archive/2026-07/MOBILE_ARCHITECTURE_V2.md` | 双屏布局、语音交互、审批 Bottom Sheet + 滑动手势 | 本文取代（已存档） |
 | `docs/archive/2026-07/2026-07-03-mobile-interaction-optimization.md` | 信息密度、语音优先、分组折叠 | 本文取代（已存档） |
-| `OPENCODE_MOBILE_MANAGEMENT_PLAN.md`（root，已存档） | 会话管理/操作/审批/配置/分析/消息/实时监控 七类需求清单 | 全部吸收进 §3-§6 |
+| `docs/archive/2026-07/OPENCODE_MOBILE_MANAGEMENT_PLAN.md`（原 root，已存档） | 会话管理/操作/审批/配置/分析/消息/实时监控 七类需求清单 | 全部吸收进 §3-§6 |
 | `docs/archive/2026-07/NAVIGATION_ARCHITECTURE.md`（已存档） | 现有路由结构 | 以 `frontend/src/app/router-mobile.ts` 实际代码为准，本文 §3 重定义 IA |
 | P0C/P1/P2/P3 报告（2026-08-15~17） | 设备门、SQLite 离线持久化、outbox 离线队列、diff 性能基线、iOS 验证 | 作为既有能力直接复用 |
 | `docs/新架构v1/02-modules/mobile-shell.md` | PocketFleet v3 目标态（Live 页、Build Live View、通知分级、性能指标） | 本文是其"现有 App 渐进演进"路径 |
@@ -169,7 +169,7 @@ L4 已完成            默认收起（现有行为保留）                    
 
 实现要点：
 
-- 铰链避让：`@media (horizontal-viewport-segments: 2)` + `env(viewport-segment-*)`；WebView 支持不完整时降级为"宽度阈值双栏 + 中缝留白"。真机验证清单用 `VIVO_USB_DEBUG_GUIDE.md`。
+- 铰链避让：`@media (horizontal-viewport-segments: 2)` + `env(viewport-segment-*)`；WebView 支持不完整时降级为"宽度阈值双栏 + 中缝留白"。真机验证清单用 `docs/archive/2026-07/VIVO_USB_DEBUG_GUIDE.md`。
 - 状态保持：折叠↔展开只切换布局组件，路由与 Pinia 状态不动；禁止重挂载导致回到首页。
 - 单手纪律：外屏态下所有可点元素位于下 2/3； destructive 操作必须二次确认。
 
@@ -225,7 +225,7 @@ L4 已完成            默认收起（现有行为保留）                    
 | 会话工作台/审批现状 | `frontend/src/features/sessions/SessionConversationView.vue`、`ApprovalPanel.vue`、`frontend/src/composables/usePendingApprovals.ts` |
 | 幂等事件总线 | `frontend/src/services/idempotentWsBus.ts`、`frontend/src/services/approvalEvents.ts` |
 | 断点体系 | `frontend/src/composables/useBreakpoint.ts` |
-| 离线持久化/队列（已交付能力） | `P1_MOBILE_PERSISTENCE_2026_08_15.md`、`frontend/src/native/{schema,outboxStore,approvalStore}.ts` |
+| 离线持久化/队列（已交付能力） | `docs/archive/2026-08/P1_MOBILE_PERSISTENCE_2026_08_15.md`、`frontend/src/native/{schema,outboxStore,approvalStore}.ts` |
 | WS 后端现状 | `backend/internal/websocket/{hub.go,mobile_hub.go,plugin_hub.go}` |
 | 目标架构 | `docs/新架构v1/02-modules/mobile-shell.md`、`docs/新架构v1/03-roadmap/里程碑.md` |
 

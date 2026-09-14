@@ -1,6 +1,6 @@
 # E2E CI 接入指南（web）
 
-> 套件本体：[`e2e/web/`](../../e2e/web/README 已并入上层) —— 见 [`e2e/README.md`](../../e2e/README.md)。
+> 套件本体：[`e2e/web/`](../../e2e/web/)（README 已并入上层）—— 见 [`e2e/README.md`](../../e2e/README.md)。
 > Workflow：[`.github/workflows/e2e-web.yml`](../../.github/workflows/e2e-web.yml)。
 
 ## 1. 本地运行（可复制粘贴）

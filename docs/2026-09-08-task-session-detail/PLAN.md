@@ -1,6 +1,6 @@
 # 任务详情：当前/历史会话（2026-09-08）
 
-消费端 SSOT。存储分层以 companion `docs/SESSION_STORAGE_DESIGN.md` 方案 D 为准，本文只定 **openpocket 任务详情如何读**。
+消费端 SSOT。存储分层以 companion `docs/SESSION_STORAGE_DESIGN.md`（未创建）方案 D 为准，本文只定 **openpocket 任务详情如何读**。
 
 ## 1. 权威
 

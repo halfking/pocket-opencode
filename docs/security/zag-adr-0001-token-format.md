@@ -92,7 +92,7 @@ Example payload:
 
 **Why not HS256 / RS256 / ES256:**
 
-- **HS256 (symmetric)** — Same key signs and verifies. A single compromised service signs for every other issuer. This is exactly the failure mode called out in `docs/adr/2026-08-20-jwks-migration.md:39-42`; ZAG will not introduce it. Rejected.
+- **HS256 (symmetric)** — Same key signs and verifies. A single compromised service signs for every other issuer. This is exactly the failure mode called out in `docs/adr/2026-08-20-jwks-migration.md:39-42`（已删除，同内容见 RedClaw 仓同名文件）; ZAG will not introduce it. Rejected.
 - **RS256 (RSA-PKCS1v1.5)** — Large signatures (~256 bytes), slow verification. Acceptable as a fallback but not as the primary choice; we keep it as an allowed secondary `alg` only when an issuer is pinned to it for backwards compatibility.
 - **ES256 (ECDSA P-256)** — Acceptable and supported. We use EdDSA in preference because verification is constant-time by construction, signatures are 64 bytes, and we already require Ed25519 for the approval double-sign path (`docs/新架构v1/02-modules/zagent-gateway.md:595-598`), so a single primitive serves both.
 
@@ -105,7 +105,7 @@ Example payload:
 
 ### 3. Algorithm-substitution defence (explicit)
 
-ZAG must reject — at parse time, before any claim is read — any token whose `alg` is not in the allowlist `[EdDSA, RS256]`. We never allow `alg=none`, `alg=HS256`, or any other symmetric algorithm, even in test environments. This mirrors the rejection already present in `identity-go` per `docs/adr/2026-08-20-jwks-migration.md:29`.
+ZAG must reject — at parse time, before any claim is read — any token whose `alg` is not in the allowlist `[EdDSA, RS256]`. We never allow `alg=none`, `alg=HS256`, or any other symmetric algorithm, even in test environments. This mirrors the rejection already present in `identity-go` per `docs/adr/2026-08-20-jwks-migration.md:29`（已删除）.
 
 ### 4. Audience and issuer checks
 
@@ -181,7 +181,7 @@ For service-to-service callers (`pocketd`, `acc-go`, `memora`), the caller mints
 
 ### Neutral
 
-- `identity-go` already supports EdDSA per `docs/adr/2026-08-20-jwks-migration.md`. This ADR makes EdDSA mandatory for ZAG, regardless of the fleet-wide rollout schedule.
+- `identity-go` already supports EdDSA per `docs/adr/2026-08-20-jwks-migration.md`（已删除，同内容见 RedClaw 仓同名文件）. This ADR makes EdDSA mandatory for ZAG, regardless of the fleet-wide rollout schedule.
 
 ---
 
@@ -194,4 +194,4 @@ For service-to-service callers (`pocketd`, `acc-go`, `memora`), the caller mints
 5. A token with `aud=pocket` is rejected with `ZAG_AUTH_BAD_AUDIENCE`.
 6. A token whose `iss` is not in `ZAG_TOKEN_ALLOWED_ISSUERS` is rejected with `ZAG_AUTH_BAD_ISSUER`.
 7. A token whose `kid` is not in the issuer JWKS is rejected with `ZAG_AUTH_UNKNOWN_KID`.
-8. If the issuer's JWKS endpoint returns 5xx, every request is rejected with HTTP 503 and error `ZAG_AUTH_ISSUER_UNREACHABLE` — verified by killing the upstream in a chaos test (see `docs/security/zag-test-matrix.md`).
+8. If the issuer's JWKS endpoint returns 5xx, every request is rejected with HTTP 503 and error `ZAG_AUTH_ISSUER_UNREACHABLE` — verified by killing the upstream in a chaos test (see `docs/security/zag-test-matrix.md`，未创建).

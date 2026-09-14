@@ -138,7 +138,7 @@
 > **当前进度**：阶段 0 完成，**进入阶段 1**（前端 runtime + lifecycle hub）。
 >
 > **下一步**：
-> 1. 读交接文档 `/Users/xutaohuang/workspace/ai-native-tools/openpocket/handoff/2026-09-09-ai-async-background-survival.md`
+> 1. 读交接文档 `/Users/xutaohuang/workspace/ai-native-tools/openpocket/handoff/2026-09-09-ai-async-background-survival.md`（当前缺失）
 > 2. `EnterPlanMode` 与用户确认：保留还是重写 3 个 native 骨架（`aiStreamRuntime.ts`、`appLifecycleHub.ts`、`approvalsRuntime.ts`）
 > 3. 跑 `cd frontend && pnpm test src/native/__tests__/` 确认 green baseline
 > 4. 阶段 1 完成后用 `comprehensive-code-audit` 审计，合并后用 `handoff` 再次交接
