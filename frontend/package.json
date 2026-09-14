@@ -29,19 +29,19 @@
     "dompurify": "^3.4.11",
     "fast-xml-parser": "^4.5.7",
     "http-proxy": "^1.18.1",
-    "jspdf": "^4.2.1",
-    "jspdf-autotable": "^5.0.8",
-    "jszip": "^3.10.1",
+    "jeep-sqlite": "^2.8.0",
     "marked": "^18.0.5",
     "material-symbols": "^0.47.0",
     "otpauth": "^9.5.1",
     "pinia": "^2.2.6",
+    "sql.js": "1.11.0",
     "vue": "^3.5.13",
     "vue-i18n": "^9.14.4",
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.1",
+    "playwright": "^1.61.1",
     "typescript": "^5.8.2",
     "vite": "^6.4.3",
     "vue-tsc": "^3.3.6"

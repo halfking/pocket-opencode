@@ -24,6 +24,8 @@ export interface RefineResult {
   todos: ActionItem[]
   noteId?: string
   tasksCreated?: number
+  /** true = 云端不可用，仅本地拼装转写，非真正精翻 */
+  fromFallback?: boolean
 }
 
 export interface MeetingSyncPayload {
@@ -229,6 +231,7 @@ async function fallbackRefine(segments: MeetingSegment[]): Promise<RefineResult>
         nextMeeting: parsed.structured_minutes?.next_meeting ?? null,
       },
       todos: parsed.todos ?? [],
+      fromFallback: true,
     }
   } catch {
     return {
@@ -236,6 +239,7 @@ async function fallbackRefine(segments: MeetingSegment[]): Promise<RefineResult>
       translations: {},
       structuredMinutes: { agenda: [], decisions: [], actionItems: [], nextMeeting: null },
       todos: [],
+      fromFallback: true,
     }
   }
 }

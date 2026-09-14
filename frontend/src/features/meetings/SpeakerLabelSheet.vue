@@ -1,5 +1,5 @@
 <template>
-  <BottomSheet :open="open" @close="$emit('close')">
+  <BottomSheet :model-value="open" @update:model-value="onVisibleChange">
     <div class="speaker-sheet">
       <h3 class="sheet-title">标注说话人</h3>
       <p class="sheet-hint">选择一位说话人并输入姓名，之后同类声纹将自动识别</p>
@@ -76,6 +76,10 @@ watch(selectedId, (id) => {
     displayName.value = ''
   }
 })
+
+function onVisibleChange(v: boolean) {
+  if (!v) emit('close')
+}
 
 function save() {
   if (!selectedId.value || !displayName.value.trim()) return

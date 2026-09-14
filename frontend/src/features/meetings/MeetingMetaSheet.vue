@@ -1,5 +1,5 @@
 <template>
-  <BottomSheet :open="open" @close="$emit('close')">
+  <BottomSheet :model-value="open" @update:model-value="onVisibleChange">
     <div class="meta-sheet">
       <h3 class="meta-title">会议信息</h3>
 
@@ -90,6 +90,10 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleString('zh-CN', {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
   })
+}
+
+function onVisibleChange(v: boolean) {
+  if (!v) emit('close')
 }
 </script>
 

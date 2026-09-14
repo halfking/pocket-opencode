@@ -3,9 +3,9 @@
     <span class="db-icon" aria-hidden="true">🔒</span>
     <p class="db-title">本地数据未解锁</p>
     <p class="db-hint">
-      {{ hint }}<br />请退出重新登录以初始化本地存储
+      {{ hint }}<br />请解锁本地存储后继续
     </p>
-    <button type="button" class="db-action" @click="$emit('relogin')">重新登录</button>
+    <button type="button" class="db-action" @click="$emit('relogin')">解锁</button>
   </div>
 </template>
 
