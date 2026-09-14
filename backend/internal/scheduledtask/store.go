@@ -396,7 +396,7 @@ UPDATE scheduled_tasks SET
     run_count = run_count + 1,
     next_run_at = $4,
     lease_until = 0,
-    enabled = CASE WHEN $4 = 0 THEN FALSE ELSE enabled END,
+    enabled = CASE WHEN $4::bigint = 0 THEN FALSE ELSE enabled END,
     updated_at = $1
  WHERE id = $5
 `, unixNow(), string(status), errMsg, nextRunAt, taskID)

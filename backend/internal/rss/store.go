@@ -93,6 +93,11 @@ func (s *Store) CreateSource(ctx context.Context, req CreateSourceRequest, sc Sc
 
 const sourceCols = `id,user_id,workspace_id,url,title,description,site_url,language,etag,last_modified,status,enabled,error,fetch_interval,next_fetch_at,last_fetched_at,created_at,updated_at`
 
+// sourceColsReturning qualifies each column with the update target alias `s`
+// for UPDATE ... FROM queries, where bare names would be ambiguous against
+// the FROM source.
+var sourceColsReturning = `s.` + strings.ReplaceAll(sourceCols, `,`, `,s.`)
+
 func scanSource(r pgx.Row) (*Source, error) {
 	var x Source
 	var sec int64
@@ -174,7 +179,7 @@ func (s *Store) ClaimDueSources(ctx context.Context, sc Scope, now time.Time, li
 	if limit > 100 {
 		limit = 100
 	}
-	rows, e := s.pool.Query(ctx, `WITH claimed AS (SELECT id FROM rss_sources WHERE user_id=$1 AND workspace_id=$2 AND enabled AND (next_fetch_at IS NULL OR next_fetch_at <= $3) ORDER BY next_fetch_at NULLS FIRST FOR UPDATE SKIP LOCKED LIMIT $4) UPDATE rss_sources s SET next_fetch_at=$3 + make_interval(secs => s.fetch_interval),updated_at=NOW() FROM claimed c WHERE s.id=c.id RETURNING `+sourceCols, sc.UserID, sc.WorkspaceID, now, limit)
+	rows, e := s.pool.Query(ctx, `WITH claimed AS (SELECT id FROM rss_sources WHERE user_id=$1 AND workspace_id=$2 AND enabled AND (next_fetch_at IS NULL OR next_fetch_at <= $3) ORDER BY next_fetch_at NULLS FIRST FOR UPDATE SKIP LOCKED LIMIT $4) UPDATE rss_sources s SET next_fetch_at=$3 + make_interval(secs => s.fetch_interval),updated_at=NOW() FROM claimed c WHERE s.id=c.id RETURNING `+sourceColsReturning, sc.UserID, sc.WorkspaceID, now, limit)
 	if e != nil {
 		return nil, e
 	}
