@@ -276,7 +276,29 @@ bash tests/deploy-integration-test.sh
 - 生产请优先用根级 `./deploy-{154,245,252}.sh`。
 - `~/Downloads/kaixuan/opp` 与 `/opt/kaixuan/opp` 旧路径仍可通过 `DEPLOY_BASE_DIR` 显式覆盖使用。
 
+## 252 四域名边缘（2026-09-14）
+
+Pocket 公网四域名统一从 252 边缘 nginx 出（443 stream SNI → 9443 PROXY-protocol vhost，`default` 兜底已覆盖全部域名，无需改 stream 配置）：
+
+| 域名 | 服务方 | 上游 |
+|---|---|---|
+| pocket.kxpms.cn | 252 本机 | 172.16.2.210:8090（API）/ 127.0.0.1:4175（前端） |
+| openpocket-api.kxpms.cn | 252 本机 | 172.16.2.210:8090 |
+| pocket.itestu.cn | Mac（netbird 透传） | `<MAC_MESH_IP>`:4175/:8090 主 + 252 兜底 |
+| openpocket-api.itestu.cn | Mac（netbird 透传） | `<MAC_MESH_IP>`:8090 主 + 252 兜底 |
+
+- 模板与幂等应用：`deploy/edge/*.conf` + `deploy/edge/apply-edge-conf.sh`（渲染 `__MAC_MESH_IP__` → scp → `nginx -t` 门禁 → reload，失败自动回滚；itestu 双域带 3s 连接超时快速切换与 `X-Pocket-Upstream` 响应头暴露实际服务方）。
+- mesh IP 变更时：`POCKET_MAC_MESH_IP=<新IP> ./deploy/edge/apply-edge-conf.sh`。
+- openpocket-api.kxpms.cn 证书：LE 从 252 直连被间歇阻断，签发走 Mac `certbot certonly --manual`（auth/cleanup 钩子经 ssh 写 252 `/var/www/certbot`），产物同步 252 `/etc/letsencrypt/live/openpocket-api.kxpms.cn/`，续期同样在 Mac 跑 `certbot renew` 后 scp。
+- 拓扑细节/证书矩阵/遗留风险见 `docs/handoff/2026-09-14-pocket-4-domain-deploy.md`。
+
 ## 变更记录
+
+- **2026-09-14（审计 + 四域名边缘 + 实况端口对齐）**：
+  - `env.sh` 252 分支端口从 8092/4177 修正为实况 8090/4175（kxpms-cert-manager 只占 127.0.0.1 loopback，pocketd 绑 eth0 IP 不冲突）
+  - 新增 `deploy/edge/`：四域名 vhost SSOT 模板 + `apply-edge-conf.sh` 幂等应用脚本
+  - `pocket.kxpms-cn-9443.conf` upstream 内联自包含（原先跨文件引用 itestu conf 的 `pocket_mac_api/pocket_mac_web`，itestu 改 mesh 会误伤 kxpms 域）
+  - itestu 双域改为 mesh 主 + 252 兜底；252 `.env.252` 的 `POCKET_ALLOWED_ORIGINS` 补齐 4 个 https 域
 
 - **2026-09-04（审计 + 修复 + 252 入口）**：
   - 新增仓库根 `deploy-252.sh`（与 154 / 245 同款、同 `OPP_SERVER_NAME=252`、绑 eth0 IP `172.16.2.252`、端口 `8092 / 4177`、env 文件 `.env.252`）

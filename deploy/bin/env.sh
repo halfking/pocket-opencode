@@ -213,10 +213,12 @@ if [[ "${DEPLOY_ENV}" == "server" ]]; then
       # 252 是后端 API 宿主 + PG 宿主。注意：服务器名"252"来自公网 IP
       # 115.29.212.252，其 eth0 内网 IP 实为 172.16.2.210（2026-09-04 实测确认，
       # 与 PG 容器 pg-252-pg17 的绑 IP 一致）；绑 172.16.2.252 会 bind 失败。
-      # 端口 8092 / 4177 与已被占用 8090（kxpms-cert-manager）/4175 错开。
+      # 端口定稿（2026-09-14 以容器实况为准）：8090/4175。kxpms-cert-manager
+      # 只占 127.0.0.1:8090 loopback，pocketd 绑 eth0 172.16.2.210:8090，
+      # 绑定 IP 不同不冲突。旧预设 8092/4177 与实况容器不符，废弃。
       : "${POCKET_PORT_BIND_IP:=172.16.2.210}"
-      : "${POCKET_HTTP_PORT:=8092}"
-      : "${POCKET_FRONTEND_PORT:=4177}"
+      : "${POCKET_HTTP_PORT:=8090}"
+      : "${POCKET_FRONTEND_PORT:=4175}"
       ;;
     *)
       # 旧 deploy-252 的兼容路径（无 OPP_SERVER_NAME 但 DEPLOY_ENV=server 时）

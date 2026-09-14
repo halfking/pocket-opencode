@@ -1138,3 +1138,165 @@ POCKET_PROJECT_NAME=opencode-pocket-server-245
   新建 10 个目录，跳过 1 个已存在目录
   条件 DB 数据目录已建: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.rfkaNo7DdS/postgres
   下一步: ./deploy-local.sh（会自动生成 /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.rfkaNo7DdS/config/.env.local）
+━━━ 1. dry-run: deploy-local.sh (PG=true) ━━━
+━━━ deploy-local ━━━
+  OS_KIND         = darwin
+  DEPLOY_BASE_DIR = /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05
+  HTTP_PORT       = 8090@0.0.0.0
+  FRONTEND_PORT   = 4175
+  ✅ OS 适配: darwin（原生支持）
+  PG 拓扑: deploy=false target=host.docker.internal:5432
+━━━ init-dirs: DEPLOY_ENV=local OS=darwin ━━━
+  DEPLOY_BASE_DIR = /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05
+  OPP_SERVER_NAME = <none>
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/data
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/logs
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/raw-logs
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/config
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/images
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/backups
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/attachments
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/bin
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/run
+━━━ 完成 ━━━
+  新建 9 个目录，跳过 1 个已存在目录
+  下一步: ./deploy-local.sh（会自动生成 /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/config/.env.local）
+━━━ postgres: deploy=false target=host.docker.internal:5432 ━━━
+  ✅ postgres: 命中外部实例 (docker @ host.docker.internal:5432)；不创建新实例
+━━━ redis: deploy=false target=127.0.0.1:6379 ━━━
+  ✅ redis: 命中外部实例 (docker @ 127.0.0.1:6379)；不创建新实例
+━━━ mysql: deploy=false target=127.0.0.1:3306 ━━━
+  ✅ mysql: 命中外部实例 (docker @ 127.0.0.1:3306)；不创建新实例
+
+━━━ ensure-databases 总结 ━━━
+  PG    : mode=uninit              target=host.docker.internal:5432  deploy=false
+  Redis : mode=uninit              target=127.0.0.1:6379  deploy=false
+  MySQL : mode=uninit              target=127.0.0.1:3306  deploy=false
+  📝 生成本地 .env 模板: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/config/.env.local
+  🔑 injected POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1
+  🔑 POCKET_LLM_GATEWAY_API_KEY set
+  🆕 bin/current 不存在，stage pocket-opp-pfa20e64-20260914092342 并切换
+[blue-green] staged bin/pocket-opp-pfa20e64-20260914092342/
+[blue-green] bin/current → pocket-opp-pfa20e64-20260914092342（previous=<none>）
+▶ 镜像已存在，直接启动（--no-build；强制重建加 --build）
+━━━ start: opencode-pocket-local-opp-integ-XX (local) ━━━
+  ENV_FILE  = /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/config/.env.local
+  COMPOSE   = /Users/xutaohuang/workspace/ai-native-tools/openpocket/deploy/bin/docker-compose.opp.yml
+  DATA_DIR  = /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/data
+  LOG_DIR   = /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/logs
+  NET       = opp-local-net (external=false)
+  HTTP_PORT = 8090@0.0.0.0  FRONTEND_PORT = 4175
+▶ docker compose up -d --force-recreate --no-build
+  🧪 --dry-run: 跳过 docker compose up，仅打印预期命令
+    docker     compose     -p     opencode-pocket-local-opp-integ-XX     --env-file     /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/config/.env.local     -f     /Users/xutaohuang/workspace/ai-native-tools/openpocket/deploy/bin/docker-compose.opp.yml     -f     /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.t06py1Li05/bin/pocket-opp-pfa20e64-20260914092342/pocketd-compose-snippet.yml  -d --force-recreate --no-build pocketd
+━━━ 2. dry-run: deploy-154.sh 派生 ━━━
+POCKET_PORT_BIND_IP=172.16.2.154
+POCKET_HTTP_PORT=8090
+POCKET_ENV_FILE=/var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-154.XXXXXX.g7anY5Qajk/config/.env.154
+POCKET_PROJECT_NAME=opencode-pocket-server-154
+OPP_PG_HOST=172.16.2.210
+━━━ 3. dry-run: deploy-245.sh 派生 ━━━
+POCKET_PORT_BIND_IP=172.16.2.245
+POCKET_HTTP_PORT=8091
+POCKET_FRONTEND_PORT=4176
+POCKET_ENV_FILE=/var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-245.XXXXXX.mgI7y9fIME/config/.env.245
+POCKET_PROJECT_NAME=opencode-pocket-server-245
+━━━ 4. dry-run: OPP_DEPLOY_PG=true → postgres/ 创建 ━━━
+━━━ init-dirs: DEPLOY_ENV=local OS=darwin ━━━
+  DEPLOY_BASE_DIR = /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.G1qOATGcVC
+  OPP_SERVER_NAME = <none>
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.G1qOATGcVC/data
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.G1qOATGcVC/logs
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.G1qOATGcVC/raw-logs
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.G1qOATGcVC/config
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.G1qOATGcVC/images
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.G1qOATGcVC/backups
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.G1qOATGcVC/attachments
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.G1qOATGcVC/bin
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.G1qOATGcVC/run
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.G1qOATGcVC/postgres
+━━━ 完成 ━━━
+  新建 10 个目录，跳过 1 个已存在目录
+  条件 DB 数据目录已建: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.G1qOATGcVC/postgres
+  下一步: ./deploy-local.sh（会自动生成 /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.G1qOATGcVC/config/.env.local）
+━━━ 1. dry-run: deploy-local.sh (PG=true) ━━━
+━━━ deploy-local ━━━
+  OS_KIND         = darwin
+  DEPLOY_BASE_DIR = /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0
+  HTTP_PORT       = 8090@0.0.0.0
+  FRONTEND_PORT   = 4175
+  ✅ OS 适配: darwin（原生支持）
+  PG 拓扑: deploy=false target=host.docker.internal:5432
+━━━ init-dirs: DEPLOY_ENV=local OS=darwin ━━━
+  DEPLOY_BASE_DIR = /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0
+  OPP_SERVER_NAME = <none>
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/data
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/logs
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/raw-logs
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/config
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/images
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/backups
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/attachments
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/bin
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/run
+━━━ 完成 ━━━
+  新建 9 个目录，跳过 1 个已存在目录
+  下一步: ./deploy-local.sh（会自动生成 /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/config/.env.local）
+━━━ postgres: deploy=false target=host.docker.internal:5432 ━━━
+  ✅ postgres: 命中外部实例 (docker @ host.docker.internal:5432)；不创建新实例
+━━━ redis: deploy=false target=127.0.0.1:6379 ━━━
+  ✅ redis: 命中外部实例 (docker @ 127.0.0.1:6379)；不创建新实例
+━━━ mysql: deploy=false target=127.0.0.1:3306 ━━━
+  ✅ mysql: 命中外部实例 (docker @ 127.0.0.1:3306)；不创建新实例
+
+━━━ ensure-databases 总结 ━━━
+  PG    : mode=uninit              target=host.docker.internal:5432  deploy=false
+  Redis : mode=uninit              target=127.0.0.1:6379  deploy=false
+  MySQL : mode=uninit              target=127.0.0.1:3306  deploy=false
+  📝 生成本地 .env 模板: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/config/.env.local
+  🔑 injected POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1
+  🔑 POCKET_LLM_GATEWAY_API_KEY set
+  🆕 bin/current 不存在，stage pocket-opp-pfa20e64-20260914092345 并切换
+[blue-green] staged bin/pocket-opp-pfa20e64-20260914092345/
+[blue-green] bin/current → pocket-opp-pfa20e64-20260914092345（previous=<none>）
+▶ 镜像已存在，直接启动（--no-build；强制重建加 --build）
+━━━ start: opencode-pocket-local-opp-integ-XX (local) ━━━
+  ENV_FILE  = /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/config/.env.local
+  COMPOSE   = /Users/xutaohuang/workspace/ai-native-tools/openpocket/deploy/bin/docker-compose.opp.yml
+  DATA_DIR  = /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/data
+  LOG_DIR   = /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/logs
+  NET       = opp-local-net (external=false)
+  HTTP_PORT = 8090@0.0.0.0  FRONTEND_PORT = 4175
+▶ docker compose up -d --force-recreate --no-build
+  🧪 --dry-run: 跳过 docker compose up，仅打印预期命令
+    docker     compose     -p     opencode-pocket-local-opp-integ-XX     --env-file     /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/config/.env.local     -f     /Users/xutaohuang/workspace/ai-native-tools/openpocket/deploy/bin/docker-compose.opp.yml     -f     /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ.XXXXXX.0tXzoV44l0/bin/pocket-opp-pfa20e64-20260914092345/pocketd-compose-snippet.yml  -d --force-recreate --no-build pocketd
+━━━ 2. dry-run: deploy-154.sh 派生 ━━━
+POCKET_PORT_BIND_IP=172.16.2.154
+POCKET_HTTP_PORT=8090
+POCKET_ENV_FILE=/var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-154.XXXXXX.Y4EkAcd70f/config/.env.154
+POCKET_PROJECT_NAME=opencode-pocket-server-154
+OPP_PG_HOST=172.16.2.210
+━━━ 3. dry-run: deploy-245.sh 派生 ━━━
+POCKET_PORT_BIND_IP=172.16.2.245
+POCKET_HTTP_PORT=8091
+POCKET_FRONTEND_PORT=4176
+POCKET_ENV_FILE=/var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-245.XXXXXX.NF7w9SZaTl/config/.env.245
+POCKET_PROJECT_NAME=opencode-pocket-server-245
+━━━ 4. dry-run: OPP_DEPLOY_PG=true → postgres/ 创建 ━━━
+━━━ init-dirs: DEPLOY_ENV=local OS=darwin ━━━
+  DEPLOY_BASE_DIR = /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0
+  OPP_SERVER_NAME = <none>
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0/data
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0/logs
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0/raw-logs
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0/config
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0/images
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0/backups
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0/attachments
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0/bin
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0/run
+  ✅ mkdir /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0/postgres
+━━━ 完成 ━━━
+  新建 10 个目录，跳过 1 个已存在目录
+  条件 DB 数据目录已建: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0/postgres
+  下一步: ./deploy-local.sh（会自动生成 /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0/config/.env.local）
