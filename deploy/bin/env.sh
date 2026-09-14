@@ -90,13 +90,19 @@ if [[ "${OPP_OS_KIND}" == "darwin" && "${DEPLOY_BASE_DIR}" == "${HOME}/kaixuan/o
   fi
 fi
 
-# compose project / 容器名后缀：按 DEPLOY_BASE_DIR 末段派生。
-# 同机多套部署（正式 + 临时测试）即使同一 DEPLOY_ENV，也不同 project，
-# 避免 up --force-recreate 互相踩容器。正式目录 ~/kaixuan/openpocket → -openpocket。
-# 服务器（154/245）则用 OPP_SERVER_NAME 直接派生后缀，保证两机 compose
-# project 名不会因 base-dir 重名而互踩。
-if [[ "${DEPLOY_ENV}" == "server" && -n "${OPP_SERVER_NAME}" ]]; then
-  OPP_NAME_SUFFIX="${OPP_SERVER_NAME}"
+# compose project / 容器名后缀：server 模式一律用 -opp，local 模式用 DEPLOY_BASE_DIR 末段。
+#
+# 历史（2026-08 前）：用 OPP_SERVER_NAME 直接派生 → -154 / -245 / -252。
+#   这在多机部署没问题，但 252 上若做蓝绿切换（OPP_SERVER_NAME 不变、
+#   DEPLOY_BASE_DIR 变），会出现两套 project 名共存、互相踩。
+#   改成统一 -opp：所有 server 模式 compose project 名一致，蓝绿切时
+#   `up --force-recreate` 干净替换，rollback 也只一个名字。
+#
+# 同机多套部署（local 的正式 + 临时测试）即使同一 DEPLOY_ENV，也不同
+# project，避免 up --force-recreate 互相踩容器。
+# 正式目录 ~/kaixuan/openpocket → -openpocket，临时 ~/kaixuan/openpocket-test → -openpocket-test。
+if [[ "${DEPLOY_ENV}" == "server" ]]; then
+  OPP_NAME_SUFFIX="opp"
 else
   OPP_NAME_SUFFIX="$(basename "${DEPLOY_BASE_DIR}" | tr -c 'a-zA-Z0-9-' '-' | sed 's/^-*//;s/-*$//' | cut -c1-12)"
 fi
