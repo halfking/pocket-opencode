@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # verify-mesh-edge.sh —— Pocket 四域名 mesh 边缘贯通验证
 #
-# 用途：
-#   1. 校验 Mac 与 252 服务器通过 Netbird mesh IP 直连可达
-#   2. 校验 252 上 /pocketd-server (8090) 与 /openpocket-frontend (4175) 端口经 mesh 暴露正常
-#   3. 校验 pocket.itestu.cn 的 X-Pocket-Upstream 头指向当前 mesh IP（证明走了 mesh 回源，
-#      而不是公网回源 / 兜底备案源）
+# 用途（在 Mac 上运行）：
+#   1. 从本机 netbird 状态取 Mac 的 mesh IP
+#   2. SSH 到 252 探 mesh 回源路径（252 → Mac:8090/:4175，nginx upstream 实际方向）
+#   3. SSH 到 252 探本机兜底源（127.0.0.1:8090/:4175）
+#   4. 校验 pocket.itestu.cn 的 X-Pocket-Upstream 头指向当前 mesh IP（公网走了 mesh 回源）
 #
 # 用法：
 #   ./deploy/edge/verify-mesh-edge.sh                       # 自动从本地 netbird 状态取 IP
@@ -17,6 +17,7 @@
 set -euo pipefail
 
 UPSTREAM_HOST="115.29.212.252"
+UPSTREAM_FALLBACK_HOST="172.16.2.210"
 POCKETD_PORT_REMOTE="8090"
 FRONTEND_PORT_REMOTE="4175"
 POCKET_PUBLIC_DOMAIN="https://pocket.itestu.cn"
@@ -44,9 +45,12 @@ else
   if ! command -v netbird >/dev/null 2>&1; then
     red "未装 netbird，且未传 POCKET_MAC_MESH_IP。装 netbird 后再跑，或显式 export。"; exit 4
   fi
+  # netbird >=0.78 本机信息在顶层 netbirdIp（CIDR 形如 100.x.x.x/16）；
+  # 旧版在 .localPeerState.ip/fqdn，保留兜底。
   MESH_IP="$(netbird status --json 2>/dev/null \
-    | (command -v jq >/dev/null && jq -r '.localPeerState.fqdn // empty') \
+    | (command -v jq >/dev/null && jq -r '.netbirdIp // .localPeerState.ip // .localPeerState.fqdn // empty') \
     || true)"
+  MESH_IP="${MESH_IP%%/*}"
   if [[ -z "$MESH_IP" || "$MESH_IP" == "null" ]]; then
     red "netbird 已装但未拿到 mesh IP。先 sudo netbird up --management-url https://netbird.itestu.cn"
     exit 4
@@ -55,33 +59,42 @@ else
 fi
 hr
 
-# 2. Mac → 252 mesh 连通性（端口只探 8090 / 4175）
-yellow "[2/4] 探 252 上的 pocketd-server(:${POCKETD_PORT_REMOTE}) 与 openpocket-frontend(:${FRONTEND_PORT_REMOTE})"
+# 2. mesh 回源路径：252 → Mac（nginx pocket_mac_* upstream 实际走的方向）。
+#    注意不能在 Mac 本机 curl 自己的 mesh IP —— netbird userspace 接口不
+#    hairpin，必然超时；必须在 252 上探 Mac。
+yellow "[2/4] 在 252 上探 Mac mesh 回源 ${MESH_IP}(:${POCKETD_PORT_REMOTE}/healthz /:${FRONTEND_PORT_REMOTE}/)"
 ok_ports=0
-for port in "$POCKETD_PORT_REMOTE" "$FRONTEND_PORT_REMOTE"; do
-  if curl -sS --max-time 5 -o /dev/null -w "  ${MESH_IP}:${port} -> HTTP %{http_code} (%{time_total}s)\n" \
-       "http://${MESH_IP}:${port}/"; then
+probe_ports=("$POCKETD_PORT_REMOTE" "$FRONTEND_PORT_REMOTE")
+probe_paths=("/healthz" "/")
+for i in "${!probe_ports[@]}"; do
+  port="${probe_ports[$i]}"; path="${probe_paths[$i]}"
+  rc="$(ssh -o ConnectTimeout=5 -o BatchMode=yes root@"${UPSTREAM_HOST}" \
+        "curl -sS --max-time 5 -o /dev/null -w '%{http_code} (%{time_total}s)' http://${MESH_IP}:${port}${path}" 2>/dev/null || echo '000')"
+  echo "  252 -> ${MESH_IP}:${port}${path} -> HTTP ${rc}"
+  if [[ "$rc" =~ ^[23] ]]; then
     ok_ports=$((ok_ports+1))
   fi
 done
 if [[ $ok_ports -lt 2 ]]; then
-  red "[2/4] FAILED: 两个端口里至少一个不可达"
+  red "[2/4] FAILED: mesh 回源路径至少一个端口不可达（Mac netbird 断了或服务没起）"
   exit 2
 fi
-green "[2/4] 两个端口都通"
+green "[2/4] mesh 回源两个端口都通"
 hr
 
-# 3. 远端 SSH 上探 252 本机端口（防止 Mac 路由假阳性）
-yellow "[3/4] SSH 到 252 上探本机端口，确认是 252 自身在响应（而非别处伪造）"
+# 3. 远端 SSH 上探 252 兜底源（nginx 兜底上游用的 172.16.2.210，252 本机容器）。
+#    注意 127.0.0.1:8090 上是无关进程，不能当兜底探针。
+yellow "[3/4] SSH 到 252 上探兜底源 ${UPSTREAM_FALLBACK_HOST}，确认兜底容器在响应"
 ssh_ok=0
-for port in "$POCKETD_PORT_REMOTE" "$FRONTEND_PORT_REMOTE"; do
+for i in "${!probe_ports[@]}"; do
+  port="${probe_ports[$i]}"; path="${probe_paths[$i]}"
   rc="$(ssh -o ConnectTimeout=5 -o BatchMode=yes root@"${UPSTREAM_HOST}" \
-        "curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:${port}/" 2>/dev/null || echo '000')"
+        "curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://${UPSTREAM_FALLBACK_HOST}:${port}${path}" 2>/dev/null || echo '000')"
   if [[ "$rc" =~ ^[23] ]]; then
-    echo "  252:127.0.0.1:${port} -> HTTP ${rc}"
+    echo "  252:${UPSTREAM_FALLBACK_HOST}:${port}${path} -> HTTP ${rc}"
     ssh_ok=$((ssh_ok+1))
   else
-    echo "  252:127.0.0.1:${port} -> HTTP ${rc} (异常)"
+    echo "  252:${UPSTREAM_FALLBACK_HOST}:${port}${path} -> HTTP ${rc} (异常)"
   fi
 done
 if [[ $ssh_ok -lt 2 ]]; then
