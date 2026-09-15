@@ -25,6 +25,7 @@ backend/agent_echo
 
 # Compiled pocketd binary (sources: backend/cmd/pocketd; build artifact)
 backend/pocketd
+backend/pocketd-*
 backend/bin/
 
 # SQLite database files (local testing / runtime data)
@@ -75,3 +76,30 @@ docs/artifacts/
 
 # Scratchpad for ad-hoc agent session notes (not source-of-truth docs)
 tmp/
+
+# === 2026-09-16 cross-platform-portability cleanup ===
+# The repo had zero paths containing true Windows-illegal characters
+# (<>:"|?*), no reserved device names (CON/PRN/AUX/NUL/COM/LPT), no
+# trailing-space/dot filenames, no case collisions, and no paths near the
+# 260-char MAX_PATH limit. The cleanup below targets platform-specific
+# *build artifacts* and *secrets* that should never have been tracked:
+# they are local-only, large, and/or sensitive, and they break clean
+# cross-platform checkout because the same names are rebuilt with
+# different platform binaries on Windows / macOS / Linux.
+
+# Root-level build outputs (sources: backend/cmd/* ; not part of source)
+/bin/
+
+# Backend test binaries (sources: backend/cmd/test_acp_* ; locally built)
+backend/test_acp_*
+
+# Deploy artifacts directory (local build outputs of pocketd for offline
+# image / cross-OS testing). Generic pattern catches 本地方案/artifacts/
+# and any future locale-named deploy artifacts.
+/backend/deploy/*/artifacts/
+
+# Email encryption master keys — generated per host, must NEVER be
+# committed. Two copies exist due to a repo-root vs backend-root path
+# duplication; both are sensitive.
+backend/data/email_master.key
+data/email_master.key
