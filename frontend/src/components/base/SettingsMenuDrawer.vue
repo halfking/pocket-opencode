@@ -91,6 +91,7 @@ const groups = computed<MenuGroup[]>(() => [
     // tab bar 只保留 5 个一级目的地（见 BottomNav 头注释）。
     title: t('nav.moreFeatures'),
     items: [
+      { to: '/local-agent', icon: 'smart_toy', label: t('nav.localAgent') },
       { to: '/pkm/today', icon: 'sticky_note_2', label: t('nav.pkmNotes') },
       { to: '/vault', icon: 'lock', label: t('nav.vault') },
       { to: '/marketplace/skills', icon: 'extension', label: t('nav.skillMarket') },

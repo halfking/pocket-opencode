@@ -47,7 +47,8 @@
     "sessions": "Sessões",
     "instances": "Instâncias",
     "costQuota": "Custo e cota",
-    "settings": "Configurações"
+    "settings": "Configurações",
+    "localAgent": "Local Agent"
   },
   "settings": {
     "aiGateway": "AI Gateway",

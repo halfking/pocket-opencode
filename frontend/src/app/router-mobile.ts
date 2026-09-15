@@ -57,6 +57,9 @@ const WorkbuddyView = () => import('../features/marketplace/WorkbuddyView.vue')
 // PR4: 守卫逻辑已抽取到 ./routeGuards.ts；本文件保留路由表，避免在
 // 创建 router 之前 import pinia/native 引发的副作用。
 
+// 手机端内置本地智能体(pi 语义移植:skills+experts+tools,WebView 内循环)
+const LocalAgentView = () => import('../features/local-agent/LocalAgentView.vue')
+
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
@@ -84,6 +87,13 @@ const router = createRouter({
       name: 'agent-library',
       component: () => import('../features/agents/AgentLibraryView.vue'),
       meta: { requiresAuth: true, title: '智能体', bottomNav: false, canGoBack: true }
+    },
+    // 本地智能体:手机端内置(pi 语义移植,WebView 内 agent 循环 + 技能/专家/工具)
+    {
+      path: '/local-agent',
+      name: 'local-agent',
+      component: LocalAgentView,
+      meta: { requiresAuth: true, title: '本地智能体', bottomNav: false, canGoBack: true }
     },
     {
       path: '/agents/new',

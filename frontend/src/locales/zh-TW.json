@@ -47,7 +47,8 @@
     "sessions": "會話",
     "instances": "實例",
     "costQuota": "成本與配額",
-    "settings": "設定"
+    "settings": "設定",
+    "localAgent": "本地智慧體"
   },
   "settings": {
     "aiGateway": "AI 閘道",

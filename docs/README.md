@@ -22,6 +22,7 @@
 | [2026-09-10-android-ai-stream-fgs.md](design/2026-09-10-android-ai-stream-fgs.md) | Android AiStreamService（dataSync FGS）落地与 AVD 验证（含 thenable 陷阱修复） |
 | [2026-09-10-sse-120s-watchdog-diagnosis.md](design/2026-09-10-sse-120s-watchdog-diagnosis.md) | AI 流 120s 看门狗真因诊断（全链路超时审计 + SSE 实测；nginx buffering 缺陷） |
 | [2026-09-10-ios-safari-sse-decision.md](design/2026-09-10-ios-safari-sse-decision.md) | iOS Safari/WKWebView 流后台续传方案决策（A 现状 / B Native 桥 / 否决 WS） |
+| [2026-09-15-mobile-local-agent.md](design/2026-09-15-mobile-local-agent.md) | 手机端内置本地智能体（pi 语义移植：skills+experts+tools WebView 内循环；openhands 交互：事件时间线/工具卡/审批条/计划卡；openhands×pi 调研 + 落地 + 模拟器验收） |
 | [2026-09-08-master-password-biometric-unlock.md](2026-09-08-master-password-biometric-unlock.md) | 主密码与生物认证解锁 |
 | [2026-09-08-task-session-detail/](2026-09-08-task-session-detail/) | 任务/会话详情（[PLAN.md](2026-09-08-task-session-detail/PLAN.md)） |
 | [2026-09-09-list-sync-rules.md](2026-09-09-list-sync-rules.md) | 列表数据拉取与更新同步规则（规范 v1） |

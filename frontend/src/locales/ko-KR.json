@@ -47,7 +47,8 @@
     "sessions": "세션",
     "instances": "인스턴스",
     "costQuota": "비용 및 할당량",
-    "settings": "설정"
+    "settings": "설정",
+    "localAgent": "로컬 에이전트"
   },
   "settings": {
     "aiGateway": "AI Gateway",

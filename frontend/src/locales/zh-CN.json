@@ -56,7 +56,8 @@
     "sessions": "会话",
     "instances": "实例",
     "costQuota": "成本与配额",
-    "settings": "设置"
+    "settings": "设置",
+    "localAgent": "本地智能体"
   },
   "routes": {
     "login": "登录",

@@ -55,7 +55,8 @@
     "sessions": "Sessions",
     "instances": "Instances",
     "costQuota": "Cost & Quota",
-    "settings": "Settings"
+    "settings": "Settings",
+    "localAgent": "Local Agent"
   },
   "routes": {
     "settings": "Settings",
