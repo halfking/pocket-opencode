@@ -112,3 +112,52 @@ func TestParseToolTasks_JSONRowsWithoutIDAreSkipped(t *testing.T) {
 		t.Fatalf("expected rows without id to be skipped, got %+v", tasks)
 	}
 }
+
+// TestParseToolTasks_NonTaskJSON 防线：JSON 看起来"合法但不是任务"。
+// 例如 {"id":"foo","message":"No tasks found"} 既能通过 json.Unmarshal，
+// 又满足 single.ID 非空——若仅凭 id 判断，会把它当成任务，后续 upsert
+// 直接制造空 title 脏行。这条测试锁住识别契约：id 与 title 都非空才算
+// 任务对象；且合法 JSON 未识别出任务时返回空，绝不回退 legacy 解析器
+// （legacy 会把 JSON 按 ": " 撕成垃圾 id，tasks_pkey 事故根因）。
+func TestParseToolTasks_NonTaskJSON(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"plain message", `{"message":"No tasks found"}`},
+		{"id but no title", `{"id":"foo","message":"No tasks found"}`},
+		{"array without id or title", `[{"message":"No tasks found"},{"id":"x","note":"y"}]`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if tasks := ParseToolTasks(c.body); len(tasks) != 0 {
+				t.Fatalf("non-task JSON should not be parsed as tasks, got %+v", tasks)
+			}
+		})
+	}
+}
+
+// TestParseToolTasks_ValidJSONNeverFallsBackToLegacy 锁死二次加固语义：
+// 任何合法 JSON（含未来新增的未知响应形态）都不得进入 legacy 文本解析器，
+// 否则 JSON 字符串会被按 ": " 切成垃圾 id 复发 tasks_pkey。
+func TestParseToolTasks_ValidJSONNeverFallsBackToLegacy(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"unknown envelope", `{"code":200,"data":{"next_cursor":"abc"}}`},
+		{"nested unknown object", `{"result":{"items":[1,2,3]}}`},
+		{"json string", `"plain json string"`},
+		{"json number", `42`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tasks := ParseToolTasks(c.body)
+			for _, ts := range tasks {
+				if strings.ContainsAny(ts.ID, "{},[]\"") || strings.Contains(ts.ID, ": ") {
+					t.Fatalf("valid JSON leaked into legacy parser, garbage id %q", ts.ID)
+				}
+			}
+		})
+	}
+}

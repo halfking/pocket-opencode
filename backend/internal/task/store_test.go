@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -675,5 +676,97 @@ func TestUpsertTask_RequiresID(t *testing.T) {
 
 	if err := s.UpsertTask(context.Background(), &Task{Title: "x"}); err == nil {
 		t.Fatal("UpsertTask with empty id should fail")
+	}
+}
+
+// TestUpsertTask_CrossWorkspaceConflict 锁定跨 workspace 同 ID 语义：
+// ACC 任务 ID 全局唯一，tasks 表主键也是全局 (id)。同 ID 出现在另一
+// workspace 属数据异常，UpsertTask 必须拒绝写入（而不是静默改写另一
+// 租户任务的远端字段造成跨租户污染）。同时锁住 CreatedAt/UpdatedAt
+// 不被无脑重写——上游携带的时间戳应当原样落盘。
+func TestUpsertTask_CrossWorkspaceConflict(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	upstreamCreated := time.Unix(1_700_000_000, 0).UTC()
+	upstreamUpdated := time.Unix(1_700_000_500, 0).UTC()
+
+	ws1 := &Task{
+		ID:          "task-cross",
+		WorkspaceID: "workspace-alpha",
+		Title:       "Task in alpha",
+		Status:      "pending",
+		CreatedAt:   upstreamCreated,
+		UpdatedAt:   upstreamUpdated,
+	}
+	if err := s.UpsertTask(ctx, ws1); err != nil {
+		t.Fatalf("upsert ws1 failed: %v", err)
+	}
+	// 入参对象不得被改写：调用者携带的 CreatedAt/UpdatedAt 在 UpsertTask
+	// 返回后应保持原值（副作用仅落库，不污染调用者数据）。
+	if !ws1.CreatedAt.Equal(upstreamCreated) || !ws1.UpdatedAt.Equal(upstreamUpdated) {
+		t.Fatalf("UpsertTask mutated caller struct: CreatedAt=%s UpdatedAt=%s",
+			ws1.CreatedAt.UTC(), ws1.UpdatedAt.UTC())
+	}
+	first, err := s.GetTaskScoped(ctx, "task-cross", "workspace-alpha")
+	if err != nil {
+		t.Fatalf("GetTaskScoped alpha: %v", err)
+	}
+
+	// 同 ID 另一 workspace 写入必须被拒绝。
+	ws2 := &Task{
+		ID:          "task-cross",
+		WorkspaceID: "workspace-beta",
+		Title:       "Task in beta",
+		Status:      "pending",
+		CreatedAt:   upstreamCreated.Add(time.Hour),
+		UpdatedAt:   upstreamUpdated.Add(time.Hour),
+	}
+	if err := s.UpsertTask(ctx, ws2); err == nil {
+		t.Fatal("cross-workspace same-id upsert should be rejected")
+	}
+
+	// 原 workspace 的行未被污染：title 保留，created_at 为首插时间。
+	got, err := s.GetTaskScoped(ctx, "task-cross", "workspace-alpha")
+	if err != nil {
+		t.Fatalf("GetTaskScoped alpha: %v", err)
+	}
+	if got.Title != "Task in alpha" {
+		t.Errorf("title = %q, want Task in alpha (row must not be polluted)", got.Title)
+	}
+	if !got.CreatedAt.Equal(first.CreatedAt) {
+		t.Errorf("CreatedAt = %s, want first-insert %s (rejected upsert must not touch the row)",
+			got.CreatedAt.UTC(), first.CreatedAt.UTC())
+	}
+
+	// workspace-beta 看不到该任务。
+	if _, err := s.GetTaskScoped(ctx, "task-cross", "workspace-beta"); err == nil {
+		t.Fatal("task must not appear in workspace-beta")
+	}
+
+	// 同 workspace 重放仍走 ON CONFLICT 更新（tasks_pkey 防线），且
+	// 上游携带的 CreatedAt 不被覆盖。
+	replay := &Task{
+		ID:          "task-cross",
+		WorkspaceID: "workspace-alpha",
+		Title:       "Task in alpha v2",
+		Status:      "work",
+		CreatedAt:   upstreamCreated.Add(2 * time.Hour),
+		UpdatedAt:   upstreamUpdated.Add(2 * time.Hour),
+	}
+	if err := s.UpsertTask(ctx, replay); err != nil {
+		t.Fatalf("same-workspace replay failed: %v", err)
+	}
+	got2, err := s.GetTaskScoped(ctx, "task-cross", "workspace-alpha")
+	if err != nil {
+		t.Fatalf("GetTaskScoped after replay: %v", err)
+	}
+	if got2.Title != "Task in alpha v2" || got2.Status != "work" {
+		t.Errorf("replay did not refresh remote fields: %+v", got2)
+	}
+	if !got2.CreatedAt.Equal(first.CreatedAt) {
+		t.Errorf("CreatedAt = %s, want first-insert %s (replay must not reset CreatedAt)",
+			got2.CreatedAt.UTC(), first.CreatedAt.UTC())
 	}
 }

@@ -471,9 +471,24 @@ func (c *Client) Call(ctx context.Context, method string, params interface{}) (j
 // pocket.opencode_pocket.tasks 后，每次同步重插同一 id，PG 日志持续报
 // duplicate key tasks_pkey（2026-09-08 04:53 起约 42 小时 508 次）。
 // 因此先按 JSON 解析，失败才回退旧文本格式。
+//
+// 2026-09-10 二次加固：JSON 形态的输入（[ 或 { 开头且 json.Valid）绝不
+// 回退旧文本解析器——合法 JSON 未识别出任务时（错误信封、响应性对象如
+// {"message":"No tasks found"}）返回空结果。否则任何未来新增的响应形态
+// 都会被 legacy 按 ": " 撕成垃圾 id，复发 tasks_pkey。任务判定契约：
+// id 与 title 都非空才算任务对象（status 缺失回退 phase，与 ACC 看板一致）。
 func ParseToolTasks(text string) []ParsedTask {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return nil
+	}
 	if tasks, ok := parseToolTasksJSON(text); ok {
 		return tasks
+	}
+	// JSON 形态但未识别出任务结构：返回空而不是交给 legacy——
+	// legacy 对 JSON 文本的输出是垃圾 id（事故根因）。
+	if json.Valid([]byte(trimmed)) {
+		return nil
 	}
 	return parseToolTasksLegacyLines(text)
 }
@@ -501,29 +516,33 @@ func parseToolTasksJSON(text string) ([]ParsedTask, bool) {
 		Owner   string `json:"owner"`
 		AgentID string `json:"agent_id"`
 	}
-	mapTasks := func(rows []accTask) []ParsedTask {
-		tasks := make([]ParsedTask, 0, len(rows))
-		for _, r := range rows {
-			if strings.TrimSpace(r.ID) == "" {
-				continue
-			}
-			status := r.Status
-			if status == "" {
-				status = r.Phase
-			}
-			owner := r.Owner
-			if owner == "" {
-				owner = r.AgentID
-			}
-			tasks = append(tasks, ParsedTask{
-				ID:     strings.TrimSpace(r.ID),
-				Title:  r.Title,
-				Status: status,
-				Owner:  owner,
-			})
+// 任务判定契约：id 与 title 都非空才算任务对象。仅凭 id 非空会把
+// {"id":"foo","message":"No tasks found"} 这类响应性 JSON 当成任务，
+// 写库后产生空 title 的脏行；status 缺失时回退 phase（ACC 以 phase 驱动
+// 看板），不作为任务判定条件。
+mapTasks := func(rows []accTask) []ParsedTask {
+	tasks := make([]ParsedTask, 0, len(rows))
+	for _, r := range rows {
+		if strings.TrimSpace(r.ID) == "" || strings.TrimSpace(r.Title) == "" {
+			continue
 		}
-		return tasks
+		status := r.Status
+		if status == "" {
+			status = r.Phase
+		}
+		owner := r.Owner
+		if owner == "" {
+			owner = r.AgentID
+		}
+		tasks = append(tasks, ParsedTask{
+			ID:     strings.TrimSpace(r.ID),
+			Title:  r.Title,
+			Status: status,
+			Owner:  owner,
+		})
 	}
+	return tasks
+}
 
 	var rows []accTask
 	if err := json.Unmarshal([]byte(trimmed), &rows); err == nil {
@@ -544,7 +563,13 @@ func parseToolTasksJSON(text string) ([]ParsedTask, bool) {
 	}
 
 	var single accTask
-	if err := json.Unmarshal([]byte(trimmed), &single); err == nil && strings.TrimSpace(single.ID) != "" {
+	if err := json.Unmarshal([]byte(trimmed), &single); err == nil {
+		// 单对象与数组同一判定契约：id 与 title 都非空才算任务。
+		// {"id":"solo","title":"one task"}（无 status）是合法任务；
+		// {"id":"foo","message":"..."} 不是。
+		if strings.TrimSpace(single.ID) == "" || strings.TrimSpace(single.Title) == "" {
+			return nil, false
+		}
 		return mapTasks([]accTask{single}), true
 	}
 	return nil, false

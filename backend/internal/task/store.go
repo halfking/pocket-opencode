@@ -247,14 +247,37 @@ func (s *Store) UpsertTask(ctx context.Context, task *Task) error {
 	if task == nil || strings.TrimSpace(task.ID) == "" {
 		return fmt.Errorf("upsert task: id is required")
 	}
+	// 不要改写调用者传入的 CreatedAt/UpdatedAt——调用者可能携带了上游时间戳
+	// （如 tasksync 拉到的 ACC 远端字段），改写会破坏语义并把这种隐式副作用
+	// 扩散到调用方。仅当调用者未设置（零值）时，使用本地时钟兜底，避免
+	// SQL 拿到 0 触发下游排序/索引异常。
 	now := time.Now().Unix()
-	task.CreatedAt = time.Unix(now, 0)
-	task.UpdatedAt = time.Unix(now, 0)
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = time.Unix(now, 0)
+	}
+	if task.UpdatedAt.IsZero() {
+		task.UpdatedAt = time.Unix(now, 0)
+	}
 	if task.Source == "" {
 		task.Source = "local"
 	}
 	task.WorkspaceID = normalizeWorkspace(task.WorkspaceID)
 	task.PendingApprovals = 0
+
+	// 跨 workspace 同 ID 守卫：ACC 任务 ID 全局唯一，tasks 表主键也是全局
+	// (id)。若同 ID 已存在于另一 workspace，说明数据异常——拒绝写入并保留
+	// 原行，避免 ON CONFLICT 把另一租户任务的远端字段（title/status 等）
+	// 静默改写造成跨租户污染。同 workspace 重放仍走 ON CONFLICT 更新。
+	var existingWS string
+	wsErr := s.pool.QueryRow(ctx,
+		`SELECT workspace_id FROM tasks WHERE id = $1`, task.ID).Scan(&existingWS)
+	switch {
+	case wsErr == nil && existingWS != task.WorkspaceID:
+		return fmt.Errorf("upsert task %s: workspace mismatch (existing=%s incoming=%s)",
+			task.ID, existingWS, task.WorkspaceID)
+	case wsErr != nil && !errors.Is(wsErr, pgx.ErrNoRows):
+		return fmt.Errorf("upsert task %s: check existing workspace: %w", task.ID, wsErr)
+	}
 
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO tasks (id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count)
