@@ -815,3 +815,83 @@ func TestDynamicGatewayStreamFinalCandidateEmptyStreamIsError(t *testing.T) {
 		t.Fatal("usage = nil, want non-nil zero usage")
 	}
 }
+
+// TestDynamicGatewayStreamToolCallsRoundTrip verifies tools array reaches
+// upstream and tool_calls deltas are correctly parsed and forwarded.
+func TestDynamicGatewayStreamToolCallsRoundTrip(t *testing.T) {
+	var receivedTools []llmgateway.Tool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req llmgateway.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request: %v", err)
+		}
+		receivedTools = req.Tools
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"calculate","arguments":""}}]}}]}`+"\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"expr\":\"2+2\"}"}}]}}]}`+"\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		
+		fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":50,"completion_tokens":10,"total_tokens":60}}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	p := NewDynamicLLMGatewayBFFProvider(func(string, string) GatewayConfig {
+		return GatewayConfig{
+			BaseURL:         srv.URL,
+			APIKey:          "test-key",
+			PreferredModels: []string{"gpt-4o"},
+		}
+	})
+
+	var gotDeltas []llmbff.Delta
+	usage, err := p.Stream(context.Background(), llmbff.ChatRequest{
+		WorkspaceID: "ws",
+		Model:       "gpt-4o",
+		Messages:    []llmbff.Message{{Role: "user", Content: "Calculate 2+2"}},
+		Tools: []llmbff.Tool{{
+			Type: "function",
+			Function: llmbff.ToolFunction{
+				Name:        "calculate",
+				Description: "Evaluate math expression",
+				Parameters:  map[string]interface{}{"type": "object"},
+			},
+		}},
+	}, func(d llmbff.Delta) bool {
+		gotDeltas = append(gotDeltas, d)
+		return true
+	})
+
+	if err != nil {
+		t.Fatalf("Stream error: %v", err)
+	}
+	if len(receivedTools) != 1 || receivedTools[0].Function.Name != "calculate" {
+		t.Fatalf("upstream received tools = %+v, want calculate tool", receivedTools)
+	}
+
+	var allToolCalls []llmbff.ToolCall
+	for _, d := range gotDeltas {
+		allToolCalls = append(allToolCalls, d.ToolCalls...)
+	}
+	if len(allToolCalls) < 2 {
+		t.Fatalf("tool_calls deltas = %d, want >= 2", len(allToolCalls))
+	}
+	if allToolCalls[0].ID != "call_123" || allToolCalls[0].Function.Name != "calculate" {
+		t.Errorf("first tool_call = %+v, want id=call_123 name=calculate", allToolCalls[0])
+	}
+	if usage == nil || usage.TotalTokens != 60 {
+		t.Errorf("usage = %+v, want 60 tokens", usage)
+	}
+}

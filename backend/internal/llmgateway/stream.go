@@ -42,7 +42,8 @@ func parseSSEStream(body io.Reader, fn func(StreamDelta) bool) (*StreamDelta, er
 			Model   string `json:"model"`
 			Choices []struct {
 				Delta struct {
-					Content string `json:"content"`
+					Content   string     `json:"content"`
+					ToolCalls []ToolCall `json:"tool_calls"`
 				} `json:"delta"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
@@ -61,6 +62,7 @@ func parseSSEStream(body io.Reader, fn func(StreamDelta) bool) (*StreamDelta, er
 		d := StreamDelta{Done: false, Model: frame.Model}
 		if len(frame.Choices) > 0 {
 			d.Content = frame.Choices[0].Delta.Content
+			d.ToolCalls = frame.Choices[0].Delta.ToolCalls
 			d.FinishReason = frame.Choices[0].FinishReason
 		}
 		if frame.Usage != nil {
@@ -74,8 +76,8 @@ func parseSSEStream(body io.Reader, fn func(StreamDelta) bool) (*StreamDelta, er
 			}
 		}
 
-		// Empty content + empty finish_reason + no usage + no model = keepalive.
-		if d.Content == "" && d.FinishReason == "" && frame.Usage == nil && d.Model == "" {
+		// Empty content + empty tool_calls + empty finish_reason + no usage + no model = keepalive.
+		if d.Content == "" && len(d.ToolCalls) == 0 && d.FinishReason == "" && frame.Usage == nil && d.Model == "" {
 			continue
 		}
 		if !fn(d) {

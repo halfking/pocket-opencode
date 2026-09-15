@@ -102,3 +102,59 @@ data: [DONE]
 		t.Errorf("got %q, want OK (malformed line should be skipped)", got)
 	}
 }
+
+func TestParseSSEStream_ToolCallsDelta(t *testing.T) {
+	// OpenAI streaming tool_calls: index + incremental id/function/arguments
+	// Each arguments field is a JSON string that arrives in chunks
+	body := strings.NewReader(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"loc"}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ation\":\""}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"NYC\"}"}}]}}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}
+
+data: [DONE]
+`)
+	var deltas []StreamDelta
+	var allDeltas []StreamDelta
+	finalUsage, err := parseSSEStream(body, func(d StreamDelta) bool {
+		allDeltas = append(allDeltas, d)
+		if len(d.ToolCalls) > 0 {
+			deltas = append(deltas, d)
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatalf("parseSSEStream: %v", err)
+	}
+	t.Logf("Total deltas received: %d, with tool_calls: %d", len(allDeltas), len(deltas))
+	for i, d := range allDeltas {
+		t.Logf("  Delta %d: content=%q tool_calls=%d finish=%q", i, d.Content, len(d.ToolCalls), d.FinishReason)
+		if len(d.ToolCalls) > 0 {
+			t.Logf("    ToolCall[0]: id=%q name=%q args=%q", d.ToolCalls[0].ID, d.ToolCalls[0].Function.Name, d.ToolCalls[0].Function.Arguments)
+		}
+	}
+	if len(deltas) != 4 {
+		t.Errorf("tool_calls deltas = %d, want 4", len(deltas))
+	}
+	if len(deltas) > 0 && (deltas[0].ToolCalls[0].ID != "call_abc" || deltas[0].ToolCalls[0].Function.Name != "get_weather") {
+		t.Errorf("first delta = %+v, want id=call_abc name=get_weather", deltas[0].ToolCalls[0])
+	}
+	// Arguments should accumulate: "" + "{\"loc" + "ation\":\"" + "NYC\"}" = "{\"location\":\"NYC\"}"
+	if len(deltas) == 4 {
+		fullArgs := deltas[0].ToolCalls[0].Function.Arguments +
+			deltas[1].ToolCalls[0].Function.Arguments +
+			deltas[2].ToolCalls[0].Function.Arguments +
+			deltas[3].ToolCalls[0].Function.Arguments
+		if fullArgs != `{"location":"NYC"}` {
+			t.Errorf("accumulated arguments = %q, want %q", fullArgs, `{"location":"NYC"}`)
+		}
+	}
+	if finalUsage == nil || finalUsage.TotalTokens != 15 {
+		t.Errorf("usage = %+v, want 15 tokens", finalUsage)
+	}
+}
+

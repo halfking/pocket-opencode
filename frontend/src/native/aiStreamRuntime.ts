@@ -46,6 +46,12 @@ export interface ChatStreamInput {
 
 export interface ChatStreamDelta {
   content?: string
+  tool_calls?: Array<{
+    index: number
+    id?: string
+    type?: 'function'
+    function?: { name?: string; arguments?: string }
+  }>
   done: boolean
   model?: string
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }

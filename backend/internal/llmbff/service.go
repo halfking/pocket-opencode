@@ -46,10 +46,15 @@ const (
 // provider adapter folds them into OpenAI multimodal content parts
 // (text + image_url) so vision models can see them; providers that only
 // accept plain strings keep receiving Content.
+//
+// ToolCalls 用于 assistant 消息携带工具调用（function calling）。
+// ToolCallID 用于 tool role 消息关联到之前的工具调用。
 type Message struct {
-	Role    Role    `json:"role"`
-	Content string  `json:"content"`
-	Images  []string `json:"images,omitempty"`
+	Role       Role       `json:"role"`
+	Content    string     `json:"content"`
+	Images     []string   `json:"images,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
 // ChatRequest is the unified BFF request for a chat completion.
@@ -57,10 +62,12 @@ type Message struct {
 // WorkspaceID is REQUIRED for usage attribution and per-workspace quota (S3).
 // Model is optional — the Provider picks a default when empty.
 // Stream toggles streaming (SSE delta) vs. one-shot completion.
+// Tools 是可选的工具定义列表（OpenAI function calling）。
 type ChatRequest struct {
 	WorkspaceID string    `json:"workspace_id"`
 	Model       string    `json:"model,omitempty"`
 	Messages    []Message `json:"messages"`
+	Tools       []Tool    `json:"tools,omitempty"`
 	Temperature float64   `json:"temperature,omitempty"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Stream      bool      `json:"stream,omitempty"`
@@ -87,15 +94,16 @@ type Usage struct {
 
 // Delta is one chunk of a streaming response. A stream ends when Done=true.
 //
-// Content is the incremental text (OpenAI delta shape). The finish reason
-// (stop/length/tool_calls) arrives in the final delta with Done=true, and
-// Usage is populated on that final chunk when the provider supports
-// stream_options.include_usage.
+// Content is the incremental text (OpenAI delta shape). ToolCalls 携带增量工具调用
+// （OpenAI 增量模式）。The finish reason (stop/length/tool_calls) arrives in the
+// final delta with Done=true, and Usage is populated on that final chunk when
+// the provider supports stream_options.include_usage.
 type Delta struct {
-	Content      string `json:"content,omitempty"`
-	Done         bool   `json:"done"`
-	FinishReason string `json:"finish_reason,omitempty"`
-	Usage        *Usage `json:"usage,omitempty"`
+	Content      string     `json:"content,omitempty"`
+	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
+	Done         bool       `json:"done"`
+	FinishReason string     `json:"finish_reason,omitempty"`
+	Usage        *Usage     `json:"usage,omitempty"`
 	// Model 是本帧对应的真实上游模型。auto 路由会在首 token 前先发一帧
 	// 只有 model、没有 content 的进度，让客户端立刻显示命中名而不是 "auto"。
 	Model string `json:"model,omitempty"`
@@ -234,6 +242,32 @@ type UsageSummary struct {
 // UsageStore; NoopSummarizer returns zeros.
 type Summarizer interface {
 	Summarize(ctx context.Context, wsID string, from, to time.Time) (UsageSummary, error)
+}
+
+// Tool 对应 OpenAI function calling 的工具定义。
+type Tool struct {
+	Type     string       `json:"type"` // "function"
+	Function ToolFunction `json:"function"`
+}
+
+// ToolFunction 是工具的函数定义（名称 + 描述 + JSON Schema 参数）。
+type ToolFunction struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	Parameters  map[string]interface{} `json:"parameters,omitempty"` // JSON Schema
+}
+
+// ToolCall 对应 assistant 消息携带的工具调用。
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"` // "function"
+	Function ToolCallFunc `json:"function"`
+}
+
+// ToolCallFunc 是工具调用的函数部分（名称 + 参数 JSON 字符串）。
+type ToolCallFunc struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // JSON string
 }
 
 // ErrNotConfigured means no Provider was wired (POCKET_LLM_* env unset and no

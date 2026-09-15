@@ -63,13 +63,45 @@ func NewClient(baseURL, apiKey string) *Client {
 	}
 }
 
+// Tool 对应 OpenAI function calling 的工具定义。
+type Tool struct {
+	Type     string       `json:"type"` // "function"
+	Function ToolFunction `json:"function"`
+}
+
+// ToolFunction 是工具的函数定义（名称 + 描述 + JSON Schema 参数）。
+type ToolFunction struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	Parameters  map[string]interface{} `json:"parameters,omitempty"` // JSON Schema
+}
+
+// ToolCall 对应 assistant 消息携带的工具调用。
+type ToolCall struct {
+	Index    int          `json:"index,omitempty"` // only in streaming deltas
+	ID       string       `json:"id"`
+	Type     string       `json:"type"` // "function"
+	Function ToolCallFunc `json:"function"`
+}
+
+// ToolCallFunc 是工具调用的函数部分（名称 + 参数 JSON 字符串）。
+type ToolCallFunc struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // JSON string
+}
+
 // ChatMessage 兼容 OpenAI chat completion 消息格式。
 //
 // Content 是 any：纯文本时为 string；多模态（带图）时由 ContentParts 生成
 // OpenAI 的 [{type:text},{type:image_url}] 数组。旧调用方继续传 string 即可。
+//
+// ToolCalls 用于 assistant 消息携带工具调用（function calling）。
+// ToolCallID 用于 tool role 消息关联到之前的工具调用。
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content any    `json:"content"`
+	Role       string     `json:"role"`
+	Content    any        `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
 // ContentParts 把"文本 + 图片列表"组装成 OpenAI 多模态 content 数组。
@@ -95,6 +127,7 @@ func ContentParts(text string, images []string) any {
 type ChatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []ChatMessage `json:"messages"`
+	Tools       []Tool        `json:"tools,omitempty"`
 	Temperature float64       `json:"temperature,omitempty"`
 	MaxTokens   int           `json:"max_tokens,omitempty"`
 	Stream      bool          `json:"stream,omitempty"`
@@ -111,8 +144,9 @@ type ChatResponse struct {
 	Choices []struct {
 		Index   int `json:"index"`
 		Message struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
+			Role      string     `json:"role"`
+			Content   string     `json:"content"`
+			ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -155,16 +189,18 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 }
 
 // StreamDelta is one chunk of a streaming chat completion (OpenAI SSE shape).
-// Content is the incremental text; Usage is only present on the final chunk
-// when the request set stream_options.include_usage.
+// Content is the incremental text; ToolCalls carries incremental tool call deltas
+// (OpenAI 增量模式: index + id/type/function.name/arguments 分帧到达); Usage is
+// only present on the final chunk when the request set stream_options.include_usage.
 type StreamDelta struct {
-	Content          string `json:"content"`
-	FinishReason     string `json:"finish_reason"`
-	Done             bool   `json:"done"`
-	Model            string `json:"model,omitempty"`
-	PromptTokens     int    `json:"prompt_tokens,omitempty"`
-	CompletionTokens int    `json:"completion_tokens,omitempty"`
-	TotalTokens      int    `json:"total_tokens,omitempty"`
+	Content          string     `json:"content"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	FinishReason     string     `json:"finish_reason"`
+	Done             bool       `json:"done"`
+	Model            string     `json:"model,omitempty"`
+	PromptTokens     int        `json:"prompt_tokens,omitempty"`
+	CompletionTokens int        `json:"completion_tokens,omitempty"`
+	TotalTokens      int        `json:"total_tokens,omitempty"`
 }
 
 // Stream 调用 llm-gateway 的 chat completion（流式 SSE）。
@@ -183,6 +219,9 @@ func (c *Client) Stream(ctx context.Context, req ChatRequest, fn func(StreamDelt
 		"stream":      true,
 		"user":        req.User,
 		"stream_options": map[string]bool{"include_usage": true},
+	}
+	if len(req.Tools) > 0 {
+		payload["tools"] = req.Tools
 	}
 	if req.WorkType != "" {
 		payload["work_type"] = req.WorkType

@@ -288,9 +288,10 @@ func (p *dynamicGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatR
 		// 重试（会在同一气泡里重复作答），错误只能原样上抛。终态帧（finish/
 		// usage）也要计入——SSE 解析在终态帧后仍会等 [DONE]，上游在此间隙
 		// 挂死时错误同样是尝试级超时，只按正文判定会误判"未作答"而重复作答。
+		// tool_calls 也是作答的一种（无 content 但有工具调用）。
 		answered := false
 		attemptFn := func(d llmbff.Delta) bool {
-			if d.Content != "" {
+			if d.Content != "" || len(d.ToolCalls) > 0 {
 				answered = true
 			}
 			return fn(d)
@@ -395,11 +396,44 @@ func (p *dynamicGatewayBFFProvider) Embed(ctx context.Context, req llmbff.EmbedR
 func (p *llmGatewayBFFProvider) Chat(ctx context.Context, req llmbff.ChatRequest) (*llmbff.ChatResponse, error) {
 	msgs := make([]llmgateway.ChatMessage, len(req.Messages))
 	for i, m := range req.Messages {
-		msgs[i] = llmgateway.ChatMessage{Role: string(m.Role), Content: llmgateway.ContentParts(m.Content, m.Images)}
+		gwMsg := llmgateway.ChatMessage{
+			Role:       string(m.Role),
+			Content:    llmgateway.ContentParts(m.Content, m.Images),
+			ToolCallID: m.ToolCallID,
+		}
+		if len(m.ToolCalls) > 0 {
+			gwMsg.ToolCalls = make([]llmgateway.ToolCall, len(m.ToolCalls))
+			for j, tc := range m.ToolCalls {
+				gwMsg.ToolCalls[j] = llmgateway.ToolCall{
+					ID:   tc.ID,
+					Type: tc.Type,
+					Function: llmgateway.ToolCallFunc{
+						Name:      tc.Function.Name,
+						Arguments: tc.Function.Arguments,
+					},
+				}
+			}
+		}
+		msgs[i] = gwMsg
+	}
+	var gwTools []llmgateway.Tool
+	if len(req.Tools) > 0 {
+		gwTools = make([]llmgateway.Tool, len(req.Tools))
+		for i, t := range req.Tools {
+			gwTools[i] = llmgateway.Tool{
+				Type: t.Type,
+				Function: llmgateway.ToolFunction{
+					Name:        t.Function.Name,
+					Description: t.Function.Description,
+					Parameters:  t.Function.Parameters,
+				},
+			}
+		}
 	}
 	resp, err := p.client.Chat(ctx, llmgateway.ChatRequest{
 		Model:       req.Model,
 		Messages:    msgs,
+		Tools:       gwTools,
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
 		User:        req.User,
@@ -423,12 +457,45 @@ func (p *llmGatewayBFFProvider) Chat(ctx context.Context, req llmbff.ChatRequest
 func (p *llmGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatRequest, fn func(llmbff.Delta) bool) (*llmbff.Usage, error) {
 	msgs := make([]llmgateway.ChatMessage, len(req.Messages))
 	for i, m := range req.Messages {
-		msgs[i] = llmgateway.ChatMessage{Role: string(m.Role), Content: llmgateway.ContentParts(m.Content, m.Images)}
+		gwMsg := llmgateway.ChatMessage{
+			Role:       string(m.Role),
+			Content:    llmgateway.ContentParts(m.Content, m.Images),
+			ToolCallID: m.ToolCallID,
+		}
+		if len(m.ToolCalls) > 0 {
+			gwMsg.ToolCalls = make([]llmgateway.ToolCall, len(m.ToolCalls))
+			for j, tc := range m.ToolCalls {
+				gwMsg.ToolCalls[j] = llmgateway.ToolCall{
+					ID:   tc.ID,
+					Type: tc.Type,
+					Function: llmgateway.ToolCallFunc{
+						Name:      tc.Function.Name,
+						Arguments: tc.Function.Arguments,
+					},
+				}
+			}
+		}
+		msgs[i] = gwMsg
+	}
+	var gwTools []llmgateway.Tool
+	if len(req.Tools) > 0 {
+		gwTools = make([]llmgateway.Tool, len(req.Tools))
+		for i, t := range req.Tools {
+			gwTools[i] = llmgateway.Tool{
+				Type: t.Type,
+				Function: llmgateway.ToolFunction{
+					Name:        t.Function.Name,
+					Description: t.Function.Description,
+					Parameters:  t.Function.Parameters,
+				},
+			}
+		}
 	}
 	var finalUsage *llmbff.Usage
 	_, err := p.client.Stream(ctx, llmgateway.ChatRequest{
 		Model:       req.Model,
 		Messages:    msgs,
+		Tools:       gwTools,
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
 		User:        req.User,
@@ -439,6 +506,19 @@ func (p *llmGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatReque
 			FinishReason: d.FinishReason,
 			Done:         d.FinishReason != "" || d.TotalTokens > 0,
 			Model:        d.Model,
+		}
+		if len(d.ToolCalls) > 0 {
+			delta.ToolCalls = make([]llmbff.ToolCall, len(d.ToolCalls))
+			for i, tc := range d.ToolCalls {
+				delta.ToolCalls[i] = llmbff.ToolCall{
+					ID:   tc.ID,
+					Type: tc.Type,
+					Function: llmbff.ToolCallFunc{
+						Name:      tc.Function.Name,
+						Arguments: tc.Function.Arguments,
+					},
+				}
+			}
 		}
 		if delta.Model == "" {
 			delta.Model = req.Model

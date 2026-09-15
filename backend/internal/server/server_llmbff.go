@@ -100,6 +100,7 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Model       string           `json:"model"`
 		Messages    []llmbff.Message `json:"messages"`
+		Tools       []llmbff.Tool    `json:"tools"`
 		Temperature float64          `json:"temperature"`
 		MaxTokens   int              `json:"max_tokens"`
 		Kind        string           `json:"kind"`
@@ -114,6 +115,10 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(body.Messages) > 50 {
 		writeError(w, http.StatusBadRequest, "too many messages (max 50)")
+		return
+	}
+	if len(body.Tools) > 20 {
+		writeError(w, http.StatusBadRequest, "too many tools (max 20)")
 		return
 	}
 	for _, m := range body.Messages {
@@ -178,6 +183,7 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: s.workspaceIDFromRequest(r),
 		Model:       body.Model,
 		Messages:    body.Messages,
+		Tools:       body.Tools,
 		Temperature: body.Temperature,
 		MaxTokens:   body.MaxTokens,
 		Stream:      true,
