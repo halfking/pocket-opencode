@@ -113,7 +113,7 @@ curl -s https://openpocket-api.kxpms.cn/healthz # 200（kxpms 侧同验）
 
 | 风险 | 影响 | 状态/缓解 |
 |------|------|------|
-| openpocket.kxpms.cn / openpocket-web.kxpms.cn | DNS 已指 252 但无证书无 vhost，HTTPS 落默认 server | **待用户定语义**：openpocket-web 明确=web UI（仿 pocket_mac_web：Mac :4175 主 + 252 兜底）；openpocket（apex）=API 还是主入口待定。定了即可 certbot 签证 + 建 conf |
+| openpocket.kxpms.cn / openpocket-web.kxpms.cn | DNS 已指 252 但无证书无 vhost，HTTPS 落默认 server | **✅ 2026-09-15 收尾完成**：语义已拍板（apex=纯 API 直出 172.16.2.210:8090；web=UI pocket_mac_web 模式 Mac :4175 主 + 172.16.2.210:4175 兜底），双证双 vhost 上线全通；顺带修复 mihomo letsencrypt 阻断。见 docs/handoff/2026-09-15-pocket-kxpms-apex-web-closeout.md |
 | stash@{0} | 含已废弃的旧版 MeetingDetail/Record UI | 保留作存档；确认不要可 `git stash drop` |
 | 工作树未追踪文件 | docs/handoff(本文件)、frontend/.scratch/、material-symbols-outlined.ttf(HEAD 用 woff2)、features/sessions/components/JsonTreeView.vue(零引用孤儿) | 未清；JsonTreeView/ttf 确认无用可删 |
 | netbird 管理 token / 管理员凭据明文 | /root/myvpn/scripts/netbird-config/ 脚本内含明文凭据 | 既有现状；如需收敛改用 service-user + token 轮换 |

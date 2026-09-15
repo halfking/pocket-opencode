@@ -12,22 +12,31 @@
 #
 # 前置：
 #   - ssh alias 可达（~/.ssh/config Host 252 → root@115.29.212.252:25022）
-#   - openpocket-api.kxpms.cn 证书已签出（certbot certonly --webroot -w /var/www/certbot -d openpocket-api.kxpms.cn）
+#   - kxpms 三方证书已签出（certbot certonly --webroot -w /var/www/certbot -d <domain>）：
+#     openpocket-api.kxpms.cn / openpocket.kxpms.cn / openpocket-web.kxpms.cn
+#   - *-80.conf 文件先于本脚本或同期上线，否则 ACME HTTP-01 没法续期（certbot 已签的现仍可用）
 # =====================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EDGE_HOST="${OPP_EDGE_SSH_HOST:-252}"
-MAC_MESH_IP="${POCKET_MAC_MESH_IP:-100.106.126.138}"
+# Mac mesh IP 默认取永久化的 nb-mac-01（per netbird-mesh-admin: login_expiration_enabled=false + never-expires setup key）
+MAC_MESH_IP="${POCKET_MAC_MESH_IP:-100.106.192.58}"
 REMOTE_CONF_DIR="/etc/nginx/conf.d"
 REMOTE_BACKUP_DIR="${REMOTE_CONF_DIR}/backups"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
+# 9443 vhost + 80 端口 ACME 配套（顺序无关，nginx -t 全局校验）
 CONFS=(
   pocket.itestu.cn.conf
   openpocket-api.itestu.cn.conf
   openpocket-api.kxpms.cn.conf
+  openpocket.kxpms.cn.conf
+  openpocket-web.kxpms.cn.conf
   pocket.kxpms-cn-9443.conf
+  openpocket-api.kxpms.cn-80.conf
+  openpocket.kxpms.cn-80.conf
+  openpocket-web.kxpms.cn-80.conf
 )
 
 log() { printf '\033[1;32m  ✅\033[0m %s\n' "$*"; }
@@ -44,8 +53,17 @@ done
 log "模板渲染完成（mesh IP=${MAC_MESH_IP}）: ${CONFS[*]}"
 
 # ── 2. 远端连通性 + 证书就绪检查 ──────────────────────────────────
-ssh "${EDGE_HOST}" "test -d /etc/letsencrypt/live/openpocket-api.kxpms.cn" \
-  || die "252 缺 openpocket-api.kxpms.cn 证书；先执行: certbot certonly --webroot -w /var/www/certbot -d openpocket-api.kxpms.cn"
+# kxpms 三方证书必须先签出（certbot certonly --webroot -w /var/www/certbot -d <domain>），
+# 否则 9443 vhost 的 ssl_certificate 路径 nginx -t 会失败。
+REQUIRED_CERTS=(
+  openpocket-api.kxpms.cn
+  openpocket.kxpms.cn
+  openpocket-web.kxpms.cn
+)
+for c in "${REQUIRED_CERTS[@]}"; do
+  ssh "${EDGE_HOST}" "test -d /etc/letsencrypt/live/${c}" \
+    || die "252 缺 ${c} 证书；先执行: ssh ${EDGE_HOST} certbot certonly --webroot -w /var/www/certbot -d ${c}"
+done
 
 # ── 3. 远端备份旧配置（无则跳过） ─────────────────────────────────
 ssh "${EDGE_HOST}" "mkdir -p ${REMOTE_BACKUP_DIR} && for f in ${CONFS[*]}; do [ -f ${REMOTE_CONF_DIR}/\$f ] && cp -a ${REMOTE_CONF_DIR}/\$f ${REMOTE_BACKUP_DIR}/\$f.bak-${STAMP}; done; true"
@@ -66,4 +84,4 @@ fi
 
 # ── 6. reload ─────────────────────────────────────────────────────
 ssh "${EDGE_HOST}" "systemctl reload nginx"
-log "nginx reload 完成 — 四域名 vhost 生效"
+log "nginx reload 完成 — pocket 9 个 vhost 生效（5 个 9443 + 3 个 kxpms -80 + pocket.itestu.cn-80 等已在仓外的）"
