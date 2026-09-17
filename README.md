@@ -94,8 +94,7 @@ OpenCode Pocket 提供两种部署模式，根据你的使用场景选择：
 **快速启动**：
 ```bash
 cd deploy/本地方案
-cp .env.example .env
-./local-up.sh
+./local-up.sh   # 首次运行经 local-db-init.sh 自动生成 .env.local（自 3b6ca72 起仓内不再携带 .env.example）
 ```
 
 详见：[本地方案文档](deploy/本地方案/README.md)
@@ -159,7 +158,8 @@ export POCKET_JWT_SECRET="your-secret-key"
 export POCKET_HTTP_PORT=8088
 export POCKET_DEV_AUTH=true
 
-# 启动服务
+# 构建并启动（pocketd 二进制不入库，见 .gitignore）
+go build -o pocketd ./cmd/pocketd
 ./pocketd
 ```
 
@@ -213,7 +213,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 ### 主要文档
 
 - [**文档索引**](docs/README.md) - docs 目录总入口
-- [**功能特性大盘（As-built）**](docs/2026-09-08-feature-inventory.md) - 前端 24 域 + 后端 46 模块 + 原生 35+ 能力位
+- [**功能特性大盘（As-built）**](docs/2026-09-08-feature-inventory.md) - 前端 25 域 + 后端 47 模块 + 原生 35+ 能力位
 - [**需求与设计（As-built）**](docs/2026-09-08-requirements-design.md) - 反向整理的需求清单与现行架构设计
 - [**原生化与跨平台路线图**](docs/2026-09-08-native-and-cross-platform.md) - iOS / Android / HarmonyOS 平台补齐方案
 - [**运维指南**](docs/guides/OPERATIONS_GUIDE.md) - 完整的部署和运维文档

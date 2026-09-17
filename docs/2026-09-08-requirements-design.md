@@ -130,7 +130,7 @@
 | 契约 | 说明 | 验证方式 |
 |---|---|---|
 | **OpenCode 兼容层** | `internal/opencode/*` + `frontend/src/api/opencode.ts` | `opencode-contract.md` + 契约测试 |
-| **ACP JSON-RPC 2.0** | `internal/agent/*` stdio | `test_acp_stdio_real/` |
+| **ACP JSON-RPC 2.0** | `internal/agent/*` stdio | `go run ./cmd/test_acp_stdio_real`（`backend/test_acp_*` 二进制不入库） |
 | **移动 API（mobile_api.go）** | 移动端统一入口，所有域走 `requiresAuth + device` | `mobile_api_isolation_test.go` |
 | **WS 事件总线** | `internal/websocket/{hub, mobile_hub, plugin_hub}.go` + 前端 `idempotentWsBus` | 幂等键 + 心跳 |
 | **审批事件** | `approval.permission/question.pending/resolved` | 前端 `approvalEvents.ts` |

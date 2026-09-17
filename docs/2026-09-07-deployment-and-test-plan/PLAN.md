@@ -331,7 +331,7 @@ kill $(cat /tmp/pocket-sse.pid) 2>/dev/null || true
 
 **Step 0.** Seed a permission request. Two options:
 - (a) If the upstream OpenCode is running, issue a prompt that triggers a real permission.
-- (b) Use the test binary `backend/test_acp_adapter` (in-tree) to push a synthetic permission into the registry via `permMgr`. The repo ships `test_acp_stdio` / `test_acp_adapter` binaries — exercise via `go run ./cmd/test_acp_adapter` from `backend/`.
+- (b) Push a synthetic permission into the registry via `permMgr` — run `go run ./cmd/test_acp_adapter` from `backend/`（`backend/test_acp_*` 预编译二进制自 3b6ca72 起不再入库，源码 harness 在 `backend/cmd/test_acp_*`）.
 
 **Step 1.** List pending approvals.
 ```bash
