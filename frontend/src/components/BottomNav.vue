@@ -28,6 +28,7 @@
       class="nav-item"
       :class="{ active: isActive(item) }"
       :aria-current="isActive(item) ? 'page' : undefined"
+      @click="haptic('light')"
     >
       <span class="icon-pill" aria-hidden="true">
         <span class="material-symbols-outlined icon">{{ item.icon }}</span>
@@ -42,6 +43,7 @@ import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { SCROLL_CHROME_KEY } from '../composables/scroll-chrome'
+import { haptic } from '../composables/useHaptics'
 
 const route = useRoute()
 const { t } = useI18n()

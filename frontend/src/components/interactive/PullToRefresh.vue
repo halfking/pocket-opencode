@@ -37,6 +37,7 @@
 import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
 import { SCROLL_CHROME_KEY } from '@/composables/scroll-chrome'
 import { scrollEdgeFlags } from '@/composables/useScrollHideChrome'
+import { haptic } from '@/composables/useHaptics'
 
 export interface PullToRefreshProps {
   onRefresh: () => Promise<void>
@@ -59,6 +60,8 @@ const isPulling = ref(false)
 const isRefreshing = ref(false)
 
 let lastScrollTop = 0
+/** 本次下拉是否已触发过阈值触觉（每次下拉只震一次） */
+let thresholdCrossed = false
 
 function onContentScroll() {
   const el = contentRef.value
@@ -92,6 +95,7 @@ const handleTouchStart = (e: TouchEvent) => {
 
   startY.value = e.touches[0].clientY
   isPulling.value = true
+  thresholdCrossed = false
 }
 
 const handleTouchMove = (e: TouchEvent) => {
@@ -107,6 +111,12 @@ const handleTouchMove = (e: TouchEvent) => {
     // 添加阻尼效果
     const damping = 0.5
     pullDistance.value = Math.min(deltaY * damping, props.threshold * 1.5)
+
+    // 过阈值轻触觉一次（原生顺滑度审计 P0 #4；松手才触发，这里只是预告）
+    if (!thresholdCrossed && pullDistance.value >= props.threshold) {
+      thresholdCrossed = true
+      haptic('light')
+    }
   }
 }
 

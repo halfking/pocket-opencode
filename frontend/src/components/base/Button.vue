@@ -96,6 +96,24 @@ const handleClick = (event: MouseEvent) => {
 .button--primary {
   background: var(--gradient-primary);
   color: var(--text-inverse);
+  /* ripple 近似（原生顺滑度审计 A5/P0 #5）：径向渐变从中心扩散 250ms，
+     纯 CSS 无触点坐标（触点级 ripple 需 JS 指令，此处取成本/收益平衡点） */
+  overflow: hidden;
+}
+
+.button--primary::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.35) 1%, transparent 1%) center /
+    0 0 no-repeat;
+  transition: background-size 250ms var(--ease-out);
+  pointer-events: none;
+}
+
+.button--primary:active::after {
+  background-size: 300% 300%;
 }
 
 .button--primary:hover:not(.button--disabled):not(.button--loading) {

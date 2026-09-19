@@ -21,7 +21,11 @@ const config: CapacitorConfig = {
   },
   plugins: {
     SplashScreen: {
-      launchShowDuration: 2000,
+      // 原生顺滑度审计 A3/P0 #3：废除 2s 定时 splash。launchShowDuration: 0 +
+      // launchAutoHide: false 让 splash 一直盖到首帧渲染完成，由 main.ts 主动
+      // hide（200ms fade）——冷启动体感从"定时 2s + 白屏等待"变为就绪即进。
+      launchShowDuration: 0,
+      launchAutoHide: false,
       backgroundColor: '#ffffff',
     },
     /**

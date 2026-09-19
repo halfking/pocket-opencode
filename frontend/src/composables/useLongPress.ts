@@ -2,6 +2,7 @@
  * useLongPress — 长按手势检测（移动端任务卡片上下文菜单等）。
  */
 import { ref } from 'vue'
+import { haptic } from './useHaptics'
 
 export interface LongPressHandlers {
   onTouchStart: (e: TouchEvent) => void
@@ -33,9 +34,9 @@ export function useLongPress(onLongPress: () => void, delayMs = 500) {
     isPressed.value = true
     timer = setTimeout(() => {
       onLongPress()
-      if (typeof navigator !== 'undefined' && navigator.vibrate) {
-        navigator.vibrate(12)
-      }
+      // 长按菜单弹出轻触觉（审计 P0 #4）：统一走 useHaptics
+      // （原生 @capacitor/haptics / Web 降级 navigator.vibrate）
+      haptic('light')
       clear()
     }, delayMs)
   }

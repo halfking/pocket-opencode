@@ -11,6 +11,17 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // 框架代码独立 vendor 包（原生顺滑度审计 A3/P1 #7）：业务改动不再整体
+        // 失效框架缓存，主包仅含首屏业务代码
+        manualChunks: {
+          "vue-vendor": ["vue", "vue-router", "pinia", "vue-i18n"],
+        },
+      },
+    },
+  },
   server: {
     host: "0.0.0.0",
     port: 4174,

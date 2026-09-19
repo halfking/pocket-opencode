@@ -77,13 +77,20 @@ public class MainActivity extends BridgeActivity {
                 return insets;
             });
         }
-        WebView.setWebContentsDebuggingEnabled(true);
+        // 调试开关收口（原生顺滑度审计 A7/P0 #6）：WebView 远程调试仅 debug 构建开启
+        if (BuildConfig.DEBUG) {
+            WebView.setWebContentsDebuggingEnabled(true);
+        }
 
         // 允许混合内容（仅开发环境使用）
         // 生产环境应该使用HTTPS后端
         if (getBridge() != null && getBridge().getWebView() != null) {
             WebSettings webSettings = getBridge().getWebView().getSettings();
-            webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+            if (BuildConfig.DEBUG) {
+                webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+            } else {
+                webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+            }
             // WebView 录音需要 JS 和 MediaPlayback 不受限
             webSettings.setJavaScriptEnabled(true);
             webSettings.setMediaPlaybackRequiresUserGesture(false);

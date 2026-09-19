@@ -1,4 +1,5 @@
 import { createApp } from "vue"
+import { Capacitor } from "@capacitor/core"
 import { createPinia } from "pinia"
 import App from "./app/App.vue"
 import router from "./app/router-mobile"
@@ -43,6 +44,21 @@ app.use(pinia)
 app.use(router)
 app.use(i18n)
 app.mount("#app")
+
+// Splash 就绪即隐（原生顺滑度审计 A3/P0 #3）：config 已关定时（launchShowDuration:0
+// + launchAutoHide:false），这里在 Vue mount + 首帧绘制完成后主动 fade 掉。
+// 双 rAF 确保首帧真的上屏；Web 端无 splash，no-op。插件加载失败静默——
+// 卡住 splash 比没有 splash 更糟，200ms 后兜底强隐。
+if (Capacitor.isNativePlatform()) {
+  const hideSplash = () => {
+    import("@capacitor/splash-screen")
+      .then(({ SplashScreen }) =>
+        SplashScreen.hide({ fadeOutDuration: 200 }).catch(() => {}),
+      )
+      .catch(() => {})
+  }
+  requestAnimationFrame(() => requestAnimationFrame(hideSplash))
+}
 
 // 离线同步接线（P1）：网络恢复 / App 回前台时自动 drain outbox + 同步会话
 // 与审批快照；全局状态条读取该 store。未登录 / 本地库未解锁时静默跳过。

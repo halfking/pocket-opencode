@@ -471,6 +471,8 @@ function focusMain() {
   overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  /* 路由转场（App.vue Transition）：离场页 absolute 快照的定位基准 */
+  position: relative;
   /* Large screens (foldable expanded / tablet): center and cap width. */
   max-width: var(--content-max, 100%);
   margin: 0 auto;

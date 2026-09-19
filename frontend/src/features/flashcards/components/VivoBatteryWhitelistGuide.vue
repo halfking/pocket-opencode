@@ -59,8 +59,8 @@ import { onAlarmDenied } from '../../../native/localNotifications'
 
 const STORAGE_KEY = 'openpocket.flashcards.vivoGuideDismissed.v1'
 
-/** Pure helper — exported for unit tests / debugging from devtools. */
-export function isVivoOriginOS(ua: string = (typeof navigator !== 'undefined' ? navigator.userAgent : '')): boolean {
+/** Pure helper — expose 给 devtools 调试用（script setup 不能 export，见 defineExpose） */
+function isVivoOriginOS(ua: string = (typeof navigator !== 'undefined' ? navigator.userAgent : '')): boolean {
   if (!ua) return false
   // OriginOS WebView 自报 'OriginOS'；旧版 Funtouch 含 'vivo'。大小写都接受。
   return /vivo|OriginOS/i.test(ua)

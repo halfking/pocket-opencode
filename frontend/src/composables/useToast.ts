@@ -9,6 +9,7 @@
 
 import { createApp, h } from 'vue'
 import Toast, { type ToastProps } from '@/components/base/Toast.vue'
+import { haptic } from '@/composables/useHaptics'
 
 interface ToastOptions extends Omit<ToastProps, 'message'> {
   message: string
@@ -58,6 +59,8 @@ class ToastManager {
   }
 
   error(message: string, options?: Partial<ToastOptions>) {
+    // 错误通知触觉（审计 P0 #4）：Error 三连震（原生）/ 降级 vibrate
+    haptic('error')
     this.show({
       message,
       type: 'error',

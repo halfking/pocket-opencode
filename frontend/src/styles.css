@@ -142,10 +142,15 @@ button {
   border: none;
   color: inherit;
   padding: 0;
+  /* 按压态升级（原生顺滑度审计 A5/P0 #5）：120ms 回弹过渡。
+     reduced-motion 由下方全局媒体查询归零。 */
+  transition: transform 120ms var(--ease-out, ease-out), opacity 120ms var(--ease-out, ease-out);
 }
 
+/* scale 微缩 + 轻降透明度，替代纯 opacity 的"网页按钮"心智 */
 button:active {
   opacity: 0.85;
+  transform: scale(0.97);
 }
 
 /* Links use brand color and respect prefers-reduced-motion. */
@@ -200,4 +205,79 @@ img {
 ::selection {
   background: rgba(var(--color-primary-rgb, 102, 126, 234), 0.25);
   color: var(--text-primary);
+}
+
+/* ── 路由转场（原生顺滑度审计 P0 #1）────────────────────────────
+   push：新页从右滑入盖住旧页（z 上层），旧页视差左移 30%；
+   pop ：反向——离场页滑出右侧（z 上层），前页从 -30% 归位；
+   tab ：150ms 双向 fade（双平台 tab 切换惯例）。
+   只动 transform/opacity 保 60fps；离场页由 App.vue 钩子转 absolute，
+   偏移对齐 main 的 padding box，滚动位置快照进自身。
+   --swipe-from 由右滑返回钩子注入：pop 离场从拖拽位移接力，无回弹跳变。
+   reduced-motion 由上方全局媒体查询把 transition-duration 归零。 */
+.nav-push-enter-active,
+.nav-push-leave-active,
+.nav-pop-enter-active,
+.nav-pop-leave-active,
+.nav-tab-enter-active,
+.nav-tab-leave-active {
+  transition:
+    transform var(--duration-chrome, 280ms) var(--ease-chrome, cubic-bezier(0.32, 0.72, 0, 1)),
+    opacity var(--duration-chrome, 280ms) var(--ease-chrome, cubic-bezier(0.32, 0.72, 0, 1));
+  /* 转场双层同屏时垫底色：页面根节点多为透明，直接叠会"透视" */
+  background: var(--bg-base, #f7f7fa);
+}
+
+.nav-push-enter-active {
+  z-index: 2;
+  box-shadow: -12px 0 24px rgba(0, 0, 0, 0.1);
+}
+.nav-push-enter-from {
+  transform: translateX(100%);
+}
+.nav-push-leave-active {
+  z-index: 1;
+}
+.nav-push-leave-to {
+  transform: translateX(-30%);
+}
+
+.nav-pop-enter-active {
+  z-index: 1;
+}
+.nav-pop-enter-from {
+  transform: translateX(-30%);
+}
+.nav-pop-leave-active {
+  z-index: 2;
+  box-shadow: -12px 0 24px rgba(0, 0, 0, 0.1);
+}
+.nav-pop-leave-from {
+  transform: translateX(var(--swipe-from, 0px));
+}
+.nav-pop-leave-to {
+  transform: translateX(var(--swipe-to, 100%));
+}
+
+.nav-tab-enter-active,
+.nav-tab-leave-active {
+  transition-duration: var(--duration-fast, 150ms);
+}
+.nav-tab-enter-from,
+.nav-tab-leave-to {
+  opacity: 0;
+}
+
+/* ── 长列表渲染兜底（审计 A6/P1 #8）────────────────────────────
+   高频列表项屏外跳过 layout/paint（content-visibility），配合记忆高度
+   防滚动条跳动；虚拟滚动（@tanstack/vue-virtual）待后续按页接入。 */
+.email-list > *,
+.note-list > *,
+.meeting-list > *,
+.contact-list > *,
+.session-list > *,
+.entry-list > *,
+.completed-list > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 76px;
 }

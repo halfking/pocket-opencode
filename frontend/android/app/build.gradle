@@ -22,6 +22,11 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    // AGP 8 默认关闭 BuildConfig 生成；MainActivity 需要 BuildConfig.DEBUG
+    // 判断调试开关（原生顺滑度审计 A7/P0 #6）
+    buildFeatures {
+        buildConfig true
+    }
 }
 
 repositories {

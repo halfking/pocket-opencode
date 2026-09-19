@@ -8,10 +8,21 @@
     <AppLayout>
       <!-- KeepAlive 白名单只缓存列表页（LIST_CACHE_NAMES）：列表→详情→返回时
            筛选/分类/状态保留原现场；详情页不在名单内，每次进入都重新挂载拉最新。 -->
-      <router-view v-slot="{ Component }">
-        <KeepAlive :include="LIST_CACHE_NAMES">
-          <component :is="Component" />
-        </KeepAlive>
+      <!-- Transition（原生顺滑度审计 P0 #1）：push=新页右滑入盖旧页视差、pop=反向
+           接力右滑返回、tab=150ms fade；只动 transform/opacity。方向由
+           routeTransition.beforeRouteTransition 在守卫阶段判定；离场页滚动快照、
+           滑返位移接力见 onTransitionLeave。 -->
+      <router-view v-slot="{ Component, route: viewRoute }">
+        <Transition
+          :name="transitionName"
+          @enter="onTransitionEnter"
+          @leave="onTransitionLeave"
+          @after-leave="onAfterTransitionLeave"
+        >
+          <KeepAlive :include="LIST_CACHE_NAMES">
+            <component :is="Component" :key="viewRoute.path" />
+          </KeepAlive>
+        </Transition>
       </router-view>
     </AppLayout>
     <UpdateChecker ref="updateChecker" />
@@ -21,7 +32,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { useRoute } from 'vue-router'
 import AppLayout from './AppLayout.vue'
 import UpdateChecker from '../components/UpdateChecker.vue'
 import ConfirmDialog from '../components/base/ConfirmDialog.vue'
@@ -29,6 +41,7 @@ import { LIST_CACHE_NAMES } from '../composables/use-list-scene'
 import { useSwipeBack } from '../composables/useSwipeBack'
 import { useStatusBar } from '../composables/useStatusBar'
 import { installKeyboardInset } from '../composables/useKeyboardInset'
+import { transitionState, consumeSwipeFromPx } from './routeTransition'
 
 const updateChecker = ref<InstanceType<typeof UpdateChecker> | null>(null)
 
@@ -49,6 +62,81 @@ onMounted(() => {
 onBeforeUnmount(() => {
   statusBar.stop()
 })
+
+/* ── 路由转场（审计 P0 #1/#2 + P1 #9）──
+   方向在 router 守卫（beforeRouteTransition）里先行写入 transitionState，
+   渲染时读取即可；读 route.fullPath 建立响应依赖让 computed 每次导航重算。
+   钩子只接收 (el)（不声明 done），Vue 才会继续做 CSS transition 结束自动探测。 */
+const viewRoute = useRoute()
+const transitionName = computed(() => {
+  void viewRoute.fullPath
+  switch (transitionState.direction) {
+    case 'push':
+      return 'nav-push'
+    case 'pop':
+      return 'nav-pop'
+    case 'tab':
+      return 'nav-tab'
+    default:
+      return 'nav-none'
+  }
+})
+
+/** enter：首帧绘制前把滚动容器恢复到目标页记忆位置（push=0 / pop与tab=记忆值） */
+function onTransitionEnter(el: Element) {
+  const main = (el as HTMLElement).parentElement
+  if (main && transitionState.pendingScrollTop > 0) {
+    main.scrollTop = transitionState.pendingScrollTop
+  }
+}
+
+/**
+ * leave：离场页三件事，全部在绘制前的同一 flush 里完成，无中间帧：
+ *  1. 滚动快照——shell 滚动页的 scrollTop 在 main 上，离场页转 absolute
+ *     （偏移精确对齐 padding box）后把滚动搬进自身，避免转场期间旧页跳顶；
+ *  2. 右滑返回接力——手势提交时 useSwipeBack 留在 main 上的拖拽位移在此清掉，
+ *     视觉起点由 leave-from 的 --swipe-from 接管（原生顺滑度审计 A2）；
+ *  3. main.scrollTop 收敛到目标页应处的位置。
+ */
+function onTransitionLeave(el: Element) {
+  if (transitionState.direction === 'none') return
+  const hEl = el as HTMLElement
+  const main = hEl.parentElement
+  if (!main) return
+
+  const leavingTop = main.scrollTop
+  const swipePx = consumeSwipeFromPx()
+  if (transitionState.direction === 'pop' && swipePx != null) {
+    hEl.style.setProperty('--swipe-from', `${swipePx}px`)
+  }
+
+  const cs = getComputedStyle(main)
+  hEl.style.position = 'absolute'
+  hEl.style.top = cs.paddingTop
+  hEl.style.right = cs.paddingRight
+  hEl.style.bottom = cs.paddingBottom
+  hEl.style.left = cs.paddingLeft
+  hEl.style.overflowY = 'auto'
+  hEl.scrollTop = leavingTop
+
+  main.style.transition = ''
+  main.style.transform = ''
+  main.style.opacity = ''
+  main.scrollTop = transitionState.pendingScrollTop
+}
+
+/** after-leave：清掉快照期内联样式（KeepAlive 缓存的根节点会复用，必须还原） */
+function onAfterTransitionLeave(el: Element) {
+  const hEl = el as HTMLElement
+  hEl.style.removeProperty('--swipe-from')
+  hEl.style.position = ''
+  hEl.style.top = ''
+  hEl.style.right = ''
+  hEl.style.bottom = ''
+  hEl.style.left = ''
+  hEl.style.overflowY = ''
+  hEl.scrollTop = 0
+}
 </script>
 
 <style>
@@ -108,8 +196,10 @@ input:focus, textarea:focus, select:focus {
   background: var(--text-muted, #a3a3a3);
 }
 
-/* 触摸反馈 */
+/* 触摸反馈：与 styles.css 的全局按压态同款（审计 A5——scale 微缩替代纯降透明度，
+   双写保证两处样式表注入顺序无关） */
 button:active {
-  opacity: 0.8;
+  opacity: 0.85;
+  transform: scale(0.97);
 }
 </style>

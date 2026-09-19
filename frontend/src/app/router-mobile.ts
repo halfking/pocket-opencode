@@ -1,46 +1,41 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 
-// 登录页
+// ---- 主包瘦身（原生顺滑度审计 A3/P1 #7）----
+// 仅保留首屏关键视图为静态 import：/ai（TasksView，默认入口）、/login（冷启动
+// 未登录落点）、/servers（首启未配服务器落点）。其余 21 个视图全部路由级懒加载，
+// 主包从 ~900KB 降到首屏所需（flashcards/pkm/marketplace 等本已懒加载）。
+
+// 登录页（未登录冷启动落点）
 import LoginView from '../features/auth/LoginView.vue'
 
-// 服务器选择页
+// 服务器选择页（首启未配服务器落点）
 import ServerSelectView from '../features/servers/ServerSelectView.vue'
 
-// OpenCode 实例列表页
-import InstanceListView from '../features/instances/InstanceListView.vue'
-
-// 任务列表页（按分组）
+// AI 工具控制默认入口（复用任务视图；/ai 为首屏）
 import TasksView from '../features/tasks/TasksView.vue'
 
-// 任务详情页
-import TaskDetailView from '../features/tasks/TaskDetailView.vue'
-
-// 会话列表页
-import SessionWorkspaceView from '../features/sessions/SessionWorkspaceView.vue'
-
-// 设置页
-import SettingsView from '../features/settings/SettingsView.vue'
+// 其余视图全部懒加载：仅在进入对应路由才下载
+const InstanceListView = () => import('../features/instances/InstanceListView.vue')
+const TaskDetailView = () => import('../features/tasks/TaskDetailView.vue')
+const SessionWorkspaceView = () => import('../features/sessions/SessionWorkspaceView.vue')
+const SettingsView = () => import('../features/settings/SettingsView.vue')
 
 // ---- 新增个人助理模块（骨架） ----
-// AI 工具控制默认入口（复用现有任务视图，可后续替换为聚合看板）
-import NoteListView from '../features/notes/NoteListView.vue'
-import NoteDetailView from '../features/notes/NoteDetailView.vue'
-import NoteEditView from '../features/notes/NoteEditView.vue'
-import EmailInboxView from '../features/email/EmailInboxView.vue'
-import EmailDetailView from '../features/email/EmailDetailView.vue'
-import EmailSummaryView from '../features/email/EmailSummaryView.vue'
-import EmailAccountSetup from '../features/email/EmailAccountSetup.vue'
-import EmailSettingsView from '../features/email/EmailSettingsView.vue'
-import EmailInvoiceListView from '../features/email/InvoiceListView.vue'
-import FinanceView from '../features/finance/FinanceView.vue'
-import VaultListView from '../features/vault/VaultListView.vue'
-import VaultEntryView from '../features/vault/VaultEntryView.vue'
-import MeetingListView from '../features/meetings/MeetingListView.vue'
-import MeetingRecordView from '../features/meetings/MeetingRecordView.vue'
-import MeetingDetailView from '../features/meetings/MeetingDetailView.vue'
-import ScheduledTaskListView from '../features/scheduled-tasks/ScheduledTaskListView.vue'
-import ScheduledTaskDetailView from '../features/scheduled-tasks/ScheduledTaskDetailView.vue'
-import ScheduledTaskEditView from '../features/scheduled-tasks/ScheduledTaskEditView.vue'
+const NoteListView = () => import('../features/notes/NoteListView.vue')
+const NoteDetailView = () => import('../features/notes/NoteDetailView.vue')
+const NoteEditView = () => import('../features/notes/NoteEditView.vue')
+const EmailInboxView = () => import('../features/email/EmailInboxView.vue')
+const EmailDetailView = () => import('../features/email/EmailDetailView.vue')
+const EmailSummaryView = () => import('../features/email/EmailSummaryView.vue')
+const EmailAccountSetup = () => import('../features/email/EmailAccountSetup.vue')
+const EmailSettingsView = () => import('../features/email/EmailSettingsView.vue')
+const EmailInvoiceListView = () => import('../features/email/InvoiceListView.vue')
+const FinanceView = () => import('../features/finance/FinanceView.vue')
+const VaultListView = () => import('../features/vault/VaultListView.vue')
+const VaultEntryView = () => import('../features/vault/VaultEntryView.vue')
+const ScheduledTaskListView = () => import('../features/scheduled-tasks/ScheduledTaskListView.vue')
+const ScheduledTaskDetailView = () => import('../features/scheduled-tasks/ScheduledTaskDetailView.vue')
+const ScheduledTaskEditView = () => import('../features/scheduled-tasks/ScheduledTaskEditView.vue')
 
 // Flashcards v1（契约 §2 + §4）：FSRS 驱动的间隔重复学习
 // 路由级懒加载：仅在进入 /flashcards 才下载，减少首屏 JS 体积。
@@ -574,6 +569,7 @@ const router = createRouter({
  *     diagnostic / restore flows.
  */
 import { runGuard } from './routeGuards'
+import { beforeRouteTransition } from './routeTransition'
 
 /**
  * "首页栈" 标记：用户在 BottomNav 根 tab 上点击进入子页面后，
@@ -591,6 +587,9 @@ router.beforeEach((to, from, next) => {
       sessionStorage.setItem('pocket:navigatedFromHome', '1')
     }
   }
+  // 路由转场方向判定 + 滚动位置记忆（原生顺滑度审计 P0 #1 / P1 #9）；
+  // 必须在守卫阶段同步写入——App.vue 渲染 <Transition> 时就要读方向。
+  beforeRouteTransition(to.path, from.path, from.matched.length)
   runGuard(to, next)
 })
 export default router
