@@ -105,5 +105,50 @@
     "groupSettings": "Ajustes",
     "groupOps": "Operaciones y avanzado",
     "versionFootnote": "Redclaw · v{version}"
+  },
+  "flashcards": {
+    "list": {
+      "title": "Tarjetas de memoria",
+      "empty": "Aún no hay mazos",
+      "create": "Crear mazo",
+      "dueToday": "{count} para repasar hoy"
+    },
+    "deck": {
+      "title": "Mazo",
+      "addCard": "Añadir tarjeta",
+      "review": "Repasar",
+      "noCards": "Este mazo no tiene tarjetas"
+    },
+    "review": {
+      "title": "Repaso",
+      "again": "Otra vez",
+      "hard": "Difícil",
+      "good": "Bien",
+      "easy": "Fácil",
+      "remaining": "{count} restantes",
+      "complete": "Sesión completada",
+      "fuzzNote": "Las fechas de vencimiento se dispersan a propósito dentro de un ±5% para evitar que se acumulen"
+    },
+    "edit": {
+      "title": "Tarjeta",
+      "front": "Anverso",
+      "back": "Reverso",
+      "tags": "Etiquetas",
+      "save": "Guardar",
+      "delete": "Eliminar",
+      "confirmDelete": "¿Eliminar esta tarjeta?"
+    },
+    "permission": {
+      "vivoTitle": "Permite que OpenPocket te recuerde cada día",
+      "vivoBody": "OriginOS restringe las aplicaciones en segundo plano. Activa «Consumo en segundo plano sin restricciones» y «Inicio automático» para que los recordatorios diarios se disparen a tiempo.",
+      "vivoStep1": "Ajustes → Batería → Consumo en segundo plano",
+      "vivoStep2": "Encuentra OpenPocket y ponlo en «Sin restricciones»",
+      "vivoStep3": "Ajustes → Inicio automático → activar OpenPocket",
+      "vivoDone": "Listo"
+    },
+    "error": {
+      "loadFailed": "No se pudieron cargar las tarjetas de memoria",
+      "syncConflict": "Conflicto de sincronización — actualiza la página"
+    }
   }
 }

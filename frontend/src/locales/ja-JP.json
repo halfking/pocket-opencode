@@ -105,5 +105,50 @@
     "groupSettings": "設定",
     "groupOps": "運用・詳細",
     "versionFootnote": "Redclaw · v{version}"
+  },
+  "flashcards": {
+    "list": {
+      "title": "フラッシュカード",
+      "empty": "デッキはまだありません",
+      "create": "デッキを作成",
+      "dueToday": "本日 {count} 件復習待ち"
+    },
+    "deck": {
+      "title": "デッキ",
+      "addCard": "カードを追加",
+      "review": "復習する",
+      "noCards": "このデッキにはカードがありません"
+    },
+    "review": {
+      "title": "復習",
+      "again": "もう一度",
+      "hard": "難しい",
+      "good": "普通",
+      "easy": "簡単",
+      "remaining": "残り {count} 件",
+      "complete": "本日の復習が完了しました",
+      "fuzzNote": "カードが同時期に集中しないよう、期日は ±5% の範囲で意図的に散らしています"
+    },
+    "edit": {
+      "title": "カード",
+      "front": "表面",
+      "back": "裏面",
+      "tags": "タグ",
+      "save": "保存",
+      "delete": "削除",
+      "confirmDelete": "このカードを削除しますか？"
+    },
+    "permission": {
+      "vivoTitle": "OpenPocket の毎日の通知を許可する",
+      "vivoBody": "OriginOS はバックグラウンドアプリを制限します。毎日の通知を正確に届けるために、「バックグラウンド高電費」と「自動起動」を有効にしてください。",
+      "vivoStep1": "設定 → バッテリー → バックグラウンド高電費",
+      "vivoStep2": "OpenPocket を見つけて「無制限」に設定",
+      "vivoStep3": "設定 → 自動起動 → OpenPocket を有効化",
+      "vivoDone": "完了しました"
+    },
+    "error": {
+      "loadFailed": "フラッシュカードの読み込みに失敗しました",
+      "syncConflict": "同期が競合しています — 再読み込みしてください"
+    }
   }
 }

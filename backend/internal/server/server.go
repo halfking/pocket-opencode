@@ -28,6 +28,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
 	"github.com/halfking/pocket-opencode/backend/internal/finance"
+	"github.com/halfking/pocket-opencode/backend/internal/flashcards"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
@@ -87,8 +88,13 @@ type Server struct {
 	snippetStore     *snippet.Store
 	meetingStore     *meeting.Store
 	chatSummaryStore *cs.Store
-	transcriber      *stt.Transcriber // nil = 云端 STT 兜底未配置
-	mcpClient        *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
+	// flashcardStore holds the v1 spaced-repetition flashcard persistence
+	// (notes/cards/decks/revlogs). nil → /api/flashcards handlers return
+	// 503. SetFlashcardStore() is the public injection point used by
+	// cmd/pocketd/main.go.
+	flashcardStore *flashcards.Store
+	transcriber    *stt.Transcriber // nil = 云端 STT 兜底未配置
+	mcpClient      *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// RSS 订阅与分享（PG store + 后台 scheduler）。nil = 关闭模块。
 	// 由 cmd/pocketd/main.go 通过 SetRSSStore / SetRSSScheduler 注入。
 	rssStore     *rss.Store
@@ -204,14 +210,14 @@ func isProductionConfig(cfg config.Config) bool {
 // Auth + Email: 新增 userStore/jwtSigner/emailCrypto/emailPending/emailScheduler/emailFetcher/dataDir。
 // 这些依赖都允许为 nil（对应功能降级），由各 handler 自行判断。
 // 记账存储经 SetFinanceStore 注入（PG 版），未注入时默认内存版。
-func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore vaultSyncStorer, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string, pool *pgxpool.Pool) *Server {
-	return newServer(cfg, nps, opencode, taskStore, reg, configAdapter, notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, opencodeManager, userStore, jwtSigner, emailCrypto, emailPending, emailScheduler, emailFetcher, dataDir, true, pool)
+func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore vaultSyncStorer, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string, pool *pgxpool.Pool, flashcardStore *flashcards.Store) *Server {
+	return newServer(cfg, nps, opencode, taskStore, reg, configAdapter, notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, opencodeManager, userStore, jwtSigner, emailCrypto, emailPending, emailScheduler, emailFetcher, dataDir, true, pool, flashcardStore)
 }
 
 // newServer builds a Server and optionally starts its long-lived websocket hubs.
 // Handler tests that do not exercise websocket or plugin traffic may disable those
 // workers to avoid leaking goroutines for the lifetime of the test process.
-func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore vaultSyncStorer, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string, startHubs bool, pool *pgxpool.Pool) *Server {
+func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore vaultSyncStorer, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string, startHubs bool, pool *pgxpool.Pool, flashcardStore *flashcards.Store) *Server {
 	hub := ws.NewHub()
 	if startHubs {
 		go hub.Run()
@@ -244,6 +250,7 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 		snippetStore:     snippet.NewStore(),
 		meetingStore:     meeting.NewStore(),
 		chatSummaryStore: cs.NewStore(),
+		flashcardStore:   flashcardStore,
 		transcriber:      transcriber,
 		mcpClient:        mcpClient,
 		embedder:         embedder,
@@ -429,6 +436,18 @@ func (s *Server) SetAgentBridge(b *agentbridge.Bridge, store *agentbridge.Store)
 // the already compatibility-sensitive New constructor.
 func (s *Server) SetScheduledTaskStore(store *scheduledtask.Store) {
 	s.scheduledTaskStore = store
+}
+
+// SetFlashcardStore wires the v1 spaced-repetition flashcard persistence.
+// Mirrors SetScheduledTaskStore: passed positionally to New() but also
+// available as a setter for tests or late-binding cases.
+func (s *Server) SetFlashcardStore(store *flashcards.Store) {
+	s.flashcardStore = store
+}
+
+// FlashcardStore returns the configured store (nil-safe).
+func (s *Server) FlashcardStore() *flashcards.Store {
+	return s.flashcardStore
 }
 
 // SetScheduledTaskScheduler wires manual-trigger access and scheduler
@@ -625,6 +644,10 @@ func (s *Server) Handler() http.Handler {
 	// 语音笔记
 	mux.HandleFunc("/api/notes", s.requireAuth(s.handleNotes))
 	mux.HandleFunc("/api/notes/", s.requireAuth(s.handleNoteOperations))
+	// v1 闪卡模块：/api/flashcards 与 /api/flashcards/。handlers 在 store
+	// 未注入时返回 503（pgxpool 为 nil 的 remote-only 模式下自然降级）。
+	mux.HandleFunc("/api/flashcards", s.requireAuth(s.handleFlashcardsCollection))
+	mux.HandleFunc("/api/flashcards/", s.requireAuth(s.handleFlashcardsItem))
 	// 代码片段
 	mux.HandleFunc("/api/snippets", s.requireAuth(s.handleSnippets))
 	mux.HandleFunc("/api/snippets/", s.requireAuth(s.handleSnippetOps))

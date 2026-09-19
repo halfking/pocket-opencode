@@ -105,5 +105,50 @@
     "groupSettings": "設定",
     "groupOps": "維運與進階",
     "versionFootnote": "Redclaw · v{version}"
+  },
+  "flashcards": {
+    "list": {
+      "title": "閃卡",
+      "empty": "目前沒有卡組",
+      "create": "新增卡組",
+      "dueToday": "今日待複習 {count} 張"
+    },
+    "deck": {
+      "title": "卡組",
+      "addCard": "新增卡片",
+      "review": "開始複習",
+      "noCards": "此卡組目前沒有卡片"
+    },
+    "review": {
+      "title": "複習",
+      "again": "重來",
+      "hard": "困難",
+      "good": "良好",
+      "easy": "簡單",
+      "remaining": "剩餘 {count} 張",
+      "complete": "本次複習完成",
+      "fuzzNote": "為避免集中到期，卡片到期時間會刻意在 ±5% 內散開"
+    },
+    "edit": {
+      "title": "卡片",
+      "front": "正面",
+      "back": "背面",
+      "tags": "標籤",
+      "save": "儲存",
+      "delete": "刪除",
+      "confirmDelete": "確定要刪除這張卡片嗎？"
+    },
+    "permission": {
+      "vivoTitle": "允許 OpenPocket 每日提醒你",
+      "vivoBody": "OriginOS 會限制背景應用。請開啟「不受限背景耗電」與「自動啟動」，以確保每日提醒準時送達。",
+      "vivoStep1": "設定 → 電池 → 背景高耗電",
+      "vivoStep2": "找到 OpenPocket，設定為「不受限」",
+      "vivoStep3": "設定 → 自動啟動 → 啟用 OpenPocket",
+      "vivoDone": "已完成"
+    },
+    "error": {
+      "loadFailed": "載入閃卡失敗",
+      "syncConflict": "同步衝突，請重新整理"
+    }
   }
 }

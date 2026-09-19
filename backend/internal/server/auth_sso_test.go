@@ -108,7 +108,7 @@ func newSSOTestServer(t *testing.T, fakeAgent *httptest.Server, ssoEnabled bool)
 	cfg := config.Config{RedClawSsoEnabled: ssoEnabled}
 	// startHubs=false：handler 测试不跑 websocket/plugin hub，避免泄漏 goroutine。
 	srv := newServer(cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, nil, nil, nil, "", false, nil)
+		nil, nil, nil, nil, nil, nil, "", false, nil, nil)
 	if fakeAgent != nil {
 		client, err := redclaw.NewAdminAuthClient(redclaw.AdminAuthClientConfig{
 			AdminURL:     fakeAgent.URL,

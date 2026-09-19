@@ -42,6 +42,13 @@ import ScheduledTaskListView from '../features/scheduled-tasks/ScheduledTaskList
 import ScheduledTaskDetailView from '../features/scheduled-tasks/ScheduledTaskDetailView.vue'
 import ScheduledTaskEditView from '../features/scheduled-tasks/ScheduledTaskEditView.vue'
 
+// Flashcards v1（契约 §2 + §4）：FSRS 驱动的间隔重复学习
+// 路由级懒加载：仅在进入 /flashcards 才下载，减少首屏 JS 体积。
+const FlashcardListView = () => import('../features/flashcards/FlashcardListView.vue')
+const FlashcardDeckView = () => import('../features/flashcards/FlashcardDeckView.vue')
+const FlashcardReviewView = () => import('../features/flashcards/FlashcardReviewView.vue')
+const FlashcardEditView = () => import('../features/flashcards/FlashcardEditView.vue')
+
 // S1.1 PKM 记事本（TipTap WYSIWYG + 双向链接，基于 S0-C assetStore）
 // 路由级懒加载：TipTap ~200KB 只在进入 /pkm 时才下载，保持首屏精简。
 const PkmTodayView = () => import('../features/pkm/PkmTodayView.vue')
@@ -441,6 +448,39 @@ const router = createRouter({
       name: 'scheduled-task-detail',
       component: ScheduledTaskDetailView,
       meta: { requiresAuth: true, title: '定时任务详情', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
+    // ---- Flashcards v1（FSRS 间隔重复）----
+    // 路由顺序：list → new → notes/:noteId/edit → decks/:deckId → review
+    // 这样动态段（:deckId/:noteId）不会被静态前缀吞掉。
+    {
+      path: '/flashcards',
+      name: 'flashcards',
+      component: FlashcardListView,
+      meta: { requiresAuth: true, title: '闪卡', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
+    {
+      path: '/flashcards/new',
+      name: 'flashcard-new',
+      component: FlashcardEditView,
+      meta: { requiresAuth: true, title: '新建卡片', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
+    {
+      path: '/flashcards/notes/:noteId/edit',
+      name: 'flashcard-note-edit',
+      component: FlashcardEditView,
+      meta: { requiresAuth: true, title: '编辑卡片', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
+    {
+      path: '/flashcards/decks/:deckId',
+      name: 'flashcard-deck',
+      component: FlashcardDeckView,
+      meta: { requiresAuth: true, title: '卡组', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
+    {
+      path: '/flashcards/decks/:deckId/review',
+      name: 'flashcard-review',
+      component: FlashcardReviewView,
+      meta: { requiresAuth: true, title: '复习', bottomNav: false, canGoBack: true, hideAppHeader: true, scrollMode: 'self' }
     },
     // P3 — 成本与配额只读面板
     {

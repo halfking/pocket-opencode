@@ -44,7 +44,7 @@ func TestLookupDiskSessionTask_MatchesListSemantics(t *testing.T) {
 
 	cfg := config.Load()
 	ad := &diskLookupAdapter{}
-	srv := New(cfg, adapter.NewStaticNPSAdapter(), ad, nil, reg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, signer, nil, nil, nil, nil, "", nil)
+	srv := New(cfg, adapter.NewStaticNPSAdapter(), ad, nil, reg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, signer, nil, nil, nil, nil, "", nil, nil)
 	token, err := signer.SignWithWorkspace("u1", "admin", "ws-a")
 	if err != nil {
 		t.Fatal(err)

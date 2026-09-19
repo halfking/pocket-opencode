@@ -105,5 +105,50 @@
     "groupSettings": "Réglages",
     "groupOps": "Opérations & avancé",
     "versionFootnote": "Redclaw · v{version}"
+  },
+  "flashcards": {
+    "list": {
+      "title": "Cartes mémoire",
+      "empty": "Aucun paquet pour l'instant",
+      "create": "Créer un paquet",
+      "dueToday": "{count} à réviser aujourd'hui"
+    },
+    "deck": {
+      "title": "Paquet",
+      "addCard": "Ajouter une carte",
+      "review": "Réviser",
+      "noCards": "Ce paquet ne contient aucune carte"
+    },
+    "review": {
+      "title": "Révision",
+      "again": "À revoir",
+      "hard": "Difficile",
+      "good": "Correct",
+      "easy": "Facile",
+      "remaining": "{count} restantes",
+      "complete": "Session terminée",
+      "fuzzNote": "Les échéances sont volontairement dispersées dans une plage de ±5% pour éviter l'entassement"
+    },
+    "edit": {
+      "title": "Carte",
+      "front": "Recto",
+      "back": "Verso",
+      "tags": "Étiquettes",
+      "save": "Enregistrer",
+      "delete": "Supprimer",
+      "confirmDelete": "Supprimer cette carte ?"
+    },
+    "permission": {
+      "vivoTitle": "Autoriser OpenPocket à vous rappeler chaque jour",
+      "vivoBody": "OriginOS limite les applications en arrière-plan. Activez « Consommation arrière-plan illimitée » et « Démarrage automatique » pour que les rappels quotidiens se déclenchent à l'heure.",
+      "vivoStep1": "Paramètres → Batterie → Consommation arrière-plan",
+      "vivoStep2": "Trouver OpenPocket et le régler sur « Illimité »",
+      "vivoStep3": "Paramètres → Démarrage auto → activer OpenPocket",
+      "vivoDone": "C'est fait"
+    },
+    "error": {
+      "loadFailed": "Impossible de charger les cartes mémoire",
+      "syncConflict": "Conflit de synchronisation — veuillez actualiser"
+    }
   }
 }

@@ -168,5 +168,50 @@
     "newVersionAvailable": "发现新版本 v{version}！\n\n更新内容:\n{changelog}",
     "alreadyLatest": "当前已是最新版本！",
     "checkUpdateFailed": "检查更新失败，请稍后重试"
+  },
+  "flashcards": {
+    "list": {
+      "title": "闪卡",
+      "empty": "暂无卡组",
+      "create": "新建卡组",
+      "dueToday": "今日待复习 {count} 张"
+    },
+    "deck": {
+      "title": "卡组",
+      "addCard": "添加卡片",
+      "review": "开始复习",
+      "noCards": "该卡组暂无卡片"
+    },
+    "review": {
+      "title": "复习",
+      "again": "重来",
+      "hard": "困难",
+      "good": "良好",
+      "easy": "简单",
+      "remaining": "剩余 {count} 张",
+      "complete": "本次复习完成",
+      "fuzzNote": "为避免集中到期，卡片到期时间会刻意在 ±5% 内散开"
+    },
+    "edit": {
+      "title": "卡片",
+      "front": "正面",
+      "back": "背面",
+      "tags": "标签",
+      "save": "保存",
+      "delete": "删除",
+      "confirmDelete": "确定删除该卡片？"
+    },
+    "permission": {
+      "vivoTitle": "允许 OpenPocket 每日提醒你",
+      "vivoBody": "OriginOS 会限制后台应用。请开启\"不受限后台耗电\"与\"自启动\"，以保证每日提醒准时送达。",
+      "vivoStep1": "设置 → 电池 → 后台高耗电",
+      "vivoStep2": "找到 OpenPocket，设置为\"不受限\"",
+      "vivoStep3": "设置 → 自启动 → 启用 OpenPocket",
+      "vivoDone": "已完成"
+    },
+    "error": {
+      "loadFailed": "加载闪卡失败",
+      "syncConflict": "同步冲突，请刷新重试"
+    }
   }
 }

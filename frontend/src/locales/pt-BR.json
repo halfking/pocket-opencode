@@ -105,5 +105,50 @@
     "groupSettings": "Configurações",
     "groupOps": "Operações e avançado",
     "versionFootnote": "Redclaw · v{version}"
+  },
+  "flashcards": {
+    "list": {
+      "title": "Flashcards",
+      "empty": "Ainda não há baralhos",
+      "create": "Criar baralho",
+      "dueToday": "{count} para revisar hoje"
+    },
+    "deck": {
+      "title": "Baralho",
+      "addCard": "Adicionar cartão",
+      "review": "Revisar",
+      "noCards": "Este baralho não tem cartões"
+    },
+    "review": {
+      "title": "Revisão",
+      "again": "De novo",
+      "hard": "Difícil",
+      "good": "Bom",
+      "easy": "Fácil",
+      "remaining": "{count} restantes",
+      "complete": "Sessão concluída",
+      "fuzzNote": "Os prazos são intencionalmente dispersos em ±5% para evitar acúmulo"
+    },
+    "edit": {
+      "title": "Cartão",
+      "front": "Frente",
+      "back": "Verso",
+      "tags": "Etiquetas",
+      "save": "Salvar",
+      "delete": "Excluir",
+      "confirmDelete": "Excluir este cartão?"
+    },
+    "permission": {
+      "vivoTitle": "Permita que o OpenPocket te avise todos os dias",
+      "vivoBody": "O OriginOS restringe apps em segundo plano. Ative \"Consumo em segundo plano irrestrito\" e \"Início automático\" para que os lembretes diários disparem na hora.",
+      "vivoStep1": "Configurações → Bateria → Consumo em segundo plano",
+      "vivoStep2": "Encontre o OpenPocket e defina como \"Sem restrições\"",
+      "vivoStep3": "Configurações → Início automático → ativar OpenPocket",
+      "vivoDone": "Feito"
+    },
+    "error": {
+      "loadFailed": "Não foi possível carregar os flashcards",
+      "syncConflict": "Conflito de sincronização — atualize a página"
+    }
   }
 }

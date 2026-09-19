@@ -105,5 +105,50 @@
     "groupSettings": "Einstellungen",
     "groupOps": "Betrieb & Erweitert",
     "versionFootnote": "Redclaw · v{version}"
+  },
+  "flashcards": {
+    "list": {
+      "title": "Karteikarten",
+      "empty": "Noch keine Stapel vorhanden",
+      "create": "Stapel erstellen",
+      "dueToday": "Heute {count} fällig"
+    },
+    "deck": {
+      "title": "Stapel",
+      "addCard": "Karte hinzufügen",
+      "review": "Wiederholen",
+      "noCards": "Dieser Stapel enthält keine Karten"
+    },
+    "review": {
+      "title": "Wiederholung",
+      "again": "Nochmal",
+      "hard": "Schwer",
+      "good": "Gut",
+      "easy": "Leicht",
+      "remaining": "Noch {count} übrig",
+      "complete": "Sitzung abgeschlossen",
+      "fuzzNote": "Fälligkeitstermine werden absichtlich um ±5% gestreut, um ein Clustering zu vermeiden"
+    },
+    "edit": {
+      "title": "Karte",
+      "front": "Vorderseite",
+      "back": "Rückseite",
+      "tags": "Schlagwörter",
+      "save": "Speichern",
+      "delete": "Löschen",
+      "confirmDelete": "Diese Karte löschen?"
+    },
+    "permission": {
+      "vivoTitle": "Erlaube OpenPocket, dich täglich zu erinnern",
+      "vivoBody": "OriginOS schränkt Hintergrund-Apps ein. Aktiviere \"Unbeschränkter Hintergrundverbrauch\" und \"Autostart\", damit tägliche Erinnerungen pünktlich ausgelöst werden.",
+      "vivoStep1": "Einstellungen → Akku → Hintergrundverbrauch",
+      "vivoStep2": "OpenPocket finden und auf \"Unbeschränkt\" setzen",
+      "vivoStep3": "Einstellungen → Autostart → OpenPocket aktivieren",
+      "vivoDone": "Erledigt"
+    },
+    "error": {
+      "loadFailed": "Karteikarten konnten nicht geladen werden",
+      "syncConflict": "Sync-Konflikt — bitte aktualisieren"
+    }
   }
 }

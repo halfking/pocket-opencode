@@ -23,6 +23,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/db"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/finance"
+	"github.com/halfking/pocket-opencode/backend/internal/flashcards"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
@@ -88,6 +89,13 @@ func main() {
 		marketplaceStore   *marketplace.Store
 		financeStore       finance.FinanceStore
 		rssStore           *rss.Store
+		// v1 闪卡模块（docs/flashcards-contract.md §1, §5）。PG 就绪时构造
+		// store 与 EnsureSchema；remote-only 模式下保持 nil，handler 返 503。
+		flashcardStore *flashcards.Store
+		// v1 闪卡复习 executor：在 scheduledtask block 内构造、注册到
+		// scheduler；scheduler 启动之后，notifycenter 块构造完成后再
+		// 通过 SetNotifier 注入通知客户端（详见下方 notifycenter 块注释）。
+		flashcardExec *scheduledexecutors.FlashcardReviewExecutor
 	)
 	if pool != nil {
 		ts, err := task.NewStore(pool)
@@ -135,6 +143,20 @@ func main() {
 			log.Fatalf("rss store: %v", err)
 		}
 		rssStore = rs
+		// v1 闪卡：构造 + EnsureSchema。fail-fast 因为 4 张表是新引入的，
+		// PG 状态不对（迁移漂移）应该让启动失败而不是悄悄降级。
+		fcCtx, fcCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		fcs, err := flashcards.NewStore(fcCtx, pool)
+		if err != nil {
+			fcCancel()
+			log.Fatalf("flashcards store: %v", err)
+		}
+		if err := fcs.EnsureSchema(fcCtx); err != nil {
+			fcCancel()
+			log.Fatalf("flashcards schema: %v", err)
+		}
+		fcCancel()
+		flashcardStore = fcs
 		if marketplaceStore != nil {
 			log.Println("Module stores initialized (PG, scheduled tasks and marketplace enabled)")
 		} else {
@@ -553,7 +575,7 @@ func main() {
 		userStore, jwtSigner,
 		emailCrypto, emailPending,
 		emailScheduler, emailFetcher,
-		dataDir, pool)
+		dataDir, pool, flashcardStore)
 	if financeStore != nil {
 		srv.SetFinanceStore(financeStore)
 	}
@@ -578,6 +600,11 @@ func main() {
 		defer rssSched.Stop()
 		log.Printf("RSS scheduler started (enabled=%v, tick=%s, max_parallel=%d, source_interval=%s)",
 			cfg.RSS.Enabled, cfg.RSS.FetchInterval, cfg.RSS.MaxConcurrency, cfg.RSS.DefaultSourceInterval)
+	}
+
+	// Flashcards：注入 store（PG 已就绪时）。v1 仅暴露 store；scheduler 与后台任务由后续 agent 接入。
+	if flashcardStore != nil {
+		srv.SetFlashcardStore(flashcardStore)
 	}
 	if pool != nil {
 		if us, err := usersetting.NewStore(pool); err != nil {
@@ -909,6 +936,14 @@ func main() {
 		} else {
 			registered++
 		}
+		if flashcardStore != nil {
+			flashcardExec = scheduledexecutors.NewFlashcardReviewExecutor(flashcardStore, nil)
+			if err := sched.Register(flashcardExec); err != nil {
+				log.Printf("WARN: register flashcard review scheduled executor: %v", err)
+			} else {
+				registered++
+			}
+		}
 		srv.SetScheduledTaskScheduler(sched)
 		sched.Start(context.Background())
 		defer sched.Stop()
@@ -924,6 +959,13 @@ func main() {
 			wsSender := notifycenter.NewWebsocketSender(srv.WSHub())
 			svc := notifycenter.NewService(ncStore, wsSender)
 			srv.SetNotifyCenter(svc, ncStore)
+			// Flashcards executor 的通知客户端晚绑：scheduler block 在
+			// notifycenter 之前，所以 NewFlashcardReviewExecutor 拿不到
+			// svc；现在 notifycenter 已就绪，再补注入即可。flashcardExec
+			// 为 nil 时（remote-only / store 未构造）跳过。
+			if flashcardExec != nil {
+				flashcardExec.SetNotifier(svc)
+			}
 			log.Println("Notification Center enabled (inbox + rules + WS foreground push)")
 		}
 	}

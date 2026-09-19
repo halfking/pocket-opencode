@@ -32,7 +32,7 @@ func TestFinanceCreateScoped_CreatedField(t *testing.T) {
 		adapter.NewStaticNPSAdapter(),
 		adapter.NewOpenCodeHTTPAdapter(5000),
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		signer, nil, nil, nil, nil, "", false, nil,
+		signer, nil, nil, nil, nil, "", false, nil, nil,
 	)
 	h := srv.Handler()
 

@@ -120,7 +120,7 @@ func newExtendedAuthTestServer(t *testing.T, pool *pgxpool.Pool) *Server {
 	}
 
 	// 用 nil SMTP（不实际发送邮件；debug 模式回显 code）
-	srv := New(cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, us, signer, nil, nil, nil, nil, "", pool)
+	srv := New(cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, us, signer, nil, nil, nil, nil, "", pool, nil)
 	srv.SetAuthExt(cs, nil, nil)
 	return srv
 }

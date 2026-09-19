@@ -128,5 +128,50 @@
     "newVersionAvailable": "New version v{version} available!\n\nChangelog:\n{changelog}",
     "alreadyLatest": "Already on the latest version!",
     "checkUpdateFailed": "Failed to check for updates, please try again later"
+  },
+  "flashcards": {
+    "list": {
+      "title": "Flashcards",
+      "empty": "No decks yet",
+      "create": "Create deck",
+      "dueToday": "{count} due today"
+    },
+    "deck": {
+      "title": "Deck",
+      "addCard": "Add card",
+      "review": "Review",
+      "noCards": "This deck has no cards"
+    },
+    "review": {
+      "title": "Review",
+      "again": "Again",
+      "hard": "Hard",
+      "good": "Good",
+      "easy": "Easy",
+      "remaining": "{count} remaining",
+      "complete": "Session complete",
+      "fuzzNote": "Cards are intentionally scattered within ±5% to prevent clustering"
+    },
+    "edit": {
+      "title": "Card",
+      "front": "Front",
+      "back": "Back",
+      "tags": "Tags",
+      "save": "Save",
+      "delete": "Delete",
+      "confirmDelete": "Delete this card?"
+    },
+    "permission": {
+      "vivoTitle": "Allow OpenPocket to remind you daily",
+      "vivoBody": "OriginOS restricts background apps. Enable unrestricted battery and autostart so daily reminders fire on time.",
+      "vivoStep1": "Settings → Battery → Background power consumption",
+      "vivoStep2": "Find OpenPocket and set to Unrestricted",
+      "vivoStep3": "Settings → Autostart → enable OpenPocket",
+      "vivoDone": "I've done this"
+    },
+    "error": {
+      "loadFailed": "Could not load flashcards",
+      "syncConflict": "Sync conflict — please refresh"
+    }
   }
 }

@@ -47,6 +47,8 @@ const (
 	// 包提供，分别落到 orchestrator.LocalDispatcher / CloudDispatcher。
 	KindLocalAgent    Kind = "local_agent"
 	KindCloudDispatch Kind = "cloud_dispatch"
+	// Phase 5: 闪卡复习提醒，由 flashcards.Store 提供到期统计。
+	KindFlashcardReview Kind = "flashcard_review"
 )
 
 // AllKinds lists every built-in kind. Used by the API layer to validate

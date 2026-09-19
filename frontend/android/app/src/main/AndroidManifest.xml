@@ -74,6 +74,10 @@
          切后台时保住进程优先级；WAKE_LOCK：AI 流进行中短时持有，防 Doze 冻结 fetch/SSE。 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 闪卡：每日定时本地通知 — SCHEDULE_EXACT_ALARM 仅 Android 12+ 精确闹钟必需 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- 闪卡：设备重启后由 LocalNotifications 重建定时提醒 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
