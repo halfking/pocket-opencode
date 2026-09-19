@@ -1,6 +1,7 @@
 # 原生顺滑度审计 —— WebView 交互为何"不原生"与达标路径（2026-09-19）
 
-> 状态：审计完成，改进方案待排期。本文是**代码级证据审计**，与 2026-09-08 口头梳理的
+> 状态：**P0 全 6 项 + P1 #7/#8/#9 已落地**（2026-09-20，feature/native-smoothness-p0），
+> 模拟器实测回填见文末「八、落地记录」。本文是**代码级证据审计**，与 2026-09-08 口头梳理的
 > 「5 大原生差距 / 4 阶段路线图」（未落档）互补：那份回答"要不要原生化"，本文回答
 > "在 Capacitor 形态下，顺滑感差在哪、哪些能救、哪些救不了"。
 > 审计方法：全量读壳层代码（App.vue / AppLayout.vue / useSwipeBack / styles.css /
@@ -169,3 +170,35 @@ P0/P1 做完，Capacitor 形态可以到"次原生"；剩余 30% 才是 RN/Flutt
   等能力项不在此重复）。
 - 本文 A 节四项固有短板 = 路线图阶段 2/3 的启动判据；结论一致：**先深耕
   Capacitor，达标后按页重写，不推倒重来**。
+
+## 七、P0/P1 实际落地范围（2026-09-20）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| P0 #1 路由转场 | ✅ | `routeTransition.ts` 方向判定（路径深度，免改 50+ 条 meta.depth）；push/pop/tab(fade) 三套 CSS；离场页 absolute 对齐 padding box + 滚动快照进自身 |
+| P0 #2 右滑返回 | ✅ | 过阈值立即 back + pop 转场 `--swipe-from` 接力；阻尼 sqrt(dx)*8 → 线性 dx×0.85；提交轻触觉 |
+| P0 #3 splash | ✅ | `launchShowDuration: 0 + launchAutoHide: false` + main.ts 双 rAF 后 `hide(200ms fade)`；@capacitor/splash-screen 已入原生工程 |
+| P0 #4 触觉 | ✅ | `useHaptics.ts`（原生 @capacitor/haptics / Web navigator.vibrate 降级）；tab/PTR 过阈值/返回提交/长按/Toast error 五处接入 |
+| P0 #5 按压态 | ✅ | `button:active` scale(0.97)+opacity 0.85+120ms；Button.vue primary 纯 CSS ripple（中心扩散，非触点级） |
+| P0 #6 调试收口 | ✅ | MainActivity 按 `BuildConfig.DEBUG` 分流（gradle 开 buildFeatures.buildConfig） |
+| P1 #7 主包瘦身 | ✅ | 24 个静态 import → 3（留 /ai、/login、/servers 首屏）+ vue-vendor manualChunks |
+| P1 #8 列表兜底 | ✅ | 7 个高频列表容器 `content-visibility: auto + contain-intrinsic-size`；@tanstack 虚拟化仍留后续 |
+| P1 #9 滚动恢复 | ✅ | 守卫记忆离场 scrollTop；pop/tab 经 Transition enter 钩子首帧前恢复 |
+| P1 #10 骨架屏 | ⏳ | 未做（配合 feat/list-sync 一并落地为宜） |
+| P1 #11 内联 SVG | ⏳ | 未做（审计自评收益中等、排期靠后） |
+
+顺带修复：VivoBatteryWhitelistGuide.vue `<script setup>` 内 export 导致 vite build
+失败（flashcards 分支既有问题，全量构建首次触达该文件时暴露）。
+
+## 八、落地实测（Android 模拟器 pocket_clone / API 36.1，2026-09-20）
+
+| 指标 | 审计现状（估） | 实测 | 验证手段 |
+|---|---|---|---|
+| 冷启动→可交互 | ~2.5s+ | **COLD 1050–1689ms** | `adb am start -W`（splash 不再定时，就绪即隐） |
+| 主包体积 | 900KB | **index 364KB（<400KB 达标）** + vue-vendor 177KB | dist 产物 |
+| 路由转场 | 硬切 | push：新页 translateX 100%→0（z=2 带阴影）+ 旧页视差 →-30%；pop 反向；tab 150ms fade；仅动 transform/opacity | 慢放(3s)中间帧截图 + CDP computed transform |
+| 右滑返回 | 假跟随+闪跳 | 跟手位移 = dx×0.85 精确；过阈值立即 back，pop 离场从拖拽位移接力（`--swipe-from`），main inline transform 零残留 | CDP 合成 TouchEvent 全链路 |
+| 触觉 | 无 | Haptics/SplashScreen 插件原生注册（cap sync 10 plugins）；impact 调用经原生桥 resolve | CDP `Capacitor.Plugins.Haptics.impact` |
+| 千封邮件 fling | 掉帧 | 未复测（当前测试账号无千封级数据）；content-visibility 已生效 | 待真机 Perfetto 回填 |
+
+遗留：Perfetto/systrace 帧级复测、真机（中端机）TTI 复测，按第五节验收表继续。
