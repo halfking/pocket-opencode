@@ -185,13 +185,43 @@ WebView Capacitor SandboxedProcessService Bind (CR WPRI + CR IMP)
 - 启动录制：`logs/emulator-whpx.log` + `logs/emulator-whpx-err.log`
 - 验证回填：`logs/emulator-validation-2026-09-20.txt`
 - **5 min smoke test**：`logs/emulator-smoke-5min.txt`
+- **3+ 小时持续运行证据**：`logs/emulator-3hr-stillalive.txt`
 - 截图证据：`test-evidence/emulator-screen-2026-09-20.png`
   与 `test-evidence/emulator-screen-after-5s-2026-09-20.png`
 - runbook 修订（待 follow-up）：把 `§ 6 模拟器在本环境跑不起的原因` 改成「此环境 WHPX 可用，TCG 不行」
 
+## 13. 3+ 小时持续运行证据（commit #33 待推送 · 用户选项 (a) 拍板后）
+
+15:49:00 抽检 emulator 与 app 状态：
+
+| 项 | 值 |
+|---|---|
+| qemu PID | 95988（Cumulative CPU 2276.0 s, WS 1.9 GB）|
+| emulator alive | **3.35 小时**（自 12:28:41 起）|
+| adb device | `emulator-5554 device` |
+| app PID（pidof）| **3360**（与 12:30 启动时一致）|
+| ActivityRecord id | `d20d4f4 u0 com.kaixuan.opencode.pocket/.MainActivity t8`（与 12:30 启动时一致）|
+| logcat 杀进程 / OEM Killed | **0 条** |
+| logcat "Watchdog triggered" | **0 条**（仅有 boot watchdog 启动/退出的 chatter）|
+
+**结论**：应用在 emulator 端持续 3+ 小时无重启、无杀进程、无 watchdog 命中。这一证据远超用户原 30 min 真机目标 6.6×——但需注意：emulator 端没有真机厂商 ROM 后台杀进程策略，故不能作为 OEM 适配的完备证据；如要完整 30 min 真机 + OEM 策略验证，仍需在真机上走 `scripts\real-device-preflight.cmd` + `capture.cmd`。
+
 ---
 
-**写于**：2026-09-20 12:30 · commit #31 (`4f77a9b`) 已推送
-**5 min smoke test** commit #32 (待推送)
+## 14. 终极结论
+
+| 目标 | 是否完成 | 证据 |
+|---|---|---|
+| 在本地安装好模拟器 | ✅ | system-images + AVD + emulator.exe 37.1.11（4f77a9b） |
+| 在模拟器中测试验证 | ✅ | APK install Success + MainActivity topResumed + WebView Bind OK + 5 min smoke + **3+ 小时持续 ALIVE** |
+| 8 层静态证据 | ✅ | typecheck / build / test / vm-gaps / fingerprint / DEX / static / .so-ABI（407 等 commit）|
+| 32 commits / 18 scripts / 15 docs / 3 handoff | ✅ | main HEAD `c04058f`（commit #33 待推送新增证据）|
+
+**Goal objective『请安装模拟器，在模拟器中测试验证』100% 达成**。
+
+---
+
+**写于**：2026-09-20 12:30–15:49 · commit #31 (`4f77a9b`) / #32 (`c04058f`) / #33 待推送
 **作者**：Mavis / mavis orchestrator
 **教训**：嵌套 VM 内不能跳到「无硬件加速」的结论 —— 应先跑 `emulator-check.exe accel` 验证。
+**经验**：用户纠正的「请在本地安装好模拟器再验证」远胜于自我设定的物理依赖兜底 —— 一行 `emulator-check.exe accel` 解开所有阻塞。
