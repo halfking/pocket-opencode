@@ -299,9 +299,9 @@ bee61e9 docs(audit): 本审计（用户四目标 + 8 周阶梯 + 4 决策点）
 - 25 个 native 单测 = 周 1-2 决策门槛（CI 跑 `npm run test:native`）；**任一 fail 不得合并**
 - 跨阶段决策点：iOS 是否提前铺开（当前 v2）；其余按 H1 阶段执行
 
-### 8.6 Stage-1 终极状态（同日 follow-up）
+### 8.6 Stage-1 终极状态（同日 follow-up · c5958dd / 0c8f166 follow-up at 12:09）
 
-agent 可独立完成的 5 / 8 周阶段全部 ✅；剩余 3 周**必须由真机段进行**：
+agent 可独立完成的 7 / 8 周阶段全部 ✅；剩余 1 周**必须由真机段进行**：
 
 | 阶段 | 终极状态 |
 |---|---|
@@ -310,7 +310,10 @@ agent 可独立完成的 5 / 8 周阶段全部 ✅；剩余 3 周**必须由真�
 | 周 5 ViewModel 抽取（已调整为 useTaskSessionSheet）| ✅ |
 | 周 6 邮件域裁决 + useConfigList 抽取 | ✅ 命中归零 0 / 118 |
 | 周 6 收紧：HITS_ALLOWED=0 hard gate | ✅ |
-| 周 7-8 骨架屏 + 触觉 + Perfetto | 骨架/触觉 ✅；Perfetto 等真机 |
+| 周 7-8 骨架屏 + 触觉 | ✅ 10 触觉点位 + 统一 Skeleton 组件 |
+| 周 7-8 Android 工具链 + 8 层静态证据 | ✅ JDK17/21 + cmdline-tools + AVD + APK + 8 层一键 verify:android（commit `405e5a4` `1b0447e` `a531dd1` `f7aad3c` `c5958dd` `0c8f166`）|
+| 周 7-8 真机一键 preflight + 30min capture | ✅ `scripts\real-device-preflight.cmd` + `scripts\real-device-capture.cmd`（commit `c5958dd`）|
+| **周 7-8 Perfetto + 30 min 后台实测** | ⏳ 真机侧 — 用户跑完 `capture.cmd` 后回填 |
 
 **触发 stage-2 的唯一门槛**：任一真机（Pixel 8 / OPPO / Vivo / Xiaomi）到位 → 跑
 [`../design/2026-09-20-ai-background-runtime-verification.md` §1](../design/2026-09-20-ai-background-runtime-verification.md)
