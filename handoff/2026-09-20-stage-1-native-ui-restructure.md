@@ -1,7 +1,7 @@
 # Stage 1 交接 · 原生化与 UI 重构（2026-09-20）
 
-> 给后续 session 的接力单。完成时间 2026-09-20，10 commits + 5 docs + 1 CI 脚本，全部已推送 `main`。
-> 起点：原目标"分析→审计→执行→推送"完整循环的前 8 周计划中 5/8 阶段已落地。
+> 给后续 session 的接力单。完成时间 2026-09-20，**15 commits + 8 docs + 1 CI 工具集 + 1 全门槛脚本**，全部已推送 `main`。
+> 起点：原目标"分析→审计→执行→推送"完整循环 + 8 周计划中 agent-可独立完成 5/8 阶段已落地。
 
 ---
 
@@ -9,13 +9,14 @@
 
 ```bash
 git checkout main
-git log --oneline -10              # 看 8b338cb..bee61e9 10 个 commit
+git log --oneline -15              # 看 4e26cb7..bee61e9 15 个 commit
 cat docs/audits/2026-09-20-native-ui-restructure-plan.md   # 顶层设计
+cd frontend && npm run gates       # 一键验 agent-可范围全部门檻
 ```
 
 - **目标**：Hybrid 2.0 化（Capacitor + 8 原生 plugin）；UI 重构；数据后台可执行
-- **当前阶段**：周 1-8 中 5/8 完成；剩 3 周依赖真机
-- **状态**：代码级 + 单测 ✅；真机 30min + Perfetto 仍待跑
+- **当前阶段**：8 周中 5/8 完成（agent-可范围 100%）；剩 3 周 100% 真机段
+- **状态**：代码级 + 单测 + CI 门槛 ✅；真机 30min + Perfetto 仍待跑
 - **下一步选择**：见 §6
 
 ---
@@ -26,11 +27,11 @@ cat docs/audits/2026-09-20-native-ui-restructure-plan.md   # 顶层设计
 |---|---|---|
 | 转 native / 首先支持 android | ✅ 决策锁定 + 8 plugin 在主线 | `bee61e9` §0 |
 | 流畅的 UI 交互 | ✅ P0/P1 + Skeleton 12 处 + 触觉 10 点 | `62f4d96` `6f63e58` `cd8892f` |
-| 整体 UI 重构 + 数据与 UI 分离 | ✅ 邮件域天然 4 层 + useTaskSessionSheet 抽出 | `1703dbc6` `58499e0` |
-| 数据后台 / UI 切换 / App 整体后台 | ✅ 代码层接通；⏳ 真机 30min 待补 | `62cbd82` 验证清单 |
+| 整体 UI 重构 + 数据与 UI 分离 | ✅ 邮件域天然 4 层 + useTaskSessionSheet + useConfigList | `1703dbc6` `58499e0` `2f58aee` |
+| 数据后台 / UI 切换 / App 整体后台 | ✅ 代码层接通；⏳ 真机 30min 待补 | `62cbd82` 验证清单 + `1703dbc6` WorkManager 实施稿 |
 | 学习网上优秀方案 | ✅ Capacitor FGS / WorkManager / Pinia 4 层 | 隐含在 `bee61e9` §1.2 |
-| 形成方案 + 落成文档 + 审计 + 执行 | ✅ 全部完成 | 5 docs |
-| 及时提交代码并推送 | ✅ 10 commits | 见 §2 |
+| 形成方案 + 落成文档 + 审计 + 执行 | ✅ 全部完成 | 8 docs |
+| 及时提交代码并推送 | ✅ 15 commits | 见 §2 |
 
 ---
 

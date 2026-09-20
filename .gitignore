@@ -1,4 +1,4 @@
-node_modules/
+﻿node_modules/
 dist/
 build/
 coverage/
@@ -63,7 +63,7 @@ pocketd.log
 backend/gen-jwt
 backend/test-evidence/
 
-# Test evidence — only ship the deliberately-traced dated subdirs (e.g.
+# Test evidence 鈥?only ship the deliberately-traced dated subdirs (e.g.
 # 2026-09-09-list-sync-verify); ignore the rest at the root so future dated
 # snapshots are auto-skipped without .gitignore churn. Already-tracked
 # subdirs stay tracked because git does not un-track already-added files
@@ -94,12 +94,16 @@ tmp/
 backend/test_acp_*
 
 # Deploy artifacts directory (local build outputs of pocketd for offline
-# image / cross-OS testing). Generic pattern catches 本地方案/artifacts/
+# image / cross-OS testing). Generic pattern catches 鏈湴鏂规/artifacts/
 # and any future locale-named deploy artifacts.
 /backend/deploy/*/artifacts/
 
-# Email encryption master keys — generated per host, must NEVER be
+# Email encryption master keys 鈥?generated per host, must NEVER be
 # committed. Two copies exist due to a repo-root vs backend-root path
 # duplication; both are sensitive.
 backend/data/email_master.key
 data/email_master.key
+
+
+# Downloads (toolchain installers)
+downloads/
