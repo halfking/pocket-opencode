@@ -116,6 +116,32 @@ if (!effectiveAPIBase) {
   console.warn("[build-mobile] WARNING: building with empty VITE_API_BASE (MOBILE_ALLOW_EMPTY_API_BASE=1) — the app will not reach any backend");
 }
 
+// ---- production host guard ----
+// 生产包只允许公网入口（pocket.itestu.cn 等）。占位符（pocket.example.com）与
+// 环回/LAN 网段（127.0.0.1 / localhost / ::1 / 10.0.2.2 / 192.168.* / 172.16-31.*）
+// 一律拒绝——真机上这些地址要么打到 WebView 自身、要么打到别人的局域网。
+// 与 build-harmony.mjs 的 loopback 拒绝同向，比它更严（含占位符与 LAN 段）。
+if (mode === "production" && effectiveAPIBase) {
+  let host = "";
+  try {
+    host = new URL(effectiveAPIBase).hostname;
+  } catch {
+    console.error(`[build-mobile] refusing production build: VITE_API_BASE is not an absolute URL: ${effectiveAPIBase}`);
+    process.exit(1);
+  }
+  const isLoopbackOrLAN =
+    ["localhost", "127.0.0.1", "::1", "10.0.2.2"].includes(host) ||
+    /^192\.168\.\d+\.\d+$/.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/.test(host);
+  const isPlaceholder = /^(pocket|staging-pocket)\.example\.com$/.test(host);
+  if (isLoopbackOrLAN || isPlaceholder) {
+    console.error(`[build-mobile] refusing production build: VITE_API_BASE host '${host}' is loopback/LAN/placeholder`);
+    console.error("[build-mobile] production apps must reach the public ingress (https://pocket.itestu.cn);");
+    console.error("[build-mobile] dev/emulator targets belong to 'dev' builds (.env.android-dev), not 'prod'.");
+    process.exit(1);
+  }
+}
+
 const fast = process.env.MOBILE_FAST === "1";
 const envVars = { ...process.env, FORCE_COLOR: "1" };
 
