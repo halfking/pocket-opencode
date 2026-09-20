@@ -13,7 +13,8 @@
     "test:native": "node --test src/native/__tests__/appLifecycleHub.test.mjs src/native/__tests__/aiStreamKeepalive.test.mjs src/native/__tests__/aiStreamRuntime.test.mjs",
     "test:native:all": "node --test src/native/__tests__/*.test.mjs src/native/__tests__/*.test.ts",
     "audit:vm-gaps": "node scripts/audit-viewmodel-gaps.mjs",
-    "check:vm-gaps": "node scripts/check-viewmodel-gaps.mjs"
+    "check:vm-gaps": "node scripts/check-viewmodel-gaps.mjs",
+    "verify:android": "npm run gates && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-classes-fast.ps1 && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-static-verify.ps1"
   },
   "dependencies": {
     "@capacitor-community/sqlite": "^8.1.0",
