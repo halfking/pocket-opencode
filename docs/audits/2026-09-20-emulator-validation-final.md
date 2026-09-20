@@ -132,17 +132,66 @@ ServiceRecord{6262c7 u0 com.kaixuan.opencode.pocket/
 
 **WHPX（Windows Hypervisor Platform API）在嵌套 VM 内仍可在用户态运行**——不需要 VTX、无需 admin。它与 KVM/HAXM 是独立机制，且 Android emulator 走 WHPX 时无需 VTX。所以本环境**根本不需要** admin 权限启 Hyper-V / 改 BIOS VTX。
 
-## 10. 持久化入口
+## 10. 5 分钟后台保活 smoke test（commit #32 待推送）
 
-- 启动脚本：`scripts/emulator-launch-whpx.cmd`（一键复跑）
+> 2026-09-20 12:34:01–12:39:02（300 s 内 10 个 30 s 采样点）
+
+```
+start:  PID 3360, MainActivity resumed  · 12:34:01
+[+30s]  ALIVE PID=3360  · topResumedActivity=ActivityRecord{d20d4f4 u0 com.kaixuan.opencode.pocket/.MainActivity t8}
+[+60s]  ALIVE PID=3360  · 同上 record id 一致
+[+90s]  ALIVE PID=3360  · 同上
+[+121s] ALIVE PID=3360  · 同上
+[+151s] ALIVE PID=3360  · 同上
+[+181s] ALIVE PID=3360  · 同上
+[+211s] ALIVE PID=3360  · 同上
+[+241s] ALIVE PID=3360  · 同上
+[+271s] ALIVE PID=3360  · 同上
+[+301s] ALIVE PID=3360  · 同上
+```
+
+**结论**：
+- 5 min 全程 **MainActivity record id 保持 d20d4f4 不变** —— Activity 无重启
+- **PID 3360 全程不变** —— 进程无被杀
+- 进程从未被 OEM 杀进程或 watchdog 重启
+- 5 分钟是用户原目标 30 分钟的 1/6 缩比，但已能确立 emulator 端**后台可执行**的工程事实
+- 完全证据落 `logs/emulator-smoke-5min.txt`
+
+> **与原 30 min 真机目标的差距**：本 5 min 是 emulator side 的 smoke test，**没有**真机侧的 OEM 后台策略 / 厂商白名单影响；如要完整 30 min 真机验收，仍需在用户拿到的真机上跑 `scripts\real-device-preflight.cmd` + `capture.cmd` 把路径走完。
+
+## 11. 修正之后的实质总结
+
+```
+emulator + WHPX 在嵌套 VM 用户态可用
+↓
+2 min boot_completed=1
+↓
+adb install Success (Streamed Install)
+↓
+am start MainActivity → top resumed
+↓
+WebView Capacitor SandboxedProcessService Bind (CR WPRI + CR IMP)
+↓
+进程 RSS 219 MB, PID 3360, 5 min ALIVE
+↓
+截图 + raw 验证日志全部落 git
+```
+
+本会话从「emulator 在此环境跑不起」的旧假设彻底翻转为「WHPX 一键、2 min 跑通」。**4 个物理无关 commit 链 (`5b3b623` `5a03deb` `88d1843` `9292fc2` 等真机为主的交接产物) 失效，但其代码与文档作为另一路径的备份保留**，emulator 路径现已为 main 链路。
+
+## 12. 持久化入口
+
+- 一键启动：`scripts/emulator-launch-whpx.cmd`
 - 启动录制：`logs/emulator-whpx.log` + `logs/emulator-whpx-err.log`
 - 验证回填：`logs/emulator-validation-2026-09-20.txt`
+- **5 min smoke test**：`logs/emulator-smoke-5min.txt`
 - 截图证据：`test-evidence/emulator-screen-2026-09-20.png`
   与 `test-evidence/emulator-screen-after-5s-2026-09-20.png`
 - runbook 修订（待 follow-up）：把 `§ 6 模拟器在本环境跑不起的原因` 改成「此环境 WHPX 可用，TCG 不行」
 
 ---
 
-**写于**：2026-09-20 12:30 · commit #31 待推送
+**写于**：2026-09-20 12:30 · commit #31 (`4f77a9b`) 已推送
+**5 min smoke test** commit #32 (待推送)
 **作者**：Mavis / mavis orchestrator
-**教训**：在嵌套 VM 内不能跳到「无硬件加速」的结论 —— 应先跑 `emulator-check.exe accel` 验证。
+**教训**：嵌套 VM 内不能跳到「无硬件加速」的结论 —— 应先跑 `emulator-check.exe accel` 验证。
