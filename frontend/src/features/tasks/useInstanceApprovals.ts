@@ -24,6 +24,7 @@ import {
 } from '../../api/approvals'
 import { useConnectivityStore } from '../../stores/connectivity'
 import { usePendingApprovals, type ReplyStatus } from '../../composables/usePendingApprovals'
+import { useHaptics } from '../../composables/useHaptics'
 import { initIdempotentWsBus, subscribe } from '../../services/idempotentWsBus'
 import { APPROVAL_EVENT_TYPES } from '../../services/approvalEvents'
 
@@ -57,6 +58,7 @@ export interface UseInstanceApprovalsReturn {
 
 export function useInstanceApprovals(instanceId: () => string): UseInstanceApprovalsReturn {
   const conn = useConnectivityStore()
+  const haptics = useHaptics()
   const pending = ref<PendingItem[]>([])
   const loadError = ref('')
   const firstSeen = new Map<string, number>()
@@ -136,8 +138,11 @@ export function useInstanceApprovals(instanceId: () => string): UseInstanceAppro
     // 离线入队由 reply() 内部处理（queued-offline）；conflict 时本地同步移除。
     const status = await channelFor(item.sessionId).reply(item.requestId, decision)
     if (status === 'confirmed' || status === 'queued-offline' || status === 'conflict') {
+      haptics.medium()
       removeLocal(item.requestId)
+      return status
     }
+    haptics.error()
     return status
   }
 
@@ -148,14 +153,17 @@ export function useInstanceApprovals(instanceId: () => string): UseInstanceAppro
         sessionID: item.sessionId,
         answers: [[optionLabel]],
       })
+      haptics.medium()
       removeLocal(item.requestId)
       return 'confirmed'
     } catch (err) {
       // 409 视为已在别处处理；其余失败保留条目可重试。
       if (err instanceof ApiError && err.status === 409) {
+        haptics.medium()
         removeLocal(item.requestId)
         return 'conflict'
       }
+      haptics.error()
       return 'failed'
     }
   }
@@ -166,9 +174,11 @@ export function useInstanceApprovals(instanceId: () => string): UseInstanceAppro
         instanceID: instanceId(),
         sessionID: item.sessionId,
       })
+      haptics.medium()
       removeLocal(item.requestId)
       return 'confirmed'
     } catch {
+      haptics.error()
       return 'failed'
     }
   }

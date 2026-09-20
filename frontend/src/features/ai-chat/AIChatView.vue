@@ -446,6 +446,7 @@ import {
 import { renderMarkdown } from '../../utils/markdown'
 import { useToast } from '../../composables/useToast'
 import { useConfirm } from '../../composables/useConfirm'
+import { useHaptics } from '../../composables/useHaptics'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 import { bindScrollHideChrome } from '../../composables/useScrollHideChrome'
 import { SCROLL_CHROME_KEY } from '../../composables/scroll-chrome'
@@ -460,6 +461,7 @@ const router = useRouter()
 const route = useRoute()
 const toast = useToast()
 const { confirm } = useConfirm()
+const haptics = useHaptics()
 const agentStore = useChatAgentStore()
 
 // 统一输入组件引用（提交/重置/内部 canSubmit）
@@ -752,10 +754,12 @@ function onSend(text?: string) {
   const value = (text ?? draft.value).trim()
   if (!value) return
   if (store.models.length === 0) {
+    haptics.error()
     toast.error('请先在「设置 → AI 网关」配置网关密钥')
     settingsOpen.value = true
     return
   }
+  haptics.light()
   store.send(value, [])
   if (!text) draft.value = ''
   chromeCtx?.reveal()
@@ -765,10 +769,12 @@ function onSend(text?: string) {
 /** 统一输入组件提交（文本 + 图片附件）。 */
 function onComposerSubmit(payload: { text: string; images: string[] }) {
   if (store.models.length === 0) {
+    haptics.error()
     toast.error('请先在「设置 → AI 网关」配置网关密钥')
     settingsOpen.value = true
     return
   }
+  haptics.light()
   store.send(payload.text.trim() || '（请描述这张图片）', payload.images)
   composerRef.value?.reset()
   chromeCtx?.reveal()
@@ -776,6 +782,7 @@ function onComposerSubmit(payload: { text: string; images: string[] }) {
 }
 
 function stop() {
+  haptics.medium()
   store.stop()
 }
 
