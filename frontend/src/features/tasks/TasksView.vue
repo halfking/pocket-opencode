@@ -120,9 +120,7 @@
         <button class="link-btn acc-delegate-btn" @click="openAccDelegate">委托 ACC</button>
       </div>
 
-      <div v-if="loading" class="skeleton-row">
-        <div v-for="i in 3" :key="i" class="skeleton-card" />
-      </div>
+      <Skeleton v-if="loading" :count="3" />
 
       <div v-else-if="activeTasks.length > 0" class="task-scroll">
         <div
@@ -198,9 +196,7 @@
         <button class="link-btn" @click="router.push('/sessions')">全部</button>
       </div>
 
-      <div v-if="sessionsLoading" class="skeleton-row">
-        <div v-for="i in 3" :key="i" class="skeleton-card" />
-      </div>
+      <Skeleton v-if="sessionsLoading" :count="3" />
 
       <div v-else-if="visibleSessions.length > 0" class="session-list">
         <div
@@ -435,7 +431,7 @@ import { useToast } from '../../composables/useToast'
 import { useApprovalAlerts } from '../../composables/useApprovalAlerts'
 import { useAccTasksStore } from '../../stores/accTasks'
 import { useAuthStore } from '../../stores/auth'
-import { EmptyState, PullToRefresh, UnifiedComposer } from '../../components'
+import { EmptyState, PullToRefresh, Skeleton, UnifiedComposer } from '../../components'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { assessHealth, summarizeHealth, formatDuration, type HealthSignal } from './health'
 import { useInstanceApprovals, type PendingItem } from './useInstanceApprovals'
@@ -1585,24 +1581,6 @@ function timeAgo(dateStr?: string): string {
 .empty-text {
   font-size: 12px;
   color: var(--text-muted);
-}
-
-/* ── Skeleton ── */
-.skeleton-row {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.skeleton-card {
-  height: 44px;
-  background: var(--bg-subtle);
-  border-radius: 8px;
-  animation: shimmer 1.5s infinite;
-}
-@keyframes shimmer {
-  0% { opacity: 0.6; }
-  50% { opacity: 1; }
-  100% { opacity: 0.6; }
 }
 
 /* ── Completed Section ── */
