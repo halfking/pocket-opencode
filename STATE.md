@@ -31,6 +31,8 @@ emulator: 工具链齐，AVD 配置齐，headless 启动 ≤ 90s 内退出（VMw
 > 5. DEX 字节码 (11/11 关键类)
 > 6. APK 静态 (manifest 18 权限 + v2 签名)
 > **7. .so ABI 覆盖 (4/4 全 ABI)** ← 本次新增
+>
+> **2026-09-20 二期**：fingerprint 单独拆成 verify:android 第 1 步（前置），runbook SHA 自检确认 3EB53… 没有飘移
 
 ## 2. 用户终极目标进度
 
@@ -80,6 +82,7 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 - `2026-09-20-apk-dex-classes-audit.md` — DEX 字节码层 11/11 关键类验证（Activity / 8 plugin / Service / Receiver / Runner）
 - `2026-09-20-apk-native-so-audit.md` — native 层 4 ABI 全覆盖（arm64-v8a / armeabi-v7a / x86 / x86_64）
 - `2026-09-20-real-device-emulator-runbook.md` — 真机 / 物理机 / 云端 3 路径验收步骤
+- `2026-09-20-runtime-evidence-summary.md` — **真机 30 min 后台保活回填位（模板，等用户填）**
 
 ### 设计稿（`docs/design/`）
 - `2026-09-09-ai-async-background-survival.md` — M1-M5 流所有者迁移
@@ -131,6 +134,7 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 | `scripts/android-apk-classes-fast.ps1` | APK 中 classes.dex 关键类字节码定位 |
 | `scripts/android-apk-classes-audit.ps1` | DEX class audit 全量模式 |
 | `scripts/android-apk-so-audit.ps1` | native .so ABI 4 档覆盖 + host arch cross-check |
+| `scripts/android-apk-fingerprint.ps1` | **APK 指纹 + runbook SHA drift 自检（verify:android 第 1 步）** |
 | `scripts/check-hyper-v.ps1` | WindowsOptionalFeature + systeminfo 检测 |
 | `scripts/find-androidcli.ps1` / `find-androidcmd.ps1` / `find-androidcmd2.ps1` | 调试工具 |
 
