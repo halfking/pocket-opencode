@@ -1,9 +1,16 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
-import { api, type TaskSessionBundleRow, type TaskSessionMessage } from '../../api/client'
+/**
+ * TaskSessionSheet — 会话抽屉（指挥中心 / 任务详情共用）。
+ *
+ * 业务逻辑已迁至 `useTaskSessionSheet`（2026-09-20 ViewModel 拆分）；
+ * 本文件仅负责模板 + props/emit + 与 BottomSheet 的绑定。
+ */
+import { computed, toRef } from 'vue'
+import type { TaskSessionBundleRow } from '../../api/client'
 import BottomSheet from '../../components/base/BottomSheet.vue'
-import SessionKindFilter, { type SessionMsgKind } from './SessionKindFilter.vue'
+import SessionKindFilter from './SessionKindFilter.vue'
 import TaskSessionTranscript from './TaskSessionTranscript.vue'
+import { useTaskSessionSheet } from './useTaskSessionSheet'
 
 const props = defineProps<{
   taskId: string
@@ -11,59 +18,33 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ close: [] }>()
 
-const kinds = ref<SessionMsgKind[]>(['user', 'assistant', 'tool', 'thinking'])
-const messages = ref<TaskSessionMessage[]>([])
-const summary = ref('')
-const title = ref('')
-const loading = ref(false)
-const error = ref('')
+const taskIdRef = toRef(props, 'taskId')
+const rowRef = toRef(props, 'row')
 
-watch(() => props.row, (row) => {
-  title.value = row?.title || ''
-  summary.value = ''
-  messages.value = []
-}, { immediate: true })
+const {
+  kinds,
+  messages,
+  summary,
+  title,
+  loading,
+  error,
+  reload: _reload,
+  extractTitle,
+  summarize,
+} = useTaskSessionSheet({ taskId: taskIdRef, row: rowRef })
 
-async function load() {
-  if (!props.row || !props.taskId) return
-  loading.value = true
-  error.value = ''
-  try {
-    const sid = props.row.agentSessionId || props.row.id
-    const kind = (props.row.agentKind || '').replace(/^disk-/, '')
-    const data = await api.getTaskSessionTranscript(props.taskId, sid, kinds.value.join(','), kind)
-    messages.value = data.messages || []
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载失败'
-    messages.value = []
-  } finally {
-    loading.value = false
-  }
-}
+// reload 由 useTaskSessionSheet 内部 watch 触发；这里保留引用避免被 vue-tsc 视作未用
+void _reload
 
-watch(() => [props.row?.id, kinds.value.join(',')], () => { void load() })
-
-async function extractTitle() {
-  if (!props.row) return
-  const sid = props.row.agentSessionId || props.row.id
-  const { title: next } = await api.extractTaskSessionTitle(props.taskId, sid)
-  title.value = next
-}
-
-async function summarize() {
-  if (!props.row) return
-  const sid = props.row.agentSessionId || props.row.id
-  const { summary: text } = await api.summarizeTaskSession(props.taskId, sid)
-  summary.value = text
-}
+const sheetTitle = computed(() => title.value || props.row?.title || '会话')
 </script>
 
 <template>
   <BottomSheet
     :model-value="!!row"
-    :title="title || row?.title || '会话'"
+    :title="sheetTitle"
     close-on-overlay
-    @update:model-value="(v) => { if (!v) emit('close') }"
+    @update:model-value="(v: boolean) => { if (!v) emit('close') }"
   >
     <div v-if="row" class="sheet-body">
       <SessionKindFilter v-model="kinds" />
