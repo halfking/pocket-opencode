@@ -1,11 +1,15 @@
 import { resolveApiBase } from '../config/api-base'
+import { nextReconnectDelay } from './reconnectPolicy'
 
 // WebSocket 客户端管理
 class WebSocketClient {
   private ws: WebSocket | null = null
   private reconnectTimer: number | null = null
-  private reconnectDelay = 3000
+  private reconnectAttempts = 0
   private listeners: Map<string, Set<(data: any) => void>> = new Map()
+  /** 连接成功回调(2026-09-20):每次成功 open 都触发(含登录后首连与断线
+   * 重连)。消费方在此做增量 resync —— hub 不回放事件,断线窗口只能靠拉。 */
+  private connectedCallbacks = new Set<() => void>()
   private url: string
 
   constructor(url: string) {
@@ -27,6 +31,10 @@ class WebSocketClient {
         if (this.reconnectTimer) {
           clearTimeout(this.reconnectTimer)
           this.reconnectTimer = null
+        }
+        this.reconnectAttempts = 0
+        for (const cb of this.connectedCallbacks) {
+          try { cb() } catch (err) { console.error('Error in connected handler:', err) }
         }
       }
 
@@ -56,10 +64,19 @@ class WebSocketClient {
   private scheduleReconnect() {
     if (this.reconnectTimer) return
 
+    const delay = nextReconnectDelay(this.reconnectAttempts)
+    this.reconnectAttempts++
     this.reconnectTimer = window.setTimeout(() => {
-      console.log('Reconnecting WebSocket...')
+      this.reconnectTimer = null
+      console.log(`Reconnecting WebSocket (attempt ${this.reconnectAttempts}, ${delay}ms backoff)...`)
       this.connect()
-    }, this.reconnectDelay)
+    }, delay)
+  }
+
+  /** 注册「连接成功」回调(每次成功 open 都触发,含首连与重连);返回反注册函数。 */
+  onConnected(cb: () => void): () => void {
+    this.connectedCallbacks.add(cb)
+    return () => { this.connectedCallbacks.delete(cb) }
   }
 
   private handleMessage(message: { type: string; payload: any }) {

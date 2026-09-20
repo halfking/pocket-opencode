@@ -341,7 +341,7 @@ async function onMic() {
   if (text) insertAtCursor(text)
 }
 const { pickImage } = useCameraCapture()
-const { optimize: runOptimize, abort: abortOptimize, isOptimizing, optimizeRetryHint } = usePromptOptimizer()
+const { optimize: runOptimize, isOptimizing, optimizeRetryHint } = usePromptOptimizer()
 
 // ---- 角色 ----
 const agentStore = useChatAgentStore()
@@ -457,7 +457,8 @@ function reset() {
 defineExpose({ reset, insertAtCursor, openFullscreen, closeFullscreen, submit: onSubmit, canSubmit, attachments })
 
 onBeforeUnmount(() => {
-  abortOptimize()
+  // M1 契约(usePromptOptimizer 头注释):组件 unmount 不 abort 优化流 ——
+  // 流所有权归 aiStreamRuntime,自然跑完;取消只属于用户显式操作。
   if (pressTimer) clearTimeout(pressTimer)
   if (fullscreen.value) scrollLock.release()
 })

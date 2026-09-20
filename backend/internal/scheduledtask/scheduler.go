@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 )
 
 // Broadcaster is the small WebSocket surface needed by the scheduler. The
@@ -18,6 +20,14 @@ import (
 // the transport implementation.
 type Broadcaster interface {
 	BroadcastToWorkspace(workspaceID, msgType string, payload interface{})
+}
+
+// Notifier is the notifycenter.Service subset the scheduler needs (mirrors
+// executors.NotificationClient). Late-bound via SetNotifier because main.go
+// constructs the notify service after the scheduler (same wiring order the
+// flashcard executor solves with its own SetNotifier).
+type Notifier interface {
+	Dispatch(ctx context.Context, ev notifycenter.Event) (*notifycenter.DispatchResult, error)
 }
 
 // AuditFields is the minimal background-job audit payload.
@@ -55,6 +65,7 @@ type Scheduler struct {
 
 	broadcaster Broadcaster
 	auditor     AuditWriter
+	notifier    Notifier
 
 	stop         chan struct{}
 	startOnce    sync.Once
@@ -89,6 +100,11 @@ func NewScheduler(store SchedulerStore, enabled bool) *Scheduler {
 
 func (s *Scheduler) SetBroadcaster(b Broadcaster) { s.broadcaster = b }
 func (s *Scheduler) SetAuditWriter(w AuditWriter) { s.auditor = w }
+
+// SetNotifier late-binds the notification client (notifycenter.Service).
+// Failure notifications are best-effort: nil (remote-only deployments) simply
+// disables them without affecting the run state machine.
+func (s *Scheduler) SetNotifier(n Notifier) { s.notifier = n }
 
 // SetTickInterval changes the interval before Start. Non-positive values are
 // ignored so time.NewTicker can never panic.
@@ -342,7 +358,36 @@ func (s *Scheduler) dispatch(parent context.Context, t *Task) {
 		"taskId": t.ID, "runId": run.ID, "status": status, "error": errMsg,
 		"referencedTaskId": referenced,
 	})
+	s.notifyTerminal(t, status, errMsg)
 	s.audit(t, status, run.ID, errMsg)
+}
+
+// notifyTerminal pushes an inbox notification when a run FAILED. Success and
+// skip are silent by design: recurring tasks would flood the notification
+// center otherwise (the WS events above still reach live listeners).
+func (s *Scheduler) notifyTerminal(t *Task, status RunStatus, errMsg string) {
+	if s.notifier == nil || status != RunStatusFailed {
+		return
+	}
+	// Independent context: the executor's ctx is typically already canceled
+	// (DeadlineExceeded) at this point; the notification must still go out.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	body := fmt.Sprintf("任务「%s」运行失败", t.Name)
+	if errMsg != "" {
+		body += "：" + errMsg
+	}
+	if _, err := s.notifier.Dispatch(ctx, notifycenter.Event{
+		WorkspaceID: t.WorkspaceID,
+		UserID:      t.UserID,
+		Source:      "scheduledtask",
+		Kind:        "task.failed",
+		Title:       "定时任务失败",
+		Body:        body,
+		Priority:    "high",
+	}); err != nil {
+		log.Printf("[scheduledtask] failure notification task=%s: %v", t.ID, err)
+	}
 }
 
 func (s *Scheduler) executeSafely(ctx context.Context, t *Task) (result *Result, err error) {

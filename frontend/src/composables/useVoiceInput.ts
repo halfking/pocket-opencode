@@ -4,23 +4,31 @@
  *
  * 权限闸：先走 useMicPermission().ensure()，被拒时给出可读的 deniedLabel，
  * 避免 getUserMedia 的 NotAllowedError 直接吞掉。
+ *
+ * 转写结果生存（2026-09-20 P0/G5）：转写是已发出的 HTTP 任务，组件
+ * unmount 不取消；组件不在场时结果不再作废 —— 落剪贴板并 toast 告知，
+ * 用户口述文本可找回。若 unmount 时仍在录音，同样收尾转写已捕获音频。
  */
 import { ref, onBeforeUnmount } from 'vue'
 import { sttApi } from '../api/stt'
 import { openPreferredMicStream } from '../native/audio-inputs'
 import { useMicPermission } from './useMicPermission'
+import { useToast } from './useToast'
 
 export function useVoiceInput() {
   const isRecording = ref(false)
   const isTranscribing = ref(false)
   const sttError = ref('')
   const mic = useMicPermission()
+  const toast = useToast()
 
   let mediaRecorder: MediaRecorder | null = null
   let mediaStream: MediaStream | null = null
   let audioChunks: Blob[] = []
   let audioPath = ''
   let audioPathTimeout: ReturnType<typeof setTimeout> | null = null
+  /** 组件已卸载:此后完成的转写走「孤儿交付」(剪贴板 + toast)。 */
+  let ownerGone = false
 
   function cleanupMedia() {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
@@ -42,6 +50,20 @@ export function useVoiceInput() {
       URL.revokeObjectURL(audioPath)
       audioPath = ''
     }
+  }
+
+  /** 组件不在场时的转写交付:文本进剪贴板,toast 告知(不弹全文,长文本刷屏)。 */
+  async function deliverOrphan(text: string): Promise<void> {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    let copied = false
+    try {
+      await navigator.clipboard.writeText(trimmed)
+      copied = true
+    } catch { /* WebView 可能无剪贴板权限 */ }
+    toast.success(copied
+      ? `语音转写已完成并复制到剪贴板：${trimmed.slice(0, 24)}${trimmed.length > 24 ? '…' : ''}`
+      : `语音转写已完成：${trimmed.slice(0, 60)}${trimmed.length > 60 ? '…' : ''}`)
   }
 
   async function startRecording(): Promise<boolean> {
@@ -90,6 +112,7 @@ export function useVoiceInput() {
 
     try {
       const result = await sttApi.transcribe({ audioBlob: blob })
+      if (ownerGone) await deliverOrphan(result.text)
       return result.text
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -107,8 +130,28 @@ export function useVoiceInput() {
     return null
   }
 
-  onBeforeUnmount(() => {
-    cleanupMedia()
+  onBeforeUnmount(async () => {
+    ownerGone = true
+    if (isTranscribing.value) {
+      // 转写已在途:不取消,结果由 stopRecording 的收尾路径孤儿交付。
+      cleanupAudioPath()
+      return
+    }
+    if (isRecording.value) {
+      // 还在录:收尾已捕获音频并完成转写(语音输入是即时交互,unmount 停止
+      // 采集;但已录的部分不丢)。
+      cleanupMedia()
+      const blob = new Blob(audioChunks, { type: 'audio/webm' })
+      isTranscribing.value = true
+      try {
+        if (blob.size > 0) {
+          const result = await sttApi.transcribe({ audioBlob: blob })
+          await deliverOrphan(result.text)
+        }
+      } catch { /* 孤儿转写失败无从提示,静默 */ } finally {
+        isTranscribing.value = false
+      }
+    }
     cleanupAudioPath()
   })
 

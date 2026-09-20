@@ -125,8 +125,9 @@ async function load() {
   langCache.value = {}
   composeKind.value = 'hidden'
   try {
-    const found = await emailsStore.getEmail(route.params.id as string)
-    email.value = found
+  const found = await emailsStore.getEmail(route.params.id as string)
+  email.value = found
+  langCache.value = found ? restoreTranslations(found.id) : {}
     if (found && !found.isRead) {
       try { await emailsStore.markRead(found.id, true); found.isRead = true; markListDirty('email') } catch { /* 不挡正文 */ }
     }
@@ -176,12 +177,33 @@ async function chooseLang(next: EmailLang) {
       return res.content
     })
     langCache.value = { ...langCache.value, [next]: out }
+    persistTranslation(next, out)
     lang.value = next
   } catch (e: any) {
     toast.error(e?.message || '翻译失败')
   } finally {
     translating.value = false
   }
+}
+
+// 翻译结果持久化(P0/G6):离开详情页即丢组件缓存会浪费已花的 token;
+// 以邮件 id 为键落 localStorage,重进(甚至重装前的同库)直接命中。
+function translationKey(id: string): string {
+  return `email_translations:${id}`
+}
+function restoreTranslations(id: string): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(translationKey(id))
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {}
+  } catch { return {} }
+}
+function persistTranslation(lang: EmailLang, text: string): void {
+  const id = email.value?.id
+  if (!id) return
+  try {
+    const merged = { ...restoreTranslations(id), [lang]: text }
+    localStorage.setItem(translationKey(id), JSON.stringify(merged))
+  } catch { /* 配额满等场景静默,仅退化为不缓存 */ }
 }
 
 function openCompose(kind: ComposeKind) {

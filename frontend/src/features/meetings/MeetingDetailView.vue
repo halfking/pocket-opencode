@@ -115,6 +115,7 @@ let relatedTimer: ReturnType<typeof setTimeout> | null = null
 
 const {
   isRecording, segments, sttError, interimCaption, speakers, start, stop, appendText, formatElapsed, labelSpeaker,
+  seedSegments,
 } = useMeetingRecorder(meetingId)
 const { liveSummary, recommendations, isUpdating, refresh } = useLiveSummary(meetingId, segments, {
   meta: computed(() => ({
@@ -170,7 +171,10 @@ async function onMicToggle() {
   wantMic.value = true
   try {
     if (storedSegments.value.length) {
-      segments.value.splice(0, segments.value.length, ...storedSegments.value)
+      // 恢复录音:把 localDB 的既有分段预置进 runtime,续录后的
+      // transcript 才含完整历史(segments 是 runtime 的圈定只读视图,
+      // 不能再直接 splice)。
+      seedSegments(storedSegments.value)
     }
     const ok = await start({ resume: storedSegments.value.length > 0 })
     if (!ok) wantMic.value = false

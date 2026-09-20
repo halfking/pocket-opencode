@@ -43,6 +43,16 @@
         <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>
       </button>
       <h1 class="title">{{ title }}</h1>
+      <!-- 通知中心入口(2026-09-20 通知体系 P1):常驻铃铛 + 未读徽标。 -->
+      <button
+        class="notif-btn"
+        type="button"
+        aria-label="通知中心"
+        @click="goNotifications"
+      >
+        <span class="material-symbols-outlined" aria-hidden="true">notifications</span>
+        <span v-if="unreadCount" class="notif-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+      </button>
       <!-- 页面经 HeaderActionsPortal 注入的标题栏右侧操作区（编辑/保存/筛选等）。
            与 ScrollChromePortal 同构，消灭 AgentDetail/Edit、CostQuota、MeetingRecord
            里的双层标题栏。 -->
@@ -81,6 +91,9 @@
     <SettingsMenuDrawer v-if="showMenuButton" v-model="menuOpen" />
 
     <BottomNav v-if="showBottomNav" />
+
+    <!-- 全局录音指示条:录音跨页存续后,切离宿主页时的状态可见性与停止入口。 -->
+    <RecordingPill />
   </div>
 </template>
 
@@ -92,12 +105,14 @@ import { App as CapApp } from '@capacitor/app'
 import { Capacitor } from '@capacitor/core'
 import BottomNav from '../components/BottomNav.vue'
 import GlobalStatusBar from '../components/GlobalStatusBar.vue'
+import RecordingPill from '../components/RecordingPill.vue'
 import SettingsMenuDrawer from '../components/base/SettingsMenuDrawer.vue'
 import { useBreakpoint } from '../composables/useBreakpoint'
 import { useDevicePosture } from '../composables/useDevicePosture'
 import { createScrollHideChrome, bindScrollHideChrome } from '../composables/useScrollHideChrome'
 import { SCROLL_CHROME_KEY, isChromeToggleTap } from '../composables/scroll-chrome'
 import { headerTitleOverride } from '../composables/useAppHeaderTitle'
+import { useNotificationStore } from '../stores/notification'
 
 const { t } = useI18n()
 
@@ -305,6 +320,13 @@ function goBack() {
   }
 }
 
+// ---- 通知中心入口(2026-09-20 通知体系 P1) ----
+const notificationStore = useNotificationStore()
+const unreadCount = computed(() => notificationStore.unreadCount)
+function goNotifications() {
+  router.push('/notifications')
+}
+
 function focusMain() {
   // Move focus to <main> so the skip link lands keyboard users at content.
   mainEl.value?.focus()
@@ -418,6 +440,42 @@ function focusMain() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 通知中心铃铛入口:与 menu-btn 同尺寸语言,叠加未读徽标。 */
+.notif-btn {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.notif-btn .material-symbols-outlined {
+  font-size: 22px;
+}
+
+.notif-badge {
+  position: absolute;
+  top: 5px;
+  right: 3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--danger, #e5484d);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
 }
 
 /* 页面注入的右侧操作容器：横向排布，与 back-btn 同侧对齐 */

@@ -25,6 +25,7 @@
 | [2026-09-15-mobile-local-agent.md](design/2026-09-15-mobile-local-agent.md) | 手机端内置本地智能体（pi 语义移植：skills+experts+tools WebView 内循环；openhands 交互：事件时间线/工具卡/审批条/计划卡；openhands×pi 调研 + 落地 + 模拟器验收） |
 | [2026-09-15-mobile-local-agent-phase2.md](design/2026-09-15-mobile-local-agent-phase2.md) | 手机端本地智能体 Phase 2（backend native function-calling 透传设计） |
 | [2026-09-19-native-smoothness-audit.md](design/2026-09-19-native-smoothness-audit.md) | 原生顺滑度审计（路由无转场/假跟随右滑/2s splash/零触觉/无虚拟滚动的代码级证据 + P0/P1/P2 分级达标路径） |
+| [2026-09-20-background-execution-and-notifications.md](design/2026-09-20-background-execution-and-notifications.md) | 全任务后台化 + 完整消息通知体系（录音 runtime 单例/RecordingPill；notifycenter 定向+默认规则+定时任务失败通知；notificationDispatcher 三层感知 + 通知中心 UI；WS 退避重连） |
 | [2026-09-08-master-password-biometric-unlock.md](2026-09-08-master-password-biometric-unlock.md) | 主密码与生物认证解锁 |
 | [2026-09-08-task-session-detail/](2026-09-08-task-session-detail/) | 任务/会话详情（[PLAN.md](2026-09-08-task-session-detail/PLAN.md)） |
 | [2026-09-09-list-sync-rules.md](2026-09-09-list-sync-rules.md) | 列表数据拉取与更新同步规则（规范 v1） |

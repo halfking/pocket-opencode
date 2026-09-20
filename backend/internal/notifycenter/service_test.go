@@ -78,7 +78,10 @@ func (a *svcStoreAdapter) InsertNotification(ctx context.Context, n *Notificatio
 // We change Service to hold storeLike (see service.go refactor below).
 // For test brevity we construct via newServiceWithStore.
 
-func TestDispatch_NoRule_Suppressed(t *testing.T) {
+// TestDispatch_NoRule_DefaultFallback — 2026-09-20 通知体系:无规则匹配时
+// 不再整条丢弃,回落到内置默认规则(inbox + websocket, priority normal)。
+// 这保证通知中心开箱即用;显式规则(含免打扰/仅 inbox)仍优先。
+func TestDispatch_NoRule_DefaultFallback(t *testing.T) {
 	store := &fakeStoreForSvc{rules: nil} // no rules
 	sender := &recordingSender{}
 	svc := newServiceWithStore(&svcStoreAdapter{store}, sender)
@@ -89,14 +92,17 @@ func TestDispatch_NoRule_Suppressed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	if !res.Suppressed {
-		t.Error("expected Suppressed=true when no rule matches")
+	if res.Suppressed {
+		t.Error("default fallback should not suppress")
 	}
-	if len(store.inserted) != 0 {
-		t.Errorf("no row should be inserted, got %d", len(store.inserted))
+	if res.Rule == nil || res.Rule.ID != "builtin-default" {
+		t.Errorf("expected builtin-default rule, got %+v", res.Rule)
 	}
-	if len(sender.calls) != 0 {
-		t.Errorf("no sends expected, got %d", len(sender.calls))
+	if len(store.inserted) != 1 {
+		t.Errorf("expected 1 inbox row from default rule, got %d", len(store.inserted))
+	}
+	if len(sender.calls) != 2 {
+		t.Errorf("expected 2 sends (inbox+ws) from default rule, got %d", len(sender.calls))
 	}
 }
 
@@ -211,6 +217,23 @@ func TestWebsocketSender_OnlyWebsocketChannel(t *testing.T) {
 	if len(hub.calls) != 1 || hub.calls[0].msgType != "notification" {
 		t.Errorf("expected 1 websocket broadcast, got %+v", hub.calls)
 	}
+	if hub.calls[0].toUser != "" {
+		t.Errorf("system notification (no user) should use global broadcast, got toUser=%q", hub.calls[0].toUser)
+	}
+}
+
+// TestWebsocketSender_TargetedByUser — 带 user_id 的通知必须走 BroadcastToUser
+// 定向推送(2026-09-20),避免多用户串台。
+func TestWebsocketSender_TargetedByUser(t *testing.T) {
+	hub := &recordingBroadcaster{}
+	s := NewWebsocketSender(hub)
+	_ = s.Send(context.Background(), ChannelWebsocket, &Notification{ID: "n1", UserID: "u1", Title: "hi"}, "")
+	if len(hub.calls) != 1 {
+		t.Fatalf("expected 1 broadcast, got %d", len(hub.calls))
+	}
+	if hub.calls[0].toUser != "u1" {
+		t.Errorf("expected targeted broadcast to u1, got %+v", hub.calls[0])
+	}
 }
 
 func TestWebsocketSender_NilHub(t *testing.T) {
@@ -251,15 +274,19 @@ func TestMultiSender_OneErrorNotFatal(t *testing.T) {
 // ---- helpers ----
 
 type recordingBroadcaster struct {
-	calls []struct {
-		msgType string
-		payload any
-	}
+	calls []bcastCall
+}
+
+type bcastCall struct {
+	msgType string
+	toUser  string // non-empty when BroadcastToUser was used
+	payload any
 }
 
 func (r *recordingBroadcaster) Broadcast(msgType string, payload any) {
-	r.calls = append(r.calls, struct {
-		msgType string
-		payload any
-	}{msgType, payload})
+	r.calls = append(r.calls, bcastCall{msgType: msgType, payload: payload})
+}
+
+func (r *recordingBroadcaster) BroadcastToUser(userID, msgType string, payload any) {
+	r.calls = append(r.calls, bcastCall{msgType: msgType, toUser: userID, payload: payload})
 }

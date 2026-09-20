@@ -128,6 +128,7 @@ const {
   transcript: liveTranscript,
   error: recError,
   toggle: toggleRecording,
+  consumePendingResult,
 } = useNoteRecording()
 
 const DOMAINS = [
@@ -209,13 +210,19 @@ async function onSearch() {
 async function onMicToggle() {
   const stopped = await toggleRecording()
   if (!stopped) return
+  await createVoiceDraft(stopped.text, stopped.audioBlob, stopped.durationMs)
+}
+
+/** 录音停止 → 语音草稿笔记 + 打开元信息编辑。页面在场与跨页停止(全局
+ * 指示条/pendingResult 补建)共用同一条路径。 */
+async function createVoiceDraft(text: string, audioBlob: Blob, durationMs: number) {
   metaNote.value = await notesStore.createNote({
-    content: stopped.text || '（语音草稿）',
+    content: text || '（语音草稿）',
     contentType: 'voice',
     status: 'draft',
     createdByVoice: true,
-    audioBlob: stopped.audioBlob,
-    audioDurationMs: stopped.durationMs,
+    audioBlob,
+    audioDurationMs: durationMs,
   })
   metaOpen.value = true
   await load()
@@ -244,7 +251,15 @@ async function onMetaDelete() {
 }
 
 watch(domain, () => { void load() })
-onMounted(load)
+onMounted(async () => {
+  await load()
+  // 录音跨页存续(P0):录音在本页不在场时被停止(全局指示条),产物由
+  // runtime 暂存;重进笔记页补建语音草稿,文本/音频不丢。
+  const pending = consumePendingResult()
+  if (pending && pending.text.trim()) {
+    await createVoiceDraft(pending.text, pending.audioBlob, pending.durationMs)
+  }
+})
 /* KeepAlive 现场保持：domain 筛选/搜索词保留；仅当笔记数据被详情页修改过才刷新 */
 useListScene('notes', load)
 </script>

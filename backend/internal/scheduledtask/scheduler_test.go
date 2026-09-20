@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 )
 
 type fakeSchedulerStore struct {
@@ -230,4 +232,78 @@ func waitFor(t *testing.T, condition func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("condition was not met before timeout")
+}
+
+// ---- 失败通知(2026-09-20 通知体系) ----
+
+type fakeNotifier struct {
+	mu   sync.Mutex
+	evts []notifycenter.Event
+}
+
+func (f *fakeNotifier) Dispatch(_ context.Context, ev notifycenter.Event) (*notifycenter.DispatchResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.evts = append(f.evts, ev)
+	return &notifycenter.DispatchResult{}, nil
+}
+
+func (f *fakeNotifier) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.evts)
+}
+
+// TestSchedulerFailureNotifiesOnce — 失败的 run 必须恰好派发一条
+// source=scheduledtask / kind=task.failed 的通知;成功 run 不派发(防刷屏)。
+func TestSchedulerFailureNotifiesOnce(t *testing.T) {
+	store := &fakeSchedulerStore{due: []*Task{{
+		ID: "task-f", Name: "每日摘要", UserID: "user-1", WorkspaceID: "workspace-1", Kind: "test",
+		ScheduleKind: ScheduleInterval, ScheduleExpr: "1h", Timezone: "UTC", TimeoutSec: 1,
+	}}}
+	notif := &fakeNotifier{}
+	s := NewScheduler(store, true)
+	s.SetMaxParallel(1)
+	_ = s.Register(&fakeExecutor{kind: "test", fn: func(context.Context, *Task) (*Result, error) {
+		return nil, errors.New("boom")
+	}})
+	s.SetNotifier(notif)
+	s.scan(context.Background())
+	waitFor(t, func() bool { return notif.count() == 1 })
+
+	notif.mu.Lock()
+	defer notif.mu.Unlock()
+	ev := notif.evts[0]
+	if ev.Source != "scheduledtask" || ev.Kind != "task.failed" {
+		t.Fatalf("event = %s/%s, want scheduledtask/task.failed", ev.Source, ev.Kind)
+	}
+	if ev.WorkspaceID != "workspace-1" || ev.UserID != "user-1" {
+		t.Fatalf("event must be attributed to the task owner, got ws=%s user=%s", ev.WorkspaceID, ev.UserID)
+	}
+	if ev.Title != "定时任务失败" || ev.Priority != "high" {
+		t.Fatalf("title=%q priority=%q", ev.Title, ev.Priority)
+	}
+}
+
+// TestSchedulerSuccessDoesNotNotify — 成功 run 不产生 inbox 通知
+//(WS 事件仍会广播;inbox 只记失败)。
+func TestSchedulerSuccessDoesNotNotify(t *testing.T) {
+	store := &fakeSchedulerStore{due: []*Task{{
+		ID: "task-ok", UserID: "user-1", WorkspaceID: "workspace-1", Kind: "test",
+		ScheduleKind: ScheduleInterval, ScheduleExpr: "1h", Timezone: "UTC", TimeoutSec: 1,
+	}}}
+	notif := &fakeNotifier{}
+	s := NewScheduler(store, true)
+	s.SetMaxParallel(1)
+	_ = s.Register(&fakeExecutor{kind: "test"})
+	s.SetNotifier(notif)
+	s.scan(context.Background())
+	waitFor(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return len(store.finished) == 1
+	})
+	if notif.count() != 0 {
+		t.Fatalf("success run should not notify, got %d", notif.count())
+	}
 }

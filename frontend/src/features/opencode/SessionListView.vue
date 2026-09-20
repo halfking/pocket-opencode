@@ -111,7 +111,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useOpenCodeStore } from '../../stores/opencode'
 import type { OpenCodeSession } from '../../stores/opencode'
@@ -126,8 +126,6 @@ const sessions = computed(() => openCodeStore.sessions)
 const activeSessions = computed(() => openCodeStore.activeSessions)
 const idleSessions = computed(() => openCodeStore.idleSessions)
 
-let ws: WebSocket | null = null
-
 onMounted(async () => {
   const instanceId = route.query.instance_id as string
   if (instanceId) {
@@ -141,14 +139,10 @@ onMounted(async () => {
     }
   }
 
-  // 订阅实时更新
-  ws = openCodeStore.subscribeToRealTimeUpdates()
-})
-
-onUnmounted(() => {
-  if (ws) {
-    ws.close()
-  }
+  // 订阅实时更新。返回的是 store 模块级共享单例连接(M4 收口):连接的
+  // 生死由 store 管理(含重连),视图卸载不得反向 close,否则所有页面
+  // 的实时事件都会断 5s。
+  openCodeStore.subscribeToRealTimeUpdates()
 })
 
 async function refreshSessions() {

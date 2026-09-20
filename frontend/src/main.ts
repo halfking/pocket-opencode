@@ -22,6 +22,7 @@ import {
   initIdempotentWsBus,
   subscribe as wsBusSubscribe,
 } from "./services/idempotentWsBus.ts"
+import { startNotificationDispatcher } from "./services/notificationDispatcher.ts"
 import {
   APPROVAL_EVENT_TYPES,
   parseApprovalEvent,
@@ -88,6 +89,9 @@ startAiStreamKeepalive()
 // 不影响 runtime 继续轮询 / 监听 WS 审批推送。WS / 计时器在此处一次性 start()。
 {
   initIdempotentWsBus()
+  // 通知分发器(2026-09-20 通知体系 P1):关键 WS 事件 → inbox 入账 +
+  // 前台 toast + 后台系统通知(deepLink 回跳);WS 连接成功时增量补拉 inbox。
+  startNotificationDispatcher(pinia, router)
   setApprovalsRuntime(
     new ApprovalsRuntime({
       isOnline: () => useConnectivityStore(pinia).online,

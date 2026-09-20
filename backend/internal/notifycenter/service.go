@@ -301,8 +301,13 @@ type Sender interface {
 // Broadcaster is the subset of ws.Hub notifycenter needs. Defining it here
 // avoids a circular import (websocket → server → notifycenter → websocket).
 // The server package adapts *ws.Hub to this interface at wiring time.
+//
+// BroadcastToUser was added 2026-09-20: notifications carry user_id, so the
+// foreground push is targeted per-user instead of fanned out workspace-wide
+// (*ws.Hub already implements both methods, no adapter needed).
 type Broadcaster interface {
 	Broadcast(msgType string, payload any)
+	BroadcastToUser(userID, msgType string, payload any)
 }
 
 // WebsocketSender pushes to the foreground via the injected Broadcaster.
@@ -318,6 +323,12 @@ func NewWebsocketSender(hub Broadcaster) *WebsocketSender {
 
 func (w *WebsocketSender) Send(ctx context.Context, ch Channel, n *Notification, _ string) error {
 	if ch != ChannelWebsocket || w.hub == nil {
+		return nil
+	}
+	// 定向优先:通知归属某个用户时只推给该用户的连接,避免多用户串台;
+	// 无 user_id(系统级通知)退化为全局广播。
+	if n.UserID != "" {
+		w.hub.BroadcastToUser(n.UserID, "notification", n)
 		return nil
 	}
 	w.hub.Broadcast("notification", n)
@@ -388,6 +399,12 @@ type DispatchResult struct {
 //
 // Notifications ALWAYS get an inbox row when they survive the rule filter —
 // the inbox is the source of truth for "what happened". Channels are best-effort.
+//
+// Default-rule fallback (2026-09-20): when no user rule matches, the event
+// falls back to a built-in default (inbox + websocket, priority from the
+// event or "normal") instead of being dropped. Previously "no rule = drop"
+// left the notification center permanently empty unless someone seeded rows
+// by hand; explicit rules (incl. quiet hours / inbox-only) still win.
 func (svc *Service) Dispatch(ctx context.Context, ev Event) (*DispatchResult, error) {
 	rule, err := svc.store.matchRule(ctx, ev.WorkspaceID, ev.Source, ev.Kind)
 	if err != nil {
@@ -395,9 +412,12 @@ func (svc *Service) Dispatch(ctx context.Context, ev Event) (*DispatchResult, er
 	}
 	res := &DispatchResult{Rule: rule}
 	if rule == nil {
-		// No rule matched → drop. (Add a default "catch-all" rule to keep.)
-		res.Suppressed = true
-		return res, nil
+		rule = &Rule{
+			ID:       "builtin-default",
+			Channels: []string{string(ChannelInbox), string(ChannelWebsocket)},
+			Priority: "normal",
+		}
+		res.Rule = rule
 	}
 
 	// Build the notification row from event + rule.

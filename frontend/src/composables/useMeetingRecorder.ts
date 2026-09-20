@@ -1,308 +1,57 @@
 /**
- * useMeetingRecorder — VAD 分段 + STT + 声纹；Android 走 BackgroundMic 前台服务。
+ * useMeetingRecorder — MeetingRecorderRuntime 的页面级薄壳(2026-09-20 P0)。
+ *
+ * 录音的所有权与状态在进程级单例 native/recordingRuntime.ts(M1 模式):
+ * 组件 unmount 不再停止录音 —— 详情页切走/切回录音持续,跨页可见全局
+ * 录音指示条 RecordingPill。本 composable 只提供「按 meetingId 圈定的
+ * 只读视图 + 动作转发」:
+ * - 正在录的是别的会议时,本页 isRecording/segments/elapsed 等不亮(不串台);
+ * - start():已在录本会议 → 幂等 true;别的会议在录 → 先正式收尾旧的再开新的。
  */
-import { ref, unref, onBeforeUnmount, type MaybeRef } from 'vue'
-import { Capacitor } from '@capacitor/core'
-import { saveMeetingAudio } from '../native/meeting-audio'
-import { VadSegmenter } from '../native/vad-segmenter'
-import { SpeakerDiarizer } from '../native/speaker-diarization'
-import { loadSpeakerProfiles, saveVoiceprint } from '../features/meetings/voiceprints-store'
+import { computed, unref, type MaybeRef } from 'vue'
 import {
-  updateMeeting, updateSegmentSpeaker, getMeeting, saveSegment, updateTranscript,
-  type MeetingSegment,
-} from '../features/meetings/meetings-store'
-import { syncMeetingMetadata } from '../features/meetings/meeting-ingest'
-import { ingestSpeechBlob } from '../features/meetings/ingest-speech'
-import {
-  applyCaptionResult, createLiveCaption, pickSpeechRecognition, type SpeechRecLike,
-} from '../features/meetings/meeting-live-caption'
-import { buildUtteranceSegment } from '../features/meetings/meeting-utterance'
-import { useMicPermission } from './useMicPermission'
-import { openPreferredMicStream, listAudioInputs, type AudioInput } from '../native/audio-inputs'
-import {
-  isBackgroundMicSupported, listNativeMicInputs, startBackgroundMic,
-  stopBackgroundMic, listenBackgroundMicParts, nativePartToBlob,
-} from '../native/background-mic'
-import { useToast } from './useToast'
+  meetingRecorderRuntime as rt,
+  type MeetingRecorderRuntime,
+} from '../native/recordingRuntime'
+import type { MeetingSegment } from '../features/meetings/meetings-store'
+import type { AudioInput } from '../native/audio-inputs'
 
 const LANG_LABELS: Record<string, string> = {
   zh: '中文', en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', de: 'Deutsch',
 }
 
 export function useMeetingRecorder(meetingId: MaybeRef<string>) {
-  const isRecording = ref(false)
-  const isPaused = ref(false)
-  const elapsedMs = ref(0)
-  const segments = ref<MeetingSegment[]>([])
-  const sttError = ref('')
-  const interimCaption = ref('')
-  const speakers = ref<{ profileId: string; label: string }[]>([])
-  const processingCount = ref(0)
-  const inputs = ref<AudioInput[]>([])
-  const selectedInput = ref<AudioInput | undefined>()
-  const toast = useToast()
-
-  let mediaStream: MediaStream | null = null
-  let vadSegmenter: VadSegmenter | null = null
-  let diarizer: SpeakerDiarizer | null = null
-  let startTime = 0
-  let elapsedTimer: ReturnType<typeof setInterval> | null = null
-  const segmentProfiles = new Map<string, string>()
-  let partSeq = 0
-  let unlistenNative: (() => void) | null = null
-  let nativeMode = false
-  let stopCaption: (() => void) | null = null
-  // 在途分段转写 promise：stop() 必须等它们落库，否则 refine 拿到的
-  // transcript 缺尾巴，晚到的 updateTranscript 还会与 completed 状态竞争。
-  const inFlightSegments = new Set<Promise<void>>()
-
-  async function cleanupMedia() {
-    if (mediaStream) {
-      mediaStream.getTracks().forEach((t) => t.stop())
-      mediaStream = null
-    }
-    vadSegmenter = null
-    if (unlistenNative) { unlistenNative(); unlistenNative = null }
-    if (nativeMode) await stopBackgroundMic()
-    nativeMode = false
-    stopCaption?.()
-    stopCaption = null
-    interimCaption.value = ''
-    document.removeEventListener('visibilitychange', onHidden)
-    navigator.mediaDevices?.removeEventListener?.('devicechange', onDeviceChange)
-  }
-
-  function onHidden() {
-    if (document.visibilityState !== 'hidden' || !isRecording.value || nativeMode) return
-    toast.error('浏览器无法在后台继续录音，请保持应用在前台或使用 Android 客户端')
-  }
-
-  async function start(opts?: { deviceId?: string; resume?: boolean }): Promise<boolean> {
-    if (isRecording.value || !unref(meetingId)) return false
-    sttError.value = ''
-    if (!opts?.resume) {
-      segments.value = []
-      speakers.value = []
-      segmentProfiles.clear()
-      elapsedMs.value = 0
-      processingCount.value = 0
-      partSeq = 0
-    }
-    if (!opts?.resume || !diarizer) {
-      diarizer = new SpeakerDiarizer(0.72)
-      try {
-        const profiles = await loadSpeakerProfiles()
-        diarizer.loadProfiles(profiles)
-      } catch { /* 空库 */ }
-    }
-
-    const mic = useMicPermission()
-    const ok = await mic.ensure()
-    if (!ok) {
-      sttError.value = mic.deniedLabel.value || '麦克风权限被拒绝，请在系统设置中授权后重试'
-      return false
-    }
-
-    try {
-      nativeMode = false
-      if (isBackgroundMicSupported()) {
-        const nativeInputs = await listNativeMicInputs()
-        if (nativeInputs.length) inputs.value = nativeInputs
-        nativeMode = await startBackgroundMic({
-          meetingId: unref(meetingId),
-          deviceId: opts?.deviceId,
-        })
-        if (nativeMode) {
-          selectedInput.value = inputs.value.find((i) => i.deviceId === opts?.deviceId)
-            || inputs.value[0]
-          unlistenNative = await listenBackgroundMicParts((part) => {
-            void processSegment(nativePartToBlob(part), part.startMs, part.endMs)
-          }, (msg) => { sttError.value = msg })
-        }
-      }
-      if (!nativeMode) {
-        const opened = await openPreferredMicStream(opts?.deviceId)
-        mediaStream = opened.stream
-        inputs.value = opened.inputs
-        selectedInput.value = opened.selected
-        vadSegmenter = new VadSegmenter({
-          silenceMs: 1500,
-          minSpeechMs: 400,
-          energyThreshold: 0.012,
-          onSegment: (seg) => { void processSegment(seg.blob, seg.startMs, seg.endMs) },
-        })
-        await vadSegmenter.start(mediaStream)
-        document.addEventListener('visibilitychange', onHidden)
-      }
-
-      startLiveCaption()
-      startTime = Date.now()
-      isRecording.value = true
-      elapsedTimer = setInterval(() => {
-        if (!isPaused.value) elapsedMs.value = Date.now() - startTime
-      }, 200)
-      navigator.mediaDevices?.addEventListener?.('devicechange', onDeviceChange)
-      return true
-    } catch {
-      sttError.value = mic.deniedLabel.value || '麦克风权限被拒绝'
-      void cleanupMedia()
-      return false
-    }
-  }
-
-  async function onDeviceChange() {
-    const next = Capacitor.isNativePlatform()
-      ? await listNativeMicInputs()
-      : await listAudioInputs()
-    if (!next.length) return
-    inputs.value = next
-    const best = next[0]
-    if (selectedInput.value && best.deviceId !== selectedInput.value.deviceId && best.rank < selectedInput.value.rank) {
-      toast.success(`检测到更好的麦克风：${best.label}，可在录音条切换`)
-    }
-  }
-
-  async function switchDevice(deviceId: string) {
-    if (!isRecording.value) return start({ deviceId })
-    if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
-    const keptElapsed = elapsedMs.value
-    vadSegmenter?.stop()
-    await cleanupMedia()
-    isRecording.value = false
-    const ok = await start({ deviceId, resume: true })
-    if (ok) elapsedMs.value = keptElapsed
-    return ok
-  }
-
-  function startLiveCaption() {
-    const Rec = pickSpeechRecognition(typeof window === 'undefined' ? null : (window as unknown as {
-      SpeechRecognition?: new () => SpeechRecLike
-      webkitSpeechRecognition?: new () => SpeechRecLike
-    }))
-    if (!Rec) return
-    const caption = createLiveCaption({
-      recognition: new Rec(),
-      onResult: (result) => {
-        applyCaptionResult(result, {
-          setInterim: (text) => { interimCaption.value = text },
-          commit: (text) => { void appendText(text) },
-        })
-      },
-    })
-    if (caption.start()) stopCaption = caption.stop
-  }
-
-  async function appendText(text: string): Promise<MeetingSegment | null> {
-    const last = segments.value[segments.value.length - 1]
-    const lastEnd = last?.endMs ?? elapsedMs.value
-    const draft = buildUtteranceSegment({
-      meetingId: unref(meetingId),
-      text,
-      startMs: lastEnd,
-    })
-    if (!draft) return null
-    const id = await saveSegment(draft)
-    const saved: MeetingSegment = { id, ...draft }
-    segments.value.push(saved)
-    await updateTranscript(unref(meetingId), segments.value.map((s) => `[${s.speakerLabel}] ${s.text}`).join('\n'))
-    return saved
-  }
-
-  async function processSegment(blob: Blob, startMs: number, endMs: number) {
-    if (!diarizer) return
-    processingCount.value++
-    const task = (async () => {
-      try {
-        partSeq += 1
-        await ingestSpeechBlob({
-          meetingId, blob, startMs, endMs, seq: partSeq, diarizer,
-          segments: segments.value, segmentProfiles,
-        })
-        syncSpeakers()
-      } catch (e) {
-        sttError.value = '转写失败，将在下一段重试'
-        console.warn('[meeting-recorder] segment failed:', e)
-      } finally {
-        processingCount.value--
-      }
-    })()
-    inFlightSegments.add(task)
-    try {
-      await task
-    } finally {
-      inFlightSegments.delete(task)
-    }
-  }
-
-  function syncSpeakers() {
-    if (!diarizer) return
-    speakers.value = diarizer.getProfiles().map((p) => ({ profileId: p.id, label: p.label }))
-  }
-
-  async function labelSpeaker(profileId: string, displayName: string) {
-    if (!diarizer) return
-    diarizer.labelProfile(profileId, displayName)
-    syncSpeakers()
-    const profile = diarizer.getProfile(profileId)
-    if (profile) await saveVoiceprint({ id: profileId, displayName, embedding: profile.embedding })
-    for (const [segId, pid] of segmentProfiles) {
-      if (pid !== profileId) continue
-      await updateSegmentSpeaker(segId, displayName)
-      const seg = segments.value.find((s) => s.id === segId)
-      if (seg) seg.speakerLabel = displayName
-    }
-  }
-
-  async function stop(): Promise<{ audioPath: string; durationMs: number } | null> {
-    if (!isRecording.value) return null
-    isRecording.value = false
-    if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
-    navigator.mediaDevices?.removeEventListener?.('devicechange', onDeviceChange)
-
-    const fullBlob = vadSegmenter?.stop() ?? null
-    await cleanupMedia()
-    const durationMs = elapsedMs.value
-    let audioPath = ''
-    if (fullBlob && fullBlob.size > 0) {
-      audioPath = URL.createObjectURL(fullBlob)
-      try { await saveMeetingAudio(unref(meetingId), fullBlob) } catch { /* ok */ }
-    }
-    // 等在途分段转写落库再置 completed；上限 10s，防止个别请求挂死卡住停止流程。
-    if (inFlightSegments.size) {
-      await Promise.race([
-        Promise.allSettled([...inFlightSegments]),
-        new Promise((resolve) => setTimeout(resolve, 10_000)),
-      ])
-    }
-    await updateMeeting(unref(meetingId), {
-      audioPath: audioPath || null,
-      durationMs,
-      status: 'completed',
-    })
-    void getMeeting(unref(meetingId)).then((m) => { if (m) syncMeetingMetadata(m) })
-    return { audioPath, durationMs }
-  }
-
-  function formatElapsed(): string {
-    const s = Math.floor(elapsedMs.value / 1000)
-    const h = Math.floor(s / 3600)
-    const m = Math.floor((s % 3600) / 60)
-    const sec = s % 60
-    if (h > 0) return `${h}:${pad(m)}:${pad(sec)}`
-    return `${pad(m)}:${pad(sec)}`
-  }
-
-  onBeforeUnmount(() => {
-    if (elapsedTimer) clearInterval(elapsedTimer)
-    navigator.mediaDevices?.removeEventListener?.('devicechange', onDeviceChange)
-    void cleanupMedia()
+  // 本页面对应的录音是否正在进行(runtime 全局唯一活跃录音的归属判定)。
+  const scoped = computed(() => {
+    const id = rt.activeMeetingId.value
+    return id !== '' && id === unref(meetingId)
   })
+
+  const isRecording = computed(() => rt.isRecording.value && scoped.value)
+  const isPaused = computed(() => rt.isPaused.value && scoped.value)
+  const elapsedMs = computed(() => (scoped.value ? rt.elapsedMs.value : 0))
+  const segments = computed<MeetingSegment[]>(() => (scoped.value ? rt.segments.value : []))
+  const interimCaption = computed(() => (scoped.value ? rt.interimCaption.value : ''))
+  const speakers = computed(() => (scoped.value ? rt.speakers.value : []))
+  const processingCount = computed(() => (scoped.value ? rt.processingCount.value : 0))
+  // sttError 不圈定:start() 失败的错误必须回显到发起页;跨会议串扰的
+  // 瞬态错误可接受(错误文案本身是易失的)。
+  const sttError = computed(() => rt.sttError.value)
+  const inputs = computed<AudioInput[]>(() => rt.inputs.value)
+  const selectedInput = computed<AudioInput | undefined>(() => rt.selectedInput.value)
 
   return {
     isRecording, isPaused, elapsedMs, segments, sttError, interimCaption, speakers, processingCount,
     inputs, selectedInput,
-    start, stop, switchDevice, appendText, formatElapsed, labelSpeaker, langLabels: LANG_LABELS,
+    start: (opts?: { deviceId?: string; resume?: boolean }) => rt.start(unref(meetingId), opts),
+    stop: () => rt.stop(),
+    switchDevice: (deviceId: string) => rt.switchDevice(unref(meetingId), deviceId),
+    seedSegments: (stored: MeetingSegment[]) => rt.seedSegments(unref(meetingId), stored),
+    appendText: (text: string) => rt.appendText(text),
+    formatElapsed: () => rt.formatElapsed(),
+    labelSpeaker: (profileId: string, label: string) => rt.labelSpeaker(profileId, label),
+    langLabels: LANG_LABELS,
+    /** runtime 单例直取(全局指示条/测试用)。 */
+    runtime: rt as MeetingRecorderRuntime,
   }
 }
-
-function pad(n: number): string { return n.toString().padStart(2, '0') }

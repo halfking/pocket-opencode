@@ -1,11 +1,12 @@
 /**
  * notification.ts — S0-E Notification Center 状态管理。
  *
- * inbox 列表 + 未读计数 + 前台 WS 实时推送接入。
+ * inbox 列表 + 未读计数。
  *
- * WS 接入：在 main.ts 启动时调 notificationStore.subscribeWs()，把 websocket-hub
- * 的 'notification' 事件接到 store。后台/锁屏推送由 APNs/FCM（部署期接入）
- * 负责，本 store 只管前台 + inbox 历史。
+ * 接线(2026-09-20 通知体系 P1):main.ts 启动 notificationDispatcher 后,
+ * 'notification' WS 事件经幂等总线入账(pushLocal);WS 连接成功(首连/
+ * 重连)时增量 loadInbox。后台/锁屏推送由 APNs/FCM(部署期接入)负责,
+ * 本 store 只管前台 + inbox 历史。
  */
 import { defineStore } from 'pinia'
 import {

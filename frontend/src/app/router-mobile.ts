@@ -37,6 +37,9 @@ const ScheduledTaskListView = () => import('../features/scheduled-tasks/Schedule
 const ScheduledTaskDetailView = () => import('../features/scheduled-tasks/ScheduledTaskDetailView.vue')
 const ScheduledTaskEditView = () => import('../features/scheduled-tasks/ScheduledTaskEditView.vue')
 
+// 通知中心(2026-09-20 通知体系 P1):inbox 列表 + 已读管理。
+const NotificationsView = () => import('../features/notifications/NotificationsView.vue')
+
 // Flashcards v1（契约 §2 + §4）：FSRS 驱动的间隔重复学习
 // 路由级懒加载：仅在进入 /flashcards 才下载，减少首屏 JS 体积。
 const FlashcardListView = () => import('../features/flashcards/FlashcardListView.vue')
@@ -363,6 +366,13 @@ const router = createRouter({
       name: 'sessions',
       component: SessionWorkspaceView,
       meta: { requiresAuth: true, title: '会话', bottomNav: true, scrollMode: 'split' }
+    },
+    {
+      // 通知中心(2026-09-20 通知体系 P1):铃铛入口/系统通知点击均落此页。
+      path: '/notifications',
+      name: 'notifications',
+      component: NotificationsView,
+      meta: { requiresAuth: true, title: '通知中心', bottomNav: false, canGoBack: true }
     },
     {
       // Phase V3: 实时会话对话视图（P1 会话工作台：状态条 + 轮次时间线 + 详情抽屉）

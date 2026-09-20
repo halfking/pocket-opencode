@@ -96,6 +96,9 @@ func main() {
 		// scheduler；scheduler 启动之后，notifycenter 块构造完成后再
 		// 通过 SetNotifier 注入通知客户端（详见下方 notifycenter 块注释）。
 		flashcardExec *scheduledexecutors.FlashcardReviewExecutor
+		// scheduler 引用：同样为 notifycenter 的晚绑保留 —— 定时任务失败
+		// 通知（2026-09-20 通知体系）在 notifycenter 就绪后注入 schedRef。
+		schedRef *scheduledtask.Scheduler
 	)
 	if pool != nil {
 		ts, err := task.NewStore(pool)
@@ -945,6 +948,7 @@ func main() {
 			}
 		}
 		srv.SetScheduledTaskScheduler(sched)
+		schedRef = sched
 		sched.Start(context.Background())
 		defer sched.Stop()
 		log.Printf("Scheduled task scheduler started (enabled=%v, tick=%s, max_parallel=%d, executors=%d)", cfg.SchedulerEnabled, cfg.SchedulerTickInterval, cfg.SchedulerMaxParallel, registered)
@@ -965,6 +969,10 @@ func main() {
 			// 为 nil 时（remote-only / store 未构造）跳过。
 			if flashcardExec != nil {
 				flashcardExec.SetNotifier(svc)
+			}
+			// 定时任务失败通知（2026-09-20）：同一晚绑路径注入 scheduler。
+			if schedRef != nil {
+				schedRef.SetNotifier(svc)
 			}
 			log.Println("Notification Center enabled (inbox + rules + WS foreground push)")
 		}
