@@ -91,6 +91,7 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 
 ### 接力单（`handoff/`）
 - `2026-09-20-stage-1-native-ui-restructure.md` — stage-1 全图
+- `2026-09-20-real-device-30min-pickup.md` — **真机一键接力卡（30 秒读完即可上手）**
 
 ### 设计稿之详细路径（`handoff/`）
 - `2026-08-29-00-35-biometric-auth-cross-module-requirements.md`
@@ -151,6 +152,10 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 - 模拟器必装 BIOS 启 VTX/AMD-V 的物理机
 - 或 1 台 Android 13+ 真机
 - 或 Firebase Test Lab / BrowserStack 等云端设备农场
+
+### 用户已选路径：真机验收（推荐）
+- 装载 APK → 启 Activity → 电池白名单 → 长 prompt → Home → 30 min → 回前台
+- 详见 [`handoff/2026-09-20-real-device-30min-pickup.md`](../handoff/2026-09-20-real-device-30min-pickup.md) 一键接力卡（30 秒读完）
 
 ### 接力：跑法 A（真机，最快，30 min 完成）
 参见 [`docs/audits/2026-09-20-real-device-emulator-runbook.md`](docs/audits/2026-09-20-real-device-emulator-runbook.md)
