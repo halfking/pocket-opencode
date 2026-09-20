@@ -84,6 +84,7 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 - `2026-09-20-real-device-emulator-runbook.md` — 真机 / 物理机 / 云端 3 路径验收步骤
 - `2026-09-20-runtime-evidence-summary.md` — **真机 30 min 后台保活回填位（模板，等用户填）**
 - `2026-09-20-android-8-layers-final-evidence.md` — **8 层证据统一证据单**（fingerprint + DEX + static + .so + runbook 一致性）
+- `2026-09-20-runtime-evidence-preadvice.md` — **真机验收设备参考表（Pixel / Samsung / MIUI / EMUI / 一加）+ 5 行 adb 速取**
 
 ### 设计稿（`docs/design/`）
 - `2026-09-09-ai-async-background-survival.md` — M1-M5 流所有者迁移
@@ -136,6 +137,8 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 | `scripts/android-apk-classes-audit.ps1` | DEX class audit 全量模式 |
 | `scripts/android-apk-so-audit.ps1` | native .so ABI 4 档覆盖 + host arch cross-check |
 | `scripts/android-apk-fingerprint.ps1` | **APK 指纹 + runbook SHA drift 自检（verify:android 第 1 步）** |
+| `scripts/real-device-preflight.cmd` | **真机一键 preflight（PATH + adb devices + install + start + battery WL）** |
+| `scripts/real-device-capture.cmd` | **真机 30min 捕获 + 自动汇总 4 关键指标（hit 数）** |
 | `scripts/check-hyper-v.ps1` | WindowsOptionalFeature + systeminfo 检测 |
 | `scripts/find-androidcli.ps1` / `find-androidcmd.ps1` / `find-androidcmd2.ps1` | 调试工具 |
 
