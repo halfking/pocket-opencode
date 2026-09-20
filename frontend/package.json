@@ -10,7 +10,9 @@
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "test:native": "node --test src/native/__tests__/appLifecycleHub.test.mjs src/native/__tests__/aiStreamKeepalive.test.mjs src/native/__tests__/aiStreamRuntime.test.mjs",
-    "test:native:all": "node --test src/native/__tests__/*.test.mjs src/native/__tests__/*.test.ts"
+    "test:native:all": "node --test src/native/__tests__/*.test.mjs src/native/__tests__/*.test.ts",
+    "audit:vm-gaps": "node scripts/audit-viewmodel-gaps.mjs",
+    "check:vm-gaps": "node scripts/check-viewmodel-gaps.mjs"
   },
   "dependencies": {
     "@capacitor-community/sqlite": "^8.1.0",

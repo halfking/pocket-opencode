@@ -39,14 +39,19 @@ export interface UseTaskSessionSheetReturn {
 }
 
 export function useTaskSessionSheet(args: UseTaskSessionSheetArgs): UseTaskSessionSheetReturn {
-  const taskIdRef = typeof args.taskId === 'string'
+  const taskIdRef: Ref<string> = typeof args.taskId === 'string'
     ? ref(args.taskId)
     : args.taskId
-  const rowRef = args.row === null
-    ? ref<TaskSessionBundleRow | null>(null)
-    : args.row instanceof Object && 'value' in (args.row as object)
-      ? args.row as Ref<TaskSessionBundleRow | null>
-      : ref<TaskSessionBundleRow | null>(args.row)
+  // Row 形态归一为 Ref<... | null>：
+  //  - null   → 新建一个 ref(null)
+  //  - 非 null 且已是 Ref → 直接采用
+  //  - 其它（裸对象）     → 包到新 ref 里
+  const rowRef: Ref<TaskSessionBundleRow | null> =
+    args.row === null
+      ? ref<TaskSessionBundleRow | null>(null)
+      : typeof args.row === 'object' && 'value' in args.row
+        ? (args.row as Ref<TaskSessionBundleRow | null>)
+        : ref<TaskSessionBundleRow | null>(args.row as TaskSessionBundleRow)
 
   const kinds = ref<SessionMsgKind[]>(['user', 'assistant', 'tool', 'thinking'])
   const messages = ref<TaskSessionMessage[]>([])
