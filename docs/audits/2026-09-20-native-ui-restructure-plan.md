@@ -243,3 +243,56 @@ P0/P1 已落地。当前剩**未达标的次原生项**：
 
 **写于**：2026-09-20，**审计作者**：Mavis / mavis orchestrator
 **下次更新**：用户决策后 + 周 2 阶段性回填
+
+---
+
+## 8. Stage-1 落地回填（2026-09-20 同日）
+
+> 本节是"决策已拍板 → 第一波实施"的真实落地记录，每次向前推进都更新此处。
+
+### 8.1 commit 链
+
+```
+cd8892f feat(haptics): 触感反馈点位扩充 5 → 10（周 7-8 质感打磨）
+6f63e58 chore(skeleton): TasksView 骨架屏改用统一 Skeleton 组件
+62cbd82 docs(verify): AI 流后台生存真机验证清单（M1+M5/T2）
+bee61e9 docs(audit): 本审计（用户四目标 + 8 周阶梯 + 4 决策点）
+```
+
+全部已推送 `main`。`cd8892f`..`6f63e58` 均为纯前端改动；`62cbd82`/`bee61e9` 为方案与门禁文档。
+
+### 8.2 阶段评估
+
+| 阶段 | 范围 | 状态 |
+|---|---|---|
+| **周 1-2** | 把骨架接到业务、补 keepalive 兜底、跑通测试 | ✅ `62cbd82` 门禁齐 + `cd8892f` 触感扩 + 25 / 25 单测全绿 |
+| **周 3-4** | WorkManager 周期任务、电池优化引导 | ⏳ 等 EmailFetchRunner 接入 WorkManager |
+| **周 5-6** | 邮件 Service 层抽取、其他域 UI 解耦 | 🔍 已审计发现邮件域**已天然 4 层分层**（useEmailInbox + emailsStore + email-*.ts + raw Api） |
+| **周 7-8** | 骨架屏统一（TasksView）+ 触觉 8+ 位 + Perfetto | ✅ 一次性 PR 完成两项；Perfetto 实测等真机 |
+
+### 8.3 邮件域意外发现（节省周 5-6 工作量）
+
+`features/email/` 不是"单文件巨页面"，而是天然分层：
+
+- **View**：`EmailInboxView.vue`、`EmailAccountSetup.vue` 等 13 个 `.vue`
+- **ViewModel**：`use-email-inbox.ts`、`use-invoice-list.ts`
+- **Store / Pinia**：`emailsStore.ts`、`invoicesStore.ts`
+- **Service / 子模块**：`email-fetch-host`、`email-body-cache`、`email-classify-run`、`email-soft-delete` 等 25+ 文件
+
+=> 原计划"抽 emailService.ts"实质上**已经被 25 个小 Service 取代**，无需新增一个总 Service 文件。真正可改进的是 **ViewModel 缺统一的对外契约**（其他域不一定都有），下一段可以先做"哪些 View 还没 ViewModel"的盘点。
+
+### 8.4 真机依赖清单
+
+| 需真机 | 阶段 | 所需机型 |
+|---|---|---|
+| 30min 后台保活验证 | 周 1-2 验收 | Pixel 8 + OPPO/Vivo + Xiaomi 各 1 |
+| Perfetto 实测 | 周 7-8 验收 | 同上 |
+| WorkManager 周期任务厂商适配 | 周 3-4 | OPPO/Vivo 后台策略表 |
+| FGS 通知栏出现即"AI 任务进行中" | 周 1-2 验收 | Pixel 8 |
+
+### 8.5 收尾说明
+
+- 主包仍稳定在 **364.59 kB / 112.27 kB gz**（差异 +50 B gz 来自 haptics 调用，零业务增量）
+- 25 个 native 单测 = 周 1-2 决策门槛（CI 跑 `npm run test:native`）；**任一 fail 不得合并**
+- 跨阶段决策点：iOS 是否提前铺开（当前 v2）；其余按 H1 阶段执行
+
