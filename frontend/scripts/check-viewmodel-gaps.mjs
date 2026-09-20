@@ -17,7 +17,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const HITS_ALLOWED = Number.parseInt(process.env.HITS_ALLOWED ?? '1', 10)
+const HITS_ALLOWED = Number.parseInt(process.env.HITS_ALLOWED ?? '0', 10)
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT_FEATURES = join(HERE, '..', 'src', 'features')
 
