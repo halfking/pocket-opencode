@@ -83,6 +83,7 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 - `2026-09-20-apk-native-so-audit.md` — native 层 4 ABI 全覆盖（arm64-v8a / armeabi-v7a / x86 / x86_64）
 - `2026-09-20-real-device-emulator-runbook.md` — 真机 / 物理机 / 云端 3 路径验收步骤
 - `2026-09-20-runtime-evidence-summary.md` — **真机 30 min 后台保活回填位（模板，等用户填）**
+- `2026-09-20-android-8-layers-final-evidence.md` — **8 层证据统一证据单**（fingerprint + DEX + static + .so + runbook 一致性）
 
 ### 设计稿（`docs/design/`）
 - `2026-09-09-ai-async-background-survival.md` — M1-M5 流所有者迁移
