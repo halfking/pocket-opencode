@@ -1,23 +1,22 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { api, type Instance } from '../../api/client'
+/**
+ * ConfigList — 实例配置管理入口。
+ *
+ * 数据获取已迁至 `useConfigList`（2026-09-20 ViewModel 拆分）。
+ * 本文件仅负责模板 + 一行 load() 触发。
+ */
+import { onMounted } from 'vue'
+import { useConfigList } from './useConfigList'
 
 const emit = defineEmits<{
   viewConfig: [instanceId: string]
 }>()
 
-const instances = ref<Instance[]>([])
-const loading = ref(true)
+const { instances, loading, error, load } = useConfigList()
+onMounted(load)
 
-onMounted(async () => {
-  try {
-    instances.value = await api.getInstances()
-  } catch (e: any) {
-    console.error('Failed to load instances:', e)
-  } finally {
-    loading.value = false
-  }
-})
+// error 暴露给模板（兜底文案已与 useConfigList 保持一致）
+void error
 </script>
 
 <template>
@@ -60,7 +59,7 @@ onMounted(async () => {
         </div>
       </div>
 
-      <div v-if="instances.length === 0" class="text-center py-12 text-gray-400">
+      <div v-if="instances.length === 0 && !loading" class="text-center py-12 text-gray-400">
         <p>没有可用的实例</p>
         <p class="text-sm mt-2">请先配置 OpenCode 实例</p>
       </div>
