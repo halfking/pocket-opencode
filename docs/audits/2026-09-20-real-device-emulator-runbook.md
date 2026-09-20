@@ -26,6 +26,30 @@
 - 真机 Developer Mode + USB debugging 已开
   - 路径：设置 → 关于本机 → 7 次连点"版本号"→ 回到设置 → 系统 → 开发者选项 → USB debugging
 
+### 0.5 一键 preflight（推荐用法）
+
+如果你是 **Windows 用户**，直接双击 / 运行：
+
+```cmd
+cd C:\workspace\openpocket
+scripts\real-device-preflight.cmd
+```
+
+它会自动跑完下面 § 1.1 / § 1.3 / § 1.4（PATH 设置 + adb devices + install + start + 电池白名单页 + logcat 监听）。你只要在弹出的页面点「允许」，再到 App 内发长 prompt 后按 Home。
+
+### 0.6 一键 capture（30 min 后自动汇总）
+
+30 分钟结束后，跑：
+
+```cmd
+cd C:\workspace\openpocket
+scripts\real-device-capture.cmd
+```
+
+它会捕 30 min logcat，自动 grep 出 4 个关键指标（onStartCommand / keepalive / Watchdog / OEM 杀进程），生成 `logs/real-device-summary-YYYYMMDD-HHMMSS.txt`，把那个文件内容贴回 chat 即完成 § 4 回填。
+
+> 偏好手动 control 或非 Windows 平台，继续用 § 1.1-§ 1.9 的 PowerShell / adb 命令版本。
+
 ### 1. 启动 adb 桥
 ```bash
 adb devices      # 应看到设备；如未出现，重启 adb：adb kill-server && adb start-server

@@ -14,7 +14,14 @@
 - 已开 **USB 调试**：设置 → 关于本机 → 连点 7 次「版本号」→ 系统 → 开发者选项 → USB 调试
 - 当前仓库 main 已 `1b0447e`，APK 已构建
 
-## 1. 10 秒贴这段 PowerShell
+## 1. 10 秒贴这段 PowerShell（Windows 用户推荐改用一键 preflight）
+
+> ⚡ **更快**：Windows 用户只需两行——
+> ```cmd
+> cd C:\workspace\openpocket
+> scripts\real-device-preflight.cmd
+> ```
+> 它会自动完成下面的 PowerShell 等价动作 + 跳到 logcat 监听。下文 PowerShell 是给非 Windows / 偏好手动的用户。
 
 打开 PowerShell，粘贴：
 
@@ -49,6 +56,8 @@ adb logcat -v time AiStreamService:V AiStreamKeepalive:V *:S                    
 - 接上文流不中断 → 流消息完整
 - 通知仍在
 - logcat 中 `AiStreamService onStartCommand` 出现多次（keepalive 命中）
+
+> ⚡ **一键 capture**：跑 `scripts\real-device-capture.cmd` 自动 grep 4 个关键 hit 数 + dumpsys 状态到 `logs\real-device-summary-*.txt`，贴这个文件即可代替下面手填。
 
 ## 5. 30 秒回填这张表
 
