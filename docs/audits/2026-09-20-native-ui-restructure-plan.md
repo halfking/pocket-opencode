@@ -266,8 +266,9 @@ bee61e9 docs(audit): 本审计（用户四目标 + 8 周阶梯 + 4 决策点）
 | 阶段 | 范围 | 状态 |
 |---|---|---|
 | **周 1-2** | 把骨架接到业务、补 keepalive 兜底、跑通测试 | ✅ `62cbd82` 门禁齐 + `cd8892f` 触感扩 + 25 / 25 单测全绿 |
-| **周 3-4** | WorkManager 周期任务、电池优化引导 | ⏳ 等 EmailFetchRunner 接入 WorkManager |
-| **周 5-6** | 邮件 Service 层抽取、其他域 UI 解耦 | 🔍 已审计发现邮件域**已天然 4 层分层**（useEmailInbox + emailsStore + email-*.ts + raw Api） |
+| **周 3-4** | WorkManager 周期任务、电池优化引导 | ✅ **`332132d` 设计落定**（Week 3-4 spec 文件已有；实施待真机） |
+| **周 5（adj）** | `useTaskSessionSheet` 抽取 | ✅ **`58499e0`**（缺口 2 → 1）|
+| **周 6（adj）** | `useEmailListVM` 决策 + 其他域盘点 | ✅ **决议不抽**（[`../design/2026-09-20-email-domain-architecture-verdict.md`](../design/2026-09-20-email-domain-architecture-verdict.md)）；缺口维持 1/118 |
 | **周 7-8** | 骨架屏统一（TasksView）+ 触觉 8+ 位 + Perfetto | ✅ 一次性 PR 完成两项；Perfetto 实测等真机 |
 
 ### 8.3 邮件域意外发现（节省周 5-6 工作量）
