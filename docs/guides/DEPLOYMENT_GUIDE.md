@@ -245,7 +245,7 @@ sudo journalctl -u pocketd -n 50
 
 # 3. 测试 API
 # 健康检查
-curl http://localhost:8088/api/health
+curl http://localhost:8088/healthz
 
 # 登录测试
 curl -X POST http://localhost:8088/api/auth/login \

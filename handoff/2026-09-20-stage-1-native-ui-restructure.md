@@ -74,7 +74,7 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 | `npm run build:fast` | 主包 364 kB / 112 kB gz |
 | `npm run test:native` | 25 / 25 native 单测全绿（appLifecycleHub + aiStreamKeepalive + aiStreamRuntime） |
 | `npm run audit:vm-gaps` | 打印 ViewModel 缺口分布，**不**退 |
-| `npm run check:vm-gaps` | **退出码门槛**：默认 HITS_ALLOWED=1 → exit 0 |
+| `npm run check:vm-gaps` | **退出码门槛**：默认 HITS_ALLOWED=0 → 命中 > 0 即退出非零（b991b01 收紧） |
 
 ### 5 min 接管验证
 

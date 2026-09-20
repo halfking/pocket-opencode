@@ -13,6 +13,9 @@ OpenCode Pocket provides tenant-scoped scheduled automations under **Settings â†
 | `kxmemory_summary` | `{"date":"2026-08-30","emails":[]}` | kxmemory DailySummary |
 | `acc_mcp` | `{"tool":"acc_get_tasks","status":"pending","limit":20}` | ACC MCP connector |
 | `webhook` | `{"url":"https://example.com/hook","method":"POST","body":{}}` | Safe outbound HTTP |
+| `local_agent` | `{"prompt":"...","type":"text","skills":["..."]}` | Orchestrator LocalDispatcher |
+| `cloud_dispatch` | `{"prompt":"...","max_tokens":4096}` | Orchestrator CloudDispatcher (same payload as `local_agent`) |
+| `flashcard_review` | `{"user_id":"...","due_window":"today"}` | Flashcards daily-review reminder |
 
 `intent_forward` is intentionally not exposed until its executor is implemented.
 

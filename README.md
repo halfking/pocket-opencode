@@ -94,7 +94,7 @@ OpenCode Pocket 提供两种部署模式，根据你的使用场景选择：
 **快速启动**：
 ```bash
 cd deploy/本地方案
-./local-up.sh   # 首次运行经 local-db-init.sh 自动生成 .env.local（自 3b6ca72 起仓内不再携带 .env.example）
+./local-up.sh   # 首次运行经 local-db-init.sh 自动生成 .env.local（本地方案目录不携带 .env.example，仓根/backend/frontend 等目录的 .env.example 正常保留）
 ```
 
 详见：[本地方案文档](deploy/本地方案/README.md)
@@ -294,7 +294,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 | API响应时间 | <200ms | <100ms | ✅ 优秀 |
 | WebSocket连接 | 稳定 | 3+小时无断开 | ✅ 优秀 |
 | 内存占用 | <500MB | ~200MB | ✅ 优秀 |
-| APK大小 | <50MB | 24MB | ✅ 优秀 |
+| APK大小 | <50MB | 28.9MB（2026-09-20 实测） | ✅ 优秀 |
 | 崩溃率 | <1% | 0% | ✅ 完美 |
 
 ---

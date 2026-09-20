@@ -15,7 +15,7 @@ branch: main
 last commit: <待推送 #31>
 commits this session: 31
 docs: 15 + 3 handoff
-scripts: 18（含 emulator-launch-whpx.cmd）
+scripts: 35（含 emulator-launch-whpx.cmd）
 build:    vue-tsc 全清 / bundle 364.59 KB
 tests:    25 / 25 native green
 ViewModel 命中: 0 / 118 (hard gate 阈值 0)
@@ -41,7 +41,7 @@ emulator: ✅ **WHPX 加速启动 2 min boot_completed=1 + topResumedActivity = 
 | 1. 分析 + 设计 + 文档 | ✅ | `docs/audits/2026-09-20-native-ui-restructure-plan.md` (8 周阶梯) | 任意未来 session 一眼读懂 |
 | 2. UI 顺滑度 P0/P1 | ✅ | `62f4d96` 主线 6 + 3 项 | `git log --oneline \| grep -i smooth` |
 | 3. UI 与数据分离 | ✅ | 邮件域天然 4 层 + 0/118 ViewModel 缺口 + 2 VM 抽出 | `2f58aee` `58499e0` `check:vm-gaps` |
-| 4. 代码层后台保活 | ✅ | M1 + M5/T2 + 8 原生 plugin + 18 关键权限 + 完整 build | `1703dbc6` + `5a03deb` |
+| 4. 代码层后台保活 | ✅ | M1 + M5/T2 + 8 原生 plugin + 18 关键权限 + 完整 build | `332132d` + `5a03deb` |
 | 5. **运行时 30min 后台** | ✅ emulator 跑通；⏳ Perfetto trace 待采 | WHPX 加速下 emulator 2 min boot + WebView Bind OK | `88d1843` 真机 runbook · `2026-09-20-emulator-validation-final.md` |
 
 ## 3. 完整 commit 链（从最近往前）
@@ -63,7 +63,7 @@ b991b01 chore(audit): 收紧 check:vm-gaps 默认阈值 HITS_ALLOWED=0
 29511a9 handoff(stage-1): stage-1 完整接力单
 8b338cb chore(audit): ViewModel 缺口硬门槛脚本 check:vm-gaps
 06f69d7 docs(design): 邮件域架构裁决（不抽 useEmailListVM）
-1703dbc6 docs(design): WorkManager 周期任务实施规格
+332132d docs(design): WorkManager 周期任务实施规格
 58499e0 refactor(tasks): TaskSessionSheet 抽出 useTaskSessionSheet
 9292fc2 chore(audit): ViewModel 缺口盘点脚本 + 结果
 6a89621 docs(audit): 回填 stage-1 落地状态
@@ -116,7 +116,6 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 |---|---|
 | `frontend/scripts/audit-viewmodel-gaps.mjs` | 打印 ViewModel 缺口分布（不退） |
 | `frontend/scripts/check-viewmodel-gaps.mjs` | 硬门槛（命中 > 0 退出非零）；`HITS_ALLOWED` 可调 |
-| `frontend/scripts/check-viewmodel-gaps.sh` | 同上（bash 版，但 bash 在本机 PATH 缺失，已用 .mjs 替代） |
 
 ### Android 工具链（落地）
 

@@ -116,7 +116,7 @@
 
 ## 3. 前端 TypeScript 类型（前端代理 B 必须使用）
 
-文件：`frontend/src/features/flashcards/types.ts`（由代理 B 新建，但形状必须满足）。
+文件：`frontend/src/types/flashcards.ts`（由代理 B 新建，但形状必须满足）。
 
 ```ts
 export type FlashcardRating = 1 | 2 | 3 | 4  // Again | Hard | Good | Easy
@@ -226,9 +226,9 @@ export interface FlashcardReviewLog {
 
 | 新增/修改文件 | 代理 | 说明 |
 |--------------|------|------|
-| `frontend/src/features/flashcards/types.ts` | B | 按 §3 |
-| `frontend/src/features/flashcards/api.ts` | B | 与 §2 路由一一对应 |
-| `frontend/src/features/flashcards/store.ts` | B | Pinia，仿 `scheduled-tasks/store.ts` 的 outbox 模式 |
+| `frontend/src/types/flashcards.ts` | B | 按 §3 |
+| `frontend/src/services/flashcards.ts` | B | 与 §2 路由一一对应 |
+| `frontend/src/stores/flashcards.ts` | B | Pinia，仿 `scheduled-tasks/store.ts` 的 outbox 模式 |
 | `frontend/src/features/flashcards/FlashcardListView.vue` | B | 仿 `ScheduledTaskListView.vue` |
 | `frontend/src/features/flashcards/FlashcardDeckView.vue` | B | 仿 `ScheduledTaskDetailView.vue`（单 deck 卡片列表） |
 | `frontend/src/features/flashcards/FlashcardReviewView.vue` | B | 仿 `ScheduledTaskEditView.vue`（核心：四档评分） |

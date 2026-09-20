@@ -190,7 +190,7 @@ cd deploy
 
 # 2. 手动验证 API
 # 健康检查
-curl http://localhost:8088/api/health
+curl http://localhost:8088/healthz
 
 # 登录测试
 curl -X POST http://localhost:8088/api/auth/login \
@@ -209,7 +209,7 @@ sudo journalctl -u pocketd -f
 ## 验证检查点
 
 ### Backend API
-- [ ] `/api/health` 返回 200 OK
+- [ ] `/healthz` 返回 200 OK
 - [ ] `/api/auth/login` 可以登录获取 JWT
 - [ ] `/api/tasks` (GET) 返回任务列表
 - [ ] `/api/tasks` (POST) 可以创建任务
