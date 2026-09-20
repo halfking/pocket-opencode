@@ -12,16 +12,25 @@
 ```
 project: pocket-opencode
 branch: main
-last commit: 88d1843
-commits this session: 19
-docs: 9 + 1 stage-1 handoff
-scripts: 12
+last commit: <待推送 #24>
+commits this session: 24
+docs: 10 + 1 stage-1 handoff
+scripts: 14
 build:    vue-tsc 全清 / bundle 364.59 KB
 tests:    25 / 25 native green
 ViewModel 命中: 0 / 118 (hard gate 阈值 0)
-APK:      28.9 MB app-debug.apk (v2 signature OK)
+APK:      28.9 MB app-debug.apk (v2 signature OK + .so 4 ABI 全覆盖)
 emulator: 工具链齐，AVD 配置齐，headless 启动 ≤ 90s 内退出（VMware 嵌套 + Hyper-V 缺）
 ```
+
+> **8 层静态证据链**（`npm run verify:android` 一键跑完）：
+> 1. typecheck (vue-tsc)
+> 2. build (vite)
+> 3. test (25 native tests)
+> 4. check:vm-gaps (ViewModel 硬门槛)
+> 5. DEX 字节码 (11/11 关键类)
+> 6. APK 静态 (manifest 18 权限 + v2 签名)
+> **7. .so ABI 覆盖 (4/4 全 ABI)** ← 本次新增
 
 ## 2. 用户终极目标进度
 
@@ -36,6 +45,10 @@ emulator: 工具链齐，AVD 配置齐，headless 启动 ≤ 90s 内退出（VMw
 ## 3. 完整 commit 链（从最近往前）
 
 ```
+<待推送> test(android): APK .so ABI 静态审计 — 4 ABI 全覆盖 + verify:android 第 7 步
+405e5a4 chore(gates): 新增 npm run verify:android 一键跑通前端 + Android 7 层验证
+d4d3640 test(android): APK DEX class audit —— 字节码层验证 11/11 关键类
+b284811 docs(state): 项目全局状态索引 STATE.md —— 一页回答"项目到哪里 / 接下来怎么走"
 88d1843 docs(audit): 真机 / 物理机 runbook
 5a03deb test(android): APK 静态验证 + 模拟器启动阻塞溯源
 5b3b623 chore(emulator): AVD 创建 + gradle assembleDebug + JDK21
@@ -64,6 +77,8 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 - `2026-09-20-native-ui-restructure-plan.md` — 用户 4 目标工程映射 + 8 周阶梯 + 4 决策点 + Stage-1 状态回填
 - `2026-09-20-android-toolchain-install.md` — JDK / cmdline-tools / AVD / 工具脚本路径
 - `2026-09-20-apk-static-verification.md` — APK badging / permissions / 签名 + 模拟器启动物理限制溯源
+- `2026-09-20-apk-dex-classes-audit.md` — DEX 字节码层 11/11 关键类验证（Activity / 8 plugin / Service / Receiver / Runner）
+- `2026-09-20-apk-native-so-audit.md` — native 层 4 ABI 全覆盖（arm64-v8a / armeabi-v7a / x86 / x86_64）
 - `2026-09-20-real-device-emulator-runbook.md` — 真机 / 物理机 / 云端 3 路径验收步骤
 
 ### 设计稿（`docs/design/`）
@@ -112,6 +127,9 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 | `scripts/emulator-start.cmd` / `emulator-detach.ps1` | 模拟器前台/后台启动 |
 | `scripts/android-build-debug.cmd` | gradle assembleDebug（JD21 入口） |
 | `scripts/android-apk-static-verify.ps1` | aapt2 + apksigner 一键验证 |
+| `scripts/android-apk-classes-fast.ps1` | APK 中 classes.dex 关键类字节码定位 |
+| `scripts/android-apk-classes-audit.ps1` | DEX class audit 全量模式 |
+| `scripts/android-apk-so-audit.ps1` | native .so ABI 4 档覆盖 + host arch cross-check |
 | `scripts/check-hyper-v.ps1` | WindowsOptionalFeature + systeminfo 检测 |
 | `scripts/find-androidcli.ps1` / `find-androidcmd.ps1` / `find-androidcmd2.ps1` | 调试工具 |
 
@@ -149,7 +167,8 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 |---|---|---|
 | 1 | 验 gates 一键全跑 | `cd frontend && npm run gates` |
 | 2 | 跑 ViewModel 缺口 | `cd frontend && npm run check:vm-gaps` |
-| 3 | 跑 APK 静态验证 | `powershell scripts/android-apk-static-verify.ps1` |
+| 3 | 跑 Android 8 层验证 | `cd frontend && npm run verify:android` |
+| 4 | 单独跑 .so ABI 审计 | `powershell scripts/android-apk-so-audit.ps1` |
 | 4 | **跑真机验收**（最关键） | 见 `docs/audits/2026-09-20-real-device-emulator-runbook.md` §1 |
 | 5 | 真机跑完回填数据 | 把数据写进 §4 表格 |
 | 6 | 标记 goal complete | 调用 `update_goal status: complete` |
