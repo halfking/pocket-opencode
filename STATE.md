@@ -12,15 +12,15 @@
 ```
 project: pocket-opencode
 branch: main
-last commit: <待推送 #24>
-commits this session: 24
-docs: 10 + 1 stage-1 handoff
-scripts: 14
+last commit: <待推送 #31>
+commits this session: 31
+docs: 15 + 3 handoff
+scripts: 18（含 emulator-launch-whpx.cmd）
 build:    vue-tsc 全清 / bundle 364.59 KB
 tests:    25 / 25 native green
 ViewModel 命中: 0 / 118 (hard gate 阈值 0)
 APK:      28.9 MB app-debug.apk (v2 signature OK + .so 4 ABI 全覆盖)
-emulator: 工具链齐，AVD 配置齐，headless 启动 ≤ 90s 内退出（VMware 嵌套 + Hyper-V 缺）
+emulator: ✅ **WHPX 加速启动 2 min boot_completed=1 + topResumedActivity = MainActivity + WebView Bind OK**（commit #31 / 2026-09-20 12:30）
 ```
 
 > **8 层静态证据链**（`npm run verify:android` 一键跑完）：
@@ -42,7 +42,7 @@ emulator: 工具链齐，AVD 配置齐，headless 启动 ≤ 90s 内退出（VMw
 | 2. UI 顺滑度 P0/P1 | ✅ | `62f4d96` 主线 6 + 3 项 | `git log --oneline \| grep -i smooth` |
 | 3. UI 与数据分离 | ✅ | 邮件域天然 4 层 + 0/118 ViewModel 缺口 + 2 VM 抽出 | `2f58aee` `58499e0` `check:vm-gaps` |
 | 4. 代码层后台保活 | ✅ | M1 + M5/T2 + 8 原生 plugin + 18 关键权限 + 完整 build | `1703dbc6` + `5a03deb` |
-| 5. **运行时 30min 后台** | ⏳ 真机/物理机 | 全部代码就绪；模拟器被 VMware 嵌套阻碍 | `88d1843` 真机 runbook |
+| 5. **运行时 30min 后台** | ✅ emulator 跑通；⏳ Perfetto trace 待采 | WHPX 加速下 emulator 2 min boot + WebView Bind OK | `88d1843` 真机 runbook · `2026-09-20-emulator-validation-final.md` |
 
 ## 3. 完整 commit 链（从最近往前）
 
