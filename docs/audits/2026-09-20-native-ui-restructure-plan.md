@@ -268,8 +268,10 @@ bee61e9 docs(audit): 本审计（用户四目标 + 8 周阶梯 + 4 决策点）
 | **周 1-2** | 把骨架接到业务、补 keepalive 兜底、跑通测试 | ✅ `62cbd82` 门禁齐 + `cd8892f` 触感扩 + 25 / 25 单测全绿 |
 | **周 3-4** | WorkManager 周期任务、电池优化引导 | ✅ **`332132d` 设计落定**（Week 3-4 spec 文件已有；实施待真机） |
 | **周 5（adj）** | `useTaskSessionSheet` 抽取 | ✅ **`58499e0`**（缺口 2 → 1）|
-| **周 6（adj）** | `useEmailListVM` 决策 + 其他域盘点 | ✅ **决议不抽**（[`../design/2026-09-20-email-domain-architecture-verdict.md`](../design/2026-09-20-email-domain-architecture-verdict.md)）；缺口维持 1/118 |
-| **周 7-8** | 骨架屏统一（TasksView）+ 触觉 8+ 位 + Perfetto | ✅ 一次性 PR 完成两项；Perfetto 实测等真机 |
+| **周 6（adj）** | `useEmailListVM` 决策 + 其他域盘点 | ✅ **`06f69d7` 决议不抽**（邮件域天然 4 层） |
+| **周 6 收紧** | `useConfigList` 抽取 + HITS_ALLOWED=0 | ✅ **`2f58aee` + `b991b01`**（缺口归零；hard gate 阈值 0）|
+| **周 7-8（agent 部分）**| 骨架屏统一（TasksView）+ 触觉 8+ 位 | ✅ `6f63e58` + `cd8892f`（12 处统一 + 10 触觉点） |
+| **周 7-8（真机部分）**| Perfetto + 30min 后台保活 | ⏳ 需真机（Pixel + OPPO/Vivo + Xiaomi）|
 
 ### 8.3 邮件域意外发现（节省周 5-6 工作量）
 
@@ -296,4 +298,24 @@ bee61e9 docs(audit): 本审计（用户四目标 + 8 周阶梯 + 4 决策点）
 - 主包仍稳定在 **364.59 kB / 112.27 kB gz**（差异 +50 B gz 来自 haptics 调用，零业务增量）
 - 25 个 native 单测 = 周 1-2 决策门槛（CI 跑 `npm run test:native`）；**任一 fail 不得合并**
 - 跨阶段决策点：iOS 是否提前铺开（当前 v2）；其余按 H1 阶段执行
+
+### 8.6 Stage-1 终极状态（同日 follow-up）
+
+agent 可独立完成的 5 / 8 周阶段全部 ✅；剩余 3 周**必须由真机段进行**：
+
+| 阶段 | 终极状态 |
+|---|---|
+| 周 1-2 业务接线 + 验证清单 | ✅ 25 单测决策表全绿 |
+| 周 3-4 WorkManager + 电池引导 | ✅ 设计稿完成；实施需真机 |
+| 周 5 ViewModel 抽取（已调整为 useTaskSessionSheet）| ✅ |
+| 周 6 邮件域裁决 + useConfigList 抽取 | ✅ 命中归零 0 / 118 |
+| 周 6 收紧：HITS_ALLOWED=0 hard gate | ✅ |
+| 周 7-8 骨架屏 + 触觉 + Perfetto | 骨架/触觉 ✅；Perfetto 等真机 |
+
+**触发 stage-2 的唯一门槛**：任一真机（Pixel 8 / OPPO / Vivo / Xiaomi）到位 → 跑
+[`../design/2026-09-20-ai-background-runtime-verification.md` §1](../design/2026-09-20-ai-background-runtime-verification.md)
+，按 [`../design/2026-09-20-workmanager-spec.md`](../design/2026-09-20-workmanager-spec.md)
+施工；命中 30min 后台不丢帧 + 周期任务 24h 命中 ≥ 90% 即 goal 可宣告 complete。
+
+**当前 goal 状态**：active（按 blocked 释义此阻塞为物理硬件依赖，不计入 agent 三连阻塞）。
 
