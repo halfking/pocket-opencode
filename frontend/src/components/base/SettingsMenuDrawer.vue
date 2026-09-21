@@ -31,7 +31,21 @@
 
       <section v-for="group in groups" :key="group.title" class="menu-group">
         <h4 class="group-title">{{ group.title }}</h4>
-        <ul class="group-list" role="menu">
+        <!--
+          StaggerList：菜单组展开时交错入场。44 ms step 不会让用户等太久，但给
+          「抽屉刚打开」一种「菜单元素有序就位」的精致观感。每个 ul 内 li
+          走 display:contents，仅 opacity+transform 被插入；不要触碰 ul
+          自身的 list-style / padding。
+        -->
+        <StaggerList
+          tag="ul"
+          :step="44"
+          :initial="40"
+          :duration="320"
+          :distance="10"
+          class="group-list"
+          role="menu"
+        >
           <li v-for="item in group.items" :key="item.to" role="none">
             <button
               class="menu-item"
@@ -46,7 +60,7 @@
               <span class="material-symbols-outlined menu-chevron" aria-hidden="true">chevron_right</span>
             </button>
           </li>
-        </ul>
+        </StaggerList>
       </section>
 
       <p class="menu-foot">{{ t('settingsMenu.versionFootnote', { version }) }}</p>
@@ -59,6 +73,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import BottomSheet from './BottomSheet.vue'
+import StaggerList from './StaggerList.vue'
 import { useAuthStore } from '../../stores/auth'
 import { APP_VERSION } from '../../utils/version'
 
