@@ -13,9 +13,25 @@
 <template>
   <div v-if="visible" class="rec-pill" role="status" aria-live="polite">
     <button class="rec-go" type="button" @click="goHost">
+      <ProgressRing
+        :value="ringValue"
+        :size="22"
+        :stroke="2"
+        :duration="0"
+        :linecap="'round'"
+        :color="'var(--danger, #e5484d)'"
+        class="rec-ring"
+        aria-hidden="true"
+      />
       <span class="rec-dot" aria-hidden="true"></span>
       <span class="rec-label">{{ label }}</span>
       <span class="rec-clock">{{ clock }}</span>
+      <AnimatedNumber
+        class="rec-secs"
+        :value="secondsOnly"
+        unit="s"
+        :duration="380"
+      />
     </button>
     <button class="rec-stop" type="button" aria-label="停止录音" @click="onStop">
       <span class="material-symbols-outlined" aria-hidden="true">stop_circle</span>
@@ -27,6 +43,8 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useToast } from '../composables/useToast'
+import ProgressRing from './base/ProgressRing.vue'
+import AnimatedNumber from './base/AnimatedNumber.vue'
 import {
   meetingRecorderRuntime, noteRecorderRuntime, anyRecordingActive,
 } from '../native/recordingRuntime'
@@ -52,6 +70,21 @@ const label = computed(() => (meetingActive.value ? '会议录音中' : '笔记�
 const clock = computed(() => {
   if (meetingActive.value) return meetingRecorderRuntime.formatElapsed()
   return formatRecordingClock(noteRecorderRuntime.elapsedMs.value)
+})
+
+/** 录音已用秒（仅秒整数部分）。喂给 ProgressRing 的进度与 AnimatedNumber 的连续动画。 */
+const secondsOnly = computed(() => {
+  if (meetingActive.value) return Math.floor((meetingRecorderRuntime.elapsedMs.value ?? 0) / 1000)
+  return Math.floor((noteRecorderRuntime.elapsedMs.value ?? 0) / 1000)
+})
+
+/**
+ * 环状进度：60s 一循环的视觉心跳。任何录音很少超过十几分钟，本地循环足够
+ * 标示「还在录」；mm:ss 文本独立承担精确读数职责。
+ */
+const ringValue = computed(() => {
+  const secs = secondsOnly.value
+  return ((secs % 60) / 60) * 100
 })
 
 function goHost() {
@@ -113,6 +146,25 @@ async function onStop() {
 .rec-clock {
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
+  margin-right: 6px;
+}
+
+.rec-ring {
+  flex-shrink: 0;
+  /* 占位优先保证 mm:ss 文字不会因 ring 切换位置跳动 */
+  width: 22px;
+  height: 22px;
+}
+
+.rec-secs {
+  font-size: 11px;
+  opacity: 0.7;
+  margin-left: 6px;
+  color: var(--danger, #e5484d);
+  font-variant-numeric: tabular-nums;
+  /* micro-pulse 持续视觉心跳 —— 数字每秒变一次像心跳 */
+  min-width: 32px;
+  text-align: right;
 }
 .rec-stop {
   display: inline-flex;
