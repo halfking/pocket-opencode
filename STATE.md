@@ -12,27 +12,32 @@
 ```
 project: pocket-opencode
 branch: main
-last commit: <待推送 #31>
-commits this session: 31
-docs: 15 + 3 handoff
+last commit: 791d190
+commits this session: 36
+docs: 16 + 3 handoff
 scripts: 35（含 emulator-launch-whpx.cmd）
 build:    vue-tsc 全清 / bundle 364.59 KB
-tests:    25 / 25 native green
+tests:    99 / 99 native green
 ViewModel 命中: 0 / 118 (hard gate 阈值 0)
 APK:      28.9 MB app-debug.apk (v2 signature OK + .so 4 ABI 全覆盖)
-emulator: ✅ **WHPX 加速启动 2 min boot_completed=1 + topResumedActivity = MainActivity + WebView Bind OK**（commit #31 / 2026-09-20 12:30）
+emulator: ✅ **WHPX 加速启动 2 min boot_completed=1 + topResumedActivity + WebView Bind OK**（commit #31 / 2026-09-20 12:30）
+**UI 视觉技法 3 件套**：AnimatedNumber + ProgressRing + StaggerList（commit #34）+ RecordingPill / SettingsMenuDrawer 已接入（#35 / #36）
 ```
 
+> **9-21 进度**：emulator + 真机 + UI 优化 3 块全部闭环。Native 单测 99/99 由 25/25 提升上来了（test:native:all 包含子测试）。
+
 > **8 层静态证据链**（`npm run verify:android` 一键跑完）：
-> 1. typecheck (vue-tsc)
-> 2. build (vite)
-> 3. test (25 native tests)
-> 4. check:vm-gaps (ViewModel 硬门槛)
-> 5. DEX 字节码 (11/11 关键类)
-> 6. APK 静态 (manifest 18 权限 + v2 签名)
-> **7. .so ABI 覆盖 (4/4 全 ABI)** ← 本次新增
+> 1. typecheck (vue-tsc) ✅
+> 2. build (vite) ✅
+> 3. test (99 native tests) ✅
+> 4. check:vm-gaps (ViewModel 硬门槛) ✅
+> 5. DEX 字节码 (11/11 关键类) ✅
+> 6. APK 静态 (manifest 21 权限 + v2 签名) ✅
+> **7. .so ABI 覆盖 (4/4 全 ABI)** ✅
 >
 > **2026-09-20 二期**：fingerprint 单独拆成 verify:android 第 1 步（前置），runbook SHA 自检确认 3EB53… 没有飘移
+
+
 
 ## 2. 用户终极目标进度
 
