@@ -30,13 +30,14 @@ const config: CapacitorConfig = {
     },
     /**
      * 状态栏：
-     * - overlaysWebView:false —— Android 上 WebView 布局在状态栏之下，
-     *   这样 env(safe-area-inset-top) 才能拿到非 0 值，配合 body padding 给
-     *   标题栏让出系统状态栏高度。
-     * - style: 'LIGHT' —— 浅色图标；深浅主题切换时由 App.vue 按背景切换。
+     * - overlaysWebView: true —— WebView 绘制延伸到状态栏区域，body 背景
+     *   真正"铺满全屏"。body 的 padding-top = var(--app-safe-top) 仍然
+     *   让标题栏让出状态栏高度（不留白边）。
+     * - style: 'LIGHT' —— 浅色图标（深字）；深浅主题切换时由 App.vue 的
+     *   useStatusBar 按当前皮肤设置 style / backgroundColor。
      */
     StatusBar: {
-      overlaysWebView: false,
+      overlaysWebView: true,
       style: 'LIGHT',
     },
   },

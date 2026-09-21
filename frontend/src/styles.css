@@ -13,7 +13,22 @@ html,
 body {
   margin: 0;
   padding: 0;
-  height: 100%;
+}
+
+/* 全屏背景：让 body 的背景 token 真正覆盖到 status bar / nav bar 区域
+   （Capacitor StatusBar.overlaysWebView=true 下 WebView 绘到屏幕边）。
+   100dvh 在老 System WebView 不支持，@supports 拿到的两层渐进策略：
+   老内核走 min-height: 100vh；新内核走 height: 100%。 */
+html,
+body {
+  min-height: 100vh;
+}
+
+@supports (height: 100dvh) {
+  html,
+  body {
+    height: 100%;
+  }
 }
 
 :root {

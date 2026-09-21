@@ -7,6 +7,12 @@
 
 export const API_BASE_STORAGE_KEY = 'pocket_api_base'
 export const PRODUCTION_API_BASE = 'https://pocket.itestu.cn'
+/**
+ * 备用入口：与生产入口互为热备，二者可在系统设置中来回切换。
+ * 同一个后端域名 `pocket.kxpms.cn` 在不同 CDN / 边缘节点上对外暴露。
+ * 切换会清掉 selected_instance 与已登录 session（强制重登，避免跨节点态错乱）。
+ */
+export const BACKUP_API_BASE = 'https://pocket.kxpms.cn'
 
 export type ProbeHealthzResult = { ok: true } | { ok: false; error: string }
 

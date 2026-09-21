@@ -24,6 +24,14 @@
         <span class="preset-title">{{ t('settings.productionServer') }}</span>
         <span class="preset-url">{{ PRODUCTION_API_BASE }}</span>
       </button>
+      <button
+        type="button"
+        :class="['preset', { active: kind === 'backup' }]"
+        @click="kind = 'backup'"
+      >
+        <span class="preset-title">{{ t('settings.backupServer') }}</span>
+        <span class="preset-url">{{ BACKUP_API_BASE }}</span>
+      </button>
       <button type="button" :class="['preset', { active: kind === 'custom' }]" @click="kind = 'custom'">
         <span class="preset-title">{{ t('settings.customServer') }}</span>
         <span class="preset-url">{{ customUrl || t('settings.customServerHint') }}</span>
@@ -67,6 +75,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
   PRODUCTION_API_BASE,
+  BACKUP_API_BASE,
   normalizeApiBase,
   persistApiBase,
   probeHealthz,
@@ -76,7 +85,7 @@ import {
 import { clearSelectedInstance } from '../../config/selected-instance'
 import { useAuthStore } from '../../stores/auth'
 
-type Kind = 'build' | 'origin' | 'production' | 'custom'
+type Kind = 'build' | 'origin' | 'production' | 'backup' | 'custom'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -90,6 +99,7 @@ function detectKind(): { kind: Kind; custom: string } {
   if (override === null) return { kind: buildDefault ? 'build' : 'origin', custom: '' }
   if (override === '') return { kind: 'origin', custom: '' }
   if (override === PRODUCTION_API_BASE) return { kind: 'production', custom: '' }
+  if (override === BACKUP_API_BASE) return { kind: 'backup', custom: '' }
   return { kind: 'custom', custom: override }
 }
 
@@ -105,6 +115,7 @@ function previewBase(): string {
   if (kind.value === 'build') return buildDefault ? normalizeApiBase(buildDefault) : ''
   if (kind.value === 'origin') return ''
   if (kind.value === 'production') return PRODUCTION_API_BASE
+  if (kind.value === 'backup') return BACKUP_API_BASE
   return normalizeApiBase(customUrl.value, pageOrigin)
 }
 
@@ -112,6 +123,7 @@ function persistChoice(): string {
   if (kind.value === 'build') return persistApiBase(null)
   if (kind.value === 'origin') return persistApiBase('')
   if (kind.value === 'production') return persistApiBase(PRODUCTION_API_BASE)
+  if (kind.value === 'backup') return persistApiBase(BACKUP_API_BASE)
   return persistApiBase(normalizeApiBase(customUrl.value, pageOrigin))
 }
 
