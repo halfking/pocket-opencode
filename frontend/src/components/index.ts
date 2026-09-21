@@ -13,6 +13,9 @@ export { default as Loading } from './base/Loading.vue'
 export { default as EmptyState } from './base/EmptyState.vue'
 export { default as DbLockedState } from './base/DbLockedState.vue'
 export { default as ErrorState } from './base/ErrorState.vue'
+export { default as AnimatedNumber } from './base/AnimatedNumber.vue'
+export { default as ProgressRing } from './base/ProgressRing.vue'
+export { default as StaggerList } from './base/StaggerList.vue'
 
 // 交互组件
 export { default as BottomNav } from './interactive/BottomNav.vue'
@@ -57,3 +60,8 @@ export type { Email, EmailCardProps } from './business/EmailCard.vue'
 export type { AIThinkingIndicatorProps } from './business/AIThinkingIndicator.vue'
 export type { Session, SessionCardProps } from './business/SessionCard.vue'
 export type { WaveformVisualizerProps } from './business/WaveformVisualizer.vue'
+
+// 视觉技法 3 件套（commit #34）
+export type { ProgressRingProps } from './base/ProgressRing.vue'
+export type { AnimatedNumberProps } from './base/AnimatedNumber.vue'
+export type { StaggerListProps } from './base/StaggerList.vue'
