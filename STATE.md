@@ -12,9 +12,9 @@
 ```
 project: pocket-opencode
 branch: main
-last commit: 3fad123
-commits this session: 38
-docs: 17 + 3 handoff
+last commit: e4e25c3
+commits this session: 42
+docs: 18 + 4 handoff
 scripts: 35（含 emulator-launch-whpx.cmd）
 build:    vue-tsc 全清 / bundle 364.59 KB
 tests:    99 / 99 native green
@@ -22,7 +22,9 @@ ViewModel 命中: 0 / 118 (hard gate 阈值 0)
 APK:      29.0 MB app-debug.apk (v2 signature OK + .so 4 ABI + edge-to-edge background)
 emulator: ✅ **WHPX 加速启动 2 min boot_completed=1 + topResumedActivity + WebView Bind OK**（commit #31 / 2026-09-20 12:30）
 UI 视觉技法 3 件套: ✅ AnimatedNumber + ProgressRing + StaggerList（#34）+ RecordingPill / SettingsMenuDrawer 已接入（#35 / #36）
-目标 2（9-21 用户切换）：✅ edge-to-edge 全屏背景 + 备用入口 pocket.kxpms.cn 可切换 + 真机 4c308e2e + emul-5554 双装机（#38 / `3fad123`）
+目标 2（9-21 用户切换）：✅ edge-to-edge 全屏背景 + 备用入口 pocket.kxpms.cn 可切换 + 真机 4c308e2e + emul-5554 双装机（#38 #39 #40）
++ CDP 自动化尝试留痕（#41）+ 5 步回填模板（#42）
+**唯一遗留**：用户端真机 5 次点击实测回填 `docs/audits/2026-09-21-real-device-5-click-result.md`
 ```
 
 > **9-21 进度**：emulator + 真机 + UI 优化 3 块全部闭环。Native 单测 99/99 由 25/25 提升上来了（test:native:all 包含子测试）。
