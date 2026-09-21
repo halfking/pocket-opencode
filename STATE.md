@@ -101,6 +101,7 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 - `2026-09-20-viewmodel-gap-audit.md` — 周 5-6 阶梯调整依据
 - `2026-09-20-email-domain-architecture-verdict.md` — 邮件域 4 层裁决
 - `2026-09-20-workmanager-spec.md` — WorkManager 实施规格
+- `2026-09-21-native-roi-decision.md` — **原生路线图 ROI 裁决：追"那 30%"走 RN/Flutter UI 层，不走 Swift+Kotlin**（当前阶段保持 Capacitor，三项次优解先救 90%）
 
 ### 接力单（`handoff/`）
 - `2026-09-20-stage-1-native-ui-restructure.md` — stage-1 全图
@@ -195,5 +196,5 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 
 ---
 
-**写于**：2026-09-20
+**写于**：2026-09-20（9-21 补 ROI 决策索引）
 **作者**：Mavis / mavis orchestrator
