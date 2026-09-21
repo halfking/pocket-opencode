@@ -12,10 +12,10 @@
 ```
 project: pocket-opencode
 branch: main
-last commit: e4e25c3
-commits this session: 42
-docs: 18 + 4 handoff
-scripts: 35（含 emulator-launch-whpx.cmd）
+last commit: 50a11c4
+commits this session: 44
+docs: 20 + 5 handoff
+scripts: 37（含 emulator-launch-whpx.cmd）
 build:    vue-tsc 全清 / bundle 364.59 KB
 tests:    99 / 99 native green
 ViewModel 命中: 0 / 118 (hard gate 阈值 0)
@@ -93,6 +93,9 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 - `2026-09-20-runtime-evidence-summary.md` — **真机 30 min 后台保活回填位（模板，等用户填）**
 - `2026-09-20-android-8-layers-final-evidence.md` — **8 层证据统一证据单**（fingerprint + DEX + static + .so + runbook 一致性）
 - `2026-09-20-runtime-evidence-preadvice.md` — **真机验收设备参考表（Pixel / Samsung / MIUI / EMUI / 一加）+ 5 行 adb 速取**
+- `2026-09-21-server-endpoint-rotation.md` — **端点切换（pocket.kxpms.cn 备用入口）+ edge-to-edge 真机部署验证**（4 截图 + SHA256）
+- `2026-09-21-cdp-attempt-result.md` — 老 WebView devtools socket 不响应 HTTP /json —— CDP 自动化尝试失败留痕
+- `2026-09-21-real-device-5-click-result.md` — 真机 / Emulator 5 步验证回填模板（8 字段贴贴型可重用）
 
 ### 设计稿（`docs/design/`）
 - `2026-09-09-ai-async-background-survival.md` — M1-M5 流所有者迁移
@@ -102,10 +105,12 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 - `2026-09-20-email-domain-architecture-verdict.md` — 邮件域 4 层裁决
 - `2026-09-20-workmanager-spec.md` — WorkManager 实施规格
 - `2026-09-21-native-roi-decision.md` — **原生路线图 ROI 裁决：追"那 30%"走 RN/Flutter UI 层，不走 Swift+Kotlin**（当前阶段保持 Capacitor，三项次优解先救 90%）
+- `2026-09-21-ui-techniques.md` — **视觉技法 3 件套**（AnimatedNumber / ProgressRing / StaggerList 组件规格与接入技法）
 
 ### 接力单（`handoff/`）
 - `2026-09-20-stage-1-native-ui-restructure.md` — stage-1 全图
 - `2026-09-20-real-device-30min-pickup.md` — **真机一键接力卡（30 秒读完即可上手）**
+- `2026-09-21-edge-to-edge-and-endpoint-switch-pickup.md` — **30 秒验证接力卡（全屏背景 + 端点切换）**
 
 ### 设计稿之详细路径（`handoff/`）
 - `2026-08-29-00-35-biometric-auth-cross-module-requirements.md`
@@ -125,6 +130,7 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 |---|---|
 | `frontend/scripts/audit-viewmodel-gaps.mjs` | 打印 ViewModel 缺口分布（不退） |
 | `frontend/scripts/check-viewmodel-gaps.mjs` | 硬门槛（命中 > 0 退出非零）；`HITS_ALLOWED` 可调 |
+| `scripts/webview-eval.py` / `scripts/webview-bridge.py` | WebView devtools CDP 求值/桥接工具（真机 WebView 自动化探测备用） |
 
 ### Android 工具链（落地）
 

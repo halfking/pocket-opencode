@@ -7,7 +7,7 @@
 >
 > - [`2026-09-19-native-smoothness-audit.md`](2026-09-19-native-smoothness-audit.md) —
 >   P0 全 6 + P1 #7/#8/#9 已落地（2026-09-20），剩余 30% 是 WebView 架构固有短板
-> - [`2026-09-08-native-and-cross-platform.md`](../audits/2026-09-08-native-and-cross-platform.md) —
+> - [`2026-09-08-native-and-cross-platform.md`](../2026-09-08-native-and-cross-platform.md) —
 >   4 阶段路线图：Capacitor → RN → Flutter → Full Native（草案，未落档；本文补完 ROI 论证）
 > - [`2026-09-20-native-ui-restructure-plan.md`](../audits/2026-09-20-native-ui-restructure-plan.md) —
 >   "native" 实操含义 = "用到原生能力时调原生 plugin"，不是字面 UI 全原生

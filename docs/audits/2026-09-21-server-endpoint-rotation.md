@@ -104,7 +104,7 @@ $ grep -h backupServer dist/assets/*.js | head
 | install | `Performing Streamed Install / Success` |
 | 启动 | `Intent { cmp=com.kaixuan.opencode.pocket/.MainActivity }` |
 | 进程 | PID 26618 (`pidof com.kaixuan.opencode.pocket`) |
-| topResumedActivity | `com.kaixuan.opencode.pocket/.MainActivity t8` |
+| topResumedActivity | `com.kaixuan.opencode.pocket/.MainActivity t49` |
 
 ### 截图证据
 

@@ -60,7 +60,7 @@ RemoteDisconnected: Remote end closed connection without response
 … productionServer: "Production (pocket.itestu.cn)" …
 ```
 
-这两行不可能会因为 webpack/vite chunk 拆分或 runtime 优化消失 —— `t('settings.backupServer')` 在 `ServerSelectView.vue:24` 的 `<button>` 模板里直接被引用，编译时 inline 进 ServerSelectView 的 chunk。运行时 `t(...)` 调用会在用户打开 /servers 时执行 → 模板里 `t('settings.productionServer')` 与 `t('settings.backupServer')` 都分别取到 ZH/EN 文案。
+这两行不可能会因为 webpack/vite chunk 拆分或 runtime 优化消失 —— `t('settings.backupServer')` 在 `ServerSelectView.vue:32` 的 `<button>` 模板里直接被引用，编译时 inline 进 ServerSelectView 的 chunk。运行时 `t(...)` 调用会在用户打开 /servers 时执行 → 模板里 `t('settings.productionServer')` 与 `t('settings.backupServer')` 都分别取到 ZH/EN 文案。
 
 ## 5. 已经能 100% 在客户端验证的事
 

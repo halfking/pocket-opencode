@@ -1,6 +1,6 @@
 # 真机 / Emulator 5 步验证 · 回填模板
 
-> **用法**：你按 `handoff/2026-09-21-edge-to-edge-and-endpoint-switch-pickup.md` 跑完 5 步，把下面 8 个字段填好直接贴回 chat。我立刻做：折叠进 `runtime-evidence-summary.md` → 同步 `STATE.md` § 8.6 → `update_goal status: complete`。
+> **用法**：你按 `handoff/2026-09-21-edge-to-edge-and-endpoint-switch-pickup.md` 跑完 5 步，把下面 8 个字段填好直接贴回 chat。我立刻做：折叠进 `runtime-evidence-summary.md` → 同步 `STATE.md` §2 表「5. 运行时 30min 后台」行 → `update_goal status: complete`。
 > 
 > 时间：30 秒。
 

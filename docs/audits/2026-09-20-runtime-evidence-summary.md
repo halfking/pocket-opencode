@@ -1,7 +1,7 @@
 # 真机 30 分钟后台保活 — Runtime Evidence Summary（2026-09-20）
 
 > 这是「用户在真机上跑完 30min 后台保活验收」后的回填位。
-> 当前为模板。等用户填完跑回，会一起合并到 `2026-09-20-real-device-emulator-runbook.md` §4 表格与 `STATE.md` § 8.6 终极状态表。
+> 当前为模板。等用户填完跑回，会一起合并到 `2026-09-20-real-device-emulator-runbook.md` §4 表格与 `STATE.md` §2 表「5. 运行时 30min 后台」行。
 
 ---
 
@@ -76,7 +76,7 @@
 |---|---|---|
 | 1 | 把本文件 1-5 节回填完整 | 手填 / 粘贴 |
 | 2 | 把数据折叠进 `2026-09-20-real-device-emulator-runbook.md` § 4 表格 | edit |
-| 3 | 把 `STATE.md` § 8.6 终极状态表「perfetto」行 ⏳ 改 ✅ | edit |
+| 3 | 把 `STATE.md` §2 表「5. 运行时 30min 后台」行的「⏳ Perfetto trace 待采」改 ✅ | edit |
 | 4 | 提交推送（commit #XX） | `git add … && git commit … && git push` |
 | 5 | `update_goal status: complete` | mavis tool |
 

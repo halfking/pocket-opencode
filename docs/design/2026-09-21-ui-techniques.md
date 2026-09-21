@@ -126,7 +126,7 @@
 | `whenInView`     | true（视口进入才触发，避免已划过的列表又 stagger）|
 | `rootMargin`     | `'0px 0px -10% 0px'`（距底部 10% 时开始）|
 | `threshold`      | 0.05 |
-| `retriggerOnKey` | false（可在数据 key 变化时重放）|
+| `retriggerOnKey` | false（预留位：当前传入不产生重放效果）|
 
 ### 技法
 
@@ -135,7 +135,7 @@
 - 下一帧注入过渡：`opacity duration delay, transform duration delay`，逐项累加 step
 - IntersectionObserver 视口探针，元素不在屏内不触发（避免长列表中部已划过还在跳）
 - `prefers-reduced-motion: reduce` → 直接显示，不透明无位移
-- `retriggerOnKey` 在数据源刷新时可通过 `:key` 强制重放一次（用于「追加 1 条新结果」的场景）
+- `retriggerOnKey` 当前为预留位，自增的内部 key 未被消费，未实现重放逻辑；如需重放请对组件本身更换 `:key` 强制重新挂载
 
 ### 适合
 

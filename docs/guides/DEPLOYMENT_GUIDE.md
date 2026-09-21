@@ -443,7 +443,7 @@ sudo systemctl restart pocketd
 
 # 4. 验证
 sudo systemctl status pocketd
-curl http://localhost:8088/api/health
+curl http://localhost:8088/healthz
 ```
 
 ## 回滚操作

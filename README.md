@@ -294,7 +294,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 | API响应时间 | <200ms | <100ms | ✅ 优秀 |
 | WebSocket连接 | 稳定 | 3+小时无断开 | ✅ 优秀 |
 | 内存占用 | <500MB | ~200MB | ✅ 优秀 |
-| APK大小 | <50MB | 28.9MB（2026-09-20 实测） | ✅ 优秀 |
+| APK大小 | <50MB | 29.0MB（2026-09-21 实测） | ✅ 优秀 |
 | 崩溃率 | <1% | 0% | ✅ 完美 |
 
 ---
