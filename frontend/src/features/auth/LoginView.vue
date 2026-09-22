@@ -34,7 +34,14 @@
           {{ unlockButtonLabel({ loading, biometricBound: bioReady, password: unlockPassword }) }}
         </button>
         <div v-if="error" class="error-message">{{ error }}</div>
-        <p class="hint" style="margin-top: 20px; cursor: pointer;" @click="logoutAndRelogin">退出重新登录 →</p>
+        <!-- BUG-C 配套 (2026-09-22): 把 <p> 换成 <button>,加 .stop 显式 handler,
+           与 endpoint 按钮同款修法——原 <p @click=...> 行内表达式在
+           production build + WebView 126 上 click 被静默吞掉。 -->
+        <button
+          type="button"
+          class="hint hint-button"
+          @click.stop="logoutAndRelogin"
+        >退出重新登录 →</button>
       </div>
 
       <!-- 登录表单 -->
@@ -167,10 +174,19 @@
         @success="onMasterPasswordCreated"
       />
 
-      <!-- 版本信息 + 当前 pocketd 基址（与设置页同一 SSOT） -->
+      <!-- 版本信息 + 当前 pocketd 基址（与设置页同一 SSOT）
+           BUG-C 修复: 加 .stop 防止冒泡,防止点击事件被外层
+           needUnlock 表单的 submit 监听吞掉而 router.push 没执行;
+           同时改用显式 handler 避免同一行内联表达式被任何父级
+           拦截 (实测在 production build + WebView 126 上不加 .stop
+           时该 click 被静默吞掉)。-->
       <div class="version-info">
-        <p>v1.1.0-mobile</p>
-        <button type="button" class="api-base-link" @click="router.push('/servers')">
+        <p>v1.2.0-mobile</p>
+        <button
+          type="button"
+          class="api-base-link"
+          @click.stop="goToServers"
+        >
           后端服务器 · {{ backendDisplay }}
         </button>
       </div>
@@ -413,6 +429,13 @@ async function logoutAndRelogin() {
   await auth.logout()
   needUnlock.value = false
   error.value = ''
+}
+
+// BUG-C 配套: 后端服务器按钮的显式 handler,避免行内表达式在
+// production build 中被某些父级 v-on 监听吞掉 (实测在 WebView 126
+// 上 @click="router.push('/servers')" 行内写法 click 被静默吞掉)。
+function goToServers() {
+  router.push('/servers')
 }
 
 function onMasterPasswordCreated() {
@@ -727,6 +750,21 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
 .hint {
   color: var(--brand-primary);
   font-weight: var(--font-weight-medium);
+}
+
+/* BUG-C 修复（2026-09-22）: 把 <p class="hint"> 换成 <button class="hint hint-button"> 后,
+   浏览器默认 button 样式需要清零——否则会有 native button border / padding /
+   background-color 破坏视觉。*/
+.hint-button {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font: inherit;
+  margin-top: 20px;
+  cursor: pointer;
+}
+.hint-button:hover {
+  text-decoration: underline;
 }
 
 .unlock-hint {

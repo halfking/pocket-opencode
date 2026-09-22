@@ -156,6 +156,14 @@ if (Capacitor.isNativePlatform()) {
       menuOpen.value = false
       return
     }
+    // BUG-B 修复（2026-09-22）: /login?unlock=1 状态下硬件 back 原本会
+    // 跳过主密码验证直接回到受保护路由（/ai、/ai-chat 等）。
+    // 解锁未完成时吞掉 back,要求用户必须输入主密码或点"退出重新登录"。
+    if (route.query.unlock === '1') {
+      // 没有任何回调,等价于吞掉事件——若栈空,也不退出 App,
+      // 因为锁定态退出 app 比绕过验证更严重。
+      return
+    }
     // 有历史则后退；栈空（根页面）时退出应用——接管了 backButton 就必须
     // 兜底 Capacitor 被覆盖的默认退出行为，否则用户无法退出。
     if (window.history.state?.back == null) {
