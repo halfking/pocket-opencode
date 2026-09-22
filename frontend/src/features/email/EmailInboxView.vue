@@ -208,6 +208,14 @@ async function showLocal() {
   hasMore.value = inboxHasMore(page.length)
 }
 
+/** 是否有未归类邮件(需要触发自动归类) */
+async function hasUncategorized(): Promise<boolean> {
+  try {
+    const page = await readInboxPage('', 0)
+    return page.some((m) => !m.category)
+  } catch { return false }
+}
+
 async function load() {
   loading.value = emails.value.length === 0
   loadError.value = ''
@@ -224,9 +232,23 @@ async function load() {
       await pullInboxFromServer()
       await showLocal()
     } catch { /* 保持本地列表 */ }
-    const { hint } = await runDelegatedEmailFetch({ classify: false })
+    // 自动归纳整理：拉完新邮件后,只要还有未归类就触发 runClassify 把后端
+    // 队列清空(用户无需再点"归类"按钮)。后台静默运行,失败也不冒泡阻塞 UI。
+    try { await showLocal() } catch { /* 保持本地列表 */ }
+    if (await hasUncategorized()) {
+      try {
+        emails.value = await inbox.runClassify(emails.value)
+        await showLocal()
+      } catch { /* 单封归类失败由 runClassify 内 hint 暴露;此处静默 */ }
+    }
+    const { hint } = await runDelegatedEmailFetch({ classify: true })
     if (hint) syncHint.value = hint
     try { await showLocal() } catch { /* 保持本地列表 */ }
+    // 兜底：若 fetch 路径未分类完成,再扫一遍本地未归类,直到清空或被取消。
+    let safety = 0
+    while (safety++ < 3 && await hasUncategorized() && !inbox.classifying.value) {
+      try { emails.value = await inbox.runClassify(emails.value); await showLocal() } catch { break }
+    }
   })()
 }
 

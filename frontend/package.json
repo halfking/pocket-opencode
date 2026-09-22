@@ -39,7 +39,6 @@
     "http-proxy": "^1.18.1",
     "jeep-sqlite": "^2.8.0",
     "marked": "^18.0.5",
-    "material-symbols": "^0.47.0",
     "otpauth": "^9.5.1",
     "pinia": "^2.2.6",
     "sql.js": "1.11.0",
@@ -50,7 +49,12 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.1",
+    "harfbuzzjs": "^1.6.1",
+    "material-symbols": "^0.47.4",
+    "patch-package": "^8.0.1",
     "playwright": "^1.61.1",
+    "postinstall-postinstall": "^2.1.0",
+    "subset-font": "^2.9.0",
     "typescript": "^5.8.2",
     "vite": "^6.4.3",
     "vue-tsc": "^3.3.6"

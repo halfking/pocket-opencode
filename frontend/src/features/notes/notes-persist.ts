@@ -104,7 +104,7 @@ export async function createNote(input: CreateNoteInput): Promise<LocalNote> {
 
 export async function updateNote(
   id: string,
-  patch: Partial<Pick<LocalNote, 'title' | 'content' | 'domain' | 'tags' | 'status'>> & {
+  patch: Partial<Pick<LocalNote, 'title' | 'content' | 'domain' | 'tags' | 'status' | 'summary'>> & {
     media?: NoteMediaInput[]
     audioBlob?: Blob
     audioDurationMs?: number
@@ -124,7 +124,11 @@ export async function updateNote(
       kind: asset.kind,
       title: patch.title !== undefined ? patch.title || '' : asset.title,
       bodyText: patch.content !== undefined ? patch.content : asset.bodyText,
-      metaJson: JSON.stringify({ ...meta, ...(patch.tags !== undefined ? { tags: patch.tags } : {}) }),
+      metaJson: JSON.stringify({
+        ...meta,
+        ...(patch.tags !== undefined ? { tags: patch.tags } : {}),
+        ...(patch.summary !== undefined ? { summary: patch.summary } : {}),
+      }),
       source: asset.source,
       syncMode: asset.syncMode,
     })
@@ -134,6 +138,7 @@ export async function updateNote(
   const nextContent = patch.content !== undefined ? patch.content : await loadFullContent(existing)
   const nextTitle = patch.title !== undefined ? patch.title : existing.title
   const nextTags = patch.tags !== undefined ? patch.tags : existing.tags
+  const nextSummary = patch.summary !== undefined ? patch.summary : undefined
   const media = patch.media ?? (patch.audioBlob ? [{
     kind: 'audio' as const,
     blob: patch.audioBlob,
@@ -187,7 +192,7 @@ export async function updateNote(
       patch.domain !== undefined ? patch.domain : existing.domain,
       nextTags ? JSON.stringify(nextTags) : null,
       patch.status ?? existing.status ?? 'saved',
-      decided.tier, decided.summary, decided.searchText, bodyPath, mediaJson,
+      decided.tier, nextSummary ?? decided.summary, decided.searchText, bodyPath, mediaJson,
       audioPath, audioPath ? (patch.audioDurationMs ?? existing.audioDurationMs) : (patch.audioDurationMs ?? 0),
       Date.now(),
       id, workspaceId,

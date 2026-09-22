@@ -1,6 +1,10 @@
 <template>
   <BottomSheet :open="open" title="笔记属性" @close="onClose">
     <div class="meta">
+      <div v-if="aiSummary" class="ai-summary" role="note" aria-label="AI 即时总结">
+        <span class="ai-summary-label">AI 即时总结</span>
+        <p class="ai-summary-text">{{ aiSummary }}</p>
+      </div>
       <label class="field">
         <span>标题</span>
         <input v-model="form.title" placeholder="自动生成或手动输入" />
@@ -36,7 +40,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { BottomSheet } from '../../components'
 import { extractLocalTags, inferDomain, mergeTags, suggestTitle } from './note-tags'
 import { extractTagsWithAi } from './note-search'
@@ -52,6 +56,7 @@ const props = defineProps<{
   open: boolean
   title?: string | null
   content?: string
+  summary?: string | null
   domain?: string | null
   tags?: string[] | null
 }>()
@@ -61,6 +66,24 @@ const emit = defineEmits<{
   save: [data: { title: string; domain: string; tags: string[] }]
   delete: []
 }>()
+
+// 暴露在 sheet 顶部的 AI 总结(录音停止后由 NoteListView 异步请求 /api/notes/{id}/summarize)
+// 用户没保存也能看到总结是否就位。空字符串/占位不展示。
+const aiSummary = computed(() => {
+  const s = props.summary?.trim() || ''
+  if (!s || s === '（语音草稿）') return ''
+  return s
+})
+
+watch(() => props.open, (v) => {
+  if (!v) return
+  // 如果用户没传 title,优先从 AI 总结里推一条候选(语音草稿的内容偏口语,
+  // 用总结当 title 比拿全文前 24 字更准)。content 仍走原兜底。
+  const seedTitle = props.content || aiSummary.value || ''
+  form.title = props.title || suggestTitle(seedTitle)
+  form.domain = props.domain || inferDomain(seedTitle)
+  form.tagsInput = (props.tags ?? []).join(', ')
+})
 
 const form = reactive({ title: '', domain: 'work', tagsInput: '' })
 const extracting = ref(false)
@@ -101,6 +124,28 @@ function onClose() {
 
 <style scoped>
 .meta { padding: 0 var(--space-1) var(--space-3); }
+.ai-summary {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--brand-bg);
+}
+.ai-summary-label {
+  display: inline-block;
+  font-size: var(--text-xs);
+  letter-spacing: 0.5px;
+  color: var(--brand-primary);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.ai-summary-text {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+}
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--space-3); }
 .field > span { font-size: 12px; color: var(--text-muted); }
 .field input {

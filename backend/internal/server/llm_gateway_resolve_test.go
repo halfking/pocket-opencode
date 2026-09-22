@@ -14,8 +14,12 @@ func TestCanonicalGatewayURLRewritesObsoleteLocal(t *testing.T) {
 	if got != opencode.DefaultLLMGatewayBaseURL {
 		t.Fatalf("obsolete local URL must become kaixuan default, got %q", got)
 	}
-	if canonicalGatewayURL("https://llm.kxpms.cn/v1") != "https://llm.kxpms.cn/v1" {
-		t.Fatal("kaixuan URL must stay unchanged")
+	// 2026-09-21: 老域名 llm.kxpms.cn 也算 obsolete，写成 llmgo
+	if got := canonicalGatewayURL("https://llm.kxpms.cn/v1"); got != "https://llmgo.kxpms.cn/v1" {
+		t.Fatalf("legacy llm.kxpms.cn must be rewritten to llmgo, got %q", got)
+	}
+	if canonicalGatewayURL("https://llmgo.kxpms.cn/v1") != "https://llmgo.kxpms.cn/v1" {
+		t.Fatal("llmgo URL must stay unchanged")
 	}
 }
 
@@ -72,8 +76,10 @@ func TestResolveGatewayForUserPrefersSettings(t *testing.T) {
 	srv.userSettings = store
 
 	cfg := srv.ResolveGatewayForUser("user-admin", "ws_user-admin")
-	if cfg.BaseURL != "https://llm.kxpms.cn/v1" {
-		t.Fatalf("must use settings URL, got %q", cfg.BaseURL)
+	// 2026-09-21: settings 里写的老域名 llm.kxpms.cn 会被 canonicalGatewayURL
+	// 改写到 llmgo.kxpms.cn/v1（语义不变：用户配置的源信息仍胜出缓存）。
+	if cfg.BaseURL != "https://llmgo.kxpms.cn/v1" {
+		t.Fatalf("must use settings URL (rewritten to llmgo), got %q", cfg.BaseURL)
 	}
 	if cfg.APIKey != "sk-from-settings" {
 		t.Fatalf("must use settings key, got %q", cfg.APIKey)

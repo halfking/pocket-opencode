@@ -1,0 +1,10 @@
+$ErrorActionPreference = 'Stop'
+$env:ANDROID_HOME = "C:\Users\86133\AppData\Local\Android"
+$env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
+$env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot"
+$env:PATH = "$env:JAVA_HOME\bin;$env:ANDROID_HOME\platform-tools;$env:ANDROID_HOME\build-tools\34.0.0;C:\tools\node-v22.23.2-win-x64;$env:PATH"
+$env:NODE = "C:\tools\node-v22.23.2-win-x64\node.exe"
+$env:NPMCLI = "C:\tools\node-v22.23.2-win-x64\node_modules\npm\bin\npm-cli.js"
+$env:NPXCLI = "C:\tools\node-v22.23.2-win-x64\node_modules\npm\bin\npx-cli.js"
+$REPO = "C:\workspace\openpocket"
+$DEVICE = "4c308e2e"

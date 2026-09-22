@@ -53,8 +53,8 @@ type llmGatewayState struct {
 // has been persisted for the workspace. We keep it deterministic so GET is
 // idempotent across requests.
 //
-// 2026-08-31: 优先 POCKET_LLM_GATEWAY_URL env；未设置时回落到
-// opencode.DefaultLLMGatewayBaseURL（已切换为 https://llm.kxpms.cn/v1）。APIKey
+// 2026-09-21: 优先 POCKET_LLM_GATEWAY_URL env；未设置时回落到
+// opencode.DefaultLLMGatewayBaseURL（已切换为 https://llmgo.kxpms.cn/v1）。APIKey
 // 同样 env-first：API Key 只读 POCKET_LLM_GATEWAY_API_KEY；preferred
 // 模型列表来自 opencode.DefaultLLMGatewayPreferredModels。
 func defaultLLMGatewayState() llmGatewayState {
@@ -69,10 +69,17 @@ func defaultLLMGatewayState() llmGatewayState {
 	}
 }
 
-// obsoleteLocalGatewayURL 识别本机 docker 旧默认（8782）。
-// 切到 kaixuan 网关后，已有行不能再幂等跳过，否则会一直打旧地址。
+// obsoleteLocalGatewayURL 识别本机 docker 旧默认（8782）+ 2026-08-31 的旧域名。
+// 切到 llmgo.kxpms.cn 后，老的 llm.kxpms.cn 行也要重写，避免一直打旧地址。
 func obsoleteLocalGatewayURL(u string) bool {
-	return strings.Contains(strings.ToLower(strings.TrimSpace(u)), "llm-gateway-local-8782")
+	low := strings.ToLower(strings.TrimSpace(u))
+	if strings.Contains(low, "llm-gateway-local-8782") {
+		return true
+	}
+	if strings.HasPrefix(low, "https://llm.kxpms.cn") || strings.HasPrefix(low, "http://llm.kxpms.cn") {
+		return true
+	}
+	return false
 }
 
 // pickAPIKey 取第一个非空候选。不再回退仓库内写死的租户 key。

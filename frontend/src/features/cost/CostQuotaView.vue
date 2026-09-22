@@ -385,7 +385,7 @@ onUnmounted(() => {
 }
 .quota-meta-value {
   color: var(--text-primary);
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 .quota-meta-value.small {
   font-size: 11px;
@@ -430,7 +430,7 @@ onUnmounted(() => {
   margin-top: 2px;
   font-size: 11px;
   color: var(--text-muted);
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 
 .refresh-btn {

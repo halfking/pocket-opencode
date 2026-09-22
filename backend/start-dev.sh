@@ -58,6 +58,10 @@ if [ -f "$ROOT_ENV" ]; then
   echo "AI 网关: ${POCKET_LLM_GATEWAY_URL:-<未配置>} (key: ${POCKET_LLM_GATEWAY_API_KEY:+已注入})"
 fi
 
+# 私网/loopback 放行：本地 dev 环境有时需要连内网 AI 网关（如 192.168.x.x），
+# SSRF 校验默认会拦下私网；打开后只放宽私网，云元数据端点仍被拒。
+export POCKET_LLM_GATEWAY_ALLOW_PRIVATE="${POCKET_LLM_GATEWAY_ALLOW_PRIVATE:-true}"
+
 # ✨ 新增：配置本地 OpenCode 实例
 export POCKET_OPENCODE_INSTANCES='[
   {

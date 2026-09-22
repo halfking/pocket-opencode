@@ -47,6 +47,10 @@ defineEmits<{ toggle: [] }>()
   border-radius: 50%;
   border: 2px solid var(--danger);
   animation: pulse var(--duration-slow) infinite;
+  /* 动画层仅做视觉装饰,不挡 FAB 命中 — 否则点击录音按钮会被 pulse 拦截,
+     用户感知为"按了没反应"。 */
+  pointer-events: none;
+  z-index: -1;
 }
 @keyframes pulse {
   0% { transform: scale(1); opacity: 0.8; }

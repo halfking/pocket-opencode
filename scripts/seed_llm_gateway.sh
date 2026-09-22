@@ -29,7 +29,7 @@ env_get() {
 }
 
 API_KEY="${POCKET_LLM_GATEWAY_API_KEY:-$(env_get POCKET_LLM_GATEWAY_API_KEY)}"
-BASE_URL="${POCKET_LLM_GATEWAY_URL:-https://llm.kxpms.cn/v1}"
+BASE_URL="${POCKET_LLM_GATEWAY_URL:-https://llmgo.kxpms.cn/v1}"
 if [ -z "$API_KEY" ]; then
   echo "[seed] POCKET_LLM_GATEWAY_API_KEY is required" >&2
   exit 1

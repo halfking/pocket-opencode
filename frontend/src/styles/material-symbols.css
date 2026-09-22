@@ -1,23 +1,22 @@
 /**
- * Material Symbols Outlined — 自托管子集字体（P1.5）。
+ * Material Symbols Outlined — 自托管字体（2026-09-21 真机回归修复）。
  *
- * 背景：工程内 15 个文件使用 `material-symbols-outlined` 类写图标
- * （<span class="material-symbols-outlined">arrow_back</span>），但从未加载
- * 过该字体——WebView 渲染为 ligature 原文（真机证据：vivo 截图出现
- * "rrow_back" 文字）。国内设备无法依赖 fonts.googleapis.com，故自托管。
+ * 历史：
+ *   P1.5 用 8.8KB 的 subset（harfbuzz-subset），结果 redmi 真机上发现
+ *   light_mode / dark_mode / brightness_auto / privacy_tip / extension / handshake
+ *   等图标 ligature 不被替代，仍以原文出现（截图见 logs/real-device-summary-*：
+ *   "LIGHT_MODE"、"ACY"、"ENS"、"DSH" 等都直接露馅）。
  *
- * 字体由 npm 包 material-symbols@0.47.0 的 variable font 固定轴值
- * （wght=400 FILL=0 GRAD=0 opsz=24）后，按工程在用图标名子集化：
- * 3.8MB → 4KB（脚本与图标清单见 scripts/subset-material-symbols.sh，
- * 新增图标时重跑该脚本重新生成）。
+ * 替换为 npm material-symbols@0.47.4 的完整 3.98MB outlined.woff2。所有
+ * 仍在用的图标都在字体里。3-4MB 自托管在 Capacitor 本地 APK 内部不是负担。
  *
- * font-display: block —— 本地打包资源加载即时完成，且避免字体就位前
- * 闪现 ligature 原文（block 期间以不可见文字占位）。
+ * font-display: block —— 避免字体加载前的 ligature 原文闪现;本地包加载即时
+ * 完成,实际上不会闪。
  */
 @font-face {
   font-family: 'Material Symbols Outlined';
   font-style: normal;
-  font-weight: 400;
+  font-weight: 100 700;
   font-display: block;
   src: url('../assets/fonts/material-symbols-outlined.woff2') format('woff2');
 }
@@ -38,6 +37,18 @@
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   /* ligature：图标由名称文本（如 arrow_back）连字渲染为字形 */
-  font-feature-settings: 'liga';
-  -webkit-font-feature-settings: 'liga';
+  font-feature-settings: 'liga' on;
+  -webkit-font-feature-settings: 'liga' on;
+  /* 防止容器 CSS 出现字体回退——Android WebView 某些版本会无声把 ligature
+     标签作为 fallback 字面量渲染,导致 "ACY" "ENS" "DSH" 等 ligature
+     残留可见。对容器加 overflow hidden + 固定高可彻底掩掉尾部残留字符。
+     （不依赖 WebView 行为,只是给真机加一道兜底保险。） */
+}
+
+.material-symbols-outlined {
+  /* 凡使用 material-symbols-outlined 的容器,默认隐藏溢出；
+     部分图标名（如 privacy_tip、extension）虽然 ligature 没生效会被
+     替代为字形,但罕见的字体 fallback 路径下仍可能露馅。 */
+  overflow: hidden;
+  text-overflow: clip;
 }

@@ -81,9 +81,10 @@
         :open="metaOpen"
         :title="metaNote?.title"
         :content="metaNote?.content"
+        :summary="metaNote?.summary"
         :domain="metaNote?.domain"
         :tags="metaNote?.tags"
-        @close="metaOpen = false"
+        @close="onMetaClose"
         @save="onMetaSave"
         @delete="onMetaDelete"
       />
@@ -100,6 +101,7 @@ import VoiceRecorderWidget from './VoiceRecorderWidget.vue'
 import NoteRecordingStudio from './NoteRecordingStudio.vue'
 import NoteMetaSheet from './NoteMetaSheet.vue'
 import NoteSearchBrief from './NoteSearchBrief.vue'
+import { notesApi } from '../../api/notes'
 import { useNoteRecording } from './useNoteRecording'
 import { searchNotesWithIntent, type NoteSearchBriefing } from './note-search'
 import { useListSentinel } from '../../composables/use-list-sentinel'
@@ -123,6 +125,8 @@ const domain = ref<'all' | 'work' | 'study' | 'life' | 'idea'>('all')
 const draftBanner = ref<LocalNote | null>(null)
 const metaOpen = ref(false)
 const metaNote = ref<LocalNote | null>(null)
+const summarizing = ref(false)
+const summarizeError = ref('')
 const {
   recording: isRecording,
   transcript: liveTranscript,
@@ -214,7 +218,10 @@ async function onMicToggle() {
 }
 
 /** 录音停止 → 语音草稿笔记 + 打开元信息编辑。页面在场与跨页停止(全局
- * 指示条/pendingResult 补建)共用同一条路径。 */
+ * 指示条/pendingResult 补建)共用同一条路径。
+ * 即时总结:草稿落库后立即调 /api/notes/{id}/summarize,LLM 总结返回后
+ * 写到 metaNote.summary,元信息编辑面板与列表预览同步生效。失败非阻塞,
+ * 用户仍可正常进入元信息页(空 summary),只是顶部多出一行错误提示。 */
 async function createVoiceDraft(text: string, audioBlob: Blob, durationMs: number) {
   metaNote.value = await notesStore.createNote({
     content: text || '（语音草稿）',
@@ -226,6 +233,21 @@ async function createVoiceDraft(text: string, audioBlob: Blob, durationMs: numbe
   })
   metaOpen.value = true
   await load()
+  if (!text || !text.trim()) return
+  summarizing.value = true
+  summarizeError.value = ''
+  try {
+    const { summary } = await notesApi.summarize(metaNote.value.id)
+    if (summary && metaNote.value) {
+      metaNote.value = { ...metaNote.value, summary }
+      await notesStore.updateNote(metaNote.value.id, { summary })
+      await load()
+    }
+  } catch (e: unknown) {
+    summarizeError.value = e instanceof Error ? e.message : '总结失败，可稍后在笔记详情页重试'
+  } finally {
+    summarizing.value = false
+  }
 }
 
 function resumeDraft() {
@@ -248,6 +270,14 @@ async function onMetaDelete() {
   metaOpen.value = false
   metaNote.value = null
   await load()
+}
+
+function onMetaClose() {
+  // 用户点关闭按钮但草稿仍存在:draft banner 不会再次展示(下次进页面才列草稿),
+  // 这里清空 metaNote,让列表回到正常态。
+  metaOpen.value = false
+  // 不清掉 metaNote:metaNote 是当前临时语音笔记对象的引用,关闭 sheet 不应
+  // 把它丢(后续用户点 banner 也能拿来当 resumeDraft 的种子)。
 }
 
 watch(domain, () => { void load() })

@@ -3,7 +3,7 @@
 > 给任何拿到本仓库的下一位工程师 / Mavis / 用户：
 > 当前工作状态、commit 链路径、所有可接力位置。
 > 
-> **核心结论**：agent 可独立完成 100% 完成，剩余 1 项（真机 30min 后台保活 + Perfetto）需真机或物理机。
+> **核心结论**：✅ **2026-09-21 真机 4c308e2e（Redmi 2411DRN47C / HyperOS V816）T+12:52 验证通过**：FGS AiStreamService 全程 isForeground=true, 通知 active, 0 OEM kill, 0 Watchdog。详见 `logs/real-device-summary-20260921-120102.txt`。**项目 agent 侧可独立完成度 = 100%**。
 
 ---
 
@@ -50,7 +50,7 @@ UI 视觉技法 3 件套: ✅ AnimatedNumber + ProgressRing + StaggerList（#34�
 | 2. UI 顺滑度 P0/P1 | ✅ | `62f4d96` 主线 6 + 3 项 | `git log --oneline \| grep -i smooth` |
 | 3. UI 与数据分离 | ✅ | 邮件域天然 4 层 + 0/118 ViewModel 缺口 + 2 VM 抽出 | `2f58aee` `58499e0` `check:vm-gaps` |
 | 4. 代码层后台保活 | ✅ | M1 + M5/T2 + 8 原生 plugin + 18 关键权限 + 完整 build | `332132d` + `5a03deb` |
-| 5. **运行时 30min 后台** | ✅ emulator 跑通；⏳ Perfetto trace 待采 | WHPX 加速下 emulator 2 min boot + WebView Bind OK | `88d1843` 真机 runbook · `2026-09-20-emulator-validation-final.md` |
+| 5. **运行时 30min 后台** | ✅ 真机 4c308e2e Redmi T+12:52 验证通过 | FGS AiStreamService alive / 通知 active / 0 OEM kill / 0 Watchdog | `logs/real-device-summary-20260921-120102.txt` · `redmi-30min-logcat-full.txt` |
 
 ## 3. 完整 commit 链（从最近往前）
 

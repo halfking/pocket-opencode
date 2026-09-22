@@ -107,3 +107,6 @@ data/email_master.key
 
 # Downloads (toolchain installers)
 downloads/
+
+# Local MiniMax / Mavis runtime cache (per-host skill installs; not source)
+.minimax/

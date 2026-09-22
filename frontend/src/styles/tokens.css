@@ -102,6 +102,31 @@
   --font-weight-semibold: 600;
   --font-weight-bold: 700;
 
+  /* 字体族（修复：此前 Button/Input/Textarea/AIChatView 引用过本变量却从未定义，
+     CSS 规则退回到浏览器默认无衬线字。设置页的按钮、输入框因此与系统中文不一致）。
+     前端无外部 webfont 引入，直接使用系统栈并把 CJK 字体前移，
+     Android 默认 Roboto/PingFang SC，iOS Apple SF/PingFang，桌面 Segoe UI/YaHei。 */
+  --font-sans:
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
+  --font-mono:
+    "JetBrains Mono",
+    "Fira Code",
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+
   /* Shadows */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08);

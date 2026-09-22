@@ -19,6 +19,7 @@
  */
 import { ref } from 'vue'
 import { Capacitor } from '@capacitor/core'
+import { pickSupportedRecorderMime } from './recorderMime'
 import { saveMeetingAudio } from './meeting-audio'
 import { VadSegmenter } from './vad-segmenter'
 import { SpeakerDiarizer } from './speaker-diarization'
@@ -374,6 +375,27 @@ export class MeetingRecorderRuntime {
 const NOTE_CHUNK_MS = 3000
 
 /**
+ * 在浏览器/WebView 运行时探测 MediaRecorder 支持:把全局 MediaRecorder 绑到
+ * recorderMime.ts 的 probe 接口上(2026-09-21 抽离后)。Node SSR / 测试环境
+ * 没有全局 MediaRecorder → 返回空串,让上层走 new MediaRecorder(stream) 默认路径。
+ */
+function detectRecorderMime(): string {
+  if (typeof MediaRecorder === 'undefined') return ''
+  return pickSupportedRecorderMime({
+    isTypeSupported: (m) => MediaRecorder.isTypeSupported(m),
+  })
+}
+
+/**
+ * 选择 MediaRecorder 可用的 MIME 类型并切成录音 blob.
+ * 真机(redmi 等 Android WebView,Chromium 内核)对 audio/webm 实际不支持或
+ * timeslice 不工作——选不到 webm/opopus 时降级到 audio/mp4(aac);都选不到
+ * 直接 new MediaRecorder(stream) 走默认路径(浏览器会挑最稳的)。
+ *
+ * 2026-09-21 重构为独立模块 recorderMime.ts(便于单测,probe 可注入)。
+ */
+
+/**
  * 笔记录音(3s 分片 + sherpa 流式 + 云端兜底)。跨页面存续:NoteListView 被
  * KeepAlive 驱逐或应用级导航离开时录音不断;stop() 的结果同时暂存在
  * pendingResult,NoteListView 重进后可消费(draftBanner 流程)。
@@ -442,7 +464,10 @@ export class NoteRecorderRuntime {
       this.chunks = []
       this.committed = ''
       this.transcript.value = ''
-      this.mediaRecorder = new MediaRecorder(this.mediaStream)
+      const mimeType = detectRecorderMime()
+      this.mediaRecorder = mimeType
+        ? new MediaRecorder(this.mediaStream, { mimeType })
+        : new MediaRecorder(this.mediaStream)
       this.mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) this.chunks.push(e.data)
         if (!this.nativeListening && e.data.size > 0 && this.phase.value === 'recording') {
@@ -498,9 +523,15 @@ export class NoteRecorderRuntime {
     this.recording.value = false
     this.stopTick()
     const durationMs = Date.now() - this.startedAt
+    // 兜底：部分 Android WebView 在 timeslice MediaRecorder 上,即便我们调 stop()
+    // 也不会派 onstop(dataavailable 已停在 INACTIVE,但 recorder 没把队列里的
+    // onstop 事件 flush)。三秒兜底后强制 resolve 并继续清理,避免 UI 卡死。
+    let stopResolved = false
     await new Promise<void>((resolve) => {
-      this.mediaRecorder!.onstop = () => resolve()
-      try { this.mediaRecorder!.stop() } catch { resolve() }
+      const onStopped = () => { if (stopResolved) return; stopResolved = true; resolve() }
+      this.mediaRecorder!.onstop = onStopped
+      try { this.mediaRecorder!.stop() } catch { onStopped() }
+      setTimeout(() => { if (!stopResolved) { stopResolved = true; resolve() } }, 3000)
     })
     if (this.nativeListening) {
       try {
@@ -517,7 +548,12 @@ export class NoteRecorderRuntime {
     this.unlisten?.remove()
     this.unlisten = null
     this.cleanupMedia()
-    const audioBlob = new Blob(this.chunks, { type: 'audio/webm' })
+    // 用真实 MIME 类型拼装 blob——Android WebView 多数走 audio/mp4(aac),
+    // 类型不符后端 / 转写接口可能拒绝。兜底回 audio/webm。
+    const blobType = this.mediaRecorder?.mimeType || detectRecorderMime() || 'audio/webm'
+    const audioBlob = this.chunks.length
+      ? new Blob(this.chunks, { type: blobType })
+      : new Blob([], { type: blobType })
     if (!this.transcript.value.trim() && audioBlob.size > 0) {
       try {
         const result = await sttApi.transcribe({ audioBlob })

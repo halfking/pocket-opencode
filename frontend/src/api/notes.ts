@@ -68,6 +68,13 @@ export const notesApi = {
   classify(id: string): Promise<{ domain: NoteDomain; category: string; tags: string[] }> {
     return http(`/api/notes/${id}/classify`, { method: 'POST' })
   },
+  /**
+   * 即时总结（语音草稿收尾后立刻调用）。
+   * 后端走 llmBFF 智能路由；失败时返回空 summary，前端不阻塞流程。
+   */
+  summarize(id: string): Promise<{ summary: string; model?: string }> {
+    return http(`/api/notes/${id}/summarize`, { method: 'POST' })
+  },
   /** Hybrid search across notes. */
   search(query: string): Promise<{ notes: Note[] }> {
     return http(`/api/notes/search?q=${encodeURIComponent(query)}`)

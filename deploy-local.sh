@@ -137,7 +137,7 @@ POCKET_FEISHU_APP_ID=
 POCKET_KXMEMORY_BASE_URL=
 
 # ---- 自有 kaixuan OpenAI 兼容网关（真值由 envs 注入，勿手写真 key）----
-POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1
+POCKET_LLM_GATEWAY_URL=https://llmgo.kxpms.cn/v1
 POCKET_LLM_GATEWAY_API_KEY=
 EOF
   chmod 600 "${POCKET_ENV_FILE}"
@@ -173,14 +173,14 @@ text = path.read_text() if path.exists() else ""
 lines = [ln for ln in text.splitlines() if not ln.startswith("POCKET_LLM_GATEWAY_URL=") and not ln.startswith("POCKET_LLM_GATEWAY_API_KEY=")]
 while lines and lines[-1] == "":
     lines.pop()
-lines.append("POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1")
+lines.append("POCKET_LLM_GATEWAY_URL=https://llmgo.kxpms.cn/v1")
 if key:
     lines.append(f"POCKET_LLM_GATEWAY_API_KEY={key}")
 else:
     lines.append("POCKET_LLM_GATEWAY_API_KEY=")
 path.write_text("\n".join(lines) + "\n")
 path.chmod(0o600)
-print("  🔑 injected POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1")
+print("  🔑 injected POCKET_LLM_GATEWAY_URL=https://llmgo.kxpms.cn/v1")
 print("  🔑 POCKET_LLM_GATEWAY_API_KEY", "set" if key else "empty (envs miss)")
 PY
 }
