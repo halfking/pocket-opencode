@@ -29,11 +29,19 @@ public class MainActivity extends BridgeActivity {
     private void injectSafeInsets() {
         if (lastSafeTopCssPx < 0 && lastSafeBottomCssPx < 0) return;
         if (getBridge() != null && getBridge().getWebView() != null) {
+            // BUG-A 修复 (2026-09-22): onPageCommitVisible 早期回调触发时
+            // document.documentElement 可能尚未就绪(WebView 126 回归),
+            // 必须用 try/catch 兜底否则抛 "Cannot read properties of
+            // null (reading 'style')" 干扰 Vue mount,导致全局点击事件
+            // 不触发。Capacitor 8 SystemBars 已禁 insetsHandling=disable
+            // (commit 90dfbd6),剩下的 path 就是 MainActivity 这里。
             String script = ""
+                    + "try{"
                     + "document.documentElement.style.setProperty('--android-safe-top','"
                     + lastSafeTopCssPx + "px');"
                     + "document.documentElement.style.setProperty('--android-safe-bottom','"
-                    + lastSafeBottomCssPx + "px')";
+                    + lastSafeBottomCssPx + "px');"
+                    + "}catch(e){console.debug('[MainActivity] injectSafeInsets skipped:',(e&&e.message)||e)}";
             getBridge().getWebView().evaluateJavascript(script, null);
         }
     }
