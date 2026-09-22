@@ -40,6 +40,26 @@ const config: CapacitorConfig = {
       overlaysWebView: true,
       style: 'LIGHT',
     },
+    /**
+     * BUG-A 修复 (2026-09-22)：Capacitor 8 SystemBars 默认 insetsHandling='css'
+     * 会在 WebView 装载早期执行 evaluateJavascript 注入
+     *   document.documentElement.style.setProperty('--safe-area-inset-*', ...)
+     * 但该 script 跑得比 document.documentElement 创建还早，在
+     * Chrome WebView 126 上 (Chromium bug 40699457 引入的回归,直到 140 才
+     * 在 SystemBars 修复) 抛 "Cannot read properties of null (reading 'style')"。
+     *
+     * 表现：TypeError 干扰 Vue mount，导致 WebView 全局点击事件不触发
+     * （[chromium] console.log 显示 "Uncaught TypeError"，但被 Capacitor
+     * 脚本的 try/catch 局部捕获后仍留下 1+ 个 setProperty 抛出的异常，
+     * Vue 渲染管线无法 attach event handlers）。
+     *
+     * 修法：把 insetsHandling 关掉，由我们 MainActivity.injectSafeInsets()
+     * 独家负责向 --android-safe-top 注入（main.ts 启动后定时 flush 一次
+     * 兜底 race window）。Capacitor 不再代为注入。
+     */
+    SystemBars: {
+      insetsHandling: 'disable',
+    },
   },
 };
 
