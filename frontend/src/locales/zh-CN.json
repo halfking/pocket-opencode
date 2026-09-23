@@ -247,6 +247,40 @@
       "maximumInterval": "最大复习间隔（天）",
       "easyBonus": "Easy 加成（1.0-3.0）",
       "hardInterval": "Hard 难度（0.5-2.0）"
+    },
+    "browser": {
+      "title": "卡片浏览器",
+      "resultCount": "{{count}} 条结果",
+      "searchPlaceholder": "搜索 front / back 文本",
+      "allDecks": "全部卡组",
+      "allTags": "全部标签",
+      "tagsSelected": "{{count}} 个标签",
+      "clear": "清除过滤",
+      "pickDeck": "选择卡组",
+      "pickTags": "选择标签",
+      "noTags": "还没有任何标签",
+      "empty": "没有匹配的卡片",
+      "state": {
+        "all": "全部状态",
+        "new": "新卡",
+        "learning": "学习中",
+        "review": "复习中",
+        "relearning": "重学"
+      }
+    },
+    "stats": {
+      "title": "复习统计",
+      "total": "总卡片",
+      "new": "新卡",
+      "young": "学习中",
+      "mature": "已毕业",
+      "distribution": "状态分布",
+      "reviewsPerDay": "{{days}} 天复习曲线",
+      "lapsesPerDay": "{{days}} 天遗忘曲线",
+      "retention": "记忆保持率",
+      "retentionHint": "基于最近 {{again}}+{{hard}}+{{good}}+{{easy}} 次评分的简化估算",
+      "noReviewsYet": "最近没有复习记录",
+      "noLapses": "近期没有 Again 评分"
     }
   },
   "study": {
@@ -262,7 +296,9 @@
       "all": "全部",
       "empty": "还没有牌组",
       "create": "新建牌组",
-      "dueShort": "{{count}} 待复习"
+      "dueShort": "{{count}} 待复习",
+      "stats": "查看统计",
+      "browser": "卡片浏览器"
     },
     "notes": {
       "title": "我的笔记",

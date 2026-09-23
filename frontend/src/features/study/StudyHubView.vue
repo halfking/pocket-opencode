@@ -40,9 +40,17 @@
           <span class="material-symbols-outlined" aria-hidden="true">style</span>
           {{ t('study.decks.title') }}
         </h2>
-        <button class="link-btn" type="button" @click="router.push('/flashcards')">
-          {{ t('study.decks.all') }}
-        </button>
+        <div class="head-actions">
+          <button class="link-btn" type="button" :aria-label="t('study.decks.stats')" @click="router.push('/flashcards/stats')">
+            <span class="material-symbols-outlined" aria-hidden="true">monitoring</span>
+          </button>
+          <button class="link-btn" type="button" :aria-label="t('study.decks.browser')" @click="router.push('/flashcards/browser')">
+            <span class="material-symbols-outlined" aria-hidden="true">manage_search</span>
+          </button>
+          <button class="link-btn" type="button" @click="router.push('/flashcards')">
+            {{ t('study.decks.all') }}
+          </button>
+        </div>
       </header>
       <div v-if="store.loading" class="state">
         <Skeleton :count="2" />
@@ -265,6 +273,25 @@ function goCreateDeck() {
   cursor: pointer;
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-md);
+}
+
+.head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.head-actions .link-btn {
+  padding: 4px;
+  min-width: 28px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.head-actions .link-btn .material-symbols-outlined {
+  font-size: 18px;
 }
 
 .link-btn:active {

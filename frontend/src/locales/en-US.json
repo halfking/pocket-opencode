@@ -207,6 +207,40 @@
       "maximumInterval": "Maximum interval (days)",
       "easyBonus": "Easy bonus (1.0-3.0)",
       "hardInterval": "Hard interval (0.5-2.0)"
+    },
+    "browser": {
+      "title": "Card browser",
+      "resultCount": "{{count}} results",
+      "searchPlaceholder": "Search front / back text",
+      "allDecks": "All decks",
+      "allTags": "All tags",
+      "tagsSelected": "{{count}} tags",
+      "clear": "Clear filters",
+      "pickDeck": "Pick deck",
+      "pickTags": "Pick tags",
+      "noTags": "No tags yet",
+      "empty": "No matching cards",
+      "state": {
+        "all": "All states",
+        "new": "New",
+        "learning": "Learning",
+        "review": "Review",
+        "relearning": "Relearning"
+      }
+    },
+    "stats": {
+      "title": "Review stats",
+      "total": "Total",
+      "new": "New",
+      "young": "Young",
+      "mature": "Mature",
+      "distribution": "Distribution",
+      "reviewsPerDay": "Reviews / {{days}} days",
+      "lapsesPerDay": "Lapses / {{days}} days",
+      "retention": "Estimated retention",
+      "retentionHint": "Simplified estimate from {{again}}+{{hard}}+{{good}}+{{easy}} recent ratings",
+      "noReviewsYet": "No reviews in window",
+      "noLapses": "No Again ratings in window"
     }
   },
   "study": {
@@ -222,7 +256,9 @@
       "all": "All",
       "empty": "No decks yet",
       "create": "New deck",
-      "dueShort": "{{count}} due"
+      "dueShort": "{{count}} due",
+      "stats": "View stats",
+      "browser": "Card browser"
     },
     "notes": {
       "title": "My notes",

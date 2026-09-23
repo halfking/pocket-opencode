@@ -38,6 +38,8 @@ interface CachedState {
   notes: FlashcardNote[]
   cards: FlashcardCard[]
   deckConfigs: FlashcardDeckConfig[]
+  /** Phase 5：本地复习日志（仅本地累计；后端契约暂未返回 reviewLog 列表）。 */
+  reviewLogs: FlashcardReviewLog[]
   lastSyncedAt: number
 }
 
@@ -95,6 +97,7 @@ function readCache(): CachedState {
       notes: Array.isArray(parsed.notes) ? parsed.notes : [],
       cards: Array.isArray(parsed.cards) ? parsed.cards : [],
       deckConfigs: Array.isArray(parsed.deckConfigs) ? parsed.deckConfigs : [],
+      reviewLogs: Array.isArray(parsed.reviewLogs) ? parsed.reviewLogs : [],
       lastSyncedAt: typeof parsed.lastSyncedAt === 'number' ? parsed.lastSyncedAt : 0,
     }
   } catch {
@@ -103,7 +106,7 @@ function readCache(): CachedState {
 }
 
 function emptyCache(): CachedState {
-  return { notes: [], cards: [], deckConfigs: [], lastSyncedAt: 0 }
+  return { notes: [], cards: [], deckConfigs: [], reviewLogs: [], lastSyncedAt: 0 }
 }
 
 function writeCache(state: CachedState) {
@@ -161,6 +164,8 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
   const cards = ref<FlashcardCard[]>([])
   const deckConfigs = ref<FlashcardDeckConfig[]>([])
   const outbox = ref<OutboxItem[]>([])
+  /** Phase 5：本地复习日志（仅本地累计，stats 视图消费）。 */
+  const reviewLogs = ref<FlashcardReviewLog[]>([])
   const lastSyncedAt = ref(0)
   const loading = ref(false)
   const flushing = ref(false)
@@ -266,6 +271,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
       notes: notes.value,
       cards: cards.value,
       deckConfigs: deckConfigs.value,
+      reviewLogs: reviewLogs.value,
       lastSyncedAt: lastSyncedAt.value,
     })
   }
@@ -312,12 +318,37 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
     const idx = cards.value.findIndex((c) => c.id === cardId)
     if (idx < 0) return null
     const prev = cards.value[idx]
-    const updated = useFsrs().applyReview(prev, rating, nowSec())
+    const now = nowSec()
+    const updated = useFsrs().applyReview(prev, rating, now)
     cards.value = [
       ...cards.value.slice(0, idx),
-      { ...updated, updatedAt: nowSec() },
+      { ...updated, updatedAt: now },
       ...cards.value.slice(idx + 1),
     ]
+    // Phase 5：写一条本地 review log（Stats 视图消费）。
+    // - prevInterval/nextInterval 与 store 字段同名，但卡 .due 在学习中用秒、
+    //   复习中用「距 epoch 的天数」——为统一，这里都按天数记录。
+    const prevIntervalDays = prev.intervalDays ?? 0
+    const nextIntervalDays = updated.intervalDays ?? 0
+    reviewLogs.value = [
+      ...reviewLogs.value,
+      {
+        id: `${cardId}-${now}`,
+        cardId,
+        userId: prev.userId,
+        reviewedAt: now,
+        rating,
+        prevState: prev.state,
+        nextState: updated.state,
+        prevInterval: prevIntervalDays,
+        nextInterval: nextIntervalDays,
+        elapsedDays: prevIntervalDays,
+      },
+    ]
+    // 防止无限增长，保留最近 1000 条
+    if (reviewLogs.value.length > 1000) {
+      reviewLogs.value = reviewLogs.value.slice(-1000)
+    }
     persistCache()
     return cards.value[idx]
   }
@@ -459,6 +490,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
     cards,
     deckConfigs,
     outbox,
+    reviewLogs,
     lastSyncedAt,
     loading,
     flushing,

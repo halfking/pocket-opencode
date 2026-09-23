@@ -510,6 +510,20 @@ const router = createRouter({
       component: () => import('../features/flashcards/DeckOptionsView.vue'),
       meta: { requiresAuth: true, title: '卡组设置', bottomNav: false, canGoBack: true, hideAppHeader: true }
     },
+    {
+      // Phase 5：卡片浏览器（Anki `/` 对齐）
+      path: '/flashcards/browser',
+      name: 'flashcard-browser',
+      component: () => import('../features/flashcards/CardBrowserView.vue'),
+      meta: { requiresAuth: true, title: '卡片浏览器', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
+    {
+      // Phase 5：复习统计
+      path: '/flashcards/stats',
+      name: 'flashcard-stats',
+      component: () => import('../features/flashcards/StatsView.vue'),
+      meta: { requiresAuth: true, title: '复习统计', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
     // P3 — 成本与配额只读面板
     {
       path: '/cost',
