@@ -344,6 +344,14 @@ const router = createRouter({
       meta: { title: '后端服务器', canGoBack: true, bottomNav: false, menu: false }
     },
     {
+      // 2026-09-23 TabBar 4+1 重组 (Phase 1)：「更多」tab 聚合页。
+      // 9 宫格主功能 + 设置与运维分组（替代原 SettingsMenuDrawer 入口）。
+      path: '/more',
+      name: 'more',
+      component: () => import('../features/more/MoreHubView.vue'),
+      meta: { requiresAuth: true, title: '更多', bottomNav: true, scrollMode: 'self' }
+    },
+    {
       path: '/instances',
       name: 'instances',
       component: InstanceListView,

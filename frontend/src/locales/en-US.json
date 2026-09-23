@@ -56,7 +56,9 @@
     "instances": "Instances",
     "costQuota": "Cost & Quota",
     "settings": "Settings",
-    "localAgent": "Local Agent"
+    "localAgent": "Local Agent",
+    "home": "Home",
+    "study": "Study"
   },
   "routes": {
     "settings": "Settings",
@@ -67,7 +69,8 @@
     "gatewayNodes": "Gateway Nodes",
     "instances": "Instances",
     "tasks": "Tasks",
-    "sessions": "Sessions"
+    "sessions": "Sessions",
+    "notifications": "Notifications"
   },
   "settings": {
     "aiGateway": "AI Gateway",

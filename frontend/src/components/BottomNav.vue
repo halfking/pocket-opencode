@@ -1,13 +1,17 @@
 <!--
   BottomNav — 全局底部导航（AppLayout 渲染）。
-  P2 设计轮专业化重做（2026-08-28）：
-  - 图标体系从 emoji 切换到 Material Symbols 自托管子集（与全 App 图标
-    语言统一；emoji 各机型字形不一致是"粗制滥造"观感的主因之一）；
-  - 激活态采用 Material 3 NavigationBar 惯例：品牌色图标 + pill 指示背景
-    （56×32 圆角），标签加重；非激活弱化；
-  - 2026-09-05 入口收敛：移除「更多」Tab 与更多面板，次要功能入口统一
-    收敛到顶栏左 ≡ 菜单抽屉（SettingsMenuDrawer「更多功能」组），
-    TabBar 只保留 5 个一级目的地。
+
+  2026-09-23 TabBar 4+1 重组（设计文档 docs/design/2026-09-23-hybrid-tabbar-and-anki-integration.md）：
+  - 原 6 tab 重组为 4 个一级目的地（iOS HIG / Material 3 共同推荐的黄金数字）：
+    首页 (/ai) · 学习 (/study) · 会议 (/meetings) · 更多 (/more)。
+  - AI Chat、笔记、邮件、RSS、Vault、定时任务、智能体市场、技能市场、本地智能体
+    等次要功能全部下沉到 MoreHubView（/more 的 9 宫格聚合页）。
+  - 学习 tab 合并 Flashcards + 笔记（Phase 2 实施）。
+
+  历史：
+  - P2 设计轮（2026-08-28）：图标换 Material Symbols + M3 pill 激活态。
+  - 2026-09-05 入口收敛：原「更多」Tab 移除，次要功能入 SettingsMenuDrawer。
+  - 2026-09-23：抽屉收编为「MoreHubView」页面（1 跳直访 vs 原 2 跳抽屉）。
 
   Accessibility:
   - <nav aria-label="主导航"> 包裹整条。
@@ -70,16 +74,22 @@ onUnmounted(() => navRO?.disconnect())
 
 interface NavItem { to: string; icon: string; label: string; match?: string }
 
+/**
+ * TabBar 一级目的地（2026-09-23 4+1 重组后）：
+ * - /ai       首页：AI 任务聚合（TasksView）
+ * - /study    学习：Phase 2 引入，合并 Flashcards + 笔记；当前暂路由到 /flashcards 占位
+ * - /meetings 会议：录音 + 转写 + 总结（不变）
+ * - /more     更多：9 宫格聚合（MoreHubView）
+ */
 const items: NavItem[] = [
-  { to: '/ai', icon: 'smart_toy', label: t('nav.ai'), match: '/ai' },
-  { to: '/ai-chat', icon: 'forum', label: t('nav.aiChat'), match: '/ai-chat' },
-  { to: '/notes', icon: 'edit_note', label: t('nav.notes'), match: '/notes' },
+  { to: '/ai', icon: 'home', label: t('nav.home'), match: '/ai' },
+  { to: '/flashcards', icon: 'style', label: t('nav.study'), match: '/flashcards' },
   { to: '/meetings', icon: 'mic', label: t('nav.meetings'), match: '/meetings' },
-  { to: '/rss', icon: 'rss_feed', label: t('nav.rss'), match: '/rss' },
-  { to: '/email', icon: 'mail', label: t('nav.email'), match: '/email' },
+  { to: '/more', icon: 'apps', label: t('nav.more'), match: '/more' },
 ]
 
 function isActive(item: NavItem) {
+  // /more 不与子路由都高亮「更多」——子路由在 own page 自己强调。
   return route.path.startsWith(item.match || item.to)
 }
 </script>

@@ -1,12 +1,12 @@
 <!--
-  SettingsMenuDrawer — 统一的"设置/功能"侧边抽屉（AppLayout 顶栏左 ≡ 触发）。
+  SettingsMenuDrawer — 账户中心 + 设置侧边抽屉（AppLayout 顶栏左 ≡ 触发）。
 
-  设计动机：业界惯例（iOS HIG / Material 3 / Slack / Notion Mobile）将"账户中心 +
-  设置入口 + 次要功能"集中到一个菜单抽屉；这样每个页面顶栏是单层，左 ≡ 打开此抽屉，
-  tab bar 不必再放设置 tab。
-
-  依赖 BottomSheet（placement="left"）的现成动画/手势，列表按"个人中心 /
-  设置 / 更多功能 / 高级"分组；点击即跳路由并关闭抽屉。
+  2026-09-23 TabBar 4+1 重组（Phase 1 落地）：
+  - 原「更多功能」6 项（local-agent / pkm / vault / 3 个市场）已迁移到 MoreHubView。
+  - 原「运维」5 项（cost / gateway / instances / tasks / sessions）也已迁移。
+  - 本抽屉现在仅保留：账户卡片 + 设置组（4 项） + 运维组（轻量回退入口）。
+  - 设计动机：业界惯例（iOS HIG / Material 3 / Slack / Notion Mobile）将"账户 +
+    设置"集中到抽屉；功能型入口走 tab 与 /more 页。
 -->
 <template>
   <BottomSheet
@@ -102,27 +102,12 @@ const groups = computed<MenuGroup[]>(() => [
     ],
   },
   {
-    // 2026-09-05 入口收敛：原 TabBar「更多」面板的次要功能入口统一迁入本组，
-    // tab bar 只保留 5 个一级目的地（见 BottomNav 头注释）。
-    title: t('nav.moreFeatures'),
-    items: [
-      { to: '/local-agent', icon: 'smart_toy', label: t('nav.localAgent') },
-      { to: '/pkm/today', icon: 'sticky_note_2', label: t('nav.pkmNotes') },
-      { to: '/vault', icon: 'lock', label: t('nav.vault') },
-      { to: '/marketplace/skills', icon: 'extension', label: t('nav.skillMarket') },
-      { to: '/marketplace/agents', icon: 'smart_toy', label: t('nav.agentMarket') },
-      { to: '/marketplace/workbuddies', icon: 'handshake', label: t('nav.workbuddy') },
-    ],
-  },
-  {
+    // 2026-09-23 Phase 1 收编：原 11 项功能入口（local-agent / pkm / vault /
+    // 3 个市场 / cost / gateway / instances / tasks / sessions）已迁到
+    // MoreHubView (/more) 的 9 宫格 + 运维分组。
+    // 本抽屉仅保留「设置」一组（账户卡片在上、版本号在下），专注账户中心角色。
     title: t('settingsMenu.groupOps'),
-    items: [
-      { to: '/cost', icon: 'payments', label: t('routes.costQuota') },
-      { to: '/gateway', icon: 'dns', label: t('routes.gatewayNodes') },
-      { to: '/instances', icon: 'memory', label: t('routes.instances') },
-      { to: '/tasks', icon: 'checklist', label: t('routes.tasks') },
-      { to: '/sessions', icon: 'forum', label: t('routes.sessions') },
-    ],
+    items: [],
   },
 ])
 

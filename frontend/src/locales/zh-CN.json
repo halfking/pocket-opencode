@@ -57,7 +57,9 @@
     "instances": "实例",
     "costQuota": "成本与配额",
     "settings": "设置",
-    "localAgent": "本地智能体"
+    "localAgent": "本地智能体",
+    "home": "首页",
+    "study": "学习"
   },
   "routes": {
     "login": "登录",
@@ -107,7 +109,8 @@
     "modelRouting": "模型路由",
     "modelCatalog": "模型目录",
     "routingConfig": "路由配置",
-    "liveRequests": "实时请求"
+    "liveRequests": "实时请求",
+    "notifications": "通知中心"
   },
   "settings": {
     "aiGateway": "AI 网关",
