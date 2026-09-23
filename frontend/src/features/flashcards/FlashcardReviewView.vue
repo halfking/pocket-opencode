@@ -62,10 +62,28 @@
             <div class="face front" v-show="!isFlipped">
               <small>{{ t('flashcards.edit.front') }}</small>
               <p>{{ currentNote?.front ?? '—' }}</p>
+              <div v-if="frontMedia.length > 0" class="review-media">
+                <img
+                  v-for="m in frontMedia"
+                  :key="m.fileName"
+                  :src="mediaCache[m.fileName] || ''"
+                  :alt="m.fileName"
+                  class="review-img"
+                />
+              </div>
             </div>
             <div class="face back" v-show="isFlipped">
               <small>{{ t('flashcards.edit.back') }}</small>
               <p>{{ currentNote?.back ?? '—' }}</p>
+              <div v-if="backMedia.length > 0" class="review-media">
+                <img
+                  v-for="m in backMedia"
+                  :key="m.fileName"
+                  :src="mediaCache[m.fileName] || ''"
+                  :alt="m.fileName"
+                  class="review-img"
+                />
+              </div>
             </div>
           </template>
           <!-- Cloze 模板（Phase 3）：同一段 cloze 文本，挖空在翻面后揭示。
@@ -76,6 +94,15 @@
               <p class="cloze-line">
                 <ClozeRenderer :text="clozeSourceText" :revealed="isFlipped" />
               </p>
+              <div v-if="frontMedia.length > 0" class="review-media">
+                <img
+                  v-for="m in frontMedia"
+                  :key="m.fileName"
+                  :src="mediaCache[m.fileName] || ''"
+                  :alt="m.fileName"
+                  class="review-img"
+                />
+              </div>
               <small v-if="!isFlipped" class="cloze-tip">{{ t('flashcards.review.clozeHint') }}</small>
             </div>
           </template>
@@ -132,7 +159,7 @@
  *   - outer：紧凑（仅 front + Again/Good 两档快评）
  *   - inner：完整四档 + 进度条 + 散开提示
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import FoldAwareLayout from './components/FoldAwareLayout.vue'
@@ -140,6 +167,7 @@ import VivoBatteryWhitelistGuide from './components/VivoBatteryWhitelistGuide.vu
 import ClozeRenderer from './components/ClozeRenderer.vue'
 import { useFlashcardsStore } from '../../stores/flashcards'
 import { parseCloze } from './utils/cloze'
+import { loadMediaDataUrl } from './utils/flashcardMedia'
 import type { FlashcardCard, FlashcardRating } from '../../types/flashcards'
 
 defineOptions({ name: 'FlashcardReviewView' })
@@ -186,6 +214,37 @@ const clozeCountText = computed(() => {
   const cnt = parseCloze(clozeSourceText.value).clozeCount
   return t('flashcards.review.clozeCount', { count: cnt })
 })
+
+/* Phase 6：媒体 data URL 缓存。卡片切换时重新拉取。
+ * 简化策略：每张卡一个 reactive object，按文件名索引。
+ * 命中率低 → 不预拉，按需 await。 */
+const mediaCache = ref<Record<string, string>>({})
+
+async function ensureMediaUrls(role: 'front' | 'back' | 'cloze') {
+  const n = currentNote.value
+  if (!n) return
+  const refs = (n.mediaRefs ?? []).filter((m) => m.role === role)
+  for (const ref of refs) {
+    if (mediaCache.value[ref.fileName]) continue
+    const url = await loadMediaDataUrl(ref.fileName).catch(() => null)
+    if (url) mediaCache.value = { ...mediaCache.value, [ref.fileName]: url }
+  }
+}
+
+const frontMedia = computed(() => {
+  const n = currentNote.value
+  if (!n) return []
+  return (n.mediaRefs ?? []).filter((m) => m.role === 'front')
+})
+const backMedia = computed(() => {
+  const n = currentNote.value
+  if (!n) return []
+  return (n.mediaRefs ?? []).filter((m) => m.role === 'back')
+})
+
+watch(currentNote, (n: any) => {
+  if (n) void ensureMediaUrls('front').then(() => ensureMediaUrls('back'))
+}, { immediate: true })
 
 const progressPct = computed(() => {
   if (total.value === 0) return 0
@@ -278,6 +337,22 @@ const dueCountHint = computed(() => total.value)
 .card-display p { font-size: 18px; color: var(--text-primary); margin: 0; line-height: 1.4; }
 .card-display small { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: var(--space-2); }
 .card-display .back { color: var(--text-primary); }
+
+.review-media {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  justify-content: center;
+}
+
+.review-img {
+  max-width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
 .hint { text-align: center; font-size: 12px; color: var(--brand-primary); margin: 0 0 var(--space-3); }
 
 .ratings { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-2); padding: 0 var(--space-4); }

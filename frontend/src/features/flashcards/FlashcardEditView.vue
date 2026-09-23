@@ -33,10 +33,69 @@
         <label>
           {{ t('flashcards.edit.front') }} *
           <textarea v-model="front" rows="4" required :placeholder="t('flashcards.edit.front')" />
+          <!-- Phase 6：front 图片挂载。 -->
+          <div v-if="frontMedia.length > 0" class="media-strip">
+            <span
+              v-for="m in frontMedia"
+              :key="m.fileName"
+              class="media-thumb"
+              :data-filename="m.fileName"
+            >
+                <img :src="mediaDataUrls[m.fileName] || ''" :alt="m.fileName" />
+                <button type="button" class="thumb-x" :aria-label="`remove ${m.fileName}`" @click="removeMedia(m)">
+                  <span class="material-symbols-outlined">close</span>
+                </button>
+              </span>
+            <button type="button" class="media-add" @click="pickImage('front', 'camera')">
+              <span class="material-symbols-outlined">photo_camera</span>
+              <span>{{ t('flashcards.edit.addImageCamera') }}</span>
+            </button>
+            <button type="button" class="media-add" @click="pickImage('front', 'gallery')">
+              <span class="material-symbols-outlined">photo_library</span>
+              <span>{{ t('flashcards.edit.addImageGallery') }}</span>
+            </button>
+          </div>
+          <button
+            v-else
+            type="button"
+            class="media-launch"
+            @click="showMediaPicker = { role: 'front', open: true }"
+          >
+            <span class="material-symbols-outlined">image</span>
+            <span>{{ t('flashcards.edit.addImage') }}</span>
+          </button>
         </label>
         <label>
           {{ t('flashcards.edit.back') }} *
           <textarea v-model="back" rows="6" required :placeholder="t('flashcards.edit.back')" />
+          <div v-if="backMedia.length > 0" class="media-strip">
+            <span
+              v-for="m in backMedia"
+              :key="m.fileName"
+              class="media-thumb"
+              :data-filename="m.fileName"
+            >
+              <img :src="mediaDataUrls[m.fileName] || ''" :alt="m.fileName" />
+              <button type="button" class="thumb-x" :aria-label="`remove ${m.fileName}`" @click="removeMedia(m)">
+                <span class="material-symbols-outlined">close</span>
+              </button>
+            </span>
+            <button type="button" class="media-add" @click="pickImage('back', 'camera')">
+              <span class="material-symbols-outlined">photo_camera</span>
+            </button>
+            <button type="button" class="media-add" @click="pickImage('back', 'gallery')">
+              <span class="material-symbols-outlined">photo_library</span>
+            </button>
+          </div>
+          <button
+            v-else
+            type="button"
+            class="media-launch"
+            @click="showMediaPicker = { role: 'back', open: true }"
+          >
+            <span class="material-symbols-outlined">image</span>
+            <span>{{ t('flashcards.edit.addImage') }}</span>
+          </button>
         </label>
       </template>
 
@@ -119,6 +178,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useFlashcardsStore } from '../../stores/flashcards'
 import { parseCloze } from './utils/cloze'
+import { pickAndSaveImage, loadMediaDataUrl, deleteMediaFile, type MediaRef } from './utils/flashcardMedia'
 import TagInput from './components/TagInput.vue'
 import ParentDeckSelect from './components/ParentDeckSelect.vue'
 import type { FlashcardTemplate } from '../../types/flashcards'
@@ -141,10 +201,17 @@ const tagsModel = ref<string[]>([])
 const selectedDeckId = ref('')
 /* Phase 4：父牌组（仅在编辑已有 note 时记录，新建时 parent 由选 deck 决定）。 */
 const parentDeckId = ref<string | null>(null)
+/* Phase 6：媒体引用 + data URL 缓存（按 fileName 索引）。 */
+const mediaRefs = ref<MediaRef[]>([])
+const mediaDataUrls = ref<Record<string, string>>({})
+const showMediaPicker = ref<{ role: MediaRef['role']; open: boolean } | null>(null)
 const saving = ref(false)
 const error = ref('')
 
 const deckConfigs = computed(() => store.deckConfigs)
+
+const frontMedia = computed(() => mediaRefs.value.filter((m) => m.role === 'front'))
+const backMedia = computed(() => mediaRefs.value.filter((m) => m.role === 'back'))
 
 const templateOptions = computed(() => [
   { value: 'basic' as const, icon: 'compare_arrows', label: t('flashcards.edit.templateBasic') },
@@ -198,6 +265,34 @@ function hydrate(noteIdVal: string) {
   clozeText.value = note.clozeText ?? note.front
   tagsModel.value = [...(note.tags ?? [])]
   selectedDeckId.value = note.deckId
+  mediaRefs.value = [...(note.mediaRefs ?? [])]
+  void hydrateMediaUrls()
+}
+
+async function hydrateMediaUrls() {
+  for (const m of mediaRefs.value) {
+    if (mediaDataUrls.value[m.fileName]) continue
+    const url = await loadMediaDataUrl(m.fileName).catch(() => null)
+    if (url) mediaDataUrls.value[m.fileName] = url
+  }
+}
+
+async function pickImage(role: MediaRef['role'], source: 'camera' | 'gallery') {
+  error.value = ''
+  try {
+    const ref = await pickAndSaveImage({ role, source })
+    mediaRefs.value = [...mediaRefs.value, ref]
+    const url = await loadMediaDataUrl(ref.fileName).catch(() => null)
+    if (url) mediaDataUrls.value = { ...mediaDataUrls.value, [ref.fileName]: url }
+  } catch (e: any) {
+    error.value = e?.message ?? t('flashcards.edit.imagePickFailed')
+  }
+}
+
+async function removeMedia(ref: MediaRef) {
+  mediaRefs.value = mediaRefs.value.filter((m) => m.fileName !== ref.fileName)
+  delete mediaDataUrls.value[ref.fileName]
+  void deleteMediaFile(ref.fileName).catch(() => {})
 }
 
 async function save() {
@@ -215,6 +310,7 @@ async function save() {
       tags,
       template: template.value,
       clozeText: isCloze ? effectiveText : undefined,
+      mediaRefs: [...mediaRefs.value],
     }
     if (isEdit.value) {
       store.enqueuePatchNote(noteId.value, input)
@@ -369,4 +465,82 @@ textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, m
 .actions .danger { color: var(--danger); border-color: var(--danger); }
 .actions button:disabled { opacity: 0.5; cursor: not-allowed; }
 .error { margin: 0; padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); font-size: 13px; }
+
+/* Phase 6：媒体挂载 */
+.media-launch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--brand-primary);
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  align-self: flex-start;
+  min-height: 32px;
+}
+
+.media-launch .material-symbols-outlined { font-size: 16px; }
+
+.media-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.media-thumb {
+  position: relative;
+  display: inline-block;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+}
+
+.media-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.thumb-x {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.thumb-x .material-symbols-outlined { font-size: 14px; }
+
+.media-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.media-add .material-symbols-outlined { font-size: 20px; }
+.media-add:hover { color: var(--brand-primary); border-color: var(--brand-primary); }
 </style>

@@ -175,7 +175,11 @@
       "clozeCount": "{{count}} occlusions",
       "parentDeck": "Parent deck",
       "parentDeckNone": "None (top level)",
-      "parentDeckSelf": "(self)"
+      "parentDeckSelf": "(self)",
+      "addImage": "Add image",
+      "addImageCamera": "Camera",
+      "addImageGallery": "Gallery",
+      "imagePickFailed": "Failed to pick image"
     },
     "permission": {
       "vivoTitle": "Allow OpenPocket to remind you daily",
@@ -241,6 +245,22 @@
       "retentionHint": "Simplified estimate from {{again}}+{{hard}}+{{good}}+{{easy}} recent ratings",
       "noReviewsYet": "No reviews in window",
       "noLapses": "No Again ratings in window"
+    },
+    "io": {
+      "title": "Import / Export",
+      "exportTitle": "Export",
+      "exportDesc": "Bundle all notes + cards + decks into a JSON file you can share",
+      "exportBtn": "Export JSON",
+      "exportOk": "Exported {{count}} cards",
+      "exportFailed": "Export failed",
+      "importTitle": "Import",
+      "importDesc": "Pick a previously exported JSON file. Merge by id.",
+      "importBtn": "Pick file",
+      "importOk": "Merged {{notes}} notes / {{cards}} cards / {{decks}} decks",
+      "importFailed": "Import failed",
+      "notes": "Notes",
+      "cards": "Cards",
+      "decks": "Decks"
     }
   },
   "study": {

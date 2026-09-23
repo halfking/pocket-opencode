@@ -524,6 +524,13 @@ const router = createRouter({
       component: () => import('../features/flashcards/StatsView.vue'),
       meta: { requiresAuth: true, title: '复习统计', bottomNav: false, canGoBack: true, hideAppHeader: true }
     },
+    {
+      // Phase 6：JSON 导入 / 导出
+      path: '/flashcards/io',
+      name: 'flashcard-io',
+      component: () => import('../features/flashcards/FlashcardImportExportView.vue'),
+      meta: { requiresAuth: true, title: '导入导出', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
     // P3 — 成本与配额只读面板
     {
       path: '/cost',

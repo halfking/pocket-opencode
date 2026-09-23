@@ -485,6 +485,24 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
     persistCache()
   }
 
+  /* Phase 6：导入用批量 setter（JSON 导入替换式覆盖）。 */
+  function replaceAllNotes(next: FlashcardNote[]) {
+    notes.value = next
+    persistCache()
+  }
+  function replaceAllCards(next: FlashcardCard[]) {
+    cards.value = next
+    persistCache()
+  }
+  function replaceAllDeckConfigs(next: FlashcardDeckConfig[]) {
+    deckConfigs.value = next
+    persistCache()
+  }
+  function replaceAllReviewLogs(next: FlashcardReviewLog[]) {
+    reviewLogs.value = next.length > 1000 ? next.slice(-1000) : next
+    persistCache()
+  }
+
   return {
     notes,
     cards,
@@ -514,6 +532,10 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
     applyReviewLocally,
     fetchDueCount,
     saveDeckConfig,
+    replaceAllNotes,
+    replaceAllCards,
+    replaceAllDeckConfigs,
+    replaceAllReviewLogs,
   }
 })
 

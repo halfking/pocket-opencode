@@ -31,6 +31,12 @@ export interface FlashcardNote {
    *  旧 cloze note 的 cloze 文本存在 front 中（前后端协议 §2）；本字段为
    *  客户端冗余，便于在 editor / review UI 里不必从 front 重新解析。 */
   clozeText?: string
+  /** Phase 6：挂载的图片 / 音频引用（文件名 + role）。 */
+  mediaRefs?: Array<{
+    role: 'front' | 'back' | 'cloze'
+    fileName: string
+    mime: string
+  }>
   tags: string[]
   usn: number
   createdAt: number
@@ -121,6 +127,12 @@ export interface FlashcardNoteInput {
   template?: FlashcardTemplate
   /** Cloze 专用：与 front 同义（前端冗余）。 */
   clozeText?: string
+  /** Phase 6：媒体引用（图片 / 音频）。 */
+  mediaRefs?: Array<{
+    role: 'front' | 'back' | 'cloze'
+    fileName: string
+    mime: string
+  }>
 }
 
 /** 服务端增量信封（契约 §2 GET /api/flashcards）。 */

@@ -109,6 +109,7 @@ const opsFeatures = computed<HubItem[]>(() => [
   { to: '/cost', icon: 'payments', label: t('routes.costQuota') },
   { to: '/gateway', icon: 'dns', label: t('routes.gatewayNodes') },
   { to: '/servers', icon: 'dns', label: t('routes.selectServer') },
+  { to: '/flashcards/io', icon: 'import_export', label: t('flashcards.io.title') },
 ])
 
 function go(to: string) {

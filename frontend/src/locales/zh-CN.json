@@ -215,7 +215,11 @@
       "clozeCount": "{{count}} 处挖空",
       "parentDeck": "父牌组",
       "parentDeckNone": "无（顶级）",
-      "parentDeckSelf": "（自身）"
+      "parentDeckSelf": "（自身）",
+      "addImage": "添加图片",
+      "addImageCamera": "拍照",
+      "addImageGallery": "相册",
+      "imagePickFailed": "图片获取失败"
     },
     "permission": {
       "vivoTitle": "允许 OpenPocket 每日提醒你",
@@ -281,6 +285,22 @@
       "retentionHint": "基于最近 {{again}}+{{hard}}+{{good}}+{{easy}} 次评分的简化估算",
       "noReviewsYet": "最近没有复习记录",
       "noLapses": "近期没有 Again 评分"
+    },
+    "io": {
+      "title": "导入导出",
+      "exportTitle": "导出",
+      "exportDesc": "把所有笔记 + cards + decks 打包成 JSON 文件，可分享到其他设备",
+      "exportBtn": "导出 JSON",
+      "exportOk": "已导出 {{count}} 张卡片",
+      "exportFailed": "导出失败",
+      "importTitle": "导入",
+      "importDesc": "选择之前导出的 JSON 文件，按 id 自动合并",
+      "importBtn": "选择文件",
+      "importOk": "成功合并 {{notes}} 张 notes / {{cards}} 张 cards / {{decks}} 个 decks",
+      "importFailed": "导入失败",
+      "notes": "笔记",
+      "cards": "卡片",
+      "decks": "卡组"
     }
   },
   "study": {
