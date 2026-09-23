@@ -262,6 +262,14 @@ const router = createRouter({
       component: PkmNoteView,
       meta: { requiresAuth: true, requiresLobster: true, title: '笔记', bottomNav: false, canGoBack: true }
     },
+    // 2026-09-23 Phase 2：「学习」tab 聚合页 —— 合并 Flashcards + 笔记入口。
+    // 详情仍走独立路由（/flashcards、/notes），深链与历史收藏不受影响。
+    {
+      path: '/study',
+      name: 'study',
+      component: () => import('../features/study/StudyHubView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '学习', bottomNav: true, scrollMode: 'self' }
+    },
     // S2.2 会议记录：录音 → 转写 → AI 纪要 → Note/Task 沉淀
     {
       path: '/meetings',

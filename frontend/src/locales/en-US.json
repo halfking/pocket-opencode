@@ -177,5 +177,27 @@
       "loadFailed": "Could not load flashcards",
       "syncConflict": "Sync conflict — please refresh"
     }
+  },
+  "study": {
+    "hero": {
+      "today": "Today",
+      "cardsDue": "cards due",
+      "start": "Start review",
+      "review": "Start today review",
+      "allDone": "All done for today"
+    },
+    "decks": {
+      "title": "My decks",
+      "all": "All",
+      "empty": "No decks yet",
+      "create": "New deck",
+      "dueShort": "{{count}} due"
+    },
+    "notes": {
+      "title": "My notes",
+      "all": "All",
+      "voice": "Voice notes",
+      "hint": "Tap mic to record"
+    }
   }
 }

@@ -217,5 +217,27 @@
       "loadFailed": "加载闪卡失败",
       "syncConflict": "同步冲突，请刷新重试"
     }
+  },
+  "study": {
+    "hero": {
+      "today": "今日待复习",
+      "cardsDue": "张卡片",
+      "start": "开始复习",
+      "review": "开始复习今日卡片",
+      "allDone": "今日已完成"
+    },
+    "decks": {
+      "title": "我的牌组",
+      "all": "全部",
+      "empty": "还没有牌组",
+      "create": "新建牌组",
+      "dueShort": "{{count}} 待复习"
+    },
+    "notes": {
+      "title": "我的笔记",
+      "all": "全部",
+      "voice": "语音笔记",
+      "hint": "麦克风一键录入"
+    }
   }
 }

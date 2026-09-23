@@ -77,13 +77,13 @@ interface NavItem { to: string; icon: string; label: string; match?: string }
 /**
  * TabBar 一级目的地（2026-09-23 4+1 重组后）：
  * - /ai       首页：AI 任务聚合（TasksView）
- * - /study    学习：Phase 2 引入，合并 Flashcards + 笔记；当前暂路由到 /flashcards 占位
+ * - /study    学习：Phase 2 落地 — 合并 Flashcards + 笔记（StudyHubView）
  * - /meetings 会议：录音 + 转写 + 总结（不变）
  * - /more     更多：9 宫格聚合（MoreHubView）
  */
 const items: NavItem[] = [
   { to: '/ai', icon: 'home', label: t('nav.home'), match: '/ai' },
-  { to: '/flashcards', icon: 'style', label: t('nav.study'), match: '/flashcards' },
+  { to: '/study', icon: 'style', label: t('nav.study'), match: '/study' },
   { to: '/meetings', icon: 'mic', label: t('nav.meetings'), match: '/meetings' },
   { to: '/more', icon: 'apps', label: t('nav.more'), match: '/more' },
 ]
