@@ -61,7 +61,10 @@ export function parseCloze(input: string): ParsedCloze {
 }
 
 export function isClozeText(input: string): boolean {
-  return CLOZE_RE.test(input)
+  // 复用 parseCloze：空 cloze 不算（与 parseCloze 语义一致）。
+  // 不直接用 CLOZE_RE.test()，因为 global regex 的 test() 有 lastIndex 状态，
+  // 第二次调用会从上次位置开始而漏掉。
+  return parseCloze(input).clozeCount > 0
 }
 
 /**
