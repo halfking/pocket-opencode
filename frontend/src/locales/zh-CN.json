@@ -194,7 +194,9 @@
       "easy": "简单",
       "remaining": "剩余 {count} 张",
       "complete": "本次复习完成",
-      "fuzzNote": "为避免集中到期，卡片到期时间会刻意在 ±5% 内散开"
+      "fuzzNote": "为避免集中到期，卡片到期时间会刻意在 ±5% 内散开",
+      "clozeCount": "{{count}} 处挖空",
+      "clozeHint": "点击卡片显示答案"
     },
     "edit": {
       "title": "卡片",
@@ -203,7 +205,14 @@
       "tags": "标签",
       "save": "保存",
       "delete": "删除",
-      "confirmDelete": "确定删除该卡片？"
+      "confirmDelete": "确定删除该卡片？",
+      "template": "卡模板",
+      "templateBasic": "正面 · 反面",
+      "templateCloze": "挖空",
+      "clozeText": "挖空文本",
+      "clozePlaceholder": "例如：水的化学式是 {{c1::H₂O::氢二氧}}，沸点是 {{c2::100℃}}。",
+      "clozeHint": "用 {{c1::答案}} 或 {{c1::答案::提示}} 标记挖空。同一卡片可有多个挖空，复习时一并复习。",
+      "clozeCount": "{{count}} 处挖空"
     },
     "permission": {
       "vivoTitle": "允许 OpenPocket 每日提醒你",

@@ -7,12 +7,30 @@
 export type FlashcardRating = 1 | 2 | 3 | 4 // 1=Again 2=Hard 3=Good 4=Easy
 export type FlashcardState = 0 | 1 | 2 | 3 // 0=new 1=learning 2=review 3=relearning
 
+/**
+ * Card template (Phase 3 of Anki feature injection).
+ *
+ * - `basic`:           front / back 正面反面
+ * - `basic_reversed`:  正反互换（Phase 3.5 再实现 cardTemplates 展开）
+ * - `cloze`:           Anki {{c1::answer}} 挖空语法；front/back 仍写入
+ *                      `front` 字段（同样的 cloze 文本），模板由 UI 决定渲染。
+ *
+ * 旧数据没有 template 字段，按 basic 处理（前端 store hydrate 时回填）。
+ */
+export type FlashcardTemplate = 'basic' | 'basic_reversed' | 'cloze'
+
 export interface FlashcardNote {
   id: string
   userId: string
   deckId: string
   front: string
   back: string
+  /** Phase 3：卡模板。缺省视为 'basic'（向后兼容旧 note）。 */
+  template?: FlashcardTemplate
+  /** Cloze 专用字段：与 front 同义，便于 store 层强制从 cloze 模板渲染。
+   *  旧 cloze note 的 cloze 文本存在 front 中（前后端协议 §2）；本字段为
+   *  客户端冗余，便于在 editor / review UI 里不必从 front 重新解析。 */
+  clozeText?: string
   tags: string[]
   usn: number
   createdAt: number
@@ -91,6 +109,10 @@ export interface FlashcardNoteInput {
   front: string
   back: string
   tags?: string[]
+  /** Phase 3：模板类型。缺省 'basic'。 */
+  template?: FlashcardTemplate
+  /** Cloze 专用：与 front 同义（前端冗余）。 */
+  clozeText?: string
 }
 
 /** 服务端增量信封（契约 §2 GET /api/flashcards）。 */

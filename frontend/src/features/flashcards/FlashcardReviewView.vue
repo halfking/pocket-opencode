@@ -10,11 +10,21 @@
             {{ Math.min(index + 1, total) }} / {{ total }}
           </span>
         </header>
-        <article class="card-display" :class="{ flipped: isFlipped }" @click="flip">
-          <div class="face front">
-            <p>{{ currentNote?.front ?? '—' }}</p>
-            <small>{{ t('flashcards.edit.front') }}</small>
-          </div>
+        <article class="card-display" :class="{ flipped: isFlipped, cloze: isClozeCard }" @click="flip">
+          <template v-if="!isClozeCard">
+            <div class="face front">
+              <p>{{ currentNote?.front ?? '—' }}</p>
+              <small>{{ t('flashcards.edit.front') }}</small>
+            </div>
+          </template>
+          <template v-else>
+            <div class="face cloze-face">
+              <p class="cloze-line">
+                <ClozeRenderer :text="clozeSourceText" :revealed="isFlipped" />
+              </p>
+              <small>{{ t('flashcards.edit.templateCloze') }}</small>
+            </div>
+          </template>
         </article>
         <div class="cta">
           <button v-if="!isFlipped" class="primary" type="button" @click="flip">
@@ -46,15 +56,29 @@
 
         <VivoBatteryWhitelistGuide />
 
-        <article class="card-display" :class="{ flipped: isFlipped }" @click="flip">
-          <div class="face front" v-show="!isFlipped">
-            <small>{{ t('flashcards.edit.front') }}</small>
-            <p>{{ currentNote?.front ?? '—' }}</p>
-          </div>
-          <div class="face back" v-show="isFlipped">
-            <small>{{ t('flashcards.edit.back') }}</small>
-            <p>{{ currentNote?.back ?? '—' }}</p>
-          </div>
+        <article class="card-display" :class="{ flipped: isFlipped, cloze: isClozeCard }" @click="flip">
+          <!-- Basic 模板：front / back。 -->
+          <template v-if="!isClozeCard">
+            <div class="face front" v-show="!isFlipped">
+              <small>{{ t('flashcards.edit.front') }}</small>
+              <p>{{ currentNote?.front ?? '—' }}</p>
+            </div>
+            <div class="face back" v-show="isFlipped">
+              <small>{{ t('flashcards.edit.back') }}</small>
+              <p>{{ currentNote?.back ?? '—' }}</p>
+            </div>
+          </template>
+          <!-- Cloze 模板（Phase 3）：同一段 cloze 文本，挖空在翻面后揭示。
+               front = back = cloze 文本；ClozeRenderer 根据 isFlipped 切换揭示态。 -->
+          <template v-else>
+            <div class="face cloze-face">
+              <small>{{ t('flashcards.edit.templateCloze') }} · {{ clozeCountText }}</small>
+              <p class="cloze-line">
+                <ClozeRenderer :text="clozeSourceText" :revealed="isFlipped" />
+              </p>
+              <small v-if="!isFlipped" class="cloze-tip">{{ t('flashcards.review.clozeHint') }}</small>
+            </div>
+          </template>
         </article>
 
         <p v-if="!isFlipped" class="hint" @click="flip">{{ t('flashcards.deck.review') }}</p>
@@ -113,7 +137,9 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import FoldAwareLayout from './components/FoldAwareLayout.vue'
 import VivoBatteryWhitelistGuide from './components/VivoBatteryWhitelistGuide.vue'
+import ClozeRenderer from './components/ClozeRenderer.vue'
 import { useFlashcardsStore } from '../../stores/flashcards'
+import { parseCloze } from './utils/cloze'
 import type { FlashcardCard, FlashcardRating } from '../../types/flashcards'
 
 defineOptions({ name: 'FlashcardReviewView' })
@@ -141,6 +167,24 @@ const currentNote = computed(() => {
   const card = currentCard.value
   if (!card) return null
   return store.notes.find((n) => n.id === card.noteId) ?? null
+})
+
+/* Cloze 渲染分支（Phase 3）：
+ * - isClozeCard  → 模板为 cloze 时走 ClozeRenderer
+ * - clozeSourceText → 优先 note.clozeText，回退 note.front（Cloze 模板下二者相等）
+ * - clozeCountText → 给复习者「N 处挖空」的视觉提示
+ *
+ * 简化策略：1 note = 1 card，挖空全部展示，1 张复习卡覆盖全部挖空。
+ * Anki 的「1 note → 多 card」展开（Phase 3.5）属于 store 层增量，本期不做。 */
+const isClozeCard = computed(() => currentNote.value?.template === 'cloze')
+const clozeSourceText = computed(() => {
+  const n = currentNote.value
+  if (!n) return ''
+  return n.clozeText && n.clozeText.length > 0 ? n.clozeText : n.front
+})
+const clozeCountText = computed(() => {
+  const cnt = parseCloze(clozeSourceText.value).clozeCount
+  return t('flashcards.review.clozeCount', { count: cnt })
 })
 
 const progressPct = computed(() => {

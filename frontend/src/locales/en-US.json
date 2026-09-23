@@ -154,7 +154,9 @@
       "easy": "Easy",
       "remaining": "{count} remaining",
       "complete": "Session complete",
-      "fuzzNote": "Cards are intentionally scattered within ±5% to prevent clustering"
+      "fuzzNote": "Cards are intentionally scattered within ±5% to prevent clustering",
+      "clozeCount": "{{count}} cloze",
+      "clozeHint": "Tap card to reveal"
     },
     "edit": {
       "title": "Card",
@@ -163,7 +165,14 @@
       "tags": "Tags",
       "save": "Save",
       "delete": "Delete",
-      "confirmDelete": "Delete this card?"
+      "confirmDelete": "Delete this card?",
+      "template": "Card template",
+      "templateBasic": "Front · Back",
+      "templateCloze": "Cloze",
+      "clozeText": "Cloze text",
+      "clozePlaceholder": "e.g. The chemical formula of water is {{c1::H₂O::hydrogen dioxide}}, boiling at {{c2::100℃}}.",
+      "clozeHint": "Use {{c1::answer}} or {{c1::answer::hint}} to mark occlusions. Multiple cloze in one card review together.",
+      "clozeCount": "{{count}} occlusions"
     },
     "permission": {
       "vivoTitle": "Allow OpenPocket to remind you daily",
