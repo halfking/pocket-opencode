@@ -437,6 +437,23 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
     }
   }
 
+  /**
+   * Phase 4：保存 deck config（local-first）。
+   *
+   * 行为：替换式写整个 deckConfig；持久化到 localStorage；不入 outbox
+   * （后端契约暂未提供 PATCH /decks/:id/config，Phase 4.1 增量）。
+   *
+   * 视图层用 `store.deckById(deckId)` 读最新；如保存前后差异需要做 diff，
+   * 在调用方保存 hasChanges 状态。
+   */
+  function saveDeckConfig(next: FlashcardDeckConfig) {
+    const idx = deckConfigs.value.findIndex((d) => d.deckId === next.deckId)
+    if (idx < 0) return
+    const updated = { ...next, updatedAt: nowSec() }
+    deckConfigs.value.splice(idx, 1, updated)
+    persistCache()
+  }
+
   return {
     notes,
     cards,
@@ -464,6 +481,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
     enqueuePatchCard,
     applyReviewLocally,
     fetchDueCount,
+    saveDeckConfig,
   }
 })
 

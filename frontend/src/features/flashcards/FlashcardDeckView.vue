@@ -20,6 +20,9 @@
             <span class="material-symbols-outlined">arrow_back</span>
           </button>
           <h1>{{ deckName }}</h1>
+          <button type="button" class="options-btn" :aria-label="t('flashcards.deckOptions.title')" @click="goOptions">
+            <span class="material-symbols-outlined">settings</span>
+          </button>
           <button type="button" class="add-btn" :aria-label="t('flashcards.deck.addCard')" @click="goCreate">
             <span class="material-symbols-outlined">add</span>
           </button>
@@ -143,6 +146,10 @@ function goCreate() {
   router.push({ path: '/flashcards/new', query: { deckId: deckId.value } })
 }
 
+function goOptions() {
+  router.push(`/flashcards/decks/${encodeURIComponent(deckId.value)}/options`)
+}
+
 function editRow(noteId: string) {
   router.push(`/flashcards/notes/${encodeURIComponent(noteId)}/edit`)
 }
@@ -177,6 +184,14 @@ onMounted(() => {
   cursor: pointer;
 }
 .add-btn { color: var(--brand-primary); }
+.options-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 6px;
+  border-radius: 999px;
+  cursor: pointer;
+}
 
 .summary {
   display: grid;

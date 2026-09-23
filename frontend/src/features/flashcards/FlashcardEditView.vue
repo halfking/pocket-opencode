@@ -62,8 +62,9 @@
 
       <label>
         {{ t('flashcards.edit.tags') }}
-        <input v-model="tagsInput" :placeholder="t('flashcards.edit.tags')" />
+        <TagInput v-model="tagsModel" />
       </label>
+
       <label>
         {{ t('flashcards.deck.title') }}
         <select v-model="selectedDeckId">
@@ -72,6 +73,14 @@
           </option>
         </select>
       </label>
+
+      <!-- Phase 4：父牌组选择（嵌套牌组树，最深 3 层）。 -->
+      <ParentDeckSelect
+        v-if="deckConfigs.length > 1"
+        v-model="parentDeckId"
+        :exclude-id="noteId || undefined"
+        :decks="deckConfigs"
+      />
 
       <p v-if="error" class="error" role="alert">{{ error }}</p>
 
@@ -110,6 +119,8 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useFlashcardsStore } from '../../stores/flashcards'
 import { parseCloze } from './utils/cloze'
+import TagInput from './components/TagInput.vue'
+import ParentDeckSelect from './components/ParentDeckSelect.vue'
 import type { FlashcardTemplate } from '../../types/flashcards'
 
 defineOptions({ name: 'FlashcardEditView' })
@@ -126,8 +137,10 @@ const front = ref('')
 const back = ref('')
 const clozeText = ref('')
 const template = ref<FlashcardTemplate>('basic')
-const tagsInput = ref('')
+const tagsModel = ref<string[]>([])
 const selectedDeckId = ref('')
+/* Phase 4：父牌组（仅在编辑已有 note 时记录，新建时 parent 由选 deck 决定）。 */
+const parentDeckId = ref<string | null>(null)
 const saving = ref(false)
 const error = ref('')
 
@@ -183,7 +196,7 @@ function hydrate(noteIdVal: string) {
   front.value = note.front
   back.value = note.back
   clozeText.value = note.clozeText ?? note.front
-  tagsInput.value = (note.tags ?? []).join(', ')
+  tagsModel.value = [...(note.tags ?? [])]
   selectedDeckId.value = note.deckId
 }
 
@@ -192,12 +205,7 @@ async function save() {
   saving.value = true
   error.value = ''
   try {
-    const tags = tagsInput.value
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-    // Cloze 模式下：front/back/clozeText 三字段冗余写同一段文本，
-    // 这样后端契约不变、Cloze 渲染层不必再读 clozeText 兜底。
+    const tags = tagsModel.value
     const isCloze = template.value === 'cloze'
     const effectiveText = isCloze ? clozeText.value.trim() : front.value.trim()
     const input = {
@@ -210,6 +218,8 @@ async function save() {
     }
     if (isEdit.value) {
       store.enqueuePatchNote(noteId.value, input)
+      // 父牌组变更只影响 deck config（card 的 deckId 不变 → 树形归位靠 store 后续 patchCard）。
+      // 这里先不入 outbox；Phase 4.1 再扩展 deck config 的 outbox 通道。
     } else {
       store.enqueueCreateNote(input)
     }

@@ -503,6 +503,13 @@ const router = createRouter({
       component: FlashcardReviewView,
       meta: { requiresAuth: true, title: '复习', bottomNav: false, canGoBack: true, hideAppHeader: true, scrollMode: 'self' }
     },
+    {
+      // Phase 4：牌组配置（Anki deck options 对齐）
+      path: '/flashcards/decks/:deckId/options',
+      name: 'flashcard-deck-options',
+      component: () => import('../features/flashcards/DeckOptionsView.vue'),
+      meta: { requiresAuth: true, title: '卡组设置', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
     // P3 — 成本与配额只读面板
     {
       path: '/cost',

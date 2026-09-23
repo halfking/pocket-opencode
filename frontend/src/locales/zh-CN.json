@@ -212,7 +212,10 @@
       "clozeText": "挖空文本",
       "clozePlaceholder": "例如：水的化学式是 {{c1::H₂O::氢二氧}}，沸点是 {{c2::100℃}}。",
       "clozeHint": "用 {{c1::答案}} 或 {{c1::答案::提示}} 标记挖空。同一卡片可有多个挖空，复习时一并复习。",
-      "clozeCount": "{{count}} 处挖空"
+      "clozeCount": "{{count}} 处挖空",
+      "parentDeck": "父牌组",
+      "parentDeckNone": "无（顶级）",
+      "parentDeckSelf": "（自身）"
     },
     "permission": {
       "vivoTitle": "允许 OpenPocket 每日提醒你",
@@ -225,6 +228,25 @@
     "error": {
       "loadFailed": "加载闪卡失败",
       "syncConflict": "同步冲突，请刷新重试"
+    },
+    "deckOptions": {
+      "title": "卡组设置",
+      "notFound": "未找到该卡组",
+      "deckName": "名称",
+      "nameRequired": "名称不能为空",
+      "groupDaily": "每日限额",
+      "newPerDay": "每日新卡数",
+      "reviewsPerDay": "每日复习数",
+      "groupLearning": "学习阶梯",
+      "learningSteps": "学习阶梯（分钟，逗号分隔）",
+      "learningStepsHint": "例：1, 10",
+      "graduatingInterval": "毕业间隔（天）",
+      "easyInterval": "简单间隔（天）",
+      "groupFsrs": "FSRS 算法",
+      "desiredRetention": "目标记忆率（0.5-0.99）",
+      "maximumInterval": "最大复习间隔（天）",
+      "easyBonus": "Easy 加成（1.0-3.0）",
+      "hardInterval": "Hard 难度（0.5-2.0）"
     }
   },
   "study": {

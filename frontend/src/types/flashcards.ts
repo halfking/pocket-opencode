@@ -75,6 +75,14 @@ export interface FlashcardDeckConfig {
   easyIntervalDays: number
   fsrsWeights: number[]
   desiredRetention: number
+  /** Phase 4：父牌组（嵌套牌组树）。null/undefined = 顶层 deck。 */
+  parentDeckId?: string | null
+  /** Phase 4：FSRS 调度扩展。最大间隔天数（默认 36500 = 不限制）。 */
+  maximumIntervalDays?: number
+  /** Phase 4：Easy 按钮额外加成（FSRS 5.x 推荐 1.3，Anki 2024 起暴露）。 */
+  easyBonus?: number
+  /** Phase 4：Hard 按钮额外难度（FSRS 5.x 推荐 1.2）。 */
+  hardInterval?: number
   usn: number
   createdAt: number
   updatedAt: number

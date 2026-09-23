@@ -172,7 +172,10 @@
       "clozeText": "Cloze text",
       "clozePlaceholder": "e.g. The chemical formula of water is {{c1::H₂O::hydrogen dioxide}}, boiling at {{c2::100℃}}.",
       "clozeHint": "Use {{c1::answer}} or {{c1::answer::hint}} to mark occlusions. Multiple cloze in one card review together.",
-      "clozeCount": "{{count}} occlusions"
+      "clozeCount": "{{count}} occlusions",
+      "parentDeck": "Parent deck",
+      "parentDeckNone": "None (top level)",
+      "parentDeckSelf": "(self)"
     },
     "permission": {
       "vivoTitle": "Allow OpenPocket to remind you daily",
@@ -185,6 +188,25 @@
     "error": {
       "loadFailed": "Could not load flashcards",
       "syncConflict": "Sync conflict — please refresh"
+    },
+    "deckOptions": {
+      "title": "Deck options",
+      "notFound": "Deck not found",
+      "deckName": "Name",
+      "nameRequired": "Name is required",
+      "groupDaily": "Daily limits",
+      "newPerDay": "New cards per day",
+      "reviewsPerDay": "Reviews per day",
+      "groupLearning": "Learning steps",
+      "learningSteps": "Learning steps (min, comma-separated)",
+      "learningStepsHint": "e.g. 1, 10",
+      "graduatingInterval": "Graduating interval (days)",
+      "easyInterval": "Easy interval (days)",
+      "groupFsrs": "FSRS algorithm",
+      "desiredRetention": "Desired retention (0.5-0.99)",
+      "maximumInterval": "Maximum interval (days)",
+      "easyBonus": "Easy bonus (1.0-3.0)",
+      "hardInterval": "Hard interval (0.5-2.0)"
     }
   },
   "study": {
