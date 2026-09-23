@@ -25,7 +25,7 @@
 
 ## 2. TypeScript 侧抽象：`pocket-native.ts`
 
-业务代码只调 `getPocketNative()`，**不直接 import Capacitor**：
+业务代码统一走 `getPocketNative()`，不直接 import Capacitor —— 这是设计目标：存量仍有 19 处直接 import（Phase 9 已迁移 `flashcardMedia.ts`），新增代码应只调 `getPocketNative()`：
 
 ```ts
 import { getPocketNative } from '@/native/pocket-native'

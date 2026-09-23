@@ -6,7 +6,7 @@
 
 | 文档 | 说明 |
 |---|---|
-| [2026-09-08-feature-inventory.md](2026-09-08-feature-inventory.md) | 全功能特性大盘：前端 25 域 + 后端 47 模块 + 原生 35+ 能力位 |
+| [2026-09-08-feature-inventory.md](2026-09-08-feature-inventory.md) | 全功能特性大盘：前端 30 域 + 后端 48 模块 + 原生 35+ 能力位（文档为 2026-09-08 盘点快照，现计数 30 域 / 48 模块） |
 | [2026-09-08-requirements-design.md](2026-09-08-requirements-design.md) | 反向整理的需求与设计（As-built 现行方案） |
 | [2026-09-08-native-and-cross-platform.md](2026-09-08-native-and-cross-platform.md) | 原生效果分析 + iOS / Android / HarmonyOS 跨平台路线图 |
 

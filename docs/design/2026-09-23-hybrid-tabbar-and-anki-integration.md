@@ -24,7 +24,7 @@
 | **硬件能力** | 录音 / 拍照 / 推送 / 后台任务 全部走 Capacitor Plugin | Plugin 调用层级合理，但 UI 反馈（如录音条跨页存续）已通过 `RecordingPill` 解决 |
 | **Flashcards** | 已存在 `features/flashcards`，FSRS + outbox 离线友好 | 缺 Anki 的卡类型/牌组树/标签/Browser/统计/导入导出 |
 | **iOS** | `frontend/ios/App/` 存在（Xcode 工程 + SPM） | 缺乏 tabbar parity 文档 + 原生 module 落地证明 |
-| **Android** | `MainActivity.kt` 自定义、18 关键权限 | OK |
+| **Android** | `MainActivity.java` 自定义、17 关键权限（源 manifest 口径） | OK |
 
 ### 1.2 当前 TabBar 痛点
 
@@ -161,7 +161,7 @@ ts/src/
 
 | 层级 | 技术 | 典型功能 | 路径 |
 |---|---|---|---|
-| **L1 原生 Activity / UIKit** | Kotlin / Swift / ArkTS | 启动屏、权限申请、系统对话框、Widget、Live Activity | `android/app/src/main/java/...MainActivity.kt`、`ios/App/.../AppDelegate.swift` |
+| **L1 原生 Activity / UIKit** | Kotlin / Swift / ArkTS | 启动屏、权限申请、系统对话框、Widget、Live Activity | `android/app/src/main/java/...MainActivity.java`、`ios/App/.../AppDelegate.swift` |
 | **L2 原生 Module（Capacitor Plugin）** | Kotlin / Swift / ArkTS | 录音、拍照、智能体循环、后台任务、推送、文件系统、加密 | `frontend/android/app/src/main/java/.../plugins/`、`frontend/ios/App/.../Plugins/` |
 | **L3 WebView 容器** | Capacitor Bridge | 加载 dist/、状态栏、安全区域、键盘避让、返回键 | `frontend/capacitor.config.ts` |
 | **L4 H5 业务层** | Vue 3 + Pinia | 列表 / 详情 / 表单 / 设置 / 复习 UI / 统计图 | `frontend/src/features/**` |
@@ -238,7 +238,7 @@ export interface PocketAgentRuntime {
 
 ### 4.1 现状
 
-- **Android**：`frontend/android/` 完整，`MainActivity.kt` 有自定义（safe area 注入 + WebView bind）。
+- **Android**：`frontend/android/` 完整，`MainActivity.java` 有自定义（safe area 注入 + WebView bind）。
 - **iOS**：`frontend/ios/App/` 存在（Xcode 工程 + CapApp-SPM），需要补充：
   - 自定义 `AppDelegate.swift`（safe area 注入 + WebView bind 镜像）。
   - 原生 Plugin 镜像（Recording / Camera / AgentRuntime / Background / Notify）。
@@ -273,7 +273,7 @@ export interface PocketNative {
 
 | 项 | 优先级 | 工期估计 |
 |---|---|---|
-| `AppDelegate.swift` 镜像 `MainActivity.kt` 的 safe area 修复 | P0 | 0.5d |
+| `AppDelegate.swift` 镜像 `MainActivity.java` 的 safe area 修复 | P0 | 0.5d |
 | `Recorder` Plugin Swift 实现（AVAudioRecorder） | P0 | 1d |
 | `Camera` Plugin Swift 实现 | P0 | 1d |
 | `Background` Plugin Swift 实现（BGTaskScheduler） | P1 | 1d |

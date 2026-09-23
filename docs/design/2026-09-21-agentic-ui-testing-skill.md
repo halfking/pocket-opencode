@@ -5,7 +5,7 @@
 > 2. 我们能不能复用这套模式做真机验收
 > 3. 我们用什么形式把它沉淀下来
 >
-> 配套产物：`.minimax/skills/real-device-test/`（已落地）。
+> 配套产物：`.minimax/skills/real-device-test/`（本地运行时产物，`.minimax/` 按 .gitignore 约定不入库，仓库内不可获取）。
 
 ## 1. Maestro MCP 思路拆解
 

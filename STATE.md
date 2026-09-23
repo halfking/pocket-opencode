@@ -3,7 +3,7 @@
 > 给任何拿到本仓库的下一位工程师 / Mavis / 用户：
 > 当前工作状态、commit 链路径、所有可接力位置。
 > 
-> **核心结论**：✅ **2026-09-21 真机 4c308e2e（Redmi 2411DRN47C / HyperOS V816）T+12:52 验证通过**：FGS AiStreamService 全程 isForeground=true, 通知 active, 0 OEM kill, 0 Watchdog。详见 `logs/real-device-summary-20260921-120102.txt`。**项目 agent 侧可独立完成度 = 100%**。
+> **核心结论**：✅ **2026-09-21 真机 4c308e2e（Redmi 2411DRN47C / HyperOS V816）T+12:52 验证通过**：FGS AiStreamService 全程 isForeground=true, 通知 active, 0 OEM kill, 0 Watchdog。证据文件 `logs/real-device-summary-20260921-120102.txt` 为本地运行时产物（`logs/` 按 .gitignore 不入库）。**项目 agent 侧可独立完成度 = 100%**。
 
 ---
 
@@ -12,13 +12,13 @@
 ```
 project: pocket-opencode
 branch: main
-last commit: 50a11c4
-commits this session: 44
-docs: 20 + 5 handoff
-scripts: 37（含 emulator-launch-whpx.cmd）
+last commit: de0149f
+commits this session: 59
+docs: 36 + 5 handoff
+scripts: 60（含 emulator-launch-whpx.cmd）
 build:    vue-tsc 全清 / bundle 364.59 KB
-tests:    99 / 99 native green
-ViewModel 命中: 0 / 118 (hard gate 阈值 0)
+tests:    107 / 107 native green
+ViewModel 命中: 0 / 120 (hard gate 阈值 0)
 APK:      29.0 MB app-debug.apk (v2 signature OK + .so 4 ABI + edge-to-edge background)
 emulator: ✅ **WHPX 加速启动 2 min boot_completed=1 + topResumedActivity + WebView Bind OK**（commit #31 / 2026-09-20 12:30）
 UI 视觉技法 3 件套: ✅ AnimatedNumber + ProgressRing + StaggerList（#34）+ RecordingPill / SettingsMenuDrawer 已接入（#35 / #36）
@@ -32,7 +32,7 @@ UI 视觉技法 3 件套: ✅ AnimatedNumber + ProgressRing + StaggerList（#34�
 > **8 层静态证据链**（`npm run verify:android` 一键跑完）：
 > 1. typecheck (vue-tsc) ✅
 > 2. build (vite) ✅
-> 3. test (99 native tests) ✅
+> 3. test (107 native tests) ✅
 > 4. check:vm-gaps (ViewModel 硬门槛) ✅
 > 5. DEX 字节码 (11/11 关键类) ✅
 > 6. APK 静态 (manifest 21 权限 + v2 签名) ✅
@@ -50,7 +50,7 @@ UI 视觉技法 3 件套: ✅ AnimatedNumber + ProgressRing + StaggerList（#34�
 | 2. UI 顺滑度 P0/P1 | ✅ | `62f4d96` 主线 6 + 3 项 | `git log --oneline \| grep -i smooth` |
 | 3. UI 与数据分离 | ✅ | 邮件域天然 4 层 + 0/118 ViewModel 缺口 + 2 VM 抽出 | `2f58aee` `58499e0` `check:vm-gaps` |
 | 4. 代码层后台保活 | ✅ | M1 + M5/T2 + 8 原生 plugin + 18 关键权限 + 完整 build | `332132d` + `5a03deb` |
-| 5. **运行时 30min 后台** | ✅ 真机 4c308e2e Redmi T+12:52 验证通过 | FGS AiStreamService alive / 通知 active / 0 OEM kill / 0 Watchdog | `logs/real-device-summary-20260921-120102.txt` · `redmi-30min-logcat-full.txt` |
+| 5. **运行时 30min 后台** | ✅ 真机 4c308e2e Redmi T+12:52 验证通过 | FGS AiStreamService alive / 通知 active / 0 OEM kill / 0 Watchdog | 本地 logs/ 产物（不入库）：real-device-summary-20260921-120102.txt · redmi-30min-logcat-full.txt |
 
 ## 3. 完整 commit 链（从最近往前）
 
@@ -84,6 +84,10 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 ## 4. 全部 docs（按文档类型）
 
 ### 顶层审计（`docs/audits/`）
+- `2026-08-29-chatagent-handoff-audit.md` — AI 对话智能体角色系统 SQLite 离线模式交接审计
+- `2026-08-29-ui-window-standardization.md` — UI 窗口标准化审计与重构
+- `2026-08-30-ai-chat-floating-layer-audit.md` — AIChat 浮层统一审计
+- `2026-09-01-harmonyos-phase-a.md` — HarmonyOS Phase A 审计
 - `2026-09-20-native-ui-restructure-plan.md` — 用户 4 目标工程映射 + 8 周阶梯 + 4 决策点 + Stage-1 状态回填
 - `2026-09-20-android-toolchain-install.md` — JDK / cmdline-tools / AVD / 工具脚本路径
 - `2026-09-20-apk-static-verification.md` — APK badging / permissions / 签名 + 模拟器启动物理限制溯源
@@ -93,19 +97,31 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 - `2026-09-20-runtime-evidence-summary.md` — **真机 30 min 后台保活回填位（模板，等用户填）**
 - `2026-09-20-android-8-layers-final-evidence.md` — **8 层证据统一证据单**（fingerprint + DEX + static + .so + runbook 一致性）
 - `2026-09-20-runtime-evidence-preadvice.md` — **真机验收设备参考表（Pixel / Samsung / MIUI / EMUI / 一加）+ 5 行 adb 速取**
+- `2026-09-20-emulator-validation-final.md` — 模拟器验证最终版（boot / bind / 页面探针落地数据）
 - `2026-09-21-server-endpoint-rotation.md` — **端点切换（pocket.kxpms.cn 备用入口）+ edge-to-edge 真机部署验证**（4 截图 + SHA256）
 - `2026-09-21-cdp-attempt-result.md` — 老 WebView devtools socket 不响应 HTTP /json —— CDP 自动化尝试失败留痕
 - `2026-09-21-real-device-5-click-result.md` — 真机 / Emulator 5 步验证回填模板（8 字段贴贴型可重用）
 
 ### 设计稿（`docs/design/`）
+- `2026-09-08-rss.md` — RSS 订阅 & 分享 As-built
 - `2026-09-09-ai-async-background-survival.md` — M1-M5 流所有者迁移
+- `2026-09-09-fonts-subset.md` — 字体子集 + 去 Google Fonts 死链 + CJK fallback 决策
+- `2026-09-10-android-ai-stream-fgs.md` — T2：Android AiStreamService 前台服务（dataSync）落地与验证
+- `2026-09-10-ios-safari-sse-decision.md` — T4 决策：iOS Safari / WKWebView 的 AI 流后台续传方案
+- `2026-09-10-sse-120s-watchdog-diagnosis.md` — T3 诊断：Web 端 AI 流「120s 看门狗」真因定位
+- `2026-09-15-mobile-local-agent.md` — 手机端内置本地智能体设计与实施
+- `2026-09-15-mobile-local-agent-phase2.md` — 本地智能体 Phase 2：原生 function-calling + Marketplace 集成
 - `2026-09-19-native-smoothness-audit.md` — P0/P1 顺滑度
 - `2026-09-20-ai-background-runtime-verification.md` — 30min 后台决策表 + Failover 路径
+- `2026-09-20-background-execution-and-notifications.md` — 全任务后台化 + 完整消息通知体系
 - `2026-09-20-viewmodel-gap-audit.md` — 周 5-6 阶梯调整依据
 - `2026-09-20-email-domain-architecture-verdict.md` — 邮件域 4 层裁决
 - `2026-09-20-workmanager-spec.md` — WorkManager 实施规格
+- `2026-09-21-agentic-ui-testing-skill.md` — Agentic UI Testing Skill 设计选型
 - `2026-09-21-native-roi-decision.md` — **原生路线图 ROI 裁决：追"那 30%"走 RN/Flutter UI 层，不走 Swift+Kotlin**（当前阶段保持 Capacitor，三项次优解先救 90%）
 - `2026-09-21-ui-techniques.md` — **视觉技法 3 件套**（AnimatedNumber / ProgressRing / StaggerList 组件规格与接入技法）
+- `2026-09-23-hybrid-tabbar-and-anki-integration.md` — **融合重构方案：原生 + H5 混合架构 + TabBar 重组 + Anki 功能注入（Phase 1-7 路线图）**
+- `2026-09-23-ios-parity-runbook.md` — **iOS Plugin 镜像 runbook（Phase 7）**
 
 ### 接力单（`handoff/`）
 - `2026-09-20-stage-1-native-ui-restructure.md` — stage-1 全图
@@ -117,10 +133,8 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 - `2026-09-01-01-07-redclaw-mobile-auth-rebrand.md`
 
 ### 实测报告（`logs/`）
-- `apk-verify.txt` — aapt2 + apksigner 验证 4 段
-- `emulator.log` / `emulator-run.log` — 启动尝试
-- `gradle-build.log` / `gradle-build-jdk21.log` — Gradle 失败原因
-- `2026-09-20-emulator-validation.md` — 完整落地数据
+- `docs/audits/2026-09-20-emulator-validation-final.md` — 完整落地数据
+- 其余 `logs/` 产物（apk-verify / emulator / gradle 构建日志等）为本地运行时产物，按 .gitignore 不入库
 
 ## 5. 全部 scripts（按用途）
 
@@ -130,7 +144,6 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 |---|---|
 | `frontend/scripts/audit-viewmodel-gaps.mjs` | 打印 ViewModel 缺口分布（不退） |
 | `frontend/scripts/check-viewmodel-gaps.mjs` | 硬门槛（命中 > 0 退出非零）；`HITS_ALLOWED` 可调 |
-| `scripts/webview-eval.py` / `scripts/webview-bridge.py` | WebView devtools CDP 求值/桥接工具（真机 WebView 自动化探测备用） |
 
 ### Android 工具链（落地）
 
@@ -153,8 +166,25 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 | `scripts/android-apk-fingerprint.ps1` | **APK 指纹 + runbook SHA drift 自检（verify:android 第 1 步）** |
 | `scripts/real-device-preflight.cmd` | **真机一键 preflight（PATH + adb devices + install + start + battery WL）** |
 | `scripts/real-device-capture.cmd` | **真机 30min 捕获 + 自动汇总 4 关键指标（hit 数）** |
+| `scripts/real-device-capture.ps1` | 真机 30min 测试结果捕获（09-23 版） |
+| `scripts/redmi-capture-helper.ps1` | adb screencap 截图助手 |
 | `scripts/check-hyper-v.ps1` | WindowsOptionalFeature + systeminfo 检测 |
 | `scripts/find-androidcli.ps1` / `find-androidcmd.ps1` / `find-androidcmd2.ps1` | 调试工具 |
+
+### WebView CDP 自动化 / 调试（09-23 新增）
+
+| 脚本 | 用途 |
+|---|---|
+| `scripts/webview-cdp.py` | 最小 Chrome DevTools Protocol WebSocket 客户端 |
+| `scripts/webview-eval.ps1` / `scripts/webview-eval.py` / `scripts/webview-bridge.py` | WebView devtools CDP 求值/桥接工具（真机 WebView 自动化探测备用） |
+| `scripts/adb-watchdog.ps1` | MIUI/HyperOS 频繁断连下的 adb 保活 |
+| `scripts/ai-prompt-fill.js` / `ai-state.js` / `ai-submit.js` / `ai-submit2.js` / `set-llmgo.js` / `check-ai-state.js` / `check-placeholder.js` | WebView 内 AI 对话自动化注入片段（CDP 求值用：填 prompt / 提交 / 读状态） |
+| `scripts/check-webview-bg.py` / `check-webview-size.py` / `check-webview-size2.py` / `check-webview-size3.py` | WebView 背景 / 尺寸 CDP 探测（edge-to-edge 验证） |
+| `scripts/inspect-bottom.py` / `inspect-more.py` / `inspect-points.py` | WebView 底栏 / MoreHub / 点位布局探测 |
+| `scripts/params.json` / `params2.json` | CDP 注入 payload 参数 |
+| `scripts/audit-env.ps1` | Windows 构建环境变量自检（ANDROID_HOME / JAVA_HOME / PATH） |
+| `scripts/redmi-icon-regex-helper.mjs` | material-symbols 图标子集化（仅保留工程实际用到的图标） |
+| `scripts/seed_llm_gateway.sh` | kaixuan 网关默认配置写入 admin 主库（user_settings + llm-gateway/config） |
 
 ## 6. 用户新目标「请安装模拟器，在模拟器中测试验证」详细记录
 
