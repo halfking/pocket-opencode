@@ -57,7 +57,14 @@ export async function pickAndSaveImage(opts: {
   return { role: opts.role, fileName, mime }
 }
 
-/** 从 PocketFilesystem 路径读 base64，转 data URL 给 <img :src>。 */
+/** 从 PocketFilesystem 路径读 base64，转 data URL 给 <img :src>。
+ *
+ * Phase 9.1：切到 pocket-native.filesystem（Android/iOS/Web 各家抽象）。
+ *  - Web：图片 base64 内联在 note 上（不在文件系统）；返回 null 让 caller
+ *    走 imageRefs 透传路径（Phase 9.1）。
+ *  - Android：底层仍走 @capacitor/filesystem（成熟稳定，先记磁盘，再同步 pocket-native）。
+ *  - iOS：Phase 7.1 接通 Swift plugin 后通过 FilesystemPlugin.writeFile/readFile/deleteFile 落地。
+ */
 export async function loadMediaDataUrl(fileName: string): Promise<string | null> {
   const native = getPocketNative()
   if (native.platform === 'web') {
@@ -66,30 +73,23 @@ export async function loadMediaDataUrl(fileName: string): Promise<string | null>
     return null
   }
   try {
-    const { Filesystem, Directory } = await import('@capacitor/filesystem')
-    const result = await Filesystem.readFile({
-      path: `${MEDIA_DIR}/${fileName}`,
-      directory: Directory.Data,
-    })
-    if (typeof result.data !== 'string') return null
-    return result.data.startsWith('data:')
-      ? result.data
-      : `data:image/jpeg;base64,${result.data}`
+    const base64 = await native.filesystem.readFile(`${MEDIA_DIR}/${fileName}`)
+    if (!base64) return null
+    return base64.startsWith('data:') ? base64 : `data:image/jpeg;base64,${base64}`
   } catch {
     return null
   }
 }
 
-/** 删除媒体（编辑替换 / 删除卡片时清理）。 */
+/** 删除媒体（编辑替换 / 删除卡片时清理）。
+ *
+ * Phase 9.1：切到 pocket-native.filesystem.deleteFile。
+ */
 export async function deleteMediaFile(fileName: string): Promise<void> {
   const native = getPocketNative()
   if (native.platform === 'web') return
   try {
-    const { Filesystem, Directory } = await import('@capacitor/filesystem')
-    await Filesystem.deleteFile({
-      path: `${MEDIA_DIR}/${fileName}`,
-      directory: Directory.Data,
-    })
+    await native.filesystem.deleteFile(`${MEDIA_DIR}/${fileName}`)
   } catch {
     /* 文件已不存在 = 忽略 */
   }
@@ -124,17 +124,14 @@ async function captureBase64(
 }
 
 /**
- * 写文件：直接走 @capacitor/filesystem。
+ * 写文件：走 pocket-native.filesystem。
  *
- * Phase 9.1 增量：把 Filesystem.writeFile 也搬到 PocketFilesystem 接口。
+ * Phase 9.1：把 Filesystem.writeFile 搬到 PocketFilesystem 接口；
+ * 业务代码不再直接 import '@capacitor/filesystem'。
  */
 async function writeFile(fileName: string, base64: string): Promise<void> {
-  const { Filesystem, Directory } = await import('@capacitor/filesystem')
-  await Filesystem.writeFile({
-    path: `${MEDIA_DIR}/${fileName}`,
-    data: base64,
-    directory: Directory.Data,
-  })
+  const native = getPocketNative()
+  await native.filesystem.writeFile(`${MEDIA_DIR}/${fileName}`, base64)
 }
 
 /** Web fallback：调起文件选择器。 */

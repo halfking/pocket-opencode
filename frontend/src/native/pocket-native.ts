@@ -82,6 +82,27 @@ export interface PocketAppSettings {
   requestPermission(name: 'microphone' | 'notifications' | 'camera' | 'photos'): Promise<'granted' | 'denied'>
 }
 
+/* ===== 文件系统 =====
+ * Phase 9.1：把 @capacitor/filesystem 调用搬到 pocket-native 抽象。
+ *  - Android → @capacitor/filesystem 兼容层（Directory.Data / Documents / Cache）
+ *  - iOS     → Phase 7.1 接通 Swift plugin 后可用；当前 stub 抛错
+ *  - Web     → IndexedDB 模拟（库 pocket-fs / object store files / key = `pocket:fs:<dir>:<path>`）
+ *
+ * 参数形式刻意走位置参数而非 opts 对象 —— flashcards 域所有调用点都是
+ * `(path, base64, dir)` 的形态，位置参数 + TS 类型校验已经够用，避免每个
+ * 调用点都包一层对象字面量。
+ */
+export interface PocketFilesystem {
+  /** 写文件；data 为 base64 字符串（无 data: 前缀）。 */
+  writeFile(path: string, data: string, directory?: 'data' | 'cache' | 'documents'): Promise<void>
+  /** 读文件；返回 base64 字符串（无 data: 前缀）；不存在抛错。 */
+  readFile(path: string, directory?: 'data' | 'cache' | 'documents'): Promise<string>
+  /** 删除文件；不存在不抛错。 */
+  deleteFile(path: string, directory?: 'data' | 'cache' | 'documents'): Promise<void>
+  /** 取可分享 URI（Phase 9.3 flashcardIo 导出用）。 */
+  getUri(path: string, directory?: 'data' | 'cache' | 'documents'): Promise<{ uri: string }>
+}
+
 /* ===== 加密本地存储 ===== */
 export interface PocketCrypto {
   encrypt(plaintext: string): Promise<string>
@@ -100,6 +121,7 @@ export interface PocketNative {
   readonly biometric: PocketBiometric
   readonly appSettings: PocketAppSettings
   readonly crypto: PocketCrypto
+  readonly filesystem: PocketFilesystem
 }
 
 /* ===== 平台检测 ===== */
@@ -186,6 +208,12 @@ function createIosStub(): PocketNative {
       decrypt: notImpl('crypto.decrypt'),
       hasKey: () => Promise.resolve(false),
     },
+    filesystem: {
+      writeFile: notImpl('filesystem.writeFile'),
+      readFile: notImpl('filesystem.readFile'),
+      deleteFile: notImpl('filesystem.deleteFile'),
+      getUri: notImpl('filesystem.getUri'),
+    },
   }
 }
 
@@ -251,6 +279,50 @@ function createAndroidBridge(): PocketNative {
       decrypt: async (s) => s,
       hasKey: async () => true,
     },
+    filesystem: {
+      writeFile: async (path, data, directory = 'data') => {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem')
+        const dir =
+          directory === 'cache'
+            ? Directory.Cache
+            : directory === 'documents'
+            ? Directory.Documents
+            : Directory.Data
+        await Filesystem.writeFile({ path, data, directory: dir })
+      },
+      readFile: async (path, directory = 'data') => {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem')
+        const dir =
+          directory === 'cache'
+            ? Directory.Cache
+            : directory === 'documents'
+            ? Directory.Documents
+            : Directory.Data
+        const res = await Filesystem.readFile({ path, directory: dir })
+        return typeof res.data === 'string' ? res.data : ''
+      },
+      deleteFile: async (path, directory = 'data') => {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem')
+        const dir =
+          directory === 'cache'
+            ? Directory.Cache
+            : directory === 'documents'
+            ? Directory.Documents
+            : Directory.Data
+        await Filesystem.deleteFile({ path, directory: dir })
+      },
+      getUri: async (path, directory = 'data') => {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem')
+        const dir =
+          directory === 'cache'
+            ? Directory.Cache
+            : directory === 'documents'
+            ? Directory.Documents
+            : Directory.Data
+        const res = await Filesystem.getUri({ path, directory: dir })
+        return { uri: res.uri }
+      },
+    },
   }
 }
 
@@ -307,6 +379,110 @@ function createWebFallback(): PocketNative {
       encrypt: async (s) => btoa(unescape(encodeURIComponent(s))),
       decrypt: async (s) => decodeURIComponent(escape(atob(s))),
       hasKey: async () => false,
+    },
+    filesystem: createWebFilesystem(),
+  }
+}
+
+/* ===== Web IndexedDB filesystem（Phase 9.1）=====
+ * 设计：
+ *   - DB: pocket-fs, version 1, object store `files`
+ *   - key = `pocket:fs:<dir>:<path>`
+ *   - value = base64 字符串本身（与 @capacitor/filesystem Filesystem.writeFile 的 data 形状对齐）
+ *
+ * 容错：
+ *   - IDB 不可用（隐私模式 / SSR）→ writeFile throw；readFile 抛错让上层 catch；
+ *     业务侧（flashcardMedia）已有 web early-return，理论上不会触发。
+ */
+function createWebFilesystem(): PocketFilesystem {
+  const DB_NAME = 'pocket-fs'
+  const DB_VERSION = 1
+  const STORE = 'files'
+
+  function keyFor(directory: string, path: string): string {
+    return `pocket:fs:${directory}:${path}`
+  }
+
+  function openDb(): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+      if (typeof indexedDB === 'undefined') {
+        reject(new Error('[PocketNative:web] filesystem: IndexedDB unavailable'))
+        return
+      }
+      const req = indexedDB.open(DB_NAME, DB_VERSION)
+      req.onupgradeneeded = () => {
+        const db = req.result
+        if (!db.objectStoreNames.contains(STORE)) {
+          db.createObjectStore(STORE)
+        }
+      }
+      req.onsuccess = () => resolve(req.result)
+      req.onerror = () => reject(req.error ?? new Error('indexedDB open failed'))
+    })
+  }
+
+  function awaitRequest<T>(req: IDBRequest<T>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result)
+      req.onerror = () => reject(req.error ?? new Error('indexedDB request error'))
+    })
+  }
+
+  async function withStore<T>(
+    mode: IDBTransactionMode,
+    fn: (store: IDBObjectStore) => IDBRequest<T>,
+  ): Promise<T> {
+    const db = await openDb()
+    return new Promise<T>((resolve, reject) => {
+      const tx = db.transaction(STORE, mode)
+      const store = tx.objectStore(STORE)
+      let settled = false
+      const settleOk = (v: T) => {
+        if (settled) return
+        settled = true
+        resolve(v)
+      }
+      const settleErr = (e: unknown) => {
+        if (settled) return
+        settled = true
+        reject(e instanceof Error ? e : new Error(String(e)))
+      }
+      tx.onerror = () => settleErr(tx.error ?? new Error('indexedDB tx error'))
+      tx.onabort = () => settleErr(tx.error ?? new Error('indexedDB tx aborted'))
+      const ret = fn(store)
+      ret.onsuccess = () => settleOk(ret.result)
+      ret.onerror = () => settleErr(ret.error ?? new Error('indexedDB req error'))
+    })
+  }
+
+  return {
+    async writeFile(path, data, directory = 'data') {
+      await withStore('readwrite', (store) => store.put(data, keyFor(directory, path)))
+    },
+    async readFile(path, directory = 'data') {
+      const rec = await withStore('readonly', (store) =>
+        store.get(keyFor(directory, path)),
+      )
+      if (rec == null) {
+        throw new Error(
+          `[PocketNative:web] filesystem.readFile: not found: ${directory}:${path}`,
+        )
+      }
+      return typeof rec === 'string' ? rec : String(rec)
+    },
+    async deleteFile(path, directory = 'data') {
+      try {
+        await withStore('readwrite', (store) =>
+          store.delete(keyFor(directory, path)),
+        )
+      } catch {
+        // 不存在 = 忽略（与 @capacitor/filesystem 行为对齐）
+      }
+    },
+    async getUri(path, directory = 'data') {
+      // Web 没有"沙盒文件 URI"概念；返回 data URL 供 share / <img> 直接用。
+      const data = await this.readFile(path, directory)
+      return { uri: `data:application/octet-stream;base64,${data}` }
     },
   }
 }
