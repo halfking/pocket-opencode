@@ -12,7 +12,7 @@
 ```
 project: pocket-opencode
 branch: main
-last commit: de0149f
+last commit: 9a84c92
 commits this session: 59
 docs: 36 + 5 handoff
 scripts: 60（含 emulator-launch-whpx.cmd）
