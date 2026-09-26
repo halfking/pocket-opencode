@@ -12,12 +12,12 @@
 ```
 project: pocket-opencode
 branch: main
-last commit: 9a84c92
+last commit: 530ad1e
 commits this session: 59
-docs: 36 + 5 handoff
+docs: 37 + 5 handoff
 scripts: 60（含 emulator-launch-whpx.cmd）
 build:    vue-tsc 全清 / bundle 364.59 KB
-tests:    107 / 107 native green
+tests:    118 / 118 native green（Phase 9.3 +11 pocket-native filesystem tests）
 ViewModel 命中: 0 / 120 (hard gate 阈值 0)
 APK:      29.0 MB app-debug.apk (v2 signature OK + .so 4 ABI + edge-to-edge background)
 emulator: ✅ **WHPX 加速启动 2 min boot_completed=1 + topResumedActivity + WebView Bind OK**（commit #31 / 2026-09-20 12:30）
@@ -51,11 +51,27 @@ UI 视觉技法 3 件套: ✅ AnimatedNumber + ProgressRing + StaggerList（#34�
 | 3. UI 与数据分离 | ✅ | 邮件域天然 4 层 + 0/118 ViewModel 缺口 + 2 VM 抽出 | `2f58aee` `58499e0` `check:vm-gaps` |
 | 4. 代码层后台保活 | ✅ | M1 + M5/T2 + 8 原生 plugin + 18 关键权限 + 完整 build | `332132d` + `5a03deb` |
 | 5. **运行时 30min 后台** | ✅ 真机 4c308e2e Redmi T+12:52 验证通过 | FGS AiStreamService alive / 通知 active / 0 OEM kill / 0 Watchdog | 本地 logs/ 产物（不入库）：real-device-summary-20260921-120102.txt · redmi-30min-logcat-full.txt |
+| 6. **pocket-native 跨端抽象**（Phase 7-9） | ✅ Phase 9.1 filesystem + Phase 9.3 share 三平台实装 | 业务 flashcards 域 `@capacitor/filesystem` 0 处 `@capacitor/share` 0 处 `@capacitor/local-notifications` 0 处；iOS stub 待 Phase 7.1 Swift plugin 镜像 | `docs/design/2026-09-24-phase-9-pocket-native-complete.md` §3 · commit `530ad1e` |
 
 ## 3. 完整 commit 链（从最近往前）
 
 ```
-<待推送> test(android): APK .so ABI 静态审计 — 4 ABI 全覆盖 + verify:android 第 7 步
+<待推送> docs(sweep): 2026-09-25 STATE.md last commit 跟齐 530ad1e (Phase 9.3 PocketShare 三平台实装 + flashcardIo 切流后指针跟进)
+530ad1e feat(native): Phase 9.3 —— PocketShare 三平台实装 + flashcardIo 切流
+4d73c66 docs(plan): Phase 9 —— pocket-native 抽象完整化与 Capacitor 直依赖收编
+05798af docs(sweep): 2026-09-25 一致性清扫 —— STATE.md last commit 跟齐 9a84c92
+9a84c92 Phase 9.1: PocketFilesystem abstraction across platforms
+0cde7a0 docs(sweep): 2026-09-23 一致性清扫 —— STATE.md 头部表跟齐 de0149f
+de0149f refactor(flashcards): Phase 9 —— flashcardMedia 迁移到 pocket-native 抽象
+506cb68 test(flashcards): Phase 8 —— 单测覆盖 Cloze 解析器 + JSON IO 工具
+a8282ef feat(native): Phase 7 —— iOS Plugin 镜像 scaffold + 跨端 TS 抽象
+e0c6249 feat(flashcards): Phase 6 —— 媒体图片 + JSON 导入导出
+e5aa896 feat(flashcards): Phase 5 —— Card Browser + 复习统计 (SVG)
+a58602d feat(flashcards): Phase 4 —— Anki 标签 + 牌组树 + deck-options
+4773ed4 feat(flashcards): Phase 3 —— Anki Cloze 挖空语法 ({{c1::answer}})
+6a35d9f feat(study): Phase 2 —— 学习 Tab 合并 Flashcards + 笔记
+2548adb feat(tabbar): Phase 1 —— TabBar 6→4 + 9 宫格 MoreHubView + 抽屉收编
+<历史> ...（Phase 0 融合重构及更早 commit 见 git log）
 405e5a4 chore(gates): 新增 npm run verify:android 一键跑通前端 + Android 7 层验证
 d4d3640 test(android): APK DEX class audit —— 字节码层验证 11/11 关键类
 b284811 docs(state): 项目全局状态索引 STATE.md —— 一页回答"项目到哪里 / 接下来怎么走"
@@ -122,6 +138,7 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 - `2026-09-21-ui-techniques.md` — **视觉技法 3 件套**（AnimatedNumber / ProgressRing / StaggerList 组件规格与接入技法）
 - `2026-09-23-hybrid-tabbar-and-anki-integration.md` — **融合重构方案：原生 + H5 混合架构 + TabBar 重组 + Anki 功能注入（Phase 1-7 路线图）**
 - `2026-09-23-ios-parity-runbook.md` — **iOS Plugin 镜像 runbook（Phase 7）**
+- `2026-09-24-phase-9-pocket-native-complete.md` — **pocket-native 跨端抽象完整化 + Capacitor 直依赖收编（Phase 9.1-9.4 路线图）**
 
 ### 接力单（`handoff/`）
 - `2026-09-20-stage-1-native-ui-restructure.md` — stage-1 全图
