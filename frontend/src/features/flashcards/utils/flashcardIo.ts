@@ -1,5 +1,5 @@
 /**
- * flashcardIo —— JSON 导入 / 导出（Phase 6 简化版）。
+ * flashcardIo —— JSON 导入 / 导出（Phase 6 简化版；Phase 9.3 切流至 pocket-native）。
  *
  * 简化说明：
  *   - **不解析 .apkg**（Anki SQLite 格式）；改用 JSON（同 Anki collection 概念，
@@ -12,12 +12,13 @@
  *   - 备份 / 还原。
  *   - 与 Anki .apkg 互通：Phase 6.1 增量 sql.js 解析。
  *
- * 文件落盘走 Capacitor Filesystem + Share（原生壳）；
- * Web 环境走 Blob + URL.createObjectURL 下载。
+ * 平台分发（Phase 9.3）：
+ *   - 原生壳：pocket-native.filesystem 写 Documents → pocket-native.share 弹面板。
+ *   - Web：    Blob + URL.createObjectURL + <a download>（不走 filesystem,web filesystem
+ *              仅 media 用,与导出无关）。
+ *   - iOS stub：pocket-native.share 抛 notImpl；web fallback 继续工作。
  */
-import { Filesystem, Directory } from '@capacitor/filesystem'
-import { Share } from '@capacitor/share'
-import { Capacitor } from '@capacitor/core'
+import { getPocketNative } from '../../../native/pocket-native'
 import type { FlashcardCard, FlashcardDeckConfig, FlashcardNote, FlashcardReviewLog } from '../../../types/flashcards'
 
 const EXPORT_VERSION = 1
@@ -31,8 +32,6 @@ export interface FlashcardExportBundle {
   /** 可选：本地复习日志（统计迁移用）。 */
   reviewLogs?: FlashcardReviewLog[]
 }
-
-const isNative = (): boolean => typeof Capacitor !== 'undefined' && Capacitor.isNativePlatform()
 
 export function buildExportBundle(input: {
   notes: FlashcardNote[]
@@ -50,8 +49,10 @@ export function buildExportBundle(input: {
 /**
  * 导出：写 JSON 到本地，并通过 Share 让用户决定去向。
  *
- * Web 浏览器：返回 blob URL，由调用方触发下载。
- * 原生壳：写 Documents/flashcards-*.json，弹 Share 面板。
+ * - Web 浏览器：Blob + URL.createObjectURL 触发下载（不写 IndexedDB，因为 media
+ *   的 web filesystem 是给 flashcardMedia 用的，导出 JSON 是用户文件,理应直接走浏览器下载）。
+ * - 原生壳：pocket-native.filesystem 写 documents → getUri → pocket-native.share 弹面板。
+ * - iOS stub：pocket-native.filesystem.writeFile 抛 notImpl,web fallback 路径不触发。
  */
 export async function exportJson(opts: {
   bundle: FlashcardExportBundle
@@ -59,30 +60,38 @@ export async function exportJson(opts: {
 }): Promise<{ method: 'web' | 'native'; url?: string }> {
   const filename = opts.filename ?? `openpocket-flashcards-${new Date().toISOString().slice(0, 10)}.json`
   const json = JSON.stringify(opts.bundle, null, 2)
+  const native = getPocketNative()
 
-  if (isNative()) {
-    await Filesystem.writeFile({
-      path: filename,
-      data: json,
-      directory: Directory.Documents,
-      recursive: false,
-    })
-    const uriRes = await Filesystem.getUri({ path: filename, directory: Directory.Documents })
-    const fileUri = uriRes.uri
+  // 原生壳（Android 走 Capacitor,iOS 走 stub;Phase 7.1 接通 Swift 后扩展）
+  if (native.platform === 'android' || native.platform === 'ios') {
     try {
-      await Share.share({
-        title: 'OpenPocket Flashcards Export',
-        text: `${opts.bundle.notes.length} notes · ${opts.bundle.cards.length} cards`,
-        url: fileUri,
-        dialogTitle: '导出卡片到',
-      })
-    } catch {
-      /* 用户取消分享不报错 */
+      await native.filesystem.writeFile(filename, json, 'documents')
+      const { uri: fileUri } = await native.filesystem.getUri(filename, 'documents')
+      try {
+        await native.share.share({
+          title: 'OpenPocket Flashcards Export',
+          text: `${opts.bundle.notes.length} notes · ${opts.bundle.cards.length} cards`,
+          url: fileUri,
+          dialogTitle: '导出卡片到',
+        })
+      } catch {
+        /* 用户取消分享不报错 */
+      }
+      return { method: 'native' }
+    } catch (e) {
+      // iOS stub 走这里:notImpl 后退 web 下载
+      if (native.platform === 'ios') {
+        return webDownload(json, filename)
+      }
+      throw e
     }
-    return { method: 'native' }
   }
 
   // Web：返回 blob 让调用方下载
+  return webDownload(json, filename)
+}
+
+function webDownload(json: string, filename: string): { method: 'web'; url: string } {
   const blob = new Blob([json], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

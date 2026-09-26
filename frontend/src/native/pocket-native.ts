@@ -103,6 +103,29 @@ export interface PocketFilesystem {
   getUri(path: string, directory?: 'data' | 'cache' | 'documents'): Promise<{ uri: string }>
 }
 
+/* ===== 分享 =====
+ * Phase 9.3：把 @capacitor/share 调用搬到 pocket-native 抽象（计划文档 §2.2）。
+ *  - Android → @capacitor/share Share.share({ text, url, dialogTitle })
+ *  - iOS     → @capacitor/share 同上（Phase 7.1 接通 Swift plugin 后可用；当前 stub）
+ *  - Web     → navigator.share（可用时）/ <a download> blob fallback（不可用时）
+ *
+ * 字段：
+ *  - text: 必传，分享摘要文本。
+ *  - url: 可选，Android/iOS 用于分享文件（files:// URI）。
+ *    Web 若传 blob:/data: URL 则转 <a download> 触发下载。
+ *  - dialogTitle: 仅 Android/iOS 弹框标题。
+ */
+export interface PocketShare {
+  share(opts: {
+    title?: string
+    text: string
+    url?: string
+    dialogTitle?: string
+  }): Promise<void>
+  /** 是否支持系统分享面板（Web 通常仅在 navigator.share 可用时为 true）。 */
+  canShare(): Promise<boolean>
+}
+
 /* ===== 加密本地存储 ===== */
 export interface PocketCrypto {
   encrypt(plaintext: string): Promise<string>
@@ -122,6 +145,7 @@ export interface PocketNative {
   readonly appSettings: PocketAppSettings
   readonly crypto: PocketCrypto
   readonly filesystem: PocketFilesystem
+  readonly share: PocketShare
 }
 
 /* ===== 平台检测 ===== */
@@ -213,6 +237,10 @@ function createIosStub(): PocketNative {
       readFile: notImpl('filesystem.readFile'),
       deleteFile: notImpl('filesystem.deleteFile'),
       getUri: notImpl('filesystem.getUri'),
+    },
+    share: {
+      share: notImpl('share.share'),
+      canShare: () => Promise.resolve(false),
     },
   }
 }
@@ -323,6 +351,22 @@ function createAndroidBridge(): PocketNative {
         return { uri: res.uri }
       },
     },
+    share: {
+      share: async (opts) => {
+        const { Share } = await import('@capacitor/share')
+        await Share.share({
+          title: opts.title,
+          text: opts.text,
+          url: opts.url,
+          dialogTitle: opts.dialogTitle,
+        })
+      },
+      canShare: async () => {
+        const { Share } = await import('@capacitor/share')
+        const res = await Share.canShare()
+        return Boolean(res.value)
+      },
+    },
   }
 }
 
@@ -381,6 +425,48 @@ function createWebFallback(): PocketNative {
       hasKey: async () => false,
     },
     filesystem: createWebFilesystem(),
+    share: createWebShare(),
+  }
+}
+
+/* ===== Web share（navigator.share + <a download> fallback）===== */
+function createWebShare(): PocketShare {
+  return {
+    async canShare() {
+      return typeof navigator !== 'undefined' && typeof navigator.share === 'function'
+    },
+    async share(opts) {
+      // 优先 navigator.share（移动浏览器 / Safari PWA）。
+      if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+        try {
+          await navigator.share({
+            title: opts.title,
+            text: opts.text,
+            url: opts.url,
+          })
+          return
+        } catch (e) {
+          // 用户取消（AbortError）= 正常路径，不重试
+          if (e instanceof DOMException && e.name === 'AbortError') return
+          // 其他错误继续走 <a download> fallback
+        }
+      }
+      // Fallback：触发浏览器下载（处理 data:/blob: URL；http(s) 由浏览器按 <a> 导航）。
+      if (typeof document === 'undefined') {
+        throw new Error('[PocketNative:web] share.share: document unavailable, cannot fallback to <a download>')
+      }
+      const a = document.createElement('a')
+      a.href = opts.url ?? `data:text/plain;charset=utf-8,${encodeURIComponent(opts.text)}`
+      // 优先取 url 末尾文件名；其次取 title；再退到 'share.txt'。
+      const fileName = opts.url
+        ? decodeURIComponent(opts.url.split('/').pop()?.split('?')[0] ?? '') || opts.title || 'share.txt'
+        : opts.title || 'share.txt'
+      a.download = fileName
+      a.rel = 'noopener'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+    },
   }
 }
 
@@ -390,18 +476,63 @@ function createWebFallback(): PocketNative {
  *   - key = `pocket:fs:<dir>:<path>`
  *   - value = base64 字符串本身（与 @capacitor/filesystem Filesystem.writeFile 的 data 形状对齐）
  *
+ * 可测性：
+ *   - 把 IndexedDB 交互收敛到 WebFilesystemStore 接口；业务逻辑放进
+ *     makeWebFilesystem(store) 纯函数里，可在 node 端用 Map-backed fake store 跑单测
+ *     （pocket-native.test.mjs），不必引入 fake-indexeddb。
+ *
  * 容错：
  *   - IDB 不可用（隐私模式 / SSR）→ writeFile throw；readFile 抛错让上层 catch；
  *     业务侧（flashcardMedia）已有 web early-return，理论上不会触发。
  */
-function createWebFilesystem(): PocketFilesystem {
+
+/** 极简 KV 接口，让 makeWebFilesystem 能在 node 端被单测。 */
+export interface WebFilesystemStore {
+  get(key: string): Promise<string | undefined>
+  put(key: string, value: string): Promise<void>
+  delete(key: string): Promise<void>
+}
+
+/** 暴露给 node 端单测（test/native）使用 —— makeWebFilesystem 依赖的纯 key 构造函数。 */
+export function webFsKey(directory: string, path: string): string {
+  return `pocket:fs:${directory}:${path}`
+}
+
+/** 纯逻辑工厂：拿到任意 WebFilesystemStore 即可构造 PocketFilesystem。 */
+export function makeWebFilesystem(store: WebFilesystemStore): PocketFilesystem {
+  return {
+    async writeFile(path, data, directory = 'data') {
+      await store.put(webFsKey(directory, path), data)
+    },
+    async readFile(path, directory = 'data') {
+      const rec = await store.get(webFsKey(directory, path))
+      if (rec == null) {
+        throw new Error(
+          `[PocketNative:web] filesystem.readFile: not found: ${directory}:${path}`,
+        )
+      }
+      return typeof rec === 'string' ? rec : String(rec)
+    },
+    async deleteFile(path, directory = 'data') {
+      try {
+        await store.delete(webFsKey(directory, path))
+      } catch {
+        // 不存在 = 忽略（与 @capacitor/filesystem 行为对齐）
+      }
+    },
+    async getUri(path, directory = 'data') {
+      // Web 没有"沙盒文件 URI"概念；返回 data URL 供 share / <img> 直接用。
+      const data = await this.readFile(path, directory)
+      return { uri: `data:application/octet-stream;base64,${data}` }
+    },
+  }
+}
+
+/** 真正的 IndexedDB-backed store（仅浏览器侧有意义）。 */
+function createIndexedDbWebStore(): WebFilesystemStore {
   const DB_NAME = 'pocket-fs'
   const DB_VERSION = 1
   const STORE = 'files'
-
-  function keyFor(directory: string, path: string): string {
-    return `pocket:fs:${directory}:${path}`
-  }
 
   function openDb(): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
@@ -456,35 +587,21 @@ function createWebFilesystem(): PocketFilesystem {
   }
 
   return {
-    async writeFile(path, data, directory = 'data') {
-      await withStore('readwrite', (store) => store.put(data, keyFor(directory, path)))
+    async get(key) {
+      const rec = await withStore('readonly', (store) => store.get(key))
+      return rec == null ? undefined : typeof rec === 'string' ? rec : String(rec)
     },
-    async readFile(path, directory = 'data') {
-      const rec = await withStore('readonly', (store) =>
-        store.get(keyFor(directory, path)),
-      )
-      if (rec == null) {
-        throw new Error(
-          `[PocketNative:web] filesystem.readFile: not found: ${directory}:${path}`,
-        )
-      }
-      return typeof rec === 'string' ? rec : String(rec)
+    async put(key, value) {
+      await withStore('readwrite', (store) => store.put(value, key))
     },
-    async deleteFile(path, directory = 'data') {
-      try {
-        await withStore('readwrite', (store) =>
-          store.delete(keyFor(directory, path)),
-        )
-      } catch {
-        // 不存在 = 忽略（与 @capacitor/filesystem 行为对齐）
-      }
-    },
-    async getUri(path, directory = 'data') {
-      // Web 没有"沙盒文件 URI"概念；返回 data URL 供 share / <img> 直接用。
-      const data = await this.readFile(path, directory)
-      return { uri: `data:application/octet-stream;base64,${data}` }
+    async delete(key) {
+      await withStore('readwrite', (store) => store.delete(key))
     },
   }
+}
+
+function createWebFilesystem(): PocketFilesystem {
+  return makeWebFilesystem(createIndexedDbWebStore())
 }
 
 /* ===== 运行时平台（继承 runtime-platform.ts） ===== */

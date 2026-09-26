@@ -10,7 +10,7 @@
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "gates": "npm run typecheck && npm run build:fast && npm run test:native && npm run check:vm-gaps",
-    "test:native": "node --test src/native/__tests__/appLifecycleHub.test.mjs src/native/__tests__/aiStreamKeepalive.test.mjs src/native/__tests__/aiStreamRuntime.test.mjs",
+    "test:native": "node --test src/native/__tests__/appLifecycleHub.test.mjs src/native/__tests__/aiStreamKeepalive.test.mjs src/native/__tests__/aiStreamRuntime.test.mjs src/native/__tests__/pocket-native.test.mjs",
     "test:native:all": "node --test src/native/__tests__/*.test.mjs src/native/__tests__/*.test.ts",
     "audit:vm-gaps": "node scripts/audit-viewmodel-gaps.mjs",
     "check:vm-gaps": "node scripts/check-viewmodel-gaps.mjs",
