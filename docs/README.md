@@ -26,6 +26,9 @@
 | [2026-09-15-mobile-local-agent-phase2.md](design/2026-09-15-mobile-local-agent-phase2.md) | 手机端本地智能体 Phase 2（backend native function-calling 透传设计） |
 | [2026-09-19-native-smoothness-audit.md](design/2026-09-19-native-smoothness-audit.md) | 原生顺滑度审计（路由无转场/假跟随右滑/2s splash/零触觉/无虚拟滚动的代码级证据 + P0/P1/P2 分级达标路径） |
 | [2026-09-20-background-execution-and-notifications.md](design/2026-09-20-background-execution-and-notifications.md) | 全任务后台化 + 完整消息通知体系（录音 runtime 单例/RecordingPill；notifycenter 定向+默认规则+定时任务失败通知；notificationDispatcher 三层感知 + 通知中心 UI；WS 退避重连） |
+| [2026-09-23-hybrid-tabbar-and-anki-integration.md](design/2026-09-23-hybrid-tabbar-and-anki-integration.md) | 融合重构方案：原生 + H5 混合架构 + TabBar 重组 + Anki 功能注入（Phase 1-7 路线图） |
+| [2026-09-23-ios-parity-runbook.md](design/2026-09-23-ios-parity-runbook.md) | iOS Plugin 镜像 runbook（Phase 7） |
+| [2026-09-24-phase-9-pocket-native-complete.md](design/2026-09-24-phase-9-pocket-native-complete.md) | pocket-native 跨端抽象完整化 + Capacitor 直依赖收编（Phase 9.1-9.4 路线图） |
 | [2026-09-08-master-password-biometric-unlock.md](2026-09-08-master-password-biometric-unlock.md) | 主密码与生物认证解锁 |
 | [2026-09-08-task-session-detail/](2026-09-08-task-session-detail/) | 任务/会话详情（[PLAN.md](2026-09-08-task-session-detail/PLAN.md)） |
 | [2026-09-09-list-sync-rules.md](2026-09-09-list-sync-rules.md) | 列表数据拉取与更新同步规则（规范 v1） |

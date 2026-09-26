@@ -12,9 +12,9 @@
 ```
 project: pocket-opencode
 branch: main
-last commit: 530ad1e
+last commit: 399dfc0
 commits this session: 59
-docs: 37 + 5 handoff
+docs: 37 + 6 handoff
 scripts: 60（含 emulator-launch-whpx.cmd）
 build:    vue-tsc 全清 / bundle 364.59 KB
 tests:    118 / 118 native green（Phase 9.3 +11 pocket-native filesystem tests）
@@ -56,7 +56,8 @@ UI 视觉技法 3 件套: ✅ AnimatedNumber + ProgressRing + StaggerList（#34�
 ## 3. 完整 commit 链（从最近往前）
 
 ```
-<待推送> docs(sweep): 2026-09-25 STATE.md last commit 跟齐 530ad1e (Phase 9.3 PocketShare 三平台实装 + flashcardIo 切流后指针跟进)
+399dfc0 docs(handoff): 2026-09-25 Phase 9.3 接力单（审计 / 修复 / 验证矩阵 / Phase 9.4 接力范围）
+92b6fda docs(sweep): 2026-09-25 STATE.md last commit 跟齐 530ad1e（Phase 9.3 PocketShare 三平台实装 + flashcardIo 切流后指针跟进）
 530ad1e feat(native): Phase 9.3 —— PocketShare 三平台实装 + flashcardIo 切流
 4d73c66 docs(plan): Phase 9 —— pocket-native 抽象完整化与 Capacitor 直依赖收编
 05798af docs(sweep): 2026-09-25 一致性清扫 —— STATE.md last commit 跟齐 9a84c92
@@ -144,6 +145,7 @@ bee61e9 docs(audit): 原生化与 UI 重构方案
 - `2026-09-20-stage-1-native-ui-restructure.md` — stage-1 全图
 - `2026-09-20-real-device-30min-pickup.md` — **真机一键接力卡（30 秒读完即可上手）**
 - `2026-09-21-edge-to-edge-and-endpoint-switch-pickup.md` — **30 秒验证接力卡（全屏背景 + 端点切换）**
+- `2026-09-25-phase-9-3-pocket-share-flashcard-io-cutover.md` — Phase 9.3 接力单（审计 / 修复 / 验证矩阵 / Phase 9.4 接力范围）
 
 ### 设计稿之详细路径（`handoff/`）
 - `2026-08-29-00-35-biometric-auth-cross-module-requirements.md`
