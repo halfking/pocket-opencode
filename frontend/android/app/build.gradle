@@ -17,6 +17,10 @@ android {
         }
     }
     buildTypes {
+        debug {
+            // 开发/测试构建：允许 WebView mixed-content（ws:// from https://localhost）
+            debuggable true
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'

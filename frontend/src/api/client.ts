@@ -1,4 +1,18 @@
-import { resolveApiBase } from '../config/api-base'
+/**
+ * BUG-D 修复（2026-09-30 真机验收）：本文件原先直接用裸 `resolveApiBase()`，
+ * 而 `api/http.ts` 用的是带兜底的 `resolveRuntimeApiBase()`。两条 API 调用
+ * 路径解析 base 的方式不一致，导致：
+ *   - 构建缺少 VITE_API_BASE 时，http.ts 的请求回退到生产入口
+ *     https://pocket.itestu.cn，client.ts 的请求却落到同源 ''，
+ *     在 Capacitor 里就是 WebView 自己的 https://localhost，
+ *     /api 返回本地 index.html（HTML 而非 JSON）。
+ * 即测试机上会出现「一半请求打到生产、一半打到本地壳」的分裂行为。
+ *
+ * 这里统一到 resolveRuntimeApiBase：与 http.ts 走同一个解析入口，
+ * Capacitor 源且解析为空时回退生产入口（api-base.ts:104 的既有约定）。
+ * 保留本地名 `resolveApiBase` 以免改动全部调用点。
+ */
+import { resolveRuntimeApiBase as resolveApiBase } from '../config/api-base'
 import { useAuthStore } from '../stores/auth'
 import { ApiError, assertNotHTML } from './http'
 

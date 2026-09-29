@@ -1,4 +1,4 @@
-import { resolveApiBase } from '../config/api-base'
+import { resolveRuntimeApiBase } from '../config/api-base'
 import { nextReconnectDelay } from './reconnectPolicy'
 
 // WebSocket 客户端管理
@@ -149,7 +149,10 @@ class WebSocketClient {
 const TOKEN_KEY = 'pocket_token'
 
 function wsHttpBase(): string {
-  return resolveApiBase() || (typeof window !== 'undefined' ? window.location.origin : '')
+  // 与 HTTP API 共用运行时解析：Capacitor 的 https://localhost 在缺少
+  // build default 时必须回退到生产/配置后的真实 pocketd 地址，不能让 WS
+  // 误连 WebView 自身并被 mixed-content 拦截。
+  return resolveRuntimeApiBase() || (typeof window !== 'undefined' ? window.location.origin : '')
 }
 
 function getWsUrl(): string {
