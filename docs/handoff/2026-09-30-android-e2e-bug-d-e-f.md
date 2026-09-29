@@ -227,27 +227,115 @@ loadingFailed: errorText="net::ERR_ADDRESS_UNREACHABLE" blockedReason="-" type=F
 
 ---
 
+## 4.6 写操作验证（CDP 驱动真实 UI，非渲染推断）
+
+> 工具：CDP `Runtime.evaluate` 里 `location.hash` 导航 + 原生 setter 赋值 +
+> `dispatchEvent(new Event('input'))` 触发 Vue 的 `v-model`，再点真实按钮。
+> **注意**：Vue 的 `v-model` 不会因为直接改 `.value` 而更新，必须走原生 setter + `input` 事件。
+
+### 已验证通过的写操作
+
+| 模块 | 操作 | 证据 |
+|---|---|---|
+| **笔记 Notes** | 新建 | `createBtn.disabled=false` → 创建 → 列表 `found=true`，标题+正文+「0分钟前」 |
+| **笔记 Notes** | 编辑 | id `note-1790723119846-xzs3ce`，`editPersisted=true`，正文已更新并回显 |
+| **笔记 Notes** | 删除 | 二次确认 `confirmed=1`，`deleteRemoved=true`，列表回到「还没有笔记」 |
+| **财务 Finance** | 解析+入账 | 确认弹窗「支出 · 交通 · ¥32.00」→ 确认入账 → 账本出现条目、月度汇总更新 |
+| **财务 Finance** | 删除 | 列表项 `delete` 按钮，`deleteWorked=true`，汇总归 ¥0.00 |
+| **本地智能体** | 新建 | 三必填项齐全 → `#/agents/custom-e2e--1790723592`，详情页含名称/简介/System Prompt/角色 ID，`listHasAgent=true` |
+
+### 排查过程中确认的「非缺陷」
+
+- 智能体保存「没反应」→ 读 `AgentEditView.vue:98-111`，`handleSave` 要求
+  **name / description / system_prompt 三项都非空**，缺任一就 `toast.error` 后 return。
+  这是**正确的校验行为**，不是 bug。补齐三项即通过。
+- 4 个模块 `LOGIN_GATED` → 本地加密库需主密码解锁（见 §4），设计行为。
+- 财务「32 元被解析成 ¥2.00」→ 是我第一次输入带了 `E2E` 前缀导致的，**不是金额解析 bug**
+  （见下方 BUG-H，那是个更窄但真实的问题）。
+
+---
+
+## 4.7 BUG-H：财务金额解析被标识符中的数字抢占（后端）
+
+### 现象
+`E2E 50 元` 被解析成 **amount=2**，且 `/api/finance/parse` 返回 **200**，
+错误金额一路静默写进账本（前端还会弹出「支出 · 其他 · ¥2.00 确认入账」）。
+
+### 根因
+`backend/internal/finance/recognizer.go:27`
+```go
+amountRegex: regexp.MustCompile(`[¥$]?\s*(\d+(?:\.\d{1,2})?)\s*(?:块钱?|元|钱)?`)
+```
+除数字外**全部可选**（货币符号可选、单位可选），而 `FindStringSubmatch` 取**第一个**匹配。
+`E2E` 里的 `2` 满足「数字」这一唯一必需条件，被直接当成金额。
+
+对照实验（修复前）：
+```
+打车 32 元        -> 32    ✓
+买菜 66 元        -> 66    ✓
+50 元             -> 50    ✓
+abc 100 元        -> 100   ✓   （abc 里没数字，不影响）
+E2E 50 元         -> 2     ✗
+报销 1200 元      -> 1200  ✓
+```
+可见与「拉丁前缀」无关，**只要字符串里第一个数字粘在 ASCII 字母后就会中招**。
+
+### 修复：两级策略
+1. `amountRegex` 优先匹配「货币符号+数字」或「数字+货币单位」（单位/符号必填）；
+2. 都没有时回退 `looseAmountRegex`：任意数字，但**前一个字符不得是 ASCII 字母/数字**。
+
+> 第一版曾试图「强制单位必填」，结果打破了 4 个既有测试
+> （`吃饭花了38` / `入账1000` / `收款1000` / `项目尾款3000到账` 都是裸数字），
+> 说明裸数字是既有契约的一部分。两级策略才是正确解法。
+> 新增 `recognizer_bugh_test.go` 同时锁定「修好了」和「没改坏」两侧。
+
+### 验证（重建后端后打真实接口）
+```
+E2E 50 元                    -> 200 amount=50    ✓（修复前 2）
+E2E 50                       -> 200 amount=50    ✓
+test2 打车 30 元              -> 200 amount=30    ✓
+吃饭花了38                    -> 200 amount=38    ✓（契约未破）
+入账1000 / 项目尾款3000到账    -> 200 amount=1000/3000 ✓
+买了100块…又花了50块打车        -> 200 amount=100   ✓（仍取第一个金额）
+乱七八糟没有数字               -> 400 正确拒绝      ✓
+E2E                          -> 400 正确拒绝      ✓（修复前静默记 2）
+```
+`go test ./internal/finance/...` 全绿（含新增 2 个回归测试）。
+
+---
+
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
 - BUG-D 构建守卫（裸 build EXIT=1）、typecheck EXIT=0
 - BUG-E i18n 292/292 对等，底栏英文 `RSS`
 - BUG-F 修复机制在**模拟器**上完整生效：origin 降级、Mixed Content 归零、**WebSocket connected**、登录 200、主密码创建、`/ai` 实时数据
-- **BUG-G 修复生效**：13 模块控制台异常 2 → **0**（`EmailFetch` / `Keystore` thenable 陷阱已消除）
-- **13 个模块全部可达并渲染**（8 本地 + 5 抽屉），解锁本地库后 `LOGIN_GATED=0` / `BLANK=0`
+- **BUG-G 修复生效**：13 模块控制台异常 2 → **0**
+- **13 个模块全部可达并渲染**，解锁本地库后 `LOGIN_GATED=0` / `BLANK=0`
+- **BUG-H 修复生效**：`E2E 50 元` 由 amount=2 修正为 50；`E2E` 由静默记 2 改为 400 拒绝；裸数字契约未破
+- **写操作（部分）**：
+  - 笔记 Notes **完整 CRUD**（新建/编辑/删除，含二次确认）
+  - 财务 Finance **新建+删除**（解析→确认入账→账本回显→汇总更新）
+  - 本地智能体 **新建**（三必填校验 + 角色详情回显）
 - 后端 CORS / WS origin 校验对 `http://localhost` 均放行
 
 ### ❌ 未验证（下一轮必须补）
-- **13 个模块的写操作**。本轮只证明「可达 + 渲染 + 无异常」，
-  新建/编辑/删除一条都没实际点过。**不得写成"功能已打通"。**
+- **剩余 10 个模块的写操作**：闪卡 / PKM / 密码箱 / 市场 / 邮箱 / 任务 / 会话 / 网关 / 实例 / 费用配额。
+  本轮只做了笔记、财务、智能体三个。**这 10 个仍只有「可达+渲染」。**
+- **密码箱 Vault 存疑**：页面上是独立的解锁门（`或输入主密码` + `指纹/面容解锁`），
+  底层依赖 `Keystore` 原生插件，而该插件在 Android 尚未实现（BUG-G 只让降级路径正确生效）。
+  **Vault 很可能在 Android 上根本不可用**，下一轮需实测确认，不要假设它能用。
+- **市场 Market 存疑**：`/marketplace/skills` 只看到「刷新 / 重试」按钮，疑似加载失败态，未深查。
 - **真机 Redmi 的端到端**。BUG-F 在真机上 origin 已降级、Mixed Content 归零，
   但宿主侧网络不通（见 §4.5），未能完成登录与 WS 握手。
 - **生产 `https` scheme 下的真机回归**。BUG-F 修复是 `CAP_ANDROID_SCHEME=http` 这条
   opt-in 路径，默认仍是 `https`，该路径本轮未回归。
-- BUG-G 修复的**真机**验证（模拟器 WebView 与真机 WebView 版本不同：
-  真机 `126.0.6478.71`，模拟器为 Android 34 自带版本）。
+- BUG-G / BUG-H 的**真机**验证（BUG-G 目前只在模拟器 WebView 验证）。
 - `Keystore` / `EmailFetch` 的**原生实现本身仍不存在**——本轮只是让降级路径
   正确生效（不再抛未捕获异常），并未实现这两个插件。
+- **既有的 `TestMeetingWorkspaceIsolation` 失败**：`go test ./internal/server/...` 全量跑时失败，
+  单跑通过（测试间状态污染）。已做同条件对照（stash 我的改动再全量跑），
+  **失败一致，非本轮引入**，属既有欠账。
 
 ---
 

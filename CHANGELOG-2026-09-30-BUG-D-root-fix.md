@@ -365,3 +365,63 @@ CDP `Network.enable` 抓到 `errorText="net::ERR_ADDRESS_UNREACHABLE"`；
   （不再抛未捕获异常），并未实现这两个插件。
 
 详见 `docs/handoff/2026-09-30-android-e2e-bug-d-e-f.md`。
+
+---
+
+# 追加：BUG-H 财务金额解析抢占 + 写操作验证（2026-09-30 07:30）
+
+## 写操作验证（CDP 驱动真实 UI）
+
+工具：CDP `Runtime.evaluate` 导航 + 原生 setter 赋值 + `dispatchEvent(new Event('input'))`
+触发 Vue `v-model`，再点真实按钮。**直接改 `.value` 不会更新 v-model，必须走原生 setter。**
+
+已通过：
+- 笔记 Notes 完整 CRUD：新建（列表回显「0分钟前」）/ 编辑（id note-1790723119846-xzs3ce，
+  editPersisted=true）/ 删除（二次确认 confirmed=1，列表回到空态）
+- 财务 Finance：解析->确认入账->账本回显->汇总更新->删除（deleteWorked=true，汇总归 0）
+- 本地智能体：三项必填校验后创建，# /agents/custom-e2e--1790723592，详情页字段齐全
+
+排查中确认的非缺陷：
+- 智能体保存「没反应」= AgentEditView.vue:98-111 要求 name/description/system_prompt
+  三项都非空，缺任一即 toast.error 后 return。正确校验行为。
+- 4 模块 LOGIN_GATED = 本地加密库需主密码解锁，设计行为。
+
+## BUG-H 财务金额解析被标识符中的数字抢占（后端）
+
+现象：`E2E 50 元` 解析成 amount=2，/api/finance/parse 返回 200，错误金额静默入账。
+
+根因 recognizer.go:27
+    amountRegex: regexp.MustCompile(`[¥$]?\s*(\d+(?:\.\d{1,2})?)\s*(?:块钱?|元|钱)?`)
+除数字外全部可选，且 FindStringSubmatch 取第一个匹配 -> "E2E" 的 2 命中。
+与拉丁前缀无关：只要第一个数字粘在 ASCII 字母后就会中招（`abc 100 元` 反而正常，
+因为 abc 里没数字）。
+
+修复：两级策略
+1. amountRegex 优先匹配「货币符号+数字」或「数字+货币单位」（单位/符号必填）；
+2. 都没有时回退 looseAmountRegex：任意数字，但前一字符不得是 ASCII 字母/数字。
+
+> 第一版曾试图「强制单位必填」，打破了 4 个既有测试（吃饭花了38 / 入账1000 /
+> 收款1000 / 项目尾款3000到账 都是裸数字），说明裸数字是既有契约。两级策略才对。
+> 新增 recognizer_bugh_test.go 同时锁定「修好了」与「没改坏」。
+
+验证（重建后端后打真实接口）：
+    E2E 50 元   200 amount=50   （修复前 2）
+    test2 打车 30 元 200 amount=30
+    吃饭花了38 / 入账1000 / 项目尾款3000到账 -> 38/1000/3000 契约未破
+    买了100块…又花了50块打车 -> 100 仍取第一个金额
+    乱七八糟没有数字 / E2E -> 400 正确拒绝（E2E 修复前静默记 2）
+go test ./internal/finance/... 全绿（含 2 个新增回归测试）。
+
+## 既有的 TestMeetingWorkspaceIsolation 失败（非本轮引入）
+
+go test ./internal/server/... 全量跑时该测试失败，单跑通过（测试间状态污染）。
+已做同条件对照：stash 掉本轮改动后全量重跑，失败完全一致 -> 属既有欠账。
+
+## 仍未验证
+
+- 剩余 10 个模块写操作：闪卡 / PKM / 密码箱 / 市场 / 邮箱 / 任务 / 会话 / 网关 / 实例 / 费用配额
+- 密码箱 Vault 疑似 Android 不可用（依赖未实现的 Keystore 原生插件）
+- 市场 Market 疑似加载失败（只见「刷新/重试」）
+- 真机端到端、BUG-G/BUG-H 真机验证、生产 https 回归
+
+详见 docs/handoff/2026-09-30-android-e2e-bug-d-e-f.md。

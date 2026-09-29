@@ -17,15 +17,50 @@ type ParseResult struct {
 
 // Recognizer 语音记账识别引擎，用于解析自然语言输入并提取交易信息
 type Recognizer struct {
+	// amountRegex 优先匹配「货币符号+数字」或「数字+货币单位」——金额最可靠。
 	amountRegex *regexp.Regexp
+	// looseAmountRegex 兜底：无货币符号也无单位时，接受任意数字，
+	// 但数字前不得紧跟 ASCII 字母/数字。
+	looseAmountRegex *regexp.Regexp
 }
 
 // NewRecognizer 创建新的语音识别器实例
 func NewRecognizer() *Recognizer {
 	return &Recognizer{
-		// 支持: 块, 块钱, 元, 钱, 以及货币符号
-		amountRegex: regexp.MustCompile(`[¥$]?\s*(\d+(?:\.\d{1,2})?)\s*(?:块钱?|元|钱)?`),
+		// BUG-H (2026-09-30)：原正则是 `[¥$]?\s*(\d+...)\s*(?:块钱?|元|钱)?`，
+		// 除数字外全部可选，且 FindStringSubmatch 取【第一个】匹配。
+		// 于是 "E2E 50 元" 里 "E2E" 的 2 被当成金额（实测 amount=2，50 丢失），
+		// /api/finance/parse 还返回 200，错误金额静默入账。
+		//
+		// 改为两级策略，既修掉误取又保住既有契约：
+		//   1) 优先匹配带货币符号或货币单位的金额（"打车 32 元" -> 32）；
+		//   2) 都没有时回退到裸数字，但要求数字前不是 ASCII 字母/数字
+		//      （"吃饭花了38" -> 38 保留；"E2E 50" 里 E2E 的 2 被排除 -> 50）。
+		amountRegex:      regexp.MustCompile(`[¥$]\s*(\d+(?:\.\d{1,2})?)|(\d+(?:\.\d{1,2})?)\s*(?:块钱?|元|钱)`),
+		looseAmountRegex: regexp.MustCompile(`(?:^|[^A-Za-z0-9])\s*(\d+(?:\.\d{1,2})?)`),
 	}
+}
+
+// extractAmount 提取金额。优先带货币符号/单位的写法，其次是不粘在 ASCII
+// 字母后的裸数字。返回 0 表示未识别到。
+func (r *Recognizer) extractAmount(input string) float64 {
+	if m := r.amountRegex.FindStringSubmatch(input); len(m) >= 3 {
+		s := m[1]
+		if s == "" {
+			s = m[2]
+		}
+		if s != "" {
+			if v, err := strconv.ParseFloat(s, 64); err == nil {
+				return v
+			}
+		}
+	}
+	if m := r.looseAmountRegex.FindStringSubmatch(input); len(m) >= 2 && m[1] != "" {
+		if v, err := strconv.ParseFloat(m[1], 64); err == nil {
+			return v
+		}
+	}
+	return 0
 }
 
 // Parse 解析语音输入，返回记账结果
@@ -39,13 +74,8 @@ func (r *Recognizer) Parse(input string) *ParseResult {
 	lower := strings.ToLower(input)
 
 	// 提取金额
-	matches := r.amountRegex.FindStringSubmatch(input)
-	if len(matches) < 2 {
-		return nil
-	}
-
-	amount, err := strconv.ParseFloat(matches[1], 64)
-	if err != nil || amount <= 0 {
+	amount := r.extractAmount(input)
+	if amount <= 0 {
 		return nil
 	}
 
