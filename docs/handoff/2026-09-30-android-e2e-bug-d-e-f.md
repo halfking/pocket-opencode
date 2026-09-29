@@ -304,6 +304,61 @@ E2E                          -> 400 正确拒绝      ✓（修复前静默记 2
 
 ---
 
+## 4.8 BUG-I：不可恢复的 401 把用户困在死胡同
+
+### 现象
+市场模块只显示「invalid or expired token / 刷新 / 重试」，**没有任何回到登录页的路径**。
+
+### 根因
+`stores/auth.ts:110-111` 的注释写「refresh 失败返回 false（**由调用方决定是否登出**）」，
+但 `api/http.ts:145-150` 在 refresh 失败时只是**原样把 401 抛给调用方**，
+而**没有任何调用方真的执行登出**。于是：
+
+- 后端 `POCKET_JWT_SECRET` 变更（重启换密钥）→ 旧 token 全部 401
+- 或 token 过期且 refresh 端点也失败
+→ 用户拿着死 token 卡在各个模块，**既不能继续，也回不去登录**。
+
+实测确认旧 token **并未过期**（剩余 22 小时）却被所有接口 401，
+而同接口用新签发的 token 立即 200 —— 是密钥变更导致，属预期 JWT 行为；
+**缺陷在于 App 对此毫无恢复路径**。
+
+### 修复
+- `stores/auth.ts` 新增 `clearLocal()`：只清本地态，不打后端
+  （此时 `/api/auth/logout` 必然被拒，调它只会白等一轮超时）；`logout()` 复用它。
+- `api/http.ts` 新增 `forceReauth()`：401 且 refresh 失败时单飞触发，
+  跳过已在登录页的场景（防重定向循环），清本地态后 `location.hash = '#/login?reason=expired'`。
+
+### 验证（模拟器，持真实死 token 复现）
+```
+onLaunch            hash=#/ai
+afterNavMarket      hash=#/login?reason=expired   ← 自动回登录页
+marketText          正常渲染登录页（用户名/密码/登录/注册新账号/忘记密码）
+```
+修复前该页面只有「刷新 / 重试」死循环。
+
+---
+
+## 4.9 后端端点可用性矩阵（决定哪些模块能验证写操作）
+
+用 dev 后端 + 有效 token 实测：
+
+| 端点 | 状态 | 含义 | 受影响模块 |
+|---|---|---|---|
+| `/api/tasks` | **200** | 可用 | 任务 |
+| `/api/sessions` | **200** | 可用 | 会话 |
+| `/api/instances` | **200** | 可用 | 实例 |
+| `/api/meetings` | **200** | 可用 | 会议 |
+| `/api/notes` | 503 | store 未配置 | 笔记（前端仍走本地库，可用） |
+| `/api/flashcards` | 503 | store 未配置 | 闪卡（列表页显示 "Could not load flashcards"，保存恒 disabled） |
+| `/api/vault` | 404 | 路由/服务未挂载 | 密码箱 |
+| `/api/marketplace/*` | 404 | `marketplaceStore` 为 nil | 市场 |
+
+**这批 404/503 是 dev 环境未配存储/服务，不是代码缺陷。**
+下轮若要验证闪卡/市场/密码箱的写操作，必须先把对应 store 接上
+（dev 环境没有 PostgreSQL 时很多 store 为 nil），否则测的全是配置问题。
+
+---
+
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
@@ -313,24 +368,30 @@ E2E                          -> 400 正确拒绝      ✓（修复前静默记 2
 - **BUG-G 修复生效**：13 模块控制台异常 2 → **0**
 - **13 个模块全部可达并渲染**，解锁本地库后 `LOGIN_GATED=0` / `BLANK=0`
 - **BUG-H 修复生效**：`E2E 50 元` 由 amount=2 修正为 50；`E2E` 由静默记 2 改为 400 拒绝；裸数字契约未破
+- **BUG-I 修复生效**：持死 token 时市场模块自动跳 `#/login?reason=expired`，登录页正常渲染（修复前是「刷新/重试」死循环）
 - **写操作（部分）**：
   - 笔记 Notes **完整 CRUD**（新建/编辑/删除，含二次确认）
   - 财务 Finance **新建+删除**（解析→确认入账→账本回显→汇总更新）
   - 本地智能体 **新建**（三必填校验 + 角色详情回显）
+  - 会议 Meetings **新建**（自动创建 `meeting-1790725942511-waen21`，列表回显 + 删除按钮）
+- 后端 CORS / WS origin 校验对 `http://localhost` 均放行
+- 后端端点可用性已摸清（见 §4.9）：tasks/sessions/instances/meetings 可用；notes/flashcards 503、vault/marketplace 404 属 dev 未配存储
 - 后端 CORS / WS origin 校验对 `http://localhost` 均放行
 
 ### ❌ 未验证（下一轮必须补）
-- **剩余 10 个模块的写操作**：闪卡 / PKM / 密码箱 / 市场 / 邮箱 / 任务 / 会话 / 网关 / 实例 / 费用配额。
-  本轮只做了笔记、财务、智能体三个。**这 10 个仍只有「可达+渲染」。**
-- **密码箱 Vault 存疑**：页面上是独立的解锁门（`或输入主密码` + `指纹/面容解锁`），
-  底层依赖 `Keystore` 原生插件，而该插件在 Android 尚未实现（BUG-G 只让降级路径正确生效）。
-  **Vault 很可能在 Android 上根本不可用**，下一轮需实测确认，不要假设它能用。
-- **市场 Market 存疑**：`/marketplace/skills` 只看到「刷新 / 重试」按钮，疑似加载失败态，未深查。
+- **闪卡 / 密码箱 / 市场 / 邮箱 的写操作无法在当前 dev 环境验证**：
+  对应后端 store 未配置（`/api/flashcards` 503、`/api/vault` 404、`/api/marketplace/*` 404，
+  见 §4.9）。闪卡列表页直接显示「Could not load flashcards」且保存恒 disabled。
+  **这是环境限制，不是模块代码缺陷**，但也**不能因此宣称它们可用**。
+  下轮需先把 store 接上再测。
+- **任务 / 会话 的写操作**未验证（端点 200 可用，但本轮只做了会议创建）。
+- **密码箱 Vault 存疑**：依赖 `Keystore` 原生插件，Android 尚未实现（BUG-G 只让降级路径
+  正确生效）。`/api/vault` 亦 404。**很可能 Android 上根本不可用**，下轮需实测确认。
 - **真机 Redmi 的端到端**。BUG-F 在真机上 origin 已降级、Mixed Content 归零，
   但宿主侧网络不通（见 §4.5），未能完成登录与 WS 握手。
 - **生产 `https` scheme 下的真机回归**。BUG-F 修复是 `CAP_ANDROID_SCHEME=http` 这条
   opt-in 路径，默认仍是 `https`，该路径本轮未回归。
-- BUG-G / BUG-H 的**真机**验证（BUG-G 目前只在模拟器 WebView 验证）。
+- BUG-G / BUG-H / BUG-I 的**真机**验证（BUG-G/I 目前只在模拟器 WebView 验证）。
 - `Keystore` / `EmailFetch` 的**原生实现本身仍不存在**——本轮只是让降级路径
   正确生效（不再抛未捕获异常），并未实现这两个插件。
 - **既有的 `TestMeetingWorkspaceIsolation` 失败**：`go test ./internal/server/...` 全量跑时失败，
