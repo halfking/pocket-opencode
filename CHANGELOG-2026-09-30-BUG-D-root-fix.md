@@ -279,3 +279,89 @@ $e=$z.Entries | Where-Object { $_.FullName -eq 'assets/capacitor.config.json' }
 **只能声明「真机 scheme 已生效」，不能声明「真机端到端已通过」。**
 
 详见 `docs/handoff/2026-09-30-android-e2e-bug-d-e-f.md`。
+
+---
+
+# 追加：BUG-G Capacitor 插件 thenable 陷阱 + 13 模块可达性验证（2026-09-30 07:05）
+
+## 背景
+
+BUG-F 修完后用 CDP 逐个访问 13 个模块（不走截图，真机 screencap 连续 5 次返回 0 字节），
+在 `/email` 与 `/vault` 上暴露未捕获异常：
+
+```
+/email : WARNING [email] sync from server: email store not configured
+         EXC Error: "EmailFetch.then()" is not implemented on android
+/vault : EXC Error: "Keystore" plugin is not implemented on android
+```
+
+## 根因
+
+Capacitor 的 `registerPlugin(name)` 返回**带 `.then` 的 thenable 代理**。
+若把它从 `async` 函数 `return` 出去，或当作 `.then()` 回调的返回值，
+JS 的 promise 决议会去调它的 `.then()`，未实现的原生插件直接抛
+`"<Name>.then()" is not implemented`。
+
+两层后果：
+1. 抛出未捕获异常，掩盖真实原因；
+2. 写好的降级路径完全失效——`keystore.ts` 的 `StubKeystore` 只在
+   `registerPlugin` 抛异常时启用，但代理不抛、只返回 thenable，
+   「优雅降级」从未真正跑过一次。
+
+**项目其实早就知道这个陷阱**：`native/biometricAuth.ts:38-40` 有明确注释
+「绝不能从 async 函数直接 return 这个代理（会被当 thenable 采用）」，
+且已用 `Promise<void> + 同步传递实例` 修好；`background-mic.ts` 写法同样正确。
+**但 keystore.ts / email-fetch-native.ts / util.ts（Sherpa 在用）三处漏了。**
+
+## 修复
+
+统一改为「非 thenable 盒子」装载实例，async 只返回盒子：
+
+| 文件 | 改动 |
+|---|---|
+| `frontend/src/native/keystore.ts` | `load(): Promise<KeystoreBox>`，`{ value: impl }`；facade 用 `box.value[prop]` |
+| `frontend/src/features/email/email-fetch-native.ts` | `ensurePlugin(): Promise<EmailFetchBox \| null>`；`Promise.resolve().then()` 回调改为**不返回值**（赋值结果若被当决议值会再次触发陷阱） |
+| `frontend/src/native/util.ts` | `ensure(): Promise<{ value: T }>`；`registerPluginSafely`（Sherpa 使用） |
+
+`vue-tsc --noEmit` EXIT=0；重建 APK（`index-oroRx_TG.js`）后 13 模块控制台异常 2 -> 0。
+
+## 13 模块可达性验证（scripts/verify-modules.mjs，新增入库）
+
+CDP `Runtime.enable` 抓 `exceptionThrown` / `console.error|warning`，
+逐路由 `location.hash` 导航后检查最终 URL + 渲染文本量 + 是否被重定向回 /login。
+
+首轮出现 4 个 `LOGIN_GATED`（Notes/Email/Vault/PKM，URL 带 `?unlock=1`）——
+**这不是缺陷**：本地加密库需主密码解锁，页面提示「检测到已登录态，但本地加密库未解锁」，
+输入主密码后 `returnTo` 正确跳回。冷启动后必须重新解锁，
+否则会把设计行为误判成「模块打不开」。
+
+解锁后最终：13/13 RENDERED，`LOGIN_GATED=0`，`BLANK=0`，控制台错误 0。
+
+## 真机 Redmi 的 BUG-F 复验：宿主侧网络阻塞，非代码问题
+
+CDP `Network.enable` 抓到 `errorText="net::ERR_ADDRESS_UNREACHABLE"`；
+`no-cors` 模式同样失败、XHR `status=0` -> 排除 CORS。但对照实验表明与 App 无关：
+
+| 发起方 | 目标 | 结果 |
+|---|---|---|
+| 设备 shell curl | 网关 192.168.31.1:80 | 302, 10-64ms OK |
+| 设备 shell curl | 宿主 192.168.31.20:8088 | 000, ~1.1s 超时 FAIL |
+| WebView fetch | 网关 192.168.31.1:80 | opaque 成功 OK |
+| WebView fetch | 宿主 192.168.31.20:8088 | ERR_ADDRESS_UNREACHABLE FAIL |
+
+同一时刻宿主自身 127.0.0.1:8088 与 192.168.31.20:8088 都 200、
+`Get-NetTCPConnection` 正常监听 -> 宿主侧网络/防火墙问题。
+**不能把真机失败记为代码缺陷。** 下轮备选方案：
+`adb reverse tcp:8088 tcp:8088` + `VITE_API_BASE=http://localhost:8088`
+（`buildOriginChecker` 只校验 hostname 不校验端口，该 origin 会被放行，
+且与 Capacitor 的 `http://localhost`(80) 不同源）。
+
+## 仍未验证（不得写成已完成）
+
+- **13 个模块的写操作**：本轮只证明「可达 + 渲染 + 无异常」，新建/编辑/删除一条都没点过。
+- 真机 Redmi 端到端（宿主网络阻塞）
+- 生产 `https` scheme 回归
+- `Keystore` / `EmailFetch` 的**原生实现本身仍不存在**——本轮只是让降级路径正确生效
+  （不再抛未捕获异常），并未实现这两个插件。
+
+详见 `docs/handoff/2026-09-30-android-e2e-bug-d-e-f.md`。
