@@ -211,3 +211,71 @@ Mixed Content: ... attempted to connect to the insecure WebSocket endpoint 'ws:/
 
 **交付时间**：2026-09-30 04:00  
 **验收状态**：BUG-D 根治修复已完成并验证；真机全功能点验收因环境障碍未完成
+
+---
+
+# 追加：BUG-F 真机 WebSocket 硬阻断（2026-09-30 05:50）
+
+## 背景
+
+BUG-D 修完后真机仍无法完成端到端：logcat 持续出现 Mixed Content 告警与 WebSocket 无限重连
+（`Reconnecting WebSocket (attempt 1, 3182ms backoff)` / `attempt 2, 4.6s...`）。
+
+## 根因（关键：两类 mixed content 行为不同）
+
+| 通道 | 管控者 | 修复前行为 |
+|---|---|---|
+| XHR `http://…/api/*` | `WebSettings.setMixedContentMode` | debug 下 `ALWAYS_ALLOW` → 放行（仅 console 告警） |
+| WS `ws://…/ws?token=` | Chromium >=111 Insecure-WebSocket 策略 | **硬阻断，不受 mixed content mode 影响** |
+
+因此 BUG-D 中「`buildTypes.debug.debuggable true` 对 mixed-content 无效」这一观察是正确的：
+那条路径原理上不可能生效，不是配置写错。
+
+后端不是问题（实测）：
+- `GET /api/app/check-update` + `Origin: https://localhost` → 200，`ACAO: https://localhost`，预检 200
+- 生产 `/ws` 的 origin 校验 `buildOriginChecker(AllowedOrigins, DevAuth)` 在 devAuth 下放行 `http(s)://localhost`
+  （`backend/internal/server/server.go:292-296`）
+- `mobile_api.go:529` 的 `CheckOrigin: return true` 是死代码，已被 `mobile_api_isolation_test.go` 锁死
+
+## 修复
+
+`frontend/capacitor.config.ts` 新增逃生舱：
+
+```ts
+androidScheme: (process.env.CAP_ANDROID_SCHEME as 'http' | 'https') ?? 'https',
+```
+
+- 默认仍为 `https`（生产后端应走 HTTPS + wss，不需降级）
+- 仅本地/内网 HTTP 后端联调时用 `CAP_ANDROID_SCHEME=http` 构建
+- 机制：`cap sync` 写入 `android/app/src/main/assets/capacitor.config.json`，运行时由 Capacitor 读取
+- 效果：页面 origin 变为 `http://localhost`，与后端同为非安全上下文，mixed content 规则不再适用；
+  XHR 走 CORS（已验证放行），ws:// 直接放行
+
+## 验证（模拟器 emulator-5554）
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| `Loading app at` | `https://localhost` | `http://localhost` |
+| Mixed Content 告警 | 6 | **0** |
+| WebSocket | error → disconnected → 无限重连 | **`WebSocket connected`** |
+| Failed to fetch | - | 0 |
+
+端到端通过：登录 200（`auth_method=dev-bypass`）→ 创建主密码 → `/ai` 实时状态 `● 全部正常 · 0`。
+
+## 坑：必须校验 APK 内实际打包的 scheme
+
+本轮被并发会话坑过一次：`cap sync` 已写对 `http`，但打包前另一个会话重跑 `cap sync` 改回 `https`，
+装上去 origin 仍是 `https://localhost`，一度误判为「修复无效」。构建流程应加断言：
+
+```powershell
+$z=[System.IO.Compression.ZipFile]::OpenRead($apk)
+$e=$z.Entries | Where-Object { $_.FullName -eq 'assets/capacitor.config.json' }
+```
+
+## 未完成
+
+真机 Redmi（4c308e2e）复验未完成：新 APK 已装、origin 已确认 `http://localhost`、Mixed Content 归零，
+但当时设备到宿主 `192.168.31.20` 100% 丢包（`Failed to fetch`），未能完成登录与 WS 握手。
+**只能声明「真机 scheme 已生效」，不能声明「真机端到端已通过」。**
+
+详见 `docs/handoff/2026-09-30-android-e2e-bug-d-e-f.md`。
