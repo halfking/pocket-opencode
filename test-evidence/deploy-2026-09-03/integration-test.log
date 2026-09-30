@@ -1300,3 +1300,219 @@ POCKET_PROJECT_NAME=opencode-pocket-server-245
   新建 10 个目录，跳过 1 个已存在目录
   条件 DB 数据目录已建: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0/postgres
   下一步: ./deploy-local.sh（会自动生成 /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opp-integ-pg.XXXXXX.YB9wv7JpM0/config/.env.local）
+━━━ 1. dry-run: deploy-local.sh (PG=true) ━━━
+━━━ deploy-local ━━━
+  OS_KIND         = windows-msys
+  DEPLOY_BASE_DIR = /tmp/opp-integ.12wVv9
+  HTTP_PORT       = 8090@0.0.0.0
+  FRONTEND_PORT   = 4175
+  ⚠️  Windows MSYS / Git-Bash 路径支持（注意 docker daemon 是 Windows 上的 Docker Desktop）
+  PG 拓扑: deploy=false target=host.docker.internal:5432
+━━━ init-dirs: DEPLOY_ENV=local OS=windows-msys ━━━
+  DEPLOY_BASE_DIR = /tmp/opp-integ.12wVv9
+  OPP_SERVER_NAME = <none>
+  ✅ mkdir /tmp/opp-integ.12wVv9/data
+  ✅ mkdir /tmp/opp-integ.12wVv9/logs
+  ✅ mkdir /tmp/opp-integ.12wVv9/raw-logs
+  ✅ mkdir /tmp/opp-integ.12wVv9/config
+  ✅ mkdir /tmp/opp-integ.12wVv9/images
+  ✅ mkdir /tmp/opp-integ.12wVv9/backups
+  ✅ mkdir /tmp/opp-integ.12wVv9/attachments
+  ✅ mkdir /tmp/opp-integ.12wVv9/bin
+  ✅ mkdir /tmp/opp-integ.12wVv9/run
+━━━ 完成 ━━━
+  新建 9 个目录，跳过 1 个已存在目录
+  下一步: ./deploy-local.sh（会自动生成 /tmp/opp-integ.12wVv9/config/.env.local）
+━━━ postgres: deploy=false target=host.docker.internal:5432 ━━━
+  ✅ postgres: 命中外部实例 (local-port @ 127.0.0.1:5432)；不创建新实例
+━━━ redis: deploy=false target=127.0.0.1:6379 ━━━
+  ⚠️  redis: 未发现外部实例且 OPP_DEPLOY_REDIS=false；
+      期望 DSN 由 .env 或上游 deploy 脚本注入远端（如 252）
+━━━ mysql: deploy=false target=127.0.0.1:3306 ━━━
+  ⚠️  mysql: 未发现外部实例且 OPP_DEPLOY_MYSQL=false；
+      期望 DSN 由 .env 或上游 deploy 脚本注入远端（如 252）
+
+━━━ ensure-databases 总结 ━━━
+  PG    : mode=uninit              target=host.docker.internal:5432  deploy=false
+  Redis : mode=uninit              target=127.0.0.1:6379  deploy=false
+  MySQL : mode=uninit              target=127.0.0.1:3306  deploy=false
+  📝 生成本地 .env 模板: /tmp/opp-integ.12wVv9/config/.env.local
+  🔑 injected POCKET_LLM_GATEWAY_URL=https://llmgo.kxpms.cn/v1
+  🔑 POCKET_LLM_GATEWAY_API_KEY empty (envs miss)
+❌ 既没有所需镜像，也没有 kx-base:go-vue-optimized
+   离线导入: ./deploy/bin/load-images.sh   （tars 放 /tmp/opp-integ.12wVv9/images）
+   或加载 kx-base 后用 --build 现场构建
+━━━ 2. dry-run: deploy-154.sh 派生 ━━━
+POCKET_PORT_BIND_IP=172.16.2.154
+POCKET_HTTP_PORT=8090
+POCKET_ENV_FILE=/tmp/opp-integ-154.49JdxE/config/.env.154
+POCKET_PROJECT_NAME=opencode-pocket-server-opp
+OPP_PG_HOST=172.16.2.210
+━━━ 3. dry-run: deploy-245.sh 派生 ━━━
+POCKET_PORT_BIND_IP=172.16.2.245
+POCKET_HTTP_PORT=8091
+POCKET_FRONTEND_PORT=4176
+POCKET_ENV_FILE=/tmp/opp-integ-245.7XGBpv/config/.env.245
+POCKET_PROJECT_NAME=opencode-pocket-server-opp
+━━━ 4. dry-run: OPP_DEPLOY_PG=true → postgres/ 创建 ━━━
+━━━ init-dirs: DEPLOY_ENV=local OS=windows-msys ━━━
+  DEPLOY_BASE_DIR = /tmp/opp-integ-pg.2hDPi6
+  OPP_SERVER_NAME = <none>
+  ✅ mkdir /tmp/opp-integ-pg.2hDPi6/data
+  ✅ mkdir /tmp/opp-integ-pg.2hDPi6/logs
+  ✅ mkdir /tmp/opp-integ-pg.2hDPi6/raw-logs
+  ✅ mkdir /tmp/opp-integ-pg.2hDPi6/config
+  ✅ mkdir /tmp/opp-integ-pg.2hDPi6/images
+  ✅ mkdir /tmp/opp-integ-pg.2hDPi6/backups
+  ✅ mkdir /tmp/opp-integ-pg.2hDPi6/attachments
+  ✅ mkdir /tmp/opp-integ-pg.2hDPi6/bin
+  ✅ mkdir /tmp/opp-integ-pg.2hDPi6/run
+  ✅ mkdir /tmp/opp-integ-pg.2hDPi6/postgres
+━━━ 完成 ━━━
+  新建 10 个目录，跳过 1 个已存在目录
+  条件 DB 数据目录已建: /tmp/opp-integ-pg.2hDPi6/postgres
+  下一步: ./deploy-local.sh（会自动生成 /tmp/opp-integ-pg.2hDPi6/config/.env.local）
+━━━ 1. dry-run: deploy-local.sh (PG=true) ━━━
+━━━ deploy-local ━━━
+  OS_KIND         = windows-msys
+  DEPLOY_BASE_DIR = /tmp/opp-integ.LIxybM
+  HTTP_PORT       = 8090@0.0.0.0
+  FRONTEND_PORT   = 4175
+  ⚠️  Windows MSYS / Git-Bash 路径支持（注意 docker daemon 是 Windows 上的 Docker Desktop）
+  PG 拓扑: deploy=false target=host.docker.internal:5432
+━━━ init-dirs: DEPLOY_ENV=local OS=windows-msys ━━━
+  DEPLOY_BASE_DIR = /tmp/opp-integ.LIxybM
+  OPP_SERVER_NAME = <none>
+  ✅ mkdir /tmp/opp-integ.LIxybM/data
+  ✅ mkdir /tmp/opp-integ.LIxybM/logs
+  ✅ mkdir /tmp/opp-integ.LIxybM/raw-logs
+  ✅ mkdir /tmp/opp-integ.LIxybM/config
+  ✅ mkdir /tmp/opp-integ.LIxybM/images
+  ✅ mkdir /tmp/opp-integ.LIxybM/backups
+  ✅ mkdir /tmp/opp-integ.LIxybM/attachments
+  ✅ mkdir /tmp/opp-integ.LIxybM/bin
+  ✅ mkdir /tmp/opp-integ.LIxybM/run
+━━━ 完成 ━━━
+  新建 9 个目录，跳过 1 个已存在目录
+  下一步: ./deploy-local.sh（会自动生成 /tmp/opp-integ.LIxybM/config/.env.local）
+━━━ postgres: deploy=false target=host.docker.internal:5432 ━━━
+  ✅ postgres: 命中外部实例 (local-port @ 127.0.0.1:5432)；不创建新实例
+━━━ redis: deploy=false target=127.0.0.1:6379 ━━━
+  ⚠️  redis: 未发现外部实例且 OPP_DEPLOY_REDIS=false；
+      期望 DSN 由 .env 或上游 deploy 脚本注入远端（如 252）
+━━━ mysql: deploy=false target=127.0.0.1:3306 ━━━
+  ⚠️  mysql: 未发现外部实例且 OPP_DEPLOY_MYSQL=false；
+      期望 DSN 由 .env 或上游 deploy 脚本注入远端（如 252）
+
+━━━ ensure-databases 总结 ━━━
+  PG    : mode=uninit              target=host.docker.internal:5432  deploy=false
+  Redis : mode=uninit              target=127.0.0.1:6379  deploy=false
+  MySQL : mode=uninit              target=127.0.0.1:3306  deploy=false
+  📝 生成本地 .env 模板: /tmp/opp-integ.LIxybM/config/.env.local
+  🔑 injected POCKET_LLM_GATEWAY_URL=https://llmgo.kxpms.cn/v1
+  🔑 POCKET_LLM_GATEWAY_API_KEY empty (envs miss)
+❌ 既没有所需镜像，也没有 kx-base:go-vue-optimized
+   离线导入: ./deploy/bin/load-images.sh   （tars 放 /tmp/opp-integ.LIxybM/images）
+   或加载 kx-base 后用 --build 现场构建
+━━━ 2. dry-run: deploy-154.sh 派生 ━━━
+POCKET_PORT_BIND_IP=172.16.2.154
+POCKET_HTTP_PORT=8090
+POCKET_ENV_FILE=/tmp/opp-integ-154.s1yaO1/config/.env.154
+POCKET_PROJECT_NAME=opencode-pocket-server-opp
+OPP_PG_HOST=172.16.2.210
+━━━ 3. dry-run: deploy-245.sh 派生 ━━━
+POCKET_PORT_BIND_IP=172.16.2.245
+POCKET_HTTP_PORT=8091
+POCKET_FRONTEND_PORT=4176
+POCKET_ENV_FILE=/tmp/opp-integ-245.40vIYK/config/.env.245
+POCKET_PROJECT_NAME=opencode-pocket-server-opp
+━━━ 4. dry-run: OPP_DEPLOY_PG=true → postgres/ 创建 ━━━
+━━━ init-dirs: DEPLOY_ENV=local OS=windows-msys ━━━
+  DEPLOY_BASE_DIR = /tmp/opp-integ-pg.vkCgPr
+  OPP_SERVER_NAME = <none>
+  ✅ mkdir /tmp/opp-integ-pg.vkCgPr/data
+  ✅ mkdir /tmp/opp-integ-pg.vkCgPr/logs
+  ✅ mkdir /tmp/opp-integ-pg.vkCgPr/raw-logs
+  ✅ mkdir /tmp/opp-integ-pg.vkCgPr/config
+  ✅ mkdir /tmp/opp-integ-pg.vkCgPr/images
+  ✅ mkdir /tmp/opp-integ-pg.vkCgPr/backups
+  ✅ mkdir /tmp/opp-integ-pg.vkCgPr/attachments
+  ✅ mkdir /tmp/opp-integ-pg.vkCgPr/bin
+  ✅ mkdir /tmp/opp-integ-pg.vkCgPr/run
+  ✅ mkdir /tmp/opp-integ-pg.vkCgPr/postgres
+━━━ 完成 ━━━
+  新建 10 个目录，跳过 1 个已存在目录
+  条件 DB 数据目录已建: /tmp/opp-integ-pg.vkCgPr/postgres
+  下一步: ./deploy-local.sh（会自动生成 /tmp/opp-integ-pg.vkCgPr/config/.env.local）
+━━━ 1. dry-run: deploy-local.sh (PG=true) ━━━
+━━━ deploy-local ━━━
+  OS_KIND         = windows-msys
+  DEPLOY_BASE_DIR = /tmp/opp-integ.NKkuCI
+  HTTP_PORT       = 8090@0.0.0.0
+  FRONTEND_PORT   = 4175
+  ⚠️  Windows MSYS / Git-Bash 路径支持（注意 docker daemon 是 Windows 上的 Docker Desktop）
+  PG 拓扑: deploy=false target=host.docker.internal:5432
+━━━ init-dirs: DEPLOY_ENV=local OS=windows-msys ━━━
+  DEPLOY_BASE_DIR = /tmp/opp-integ.NKkuCI
+  OPP_SERVER_NAME = <none>
+  ✅ mkdir /tmp/opp-integ.NKkuCI/data
+  ✅ mkdir /tmp/opp-integ.NKkuCI/logs
+  ✅ mkdir /tmp/opp-integ.NKkuCI/raw-logs
+  ✅ mkdir /tmp/opp-integ.NKkuCI/config
+  ✅ mkdir /tmp/opp-integ.NKkuCI/images
+  ✅ mkdir /tmp/opp-integ.NKkuCI/backups
+  ✅ mkdir /tmp/opp-integ.NKkuCI/attachments
+  ✅ mkdir /tmp/opp-integ.NKkuCI/bin
+  ✅ mkdir /tmp/opp-integ.NKkuCI/run
+━━━ 完成 ━━━
+  新建 9 个目录，跳过 1 个已存在目录
+  下一步: ./deploy-local.sh（会自动生成 /tmp/opp-integ.NKkuCI/config/.env.local）
+━━━ postgres: deploy=false target=host.docker.internal:5432 ━━━
+  ✅ postgres: 命中外部实例 (local-port @ 127.0.0.1:5432)；不创建新实例
+━━━ redis: deploy=false target=127.0.0.1:6379 ━━━
+  ⚠️  redis: 未发现外部实例且 OPP_DEPLOY_REDIS=false；
+      期望 DSN 由 .env 或上游 deploy 脚本注入远端（如 252）
+━━━ mysql: deploy=false target=127.0.0.1:3306 ━━━
+  ⚠️  mysql: 未发现外部实例且 OPP_DEPLOY_MYSQL=false；
+      期望 DSN 由 .env 或上游 deploy 脚本注入远端（如 252）
+
+━━━ ensure-databases 总结 ━━━
+  PG    : mode=uninit              target=host.docker.internal:5432  deploy=false
+  Redis : mode=uninit              target=127.0.0.1:6379  deploy=false
+  MySQL : mode=uninit              target=127.0.0.1:3306  deploy=false
+  📝 生成本地 .env 模板: /tmp/opp-integ.NKkuCI/config/.env.local
+  🔑 injected POCKET_LLM_GATEWAY_URL=https://llmgo.kxpms.cn/v1
+  🔑 POCKET_LLM_GATEWAY_API_KEY empty (envs miss)
+❌ 既没有所需镜像，也没有 kx-base:go-vue-optimized
+   离线导入: ./deploy/bin/load-images.sh   （tars 放 /tmp/opp-integ.NKkuCI/images）
+   或加载 kx-base 后用 --build 现场构建
+━━━ 2. dry-run: deploy-154.sh 派生 ━━━
+POCKET_PORT_BIND_IP=172.16.2.154
+POCKET_HTTP_PORT=8090
+POCKET_ENV_FILE=/tmp/opp-integ-154.9fI7CJ/config/.env.154
+POCKET_PROJECT_NAME=opencode-pocket-server-opp
+OPP_PG_HOST=172.16.2.210
+━━━ 3. dry-run: deploy-245.sh 派生 ━━━
+POCKET_PORT_BIND_IP=172.16.2.245
+POCKET_HTTP_PORT=8091
+POCKET_FRONTEND_PORT=4176
+POCKET_ENV_FILE=/tmp/opp-integ-245.MQeOSf/config/.env.245
+POCKET_PROJECT_NAME=opencode-pocket-server-opp
+━━━ 4. dry-run: OPP_DEPLOY_PG=true → postgres/ 创建 ━━━
+━━━ init-dirs: DEPLOY_ENV=local OS=windows-msys ━━━
+  DEPLOY_BASE_DIR = /tmp/opp-integ-pg.a9eKbw
+  OPP_SERVER_NAME = <none>
+  ✅ mkdir /tmp/opp-integ-pg.a9eKbw/data
+  ✅ mkdir /tmp/opp-integ-pg.a9eKbw/logs
+  ✅ mkdir /tmp/opp-integ-pg.a9eKbw/raw-logs
+  ✅ mkdir /tmp/opp-integ-pg.a9eKbw/config
+  ✅ mkdir /tmp/opp-integ-pg.a9eKbw/images
+  ✅ mkdir /tmp/opp-integ-pg.a9eKbw/backups
+  ✅ mkdir /tmp/opp-integ-pg.a9eKbw/attachments
+  ✅ mkdir /tmp/opp-integ-pg.a9eKbw/bin
+  ✅ mkdir /tmp/opp-integ-pg.a9eKbw/run
+  ✅ mkdir /tmp/opp-integ-pg.a9eKbw/postgres
+━━━ 完成 ━━━
+  新建 10 个目录，跳过 1 个已存在目录
+  条件 DB 数据目录已建: /tmp/opp-integ-pg.a9eKbw/postgres
+  下一步: ./deploy-local.sh（会自动生成 /tmp/opp-integ-pg.a9eKbw/config/.env.local）

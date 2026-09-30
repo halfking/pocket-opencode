@@ -31,12 +31,17 @@ _db_log() {
 }
 
 # TCP 端口探测，3s 超时
+# bash 内建 /dev/tcp 优先：Git Bash 等环境 PATH 上的 nc 可能是 BusyBox 精简版，
+# 不支持 -z/-G（报 unknown option 恒非零），不能把探测工具自身的能力缺陷
+# 当成「端口不通」——否则本机已有实例会被漏检、误走容器化路径撞端口。
+# nc 仅作 /dev/tcp 不可用（个别 bash 编译裁剪）时的兜底。
 _db_port_open() {
   local host="$1" port="$2"
+  if timeout 3 bash -c "</dev/tcp/${host}/${port}" >/dev/null 2>&1; then
+    return 0
+  fi
   if command -v nc >/dev/null 2>&1; then
     nc -z -G 3 "${host}" "${port}" >/dev/null 2>&1
-  else
-    timeout 3 bash -c "</dev/tcp/${host}/${port}" >/dev/null 2>&1
   fi
 }
 
