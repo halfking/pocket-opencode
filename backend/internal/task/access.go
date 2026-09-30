@@ -73,3 +73,37 @@ func CanWriteWorkItem(t *Task, parts []Participant, userID string) bool {
 	}
 	return isParticipant(parts, id)
 }
+
+// FilterReadableChildren keeps the children userID may read, in the order they
+// were given.
+//
+// Being able to read a parent says nothing about the children: a `private` sub
+// task belongs to whoever owns it, and the parent may be shared (or belong to
+// someone else entirely) while the child is not. Listing the children of a
+// work item you can see is therefore a read of each child, and the parent's
+// permission must not be inherited by them.
+//
+// parts is resolved per child through a callback so the caller can batch the
+// lookup (one query for the whole list) instead of issuing one per child; it
+// must return the child's own participants, and nil for an unknown id.
+func FilterReadableChildren(children []Task, parts func(Task) []Participant, userID string) []Task {
+	if len(children) == 0 {
+		return nil
+	}
+	// A caller that has no participant data at all still gets the
+	// owner/visibility half of the rule rather than a panic: a task with no
+	// participants is a normal state, and CanReadWorkItem decides correctly on
+	// an empty list.
+	lookup := parts
+	if lookup == nil {
+		lookup = func(Task) []Participant { return nil }
+	}
+	out := make([]Task, 0, len(children))
+	for i := range children {
+		child := children[i]
+		if CanReadWorkItem(&child, lookup(child), userID) {
+			out = append(out, child)
+		}
+	}
+	return out
+}

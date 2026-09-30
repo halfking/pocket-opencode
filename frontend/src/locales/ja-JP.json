@@ -371,7 +371,12 @@
     }
   },
   "email": {
-    "dailySummary": "デイリー要約"
+    "dailySummary": "デイリー要約",
+    "fetchHintNetwork": "バックグラウンド取得が完了しませんでした。同期済みメールを表示しています",
+    "fetchHintClassifierOff": "自動分類が無効です。メールは同期されましたが分類されていません",
+    "fetchHintAuth": "セッションの有効期限が切れました。再度ログインしてください。",
+    "fetchHintUnavailable": "バックグラウンドサービスを利用できません。メールは同期されました",
+    "fetchHintHttpError": "バックグラウンド取得が不完全です（{code}）。メッセージは同期済み"
   },
   "errors": {
     "rssNotConfigured": "RSS フィードがまだ設定されていません。先にフィードを追加してください。",

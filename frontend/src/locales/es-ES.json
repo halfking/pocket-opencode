@@ -371,7 +371,12 @@
     }
   },
   "email": {
-    "dailySummary": "Resumen diario"
+    "dailySummary": "Resumen diario",
+    "fetchHintNetwork": "La descarga en segundo plano no terminó; se muestran los mensajes sincronizados",
+    "fetchHintClassifierOff": "La categorización automática está desactivada; mensajes sincronizados sin categoría",
+    "fetchHintAuth": "La sesión ha caducado. Inicia sesión de nuevo.",
+    "fetchHintUnavailable": "Servicio en segundo plano no disponible; mensajes sincronizados",
+    "fetchHintHttpError": "Recuperación en segundo plano incompleta ({code}); mensajes sincronizados"
   },
   "errors": {
     "rssNotConfigured": "Aún no hay ninguna fuente RSS configurada. Añade una para empezar.",

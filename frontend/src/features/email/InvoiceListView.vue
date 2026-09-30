@@ -1,4 +1,4 @@
-<!--
+﻿<!--
   InvoiceListView — 邮件发票自动整理列表。
   路由：/email/invoices；点卡片看原邮件，点缩略图看全图/文件。
 -->
@@ -31,10 +31,34 @@
         {{ selectMode ? '取消选择' : '选择' }}
       </button>
       <button v-if="selectMode" class="chip" @click="selectAllDownloaded">选已下载</button>
+      <a
+        v-if="shareDocUrl"
+        class="chip share-doc"
+        :href="shareDocUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+      >共享台账</a>
       <div class="spacer" />
-      <button class="chip export" :disabled="exporting || downloadableSelection().length === 0" @click="exportGrid(2)">
-        {{ exporting ? '导出中…' : '导出 A4 2×2' }}
+      <button
+        class="chip export"
+        :disabled="exporting || downloadableSelection().length === 0"
+        @click="exportGrid(gridChoice)"
+      >
+        {{ exporting ? '导出中…' : `导出 A4 ${gridChoice}×${gridChoice}` }}
       </button>
+      <!-- 2×2 / 3×3 都合法：3×3 每页 9 张，量大时省纸 -->
+      <button
+        class="chip"
+        :class="{ active: gridChoice === 2 }"
+        :disabled="exporting"
+        @click="gridChoice = 2"
+      >2×2</button>
+      <button
+        class="chip"
+        :class="{ active: gridChoice === 3 }"
+        :disabled="exporting"
+        @click="gridChoice = 3"
+      >3×3</button>
       <button class="chip feishu" :disabled="pushing" @click="pushFeishu()">
         {{ pushing ? '推送中…' : '推送飞书' }}
       </button>
@@ -107,13 +131,16 @@ import { useListScene } from '../../composables/use-list-scene'
 defineOptions({ name: 'InvoiceListView' })
 
 const {
-  loading, loadingMore, hasMore, syncing, exporting, pushing, error, filter, summary, bookingId,
+  loading, loadingMore, hasMore, syncing, exporting, pushing, error, filter, summary, bookingId, shareDocUrl,
   selectMode, selected, thumbs, preview, invoices, previewSrc, previewKind, previewTitle,
   formatAmount, statusLabel, bookable, toggleSelectMode, selectAllDownloaded, togglePick,
   downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline,
   syncAndReload, exportGrid, pushFeishu, downloadInvoice, markFiled, markNew, book,
   exportCsv, remove,
 } = useInvoiceList()
+
+/** A4 网格密度：2 = 每页 4 张，3 = 每页 9 张（服务端只接受这两个值）。 */
+const gridChoice = ref<2 | 3>(2)
 
 const moreEl = ref<HTMLElement | null>(null)
 let moreObs: IntersectionObserver | null = null
@@ -160,3 +187,4 @@ onUnmounted(() => {
 .hint { font-size: 12px; margin-top: 8px; }
 .more { padding: 16px 0 24px; text-align: center; font-size: 12px; color: var(--text-muted); }
 </style>
+

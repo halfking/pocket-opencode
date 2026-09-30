@@ -36,20 +36,44 @@ func FindChineseFont(dataDir string) string {
 			}
 		}
 	}
-	candidates := []string{
-		// macOS（fpdf 只吃 ttf；ttc 不支持，不列）
-		"/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-		"/Library/Fonts/Arial Unicode.ttf",
-		// Linux（常见发行版包）
-		"/usr/share/fonts/truetype/arphic/uming.ttf",
-		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", // 非中文兜底：至少数字/拉丁可用
-	}
+	candidates := systemFontCandidates()
 	for _, p := range candidates {
 		if resolved, ok := resolveFontFile(p); ok {
 			return resolved
 		}
 	}
 	return ""
+}
+
+// systemFontCandidates 返回各平台常见中文字体候选（按优先级）。
+//
+// 只列 .ttf：go-pdf/fpdf 的 AddUTF8Font 不支持 .ttc 字体集合，而 Windows 的
+// 微软雅黑（msyh.ttc）、宋体（simsun.ttc）恰好都是 ttc，所以这里用同为中文
+// 可用的黑体（simhei.ttf）/等线（Deng.ttf）。之前候选表只有 macOS/Linux，
+// 在 Windows 开发机和 Android 设备上一律探测失败 ⇒ XML 发票重渲染恒降级为
+// failed（harvestOne 的 XML 分支），这是「XML 发票拿不到」的环境级原因。
+func systemFontCandidates() []string {
+	winDir := os.Getenv("SystemRoot") // 通常是 C:\Windows
+	if winDir == "" {
+		winDir = `C:\Windows`
+	}
+	return []string{
+		// macOS（fpdf 只吃 ttf；ttc 不支持，不列）
+		"/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+		"/Library/Fonts/Arial Unicode.ttf",
+		// Linux（常见发行版包）
+		"/usr/share/fonts/truetype/arphic/uming.ttf",
+		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", // 非中文兜底：至少数字/拉丁可用
+		// Windows：黑体/等线/仿宋/楷体都是独立 ttf，含完整 CJK
+		filepath.Join(winDir, "Fonts", "simhei.ttf"),
+		filepath.Join(winDir, "Fonts", "Deng.ttf"),
+		filepath.Join(winDir, "Fonts", "simfang.ttf"),
+		filepath.Join(winDir, "Fonts", "simkai.ttf"),
+		filepath.Join(winDir, "Fonts", "NotoSansSC-VF.ttf"),
+		// Android（pocketd 跑在设备上时）：DroidSansFallback 是 CJK 兜底 ttf；
+		// 系统里的 NotoSansCJK 只有 ttc/.otf，fpdf 都不吃，不列。
+		"/system/fonts/DroidSansFallback.ttf",
+	}
 }
 
 // resolveFontFile 确认是常规文件（含 symlink 目标解析）且为 .ttf。

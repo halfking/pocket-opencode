@@ -412,11 +412,29 @@ func decodePartBytes(r io.Reader, transferEncoding string) ([]byte, error) {
 }
 
 // decodeMIMEWord 解 RFC 2047 编码头（=?utf-8?B?...?=）。
+// decodeMIMEWord 解 RFC 2047 编码字（=?charset?B|Q?text?=）。
+//
+// 必须挂 CharsetReader：mime.WordDecoder 默认只认 UTF-8/ISO-8859-1，
+// 遇到国内企业邮箱最常见的 `=?GBK?B?...?=` 会直接报错，于是**整个头字段原样返回**
+// ——症状是列表里所有中文主题都显示成 `=?GBK?B?5Y2G5bCP?=`。实测企业微信邮箱
+// 收信 5 封、5 封主题全是编码字原文。
 func decodeMIMEWord(s string) string {
 	if s == "" {
 		return ""
 	}
-	dec := new(mime.WordDecoder)
+	dec := &mime.WordDecoder{
+		CharsetReader: func(label string, input io.Reader) (io.Reader, error) {
+			raw, err := io.ReadAll(input)
+			if err != nil {
+				return nil, err
+			}
+			out, derr := decodeCharset(raw, strings.ToLower(strings.TrimSpace(label)))
+			if derr != nil {
+				return nil, derr
+			}
+			return bytes.NewReader(out), nil
+		},
+	}
 	if out, err := dec.DecodeHeader(s); err == nil {
 		return out
 	}

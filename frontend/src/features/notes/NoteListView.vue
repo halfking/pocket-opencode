@@ -28,6 +28,14 @@
       <template v-if="isRecording">
         <NoteRecordingStudio v-model="liveTranscript" :error="recError" />
       </template>
+      <!--
+        转写错误只在「录音结束后」才产生（runStop() 里的兜底转写失败才写
+        recError），而 NoteRecordingStudio 只在 isRecording 为真时挂载。
+        一点停止它就被卸载，错误随之从界面上消失 —— 用户只看到"点完没反应"，
+        正是「语音没有转成文字」被报成卡死的原因。这里在停止后继续把错误
+        单独显示出来，直到用户开始下一次录音（watch 里清空）。
+      -->
+      <p v-else-if="recError" class="studio-error" role="alert">{{ recordErrorText }}</p>
       <template v-else>
         <div class="context-row">
           <button
@@ -109,12 +117,14 @@ import { DEFAULT_LIST_PAGE_SIZE, pageHasMore } from '../../native/list-sync/page
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
 import { useListScene } from '../../composables/use-list-scene'
+import { useApiError } from '../../composables/useApiError'
 import { useAuthStore } from '../../stores/auth'
 
 defineOptions({ name: 'NoteListView' })
 
 const router = useRouter()
 const auth = useAuthStore()
+const apiError = useApiError()
 const notes = ref<LocalNote[]>([])
 const loading = ref(true)
 const loadingMore = ref(false)
@@ -136,6 +146,17 @@ const {
   toggle: toggleRecording,
   consumePendingResult,
 } = useNoteRecording()
+
+/**
+ * 录音停止后的转写错误文案。
+ *
+ * recError 存的是原始异常文本（"Failed to fetch" / 后端错误 JSON），
+ * 与 NoteRecordingStudio 用同一套归一：已知类别走 i18n，识别不出时
+ * 再兜底一次多语言转文字失败。
+ */
+const recordErrorText = computed(() =>
+  recError.value ? apiError(recError.value, 'errors.sttNotConfigured') : '',
+)
 
 const DOMAINS = [
   { value: 'all', label: '全部', emoji: '🗂' },
@@ -307,6 +328,13 @@ useListScene('notes', load)
 </script>
 
 <style scoped>
+/* 录音停止后的转写失败提示。NoteRecordingStudio 里同名类是它 scoped 的，
+   不会作用到本页，所以这里自带一份（保持视觉一致：danger 色 + 13px）。 */
+.studio-error {
+  margin: 0 0 var(--space-2);
+  color: var(--danger);
+  font-size: 13px;
+}
 /* 这两个按钮经 HeaderActionsPortal teleport 到 AppLayout 的 .header-actions，
    scope 属性只挂在按钮自己身上，`:deep(.notes-action)` 编译成
    `[data-v-x] .notes-action`（要求祖先带 scope）→ 永不匹配，圆角描边一直没生效。

@@ -67,11 +67,24 @@ func (s *Server) loadUserGatewaySetting(userID, workspaceID string) *usersetting
 	return rec
 }
 
+// pickGatewayState 选出某工作区当前生效的网关状态。两种借用 default 工作区
+// 快照的情况必须分开处理：
+//   - 地址是废弃的本机 8782：只把地址换回默认网关，**保留本工作区自己的 key**。
+//     早先这两件事混在一个条件里；而 2026-09-30 起 default 快照自带内置 key，
+//     混着判会让「8782 + 自有 key」的工作区整个配置被 default 快照顶掉，
+//     用户在设置页配的 key 被静默换成内置那把。
+//   - 完全没有 key：这时才向 default 工作区借一整套（地址+key+模型）。
 func (s *Server) pickGatewayState(workspaceID string) llmGatewayState {
 	st := s.gatewaySnapshot(workspaceID)
-	if (obsoleteLocalGatewayURL(st.BaseURL) || st.APIKey == "") && workspaceID != "default" {
-		fb := s.gatewaySnapshot("default")
-		if !obsoleteLocalGatewayURL(fb.BaseURL) && fb.APIKey != "" {
+	if workspaceID == "default" {
+		return st
+	}
+	if obsoleteLocalGatewayURL(st.BaseURL) {
+		st.BaseURL = opencode.DefaultLLMGatewayBaseURL
+		return st
+	}
+	if st.APIKey == "" {
+		if fb := s.gatewaySnapshot("default"); !obsoleteLocalGatewayURL(fb.BaseURL) && fb.APIKey != "" {
 			return fb
 		}
 	}
@@ -86,7 +99,13 @@ func (s *Server) effectiveGatewayState(userID, workspaceID string) llmGatewaySta
 	if rec := s.loadUserGatewaySetting(userID, workspaceID); rec != nil {
 		st = overlayGatewaySetting(st, rec)
 	}
-	if (obsoleteLocalGatewayURL(st.BaseURL) || st.APIKey == "") && workspaceID != "default" {
+	// 用户级设置可能把地址覆盖成废弃的 8782：同样只换地址、保留 key。
+	if obsoleteLocalGatewayURL(st.BaseURL) {
+		st.BaseURL = opencode.DefaultLLMGatewayBaseURL
+		return st
+	}
+	// 仍然没有任何 key：这时才向 default 工作区借。
+	if st.APIKey == "" && workspaceID != "default" {
 		fb := s.pickGatewayState("default")
 		if rec := s.loadUserGatewaySetting(userID, "default"); rec != nil {
 			fb = overlayGatewaySetting(fb, rec)

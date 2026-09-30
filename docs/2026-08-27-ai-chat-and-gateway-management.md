@@ -36,8 +36,11 @@
 ## 2. 配置
 
 ```bash
-# 数据面（对话）：默认即 https://llmgo.kxpms.cn，写不写 /v1 均可（自动归一化）
-POCKET_LLM_GATEWAY_API_KEY=<data_key>          # 必需（或在 App 设置→AI 模型 里保存）
+# 数据面（对话）：默认即 https://llm.kxpms.cn/v1，写不写 /v1 均可（自动归一化）
+# 2026-09-30 起默认地址/密钥/常用模型都内置在 opencode.DefaultLLMGateway* 常量里，
+# 全新实例不配 env 也能在「设置 → AI 网关」直接连通；下面两个 env 仍可覆盖。
+POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1    # 可选，覆盖内置默认地址
+POCKET_LLM_GATEWAY_API_KEY=<data_key>            # 可选，覆盖内置默认 key
 
 # 控制面（管理页）：需在 App「网关节点」配置 admin 用户名/密码（super_admin 角色）
 # 节点存储依赖 PostgreSQL + POCKET_EMAIL_MASTER_KEY

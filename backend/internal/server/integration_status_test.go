@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
@@ -126,12 +125,15 @@ func TestIntegrationStatus_MethodNotAllowed(t *testing.T) {
 	}
 }
 
-// llm_gateway 必须按「BaseURL 是否配置」报告——llmGWCache 在 newServer
-// 中无条件创建，不能作为启用信号（回归：曾恒报 enabled=true）。
-func TestIntegrationStatus_LLMGatewayDisabledWithoutBaseURL(t *testing.T) {
-	if os.Getenv("POCKET_LLM_GATEWAY_URL") != "" {
-		t.Skip("POCKET_LLM_GATEWAY_URL set in env; snapshot would report configured")
-	}
+// 没有 env 就没有内置密钥，网关必须如实报「未配置」。
+//
+// 这条测试原本断言相反的事：源码里曾有一个明文默认 key，于是网关「永远已配置」，
+// 运营方从没配过的实例也会拿那把 key 去调网关——会议转写、邮件分类、STT 探测
+// 都走这条，真实调用失败时用户看到的是 502，而不是「你没配 key」。
+// 移除内置密钥后，这些路径一律报「网关未配置」，这才是诚实的答案。
+func TestIntegrationStatus_LLMGatewayReportsUnconfiguredWithoutEnv(t *testing.T) {
+	t.Setenv("POCKET_LLM_GATEWAY_URL", "")
+	t.Setenv("POCKET_LLM_GATEWAY_API_KEY", "")
 	srv, _, signer, _ := newMobileRouteServer(t)
 	tok, _ := signer.SignWithWorkspace("ops", "member", "ws-a")
 
@@ -143,14 +145,52 @@ func TestIntegrationStatus_LLMGatewayDisabledWithoutBaseURL(t *testing.T) {
 	}
 	var resp struct {
 		Integrations map[string]struct {
-			Enabled bool `json:"enabled"`
+			Enabled      bool   `json:"enabled"`
+			Configured   bool   `json:"configured"`
+			Capabilities string `json:"capabilities"`
 		} `json:"integrations"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if gw, ok := resp.Integrations["llm_gateway"]; !ok || gw.Enabled {
-		t.Fatalf("llm_gateway must be disabled when baseURL unconfigured, got %+v", resp.Integrations)
+	gw, ok := resp.Integrations["llm_gateway"]
+	if !ok {
+		t.Fatalf("llm_gateway entry missing: %+v", resp.Integrations)
+	}
+	if gw.Enabled || gw.Configured {
+		t.Fatalf("without a key the gateway must report unconfigured, got %+v", gw)
+	}
+	if !strings.Contains(gw.Capabilities, "no gateway credentials") {
+		t.Fatalf("capabilities must say why it is disabled, got %q", gw.Capabilities)
+	}
+	// 端点绝不回显地址/key 本身（内部地址泄露防护）。
+	if strings.Contains(rr.Body.String(), "llm.kxpms.cn") || strings.Contains(rr.Body.String(), "sk-") {
+		t.Fatalf("status must not echo gateway URL or key: %s", rr.Body.String())
+	}
+}
+
+// env 显式配置时来源标 env，仍不得回显地址。
+func TestIntegrationStatus_LLMGatewayReportsEnvSource(t *testing.T) {
+	t.Setenv("POCKET_LLM_GATEWAY_URL", "https://llm.kxpms.cn/v1")
+	srv, _, signer, _ := newMobileRouteServer(t)
+	tok, _ := signer.SignWithWorkspace("ops", "member", "ws-a")
+
+	req := mobileRequest(http.MethodGet, "/api/integration/status", tok, "")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	var resp struct {
+		Integrations map[string]struct {
+			Enabled      bool   `json:"enabled"`
+			Capabilities string `json:"capabilities"`
+		} `json:"integrations"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	gw := resp.Integrations["llm_gateway"]
+	if !gw.Enabled || !strings.Contains(gw.Capabilities, "source: env") {
+		t.Fatalf("env-configured gateway must report enabled + source=env, got %+v", gw)
 	}
 }
 

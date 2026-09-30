@@ -33,8 +33,13 @@ func (s *Server) handleEmailClassify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "email store not configured")
 		return
 	}
-	if s.kxmemory == nil {
-		writeError(w, http.StatusServiceUnavailable, "classifier not configured")
+	// 分类器门槛：kxmemory 与 LLM 网关至少要有一个可用。
+	//
+	// 之前只看 s.kxmemory，没配 POCKET_KXMEMORY_BASE_URL 时一律 503，
+	// 于是「邮件自动归纳整理」在只配了 LLM 网关的部署里彻底不可用，
+	// 而用户明明已经配好了网关。现在 kxmemory 缺失会自动退到网关分类器。
+	if s.kxmemory == nil && s.llmBFF == nil && s.llm == nil {
+		writeError(w, http.StatusServiceUnavailable, "email classifier not configured")
 		return
 	}
 	var body classifyEmailsBody
@@ -87,7 +92,22 @@ func (s *Server) handleEmailClassify(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// classifyOneEmail 给单封邮件归类。
+//
+// 优先 kxmemory（专用分类服务）；未配置或调用失败时退到已配置的 LLM 网关，
+// 保证「自动归纳整理」在只配网关的部署里也能工作。
 func (s *Server) classifyOneEmail(ctx context.Context, it email.ClassifyItem, userID, workspaceID string) (classifyResultJSON, error) {
+	if s.kxmemory != nil {
+		out, err := s.classifyViaKxmemory(ctx, it, userID, workspaceID)
+		if err == nil {
+			return out, nil
+		}
+		log.Printf("[email/classify] %s: kxmemory failed (%v), falling back to llm gateway", it.ID, err)
+	}
+	return s.classifyViaGateway(ctx, it, userID, workspaceID)
+}
+
+func (s *Server) classifyViaKxmemory(ctx context.Context, it email.ClassifyItem, userID, workspaceID string) (classifyResultJSON, error) {
 	out := classifyResultJSON{EmailID: it.ID}
 	callCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()

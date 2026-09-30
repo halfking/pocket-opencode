@@ -371,7 +371,12 @@
     }
   },
   "email": {
-    "dailySummary": "Résumé quotidien"
+    "dailySummary": "Résumé quotidien",
+    "fetchHintNetwork": "Récupération en arrière-plan incomplète ; messages synchronisés affichés",
+    "fetchHintClassifierOff": "Catégorisation automatique désactivée ; messages synchronisés mais non catégorisés",
+    "fetchHintAuth": "Session expirée. Veuillez vous reconnecter.",
+    "fetchHintUnavailable": "Service en arrière-plan indisponible ; messages synchronisés",
+    "fetchHintHttpError": "Récupération en arrière-plan incomplète ({code}) ; messages synchronisés"
   },
   "errors": {
     "rssNotConfigured": "Aucun flux RSS configuré pour l'instant. Ajoutez un flux pour commencer.",

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Email assistant API — multi-account IMAP aggregation, AI classification,
  * and daily summaries. See docs/2026-07-02-email-assistant-design.md.
  */
@@ -425,6 +425,9 @@ export interface EmailInvoicePushResult {
   errors?: string[]
   shareDocCsv?: string
   shareDocMd?: string
+  /** 飞书共享台账（电子表格）链接；飞书未配置/未授权时为空。 */
+  shareDocUrl?: string
+  ledgerError?: string
   message?: string
 }
 
@@ -448,6 +451,8 @@ export interface EmailInvoiceSummary {
   }[]
   shareDocCsv?: string
   shareDocMd?: string
+  /** 飞书共享台账链接（别人可打开的电子表格，含清单与合计）。 */
+  shareDocUrl?: string
 }
 
 /** 一轮流水线的执行报告（对齐后端 email.PipelineReport）。 */
@@ -471,5 +476,14 @@ export interface EmailPipelineReport {
   feishuFailed: number
   shareDocCsv?: string
   shareDocMd?: string
+  /**
+   * 飞书共享台账链接。
+   *
+   * 后端 PipelineReport 自带 shareDocUrl（未配置飞书时省略），但这个类型
+   * 早于该字段加上：不声明的话定时跑产出的链接会被静默丢弃，只有手动推送
+   * 那条路径（走 EmailInvoicePushResult）才可能填上界面上的芯片。
+   */
+  shareDocUrl?: string
   errors?: string[]
 }
+

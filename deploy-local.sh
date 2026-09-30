@@ -172,8 +172,10 @@ POCKET_EMAIL_FETCH_ENABLED=false
 POCKET_FEISHU_APP_ID=
 POCKET_KXMEMORY_BASE_URL=
 
-# ---- 自有 kaixuan OpenAI 兼容网关（真值由 envs 注入，勿手写真 key）----
-POCKET_LLM_GATEWAY_URL=https://llmgo.kxpms.cn/v1
+# ---- 自有 OpenAI 兼容网关（https://llm.kxpms.cn/v1）----
+# key 留空时 pocketd 回落到内置默认 key（internal/opencode.DefaultLLMGatewayAPIKey），
+# 真值仍优先取 envs 注入的 POCKET_LLM_GATEWAY_API_KEY。
+POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1
 POCKET_LLM_GATEWAY_API_KEY=
 EOF
   # Database provisioning may already have written a DSN. Fill missing keys,
@@ -221,12 +223,12 @@ existing_key = next((ln.split("=", 1)[1] for ln in text.splitlines() if ln.start
 lines = [ln for ln in text.splitlines() if not ln.startswith("POCKET_LLM_GATEWAY_URL=") and not ln.startswith("POCKET_LLM_GATEWAY_API_KEY=")]
 while lines and lines[-1] == "":
     lines.pop()
-lines.append("POCKET_LLM_GATEWAY_URL=https://llmgo.kxpms.cn/v1")
+lines.append("POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1")
 lines.append(f"POCKET_LLM_GATEWAY_API_KEY={key or existing_key}")
 path.write_text("\n".join(lines) + "\n")
 path.chmod(0o600)
-print("  🔑 injected POCKET_LLM_GATEWAY_URL=https://llmgo.kxpms.cn/v1")
-print("  🔑 POCKET_LLM_GATEWAY_API_KEY", "loaded" if key else "preserved" if existing_key else "empty (envs miss)")
+print("  🔑 injected POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1")
+print("  🔑 POCKET_LLM_GATEWAY_API_KEY", "loaded" if key else "preserved" if existing_key else "empty (pocketd falls back to built-in default key)")
 PY
 }
 

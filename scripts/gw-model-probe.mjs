@@ -4,9 +4,11 @@ import { readFileSync } from 'node:fs'
 const GW = 'https://llm.kxpms.cn/v1';
 const KEY = process.env.POCKET_GW_KEY || readFileSync('logs/.gateway-key', 'utf8').trim();
 const MODELS = (process.env.GW_MODELS || [
-  'claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-sonnet-5',
-  'gpt-5.6', 'gpt-5.5', 'gpt-5.4', 'glm-5.2', 'minimax-m3',
-  'deepseek-v4-pro', 'mimo-v2.5-pro', 'gpt-4o-mini',
+  // 与 backend/internal/opencode/config_writer.go 的
+  // DefaultLLMGatewayPreferredModels 同源（用户 2026-09-30 指定）
+  'glm-5.2', 'minimax-m3', 'kimi-k3', 'claude-sonnet-5', 'gpt-5.6-terra',
+  'claude-opus-5', 'claude-fable-5', 'gpt-5.6-sol', 'gemini-3.5-flash',
+  'gpt-4o-mini',
 ].join(',')).split(',').map((s) => s.trim()).filter(Boolean);
 
 const TIMEOUT = Number(process.env.GW_TIMEOUT || 45000);

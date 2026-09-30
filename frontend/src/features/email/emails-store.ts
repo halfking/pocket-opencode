@@ -216,7 +216,13 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
        e.hasAttachments ? 1 : 0, now, updatedAt],
     )
     return true
-  } catch {
+  } catch (err) {
+    // 不能裸吞：任何 DB 错误都会被当成「不是新邮件」而静默丢弃。
+    // 最典型的是 account_id 外键失败——对应账户没进 local_email_accounts
+    // 时（account-sync 会按 isLocalTestAddress 跳过 *.local 账户），每一封
+    // 邮件都写不进去，用户只看到「暂无邮件」，界面、接口、日志全无痕迹。
+    // 真机实测就是这样静默丢了 6 封邮件。
+    console.warn('[email] upsert into local mirror failed:', id, err)
     return false
   }
 }
@@ -252,8 +258,12 @@ export async function maxEmailUpdatedAt(): Promise<number> {
 export async function syncEmailsFromServer(limit = 200, since = 0): Promise<number> {
   const { emailApi } = await import('../../api/email')
   const res = await emailApi.listEmails({ limit, since: since > 0 ? since : undefined })
+  const incoming = (res.emails ?? []).slice(0, limit)
   let n = 0
-  for (const e of (res.emails ?? []).slice(0, limit)) {
+  // 「没写进去」和「本来就有」在返回值上无法区分，两者混在一起会让调用方
+  // 以为同步成功。单独计数并告警，避免又变成一条查不出根因的静默路径。
+  let failed = 0
+  for (const e of incoming) {
     const dateMs = emailDateToMs(typeof e.date === 'number' ? e.date : Date.parse(String(e.date)) || 0) || Date.now()
     const ok = await upsertEmail({
       id: e.id,
@@ -275,6 +285,14 @@ export async function syncEmailsFromServer(limit = 200, since = 0): Promise<numb
       updatedAt: e.updatedAt && e.updatedAt > 0 ? e.updatedAt : dateMs,
     })
     if (ok) n++
+    else failed++
+  }
+  if (failed > 0) {
+    console.warn(
+      `[email] ${failed}/${incoming.length} 封未能写入本地镜像。` +
+      '最常见原因是 account_id 外键失败：该账户没被写进 local_email_accounts' +
+      '（account-sync 会按 isLocalTestAddress 跳过 *.local 账户），此时收件箱会一直显示为空。',
+    )
   }
   const tombstones = res.deletedIds ?? []
   if (tombstones.length > 0) {

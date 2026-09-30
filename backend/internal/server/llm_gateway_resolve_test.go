@@ -153,4 +153,14 @@ func TestSyncGatewayUserSettingMakesSaveTakeEffect(t *testing.T) {
 	if cfg := srv.ResolveGatewayForUser("user-admin", "ws_user-admin"); cfg.BaseURL != want {
 		t.Fatalf("ResolveGatewayForUser must return the saved URL, got %q", cfg.BaseURL)
 	}
+
+	// 同秒连写不能被静默丢弃：usersetting 的 DecidePut 按 unix 秒比较，
+	// 时间戳相同会判 DecisionKeep。直接用 time.Now().Unix() 时，"保存设置页"
+	// 紧接着被覆盖层 PUT 就会写不进去，症状仍是「保存成功但读回旧值」。
+	const second = "https://llmgo.kxpms.cn/v1"
+	srv.syncGatewayUserSetting(req, "ws_user-admin",
+		llmGatewayState{BaseURL: second, APIKey: "sk-x", Format: defaultGatewayFormat})
+	if cfg := srv.ResolveGatewayForUser("user-admin", "ws_user-admin"); cfg.BaseURL != second {
+		t.Fatalf("same-second consecutive save must still take effect, got %q", cfg.BaseURL)
+	}
 }
