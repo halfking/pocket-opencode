@@ -2535,10 +2535,11 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   记账/确认入账/暂无账单/笔记自动…）。它引用的两个错误兜底键在 9/9 语言里都已翻译，
   说明**只是这一页漏了**，不是缺键。本轮**未修**（§4.33.6）——
   9 种语言 × 20 条记账术语需要逐条审，错译比不译更糟。
-- **⚠️ 设备启动期 9 条 console.error 未定性**（§4.35）：含本地 SQLite 的
-  `Execute: incomplete input (code 1) … COALESCE(NULLIF(new|old.search_text …)`，
-  指向笔记 FTS 触发器 DDL。**根因、影响面、设备上触发器是否存在，三件都还没确认。**
-  下轮必须先查 `sqlite_master` 或走 UI 端到端，不许靠推测改代码。
+- **⚠️ 设备启动期 9 条 console.error** → **已定性并修复**（§4.38 BUG-AH）：
+  根因是 `@capacitor-community/sqlite` 的 Android `execute` 按**字面量「分号 + LF」**
+  切分语句，把 `CREATE TRIGGER … BEGIN <stmt>;\nEND;` 截断，
+  **三个笔记 FTS 触发器一个都没建出来**。后果是搜索可能返回已删除/旧内容的笔记
+  （索引行数当时与笔记数相等，掩盖了内容陈旧）。真机验证 3/6 → **6/6**。
 - **密码箱（vault）**：状态比原先记的**好**。后端密文传输层
   `GET/POST /api/vault/sync/` **已实现并验证**（§4.36.1 修正了「恒 404」的旧说法）。
   本轮修掉 **BUG-AG**（空 blob 上传覆盖密文并回 200 ok，丢数据）。
@@ -3197,6 +3198,95 @@ Execute: incomplete input (code 1): , while compiling …COALESCE(NULLIF(old.sea
    （旧词应消失）→ 删除 → 再搜（旧词不应还在）。
 
 在这两条之一做完之前，**不要**把它写成「已确认缺陷」，也**不要**改代码碰运气。
+
+## 4.38 BUG-AH：三个笔记 FTS 触发器一个都没建出来（根因 + 修复 + 真机 6/6）
+
+§4.35 那条「未定性」的启动期报错，这一轮**定性并修掉了**。
+
+### 4.38.1 定性走了四步弯路，每一步都被自己的错误判据挡住
+
+| 步骤 | 我以为的 | 实际 | 是谁的问题 |
+|---|---|---|---|
+| 1 | 报错来自 App 的 JS | 堆栈是 `win.androidBridge.onmessage`，**来自 Capacitor 原生桥** | 我的假设 |
+| 2 | 拉库文件查 `sqlite_master` | `lobsterSQLite.db` 是 **SQLCipher 加密**的，静态读不了 | 环境限制 |
+| 3 | 挂 `window.Capacitor.Plugins.SQLite` 记 SQL | 插件注册名其实是 **`CapacitorSQLite`**，挂空了，捕获 0 条 | **判据 bug** |
+| 4 | 插件按 `;` 机械切分，所以触发器建不出来 | 实验 A~E 证明**单条含内部分号的触发器能建成** | 假设被自己的实验推翻 |
+
+**教训**：第 3 步那个「捕获 0 条」，如果我当时把它当成「没有 SQL 执行、说明不是这条路径」就收工，
+根因会继续悬着。**探针捕获 0 条 = 探针坏了**，不等于事实为 0。
+
+### 4.38.2 决定性观测：设备上 FTS 虚表在、触发器全无
+
+`check-fts-triggers-device.mjs`（新）通过插件直接问 `sqlite_master`：
+
+```
+{"name":"local_notes","type":"table"}
+{"name":"local_notes_fts","type":"table"}
+{"name":"local_notes_fts_data","type":"table"} …（影子表）
+—— 没有 local_notes_ai / _ad / _au
+```
+
+脚本第一版把返回的**对象数组**当成二维数组取 `r[0]`，名字集合恒空 → 报 5 条 FAIL。
+那 5 条「全失败」反而是线索：逼我去看原始返回，才发现虚表在、触发器全无。
+修好解析后，**修前基线 = 3/6，正好是三个触发器判据 FAIL**。
+
+### 4.38.3 根因：插件按**字面量「分号 + LF」**切分
+
+`exp-trigger-bisect.mjs`（新）在**活的插件**上逐组试：
+
+| 用例 | 特征 | 结果 |
+|---|---|---|
+| 1 | LF 多行，体内有 `;\n` | ❌ incomplete input |
+| 2 | 同一段 SQL 压成一行 | ✅ |
+| 3/4/5 | 去掉 COALESCE / NULLIF / 换成 SELECT，仍是多行 | ❌（说明与表达式无关） |
+| 6 | CRLF 多行（串里没有 `;\n` 这两个字符） | ✅ |
+| 7 | **多行**、有内部分号，但 `;` 后跟**空格** | ✅ |
+| 8 | **单行**，但体内含 `;\n` | ❌ |
+
+**7 与 8 互为判别**：变量是「分号后面是不是 LF」，与「多不多行」「有没有内部分号」都无关。
+CRLF 能活下来，正因为 `;\n` 这两个相邻字符不出现（是 `;\r\n`）。
+
+`splitSqlStatements`（`schema.ts:655`）把触发体完整交给插件是对的，
+但插件**还会再害一次** —— 于是 SCHEMA_SQL 里那三个触发器每次打开都建不出来。
+虚表幸存是因为它体内没有分号。
+
+### 4.38.4 影响：搜索会返回已删除 / 旧内容的笔记
+
+`notes-search.ts:36-41` 走的是 `local_notes_fts MATCH` + `bm25()`，索引不是摆设。
+`_ad` / `_au` 缺失意味着**删改笔记不会从索引里摘掉旧行**。
+之前没暴露，是因为 `notes-fts-ready.ts` 的全量回灌让行数一度对得上
+（本轮实测 fts=10 / notes=10）—— **行数相等掩盖了内容陈旧**。
+
+### 4.38.5 修复
+
+`schema.ts` 新增 `normalizeTriggerForPluginExecute`：只对 `CREATE TRIGGER` 语句，
+把「分号 + 换行」压成「分号 + 空格」；`local-db.ts` 的 SCHEMA_SQL 循环与
+笔记 FTS 迁移路径都套用它。只动触发器是因为只有它们的触发体天然含分号，
+普通语句不碰，也就不可能误伤字符串字面量里的换行（单测里有专门一条守这个）。
+
+### 4.38.6 验证
+
+**单元**（`schemaTriggerNormalize.test.mjs`，新）4/4，与既有 `schemaSplit` 合跑 **7/7**，
+`npx vue-tsc --noEmit` exit 0。
+
+**证伪要诚实**：把 `normalizeTriggerForPluginExecute` 改成恒等函数后，
+**只有第 2 条**（「归一化后语句里不再有 `;\n`」）如期红；
+第 3 条（触发器真的生效）**照样全绿** —— 因为 `node:sqlite` 是真 SQLite，
+它本来就接受 `;\n` 的触发体，**截断是 Capacitor 插件的毛病，不是 SQLite 的**。
+所以单元测试只能锁住「归一化存在」，判别 BUG-AH 的必须是真机那条。
+
+**真机**（重新 `build-mobile` → `cap sync` → `assembleDebug` → `adb install -r -g`）：
+
+```
+修前  check-fts-triggers-device.mjs → 3/6（ai/ad/au 三条 FAIL）
+修后  check-fts-triggers-device.mjs → 6/6
+      sqlite_master 里 local_notes_ai / _ad / _au 三个 trigger 全部在列
+```
+
+启动期 `console.error` 也从 **9 条降到 0 条**（重载后复测）。
+剩下的「`SetEncryptionSecret: a passphrase has already been set`」是幂等初始化提示，
+不是缺陷。
+
 
 ### 4.35.1 ⚠️ 跨会话冲突面从 9 涨到 10（本轮新增 `server.go`）
 
