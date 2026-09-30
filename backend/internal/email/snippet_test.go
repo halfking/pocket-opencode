@@ -1,6 +1,8 @@
 package email
 
 import (
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -108,5 +110,66 @@ func TestDeriveSnippet_EntityDecodingNotDouble(t *testing.T) {
 	got := DeriveSnippet([]byte("<p>余额 &amp;lt; 100</p>"), 500)
 	if got != "余额 &lt; 100" {
 		t.Fatalf("实体解码错误（二次解码或顺序错了）：%q", got)
+	}
+}
+
+// 回归护栏：DeriveSnippet 本身正确还不够，fetcher.go 的**每一个**摘要产生点都
+// 必须真的走它。否则纯函数就是死代码，用户在真机上照样看到原始 MIME。
+//
+// 2026-10-01 记录：本测试与 fetcher.go 的三处调用点在一次并行会话的 merge
+// 提交（94b55ff）里被连带删除 —— 缺陷静默回归且没有任何测试转红。所以这里断言
+// 的是「源码里不允许再出现的旧写法」+「调用点数量」，而不只是跑一遍纯函数。
+func TestFetcherUsesDeriveSnippetAtEverySnippetSite(t *testing.T) {
+	src, err := os.ReadFile("fetcher.go")
+	if err != nil {
+		t.Fatalf("读不到 fetcher.go：%v", err)
+	}
+	text := string(src)
+
+	// 护栏必须只看**代码**不看注释：这些禁用写法的名字经常出现在解释「原来错在哪」
+	// 的注释里，不剥离就会自己把自己判成 FAIL（第一版就踩了这个坑）。
+	var code strings.Builder
+	for _, line := range strings.Split(text, "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		code.WriteString(line)
+		code.WriteString("\n")
+	}
+	codeText := code.String()
+
+	forbidden := []struct {
+		desc string
+		re   string
+	}{
+		{
+			desc: "IMAP 主路径未走 DeriveSnippet（strings.TrimSpace(string(bs.Bytes))）",
+			re:   `strings\.TrimSpace\(string\(bs\.Bytes\)\)`,
+		},
+		{
+			desc: "IMAP 主路径仍按字节切摘要（snippet[:500]）",
+			re:   `snippet\s*\[:500\]`,
+		},
+		{
+			desc: "按需补拉路径未走 DeriveSnippet（truncateStr(strings.TrimSpace(string(bs.Bytes)), 500)）",
+			re:   `truncateStr\(strings\.TrimSpace\(string\(bs\.Bytes\)\)`,
+		},
+		{
+			desc: "POP3 的 HTMLBody 未剥标签（truncateStr(strings.TrimSpace(parsed.HTMLBody), 500)）",
+			re:   `truncateStr\(strings\.TrimSpace\(parsed\.HTMLBody\),\s*500\)`,
+		},
+	}
+	for _, f := range forbidden {
+		re, err := regexp.Compile(f.re)
+		if err != nil {
+			t.Fatalf("护栏自身的正则 %q 编译失败：%v", f.re, err)
+		}
+		if re.MatchString(codeText) {
+			t.Errorf("fetcher.go 仍存在%s", f.desc)
+		}
+	}
+
+	if n := strings.Count(codeText, "DeriveSnippet("); n != 3 {
+		t.Errorf("fetcher.go 里的 DeriveSnippet 调用数 = %d，期望 3（按需补拉 / IMAP 批量主路径 / POP3 HTML 回退）", n)
 	}
 }
