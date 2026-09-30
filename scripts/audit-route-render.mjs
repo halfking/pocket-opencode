@@ -64,14 +64,41 @@ ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (m.id &
 await new Promise((r) => ws.addEventListener('open', r))
 await send('Runtime.enable')
 
-/** evaluate 加超时保护：卡死的表达式不该让整个审计挂住。 */
-async function ev(x, timeoutMs = 12000) {
-  const res = await Promise.race([
-    send('Runtime.evaluate', { expression: x, returnByValue: true }),
-    sleep(timeoutMs).then(() => ({ __timeout: true })),
-  ])
-  if (res?.__timeout) return undefined
+/**
+ * evaluate。**不带超时**。
+ *
+ * 前一版用 `Promise.race([send(...), sleep(12s)])`，超时后返回 undefined ——
+ * 但底层的 CDP `send` **仍在排队执行**。于是 `location.hash = X` 可能十几秒后才
+ * 生效，而主循环早已推进到几十条之后，赋值不断堆积。读到的 hash 是**很后面**
+ * 的路由：
+ *     /ai        -> #/flashcards/browser     (browser 在列表第 34 位)
+ *     /ai-chat   -> #/flashcards/new         (第 35 位)
+ * 报出 17 条 HASH_MISMATCH，全是假阳性。
+ *
+ * 超时只会把「慢」变成「错」。CDP 单条 evaluate 在这台设备上从未超过几秒，
+ * 直接等它返回即可。真正的「等页面就绪」由下面的 waitHash 负责。
+ */
+async function ev(x) {
+  const res = await send('Runtime.evaluate', { expression: x, returnByValue: true })
   return res?.result?.value
+}
+
+/**
+ * 设置 hash 并**轮询等待它真的生效**，而不是固定 sleep。
+ *
+ * 固定 sleep 有两个毛病：短了读到旧页面（假阴性），长了白等。
+ * 更要紧的是它掩盖了「赋值尚未生效」——上一版就是这么把 17 条正常路由报成
+ * HASH_MISMATCH 的。判据应当是「状态达到期望」，而不是「等够时间」。
+ */
+async function gotoHash(route, timeoutMs = 12000) {
+  await ev(`location.hash = ${JSON.stringify(route)}`)
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const h = await ev('location.hash')
+    if (h === route) return true
+    await sleep(300)
+  }
+  return false
 }
 
 // 会话恢复
@@ -90,26 +117,41 @@ if (await ev(`!!document.querySelector('input[placeholder*="用户名"]')`)) {
   await ev(`(function(){var b=Array.prototype.slice.call(document.querySelectorAll('button')).find(function(x){return (x.textContent||'').trim().indexOf('登录')>=0});if(b)b.click();return 1})()`)
   await sleep(6500)
 }
-console.log('session restored, hash =', await ev('location.hash', 8000))
+console.log('session restored, hash =', await ev('location.hash'))
 console.log(`\n逐路由渲染验证（${ROUTES.length} 条）\n`)
 
 const rows = []
 for (const r of ROUTES) {
-  await ev(`location.hash = ${JSON.stringify('#' + r)}`)
-  await sleep(2200)
-  const hash = await ev('location.hash', 8000)
-  const body = ((await ev(`(document.body.innerText||'').replace(/\\s+/g,' ').trim()`, 8000)) || '')
+  const target = '#' + r
+  // 轮询等待 hash 真的到位，而不是固定 sleep（理由见 gotoHash 的注释）
+  const arrived = await gotoHash(target)
+  await sleep(1200) // hash 到位后给页面渲染 / 拉数据的时间
+  const hash = await ev('location.hash')
+  const body = ((await ev(`(document.body.innerText||'').replace(/\\s+/g,' ').trim()`)) || '')
   const guarded = String(hash).includes('/login')
+  // 关键判据：**落地 hash 必须等于目标**。
+  //
+  // 这一条第一版漏了，结果报出「37/37 全通过」而实际日志长这样：
+  //     OK  /agents        -> #/ai            len=165
+  //     OK  /cost          -> #/ai-chat       len=305
+  //     OK  /flashcards    -> #/more          len=526
+  // 落地页根本不是目标页，只因为「有内容、非空白、不含 404」就判了 OK。
+  // 页面内容是上一条路由的残留 -> 非空白 -> 假阳性。
+  //
+  // 教训：判据里少一条，就等于把「没测」当成「测过了」。自己定的纪律
+  // （断言要能区分通/不通）自己也违反了。
+  const mismatch = !arrived || (!guarded && String(hash) !== target)
   const notFound = /404|页面未找到|not found|找不到页面/i.test(body)
   const blank = body.length < 12
   const onlyLoading = body.length < 30 && /加载|loading|…|\.\.\./i.test(body)
   const verdict = guarded ? 'GUARDED(被路由守卫弹走)'
+    : mismatch ? `HASH_MISMATCH(期望 ${target} 实际 ${hash})`
     : notFound ? 'NOT_FOUND'
     : blank ? 'BLANK(空白页)'
     : onlyLoading ? 'STUCK_LOADING'
     : 'OK'
   rows.push({ r, hash, verdict, len: body.length, body })
-  console.log(`${verdict.padEnd(22)} ${r.padEnd(34)} -> ${String(hash).padEnd(34)} len=${body.length}`)
+  console.log(`${verdict.padEnd(30)} ${r.padEnd(34)} -> ${String(hash).padEnd(34)} len=${body.length}`)
 }
 
 const bad = rows.filter((x) => x.verdict !== 'OK')
