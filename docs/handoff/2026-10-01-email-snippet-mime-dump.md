@@ -1,9 +1,16 @@
-# 邮件摘要透出原始 MIME —— 调用点补丁待应用（2026-10-01 真机审计）
+# 邮件摘要透出原始 MIME（2026-10-01 真机审计）
 
-> 纯函数 `DeriveSnippet` 已提交（`583f02e`，`internal/email/snippet.go` + 8 个用例）。
-> **调用点还没改**，因为 `internal/email/fetcher.go` 当时正被并行会话修改
-> （`git status` 显示 `MM`，行号在变动），按协作纪律没有抢写。
-> 本文给出精确补丁，谁在 fetcher.go 空闲时应用都行。
+> **状态更新（已修复）**：调用点补丁已提交 `d0014bd`，分支 `fix/email-snippet-callsites`
+> （worktree `C:\workspace\openpocket-wt-snippet`），**尚未并入 main**。
+> 下方「精确补丁」一节仍保留，作为补丁内容的说明。
+>
+> 原文写的「调用点还没改」这一段留档如下：纯函数 `DeriveSnippet` 先由 `583f02e` 提交
+> （`internal/email/snippet.go` + 8 个用例），当时 `internal/email/fetcher.go` 正被并行
+> 会话修改（`git status` 显示 `MM`，行号在变动），按协作纪律没有抢写。
+>
+> 插曲：随后 `94b55ff` 一次 merge 把 fetcher.go 的三处调用点**和**调用点护栏测试
+> `TestFetcherUsesDeriveSnippetAtEverySnippetSite` 一起连带删除，`DeriveSnippet` 退化成
+> 死代码——8 个纯函数用例照样全绿，缺陷静默回归。`d0014bd` 同时补回接线与护栏。
 
 ## 1. 真机证据
 
