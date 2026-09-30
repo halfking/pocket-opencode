@@ -1545,6 +1545,132 @@ ok  github.com/halfking/pocket-opencode/backend/internal/server  2.906s
    「用纳秒级时间戳足够避免单用户场景冲突」，这句注释本身就是 BUG-R 的
    错误前提。定性的代码债先读注释，注释常常就是缺陷的现场。
 
+### 4.21.8 顺带澄清：`/api/marketplace/*` 的 401 与 404 之争
+
+审计方提出「`/api/marketplace/agents` 的 404 说法无法证实，返回 401」。
+**两边都是对的，只是测的不是同一件事。**
+
+新增 `scripts/probe-marketplace-auth.mjs`（同场跑「无 token」和「带合法 token」）：
+
+```
+login status = 200  token 长度 = 291
+
+=== 前端 GET 端点（功能关键）===
+/api/marketplace/packages            无token=401  带token=200  {"packages":[]}
+/api/marketplace/packages?kind=skill 无token=401  带token=200
+/api/marketplace/packages?kind=agent 无token=401  带token=200
+/api/marketplace/releases            无token=401  带token=200
+/api/marketplace/packages/x/versions 无token=401  带token=200
+
+=== 前端 POST 端点（空 body，只看路由是否注册）===
+/api/marketplace/submit   401 -> 400 {"error":"name, kind, version, digest are required"}
+/api/marketplace/review   401 -> 400 {"error":"version_id is required"}
+/api/marketplace/publish  401 -> 400 {"error":"version_id is required"}
+/api/marketplace/install  401 -> 400 {"error":"release_id is required"}
+/api/marketplace/revoke   401 -> 400 {"error":"release_id and reason are required"}
+/api/marketplace/rate     401 -> 400 {"error":"release_id is required"}
+
+=== 无前端调用方的旧路径 ===
+/api/marketplace/agents   带token=404
+/api/marketplace/installs 带token=404
+/api/marketplace/router   带token=404
+/api/marketplace/skills   带token=404
+
+前端关键端点中 404/405 的数量: 0/11
+```
+
+**认证中间件在路由之前，缺 token 时根本走不到路由，所以必然是 401。**
+只有带合法 token 才暴露「路由是否注册」。
+**401 绝不能用来论证「端点不存在」** —— 这是本条要记住的判据。
+
+结论：
+- 前端 `features/marketplace/api.ts` 实际调用的 **11 个端点全部可达**（0 个 404/405）。
+  POST 的 400 是**正确的入参校验**，不是「路由不存在」。
+- 404 的那 4 条（`/agents` `/installs` `/router` `/skills`）**前端零调用**，
+  是旧契约残留路径。之前「不是功能缺陷」的判断**成立**，而且现在是被正面验证过的，
+  不再是假设。
+
+## 4.22 BUG-U：零卡组时「新建卡片」是条死胡同（已修 + 真机 13/13）
+
+### 4.22.1 缺陷
+
+`/flashcards` 的空态原本只有一个「新建卡片」按钮，跳 `/flashcards/new`（卡片编辑页）。
+但那页的「保存」在**没有卡组时恒 disabled**（`selectedDeckId` 为空 → `isValid` false）。
+用户点进去才发现要先建组，而建组入口是**那页顶部的另一个输入框**。
+
+**从零状态看，这是一个死胡同**：唯一的 CTA 指向一个必然无法完成任务的页面。
+
+（BUG-K 修的是「卡组页有建组入口」，BUG-U 修的是「从列表页能不能走出来」。两者盲区不同。）
+
+### 4.22.2 修法
+
+`FlashcardListView.vue` 的空态改为**就地内联建组**：
+
+- 用 `flashcards.deck.create` / `createPlaceholder`（键在 9 语言里都存在，已核）
+- 走 `store.createDeck()`，建完 `decks` computed 更新、空态自动消失
+- **故意不保留「新建卡片」按钮**：没有卡组时那页保存恒 disabled，
+  摆一个点了必然失败、又不解释原因的按钮比不放更糟
+
+### 4.22.3 真机验证（`scripts/verify-bug-u.mjs`，13/13，连跑三轮稳定）
+
+四段式判据，最后一段是唯一能排除「UI 假象」的：
+
+```
+PASS  前置：服务端 deck 数为 0            — PG 实际 0
+PASS  空态容器出现（可见 pane 内）        — bodyLen=23 deckItems=0
+PASS  内联建组表单存在
+PASS  建组输入框存在                      — placeholder=卡组名称
+PASS  提交按钮存在且初始 disabled          — text=新建卡组
+PASS  列表加载完成（loading 态消失后才交互）
+PASS  填值回读一致                        — readBack=BUGU-ZEROSTATE-DECK
+PASS  填名后提交按钮变为可用              — disabled=false {...}
+PASS  空态在提交后消失
+PASS  建组表单在提交后消失
+PASS  卡组条目节点出现（不是 innerText 碰巧含名字）— items=["BUGU-ZEROSTATE-DECK"]
+PASS  PG 落库（不信 UI，不信 localStorage） — PG deck 数=1 names=BUGU-ZEROSTATE-DECK
+PASS  无未捕获 JS 异常
+13/13 通过
+```
+
+落库判据**直接查 PG**，不信 localStorage、不信接口返回值。
+验证前置需要把闪卡表清空（dev 库，E2E 丢弃数据）。
+
+### 4.22.4 ⚠️ 这一节的重点其实是**我的验证脚本翻了三次车**
+
+功能第一次跑就通了，**翻车的是判据**。三条都是可复用的坑：
+
+**坑一：`.empty` 这个类名撞车。**
+列表里的徽章是 `<span class="badge empty">`。`querySelector('.empty')`
+拿到的是**徽章**不是空态容器，于是「空态是否消失」这条判据**构造上就永远失败**。
+`outerHTML` 打印出来是 `<span class="badge empty">今日待复习 0 张</span>` 才暴露的。
+→ 修法：给视图加稳定的 `data-testid`（`flashcards-empty` / `deck-create-form` /
+`flashcards-deck-item`），验收钩子**不许建在样式类上**。
+
+**坑二：`FoldAwareLayout` 故意同时渲染 `#outer` 和 `#inner` 两个 slot**
+（`FoldAwareLayout.vue:3-8` 的注释写得很清楚：「Always render both slots;
+CSS picks which one is visible」）。所以 `querySelectorAll` 一次拿到**两份**。
+→ 修法：所有 DOM 查询限定在**可见 pane**（`offsetParent !== null`）。
+这是**本仓库所有折叠屏页面的通用陷阱**，不止闪卡。
+
+**坑三：在 `store.refresh()` 还在飞行时就填值。**
+`onMounted` 会 `loadFromCache()` + `refresh()`，refresh 期间
+`v-if="store.loading"` 会把整个表单**卸载**；此时填的值和后续重新挂载的
+按钮是**两个不同的节点**。表现就是「输入回读成功，但按钮永远 disabled」——
+一条完全自相矛盾的假 FAIL。
+→ 修法：**等状态达到期望**（轮询 loading 态消失）再交互，而不是等够时间。
+这和 `gotoHash` 里的教训是同一条，只是当时没推广到这条路径。
+
+另外单独记录两个环境坑：
+- `psql -c "... coalesce(..., '(空)')"` 里的中文会经系统 ANSI 码页传进去，
+  报 `invalid byte sequence for encoding UTF8` → 兜底串必须纯 ASCII
+- 服务端清空后**本地 `flashcards:v1` 缓存仍会把旧卡组灌回来**，空态根本不渲染。
+  验证前必须 `localStorage.removeItem` + `Page.reload`
+
+### 4.22.5 稳定性声明（不能只凭一次绿灯）
+
+修好判据后**连跑三轮都是 13/13**。修之前同一脚本是 12/13（那条假 FAIL）。
+如实记录：这条判据**曾经 flaky**，是坑三导致的；现在三轮稳定才敢下结论。
+
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
@@ -1606,6 +1732,11 @@ ok  github.com/halfking/pocket-opencode/backend/internal/server  2.906s
   200/200 唯一、0 碰撞；`go test ./internal/server/ -count=1` 从 FAIL 转
   `ok 2.906s`，挂了两轮的 `list_A` 首次全绿。`go build ./...` OK、
   `go vet` 5 包 OK、`meeting`/`presentation`/`notifycenter`/`server` 四包全绿（§4.21）
+- **BUG-U 零卡组建组死胡同**（真机 `scripts/verify-bug-u.mjs` **13/13，连跑三轮稳定**）：
+  空态内联建组 → 提交 → 卡组条目出现 → **直接查 PG 确认落库**（§4.22）
+- **marketplace 端点可达性**：前端 `features/marketplace/api.ts` 实际调用的
+  **11 个端点 0 个 404/405**；4 个 404 路径（`/agents` `/installs` `/router` `/skills`）
+  **前端零调用**，是旧契约残留。「不是功能缺陷」的判断现在是被正面验证过的（§4.21.8）
 
 ### ⚠️ 本轮新增未验证 / 未修（不要当成已完成）
 

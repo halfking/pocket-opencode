@@ -33,9 +33,36 @@
           {{ apiError(store.error, 'errors.loadFlashcardsFailed') }}
           <button type="button" @click="reload">{{ retryLabel }}</button>
         </div>
-        <div v-else-if="decks.length === 0" class="empty">
+        <div v-else-if="decks.length === 0" class="empty" data-testid="flashcards-empty">
           <p>{{ t('flashcards.list.empty') }}</p>
-          <button class="primary" type="button" @click="goCreate">{{ t('flashcards.list.create') }}</button>
+          <!--
+            BUG-U（2026-09-30）：零卡组时这里原本只有一个「新建卡片」按钮，
+            跳 /flashcards/new —— 但那页的「保存」在没有卡组时恒 disabled
+            （selectedDeckId 为空 → isValid false）。用户点进去才发现要先建组，
+            而建组入口是那页顶部的另一个输入框。**从零状态看，这是一个死胡同。**
+            现在零卡组时直接在本页内联建组；建完列表立刻出现，可继续点「新建卡片」。
+          -->
+          <form
+            class="deck-create"
+            data-testid="deck-create-form"
+            @submit.prevent="submitCreateDeck"
+          >
+            <input
+              v-model="newDeckName"
+              type="text"
+              :placeholder="t('flashcards.deck.createPlaceholder')"
+              :aria-label="t('flashcards.deck.create')"
+            />
+            <button class="primary" type="submit" :disabled="deckCreating || !newDeckName.trim()">
+              {{ deckCreating ? t('common.loading') : t('flashcards.deck.create') }}
+            </button>
+          </form>
+          <p v-if="deckError" class="error" role="alert">{{ deckError }}</p>
+          <!--
+            这里**故意不放**「新建卡片」按钮：没有卡组时那页保存恒 disabled，
+            摆一个点了必然失败、又不解释原因的按钮比不放更糟。
+            建完组卡组立刻出现在下方列表，顶部 + 按钮即可继续建卡。
+          -->
         </div>
 
         <main v-else class="list">
@@ -43,6 +70,7 @@
             v-for="deck in decks"
             :key="deck.deckId"
             class="card"
+            data-testid="flashcards-deck-item"
             role="button"
             tabindex="0"
             @click="openDeck(deck.deckId)"
@@ -73,7 +101,7 @@
  * 依赖：stores/flashcards.ts（summaries）+ services/flashcards.ts。
  * Foldable：双 slot；外屏单卡紧凑视图，内屏完整列表。
  */
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import FoldAwareLayout from './components/FoldAwareLayout.vue'
@@ -95,6 +123,27 @@ function openDeck(deckId: string) {
 
 function goCreate() {
   router.push('/flashcards/new')
+}
+
+// BUG-U：零卡组时的内联建组。store.createDeck 建完会把卡组合并进本地缓存并
+// persistCache，因此 decks computed 会立刻更新，空态自动消失。
+const newDeckName = ref('')
+const deckCreating = ref(false)
+const deckError = ref('')
+
+async function submitCreateDeck() {
+  const name = newDeckName.value.trim()
+  if (!name || deckCreating.value) return
+  deckCreating.value = true
+  deckError.value = ''
+  try {
+    await store.createDeck(name)
+    newDeckName.value = ''
+  } catch (err) {
+    deckError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    deckCreating.value = false
+  }
 }
 
 const retryLabel = computed(() => t('flashcards.error.loadFailed') || 'Retry')
@@ -164,6 +213,17 @@ onMounted(async () => {
   color: var(--text-inverse);
   border-radius: var(--radius-sm);
   cursor: pointer;
+}
+.empty .primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.deck-create { display: flex; gap: var(--space-2); margin-top: var(--space-3); }
+.deck-create input {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: inherit;
 }
 .error { margin: var(--space-3); padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); display: flex; gap: 8px; align-items: center; }
 .error button { border: 1px solid var(--danger); background: transparent; color: var(--danger); padding: 4px 10px; border-radius: var(--radius-sm); cursor: pointer; }

@@ -751,3 +751,73 @@ ID: fmt.Sprintf("mtg_%d_%d", now.UnixNano(), meetingIDSeq.Add(1)),
 - `internal/agent` 的 FAIL 全部是 Windows 平台问题：
   `fork/exec ...fake-pi.sh: %1 is not a valid Win32 application`、
   无扩展名可执行文件 —— 测试假设 POSIX shell。**预先存在，未修。**
+
+---
+
+## BUG-U：零卡组时「新建卡片」是条死胡同
+
+### 缺陷
+
+`/flashcards` 的空态原本只有一个「新建卡片」按钮，跳 `/flashcards/new`（卡片编辑页）。
+但那页的「保存」在**没有卡组时恒 disabled**（`selectedDeckId` 为空 → `isValid` false）。
+用户点进去才发现要先建组，而建组入口是**那页顶部的另一个输入框**。
+
+**从零状态看这是一个死胡同**：唯一的 CTA 指向一个必然无法完成任务的页面。
+
+（BUG-K 修的是「卡组页有建组入口」，BUG-U 修的是「从列表页能不能走出来」，盲区不同。）
+
+### 修法
+
+`FlashcardListView.vue` 空态改为**就地内联建组**，走 `store.createDeck()`，
+建完空态自动消失。**故意不保留「新建卡片」按钮** —— 摆一个点了必然失败、
+又不解释原因的按钮比不放更糟。
+
+同时给视图加了稳定的 `data-testid`（`flashcards-empty` / `deck-create-form` /
+`flashcards-deck-item`）。
+
+### 真机验证（scripts/verify-bug-u.mjs，13/13，连跑三轮稳定）
+
+```
+PASS  前置：服务端 deck 数为 0            — PG 实际 0
+PASS  空态容器出现（可见 pane 内）        — bodyLen=23 deckItems=0
+PASS  内联建组表单存在
+PASS  建组输入框存在                      — placeholder=卡组名称
+PASS  提交按钮存在且初始 disabled          — text=新建卡组
+PASS  列表加载完成（loading 态消失后才交互）
+PASS  填值回读一致                        — readBack=BUGU-ZEROSTATE-DECK
+PASS  填名后提交按钮变为可用              — disabled=false
+PASS  空态在提交后消失
+PASS  建组表单在提交后消失
+PASS  卡组条目节点出现（不是 innerText 碰巧含名字）— items=["BUGU-ZEROSTATE-DECK"]
+PASS  PG 落库（不信 UI，不信 localStorage） — PG deck 数=1
+PASS  无未捕获 JS 异常
+```
+
+落库判据**直接查 PG**。验证前置需清空闪卡表（dev 库，E2E 丢弃数据）。
+
+### 这一节的重点其实是验证脚本翻了三次车
+
+功能第一次跑就通了，**翻车的是判据**：
+
+1. **`.empty` 类名撞车** —— 徽章是 `<span class="badge empty">`，
+   `querySelector('.empty')` 拿到的是徽章不是空态容器，
+   「空态是否消失」这条判据**构造上就永远失败**。
+   → 验收钩子不许建在样式类上，改用 `data-testid`。
+2. **`FoldAwareLayout` 故意同时渲染 `#outer`/`#inner` 两个 slot**（靠 CSS 隐藏其一），
+   `querySelectorAll` 一次拿到两份。
+   → 所有 DOM 查询限定在**可见 pane**（`offsetParent !== null`）。
+   这是本仓库折叠屏页面的**通用陷阱**。
+3. **在 `store.refresh()` 还在飞行时填值** —— refresh 期间
+   `v-if="store.loading"` 把表单整个卸载，填的值和随后重新挂载的按钮是
+   **两个不同节点**。表现是「回读成功但按钮永远 disabled」的自相矛盾假 FAIL。
+   → **等状态达到期望**（轮询 loading 态消失）再交互，而不是等够时间。
+
+附带两个环境坑：`psql -c` 里的中文兜底串会经 ANSI 码页报
+`invalid byte sequence for encoding UTF8`（必须纯 ASCII）；
+服务端清空后本地 `flashcards:v1` 缓存仍会把旧卡组灌回来，验证前必须
+`localStorage.removeItem` + `Page.reload`。
+
+### 稳定性声明
+
+修好判据后**连跑三轮都是 13/13**；修之前同一脚本是 12/13。
+如实记录：这条判据**曾经 flaky**（坑三导致），三轮稳定才敢下结论。
