@@ -3540,6 +3540,53 @@ capacitor 壳 origin 下**回退到生产入口 `https://pocket.itestu.cn`**，�
 
 
 
+### 4.42 修正：Keystore 原生插件**不是**密码箱的功能死锁（真机 4/4）
+
+此前多轮把「Keystore 原生插件未实现」记成**密码箱的唯一阻塞项**。本轮逐层查证 + 真机验证后
+**这个结论是错的**，予以修正。
+
+#### 4.42.1 三条路径的真实关系
+
+| 路径 | 实际用什么 | 状态 |
+|---|---|---|
+| `features/vault/vault-store.ts` | **`native/crypto.ts`（Web Crypto `crypto.subtle`）** | ✅ 真机可用 |
+| `api/vault.ts` 的 `vaultApi` | 调 `keystore.*`（registerPlugin 代理） | ⚠️ **死代码**：全仓无任何 import |
+| `native/keystore.ts` | registerPlugin `'Keystore'`，原生未在 `MainActivity` 注册 | 仅 `VaultListView` 的 `isVaultInitialized()` / `unlockWithBiometric()` 调它，**均在 try/catch 内降级** |
+
+`VaultListView.probe()` 先试 `keystore.isVaultInitialized()`，抛了就 fallback 到
+`isCryptoReady()`（Web Crypto）。`VaultListView.unlockPwd()` 同理：crypto 就绪即直接置
+`unlocked=true`。**所以 Keystore 插件缺失不会让密码箱不可用。**
+
+真机前提实测：App 跑在 `https://localhost`，`crypto.subtle` 可用、`window.isSecureContext=true`，
+Web Crypto 降级路径的前提成立。
+
+#### 4.42.2 真机写路径 4/4（`scripts/verify-vault-writepath.mjs`，红米 2411DRN47C）
+
+```
+PASS  密码箱可解锁（Web Crypto 降级路径，非 Keystore 插件）  unlocked=true
+PASS  可打开「新增」表单                                      add=1 form=true
+PASS  保存后条目出现在密码箱列表（写路径通）                    listed=true
+PASS  重新加载后条目仍在（Web Crypto 加密落库 + 解密回显）        stillThere=true
+                                                          4/4
+```
+
+结论：**密码箱读/写/落库/解密回显全部打通**，走的是 Web Crypto 而非 Keystore 插件。
+
+#### 4.42.3 Keystore 插件的正确定性
+
+不是「阻塞功能」，而是**安全加固项**：
+- Web Crypto 降级把密钥只放在**内存**（`cryptoKey`，刷新/重启即失），并依赖**全局主密码解锁**。
+  这比 AndroidKeyStore（硬件绑定、生物识别）弱，但**功能完整**。
+- 真正该补的是：硬件级密钥保护 + 生物识别解锁，属于体验/安全增强，不是「打通功能点」的前置条件。
+
+#### 4.42.4 顺带修正的「未实现」表述
+
+- `api/vault.ts` 整个 `vaultApi` 是**死代码**（无 import）。它 import 了 `native/keystore` 的类型，
+  任何调用都会踩「Keystore plugin not implemented」。要么接线、要么删掉，**留着是误导**。
+- `native/keystore.ts` 的 `StubKeystore` 因 BUG-G 的盒子化改造**永远不会被启用**
+  （`registerPlugin` 不抛异常、只返回 thenable 代理），即注释里承诺的「优雅降级」对原生缺失
+  这条路其实不生效——真正兜底的是上面那些 try/catch。
+
 ### 4.35.1 ⚠️ 跨会话冲突面从 9 涨到 10（本轮新增 `server.go`）
 
 修 BUG-AE 动了 `backend/internal/server/server.go`，而**并发会话也在改同一个文件**。
