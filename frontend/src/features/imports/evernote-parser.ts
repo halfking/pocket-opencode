@@ -1,5 +1,5 @@
 import { XMLParser } from 'fast-xml-parser'
-import { enmlToMarkdown } from './enml-to-markdown'
+import { enmlToMarkdown } from './enml-to-markdown.ts'
 
 export interface EvernoteResource {
   data: string
@@ -39,7 +39,13 @@ function parseNote(note: any): EvernoteNote {
   const content = String(note.content || '')
   const attributes = note['note-attributes'] || {}
   const resources = toArray(note.resource).map((resource: any) => {
-    const data = String(resource?.data?.['#text'] ?? resource?.data ?? '')
+    // data 带属性时 XMLParser 把文本放进 #text；无属性时是纯字符串。
+    // 注意兜底顺序：对象形态缺 #text（如 <data encoding="base64"/> 空文本）
+    // 必须落到空串被下面的 filter 剔除，不能 String(对象) 变 "[object Object]"。
+    const rawData = resource?.data
+    const data = rawData !== null && typeof rawData === 'object'
+      ? String(rawData['#text'] ?? '')
+      : String(rawData ?? '')
     const resourceAttributes = resource?.['resource-attributes'] || {}
     return {
       data,

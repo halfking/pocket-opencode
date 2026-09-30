@@ -41,7 +41,7 @@
     "@tiptap/starter-kit": "^3.27.3",
     "@tiptap/vue-3": "^3.27.3",
     "dompurify": "^3.4.11",
-    "fast-xml-parser": "^4.5.7",
+    "fast-xml-parser": "^5.11.2",
     "http-proxy": "^1.18.1",
     "jeep-sqlite": "^2.8.0",
     "marked": "^18.0.5",
