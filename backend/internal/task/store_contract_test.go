@@ -180,6 +180,84 @@ func TestTaskInsertAndUpsertSelectTheSameColumns(t *testing.T) {
 	}
 }
 
+// TestTaskUpdateSetsCoverEveryField guards the completion write path.
+//
+// taskUpdateSets backs CompleteTaskScoped. It once handled only the four legacy
+// fields, so completing a task silently dropped type/ownerId/assignees/dueAt/
+// remindAt/parentId/tags/visibility — after the handler had already run
+// validateReparent, making the cycle check pointless, and while still replying
+// 200. A dropped field is invisible: no error, no log, and the response echoes
+// the old values back.
+//
+// The guard fills every pointer field of TaskUpdate and asserts the rendered
+// clause has exactly one assignment per field plus updated_at. Adding a field
+// to TaskUpdate without teaching taskUpdateSets about it fails here.
+//
+// Status is the one documented exception: CompleteTaskScoped appends
+// `status = 'completed'` itself, so handling it here would emit two status
+// assignments. Do not "fix" this by adding it — the caller owns that column.
+func TestTaskUpdateSetsCoverEveryField(t *testing.T) {
+	update := TaskUpdate{}
+	v := reflect.ValueOf(&update).Elem()
+	fieldCount := 0
+	for i := 0; i < v.NumField(); i++ {
+		name := v.Type().Field(i).Name
+		f := v.Field(i)
+		if f.Kind() != reflect.Ptr {
+			t.Fatalf("TaskUpdate.%s is %s, not a pointer; the nil-means-absent contract requires *T", name, f.Kind())
+		}
+		if name == "Status" {
+			continue // caller-owned; see the doc comment
+		}
+		nonNil := reflect.New(f.Type().Elem())
+		switch f.Type().Elem().Kind() {
+		case reflect.String:
+			nonNil.Elem().SetString("x")
+		case reflect.Int64:
+			nonNil.Elem().SetInt(1)
+		case reflect.Slice:
+			nonNil.Elem().Set(reflect.MakeSlice(f.Type().Elem(), 0, 0))
+		default:
+			t.Fatalf("TaskUpdate.%s has unhandled kind %s; extend this test", name, f.Type().Elem().Kind())
+		}
+		f.Set(nonNil)
+		fieldCount++
+	}
+
+	sets, args := taskUpdateSets(update, 1700000000)
+	// One assignment per handled field, plus the trailing updated_at.
+	if want := fieldCount + 1; len(sets) != want {
+		t.Errorf("taskUpdateSets produced %d assignments for %d handled TaskUpdate fields, want %d\n  %v",
+			len(sets), fieldCount, want, sets)
+	}
+	if len(args) != len(sets) {
+		t.Errorf("taskUpdateSets produced %d args for %d assignments; every $N must have exactly one value", len(args), len(sets))
+	}
+	// A dropped column must be visible: the guard above counts assignments, so
+	// assert the work-item columns are actually present by name.
+	joined := strings.Join(sets, " ")
+	for _, col := range []string{"type =", "owner_id =", "assignees =", "due_at =", "remind_at =", "parent_id =", "tags =", "visibility ="} {
+		if !strings.Contains(joined, col) {
+			t.Errorf("work-item column %q missing from the completion write path: %v", col, sets)
+		}
+	}
+	if strings.Contains(joined, "status =") {
+		t.Errorf("taskUpdateSets must not emit status; CompleteTaskScoped owns that column: %v", sets)
+	}
+}
+
+// TestTaskUpdateSetsPlaceholderOrderIsSequential makes sure the SET clause and
+// the argument slice cannot drift apart: assignment N must reference $N.
+func TestTaskUpdateSetsPlaceholderOrderIsSequential(t *testing.T) {
+	update := TaskUpdate{}
+	sets, _ := taskUpdateSets(update, 1700000000)
+	for i, set := range sets {
+		if !strings.Contains(set, "$"+strconv.Itoa(i+1)) {
+			t.Errorf("assignment %d = %q should reference $%d", i, set, i+1)
+		}
+	}
+}
+
 // countPlaceholders counts distinct $N references in a VALUES clause.
 func countPlaceholders(values string) int {
 	seen := map[int]bool{}

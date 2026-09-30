@@ -47,6 +47,7 @@ import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { SCROLL_CHROME_KEY } from '../composables/scroll-chrome'
+import type { IconName } from '../constants/icons'
 import { haptic } from '../composables/useHaptics'
 
 const route = useRoute()
@@ -72,7 +73,7 @@ onMounted(() => {
 })
 onUnmounted(() => navRO?.disconnect())
 
-interface NavItem { to: string; icon: string; label: string; match?: string }
+interface NavItem { to: string; icon: IconName; label: string; match?: string }
 
 /**
  * TabBar 一级目的地（2026-09-23 4+1 重组后）：

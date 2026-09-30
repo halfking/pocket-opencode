@@ -26,6 +26,7 @@
 | [evidence/2026-09-30-icon-registry-and-font-gate.md](evidence/2026-09-30-icon-registry-and-font-gate.md) | 图标集中映射表 `constants/icons.ts` + 字体级实测门禁：三个扫描盲区、**当前无活着缺字**的原因、注入实测 |
 | [evidence/2026-09-30-runtime-and-build-verification.md](evidence/2026-09-30-runtime-and-build-verification.md) | 运行时与构建产物验证：dev server 启动、生产构建、**动态图标名入产物**、字体 SHA256 一致 |
 | [evidence/2026-09-30-server-binary-route-verification.md](evidence/2026-09-30-server-binary-route-verification.md) | 真实服务端二进制验证：14 条路由**确实注册**、通配注册探测陷阱、**登录墙成因定位到 PG** |
+| **[evidence/2026-09-30-post-delivery-audit.md](evidence/2026-09-30-post-delivery-audit.md)** | ⚠ **交付后复审**：2 条高危已修（含机器守卫）+ 24 条 backlog 分级登记（P0 为可利用越权） |
 | [如何验证真实数据库.md](如何验证真实数据库.md) | **怎么跑**真实 Postgres 集成测试（门控套件已就绪，**尚未执行过**） |
 
 ## 三十秒版本

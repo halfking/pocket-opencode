@@ -138,6 +138,12 @@ func TestClaimMilestoneIsExactlyOnce(t *testing.T) {
 	}
 
 	// And a different workspace as well — the row is keyed by workspace too.
+	//
+	// This case is what caught a real bug: the synthetic id used to be
+	// "ms-<key>-<userID>" with no workspace, so the second workspace collided
+	// on the primary key (23505) instead of being caught by the ON CONFLICT
+	// clause, which only names the unique index. The milestone could never be
+	// announced in the second workspace.
 	otherWS, err := s.ClaimMilestone(ctx, "ws-2", "alice", MilestoneKey(7), 1700000000)
 	if err != nil {
 		t.Fatalf("claim in another workspace: %v", err)

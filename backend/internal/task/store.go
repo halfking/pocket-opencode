@@ -958,6 +958,20 @@ func pendingApprovalCount(ctx context.Context, tx pgx.Tx, taskID, workspaceID st
 	return count, nil
 }
 
+// taskUpdateSets renders the SET clause shared by the completion path
+// (CompleteTaskScoped) and any other caller that updates a task without going
+// through updateTask.
+//
+// It must cover **every** field of TaskUpdate. It previously handled only the
+// four legacy fields, so completing a task silently discarded type, ownerId,
+// assignees, dueAt, remindAt, parentId, tags and visibility — and because
+// CompleteTaskScoped runs *after* the handler's validateReparent, the cycle
+// check ran, passed, and the parentId it validated was then thrown away. The
+// client got 200 with the old values and had no way to tell.
+//
+// TestTaskUpdateSetsCoverEveryField (store_contract_test.go) fails if a field
+// is added to TaskUpdate without being handled here, so this cannot regress
+// silently again.
 func taskUpdateSets(update TaskUpdate, now int64) ([]string, []any) {
 	sets := []string{}
 	args := []any{}
@@ -976,6 +990,41 @@ func taskUpdateSets(update TaskUpdate, now int64) ([]string, []any) {
 	if update.WorkstreamID != nil {
 		sets = append(sets, fmt.Sprintf("workstream_id = $%d", len(args)+1))
 		args = append(args, *update.WorkstreamID)
+	}
+	// Work-item fields. Column names and encoding must match updateTask exactly
+	// (assignees/tags go through encodeStringList so a client can clear the
+	// list by sending an explicit []).
+	if update.Type != nil {
+		sets = append(sets, fmt.Sprintf("type = $%d", len(args)+1))
+		args = append(args, *update.Type)
+	}
+	if update.OwnerID != nil {
+		sets = append(sets, fmt.Sprintf("owner_id = $%d", len(args)+1))
+		args = append(args, *update.OwnerID)
+	}
+	if update.Assignees != nil {
+		sets = append(sets, fmt.Sprintf("assignees = $%d", len(args)+1))
+		args = append(args, encodeStringList(*update.Assignees))
+	}
+	if update.DueAt != nil {
+		sets = append(sets, fmt.Sprintf("due_at = $%d", len(args)+1))
+		args = append(args, *update.DueAt)
+	}
+	if update.RemindAt != nil {
+		sets = append(sets, fmt.Sprintf("remind_at = $%d", len(args)+1))
+		args = append(args, *update.RemindAt)
+	}
+	if update.ParentID != nil {
+		sets = append(sets, fmt.Sprintf("parent_id = $%d", len(args)+1))
+		args = append(args, *update.ParentID)
+	}
+	if update.Tags != nil {
+		sets = append(sets, fmt.Sprintf("tags = $%d", len(args)+1))
+		args = append(args, encodeStringList(*update.Tags))
+	}
+	if update.Visibility != nil {
+		sets = append(sets, fmt.Sprintf("visibility = $%d", len(args)+1))
+		args = append(args, *update.Visibility)
 	}
 	sets = append(sets, fmt.Sprintf("updated_at = $%d", len(args)+1))
 	args = append(args, now)

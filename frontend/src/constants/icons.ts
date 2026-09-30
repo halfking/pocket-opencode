@@ -125,13 +125,18 @@ export const ICON = {
   chatAgent: 'person',
 } as const
 
-/** 任一动态图标的字面量类型。数据表写错名字会在 vue-tsc 阶段就报错。 */
+/**
+ * 任一动态图标的字面量类型。
+ *
+ * **覆盖范围要说准**：只有把字段显式标注成 `IconName`（或 `: Record<string, IconName>`）
+ * 的地方，写错名字才会在 `vue-tsc` 阶段报错。目前已标注的只有 3 个组件
+ * （`SessionStatusBar` / `ToolCallCard` / `StudyHubView`）——
+ * 它们的图标是 computed/map/switch 里的返回值，最容易写错也最难被扫描器发现。
+ *
+ * 其余数据表（`MoreHubView` / `SettingsView` / `BottomNav` / `SettingsMenuDrawer` /
+ * `useSessionDrafts` / `FlashcardEditView` / `SessionComposer`）目前仍是裸字符串，
+ * 它们由**两个门禁脚本**兜底（`check:icons`），而不是由类型兜底。
+ * 把它们也标注成 `IconName` 是后续可做的加固。
+ */
 export type IconName = (typeof ICON)[keyof typeof ICON]
 
-/**
- * 注册表里的全部名字，降序无关的稳定顺序。
- * 构建脚本与两个门禁脚本都从**这个数组**读，不要在别处再抄一份。
- */
-export const DYNAMIC_ICON_NAMES: readonly IconName[] = Object.freeze(
-  Object.values(ICON) as IconName[],
-)
