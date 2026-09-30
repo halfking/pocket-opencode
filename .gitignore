@@ -53,6 +53,22 @@ data/*.sqlite-wal
 data/email-invoices/
 deploy-local.sh.bak-*
 
+# 2026-10-01 audit: MIME 正文落盘文件（真实邮箱抓取下来的邮件正文）。
+# 这批文件是「每个用户自己的内容」，不是源码。邮件流水线那轮工作里
+# `git add -A` 把 13 个真实正文（data/email-bodies/*.bin）一起加进了暂存区，
+# 和上面已列的 data/email_master.key 属于同一类泄露，所以整个目录忽略，
+# 而不是只忽略主密钥。
+data/email-bodies/
+
+# 2026-10-01 audit: 调试会话丢在仓库根目录的一次性探针脚本与采样音频
+# （ASR 端点扫描、模型探测、一段语音样本）。真正有价值的探针应该整理成
+# scripts/ 下的正经脚本，这些是一次性的，不入库。
+/tmp-*.mjs
+/tmp-*.ts
+/tmp-*.sh
+/tmp-*.log
+/tmp-*.wav
+
 # === 2026-09-09 list-sync-rules plan-cleanup ===
 # Local-only dev/runtime artifacts, build logs, and stray test evidence that
 # are NOT part of the shipped product nor the validated plan.
