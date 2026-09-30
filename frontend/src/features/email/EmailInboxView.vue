@@ -139,8 +139,15 @@
           <span class="material-symbols-outlined more-spin" aria-hidden="true">progress_activity</span>
           <span>正在加载更早的邮件…</span>
         </span>
-        <Transition name="morefade" mode="out-in">
-          <span v-else-if="pageState.hasMore" key="hint">上滑加载更早的邮件</span>
+        <!--
+          v-else 挂在 <Transition> 上，v-if / v-else 必须在 Transition **内部** 成相邻兄弟。
+          2026-10-01 修复：`v-if` 原本在 Transition 外面（L138），而 hint / end 两条却用了
+          `v-else-if` / `v-else` 放在 Transition 内部 —— 编译器直接报
+          "v-else/v-else-if has no adjacent v-if or v-else-if"，
+          **整个 vite build 失败**，APK 出不来。
+        -->
+        <Transition v-else name="morefade" mode="out-in">
+          <span v-if="pageState.hasMore" key="hint">上滑加载更早的邮件</span>
           <span v-else key="end" class="more-end">已到最早一封</span>
         </Transition>
       </div>
