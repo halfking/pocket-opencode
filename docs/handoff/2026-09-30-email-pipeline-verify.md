@@ -498,13 +498,131 @@ BodyCache 当时是 nil —— 第 8 次事故把 `server_email_pipeline.go` / `
 装配也清掉了，而我第一次恢复时只列了 `backend/internal/email`，没列 server 侧。
 补回后错误信息变成 `raw body cache miss (err=<nil>)`，说明它真的去查缓存了。
 
-> **未实现的自愈方案**：采集器在缓存未命中时，主动为该账户补跑一次 POP3 同步
-> （`syncPOP3Fallback` 已经是现成实现，只需一个可从 harvester 调用的入口），
-> 同步把原文灌进缓存，然后重试读缓存。
->
-> 没有做，原因是这需要新增对外接口，且刚经历第 8/9 次事故，不宜在状态不稳时动
-> `invoice_harvest.go`。**这两张发票要救回来必须等这一步落地**；单纯「让 QQ 再走
-> 一次同步」不行 —— 只要 IMAP 正常，POP3 就不会被触发。
+> **自愈方案（已于 §7m 落地，但推翻过一次）**：最初的方案是「采集器在缓存未命中时，
+> 用 IMAP SEARCH 反查真实 UID」。那个方案对真实场景**无效** —— 详见 §7m 的两条硬证据。
+> 最终落地的是**回到 POP3 用位置序号 RETR**（`FetchPOP3MessageByIndex`）。
+
+## 7m. 我推翻了自己：「IMAP SEARCH 反查真实 UID」对真实场景无效
+
+§7l 的自愈方案先做成了 IMAP SEARCH 反查（`imap_resolve.go`），代码正确、测试扎实
+（3 用例含负控）。**下一轮自查时用真实数据推翻了自己**，两条硬证据：
+
+1. **两张 QQ Wallet 发票无法按头部区分** —— 主题、主题、发件人、日期**全同**
+   （`2026-10-01 01:24:12`，同一批落库），只有正文里的发票号不同
+   （`…7012698`/CNY 126.00 vs `…7012703`/CNY 328.50）。`HEADER Subject + From +
+   SINCE/BEFORE` 必然同时命中 134 和 135 → 落入自己写的 ambiguous 拒绝 → 白做。
+2. **邮件在 IMAP 侧根本不存在** —— QQ 账户 IMAP 侧 50 封里 Wallet/Invoice 主题
+   **零命中**，发票只存在于 POP3 路径的 279 封里。SEARCH 必然 0 命中。
+
+> **教训**：上轮只核了「守卫逻辑正确、测试扎实」，没核「这两封真实邮件在 IMAP
+> 侧到底在不在」。典型的局部证据支撑全局结论。真实数据诊断不是可选项。
+
+## 7n. 正确的自愈：回到 POP3 用位置序号 RETR
+
+位置序号（134/135）在 **POP3 侧是有效的**（它就是 POP3 自己的编号），拿它去 IMAP
+盲 FETCH 才危险。三处新增：
+
+- `FetchPOP3MessageByIndex`（`pop3_fetcher.go`）— 按位置序号 `RETR` 单封，
+  可选 UIDL 交叉校验防位置漂移。
+- `RefetchPOP3RawByIndex`（`fetcher.go`）— 用账户凭据走 `pop3EndpointFor`
+  解析出的 POP3 端点补取。
+- `recoverPOP3SourcedRaw`（`invoice_harvest.go`）— **POP3 补取优先**，
+  SEARCH 反查降为次选；拿到的原文回填缓存。
+
+两条路都过 `sameEmailMessage` 闸门：真实 Message-ID 相等=强确认，**不等=强否定
+直接拒绝**，否则要求主题+发件人相等且同一天。
+
+**测试抓到一个我自己没想到的缺口**：`TestSameEmailMessage_RealMessageIDMismatchRejected`
+一开始就红了 —— 我把「真实 Message-ID 不匹配」当成「无强确认」而继续走头部比对，
+于是放行。真实 Message-ID 明确不等就是另一封，必须立即拒绝。已修正为强否定。
+
+**负控**：`sameEmailMessage` 改成永远 `true` → 3 个「拒绝」用例全红、3 个「接受」
+仍绿，精确证明在测拒绝逻辑。
+
+> **仍未验证**：自愈路径**没有在真实 QQ 邮箱上跑过**（只读约束）。要生效前提是
+> 那两封还在 QQ 的 POP3 收件箱（位置 134/135 未漂移）。需要一次只读 RETR 授权。
+
+## 7o. 需求 3 的规范文件名在真实 QQ 发票上是废的
+
+翻库时发现两张真实发票的提取结果三字段全错：
+
+| 字段 | 库里的值 | 应该是什么 | 根因 |
+|---|---|---|---|
+| `invoice_no` | `Issuance` | `24317200000907012698` | 主题 `Invoice Issuance Notice` 里 `Invoice`+空格把纯字母 `Issuance`（8 字符过长度门槛）当发票号 |
+| `seller` | `name:` | `Tencent Cloud Computing Co Ltd` | snippet `Seller name:` 的标签词被当值 |
+| `amount` | `0.00` | `126.00` | `CNY 126.00` 的 ISO 货币代码不在 `[¥￥$€£]` 白名单 |
+
+后果：`{费用类型}-{对方单位}-{金额}-{日期}.pdf` 产出 `其他-name--0.00-2026-10-01.pdf`，
+**金额是空的，对账不可用**。
+
+修 `invoice.go` 四个共享正则：发票号值必须**含数字**（不用数字打头 —— 那会误杀
+`INV-TEST-0001`）、销售方支持 `Seller name` 复合标签、金额支持 ISO 货币代码、
+全部加 `(?i)`（真实英文标签是小写）。
+
+**两次负控都给了实质信息**：
+1. 撤 `reCurrency` 的 CNY，金额用例**没转红** —— 金额实际靠 `reAnyAmount` 兜底
+   路径，我改了两处却只撤了一处。撤对后 3 个用例全红。
+2. 全量测试抓到**修过头**：首版用 `[0-9]` 打头，`TestRealInvoice_Amount3500`
+   立刻回归（`INV-TEST-0001` 被误杀），当场修正。
+
+## 7p. 真实数据诊断抓出我上一轮引入的 seller 跨行缺陷
+
+§7o 的修复里，`reSeller` 值组改成 `(?:\s+…)*` 支持多词公司名，但 `\s` **含
+`\r\n`** —— 贪婪匹配把销售方后面那行一起吞了：
+
+```
+Seller="Tencent Cloud Computing Co Ltd\r\nInvoice details please see attachment (PDF)."
+```
+
+文件名退化成 `其他-Tencent-…-Invoice-details-please-see-a-126.00-….pdf`。
+
+**为什么单测没抓到**：我写的 snippet 恰好没触发这个边界。是把真实库 snippet 喂进
+提取器才暴露的。改为 `[^\S\r\n]+`（非换行空白）并限制最多 6 个词，负控换回 `\s`
+后断言立即转红。
+
+真实数据验证（两封各自正确）：
+
+```
+其他-Tencent-Cloud-Computing-Co-Ltd-126.00-2026-10-01.pdf
+其他-Tencent-Cloud-Computing-Co-Ltd-328.50-2026-10-01.pdf
+```
+
+> **边界**：字段提取修好了，但这两张发票的 **PDF 仍下载不了** —— 原文拿不到，
+> `status` 仍是 `failed`。字段提取与原文获取是两条独立线，后者依赖 §7n 的
+> 未验证自愈路径。存量 failed 记录需走 `/api/emails/invoices/extract` 单封重提取
+> 才会用上新正则（**没有批量入口**）。
+
+## 7q. 需求 8 客户端 LWW 一直在被「假测试」覆盖
+
+`account-sync.test.mjs` 里的 `planAccountSync` 是**测试文件自己复制的一份判定
+逻辑**，不是生产实现。生产判定埋在 `account-sync.ts`，而该模块 import 了
+`emailApi`/`localDB`/`vue`，node 测试环境整条依赖链解析不了 —— 这正是当初选择
+复制一份的原因。
+
+后果：**生产 LWW 判定怎么改，测试都全绿**。
+
+修法：抽出无任何 import 的纯模块 `account-lww.ts`，生产与测试共用同一份实现。
+tsc 当场抓到 `export { x } from` **不会把名字引入本模块作用域**（`TS2304`），
+改为 import + export 双向。
+
+**负控**：生产的 `>` 改成 `>=` → `equal timestamps do nothing` 立即转红；旧版
+假测试对同一改动完全无感。
+
+> **我的一次误判（已撤回）**：中途判定 `buildMirrorAccountWrite` 无条件 UPDATE
+> 覆盖、违反需求 8。**不成立** —— LWW 判断在调用方 `emails-store.ts:151`
+> （`if (local && local.updatedAt >= acc.updatedAt) return false`），
+> `buildMirrorAccountWrite` 只是 SQL 构造器。
+
+## 7r. 需求 6「默认本地执行」此前零测试守护
+
+判定埋在 `runEmailPipeline` 里，无测试。风险很实：把 `mode == "server"` 改成
+`mode != ""` 就让**默认**变成委托，而被委托的是带邮箱权限的整条流水线（POST 到
+远端编排服务）—— 不会让任何现有测试变红。
+
+抽出 `shouldDelegatePipeline` 纯函数 + 4 用例。负控用的正是那个危险改动，3 个
+用例转红。顺带固化一个隐含行为：配了 `server` 却没给 URL 时**落回本地**，
+而不是委托进一个必然报错的分支（`delegatePipeline` 遇空 URL 直接返回错误，
+等于那轮什么都没跑）。
 
 ## 8. 仍未验证 / 未完成（不得外推）
 
@@ -513,12 +631,18 @@ BodyCache 当时是 nil —— 第 8 次事故把 `server_email_pipeline.go` / `
     要不要在真邮箱上开这条，建议你确认后再开。
   - **163 的特殊头**（CLIENTID 等）这次没被触发，代码路径未被真实流量覆盖。
   - **发票开票日期**没从附件 PDF 里抽到，文件名日期退化为下载当天。
+    （另注：**主题/摘要里的英文字段**提取曾整体失效，已由 §7o/§7p 修复并有真实
+    数据验证；**附件 PDF 内的字段**仍未抽，二者是两回事。）
 - **飞书推送未验证**：`POCKET_FEISHU_APP_ID/SECRET/INVOICE_CHAT_ID` 未配置，
-  真实 `SendInvoiceFile` 与新建的电子表格接口都**只在 httptest 假服务器上跑过**，
+  真实 `SendInvoiceFile` 与电子表格接口都**只在 httptest 假服务器上跑过**，
   没有对着真实租户跑过一次（需要应用开通电子表格权限）。
+  已验证的只是**无凭证也成立的那部分**：`PublishLedgerScoped` 5 用例全绿，其中
+  `SkipsWhenUnavailable` 守住「未配置时返回空 URL 且不报错、不编造 `shareDocUrl`」；
+  推送失败保留 `feishu_sent_at=0`，由共享汇总文档兜底。
+- **POP3 自愈路径（§7n）没有在真实 QQ 邮箱验证过**，两张发票仍是 `failed`。
 - **「多次操作才能下载到发票」只做到跨轮重试**（`MaxInvoiceAttempts=8` + pending 重试），
   没有「打开邮件→点确认→再下载」这类交互式多步。
 - 定时流水线**到点执行**没有等过一次真实 06:00（用注入时钟单测 + 启动排期日志代替）。
-- 需求 6 的「委托服务端执行」：`delegatePipeline` 只是 HTTP 转发，**对端编排服务不在本仓**，
-  默认 `local` 路径才是可验证的那条。
+- 需求 6 的「委托服务端执行」：`delegatePipeline` 只是 HTTP 转发，**对端编排服务不在本仓**；
+  默认 `local` 判定已由 §7r 的纯函数 + 4 用例（含负控）守护。
 - 前端改动（3×3 入口、409 走行覆盖）只过了 typecheck，**未做真机 UI 验证**。
