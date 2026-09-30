@@ -92,7 +92,13 @@ const mainFeatures = computed<HubItem[]>(() => [
   { to: '/email', icon: 'mail', label: t('nav.email') },
   { to: '/rss', icon: 'rss_feed', label: t('nav.rss') },
   { to: '/vault', icon: 'lock', label: t('nav.vault') },
-  { to: '/scheduled-tasks', icon: 'schedule', label: t('routes.scheduledTasks') },
+  // BUG-Q（2026-09-30 可达性全量对账）：这里原来写的是 '/scheduled-tasks'，
+  // 而路由表里根本没有这个路径 —— 只有 '/settings/scheduled-tasks'。
+  // 也就是说「定时自动化」这个入口点进去是**未匹配路由**，用户看到空白页或 404。
+  //
+  // 这类和 BUG-P 是同一类问题（入口存在但去不到），但更糟：BUG-P 是少一个入口，
+  // BUG-Q 是有一个入口指向虚空。两者都不会被「接口能通 / 路由表里有」的验收抓到。
+  { to: '/settings/scheduled-tasks', icon: 'schedule', label: t('routes.scheduledTasks') },
   { to: '/marketplace/skills', icon: 'extension', label: t('nav.skillMarket') },
   { to: '/marketplace/agents', icon: 'smart_toy', label: t('nav.agentMarket') },
   { to: '/local-agent', icon: 'memory', label: t('nav.localAgent') },
