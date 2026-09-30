@@ -2391,6 +2391,9 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   4 个是写操作；另修 `EmailDetailView` / `MeetingDetailView` 同类 2 处）：
   - 错配取证：真机 `localStorage.pocket_workspace_id = ws_user-admin` vs 列表查询 `default`（`MISMATCH: true`）
   - 笔记写路径 `verify-notes-inputtext.mjs` **2/2**（`cards=4 found=true`；同脚本修复前 `cards=0 found=false`）
+  - **笔记完整 CRUD `verify-notes-crud.mjs` 7/7**：新建 4→5、编辑后列表回显新正文、
+    删除 5→4 精确回到基线。**删除是本 bug 最隐蔽的一环**——修复前软删打错分区、
+    真行删不掉且不报错，现在计数精确回落证明落在正确分区
   - 跨路由冒烟 `smoke-routes.mjs` **11/11**，零 console error；`npx vue-tsc --noEmit` exit 0
   - ⚠️ 该缺陷是**潜伏型**——早期 CRUD 6/6 全过是因为当时 `auth.workspaceId` 为空、
     读写同落 `'default'`。详见 §4.44.2
@@ -2565,10 +2568,11 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   提交时**必须路径限定**，不要 `git add -A`。
 
 ### ❌ 未验证（下一轮必须补）
-- **BUG-AK 的历史数据订正未做**：修复只纠正「此后」的读写。若此前有笔记被写进
-  `'default'` 分区（§4.43 期间用旧 bundle 建的），它们在 `ws_user-admin` 视图中**仍不可见**。
-  真机列表 4 张中新建的 `NI-xxxxxx` 可见，但**未逐条核对**是否还有遗留在 `default` 的旧行。
-  SQLCipher 加密，需应用内迁移。
+- **BUG-AK 的历史数据订正未做**：修复只纠正「此后」的读写。修复后列表立刻从 0 张变 4 张，
+  说明这 4 条本就在 `ws_user-admin`（由 `NoteEditView` 正确写入），**不是** `default` 的遗留。
+  但**无法排除**另有少量行在 §4.43 期间被写进 `'default'` 分区而在当前视图中不可见。
+  SQLCipher 加密，需应用内迁移才能逐分区计数。**下一轮建议**：在应用内加一次性
+  `local_notes` 分区计数查询（按 `workspace_id` group by），确认 `'default'` 分区行数是否为 0。
 - **BUG-AK 附带的两处同类修复只过了类型检查，未做真机行为验证**：
   邮件→联系人跳转、会议关联笔记推荐。缺可复现前置数据（真实聚合的联系人、带转写的会议），
   **不得据此宣称「已验证」**。
@@ -4130,7 +4134,13 @@ bash 4.2，不是开发机的 bash 5.x**——integration test 必须至少在�
 | 类型检查 | `npx vue-tsc --noEmit`（`frontend/`） | **exit 0**，无输出 |
 | 错配取证 | `node scripts/diag-notes-workspace-id.mjs` | `MISMATCH: true`，`noteCards: none=0`（修复前） |
 | 笔记写路径 | `node scripts/verify-notes-inputtext.mjs` | **2/2**，`cards=4 found=true` |
+| **笔记完整 CRUD** | `node scripts/verify-notes-crud.mjs` | **7/7**（新建 4→5、编辑回显新正文、删除 5→4 回到基线） |
 | 跨路由冒烟 | `node scripts/smoke-routes.mjs` | **11/11**，11 条路由 `landed=true` 且零 console error |
+
+> 单独跑完整 CRUD 的理由：BUG-AK 改的是**读+写**四条路径，只验「新建→可见」覆盖不到
+> `updateNote` / `deleteNote`。**删除尤其关键**——修复前 `deleteNote` 的软删打在 `'default'`
+> 分区，真行删不掉且**不报任何错**（无反馈类信号，纯静默）。现在 5→4 精确回到基线，
+> 说明软删落在正确分区。
 
 **受控对照**：同一脚本、同一台真机、同一判据，只有代码变了。
 修复前 `cards=0 found=false`（§4.43.3 记录），修复后 `cards=4 found=true`。
