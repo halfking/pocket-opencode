@@ -5424,3 +5424,61 @@ PG: decks=1  notes=1  cards=1
 ⇒ 判据会被页面上恰好同名的元素喂饱。已改成断言零状态空态**消失** +
 PG 侧三方对照，这类「假通过」以后必须用**数据层证据**兜底。
 
+## 4.55 BUG-AS（静态可证，未在真机确认）：到期数是「快照」而非「实时」，页面开着不会变
+
+接着 §4.54 往下查「开始复习」为什么时红时绿时，在读代码时发现一个**不需要真机就能确定**的问题。
+**注意：它并不能解释 flow 的抖动**（flow 里那张卡是创建时即到期，且 store 里确实有它），
+这是两件事，别混。
+
+### 4.55.1 现象与静态证据
+
+`stores/flashcards.ts` 里三个 computed 都拿 `nowSec()` 当判据：
+
+```ts
+function nowSec(): number {
+  return Math.floor(Date.now() / 1000)   // ← 读真实时钟，**不是响应式依赖**
+}
+
+const dueByDeck = computed(() => {         // :187
+  const now = nowSec()
+  ... if (!isDue) continue               // isDue 依赖 now
+})
+const deckSummaries = computed(() => { const now = nowSec(); ... })   // :201/:213
+const dueCardsForDeck = computed(() => () => { const now = nowSec(); ... })  // :239/:240
+```
+
+Vue 的 computed 只在**响应式依赖变化**时重算。这里的依赖只有 `cards.value`（数组本身）；
+`Date.now()` 不是 ref、不触发任何依赖。同一文件里也**没有任何 setInterval / setTimeout**
+去推进时间（grep 过，只有 outbox 的 enqueue/flush 与 review 用到 nowSec）。
+
+⇒ 一张卡片在**页面打开期间**跨过到期时刻，`dueByDeck` **不会重算**：
+到期数不变、「开始复习」的 `:disabled="dueCount === 0"` 也不变。
+只有当别的响应式依赖动了（新增/打patch、`refresh()` 整体替换数组、进出页面重新挂载）才会刷新。
+
+**用户可见症状**：09:00 打开卡组页，某张卡 09:30 到期，页面一直显示「今日待复习 0 张」、
+「开始复习」保持置灰，直到用户切走再回来。
+
+### 4.55.2 建议修法（**本轮没做**，因为无法在真机验证）
+
+把时间变成响应式：store 内加一个每秒/每 30s 推进的 `nowRef = ref(Math.floor(Date.now()/1000))`，
+用 `setInterval` 更新，三个 computed 改读 `nowRef.value`；组件卸载时清掉定时器。
+需要一并决定的：**重算频率**（30s 够不够）与**页面不可见时是否暂停**（省电），
+属产品/性能取舍，所以没有擅自改。
+
+### 4.55.3 ⚠️ 本轮真正的阻塞：设备被并发会话持续驱动，真机读数不可信
+
+这是第三次实证，证据都在日志里：
+
+| 现象 | 出处 |
+|---|---|
+| flow 跑到「添加卡片」后，App 出现在 `#/ai-chat` | `logs/m-probe-a11y.log` + 该轮 screen-hierarchy |
+| flow 失败后 App 被挪到 `#/settings`，`store.cards=0` | `diag-fc-duecount-timeline` 连续 7 次采样，稳定在 `#/settings` |
+| 同一轮里 PG `decks=1 notes=0 cards=0`，而 App 侧 `cards=0` | `logs/m-fc13.log` |
+| 坐标点击 `(50%,29%)` 时灵时不灵（一次成功一次点空） | fc10 成功、fc13 失败在同一坐标 |
+
+⇒ **在并发会话停下来之前，真机回归的结论一律不可信**：
+读到的是「谁最后动了设备」的快照，不是被测代码的行为。
+这也是为什么 `flashcards-write.yaml` 到现在还没有一次全绿——
+不是 flow 一定还有 bug，而是**它测的东西一直在被别人改**。
+需要用户决定是否让并发会话暂停设备操作。
+
