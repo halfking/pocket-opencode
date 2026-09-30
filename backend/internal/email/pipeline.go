@@ -301,7 +301,7 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 		}
 		// 命中了但**没有开票日期**：IMAP 路径只落 envelope，正文里的「开票日期」
 		// 看不到，于是规范文件名退化成下载当天（实测真发票
-		// 「其他-杭州创客家…-3500.00-2026-10-01.pdf」，票面其实是 5 月开的）。
+		// 「其他-〔销售方〕-3500.00-2026-10-01.pdf」，票面其实是 5 月开的）。
 		// 这里补一次正文读取——只针对「已命中 + 缺日期」的候选，量很小。
 		if hit && inv.InvoiceDate == "" && e.UID > 0 && p.Fetcher != nil {
 			bodyFetches++
