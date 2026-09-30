@@ -473,10 +473,11 @@ func (s *Store) SetSummaryScoped(ctx context.Context, id, userID, workspaceID, a
 	return err
 }
 
-// ON CONFLICT DO NOTHING 不指定冲突目标，PostgreSQL 会自动匹配任一唯一
-// 约束/索引：(account_id, message_id) 全局唯一约束，或 message_id IS NULL
-// 时的 (account_id, subject, date) 部分唯一索引。这样无论哪种冲突都不会
-// 抛错中断同步。
+// 冲突目标见 SQL 里的 `ON CONFLICT (id)`。历史注释曾写「不指定冲突目标，
+// PostgreSQL 自动匹配任一唯一约束」——与代码不符（代码一直写的是 (id)），
+// 这里按实际行为描述。
+//
+// 2026-10-01：冲突时**只**刷新 snippet，理由与边界见 SQL 注释。
 func (s *Store) InsertEmail(ctx context.Context, e Email) error {
 	_, err := s.pool.Exec(ctx,
 		// Two defects used to make this statement fail on every call, so no
@@ -493,9 +494,26 @@ func (s *Store) InsertEmail(ctx context.Context, e Email) error {
 		//   - created_at = 本行入库时间（time.Now）
 		// 目前没有任何读路径消费 created_at，全部走 e.date；把 created_at 改成
 		// e.Date 只会复制 date 并丢掉入库时间，因此保持 time.Now()。
+		//
+		// 2026-10-01 真机审计：原来是 `ON CONFLICT (id) DO NOTHING` —— 重跑同步
+		// 对已入库邮件**完全不写**，于是 snippet 成了只写一次的不可自愈字段。
+		// 后果很具体：DeriveSnippet 上线前写进去的原始 MIME 摘要（真机 100 个
+		// 通知正文里 46 个溢出、累计 12,311px 被祖先 overflow-x:hidden 静默裁掉）
+		// 永远留在库里，代码修好了数据也永远是坏的。
+		//
+		// 这里只让 snippet 变得可刷新，且刻意保持窄口径：
+		//   - 其余列一律不更新。is_read / is_starred / category / ai_summary 都是
+		//     用户或分类流程已经算好的状态，重跑同步不能覆盖（DO UPDATE 若带上它们，
+		//     每轮同步都会把「已读」标回未读）。
+		//   - EXCLUDED.snippet 为空时保留旧值。DeriveSnippet 在「疑似整段 MIME
+		//     又剥不干净」时会返回空串（宁可空着也不把 MIME 转储还给用户）；
+		//     若直接赋值，一次同步就能把正常摘要刷成空白，这比留着旧 MIME 更糟。
+		//   - subject / from_address 同样是从信封派生的，但本轮没有证据表明它们
+		//     出过错，暂不扩大刷新面。
 		`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments, created_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-			 ON CONFLICT (id) DO NOTHING`,
+			 ON CONFLICT (id) DO UPDATE SET
+			   snippet = CASE WHEN EXCLUDED.snippet <> '' THEN EXCLUDED.snippet ELSE emails.snippet END`,
 		e.ID, e.AccountID, defaultWorkspace(e.WorkspaceID), nullStr(e.MessageID), e.UID,
 		e.FromAddress, e.FromName, e.Subject, e.Snippet, e.Date,
 		e.IsRead, e.IsStarred, e.Category, e.Importance, e.AISummary, e.SuggestedAction,
