@@ -4486,6 +4486,33 @@ export function dueSummaryHeadlineKey(...): DueSummaryHeadlineKey { ... }
 > 备注：反证时用 PowerShell `Set-Content -Encoding UTF8` 改过 .ts，
 > **该命令会加 BOM**（本项目反复踩到的坑）。事后逐个回读首字节确认已无污染。
 
+#### 4.47.5 一次「假回归」：冒烟 5/11 其实是夹具解锁时机错了
+
+BUG-AO 装包后跑 `smoke-routes.mjs`，拿到 **5/11**，6 个路由 `landed=false`
+且 `textLen` **恒为 121**。差点当成 BUG-AO 引入的回归记进 handoff。追下去是：
+
+`diag-route-guard.mjs` 显示这些路由被守卫改写成了
+
+```
+#/login?returnTo=/notes&unlock=1
+「检测到已有登录态，但本地加密库未解锁。请重新输入主密码以访问本地数据。」
+```
+
+- 失败的 6 个（notes / vault / contacts / meetings / study / email）
+  **全都依赖本地 SQLCipher 库**；通过的 5 个不依赖或依赖弱。
+- crypto key **只在内存**，装包重启后失效。
+- 起点常是 `#/settings`（不依赖本地库），所以第一次 `ensureUnlocked` 看不到
+  主密码输入框、什么也没做；等导航到 `/notes` 才被守卫弹飞，
+  **后续所有依赖本地库的路由全被弹飞**。
+
+⇒ 夹具缺陷：解锁只在开头做一次，而守卫是**导航途中**才判定的。
+已改为每个路由前 + 导航后再各调一次 `ensureUnlocked()`，
+并在 `landed=false` 时打印被改写后的 hash。重跑 **11/11**。
+
+**教训**：多个条目以**完全相同的 `textLen`** 失败，是「卡在同一个界面」的强信号，
+不是 N 个独立回归。下次看到这种形态，先查是不是夹具/状态问题再谈产品缺陷。
+
+
 
 
 

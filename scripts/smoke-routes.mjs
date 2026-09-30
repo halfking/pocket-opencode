@@ -41,12 +41,14 @@ const ev = async (expression) =>
 
 await send('Runtime.enable')
 
-// 解锁
-if (await ev('!!document.querySelector(\'input[placeholder*="主密码"]\')')) {
+// 解锁：抽成函数，因为守卫可能在**导航途中**才要求解锁（见下方循环内注释）
+async function ensureUnlocked() {
+  if (!(await ev('!!document.querySelector(\'input[placeholder*="主密码"]\')'))) return false
   await ev(`(function(){var e=document.querySelector('input[placeholder*="主密码"]');var s=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(e),'value').set;s.call(e,${JSON.stringify(MASTER)});e.dispatchEvent(new Event('input',{bubbles:true}));return 1})()`)
   await sleep(700)
   await ev(`(function(){var b=Array.prototype.slice.call(document.querySelectorAll('button')).find(x=>(x.textContent||'').trim()==='解锁');if(b)b.click();return 1})()`)
   await sleep(5000)
+  return true
 }
 
 const ROUTES = [
@@ -56,17 +58,28 @@ const ROUTES = [
 
 const rows = []
 for (const route of ROUTES) {
+  // 每个路由前都要重新检查解锁状态，不能只在开头解锁一次。
+  // 原因：路由守卫是**导航途中**才判定本地加密库是否解锁的——
+  // 起点可能是 #/settings 这种不依赖本地库的路由，一开始看不到主密码输入框，
+  // 于是第一次 ensureUnlocked 什么也没做；等导航到 /notes 才被守卫弹到
+  // #/login?returnTo=/notes&unlock=1，后续所有依赖本地库的路由全被弹飞。
+  // 症状极像「6 个路由同时回归」（textLen 恒为 121），其实是夹具的解锁时机错了。
+  await ensureUnlocked()
   consoleErrors.length = 0
   await ev(`location.hash=${JSON.stringify('#' + route)}`)
   // 确定性等待：轮询 hash 实际变成目标值
   const deadline = Date.now() + 12000
   while (Date.now() < deadline && (await ev('location.hash')) !== '#' + route) await sleep(300)
-  await sleep(1800)
+  // 导航途中可能又被守卫弹走，补一次解锁再测
+  await ensureUnlocked()
+  await sleep(1500)
+  const landed = (await ev('location.hash')) === '#' + route
+  if (!landed) console.log(`  提示：${route} 被守卫改写成 ${await ev('location.hash')}`)
   const state = await ev(
     "JSON.stringify({txt:((document.querySelector('.view-root,main,#app>div')||document.body).textContent||'').trim().length, cards:document.querySelectorAll('.note-card,.vault-card,.deck-card,.card,.list-item,li').length})",
   )
   const s = JSON.parse(state || '{}')
-  rows.push({ route, landed: (await ev('location.hash')) === '#' + route, textLen: s.txt, cards: s.cards, errors: [...consoleErrors] })
+  rows.push({ route, landed, textLen: s.txt, cards: s.cards, errors: [...consoleErrors] })
 }
 
 let bad = 0
