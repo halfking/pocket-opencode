@@ -71,12 +71,12 @@ mkdir_dir() {
   fi
 }
 
-for d in "${ALWAYS_DIRS[@]}" "${CONDITIONAL_DB_DIRS[@]}"; do
+for d in "${ALWAYS_DIRS[@]}" ${CONDITIONAL_DB_DIRS[@]+"${CONDITIONAL_DB_DIRS[@]}"}; do
   mkdir_dir "${d}"
 done
 
 # 写 .gitkeep（空目录也保留结构）
-for d in "${ALWAYS_DIRS[@]}" "${CONDITIONAL_DB_DIRS[@]}"; do
+for d in "${ALWAYS_DIRS[@]}" ${CONDITIONAL_DB_DIRS[@]+"${CONDITIONAL_DB_DIRS[@]}"}; do
   [[ -f "${d}/.gitkeep" ]] || : > "${d}/.gitkeep"
 done
 
@@ -93,7 +93,7 @@ write_gitignore() {
 !.gitkeep
 EOF
 }
-for d in "${ALWAYS_DIRS[@]}" "${CONDITIONAL_DB_DIRS[@]}"; do
+for d in "${ALWAYS_DIRS[@]}" ${CONDITIONAL_DB_DIRS[@]+"${CONDITIONAL_DB_DIRS[@]}"}; do
   write_gitignore "${d}"
 done
 
