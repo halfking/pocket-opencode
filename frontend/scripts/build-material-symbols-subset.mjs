@@ -147,6 +147,13 @@ async function collectIcons() {
 
 async function main() {
   const icons = await collectIcons()
+  // --list：只打印最终图标清单就退出，不做子集化。
+  // 这是排查「图标写了但字体里没有」的唯一可靠入口 —— 收集规则有两条正则，
+  // 跨行写法、动态表达式形态都可能静默漏扫，肉眼扫源码看不出来。
+  if (process.argv.includes('--list')) {
+    console.log(icons.join('\n'))
+    return
+  }
   console.log(`[subset] 工程用到 + 兜底共 ${icons.length} 个图标`)
   // harfbuzz-subset 需要一个 text string 来确定要保留哪些字形(material-symbols
   // 的 ligatures 是按名合成,我们用空格连起让 subset-font 把所有 ligature

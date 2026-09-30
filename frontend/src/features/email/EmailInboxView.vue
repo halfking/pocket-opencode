@@ -73,7 +73,12 @@
         </div>
       </ScrollChromePortal>
 
-      <PullToRefresh :on-refresh="onRefresh" class="inbox-scroll">
+      <PullToRefresh
+        ref="pullRef"
+        :on-refresh="onRefresh"
+        class="inbox-scroll"
+        @scroll-position="onScrollPosition"
+      >
     <p v-if="inbox.classifyHint.value" class="sync-hint">
       {{ inbox.classifyHint.value }}
       <button v-if="inbox.classifying.value" type="button" class="linkish" @click="inbox.cancelClassify()">取消</button>
@@ -129,12 +134,34 @@
         </div>
       </TransitionGroup>
       <div v-if="emails.length > 0" ref="moreEl" class="more">
-        <span v-if="pageState.loadingMore">加载中…</span>
-        <span v-else-if="pageState.hasMore">上拉加载更多</span>
-        <span v-else>没有更多了</span>
+        <!-- 加载中：转圈 + 文案淡入淡出；静态提示则保持常驻，不做位移。 -->
+        <span v-if="pageState.loadingMore" class="more-loading">
+          <span class="material-symbols-outlined more-spin" aria-hidden="true">progress_activity</span>
+          <span>正在加载更早的邮件…</span>
+        </span>
+        <Transition name="morefade" mode="out-in">
+          <span v-else-if="pageState.hasMore" key="hint">上滑加载更早的邮件</span>
+          <span v-else key="end" class="more-end">已到最早一封</span>
+        </Transition>
       </div>
     </template>
     </PullToRefresh>
+
+    <!--
+      回顶按钮：下滑超过一屏后浮现。
+      旧列表没有这个，用户在长列表里想回顶部只能一直上滑。
+    -->
+    <Transition name="totop">
+      <button
+        v-if="showScrollTop"
+        type="button"
+        class="to-top"
+        aria-label="回到顶部"
+        @click="scrollToTop"
+      >
+        <span class="material-symbols-outlined" aria-hidden="true">expand_more</span>
+      </button>
+    </Transition>
     </template>
   </div>
 </template>
@@ -148,8 +175,12 @@ import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 import HeaderActionsPortal from '@/components/layout/HeaderActionsPortal.vue'
 import { useListSentinel } from '../../composables/use-list-sentinel'
 import * as emailsStore from './emails-store'
+import { emailApi } from '../../api/email'
 import type { LocalEmail } from './emails-store'
 import { pullInboxFromServer, readInboxPage } from './email-inbox-page'
+import { prefetchEmailBody, prefetchEmailBodySeries } from './email-body-prefetch.ts'
+import { readEmailBodyLocal, writeEmailBodyLocal } from './email-body-cache.ts'
+import { extractEmailBody } from './email-body-format.ts'
 import {
   INBOX_PAGE_SIZE,
   advanceInboxPage,
@@ -194,6 +225,18 @@ const shownEmails = computed(() => inbox.visibleEmails(emails.value))
  */
 const pageState = ref(createInboxPageState())
 const refreshing = ref(false)
+
+/**
+ * 正文预取依赖。与 EmailDetailView 用同一份定义，保证：
+ *  - 两边对「怎么取正文」的约定一致；
+ *  - 在途去重真正生效（否则两个模块各写一套，重复请求照旧）。
+ */
+const bodyPrefetchDeps = {
+  fetchBody: (id: string) => emailApi.getEmailBody(id),
+  readCache: (id: string) => readEmailBodyLocal(id),
+  writeCache: (id: string, body: string) => writeEmailBodyLocal(id, body),
+  extract: (raw: string) => extractEmailBody(raw),
+}
 
 function goToLogin() {
   router.push('/login')
@@ -319,6 +362,38 @@ async function loadMore() {
 const { moreEl } = useListSentinel(loadMore)
 
 /**
+ * 回顶按钮的显示阈值：约一屏半。
+ * 不足一屏时列表根本没有「顶部可回」，按钮会变成无意义的存在。
+ */
+const SCROLL_TOP_THRESHOLD_PX = 600
+
+/** PullToRefresh 实例：只为拿到它的滚动容器做程序化滚动。 */
+const pullRef = ref<InstanceType<typeof PullToRefresh> | null>(null)
+const scrollTop = ref(0)
+const showScrollTop = computed(() => scrollTop.value > SCROLL_TOP_THRESHOLD_PX)
+
+function onScrollPosition(top: number) {
+  scrollTop.value = top
+}
+
+/**
+ * 回到顶部。
+ *
+ * 用平滑滚动而不是瞬移：瞬移会让长列表在两帧内重排上百个卡片，
+ * 真机上表现为明显卡顿；平滑滚动顺带把 chrome 唤出逻辑也走了一遍。
+ * 尊重系统的 prefers-reduced-motion——这类用户对大幅位移动画敏感。
+ */
+function scrollToTop() {
+  const el = pullRef.value?.scrollEl
+  if (!el) {
+    scrollTop.value = 0
+    return
+  }
+  const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  el.scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' })
+}
+
+/**
  * 追加完一页后补一次哨兵检查。
  *
  * IntersectionObserver 只在「交叉状态变化」时回调。若一页加载完时哨兵**仍在视口内**
@@ -367,7 +442,24 @@ function setCategory(c: string) {
   pageState.value = resetInboxPage(pageState.value)
   void load()
 }
-function open(id: string) { router.push(`/email/${id}`) }
+/**
+ * 点进详情：**不等待**任何网络。
+ *
+ * 真机反馈「点进邮件详情失败或非常慢」的关键修复点：点击的**瞬间**就发起正文
+ * 预取，让它与路由跳转、组件挂载并行。等到详情页真正要读正文时，请求多半已经
+ * 在途甚至完成，首屏几乎无等待。跳转本身永远不被网络拖住。
+ */
+function open(id: string) {
+  void prefetchEmailBody(id, bodyPrefetchDeps)
+  // 顺手把「下一封」也热好：用户看完返回几乎总是往下滑看下一封，
+  // 提前热好能让这趟往返同样是秒开。
+  const idx = shownEmails.value.findIndex((m) => m.id === id)
+  if (idx >= 0) {
+    const ahead = shownEmails.value.slice(idx + 1, idx + 3).map((m) => m.id)
+    if (ahead.length) void prefetchEmailBodySeries(ahead, bodyPrefetchDeps, 2)
+  }
+  router.push(`/email/${id}`)
+}
 
 async function markRead(m: LocalEmail, read: boolean) {
   await emailsStore.markRead(m.id, read)
@@ -437,4 +529,29 @@ onUnmounted(() => setHeaderTitle(null))
 .read-btn { margin-left: auto; font-size: 11px; padding: 2px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-card); color: var(--brand-primary); }
 .sync-hint { margin: 0 var(--space-3) var(--space-2); font-size: 11px; color: var(--text-muted); }
 .more { padding: 16px 0 24px; text-align: center; font-size: 12px; color: var(--text-muted); }
+.more-loading { display: inline-flex; align-items: center; gap: 6px; }
+.more-spin { font-size: 15px; color: var(--brand-primary); animation: more-spin 900ms linear infinite; }
+@keyframes more-spin { to { transform: rotate(360deg); } }
+.more-end { opacity: .7; }
+/* 加载更多三态互切：淡入淡出 + 轻微上移，避免文案硬切。 */
+.morefade-enter-active, .morefade-leave-active { transition: opacity .2s ease, transform .2s ease; }
+.morefade-enter-from { opacity: 0; transform: translateY(4px); }
+.morefade-leave-to { opacity: 0; transform: translateY(-4px); }
+
+/* 回顶按钮：右下悬浮，圆形。expand_more 本身就是向上双箭头，无需再 rotate。 */
+.to-top {
+  position: absolute; right: 14px; bottom: 18px; z-index: 5;
+  width: 40px; height: 40px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); background: var(--bg-card);
+  color: var(--brand-primary); box-shadow: 0 4px 14px rgba(0,0,0,.16);
+  cursor: pointer; padding: 0;
+}
+.to-top:active { background: var(--bg-hover); }
+.to-top .material-symbols-outlined { font-size: 22px; }
+/* 浮现/隐去：上移 + 淡入，像从列表里「浮起来」。 */
+.totop-enter-active { transition: opacity .24s var(--ease-out), transform .24s var(--ease-out); }
+.totop-leave-active { transition: opacity .18s var(--ease-out), transform .18s var(--ease-out); }
+.totop-enter-from, .totop-leave-to { opacity: 0; transform: translateY(10px) scale(.9); }
+
 </style>
