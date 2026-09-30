@@ -86,8 +86,10 @@ import { ApiError } from '../../api/http'
 import { deleteEmailsByIds } from './emails-store'
 import { formatEmailRelTime, hasCleanupConstraint } from './cleanup-filter'
 import { isLocalTestAddress } from './providers'
+import { useConfirm } from '../../composables/useConfirm'
 
 const router = useRouter()
+const { confirm } = useConfirm()
 const accounts = ref<EmailAccount[]>([])
 const subject = ref('')
 const from = ref('')
@@ -186,7 +188,14 @@ async function preview() {
 async function confirmDelete() {
   const f = previewedFilter.value
   if (!f || !previewed.value) return
-  if (!window.confirm(`确认把 ${matched.value} 封邮件移到垃圾箱？此操作会同步到邮箱服务器。`)) return
+  // BUG-AQ：原为 window.confirm（同步阻塞），在 Android WebView 里会卡死渲染进程。
+  const ok = await confirm({
+    title: '移到垃圾箱',
+    message: `确认把 ${matched.value} 封邮件移到垃圾箱？此操作会同步到邮箱服务器。`,
+    confirmText: '移到垃圾箱',
+    danger: true,
+  })
+  if (!ok) return
   busy.value = true
   formError.value = ''
   try {

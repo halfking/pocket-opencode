@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 import { useConfirm } from '../../composables/useConfirm'
+import { useToast } from '../../composables/useToast'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import AgentSyncSheet from '../ai-chat/AgentSyncSheet.vue'
 
@@ -11,6 +12,7 @@ defineOptions({ name: 'AgentLibraryView' })
 const router = useRouter()
 const agentStore = useChatAgentStore()
 const { confirm } = useConfirm()
+const toast = useToast()
 
 const searchQuery = ref('')
 const selectedDepartment = ref<string>('') // 空字符串 = 全部
@@ -92,7 +94,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
     : `确定要删除角色"${agentName}"吗？`
   if (!(await confirm({ title: '删除角色', message, confirmText: '删除', danger: true }))) return
   agentStore.deleteAgent(agentId).catch((err) => {
-    alert(`删除失败：${err.message || err}`)
+    toast.error(`删除失败：${err.message || err}`)
   })
 }
 </script>

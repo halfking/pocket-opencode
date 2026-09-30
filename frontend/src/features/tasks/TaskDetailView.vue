@@ -119,6 +119,7 @@ import { ref, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { api, type Task, type TaskSessionBundle, type TaskSessionBundleRow } from '../../api/client'
 import { useConfirm } from '../../composables/useConfirm'
+import { useToast } from '../../composables/useToast'
 import BottomSheet from '../../components/base/BottomSheet.vue'
 import TaskSessionPanel from './TaskSessionPanel.vue'
 import TaskSessionSheet from './TaskSessionSheet.vue'
@@ -127,6 +128,7 @@ import TaskCollaborationPanel from './TaskCollaborationPanel.vue'
 const router = useRouter()
 const route = useRoute()
 const { confirm } = useConfirm()
+const toast = useToast()
 
 const task = ref<Task | null>(null)
 const bundle = ref<TaskSessionBundle>({
@@ -188,7 +190,7 @@ async function updateStatus(status: string) {
   } catch (e) {
     task.value.status = old
     console.error('Failed to update status:', e)
-    alert('状态更新失败，请重试')
+    toast.error('状态更新失败，请重试')
   }
 }
 
@@ -200,7 +202,7 @@ async function confirmDelete() {
     router.push('/ai')
   } catch (e) {
     console.error('Failed to delete task:', e)
-    alert('删除失败，请重试')
+    toast.error('删除失败，请重试')
   }
 }
 

@@ -207,6 +207,7 @@ import { pickAndSaveImage, loadMediaDataUrl, deleteMediaFile, type MediaRef } fr
 import TagInput from './components/TagInput.vue'
 import ParentDeckSelect from './components/ParentDeckSelect.vue'
 import { useApiError } from '../../composables/useApiError'
+import { useConfirm } from '../../composables/useConfirm'
 import type { FlashcardTemplate } from '../../types/flashcards'
 
 defineOptions({ name: 'FlashcardEditView' })
@@ -215,6 +216,7 @@ const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
+const { confirm } = useConfirm()
 const store = useFlashcardsStore()
 
 const noteId = computed(() => (route.params.noteId ? String(route.params.noteId) : ''))
@@ -396,9 +398,11 @@ async function save() {
   }
 }
 
-function confirmDelete() {
+async function confirmDelete() {
   if (!isEdit.value) return
-  const ok = typeof window !== 'undefined' && window.confirm(t('flashcards.edit.confirmDelete'))
+  // BUG-AQ：原为 window.confirm（同步阻塞），在 Android WebView 里会卡死渲染进程。
+  // 标题/正文都用已存在的 key，不新增（新增会踩 check:i18n 拦的缺 key）。
+  const ok = await confirm({ title: t('common.delete'), message: t('flashcards.edit.confirmDelete'), confirmText: t('common.delete'), danger: true })
   if (!ok) return
   store.enqueueDeleteNote(noteId.value)
   void store.flushOutbox().catch(() => {})

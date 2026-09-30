@@ -236,11 +236,13 @@ import { http } from '../../api/http'
 import { displayApiBase, probeHealthz, resolveApiBase } from '../../config/api-base'
 import { clearSelectedInstance, readSelectedInstance } from '../../config/selected-instance'
 import { useConfirm } from '../../composables/useConfirm'
+import { useToast } from '../../composables/useToast'
 import { useThemeStore, type ThemePreference } from '../../stores/theme'
 import LanguageSwitcher from '../../components/LanguageSwitcher.vue'
 
 const router = useRouter()
 const { confirm } = useConfirm()
+const toast = useToast()
 const { t } = useI18n()
 const apiError = useApiError()
 const theme = useThemeStore()
@@ -359,18 +361,19 @@ async function checkForUpdates() {
   try {
     const response = await checkUpdate()
     if (response.hasUpdate && !canDownloadApk()) {
-      alert(`当前平台（${runtimePlatform()}）暂无可用的应用内更新渠道`)
+      toast.warning(`当前平台（${runtimePlatform()}）暂无可用的应用内更新渠道`)
     } else if (response.hasUpdate) {
-      alert(t('settings.newVersionAvailable', {
+      // 更新日志较长：默认 3s toast 读不完，给足时长并保留关闭按钮
+      toast.info(t('settings.newVersionAvailable', {
         version: response.latest?.version,
         changelog: response.latest?.changelog.join('\n')
-      }))
+      }), { duration: 15000, closable: true })
     } else {
-      alert(t('settings.alreadyLatest'))
+      toast.success(t('settings.alreadyLatest'))
     }
   } catch (error) {
     console.error('检查更新失败:', error)
-    alert(t('settings.checkUpdateFailed'))
+    toast.error(t('settings.checkUpdateFailed'))
   }
 }
 

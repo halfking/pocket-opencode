@@ -158,11 +158,13 @@ import { formatInboxSearchLabel } from './email-inbox-search'
 import { useEmailInbox } from './use-email-inbox'
 import { setHeaderTitle } from '../../composables/useAppHeaderTitle'
 import { useListScene } from '../../composables/use-list-scene'
+import { useConfirm } from '../../composables/useConfirm'
 
 defineOptions({ name: 'EmailInboxView' })
 
 const router = useRouter()
 const { t } = useI18n()
+const { confirm } = useConfirm()
 const emails = ref<LocalEmail[]>([])
 const loading = ref(true)
 const loadingMore = ref(false)
@@ -205,7 +207,14 @@ async function onClassify() {
 
 async function onPurge() {
   if (!inbox.selectedCount.value) return
-  if (!window.confirm(`删除选中的 ${inbox.selectedCount.value} 封邮件？正文将清空，仅保留标题和摘要。`)) return
+  // BUG-AQ：原为 window.confirm（同步阻塞），在 Android WebView 里会卡死渲染进程。
+  const ok = await confirm({
+    title: '删除邮件',
+    message: `删除选中的 ${inbox.selectedCount.value} 封邮件？正文将清空，仅保留标题和摘要。`,
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!ok) return
   await inbox.confirmPurge()
   await load()
 }

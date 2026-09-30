@@ -121,6 +121,7 @@ import { useApiError } from '@/composables/useApiError'
 import { Skeleton, EmptyState, PullToRefresh, SwipeableListItem, type SwipeAction } from '@/components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 import { useListScene } from '@/composables/use-list-scene'
 import { listSnapshots, upsertSnapshots } from '@/native/list-sync/snapshot-store'
 import {
@@ -158,6 +159,7 @@ const LEGACY_ARCHIVE_KEY = 'archived_session_ids'
 const router = useRouter()
 const auth = useAuthStore()
 const { confirm } = useConfirm()
+const toast = useToast()
 
 const sessions = ref<Session[]>([])
 const instances = ref<Instance[]>([])
@@ -353,7 +355,7 @@ function unarchiveSession(session: Session) {
 async function deleteSession(session: Session) {
   const instId = selectedInstanceId.value
   if (!instId) {
-    alert('请先选择实例再删除会话')
+    toast.warning('请先选择实例再删除会话')
     return
   }
   if (!(await confirm({ title: '删除会话', message: `确定删除会话「${session.title}」？`, confirmText: '删除', danger: true }))) return
@@ -362,7 +364,7 @@ async function deleteSession(session: Session) {
     sessions.value = sessions.value.filter((s) => s.id !== session.id)
     total.value = Math.max(0, total.value - 1)
   } catch (err: any) {
-    alert('删除失败: ' + (err.message || '未知错误'))
+    toast.error('删除失败: ' + (err.message || '未知错误'))
   }
 }
 

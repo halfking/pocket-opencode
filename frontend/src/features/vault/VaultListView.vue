@@ -92,6 +92,7 @@ import * as syncStore from './sync-store'
 import { isCryptoReady } from '../../native/crypto'
 import type { VaultEntryMeta } from './vault-store'
 import { useListScene } from '../../composables/use-list-scene'
+import { useToast } from '../../composables/useToast'
 
 defineOptions({ name: 'VaultListView' })
 
@@ -105,6 +106,7 @@ const syncing = ref(false)
 const syncStatus = ref<{ type: 'ok' | 'err'; msg: string } | null>(null)
 
 const router = useRouter()
+const toast = useToast()
 
 const newEntry = reactive({
   title: '', username: '', url: '', category: 'login', password: '', notes: '',
@@ -169,7 +171,7 @@ async function generate() {
   try {
     const pwd = await keystore.generatePassword({ length: 20, upper: true, lower: true, digits: true, symbols: true })
     await navigator.clipboard.writeText(pwd).catch(() => {})
-    alert('已生成并复制（30秒后剪贴板自动清空）')
+    toast.success('已生成并复制（30秒后剪贴板自动清空）')
   } catch {
     // cap-keystore 不可用：用 Web Crypto 生成
     const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*'
@@ -177,12 +179,12 @@ async function generate() {
     crypto.getRandomValues(arr)
     const pwd = Array.from(arr, (n) => chars[n % chars.length]).join('')
     await navigator.clipboard.writeText(pwd).catch(() => {})
-    alert('已生成并复制（30秒后剪贴板自动清空）')
+    toast.success('已生成并复制（30秒后剪贴板自动清空）')
   }
 }
 
 async function saveNew() {
-  if (!newEntry.title) { alert('请输入标题'); return }
+  if (!newEntry.title) { toast.error('请输入标题'); return }
   await vaultStore.saveEntry({
     title: newEntry.title,
     username: newEntry.username || undefined,

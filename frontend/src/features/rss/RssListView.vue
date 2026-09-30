@@ -4,9 +4,11 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { rssApi, type RSSSource, type RSSItem } from '../../api/rss'
 import { toUserMessage } from '../../api/error-message'
+import { useConfirm } from '../../composables/useConfirm'
 
 const router = useRouter()
 const { t } = useI18n()
+const { confirm } = useConfirm()
 const tab = ref<'sources' | 'items'>('items')
 const sources = ref<RSSSource[]>([])
 const items = ref<RSSItem[]>([])
@@ -59,7 +61,9 @@ async function toggleSource(src: RSSSource) {
   }
 }
 async function deleteSource(src: RSSSource) {
-  if (!confirm(`确定删除订阅源「${src.title}」？所有 item 也会被删除。`)) return
+  // BUG-AQ：原为裸 confirm()（同步阻塞），在 Android WebView 里会卡死渲染进程。
+  const ok = await confirm({ title: '删除订阅源', message: `确定删除订阅源「${src.title}」？所有 item 也会被删除。`, confirmText: '删除', danger: true })
+  if (!ok) return
   try {
     await rssApi.deleteSource(src.id)
     await refresh()

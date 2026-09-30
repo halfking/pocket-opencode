@@ -24,8 +24,10 @@ import { formatPayload, formatTimestamp, scheduleKindLabel, taskKindLabel } from
 import { describeTaskSchedule } from './schedule-plan'
 import { markListDirty } from '../../composables/list-scene-store'
 import { useApiError } from '../../composables/useApiError'
+import { useConfirm } from '../../composables/useConfirm'
 
 const route = useRoute(); const router = useRouter(); const store = useScheduledTasksStore()
+const { confirm } = useConfirm()
 const taskId = computed(() => route.params.id as string)
 const task = computed(() => store.selected)
 const running = ref(false)
@@ -40,7 +42,7 @@ async function runNow() {
   try { await store.run(task.value.id); await load() } catch (e: any) { store.error = String(e?.message ?? e) } finally { running.value = false }
 }
 async function toggle() { if (task.value) { await store.update(task.value.id, { enabled: !task.value.enabled }); markListDirty('scheduled-tasks') } }
-async function remove() { if (!task.value || !window.confirm(`删除自动化「${task.value.name}」？`)) return; await store.remove(task.value.id); markListDirty('scheduled-tasks'); router.replace('/settings/scheduled-tasks') }
+async function remove() { if (!task.value) return; const ok = await confirm({ title: '删除自动化', message: `删除自动化「${task.value.name}」？`, confirmText: '删除', danger: true }); if (!ok) return; await store.remove(task.value.id); markListDirty('scheduled-tasks'); router.replace('/settings/scheduled-tasks') }
 onMounted(load)
 watch(taskId, (id, previous) => { if (id && id !== previous) void load() })
 </script>

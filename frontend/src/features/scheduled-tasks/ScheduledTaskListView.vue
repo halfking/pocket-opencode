@@ -41,18 +41,25 @@ import { formatTimestamp, taskKindLabel, type ScheduledTask } from './types'
 import { describeTaskSchedule } from './schedule-plan'
 import { useListScene } from '../../composables/use-list-scene'
 import { useApiError } from '../../composables/useApiError'
+import { useConfirm } from '../../composables/useConfirm'
 
 defineOptions({ name: 'ScheduledTaskListView' })
 
 const apiError = useApiError()
 const router = useRouter()
 const store = useScheduledTasksStore()
+const { confirm } = useConfirm()
 const enabledOnly = ref(false)
 
 function load() { return store.load(enabledOnly.value).catch(() => {}) }
 async function toggle(task: ScheduledTask) { await store.update(task.id, { enabled: !task.enabled }).catch(() => {}) }
 async function remove(task: ScheduledTask) {
-  if (!window.confirm(`删除自动化「${task.name}」？`)) return
+  // BUG-AQ：原来是 window.confirm。它在 Android WebView 里是**同步阻塞**的，
+  // 会卡住渲染进程 JS 线程——真机实测点「删除」后应用彻底假死，连 CDP 的
+  // `1+1` 都不再返回，只能 am force-stop。项目早已确立 ConfirmDialog 为
+  // 全局唯一确认弹窗，这里是漏网的一处。
+  const ok = await confirm({ title: '删除自动化', message: `删除自动化「${task.name}」？`, confirmText: '删除', danger: true })
+  if (!ok) return
   await store.remove(task.id).catch(() => {})
 }
 function open(id: string) { router.push(`/settings/scheduled-tasks/${id}`) }

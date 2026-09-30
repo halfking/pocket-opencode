@@ -1199,7 +1199,7 @@ async function ctxUpdateStatus(status: string) {
   } catch (e) {
     task.status = old
     console.error('Failed to update task:', e)
-    alert('操作失败，请重试')
+    toast.error('操作失败，请重试')
   }
 }
 
@@ -1212,7 +1212,7 @@ async function ctxDelete() {
     closeContextMenu()
   } catch (e) {
     console.error('Failed to delete task:', e)
-    alert('删除失败，请重试')
+    toast.error('删除失败，请重试')
   }
 }
 
