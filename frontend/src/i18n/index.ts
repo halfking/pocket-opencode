@@ -15,6 +15,7 @@ import {
   resolveInitialLocale,
   type LocaleType,
 } from './locale-resolve'
+import { onMissingKey } from './missing-key'
 
 export {
   LOCALE_STORAGE_KEY,
@@ -81,6 +82,10 @@ const i18n = createI18n({
   legacy: false, // 使用 Composition API 模式
   locale: resolveStartupLocale(), // 默认语言（用户选择 > 设备语言）
   fallbackLocale: 'en-US', // 回退语言
+  // BUG-AO：缺 key 原本完全静默——`study.due.allClear` 这类「代码在用、
+  // 语言文件里没有」的 key 会把字符串直接甩到界面上，且没有任何告警，
+  // 只能靠人肉看截图发现。这里补一条去重后的 console.warn（见 missing-key.ts）。
+  missing: onMissingKey,
   messages: {
     'zh-CN': zhCN,
     'zh-TW': zhTW,

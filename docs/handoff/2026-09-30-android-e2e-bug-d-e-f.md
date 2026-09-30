@@ -2387,6 +2387,14 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
+- **BUG-AO 缺 key 静默已修**：`createI18n` 接上 `missing` 钩子，缺 key 打**去重后**的
+  `console.warn`（按 `locale:key`），避免渲染循环刷屏。
+  - 单测 **16/16**（i18n 目录全量）；`vue-tsc` exit 0
+  - **判据在缺陷侧失败过**：去掉去重 → `# pass 0 / # fail 1`；
+    删掉 `console.warn`（=修复前）→ `# pass 0 / # fail 1`；还原 → `4 pass`
+  - **刻意不改渲染**：返回值仍是 key 本身。「界面出现机器串」是最有价值的信号，
+    换成中性占位符反而更难发现。是否给生产换占位符属产品决策，留给产品侧
+  - 详见 §4.47
 - **BUG-AM/AN i18n 缺 key 已补齐**：13 个 key（`study.reminder.*`/`study.due.*`/`study.inbox.*`/`nav.flashcards`）
   在代码里在用、**9 个语言文件全缺** ⇒ 用户在界面上看到 key 字符串本身。
   - `audit-i18n-keys.mjs` 全量对账：**241/241，缺失 0**，9 语言相互对等
@@ -2598,7 +2606,8 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   ⚠️ **性质已澄清**（§4.46）：这只是**译文质量**欠账（显示英文），
   **不是缺 key**。9 个语言文件的 key 集合与 zh-CN **完全对等**，
   缺 key（显示 key 串）是另一类问题，已在 BUG-AM/AN 里修完。
-  另外 **vue-i18n 的缺 key 全局兜底仍未做**——现在漏了新 key 仍会直接显示 key 串。
+  缺 key 的**运行时告警**也补上了（BUG-AO），但 CI 侧尚未接入
+  `audit-i18n-keys.mjs`——目前要手动跑。
 - **真机 Maestro 仍然零次执行**：本轮把阻塞量化了（拦全新安装、需手动授权），
   并改用 CDP 在真机上完成 BUG-AA 的验证。**但 `.maestro/` 下的 flow 至今没在真机跑过一次**，
   不要把「真机验证走 CDP」说成「真机 Maestro 跑通了」（§4.16.3 / §4.28.7）
@@ -4426,6 +4435,57 @@ export function dueSummaryHeadlineKey(...): DueSummaryHeadlineKey { ... }
 
 **仍未做**：vue-i18n 的**缺 key 全局兜底**。现在缺 key 仍会直接把 key 渲染给用户看；
 本轮只补齐了已知的 13 个，**没有加兜底机制**去兜住未来新增的漏 key。
+
+### 4.47 BUG-AO：缺 key 完全静默——加告警钩子（不改变用户看到的文案）
+
+§4.46 补齐 13 个 key 是**治已病**；BUG-AO 处理的是**为什么它能潜伏这么久**：
+缺 key 时 vue-i18n 只是把 key 字符串回显，**没有任何告警**，
+所以只能靠人肉看截图偶然发现。
+
+#### 4.47.1 关键决策：只加检测，不改渲染
+
+`onMissingKey(locale, key)` 返回的是 **key 本身**，不是中性占位符。理由：
+
+- 「界面上出现 `study.due.allClear` 这种机器串」本身就是**最有价值的信号**——
+  截图、录屏、用户反馈里一眼能认出。换成 `⚠️` 或空白反而把这个信号抹掉，
+  缺 key 会变得更难发现。
+- 是否给生产环境换占位符，属于**产品决策**（可读性 vs 可发现性），
+  不该由我在这里替用户定。留待产品侧拍板。
+
+新增的只有：`console.warn` + **按 `locale:key` 去重**（一个渲染循环里
+同一个缺 key 可能触发上百次，不去重会把日志冲垮）。
+
+#### 4.47.2 单独成模块的理由
+
+与 `api/tasks-url.ts` 完全同一个理由：`i18n/index.ts` 依赖 vue-i18n/pinia
+与无扩展名相对 import，Node 的 ESM 解析器跑不起来，进不了 `node --test`。
+所以逻辑抽到 `i18n/missing-key.ts`，`index.ts` 只做接线。
+
+#### 4.47.3 改动
+
+- `frontend/src/i18n/missing-key.ts`（新） —— `onMissingKey` + 去重表 + 测试用的 reset/导出。
+- `frontend/src/i18n/index.ts` —— `createI18n({ missing: onMissingKey, ... })`。
+- `frontend/src/i18n/__tests__/missing-key.test.mjs`（新） —— 4 条判据。
+
+#### 4.47.4 验证
+
+| 项 | 结果 |
+|---|---|
+| 单测 | `node --test src/i18n/__tests__/*.test.mjs` → **16/16**（新 4 条 + 既有 12 条） |
+| 类型检查 | `npx vue-tsc --noEmit` → **exit 0** |
+| 无 BOM 污染 | `missing-key.ts` / 测试 / `index.ts` 首字节均非 `EF BB BF` |
+
+**判据在缺陷侧失败过**（不是只跑通就算数）：
+
+| 反证 | 预期 | 实测 |
+|---|---|---|
+| 去掉去重（每次都告警） | 「50 次调用只告警 1 次」应失败 | `# pass 0 / # fail 1` |
+| 完全删掉 `console.warn`（= BUG-AO 修复前） | 「首次必告警」应失败 | `# pass 0 / # fail 1` |
+| 还原 | `# pass 4 / # fail 0` | 一致 |
+
+> 备注：反证时用 PowerShell `Set-Content -Encoding UTF8` 改过 .ts，
+> **该命令会加 BOM**（本项目反复踩到的坑）。事后逐个回读首字节确认已无污染。
+
 
 
 
