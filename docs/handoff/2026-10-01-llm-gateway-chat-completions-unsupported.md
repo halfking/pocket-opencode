@@ -96,7 +96,11 @@ fetch 也一并记了下来，随后被我误读成应用的第二次调用。
 
 ## 7. 复现脚本
 
-- `scripts/llm-endpoint-shapes.mjs` —— 五组端点形态对照（含负控）
+- `scripts/llm-endpoint-shapes.mjs` —— 五组端点形态对照（含负控）**← 决定性证据在这一个**
 - `scripts/llm-proxy-isolate.mjs` —— 代理 vs 网关分离
-- `scripts/llm-chain-check.mjs` —— pocketd 侧 models/chat/stream 三段链路
 - `logs/llm-shapes.json` —— 本次五组对照的原始输出
+
+另有 `scripts/llm-chain-check.mjs`（pocketd 侧 models/chat/stream 三段链路）与
+`scripts/llm-direct-probe.mjs`（裸连三个模型）在本轮跑过后被并行会话的分支切换卷走
+（2026-10-01 当天第二次发生，见 `docs/handoff/2026-10-01-shared-tree-hazard.md`），
+需要时按本文第 2/3 节的参数重建即可；关键结论已由上面两个脚本独立复现。
