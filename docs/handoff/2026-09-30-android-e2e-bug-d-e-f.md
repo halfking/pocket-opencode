@@ -23,6 +23,9 @@
 | `scripts/diag-finance-samescope.mjs` | 用 App 自己的作用域 token 播种，区分「功能坏了」vs「跨作用域比对」（§4.40.6） |
 | `scripts/diag-token-stick.mjs` | 注入 token 后看 App 是否覆盖回弹 —— 陈旧 bundle 的决定性判据（§4.40.3） |
 | `scripts/diag-finance-workspace.mjs` / `diag-auth-workspace-origin.mjs` / `diag-auth-token-source.mjs` / `probe-login-paths.mjs` | 工作区分裂与 token 来源的四段排除证据（§4.40.2–4.40.3） |
+| `scripts/verify-flashcard-deck-entry.mjs` | **闪卡有卡组时的建组入口**真机判据（§4.41.1，4/4） |
+| `scripts/set-app-api-base.mjs` | 运行时写 `pocket_api_base` 覆盖把 App 指向本地后端（§4.41.3） |
+| `scripts/probe-flashcards-api.mjs` | 直连后端闪卡接口（发现 `decks:null` 响应形状，§4.41.3） |
 
 ---
 
@@ -3459,7 +3462,7 @@ verify-instances-readpath.mjs (同上)                                  13/13
 > 说明这两项的结论没有被推翻。但**其余真机结论尚未在干净状态下复验**，
 > 引用前请默认存疑。
 
-#### 4.40.6 沉淀
+### 4.40.6 沉淀
 
 - `scripts/apk-assert-scheme.mjs`：**拆开 APK 直接回读**
   `assets/capacitor.config.json` 的 `androidScheme`。`gradlew BUILD SUCCESSFUL`
@@ -3469,6 +3472,71 @@ verify-instances-readpath.mjs (同上)                                  13/13
   本次就是靠它拿到 ✅（同作用域 SEED 正常上屏）。
 - **教训**：真机复验前必须 `pm clear` 或至少确认 WebView 没有缓存旧 bundle，
   否则你测的可能不是 HEAD。「偶发」「时好时坏」的第一嫌疑永远是环境漂移，不是产品缺陷。
+
+#### 4.41 闪卡「有卡组时无建组入口」修复 + Maestro 真机受阻 + 一个构建配置坑
+
+#### 4.41.1 闪卡入口（BUG-K follow-up，已修 + 真机 4/4）
+
+**缺陷**：零卡组时列表页有 BUG-U 的内联建组表单；但**一旦有了卡组，列表页没有任何建组入口**——
+「新建卡组」只存在于 `FlashcardEditView` 顶部的表单里。于是加第 2 个卡组必须先点「新建卡片」
+进编辑页才能建，入口语义和位置都不对（BUG-K 注释自己就承认「列表页『新建卡组』又直接跳本页」）。
+
+**修复**：`FlashcardListView.vue` 在**有卡组态**补一个可展开的建组入口
+（`data-testid=deck-create-toggle`），复用同一套 `newDeckName / submitCreateDeck / deckError`。
+零卡组态（BUG-U）与有卡组态入口文案统一为 `flashcards.deck.create`（「新建卡组」），
+不再与实际行为错位。
+
+**真机验证**（`scripts/verify-flashcard-deck-entry.mjs`，红米 2411DRN47C）：
+```
+前置：有卡组存在                                    PASS  decks=1
+有卡组时列表页存在「新建卡组」入口(deck-create-toggle)  PASS
+点开入口后建组表单展开                              PASS
+从列表页入口建出第 2 个卡组并出现在列表                PASS  decks 1 -> 2
+                                                    4/4
+```
+判据能区分修前/修后：修前 `[data-testid=deck-create-toggle]` 根本不存在，第 2、3 条恒 FAIL。
+
+#### 4.41.2 Maestro：主机侧就绪，**真机卡在 MIUI 的「USB 安装」开关（需用户手动开）**
+
+宿主侧全部装好了：Maestro **2.11.0**（`logs/maestro/maestro/bin/maestro.bat`，`--version` 通过）。
+但真机 `maestro test` 在装 driver APK 时被 MIUI 拒掉：
+
+```
+Failure [INSTALL_FAILED_USER_RESTRICTED: Install canceled by user]
+  at maestro.drivers.AndroidDriver.installMaestroApks
+```
+
+- 设备 **MIUI V816 / Android 14**，**无 root**（`su: inaccessible or not found`）。
+- 这是 **MIUI 特有**的「USB 安装 / Install via USB」开关，**不是 AOSP 层**：
+  已用 adb 翻过 `verifier_verify_adb_installs=0` / `package_verifier_enable=0` /
+  `install_non_market_apps=1`（回读确认写入成功），**对 INSTALL_FAILED_USER_RESTRICTED 无效**。
+- 直接 `adb install` 一个全新包（`maestro-server.apk`）同样被拒，交叉印证是「全新包安装」被拦
+  （已装包的 `-r` 更新通道不受影响，这也是之前能装主 App 的原因）。
+- 模拟器上 driver **能装上**，但随后 JVM 因宿主内存耗尽崩溃
+  （`hs_err: insufficient memory for the Java Runtime Environment`），driver 启动超时。
+
+> **需要用户操作**：真机 `设置 → 更多设置 → 开发者选项` → 开启「**USB 安装**」，
+> 并关闭「安装监控」。开了之后 `.maestro/_connectivity.yaml` 应能直接跑通。
+> 在此之前，**真机 Maestro 仍是零次执行**——本节不把它写成已达成。
+
+#### 4.41.3 附带挖出：`.env.android-dev` 的 API base 是连不上的 LAN IP（构建配置坑）
+
+排查 4.41.1 装机后满屏「无法连接服务器，请检查网络 加载闪卡失败」时发现：App 所有 `/api/*`
+都是 `TypeError: Failed to fetch`，但设备 `curl` 后端 200、页面内直连 fetch 也 200。
+
+真因：`build-mobile.mjs android dev` 加载的 `.env.android-dev` 里
+`VITE_API_BASE=http://192.168.31.20:8088` —— **一个当前环境连不上的 LAN IP**。
+`VITE_API_BASE` 没进 bundle 时，`resolveRuntimeApiBase()`（`config/api-base.ts:132`）在
+capacitor 壳 origin 下**回退到生产入口 `https://pocket.itestu.cn`**，本机够不到 → 全线 Failed to fetch。
+
+> **真机走 adb reverse 时应使用 `.env.reversedev`（`VITE_API_BASE=http://localhost:8088`），
+> 或在构建 shell 里显式 `VITE_API_BASE=http://127.0.0.1:8088`。**
+> 临时兜底：运行时用 `scripts/set-app-api-base.mjs` 写 `pocket_api_base` 覆盖
+> （`resolveRuntimeApiBase` 的第一优先级就是读它），无需重新构建。
+>
+> 另注：`build-mobile.mjs` 的 bundle sanity check（用 `grep -F` 找 base 字符串）这次**没有拦住**
+> 空 base——值得单独查（`grep` 跨平台/编码差异，或 check 只在某些分支跑），否则「构建成功」仍不等于
+> 「base 正确注入」，与 §4.40.6「构建成功≠内容已更新」是同一类风险。
 
 
 
