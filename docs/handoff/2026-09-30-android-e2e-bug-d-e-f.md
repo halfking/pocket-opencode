@@ -1065,6 +1065,25 @@ adb install -r -g maestro-server.apk
 要走「新装」路径，被 MIUI 的开发者选项「USB 安装」拦下。这个开关**不在
 settings 里**，`settings put` / `pm install` 都改不到。
 
+**2026-09-30 16:4x 实测矩阵（把上面从推断升级为事实）**：
+
+| 操作 | 结果 | 说明 |
+|---|---|---|
+| `adb push maestro-server.apk /data/local/tmp/t.apk` | **OK**（110.9 MB/s） | push 通道正常，不是传输问题 |
+| `adb install -r -g maestro-server.apk`（**全新包**） | `INSTALL_FAILED_USER_RESTRICTED` | 被拦 |
+| `shell pm install -r -g /data/local/tmp/t.apk` | `INSTALL_FAILED_USER_RESTRICTED` | 换路径同样被拦 |
+| `adb install -r -g app-debug.apk`（**已装包 com.kaixuan.opencode.pocket**） | **Success** | 更新路径畅通 |
+
+设备侧设置已全部放开（实测读值）：`verifier_verify_adb_installs=0`、
+`package_verifier_enable=0`、`adb_install_need_confirm=0`、
+`install_non_market_apps=1`；MIUI 私有键 `miui_install_usb` /
+`miui_permit_install_apps_via_adb` **读出来是 null**（不存在，adb 无法写）。
+
+**结论（有对照支撑，不是猜）**：MIUI 拦的是**全新安装**这条路，**不拦更新已装应用**。
+所以 Maestro 在这台真机上**无法通过 adb 装上**，只能手动授权；
+但**本项目 App 的每次前端改动仍然可以推到真机上验证**（走 `adb install -r` + CDP），
+不必等 Maestro。这条把「真机验证」和「真机 Maestro」两件事解耦了。
+
 **必须由用户在手机上手动完成**（约 1 分钟）：
 设置 → 更多设置 → 开发者选项 →
 1. 打开「USB 安装」（安装未知来源应用）
@@ -2027,7 +2046,7 @@ BUG-K（`0ac074b`）**只改对了 zh-CN 和 en-US**，其余 7 种语言保留�
 
 重做为三条判据：
 
-| 判据 | 内容 | 在 origin/main 上报出 |
+| 判据 | 内容 | 在修复前（`d7c6ab2`）报出 |
 |---|---|---|
 | A（弱，保留） | 两个 CTA 字面必须不同 | 1/7 |
 | **A2（承重）** | 对照**人工审定的黄金译文表** | **7/7** |
@@ -2039,6 +2058,15 @@ BUG-K（`0ac074b`）**只改对了 zh-CN 和 en-US**，其余 7 种语言保留�
 
 判据自证 **6/6**（`--meta`），其中 A2 专门注入「字面不同但语义错」这一类来证明它抓得到。
 计数是动态取的 —— 写死就会出现「加了一项检查、报告还是写 4/4」这种报告比事实乐观的情况。
+
+**证伪基线必须点名 commit，不能写「origin/main」**：本轮修复推到 main 之后，
+`--ref origin/main` 已经指向修复后的状态（0 项），写「跑 origin/main 报出 8 项」就**不可复现**了。
+可复现的写法：
+
+```
+node scripts/audit-deck-cta-i18n.mjs --ref d7c6ab2   # 修复前 -> 硬失败 8 项（A=1 A2=7），exit 1
+node scripts/audit-deck-cta-i18n.mjs --ref origin/main # 修复后 -> 硬失败 0 项，exit 0
+```
 
 ### 4.28.6 顺带发现、本轮**未修**（别当成已解决）
 
@@ -2052,6 +2080,88 @@ dueShort = "{count} due"  stats = "View stats"  browser = "Card browser"
 
 审计的判据 C 会持续报出这 7 条（只报不拦）。**本轮不修**：42 条译文要逐条审，
 混进这次提交不合适。另外 `study.decks.create` 因本次改动已成为**死键**（唯一引用被移除）。
+
+### 4.28.7 真机验证（13/13，连跑三轮稳定）+ 证伪（修复前 4/13）
+
+`scripts/verify-bugaa-realdevice.mjs` —— **在真机 2411DRN47C（192.168.31.19:5555）上跑**。
+
+先说清楚**为什么能用 CDP 而不是 Maestro**：本轮实测确认这台 MIUI **拦全新安装、不拦更新**
+（矩阵见 §4.16.3）。所以「真机验证」和「真机 Maestro」是两件事 ——
+Maestro 仍然装不上（需用户手动开「USB 安装」），但**本项目 App 的每次前端改动都能推到真机上验证**。
+这条把两者解耦了，不用再等 Maestro 才能拿到真机证据。
+
+**部署链路**（本轮实测走通，可复用）：
+
+```
+$env:CAP_ANDROID_SCHEME="http"   # 必须 PowerShell 设；且必须在**跑 cap sync 的那次调用里**设
+                                  # 我第一次在另一次调用里跑 sync，结果 capacitor.config.json 还是 https
+node scripts/build-mobile.mjs android dev
+cmd /c "npx cap sync android"     # build-mobile 里的 sync 偶发 exit=null，单独跑一次更稳
+gradlew.bat assembleDebug
+adb install -r -g app-debug.apk   # 更新路径，实测 Success
+```
+
+⚠️ 两个已踩的坑：
+1. `build-mobile.mjs` 里的 `cap sync` 会 **`exit=null` 被信号杀掉**。此时 `vite build` 已成功、
+   Gradle 也会成功，但 **bundle 根本没换** —— 我据此差点做了一次**无效的证伪**。
+   凡是「构建成功」都不能当成「内容已更新」，**必须回读产物标记**再继续。
+2. `CAP_ANDROID_SCHEME` 若不在跑 `cap sync` 的那次 shell 里设，生成的
+   `capacitor.config.json` 会是 `https`，装机后 `location.origin=https://localhost`，
+   所有断言都失去意义（脚本会 `exit 5` 明确中止，不会给出假通过）。
+
+**修复版真机结果（连跑三轮，每轮 13/13）**：
+
+```
+PASS  前置：服务端 deck 数为 0（直接查 PG）  — PG 实际 0
+PASS  StudyHub 零卡组空态出现（可见 pane 内，data-testid 钩子）
+      空态文案 = "还没有牌组\n\n新建卡组"
+PASS  内联建卡组输入框存在（旧代码是纯 button、无 input）
+PASS  提交按钮存在且初始 disabled  — {"text":"新建卡组","disabled":true}
+PASS  填名后提交按钮变为可用（等状态，不固定 sleep）
+PASS  空态里存在可点击的建组控件（没有则判 FAIL，不当空过）
+PASS  **点击后未跳走到新建卡片页** — before=#/study after=#/study 点击的是=submit
+PASS  空态在提交后消失
+PASS  **直接查 PG** 确认落库 — PG names=BUGAA-STUDY-DECK
+PASS  对照组：建完后显示卡组列表而非空态表单
+PASS  无未捕获 JS 异常
+```
+
+**证伪（`scripts/revert-bugaa.mjs on` 回到修复前 → 重建 → 装机 → 同一支脚本）**：
+
+```
+FAIL  StudyHub 零卡组空态出现（data-testid 钩子）— hash=#/study
+FAIL  内联建卡组输入框存在
+FAIL  提交按钮存在且初始 disabled — null
+FAIL  填名后提交按钮变为可用
+PASS  空态里存在可点击的建组控件 — {"text":"add 新建牌组","how":"legacy-div-empty-button"}
+FAIL  **点击后未跳走到新建卡片页** — before=#/study after=#/flashcards/new
+      点击的是=legacy-div-empty-button
+FAIL  卡组名出现在页面文本中
+FAIL  **直接查 PG** 确认落库 — PG names=(none)
+FAIL  对照组：建完后显示卡组列表而非空态表单
+=> 4/13
+```
+
+证伪输出里那句 `{"text":"add 新建牌组","how":"legacy-div-empty-button"}` 就是
+**BUG-AA 的症状在真机上被当场抓住**：一个写着「新建牌组」的按钮，点了跳到新建**卡片**页。
+
+### 4.28.8 判据自身也被推翻过一次（重要）
+
+真机脚本第一版的判据是「空态文案不含『建卡组 / New deck』」，结果在**修复版上误报 FAIL**：
+修复后的空态本来就应该有「新建卡组」这个**诚实**的建组按钮标签。
+
+**文本匹配区分不了「标签在说谎」和「标签说实话」。** 改成行为判据
+（点击后 `location.hash` 必须仍是 `#/study`）。
+
+改完之后**又发现它是空过的**：第一版行为判据只点 `[data-testid="study-deck-create-submit"]`，
+而修复前版本根本没有这个元素 → 点击成了 no-op → hash 自然不变 → **PASS**。
+即那条判据单独**没有区分能力**，属于「静默通过」陷阱。已改为：
+先确认空态里**确实存在可点控件**（没有就判 FAIL），再点它并比对 hash。
+
+教训（与 §4.28.5 的判据 A 是同一个）：
+- **判据必须在「有缺陷」的那一侧失败过**，否则它可能只是恒真。
+- 「没找到元素 → 跳过 → 记 PASS」是隐蔽的空过写法。**找不到必须判 FAIL。**
+- 文本断言只适合判「文案是什么」，判「文案对不对」必须落到行为上。
 
 ## 5. 已验证 / 未验证（严禁外推）
 
@@ -2119,8 +2229,20 @@ dueShort = "{count} due"  stats = "View stats"  browser = "Card browser"
 - **BUG-AA 闪卡 CTA 文案与行为不符（两个实例）**：
   ① `flashcards.list.create` 在 7/9 语言里仍是「建卡组」的直译（BUG-K 只改对 zh-CN/en-US），
   已按人工审定译文修正；② `StudyHubView` 空态按钮 9/9 全错，改为与 FlashcardListView
-  同构的内联建组。`scripts/audit-deck-cta-i18n.mjs` 判据自证 **6/6**，
-  工作区 0 硬失败；**证伪**：同一判据跑 `origin/main` 报出 **8 项**（§4.28）
+  同构的内联建组。`scripts/audit-deck-cta-i18n.mjs` 判据自证 **6/6**，工作区 0 硬失败；
+  **证伪**：同一判据跑 `--ref d7c6ab2`（修复前）报出 **8 项**（§4.28）
+- **BUG-AA 真机验证（`verify-bugaa-realdevice.mjs` 13/13，连跑三轮稳定）**：
+  Redmi 2411DRN47C 实机，`adb install -r` 更新路径装机 + CDP 驱动；
+  **证伪**：回退代码重建装机后同一支脚本 **4/13**，且核心判据直接打出
+  `before=#/study after=#/flashcards/new`（§4.28.7）
+- **MIUI 安装策略已量化**：拦**全新安装**、不拦**更新已装应用**（`adb push` 正常、
+  `adb install`/`pm install` 全新包被拒、已装包 `adb install -r` 返回 Success）。
+  Maestro 因此**无法**用 adb 装上，但本项目 App 的前端改动**仍可真机验证**（§4.16.3）
+- **`/api/marketplace/{agents,skills,installs,router}` 确为 404**：
+  外部审计的「只读探测返回 401、无法证实」已用带 token 探测**推翻** ——
+  认证中间件在路由之前，401 说明不了路由是否存在。带 token 四个全 404，
+  阳性对照 `/api/marketplace/packages` 200、阴性对照（随机路由）404，
+  探针有区分能力（`scripts/probe-marketplace-404.mjs`）
 - **BUG-Z 重复提交冲突归类**（scripts/verify-bug-z.mjs **4/4** 打真后端 + Go 回归 3/3 +
   **证伪对照**：回退修复后测试如期失败）：POST /api/marketplace/submit 同名同版本重复提交
   现在返回 **409**（修前是 **500** + 原始 23505 文案），换版本号仍 201（§4.27）
@@ -2190,9 +2312,12 @@ dueShort = "{count} due"  stats = "View stats"  browser = "Card browser"
 - **`study.decks.*` 整块 7 个键在 7 种语言里未翻译**（与 en-US 逐字节相同，
   即整块英文）。`scripts/audit-deck-cta-i18n.mjs` 判据 C 持续报出，只报不拦。
   本轮**未修** —— 42 条译文需逐条审，不宜混进同一次提交（§4.28.6）
-- **`StudyHubView` 的内联建组未在真机上跑过**：本轮只做了静态修复 + 类型检查 +
-  i18n 测试，**没有真机/模拟器 UI 验证**。BUG-X 的同类实现有真机 13/13 记录，
-  但那是 `FlashcardListView` 的，不是这个组件的。不要外推。
+- **真机 Maestro 仍然零次执行**：本轮把阻塞量化了（拦全新安装、需手动授权），
+  并改用 CDP 在真机上完成 BUG-AA 的验证。**但 `.maestro/` 下的 flow 至今没在真机跑过一次**，
+  不要把「真机验证走 CDP」说成「真机 Maestro 跑通了」（§4.16.3 / §4.28.7）
+- **生产 `https` 路径仍未系统回归**：本轮装过一次 `https://localhost` 的包
+  （因 `CAP_ANDROID_SCHEME` 没在跑 cap sync 那次调用里设），只观察到 origin 是 https，
+  **没有验证 mixed content / ws:// 在该 scheme 下的实际行为**。不算已回归。
 - **任务 / 会话 的编辑、删除**未验证（创建已验证 201 + 落库）。
 - **密码箱 / 市场 / 邮箱 / 网关 / 实例 / 费用配额**的 UI 写路径**零验证**（后端端点已通，§4.12）。
   ✅ **市场已打通**（§4.25，12/12）；**其余五个模块（密码箱 / 邮箱 / 网关 / 实例 / 费用配额）
