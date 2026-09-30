@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
@@ -2401,10 +2402,16 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 // 辅助
 // =====================================================================
 
+// randomIDSeq 与时间戳一起保证 ID 在进程内唯一。
+var randomIDSeq atomic.Uint64
+
 // randomID 生成带前缀的简易 ID。Phase 0 骨架用，后续可换 UUID/kseq。
 func randomID(prefix string) string {
-	// 用纳秒级时间戳足够避免单用户场景冲突。
-	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+	// 原注释写的是「用纳秒级时间戳足够避免单用户场景冲突」——**这个假设是错的**。
+	// 本机实测 1000 次 time.Now() 只产生 1 个不同值，纳秒时间戳在负载下
+	// 几乎必然重复；会议 store 曾因此静默丢失 194/200 条记录（BUG-R）。
+	// 单进程内加单调序号即可，同刻度内也不会撞。
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), randomIDSeq.Add(1))
 }
 
 var _ = notes.Note{} // keep import if temporarily unused

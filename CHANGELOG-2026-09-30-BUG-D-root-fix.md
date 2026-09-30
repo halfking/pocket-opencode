@@ -672,3 +672,154 @@ BUG-O 的提交 `942a379` 引入了一个**从未创建**的模块
     node --test src/api/websocket-url.test.ts src/composables/api-error-message.test.ts
     # tests 15 / pass 15 / fail 0
     cd backend && go build ./...   # EXIT=0
+## BUG-P / Q / S / T：可达性与「修好一层露出下一层」（2026-09-30 第三轮）
+
+前一轮把闪卡从零状态修到可用（BUG-K/L/M/N/O），但**用户仍然可能根本用不到它**。
+这一轮的四个缺陷全部不在后端，全部是「用户视角的最后一公里」。
+
+| 编号 | 现象 | 根因 | 修法 | 回归锁 |
+|---|---|---|---|---|
+| **BUG-P** | 闪卡模块修好三轮，用户从 UI 进不去 | `MoreHubView.vue` 的 `mainFeatures` 里根本没有闪卡入口 | 补入口 + 补 `nav.flashcards` 键 | `cdp-more-hub.mjs` 真机复验 |
+| **BUG-Q** | 「定时自动化」点进去是空白 | 入口写 `/scheduled-tasks`，路由表里只有 `/settings/scheduled-tasks` | 改成真实路径 | `audit-route-render.mjs` + 入口静态对账 |
+| **BUG-S** | 闪卡统计/浏览器整页白屏 | vue-i18n v2 的字面量插值 `{{name}}` 残留在 9 语言里，编译期直接抛 | 全部改回 v3 的 `{name}`，补齐 10 个必崩键 | `audit-i18n-compile.mjs`（带参调用，9/9 语言 0 失败） |
+| **BUG-T** | 闪卡统计页显示 `t('flashcards.stats.retentionHint', { again:` —— **用户看到的是 JS 源码** | `StatsView.vue` 模板里那行漏了 `{{ }}` 包裹 | 补上 `{{ }}` | `audit-vue-mustache.mjs`（173 个 .vue，0 命中）+ `verify-audit-detects.mjs` 元验证 |
+
+**BUG-S 的返工值得单记**：修了两轮才修对。第一轮把键名改对了，但**只提交没改工作区**——
+`vite build` 读的是工作区，APK 里还是坏版本，真机 `appHTMLLen` 纹丝不动（371）。
+第二轮才找准根因不是键名而是**插值语法残留**。
+
+**BUG-T 是 BUG-S 修好后自己露出来的**：白屏消失后，那行漏 `{{ }}` 的模板第一次有了显示机会。
+所以「确认不崩了」之后必须**再看一眼页面内容**，不能只看控制台有没有报错。
+
+### 可达性沉淀：两道互补的检查，都不能替代
+
+- **入口静态对账**（MoreHubView 的 `to` vs 路由表）→ 抓「没入口」+「入口指向虚空」（BUG-P / BUG-Q）
+- **逐路由渲染验证**（`audit-route-render.mjs`）→ 抓「路由存在但白屏」（BUG-S）
+
+静态对账看不见「页面渲染失败」，动态验证看不见「没有入口」。
+
+---
+
+## 追加定性：上一轮报的 6 条「路由未验证」是被污染的测量，不是缺陷
+
+`audit-route-render.mjs` 上一轮报 31/37，6 条 HASH_MISMATCH
+（`/agents`→`#/ai`、`/gateway`→`#/ai-chat`、`/servers`→`#/study` 等）。
+
+**不猜，直接读时间线**：新增 `scripts/probe-route-redirect.mjs`，设置 hash 后每 200ms
+连采 25 次（5 秒），记录变化时刻并挂 `frameNavigated` / `exceptionThrown` / `console`。
+单看终态无法区分「守卫 redirect」「异步跳转」「渲染进程重载」「外部干扰」这四种成因。
+
+| 轮次 | 环境 | 结果 |
+|---|---|---|
+| 上一轮 13:33 | 并发会话同时在驱同一台真机 | 31/37 |
+| 独立探针 15:10（复跑两次一致） | 隔离 | 嫌疑 6/6 STABLE，对照 2/2 STABLE |
+| 隔离重跑审计 15:17 | 隔离 | **37/37** |
+
+6 条全部**首次采样（~300ms）就命中目标，之后 5 秒一次都没漂**，无任何异常事件。
+隔离重跑里这 6 条的 `len` 与独立探针的采样值**逐个一致**（26712 / 277 / 159 / 264 /
+167 / 421 / 176 / 269 / 82），说明判据本身稳定。
+
+**6 条落点无一例外全是 BottomNav 的 tab 路由，每次都不一样。** 脚本只写
+`location.hash`、从不派发点击，纯哈希赋值不可能「点到」底栏 —— 那一刻一定有人在点屏幕。
+（**标记为假设，未直接取证**：没抓到并发会话的操作日志。）
+
+**沉淀为硬判据**：疑似缺陷必须能复现两次以上、且在隔离环境下复现，才允许写进缺陷列表。
+一次性的观测只能进「待复查」。本轮同一个坑翻了三次（17 条 → 6 条 → 0 条），
+三次都是设备被抢占造成的假故障。
+
+---
+
+## BUG-R：会议 ID 撞车导致静默丢数据（挂了两轮的"测试污染"其实是真缺陷）
+
+### 起因
+
+`TestMeetingWorkspaceIsolation/list_A` 被前几轮记为「测试间状态污染 / 预先存在，
+未定性」。本轮去查，第一件事是**拿到真实错误信息**：
+
+```
+--- FAIL: TestMeetingWorkspaceIsolation/list_A
+    workspace_isolation_test.go:116: list total/items=0/0, want 1
+workspace_isolation_test.go:129: cross-workspace meeting GET status=200
+    body={"id":"mtg_...","workspace_id":"ws-b","title":"workspace B meeting",...}
+```
+
+第 129 行是关键：**用 `meetingA.ID` 去请求，却返回了 ws-b 那条会议**。
+这不是「过滤太严」，是**返回了错误的对象**。
+
+### 根因
+
+`internal/meeting/store.go:66` —— ID 是纯墙钟纳秒时间戳，直接当 map key：
+
+```go
+now := time.Now()
+ID: fmt.Sprintf("mtg_%d", now.UnixNano()),
+...
+s.meetings[m.ID] = m
+```
+
+两次创建落在同一时钟刻度 → ID 相同 → 后者覆盖前者，前者被静默抹掉。
+「单跑 PASS、全跑 FAIL」与测试顺序**无关**，是**概率**。
+
+### 决定性实验
+
+新增 `internal/meeting/id_collision_diag_test.go`：
+
+```
+连续创建 200 条，唯一 ID 6 个，重复 194 次
+store 里实际存了 6 条（期望 200）
+1000 次 time.Now() 产生 1 个不同值，最小间隔 0ns
+```
+
+**本机 `time.Now()` 在 1000 次紧邻调用里只产生 1 个不同值** —— 纳秒时间戳
+在这台机器上没有纳秒精度。**194/200 条会议被静默丢弃，且创建全部返回成功。**
+
+### 修法
+
+沿用仓库里 `finance.Store` / `chat_summary.Store` 已有的「时间戳 + 原子序号」：
+
+```go
+var meetingIDSeq atomic.Uint64
+ID: fmt.Sprintf("mtg_%d_%d", now.UnixNano(), meetingIDSeq.Add(1)),
+```
+
+修后：200 次创建 → 200 个唯一 ID、0 碰撞、200 条全部落库。
+
+### 回归
+
+`go test ./internal/server/ -count=1` 从 `FAIL` 转为 `ok 2.906s`，
+**挂了两轮的 `list_A` 首次全绿**。`go build ./...` OK、
+`go vet` 5 包 OK、`meeting`/`presentation`/`notifycenter`/`server` 四包全绿。
+
+### 同类站点：4 处一起修
+
+全仓扫 `UnixNano()` 找 ID 生成点。**已带唯一性成分的未动**：`finance`、
+`chat_summary`、`email/store.go`、`redclaw/audit.go`、
+`opencode/session_event_broadcaster.go`、`flashcards/cards.go`、
+`scheduledtask`（后两者用 crypto/rand）。
+
+**无唯一性成分、已修**（除 meeting 外均属**预防性**，未观测到实际失败）：
+
+| 站点 | 原 ID | 危害路径 |
+|---|---|---|
+| `internal/email/invoice_store.go` | `inv_%d` | PG 主键冲突 → 整批 upsert 失败 |
+| `internal/notifycenter/service.go` | `%s_%d` | PG 主键冲突 → 丢通知行 |
+| `internal/presentation/generator.go` | `pres_%d` | ID 重复，按 ID 查找取错对象 |
+| `internal/server/server_assistant.go` | `%s-%d` | 原注释「纳秒级时间戳足够避免冲突」**是错的**，已改写 |
+
+`marketplace` 的 `releaseID`/`installID` 带版本/渠道/工作区前缀，本轮**未处理**。
+
+### 回归锁
+
+- `id_collision_diag_test.go`：200 次创建必须 200 个唯一 ID、store 存满 200 条
+- `TestUnixNanoResolution` 改为只记录不判定（测的是平台特性，不是产品行为）
+- `workspace_isolation_test.go` 本身即端到端回归锁
+
+### 既有失败的定性（本轮一并澄清）
+
+- `internal/email` 剩 2 个 FAIL：**已用 `git worktree` 在 HEAD 上同条件复现，
+  错误信息一致 → 预先存在，非本轮回归**（我改过同包的 `invoice_store.go`，
+  所以这一条必须实证）。其中 `TestWriteKeyAtomic_CreatesFileWithCorrectMode`
+  是 POSIX 文件权限位测试，Windows 上不成立。
+- `internal/agent` 的 FAIL 全部是 Windows 平台问题：
+  `fork/exec ...fake-pi.sh: %1 is not a valid Win32 application`、
+  无扩展名可执行文件 —— 测试假设 POSIX shell。**预先存在，未修。**

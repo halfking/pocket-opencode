@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,6 +31,18 @@ type meetingTombstone struct {
 	workspaceID string
 	at          time.Time
 }
+
+// meetingIDSeq 保证同一进程内 ID 唯一。
+//
+// 为什么必须要它：ID 原先只有 `time.Now().UnixNano()`，而
+// **`time.Now()` 在很多环境（本仓库的 Windows 机器实测 1000 次调用
+// 只产生 1 个不同值）根本没有纳秒精度**。同一时钟刻度内连续创建的两条
+// 会议会拿到完全相同的 ID，而 `s.meetings[m.ID] = m` 让后者直接覆盖前者 ——
+// **创建成功、返回 201、库里却查不到**（实测 200 次创建只剩 6 条）。
+//
+// 加上单调递增的序号后，`nano_seq` 这一对在进程内必然唯一；跨进程则由
+// 纳秒部分区分。格式与 `finance.Store` / `chat_summary.Store` 保持一致。
+var meetingIDSeq atomic.Uint64
 
 // NewStore creates a new in-memory meeting store
 func NewStore() *Store {
@@ -63,7 +76,7 @@ func (s *Store) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID stri
 
 	now := time.Now()
 	m := &Meeting{
-		ID:          fmt.Sprintf("mtg_%d", now.UnixNano()),
+		ID:          fmt.Sprintf("mtg_%d_%d", now.UnixNano(), meetingIDSeq.Add(1)),
 		OwnerID:     ownerID,
 		WorkspaceID: workspaceID,
 		Title:       req.Title,
