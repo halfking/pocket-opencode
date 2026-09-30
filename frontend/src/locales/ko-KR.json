@@ -186,7 +186,7 @@
     "list": {
       "title": "플래시카드",
       "empty": "덱이 아직 없습니다",
-      "create": "덱 만들기",
+      "create": "새 카드",
       "dueToday": "오늘 학습할 카드 {count}장"
     },
     "deck": {

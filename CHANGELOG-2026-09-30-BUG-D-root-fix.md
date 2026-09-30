@@ -983,3 +983,44 @@ wrapUniqueViolation，三处裸 INSERT 接上：Submit 的 packages/versions、P
 
 **教训**：看到「后端忽略了客户端传的字段」**先读那段代码的注释**，
 注释里往往直接写着为什么。本轮差点把一个安全决策当成 bug 报出去。
+
+
+---
+
+## BUG-AA：闪卡「建卡组」CTA 实际跳新建卡片页（两个实例，BUG-K 只修对 2/9 语言）
+
+**缺陷一 · BUG-K 的修复只覆盖 2/9 语言**：`FlashcardListView` 主 CTA 走
+`goCreate()` → `/flashcards/new`（**新建卡片**页）。而 `flashcards.list.create`
+在 zh-CN / en-US 已改对，其余 **7 种语言仍是旧中文文案的直译**：
+zh-TW「新增卡組」、ja-JP「デッキを作成」、ko-KR「덱 만들기」、de-DE「Stapel erstellen」、
+fr-FR「Créer un paquet」、es-ES「Crear mazo」、pt-BR「Criar baralho」。
+BUG-K（`0ac074b`）只动了 zh-CN / en-US。
+
+**缺陷二 · 同一问题的第二个实例，9/9 全错**：`StudyHubView.vue` 的零卡组空态按钮
+文案取 `study.decks.create`（「新建牌组 / New deck」），点击 `goCreateDeck()`
+→ `router.push('/flashcards/new')`，同样是**新建卡片**页；且从零状态点进去
+必然撞 BUG-U 那个死胡同（无卡组时该页「保存」恒 disabled）。BUG-K 没碰过这个组件。
+
+**修法**：StudyHubView 改为与 FlashcardListView（BUG-U / BUG-X）**同构**的内联建组，
+复用同一份已真机验证过的 `store.createDeck`（该组件本就已 useFlashcardsStore），
+建完 `decks` computed 立刻更新。验收钩子一律 `data-testid` —— 该文件同时存在
+`div.empty` 和 `span.deck-badge.empty`，用类名会撞车。
+7 种语言的 `flashcards.list.create` 用**定点字符串替换**修正（JSON 重写会重排格式、
+产生几百行假 diff），替换前校验旧值、替换后重新 parse、断言
+`flashcards.deck.create` 与基线逐字节相同，可重复执行。
+
+**审计脚本 `scripts/audit-deck-cta-i18n.mjs`（判据自证 6/6）**：
+第一版判据「两个 CTA 字面必须不同」**被证伪推翻** —— 在 `origin/main` 上只报出 **1/7**，
+因为其余 6 种语言字面不同但语义相同。重做为：A2 对照**人工审定的黄金译文表**
+（在 origin/main 上报出 **7/7**）+ B 元素粒度判定「指向新建卡片页的可点击元素，
+其文案不得等于建卡组文案」。
+判据 B 第一版也错了：扫整个文件的所有 `t()`，把 `flashcards.deck.addCard`
+（=「添加卡片」，键名带 deck 但语义是**建卡片**、且导航到新卡片页是**正确的**）误报。
+**键名不是判据，值比对才语言无关。**
+
+**本轮未修**：`study.decks.*` 整块 7 个键在 7 种语言里与 en-US 逐字节相同（整块英文未翻译），
+审计判据 C 只报不拦。42 条译文需逐条审，不宜混进同一次提交。
+另外 `study.decks.create` 因本次改动已成为**死键**。
+
+**未验证**：StudyHubView 的内联建组**未在真机/模拟器上跑过**，只有静态修复 + 类型检查 +
+i18n 测试（`vue-tsc --noEmit` exit 0；locale 测试 17/17）。不要外推 BUG-X 的真机 13/13。

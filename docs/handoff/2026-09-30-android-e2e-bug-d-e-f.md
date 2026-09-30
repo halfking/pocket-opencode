@@ -1956,6 +1956,103 @@ PASS  对照组：换版本号仍返回 201
 教训：**看到「后端忽略了客户端传的字段」先读那段代码的注释** ——
 注释里往往直接写着为什么。本轮差点把一个安全决策当成 bug 报出去。
 
+## 4.28 BUG-AA：「文案说建卡组、实际跳新建卡片页」有两个实例，且 BUG-K 只修对了 2/9 语言
+
+### 4.28.1 怎么发现的
+
+外部审计给了一条「闪卡入口缺陷只记录未修」的高优先级指控。先**核对而不是照单全收**：
+`git cat-file -t 0ac074b` 确认提交真实存在，`git merge-base --is-ancestor` 确认它在
+`origin/main` 上，handoff §4.16.1 写的「已修并入库」**属实**。
+
+但接着直接读 `origin/main` 的 locale **实际字节**（不信文档、不信工作区），发现两件文档没写的事。
+
+### 4.28.2 缺陷一：BUG-K 的修复只覆盖 2/9 语言
+
+`FlashcardListView` 的主 CTA 走 `goCreate()` → `/flashcards/new` → `FlashcardEditView`，
+即**新建卡片**页。而 `flashcards.list.create` 这个键：
+
+| 语言 | origin/main 实际取值 | 语义 | 应为 |
+|---|---|---|---|
+| zh-CN | 新建卡片 | ✅ 卡片 | — |
+| en-US | New card | ✅ 卡片 | — |
+| zh-TW | 新增卡組 | ❌ 卡组 | 新增卡片 |
+| ja-JP | デッキを作成 | ❌ 卡组 | 新しいカード |
+| ko-KR | 덱 만들기 | ❌ 卡组 | 새 카드 |
+| de-DE | Stapel erstellen | ❌ 卡组 | Neue Karte |
+| fr-FR | Créer un paquet | ❌ 卡组 | Nouvelle carte |
+| es-ES | Crear mazo | ❌ 卡组 | Nueva tarjeta |
+| pt-BR | Criar baralho | ❌ 卡组 | Novo cartão |
+
+BUG-K（`0ac074b`）**只改对了 zh-CN 和 en-US**，其余 7 种语言保留的是旧中文文案的**直译**。
+7/9 的用户在非中文界面里点「新建卡组」，进去是新建卡片页。
+
+### 4.28.3 缺陷二：StudyHubView 是同一类问题的第二个实例（9/9 全错）
+
+`StudyHubView.vue` 的空态（`decks.length === 0`）有一个按钮，文案取 `study.decks.create`，
+点击 `goCreateDeck()` → `router.push('/flashcards/new')` —— 同样是**新建卡片页**。
+9 种语言**全部**写着「建卡组 / New deck」。BUG-K 完全没碰过这个组件。
+
+从零状态点进去还会撞上 BUG-U 那个死胡同（没有卡组时该页「保存」恒 disabled）。
+
+### 4.28.4 修法
+
+`StudyHubView` 改为与 `FlashcardListView`（BUG-U / BUG-X）**同构**的内联建组：
+复用同一份已真机验证过的 `store.createDeck`（该组件本来就已 `useFlashcardsStore()`），
+建完 `decks` computed 立刻更新、空态自动消失。三个 `data-testid` 钩子
+（`study-empty` / `study-deck-create-form` / `study-deck-name-input` / `study-deck-create-submit`）。
+
+⚠️ 验收钩子用 `data-testid` 而不是样式类：这个文件里同时存在 `div.empty` 和
+`span.deck-badge.empty`，用类名会撞车（与 §4.22 同一个坑）。
+
+7 种语言的 `flashcards.list.create` 用**定点字符串替换**修正 —— 不能用
+`JSON.parse/stringify` 重写整个文件，那会重排格式产生几百行假 diff。
+`scripts/fix-bugaa-locales.mjs` 替换前逐语言校验旧值、替换后重新 `JSON.parse`、
+并断言 `flashcards.deck.create` **与 origin/main 基线逐字节相同**（防误伤），
+且可重复执行（已修的报 SKIP）。
+
+### 4.28.5 ⚠️ 审计脚本的判据先是不合格，被证伪抓出来后重做
+
+新增 `scripts/audit-deck-cta-i18n.mjs`。第一版判据是
+「`flashcards.list.create` 与 `flashcards.deck.create` 在每种语言里必须不同」——
+听起来语言无关、很干净。但**证伪时（`--ref origin/main`）只报出 1/7**：
+
+```
+判据 A  FAIL zh-TW: 两者完全相同（"新增卡組"）
+硬失败 1 项
+```
+
+因为其余 6 种语言**字面不同但语义相同**（「デッキを作成」vs「新しいデッキ」字面有别，
+说的却都是建卡组）。**判据 A 抓不了语义等价。** 若就此宣布「判据通过」，
+就会漏掉 6/7 的真实缺陷 —— 这正是「审计脚本必须自证有区分能力」要防的事。
+
+重做为三条判据：
+
+| 判据 | 内容 | 在 origin/main 上报出 |
+|---|---|---|
+| A（弱，保留） | 两个 CTA 字面必须不同 | 1/7 |
+| **A2（承重）** | 对照**人工审定的黄金译文表** | **7/7** |
+| B（元素粒度） | 指向 `/flashcards/new` 的**可点击元素**，其文案不得等于「建卡组」文案 | 0 |
+
+判据 B 第一版也是错的：它扫**整个文件**的所有 `t()`，把 `flashcards.deck.addCard`
+（=「添加卡片」，键名带 deck 但语义是**建卡片**，且导航到新卡片页是**正确的**）误报了。
+**键名不是判据。** 改为元素粒度 + 按 zh-CN 解析后**比对文案值**（值比对才语言无关）。
+
+判据自证 **6/6**（`--meta`），其中 A2 专门注入「字面不同但语义错」这一类来证明它抓得到。
+计数是动态取的 —— 写死就会出现「加了一项检查、报告还是写 4/4」这种报告比事实乐观的情况。
+
+### 4.28.6 顺带发现、本轮**未修**（别当成已解决）
+
+`study.decks.*` 整块 **7 个键**在 zh-TW / ja-JP / ko-KR / de-DE / fr-FR / es-ES / pt-Br
+**七种语言里与 en-US 逐字节相同**，即整块英文未翻译：
+
+```
+title = "My decks"  all = "All"  empty = "No decks yet"  create = "New deck"
+dueShort = "{count} due"  stats = "View stats"  browser = "Card browser"
+```
+
+审计的判据 C 会持续报出这 7 条（只报不拦）。**本轮不修**：42 条译文要逐条审，
+混进这次提交不合适。另外 `study.decks.create` 因本次改动已成为**死键**（唯一引用被移除）。
+
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
@@ -2019,6 +2116,11 @@ PASS  对照组：换版本号仍返回 201
   `go vet` 5 包 OK、`meeting`/`presentation`/`notifycenter`/`server` 四包全绿（§4.21）
 - **BUG-U 零卡组建组死胡同**（真机 `scripts/verify-bug-u.mjs` **13/13，连跑三轮稳定**）：
   空态内联建组 → 提交 → 卡组条目出现 → **直接查 PG 确认落库**（§4.22）
+- **BUG-AA 闪卡 CTA 文案与行为不符（两个实例）**：
+  ① `flashcards.list.create` 在 7/9 语言里仍是「建卡组」的直译（BUG-K 只改对 zh-CN/en-US），
+  已按人工审定译文修正；② `StudyHubView` 空态按钮 9/9 全错，改为与 FlashcardListView
+  同构的内联建组。`scripts/audit-deck-cta-i18n.mjs` 判据自证 **6/6**，
+  工作区 0 硬失败；**证伪**：同一判据跑 `origin/main` 报出 **8 项**（§4.28）
 - **BUG-Z 重复提交冲突归类**（scripts/verify-bug-z.mjs **4/4** 打真后端 + Go 回归 3/3 +
   **证伪对照**：回退修复后测试如期失败）：POST /api/marketplace/submit 同名同版本重复提交
   现在返回 **409**（修前是 **500** + 原始 23505 文案），换版本号仍 201（§4.27）
@@ -2085,6 +2187,12 @@ PASS  对照组：换版本号仍返回 201
   `fallbackLocale: 'en-US'` 兜底。功能不受影响，但这 7 种语言的用户看到的是英文。
 
 ### ❌ 未验证（下一轮必须补）
+- **`study.decks.*` 整块 7 个键在 7 种语言里未翻译**（与 en-US 逐字节相同，
+  即整块英文）。`scripts/audit-deck-cta-i18n.mjs` 判据 C 持续报出，只报不拦。
+  本轮**未修** —— 42 条译文需逐条审，不宜混进同一次提交（§4.28.6）
+- **`StudyHubView` 的内联建组未在真机上跑过**：本轮只做了静态修复 + 类型检查 +
+  i18n 测试，**没有真机/模拟器 UI 验证**。BUG-X 的同类实现有真机 13/13 记录，
+  但那是 `FlashcardListView` 的，不是这个组件的。不要外推。
 - **任务 / 会话 的编辑、删除**未验证（创建已验证 201 + 落库）。
 - **密码箱 / 市场 / 邮箱 / 网关 / 实例 / 费用配额**的 UI 写路径**零验证**（后端端点已通，§4.12）。
   ✅ **市场已打通**（§4.25，12/12）；**其余五个模块（密码箱 / 邮箱 / 网关 / 实例 / 费用配额）

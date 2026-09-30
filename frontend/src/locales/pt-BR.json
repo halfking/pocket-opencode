@@ -186,7 +186,7 @@
     "list": {
       "title": "Flashcards",
       "empty": "Ainda não há baralhos",
-      "create": "Criar baralho",
+      "create": "Novo cartão",
       "dueToday": "{count} para revisar hoje"
     },
     "deck": {

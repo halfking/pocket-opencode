@@ -55,12 +55,41 @@
       <div v-if="store.loading" class="state">
         <Skeleton :count="2" />
       </div>
-      <div v-else-if="decks.length === 0" class="empty">
+      <div v-else-if="decks.length === 0" class="empty" data-testid="study-empty">
         <p>{{ t('study.decks.empty') }}</p>
-        <button class="primary" type="button" @click="goCreateDeck">
-          <span class="material-symbols-outlined">add</span>
-          {{ t('study.decks.create') }}
-        </button>
+        <!--
+          BUG-AA（2026-09-30 真机走查发现）：这里原本是一个按钮，文案是
+          「新建牌组 / New deck」，点击却 `router.push('/flashcards/new')` ——
+          那是**新建卡片**页。文案与行为不符。
+          更糟的是从零状态点进去必然撞上 BUG-U 那个死胡同：
+          没有卡组时那页的「保存」恒 disabled（selectedDeckId 为空 → isValid false）。
+          改为与 FlashcardListView（BUG-U / BUG-X）**同构**的内联建组：
+          走同一个已真机验证过的 store.createDeck，建完 decks computed 立刻更新。
+        -->
+        <form
+          class="deck-create"
+          data-testid="study-deck-create-form"
+          @submit.prevent="submitCreateDeck"
+        >
+          <input
+            v-model="newDeckName"
+            type="text"
+            :placeholder="t('flashcards.deck.createPlaceholder')"
+            :aria-label="t('flashcards.deck.create')"
+            data-testid="study-deck-name-input"
+          />
+          <button
+            class="primary"
+            type="submit"
+            :disabled="deckCreating || !newDeckName.trim()"
+            data-testid="study-deck-create-submit"
+          >
+            {{ deckCreating ? t('common.loading') : t('flashcards.deck.create') }}
+          </button>
+        </form>
+        <p v-if="deckError" class="error" role="alert" data-testid="study-deck-create-error">
+          {{ deckError }}
+        </p>
       </div>
       <ul v-else class="deck-list" data-testid="study-deck-list">
         <li v-for="deck in decks.slice(0, 3)" :key="deck.deckId">
@@ -110,7 +139,7 @@
  *
  * 离线 / 首次安装：due 总数为 0 时 Hero 进入 completed 态。
  */
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { AnimatedNumber, Skeleton } from '../../components'
@@ -154,8 +183,27 @@ function openDeck(deckId: string) {
   router.push(`/flashcards/decks/${encodeURIComponent(deckId)}`)
 }
 
-function goCreateDeck() {
-  router.push('/flashcards/new')
+// BUG-AA：空态原本是「新建牌组」按钮跳 /flashcards/new（新建卡片页）——
+// 文案与行为不符，且从零状态进去必然撞 BUG-U 的死胡同。
+// 改为与 FlashcardListView 同构的内联建组。store.createDeck 建完会把卡组合并进
+// 本地缓存并 persistCache，因此 decks computed 立刻更新，空态自动消失。
+const newDeckName = ref('')
+const deckCreating = ref(false)
+const deckError = ref('')
+
+async function submitCreateDeck() {
+  const name = newDeckName.value.trim()
+  if (!name || deckCreating.value) return
+  deckCreating.value = true
+  deckError.value = ''
+  try {
+    await store.createDeck(name)
+    newDeckName.value = ''
+  } catch (err) {
+    deckError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    deckCreating.value = false
+  }
 }
 </script>
 
@@ -436,6 +484,34 @@ function goCreateDeck() {
   font-size: 13px;
   font-weight: var(--font-weight-semibold);
   cursor: pointer;
+}
+
+/* BUG-AA：空态内联建卡组。样式与 FlashcardListView 的 .deck-create 保持一致。 */
+.deck-create {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.deck-create input {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: inherit;
+}
+.deck-create .primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.error {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-2);
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
 }
 
 .state {

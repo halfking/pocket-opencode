@@ -186,7 +186,7 @@
     "list": {
       "title": "フラッシュカード",
       "empty": "デッキはまだありません",
-      "create": "デッキを作成",
+      "create": "新しいカード",
       "dueToday": "本日 {count} 件復習待ち"
     },
     "deck": {
