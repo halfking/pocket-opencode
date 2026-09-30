@@ -2387,6 +2387,15 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
+- **BUG-AM/AN i18n 缺 key 已补齐**：13 个 key（`study.reminder.*`/`study.due.*`/`study.inbox.*`/`nav.flashcards`）
+  在代码里在用、**9 个语言文件全缺** ⇒ 用户在界面上看到 key 字符串本身。
+  - `audit-i18n-keys.mjs` 全量对账：**241/241，缺失 0**，9 语言相互对等
+  - 工具自证：故意还原 zh-CN.json → 如实报出 `缺失: 13`；补齐后回 0
+  - 真机 `diag-study-i18n-render.mjs` 连跑 3 次 `hasKeyLiteral: false`，
+    且第 2/3 次 `linkBtnTexts` 有值（hex `5168 90e8` = 全部）——**非空过**
+  - 顺带把 §5 的「`study.decks.*` 42 条未翻译」**澄清为翻译质量问题**：
+    各语言 key 集合与 zh-CN 完全对等，缺的是译文而非 key
+  - 详见 §4.46
 - **BUG-AL 任务看板恒空已修**（`loadTasks` 用 `?source=opencode` 过滤，
   而本 UI 建的任务是 `source='local'`，交集为空 ⇒ 自己建的任务自己看不见）：
   - API 对照：无过滤 5 条（全 `local`）/`?source=opencode` **0 条** / `?source=local` 5 条
@@ -2586,9 +2595,10 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
 - **`study.decks.*` 整块 7 个键在 7 种语言里未翻译**（与 en-US 逐字节相同，
   即整块英文）。`scripts/audit-deck-cta-i18n.mjs` 判据 C 持续报出，只报不拦。
   本轮**未修** —— 42 条译文需逐条审，不宜混进同一次提交（§4.28.6）
-  ⚠️ **新增观察**：`#/study` 页面上**直接可见 `study.decks.all` 这个 key 字符串**
-  ——缺 key 时没有兜底文案，用户看到的是 key 本身。翻译欠账之外，
-  i18n 层的缺 key 兜底也需要单独处理（§4.45.7）
+  ⚠️ **性质已澄清**（§4.46）：这只是**译文质量**欠账（显示英文），
+  **不是缺 key**。9 个语言文件的 key 集合与 zh-CN **完全对等**，
+  缺 key（显示 key 串）是另一类问题，已在 BUG-AM/AN 里修完。
+  另外 **vue-i18n 的缺 key 全局兜底仍未做**——现在漏了新 key 仍会直接显示 key 串。
 - **真机 Maestro 仍然零次执行**：本轮把阻塞量化了（拦全新安装、需手动授权），
   并改用 CDP 在真机上完成 BUG-AA 的验证。**但 `.maestro/` 下的 flow 至今没在真机跑过一次**，
   不要把「真机验证走 CDP」说成「真机 Maestro 跑通了」（§4.16.3 / §4.28.7）
@@ -4315,10 +4325,108 @@ BUG-AL 的线索是「PG 有 14 条 active，但 `.task-card` 恒为 0」。把�
 2. **解锁后 App 会自己重定向一次**（曾把 `#/ai` 顶成 `#/email`），
    第一个路由的读数取到的是重定向途中的画面。已在脚本开头加静置。
 
-**顺带发现（未修）**：`#/study` 页面把未翻译的 i18n key **原样渲染出来**——
-页面上直接可见 `study.decks.all` 字符串。这不只是「翻译欠账」，
-而是**缺 key 时没有兜底文案**，用户在界面上直接看到 key 本身。
-与 §5 里「`study.decks.*` 42 条未翻译」是同一根问题的两种表现。
+**顺带发现：⚠️ 上一版这里写错了，已自我更正**——曾写「`#/study` 页面直接可见
+`study.decks.all` 这个 key 字符串」。**该说法不成立**：那是 `audit-list-views.mjs` 的
+输出经 **PowerShell 控制台把 UTF-8 转 ANSI** 造成的显示损坏，不是页面内容。
+用 JS 侧 hex 回传复核（绕开控制台编码）后，该按钮实际渲染为 `全部`
+（hex `5168 90e8`），且 9 个语言文件里 `study.decks` 整块都存在。**属假警报，撤回。**
+
+但复核过程中**真的挖到一类缺陷**——见 §4.46。
+
+### 4.46 BUG-AM/AN：13 个 i18n key 在代码里在用、9 个语言文件里全缺
+
+用户在界面上看到的是 **key 字符串本身**（vue-i18n 缺 key 时回退到 key）。
+这与「未翻译」是两种不同严重度的问题：未翻译只是显示英文，
+缺 key 是显示 `study.due.allClear` 这种机器串。
+
+#### 4.46.1 怎么发现的（以及一次假警报）
+
+从 §4.45.7 的列表审计输出里看到疑似 `study.decks.all` 字面量。
+**但那是假警报**：`audit-list-views.mjs` 的输出经 PowerShell 控制台把 UTF-8 转 ANSI，
+`study.decks.all` 被显示成 `study.deue.all`。用 JS 侧 hex 回传复核后，
+该按钮实际渲染为 `全部`（hex `5168 90e8`），且 `study.decks` 整块在 9 个文件里都存在。
+
+**教训：从控制台输出里读到的「异常文案」不能直接当证据。**
+必须用编码无关的方式（hex / 布尔判定 / 直接读文件）复核。
+
+改用 `diag-study-i18n-render.mjs`（JS 正则 + hex 回传）后，
+拿到真正的匹配串 `study.due.all…`，顺藤摸到真正的缺失 key 组。
+
+#### 4.46.2 全量对账工具
+
+`scripts/audit-i18n-keys.mjs`：抽取代码里所有 `t('x.y.z')`，
+与 9 个语言文件展平后的 key 集合对账。首轮结果：
+
+```
+源码文件数: 506   静态可识别的 key: 241
+zh-CN 缺失: 9
+  nav.flashcards            (MoreHubView)
+  study.due.cardsDue / inboxWaiting / reviewing / tasksDue / title   (StudyHubView)
+  study.inbox.advance / empty / title                                (StudyHubView)
+各语言相对 zh-CN 缺失: 全部 0
+```
+
+**各语言与 zh-CN 完全对等** —— 所以 §5 里那条「`study.decks.*` 42 条未翻译」
+是**翻译质量**欠账（显示英文），与本节的**缺 key**（显示 key 串）是两码事。
+此前一直混在一起说，本节把它们分开了。
+
+#### 4.46.3 漏掉的那个：动态 key
+
+补完 9 个 key 后重建，真机复跑**仍然**渲染出 `study.due.allClear`。
+根因：这个 key 不在任何 `t('...')` 调用里，而是
+
+```ts
+// utils/learning-due.ts
+export type DueSummaryHeadlineKey =
+  | 'study.due.cardsDue' | ... | 'study.due.allClear'
+export function dueSummaryHeadlineKey(...): DueSummaryHeadlineKey { ... }
+```
+
+界面通过 `t(dueSummaryHeadlineKey(due.value))` **动态**取用 ——
+静态正则看不见它。
+
+于是给审计工具加了第二条规则。**第一版这条规则写废了**：正则要求联合类型带分号，
+而 TS 的 `export type X = | 'a' | 'b'` 是换行结束的、**没有分号**，
+结果一条都匹配不上、工具「碰巧对」而不是真对（动态候选数显示 0）。
+改成只匹配 `| '字面量'` 连续链后，动态候选数 = 5，正确覆盖 `DueSummaryHeadlineKey`。
+
+**也试过更宽的规则**（所有首段命中命名空间的点分字面量），
+报出 23 条候选，逐条看**全是噪声**：
+`email.is_starred`（数据库列名）、`inbox.classifyHint.value`（ref 属性路径）、
+`settings.temperature`（API 字段名）。
+宽规则没人敢用，所以最终收窄到 `*Key` 联合类型——**工具必须先零噪声才有价值**。
+
+**审计工具的自证**：故意用 `git checkout` 还原 zh-CN.json（制造 13 个缺失），
+审计立刻报出 `zh-CN 缺失: 13`；重新补齐后回到 0。
+（注：中途用 PowerShell `Set-Content -Encoding UTF8` 改文件**加了 BOM** 导致 JSON 解析失败，
+这是本项目反复踩到的坑，JSON 必须用无 BOM 写入。）
+
+#### 4.46.4 改动与验证
+
+- 9 个语言文件（`frontend/src/locales/*.json`）补齐 **13 个 key**：
+  `study.reminder.{title,next,offline}`、`study.due.{title,cardsDue,inboxWaiting,reviewing,tasksDue,allClear}`、
+  `study.inbox.{title,empty,advance}`、`nav.flashcards`。
+- 写回前统一做**格式往返校验**（`JSON.stringify(obj,null,2)` 必须与原文一致），
+  不一致就跳过并报告——**绝不为加 key 重排整个文件格式**。
+  最终 diff：每文件仅 1 处删除（`"study": "学习"` 改成带逗号以追加 `flashcards`）+ 若干新增行。
+
+验证：
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| key 对账 | `node scripts/audit-i18n-keys.mjs` | **241/241，缺失 0**，9 语言全部对等 |
+| 工具自证 | 故意还原 zh-CN.json | 如实报出 `缺失: 13` |
+| 类型检查 | `npx vue-tsc --noEmit` | **exit 0** |
+| 真机渲染 | `node scripts/diag-study-i18n-render.mjs` | 连跑 3 次均 `hasKeyLiteral: false` |
+
+真机判据**非空过**：第一次跑 `linkBtnTexts=[]`（页面还没渲染完），
+第二次起 `linkBtnTexts=["monitoring","manage_search","全部","全部"]`
+（hex `5168 90e8` = 全部）**且** `hasKeyLiteral: false`——
+即「页面确实有内容」与「没有 key 字面量」同时成立，才算数。
+
+**仍未做**：vue-i18n 的**缺 key 全局兜底**。现在缺 key 仍会直接把 key 渲染给用户看；
+本轮只补齐了已知的 13 个，**没有加兜底机制**去兜住未来新增的漏 key。
+
 
 
 

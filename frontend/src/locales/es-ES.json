@@ -59,7 +59,8 @@
     "settings": "Configuración",
     "localAgent": "Local Agent",
     "home": "Home",
-    "study": "Study"
+    "study": "Study",
+    "flashcards": "Tarjetas"
   },
   "routes": {
     "login": "Iniciar sesión",
@@ -332,6 +333,11 @@
       "stats": "View stats",
       "browser": "Card browser"
     },
+    "reminder": {
+      "title": "Recordatorio de repaso diario",
+      "next": "Próximo: {time}",
+      "offline": "Servicio de aprendizaje sin conexión: recordatorios no disponibles por ahora"
+    },
     "notes": {
       "title": "My notes",
       "all": "All",
@@ -349,6 +355,19 @@
       "days": "días seguidos",
       "toNext": "{count} más para {next}",
       "milestoneReached": "Hito de {days} días alcanzado"
+    },
+    "due": {
+      "title": "Pendientes de hoy",
+      "cardsDue": "Tarjetas pendientes",
+      "inboxWaiting": "Bandeja de entrada pendiente",
+      "reviewing": "Por repasar",
+      "tasksDue": "Tareas pendientes",
+      "allClear": "Nada pendiente hoy"
+    },
+    "inbox": {
+      "title": "Bandeja de entrada",
+      "empty": "La bandeja de entrada está vacía",
+      "advance": "Procesar"
     }
   },
   "email": {

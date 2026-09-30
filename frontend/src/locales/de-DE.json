@@ -59,7 +59,8 @@
     "settings": "Einstellungen",
     "localAgent": "Local Agent",
     "home": "Home",
-    "study": "Study"
+    "study": "Study",
+    "flashcards": "Karteikarten"
   },
   "routes": {
     "login": "Anmelden",
@@ -332,6 +333,11 @@
       "stats": "View stats",
       "browser": "Card browser"
     },
+    "reminder": {
+      "title": "Tägliche Wiederholungserinnerung",
+      "next": "Nächste: {time}",
+      "offline": "Lerndienst nicht verbunden – Erinnerungen derzeit nicht verfügbar"
+    },
     "notes": {
       "title": "My notes",
       "all": "All",
@@ -349,6 +355,19 @@
       "days": "Tage in Folge",
       "toNext": "Noch {count} bis {next}",
       "milestoneReached": "{days}-Tage-Meilenstein erreicht"
+    },
+    "due": {
+      "title": "Heute fällig",
+      "cardsDue": "Karten fällig",
+      "inboxWaiting": "Posteingang wartet",
+      "reviewing": "Zu wiederholen",
+      "tasksDue": "Aufgaben fällig",
+      "allClear": "Heute nichts fällig"
+    },
+    "inbox": {
+      "title": "Posteingang",
+      "empty": "Posteingang ist leer",
+      "advance": "Fortfahren"
     }
   },
   "email": {
