@@ -337,6 +337,18 @@
       "all": "All",
       "voice": "Voice notes",
       "hint": "Tap mic to record"
+    },
+    "capture": {
+      "add": "Ajouter à l'apprentissage",
+      "done": "Ajouté aux apprentissages",
+      "toTask": "Convertir en tâche",
+      "taskDone": "Tâche créée",
+      "failed": "Enregistrement impossible. Réessayez."
+    },
+    "streak": {
+      "days": "jours d’affilée",
+      "toNext": "Encore {count} pour {next}",
+      "milestoneReached": "Jalon de {days} jours atteint"
     }
   },
   "email": {
@@ -381,5 +393,31 @@
     "operateFailed": "L'action a échoué. Veuillez réessayer.",
     "summaryFailed": "Impossible de générer le résumé. Vérifiez qu'une passerelle de modèle est configurée et joignable.",
     "probeFailed": "Sonde échouée. Vérifiez que la cible est joignable."
+  },
+  "due": {
+    "title": "Révision du jour",
+    "cardsDue": "Cartes dues",
+    "inboxWaiting": "À traiter",
+    "reviewing": "En révision",
+    "tasksDue": "Tâches dues",
+    "allClear": "Rien à réviser aujourd'hui"
+  },
+  "reminder": {
+    "title": "Résumé quotidien",
+    "next": "Prochain : {time}",
+    "offline": "Le résumé quotidien nécessite le service d'apprentissage. Reconnectez-vous pour activer les rappels."
+  },
+  "inbox": {
+    "title": "Boîte de réception",
+    "empty": "Rien de collecté pour l'instant. Utilisez « Ajouter à l'apprentissage » sur une note, un e-mail ou un flux RSS.",
+    "advance": "Commencer"
+  },
+  "source": {
+    "note": "Note",
+    "email": "E-mail",
+    "rss": "RSS",
+    "meeting": "Réunion",
+    "chat": "Discussion",
+    "manual": "Manuel"
   }
 }

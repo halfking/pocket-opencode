@@ -337,6 +337,18 @@
       "all": "All",
       "voice": "Voice notes",
       "hint": "Tap mic to record"
+    },
+    "capture": {
+      "add": "学習に追加",
+      "done": "学習に追加済み",
+      "toTask": "タスクに変換",
+      "taskDone": "タスクを作成しました",
+      "failed": "保存できませんでした。再試行してください。"
+    },
+    "streak": {
+      "days": "日連続",
+      "toNext": "あと {count} 日で {next} 日",
+      "milestoneReached": "{days} 日マイルストーン達成"
     }
   },
   "email": {
@@ -381,5 +393,31 @@
     "operateFailed": "操作に失敗しました。もう一度お試しください。",
     "summaryFailed": "要約を生成できませんでした。モデルゲートウェイの設定と接続を確認してください。",
     "probeFailed": "プローブに失敗しました。対象アドレスに到達できるか確認してください。"
+  },
+  "due": {
+    "title": "今日の復習",
+    "cardsDue": "カードの期限",
+    "inboxWaiting": "未処理",
+    "reviewing": "復習中",
+    "tasksDue": "タスクの期限",
+    "allClear": "今日はやることがありません"
+  },
+  "reminder": {
+    "title": "毎日のダイジェスト",
+    "next": "次回：{time}",
+    "offline": "毎日の復習には学習サービスが必要です。再接続すると通知を有効にできます。"
+  },
+  "inbox": {
+    "title": "受信トレイ",
+    "empty": "まだ素材がありません。ノート・メール・RSS で「学習に追加」を使ってください。",
+    "advance": "学習を開始"
+  },
+  "source": {
+    "note": "ノート",
+    "email": "メール",
+    "rss": "RSS",
+    "meeting": "会議",
+    "chat": "チャット",
+    "manual": "手動"
   }
 }

@@ -18,6 +18,23 @@ const DefaultLLMGatewayBaseURL = "https://llm.kxpms.cn/v1"
 // DefaultLLMGatewayPreferredModels 默认「常用模型」列表，写入 seed 的
 // preferredModels。catalog models 仍由「测试连接」拉取后写入。
 // API Key 只从 POCKET_LLM_GATEWAY_API_KEY 注入，禁止把租户密钥写进仓库。
+//
+// 2026-09-30 实测记录（不据此改顺序，理由见下）：
+// 本列表同时是 auto 模式的降级链顺序（llmbff_provider_adapters.go 的
+// nextFallbackModel 按序取候选，每个候选 20s 尝试窗）。真机上 auto 模式实测
+// 首问 25.3s：首选候选吃满 20s 尝试窗后降级到 claude-opus-4-8 才拿到回答。
+//
+// 但**刻意没有重排**：对 llm.kxpms.cn 做了三轮独立探测（每模型 30s/45s 窗口），
+// 结论互相打架——
+//   claude-fable-5  4.2s ✅ / 5.0s ✅ / 30s 超时 ❌
+//   claude-sonnet-5 45s 超时 ❌ / 4.4s ✅
+//   minimax-m3      4.0s ✅ / 1.7s ✅ / 2.0s ✅
+//   gpt-5.4          45s 超时 ❌ / 30s 超时 ❌
+//   glm-5.2          HTTP 200 但 0 个 content delta（三轮一致）
+// 也就是说上游可用性是波动的，单次或两次探测不足以支撑「把谁排前面」的结论，
+// 那只会把噪声固化进默认值。20s 尝试窗本身也不宜调低——代码注释记录过
+// kimi-k3 长 prompt 首 token 实测 >20s，调低会误杀慢而可用的模型。
+// 网关侧模型可用性治理由网关负责，应用侧保持"链式降级 + 进度帧"这一既有设计。
 var DefaultLLMGatewayPreferredModels = []string{
 	"claude-fable-5",
 	"claude-opus-4-8",

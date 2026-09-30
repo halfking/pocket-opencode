@@ -114,42 +114,88 @@
       <div class="section-header">
         <h2>
           <span class="dot pulse" />运行中
-          <span class="badge">{{ activeTasks.length }}</span>
+          <span class="badge">{{ visibleActiveTasks.length }}</span>
         </h2>
         <button class="link-btn" @click="showCreateModal = true">+ 新任务</button>
         <button class="link-btn acc-delegate-btn" @click="openAccDelegate">委托 ACC</button>
       </div>
 
+      <!--
+        工作 = 任务：按类型分类（docs/学习muse/03-架构方案.md §1）。
+        两行 chip：先按 typeGroup 折叠（工作 / 生活 / 学习 / 其他），
+        再按到期收窄（逾期 / 今天 / 本周）。默认不过滤，行为与改造前一致。
+      -->
+      <div class="work-filters" data-testid="task-filters">
+        <div class="filter-row">
+          <button
+            v-for="g in GROUP_CHIPS"
+            :key="g.key"
+            class="chip"
+            :class="{ active: typeGroupFilter === g.key }"
+            type="button"
+            :data-testid="`task-group-${g.key || 'all'}`"
+            @click="typeGroupFilter = g.key"
+          >
+            {{ g.label }}
+            <span v-if="g.count > 0" class="chip-count">{{ g.count }}</span>
+          </button>
+        </div>
+        <div class="filter-row">
+          <button
+            v-for="d in DUE_CHIPS"
+            :key="d.key"
+            class="chip subtle"
+            :class="{ active: dueFilter === d.key }"
+            type="button"
+            :data-testid="`task-due-${d.key || 'any'}`"
+            @click="dueFilter = d.key"
+          >
+            {{ d.label }}
+          </button>
+        </div>
+      </div>
+
       <Skeleton v-if="loading" :count="3" />
 
-      <div v-else-if="activeTasks.length > 0" class="task-scroll">
-        <div
-          v-for="task in activeTasks"
-          :key="task.id"
-          class="task-card compact"
-          @click="onTaskClick(task.id)"
-          @touchstart="onTaskTouchStart(task, $event)"
-          @touchmove="onTouchMove"
-          @touchend="onTouchEnd"
-        >
-          <div class="priority-bar" :class="task.priority" />
-          <div class="task-body">
-            <div class="task-title">{{ task.title }}</div>
-            <div class="task-meta-row">
-              <span v-if="signalFor(task)" class="health-signal" :class="'tone-' + signalFor(task)!.tone">
-                <span class="health-dot" />{{ signalFor(task)!.action }}<template v-if="signalFor(task)!.since"> · {{ signalFor(task)!.since }}</template>
-              </span>
-              <span v-if="task.instanceName" class="instance-tag">{{ task.instanceName }}</span>
-            </div>
+      <div v-else-if="visibleActiveTasks.length > 0" class="task-scroll">
+        <template v-for="group in groupedActiveTasks" :key="group.key">
+          <div v-if="group.label" class="group-label" :data-testid="`task-group-label-${group.key}`">
+            {{ group.label }}
+            <span class="badge">{{ group.tasks.length }}</span>
           </div>
-          <span class="chevron">›</span>
-        </div>
+          <div
+            v-for="task in group.tasks"
+            :key="task.id"
+            class="task-card compact"
+            @click="onTaskClick(task.id)"
+            @touchstart="onTaskTouchStart(task, $event)"
+            @touchmove="onTouchMove"
+            @touchend="onTouchEnd"
+          >
+            <div class="priority-bar" :class="task.priority" />
+            <div class="task-body">
+              <div class="task-title">{{ task.title }}</div>
+              <div class="task-meta-row">
+                <span v-if="signalFor(task)" class="health-signal" :class="'tone-' + signalFor(task)!.tone">
+                  <span class="health-dot" />{{ signalFor(task)!.action }}<template v-if="signalFor(task)!.since"> · {{ signalFor(task)!.since }}</template>
+                </span>
+                <span v-if="task.instanceName" class="instance-tag">{{ task.instanceName }}</span>
+                <span v-if="task.type && task.type !== 'other'" class="type-tag">{{ typeLabel(task.type) }}</span>
+                <span v-if="dueChip(task)" class="due-tag" :class="dueChip(task)!.tone">{{ dueChip(task)!.text }}</span>
+                <span v-if="(task.assignees?.length ?? 0) > 0" class="assignee-tag">
+                  {{ task.assignees!.length }} 人协作
+                </span>
+              </div>
+            </div>
+            <span class="chevron">›</span>
+          </div>
+        </template>
       </div>
 
       <div v-else class="empty-inline">
         <EmptyState
           icon="📋"
-          title="暂无运行中的任务"
+          :title="activeTasks.length > 0 ? '当前筛选下没有任务' : '暂无运行中的任务'"
           hint="点击「+ 新任务」创建，或长按任务卡片操作"
           size="sm"
           variant="inline"
@@ -326,6 +372,18 @@
           <label>描述</label>
           <textarea v-model="newTask.description" placeholder="输入任务描述" rows="2" />
         </div>
+        <!--
+          工作 = 任务：创建时就定分类与期限，而不是建完再补。
+          分类是闭合枚举（后端 worktype.go 校验，非法值 400），下拉只给合法值。
+        -->
+        <div class="form-group">
+          <label>分类</label>
+          <select v-model="newTask.type" data-testid="create-task-type">
+            <option v-for="opt in TYPE_OPTIONS" :key="opt.value" :value="opt.value">
+              {{ opt.group }} · {{ opt.label }}
+            </option>
+          </select>
+        </div>
         <div class="form-row">
           <div class="form-group half">
             <label>优先级</label>
@@ -340,6 +398,20 @@
             <select v-model="newTask.status">
               <option value="active">进行中</option>
               <option value="blocked">已阻塞</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group half">
+            <label>截止日期</label>
+            <input v-model="newTask.dueDate" type="date" data-testid="create-task-due" />
+          </div>
+          <div class="form-group half">
+            <label>提醒</label>
+            <select v-model="newTask.remindOffset">
+              <option value="0">不提醒</option>
+              <option value="3600">提前 1 小时</option>
+              <option value="86400">提前 1 天</option>
             </select>
           </div>
         </div>
@@ -424,7 +496,7 @@
 <script setup lang="ts">
 import { ref, computed, inject, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, type Task } from '../../api/client'
+import { api, type Task, type TaskTypeGroup } from '../../api/client'
 import { readSelectedInstance } from '../../config/selected-instance'
 import wsClient from '../../api/websocket'
 import { useToast } from '../../composables/useToast'
@@ -632,7 +704,39 @@ const newTask = ref({
   description: '',
   priority: 'medium',
   status: 'active',
+  // 工作=任务的分类与期限（docs/学习muse/03-架构方案.md §1）。
+  // dueDate 用 <input type="date"> 的 yyyy-mm-dd，提交时换算成 unix 秒。
+  type: 'other' as string,
+  dueDate: '',
+  remindOffset: 0,
 })
+
+/** 分类下拉的候选：与后端 worktype.go 的 typeGroups 一一对应（闭合枚举）。 */
+const TYPE_OPTIONS: Array<{ value: string; label: string; group: string }> = [
+  { value: 'dev', label: '开发', group: '工作' },
+  { value: 'ops', label: '运维', group: '工作' },
+  { value: 'project', label: '项目', group: '工作' },
+  { value: 'meeting', label: '会议', group: '工作' },
+  { value: 'doc', label: '文档', group: '工作' },
+  { value: 'comms', label: '沟通', group: '工作' },
+  { value: 'admin', label: '行政', group: '工作' },
+  { value: 'errand', label: '杂事', group: '生活' },
+  { value: 'family', label: '家庭', group: '生活' },
+  { value: 'finance', label: '财务', group: '生活' },
+  { value: 'health', label: '健康', group: '生活' },
+  { value: 'study', label: '学习', group: '学习' },
+  { value: 'research', label: '研究', group: '学习' },
+  { value: 'review', label: '复盘', group: '学习' },
+  { value: 'other', label: '未分类', group: '其他' },
+]
+
+/** yyyy-mm-dd → 当天 23:59 的 unix 秒；空值或非法值返回 0（不设期限）。 */
+function parseDueDate(value: string): number {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return 0
+  const d = new Date(`${value}T23:59:00`)
+  const sec = d.getTime()
+  return Number.isFinite(sec) ? Math.floor(sec / 1000) : 0
+}
 
 // ── Delegate to ACC ──
 const toast = useToast()
@@ -695,6 +799,148 @@ const completedTasks = computed(() =>
     .filter((t) => t.status === 'completed')
     .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
 )
+
+// ── 工作=任务：类型分组 + 到期筛选（docs/学习muse/03-架构方案.md §1.2）──
+//
+// 分组键优先用服务端返回的 typeGroup；老数据 / ACC 与 OpenCode 投影没有这个
+// 字段时回落到 type 的前缀表，再回落到 'other'。这样老任务不会因为缺字段
+// 消失，只是没有自己的分类标签。
+
+const TYPE_GROUP_OF: Record<string, TaskTypeGroup> = {
+  dev: 'work', ops: 'work', project: 'work', meeting: 'work',
+  doc: 'work', comms: 'work', admin: 'work',
+  errand: 'life', family: 'life', finance: 'life', health: 'life',
+  study: 'learning', research: 'learning', review: 'learning',
+  other: 'other',
+}
+
+const GROUP_ORDER: TaskTypeGroup[] = ['work', 'life', 'learning', 'other']
+const GROUP_LABEL: Record<TaskTypeGroup, string> = {
+  work: '工作',
+  life: '生活',
+  learning: '学习',
+  other: '未分类',
+}
+
+const TYPE_LABEL: Record<string, string> = {
+  dev: '开发', ops: '运维', project: '项目', meeting: '会议',
+  doc: '文档', comms: '沟通', admin: '行政',
+  errand: '杂事', family: '家庭', finance: '财务', health: '健康',
+  study: '学习', research: '研究', review: '复盘',
+  other: '未分类',
+}
+
+function groupOf(task: Task): TaskTypeGroup {
+  if (task.typeGroup && task.typeGroup in GROUP_LABEL) return task.typeGroup
+  const byType = task.type ? TYPE_GROUP_OF[task.type] : undefined
+  return byType ?? 'other'
+}
+
+function typeLabel(type: string): string {
+  return TYPE_LABEL[type] ?? type
+}
+
+const typeGroupFilter = ref<TaskTypeGroup | ''>('')
+const dueFilter = ref<'' | 'overdue' | 'today' | 'week'>('')
+
+function isOverdue(task: Task, nowSec: number): boolean {
+  return (task.dueAt ?? 0) > 0 && task.dueAt! < nowSec
+}
+
+function endOfToday(nowSec: number): number {
+  const d = new Date(nowSec * 1000)
+  d.setHours(23, 59, 59, 999)
+  return Math.floor(d.getTime() / 1000)
+}
+
+function matchesDueFilter(task: Task, nowSec: number): boolean {
+  if (dueFilter.value === '') return true
+  const due = task.dueAt ?? 0
+  // 没有截止时间的任务在"逾期/今天/本周"下不显示：按到期筛选时，
+  // 把无期限任务混进来会让筛选结果看不出意义。
+  if (due <= 0) return false
+  if (dueFilter.value === 'overdue') return due < nowSec
+  if (dueFilter.value === 'today') return due <= endOfToday(nowSec)
+  return due <= nowSec + 7 * 86400
+}
+
+const visibleActiveTasks = computed(() => {
+  const nowSec = Math.floor(Date.now() / 1000)
+  return activeTasks.value.filter(
+    (t) =>
+      (typeGroupFilter.value === '' || groupOf(t) === typeGroupFilter.value) &&
+      matchesDueFilter(t, nowSec),
+  )
+})
+
+const GROUP_CHIPS = computed(() => [
+  { key: '' as TaskTypeGroup | '', label: '全部', count: activeTasks.value.length },
+  ...GROUP_ORDER.map((g) => ({
+    key: g,
+    label: GROUP_LABEL[g],
+    count: activeTasks.value.filter((t) => groupOf(t) === g).length,
+  })),
+])
+
+const DUE_CHIPS: Array<{ key: '' | 'overdue' | 'today' | 'week'; label: string }> = [
+  { key: '', label: '全部期限' },
+  { key: 'overdue', label: '已逾期' },
+  { key: 'today', label: '今天' },
+  { key: 'week', label: '本周' },
+]
+
+/**
+ * 分组后的运行中任务。只保留非空组；当用户已经选了某个分组时不再重复
+ * 显示组标题（chip 已经说明了当前在看哪一组）。
+ */
+const groupedActiveTasks = computed(() => {
+  const list = visibleActiveTasks.value
+  if (typeGroupFilter.value !== '') {
+    return [{ key: typeGroupFilter.value as string, label: '', tasks: list }]
+  }
+  return GROUP_ORDER.map((g) => ({
+    key: g,
+    label: GROUP_LABEL[g],
+    tasks: list
+      .filter((t) => groupOf(t) === g)
+      .sort((a, b) => {
+        // 有截止时间的排前面且按时间升序；都没有时沿用 updatedAt 倒序。
+        const da = a.dueAt ?? 0
+        const db = b.dueAt ?? 0
+        if (da && db) return da - db
+        if (da) return -1
+        if (db) return 1
+        return (b.updatedAt || '').localeCompare(a.updatedAt || '')
+      }),
+  })).filter((g) => g.tasks.length > 0)
+})
+
+/** 到期小标签：逾期 / 今天 HH:MM / MM-DD。返回 null 表示不显示。 */
+function dueChip(task: Task): { text: string; tone: 'overdue' | 'today' | 'later' } | null {
+  const due = task.dueAt ?? 0
+  if (due <= 0) return null
+  const nowSec = Math.floor(Date.now() / 1000)
+  if (due < nowSec) {
+    return { text: `逾期 ${formatDue(due, nowSec)}`, tone: 'overdue' }
+  }
+  if (due <= endOfToday(nowSec)) {
+    return { text: `今天 ${formatClock(due)}`, tone: 'today' }
+  }
+  return { text: formatDue(due, nowSec), tone: 'later' }
+}
+
+function formatClock(unixSec: number): string {
+  const d = new Date(unixSec * 1000)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+function formatDue(unixSec: number, nowSec: number): string {
+  const d = new Date(unixSec * 1000)
+  const today = new Date(nowSec * 1000)
+  const sameYear = d.getFullYear() === today.getFullYear()
+  const md = `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, '0')}`
+  return sameYear ? md : `${d.getFullYear()}-${md}`
+}
 
 // ── Pull-down close (BottomSheet 已具备内建下拉关闭，无需再外挂) ──
 
@@ -792,12 +1038,23 @@ function handleSessionAttached(link: any) {
 async function handleCreate() {
   if (!newTask.value.title) return
   try {
+    const dueAt = parseDueDate(newTask.value.dueDate)
+    // 提醒时间不能晚于截止时间；选了「提前 N」但没填截止日时按无提醒处理，
+    // 否则后端会 400（remindAt must not be after dueAt）。
+    const remindAt =
+      dueAt > 0 && newTask.value.remindOffset > 0 && dueAt - newTask.value.remindOffset > 0
+        ? dueAt - newTask.value.remindOffset
+        : 0
     const task: Task = {
       id: `task-${Date.now()}`,
       title: newTask.value.title,
       description: newTask.value.description,
       status: newTask.value.status as any,
       priority: newTask.value.priority as any,
+      type: newTask.value.type,
+      typeGroup: TYPE_GROUP_OF[newTask.value.type] as TaskTypeGroup,
+      dueAt: dueAt || undefined,
+      remindAt: remindAt || undefined,
       workstreamId: currentInstance.value?.id,
       source: 'local',
       createdAt: new Date().toISOString(),
@@ -805,7 +1062,15 @@ async function handleCreate() {
       sessionCount: 0,
     }
     await api.createTask(task)
-    newTask.value = { title: '', description: '', priority: 'medium', status: 'active' }
+    newTask.value = {
+      title: '',
+      description: '',
+      priority: 'medium',
+      status: 'active',
+      type: 'other',
+      dueDate: '',
+      remindOffset: 0,
+    }
     showCreateModal.value = false
     loadTasks()
   } catch (e) {
@@ -1479,8 +1744,119 @@ function timeAgo(dateStr?: string): string {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.instance-tag.sm {
-  font-size: 9px;
+/* ── 工作=任务：分类 chip / 到期筛选（docs/学习muse/03-架构方案.md §1.2） ── */
+.work-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 var(--space-1);
+}
+
+.filter-row {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.filter-row::-webkit-scrollbar {
+  display: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  min-height: 30px;
+}
+
+.chip.active {
+  border-color: var(--brand-primary);
+  background: var(--brand-bg);
+  color: var(--brand-primary);
+  font-weight: 600;
+}
+
+.chip.subtle {
+  font-size: 11px;
+  padding: 4px 9px;
+  min-height: 26px;
+}
+
+.chip-count {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  opacity: 0.75;
+}
+
+/* 分组标题：只在"全部"视图出现，选中某个分组时 chip 已经说明看的是哪组。 */
+.group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: var(--space-2) var(--space-1) 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+
+.type-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  line-height: 14px;
+  flex-shrink: 0;
+}
+
+.due-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  line-height: 14px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+}
+
+.due-tag.overdue {
+  background: rgba(220, 38, 38, 0.12);
+  color: #dc2626;
+}
+
+.due-tag.today {
+  background: rgba(234, 88, 12, 0.12);
+  color: #ea580c;
+}
+
+.due-tag.later {
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+}
+
+.assignee-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--brand-bg);
+  color: var(--brand-primary);
+  line-height: 14px;
+  flex-shrink: 0;
+}
+
+.instance-tag.sm {  font-size: 9px;
   padding: 0px 4px;
 }
 .meta-muted {

@@ -29,6 +29,7 @@ import {
   type SessionPhase,
   type SessionStatusMode,
 } from './useSessionEvents'
+import { ICON, type IconName } from '../../constants/icons'
 
 const props = defineProps<{
   /** 当前 phase（事件 or 降级推导）；null = 完全未知（按 active 兜底）。 */
@@ -77,10 +78,10 @@ const elapsedText = computed(() => {
 })
 
 /** 图标语义（Material Symbols 子集内）：审批=通知、运行=旋转进度、空闲=播放。 */
-const iconName = computed(() => {
-  if (mode.value === 'approval') return 'notifications_active'
-  if (mode.value === 'running') return 'progress_activity'
-  return 'play_arrow'
+const iconName = computed<IconName>(() => {
+  if (mode.value === 'approval') return ICON.statusApproval
+  if (mode.value === 'running') return ICON.statusRunning
+  return ICON.statusIdle
 })
 
 const actionLabel = computed(() => {

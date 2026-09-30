@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { rssApi, type RSSItem } from '../../api/rss'
+import AddToLearningButton from '../study/AddToLearningButton.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -97,6 +98,11 @@ function back() {
         <a :href="item.url" target="_blank" rel="noopener">原文 ↗</a>
       </div>
       <div v-if="item.summary" class="summary">{{ item.summary }}</div>
+      <!-- P2：RSS 条目 → 学习条目（读过的订阅会按记忆法则回来找你） -->
+      <div v-if="item" class="rss-actions">
+        <AddToLearningButton source-kind="rss" :source-id="item.id" />
+        <AddToLearningButton source-kind="rss" :source-id="item.id" as-task task-type="research" />
+      </div>
       <div v-if="item.content" class="content" v-html="item.content"></div>
     </article>
 

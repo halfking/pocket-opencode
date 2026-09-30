@@ -22,7 +22,22 @@ type Task struct {
 	// Source identifies which task system the row came from. Phase 5 unifies
 	// three sources into one view: "acc" (ACC system via MCP), "opencode"
 	// (per-instance HTTP), "local" (this Postgres store). Defaults to "local".
-	Source           string    `json:"source"`
+	Source string `json:"source"`
+	// Work and tasks are the same entity: the difference is the Type below, not
+	// the table. TypeGroup is derived server-side so the UI can fold the list
+	// into work / life / learning / other without a second stored column.
+	// See docs/学习muse/03-架构方案.md §1.
+	Type             string    `json:"type"`
+	TypeGroup        string    `json:"typeGroup"`
+	OwnerID          string    `json:"ownerId"`
+	Assignees        []string  `json:"assignees"`
+	DueAt            int64     `json:"dueAt,omitempty"`
+	RemindAt         int64     `json:"remindAt,omitempty"`
+	ParentID         string    `json:"parentId,omitempty"`
+	OriginKind       string    `json:"originKind,omitempty"`
+	OriginRef        string    `json:"originRef,omitempty"`
+	Tags             []string  `json:"tags"`
+	Visibility       string    `json:"visibility"`
 	CreatedAt        time.Time `json:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`
 	PendingApprovals int       `json:"pendingApprovals"`
@@ -68,6 +83,16 @@ type TaskUpdate struct {
 	Status       *string `json:"status"`
 	Priority     *string `json:"priority"`
 	WorkstreamID *string `json:"workstreamId"`
+	// Work-item fields (docs/学习muse/03-架构方案.md §1.1). Same nil-means-absent
+	// contract as the legacy fields above.
+	Type       *string   `json:"type"`
+	OwnerID    *string   `json:"ownerId"`
+	Assignees  *[]string `json:"assignees"`
+	DueAt      *int64    `json:"dueAt"`
+	RemindAt   *int64    `json:"remindAt"`
+	ParentID   *string   `json:"parentId"`
+	Tags       *[]string `json:"tags"`
+	Visibility *string   `json:"visibility"`
 }
 
 // ApprovalKind identifies the upstream workflow that created an approval gate.

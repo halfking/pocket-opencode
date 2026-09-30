@@ -34,24 +34,25 @@
 import { computed, ref } from 'vue'
 import type { TimelineItem } from '../../localagent/runtime.ts'
 import { useApiError } from '../../composables/useApiError'
+import { ICON, type IconName } from '../../constants/icons'
 
 const apiError = useApiError()
 const props = defineProps<{ item: TimelineItem }>()
 const expanded = ref(false)
 
-const icon = computed(() => {
-  const map: Record<string, string> = {
-    current_time: 'schedule',
-    calculate: 'calculate',
-    device_info: 'smartphone',
-    http_fetch: 'public',
-    read_file: 'draft',
-    write_file: 'edit_document',
-    list_files: 'folder_open',
-    task_plan: 'checklist',
-    load_skill: 'bolt',
+const icon = computed<IconName>(() => {
+  const map: Record<string, IconName> = {
+    current_time: ICON.toolCurrentTime,
+    calculate: ICON.toolCalculate,
+    device_info: ICON.toolDeviceInfo,
+    http_fetch: ICON.toolHttpFetch,
+    read_file: ICON.toolReadFile,
+    write_file: ICON.toolWriteFile,
+    list_files: ICON.toolListFiles,
+    task_plan: ICON.toolTaskPlan,
+    load_skill: ICON.toolLoadSkill,
   }
-  return map[props.item.name ?? ''] ?? 'handyman'
+  return map[props.item.name ?? ''] ?? ICON.toolHandyman
 })
 
 const risky = computed(() => props.item.risk === 'medium' || props.item.risk === 'high')

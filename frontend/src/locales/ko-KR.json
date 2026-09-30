@@ -337,6 +337,18 @@
       "all": "All",
       "voice": "Voice notes",
       "hint": "Tap mic to record"
+    },
+    "capture": {
+      "add": "학습에 추가",
+      "done": "학습에 추가됨",
+      "toTask": "할 일로 변환",
+      "taskDone": "할 일을 만들었습니다",
+      "failed": "저장하지 못했습니다. 다시 시도하세요."
+    },
+    "streak": {
+      "days": "일 연속",
+      "toNext": "{next} 일까지 {count} 일 더",
+      "milestoneReached": "{days}일 이정표 도달"
     }
   },
   "email": {
@@ -381,5 +393,31 @@
     "operateFailed": "작업에 실패했습니다. 다시 시도하세요.",
     "summaryFailed": "요약을 생성하지 못했습니다. 모델 게이트웨이가 설정되어 있고 연결 가능한지 확인하세요.",
     "probeFailed": "프로브에 실패했습니다. 대상 주소에 접근 가능한지 확인하세요."
+  },
+  "due": {
+    "title": "오늘의 복습",
+    "cardsDue": "카드 마감",
+    "inboxWaiting": "처리 대기",
+    "reviewing": "복습 중",
+    "tasksDue": "할 일 마감",
+    "allClear": "오늘은 할 일이 없습니다"
+  },
+  "reminder": {
+    "title": "매일 요약",
+    "next": "다음: {time}",
+    "offline": "매일 복습에는 학습 서비스가 필요합니다. 다시 연결하면 알림을 켤 수 있습니다."
+  },
+  "inbox": {
+    "title": "수신함",
+    "empty": "아직 수집한 자료가 없습니다. 노트·메일·RSS에서 \"학습에 추가\"를 사용하세요.",
+    "advance": "학습 시작"
+  },
+  "source": {
+    "note": "노트",
+    "email": "메일",
+    "rss": "RSS",
+    "meeting": "회의",
+    "chat": "채팅",
+    "manual": "수동"
   }
 }

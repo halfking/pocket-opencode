@@ -31,6 +31,21 @@
             @append="onAppendUtterance"
           />
         </section>
+        <div class="meeting-learning">
+          <!--
+            P2：会议待办进 PG tasks（origin_kind=meeting）。
+            之前这条链路是断的 —— 会议待办只写进移动端本地 SQLite 的
+            local_todos 表，PC 端和其他设备都看不到，负责人也退化成描述里
+            的「负责人：xxx」字符串。服务端按 (meeting, action text) 幂等，
+            所以重复点不会产生两份。
+          -->
+          <AddToLearningButton
+            source-kind="meeting"
+            :source-id="meetingId"
+            as-task
+            task-type="meeting"
+          />
+        </div>
         <MeetingInsightPanel
           :summary="liveSummary || meeting.liveSummary"
           :final-summary="meeting.summary"
@@ -87,6 +102,7 @@ import { captureDeviceLocation, formatCapturedTitle } from './meeting-meta'
 import { mergeRecommendations, relatedQueryFromTranscript } from './meeting-related'
 import { searchRelatedContext } from './meeting-related-search'
 import { createMeetingTodos, handoffTodoToAcc, shareTodoWithPerson } from './meeting-todo-persist'
+import AddToLearningButton from '../study/AddToLearningButton.vue'
 import type { MeetingTodoDraft } from './meeting-todos'
 import type { MeetingStudioAction } from './meeting-page-actions'
 import { useMeetingStudio } from './use-meeting-studio'

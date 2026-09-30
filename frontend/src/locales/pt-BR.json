@@ -337,6 +337,18 @@
       "all": "All",
       "voice": "Voice notes",
       "hint": "Tap mic to record"
+    },
+    "capture": {
+      "add": "Adicionar ao aprendizado",
+      "done": "Adicionado ao aprendizado",
+      "toTask": "Converter em tarefa",
+      "taskDone": "Tarefa criada",
+      "failed": "Não foi possível salvar. Tente novamente."
+    },
+    "streak": {
+      "days": "dias seguidos",
+      "toNext": "Mais {count} para {next}",
+      "milestoneReached": "Marco de {days} dias alcançado"
     }
   },
   "email": {
@@ -381,5 +393,31 @@
     "operateFailed": "A operação falhou. Tente novamente.",
     "summaryFailed": "Não foi possível gerar o resumo. Verifique se o gateway de modelos está configurado e acessível.",
     "probeFailed": "Sonda falhou. Verifique se o destino está acessível."
+  },
+  "due": {
+    "title": "Revisão de hoje",
+    "cardsDue": "Cartões pendentes",
+    "inboxWaiting": "A processar",
+    "reviewing": "Em revisão",
+    "tasksDue": "Tarefas pendentes",
+    "allClear": "Nada pendente hoje"
+  },
+  "reminder": {
+    "title": "Resumo diário",
+    "next": "Próximo: {time}",
+    "offline": "O resumo diário precisa do serviço de aprendizado. Reconecte para ativar os lembretes."
+  },
+  "inbox": {
+    "title": "Caixa de entrada",
+    "empty": "Nada coletado ainda. Use \"Adicionar ao aprendizado\" em uma nota, e-mail ou RSS.",
+    "advance": "Começar"
+  },
+  "source": {
+    "note": "Nota",
+    "email": "E-mail",
+    "rss": "RSS",
+    "meeting": "Reunião",
+    "chat": "Chat",
+    "manual": "Manual"
   }
 }

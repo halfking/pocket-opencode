@@ -29,6 +29,8 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
 	"github.com/halfking/pocket-opencode/backend/internal/finance"
 	"github.com/halfking/pocket-opencode/backend/internal/flashcards"
+	"github.com/halfking/pocket-opencode/backend/internal/learning"
+	"github.com/halfking/pocket-opencode/backend/internal/learning/sources"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
@@ -93,6 +95,14 @@ type Server struct {
 	// 503. SetFlashcardStore() is the public injection point used by
 	// cmd/pocketd/main.go.
 	flashcardStore *flashcards.Store
+	// learningService backs /api/learning/*: the Learning Core that turns
+	// notes/email/RSS into spaced-repetition material with scheduled reminders
+	// (docs/学习muse/03-架构方案.md §2). nil → those routes return 503, exactly
+	// like the flashcard routes when Postgres is absent.
+	learningService *learning.Service
+	// learningSources resolves a content-domain row (note / email / RSS /
+	// meeting) into a title+summary for the one-click capture paths.
+	learningSources *sources.Resolver
 	transcriber    *stt.Transcriber // nil = 云端 STT 兜底未配置
 	mcpClient      *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// RSS 订阅与分享（PG store + 后台 scheduler）。nil = 关闭模块。
@@ -450,6 +460,31 @@ func (s *Server) FlashcardStore() *flashcards.Store {
 	return s.flashcardStore
 }
 
+// SetLearningService wires the Learning Core (docs/学习muse/03-架构方案.md §2).
+// The scheduled-task executor gets the same service instance, so the digest
+// notification and the /api/learning/items/due response can never disagree.
+func (s *Server) SetLearningService(svc *learning.Service) {
+	s.learningService = svc
+}
+
+// LearningService returns the configured service (nil-safe).
+func (s *Server) LearningService() *learning.Service {
+	return s.learningService
+}
+
+// SetLearningSources wires the content-domain resolver used by the one-click
+// capture endpoints (/api/tasks/from-source and the title-less capture path).
+func (s *Server) SetLearningSources(r *sources.Resolver) {
+	s.learningSources = r
+}
+
+// MeetingStore returns the meeting store (nil-safe). cmd/pocketd uses it to
+// assemble the learning source resolver, because the store is created inside
+// newServer rather than in main.
+func (s *Server) MeetingStore() *meeting.Store {
+	return s.meetingStore
+}
+
 // SetScheduledTaskScheduler wires manual-trigger access and scheduler
 // observability to the HTTP layer.
 func (s *Server) SetScheduledTaskScheduler(scheduler *scheduledtask.Scheduler) {
@@ -598,6 +633,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/sessions/", s.requireAuth(s.handleSessions))
 	mux.HandleFunc("/api/sessions", s.requireAuth(s.handleAllSessions)) // 新增：获取所有会话
 	mux.HandleFunc("/api/tasks", s.requireAuth(s.handleTasks))
+	// 来源 → 任务（notes / email / rss / meeting），带 origin 溯源。
+	mux.HandleFunc("/api/tasks/from-source", s.requireAuth(s.handleTaskFromSource))
 	mux.HandleFunc("/api/tasks/", s.requireAuth(s.handleTaskOperations))
 	// P1 双向 MCP：委派任务创建到 ACC（acc_create_task）。与 /api/tasks 的
 	// source=acc 只读守卫分开——这里是显式的写路径，返回 ACC 创建的任务。
@@ -648,6 +685,10 @@ func (s *Server) Handler() http.Handler {
 	// 未注入时返回 503（pgxpool 为 nil 的 remote-only 模式下自然降级）。
 	mux.HandleFunc("/api/flashcards", s.requireAuth(s.handleFlashcardsCollection))
 	mux.HandleFunc("/api/flashcards/", s.requireAuth(s.handleFlashcardsItem))
+	// 学习模块（docs/学习muse/03-架构方案.md §2）：/api/learning 与 /api/learning/。
+	// service 未注入时返回 503，与闪卡路由同一降级约定。
+	mux.HandleFunc("/api/learning", s.requireAuth(s.handleLearningCollection))
+	mux.HandleFunc("/api/learning/", s.requireAuth(s.handleLearningRouter))
 	// 代码片段
 	mux.HandleFunc("/api/snippets", s.requireAuth(s.handleSnippets))
 	mux.HandleFunc("/api/snippets/", s.requireAuth(s.handleSnippetOps))
@@ -1265,6 +1306,33 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid task status", http.StatusBadRequest)
 			return
 		}
+		// Work = task: the classification is a closed enum. Rejecting an
+		// unknown value (rather than storing it) is what keeps the frontend
+		// type picker and the stored data from drifting apart — the previous
+		// unchecked `category` field silently accepted anything.
+		if req.Type == "" {
+			req.Type = task.TypeOther
+		}
+		if !task.ValidType(req.Type) {
+			http.Error(w, "invalid task type", http.StatusBadRequest)
+			return
+		}
+		if req.Visibility == "" {
+			req.Visibility = task.VisibilityPrivate
+		}
+		if !task.ValidVisibility(req.Visibility) {
+			http.Error(w, "invalid task visibility", http.StatusBadRequest)
+			return
+		}
+		if !task.ValidOriginKind(req.OriginKind) {
+			http.Error(w, "invalid task origin kind", http.StatusBadRequest)
+			return
+		}
+		if req.RemindAt > 0 && req.DueAt > 0 && req.RemindAt > req.DueAt {
+			http.Error(w, "remindAt must not be after dueAt", http.StatusBadRequest)
+			return
+		}
+		req.TypeGroup = task.TypeGroup(req.Type)
 		if req.Status == "completed" {
 			http.Error(w, "new tasks cannot be completed", http.StatusConflict)
 			return
@@ -1272,9 +1340,22 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		// 租户来自已认证 claims，忽略请求体里的 workspaceId，避免调用方把任务
 		// 写进别人的 workspace。
 		req.WorkspaceID = s.workspaceIDFromRequest(r)
+		// 创建者默认是 owner：没有 created_by 列时，owner_id 是「谁建的 /
+		// 现在归谁」的唯一可查来源，协作鉴权（CanReadWorkItem）依赖它。
+		// 显式传了 ownerId 的以请求为准（委派场景）。
+		if req.OwnerID == "" {
+			req.OwnerID = s.userIDFromRequest(r)
+		}
 		if err := s.taskStore.CreateTask(r.Context(), &req); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		// 把创建者写进参与者名单，否则「谁在这条工作项上」在 UI 里是空的。
+		// 失败不阻断创建：owner_id 已经落库，鉴权仍然成立。
+		if err := s.taskStore.SetParticipants(r.Context(), req.ID, req.WorkspaceID, []task.Participant{
+			{UserID: req.OwnerID, Role: task.RoleOwner},
+		}); err != nil {
+			log.Printf("[tasks] seed owner participant for %s failed: %v", req.ID, err)
 		}
 
 		// 广播任务创建事件
@@ -1424,6 +1505,43 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			s.handleTaskRunEvents(w, r, parts[0])
 			return
 		}
+		// 协作：参与者名单、活动流、委派（P3，docs/学习muse §4）。
+		// 注意 `events` 已被 ACC 运行事件占用，协作活动流叫 `activity`；
+		// 而 `/api/tasks/delegate` 是「经 ACC 建任务」，委派到人走 `{id}/delegate`。
+		if len(parts) == 2 {
+			switch parts[1] {
+			case "participants":
+				if r.Method == http.MethodGet || r.Method == http.MethodPut {
+					s.handleTaskParticipants(w, r, parts[0])
+					return
+				}
+			case "activity":
+				if r.Method == http.MethodGet || r.Method == http.MethodPost {
+					s.handleTaskActivity(w, r, parts[0])
+					return
+				}
+			case "delegate":
+				if r.Method == http.MethodPost {
+					s.handleTaskDelegate(w, r, parts[0])
+					return
+				}
+			case "children":
+				if r.Method == http.MethodGet {
+					s.handleTaskChildren(w, r, parts[0])
+					return
+				}
+			case "subtasks":
+				if r.Method == http.MethodPost {
+					s.handleTaskSubtasks(w, r, parts[0])
+					return
+				}
+			case "approvals":
+				if r.Method == http.MethodGet {
+					s.handleTaskApprovals(w, r, parts[0])
+					return
+				}
+			}
+		}
 		// 任务详情会话正文（companion 透传，支持 after_seq 增量续传）
 		if len(parts) == 4 && parts[1] == "sessions" {
 			switch {
@@ -1482,6 +1600,23 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 		if update.Status != nil && !isValidTaskStatus(*update.Status) {
 			http.Error(w, "invalid task status", http.StatusBadRequest)
 			return
+		}
+		if update.Type != nil && !task.ValidType(*update.Type) {
+			http.Error(w, "invalid task type", http.StatusBadRequest)
+			return
+		}
+		if update.Visibility != nil && !task.ValidVisibility(*update.Visibility) {
+			http.Error(w, "invalid task visibility", http.StatusBadRequest)
+			return
+		}
+		// Re-parenting is validated before the write: a cycle makes the
+		// progress roll-up undecidable, and a cross-workspace parent would
+		// leak another tenant's tree.
+		if update.ParentID != nil {
+			if msg, ok := s.validateReparent(r, path, *update.ParentID); !ok {
+				http.Error(w, msg, http.StatusBadRequest)
+				return
+			}
 		}
 		var updated *task.Task
 		if update.Status != nil && *update.Status == "completed" {

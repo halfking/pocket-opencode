@@ -337,6 +337,18 @@
       "all": "All",
       "voice": "Voice notes",
       "hint": "Tap mic to record"
+    },
+    "capture": {
+      "add": "Zum Lernen hinzufügen",
+      "done": "Zum Lernen hinzugefügt",
+      "toTask": "In Aufgabe umwandeln",
+      "taskDone": "Aufgabe erstellt",
+      "failed": "Speichern fehlgeschlagen. Erneut versuchen."
+    },
+    "streak": {
+      "days": "Tage in Folge",
+      "toNext": "Noch {count} bis {next}",
+      "milestoneReached": "{days}-Tage-Meilenstein erreicht"
     }
   },
   "email": {
@@ -381,5 +393,31 @@
     "operateFailed": "Aktion fehlgeschlagen. Bitte erneut versuchen.",
     "summaryFailed": "Zusammenfassung konnte nicht erstellt werden. Prüfe, ob ein Modell-Gateway konfiguriert und erreichbar ist.",
     "probeFailed": "Probe fehlgeschlagen. Prüfe, ob die Zieladresse erreichbar ist."
+  },
+  "due": {
+    "title": "Heutige Wiederholung",
+    "cardsDue": "Karten fällig",
+    "inboxWaiting": "Zu bearbeiten",
+    "reviewing": "In Wiederholung",
+    "tasksDue": "Aufgaben fällig",
+    "allClear": "Heute nichts fällig"
+  },
+  "reminder": {
+    "title": "Tägliche Zusammenfassung",
+    "next": "Nächstes: {time}",
+    "offline": "Die tägliche Wiederholung benötigt den Lerndienst. Nach dem Verbinden lassen sich Erinnerungen aktivieren."
+  },
+  "inbox": {
+    "title": "Posteingang",
+    "empty": "Noch nichts gesammelt. Nutze „Zum Lernen hinzufügen“ bei Notiz, E-Mail oder RSS.",
+    "advance": "Lernen starten"
+  },
+  "source": {
+    "note": "Notiz",
+    "email": "E-Mail",
+    "rss": "RSS",
+    "meeting": "Meeting",
+    "chat": "Chat",
+    "manual": "Manuell"
   }
 }

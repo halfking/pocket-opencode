@@ -160,6 +160,47 @@ func (s *Store) migrate() error {
 		ON task_approval_projections(workspace_id, task_id, state);
 	CREATE INDEX IF NOT EXISTS idx_task_approval_projections_session
 		ON task_approval_projections(workspace_id, instance_id, session_id);
+
+	-- Work = task (docs/学习muse/03-架构方案.md §1). One entity, classified by
+	-- the type column; the collaboration and due-date columns ride the same
+	-- row so a work item never needs a second table to render.
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS type        TEXT NOT NULL DEFAULT 'other';
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS owner_id    TEXT NOT NULL DEFAULT '';
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assignees   JSONB NOT NULL DEFAULT '[]'::jsonb;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_at      BIGINT NOT NULL DEFAULT 0;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remind_at   BIGINT NOT NULL DEFAULT 0;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parent_id   TEXT NOT NULL DEFAULT '';
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS origin_kind TEXT NOT NULL DEFAULT '';
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS origin_ref  TEXT NOT NULL DEFAULT '';
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tags        JSONB NOT NULL DEFAULT '[]'::jsonb;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS visibility  TEXT NOT NULL DEFAULT 'private';
+	CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(workspace_id, type);
+	CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(workspace_id, due_at) WHERE status <> 'completed';
+
+	-- Collaboration: who is on the work item, and what happened to it.
+	CREATE TABLE IF NOT EXISTS work_item_participants (
+		workspace_id TEXT NOT NULL,
+		task_id      TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+		user_id      TEXT NOT NULL,
+		role         TEXT NOT NULL,
+		created_at   BIGINT NOT NULL,
+		PRIMARY KEY (workspace_id, task_id, user_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_work_item_participants_user
+		ON work_item_participants(workspace_id, user_id, role);
+
+	CREATE TABLE IF NOT EXISTS work_item_events (
+		workspace_id  TEXT NOT NULL,
+		task_id       TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+		event_id      TEXT NOT NULL,
+		event_type    TEXT NOT NULL,
+		actor_user_id TEXT NOT NULL DEFAULT '',
+		payload       JSONB NOT NULL DEFAULT '{}'::jsonb,
+		created_at    BIGINT NOT NULL,
+		PRIMARY KEY (workspace_id, task_id, event_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_work_item_events_type
+		ON work_item_events(workspace_id, event_type, created_at);
 	`)
 	return err
 }
@@ -174,8 +215,9 @@ func normalizeWorkspace(wsID string) string {
 }
 
 // taskColumns is the shared SELECT list; workspace_id is included so the model
-// round-trips its tenant instead of dropping it.
-const taskColumns = `id, workspace_id, title, description, status, priority, COALESCE(workstream_id, ''), source, created_at, updated_at, pending_approvals, session_count, accepted_at, accepted_by, evidence_bundle`
+// round-trips its tenant instead of dropping it. The work-item columns
+// (type/owner/due/...) are appended last so the scan order below stays stable.
+const taskColumns = `id, workspace_id, title, description, status, priority, COALESCE(workstream_id, ''), source, created_at, updated_at, pending_approvals, session_count, accepted_at, accepted_by, evidence_bundle, type, owner_id, assignees, due_at, remind_at, parent_id, origin_kind, origin_ref, tags, visibility`
 
 // scanTask reads one row in taskColumns order.
 func scanTask(row interface {
@@ -189,9 +231,12 @@ func scanTask(row interface {
 	// NULLIF 语义会写 NULL），必须用指针接，否则 NULL 行读取直接报错。
 	var description, workstreamID *string
 	var evidenceBundleRaw []byte
+	var assigneesRaw, tagsRaw []byte
 	if err := row.Scan(&t.ID, &t.WorkspaceID, &t.Title, &description, &t.Status, &t.Priority,
 		&workstreamID, &t.Source, &createdAt, &updatedAt, &t.PendingApprovals, &t.SessionCount,
-		&acceptedAt, &acceptedBy, &evidenceBundleRaw); err != nil {
+		&acceptedAt, &acceptedBy, &evidenceBundleRaw,
+		&t.Type, &t.OwnerID, &assigneesRaw, &t.DueAt, &t.RemindAt, &t.ParentID,
+		&t.OriginKind, &t.OriginRef, &tagsRaw, &t.Visibility); err != nil {
 		return nil, err
 	}
 	if description != nil {
@@ -200,6 +245,12 @@ func scanTask(row interface {
 	if workstreamID != nil {
 		t.WorkstreamID = *workstreamID
 	}
+	t.Assignees = decodeStringList(assigneesRaw)
+	t.Tags = decodeStringList(tagsRaw)
+	if t.Type == "" {
+		t.Type = TypeOther
+	}
+	t.TypeGroup = TypeGroup(t.Type)
 	t.CreatedAt = time.Unix(createdAt, 0)
 	t.UpdatedAt = time.Unix(updatedAt, 0)
 	t.AcceptedAt = acceptedAt
@@ -214,6 +265,53 @@ func scanTask(row interface {
 	return t, nil
 }
 
+// encodeStringList serialises a []string for a JSONB column. nil becomes an
+// empty array so the column is never SQL NULL.
+func encodeStringList(values []string) []byte {
+	if values == nil {
+		values = []string{}
+	}
+	b, err := json.Marshal(values)
+	if err != nil {
+		return []byte("[]")
+	}
+	return b
+}
+
+// decodeStringList is the read counterpart; a NULL or malformed column yields
+// an empty slice rather than an error, so one bad row cannot break a list page.
+func decodeStringList(raw []byte) []string {
+	if len(raw) == 0 {
+		return []string{}
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
+		return []string{}
+	}
+	return out
+}
+
+// taskInsertColumns and taskInsertValues are the shared shape of both INSERT
+// statements (plain insert and upsert). They are consts rather than inline
+// literals so store_contract_test.go can assert that the column list, the
+// placeholder list, and taskColumns stay in agreement without a database.
+//
+// The number of Go arguments is NOT checkable statically — pgx takes them
+// variadically. That case is covered by the Postgres-gated tests instead
+// (see workitem_pg_test.go and docs/学习muse/如何验证真实数据库.md).
+const taskInsertColumns = `id, workspace_id, title, description, status, priority, workstream_id, source,
+	created_at, updated_at, pending_approvals, session_count,
+	type, owner_id, assignees, due_at, remind_at, parent_id, origin_kind, origin_ref, tags, visibility`
+
+const taskInsertValues = `VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+	$13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`
+
+// taskUpsertValues is the same arity but wraps the nullable text columns in
+// NULLIF, so an empty string becomes SQL NULL on upsert. That is why it cannot
+// simply reuse taskInsertValues.
+const taskUpsertValues = `VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, NULLIF($7, ''), $8, $9, $10, $11, $12,
+	$13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`
+
 func (s *Store) CreateTask(ctx context.Context, task *Task) error {
 	now := time.Now().Unix()
 	task.CreatedAt = time.Unix(now, 0)
@@ -225,13 +323,37 @@ func (s *Store) CreateTask(ctx context.Context, task *Task) error {
 	// Pending approvals are derived by server-owned approval workflows. A client
 	// cannot create a task with a forged approval state.
 	task.PendingApprovals = 0
+	normalizeWorkItem(task)
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO tasks (id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-	`, task.ID, task.WorkspaceID, task.Title, task.Description, task.Status, task.Priority, task.WorkstreamID, task.Source, now, now, task.PendingApprovals, task.SessionCount)
+		INSERT INTO tasks (`+taskInsertColumns+`)
+		`+taskInsertValues+`
+	`, task.ID, task.WorkspaceID, task.Title, task.Description, task.Status, task.Priority, task.WorkstreamID, task.Source, now, now, task.PendingApprovals, task.SessionCount,
+		task.Type, task.OwnerID, encodeStringList(task.Assignees), task.DueAt, task.RemindAt, task.ParentID,
+		task.OriginKind, task.OriginRef, encodeStringList(task.Tags), task.Visibility)
 
 	return err
+}
+
+// normalizeWorkItem fills the defaults for the work-item columns so every write
+// path (CreateTask, UpsertTask, the HTTP layer) lands the same values. It
+// deliberately does NOT validate: the HTTP layer rejects bad enums with 400
+// before we get here, and internal writers (tasksync) must not be able to
+// wedge the store with an error.
+func normalizeWorkItem(t *Task) {
+	if t.Type == "" {
+		t.Type = TypeOther
+	}
+	t.TypeGroup = TypeGroup(t.Type)
+	if t.Visibility == "" {
+		t.Visibility = VisibilityPrivate
+	}
+	if t.Assignees == nil {
+		t.Assignees = []string{}
+	}
+	if t.Tags == nil {
+		t.Tags = []string{}
+	}
 }
 
 // UpsertTask writes a remote task into the local cache, creating or updating.
@@ -263,6 +385,11 @@ func (s *Store) UpsertTask(ctx context.Context, task *Task) error {
 	}
 	task.WorkspaceID = normalizeWorkspace(task.WorkspaceID)
 	task.PendingApprovals = 0
+	// tasksync replays remote ACC rows. The work-item columns (type/owner/
+	// due/...) are locally owned, so they are written on INSERT but deliberately
+	// NOT refreshed in the DO UPDATE branch below — a replayed remote snapshot
+	// must never clobber a classification the user set by hand.
+	normalizeWorkItem(task)
 
 	// 跨 workspace 同 ID 守卫：ACC 任务 ID 全局唯一，tasks 表主键也是全局
 	// (id)。若同 ID 已存在于另一 workspace，说明数据异常——拒绝写入并保留
@@ -280,8 +407,8 @@ func (s *Store) UpsertTask(ctx context.Context, task *Task) error {
 	}
 
 	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO tasks (id, workspace_id, title, description, status, priority, workstream_id, source, created_at, updated_at, pending_approvals, session_count)
-		VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, NULLIF($7, ''), $8, $9, $10, $11, $12)
+		INSERT INTO tasks (`+taskInsertColumns+`)
+		`+taskUpsertValues+`
 		ON CONFLICT (id) DO UPDATE SET
 			title         = EXCLUDED.title,
 			description   = COALESCE(NULLIF(EXCLUDED.description, ''), tasks.description),
@@ -289,7 +416,9 @@ func (s *Store) UpsertTask(ctx context.Context, task *Task) error {
 			priority      = EXCLUDED.priority,
 			workstream_id = COALESCE(NULLIF(EXCLUDED.workstream_id, ''), tasks.workstream_id),
 			updated_at    = EXCLUDED.updated_at
-	`, task.ID, task.WorkspaceID, task.Title, task.Description, task.Status, task.Priority, task.WorkstreamID, task.Source, now, now, task.PendingApprovals, task.SessionCount)
+	`, task.ID, task.WorkspaceID, task.Title, task.Description, task.Status, task.Priority, task.WorkstreamID, task.Source, now, now, task.PendingApprovals, task.SessionCount,
+		task.Type, task.OwnerID, encodeStringList(task.Assignees), task.DueAt, task.RemindAt, task.ParentID,
+		task.OriginKind, task.OriginRef, encodeStringList(task.Tags), task.Visibility)
 	if err != nil {
 		return err
 	}
@@ -900,6 +1029,50 @@ func (s *Store) updateTask(ctx context.Context, id, wsID string, update TaskUpda
 	if update.WorkstreamID != nil {
 		sets = append(sets, fmt.Sprintf("workstream_id = $%d", argIdx))
 		args = append(args, *update.WorkstreamID)
+		argIdx++
+	}
+	// Work-item fields (docs/学习muse/03-架构方案.md §1.1). They follow the
+	// same nil-means-absent contract as the legacy ones; JSONB columns are
+	// encoded through encodeStringList so a client can clear the list by
+	// sending an explicit [].
+	if update.Type != nil {
+		sets = append(sets, fmt.Sprintf("type = $%d", argIdx))
+		args = append(args, *update.Type)
+		argIdx++
+	}
+	if update.OwnerID != nil {
+		sets = append(sets, fmt.Sprintf("owner_id = $%d", argIdx))
+		args = append(args, *update.OwnerID)
+		argIdx++
+	}
+	if update.Assignees != nil {
+		sets = append(sets, fmt.Sprintf("assignees = $%d", argIdx))
+		args = append(args, encodeStringList(*update.Assignees))
+		argIdx++
+	}
+	if update.DueAt != nil {
+		sets = append(sets, fmt.Sprintf("due_at = $%d", argIdx))
+		args = append(args, *update.DueAt)
+		argIdx++
+	}
+	if update.RemindAt != nil {
+		sets = append(sets, fmt.Sprintf("remind_at = $%d", argIdx))
+		args = append(args, *update.RemindAt)
+		argIdx++
+	}
+	if update.ParentID != nil {
+		sets = append(sets, fmt.Sprintf("parent_id = $%d", argIdx))
+		args = append(args, *update.ParentID)
+		argIdx++
+	}
+	if update.Tags != nil {
+		sets = append(sets, fmt.Sprintf("tags = $%d", argIdx))
+		args = append(args, encodeStringList(*update.Tags))
+		argIdx++
+	}
+	if update.Visibility != nil {
+		sets = append(sets, fmt.Sprintf("visibility = $%d", argIdx))
+		args = append(args, *update.Visibility)
 		argIdx++
 	}
 

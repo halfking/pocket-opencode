@@ -49,10 +49,20 @@ const (
 	KindCloudDispatch Kind = "cloud_dispatch"
 	// Phase 5: 闪卡复习提醒，由 flashcards.Store 提供到期统计。
 	KindFlashcardReview Kind = "flashcard_review"
+	// 学习域每日回顾（docs/学习muse/03-架构方案.md §3.3）：汇总到期卡片 +
+	// inbox 待处理 + 今日到期工作项，四项全 0 时不推送。
+	KindLearningDigest Kind = "learning_digest"
+	// 工作项一次性提醒（P4）：消费 tasks.remind_at，产生 `reminded` 事件并
+	// 通知 owner；落在免打扰窗口内的顺延到窗口结束而不是丢弃。
+	KindWorkItemReminder Kind = "work_item_reminder"
 )
 
 // AllKinds lists every built-in kind. Used by the API layer to validate
 // client payloads and to drive the UI's kind picker.
+//
+// flashcard_review and learning_digest were missing here, which made
+// POST /api/scheduled-tasks reject both kinds with "unsupported task kind"
+// even though their executors are registered in cmd/pocketd/main.go.
 func AllKinds() []Kind {
 	return []Kind{
 		KindRedClawChat,
@@ -64,6 +74,9 @@ func AllKinds() []Kind {
 		KindWebhook,
 		KindLocalAgent,
 		KindCloudDispatch,
+		KindFlashcardReview,
+		KindLearningDigest,
+		KindWorkItemReminder,
 	}
 }
 

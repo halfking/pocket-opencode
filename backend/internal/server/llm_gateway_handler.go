@@ -14,6 +14,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
+	"github.com/halfking/pocket-opencode/backend/internal/usersetting"
 )
 
 // gatewayFormats 是设置页「消息格式」下拉框的可选项（对齐 llm-gateway-go
@@ -324,6 +325,12 @@ func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) 
 		if s.llmGWCache != nil {
 			s.llmGWCache.replace(workspaceID, current)
 		}
+		// 关键：effectiveGatewayState 在读的时候还会用 user setting 覆盖 baseURL
+		// （server_user_settings.go 的 seedAdminGatewaySetting 写下的 llm_gateway
+		// 行）。只写工作区快照会出现「保存成功但读回旧地址」：真机实测 POST 200
+		// 之后紧接着 GET 仍返回上一个域名，对话也照旧打旧网关——两个域名都通时
+		// 更容易被误判为"配置生效了"。这里把用户级设置一并同步，两处不再分叉。
+		s.syncGatewayUserSetting(r, workspaceID, current)
 		// 审计：baseURL/apiKey 配置变更。detail 只暴露 baseURL host 与
 		// 是否携带 apiKey，绝不写 apiKey 原文（也绝不走 redact —— 这里
 		// 就不让它进入 detail 字符串）。
@@ -337,6 +344,35 @@ func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "baseURL": current.BaseURL, "models": current.Models})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// syncGatewayUserSetting 把刚保存的网关配置同步到请求者自己的 llm_gateway
+// 用户设置，确保「工作区快照」与「用户设置」不因读写路径不同而分叉。
+// 失败只记日志不阻断：用户设置是覆盖层，缺失时读路径会回落到工作区快照。
+func (s *Server) syncGatewayUserSetting(r *http.Request, workspaceID string, st llmGatewayState) {
+	if s == nil || s.userSettings == nil {
+		return
+	}
+	userID := s.userIDFromRequest(r)
+	if strings.TrimSpace(userID) == "" {
+		return
+	}
+	log.Printf("[llm-gateway] sync user setting: user=%s ws=%s base=%s keySet=%t", userID, workspaceID, st.BaseURL, st.APIKey != "")
+	payload, err := json.Marshal(map[string]any{
+		"baseURL": st.BaseURL, "format": normalizeGatewayFormat(st.Format),
+		"models": st.Models, "preferredModels": st.PreferredModels,
+	})
+	if err != nil {
+		log.Printf("[llm-gateway] sync user setting: marshal payload: %v", err)
+		return
+	}
+	if _, err := s.userSettings.Put(usersetting.Record{
+		UserID: userID, WorkspaceID: workspaceID,
+		Namespace: "llm_gateway", ID: "default",
+		Payload: payload, Secret: st.APIKey, UpdatedAt: time.Now().Unix(),
+	}); err != nil {
+		log.Printf("[llm-gateway] sync user setting failed (non-fatal): %v", err)
 	}
 }
 

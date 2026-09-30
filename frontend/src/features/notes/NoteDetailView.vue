@@ -27,6 +27,11 @@
         <!-- 标题区 -->
         <header class="note-header" :class="`domain-${note.domain || 'work'}`">
           <h1 class="note-title">{{ displayTitle }}</h1>
+          <!-- P2：读到有用的笔记当场进记忆回路 / 或变成一条工作项 -->
+          <div class="note-actions">
+            <AddToLearningButton source-kind="note" :source-id="note.id" />
+            <AddToLearningButton source-kind="note" :source-id="note.id" as-task task-type="study" />
+          </div>
         </header>
 
         <!-- 元信息条 -->
@@ -117,6 +122,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
+import AddToLearningButton from '../study/AddToLearningButton.vue'
 import { http } from '../../api/http'
 import { ErrorState } from '../../components'
 import { useAuthStore } from '../../stores/auth'

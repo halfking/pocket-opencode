@@ -33,6 +33,11 @@
         <span v-else-if="lang !== 'original'" class="lang-hint">{{ langShortLabel(lang) }}</span>
       </div>
       <h1 class="subject">{{ email.subject || '(无主题)' }}</h1>
+      <!-- P2：邮件 → 学习条目 / 工作项（标题由服务端解析，见 learning/sources） -->
+      <div class="detail-actions">
+        <AddToLearningButton source-kind="email" :source-id="email.id" />
+        <AddToLearningButton source-kind="email" :source-id="email.id" as-task task-type="comms" />
+      </div>
     </header>
     <p v-if="email.aiSummary" class="ai">{{ email.aiSummary }}</p>
     <div v-if="email.bodyPurged" class="state slim">正文已清除，仅保留标题和摘要。</div>
@@ -73,6 +78,7 @@ import { api } from '../../api/client'
 import { emailApi } from '../../api/email'
 import { http } from '../../api/http'
 import { useToast } from '../../composables/useToast'
+import AddToLearningButton from '../study/AddToLearningButton.vue'
 import { ErrorState } from '../../components'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { findContactByEmail } from '../contact/contacts-store'

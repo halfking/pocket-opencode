@@ -51,6 +51,69 @@ async function authFetch(input: string, init: RequestInit = {}): Promise<Respons
   return assertNotHTML(response)
 }
 
+/**
+ * Work = task: one entity, classified by `type` (docs/学习muse/03-架构方案.md §1).
+ * The previous `category` / `owner` fields were declared here but never
+ * returned by the backend — any UI built on them silently rendered blank. They
+ * are replaced by the fields the server actually stores and validates.
+ */
+export type TaskTypeGroup = 'work' | 'life' | 'learning' | 'other'
+
+/** 协作角色，与 backend/internal/task/workitem.go 的 Role* 常量一致。 */
+export type TaskParticipantRole = 'owner' | 'assignee' | 'watcher'
+
+export interface TaskParticipant {
+  userId: string
+  role: TaskParticipantRole
+  createdAt?: number
+}
+
+/**
+ * 目标的派生进度（不落库，由子任务状态聚合）。total 为 0 表示这条不是目标，
+ * 此时 percent 恒为 0 —— 没有子任务不是「全部完成」。
+ */
+export interface GoalProgress {
+  parentId: string
+  total: number
+  done: number
+  percent: number
+  blocked: number
+}
+
+/** 审批投影：agent 上游的审批请求在任务域的只读视图。 */
+export interface TaskApproval {
+  instanceId: string
+  sessionId: string
+  requestId: string
+  kind: 'permission' | 'question'
+  state: string
+  decision?: string
+  version: number
+  createdAt: number
+  updatedAt: number
+}
+
+/**
+ * 活动流条目。payload 是服务端原样透传的 JSON，本组件只读 comment/status，
+ * 所以这里刻意保持宽松——新增事件类型不该让前端编译失败。
+ */
+export interface WorkItemEvent {
+  workspaceId?: string
+  taskId: string
+  eventId: string
+  eventType: string
+  actorUserId?: string
+  payload?: {
+    comment?: string
+    status?: string
+    userId?: string
+    taskTitle?: string
+    childId?: string
+    childTitle?: string
+  } | null
+  createdAt: number
+}
+
 export interface Task {
   id: string
   title: string
@@ -59,12 +122,27 @@ export interface Task {
   priority?: string
   workstreamId?: string
   source?: 'acc' | 'opencode' | 'local'
-  category?: string
+  /** Closed enum; the server rejects anything else with 400. Empty = 'other'. */
+  type?: string
+  /** Server-derived fold group for the type above. */
+  typeGroup?: TaskTypeGroup
+  /** Accountable person (user id). Defaults to the task owner. */
+  ownerId?: string
+  /** Collaborator user ids. */
+  assignees?: string[]
+  /** Unix seconds. */
+  dueAt?: number
+  remindAt?: number
+  parentId?: string
+  /** note | email | rss | meeting | agent | manual | import */
+  originKind?: string
+  originRef?: string
+  tags?: string[]
+  visibility?: 'private' | 'shared' | 'workspace'
   createdAt?: string
   updatedAt?: string
   pendingApprovals?: number
   sessionCount?: number
-  owner?: string
   /** UI-only: 实例显示名（TasksView 本地 enrich） */
   instanceName?: string
 }
@@ -210,6 +288,25 @@ export const api = {
     return res.json()
   },
 
+  /**
+   * 来源 → 任务：把一条笔记 / 邮件 / RSS / 会议转成工作项，带 origin 溯源。
+   * 会议会按 action item 展开成多条，重复调用按 (originRef, title) 幂等。
+   */
+  async createTaskFromSource(input: {
+    sourceKind: "note" | "email" | "rss" | "meeting"
+    sourceId: string
+    type?: string
+    title?: string
+  }): Promise<{ tasks: Task[]; skipped?: number }> {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/from-source`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    })
+    if (!res.ok) throw new Error(`createTaskFromSource failed: ${res.status}`)
+    return res.json()
+  },
+
   async deleteTask(id: string): Promise<void> {
     await authFetch(`${resolveApiBase()}/api/tasks/${id}`, {
       method: "DELETE",
@@ -265,6 +362,73 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ instanceId, sessionId, role }),
     })
+  },
+
+  // ---- 协作（P3，docs/学习muse/03-架构方案.md §4）----
+  // 注意 `/api/tasks/{id}/events` 是 ACC 运行事件，协作活动流叫 `/activity`；
+  // `/api/tasks/delegate` 是「经 ACC 建任务」，委派到人走 `{id}/delegate`。
+
+  async getTaskParticipants(taskId: string): Promise<TaskParticipant[]> {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/participants`)
+    const data = await res.json()
+    return data.participants || []
+  },
+
+  async setTaskParticipants(taskId: string, participants: TaskParticipant[]): Promise<TaskParticipant[]> {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/participants`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ participants }),
+    })
+    const data = await res.json()
+    return data.participants || []
+  },
+
+  async getTaskActivity(taskId: string, limit = 50): Promise<WorkItemEvent[]> {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/activity?limit=${limit}`)
+    const data = await res.json()
+    return data.events || []
+  },
+
+  async postTaskComment(taskId: string, comment: string, eventId?: string): Promise<WorkItemEvent> {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/activity`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ comment, eventId }),
+    })
+    const data = await res.json()
+    return data.event
+  },
+
+  async delegateTask(taskId: string, userId: string, role: TaskParticipantRole = "assignee"): Promise<{ participants: TaskParticipant[]; ownerId: string }> {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/delegate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId, role }),
+    })
+    return res.json()
+  },
+
+  // ---- 目标 → 子任务层级 + 审批读取（P3 剩余）----
+
+  async getTaskChildren(taskId: string): Promise<{ children: Task[]; progress: GoalProgress }> {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/children`)
+    return res.json()
+  },
+
+  async createSubtask(taskId: string, body: { title: string; type?: string; dueAt?: number; description?: string }): Promise<Task> {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/subtasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json()
+  },
+
+  async getTaskApprovals(taskId: string): Promise<{ approvals: TaskApproval[]; pending: number }> {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/approvals`)
+    return res.json()
   },
 
   async getModelConfig(instanceId: string): Promise<ModelConfig> {

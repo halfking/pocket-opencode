@@ -337,6 +337,18 @@
       "all": "全部",
       "voice": "语音笔记",
       "hint": "麦克风一键录入"
+    },
+    "capture": {
+      "add": "加入学习",
+      "done": "已加入学习",
+      "toTask": "转为任务",
+      "taskDone": "已创建任务",
+      "failed": "保存失败，请重试"
+    },
+    "streak": {
+      "days": "天连续",
+      "toNext": "再有 {count} 天到 {next} 天",
+      "milestoneReached": "已达成 {days} 天里程碑"
     }
   },
   "email": {
@@ -381,5 +393,31 @@
     "operateFailed": "操作失败，请稍后重试",
     "summaryFailed": "总结生成失败，请确认已配置并可用的模型网关",
     "probeFailed": "探测失败，请检查目标地址是否可达"
+  },
+  "due": {
+    "title": "今日回顾",
+    "cardsDue": "卡片到期",
+    "inboxWaiting": "待处理",
+    "reviewing": "复习中",
+    "tasksDue": "任务到期",
+    "allClear": "今天没有待学内容"
+  },
+  "reminder": {
+    "title": "每日回顾提醒",
+    "next": "下次：{time}",
+    "offline": "每日回顾需要学习服务，重新连接后可开启提醒。"
+  },
+  "inbox": {
+    "title": "学习收件箱",
+    "empty": "还没有收集材料。在笔记、邮件或 RSS 里选择「加入学习」即可。",
+    "advance": "开始学习"
+  },
+  "source": {
+    "note": "笔记",
+    "email": "邮件",
+    "rss": "RSS",
+    "meeting": "会议",
+    "chat": "对话",
+    "manual": "手工"
   }
 }

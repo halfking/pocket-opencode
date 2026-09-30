@@ -337,6 +337,18 @@
       "all": "All",
       "voice": "Voice notes",
       "hint": "Tap mic to record"
+    },
+    "capture": {
+      "add": "Add to learning",
+      "done": "Added to learning",
+      "toTask": "Convert to task",
+      "taskDone": "Task created",
+      "failed": "Could not save. Try again."
+    },
+    "streak": {
+      "days": "day streak",
+      "toNext": "{count} more to {next}",
+      "milestoneReached": "{days}-day milestone reached"
     }
   },
   "email": {
@@ -381,5 +393,31 @@
     "operateFailed": "That action failed. Please try again.",
     "summaryFailed": "Could not generate a summary. Check that a model gateway is configured and reachable.",
     "probeFailed": "Probe failed. Check that the target is reachable."
+  },
+  "due": {
+    "title": "Today's review",
+    "cardsDue": "Cards due",
+    "inboxWaiting": "To process",
+    "reviewing": "In review",
+    "tasksDue": "Tasks due",
+    "allClear": "Nothing due today"
+  },
+  "reminder": {
+    "title": "Daily digest",
+    "next": "Next: {time}",
+    "offline": "Daily review needs the learning service. Reconnect to enable reminders."
+  },
+  "inbox": {
+    "title": "Inbox",
+    "empty": "Nothing collected yet. Use \"Add to learning\" on a note, email or RSS item.",
+    "advance": "Start studying"
+  },
+  "source": {
+    "note": "Note",
+    "email": "Email",
+    "rss": "RSS",
+    "meeting": "Meeting",
+    "chat": "Chat",
+    "manual": "Manual"
   }
 }

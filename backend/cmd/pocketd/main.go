@@ -26,6 +26,8 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/flashcards"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/learning"
+	"github.com/halfking/pocket-opencode/backend/internal/learning/sources"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
 	"github.com/halfking/pocket-opencode/backend/internal/lobster"
@@ -96,6 +98,16 @@ func main() {
 		// scheduler；scheduler 启动之后，notifycenter 块构造完成后再
 		// 通过 SetNotifier 注入通知客户端（详见下方 notifycenter 块注释）。
 		flashcardExec *scheduledexecutors.FlashcardReviewExecutor
+		// 学习核心（docs/学习muse/03-架构方案.md §2）。依赖 flashcards store
+		// （到期卡数）与 task store（今日到期工作项），两者任一缺失时仍可用，
+		// 对应计数项按 0 处理。PG 未就绪时保持 nil，/api/learning/* 返 503。
+		learningService *learning.Service
+		// 来源解析器：notes/email/rss/meeting → 学习条目标题/摘要。
+		learningSources *sources.Resolver
+		// 学习域每日回顾 executor：与 flashcardExec 同样的晚绑通知客户端。
+		learningExec *scheduledexecutors.LearningDigestExecutor
+		// 工作项一次性提醒 executor（P4），同样晚绑。
+		workItemExec *scheduledexecutors.WorkItemReminderExecutor
 		// scheduler 引用：同样为 notifycenter 的晚绑保留 —— 定时任务失败
 		// 通知（2026-09-20 通知体系）在 notifycenter 就绪后注入 schedRef。
 		schedRef *scheduledtask.Scheduler
@@ -160,6 +172,27 @@ func main() {
 		}
 		fcCancel()
 		flashcardStore = fcs
+		// 学习核心：两表新引入，同样 fail-fast（保持与 flashcards 一致的启动语义）。
+		// NewStore 内部用 background context 建表（与 task.NewStore 同风格），
+		// 启动期没有请求可取消。
+		ls, err := learning.NewStore(pool)
+		if err != nil {
+			log.Fatalf("learning store: %v", err)
+		}
+		// taskStore 已在上面构造完成（104 行），因此这里可以把它作为到期工作项
+		// 计数器接进学习摘要；两者共享同一 pool 与同一 workspace 语义。
+		learningService = learning.NewService(ls, flashcardStore, taskStore)
+		// 闪卡复习也计入连续学习天数。*flashcards.Store 结构化满足
+		// learning.ReviewDayCounter，无需包装类型。少了这一步，只刷闪卡、
+		// 不收集材料的用户连续天数会一直是 0。
+		if flashcardStore != nil {
+			learningService.SetReviewDayCounter(flashcardStore)
+		}
+		// Compile-time proof that *flashcards.Store structurally satisfies the
+		// interface. Without this, renaming a method on either side would only
+		// be caught when someone set the counter — and only if flashcardStore
+		// happened to be non-nil in that build.
+		var _ learning.ReviewDayCounter = (*flashcards.Store)(nil)
 		if marketplaceStore != nil {
 			log.Println("Module stores initialized (PG, scheduled tasks and marketplace enabled)")
 		} else {
@@ -609,6 +642,17 @@ func main() {
 	if flashcardStore != nil {
 		srv.SetFlashcardStore(flashcardStore)
 	}
+	// Learning Core：注入 service（nil 时 /api/learning/* 返 503）。
+	if learningService != nil {
+		srv.SetLearningService(learningService)
+	}
+	// 来源解析器：让「一键加入学习 / 转为任务」只需要一个 source id。
+	// meeting store 由 newServer 内部构造，因此这里从 srv 取而不是用本地变量。
+	learningSources = sources.New(notesStore, emailStore, rssStore, srv.MeetingStore())
+	srv.SetLearningSources(learningSources)
+	if learningService != nil {
+		learningService.SetResolver(learningSources)
+	}
 	if pool != nil {
 		if us, err := usersetting.NewStore(pool); err != nil {
 			log.Printf("WARN: user settings store: %v", err)
@@ -947,6 +991,25 @@ func main() {
 				registered++
 			}
 		}
+		// 学习域每日回顾：与闪卡 executor 同构，晚绑通知客户端。
+		if learningService != nil {
+			learningExec = scheduledexecutors.NewLearningDigestExecutor(learningService, nil)
+			if err := sched.Register(learningExec); err != nil {
+				log.Printf("WARN: register learning digest scheduled executor: %v", err)
+			} else {
+				registered++
+			}
+		}
+		// 工作项一次性提醒（P4）：消费 tasks.remind_at，与上面两个 executor
+		// 同构晚绑通知客户端。
+		if taskStore != nil {
+			workItemExec = scheduledexecutors.NewWorkItemReminderExecutor(taskStore, nil)
+			if err := sched.Register(workItemExec); err != nil {
+				log.Printf("WARN: register work item reminder scheduled executor: %v", err)
+			} else {
+				registered++
+			}
+		}
 		srv.SetScheduledTaskScheduler(sched)
 		schedRef = sched
 		sched.Start(context.Background())
@@ -969,6 +1032,14 @@ func main() {
 			// 为 nil 时（remote-only / store 未构造）跳过。
 			if flashcardExec != nil {
 				flashcardExec.SetNotifier(svc)
+			}
+			// 学习域每日回顾 executor 同样的晚绑路径。
+			if learningExec != nil {
+				learningExec.SetNotifier(svc)
+			}
+			// 工作项提醒 executor 同上。
+			if workItemExec != nil {
+				workItemExec.SetNotifier(svc)
 			}
 			// 定时任务失败通知（2026-09-20）：同一晚绑路径注入 scheduler。
 			if schedRef != nil {

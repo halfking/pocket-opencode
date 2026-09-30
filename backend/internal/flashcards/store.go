@@ -116,6 +116,11 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_flashcard_cards_user_deleted ON flashcard_cards(user_id, deleted_at) WHERE deleted_at IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_flashcard_cards_user_deck_due ON flashcard_cards(user_id, deck_id, due)`,
 		`CREATE INDEX IF NOT EXISTS idx_flashcard_revlog_card ON flashcard_revlog(card_id, reviewed_at DESC)`,
+		// The per-card index above cannot serve a per-user time-range scan, which
+		// is what the study streak needs ("which days did this user review?").
+		// Without this the streak query degrades into a sequential scan of every
+		// review the user has ever logged.
+		`CREATE INDEX IF NOT EXISTS idx_flashcard_revlog_user_reviewed ON flashcard_revlog(user_id, reviewed_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_flashcard_deck_user_updated ON flashcard_deck_config(user_id, updated_at DESC)`,
 	}
 	for _, q := range stmts {
@@ -663,6 +668,44 @@ func (s *Store) ListRevLogsByCard(ctx context.Context, userID, cardID string, li
 		out = append(out, &r)
 	}
 	return out, rows.Err()
+}
+
+// ReviewTimestampsSince returns every review timestamp the user logged at or
+// after sinceUnix, oldest first. It is the review half of the study streak
+// (docs/学习muse/03-架构方案.md §3.3): a user who studies exclusively with
+// flashcards has no learning_items rows, and without this their streak would
+// read 0 forever.
+//
+// Raw timestamps come back rather than day indices so the caller owns the
+// timezone arithmetic — the same split the learning store uses.
+//
+// Like CountDueCards, this is scoped by user_id only. flashcard_revlog has no
+// workspace_id column, so user identity is the entire tenancy boundary here;
+// that is a pre-existing property of the flashcards schema, not something this
+// method introduces.
+func (s *Store) ReviewTimestampsSince(ctx context.Context, userID string, sinceUnix int64) ([]int64, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT reviewed_at
+		FROM flashcard_revlog
+		WHERE user_id = $1 AND reviewed_at >= $2
+		ORDER BY reviewed_at ASC`, userID, sinceUnix)
+	if err != nil {
+		return nil, fmt.Errorf("review timestamps since: %w", err)
+	}
+	defer rows.Close()
+
+	out := []int64{}
+	for rows.Next() {
+		var ts int64
+		if err := rows.Scan(&ts); err != nil {
+			return nil, fmt.Errorf("review timestamps since: scan: %w", err)
+		}
+		out = append(out, ts)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("review timestamps since: %w", err)
+	}
+	return out, nil
 }
 
 // CountDueCards returns cards whose due <= nowSec and state in (new=0,

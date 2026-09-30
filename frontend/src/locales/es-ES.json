@@ -337,6 +337,18 @@
       "all": "All",
       "voice": "Voice notes",
       "hint": "Tap mic to record"
+    },
+    "capture": {
+      "add": "Añadir al aprendizaje",
+      "done": "Añadido al aprendizaje",
+      "toTask": "Convertir en tarea",
+      "taskDone": "Tarea creada",
+      "failed": "No se pudo guardar. Inténtalo de nuevo."
+    },
+    "streak": {
+      "days": "días seguidos",
+      "toNext": "{count} más para {next}",
+      "milestoneReached": "Hito de {days} días alcanzado"
     }
   },
   "email": {
@@ -381,5 +393,31 @@
     "operateFailed": "La operación falló. Inténtalo de nuevo.",
     "summaryFailed": "No se pudo generar el resumen. Comprueba que la pasarela de modelos esté configurada y accesible.",
     "probeFailed": "Sonda fallida. Comprueba que el destino sea accesible."
+  },
+  "due": {
+    "title": "Repaso de hoy",
+    "cardsDue": "Tarjetas pendientes",
+    "inboxWaiting": "Por procesar",
+    "reviewing": "En repaso",
+    "tasksDue": "Tareas pendientes",
+    "allClear": "Nada pendiente hoy"
+  },
+  "reminder": {
+    "title": "Resumen diario",
+    "next": "Siguiente: {time}",
+    "offline": "El resumen diario necesita el servicio de aprendizaje. Vuelve a conectar para activar los recordatorios."
+  },
+  "inbox": {
+    "title": "Bandeja de entrada",
+    "empty": "Aún no hay material. Usa «Añadir al aprendizaje» en una nota, correo o RSS.",
+    "advance": "Empezar"
+  },
+  "source": {
+    "note": "Nota",
+    "email": "Correo",
+    "rss": "RSS",
+    "meeting": "Reunión",
+    "chat": "Chat",
+    "manual": "Manual"
   }
 }

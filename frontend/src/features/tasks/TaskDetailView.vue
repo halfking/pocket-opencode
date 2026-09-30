@@ -67,6 +67,8 @@
       </button>
     </div>
 
+    <TaskCollaborationPanel v-if="task?.id" :task-id="task.id" />
+
     <TaskSessionPanel
       :current="bundle.current"
       :historical="bundle.historical"
@@ -120,6 +122,7 @@ import { useConfirm } from '../../composables/useConfirm'
 import BottomSheet from '../../components/base/BottomSheet.vue'
 import TaskSessionPanel from './TaskSessionPanel.vue'
 import TaskSessionSheet from './TaskSessionSheet.vue'
+import TaskCollaborationPanel from './TaskCollaborationPanel.vue'
 
 const router = useRouter()
 const route = useRoute()
