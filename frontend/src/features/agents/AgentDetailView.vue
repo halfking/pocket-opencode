@@ -269,7 +269,7 @@ function goToEdit() {
   background: var(--bg-base);
   padding: 2px 6px;
   border-radius: 4px;
-  font-family: 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
 }
 
@@ -317,7 +317,7 @@ function goToEdit() {
 }
 
 .mono {
-  font-family: 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
 }
 </style>

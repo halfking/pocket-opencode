@@ -393,7 +393,7 @@ function formatLastUpdate(timestamp?: string): string {
   display: flex;
   gap: 8px;
   font-size: 12px;
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 
 .additions {

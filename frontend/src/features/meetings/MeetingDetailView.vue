@@ -97,7 +97,9 @@ import MeetingMicDock from './MeetingMicDock.vue'
 import MeetingSettingsSheet from './MeetingSettingsSheet.vue'
 import MeetingStudioMenu from './MeetingStudioMenu.vue'
 import SpeakerLabelSheet from './SpeakerLabelSheet.vue'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
@@ -197,7 +199,7 @@ async function onSummarize() {
     await load()
     toast.success('已生成当前总结')
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '总结失败')
+    toast.error(e instanceof Error ? e.message : apiError(e, 'errors.operateFailed'))
   } finally { summarizing.value = false }
 }
 
@@ -225,7 +227,7 @@ async function onShareTodo(draft: MeetingTodoDraft) {
     await shareTodoWithPerson(draft, meeting.value?.title || '')
     toast.success('已生成转交内容')
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '转交失败')
+    toast.error(e instanceof Error ? e.message : apiError(e, 'errors.operateFailed'))
   }
 }
 
@@ -235,7 +237,7 @@ async function onAccTodo(draft: MeetingTodoDraft) {
     toast.success('已转交 ACC')
     router.push(`/settings/scheduled-tasks/${task.id}`)
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '转交 ACC 失败')
+    toast.error(e instanceof Error ? e.message : apiError(e, 'errors.operateFailed'))
   }
 }
 

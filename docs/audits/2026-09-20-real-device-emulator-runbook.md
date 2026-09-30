@@ -10,8 +10,8 @@
 | 项 | 值 |
 |---|---|
 | APK 路径 | `frontend/android/app/build/outputs/apk/debug/app-debug.apk` |
-| 大小 | 28.9 MB（30,305,333 bytes） |
-| SHA256 | `3EB5366964BC41495E80361A4C68A10FD01085BA3DDCFDD11238C19AB2D97108` |
+| 大小 | 32.8 MB（34,426,857 bytes） |
+| SHA256 | `0B29C7AE7704037232FE09BF1AF9478CA046D52DE36191A0B130F5DF3E56FC73` |
 | 包名 | `com.kaixuan.opencode.pocket` |
 | 版本 | 1.2.0-openpocket |
 | 入口 | `com.kaixuan.opencode.pocket.MainActivity` |

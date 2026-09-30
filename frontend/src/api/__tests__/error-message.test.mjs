@@ -98,3 +98,24 @@ describe('toUserMessage', () => {
     assert.equal(toUserMessage(null, t, '加载订阅源失败'), '加载订阅源失败')
   })
 })
+
+// 以下三条承接 origin/main 的 composables/api-error-message.test.ts：
+// 那套 resolveApiErrorMessage / shouldSurfaceRawMessage 已并入本模块，
+// 契约从「5xx 不上屏、4xx 保留原消息」收紧为「原始消息一律不上屏」，
+// 行为不变但覆盖面更广，这里把等价断言固定下来。
+describe('HTTP 状态码下的原始消息处理', () => {
+  it('5xx 的内部细节不上屏（pq: duplicate key 属后端实现细节）', () => {
+    const msg = toUserMessage(new FakeApiError(500, 'pq: duplicate key'), t, '保存失败')
+    assert.equal(msg, '保存失败')
+  })
+
+  it('502 上游 HTML 片段不上屏', () => {
+    const msg = toUserMessage(new FakeApiError(502, '<html>bad gateway</html>'), t, '保存失败')
+    assert.equal(msg, '保存失败')
+  })
+
+  it('4xx 也不直接上屏，走调用方领域文案', () => {
+    const msg = toUserMessage(new FakeApiError(409, 'deck name taken'), t, '保存失败')
+    assert.equal(msg, '保存失败')
+  })
+})

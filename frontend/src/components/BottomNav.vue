@@ -122,6 +122,10 @@ function isActive(item: NavItem) {
 
 .nav-item {
   flex: 1;
+  /* 6 个 Tab 在 360dp 宽机型上平均只剩 60px，而 .icon-pill(56px)+padding(8px)
+     构成 64px 的 flex 最小内容宽；不置 0 的话 flex 项无法收缩，最后一个
+     「邮箱」Tab 会被挤出屏幕右缘（真机 Redmi 14R 5G / 360dp 实测 navScrollW 384 > 360）。 */
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -145,6 +149,8 @@ function isActive(item: NavItem) {
   align-items: center;
   justify-content: center;
   width: 56px;
+  /* 窄屏下让 pill 跟着 Tab 宽度收缩，不反过来把 Tab 撑出屏幕 */
+  max-width: 100%;
   height: 30px;
   border-radius: var(--radius-full);
   transition: background var(--duration-fast) var(--ease-out);
@@ -167,6 +173,10 @@ function isActive(item: NavItem) {
   font-size: 11px;
   line-height: 1;
   letter-spacing: 0.2px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav-item.active .label {

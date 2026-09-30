@@ -414,7 +414,7 @@ function formatDate(d?: string): string {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 .session-tags {
   display: flex;
