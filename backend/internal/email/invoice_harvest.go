@@ -168,6 +168,92 @@ func isPOP3SourcedEmail(e Email) bool {
 }
 
 // harvestOne 处理单条发票记录，返回最终状态。
+// sameEmailMessage 判断重新取回的原文 raw 是否就是库里那条 em 记录。
+//
+// 位置序号（POP3）或 SEARCH 反查（IMAP）都可能因为服务器重排而指向**另一封**
+// 邮件——把它当这封的发票解析、存成错误的 PDF，正是当初拒绝合成 IMAP UID
+// 要防的事故。判据组合（任一足够强即认为是同一封）：
+//   - 真实 Message-ID 完全相等（最强，但 POP3 落库时可能没取到真实头）；
+//   - 主题相等 且 发件人相等 且 日期在同一天内（秒级相等过严：POP3 与库
+//     落库时间可能差几秒，用「同一天」容忍）。
+//
+// 抽成纯函数是为了脱离 DB/网络直接测，负控见 invoice_harvest_test.go。
+func sameEmailMessage(em *Email, raw []byte) bool {
+	parsed, err := ParseMIMEMessage(raw)
+	if err != nil {
+		return false
+	}
+	// 真实 Message-ID：双方都有且不等 -> 强否定（就是另一封）。
+	emMsgID := strings.Trim(strings.TrimSpace(em.MessageID), "<>")
+	parsedMsgID := strings.Trim(strings.TrimSpace(parsed.MessageID), "<>")
+	emHasReal := emMsgID != "" && !strings.HasPrefix(emMsgID, "pop3-")
+	parsedHasReal := parsedMsgID != "" && !strings.HasPrefix(parsedMsgID, "pop3-")
+	if emHasReal && parsedHasReal {
+		if strings.EqualFold(parsedMsgID, emMsgID) {
+			return true // 强确认（即使主题被改写）
+		}
+		return false // 强否定：真实 Message-ID 不等就是另一封，绝不放行
+	}
+	if !strings.EqualFold(strings.TrimSpace(parsed.Subject), strings.TrimSpace(em.Subject)) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(parsed.From), strings.TrimSpace(em.FromAddress)) {
+		return false
+	}
+	if em.Date > 0 && parsed.Date.Unix() > 0 {
+		const day = 24 * time.Hour
+		diff := time.Duration(em.Date - parsed.Date.Unix()) * time.Second
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > day {
+			return false
+		}
+	}
+	return true
+}
+
+// recoverPOP3SourcedRaw 为 POP3 来源的发票邮件自愈取回原文。
+//
+// 两条路径按可靠性排序，都做 sameEmailMessage 校验：
+//  1. POP3 位置序号 RETR（邮件通常只在 POP3 侧，首选）；
+//  2. IMAP SEARCH 反查真实 UID 后 FETCH（邮件已同步到 IMAP 时）。
+//
+// 两条都失败或校验不过时返回错误，由调用方记 failed——绝不返回「疑似」的
+// 原文，那会把别人的邮件存成这封发票。
+func (h *InvoiceHarvester) recoverPOP3SourcedRaw(ctx context.Context, inv *Invoice, em *Email) ([]byte, error) {
+	if h.Fetcher == nil {
+		return nil, fmt.Errorf("no fetcher configured for self-heal")
+	}
+	// 路径 1：POP3 位置序号补取。位置序号在 POP3 侧有效。
+	if em.UID > 0 {
+		raw, err := h.Fetcher.RefetchPOP3RawByIndex(ctx, em.AccountID, int(em.UID))
+		if err == nil && len(raw) > 0 && sameEmailMessage(em, raw) {
+			log.Printf("[email/invoice-harvest] self-heal invoice=%s via POP3 index=%d (same message confirmed)", inv.ID, em.UID)
+			return raw, nil
+		}
+		if err != nil {
+			log.Printf("[email/invoice-harvest] self-heal POP3 index=%d failed: %v", em.UID, err)
+		} else {
+			log.Printf("[email/invoice-harvest] self-heal POP3 index=%d returned a DIFFERENT message — discarded", em.UID)
+		}
+	}
+	// 路径 2：IMAP SEARCH 反查真实 UID。邮件已同步到 IMAP 时才可能命中。
+	realUID, rerr := h.Fetcher.ResolveRealUIDByHeader(ctx, em.AccountID, em.FromAddress, em.Subject, em.Date)
+	if rerr != nil || realUID <= 0 {
+		return nil, fmt.Errorf("POP3 index self-heal unavailable and IMAP real-UID resolve failed: %v", rerr)
+	}
+	raw, ferr := h.Fetcher.FetchMessageRaw(ctx, em.AccountID, realUID)
+	if ferr != nil {
+		return nil, fmt.Errorf("IMAP fetch by resolved uid=%d: %w", realUID, ferr)
+	}
+	if !sameEmailMessage(em, raw) {
+		return nil, fmt.Errorf("IMAP resolved uid=%d returned a DIFFERENT message — discarded", realUID)
+	}
+	log.Printf("[email/invoice-harvest] self-heal invoice=%s via IMAP real uid=%d (same message confirmed)", inv.ID, realUID)
+	return raw, nil
+}
+
 func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string {
 	em, err := h.Store.GetEmailByID(ctx, inv.EmailID)
 	if err != nil || em == nil {
@@ -202,42 +288,36 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 		}
 		cached, cerr := h.BodyCache.Get(em.ID, em.UID)
 		if cerr != nil || len(cached) == 0 {
-			// 缓存未命中**不等于**无路可走：用 IMAP SEARCH 按头部特征反查
-			// 这封邮件的**真实** IMAP UID，唯一命中才 FETCH。
+			// 缓存未命中**不等于**无路可走。两条安全的自愈路径，按可靠性排序：
 			//
-			// 这与「拿合成 UID 盲 FETCH」有本质区别——盲 FETCH 会取到不相干
-			// 的邮件（把别人的附件存成这封发票）；SEARCH 是服务端按发件人+
-			// 主题匹配，且**只有唯一命中才返回**。多命中时如实报未解析，绝不
-			// 取最新/最旧来猜。
+			//  1) POP3 位置序号补取（首选）。POP3 落库的 uid 就是 POP3 自己的位置
+			//     序号，在 POP3 侧**有效**；邮件本来就只在 POP3 侧（实测 QQ 账户
+			//     IMAP 侧 50 封里零封发票，两张真实 QQ Wallet 发票只在 POP3 的
+			//     279 封里）。回 POP3 RETR 是拿回自己原文的正规途径。
+			//  2) IMAP SEARCH 反查真实 UID（邮件已同步到 IMAP 时才可能命中）。
+			//
+			// 两条路拿到的原文都要经过 sameEmailMessage 校验——位置序号若因
+			// 服务器重排漂移，或 SEARCH 多命中，会取到**另一封**邮件，把它当这封
+			// 的发票存盘正是当初拒绝合成 IMAP UID 要防的事故。
 			//
 			// 真实死结（2026-10-01 实测）：QQ 上 POP3 原文缓存从未落盘（POP3
-			// 只在 IMAP 失败时才跑，IMAP 修好后不再跑），而守卫又拒绝合成
-			// UID，两张真实 QQ Wallet 发票因此永远 failed。
-			if h.Fetcher == nil {
+			// 只在 IMAP 失败时才跑，IMAP 修好后不再跑），守卫又拒绝合成 UID，
+			// 两张真实 QQ Wallet 发票因此永远 failed。
+			healed, herr := h.recoverPOP3SourcedRaw(ctx, inv, em)
+			if herr != nil {
 				inv.Status = "failed"
-				inv.LastError = fmt.Sprintf("POP3-sourced email raw body cache miss (err=%v) and no fetcher to resolve real UID", cerr)
+				inv.LastError = fmt.Sprintf("POP3-sourced email raw body cache miss (err=%v) and self-heal failed: %v; refusing to IMAP-FETCH a positional index (would fetch the wrong message)", cerr, herr)
 				_ = h.Store.UpdateInvoiceHarvest(ctx, inv)
 				return "failed"
 			}
-			realUID, rerr := h.Fetcher.ResolveRealUIDByHeader(ctx, em.AccountID, em.FromAddress, em.Subject, em.Date)
-			if rerr != nil || realUID <= 0 {
-				inv.Status = "failed"
-				inv.LastError = fmt.Sprintf("POP3-sourced email raw body cache miss (err=%v) and real-UID resolve failed: %v; refusing to IMAP-FETCH a positional index (would fetch the wrong message)", cerr, rerr)
-				_ = h.Store.UpdateInvoiceHarvest(ctx, inv)
-				return "failed"
-			}
-			fetched, ferr := h.Fetcher.FetchMessageRaw(ctx, em.AccountID, realUID)
-			if ferr != nil {
-				return h.markRetry(ctx, inv, fmt.Sprintf("fetch raw by resolved real uid=%d: %v", realUID, ferr))
-			}
-			// 反查到的原文顺手回填缓存：同一封邮件若因别的原因再被采集，
-			// 这次已经付出过连接成本，不必再走一遍 SEARCH。
+			// 自愈拿到的原文顺手回填缓存：同一封若因别的原因再被采集，不必再
+			// 付一次连接成本。
 			if h.BodyCache != nil {
-				if _, perr := h.BodyCache.Put(em.ID, em.UID, fetched); perr != nil {
+				if _, perr := h.BodyCache.Put(em.ID, em.UID, healed); perr != nil {
 					log.Printf("[email/invoice-harvest] backfill body cache invoice=%s email=%s: %v", inv.ID, em.ID, perr)
 				}
 			}
-			raw = fetched
+			raw = healed
 		} else {
 			raw = cached
 		}

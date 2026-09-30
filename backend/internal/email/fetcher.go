@@ -954,6 +954,45 @@ func (f *Fetcher) loadAccountPasswordFallback(acc *Account) (string, error) {
 
 // sanitizeUIDLForID 把 POP3 UIDL 清洗成可安全嵌入主键/Message-ID 的字符串
 //（只保留字母数字与连字符，其余替换为连字符；超长截断）。
+// RefetchPOP3RawByIndex 用账户凭据按 POP3 位置序号补取单封邮件原文。
+//
+// 这是 POP3 来源发票的死结自愈（2026-10-01 实测）：POP3 落库的邮件在 IMAP
+// 侧未必存在（实测 QQ 账户 IMAP 侧 50 封里零封发票，两张真实 QQ Wallet 发票
+// 只在 POP3 路径的 279 封里），原文缓存又从未落盘。此时既不能 IMAP FETCH、
+// 又无缓存可读。位置序号在 POP3 侧是**有效**的（它就是 POP3 自己的编号），
+// 所以回到 POP3 RETR 是第三条安全路径——不同于拿它去 IMAP 盲 FETCH。
+//
+// 安全性依赖调用方：拿到 raw 后应与库记录比对（Message-ID/主题/发件人）确认
+// 是同一封，位置序号若因服务器重排漂移就会取到别的邮件。本方法不内置该比对，
+// 因为 raw 解析属于 mime 层。
+func (f *Fetcher) RefetchPOP3RawByIndex(ctx context.Context, accountID string, index int) ([]byte, error) {
+	if f == nil || f.store == nil || f.crypto == nil {
+		return nil, fmt.Errorf("email: fetcher not configured")
+	}
+	acc, encryptedCred, err := f.store.GetAccountByID(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("load account: %w", err)
+	}
+	if !acc.Enabled {
+		return nil, fmt.Errorf("account disabled")
+	}
+	cred, err := f.crypto.DecryptString(encryptedCred)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt credential: %w", err)
+	}
+	if cred == "" || cred == "oauth-pending-no-credential" {
+		return nil, fmt.Errorf("account has no usable credential")
+	}
+	host, port, tlsFlag := pop3EndpointFor(acc)
+	if host == "" {
+		return nil, fmt.Errorf("no POP3 endpoint for %s (imaphost=%s)", acc.EmailAddress, acc.IMAPHost)
+	}
+	// 位置序号在 POP3 侧有效，不需要 UIDL 交叉校验（UIDL 被 sanitize 进 ID，
+	// 不可逆）；同一封的确认交给调用方比对原文。
+	return FetchPOP3MessageByIndex(ctx, fmt.Sprintf("%s:%d", host, port), tlsFlag,
+		acc.EmailAddress, cred, index, "", 0)
+}
+
 func sanitizeUIDLForID(uidl string) string {
 	var b strings.Builder
 	for _, r := range uidl {
