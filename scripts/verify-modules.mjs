@@ -105,7 +105,7 @@ for (const [name, route] of ROUTES) {
   })
 }
 
-console.log('\n=== 模块可达性验证（emulator-5554，已登录+主密码已建）===')
+console.log(`\n=== 模块可达性验证（${SERIAL}，已登录+主密码已建）===`)
 console.table(rows)
 const gated = rows.filter((r) => r.判定 === 'LOGIN_GATED').map((r) => r.模块)
 const blank = rows.filter((r) => r.判定 === 'BLANK').map((r) => r.模块)

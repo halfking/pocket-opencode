@@ -16,6 +16,16 @@ export const BACKUP_API_BASE = 'https://pocket.kxpms.cn'
 
 export type ProbeHealthzResult = { ok: true } | { ok: false; error: string }
 
+/**
+ * 最小存储契约。真实 localStorage 天然满足它，单测里的内存实现也能满足，
+ * 避免为了注入一个假存储而被迫实现 length/clear/key。
+ */
+export interface StorageLike {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+  removeItem(key: string): void
+}
+
 function defaultStorage(): Storage | null {
   try {
     return typeof localStorage !== 'undefined' ? localStorage : null
@@ -58,13 +68,13 @@ export function normalizeApiBase(input: string, pageOrigin?: string): string {
   return `${url.origin}${path}`
 }
 
-export function readApiBaseOverride(storage?: Storage): string | null {
+export function readApiBaseOverride(storage?: StorageLike): string | null {
   const store = storage ?? defaultStorage()
   if (!store) return null
   return store.getItem(API_BASE_STORAGE_KEY)
 }
 
-export function persistApiBase(value: string | null, storage?: Storage): string {
+export function persistApiBase(value: string | null, storage?: StorageLike): string {
   const store = storage ?? defaultStorage()
   if (value === null) {
     store?.removeItem(API_BASE_STORAGE_KEY)
@@ -79,7 +89,7 @@ export function resolveApiBase(opts?: {
   override?: string | null
   buildDefault?: string
   pageOrigin?: string
-  storage?: Storage
+  storage?: StorageLike
 }): string {
   const override = opts && 'override' in opts ? opts.override : readApiBaseOverride(opts?.storage)
   // 空串覆盖会吞掉 VITE_API_BASE，真机 https://localhost 上收信/归类会 Failed to fetch
@@ -91,17 +101,32 @@ export function resolveApiBase(opts?: {
   return build ? normalizeApiBase(build, opts?.pageOrigin) : ''
 }
 
-/** Capacitor WebView origin 是 https://localhost；空 base 时回退生产入口，避免 /api 打到本地壳。 */
+/**
+ * Capacitor 本地壳的 origin 白名单。
+ *
+ * 必须是 scheme 无关的：`androidScheme` 是 BUG-F 引入的逃生舱，
+ * 联调时可以整成 `http`，此时页面 origin 变成 `http://localhost`（无端口）。
+ * 旧实现只硬编码 `https://localhost` / `capacitor://localhost`，
+ * 于是 http 壳下守卫失效、base 解析成空串，`/api/*` 全部打到本地 index.html。
+ */
+const CAPACITOR_SHELL_ORIGIN = /^(https?|capacitor):\/\/localhost$/i
+
+/** 该 origin 是否为 Capacitor WebView 的本地壳（同源 ≠ 后端，必须回退真实 base）。 */
+export function isCapacitorShellOrigin(origin: string | undefined | null): boolean {
+  return CAPACITOR_SHELL_ORIGIN.test(String(origin ?? '').trim())
+}
+
+/** Capacitor WebView origin 是 http(s)://localhost；空 base 时回退生产入口，避免 /api 打到本地壳。 */
 export function resolveRuntimeApiBase(opts?: {
   override?: string | null
   buildDefault?: string
   pageOrigin?: string
-  storage?: Storage
+  storage?: StorageLike
 }): string {
   const resolved = resolveApiBase(opts)
   if (resolved) return resolved
   const origin = pageOriginFallback(opts?.pageOrigin)
-  if (origin === 'https://localhost' || origin === 'capacitor://localhost') return PRODUCTION_API_BASE
+  if (isCapacitorShellOrigin(origin)) return PRODUCTION_API_BASE
   return ''
 }
 

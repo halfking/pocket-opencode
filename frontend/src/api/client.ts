@@ -15,6 +15,7 @@
 import { resolveRuntimeApiBase as resolveApiBase } from '../config/api-base'
 import { useAuthStore } from '../stores/auth'
 import { ApiError, assertNotHTML } from './http'
+import { buildTasksUrl, type TaskListFilters } from './tasks-url.ts'
 
 /**
  * fetch 包装：注入 Bearer token + 统一错误处理。
@@ -180,15 +181,8 @@ export interface ModelDefinition {
 }
 
 export const api = {
-  async getTasks(
-    instanceId?: string,
-    opts: { workstreamId?: string; source?: 'acc' | 'opencode' | 'local' } = {},
-  ): Promise<Task[]> {
-    const url = new URL(`${resolveApiBase()}/api/tasks`, window.location.origin)
-    if (instanceId) url.searchParams.set('instance_id', instanceId)
-    if (opts.workstreamId) url.searchParams.set('workstream_id', opts.workstreamId)
-    if (opts.source) url.searchParams.set('source', opts.source)
-    const res = await authFetch(url.toString().replace(window.location.origin, ''))
+  async getTasks(instanceId?: string, opts: TaskListFilters = {}): Promise<Task[]> {
+    const res = await authFetch(buildTasksUrl(resolveApiBase(), instanceId, opts))
     const data = await res.json()
     return data.tasks || []
   },

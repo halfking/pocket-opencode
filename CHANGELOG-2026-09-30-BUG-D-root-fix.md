@@ -425,3 +425,143 @@ go test ./internal/server/... 全量跑时该测试失败，单跑通过（测�
 - 真机端到端、BUG-G/BUG-H 真机验证、生产 https 回归
 
 详见 docs/handoff/2026-09-30-android-e2e-bug-d-e-f.md。
+
+---
+
+# 追加：BUG-J + BUG-F 归因证伪 + 真机端到端打通（2026-09-30 09:00）
+
+## 🔴 先说最重要的：BUG-F 的原始归因是错的
+
+原结论（写在本文件上文与 handoff §3）：「WebSocket 被 Chromium ≥111 的
+Insecure-WebSocket 策略**硬阻断**，`setMixedContentMode` 管不到，必须把
+Capacitor 的 scheme 降级成 `http`」。**该结论已被真机实测证伪。**
+
+### 证伪的关键判据
+
+原判据是「`WebSocket` 构造失败 + 后端日志里没有连接记录」。这个组合**无法区分**
+「被浏览器阻断」和「到了后端但被拒」——因为 401/403 发生在 upgrade **之前**，
+后端那条 `WebSocket client connected` 日志根本不会打印。我据此错误地判定「握手没到后端」。
+
+改用 CDP `Network` 域后，真机上的实测结果：
+
+| 目标 | CDP 事件 | 结论 |
+|---|---|---|
+| `ws://localhost:8088/__probe_no_such_route__` | `wsHandshake` + **404** | 握手**到了后端**并拿到了 Echo 的响应体 |
+| `ws://localhost:8088/ws?token=probe` | `wsHandshake` + 401 | 握手**到了后端**，被鉴权拒绝 |
+| `ws://192.168.31.20:8088/ws?...` | `ERR_ADDRESS_UNREACHABLE` | 目标地址在真机上不可达 |
+
+console 侧措辞也印证：Chromium 说的是
+`Connecting to a non-secure WebSocket server from a secure origin is **deprecated**`
+（弃用**警告**），不是 blocked。若真是策略硬阻断，CDP 只会给
+`loadingFailed` / `ERR_BLOCKED_BY_CLIENT`，不可能给出后端的状态码。
+
+### mixed content 对 XHR 与 WS 的真实差别（修正）
+
+| 通道 | `https://localhost` 页面请求 `http://…` / `ws://…` | 实测 |
+|---|---|---|
+| XHR / fetch | **真阻断**，请求出不去浏览器 | Mixed Content 警告 + 请求根本没到网络层 |
+| WebSocket | **仅 deprecation warning**，照常发出 | `wsHandshake` + 后端真实状态码 |
+
+`CAP_ANDROID_SCHEME=http` 逃生舱**方向仍然正确**（它消除的是 XHR 的硬阻断，
+Mixed Content 计数归零），但「它是用来救 WS 的」这个因果关系是错的。
+
+### 真机 WS 断连的真实原因（两条，都不是代码缺陷）
+
+1. **APK 被打成了 LAN IP**：并发会话用 `.env.android-dev`
+   （`VITE_API_BASE=http://192.168.31.20:8088`）重建并重装，覆盖了 reversedev 包，
+   而真机到宿主 LAN IP 是 `ERR_ADDRESS_UNREACHABLE`（宿主防火墙）。
+2. **设备上持有的 JWT 失效**：真机 localStorage 的 token 由另一个 pocketd 实例签发，
+   与当前 pocketd 的 `POCKET_JWT_SECRET` 不匹配。该 token 连**普通 HTTP**
+   `GET /api/auth/me` 也是 401 `invalid or expired token`；现场重新登录拿的新 token 立刻 200。
+
+## BUG-J：`getTasks` 把 API base 的 scheme+host 当前缀删掉
+
+真机 13 模块巡检中只有 `/tasks` 报错：
+
+    ERROR Failed to load tasks: Error: API 返回了 HTML 页面而非 JSON：
+          通常是移动端打包漏注入 VITE_API_BASE（请求落到 WebView 本地 index.html）…
+
+`frontend/src/api/client.ts` 的 `getTasks` 曾这样拼 URL：
+
+```ts
+const url = new URL(`${resolveApiBase()}/api/tasks`, window.location.origin)
+const res = await authFetch(url.toString().replace(window.location.origin, ''))
+```
+
+那句 `.replace(window.location.origin, '')` 本意是「同源时把绝对地址降成相对路径」，
+但 `window.location.origin` **不带端口**而 API base **带端口**，replace 命中前缀整段删掉：
+
+| 项 | 值 |
+|---|---|
+| 页面 origin | `http://localhost` |
+| 正确 URL | `http://localhost:8088/api/tasks` |
+| replace 之后 | `:8088/api/tasks` |
+| 浏览器解析为 | `http://localhost/:8088/api/tasks` |
+| 实际响应 | `200 text/html :: <!doctype html>…`（本地 index.html） |
+| 修复后 | `200 application/json :: {"tasks":null}` |
+
+**这是 BUG-F 引入 `CAP_ANDROID_SCHEME=http` 后才暴露的回归，由我自己引入**：
+`androidScheme=https` 时 origin 是 `https://localhost`，与 `http://localhost:8088`
+字符串不匹配，replace 空转，侥幸不触发。
+
+同时修掉第二处：`frontend/src/config/api-base.ts` 的 Capacitor 壳回退守卫
+写的是 `origin === 'https://localhost' || origin === 'capacitor://localhost'`，
+**同样漏了 `http://localhost`**。改为 scheme 无关的正则并导出
+`isCapacitorShellOrigin()`，让判据对取值空间封闭。
+
+### 改动文件
+
+- `frontend/src/api/tasks-url.ts`（新增）`buildTasksUrl()` 纯函数
+- `frontend/src/api/client.ts` `getTasks` 改用 `buildTasksUrl`，删掉 `.replace()`
+- `frontend/src/config/api-base.ts` `isCapacitorShellOrigin()` + `resolveRuntimeApiBase()` 用它
+- `frontend/src/api/tasks-url.test.ts`（新增，4 例，含一条反证旧实现产物的断言）
+- `frontend/src/config/api-base.test.ts` 新增 5 例
+
+### 验证
+
+    node --experimental-strip-types --test src/api/tasks-url.test.ts src/config/api-base.test.ts
+    # tests 20   pass 20   fail 0
+    npx vue-tsc --noEmit      # 无输出 = 通过
+
+真机复验（Redmi 2411DRN47C，08:59 二次复现）：
+
+    /api/tasks?source=opencode  ->  200 application/json   控制台错误 0
+
+## 真机端到端打通
+
+    node scripts/redmi-final-verify.mjs
+    {
+      "appWsHandshake101": true,        # App 自己发起的 ws://localhost:8088/ws 握手 101
+      "appWsTargetOk": true,            # 目标与 resolveRuntimeApiBase() 解析结果一致
+      "tasksJson": true,
+      "tasksHtmlRegression": false,
+      "tasksConsoleErrors": 0
+    }
+    node scripts/verify-modules.mjs    # 13/13 RENDERED, LOGIN_GATED=0, BLANK=0
+    node scripts/host-ws-check.mjs     # 后端 /ws：OPEN + pong
+
+### ⚠️ 差点把自己骗过去的一处
+
+第一次宣布「真机 WS 101」时，测的是**在页面里手工 `new WebSocket(...)` 造的连接**，
+不是 App 自己的 `wsClient`。真正暴露问题的是 `scripts/cdp-base-audit.mjs`：
+
+    localStorage.pocket_api_base = "http://192.168.31.20:8088"   # override 优先级高于 VITE_API_BASE
+    WS-CREATED ws://192.168.31.20:8088/ws?token=<redacted>
+    WS-ERR "net::ERR_ADDRESS_UNREACHABLE"
+
+**override 会静默压过构建默认值，而页面底部「后端服务器」仍显示构建默认值**，
+极具迷惑性。换包后第一件事是 `localStorage.removeItem('pocket_api_base')` 再 reload。
+
+## 仍未验证（不得写成已完成）
+
+- **任务 / 会话的写操作**：`POST /api/tasks` 在 dev 后端恒 503
+  `local task store not configured (remote-only mode)`——`taskStore` 只在
+  `pool != nil`（PostgreSQL）时构造（`backend/cmd/pocketd/main.go:103-108`）。
+  `internal/server/disk_task_fallback.go` 只是**只读**合成，不提供写路径。
+- 闪卡 / 密码箱 / 市场 / 邮箱 的写操作：对应后端 store 未配置（503/404），属环境限制。
+- 密码箱 Vault 依赖未实现的 `Keystore` 原生插件，Android 上很可能根本不可用。
+- 生产 `https` scheme 的真机回归（重点是 XHR 混合内容是否仍被正确阻断）。
+- `/cost` 路由：真机上访问 `/cost` 实际落到 `/#/ai-chat`，模拟器上是 `/#/cost`，未定位。
+- 既有的 `TestMeetingWorkspaceIsolation` 全量跑失败（测试间状态污染，非本轮引入）。
+
+详见 docs/handoff/2026-09-30-android-e2e-bug-d-e-f.md。
