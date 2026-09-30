@@ -3446,3 +3446,83 @@ MIUI 拦全新安装，需要用户手动开「设置 → 开发者选项 → US
 
 
 
+
+---
+
+## 6. 审计轮（2026-09-30 晚）：拉取合并验证 + codex 分支逐文件裁定 + 本地修改处置
+
+> 本轮是对 24h 内全部修正任务的一次独立审计：拉取 → 全量编译/测试 → 唯一未合并
+> 子分支逐文件取舍 → 提交/本地修改逐条批判。只登记有证据的结论。
+
+### 6.1 拉取与全量验证（基线健康）
+
+- `origin/main` 领先 4 个提交（44d154e BUG-AG / 8e7f030 / bc8816b BUG-AH / d1a75d5），fast-forward 合并。
+- `go build ./...` ✅；`go test ./...` 仅 `internal/agent` 存量平台失败
+  （Windows 无法 fork/exec `.sh` 假代理 + `agent_echo` fixture，与 2026-09-20 基线清单一致，非回归）。
+- `vue-tsc --noEmit` ✅；`test:native:all` **122/122**（含 BUG-AH 触发器归一化 5 条）。
+- `MOBILE_ALLOW_EMPTY_API_BASE=1 npm run build:fast` ✅（见 6.2，该逃生门是 web 镜像构建的必要条件）。
+
+### 6.2 codex/platform-goal-20260930（24h 内唯一未合并子分支）逐文件裁定
+
+分支单提交 `8f832c6`，12 个文件，与 main 零冲突面（`d7c6ab2..main` 未触碰同批文件，
+也与 §4.35.1 的 10 个跨会话冲突面零交集）。**9 合入 / 3 剔除**：
+
+**合入（9）——三块真实修复：**
+1. **Web 显式「同源」被劫持**：`resolveApiBase` 旧语义把空串 override 一律送 buildDefault，
+   而 `serverChoiceToPersistValue` 对「与页面同源」显式落盘**空串**——
+   浏览器用户选「同源」后被静默送往构建默认地址。修复后按 origin 分流：
+   浏览器 → 真同源 `''`；Capacitor 壳（`https://localhost`）→ 保持 buildDefault。
+   涉及 `api-base.ts` / `api-base.test.ts` / `server-select-logic.ts` + 其测试。
+2. **`/healthz` 只证明前端活着**：nginx 本地方案的 `/healthz` 返回哨兵
+   `frontend ok`（与 `deploy/本地方案/nginx.conf` 的 `location = /healthz` 字面契约，
+   本轮已在 `api-base.ts` 补注释防误删），`probeHealthz` 见哨兵后穿透
+   `location = /api/healthz`（新）确认后端，健康检查不再假阳。
+3. **部署脚本**：`start.sh` 新增 `--frontend-only`（保活 pocketd，`--no-deps` +
+   前置健康门）且 `--dry-run` 不再 stage 版本/切 `bin/current`/写 `.last-start`
+   （`deploy-integration-test.sh` 断言同步反转）；`deploy-local.sh` 修复
+   envs loader 缺失时把已有 `POCKET_LLM_GATEWAY_API_KEY` 清空的真 bug；
+   `Dockerfile.frontend` 补 `ENV MOBILE_ALLOW_EMPTY_API_BASE=1`——
+   没有它 `vite.config.ts` 的空 base 校验（§BUG-D 守卫）会让 web 镜像构建**直接失败**。
+
+**剔除（3）——全部有具体理由：**
+- `frontend/package.json` + `package-lock.json`：混入与分支主题无关的依赖升级，
+  其中 `fast-xml-parser` ^4.5.7 → **5.11.2 跨大版本**，唯一使用点
+  `evernote-parser.ts` **没有任何测试**，无保护不带这么升。tiptap 3.27.3→3.31.3 精确化
+  同批搁置，待单独验证后再提。
+- `deploy/bin/tests/test_database_detect.sh`：改造引用了 `OPP_TEST_REAL_NC` /
+  `OPP_TEST_DOCKER_HIT` 等门控变量，但 **deploy/ 下没有任何生产脚本读取它们**
+  （对应 detect 侧改动未随分支提交，不完整）；且 main 版与分支版同为
+  6 PASS / 1 FAIL（同一用例 `PG detect via local port`），零收益。
+
+**验证**：两测试文件 node --test **29/29**；`bash -n` 三个脚本 ✅；
+typecheck + 逃生门 web 构建 ✅。分支已删（`git push origin --delete`）。
+
+### 6.3 本地修改处置（stash + 工作区）
+
+- stash@{0}「BUG-O followup」：`apiError(e, 'errors.saveFailed')` →
+  `apiError(e, t('flashcards.error.saveFailed'))` 两处。裁定**采纳**：
+  `useApiError` 明确支持「key 或已翻译文案」双约定，改动把通用文案换成场景化文案
+  （9 语言键齐全 333/333 对称），方向正确、风险 2 行。
+  其 untracked 部分（`api-error-message.ts` + 测试）与 main 现版**内容逐字相同**
+  （仅 CRLF/LF），已由 03565ce 的裁定提交覆盖，stash 已 drop。
+- 顺带发现：本文件有两个 `## 5.`（编号重复，追加式登记所致）。历史编号不回改，
+  本轮起用 `## 6`，后续章节顺延。
+
+### 6.4 提交流水的批判结论（24h 内 40+ 提交）
+
+- 两对同名提交（BUG-T ×2、i18n errors ×2）是双会话各提交了一半、后经 merge 收敛——
+  收敛结果干净（useApiError 全仓 1 份、9 locale 333 键 0 重复、
+  `append-handoff-*.mjs` 一次性脚本已清理）。
+- BUG-U 编号被两个问题复用（4.22 零卡组死胡同 / 4.22.1 typecheck 断），
+  handoff 已分节显式管理，不算登记事故，但**下一个 BUG 编号从 AI 起**。
+- 两条提交信息带 BOM 前缀（`1814d15` / `03565ce`，d7c6ab2 已自查登记），历史不重写。
+- BUG-AG / BUG-AD / BUG-AE / BUG-AH 抽验：根因、回归、阳性对照、证伪四件套齐全，
+  `go test ./internal/server/` 本地全绿。质量合格。
+
+### 6.5 本轮遗留（严禁外推）
+
+- `fast-xml-parser` 5 升级**未做**，evernote 导入仍无测试覆盖（独立任务）。
+- `--frontend-only` 与 nginx `/api/healthz` 代理只在脚本/配置层验证（bash -n + diff 评审），
+  未起真容器跑 `deploy-integration-test.sh`（本机无 docker compose 环境）。
+- `probeHealthz` 对「自定义前端 /healthz 返回 200 'ok'」仍直接判健康（与 main 旧行为一致，非回归）。
+- `test_database_detect.sh` 的存量 1 FAIL（PG detect via local port）仍在，本轮未修。
