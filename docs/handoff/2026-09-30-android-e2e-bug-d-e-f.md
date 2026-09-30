@@ -2392,8 +2392,8 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   - 错配取证：真机 `localStorage.pocket_workspace_id = ws_user-admin` vs 列表查询 `default`（`MISMATCH: true`）
   - 笔记写路径 `verify-notes-inputtext.mjs` **2/2**（`cards=4 found=true`；同脚本修复前 `cards=0 found=false`）
   - **笔记完整 CRUD `verify-notes-crud.mjs` 7/7**：新建 4→5、编辑后列表回显新正文、
-    删除 5→4 精确回到基线。**删除是本 bug 最隐蔽的一环**——修复前软删打错分区、
-    真行删不掉且不报错，现在计数精确回落证明落在正确分区
+    删除 5→4 精确回到基线。⚠️ 删除这条只能声称「修复后正确」，
+    **未在修复前的构建上实测过它失效**（原因见 §4.44.6）
   - 跨路由冒烟 `smoke-routes.mjs` **11/11**，零 console error；`npx vue-tsc --noEmit` exit 0
   - ⚠️ 该缺陷是**潜伏型**——早期 CRUD 6/6 全过是因为当时 `auth.workspaceId` 为空、
     读写同落 `'default'`。详见 §4.44.2
@@ -4138,9 +4138,13 @@ bash 4.2，不是开发机的 bash 5.x**——integration test 必须至少在�
 | 跨路由冒烟 | `node scripts/smoke-routes.mjs` | **11/11**，11 条路由 `landed=true` 且零 console error |
 
 > 单独跑完整 CRUD 的理由：BUG-AK 改的是**读+写**四条路径，只验「新建→可见」覆盖不到
-> `updateNote` / `deleteNote`。**删除尤其关键**——修复前 `deleteNote` 的软删打在 `'default'`
-> 分区，真行删不掉且**不报任何错**（无反馈类信号，纯静默）。现在 5→4 精确回到基线，
-> 说明软删落在正确分区。
+> `updateNote` / `deleteNote`。现在 5→4 精确回到基线，软删确实落在正确分区。
+>
+> ⚠️ **但别把「修复前删除是坏的」当成实测结论**。那是**代码推断**：
+> `deleteNote` 执行 `UPDATE local_notes SET deleted_at=? WHERE id=? AND workspace_id='default'`，
+> 匹配 0 行、不报错。而且修复前笔记**根本不在列表里**，删除入口**不可达**——
+> 也就是说这条路径当时是**不可观测**的，不是「点了没反应」。本轮**没有**在修复前的
+> 构建上跑过这个 CRUD 测试，所以只能声称「修复后删除正确」，不能声称「实测过修复前删除失效」。
 
 **受控对照**：同一脚本、同一台真机、同一判据，只有代码变了。
 修复前 `cards=0 found=false`（§4.43.3 记录），修复后 `cards=4 found=true`。
@@ -4154,6 +4158,8 @@ bash 4.2，不是开发机的 bash 5.x**——integration test 必须至少在�
    **仍不可见**。真机实测列表为 4 张，其中新建的 `NI-xxxxxx` 可见，
    但**未逐条核对**是否还有遗留在 `default` 的旧行——需一次性数据订正，
    本轮**未做**（SQLCipher 加密，需应用内迁移）。
+   *补充*：修复后列表由 0 张直接变 4 张，说明这 4 条本就在 `ws_user-admin`，
+   不是 `default` 遗留；但**无法排除**另有少量行遗留在 `default`。
 2. **`handleServerEvent` 的同类隐患**（`notes-store.ts:33`）：
    `const workspaceId = note.workspaceId ?? 'default'`。若服务端 `note.created`
    推送不带 `workspace_id`（`ws-bus.ts:63` 允许为 `null`），笔记会落进 `default`。
