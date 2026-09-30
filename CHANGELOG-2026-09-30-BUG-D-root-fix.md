@@ -893,7 +893,7 @@ PASS  无未捕获 JS 异常
 
 修好判据后**连跑三轮都是 13/13**；修之前同一脚本是 12/13。
 如实记录：这条判据**曾经 flaky**（坑三导致），三轮稳定才敢下结论。
-﻿
+
 ---
 
 ## BUG-Y：「安装」对没先点过「查看版本」的包必然失败
@@ -949,3 +949,37 @@ if (!publishedVersion) { store.error = '该包尚无已发布版本，无法安�
    `clickByText('登录')` 用 indexOf 匹配到「密码登录」那个 tab；
    登录按钮 disabled 是计算属性（需轮询等 enabled）；
    页面内裸 `fetch('/api/...')` 返回 HTML（没加 API base 前缀，与 BUG-J 同源）。
+
+---
+
+## BUG-Z：重复提交同名同版本被归成 500（与 BUG-M 同类）
+
+**现象**：POST /api/marketplace/submit 同 workspace 对同名包重复提交同一版本号 →
+**500** + 原始文案 duplicate key ... marketplace_versions_pkey (SQLSTATE 23505)。
+
+**根因**：Submit 里 INSERT INTO marketplace_versions 的错误原样返回，
+既不是 ErrMarketplaceNotFound 也不是 ErrMarketplaceConflict，
+落到 writeMarketplaceError 的 default 分支 → 500。
+该函数本来就有 ErrMarketplaceConflict → 409 的映射，只是没被触发。
+
+**为什么不该是 500**：换个版本号就能继续，是客户端可纠正的输入冲突；
+且前端 ApiError.retryable 会把 5xx 当可重试**反复重试**。与已修的 BUG-M 同一类。
+
+**修法**：signing.go 的 RegisterPublisherKey 早有同样的惯用法
+（pgconn.PgError code 23505 → ErrMarketplaceConflict）。抽成共用
+wrapUniqueViolation，三处裸 INSERT 接上：Submit 的 packages/versions、Publish 的 releases。
+（Install 本来就有 ON CONFLICT DO NOTHING + 回查，幂等，不受影响。）
+
+**验证**：
+
+    Go 回归 3/3（含对照组 + 助手透传测试）
+    证伪：revert-bugz.mjs 回退修复后测试如期失败，报的正是原始 23505
+    端到端 verify-bug-z.mjs 4/4：201 / 409 / 文案不泄漏 23505 / 换版本号仍 201
+    go build ./... OK；go vet OK；marketplace ok 15.756s；server ok 14.037s
+
+**顺带更正上一轮的一处错误定性**：「submit 忽略客户端 package_id」**不是缺陷，
+是刻意的反伪造设计** —— server_marketplace.go:231-237 的注释写明
+「绝不信任 body 中的同名字段，否则 other-ws/some-pkg 会污染本 workspace 命名空间」。
+
+**教训**：看到「后端忽略了客户端传的字段」**先读那段代码的注释**，
+注释里往往直接写着为什么。本轮差点把一个安全决策当成 bug 报出去。

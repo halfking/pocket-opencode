@@ -760,7 +760,6 @@ task-1790735324849 | Maestro任务310673 | local | active | default
 
 ---
 
-
 ## 4.14 BUG-K：闪卡从零状态完全不可用（无卡组可建）
 
 ### 缺陷链（真机实测闭环）
@@ -1743,7 +1742,7 @@ PASS  探针 key 在全部 9 种语言里都被判为缺失 → 检测逻辑有�
 2. 少数派改调用点，成本低于改主干
 3. 加扫描器 + **判据自证**，别让下一个 merge 再翻车
 
-﻿# 追加：BUG-Y + 市场写路径首次真机打通（2026-09-30 15:15-15:40）
+# 追加：BUG-Y + 市场写路径首次真机打通（2026-09-30 15:15-15:40）
 
 ## 4.25 BUG-Y：「安装」对没先点过「查看版本」的包必然失败（真机 12/12）
 
@@ -1847,7 +1846,116 @@ PASS  无未捕获 JS 异常
    探针没加 API base 前缀，与 BUG-J 同源。应用自己的 http 客户端
    走的是 `http://127.0.0.1:8088/...`，是对的。
 
-## 5. 已验证 / 未验证（严禁外推）
+## 4.27 BUG-Z：重复提交同名同版本被归成 500（与 BUG-M 同类，已修）
+
+### 现象
+
+`POST /api/marketplace/submit`，同一 workspace 对**同名包**重复提交**同一版本号**：
+
+```
+HTTP 500
+{"error":"ERROR: duplicate key value violates unique constraint
+          \"marketplace_versions_pkey\" (SQLSTATE 23505)"}
+```
+
+### 根因
+
+`internal/marketplace/marketplace.go` 的 `Submit` 里，
+`INSERT INTO marketplace_versions` 的错误**原样返回**。原始 `pgx` 错误既不是
+`ErrMarketplaceNotFound` 也不是 `ErrMarketplaceConflict`，
+于是落到 `server_marketplace.go:writeMarketplaceError` 的 `default` 分支 → **500**。
+
+那个函数本来就有正确的映射能力（`ErrMarketplaceConflict` → 409），只是没被触发。
+
+**为什么这不该是 500**：换个版本号就能继续，是**客户端可纠正的输入冲突**。
+而且前端 `ApiError.retryable` 会把 5xx 当成可重试**反复重试** ——
+这正是已修的 BUG-M（闪卡 review 把入参错误归 500）踩过的同一个坑。
+
+### 修法
+
+仓库里 `signing.go` 的 `RegisterPublisherKey` **早就有**同样的惯用法
+（识别 `pgconn.PgError` code `23505` → 包成 `ErrMarketplaceConflict`）。
+抽成共用函数 `wrapUniqueViolation`，三处裸 INSERT 全部接上：
+
+| 位置 | 触发条件 |
+|---|---|
+| `Submit` → `marketplace_packages` | 并发提交同名包，两事务都查不到再同时 INSERT |
+| `Submit` → `marketplace_versions` | **重复提交同名同版本（本轮实测的这条）** |
+| `Publish` → `marketplace_releases` | 同版本同渠道重复发布 |
+
+`Install` 那处本来就有 `ON CONFLICT ... DO NOTHING` + 回查，幂等，不受影响。
+
+### 验证
+
+**Go 回归测试**（`submit_conflict_test.go`，3/3）：
+
+```
+PASS  TestSubmitDuplicateVersionIsConflict
+      重复提交返回: marketplace: conflict: version ws-bugz/报告助手@1.0.0 already exists
+PASS  TestSubmitDifferentVersionSucceeds     ← 对照组：换版本号必须成功
+PASS  TestWrapUniqueViolationPassthrough     ← 证明助手不是「把所有错误都变 409」
+```
+
+**证伪（元验证）**：用 `scripts/revert-bugz.mjs` 把三处 `wrapUniqueViolation`
+回退成裸 `err` 后重跑，测试**如期失败**且报出的正是那条原始 pgx 错误：
+
+```
+--- FAIL: TestSubmitDuplicateVersionIsConflict
+    重复提交应返回 ErrMarketplaceConflict（server 据此映射 409），实际 =
+    ERROR: duplicate key value violates unique constraint
+    "marketplace_versions_pkey" (SQLSTATE 23505)
+```
+
+对照组 `TestSubmitDifferentVersionSucceeds` 在回退下**仍然通过** ——
+说明失败确实来自被测的那条路径，不是环境问题。
+
+（第三项 `TestWrapUniqueViolationPassthrough` 在两种状态下都通过，因为它直接测助手
+本身、不经过调用点 —— 它防的是**另一个方向**的错误：助手把所有错误都吞成 409。
+不要把它算作对调用点的判别力。）
+
+**⚠️ 证伪脚本自己出过两次事故，值得记**：
+
+1. 第一版只实现了 `on`（无 `off`），文档却写 `on|off`。误跑一次就会把**已回退的
+   BUG-Z 留在工作区**，可能误提交。已改为双向 + 状态校验 + 无参数拒绝执行（退出码 2）
+   + 状态不符拒绝盲替换（退出码 3），每次执行后打印该文件 `git diff --numstat`。
+2. 第二版 `off` 方向用正则锚点回填，因为 (a) 锚点写死 `\n` 而 Windows 工作区是
+   **CRLF**，(b) `\s*` 会连带吞掉换行，(c) 用了**函数式 replacer** 导致 `$1`
+   不被展开（原样落盘），**把三处调用点连同 `marketplace_releases` 的 INSERT
+   起始行一起写坏**，文件直接编译不过。是靠「执行后必须核对 `git diff`」发现的，
+   不是靠脚本自己发现的。
+
+教训一：`$1` 只在**字符串**替换值里展开，函数式 replacer 不会。
+教训二：改源码文件的脚本**绝不能写死换行符**，必须 `\r?\n`；缩进用 `[ \t]*` 而非 `\s*`。
+教训三：**脚本 exit=0 不等于文件没被改坏**。任何就地改文件的脚本，
+执行后必须人工/程序核对 `git diff`，否则「自动化通过」是假的。
+
+**端到端**（`scripts/verify-bug-z.mjs`，打真后端，4/4）：
+
+```
+PASS  首次 submit 返回 201
+PASS  重复 submit（同名同版本）返回 409 而非 500
+      {"error":"marketplace: conflict: version ...@9.9.9 already exists"}
+PASS  错误文案不泄漏原始 pgx 串（23505 / duplicate key）
+PASS  对照组：换版本号仍返回 201
+```
+
+`go build ./...` OK、`go vet` OK、`internal/marketplace` 全包 ok 15.756s、
+`internal/server` 全包 ok 14.037s。
+
+### ⚠️ 顺带更正上一轮的一处错误定性
+
+上一轮我把「`submit` 忽略客户端传的 `package_id`」记成了可疑行为。
+**那是刻意设计，不是缺陷** —— `server_marketplace.go:231-237` 写得很清楚：
+
+> workspace_id、publisher、package_id 严格来自认证上下文 / 派生，
+> 绝不信任 body 中的同名字段。caller 提交的 package_id 若形如
+> "other-ws/some-pkg" 会污染本 workspace 命名空间，故此处清空。
+
+即**反伪造**措施。清空后由 store 统一派生 `"<workspaceID>/<name>"` 是**预期**。
+
+教训：**看到「后端忽略了客户端传的字段」先读那段代码的注释** ——
+注释里往往直接写着为什么。本轮差点把一个安全决策当成 bug 报出去。
+
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
@@ -1911,6 +2019,15 @@ PASS  无未捕获 JS 异常
   `go vet` 5 包 OK、`meeting`/`presentation`/`notifycenter`/`server` 四包全绿（§4.21）
 - **BUG-U 零卡组建组死胡同**（真机 `scripts/verify-bug-u.mjs` **13/13，连跑三轮稳定**）：
   空态内联建组 → 提交 → 卡组条目出现 → **直接查 PG 确认落库**（§4.22）
+- **BUG-Z 重复提交冲突归类**（scripts/verify-bug-z.mjs **4/4** 打真后端 + Go 回归 3/3 +
+  **证伪对照**：回退修复后测试如期失败）：POST /api/marketplace/submit 同名同版本重复提交
+  现在返回 **409**（修前是 **500** + 原始 23505 文案），换版本号仍 201（§4.27）
+- **文档卫生闸 `scripts/audit-doc-encoding.mjs`（342 个 .md 全绿，判据自证 3/3）**：
+  本轮提交前自查发现 handoff 有 2 个 U+FFFD、§4.27 前 1 个 U+FEFF、§5 标题重复 3 份，
+  其中 U+FEFF 和「2 份重复的 §5」**在 HEAD 里就已存在**（上一轮 Out-File 追加带进去的）——
+  即**反复发生**的写入事故，故留闸而非改完就算。检测 U+FFFD / U+FEFF / 相邻重复标题三类，
+  `--meta` 会对每类注入缺陷验证「能报出」且对干净样本「不误报」，判据失效则退出码 2。
+  **下轮提交任何 .md 之前先跑它。**
 - **marketplace 端点可达性**：前端 `features/marketplace/api.ts` 实际调用的
   **11 个端点 0 个 404/405**；4 个 404 路径（`/agents` `/installs` `/router` `/skills`）
   **前端零调用**，是旧契约残留。「不是功能缺陷」的判断现在是被正面验证过的（§4.21.8）

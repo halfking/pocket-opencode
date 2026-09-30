@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -314,7 +315,9 @@ func (s *Store) Submit(ctx context.Context, req SubmitRequest) (PackageVersion, 
 			INSERT INTO marketplace_packages (package_id, workspace_id, name, kind, publisher, visibility, created_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7)
 		`, pkgID, req.WorkspaceID, req.Name, req.Kind, req.Publisher, req.Visibility, now); err != nil {
-			return PackageVersion{}, err
+			// 并发提交同名包时，上面的 SELECT 查不到、两个事务同时 INSERT，
+			// 后到的那条会撞 marketplace_packages_pkey → 409 而非 500。
+			return PackageVersion{}, wrapUniqueViolation(err, "package "+pkgID)
 		}
 	} else if err != nil {
 		return PackageVersion{}, err
@@ -331,7 +334,9 @@ func (s *Store) Submit(ctx context.Context, req SubmitRequest) (PackageVersion, 
 		INSERT INTO marketplace_versions (version_id, package_id, workspace_id, version, digest, manifest, status, signature, signing_key_id, submitted_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, versionID, pkgID, req.WorkspaceID, req.Version, req.Digest, manifestJSON, VersionDraft, req.Signature, req.SigningKeyID, now); err != nil {
-		return PackageVersion{}, err
+		// BUG-Z：同一 workspace + 同名包 + 同版本号重复提交 → 撞 pkey → 409。
+		// 修之前这里直接冒泡原始 pgx 错误，最终被写成 500。
+		return PackageVersion{}, wrapUniqueViolation(err, "version "+versionID)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -432,7 +437,7 @@ func (s *Store) Publish(ctx context.Context, cmd PublishCommand) (ReleaseRef, er
 		INSERT INTO marketplace_releases (release_id, version_id, channel, published_at)
 		VALUES ($1, $2, $3, $4)
 	`, releaseID, cmd.VersionID, channel, now); err != nil {
-		return ReleaseRef{}, err
+		return ReleaseRef{}, wrapUniqueViolation(err, "release "+releaseID)
 	}
 
 	if _, err := tx.Exec(ctx, `UPDATE marketplace_versions SET status = $1, published_at = $2 WHERE version_id = $3`,
@@ -673,3 +678,29 @@ var (
 	ErrMarketplaceNotPublished   = errors.New("marketplace: not published")
 	ErrMarketplaceRateOutOfRange = errors.New("marketplace: rating out of range")
 )
+
+// wrapUniqueViolation 把 PostgreSQL 的唯一约束冲突（SQLSTATE 23505）翻译成
+// ErrMarketplaceConflict，让 server 层的 writeMarketplaceError 映射到 **409**。
+//
+// 为什么需要（BUG-Z，2026-09-30 真机验收）：
+//
+//	同一 workspace 内对**同名包**重复提交**同一版本号**（比如包名 "报告助手"
+//	版本 "1.0.0" 提交两次），第二次会撞 marketplace_versions_pkey。
+//	在此之前原始 pgx 错误一路冒泡到 writeMarketplaceError 的 default 分支，
+//	被写成 **500 Internal Server Error** —— 但这是**客户端重复提交**造成的，
+//	用户改个版本号就能继续，不该被当成服务端故障。
+//
+//	与已修的 BUG-M（闪卡 review 把入参错误归 500）同一类：
+//	「客户端可纠正的输入冲突」被归成 5xx，前端会把 5xx 当成可重试反复重试。
+//
+//	signing.go 里 RegisterPublisherKey 早就有同样的惯用法，这里只是把它抽出来共用。
+func wrapUniqueViolation(err error, what string) error {
+	if err == nil {
+		return nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return fmt.Errorf("%w: %s already exists", ErrMarketplaceConflict, what)
+	}
+	return err
+}
