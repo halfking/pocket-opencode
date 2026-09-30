@@ -65,10 +65,20 @@ var (
 	reInvoiceNo   = regexp.MustCompile(`(?:发票号码|发票号|票据号码|Invoice\s*(?:No\.?|Number)?|Bill\s*No\.?)[:：\s]*([A-Za-z0-9\-]{8,32})`)
 	reInvoiceDate = regexp.MustCompile(`(?:开票日期|发票日期|开票时间|日期|Date)[:：\s]*(\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}|\d{8})日?`)
 	reLooseCNDate = regexp.MustCompile(`(\d{4}年\d{1,2}月\d{1,2})日?`)
-	// 价税合计优先，其次 合计/总额/Amount；金额允许千分位
-	reAmountTotal = regexp.MustCompile(`(?:价税合计|合计金额|合计|总额|Amount\s*(?:Due|Total)?)[:：（(]?(?:小写[)）]?)?[:：\s]*[¥￥$€£]?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
+	// 价税合计优先，其次 合计/总额/金额/Amount；金额允许千分位与尾随「元」。
+	//
+	// 「金额」是实测补的：真发票邮件（QQ 邮箱，2026-09-30）主题写
+	// 「…发票号码：26332000008261110741，金额：3500.00元，请注意查收！」，
+	// 关键词表里没有「金额」⇒ amount=0 ⇒ 共享台账合计行直接少算这一张。
+	// 为了不误伤散文（「您本月的金额已超出额度」这种后面不跟数字的句子），
+	// 数值部分是必需的：没数字就不匹配。
+	reAmountTotal = regexp.MustCompile(`(?:价税合计|合计金额|合计|总额|金额|Amount\s*(?:Due|Total)?)[:：（(]?(?:小写[)）]?)?[:：\s]*[¥￥$€£]?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*(?:元|[圆])?`)
 	reAnyAmount   = regexp.MustCompile(`[¥￥]\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
 	reSeller      = regexp.MustCompile(`(?:销售方名称|销售方|开票方|商户名称|商户|Merchant|Seller)[:：\s]*([^\s,，;；。]{2,40})`)
+	// 「您收到来自XX的发票」——中文发票邮件最常见的形态，主题里就有对方单位。
+	// 不抽的话销售方会退化成发件地址，规范文件名变成
+	// 「其他-noreply@service.dzfp.com-3500.00-….pdf」，对账时看不出是谁开的票。
+	reSellerFromSubject = regexp.MustCompile(`(?:来自|由)\s*([^,，;；。]{2,40}?)(?:开具|开具的|提供|提供的|的)?\s*(?:电子)?(?:发票|账单|收据|票据)`)
 	reTitle       = regexp.MustCompile(`(?:发票抬头|抬头|购买方名称|购买方)[:：\s]*([^\s,，;；。]{2,60})`)
 )
 
@@ -208,6 +218,22 @@ func SortInvoicesByReceived(invoices []Invoice) {
 // bodyText 为可选的已解密正文文本（server 层负责读缓存并解密）；空时只用
 // 主题 + 摘要。规则优先级：价税合计 > 任一 ¥ 金额（取最大）。
 func ExtractInvoice(e Email, bodyText string) (*Invoice, bool) {
+	return ExtractInvoiceLoose(e, bodyText, false)
+}
+
+// ExtractInvoiceLoose 与 ExtractInvoice 相同，但多一个 hasInvoiceAttachment 开关：
+// 命中关键词却抽不到金额/发票号时，若调用方确认这封邮件**带着**发票类附件
+// （PDF/图片/XML），仍然建档，把金额与日期留给采集器从附件里补。
+//
+// 为什么需要这条：真实账单邮件的形态是「主题写 9 月度对账单、金额只印在
+// 附件 PDF 里」。原来的硬门槛（金额和发票号都没有 → 直接丢弃）会在采集器
+// 看到附件**之前**就把这封邮件扔掉，于是 harvestOne 的 PDF 附件分支永远
+// 没机会跑——实测夹具邮件就是这样：正文只有一句「见附件」，流水线
+// invoices.Processed=0，发票列表 0 条。
+//
+// 放宽只在有附件证据时生效，且不碰强门槛：没有附件的营销「账单提醒」邮件
+// 依旧被丢弃，避免发票列表被垃圾邮件灌满。
+func ExtractInvoiceLoose(e Email, bodyText string, hasInvoiceAttachment bool) (*Invoice, bool) {
 	subject := e.Subject
 	snippet := e.Snippet
 	joined := subject + "\n" + snippet
@@ -242,6 +268,12 @@ func ExtractInvoice(e Email, bodyText string) (*Invoice, bool) {
 		inv.Seller = strings.TrimSpace(m[1])
 	}
 	if inv.Seller == "" {
+		// 正文里没有「销售方：」时，主题里的「来自XX的发票」往往就是开票方。
+		if m := reSellerFromSubject.FindStringSubmatch(subject); m != nil {
+			inv.Seller = strings.TrimSpace(m[1])
+		}
+	}
+	if inv.Seller == "" {
 		// 销售方常见在发件人域名/名称里（如 billing@didichuxing.com）
 		inv.Seller = strings.TrimSpace(e.FromName)
 		if inv.Seller == "" {
@@ -266,8 +298,9 @@ func ExtractInvoice(e Email, bodyText string) (*Invoice, bool) {
 		inv.Amount = best
 	}
 
-	// 没有金额也没有发票号 → 命中关键词但不是可归档票据（如营销邮件）
-	if inv.Amount == 0 && inv.InvoiceNo == "" {
+	// 没有金额也没有发票号：营销邮件伪命中。
+	// 例外——邮件确实带着 PDF/图片/XML 附件时仍然建档，让采集器去附件里找。
+	if inv.Amount == 0 && inv.InvoiceNo == "" && !hasInvoiceAttachment {
 		return nil, false
 	}
 	inv.ExtractedBy = "rule"

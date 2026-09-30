@@ -9,6 +9,7 @@ package task
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -166,6 +167,149 @@ func (s *Store) ListParticipants(ctx context.Context, taskID, wsID string) ([]Pa
 		return out[i].UserID < out[j].UserID
 	})
 	return out, nil
+}
+
+// ListParticipantsForTasks returns the participants of many work items in one
+// query, keyed by task id. Tasks with no participants are simply absent from
+// the map, which is the same thing an empty list means.
+//
+// It exists so a caller can apply CanReadWorkItem to a list of work items
+// without an N+1: the rule needs each item's own participant set, and a goal
+// can have dozens of children.
+func (s *Store) ListParticipantsForTasks(ctx context.Context, wsID string, taskIDs []string) (map[string][]Participant, error) {
+	out := map[string][]Participant{}
+	ids := make([]string, 0, len(taskIDs))
+	seen := make(map[string]struct{}, len(taskIDs))
+	for _, id := range taskIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT p.task_id, p.user_id, p.role
+		FROM work_item_participants p
+		JOIN tasks t ON t.id = p.task_id AND t.workspace_id = p.workspace_id
+		WHERE p.workspace_id = $1 AND p.task_id = ANY($2)
+	`, normalizeWorkspace(wsID), ids)
+	if err != nil {
+		return nil, fmt.Errorf("list participants for tasks: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var taskID, userID, role string
+		if err := rows.Scan(&taskID, &userID, &role); err != nil {
+			return nil, fmt.Errorf("list participants for tasks: scan: %w", err)
+		}
+		out[taskID] = append(out[taskID], Participant{UserID: userID, Role: role})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list participants for tasks: %w", err)
+	}
+	return out, nil
+}
+
+// SyncAssigneeParticipants keeps `tasks.assignees` and the participant rows in
+// agreement inside one transaction.
+//
+// The two lists used to be independent. An assignee who was not also a
+// participant could not open a private work item (CanReadWorkItem asks both)
+// and received no notification at all, so being assigned something could look
+// like the assignment never happened.
+//
+// The rules, chosen so that neither list can silently destroy the other:
+//
+//   - Every assignee is added with role `assignee`. ON CONFLICT DO NOTHING, so
+//     a person who is already the owner or a watcher keeps that role.
+//   - The owner is always present.
+//   - A participant whose role is `assignee` and who is no longer assigned is
+//     removed. Watchers are never removed: they were added on purpose, and
+//     nothing on the task row records that intent, so guessing would drop real
+//     subscribers.
+//
+// It is deliberately not SetParticipants: that is PUT semantics for the
+// explicit participants endpoint, and a read-modify-write of the whole set
+// would lose a concurrent delegation.
+func (s *Store) SyncAssigneeParticipants(ctx context.Context, taskID, wsID, ownerID string, assignees []string) error {
+	id := strings.TrimSpace(taskID)
+	if id == "" {
+		return fmt.Errorf("sync assignees: task id is required")
+	}
+	workspaceID := normalizeWorkspace(wsID)
+	owner := strings.TrimSpace(ownerID)
+
+	names := make([]string, 0, len(assignees)+1)
+	seen := make(map[string]struct{}, len(assignees)+1)
+	for _, a := range assignees {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if _, dup := seen[a]; dup {
+			continue
+		}
+		seen[a] = struct{}{}
+		names = append(names, a)
+	}
+	if owner != "" {
+		if _, dup := seen[owner]; !dup {
+			seen[owner] = struct{}{}
+			names = append(names, owner)
+		}
+	}
+	// A work item with no participants at all is a legitimate state; the two
+	// statements below are then no-ops rather than errors.
+	if len(names) == 0 {
+		return nil
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("sync assignees: begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var exists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT true FROM tasks WHERE id = $1 AND workspace_id = $2`, id, workspaceID).Scan(&exists); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("sync assignees: task not found: %s", id)
+		}
+		return fmt.Errorf("sync assignees: lookup task: %w", err)
+	}
+
+	now := time.Now().Unix()
+	// The owner keeps the owner role; everyone else arrives as an assignee.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO work_item_participants (workspace_id, task_id, user_id, role, created_at)
+		SELECT $1, $2, u, CASE WHEN u = $4 THEN 'owner' ELSE 'assignee' END, $5
+		FROM unnest($3::text[]) AS u
+		ON CONFLICT (workspace_id, task_id, user_id) DO NOTHING
+	`, workspaceID, id, names, owner, now); err != nil {
+		return fmt.Errorf("sync assignees: add: %w", err)
+	}
+	// Drop the ones who are no longer assigned. `role = 'assignee'` is what
+	// keeps watchers and the owner out of this statement.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM work_item_participants
+		WHERE workspace_id = $1 AND task_id = $2 AND role = 'assignee'
+		  AND NOT (user_id = ANY($3::text[]))
+	`, workspaceID, id, names); err != nil {
+		return fmt.Errorf("sync assignees: remove: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("sync assignees: commit: %w", err)
+	}
+	return nil
 }
 
 // AppendEvent writes one activity-stream entry. It is idempotent on

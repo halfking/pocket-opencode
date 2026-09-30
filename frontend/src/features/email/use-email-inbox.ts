@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import { emailApi } from '../../api/email'
+import i18n from '../../i18n'
 import { normalizeEmailCategory } from './email-categories'
 import { applyClassifyResult, classifyProgressLabel, isUncategorized } from './email-classify-run'
 import { sanitizeFetchHint } from './email-fetch-plan'
@@ -116,7 +117,9 @@ export function useEmailInbox() {
         classifyHint.value = leftover ? `已取消，仍有 ${leftover} 封未归类` : '归类完成'
       } else {
         const raw = e instanceof Error ? e.message : '归类失败'
-        classifyHint.value = sanitizeFetchHint(raw) === raw ? raw : '归类中断，已保存已完成的分类'
+        const tr = (k: string, p?: Record<string, unknown>) =>
+          (p ? i18n.global.t(k, p) : i18n.global.t(k)) as string
+        classifyHint.value = sanitizeFetchHint(raw, tr) === raw ? raw : '归类中断，已保存已完成的分类'
       }
     } finally {
       classifyAbort.value = null

@@ -3,7 +3,10 @@ package task
 // Quiet-hours deferral for work-item reminders, and the reminder idempotency
 // key. The cases here are the ones a naive `start <= x && x < end` gets wrong.
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // at builds a unix timestamp for a given minute-of-day on day 0, so the
 // arithmetic is readable.
@@ -11,7 +14,7 @@ func at(minute int) int64 { return int64(minute) * 60 }
 
 func TestQuietWindowActive(t *testing.T) {
 	if !DefaultQuietWindow().Active() {
-		t.Error("the 22:30→07:30 default must be active")
+		t.Error("the 22:30 to 07:30 default must be active")
 	}
 	// A zero end means "not configured". If this were active, every reminder
 	// would be deferred to midnight.
@@ -24,7 +27,7 @@ func TestQuietWindowActive(t *testing.T) {
 }
 
 func TestQuietWindowInWindowWrapsMidnight(t *testing.T) {
-	w := DefaultQuietWindow() // 22:30 (1350) → 07:30 (450)
+	w := DefaultQuietWindow() // 22:30 (1350) to 07:30 (450)
 	cases := []struct {
 		minute int
 		want   bool
@@ -46,7 +49,7 @@ func TestQuietWindowInWindowWrapsMidnight(t *testing.T) {
 }
 
 func TestQuietWindowInWindowSameDay(t *testing.T) {
-	// A 09:00–18:00 window does not wrap and must not use the wrap rule.
+	// A 09:00 to 18:00 window does not wrap and must not use the wrap rule.
 	w := QuietWindow{StartMin: 9 * 60, EndMin: 18 * 60}
 	cases := map[int]bool{
 		8 * 60:     false,
@@ -63,7 +66,15 @@ func TestQuietWindowInWindowSameDay(t *testing.T) {
 	}
 }
 
+// at builds a unix timestamp for a given minute-of-day on day 0, so the
+// arithmetic is readable.
+//
+// The cases below state their zone explicitly at the call site (time.UTC),
+// because that is the whole point: they used to run against an implicit UTC
+// day boundary, which made them pass for any user who is not eight hours off
+// it. quiet_timezone_test.go covers the non-UTC cases that used to be wrong.
 func TestQuietWindowDefer(t *testing.T) {
+	utc := time.UTC
 	w := DefaultQuietWindow()
 	cases := []struct {
 		name   string
@@ -100,7 +111,7 @@ func TestQuietWindowDefer(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		if got := w.Defer(c.fireAt); got != c.want {
+		if got := w.Defer(c.fireAt, utc); got != c.want {
 			t.Errorf("%s: Defer(%d) = %d, want %d (%s)", c.name, c.fireAt, got, c.want, c.why)
 		}
 	}
@@ -109,21 +120,21 @@ func TestQuietWindowDefer(t *testing.T) {
 func TestQuietWindowDeferDisabledIsIdentity(t *testing.T) {
 	var w QuietWindow // not configured
 	fire := at(23 * 60)
-	if got := w.Defer(fire); got != fire {
-		t.Errorf("an unconfigured window changed the fire time: %d → %d", fire, got)
+	if got := w.Defer(fire, time.UTC); got != fire {
+		t.Errorf("an unconfigured window changed the fire time: %d to %d", fire, got)
 	}
-	if got := w.DeferralMinutes(fire); got != 0 {
+	if got := w.DeferralMinutes(fire, time.UTC); got != 0 {
 		t.Errorf("an unconfigured window reported a %d minute deferral", got)
 	}
 }
 
 func TestQuietWindowDeferralMinutes(t *testing.T) {
 	w := DefaultQuietWindow()
-	// 03:00 → 07:30 is 4h30m.
-	if got := w.DeferralMinutes(at(3 * 60)); got != 4*60+30 {
+	// 03:00 to 07:30 is 4h30m.
+	if got := w.DeferralMinutes(at(3*60), time.UTC); got != 4*60+30 {
 		t.Errorf("DeferralMinutes(03:00) = %d, want %d", got, 4*60+30)
 	}
-	if got := w.DeferralMinutes(at(14 * 60)); got != 0 {
+	if got := w.DeferralMinutes(at(14*60), time.UTC); got != 0 {
 		t.Errorf("DeferralMinutes(14:00) = %d, want 0", got)
 	}
 }

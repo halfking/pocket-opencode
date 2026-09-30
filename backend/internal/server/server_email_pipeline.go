@@ -1,4 +1,4 @@
-package server
+﻿package server
 
 // server_email_pipeline.go — 邮件流水线的 server 侧装配与 HTTP handlers。
 //
@@ -17,12 +17,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/email"
@@ -62,6 +64,67 @@ func (p *feishuInvoicePusher) PushInvoice(ctx context.Context, inv email.Invoice
 	return p.client.SendText(ctx, "chat_id", p.chatID, note)
 }
 
+// feishuLedgerPublisher 把 email.LedgerPublisher 接到飞书电子表格。
+//
+// 需求里的「建立共享文档及文件」此前只有本地 CSV/MD（设备上的文件，别人拿不到）。
+// 这里在飞书上真的建一张电子表格：清单 + 合计行写进去，返回可分享链接。
+type feishuLedgerPublisher struct {
+	client *feishu.Client
+	// folderToken 非空时台账建在该云空间目录下。
+	folderToken string
+
+	// published 记住本进程内已经建过的台账链接，按 (workspace, user) 归档。
+	// 没有它，GET 汇总接口每刷新一次就新建一张表，把用户云盘刷屏。
+	publishedMu sync.Mutex
+	published   map[string]string
+}
+
+// PublishedURL 返回该用户本进程内已经建过的台账链接，没有则空串。
+func (p *feishuLedgerPublisher) PublishedURL(workspaceID, userID string) string {
+	if p == nil {
+		return ""
+	}
+	p.publishedMu.Lock()
+	defer p.publishedMu.Unlock()
+	return p.published[workspaceID+"|"+userID]
+}
+
+// RememberPublished 记住刚建好的台账链接，供后续读路径复用。
+func (p *feishuLedgerPublisher) RememberPublished(workspaceID, userID, url string) {
+	if p == nil || url == "" {
+		return
+	}
+	p.publishedMu.Lock()
+	defer p.publishedMu.Unlock()
+	if p.published == nil {
+		p.published = map[string]string{}
+	}
+	p.published[workspaceID+"|"+userID] = url
+}
+
+func (p *feishuLedgerPublisher) Available() bool {
+	return p != nil && p.client != nil && p.client.Available()
+}
+
+func (p *feishuLedgerPublisher) PublishLedger(ctx context.Context, title string, invs []email.Invoice) (string, error) {
+	if !p.Available() {
+		return "", fmt.Errorf("feishu ledger: app_id/app_secret not configured")
+	}
+	ss, err := p.client.CreateSpreadsheet(ctx, title, p.folderToken)
+	if err != nil {
+		return "", err
+	}
+	sheetID, err := p.client.FirstSheetID(ctx, ss.Token)
+	if err != nil {
+		return "", err
+	}
+	rows, _ := email.LedgerRows(invs)
+	if err := p.client.WriteValues(ctx, ss.Token, email.LedgerCellRange(sheetID, rows), rows); err != nil {
+		return ss.URL, err
+	}
+	return ss.URL, nil
+}
+
 // notifycenterEmailNotifier 把 email.ImportantNotifier 接到 notifycenter.Service。
 type notifycenterEmailNotifier struct {
 	svc   *notifycenter.Service
@@ -94,22 +157,31 @@ func (n *notifycenterEmailNotifier) NotifyImportantEmail(ctx context.Context, e 
 	return err
 }
 
+// ensureInvoiceHarvester 构造发票采集器（流水线与手动 harvest 端点共用）。
+// 返回 nil 表示依赖不齐（无 store / 无 dataDir）。
+func (s *Server) ensureInvoiceHarvester() *email.InvoiceHarvester {
+	if s.emailStore == nil || s.emailFetcher == nil || s.dataDir == "" {
+		return nil
+	}
+	font := email.FindChineseFont(s.dataDir)
+	return &email.InvoiceHarvester{
+		Store:   s.emailStore,
+		Fetcher: s.emailFetcher,
+		DataDir: s.dataDir,
+		XMLRenderer: func(name string, inv *email.Invoice, xmlRaw []byte) ([]byte, error) {
+			return email.RenderInvoiceXMLPDF(font, inv, xmlRaw)
+		},
+	}
+}
+
 // ensurePipeline 惰性构造流水线（单例）。依赖缺失时返回 nil。
 func (s *Server) ensurePipeline() *email.Pipeline {
 	s.emailPipelineOnce.Do(func() {
 		if s.emailStore == nil || s.emailFetcher == nil || s.dataDir == "" {
 			return
 		}
-		font := email.FindChineseFont(s.dataDir)
-		harvester := &email.InvoiceHarvester{
-			Store:   s.emailStore,
-			Fetcher: s.emailFetcher,
-			DataDir: s.dataDir,
-			XMLRenderer: func(name string, inv *email.Invoice, xmlRaw []byte) ([]byte, error) {
-				return email.RenderInvoiceXMLPDF(font, inv, xmlRaw)
-			},
-		}
-		if font == "" {
+		harvester := s.ensureInvoiceHarvester()
+		if font := email.FindChineseFont(s.dataDir); font == "" {
 			log.Printf("[email/pipeline] 中文字体不可用，XML 发票渲染降级（设置 POCKET_EMAIL_PDF_FONT_PATH）")
 		}
 		pusher := &feishuInvoicePusher{
@@ -123,7 +195,14 @@ func (s *Server) ensurePipeline() *email.Pipeline {
 			Harvest:  harvester,
 			Pusher:   pusher,
 			Notifier: notifier,
+			Ledger:   &feishuLedgerPublisher{client: pusher.client, folderToken: s.cfg.FeishuInvoiceFolderToken},
 			DataDir:  s.dataDir,
+			// 默认预演：清垃圾会 IMAP MOVE 真实邮件，规则没在真实邮箱上验证过，
+			// 无人值守地搬用户邮件风险太大。置 POCKET_EMAIL_SPAM_DRYRUN=false 才真移。
+			SpamDryRun: s.cfg.EmailSpamDryRun,
+		}
+		if s.cfg.EmailSpamDryRun {
+			log.Printf("[email/pipeline] 清垃圾为预演模式（只判定不移动）：POCKET_EMAIL_SPAM_DRYRUN=false 可开启真实 MOVE")
 		}
 		if !pusher.Available() {
 			log.Printf("[email/pipeline] feishu pusher 未配置（POCKET_FEISHU_APP_ID/SECRET/INVOICE_CHAT_ID），发票将走共享汇总文档路径")
@@ -134,6 +213,19 @@ func (s *Server) ensurePipeline() *email.Pipeline {
 
 // RunEmailPipeline 供 scheduler 定时调用（或调试）。执行位置按配置决定。
 func (s *Server) RunEmailPipeline(ctx context.Context) *email.PipelineReport {
+	return s.runEmailPipeline(ctx, nil)
+}
+
+// runEmailPipeline 是唯一真正执行流水线的地方。
+//
+// 整个函数体都在 emailPipelineMu 里：Pipeline 是单例，而定时任务与 HTTP 手动
+// 触发会并发进来。spamOverride 非 nil 时只覆盖本轮、跑完恢复配置值——
+// 覆盖与执行必须处在同一把锁内，否则并发的手动跑会把另一轮正在进行的预演
+// 设置改掉（一次 dryRun:false 会在别人的预演窗口里触发真实 IMAP MOVE）。
+func (s *Server) runEmailPipeline(ctx context.Context, spamOverride *bool) *email.PipelineReport {
+	s.emailPipelineMu.Lock()
+	defer s.emailPipelineMu.Unlock()
+
 	mode := strings.ToLower(strings.TrimSpace(s.cfg.EmailExecutionMode))
 	if mode == "server" && strings.TrimSpace(s.cfg.EmailServerPipelineURL) != "" {
 		return s.delegatePipeline(ctx)
@@ -141,6 +233,12 @@ func (s *Server) RunEmailPipeline(ctx context.Context) *email.PipelineReport {
 	p := s.ensurePipeline()
 	if p == nil {
 		return &email.PipelineReport{Errors: []string{"email pipeline not configured"}}
+	}
+	if spamOverride != nil && *spamOverride != p.SpamDryRun {
+		log.Printf("[email/pipeline] 本轮清垃圾 dryRun=%v（配置值 %v）", *spamOverride, s.cfg.EmailSpamDryRun)
+		prev := p.SpamDryRun
+		p.SpamDryRun = *spamOverride
+		defer func() { p.SpamDryRun = prev }()
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
@@ -167,6 +265,8 @@ func (s *Server) delegatePipeline(ctx context.Context) *email.PipelineReport {
 }
 
 // handleEmailPipelineRun — POST /api/email/pipeline/run
+// body 可选 {"dryRunSpam": true|false} 覆盖本轮清垃圾的预演开关
+// （不传 = 用 POCKET_EMAIL_SPAM_DRYRUN 的配置值）。
 func (s *Server) handleEmailPipelineRun(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
@@ -176,7 +276,16 @@ func (s *Server) handleEmailPipelineRun(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusServiceUnavailable, "email store not configured")
 		return
 	}
-	rep := s.RunEmailPipeline(r.Context())
+	var body struct {
+		DryRunSpam *bool `json:"dryRunSpam"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	// 覆盖只作用于本轮：跑完立刻恢复成配置值，否则一次 dryRunSpam:false
+	// 会永久改掉后续每日定时任务的行为。覆盖与执行由 runEmailPipeline 在
+	// 同一把锁内完成（Pipeline 是单例，手动跑与定时跑会并发）。
+	rep := s.runEmailPipeline(r.Context(), body.DryRunSpam)
 	writeJSON(w, http.StatusOK, rep)
 }
 
@@ -237,26 +346,49 @@ func (s *Server) handleEmailInvoiceExport(w http.ResponseWriter, r *http.Request
 		return
 	}
 	outDir := filepath.Join(s.dataDir, "email-invoices", "exports", wsID)
-	outPath, err := email.ExportInvoiceGrid(outDir, files, body.Grid)
+	gridExport, err := email.ExportInvoiceGridDetailed(outDir, files, body.Grid)
 	if err != nil {
+		// 选中的发票一个都用不了（畸形 PDF / 坏图片）是用户选择问题，回 400；
+		// 之前一律 500，前端只会显示「操作失败」，看不出是哪张票坏了。
+		if errors.Is(err, email.ErrNoUsableInvoiceFile) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// 记录导出时间 + 通知前端刷新
+	outPath := gridExport.Path
+	// 记录导出时间 + 通知前端刷新。只给**真正进入网格**的票打时间戳：
+	// 被跳过的坏文件不能算「已导出」，否则发票页会显示一张根本没导出的票已归档。
+	// 注意不能用 count 前 N 个——跳过的文件可能在清单中间。
+	skipped := make(map[string]bool, len(gridExport.Skipped))
+	for _, name := range gridExport.Skipped {
+		skipped[name] = true
+	}
 	now := time.Now().Unix()
-	for _, id := range exportedIDs {
-		_ = s.emailStore.MarkInvoiceExported(r.Context(), id, uid, wsID, now)
+	exported := 0
+	for i, f := range files {
+		if i >= len(exportedIDs) {
+			break
+		}
+		if skipped[filepath.Base(f)] {
+			continue
+		}
+		_ = s.emailStore.MarkInvoiceExported(r.Context(), exportedIDs[i], uid, wsID, now)
+		exported++
 	}
 	if s.wsHub != nil {
 		s.wsHub.BroadcastToUser(uid, "email.invoices.exported", map[string]any{
-			"file": filepath.Base(outPath), "count": len(exportedIDs), "grid": body.Grid,
+			"file": filepath.Base(outPath), "count": gridExport.Count, "grid": body.Grid,
+			"skipped": gridExport.Skipped,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"file":  filepath.Base(outPath),
-		"count": len(exportedIDs),
-		"grid":  body.Grid,
-		"url":   "/api/emails/invoices/export/download?file=" + filepath.Base(outPath),
+		"file":    filepath.Base(outPath),
+		"count":   gridExport.Count,
+		"grid":    body.Grid,
+		"skipped": gridExport.Skipped,
+		"url":     "/api/emails/invoices/export/download?file=" + filepath.Base(outPath),
 	})
 }
 
@@ -312,7 +444,13 @@ func (s *Server) handleEmailInvoicePush(w http.ResponseWriter, r *http.Request) 
 		"errors": rep.Errors,
 	}
 	if rep.FeishuPushed == 0 {
-		// 兜底：生成共享汇总文档（CSV + Markdown，含合计金额）
+		// 飞书发不出文件时的兜底：① 能建共享台账就建（别人可打开的电子表格），
+		// ② 无论如何都生成本地 CSV/MD 清单（含合计金额）。
+		if url, lerr := p.PublishLedgerScoped(r.Context(), uid, wsID); lerr != nil {
+			result["ledgerError"] = lerr.Error()
+		} else if url != "" {
+			result["shareDocUrl"] = url
+		}
 		csvPath, mdPath, err := p.BuildInvoiceSummaryDocs(r.Context(), uid, wsID)
 		if err == nil {
 			result["shareDocCsv"] = filepath.Base(csvPath)
@@ -370,6 +508,12 @@ func (s *Server) handleEmailInvoiceSummary(w http.ResponseWriter, r *http.Reques
 		csvName = filepath.Base(csvPath)
 		mdName = filepath.Base(mdPath)
 	}
+	// 飞书可用时同时给一份可分享的共享台账链接（需求：建立共享文档及文件，
+	// 整理一个列表并汇总金额）。发布失败不阻断汇总接口。
+	ledgerURL, ledgerErr := p.PublishLedgerScoped(r.Context(), uid, wsID)
+	if ledgerErr != nil {
+		log.Printf("[email/summary] publish feishu ledger: %v", ledgerErr)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"count":       len(invoices),
 		"amountTotal": total,
@@ -379,5 +523,7 @@ func (s *Server) handleEmailInvoiceSummary(w http.ResponseWriter, r *http.Reques
 		"rows":        rows,
 		"shareDocCsv": csvName,
 		"shareDocMd":  mdName,
+		"shareDocUrl": ledgerURL,
 	})
 }
+

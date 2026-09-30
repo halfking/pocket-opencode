@@ -141,6 +141,28 @@ func NotifyRecipients(ev WorkItemEvent, parts []Participant, ownerID string, pay
 	}
 }
 
+// StatusChangeEventType picks the activity-stream event for a status change.
+// It returns "" when nothing actually changed — that is the caller's signal to
+// stay silent rather than to write a no-op event and notify everyone that
+// nothing happened.
+//
+// Completion is its own event type because it reaches a different set of
+// people with a different tone: everyone involved hears about a status change,
+// while `completed` also tells the person who did it (see NotifyRecipients).
+func StatusChangeEventType(from, to string) string {
+	before := strings.ToLower(strings.TrimSpace(from))
+	after := strings.ToLower(strings.TrimSpace(to))
+	if before == after {
+		return ""
+	}
+	switch after {
+	case "completed", "accepted":
+		return EventCompleted
+	default:
+		return EventStatusChanged
+	}
+}
+
 // NotificationTitle renders the English fallback headline. Clients with a
 // translation entry localise it themselves; this string exists so a client
 // without one still shows something meaningful, matching the flashcard and

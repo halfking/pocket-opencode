@@ -34,9 +34,12 @@ func TestDueTaskRemindersFilters(t *testing.T) {
 	mk := func(id string, remindAt int64, status string) {
 		t.Helper()
 		typ := TypeDev
+		// created_at / updated_at are NOT NULL with no default; the store's own
+		// insert always supplies them. This fixture omitted them, which only
+		// showed up the first time these tests ran against a real database.
 		if _, err := s.pool.Exec(ctx, `
-			INSERT INTO tasks (id, workspace_id, title, status, priority, type, remind_at, visibility)
-			VALUES ($1, 'ws-1', $1, $3, 'normal', $4, $2, 'private')`, id, remindAt, status, typ); err != nil {
+			INSERT INTO tasks (id, workspace_id, title, status, priority, type, remind_at, visibility, created_at, updated_at)
+			VALUES ($1, 'ws-1', $1, $3, 'normal', $4, $2, 'private', $5, $5)`, id, remindAt, status, typ, now); err != nil {
 			t.Fatalf("seed %s: %v", id, err)
 		}
 	}
@@ -69,8 +72,8 @@ func TestDueTaskRemindersIsWorkspaceScoped(t *testing.T) {
 	now := time.Now().Unix()
 
 	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO tasks (id, workspace_id, title, status, priority, type, remind_at, visibility)
-		VALUES ('theirs', 'ws-2', 'theirs', 'active', 'normal', 'dev', $1, 'private')`, now-60); err != nil {
+		INSERT INTO tasks (id, workspace_id, title, status, priority, type, remind_at, visibility, created_at, updated_at)
+		VALUES ('theirs', 'ws-2', 'theirs', 'active', 'normal', 'dev', $1, 'private', $2, $2)`, now-60, now); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	got, err := s.DueTaskReminders(ctx, "ws-1", now, 50)
@@ -336,6 +339,15 @@ func TestListTaskApprovals(t *testing.T) {
 	ctx := context.Background()
 
 	mustCreate(t, s, "t-1", "ws-1", "task")
+	// The projection materializes onto the tasks *linked to its session*, so a
+	// task with no session link legitimately receives nothing. The fixture used
+	// to skip the link, which is why this read came back empty the first time
+	// it ran against a real database.
+	if err := s.AttachSessionScoped(ctx, SessionLink{
+		TaskID: "t-1", InstanceID: "inst", SessionID: "sess", Role: "primary",
+	}, "ws-1"); err != nil {
+		t.Fatalf("AttachSessionScoped: %v", err)
+	}
 	if err := s.ApplyApprovalProjection(ctx, ApprovalProjectionEvent{
 		WorkspaceID: "ws-1", InstanceID: "inst", SessionID: "sess",
 		RequestID: "req-1", Kind: ApprovalKindPermission, State: ApprovalStatePending, Version: 1,

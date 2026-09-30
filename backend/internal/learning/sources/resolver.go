@@ -27,12 +27,24 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// emailScopedReader is the slice of the email store the resolver needs.
+//
+// It is an interface rather than *email.Store so the tenancy rule below can be
+// tested without a database: the interesting case is a store that *answers*
+// with somebody else's email, and that cannot be staged without real rows.
+type emailScopedReader interface {
+	// GetEmailByIDScoped must return (nil, nil) for an email that is not
+	// owned by (userID, workspaceID). An implementation that ignores the
+	// scope arguments must never be wired here.
+	GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID string) (*email.Email, error)
+}
+
 // Resolver implements learning.SourceResolver over the real stores. Any store
 // may be nil (remote-only mode); the corresponding kind then answers
 // "not found" instead of panicking.
 type Resolver struct {
 	notes   *notes.Store
-	emails  *email.Store
+	emails  emailScopedReader
 	rss     *rss.Store
 	meeting *meeting.Store
 }
@@ -82,14 +94,17 @@ func (r *Resolver) Resolve(ctx context.Context, kind, sourceID, userID, workspac
 		if r.emails == nil {
 			return nil, learning.ErrSourceNotFound
 		}
-		msg, err := r.emails.GetEmailByID(ctx, sourceID)
+		// The lookup itself is tenant-scoped (it joins email_accounts), so a
+		// foreign email is indistinguishable from a missing one. Do NOT
+		// re-check msg.WorkspaceID here: the detail projection never selects
+		// that column, so it is always "" and such a check passes for every
+		// caller — which is exactly how this path became an exfiltration hole.
+		msg, err := r.emails.GetEmailByIDScoped(ctx, sourceID, userID, wsID)
 		if err != nil {
 			return nil, wrapNotFound("email", err)
 		}
-		// GetEmailByID is not tenant-scoped, so enforce the boundary here: a
-		// mismatched workspace is reported exactly like "not found".
-		if msg.WorkspaceID != "" && msg.WorkspaceID != wsID {
-			return nil, learning.ErrSourceNotFound
+		if msg == nil {
+			return nil, fmt.Errorf("%w: email", learning.ErrSourceNotFound)
 		}
 		title := strings.TrimSpace(msg.Subject)
 		if title == "" {

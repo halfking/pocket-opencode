@@ -1131,6 +1131,10 @@ func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc 
 		SMTPHost     *string `json:"smtpHost"`
 		SMTPPort     *int    `json:"smtpPort"`
 		SMTPPassword *string `json:"smtpPassword"`
+		// UpdatedAt 是客户端本地镜像里这一行的时间戳（LWW 基准版本）。
+		// 省略/0 = 旧客户端，服务端无条件覆盖；带上则做 last-write-by-time
+		// 守卫：服务端比它新就回 409 + 当前 updated_at，让客户端改走下行。
+		UpdatedAt *int64 `json:"updatedAt"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -1213,9 +1217,21 @@ func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc 
 	}
 
 	uid := s.userIDFromRequest(r)
-	if err := s.emailStore.UpdateAccountScoped(r.Context(), acc, uid, workspaceID, encrypted, updateCredential); err != nil {
+	var baseUpdatedAt int64
+	if body.UpdatedAt != nil && *body.UpdatedAt > 0 {
+		baseUpdatedAt = *body.UpdatedAt
+	}
+	if err := s.emailStore.UpdateAccountLWTScoped(r.Context(), acc, uid, workspaceID, encrypted, updateCredential, baseUpdatedAt); err != nil {
 		if errors.Is(err, email.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "account not found")
+			return
+		}
+		if errors.Is(err, email.ErrStaleWrite) {
+			// 服务端这份更新：附上当前 updated_at，客户端可直接覆盖本地镜像。
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":     "stale write: server copy is newer",
+				"updatedAt": acc.UpdatedAt,
+			})
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "update account: "+err.Error())
@@ -1664,13 +1680,7 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 	//    （em.BodyPath 来自 GetEmailByIDScoped 的 body_path 列；旧逻辑每次盲试文件。）
 	if em.BodyPath != "" {
 		if cached, _ := s.readCachedEmailBody(ctx, emailID, em.UID); cached != nil {
-			display := email.ExtractDisplayBody(cached)
-			writeJSON(w, http.StatusOK, map[string]any{
-				"emailId": emailID,
-				"source":  "cache",
-				"bytes":   len(display),
-				"body":    display,
-			})
+			writeJSON(w, http.StatusOK, s.emailBodyResponse(emailID, "cache", cached))
 			return
 		}
 	}
@@ -1685,15 +1695,25 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 		writeError(w, http.StatusUnprocessableEntity, "email missing imap uid")
 		return
 	}
-	body, err := s.emailFetcher.FetchBody(ctx, em.AccountID, em.UID, maxBodyBytes)
+	// 3) 主路径取整封原文（BODY.PEEK[]），而不是 BODY[TEXT]。
+	//
+	// BODY[TEXT] 是服务器端就挑好的纯文本，HTML 分支、cid 内联图、附件结构
+	// 在这一步已经全部丢失；而前端唯一的详情入口 EmailDetailView 拿到响应后
+	// 直接交给 extractEmailBody()——它需要完整 MIME 树才能把
+	// <img src="cid:..."> 内联成 data URI、在 multipart/alternative 里选 HTML。
+	// 两者对不上，就是真机报的「详情展示不正常、缺失图片或内容」。
+	body, err := s.emailFetcher.FetchMessageRaw(ctx, em.AccountID, em.UID)
 	if err != nil {
-		raw, rawErr := s.emailFetcher.FetchMessageRaw(ctx, em.AccountID, em.UID)
-		if rawErr != nil {
-			log.Printf("[email/body] imap fetch email=%s account=%s uid=%d: %v; raw: %v", emailID, em.AccountID, em.UID, err, rawErr)
+		// 整封原文拿不到（部分服务器/代理对 BODY[] 有限制）→ 退回 BODY[TEXT]。
+		// 此时只剩纯文本，详情会退化成无图无 HTML 的纯文本模式，但好过整封报错。
+		text, terr := s.emailFetcher.FetchBody(ctx, em.AccountID, em.UID, maxBodyBytes)
+		if terr != nil {
+			log.Printf("[email/body] imap fetch email=%s account=%s uid=%d: raw: %v; text: %v", emailID, em.AccountID, em.UID, err, terr)
 			writeError(w, http.StatusBadGateway, "imap fetch failed")
 			return
 		}
-		body = raw
+		log.Printf("[email/body] email=%s uid=%d: BODY[] unavailable (%v), fell back to BODY[TEXT]（详情将无图无 HTML）", emailID, em.UID, err)
+		body = text
 	}
 	if writeErr := s.writeCachedEmailBody(ctx, emailID, body); writeErr != nil {
 		log.Printf("[email/body] cache write email=%s: %v", emailID, writeErr)
@@ -1702,13 +1722,36 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 	if markErr := s.emailStore.MarkEmailBodyCached(ctx, emailID, bodyCacheRelativePath(emailID), len(body)); markErr != nil && !errors.Is(markErr, email.ErrNotFound) {
 		log.Printf("[email/body] mark body cached email=%s: %v", emailID, markErr)
 	}
-	display := email.ExtractDisplayBody(body)
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, http.StatusOK, s.emailBodyResponse(emailID, "imap", body))
+}
+
+// emailBodyResponse 组装 /api/emails/{id}/body 的响应。
+//
+// body 字段承载的是「整封 MIME 原文」，不是拍平后的展示文本：前端
+// EmailDetailView 是唯一消费者，它拿到 body 后交给 extractEmailBody()
+// 解析——cid 内联图、multipart/alternative 选分支、quoted-printable 与
+// GB2312 解码全都依赖完整 MIME 树。之前这里返回
+// ExtractDisplayBody(BodyText) 拍平结果，且那份 body 来自 BODY[TEXT]
+// （服务器端已丢掉 HTML/内嵌图/附件），于是详情页永远只剩一段纯文本。
+//
+// 非 MIME 输入（旧版本缓存下来的拍平文本、或 BODY[TEXT] 回退结果）仍然要
+// 能显示，故保留 ExtractDisplayBody 兜底。
+func (s *Server) emailBodyResponse(emailID, source string, raw []byte) map[string]any {
+	if _, err := email.ParseMIMEMessage(raw); err != nil {
+		display := email.ExtractDisplayBody(raw)
+		return map[string]any{
+			"emailId": emailID,
+			"source":  source,
+			"bytes":   len(display),
+			"body":    display,
+		}
+	}
+	return map[string]any{
 		"emailId": emailID,
-		"source":  "imap",
-		"bytes":   len(display),
-		"body":    display,
-	})
+		"source":  source,
+		"bytes":   len(raw),
+		"body":    string(raw),
+	}
 }
 
 // bodyCacheDirName 缓存目录名；放在 dataDir 内、模式 0700，仅进程可读。
@@ -2309,7 +2352,12 @@ func audioFilenameForContentType(contentType string) string {
 
 func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 	if s.transcriber == nil {
-		writeError(w, http.StatusServiceUnavailable, "STT cloud not configured (set POCKET_GROQ_API_KEY)")
+		// 错误码前缀是前后端契约：前端 api/error-message.ts 用
+		// extractErrorCode() 取 `code:` 前半段做精确匹配，映射到
+		// errors.sttNotConfigured（"语音转写服务尚未配置"）。
+		// 不带码时只能落到通用 not configured 文案（"该功能尚未完成配置"），
+		// 用户不知道该去配什么。
+		writeError(w, http.StatusServiceUnavailable, "stt_unavailable: STT cloud not configured (set POCKET_GROQ_API_KEY)")
 		return
 	}
 	if r.Method != http.MethodPost {

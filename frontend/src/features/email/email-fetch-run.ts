@@ -1,6 +1,7 @@
 import { Capacitor } from '@capacitor/core'
 import { emailApi } from '../../api/email'
 import { PRODUCTION_API_BASE, resolveApiBase } from '../../config/api-base'
+import i18n from '../../i18n'
 import { useAuthStore } from '../../stores/auth'
 import { formatFetchHint, resolveFetchApiBase, sanitizeFetchHint } from './email-fetch-plan'
 import { configureNativeEmailFetch, runNativeEmailFetch } from './email-fetch-native'
@@ -46,5 +47,9 @@ export async function runDelegatedEmailFetch(opts?: { classify?: boolean }): Pro
       /* 列表已拉；归类交给导航栏 */
     }
   }
-  return { hint: sanitizeFetchHint(formatFetchHint(syncHint, classified)), classified }
+  return {
+    hint: sanitizeFetchHint(formatFetchHint(syncHint, classified), (k, p) =>
+      p ? (i18n.global.t(k, p) as string) : (i18n.global.t(k) as string)),
+    classified,
+  }
 }

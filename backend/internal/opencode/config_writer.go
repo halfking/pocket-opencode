@@ -15,11 +15,26 @@ import (
 // POCKET_LLM_GATEWAY_URL 仍可覆盖。reset 后首次启动 pocketd 会自动写 seed。
 const DefaultLLMGatewayBaseURL = "https://llm.kxpms.cn/v1"
 
+// 租户密钥**不从这里出**。
+//
+// 曾经有人为了「全新实例不配 env 也能连通」加了一个明文常量
+// DefaultLLMGatewayAPIKey，并把这句注释换成了「仅适用于私有部署仓库」。
+// 那是把一把能计费的真实网关密钥写进源码：它会进 git 历史（不可撤回），
+// 并且成为所有部署的默认密钥——包括运营方从未配置过的实例（邮件分类等
+// 路径会直接拿它去计费）。密钥只从 POCKET_LLM_GATEWAY_API_KEY 注入。
+//
+// 没有该 env 时网关就是「未配置」状态：设置页会提示填 key，
+// integration_status 也能如实报 disabled。这比"偷偷能用别人的 key"诚实。
+
 // DefaultLLMGatewayPreferredModels 默认「常用模型」列表，写入 seed 的
 // preferredModels。catalog models 仍由「测试连接」拉取后写入。
-// API Key 只从 POCKET_LLM_GATEWAY_API_KEY 注入，禁止把租户密钥写进仓库。
 //
-// 2026-09-30 实测记录（不据此改顺序，理由见下）：
+// 2026-09-30 用户指定：设置页默认勾选下列 9 个（按用户给出的顺序写死），
+// 前面的 claude-opus-4-8 / claude-sonnet-4-6 / gpt-5.6 / gpt-5.5 / gpt-5.4 /
+// deepseek-v4-pro / mimo-v2.5-pro 已从默认勾选里移除（仍可在设置页手动加回，
+// 目录来自网关 /v1/models）。
+//
+// 旧顺序的实测记录（保留作为后续调整依据，见下）：
 // 本列表同时是 auto 模式的降级链顺序（llmbff_provider_adapters.go 的
 // nextFallbackModel 按序取候选，每个候选 20s 尝试窗）。真机上 auto 模式实测
 // 首问 25.3s：首选候选吃满 20s 尝试窗后降级到 claude-opus-4-8 才拿到回答。
@@ -35,18 +50,17 @@ const DefaultLLMGatewayBaseURL = "https://llm.kxpms.cn/v1"
 // 那只会把噪声固化进默认值。20s 尝试窗本身也不宜调低——代码注释记录过
 // kimi-k3 长 prompt 首 token 实测 >20s，调低会误杀慢而可用的模型。
 // 网关侧模型可用性治理由网关负责，应用侧保持"链式降级 + 进度帧"这一既有设计。
+// 注意：本列表同时是 auto 模式的降级链顺序，改动会同时改变默认首选模型。
 var DefaultLLMGatewayPreferredModels = []string{
-	"claude-fable-5",
-	"claude-opus-4-8",
-	"claude-sonnet-4-6",
-	"claude-sonnet-5",
-	"gpt-5.6",
-	"gpt-5.5",
-	"gpt-5.4",
 	"glm-5.2",
 	"minimax-m3",
-	"deepseek-v4-pro",
-	"mimo-v2.5-pro",
+	"kimi-k3",
+	"claude-sonnet-5",
+	"gpt-5.6-terra",
+	"claude-opus-5",
+	"claude-fable-5",
+	"gpt-5.6-sol",
+	"gemini-3.5-flash",
 }
 
 // LLMGatewayConfig 描述注入到 OpenCode 的 LLM Gateway 配置。

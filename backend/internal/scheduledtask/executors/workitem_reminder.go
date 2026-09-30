@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
@@ -49,11 +50,24 @@ type WorkItemClient interface {
 	AppendEvent(ctx context.Context, ev task.WorkItemEvent) error
 }
 
+// QuietPreferencesLookup resolves one user's do-not-disturb configuration.
+//
+// It exists because a single server-wide window cannot be right for everyone:
+// the minute-of-day a reminder lands on is the *owner's* local time, so a
+// window applied in UTC pushes a 23:50 Asia/Shanghai reminder straight
+// through. A nil implementation is legitimate — it means "no preferences are
+// stored", and every user then falls back to the server's zone.
+type QuietPreferencesLookup interface {
+	QuietPreferences(ctx context.Context, wsID, userID string) (task.QuietPreferences, bool)
+}
+
 // WorkItemReminderExecutor implements scheduledtask.KindWorkItemReminder.
 type WorkItemReminderExecutor struct {
 	tasks WorkItemClient
 	notif NotificationClient
 	quiet task.QuietWindow
+	// prefs resolves each work item owner's own timezone. Optional.
+	prefs QuietPreferencesLookup
 	// batch caps how many reminders one tick fires, so a backlog created by
 	// an outage cannot produce one huge burst the moment the service returns.
 	batch int
@@ -70,6 +84,15 @@ func NewWorkItemReminderExecutor(tc WorkItemClient, notif NotificationClient) *W
 		batch:      50,
 		staleAfter: DefaultStaleAfter,
 	}
+}
+
+// SetQuietPreferences wires the per-user do-not-disturb lookup. A nil lookup
+// leaves every user on the server default.
+func (e *WorkItemReminderExecutor) SetQuietPreferences(l QuietPreferencesLookup) {
+	if e == nil {
+		return
+	}
+	e.prefs = l
 }
 
 // DefaultStaleAfter is how late a reminder may be and still be worth pushing.
@@ -105,16 +128,17 @@ func (*WorkItemReminderExecutor) Kind() scheduledtask.Kind {
 
 // reminderPayload is the scheduled-task payload:
 //
-//	{"workspace_id":"...","user_id":"...","limit":50}
+//	{"user_id":"...","limit":50}
 //
-// workspace_id and user_id fall back to the scheduled task's own tenancy; the
-// client cannot widen the scan beyond the task's workspace because the store
-// query is workspace-scoped and the payload value is only ever substituted
-// when the task has none.
+// It carries **no workspace**. The tenant is the scheduled task's own
+// workspace_id, and nothing in the payload can change it: a payload-supplied
+// workspace used to win over the task's, which let any authenticated user point
+// their own reminder job at another tenant — the executor then wrote events and
+// sent push notifications inside that workspace. The store query is scoped, but
+// it was being handed the *attacker's* scope, so the scoping bought nothing.
 type reminderPayload struct {
-	UserID      string `json:"user_id"`
-	WorkspaceID string `json:"workspace_id"`
-	Limit       int    `json:"limit"`
+	UserID string `json:"user_id"`
+	Limit  int    `json:"limit"`
 }
 
 func (e *WorkItemReminderExecutor) Execute(ctx context.Context, t *scheduledtask.Task) (*scheduledtask.Result, error) {
@@ -130,13 +154,19 @@ func (e *WorkItemReminderExecutor) Execute(ctx context.Context, t *scheduledtask
 			return nil, fmt.Errorf("decode work item reminder payload: %w", err)
 		}
 	}
-	wsID := p.WorkspaceID
+	// The scheduled task's own tenancy is the only tenancy. An empty workspace
+	// means the row is malformed; fail closed rather than fall back to a
+	// default tenant and scan somebody's work items.
+	wsID := strings.TrimSpace(t.WorkspaceID)
 	if wsID == "" {
-		wsID = t.WorkspaceID
+		return nil, fmt.Errorf("work item reminder task %s has no workspace; refusing to scan an unscoped set", t.ID)
 	}
-	limit := p.Limit
-	if limit <= 0 {
-		limit = e.batch
+	// The payload may lower the batch (a smaller tick) but never raise it: the
+	// cap exists so an outage backlog cannot come back as one huge burst, and
+	// a client-supplied 200 would defeat exactly that.
+	limit := e.batch
+	if p.Limit > 0 && p.Limit < limit {
+		limit = p.Limit
 	}
 
 	now := time.Now().Unix()
@@ -146,12 +176,27 @@ func (e *WorkItemReminderExecutor) Execute(ctx context.Context, t *scheduledtask
 	}
 
 	fired, deferred, notified, stale := 0, 0, 0, 0
+	quiet := e.newQuietResolver(wsID)
+	quiet.fallback = e.quiet
 	for _, item := range due {
+		// Defence in depth: the scan above is workspace-scoped, so every row
+		// belongs to wsID. If one ever does not (a store change, a hand-edited
+		// row), writing an event and pushing a notification for it is the
+		// cross-tenant write this file used to allow. Skip it instead.
+		itemWS := strings.TrimSpace(item.WorkspaceID)
+		if itemWS != "" && itemWS != wsID {
+			log.Printf("[work_item] reminder for %s claims workspace %q but the job runs in %q; skipped",
+				item.ID, itemWS, wsID)
+			continue
+		}
+		if itemWS == "" {
+			itemWS = wsID
+		}
 		// Staleness is checked before quiet hours: a three-day-old reminder
 		// must not be "deferred to 07:30 tomorrow" either — it is retired.
 		if e.staleAfter > 0 && now-item.RemindAt > int64(e.staleAfter/time.Second) {
 			stale++
-			if err := e.tasks.ClearTaskRemindAt(ctx, item.ID, wsID, 0); err != nil {
+			if err := e.tasks.ClearTaskRemindAt(ctx, item.ID, itemWS, 0); err != nil {
 				// Leave it in place; the next tick re-evaluates it. Retiring a
 				// stale reminder is not worth failing the batch over.
 				log.Printf("[work_item] retire stale reminder for %s failed: %v", item.ID, err)
@@ -160,11 +205,14 @@ func (e *WorkItemReminderExecutor) Execute(ctx context.Context, t *scheduledtask
 		}
 
 		// Quiet hours first: a deferred reminder is still pending, so it must
-		// not be counted as fired and must not be notified yet.
-		next := e.quiet.Defer(item.RemindAt)
+		// not be counted as fired and must not be notified yet. The window and
+		// the day boundary are the *owner's* — §4.2 sends `reminded` to the
+		// owner, so the owner's local midnight is the one that decides.
+		window, loc := quiet.resolve(ctx, item)
+		next := window.Defer(item.RemindAt, loc)
 		if next != item.RemindAt {
 			deferred++
-			if err := e.tasks.ClearTaskRemindAt(ctx, item.ID, wsID, next); err != nil {
+			if err := e.tasks.ClearTaskRemindAt(ctx, item.ID, itemWS, next); err != nil {
 				// Leave the original time in place; the next tick retries the
 				// deferral rather than losing the reminder.
 				log.Printf("[work_item] defer reminder for %s failed: %v", item.ID, err)
@@ -173,14 +221,14 @@ func (e *WorkItemReminderExecutor) Execute(ctx context.Context, t *scheduledtask
 			continue
 		}
 
-		if err := e.fireOne(ctx, wsID, item); err != nil {
+		if err := e.fireOne(ctx, itemWS, item); err != nil {
 			// One bad work item must not abort the batch: the rest still get
 			// their reminders, and this one is retried on the next tick.
 			log.Printf("[work_item] reminder for %s failed: %v", item.ID, err)
 			continue
 		}
 		fired++
-		notified += e.notify(ctx, wsID, item)
+		notified += e.notify(ctx, itemWS, item)
 	}
 
 	out, _ := json.Marshal(map[string]any{
@@ -192,6 +240,66 @@ func (e *WorkItemReminderExecutor) Execute(ctx context.Context, t *scheduledtask
 		"notified":    notified,
 	})
 	return &scheduledtask.Result{Output: out}, nil
+}
+
+// quietFor returns the per-owner do-not-disturb resolver, created once per
+// tick so a batch of fifty reminders does not read the same user's settings
+// fifty times. It lives on the call stack rather than on the executor because
+// the executor is shared across ticks.
+func (e *WorkItemReminderExecutor) newQuietResolver(wsID string) *quietResolver {
+	return &quietResolver{
+		wsID:     wsID,
+		lookup:   e.prefs,
+		cache:    map[string]cachedQuiet{},
+		fallback: task.QuietWindow{},
+	}
+}
+
+// quietResolver memoizes one lookup per user for the length of a tick.
+type quietResolver struct {
+	wsID     string
+	lookup   QuietPreferencesLookup
+	cache    map[string]cachedQuiet
+	fallback task.QuietWindow
+}
+
+type cachedQuiet struct {
+	window task.QuietWindow
+	loc    *time.Location
+}
+
+// resolve returns the window and timezone to apply for this work item's owner.
+// The lookup is skipped entirely when no preferences are wired, when the work
+// item has no owner, or when the same owner was already resolved this tick.
+func (q *quietResolver) resolve(ctx context.Context, item task.Task) (task.QuietWindow, *time.Location) {
+	if q == nil || q.lookup == nil {
+		return q.window(), nil
+	}
+	owner := strings.TrimSpace(item.OwnerID)
+	if owner == "" {
+		// §4.2 notifies the owner, so a work item without one is nobody's quiet
+		// hours to respect.
+		return q.window(), nil
+	}
+	if hit, ok := q.cache[owner]; ok {
+		return hit.window, hit.loc
+	}
+	out := cachedQuiet{window: q.window()}
+	// A lookup failure must not silence a reminder, so an error falls back to
+	// the server default rather than aborting the tick.
+	if prefs, ok := q.lookup.QuietPreferences(ctx, q.wsID, owner); ok {
+		out.window = prefs.Window()
+		out.loc = prefs.Location()
+	}
+	q.cache[owner] = out
+	return out.window, out.loc
+}
+
+func (q *quietResolver) window() task.QuietWindow {
+	if q == nil || q.fallback == (task.QuietWindow{}) {
+		return task.DefaultQuietWindow()
+	}
+	return q.fallback
 }
 
 // fireOne writes the `reminded` event and retires the reminder point.

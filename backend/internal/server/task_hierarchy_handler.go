@@ -42,15 +42,35 @@ func (s *Server) handleTaskChildren(w http.ResponseWriter, r *http.Request, task
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Reading the parent is not permission to read its children. A private sub
+	// task belongs to its own owner, and the parent can be shared (or belong to
+	// somebody else) while the child is not — so each child is filtered through
+	// the same CanReadWorkItem rule that guards the parent. Without this, one
+	// GET on a shared goal hands over every private child in full.
+	ids := make([]string, 0, len(children))
+	for _, c := range children {
+		ids = append(ids, c.ID)
+	}
+	childParts, err := s.taskStore.ListParticipantsForTasks(r.Context(), wsID, ids)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	reader := s.userIDFromRequest(r)
+	visible := task.FilterReadableChildren(children, func(c task.Task) []task.Participant {
+		return childParts[c.ID]
+	}, reader)
 	// Recompute from the children we just read instead of a second query: the
 	// roll-up is a pure function over these statuses, and a second query could
-	// disagree with this list if a child changed in between.
-	statuses := make([]string, 0, len(children))
-	for _, c := range children {
+	// disagree with this list if a child changed in between. Hidden children
+	// are excluded from the count too — "3 of 5 done" would otherwise leak
+	// the existence of children the reader may not open.
+	statuses := make([]string, 0, len(visible))
+	for _, c := range visible {
 		statuses = append(statuses, c.Status)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"children": children,
+		"children": visible,
 		"progress": task.RollUpProgress(taskID, statuses),
 	})
 }
@@ -128,6 +148,11 @@ func (s *Server) handleTaskSubtasks(w http.ResponseWriter, r *http.Request, task
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Named assignees become participants, or they could not open the child and
+	// would never hear about it.
+	if err := s.taskStore.SyncAssigneeParticipants(r.Context(), child.ID, wsID, ownerID, body.Assignees); err != nil {
+		s.Write(r, "task.subtask.participants_failed", "task:"+taskID, AuditFields{Success: false, Detail: err.Error()})
 	}
 	// The parent's activity stream records the new child, so the goal's
 	// history explains where its progress came from. This event maps to no

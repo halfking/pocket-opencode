@@ -9,6 +9,30 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
 )
 
+// STT 未装配时必须返回**带错误码**的 503。
+//
+// 前端 api/error-message.ts:extractErrorCode() 只认 `code: 说明` 这种
+// 前缀格式，`ERROR_CODE_I18N_KEYS` 里 stt_unavailable → errors.sttNotConfigured。
+// 不带码就只能落到通用 not configured 文案（"该功能尚未完成配置"），
+// 用户不知道该去配语音转写服务。
+func TestSttTranscribeUnconfiguredCarriesErrorCode(t *testing.T) {
+	srv, tokens := newWorkspaceIsolationServer(t)
+	srv.transcriber = nil
+
+	req := httptest.NewRequest(http.MethodPost, "/api/stt/transcribe", strings.NewReader("raw audio"))
+	req.Header.Set("Authorization", "Bearer "+tokens["ws-a"])
+	req.Header.Set("Content-Type", "audio/webm")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unconfigured STT status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "stt_unavailable:") {
+		t.Fatalf("响应必须带 stt_unavailable 错误码前缀，实际：%s", rr.Body.String())
+	}
+}
+
 func TestSttTranscribeAcceptsRawAudio(t *testing.T) {
 	srv, tokens := newWorkspaceIsolationServer(t)
 	srv.transcriber = stt.NewTranscriber("", "", "")

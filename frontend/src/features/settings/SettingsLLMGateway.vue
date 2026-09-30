@@ -46,7 +46,7 @@
           v-model="form.baseURL"
           class="form-input"
           type="text"
-          placeholder="https://llmgo.kxpms.cn/v1"
+          placeholder="https://llm.kxpms.cn/v1"
           autocapitalize="off"
           autocorrect="off"
           spellcheck="false"
@@ -158,6 +158,11 @@ import { api, type GatewayConfig, type GatewayTestResult } from '../../api/clien
 import { createScrollHideChrome } from '../../composables/useScrollHideChrome'
 import { useApiError } from '../../composables/useApiError'
 import { saveSettingLocalFirst } from '../../native/config-sync/runtime'
+import {
+  DEFAULT_GATEWAY_BASE_URL,
+  DEFAULT_GATEWAY_FORMAT,
+  DEFAULT_GATEWAY_PREFERRED_MODELS,
+} from '../../constants/llm-gateway'
 
 const router = useRouter()
 
@@ -183,20 +188,20 @@ function measureChrome() {
 }
 
 const original = reactive<GatewayConfig>({
-  baseURL: '',
+  baseURL: DEFAULT_GATEWAY_BASE_URL,
   apiKeySet: false,
   apiKey: '',
-  models: [],
+  models: [...DEFAULT_GATEWAY_PREFERRED_MODELS],
   source: 'pocketd',
-  format: 'openai-chat',
-  preferredModels: [],
+  format: DEFAULT_GATEWAY_FORMAT,
+  preferredModels: [...DEFAULT_GATEWAY_PREFERRED_MODELS],
   formats: [],
 })
 
 const form = reactive({
-  baseURL: '',
+  baseURL: DEFAULT_GATEWAY_BASE_URL,
   apiKey: '',
-  format: 'openai-chat',
+  format: DEFAULT_GATEWAY_FORMAT,
 })
 
 /** 消息格式下拉框（优先服务端 formats，本地兜底同源常量）。 */
@@ -211,9 +216,13 @@ const formatOptions = computed(() =>
     : Object.entries(FORMAT_LABELS).map(([value, label]) => ({ value, label })),
 )
 
-/** 模型目录（测试连接后填充，勾选常用模型的候选）。 */
-const catalogModels = ref<string[]>([])
-const preferredSel = ref<Set<string>>(new Set())
+/**
+ * 模型目录（测试连接后填充，勾选常用模型的候选）。
+ * 初值用默认常用模型：离线 / 后端未起时那 9 个 chip 仍然可见可取消勾选，
+ * 而不是只留一句"测试连接后拉取目录"。后端返回真实目录后会整体替换它。
+ */
+const catalogModels = ref<string[]>([...DEFAULT_GATEWAY_PREFERRED_MODELS])
+const preferredSel = ref<Set<string>>(new Set(DEFAULT_GATEWAY_PREFERRED_MODELS))
 const modelSearch = ref('')
 
 /** 模型 id → 原厂分组。规则按前缀匹配，未识别归入「其他」（排在最后）。 */
@@ -290,13 +299,18 @@ onMounted(async () => {
     const raw = await api.getGatewayConfig()
     const cfg = { ...raw, models: raw.models ?? [], preferredModels: raw.preferredModels ?? [] }
     Object.assign(original, cfg)
-    form.baseURL = cfg.baseURL
-    form.format = cfg.format || 'openai-chat'
+    // 后端为空时保留内置默认（用户可能在设置里存过空/半截配置）。
+    form.baseURL = cfg.baseURL || DEFAULT_GATEWAY_BASE_URL
+    form.format = cfg.format || DEFAULT_GATEWAY_FORMAT
+    // preferredModels 空 = 用户主动清空（= 展示全部），不回落默认，否则
+    // "清空"后每次进设置页又被悄悄勾回 9 个。
     preferredSel.value = new Set(cfg.preferredModels)
     // 目录已有缓存模型时直接可作为勾选候选
     if (cfg.models.length > 0) catalogModels.value = cfg.models
   } catch (err: any) {
-    setStatus('error', apiError(err, 'errors.loadGatewayFailed'), 0)
+    // 拉不到后端配置（离线/后端未起）时，表单停留在内置默认值上，
+    // 状态条说明这一点，避免用户以为"没配置过"。
+    setStatus('error', `${apiError(err, 'errors.loadGatewayFailed')}（当前显示的是内置默认网关配置）`, 0)
   }
 })
 

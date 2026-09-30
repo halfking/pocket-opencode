@@ -1,4 +1,4 @@
-import { computed, onUnmounted, ref, watch } from 'vue'
+﻿import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { emailApi, type EmailInvoice, type EmailInvoiceStatus } from '../../api/email'
 import { financeApi } from '../../api/finance'
@@ -27,6 +27,8 @@ export function useInvoiceList() {
   const all = ref<EmailInvoice[]>([])
   const summary = ref({ total: 0, filed: 0, amount: 0, downloaded: 0, pending: 0, failed: 0 })
   const bookingId = ref('')
+  /** 飞书共享台账链接（推不出去时的兜底共享文档）。 */
+  const shareDocUrl = ref('')
   const selectMode = ref(false)
   const selected = ref<string[]>([])
   const thumbs = ref<Record<string, string>>({})
@@ -223,6 +225,10 @@ export function useInvoiceList() {
     pushing.value = true
     try {
       const res = await emailApi.pushInvoicesToFeishu(selected.value.length ? selected.value : undefined)
+      // 推不出去时服务端会兜底建共享台账（飞书电子表格）。把链接留住给用户点，
+      // 只弹一句 toast 的话，链接一闪而过等于没做。
+      if (res.shareDocUrl) shareDocUrl.value = res.shareDocUrl
+      if (res.ledgerError) console.warn('[email] feishu ledger publish failed:', res.ledgerError)
       toast.success(res.pushed > 0 ? `已推送 ${res.pushed} 张` : (res.message || '未推送'))
       await load()
     } catch (e: any) {
@@ -322,6 +328,7 @@ export function useInvoiceList() {
   })
   return {
     loading, loadingMore, hasMore, syncing, exporting, pushing, error, filter, summary, bookingId,
+    shareDocUrl,
     selectMode, selected, thumbs, preview, invoices, previewSrc, previewKind, previewTitle,
     formatAmount, statusLabel, bookable, toggleSelectMode, selectAllDownloaded, togglePick,
     downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline,
@@ -329,3 +336,4 @@ export function useInvoiceList() {
     exportCsv, remove,
   }
 }
+

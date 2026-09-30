@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -149,6 +150,43 @@ func TestMeetingWorkspaceIsolation(t *testing.T) {
 	if before.Status != "recording" || before.Transcript != "" {
 		t.Fatalf("cross-workspace transcribe changed meeting: status=%q transcript=%q", before.Status, before.Transcript)
 	}
+	// 没有配置任何 ASR 目标时，owner 自己调用也必须如实失败，而不是拿别人的
+	// 密钥去转写、也不是塞一段占位文本假装成功。用另一条会议做，避免污染上面
+	// 已经被断言过状态的 meetingA。
+	meetingNoASR := create(tokens["ws-a"], "workspace A meeting without ASR")
+	noASRTranscribe := serveWorkspaceJSON(t, h, http.MethodPost, "/api/meetings/"+meetingNoASR.ID+"/transcribe", tokens["ws-a"], "audio")
+	if noASRTranscribe.Code != http.StatusBadGateway {
+		t.Fatalf("unconfigured ASR transcribe status=%d body=%s", noASRTranscribe.Code, noASRTranscribe.Body.String())
+	}
+	noASRAfter := serveWorkspaceJSON(t, h, http.MethodGet, "/api/meetings/"+meetingNoASR.ID, tokens["ws-a"], "")
+	var noASRMeeting meeting.Meeting
+	if err := json.Unmarshal(noASRAfter.Body.Bytes(), &noASRMeeting); err != nil {
+		t.Fatalf("decode meeting after unconfigured transcribe: %v", err)
+	}
+	if noASRMeeting.Status == "transcribed" || noASRMeeting.Transcript != "" {
+		t.Fatalf("unconfigured transcribe fabricated a transcript: status=%q transcript=%q", noASRMeeting.Status, noASRMeeting.Transcript)
+	}
+
+	// 正向路径用测试自建的 ASR 目标：转写要真的成功并落库，且状态迁移正确。
+	asr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/audio/transcriptions" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-asr-key" {
+			t.Errorf("ASR request Authorization=%q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"张三: 同意发布\n李四: 我来负责上线"}`))
+	}))
+	defer asr.Close()
+	srv.transcriber = stt.NewResolver(func(context.Context, stt.Scope) (*stt.Target, error) {
+		return &stt.Target{
+			BaseURL: asr.URL + "/v1", APIKey: "test-asr-key", Model: "whisper-test",
+			Transport: stt.TransportTranscriptions, Channel: stt.ChannelExternal, Label: "test",
+		}, nil
+	})
+
 	ownerTranscribe := serveWorkspaceJSON(t, h, http.MethodPost, "/api/meetings/"+meetingA.ID+"/transcribe", tokens["ws-a"], "audio")
 	if ownerTranscribe.Code != http.StatusOK {
 		t.Fatalf("owner meeting transcribe status=%d body=%s", ownerTranscribe.Code, ownerTranscribe.Body.String())
@@ -160,6 +198,9 @@ func TestMeetingWorkspaceIsolation(t *testing.T) {
 	}
 	if afterTranscribe.Status != "transcribed" || afterTranscribe.Transcript == "" {
 		t.Fatalf("owner transcribe did not persist: status=%q transcript=%q", afterTranscribe.Status, afterTranscribe.Transcript)
+	}
+	if afterTranscribe.WorkspaceID != "ws-a" || afterTranscribe.OwnerID != "shared-user" {
+		t.Fatalf("owner transcribe changed meeting ownership: %s/%s", afterTranscribe.OwnerID, afterTranscribe.WorkspaceID)
 	}
 
 	// Seed a separate transcript so summarize isolation is tested before any

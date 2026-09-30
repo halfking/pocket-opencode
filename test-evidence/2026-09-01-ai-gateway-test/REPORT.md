@@ -126,7 +126,7 @@ cd backend && go build -o pocketd ./cmd/pocketd
 pkill -9 -f pocketd
 POCKET_HTTP_PORT=9088 \
 POCKET_LLM_GATEWAY_URL="https://llm.kxpms.cn/v1" \
-POCKET_LLM_GATEWAY_API_KEY="sk-6tGLjzlzUIOuMxh6qhOVRK9eznOTVAkQ3JxRZrvWECrK51YV" \
+POCKET_LLM_GATEWAY_API_KEY="<REDACTED-2026-10-01-see-handoff>" \
 POCKET_DEV_AUTH=true POCKET_AUTH_USER=admin POCKET_AUTH_PASS=admin \
 POCKET_JWT_SECRET="test-secret-key-for-phase7-validation" \
 POCKET_DB_PATH="./data/pocket.sqlite" \
