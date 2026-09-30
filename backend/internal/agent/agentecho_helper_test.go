@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -42,6 +43,14 @@ func buildAgentEcho(t *testing.T) string {
 		t.Fatalf("mktemp for agent_echo: %v", err)
 	}
 	bin := filepath.Join(dir, "agent_echo")
+	// Windows 的 os/exec 只认带扩展名的可执行文件：对一个「存在但无扩展名」
+	// 的绝对路径，exec.LookPath 直接返回 "executable file not found in
+	// %PATH%"（实测 exe 与无扩展名产物同为合法 PE，差别只在这个名字）。
+	// 因此 Windows 上必须显式补 .exe，否则下面所有 StdioTransport /
+	// ACP 用例都会红在同一处。
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	// 测试 cwd = backend/internal/agent，cmd 包相对路径为 ../../cmd/agent_echo
 	out, err := exec.Command("go", "build", "-o", bin, "../../cmd/agent_echo").CombinedOutput()
 	if err != nil {
