@@ -1,0 +1,77 @@
+# Maestro 真机功能流 · 笔记完整 CRUD
+#
+# 本文件的选择器来自 2026-09-30 真机 CDP 探查（scripts/cdp-notes-probe.mjs）的实测 DOM：
+#   列表卡片      .note-card > .note-title / .note-snippet / .note-meta
+#   新建页        textarea[placeholder*="一句话概括"]  (标题)
+#                 textarea[placeholder*="全屏编辑"]    (正文)
+#                 button 文本 "✓ 创建"（内容非空才 enable）
+#   详情页        button "✎ 编辑" / "🗑 删除"
+#                 点删除后弹确认框，确认按钮文本也是 "删除"（class 含 button--danger）
+#
+# 踩坑记录：
+#   1) 断言/选择器文本里**不要放 emoji**（🟢 ✓ ✎ 🗑）——Java 正则里这些字符
+#      会让整条匹配抛异常并直接判 false。用纯中文子串（创建/编辑/删除）。
+#   2) 详情页默认是**只读**的，必须先点「编辑」才会出现 textarea。
+#   3) 弹窗里的「删除」和工具栏的「删除」同名，要用 index 区分。
+#
+# 前置：
+#   adb reverse tcp:8088 tcp:8088
+#   localStorage.pocket_api_base 必须为空（否则会盖掉构建默认值）
+#   已登录 + 本地库已解锁（SQLCipher 库需主密码）
+#
+# 运行：
+#   maestro --device 192.168.31.19:5555 test .maestro/notes-crud.yaml
+#   （真机首次需允许安装 maestro driver：设置→更多设置→开发者选项→USB 安装）
+appId: com.kaixuan.opencode.pocket
+---
+- launchApp
+- extendedWaitUntil:
+    visible: "全部正常"
+    timeout: 45000
+
+# ---- 新建 ----
+- tapOn:
+    id: "notes-action"
+    index: 1
+- extendedWaitUntil:
+    visible: "一句话概括"
+    timeout: 20000
+- tapOn: "一句话概括"
+- inputText: "Maestro笔记"
+- tapOn: "全屏编辑"
+- inputText: "由Maestro创建"
+- tapOn: "创建"
+- extendedWaitUntil:
+    visible: "Maestro笔记"
+    timeout: 25000
+- assertVisible: "Maestro笔记"
+
+# ---- 编辑（详情页先切编辑态）----
+- tapOn: "Maestro笔记"
+- extendedWaitUntil:
+    visible: "编辑"
+    timeout: 20000
+- tapOn: "编辑"
+- extendedWaitUntil:
+    visible: "全屏编辑"
+    timeout: 20000
+- tapOn: "全屏编辑"
+- inputText: "已编辑"
+- tapOn: "保存"
+- extendedWaitUntil:
+    notVisible: "全屏编辑"
+    timeout: 25000
+
+# ---- 删除（含二次确认）----
+- tapOn: "删除"
+- extendedWaitUntil:
+    visible: "取消"
+    timeout: 15000
+- tapOn:
+    text: "删除"
+    index: 1
+- extendedWaitUntil:
+    notVisible: "Maestro笔记"
+    timeout: 25000
+- assertNotVisible: "Maestro笔记"
+- takeScreenshot: "logs/maestro/notes-after-delete"

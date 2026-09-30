@@ -1,0 +1,30 @@
+# Maestro 真机冒烟流 · 登录与主界面
+#
+# 目标包：.env.reversedev (VITE_API_BASE=http://localhost:8088) + CAP_ANDROID_SCHEME=http
+# 前置：adb reverse tcp:8088 tcp:8088；localStorage.pocket_api_base 必须为空
+#
+# 运行：
+#   maestro --device <serial> test .maestro/smoke-login.yaml
+#   $env:POCKET_SERIAL='192.168.31.19:5555'   # 真机；模拟器用 emulator-5554
+appId: com.kaixuan.opencode.pocket
+---
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: "登录|退出重新登录|🟢|解锁"
+    timeout: 30000
+- runFlow:
+    when:
+      visible: "输入用户名"
+    commands:
+      - tapOn: "输入用户名"
+      - inputText: "admin"
+      - tapOn: "输入密码"
+      - inputText: "${POCKET_DEV_PASS}"
+      - tapOn: "登录"
+- extendedWaitUntil:
+    visible: "🟢"
+    timeout: 30000
+- assertVisible: "全部正常"
+# WebSocket 连上的外部可观测面：状态胶囊
+- takeScreenshot: "logs/maestro/smoke-after-login"

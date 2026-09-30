@@ -14,7 +14,11 @@
 | `scripts/cdp-tasks-net.mjs` | BUG-J 复现：对比畸形 URL 与正确 URL 的实际响应 |
 | `scripts/cdp-base-audit.mjs` | 审计 localStorage override 与 App 真实请求出口 |
 | `scripts/cdp-unlock-debug.mjs` | 本地库解锁排查 |
-| `scripts/verify-modules.mjs` | 13 模块可达性巡检 |
+| `scripts/verify-modules.mjs` | 13 模块可达性巡检（reachability，非功能性） |
+| `scripts/redmi-write-ops.mjs` | **功能性**测试：真机笔记完整 CRUD + 落库/删除落库（6 断言） |
+| `scripts/cdp-dom-probe.mjs` | 批量探查各功能页的 input/button/textarea 结构 |
+| `scripts/cdp-notes-probe.mjs` | 笔记页 DOM + IndexedDB 结构专项探查 |
+| `.maestro/*.yaml` | Maestro flow（目标指定方法）；见 §4.11.1 |
 
 ---
 
@@ -525,6 +529,105 @@ npx vue-tsc --noEmit          # 无输出 = 通过
 
 ---
 
+## 4.11 Maestro 真机测试 + 真机功能性测试（可达性 ≠ 功能性）
+
+### 4.11.1 Maestro 落地（目标指定的方法，本轮之前一直没用）
+
+**安装**：GitHub 直连会被切断（`Invoke-WebRequest` 与 `curl` 都报
+`意外的 EOF` / 0 字节），必须走镜像：
+
+```powershell
+curl.exe -sSL --retry 2 -o maestro.zip `
+  https://gh-proxy.com/https://github.com/mobile-dev-inc/maestro/releases/latest/download/maestro.zip
+# 314,886,578 字节 ≈ 300MB
+Expand-Archive maestro.zip -DestinationPath dist -Force
+$env:JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot'
+$env:PATH="$env:JAVA_HOME\bin;$env:PATH"
+$env:MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED='true'
+.\dist\maestro\bin\maestro.bat --version        # 2.11.0
+```
+
+**真机跑不了 —— MIUI 安装策略**。Maestro 要先装自己的 driver APK，
+真机上被拦死，且 `adb install`、`pm install`（含先 `settings put global
+verifier_verify_adb_installs 0` / `package_verifier_enable 0` /
+`install_non_market 1` 全部试过）都是同一个错：
+
+```
+INSTALL_FAILED_USER_RESTRICTED: Install canceled by user
+```
+
+这需要**在手机上手动授权**，adb 无法绕过：
+设置 → 更多设置 → 开发者选项 → 打开「USB 安装」（MIUI 还要「安装监控」关闭）。
+driver APK 可提前从 jar 里抽出来手动装：
+
+```powershell
+# driver APK 内嵌在 maestro-client.jar / maestro-orchestra.jar 里
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+# …遍历 lib/*.jar 抽出 *.apk -> maestro-server.apk (0.84MB) / maestro-app.apk (11.2MB)
+adb install -r -d maestro-server.apk
+```
+
+**模拟器上 Maestro 跑通了**（AOSP Android 34，无 MIUI 限制）：
+
+```powershell
+.\dist\maestro\bin\maestro.bat --device emulator-5554 test .maestro\_connectivity.yaml
+```
+```
+Launch app "com.kaixuan.opencode.pocket"... COMPLETED
+Assert that "全部正常" is visible... COMPLETED
+Assert that "全部正常" is visible... COMPLETED
+Assert that "AI 工具" is visible... COMPLETED
+```
+
+**Maestro 两个坑**：
+1. **选择器/断言文本里不能放 emoji**（`🟢` `✓` `✎` `🗑`）。Java 正则里这些字符
+   会让整条匹配抛异常并**直接判 false**——第一版 flow 断言
+   `"笔记|登录|解锁|🟢|AI"` 就是这么挂的，且报错信息毫无指向性。
+   改用纯中文子串（`全部正常` / `创建` / `编辑` / `删除`）。
+2. **Windows 控制台把中文输出成乱码**（`ȫ������`），但 Maestro 内部处理是正确的
+   ——它生成的 debug 产物文件名 `step-004-assertCondition-笔记登录解锁🟢AI.png`
+   说明 YAML 是按 UTF-8 读的。**不要被 console 乱码误导成断言文本不匹配**。
+   排查要看 `%USERPROFILE%\.maestro\tests\<时间戳>\<flow>\` 里的
+   `screen-hierarchy/*.json`（完整 UI 树）和 `screenshots/*.png`。
+
+新增 flow：`.maestro/_connectivity.yaml`、`.maestro/smoke-login.yaml`、
+`.maestro/notes-crud.yaml`（后两者的选择器来自真机 CDP 实测 DOM，不是猜的）。
+
+### 4.11.2 真机功能性测试：`scripts/redmi-write-ops.mjs`（6/6 通过）
+
+`verify-modules.mjs` 只证明「可达 + 渲染」，**不能**当作功能可用。
+这个脚本驱动真实 UI 完成写操作并**回读校验**：
+
+```
+=== SUMMARY 6/6 ===
+  PASS  新建笔记：跳回列表                  hash=#/notes
+  PASS  新建笔记：列表回显标题              found
+  PASS  落库：force-stop 重启后笔记仍在      persisted across process restart
+  PASS  编辑笔记：列表摘要显示新正文        snippet="已编辑-33418938"
+  PASS  删除笔记：列表不再回显              gone (cards=1)
+  PASS  删除落库：重启后笔记仍不存在        gone after restart (cards=1)
+```
+
+关键设计（每一条都是踩过坑换来的）：
+
+1. **落库判据 = `am force-stop` 后重启仍在**。笔记存在 **Capacitor SQLite 原生插件**
+   （表 `local_notes`），**不在 WebView 的 localStorage / IndexedDB 里**
+   （实测 `indexedDB.databases()` 返回 `[]`）。查 localStorage 只会得到假阴性。
+2. **重启后必须先恢复会话再断言**。进程重启后 App 回到「登出 + 本地库锁定」，
+   任何 `#/xxx` 都被守卫弹到 `#/login?returnTo=…&unlock=1`，列表本来就是空的。
+   不恢复就会把「被 gate 挡住」误判成「数据丢了」——我第一版脚本就因此
+   同时产生了 1 个假 FAIL 和 2 个假 PASS。
+3. **解锁按钮有 `disabled` 计算属性**，填完主密码必须等 Vue 重渲染（约 1.5s）
+   再点，否则点到 disabled 按钮静默无效。这是「解锁点不动」的真正原因。
+4. **详情页默认只读**，必须先点「编辑」才出现 textarea；且详情页有**两个** textarea
+   （标题 + 正文），`fill('textarea')` 会命中第一个把标题也改掉，导致后续按标题定位卡片失败。
+5. **删除确认弹窗的按钮文本也是「删除」**，和工具栏的删除同名；
+   用 `class` 含 `button--danger` 区分，fallback 取最后一个。
+6. **任何前置失败立即 `exit(5)`**，不产出级联的假结论。
+7. 断言要**强**：「编辑后标题还在列表」几乎恒真，必须验「列表摘要显示新正文」。
+
+---
+
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
@@ -539,6 +642,9 @@ npx vue-tsc --noEmit          # 无输出 = 通过
   - 财务 Finance **新建+删除**（解析→确认入账→账本回显→汇总更新）
   - 本地智能体 **新建**（三必填校验 + 角色详情回显）
   - 会议 Meetings **新建**（自动创建 `meeting-1790725942511-waen21`，列表回显 + 删除按钮）
+- **写操作（真机，`scripts/redmi-write-ops.mjs`，6/6）**：笔记 Notes 完整 CRUD
+  + **force-stop 进程重启后仍存在**（真持久化证据）+ 删除后重启仍不存在（非软删除残留）。
+  详见 §4.11.2
 - **BUG-I 修复生效（真机）**：`#/login?reason=expired` 在真机出现——401 后自动带原因跳登录页
 - **BUG-J 修复生效（真机）**：`/api/tasks?source=opencode` → `200 application/json`，
   控制台错误 0（修复前是 `text/html` + 「API 返回了 HTML 页面而非 JSON」）
@@ -564,8 +670,19 @@ npx vue-tsc --noEmit          # 无输出 = 通过
 - **生产 `https` scheme 下的真机回归**。BUG-F 的逃生舱是 `CAP_ANDROID_SCHEME=http` 这条
   opt-in 路径，默认仍是 `https`，该路径本轮未回归（且 §3.1 已证明 WS 在 https 下本就能握手，
   真正需要 https 回归的是 **XHR 混合内容**是否仍被正确阻断）。
-- `Keystore` / `EmailFetch` 的**原生实现本身仍不存在**——本轮只是让降级路径
-  正确生效（不再抛未捕获异常），并未实现这两个插件。
+- **`Keystore` 原生插件确实不存在**——这是**代码欠账**，不是环境限制。
+  `MainActivity.java` 注册了 6 个插件（AppSettings / Sherpa / BiometricAuth /
+  BackgroundMic / **EmailFetch** / AiStreamKeepalive），**没有 Keystore**；
+  `frontend/src/native/keystore.ts` 自己也写着
+  「For now we use a stub that throws until the native plugin is built」。
+  SQLCipher 库主密钥按设计应由 Keystore 派生（见 `native/local-db.ts` 头注释），
+  当前退化为「主密码直接派生」。**下一轮应当实现它，而不是记为环境问题。**
+- ⚠️ **上一版 handoff 把 `EmailFetch` 也写成「原生实现不存在」，这是错的，已修正。**
+  `EmailFetchPlugin.java` 存在且已在 `MainActivity` 注册，
+  `@CapacitorPlugin(name = "EmailFetch")`，实现 `configure` / `schedule`
+  （走 `EmailFetchReceiver` + AlarmManager）/ `runNow`（走 `EmailFetchRunner`，独立线程），
+  是有真实行为的实现。BUG-G 里 `"EmailFetch.then()" is not implemented` 那个报错的
+  真正来源是 **thenable 陷阱**（§3.5），不是插件缺失。
 - **`/cost` 路由行为待查**：真机上访问 `/cost` 实际落到了 `/#/ai-chat`（文本长度 420），
   模拟器上则是 `/#/cost`。可能是「AI 未配置」时的回退跳转，本轮未定位。
 - **既有的 `TestMeetingWorkspaceIsolation` 失败**：`go test ./internal/server/...` 全量跑时失败，
@@ -670,10 +787,15 @@ localStorage.removeItem('pocket_api_base')   // 再 Page.reload
    node scripts/verify-modules.mjs        # 期望 13/13 RENDERED, LOGIN_GATED=0, BLANK=0
    node scripts/host-ws-check.mjs         # 宿主侧后端 WS 回归，期望 OPEN + pong
    ```
-4. **补写操作验证**（当前唯一的大块空白）。前置：给 dev 后端接上 PostgreSQL，
-   否则 `/api/tasks` 写路径恒 503、闪卡/市场/邮箱 store 为 nil（见 §4.9 与 §5 未验证节）。
-5. **查 `/cost` 路由**：真机上访问 `/cost` 落到了 `/#/ai-chat`，模拟器上是 `/#/cost`。
-6. 回归默认 `https` 构建，重点看 **XHR 混合内容**是否被正确阻断（WS 在 https 下本就能握手，§3.1）。
+4. **补写操作验证**（当前最大空白）。已有：笔记（真机 6/6）、财务 / 智能体 / 会议（模拟器）。
+   仍缺：闪卡 / 密码箱 / 市场 / 邮箱 / 任务 / 会话 / 网关 / 实例 / 费用配额。
+   前置：给 dev 后端接上 PostgreSQL，否则 `/api/tasks` 写路径恒 503、
+   闪卡/市场/邮箱 store 为 nil（见 §4.9 与 §5 未验证节）。
+5. **在真机上把 Maestro 跑起来**：需要有人在手机上开「开发者选项 → USB 安装」
+   （见 §4.11.1）。授权后 `.maestro/notes-crud.yaml` 可直接用于真机功能回归。
+6. **查 `/cost` 路由**：真机上访问 `/cost` 落到了 `/#/ai-chat`，模拟器上是 `/#/cost`。
+7. **实现 `Keystore` 原生插件**（见 §5 未验证节）：这是代码欠账不是环境问题。
+8. 回归默认 `https` 构建，重点看 **XHR 混合内容**是否被正确阻断（WS 在 https 下本就能握手，§3.1）。
 7. 可选加固：给指向明文 http:// 后端的构建加断言/告警，避免下一个人重踩 BUG-F。
    另可考虑在 `resolveApiBase` 命中一个**当前 origin 下不可达**的 override 时给出 UI 警告——
    本轮这个「override 静默压过构建默认值 + 页面却显示构建默认值」的行为极具迷惑性。
@@ -687,6 +809,18 @@ localStorage.removeItem('pocket_api_base')   // 再 Page.reload
 我曾用手工 `new WebSocket()` 造的探针拿到 101 就宣布打通，而 App 自己的 `wsClient`
 其实连的是另一个地址。判据应是 `Network.webSocketCreated` 的 URL
 与 `resolveRuntimeApiBase()` 的解析结果**一致**，且响应码为 101。
+
+### 通用教训五：可达性断言不是功能断言
+`LOGIN_GATED=0` / `BLANK=0` / `RENDERED` 只说明组件挂载了。
+判「功能可用」必须驱动真实交互 + 回读校验（`scripts/redmi-write-ops.mjs`），
+而且断言要强——「编辑后标题还在列表」几乎恒真，「列表摘要显示新正文」才有效。
+另见 §4.11.2 的 7 条设计约束（落库判据、重启后恢复会话、disabled 时序、
+只读详情页、同名按钮消歧、前置失败即中止）。
+
+### 通用教训六：定性之前先查注册表，别照抄上一轮结论
+本轮把 `EmailFetch` 写成「原生插件未实现」，实际 `EmailFetchPlugin.java` 早已实现并注册。
+`registerPlugin(...)` 的完整列表在 `MainActivity.java`——**要定性的插件先去那里看一眼**，
+比顺着上一轮的结论写要可靠。
 
 ### 通用教训三：Capacitor 插件 thenable 陷阱
 新增 `registerPlugin` 包装时，**绝不能从 `async` 函数直接 return 插件代理**

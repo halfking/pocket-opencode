@@ -1,0 +1,17 @@
+# Maestro 连通性自检：确认 Maestro 能驱动本项目 App 与设备
+#
+# 注意：断言文本里不要放 emoji（如 🟢）——Java 正则里该字符会导致匹配异常、
+#      整条断言直接判 false（2026-09-30 实测踩过）。
+#      状态胶囊的真实可见文本是「全部正常」，用它作为 WebSocket 连上的外部可观测面。
+#
+# 运行：
+#   maestro --device emulator-5554        test .maestro/_connectivity.yaml
+#   maestro --device 192.168.31.19:5555    test .maestro/_connectivity.yaml   # 真机需先授权安装 maestro driver
+appId: com.kaixuan.opencode.pocket
+---
+- launchApp
+- extendedWaitUntil:
+    visible: "全部正常"
+    timeout: 45000
+- assertVisible: "全部正常"
+- assertVisible: "AI 工具"
