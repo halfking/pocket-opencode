@@ -19,6 +19,10 @@
 | `scripts/cdp-dom-probe.mjs` | 批量探查各功能页的 input/button/textarea 结构 |
 | `scripts/cdp-notes-probe.mjs` | 笔记页 DOM + IndexedDB 结构专项探查 |
 | `.maestro/*.yaml` | Maestro flow（目标指定方法）；见 §4.11.1 |
+| `scripts/apk-assert-scheme.mjs` | **拆 APK 回读 `androidScheme`**：把「构建成功」和「产物已更新」拆开（§4.40.6） |
+| `scripts/diag-finance-samescope.mjs` | 用 App 自己的作用域 token 播种，区分「功能坏了」vs「跨作用域比对」（§4.40.6） |
+| `scripts/diag-token-stick.mjs` | 注入 token 后看 App 是否覆盖回弹 —— 陈旧 bundle 的决定性判据（§4.40.3） |
+| `scripts/diag-finance-workspace.mjs` / `diag-auth-workspace-origin.mjs` / `diag-auth-token-source.mjs` / `probe-login-paths.mjs` | 工作区分裂与 token 来源的四段排除证据（§4.40.2–4.40.3） |
 
 ---
 
@@ -3370,10 +3374,101 @@ check-fts-triggers-device.mjs    6/6（三个触发器仍在）
 不需要也不应该伪造「回退后再跑一遍」——回退意味着再走一轮 5 分钟的构建装机，
 而前后对照已经由**同一判据脚本**在同一环境里给出。
 
-**https 回归仍未收尾**：finance 在 https 下的 24/26 里那两条，
-本轮只证明了「不是 https 普遍性问题」（instances 13/13），
-**没有定位到根因**。BUG-AI 修完后的 https 包**还没重装复验**，
-所以「https 下记账页列表偶发空」这条**依然挂着**，不写成已解决。
+### 4.40 「https 下记账页列表偶发空」——根因是**陈旧 WebView 缓存的旧 bundle**，不是产品缺陷
+
+上一节挂着的那条，本轮定位到底了。**结论先说：记账功能在 https 下没有任何缺陷，
+26/26 全绿；此前 24/26 是测试环境污染，且该污染会作废此前所有真机结论。**
+
+#### 4.40.1 现象
+
+BUG-AI 修完后重装 https 包、复跑 `verify-finance-writepath.mjs`：**24/26**，
+两条挂在读路径——
+
+```
+FAIL 读路径：API 播种的记录出现在 UI 列表里  — 未找到 SEED-819226，共 0 张卡
+FAIL 对照组：删除没误伤，SEED 记录仍在 UI 上
+```
+
+写路径全通（PG 直查证明真落库、UI 回显、删除生效），**只有读路径空**。
+注意这个不对称就是线索：`quickConfirm` 里**没有任何本地插入**，新卡片出现
+**纯粹靠 `await load()` 从服务端重新拉回来**（`FinanceView.vue:204`）。
+所以「新建能显示、API 播的不能显示」= 服务端返回的列表里根本没有那条。
+
+#### 4.40.2 三段排除，每段都留了可复现的判据
+
+| 假设 | 判据 | 结果 |
+|---|---|---|
+| https 本身有问题 | 静态审计零硬编码；instances 在 https 下 13/13 | **证伪** |
+| 服务端 list 过滤错 | 用 **App 的真实 token** 从 Node 直打 `/api/finance` | `count=0` —— 服务端确实返回空 |
+| 同一请求换个 token | 用 admin 新登录的 token 直打同一端点 | `count=1, hasSeed=true` —— **服务端是对的** |
+
+服务端 `handleListFinance` 走 `ListScoped(uid, workspaceID)`（`server_finance.go:76`），
+按 token claim 里的工作区过滤。于是问题收敛成一句：**App 和测试不在同一个工作区。**
+
+#### 4.40.3 根因
+
+```
+App token claim          = {"user_id":"user-admin", "workspace_id":"default"}
+admin 新登录 token claim = {"user_id":"user-admin", "workspace_id":"ws_user-admin"}
+PG 里 SEED 实际落在       = ws=ws_user-admin
+```
+
+同一用户被劈成两个桶。App 看 `default`（空的），测试的 admin API 写
+`ws_user-admin`，**两个不同的桶，于是「读不到」**。
+
+那么 `default` 这个 token 是哪来的？逐层排除：
+
+1. `scripts/probe-login-paths.mjs` 连打 4 发 `/api/auth/login`：
+   **4/4 都是 `auth_method=dev-bypass` + `workspace_id=ws_user-admin`** ——
+   后端工作区解析本身是对的，`ensureWorkspaceForRedClawUser` 没在 fallback。
+2. 前端 `main.ts` / `LoginView.vue` / `stores/auth.ts` 全读一遍：
+   **没有任何自动登录、没有硬编码 token**；`setAuth` 只在真实登录响应后调用；
+   主密码「解锁」走的是 `initLobster()`（`LoginView.vue:416`），纯本地解密，不铸 token。
+3. 全量网络抓包（`diag-auth-token-source.mjs`）：reload 后 App 只发了 3 个请求
+   （check-update / sso/status / notifications），**没有任何登录调用**，
+   可 localStorage 里却躺着一个 `auth_method=dev-bypass` 的 token。
+4. `diag-token-stick.mjs` 是决定性的一步：注入一个 `ws_user-admin` 的 token，
+   **在 reload 之前**读回来就已经变成 `default` 了 —— 说明**正在运行的 App
+   在主动把任何 token 覆盖成 `default` 作用域的**。
+
+第 4 条和第 2、3 条互相矛盾：当前源码里根本没有这段逻辑。唯一自洽的解释是
+——**设备上 WebView 跑的根本不是当前 HEAD 的 bundle，而是缓存里的旧包**，
+旧版 auth 代码有个 dev 自动登录，把会话锁死在空的 `default` 工作区并反复回写。
+
+`adb shell pm clear` 之后一切自证：token 为空、停在 `#/login`、
+**出现正常的用户名输入框**、没有自动登录。
+
+#### 4.40.4 干净起点上的复验
+
+```
+adb shell pm clear com.kaixuan.opencode.pocket   # 清缓存 + 全部 App 数据
+（当前 bundle 全新启动 -> 走真实登录表单 -> ws_user-admin）
+
+verify-finance-writepath.mjs (POCKET_EXPECT_ORIGIN=https://localhost)  26/26
+  └─ 读路径 PASS：↑UI测试-¥11.119/30 20:36 SEED-763240
+verify-instances-readpath.mjs (同上)                                  13/13
+```
+
+**顺带**：`pm clear` 把本地 SQLCipher 库也清了，所以这一轮同时是
+**BUG-AI 迁移从零初始化**的干净验证（`vue-tsc` 早已 exit 0，见 4.39.4）。
+
+#### 4.40.5 对既有结论的影响（重要，别外推）
+
+> 既然设备长期跑的是陈旧 bundle，**此前所有真机 UI 结论都存在「验证的是旧代码」的风险**。
+> 本轮在干净状态下重跑了两个关键项：finance 26/26、instances 13/13，**均通过**，
+> 说明这两项的结论没有被推翻。但**其余真机结论尚未在干净状态下复验**，
+> 引用前请默认存疑。
+
+#### 4.40.6 沉淀
+
+- `scripts/apk-assert-scheme.mjs`：**拆开 APK 直接回读**
+  `assets/capacitor.config.json` 的 `androidScheme`。`gradlew BUILD SUCCESSFUL`
+  并不等于产物里装进了目标 scheme，这条把「构建成功」和「内容已更新」拆开。
+- `scripts/diag-finance-samescope.mjs`：用 App 自己的作用域 token 播种，
+  **立刻显示** —— 一条命令把「功能坏了」和「跨作用域比对」区分开。
+  本次就是靠它拿到 ✅（同作用域 SEED 正常上屏）。
+- **教训**：真机复验前必须 `pm clear` 或至少确认 WebView 没有缓存旧 bundle，
+  否则你测的可能不是 HEAD。「偶发」「时好时坏」的第一嫌疑永远是环境漂移，不是产品缺陷。
 
 
 
