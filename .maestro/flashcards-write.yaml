@@ -25,13 +25,14 @@
 #   真机  ：maestro --device 192.168.31.19:5555 test .maestro/flashcards-write.yaml
 #            （真机需先手动授权安装 maestro driver，见 handoff §4.16.3）
 #
-# 前置：App 已登录 dev 账号且本地库已解锁。本 flow 不负责登录 ——
-#      登录态由 .maestro/smoke-login.yaml 负责，两个 flow 顺序跑。
+# 前置：由 _login.yaml 处理登录/解锁（三种起始状态都覆盖）。
+#      不要在这里写 launchApp 之后自己判「已登录」——2026-10-01 真机上
+#      Maestro 的 launchApp 默认会先重装 driver 再 am force-stop，
+#      在 MIUI 上是「卸载成功、安装被拦」的破坏性循环。统一走 scripts/maestro-run.mjs。
 
 appId: com.kaixuan.opencode.pocket
 ---
-- launchApp:
-    clearState: false
+- runFlow: _login.yaml
 
 # ---------- 1. 进闪卡 ----------
 # 闪卡不在底部主导航里，在「更多」九宫格内。
