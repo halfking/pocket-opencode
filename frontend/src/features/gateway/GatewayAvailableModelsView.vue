@@ -73,6 +73,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getAvailableModels, type AvailableModelFamily } from '../../api/gateway'
+import { useApiError } from '../../composables/useApiError'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
 const route = useRoute()
@@ -81,6 +82,7 @@ const nodeId = Number(route.params.nodeId)
 
 const loading = ref(false)
 const error = ref('')
+const apiError = useApiError()
 const families = ref<AvailableModelFamily[]>([])
 const activeMod = ref<string>('')
 const expanded = ref('')
@@ -125,7 +127,7 @@ async function load() {
     const res = await getAvailableModels(nodeId)
     families.value = res.families ?? []
   } catch (e: any) {
-    error.value = e?.message || String(e)
+    error.value = apiError(e, 'errors.loadGatewayFailed')
   } finally {
     loading.value = false
   }
@@ -174,7 +176,7 @@ onMounted(load)
 .model-name { font-size: 14px; color: var(--text-primary); font-weight: 500; word-break: break-all; }
 .star { color: var(--warning); }
 .model-meta { font-size: 11px; color: var(--text-secondary); margin-top: 3px; word-break: break-all; }
-.mono { font-family: 'SF Mono', Menlo, monospace; }
+.mono { font-family: var(--font-mono); }
 .modality-badge {
   flex: none; font-size: 10px; padding: 3px 8px; border-radius: 999px;
   background: var(--bg-subtle); color: var(--text-secondary); border: 1px solid var(--border);

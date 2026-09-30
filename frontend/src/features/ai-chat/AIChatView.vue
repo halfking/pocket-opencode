@@ -12,7 +12,7 @@
     <HeaderActionsPortal>
       <button
         v-if="conversations.length > 1 || active"
-        class="chat-convo-btn"
+        class="chat-convo-btn shrinkable-action"
         type="button"
         :aria-label="'切换会话'"
         @click="toggleDrawer"
@@ -115,7 +115,7 @@
             <!-- auto 回退重试进度：正文到达前/后都以一行灰色小字透出 -->
             <div v-if="a.retryHint" class="msg-retry">{{ a.retryHint }}</div>
             <footer v-if="a.usage" class="usage">≈ {{ a.usage.total_tokens }} tokens</footer>
-            <div v-if="a.error" class="msg-error">{{ a.error }}</div>
+            <div v-if="a.error" class="msg-error">{{ apiError(a.error, 'errors.operateFailed') }}</div>
             <div v-if="a.interrupted" class="msg-interrupted">⚠️ 生成被中断（页面刷新或应用重启）</div>
             <div class="msg-actions">
               <button class="act" @click="copy(a)">复制</button>
@@ -455,7 +455,9 @@ import AgentSelectorSheet from './AgentSelectorSheet.vue'
 import BottomSheet from '../../components/base/BottomSheet.vue'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import UnifiedComposer from '../../components/business/UnifiedComposer.vue'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const store = useAIChatStore()
 const router = useRouter()
 const route = useRoute()
@@ -955,9 +957,17 @@ function formatTime(ts: number): string {
   min-width: 0;
 }
 
-/* 注入 AppLayout header-actions 的按钮样式（与 AppLayout 默认 :deep 样式叠加，
-   但我们要更紧凑、可显示文字标签）。 */
-:deep(.chat-convo-btn) {
+/* 注入 AppLayout header-actions 的按钮样式（与 AppLayout 默认样式叠加，
+   但我们要更紧凑、可显示文字标签）。
+
+   ⚠ 必须用 scoped 自身选择器，不能用 :deep()。
+   这几个按钮经 HeaderActionsPortal **teleport** 到 AppLayout 的 .header-actions，
+   scope 属性只挂在按钮自己身上，祖先链上没有任何带 data-v 的元素。
+   `:deep(.chat-convo-btn)` 编译成 `[data-v-x] .chat-convo-btn`（要求祖先带 scope）→ 永不匹配；
+   写成 `.chat-convo-btn` 编译成 `.chat-convo-btn[data-v-x]`（挂在自身）→ 正常命中。
+   真机实测证据：修复前构建产物里是 `[data-v-eb36f3e2] .chat-convo-btn{...}`，
+   computed style 显示 radius 落到 8px、背景透明 —— 胶囊的样式一条都没生效。 */
+.chat-convo-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -976,22 +986,27 @@ function formatTime(ts: number): string {
   white-space: nowrap;
   overflow: hidden;
 }
-:deep(.chat-convo-btn:active) { background: var(--border); }
-:deep(.chat-convo-btn .material-symbols-outlined) { font-size: 16px; flex-shrink: 0; }
-:deep(.chat-convo-btn .convo-label) {
+.chat-convo-btn:active { background: var(--border); }
+.chat-convo-btn .material-symbols-outlined { font-size: 16px; flex-shrink: 0; }
+.chat-convo-btn .convo-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
 }
 
-:deep(.chat-icon-btn.active) { color: var(--brand-primary); background: var(--brand-bg); }
+.chat-icon-btn.active { color: var(--brand-primary); background: var(--brand-bg); }
 
-/* 窄屏（≤380px）隐藏 chip 文字标签，只保留图标，腾出更多空间给标题 */
+/* 窄屏（≤380px）隐藏 chip 文字标签，只保留图标，腾出更多空间给标题。
+   360dp 实测：顶栏 4 个动作必须挤进 ~180px，会话胶囊因此只留图标，
+   同时把左右内边距从 10px 收到 6px（下限 22 图标 + 12 内边距 + 2 边框 = 36px），
+   否则它会顶掉右侧「对话参数」「新建对话」两个按钮。
+   同上：teleport 内容不能用 :deep()，这里写 scoped 自身选择器。 */
 @media (max-width: 380px) {
   .context-row { padding: 6px var(--space-3); gap: 6px; }
   .chip-label { display: none; }
-  :deep(.chat-convo-btn .convo-label) { display: none; }
+  .chat-convo-btn .convo-label { display: none; }
+  .chat-convo-btn { padding: 0 6px; }
 }
 
 /* 对比条 */
@@ -1079,7 +1094,7 @@ function formatTime(ts: number): string {
   font-size: 13px;
 }
 .ai-bubble :deep(code) {
-  font-family: 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
 }
 .ai-bubble :deep(p) { margin: 6px 0; }

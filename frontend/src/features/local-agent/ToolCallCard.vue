@@ -23,7 +23,7 @@
       </div>
       <div v-if="item.error" class="section">
         <p class="label err">错误</p>
-        <pre class="code err">{{ item.error }}</pre>
+        <pre class="code err">{{ apiError(item.error, 'errors.operateFailed') }}</pre>
       </div>
       <p v-if="item.durationMs != null" class="meta">耗时 {{ (item.durationMs / 1000).toFixed(1) }}s</p>
     </div>
@@ -33,7 +33,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { TimelineItem } from '../../localagent/runtime.ts'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const props = defineProps<{ item: TimelineItem }>()
 const expanded = ref(false)
 

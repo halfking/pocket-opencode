@@ -117,6 +117,7 @@ import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
+import { useApiError } from '@/composables/useApiError'
 import { Skeleton, EmptyState, PullToRefresh, SwipeableListItem, type SwipeAction } from '@/components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 import { useConfirm } from '@/composables/useConfirm'
@@ -162,6 +163,7 @@ const sessions = ref<Session[]>([])
 const instances = ref<Instance[]>([])
 const loading = ref(false)
 const error = ref('')
+const apiError = useApiError()
 const searchQuery = ref('')
 const selectedInstanceId = ref('')
 const offset = ref(0)
@@ -261,7 +263,7 @@ async function loadSessions() {
       sessions.value = snap.sessions
       total.value = snap.total
     } else {
-      error.value = err.message || '加载会话失败'
+      error.value = apiError(err, 'errors.loadSessionsFailed')
     }
   } finally {
     loading.value = false
@@ -640,7 +642,7 @@ useListScene('sessions', () => {
   margin: 0;
   font-size: var(--text-xs);
   color: var(--text-muted);
-  font-family: monospace;
+  font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

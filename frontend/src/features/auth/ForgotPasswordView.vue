@@ -135,7 +135,8 @@ async function requestCode() {
     step.value = 2
     startCooldown()
   } catch (e: any) {
-    error.value = e?.body?.error || e?.message || '发送验证码失败'
+    console.warn('[auth] 发送验证码失败（原始信息）:', e?.body?.error || e?.message || e)
+    error.value = '发送验证码失败，请稍后重试'
   } finally {
     loading.value = false
   }
@@ -160,7 +161,8 @@ async function submit() {
     await forgotPassword(email.value, code.value, newPassword.value)
     step.value = 3
   } catch (e: any) {
-    error.value = e?.body?.error || e?.message || '重置失败'
+    console.warn('[auth] 重置密码失败（原始信息）:', e?.body?.error || e?.message || e)
+    error.value = '重置失败，请确认验证码是否已过期'
   } finally {
     loading.value = false
   }
@@ -208,7 +210,7 @@ function goLogin() {
 .resend { font-size: var(--text-xs); color: var(--text-secondary); margin: var(--space-1) 0 0 0; }
 .link-btn { background: transparent; border: none; color: var(--brand-primary); font-size: inherit; padding: 0; cursor: pointer; text-decoration: underline; }
 .link-btn:disabled { color: var(--text-tertiary, #999); cursor: not-allowed; text-decoration: none; }
-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg-subtle); padding: 2px 6px; border-radius: 4px; font-size: 0.95em; }
+code { font-family: var(--font-mono); background: var(--bg-subtle); padding: 2px 6px; border-radius: 4px; font-size: 0.95em; }
 .success { align-items: center; text-align: center; padding: var(--space-4) 0; }
 .success-icon { width: 56px; height: 56px; border-radius: 50%; background: var(--success, #2f9e44); color: #fff; font-size: 32px; line-height: 56px; text-align: center; }
 .success-text { font-size: var(--text-lg); font-weight: var(--font-weight-semibold); color: var(--text-primary); margin: var(--space-2) 0 var(--space-1) 0; }

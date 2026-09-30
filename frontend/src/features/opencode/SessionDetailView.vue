@@ -146,7 +146,9 @@ import { useOpenCodeStore } from '../../stores/opencode'
 import type { OpenCodeSession, HistoryEvent } from '../../stores/opencode'
 import { useToast } from '../../composables/useToast'
 import { downloadTextFile, DownloadUnsupportedError } from '../../utils/download'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const router = useRouter()
 const route = useRoute()
 const openCodeStore = useOpenCodeStore()
@@ -470,7 +472,7 @@ function getActorName(actor: string): string {
 }
 
 .info-item .value.code {
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   color: var(--brand-primary);
 }

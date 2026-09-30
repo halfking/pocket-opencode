@@ -93,6 +93,13 @@
             </div>
           </div>
         </div>
+        <div class="setting-item">
+          <div class="setting-icon"><span class="material-symbols-outlined">translate</span></div>
+          <div class="setting-content">
+            <div class="setting-label">{{ t('settings.language') }}</div>
+            <LanguageSwitcher />
+          </div>
+        </div>
       </div>
 
       <!-- 当前连接：后端服务器 = pocketd API 基址；实例是其下游 -->
@@ -123,12 +130,12 @@
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">hub</span></div>
           <div class="setting-content">
-            <div class="setting-label">RedClaw 集成</div>
+            <div class="setting-label">{{ t('settings.redclawIntegration') }}</div>
             <div class="setting-value">
-              <span v-if="redclaw.connected === true" class="rc-ok">● 已连接</span>
-              <span v-else-if="redclaw.connected === false" class="rc-down">● 已配置 · 连接异常</span>
-              <span v-else class="rc-off">● 未启用</span>
-              <template v-if="redclaw.tenantId"> · 租户 {{ redclaw.tenantId }}</template>
+              <span v-if="redclaw.connected === true" class="rc-ok">● {{ t('settings.redclawConnected') }}</span>
+              <span v-else-if="redclaw.connected === false" class="rc-down">● {{ t('settings.redclawMisconfigured') }}</span>
+              <span v-else class="rc-off">● {{ t('settings.redclawDisabled') }}</span>
+              <template v-if="redclaw.tenantId"> · {{ t('settings.tenant', { id: redclaw.tenantId }) }}</template>
             </div>
           </div>
         </div>
@@ -187,8 +194,8 @@
         <div class="setting-item entry" @click="router.push('/finance')">
           <div class="setting-icon"><span class="material-symbols-outlined">account_balance_wallet</span></div>
           <div class="setting-content">
-            <div class="setting-label">记账</div>
-            <div class="setting-value">手动 + 笔记自动入账 · 月度收支统计</div>
+            <div class="setting-label">{{ t('settings.finance') }}</div>
+            <div class="setting-value">{{ t('settings.financeDesc') }}</div>
           </div>
           <span class="material-symbols-outlined chevron">chevron_right</span>
         </div>
@@ -220,6 +227,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { useApiError } from '../../composables/useApiError'
 import { APP_VERSION, canDownloadApk, checkUpdate } from '../../utils/version'
 import { runtimePlatform } from '../../native/runtime-platform'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
@@ -228,10 +236,12 @@ import { displayApiBase, probeHealthz, resolveApiBase } from '../../config/api-b
 import { clearSelectedInstance, readSelectedInstance } from '../../config/selected-instance'
 import { useConfirm } from '../../composables/useConfirm'
 import { useThemeStore, type ThemePreference } from '../../stores/theme'
+import LanguageSwitcher from '../../components/LanguageSwitcher.vue'
 
 const router = useRouter()
 const { confirm } = useConfirm()
 const { t } = useI18n()
+const apiError = useApiError()
 const theme = useThemeStore()
 
 // 皮肤三选项（图标 + 词条），选中即调用 setPreference 全局生效
@@ -323,11 +333,12 @@ async function testGateway() {
     } else {
       testResult.value = {
         ok: false,
-        text: t('settings.testFailed', { error: r.error || r.response || 'HTTP ' + r.status }),
+        text: t('settings.testFailed', { error: apiError(r, 'errors.gatewayUnreachable') }),
       }
     }
   } catch (err: any) {
-    testResult.value = { ok: false, text: '✗ ' + (err?.message || String(err)) }
+    // 原来是 `'✗ ' + err.message`，网络不通时直接把 "Failed to fetch" 摆给用户
+    testResult.value = { ok: false, text: '✗ ' + apiError(err, 'errors.gatewayUnreachable') }
   } finally {
     testing.value = false
   }
@@ -487,7 +498,7 @@ async function handleLogout() {
 
 .setting-value.small {
   font-size: var(--text-xs);
-  font-family: monospace;
+  font-family: var(--font-mono);
   word-break: break-all;
 }
 

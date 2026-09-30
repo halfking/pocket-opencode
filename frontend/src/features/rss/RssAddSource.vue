@@ -143,7 +143,7 @@ function back() {
 .step label { display: block; margin: 8px 0 4px; color: var(--text-muted); font-size: 13px; }
 .step input[type="text"], .step input:not([type]) { width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; box-sizing: border-box; }
 .btn { display: inline-flex; align-items: center; gap: 4px; padding: 8px 16px; border: 1px solid var(--border); background: var(--bg-elevated); border-radius: 6px; cursor: pointer; margin-top: 8px; }
-.btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
+.btn-primary { background: var(--brand-primary); color: white; border-color: var(--brand-primary); }
 .icon { padding: 4px 8px; border: none; background: transparent; cursor: pointer; font-size: 20px; }
 .error { padding: 8px 12px; background: var(--err-bg); color: var(--err-fg); border-radius: 6px; margin-bottom: 8px; }
 .divider { text-align: center; margin: 16px 0; color: var(--text-muted); font-size: 12px; position: relative; }
@@ -153,10 +153,10 @@ function back() {
 .seeds li:hover, .candidates li:hover { background: var(--bg-hover); }
 .seed-title { font-weight: 600; }
 .seed-url { font-size: 12px; color: var(--text-muted); word-break: break-all; }
-.badge { display: inline-block; padding: 2px 6px; background: var(--accent); color: white; border-radius: 10px; font-size: 11px; margin-right: 4px; }
+.badge { display: inline-block; padding: 2px 6px; background: var(--brand-primary); color: white; border-radius: 10px; font-size: 11px; margin-right: 4px; }
 .badge.subtle { background: var(--bg-hover); color: var(--text-secondary); }
 .candidates li { display: flex; gap: 8px; align-items: center; }
-.cand-url { font-family: monospace; font-size: 13px; word-break: break-all; }
+.cand-url { font-family: var(--font-mono); font-size: 13px; word-break: break-all; }
 .cand-title { font-size: 12px; color: var(--text-muted); }
 .manual { display: flex; gap: 8px; align-items: center; }
 .manual input { flex: 1; }

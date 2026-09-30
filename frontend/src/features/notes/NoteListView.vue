@@ -295,7 +295,11 @@ useListScene('notes', load)
 </script>
 
 <style scoped>
-:deep(.notes-action) {
+/* 这两个按钮经 HeaderActionsPortal teleport 到 AppLayout 的 .header-actions，
+   scope 属性只挂在按钮自己身上，`:deep(.notes-action)` 编译成
+   `[data-v-x] .notes-action`（要求祖先带 scope）→ 永不匹配，圆角描边一直没生效。
+   必须写 scoped 自身选择器，编译成 `.notes-action[data-v-x]`。 */
+.notes-action {
   display: inline-flex; align-items: center; justify-content: center;
   width: 40px; height: 40px; border-radius: 999px;
   background: transparent; border: 1px solid var(--border); color: var(--text-primary);
@@ -303,7 +307,12 @@ useListScene('notes', load)
 .context-row {
   display: flex; gap: 6px; padding: 8px var(--space-3);
   background: var(--bg-card); border-bottom: 1px solid var(--border); overflow-x: auto;
+  /* 与 AIChatView 的同名容器保持一致：横向 chip 条不该常驻灰滚动条
+     （真机 360dp 实测笔记页 chips 下方出现一条突兀灰线）。 */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.context-row::-webkit-scrollbar { display: none; }
 .chip {
   padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border);
   background: var(--bg-base); color: var(--text-secondary); font-size: 12px; flex-shrink: 0;

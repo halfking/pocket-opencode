@@ -9,7 +9,7 @@
  * On web (no native plugin), skips local and goes straight to cloud.
  */
 import { sherpa } from '../native/sherpa'
-import { http } from './http'
+import { http, LONG_REQUEST_TIMEOUT_MS } from './http'
 import { blobToBase64 } from '../utils/base64'
 import {
   CLOUD_STT_NEED_BLOB,
@@ -69,9 +69,11 @@ export const sttApi = {
       filename: filenameForMimeType(audioBlob.type || 'audio/webm'),
     })
 
+    // 音频转写比普通 CRUD 慢一个量级（整段 base64 上传 + 推理），
+    // 给到 LONG 上限；但仍必须有上限，否则录音停止链路会被拖死。
     const res = await http<{ text: string; confidence: number; costCents?: number }>(
       '/api/stt/transcribe',
-      { method: 'POST', body },
+      { method: 'POST', body, timeoutMs: LONG_REQUEST_TIMEOUT_MS },
     )
     return {
       text: res.text,

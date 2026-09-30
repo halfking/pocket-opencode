@@ -3,6 +3,7 @@ import { useRouter } from 'vue-router'
 import { emailApi, type EmailInvoice, type EmailInvoiceStatus } from '../../api/email'
 import { financeApi } from '../../api/finance'
 import { useToast } from '../../composables/useToast'
+import { useApiError } from '../../composables/useApiError'
 import { downloadTextFile, downloadFile, DownloadUnsupportedError } from '../../utils/download'
 import { remapRecordMap } from '../../native/list-sync/id-align'
 import { isLocalOnlyId } from '../../native/list-sync/planner'
@@ -15,6 +16,7 @@ import {
 
 export function useInvoiceList() {
   const toast = useToast()
+  const apiError = useApiError()
   const router = useRouter()
   const loading = ref(false)
   const syncing = ref(false)
@@ -105,7 +107,7 @@ export function useInvoiceList() {
       closePreview()
       preview.value = { inv, src: URL.createObjectURL(blob) }
     } catch (e: any) {
-      toast.error(e?.message || '无法打开发票文件')
+      toast.error(apiError(e, 'errors.notFound'))
     }
   }
   function applyRemaps(remaps: { localId: string; serverId: string }[]) {
@@ -149,7 +151,7 @@ export function useInvoiceList() {
     try {
       await pullServerPage(0)
     } catch (e: any) {
-      if (all.value.length === 0) error.value = e?.message || '加载失败'
+      if (all.value.length === 0) error.value = apiError(e, 'errors.loadInvoicesFailed')
     } finally {
       loading.value = false
     }
@@ -173,7 +175,7 @@ export function useInvoiceList() {
       }
       await pullServerPage(offset)
     } catch (e: any) {
-      toast.error(e?.message || '加载更多失败')
+      toast.error(apiError(e, 'errors.loadEmailFailed'))
     } finally {
       loadingMore.value = false
     }
@@ -185,7 +187,7 @@ export function useInvoiceList() {
       toast.success(`整理完成：新邮件 ${rep.newEmails ?? 0}`)
       await load()
     } catch (e: any) {
-      toast.error(e?.message || '整理失败')
+      toast.error(apiError(e, 'errors.operateFailed'))
     } finally {
       syncing.value = false
     }
@@ -197,7 +199,7 @@ export function useInvoiceList() {
       toast.success('邮箱同步完成，正在提取发票…')
       await load()
     } catch (e: any) {
-      toast.error(e?.message || '同步失败')
+      toast.error(apiError(e, 'errors.operateFailed'))
     } finally {
       syncing.value = false
     }
@@ -212,7 +214,7 @@ export function useInvoiceList() {
       toast.success(`已导出 ${res.count} 张发票`)
       await load()
     } catch (e: any) {
-      toast.error(e instanceof DownloadUnsupportedError ? e.message : (e?.message || '导出失败'))
+      toast.error(e instanceof DownloadUnsupportedError ? e.message : apiError(e, 'errors.operateFailed'))
     } finally {
       exporting.value = false
     }
@@ -224,7 +226,7 @@ export function useInvoiceList() {
       toast.success(res.pushed > 0 ? `已推送 ${res.pushed} 张` : (res.message || '未推送'))
       await load()
     } catch (e: any) {
-      toast.error(e?.message || '推送失败')
+      toast.error(apiError(e, 'errors.operateFailed'))
     } finally {
       pushing.value = false
     }
@@ -235,7 +237,7 @@ export function useInvoiceList() {
       await downloadFile(name, await emailApi.fetchInvoiceFile(inv.id), 'application/pdf')
       toast.success(`已下载 ${name}`)
     } catch (e: any) {
-      toast.error(e instanceof DownloadUnsupportedError ? e.message : (e?.message || '下载失败'))
+      toast.error(e instanceof DownloadUnsupportedError ? e.message : apiError(e, 'errors.operateFailed'))
     }
   }
   async function markFiled(inv: EmailInvoice) {
@@ -249,7 +251,7 @@ export function useInvoiceList() {
       }
       toast.success('已归档')
     } catch (e: any) {
-      toast.error(e?.message || '操作失败')
+      toast.error(apiError(e, 'errors.operateFailed'))
     }
   }
   async function markNew(inv: EmailInvoice) {
@@ -262,7 +264,7 @@ export function useInvoiceList() {
         await invoiceStore.clearDirty(inv.id)
       }
     } catch (e: any) {
-      toast.error(e?.message || '操作失败')
+      toast.error(apiError(e, 'errors.operateFailed'))
     }
   }
   async function book(inv: EmailInvoice) {
@@ -278,7 +280,7 @@ export function useInvoiceList() {
       }
       toast.success(`${res.created ? '已入账' : '该发票已入账'} ¥${formatAmount(inv.amount)}`)
     } catch (e: any) {
-      toast.error(e?.message || '入账失败')
+      toast.error(apiError(e, 'errors.operateFailed'))
     } finally {
       bookingId.value = ''
     }
@@ -299,7 +301,7 @@ export function useInvoiceList() {
       await downloadTextFile({ filename: 'openpocket-invoices.csv', content: '\uFEFF' + lines.join('\r\n'), mimeType: 'text/csv;charset=utf-8' })
       toast.success(`已导出 ${rows.length} 张发票`)
     } catch (e) {
-      toast.error(e instanceof DownloadUnsupportedError ? e.message : '导出失败')
+      toast.error(e instanceof DownloadUnsupportedError ? e.message : apiError(e, 'errors.operateFailed'))
     }
   }
   async function remove(inv: EmailInvoice) {
@@ -310,7 +312,7 @@ export function useInvoiceList() {
       if (!isLocalOnlyId(inv.id)) await emailApi.deleteInvoice(inv.id)
       toast.success('已删除')
     } catch (e: any) {
-      toast.error(e?.message || '删除失败')
+      toast.error(apiError(e, 'errors.operateFailed'))
     }
   }
   watch(filter, () => { void load() })

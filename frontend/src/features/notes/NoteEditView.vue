@@ -97,6 +97,7 @@ import type { LocalNote, NoteMediaInput } from './notes-store'
 import { ErrorState, UnifiedComposer } from '../../components'
 import { useAuthStore } from '../../stores/auth'
 import { markListDirty } from '../../composables/list-scene-store'
+import { useApiError } from '../../composables/useApiError'
 import {
   attachmentsToMedia,
   extractTagsForForm,
@@ -105,6 +106,7 @@ import {
   tagsFromArray,
 } from './note-edit-helpers'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
@@ -196,7 +198,7 @@ async function load() {
       hydrate(existing)
     }
   } catch (e: any) {
-    loadError.value = e?.message || '加载笔记失败，请稍后重试。'
+    loadError.value = apiError(e, 'errors.loadNotesFailed')
   } finally {
     loading.value = false
   }
@@ -250,7 +252,7 @@ async function onSave() {
   } catch (e: any) {
     console.warn('[note] 保存失败:', e)
     saving.value = false
-    saveError.value = e?.message || '保存失败，请稍后重试'
+    saveError.value = apiError(e, 'errors.saveFailed')
   }
 }
 

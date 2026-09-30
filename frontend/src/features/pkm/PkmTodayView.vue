@@ -79,10 +79,12 @@ import {
 } from './pkm-store'
 import { useAuthStore } from '../../stores/auth'
 import { EmptyState, ErrorState, Loading } from '../../components'
+import { useApiError } from '../../composables/useApiError'
 import { useListScene } from '../../composables/use-list-scene'
 
 defineOptions({ name: 'PkmTodayView' })
 
+const apiError = useApiError()
 const router = useRouter()
 const auth = useAuthStore()
 const workspaceId = auth.workspaceId || 'default'
@@ -106,7 +108,7 @@ async function loadRecent() {
     notes.value = await listNotes({ workspaceId, limit: 50 })
     dailyExists.value = !!(await getDailyNote(todayKey, workspaceId))
   } catch (e: any) {
-    loadError.value = e?.message || '加载笔记失败，请稍后重试。'
+    loadError.value = apiError(e, 'errors.loadNotesFailed')
   } finally {
     loading.value = false
   }
@@ -122,7 +124,7 @@ async function onSearch() {
   try {
     notes.value = await searchNotes(query.value, { workspaceId })
   } catch (e: any) {
-    loadError.value = e?.message || '搜索笔记失败，请稍后重试。'
+    loadError.value = apiError(e, 'errors.operateFailed')
   } finally {
     loading.value = false
   }

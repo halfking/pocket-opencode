@@ -10,7 +10,7 @@
       <label class="filter"><input v-model="enabledOnly" type="checkbox" @change="load" /> 仅显示启用</label>
       <button type="button" class="refresh" :disabled="store.loading" @click="load">刷新</button>
     </div>
-    <div v-if="store.error" class="error" role="alert">{{ store.error }} <button @click="load">重试</button></div>
+    <div v-if="store.error" class="error" role="alert">{{ apiError(store.error, 'errors.loadTasksFailed') }} <button @click="load">重试</button></div>
     <div v-if="store.loading" class="state">加载中…</div>
     <div v-else-if="store.tasks.length === 0" class="state"><p>还没有自动化任务</p><button class="primary" @click="router.push('/settings/scheduled-tasks/new')">创建自动化</button></div>
     <main v-else class="list">
@@ -40,9 +40,11 @@ import { useScheduledTasksStore } from './store'
 import { formatTimestamp, taskKindLabel, type ScheduledTask } from './types'
 import { describeTaskSchedule } from './schedule-plan'
 import { useListScene } from '../../composables/use-list-scene'
+import { useApiError } from '../../composables/useApiError'
 
 defineOptions({ name: 'ScheduledTaskListView' })
 
+const apiError = useApiError()
 const router = useRouter()
 const store = useScheduledTasksStore()
 const enabledOnly = ref(false)

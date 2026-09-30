@@ -91,7 +91,9 @@ import {
   type EmailLang,
 } from './translate-email'
 import { markListDirty } from '../../composables/list-scene-store'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
@@ -151,11 +153,11 @@ async function load() {
           if (remote) await writeEmailBodyLocal(found.id, remote)
         }
       } catch (e: any) {
-        if (!bodyText.value) bodyError.value = e?.message || '正文拉取失败'
+        if (!bodyText.value) bodyError.value = apiError(e, 'errors.loadEmailBodyFailed')
       } finally { bodyLoading.value = false }
     }
   } catch (e: any) {
-    loadError.value = e?.message || '加载邮件失败，请稍后重试。'
+    loadError.value = apiError(e, 'errors.loadEmailFailed')
   } finally {
     loading.value = false
   }
@@ -180,7 +182,7 @@ async function chooseLang(next: EmailLang) {
     persistTranslation(next, out)
     lang.value = next
   } catch (e: any) {
-    toast.error(e?.message || '翻译失败')
+    toast.error(apiError(e, 'errors.operateFailed'))
   } finally {
     translating.value = false
   }
@@ -247,7 +249,7 @@ async function onComposeSubmit(payload: { text: string; to: string[] }) {
     toast.success(reply ? '回复已发送' : '转发已发送')
     composeKind.value = 'hidden'
   } catch (e: any) {
-    composeError.value = e?.message || '发送失败'
+    composeError.value = apiError(e, 'errors.sendEmailFailed')
   } finally {
     sending.value = false
   }
@@ -270,7 +272,7 @@ async function createTodo(text: string) {
     composeKind.value = 'hidden'
     router.push(`/tasks/${task.id}`)
   } catch (e: any) {
-    composeError.value = e?.message || '创建任务失败'
+    composeError.value = apiError(e, 'errors.createTaskFailed')
   } finally {
     converting.value = false
     sending.value = false
@@ -299,7 +301,7 @@ async function navigateToContact() {
     if (contact) router.push(`/contacts/${contact.id}`)
     else toast.info('联系人不存在，请先在联系人页面聚合')
   } catch (e: any) {
-    toast.error(e?.message || '查找联系人失败')
+    toast.error(apiError(e, 'errors.notFound'))
   }
 }
 

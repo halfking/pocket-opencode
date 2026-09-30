@@ -111,8 +111,10 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as gw from '../../api/gateway'
 import type { GatewayNode } from '../../api/gateway'
+import { useApiError } from '../../composables/useApiError'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const nodeId = Number(route.params.nodeId)
@@ -143,7 +145,7 @@ async function load() {
     blockErrors.value = res.errors ?? {}
     generatedAt.value = new Date(res.generatedAt).toLocaleString()
   } catch (e: any) {
-    error.value = e?.message || '加载失败'
+    error.value = apiError(e, 'errors.loadGatewayFailed')
   } finally {
     loading.value = false
   }

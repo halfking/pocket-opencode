@@ -59,8 +59,7 @@
     "settings": "设置",
     "localAgent": "本地智能体",
     "home": "首页",
-    "study": "学习",
-    "flashcards": "闪卡"
+    "study": "学习"
   },
   "routes": {
     "login": "登录",
@@ -172,7 +171,16 @@
     "logoutConfirm": "确定要退出登录吗?",
     "newVersionAvailable": "发现新版本 v{version}！\n\n更新内容:\n{changelog}",
     "alreadyLatest": "当前已是最新版本！",
-    "checkUpdateFailed": "检查更新失败，请稍后重试"
+    "checkUpdateFailed": "检查更新失败，请稍后重试",
+    "redclawIntegration": "RedClaw 集成",
+    "redclawConnected": "已连接",
+    "redclawMisconfigured": "已配置 · 连接异常",
+    "redclawDisabled": "未启用",
+    "tenant": "租户 {id}",
+    "finance": "记账",
+    "financeDesc": "手动 + 笔记自动入账 · 月度收支统计",
+    "language": "界面语言",
+    "apiAddressNotSaved": "地址未能保存，请检查输入是否为空或格式不正确"
   },
   "flashcards": {
     "list": {
@@ -329,5 +337,48 @@
       "voice": "语音笔记",
       "hint": "麦克风一键录入"
     }
+  },
+  "email": {
+    "dailySummary": "每日摘要"
+  },
+  "errors": {
+    "rssNotConfigured": "RSS 订阅源尚未配置，请先添加一个订阅源",
+    "rssSourceMissing": "找不到该订阅源，可能已被删除",
+    "emailNotConfigured": "邮箱尚未配置，请先在邮箱设置中添加账户",
+    "emailAccountMissing": "找不到该邮箱账户，可能已被删除",
+    "imapUnauthorized": "邮箱授权已失效，请重新授权",
+    "imapFailed": "连接邮箱服务器失败，请检查网络与账户信息",
+    "sttNotConfigured": "语音转写服务尚未配置",
+    "llmNotConfigured": "尚未配置可用的大模型，请先在模型设置中选择",
+    "modelNotFound": "找不到该模型，可能已被移除",
+    "gatewayUnreachable": "无法连接模型网关，请检查网关地址与网络",
+    "workspaceNotFound": "找不到该工作区",
+    "notConfigured": "该功能尚未完成配置",
+    "unauthorized": "身份验证已失效，请重新登录",
+    "notFound": "找不到对应的内容",
+    "timeout": "请求超时，请稍后重试",
+    "network": "无法连接服务器，请检查网络",
+    "rateLimited": "操作过于频繁，请稍后再试",
+    "conflict": "内容已存在或状态冲突",
+    "server": "服务器开小差了，请稍后重试",
+    "loadRssFailed": "加载订阅源失败",
+    "loadEmailFailed": "加载邮件失败，请稍后重试。",
+    "loadEmailBodyFailed": "正文拉取失败",
+    "loadEmailSettingsFailed": "加载邮箱设置失败",
+    "sendEmailFailed": "发送失败",
+    "createTaskFailed": "创建任务失败",
+    "loadInvoicesFailed": "加载发票失败",
+    "loadNotesFailed": "加载笔记失败",
+    "loadMeetingsFailed": "加载会议记录失败",
+    "loadFlashcardsFailed": "加载卡片失败",
+    "loadGatewayFailed": "加载网关信息失败",
+    "loadTasksFailed": "加载任务失败",
+    "loadSessionsFailed": "加载会话失败",
+    "loadFinanceFailed": "加载账单失败",
+    "loadSettingsFailed": "加载设置失败",
+    "saveFailed": "保存失败，请稍后重试",
+    "operateFailed": "操作失败，请稍后重试",
+    "summaryFailed": "总结生成失败，请确认已配置并可用的模型网关",
+    "probeFailed": "探测失败，请检查目标地址是否可达"
   }
 }

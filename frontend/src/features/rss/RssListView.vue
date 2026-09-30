@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { rssApi, type RSSSource, type RSSItem } from '../../api/rss'
+import { toUserMessage } from '../../api/error-message'
 
 const router = useRouter()
+const { t } = useI18n()
 const tab = ref<'sources' | 'items'>('items')
 const sources = ref<RSSSource[]>([])
 const items = ref<RSSItem[]>([])
@@ -23,7 +26,9 @@ async function refresh() {
       limit: 50,
     })
   } catch (e: any) {
-    errorMsg.value = e?.message ?? String(e)
+    // 真机实测：原先直接渲染 e.message，屏幕上出现
+    // 「rss_unavailable: store not configured」——英文技术标识且未本地化。
+    errorMsg.value = toUserMessage(e, t, t('errors.loadRssFailed'))
   } finally {
     loading.value = false
   }
@@ -158,11 +163,11 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
 .rss-header h2 { flex: 1; margin: 0; font-size: 20px; }
 .actions { display: flex; gap: 8px; }
 .btn-primary, .btn-secondary { display: inline-flex; align-items: center; gap: 4px; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); cursor: pointer; background: var(--bg-elevated); }
-.btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
-.badge { background: var(--accent); color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+.btn-primary { background: var(--brand-primary); color: white; border-color: var(--brand-primary); }
+.badge { background: var(--brand-primary); color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
 .tabs { display: flex; gap: 16px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
 .tabs button { padding: 8px 4px; border: none; background: transparent; cursor: pointer; border-bottom: 2px solid transparent; }
-.tabs button.active { border-bottom-color: var(--accent); color: var(--accent); }
+.tabs button.active { border-bottom-color: var(--brand-primary); color: var(--brand-primary); }
 .filters { display: flex; gap: 8px; margin-bottom: 12px; }
 .filters select, .filters input { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; }
 .filters input { flex: 1; }
@@ -187,5 +192,5 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
 .src-actions { display: flex; gap: 4px; }
 .icon { padding: 4px; border: none; background: transparent; cursor: pointer; border-radius: 4px; }
 .icon:hover { background: var(--bg-hover); }
-.link { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; padding: 0; }
+.link { background: none; border: none; color: var(--brand-primary); cursor: pointer; text-decoration: underline; padding: 0; }
 </style>

@@ -13,7 +13,7 @@
     </div>
 
     <div v-if="store.error" class="error" role="alert">
-      {{ store.error }}
+      {{ apiError(store.error, 'errors.loadSettingsFailed') }}
       <button type="button" @click="refresh">重试</button>
     </div>
 
@@ -63,7 +63,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { useMarketplaceStore } from './store'
 import type { MarketplacePackage, PackageVersion, Visibility } from './types'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const store = useMarketplaceStore()
 const search = ref('')
 const installing = ref(false)

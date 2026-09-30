@@ -2,7 +2,7 @@
  * Email assistant API — multi-account IMAP aggregation, AI classification,
  * and daily summaries. See docs/2026-07-02-email-assistant-design.md.
  */
-import { http } from './http'
+import { http, LONG_REQUEST_TIMEOUT_MS } from './http'
 import { useAuthStore } from '../stores/auth'
 
 export type EmailCategory =
@@ -248,10 +248,17 @@ export const emailApi = {
       body: JSON.stringify(accountId ? { account_id: accountId } : {}),
     })
   },
-  classifyInbox(limit = 20): Promise<EmailClassifyReport> {
+  /**
+   * 批量归类。传入 signal 可真正中止在途请求（不只是停批间循环），
+   * 对应需求「后台执行的 api 可以强行终止」。
+   */
+  classifyInbox(limit = 20, signal?: AbortSignal): Promise<EmailClassifyReport> {
     return http('/api/emails/classify', {
       method: 'POST',
       body: JSON.stringify({ limit }),
+      signal,
+      // 归类逐封调 LLM，天然慢；给足额度再由用户手动中止。
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     })
   },
   purgeEmails(ids: string[]): Promise<{ purged: number }> {

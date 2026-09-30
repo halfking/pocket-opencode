@@ -78,8 +78,10 @@ import { ApiError } from '../../api/http'
 import * as gw from '../../api/gateway'
 import type { ModelTreeCredential } from '../../api/gateway'
 import { useConfirm } from '../../composables/useConfirm'
+import { useApiError } from '../../composables/useApiError'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -112,7 +114,7 @@ async function load() {
     if (e instanceof ApiError && e.status === 403) {
       error.value = '该网关账号权限不足，无法读取模型路由'
     } else {
-      error.value = e?.message || '加载失败'
+      error.value = apiError(e, 'errors.loadGatewayFailed')
     }
   } finally {
     loading.value = false
@@ -171,7 +173,7 @@ async function probe(model: string) {
     if (e instanceof ApiError && e.status === 403) {
       error.value = '探测需要 pocket admin 角色 + 网关 super_admin'
     } else {
-      error.value = e?.message || '探测失败'
+      error.value = apiError(e, 'errors.probeFailed')
     }
   } finally {
     probing.value = null

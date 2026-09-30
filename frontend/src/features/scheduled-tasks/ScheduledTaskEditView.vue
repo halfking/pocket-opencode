@@ -60,8 +60,10 @@ import { defaultSchedulePlan, encodeSchedule, parseSchedule } from './schedule-p
 import { applyPrompt, extractPrompt, promptFieldForKind } from './task-prompt'
 import PromptOptimizeField from './PromptOptimizeField.vue'
 import SchedulePlanFields from './SchedulePlanFields.vue'
+import { useApiError } from '../../composables/useApiError'
 import { markListDirty } from '../../composables/list-scene-store'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const store = useScheduledTasksStore()
@@ -107,7 +109,7 @@ function hydrate(task: ScheduledTask) {
 async function load() {
   if (!taskId.value) return
   try { hydrate(await store.loadOne(taskId.value)) }
-  catch (e: any) { error.value = e?.message || '加载失败' }
+  catch (e: any) { error.value = apiError(e, 'errors.loadGatewayFailed') }
 }
 
 function parsePayloadText(): unknown {
@@ -147,7 +149,7 @@ async function save() {
     const saved = isEdit.value ? await store.update(taskId.value!, input) : await store.create(input)
     markListDirty('scheduled-tasks')
     router.replace(`/settings/scheduled-tasks/${saved.id}`)
-  } catch (e: any) { error.value = e?.message || '保存失败' }
+  } catch (e: any) { error.value = apiError(e, 'errors.saveFailed') }
   finally { saving.value = false }
 }
 

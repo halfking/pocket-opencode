@@ -35,18 +35,19 @@
           >
             <span class="material-symbols-outlined" aria-hidden="true">label</span>
           </button>
-          <button class="chat-icon-btn" type="button" aria-label="删除" @click="inbox.enterSelect()">
-            <span class="material-symbols-outlined" aria-hidden="true">delete</span>
-          </button>
           <button class="chat-icon-btn" type="button" aria-label="更多" @click="inbox.moreOpen.value = !inbox.moreOpen.value">
             <span class="material-symbols-outlined" aria-hidden="true">more_vert</span>
           </button>
         </template>
       </HeaderActionsPortal>
       <div v-if="inbox.moreOpen.value && !inbox.selectMode.value" class="more-menu">
+        <button type="button" @click="go('/email/summary')">{{ t('email.dailySummary') }}</button>
         <button type="button" @click="go('/email/invoices')">发票整理</button>
         <button type="button" @click="go('/email/cleanup')">清理垃圾</button>
         <button type="button" @click="go('/email/settings')">邮箱设置</button>
+        <!-- 真机 360dp 实测：删除入口挤在顶栏时标题「邮箱」被截成「邮...」，
+             移入更多菜单后顶栏动作 4→3，标题恢复完整。 -->
+        <button type="button" @click="onEnterSelectFromMenu">批量删除</button>
       </div>
 
       <ScrollChromePortal>
@@ -75,7 +76,7 @@
       <PullToRefresh :on-refresh="load" class="inbox-scroll">
     <p v-if="inbox.classifyHint.value" class="sync-hint">
       {{ inbox.classifyHint.value }}
-      <button v-if="inbox.classifying.value" type="button" class="linkish" @click="inbox.classifyCancel.value = true">取消</button>
+      <button v-if="inbox.classifying.value" type="button" class="linkish" @click="inbox.cancelClassify()">取消</button>
     </p>
     <p v-if="syncHint" class="sync-hint">{{ syncHint }}</p>
     <div v-if="loading" class="state-wrap"><Skeleton :count="5" /></div>
@@ -141,6 +142,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { Skeleton, EmptyState, PullToRefresh, DbLockedState } from '../../components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 import HeaderActionsPortal from '@/components/layout/HeaderActionsPortal.vue'
@@ -160,6 +162,7 @@ import { useListScene } from '../../composables/use-list-scene'
 defineOptions({ name: 'EmailInboxView' })
 
 const router = useRouter()
+const { t } = useI18n()
 const emails = ref<LocalEmail[]>([])
 const loading = ref(true)
 const loadingMore = ref(false)
@@ -180,6 +183,11 @@ function goToLogin() {
 function go(path: string) {
   inbox.moreOpen.value = false
   router.push(path)
+}
+
+function onEnterSelectFromMenu() {
+  inbox.moreOpen.value = false
+  inbox.enterSelect()
 }
 
 watch([sinceLocal, untilLocal], () => {
@@ -300,7 +308,13 @@ onUnmounted(() => setHeaderTitle(null))
 .pick { display: flex; align-items: center; margin-right: 8px; }
 .card-main { flex: 1; min-width: 0; }
 .linkish { border: none; background: none; color: var(--brand-primary); font-size: 11px; }
-.filters { display: flex; gap: var(--space-2); overflow-x: auto; padding: var(--space-3); }
+.filters { display: flex; gap: var(--space-2); overflow-x: auto; padding: var(--space-3);
+  /* 横向 chip 条隐藏滚动条：与 AIChatView.context-row / NoteListView.context-row 一致，
+     真机实测未隐藏时 chip 行下方常驻一条突兀灰条。 */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.filters::-webkit-scrollbar { display: none; }
 .chip { padding: var(--space-1) var(--space-3); border-radius: var(--radius-full); border: 1px solid var(--border); background: var(--bg-card); color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
 .chip.active { background: var(--brand-primary); color: var(--text-inverse); border-color: var(--brand-primary); }
 .inbox-scroll { flex: 1; min-height: 0; }

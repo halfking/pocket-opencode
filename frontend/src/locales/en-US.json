@@ -59,8 +59,7 @@
     "settings": "Settings",
     "localAgent": "Local Agent",
     "home": "Home",
-    "study": "Study",
-    "flashcards": "Flashcards"
+    "study": "Study"
   },
   "routes": {
     "login": "Sign in",
@@ -341,5 +340,45 @@
   },
   "email": {
     "dailySummary": "Daily digest"
+  },
+  "errors": {
+    "rssNotConfigured": "No RSS feed configured yet. Add a feed to get started.",
+    "rssSourceMissing": "That feed no longer exists; it may have been removed.",
+    "emailNotConfigured": "No mailbox configured yet. Add an account in Mail settings.",
+    "emailAccountMissing": "That mailbox no longer exists; it may have been removed.",
+    "imapUnauthorized": "Mailbox authorization expired. Please reconnect it.",
+    "imapFailed": "Could not reach the mail server. Check your network and account details.",
+    "sttNotConfigured": "Speech-to-text is not configured yet.",
+    "llmNotConfigured": "No language model configured yet. Pick one in Model settings.",
+    "modelNotFound": "That model no longer exists; it may have been removed.",
+    "gatewayUnreachable": "Cannot reach the model gateway. Check its address and your network.",
+    "workspaceNotFound": "That workspace could not be found.",
+    "notConfigured": "This feature has not been configured yet.",
+    "unauthorized": "Your session expired. Please sign in again.",
+    "notFound": "The requested item could not be found.",
+    "timeout": "The request timed out. Please try again.",
+    "network": "Cannot reach the server. Check your network.",
+    "rateLimited": "Too many requests. Please slow down and try again.",
+    "conflict": "That already exists or conflicts with the current state.",
+    "server": "The server hit an error. Please try again later.",
+    "loadRssFailed": "Could not load your feeds",
+    "loadEmailFailed": "Could not load the email. Please try again.",
+    "loadEmailBodyFailed": "Could not load the message body",
+    "loadEmailSettingsFailed": "Could not load mail settings",
+    "sendEmailFailed": "Sending failed",
+    "createTaskFailed": "Could not create the task",
+    "loadInvoicesFailed": "Could not load invoices",
+    "loadNotesFailed": "Could not load notes",
+    "loadMeetingsFailed": "Could not load meetings",
+    "loadFlashcardsFailed": "Could not load cards",
+    "loadGatewayFailed": "Could not load gateway information",
+    "loadTasksFailed": "Could not load tasks",
+    "loadSessionsFailed": "Could not load sessions",
+    "loadFinanceFailed": "Could not load your finances",
+    "loadSettingsFailed": "Could not load settings",
+    "saveFailed": "Could not save. Please try again.",
+    "operateFailed": "That action failed. Please try again.",
+    "summaryFailed": "Could not generate a summary. Check that a model gateway is configured and reachable.",
+    "probeFailed": "Probe failed. Check that the target is reachable."
   }
 }
