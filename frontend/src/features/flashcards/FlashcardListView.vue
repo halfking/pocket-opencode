@@ -66,6 +66,41 @@
         </div>
 
         <main v-else class="list">
+          <!--
+            BUG-K follow-up（2026-09-30）：有卡组时列表页原本**没有**建组入口，
+            「新建卡组」只存在于 FlashcardEditView 顶部那个表单里 —— 于是加第 2 个
+            卡组必须先点「新建卡片」进编辑页才能建，入口语义和位置都不对。
+            这里补一个可展开的建组入口，复用同一套 newDeckName/submitCreateDeck。
+          -->
+          <div class="deck-new">
+            <button
+              type="button"
+              class="deck-toggle"
+              data-testid="deck-create-toggle"
+              :aria-expanded="showDeckForm"
+              @click="showDeckForm = !showDeckForm"
+            >
+              <span class="material-symbols-outlined">library_add</span>
+              <span>{{ t('flashcards.deck.create') }}</span>
+            </button>
+            <form
+              v-if="showDeckForm"
+              class="deck-create"
+              data-testid="deck-create-form-existing"
+              @submit.prevent="submitCreateDeck"
+            >
+              <input
+                v-model="newDeckName"
+                type="text"
+                :placeholder="t('flashcards.deck.createPlaceholder')"
+                :aria-label="t('flashcards.deck.create')"
+              />
+              <button class="primary" type="submit" :disabled="deckCreating || !newDeckName.trim()">
+                {{ deckCreating ? t('common.loading') : t('flashcards.deck.create') }}
+              </button>
+            </form>
+            <p v-if="deckError" class="error" role="alert">{{ deckError }}</p>
+          </div>
           <article
             v-for="deck in decks"
             :key="deck.deckId"
@@ -130,6 +165,8 @@ function goCreate() {
 const newDeckName = ref('')
 const deckCreating = ref(false)
 const deckError = ref('')
+// BUG-K follow-up：有卡组时建组表单默认收起，点「新建卡组」才展开。
+const showDeckForm = ref(false)
 
 async function submitCreateDeck() {
   const name = newDeckName.value.trim()
@@ -180,6 +217,19 @@ onMounted(async () => {
   cursor: pointer;
 }
 .list { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-3) var(--space-4) 100px; }
+.deck-new { display: flex; flex-direction: column; gap: var(--space-2); }
+.deck-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  align-self: flex-start;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--text-primary);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md, 8px);
+  cursor: pointer;
+}
 .card {
   text-align: left;
   border: 1px solid var(--border);
