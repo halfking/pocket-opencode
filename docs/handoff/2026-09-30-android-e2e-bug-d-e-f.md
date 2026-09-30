@@ -2193,6 +2193,23 @@ MISS StudyHubView.vue 含修复钩子 = false，仍是旧的 goCreateDeck
 2. 再 `git stash` / 提交 / 放弃它的本地改动，把工作区对齐 origin/main；
 3. 然后才能快进。**不要用 `-f` 强行绕过 git 的拒绝。**
 
+**2026-09-30 17:45 复测（已推到 11 个提交后）**：
+
+```
+主工作区落后 origin/main 11 个提交
+主工作区脏文件 76 个，待快进提交涉及 37 个文件
+重叠（会挡住快进 / 有被覆盖风险）9 个：
+  frontend/src/features/sessions/SessionListView.vue   ← 并发会话自己的
+  frontend/src/features/study/StudyHubView.vue         ← 我的 BUG-AA
+  frontend/src/locales/{ja-JP,ko-KR,de-DE,fr-FR,es-ES,pt-BR,zh-TW}.json  ← 我的 BUG-AA
+本轮已推送的修复中，主工作区仍是旧版的：8 项
+```
+
+复现：`node scripts/check-main-overlap.mjs`（通用版，列出重叠面 + 本轮修复的旧版清单）。
+
+**好消息**：本轮的 `EmailAccountAddView.vue`（BUG-AB / BUG-AC）**不在**脏文件里，
+所以那两处修复没有被覆盖风险。风险仍集中在 BUG-AA 的 8 个文件上。
+
 ## 4.29 BUG-AB：邮箱账户的 UI 写路径**根本走不通**（真机 13/13 + 证伪 7/11）
 
 ### 4.29.1 怎么发现的
