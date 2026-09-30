@@ -166,7 +166,34 @@
   3. 顺带断言 ASR 请求真的带上了 `Authorization: Bearer test-asr-key`（防止 target 拼装被改坏）。
 - 结果：PASS。
 
-### 5.3 三个被改坏的测试（未提交，已从整合分支排除）
+### 5.4 顺带收掉：STT 探测的 `ProbeEndpointMissing` 死常量
+
+- 来源：并发会话在 `74b629c` 把它交付成**补丁文件**
+  `docs/handoff/patches/2026-10-01-stt-endpoint-missing.patch`，
+  **没有直接改进代码**——也就是说这个缺陷在 `origin/main` 上**仍然是活的**。
+- 缺陷：`ProbeEndpointMissing` 声明了、`server_stt_settings.go` 也为它配了「无转写端点」中文文案，
+  但生产代码从不赋值。网关两种形态都 404 时落到 `ProbeFailed`，
+  而 `describeProbe` 对 `ProbeFailed` 拼的是 `"探测失败(" + Detail + ")"`，
+  `Detail` 带上游原始响应体 → 设置页直接显示
+  `探测失败(http 404: {"error":{"code":"no_candidate",...}})`。
+- 已做：应用其 `discovery.go` 生产修复（17 行）。
+  补丁里的测试**依赖那份被排除的坏 fixture**（`discovery_test.go` 不在整合树里），
+  因此**另写了一个自包含测试** `internal/stt/discovery_endpoint_missing_test.go`：
+  - `TestProbeClassifiesBothTransportsMissing`：两种形态都 404 → 判 `endpoint_missing`，
+    且 `Detail` **不得含 `{` / `choices` / `no_candidate`**（防上游 body 泄漏到 UI）。
+  - `TestProbeNoProviderIsNotEndpointMissing`：**反向护栏**。
+    503 `no_candidate`（网关列了模型但无可用上游）与「端点不存在」是两回事，
+    守住修复的边界——否则设置页会把「换个模型」的建议错换成「网关没开转写端点」。
+- **修复前红 / 修复后绿已实测**（`git stash` 对照）：
+  ```
+  修复前：status=failed want endpoint_missing
+          (detail=http 404: {"error":{"code":"no_candidate",...,"choices":[]}})
+  修复后：两例全 PASS
+  ```
+  修复前的失败信息**逐字就是甩给用户的那坨 JSON**，判据自证。
+
+### 5.5 三个被改坏的测试（未提交，已从整合分支排除）
+
 
 - `server_stt_settings_test.go`：引用不存在的 `wsAToken`、调用未导出的 `sttDiscovery.Put` → 无法编译。
 - `internal/stt/discovery_test.go`：3 个模型分类断言失败。

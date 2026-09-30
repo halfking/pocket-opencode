@@ -291,6 +291,23 @@ func ProbeModel(ctx context.Context, client *http.Client, baseURL, apiKey, model
 			out.Status, out.Detail = ProbeNoProvider, providerDetail(status2, err2)
 			return out
 		}
+		// 走到这里说明 /audio/transcriptions 已经是 404/405（见上面的 switch）。
+		// 如果 chat 侧同样是 404/405，那就是「这个网关压根没开转写端点」，
+		// 而不是「探测过程出错了」。
+		//
+		// 不单独判出去的后果很具体：会落到 ProbeFailed，而
+		// server_stt_settings.go 的 describeProbe 对 ProbeFailed 拼的是
+		// "探测失败(" + Detail + ")"，Detail 里带着上游返回的原始响应体，
+		// 于是设置页直接把这坨东西甩给用户：
+		//   探测失败(http 404: {"error":{"code":"no_candidate",…}})
+		// ProbeEndpointMissing 本来就配了「无转写端点」这句中文文案，
+		// 但在这之前生产代码从没给它赋过值，是个死常量。
+		// TestProbeClassifiesBothTransportsMissing 守住这条。
+		if status2 == http.StatusNotFound || status2 == http.StatusMethodNotAllowed {
+			out.Status, out.Detail = ProbeEndpointMissing,
+				"网关未提供转写端点（/audio/transcriptions 与 chat 音频输入均为 404/405）"
+			return out
+		}
 		detail := firstLine(err2)
 		if status2 != 0 {
 			detail = fmt.Sprintf("http %d: %s", status2, detail)

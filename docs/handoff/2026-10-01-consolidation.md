@@ -73,6 +73,7 @@
 | — | 我自己早前 PowerShell 造成的 2 处 mojibake | 编辑工具修回 |
 | — | `TestMeetingWorkspaceIsolation` 因移除密钥而红 | 改写成「未配置→502 且不伪造转写」+「测试自建 ASR→200 且落库」两段 |
 | — | `server_stt_settings.go:293` 值/指针类型错配（合并带回的旧版） | 传 `&res` |
+| MEDIUM | `ProbeEndpointMissing` 是死常量 → 设置页把上游原始 JSON 当「探测失败」甩给用户 | 应用 `74b629c` 交付的补丁里的生产修复；测试另写自包含版（补丁的测试依赖被排除的坏 fixture） |
 
 ---
 
@@ -88,6 +89,7 @@
 | 网关状态 | `TestIntegrationStatus_LLMGatewayReportsUnconfiguredWithoutEnv` / `...EnvSource` | 全 PASS |
 | 网关默认值 | `TestDefaultLLMGatewayStateHasNoBuiltinKey` / `TestGatewayConfigGETReturnsInitializedDefaults` | 全 PASS |
 | 台账复用 | `TestPublishLedgerScoped_ReusesPublishedSheet`（真库） | PASS |
+| STT 探测分类 | `TestProbeClassifiesBothTransportsMissing` / `TestProbeNoProviderIsNotEndpointMissing` | 全 PASS（**修复前红已用 `git stash` 实测对照**） |
 | 密钥不在工作区 | 全仓扫 `sk-6tGLjzlzUIOuMxh6` | 无命中（已脱敏） |
 
 18 项失败的构成（`origin/main` 基线同样红，非本轮引入）：
