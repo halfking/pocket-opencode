@@ -242,6 +242,7 @@
     },
     "error": {
       "loadFailed": "載入閃卡失敗",
+      "saveFailed": "儲存卡片失敗",
       "syncConflict": "同步衝突，請重新整理"
     },
     "deckOptions": {

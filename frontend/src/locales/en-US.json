@@ -242,6 +242,7 @@
     },
     "error": {
       "loadFailed": "Could not load flashcards",
+      "saveFailed": "Could not save the card",
       "syncConflict": "Sync conflict — please refresh"
     },
     "deckOptions": {

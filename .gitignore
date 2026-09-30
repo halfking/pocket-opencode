@@ -113,3 +113,6 @@ downloads/
 
 # Local MiniMax / Mavis runtime cache (per-host skill installs; not source)
 .minimax/
+
+# Local debug log (pocketd / dev tooling run from repo root)
+debug.log

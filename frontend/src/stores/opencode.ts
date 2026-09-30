@@ -5,7 +5,8 @@
 import { defineStore } from 'pinia'
 import { api } from '../api/client'
 import type { Instance, Session, Task } from '../api/client'
-import { assertNotHTML } from '../api/jsonGuard'
+import { getApiBase, http } from '../api/http'
+import { buildWebSocketUrl } from '../api/websocket-url'
 
 // M4（2026-09-09）：实时更新 WS 的进程级单例引用 + 重连排期句柄。
 // 此前每次 subscribeToRealTimeUpdates() 都新建连接且递归重连，导致连接堆积。
@@ -196,11 +197,12 @@ export const useOpenCodeStore = defineStore('opencode', {
       this.error = null
       try {
         // TODO: 后端需要实现 /api/opencode/sessions/{id}/history
-        const response = await fetch(`/api/opencode/sessions/${sessionId}/history`)
-        if (!response.ok) {
-          throw new Error(`Failed to load history: ${response.statusText}`)
-        }
-        const data = await assertNotHTML(response).json()
+        // 必须走 http()：裸 fetch('/api/...') 是相对路径，在 Capacitor 里
+        // 会打到 WebView 自己的 https://localhost，拿回本地 index.html
+        // （BUG-J 同源缺陷）。http() 会解析真实 pocketd 基址并带鉴权。
+        const data = await http<{ timeline?: HistoryEvent[] }>(
+          `/api/opencode/sessions/${encodeURIComponent(sessionId)}/history`,
+        )
         this.sessionHistory[sessionId] = data.timeline || []
         
         console.log('✅ 加载历史成功:', sessionId)
@@ -220,11 +222,9 @@ export const useOpenCodeStore = defineStore('opencode', {
     async getSessionSummary(sessionId: string): Promise<string> {
       try {
         // TODO: 后端需要实现 /api/opencode/sessions/{id}/summary
-        const response = await fetch(`/api/opencode/sessions/${sessionId}/summary`)
-        if (!response.ok) {
-          throw new Error(`Failed to get summary: ${response.statusText}`)
-        }
-        const data = await assertNotHTML(response).json()
+        const data = await http<{ summary?: string }>(
+          `/api/opencode/sessions/${encodeURIComponent(sessionId)}/summary`,
+        )
         return data.summary || '暂无摘要'
       } catch (err: any) {
         console.error('❌ 获取摘要失败:', err)
@@ -261,8 +261,19 @@ export const useOpenCodeStore = defineStore('opencode', {
       }
       if (realtimeReconnectTimer !== null) return realtimeWs // 重连已排期
 
-      // WebSocket 连接
-      const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
+      // WebSocket 连接：必须用配置后的 pocketd 基址，而不是 window.location。
+      // Capacitor 里 window.location 是 WebView 自身（https://localhost），
+      // 据此拼出的地址永远连不上真正的 pocketd（BUG-D/BUG-F 同源）。
+      const token = localStorage.getItem('pocket_token')
+      const wsUrl = buildWebSocketUrl(getApiBase(), token)
+      if (!wsUrl) {
+        console.warn('⚠️ 未订阅 OpenCode 实时更新：API 基址无法构造合法的 ws 地址')
+        return null
+      }
+      if (!token) {
+        console.warn('⚠️ 未订阅 OpenCode 实时更新：缺少认证 token')
+        return null
+      }
       const ws = new WebSocket(wsUrl)
       realtimeWs = ws
 

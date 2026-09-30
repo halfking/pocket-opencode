@@ -242,6 +242,7 @@
     },
     "error": {
       "loadFailed": "フラッシュカードの読み込みに失敗しました",
+      "saveFailed": "カードを保存できませんでした",
       "syncConflict": "同期が競合しています — 再読み込みしてください"
     },
     "deckOptions": {

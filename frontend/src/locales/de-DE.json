@@ -242,6 +242,7 @@
     },
     "error": {
       "loadFailed": "Karteikarten konnten nicht geladen werden",
+      "saveFailed": "Karte konnte nicht gespeichert werden",
       "syncConflict": "Sync-Konflikt — bitte aktualisieren"
     },
     "deckOptions": {
