@@ -2387,6 +2387,22 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
+- **BUG-AQ 原生 confirm/alert 冻结渲染进程已修**（真机复现过两次整机假死：
+  点「删除」后所有 CDP 命令超时，含 `1+1` 和 `Page.enable`，只有 `am force-stop` 能恢复）：
+  - 改动：7 处 `confirm` → `useConfirm()` + 16 处 `alert` → `useToast()`，**共 23 处**；
+    改完全仓 `.vue` 已无裸 `alert(` / `window.confirm(` / `prompt(`
+  - `verify-bug-aq-no-freeze.mjs` **12/12**（真机）。**判据自证**：脚本先主动调
+    `window.confirm()` 制造冻结，拿到 `Page.javascriptDialogOpening` 且 `evaluate` 超时，
+    证明探针抓得到冻结态；再验真实删除按钮只弹 Vue `.confirm-message`、渲染进程全程可响应
+  - 服务端兜底：删除后直查 PG，`ST2-3646738` / `ST2-4010383` 已不在表中
+  - ⚠️ 这 16 条 toast 文案**仍是硬编码中文**（既有欠账，未接 i18n），详见 §4.51.3
+  - 详见 §4.51
+- **BUG-AP 本地缓存写失败被当成服务端失败已修**（会造出重复任务）：
+  - `create()`/`update()` 只把 API 调用放 try；本地镜像写单独 try/catch 只 warn，
+    **不改 id、不重推**；`writeLocalSetting` 补 `isReady()` 守卫
+  - `verify-scheduled-task-writepath.mjs` **8/8**（每步以 PG 直查兜底，不以 toast 单独成立）：
+    列表回显 `found=false → true`、启停 `enabled 1→1（不变）→ 1→0`、改名落库、删除 `count=0`
+  - 详见 §4.50
 - **BUG-AO 缺 key 静默已修**：`createI18n` 接上 `missing` 钩子，缺 key 打**去重后**的
   `console.warn`（按 `locale:key`），避免渲染循环刷屏。
   - 单测 **16/16**（i18n 目录全量）；`vue-tsc` exit 0
@@ -2540,6 +2556,18 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   对照组重复安装被唯一索引挡住。**这是六个模块里第一个被打通的 UI 写路径**（§4.25）
 
 ### ⚠️ 本轮新增未验证 / 未修（不要当成已完成）
+
+- **BUG-AQ 换掉的 16 条 toast 文案仍是硬编码中文，没接 i18n**。
+  同一文件上下的 `confirm` 弹窗文案本来也全是硬编码中文
+  （如 `TasksView.vue:1207`），只改这 16 处会造成不一致，所以按欠账记账、没顺手改。
+  与 `FinanceView.vue` 的 32 行硬编码中文、`§4.48.3` 的 117 条/语言未译，属同一类欠账。
+- **BUG-AQ 里「有新版本」那条 toast 的可读性没根治**：`settings.newVersionAvailable`
+  文案含完整 changelog，我给了 `duration: 15000 + closable` 绕开「3 秒读不完」，
+  但长文本塞进 toast 终究不是正解。正解是把更新日志放进可滚动面板。**未做。**
+- **BUG-AQ 只在定时任务页做了端到端点验**：另外 22 处替换点没有逐个真机点到。
+  静态面已确认「全仓 `.vue` 无裸 `alert(`/`window.confirm(`/`prompt(`」，
+  且 `useConfirm`/`useToast` 是项目既有正确实现（`ConfirmDialog` 挂载在 `App.vue`、
+  `Toast` 自建容器无需 Provider），但**这不等于 23 个入口都实测过**。
 
 - ~~**真机 BUG-O 闭环未复验**~~ → **已复验通过**（11:45 构建、11:46 装机）：
   `scripts/redmi-write-ops-modules.mjs` **7/7**。强证据：新建卡组显示 `1 cards`
@@ -4563,32 +4591,285 @@ FinanceView 侧也修正：实际是 **32 行**含中文（其中一部分是文
 2. 会再次与并发会话在 `locales/*.json` 上重叠（当前主工作区已有 9 个文件重叠）；
 3. 这是**显示英文**的问题，不影响功能正确性，优先级低于本轮修的三个真缺陷。
 
+### 4.49 关掉两个悬着的证据缺口
 
-#### 4.47.5 一次「假回归」：冒烟 5/11 其实是夹具解锁时机错了
+#### 4.49.1 `/api/marketplace/agents`：**404 成立**，之前的 401 是探测方法错了
 
-BUG-AO 装包后跑 `smoke-routes.mjs`，拿到 **5/11**，6 个路由 `landed=false`
-且 `textLen` **恒为 121**。差点当成 BUG-AO 引入的回归记进 handoff。追下去是：
+§4.37.2 记的是「404 说法无法证实，只读探测返回 401」。本轮定下来了——
+**401 是探测方法的问题，不是端点状态**：
 
-`diag-route-guard.mjs` 显示这些路由被守卫改写成了
+| 探测方式 | `/api/marketplace/agents` | `/api/marketplace/packages` |
+|---|---|---|
+| 不带凭据（主机 curl） | **401** | 401 |
+| 带设备有效 token（页面内 fetch） | **404** `{"error":"not found"}` | **200**，返回真实 packages |
+
+不带 token 时**鉴权中间件先短路**，无论路由存不存在都是 401 ——
+那样的探测根本测不出 404。带 token 后才见分晓。
+
+同时确认后端**没有** `marketplace/agents` 路由（grep 全仓无匹配），
+智能体的真实路径是 **`/api/agents`**（带 token → 200 `{"agents":null}`），
+`/api/marketplace/skills` 同样是 404。⇒ §4.37.2 的「404 说法」**是对的**，
+错的只是当时拿 401 当反证。
+
+#### 4.49.2 闪卡入口缺陷：verifier 的「只记录未修」是旧快照
+
+外部审计一直报「闪卡入口缺陷只记录未修」。实际该缺陷在 `af24ce0` 就修了，
+本轮在**当前最新构建**上复跑 `verify-flashcard-deck-entry.mjs`：
 
 ```
-#/login?returnTo=/notes&unlock=1
-「检测到已有登录态，但本地加密库未解锁。请重新输入主密码以访问本地数据。」
+PASS  前置：有卡组存在                        decks=2
+PASS  有卡组时列表页存在「新建卡组」入口        exists=true
+PASS  点开入口后建组表单展开                    form=true
+PASS  从列表页入口成功建出第 2 个卡组并出现在列表  decks 2 -> 3
+=== 4/4 通过 ===
 ```
 
-- 失败的 6 个（notes / vault / contacts / meetings / study / email）
-  **全都依赖本地 SQLCipher 库**；通过的 5 个不依赖或依赖弱。
-- crypto key **只在内存**，装包重启后失效。
-- 起点常是 `#/settings`（不依赖本地库），所以第一次 `ensureUnlocked` 看不到
-  主密码输入框、什么也没做；等导航到 `/notes` 才被守卫弹飞，
-  **后续所有依赖本地库的路由全被弹飞**。
+⇒ 该条审计意见基于过期快照，已失效。
 
-⇒ 夹具缺陷：解锁只在开头做一次，而守卫是**导航途中**才判定的。
-已改为每个路由前 + 导航后再各调一次 `ensureUnlocked()`，
-并在 `landed=false` 时打印被改写后的 hash。重跑 **11/11**。
+#### 4.49.3 定时任务写路径：从「零验证」到有据可依（且先踩了一次夹具坑）
 
-**教训**：多个条目以**完全相同的 `textLen`** 失败，是「卡在同一个界面」的强信号，
-不是 N 个独立回归。下次看到这种形态，先查是不是夹具/状态问题再谈产品缺陷。
+`scheduled-tasks` 此前**没有任何写路径验证**。首版脚本报「创建未落库」，
+差点记成产品 bug；`diag-scheduled-create.mjs` 定性后是**夹具问题**：
+
+- 默认 `kind=redclaw_chat` ⇒ `showPrompt` 为真；
+- `save()` 在「提示词为空」时**早退**，显示「请填写任务提示词」，**根本不发请求**；
+- 我上一版填的是 `payloadText`（JSON 文本域）而不是「任务内容」提示词文本域。
+
+填对字段后创建成功并跳到详情页。**教训与 §4.48.1 同源**：
+「没落库」既可能是产品 bug 也可能是夹具没填必填，
+必须把页面上的**错误文案**读出来判读，不能只看数据库。
+
+（完整 CRUD 结果见下一节。）
+
+### 4.50 BUG-AP：本地缓存写失败被当成服务端失败——会造出重复任务
+
+修好夹具后重跑，暴露出一个**真缺陷**，而且形状和 BUG-AL / BUG-AK 一模一样：
+**写成功了，读不回来**。
+
+#### 4.50.1 现象（三条互相印证的证据）
+
+`verify-scheduled-task-writepath.mjs`：
+
+```
+点「创建任务」= 1
+页面错误文案 = 保存失败，请稍后重试          ← ① 用户被告知失败
+PASS  创建：PG 落库  — scheduled_tasks -> 1b119c34...|1   ← ② 服务端其实有行
+FAIL  创建：列表回显  — found=false                       ← ③ 列表却是空的
+FAIL  启用/停用 落库  — enabled 1 -> 1                    ← 卡片根本没渲染出来
+PASS  编辑页回填原值 / PASS 编辑改名落库                     ← 直接 URL 进详情却正常
+FAIL  删除后 PG 无该行  — count=1                          ← 列表里没有卡片可点
+```
+
+①+② 同时成立只有一个解释：**服务端创建成功了，但前端把它当成失败了。**
+③ 的直接原因是列表拿不到卡片，于是 ⑤⑥ 连环失败。
+
+#### 4.50.2 根因：本地缓存写与服务端调用挤在同一个 try
+
+`features/scheduled-tasks/store.ts`：
+
+```ts
+async function create(input) {
+  try {
+    const task = await scheduledTasksApi.create(input)          // ← 服务端已成功，PG 有行
+    await writeLocalSetting({ ... })                          // ← 本地镜像写，失败就抛
+    tasks.value = [task, ...tasks.value]
+    return task
+  } catch {
+    const id = crypto.randomUUID()                             // ← 伪造一个「不同的」id
+    const draft = { id, ...input, ... }
+    await writeLocalSetting({ ..., dirty: 1 })
+    await enqueueConfigPush({ namespace: 'scheduled_task', id, payload: input })  // ← 再推一次服务端
+    tasks.value = [draft, ...tasks.value]
+    return draft
+  }
+}
+```
+
+**本地镜像写失败 ⇒ 落进 catch ⇒ 造一条 `crypto.randomUUID()` 的草稿并排队推送。**
+后果链条：
+
+1. 服务端已经有真数据，用户却被告知「保存失败」；
+2. UI 里的 id 是草稿的 UUID，与服务端真实 id **不是同一个**；
+3. 草稿 `dirty: 1` 会在后续同步被推回服务端 ⇒ **同一件事在服务端出现两次**；
+4. 用户大概率会重试 ⇒ 再多一条。
+
+`update()` 有同样的毛病（服务端 PATCH 成功后本地写失败，会用**同一个 id** 造
+`dirty:1` 的本地版本再推一遍，等于把一次已成功的修改又推了一次）。
+
+第三个现场在 `load()`：`writeLocalIfNewer` / `deleteLocalSetting` 与「服务端结果合并」
+在同一个 `try` 里，本地一不可用就整块跳到 `catch`，`tasks.value` 停在旧值 ——
+**服务端明明有数据，列表却是空的**。
+
+#### 4.50.3 为什么本地镜像写会失败：`writeLocalSetting` 缺 `isReady()` 守卫
+
+`native/config-sync/settings-store.ts` 里五个函数，**只有 `writeLocalSetting` 没有守卫**：
+
+| 函数 | `isReady()` 守卫 |
+|---|---|
+| `listLocalSettings` | ✅ `return []` |
+| `getLocalSetting` | ✅ `return null` |
+| **`writeLocalSetting`** | ❌ **直接 `localDB.run()` → 抛** |
+| `markSettingClean` | ✅ |
+| `deleteLocalSetting` | ✅ |
+
+本地库未就绪（未解锁 / 迁移未完成）时，**读**全部优雅降级，**写**却炸。
+这个不对称正是「本地一不可用就全线崩」的触发点。
+
+（`writeLocalIfNewer` 虽然自身没写守卫，但它经由 `getLocalSetting` /
+`writeLocalSetting` 传递性覆盖，修完这两处后已安全。）
+
+#### 4.50.4 改动
+
+- `native/config-sync/settings-store.ts` —— `writeLocalSetting` 补 `isReady()` 守卫，
+  与同文件另外四个函数对齐；未就绪时返回内存态的 `LocalSetting`，不落盘。
+- `features/scheduled-tasks/store.ts`
+  - `create()`：**只把 `scheduledTasksApi.create` 放进 try**。服务端成功后本地镜像写
+    单独 try/catch，失败只 `console.warn`，**不改 id、不重推、不报错**。
+  - `update()`：同样拆开；离线兜底只在服务端调用失败时走。
+  - `load()`：把 `writeLocalIfNewer` / `deleteLocalSetting` 各自包 try/catch，
+    本地镜像写失败**不再连累**服务端结果合并。
+
+原则写进注释：**本地镜像是缓存，服务端才是事实来源；缓存写失败只应丢缓存。**
+
+#### 4.50.5 验证
+
+真机 `192.168.31.19:5555`，pocketd `:8088`，PG `opencode_pocket.scheduled_tasks`。
+命令 `node scripts/verify-scheduled-task-writepath.mjs`（每步以 PG 直查兜底，不以 toast 单独成立）：
+
+| 步骤 | 判据 | 修复前 | 修复后 |
+|---|---|---|---|
+| 创建 | PG 出现新行 | 落库但列表无回显 | `863aec78…` 落库 ✅ |
+| 列表回显 | `found` 为 true | **false** | **true** ✅ |
+| 启用/停用 | PG `enabled` 变化 | `1 -> 1`（没变） | **`1 -> 0`** ✅ |
+| 编辑改名 | PG `name` 变化 | — | `ST2-6799073`，`count=1` ✅ |
+| 删除 | PG 无该行 | — | `count=0` ✅ |
+
+**8/8 通过**（真机实测，非推断）。「修复前列表不回显」是 BUG-AP 的直接症状：
+服务端明明写成功了，本地镜像写失败又把整段 catch 掉，UI 只能拿到兜底草稿。
+
+### 4.51 BUG-AQ：原生 confirm/alert 在 Android WebView 里同步阻塞渲染进程，应用彻底假死
+
+#### 4.51.1 现象：两次复现的整机假死
+
+点定时任务的「删除」之后，**所有** CDP 命令全部超时——包括 `1+1` 这种
+不可能卡住的表达式，也包括 `Page.enable`。只有 `am force-stop` 能恢复。
+
+关键区分：TCP 握手仍然能成（510ms），所以不是连接问题；
+是 **JS 主线程被停摆**，所有 `Runtime.evaluate` 永不返回。
+
+#### 4.51.2 根因
+
+原生 `window.confirm` / `window.alert` 在 Android WebView 里是**同步阻塞**调用：
+对话框打开期间渲染进程不跑事件循环，JS 线程停摆。
+项目里 `ConfirmDialog.vue` 的注释早就写明它是「全局唯一确认弹窗（替代 window.confirm）」，
+但只有部分视图遵守了。
+
+#### 4.51.3 改动：23 处全部替换
+
+**7 处 `confirm` → `useConfirm()`**（上一轮已做）：
+
+| 文件 | 行 |
+|---|---|
+| `scheduled-tasks/ScheduledTaskListView.vue` | 55 |
+| `scheduled-tasks/ScheduledTaskDetailView.vue` | 43 |
+| `rss/RssListView.vue` | 62 |
+| `flashcards/FlashcardEditView.vue` | 401 |
+| `email/EmailInboxView.vue` | 208 |
+| `email/EmailSpamCleanupView.vue` | 189 |
+| `settings/SettingsPermissionsView.vue` | 324 |
+
+**16 处 `alert` → `useToast()`**（本轮）：
+
+| 文件 | 行 | 语义 |
+|---|---|---|
+| `vault/VaultListView.vue` | 172, 180 | 生成密码成功 → `success` |
+| `vault/VaultListView.vue` | 185 | 标题为空 → `error` |
+| `tasks/TasksView.vue` | 1202, 1215 | 操作/删除失败 → `error`（复用已有 `toast` 实例，L742） |
+| `tasks/TaskDetailView.vue` | 191, 203 | 状态更新/删除失败 → `error` |
+| `sessions/SessionListView.vue` | 356 | 未选实例 → `warning` |
+| `sessions/SessionListView.vue` | 365 | 删除失败 → `error` |
+| `agents/AgentLibraryView.vue` | 95 | 删除失败 → `error` |
+| `settings/SettingsView.vue` | 362 | 无更新渠道 → `warning` |
+| `settings/SettingsView.vue` | 364 | 有新版本 → `info`，`duration: 15000, closable: true` |
+| `settings/SettingsView.vue` | 369 | 已是最新 → `success` |
+| `settings/SettingsView.vue` | 373 | 检查失败 → `error` |
+| `settings/SettingsPermissionsView.vue` | 258 | 打不开系统设置 → `error` |
+| `settings/SettingsPermissionsView.vue` | 321 | Web 环境指纹 → `warning` |
+
+**更新日志那条单独处理**：`settings.newVersionAvailable` 文案含完整 changelog，
+默认 3 秒的 toast 根本读不完，所以显式给 `duration: 15000` 并保留关闭按钮。
+这是「不再冻结」与「可读性」之间的折中，**不是最优解**——真正该做的是把
+更新日志放进一个可滚动面板，这里只是先把冻结解掉。
+
+**文案未接 i18n**：这 16 条中文是既有欠账（同一文件上下的 `confirm` 弹窗文案
+也全是硬编码中文，例如 `TasksView.vue:1207`）。BUG-AQ 的范围是消除冻结，
+顺手改一半会制造不一致。**欠账如实记账，不在这里假装修好。**
+`FinanceView.vue` 的 32 行硬编码中文同属一类。
+
+#### 4.51.4 验证：探针自证，12/12
+
+`node scripts/verify-bug-aq-no-freeze.mjs`，真机实测：
+
+| # | 判据 | 结果 |
+|---|---|---|
+| 基线 | `1+1` 可返回 | PASS |
+| **A1** | 主动调 `window.confirm()` 收到 `Page.javascriptDialogOpening` | PASS `type=confirm` |
+| **A2** | 对话框打开期间 `evaluate` 超时 | PASS（探针能识别冻结态） |
+| B1 | `Page.handleJavaScriptDialog` 后恢复 | PASS |
+| C0 | 已进入 `#/settings/scheduled-tasks` | PASS |
+| C1 | 触发删除动作 | PASS |
+| **C2** | **未打开原生对话框** | PASS（无 `javascriptDialogOpening`） |
+| **C3** | **点击删除后渲染进程未冻结** | PASS `1+1 => 2` |
+| C4 | Vue `ConfirmDialog` 已渲染（`.confirm-message` + 取消/删除） | PASS 文案「删除自动化「ST2-3646738」？」 |
+| C5 | 点对话框内确认删除 | PASS |
+| C6 | 删除后渲染进程仍存活 | PASS |
+| C7 | 对话框已关闭 | PASS |
+
+**A1/A2 是这套判据的自证**：先在页面里主动制造一次原生冻结，
+证明探针抓得到冻结态；如果抓不到，A 段失败就说明探针坏了，
+C 段的「没冻结」结论也就不成立。
+
+服务端兜底：删除后直查 PG，`ST2-3646738` 与上一轮删的 `ST2-4010383`
+均已不在 `opencode_pocket.scheduled_tasks` 中。
+
+**12/12 通过。**
+
+#### 4.51.5 一次测试自身的 bug 被当成产品缺陷
+
+首轮跑出 **10/11**，唯一失败项 C0「已进入定时任务页」。
+实际 `location.hash` 是 `#/settings/scheduled-tasks`，页面完全正确——
+是断言没做 hash 路由归一化（应用是 `#/x`，我断言的是 `/x`）。
+同轮 C5 还有个更隐蔽的问题：用「页面上第一个删除按钮」定位，
+而列表里本来就有一堆删除按钮，很可能点错。已改为用
+`.dialog .confirm-message` 精确定位对话框、再在它自己的 footer 里找确认键。
+
+**教训**：修判据和修产品同等重要。判据自身的 bug 会把「通过」变成假通过
+（C5 那种）或把「正确」变成假失败（C0 这种）。
+
+#### 4.51.6 ⚠️ 上一轮我引入的编译级错误，本轮才发现
+
+上一轮把 `SettingsPermissionsView.vue:324` 的 `confirm` 换成 `useConfirm` 时，
+**加了 `const { confirm } = useConfirm()` 却忘了加 import**。
+这会让该组件在运行时抛 `ReferenceError`、整个权限页崩掉。
+本轮写 `scripts/audit-composable-imports.mjs` 扫出后修掉。
+
+真相是：**上一轮改完没跑 `vue-tsc`**。不是工具没抓到，是没跑。
+
+已沉淀两个卡口（均已反证能在有缺陷一侧失败）：
+
+| 命令 | 作用 | 反证结果 |
+|---|---|---|
+| `npx vue-tsc --noEmit` | 类型/未定义符号 | 删 import → `TS2304: Cannot find name 'useToast'`，EXIT=2 |
+| `node scripts/audit-composable-imports.mjs` | 专门扫「用了 composable 没 import」 | 删 import → 报 `MISSING-IMPORT`，EXIT=1；干净态 518 文件 0 噪声 |
+
+后者先剥 HTML/行/块注释，并用负向后顾排除 `export function useConfirm() {` 这个**定义**，
+否则注释和定义会被当成调用，4 条噪声——**零噪声才有可用性**。
+
+
+
+
+
+
 
 
 
