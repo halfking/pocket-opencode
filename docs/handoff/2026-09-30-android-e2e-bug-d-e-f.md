@@ -2387,6 +2387,23 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
+- **BUG-AO 缺 key 静默已修**：`createI18n` 接上 `missing` 钩子，缺 key 打**去重后**的
+  `console.warn`（按 `locale:key`），避免渲染循环刷屏。
+  - 单测 **16/16**（i18n 目录全量）；`vue-tsc` exit 0
+  - **判据在缺陷侧失败过**：去掉去重 → `# pass 0 / # fail 1`；
+    删掉 `console.warn`（=修复前）→ `# pass 0 / # fail 1`；还原 → `4 pass`
+  - **刻意不改渲染**：返回值仍是 key 本身。「界面出现机器串」是最有价值的信号，
+    换成中性占位符反而更难发现。是否给生产换占位符属产品决策，留给产品侧
+  - 详见 §4.47
+- **BUG-AM/AN i18n 缺 key 已补齐**：13 个 key（`study.reminder.*`/`study.due.*`/`study.inbox.*`/`nav.flashcards`）
+  在代码里在用、**9 个语言文件全缺** ⇒ 用户在界面上看到 key 字符串本身。
+  - `audit-i18n-keys.mjs` 全量对账：**241/241，缺失 0**，9 语言相互对等
+  - 工具自证：故意还原 zh-CN.json → 如实报出 `缺失: 13`；补齐后回 0
+  - 真机 `diag-study-i18n-render.mjs` 连跑 3 次 `hasKeyLiteral: false`，
+    且第 2/3 次 `linkBtnTexts` 有值（hex `5168 90e8` = 全部）——**非空过**
+  - 顺带把 §5 的「`study.decks.*` 42 条未翻译」**澄清为翻译质量问题**：
+    各语言 key 集合与 zh-CN 完全对等，缺的是译文而非 key
+  - 详见 §4.46
 - **BUG-AL 任务看板恒空已修**（`loadTasks` 用 `?source=opencode` 过滤，
   而本 UI 建的任务是 `source='local'`，交集为空 ⇒ 自己建的任务自己看不见）：
   - API 对照：无过滤 5 条（全 `local`）/`?source=opencode` **0 条** / `?source=local` 5 条
@@ -2585,10 +2602,17 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   **不得据此宣称「已验证」**。
 - **`study.decks.*` 整块 7 个键在 7 种语言里未翻译**（与 en-US 逐字节相同，
   即整块英文）。`scripts/audit-deck-cta-i18n.mjs` 判据 C 持续报出，只报不拦。
-  本轮**未修** —— 42 条译文需逐条审，不宜混进同一次提交（§4.28.6）
-  ⚠️ **新增观察**：`#/study` 页面上**直接可见 `study.decks.all` 这个 key 字符串**
-  ——缺 key 时没有兜底文案，用户看到的是 key 本身。翻译欠账之外，
-  i18n 层的缺 key 兜底也需要单独处理（§4.45.7）
+  ⚠️ **本轮实测更正（§4.48.3）**：这个「42 条」是手数且**明显偏小**。
+  实测 `scripts/audit-i18n-translation.mjs`：**平均 117 条/语言 × 8 种**，
+  主体是 `flashcards`（75）与 `settings`（40）两个命名空间，**不是** `study.decks`
+  （那 7 个 key 已在 BUG-AM/AN 补齐）。zh-CN 作为基准只有 6 条，且多为专名
+  （`app.title`、`source.rss`）实际无需翻译。
+  **本轮仍未做批量翻译**，理由见 §4.48.3（需逐条审 / 与并发会话重叠 / 非功能性问题）。
+  另：`FinanceView` 硬编码是 **32 行**含中文（不是 20 处），至少含
+  「刷新」「本月收入」「本月支出」「结余」等模板文案，尚未接 i18n。
+- **缺 key 已上卡口**：新增 `frontend/scripts/check-i18n-keys.mjs` 并挂进
+  `npm run gates`，缺 key 直接 `exit 1`。反证过（删 `allClear` → EXIT=1）。
+  **「未翻译」仍未上卡口**——目前只报不拦。
 - **真机 Maestro 仍然零次执行**：本轮把阻塞量化了（拦全新安装、需手动授权），
   并改用 CDP 在真机上完成 BUG-AA 的验证。**但 `.maestro/` 下的 flow 至今没在真机跑过一次**，
   不要把「真机验证走 CDP」说成「真机 Maestro 跑通了」（§4.16.3 / §4.28.7）
@@ -4179,8 +4203,15 @@ bash 4.2，不是开发机的 bash 5.x**——integration test 必须至少在�
    `const workspaceId = note.workspaceId ?? 'default'`。若服务端 `note.created`
    推送不带 `workspace_id`（`ws-bus.ts:63` 允许为 `null`），笔记会落进 `default`。
    **未确认服务端是否总会下发**，故本轮**未改**——属推测性修改，列为风险。
-3. 邮件联系人跳转、会议关联笔记两处**只做了类型检查，未做真机行为验证**
-   （缺少可复现的前置数据：真实聚合的联系人、带转写的会议）。不得据此宣称「已验证」。
+3. 邮件联系人跳转、会议关联笔记两处**只做了类型检查，未做真机行为验证**。
+   **阻塞点已查清**（不是「懒得测」）：
+   - 联系人是 local-first，**只能从邮件聚合**产生——`ContactListView` 只有「↻ 聚合」
+     一个入口，`contacts-store.saveContact` 有导出但**无 UI 调用方**，无法手工建联系人；
+   - 而邮件需要**可用的 IMAP 账户**才能同步进来，现有账户指向 `imap.invalid.test`
+     （BUG-AC 已确认），所以聚合不出任何联系人；
+   - 会议同理，local-first，且 `relatedQueryFromTranscript` 需要带转写的会议。
+   ⇒ 需要先有可用的 IMAP 夹具（并发会话正在搭 `scripts/imap-stub-server.mjs`，
+   等它就绪后可复用）才能补这两处验证。**在那之前不得声称「已验证」。**
 
 ### 4.45 BUG-AL：任务看板列表过滤排除了本 UI 自己产出的任务
 
@@ -4315,10 +4346,252 @@ BUG-AL 的线索是「PG 有 14 条 active，但 `.task-card` 恒为 0」。把�
 2. **解锁后 App 会自己重定向一次**（曾把 `#/ai` 顶成 `#/email`），
    第一个路由的读数取到的是重定向途中的画面。已在脚本开头加静置。
 
-**顺带发现（未修）**：`#/study` 页面把未翻译的 i18n key **原样渲染出来**——
-页面上直接可见 `study.decks.all` 字符串。这不只是「翻译欠账」，
-而是**缺 key 时没有兜底文案**，用户在界面上直接看到 key 本身。
-与 §5 里「`study.decks.*` 42 条未翻译」是同一根问题的两种表现。
+**顺带发现：⚠️ 上一版这里写错了，已自我更正**——曾写「`#/study` 页面直接可见
+`study.decks.all` 这个 key 字符串」。**该说法不成立**：那是 `audit-list-views.mjs` 的
+输出经 **PowerShell 控制台把 UTF-8 转 ANSI** 造成的显示损坏，不是页面内容。
+用 JS 侧 hex 回传复核（绕开控制台编码）后，该按钮实际渲染为 `全部`
+（hex `5168 90e8`），且 9 个语言文件里 `study.decks` 整块都存在。**属假警报，撤回。**
+
+但复核过程中**真的挖到一类缺陷**——见 §4.46。
+
+### 4.46 BUG-AM/AN：13 个 i18n key 在代码里在用、9 个语言文件里全缺
+
+用户在界面上看到的是 **key 字符串本身**（vue-i18n 缺 key 时回退到 key）。
+这与「未翻译」是两种不同严重度的问题：未翻译只是显示英文，
+缺 key 是显示 `study.due.allClear` 这种机器串。
+
+#### 4.46.1 怎么发现的（以及一次假警报）
+
+从 §4.45.7 的列表审计输出里看到疑似 `study.decks.all` 字面量。
+**但那是假警报**：`audit-list-views.mjs` 的输出经 PowerShell 控制台把 UTF-8 转 ANSI，
+`study.decks.all` 被显示成 `study.deue.all`。用 JS 侧 hex 回传复核后，
+该按钮实际渲染为 `全部`（hex `5168 90e8`），且 `study.decks` 整块在 9 个文件里都存在。
+
+**教训：从控制台输出里读到的「异常文案」不能直接当证据。**
+必须用编码无关的方式（hex / 布尔判定 / 直接读文件）复核。
+
+改用 `diag-study-i18n-render.mjs`（JS 正则 + hex 回传）后，
+拿到真正的匹配串 `study.due.all…`，顺藤摸到真正的缺失 key 组。
+
+#### 4.46.2 全量对账工具
+
+`scripts/audit-i18n-keys.mjs`：抽取代码里所有 `t('x.y.z')`，
+与 9 个语言文件展平后的 key 集合对账。首轮结果：
+
+```
+源码文件数: 506   静态可识别的 key: 241
+zh-CN 缺失: 9
+  nav.flashcards            (MoreHubView)
+  study.due.cardsDue / inboxWaiting / reviewing / tasksDue / title   (StudyHubView)
+  study.inbox.advance / empty / title                                (StudyHubView)
+各语言相对 zh-CN 缺失: 全部 0
+```
+
+**各语言与 zh-CN 完全对等** —— 所以 §5 里那条「`study.decks.*` 42 条未翻译」
+是**翻译质量**欠账（显示英文），与本节的**缺 key**（显示 key 串）是两码事。
+此前一直混在一起说，本节把它们分开了。
+
+#### 4.46.3 漏掉的那个：动态 key
+
+补完 9 个 key 后重建，真机复跑**仍然**渲染出 `study.due.allClear`。
+根因：这个 key 不在任何 `t('...')` 调用里，而是
+
+```ts
+// utils/learning-due.ts
+export type DueSummaryHeadlineKey =
+  | 'study.due.cardsDue' | ... | 'study.due.allClear'
+export function dueSummaryHeadlineKey(...): DueSummaryHeadlineKey { ... }
+```
+
+界面通过 `t(dueSummaryHeadlineKey(due.value))` **动态**取用 ——
+静态正则看不见它。
+
+于是给审计工具加了第二条规则。**第一版这条规则写废了**：正则要求联合类型带分号，
+而 TS 的 `export type X = | 'a' | 'b'` 是换行结束的、**没有分号**，
+结果一条都匹配不上、工具「碰巧对」而不是真对（动态候选数显示 0）。
+改成只匹配 `| '字面量'` 连续链后，动态候选数 = 5，正确覆盖 `DueSummaryHeadlineKey`。
+
+**也试过更宽的规则**（所有首段命中命名空间的点分字面量），
+报出 23 条候选，逐条看**全是噪声**：
+`email.is_starred`（数据库列名）、`inbox.classifyHint.value`（ref 属性路径）、
+`settings.temperature`（API 字段名）。
+宽规则没人敢用，所以最终收窄到 `*Key` 联合类型——**工具必须先零噪声才有价值**。
+
+**审计工具的自证**：故意用 `git checkout` 还原 zh-CN.json（制造 13 个缺失），
+审计立刻报出 `zh-CN 缺失: 13`；重新补齐后回到 0。
+（注：中途用 PowerShell `Set-Content -Encoding UTF8` 改文件**加了 BOM** 导致 JSON 解析失败，
+这是本项目反复踩到的坑，JSON 必须用无 BOM 写入。）
+
+#### 4.46.4 改动与验证
+
+- 9 个语言文件（`frontend/src/locales/*.json`）补齐 **13 个 key**：
+  `study.reminder.{title,next,offline}`、`study.due.{title,cardsDue,inboxWaiting,reviewing,tasksDue,allClear}`、
+  `study.inbox.{title,empty,advance}`、`nav.flashcards`。
+- 写回前统一做**格式往返校验**（`JSON.stringify(obj,null,2)` 必须与原文一致），
+  不一致就跳过并报告——**绝不为加 key 重排整个文件格式**。
+  最终 diff：每文件仅 1 处删除（`"study": "学习"` 改成带逗号以追加 `flashcards`）+ 若干新增行。
+
+验证：
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| key 对账 | `node scripts/audit-i18n-keys.mjs` | **241/241，缺失 0**，9 语言全部对等 |
+| 工具自证 | 故意还原 zh-CN.json | 如实报出 `缺失: 13` |
+| 类型检查 | `npx vue-tsc --noEmit` | **exit 0** |
+| 真机渲染 | `node scripts/diag-study-i18n-render.mjs` | 连跑 3 次均 `hasKeyLiteral: false` |
+
+真机判据**非空过**：第一次跑 `linkBtnTexts=[]`（页面还没渲染完），
+第二次起 `linkBtnTexts=["monitoring","manage_search","全部","全部"]`
+（hex `5168 90e8` = 全部）**且** `hasKeyLiteral: false`——
+即「页面确实有内容」与「没有 key 字面量」同时成立，才算数。
+
+**仍未做**：vue-i18n 的**缺 key 全局兜底**。现在缺 key 仍会直接把 key 渲染给用户看；
+本轮只补齐了已知的 13 个，**没有加兜底机制**去兜住未来新增的漏 key。
+
+### 4.47 BUG-AO：缺 key 完全静默——加告警钩子（不改变用户看到的文案）
+
+§4.46 补齐 13 个 key 是**治已病**；BUG-AO 处理的是**为什么它能潜伏这么久**：
+缺 key 时 vue-i18n 只是把 key 字符串回显，**没有任何告警**，
+所以只能靠人肉看截图偶然发现。
+
+#### 4.47.1 关键决策：只加检测，不改渲染
+
+`onMissingKey(locale, key)` 返回的是 **key 本身**，不是中性占位符。理由：
+
+- 「界面上出现 `study.due.allClear` 这种机器串」本身就是**最有价值的信号**——
+  截图、录屏、用户反馈里一眼能认出。换成 `⚠️` 或空白反而把这个信号抹掉，
+  缺 key 会变得更难发现。
+- 是否给生产环境换占位符，属于**产品决策**（可读性 vs 可发现性），
+  不该由我在这里替用户定。留待产品侧拍板。
+
+新增的只有：`console.warn` + **按 `locale:key` 去重**（一个渲染循环里
+同一个缺 key 可能触发上百次，不去重会把日志冲垮）。
+
+#### 4.47.2 单独成模块的理由
+
+与 `api/tasks-url.ts` 完全同一个理由：`i18n/index.ts` 依赖 vue-i18n/pinia
+与无扩展名相对 import，Node 的 ESM 解析器跑不起来，进不了 `node --test`。
+所以逻辑抽到 `i18n/missing-key.ts`，`index.ts` 只做接线。
+
+#### 4.47.3 改动
+
+- `frontend/src/i18n/missing-key.ts`（新） —— `onMissingKey` + 去重表 + 测试用的 reset/导出。
+- `frontend/src/i18n/index.ts` —— `createI18n({ missing: onMissingKey, ... })`。
+- `frontend/src/i18n/__tests__/missing-key.test.mjs`（新） —— 4 条判据。
+
+#### 4.47.4 验证
+
+| 项 | 结果 |
+|---|---|
+| 单测 | `node --test src/i18n/__tests__/*.test.mjs` → **16/16**（新 4 条 + 既有 12 条） |
+| 类型检查 | `npx vue-tsc --noEmit` → **exit 0** |
+| 无 BOM 污染 | `missing-key.ts` / 测试 / `index.ts` 首字节均非 `EF BB BF` |
+
+**判据在缺陷侧失败过**（不是只跑通就算数）：
+
+| 反证 | 预期 | 实测 |
+|---|---|---|
+| 去掉去重（每次都告警） | 「50 次调用只告警 1 次」应失败 | `# pass 0 / # fail 1` |
+| 完全删掉 `console.warn`（= BUG-AO 修复前） | 「首次必告警」应失败 | `# pass 0 / # fail 1` |
+| 还原 | `# pass 4 / # fail 0` | 一致 |
+
+> 备注：反证时用 PowerShell `Set-Content -Encoding UTF8` 改过 .ts，
+> **该命令会加 BOM**（本项目反复踩到的坑）。事后逐个回读首字节确认已无污染。
+
+### 4.48 把 i18n key 缺失误报成回归——并更正一条手数错误
+
+#### 4.48.1 「5/11 假回归」：先判形态，再判产品
+
+BUG-AO 装包后跑 `smoke-routes.mjs`，得到 **5/11**，其中 6 个
+`landed=false` 且 **`textLen` 全部等于 121**。
+
+**形态本身就是结论**：多个条目以**完全相同的 `textLen`** 失败，
+只可能是「卡在同一个界面」，不可能是 6 个独立回归。差点直接记成 BUG-AO 引入的回归。
+
+`diag-route-guard.mjs` 证实守卫把这些路由改写成了：
+
+```
+#/login?returnTo=/notes&unlock=1
+「检测到已有登录态，但本地加密库未解锁。请重新输入主密码以访问本地数据。」
+```
+
+- 失败的 6 个（notes / vault / contacts / meetings / study / email）**全都依赖本地 SQLCipher**；
+  crypto key 只在内存，装包重启即失效。
+- 起点是 `#/settings`（不依赖本地库）⇒ 开头那次解锁看不到主密码输入框、什么也没做；
+  等导航到 `/notes` 才被守卫弹飞，**后续所有依赖本地库的路由被一起带崩**。
+
+夹具修法：`ensureUnlocked` 抽成函数，每个路由前 + 导航后各调一次；
+`landed=false` 时打印被改写后的 hash（下次一眼能看出是不是守卫）。重跑 **11/11**。
+
+#### 4.48.2 把缺 key 变成卡口：`check-i18n-keys.mjs`
+
+`audit-i18n-keys.mjs` 只报告，会被忽略。参照仓库既有的
+`audit-viewmodel-gaps` / `check-viewmodel-gaps` 约定，新增卡口版
+`frontend/scripts/check-i18n-keys.mjs`，缺 key 直接 `exit 1`，
+并挂进 `npm run gates`（`gates` 是 `verify:android` 的第一环）。
+
+判据在缺陷侧失败过：删掉 `zh-CN.json` 里的 `study.due.allClear` → `EXIT=1`
+且精确报出 `❌ zh-CN 缺 1 个 key：study.due.allClear`；还原 → `EXIT=0`。
+
+当前：`代码在用 241（静态）/ 5（动态候选）`，9 份语言文件全部齐平，`EXIT=0`。
+
+#### 4.48.3 ⚠️ 更正：欠账不是「42 条」，实测是平均 **117 条/语言**
+
+§5 一直记着「`study.decks.*` 42 条未翻译 + `FinanceView` 20 处硬编码」。
+写 `scripts/audit-i18n-translation.mjs` 实测后，**这个手数明显偏小**：
+
+| 语言 | 未翻译（值与 en-US 逐字节相同） | 主要集中区 |
+|---|---|---|
+| zh-CN | **6** / 372 | `app.title`、`source.rss` 等（多为专名/标识符，实际无需翻） |
+| zh-TW | 100 | `flashcards=75`、`study=16` |
+| ja-JP | 100 | 同上 |
+| ko-KR | 138 | `flashcards=75`、`settings=39` |
+| de-DE | 148 | `flashcards=75`、`settings=40` |
+| es-ES | 144 | 同上 |
+| pt-BR | 146 | 同上 |
+| fr-FR | 153 | 同上 |
+
+**合计平均 117 条/语言，共 8 种语言**，主体是 `flashcards`（75）与
+`settings`（40）两个命名空间——**不是** `study.decks`（那 7 个 key 已在
+BUG-AM/AN 补齐）。
+
+FinanceView 侧也修正：实际是 **32 行**含中文（其中一部分是文件头注释），
+不是 20 处；模板里可确认的硬编码至少包括「刷新」「本月收入」「本月支出」「结余」。
+
+**本轮未做批量翻译**，理由有三，都要记下来：
+1. 约 936 条译文（117 × 8）需**逐条审**，混进同一次提交不合适；
+2. 会再次与并发会话在 `locales/*.json` 上重叠（当前主工作区已有 9 个文件重叠）；
+3. 这是**显示英文**的问题，不影响功能正确性，优先级低于本轮修的三个真缺陷。
+
+
+#### 4.47.5 一次「假回归」：冒烟 5/11 其实是夹具解锁时机错了
+
+BUG-AO 装包后跑 `smoke-routes.mjs`，拿到 **5/11**，6 个路由 `landed=false`
+且 `textLen` **恒为 121**。差点当成 BUG-AO 引入的回归记进 handoff。追下去是：
+
+`diag-route-guard.mjs` 显示这些路由被守卫改写成了
+
+```
+#/login?returnTo=/notes&unlock=1
+「检测到已有登录态，但本地加密库未解锁。请重新输入主密码以访问本地数据。」
+```
+
+- 失败的 6 个（notes / vault / contacts / meetings / study / email）
+  **全都依赖本地 SQLCipher 库**；通过的 5 个不依赖或依赖弱。
+- crypto key **只在内存**，装包重启后失效。
+- 起点常是 `#/settings`（不依赖本地库），所以第一次 `ensureUnlocked` 看不到
+  主密码输入框、什么也没做；等导航到 `/notes` 才被守卫弹飞，
+  **后续所有依赖本地库的路由全被弹飞**。
+
+⇒ 夹具缺陷：解锁只在开头做一次，而守卫是**导航途中**才判定的。
+已改为每个路由前 + 导航后再各调一次 `ensureUnlocked()`，
+并在 `landed=false` 时打印被改写后的 hash。重跑 **11/11**。
+
+**教训**：多个条目以**完全相同的 `textLen`** 失败，是「卡在同一个界面」的强信号，
+不是 N 个独立回归。下次看到这种形态，先查是不是夹具/状态问题再谈产品缺陷。
+
+
+
 
 
 

@@ -59,7 +59,8 @@
     "settings": "Paramètres",
     "localAgent": "Local Agent",
     "home": "Home",
-    "study": "Study"
+    "study": "Study",
+    "flashcards": "Cartes mémoire"
   },
   "routes": {
     "login": "Connexion",
@@ -332,6 +333,11 @@
       "stats": "View stats",
       "browser": "Card browser"
     },
+    "reminder": {
+      "title": "Rappel de révision quotidienne",
+      "next": "Prochain : {time}",
+      "offline": "Service d'apprentissage hors ligne : rappels indisponibles pour le moment"
+    },
     "notes": {
       "title": "My notes",
       "all": "All",
@@ -349,6 +355,19 @@
       "days": "jours d’affilée",
       "toNext": "Encore {count} pour {next}",
       "milestoneReached": "Jalon de {days} jours atteint"
+    },
+    "due": {
+      "title": "À faire aujourd'hui",
+      "cardsDue": "Cartes à réviser",
+      "inboxWaiting": "Boîte de réception en attente",
+      "reviewing": "À réviser",
+      "tasksDue": "Tâches à faire",
+      "allClear": "Rien à faire aujourd'hui"
+    },
+    "inbox": {
+      "title": "Boîte de réception",
+      "empty": "La boîte de réception est vide",
+      "advance": "Traiter"
     }
   },
   "email": {

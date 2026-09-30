@@ -59,7 +59,8 @@
     "settings": "Settings",
     "localAgent": "Local Agent",
     "home": "Home",
-    "study": "Study"
+    "study": "Study",
+    "flashcards": "Flashcards"
   },
   "routes": {
     "login": "Sign in",
@@ -332,6 +333,11 @@
       "stats": "View stats",
       "browser": "Card browser"
     },
+    "reminder": {
+      "title": "Daily review reminder",
+      "next": "Next: {time}",
+      "offline": "Learning service is offline; reminders are unavailable for now"
+    },
     "notes": {
       "title": "My notes",
       "all": "All",
@@ -349,6 +355,19 @@
       "days": "day streak",
       "toNext": "{count} more to {next}",
       "milestoneReached": "{days}-day milestone reached"
+    },
+    "due": {
+      "title": "Today's due",
+      "cardsDue": "Cards due",
+      "inboxWaiting": "Inbox waiting",
+      "reviewing": "To review",
+      "tasksDue": "Tasks due",
+      "allClear": "Nothing due today"
+    },
+    "inbox": {
+      "title": "Inbox",
+      "empty": "Inbox is empty",
+      "advance": "Advance"
     }
   },
   "email": {

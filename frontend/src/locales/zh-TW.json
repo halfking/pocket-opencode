@@ -59,7 +59,8 @@
     "settings": "設定",
     "localAgent": "本地智慧體",
     "home": "Home",
-    "study": "Study"
+    "study": "Study",
+    "flashcards": "閃卡"
   },
   "routes": {
     "login": "登入",
@@ -332,6 +333,11 @@
       "stats": "View stats",
       "browser": "Card browser"
     },
+    "reminder": {
+      "title": "每日回顧提醒",
+      "next": "下次：{time}",
+      "offline": "學習服務未連接，提醒暫不可用"
+    },
     "notes": {
       "title": "My notes",
       "all": "All",
@@ -349,6 +355,19 @@
       "days": "天連續",
       "toNext": "再有 {count} 天到 {next} 天",
       "milestoneReached": "已達成 {days} 天里程碑"
+    },
+    "due": {
+      "title": "今日待辦",
+      "cardsDue": "待複習卡片",
+      "inboxWaiting": "收件匣待處理",
+      "reviewing": "待回顧",
+      "tasksDue": "待辦任務",
+      "allClear": "今天沒有待辦"
+    },
+    "inbox": {
+      "title": "收件匣",
+      "empty": "收件匣已清空",
+      "advance": "推進處理"
     }
   },
   "email": {

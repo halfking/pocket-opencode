@@ -59,7 +59,8 @@
     "settings": "設定",
     "localAgent": "ローカルエージェント",
     "home": "Home",
-    "study": "Study"
+    "study": "Study",
+    "flashcards": "フラッシュカード"
   },
   "routes": {
     "login": "ログイン",
@@ -332,6 +333,11 @@
       "stats": "View stats",
       "browser": "Card browser"
     },
+    "reminder": {
+      "title": "日次レビューのお知らせ",
+      "next": "次回：{time}",
+      "offline": "学習サービスに未接続のため、リマインダーは現在利用できません"
+    },
     "notes": {
       "title": "My notes",
       "all": "All",
@@ -349,6 +355,19 @@
       "days": "日連続",
       "toNext": "あと {count} 日で {next} 日",
       "milestoneReached": "{days} 日マイルストーン達成"
+    },
+    "due": {
+      "title": "本日の予定",
+      "cardsDue": "復習待ちカード",
+      "inboxWaiting": "受信トレイの未処理",
+      "reviewing": "レビュー待ち",
+      "tasksDue": "期限近いタスク",
+      "allClear": "本日の予定はありません"
+    },
+    "inbox": {
+      "title": "受信トレイ",
+      "empty": "受信トレイは空です",
+      "advance": "次へ進める"
     }
   },
   "email": {

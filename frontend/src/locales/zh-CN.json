@@ -59,7 +59,8 @@
     "settings": "设置",
     "localAgent": "本地智能体",
     "home": "首页",
-    "study": "学习"
+    "study": "学习",
+    "flashcards": "闪卡"
   },
   "routes": {
     "login": "登录",
@@ -332,6 +333,11 @@
       "stats": "查看统计",
       "browser": "卡片浏览器"
     },
+    "reminder": {
+      "title": "每日回顾提醒",
+      "next": "下次：{time}",
+      "offline": "学习服务未连接，提醒暂不可用"
+    },
     "notes": {
       "title": "我的笔记",
       "all": "全部",
@@ -349,6 +355,19 @@
       "days": "天连续",
       "toNext": "再有 {count} 天到 {next} 天",
       "milestoneReached": "已达成 {days} 天里程碑"
+    },
+    "due": {
+      "title": "今日待办",
+      "cardsDue": "待复习卡片",
+      "inboxWaiting": "收件箱待处理",
+      "reviewing": "待回顾",
+      "tasksDue": "待办任务",
+      "allClear": "今天没有待办"
+    },
+    "inbox": {
+      "title": "收件箱",
+      "empty": "收件箱已清空",
+      "advance": "推进处理"
     }
   },
   "email": {
