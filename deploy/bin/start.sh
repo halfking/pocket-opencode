@@ -53,16 +53,6 @@ if [[ "$BACKEND_ONLY" == true && "$FRONTEND_ONLY" == true ]]; then
   exit 1
 fi
 
-# ── blue-green：rollback 模式直接走 bg_rollback ──────────────────
-if [[ "${ACTION}" == "rollback" ]]; then
-  echo "━━━ rollback ━━━"
-  previous="$(bg_rollback)"
-  echo "  已回滚到 bin/${previous}"
-  # 回滚后再走一次 deploy（用旧版本镜像）
-  OPP_VERSION_BUILD="${previous}"
-  export OPP_VERSION_BUILD
-fi
-
 command -v docker >/dev/null 2>&1 || { echo "❌ docker 未安装"; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo "❌ 需要 docker compose v2（docker-compose v1 不支持）"; exit 1; }
 if [[ ! -f "${POCKET_ENV_FILE}" ]]; then
@@ -73,8 +63,24 @@ if [[ ! -f "${POCKET_ENV_FILE}" ]]; then
   echo "   252 : 手工填 ${POCKET_ENV_FILE}，再 ./deploy-252.sh" >&2
   exit 1
 fi
+# Prove the actual env_file target and permissions before any release switch.
+# Frontend-only deploys retain an already healthy backend. Dry runs remain plans.
+if [[ "$FRONTEND_ONLY" != true && "$DRY_RUN" != true ]]; then
+  python3 "${LIB_DIR}/check-databases.py" --env-file "$POCKET_ENV_FILE"
+fi
 [[ -f "${POCKET_COMPOSE_FILE}" ]] || { echo "❌ compose 缺失: ${POCKET_COMPOSE_FILE}"; exit 1; }
 # http_ok 由 env.sh 提供（curl 优先，无则 wget）
+
+# ── blue-green：rollback 模式直接走 bg_rollback ──────────────────
+if [[ "${ACTION}" == "rollback" && "$DRY_RUN" != true ]]; then
+  echo "━━━ rollback ━━━"
+  previous="$(bg_rollback)"
+  echo "  已回滚到 bin/${previous}"
+  # 回滚后再走一次 deploy（用旧版本镜像）
+  OPP_VERSION_BUILD="${previous}"
+  export OPP_VERSION_BUILD
+fi
+
 
 # 离线 kx-base 镜像仅覆盖 arm64；amd64（如 252）必须用 save/load-images 流程，
 # 不能现场 --build。把架构门禁提到任何构建决策之前。

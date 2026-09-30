@@ -17,17 +17,18 @@ x-db-common: &db-common
   restart: unless-stopped
   network_mode: bridge
   # 注意：只绑 127.0.0.1，对外不暴露；容器间通信通过 DOCKER_DB_HOST=host.docker.internal
-  ports:
-    - "127.0.0.1:${DOCKER_DB_PORT:?DOCKER_DB_PORT must be set}:${DOCKER_DB_PORT}"
+
 
 services:
   postgres:
     image: ${DOCKER_DB_IMAGE:-postgres:17}
     container_name: opp-db-postgres
+    ports:
+      - "127.0.0.1:${DOCKER_DB_PORT:?DOCKER_DB_PORT must be set}:5432"
     <<: *db-common
     environment:
       POSTGRES_USER: ${OPP_PG_USER:-llm_gateway}
-      POSTGRES_PASSWORD: ${OPP_PG_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: ${OPP_PG_PASSWORD:-}
       POSTGRES_DB: ${OPP_PG_DB:-pocket}
     volumes:
       - ${DOCKER_DB_DATA_DIR:?DOCKER_DB_DATA_DIR must be set}:/var/lib/postgresql/data
@@ -40,6 +41,8 @@ services:
   redis:
     image: ${DOCKER_DB_IMAGE:-redis:7}
     container_name: opp-db-redis
+    ports:
+      - "127.0.0.1:${DOCKER_DB_PORT:?DOCKER_DB_PORT must be set}:6379"
     <<: *db-common
     volumes:
       - ${DOCKER_DB_DATA_DIR:?DOCKER_DB_DATA_DIR must be set}:/data
@@ -52,9 +55,11 @@ services:
   mysql:
     image: ${DOCKER_DB_IMAGE:-mysql:8}
     container_name: opp-db-mysql
+    ports:
+      - "127.0.0.1:${DOCKER_DB_PORT:?DOCKER_DB_PORT must be set}:3306"
     <<: *db-common
     environment:
-      MYSQL_ROOT_PASSWORD: ${OPP_MYSQL_PASSWORD:-changeme}
+      MYSQL_ROOT_PASSWORD: ${OPP_MYSQL_PASSWORD:-}
       MYSQL_DATABASE: ${OPP_MYSQL_DB:-openpocket}
     volumes:
       - ${DOCKER_DB_DATA_DIR:?DOCKER_DB_DATA_DIR must be set}:/var/lib/mysql
