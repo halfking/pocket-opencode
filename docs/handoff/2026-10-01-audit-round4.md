@@ -70,8 +70,9 @@ route 级测试落进 main；§5.2 三项清理全部闭环，其中 `sk-` 夹�
 2. **`llm_gateway_mask_key_test.go:15` sk- 夹具定性**：`git log -S --all`
    全历史核查——该字面量只在引入它的 `14e35a1`（2026-09-05 掩码测试）
    出现过，从未在配置/证据/脚本中被使用，与租户 key（sk-6tGL…K51YV）
-   前后缀均不同 → **判定合成夹具**。已换成 `sk-test-fixture-not-a-real-key-000111`
-   无歧义合成串（maskKey 纯字符串操作，语义不变），并留定性注释。
+   前后缀均不同 → **判定合成夹具**（`bf15387`）。已换成
+   `sk-test-fixture-not-a-real-key-000111` 无歧义合成串（maskKey 纯字符串
+   操作，语义不变），并留定性注释。
 3. **scripts/ 探针归档**：8 个一次性脚本 → `scripts/archive/2026-09-probes/`
    （probe-invoice-* / gw-audio-probe / cdp-doc-open-* /
    locales-add-fetchhint / **verify-real-invoice-e2e / verify-real-mailbox-readonly**
@@ -157,7 +158,7 @@ route 级测试落进 main；§5.2 三项清理全部闭环，其中 `sk-` 夹�
 
 > 接 `2026-10-01-audit-round4.md`。本轮 P0 越权修复、PREFLIGHT 文档、
 > §5.2 三项清理、sk- 夹具定性均已进 main（d8237d9 / 44da73f / 8b2d2b5 /
-> e1ffa19）。下一轮：
+> e1ffa19 / bf15387）。下一轮：
 > 1. （用户侧，催）网关密钥轮换；完成后按 round4 §5 评估执行历史重写
 >    （含 commit 映射存档与全员重克隆公告），等 openpocket 会话结束。
 > 2. 按用户对 round4 §7 两条的定夺落地 learning 修复（方案一 + 方案一
