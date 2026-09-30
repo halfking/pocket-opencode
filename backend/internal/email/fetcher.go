@@ -298,7 +298,11 @@ func (f *Fetcher) fetchSnippetOnConnected(client *imapclient.Client, uid imap.UI
 	}
 	for _, bs := range messages[0].BodySection {
 		if len(bs.Bytes) > 0 {
-			return truncateStr(strings.TrimSpace(string(bs.Bytes)), 500)
+			// 2026-10-01 真机审计：原来直接取原始字节，用户在 /notifications 上
+			// 会直接看到整段 MIME（------=_Part_397111… / Content-Type: …）或字面
+			// HTML 标签。改走 DeriveSnippet：MIME 解析优先 → 剥 HTML 标签 → 按
+			// rune 截断（中文不会被劈出半个字符）。
+			return DeriveSnippet(bs.Bytes, 500)
 		}
 	}
 	return ""
@@ -450,11 +454,16 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		}
 		var snippet string
 		for _, bs := range m.BodySection {
-			snippet = strings.TrimSpace(string(bs.Bytes))
+			// 2026-10-01 真机审计：原来是 strings.TrimSpace(string(bs.Bytes))
+			// 再按**字节**切 [:500]，三个问题同时命中用户：
+			//  1. 不解析 MIME —— 整段 multipart/alternative 原文直接落库，
+			//     /notifications 上原文照显，还把 .ntf-item 撑出横向溢出
+			//     （MIME boundary 是不可断长串，祖先 overflow-x:hidden 静默裁掉，
+			//     用户既看不到也滚不到）；
+			//  2. 不剥 HTML —— 字面的 <br/> 与 <a href=…> 透给用户；
+			//  3. 按字节切 —— 中文邮件在第 500 字节处劈出半个字符，乱码。
+			snippet = DeriveSnippet(bs.Bytes, 500)
 			break
-		}
-		if len(snippet) > 500 {
-			snippet = snippet[:500]
 		}
 		if snippet == "" {
 			// 批量 fetch 只取 envelope（Greenmail 对 BODY[TEXT]<partial> 响应
@@ -607,7 +616,10 @@ func (f *Fetcher) syncPOP3Fallback(ctx context.Context, acc *Account, cred strin
 			em.Subject = parsed.Subject
 			em.Snippet = truncateStr(strings.TrimSpace(parsed.TextBody), 500)
 			if em.Snippet == "" {
-				em.Snippet = truncateStr(strings.TrimSpace(parsed.HTMLBody), 500)
+				// 2026-10-01 真机审计：原来直接塞 HTMLBody，字面的 <br/> 与
+				// <a href=…> 会原样透到通知列表（真机 5/50 条）。走 DeriveSnippet
+				// 剥标签并按 rune 截断。
+				em.Snippet = DeriveSnippet([]byte(parsed.HTMLBody), 500)
 			}
 			if !parsed.Date.IsZero() {
 				em.Date = parsed.Date.Unix()

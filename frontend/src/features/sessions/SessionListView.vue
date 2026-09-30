@@ -364,7 +364,7 @@ async function deleteSession(session: Session) {
     sessions.value = sessions.value.filter((s) => s.id !== session.id)
     total.value = Math.max(0, total.value - 1)
   } catch (err: any) {
-    toast.error('删除失败: ' + (err.message || '未知错误'))
+    toast.error(apiError(err, '删除失败'))
   }
 }
 

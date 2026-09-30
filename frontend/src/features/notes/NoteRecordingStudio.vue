@@ -14,7 +14,6 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useApiError } from '../../composables/useApiError'
 
 const props = defineProps<{
   modelValue: string
@@ -24,15 +23,21 @@ defineEmits<{
   'update:modelValue': [value: string]
 }>()
 
-const apiError = useApiError()
 /**
- * recordingRuntime.error 存的是原始异常文本（转写接口失败时可能是
- * "Failed to fetch" / 英文错误码），直接上屏用户无法据此行动。
- * 这里统一归一：已知类别走 i18n，识别不出就给领域兜底「语音转文字失败」。
+ * 2026-10-01 审计修正：这里**不能再套 apiError**。
+ *
+ * runtime 在**写入** error 时就已经调过 `sttFailureText()`（见
+ * native/recordingRuntime.ts），存进来的是面向用户的成品文案，
+ * `stt_unavailable:` 错误码前缀已被剥掉。而 apiError 靠
+ * `extractErrorCode()` 取第一个冒号前的码当错误码，前缀没了就取不到
+ * → 落回通用兜底「语音转写服务尚未配置」，把"网关列了模型但没开通
+ * provider，去设置里换外部服务"这条唯一可行动的信息整个盖掉
+ * （会议页直接渲染 sttError，反而是完整的）。
+ *
+ * runtime 的 error 全部写入点都是字面文案或经 sttFailureText 归一的文案，
+ * 所以渲染层直接渲染即可。详见 api/__tests__/stt-error-render-chain.test.mjs。
  */
-const errorText = computed(() =>
-  props.error ? apiError(props.error, 'errors.sttNotConfigured') : '',
-)
+const errorText = computed(() => props.error || '')
 </script>
 
 <style scoped>

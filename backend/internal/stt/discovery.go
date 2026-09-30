@@ -30,6 +30,22 @@ import (
 // asrNameRe 命中即视为 ASR 候选（配合 modality 一起判定）。
 var asrNameRe = regexp.MustCompile(`(?i)(asr|whisper|transcri|speech|audio|omni|voice)`)
 
+// ttsNameRe 命中即视为语音**合成**（TTS）模型，需要排除。
+//
+// 2026-10-01 真机实测发现的缺陷：asrNameRe 里的 `voice` 会把
+// `mimo-v2.5-tts-voiceclone`、`mimo-v2.5-tts-voicedesign` 这两个**语音合成**
+// 模型拉进 ASR 候选。代价有三，都不是"看着别扭"这种小事：
+//  1. 探测预算是硬约束（maxProbeCandidates=6，网关限流实测 12 次/分钟），
+//     两个注定失败的槽位被 TTS 吃掉，真正可能可用的 ASR 模型反而探不到；
+//  2. 设置页会把"语音合成模型"列在"语音转写模型"分组下，用户完全看不懂；
+//  3. 真机录音失败文案里出现 `mimo-v2.5-tts-voiceclone=网关无上游 provider`——
+//     用户看到"转写失败"却收到两个合成模型名，比只报一句通用文案更困惑。
+var ttsNameRe = regexp.MustCompile(`(?i)(tts|voice-?clon|voice-?design|voice-?id|text-?to-?speech|speak)`)
+
+// strongASRRe 是强 ASR 标记：名字里同时带 TTS 词和这些词时，仍然按 ASR 算。
+// 例：`whisper-tts` 这种混合命名不应该被 ttsNameRe 误杀。
+var strongASRRe = regexp.MustCompile(`(?i)(asr|whisper|transcri|speech-?to-?text|stt)`)
+
 // GatewayModel 是网关 /models 里的一个条目。
 type GatewayModel struct {
 	ID       string `json:"id"`
@@ -39,6 +55,10 @@ type GatewayModel struct {
 
 // IsASRCandidate 判定一个网关模型是否值得探测。
 func IsASRCandidate(m GatewayModel) bool {
+	// 先排 TTS：合成模型不可能做转写，除非名字里另有强 ASR 标记。
+	if ttsNameRe.MatchString(m.ID) && !strongASRRe.MatchString(m.ID) {
+		return false
+	}
 	if strings.EqualFold(strings.TrimSpace(m.Modality), "audio") {
 		return true
 	}
@@ -168,6 +188,16 @@ func (c *DiscoveryCache) put(baseURL, apiKey string, r DiscoveryResult) {
 // Peek 返回缓存中的结论（不触发探测）。
 func (c *DiscoveryCache) Peek(baseURL, apiKey string) (DiscoveryResult, bool) {
 	return c.get(baseURL, apiKey)
+}
+
+// Seed 预置一条探测结论。
+//
+// 这是**测试注入点**，不是生产路径：生产上探测结论只能由 Discover 产生。
+// 之所以要导出它，是因为 internal/server 的测试要构造「网关探测已跑完、结论是
+// no_provider」这种确定性前置状态，而 put/get 都是本包私有方法，跨包够不着。
+// 2026-10-01 并入 feat/2026-10-01-stt-service 时恢复出来的 server 测试就依赖它。
+func (c *DiscoveryCache) Seed(baseURL, apiKey string, r DiscoveryResult) {
+	c.put(baseURL, apiKey, r)
 }
 
 // ListGatewayModels 拉取网关模型目录。
@@ -453,7 +483,13 @@ func extractText(raw json.RawMessage) string {
 }
 
 // missingAudioRe 命中即认为「上游没收到音频」，返回的是幻觉文本而非转写。
-var missingAudioRe = regexp.MustCompile(`(?i)(no audio|not (?:see|receiv|receiv\w*|access|accessible)|didn'?t (?:receiv|get|hear)|cannot (?:access|listen|hear)|unable to (?:access|listen|hear)|can'?t (?:access|listen|hear)|没有(?:附上|收到|听到|音频|录音|文件)|未(?:收到|听到)|无法(?:访问|听到|读取)(?:音频|录音)|抱歉.{0,12}(?:没有|未)|please (?:re-?upload|upload|provide|send) (?:the |your )?(?:audio|recording|file))`)
+//
+// 2026-10-01 审计：补了独立的 `don'?t` / `do not` / `does not` 形式，并加上
+// see|find|detect|listen。原来只覆盖 `didn't receive/get/hear` 与 `not see`，
+// 于是网关最常见的一句「I don't see any audio file attached to this message.」
+// 匹配不上 —— 而这正是本函数要拦的那类幻觉。漏掉就意味着它被当成转写结果写进
+// 会议记录，且不报任何错。新增措辞与「正常转写」用例无交集（已回归验证）。
+var missingAudioRe = regexp.MustCompile(`(?i)(no audio|(?:didn'?t|don'?t|do not|does not) (?:see|receiv|get|hear|find|detect|access|listen)|not (?:see|receiv|receiv\w*|access|accessible)|cannot (?:access|listen|hear)|unable to (?:access|listen|hear)|can'?t (?:access|listen|hear)|没有(?:附上|收到|听到|音频|录音|文件)|未(?:收到|听到)|无法(?:访问|听到|读取)(?:音频|录音)|抱歉.{0,12}(?:没有|未)|please (?:re-?upload|upload|provide|send) (?:the |your )?(?:audio|recording|file))`)
 
 // LooksLikeMissingAudio 识别「200 但音频被丢弃」的幻觉回复。
 // 2026-10-01 实测网关 auto 模型：拿到 base64 音频后回答

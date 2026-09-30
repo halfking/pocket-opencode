@@ -250,6 +250,24 @@ func describeProbe(c stt.Candidate) string {
 	}
 }
 
+// sttHTTPClientOr 返回 STT 出网该用的客户端：优先用注入的 s.sttHTTPClient，
+// 没注入时回落到带 SSRF 防护的 gatewayHTTPClient(timeout)。
+//
+// 为什么要这个回落而不是直接用字段：生产环境（cmd/pocketd）从不注入这个字段，
+// 必须仍然拿到 gatewayHTTPClient 的 DNS 重绑定防护；字段为 nil 时直接返回会让
+// 出网直接 panic。
+//
+// 2026-10-01 审计新增。此前这个字段是死的：discoverGatewayASR 与 /api/stt/probe
+// 各自硬编码 gatewayHTTPClient(...)，所以「测试注入拒绝出网实现」根本没生效 ——
+// 从 feat/2026-10-01-stt-service 恢复出来的 server_stt_settings_test.go 依赖的
+// SetSTTHTTPClient 也因此根本不存在，整包编译不过。
+func (s *Server) sttHTTPClientOr(timeout time.Duration) *http.Client {
+	if s.sttHTTPClient != nil {
+		return s.sttHTTPClient
+	}
+	return gatewayHTTPClient(timeout)
+}
+
 // discoverGatewayASR 走缓存的网关 ASR 探测。
 func (s *Server) discoverGatewayASR(ctx context.Context, baseURL, apiKey string, force bool) (stt.DiscoveryResult, error) {
 	if s.sttDiscovery == nil {
@@ -260,7 +278,7 @@ func (s *Server) discoverGatewayASR(ctx context.Context, baseURL, apiKey string,
 	if len(stt.RecommendedGatewayModels()) > 0 {
 		timeout = 90 * time.Second
 	}
-	return stt.Discover(ctx, gatewayHTTPClient(timeout), s.sttDiscovery, baseURL, apiKey, force)
+	return stt.Discover(ctx, s.sttHTTPClientOr(timeout), s.sttDiscovery, baseURL, apiKey, force)
 }
 
 // ---------------------------------------------------------------- handlers
@@ -292,9 +310,18 @@ func (s *Server) handleSTTConfig(w http.ResponseWriter, r *http.Request) {
 			resp.Gateway = &res
 			view.Effective = effectiveModelName(p, &res)
 		}
-		if best, ok := resp.Gateway.Best(); ok && p.GatewayModel == "" {
-			view.Effective = best.Model
-			view.EffectiveNote = "网关自动发现"
+		// resp.Gateway 只有缓存命中时才是非 nil，而 Best() 是**值接收者**：
+		// 直接 resp.Gateway.Best() 会在 nil 指针上解引用 panic，被中间件兜成
+		// 500「internal server error」。
+		//
+		// 2026-10-01 审计：这是被恢复出来的 TestSttConfigListsBothRecommendedGroups
+		// 抓到的真缺陷 —— 缓存冷（首次打开设置页、纯外部通道用户、网关没配 key）
+		// 时 GET /api/stt/config 必定 500，语音转写设置页打不开。
+		if resp.Gateway != nil {
+			if best, ok := resp.Gateway.Best(); ok && p.GatewayModel == "" {
+				view.Effective = best.Model
+				view.EffectiveNote = "网关自动发现"
+			}
 		}
 		resp.Settings = view
 		writeJSON(w, http.StatusOK, resp)
@@ -411,7 +438,7 @@ func (s *Server) handleSTTProbe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	engine := stt.NewResolver(func(context.Context, stt.Scope) (*stt.Target, error) { return target, nil })
-	engine.SetHTTPClient(gatewayHTTPClient(120 * time.Second))
+	engine.SetHTTPClient(s.sttHTTPClientOr(120 * time.Second))
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 	res, err := engine.TranscribeFor(ctx, stt.Scope{UserID: userID, WorkspaceID: wsID}, audio, filename)

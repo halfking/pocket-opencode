@@ -421,6 +421,15 @@ const router = createRouter({
       meta: { requiresAuth: true, title: 'AI 模型', bottomNav: false, canGoBack: true, hideAppHeader: true, scrollMode: 'self' }
     },
     {
+      // 2026-10-01：会议与笔记录音的转写配置。通道三选（自动/网关/外部）、
+      // 候选带真实探测状态、录 3 秒试转。文案硬编码中文，与既有
+      // SettingsLLMGateway.vue 保持一致，不新增 i18n key。
+      path: '/settings/stt',
+      name: 'settings-stt',
+      component: () => import('../features/settings/SettingsSTT.vue'),
+      meta: { requiresAuth: true, title: '语音转写', bottomNav: false, canGoBack: true, hideAppHeader: true, scrollMode: 'self' }
+    },
+    {
       // 系统权限与隐私：麦克风 / 通知 / 生物识别状态与申请入口（Android 优先）
       path: '/settings/permissions',
       name: 'settings-permissions',

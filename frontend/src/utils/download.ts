@@ -2,17 +2,23 @@
  * 统一文件导出工具（审计 P1-3 收敛 + 原生导出支持）。
  *
  * - web：blob + a[download]（延迟回收，规避旧 WebView 取 blob 前引用被回收的竞态）。
- * - android/ios：@capacitor/filesystem 写 Cache 目录 → @capacitor/share 调起系统
- *   分享面板（保存到文件/发送到应用由用户选择）。Share 插件内部走 FileProvider，
- *   Cache 目录无需额外存储权限。
+ * - android：@capacitor/filesystem 写 Cache 目录 → Document 插件用 MediaStore
+ *   **静默写入系统「下载」目录**。这里刻意不再用 @capacitor/share：真机实测
+ *   （Redmi 2411DRN47C / WebView 126）Share.share 会拉起系统「打开方式」选择框
+ *   （MiuiChooserActivity，标题就是旧代码里的「保存或分享文件」），候选只有 QQ 等，
+ *   任何导出入口都被系统弹窗打断。API 29+ 无需任何运行时权限。
+ * - ios：@capacitor/share（无 MediaStore 等价物，保留系统分享面板）
  * - harmony：arkts-webview 桥暂无该能力，抛 DownloadUnsupportedError 显式失败
  *   （不产生文件是静默的，必须让用户感知）。
+ *
+ * 所有导出函数返回给用户看的一句话（落盘位置），调用方可直接 toast。
  *
  * 调用方只需捕获 DownloadUnsupportedError 与通用异常并 toast，无需感知平台差异。
  */
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem'
 import { Share } from '@capacitor/share'
 import { runtimePlatform } from '../native/runtime-platform'
+import { documentNative, hasNativeDocumentSupport } from '../native/document'
 
 export class DownloadUnsupportedError extends Error {
   constructor(message = '当前环境不支持导出文件，请在网页版使用') {
@@ -29,7 +35,7 @@ export interface TextDownloadOptions {
 }
 
 /** 文本文件导出。CSV 的 BOM 前缀等编码细节由调用方拼入 content。 */
-export async function downloadTextFile(opts: TextDownloadOptions): Promise<void> {
+export async function downloadTextFile(opts: TextDownloadOptions): Promise<string> {
   const platform = runtimePlatform()
 
   if (platform === 'web') {
@@ -42,24 +48,24 @@ export async function downloadTextFile(opts: TextDownloadOptions): Promise<void>
     a.click()
     a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 10_000)
-    return
+    return `已下载 ${opts.filename}`
   }
 
   if (platform === 'harmony') throw new DownloadUnsupportedError()
 
-  // android / ios：写缓存目录（UTF-8 文本，无需 base64）+ 系统分享
-  const result = await Filesystem.writeFile({
+  // android / ios：写缓存目录（UTF-8 文本，无需 base64）
+  await Filesystem.writeFile({
     path: opts.filename,
     data: opts.content,
     directory: Directory.Cache,
     encoding: Encoding.UTF8,
     recursive: true,
   })
-  await shareFile(opts.filename, result.uri)
+  return persistFile(opts.filename, opts.mimeType)
 }
 
 /** 二进制文件导出（Blob / ArrayBuffer，如 PDF、ZIP）。 */
-export async function downloadFile(filename: string, data: Blob | ArrayBuffer, mimeType: string): Promise<void> {
+export async function downloadFile(filename: string, data: Blob | ArrayBuffer, mimeType: string): Promise<string> {
   const platform = runtimePlatform()
 
   if (platform === 'web') {
@@ -72,28 +78,43 @@ export async function downloadFile(filename: string, data: Blob | ArrayBuffer, m
     a.click()
     a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 10_000)
-    return
+    return `已下载 ${filename}`
   }
 
   if (platform === 'harmony') throw new DownloadUnsupportedError()
 
   const base64 = data instanceof Blob ? await blobToBase64(data) : arrayBufferToBase64(data)
-  const result = await Filesystem.writeFile({
+  await Filesystem.writeFile({
     path: filename,
     data: base64,
     directory: Directory.Cache,
     recursive: true,
   })
-  await shareFile(filename, result.uri)
+  return persistFile(filename, mimeType)
 }
 
-/** 调起系统分享面板。用户取消分享不视为失败（文件已生成在缓存目录）。 */
-async function shareFile(filename: string, uri: string): Promise<void> {
+/**
+ * 把 Cache 目录里的文件交付出去。返回给用户的一句话。
+ *
+ * Android 走 MediaStore 静默落盘（无系统弹窗）；其余平台保留系统分享面板。
+ * 文件已经写在 Cache 里，所以用户取消分享不算失败。
+ */
+async function persistFile(filename: string, mimeType: string): Promise<string> {
+  if (hasNativeDocumentSupport()) {
+    const saved = await documentNative.saveToDownloads({ path: filename, filename, mimeType })
+    return `已保存到「下载/${saved.name}」`
+  }
+  await shareFile(filename)
+  return `已导出 ${filename}`
+}
+
+/** 调起系统分享面板（iOS 路径）。用户取消分享不视为失败（文件已生成在缓存目录）。 */
+async function shareFile(filename: string): Promise<void> {
   const canShare = await Share.canShare()
   if (!canShare.value) throw new Error('当前设备没有可用的分享渠道')
   await Share.share({
     title: filename,
-    url: uri,
+    url: (await Filesystem.getUri({ path: filename, directory: Directory.Cache })).uri,
     dialogTitle: '保存或分享文件',
   })
 }
