@@ -1643,9 +1643,8 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		workspaceID := s.workspaceIDFromRequest(r)
-		current, err := s.taskStore.GetTaskScoped(r.Context(), path, workspaceID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
+		current, ok := s.workItemWriteGuard(w, r, path, workspaceID)
+		if !ok {
 			return
 		}
 		if update.Status != nil && !isValidTaskStatus(*update.Status) {
@@ -1670,6 +1669,7 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		var updated *task.Task
+		var err error
 		if update.Status != nil && *update.Status == "completed" {
 			updated, err = s.taskStore.CompleteTaskScoped(r.Context(), path, workspaceID, update)
 		} else {
@@ -1708,7 +1708,11 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 
 	// DELETE /api/tasks/{id} — 删除任务及其会话关联
 	if r.Method == http.MethodDelete {
-		if err := s.taskStore.DeleteTaskScoped(r.Context(), path, s.workspaceIDFromRequest(r)); err != nil {
+		workspaceID := s.workspaceIDFromRequest(r)
+		if _, ok := s.workItemWriteGuard(w, r, path, workspaceID); !ok {
+			return
+		}
+		if err := s.taskStore.DeleteTaskScoped(r.Context(), path, workspaceID); err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
@@ -1719,6 +1723,35 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "not found", http.StatusNotFound)
+}
+
+// workItemWriteGuard loads the work item and decides whether the authenticated
+// caller may modify or delete it. Writes belong to the owner and the
+// participants (task.CanWriteWorkItem) — workspace membership alone does not:
+// a private work item whose workspace happens to be shared stays private.
+// Consolidation §5.1 第三条：此前 PATCH/DELETE 只有 workspace 维度校验，
+// 同 workspace 普通成员可改删他人 private 工作项。
+//
+// On failure the response has already been written (404 unknown, 500 when the
+// participant list cannot be read — an unreadable list must never read as
+// "no participants", which would turn every private item into one anyone may
+// write) and ok is false.
+func (s *Server) workItemWriteGuard(w http.ResponseWriter, r *http.Request, taskID, workspaceID string) (*task.Task, bool) {
+	current, err := s.taskStore.GetTaskScoped(r.Context(), taskID, workspaceID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return nil, false
+	}
+	parts, err := s.taskStore.ListParticipants(r.Context(), taskID, workspaceID)
+	if err != nil {
+		http.Error(w, "read participants failed", http.StatusInternalServerError)
+		return nil, false
+	}
+	if !task.CanWriteWorkItem(current, parts, s.userIDFromRequest(r)) {
+		http.Error(w, "not the owner or a participant of this work item", http.StatusForbidden)
+		return nil, false
+	}
+	return current, true
 }
 
 func (s *Server) handleAttachSession(w http.ResponseWriter, r *http.Request, taskID string) {
