@@ -42,6 +42,52 @@ const adb = (args, t = 60000) =>
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/** 用 CDP 把 App 复位到指定路由，并等 App 外壳真的渲染出来。
+ *  只等 hash 匹配是不够的——hash 变了不代表 DOM 渲染完了，
+ *  实测会在 flow 第一条断言就失败（连「打开菜单」都还不在视图树里）。 */
+async function setRoute(hash, readyExpr, timeoutMs = 30000) {
+  const pid = adb(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
+  if (!pid) return false
+  const socks = adb(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
+    .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
+  const sock = socks.find((s) => s.endsWith(`_${pid}`)) || socks[socks.length - 1]
+  if (!sock) return false
+  const port = 9500 + Math.floor(Math.random() * 300)
+  try {
+    adb(['forward', `tcp:${port}`, `localabstract:${sock}`], 15000)
+    const page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page')
+    if (!page) return false
+    const ws = new WebSocket(page.webSocketDebuggerUrl.replace(/:\d+\//, `:${port}/`))
+    let id = 0
+    const pending = new Map()
+    ws.addEventListener('message', (e) => {
+      const m = JSON.parse(e.data)
+      if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id) }
+    })
+    await new Promise((r) => ws.addEventListener('open', r))
+    const ev = (x, ms = 8000) => new Promise((r) => {
+      const i = ++id
+      const t = setTimeout(() => { pending.delete(i); r(null) }, ms)
+      pending.set(i, (v) => { clearTimeout(t); r(v) })
+      ws.send(JSON.stringify({ id: i, method: 'Runtime.evaluate', params: { expression: x, returnByValue: true, awaitPromise: true } }))
+    })
+    await ev(`location.hash=${JSON.stringify(hash)}`)
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      await sleep(800)
+      const gotHash = (await ev('location.hash'))?.result?.value
+      const gotReady = readyExpr ? (await ev(readyExpr))?.result?.value === true : true
+      if (gotHash === hash && gotReady) { ws.close(); return true }
+    }
+    ws.close()
+    return false
+  } catch {
+    return false
+  } finally {
+    try { adb(['forward', '--remove', `tcp:${port}`], 15000) } catch { /* 已经没了 */ }
+  }
+}
+
 async function ensureDriver() {
   // Maestro 在判定 driver 不可用时会**先卸载再安装**，而 MIUI 会拦下那一步安装，
   // 结果 driver 被卸掉且装不回来，之后每次 run 都在这卡死（实测连踩两次）。
@@ -120,6 +166,20 @@ if (!m) {
 }
 
 if (!(await preflight())) process.exit(3)
+
+// 复位到 #/ai。App 会记住 pocket:lastRoute 并在重启后恢复过去，
+// 实测撞到过恢复到「邮件详情」和「笔记页」——起始状态不确定，
+// flow 里所有「等某个页面元素出现」的断言就都可能不成立。
+// 每次 run 都复位一次，后面所有 flow 才可以假定起点是 AI 工具页。
+{
+  const route = process.env.POCKET_START_ROUTE || '#/ai'
+  // 顺带等 App 外壳真的渲染出来：只等 hash 匹配时，flow 第一条断言（打开菜单）
+  // 仍可能失败——hash 变了但 DOM 还没画完。ready 判据用 aria-label，结构性、稳定。
+  const ok = await setRoute(route, `!!document.querySelector('[aria-label="打开菜单"]')`)
+  console.log(ok
+    ? `[preflight] 已复位到 ${route} 且 App 外壳已渲染`
+    : '[preflight] ⚠️ 复位路由/等渲染未成功，flow 的起始状态可能不确定')
+}
 
 // --no-reinstall-driver 是这台机器上能不能跑通 Maestro 的关键：
 // Maestro 2.11 **默认每次 test 之前都重装 driver**，而它的重装是「先卸载再安装」。

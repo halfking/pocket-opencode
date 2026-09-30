@@ -23,6 +23,15 @@
 appId: com.kaixuan.opencode.pocket
 ---
 
+# ⚠️ 开头必须用 extendedWaitUntil 而不是裸 assert。
+#    Maestro 读的是 **Android 无障碍树**，而 WebView 是**异步发布**这棵树的：
+#    DOM 里元素已经在了（启动器用 CDP 确认过），无障碍树还没推过来，
+#    裸 assert 会在树就绪前那一瞬间直接判 false。
+#    实测踩到过：preflight 刚报「App 外壳已渲染」，flow 第一条 assert 仍失败。
+- extendedWaitUntil:
+    visible: "打开菜单"
+    timeout: 60000
+
 # ---- B. 已登录但本地库锁定：只输主密码 ----
 - runFlow:
     when:
@@ -57,15 +66,17 @@ appId: com.kaixuan.opencode.pocket
 # ---- 兜底：三种都没命中说明没落在 App 里，直接报出来 ----
 - assertVisible: "打开菜单"
 
-# 必须等到**页面内容**渲染完，不能停在「外壳可见」就往下走。
+# 必须等到**页面结构**渲染完，不能停在「外壳可见」就往下走。
 # 「打开菜单」是 App 外壳 header 的 aria-label，路由还在恢复时它就已经在了；
 # 紧接着 tap 底部导航会被吞掉——Maestro 报 COMPLETED 但页面不动，
 # 而且因为 tap 坐标点击没有结果校验，所以看起来像成功。踩过两次，别删这段。
 #
-# ⚠️ Maestro 的 visible 文本是**整串全匹配**，不是子串包含。
-#    按钮的真实文本是「+ 新任务」（带加号），写 "新任务" 匹配不上，
-#    必须写 ".*新任务.*" 这种包一层 .* 的形式。踩过。
+# ⚠️ 这里等的是 **「主导航」**（底部导航容器的 aria-label），不是「+ 新任务」。
+#    「+ 新任务」「运行中 6」这些是**数据依赖**的元素：列表重渲染时抓到的快照里
+#    可能正好没有它们（实测过一次，页面数据都到了、按钮却不在快照里），
+#    用它们当判据就是拿运行时状态当确定性信号。
+#    「主导航」是结构性的，永远在。
 - extendedWaitUntil:
-    visible: ".*新任务.*"
+    visible: "主导航"
     timeout: 30000
-- assertVisible: ".*新任务.*"
+- assertVisible: "主导航"
