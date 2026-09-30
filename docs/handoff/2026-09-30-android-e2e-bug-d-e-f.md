@@ -3778,3 +3778,123 @@ typecheck + 逃生门 web 构建 ✅。分支已删（`git push origin --delete`
   未起真容器跑 `deploy-integration-test.sh`（本机无 docker compose 环境）。
 - `probeHealthz` 对「自定义前端 /healthz 返回 200 'ok'」仍直接判健康（与 main 旧行为一致，非回归）。
 - `test_database_detect.sh` 的存量 1 FAIL（PG detect via local port）仍在，本轮未修。
+
+---
+
+## 7. §6.5 遗留清账轮：evernote 测试 + fxp 5、真容器全链路、detect 修复（2026-09-30 晚）
+
+> 本轮把 §6.5 四条遗留全部处置完毕（3 收账 + 1 确认维持），并在真容器验证中
+> 挖出并修复 **BUG-AJ**。全部结论有可复跑命令与提交记录。
+>
+> ⚠️ BUG 编号注：§6.4 说「下一个从 AI 起」，但并发会话的 §4.39 先把 AI 用掉了
+> （本地库迁移静默失败）。本轮的 nginx 缺陷顺延为 **BUG-AJ**，下一个从 AK 起。
+
+### 7.1 遗留①收账：evernote-parser 13 例单测 + fast-xml-parser 4→5（提交 `39458c4`）
+
+- 新增 `frontend/src/features/imports/evernote-parser.test.ts`（node --test 直跑，
+  CI frontend.yml 增设步骤）。样本是真实 .enex 形态：DOCTYPE + 多 note +
+  CDATA ENML 正文 + note-attributes + 多 resource（含/缺 attachment-hash、空 data）。
+- **测试当场抓出一个真缺陷**：`<data encoding="base64"/>`（带属性但空文本）时，
+  旧兜底 `resource?.data?.['#text'] ?? resource?.data ?? ''` 会把属性对象
+  `String()` 成 `"[object Object]"`——非空真值让空 resource 过滤失效，垃圾数据
+  混进 resources。修复：对象形态缺 `#text` 落空串走 filter。
+- 顺带修 import：`./enml-to-markdown` → `./enml-to-markdown.ts`（node --test
+  直跑必需，vite/vue-tsc 兼容，BUG-J 先例同款）。
+- fxp `^4.5.7` → `^5.11.2`：13/13 新用例在 4 与 5 上行为一致后才合入——
+  §6.2 剔除 codex 分支的理由是「无测试不跨大版本」，本提交补齐了前提。
+  唯一使用点 evernote-parser，package.json diff 仅此一行（不重蹈 §6.2 夹带覆辙）。
+
+验证（可复跑）：
+```
+cd frontend
+node --experimental-strip-types --test src/features/imports/evernote-parser.test.ts   # 13/13
+npm run test:native:all      # 124/124（存量 122 + 并行会话 +2，0 fail）
+npx vue-tsc --noEmit         # 0 err
+npm run build:gate           # ✓ built in 33s
+```
+
+### 7.2 遗留④收账：test_database_detect.sh 7/7（提交 `7a3a7d7`）
+
+- 根因（Git Bash 实测）：PATH 上的 `nc` 是 w64devkit 的 **BusyBox nc**，不支持
+  `-z`/`-G`，报 `unknown option` 恒非零——`_db_port_open` 的 nc 分支把
+  「探测工具能力缺失」当成「端口不通」，listener 明明在监听也判死。
+- 修复：`deploy/bin/lib/database-detect.sh` 的 `_db_port_open` 改 **bash 内建
+  `/dev/tcp` + `timeout 3` 优先，nc 仅在 /dev/tcp 不可用时兜底**。Linux 生产机
+  BSD nc 语义不变（探测顺序换位，正负判定等价）。
+
+验证：
+```
+bash deploy/bin/tests/test_database_detect.sh   # 7/7（修复前 6/7）
+bash deploy/bin/tests/run-all.sh
+#   init_dirs 38/0、os_detect 20/0、integration dry-run 26/0 全绿
+#   test_blue_green 7/5——stash 对照确认 5 FAIL 为 Windows symlink 环境存量
+#   （修复前完全相同，与本改动无关，见 7.5 维持项）
+```
+
+### 7.3 遗留②③收账 + BUG-AJ：真容器全链路（154 实机，提交 `eee1e1e`）
+
+环境：154（CentOS 7 / kernel 3.10 / Docker 26.1.4 / compose v2.27.1），隔离验证栈：
+`/tmp/opp-verify-<ts>/`（独立 DEPLOY_BASE_DIR + project name，端口 127.0.0.1:18088 /
+0.0.0.0:18080，验证完 compose 栈/镜像/临时目录全部清空，`docker ps -a` 零残留）。
+前端镜像用 **verbatim Dockerfile.frontend** 容器内构建（npm ci 294 包 + vue-tsc +
+vite build），后端镜像复刻 Dockerfile.kx-base 运行时层 + 本地交叉编译的
+linux/amd64 pocketd（CGO_ENABLED=0，modernc sqlite 纯 Go）。
+
+**BUG-AJ：floating `nginx:alpine`（mainline 1.31.5）在 CentOS 7 上 master 起不来**
+- 现场：首次 `start.sh --frontend-only` 健康门 60s 超时；frontend 容器日志
+  `pwrite() "/run/nginx.pid" failed (1: Operation not permitted)`。
+- A/B 对照（同机同命令）：`docker run --rm nginx:alpine nginx -g "daemon off;"` →
+  上述 crit 退出；`nginx:1.24-alpine` → 正常。root 对 /run 可写（两镜像
+  `touch /run/x` 都 OK），仅完整 master 路径失败。证据：
+  `test-evidence/deploy-2026-09-30/nginx-alpine-vs-stable-ab.md`。
+- 修复：`Dockerfile.frontend` 与 `deploy/docker/Dockerfile.frontend-prebuilt`
+  （默认 ARG）钉 **nginx:1.24-alpine**。
+- 方法论注：这正是「起真容器」对「bash -n + diff 评审」（§6.2 的验证深度）的
+  增量价值——静态评审看不见 floating tag 会漂成什么。
+
+**修复后 `--frontend-only` 全链路（真实 start.sh，非 dry-run）：**
+```
+start.sh --backend-only   → compose up pocketd，✅ http://127.0.0.1:18088（healthz 过）
+start.sh --frontend-only  → 前置门:现有 pocketd 健康 ✅
+                            up -d --force-recreate --no-deps --no-build frontend ✅
+                            双健康门 ✅ blue-green: bin/current → 新 id（previous 已记录）
+```
+
+**穿透断言组合（证据 `test-evidence/deploy-2026-09-30/opp-verify-evidence*.log`）：**
+
+| 探测 | 期望 | 实测 |
+|---|---|---|
+| `GET :18080/healthz` | 哨兵 200 `frontend ok` | ✅ |
+| `GET :18088/healthz`（后端直连） | 200 `ok` | ✅ |
+| `GET :18080/api/healthz` | 穿透 200 `ok` = 直连，**≠ 哨兵** | ✅ |
+| `GET :18080/api/instances` | requireAuth 401 JSON（证 /api/ 子树真到后端） | ✅ |
+| `GET :18080/` | 200 index.html 同源壳 | ✅ |
+| **反证**：`docker stop` pocketd | `/api/healthz` → **504**，`/healthz` 仍 200 哨兵 | ✅ |
+| 反证恢复：`docker start` pocketd | `/api/healthz` → 200 `ok` | ✅ |
+
+反证那条正是 §6.2 修复的语义验收：没有 `/api/healthz` 穿透探针时，
+「后端死了」在旧健康检查里就是绿——假阳盲区在真容器里复现并被新探针抓住。
+（`probeHealthz` 对「自定义前端 /healthz 返回 200 'ok'」仍直接判健康，§6.5
+第 3 条**维持未改**：哨兵字面量 `frontend ok` 契约在 `api-base.ts` 有注释锁定，
+改判定属独立任务。）
+
+**`tests/deploy-integration-test.sh`**：154 实机（bash 4.2）**26/26**、本地
+**26/26**。
+
+### 7.4 顺带发现并修复（非遗留清单内）
+
+`deploy/bin/init-dirs.sh` 空数组 + `set -u` 在 **bash 4.2**（CentOS 7）下
+`"${CONDITIONAL_DB_DIRS[@]}"` 报 unbound variable——`OPP_DEPLOY_PG/REDIS/MYSQL`
+全 false 时 deploy 在目标 OS 上直接断。本地 bash 5.x 不复现，154 首跑即炸。
+已由并发会话以逐字相同的守卫 `${arr[@]+${arr[@]}}` 提交（`2b5000c`），本轮
+154 复跑 26/26 即含此修复的实证。教训：**部署脚本的兼容性下界是目标服务器的
+bash 4.2，不是开发机的 bash 5.x**——integration test 必须至少在一台真目标机上跑。
+
+### 7.5 §6.5 四条遗留的最终状态
+
+| §6.5 条目 | 状态 |
+|---|---|
+| ① fxp 5 升级未做、evernote 无测试 | ✅ 收账（7.1，`39458c4`） |
+| ② --frontend-only 与 /api/healthz 未起真容器 | ✅ 收账（7.3，`eee1e1e`），顺带修 BUG-AJ |
+| ③ probeHealthz 对 'ok' 哨兵直接判健康 | ⏸ **维持**（有意不改：哨兵契约已注释锁定；改判定=独立任务，未验证前不得声称已修） |
+| ④ detect 存量 1 FAIL | ✅ 收账（7.2，`7a3a7d7`） |
