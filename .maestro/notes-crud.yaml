@@ -13,6 +13,15 @@
 #   按钮  只有「返回」(arrow_back) 与「通知中心」——**没有保存按钮**（自动保存）
 #   列表页空态有个 .empty-action 按钮，文案就是「新建笔记」
 #
+# ⚠️ 匹配语义（2026-10-01 踩坑后修正，务必别改回纯字符串）：
+#   Maestro 的 `visible` 是**整串全匹配**，不是子串包含。而 WebView 会把
+#   `<li class="note-item">` 里的三个 span（n-title / n-snippet / n-date）**合并成
+#   一个可访问性 TextView**，实测节点文本是 `MaestroPKM笔记空笔记10/1`。
+#   所以列表断言必须用正则 `标题.*`，写纯字符串会永远失败——
+#   2026-10-01 就因为这个误判了一轮「修复后仍看不到笔记」，而实际上 DB 与 DOM 都已正确。
+#   编辑页的 input 是独立节点，值为「无标题」/新标题本身，纯字符串可匹配。
+#   失败时的现场证据：~/.maestro/tests/2026-10-01_055405/.../step-039-*.json
+#
 # 覆盖范围与边界：
 #   ✅ 创建（点「新建笔记」→ 得到一个真 id 的笔记）
 #   ✅ 改名（改标题 → 回列表能看到新标题）
@@ -31,23 +40,24 @@ appId: com.kaixuan.opencode.pocket
 # ---- 创建 ----
 - tapOn: "新建笔记"
 - extendedWaitUntil:
-    visible: "无标题"
+    visible: { text: "^无标题$" }
     timeout: 25000
-- assertVisible: "无标题"
+- assertVisible: { text: "^无标题$" }
 
 # ---- 改名（标题输入框初值就是「无标题」，先清后写）----
-- tapOn: "无标题"
+- tapOn: { text: "^无标题$" }
 - eraseText
 - inputText: "MaestroPKM笔记"
 - hideKeyboard
 - extendedWaitUntil:
-    visible: "MaestroPKM笔记"
+    visible: { text: "^MaestroPKM笔记$" }
     timeout: 15000
-- assertVisible: "MaestroPKM笔记"
+- assertVisible: { text: "^MaestroPKM笔记$" }
 
 # ---- 回列表：必须能看到新标题，否则「写进去但读不到」也算失败 ----
+# 用正则而不是纯字符串：列表项三个 span 被 WebView 合并成「标题+摘要+日期」一个节点。
 - tapOn: "返回"
 - extendedWaitUntil:
-    visible: "MaestroPKM笔记"
+    visible: { text: "MaestroPKM笔记.*" }
     timeout: 25000
-- assertVisible: "MaestroPKM笔记"
+- assertVisible: { text: "MaestroPKM笔记.*" }

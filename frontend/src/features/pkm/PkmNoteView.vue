@@ -17,6 +17,7 @@
         />
         <BacklinksPanel
           :target-title="currentTitle"
+          :workspace-id="currentWorkspaceId()"
           :refresh-key="refreshTick"
           @open="openNote"
         />
@@ -32,10 +33,22 @@ import BacklinksPanel from './BacklinksPanel.vue'
 import { getNote, saveNote, type PkmNote } from './pkm-store'
 import { useWikilinkNav } from './use-wikilink-nav'
 import { markListDirty } from '../../composables/list-scene-store'
+import { useAuthStore } from '../../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 const { navigate } = useWikilinkNav()
+
+/**
+ * 资产表 local_assets 按 workspace_id 分区。写入必须显式带上当前登录 workspace，
+ * 否则 asset-store.ts:114 的 `?? 'default'` 会把行落到 default 分区，而列表页
+ * （PkmTodayView）按 auth.workspaceId 读 —— 表现为「保存成功但列表看不到」。
+ * 与 NoteListView / NoteEditView 的同名函数保持一致。
+ */
+function currentWorkspaceId(): string {
+  return auth.workspaceId || 'default'
+}
 
 const loading = ref(true)
 const noteId = ref('')
@@ -48,7 +61,7 @@ async function loadOrCreate(id: string) {
   loading.value = true
   if (id === 'new' || !id) {
     // 新建空笔记
-    const created = await saveNote({ title: '无标题', html: '' })
+    const created = await saveNote({ title: '无标题', html: '', workspaceId: currentWorkspaceId() })
     router.replace(`/pkm/n/${created.id}`)
     noteId.value = created.id
     currentTitle.value = created.title
