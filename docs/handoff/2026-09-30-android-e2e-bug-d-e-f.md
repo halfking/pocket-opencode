@@ -2163,8 +2163,35 @@ FAIL  对照组：建完后显示卡组列表而非空态表单
 - 「没找到元素 → 跳过 → 记 PASS」是隐蔽的空过写法。**找不到必须判 FAIL。**
 - 文本断言只适合判「文案是什么」，判「文案对不对」必须落到行为上。
 
-## 5. 已验证 / 未验证（严禁外推）
+### 🔴 跨会话冲突预警（本轮实测，**下轮第一件事就是处理它**）
 
+主工作区 `C:\workspace\openpocket`（并发会话正在写的那份，脏文件已涨到 **58 个**）
+**不含本轮已推送到 origin/main 的 BUG-AA 修复**：
+
+```
+MISS ja-JP  "デッキを作成"      （origin/main 是 "新しいカード"）
+MISS ko-KR  "덱 만들기"        （origin/main 是 "새 카드"）
+MISS de-DE  "Stapel erstellen"  （origin/main 是 "Neue Karte"）
+MISS fr-FR  "Créer un paquet"   （origin/main 是 "Nouvelle carte"）
+MISS es-ES  "Crear mazo"        （origin/main 是 "Nueva tarjeta"）
+MISS pt-BR  "Criar baralho"     （origin/main 是 "Novo cartão"）
+MISS zh-TW  "新增卡組"           （origin/main 是 "新增卡片"）
+MISS StudyHubView.vue 含修复钩子 = false，仍是旧的 goCreateDeck
+=> 缺失 8 项
+```
+
+复现：`node scripts/check-main-worktree-conflict.mjs`
+
+**好消息**：`git merge --ff-only origin/main` 会被 git **拒绝**（不允许覆盖本地修改），
+所以修复不会在快进时被静默吞掉。
+
+**坏消息**：如果并发会话**先** `git add` + `git commit` 这 9 个文件，
+就会把 BUG-AA 的修复 **revert 掉**推上 main。
+
+**下轮处理顺序**：
+1. 先让并发会话收工（或至少让它知道这 9 个文件已由 main 修复，别重复提交旧版）；
+2. 再 `git stash` / 提交 / 放弃它的本地改动，把工作区对齐 origin/main；
+3. 然后才能快进。**不要用 `-f` 强行绕过 git 的拒绝。**
 ### ✅ 已验证（有证据）
 - BUG-D 构建守卫（裸 build EXIT=1）、typecheck EXIT=0
 - BUG-E i18n 292/292 对等，底栏英文 `RSS`
