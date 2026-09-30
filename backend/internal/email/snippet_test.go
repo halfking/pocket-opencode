@@ -113,6 +113,46 @@ func TestDeriveSnippet_EntityDecodingNotDouble(t *testing.T) {
 	}
 }
 
+// quoted-printable 必须解码，否则用户看到的是 =E5=90=84 这种十六进制转义。
+//
+// 2026-10-01 端到端跑 IMAP 桩时在库里看到过这样的摘要：
+//
+//	=E5=90=84=E4=BD=8D=E5=90=8C=E4=BA=8B=EF=BC=9A=0A=0A=E6=9C=AC=E5=91=A8=E5=85=
+//
+// 那是修复前写入的旧行，但形态来自真实邮件（桩夹具 UID 2「生产环境变更通知」
+// 就是 alternative + quoted-printable 中文），所以固化成用例。
+// 两种形态都要覆盖：multipart/alternative，以及 IMAP BODY[TEXT] 常见的单部件。
+const qpAlt = "From: a@example.com\r\nTo: b@example.com\r\nSubject: t\r\n" +
+	"MIME-Version: 1.0\r\n" +
+	"Content-Type: multipart/alternative; boundary=\"BND\"\r\n\r\n" +
+	"--BND\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+	"Content-Transfer-Encoding: quoted-printable\r\n\r\n" +
+	"=E5=90=84=E4=BD=8D=E5=90=8C=E4=BA=8B=EF=BC=9A=0A=0A=E6=9C=AC=E5=91=A8=E5=85=AD\r\n" +
+	"--BND\r\nContent-Type: text/html; charset=utf-8\r\n" +
+	"Content-Transfer-Encoding: quoted-printable\r\n\r\n" +
+	"<p>=E5=90=84=E4=BD=8D=E5=90=8C=E4=BA=8B</p>\r\n--BND--\r\n"
+
+const qpSingle = "From: a@example.com\r\nTo: b@example.com\r\nSubject: t\r\n" +
+	"MIME-Version: 1.0\r\n" +
+	"Content-Type: text/plain; charset=utf-8\r\n" +
+	"Content-Transfer-Encoding: quoted-printable\r\n\r\n" +
+	"=E5=90=84=E4=BD=8D=E5=90=8C=E4=BA=8B=EF=BC=9A\r\n"
+
+func TestDeriveSnippet_DecodesQuotedPrintable(t *testing.T) {
+	for _, c := range []struct{ name, raw, want string }{
+		{"multipart/alternative", qpAlt, "各位同事"},
+		{"单部件 text/plain", qpSingle, "各位同事"},
+	} {
+		got := DeriveSnippet([]byte(c.raw), 500)
+		if strings.Contains(got, "=E5") || regexp.MustCompile(`=[0-9A-F]{2}`).MatchString(got) {
+			t.Errorf("%s: quoted-printable 没解码，用户会看到十六进制转义：%q", c.name, got)
+		}
+		if !strings.Contains(got, c.want) {
+			t.Errorf("%s: 解码后应含 %q，实际 %q", c.name, c.want, got)
+		}
+	}
+}
+
 // 回归护栏：DeriveSnippet 本身正确还不够，fetcher.go 的**每一个**摘要产生点都
 // 必须真的走它。否则纯函数就是死代码，用户在真机上照样看到原始 MIME。
 //
