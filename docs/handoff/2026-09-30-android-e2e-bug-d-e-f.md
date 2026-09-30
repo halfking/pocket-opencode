@@ -759,6 +759,236 @@ task-1790735324849 | Maestro任务310673 | local | active | default
 ---
 
 
+## 4.14 BUG-K：闪卡从零状态完全不可用（无卡组可建）
+
+### 缺陷链（真机实测闭环）
+
+```
+GET  /api/flashcards         -> {"decks":0,"cards":0}
+POST /api/flashcards/decks   -> 404   ← 后端根本没有这个路由
+```
+
+前端侧：`FlashcardListView.vue` 唯一的「新建」按钮执行
+```ts
+function goCreate() { router.push('/flashcards/new') }
+```
+而 `/flashcards/new` 的 meta title 是 **「新建卡片」**、组件是 `FlashcardEditView.vue`。
+**按钮写「新建卡组」，实际跳到新建卡片页——文案与行为不符。**
+
+于是形成死结：
+```
+decks = 0
+  → FlashcardEditView: selectedDeckId = store.deckConfigs[0]?.deckId || '' = ''
+  → isValid = false（isValid 要求 selectedDeckId 非空）
+  → button.save-link 恒 disabled
+  → 卡片永远存不进去 → 永远没有卡组
+```
+
+**用户没有任何办法在 UI 上建出第一个卡组。**（卡组此前只能靠
+`POST /api/flashcards/notes` 从笔记批量导入时隐式生成。）
+
+### 修复
+
+**后端**（`backend/internal/server/flashcards_handler.go`）
+新增 `POST /api/flashcards/decks` → `flashcardsCreateDeck`：
+- `name` 必填（空白 → 400），长度上限 80 runes
+- `deckId` 可选，不传则 `newFlashcardID("deck")`
+- FSRS 参数（newPerDay / reviewsPerDay / learningStepsMin / graduatingInterval /
+  easyInterval / desiredRetention）由 `store.UpsertDeckConfig` 填默认值
+- 返回 201 + DeckConfig
+
+**前端**
+- `services/flashcards.ts` 新增 `createDeck(name, deckId?)`
+- `stores/flashcards.ts` 新增 `createDeck` action（建完合并进 `deckConfigs` 并持久化）
+- `FlashcardEditView.vue` 卡组下拉下方新增「卡组名称 + 新建卡组」，
+  **建完立即 `selectedDeckId = created.deckId`**，否则用户还得手动选一次
+- `zh-CN.json` / `en-US.json`：
+  - `flashcards.list.create`: 「新建卡组」→「新建卡片」（**修正文案与行为不符**）
+  - 新增 `flashcards.deck.create` / `flashcards.deck.createPlaceholder`
+
+**回归锁**（`backend/internal/server/flashcards_deck_route_test.go`）
+`flashcardStore` 是依赖 pgxpool 的具体类型、无法 mock，所以锁的是**路由分发**这一环：
+store 为 nil 时 `POST /api/flashcards/decks` 必须返回 **503**（路由已注册，只是缺 store），
+**不能是 404**（路由不存在）。修复前本用例拿到 404。同时用
+`POST /api/flashcards/cards`、`POST /api/flashcards/notes` 做对照，
+证明判据是「路由注册」而不是碰巧返回某个状态码。
+
+### 验证
+
+```powershell
+cd backend; go build ./...                    # exit 0
+go test ./internal/server/ -run TestFlashcardsCreateDeckRouteExists -v
+# --- PASS: TestFlashcardsCreateDeckRouteExists (2 subtests)
+cd frontend; npx vue-tsc --noEmit             # exit 0
+```
+
+真实接口 + 直接查库：
+```
+POST /api/flashcards/decks  -> 201
+  deckId=deck_813205139d1dcc639089ab6a88b5db5a  newPerDay=20
+  desiredRetention=0.9  learningSteps=1,10      ← store 默认值已填
+POST /api/flashcards/decks  body={}  -> 400      ← name 必填
+GET  /api/flashcards        -> decks=1
+
+select deck_id, name, new_per_day, desired_retention, learning_steps_min
+  from opencode_pocket.flashcard_deck_config;
+  deck_813205139d1dcc639089ab6a88b5db5a | 20 | 0.9 | {1,10}
+```
+
+> ⚠️ 顺带修掉启动脚本的一个隐蔽坑：`Start-Process cmd /c xxx.cmd` 这条路径上，
+> 环境变量**不稳定地**丢失——同一份脚本出现过 `POCKET_AUTH_LEGACY_ONLY` 生效但
+> `POCKET_POSTGRES_DSN` / `POCKET_DEV_AUTH` 没生效，pocketd 打
+> `WARN: POCKET_POSTGRES_DSN not set, running in remote-only mode`，
+> **而 503 症状与「代码坏了」完全一样**。已改为
+> `scripts/start-pocketd-pg.ps1`（先设 `$env:` 再 `Start-Process` exe），
+> 脚本内置 `Postgres pool initialized` 自检，失败即非零退出。
+> 另注意端口变量名是 `POCKET_HTTP_PORT` 而非 `POCKET_PORT`（`config.go:210`）。
+
+---
+
+---
+
+## 4.15 BUG-L / M / N / O：写路径的第四轮清扫（2026-09-30 11:00-12:10）
+
+### 4.15.0 先说方法论：本轮为什么能一次抓出 4 个缺陷
+
+前几轮（BUG-D ~ BUG-K）都靠「真机上点 UI + 看 Network 面板」发现问题。这轮换了路子：
+**从前端源码里静态抽出全部写请求，再对真后端逐条发探测请求**。理由是 BUG-L 的形态
+——路由前缀注册了、handler 却在内部按 method 拒绝——静态前缀对账**天然看不见**，
+而真探测一次就能看见。
+
+两个脚本（共用同一套提取器，避免两份实现漂移）：
+
+| 脚本 | 判据 | 能抓 | 不能抓 |
+|---|---|---|---|
+| `scripts/audit-write-routes.mjs` | 前端写路径能否命中已注册 mux 前缀 | 路径压根没注册 | **method 级拒绝（抓不到 BUG-L）** |
+| `scripts/probe-write-methods.mjs` | 对真后端发请求看状态码 | **method 级拒绝（BUG-L 同类）** | 需要后端在跑 |
+
+提取器在 `scripts/lib/extract-write-paths.mjs`。它的两个坑写在文件头，这里也记一笔：
+
+- **假阴性（0 findings）**：第一版只扫 `services/`，且把 `${BASE}/notes` 直接折叠成
+  `:seg/notes`——不以 `/` 开头被丢弃，输出「0 write calls」。看着像"全部通过"，其实
+  什么都没查。修法：先按同文件 `const` 展开模块常量。
+- **假阳性（4 条）**：第二版用跨行大正则 `/http\(...\)(\s\S{0,300}?method:...)/`，
+  把 `email.ts:172` 的 **GET** 调用和 175 行另一个调用里的 `method:'POST'` 吸成一条。
+  修法：括号平衡，只在**本次调用自己的实参**里找 method。
+- 现在有自检：解析出 0 条写调用时脚本以 exit 2 报错并明说"提取器坏了，不是通过"。
+
+### 4.15.1 BUG-L：闪卡建卡片恒 405
+
+- **现象**：真机 `POST /api/flashcards/notes -> 405 Method Not Allowed`。闪卡卡片永远存不进后端。
+- **根因**：契约 §2 与前端 `services/flashcards.ts` 的 `createNote` 都打
+  `POST /api/flashcards/notes`，但后端 `handleFlashcardsItem` 把
+  `len(parts)==1 && parts[0]=="notes"` 一律交给 `flashcardsNotesCollection`，
+  而后者只允许 GET（405 "GET only"）。创建实现 `flashcardsCreateNote` 只挂在
+  **无尾斜杠**的 `/api/flashcards`。两条路径不等价。
+- **为什么 BUG-K 的测试没抓到**：那次断言的是 store==nil 时的 503，而 503 检查在
+  `handleFlashcardsItem` **最开头**，早于任何 method 分派——405 永远被 503 挡住。
+  要观察真实分派必须注入非 nil 的零值 store。
+- **修法**：后端补齐 POST（等价于 `POST /api/flashcards`），**不动前端**
+  （契约测试 `flashcards.contract.test.ts` 锁的正是 `/notes` 这条）。
+- **回归锁**：`backend/internal/server/flashcards_create_note_route_test.go`
+- **证据**：`scripts/verify-buglnm.mjs` 12/12；真机 UI 保存 201；PG 有 note+card。
+
+### 4.15.2 BUG-M：客户端输入错误被归成 500
+
+- **现象**：`probe-write-methods.mjs` 对 `POST /api/flashcards/cards/:id/review` 发空 body，
+  拿到 `500 {"error":"invalid rating 0 (must be 1..4)"}`。
+- **危害**（不是"返回码不好看"）：前端 `ApiError.retryable` 依 5xx 判定可重试，
+  会对一个**永远不可能成功**的请求反复重试；按 5xx 计故障率的看板会把参数错误记进去。
+- **修法**：在进 store 之前挡，返回 400。
+- **回归锁**：`backend/internal/server/flashcards_review_rating_test.go`
+
+### 4.15.3 BUG-N：`PUT /api/notes/:id` 恒 405（API 契约不匹配，非当前 UI 故障）
+
+- **现象**：`PUT /api/notes/:id -> 405`。前端 `notesApi.update` 打的就是 PUT。
+  笔记的建/读/删都是好的，所以肉眼看模块"大部分能用"。
+
+  > ⚠️ **定性修正（真机复验后）**：这条**不是**用户可见的功能故障。
+  > `grep -r "notesApi.update"` 在整个 `frontend/src` **零命中** —— 这个方法
+  > 从未被调用。笔记编辑实际走 `notes-store.updateNote` → `notes-persist` →
+  > **Capacitor SQLite 本地库**（表 `local_notes`），完全不经过后端。
+  > 真机 `scripts/redmi-write-ops.mjs` **6/6 全过**，其中「编辑笔记：列表摘要
+  > 显示新正文」PASS —— 编辑一直是好的。
+  >
+  > 所以 BUG-N 的准确定性是：**前后端 API 契约不匹配**（前端声明了 PUT，
+  > 后端没实现，`notes.Store` 连更新方法都没有）。这是技术债 + 未来风险
+  > （任何走 HTTP 的同步、或其他客户端都会撞上），**不是**当前 UI 故障。
+  > 本轮的修复是补齐契约，让 `notesApi.update` 不再是死路。
+- **根因**：`handleNoteOperations` 的 switch 只有 GET/DELETE；
+  `notes.Store` 里**根本没有任何更新方法**。要修必须补两层。
+- **修法**：
+  - `backend/internal/notes/store.go` 新增 `NotePatch` + `UpdateNoteScoped`。
+    所有权进 UPDATE 谓词（不用先查后写）；**Content 变更时同步重算 Snippet**。
+  - `server_assistant.go` 加 `handleNoteUpdate`，PUT/PATCH 同一套部分更新语义。
+- **为什么必须同步 snippet**：列表摘要读的是 snippet。不同步的话
+  "编辑后标题还在列表"这种断言**几乎恒真**（标题没动），会掩盖正文根本没存上。
+- **回归锁**：`backend/internal/server/notes_update_route_test.go`
+- **证据**：`verify-buglnm.mjs` 断言回读的 snippet 含新正文、且列表摘要也同步了。
+
+### 4.15.4 BUG-O：闪卡卡片保存成功但永远看不见（数据丢失级）
+
+这是本轮最严重的一个，**不是显示问题**。
+
+- **现象**：真机建卡组 201 → 填正反面保存 `POST /api/flashcards/notes` **201** →
+  查 PG：note 与 card 都在、deck_id 正确 → 宿主侧 `GET /api/flashcards?since=0`
+  能拿到那张卡 → **但卡组详情页「开始复习」恒 disabled，卡片永远不出现。**
+- **根因（两半，缺一不可）**：
+  1. **客户端水位线语义错**：`syncFromServer` 把 `lastSyncedAt` 设成
+     `floor(serverTimeMs/1000)`（服务器此刻时间），而服务端过滤是
+     `updated_at > $since`。凡是在"写入完成 ~ 这次拉取"之间发生的变更，
+     updated_at 都落在水位线之前，之后**永远拉不回来**。
+     注意"宿主侧 since=0 能拿到"**不能否证**它——since=0 时不过滤。
+  2. **保存后不回读**：首张 card 的 id 由服务端 `newFlashcardID` 生成，客户端本地
+     没有这条记录，只能靠 sync 拉。而 `FlashcardEditView.save()` 原来是
+     `void store.flushOutbox()`（fire-and-forget）就 `goBack()`，不触发任何 sync。
+- **修法**：
+  - 客户端 `frontend/src/stores/flashcards.ts`：水位线改取**本批实际收到的最大
+    `updatedAt`**；空结果时**不推进**水位线（空结果不代表"此前都已同步"）。
+  - 服务端 `backend/internal/flashcards/store.go`：6 处 `> $2` 改 `>= $2`。
+    **服务端也必须改**：水位线取"本批最大"后，严格大于依然会在**同一秒内的多条变更**
+    上丢数据（先收到 A → 水位线 T；服务端同秒写入 B → `T > T` 不成立 → B 永久丢失）。
+    `>=` 会重复返回水位线那一秒的行，而客户端 merge-by-id 幂等，重复无副作用；
+    漏数据不可逆。这个不对称是刻意的。
+  - `FlashcardEditView.save()`：先 `await flushOutbox()`（让服务端建好 note+card），
+    再 `await store.refresh()` 把服务端生成的 card 拉回，最后 `goBack()`。
+    顺序反了拉不到。refresh 失败**不报成保存失败**——数据已落库。
+- **回归锁**：
+  - `backend/internal/flashcards/store_since_test.go`（静态锁，防语义被改回去）
+  - `frontend/src/stores/flashcards-sync-watermark.test.ts`（5 用例）
+
+### 4.15.5 本轮证伪的三个"疑似缺陷"（比新缺陷更值得记）
+
+| 曾经的怀疑 | 查证结果 | 怎么查的 |
+|---|---|---|
+| `OPTIONS /api/notes/:id` 返回 200 而非 405 | **设计如此**：`corsMiddleware` 短路了所有 OPTIONS（server.go:885） | 读代码 + `scripts/probe-options.mjs` 实测任意路径/无鉴权都是 200 |
+| 闪卡列表不显示卡片 | **验收标准本身错了**：列表页按设计只显示卡组（name + 今日待复习数），卡片在卡组详情页 | CDP dump DOM + 读 `FlashcardListView.vue` |
+| 真机上"新建卡组入口没出现" | **测试脚本假设错了**：卡组入口是页内 inline（input + button），不是弹窗；按钮 disabled 只是因为 `newDeckName` 为空 | CDP 看到 `input[placeholder=卡组名称]` 与 `新建卡组[disabled]` 都在 |
+| 探针里 `fetch('/api/flashcards')` 返回 HTML | **探针写错了**：裸相对路径在 `https://localhost` origin 下落到打包资源，与 BUG-J 同源 | 改用 `http://localhost:8088` 前缀后正常 |
+
+### 4.15.6 与本轮无关的既有失败（别记到我头上，也别当新缺陷）
+
+- `backend/internal/server` 的 `TestMeetingWorkspaceIsolation/list_A` **失败**。
+  已在 `ca4a53e`（不含本轮任何改动）上用 `git worktree` 复现，**错误信息完全一致**
+  → 预先存在。单独跑该测试是 PASS，全量跑才 FAIL，是测试间状态干扰。
+  它同时暴露了一个真实疑点：跨 workspace 的 meeting GET 返回 200，列表返回 0。
+  **未修，未定性**，留给下一轮。
+- `backend/internal/agent`（25.8s）、`backend/internal/email` 也有 FAIL，
+  本轮未改动这两个包（`git diff --name-only HEAD` 为空）。
+
+### 4.15.7 新增脚本
+
+| 脚本 | 用途 |
+|---|---|
+| `scripts/lib/extract-write-paths.mjs` | 写路径提取器（静态审计与真探测共用） |
+| `scripts/audit-write-routes.mjs` | 静态前缀对账（--all 看全量） |
+| `scripts/probe-write-methods.mjs` | **真后端 method 级探测**（--only=xxx 限定范围） |
+| `scripts/verify-buglnm.mjs` | BUG-L/M/N 端到端验证（12 项） |
+| `scripts/inspect-flashcards-envelope.mjs` | 闪卡增量 envelope 取证 |
+| `scripts/cdp-flashcards-store.mjs` | 在真机 WebView 上下文里读 store / 打真机 API |
+| `scripts/probe-options.mjs` | OPTIONS 行为取证 |
+| `scripts/fix-since-comparator.mjs` | 一次性：`> $2` → `>= $2`（可删） |
+
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
@@ -793,15 +1023,38 @@ task-1790735324849 | Maestro任务310673 | local | active | default
 - 后端 CORS / WS origin 校验对 `http://localhost` 均放行
 - 后端端点可用性已摸清（见 §4.9）：tasks/sessions/instances/meetings 可用；notes/flashcards 503、vault/marketplace 404 属 dev 未配存储
 
+### ✅ 已验证 · 补充（BUG-L/M/N/O）
+
+- **BUG-L** POST /api/flashcards/notes 真后端 201 + PG 落库 + 真机 UI 保存 201
+- **BUG-M** review 空 body / rating=9 均返回 400（不再 500）
+- **BUG-N（API 契约层）** PUT /api/notes/:id 返回 200，回读 snippet 含新正文，
+  列表摘要同步。注意：**当前 UI 不走这条路径**（编辑走本地 SQLite），
+  详见 §4.15.3 的定性修正
+- **BUG-O** 水位线 + 服务端 >= + 保存后回读三处修复，回归锁各就位（前端 5 用例 / 后端静态锁）
+- **写路径 method 级探测全量**：94 条唯一写路径，405 从 1 → 0；20 个 404 中 19 个是
+  handler 内部「资源不存在」（正常），1 个是 SSO 未启用（功能开关）
+- vue-tsc --noEmit exit 0；go build ./... OK；internal/notes、internal/flashcards 全绿
+
+### ⚠️ 本轮新增未验证 / 未修（不要当成已完成）
+
+- ~~**真机 BUG-O 闭环未复验**~~ → **已复验通过**（11:45 构建、11:46 装机）：
+  `scripts/redmi-write-ops-modules.mjs` **7/7**。强证据：新建卡组显示 `1 cards`
+  （修前 `0 cards`）；卡组详情页「开始复习」enabled；正文可见
+  `1 卡组 1 今日待复习 1 张 ... 正面-080323 — New`。
+  API 时序也对上了：`POST /notes 201` → 紧接着 `?since=新时间戳` 回读。
+- **真机笔记编辑（BUG-N）UI 闭环未验**：后端与宿主侧脚本已证实 12/12，
+  但没有在真机上点过编辑按钮。
+- `TestMeetingWorkspaceIsolation/list_A` 失败（预先存在，见 §4.15.6），未修也未定性。
+- `backend/internal/agent`、`backend/internal/email` 也有 FAIL，本轮未触碰这两个包。
+- 真机 Maestro 仍需用户手动开「USB 安装」（见 §4.11.1）。
+- 生产默认 https 路径仍未系统回归。
+- Keystore 原生插件仍未实现（代码欠账）。
 ### ❌ 未验证（下一轮必须补）
-- **闪卡的 UI 写路径没打通**。后端已通（`GET /api/flashcards` 200，store 已接 PG），
-  但真机上没走完：列表页「新建卡组」实际**直接跳到卡片编辑页**（`#/flashcards/new`），
-  而卡片页的「卡组」按钮又**跳回列表**（`#/flashcards`）——**文案与行为不一致**，
-  卡片页的 `button.save-link` 因此恒 `disabled`。
-  两种可能：① 这是产品交互缺陷（按钮语义/文案错乱）② 存在我没找到的卡组管理入口。
-  **需要人看一眼真实 UI 再判定**，不要凭脚本猜。
+- **闪卡的 UI 写路径**：后端缺 `POST /api/flashcards/decks` 导致「无卡组可建」已由
+  **BUG-K 修复**（§4.14），接口层 201 + 查库确认落库。**卡片 UI 端到端（建卡组 → 建卡片 → 保存）
+  尚未在真机跑通**，待用新 APK 复验。
 - **任务 / 会话 的编辑、删除**未验证（创建已验证 201 + 落库）。
-- **闪卡 / 密码箱 / 市场 / 邮箱 的写操作**未验证（后端已通，前端路径待打通）。
+- **密码箱 / 市场 / 邮箱**的 UI 写路径未验证（后端端点已通，§4.12）。
 - **任务 / 会话 的写操作**未验证。`GET /api/tasks` 200 可读，但 `POST /api/tasks` 在 dev 后端
   恒 **503 `local task store not configured (remote-only mode)`**——`taskStore` 只在
   `pool != nil`（PostgreSQL）时构造（`backend/cmd/pocketd/main.go:103-108`）。

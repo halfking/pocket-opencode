@@ -22,6 +22,8 @@ const DECK = `Maestro卡组${stamp}`
 const CARD_FRONT = `正面-${stamp}`
 const CARD_BACK = `背面-${stamp}`
 const TASK_TITLE = `Maestro任务${stamp}`
+/** BUG-O 断言用：建完卡组后记下 deckId，稍后进卡组详情页验证卡片真的出现。 */
+let selectedDeckId = ''
 
 const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
 const pid = adb(['-s', SERIAL, 'shell', `pidof ${PKG}`]).trim().split(/\s+/)[0]
@@ -134,52 +136,64 @@ if (await ev(`!!document.querySelector('input[placeholder*="用户名"]')`)) {
 }
 console.log('  ready, hash =', await ev('location.hash'))
 
-// ---------- 1. 闪卡：进卡片页 → 选卡组 ----------
-// 实测交互模型（cdp-click-probe.mjs）：列表页的「新建卡组」**不是弹窗**，
-// 它直接导航到 #/flashcards/new；卡组是在卡片页用「卡组」按钮选的。
-// 卡片页的「保存」是 class="save-link"，未选卡组时恒 disabled。
-console.log('\n--- 1. FLASHCARD deck selector ---')
+// ---------- 1. 闪卡：卡片页 → 就地建卡组（BUG-K 修复后的新入口）----------
+// BUG-K 修复前：列表页按钮文案「新建卡组」但实际跳 /flashcards/new（新建卡片页），
+// 文案与行为不符；修复后文案改为「新建卡片」，并在卡片页新增「新建卡组」入口。
+console.log('\n--- 1. FLASHCARD create deck in card page (BUG-K) ---')
 await goto('#/flashcards', `(document.body.innerText||'').indexOf('闪卡') >= 0`, '闪卡列表')
 apiCalls.length = 0
-console.log('  click 新建卡组 ->', await ev(click('新建卡组')))
+console.log('  list buttons =', await btnStates())
+console.log('  click 新建卡片 ->', await ev(click('新建卡片')))
 const onCardPage = await waitFor(`!!document.querySelector('button.save-link') ? 'card-page' : null`, '卡片编辑页', 12000)
-if (!onCardPage) abort('点「新建卡组」后未进入卡片编辑页')
+if (!onCardPage) abort('点「新建卡片」后未进入卡片编辑页（文案/路由是否一致？）')
 console.log('  on card page, hash =', await ev('location.hash'))
-console.log('  click 卡组 ->', await ev(click('卡组', { exact: true })))
-const deckSheet = await waitFor(
-  `(function(){
-     var ov = document.querySelector('.bottom-sheet, [class*="overlay"], [class*="sheet"], [role="dialog"]');
-     return ov ? 'sheet' : null;
-   })()`, '卡组弹窗', 10000)
-if (!deckSheet) {
+
+// 卡组入口是**页内 inline 区域**（一个 placeholder="卡组名称" 的 input +
+// 一个「新建卡组」按钮），不是弹窗。
+//
+// 这里踩过一次坑：最初按"点新建卡组会弹出 bottom-sheet"来写，找不到 .bottom-sheet
+// / [role=dialog] 就判 FAIL，结论一度写成"BUG-K 的入口在真机上没出现"。
+// 用 CDP dump DOM 复查后才发现 input 和按钮都在，只是新建卡组按钮因为
+// newDeckName 为空而 disabled —— 是**测试脚本的假设错了**，不是产品缺陷。
+// 所以判据直接认 input+button 本身，不再假设容器形态。
+const deckInput = await waitFor(
+  `!!document.querySelector('input[placeholder="卡组名称"]') ? 'inline' : null`,
+  '卡组名称输入框（页内 inline 入口）', 10000)
+if (!deckInput) {
   console.log('  btns =', await btnStates())
   console.log('  body =', ((await bodyText()) || '').slice(0, 200))
-  record('闪卡：卡组可创建/选择', false, '点「卡组」后无弹窗（可能已有卡组，选择器为列表而非创建表单）')
+  record('闪卡：可创建卡组（BUG-K 修复）', false, '卡片页未出现「卡组名称」输入框')
 } else {
+  console.log('  卡组入口 =', deckInput, '| 新建卡组按钮初始 =',
+    await ev(`(function(){ var b=Array.from(document.querySelectorAll('button')).find(x=>(x.textContent||'').trim().indexOf('新建卡组')>=0); return b ? ('disabled='+b.disabled) : '(absent)' })()`))
   console.log('  deck sheet inputs =', await ev(`JSON.stringify(Array.from(document.querySelectorAll('input')).map(i=>i.type+'|'+(i.placeholder||'')))`))
-  console.log('  deck sheet btns =', await ev(`JSON.stringify(Array.from(document.querySelectorAll('button')).map(b=>(b.textContent||'').trim().slice(0,12)+(b.disabled?'[off]':'[on]')).filter(Boolean).slice(-10))`))
+  // 直接按 placeholder 定位。原先用「所有 text input 里取最后一个」，
+  // 页面同时有「输入标签后回车」的标签 input，取 .pop() 可能选错元素。
   const deckNameFill = await ev(`(function(){
-    var el = Array.from(document.querySelectorAll('input')).filter(function(i){
-      var p = (i.placeholder || '');
-      return (i.type === 'text' || !i.type) && !/标签|任务标题|任务描述/.test(p);
-    }).pop();
+    var el = document.querySelector('input[placeholder="卡组名称"]');
     if (!el) return 'NO_INPUT';
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el),'value').set.call(el, ${JSON.stringify(DECK)});
     el.dispatchEvent(new Event('input', { bubbles: true }));
-    return 'filled';
+    return 'filled:' + el.value;
   })()`)
   console.log('  deck name ->', deckNameFill)
   const deckCreated = await waitFor(
-    `(()=>{ var b=Array.from(document.querySelectorAll('button')).find(x=>(x.textContent||'').trim()==='创建'); return (b && !b.disabled) ? 'enabled' : null })()`,
-    '创建卡组按钮 enabled', 8000)
+    `(()=>{ var b=Array.from(document.querySelectorAll('button')).find(x=>(x.textContent||'').trim().indexOf('新建卡组')>=0); return (b && !b.disabled) ? 'enabled' : null })()`,
+    '「新建卡组」按钮 enabled（依赖 newDeckName）', 8000)
   if (!deckCreated) {
-    record('闪卡：卡组可创建/选择', false, '卡组弹窗「创建」按钮始终 disabled')
+    record('闪卡：可创建卡组（BUG-K 修复）', false, '填了卡组名后「新建卡组」仍 disabled')
   } else {
-    console.log('  create deck ->', await ev(click('创建', { exact: true })))
-    await sleep(3000)
-    await ev(closeOverlays())
-    await sleep(1200)
-    record('闪卡：卡组可创建/选择', true, `deck=${DECK}`)
+    console.log('  create deck ->', await ev(fullClick('新建卡组')))
+    await sleep(3500)
+    const deckApi = apiCalls.filter((c) => c.url.includes('flashcards/decks'))
+    console.log('  deck api =', JSON.stringify(deckApi))
+    const selected = await ev(`(()=>{ var s=document.querySelector('select'); return s && s.value ? s.value : '(empty)' })()`)
+    console.log('  selected deck after create =', selected)
+    selectedDeckId = selected !== '(empty)' ? selected : ''
+    console.log('  save button now =', await ev(`(function(){ var b=document.querySelector('button.save-link'); return b ? ('disabled='+b.disabled) : '(absent)' })()`))
+    record('闪卡：可创建卡组（BUG-K 修复）',
+      deckApi.some((c) => c.status >= 200 && c.status < 300) && selected !== '(empty)',
+      `deck api=${JSON.stringify(deckApi)} selected=${selected}`)
   }
 }
 console.log('  after deck, hash =', await ev('location.hash'),
@@ -205,10 +219,37 @@ if (!saveOn) {
   record('闪卡：保存按钮可用（此前恒 disabled）', true, 'enabled after 卡组+正面+背面')
   record('闪卡：卡片保存请求 2xx', cardApi.some((c) => c.status < 300),
     cardApi.length ? JSON.stringify(cardApi) : 'no flashcard API call captured')
+
+  // 验收标准纠正（2026-09-30）：**列表页按设计只显示卡组**
+  // （name + 今日待复习数 + N cards），卡片正文在卡组详情页
+  // /flashcards/decks/:id。原先断言"列表正文里出现 CARD_FRONT"永远为假，
+  // 差点被当成缺陷记进 handoff。
+  //
+  // 所以分两层断言，且都用**能区分修前/修后**的强判据：
+  //   列表层：新建卡组的 totalCards 从 0 变成 1
+  //           （BUG-O 修前是 0 cards，因为服务端生成的 card 拉不回来）
+  //   详情层：进卡组页后「开始复习」不再 disabled
   await goto('#/flashcards', `(document.body.innerText||'').indexOf('闪卡') >= 0`, '闪卡列表(保存后)')
-  const afterCard = (await bodyText()) || ''
-  record('闪卡：列表回显卡片', afterCard.includes(CARD_FRONT) || afterCard.includes(CARD_BACK),
-    afterCard.includes(CARD_FRONT) ? 'card in list' : `not shown; body=${afterCard.slice(0, 80)}`)
+  await sleep(1500)
+  const listText = ((await bodyText()) || '').replace(/\s+/g, ' ')
+  const deckHasOne = new RegExp(`${DECK}[^|]{0,40}?1 cards`).test(listText)
+  record('闪卡：列表卡组计数 = 1（BUG-O 修复前为 0）', deckHasOne,
+    deckHasOne ? `"${DECK}" 后有 1 cards` : `list=${listText.slice(0, 140)}`)
+
+  const deckId = selectedDeckId
+  if (deckId) {
+    await goto(`#/flashcards/decks/${deckId}`, `!!document.querySelector('button')`, '卡组详情页', 15000)
+    await sleep(2000)
+    const deckBody = ((await bodyText()) || '').replace(/\s+/g, ' ')
+    const startBtns = await ev(`JSON.stringify(Array.from(document.querySelectorAll('button')).map(b=>(b.textContent||'').trim()+'|'+(b.disabled?'dis':'en')).filter(s=>/复习/.test(s)))`)
+    const startEnabled = (startBtns || '').includes('|en')
+    record('闪卡：卡组页「开始复习」可用（BUG-O 修复前恒 disabled）', startEnabled,
+      `${startBtns} | body=${deckBody.slice(0, 120)}`)
+    record('闪卡：卡组页能看到刚建的卡片', deckBody.includes(CARD_FRONT) || deckBody.includes(CARD_BACK),
+      deckBody.includes(CARD_FRONT) ? 'front shown' : `body=${deckBody.slice(0, 140)}`)
+  } else {
+    record('闪卡：卡组页「开始复习」可用（BUG-O 修复前恒 disabled）', false, '未取到 deckId，跳过')
+  }
 }
 
 // ---------- 3. 任务 ----------

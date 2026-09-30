@@ -133,6 +133,30 @@
         </select>
       </label>
 
+      <!--
+        BUG-K（2026-09-30 真机验收）：此前**没有创建卡组的任何入口**。
+        后端无 POST /api/flashcards/decks，前端列表页「新建卡组」又直接跳本页
+        （「新建卡片」页）。于是 decks=0 时 selectedDeckId 为空、isValid 恒 false，
+        保存按钮恒 disabled —— 闪卡模块从零状态完全不可用。
+        这里补上建卡组入口，让「没有卡组」不再是一个死局。
+      -->
+      <div class="deck-create">
+        <input
+          v-model="newDeckName"
+          type="text"
+          :placeholder="t('flashcards.deck.createPlaceholder')"
+          :aria-label="t('flashcards.deck.create')"
+        />
+        <button
+          type="button"
+          :disabled="deckCreating || !newDeckName.trim()"
+          @click="submitCreateDeck"
+        >
+          {{ deckCreating ? t('common.loading') : t('flashcards.deck.create') }}
+        </button>
+      </div>
+      <p v-if="deckError" class="error" role="alert">{{ deckError }}</p>
+
       <!-- Phase 4：父牌组选择（嵌套牌组树，最深 3 层）。 -->
       <ParentDeckSelect
         v-if="deckConfigs.length > 1"
@@ -181,10 +205,12 @@ import { parseCloze } from './utils/cloze'
 import { pickAndSaveImage, loadMediaDataUrl, deleteMediaFile, type MediaRef } from './utils/flashcardMedia'
 import TagInput from './components/TagInput.vue'
 import ParentDeckSelect from './components/ParentDeckSelect.vue'
+import { useApiError } from '../../composables/useApiError'
 import type { FlashcardTemplate } from '../../types/flashcards'
 
 defineOptions({ name: 'FlashcardEditView' })
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
@@ -207,6 +233,27 @@ const mediaDataUrls = ref<Record<string, string>>({})
 const showMediaPicker = ref<{ role: MediaRef['role']; open: boolean } | null>(null)
 const saving = ref(false)
 const error = ref('')
+/* BUG-K：就地建卡组。失败要单独提示，不能污染上面的 error（那是表单提交用的）。 */
+const newDeckName = ref('')
+const deckCreating = ref(false)
+const deckError = ref('')
+
+async function submitCreateDeck() {
+  const name = newDeckName.value.trim()
+  if (!name || deckCreating.value) return
+  deckCreating.value = true
+  deckError.value = ''
+  try {
+    const created = await store.createDeck(name)
+    // 建完立刻选中，否则用户还得在下拉里手动选一次才能保存
+    selectedDeckId.value = created.deckId
+    newDeckName.value = ''
+  } catch (err) {
+    deckError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    deckCreating.value = false
+  }
+}
 
 const deckConfigs = computed(() => store.deckConfigs)
 
@@ -285,7 +332,10 @@ async function pickImage(role: MediaRef['role'], source: 'camera' | 'gallery') {
     const url = await loadMediaDataUrl(ref.fileName).catch(() => null)
     if (url) mediaDataUrls.value = { ...mediaDataUrls.value, [ref.fileName]: url }
   } catch (e: any) {
-    error.value = e?.message ?? t('flashcards.edit.imagePickFailed')
+    // 原来直接把 err.message 赋给页面级 error；该错误是本地媒体读取失败，
+    // 原文常是英文底层异常（如 "Failed to fetch"），对用户没有指导意义。
+    console.warn('[flashcards] 读取图片失败（原始信息）:', e?.message || e)
+    error.value = t('flashcards.edit.imagePickFailed')
   }
 }
 
@@ -316,13 +366,28 @@ async function save() {
       store.enqueuePatchNote(noteId.value, input)
       // 父牌组变更只影响 deck config（card 的 deckId 不变 → 树形归位靠 store 后续 patchCard）。
       // 这里先不入 outbox；Phase 4.1 再扩展 deck config 的 outbox 通道。
+      await store.flushOutbox().catch(() => {})
     } else {
       store.enqueueCreateNote(input)
+      // BUG-O（2026-09-30 真机验收）：新建 note 时，**首张 card 是服务端生成的**
+      // （id 由后端 newFlashcardID 造，客户端无从得知）。原来这里是
+      // `void store.flushOutbox()` —— fire-and-forget，写完立刻 goBack，
+      // 客户端 cards 数组里自始至终没有这张 card，用户回到列表/卡组页永远看不到
+      // 刚保存的卡片。
+      //
+      // 必须在 flush 之后回读一次：先 flush 让服务端建好 note+card，再 refresh
+      // 把服务端生成的 card 拉回本地。顺序反了会拉不到（card 还没建），
+      // 所以这里 await 而不是 void。
+      await store.flushOutbox()
+      // refresh 失败不该把"已保存"报成保存失败——数据已经落库了。
+      // 只在控制台留痕，UI 仍按成功路径返回。
+      await store.refresh().catch((e) => {
+        console.warn('[flashcards] 保存后回读失败（卡片已落库，稍后同步会补上）:', e?.message || e)
+      })
     }
-    void store.flushOutbox().catch(() => {})
     goBack()
   } catch (e: any) {
-    error.value = e?.message || 'save failed'
+    error.value = apiError(e, 'errors.saveFailed')
   } finally {
     saving.value = false
   }
@@ -419,7 +484,7 @@ input, textarea, select {
   font: inherit;
   font-size: 14px;
 }
-textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+textarea { resize: vertical; font-family: var(--font-mono); font-size: 13px; }
 
 .hint {
   display: flex;

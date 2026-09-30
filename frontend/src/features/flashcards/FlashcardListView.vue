@@ -30,7 +30,7 @@
 
         <div v-if="store.loading" class="state" role="status">{{ t('common.loading') || '加载中…' }}</div>
         <div v-else-if="store.error" class="error" role="alert">
-          {{ store.error }}
+          {{ apiError(store.error, 'errors.loadFlashcardsFailed') }}
           <button type="button" @click="reload">{{ retryLabel }}</button>
         </div>
         <div v-else-if="decks.length === 0" class="empty">
@@ -78,12 +78,14 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import FoldAwareLayout from './components/FoldAwareLayout.vue'
 import { useFlashcardsStore } from '../../stores/flashcards'
+import { useApiError } from '../../composables/useApiError'
 
 defineOptions({ name: 'FlashcardListView' })
 
 const router = useRouter()
 const { t } = useI18n()
 const store = useFlashcardsStore()
+const apiError = useApiError()
 
 const decks = computed(() => store.deckSummaries)
 

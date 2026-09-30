@@ -14,6 +14,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import {
+  createDeck as createDeckSvc,
   createNote,
   deleteNote,
   dueCount as fetchDueCountSvc,
@@ -293,8 +294,32 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
         notes.value = notes.value.filter((n) => !deletedSet.has(n.id))
         cards.value = cards.value.filter((c) => !deletedSet.has(c.id))
       }
-      if (typeof envelope.serverTimeMs === 'number') {
-        lastSyncedAt.value = Math.floor(envelope.serverTimeMs / 1000)
+      // BUG-O（2026-09-30 真机验收）：水位线必须取**本次实际收到的最大
+      // updatedAt**，不能取 serverTimeMs。
+      //
+      // 后端过滤是 `updated_at > $since`（严格大于，flashcards/store.go:361）。
+      // 原实现把 lastSyncedAt 设成 floor(serverTimeMs/1000)，也就是"服务器
+      // 此刻的时间"。凡是在「写入完成」与「这次拉取」之间发生的变更，其
+      // updated_at 小于这个水位线，下一次 since 更大，于是**永远拉不回来**。
+      //
+      // 真机上的具体表现：UI 新建卡片 -> POST /api/flashcards/notes 201，
+      // 服务端同时生成 note 和 card（card 的 id 由服务端生成，客户端本地
+      // 根本没有这条记录，只能靠 sync 拉）。但随后一次 sync 把 lastSyncedAt
+      // 推到服务端当前时间，card 的 updated_at 落在水位线之前 —— 卡组详情页
+      // 「开始复习」恒 disabled，卡片永远不出现，而 PG 里数据明明在、宿主侧
+      // 直接调 since=0 也能拿到。
+      //
+      // 没有数据时保持原水位线不动：空结果不代表"服务端此刻之前都已同步"。
+      const maxUpdated = [
+        ...(envelope.notes ?? []),
+        ...(envelope.cards ?? []),
+        ...(envelope.decks ?? []),
+      ].reduce((acc, item) => {
+        const ts = typeof item?.updatedAt === 'number' ? item.updatedAt : 0
+        return ts > acc ? ts : acc
+      }, 0)
+      if (maxUpdated > 0) {
+        lastSyncedAt.value = maxUpdated
       }
       persistCache()
     } catch (e: any) {
@@ -469,6 +494,24 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
   }
 
   /**
+   * 创建卡组（BUG-K，2026-09-30 真机验收）。
+   *
+   * 此前**没有任何创建卡组的路径**：后端无 POST /api/flashcards/decks，
+   * 前端列表页「新建卡组」又直接跳 /flashcards/new（新建卡片页）。
+   * 结果 decks=0 → selectedDeckId 为空 → 保存恒 disabled，闪卡从零状态不可用。
+   *
+   * 走服务端建（后端会填 FSRS 默认值），成功后合并进本地缓存并返回。
+   */
+  async function createDeck(name: string): Promise<FlashcardDeckConfig> {
+    const created = await createDeckSvc(name.trim())
+    const idx = deckConfigs.value.findIndex((d) => d.deckId === created.deckId)
+    if (idx >= 0) deckConfigs.value.splice(idx, 1, created)
+    else deckConfigs.value.push(created)
+    persistCache()
+    return created
+  }
+
+  /**
    * Phase 4：保存 deck config（local-first）。
    *
    * 行为：替换式写整个 deckConfig；持久化到 localStorage；不入 outbox
@@ -531,6 +574,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
     enqueuePatchCard,
     applyReviewLocally,
     fetchDueCount,
+    createDeck,
     saveDeckConfig,
     replaceAllNotes,
     replaceAllCards,

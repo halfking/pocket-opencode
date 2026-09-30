@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -147,6 +148,7 @@ func (s *Server) flashcardsCreateNote(w http.ResponseWriter, r *http.Request, us
 // handleFlashcardsItem dispatches the path-based sub-resources:
 //
 //	GET    /api/flashcards/notes?since=<sec>            → notes list
+//	POST   /api/flashcards/notes                        → create note (BUG-L; 等价于 POST /api/flashcards)
 //	POST   /api/flashcards/cards                        → create extra card
 //	PATCH  /api/flashcards/cards/:id                    → patch due/state
 //	POST   /api/flashcards/cards/:id/review             → record review
@@ -164,11 +166,29 @@ func (s *Server) handleFlashcardsItem(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 
 	if len(parts) == 1 && parts[0] == "notes" {
+		// BUG-L（2026-09-30 真机验收）：契约 §2 与前端 services/flashcards.ts
+		// 的 createNote 都打 POST /api/flashcards/notes，但本路径此前只允许
+		// GET（405 "GET only"）——创建 note 的实现只挂在无尾斜杠的
+		// /api/flashcards（handleFlashcardsCollection）。结果是「保存卡片」
+		// 在真机上恒失败，闪卡写路径整体不可用。这里补齐 POST，两条路径等价；
+		// 契约测试 flashcards.contract.test.ts 锁的正是 /notes 这条，不动前端。
+		if r.Method == http.MethodPost {
+			s.flashcardsCreateNote(w, r, userID)
+			return
+		}
 		s.flashcardsNotesCollection(w, r, userID)
 		return
 	}
 	if len(parts) == 1 && parts[0] == "cards" && r.Method == http.MethodPost {
 		s.flashcardsCreateCard(w, r, userID)
+		return
+	}
+	// BUG-K（2026-09-30 真机验收）：此前没有「创建卡组」的入口，
+	// 导致新用户 decks=0 -> 卡片页 selectedDeckId 为空 -> 保存恒 disabled，
+	// 闪卡模块从零状态完全不可用（后端 404，前端列表页「新建卡组」
+	// 按钮又直接跳 /flashcards/new 这个「新建卡片」页，文案与行为不符）。
+	if len(parts) == 1 && parts[0] == "decks" && r.Method == http.MethodPost {
+		s.flashcardsCreateDeck(w, r, userID)
 		return
 	}
 	if len(parts) >= 2 && parts[0] == "cards" {
@@ -377,6 +397,15 @@ func (s *Server) flashcardsReviewCard(w http.ResponseWriter, r *http.Request, us
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
+	// BUG-M（2026-09-30 写路径 method 级探测发现）：rating 非法属于**客户端输入
+	// 错误**，此前由 store 返回 error 后被无差别归为 500。后果有两个：前端
+	// ApiError.retryable 会把 500 当可重试，对一个永远不会成功的请求反复重试；
+	// 监控把参数错误记成服务端故障。这里在进 store 之前挡住，返回 400。
+	if input.Rating < 1 || input.Rating > 4 {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("invalid rating %d (must be 1..4)", input.Rating))
+		return
+	}
 	card, log, err := s.flashcardStore.RecordReview(r.Context(), userID, id, input.Rating, input.ReviewedAt)
 	if err != nil {
 		if errors.Is(err, flashcards.ErrCardNotFound) {
@@ -466,10 +495,57 @@ func parseFlashcardsSinceLimit(r *http.Request) (int64, int) {
 	return since, limit
 }
 
+// flashcardsCreateDeck 处理 POST /api/flashcards/decks。
+//
+// BUG-K（2026-09-30 真机验收）：闪卡此前**没有任何创建卡组的路径**——
+// 后端没有本路由，前端列表页的「新建卡组」按钮实际执行 `router.push('/flashcards/new')`
+// 跳到「新建卡片」页（FlashcardEditView）。于是新用户 decks=0 →
+// selectedDeckId 取不到值 → 保存按钮恒 disabled → 闪卡从零状态完全不可用。
+//
+// deck 的 FSRS 参数（newPerDay / learningSteps / desiredRetention 等）由
+// store.UpsertDeckConfig 填默认值，这里只强制要求 name。
+func (s *Server) flashcardsCreateDeck(w http.ResponseWriter, r *http.Request, userID string) {
+	body, err := decodeFlashcardsBody(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var input struct {
+		DeckID string `json:"deckId"`
+		Name   string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if len([]rune(name)) > 80 {
+		writeError(w, http.StatusBadRequest, "name too long (max 80)")
+		return
+	}
+	deckID := strings.TrimSpace(input.DeckID)
+	if deckID == "" {
+		deckID = newFlashcardID("deck")
+	}
+	deck := &flashcards.DeckConfig{ //nolint:exhaustruct // 其余字段由 store 填默认值
+		DeckID: deckID,
+		UserID: userID,
+		Name:   name,
+	}
+	if err := s.flashcardStore.UpsertDeckConfig(r.Context(), deck); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, deck)
+}
+
 // newFlashcardID returns a 32-char hex id with a short prefix so the DB
 // inspector can tell note ids from card ids at a glance.
-func newFlashcardID(prefix string) string {
-	var b [16]byte
+func newFlashcardID(prefix string) string {	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return prefix + "_" + time.Now().Format("20060102150405.000000000")
 	}

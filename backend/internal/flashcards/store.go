@@ -181,7 +181,19 @@ func (s *Store) GetNote(ctx context.Context, userID, id string) (*Note, error) {
 	return &n, nil
 }
 
-// ListNotesSince returns notes with updated_at > sinceSec, capped at limit.
+// 增量语义：返回 updated_at **>=** sinceSec 的行，不是 >。
+//
+// BUG-O（2026-09-30 真机验收）：原来这里是严格大于。配合客户端把 lastSyncedAt
+// 设成「本批数据的最大 updated_at」的水位线，严格大于会在**同一秒内的多条变更**
+// 上丢数据 —— 客户端先收到 A（updated_at=T，水位线=T），随后服务端在同一秒写入
+// B（updated_at=T），下一轮 since=T，`T > T` 不成立，B 永久拉不回来。
+//
+// 改成 >= 后会重复返回水位线那一秒的行，客户端 merge-by-id 是幂等的，
+// 重复拉取没有副作用；而漏数据是不可逆的。这个不对称是刻意的取舍。
+//
+// 同样的理由适用于 ListDeleted*Since 的 deleted_at 比较。
+//
+// ListNotesSince returns notes with updated_at >= sinceSec, capped at limit.
 func (s *Store) ListNotesSince(ctx context.Context, userID string, sinceSec int64, limit int) ([]*Note, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 500
@@ -190,7 +202,7 @@ func (s *Store) ListNotesSince(ctx context.Context, userID string, sinceSec int6
 		SELECT id, user_id, deck_id, front, back, tags, usn, created_at, updated_at,
 		       COALESCE(deleted_at, 0)
 		FROM flashcard_notes
-		WHERE user_id=$1 AND deleted_at IS NULL AND updated_at > $2
+		WHERE user_id=$1 AND deleted_at IS NULL AND updated_at >= $2
 		ORDER BY updated_at ASC LIMIT $3`,
 		userID, sinceSec, limit)
 	if err != nil {
@@ -209,7 +221,7 @@ func (s *Store) ListNotesSince(ctx context.Context, userID string, sinceSec int6
 	return out, rows.Err()
 }
 
-// ListDeletedNotesSince returns ids whose deleted_at > sinceSec, capped.
+// ListDeletedNotesSince returns ids whose deleted_at >= sinceSec, capped.
 func (s *Store) ListDeletedNotesSince(ctx context.Context, userID string, sinceSec int64, limit int) ([]string, error) {
 	if sinceSec <= 0 {
 		return nil, nil
@@ -219,7 +231,7 @@ func (s *Store) ListDeletedNotesSince(ctx context.Context, userID string, sinceS
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT id FROM flashcard_notes
-		WHERE user_id=$1 AND deleted_at IS NOT NULL AND deleted_at > $2
+		WHERE user_id=$1 AND deleted_at IS NOT NULL AND deleted_at >= $2
 		ORDER BY deleted_at ASC LIMIT $3`,
 		userID, sinceSec, limit)
 	if err != nil {
@@ -358,7 +370,7 @@ func (s *Store) ListCardsSince(ctx context.Context, userID string, sinceSec int6
 		       reps, lapses, COALESCE(last_review_at, 0), usn, created_at, updated_at,
 		       COALESCE(deleted_at, 0)
 		FROM flashcard_cards
-		WHERE user_id=$1 AND deleted_at IS NULL AND updated_at > $2
+		WHERE user_id=$1 AND deleted_at IS NULL AND updated_at >= $2
 		ORDER BY updated_at ASC LIMIT $3`,
 		userID, sinceSec, limit)
 	if err != nil {
@@ -388,7 +400,7 @@ func (s *Store) ListDeletedCardsSince(ctx context.Context, userID string, sinceS
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT id FROM flashcard_cards
-		WHERE user_id=$1 AND deleted_at IS NOT NULL AND deleted_at > $2
+		WHERE user_id=$1 AND deleted_at IS NOT NULL AND deleted_at >= $2
 		ORDER BY deleted_at ASC LIMIT $3`,
 		userID, sinceSec, limit)
 	if err != nil {
@@ -550,7 +562,7 @@ func (s *Store) ListDeckConfigsSince(ctx context.Context, userID string, sinceSe
 		       graduating_interval_days, easy_interval_days, fsrs_weights, desired_retention,
 		       usn, created_at, updated_at, COALESCE(deleted_at, 0)
 		FROM flashcard_deck_config
-		WHERE user_id=$1 AND deleted_at IS NULL AND updated_at > $2
+		WHERE user_id=$1 AND deleted_at IS NULL AND updated_at >= $2
 		ORDER BY updated_at ASC LIMIT $3`,
 		userID, sinceSec, limit)
 	if err != nil {
@@ -586,7 +598,7 @@ func (s *Store) ListDeletedDeckConfigsSince(ctx context.Context, userID string, 
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT deck_id FROM flashcard_deck_config
-		WHERE user_id=$1 AND deleted_at IS NOT NULL AND deleted_at > $2
+		WHERE user_id=$1 AND deleted_at IS NOT NULL AND deleted_at >= $2
 		ORDER BY deleted_at ASC LIMIT $3`,
 		userID, sinceSec, limit)
 	if err != nil {

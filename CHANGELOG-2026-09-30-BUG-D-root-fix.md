@@ -565,3 +565,35 @@ const res = await authFetch(url.toString().replace(window.location.origin, ''))
 - 既有的 `TestMeetingWorkspaceIsolation` 全量跑失败（测试间状态污染，非本轮引入）。
 
 详见 docs/handoff/2026-09-30-android-e2e-bug-d-e-f.md。
+
+---
+
+## BUG-L / M / N / O（2026-09-30 第二轮清扫）
+
+全部由 `scripts/probe-write-methods.mjs`（前端写路径 × 真后端 method 级探测）发现。
+这类缺陷静态前缀对账抓不到——路由前缀注册了，handler 却在内部按 method 拒绝。
+
+| 编号 | 现象 | 根因 | 修法 | 回归锁 |
+|---|---|---|---|---|
+| **BUG-L** | `POST /api/flashcards/notes` 恒 405，闪卡卡片存不进后端 | 创建实现只挂在无尾斜杠的 `/api/flashcards`；`/notes` 子路径的 handler 只允许 GET | 后端补齐 POST，两路径等价；不动前端（契约测试锁的是 `/notes`） | `flashcards_create_note_route_test.go` |
+| **BUG-M** | review 空 body 返回 500 `invalid rating 0` | 客户端输入错误走了 store error 分支被归为 500 | 进 store 前挡，返回 400 | `flashcards_review_rating_test.go` |
+| **BUG-N** | `PUT /api/notes/:id` 恒 405（API 契约不匹配，**非当前 UI 故障**：编辑走本地 SQLite） | `handleNoteOperations` 只有 GET/DELETE；`notes.Store` 没有任何更新方法 | 新增 `NotePatch` + `UpdateNoteScoped`（所有权进 UPDATE 谓词，Content 变更同步重算 snippet）+ `handleNoteUpdate` | `notes_update_route_test.go` |
+| **BUG-O** | 闪卡卡片保存 201、PG 有数据，但卡组页永远看不到卡片 | ① 客户端水位线取 `serverTimeMs` 而非本批最大 `updatedAt`；② 服务端 `updated_at > since` 严格大于；③ 保存后 fire-and-forget 不回读，服务端生成的 card id 客户端拿不到 | ① 水位线改本批最大 `updatedAt`，空结果不推进；② 6 处 `>` 改 `>=`；③ `await flushOutbox()` 后 `await refresh()` 再 `goBack()` | `store_since_test.go` + `flashcards-sync-watermark.test.ts` |
+
+**关于 BUG-O 的服务端 `>=` 改动**：客户端水位线改成"本批最大 updatedAt"后，
+严格大于依然会在**同一秒内的多条变更**上丢数据（先收到 A → 水位线 T；服务端同秒写入
+B → `T > T` 不成立 → B 永久丢失）。改成 `>=` 会重复返回水位线那一秒的行，
+而客户端 merge-by-id 幂等，重复没有副作用，漏数据不可逆。这个不对称是刻意取舍。
+
+### 本轮证伪的疑似缺陷（比新缺陷更值得记）
+
+- `OPTIONS` 任意路径返回 200：`corsMiddleware` 的标准预检短路，设计如此。
+- 闪卡列表不显示卡片：列表页按设计只显示卡组，卡片在卡组详情页——验收标准写错了。
+- 真机"新建卡组入口没出现"：卡组入口是页内 inline 而非弹窗，测试脚本假设错了。
+- 探针里裸 `fetch('/api/...')` 返回 HTML：探针没加 base 前缀，与 BUG-J 同源。
+
+### 与本轮无关的既有失败
+
+`backend/internal/server` 的 `TestMeetingWorkspaceIsolation/list_A` 失败，
+已在 `ca4a53e`（不含本轮改动）上用 git worktree 复现且错误信息一致 → 预先存在。
+它同时暴露一个未定性的疑点：跨 workspace 的 meeting GET 返回 200、列表返回 0。

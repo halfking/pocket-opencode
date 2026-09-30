@@ -151,7 +151,11 @@ async function goto(route, mustExist, label) {
   return ok
 }
 
-// ---------- 0. 前置：会话恢复 + 路由可达 ----------
+// ---------- 1. CREATE note ----------
+// 会话恢复由 ensureSession() 负责：脚本开头显式调一次，force-stop 重启后
+// 因为要重挂 CDP 也会再调一次（见第 2 步）。**不要在这里另写一份恢复逻辑**——
+// 本轮误加过一份重复实现，结果是同一个动作有两套代码在维护。
+await ensureSession('start')
 console.log('--- 1. CREATE note ---')
 await goto('#/notes/new', `!!document.querySelector('textarea[placeholder*="一句话概括"]')`, '新建笔记表单')
 console.log('  title field  =', await ev(fill('textarea[placeholder*="一句话概括"]', TITLE)))
@@ -221,6 +225,17 @@ console.log('  open note ->', opened)
 await waitFor(`location.hash.indexOf('/notes/') >= 0 ? location.hash : null`, '进入详情页', 12000)
 const NOTE_ROUTE = await ev(`location.hash`)
 console.log('  note route =', NOTE_ROUTE)
+// 只等 hash 变化**不够**：路由已经切了但详情页的工具栏还没渲染出来，
+// 这时 querySelectorAll('button') 里还没有「✎ 编辑」，clickByText 返回
+// NO_BUTTON —— 看起来像"编辑入口不存在"，实际是抢跑了。
+// 判据改成等「编辑」按钮真的出现。（本轮踩过，ABORT 了一次。）
+const editBtnReady = await waitFor(
+  `Array.from(document.querySelectorAll('button')).some(b => (b.textContent||'').indexOf('编辑') >= 0) ? 'ready' : null`,
+  '详情页「编辑」按钮出现', 12000)
+if (!editBtnReady) {
+  console.log('  buttons =', await btnStates())
+  abort('进入详情页后始终没有「编辑」按钮')
+}
 console.log('  click 编辑 ->', await ev(clickByText('编辑')))
 const inEdit = await waitFor(`!!document.querySelector('textarea') ? 'edit-mode' : null`, '进入编辑态', 12000)
 if (!inEdit) abort('点「编辑」后没有出现 textarea')

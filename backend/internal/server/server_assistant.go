@@ -8,6 +8,7 @@ package server
 // 确保端到端骨架可运行、可测试。
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
@@ -401,6 +402,12 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, found)
+	case http.MethodPut, http.MethodPatch:
+		// BUG-N（2026-09-30 由 scripts/probe-write-methods.mjs 的 method 级
+		// 探测发现）：前端 notesApi.update 打 PUT /api/notes/:id，而这里此前
+		// 只有 GET/DELETE，notes.Store 也没有任何更新方法 -> 编辑笔记恒 405。
+		// PUT 与 PATCH 走同一套部分更新语义：字段缺失=不改，显式空串=清空。
+		s.handleNoteUpdate(w, r, id, uid, wsID)
 	case http.MethodDelete:
 		if err := s.notesStore.DeleteScoped(r.Context(), id, uid, wsID); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -410,6 +417,69 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "GET/DELETE only")
 	}
+}
+
+// handleNoteUpdate — PUT/PATCH /api/notes/{id}
+//
+// 解析成指针字段的 patch：JSON 里缺席的字段保持 nil（不改），显式给出的
+// 字段才会写。空串是"清空"而不是"不改"，这与前端 Partial<NoteInput> 的
+// 预期一致，也让"清空标题"成为可表达的操作。
+func (s *Server) handleNoteUpdate(w http.ResponseWriter, r *http.Request, id, uid, wsID string) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+	var in struct {
+		Title         *string `json:"title"`
+		Content       *string `json:"content"`
+		ContentType   *string `json:"contentType"`
+		Domain        *string `json:"domain"`
+		Tags          *string `json:"tags"`
+		AudioPath     *string `json:"audioPath"`
+		AudioDuration *int    `json:"audioDuration"`
+	}
+	if len(bytes.TrimSpace(body)) > 0 {
+		if err := json.Unmarshal(body, &in); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+			return
+		}
+	}
+	// 前端 Note.tags 是 string[]，而库里/Note.Tags 是 JSON 数组字符串。
+	// 两种形态都接受，避免前端改形状时静默丢标签。
+	if in.Tags != nil {
+		var asArray []string
+		if err := json.Unmarshal([]byte(*in.Tags), &asArray); err == nil {
+			b, _ := json.Marshal(asArray)
+			s := string(b)
+			in.Tags = &s
+		}
+	}
+
+	updated, err := s.notesStore.UpdateNoteScoped(r.Context(), id, uid, wsID, notes.NotePatch{
+		Title:         in.Title,
+		Content:       in.Content,
+		ContentType:   in.ContentType,
+		Domain:        in.Domain,
+		Tags:          in.Tags,
+		AudioPath:     in.AudioPath,
+		AudioDuration: in.AudioDuration,
+	})
+	if err != nil {
+		if errors.Is(err, notes.ErrNoteNotFound) {
+			writeError(w, http.StatusNotFound, "note not found")
+			return
+		}
+		// 字段级校验失败（domain/contentType 越界、tags 不是 JSON 数组）属于
+		// 客户端输入错误，store 只能用 error 表达，这里按 400 返回。
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if updated == nil {
+		writeError(w, http.StatusNotFound, "note not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 // handleNoteClassify — POST /api/notes/{id}/classify

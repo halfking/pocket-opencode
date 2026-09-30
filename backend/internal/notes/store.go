@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -85,6 +86,16 @@ func (s *Store) migrate() error {
 }
 
 // Upsert caches or updates a note's metadata after kxmemory confirms it.
+// allowedDomains mirrors the schema's CHECK (domain IN (...)).
+// Package-level because both Upsert and UpdateNoteScoped must agree; a second
+// copy in UpdateNoteScoped is exactly the kind of drift that lets an invalid
+// domain through one path and not the other.
+var allowedDomains = map[string]bool{"work": true, "study": true, "life": true, "idea": true}
+
+// ErrStoreUnavailableNotes is returned when the store has no pool, i.e. the
+// handler is wired but the backing store is not configured.
+var ErrStoreUnavailableNotes = errors.New("notes: store not configured")
+
 func (s *Store) Upsert(ctx context.Context, n *Note) error {
 	// Code-side Note has Snippet only; actual table has a separate
 	// NOT NULL `content` column. Fall back to Snippet for content so
@@ -122,7 +133,6 @@ func (s *Store) Upsert(ctx context.Context, n *Note) error {
 	// The Go Note.Domain defaults to "" when not set, which the CHECK
 	// rejects. Only pass domain when it matches one of the allowed values;
 	// otherwise pass NULL.
-	allowedDomains := map[string]bool{"work": true, "study": true, "life": true, "idea": true}
 	var domainVal any
 	if allowedDomains[n.Domain] {
 		domainVal = n.Domain
@@ -406,6 +416,124 @@ func (s *Store) GetByIDScoped(ctx context.Context, id, userID, workspaceID strin
 		}
 	}
 	return &n, nil
+}
+
+// NotePatch is a partial update for a note. Only non-nil fields are written,
+// so an explicit empty string clears a value while nil means "leave as is".
+// Mirrors scheduledtask.TaskInput's convention.
+type NotePatch struct {
+	Title         *string
+	Content       *string // also refreshes Snippet
+	ContentType   *string
+	Domain        *string
+	Tags          *string // JSON array string
+	AudioPath     *string
+	AudioDuration *int
+}
+
+// ErrNoteNotFound is returned by UpdateNoteScoped when no row matches the
+// (id, user, workspace, not-deleted) tuple. Distinct from a DB error so the
+// HTTP layer can answer 404 instead of 500.
+var ErrNoteNotFound = errors.New("notes: note not found")
+
+// snippetRunes is the snippet length the local cache uses for list rendering.
+const snippetRunes = 200
+
+// UpdateNoteScoped applies a partial update to one note, constrained to the
+// (id, user, workspace) tuple and to non-deleted rows.
+//
+// BUG-N（2026-09-30 由 scripts/probe-write-methods.mjs 的 method 级探测发现）：
+// 前端 frontend/src/api/notes.ts 的 `update()` 打 PUT /api/notes/:id，但后端
+// handleNoteOperations 此前只有 GET/DELETE，notes.Store 也没有任何更新方法。
+// 结果是**编辑笔记在真机上恒 405**，功能完全不可用。
+//
+// 两个刻意的行为约定：
+//   - Content 变更时同步重算 Snippet。列表摘要读的是 snippet；不同步的话
+//     "编辑后标题还在列表"这种断言会恒真（标题没动），掩盖正文根本没存上。
+//     断言必须能看见新正文。
+//   - 所有权进 UPDATE 谓词，不用先查后写。跨用户/跨 workspace 改不动。
+func (s *Store) UpdateNoteScoped(ctx context.Context, id, userID, workspaceID string, patch NotePatch) (*Note, error) {
+	if s == nil || s.pool == nil {
+		return nil, ErrStoreUnavailableNotes
+	}
+
+	sets := []string{}
+	args := []any{id, userID, workspaceID}
+	add := func(col string, val any) {
+		args = append(args, val)
+		sets = append(sets, fmt.Sprintf("%s = $%d", col, len(args)))
+	}
+
+	if patch.Title != nil {
+		add("title", *patch.Title)
+	}
+	if patch.Content != nil {
+		add("content", *patch.Content)
+		// Snippet mirrors the head of content; DB stores seconds, we store the
+		// same truncated preview the list view renders.
+		snip := []rune(*patch.Content)
+		if len(snip) > snippetRunes {
+			snip = snip[:snippetRunes]
+		}
+		add("snippet", string(snip))
+	}
+	if patch.ContentType != nil {
+		ct := *patch.ContentType
+		// schema CHECK (content_type IN ('voice','text','mixed'))
+		if ct != "voice" && ct != "text" && ct != "mixed" {
+			return nil, fmt.Errorf("notes: invalid contentType %q", ct)
+		}
+		add("content_type", ct)
+	}
+	if patch.Domain != nil {
+		d := *patch.Domain
+		// schema CHECK (domain IN ('work','study','life','idea'))
+		if d == "" {
+			add("domain", nil)
+		} else if allowedDomains[d] {
+			add("domain", d)
+		} else {
+			return nil, fmt.Errorf("notes: invalid domain %q", d)
+		}
+	}
+	if patch.Tags != nil {
+		// column is jsonb; pass []string so pgx encodes it natively.
+		arr := []string{}
+		if *patch.Tags != "" {
+			if err := json.Unmarshal([]byte(*patch.Tags), &arr); err != nil {
+				return nil, fmt.Errorf("notes: tags must be a JSON array string: %w", err)
+			}
+		}
+		add("tags", arr)
+	}
+	if patch.AudioPath != nil {
+		add("audio_path", *patch.AudioPath)
+	}
+	if patch.AudioDuration != nil {
+		add("audio_duration", *patch.AudioDuration)
+	}
+
+	if len(sets) == 0 {
+		// Nothing to change: return the current row rather than erroring, so
+		// an empty PATCH is a harmless no-op instead of a 4xx the UI can't
+		// distinguish from a real failure.
+		return s.GetByIDScoped(ctx, id, userID, workspaceID)
+	}
+
+	sets = append(sets, "updated_at = CURRENT_TIMESTAMP")
+	sql := fmt.Sprintf(`
+		UPDATE notes SET %s
+		WHERE id = $1 AND user_id = $2 AND workspace_id = $3 AND deleted_at IS NULL
+	`, strings.Join(sets, ", "))
+
+	tag, err := s.pool.Exec(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("update note %s: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrNoteNotFound
+	}
+	return s.GetByIDScoped(ctx, id, userID, workspaceID)
 }
 
 func (s *Store) Delete(ctx context.Context, id string) error {
