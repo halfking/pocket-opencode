@@ -654,3 +654,100 @@ B → `T > T` 不成立 → B 永久丢失）。改成 `>=` 会重复返回水�
 **沉淀为硬判据**：疑似缺陷必须能复现两次以上、且在隔离环境下复现，才允许写进缺陷列表。
 一次性的观测只能进「待复查」。本轮同一个坑翻了三次（17 条 → 6 条 → 0 条），
 三次都是设备被抢占造成的假故障。
+
+---
+
+## BUG-R：会议 ID 撞车导致静默丢数据（挂了两轮的"测试污染"其实是真缺陷）
+
+### 起因
+
+`TestMeetingWorkspaceIsolation/list_A` 被前几轮记为「测试间状态污染 / 预先存在，
+未定性」。本轮去查，第一件事是**拿到真实错误信息**：
+
+```
+--- FAIL: TestMeetingWorkspaceIsolation/list_A
+    workspace_isolation_test.go:116: list total/items=0/0, want 1
+workspace_isolation_test.go:129: cross-workspace meeting GET status=200
+    body={"id":"mtg_...","workspace_id":"ws-b","title":"workspace B meeting",...}
+```
+
+第 129 行是关键：**用 `meetingA.ID` 去请求，却返回了 ws-b 那条会议**。
+这不是「过滤太严」，是**返回了错误的对象**。
+
+### 根因
+
+`internal/meeting/store.go:66` —— ID 是纯墙钟纳秒时间戳，直接当 map key：
+
+```go
+now := time.Now()
+ID: fmt.Sprintf("mtg_%d", now.UnixNano()),
+...
+s.meetings[m.ID] = m
+```
+
+两次创建落在同一时钟刻度 → ID 相同 → 后者覆盖前者，前者被静默抹掉。
+「单跑 PASS、全跑 FAIL」与测试顺序**无关**，是**概率**。
+
+### 决定性实验
+
+新增 `internal/meeting/id_collision_diag_test.go`：
+
+```
+连续创建 200 条，唯一 ID 6 个，重复 194 次
+store 里实际存了 6 条（期望 200）
+1000 次 time.Now() 产生 1 个不同值，最小间隔 0ns
+```
+
+**本机 `time.Now()` 在 1000 次紧邻调用里只产生 1 个不同值** —— 纳秒时间戳
+在这台机器上没有纳秒精度。**194/200 条会议被静默丢弃，且创建全部返回成功。**
+
+### 修法
+
+沿用仓库里 `finance.Store` / `chat_summary.Store` 已有的「时间戳 + 原子序号」：
+
+```go
+var meetingIDSeq atomic.Uint64
+ID: fmt.Sprintf("mtg_%d_%d", now.UnixNano(), meetingIDSeq.Add(1)),
+```
+
+修后：200 次创建 → 200 个唯一 ID、0 碰撞、200 条全部落库。
+
+### 回归
+
+`go test ./internal/server/ -count=1` 从 `FAIL` 转为 `ok 2.906s`，
+**挂了两轮的 `list_A` 首次全绿**。`go build ./...` OK、
+`go vet` 5 包 OK、`meeting`/`presentation`/`notifycenter`/`server` 四包全绿。
+
+### 同类站点：4 处一起修
+
+全仓扫 `UnixNano()` 找 ID 生成点。**已带唯一性成分的未动**：`finance`、
+`chat_summary`、`email/store.go`、`redclaw/audit.go`、
+`opencode/session_event_broadcaster.go`、`flashcards/cards.go`、
+`scheduledtask`（后两者用 crypto/rand）。
+
+**无唯一性成分、已修**（除 meeting 外均属**预防性**，未观测到实际失败）：
+
+| 站点 | 原 ID | 危害路径 |
+|---|---|---|
+| `internal/email/invoice_store.go` | `inv_%d` | PG 主键冲突 → 整批 upsert 失败 |
+| `internal/notifycenter/service.go` | `%s_%d` | PG 主键冲突 → 丢通知行 |
+| `internal/presentation/generator.go` | `pres_%d` | ID 重复，按 ID 查找取错对象 |
+| `internal/server/server_assistant.go` | `%s-%d` | 原注释「纳秒级时间戳足够避免冲突」**是错的**，已改写 |
+
+`marketplace` 的 `releaseID`/`installID` 带版本/渠道/工作区前缀，本轮**未处理**。
+
+### 回归锁
+
+- `id_collision_diag_test.go`：200 次创建必须 200 个唯一 ID、store 存满 200 条
+- `TestUnixNanoResolution` 改为只记录不判定（测的是平台特性，不是产品行为）
+- `workspace_isolation_test.go` 本身即端到端回归锁
+
+### 既有失败的定性（本轮一并澄清）
+
+- `internal/email` 剩 2 个 FAIL：**已用 `git worktree` 在 HEAD 上同条件复现，
+  错误信息一致 → 预先存在，非本轮回归**（我改过同包的 `invoice_store.go`，
+  所以这一条必须实证）。其中 `TestWriteKeyAtomic_CreatesFileWithCorrectMode`
+  是 POSIX 文件权限位测试，Windows 上不成立。
+- `internal/agent` 的 FAIL 全部是 Windows 平台问题：
+  `fork/exec ...fake-pi.sh: %1 is not a valid Win32 application`、
+  无扩展名可执行文件 —— 测试假设 POSIX shell。**预先存在，未修。**

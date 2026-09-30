@@ -4,8 +4,12 @@ package presentation
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+// presentationIDSeq 与时间戳一起构成唯一 ID，理由见 Generate 里的注释。
+var presentationIDSeq atomic.Uint64
 
 // Generator generates business proposals and presentations
 type Generator struct{}
@@ -45,8 +49,11 @@ func (g *Generator) Generate(req GenerateRequest) (*GenerateResponse, error) {
 	// Generate slides
 	slides := g.generateSlides(req, content)
 
+	// ID 不能只用纳秒时间戳：本机实测 1000 次 time.Now() 只产生 1 个不同值，
+	// 同一刻度内创建的两份演示文稿会拿到相同 ID。加单调序号保证进程内唯一。
+	// 详见 internal/meeting/store.go 的 meetingIDSeq 注释与 BUG-R。
 	p := &Presentation{
-		ID:        fmt.Sprintf("pres_%d", time.Now().UnixNano()),
+		ID:        fmt.Sprintf("pres_%d_%d", time.Now().UnixNano(), presentationIDSeq.Add(1)),
 		Title:     req.Topic,
 		Type:      req.Type,
 		Content:   content,

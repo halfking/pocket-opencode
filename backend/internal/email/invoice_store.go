@@ -3,6 +3,7 @@ package email
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -58,8 +59,16 @@ ALTER TABLE email_invoices ADD CONSTRAINT email_invoices_status_check
 	return err
 }
 
+// invoiceIDSeq 与时间戳一起构成发票 ID。
+//
+// 不能只用纳秒时间戳：本机实测 1000 次 time.Now() 只产生 1 个不同值，
+// 同一刻度内提取的两封发票会拿到相同 ID。邮件批量导入时这是可触发路径，
+// 主键冲突会让整批 upsert 失败。详见 internal/meeting/store.go 的
+// meetingIDSeq 注释与 BUG-R。
+var invoiceIDSeq atomic.Uint64
+
 func newInvoiceID() string {
-	return fmt.Sprintf("inv_%d", time.Now().UnixNano())
+	return fmt.Sprintf("inv_%d_%d", time.Now().UnixNano(), invoiceIDSeq.Add(1))
 }
 
 // UpsertInvoice 幂等写入发票记录：同 email_id 重复提取时更新非空字段。

@@ -1421,6 +1421,130 @@ h §5 记了并发会话 `scripts/device.mjs` 会抢占同一台真机。如果�
 - 关键数值（`len`）在两套独立驱动下交叉比对
 - 同一时刻**绝不允许两个自动化进程驱同一台设备**（这条 h §5 已记，本轮再次付出代价）
 
+## 4.21 BUG-R：会议 ID 撞车导致静默丢数据（挂了两轮的"测试污染"其实是真缺陷）
+
+### 4.21.1 起因：一个被误标了两轮的失败
+
+`TestMeetingWorkspaceIsolation/list_A` 失败被前几轮记为「测试间状态污染 / 预先存在，
+未定性」。本轮去查，**第一件事是拿到真实错误信息**（之前只有二手描述
+"跨 workspace 的 meeting GET 返回 200、列表返回 0"）：
+
+```
+--- FAIL: TestMeetingWorkspaceIsolation/list_A
+    workspace_isolation_test.go:116: list total/items=0/0, want 1
+workspace_isolation_test.go:129: cross-workspace meeting GET status=200
+    body={"id":"mtg_...","workspace_id":"ws-b","title":"workspace B meeting",...}
+```
+
+第 129 行才是关键：**用 `meetingA.ID` 去请求，却返回了 ws-b 那条会议**。
+这不是「过滤太严」，这是**返回了错误的对象**。
+
+### 4.21.2 根因
+
+`internal/meeting/store.go:66`
+
+```go
+now := time.Now()
+ID: fmt.Sprintf("mtg_%d", now.UnixNano()),
+...
+s.meetings[m.ID] = m     // map 是按 ID 做 key 的
+```
+
+ID 是**纯墙钟纳秒时间戳，没有任何唯一性保证**，而它直接当 map key。
+两次创建落在同一个时钟刻度 → ID 相同 → **后者覆盖前者，前者被静默抹掉**。
+
+为什么"单跑 PASS、全跑 FAIL"：跟测试顺序**无关**，是**概率**。
+刻度越粗、负载越高越容易撞；全包跑时进程状态不同，恰好撞上了。
+
+### 4.21.3 决定性实验（不靠推理）
+
+新增 `internal/meeting/id_collision_diag_test.go`，绕开 handler 直接压 store：
+
+```
+=== RUN   TestCreateScopedIDCollision
+    连续创建 200 条，唯一 ID 6 个，重复 194 次
+    首个碰撞：id=mtg_1790748085057843800 由第 1 次和第 2 次创建同时产生
+    store 里实际存了 6 条（期望 200）
+    确认缺陷：194 次 ID 碰撞，store 丢失 194 条会议
+--- FAIL
+
+=== RUN   TestUnixNanoResolution
+    1000 次 time.Now() 产生 1 个不同值，最小间隔 0ns
+--- FAIL
+```
+
+**本机 `time.Now()` 在 1000 次紧邻调用里只产生 1 个不同值** ——
+纳秒时间戳在这台机器上根本没有纳秒精度。**194/200 条会议被静默丢弃**，
+而且创建全部返回成功。这是数据丢失级缺陷，不是测试问题。
+
+（`TestUnixNanoResolution` 测的是**平台特性**不是产品行为，修完缺陷后已改为
+只 `Logf` 不判定失败 —— 粗粒度时钟不是缺陷，拿它当唯一 ID 才是。）
+
+### 4.21.4 修法
+
+按仓库里 `finance.Store` / `chat_summary.Store` **已有的**「时间戳 + 原子序号」模式：
+
+```go
+var meetingIDSeq atomic.Uint64
+ID: fmt.Sprintf("mtg_%d_%d", now.UnixNano(), meetingIDSeq.Add(1)),
+```
+
+进程内唯一由序号保证，跨进程由纳秒部分区分。修后：
+
+```
+连续创建 200 条，唯一 ID 200 个，重复 0 次
+store 里实际存了 200 条（期望 200）
+```
+
+### 4.21.5 回归：`internal/server` 全包第一次绿
+
+```
+ok  github.com/halfking/pocket-opencode/backend/internal/server  2.906s
+```
+
+`go test ./internal/server/ -count=1` 在 BUG-R 修之前是 `FAIL`
+（就是 `list_A`），修之后无任何 `--- FAIL`。**挂了两轮的测试不是环境问题，
+是它一直在正确地抓一个真实缺陷，而前几轮把它误标成了"测试污染"。**
+
+`go build ./...` OK、`go vet` 5 包 OK、
+`meeting` / `presentation` / `notifycenter` / `server` 四包测试全绿。
+
+### 4.21.6 同类站点：4 处一起修（区分「已观测」与「预防性」）
+
+全仓扫 `UnixNano()` 找 ID 生成点，结果分两类：
+
+**已带唯一性成分（未动）**：`finance/store.go`（`txn_%d_%d` + `s.counter`）、
+`chat_summary/store.go`（`cs_%d_%d`）、`email/store.go`（+`randomIDCounter`）、
+`redclaw/audit.go`（`aud_%d_%d` + `s.seq`）、`opencode/session_event_broadcaster.go`（+`n`）、
+`flashcards/cards.go` 与 `scheduledtask/store.go`（crypto/rand，失败才回落时间戳）。
+
+**无唯一性成分（已修，但除 meeting 外属预防性）**：
+
+| 站点 | 原 ID | 危害路径 | 状态 |
+|---|---|---|---|
+| `internal/meeting/store.go` | `mtg_%d` | map key 覆盖 → **已观测丢 194/200 条** | 已修 + 回归锁 |
+| `internal/email/invoice_store.go` | `inv_%d` | PG 主键冲突 → 整批发票 upsert 失败 | 预防性修复 |
+| `internal/notifycenter/service.go` | `%s_%d` | PG 主键冲突 → **丢通知行** | 预防性修复 |
+| `internal/presentation/generator.go` | `pres_%d` | ID 重复，后续按 ID 查找取错对象 | 预防性修复 |
+| `internal/server/server_assistant.go` | `%s-%d` | 原注释写「纳秒级时间戳足够避免冲突」——**这个假设是错的**，已改写 | 预防性修复 |
+
+⚠️ 后四行**没有观测到实际失败**，是按同一形态预防性修复的。
+`marketplace` 的 `releaseID` / `installID` 带了版本/渠道/工作区前缀，
+碰撞需要同前缀同时创建，本轮**未处理**，留给下轮确认。
+
+### 4.21.7 教训
+
+1. **「单跑 PASS、全跑 FAIL」不等于测试间污染。** 那个判断连续两轮都是错的。
+   真正该做的是**先拿到真实错误信息**——`list total/items=0/0` 和
+   `cross-workspace GET status=200` 指向完全不同的根因。
+2. **`t.Fatalf` 在子测试里只中止子测试**，父测试会继续往下跑，于是后面又冒出
+   一个「跨 workspace 泄漏」的报错，看起来像两个缺陷，其实是一个。
+3. **墙钟时间戳不是 ID。** `UnixNano()` 的精度取决于平台与负载，
+   本机实测刻度为 0ns。凡是拿它当主键/map key，必须配单调序号或随机后缀。
+4. **注释里的「足够」是最贵的谎言**：`server_assistant.go` 写着
+   「用纳秒级时间戳足够避免单用户场景冲突」，这句注释本身就是 BUG-R 的
+   错误前提。定性的代码债先读注释，注释常常就是缺陷的现场。
+
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
@@ -1478,6 +1602,10 @@ h §5 记了并发会话 `scripts/device.mjs` 会抢占同一台真机。如果�
 - **BUG-K/L/M/N/O 回归锁**（`.maestro/flashcards-write.yaml` + Go 测试 + 前端 5 用例）全部就位
 - **路由渲染审计 37/37 全绿**（隔离条件，`logs/route-render6.log`）；
   上一轮报的 6 条 HASH_MISMATCH 已定性为**被污染的测量**，不是缺陷（§4.20）
+- **BUG-R 会议 ID 撞车**：诊断 200 次创建只剩 6 条（丢 194 条）→ 修复后
+  200/200 唯一、0 碰撞；`go test ./internal/server/ -count=1` 从 FAIL 转
+  `ok 2.906s`，挂了两轮的 `list_A` 首次全绿。`go build ./...` OK、
+  `go vet` 5 包 OK、`meeting`/`presentation`/`notifycenter`/`server` 四包全绿（§4.21）
 
 ### ⚠️ 本轮新增未验证 / 未修（不要当成已完成）
 
@@ -1489,8 +1617,17 @@ h §5 记了并发会话 `scripts/device.mjs` 会抢占同一台真机。如果�
 - ~~**真机笔记编辑（BUG-N）UI 闭环未验**~~ → **已验**：`scripts/redmi-write-ops.mjs` **6/6**，
   编辑走本地 SQLite，回读 snippet 含新正文（§4.15.3 已说明这与后端 PUT 是两条路径）。
   后端 `PUT /api/notes/:id` 本身仍**无 UI 调用方**（契约层已修好并有测试锁定）。
-- `TestMeetingWorkspaceIsolation/list_A` 失败（预先存在，见 §4.15.6），未修也未定性。
-- `backend/internal/agent`、`backend/internal/email` 也有 FAIL，本轮未触碰这两个包。
+- ~~`TestMeetingWorkspaceIsolation/list_A` 失败（预先存在，见 §4.15.6），未修也未定性。~~
+  → **已定性并修复**：是 BUG-R（会议 ID 撞车导致静默丢数据），不是测试污染（§4.21）。
+- ~~`backend/internal/agent`、`backend/internal/email` 也有 FAIL~~ →
+  **已用 `git worktree` 在 HEAD 上做同条件对照，结论分两类**：
+  - `internal/email` 剩 2 个 FAIL（`TestWriteKeyAtomic_CreatesFileWithCorrectMode`、
+    `TestFetchPOP3MailboxAuthRejected`）—— **在 HEAD 上失败信息完全一致，预先存在，
+    非本轮回归**（我改过 `invoice_store.go`，所以这一条必须实证而不是断言）。
+    前者是 POSIX 文件权限位测试，Windows 上不成立。
+  - `internal/agent` 的 FAIL 全部是 **Windows 平台问题**：`fork/exec ...fake-pi.sh:
+    %1 is not a valid Win32 application`、无扩展名可执行文件 —— 测试假设 POSIX shell。
+    **预先存在，未修**（修它需要改测试而不是改产品，属于下轮的可选项）。
 - 真机 Maestro 仍需用户手动开「USB 安装」（见 §4.11.1）。
 - 生产默认 https 路径仍未系统回归。
 - Keystore 原生插件仍未实现（代码欠账）。
@@ -1542,10 +1679,10 @@ h §5 记了并发会话 `scripts/device.mjs` 会抢占同一台真机。如果�
 - ~~**`/cost` 路由行为待查**：真机上访问 `/cost` 实际落到了 `/#/ai-chat`~~ →
   **已定性为误报**（§4.13），并在 §4.20 用隔离环境复验：`/cost` 稳定停在 `#/cost`。
   同一类现象（落点是别的 tab 路由）连续三轮出现，**根因是测量被外部干扰污染，不是应用**。
-- **既有的 `TestMeetingWorkspaceIsolation` 失败**：`go test ./internal/server/...` 全量跑时失败，
-  单跑通过（测试间状态污染）。已做同条件对照（`git worktree` 落在不含本轮改动的
-  `ca4a53e` 上复现），**失败一致，非本轮引入**，属既有欠账。
-  它暴露的真实疑点仍未查：跨 workspace 的 meeting **GET 返回 200、但列表返回 0 条**。
+- **既有的 `TestMeetingWorkspaceIsolation` 失败**：~~单跑通过（测试间状态污染）~~ →
+  **该判断是错的**。它一直在正确地抓 BUG-R（会议 ID 撞车 → map 覆盖 → 静默丢数据），
+  已修复并有回归锁，`internal/server` 全包现为 `ok`。详见 §4.21。
+  **教训**：「单跑 PASS、全跑 FAIL」不能推断成测试间污染；先拿真实错误信息。
 
 ---
 
@@ -1666,8 +1803,11 @@ localStorage.removeItem('pocket_api_base')   // 再 Page.reload
    授权后 `.maestro/notes-crud.yaml` / `.maestro/flashcards-write.yaml` 可直接用于真机功能回归。
 6. **实现 `Keystore` 原生插件**（见 §5 未验证节）：这是代码欠账不是环境问题。
 7. 回归默认 `https` 构建，重点看 **XHR 混合内容**是否被正确阻断（WS 在 https 下本就能握手，§3.1）。
-8. **定性 `TestMeetingWorkspaceIsolation/list_A`**：已确认预先存在（非本轮引入），
-   但它暴露的真实疑点（跨 workspace 的 meeting GET 200、列表 0 条）还没查。
+8. ~~**定性 `TestMeetingWorkspaceIsolation/list_A`**~~ → **已完成**：是 BUG-R
+   （会议 ID 撞车 → map 覆盖 → 静默丢数据），已修 + 回归锁，`internal/server` 全包绿（§4.21）。
+   剩下的可选项：`marketplace` 的 `releaseID`/`installID` 虽带前缀，仍无唯一性成分，
+   需确认同版本同渠道并发发布是否可能撞；`internal/agent` 的一批测试假设 POSIX shell，
+   在 Windows 上必然失败，要修得改测试而不是改产品。
 9. 可选加固：给指向明文 http:// 后端的构建加断言/告警，避免下一个人重踩 BUG-F。
    另可考虑在 `resolveApiBase` 命中一个**当前 origin 下不可达**的 override 时给出 UI 警告——
    本轮这个「override 静默压过构建默认值 + 页面却显示构建默认值」的行为极具迷惑性。
