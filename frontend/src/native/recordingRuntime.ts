@@ -20,6 +20,7 @@
 import { ref } from 'vue'
 import { Capacitor } from '@capacitor/core'
 import { pickSupportedRecorderMime } from './recorderMime'
+import { sttFailureText } from '../api/stt-error'
 import { saveMeetingAudio } from './meeting-audio'
 import { VadSegmenter } from './vad-segmenter'
 import { SpeakerDiarizer } from './speaker-diarization'
@@ -43,11 +44,65 @@ import {
 } from './background-mic'
 import { sttApi } from '../api/stt'
 import { sherpa } from './sherpa'
+import {
+  RecordingVoicePrompt, makeWebSpeaker, type MicTrackLike, type VoicePromptDeps,
+} from './recording-voice-prompt'
 import { setHeaderTitle } from '../composables/useAppHeaderTitle'
 import {
   appendTranscript, formatRecordingClock, nextRecordingState, type RecordingPhase,
 } from '../features/notes/note-recording'
 import { decideMeetingStart, decideNoteStart } from './recordingPolicy'
+
+// ---------------------------------------------------------------------------
+// 录音语音播报（进程级单例）
+// ---------------------------------------------------------------------------
+
+const VOICE_PROMPT_KEY = '__openpocket_recordingVoicePrompt__'
+type GlobalWithVoicePrompt = typeof globalThis & {
+  [VOICE_PROMPT_KEY]?: RecordingVoicePrompt
+}
+
+/**
+ * 探测 TTS 引擎。Capacitor 的 isPluginAvailable 判据比 isNativePlatform 准：
+ * 后者不区分「WebView 已注册插件」与「插件真的可用」，在无 TTS 数据的模拟器上
+ * 会误报可用，导致播报静默失败却没有任何降级提示。
+ */
+function detectVoicePromptDeps(): VoicePromptDeps {
+  let nativeRegistered = false
+  try {
+    nativeRegistered = Capacitor.isPluginAvailable('TextToSpeech')
+  } catch {
+    nativeRegistered = false
+  }
+  const webSpeechAvailable =
+    typeof window !== 'undefined'
+    && 'speechSynthesis' in window
+    && typeof SpeechSynthesisUtterance !== 'undefined'
+  return { nativeRegistered, webSpeechAvailable }
+}
+
+/** 原生 TTS：与 useSpeech 同一个插件，不引入第二套引擎。动态 import，Web 构建不打包。 */
+async function speakNativeText(_engine: 'native' | 'web', text: string): Promise<void> {
+  const { TextToSpeech } = await import('@capacitor-community/text-to-speech')
+  await TextToSpeech.speak({ text, lang: 'zh-CN', rate: 1.05 })
+}
+
+/**
+ * 会议录音与笔记录音共用一个播报实例：两条链路的播报串在同一条队列里，
+ * 避免状态切换时两路 speak 互相打断。
+ */
+function voicePrompt(): RecordingVoicePrompt {
+  const g = globalThis as GlobalWithVoicePrompt
+  g[VOICE_PROMPT_KEY] ??= new RecordingVoicePrompt(detectVoicePromptDeps(), (engine, text) => {
+    if (engine === 'native') return speakNativeText(engine, text)
+    if (typeof window === 'undefined') return Promise.resolve()
+    return makeWebSpeaker(window as unknown as {
+      speechSynthesis: { speak: (u: SpeechSynthesisUtterance) => void }
+      SpeechSynthesisUtterance: new (t: string) => SpeechSynthesisUtterance
+    })(engine, text)
+  })
+  return g[VOICE_PROMPT_KEY]
+}
 
 // ---------------------------------------------------------------------------
 // MeetingRecorderRuntime
@@ -193,12 +248,25 @@ export class MeetingRecorderRuntime {
         if (!this.isPaused.value) this.elapsedMs.value = Date.now() - this.startTime
       }, 200)
       navigator.mediaDevices?.addEventListener?.('devicechange', this.onDeviceChange)
+      // 扬声器语音播报「开始录音」（需求：录音时要播一段语音，不是警告声）。
+      // announceSilenced 在播报期间静音麦克风——否则这四个字会被录进会议
+      // 记录成为第一句。fire-and-forget，不阻塞 start() 返回。
+      voicePrompt().announceSilenced('start', this.micTrack())
       return true
     } catch {
       this.sttError.value = mic.deniedLabel.value || '麦克风权限被拒绝'
       await this.cleanupMedia()
       return false
     }
+  }
+
+  /**
+   * 播报静音用的麦克风轨。原生后台录音（BackgroundMic）模式下没有
+   * MediaStream 可静音——那种模式的音频由原生服务直接落盘，前端拿不到
+   * track，此时返回 null，播报照常进行（原生侧靠 AEC/焦点抢占抑制回授）。
+   */
+  private micTrack(): MicTrackLike | null {
+    return this.mediaStream?.getAudioTracks?.()[0] ?? null
   }
 
   private onDeviceChange = async () => {
@@ -280,7 +348,11 @@ export class MeetingRecorderRuntime {
         })
         this.syncSpeakers()
       } catch (e) {
-        this.sttError.value = '转写失败，将在下一段重试'
+        // 2026-10-01：原来这里写死「转写失败，将在下一段重试」，真实原因只进
+        // console.warn。结果「网关列了 ASR 模型但没开通 provider」和「网络断了」
+        // 在用户眼里完全一样，而这两种要采取的动作完全不同（前者去设置里换模型，
+        // 后者重试）。后端 §4.1 辛苦整理出的可行动原因到这一层被丢干净了。
+        this.sttError.value = sttFailureText(e, '转写失败，将在下一段重试')
         console.warn('[meeting-recorder] segment failed:', e)
       } finally {
         this.processingCount.value--
@@ -355,6 +427,12 @@ export class MeetingRecorderRuntime {
       return { audioPath, durationMs }
     } finally {
       this.stopping = false
+      // 播报「录音结束」。放在 finally：无论收尾成功还是抛错，用户都会听到
+      // 状态终止的语音，不会面对一个「点了没反应」的按钮。cleanupMedia() 已
+      // 在上面拆掉麦克风，这四个字不会被录进成品。
+      // clear() 先丢弃排队内容，避免连点停止时把「继续录音」念在停止之后。
+      voicePrompt().clear()
+      voicePrompt().announce('stop')
     }
   }
 
@@ -502,6 +580,9 @@ export class NoteRecorderRuntime {
       this.startTick()
       this.syncTitle()
       void this.startLiveStt()
+      // 扬声器语音播报「开始录音」（笔记 3s 分片会立刻把第一片送去转写，
+      // 所以播报期必须静音麦克风，否则这四个字会出现在笔记正文第一句）。
+      voicePrompt().announceSilenced('start', this.micTrack())
       return true
     } catch {
       this.error.value = mic.deniedLabel.value || '无法打开麦克风'
@@ -512,6 +593,8 @@ export class NoteRecorderRuntime {
       this.recording.value = false
       this.stopTick()
       setHeaderTitle(null)
+      // 麦克风被占用/权限异常时用户往往没在看屏幕，出声比只给红字更早被察觉。
+      voicePrompt().announce('error')
       return false
     }
   }
@@ -611,7 +694,11 @@ export class NoteRecorderRuntime {
           const result = await withTimeout(sttApi.transcribe({ audioBlob }), 20000)
           this.transcript.value = result.text
         } catch (e) {
-          this.error.value = e instanceof Error ? e.message : '转写失败'
+          // 2026-10-01：原来直接甩 e.message，等于把 `stt_unavailable: …` 连错误码
+          // 一起怼给界面；但反过来无脑显示原文又会把 `dial tcp …: i/o timeout`
+          // 这类技术串甩给用户。sttFailureText 是窄口径：只放行带 stt_unavailable
+          // 码的整理文案（剥前缀、截断 160 字），没有稳定错误码的一律走通用兜底。
+          this.error.value = sttFailureText(e, '转写失败')
         }
       }
       this.pendingResult = { text: this.transcript.value.trim(), audioBlob, durationMs }
@@ -619,7 +706,16 @@ export class NoteRecorderRuntime {
     } finally {
       this.phase.value = nextRecordingState('stopping', 'drafted')
       setHeaderTitle(null)
+      // 播报「录音结束」。麦克风已在 cleanupMedia() 拆除，这四个字不会进音频。
+      // clear() 先丢弃排队内容，防止连点时把「继续录音」念在停止之后。
+      voicePrompt().clear()
+      voicePrompt().announce('stop')
     }
+  }
+
+  /** 播报静音用的麦克风轨（笔记链路独立持有自己的 MediaStream）。 */
+  private micTrack(): MicTrackLike | null {
+    return this.mediaStream?.getAudioTracks?.()[0] ?? null
   }
 
   async toggle(): Promise<{ text: string; audioBlob: Blob; durationMs: number } | null> {
