@@ -7,17 +7,23 @@
 
 ---
 
+> **9-30 审计轮**：main 上修掉两处硬伤 —— BUG-U（`npm run gates` typecheck 断掉，
+> 提交说明却写着 exit 0）与 BUG-V（WS 地址无判据，配错即无限重连）。
+> 另修 BUG-W：BUG-D 的构建守卫把 `npm run gates` 自己堵死，现由 `build:gate` 只给冒烟构建开口子。
+> 未合并分支 `local/audit-fixes` / `feat/harmonyos-phase-b` 逐项核对后判定为已被 main 覆盖，已删除。
+> 详见 `docs/handoff/2026-09-30-android-e2e-bug-d-e-f.md §4.20`。
+
 ## 1. 一句话总览
 
 ```
 project: pocket-opencode
 branch: main
-last commit: 399dfc0
+last commit: 347f975
 commits this session: 59
 docs: 37 + 6 handoff
-scripts: 60（含 emulator-launch-whpx.cmd）
-build:    vue-tsc 全清 / bundle 364.59 KB
-tests:    118 / 118 native green（Phase 9.3 +11 pocket-native filesystem tests）
+scripts: 95（本轮删除 14 个一次性脚本，净增 31 个审计/探针工具）
+build:    vue-tsc 全清 / gates 全绿（typecheck + build:gate + 36 native + vm-gaps 0）
+tests:    118 / 118 native green（test:native:all）；gates 内 test:native 36/36
 ViewModel 命中: 0 / 120 (hard gate 阈值 0)
 APK:      29.0 MB app-debug.apk (v2 signature OK + .so 4 ABI + edge-to-edge background)
 emulator: ✅ **WHPX 加速启动 2 min boot_completed=1 + topResumedActivity + WebView Bind OK**（commit #31 / 2026-09-20 12:30）

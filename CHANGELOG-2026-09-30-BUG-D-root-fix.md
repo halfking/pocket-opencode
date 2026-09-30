@@ -597,3 +597,78 @@ B → `T > T` 不成立 → B 永久丢失）。改成 `>=` 会重复返回水�
 `backend/internal/server` 的 `TestMeetingWorkspaceIsolation/list_A` 失败，
 已在 `ca4a53e`（不含本轮改动）上用 git worktree 复现且错误信息一致 → 预先存在。
 它同时暴露一个未定性的疑点：跨 workspace 的 meeting GET 返回 200、列表返回 0。
+
+---
+
+# 追加：24 小时修正审计轮 BUG-U / V / W（2026-09-30 15:20）
+
+本轮是对 2026-09-30 05:10~13:35 这 20 个提交（BUG-D ~ BUG-T）的审计。
+完整分析见 `docs/handoff/2026-09-30-android-e2e-bug-d-e-f.md §4.20`。
+
+## BUG-U：main 的 typecheck 是断的 —— 提交说明写了「exit 0」但实际 exit 2
+
+`npm run gates` 第一步就红：
+
+    src/features/flashcards/FlashcardEditView.vue(208,29): error TS2307:
+      Cannot find module '../../composables/useApiError'
+    src/features/flashcards/FlashcardListView.vue(81,29): error TS2307: 同上
+
+BUG-O 的提交 `942a379` 引入了一个**从未创建**的模块
+`frontend/src/composables/useApiError`，以及两个**从未存在**的 i18n 键
+`errors.loadFlashcardsFailed` / `errors.saveFailed`（9 个 locale 都没有
+`errors` 顶层命名空间，实际是 `flashcards.error.*`）。
+
+**该提交的说明里写着「vue-tsc --noEmit exit 0；go build ./... OK」，与事实不符。**
+一个从未跑过的验证被写成了通过 —— 这就是它能进 main 的直接原因。
+
+修法（`f2f5872`）：补纯函数 `composables/api-error-message.ts` +
+组合式函数 `composables/useApiError.ts`；调用点改用既有 `flashcards.error.*`
+命名空间；`saveFailed` 补齐 9 语言；8 个单测。**typecheck EXIT=0。**
+
+## BUG-V：WS 目标地址没有判据，配错就进入停不下来的重连循环
+
+`wsHttpBase().replace(/^http/, 'ws') + '/ws'` 在三种输入下产出非法 URL：
+空基址 → `/ws`；`capacitor://` → scheme 非法；带尾斜杠 → `wss://h//ws`。
+三种都落进 `catch -> scheduleReconnect()`，而重连**没有次数上限**
+（`reconnectAttempts` 只参与退避计算，从不终止）。
+
+修法（`22dd321`）：判据收敛为纯函数 `buildWebSocketUrl(apiBase, token)`，
+不可用时返回 `null`；`connect()` 拿到 null 直接 return 并 warn，**不排重连**。
+同提交修掉 `stores/opencode.ts` 的裸 `fetch('/api/opencode/…')`（BUG-J 同源）
+与用 `window.location` 拼 WS 地址两处。
+
+## BUG-W：BUG-D 的构建守卫把 `npm run gates` 自己堵死了
+
+守卫下沉到 `vite.config.ts` 后，`gates` 的 `vite build` 步骤在没有
+`.env.production` 的机器上必然抛错，后续 `test:native` / `check:vm-gaps`
+永远跑不到 —— 「gates 全绿」对任何人都无法复现。
+
+修法（`8b8e0f1` 前的 `22dd321` 后续提交）：新增 `frontend/scripts/build-gate.mjs`
+只给冒烟构建打开逃生舱；`npm run build:fast` 保持受守卫保护。
+
+## 分支裁定与删除
+
+| 分支 | 落后 | 裁定 |
+|---|---|---|
+| `local/audit-fixes` | 185 | 16 项**全部**已被 main 覆盖（部分还是增强版）→ 删除 |
+| `feat/harmonyos-phase-b` | 304 | 仅 `buildWebSocketUrl` 成立 → 合入后删除 |
+
+`git push origin --delete local/audit-fixes feat/harmonyos-phase-b` 已执行。
+
+## 本轮自曝的两个操作错误
+
+1. 用 `git checkout <branch> -- <file>` 合分支，抹掉 main 上的
+   `ListRunEvents` / `ToolCall`，`go build ./...` 立刻炸 —— 正确做法是
+   `git diff main...branch -- <file> | git apply --3way`；
+2. 解冲突时误删 main 上的 `TestDoRaw_FallsBackToRawBearerOn400`。
+
+另外工作区被并发会话的 `git pull --ff-only` 回滚过一次，未提交改动全部丢失，
+**共享工作区里必须分批提交**。
+
+## 验证
+
+    cd frontend && npm run gates
+    # typecheck 0 错误 / build ✓ / test:native 36/36 / check:vm-gaps 0
+    node --test src/api/websocket-url.test.ts src/composables/api-error-message.test.ts
+    # tests 15 / pass 15 / fail 0
+    cd backend && go build ./...   # EXIT=0

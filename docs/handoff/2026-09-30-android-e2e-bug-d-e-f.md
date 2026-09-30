@@ -1579,3 +1579,149 @@ BUG-J 的本质是「新增了一个 origin 取值（`http://localhost`），但
 `https://localhost` 写死在 3 处（`api-base.ts`、`client.ts` 注释、`server-select-logic.ts` 注释），
 只改了其中一处就会漏。判据函数应该**对取值空间封闭**（如 scheme 无关的正则），
 而不是逐个枚举。
+
+---
+
+## 4.20 24 小时修正审计轮：main 上有两处硬伤，其中一处让整个仓库编译不了（2026-09-30 13:45-15:20）
+
+本节记录 2026-09-30 13:45 之后这一轮审计。**先说结论：过去 24 小时的 20 个提交
+里，有 2 个把 main 推到了「跑不起来」的状态，而 942a379 的提交说明里写着
+「vue-tsc --noEmit exit 0」。**
+
+### 4.20.1 BUG-U：main 的 typecheck 是断的（`npm run gates` 第一步就红）
+
+现象（干净检出后直接复现）：
+
+```
+$ cd frontend && npm run gates
+> typecheck
+> vue-tsc --noEmit
+src/features/flashcards/FlashcardEditView.vue(208,29): error TS2307:
+  Cannot find module '../../composables/useApiError'
+src/features/flashcards/FlashcardListView.vue(81,29): error TS2307: 同上
+EXIT=2
+```
+
+根因：BUG-O 的提交 `942a379` 同时引入了两样**从未存在**的东西：
+
+1. 模块 `frontend/src/composables/useApiError` —— 两个调用点 import 了它，
+   仓库里没有这个文件（`git log -S'useApiError'` 全历史只命中 942a379 一个提交）；
+2. i18n 键 `errors.loadFlashcardsFailed` / `errors.saveFailed` —— 9 个 locale
+   都没有 `errors` 这个顶层命名空间，实际存在的是 `flashcards.error.*`。
+
+**比缺模块更值得记的是**：该提交说明里白纸黑字写着
+「vue-tsc --noEmit exit 0；go build ./... OK」，而实际 EXIT=2。
+一个从未跑过的验证被写成了通过 —— 这正是 BUG-U 能进 main 的直接原因。
+**教训：验证结论必须来自当次命令输出，不能来自记忆或复述。**
+
+修法（commit `f2f5872`）：
+
+- 新增 `composables/api-error-message.ts`（纯函数，node --test 可直接加载）
+  + `composables/useApiError.ts`（只做 useI18n 包装）；
+- 两个调用点改用**已存在**的命名空间：`flashcards.error.loadFailed`（9 语言
+  本来就有）与新增的 `flashcards.error.saveFailed`（补齐 9 语言）；
+- 顺带定了 5xx 展示策略：后端 5xx 消息常是内部细节或 HTML 片段，
+  退回兜底文案；4xx 是用户可纠正的，保留原消息。
+
+### 4.20.2 BUG-V：WS 目标地址没有判据，配错就进入停不下来的重连循环
+
+`websocket.ts` 原来是字符串拼接：
+
+```ts
+const baseWsUrl = wsHttpBase().replace(/^http/, 'ws') + '/ws'
+```
+
+| 输入 | 拼出 | 后果 |
+|---|---|---|
+| 基址为空串 | `/ws` | `new WebSocket('/ws')` 抛 SyntaxError |
+| `capacitor://localhost` | `capacitor://localhost/ws` | scheme 非法（replace 不匹配 `http`） |
+| `https://h/` | `wss://h//ws` | 路径重复 |
+
+三种都落进 `catch -> scheduleReconnect()`，而重连**没有次数上限**
+（`reconnectAttempts` 只参与退避计算，从不终止）—— 于是刷出真机 logcat 里那条
+`Reconnecting WebSocket (attempt N, …)`。**刷的是配置错误，重连多少次都不会变好。**
+
+修法（commit `22dd321`）：判据收敛成纯函数 `buildWebSocketUrl(apiBase, token)`，
+基址为空 / 非 URL / 非 http(s) scheme 一律返回 `null`；`connect()` 拿到 null
+直接 return 并给出可操作的 warn，**不排重连**。
+
+同一个提交还修了 `stores/opencode.ts` 的两处 BUG-J 级写法：裸
+`fetch('/api/opencode/…')`（相对路径在 Capacitor 里打到 WebView 自己的
+`https://localhost`）与用 `window.location` 拼 WS 地址。
+
+### 4.20.3 BUG-W：BUG-D 的构建守卫把 `npm run gates` 自己堵死了
+
+BUG-D 把「`VITE_API_BASE` 为空就拒绝构建」的守卫下沉到 `vite.config.ts`，
+对所有 mode 生效。**这道守卫本身是对的**，但它顺带让
+`gates` 的第二步（`vite build`）在一台没有 `.env.production` 的干净机器上
+必然抛错 —— typecheck 之后的 `test:native` / `check:vm-gaps` 永远跑不到。
+「gates 全绿」这句话在 BUG-D 之后对任何人都无法复现。
+
+修法：新增 `frontend/scripts/build-gate.mjs`，**只给冒烟构建**打开逃生舱；
+`npm run build:fast`（BUG-D 要防的那条路）保持原样受守卫保护 ——
+把逃生舱写进 `build:fast` 的话，守卫恰好对 BUG-D 的原始场景失效。
+
+### 4.20.4 两个未合并分支的裁定
+
+| 分支 | 落后 main | 裁定 |
+|---|---|---|
+| `local/audit-fixes` | 185 提交 | **16 项全部已被 main 覆盖**，部分还是增强版（见下）→ 删除 |
+| `feat/harmonyos-phase-b` | 304 提交 | 整体重写已被 BUG-D/F 取代，**只有 `buildWebSocketUrl` 成立** → 合入该函数后删除 |
+
+`local/audit-fixes` 逐项核对结果（16 个文件全部 DRIFTED，无一可直接 checkout）：
+
+- `mcp/client.go` 的 `httpStatusError` + 401 回退 —— main 已有，且**扩展到 400**
+  （JWT 经 nginx 常返回空 body 400），更完整；
+- 512 字节错误体截断 —— main 已有，且覆盖 7 处（分支只改 2 处）；
+- `emailIDPathSafe` 路径穿越守卫 —— main 已有（`server_assistant.go:1719`）；
+- `emailStore == nil` → 503 —— main 已有；
+- `notes-fts-ready.ts` 的 `storage_tier` 跳过 —— main 已有，且额外支持加密行；
+- `useMeetingRecorder.ts` 的在途分段等待 —— main 已重构进
+  `native/recordingRuntime.ts`（`inFlightSegments` + 10s 上限），原文件已成薄封装；
+- stt-cloud 抽取、AgentSelectorSheet 部门+搜索、EmailSpamCleanup 预览快照、
+  ingest-speech 有序插入、useSessionLiveRecord 复位、CI 步骤 —— 全部已在 main。
+
+**教训：分支「未合并」不等于「有未合并的价值」。** 判断依据必须是逐项与当前
+main 比对，不能只看 `git log --no-merged`。
+
+### 4.20.5 我在这一轮自己犯的两个错（记下来，因为都是同一类）
+
+1. **用 `git checkout <branch> -- <file>` 合分支**，把 `mcp/client.go` 与
+   `llmgateway/client.go` 回退成分支的旧版本，抹掉了 main 上的
+   `ListRunEvents` 与 `ToolCall`，`go build ./...` 立刻炸。
+   正确做法是 `git diff main...branch -- <file> | git apply --3way`，
+   只应用分支的增量而不是整份文件内容。
+2. **解冲突时误删了 main 上的 `TestDoRaw_FallsBackToRawBearerOn400`**。
+   靠 `git checkout HEAD -- <file>` 还原。解冲突时「保留 ours」必须逐字保留，
+   不能只保留冲突块的后半段。
+
+另外：**本轮中途发现工作区被另一个并发会话反复 `git pull --ff-only` 回滚**，
+我第一轮写入的 3 个文件与 2 处 edit 在提交前被清空过一次。
+这是 §4.19「只提交不改工作区」教训的延续 —— 共享工作区里**先提交再继续**，
+不要攒着改动。详见 4.20.6。
+
+### 4.20.6 共享工作区的并发写 hazard（本日第三次记录）
+
+现象：`git reflog` 显示 `pull --ff-only` / `pull origin main` 连续 Fast-forward，
+未提交的改动被清掉。24 小时内这已经是第三次因并发会话互相踩踏而产生的事故
+（另两次：BUG-D 的 APK 被覆盖、BUG-F 的 `cap sync` 改回 https）。
+
+**约定（建议写进 AGENTS.md）**：
+
+1. 改动分批提交，不要攒；
+2. 提交前 `git status` 确认改动还在（并发会话可能在你写完到提交之间清掉它）；
+3. 绝不用 `git checkout <branch> -- <file>` 从别的分支取文件；
+4. 需要干净副本做对照实验时用 `git worktree add`（changelog 早先用过，
+   比 stash 安全）。
+
+### 4.20.7 本轮清理的仓库卫生问题
+
+24 小时内新增 52 个 `scripts/` 文件，其中 14 个文件头自己就写着「一次性脚本」，
+内容是把一段写死的 markdown / 补丁打进仓库
+（`append-handoff{,-2..-5}.mjs`、`stage-i18n-*.mjs`、`fix-*.mjs`、
+`update-verified-section.mjs`、`correct-bugn-qualification.mjs`）。
+它们跑完即废却永久留在仓库里误导后来者 —— `append-handoff-2..5` 是同一段逻辑的
+第 2~5 份拷贝。已在 `22dd321` 删除，保留有长期价值的审计/探针类工具。
+
+**遗留建议**：给 `scripts/` 加一条约定 —— 一次性改写脚本不入库，
+用完即删；确需保留的一次性取证脚本，文件名统一前缀 `tmp-` 以便日后批量清理。
