@@ -12,8 +12,12 @@
 # 断言文本注意事项（踩过的坑）：
 #   1. **不能放 emoji**。Java 正则遇到某些 emoji 字节会直接抛异常，断言判 false。
 #      所以下面用纯中文/ASCII 描述可见文本。
-#   2. 卡组名与卡片正面都带时间戳，避免多轮跑时撞上已有的数据导致"看起来通过"。
-#   3. 断言要能区分"修前/修后"。BUG-O 修前卡组页的「开始复习」恒 disabled、
+#   2. **要用「中文|English」正则交替**。模拟器上的 App 默认是英文 locale
+#      （底部导航是 Home / Study / Meetings / More），真机是中文。第一版全用中文
+#      断言，在模拟器上第一条 `assertVisible: "闪卡"` 就 FAILED —— 失败截图里页面
+#      明明是好的，是断言语言不匹配。两种 locale 都要能跑，所以统一用交替正则。
+#   3. 卡组名与卡片正面都带固定文案，避免多轮跑时撞上已有的数据导致"看起来通过"。
+#   4. 断言要能区分"修前/修后"。BUG-O 修前卡组页的「开始复习」恒 disabled、
 #      列表卡片数恒 0；这两个就是判据。不要断言"页面能打开"——那恒真。
 #
 # 运行：
@@ -29,43 +33,48 @@ appId: com.kaixuan.opencode.pocket
 - launchApp:
     clearState: false
 
-# ---------- 1. 进闪卡卡片编辑页 ----------
+# ---------- 1. 进闪卡 ----------
+# 闪卡不在底部主导航里，在「更多」九宫格内。
 - extendedWaitUntil:
-    visible: "闪卡"
+    visible: "更多|More"
     timeout: 45000
-- tapOn: "闪卡"
+- tapOn: "更多|More"
 - extendedWaitUntil:
-    visible: "新建卡片"
+    visible: "闪卡|Flashcards|Flashcard"
     timeout: 20000
-- tapOn: "新建卡片"
+- tapOn: "闪卡|Flashcards|Flashcard"
 - extendedWaitUntil:
-    visible: "卡组名称"
+    visible: "新建卡片|New card"
+    timeout: 20000
+- tapOn: "新建卡片|New card"
+- extendedWaitUntil:
+    visible: "卡组名称|Deck name"
     timeout: 20000
 
 # ---------- 2. BUG-K：就地建卡组 ----------
 # 修前这个输入框与按钮根本不存在（列表页的「新建卡组」按钮其实跳到本页）。
 # 修后按钮初始是 disabled（因为还没填名字），填完才可点。
-- assertVisible: "新建卡组"
-- tapOn: "卡组名称"
+- assertVisible: "新建卡组|New deck"
+- tapOn: "卡组名称|Deck name"
 - inputText: "回归卡组"
 - extendedWaitUntil:
-    notVisible: "新建卡组[disabled]"
+    notVisible: "新建卡组[disabled]|New deck[disabled]"
     timeout: 10000
-- tapOn: "新建卡组"
+- tapOn: "新建卡组|New deck"
 - extendedWaitUntil:
-    visible: "正面"
+    visible: "正面|Front"
     timeout: 20000
 
 # ---------- 3. 填正反面并保存 ----------
-- assertVisible: "背面"
-- tapOn: "正面"
+- assertVisible: "背面|Back"
+- tapOn: "正面|Front"
 - inputText: "回归正面"
-- tapOn: "背面"
+- tapOn: "背面|Back"
 - inputText: "回归背面"
 - extendedWaitUntil:
-    notVisible: "保存[disabled]"
+    notVisible: "保存[disabled]|Save[disabled]"
     timeout: 10000
-- tapOn: "保存"
+- tapOn: "保存|Save"
 
 # ---------- 4. BUG-O：卡组页必须看得到刚建的卡片 ----------
 # 这是整个 flow 的核心断言。修前：卡组页「开始复习」恒 disabled、正文不出现，
@@ -73,5 +82,5 @@ appId: com.kaixuan.opencode.pocket
 - extendedWaitUntil:
     visible: "回归卡组"
     timeout: 25000
-- assertVisible: "开始复习"
+- assertVisible: "开始复习|Start review|Review"
 - assertVisible: "回归正面"

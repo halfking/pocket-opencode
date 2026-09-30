@@ -48,7 +48,8 @@
     "instances": "インスタンス",
     "costQuota": "コストと割り当て",
     "settings": "設定",
-    "localAgent": "ローカルエージェント"
+    "localAgent": "ローカルエージェント",
+    "flashcards": "単語カード"
   },
   "settings": {
     "aiGateway": "AIゲートウェイ",

@@ -59,7 +59,8 @@
     "settings": "设置",
     "localAgent": "本地智能体",
     "home": "首页",
-    "study": "学习"
+    "study": "学习",
+    "flashcards": "闪卡"
   },
   "routes": {
     "login": "登录",

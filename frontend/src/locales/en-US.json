@@ -59,7 +59,8 @@
     "settings": "Settings",
     "localAgent": "Local Agent",
     "home": "Home",
-    "study": "Study"
+    "study": "Study",
+    "flashcards": "Flashcards"
   },
   "routes": {
     "login": "Sign in",

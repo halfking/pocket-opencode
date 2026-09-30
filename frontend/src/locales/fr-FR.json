@@ -48,7 +48,8 @@
     "instances": "Instances",
     "costQuota": "Coût et quota",
     "settings": "Paramètres",
-    "localAgent": "Local Agent"
+    "localAgent": "Local Agent",
+    "flashcards": "Cartes mémoire"
   },
   "settings": {
     "aiGateway": "AI Gateway",

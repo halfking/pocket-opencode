@@ -97,6 +97,15 @@ const mainFeatures = computed<HubItem[]>(() => [
   { to: '/marketplace/agents', icon: 'smart_toy', label: t('nav.agentMarket') },
   { to: '/local-agent', icon: 'memory', label: t('nav.localAgent') },
   { to: '/marketplace/workbuddies', icon: 'handshake', label: t('nav.workbuddy') },
+  // BUG-P（2026-09-30 真机/模拟器验收）：闪卡路由一直存在（/flashcards），
+  // BUG-K/L/O 也都修好了，但**这个列表里没有它** —— 也就是说用户在正常 UI 导航下
+  // 根本进不去闪卡模块。之前三轮验收全部用 CDP 直接改 location.hash 导航，
+  // 绕过了真实入口，所以一直没暴露。
+  //
+  // 这类缺陷只有**从 UI 入口点进去**才会发现：路由能进 ≠ 用户能到。
+  // 加完之后 .maestro/flashcards-write.yaml 才能从「更多」页点进去（该 flow 第一步
+  // 就是 tapOn 更多 -> 闪卡）。
+  { to: '/flashcards', icon: 'style', label: t('nav.flashcards') },
 ])
 
 /* 设置与运维分组（横排列表项，每项带 chevron）。 */

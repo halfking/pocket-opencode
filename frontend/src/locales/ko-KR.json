@@ -48,7 +48,8 @@
     "instances": "인스턴스",
     "costQuota": "비용 및 할당량",
     "settings": "설정",
-    "localAgent": "로컬 에이전트"
+    "localAgent": "로컬 에이전트",
+    "flashcards": "플래시카드"
   },
   "settings": {
     "aiGateway": "AI Gateway",

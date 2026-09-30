@@ -48,7 +48,8 @@
     "instances": "實例",
     "costQuota": "成本與配額",
     "settings": "設定",
-    "localAgent": "本地智慧體"
+    "localAgent": "本地智慧體",
+    "flashcards": "閃卡"
   },
   "settings": {
     "aiGateway": "AI 閘道",

@@ -48,7 +48,8 @@
     "instances": "Instâncias",
     "costQuota": "Custo e cota",
     "settings": "Configurações",
-    "localAgent": "Local Agent"
+    "localAgent": "Local Agent",
+    "flashcards": "Cartões"
   },
   "settings": {
     "aiGateway": "AI Gateway",

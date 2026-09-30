@@ -48,7 +48,8 @@
     "instances": "Instanzen",
     "costQuota": "Kosten & Kontingent",
     "settings": "Einstellungen",
-    "localAgent": "Local Agent"
+    "localAgent": "Local Agent",
+    "flashcards": "Lernkarten"
   },
   "settings": {
     "aiGateway": "AI Gateway",
