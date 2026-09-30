@@ -989,7 +989,16 @@ async function handleRefresh() {
 async function loadTasks() {
   loading.value = true
   try {
-    const instanceTasks = await api.getTasks(undefined, { source: 'opencode' })
+    // BUG-AL：这里原本传 `{ source: 'opencode' }`，但 handleCreate 建出来的任务
+    // 硬编码 `source: 'local'`（同文件 ~1059 行）。两个值永远不相交，于是
+    // **通过这个 UI 创建的任务，在自己的列表里永远看不见**——实测
+    // `GET /api/tasks` 返回 5 条（全是 local），`?source=opencode` 返回 0 条。
+    //
+    // 本视图是任务聚合看板（active/blocked/completed 三段都由 tasks.value 驱动），
+    // 且 ACC 委托产出的是 source='acc'，同样会被这个过滤吃掉。
+    // stores/opencode.ts 调 getTasks(instanceId) 本就不带 source 过滤，两处口径必须一致，
+    // 所以这里去掉 source 过滤，按 workspace 返回全部任务。
+    const instanceTasks = await api.getTasks(undefined)
     tasks.value = (instanceTasks || []).map((t: any) => ({
       ...t,
       instanceName: t.instanceName || currentInstance.value?.displayName || currentInstance.value?.name || '',

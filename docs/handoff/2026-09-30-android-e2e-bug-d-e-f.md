@@ -2387,6 +2387,13 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
+- **BUG-AL 任务看板恒空已修**（`loadTasks` 用 `?source=opencode` 过滤，
+  而本 UI 建的任务是 `source='local'`，交集为空 ⇒ 自己建的任务自己看不见）：
+  - API 对照：无过滤 5 条（全 `local`）/`?source=opencode` **0 条** / `?source=local` 5 条
+  - `verify-task-writepath.mjs` **9/9**：创建落库 + **列表回显 `cards=6`**（修复前 `cards=0`）、
+    状态变更 PATCH→`completed`、子任务 PG count=1、评论 PG count=1、删除 PG count=0
+  - 三处任务产出（UI 新建 `local`、邮件转任务 `local`、委托 ACC `acc`）修复前**全部不可见**
+  - 详见 §4.45
 - **BUG-AK 本地库 workspace 分区错配已修**（`NoteListView` 8 个调用点漏传 `workspaceId`，
   4 个是写操作；另修 `EmailDetailView` / `MeetingDetailView` 同类 2 处）：
   - 错配取证：真机 `localStorage.pocket_workspace_id = ws_user-admin` vs 列表查询 `default`（`MISMATCH: true`）
@@ -2585,7 +2592,12 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
 - **生产 `https` 路径仍未系统回归**：本轮装过一次 `https://localhost` 的包
   （因 `CAP_ANDROID_SCHEME` 没在跑 cap sync 那次调用里设），只观察到 origin 是 https，
   **没有验证 mixed content / ws:// 在该 scheme 下的实际行为**。不算已回归。
-- **任务 / 会话 的编辑、删除**未验证（创建已验证 201 + 落库）。
+- ~~**任务 / 会话 的编辑、删除**未验证（创建已验证 201 + 落库）。~~
+  → **已从未验证清单划掉**（§4.45）：追这条缺口时发现 **BUG-AL**——任务看板列表恒空。
+  现在 `verify-task-writepath.mjs` **9/9**，覆盖创建+列表回显、状态变更、子任务、评论、删除，
+  每步都有 PG 直查兜底。**注意**：任务的「编辑」在本产品里只覆盖**状态切换**
+  （`updateTask` 的唯一 UI 调用是 resume/pause/complete），**没有标题/描述编辑 UI**，
+  这一点不是缺陷、但也别声称「任务编辑已验证」。
 - ~~**密码箱 / 实例 / 费用配额**的 UI 写路径**零验证**（后端端点已通，§4.12）。~~
   → **费用配额（记账）已从零验证里划掉**（§4.33）：后端契约 21/21、
   真机 UI 写路径 **26/26 连跑两轮**、sabotage 证伪 10/26 与 16/26 均如期失败。
@@ -4166,5 +4178,108 @@ bash 4.2，不是开发机的 bash 5.x**——integration test 必须至少在�
    **未确认服务端是否总会下发**，故本轮**未改**——属推测性修改，列为风险。
 3. 邮件联系人跳转、会议关联笔记两处**只做了类型检查，未做真机行为验证**
    （缺少可复现的前置数据：真实聚合的联系人、带转写的会议）。不得据此宣称「已验证」。
+
+### 4.45 BUG-AL：任务看板列表过滤排除了本 UI 自己产出的任务
+
+本轮为补 §4.44 之后的「任务/会话 编辑、删除未验证」缺口而追查任务写路径时，
+挖出一个**让整个任务看板恒为空**的缺陷。
+
+#### 4.45.1 现象
+
+真机 `#/ai`（TasksView，路由表里的默认入口）常驻显示：
+
+```
+📋 暂无运行中的任务    点击「+ 新任务」创建，或长按任务卡片操作
+```
+
+`.task-card` 恒为 **0**，而同库 PostgreSQL 里有 **14 条 active** 任务。
+本 handoff 早期记录的「任务 UI 创建 → 201 + PG 落库」**全部是真的**，
+但从没验证过「列表能不能看到」——缺口正落在这里。
+
+#### 4.45.2 定性过程（三步收敛，每步都排除了一个替代解释）
+
+1. **先怀疑是夹具**。第一版 `verify-task-writepath.mjs` 报「PG 无落库」，
+   差点当成产品 bug。实际是选择器错了：用 `/\+\s*新任务/` 去 `find(button, div)`
+   会匹配到祖先节点里那个**空 `DIV`**，点它根本不打开弹窗。
+   ⇒ 判据自身坏了，不能据此下产品结论。改成 `button` + 文案精确匹配后正常。
+2. **再怀疑是路由**。观察到同样地设 `location.hash='#/tasks'`，一次渲染出
+   `ai-view`、一次落到 `#/email`。单独验了 4 次往返（`#/ai`↔`#/tasks`）：
+   **4/4 都稳定**落到 `ai-view`。先前的 `#/email` 是解锁后重定向的**残留**，
+   不是路由缺陷。⇒ 路由无罪。
+3. **最后在页面内直接打 API**，把「后端空」和「前端不渲染」分开：
+
+   | 请求 | 状态 | 条数 | source 分布 |
+   |---|---|---|---|
+   | `GET /api/tasks` | 200 | **5** | `local: 5` |
+   | `GET /api/tasks?source=opencode` | 200 | **0** | — |
+   | `GET /api/tasks?source=local` | 200 | **5** | `local: 5` |
+   | `GET /api/tasks?source=acc` | 200 | **0** | — |
+
+   API **有** 5 条、UI 显示 0 条 ⇒ 缺陷在前端。
+
+#### 4.45.3 根因
+
+- `TasksView.loadTasks()`（`TasksView.vue:992`）调
+  `api.getTasks(undefined, { source: 'opencode' })` ⇒ 请求带 `?source=opencode`。
+- 而同一个 UI 的 `handleCreate()`（`TasksView.vue:1068`）把新任务硬编码成
+  **`source: 'local'`**。
+
+`opencode` ∩ `local` = ∅，于是**通过这个 UI 创建的任务，在它自己的列表里永远不出现**。
+
+严重性比看上去大——三处任务产出**全部**落在这个交集之外：
+
+| 产出点 | `source` | 修复前是否可见 |
+|---|---|---|
+| `TasksView.handleCreate`（UI「+ 新任务」） | `local` | ❌ |
+| `EmailDetailView:279`（邮件转任务） | `local` | ❌ |
+| `TasksView:772`（委托 ACC） | `acc` | ❌ |
+
+也就是说任务看板**整体功能性失效**，不是边缘情况。
+
+一致性佐证：`stores/opencode.ts:163` 调 `api.getTasks(instanceId)` **本来就不带
+source 过滤**，两处口径早已不一致。
+
+#### 4.45.4 改动
+
+`frontend/src/features/tasks/TasksView.vue` —— `loadTasks()` 去掉 `{ source: 'opencode' }`，
+改为 `api.getTasks(undefined)`，与 `stores/opencode.ts` 对齐。理由写进了代码注释：
+本视图是聚合看板（active/blocked/completed 三段都由 `tasks.value` 驱动），
+且 ACC 委托产出 `acc` 同样会被吃掉。
+
+未改后端：`source` 过滤本身语义正确（`local`/`acc`/`opencode` 三值都支持），
+错的是前端把「聚合看板」当成了「只看 opencode 的视图」。
+
+#### 4.45.5 验证
+
+`node scripts/verify-task-writepath.mjs` —— **9/9**，每步都用 PG 直查兜底：
+
+| 判据 | 结果 |
+|---|---|
+| 创建弹窗打开 | `forms=1` |
+| 创建落库 | `tasks.id=task-1790779221635` |
+| **创建：列表回显** | **`cards=6 found=true`**（修复前 `cards=0`） |
+| 进入任务详情 | `#/tasks/task-1790779221635` |
+| 状态变更 PATCH | `status=completed` |
+| 子任务创建 | `work_items(parent_id)` count=1 |
+| 评论创建 | `work_item_events.payload` count=1 |
+| 删除 | `tasks` count=0 |
+| 删除后列表不再回显 | `found=false` |
+
+**受控对照**：同一脚本、同一台真机，只有 bundle 变了。修复前 3/9 且
+「创建：列表回显」失败；修复后 9/9。
+
+**判据自证**：脚本里「删除后不再回显」只在「先确认显示过」之后才执行——
+第一版没有这道闸，结果因为任务从没显示过而**空过成假绿**（3/9 里有一项就是这样蒙对的）。
+现已改为：列表不显示就提前中止并退出码 1，不让后续判据失去前提。
+
+#### 4.45.6 教训
+
+1. **「创建成功」不等于「功能可用」**。早期只验「201 + PG 落库」，
+   漏掉「列表回显」，结果一个恒空的功能被标成已验证。**写路径验收必须闭环到 UI 回显**。
+2. **过滤器要对着生产者验**。任何列表过滤都该问一句：「本 UI 自己造出来的数据，
+   满足这个过滤条件吗？」`local` vs `opencode` 正是这种自相矛盾的过滤。
+3. **0 条 ≠ 事实为 0**。连续三次分别把锅甩给夹具、路由、后端，才定位到前端过滤。
+   每次都要拿能区分两种解释的证据，不能只取一个读数就下结论。
+
 
 
