@@ -126,6 +126,20 @@ pop3_fetcher_test.go:155: want server -ERR message surfaced, got PASS rejected: 
    只能靠 Linux CI。若后续有人改 `adapter_pi.go`，请在有 bash 的环境上验证。
 5. `origin/main` 在本轮期间仍在前进（`9fc115c` → `514b082`），本轮结论以 `9fc115c` 为基线。
 
+## §5.5 收尾时的仓库快照（提交后再次变化，如实补记）
+
+`3303827` 推送成功并成为 `origin/main` 顶端。推送前后台又发生了这些变化，
+**都不是本轮做的，也没有被本轮碰到**：
+
+- `0c128c9`（P0 写权限 + 脱敏）与 `a1c4900` 已由其属会话并入 `origin/main`——
+  §1.1 里"P0 已被并入 main"的判断得到确认，本轮推到远端的分支锚点只是冗余保险。
+- 新增 worktree `C:\workspace\openpocket-wt-stt`，分支 `feat/2026-10-01-stt-service`
+  （相对 main 3 个未合并提交）。**在途，未合并，勿动**。
+- 主工作区未提交文件数从 95 降到 31——邮件主题已被其属会话收口成提交。
+- 本地 `main` 相对 `origin/main` 为 3 behind / 1 ahead：那个 ahead 提交属于
+  在途会话，本轮**没有代为推送**。
+- `wt3` 仍占用 `fix/bugz-marketplace-conflict`，本轮按 §5-1 保留。
+
 ## §6 下一轮提示词
 
 > 接着 2026-10-01-audit-round5 做：
