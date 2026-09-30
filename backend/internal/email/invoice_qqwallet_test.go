@@ -95,6 +95,15 @@ func TestExtractInvoice_QQWalletExtractsSeller(t *testing.T) {
 	if !strings.Contains(strings.ToLower(inv.Seller), "tencent") {
 		t.Fatalf("Seller=%q, want it to contain 'Tencent'", inv.Seller)
 	}
+	// 销售方不得跨行/吞掉后续句子：真实 snippet 里 "Seller name: Tencent
+	// Cloud Computing Co Ltd" 下一行是 "Invoice details please see
+	// attachment (PDF)."，贪婪匹配会把那行也当成销售方。
+	if strings.ContainsAny(inv.Seller, "\r\n") {
+		t.Fatalf("Seller=%q must not contain a newline", inv.Seller)
+	}
+	if strings.Contains(strings.ToLower(inv.Seller), "invoice details") {
+		t.Fatalf("Seller=%q swallowed the following line", inv.Seller)
+	}
 }
 
 func TestExtractInvoice_QQWalletFilenameIsUsable(t *testing.T) {

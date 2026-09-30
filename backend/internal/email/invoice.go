@@ -97,7 +97,13 @@ var (
 	// 旧正则 `Seller)[:：\s]*([^\s,，;；。]{2,40})` 匹配 "Seller" 后吃空格，
 	// 把标签词 "name:" 当成了销售方（seller="name:"），真正的公司名丢掉。
 	// 这里显式允许 "Seller name"/"销售方名称" 这类复合标签。
-	reSeller      = regexp.MustCompile(`(?i)(?:销售方名称|销售方|开票方|商户名称|商户|Merchant(?:\s*Name)?|Seller(?:\s*Name)?)[:：\s]*([^\s:：,，;；。]{2,40}(?:\s+[^\s:：,，;；。]{2,40})*)`)
+	// 值可含空格（公司名 "Tencent Cloud Computing Co Ltd"），但**不得跨行**：
+	// 用 [^\S\r\n]（非换行空白）而不是 \s——\s 含 \r\n，贪婪匹配会把
+	// "Seller name: Tencent Cloud Computing Co Ltd" 后面那行
+	// "Invoice details please see attachment (PDF)." 一起吞成销售方，
+	// 规范文件名退化成 `其他-Tencent-…-Invoice-details-please-see-a-….pdf`。
+	// 同时限制最多 6 个词，避免长句被当单位名。
+	reSeller      = regexp.MustCompile(`(?i)(?:销售方名称|销售方|开票方|商户名称|商户|Merchant(?:\s*Name)?|Seller(?:\s*Name)?)[:：\s]*([^\s:：,，;；。]{2,40}(?:[^\S\r\n]+[^\s:：,，;；。]{2,40}){0,5})`)
 	// 「您收到来自XX的发票」——中文发票邮件最常见的形态，主题里就有对方单位。
 	// 不抽的话销售方会退化成发件地址，规范文件名变成
 	// 「其他-noreply@<发件域名>-3500.00-….pdf」，对账时看不出是谁开的票。
