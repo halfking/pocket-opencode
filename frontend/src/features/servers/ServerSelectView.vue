@@ -76,16 +76,16 @@ import { useRouter } from 'vue-router'
 import {
   PRODUCTION_API_BASE,
   BACKUP_API_BASE,
-  normalizeApiBase,
-  persistApiBase,
   probeHealthz,
-  readApiBaseOverride,
-  resolveApiBase,
 } from '../../config/api-base'
+import {
+  detectServerChoice,
+  previewServerBase,
+  resolveServerSave,
+  type ServerChoiceKind,
+} from './server-select-logic'
 import { clearSelectedInstance } from '../../config/selected-instance'
 import { useAuthStore } from '../../stores/auth'
-
-type Kind = 'build' | 'origin' | 'production' | 'backup' | 'custom'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -94,17 +94,8 @@ const auth = useAuthStore()
 const pageOrigin = typeof window !== 'undefined' ? window.location.origin : ''
 const buildDefault = String(import.meta.env.VITE_API_BASE || '')
 
-function detectKind(): { kind: Kind; custom: string } {
-  const override = readApiBaseOverride()
-  if (override === null) return { kind: buildDefault ? 'build' : 'origin', custom: '' }
-  if (override === '') return { kind: 'origin', custom: '' }
-  if (override === PRODUCTION_API_BASE) return { kind: 'production', custom: '' }
-  if (override === BACKUP_API_BASE) return { kind: 'backup', custom: '' }
-  return { kind: 'custom', custom: override }
-}
-
-const initial = detectKind()
-const kind = ref<Kind>(initial.kind)
+const initial = detectServerChoice(localStorage.getItem('pocket_api_base'), buildDefault)
+const kind = ref<ServerChoiceKind>(initial.kind)
 const customUrl = ref(initial.custom)
 const testing = ref(false)
 const saving = ref(false)
@@ -112,19 +103,7 @@ const formError = ref('')
 const testResult = ref<{ ok: boolean; text: string } | null>(null)
 
 function previewBase(): string {
-  if (kind.value === 'build') return buildDefault ? normalizeApiBase(buildDefault) : ''
-  if (kind.value === 'origin') return ''
-  if (kind.value === 'production') return PRODUCTION_API_BASE
-  if (kind.value === 'backup') return BACKUP_API_BASE
-  return normalizeApiBase(customUrl.value, pageOrigin)
-}
-
-function persistChoice(): string {
-  if (kind.value === 'build') return persistApiBase(null)
-  if (kind.value === 'origin') return persistApiBase('')
-  if (kind.value === 'production') return persistApiBase(PRODUCTION_API_BASE)
-  if (kind.value === 'backup') return persistApiBase(BACKUP_API_BASE)
-  return persistApiBase(normalizeApiBase(customUrl.value, pageOrigin))
+  return previewServerBase({ kind: kind.value, custom: customUrl.value }, buildDefault, pageOrigin)
 }
 
 async function testConnection() {
@@ -149,10 +128,17 @@ async function saveAndUse() {
   formError.value = ''
   saving.value = true
   try {
-    const previous = resolveApiBase()
-    persistChoice()
-    const next = resolveApiBase()
-    if (previous !== next) {
+    const outcome = resolveServerSave(
+      { kind: kind.value, custom: customUrl.value },
+      { buildDefault, pageOrigin, storage: localStorage },
+    )
+    // 自定义地址本该落盘；若读回来却是空/缺失，说明没存住，
+    // 直接报错让用户看见，而不是重载后静默退回同源再报「用户名或密码错误」。
+    if (kind.value === 'custom' && outcome.fellBackToOrigin) {
+      formError.value = t('settings.apiAddressNotSaved')
+      return
+    }
+    if (outcome.changed) {
       clearSelectedInstance()
       localStorage.removeItem('selected_server')
       if (auth.isAuthenticated) await auth.logout()
@@ -209,7 +195,7 @@ async function saveAndUse() {
   display: block;
   margin-top: 2px;
   font-size: var(--text-xs);
-  font-family: monospace;
+  font-family: var(--font-mono);
   color: var(--text-muted);
   word-break: break-all;
 }
