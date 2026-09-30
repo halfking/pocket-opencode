@@ -1743,6 +1743,111 @@ PASS  探针 key 在全部 9 种语言里都被判为缺失 → 检测逻辑有�
 2. 少数派改调用点，成本低于改主干
 3. 加扫描器 + **判据自证**，别让下一个 merge 再翻车
 
+﻿# 追加：BUG-Y + 市场写路径首次真机打通（2026-09-30 15:15-15:40）
+
+## 4.25 BUG-Y：「安装」对没先点过「查看版本」的包必然失败（真机 12/12）
+
+### 现象
+
+`/marketplace/skills` 上：点「安装」→ 确认弹窗正常弹出 → 点「确认安装」→
+**`marketplace_installations` 表 0 → 0，一行都没进去**，且控制台 0 异常。
+
+### 根因
+
+`SkillMarketView.vue` 的 `runInstall()` 原来直接读 `expanded`：
+
+```ts
+const versions = expanded.value[installTarget.value.package_id]
+const publishedVersion = versions?.find((v) => v.status === 'published')
+if (!publishedVersion) {
+  store.error = '该包尚无已发布版本，无法安装。'
+  ...
+}
+```
+
+而 `expanded` 是**纯 UI 展开状态**，只有用户点过「查看版本」才会有值。
+于是：没点过 → `versions` 是 `undefined` → 报「该包尚无已发布版本」。
+
+**而那个包确实有已发布版本**（`GET /api/marketplace/packages/{id}/versions`
+明确返回 `status: "published"`）。所以不只是功能坏了，**提示还是与事实相反的**。
+
+### 最扎眼的一点：同一段逻辑写了三遍，只有这一遍写错
+
+`AgentMarketView.vue` 与 `WorkbuddyView.vue` 的 `runInstall` **本来就有**
+`ensureVersionsLoaded()` 按需加载版本：
+
+```ts
+const versions = await ensureVersionsLoaded(installTarget.value)
+```
+
+**只有 `SkillMarketView` 这一份是从 `expanded` 直读。** 修法因此不是发明新方案，
+而是把这一份改成和另外两个一样的写法。
+
+顺带修掉同一处的第二个问题：原来 `await store.install(...)` **忽略返回值**。
+`store.install` 失败时返回 `null` 并把原因写进 `store.error`，于是
+**后端拒绝安装也是完全静默的** —— 弹窗一关，用户什么都不知道。
+
+### 真机验证（`scripts/verify-marketplace-install.mjs`，12/12，连跑两轮稳定）
+
+```
+PASS  API 播种 submit   — 201
+PASS  API 播种 review   — 200
+PASS  API 播种 publish  — 201
+PASS  App 与 API 在同一 workspace   — App=ws_user-admin API=ws_user-admin
+PASS  技能市场渲染出包卡片          — articles=7
+PASS  刚播种的包出现在列表里
+PASS  存在「安装」按钮
+PASS  安装确认弹窗出现
+PASS  UI 点击后 PG 落库（不信 DOM，不信接口返回）— 安装前=0 安装后=1
+PASS  落库的是刚播种的那个包（关联核对）  — 命中=1
+PASS  对照组：重复安装不新增行（唯一索引挡住了）— 再点后=1
+PASS  无未捕获 JS 异常
+12/12 通过
+```
+
+## 4.26 顺带查清的三件事（都不是产品缺陷，但都曾差点被当成缺陷报出去）
+
+### 4.26.1 marketplace `submit` 忽略客户端传的 `package_id`
+
+实测：传 `package_id: "e2e-skill-<时间戳>"`，返回的是
+`"ws_user-admin/E2E 技能"` —— **后端自己从 workspace + name + version 推导**。
+
+后果：同一 workspace 内**同名同版本**的第二次 submit 撞
+`marketplace_versions_pkey` 唯一约束。
+
+⚠️ **但那个冲突被返回成 `500`**，不是 409/400 —— 客户端输入冲突被归成服务端错误。
+这与已修的 BUG-M（闪卡 review 把入参错误归 500）是**同一类**，
+**本轮未修**，留给下一轮。
+
+### 4.26.2 App 与 API 可能在两个不同的 workspace（数据孤岛）
+
+设备上 App 持有的 token 的 `workspace_id` 是 `default`，
+而 API 全新登录稳定给 `ws_user-admin`。市场按 workspace 隔离，
+于是「后端明明返回了刚播种的包，UI 却显示暂无技能包」。
+
+**差点被当成前端缺陷报出去。** 实际原因是 App 那个 token 签发于
+`ws_<userID>` 约定生效之前（`identity.EnsureDefaultWorkspace` 的约定是 `ws_<userID>`）。
+
+所以 `verify-marketplace-install.mjs` 里加了一条**前置判据**：
+双方 workspace 不一致就**直接中止**，避免后面所有断言在错误前提下"通过"或"失败"。
+
+### 4.26.3 我自己的四条脚本级错误（都不是产品缺陷）
+
+1. **`publish` 判据写死 `status === 200`**，实测返回 **201** → 假 FAIL。
+   判据应按语义放宽到 2xx。
+2. **`clickByText('登录')` 用 `indexOf('登录') >= 0`**，
+   而页面上有「密码登录」「验证码登录」「登录」三个按钮 ——
+   点到的是第一个「密码登录」那个 **tab**。点击执行了、没报错，**但登录从未发生**。
+   症状是「hash 停在 #/login、没有 token」，看起来像登录失败。
+   独立诊断脚本用 `=== 精确匹配`，一次就通。
+   （这正是 handoff §4.11.2 里早就写过的「同名按钮消歧」，本轮又踩了一次。）
+3. **登录按钮 `disabled` 是计算属性**，固定 sleep 1200ms 偏短时按钮仍 disabled，
+   `click()` 静默无效。改成**轮询到 enabled**。
+4. **裸 `fetch('/api/marketplace/...')` 在页面里返回 HTML** ——
+   探针没加 API base 前缀，与 BUG-J 同源。应用自己的 http 客户端
+   走的是 `http://127.0.0.1:8088/...`，是对的。
+
+## 5. 已验证 / 未验证（严禁外推）
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
@@ -1809,6 +1914,10 @@ PASS  探针 key 在全部 9 种语言里都被判为缺失 → 检测逻辑有�
 - **marketplace 端点可达性**：前端 `features/marketplace/api.ts` 实际调用的
   **11 个端点 0 个 404/405**；4 个 404 路径（`/agents` `/installs` `/router` `/skills`）
   **前端零调用**，是旧契约残留。「不是功能缺陷」的判断现在是被正面验证过的（§4.21.8）
+- **市场 UI 写路径（真机 `verify-marketplace-install.mjs` 12/12，连跑两轮稳定）**：
+  播种 submit/review/publish → UI 点「安装」→「确认安装」→ **直接查 PG 确认
+  `marketplace_installations` 0 → 1**，且关联核对命中的就是刚播种的包；
+  对照组重复安装被唯一索引挡住。**这是六个模块里第一个被打通的 UI 写路径**（§4.25）
 
 ### ⚠️ 本轮新增未验证 / 未修（不要当成已完成）
 
@@ -1847,7 +1956,10 @@ PASS  探针 key 在全部 9 种语言里都被判为缺失 → 检测逻辑有�
 ### ❌ 未验证（下一轮必须补）
 - **任务 / 会话 的编辑、删除**未验证（创建已验证 201 + 落库）。
 - **密码箱 / 市场 / 邮箱 / 网关 / 实例 / 费用配额**的 UI 写路径**零验证**（后端端点已通，§4.12）。
-  这是当前最大的验证缺口 —— 六个模块的用户可见写操作一条都没在真机上点过。
+  ✅ **市场已打通**（§4.25，12/12）；**其余五个模块（密码箱 / 邮箱 / 网关 / 实例 / 费用配额）
+  的 UI 写路径仍一条都没在真机上点过**。
+  ⚠️ 密码箱要特别注意：它有**两个独立障碍** —— `Keystore` 原生插件未实现
+  **且** `/api/vault` 恒 404。只补插件不会让它可用。
 - ~~**闪卡的 UI 写路径**~~ → **已跑通**（`redmi-write-ops-modules.mjs` 7/7，见上）。
 - **任务 / 会话 的写操作**未验证。`GET /api/tasks` 200 可读，但 `POST /api/tasks` 在 dev 后端
   恒 **503 `local task store not configured (remote-only mode)`**——`taskStore` 只在

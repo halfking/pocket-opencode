@@ -71,6 +71,8 @@ const search = ref('')
 const installing = ref(false)
 const installTarget = ref<MarketplacePackage | null>(null)
 const expanded = ref<Record<string, PackageVersion[]>>({})
+// 版本缓存，独立于 expanded（纯 UI 展开状态）。与 AgentMarketView / WorkbuddyView 同形。
+const versionsByPackage = ref<Record<string, PackageVersion[]>>({})
 
 onMounted(() => {
   store.loadPackages('skill').catch(() => {})
@@ -108,6 +110,21 @@ async function openVersions(pkg: MarketplacePackage) {
   expanded.value = { ...expanded.value, [pkg.package_id]: list }
 }
 
+/**
+ * 按需加载某包的版本列表。
+ *
+ * BUG-Y 的另一半：安装流程原先假设「用户已经点过『查看版本』」，
+ * 于是从 `expanded` 里取——那是个纯 UI 展开状态，只有点过才会有值。
+ * 改成与 AgentMarketView / WorkbuddyView 相同的写法：走 store 的
+ * `versionsByPackage` 缓存，没缓存就加载。
+ */
+async function ensureVersionsLoaded(pkg: MarketplacePackage): Promise<PackageVersion[]> {
+  if (versionsByPackage.value[pkg.package_id]) return versionsByPackage.value[pkg.package_id]
+  const list = await store.loadVersions(pkg.package_id)
+  versionsByPackage.value = { ...versionsByPackage.value, [pkg.package_id]: list }
+  return list
+}
+
 function confirmInstall(pkg: MarketplacePackage) {
   installTarget.value = pkg
 }
@@ -115,9 +132,20 @@ function confirmInstall(pkg: MarketplacePackage) {
 async function runInstall() {
   if (!installTarget.value) return
   installing.value = true
-  // 选择该包最新已发布的 release（缺则提示不可安装）
-  const versions = expanded.value[installTarget.value.package_id]
-  const publishedVersion = versions?.find((v) => v.status === 'published')
+  const pkgId = installTarget.value.package_id
+  // BUG-Y（2026-09-30 真机验收）：原来这里直接读
+  //   const versions = expanded.value[pkgId]
+  // 而 `expanded` **只有用户点过「查看版本」之后才会有值**。于是：
+  //   点「安装」→ 弹确认框 → 点「确认安装」→ versions 为 undefined →
+  //   报「该包尚无已发布版本，无法安装。」
+  // 而那个包**确实有**已发布版本（`GET .../versions` 明确返回 status:"published"）。
+  // 结果：安装对任何没先展开过的包都必然失败，且给出与事实相反的提示。
+  //
+  // 注意 AgentMarketView / WorkbuddyView **本来就有** ensureVersionsLoaded，
+  // 只有这份是直接读 expanded —— 同一段逻辑写了三遍，只有这一遍写错了。
+  // 这里改成同一写法，不维护第三套。
+  const versions = await ensureVersionsLoaded(installTarget.value)
+  const publishedVersion = versions.find((v) => v.status === 'published')
   if (!publishedVersion) {
     store.error = '该包尚无已发布版本，无法安装。'
     installing.value = false
@@ -133,7 +161,12 @@ async function runInstall() {
     installTarget.value = null
     return
   }
-  await store.install({ release_id: release.release_id, target_env: '' })
+  // store.install 失败时返回 null 并把原因写进 store.error；原来忽略返回值，
+  // 于是**后端拒绝安装也是静默的** —— 弹窗一关，用户什么都不知道。
+  const inst = await store.install({ release_id: release.release_id, target_env: '' })
+  if (!inst) {
+    store.error = store.error || '安装失败，请重试。'
+  }
   installing.value = false
   installTarget.value = null
 }

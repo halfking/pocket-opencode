@@ -893,3 +893,59 @@ PASS  无未捕获 JS 异常
 
 修好判据后**连跑三轮都是 13/13**；修之前同一脚本是 12/13。
 如实记录：这条判据**曾经 flaky**（坑三导致），三轮稳定才敢下结论。
+﻿
+---
+
+## BUG-Y：「安装」对没先点过「查看版本」的包必然失败
+
+### 现象
+
+`/marketplace/skills`：点「安装」→ 确认弹窗正常弹出 → 点「确认安装」→
+**`marketplace_installations` 表 0 → 0**，控制台 0 异常。
+
+### 根因
+
+`SkillMarketView.vue` 的 `runInstall()` 直接读 `expanded`：
+
+```ts
+const versions = expanded.value[installTarget.value.package_id]
+const publishedVersion = versions?.find((v) => v.status === 'published')
+if (!publishedVersion) { store.error = '该包尚无已发布版本，无法安装。'; ... }
+```
+
+`expanded` 是**纯 UI 展开状态**，只有点过「查看版本」才有值。
+没点过 → `undefined` → 报「该包尚无已发布版本」。
+**而那个包确实有已发布版本**（versions 接口明确返回 `status: "published"`）——
+不只是功能坏，**提示还与事实相反**。
+
+### 最扎眼的一点
+
+`AgentMarketView.vue` 与 `WorkbuddyView.vue` 的 `runInstall` **本来就有**
+`ensureVersionsLoaded()` 按需加载版本。**同一段逻辑写了三遍，只有这一遍是错的。**
+修法因此不是发明新方案，而是改成和另外两个一样的写法。
+
+顺带修掉同处第二个问题：`await store.install(...)` **忽略返回值**，
+而 `store.install` 失败时返回 `null` —— 后端拒绝安装也是完全静默的。
+
+### 真机验证（12/12，连跑两轮稳定）
+
+    API 播种 submit/review/publish      201/200/201
+    App 与 API 同一 workspace          ws_user-admin == ws_user-admin
+    技能市场渲染包卡片                  articles=7
+    安装确认弹窗出现
+    UI 点击后 PG 落库                  安装前=0 安装后=1
+    落库的是刚播种的包（关联核对）      命中=1
+    对照组：重复安装不新增行            唯一索引挡住
+
+## 顺带查清的三件事（都不是产品缺陷，但都曾差点被当成缺陷）
+
+1. **`submit` 忽略客户端传的 `package_id`**，后端自己从 workspace+name+version 推导。
+   同名同版本重复提交撞唯一约束 —— ⚠️ **但被返回成 500**，不是 409/400。
+   与已修的 BUG-M 同一类，**本轮未修**。
+2. **App 与 API 可能在两个不同 workspace**（App 持 `default`，API 给 `ws_user-admin`），
+   市场按 workspace 隔离 → 「后端返回了包、UI 却说暂无」。
+   差点被当成前端缺陷。因此验证脚本加了**前置判据**：workspace 不一致直接中止。
+3. 我自己的四条脚本级错误：`publish` 判据写死 200（实为 201）；
+   `clickByText('登录')` 用 indexOf 匹配到「密码登录」那个 tab；
+   登录按钮 disabled 是计算属性（需轮询等 enabled）；
+   页面内裸 `fetch('/api/...')` 返回 HTML（没加 API base 前缀，与 BUG-J 同源）。
