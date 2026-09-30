@@ -42,6 +42,40 @@ const adb = (args, t = 60000) =>
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/** 一次性 CDP 求值：连上当前 App 的 WebView，评估一个表达式，拿回值后断开。 */
+async function cdpEval(expr, ms = 8000) {
+  const pid = adb(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
+  if (!pid) throw new Error('APP_NOT_RUNNING')
+  const socks = adb(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
+    .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
+  const sock = socks.find((s) => s.endsWith(`_${pid}`)) || socks[socks.length - 1]
+  if (!sock) throw new Error('NO_DEVTOOLS_SOCKET')
+  const port = 9500 + Math.floor(Math.random() * 300)
+  adb(['forward', `tcp:${port}`, `localabstract:${sock}`], 15000)
+  try {
+    const page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page')
+    if (!page) throw new Error('NO_PAGE_TARGET')
+    const ws = new WebSocket(page.webSocketDebuggerUrl.replace(/:\d+\//, `:${port}/`))
+    let id = 0
+    const pending = new Map()
+    ws.addEventListener('message', (e) => {
+      const m = JSON.parse(e.data)
+      if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id) }
+    })
+    await new Promise((r) => ws.addEventListener('open', r))
+    const v = await new Promise((r) => {
+      const i = ++id
+      const t = setTimeout(() => { pending.delete(i); r(null) }, ms)
+      pending.set(i, (x) => { clearTimeout(t); r(x) })
+      ws.send(JSON.stringify({ id: i, method: 'Runtime.evaluate', params: { expression: expr, returnByValue: true, awaitPromise: true } }))
+    })
+    ws.close()
+    return v?.result?.value
+  } finally {
+    try { adb(['forward', '--remove', `tcp:${port}`], 15000) } catch { /* 已经没了 */ }
+  }
+}
+
 /** 用 CDP 把 App 复位到指定路由，并等 App 外壳真的渲染出来。
  *  只等 hash 匹配是不够的——hash 变了不代表 DOM 渲染完了，
  *  实测会在 flow 第一条断言就失败（连「打开菜单」都还不在视图树里）。 */
@@ -132,6 +166,42 @@ async function ensureDriver() {
   return true
 }
 
+/**
+ * 守卫：window.fetch 必须是**原生**实现。
+ *
+ * 为什么要有这个守卫（2026-10-01 踩了，花了小半小时才定位）：
+ * 有人/有探针在运行时把 `window.fetch` 换成了一个包装器——它把请求记进
+ * `window.__reqLog`，但**没有把底层响应 return 出去**，于是 `await fetch(...)`
+ * 一律拿到 `undefined`，App 里每个 http() 调用都在读 `res.ok` 时炸成
+ * "Cannot read properties of undefined (reading 'ok')"。
+ *
+ * 表现极具误导性：看起来像「这个功能的写路径坏了」（当时是闪卡建卡组失败），
+ * 实际是**全 App 的网络都断了**。而且那个包装器既不在仓库里、也不在构建产物里
+ * （`git grep __reqLog` 与 dist/android assets 均为空），是运行时注入的残留。
+ *
+ * 判据用 `String(fetch)` 是否含 `[native code]`：原生 fetch 一定含。
+ * 命中包装器就直接中止，别浪费一轮 run 去查一个不存在的 bug。
+ */
+async function assertFetchIntact() {
+  try {
+    const info = await cdpEval(`JSON.stringify({
+      native: String(window.fetch).includes('[native code]'),
+      name: (window.fetch && window.fetch.name) || '',
+      head: String(window.fetch).slice(0, 60),
+    })`)
+    const o = JSON.parse(String(info))
+    if (o.native) { console.log('[preflight] fetch 为原生实现 ✅'); return true }
+    console.error('[preflight] ❌ window.fetch 被运行时替换了，不是原生实现！')
+    console.error(`           name="${o.name}"  head=${o.head}`)
+    console.error('           这会让 App 所有 http() 调用拿到 undefined，看起来像功能坏了，其实是环境污染。')
+    console.error('           处置：重启 App 进程（force-stop 后重新启动）即可恢复。')
+    return false
+  } catch (e) {
+    console.log(`[preflight] fetch 守卫未能判定（${e?.message || e}），不阻断`)
+    return true
+  }
+}
+
 async function preflight() {
   if (!(await ensureDriver())) return false
   console.log('[preflight] 强停并重新启动 App（绕开 MIUI 吞掉 force-stop 后启动意图的问题）')
@@ -151,6 +221,7 @@ async function preflight() {
     // 于是把「App 明明在前台」误报成「60s 未进前台」。踩过，别改回去。
     if (/topResumedActivity.*opencode\.pocket/.test(resumed)) {
       console.log(`[preflight] App 已在前台 pid=${pid.trim()}`)
+      await assertFetchIntact()
       return true
     }
   }

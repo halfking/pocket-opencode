@@ -5051,8 +5051,20 @@ App 会记住 `pocket:lastRoute` 并在重启后恢复过去，实测撞到过�
 下一步该查的是 PkmNoteView 在 `id=new` 时的加载路径，以及它是否在某个分支里重定向到了设置页。
 **这一条是推测，不是结论**，下一轮不要当已知事实用。
 
-**`notes-crud.yaml` / `flashcards-write.yaml` 的功能闭环没有跑通。**
-流程本身的坑已经定位并修掉大半（上面 8 条），但最后卡在一个**环境层面**的问题：
+**⚠️ 本条已过时，读时以 §4.53 / §4.54 为准。** 当时的结论是
+「`notes-crud.yaml` / `flashcards-write.yaml` 的功能闭环没有跑通，卡在设备状态被外部改动」。
+
+后来查明：外部改动确实存在，但**不是唯一原因**，而且其中一次造成了极具误导性的假象——
+`window.fetch` 被运行时换成了一个只记日志、不返回响应的包装器，
+于是**全 App 的网络请求都返回 `undefined`**、每个 `http()` 调用都在读 `res.ok` 时炸，
+看起来就像「闪卡的写路径坏了」。
+
+现状：
+- ✅ **`notes-crud.yaml` 已跑通并连绿两次**（§4.53，含 DB 直读 + 两侧负控）
+- ⚠️ **`flashcards-write.yaml` 的写路径功能已证实是通的**（PG 三方对照
+  `decks=1 / notes=1 / cards=1`，卡片在卡组页可见、到期数 1），
+  但**这条 flow 至今没有跑出过一次全绿**，卡在最后一条到期数文案断言（§4.54.3）。
+  **不要写成「闪卡已验证通过」。**
 
 跑到某一轮时设备上的 App 状态被外部改动了——`localStorage` 从 24 个键被清到只剩
 `pocket_api_base` + `pocket:lastRoute`，App 停在 `#/servers`（服务器选择页），
@@ -5284,4 +5296,131 @@ BUG-AK 与 BUG-AR 都是同一形状，靠人眼发现两次。所以沉淀成�
   编辑页 `input` 是独立节点，值为标题本身，纯字符串可匹配。
 - 判据红了先看失败现场层级快照：`~/.maestro/tests/<时间戳>/<flow>/screen-hierarchy/step-*.json`，
   结构是 `attributes.text` / `attributes.class`。
+
+## 4.54 闪卡 flow 重写 + 挖出一个会把「某个功能坏了」伪装成产品缺陷的运行时污染
+
+接着 §4.53 往下推 `flashcards-write.yaml`（最后一个没闭环的真机写路径）。
+**结论先说：闪卡的写路径本身是好的**（PG 三方对照 decks=1 / notes=1 / cards=1），
+但这条 flow **至今没有跑出过一次全绿**，不能算完成。过程中挖出一条影响面很大的东西。
+
+### 4.54.1 旧 flow 测的是**已经不存在的 UI**
+
+`flashcards-write.yaml` 写于 BUG-K 之前，从写出来那天起就不可能通过：
+它第 1 步 tap「新建卡片」后断言「卡组名称」——那是当时的「新建卡片」页。
+BUG-K 把建卡组挪到了**列表页**（零卡组时内联表单 / 有卡组时 deck-toggle 展开），
+`FlashcardEditView` 上**已经没有**「卡组名称」字段，只剩一个卡组 `<select>`。
+首轮实跑就卡在这里（`~/.maestro/tests/2026-10-01_062539`）。
+
+真机可见结构（`scripts/diag-page-elements.mjs` 实测，不是读模板猜的）：
+
+| 页面 | 元素 |
+|---|---|
+| `#/flashcards` 零卡组 | `div.empty[data-testid=flashcards-empty]`；`form[data-testid=deck-create-form]`；`input`（**t="" cd=""**，placeholder/aria-label 都没暴露）；`button.primary` 文本「新建卡组」**初始 enabled=false** |
+| `#/flashcards/decks/:id` | `button.add-btn[aria-label=添加卡片]`；「开始复习」**两个**同名按钮（外屏 `.review` rect 实测 `[0,0,0,0]` 不可见 + 内屏 `.primary.review-btn`） |
+| `#/flashcards/new` | `button.save-link`「保存」；两个 `textarea`（placeholder 正面/背面）；`select` 已自动选中卡组；页脚还有一份卡组内联建表单 |
+
+### 4.54.2 ⚠️⚠️ 重大发现：`window.fetch` 被运行时替换，**全 App 网络请求失效**
+
+排查「新建卡组」一直失败的过程中挖到的。现象极具误导性。
+
+**症状**：闪卡建卡组点下去毫无反应，`PG` 0 行、后端日志里**连请求都没有**，
+页面上也没有任何错误文案（`deckError` 是空的）。
+
+**逐层定位**（`scripts/diag-fetch-shapes.mjs`）：真机上 `window.fetch` 对
+6 种请求形态（绝对/相对 URL、带/不带 token、GET/POST、存在/不存在的路径）
+**全部返回 `undefined`**。于是 `api/http.ts` 里 `await fetch(...)` 拿到 undefined，
+下一行读 `res.ok` 直接炸：`Cannot read properties of undefined (reading 'ok')`。
+
+**交叉验证哪一层坏了**（`scripts/diag-http-layers.mjs`）：
+
+| 通道 | 结果 |
+|---|---|
+| `window.fetch` | **UNDEFINED**（6/6 种形态） |
+| `XMLHttpRequest` | **200 ok** |
+| `CapacitorHttp.request`（原生层） | **200** |
+| `navigator.sendBeacon` | true |
+
+⇒ 网络与原生 HTTP 层都是好的，**只有 fetch 这一条路被换掉了**。
+再看 `String(window.fetch)`：不是 `[native code]`，而是一段 JS 包装器，
+里面写着 `window.__reqLog.push(rec...)` —— 它把请求记进 `window.__reqLog`，
+**却没有把底层响应 return 出去**。
+
+**它从哪来的**：
+- `git grep __reqLog`（wt3 与主工作区）→ 无
+- `dist/assets/*.js` 与 `android/app/src/main/assets/public/assets/*.js` → 无
+⇒ **既不在仓库也不在构建产物里，是运行时注入的残留**（探针或并发会话留下的）。
+
+**决定性对照**：`am force-stop` 后重新启动 App，`fetchName` 变回 `"fetch"`、
+`fetchIsNative: true`，6 种形态全部恢复正常（200/401/201/404），
+`POST /api/flashcards/decks` 直接 **201** 并建出卡组。
+
+⇒ **不是产品缺陷，是设备状态被污染。** 但它伪装得极像：看起来像「这个功能的写路径坏了」，
+实际是全 App 的网络都断了。这与 §4.52.11「App 自主跳转」是同一类陷阱——
+**外部污染看起来和 bug 一模一样**。
+
+**已沉淀成守卫**：`scripts/maestro-run.mjs` 的 preflight 现在会检查
+`String(window.fetch).includes('[native code]')`，不是原生就**直接中止**并提示重启，
+不再浪费一整轮 run 去查一个不存在的 bug。实测输出 `[preflight] fetch 为原生实现 ✅`。
+
+### 4.54.3 闪卡写路径的实际状态：功能是通的，flow 还没绿
+
+**已证实（三方对照）**：
+
+```
+PG: decks=1  notes=1  cards=1
+卡组页断言 ".*回归正面.*"  visible  → COMPLETED      ← BUG-O 的核心判据已达成
+解锁后重进卡组页：dueByDeck = [["deck_48c0…", 1]]
+                 两个「开始复习」按钮 disabled = false
+```
+
+即：零状态建卡组 → 建卡（服务端生成 card）→ 回卡组页看见卡片 → 到期数为 1，整条链路成立。
+
+**仍未跑绿的最后一条**：断言到期数文案 `.*今日待复习 1 张.*`。
+试过 `{ text: ".*开始复习.*", enabled: true }`，因卡组页有**两个同名按钮**
+（外屏那个 rect 实测 `[0,0,0,0]`、真机不可见）导致选择器有歧义，
+表现为 `extendedWaitUntil` 通过、紧接着 `assertVisible` 又红 ⇒ 时红时绿。
+换成内容判据后仍红，**根因未定位**，下一轮从这里接手，不要重复前面 8 轮试错。
+
+### 4.54.4 沉淀的测试基础设施
+
+| 文件 | 作用 |
+|---|---|
+| `scripts/flashcards-test-fixture.mjs` | 清 PG 闪卡表 **+ 清 App 的 `flashcards:v1` 缓存**，让 flow 每次从零卡组起步 |
+| `scripts/diag-page-elements.mjs` | 通用只读探针：倒出当前页**真实可见**的可交互元素（只取 `getClientRects().length>0`）。别再读模板猜 UI |
+| `scripts/read-maestro-hierarchy.mjs` | 读 Maestro 落的 screen-hierarchy JSON 并打印（只在断言失败时才落盘） |
+| `scripts/diag-fetch-shapes.mjs` / `diag-http-layers.mjs` | fetch / XHR / CapacitorHttp / sendBeacon 四路交叉验证 |
+| `scripts/diag-fc-duecount.mjs` | 直接读 store 的 cards / dueByDeck / 按钮 disabled |
+| `scripts/diag-textarea-bounds.mjs` | 取 textarea 与保存按钮的坐标百分比 |
+| `.maestro/_probe-a11y.yaml` | **故意失败**的探针 flow，用来逼出某一页的可访问性树 |
+
+**为什么夹具必须同时清 localStorage**：`stores/flashcards.ts:291` 的
+`deckConfigs = mergeById(本地, 服务端)` 是**增量合并**，删除只走
+`envelope.deletedIds` 这条增量通道。夹具是绕开 API 的硬删，客户端本就无从知晓
+——**这是增量同步的正常行为，不是产品缺陷**。只删 PG 不清缓存的话，flow 会一直跑在
+「有卡组」的旧数据上，零卡组分支根本测不到。
+
+### 4.54.5 本轮踩到的 Maestro / WebView 语义（补 §4.52）
+
+- **没有 `disabled` 这个选择器属性**。写了会报 `Unknown Property: disabled`。
+  禁用状态要用 `{ text: ..., enabled: false }`。
+- `text` 是**整串正则全匹配**。包含语义必须写 `.*X.*`；只写 `X.*` 要求从**开头**匹配，
+  而合并节点常以别的文字开头（实测 `今日待复习.*` 匹配不到「回归卡组 今日待复习 0 张 …」）。
+- **合成 tap 不会触发 WebView 里 `<form>` 的 submit**。建卡组按钮
+  `type=submit`，Maestro 的 tap 报 COMPLETED 但 submit 没发生（加
+  `retryTapIfNoChange` 也不行）；同一时刻页面内 `button.click()` 正常建出卡组。
+  改用 `pressKey: Enter`（单行 input 在 form 内会隐式提交）**成功**。
+- **同名元素会有歧义**：同一句「开始复习」在同一页有两个节点，选择器可能命中不同那个。
+  判据尽量用**内容**（如「今日待复习 1 张」）而不是**状态**（enabled）。
+- `uiautomator dump` 在这台 MIUI 上被稳定 SIGKILL（exit 137，重试 5 次全败），
+  拿不到可访问性树；改用「故意失败的 flow」让 Maestro 自己落盘。
+- `assertVisible` 的 **V 是大写**。批量替换选择器时按小写 `visible:` 去匹配会全部落空
+  （`scripts/fix-flow-contains.mjs` 就踩了这个，`fix-flow-contains2.mjs` 补齐）。
+
+### 4.54.6 一次假通过（自查抓到）
+
+第一版 flow 用 `visible: "回归卡组.*"` 断言卡组建出来了，**通过了**——
+但匹配到的是**建卡组输入框里刚输入的值**，不是卡组列表项。
+当时 PG 0 行、后端无请求，真实情况是「卡组压根没建出来」。
+⇒ 判据会被页面上恰好同名的元素喂饱。已改成断言零状态空态**消失** +
+PG 侧三方对照，这类「假通过」以后必须用**数据层证据**兜底。
 
