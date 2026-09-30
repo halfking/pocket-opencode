@@ -2531,6 +2531,10 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   （`/finance` 在 `SettingsView.vue` 有入口，是可达的。）
 - **闪卡 browser / stats 的翻译块只有 en-US 和 zh-CN**，其余 7 种语言靠
   `fallbackLocale: 'en-US'` 兜底。功能不受影响，但这 7 种语言的用户看到的是英文。
+- **`FinanceView.vue` 整页没有走 i18n**，约 20 处硬编码中文（本月收入/本月支出/结余/
+  记账/确认入账/暂无账单/笔记自动…）。它引用的两个错误兜底键在 9/9 语言里都已翻译，
+  说明**只是这一页漏了**，不是缺键。本轮**未修**（§4.33.6）——
+  9 种语言 × 20 条记账术语需要逐条审，错译比不译更糟。
 
 ### ❌ 未验证（下一轮必须补）
 - **`study.decks.*` 整块 7 个键在 7 种语言里未翻译**（与 en-US 逐字节相同，
@@ -2543,12 +2547,18 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   （因 `CAP_ANDROID_SCHEME` 没在跑 cap sync 那次调用里设），只观察到 origin 是 https，
   **没有验证 mixed content / ws:// 在该 scheme 下的实际行为**。不算已回归。
 - **任务 / 会话 的编辑、删除**未验证（创建已验证 201 + 落库）。
-- **密码箱 / 实例 / 费用配额**的 UI 写路径**零验证**（后端端点已通，§4.12）。
-  **本轮推进**：邮箱（已验证 + 修 2 个真缺陷）与**网关（已验证 12/12，无新缺陷）**
-  已从「零验证」里划掉。剩下这三个一个都还没跑，**不要把前两个的结果外推过去**。
-  ✅ **市场已打通**（§4.25，12/12）；**其余五个模块（密码箱 / 邮箱 / 网关 / 实例 / 费用配额）
-  的 UI 写路径仍一条都没在真机上点过**。
-  ⚠️ 密码箱要特别注意：它有**两个独立障碍** —— `Keystore` 原生插件未实现
+- ~~**密码箱 / 实例 / 费用配额**的 UI 写路径**零验证**（后端端点已通，§4.12）。~~
+  → **费用配额（记账）已从零验证里划掉**（§4.33）：后端契约 21/21、
+  真机 UI 写路径 **26/26 连跑两轮**、sabotage 证伪 10/26 与 16/26 均如期失败。
+  顺带修掉 **BUG-AD**（`/api/finance/stats` 缺方法白名单）。
+  ⚠️ 剩下**密码箱 / 实例**两个仍未跑，**不要把记账的结果外推过去**。
+  ⚠️ **实例模块的范围要改**：`handleInstances` 完全不检查 `r.Method`，
+  `/api/opencode/instances/` 只处理 `/stats`、其余 404 且前端从不调用，
+  `InstanceListView.vue` 只有刷新与选择、**没有创建表单** ——
+  **它是只读设计，「实例的 UI 写路径」本身就是范畴错误**。
+  下轮应改为验**读路径 + 空态/错误处理**（如「请确认服务器已注册实例后重试」
+  在服务端 500 时是否诚实显示），不要再按写路径去找。
+  ⚠️ 密码箱仍要特别注意：它有**两个独立障碍** —— `Keystore` 原生插件未实现
   **且** `/api/vault` 恒 404。只补插件不会让它可用。
 - ~~**闪卡的 UI 写路径**~~ → **已跑通**（`redmi-write-ops-modules.mjs` 7/7，见上）。
 - **任务 / 会话 的写操作**未验证。`GET /api/tasks` 200 可读，但 `POST /api/tasks` 在 dev 后端
@@ -2911,3 +2921,170 @@ main 比对，不能只看 `git log --no-merged`。
 推论：**「落点全是 UI 导航目标」是一个强信号**，它几乎不可能由哈希赋值自己产生。
 纯 `location.hash = x` 的脚本导航不可能「点到」底栏，落点却偏偏全是 BottomNav 的
 tab 路由 —— 那一刻一定有人在点屏幕。看到这种形状，先怀疑测量环境，再怀疑代码。
+
+## 4.33 记账（finance）模块：后端契约 21/21，真机 UI 写路径 26/26（连跑两轮），**顺带修掉 BUG-AD**
+
+本轮把 §4.32 的同一套路搬到记账模块上。结论分三块。
+
+### 4.33.1 后端契约是完整的（`probe-finance-api.mjs`，21/21）
+
+```
+GET    /api/finance                       -> 200 {total,transactions[]}
+POST   /api/finance/parse "打车花了 32 元"  -> 200 {type:expense,amount:32,category:交通}
+POST   /api/finance/parse "今天天气不错…"   -> 400   ← 不返回「200 + amount 0」的假预览
+POST   /api/finance（完整）                 -> 201 created=true
+POST   /api/finance（同 note_ref 再来一次）   -> 200 created=false，id 完全相同  ← 幂等真的生效
+GET    /api/finance/{id}                  -> 200；不存在的 id -> 404
+GET    /api/finance/stats?month&tz        -> 200，by_category 含新建的「交通」
+GET    /api/finance/stats?tz=99999        -> 400  ← tz 有真校验
+DELETE /api/finance/{id}                  -> 204，之后再取 -> 404
+GET    /api/finance/definitely-not-a-route-> 404  ← 阴性对照
+GET    /api/finance（无 token）            -> 401  ← 阴性对照
+```
+
+**这一步的意义**：把「后端不支持」和「UI 有 bug」提前分开。21/21 干净意味着
+后面真机上出的任何问题**都不能**用「后端没这能力」解释。
+
+### 4.33.2 BUG-AD：`/api/finance/stats` 没有方法白名单（低危，已修）
+
+`handleFinanceOps` 在进 method switch **之前**就把 `stats` 分流给 `handleFinanceStats`，
+而 `handleFinanceStats` 自己不看 `r.Method`。同前缀下的另外两个子路由都有白名单
+（`parse` 只收 POST，`/{id}` 只收 GET/DELETE），**只有 stats 没有**：
+
+```
+DELETE /api/finance/stats -> 200 {"month":"","total_income":0,...}
+POST   /api/finance/stats -> 200 （同上）
+```
+
+**严重度：低。** 它只读，造不成数据损坏。但危害是实的：探活脚本/爬虫/错误重试
+用 POST 或 DELETE 打出一次 200，看起来像「改成功了」，而实际什么都没发生 ——
+这正是 BUG-AC 那类「状态码在说谎」的同一形状，只是发生在 HTTP 层。
+
+**修复**（`backend/internal/server/server_finance.go`）：`handleFinanceStats` 开头加
+```go
+if r.Method != http.MethodGet {
+    http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+    return
+}
+```
+
+**回归** `TestFinanceStats_RejectsNonGET`（5/5 通过）：
+
+| 子测试 | 修复后 | 撤掉白名单（证伪） |
+|---|---|---|
+| baseline `GET /api/finance/stats` | 200 且 body 非空 | 200（对照必须保持绿） |
+| `DELETE` | 405，body 不含 `total_income`/`by_category` | **200 + 完整统计内容 → FAIL** |
+| `POST` | 405 | **200 → FAIL** |
+| `PUT` | 405 | **200 → FAIL** |
+| `PATCH` | 405 | **200 → FAIL** |
+
+证伪是实打实把那段 `if` 删掉重跑，4/4 子测试如期红、报的正是 405≠200，
+然后再把修复放回去。`go test ./internal/server/ ./internal/finance/` 全绿（3.013s / 0.205s）。
+
+探针里那条原本只「观察」不断言的 `DELETE /api/finance/stats` 已升级成正式判据
+（第 21 条），并换到含修复的新二进制 `logs/pocketd-bugad-v3.exe` 上跑。
+
+### 4.33.3 真机 UI 写路径 26/26（连跑两轮），**没有发现 BUG-AB / BUG-AC 那类问题**
+
+`verify-finance-writepath.mjs`，三段式：API 播种 → UI 点击 → **直接查 PG**。
+
+```
+PASS  前置：直接查 PG 拿到基线行数
+PASS  API 播种成功（2xx，拿到 id）+ 播种后 PG 行数 +1
+PASS  页面就位：输入框与「记账」按钮都存在（缺失即 FAIL，不许空过）
+PASS  读路径：API 播种的记录出现在 UI 列表里 — ↑UI测试-¥11.11  SEED-…
+PASS  对照组 A：空输入时「记账」按钮 disabled（排除「无脑点也能过」）
+PASS  自然语言文本填入并回读一致
+PASS  点「记账」后预览出现 + 金额/收支方向正确（支出 · 交通 · ¥97.77）
+PASS  解析接口 2xx — status=200
+PASS  「确认入账」点得动
+PASS  **直接查 PG** 确认真的写进去了 — 1 -> 2
+PASS  PG 最新一条 amount=97.77 type=expense source=manual，note 是 UI 输入的原文
+PASS  POST /api/finance 非 4xx/5xx — status=201
+PASS  界面给出成功反馈（toast）— ["已入账"]
+PASS  没有失败类反馈与成功类并存 / 没有「PG 未变却说成功」
+PASS  列表回显 + 统计联动（本月支出「-¥108.88」≥ 97.77）
+PASS  **直接查 PG** 确认删除真的生效 — 2 -> 1，DELETE 204，卡片消失
+PASS  对照组：删除没误伤 SEED  +  无未捕获 JS 异常
+```
+
+**记账的「保存」和「验证」本来就是分开的两步**（预览 → 确认入账 → 才 POST），
+没有 BUG-AC 那种「把两个状态混成一个」的结构性风险。这是它比邮箱模块干净的原因。
+
+### 4.33.4 证伪：26/26 的绿灯本身不算证据，所以给它加了两个 sabotage 模式
+
+判据没在「有缺陷」一侧失败过，就只是一串会一直绿的字符串。本轮给脚本加了
+`--sabotage=hide-cta` 和 `--sabotage=swallow-create`，**判据必须失败才算跑对**：
+
+| 证伪模式 | 做什么 | 结果 |
+|---|---|---|
+| `hide-cta` | 把「记账」按钮从 DOM 摘掉 | **10/26**，16 条判据如期失败，判定 ✅ |
+| `swallow-create` | 拦掉 `POST /api/finance` 并回一个假的 201 | **16/26**，判定 ✅ |
+
+`swallow-create` 这一轮是本轮**最有价值的一次证伪**，它精确复刻了 BUG-AC：
+
+```
+toast = ["已入账"]
+PASS  界面给出成功反馈（toast）        ← UI 确实说了成功，toast 判据放行
+FAIL  **直接查 PG** 确认真的写进去了 — 1 -> 1
+FAIL  ⚠️ 没出现「PG 未变却说成功」的假成功 — saidOk=true PG 1->1
+FAIL  POST /api/finance 非 4xx/5xx — （未捕获到创建请求）
+```
+
+**如果只判 toast，这个 BUG-AC 会被判成通过。** 抓出它的是「直查 PG」和
+「PG 未变却出现成功文案」这两条。把这条写进纪律：**反馈类判据永远不能单独成立。**
+
+### 4.33.5 本轮我自己犯的三个错（都是「绿灯/红灯都不可信」那一类）
+
+1. **改 hash 不触发 `onMounted`，读到上一轮的陈旧列表 → 读路径判据假失败。**
+   证伪 `hide-cta` 那一轮报「共 1 张卡，但那张是上一轮的旧 SEED」。
+   根因：设备已经在 `#/finance` 时，`location.hash = '#/finance'` 不产生导航，
+   `load()` 根本不跑。修法是**无条件点一次头部「刷新」强制 load，再轮询等目标卡片**。
+   —— 教训：**「页面已经在这个路由上」时，任何 `location.hash = 同值` 的导航都是空操作**。
+
+2. **sabotage 跨轮泄漏。** `b.remove()` 摘掉按钮后，Vue 的 vdom 仍认为那个节点在，
+   重新 patch 时**不会**把它插回去 —— 于是下一轮即使不指定 `--sabotage` 也照样 `btn=false`，
+   整轮结论作废（当时 `swallow-create` 退化成 `hide-cta`，白跑一轮）。
+   修法：每轮开头无条件 `location.reload()`；再加一道污染守卫，
+   非 `hide-cta` 模式下按钮本该在，不在就 `CONTAMINATED` 直接退出。
+
+3. **证伪判定器自己把「抓到了」报成「没抓到」，连续两轮。**
+   - 第一版：`expectKey` 写了 `**直接查 PG** …`，判定时把 `*` 剥掉再 `includes`，
+     而实际判据名里也带 `**` → 永远匹配不上。
+   - 修完还是 ❌：真凶是 `failed` 是 **`{n, pass}` 对象数组**，
+     `failed.map(norm)` 把每个对象 `String()` 成了 `"[object Object]"`。
+   - 修好后我把匹配逻辑**单独拎出来跑**做验证，结果 `caught = true` ——
+     **但那是假的**，因为我喂进去的是**纯字符串数组**，没有复现真实的对象形状。
+     隔离测试没有复制真实数据结构，就验证了一个不存在的问题。
+   —— 教训：**隔离复现必须连数据形状一起复制**，否则「单独跑一遍」只是安慰剂。
+
+### 4.33.6 记账模块的 i18n 缺口（**未修，已量化**）
+
+`FinanceView.vue` **整页没有走 i18n**，全部硬编码中文：
+本月收入 / 本月支出 / 结余 / 记一笔 / 记账 / 识别中… / 收入 / 支出 /
+确认入账 / 取消 / 加载中… / 暂无账单 / 空态提示 / 笔记自动 / 语音 / 发票 /
+删除（aria-label） / 刷新（aria-label） —— 约 **20 处**。
+而它用到的两个错误兜底键 `errors.loadFinanceFailed` / `errors.operateFailed`
+在 **9/9 语言里都存在且已翻译**（zh-CN/en-US/de-DE/es-ES/fr-FR/ja-JP/ko-KR/pt-BR/zh-TW）。
+
+**没有修**，理由直说：9 种语言 × 20 条记账术语，机器翻译出来的
+「结余/余额」「收入/所得」在财务语境里会分叉，**错译比不译更糟**。
+这跟已登记的 `study.decks.*` 42 条未翻译是同一类欠账，合并到国际化队列里一起做。
+
+### 通用教训八：绿灯不算证据，**判据必须在有缺陷的一侧失败过**
+
+记账这一轮把这条用到了极致，也因此抓到一次「差点被骗过去」的假成功：
+
+- `--sabotage=swallow-create` 拦掉 `POST /api/finance` 回一个假 201 之后，
+  **toast 判据照样 PASS**（UI 确实弹了「已入账」），只有「直查 PG」和
+  「PG 未变却出现成功文案」判成 FAIL。**只判反馈文案的话，BUG-AC 会被判通过。**
+- 同理，Go 侧也是实打实把 `if` 删掉重跑，4/4 子测试红、报的还是 405≠200，才放回去。
+
+两条硬规矩：
+1. **反馈类判据（toast / 状态条 / 提示语）永远不能单独成立**，必须配一条落库/网络侧判据。
+2. **「证伪判定器」本身也要证伪。** 本轮判定器连报两轮「没抓到破坏」，
+   第一次是 `*` 剥离不对称，第二次是 `failed` 是对象数组却被当字符串用。
+   修好后我把匹配逻辑单独跑了一遍得到 `true`，**但那是假的** ——
+   我喂进去的是纯字符串数组，没复现真实数据结构。**隔离复现必须连数据形状一起复制**，
+   否则「单独跑一遍」只是安慰剂。
+

@@ -1024,3 +1024,55 @@ BUG-K（`0ac074b`）只动了 zh-CN / en-US。
 
 **未验证**：StudyHubView 的内联建组**未在真机/模拟器上跑过**，只有静态修复 + 类型检查 +
 i18n 测试（`vue-tsc --noEmit` exit 0；locale 测试 17/17）。不要外推 BUG-X 的真机 13/13。
+
+---
+
+## 记账（finance）模块验收轮：BUG-AD + 真机 26/26（2026-09-30 18:00-18:30）
+
+### BUG-AD：`/api/finance/stats` 缺方法白名单（低危，已修）
+
+**文件**：`backend/internal/server/server_finance.go`
+
+**根因**：`handleFinanceOps` 在进 method switch **之前**就把 `stats` 分流给
+`handleFinanceStats`，而 `handleFinanceStats` 自己不看 `r.Method`。
+同前缀的另外两个子路由都有白名单（`parse` 只收 POST、`/{id}` 只收 GET/DELETE），
+只有 stats 没有，于是 `DELETE /api/finance/stats` 回 **200 + 完整统计内容**。
+
+**严重度：低**（只读，造不成数据损坏）。但危害是实的：探活脚本 / 爬虫 / 错误重试
+用 POST 或 DELETE 打出一次 200，看起来像「改成功了」而实际什么都没发生 ——
+这与 BUG-AC「状态码在说谎」是同一形状，只是发生在 HTTP 层。
+
+**修复**：`handleFinanceStats` 开头加 `if r.Method != http.MethodGet { 405 }`。
+
+**回归**：`TestFinanceStats_RejectsNonGET` 5/5（baseline GET 200 + DELETE/POST/PUT/PATCH
+各 405，且 body 不泄露统计内容）。**证伪**：实打实删掉那段 `if` 重跑，
+4/4 子测试红、报的正是 `405 expected, got 200`，再放回修复。
+`go test ./internal/server/ ./internal/finance/` → ok 3.013s / ok 0.205s。
+
+### 记账模块 UI 写路径：真机 26/26（连跑两轮），未发现新缺陷
+
+- 后端契约 `scripts/probe-finance-api.mjs` **21/21**
+  （含两条阴性对照：随机子路径 404、无 token 401）
+- 真机 `scripts/verify-finance-writepath.mjs` **26/26**，连跑两轮一致；PG 终值归 0
+- 覆盖：自然语言解析 → 预览 → 确认入账 → 直查 PG 落库 → 列表回显 →
+  统计联动（本月支出同步刷新）→ 删除 → 直查 PG 回落 → 未误伤对照组记录
+- 记账的「保存 / 验证」本来就是分两步的（预览 → 确认 → POST），
+  没有 BUG-AC 那种把两个状态混成一个的结构性风险
+
+**证伪（sabotage 模式）**：判据必须在有缺陷一侧失败过才算数。
+
+| 模式 | 结果 |
+|---|---|
+| `--sabotage=hide-cta`（摘掉「记账」按钮） | 10/26，16 条判据如期失败 |
+| `--sabotage=swallow-create`（拦 POST 回假 201） | 16/26，判定通过 |
+
+`swallow-create` 精确复刻了 BUG-AC：**toast 判据照样 PASS**（UI 确实弹了「已入账」），
+只有「直查 PG」和「PG 未变却出现成功文案」判 FAIL。
+**只判反馈文案的话，这个 BUG 会被判通过** —— 反馈类判据永远不能单独成立。
+
+### 本轮未修
+
+- `FinanceView.vue` **整页没走 i18n**，约 20 处硬编码中文。它引用的
+  `errors.loadFinanceFailed` / `errors.operateFailed` 在 9/9 语言里都已翻译，
+  说明只是这一页漏了。9 种语言 × 20 条记账术语需逐条审，**错译比不译更糟**，
+  与已登记的 `study.decks.*` 42 条未翻译合并到国际化队列一起做。
