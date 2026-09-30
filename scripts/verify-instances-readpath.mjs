@@ -98,13 +98,16 @@ const ev = async (x) => (await send('Runtime.evaluate', { expression: x, returnB
 let origin = null;
 const readyDl = Date.now() + 20000;
 while (Date.now() < readyDl) { origin = await ev('location.origin'); if (origin && origin !== 'null') break; await sleep(500) }
-console.log('origin =', origin, '（必须是 http://localhost）');
-if (origin !== 'http://localhost') { console.log('非 dev 包或 WebView 未就绪，中止。'); process.exit(5) }
+// 默认要求 dev 包（http://localhost）。生产 https 回归时用
+// POCKET_EXPECT_ORIGIN=https://localhost 放宽。
+const EXPECT_ORIGIN = process.env.POCKET_EXPECT_ORIGIN || 'http://localhost';
+console.log('origin =', origin, `（本次要求 ${EXPECT_ORIGIN}）`);
+if (origin !== EXPECT_ORIGIN) { console.log(`origin 与预期不符（要求 ${EXPECT_ORIGIN}），中止。`); process.exit(5) }
 
 // 每轮 reload，避免上一轮的 DOM 改动泄漏（记账那轮踩过）
 await ev('location.reload()');
 const rlDl = Date.now() + 30000;
-while (Date.now() < rlDl) { await sleep(1000); if ((await ev('location.origin')) === 'http://localhost') break }
+while (Date.now() < rlDl) { await sleep(1000); if ((await ev('location.origin')) === EXPECT_ORIGIN) break }
 await sleep(2500);
 collecting = true;   // 从这里开始才算这一轮的异常/console 噪声
 

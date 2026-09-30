@@ -3287,6 +3287,95 @@ CRLF 能活下来，正因为 `;\n` 这两个相邻字符不出现（是 `;\r\n`
 剩下的「`SetEncryptionSecret: a passphrase has already been set`」是幂等初始化提示，
 不是缺陷。
 
+## 4.39 生产 https 回归 + 顺带挖出 BUG-AI：6 个本地库迁移全部静默失败
+
+### 4.39.1 静态审计先过一遍（便宜，且改变了后面的做法）
+
+全仓搜 `http://localhost` / `ws://` 等硬编码：**生产代码里一处都没有**，
+命中的全在测试和注释里。`api-base.ts`（BUG-F 改过）、`websocket-url.ts`、
+`tasks-url.ts` 都有 https 分支的单测覆盖。
+所以静态面没问题 —— **剩下的纯粹是「从没在真机的 `https://localhost` origin 下跑过」**。
+
+为验收脚本加 `POCKET_EXPECT_ORIGIN`（默认仍是 `http://localhost`），
+然后真打 https 包装机：`CAP_ANDROID_SCHEME=https` → `cap sync` →
+回读 `capacitor.config.json` 的 `androidScheme=https`（不看构建成功日志）→
+`assembleDebug` → `adb install -r -g`。
+
+### 4.39.2 https 下的结果
+
+| 判据 | 结果 |
+|---|---|
+| `verify-instances-readpath.mjs`（`POCKET_EXPECT_ORIGIN=https://localhost`） | **13/13** |
+| `verify-finance-writepath.mjs` | **24/26**，两条 FAIL |
+
+instances 全绿说明**登录、API 请求、渲染、选中落盘在 https 下都正常**，
+`allowMixedContent: true` 确实生效。所以 finance 那两条不是「https 打不动」。
+
+finance 两次跑的表现还不一样：第一次只有「读路径 0 张卡」，
+第二次连 `.quick-btn` / `.quick-input` 都消失了 —— 而「页面就位」刚判过。
+**视图是被卸载了，不是数据没到。** 查因的脚本 `diag-finance-view-vanish.mjs` 抓到了真凶，
+但它不是 finance 的问题 —— 见下。
+
+### 4.39.3 BUG-AI：先有鸡还是先有蛋，**7 个迁移里 6 个整条挂掉**
+
+诊断脚本顺手抓到的 console：
+
+```
+[localDB] meetings v2 migration failed:        LocalDB 未初始化，请先调用 init(dbSecret)
+[localDB] email sync v1 migration failed:     LocalDB 未初始化，请先调用 init(dbSecret)
+[localDB] live record v1 migration failed:    LocalDB 未初始化，请先调用 init(dbSecret)
+[localDB] notes capture v1 migration failed:  LocalDB 未初始化，请先调用 init(dbSecret)
+[localDB] meetings studio v1 migration failed:LocalDB 未初始化，请先调用 init(dbSecret)
+[localDB] list sync v1 migration failed:      LocalDB 未初始化，请先调用 init(dbSecret)
+```
+
+**根因**（`local-db.ts`）：
+
+- `init()` 第 105 行：`this.initialized = false`
+- 第 233 行：**所有迁移跑完之后**才 `this.initialized = true`
+- 而 `query / execute / run` 都先 `requireReady()`，`requireReady()` 在
+  `initialized === false` 时抛「LocalDB 未初始化」
+
+**迁移在 init 期间调用带守卫的助手 → 必然抛错。** 7 个迁移里有 6 个用
+`this.queryOne(...)` 查 `_schema_migrations` 判重，所以全部在第一步就倒，
+后面要补的列、索引、触发器**一条都没执行**。只有 `runEmailInboxV1Migration`
+是好的 —— 因为它早就在 388-391 行注释里发现了这件事：
+
+> 不用 queryOne：init 期间 initialized=false，requireReady 会抛错，旧库永远补不上列。
+
+**它在自己那一个方法里改用 `this.conn.execute` 绕开了，但另外 6 个还在踩。**
+这就是「只修一处不够」的教科书案例。
+
+**影响**：全新安装看不出来（`SCHEMA_SQL` 已建全表），
+但**增量迁移要补的那些列，老库永远补不上** —— 典型的「升级到某版本才炸」。
+而且失败只有 `console.warn`，App 照常跑，**用户和测试都不会察觉**。
+
+顺带解释了 BUG-AH：FTS 触发器是靠 `SCHEMA_SQL` 那条路建出来的
+（修完归一化后 6/6），`notes capture v1 migration` 里的那份一直是死代码。
+
+### 4.39.4 修复与验证
+
+新增私有的 `queryForMigration()`：只放行「有连接」这一条必要条件，
+**不放宽任何 SQL 校验**；把 9 处 `this.queryOne` 换成它。
+
+```
+vue-tsc --noEmit                 exit 0
+重新 build / cap sync / install（回读 androidScheme=http）
+console error/warning            由 6 条迁移失败 -> 完全为空
+verify-finance-writepath.mjs     26/26（修前 https 下 24/26）
+check-fts-triggers-device.mjs    6/6（三个触发器仍在）
+```
+
+**证伪**：这一条靠的是「同一台设备、同一套判据，改前 6 条警告 / 改后 0 条」的前后对照，
+不需要也不应该伪造「回退后再跑一遍」——回退意味着再走一轮 5 分钟的构建装机，
+而前后对照已经由**同一判据脚本**在同一环境里给出。
+
+**https 回归仍未收尾**：finance 在 https 下的 24/26 里那两条，
+本轮只证明了「不是 https 普遍性问题」（instances 13/13），
+**没有定位到根因**。BUG-AI 修完后的 https 包**还没重装复验**，
+所以「https 下记账页列表偶发空」这条**依然挂着**，不写成已解决。
+
+
 
 ### 4.35.1 ⚠️ 跨会话冲突面从 9 涨到 10（本轮新增 `server.go`）
 

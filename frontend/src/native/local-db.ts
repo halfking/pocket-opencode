@@ -243,13 +243,13 @@ class LocalDB {
         applied_at INTEGER NOT NULL
       );
     `, false)
-    const done = await this.queryOne<{ version: string }>(
+    const done = await this.queryForMigration<{ version: string }>(
       "SELECT version FROM _schema_migrations WHERE version = '2026-07-15-meetings-v2'",
     )
     if (done) return
 
     for (const col of MEETINGS_V2_COLUMNS) {
-      const exists = await this.queryOne<{ cnt: number }>(
+      const exists = await this.queryForMigration<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
         [col.column],
       )
@@ -284,13 +284,13 @@ class LocalDB {
         applied_at INTEGER NOT NULL
       );
     `, false)
-    const done = await this.queryOne<{ version: string }>(
+    const done = await this.queryForMigration<{ version: string }>(
       "SELECT version FROM _schema_migrations WHERE version = '2026-09-07-email-sync-v1'",
     )
     if (done) return
 
     for (const col of EMAIL_SYNC_V1_COLUMNS) {
-      const exists = await this.queryOne<{ cnt: number }>(
+      const exists = await this.queryForMigration<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
         [col.column],
       )
@@ -318,7 +318,7 @@ class LocalDB {
       );
     `, false)
     for (const col of LIST_SYNC_V1_COLUMNS) {
-      const exists = await this.queryOne<{ cnt: number }>(
+      const exists = await this.queryForMigration<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
         [col.column],
       )
@@ -424,7 +424,7 @@ class LocalDB {
       false,
     )
     for (const col of LIVE_RECORD_V1_COLUMNS) {
-      const exists = await this.queryOne<{ cnt: number }>(
+      const exists = await this.queryForMigration<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
         [col.column],
       )
@@ -449,13 +449,13 @@ class LocalDB {
         applied_at INTEGER NOT NULL
       );
     `, false)
-    const done = await this.queryOne<{ version: string }>(
+    const done = await this.queryForMigration<{ version: string }>(
       "SELECT version FROM _schema_migrations WHERE version = '2026-09-08-notes-capture-v1'",
     )
     if (done) return
 
     for (const col of NOTES_CAPTURE_V1_COLUMNS) {
-      const exists = await this.queryOne<{ cnt: number }>(
+      const exists = await this.queryForMigration<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
         [col.column],
       )
@@ -549,7 +549,7 @@ class LocalDB {
       );
     `, false)
     for (const col of MEETINGS_STUDIO_V1_COLUMNS) {
-      const exists = await this.queryOne<{ cnt: number }>(
+      const exists = await this.queryForMigration<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
         [col.column],
       )
@@ -637,6 +637,38 @@ class LocalDB {
   /** 查询单行，无结果返回 null。 */
   async queryOne<T = Record<string, unknown>>(sql: string, values: unknown[] = []): Promise<T | null> {
     const rows = await this.query<T>(sql, values)
+    return rows.length > 0 ? rows[0] : null
+  }
+
+  /**
+   * 迁移专用的免守卫查询（BUG-AI）。
+   *
+   * 背景：`init()` 在开头把 `initialized = false`，直到**所有迁移跑完**才置 true；
+   * 而 `query/execute/run` 都先 `requireReady()`，于是 init 期间调用必抛
+   * 「LocalDB 未初始化，请先调用 init(dbSecret)」。
+   *
+   * 真机实测（https 包，`diag-finance-view-vanish.mjs` 抓的 console）：
+   * 7 个迁移里有 6 个整条挂掉，只剩 console.warn：
+   *   [localDB] meetings v2 migration failed: LocalDB 未初始化…
+   *   [localDB] email sync v1 / live record v1 / notes capture v1
+   *   [localDB] meetings studio v1 / list sync v1 migration failed: …
+   * 全新安装看不出问题（SCHEMA_SQL 已经建全表），
+   * 但**增量迁移要补的那些列，老库永远补不上** —— 典型升级期才爆的坑。
+   *
+   * 为什么之前只坏一半：`runEmailInboxV1Migration` 早就发现了这件事
+   * （388-391 行的注释写着「init 期间 initialized=false，requireReady 会抛错，
+   * 旧库永远补不上列」），并在那一个方法里改用 `this.conn.execute` 绕开 ——
+   * 但另外 6 个方法还在走带守卫的助手。修一处不够。
+   *
+   * 这里只放行「有连接」这一条必要条件，不放宽任何 SQL 校验。
+   */
+  private async queryForMigration<T = Record<string, unknown>>(
+    sql: string,
+    values: unknown[] = [],
+  ): Promise<T | null> {
+    if (!this.conn) throw new Error('LocalDB 未初始化：连接不存在')
+    const res = await this.conn.query(sql, values)
+    const rows = (res.values ?? []) as T[]
     return rows.length > 0 ? rows[0] : null
   }
 
