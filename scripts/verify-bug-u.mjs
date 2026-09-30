@@ -37,7 +37,27 @@ const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 const PKG = 'com.kaixuan.opencode.pocket'
 const PORT = process.env.POCKET_CDP_PORT || '9247'
 const MASTER = process.env.POCKET_MASTER || ''
-const PSQL = 'logs/pg/dist2/pgsql/bin/psql.exe'
+/** 直接查 PG —— 落库判据的唯一可信来源。
+ *  用全限定表名而不是 `SET search_path`：`SET` 会把额外行混进 -t -A 的输出，
+ *  导致 count() 解析成 NaN（踩过一次）。
+ *  psql 路径要能解析：`logs/` 是 gitignored，在 git worktree 里不存在，
+ *  所以按 POCKET_PSQL → 相对路径 → 主仓库绝对路径 依次找。 */
+function resolvePsql() {
+  const cands = [
+    process.env.POCKET_PSQL,
+    'logs/pg/dist2/pgsql/bin/psql.exe',
+    'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe',
+  ].filter(Boolean)
+  for (const c of cands) {
+    try {
+      execFileSync(c, ['--version'], { stdio: 'ignore' })
+      return c
+    } catch { /* 试下一个 */ }
+  }
+  console.error('找不到 psql.exe，请设置 POCKET_PSQL 环境变量')
+  process.exit(4)
+}
+const PSQL = resolvePsql()
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
 
@@ -83,6 +103,21 @@ await send('Runtime.enable')
 // 不带超时：超时只说明"没在窗口内跑完"，不能推断"卡住"
 const ev = async (x) => (await send('Runtime.evaluate', { expression: x, returnByValue: true }))?.result?.value
 
+// 等 WebView 真正加载出文档。装完包立刻连 CDP 时 location.origin 还是 null，
+// 直接往下走会拿到"origin=null"这种假故障。
+let origin = null
+const readyDl = Date.now() + 20000
+while (Date.now() < readyDl) {
+  origin = await ev('location.origin')
+  if (origin && origin !== 'null') break
+  await sleep(500)
+}
+console.log('origin =', origin, ' (必须是 http://localhost)')
+if (origin !== 'http://localhost') {
+  console.log('装的是生产(https)包或 WebView 尚未就绪 —— 后续断言无意义，直接中止。')
+  process.exit(5)
+}
+
 // ---------- 会话恢复（重启后必须先解锁，否则路由守卫弹回 /login） ----------
 await ev(`location.hash = '#/login'`); await sleep(2600)
 if (await ev(`!!document.querySelector('input[placeholder*="主密码"]')`)) {
@@ -102,7 +137,6 @@ if (await ev(`!!document.querySelector('input[placeholder*="用户名"]')`)) {
 
 // 清掉本地缓存，否则 loadFromCache 会把旧卡组灌回来，空态永远不出现
 await ev(`(function(){try{localStorage.removeItem('flashcards:v1')}catch(e){};return 1})()`)
-console.log('origin =', await ev('location.origin'), ' (必须是 http://localhost)')
 
 const checks = []
 const check = (name, pass, detail) => {

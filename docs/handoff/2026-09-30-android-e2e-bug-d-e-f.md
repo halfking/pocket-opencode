@@ -1671,6 +1671,78 @@ CSS picks which one is visible」）。所以 `querySelectorAll` 一次拿到**�
 修好判据后**连跑三轮都是 13/13**。修之前同一脚本是 12/13（那条假 FAIL）。
 如实记录：这条判据**曾经 flaky**，是坑三导致的；现在三轮稳定才敢下结论。
 
+## 4.24 合并裁定：`useApiError` 有两套调用约定，选错会**静默失效**（2026-09-30 15:00-15:30）
+
+### 4.24.1 冲突长什么样
+
+BUG-X（§4.23）提交时与另一条分支合并，`frontend/src/composables/useApiError.ts`
+报 **AA（双方各自新增）**。两边都实现了同一个导出函数，但**调用约定不同**：
+
+| | 第二个参数 | 依赖 |
+|---|---|---|
+| A（本分支） | **i18n key**：`apiError(e, 'errors.saveFailed')` | `api/error-message.ts` 的 `toUserMessage` |
+| B（另一分支） | **已翻译字符串**：`apiError(e, t('flashcards.error.saveFailed'))` | `composables/api-error-message.ts` 的 `resolveApiErrorMessage` |
+
+签名长得几乎一样：`(err: unknown, fallback: string) => string`。
+**TypeScript 不会报错** —— 两边都是 `string`。
+
+### 4.24.2 为什么这是最危险的一类冲突
+
+选错一边，运行时会走到 `t(t('...'))` 或 `t('errors.xxx')`（键不存在）。
+vue-i18n 对未知 key **返回 key 本身**，不抛异常、不打警告，
+用户看到的是 `errors.loadFlashcardsFailed` 这种字符串。
+
+**编译绿、控制台干净、功能"看起来正常"，只有用户能发现。**
+
+### 4.24.3 裁定依据：不看实现，看**调用点**
+
+```
+src/features/**（80+ 处）  apiError(e, 'errors.loadEmailFailed')   ← 传 key
+src/features/flashcards/  apiError(e, t('flashcards.error.*'))    ← 传已翻译串（2 处）
+```
+
+**82 处里 80 处传 key，只有 BUG-O 带来的 2 个闪卡调用点传已翻译串。**
+所以约定 A 才是主干 —— 少数服从多数，且少数只有 2 处、改起来更便宜。
+
+`errors.*` 命名空间当时已有 **38 个键**（含 `errors.loadFlashcardsFailed`），
+正是为了让 A 成为可行选项而补的。
+
+裁定结果：
+- `useApiError.ts` 取 A
+- 2 个闪卡调用点改回传 key
+  （`errors.loadFlashcardsFailed` / `errors.saveFailed`，**不新增键**）
+- 删除 B 引入的 `composables/api-error-message.ts` 依赖
+
+### 4.24.4 沉淀：`scripts/audit-apierror-keys.mjs`
+
+这类冲突靠人眼看不出来，所以做成扫描器，三项检查：
+
+```
+源文件 509 个，语言 9 种
+apiError 字面量 key 调用点: 82 处，20 个不同 key
+apiError 传 t(...) 的调用点: 0 处
+
+=== 检查 1：调用约定是否一致（应全部传 key）===
+PASS  全部调用点都传 key，约定一致 ✅
+
+=== 检查 2：每个 key 在 9 语言里都存在 ===
+PASS  20 个 key × 9 语言 = 180 次核对，全部存在 ✅
+
+=== 检查 3：判据自证（能区分通/不通）===
+PASS  探针 key 在全部 9 种语言里都被判为缺失 → 检测逻辑有效 ✅
+```
+
+**检查 3 是刻意加的**：它故意查一个一定不存在的键，
+用来证明这个扫描器不是恒返回 OK。恒 OK 和真有效在报告上长得一模一样。
+
+### 4.24.5 这条能推广
+
+仓库里任何「同一个导出函数有两种调用约定」的合并，都要按这个顺序判：
+
+1. 先数**调用点**各用哪种（`grep` 计数，不是读实现）
+2. 少数派改调用点，成本低于改主干
+3. 加扫描器 + **判据自证**，别让下一个 merge 再翻车
+
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
