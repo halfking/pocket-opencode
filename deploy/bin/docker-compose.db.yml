@@ -33,7 +33,7 @@ services:
     volumes:
       - ${DOCKER_DB_DATA_DIR:?DOCKER_DB_DATA_DIR must be set}:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${OPP_PG_USER:-llm_gateway} -d ${OPP_PG_DB:-pocket}"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${OPP_PG_USER:-llm_gateway} -d ${OPP_PG_DB:-pocket}"]
       interval: 10s
       timeout: 5s
       retries: 12
