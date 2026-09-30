@@ -3945,3 +3945,39 @@ bash 4.2，不是开发机的 bash 5.x**——integration test 必须至少在�
 | ② --frontend-only 与 /api/healthz 未起真容器 | ✅ 收账（7.3，`eee1e1e`），顺带修 BUG-AJ |
 | ③ probeHealthz 对 'ok' 哨兵直接判健康 | ⏸ **维持**（有意不改：哨兵契约已注释锁定；改判定=独立任务，未验证前不得声称已修） |
 | ④ detect 存量 1 FAIL | ✅ 收账（7.2，`7a3a7d7`） |
+
+
+### 4.43 笔记写路径：CDP 夹具**无法驱动** UnifiedComposer，结论是「未验证」而非「有 bug」
+
+#### 4.43.1 现象与排除
+
+用 `redmi-write-ops.mjs` 与新写的 `verify-notes-writepath.mjs` 跑真机，都复现：
+「创建后笔记在列表不显示（0 张卡）」。但**这不是产品缺陷**——根因是测试夹具：
+
+- 笔记新建页的正文/标题是自定义 `UnifiedComposer` 组件，其保存按钮文本实为
+  `send保存`，且**内容非空才 enable**（`.maestro/notes-crud.yaml` 注释已写明）。
+- CDP 用「原生 value setter + input/change/blur 事件」填表后，**按钮仍 `disabled=true`**
+  （`diag-notes-fill.mjs` 实测前后一致）——**v-model 没被程序化填表触发**。
+- 于是「创建」点击是空操作，笔记根本没被保存，后端 `opencode_pocket.notes` 里
+  自然也没有新行（查到的最近几条都是旧的）。
+
+**结论：笔记写路径目前是「未验证」——既没证明它可用，也没证明它坏。**
+卡在「CDP 无法可靠驱动 UnifiedComposer 的 v-model」这个夹具限制上，
+而不是卡在一个已定位的产品 bug 上。
+
+#### 4.43.2 顺带修正 `.maestro/notes-crud.yaml` 的错误选择器
+
+（真机 Maestro 解锁 USB 安装后，这些 flow 要能直接跑）
+- 新建按钮：`id: "notes-action"` **错**——实际是 `class="notes-action"` +
+  `aria-label="新建笔记"`（`NoteListView.vue:16`）。id 永远匹配不到。
+- 保存按钮文案是 `保存`（带 send 图标），**不是** `创建`；flow 里的
+  `tapOn: "创建"` 要改成 `保存`。
+- 正文 placeholder 是 `点击 ⛶ 全屏编辑…`（`NoteEditView.vue:34`），
+  不是 flow 里假设的独立 textarea。
+
+#### 4.43.3 打通笔记验证的可行路径（下一轮）
+
+1. **首选**：真机 Maestro（解锁「USB 安装」后）——它走真实触摸/键盘，能正确驱动 v-model。
+2. **备选**：CDP 改用 `Input.insertText` / `Input.dispatchKeyEvent`（真键盘事件）而非
+   setter 注入，可能触发 v-model。
+3. 在此之前，**不要**把笔记写路径写成「已验证」。
