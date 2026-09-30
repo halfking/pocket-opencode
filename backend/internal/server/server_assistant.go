@@ -2201,6 +2201,18 @@ func (s *Server) handleVaultSync(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
+		// BUG-AG：空 blob 必须拒。vault 的同步语义是「上传整块密文」，
+		// 空 blob 不是「清空密码箱」，而是「客户端这次没拿到数据」。
+		// 现实触发路径很现实：原生 Keystore 插件缺失 → keystore.ts 的
+		// StubKeystore 抛错/返回空 → 同步逻辑把空串传上来 → 这里一旦照收，
+		// 用户已存的密文就被覆盖清空，而响应是 200 {"ok":true}，
+		// 前端还会广播「已同步」—— 与 BUG-AC 同一形状，但后果是**丢数据**。
+		// 恢复走 POST /api/vault/sync/{version}/restore，不靠上传空串。
+		// 回归：TestVaultSync_RejectsEmptyBlob（撤掉这段会红，body 正是 {"ok":true}）
+		if strings.TrimSpace(body.Blob) == "" {
+			writeError(w, http.StatusBadRequest, "blob is required (refusing to overwrite the stored vault with an empty payload)")
+			return
+		}
 		if err := s.vaultStore.PutLatest(r.Context(), s.workspaceIDFromRequest(r), uid, body.Blob, body.Version); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
