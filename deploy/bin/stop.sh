@@ -17,13 +17,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/env.sh"
 
 REMOVE_VOLUMES=false
+FRONTEND_ONLY=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --volumes) REMOVE_VOLUMES=true; shift ;;
+    --frontend-only) FRONTEND_ONLY=true; shift ;;
     --help) echo "用法: $0 [--volumes]"; exit 0 ;;
     *) echo "未知参数: $1"; exit 1 ;;
   esac
 done
+if [[ "$FRONTEND_ONLY" == true && "$REMOVE_VOLUMES" == true ]]; then
+  echo "frontend-only 不允许删除卷" >&2
+  exit 2
+fi
 
 if [[ ! -f "${POCKET_ENV_FILE}" ]]; then
   echo "❌ env file 不存在: ${POCKET_ENV_FILE}" >&2
@@ -44,6 +50,28 @@ DOCKER_COMPOSE=(docker compose
   --env-file "${POCKET_ENV_FILE}"
   -f "${POCKET_COMPOSE_FILE}"
 )
+
+if [[ "$FRONTEND_ONLY" == true ]]; then
+  [[ "$DEPLOY_ENV" == "local" ]] || { echo "frontend-only 仅允许 local" >&2; exit 2; }
+  # The root controller supplies a previously verified, full container ID.
+  # Recheck through Compose immediately before signalling the application.
+  [[ "${OPP_EXPECT_FRONTEND_ID:-}" =~ ^[a-f0-9]{64}$ ]] || {
+    echo "缺少已核实的 OPP_EXPECT_FRONTEND_ID" >&2; exit 2;
+  }
+  actual_id="$("${DOCKER_COMPOSE[@]}" ps --all -q frontend)"
+  [[ "$actual_id" == "$OPP_EXPECT_FRONTEND_ID" ]] || {
+    echo "frontend 容器归属已变化，拒绝停止" >&2; exit 2;
+  }
+  labels="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}' "$actual_id")"
+  [[ "$labels" == "$POCKET_PROJECT_NAME|frontend" ]] || {
+    echo "frontend 标签不匹配，拒绝停止" >&2; exit 2;
+  }
+  # Stop this immutable ID. A concurrent Compose recreation must not cause
+  # a second lookup to signal its replacement container.
+  docker stop --time 10 "$actual_id"
+  echo "✅ 仅停止 frontend；pocketd、网络、卷保持"
+  exit 0
+fi
 
 if [[ "${REMOVE_VOLUMES}" == true ]]; then
   echo "▶ docker compose down --volumes"
