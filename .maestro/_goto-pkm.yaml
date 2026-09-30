@@ -18,19 +18,54 @@
 # 所以这里一律用文本点击，并用 extendedWaitUntil 兜住状态切换。
 appId: com.kaixuan.opencode.pocket
 ---
+# 进「更多」之前先确认 AI 工具页内容与底部导航都渲染完了。
+# 底部导航是 position:fixed 一直在屏幕上，但页面还在做数据加载时点它，
+# 实测有两种失败形态：① 元素还没进视图树，tapOn 直接 FAILED；
+#   ② 元素在、报 COMPLETED，但路由没变。所以这里既等页面内容，也等目标本身。
+- extendedWaitUntil:
+    visible: "主导航"
+    timeout: 30000
+- extendedWaitUntil:
+    visible: "更多"
+    timeout: 20000
+
 - tapOn: "更多"
+- waitForAnimationToEnd:
+    timeout: 3000
+
+# ⚠️ 重试必须写成「不会失败的命令」：Maestro 遇到失败的断言会**直接中止整条 flow**，
+#    所以任何 extendedWaitUntil 一旦超时，后面的补救根本没机会跑（实测踩过）。
+#    正确做法是：先用 runFlow when 做条件判断（判断本身不算失败），
+#    把可能失败的等待放在最后一条。
+- runFlow:
+    when:
+      notVisible: "PKM笔记"
+    commands:
+      - tapOn: "更多"
+      - waitForAnimationToEnd:
+          timeout: 3000
+
 - extendedWaitUntil:
     visible: "PKM笔记"
     timeout: 20000
+- assertVisible: "PKM笔记"
 
 - tapOn: "PKM笔记"
 
 # 守卫判定：本地库没解锁就把会话改写成 #/login?returnTo=/pkm/today&unlock=1
+#
+# ⚠️ 这里的密码框必须用**坐标**点，不能 tapOn "主密码"：
+#    在解锁页上「主密码」是一个 [View] 标签，密码框本身是 [EditText]（text 为空）。
+#    点标签不会让输入框获得焦点，接着的 inputText 就打进虚空，
+#    而 Maestro 照样把 tapOn 和 inputText 都报成 COMPLETED——
+#    结果：解锁按钮被点了、但密码是空的、解锁没发生（实测两次）。
+#    EditText 的 Android bounds 是 [82,924][638,1020] → 中心 50%,59%。
 - runFlow:
     when:
       visible: "解锁本地数据"
     commands:
-      - tapOn: "主密码"
+      - tapOn:
+          point: "50%,59%"
       - inputText: ${POCKET_MASTER}
       - hideKeyboard
       - tapOn: "解锁"
