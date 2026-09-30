@@ -30,7 +30,7 @@
 
         <div v-if="store.loading" class="state" role="status">{{ t('common.loading') || '加载中…' }}</div>
         <div v-else-if="store.error" class="error" role="alert">
-          {{ apiError(store.error, 'errors.loadFlashcardsFailed') }}
+          {{ apiError(store.error, t('flashcards.error.loadFailed')) }}
           <button type="button" @click="reload">{{ retryLabel }}</button>
         </div>
         <div v-else-if="decks.length === 0" class="empty" data-testid="flashcards-empty">

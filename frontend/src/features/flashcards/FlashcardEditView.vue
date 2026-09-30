@@ -387,7 +387,7 @@ async function save() {
     }
     goBack()
   } catch (e: any) {
-    error.value = apiError(e, 'errors.saveFailed')
+    error.value = apiError(e, t('flashcards.error.saveFailed'))
   } finally {
     saving.value = false
   }
