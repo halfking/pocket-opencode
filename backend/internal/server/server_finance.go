@@ -155,6 +155,17 @@ func (s *Server) handleParseFinance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFinanceStats(w http.ResponseWriter, r *http.Request) {
+	// BUG-AD：/api/finance/ 下的子路由里，parse 和 {id} 都有方法白名单，
+	// 只有 stats 没有 —— handleFinanceOps 在进 method switch 之前就把 "stats"
+	// 分流走了，于是 DELETE /api/finance/stats 也会回 200 + 统计结果。
+	// 虽然它只读、造不成数据损坏，但「任何方法都当读」会让探活/爬虫
+	// 用 POST/DELETE 打出一次 200，看起来像改成功了。与另外两个子路由对齐。
+	// 回归：TestFinanceStats_RejectsNonGET（撤掉这段会 4/4 子测试红）
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
 	// Get authenticated user identity
 	uid := s.userIDFromRequest(r)
 	wsID := s.workspaceIDFromRequest(r)
