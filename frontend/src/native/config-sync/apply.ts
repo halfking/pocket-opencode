@@ -35,7 +35,7 @@ export function applyRemoteSetting(rec: RemoteSetting): void {
 function applyAppPrefs(prefs: AppPrefs): void {
   try {
     if (prefs.theme) localStorage.setItem('app_theme', prefs.theme)
-    if (prefs.locale) localStorage.setItem('app_locale', prefs.locale)
+    if (prefs.locale) applyRemoteLocale(prefs.locale)
     if (prefs.deviceTier) localStorage.setItem('pocket_device_tier', prefs.deviceTier)
     if (prefs.sttPref) localStorage.setItem('pocket_stt_pref', prefs.sttPref)
     if (prefs.theme && typeof document !== 'undefined') {
@@ -43,12 +43,38 @@ function applyAppPrefs(prefs: AppPrefs): void {
       if (prefs.theme === 'system') root.removeAttribute('data-theme')
       else root.setAttribute('data-theme', prefs.theme)
     }
-    if (prefs.locale && typeof document !== 'undefined') {
-      document.documentElement.lang = prefs.locale
-    }
   } catch {
     // localStorage may be unavailable
   }
+}
+
+/**
+ * 下发语言要真正作用到 i18n runtime。
+ * 此前这里只写 documentElement.lang，界面语言纹丝不动，
+ * 出现「<html lang=zh-CN> 但界面是英文」的错配（真机实测）。
+ *
+ * 另一处缺陷：未规范化的字符串被直接写进 app_locale 与 <html lang>。
+ * 老版本上报的 'zh' 这类裸语言码既不是受支持 locale，也不是合法 BCP-47 标签，
+ * 写进去后 <html lang> 与 i18n runtime 再次错配，且会污染后续启动解析。
+ * 现在：只在能匹配到受支持语言时才落盘并切换，匹配不到则完全忽略。
+ * 用动态 import 避免 stores → native → stores 的静态环。
+ */
+function applyRemoteLocale(rawLocale: string): void {
+  void import('../../i18n')
+    .then(async ({ matchLocale, applyLocale }) => {
+      const matched = matchLocale([rawLocale])
+      if (!matched) return
+      const { useLocaleStore } = await import('../../stores/locale')
+      try {
+        useLocaleStore().setLocale(matched)
+      } catch {
+        // pinia 尚未就绪时至少让 i18n runtime 生效
+        applyLocale(matched)
+      }
+    })
+    .catch(() => {
+      // i18n 模块不可用时不动 <html lang>，避免写入非法语言标签
+    })
 }
 
 function applyChatSettings(settings: ChatSettingsPayload): void {

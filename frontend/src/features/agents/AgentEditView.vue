@@ -4,7 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { useChatAgentStore, departmentLabel } from '../../stores/chatAgentStore'
 import { useToast } from '../../composables/useToast'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const agentStore = useChatAgentStore()
@@ -138,7 +140,7 @@ async function handleSave() {
       router.push(`/agents/${created.id}`)
     }
   } catch (err: any) {
-    toast.error(`保存失败：${err.message || err}`)
+    toast.error(apiError(err, 'errors.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -369,7 +371,7 @@ async function handleSave() {
 }
 
 .prompt-input {
-  font-family: 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.6;
   resize: vertical;

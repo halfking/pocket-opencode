@@ -375,6 +375,22 @@ export class MeetingRecorderRuntime {
 const NOTE_CHUNK_MS = 3000
 
 /**
+ * 给「不能拖死 UI 的关键 await」封顶。录音停止链路依赖的状态机
+ * (phase: idle/recording/stopping)一旦被一个挂死的 IO 卡住,录音按钮就再也
+ * 点不动了,所以收尾阶段的每个 IO 都必须走这个上限。
+ */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`操作超时（${ms}ms）`)), ms)
+    p.then(
+      (v) => { clearTimeout(timer); resolve(v) },
+      (e) => { clearTimeout(timer); reject(e) },
+    )
+  })
+}
+
+
+/**
  * 在浏览器/WebView 运行时探测 MediaRecorder 支持:把全局 MediaRecorder 绑到
  * recorderMime.ts 的 probe 接口上(2026-09-21 抽离后)。Node SSR / 测试环境
  * 没有全局 MediaRecorder → 返回空串,让上层走 new MediaRecorder(stream) 默认路径。
@@ -419,6 +435,8 @@ export class NoteRecorderRuntime {
   private committed = ''
   private unlisten: { remove: () => void } | null = null
   private nativeListening = false
+  /** 正在执行的 stop() 收尾;重入直接复用同一个 promise,不重复拆麦克风。 */
+  private stopInFlight: Promise<{ text: string; audioBlob: Blob; durationMs: number } | null> | null = null
 
   private syncTitle() {
     if (this.phase.value === 'recording') setHeaderTitle(`录音 ${formatRecordingClock(this.elapsedMs.value)}`)
@@ -447,6 +465,10 @@ export class NoteRecorderRuntime {
     if (!decision.ok) {
       if (decision.action === 'reject-meeting-busy') {
         this.error.value = '会议录音进行中，请先结束会议录音'
+      } else {
+        // 静默失败会被读成"麦克风按钮坏了"：正在录就明确告知正在录，
+        // 收尾中就等收尾（toggle 已把 stopping 归给 stop() 处理）。
+        this.error.value = this.recording.value ? '正在录音中' : '上一段录音正在收尾，请稍候'
       }
       return false
     }
@@ -484,6 +506,12 @@ export class NoteRecorderRuntime {
     } catch {
       this.error.value = mic.deniedLabel.value || '无法打开麦克风'
       this.cleanupMedia()
+      // 启动失败必须把状态机完整复位:phase 留在非 idle 会让
+      // decideNoteStart 拒绝下一次 start(),录音 FAB 表现为"点了没反应"。
+      this.phase.value = 'idle'
+      this.recording.value = false
+      this.stopTick()
+      setHeaderTitle(null)
       return false
     }
   }
@@ -518,7 +546,30 @@ export class NoteRecorderRuntime {
   }
 
   async stop(): Promise<{ text: string; audioBlob: Blob; durationMs: number } | null> {
+    if (this.stopInFlight) return this.stopInFlight
+    this.stopInFlight = this.runStop()
+    try {
+      return await this.stopInFlight
+    } finally {
+      this.stopInFlight = null
+    }
+  }
+
+  /**
+   * 收尾主体。**必须**在 finally 里把 phase 拨回 'idle'：
+   * phase 一旦卡在 'stopping',decideNoteStart 会拒绝一切新录音、toggle() 也
+   * 直接返回 null —— 录音 FAB 就永久失灵（"点了停止没反应"）。真机上
+   * 下面的转写兜底走 /api/stt/transcribe,该请求若迟迟不回就会稳定复现。
+   */
+  private async runStop(): Promise<{ text: string; audioBlob: Blob; durationMs: number } | null> {
     if (this.phase.value !== 'recording' || !this.mediaRecorder) return null
+    const recorder = this.mediaRecorder
+    // mimeType 必须在 cleanupMedia() 之前取：cleanupMedia 会把
+    // this.mediaRecorder 置 null,之后再读只剩 undefined,拿到的就变成
+    // detectRecorderMime() 的猜测值。猜错 → 拼出的 blob 类型与实际编码
+    // 不符 → stt.filenameForMimeType() 发错扩展名 → 后端转写直接拒收,
+    // 表现为"录音有内容但转不出文字"。
+    const blobType = recorder.mimeType || detectRecorderMime() || 'audio/webm'
     this.phase.value = nextRecordingState('recording', 'toggle')
     this.recording.value = false
     this.stopTick()
@@ -529,44 +580,46 @@ export class NoteRecorderRuntime {
     let stopResolved = false
     await new Promise<void>((resolve) => {
       const onStopped = () => { if (stopResolved) return; stopResolved = true; resolve() }
-      this.mediaRecorder!.onstop = onStopped
-      try { this.mediaRecorder!.stop() } catch { onStopped() }
+      recorder.onstop = onStopped
+      try { recorder.stop() } catch { onStopped() }
       setTimeout(() => { if (!stopResolved) { stopResolved = true; resolve() } }, 3000)
     })
-    if (this.nativeListening) {
-      try {
-        const final = await sttApi.stopStreaming()
+    try {
+      if (this.nativeListening) {
+        // stopStreaming 同样没有内建超时,给 5s 上限;超时只是丢掉这一句
+        // 尾部文本,不能把整个 stop() 拖死。
+        const final = await withTimeout(sttApi.stopStreaming(), 5000)
         const text = (final as { text?: string }).text || ''
         if (text) {
           const next = appendTranscript(this.committed, this.transcript.value, '', text)
           this.committed = next.committed
           this.transcript.value = next.display
         }
-      } catch { /* keep current transcript */ }
-      this.nativeListening = false
-    }
-    this.unlisten?.remove()
-    this.unlisten = null
-    this.cleanupMedia()
-    // 用真实 MIME 类型拼装 blob——Android WebView 多数走 audio/mp4(aac),
-    // 类型不符后端 / 转写接口可能拒绝。兜底回 audio/webm。
-    const blobType = this.mediaRecorder?.mimeType || detectRecorderMime() || 'audio/webm'
-    const audioBlob = this.chunks.length
-      ? new Blob(this.chunks, { type: blobType })
-      : new Blob([], { type: blobType })
-    if (!this.transcript.value.trim() && audioBlob.size > 0) {
-      try {
-        const result = await sttApi.transcribe({ audioBlob })
-        this.transcript.value = result.text
-      } catch (e) {
-        this.error.value = e instanceof Error ? e.message : '转写失败'
+        this.nativeListening = false
       }
+      this.unlisten?.remove()
+      this.unlisten = null
+      this.cleanupMedia()
+      const audioBlob = this.chunks.length
+        ? new Blob(this.chunks, { type: blobType })
+        : new Blob([], { type: blobType })
+      // 分片转写一条都没回来时,用整段音频兜底转写。这是"停止"链路里
+      // 唯一的长耗时 IO,必须加超时 —— 否则后端不响应时 phase 永远停在
+      // 'stopping',录音按钮彻底锁死。
+      if (!this.transcript.value.trim() && audioBlob.size > 0) {
+        try {
+          const result = await withTimeout(sttApi.transcribe({ audioBlob }), 20000)
+          this.transcript.value = result.text
+        } catch (e) {
+          this.error.value = e instanceof Error ? e.message : '转写失败'
+        }
+      }
+      this.pendingResult = { text: this.transcript.value.trim(), audioBlob, durationMs }
+      return { text: this.transcript.value.trim(), audioBlob, durationMs }
+    } finally {
+      this.phase.value = nextRecordingState('stopping', 'drafted')
+      setHeaderTitle(null)
     }
-    this.phase.value = nextRecordingState('stopping', 'drafted')
-    setHeaderTitle(null)
-    // 页面可能已卸载:结果暂存到 pendingResult,NoteListView 重进后消费。
-    this.pendingResult = { text: this.transcript.value.trim(), audioBlob, durationMs }
-    return { text: this.transcript.value.trim(), audioBlob, durationMs }
   }
 
   async toggle(): Promise<{ text: string; audioBlob: Blob; durationMs: number } | null> {
@@ -575,6 +628,9 @@ export class NoteRecorderRuntime {
       return null
     }
     if (this.phase.value === 'recording') return this.stop()
+    // 'stopping':收尾还在跑(转写兜底 IO)。等它跑完并把结果交出去,
+    // 避免"再点一次没反应"被用户读成按钮坏了。
+    if (this.stopInFlight) return this.stopInFlight
     return null
   }
 

@@ -440,6 +440,13 @@ function focusMain() {
 
 .title {
   flex: 1;
+  /* 真机（360dp）实测：邮箱页右侧注入 4 个动作（搜索/归类/删除/更多，共 188px），
+     `flex: 1` 允许标题一路压缩到 30px，「邮箱」被 ellipsis 截成「邮...」。
+     给 2~3 个汉字设下限，短标题不再退化；过长标题仍按 ellipsis 截断。
+     2.5em = 40px（--text-lg: 16px），够放 2 个汉字且不挤。
+     真机 360dp 实测：标题占 56px 时，AI 对话页的 4 个动作（227px）
+     加左侧 chrome 共 413px，超出视口 53px。降到 40px 才能给动作区腾出空间。 */
+  min-width: 2.5em;
   font-size: var(--text-lg);
   font-weight: var(--font-weight-semibold);
   margin: 0;
@@ -491,7 +498,32 @@ function focusMain() {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  flex-shrink: 0;
+  /* 真机（360dp）实测：AI 对话页注入 4 个动作（会话胶囊 83 + 3 个图标按钮各 44 = 227px），
+     叠加左侧 menu(44) + 标题(56) + 通知(44) 后总宽 413px，超出视口 53px，
+     「对比模式」「对话参数」「新建对话」三个按钮整块落在屏幕外，根本点不到。
+     原来的 `flex-shrink: 0` 让容器宁可不缩也不让位，直接把按钮挤出屏幕。
+     改为容器可压缩：宽度不够时由下面显式声明 `.shrinkable-action` 的那个动作让位，
+     其余动作保持 44px 可点区域，不裁切。 */
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 显式声明「这个动作可以被压缩」——唯一允许突破 44px 下限的入口。
+   下限取 36px：22px 图标 + 左右各 6px 内边距 + 2px 边框，图标刚好完整不被裁切。
+   由页面自己选择让位者（通常是带文字、可省略的胶囊），壳层不猜。 */
+:deep(.header-actions > .shrinkable-action) {
+  min-width: 36px;
+  flex-shrink: 1;
+}
+
+/* 窄屏收紧动作间距。
+   真机 360dp 实测：AI 对话页动作区可用 178px，而内容要 180px
+   （胶囊 36 + 3 个图标按钮 44 + 3 个 4px 间距），最右侧胶囊边框被裁掉 2px。
+   把间距收到 2px 可腾出 6px，让胶囊保住 36px 的可点区域 —— 
+   相比把胶囊下限压到 30px，牺牲的是点按手感而不是外观。 */
+@media (max-width: 380px) {
+  .header-actions { gap: 2px; }
 }
 
 .header-actions:empty {

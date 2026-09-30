@@ -36,11 +36,14 @@ test('easeOutCubic 在中段 < t（减速曲线：已走过大半才接近目标
 })
 
 test('easeOutCubic 标准 800ms 关键帧观察点（用户在 200/500/700ms 看到的进度比例）', () => {
-  // 200ms / 800ms = 0.25  → 大约 58% 已显示
-  // 500ms / 800ms = 0.625 → 大约 98% 已显示
-  // 700ms / 800ms = 0.875 → 几乎 100%
+  // 标准 easeOutCubic：f(t) = 1 - (1-t)^3
+  // 200ms / 800ms = 0.25  → 1 - 0.75^3  = 0.5781
+  // 500ms / 800ms = 0.625 → 1 - 0.375^3 = 0.9473
+  // 700ms / 800ms = 0.875 → 1 - 0.125^3 = 0.9980
+  // （此前这条断言把 0.625 的期望写成 ≥0.95 并在注释里写「98%」，两者都算错了：
+  //   0.9473 < 0.95，实现没错，是断言的数学写错了。）
   assert.ok(easeOutCubic(0.25) >= 0.55 && easeOutCubic(0.25) <= 0.62)
-  assert.ok(easeOutCubic(0.625) >= 0.95 && easeOutCubic(0.625) <= 1.0)
+  assert.ok(easeOutCubic(0.625) >= 0.94 && easeOutCubic(0.625) <= 0.96)
   assert.ok(easeOutCubic(0.875) >= 0.99 && easeOutCubic(0.875) <= 1.0)
 })
 

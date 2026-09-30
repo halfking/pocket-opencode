@@ -79,6 +79,16 @@ export function createScrollHideChrome(getMaxHide: () => number): ScrollHideChro
   let suppressUntil = 0
   let edgeGuardUntil = 0
   let flickSamples: Array<{ t: number; d: number }> = []
+  /**
+   * 手势结束瞬间的快甩累计量。
+   *
+   * 必须在「最后一次 scroll 事件」时冻结，不能等到吸附定时器里再算：
+   * 吸附延时 SNAP_DELAY_MS(100) 先于求值，等于用 120ms 的窗口去量只剩 20ms 的
+   * 新鲜样本。事件间隔一旦超过 20ms（真机滚动掉帧就是 25~30ms），最早的样本
+   * 会被窗口判掉，-40px 的上甩只剩 -20px，快甩唤出彻底失效——静默降级很难查。
+   * 冻结后窗口严格覆盖手势最后 120ms，与规格一致且不再依赖定时器抖动。
+   */
+  let flickAtGestureEnd = 0
 
   function clearSnapTimers() {
     if (snapTimer) {
@@ -119,6 +129,7 @@ export function createScrollHideChrome(getMaxHide: () => number): ScrollHideChro
     const now = performance.now()
     flickSum(now)
     flickSamples.push({ t: now, d: delta })
+    flickAtGestureEnd = flickSum(now)
 
     const atTop = scrollTop <= 1
     const atEnd = Boolean(overscrollBottom || atBottom)
@@ -148,7 +159,8 @@ export function createScrollHideChrome(getMaxHide: () => number): ScrollHideChro
     hiddenOffset.value = Math.max(0, Math.min(max, hiddenOffset.value + delta))
 
     snapTimer = setTimeout(() => {
-      const flick = flickSum(performance.now())
+      // 用手势结束瞬间冻结的累计量，不用此刻重新开窗（见 flickAtGestureEnd 注释）
+      const flick = flickAtGestureEnd
       const threshold = max * SNAP_THRESHOLD_RATIO
       let target = hiddenOffset.value >= threshold ? max : 0
       if (flick <= -FLICK_REVEAL_PX) target = 0
@@ -187,6 +199,7 @@ export function createScrollHideChrome(getMaxHide: () => number): ScrollHideChro
     suppressUntil = 0
     edgeGuardUntil = 0
     flickSamples = []
+    flickAtGestureEnd = 0
   }
 
   return { hiddenOffset, snapping, hidden, reportScroll, reveal, toggle, setPinned, suppress, reset }

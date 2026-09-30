@@ -333,7 +333,7 @@ function formatLastSeen(timestamp: string): string {
   font-size: 12px;
   color: var(--text-muted);
   margin: 0 0 12px 0;
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 
 .instance-stats {

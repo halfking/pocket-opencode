@@ -166,7 +166,7 @@ function buildTree(value: unknown, key?: string, depth = 0, path: string[] = [])
   background: var(--bg-tertiary, #f8f8f8);
   border-radius: 6px;
   overflow: hidden;
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
 }
