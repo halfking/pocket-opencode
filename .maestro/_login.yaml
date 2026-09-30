@@ -23,6 +23,15 @@
 appId: com.kaixuan.opencode.pocket
 ---
 
+# ⚠️ 开头必须用 extendedWaitUntil 而不是裸 assert。
+#    Maestro 读的是 **Android 无障碍树**，而 WebView 是**异步发布**这棵树的：
+#    DOM 里元素已经在了（启动器用 CDP 确认过），无障碍树还没推过来，
+#    裸 assert 会在树就绪前那一瞬间直接判 false。
+#    实测踩到过：preflight 刚报「App 外壳已渲染」，flow 第一条 assert 仍失败。
+- extendedWaitUntil:
+    visible: "打开菜单"
+    timeout: 60000
+
 # ---- B. 已登录但本地库锁定：只输主密码 ----
 - runFlow:
     when:

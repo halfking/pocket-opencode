@@ -1,66 +1,53 @@
-# Maestro 真机功能流 · 笔记完整 CRUD
+# Maestro 真机功能流 · PKM 笔记写路径（创建 → 改名 → 回列表可见）
+#
+# ⚠️ 2026-10-01 重写。这份 flow 之前测的根本不是这个模块：
+#   旧版第一行是 tapOn(id: "notes-action")，而 notes-action 是 **CSS class 不是 id**，
+#   永远匹配不到；旧版的「一句话概括」「全屏编辑」占位符属于**另一个**笔记 UI
+#   （`/notes/*` 的 NoteListView / NoteEditView），而底部「更多」里的「PKM笔记」
+#   进的是 PKM 模块（`/pkm/*` 的 PkmTodayView / PkmNoteView + PkmEditor）。
+#   也就是说旧版 flow 从写出来那天起就没通过过，只是没人真跑过。
+#
+# PKM 编辑器的真实结构（scripts/diag-pkm-editor.mjs 实测）：
+#   标题  input.pkm-title，占位与初值都是「无标题」
+#   正文  div.tiptap.ProseMirror（contenteditable）
+#   按钮  只有「返回」(arrow_back) 与「通知中心」——**没有保存按钮**（自动保存）
+#   列表页空态有个 .empty-action 按钮，文案就是「新建笔记」
+#
+# 覆盖范围与边界：
+#   ✅ 创建（点「新建笔记」→ 得到一个真 id 的笔记）
+#   ✅ 改名（改标题 → 回列表能看到新标题）
+#   ❌ **删除**：PKM 模块**没有任何删除入口**。pkm-store.ts:127 有 deleteNote()，
+#      但整个 features/pkm 下没有任何 UI 调用它。这是发现的产品缺口，不是 flow 漏了。
+#      需要产品侧决定是否补入口，或确认删除统一走 `/notes/:id` 那套。
 #
 # 运行：
 #   node scripts/maestro-run.mjs .maestro/notes-crud.yaml
-#   启动器负责：确保 maestro driver 就位（--no-reinstall-driver）、
-#   确定性重启 App、并注入登录/解锁口令。flow 内部只管跑子流程。
-#
-# 2026-10-01 真机首次跑通时的修正（都是这条 flow 从没跑过导致的）：
-#   1) 笔记**不在 AI 工具页上**，入口是 底部「更多」→ 九宫格「PKM笔记」，
-#      路由是 #/pkm/*（不是 #/notes）。
-#   2) 旧版写的是 tapOn(id: "notes-action", index: 1)，而 notes-action 在
-#      NoteListView.vue 里是 **CSS class 不是 id**，永远匹配不到。
-#   3) 不要断言「全部正常」——TasksView 分诊条标签，只在无待处理任务时出现，
-#      且 <380px 窄屏被 CSS 隐藏（TasksView.vue:1443）。真机视口正好 360px。
-#   4) 断言/选择器文本里不要放 emoji（📝 ✓ ✎ 🗑）——Java 正则会抛异常判 false。
-#      本文件统一用纯中文子串。
-#   5) 详情页默认只读，必须先点「编辑」才出现 textarea。
-#   6) 弹窗里的「删除」与工具栏的「删除」同名，用 index 区分。
+#   务必走启动器：裸调 maestro 会触发 driver 重装，MIUI 拦下安装就把 driver 卸了。
 appId: com.kaixuan.opencode.pocket
 ---
 - runFlow: _login.yaml
 - runFlow: _goto-pkm.yaml
 
-# ---- 新建 ----
+# ---- 创建 ----
 - tapOn: "新建笔记"
 - extendedWaitUntil:
-    visible: "一句话概括"
-    timeout: 20000
-- tapOn: "一句话概括"
-- inputText: "Maestro笔记"
-- tapOn: "全屏编辑"
-- inputText: "由Maestro创建"
-- tapOn: "创建"
-- extendedWaitUntil:
-    visible: "Maestro笔记"
+    visible: "无标题"
     timeout: 25000
-- assertVisible: "Maestro笔记"
+- assertVisible: "无标题"
 
-# ---- 编辑（详情页先切编辑态）----
-- tapOn: "Maestro笔记"
+# ---- 改名（标题输入框初值就是「无标题」，先清后写）----
+- tapOn: "无标题"
+- eraseText
+- inputText: "MaestroPKM笔记"
+- hideKeyboard
 - extendedWaitUntil:
-    visible: "编辑"
-    timeout: 20000
-- tapOn: "编辑"
-- extendedWaitUntil:
-    visible: "全屏编辑"
-    timeout: 20000
-- tapOn: "全屏编辑"
-- inputText: "已编辑"
-- tapOn: "保存"
-- extendedWaitUntil:
-    notVisible: "全屏编辑"
-    timeout: 25000
-
-# ---- 删除（含二次确认）----
-- tapOn: "删除"
-- extendedWaitUntil:
-    visible: "取消"
+    visible: "MaestroPKM笔记"
     timeout: 15000
-- tapOn:
-    text: "删除"
-    index: 1
+- assertVisible: "MaestroPKM笔记"
+
+# ---- 回列表：必须能看到新标题，否则「写进去但读不到」也算失败 ----
+- tapOn: "返回"
 - extendedWaitUntil:
-    notVisible: "Maestro笔记"
+    visible: "MaestroPKM笔记"
     timeout: 25000
-- assertNotVisible: "Maestro笔记"
+- assertVisible: "MaestroPKM笔记"
