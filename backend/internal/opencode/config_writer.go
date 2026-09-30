@@ -8,9 +8,12 @@ import (
 // DefaultLLMGatewayBaseURL 默认 LLM Gateway 端点（OpenAI 兼容 /v1/...）。
 // 用户可在 SettingsView 修改后通过 POST /api/llm-gateway/config 热更新。
 //
-// 2026-09-21 调整为 https://llmgo.kxpms.cn/v1（与内部门关服务 .kxpms.cn 路径一致）；
+// 2026-09-30 切回 https://llm.kxpms.cn/v1（用户指定的正式网关，实测 /v1/models
+// 200、608 个模型、流式首字节 ~300ms）；此前 2026-09-21 曾切到 llmgo.kxpms.cn，
+// 并把 llm.kxpms.cn 列入 obsolete 强制改写——两处已一并回退，否则设置页
+// 填 llm.kxpms.cn 会被 rewriteObsoleteGateway 打回 llmgo，配置形同虚设。
 // POCKET_LLM_GATEWAY_URL 仍可覆盖。reset 后首次启动 pocketd 会自动写 seed。
-const DefaultLLMGatewayBaseURL = "https://llmgo.kxpms.cn/v1"
+const DefaultLLMGatewayBaseURL = "https://llm.kxpms.cn/v1"
 
 // DefaultLLMGatewayPreferredModels 默认「常用模型」列表，写入 seed 的
 // preferredModels。catalog models 仍由「测试连接」拉取后写入。
@@ -35,7 +38,7 @@ var DefaultLLMGatewayPreferredModels = []string{
 // 即可让 OpenCode 把所有 LLM 请求通过这个 baseURL 走。对应到 llm-gateway-go 的
 // OpenAI 兼容 /v1/chat/completions、/v1/models 等端点。
 type LLMGatewayConfig struct {
-	BaseURL string   `json:"baseURL"` // e.g. https://llmgo.kxpms.cn/v1
+	BaseURL string   `json:"baseURL"` // e.g. https://llm.kxpms.cn/v1
 	APIKey  string   `json:"apiKey"`  // sk-...
 	Models  []string `json:"models"`  // 可用模型 id 列表；为空时使用 gateway 返回的 /v1/models
 }

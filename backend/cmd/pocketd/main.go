@@ -462,7 +462,7 @@ func main() {
 	var embedder aigate.Embedder
 	var llm aigate.LLMClient
 
-	// 网关 base：显式配置优先，否则回退到默认网关（https://llmgo.kxpms.cn/v1）。
+	// 网关 base：显式配置优先，否则回退到默认网关（https://llm.kxpms.cn/v1）。
 	// 注意 NewClient 会自动剥离结尾的 /v1，因此无论写不带还是带 /v1 都能正确拼接。
 	gwBase := cfg.LLMGatewayURL
 	if gwBase == "" {
