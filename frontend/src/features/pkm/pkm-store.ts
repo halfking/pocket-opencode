@@ -123,9 +123,14 @@ export async function getNote(id: string): Promise<PkmNote | null> {
   return toNote(a.id, a.title, a.bodyText, a.metaJson, a.createdAt, a.updatedAt)
 }
 
-/** 软删除（保留墓碑供多设备同步）。 */
-export async function deleteNote(id: string): Promise<void> {
-  await assetStore.softDelete(id)
+/**
+ * 软删除（保留墓碑供多设备同步）。
+ *
+ * 走 softDeleteForWorkspace 而不是 softDelete：后者只按 id 匹配，跨 workspace
+ * 也能删中；前者带 workspace_id 条件，传错时只会删 0 行（失败安全）。
+ */
+export async function deleteNote(id: string, workspaceId = 'default'): Promise<void> {
+  await assetStore.softDeleteForWorkspace(id, workspaceId)
 }
 
 // ---- 查询 ----

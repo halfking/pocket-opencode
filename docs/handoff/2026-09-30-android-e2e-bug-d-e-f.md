@@ -2564,9 +2564,24 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   `marketplace_installations` 0 → 1**，且关联核对命中的就是刚播种的包；
   对照组重复安装被唯一索引挡住。**这是六个模块里第一个被打通的 UI 写路径**（§4.25）
 
+### ✅ 已验证 · 补充三（BUG-AQ / AR）
+
+- **BUG-AQ** 原生 `confirm`/`alert` 在 Android WebView 同步阻塞渲染进程（两次复现整机假死），
+  **23 处全替换**（7 confirm + 16 alert）；真机 `12/12`，且做了**探针自证**——
+  先主动调 `window.confirm` 制造冻结，证明探针抓得到这种故障（§4.51）
+- **BUG-AR** PKM 笔记「保存成功但列表看不见」，根因是写侧落 `default` 分区、读侧按
+  `auth.workspaceId` 读。**三方对照取证**：借 App 自己的 SQLite 连接直读
+  `local_assets`，4 行 `kind='note'` 全在 `default`、`title='MaestroPKM笔记'`、
+  `client_rev=4`（证明改名确实落盘），而读侧是 `ws_user-admin` → 行在、读不到。
+  修复 3 处漏传 + 1 处跨租户软删；真机 `notes-crud.yaml` **连跑两次 EXIT=0**，
+  新行落在 `ws_user-admin`；静态卡口 `audit-workspace-args.mjs` 518 文件 **0 命中**
+  且**负控证明不是假绿**（§4.53）
+
 ### ⚠️ 本轮新增未验证 / 未修（不要当成已完成）
 
-- ⚠️ **`notes-crud.yaml` / `flashcards-write.yaml` 的功能闭环**尚未跑通。
+- ✅ **`notes-crud.yaml` 的功能闭环已跑通**（PKM 写路径，2026-10-01，§4.53）：
+  真机连跑两次 EXIT=0，含「创建 → 改名 → 回列表可见」，且 DB 直读确认新行落在
+  `ws_user-admin`。⚠️ **`flashcards-write.yaml` 仍未跑通**，不要与它混为一谈。
   流程本身的坑已定位并修掉大半（§4.52.2 那 8 条），但最后卡在**设备被并发会话同时操作**：
   跑到某一轮时 App 的 `localStorage` 从 24 个键被清到只剩 2 个、停在 `#/servers`、
   API base 从构建写死的 `http://127.0.0.1:8088` 变成 `http://192.168.31.20:8088`，
@@ -5104,3 +5119,169 @@ flow 时灵时不灵）都源于此。**这一条是本轮唯一被推翻的结�
 
 ⇒ **坐标不能跨页面复用**。每用一个新页面都要重新量该页元素的 bounds，
 不能拿「之前某页量到的坐标」直接搬过去。
+
+## 4.53 BUG-AR：PKM 笔记「保存成功但列表看不见」——与 BUG-AK 同一形状，PKM 写路径整体漏了 workspaceId
+
+延续 4.52.9 的卡点：`notes-crud.yaml` 走完「创建 → 改名 → 回列表」，最后一条断言始终失败。
+上一轮把它记成「flow 卡住，未定位」。本轮定位到了，**是产品缺陷，且不止一处**。
+
+### 4.53.1 根因：同一个库里，写侧和读侧按不同的 workspace 分区
+
+资产表 `local_assets` 按 `workspace_id` 分区。三处调用点与读侧对不上：
+
+| 位置 | 动作 | 修复前 | 结果 |
+|---|---|---|---|
+| `pkm/PkmNoteView.vue:51` | 新建空笔记 | `saveNote({ title, html })` | 落 `default` |
+| `pkm/PkmEditor.vue:90` | 自动保存（改名/改正文） | `saveNote({ id, title, html, dailyDate })` | 留在 `default` |
+| `pkm/PkmNoteView.vue:18` | 反向链接面板 | `<BacklinksPanel>` 未传 `:workspace-id` | 按 `default` 查 |
+| `pkm/PkmTodayView.vue:90` | 列表/搜索/日记（**读**） | `auth.workspaceId || 'default'` | 读 `ws_user-admin` |
+| `pkm/use-wikilink-nav.ts` | wikilink 跳转/创建 | 已传 `workspaceId` | ✅ 唯一没漏的 |
+| `pkm-store.getOrCreateDailyNote` | 建日记 | 已传 `workspaceId` | ✅ |
+
+兜底发生在 `asset-store.ts:114`：`const wsId = input.workspaceId ?? 'default'`。
+漏传不会报错、不会告警，只是安静地把行写进 `default` 分区。
+这正是 §4.44 BUG-AK 的同一形状——BUG-AK 之后全仓推广了 `currentWorkspaceId()` 约定，
+**PKM 这一整个模块没跟上**。
+
+顺带修掉一处潜在越权：`pkm-store.deleteNote(id)` 调的是 `assetStore.softDelete(id)`，
+只按 id 匹配、跨 workspace 也能删中。改成 `softDeleteForWorkspace(id, workspaceId)`，
+传错时只会删 0 行（失败安全）。该函数目前**没有任何 UI 调用**，属潜在项。
+
+### 4.53.2 怎么拿到硬证据：SQLCipher 读不了，就借 App 自己的句柄
+
+真机本地库 `databases/lobsterSQLite.db` 可以用 `run-as` 拉到（App 是 debuggable），
+但表头不是 `SQLite format 3`——**SQLCipher 加密**，静态读不了（拉下来的 581632 字节与设备一致，
+说明拉取本身是完整的，不是截断）。
+`window.Capacitor.Plugins.CapacitorSQLite.retrieveConnection()` 在 Android 上直接抛
+`"not implemented"`（插件只实现了 web 侧）。
+
+能走通的路子是**借 App 已经建好的连接**（`scripts/diag-pkm-db.mjs`）：
+
+```js
+document.querySelector('#app').__vue_app__            // Vue 3 把 app 实例挂在挂载点上
+  .config.globalProperties.$pinia                     // pinia 装在 globalProperties
+  ._s.get('connectivity').runtime.deps.db()            // MobileSyncRuntime 构造时 deps 原样存 this.deps
+  .all(sql)                                            // → localDB.query（只读，未用 run）
+```
+
+**探针自证**：同一脚本先列 `sqlite_master`（41 张表）、再逐表 COUNT，
+看到 `local_emails` 88 行、`local_email_accounts` 7 行等非零值——
+确认「查询机制本身有效」，不是探针坏掉导致抓不到东西。
+
+**判据本体**（`logs/diag-pkm-db-after.log`）：
+
+```
+local_assets 共 4 行 kind='note'，deleted_at 全为 NULL，workspace_id **全是 'default'**
+其中一行 title = "MaestroPKM笔记"，client_rev = 4
+读侧 localStorage['pocket_workspace_id'] = "ws_user-admin"
+```
+
+⇒ 改名**确实落盘了**（client_rev 一路自增到 4），行**确实存在**，只是躺在另一个分区里。
+读侧查 `ws_user-admin` 自然查不到。**三方对照（DB 有行 / 读侧 ws_user-admin / UI 空）齐了，根因确认。**
+
+### 4.53.3 ⚠️ 自我更正：修完还是红，一度以为修复没生效——真凶是 Maestro 的匹配语义
+
+修完代码、重新构建安装、真机重跑，**最后一条断言仍然 FAILED**。
+此时 DB 里新行已经落在 `ws_user-admin`、DOM 也确实渲染出了这条笔记。
+差点据此判定「修复无效」或「WebView 缓存旧 bundle」。
+
+真凶是判据本身写错了。读失败现场的 UI 层级
+（`~/.maestro/tests/2026-10-01_055405/notes-crud/screen-hierarchy/step-039-*.json`）：
+
+```
+[android.view.View] MaestroPKM笔记空笔记10/1
+```
+
+WebView 把列表项里 `n-title` / `n-snippet` / `n-date` **三个 span 合并成一个可访问性节点**，
+节点文本是「标题+摘要+日期」拼起来的 `MaestroPKM笔记空笔记10/1`。
+而 Maestro 的 `visible` 是**整串全匹配**、不是子串包含（§4.52 早就记过这条，
+这轮却恰好用在了会被合并的列表项上——编辑页的 `input` 是独立节点，纯字符串反而能匹配）。
+
+⇒ 列表断言必须写成正则 `{ text: "MaestroPKM笔记.*" }`。
+**教训：「断言红了」先去看失败现场的层级快照，再怀疑被测对象。**
+
+### 4.53.4 修复清单
+
+| 文件 | 改动 |
+|---|---|
+| `features/pkm/PkmNoteView.vue` | 新建路径传 `workspaceId`；`BacklinksPanel` 补 `:workspace-id`；新增 `currentWorkspaceId()` |
+| `features/pkm/PkmEditor.vue` | 自动保存传 `workspaceId`；新增 `currentWorkspaceId()`（与 NoteEditView 同名函数保持一致） |
+| `features/pkm/pkm-store.ts` | `deleteNote(id, workspaceId)` 改走 `softDeleteForWorkspace` |
+| `.maestro/notes-crud.yaml` | 列表断言改正则；补注释说明「整串全匹配 + 三 span 合并」这个坑 |
+| `scripts/audit-workspace-args.mjs` | 新增：按 import 解析的 workspaceId 漏传静态卡口 |
+| `scripts/pkm-fix-negctl.mjs` | 新增：卡口自身的负控脚本 |
+| `scripts/pkm-test-fixture.mjs` | 新增：清理 flow 残留，保证断言在坏掉的一侧必红 |
+| `scripts/diag-pkm-db.mjs` | 新增：借 App 句柄直读 `local_assets`（含探针自证） |
+| `scripts/diag-pkm-list-now.mjs` | 新增：列表页 DOM 快照 + 同刻 SQL 复算（把「数据对不对」与「渲不渲染」分开） |
+
+**已废弃、不要复用的探针**（本轮试错产物，留在工作区未入库）：
+`diag-cap-globals.mjs`（探 `window.Capacitor.Plugins.SQLite`——插件真名是 `CapacitorSQLite`，
+且 `retrieveConnection()` 在 Android 上是 not implemented）；
+`diag-pkm-partition.mjs`（同上的错误插件名 + 选择器 `.pkm-today-view` 根本不存在，根类是 `.pkm-today`）；
+`diag-pkm-wsdiff.mjs` / `diag-pkm-wsdiff2.mjs`（两次分区对照**都无效**：
+v1 改 localStorage 后 `location.reload()` 触发保险库锁屏，对照组根本没跑到；
+v2 改 pinia 内存值但 KeepAlive 组件没有重新 setup，读侧压根没变）。
+结论请直接采信 §4.53.2 的 DB 直读，不要复活这两个。
+
+### 4.53.5 验证（三侧都有负控，不是只跑绿）
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| 类型检查 | `npx vue-tsc --noEmit`（frontend/ 内） | **EXIT=0** |
+| 功能流 | `node scripts/maestro-run.mjs .maestro/notes-crud.yaml` | **EXIT=0，连跑两次都绿** |
+| DB 判据 | `node scripts/diag-pkm-db.mjs` | 新行 `workspace_id='ws_user-admin'`、`title='MaestroPKM笔记'`、`client_rev=4` |
+| 静态卡口 | `node scripts/audit-workspace-args.mjs` | 518 文件，识别 31 个可省略 workspaceId 的导出函数，**命中 0** |
+| **卡口负控** | `node scripts/pkm-fix-negctl.mjs` | 回退两处修复后**命中 2**，源码自动还原 → 卡口有区分能力 |
+| **设备负控** | 夹具清空 + 冷启动 + 解锁进 PKM 页 | `count:0, emptyShown:true` → 正则断言不可能匹配 |
+
+**设备负控为什么必须做**：flow 每轮都新建一条同名笔记。若不清残留，
+上一轮那条会一直躺在列表里，于是**功能彻底坏掉时断言照样绿**。
+所以每次 run 前必须 `node scripts/pkm-test-fixture.mjs`。
+
+### 4.53.6 沉淀：`audit-workspace-args.mjs`，以及它第一版是**无效**的
+
+BUG-AK 与 BUG-AR 都是同一形状，靠人眼发现两次。所以沉淀成静态卡口。
+**但第一版是假绿，必须记下来**：
+
+- **第一版只扫位置参数**，于是完全看不见 BUG-AR 的真实形状——
+  `saveNote({...})` 是对象参数，workspaceId 在对象字面量里，第一版报「0 命中」，
+  而代码里实实在在有两处漏传。**这是最危险的一种卡口：它让你以为已经防住了。**
+- **第二版补了对象参数一路**，但按函数名全局归并定义，导致
+  `pkm-store.getNote` / `services/flashcards.deleteNote` 与 notes 侧同名函数互相污染，
+  11 处命中里绝大多数是误报。改成**按 import 解析到具体模块**后才可信。
+- **简写属性又坑了一次**：`{ workspaceId }` 没有冒号，
+  正则 `workspaceId:` 匹配不到，把 5 处**正确**调用误报成漏传。判据改成词边界匹配。
+
+自证脚本 `pkm-fix-negctl.mjs` 自己也踩了三个坑，脚本头注释里逐条记了：
+源文件是纯 CRLF（锚点写死 `\n` 全不匹配）；
+**逐个校验锚点+逐个写文件**，第一个文件已改完第二个才报错退出，把源码留在回退状态
+（已改成「先校验全部锚点再动任何文件」）；
+以及再次撞上 PowerShell `Set-Content -Encoding UTF8` 写坏中文注释。
+
+最终口径：518 个源文件、31 个「workspaceId 可省略」的导出函数、**0 处漏传**，
+且该 0 已由负控证明不是假绿。
+
+### 4.53.7 附带发现（未擅自处理）
+
+- **历史数据仍滞留在 `default` 分区**：本轮在测试机上清掉了 5 行（4 行孤儿 + 1 行本轮产物）。
+  真实用户若踩过这个 bug，他的 PKM 笔记会一直看不见。
+  已把 `assetStore.upsert` 的全部调用点扫了一遍（imports / contacts / notes-persist **都传了**），
+  **只有 PKM 会落 `default`**，所以「把 default 分区的资产迁到当前 workspace」这个迁移是安全的。
+  但**自动迁移用户数据属产品决策，本轮没做**，留待确认。
+- **`notes-store.ts:33 handleServerEvent`** 用 `note.workspaceId ?? 'default'`：
+  服务端推来的事件若不带 workspace_id，会落进 default。形状相同但路径不同，
+  需要服务端数据才能定性，**本轮未验证，不下结论**。
+- **`pkm-store.getNote(id)` 不带 workspace 过滤**（`assetStore.get` 只按 id）。
+  租户隔离上有缺口，但 id 来自已按分区过滤的列表，风险低。审计把它报了出来（跨模块同名误报），
+  未改动。
+- **设备时钟比本机快约 15.5 小时**（设备 21:27 / 本机 05:52）。
+  我一度据此误判「APK 没重新构建」。**设备侧 mtime / 时间戳永远不能与本机时间直接比较。**
+
+### 4.53.8 附：这一轮踩到的 Maestro 语义（补 §4.52）
+
+- `visible` 是**整串全匹配**；而 WebView 会把同一 `li` 里的多个 span
+  **合并成一个可访问性节点**（`标题+摘要+日期`）。列表断言必须用正则 `标题.*`。
+  编辑页 `input` 是独立节点，值为标题本身，纯字符串可匹配。
+- 判据红了先看失败现场层级快照：`~/.maestro/tests/<时间戳>/<flow>/screen-hierarchy/step-*.json`，
+  结构是 `attributes.text` / `attributes.class`。
+
