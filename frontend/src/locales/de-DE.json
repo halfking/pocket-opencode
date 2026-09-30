@@ -110,14 +110,16 @@
     "list": {
       "title": "Karteikarten",
       "empty": "Noch keine Stapel vorhanden",
-      "create": "Stapel erstellen",
+      "create": "Neue Karte",
       "dueToday": "Heute {count} fällig"
     },
     "deck": {
       "title": "Stapel",
       "addCard": "Karte hinzufügen",
       "review": "Wiederholen",
-      "noCards": "Dieser Stapel enthält keine Karten"
+      "noCards": "Dieser Stapel enthält keine Karten",
+      "create": "Neues Deck",
+      "createPlaceholder": "Deck-Name"
     },
     "review": {
       "title": "Wiederholung",

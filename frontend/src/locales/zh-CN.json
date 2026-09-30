@@ -177,14 +177,16 @@
     "list": {
       "title": "闪卡",
       "empty": "暂无卡组",
-      "create": "新建卡组",
+      "create": "新建卡片",
       "dueToday": "今日待复习 {count} 张"
     },
     "deck": {
       "title": "卡组",
       "addCard": "添加卡片",
       "review": "开始复习",
-      "noCards": "该卡组暂无卡片"
+      "noCards": "该卡组暂无卡片",
+      "create": "新建卡组",
+      "createPlaceholder": "卡组名称"
     },
     "review": {
       "title": "复习",

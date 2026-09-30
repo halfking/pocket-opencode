@@ -186,14 +186,16 @@
     "list": {
       "title": "Flashcards",
       "empty": "No decks yet",
-      "create": "Create deck",
+      "create": "New card",
       "dueToday": "{count} due today"
     },
     "deck": {
       "title": "Deck",
       "addCard": "Add card",
       "review": "Review",
-      "noCards": "This deck has no cards"
+      "noCards": "This deck has no cards",
+      "create": "New deck",
+      "createPlaceholder": "Deck name"
     },
     "review": {
       "title": "Review",

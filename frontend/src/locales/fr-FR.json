@@ -110,14 +110,16 @@
     "list": {
       "title": "Cartes mémoire",
       "empty": "Aucun paquet pour l'instant",
-      "create": "Créer un paquet",
+      "create": "Nouvelle carte",
       "dueToday": "{count} à réviser aujourd'hui"
     },
     "deck": {
       "title": "Paquet",
       "addCard": "Ajouter une carte",
       "review": "Réviser",
-      "noCards": "Ce paquet ne contient aucune carte"
+      "noCards": "Ce paquet ne contient aucune carte",
+      "create": "Nouveau paquet",
+      "createPlaceholder": "Nom du paquet"
     },
     "review": {
       "title": "Révision",

@@ -110,14 +110,16 @@
     "list": {
       "title": "Flashcards",
       "empty": "Ainda não há baralhos",
-      "create": "Criar baralho",
+      "create": "Novo cartão",
       "dueToday": "{count} para revisar hoje"
     },
     "deck": {
       "title": "Baralho",
       "addCard": "Adicionar cartão",
       "review": "Revisar",
-      "noCards": "Este baralho não tem cartões"
+      "noCards": "Este baralho não tem cartões",
+      "create": "Novo baralho",
+      "createPlaceholder": "Nome do baralho"
     },
     "review": {
       "title": "Revisão",

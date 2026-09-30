@@ -110,14 +110,16 @@
     "list": {
       "title": "플래시카드",
       "empty": "덱이 아직 없습니다",
-      "create": "덱 만들기",
+      "create": "새 카드",
       "dueToday": "오늘 학습할 카드 {count}장"
     },
     "deck": {
       "title": "덱",
       "addCard": "카드 추가",
       "review": "복습 시작",
-      "noCards": "이 덱에는 카드가 없습니다"
+      "noCards": "이 덱에는 카드가 없습니다",
+      "create": "새 덱",
+      "createPlaceholder": "덱 이름"
     },
     "review": {
       "title": "복습",

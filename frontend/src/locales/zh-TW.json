@@ -110,14 +110,16 @@
     "list": {
       "title": "閃卡",
       "empty": "目前沒有卡組",
-      "create": "新增卡組",
+      "create": "新增卡片",
       "dueToday": "今日待複習 {count} 張"
     },
     "deck": {
       "title": "卡組",
       "addCard": "新增卡片",
       "review": "開始複習",
-      "noCards": "此卡組目前沒有卡片"
+      "noCards": "此卡組目前沒有卡片",
+      "create": "新增卡組",
+      "createPlaceholder": "卡組名稱"
     },
     "review": {
       "title": "複習",

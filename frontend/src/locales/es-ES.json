@@ -110,14 +110,16 @@
     "list": {
       "title": "Tarjetas de memoria",
       "empty": "Aún no hay mazos",
-      "create": "Crear mazo",
+      "create": "Nueva tarjeta",
       "dueToday": "{count} para repasar hoy"
     },
     "deck": {
       "title": "Mazo",
       "addCard": "Añadir tarjeta",
       "review": "Repasar",
-      "noCards": "Este mazo no tiene tarjetas"
+      "noCards": "Este mazo no tiene tarjetas",
+      "create": "Nuevo mazo",
+      "createPlaceholder": "Nombre del mazo"
     },
     "review": {
       "title": "Repaso",

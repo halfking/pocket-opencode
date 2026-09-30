@@ -110,14 +110,16 @@
     "list": {
       "title": "フラッシュカード",
       "empty": "デッキはまだありません",
-      "create": "デッキを作成",
+      "create": "新しいカード",
       "dueToday": "本日 {count} 件復習待ち"
     },
     "deck": {
       "title": "デッキ",
       "addCard": "カードを追加",
       "review": "復習する",
-      "noCards": "このデッキにはカードがありません"
+      "noCards": "このデッキにはカードがありません",
+      "create": "新しいデッキ",
+      "createPlaceholder": "デッキ名"
     },
     "review": {
       "title": "復習",
