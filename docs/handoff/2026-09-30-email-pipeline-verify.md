@@ -258,6 +258,133 @@ user/workspace 取好清单，不该再走一遍无 scope 的 `ListHarvestableIn
 加固：启动日志改成打**绝对路径**（`filepath.Abs`）。另外仓库里现在有两把 key
 （`data/` 与 `backend/data/`），后者是误建，可删。
 
+## 7c. BUG-AU：整轮「20 分钟跑不完」的定位
+
+症状是「每天定时收信」跑不完，没有进度、没有日志。定位手段：
+
+1. `Get-NetTCPConnection` 看连接 —— 只剩**一条** `Established ...:993` 挂着，进程 CPU 累计才 1.67s。**不是网络慢，是代码在原地等**。
+2. 逐账户打点：前 4 个账户各 0.4~1.3s，第 5 个 QQ 账户单独连挂 **4m11s**。
+
+根因：第 1 步（逐账户同步）是 `for` **串行**循环，且整个流程**零日志**。
+
+修（`pipeline.go`）：加 `stepStart()` 分步日志 + 逐账户耗时；改为**有界并发** `syncConcurrency = 3`。实测第 1 步从「20 分钟未结束」变成 **1.465s**。
+
+第 1.5 步（拉原文做发票二次提取）同样毛病：6 分钟未完。改为并发 + `maxInvoiceBodyFetches = 24` 的预算后变成 **0.75s**。预算分配规则是 `date` 类（已确定是发票、只差日期）**优先**于 `candidate` 类（推测性扫描），见 `pipeline_budget_test.go`。
+
+## 7d. BUG-AT：163 报 `NO SELECT Unsafe Login`
+
+`FetchMessageRaw` 没发 RFC 2971 要求的 `ID` 客户端标识头，163 直接拒绝（`FAILED after 267ms`）。修（`mime.go`）：发 `ID` 头。同一封邮件变成 `in 552ms`。
+
+同批修的还有 textproto 降级路径：它用**明文 TCP** 连 993，必然 `read greeting: EOF`。改成先做 TLS 握手；并且**主路径「匹配 0 条 / 无 body section」不再被降级路径的错误覆盖**。
+
+## 7e. 清垃圾规则的真实数据量化
+
+在 6 个真实账户、443 封邮件上跑 `LooksLikeSpam`：`spamHits=0`。这个 0 有两种解释，看数字本身分不开：(a) 真实信箱确实没广告；(b) 规则在真实数据上形同虚设。
+
+诊断过程先排掉**两个我自己的错误**（都不是实现问题）：诊断 SQL 写成 `deleted_at IS NULL`（实际列是 `bigint NOT NULL DEFAULT 0`）；`nearMiss=0` 是因为 `LooksLikeSpam` 未达阈值时**返回零值**，Score/Why 被丢弃 —— 这才是真正的可诊断性缺口：预演报告只有命中/未命中两态，阈值没法基于真实数据校准。
+
+修好后拿到 **17 条 near-miss**（全在 QQ，score=30：InfoQ 每周精要 11、阿里云产品月刊 4、ecloudrover 1），已在预演报告的 `spamNearMiss` 区块里露出。
+
+**没有把阈值降到 30。** 订阅 newsletter 该不该算垃圾是产品判断，不是技术判断。
+
+> **本轮未能完成的一项**：弱词按数量分级（≥4→100 / 3→70 / 2→40）这套改动在 06:17 的并发事故后与另一个会话在 `spam.go` / `invoice_harvest_test.go` 上反复互相覆盖，无法在共享工作区稳定落地，相关测试断言已撤回。**当前 `spam.go` 仍是旧规则**（弱词 ≥2 固定加 40 分、未达阈值返回零值），因此 `spamHits` 在真实数据上仍为 0、near-miss 仍只有发件人特征那 30 分。要落地需要独占这两个文件。
+
+## 7f. BUG-AV：POP3 来源邮件会下载到**完全错误**的发票
+
+QQ 上 IMAP 不可用时走 **POP3 降级路径**（实测 444 封里 **284 封**是 POP3 来的，它是主路径不是异常路径）。该路径落库时把 `UID` 写成 **POP3 位置序号** `i+1`，而不是 IMAP UID。采集器拿这个序号去 `UID FETCH` ——
+
+> 取到的是**另一封毫不相干的邮件**，会被当成这封发票的原文解析、存成错误的发票 PDF。
+
+同一封邮件存两份的根因也在这里：POP3 合成 `message_id` 时无视真实 Message-ID 头，`UNIQUE(account_id, message_id)` 拦不住 —— 实测 **47 组重复副本**。
+
+修：`mime.go` 暴露真实 `MessageID`；`invoice_harvest.go` 加 `isPOP3SourcedEmail` 守卫（判据用 `em-pop3-` 前缀），**POP3 来源一律不走 IMAP**，缓存没命中就明确失败 —— 宁可失败也不下载错文件；新增 `email/body_cache.go` 在 POP3 同步那一刻把原文加密落盘（独立子目录 `email-bodies-raw`，与 server 层 `email-bodies` 分开：两边 UID 语义根本不同，混一个文件必然互相误命中），采集器改读缓存。
+
+功能侧实测产出：`其他-杭州创客家投资管理有限公司-3500.00-2026-05-01.pdf`。
+
+## 7g. 整轮上界：单账户 90s 放弃等待
+
+`DefaultAccountSyncTimeout = 90s`（`Pipeline.AccountSyncTimeout` 可覆盖）。要点是**到期不打断、只放弃等待**：go-imap 不响应 context 取消，强行关连接会让账户状态半写。Sync 继续在后台跑完（落库幂等），结果用带缓冲 channel 回传。
+
+## 7h. BUG-AW：「服务端 200 / 客户端 0 字节」= WriteTimeout 30s
+
+服务端日志记 `POST /api/email/pipeline/run - 200`，客户端拿到 `UND_ERR_SOCKET: other side closed` + `bytesRead: 0`，**一个字节都没有**。
+
+根因不是网络抖动：`http.Server.WriteTimeout: 30s`（`cmd/pocketd/main.go`），`longLivedPaths` 白名单里只有 SSE 路由，**邮件同步端点不在其中**。连接在 30s 处写 deadline 到期、连接已废，handler 在 1m30s 才 `writeJSON`。logging 中间件在 handler 返回后才打 200，与客户端是否真收到无关 —— 这正是难查的原因。
+
+修：把 `/api/email/pipeline/run` 与 `/api/emails/invoices/harvest` 加进 `longLivedPaths`。
+
+验证（`long_lived_middleware_test.go`，**含对照组与负控**）：
+
+- `TestLongLivedPathSurvivesServerWriteTimeout`：把 30s 缩到 300ms、handler 缩到 600ms，真实 TCP 上白名单端点必须拿到完整响应体。
+- `TestNonLongLivedPathStillCutOffByWriteTimeout`：对照组，断言非白名单**必须**拿不到响应。它没按预期失败的话，上面那个绿就是假绿。
+- **负控**：把白名单两条摘掉重跑，用例立刻转红，报错正是 `连接在 300ms 处被掐断：EOF`。
+
+真实进程复验：`POST /api/email/pipeline/run → 200，耗时 90787ms`，**这一轮本身就超过 30s，客户端完整收到整份报告**（13 PASS / 0 FAIL）。这补上了此前只能靠单测证明的缺口。
+
+## 7j. BUG-AX：IMAP 卡死导致**连接泄漏**（§7g/§7h 之外的真正根因）
+
+§7g 的 90s 上界和 §7h 的白名单都只解决了表象。`huangxutao@kxpms.cn` 每一轮都稳定卡满 90s，根因在更下面一层。
+
+### 定位（三步，每步排除一个方向）
+
+1. **网络层排除**：逐 IP 实测 `imap.exmail.qq.com` 四个地址 —— TCP 建连 41~191ms、TLS 110~187ms、greeting 34~90ms，服务端回 `* OK [CAPABILITY IMAP4 IMAP4rev1 ID AUTH=PLAIN AUTH=LOGIN NAMESPACE] QQMail IMAP4Server ready`。服务端完全正常。DNS 连续 12 次解析，IP 池稳定 4 个，无黑洞。
+2. **协议层排除**：写只读诊断（`diag_kxpms_test.go`，逐条命令打点 + 每条独立超时），跑出来 CAPABILITY 102ms / LOGIN 593ms / ID 112ms / SELECT 57ms / UID SEARCH 51ms，**总计 1.4 秒**；且 `UIDNext=12` vs `LastSyncedUID=11` = **无新邮件**，按代码应当秒回。
+3. **进程层命中**：决定性对照 —— **重启 pocketd 后第一次同步只要 1.261s**，而重启前进程里已经攒到 **11 条**到 993 的 Established 连接（`120.226.165.33` 一台独占 7 条）。
+
+### 根因链
+
+1. `net.Dialer.Timeout` 只管**建连**，建好之后的读操作没有任何时间上限。`imapclient.Options` 压根**没有** `ReadTimeout`/`WriteTimeout` 字段。`fetcher.go` 里那句注释「给 read deadline 一个上限，防止 server 不规范致连接挂死」**是说了但代码里没做**。
+2. 卡在读上 → Sync 不返回 → `defer client.Close()` 永远执行不到 → **连接泄漏**。§7g 的 90s 只是「不再等待」，Sync 还在后台挂着，连接也没释放。
+3. `scheduler.pollLoop` 每 60s 对「`LastSyncedAt` 没更新」的账户再起一个 goroutine 调 Sync，**无互斥** → 泄漏正反馈。
+
+### 修（四道，缺一不可）
+
+1. **滚动空闲 deadline**（`fetcher.go` 的 `deadlineConn`）：自己 `net.Dial` 拿到 conn（`imapclient.New(conn, opts)` 接受现成连接），每 `idle/3` 判断一次「距上次**活动**」，有活动才续期。
+   > 这里踩了个典型坑：**用定时器无条件续期是错的**。第一版写成 `ticker 每 idle/3 就 SetDeadline(now+idle)`，实际效果是**静默连接也被无限续命** —— 服务端一个字节都不发，deadline 被一次次推后，Read 永远不返回。实测 `SetDeadline` 明确返回 `nil`（成功）而 Read 仍挂满 60s 整。测试当场把它打红。
+2. **绝对硬截止**（`imapHardTimeout = 45s`）：兜的是「连接活着、有活动，但某条命令迟迟不返回」那一类。实测 `56551681@qq.com` 的 imap login 整整挂了 100s（`sync trace total 1m40.128s`），空闲 deadline 一次都没触发。这类只有硬截止能治。
+3. **per-account 互斥**（`Fetcher.inflight` + 哨兵错误 `ErrSyncInFlight`）：第二个并发 Sync 立刻返回，pipeline 与 scheduler 都识别它 —— **跳过不是失败**，计进 errors 只会每轮挂一条假警。重复同步的危害不只是浪费连接：QQ 上 POP3 是**主路径**，重复同步等于把同一批邮件反复拉一遍，正是那 47 组重复副本的来源之一。
+4. **POP3 共用剩余预算**（`syncBudget = 70s`）：原先 POP3 侧是固定 120s deadline，比 pipeline 的 90s 上界还长，于是「IMAP 挂 60s → 转 POP3 → 再挂 120s」整轮必然超时（实测 100.1s）。现在 IMAP 与降级共用一份预算 —— IMAP 慢通常意味着同一个服务商整体慢。
+
+顺带补了 `syncTrace` 分步打点（只打慢阶段）—— 之前 Sync 里一条日志都没有，只能看到 pipeline 外层的 `TIMED OUT after 1m30s`，完全不知道卡在哪。上面「真凶是 QQ 私人账户而不是企业微信」这个结论，就是靠它一次定位的。
+
+### 验证
+
+`imap_deadline_test.go`，5 个用例，**全部做过负控**：
+
+- `TestIMAPIdleDeadlineBreaksHungRead`：黑洞服务器（接受连接后永不发送任何字节），idle=400ms 拨号，断言 `Capability()` 必须在 idle 量级内返回错误（实测 534ms）。**负控**：摘掉 `dc.start()` → 立刻以 `读在 1m0.002s 才返回` 转红。
+- `TestIMAPIdleDeadlineAllowsSlowButActiveConnection`（对照组）：服务器每 idle/2 发 1 字节，连续读 5 次、累计 753ms > idle 300ms，**必须全部成功** —— 证明滚动 deadline 只杀静默、不误杀「慢但在动」的正常同步。
+- `TestIMAPHardDeadlineBreaksBusyButStuckConnection`：服务器持续发数据制造「活跃」假象，但 `idle=5s` 远大于 `hard=600ms`，仍必须被硬截止断开（实测 1.667s）。**负控**：把 `case !c.hard.IsZero() && now.After(c.hard)` 改成 `case false:` → 转红。
+- `TestSyncSkipsAccountAlreadyInFlight` / `TestSyncReleasesInflightOnReturn`。
+
+> 对照组还抓出过一次**测试自身的 bug**：它用 `conn.Read` 直连底层连接，绕过了 `deadlineConn`，`touch()` 从没被调用，看门狗正确地判定「静默」并钉死 deadline —— 那个失败是真的，但不是被测语义。
+
+### 真实进程复验
+
+同一条命令连跑多轮，对比修复前后：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 整轮耗时 | 90787ms / 90810ms（连续两轮都超时） | 多数轮 1.0~2.0s |
+| kxpms 单账户 | `TIMED OUT after 1m30s` | `new=0 in 1.03~1.31s` |
+| 残留 993 连接 | **11 条**（且持续累积） | **0 条**（超时轮最多 1 条，60s 后自行归零） |
+
+## 7i. 共享工作树事故：六次 `git stash -u`
+
+04:04、~04:28、~04:38、~06:0x、~06:17 共**六次**被并发会话用 `git stash -u` / `git clean` 卷走未提交工作。其中 06:17 那次把 BUG-AX 的全部改动一次清空。
+
+处置与恢复：
+
+- **独立快照分支** `email-pipeline-snapshot-2026-10-01`（用 `GIT_INDEX_FILE` + `read-tree`/`write-tree`/`commit-tree`/`update-ref` 建立，**全程不动共享 HEAD、不动共享 index**）。工作已成为 git 对象，`stash -u` / `clean` / `checkout` 都清不掉。本轮共推进 8 个快照提交，每次恢复后立刻重建。
+- 仓库外备份 `~/Documents/openpocket-email-backup-20261001/`。
+
+三个恢复坑：
+
+1. stash 索引会随并发会话**整体移位**，不能写死 `stash@{0}`，要循环 `git ls-tree -r --name-only "stash@{$i}^3" | Select-String -Quiet <文件名>` 动态定位；
+2. `git show "stash@{$i}^3:<path>"` 对未跟踪文件**静默返回 0 字节**，必须用 `git checkout`；
+3. 恢复**非一次性**，恢复完要 build + 测试 + 逐符号 grep 复核。
+
+> **教训**：6 次事故里至少有 2 次不是「被清空」而是**两个会话同时编辑同一文件在互相覆盖**（`spam.go` 的白名单一度出现重复条目，我从未写过重复）。这种情况下继续重试只会拉锯，正确做法是停手、如实记录哪一项没落地，并保住已经验证通过的那部分。
+
 ## 8. 仍未验证 / 未完成（不得外推）
 
 - **真实邮箱已接入（6/6）**，但只做了**只读同步 + 发票采集**。仍未在真实邮箱上验证的：

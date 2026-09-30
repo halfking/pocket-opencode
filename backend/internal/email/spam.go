@@ -27,7 +27,8 @@ var spamStrongWords = []string{
 // spamWeakWords 弱信号词，两条以上或配合营销发件人特征才判垃圾。
 var spamWeakWords = []string{
 	"促销", "优惠", "折扣", "特价", "新品上架", "会员日", "活动邀请",
-	"推广", "营销", "订阅更新", "本周精选", "专属福利", "扫码", "海报",
+	"推广", "营销", "订阅更新", "订阅", "精选", "本周精选", "精选文章",
+	"好文", "专属福利", "扫码", "海报", "限时", "特惠", "福利",
 	"promo", "sale", "discount", "deal", "newsletter", "weekly digest",
 	"exclusive offer", "limited time",
 }

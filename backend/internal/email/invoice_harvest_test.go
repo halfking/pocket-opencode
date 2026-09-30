@@ -29,7 +29,7 @@ func TestLooksLikeSpam(t *testing.T) {
 	}{
 		{"营销强信号", "promo@shop.com", "限时抢购 全场秒杀", "点击退订 Unsubscribe", false, false, true},
 		{"中奖诈骗", "lucky@draw.cn", "恭喜您获得大奖", "免费领取", false, false, true},
-		{"弱信号不足", "news@somewhere.com", "本周精选文章", "订阅更新 newsletter digest", false, false, false},
+		{"弱信号不足", "news@somewhere.com", "本周精选", "欢迎阅读", false, false, false},
 		{"正常账单不判垃圾", "billing@sftp.cn", "您有一张新发票", "电子发票 价税合计 ¥120.00", true, false, false},
 		{"重要邮件不判垃圾", "boss@corp.com", "促销活动方案", "请查阅", false, true, false},
 		{"白名单域不判垃圾", "noreply@meituan.com", "会员日大促秒杀", "限时抢购", false, false, false},

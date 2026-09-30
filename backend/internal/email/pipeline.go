@@ -153,6 +153,20 @@ type PipelineReport struct {
 	SpamDryRun        int               `json:"spamDryRun,omitempty"`
 	SpamDryRunSamples []SpamPreviewItem `json:"spamDryRunSamples,omitempty"`
 	RemindersSent int    `json:"remindersSent"`
+	// RemindersScanned 是本轮进入提醒判定的邮件数；RemindersUnclassified 是
+	// 其中 **importance 为空** 的数量。
+	//
+	// 为什么必须有它：提醒只对 `importance='high'` 触发，而 importance 是
+	// AI 分类（kxmemory）写进去的。kxmemory 没配时（POCKET_KXMEMORY_BASE_URL
+	// 未设置，启动日志明写 `AI classification/SSOT disabled`）新邮件的
+	// importance 永远是空，于是 RemindersSent 恒为 0 —— 但这个 0 **分不清**
+	// 「这批邮件里确实没有重要的」和「邮件根本没被分类过」。两者在报告里长得
+	// 一模一样，于是需求 4 看起来像没实现，其实只是缺一个依赖。
+	//
+	// 和 §spam 那次 near-miss 是同一类问题：可观测性缺口让「功能是否失灵」
+	// 没法判断。有了这两个计数，看报告就知道该去配 AI 还是该去调规则。
+	RemindersScanned     int `json:"remindersScanned,omitempty"`
+	RemindersUnclassified int `json:"remindersUnclassified,omitempty"`
 	Invoices      HarvestResult `json:"invoices"`
 	FeishuPushed  int    `json:"feishuPushed"`
 	FeishuFailed  int    `json:"feishuFailed"`
@@ -411,6 +425,32 @@ func (p *Pipeline) cleanSpam(ctx context.Context, rep *PipelineReport) {
 	}
 }
 
+// splitReminderCandidates 把扫描到的邮件分成「该提醒」与「还没被分类过」两组。
+//
+// 抽成纯函数是为了能脱离数据库验证这段判定 —— 它决定需求 4 到底是
+// 「链路正常、只是这批邮件不重要」还是「邮件根本没进过 AI 分类」，
+// 而这两种情况在旧的 `remindersSent=0` 里长得一模一样。
+func splitReminderCandidates(emails []Email, notified []int64) (toNotify []Email, unclassified int) {
+	for i := range emails {
+		if i >= len(notified) {
+			break
+		}
+		e := emails[i]
+		if notified[i] > 0 || e.Category == "spam" {
+			continue
+		}
+		switch e.Importance {
+		case "high":
+			toNotify = append(toNotify, e)
+		case "":
+			// 还没被 AI 分类过：既不是「已提醒」，也不是「不重要」，
+			// 它只是**不知道**。单独计数，否则报告里的 0 无法解释。
+			unclassified++
+		}
+	}
+	return toNotify, unclassified
+}
+
 // notifyImportant 对未提醒过的重要邮件派发通知并记录时间。
 func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 	if p.Notifier == nil {
@@ -422,18 +462,21 @@ func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 		rep.AddError("reminder scan list: %v", err)
 		return
 	}
-	var toNotify []Email
+	rep.RemindersScanned = len(emails)
+	candidates, unclassified := splitReminderCandidates(emails, notified)
+	rep.RemindersUnclassified = unclassified
+	if unclassified > 0 {
+		log.Printf("[email/pipeline] %d/%d 封邮件 importance 为空 —— 未被 AI 分类过，"+
+			"不会进入重要提醒（检查 POCKET_KXMEMORY_BASE_URL）", unclassified, len(emails))
+	}
 	var ids []string
-	for i := range emails {
-		e := emails[i]
-		if notified[i] > 0 || e.Importance != "high" || e.Category == "spam" {
-			continue
-		}
+	var sent []Email
+	for _, e := range candidates {
 		if err := p.Notifier.NotifyImportantEmail(ctx, e); err != nil {
 			rep.AddError("notify email=%s: %v", e.ID, err)
 			continue
 		}
-		toNotify = append(toNotify, e)
+		sent = append(sent, e)
 		ids = append(ids, e.ID)
 	}
 	if len(ids) > 0 {
@@ -441,7 +484,7 @@ func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 			rep.AddError("mark notified: %v", err)
 		}
 		rep.RemindersSent = len(ids)
-		log.Printf("[email/pipeline] reminders sent: %v", emailSubjects(toNotify))
+		log.Printf("[email/pipeline] reminders sent: %v", emailSubjects(sent))
 	}
 }
 
