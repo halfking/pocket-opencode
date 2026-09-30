@@ -628,6 +628,137 @@ Assert that "AI 工具" is visible... COMPLETED
 
 ---
 
+## 4.12 接入 PostgreSQL：解锁被环境阻塞的写操作（关键转折）
+
+### 为什么这是本轮最大的单点突破
+
+前面几轮把「`POST /api/tasks` 503」「`/api/flashcards` 503」「`/api/llm/usage` 503」
+一律记成「dev 环境未配存储，下轮再弄」。实际上它**当场就能解**：
+`backend/cmd/pocketd/main.go:103` 的 `if pool != nil` 决定所有 store 是否构造，
+而 `pool` 只在 `cfg.PostgresDSN != ""` 时初始化（`main.go:70`）。
+**没有 DSN ⇒ 一批 store 为 nil ⇒ 一批端点 503/404。**
+
+### 装 PG（Windows，无需管理员、无需 Docker）
+
+```powershell
+# Docker 不可用：daemon 未运行且需管理员权限（error: docker client must be run with
+# elevated privileges），所以走免安装二进制
+curl.exe -sSL --retry 3 -o logs/pg/pg.zip `
+  https://get.enterprisedb.com/postgresql/postgresql-16.4-1-windows-x64-binaries.zip
+# ⚠️ 338MB / 上万个文件，**不要用 Expand-Archive**（跑十几分钟还没解压完 share/）。
+#    tar.exe 几十秒搞定：
+tar.exe -xf logs/pg/pg.zip -C logs/pg/dist2
+
+$pg = 'C:\workspace\openpocket\logs\pg\dist2\pgsql'
+& "$pg\bin\initdb.exe" -D C:\workspace\openpocket\logs\pg\data -U postgres -A trust -E UTF8 --locale=C
+# ⚠️ 必须用 Start-Process 直接起 postgres.exe。用 pg_ctl start 的话，进程会挂在
+#    调用的 shell 上，shell 一被回收 PG 就一起死（我踩过一次）。
+Start-Process "$pg\bin\postgres.exe" `
+  -ArgumentList '-D','C:\workspace\openpocket\logs\pg\data','-p','5432','-h','127.0.0.1' `
+  -WindowStyle Hidden
+```
+
+### 启带 DSN 的 pocketd
+
+`scripts/start-pocketd-pg.cmd`（已在库；`logs/pocketd-pg.exe` 因 `logs/` 被 gitignore 不入库，
+需自己 `cd backend && go build -o ..\logs\pocketd-pg.exe ./cmd/pocketd`）：
+```bat
+set POCKET_POSTGRES_DSN=postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable
+set POCKET_PG_SCHEMA=opencode_pocket
+set POCKET_DEV_AUTH=true
+set POCKET_AUTH_LEGACY_ONLY=true
+set POCKET_PORT=8088
+logs\pocketd-pg.exe
+```
+
+启动日志确认：
+```
+Postgres pool initialized (schema="opencode_pocket")
+Module stores initialized (PG, scheduled tasks and marketplace enabled)
+LLM gateway store initialized (PG)
+Quota enforcer enabled (PG store, AlwaysAllow strategy)
+```
+
+### 端点矩阵前后对比（`scripts/backend-endpoint-matrix.mjs`）
+
+| 端点 | 无 PG | 有 PG |
+|---|---|---|
+| `POST /api/tasks` | **503** remote-only mode | **201** ✅ |
+| `POST /api/notes` | **503** | **201** ✅ |
+| `GET /api/flashcards` | **503** | **200** ✅ |
+| `GET /api/llm/usage?days=7` | **503** | **200** ✅ |
+| `GET /api/llm/quota` | — | **200** ✅ |
+| `GET /api/llm-gateway/nodes` | **503** requires PostgreSQL | **200** ✅ |
+| `GET /api/marketplace/packages` | **404** | **200** ✅ |
+| `GET /api/marketplace/releases` | **404** | **200** ✅ |
+| `GET /api/email/accounts` | — | **200** ✅ |
+| `GET /api/rss/sources` | — | **200** ✅ |
+| `GET /api/scheduled-tasks` | — | **200** ✅ |
+
+**18 / 20 可用**。剩下 2 个 404 都不是端点缺失：
+- `GET /api/vault` —— **后端根本没注册这个路由**（`server.go:693` 只有 `/api/vault/sync/`）。
+  密码箱是**纯本地**功能（SQLCipher + Keystore），后端只提供同步子树。
+  **所以「`/api/vault` 404 ⇒ 密码箱不可用」这个推断是错的**，已修正。
+  `GET /api/vault/sync/latest` 返回 `{"error":"no vault for user: no rows in result set"}`
+  是**业务上的 404**（该用户还没同步过），端点是通的。
+- `GET /api/marketplace/agents` —— `handleMarketplaceRouter` 分发到不存在的子路径。
+
+### 真机任务创建：UI 走通 + 直接查库确认落库
+
+`scripts/redmi-write-ops-modules.mjs`（真机，bottom-sheet 真实交互）：
+
+```
+PASS  任务：创建请求 2xx（此前 503）
+      — [{"url":"/api/tasks","status":201},{"url":"/api/tasks?source=opencode","status":200}]
+```
+
+直接查 PG 确认落库（**这才是权威判据**）：
+```sql
+select id, title, source, status, workspace_id from opencode_pocket.tasks
+order by created_at desc limit 8;
+```
+```
+task-1790735438707 | Maestro任务417149 | local | active | default
+task-1790735324849 | Maestro任务310673 | local | active | default
+```
+
+> ⚠️ **别拿「列表回显」当断言**：任务列表默认带 `?source=opencode` 过滤，而 UI 建的是
+> `source=local`；而且 API 侧按 workspace 隔离（UI 落 `workspace=default`，
+> admin dev token 落 `ws_user-admin`）。两个原因叠加会让「已创建」看起来像「没创建」。
+
+---
+
+## 4.13 自我更正：上一版记的 `/cost` 路由异常是**误报**
+
+上一版 handoff 写「真机上访问 `/cost` 实际落到了 `/#/ai-chat`，未定位」，
+并被当作待修缺陷交接。**用 `scripts/cdp-cost-probe.mjs` 专项复验后确认：`/cost` 路由完全正常。**
+
+```
+### navigate #/cost
+  hash timeline: #/cost -> #/cost -> #/cost -> #/cost -> #/cost
+  final title  : 成本与配额
+  body head    : 跳到主要内容 arrow_back 成本与配额 notifications 今天 7 天 30 天 用量汇总 …
+
+### navigate #/gateway
+  hash timeline: #/gateway -> #/gateway -> #/gateway -> #/gateway -> #/gateway
+  final title  : 网关节点
+### navigate #/instances
+  final title  : 实例
+```
+
+四个路由全部稳定，无一跳转。之前那次观察的现场条件是：设备上跑的**不是我的包**
+（并发会话 09:12 重装的 https 版），且 `pocket_api_base` override 指向不可达地址——
+在这种状态下任何页面的数据请求都失败，**观察结果不可作为路由缺陷的证据**。
+
+**教训**：交接文档里「未定位的异常」要先复核再当缺陷传下去。误报会让下一轮
+把时间花在不存在的问题上。
+
+（顺带查明：那次真正暴露的问题是 `/api/llm/usage` 与 `/api/llm-gateway/nodes` 都 503，
+已由 §4.12 的 PG 接入解决。）
+
+---
+
+
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
@@ -645,6 +776,13 @@ Assert that "AI 工具" is visible... COMPLETED
 - **写操作（真机，`scripts/redmi-write-ops.mjs`，6/6）**：笔记 Notes 完整 CRUD
   + **force-stop 进程重启后仍存在**（真持久化证据）+ 删除后重启仍不存在（非软删除残留）。
   详见 §4.11.2
+- **后端数据层接入 PostgreSQL 后**（§4.12）：
+  - 端点可用性 **18/20**（`POST /api/tasks` 201、`POST /api/notes` 201、
+    `GET /api/flashcards` 200、`/api/llm/usage` 200、`/api/llm-gateway/nodes` 200、
+    `/api/marketplace/packages` 200 等）
+  - **任务**：真机 UI（bottom-sheet）创建 → `POST /api/tasks` **201** →
+    直接查 PG 确认落库（`task-1790735438707 | Maestro任务417149 | local | default`）
+  - **`/cost` 路由异常是误报**，专项复验后路由完全正常（§4.13）
 - **BUG-I 修复生效（真机）**：`#/login?reason=expired` 在真机出现——401 后自动带原因跳登录页
 - **BUG-J 修复生效（真机）**：`/api/tasks?source=opencode` → `200 application/json`，
   控制台错误 0（修复前是 `text/html` + 「API 返回了 HTML 页面而非 JSON」）
@@ -656,11 +794,20 @@ Assert that "AI 工具" is visible... COMPLETED
 - 后端端点可用性已摸清（见 §4.9）：tasks/sessions/instances/meetings 可用；notes/flashcards 503、vault/marketplace 404 属 dev 未配存储
 
 ### ❌ 未验证（下一轮必须补）
+- **闪卡的 UI 写路径没打通**。后端已通（`GET /api/flashcards` 200，store 已接 PG），
+  但真机上没走完：列表页「新建卡组」实际**直接跳到卡片编辑页**（`#/flashcards/new`），
+  而卡片页的「卡组」按钮又**跳回列表**（`#/flashcards`）——**文案与行为不一致**，
+  卡片页的 `button.save-link` 因此恒 `disabled`。
+  两种可能：① 这是产品交互缺陷（按钮语义/文案错乱）② 存在我没找到的卡组管理入口。
+  **需要人看一眼真实 UI 再判定**，不要凭脚本猜。
+- **任务 / 会话 的编辑、删除**未验证（创建已验证 201 + 落库）。
+- **闪卡 / 密码箱 / 市场 / 邮箱 的写操作**未验证（后端已通，前端路径待打通）。
 - **任务 / 会话 的写操作**未验证。`GET /api/tasks` 200 可读，但 `POST /api/tasks` 在 dev 后端
   恒 **503 `local task store not configured (remote-only mode)`**——`taskStore` 只在
   `pool != nil`（PostgreSQL）时构造（`backend/cmd/pocketd/main.go:103-108`）。
   `internal/server/disk_task_fallback.go` 只是**只读**合成，不提供写路径。
   要验证写操作必须先给 dev 后端接上 PG。**这是环境限制，不是模块代码缺陷。**
+  ✅ **已解决**：见 §4.12，接 PG 后 `POST /api/tasks` 返回 201，真机 UI 创建已落库。
 - **闪卡 / 密码箱 / 市场 / 邮箱 的写操作无法在当前 dev 环境验证**：
   对应后端 store 未配置（`/api/flashcards` 503、`/api/vault` 404、`/api/marketplace/*` 404，
   见 §4.9）。闪卡列表页直接显示「Could not load flashcards」且保存恒 disabled。
@@ -773,6 +920,17 @@ localStorage.removeItem('pocket_api_base')   // 再 Page.reload
 > 真机端到端已在 08:59 打通，下一轮可以直接从「补写操作验证」起步，不必重走环境排障。
 
 0. **先确认无并发会话**（本轮被 `device.mjs` / `cdp.mjs` 污染过 4 次：`cap sync`、adb server、两次重装 APK）
+0.5 **先把 PG 拉起来**（`logs/start-pocketd-pg.cmd`），否则一半模块的写操作是 503。
+   步骤与踩坑见 §4.12。一次性命令：
+   ```powershell
+   # PG 未启动时
+   Start-Process logs\pg\dist2\pgsql\bin\postgres.exe `
+     -ArgumentList '-D','C:\workspace\openpocket\logs\pg\data','-p','5432','-h','127.0.0.1' -WindowStyle Hidden
+   # 重启 pocketd 带 DSN
+   Get-Process pocketd-new -ErrorAction SilentlyContinue | Stop-Process -Force
+   Start-Process cmd -ArgumentList '/c','scripts\start-pocketd-pg.cmd' -WindowStyle Hidden
+   node scripts/backend-endpoint-matrix.mjs      # 期望 18/20
+   ```
 1. **直接用 `adb reverse` 绕开宿主网络**，不要再纠缠 `192.168.31.20:8088`：
    ```powershell
    adb -s 192.168.31.19:5555 reverse tcp:8088 tcp:8088
@@ -787,13 +945,15 @@ localStorage.removeItem('pocket_api_base')   // 再 Page.reload
    node scripts/verify-modules.mjs        # 期望 13/13 RENDERED, LOGIN_GATED=0, BLANK=0
    node scripts/host-ws-check.mjs         # 宿主侧后端 WS 回归，期望 OPEN + pong
    ```
-4. **补写操作验证**（当前最大空白）。已有：笔记（真机 6/6）、财务 / 智能体 / 会议（模拟器）。
-   仍缺：闪卡 / 密码箱 / 市场 / 邮箱 / 任务 / 会话 / 网关 / 实例 / 费用配额。
-   前置：给 dev 后端接上 PostgreSQL，否则 `/api/tasks` 写路径恒 503、
-   闪卡/市场/邮箱 store 为 nil（见 §4.9 与 §5 未验证节）。
+4. **补写操作验证**（当前最大空白）。已有：笔记（真机 6/6）、任务创建（真机 201 + 落库）、
+   财务 / 智能体 / 会议（模拟器）。仍缺：闪卡 UI 路径、任务/会话的编辑删除、
+   密码箱、市场、邮箱、网关、实例、费用配额。
+   ⚠️ **先用眼睛看一次真机闪卡 UI**（§5 未验证首条：按钮文案与行为不一致），
+   判定是产品缺陷还是我没找对入口，再决定怎么测。
 5. **在真机上把 Maestro 跑起来**：需要有人在手机上开「开发者选项 → USB 安装」
    （见 §4.11.1）。授权后 `.maestro/notes-crud.yaml` 可直接用于真机功能回归。
-6. **查 `/cost` 路由**：真机上访问 `/cost` 落到了 `/#/ai-chat`，模拟器上是 `/#/cost`。
+   未安装时先跑 `scripts/maestro-bootstrap.sh`（幂等，含镜像与 JDK 说明）。
+6. **查闪卡「新建卡组」按钮的语义**（跳卡片页 / 「卡组」跳列表，文案行为不一致）。
 7. **实现 `Keystore` 原生插件**（见 §5 未验证节）：这是代码欠账不是环境问题。
 8. 回归默认 `https` 构建，重点看 **XHR 混合内容**是否被正确阻断（WS 在 https 下本就能握手，§3.1）。
 7. 可选加固：给指向明文 http:// 后端的构建加断言/告警，避免下一个人重踩 BUG-F。

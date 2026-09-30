@@ -29,9 +29,11 @@ const DUMP = `JSON.stringify({
   title: (document.querySelector('h1,h2')||{}).textContent || ''
 })`
 
-for (const route of ['#/notes', '#/notes/new', '#/finance', '#/local-agent/new', '#/meetings']) {
+const ROUTES = (process.env.POCKET_PROBE_ROUTES
+  || '#/notes,#/notes/new,#/finance,#/local-agent/new,#/meetings').split(',')
+for (const route of ROUTES) {
   await ev(`location.hash = ${JSON.stringify(route)}`)
-  await sleep(2600)
+  await sleep(3000)
   console.log('\n### ' + route)
   console.log(await ev(DUMP))
 }
