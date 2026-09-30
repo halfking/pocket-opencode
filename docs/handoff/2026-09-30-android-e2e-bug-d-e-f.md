@@ -2535,6 +2535,10 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   记账/确认入账/暂无账单/笔记自动…）。它引用的两个错误兜底键在 9/9 语言里都已翻译，
   说明**只是这一页漏了**，不是缺键。本轮**未修**（§4.33.6）——
   9 种语言 × 20 条记账术语需要逐条审，错译比不译更糟。
+- **⚠️ 设备启动期 9 条 console.error 未定性**（§4.35）：含本地 SQLite 的
+  `Execute: incomplete input (code 1) … COALESCE(NULLIF(new|old.search_text …)`，
+  指向笔记 FTS 触发器 DDL。**根因、影响面、设备上触发器是否存在，三件都还没确认。**
+  下轮必须先查 `sqlite_master` 或走 UI 端到端，不许靠推测改代码。
 
 ### ❌ 未验证（下一轮必须补）
 - **`study.decks.*` 整块 7 个键在 7 种语言里未翻译**（与 en-US 逐字节相同，
@@ -2551,14 +2555,9 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   → **费用配额（记账）已从零验证里划掉**（§4.33）：后端契约 21/21、
   真机 UI 写路径 **26/26 连跑两轮**、sabotage 证伪 10/26 与 16/26 均如期失败。
   顺带修掉 **BUG-AD**（`/api/finance/stats` 缺方法白名单）。
-  ⚠️ 剩下**密码箱 / 实例**两个仍未跑，**不要把记账的结果外推过去**。
-  ⚠️ **实例模块的范围要改**：`handleInstances` 完全不检查 `r.Method`，
-  `/api/opencode/instances/` 只处理 `/stats`、其余 404 且前端从不调用，
-  `InstanceListView.vue` 只有刷新与选择、**没有创建表单** ——
-  **它是只读设计，「实例的 UI 写路径」本身就是范畴错误**。
-  下轮应改为验**读路径 + 空态/错误处理**（如「请确认服务器已注册实例后重试」
-  在服务端 500 时是否诚实显示），不要再按写路径去找。
-  ⚠️ 密码箱仍要特别注意：它有**两个独立障碍** —— `Keystore` 原生插件未实现
+  ⚠️ **实例模块已从零验证里划掉**（§4.34）：它是**只读设计**，「UI 写路径」本就是范畴错误；
+  改成验读路径 + 契约形状后真机 **13/13**，顺带修掉 **BUG-AE**（`/api/instances` 缺方法白名单）。
+  ⚠️ 剩下**密码箱**一个仍未跑。它有**两个独立障碍** —— `Keystore` 原生插件未实现
   **且** `/api/vault` 恒 404。只补插件不会让它可用。
 - ~~**闪卡的 UI 写路径**~~ → **已跑通**（`redmi-write-ops-modules.mjs` 7/7，见上）。
 - **任务 / 会话 的写操作**未验证。`GET /api/tasks` 200 可读，但 `POST /api/tasks` 在 dev 后端
@@ -3087,4 +3086,107 @@ FAIL  POST /api/finance 非 4xx/5xx — （未捕获到创建请求）
    修好后我把匹配逻辑单独跑了一遍得到 `true`，**但那是假的** ——
    我喂进去的是纯字符串数组，没复现真实数据结构。**隔离复现必须连数据形状一起复制**，
    否则「单独跑一遍」只是安慰剂。
+
+## 4.34 实例模块：**范围定错了**（它是只读设计），按读路径重验 13/13，顺带修掉 BUG-AE
+
+### 4.34.1 先纠正一个范畴错误
+
+之前把「实例的 UI 写路径」列进待验证清单，**这个范围本身就是错的**：
+
+- `handleInstances` 没有任何创建/删除分支，`InstanceListView.vue` 只有刷新与选择，
+  **没有创建表单** —— 仓库里根本不存在「创建实例」这条路；
+- `/api/opencode/instances/` 只处理 `/stats`，其余子路径 404，而**前端从不调用它**
+  （实测 `GET /api/opencode/instances/stats -> 404 not found`，是死路由）；
+- 所以「实例写路径」无路可验。改成验**读路径 + 契约形状 + 诚实性**。
+
+### 4.34.2 BUG-AE：`/api/instances` 对写方法回 200（与 BUG-AD 同形，已修）
+
+`handleInstances` 同样**完全不看 `r.Method`**：
+
+```
+POST   /api/instances -> 200 {"instances":[{"id":"demo-main",...,"lastHeartbeatAt":"..."}]}
+DELETE /api/instances -> 200（同上）
+PUT    /api/instances -> 200（同上）
+```
+
+和 BUG-AD 一样的危害面：调用方看到 200 会以为写成功了，实际什么都没发生，
+而且 200 的 body 里还带着实例 id 和心跳时间。
+
+**修复**：`handleInstances` 开头加 `if r.Method != http.MethodGet { 405 }`。
+**回归** `TestInstances_RejectsNonGET` 5/5（baseline GET 200 + 4 个写方法各 405，
+且 405 body 不含 `"instances"` / `demo-main`）。
+**证伪**：删掉那段 `if` 重跑，4/4 子测试红，body 原样回 200 + 完整实例列表。
+`go test ./internal/server/` → ok 3.005s。
+
+### 4.34.3 真机读路径 13/13
+
+`verify-instances-readpath.mjs`：
+
+```
+PASS  API 基线可达且结构完整 — status=200 n=1
+PASS  页面就位：实例列表视图已渲染
+PASS  读路径：UI 卡片数与 API 返回的实例数一致 — UI=1 API=1
+PASS  逐字段一致：displayName / id / environment / 功能数 都对得上
+      {"title":"demo-main","id":"demo-main","meta":"unknown3 功能"}
+PASS  卡片上不出现 undefined / null / NaN（契约形状缺字段的典型症状）
+PASS  刷新是真刷新：点 🔄 后又发了一次 GET /api/instances — status=200
+PASS  选中后路由跳到 /tasks；selected_instance / selected_instance_id 都写了
+PASS  落盘内容与 API 返回的实例对得上
+PASS  无未捕获 JS 异常 / 读路径期间没有新增 console.error
+```
+
+**实例模块本身没有发现缺陷。** 逐字段比对这一条是有意义的：`InstanceListView` 直接渲染
+`displayName` / `id` / `environment` / `capabilities.length`，契约少一个字段页面上就是
+`undefined` —— 这类缺陷**文本判据抓不到**（页面不会报错，只是显示难看）。
+
+### 4.34.4 探针自己写错过一次，差点把「假设错」报成「产品缺陷」
+
+第一版探针断言 `?since=<RFC3339>` 应该能滤掉全部实例，实测没滤掉，报了 FAIL。
+读 `server_since.go` 才发现 **`since` 收的是整数 epoch（秒或毫秒，>1e12 自动折算）**，
+传 ISO 字符串时 `ParseInt` 失败返回 0 → 不过滤。
+改成毫秒 epoch 后 `n=0`（滤掉了），并补了一条**阳性对照**：
+「过去的时间戳仍返回全部」也通过 —— 证明上一条不是「恒空」蒙对的。
+
+**教训：判据 FAIL 的第一反应应该是「我的假设对不对」，不是「产品是不是坏了」。**
+
+## 4.35 ⚠️ 未定性：设备启动期 9 条 console.error，含本地 SQLite 触发器 DDL 编译失败
+
+实例验收顺带捞出来的，**与实例模块无关，未定性，未修**。
+
+在干净 reload 之后、进入任何业务页之前，控制台稳定出现：
+
+```
+Execute: incomplete input (code 1): , while compiling …COALESCE(NULLIF(new.search_text, ''), new.content));
+Execute: incomplete input (code 1): , while compiling …COALESCE(NULLIF(old.search_text, ''), old.content));
+```
+
+外加 `SetEncryptionSecret: a passphrase has already been set`（幂等初始化，**不是**缺陷）。
+
+**已确认的事实**：
+
+1. 两次独立运行（脚本开头都强制 `location.reload()`）都复现，不是残留噪声；
+2. 错误格式 `Execute: … (code 1)` 是 **SQLite 侧**报错，不是 PostgreSQL
+   （我一开始按 PG 方向查了半天，`pg_proc` 里根本没有 `search_text`，方向就错了）；
+3. 仓库里含这两个表达式的 DDL 只有两处：
+   - `frontend/src/native/schema.ts:55-68` —— 三个 `local_notes_ai/ad/au` FTS 触发器，
+     由 `splitSqlStatements()`（`schema.ts:655`，**已正确处理触发体整体保留**）切分后逐条执行；
+   - `frontend/src/native/local-db.ts:485-504` —— 迁移路径，用**原始多语句字符串**直接
+     `this.conn.execute()`，三个触发器的 `BEGIN … END;` 里各含 1~2 条以 `;` 结尾的语句。
+
+**未确认（不能写成结论）**：
+
+- 具体是上面**哪一处**抛的（两处都在仓库里，报错文本无法区分）；
+- 设备上这三个触发器**到底存不存在**；
+- 如果不存在，影响面有多大（`local_notes_fts` 只靠 `notes-fts-ready.ts` 的回灌维护，
+  则删除/更新笔记不会从 FTS 索引里摘掉旧行 → 搜索可能返回已删或旧内容的笔记）。
+
+**下一轮该怎么定**（别再用推测代替测量）：
+
+1. 在设备上直接查 `sqlite_master`：`SELECT name, sql FROM sqlite_master WHERE type='trigger'`
+   —— 这一条就能把「存不存在」钉死；
+2. 或者走 UI 做端到端：新建一条带特征词的笔记 → 搜索命中 → 编辑内容 → 再搜
+   （旧词应消失）→ 删除 → 再搜（旧词不应还在）。
+
+在这两条之一做完之前，**不要**把它写成「已确认缺陷」，也**不要**改代码碰运气。
+
 
