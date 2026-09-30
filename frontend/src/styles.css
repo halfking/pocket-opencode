@@ -9,6 +9,31 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/**
+ * 浏览器 UA 样式表给 code / kbd / samp / pre 的 font-family 是**裸 monospace 泛型**。
+ * 真机实测（Redmi，2026-10-01 审计）：/settings 上三个模型名
+ * （claude-fable-5 / claude-opus-4-8 / claude-sonnet-4-6）就是
+ * `<code class="model-chip">`，.model-chip 只设了字号/底色/圆角，
+ * 于是 getComputedStyle().fontFamily 返回 "monospace" —— 既拿不到应用的
+ * 等宽字体（JetBrains Mono / Fira Code），也拿不到 tokens.css 末尾给
+ * --font-mono 补的 var(--font-sans) CJK 回退。
+ *
+ * 这就是用户报的「设置页字体不对」里**源码扫描抓不到**的那一类：
+ * 前面的 css-vars 护栏只扫 .vue/.css 里写死的 font 声明，
+ * 而这里的 font-family 来自浏览器默认样式，源码里根本不出现。
+ *
+ * 一并接管 background-size，保证 <code> 元素不继承浏览器默认背景图。
+ */
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--font-mono);
+  background-size: 100% 100%;
+}
+
+
+
 html,
 body {
   margin: 0;

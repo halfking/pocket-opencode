@@ -133,3 +133,46 @@ describe('等宽字体必须走 --font-mono token', () => {
     )
   })
 })
+
+/**
+ * UA 默认字体元素的接管。
+ *
+ * 2026-10-01 真机审计发现的**扫描盲区**：上面那条规则只查源码里写死的
+ * font 声明，但浏览器 UA 样式表会给 `code` / `kbd` / `samp` / `pre`
+ * 一个**裸 monospace 泛型**——源码里根本不出现这条 font-family。
+ *
+ * 真机证据（Redmi，/settings）：三个模型名是 `<code class="model-chip">`，
+ * 而 `.model-chip` 只设了 font-size/padding/background/border-radius，
+ * 于是 getComputedStyle().fontFamily === "monospace"：
+ *   - 拿不到应用的等宽字体（JetBrains Mono / Fira Code）
+ *   - 更拿不到 tokens.css 给 --font-mono 末尾补的 var(--font-sans) CJK 回退
+ *   - 任何中文模型名 / 错误消息落进 <code> 都会字体错乱
+ *
+ * 也就是说：这一类"字体不对"是**任何源码扫描都抓不到**的，只能靠
+ * 「全局重置是否存在」这条正向断言守住。
+ */
+describe('UA 默认等宽元素必须被接管', () => {
+  const globalCss = readFileSync(join(ROOT, 'src', 'styles.css'), 'utf8')
+
+  it('code/kbd/samp/pre 的 font-family 被显式设为 --font-mono', () => {
+    const block = globalCss.match(/\b(?:code|kbd|samp|pre)\b[^{]*\{[^}]*\}/g)
+    assert.ok(block && block.length > 0, 'styles.css 里没有针对 code/kbd/samp/pre 的重置')
+    const hasFontFamily = block.some((b) => /font-family\s*:\s*var\(--font-mono\)/.test(b))
+    assert.ok(
+      hasFontFamily,
+      '必须显式声明 font-family: var(--font-mono)，否则这些元素吃 UA 默认的裸 monospace 泛型，' +
+      '既没有应用的等宽字体也没有 CJK 回退（真机 /settings 的模型名就是这样）',
+    )
+  })
+
+  it('--font-mono 仍以 var(--font-sans) 收尾（CJK 回退不能被这次改动弄丢）', () => {
+    const tokens = readFileSync(join(ROOT, 'src', 'styles', 'tokens.css'), 'utf8')
+    const mono = tokens.match(/--font-mono\s*:\s*([\s\S]*?);/)
+    assert.ok(mono, 'tokens.css 里找不到 --font-mono')
+    assert.match(
+      mono[1],
+      /var\(--font-sans\)\s*$/,
+      '--font-mono 必须以 var(--font-sans) 收尾，否则中文在等宽元素里掉回浏览器默认字体',
+    )
+  })
+})
