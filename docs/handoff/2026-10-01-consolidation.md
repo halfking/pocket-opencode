@@ -90,7 +90,7 @@
 | 网关默认值 | `TestDefaultLLMGatewayStateHasNoBuiltinKey` / `TestGatewayConfigGETReturnsInitializedDefaults` | 全 PASS |
 | 台账复用 | `TestPublishLedgerScoped_ReusesPublishedSheet`（真库） | PASS |
 | STT 探测分类 | `TestProbeClassifiesBothTransportsMissing` / `TestProbeNoProviderIsNotEndpointMissing` | 全 PASS（**修复前红已用 `git stash` 实测对照**） |
-| 密钥不在工作区 | 全仓扫 `sk-6tGLjzlzUIOuMxh6` | 无命中（已脱敏） |
+| 密钥不在工作区 | 全仓扫该密钥字面量（模式见 §5.0，只写前缀不写全文） | 无命中（已脱敏） |
 
 18 项失败的构成（`origin/main` 基线同样红，非本轮引入）：
 
