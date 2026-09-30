@@ -202,12 +202,45 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 		}
 		cached, cerr := h.BodyCache.Get(em.ID, em.UID)
 		if cerr != nil || len(cached) == 0 {
-			inv.Status = "failed"
-			inv.LastError = fmt.Sprintf("POP3-sourced email raw body cache miss (err=%v); refusing to IMAP-FETCH a positional index (would fetch the wrong message)", cerr)
-			_ = h.Store.UpdateInvoiceHarvest(ctx, inv)
-			return "failed"
+			// 缓存未命中**不等于**无路可走：用 IMAP SEARCH 按头部特征反查
+			// 这封邮件的**真实** IMAP UID，唯一命中才 FETCH。
+			//
+			// 这与「拿合成 UID 盲 FETCH」有本质区别——盲 FETCH 会取到不相干
+			// 的邮件（把别人的附件存成这封发票）；SEARCH 是服务端按发件人+
+			// 主题匹配，且**只有唯一命中才返回**。多命中时如实报未解析，绝不
+			// 取最新/最旧来猜。
+			//
+			// 真实死结（2026-10-01 实测）：QQ 上 POP3 原文缓存从未落盘（POP3
+			// 只在 IMAP 失败时才跑，IMAP 修好后不再跑），而守卫又拒绝合成
+			// UID，两张真实 QQ Wallet 发票因此永远 failed。
+			if h.Fetcher == nil {
+				inv.Status = "failed"
+				inv.LastError = fmt.Sprintf("POP3-sourced email raw body cache miss (err=%v) and no fetcher to resolve real UID", cerr)
+				_ = h.Store.UpdateInvoiceHarvest(ctx, inv)
+				return "failed"
+			}
+			realUID, rerr := h.Fetcher.ResolveRealUIDByHeader(ctx, em.AccountID, em.FromAddress, em.Subject, em.Date)
+			if rerr != nil || realUID <= 0 {
+				inv.Status = "failed"
+				inv.LastError = fmt.Sprintf("POP3-sourced email raw body cache miss (err=%v) and real-UID resolve failed: %v; refusing to IMAP-FETCH a positional index (would fetch the wrong message)", cerr, rerr)
+				_ = h.Store.UpdateInvoiceHarvest(ctx, inv)
+				return "failed"
+			}
+			fetched, ferr := h.Fetcher.FetchMessageRaw(ctx, em.AccountID, realUID)
+			if ferr != nil {
+				return h.markRetry(ctx, inv, fmt.Sprintf("fetch raw by resolved real uid=%d: %v", realUID, ferr))
+			}
+			// 反查到的原文顺手回填缓存：同一封邮件若因别的原因再被采集，
+			// 这次已经付出过连接成本，不必再走一遍 SEARCH。
+			if h.BodyCache != nil {
+				if _, perr := h.BodyCache.Put(em.ID, em.UID, fetched); perr != nil {
+					log.Printf("[email/invoice-harvest] backfill body cache invoice=%s email=%s: %v", inv.ID, em.ID, perr)
+				}
+			}
+			raw = fetched
+		} else {
+			raw = cached
 		}
-		raw = cached
 	} else {
 		inv.Attempts++
 		var err error
