@@ -6,7 +6,7 @@
 # 不真起容器，只验证：
 #   1. 9 个 always-create 子目录都建好
 #   2. OPP_DEPLOY_PG=true → postgres/ 也建
-#   3. bin/{version}.{build}/ 创建 + bin/current 符号链接就位
+#   3. dry-run 不创建发布版本或切换 bin/current
 #   4. config/.env.local 自动生成，含 POCKET_POSTGRES_DSN
 #   5. 154 / 245 模式能切换（root 校验在 macOS 上跳过）
 #   6. --rollback 路径正确切回上一个版本
@@ -69,14 +69,7 @@ echo "━━━ 1. dry-run: deploy-local.sh (PG=true) ━━━" | tee -a "${LOG
 [[ -f "${TMP_BASE}/bin/.gitkeep" ]]          && pass "bin/.gitkeep" || fail "bin/.gitkeep missing"
 [[ -f "${TMP_BASE}/bin/.gitignore" ]]        && pass "bin/.gitignore" || fail "bin/.gitignore missing"
 
-# bin/current 应被 dry-run 创建（start.sh 的 bg_init + auto-stage）
-[[ -L "${TMP_BASE}/bin/current" ]]           && pass "bin/current is a symlink (auto-staged by start.sh)" || fail "bin/current not a symlink"
-
-# 指向的目录存在
-if [[ -L "${TMP_BASE}/bin/current" ]]; then
-  target="$(readlink "${TMP_BASE}/bin/current")"
-  [[ -d "${TMP_BASE}/bin/${target}" ]] && pass "bin/current → ${target} (dir exists)" || fail "bin/current → ${target} but dir missing"
-fi
+[[ ! -L "${TMP_BASE}/bin/current" ]] && pass "dry-run did not switch bin/current" || fail "dry-run switched bin/current"
 
 # config/.env.local 应自动生成
 [[ -f "${TMP_BASE}/config/.env.local" ]]     && pass "config/.env.local auto-generated" || fail "config/.env.local missing"
@@ -89,10 +82,9 @@ if [[ -f "${TMP_BASE}/config/.env.local" ]]; then
   echo "  ⏭  DSN 注入检查跳过（OPP_DEPLOY_PG=false 走 remote-required；DSN 由 .env 注入）"
 fi
 
-# 至少生成一个 bin/{id}/
-[[ -n "$(ls -1 "${TMP_BASE}/bin" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$|^pocket-opp-p' | head -1)" ]] \
-  && pass "bin/ has at least one version directory" \
-  || fail "bin/ has no version directory"
+[[ -z "$(ls -1 "${TMP_BASE}/bin" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$|^pocket-opp-p' | head -1)" ]] \
+  && pass "dry-run did not stage a version directory" \
+  || fail "dry-run staged a version directory"
 
 # ── 2. 154 模式（dry-run 在 macOS 上跳过 root 校验；只验证 env 派生）──
 echo

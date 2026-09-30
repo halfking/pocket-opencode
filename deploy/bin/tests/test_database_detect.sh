@@ -37,6 +37,7 @@ expect_empty() {
 }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+export OPP_TEST_REAL_NC="$(command -v nc)"
 
 # 全局累积要清理的 fake bin 与 listener pid
 declare -a FAKE_BINS=()
@@ -58,27 +59,25 @@ make_fake_bin() {
   local fb
   fb="$(mktemp -d -t opp-fake-bin.XXXXXX)"
   FAKE_BINS+=("${fb}")
-  case "${hits}" in
-    docker)
-      cat > "${fb}/docker" <<'EOF'
+  LAST_FAKE_BIN="$fb"
+  cat > "${fb}/docker" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$1" == "ps" ]]; then
+if [[ "$1" == "ps" && "${OPP_TEST_DOCKER_HIT:-}" == "1" ]]; then
   printf 'opp-db-postgres\nopp-db-redis\nopp-db-mysql\nopp-other\n'
 fi
 exit 0
 EOF
-      chmod +x "${fb}/docker"
-      ;;
-    system)
-      cat > "${fb}/systemctl" <<'EOF'
+  cat > "${fb}/systemctl" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$1" == "is-active" ]]; then exit 0; fi
-exit 0
+if [[ "$1" == "is-active" && "${OPP_TEST_SYSTEM_HIT:-}" == "1" ]]; then exit 0; fi
+exit 1
 EOF
-      chmod +x "${fb}/systemctl"
-      ;;
-  esac
-  printf '%s' "${fb}"
+  cat > "${fb}/nc" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${OPP_TEST_NC_FAIL:-}" == "1" ]]; then exit 1; fi
+exec "${OPP_TEST_REAL_NC}" "$@"
+EOF
+  chmod +x "${fb}/docker" "${fb}/systemctl" "${fb}/nc"
 }
 
 # 起本地监听端口（用于 port-reachable 测试）
@@ -107,7 +106,7 @@ while True: time.sleep(60)
 # 跑 detect
 run_detect() {
   local fb="$1" func="$2" target_host="$3" target_port="$4"
-  PATH="${fb}:${PATH}" \
+  PATH="${fb}:${PATH}" AIAN_DEPLOY_LIB=/nonexistent \
     bash -c "
       source deploy/bin/env.sh >/dev/null 2>&1
       source deploy/bin/lib/database-detect.sh >/dev/null 2>&1
@@ -122,7 +121,9 @@ run_detect() {
 }
 
 # ── 测试 1: docker 命中 ─────────────────────────────────────────
-fb1="$(make_fake_bin docker)"
+make_fake_bin docker
+fb1="$LAST_FAKE_BIN"
+export OPP_TEST_DOCKER_HIT=1
 result_pg_docker="$(run_detect "${fb1}" "detect_pg_external" "127.0.0.1" "15432")"
 expect_eq "${result_pg_docker}" "docker:127.0.0.1:15432" "PG detect via docker"
 
@@ -131,27 +132,33 @@ expect_eq "${result_redis_docker}" "docker:127.0.0.1:6379" "Redis detect via doc
 
 result_mysql_docker="$(run_detect "${fb1}" "detect_mysql_external" "127.0.0.1" "3306")"
 expect_eq "${result_mysql_docker}" "docker:127.0.0.1:3306" "MySQL detect via docker"
+unset OPP_TEST_DOCKER_HIT
 
 # ── 测试 2: systemd 命中 ────────────────────────────────────────
-fb2="$(make_fake_bin system)"
+make_fake_bin system
+fb2="$LAST_FAKE_BIN"
+export OPP_TEST_SYSTEM_HIT=1
 result_pg_sys="$(run_detect "${fb2}" "detect_pg_external" "127.0.0.1" "15432")"
 expect_eq "${result_pg_sys}" "system:127.0.0.1:15432" "PG detect via systemd"
+unset OPP_TEST_SYSTEM_HIT
 
 # ── 测试 3: 端口可达（无 fake docker / systemctl）──────────────
 start_listener "127.0.0.1" 15432
-result_pg_port="$(run_detect "" "detect_pg_external" "127.0.0.1" "15432")"
+make_fake_bin none
+fb_none="$LAST_FAKE_BIN"
+result_pg_port="$(run_detect "$fb_none" "detect_pg_external" "127.0.0.1" "15432")"
 expect_eq "${result_pg_port}" "local-port:127.0.0.1:15432" "PG detect via local port"
 
 # ── 测试 4: 端口不可达 + 没 docker/systemctl → 失败 ───────────
-# 用一个肯定没人用的端口（避开本机已有的 5432 / 15432）
-result_pg_none="$(run_detect "" "detect_pg_external" "127.0.0.1" "54321" 2>/dev/null || true)"
+# 用模拟失败代替“冷门端口必不可达”的环境假设。
+export OPP_TEST_NC_FAIL=1
+result_pg_none="$(run_detect "$fb_none" "detect_pg_external" "127.0.0.1" "54321" 2>/dev/null || true)"
 expect_empty "${result_pg_none}" "PG detect: nothing found returns empty"
 
-# ── 测试 5: 远端 IP 端口不可达 → 失败（没法 mock 远端，假设连接超时）──
-# 端口也用冷门值：loopback 兜底探测会扫 127.0.0.1:<port>，
-# 常用端口（5432 等）在本机可能真有实例监听，导致假命中。
-result_remote="$(run_detect "" "detect_pg_external" "192.0.2.1" "54321" 2>/dev/null || true)"  # TEST-NET-1
+# ── 测试 5: 远端 IP 端口不可达 → 失败 ────────────────────────
+result_remote="$(run_detect "$fb_none" "detect_pg_external" "192.0.2.1" "54321" 2>/dev/null || true)"  # TEST-NET-1
 expect_empty "${result_remote}" "PG detect: remote unreachable returns empty"
+unset OPP_TEST_NC_FAIL
 
 echo
 echo "━━━ test_database_detect ━━━"

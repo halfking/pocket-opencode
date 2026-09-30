@@ -9,6 +9,7 @@ import {
   PRODUCTION_API_BASE,
   BACKUP_API_BASE,
   API_BASE_STORAGE_KEY,
+  isCapacitorShellOrigin,
   normalizeApiBase,
   readApiBaseOverride,
   resolveApiBase,
@@ -40,11 +41,11 @@ export function previewServerBase(choice: ServerChoice, buildDefault: string, pa
     case 'build':
       return buildDefault ? normalizeApiBase(buildDefault) : ''
     case 'origin':
-      // 与 resolveApiBase 保持一致：空串 override 不会吞掉构建默认值
-      // （真机 Capacitor origin 是 https://localhost，同源即本地壳，
-      //   /api 必然打不到后端）。预览必须说真话，否则用户选了「同源」
-      //   却看到空地址，实际却被送去构建默认地址。
-      return buildDefault ? normalizeApiBase(buildDefault) : ''
+      // The browser uses /api on its origin; the native localhost shell needs
+      // the configured backend instead. Match resolveApiBase in both cases.
+      return isCapacitorShellOrigin(pageOrigin) && buildDefault
+        ? normalizeApiBase(buildDefault)
+        : ''
     case 'production':
       return PRODUCTION_API_BASE
     case 'backup':
@@ -91,13 +92,13 @@ export function resolveServerSave(
     storage: StorageLike
   },
 ): ServerSaveOutcome {
-  const before = resolveApiBase({ storage: opts.storage })
+  const before = resolveApiBase({ storage: opts.storage, buildDefault: opts.buildDefault, pageOrigin: opts.pageOrigin })
   const persistValue = serverChoiceToPersistValue(choice, opts.buildDefault, opts.pageOrigin)
   if (persistValue === null) opts.storage.removeItem(API_BASE_STORAGE_KEY)
   else opts.storage.setItem(API_BASE_STORAGE_KEY, persistValue)
 
   const after = readApiBaseOverride(opts.storage)
-  const resolved = resolveApiBase({ storage: opts.storage })
+  const resolved = resolveApiBase({ storage: opts.storage, buildDefault: opts.buildDefault, pageOrigin: opts.pageOrigin })
   return {
     persistValue,
     resolved,
