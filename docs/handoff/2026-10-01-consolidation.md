@@ -203,6 +203,21 @@
 **诚实结论：实际只确认了 3 个分支已删（并发会话执行）。
 另 2 个虽定性为「无用」，但因挂在活跃 worktree 上，本轮不动。**
 
+推送完成后（02:17）复查，两者对 `origin/main` 已是 `ahead=0 / behind=0`，
+但**都仍在被写**：
+
+- `wt3`：`scripts/adb-install-confirm.mjs` 02:13 写入，`logs/maestro-conn8.log` 02:16:53（24 秒前）。
+- 主工作区：`.gitignore` 02:12 写入。
+
+**所以本轮一个分支都没删。** 删分支会连带打断正在跑的会话——
+「分支 ahead=0」只说明内容已合入，不说明没人还在用它工作。
+
+### 6.1 附带发现：worktree 建到了 workspace 外面
+
+`git worktree list` 显示存在 `C:/workspace/openpocket-baseline-wt`（detached HEAD @ `74b629c`）。
+**这不是我建的**（我的整合 worktree 在 workspace 内的 `.wt-consolidate`）。
+写到 workspace 之外违反本机安全策略，建议下一轮清理时一并处理。
+
 ---
 
 ## 7. 并发事实（下一轮开工前必读）
