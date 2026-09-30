@@ -5482,3 +5482,57 @@ Vue 的 computed 只在**响应式依赖变化**时重算。这里的依赖只�
 不是 flow 一定还有 bug，而是**它测的东西一直在被别人改**。
 需要用户决定是否让并发会话暂停设备操作。
 
+## 4.56 合并并发会话的 20 笔提交后跑全量 gates，抓到一个会**在真机上显示字面文本**的图标缺陷
+
+设备被并发会话占着，没法跑真机回归；但**合并后的树还没有人验证过能不能过卡口**。
+这件事不需要设备，于是先做了。
+
+### 4.56.1 现象
+
+`npm run gates`（typecheck + build:gate + test:native + check:vm-gaps + check:i18n + check:icons）
+在 `check:icons` 一步失败，`EXIT=1`：
+
+```
+[icon-font] ❌ 1 个名字在字体里合不出连字，真机会显示字面文本：
+  graphic_eq               src\features\settings\SettingsView.vue 字面量
+[icon-font] 修法：node scripts/build-material-symbols-subset.mjs 重建字体后提交产物。
+```
+
+来源是并入的 STT 改动：`SettingsView.vue:60` 的语音转写入口用了
+`<span class="material-symbols-outlined">graphic_eq</span>`，
+而项目提交的是**裁剪过的字体子集**（只含工程用到的图标），
+`graphic_eq` 不在里面。
+
+⇒ **在真机上那一行的图标位置会直接显示 "graphic_eq" 这几个字母**，
+不是空白也不是别的图标，而是字面文本。这个缺陷靠肉眼截图很容易漏，
+因为界面其余部分完全正常。
+
+### 4.56.2 修复与判据（先红后绿）
+
+按卡口自己给的官方修法重建字体产物：
+
+```
+cd frontend
+node scripts/build-material-symbols-subset.mjs     # 131 → 138 个图标，3529.3 KB
+```
+
+判据是仓库里**已有的** `check:icons`，属先红后绿：
+
+| 时点 | 命令 | 结果 |
+|---|---|---|
+| 修复前 | `npm --prefix frontend run check:icons` | **EXIT=1**，报 `graphic_eq` 合不出连字 |
+| 修复后 | 同上 | **EXIT=0**，`✅ 全部图标名在字体里都能合成连字` |
+| 修复后全量 | `npm run gates` | **EXIT=0**（typecheck / build gate / native 测试 / vm gaps / i18n / icons 全过） |
+
+改动只有一个文件：`frontend/src/assets/fonts/material-symbols-outlined.woff2`（3614020 字节）。
+**没有改 `SettingsView.vue`** —— 因为换成别的图标只是绕过问题，
+真正缺的是字体子集，而卡口的修法就是重建它。
+
+### 4.56.3 教训
+
+- **合并别人 20 笔提交之后，必须自己跑一遍全量卡口。** 冲突为零 ≠ 合并后的树是健康的；
+  这一条就没人跑过，缺陷已经进了 main。
+- 卡口是**先红后绿**的判据，比「看起来没问题」强得多；
+  本仓库的 gates 已经能抓到「真机显示字面文本」这类只有上机才看得见的缺陷。
+- 这一类缺陷**不需要真机就能验**，设备被占用时优先做这类事。
+
