@@ -4610,7 +4610,20 @@ FinanceView 侧也修正：实际是 **32 行**含中文（其中一部分是文
 
 ### 4.49 关掉两个悬着的证据缺口
 
-#### 4.49.1 `/api/marketplace/agents`：**404 成立**，之前的 401 是探测方法错了
+#### 4.49.1
+**2026-10-01 复验（脚本 `scripts/verify-marketplace-agents.mjs`）**：
+把「不带 token」与「带有效 token」两种探测并排跑出来，避免再被鉴权中间件误导：
+
+| 路径 | 不带 token | 带有效 token |
+|---|---|---|
+| `/api/marketplace/agents` | 401 `missing authorization token` | **404 `not found`** |
+| `/api/agents` | 401 | 200 `agents: null` |
+| `/api/marketplace/packages` | 401 | 200，且 packages 有数据 |
+
+⇒ **404 成立**。之前读到 401 的原因是探测**没带 token**，被鉴权中间件短路在路由匹配之前，
+根本没走到「这条路由有没有注册」这一步。只有带有效 token 才看得到真实结果。
+（审计曾以「只读探测返回 401，404 无法证实」质疑过这条；把两种探测摆在一起即可自证。）
+ `/api/marketplace/agents`：**404 成立**，之前的 401 是探测方法错了
 
 §4.37.2 记的是「404 说法无法证实，只读探测返回 401」。本轮定下来了——
 **401 是探测方法的问题，不是端点状态**：
