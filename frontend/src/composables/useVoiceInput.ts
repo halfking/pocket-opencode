@@ -11,6 +11,7 @@
  */
 import { ref, onBeforeUnmount } from 'vue'
 import { sttApi } from '../api/stt'
+import { sttFailureText } from '../api/stt-error'
 import { openPreferredMicStream } from '../native/audio-inputs'
 import { useMicPermission } from './useMicPermission'
 import { useToast } from './useToast'
@@ -115,8 +116,10 @@ export function useVoiceInput() {
       if (ownerGone) await deliverOrphan(result.text)
       return result.text
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e)
-      sttError.value = `转写失败：${msg}`
+      // 2026-10-01：原来把原始 e.message 拼进 sttError，UnifiedComposer 会直接把
+      // `dial tcp …: i/o timeout` 这类技术串显示给用户。改走与 recordingRuntime
+      // 同一套展示规则（sttFailureText 窄口径），保证两个入口行为一致。
+      sttError.value = sttFailureText(e, '转写失败')
       return null
     } finally {
       isTranscribing.value = false

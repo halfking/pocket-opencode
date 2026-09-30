@@ -52,6 +52,20 @@
         <div v-if="testResult" :class="['test-result', testResult.ok ? 'ok' : 'fail']">
           {{ testResult.text }}
         </div>
+        <!--
+          2026-10-01：会议与笔记录音转文字的模型与通道。
+          放在 AI 网关卡片里，因为 STT 走的就是这台网关（外部通道另算）。
+        -->
+        <div class="setting-item entry" data-testid="settings-stt-entry" @click="openSttEditor">
+          <div class="setting-icon"><span class="material-symbols-outlined">graphic_eq</span></div>
+          <div class="setting-content">
+            <div class="setting-label">语音转写</div>
+            <div class="setting-value small">
+              会议与笔记录音转文字的模型与通道
+            </div>
+          </div>
+          <span class="material-symbols-outlined chevron">chevron_right</span>
+        </div>
       </div>
 
       <!-- 用户信息 -->
@@ -349,6 +363,11 @@ async function testGateway() {
 
 function openGatewayEditor() {
   router.push('/settings/llm-gateway')
+}
+
+/** 语音转写配置：录音转文字用哪个模型、走网关还是外部服务。 */
+function openSttEditor() {
+  router.push('/settings/stt')
 }
 
 function formatLoginTime(): string {
