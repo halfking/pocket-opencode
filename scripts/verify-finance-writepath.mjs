@@ -117,8 +117,12 @@ const ev = async (x) => (await send('Runtime.evaluate', { expression: x, returnB
 let origin = null;
 const readyDl = Date.now() + 20000;
 while (Date.now() < readyDl) { origin = await ev('location.origin'); if (origin && origin !== 'null') break; await sleep(500) }
-console.log('origin =', origin, '（必须是 http://localhost）');
-if (origin !== 'http://localhost') { console.log('非 dev 包或 WebView 未就绪，中止。'); process.exit(5) }
+// 默认要求 dev 包（http://localhost）。做生产 https 回归时用
+// POCKET_EXPECT_ORIGIN=https://localhost 放宽 —— 否则脚本会在第一关就退出，
+// 根本走不到真正要验的那些判据上。
+const EXPECT_ORIGIN = process.env.POCKET_EXPECT_ORIGIN || 'http://localhost';
+console.log('origin =', origin, `（本次要求 ${EXPECT_ORIGIN}）`);
+if (origin !== EXPECT_ORIGIN) { console.log(`origin 与预期不符（要求 ${EXPECT_ORIGIN}），中止。`); process.exit(5) }
 
 // ⚠️ 证伪模式会改 DOM（hide-cta 摘按钮），而 Vue 的 vdom 仍认为那个节点在，
 // 重新 patch 时**不会**把它插回去 —— 于是 sabotage 跨轮泄漏：
@@ -130,9 +134,9 @@ let reloaded = null;
 while (Date.now() < rlDl) {
   await sleep(1000);
   reloaded = await ev('location.origin');
-  if (reloaded === 'http://localhost') break;
+  if (reloaded === EXPECT_ORIGIN) break;
 }
-console.log('reload 后 origin =', reloaded, reloaded === 'http://localhost' ? '' : '⚠️ 页面未恢复干净');
+console.log('reload 后 origin =', reloaded, reloaded === EXPECT_ORIGIN ? '' : '⚠️ 页面未恢复干净');
 await sleep(2500);
 
 // ---------- 登录 ----------
