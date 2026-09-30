@@ -15,7 +15,7 @@ import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacito
 import { initSqliteWeb } from './sqlite-web-init'
 import { isWebFallbackRuntime } from './runtime-platform'
 import type { SqlDb, SqlRow } from './sqlDb'
-import { SCHEMA_SQL, splitSqlStatements } from './schema'
+import { SCHEMA_SQL, splitSqlStatements, normalizeTriggerForPluginExecute } from './schema'
 import { localDbNeedsOpen } from './local-db-init'
 
 const MEETINGS_V2_COLUMNS = [
@@ -174,13 +174,19 @@ class LocalDB {
     let applied = 0
     let failed = 0
     for (const stmt of statements) {
-      const one = stmt.endsWith(';') ? stmt : `${stmt};`
+      // BUG-AH：切分正确还不够 —— 插件的 Android execute 会按字面量 `;\n` 再切一次，
+      // 触发体里的「分号 + 换行」会把 CREATE TRIGGER 截断成半条语句。
+      // 真机实测：三个 FTS 触发器一个都没建成，而 FTS 虚表建出来了
+      // （虚表体内没有分号，所以幸存）。详见 schema.ts 里
+      // normalizeTriggerForPluginExecute 的实验表。
+      const one = normalizeTriggerForPluginExecute(stmt)
+      const withSemi = one.endsWith(';') ? one : `${one};`
       try {
-        await this.conn.execute(one, false)
+        await this.conn.execute(withSemi, false)
         applied++
       } catch (e) {
         failed++
-        console.warn('[localDB] skip schema stmt:', one.slice(0, 60), e)
+        console.warn('[localDB] skip schema stmt:', withSemi.slice(0, 60), e)
       }
     }
     if (failed > 0) {
@@ -478,30 +484,50 @@ class LocalDB {
     )
     await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_status ON local_notes(status) WHERE deleted_at IS NULL;', false).catch(() => {})
 
+    // BUG-AH：三个 FTS 触发器原来是把**多语句字符串**整块丢给
+    // `this.conn.execute()`。触发器体里本来就带分号（`local_notes_ad` / `_au`
+    // 体内各有 1~2 条以 `;` 结尾的语句），插件按「单条语句」解析，
+    // 于是从第一个分号处截断 → `incomplete input (code 1)`，
+    // **三个触发器一个都没建成**（真机 sqlite_master 实测：只有 FTS 虚表与
+    // 它的影子表，零个 trigger）。
+    //
+    // 后果不是报错而是**索引悄悄失同步**：搜索走
+    // `local_notes_fts MATCH`（notes-search.ts），而 ad/au 缺失意味着
+    // 删改笔记不会从索引里摘掉旧行 → 搜到已删除或旧内容的笔记。
+    // 之前 `notes-fts-ready.ts` 的全量回灌让行数一度对得上，掩盖了这一点。
+    //
+    // 修法与 SCHEMA_SQL 路径保持一致：交给 splitSqlStatements 切分后逐条执行
+    // （那条路已被证明有效 —— FTS 虚表就是它建出来的）。
+    // 回归/证伪：scripts/check-fts-triggers-device.mjs 直接查设备上的 sqlite_master。
+    const ftsTriggerDdl = `
+      CREATE TRIGGER IF NOT EXISTS local_notes_ai AFTER INSERT ON local_notes BEGIN
+        INSERT INTO local_notes_fts(rowid, title, content)
+        VALUES (new.rowid, new.title, COALESCE(NULLIF(new.search_text, ''), new.content));
+      END;
+      CREATE TRIGGER IF NOT EXISTS local_notes_ad AFTER DELETE ON local_notes BEGIN
+        INSERT INTO local_notes_fts(local_notes_fts, rowid, title, content)
+        VALUES ('delete', old.rowid, old.title, COALESCE(NULLIF(old.search_text, ''), old.content));
+      END;
+      CREATE TRIGGER IF NOT EXISTS local_notes_au AFTER UPDATE ON local_notes BEGIN
+        INSERT INTO local_notes_fts(local_notes_fts, rowid, title, content)
+        VALUES ('delete', old.rowid, old.title, COALESCE(NULLIF(old.search_text, ''), old.content));
+        INSERT INTO local_notes_fts(rowid, title, content)
+        VALUES (new.rowid, new.title, COALESCE(NULLIF(new.search_text, ''), new.content));
+      END;
+    `
+    const ftsTriggerStmts = splitSqlStatements(ftsTriggerDdl)
+    if (ftsTriggerStmts.length !== 3) {
+      // 切分数量不对说明 DDL 写坏了，宁可报错也不要静默建一半
+      throw new Error(`[localDB] FTS trigger DDL split into ${ftsTriggerStmts.length} statements, expected 3`)
+    }
+
     try {
       await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_ai;', false)
       await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_ad;', false)
       await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_au;', false)
-      await this.conn.execute(`
-        CREATE TRIGGER IF NOT EXISTS local_notes_ai AFTER INSERT ON local_notes BEGIN
-          INSERT INTO local_notes_fts(rowid, title, content)
-          VALUES (new.rowid, new.title, COALESCE(NULLIF(new.search_text, ''), new.content));
-        END;
-      `, false)
-      await this.conn.execute(`
-        CREATE TRIGGER IF NOT EXISTS local_notes_ad AFTER DELETE ON local_notes BEGIN
-          INSERT INTO local_notes_fts(local_notes_fts, rowid, title, content)
-          VALUES ('delete', old.rowid, old.title, COALESCE(NULLIF(old.search_text, ''), old.content));
-        END;
-      `, false)
-      await this.conn.execute(`
-        CREATE TRIGGER IF NOT EXISTS local_notes_au AFTER UPDATE ON local_notes BEGIN
-          INSERT INTO local_notes_fts(local_notes_fts, rowid, title, content)
-          VALUES ('delete', old.rowid, old.title, COALESCE(NULLIF(old.search_text, ''), old.content));
-          INSERT INTO local_notes_fts(rowid, title, content)
-          VALUES (new.rowid, new.title, COALESCE(NULLIF(new.search_text, ''), new.content));
-        END;
-      `, false)
+      for (const one of ftsTriggerStmts) {
+        await this.conn.execute(normalizeTriggerForPluginExecute(one), false)
+      }
     } catch (e) {
       console.warn('[localDB] notes FTS trigger rebuild skipped:', e)
     }
