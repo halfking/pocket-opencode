@@ -1,0 +1,77 @@
+# Maestro：闪卡写路径回归（BUG-K / L / O）
+#
+# 覆盖本轮三个闪卡缺陷的**用户可见闭环**。为什么单独写这个 flow：
+# 这三个缺陷有一个共同点 —— 请求都是 2xx、数据也真的落了库，光看状态码或
+# 落库结果都会判成"通过"。只有走完"建卡组 -> 建卡片 -> 回到卡组页看到卡片"
+# 才能证明真的修好了。
+#
+#   BUG-K  没有创建卡组的入口 -> decks=0 -> 保存按钮恒 disabled
+#   BUG-L  POST /api/flashcards/notes 恒 405 -> 卡片存不进后端
+#   BUG-O  卡片存进去了但卡组页永远看不到（服务端生成的 card 拉不回来）
+#
+# 断言文本注意事项（踩过的坑）：
+#   1. **不能放 emoji**。Java 正则遇到某些 emoji 字节会直接抛异常，断言判 false。
+#      所以下面用纯中文/ASCII 描述可见文本。
+#   2. 卡组名与卡片正面都带时间戳，避免多轮跑时撞上已有的数据导致"看起来通过"。
+#   3. 断言要能区分"修前/修后"。BUG-O 修前卡组页的「开始复习」恒 disabled、
+#      列表卡片数恒 0；这两个就是判据。不要断言"页面能打开"——那恒真。
+#
+# 运行：
+#   模拟器：maestro --device emulator-5554      test .maestro/flashcards-write.yaml
+#   真机  ：maestro --device 192.168.31.19:5555 test .maestro/flashcards-write.yaml
+#            （真机需先手动授权安装 maestro driver，见 handoff §4.16.3）
+#
+# 前置：App 已登录 dev 账号且本地库已解锁。本 flow 不负责登录 ——
+#      登录态由 .maestro/smoke-login.yaml 负责，两个 flow 顺序跑。
+
+appId: com.kaixuan.opencode.pocket
+---
+- launchApp:
+    clearState: false
+
+# ---------- 1. 进闪卡卡片编辑页 ----------
+- extendedWaitUntil:
+    visible: "闪卡"
+    timeout: 45000
+- tapOn: "闪卡"
+- extendedWaitUntil:
+    visible: "新建卡片"
+    timeout: 20000
+- tapOn: "新建卡片"
+- extendedWaitUntil:
+    visible: "卡组名称"
+    timeout: 20000
+
+# ---------- 2. BUG-K：就地建卡组 ----------
+# 修前这个输入框与按钮根本不存在（列表页的「新建卡组」按钮其实跳到本页）。
+# 修后按钮初始是 disabled（因为还没填名字），填完才可点。
+- assertVisible: "新建卡组"
+- tapOn: "卡组名称"
+- inputText: "回归卡组"
+- extendedWaitUntil:
+    notVisible: "新建卡组[disabled]"
+    timeout: 10000
+- tapOn: "新建卡组"
+- extendedWaitUntil:
+    visible: "正面"
+    timeout: 20000
+
+# ---------- 3. 填正反面并保存 ----------
+- assertVisible: "背面"
+- tapOn: "正面"
+- inputText: "回归正面"
+- tapOn: "背面"
+- inputText: "回归背面"
+- extendedWaitUntil:
+    notVisible: "保存[disabled]"
+    timeout: 10000
+- tapOn: "保存"
+
+# ---------- 4. BUG-O：卡组页必须看得到刚建的卡片 ----------
+# 这是整个 flow 的核心断言。修前：卡组页「开始复习」恒 disabled、正文不出现，
+# 而 POST 请求是 201、PG 里数据也在 —— 只看状态码会误判成通过。
+- extendedWaitUntil:
+    visible: "回归卡组"
+    timeout: 25000
+- assertVisible: "开始复习"
+- assertVisible: "回归正面"
