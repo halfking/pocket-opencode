@@ -62,9 +62,24 @@ var invoiceCurrencySymbols = map[string]string{
 }
 
 var (
-	reInvoiceNo   = regexp.MustCompile(`(?:发票号码|发票号|票据号码|Invoice\s*(?:No\.?|Number)?|Bill\s*No\.?)[:：\s]*([A-Za-z0-9\-]{8,32})`)
+	// 值必须**含数字**：真实发票号总是数字串或数字+字母混合
+	// （中文 8/20 位纯数字、英文 "INV-TEST-0001" 这类带字母的）。
+	// 纯字母单词必须排除——否则主题「[QQ Wallet] Electronic Invoice
+	// Issuance Notice」里，`Invoice`（Number 可选）+ 空格 会把后面的
+	// "Issuance"（8 个纯字母，刚过 {7,31} 长度门槛）当成发票号，
+	// invoice_no="Issuance"、真实号码被丢（2026-10-01 真实数据）。
+	// 用「含数字」而不是「数字打头」：后者会把 INV-TEST-0001 这类
+	// 合规的字母前缀号码也误杀（invoice_realworld_test.go 覆盖）。
+	reInvoiceNo = regexp.MustCompile(`(?i)(?:发票号码|发票号|票据号码|Invoice\s*(?:No\.?|Number)?|Bill\s*No\.?)[:：\s]*([A-Za-z0-9\-]{7,31}[0-9][A-Za-z0-9\-]*)`)
 	reInvoiceDate = regexp.MustCompile(`(?:开票日期|发票日期|开票时间|日期|Date)[:：\s]*(\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}|\d{8})日?`)
 	reLooseCNDate = regexp.MustCompile(`(\d{4}年\d{1,2}月\d{1,2})日?`)
+	// 货币代码 / 符号前缀。
+	//
+	// 为什么加 ISO 4217 代码（2026-10-01 真实数据）：QQ Wallet 英文发票写
+	// 「Total tax-inclusive amount: CNY 126.00」。旧正则只认 [¥￥$€£] 符号，
+	// `CNY ` 不在白名单，数字整个没被捕获 ⇒ amount=0 ⇒ 规范文件名退化成
+	// `其他-<单位>-0.00-<日期>.pdf`，对账时金额是空的。
+	reCurrency = `[¥￥$€£]?\s*(?:CNY|RMB|USD|EUR|GBP|HKD|JPY)?\s*`
 	// 价税合计优先，其次 合计/总额/金额/Amount；金额允许千分位与尾随「元」。
 	//
 	// 「金额」是实测补的：真发票邮件（QQ 邮箱，2026-09-30）主题写
@@ -73,9 +88,16 @@ var (
 	// 关键词表里没有「金额」⇒ amount=0 ⇒ 共享台账合计行直接少算这一张。
 	// 为了不误伤散文（「您本月的金额已超出额度」这种后面不跟数字的句子），
 	// 数值部分是必需的：没数字就不匹配。
-	reAmountTotal = regexp.MustCompile(`(?:价税合计|合计金额|合计|总额|金额|Amount\s*(?:Due|Total)?)[:：（(]?(?:小写[)）]?)?[:：\s]*[¥￥$€£]?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*(?:元|[圆])?`)
-	reAnyAmount   = regexp.MustCompile(`[¥￥]\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
-	reSeller      = regexp.MustCompile(`(?:销售方名称|销售方|开票方|商户名称|商户|Merchant|Seller)[:：\s]*([^\s,，;；。]{2,40})`)
+	reAmountTotal = regexp.MustCompile(`(?i)(?:价税合计|合计金额|合计|总额|金额|amount|Amount\s*(?:Due|Total)?)[:：（(]?(?:小写[)）]?)?[:：\s]*` + reCurrency + `([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*(?:元|[圆])?`)
+	reAnyAmount   = regexp.MustCompile(`(?i)(?:[¥￥]|[$€£]|CNY|RMB|USD|EUR|GBP|HKD|JPY)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
+	// 销售方：标签里可能夹着 "name"/"名称" 之类的修饰词，值要取**冒号/空格
+	// 之后第一个非标签词**。
+	//
+	// 真实数据：英文发票写「Seller name: Tencent Cloud Computing Co Ltd」。
+	// 旧正则 `Seller)[:：\s]*([^\s,，;；。]{2,40})` 匹配 "Seller" 后吃空格，
+	// 把标签词 "name:" 当成了销售方（seller="name:"），真正的公司名丢掉。
+	// 这里显式允许 "Seller name"/"销售方名称" 这类复合标签。
+	reSeller      = regexp.MustCompile(`(?i)(?:销售方名称|销售方|开票方|商户名称|商户|Merchant(?:\s*Name)?|Seller(?:\s*Name)?)[:：\s]*([^\s:：,，;；。]{2,40}(?:\s+[^\s:：,，;；。]{2,40})*)`)
 	// 「您收到来自XX的发票」——中文发票邮件最常见的形态，主题里就有对方单位。
 	// 不抽的话销售方会退化成发件地址，规范文件名变成
 	// 「其他-noreply@<发件域名>-3500.00-….pdf」，对账时看不出是谁开的票。
