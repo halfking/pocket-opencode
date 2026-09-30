@@ -4,17 +4,22 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/assert-no-plaintext-backend.mjs",
     "build": "vue-tsc --noEmit && vite build",
-    "build:fast": "vite build",
+    "build:fast": "node scripts/assert-no-plaintext-backend.mjs && vite build",
+    "assert:no-plaintext": "node scripts/assert-no-plaintext-backend.mjs",
     "build:gate": "node scripts/build-gate.mjs",
     "build:harmony": "node scripts/build-harmony.mjs prod",
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
-    "gates": "npm run typecheck && npm run build:gate && npm run test:native && npm run check:vm-gaps",
+    "gates": "npm run typecheck && npm run build:gate && npm run test:native && npm run check:vm-gaps && npm run check:icons",
     "test:native": "node --test src/native/__tests__/appLifecycleHub.test.mjs src/native/__tests__/aiStreamKeepalive.test.mjs src/native/__tests__/aiStreamRuntime.test.mjs src/native/__tests__/pocket-native.test.mjs",
     "test:native:all": "node --test src/native/__tests__/*.test.mjs src/native/__tests__/*.test.ts",
     "audit:vm-gaps": "node scripts/audit-viewmodel-gaps.mjs",
     "check:vm-gaps": "node scripts/check-viewmodel-gaps.mjs",
+    "check:icons": "node scripts/check-icon-subset.mjs && node scripts/check-icon-font.mjs",
+    "check:icons:visual": "node scripts/build-icon-harness.mjs",
+    "build:icons": "node scripts/build-material-symbols-subset.mjs",
     "verify:android": "npm run gates && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-fingerprint.ps1 && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-classes-fast.ps1 && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-static-verify.ps1 && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-so-audit.ps1"
   },
   "dependencies": {
@@ -50,6 +55,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.1",
+    "fontverter": "^2.0.0",
     "harfbuzzjs": "^1.6.1",
     "material-symbols": "^0.47.4",
     "patch-package": "^8.0.1",

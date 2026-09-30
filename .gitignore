@@ -1,5 +1,7 @@
 ﻿node_modules/
 dist/
+# 图标目视验证页的产物：含一份 3.5 MB 字体拷贝，按需用 npm run check:icons:visual 重新生成
+frontend/.icon-harness/
 build/
 coverage/
 .DS_Store
@@ -13,6 +15,16 @@ coverage/
 
 # Local scratchpad for ad-hoc agent/device-test artifacts (previews, extracted dex, throwaway scripts)
 .scratch/
+
+# Nested git worktrees checked out INSIDE this repo (parallel branches under review).
+# These are full second checkouts (thousands of files); without this rule a stray
+# `git add -A` at the root would commit an entire nested repo.
+# 2026-09-30: wt3/ held branch fix/bugz-marketplace-conflict, 4052 files / 247 MB.
+/wt*/
+
+# Local nested worktree probe output
+.gotest-p2.txt
+/gotest-*.txt
 
 # Backend / runtime logs
 logs/
