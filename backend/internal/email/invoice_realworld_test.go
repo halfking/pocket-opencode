@@ -1,24 +1,35 @@
 package email
 
-// 真实数据回归：QQ 邮箱里的真发票邮件（2026-09-30 实测）。
+// 真实形态回归：国内邮箱里那张电子发票邮件（2026-09-30 实测暴露两个缺陷）。
 //
-// 原文主题：
+// ⚠️ 夹具已全部合成：发票号码、开票单位、发票链接域名/发件地址都换成了
+// 明显虚构的值（原值是真实发票号、真实开票公司名、真实租户的 OSS 链接与发件
+// 域名，测试文件不该也不需要承载真实凭据/PII）。合成值保持了原邮件的**结构**：
+// 20 位数字发票号 → 带连字符的 `INV-TEST-*`（reInvoiceNo 同样匹配）、
+// 中文单位名、`.invalid` 保留域（RFC 6761 保证永不可解析）。
 //
-//	您收到来自杭州创客家投资管理有限公司的发票，发票号码：26332000008261110741，
-//	金额：3500.00元，请注意查收！
+// 合成后仍要复现的形态：主题形态（单位 + 发票号码 + 「金额：…元」）与
+// IMAP 路径（只拿得到主题 + BODY[TEXT] 头部摘要，正文没拉下来）。
 //
-// 实测缺陷两个：
+// 当初实测出的两个缺陷：
 //  1. `金额：3500.00元` 抽不出金额（reAmountTotal 的关键词表里没有「金额」），
 //     结果 amount=0 —— 汇总金额直接少算，需求里的「汇总金额」就废了；
-//  2. 销售方抽成 "dzfp"（发票平台域名片段），不是「杭州创客家投资管理有限公司」。
+//  2. 销售方退化成发件地址/其域名片段，而不是主题里的开票单位。
 //
 // 这两个都不是「规则没覆盖到」的小事：金额为 0 会让共享台账的合计行失真。
 
 import "testing"
 
-const realInvoiceSubject = "您收到来自杭州创客家投资管理有限公司的发票，发票号码：26332000008261110741，金额：3500.00元，请注意查收！"
+// 合成夹具（形状照抄真实邮件，值全部虚构）。
+const (
+	syntheticSeller     = "示例虚构科技有限公司"
+	syntheticInvoiceNo  = "INV-TEST-0001"
+	realInvoiceSubject  = "您收到来自" + syntheticSeller + "的发票，发票号码：" + syntheticInvoiceNo + "，金额：3500.00元，请注意查收！"
+	realInvoiceFromAddr = "noreply@mail.example.invalid"
+)
 
-// 支付宝电子发票平台邮件的典型正文片段（用于复现 seller=dzfp）。
+// 电子发票平台邮件的典型正文片段（用于复现「销售方退化成发件域名片段」）。
+// 发票链接是 .invalid 保留域上的合成 URL，不是任何真实对象存储地址。
 const realInvoiceSnippet = `------=_Part_397111_1624436759.1790214518883
 Content-Type: multipart/alternative; boundary="----=_Part_397110_1060649035.1790214518883"
 
@@ -27,14 +38,14 @@ Content-Type: text/plain; charset=GBK
 
 尊敬的用户：
 您已成功开具电子发票，发票信息如下：
-发票号码：26332000008261110741
+发票号码：INV-TEST-0001
 开票日期：2026-05-24
-销售方名称：杭州创客家投资管理有限公司
+销售方名称：示例虚构科技有限公司
 价税合计：￥3500.00
-发票链接：https://dzfp-oss.oss-cn-hangzhou.aliyuncs.com/invoice/26332000008261110741.pdf`
+发票链接：https://oss-example.invalid/invoice/INV-TEST-0001.pdf`
 
 // 真实 IMAP 路径下 envelope 只带主题 + BODY[TEXT] 的**头部**摘要（正文没被拉下来），
-// 线上实测就是这一种：amount=0、seller="dzzp"。
+// 线上实测就是这一种：amount=0、seller 退化成发件域名片段。
 const realInvoiceLiveSnippet = `------=_Part_397111_1624436759.1790214518883
 Content-Type: multipart/alternative; boundary="----=_Part_397110_1060649035.1790214518883"
 
@@ -49,20 +60,20 @@ func TestRealInvoice_Amount3500(t *testing.T) {
 		ID:          "em-real",
 		Subject:     realInvoiceSubject,
 		Snippet:     realInvoiceLiveSnippet,
-		FromAddress: "noreply@service.dzfp.com",
+		FromAddress: realInvoiceFromAddr,
 	}
 	inv, hit := ExtractInvoice(e, "")
 	if !hit {
-		t.Fatal("real invoice mail must be recognized")
+		t.Fatal("invoice-shaped mail must be recognized")
 	}
-	if inv.InvoiceNo != "26332000008261110741" {
-		t.Fatalf("invoice no = %q", inv.InvoiceNo)
+	if inv.InvoiceNo != syntheticInvoiceNo {
+		t.Fatalf("invoice no = %q, want %q", inv.InvoiceNo, syntheticInvoiceNo)
 	}
 	if inv.Amount != 3500.00 {
 		t.Fatalf("amount = %v, want 3500.00（主题里写的是「金额：3500.00元」）", inv.Amount)
 	}
-	if inv.Seller != "杭州创客家投资管理有限公司" {
-		t.Fatalf("seller = %q, want 杭州创客家投资管理有限公司（线上抽成了 dzfp）", inv.Seller)
+	if inv.Seller != syntheticSeller {
+		t.Fatalf("seller = %q, want %s（正文没拉下来时应退回主题里的开票单位，而不是发件地址）", inv.Seller, syntheticSeller)
 	}
 }
 

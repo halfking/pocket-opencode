@@ -25,7 +25,7 @@ func b64GBK(t *testing.T, s string) string {
 }
 
 func TestParseMIMEMessage_Base64GBKBody(t *testing.T) {
-	body := "尊敬的用户：\r\n开票日期：2026-05-24\r\n价税合计：￥3500.00\r\n发票链接：https://dzfp-oss.oss-cn-hangzhou.aliyuncs.com/invoice/2633.pdf\r\n"
+	body := "尊敬的用户：\r\n开票日期：2026-05-24\r\n价税合计：￥3500.00\r\n发票链接：https://oss-example.invalid/invoice/INV-TEST-0001.pdf\r\n"
 	raw := strings.Join([]string{
 		"MIME-Version: 1.0",
 		"Content-Type: text/plain; charset=GBK",

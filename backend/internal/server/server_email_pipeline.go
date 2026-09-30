@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -247,8 +248,21 @@ func (s *Server) runEmailPipeline(ctx context.Context, spamOverride *bool) *emai
 
 // delegatePipeline 把流水线执行委托给远端编排服务（server 模式）。
 func (s *Server) delegatePipeline(ctx context.Context) *email.PipelineReport {
+	raw := strings.TrimSpace(s.cfg.EmailServerPipelineURL)
+	// 远端地址来自部署配置（env），但它决定了本进程会把带邮箱权限的
+	// 流水线 POST 到哪里。裸 http.NewRequest 对 "llm.kxpms.cn/v1"（漏写
+	// scheme）、"file:///..."、"ftp://..." 这类值要么报一句难懂的
+	// parse error，要么直接把请求发到不该去的地方。
+	// 这里只放行 http/https，且要求显式 host，把误配挡在发请求之前。
+	target, err := url.Parse(raw)
+	if err != nil || target.Host == "" ||
+		(target.Scheme != "http" && target.Scheme != "https") {
+		return &email.PipelineReport{Errors: []string{
+			fmt.Sprintf("delegate: POCKET_EMAIL_SERVER_PIPELINE_URL 必须是带 scheme 的 http(s) 绝对地址，当前值无法使用（%q）", raw),
+		}}
+	}
 	client := &http.Client{Timeout: 16 * time.Minute}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.EmailServerPipelineURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), nil)
 	if err != nil {
 		return &email.PipelineReport{Errors: []string{"delegate: " + err.Error()}}
 	}
@@ -257,6 +271,12 @@ func (s *Server) delegatePipeline(ctx context.Context) *email.PipelineReport {
 		return &email.PipelineReport{Errors: []string{"delegate: " + err.Error()}}
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		// 非 200 的响应体多半是编排服务自己的错误页，直接 Decode 会得到
+		// 一条与真实原因无关的 "delegate decode" 报错。
+		return &email.PipelineReport{Errors: []string{
+			fmt.Sprintf("delegate: remote pipeline returned %s", resp.Status)}}
+	}
 	var rep email.PipelineReport
 	if err := json.NewDecoder(resp.Body).Decode(&rep); err != nil {
 		return &email.PipelineReport{Errors: []string{"delegate decode: " + err.Error()}}

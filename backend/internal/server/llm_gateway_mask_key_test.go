@@ -12,7 +12,10 @@ func TestMaskKey(t *testing.T) {
 		{"", "******"},
 		{"short", "******"},
 		{"exactly12chr", "exa******y12chr"}, // len==12：前 3 + 末 6，中间仅遮 3 位仍可接受
-		{"sk-hMv1qInTUGjBTGRfjv5pzn9rbHspLN8S3LOQFhjLtOiq3QIv", "sk-******iq3QIv"},
+		// 合成夹具：形状照抄真实 key（sk- 前缀 + 长 body），值全是明写的占位符。
+		// 这里放真 key 只会让仓库替某把真 key 兜底，测试并不需要它。
+		// maskKey 保留前 3 + 末 6 ⇒ "sk-" + "******" + "XYZ123"。
+		{"sk-TESTKEYNOTREAL000000000000000000000000XYZ123", "sk-******XYZ123"},
 	}
 	for _, c := range cases {
 		if got := maskKey(c.in); got != c.want {

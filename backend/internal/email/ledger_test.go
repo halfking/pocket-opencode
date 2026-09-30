@@ -112,14 +112,11 @@ func TestColumnName(t *testing.T) {
 	}
 }
 
-func TestLedgerTitleAndTotalText(t *testing.T) {
+func TestLedgerTitle(t *testing.T) {
 	now := time.Date(2026, 9, 30, 10, 0, 0, 0, time.Local)
 	title := LedgerTitle("ws_user-admin", now)
 	if title == "" || !containsAll(title, "2026-09-30", "ws_user-admin") {
 		t.Fatalf("title = %q", title)
-	}
-	if got := LedgerTotalText(1280, 3); got != "合计 1280.00（3 张）" {
-		t.Fatalf("total text = %q", got)
 	}
 }
 

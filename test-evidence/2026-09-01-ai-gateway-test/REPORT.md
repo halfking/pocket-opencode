@@ -15,7 +15,7 @@
 | iOS 模拟器 | iPhone-Test，iOS-18-6（备用，本次未使用） |
 | adb reverse | `tcp:8088 → tcp:9088`，模拟器访问 `localhost:8088` 转宿主 9088 |
 | LLM 网关 | `https://llm.kxpms.cn/v1`（POCKET_LLM_GATEWAY_URL） |
-| 网关 key | `POCKET_LLM_GATEWAY_API_KEY=sk-6tGLjzlzUIOu…ECrK51YV`（来自 `.env.example`） |
+| 网关 key | `POCKET_LLM_GATEWAY_API_KEY=<REDACTED-2026-10-01-see-handoff>`（当时来自 `.env.example`，该文件已改为留空） |
 
 ---
 

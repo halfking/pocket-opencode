@@ -8,8 +8,8 @@ import {
 } from '../providers.ts'
 
 test('qq / 163 / gmail / outlook infer from domain', () => {
-  assert.equal(inferProviderId('56551681@qq.com'), 'qq')
-  assert.equal(inferProviderId('kimmy.huang@163.com'), '163')
+  assert.equal(inferProviderId('user123456@qq.com'), 'qq')
+  assert.equal(inferProviderId('someone@163.com'), '163')
   assert.equal(inferProviderId('a@126.com'), '163')
   assert.equal(inferProviderId('a@gmail.com'), 'gmail')
   assert.equal(inferProviderId('a@outlook.com'), 'outlook')
@@ -42,5 +42,5 @@ test('catalog has the six user-facing providers', () => {
 
 test('.local addresses are disposable test mirrors', () => {
   assert.equal(isLocalTestAddress('feikemanager@163.local'), true)
-  assert.equal(isLocalTestAddress('56551681@qq.com'), false)
+  assert.equal(isLocalTestAddress('someone@qq.com'), false)
 })

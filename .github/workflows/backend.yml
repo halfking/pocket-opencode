@@ -12,7 +12,42 @@ permissions:
   contents: read
 
 jobs:
+  # 编译卡口：只做 `go build ./...`，无 Postgres / npm / 前端依赖。
+  # 存在的理由：后端曾有一批改动从未编译过就合入 main，因为 CI 里
+  # `go build` 排在 `go test -race ./...` 之后，编译错误要等 15 分钟
+  # 的测试跑（甚至等 Postgres 起来）才暴露，且看不出"编译不过"这个结论。
+  # 这个 job 把它变成独立的、几分钟内失败的硬卡口。
+  build-gate:
+    name: build gate (go build ./...)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # 明确不允许被降级为非阻塞。
+    continue-on-error: false
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Build backend (blocking gate)
+        run: go build ./...
+
   test:
+    # 编译不过时不必再等测试，build-gate 先失败。
+    needs: build-gate
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:

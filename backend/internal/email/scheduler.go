@@ -201,7 +201,12 @@ func (s *Scheduler) startPipelineLoop(ctx context.Context) {
 		ctx = context.Background()
 	}
 	s.pipelineOnce.Do(func() {
-		log.Printf("[email/scheduler] daily pipeline runner injected (hour=%d)", s.pipelineHour)
+		// hour 要在锁内读：SetPipelineRunner 正在同一把锁下写它，
+		// 锁外读就是一次真实的数据竞争（-race 会报，且可能打出与本轮不符的 hour）。
+		s.startMu.Lock()
+		hour := s.pipelineHour
+		s.startMu.Unlock()
+		log.Printf("[email/scheduler] daily pipeline runner injected (hour=%d)", hour)
 		go s.pipelineLoop(ctx)
 	})
 }

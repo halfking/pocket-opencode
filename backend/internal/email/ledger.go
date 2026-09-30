@@ -11,7 +11,6 @@ package email
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 )
 
@@ -81,9 +80,4 @@ func columnName(n int) string {
 func LedgerTitle(workspaceID string, now time.Time) string {
 	ws := defaultWorkspace(workspaceID)
 	return fmt.Sprintf("发票台账 %s（%s）", now.Format("2006-01-02"), ws)
-}
-
-// LedgerTotalText 是推送文本里的合计行（金额格式化为两位小数，避免 1280.0 这种尾巴）。
-func LedgerTotalText(total float64, count int) string {
-	return "合计 " + strconv.FormatFloat(total, 'f', 2, 64) + "（" + strconv.Itoa(count) + " 张）"
 }

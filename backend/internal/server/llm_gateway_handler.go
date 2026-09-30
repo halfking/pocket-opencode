@@ -373,11 +373,20 @@ func (s *Server) syncGatewayUserSetting(r *http.Request, workspaceID string, st 
 	}
 	// usersetting 用 unix 秒做 LWW（lww.go 的 DecidePut：相同则保留服务端行）。
 	// 直接写 time.Now().Unix() 会在"同一秒内已有一次写入"时被静默丢弃——
-	// 表现为保存成功但读回旧值，正是本次要消灭的现象。抬到比现有行新 1 秒，
-	// 保证同秒连写也一定生效。
-	updatedAt := time.Now().Unix()
+	// 表现为保存成功但读回旧值，正是本次要消灭的现象。
+	//
+	// 抬 1 秒是这里唯一的手段，但**抬多少**要小心：
+	//   - 抬到「至少比现有行新」才能保证本次写入生效（否则 DecidePut 判 Keep，
+	//     写被静默丢弃，又回到「保存成功但读回旧值」）。
+	//   - 但也不能无限往后推：别的写入方都用 time.Now().Unix()，一旦本行被推到
+	//     墙钟之前的时间点，那些写入会被 LWW 判 Keep 而**永久**拒绝。
+	// 两者取平衡：正常情况（现有行不领先）只抬到「比现有行新 1 秒」；
+	// 若现有行已经领先墙钟（历史遗留的坏数据），那 1 秒偏移已经存在，
+	// 此时**必须**以现有行为基准继续写入，否则这次保存会直接丢失。
+	now := time.Now().Unix()
+	updatedAt := now
 	if existing, err := s.userSettings.Get(userID, workspaceID, "llm_gateway", "default"); err == nil && existing != nil {
-		if existing.UpdatedAt >= updatedAt {
+		if existing.UpdatedAt >= now {
 			updatedAt = existing.UpdatedAt + 1
 		}
 	}
