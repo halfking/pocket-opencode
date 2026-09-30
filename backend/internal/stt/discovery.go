@@ -30,6 +30,22 @@ import (
 // asrNameRe 命中即视为 ASR 候选（配合 modality 一起判定）。
 var asrNameRe = regexp.MustCompile(`(?i)(asr|whisper|transcri|speech|audio|omni|voice)`)
 
+// ttsNameRe 命中即视为语音**合成**（TTS）模型，需要排除。
+//
+// 2026-10-01 真机实测发现的缺陷：asrNameRe 里的 `voice` 会把
+// `mimo-v2.5-tts-voiceclone`、`mimo-v2.5-tts-voicedesign` 这两个**语音合成**
+// 模型拉进 ASR 候选。代价有三，都不是"看着别扭"这种小事：
+//  1. 探测预算是硬约束（maxProbeCandidates=6，网关限流实测 12 次/分钟），
+//     两个注定失败的槽位被 TTS 吃掉，真正可能可用的 ASR 模型反而探不到；
+//  2. 设置页会把"语音合成模型"列在"语音转写模型"分组下，用户完全看不懂；
+//  3. 真机录音失败文案里出现 `mimo-v2.5-tts-voiceclone=网关无上游 provider`——
+//     用户看到"转写失败"却收到两个合成模型名，比只报一句通用文案更困惑。
+var ttsNameRe = regexp.MustCompile(`(?i)(tts|voice-?clon|voice-?design|voice-?id|text-?to-?speech|speak)`)
+
+// strongASRRe 是强 ASR 标记：名字里同时带 TTS 词和这些词时，仍然按 ASR 算。
+// 例：`whisper-tts` 这种混合命名不应该被 ttsNameRe 误杀。
+var strongASRRe = regexp.MustCompile(`(?i)(asr|whisper|transcri|speech-?to-?text|stt)`)
+
 // GatewayModel 是网关 /models 里的一个条目。
 type GatewayModel struct {
 	ID       string `json:"id"`
@@ -39,6 +55,10 @@ type GatewayModel struct {
 
 // IsASRCandidate 判定一个网关模型是否值得探测。
 func IsASRCandidate(m GatewayModel) bool {
+	// 先排 TTS：合成模型不可能做转写，除非名字里另有强 ASR 标记。
+	if ttsNameRe.MatchString(m.ID) && !strongASRRe.MatchString(m.ID) {
+		return false
+	}
 	if strings.EqualFold(strings.TrimSpace(m.Modality), "audio") {
 		return true
 	}

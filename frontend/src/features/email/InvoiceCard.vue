@@ -5,10 +5,19 @@
         type="button"
         class="thumb"
         :disabled="!hasFile"
-        :aria-label="hasFile ? '查看发票文件' : '暂无发票文件'"
+        :aria-label="hasFile ? '查看发票详情' : '暂无发票文件'"
         @click.stop="emit('preview')"
       >
-        <img v-if="thumbUrl" :src="thumbUrl" alt="" class="thumb-img">
+        <img
+          v-if="thumbUrl"
+          :src="thumbUrl"
+          alt=""
+          class="thumb-img"
+          loading="lazy"
+          decoding="async"
+          @load="emit('thumb-loaded', inv.id)"
+        >
+        <span v-else-if="thumbPending" class="material-symbols-outlined thumb-busy">hourglass_top</span>
         <span v-else class="material-symbols-outlined">{{ hasFile ? 'description' : 'hide_image' }}</span>
       </button>
       <button type="button" class="inv-main" @click="emit('open-email')">
@@ -60,6 +69,8 @@ import { invoiceHasFile, invoiceIssueDateLabel, invoiceReceivedLabel } from './i
 const props = defineProps<{
   inv: EmailInvoice
   thumbUrl?: string
+  /** 缩略图还在取（含原生 PDF 渲染）时为真，避免闪一下「无图」图标。 */
+  thumbPending?: boolean
   selectMode: boolean
   picked: boolean
   booking: boolean
@@ -72,6 +83,7 @@ const emit = defineEmits<{
   preview: []
   'open-email': []
   'toggle-select': []
+  'thumb-loaded': [id: string]
   download: []
   book: []
   file: []
@@ -98,7 +110,19 @@ const receivedLabel = computed(() => invoiceReceivedLabel(props.inv.emailDate, p
   display: flex; align-items: center; justify-content: center;
 }
 .thumb:disabled { cursor: default; opacity: 0.7; }
-.thumb-img { width: 100%; height: 100%; object-fit: cover; }
+/*
+ * 缩略图现在可能是「PDF 第 1 页的栅格化结果」（A4 竖版，比例 ≈ 1:1.41），
+ * 而槽位是 64×80（1:1.25）。用 contain 而不是 cover——cover 会把发票的
+ * 上下两截（抬头/金额）裁掉，用户看到的就是一张认不出内容的图。
+ */
+.thumb-img {
+  width: 100%; height: 100%;
+  object-fit: contain;
+  object-position: top center;
+  background: #fff;
+}
+.thumb-busy { animation: thumb-spin 1.2s linear infinite; opacity: 0.5; }
+@keyframes thumb-spin { to { transform: rotate(360deg); } }
 .inv-main {
   flex: 1; min-width: 0; text-align: left; background: none; border: none;
   color: inherit; cursor: pointer; padding: 0;

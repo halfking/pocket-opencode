@@ -3,6 +3,8 @@
  * and daily summaries. See docs/2026-07-02-email-assistant-design.md.
  */
 import { http, LONG_REQUEST_TIMEOUT_MS } from './http'
+import { assertNotHTML } from './jsonGuard'
+import { resolveRuntimeApiBase } from '../config/api-base'
 import { useAuthStore } from '../stores/auth'
 
 export type EmailCategory =
@@ -109,6 +111,14 @@ export interface EmailBodyResult {
   bytes: number
   body: string
   purged?: boolean
+}
+
+/** /api/emails/{id}/summarize 的响应。 */
+export interface EmailSummaryResult {
+  emailId: string
+  summary: string
+  /** true = 复用已有摘要，本次没有调用 LLM。 */
+  cached: boolean
 }
 
 export interface EmailClassifyResult {
@@ -236,6 +246,18 @@ export const emailApi = {
     return http(`/api/emails/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
   },
   /**
+   * 对单封邮件按需生成摘要。服务端是幂等的：已有摘要会直接返回
+   * （cached=true）而不再调 LLM，所以重复点击不会重复消耗 token。
+   */
+  summarizeEmail(id: string, signal?: AbortSignal): Promise<EmailSummaryResult> {
+    return http(`/api/emails/${encodeURIComponent(id)}/summarize`, {
+      method: 'POST',
+      signal,
+      // 总结要调 LLM，天然比普通读接口慢；给足超时再由用户中止。
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+    })
+  },
+  /**
    * 发送邮件：使用当前 user/workspace 第一个配置了 SMTP 的账户，除非显式
    * 指定 accountId。失败时返回结构化错误（status 4xx/5xx + body.message）。
    */
@@ -303,22 +325,30 @@ export const emailApi = {
   },
   /**
    * 下载单张已采集发票 PDF（带鉴权的 blob；配合 utils/download.downloadFile
-   * 落盘/分享）。
+   * 静默落盘到系统「下载」目录）。
+   *
+   * 必须走 resolveRuntimeApiBase() 拼绝对地址：APK 里页面 origin 是
+   * https://localhost，相对路径 /api/* 会被 Capacitor WebView 的本地资源服务
+   * 兜底成 index.html（200, text/html）。真机实测（2026-10-01）：写出去的
+   * 「PDF」其实是 <!doctype html>，PdfRenderer 报 "file not in PDF format"，
+   * 旧实现还会把这份 HTML 当发票交给系统分享面板。
    */
   async fetchInvoiceFile(id: string): Promise<Blob> {
     const auth = useAuthStore()
-    const res = await fetch(`/api/emails/invoices/${encodeURIComponent(id)}/file`, {
+    const res = await fetch(`${resolveRuntimeApiBase()}/api/emails/invoices/${encodeURIComponent(id)}/file`, {
       headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined,
     })
     if (!res.ok) throw new Error(`下载失败（${res.status}）`)
+    assertNotHTML(res)
     return res.blob()
   },
   async fetchInvoiceThumb(id: string): Promise<Blob> {
     const auth = useAuthStore()
-    const res = await fetch(`/api/emails/invoices/${encodeURIComponent(id)}/thumb`, {
+    const res = await fetch(`${resolveRuntimeApiBase()}/api/emails/invoices/${encodeURIComponent(id)}/thumb`, {
       headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined,
     })
     if (!res.ok) throw new Error(`缩略图不可用（${res.status}）`)
+    assertNotHTML(res)
     return res.blob()
   },
   /** 合并导出 A4 网格 PDF（grid=2 → 2x2 每页 4 张；3 → 3x3 每页 9 张）。 */
@@ -331,10 +361,11 @@ export const emailApi = {
   async fetchInvoiceExport(file: string): Promise<Blob> {
     const auth = useAuthStore()
     const res = await fetch(
-      `/api/emails/invoices/export/download?file=${encodeURIComponent(file)}`,
+      `${resolveRuntimeApiBase()}/api/emails/invoices/export/download?file=${encodeURIComponent(file)}`,
       { headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined },
     )
     if (!res.ok) throw new Error(`下载失败（${res.status}）`)
+    assertNotHTML(res)
     return res.blob()
   },
   /** 推送发票到飞书；ids 省略 = 全部已下载未推送。失败回退共享汇总文档。 */

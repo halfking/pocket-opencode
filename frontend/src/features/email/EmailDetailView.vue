@@ -23,27 +23,59 @@
     <header class="meta">
       <div class="from" @click="navigateToContact">
         <span class="from-name">{{ email.fromName || email.fromAddress }}</span>
-        <span v-if="email.fromName" class="from-addr">{{ email.fromAddress }}</span>
+        <!--
+          发件邮箱始终展示。
+          需求要求「显示发件的邮箱」：此前只在 fromName 存在时才显示地址，
+          两者相同时就只剩一个笼统的名字，用户无法确认这封信到底来自哪个地址。
+          展示名与地址相同时不重复渲染。
+        -->
+        <span
+          v-if="email.fromAddress && email.fromAddress !== email.fromName"
+          class="from-addr"
+          :title="email.fromAddress"
+        >{{ email.fromAddress }}</span>
       </div>
       <div class="subline">
         <time>{{ formatEmailDate(email.date) }}</time>
         <span v-if="email.hasAttachments">附件</span>
         <span v-if="email.category" class="tag" :class="`cat-${email.category}`">{{ emailCatLabel(email.category) }}</span>
         <span v-if="translating" class="lang-hint">翻译中…</span>
-        <span v-else-if="lang !== 'original'" class="lang-hint">{{ langShortLabel(lang) }}</span>
+        <span v-else-if="lang !== 'original'" class="lang-hint">{{ langShortLabel(lang) }}译文</span>
       </div>
       <h1 class="subject">{{ email.subject || '(无主题)' }}</h1>
       <!-- P2：邮件 → 学习条目 / 工作项（标题由服务端解析，见 learning/sources） -->
       <div class="detail-actions">
         <AddToLearningButton source-kind="email" :source-id="email.id" />
         <AddToLearningButton source-kind="email" :source-id="email.id" as-task task-type="comms" />
+        <!--
+          总结按钮：只在「还没有摘要」时出现。
+          需求明确「在没有总结时，总结后就不需要再总结」，所以已有摘要时
+          整个按钮撤掉，而不是置灰——置灰会让人反复点同一个没用的按钮。
+        -->
+        <button
+          v-if="!summary"
+          type="button"
+          class="summarize-btn"
+          :disabled="summarizing"
+          @click="runSummarize"
+        >{{ summarizing ? '总结中…' : 'AI 总结' }}</button>
       </div>
     </header>
-    <p v-if="email.aiSummary" class="ai">{{ email.aiSummary }}</p>
+    <div v-if="summary" class="ai">
+      <span class="ai-label">邮件总结</span>
+      <p class="ai-text">{{ summary }}</p>
+    </div>
     <div v-if="email.bodyPurged" class="state slim">正文已清除，仅保留标题和摘要。</div>
     <div v-else-if="bodyLoading && !displayBody" class="state slim">正在加载正文…</div>
-    <div v-else-if="htmlBody" class="body html" v-html="htmlBody"></div>
-    <pre v-else class="body text">{{ displayBody || '(无正文)' }}</pre>
+    <template v-else>
+      <!-- 译文/原文切换：默认展示中文译文，这里给一个显式回退入口 -->
+      <div v-if="lang !== 'original'" class="lang-bar">
+        <span>当前显示：{{ langShortLabel(lang) }}译文</span>
+        <button type="button" class="link-btn" @click="lang = 'original'">显示原文</button>
+      </div>
+      <div v-if="htmlBody" class="body html" v-html="htmlBody"></div>
+      <pre v-else class="body text">{{ displayBody || '(无正文)' }}</pre>
+    </template>
     <p v-if="bodyError" class="body-error">{{ bodyError }}</p>
   </article>
 
@@ -88,14 +120,17 @@ import type { LocalEmail } from './emails-store'
 import EmailComposeSheet from './EmailComposeSheet.vue'
 import EmailDetailMenus from './EmailDetailMenus.vue'
 import { defaultForwardSubject, defaultReplySubject, todoFromDraft, toggleCompose, type ComposeKind } from './compose-mode'
-import { emailCatLabel, extractEmailBody, formatEmailDate, quotedForwardBody } from './email-body-format'
-import { sanitizeEmailHtml } from './email-detail-format'
+import { emailCatLabel, extractEmailBody, formatEmailDate, quotedForwardBody } from './email-body-format.ts'
+import { sanitizeEmailHtml } from './email-detail-format.ts'
+import { preloadRemoteImages } from './email-image-preload.ts'
 import {
+  DEFAULT_EMAIL_LANG,
+  isMostlyChinese,
   langShortLabel,
   resolveDisplayBody,
   translateEmailBody,
   type EmailLang,
-} from './translate-email'
+} from './translate-email.ts'
 import { markListDirty } from '../../composables/list-scene-store'
 import { useApiError } from '../../composables/useApiError'
 import { useAuthStore } from '../../stores/auth'
@@ -128,7 +163,12 @@ const converting = ref(false)
 
 const sourceBody = computed(() => bodyText.value || email.value?.snippet || '')
 const displayBody = computed(() => resolveDisplayBody(sourceBody.value, langCache.value, lang.value))
-const htmlBody = computed(() => sanitizeEmailHtml(displayBody.value))
+/**
+ * 渲染用的 HTML：先过净化+排版归一化（字体兜底、剥远程 webfont），
+ * 再把远程图预加载成 data URI。图片没就位前不落到 DOM，
+ * 避免「文字先出、图一个个蹦出来还把版面顶下去」。
+ */
+const htmlBody = ref('')
 
 async function load() {
   loading.value = true
@@ -137,10 +177,17 @@ async function load() {
   bodyError.value = ''
   lang.value = 'original'
   langCache.value = {}
+  // 摘要：同步流程可能已经给这封邮件写好了 ai_summary，有就直接展示，
+  // 也就不会有「再总结一次」的按钮。
+  summary.value = ''
   composeKind.value = 'hidden'
+  // load 期间屏蔽 watch 触发的重复渲染：正文会被赋值多次、lang 也会变，
+  // 若每次都重跑一遍图片预加载，同一封邮件的图会被反复抓取。
+  loadingBody = true
   try {
   const found = await emailsStore.getEmail(route.params.id as string)
   email.value = found
+  summary.value = (found?.aiSummary || '').trim()
   langCache.value = found ? restoreTranslations(found.id) : {}
     if (found && !found.isRead) {
       try { await emailsStore.markRead(found.id, true); found.isRead = true; markListDirty('email') } catch { /* 不挡正文 */ }
@@ -168,10 +215,50 @@ async function load() {
         if (!bodyText.value) bodyError.value = apiError(e, 'errors.loadEmailBodyFailed')
       } finally { bodyLoading.value = false }
     }
+    // 正文就位后：先按默认语言策略（中文优先）定 lang，再渲染。
+    // 两步分开是为了让「原文」立刻可见，不必等翻译往返。
+    await applyDefaultLang()
+    await renderBody()
   } catch (e: any) {
     loadError.value = apiError(e, 'errors.loadEmailFailed')
   } finally {
+    loadingBody = false
     loading.value = false
+  }
+}
+
+/**
+ * 邮件总结（需求：详情页给一个总结按钮，生成后展示，且不再重复总结）。
+ *
+ * 摘要单独存在 summary 里而不是直接写 email.aiSummary，是为了能在「总结中」
+ * 状态下先渲染一个骨架；成功后同时写回 email 对象与本地库，保证列表页
+ * 再次进入时不必重新请求。
+ */
+const summarizing = ref(false)
+/** 手动生成的摘要；为空表示尚未总结，此时才显示总结按钮。 */
+const summary = ref('')
+
+async function runSummarize() {
+  const mail = email.value
+  if (!mail || summarizing.value) return
+  summarizing.value = true
+  try {
+    const res = await emailApi.summarizeEmail(mail.id)
+    const text = (res.summary || '').trim()
+    if (!text) {
+      toast.error('未能生成总结，请稍后重试')
+      return
+    }
+    summary.value = text
+    // 同步进 email 对象与本地库：跨页面/重进详情时直接命中，不必再请求。
+    mail.aiSummary = text
+    try { await emailsStore.setAiSummary(mail.id, text) } catch { /* 本地库失败不影响本次展示 */ }
+    markListDirty('email')
+    toast.success(res.cached ? '已显示已有总结' : '总结已生成')
+  } catch (e: any) {
+    toast.error(apiError(e, 'errors.operateFailed'))
+  } finally {
+    summarizing.value = false
   }
 }
 
@@ -195,6 +282,71 @@ async function chooseLang(next: EmailLang) {
     lang.value = next
   } catch (e: any) {
     toast.error(apiError(e, 'errors.operateFailed'))
+  } finally {
+    translating.value = false
+  }
+}
+
+/**
+ * 渲染当前语言下的正文：净化 + 字体归一化 + 远程图预加载。
+ *
+ * 单独抽出来是因为它现在是**异步**的（要等图抓完），而 displayBody 是同步
+ * computed。preloadSeq 用来丢弃过期结果——快速切语言时先发的请求可能后到，
+ * 不做序号校验会让旧语言的 HTML 覆盖新语言。
+ */
+let preloadSeq = 0
+/** load() 期间为 true：此时由 load 自己决定何时渲染，避免重复抓图。 */
+let loadingBody = false
+async function renderBody() {
+  const seq = ++preloadSeq
+  const sanitized = sanitizeEmailHtml(displayBody.value)
+  if (!sanitized) {
+    if (seq === preloadSeq) htmlBody.value = ''
+    return
+  }
+  // 先按净化后的 HTML 渲染（文字立即可见），再异步把图换上，避免白屏等待。
+  if (seq === preloadSeq) htmlBody.value = sanitized
+  try {
+    const withImages = await preloadRemoteImages(sanitized)
+    if (seq === preloadSeq) htmlBody.value = withImages
+  } catch {
+    // 预加载失败就用已净化的版本，不影响可读性。
+  }
+}
+
+/**
+ * 默认语言策略（需求：翻译「默认为中文」）。
+ *
+ * 正文已是中文 → 直接显示原文，不再花 token 做无意义的「中文译中文」；
+ * 否则自动翻成简体中文，并把结果缓存住。两种情况都允许用户手动切回原文。
+ */
+async function applyDefaultLang() {
+  const body = sourceBody.value
+  if (!body) return
+  if (isMostlyChinese(body)) {
+    lang.value = 'original'
+    return
+  }
+  const target = DEFAULT_EMAIL_LANG
+  if (langCache.value[target]) {
+    lang.value = target
+    return
+  }
+  translating.value = true
+  try {
+    const out = await translateEmailBody(body, target, async (prompt) => {
+      const res = await http<{ content: string }>('/api/llm/chat', {
+        method: 'POST',
+        body: JSON.stringify({ messages: [{ role: 'user', content: prompt }] }),
+      })
+      return res.content
+    })
+    langCache.value = { ...langCache.value, [target]: out }
+    persistTranslation(target, out)
+    lang.value = target
+  } catch {
+    // 翻译不可用（没配 LLM / 网络问题）时静默退回原文，正文照常显示。
+    lang.value = 'original'
   } finally {
     translating.value = false
   }
@@ -326,6 +478,12 @@ function goBack() {
 
 watch(() => route.params.id, load)
 onMounted(load)
+
+// 手动切语言后要重新走一遍净化 + 图片预加载（译文的 HTML 结构可能与原文不同）。
+// load() 自身负责首屏渲染，这里只响应「用户主动切换」。
+watch([lang, bodyText], () => {
+  if (!loadingBody) void renderBody()
+})
 </script>
 
 
@@ -348,10 +506,39 @@ onMounted(load)
 .cat-marketing { background: var(--cat-marketing-bg); color: var(--cat-marketing); }
 .cat-spam { background: var(--cat-spam-bg); color: var(--cat-spam); }
 .lang-hint { color: var(--brand-primary); }
-.ai { margin: 0; font-size: 13px; line-height: 1.5; color: var(--text-secondary); padding: var(--space-2) var(--space-3); background: var(--bg-subtle); border-radius: var(--radius-md); }
+.ai {
+  margin: 0; padding: var(--space-2) var(--space-3);
+  background: var(--bg-subtle); border-radius: var(--radius-md);
+}
+.ai-label {
+  display: block; font-size: 11px; color: var(--text-muted);
+  margin-bottom: 2px; letter-spacing: .02em;
+}
+.ai-text { margin: 0; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
+.summarize-btn {
+  padding: 5px 12px; font-size: 12px; border-radius: 8px; cursor: pointer;
+  background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text-primary);
+}
+.summarize-btn:disabled { opacity: .6; cursor: progress; }
 .body { margin: 0; font-size: 15px; line-height: 1.7; color: var(--text-primary); word-break: break-word; }
-.body.text { white-space: pre-wrap; font-family: inherit; }
+/* 正文兜底字体栈：邮件自带的 font-family 可能不含汉字，落到 Roboto 会缺字/变方框。 */
+.body.text {
+  white-space: pre-wrap;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Source Han Sans SC',
+    'Noto Sans CJK SC', 'WenQuanYi Micro Hei', sans-serif;
+}
+.body.html { overflow-wrap: anywhere; }
 .body.html :deep(img) { max-width: 100%; height: auto; }
 .body.html :deep(a) { color: var(--brand-primary); }
+.body.html :deep(table) { max-width: 100%; border-collapse: collapse; }
+/* 邮件里常见的固定宽度表格在窄屏会横向溢出，这里允许横向滚动而不是被裁掉。 */
+.body.html :deep(td), .body.html :deep(th) { word-break: break-word; }
+.lang-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
+  padding: 6px var(--space-3); margin-bottom: var(--space-2);
+  background: var(--bg-subtle); border-radius: var(--radius-sm);
+  font-size: 12px; color: var(--text-secondary);
+}
 .body-error { color: var(--danger); font-size: 13px; }
 </style>

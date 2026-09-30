@@ -458,6 +458,21 @@ func (s *Store) SetClassificationScoped(ctx context.Context, id, userID, workspa
 	return err
 }
 
+// SetSummaryScoped 只写 ai_summary，不动 category / importance / suggested_action。
+//
+// 为什么不能复用 SetClassificationScoped：那个是「全量覆盖」，调用方必须把四个
+// 字段都算齐才能安全使用。手动总结（/api/emails/{id}/summarize）只想补摘要，
+// 若拿它写，就得先把邮件现有的分类读出来再原样写回——多一次查询，还容易在
+// 并发分类时把别的进程刚写的结果覆盖掉。
+func (s *Store) SetSummaryScoped(ctx context.Context, id, userID, workspaceID, aiSummary string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE emails e SET ai_summary = $1, updated_at = $2
+		FROM email_accounts a
+		WHERE e.id = $3 AND e.account_id = a.id AND a.user_id = $4 AND a.workspace_id = $5
+	`, aiSummary, time.Now().UnixMilli(), id, userID, workspaceID)
+	return err
+}
+
 // ON CONFLICT DO NOTHING 不指定冲突目标，PostgreSQL 会自动匹配任一唯一
 // 约束/索引：(account_id, message_id) 全局唯一约束，或 message_id IS NULL
 // 时的 (account_id, subject, date) 部分唯一索引。这样无论哪种冲突都不会

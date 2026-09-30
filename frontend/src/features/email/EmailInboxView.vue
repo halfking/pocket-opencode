@@ -73,7 +73,7 @@
         </div>
       </ScrollChromePortal>
 
-      <PullToRefresh :on-refresh="load" class="inbox-scroll">
+      <PullToRefresh :on-refresh="onRefresh" class="inbox-scroll">
     <p v-if="inbox.classifyHint.value" class="sync-hint">
       {{ inbox.classifyHint.value }}
       <button v-if="inbox.classifying.value" type="button" class="linkish" @click="inbox.cancelClassify()">取消</button>
@@ -129,8 +129,8 @@
         </div>
       </TransitionGroup>
       <div v-if="emails.length > 0" ref="moreEl" class="more">
-        <span v-if="loadingMore">加载中…</span>
-        <span v-else-if="hasMore">上拉加载更多</span>
+        <span v-if="pageState.loadingMore">加载中…</span>
+        <span v-else-if="pageState.hasMore">上拉加载更多</span>
         <span v-else>没有更多了</span>
       </div>
     </template>
@@ -140,7 +140,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Skeleton, EmptyState, PullToRefresh, DbLockedState } from '../../components'
@@ -149,7 +149,16 @@ import HeaderActionsPortal from '@/components/layout/HeaderActionsPortal.vue'
 import { useListSentinel } from '../../composables/use-list-sentinel'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
-import { inboxHasMore, pullInboxFromServer, readInboxPage } from './email-inbox-page'
+import { pullInboxFromServer, readInboxPage } from './email-inbox-page'
+import {
+  INBOX_PAGE_SIZE,
+  advanceInboxPage,
+  applyRefreshPage,
+  createInboxPageState,
+  mergeInboxPages,
+  resetInboxPage,
+  shouldAutoLoadMore,
+} from './email-inbox-pagination.ts'
 import { runDelegatedEmailFetch } from './email-fetch-run'
 import { sanitizeFetchHint } from './email-fetch-plan'
 import { formatEmailRelTime } from './cleanup-filter'
@@ -158,17 +167,13 @@ import { formatInboxSearchLabel } from './email-inbox-search'
 import { useEmailInbox } from './use-email-inbox'
 import { setHeaderTitle } from '../../composables/useAppHeaderTitle'
 import { useListScene } from '../../composables/use-list-scene'
-import { useConfirm } from '../../composables/useConfirm'
 
 defineOptions({ name: 'EmailInboxView' })
 
 const router = useRouter()
 const { t } = useI18n()
-const { confirm } = useConfirm()
 const emails = ref<LocalEmail[]>([])
 const loading = ref(true)
-const loadingMore = ref(false)
-const hasMore = ref(false)
 const loadError = ref('')
 const activeCategory = ref<string>('')
 const dbNotReady = ref(false)
@@ -178,6 +183,17 @@ const categoryChips = INBOX_CATEGORY_CHIPS
 const sinceLocal = ref('')
 const untilLocal = ref('')
 const shownEmails = computed(() => inbox.visibleEmails(emails.value))
+
+/**
+ * 分页游标状态。
+ *
+ * nextOffset 只按「数据库已返回过的原始行数」推进，**不用 emails.length**：
+ * 下拉同步会把新邮件插到列表顶部，此后列表长度与已索取行数不再相等，若拿长度
+ * 当 offset，下一批会跳过中间那几封（负控实测：刷新后旧游标取到 f,g,h，
+ * d,e,f 永久丢失）。详见 email-inbox-pagination.ts。
+ */
+const pageState = ref(createInboxPageState())
+const refreshing = ref(false)
 
 function goToLogin() {
   router.push('/login')
@@ -207,22 +223,27 @@ async function onClassify() {
 
 async function onPurge() {
   if (!inbox.selectedCount.value) return
-  // BUG-AQ：原为 window.confirm（同步阻塞），在 Android WebView 里会卡死渲染进程。
-  const ok = await confirm({
-    title: '删除邮件',
-    message: `删除选中的 ${inbox.selectedCount.value} 封邮件？正文将清空，仅保留标题和摘要。`,
-    confirmText: '删除',
-    danger: true,
-  })
-  if (!ok) return
+  if (!window.confirm(`删除选中的 ${inbox.selectedCount.value} 封邮件？正文将清空，仅保留标题和摘要。`)) return
   await inbox.confirmPurge()
   await load()
 }
 
-async function showLocal() {
+/**
+ * 读第一页。
+ *
+ * replace=true 时整表替换（切分类 / 首屏）；false 时把结果并入现有列表
+ * （下拉刷新与后台同步），避免把用户已翻开的分页丢掉。
+ */
+async function showLocal(replace = true) {
   const page = await readInboxPage(activeCategory.value, 0)
-  emails.value = page
-  hasMore.value = inboxHasMore(page.length)
+  if (replace) {
+    emails.value = page
+    pageState.value = advanceInboxPage(createInboxPageState(), page.length, page.length, INBOX_PAGE_SIZE)
+  } else {
+    const { list, addedCount } = applyRefreshPage(emails.value, page)
+    emails.value = list
+    pageState.value = advanceInboxPage(pageState.value, page.length, addedCount, INBOX_PAGE_SIZE)
+  }
 }
 
 /** 是否有未归类邮件(需要触发自动归类) */
@@ -238,7 +259,8 @@ async function load() {
   loadError.value = ''
   dbNotReady.value = false
   try {
-    await showLocal()
+    // 首屏整表替换；后续（下拉刷新 / 后台同步）都走合并，保留已翻开的分页。
+    await showLocal(true)
   } catch (e: any) {
     if (e?.message?.includes('LocalDB 未初始化')) dbNotReady.value = true
     else loadError.value = sanitizeFetchHint(e?.message || '') || '加载邮件失败'
@@ -247,44 +269,103 @@ async function load() {
   void (async () => {
     try {
       await pullInboxFromServer()
-      await showLocal()
+      await showLocal(false)
     } catch { /* 保持本地列表 */ }
     // 自动归纳整理：拉完新邮件后,只要还有未归类就触发 runClassify 把后端
     // 队列清空(用户无需再点"归类"按钮)。后台静默运行,失败也不冒泡阻塞 UI。
-    try { await showLocal() } catch { /* 保持本地列表 */ }
+    try { await showLocal(false) } catch { /* 保持本地列表 */ }
     if (await hasUncategorized()) {
       try {
         emails.value = await inbox.runClassify(emails.value)
-        await showLocal()
+        await showLocal(false)
       } catch { /* 单封归类失败由 runClassify 内 hint 暴露;此处静默 */ }
     }
     const { hint } = await runDelegatedEmailFetch({ classify: true })
     if (hint) syncHint.value = hint
-    try { await showLocal() } catch { /* 保持本地列表 */ }
+    try { await showLocal(false) } catch { /* 保持本地列表 */ }
     // 兜底：若 fetch 路径未分类完成,再扫一遍本地未归类,直到清空或被取消。
     let safety = 0
     while (safety++ < 3 && await hasUncategorized() && !inbox.classifying.value) {
-      try { emails.value = await inbox.runClassify(emails.value); await showLocal() } catch { break }
+      try { emails.value = await inbox.runClassify(emails.value); await showLocal(false) } catch { break }
     }
   })()
 }
 
+/**
+ * 上滑加载下一页。
+ *
+ * 关键点：
+ *  - offset 取自 pageState.nextOffset（已索取行数），不是 emails.length；
+ *  - 追加走去重合并，游标只按 fetchedCount 推进；
+ *  - 加载中直接返回，防并发翻页。
+ */
 async function loadMore() {
-  if (loading.value || loadingMore.value || !hasMore.value) return
-  loadingMore.value = true
+  if (loading.value || pageState.value.loadingMore || !pageState.value.hasMore) return
+  pageState.value = { ...pageState.value, loadingMore: true }
   try {
-    const page = await readInboxPage(activeCategory.value, emails.value.length)
-    emails.value = [...emails.value, ...page.filter((m) => !emails.value.some((e) => e.id === m.id))]
-    hasMore.value = inboxHasMore(page.length)
-  } finally {
-    loadingMore.value = false
+    const page = await readInboxPage(activeCategory.value, pageState.value.nextOffset)
+    const merged = mergeInboxPages(emails.value, page)
+    const addedCount = merged.length - emails.value.length
+    emails.value = merged
+    pageState.value = advanceInboxPage(pageState.value, page.length, addedCount, INBOX_PAGE_SIZE)
+  } catch {
+    // 读失败：解除 loading 让用户能重试，游标不动（重试同一页不会漏数据）。
+    pageState.value = { ...pageState.value, loadingMore: false }
   }
+  // 填不满一屏时继续补页（见 recheckSentinel 注释）。
+  void recheckSentinel()
 }
 
 const { moreEl } = useListSentinel(loadMore)
+
+/**
+ * 追加完一页后补一次哨兵检查。
+ *
+ * IntersectionObserver 只在「交叉状态变化」时回调。若一页加载完时哨兵**仍在视口内**
+ * （比如一屏能放下两页），就不会产生新的交叉事件，列表就永远停在这一页——
+ * 这是无限滚动最常见的「只加载一页就停」。所以每轮加载后主动补判一次。
+ */
+async function recheckSentinel() {
+  await nextTick()
+  const el = moreEl.value
+  if (!el) return
+  const sentinelTop = el.getBoundingClientRect().top
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight
+  if (shouldAutoLoadMore({
+    hasMore: pageState.value.hasMore,
+    loadingMore: pageState.value.loadingMore,
+    sentinelTop,
+    viewportHeight,
+  })) {
+    await loadMore()
+    // 递归直到填满或到底（每层都让出一帧，避免同步递归卡住主线程）。
+    if (pageState.value.hasMore && !pageState.value.loadingMore) void recheckSentinel()
+  }
+}
+
+/** 下拉刷新：只拉最新并合并到顶部，保留已加载的分页与滚动位置。 */
+async function onRefresh() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await pullInboxFromServer()
+    const page = await readInboxPage(activeCategory.value, 0)
+    const { list, addedCount } = applyRefreshPage(emails.value, page)
+    emails.value = list
+    // 刷新不改游标：已加载的分页仍然有效，nextOffset 继续指向「已索取过的行数」。
+    syncHint.value = addedCount > 0 ? `新增 ${addedCount} 封邮件` : '已是最新'
+  } catch (e: any) {
+    syncHint.value = sanitizeFetchHint(e?.message || '') || '刷新失败'
+  } finally {
+    refreshing.value = false
+  }
+}
 function setCategory(c: string) {
+  if (activeCategory.value === c) return
   activeCategory.value = c
-  load()
+  // 换分类 = 换一份数据，游标归零并整表替换。
+  pageState.value = resetInboxPage(pageState.value)
+  void load()
 }
 function open(id: string) { router.push(`/email/${id}`) }
 

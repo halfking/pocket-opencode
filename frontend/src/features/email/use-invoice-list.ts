@@ -5,10 +5,10 @@ import { financeApi } from '../../api/finance'
 import { useToast } from '../../composables/useToast'
 import { useApiError } from '../../composables/useApiError'
 import { downloadTextFile, downloadFile, DownloadUnsupportedError } from '../../utils/download'
-import { remapRecordMap } from '../../native/list-sync/id-align'
 import { isLocalOnlyId } from '../../native/list-sync/planner'
 import * as invoiceStore from './invoices-store'
 import { pullInvoiceServerPage, pushDirtyInvoices } from './invoice-list-pull'
+import { useInvoiceThumbs } from './use-invoice-thumbs.ts'
 import {
   INVOICE_PAGE_SIZE, invoiceFileKind, invoiceHasFile,
   mergeInvoicePages, sortInvoicesByReceived, type InvoiceFileKind,
@@ -31,14 +31,18 @@ export function useInvoiceList() {
   const shareDocUrl = ref('')
   const selectMode = ref(false)
   const selected = ref<string[]>([])
-  const thumbs = ref<Record<string, string>>({})
-  const preview = ref<{ inv: EmailInvoice; src: string } | null>(null)
+  // 缩略图：后端内嵌位图优先，文字型 PDF 回落到原生 PdfRenderer 渲染第 1 页。
+  const { thumbs, loading: thumbLoading, loadThumbs: loadInvoiceThumbs, revokeAll: revokeAllThumbs, applyRemaps: remapThumbs } =
+    useInvoiceThumbs()
+  const preview = ref<{ inv: EmailInvoice; src: string; blob: Blob | null } | null>(null)
   const hasMore = ref(false)
   const loadingMore = ref(false)
   const nextOffset = ref(0)
 
   const invoices = computed(() => all.value)
   const previewSrc = computed(() => preview.value?.src || '')
+  const previewBlob = computed(() => preview.value?.blob ?? null)
+  const previewKey = computed(() => preview.value?.inv.id || '')
   const previewKind = computed<InvoiceFileKind>(() => invoiceFileKind(preview.value?.inv.fileName))
   const previewTitle = computed(() => preview.value?.inv.seller || '发票预览')
 
@@ -78,18 +82,10 @@ export function useInvoiceList() {
     return all.value.filter(invoiceHasFile).map((i) => i.id)
   }
   function revokeThumbs() {
-    Object.values(thumbs.value).forEach((u) => URL.revokeObjectURL(u))
-    thumbs.value = {}
+    revokeAllThumbs()
   }
   async function loadThumbs(list: EmailInvoice[]) {
-    const next = { ...thumbs.value }
-    for (const inv of list.filter(invoiceHasFile)) {
-      if (next[inv.id]) continue
-      try {
-        next[inv.id] = URL.createObjectURL(await emailApi.fetchInvoiceThumb(inv.id))
-      } catch { /* 无嵌入图时卡片走文档图标 */ }
-    }
-    thumbs.value = next
+    await loadInvoiceThumbs(list.filter(invoiceHasFile))
   }
   function openEmail(inv: EmailInvoice) {
     if (!inv.emailId) {
@@ -107,14 +103,18 @@ export function useInvoiceList() {
     try {
       const blob = await emailApi.fetchInvoiceFile(inv.id)
       closePreview()
-      preview.value = { inv, src: URL.createObjectURL(blob) }
+      // blob 一并留着：Android 上 PDF 由原生 PdfRenderer 渲染，src(blob:) 只给
+      // 图片附件和 web/iOS 的 iframe 用（WebView 内核不渲染 PDF，iframe 会全白）。
+      preview.value = { inv, src: URL.createObjectURL(blob), blob }
     } catch (e: any) {
       toast.error(apiError(e, 'errors.notFound'))
     }
   }
   function applyRemaps(remaps: { localId: string; serverId: string }[]) {
+    // 缩略图缓存的键是发票 id，本地临时 id 重映射成服务端 id 后要跟着换键，
+    // 否则重映射后每张卡都会重新去渲染一次 PDF。
+    remapThumbs(remaps)
     for (const remap of remaps) {
-      thumbs.value = remapRecordMap(thumbs.value, remap)
       selected.value = selected.value.map((id) => (id === remap.localId ? remap.serverId : id))
     }
   }
@@ -212,8 +212,8 @@ export function useInvoiceList() {
     exporting.value = true
     try {
       const res = await emailApi.exportInvoicesGrid(ids, grid)
-      await downloadFile(res.file, await emailApi.fetchInvoiceExport(res.file), 'application/pdf')
-      toast.success(`已导出 ${res.count} 张发票`)
+      const saved = await downloadFile(res.file, await emailApi.fetchInvoiceExport(res.file), 'application/pdf')
+      toast.success(`已导出 ${res.count} 张发票 · ${saved}`)
       await load()
     } catch (e: any) {
       toast.error(e instanceof DownloadUnsupportedError ? e.message : apiError(e, 'errors.operateFailed'))
@@ -240,8 +240,8 @@ export function useInvoiceList() {
   async function downloadInvoice(inv: EmailInvoice) {
     try {
       const name = inv.fileName || `invoice-${inv.id}.pdf`
-      await downloadFile(name, await emailApi.fetchInvoiceFile(inv.id), 'application/pdf')
-      toast.success(`已下载 ${name}`)
+      const saved = await downloadFile(name, await emailApi.fetchInvoiceFile(inv.id), 'application/pdf')
+      toast.success(saved)
     } catch (e: any) {
       toast.error(e instanceof DownloadUnsupportedError ? e.message : apiError(e, 'errors.operateFailed'))
     }
@@ -304,8 +304,8 @@ export function useInvoiceList() {
       lines.push([inv.invoiceDate || '', inv.emailDate || '', inv.seller || '', (Number(inv.amount) || 0).toFixed(2), inv.invoiceNo || '', inv.category || '其他', inv.status].map(cell).join(','))
     }
     try {
-      await downloadTextFile({ filename: 'openpocket-invoices.csv', content: '\uFEFF' + lines.join('\r\n'), mimeType: 'text/csv;charset=utf-8' })
-      toast.success(`已导出 ${rows.length} 张发票`)
+      const saved = await downloadTextFile({ filename: 'openpocket-invoices.csv', content: '\uFEFF' + lines.join('\r\n'), mimeType: 'text/csv;charset=utf-8' })
+      toast.success(`已导出 ${rows.length} 张发票 · ${saved}`)
     } catch (e) {
       toast.error(e instanceof DownloadUnsupportedError ? e.message : apiError(e, 'errors.operateFailed'))
     }
@@ -329,7 +329,8 @@ export function useInvoiceList() {
   return {
     loading, loadingMore, hasMore, syncing, exporting, pushing, error, filter, summary, bookingId,
     shareDocUrl,
-    selectMode, selected, thumbs, preview, invoices, previewSrc, previewKind, previewTitle,
+    selectMode, selected, thumbs, thumbLoading, preview, invoices, previewSrc, previewBlob, previewKey,
+    previewKind, previewTitle,
     formatAmount, statusLabel, bookable, toggleSelectMode, selectAllDownloaded, togglePick,
     downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline,
     syncAndReload, exportGrid, pushFeishu, downloadInvoice, markFiled, markNew, book,

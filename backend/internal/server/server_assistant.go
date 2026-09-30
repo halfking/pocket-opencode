@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
@@ -36,6 +37,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
+	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
 
@@ -1736,8 +1738,25 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 //
 // 非 MIME 输入（旧版本缓存下来的拍平文本、或 BODY[TEXT] 回退结果）仍然要
 // 能显示，故保留 ExtractDisplayBody 兜底。
+//
+// **8bit 非 UTF-8 报文必须走兜底分支**（2026-10-01 真机审计 P0：正文乱码）：
+// 直接 `string(raw)` 再交给 encoding/json 时，非法 UTF-8 字节会被**替换成
+// U+FFFD**，GBK 正文在到达浏览器之前就已经永久丢失（实测 `��Ķ�`）。前端
+// 拿到后再怎么按 GBK 解都救不回来。ParseMIMEMessage 会按部件声明的 charset
+// 正确解码，所以这里先判 UTF-8 合法性，不合法就改用它。
 func (s *Server) emailBodyResponse(emailID, source string, raw []byte) map[string]any {
 	if _, err := email.ParseMIMEMessage(raw); err != nil {
+		display := email.ExtractDisplayBody(raw)
+		return map[string]any{
+			"emailId": emailID,
+			"source":  source,
+			"bytes":   len(display),
+			"body":    display,
+		}
+	}
+	if !utf8.Valid(raw) {
+		// 报文里有非 UTF-8 字节（GBK/Big5 系的 8bit 正文）。原样 string(raw)
+		// 会在 JSON 序列化时被替换成 U+FFFD，务必改走按 charset 解码的兜底。
 		display := email.ExtractDisplayBody(raw)
 		return map[string]any{
 			"emailId": emailID,
@@ -1891,6 +1910,16 @@ func (s *Server) handleEmailOps(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleEmailBody(w, r, id)
+		return
+	}
+	// /api/emails/{id}/summarize — POST 对单封邮件按需生成摘要（已有则直接返回）。
+	if strings.HasSuffix(remain, "/summarize") {
+		id := strings.TrimSuffix(remain, "/summarize")
+		if id == "" {
+			writeError(w, http.StatusBadRequest, "missing email id")
+			return
+		}
+		s.handleEmailSummarize(w, r, id)
 		return
 	}
 	// /api/emails/{id} — GET 详情 / PATCH 标记已读。
@@ -2440,21 +2469,38 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 		filename = "audio.wav"
 	}
 
-	// 调用 Groq Whisper Large v3 Turbo
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	// 目标由该用户的语音转写设置解析（网关自动发现 / 外部服务 / env 兜底），
+	// 不再写死 Groq Whisper。整段 base64 上传 + 推理比普通 CRUD 慢一个量级，
+	// 而录音停止链路是同步等它的，30s 太紧，给到 120s。
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	result, err := s.transcriber.Transcribe(ctx, audioData, filename)
+	scope := stt.Scope{UserID: s.userIDFromRequest(r), WorkspaceID: s.workspaceIDFromRequest(r)}
+	result, err := s.transcriber.TranscribeFor(ctx, scope, audioData, filename)
 	if err != nil {
 		log.Printf("[stt] transcribe failed: %v", err)
-		writeError(w, http.StatusBadGateway, "transcription failed: "+err.Error())
+		// 已经带错误码的（stt_unavailable: …）原样回传：前端 error-message.ts
+		// 取第一个冒号前的 [a-z0-9_]+ 当错误码，再套一层前缀会让它匹配失败，
+		// 用户就只能看到通用「服务端错误」而不是可行动的原因。
+		msg := err.Error()
+		if !strings.HasPrefix(msg, "stt_unavailable:") {
+			msg = "transcription failed: " + msg
+		}
+		writeError(w, http.StatusBadGateway, msg)
 		return
 	}
 
-	log.Printf("[stt] transcribed %d bytes (%s) -> %d chars", len(audioData), filename, len(result.Text))
+	log.Printf("[stt] transcribed %d bytes (%s) via %s/%s -> %d chars",
+		len(audioData), filename, result.Channel, result.Model, len(result.Text))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"text":       result.Text,
 		"confidence": result.Confidence,
+		"model":      result.Model,
+		"channel":    result.Channel,
+		"transport":  result.Transport,
+		"label":      result.Label,
+		"costCents":  result.CostCents,
+		"durationMs": result.DurationMS,
 	})
 }
 

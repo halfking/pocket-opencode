@@ -318,6 +318,19 @@ export async function setAiClassification(id: string, category: string, importan
   )
 }
 
+/**
+ * 只写摘要，不动 category / importance / suggested_action。
+ *
+ * 手动总结（详情页「总结」按钮）只需要补 ai_summary。若复用 setAiClassification
+ * 就得把现有分类原样写回，容易与并发的自动分类互相覆盖。
+ */
+export async function setAiSummary(id: string, summary: string): Promise<void> {
+  await localDB.run(
+    'UPDATE local_emails SET ai_summary = ? WHERE id = ?',
+    [summary, id],
+  )
+}
+
 export async function updateSyncState(accountId: string, lastUid: number): Promise<void> {
   await localDB.run(
     'UPDATE local_email_accounts SET last_synced_uid = ?, last_synced_at = ? WHERE id = ?',

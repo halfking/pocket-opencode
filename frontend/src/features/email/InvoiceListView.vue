@@ -85,6 +85,7 @@
         :key="inv.id"
         :inv="inv"
         :thumb-url="thumbs[inv.id]"
+        :thumb-pending="!thumbs[inv.id] && thumbLoading.has(inv.id)"
         :select-mode="selectMode"
         :picked="selected.includes(inv.id)"
         :booking="bookingId === inv.id"
@@ -110,6 +111,8 @@
       :open="!!preview"
       :title="previewTitle"
       :src="previewSrc"
+      :blob="previewBlob"
+      :doc-key="previewKey"
       :kind="previewKind"
       @close="closePreview"
       @open-email="preview && openEmail(preview.inv)"
@@ -132,7 +135,8 @@ defineOptions({ name: 'InvoiceListView' })
 
 const {
   loading, loadingMore, hasMore, syncing, exporting, pushing, error, filter, summary, bookingId, shareDocUrl,
-  selectMode, selected, thumbs, preview, invoices, previewSrc, previewKind, previewTitle,
+  selectMode, selected, thumbs, thumbLoading, preview, invoices, previewSrc, previewBlob, previewKey,
+  previewKind, previewTitle,
   formatAmount, statusLabel, bookable, toggleSelectMode, selectAllDownloaded, togglePick,
   downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline,
   syncAndReload, exportGrid, pushFeishu, downloadInvoice, markFiled, markNew, book,
