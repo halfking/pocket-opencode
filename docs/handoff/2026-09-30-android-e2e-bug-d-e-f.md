@@ -2028,6 +2028,20 @@ PASS  对照组：换版本号仍返回 201
   即**反复发生**的写入事故，故留闸而非改完就算。检测 U+FFFD / U+FEFF / 相邻重复标题三类，
   `--meta` 会对每类注入缺陷验证「能报出」且对干净样本「不误报」，判据失效则退出码 2。
   **下轮提交任何 .md 之前先跑它。**
+- **已推送提交里有 2 条信息带 U+FEFF，本轮决定「不重写」**：
+  `1814d15`（BUG-Y）和 `03565ce` 的提交信息开头混入了 BOM，来源是上一轮用
+  PowerShell `Out-File` 写 commit-msg 文件（PS 5.1 的 Out-File 默认写 BOM）。
+  修历史需要对 origin/main 做 force-push，而仓库同时有并发会话在写，
+  **风险远大于一个不可见字符**，故保留原样并在此登记。
+  `node scripts/audit-doc-encoding.mjs --commits 12` 可复现（当前报 2 条异常）。
+  **写 commit-msg 请用 write 工具或 `git commit -m`，不要用 Out-File / `>`。**
+- **主工作区 `C:\workspace\openpocket` 仍落后 origin/main 6 个提交，且不能快进**：
+  并发会话在改 `backend/cmd/pocketd/main.go`、`backend/internal/opencode/config_writer.go`、
+  `backend/internal/server/llm_gateway_handler.go`、`llm_gateway_resolve_test.go`、
+  `frontend/src/features/sessions/SessionListView.vue` —— 这 5 个文件**全部**出现在
+  待快进的 6 个提交的改动列表里，`git merge --ff-only` 会被 git 拒绝。
+  **等并发会话收工后再快进。** 本轮改用 worktree `wt3/` 完成提交与推送（已入
+  `.git/info/exclude`，本地生效，不会被并发会话的 `git add -A` 卷进去）。
 - **marketplace 端点可达性**：前端 `features/marketplace/api.ts` 实际调用的
   **11 个端点 0 个 404/405**；4 个 404 路径（`/agents` `/installs` `/router` `/skills`）
   **前端零调用**，是旧契约残留。「不是功能缺陷」的判断现在是被正面验证过的（§4.21.8）
