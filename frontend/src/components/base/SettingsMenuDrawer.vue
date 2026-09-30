@@ -73,6 +73,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import BottomSheet from './BottomSheet.vue'
+import type { IconName } from '../../constants/icons'
 import StaggerList from './StaggerList.vue'
 import { useAuthStore } from '../../stores/auth'
 import { APP_VERSION } from '../../utils/version'
@@ -88,7 +89,7 @@ const auth = useAuthStore()
 const userName = computed(() => auth.user)
 const version = computed(() => APP_VERSION.version)
 
-interface MenuItem { to: string; icon: string; label: string }
+interface MenuItem { to: string; icon: IconName; label: string }
 interface MenuGroup { title: string; items: MenuItem[] }
 
 const groups = computed<MenuGroup[]>(() => [

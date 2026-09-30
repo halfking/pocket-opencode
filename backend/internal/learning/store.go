@@ -476,17 +476,26 @@ func (s *Store) ActiveDayTimestamps(ctx context.Context, wsID, userID string, si
 // per milestone, enforced by PostgreSQL rather than by a check-then-insert race
 // in the executor. Reusing the reminders table avoids adding another table
 // whose DDL would go unverified alongside everything else.
+//
+// The synthetic id MUST include the workspace. It used to be
+// "ms-<key>-<userID>", and that is a live bug: ON CONFLICT names the unique
+// *index*, not the primary key, so a second workspace claiming the same
+// milestone for the same user collided on the primary key instead — 23505,
+// unhandled by that ON CONFLICT clause, and the milestone was never announced
+// in that workspace. Existing rows keep working: within one workspace the
+// index still suppresses the re-claim regardless of the id it carries.
 func (s *Store) ClaimMilestone(ctx context.Context, wsID, userID, itemID string, now int64) (bool, error) {
 	key := strings.TrimSpace(itemID)
 	if key == "" {
 		return false, fmt.Errorf("claim milestone: item id is required")
 	}
+	workspace := normalizeWorkspace(wsID)
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO learning_reminders
 			(id, workspace_id, user_id, kind, item_id, rule_kind, rule_value, next_due_at, state, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
 		ON CONFLICT (workspace_id, user_id, kind, item_id) DO NOTHING`,
-		"ms-"+key+"-"+userID, normalizeWorkspace(wsID), userID, string(ReminderStreak), key,
+		"ms-"+workspace+"-"+key+"-"+userID, workspace, userID, string(ReminderStreak), key,
 		string(RuleOnce), "", now, string(ReminderAcked), now)
 	if err != nil {
 		return false, fmt.Errorf("claim milestone: %w", err)

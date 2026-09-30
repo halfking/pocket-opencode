@@ -228,6 +228,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useApiError } from '../../composables/useApiError'
+import type { IconName } from '../../constants/icons'
 import { APP_VERSION, canDownloadApk, checkUpdate } from '../../utils/version'
 import { runtimePlatform } from '../../native/runtime-platform'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
@@ -245,7 +246,7 @@ const apiError = useApiError()
 const theme = useThemeStore()
 
 // 皮肤三选项（图标 + 词条），选中即调用 setPreference 全局生效
-const themeOptions: { value: ThemePreference; label: string; icon: string }[] = [
+const themeOptions: { value: ThemePreference; label: string; icon: IconName }[] = [
   { value: 'light', label: t('settings.themeLight'), icon: 'light_mode' },
   { value: 'dark', label: t('settings.themeDark'), icon: 'dark_mode' },
   { value: 'system', label: t('settings.themeSystem'), icon: 'brightness_auto' },

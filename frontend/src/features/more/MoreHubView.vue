@@ -73,6 +73,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
+import type { IconName } from '../../constants/icons'
 import { APP_VERSION } from '../../utils/version'
 
 defineOptions({ name: 'MoreHubView' })
@@ -83,7 +84,7 @@ const auth = useAuthStore()
 const userName = computed(() => auth.user)
 const version = computed(() => APP_VERSION.version)
 
-interface HubItem { to: string; icon: string; label: string }
+interface HubItem { to: string; icon: IconName; label: string }
 
 /* 主功能（9 宫格）。顺序按用户高频到低频排。 */
 const mainFeatures = computed<HubItem[]>(() => [

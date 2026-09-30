@@ -201,6 +201,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useFlashcardsStore } from '../../stores/flashcards'
+import type { IconName } from '../../constants/icons'
 import { parseCloze } from './utils/cloze'
 import { pickAndSaveImage, loadMediaDataUrl, deleteMediaFile, type MediaRef } from './utils/flashcardMedia'
 import TagInput from './components/TagInput.vue'
@@ -260,10 +261,12 @@ const deckConfigs = computed(() => store.deckConfigs)
 const frontMedia = computed(() => mediaRefs.value.filter((m) => m.role === 'front'))
 const backMedia = computed(() => mediaRefs.value.filter((m) => m.role === 'back'))
 
-const templateOptions = computed(() => [
-  { value: 'basic' as const, icon: 'compare_arrows', label: t('flashcards.edit.templateBasic') },
-  { value: 'cloze' as const, icon: 'auto_awesome_motion', label: t('flashcards.edit.templateCloze') },
-])
+const templateOptions = computed<{ value: 'basic' | 'cloze'; icon: IconName; label: string }[]>(
+  () => [
+    { value: 'basic' as const, icon: 'compare_arrows' as const, label: t('flashcards.edit.templateBasic') },
+    { value: 'cloze' as const, icon: 'auto_awesome_motion' as const, label: t('flashcards.edit.templateCloze') },
+  ],
+)
 
 /* Cloze 解析结果（仅 cloze 模板用得到）：给编辑者视觉反馈「几处挖空」。 */
 const parsedCloze = computed(() => parseCloze(clozeText.value))
