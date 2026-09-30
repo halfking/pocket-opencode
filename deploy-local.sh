@@ -89,8 +89,9 @@ echo "  PG 拓扑: deploy=${OPP_DEPLOY_PG} target=${OPP_PG_HOST}:${OPP_PG_PORT}"
 # A dry run must be read-only even when a DB deployment flag is true.
 if [[ " $* " == *" --dry-run "* ]]; then
   echo "  🧪 dry-run: 计划 init-dirs → DB 复用/唯一性检查 → 配置 → 数据库预检 → start"
+  python3 "$LIB_DIR/check-databases.py" --inventory
   if [[ -f "$POCKET_ENV_FILE" && " $* " != *" --frontend-only "* ]]; then
-    python3 "$LIB_DIR/check-databases.py" --env-file "$POCKET_ENV_FILE"
+    python3 "$LIB_DIR/check-databases.py" --env-file "$POCKET_ENV_FILE" --compose-file "$POCKET_COMPOSE_FILE"
   else
     echo "  数据库预检待实际后端部署执行（现有配置未改写）"
   fi

@@ -66,7 +66,7 @@ fi
 # Prove the actual env_file target and permissions before any release switch.
 # Frontend-only deploys retain an already healthy backend. Dry runs remain plans.
 if [[ "$FRONTEND_ONLY" != true && "$DRY_RUN" != true ]]; then
-  python3 "${LIB_DIR}/check-databases.py" --env-file "$POCKET_ENV_FILE"
+  python3 "${LIB_DIR}/check-databases.py" --env-file "$POCKET_ENV_FILE" --compose-file "$POCKET_COMPOSE_FILE"
 fi
 [[ -f "${POCKET_COMPOSE_FILE}" ]] || { echo "❌ compose 缺失: ${POCKET_COMPOSE_FILE}"; exit 1; }
 # http_ok 由 env.sh 提供（curl 优先，无则 wget）

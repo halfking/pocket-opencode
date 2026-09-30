@@ -57,6 +57,17 @@ def read_env(path):
     return values
 
 
+def read_compose_env(env_file, compose_file):
+    # Use the same Compose resolver as rollout: interpolation, quoting, comments
+    # and service environment overrides must be identical to the runtime.
+    rendered = json.loads(run([client("docker"), "compose", "--env-file", env_file,
+                               "-f", compose_file, "config", "--format", "json"]))
+    values = rendered.get("services", {}).get("pocketd", {}).get("environment")
+    if not isinstance(values, dict):
+        raise CheckError("rendered pocketd environment unavailable")
+    return values
+
+
 def endpoint(dsn, schemes, default_port):
     try:
         parsed = urlsplit(dsn)
@@ -146,15 +157,20 @@ def check_redis(values):
     print(f"Redis {host}:{port}: authenticated PONG")
 
 
-def can_create(kind, host, port):
-    if host not in ("localhost", "127.0.0.1", "host.docker.internal"):
-        raise CheckError("local database creation requires a local target")
-    for candidate in (port, {"postgres": 5432, "redis": 6379, "mysql": 3306}[kind]):
-        try:
-            with socket.create_connection(("127.0.0.1", candidate), timeout=2):
-                raise CheckError(f"local port {candidate} occupied; resolve existing resource before creation")
-        except OSError:
-            pass
+def inventory(kind):
+    # Native daemons can listen on non-default ports. A process candidate blocks
+    # creation until its endpoint is configured and verified; it is not a reuse
+    # success. ps comm excludes command arguments/credentials.
+    names = {"postgres": {"postgres", "postmaster"},
+             "redis": {"redis-server", "valkey-server", "keydb-server"},
+             "mysql": {"mysqld", "mariadbd"}}
+    candidates = []
+    for line in run([client("ps"), "-axo", "pid=,comm="]).splitlines():
+        fields = line.strip().split(None, 1)
+        if len(fields) == 2 and fields[0].isdigit():
+            executable = Path(fields[1].split()[0]).name.rstrip(":")
+            if executable in names[kind]:
+                candidates.append({"source": "native-process", "id": fields[0]})
     ids = run([client("docker"), "ps", "-q"]).split()
     if ids:
         containers = json.loads(run([client("docker"), "inspect", *ids]))
@@ -166,22 +182,49 @@ def can_create(kind, host, port):
             ports = item.get("Config", {}).get("ExposedPorts", {})
             bindings = item.get("NetworkSettings", {}).get("Ports", {})
             if re.search(signatures[kind], image, re.I) or target in ports or target in bindings:
-                raise CheckError(f"running {kind} candidate {item['Id'][:12]} found; configure and verify reuse")
-    print(f"{kind}: no running Docker candidate or occupied local target/default port; creation allowed")
+                labels = item.get("Config", {}).get("Labels") or {}
+                candidates.append({"source": "docker", "id": item["Id"][:12],
+                                   "compose_project": labels.get("com.docker.compose.project"),
+                                   "compose_service": labels.get("com.docker.compose.service"),
+                                   "networks": sorted(item.get("NetworkSettings", {}).get("Networks", {}))})
+    return candidates
+
+
+def can_create(kind, host, port):
+    if host not in ("localhost", "127.0.0.1", "host.docker.internal"):
+        raise CheckError("local database creation requires a local target")
+    for candidate in (port, {"postgres": 5432, "redis": 6379, "mysql": 3306}[kind]):
+        try:
+            with socket.create_connection(("127.0.0.1", candidate), timeout=2):
+                raise CheckError(f"local port {candidate} occupied; resolve existing resource before creation")
+        except OSError:
+            pass
+    candidates = inventory(kind)
+    if candidates:
+        raise CheckError(f"running {kind} candidate {candidates[0]['source']}:{candidates[0]['id']} found; configure and verify reuse")
+    print(f"{kind}: no native daemon, running Docker candidate or occupied local target/default port; creation allowed")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file")
+    parser.add_argument("--inventory", action="store_true")
+    parser.add_argument("--compose-file")
     parser.add_argument("--can-create", choices=("postgres", "redis", "mysql"))
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int)
     args = parser.parse_args()
     try:
-        if args.can_create:
+        if args.inventory:
+            for kind in ("postgres", "redis", "mysql"):
+                print(json.dumps({"kind": kind, "candidates": inventory(kind)}, ensure_ascii=False))
+        elif args.can_create:
+            if args.port is None or not 1 <= args.port <= 65535:
+                raise CheckError("valid --port required for creation check")
             can_create(args.can_create, args.host, args.port)
         elif args.env_file:
-            values = read_env(args.env_file)
+            values = (read_compose_env(args.env_file, args.compose_file)
+                      if args.compose_file else read_env(args.env_file))
             check_pg(values)
             check_redis(values)
         else:

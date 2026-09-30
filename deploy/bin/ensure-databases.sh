@@ -164,7 +164,7 @@ _start_container_db() {
   [[ "$name" != postgres ]] || _env_ensure_key POCKET_PG_SCHEMA "${OPP_PG_SCHEMA:-opencode_pocket}"
   DOCKER_DB_HOST="$host" DOCKER_DB_PORT="$port" DOCKER_DB_IMAGE="$image" \
   DOCKER_DB_DATA_DIR="$data_dir" \
-    docker compose -p "$project" -f "$compose_file" up -d "$svc" || return 1
+    docker compose -p "$project" -f "$compose_file" up -d --wait --wait-timeout 60 "$svc" || return 1
   echo "  ✅ ${name} 容器已起 (port=${port}, data=${data_dir})"
 
 }

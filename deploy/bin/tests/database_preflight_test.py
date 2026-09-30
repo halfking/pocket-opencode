@@ -80,12 +80,18 @@ class PreflightTest(unittest.TestCase):
         self.assertNotIn('p@ss', str(call.call_args.args))
         self.assertEqual(call.call_args.kwargs['env']['REDISCLI_AUTH'], 'p@ss')
 
-    def inventory(self, items, occupied=False):
+    def inventory(self, items, occupied=False, native=""):
         def connect(*args, **kwargs):
             if occupied:
                 return contextlib.nullcontext()
             raise OSError('unreachable')
-        with patch.object(mod.socket, 'create_connection', side_effect=connect), patch.object(mod, 'client', return_value='docker'), patch.object(mod, 'run', side_effect=['id' if items else '', json.dumps(items)]), contextlib.redirect_stdout(io.StringIO()):
+        def run(args, **kwargs):
+            if '-axo' in args:
+                return native
+            if 'inspect' in args:
+                return json.dumps(items)
+            return 'id' if items else ''
+        with patch.object(mod.socket, 'create_connection', side_effect=connect), patch.object(mod, 'client', return_value='docker'), patch.object(mod, 'run', side_effect=run), contextlib.redirect_stdout(io.StringIO()):
             mod.can_create('postgres', '127.0.0.1', 15432)
 
     def test_unrelated_container_name_does_not_block(self):
@@ -103,6 +109,18 @@ class PreflightTest(unittest.TestCase):
         with self.assertRaisesRegex(mod.CheckError, 'occupied'):
             self.inventory([], occupied=True)
 
+    def test_native_postgres_alternate_port_blocks(self):
+        with self.assertRaisesRegex(mod.CheckError, 'native-process:123'):
+            self.inventory([], native='123 /opt/homebrew/opt/postgresql/bin/postgres\n')
+
+    def test_postgres_client_does_not_block_creation(self):
+        self.inventory([], native='123 /opt/homebrew/opt/libpq/bin/psql\n')
+
+    def test_inventory_failure_refuses_creation(self):
+        with patch.object(mod.socket, 'create_connection', side_effect=OSError()), patch.object(mod, 'client', return_value='ps'), patch.object(mod, 'run', side_effect=mod.CheckError('inventory failed')):
+            with self.assertRaises(mod.CheckError):
+                mod.can_create('postgres', '127.0.0.1', 15432)
+
     def test_no_candidates_permits_creation(self):
         self.inventory([])
 
@@ -115,6 +133,17 @@ class PreflightTest(unittest.TestCase):
         with patch.object(mod.subprocess, 'run', return_value=result), self.assertRaises(mod.CheckError) as ctx:
             mod.run(['psql'])
         self.assertNotIn('should-never-appear', str(ctx.exception))
+
+    def test_compose_runtime_environment_used(self):
+        runtime = {"POCKET_POSTGRES_DSN": "postgresql://u:pw@db/actual", "POCKET_PG_SCHEMA": "actual_schema"}
+        with patch.object(mod, 'client', return_value='docker'), patch.object(mod, 'run', return_value=json.dumps({"services": {"pocketd": {"environment": runtime}}})) as call:
+            self.assertEqual(mod.read_compose_env('/env', '/compose'), runtime)
+        self.assertNotIn('postgresql', str(call.call_args))
+        self.assertIn('--env-file', call.call_args.args[0])
+
+    def test_compose_missing_service_refused(self):
+        with patch.object(mod, 'client', return_value='docker'), patch.object(mod, 'run', return_value='{"services":{}}'), self.assertRaises(mod.CheckError):
+            mod.read_compose_env('/env', '/compose')
 
     def test_dotenv_quotes_no_code_execution(self):
         with tempfile.TemporaryDirectory() as folder:
