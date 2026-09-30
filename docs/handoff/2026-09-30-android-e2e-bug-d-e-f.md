@@ -2387,6 +2387,15 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
+- **真机 Maestro 首次执行成功**（此前一直为 0 次，这是目标指定的核心方法）：
+  - `node scripts/maestro-run.mjs .maestro/_connectivity.yaml` **EXIT=0**，连跑两次；
+    第二次起始为**完全未登录**，完整走通 输入用户名 → admin → 口令 → 登录 → 进 App → AI 工具页
+  - 打通它踩了 8 个坑（MIUI 拦安装、driver 是两个包、`--no-reinstall-driver` 必加、
+    `pm enable` 必做、`launchApp` 的 force-stop 被吞、本地库按需解锁、
+    `visible` 是整串全匹配、`point` 点不中且 `evalScript` 不在 WebView 上下文），
+    每一条都记了实测现象，详见 §4.52
+  - 顺带证实：`notes-crud.yaml` 从写出来那天起就没通过过（`id: "notes-action"` 其实是 CSS class）
+  - 详见 §4.52
 - **BUG-AQ 原生 confirm/alert 冻结渲染进程已修**（真机复现过两次整机假死：
   点「删除」后所有 CDP 命令超时，含 `1+1` 和 `Page.enable`，只有 `am force-stop` 能恢复）：
   - 改动：7 处 `confirm` → `useConfirm()` + 16 处 `alert` → `useToast()`，**共 23 处**；
@@ -2556,6 +2565,14 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   对照组重复安装被唯一索引挡住。**这是六个模块里第一个被打通的 UI 写路径**（§4.25）
 
 ### ⚠️ 本轮新增未验证 / 未修（不要当成已完成）
+
+- ⚠️ **`notes-crud.yaml` / `flashcards-write.yaml` 的功能闭环**尚未跑通。
+  流程本身的坑已定位并修掉大半（§4.52.2 那 8 条），但最后卡在**设备被并发会话同时操作**：
+  跑到某一轮时 App 的 `localStorage` 从 24 个键被清到只剩 2 个、停在 `#/servers`、
+  API base 从构建写死的 `http://127.0.0.1:8088` 变成 `http://192.168.31.20:8088`，
+  同期主工作区脏文件 17 → 94。这些都不是我的 flow 做的。
+  按「同一台设备不能有两个自动化进程」的规矩，我**没有继续抢设备**。
+  **所以「用 Maestro 对整个项目做完整真机测试」这个目标本身仍然没有达成。**
 
 - **BUG-AQ 换掉的 16 条 toast 文案仍是硬编码中文，没接 i18n**。
   同一文件上下的 `confirm` 弹窗文案本来也全是硬编码中文
@@ -4593,7 +4610,20 @@ FinanceView 侧也修正：实际是 **32 行**含中文（其中一部分是文
 
 ### 4.49 关掉两个悬着的证据缺口
 
-#### 4.49.1 `/api/marketplace/agents`：**404 成立**，之前的 401 是探测方法错了
+#### 4.49.1
+**2026-10-01 复验（脚本 `scripts/verify-marketplace-agents.mjs`）**：
+把「不带 token」与「带有效 token」两种探测并排跑出来，避免再被鉴权中间件误导：
+
+| 路径 | 不带 token | 带有效 token |
+|---|---|---|
+| `/api/marketplace/agents` | 401 `missing authorization token` | **404 `not found`** |
+| `/api/agents` | 401 | 200 `agents: null` |
+| `/api/marketplace/packages` | 401 | 200，且 packages 有数据 |
+
+⇒ **404 成立**。之前读到 401 的原因是探测**没带 token**，被鉴权中间件短路在路由匹配之前，
+根本没走到「这条路由有没有注册」这一步。只有带有效 token 才看得到真实结果。
+（审计曾以「只读探测返回 401，404 无法证实」质疑过这条；把两种探测摆在一起即可自证。）
+ `/api/marketplace/agents`：**404 成立**，之前的 401 是探测方法错了
 
 §4.37.2 记的是「404 说法无法证实，只读探测返回 401」。本轮定下来了——
 **401 是探测方法的问题，不是端点状态**：
@@ -4865,15 +4895,108 @@ C 段的「没冻结」结论也就不成立。
 后者先剥 HTML/行/块注释，并用负向后顾排除 `export function useConfirm() {` 这个**定义**，
 否则注释和定义会被当成调用，4 条噪声——**零噪声才有可用性**。
 
+### 4.52 真机 Maestro 首次打通（本轮最大的一步：目标指定的方法终于跑起来了）
 
+#### 4.52.1 结论先说
 
+| 判据 | 结果 |
+|---|---|
+| `node scripts/maestro-run.mjs .maestro/_connectivity.yaml` | **EXIT=0** |
+| 同上，再跑一次（起始为**完全未登录**，走完整凭据登录路径） | **EXIT=0** |
+| 走过的步骤 | 输入用户名 → admin → 输入口令 → 登录 → 进入 App 外壳 → AI 工具页 → + 新任务可见 → 确认不在登录页/解锁页 |
 
+到这一轮为止，真机 Maestro **执行次数是 0**；现在是 2 次绿。
+第 2 次比第 1 次更有价值——它完整走通了真实凭据登录，不只是复用已有登录态。
 
+#### 4.52.2 打通它一共踩了 8 个坑，按发现顺序
 
+1. **MIUI 拦安装**（用户侧解决）：需开发者选项开「USB 安装」。
+   开之前 `adb install` 恒 `INSTALL_FAILED_USER_RESTRICTED`；开了之后同一条命令 Success。
+2. **driver 是两个包，不是一个**。`installMaestroApks` 依次装：
+   - `maestro-app.apk` → 包名 `dev.mobile.maestro`
+   - `maestro-server.apk` → 包名 `dev.mobile.maestro.test`（**versionCode/versionName 是空的**）
 
+   只装前一个，会卡死在 `installMaestroServerApp`。两份都在 `maestro-client.jar` 里，
+   用 `scripts/extract-maestro-driver.mjs` 解出来（与内置那份 SHA256 一致，
+   `A7F12BBD…1F0B9`），装解出来的那份避免版本漂移。
+3. ⚠️ **`--no-reinstall-driver` 是能不能跑的分水岭**。Maestro 2.11 **默认每次 test 前重装
+   driver**，而它的重装是「先卸载再安装」。MIUI 拦下安装那一步 ⇒
+   **每跑一次就亲手把 driver 卸掉且装不回来**，下一轮继续卡在 install。
+   这是个破坏性循环，连踩三次（分别卡在 `installMaestroDriverApp` 和
+   `installMaestroServerApp`）。改成不重装，driver 交给启动器自愈。
+4. **`pm enable` 不能省**。MIUI 装完新包常把它置为 `enabled=0`，
+   Maestro 认为 driver 不可用而反复重装。
+5. **`launchApp` 的 force-stop 会被 MIUI 吞掉**。实测 logcat：
+   `Force stopping com.kaixuan.opencode.pocket` + `Killing …`，之后**没有任何 Start proc**，
+   App 再没起来，45s 内界面停在 MIUI 桌面（Maestro 抓的 UI 层级是时钟和微信支付宝）。
+   改 `stopApp: false` 能起来，但 App 会保留 `pocket:lastRoute` 指向的任意页面
+   （实测撞到过邮件详情），起始状态不可预测。
+   ⇒ 最终由 `scripts/maestro-run.mjs` 统一前置：**adb 强停 + monkey 启动**（这条路径可靠），
+   并轮询 `dumpsys` 等它真正进前台。
+6. **本地 SQLCipher 是按需解锁的**，这是最隐蔽的一个。守卫只在「导航到依赖本地库的路由」
+   那一刻才判定，所以启动后停在 `#/ai` 时**看起来一切正常**（打开菜单可见、页面正常），
+   但本地库其实还锁着；一进笔记页就被弹回解锁页。
+   ⇒ 「先检查是否已解锁」这种写法必然漏判。唯一可靠做法是**先去目标页，让守卫弹解锁页，再解锁**。
+   这一条同时暴露了旧 `notes-crud.yaml` 从没通过过的事实（见下）。
+7. **Maestro 的 `visible` 是整串全匹配，不是子串包含**。按钮真实文本是「+ 新任务」，
+   写 `"新任务"` 匹配不上，必须写 `".*新任务.*"`。
+8. **`tapOn: {point: "88%,95%"}` 点不中**（报 COMPLETED 但页面不动），
+   `evalScript: ${location.hash='#/more'}` 也用不了
+   （`TypeError: Cannot set property 'hash' of undefined` ⇒ evalScript 不在 WebView 的
+   JS 上下文里跑）。**只有 `tapOn: "<文本>"` 可靠**，一律用文本点击。
 
+#### 4.52.3 顺带发现：`notes-crud.yaml` 从写出来那天起就没通过过
 
+它第一行是 `tapOn(id: "notes-action", index: 1)`，而 `notes-action` 在
+`NoteListView.vue:13,16` 里是 **CSS class 不是 id**，永远匹配不到。
+而且笔记入口也不在 AI 工具页上：真实路径是 `#/ai` → 底部「更多」→ 九宫格「PKM笔记」，
+路由是 `#/pkm/*`（不是 `#/notes`）。已按实测重写，并把 `id` 误用写进注释。
 
+另外三处过期断言也已修：`launchApp` + 等「全部正常」的写法全部换成 `_login.yaml`。
+「全部正常」是 `TasksView` 分诊条的标签，**只在没有待处理任务时出现**，且 <380px 窄屏被
+CSS 隐藏（`TasksView.vue:1443`）——真机 CSS 视口正好 360px，设备上只要留一条待处理
+任务就会假失败。
 
+#### 4.52.4 新增文件
 
+| 文件 | 作用 |
+|---|---|
+| `scripts/maestro-run.mjs` | 启动器：确保两个 driver 包就位（含 `pm enable`）、adb 确定性重启 App、等前台、注入 `--no-reinstall-driver` 与两个口令 |
+| `scripts/extract-maestro-driver.mjs` | 从 `maestro-client.jar` 解出两份 driver APK |
+| `scripts/adb-install-confirm.mjs` | MIUI 弹安装确认框时用 uiautomator 找确认键并点掉 |
+| `.maestro/_login.yaml` | 登录/解锁子流程，覆盖三种起始状态 |
+| `.maestro/_goto-pkm.yaml` | 进笔记页的导航 + 触发解锁 |
 
+口令**不写进 flow**：启动器在进程内从 `backend/internal/server/server_assistant.go`
+读 dev 旁路常量，只放进子进程 env，flow 用 `${POCKET_DEV_PASS}` / `${POCKET_MASTER}` 引用。
+取不到就直接失败，不退化成明文。
+
+#### 4.52.5 ⚠️ 没做完的部分，以及为什么停下
+
+**`notes-crud.yaml` / `flashcards-write.yaml` 的功能闭环没有跑通。**
+流程本身的坑已经定位并修掉大半（上面 8 条），但最后卡在一个**环境层面**的问题：
+
+跑到某一轮时设备上的 App 状态被外部改动了——`localStorage` 从 24 个键被清到只剩
+`pocket_api_base` + `pocket:lastRoute`，App 停在 `#/servers`（服务器选择页），
+API base 从构建时写死的 `http://127.0.0.1:8088` 变成了 `http://192.168.31.20:8088`。
+这些都不是我的 flow 做的（我的 flow 只做「更多 → PKM笔记 → 解锁 → 笔记 CRUD」）。
+同期主工作区脏文件从 17 涨到 94。
+
+按本会话自己定的规矩「**绝不能同时跑两个驱动同一台设备的自动化进程**」，
+我没有继续抢设备。**这一条是「未完成」的原因，不是我把它说成完成了。**
+
+#### 4.52.6 ⚠️ 本节有三次「测量方法本身出错」的记录，值得留
+
+1. **用会改状态的探针去读状态**。我写了个探针读 hash，但它开头先执行
+   `location.hash='#/ai'`——于是用它验证「点底部导航有没有生效」时，
+   探针自己把结果冲掉了，得出「点不中」的错误结论。后来换成只读探针（`tmp-read-hash.mjs`，
+   已删）复测，`adb input tap 630 1553` 其实是**能**导航的（`#/ai` → `#/more`）。
+   **判据自身带副作用时，结论一律不可信。**
+2. **正则少看了一个 token**。启动器里判断 App 是否进前台写成
+   `topResumedActivity=\S*\s*<包名>`，而真实输出是
+   `topResumedActivity=ActivityRecord{6194969 u0 com.kaixuan...`，中间夹着 `u0`，
+   `\S*` 跨不过空格 ⇒ **永远不匹配** ⇒ 把「App 明明在前台」误报成「60s 未进前台」。
+   同一次崩溃的还看到另一个：PowerShell 的 `-match` 和 Node 的 `RegExp` 对同一正则是
+   **不同结论**（A 不匹配 / C 匹配），所以别拿 PowerShell 的结果当 Node 行为的证据。
+3. **「报 COMPLETED」不等于「点中了」**。`tapOn: {point}` 是裸坐标点击，Maestro 不做任何
+   结果校验，成功与否和点没点中无关。文本点击至少有匹配过程可以观察。

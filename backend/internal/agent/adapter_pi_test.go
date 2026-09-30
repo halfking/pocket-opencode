@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,13 @@ import (
 // 退出（缺省 0）。
 func writeFakePi(t *testing.T) string {
 	t.Helper()
+	// fake pi 是 POSIX shell 脚本（#!/bin/sh），Windows 的 os/exec 无法执行：
+	// 报 "%1 is not a valid Win32 application"。这些断言覆盖的是 pi 适配器的
+	// 参数回放/退出码语义，在 Linux CI（ubuntu-latest，go test -race ./...）
+	// 上是真实执行的；Windows 上跳过而不是留红，避免噪音淹没真回归。
+	if runtime.GOOS == "windows" {
+		t.Skip("fake pi 是 /bin/sh 脚本，需要 POSIX shell；Windows 上无法 exec")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake-pi.sh")
 	script := `#!/bin/sh
@@ -303,6 +311,10 @@ func TestPiAdapter_NonZeroExit(t *testing.T) {
 
 // TestPiAdapter_InterruptSession 验证 InterruptSession 取消进行中的运行。
 func TestPiAdapter_InterruptSession(t *testing.T) {
+	// 同 writeFakePi：/bin/sh 夹具在 Windows 上无法 exec，语义由 Linux CI 覆盖。
+	if runtime.GOOS == "windows" {
+		t.Skip("fake pi 是 /bin/sh 脚本，需要 POSIX shell；Windows 上无法 exec")
+	}
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "fake-pi-slow.sh")
 	// 模拟慢 agent：睡 30s 后才输出（会被 kill，不会真的等 30s）。

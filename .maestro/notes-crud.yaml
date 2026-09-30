@@ -1,38 +1,28 @@
 # Maestro 真机功能流 · 笔记完整 CRUD
 #
-# 本文件的选择器来自 2026-09-30 真机 CDP 探查（scripts/cdp-notes-probe.mjs）的实测 DOM：
-#   列表卡片      .note-card > .note-title / .note-snippet / .note-meta
-#   新建页        textarea[placeholder*="一句话概括"]  (标题)
-#                 textarea[placeholder*="全屏编辑"]    (正文)
-#                 button 文本 "✓ 创建"（内容非空才 enable）
-#   详情页        button "✎ 编辑" / "🗑 删除"
-#                 点删除后弹确认框，确认按钮文本也是 "删除"（class 含 button--danger）
-#
-# 踩坑记录：
-#   1) 断言/选择器文本里**不要放 emoji**（🟢 ✓ ✎ 🗑）——Java 正则里这些字符
-#      会让整条匹配抛异常并直接判 false。用纯中文子串（创建/编辑/删除）。
-#   2) 详情页默认是**只读**的，必须先点「编辑」才会出现 textarea。
-#   3) 弹窗里的「删除」和工具栏的「删除」同名，要用 index 区分。
-#
-# 前置：
-#   adb reverse tcp:8088 tcp:8088
-#   localStorage.pocket_api_base 必须为空（否则会盖掉构建默认值）
-#   已登录 + 本地库已解锁（SQLCipher 库需主密码）
-#
 # 运行：
-#   maestro --device 192.168.31.19:5555 test .maestro/notes-crud.yaml
-#   （真机首次需允许安装 maestro driver：设置→更多设置→开发者选项→USB 安装）
+#   node scripts/maestro-run.mjs .maestro/notes-crud.yaml
+#   启动器负责：确保 maestro driver 就位（--no-reinstall-driver）、
+#   确定性重启 App、并注入登录/解锁口令。flow 内部只管跑子流程。
+#
+# 2026-10-01 真机首次跑通时的修正（都是这条 flow 从没跑过导致的）：
+#   1) 笔记**不在 AI 工具页上**，入口是 底部「更多」→ 九宫格「PKM笔记」，
+#      路由是 #/pkm/*（不是 #/notes）。
+#   2) 旧版写的是 tapOn(id: "notes-action", index: 1)，而 notes-action 在
+#      NoteListView.vue 里是 **CSS class 不是 id**，永远匹配不到。
+#   3) 不要断言「全部正常」——TasksView 分诊条标签，只在无待处理任务时出现，
+#      且 <380px 窄屏被 CSS 隐藏（TasksView.vue:1443）。真机视口正好 360px。
+#   4) 断言/选择器文本里不要放 emoji（📝 ✓ ✎ 🗑）——Java 正则会抛异常判 false。
+#      本文件统一用纯中文子串。
+#   5) 详情页默认只读，必须先点「编辑」才出现 textarea。
+#   6) 弹窗里的「删除」与工具栏的「删除」同名，用 index 区分。
 appId: com.kaixuan.opencode.pocket
 ---
-- launchApp
-- extendedWaitUntil:
-    visible: "全部正常"
-    timeout: 45000
+- runFlow: _login.yaml
+- runFlow: _goto-pkm.yaml
 
 # ---- 新建 ----
-- tapOn:
-    id: "notes-action"
-    index: 1
+- tapOn: "新建笔记"
 - extendedWaitUntil:
     visible: "一句话概括"
     timeout: 20000
@@ -74,4 +64,3 @@ appId: com.kaixuan.opencode.pocket
     notVisible: "Maestro笔记"
     timeout: 25000
 - assertNotVisible: "Maestro笔记"
-- takeScreenshot: "logs/maestro/notes-after-delete"

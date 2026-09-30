@@ -1,0 +1,71 @@
+# 登录/解锁子流程（被其它 flow 用 runFlow 引用）
+#
+# 这个子流程存在的原因，是本项目在真机上**有三种**可能的起始状态，
+# 2026-10-01 首次真机 Maestro 三种都撞上了：
+#
+#   A. 已登录 + 本地库已解锁  -> 什么都不用做
+#   B. 已登录 + 本地库未解锁  -> 只差主密码（页面标题「解锁本地数据」）
+#   C. 完全未登录              -> 要账号密码（页面有「输入用户名」）
+#
+# B 最容易误判：它**长得像**需要登录，但 localStorage 里 token 还在，
+# 输账号密码是错的。本地 SQLCipher 的 crypto key 只存在于内存，
+# 进程一死就丢，守卫就把用户弹到这个页面（handoff §4.48.1 记过同一现象）。
+#
+# 「已进入 App」的标志统一用 **打开菜单**：它是已登录 App 外壳 header 上的
+# aria-label，登录页与解锁页都没有。**不要用「全部正常」**——那是 TasksView
+# 分诊条的标签，只在没有待处理任务时才出现，且 <380px 窄屏下被 CSS 隐藏
+# （TasksView.vue:1443），设备上留一条待处理任务就会假失败。踩过。
+#
+# 口令全部从环境变量读，本文件里没有任何明文：
+#   POCKET_MASTER   —— 本地库主密码（解锁用）
+#   POCKET_DEV_PASS —— dev 旁路账号口令（登录用）
+# 由 scripts/maestro-run.mjs 注入。变量缺失应直接失败，不要退化成硬编码。
+appId: com.kaixuan.opencode.pocket
+---
+
+# ---- B. 已登录但本地库锁定：只输主密码 ----
+- runFlow:
+    when:
+      visible: "解锁本地数据"
+    commands:
+      - tapOn: "主密码"
+      - inputText: ${POCKET_MASTER}
+      - hideKeyboard
+      - tapOn: "解锁"
+      - extendedWaitUntil:
+          visible: "打开菜单"
+          timeout: 60000
+      - assertVisible: "打开菜单"
+
+# ---- C. 完全未登录：账号密码登录 ----
+- runFlow:
+    when:
+      visible: "输入用户名"
+    commands:
+      - tapOn: "输入用户名"
+      - eraseText
+      - inputText: "admin"
+      - tapOn: "输入密码"
+      - inputText: ${POCKET_DEV_PASS}
+      - hideKeyboard
+      - tapOn: "登录"
+      - extendedWaitUntil:
+          visible: "打开菜单"
+          timeout: 60000
+      - assertVisible: "打开菜单"
+
+# ---- 兜底：三种都没命中说明没落在 App 里，直接报出来 ----
+- assertVisible: "打开菜单"
+
+# 必须等到**页面内容**渲染完，不能停在「外壳可见」就往下走。
+# 「打开菜单」是 App 外壳 header 的 aria-label，路由还在恢复时它就已经在了；
+# 紧接着 tap 底部导航会被吞掉——Maestro 报 COMPLETED 但页面不动，
+# 而且因为 tap 坐标点击没有结果校验，所以看起来像成功。踩过两次，别删这段。
+#
+# ⚠️ Maestro 的 visible 文本是**整串全匹配**，不是子串包含。
+#    按钮的真实文本是「+ 新任务」（带加号），写 "新任务" 匹配不上，
+#    必须写 ".*新任务.*" 这种包一层 .* 的形式。踩过。
+- extendedWaitUntil:
+    visible: ".*新任务.*"
+    timeout: 30000
+- assertVisible: ".*新任务.*"

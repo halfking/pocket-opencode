@@ -1,0 +1,42 @@
+# 进入 PKM 笔记页（笔记相关 flow 用 runFlow 引用）
+#
+# 为什么单独抽一个：本项目的本地 SQLCipher 库是**按需解锁**的——
+# 守卫只在「导航到依赖本地库的路由」那一刻才判定。所以：
+#   启动后停在 #/ai 时看起来一切正常（打开菜单可见、AI 工具页正常），
+#   但本地库其实**还锁着**。
+# 于是「先检查是否已解锁」这种写法必然漏判：#/ai 不依赖本地库，检查永远通过。
+# 唯一可靠的做法就是**先去目标页，让守卫把解锁页弹出来，再解锁**。
+# 2026-10-01 真机首次跑 Maestro 就栽在这里：旧 _login.yaml 拿「打开菜单可见」
+# 当已解锁标志，结果一进笔记页就被弹回解锁页。
+#
+# 交互方式的实测结论（真机 720x1640 / CSS 360x820 / dpr=2）：
+#   ✅ tapOn: "文本"  可用
+#   ❌ tapOn: {point: "88%,95%"}  两次都没命中（Maestro 报 COMPLETED 但页面不动）
+#   ❌ evalScript: ${location.hash = '#/more'}
+#      → TypeError: Cannot set property 'hash' of undefined
+#        说明 evalScript 不在 WebView 的 JS 上下文里跑，不能用来做 hash 导航
+# 所以这里一律用文本点击，并用 extendedWaitUntil 兜住状态切换。
+appId: com.kaixuan.opencode.pocket
+---
+- tapOn: "更多"
+- extendedWaitUntil:
+    visible: "PKM笔记"
+    timeout: 20000
+
+- tapOn: "PKM笔记"
+
+# 守卫判定：本地库没解锁就把会话改写成 #/login?returnTo=/pkm/today&unlock=1
+- runFlow:
+    when:
+      visible: "解锁本地数据"
+    commands:
+      - tapOn: "主密码"
+      - inputText: ${POCKET_MASTER}
+      - hideKeyboard
+      - tapOn: "解锁"
+
+- extendedWaitUntil:
+    visible: "新建笔记"
+    timeout: 60000
+- assertVisible: "新建笔记"
+- assertNotVisible: "解锁本地数据"

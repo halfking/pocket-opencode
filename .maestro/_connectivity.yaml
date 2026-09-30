@@ -1,17 +1,35 @@
 # Maestro 连通性自检：确认 Maestro 能驱动本项目 App 与设备
 #
-# 注意：断言文本里不要放 emoji（如 🟢）——Java 正则里该字符会导致匹配异常、
-#      整条断言直接判 false（2026-09-30 实测踩过）。
-#      状态胶囊的真实可见文本是「全部正常」，用它作为 WebSocket 连上的外部可观测面。
+# 这个 flow 的职责边界：**只证明「Maestro 能驱动 App，且 App 处于已登录可用态」**。
+# 后端连通性不由这里断言——那件事由 scripts/ 下的 CDP 脚本单独验（打 /healthz 与真实 API），
+# 判据更强也更可复跑。混在一起会导致任一侧出问题都定位不到。
 #
-# 运行：
-#   maestro --device emulator-5554        test .maestro/_connectivity.yaml
-#   maestro --device 192.168.31.19:5555    test .maestro/_connectivity.yaml   # 真机需先授权安装 maestro driver
+# 2026-10-01 真机首次跑通，踩的坑都记在这，别删：
+#   1) 必须带 --no-reinstall-driver（由 scripts/maestro-run.mjs 统一加）。
+#      Maestro 2.11 默认每次 test 前重装 driver，方式是「先卸载再安装」，
+#      而 MIUI 会拦下安装 ⇒ 每跑一次就亲手把 driver 卸掉且装不回来。
+#   2) 启动前必须过 _login.yaml：App 进程一死，本地 SQLCipher 的 crypto key 就没了，
+#      守卫会弹回登录页或「解锁本地数据」页。
+#   3) **不要断言「全部正常」**。它是 TasksView 分诊条的标签，只在
+#      triage.hasAttention === false（没有需要介入/疑似卡死的任务）时才出现；
+#      而且 <380px 窄屏下 CSS 会直接隐藏这段文字（TasksView.vue:1443）。
+#      设备上只要留着一条待处理任务，这条断言就假失败——踩过，别加回来。
+#   4) 断言/选择器文本里不要放 emoji（🟢 ✓ ✎ 🗑 ⏹）——Java 正则里这些字符
+#      会让整条匹配抛异常并直接判 false（2026-09-30 实测）。
+#   5) 失败时先看 Maestro 抓的 UI 层级：~/.maestro/tests/<时间戳>/*/screen-hierarchy/*.json，
+#      结构是 attributes.text / attributes.class（不是顶层 text/className）。
+#
+# 运行（务必走启动器，口令在进程内注入）：
+#   node scripts/maestro-run.mjs .maestro/_connectivity.yaml
 appId: com.kaixuan.opencode.pocket
 ---
-- launchApp
-- extendedWaitUntil:
-    visible: "全部正常"
-    timeout: 45000
-- assertVisible: "全部正常"
+- runFlow: _login.yaml
+
+# 已登录可用的稳定证据：页面标题 + 常驻交互入口
 - assertVisible: "AI 工具"
+- assertVisible: "+ 新任务"
+
+# 显式排除「其实停在登录/解锁页」——这两种页面都**不含**「+ 新任务」，
+# 上面两条断言其实已经隐含排除了，这里再写一遍是为了失败时信息更直白
+- assertNotVisible: "输入用户名"
+- assertNotVisible: "解锁本地数据"

@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -33,8 +34,13 @@ func TestWriteKeyAtomic_CreatesFileWithCorrectMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Fatalf("key file mode: got %o, want 0600", perm)
+	// Windows 没有 POSIX 权限位：os.Chmod(0600) 是 no-op，Stat 恒返回 0666，
+	// 所以权限断言只在非 Windows 上生效。密钥「内容正确 + 原子落盘」的部分
+	// 仍然全平台断言，只有这条位模式断言被平台收窄。
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Fatalf("key file mode: got %o, want 0600", perm)
+		}
 	}
 }
 
