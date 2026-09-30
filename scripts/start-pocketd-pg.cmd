@@ -26,11 +26,17 @@ rem   scripts\start-pocketd-pg.cmd
 rem ---------------------------------------------------------------------------
 setlocal
 
-set POCKET_POSTGRES_DSN=postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable
-set POCKET_PG_SCHEMA=opencode_pocket
-set POCKET_DEV_AUTH=true
-set POCKET_AUTH_LEGACY_ONLY=true
-set POCKET_PORT=8088
+rem ⚠️ 踩坑记录（2026-09-30）：这五行必须原样保留在 pocketd-pg.exe 启动之前。
+rem    曾出现「POCKET_AUTH_LEGACY_ONLY 生效但 POCKET_POSTGRES_DSN 没生效」的情况，
+rem    导致 pocketd 以 remote-only 模式启动、日志打
+rem    `WARN: POCKET_POSTGRES_DSN not set, running in remote-only mode`，
+rem    而 503 症状与「没接 PG」完全一样，极易误判成代码问题。
+rem    自检方法：启动后看日志有没有 `Postgres pool initialized (schema=...)`。
+set "POCKET_POSTGRES_DSN=postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable"
+set "POCKET_PG_SCHEMA=opencode_pocket"
+set "POCKET_DEV_AUTH=true"
+set "POCKET_AUTH_LEGACY_ONLY=true"
+set "POCKET_PORT=8088"
 
 if not exist "C:\workspace\openpocket\logs\pocketd-pg.exe" (
   echo [ERROR] logs\pocketd-pg.exe 不存在，请先执行：

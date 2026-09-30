@@ -11,6 +11,9 @@ coverage/
 # Local ZCode session planning notes
 .zcode/
 
+# Local scratchpad for ad-hoc agent/device-test artifacts (previews, extracted dex, throwaway scripts)
+.scratch/
+
 # Backend / runtime logs
 logs/
 
