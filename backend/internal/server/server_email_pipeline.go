@@ -169,6 +169,12 @@ func (s *Server) ensureInvoiceHarvester() *email.InvoiceHarvester {
 		Store:   s.emailStore,
 		Fetcher: s.emailFetcher,
 		DataDir: s.dataDir,
+		// POP3 降级路径同步来的邮件，其 UID 是位置序号而非 IMAP UID，
+		// 事后拿它去 IMAP FETCH 会取到**另一封**邮件（会下载到完全错误的
+		// 发票文件）。采集器对这些邮件改读同步时加密落盘的原文缓存。
+		// 见 email/body_cache.go 与 invoice_harvest.go 的 isPOP3SourcedEmail。
+		// crypto 为 nil 时 NewFileBodyCache 返回 nil，采集器按「无缓存」处理。
+		BodyCache: email.NewFileBodyCache(s.dataDir, s.emailCrypto),
 		XMLRenderer: func(name string, inv *email.Invoice, xmlRaw []byte) ([]byte, error) {
 			return email.RenderInvoiceXMLPDF(font, inv, xmlRaw)
 		},

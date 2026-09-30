@@ -431,6 +431,10 @@ func main() {
 				go emailPending.GCLoop(context.Background())
 				if emailStore != nil {
 					emailFetcher = email.NewFetcherWithOptions(emailStore, emailCrypto, cfg.EmailIMAPInsecureSkipVerify, cfg.EmailIMAPUseStartTLS)
+					// POP3 降级路径的 UID 是位置序号而非 IMAP UID，事后无法用它
+					// IMAP FETCH 回原文（会取到另一封邮件）。所以在 POP3 同步的
+					// 那一刻把原文加密落盘，采集器再读缓存。见 email/body_cache.go。
+					emailFetcher.BodyCache = email.NewFileBodyCache(dataDir, emailCrypto)
 					emailScheduler = email.NewScheduler(emailStore, emailFetcher, cfg.EmailFetchEnabled)
 					// 注入 kxmemory 客户端（可选）：未配置时 DailySummary 自动降级到 log-only。
 					if kxmem != nil {

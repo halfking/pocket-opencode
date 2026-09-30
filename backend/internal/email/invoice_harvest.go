@@ -36,6 +36,13 @@ const (
 	// MaxInvoiceAttempts 下载重试上限。多数平台链路第 1-3 次内成功；
 	// 超过 8 次仍失败基本是链接失效/权限问题，转 failed 由人工处理。
 	MaxInvoiceAttempts = 8
+	// MaxInvoicesPerHarvestRound 单轮最多尝试采集多少张发票。
+	//
+	// 为什么要有：HarvestAll 一次列 100 张待采集，串行逐张拉原文。发票平台
+	// 限流或服务商不回命令时，每张都可能耗到 go-imap 的 5 分钟 literal
+	// 上限，100 张 = 理论 8 小时。留够一天正常量（实测单轮 3~5 张），其余
+	// 顺延到下一轮；`status` 仍是 pending，不会丢。
+	MaxInvoicesPerHarvestRound = 20
 )
 
 // HarvestResult 汇总一轮采集。
@@ -53,6 +60,9 @@ type InvoiceHarvester struct {
 	Fetcher    *Fetcher
 	DataDir    string
 	HTTPClient *http.Client
+	// BodyCache 用于读取 POP3 降级路径落库的邮件原文（见 body_cache.go）。
+	// nil 时 POP3 来源的发票仍会明确失败。
+	BodyCache BodyCache
 	// XMLRenderer 把 XML 发票数据渲染成 PDF 字节。nil = 环境缺中文字体等
 	// 无法渲染，XML 路径记 failed。由 RenderInvoiceXMLPDF 提供（invoice_pdf.go）。
 	XMLRenderer func(name string, inv *Invoice, xmlRaw []byte) ([]byte, error)
@@ -79,6 +89,14 @@ func (h *InvoiceHarvester) HarvestAll(ctx context.Context) HarvestResult {
 		log.Printf("[email/invoice-harvest] list harvestable: %v", err)
 		return HarvestResult{}
 	}
+	// 列 100 张但本轮只处理 MaxInvoicesPerHarvestRound 张：其余保持 pending
+	// 顺延下一轮。在**列库时**就截断，避免把 100 张全塞进清单再让
+	// HarvestInvoices 靠 i >= 预算 去跳（那样 Skipped 计数与日志都会失真）。
+	if len(invoices) > MaxInvoicesPerHarvestRound {
+		log.Printf("[email/invoice-harvest] %d harvestable, processing first %d this round",
+			len(invoices), MaxInvoicesPerHarvestRound)
+		invoices = invoices[:MaxInvoicesPerHarvestRound]
+	}
 	return h.HarvestInvoices(ctx, invoices)
 }
 
@@ -95,8 +113,24 @@ func (h *InvoiceHarvester) HarvestInvoices(ctx context.Context, invoices []Invoi
 	}
 	for i := range invoices {
 		inv := invoices[i]
+		if i >= MaxInvoicesPerHarvestRound {
+			res.Skipped++
+			continue
+		}
 		res.Processed++
+		t0 := time.Now()
 		status := h.harvestOne(ctx, &inv)
+		cost := time.Since(t0).Round(time.Millisecond)
+		// 逐张记耗时：第 4 步曾在真实邮箱上把整轮拖成无上界（单张卡 13 分钟），
+		// 而此前这步**一条日志都没有**，只能靠猜。UID 要回查邮件才有，这里只打
+		// 发票 ID + 账户，抓取失败时 LastError 里本来就会带上 uid。
+		if cost > 30*time.Second {
+			log.Printf("[email/invoice-harvest] SLOW inv=%s acct=%s took %s -> %s",
+				inv.ID, inv.AccountID, cost, status)
+		} else {
+			log.Printf("[email/invoice-harvest] inv=%s acct=%s in %s -> %s",
+				inv.ID, inv.AccountID, cost, status)
+		}
 		switch status {
 		case "downloaded":
 			res.Downloaded++
@@ -108,6 +142,10 @@ func (h *InvoiceHarvester) HarvestInvoices(ctx context.Context, invoices []Invoi
 			res.Skipped++
 		}
 	}
+	if len(invoices) > MaxInvoicesPerHarvestRound {
+		log.Printf("[email/invoice-harvest] round budget %d reached, %d invoice(s) deferred to next run",
+			MaxInvoicesPerHarvestRound, len(invoices)-MaxInvoicesPerHarvestRound)
+	}
 	// 空清单直接返回：没有处理任何东西时不该去扫全库的 pending（既无必要，
 	// 也会让没有 pool 的调用方炸在 CleanupStalePendingInvoices 上）。
 	if len(invoices) == 0 {
@@ -118,6 +156,15 @@ func (h *InvoiceHarvester) HarvestInvoices(ctx context.Context, invoices []Invoi
 		log.Printf("[email/invoice-harvest] %d pending invoices exhausted retries -> failed", stale)
 	}
 	return res
+}
+
+// isPOP3SourcedEmail 判断这封邮件是不是 POP3 降级路径落库的。
+//
+// 判据用 `em-pop3-` 这个 id 前缀：它在 fetcher.go 里和「UID 写成位置序号」
+// 是同一条语句里赋的值，所以比 message_id 可靠（message_id 现在已改成优先取
+// 真实 Message-ID 头，不再有 `pop3-` 前缀特征）。
+func isPOP3SourcedEmail(e Email) bool {
+	return strings.HasPrefix(e.ID, "em-pop3-")
 }
 
 // harvestOne 处理单条发票记录，返回最终状态。
@@ -136,11 +183,38 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 		_ = h.Store.UpdateInvoiceHarvest(ctx, inv)
 		return "failed"
 	}
-	inv.Attempts++
-
-	raw, err := h.Fetcher.FetchMessageRaw(ctx, inv.AccountID, em.UID)
-	if err != nil {
-		return h.markRetry(ctx, inv, fmt.Sprintf("fetch raw: %v", err))
+	var raw []byte
+	if isPOP3SourcedEmail(*em) {
+		// POP3 降级路径给的 UID 是**位置序号**（第几封），不是 IMAP UID。
+		// 拿它去 `UID FETCH` 会取到**完全不相干的另一封邮件**——也就是可能把
+		// 别人的邮件当成这封发票的原文解析、存成错误的发票 PDF。
+		// 同样地，IMAP 那边 uid=134/135 恰好是大邮件时，那次 BODY[] literal
+		// 读取会把整轮采集拖到分钟级（实测单张卡 13 分钟）。
+		//
+		// 所以 POP3 来源一律**不走 IMAP**：改读 POP3 同步时落下的原文缓存
+		// （见 body_cache.go——那是唯一还能拿到原文的机会）。缓存没命中就
+		// 明确失败，绝不退化成拿合成 UID 去 FETCH。
+		if h.BodyCache == nil {
+			inv.Status = "failed"
+			inv.LastError = "POP3-sourced email and no raw body cache configured; refusing to IMAP-FETCH a positional index (would fetch the wrong message)"
+			_ = h.Store.UpdateInvoiceHarvest(ctx, inv)
+			return "failed"
+		}
+		cached, cerr := h.BodyCache.Get(em.ID, em.UID)
+		if cerr != nil || len(cached) == 0 {
+			inv.Status = "failed"
+			inv.LastError = fmt.Sprintf("POP3-sourced email raw body cache miss (err=%v); refusing to IMAP-FETCH a positional index (would fetch the wrong message)", cerr)
+			_ = h.Store.UpdateInvoiceHarvest(ctx, inv)
+			return "failed"
+		}
+		raw = cached
+	} else {
+		inv.Attempts++
+		var err error
+		raw, err = h.Fetcher.FetchMessageRaw(ctx, inv.AccountID, em.UID)
+		if err != nil {
+			return h.markRetry(ctx, inv, fmt.Sprintf("fetch raw: %v", err))
+		}
 	}
 	parsed, err := ParseMIMEMessage(raw)
 	if err != nil {
