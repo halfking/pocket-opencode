@@ -584,7 +584,9 @@ Assert that "AI 工具" is visible... COMPLETED
    会让整条匹配抛异常并**直接判 false**——第一版 flow 断言
    `"笔记|登录|解锁|🟢|AI"` 就是这么挂的，且报错信息毫无指向性。
    改用纯中文子串（`全部正常` / `创建` / `编辑` / `删除`）。
-2. **Windows 控制台把中文输出成乱码**（`ȫ������`），但 Maestro 内部处理是正确的
+2. **Windows 控制台把中文输出成乱码**（原文回显成 `ȫ` + 若干替换字符，原始字串已随
+   控制台编码一起丢失，**未逐字复原**；可核实的等价物是上面第 1 条里列的纯中文子串），
+   但 Maestro 内部处理是正确的
    ——它生成的 debug 产物文件名 `step-004-assertCondition-笔记登录解锁🟢AI.png`
    说明 YAML 是按 UTF-8 读的。**不要被 console 乱码误导成断言文本不匹配**。
    排查要看 `%USERPROFILE%\.maestro\tests\<时间戳>\<flow>\` 里的
@@ -1321,6 +1323,104 @@ BUG-S 修好后，`/flashcards/stats` 的可见文本里出现：
 Cloze 字面示例 `{{c1::answer}}` **未被误改**（正则只匹配纯变量名，不匹配
 带 `::` 的）—— 这是刻意设计，放宽正则就会把正确的语法示例改坏。
 
+## 4.20 上一轮报的 6 条「路由未验证」是假故障，已定性并关闭（2026-09-30 15:00-15:20）
+
+### 4.20.1 上一轮留的坑
+
+`audit-route-render.mjs` 报 **31/37**，6 条 HASH_MISMATCH：
+
+| 目标 | 实际落点 | 当时 len |
+|---|---|---|
+| `/agents` | `#/ai` | 165 |
+| `/gateway` | `#/ai-chat` | 305 |
+| `/servers` | `#/study` | 441 |
+| `/flashcards/io` | `#/meetings` | 334 |
+| `/flashcards/stats` | `#/more` | 696 |
+| `/flashcards/decks/nonexistent` | `#/notes` | 268 |
+
+当时我只写了「落点全是 ROUTES 前 13 条的路由且内容正常，像是 App 把 hash
+重置回早期路由（疑似恢复上次访问位置机制或长会话后 WebView 状态漂移）。
+**未定性**」—— 那个猜测是错的，见下。
+
+### 4.20.2 为什么不猜：把「落地 hash 不对」拆成四种成因
+
+单看终态无法区分下面四件事，而处置方式完全不同：
+
+1. 路由守卫 `beforeEach` 主动 redirect → 真缺陷
+2. 页面挂载后异步 `router.push` → 真缺陷
+3. 渲染进程重载、hash 从 localStorage 恢复 → 环境问题
+4. 外部干扰导致这次测量无效 → **测量本身作废，不是缺陷**
+
+所以不读终态，改成**读时间线**：设置 hash 之后每 200ms 采一次，连采 25 次（5 秒），
+记录 hash 的变化时刻，并同时挂 `Page.frameNavigated` / `Runtime.exceptionThrown` /
+`console.error`。「先对后错」= 异步跳转；「从头不对」= 守卫；「伴随重载」= 环境。
+
+新增 `scripts/probe-route-redirect.mjs`。**它带对照组**（上一轮判 OK 的
+`/cost`、`/flashcards/browser`）并自证区分能力 —— 否则「全都正常」和
+「探针坏了恒返回正常」在报告上完全一样，这是本轮反复踩的坑。
+
+### 4.20.3 结果：6/6 嫌疑全部 STABLE，对照 2/2 STABLE
+
+```
+STABLE  /agents                       -> #/agents                       len=26712  (304ms 到位，5s 内未变)
+STABLE  /gateway                      -> #/gateway                      len=159
+STABLE  /servers                      -> #/servers                      len=264
+STABLE  /flashcards/io                -> #/flashcards/io                len=167
+STABLE  /flashcards/stats             -> #/flashcards/stats             len=176
+STABLE  /flashcards/decks/nonexistent -> #/flashcards/decks/nonexistent len=82
+--- 对照组 ---
+STABLE  /cost                         -> #/cost                         len=277
+STABLE  /flashcards/browser           -> #/flashcards/browser           len=421
+探针自证：对照组 2/2 STABLE ✅
+```
+
+每条都是**第一次采样（~300ms）就命中目标，之后 5 秒一次都没漂**。既不是
+「从未到达」（排除守卫），也不是「到达后被改写」（排除异步跳转），
+更没有任何 exception / frameNavigated 事件。
+
+### 4.20.4 决定性对照：隔离条件下重跑原审计脚本 → 37/37
+
+| 轮次 | 时间 | 环境 | 结果 |
+|---|---|---|---|
+| run 5 | 13:33 | 并发会话同时在驱同一台真机 | 31/37 |
+| probe | 15:10 | 隔离 | 嫌疑 6/6 STABLE |
+| run 6 | 15:17 | 隔离 | **37/37** |
+
+run 6 里那 6 条的 `len` 与独立探针的采样值**逐个一致**（26712 / 277 / 159 /
+264 / 167 / 421 / 176 / 269 / 82）—— 同一页面在两套完全不同的驱动代码下
+测出同一数字，说明判据本身是稳定的。
+
+**结论：不是应用缺陷，也不是审计脚本的判据缺陷。上一轮那 6 条是一次被
+污染的测量。**
+
+### 4.20.5 最符合证据的解释（**标记为假设，未直接取证**）
+
+6 条落点**无一例外全是 BottomNav 的 tab 路由**（`/ai` `/ai-chat` `/study`
+`/meetings` `/more` `/notes`），而且每次都不一样。脚本导航只写 `location.hash`，
+**从不派发点击** —— 纯哈希赋值不可能「点到」底栏。
+
+唯一能同时解释「落点必是 tab」和「每次不同」的机制，是**有外部输入在点屏幕**：
+h §5 记了并发会话 `scripts/device.mjs` 会抢占同一台真机。如果它在 13:33
+正好在点底栏，就会把页面导航到某个 tab；而它点击是间歇的，所以只有 37 条里的
+6 条被撞上。
+
+我**没有**直接证据证明 13:33 那一刻并发会话确实在点（没抓到它的操作日志），
+所以这里写「假设」。但可以确定的是：应用侧 6 条路由全部正常，
+**下一轮不必再查这 6 条**。
+
+### 4.20.6 沉淀：HASH_MISMATCH 这个结论本身需要「不可复现」这道闸
+
+这已经是同一个坑第三次翻车（run 4 报 17 条、run 5 报 6 条、run 6 报 0 条），
+三次都是「设备被抢占 / CDP 派发堆积」造成的**假故障**，而不是应用问题。
+
+判据要写成：**同一个疑似缺陷必须能复现两次以上、且在隔离环境下复现，
+才允许写进缺陷列表。** 一次性的观测只能进「待复查」。
+
+配套动作（本轮已做）：
+- 探针带对照组 + 自证区分能力（否则分不清「正常」和「探针坏了」）
+- 关键数值（`len`）在两套独立驱动下交叉比对
+- 同一时刻**绝不允许两个自动化进程驱同一台设备**（这条 h §5 已记，本轮再次付出代价）
+
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
@@ -1367,6 +1467,18 @@ Cloze 字面示例 `{{c1::answer}}` **未被误改**（正则只匹配纯变量�
   handler 内部「资源不存在」（正常），1 个是 SSO 未启用（功能开关）
 - vue-tsc --noEmit exit 0；go build ./... OK；internal/notes、internal/flashcards 全绿
 
+### ✅ 已验证 · 补充二（BUG-P / Q / S / T，2026-09-30 12:20-15:20）
+
+- **BUG-P** 真机「更多」页闪卡入口存在（`scripts/cdp-more-hub.mjs` 复验）
+- **BUG-Q** MoreHubView 的 `to` 与路由表**全量对账无悬空**；`/settings/scheduled-tasks` 可渲染
+- **BUG-S 真机复验**：`/flashcards/browser` appHTMLLen **371 → 6972**、`/flashcards/stats` **370 → 5786**，
+  0 控制台错误；带参 i18n 审计 9/9 语言 0 失败
+- **BUG-T** `audit-vue-mustache.mjs` 全量 173 个 .vue **0 命中**；
+  `verify-audit-detects.mjs` 元验证通过（注入已知缺陷能被抓出）
+- **BUG-K/L/M/N/O 回归锁**（`.maestro/flashcards-write.yaml` + Go 测试 + 前端 5 用例）全部就位
+- **路由渲染审计 37/37 全绿**（隔离条件，`logs/route-render6.log`）；
+  上一轮报的 6 条 HASH_MISMATCH 已定性为**被污染的测量**，不是缺陷（§4.20）
+
 ### ⚠️ 本轮新增未验证 / 未修（不要当成已完成）
 
 - ~~**真机 BUG-O 闭环未复验**~~ → **已复验通过**（11:45 构建、11:46 装机）：
@@ -1374,19 +1486,29 @@ Cloze 字面示例 `{{c1::answer}}` **未被误改**（正则只匹配纯变量�
   （修前 `0 cards`）；卡组详情页「开始复习」enabled；正文可见
   `1 卡组 1 今日待复习 1 张 ... 正面-080323 — New`。
   API 时序也对上了：`POST /notes 201` → 紧接着 `?since=新时间戳` 回读。
-- **真机笔记编辑（BUG-N）UI 闭环未验**：后端与宿主侧脚本已证实 12/12，
-  但没有在真机上点过编辑按钮。
+- ~~**真机笔记编辑（BUG-N）UI 闭环未验**~~ → **已验**：`scripts/redmi-write-ops.mjs` **6/6**，
+  编辑走本地 SQLite，回读 snippet 含新正文（§4.15.3 已说明这与后端 PUT 是两条路径）。
+  后端 `PUT /api/notes/:id` 本身仍**无 UI 调用方**（契约层已修好并有测试锁定）。
 - `TestMeetingWorkspaceIsolation/list_A` 失败（预先存在，见 §4.15.6），未修也未定性。
 - `backend/internal/agent`、`backend/internal/email` 也有 FAIL，本轮未触碰这两个包。
 - 真机 Maestro 仍需用户手动开「USB 安装」（见 §4.11.1）。
 - 生产默认 https 路径仍未系统回归。
 - Keystore 原生插件仍未实现（代码欠账）。
+- **7 个 i18n 键已修但未在真机触发过**：`flashcards.review.clozeCount`、
+  `flashcards.edit.clozeCount`、`flashcards.io.exportOk`、`flashcards.io.importOk`、
+  `study.decks.dueShort` 等。带参审计 0 失败只证明「键存在且能编译」，
+  **不等于「用户走到了那里」** —— 触发它们需要先完成对应操作
+  （Cloze 模式 / 闪卡导入导出 / 学习页）。
+- **`/contacts` 目前无主入口**：只在 `ContactDetailView.vue` 里有「返回」链接，等于不可达。
+  （`/finance` 在 `SettingsView.vue` 有入口，是可达的。）
+- **闪卡 browser / stats 的翻译块只有 en-US 和 zh-CN**，其余 7 种语言靠
+  `fallbackLocale: 'en-US'` 兜底。功能不受影响，但这 7 种语言的用户看到的是英文。
+
 ### ❌ 未验证（下一轮必须补）
-- **闪卡的 UI 写路径**：后端缺 `POST /api/flashcards/decks` 导致「无卡组可建」已由
-  **BUG-K 修复**（§4.14），接口层 201 + 查库确认落库。**卡片 UI 端到端（建卡组 → 建卡片 → 保存）
-  尚未在真机跑通**，待用新 APK 复验。
 - **任务 / 会话 的编辑、删除**未验证（创建已验证 201 + 落库）。
-- **密码箱 / 市场 / 邮箱**的 UI 写路径未验证（后端端点已通，§4.12）。
+- **密码箱 / 市场 / 邮箱 / 网关 / 实例 / 费用配额**的 UI 写路径**零验证**（后端端点已通，§4.12）。
+  这是当前最大的验证缺口 —— 六个模块的用户可见写操作一条都没在真机上点过。
+- ~~**闪卡的 UI 写路径**~~ → **已跑通**（`redmi-write-ops-modules.mjs` 7/7，见上）。
 - **任务 / 会话 的写操作**未验证。`GET /api/tasks` 200 可读，但 `POST /api/tasks` 在 dev 后端
   恒 **503 `local task store not configured (remote-only mode)`**——`taskStore` 只在
   `pool != nil`（PostgreSQL）时构造（`backend/cmd/pocketd/main.go:103-108`）。
@@ -1397,6 +1519,8 @@ Cloze 字面示例 `{{c1::answer}}` **未被误改**（正则只匹配纯变量�
   对应后端 store 未配置（`/api/flashcards` 503、`/api/vault` 404、`/api/marketplace/*` 404，
   见 §4.9）。闪卡列表页直接显示「Could not load flashcards」且保存恒 disabled。
   **这是环境限制，不是模块代码缺陷**，但也**不能因此宣称它们可用**。下轮需先把 store 接上再测。
+  ✅ **闪卡已解决**：见 §4.12/§4.15，接 PG 后闪卡建卡组/建卡/复习全链路可用。
+  ❌ **密码箱 / 市场 / 邮箱 仍未解决**。
 - **密码箱 Vault 存疑**：依赖 `Keystore` 原生插件，Android 尚未实现（BUG-G 只让降级路径
   正确生效）。`/api/vault` 亦 404。**很可能 Android 上根本不可用**，下轮需实测确认。
 - **生产 `https` scheme 下的真机回归**。BUG-F 的逃生舱是 `CAP_ANDROID_SCHEME=http` 这条
@@ -1415,11 +1539,13 @@ Cloze 字面示例 `{{c1::answer}}` **未被误改**（正则只匹配纯变量�
   （走 `EmailFetchReceiver` + AlarmManager）/ `runNow`（走 `EmailFetchRunner`，独立线程），
   是有真实行为的实现。BUG-G 里 `"EmailFetch.then()" is not implemented` 那个报错的
   真正来源是 **thenable 陷阱**（§3.5），不是插件缺失。
-- **`/cost` 路由行为待查**：真机上访问 `/cost` 实际落到了 `/#/ai-chat`（文本长度 420），
-  模拟器上则是 `/#/cost`。可能是「AI 未配置」时的回退跳转，本轮未定位。
+- ~~**`/cost` 路由行为待查**：真机上访问 `/cost` 实际落到了 `/#/ai-chat`~~ →
+  **已定性为误报**（§4.13），并在 §4.20 用隔离环境复验：`/cost` 稳定停在 `#/cost`。
+  同一类现象（落点是别的 tab 路由）连续三轮出现，**根因是测量被外部干扰污染，不是应用**。
 - **既有的 `TestMeetingWorkspaceIsolation` 失败**：`go test ./internal/server/...` 全量跑时失败，
-  单跑通过（测试间状态污染）。已做同条件对照（stash 我的改动再全量跑），
-  **失败一致，非本轮引入**，属既有欠账。
+  单跑通过（测试间状态污染）。已做同条件对照（`git worktree` 落在不含本轮改动的
+  `ca4a53e` 上复现），**失败一致，非本轮引入**，属既有欠账。
+  它暴露的真实疑点仍未查：跨 workspace 的 meeting **GET 返回 200、但列表返回 0 条**。
 
 ---
 
@@ -1531,19 +1657,21 @@ localStorage.removeItem('pocket_api_base')   // 再 Page.reload
    node scripts/host-ws-check.mjs         # 宿主侧后端 WS 回归，期望 OPEN + pong
    ```
 4. **补写操作验证**（当前最大空白）。已有：笔记（真机 6/6）、任务创建（真机 201 + 落库）、
-   财务 / 智能体 / 会议（模拟器）。仍缺：闪卡 UI 路径、任务/会话的编辑删除、
-   密码箱、市场、邮箱、网关、实例、费用配额。
-   ⚠️ **先用眼睛看一次真机闪卡 UI**（§5 未验证首条：按钮文案与行为不一致），
-   判定是产品缺陷还是我没找对入口，再决定怎么测。
-5. **在真机上把 Maestro 跑起来**：需要有人在手机上开「开发者选项 → USB 安装」
-   （见 §4.11.1）。授权后 `.maestro/notes-crud.yaml` 可直接用于真机功能回归。
-   未安装时先跑 `scripts/maestro-bootstrap.sh`（幂等，含镜像与 JDK 说明）。
-6. **查闪卡「新建卡组」按钮的语义**（跳卡片页 / 「卡组」跳列表，文案行为不一致）。
-7. **实现 `Keystore` 原生插件**（见 §5 未验证节）：这是代码欠账不是环境问题。
-8. 回归默认 `https` 构建，重点看 **XHR 混合内容**是否被正确阻断（WS 在 https 下本就能握手，§3.1）。
-7. 可选加固：给指向明文 http:// 后端的构建加断言/告警，避免下一个人重踩 BUG-F。
+   闪卡建卡组/建卡/复习（真机 7/7）、财务 / 智能体 / 会议（模拟器）。
+   仍缺：**密码箱、市场、邮箱、网关、实例、费用配额**六个模块的 UI 写路径，
+   以及任务/会话的编辑删除。**这六个模块一条都没在真机上点过，是当前最大缺口。**
+5. **在真机上把 Maestro 跑起来**：需要有人在手机上开「开发者选项 → USB 安装」并
+   关闭「安装监控」（见 §4.11.1）。driver APK 已备好在 `logs/maestro/driver/`
+   （`maestro-server.apk` 0.84MB、`maestro-app.apk` 11.2MB）。
+   授权后 `.maestro/notes-crud.yaml` / `.maestro/flashcards-write.yaml` 可直接用于真机功能回归。
+6. **实现 `Keystore` 原生插件**（见 §5 未验证节）：这是代码欠账不是环境问题。
+7. 回归默认 `https` 构建，重点看 **XHR 混合内容**是否被正确阻断（WS 在 https 下本就能握手，§3.1）。
+8. **定性 `TestMeetingWorkspaceIsolation/list_A`**：已确认预先存在（非本轮引入），
+   但它暴露的真实疑点（跨 workspace 的 meeting GET 200、列表 0 条）还没查。
+9. 可选加固：给指向明文 http:// 后端的构建加断言/告警，避免下一个人重踩 BUG-F。
    另可考虑在 `resolveApiBase` 命中一个**当前 origin 下不可达**的 override 时给出 UI 警告——
    本轮这个「override 静默压过构建默认值 + 页面却显示构建默认值」的行为极具迷惑性。
+10. **不必再查那 6 条路由**（§4.20 已定性为被污染的测量，隔离环境 37/37 全绿）。
 
 ### 通用教训一：别用「后端没有连接日志」推断握手没到达
 401/403 发生在 WebSocket upgrade **之前**，后端的 `WebSocket client connected` 日志根本不会打。
@@ -1579,3 +1707,17 @@ BUG-J 的本质是「新增了一个 origin 取值（`http://localhost`），但
 `https://localhost` 写死在 3 处（`api-base.ts`、`client.ts` 注释、`server-select-logic.ts` 注释），
 只改了其中一处就会漏。判据函数应该**对取值空间封闭**（如 scheme 无关的正则），
 而不是逐个枚举。
+
+### 通用教训七：不可复现的观测，不能进缺陷列表（§4.20 的直接产物）
+同一个坑本轮翻了三次：路由渲染审计先报 **17 条**、再报 **6 条**、隔离环境下报 **0 条**。
+三次「失败」全是设备被并发会话抢占导致的**被污染的测量**，没有一条是应用缺陷。
+
+判据写成规则：**疑似缺陷必须能复现两次以上、且在隔离环境下复现，才允许写进缺陷列表。**
+一次性的观测只能进「待复查」。配套三件事缺一不可：
+- 探针带**对照组**并自证区分能力（否则「全都正常」和「探针坏了恒正常」在报告上一样）
+- 关键数值在**两套独立驱动**下交叉比对（本轮 6 条 `len` 逐个吻合，才敢说判据稳定）
+- **同一时刻绝不允许两个自动化进程驱同一台设备** —— 这条 h §5 早就记了，本轮又付了代价
+
+推论：**「落点全是 UI 导航目标」是一个强信号**，它几乎不可能由哈希赋值自己产生。
+纯 `location.hash = x` 的脚本导航不可能「点到」底栏，落点却偏偏全是 BottomNav 的
+tab 路由 —— 那一刻一定有人在点屏幕。看到这种形状，先怀疑测量环境，再怀疑代码。
