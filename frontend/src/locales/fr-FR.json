@@ -151,6 +151,7 @@
     },
     "error": {
       "loadFailed": "Impossible de charger les cartes mémoire",
+      "saveFailed": "Impossible d'enregistrer la carte",
       "syncConflict": "Conflit de synchronisation — veuillez actualiser"
     }
   }

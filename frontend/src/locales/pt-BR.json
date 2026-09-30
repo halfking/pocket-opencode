@@ -151,6 +151,7 @@
     },
     "error": {
       "loadFailed": "Não foi possível carregar os flashcards",
+      "saveFailed": "Não foi possível salvar o cartão",
       "syncConflict": "Conflito de sincronização — atualize a página"
     }
   }

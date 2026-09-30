@@ -234,6 +234,7 @@
     },
     "error": {
       "loadFailed": "加载闪卡失败",
+      "saveFailed": "保存卡片失败",
       "syncConflict": "同步冲突，请刷新重试"
     },
     "deckOptions": {
