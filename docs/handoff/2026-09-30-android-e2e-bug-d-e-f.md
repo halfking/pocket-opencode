@@ -2602,12 +2602,17 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   **不得据此宣称「已验证」**。
 - **`study.decks.*` 整块 7 个键在 7 种语言里未翻译**（与 en-US 逐字节相同，
   即整块英文）。`scripts/audit-deck-cta-i18n.mjs` 判据 C 持续报出，只报不拦。
-  本轮**未修** —— 42 条译文需逐条审，不宜混进同一次提交（§4.28.6）
-  ⚠️ **性质已澄清**（§4.46）：这只是**译文质量**欠账（显示英文），
-  **不是缺 key**。9 个语言文件的 key 集合与 zh-CN **完全对等**，
-  缺 key（显示 key 串）是另一类问题，已在 BUG-AM/AN 里修完。
-  缺 key 的**运行时告警**也补上了（BUG-AO），但 CI 侧尚未接入
-  `audit-i18n-keys.mjs`——目前要手动跑。
+  ⚠️ **本轮实测更正（§4.48.3）**：这个「42 条」是手数且**明显偏小**。
+  实测 `scripts/audit-i18n-translation.mjs`：**平均 117 条/语言 × 8 种**，
+  主体是 `flashcards`（75）与 `settings`（40）两个命名空间，**不是** `study.decks`
+  （那 7 个 key 已在 BUG-AM/AN 补齐）。zh-CN 作为基准只有 6 条，且多为专名
+  （`app.title`、`source.rss`）实际无需翻译。
+  **本轮仍未做批量翻译**，理由见 §4.48.3（需逐条审 / 与并发会话重叠 / 非功能性问题）。
+  另：`FinanceView` 硬编码是 **32 行**含中文（不是 20 处），至少含
+  「刷新」「本月收入」「本月支出」「结余」等模板文案，尚未接 i18n。
+- **缺 key 已上卡口**：新增 `frontend/scripts/check-i18n-keys.mjs` 并挂进
+  `npm run gates`，缺 key 直接 `exit 1`。反证过（删 `allClear` → EXIT=1）。
+  **「未翻译」仍未上卡口**——目前只报不拦。
 - **真机 Maestro 仍然零次执行**：本轮把阻塞量化了（拦全新安装、需手动授权），
   并改用 CDP 在真机上完成 BUG-AA 的验证。**但 `.maestro/` 下的 flow 至今没在真机跑过一次**，
   不要把「真机验证走 CDP」说成「真机 Maestro 跑通了」（§4.16.3 / §4.28.7）
@@ -4198,8 +4203,15 @@ bash 4.2，不是开发机的 bash 5.x**——integration test 必须至少在�
    `const workspaceId = note.workspaceId ?? 'default'`。若服务端 `note.created`
    推送不带 `workspace_id`（`ws-bus.ts:63` 允许为 `null`），笔记会落进 `default`。
    **未确认服务端是否总会下发**，故本轮**未改**——属推测性修改，列为风险。
-3. 邮件联系人跳转、会议关联笔记两处**只做了类型检查，未做真机行为验证**
-   （缺少可复现的前置数据：真实聚合的联系人、带转写的会议）。不得据此宣称「已验证」。
+3. 邮件联系人跳转、会议关联笔记两处**只做了类型检查，未做真机行为验证**。
+   **阻塞点已查清**（不是「懒得测」）：
+   - 联系人是 local-first，**只能从邮件聚合**产生——`ContactListView` 只有「↻ 聚合」
+     一个入口，`contacts-store.saveContact` 有导出但**无 UI 调用方**，无法手工建联系人；
+   - 而邮件需要**可用的 IMAP 账户**才能同步进来，现有账户指向 `imap.invalid.test`
+     （BUG-AC 已确认），所以聚合不出任何联系人；
+   - 会议同理，local-first，且 `relatedQueryFromTranscript` 需要带转写的会议。
+   ⇒ 需要先有可用的 IMAP 夹具（并发会话正在搭 `scripts/imap-stub-server.mjs`，
+   等它就绪后可复用）才能补这两处验证。**在那之前不得声称「已验证」。**
 
 ### 4.45 BUG-AL：任务看板列表过滤排除了本 UI 自己产出的任务
 
@@ -4485,6 +4497,72 @@ export function dueSummaryHeadlineKey(...): DueSummaryHeadlineKey { ... }
 
 > 备注：反证时用 PowerShell `Set-Content -Encoding UTF8` 改过 .ts，
 > **该命令会加 BOM**（本项目反复踩到的坑）。事后逐个回读首字节确认已无污染。
+
+### 4.48 把 i18n key 缺失误报成回归——并更正一条手数错误
+
+#### 4.48.1 「5/11 假回归」：先判形态，再判产品
+
+BUG-AO 装包后跑 `smoke-routes.mjs`，得到 **5/11**，其中 6 个
+`landed=false` 且 **`textLen` 全部等于 121**。
+
+**形态本身就是结论**：多个条目以**完全相同的 `textLen`** 失败，
+只可能是「卡在同一个界面」，不可能是 6 个独立回归。差点直接记成 BUG-AO 引入的回归。
+
+`diag-route-guard.mjs` 证实守卫把这些路由改写成了：
+
+```
+#/login?returnTo=/notes&unlock=1
+「检测到已有登录态，但本地加密库未解锁。请重新输入主密码以访问本地数据。」
+```
+
+- 失败的 6 个（notes / vault / contacts / meetings / study / email）**全都依赖本地 SQLCipher**；
+  crypto key 只在内存，装包重启即失效。
+- 起点是 `#/settings`（不依赖本地库）⇒ 开头那次解锁看不到主密码输入框、什么也没做；
+  等导航到 `/notes` 才被守卫弹飞，**后续所有依赖本地库的路由被一起带崩**。
+
+夹具修法：`ensureUnlocked` 抽成函数，每个路由前 + 导航后各调一次；
+`landed=false` 时打印被改写后的 hash（下次一眼能看出是不是守卫）。重跑 **11/11**。
+
+#### 4.48.2 把缺 key 变成卡口：`check-i18n-keys.mjs`
+
+`audit-i18n-keys.mjs` 只报告，会被忽略。参照仓库既有的
+`audit-viewmodel-gaps` / `check-viewmodel-gaps` 约定，新增卡口版
+`frontend/scripts/check-i18n-keys.mjs`，缺 key 直接 `exit 1`，
+并挂进 `npm run gates`（`gates` 是 `verify:android` 的第一环）。
+
+判据在缺陷侧失败过：删掉 `zh-CN.json` 里的 `study.due.allClear` → `EXIT=1`
+且精确报出 `❌ zh-CN 缺 1 个 key：study.due.allClear`；还原 → `EXIT=0`。
+
+当前：`代码在用 241（静态）/ 5（动态候选）`，9 份语言文件全部齐平，`EXIT=0`。
+
+#### 4.48.3 ⚠️ 更正：欠账不是「42 条」，实测是平均 **117 条/语言**
+
+§5 一直记着「`study.decks.*` 42 条未翻译 + `FinanceView` 20 处硬编码」。
+写 `scripts/audit-i18n-translation.mjs` 实测后，**这个手数明显偏小**：
+
+| 语言 | 未翻译（值与 en-US 逐字节相同） | 主要集中区 |
+|---|---|---|
+| zh-CN | **6** / 372 | `app.title`、`source.rss` 等（多为专名/标识符，实际无需翻） |
+| zh-TW | 100 | `flashcards=75`、`study=16` |
+| ja-JP | 100 | 同上 |
+| ko-KR | 138 | `flashcards=75`、`settings=39` |
+| de-DE | 148 | `flashcards=75`、`settings=40` |
+| es-ES | 144 | 同上 |
+| pt-BR | 146 | 同上 |
+| fr-FR | 153 | 同上 |
+
+**合计平均 117 条/语言，共 8 种语言**，主体是 `flashcards`（75）与
+`settings`（40）两个命名空间——**不是** `study.decks`（那 7 个 key 已在
+BUG-AM/AN 补齐）。
+
+FinanceView 侧也修正：实际是 **32 行**含中文（其中一部分是文件头注释），
+不是 20 处；模板里可确认的硬编码至少包括「刷新」「本月收入」「本月支出」「结余」。
+
+**本轮未做批量翻译**，理由有三，都要记下来：
+1. 约 936 条译文（117 × 8）需**逐条审**，混进同一次提交不合适；
+2. 会再次与并发会话在 `locales/*.json` 上重叠（当前主工作区已有 9 个文件重叠）；
+3. 这是**显示英文**的问题，不影响功能正确性，优先级低于本轮修的三个真缺陷。
+
 
 #### 4.47.5 一次「假回归」：冒烟 5/11 其实是夹具解锁时机错了
 
