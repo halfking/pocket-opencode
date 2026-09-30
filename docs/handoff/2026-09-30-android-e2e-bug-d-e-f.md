@@ -2192,7 +2192,136 @@ MISS StudyHubView.vue 含修复钩子 = false，仍是旧的 goCreateDeck
 1. 先让并发会话收工（或至少让它知道这 9 个文件已由 main 修复，别重复提交旧版）；
 2. 再 `git stash` / 提交 / 放弃它的本地改动，把工作区对齐 origin/main；
 3. 然后才能快进。**不要用 `-f` 强行绕过 git 的拒绝。**
+
+## 4.29 BUG-AB：邮箱账户的 UI 写路径**根本走不通**（真机 13/13 + 证伪 7/11）
+
+### 4.29.1 怎么发现的
+
+按 §4.28 打通的真机链路（`adb install -r` + CDP）去跑邮箱模块的新增向导。
+三段式验收（填值 → 提交 → **直接查 PG**）在「直接查 PG」这一步直接断了。
+
+### 4.29.2 现象
+
+填好「邮箱地址 / 显示名 / IMAP 密码 / IMAP 主机」后点「保存并测试收发」，
+界面停在 step 2 并报：
+
+```
+保存失败：smtpHost required when smtpPassword is provided
+Network: POST /api/email/accounts -> 400
+```
+
+**一条账户都没写进库**（`email_accounts` 行数不变）。
+
+### 4.29.3 根因
+
+`EmailAccountAddView.saveAndVerify()` 里同一个对象字面量内部：
+
+```ts
+smtpHost: smtpHost.value.trim() || undefined,                   // 按「填了才发」处理
+smtpPort: smtpHost.value.trim() ? smtpPort.value : undefined,   // 同上
+password: credential.value.trim(),
+smtpPassword: credential.value.trim(),                           // ← 无条件，漏了 guard
+```
+
+SMTP 主机在「高级」区、用户通常留空（后端契约也明说 SMTP **可选**：
+`smtpHost` 为空即「未配置 SMTP」）。但密码这一项**没跟着它的两个兄弟字段一起加 guard**，
+于是永远发得出 `smtpPassword`、发不出 `smtpHost`，后端按契约以 400 拒绝。
+
+**结论：只填「邮箱地址 + IMAP 密码 + IMAP 主机」的普通用户，通过 UI 永远添加不了邮箱账户。**
+
+**参照实现就在同仓库**：`EmailAccountSetup.testAndSave` 里这段早就正确地按
+`form.smtpHost` 是否填写来决定带不带密码。所以这是**疏漏，不是设计**
+（与 BUG-Y 同一套路：同类逻辑有多份时，先比对另外几份）。
+
+### 4.29.4 修法与验证
+
+按 `EmailAccountSetup` 的写法给 `smtpPassword` 补上同样的 guard。真机对照：
+
+| | BUG-AB 修复前 | 修复后 |
+|---|---|---|
+| 验收结果 | **7/11** | **13/13**（连跑两轮稳定） |
+| POST 状态码 | **400** | **201** |
+| PG 行数 | 不变 | +1，且 `email_address` 与 UI 填入值一致 |
+
+## 4.30 BUG-AC：「保存并测试收发」把连接失败显示成成功（真机实证）
+
+### 4.30.1 现象
+
+修完 BUG-AB 后账户能建了，但结果页显示：
+
+```
+3/3 测试结果  已添加
+已保存并验证 uidemo032726@example.com
+IMAP：同步成功，新邮件 0 封
+```
+
+而那个账户的 IMAP 主机是 `imap.invalid.test` —— **一个不可能存在的主机**。
+
+### 4.30.2 根因
+
+后端 `handleEmailSync` **确实会真连 IMAP**（30s 超时），连不上就把地址收进 `failed`
+数组，但**仍返回 200**。实测 body：
+
+```json
+{"failed":["uidemo032726@example.com"],"mode":"imap_fetch","new":0,"synced":0}
+```
+
+而 `failed` 在 `api/email.ts` 的类型里**一直都声明了**：
+
+```ts
+syncNow(accountId?: string): Promise<{ mode?: string; synced?: number; new?: number; failed?: string[] }>
+```
+
+前端只读 `sync.new`、**完全无视 `failed`**，还无条件 `imapOk.value = true`：
+
+```ts
+const sync = await emailApi.syncNow(created.id)
+imapOk.value = true                                    // ← 无条件
+imapMsg.value = `同步成功，新邮件 ${sync.new ?? 0} 封`  // ← 只看 new
+```
+
+于是 `resultOk = imapOk && smtpOk = true` → 顶部显示「已保存并验证」。
+
+**这个页面的全部意义就是验证连通性，而验证根本没发生，界面却给了成功结论。**
+
+### 4.30.3 修法与验证
+
+读 `sync.failed`，有失败就 `imapOk = false` 并把失败地址显示出来。修后真机输出：
+
+```
+3/3 测试结果  未完成
+已保存 uidemo325715@example.com，但连接未全部通过
+IMAP：连接失败：uidemo325715@example.com
+```
+
+写入成功（PG +1）**且**连接失败被如实报出 —— 这才是「已保存」与「已验证」该有的区分。
+
+### 4.30.4 ⚠️ 判据被收紧过一次
+
+第一版的「反馈正确性」判据只查「界面有没有出现『已保存』」，结果 BUG-AC 存在时
+**它照样通过**（文案里确实有「已保存」）。已改成三条：
+① 承认「已保存」；② **不得**出现「已保存并验证 / 同步成功」（可证伪）；
+③ 必须明确指出「连接未全部通过 / 连接失败」。
+
+## 4.31 本轮新增的工具
+
+- `scripts/verify-email-writepath.mjs` —— 邮箱写路径真机验收（**捕获 API 状态码**，
+  这样「没写进去」能直接指认是 400 还是 5xx，而不是只看到 PG 没变）
+- `scripts/probe-email-account-api.mjs` —— 先探后端契约再点 UI
+- `scripts/probe-email-sync-honesty.mjs` —— 证明后端如实报告 `failed`、前端没读
+- `scripts/verify-apk-bundle.mjs` —— **核验 APK 里真正打进去的 bundle**。
+  `cap sync` 偶发 `exit=null` 时 vite 与 gradle 都报成功但 bundle 根本没换，
+  我据此差点做了**一次无效的证伪**。「构建成功」≠「内容已更新」。
+
+## 5. 已验证 / 未验证（严禁外推）
+
 ### ✅ 已验证（有证据）
+- **BUG-AB 邮箱账户 UI 写路径走不通**（真机 `verify-email-writepath.mjs`）：
+  修前 **7/11**（`POST /api/email/accounts` → **400**，PG 零写入），
+  修后 **13/13** 连跑两轮稳定（201 + PG +1 + 落库地址与 UI 填入值一致）（§4.29）
+- **BUG-AC「保存并测试收发」把连接失败显示成成功**：
+  修前显示「已保存并验证 / IMAP：同步成功」而主机是 `imap.invalid.test`；
+  修后显示「未完成 / 已保存…但连接未全部通过 / IMAP：连接失败：…」（§4.30）
 - BUG-D 构建守卫（裸 build EXIT=1）、typecheck EXIT=0
 - BUG-E i18n 292/292 对等，底栏英文 `RSS`
 - BUG-F 逃生舱机制生效：origin 降级为 `http://localhost`、Mixed Content 归零。
@@ -2346,7 +2475,10 @@ MISS StudyHubView.vue 含修复钩子 = false，仍是旧的 goCreateDeck
   （因 `CAP_ANDROID_SCHEME` 没在跑 cap sync 那次调用里设），只观察到 origin 是 https，
   **没有验证 mixed content / ws:// 在该 scheme 下的实际行为**。不算已回归。
 - **任务 / 会话 的编辑、删除**未验证（创建已验证 201 + 落库）。
-- **密码箱 / 市场 / 邮箱 / 网关 / 实例 / 费用配额**的 UI 写路径**零验证**（后端端点已通，§4.12）。
+- **密码箱 / 市场 / 网关 / 实例 / 费用配额**的 UI 写路径**零验证**（后端端点已通，§4.12）。
+  **本轮新增的推进**：真机 CDP 链路已跑通并用掉（邮箱模块从「零验证」变成
+  「已验证 + 顺带修掉 2 个真缺陷」），剩余四个模块照同一套路即可。
+  但**它们一个都还没跑**，不要把邮箱的结果外推过去。
   ✅ **市场已打通**（§4.25，12/12）；**其余五个模块（密码箱 / 邮箱 / 网关 / 实例 / 费用配额）
   的 UI 写路径仍一条都没在真机上点过**。
   ⚠️ 密码箱要特别注意：它有**两个独立障碍** —— `Keystore` 原生插件未实现
