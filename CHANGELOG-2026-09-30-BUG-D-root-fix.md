@@ -893,3 +893,186 @@ PASS  无未捕获 JS 异常
 
 修好判据后**连跑三轮都是 13/13**；修之前同一脚本是 12/13。
 如实记录：这条判据**曾经 flaky**（坑三导致），三轮稳定才敢下结论。
+
+---
+
+## BUG-Y：「安装」对没先点过「查看版本」的包必然失败
+
+### 现象
+
+`/marketplace/skills`：点「安装」→ 确认弹窗正常弹出 → 点「确认安装」→
+**`marketplace_installations` 表 0 → 0**，控制台 0 异常。
+
+### 根因
+
+`SkillMarketView.vue` 的 `runInstall()` 直接读 `expanded`：
+
+```ts
+const versions = expanded.value[installTarget.value.package_id]
+const publishedVersion = versions?.find((v) => v.status === 'published')
+if (!publishedVersion) { store.error = '该包尚无已发布版本，无法安装。'; ... }
+```
+
+`expanded` 是**纯 UI 展开状态**，只有点过「查看版本」才有值。
+没点过 → `undefined` → 报「该包尚无已发布版本」。
+**而那个包确实有已发布版本**（versions 接口明确返回 `status: "published"`）——
+不只是功能坏，**提示还与事实相反**。
+
+### 最扎眼的一点
+
+`AgentMarketView.vue` 与 `WorkbuddyView.vue` 的 `runInstall` **本来就有**
+`ensureVersionsLoaded()` 按需加载版本。**同一段逻辑写了三遍，只有这一遍是错的。**
+修法因此不是发明新方案，而是改成和另外两个一样的写法。
+
+顺带修掉同处第二个问题：`await store.install(...)` **忽略返回值**，
+而 `store.install` 失败时返回 `null` —— 后端拒绝安装也是完全静默的。
+
+### 真机验证（12/12，连跑两轮稳定）
+
+    API 播种 submit/review/publish      201/200/201
+    App 与 API 同一 workspace          ws_user-admin == ws_user-admin
+    技能市场渲染包卡片                  articles=7
+    安装确认弹窗出现
+    UI 点击后 PG 落库                  安装前=0 安装后=1
+    落库的是刚播种的包（关联核对）      命中=1
+    对照组：重复安装不新增行            唯一索引挡住
+
+## 顺带查清的三件事（都不是产品缺陷，但都曾差点被当成缺陷）
+
+1. **`submit` 忽略客户端传的 `package_id`**，后端自己从 workspace+name+version 推导。
+   同名同版本重复提交撞唯一约束 —— ⚠️ **但被返回成 500**，不是 409/400。
+   与已修的 BUG-M 同一类，**本轮未修**。
+2. **App 与 API 可能在两个不同 workspace**（App 持 `default`，API 给 `ws_user-admin`），
+   市场按 workspace 隔离 → 「后端返回了包、UI 却说暂无」。
+   差点被当成前端缺陷。因此验证脚本加了**前置判据**：workspace 不一致直接中止。
+3. 我自己的四条脚本级错误：`publish` 判据写死 200（实为 201）；
+   `clickByText('登录')` 用 indexOf 匹配到「密码登录」那个 tab；
+   登录按钮 disabled 是计算属性（需轮询等 enabled）；
+   页面内裸 `fetch('/api/...')` 返回 HTML（没加 API base 前缀，与 BUG-J 同源）。
+
+---
+
+## BUG-Z：重复提交同名同版本被归成 500（与 BUG-M 同类）
+
+**现象**：POST /api/marketplace/submit 同 workspace 对同名包重复提交同一版本号 →
+**500** + 原始文案 duplicate key ... marketplace_versions_pkey (SQLSTATE 23505)。
+
+**根因**：Submit 里 INSERT INTO marketplace_versions 的错误原样返回，
+既不是 ErrMarketplaceNotFound 也不是 ErrMarketplaceConflict，
+落到 writeMarketplaceError 的 default 分支 → 500。
+该函数本来就有 ErrMarketplaceConflict → 409 的映射，只是没被触发。
+
+**为什么不该是 500**：换个版本号就能继续，是客户端可纠正的输入冲突；
+且前端 ApiError.retryable 会把 5xx 当可重试**反复重试**。与已修的 BUG-M 同一类。
+
+**修法**：signing.go 的 RegisterPublisherKey 早有同样的惯用法
+（pgconn.PgError code 23505 → ErrMarketplaceConflict）。抽成共用
+wrapUniqueViolation，三处裸 INSERT 接上：Submit 的 packages/versions、Publish 的 releases。
+（Install 本来就有 ON CONFLICT DO NOTHING + 回查，幂等，不受影响。）
+
+**验证**：
+
+    Go 回归 3/3（含对照组 + 助手透传测试）
+    证伪：revert-bugz.mjs 回退修复后测试如期失败，报的正是原始 23505
+    端到端 verify-bug-z.mjs 4/4：201 / 409 / 文案不泄漏 23505 / 换版本号仍 201
+    go build ./... OK；go vet OK；marketplace ok 15.756s；server ok 14.037s
+
+**顺带更正上一轮的一处错误定性**：「submit 忽略客户端 package_id」**不是缺陷，
+是刻意的反伪造设计** —— server_marketplace.go:231-237 的注释写明
+「绝不信任 body 中的同名字段，否则 other-ws/some-pkg 会污染本 workspace 命名空间」。
+
+**教训**：看到「后端忽略了客户端传的字段」**先读那段代码的注释**，
+注释里往往直接写着为什么。本轮差点把一个安全决策当成 bug 报出去。
+
+
+---
+
+## BUG-AA：闪卡「建卡组」CTA 实际跳新建卡片页（两个实例，BUG-K 只修对 2/9 语言）
+
+**缺陷一 · BUG-K 的修复只覆盖 2/9 语言**：`FlashcardListView` 主 CTA 走
+`goCreate()` → `/flashcards/new`（**新建卡片**页）。而 `flashcards.list.create`
+在 zh-CN / en-US 已改对，其余 **7 种语言仍是旧中文文案的直译**：
+zh-TW「新增卡組」、ja-JP「デッキを作成」、ko-KR「덱 만들기」、de-DE「Stapel erstellen」、
+fr-FR「Créer un paquet」、es-ES「Crear mazo」、pt-BR「Criar baralho」。
+BUG-K（`0ac074b`）只动了 zh-CN / en-US。
+
+**缺陷二 · 同一问题的第二个实例，9/9 全错**：`StudyHubView.vue` 的零卡组空态按钮
+文案取 `study.decks.create`（「新建牌组 / New deck」），点击 `goCreateDeck()`
+→ `router.push('/flashcards/new')`，同样是**新建卡片**页；且从零状态点进去
+必然撞 BUG-U 那个死胡同（无卡组时该页「保存」恒 disabled）。BUG-K 没碰过这个组件。
+
+**修法**：StudyHubView 改为与 FlashcardListView（BUG-U / BUG-X）**同构**的内联建组，
+复用同一份已真机验证过的 `store.createDeck`（该组件本就已 useFlashcardsStore），
+建完 `decks` computed 立刻更新。验收钩子一律 `data-testid` —— 该文件同时存在
+`div.empty` 和 `span.deck-badge.empty`，用类名会撞车。
+7 种语言的 `flashcards.list.create` 用**定点字符串替换**修正（JSON 重写会重排格式、
+产生几百行假 diff），替换前校验旧值、替换后重新 parse、断言
+`flashcards.deck.create` 与基线逐字节相同，可重复执行。
+
+**审计脚本 `scripts/audit-deck-cta-i18n.mjs`（判据自证 6/6）**：
+第一版判据「两个 CTA 字面必须不同」**被证伪推翻** —— 在 `origin/main` 上只报出 **1/7**，
+因为其余 6 种语言字面不同但语义相同。重做为：A2 对照**人工审定的黄金译文表**
+（在 origin/main 上报出 **7/7**）+ B 元素粒度判定「指向新建卡片页的可点击元素，
+其文案不得等于建卡组文案」。
+判据 B 第一版也错了：扫整个文件的所有 `t()`，把 `flashcards.deck.addCard`
+（=「添加卡片」，键名带 deck 但语义是**建卡片**、且导航到新卡片页是**正确的**）误报。
+**键名不是判据，值比对才语言无关。**
+
+**本轮未修**：`study.decks.*` 整块 7 个键在 7 种语言里与 en-US 逐字节相同（整块英文未翻译），
+审计判据 C 只报不拦。42 条译文需逐条审，不宜混进同一次提交。
+另外 `study.decks.create` 因本次改动已成为**死键**。
+
+**未验证**：StudyHubView 的内联建组**未在真机/模拟器上跑过**，只有静态修复 + 类型检查 +
+i18n 测试（`vue-tsc --noEmit` exit 0；locale 测试 17/17）。不要外推 BUG-X 的真机 13/13。
+
+---
+
+## 记账（finance）模块验收轮：BUG-AD + 真机 26/26（2026-09-30 18:00-18:30）
+
+### BUG-AD：`/api/finance/stats` 缺方法白名单（低危，已修）
+
+**文件**：`backend/internal/server/server_finance.go`
+
+**根因**：`handleFinanceOps` 在进 method switch **之前**就把 `stats` 分流给
+`handleFinanceStats`，而 `handleFinanceStats` 自己不看 `r.Method`。
+同前缀的另外两个子路由都有白名单（`parse` 只收 POST、`/{id}` 只收 GET/DELETE），
+只有 stats 没有，于是 `DELETE /api/finance/stats` 回 **200 + 完整统计内容**。
+
+**严重度：低**（只读，造不成数据损坏）。但危害是实的：探活脚本 / 爬虫 / 错误重试
+用 POST 或 DELETE 打出一次 200，看起来像「改成功了」而实际什么都没发生 ——
+这与 BUG-AC「状态码在说谎」是同一形状，只是发生在 HTTP 层。
+
+**修复**：`handleFinanceStats` 开头加 `if r.Method != http.MethodGet { 405 }`。
+
+**回归**：`TestFinanceStats_RejectsNonGET` 5/5（baseline GET 200 + DELETE/POST/PUT/PATCH
+各 405，且 body 不泄露统计内容）。**证伪**：实打实删掉那段 `if` 重跑，
+4/4 子测试红、报的正是 `405 expected, got 200`，再放回修复。
+`go test ./internal/server/ ./internal/finance/` → ok 3.013s / ok 0.205s。
+
+### 记账模块 UI 写路径：真机 26/26（连跑两轮），未发现新缺陷
+
+- 后端契约 `scripts/probe-finance-api.mjs` **21/21**
+  （含两条阴性对照：随机子路径 404、无 token 401）
+- 真机 `scripts/verify-finance-writepath.mjs` **26/26**，连跑两轮一致；PG 终值归 0
+- 覆盖：自然语言解析 → 预览 → 确认入账 → 直查 PG 落库 → 列表回显 →
+  统计联动（本月支出同步刷新）→ 删除 → 直查 PG 回落 → 未误伤对照组记录
+- 记账的「保存 / 验证」本来就是分两步的（预览 → 确认 → POST），
+  没有 BUG-AC 那种把两个状态混成一个的结构性风险
+
+**证伪（sabotage 模式）**：判据必须在有缺陷一侧失败过才算数。
+
+| 模式 | 结果 |
+|---|---|
+| `--sabotage=hide-cta`（摘掉「记账」按钮） | 10/26，16 条判据如期失败 |
+| `--sabotage=swallow-create`（拦 POST 回假 201） | 16/26，判定通过 |
+
+`swallow-create` 精确复刻了 BUG-AC：**toast 判据照样 PASS**（UI 确实弹了「已入账」），
+只有「直查 PG」和「PG 未变却出现成功文案」判 FAIL。
+**只判反馈文案的话，这个 BUG 会被判通过** —— 反馈类判据永远不能单独成立。
+
+### 本轮未修
+
+- `FinanceView.vue` **整页没走 i18n**，约 20 处硬编码中文。它引用的
+  `errors.loadFinanceFailed` / `errors.operateFailed` 在 9/9 语言里都已翻译，
+  说明只是这一页漏了。9 种语言 × 20 条记账术语需逐条审，**错译比不译更糟**，
+  与已登记的 `study.decks.*` 42 条未翻译合并到国际化队列一起做。

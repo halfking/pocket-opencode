@@ -185,12 +185,44 @@ async function saveAndVerify() {
       syncIntervalMin: 15,
       enabled: true,
       password: credential.value.trim(),
-      smtpPassword: credential.value.trim(),
+      // BUG-AB（2026-09-30 真机走查发现，证据见 handoff §4.29）：
+      // 这里原来是无条件的 `smtpPassword: credential.trim()`，而同对象里的
+      // smtpHost / smtpPort 都按「填了才发」处理 —— **漏了密码这一项**。
+      //
+      // 后端契约明确「SMTP 可选」：smtpHost 为空就按「未配置 SMTP」建账户
+      // （server_assistant.go 的注释就是这么写的），但一旦同时收到 smtpPassword
+      // 就会走 validateSMTPInput(nil, …) 并以 400 拒绝
+      // 「smtpHost required when smtpPassword is provided」。
+      //
+      // 于是：**只填邮箱地址 + IMAP 密码 + IMAP 主机、不碰 SMTP 的普通用户，
+      // 通过 UI 永远添加不了邮箱账户**（实测 POST 400，账户一条都没写进库）。
+      //
+      // 修法与同仓库 EmailAccountSetup.testAndSave 的写法保持一致 ——
+      // 那份早就正确地按 smtpHost 是否填写来决定要不要带密码。
+      ...(smtpHost.value.trim()
+        ? { smtpPassword: credential.value.trim() }
+        : {}),
     })
     try {
       const sync = await emailApi.syncNow(created.id)
-      imapOk.value = true
-      imapMsg.value = `同步成功，新邮件 ${sync.new ?? 0} 封`
+      // BUG-AC（2026-09-30 真机走查发现，证据见 handoff §4.30）：
+      // 后端 handleEmailSync **即使账户全部连不上也返回 200**，把失败的地址收在
+      // failed 数组里（实测 body = {"failed":["…"],"synced":0,"new":0}），
+      // 而且 `failed` 字段在 api/email.ts 的类型里**一直都声明了**。
+      //
+      // 原来这里只读 sync.new 并无条件 imapOk = true，于是
+      // 「保存并测试收发」这个**以验证连通性为目的**的页面，
+      // 会把「连不上」显示成「IMAP：同步成功，新邮件 0 封」，
+      // 并让 resultOk = true → 顶部显示「已保存并验证」。
+      // 等于验证根本没发生，界面却给出了成功结论。
+      const failed = Array.isArray(sync.failed) ? sync.failed : []
+      if (failed.length) {
+        imapOk.value = false
+        imapMsg.value = `连接失败：${failed.join('、')}`
+      } else {
+        imapOk.value = true
+        imapMsg.value = `同步成功，新邮件 ${sync.new ?? 0} 封`
+      }
     } catch (e) {
       imapOk.value = false
       imapMsg.value = e instanceof ApiError ? e.message : (e instanceof Error ? e.message : 'IMAP 失败')

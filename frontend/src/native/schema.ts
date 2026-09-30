@@ -684,3 +684,40 @@ export function splitSqlStatements(sql: string): string[] {
   push()
   return statements
 }
+
+/**
+ * normalizeTriggerForPluginExecute — 修 BUG-AH。
+ *
+ * splitSqlStatements 能把触发体**完整**交给插件，但插件还会再害一次：
+ * `@capacitor-community/sqlite` 的 Android `execute` 会按**字面量 `;` + LF**
+ * 切分语句，于是
+ *
+ *     CREATE TRIGGER ... BEGIN
+ *       INSERT ... ;
+ *     END;
+ *
+ * 会从那个 `;\n` 处被截断，前半截单独送去编译 →
+ * `Execute: incomplete input (code 1): , while compiling: CREATE TRIGGER ...`。
+ *
+ * 真机二分实验（scripts/exp-trigger-bisect.mjs，7 组）锁定了判别条件：
+ *
+ * | 用例 | 特征 | 结果 |
+ * |---|---|---|
+ * | 1 | LF 多行，体内有 `;\n` | ❌ |
+ * | 2 | 同一段 SQL 压成一行 | ✅ |
+ * | 3/4/5 | 去掉 COALESCE/NULLIF、多行 | ❌（说明与表达式无关） |
+ * | 6 | CRLF 多行（无 `;\n`） | ✅ |
+ * | 7 | **多行**、有内部分号，但 `;` 后跟**空格** | ✅ |
+ * | 8 | **单行**，但体内含 `;\n` | ❌ |
+ *
+ * 7 与 8 互为判别：变量是「`;` 后面是不是 LF」，不是「多不多行」、
+ * 也不是「有没有内部分号」。CRLF 能活下来正是因为 `;\n` 这两个字符不出现。
+ *
+ * 修法：只对 CREATE TRIGGER 语句，把「分号 + 换行」压成「分号 + 空格」。
+ * 只动触发器是因为只有它们的触发体天然含分号；普通语句不碰，
+ * 也就不可能误伤字符串字面量里的换行。
+ */
+export function normalizeTriggerForPluginExecute(stmt: string): string {
+  if (!/^\s*CREATE\s+(TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i.test(stmt)) return stmt
+  return stmt.replace(/;[ \t]*\r?\n\s*/g, '; ')
+}

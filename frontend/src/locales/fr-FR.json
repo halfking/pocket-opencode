@@ -186,7 +186,7 @@
     "list": {
       "title": "Cartes mémoire",
       "empty": "Aucun paquet pour l'instant",
-      "create": "Créer un paquet",
+      "create": "Nouvelle carte",
       "dueToday": "{count} à réviser aujourd'hui"
     },
     "deck": {

@@ -163,25 +163,23 @@ inject_llm_gateway() {
   local loader="${ENVS_LOADER:-$HOME/workspace/ai-native-tools/envs/loader.sh}"
   local key=""
   if [[ -x "${loader}" ]]; then
-    key="$(bash "${loader}" query POCKET_LLM_GATEWAY_API_KEY 2>/dev/null | awk '{print $1}')"
+    key="$(bash "${loader}" query POCKET_LLM_GATEWAY_API_KEY 2>/dev/null | awk '{print $1}')" || key=""
   fi
   python3 - "${env_file}" "${key}" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 key = sys.argv[2].strip()
 text = path.read_text() if path.exists() else ""
+existing_key = next((ln.split("=", 1)[1] for ln in text.splitlines() if ln.startswith("POCKET_LLM_GATEWAY_API_KEY=")), "")
 lines = [ln for ln in text.splitlines() if not ln.startswith("POCKET_LLM_GATEWAY_URL=") and not ln.startswith("POCKET_LLM_GATEWAY_API_KEY=")]
 while lines and lines[-1] == "":
     lines.pop()
 lines.append("POCKET_LLM_GATEWAY_URL=https://llmgo.kxpms.cn/v1")
-if key:
-    lines.append(f"POCKET_LLM_GATEWAY_API_KEY={key}")
-else:
-    lines.append("POCKET_LLM_GATEWAY_API_KEY=")
+lines.append(f"POCKET_LLM_GATEWAY_API_KEY={key or existing_key}")
 path.write_text("\n".join(lines) + "\n")
 path.chmod(0o600)
 print("  🔑 injected POCKET_LLM_GATEWAY_URL=https://llmgo.kxpms.cn/v1")
-print("  🔑 POCKET_LLM_GATEWAY_API_KEY", "set" if key else "empty (envs miss)")
+print("  🔑 POCKET_LLM_GATEWAY_API_KEY", "loaded" if key else "preserved" if existing_key else "empty (envs miss)")
 PY
 }
 
@@ -205,7 +203,7 @@ elif grep -q "${DSN_PLACEHOLDER}" "${POCKET_ENV_FILE}" 2>/dev/null && [[ -n "${O
 fi
 
 # ── 4) 拉起服务 ───────────────────────────────────────────────────
-if [[ -f "${POCKET_ENV_FILE}" ]]; then
+if [[ -f "${POCKET_ENV_FILE}" && " $* " != *" --frontend-only "* ]]; then
   inject_llm_gateway "${POCKET_ENV_FILE}"
 fi
 exec "${SCRIPT_DIR}/deploy/bin/start.sh" "$@"

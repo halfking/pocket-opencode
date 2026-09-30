@@ -186,7 +186,7 @@
     "list": {
       "title": "Karteikarten",
       "empty": "Noch keine Stapel vorhanden",
-      "create": "Stapel erstellen",
+      "create": "Neue Karte",
       "dueToday": "Heute {count} fällig"
     },
     "deck": {

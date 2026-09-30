@@ -92,10 +92,13 @@ export function resolveApiBase(opts?: {
   storage?: StorageLike
 }): string {
   const override = opts && 'override' in opts ? opts.override : readApiBaseOverride(opts?.storage)
-  // 空串覆盖会吞掉 VITE_API_BASE，真机 https://localhost 上收信/归类会 Failed to fetch
-  if (override !== null && override !== undefined && String(override).trim() !== '') {
+  // A browser can use its same-origin /api proxy. A Capacitor localhost origin
+  // is only the app shell, so keep its configured backend fallback instead.
+  if (override !== null && override !== undefined) {
     const normalized = normalizeApiBase(override, opts?.pageOrigin)
-    if (normalized) return normalized
+    if (normalized || !isCapacitorShellOrigin(pageOriginFallback(opts?.pageOrigin))) {
+      return normalized
+    }
   }
   const build = opts?.buildDefault ?? buildDefaultFromEnv()
   return build ? normalizeApiBase(build, opts?.pageOrigin) : ''
@@ -149,6 +152,18 @@ export async function probeHealthz(
     const res = await fetchImpl(url, { method: 'GET' })
     const text = (await res.text()).trim()
     if (res.ok && text === 'ok') return { ok: true }
+    // 'frontend ok' 是 nginx 纯前端部署的哨兵（deploy/本地方案/nginx.conf:
+    //   location = /healthz { return 200 "frontend ok\n"; }），与该文件保持
+    //   字面一致。它只证明前端容器活着，必须再穿透 /api/healthz 确认后端。
+    if (res.ok && text === 'frontend ok') {
+      const backend = await fetchImpl(`${prefix}/api/healthz`, { method: 'GET' })
+      const backendText = (await backend.text()).trim()
+      if (backend.ok && backendText === 'ok') return { ok: true }
+      return {
+        ok: false,
+        error: backend.ok ? backendText || 'unexpected-body' : `HTTP ${backend.status}`,
+      }
+    }
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
     return { ok: false, error: text || 'unexpected-body' }
   } catch (err) {

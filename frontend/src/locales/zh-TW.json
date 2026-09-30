@@ -186,7 +186,7 @@
     "list": {
       "title": "閃卡",
       "empty": "目前沒有卡組",
-      "create": "新增卡組",
+      "create": "新增卡片",
       "dueToday": "今日待複習 {count} 張"
     },
     "deck": {

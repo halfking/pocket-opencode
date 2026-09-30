@@ -972,6 +972,16 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
+	// BUG-AE：实例是**只读**资源（没有创建/删除 handler，前端 InstanceListView
+	// 也只有刷新与选择），但这个 handler 完全不看 r.Method，于是
+	// POST/DELETE/PUT /api/instances 也会回 200 + 完整实例列表（含 id 与心跳时间）。
+	// 危害和 BUG-AD 同形：调用方看到 200 会以为写成功了，实际什么都没发生。
+	// 回归：TestInstances_RejectsNonGET（撤掉这段会 4/4 子测试红）
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	var instances []model.PocketInstance
 
 	// 优先使用 Registry 中的实例
