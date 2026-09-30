@@ -1521,45 +1521,6 @@ func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"source": "acc", "task_id": result.TaskID, "run_id": result.RunID, "operation_id": result.OperationID, "status": result.Status, "raw": out})
 }
 
-// requireTaskWrite gates a task write on the same rule the collaboration
-// sub-resources use: only the owner or an existing participant may change a
-// work item. Being a plain member of the work item's workspace is not enough.
-//
-// PATCH and DELETE used to skip this entirely, so any authenticated member of
-// the workspace could edit or delete someone else's private work item — the
-// same class of finding as the earlier B-1..B-4 privilege bugs.
-//
-// Read and write are judged separately on purpose. A caller who may not even
-// read the work item gets 404, not 403: answering 403 would confirm the id
-// exists and hand out a membership oracle. The body is not echoed, so a
-// cross-workspace id stays indistinguishable from a missing one, which is what
-// GetTaskScoped already guarantees.
-//
-// It reports whether the caller may proceed; on refusal the response is
-// already written.
-func (s *Server) requireTaskWrite(w http.ResponseWriter, r *http.Request, t *task.Task) bool {
-	wsID := s.workspaceIDFromRequest(r)
-	parts, err := s.taskStore.ListParticipants(r.Context(), t.ID, wsID)
-	if err != nil {
-		// A failed participant read must not degrade to "no participants",
-		// which would quietly hand the write to nobody — or, read the other
-		// way, let a stale empty list widen access. Fail closed.
-		log.Printf("[tasks] read participants for %s failed: %v", t.ID, err)
-		writeError(w, http.StatusInternalServerError, "read participants failed")
-		return false
-	}
-	actor := s.userIDFromRequest(r)
-	if !task.CanReadWorkItem(t, parts, actor) {
-		writeError(w, http.StatusNotFound, "task not found")
-		return false
-	}
-	if !task.CanWriteWorkItem(t, parts, actor) {
-		writeError(w, http.StatusForbidden, "only the owner or a participant may change this work item")
-		return false
-	}
-	return true
-}
-
 func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 	// Parse task ID from path: /api/tasks/{id}/...
 	path := r.URL.Path[len("/api/tasks/"):]
@@ -1682,14 +1643,8 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		workspaceID := s.workspaceIDFromRequest(r)
-		current, err := s.taskStore.GetTaskScoped(r.Context(), path, workspaceID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		// 写权限与读权限分开判：看不见的人不该知道这条工作项存在（404），
-		// 看得见但不是 owner/participant 的人才收到 403。
-		if !s.requireTaskWrite(w, r, current) {
+		current, ok := s.workItemWriteGuard(w, r, path, workspaceID)
+		if !ok {
 			return
 		}
 		if update.Status != nil && !isValidTaskStatus(*update.Status) {
@@ -1714,6 +1669,7 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		var updated *task.Task
+		var err error
 		if update.Status != nil && *update.Status == "completed" {
 			updated, err = s.taskStore.CompleteTaskScoped(r.Context(), path, workspaceID, update)
 		} else {
@@ -1756,12 +1712,7 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 		// 删除前必须先取回这条工作项：没有它就无从判断调用者是不是
 		// owner/participant，而「同 workspace 的普通成员删掉别人的
 		// private 工作项」正是这里原先缺失的护栏。
-		current, err := s.taskStore.GetTaskScoped(r.Context(), path, workspaceID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		if !s.requireTaskWrite(w, r, current) {
+		if _, ok := s.workItemWriteGuard(w, r, path, workspaceID); !ok {
 			return
 		}
 		if err := s.taskStore.DeleteTaskScoped(r.Context(), path, workspaceID); err != nil {
@@ -1775,6 +1726,43 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "not found", http.StatusNotFound)
+}
+
+// workItemWriteGuard loads the work item and decides whether the authenticated
+// caller may modify or delete it. Writes belong to the owner and the
+// participants (task.CanWriteWorkItem) — workspace membership alone does not:
+// a private work item whose workspace happens to be shared stays private.
+// Consolidation §5.1 第三条：此前 PATCH/DELETE 只有 workspace 维度校验，
+// 同 workspace 普通成员可改删他人 private 工作项。
+//
+// On failure the response has already been written (404 unknown, 500 when the
+// participant list cannot be read — an unreadable list must never read as
+// "no participants", which would turn every private item into one anyone may
+// write) and ok is false.
+func (s *Server) workItemWriteGuard(w http.ResponseWriter, r *http.Request, taskID, workspaceID string) (*task.Task, bool) {
+	current, err := s.taskStore.GetTaskScoped(r.Context(), taskID, workspaceID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return nil, false
+	}
+	parts, err := s.taskStore.ListParticipants(r.Context(), taskID, workspaceID)
+	if err != nil {
+		http.Error(w, "read participants failed", http.StatusInternalServerError)
+		return nil, false
+	}
+	// 读与写分开判：连读都不行的人收 404 而不是 403——回 403 等于确认
+	// 「这个 id 存在」，把工作项 id 变成成员探测 oracle。跨 workspace 的
+	// id 仍然与「不存在」不可区分，GetTaskScoped 已保证这一点。
+	actor := s.userIDFromRequest(r)
+	if !task.CanReadWorkItem(current, parts, actor) {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return nil, false
+	}
+	if !task.CanWriteWorkItem(current, parts, actor) {
+		http.Error(w, "not the owner or a participant of this work item", http.StatusForbidden)
+		return nil, false
+	}
+	return current, true
 }
 
 func (s *Server) handleAttachSession(w http.ResponseWriter, r *http.Request, taskID string) {

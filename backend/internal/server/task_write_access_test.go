@@ -41,7 +41,7 @@ func callsMethodOn(t *testing.T, fn *ast.FuncDecl, method string) bool {
 	return found
 }
 
-// requireTaskWrite 的判定顺序与结果，用真实的规则函数跑一遍。
+// workItemWriteGuard 的判定顺序与结果，用真实的规则函数跑一遍。
 //
 // AST 断言只证明「调用了 CanWriteWorkItem」，不证明**结果**对。
 // 下面把守卫里那三步（判读 → 判写 → 放行）用同样的输入喂给
@@ -92,24 +92,24 @@ func TestTaskWriteVerdictsPerIdentity(t *testing.T) {
 	}
 }
 
-// requireTaskWrite 必须真的判权限，而不是仅仅被调用。
+// workItemWriteGuard 必须真的判权限，而不是仅仅被调用。
 // 断言它内部同时触达 CanReadWorkItem 与 CanWriteWorkItem：
 // 只判其中一个就是上一轮的缺陷换了个形状。
-func TestRequireTaskWriteJudgesReadAndWrite(t *testing.T) {
-	fn := serverFuncSource(t, "requireTaskWrite")
+func TestWorkItemWriteGuardJudgesReadAndWrite(t *testing.T) {
+	fn := serverFuncSource(t, "workItemWriteGuard")
 	if fn == nil {
-		t.Fatal("requireTaskWrite not found: the PATCH/DELETE write guard is missing entirely")
+		t.Fatal("workItemWriteGuard not found: the PATCH/DELETE write guard is missing entirely")
 	}
 	if !callsMethodOn(t, fn, "CanReadWorkItem") {
-		t.Error("requireTaskWrite does not call CanReadWorkItem: a caller who cannot even read " +
+		t.Error("workItemWriteGuard does not call CanReadWorkItem: a caller who cannot even read " +
 			"the work item would receive 403, confirming the id exists")
 	}
 	if !callsMethodOn(t, fn, "CanWriteWorkItem") {
-		t.Error("requireTaskWrite does not call CanWriteWorkItem: a plain workspace member " +
+		t.Error("workItemWriteGuard does not call CanWriteWorkItem: a plain workspace member " +
 			"would be allowed to change a work item they are not on")
 	}
 	if !callsMethodOn(t, fn, "ListParticipants") {
-		t.Error("requireTaskWrite does not call ListParticipants: CanWriteWorkItem is only " +
+		t.Error("workItemWriteGuard does not call ListParticipants: CanWriteWorkItem is only " +
 			"half the rule without the participant set")
 	}
 }
@@ -120,20 +120,20 @@ func TestTaskWritePathsCallTheGuard(t *testing.T) {
 	if fn == nil {
 		t.Fatal("handleTaskOperations not found")
 	}
-	if !callsMethodOn(t, fn, "requireTaskWrite") {
-		t.Fatal("handleTaskOperations never calls requireTaskWrite: PATCH and DELETE are " +
+	if !callsMethodOn(t, fn, "workItemWriteGuard") {
+		t.Fatal("handleTaskOperations never calls workItemWriteGuard: PATCH and DELETE are " +
 			"unauthenticated against work item ownership — any workspace member can rewrite " +
 			"or delete another user's private work item")
 	}
 }
 
-// 反向对照：如果哪天有人把 requireTaskWrite 掏空成直接 return true，
+// 反向对照：如果哪天有人把 workItemWriteGuard 掏空成直接 return true，
 // 上面的结构性断言不会发现，但这一条会——因为守卫必须仍被两条写路径引用。
 // 两条一起构成护栏，缺一条另一条就失去意义。
 func TestTaskWriteGuardIsNotSilentlyBypassed(t *testing.T) {
-	guard := serverFuncSource(t, "requireTaskWrite")
+	guard := serverFuncSource(t, "workItemWriteGuard")
 	if guard == nil {
-		t.Fatal("requireTaskWrite not found")
+		t.Fatal("workItemWriteGuard not found")
 	}
 	// 守卫至少要有一个拒绝出口，否则它就是个 no-op。
 	denies := false
@@ -144,6 +144,6 @@ func TestTaskWriteGuardIsNotSilentlyBypassed(t *testing.T) {
 		return true
 	})
 	if !denies {
-		t.Error("requireTaskWrite has no return statement: it cannot refuse anything")
+		t.Error("workItemWriteGuard has no return statement: it cannot refuse anything")
 	}
 }

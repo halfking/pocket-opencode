@@ -51,9 +51,18 @@ _env_ensure_key() {
 _ensure_db() {
   local name="$1" detect_func="$2" host_var="$3" port_var="$4" \
         deploy_flag="$5" data_dir="$6" image="$7" default_port="$8"
-  local mode="${name^^}_MODE"
+  local mode
+  case "$name" in
+    postgres) mode=OPP_PG_MODE ;;
+    redis) mode=OPP_REDIS_MODE ;;
+    mysql) mode=OPP_MYSQL_MODE ;;
+  esac
 
   local deploy_value="${!deploy_flag:-false}"
+  case "$deploy_value" in
+    true|false|external) ;;
+    *) echo "  ❌ ${deploy_flag}: expected true/false/external" >&2; return 1 ;;
+  esac
   local host="${!host_var:-127.0.0.1}"
   local port="${!port_var:-${default_port}}"
 
@@ -80,7 +89,16 @@ _ensure_db() {
 
   # 未命中
   if [[ "${deploy_value}" == "true" ]]; then
-    echo "  🆕 ${name}: 未发现外部实例，按 OPP_DEPLOY_${name^^}=true 起容器化实例"
+    # A failed credential/protocol check is not evidence that no resource exists.
+    if ! python3 "${LIB_DIR}/check-databases.py" --can-create "$name" --host "$host" --port "$port"; then
+      export "${mode}=failed"
+      return 1
+    fi
+    if [[ -d "$data_dir" && -n "$(ls -A "$data_dir")" ]]; then
+      echo "  ❌ ${name}: 已有数据目录，需确认原实例和凭据后复用" >&2
+      return 1
+    fi
+    echo "  🆕 ${name}: 资源检查通过，按 ${deploy_flag}=true 起容器化实例"
     mkdir -p "${data_dir}"
     # 容器化失败必须中止部署（如端口被占）：没有 DB 就没有可用服务，
     # 静默继续会让应用以无 DB 状态启动。
@@ -111,42 +129,44 @@ _start_container_db() {
     return 1
   }
 
-  # 起对应 service
-  local project="opp-db-${name}"
-  DOCKER_DB_HOST="${host}" \
-  DOCKER_DB_PORT="${port}" \
-  DOCKER_DB_IMAGE="${image}" \
-  DOCKER_DB_DATA_DIR="${data_dir}" \
-  docker compose -p "${project}" -f "${compose_file}" up -d "${svc}" || {
-    echo "  ❌ 容器化 ${name} 失败" >&2
+  # Credentials must exist before Compose initializes an empty volume.
+  command -v openssl >/dev/null 2>&1 || {
+    echo "  ❌ 容器化 ${name} 需要 openssl" >&2
     return 1
   }
-
-  echo "  ✅ ${name} 容器已起 (port=${port}, data=${data_dir})"
-
-  # 写 DSN 到 .env（容器化路径要求 openssl 在场以生成强密码）
-  if ! command -v openssl >/dev/null 2>&1; then
-    echo "  ❌ 容器化 ${name} 需要 openssl 生成随机密码，当前不可用" >&2
-    echo "     安装 openssl（macOS: brew install openssl；Linux: apt/yum install openssl）" >&2
-    return 1
-  fi
-  case "${name}" in
+  local dsn_key password_key="" password="" dsn=""
+  case "$name" in
     postgres)
-      local pass="${OPP_PG_PASSWORD:-$(openssl rand -hex 16)}"
-      _env_ensure_key "OPP_PG_PASSWORD" "${pass}"
-      _env_ensure_key "POCKET_POSTGRES_DSN" \
-        "postgresql://${OPP_PG_USER:-llm_gateway}:${pass}@${host}:${port}/${OPP_PG_DB:-pocket}?sslmode=disable"
+      dsn_key=POCKET_POSTGRES_DSN; password_key=OPP_PG_PASSWORD
+      password="${OPP_PG_PASSWORD:-$(openssl rand -hex 16)}"
+      # Generated hex credentials are URL safe. Explicit credentials are encoded.
+      dsn="$(OPP_DB_PASSWORD="$password" python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["OPP_DB_PASSWORD"],safe=""))')"
+      dsn="postgresql://${OPP_PG_USER:-llm_gateway}:${dsn}@${host}:${port}/${OPP_PG_DB:-pocket}?sslmode=disable"
       ;;
-    redis)
-      _env_ensure_key "POCKET_REDIS_URL" "redis://${host}:${port}/0"
-      ;;
+    redis) dsn_key=POCKET_REDIS_URL; dsn="redis://${host}:${port}/0" ;;
     mysql)
-      local root_pass="${OPP_MYSQL_PASSWORD:-$(openssl rand -hex 16)}"
-      _env_ensure_key "OPP_MYSQL_PASSWORD" "${root_pass}"
-      _env_ensure_key "POCKET_MYSQL_DSN" \
-        "mysql://root:${root_pass}@${host}:${port}/${OPP_MYSQL_DB:-openpocket}"
+      dsn_key=POCKET_MYSQL_DSN; password_key=OPP_MYSQL_PASSWORD
+      password="${OPP_MYSQL_PASSWORD:-$(openssl rand -hex 16)}"
+      dsn="$(OPP_DB_PASSWORD="$password" python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["OPP_DB_PASSWORD"],safe=""))')"
+      dsn="mysql://root:${dsn}@${host}:${port}/${OPP_MYSQL_DB:-openpocket}"
       ;;
   esac
+  if [[ -f "$POCKET_ENV_FILE" ]] && grep -q "^${dsn_key}=" "$POCKET_ENV_FILE"; then
+    echo "  ❌ ${name}: 已有 DSN；请验证该配置并复用，禁止自动覆盖后另建" >&2
+    return 1
+  fi
+  [[ -z "$password_key" ]] || export "$password_key=$password"
+  local project="opp-db-${name}"
+  # Persist credentials before initializing data, so even a Compose failure
+  # cannot leave an initialized volume with an unknown random password.
+  [[ -z "$password_key" ]] || _env_ensure_key "$password_key" "$password"
+  _env_ensure_key "$dsn_key" "$dsn"
+  [[ "$name" != postgres ]] || _env_ensure_key POCKET_PG_SCHEMA "${OPP_PG_SCHEMA:-opencode_pocket}"
+  DOCKER_DB_HOST="$host" DOCKER_DB_PORT="$port" DOCKER_DB_IMAGE="$image" \
+  DOCKER_DB_DATA_DIR="$data_dir" \
+    docker compose -p "$project" -f "$compose_file" up -d --wait --wait-timeout 60 "$svc" || return 1
+  echo "  ✅ ${name} 容器已起 (port=${port}, data=${data_dir})"
+
 }
 
 # 主流程
