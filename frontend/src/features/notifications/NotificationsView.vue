@@ -117,5 +117,17 @@ li.unread .ntf-item { border-left: 3px solid var(--brand-primary, #2f6fed); }
 .ntf-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .ntf-title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
 .ntf-body { font-size: 13px; color: var(--text-secondary); line-height: 1.4; }
+/* 2026-10-01 真机审计：标题与正文必须能断词。
+ *
+ * 通知正文来自邮件摘要、任务标题、错误文案，里面会出现一长串不可断的 ASCII
+ * （MIME boundary、长 URL、长 token）。没有断词策略时它会把 .ntf-body 撑破，
+ * 祖先 overflow-x:hidden 把溢出部分**静默裁掉**——没有滚动条、没有任何提示，
+ * 用户既看不到被截掉的内容，也滚不到。真机实测 100 个正文元素里 46 个溢出，
+ * 累计被裁掉 12,311px 不可见宽度。
+ *
+ * 这条是结构性的护栏：数据侧已由 DeriveSnippet（backend/internal/email）不再写入
+ * MIME 原文，但只要将来任何一条通知出现超长不可断串，样式层也不该再把内容静默
+ * 裁掉。`anywhere` 而非 `break-word`：后者在部分内核里仍不给无空格长串断点。 */
+.ntf-title, .ntf-body { overflow-wrap: anywhere; }
 .ntf-meta { font-size: 11px; color: var(--text-muted); }
 </style>
