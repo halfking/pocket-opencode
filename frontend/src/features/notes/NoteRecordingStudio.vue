@@ -8,18 +8,31 @@
       placeholder="开始说话，文字会出现在这里…"
       @input="$emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
     />
-    <p v-if="error" class="studio-error" role="alert">{{ error }}</p>
+    <p v-if="error" class="studio-error" role="alert">{{ errorText }}</p>
   </div>
 </template>
 
 <script setup lang="ts">
-defineProps<{
+import { computed } from 'vue'
+import { useApiError } from '../../composables/useApiError'
+
+const props = defineProps<{
   modelValue: string
   error?: string
 }>()
 defineEmits<{
   'update:modelValue': [value: string]
 }>()
+
+const apiError = useApiError()
+/**
+ * recordingRuntime.error 存的是原始异常文本（转写接口失败时可能是
+ * "Failed to fetch" / 英文错误码），直接上屏用户无法据此行动。
+ * 这里统一归一：已知类别走 i18n，识别不出就给领域兜底「语音转文字失败」。
+ */
+const errorText = computed(() =>
+  props.error ? apiError(props.error, 'errors.sttNotConfigured') : '',
+)
 </script>
 
 <style scoped>

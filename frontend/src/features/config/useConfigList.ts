@@ -10,6 +10,7 @@
  */
 import { ref, type Ref } from 'vue'
 import { api, type Instance } from '../../api/client'
+import { useApiError } from '../../composables/useApiError'
 
 export interface UseConfigListReturn {
   instances: Ref<Instance[]>
@@ -22,6 +23,7 @@ export function useConfigList(): UseConfigListReturn {
   const instances = ref<Instance[]>([])
   const loading = ref(true)
   const error = ref('')
+  const apiError = useApiError()
 
   async function load(): Promise<void> {
     loading.value = true
@@ -29,7 +31,7 @@ export function useConfigList(): UseConfigListReturn {
     try {
       instances.value = await api.getInstances()
     } catch (e) {
-      error.value = e instanceof Error ? e.message : '加载实例失败'
+      error.value = apiError(e, 'errors.loadSettingsFailed')
       instances.value = []
     } finally {
       loading.value = false

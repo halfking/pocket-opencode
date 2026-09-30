@@ -20,7 +20,7 @@
 
     <p class="strategy-hint">当前策略：{{ strategyLabel }}。该选择会影响任务执行时的本地/云端路由。</p>
 
-    <div v-if="store.error" class="error" role="alert">{{ store.error }}</div>
+    <div v-if="store.error" class="error" role="alert">{{ apiError(store.error, 'errors.loadSettingsFailed') }}</div>
     <div v-else-if="store.loading" class="state">加载中…</div>
     <div v-else-if="filtered.length === 0" class="state">
       <p>暂无智能体</p>
@@ -60,7 +60,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { useMarketplaceStore } from './store'
 import type { MarketplacePackage, PackageVersion } from './types'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const store = useMarketplaceStore()
 const search = ref('')
 const strategy = ref('local_first')
@@ -143,16 +145,21 @@ function refresh() {
 
 <style scoped>
 .page { min-height: 100%; background: var(--bg-base); }
+/* 真机（360dp）实测：工具栏内容宽 389px 超出视口 29px，「刷新」按钮右边缘落在 389，
+   整个按钮点不到。根因是 flex 子项默认 `min-width: auto`：
+   input 的 min-content 约等于默认 size=20 字符宽，select 的 min-content 等于最长选项
+   「按复杂度混合」宽，两者都不肯收缩，把行撑破。
+   显式给 min-width 后由 input 先让位，select 保留可用宽度。 */
 .toolbar { display: flex; gap: var(--space-2); padding: var(--space-3); border-bottom: 1px solid var(--border); }
-.toolbar input { flex: 1; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 10px; background: var(--bg-card); color: var(--text-primary); }
-.toolbar select { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 10px; background: var(--bg-card); color: var(--text-primary); }
-.toolbar button { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); padding: 7px 12px; }
+.toolbar input { flex: 1 1 0; min-width: 56px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 10px; background: var(--bg-card); color: var(--text-primary); }
+.toolbar select { flex: 0 1 auto; min-width: 0; max-width: 45%; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 10px; background: var(--bg-card); color: var(--text-primary); }
+.toolbar button { flex-shrink: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); padding: 7px 12px; }
 .strategy-hint { padding: var(--space-2) var(--space-3); color: var(--text-secondary); font-size: 12px; background: var(--bg-subtle); border-bottom: 1px solid var(--border); margin: 0; }
 .list { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
 .card { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); }
 .card header { display: flex; align-items: center; gap: 8px; }
 .card h2 { flex: 1; margin: 0; font-size: 15px; color: var(--text-primary); }
-.kind { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--accent); color: var(--text-inverse); }
+.kind { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--brand-primary); color: var(--text-inverse); }
 .meta { margin: 7px 0; font-size: 13px; color: var(--text-secondary); }
 .tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { padding: 2px 8px; border-radius: 999px; background: var(--bg-subtle); color: var(--text-primary); font-size: 12px; }

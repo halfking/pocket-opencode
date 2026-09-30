@@ -191,7 +191,9 @@ import * as vaultStore from './vault-store'
 import type { VaultEntry } from './vault-store'
 import { useConfirm } from '../../composables/useConfirm'
 import { markListDirty } from '../../composables/list-scene-store'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -381,7 +383,7 @@ async function onSave() {
     markListDirty('vault')
     router.push(`/vault/${entry.value.id}`)
   } catch (e: any) {
-    showToast(`保存失败：${e.message || e}`, 'danger')
+    showToast(apiError(e, 'errors.saveFailed'), 'danger')
   } finally {
     saving.value = false
   }
@@ -403,7 +405,7 @@ async function onDelete() {
     markListDirty('vault')
     router.push('/vault')
   } catch (e: any) {
-    showToast(`删除失败：${e.message || e}`, 'danger')
+    showToast(apiError(e, 'errors.operateFailed'), 'danger')
     deleting.value = false
   }
 }
@@ -431,7 +433,7 @@ async function load() {
     if (isEdit.value) loadForm()
     startTotpTicker()
   } catch (err: any) {
-    showToast(`加载失败：${err.message || err}`, 'danger')
+    showToast(apiError(err, 'errors.loadSettingsFailed'), 'danger')
     entry.value = null
   } finally {
     loading.value = false
@@ -520,7 +522,7 @@ onBeforeUnmount(() => {
   font-size: 14px; color: var(--text-primary);
   word-break: break-all; line-height: 1.5;
 }
-.field-value.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 15px; }
+.field-value.mono { font-family: var(--font-mono); font-size: 15px; }
 .field-value.link { color: var(--brand-primary); text-decoration: none; }
 .field-value.notes { white-space: pre-wrap; }
 .field-icon-btn {

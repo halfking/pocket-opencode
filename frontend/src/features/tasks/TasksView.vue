@@ -378,7 +378,7 @@
           />
           <div class="char-counter">{{ accDraft.description.length }} / 500</div>
         </div>
-        <div v-if="accStore.error" class="acc-error">{{ accStore.error }}</div>
+        <div v-if="accStore.error" class="acc-error">{{ apiError(accStore.error, 'errors.operateFailed') }}</div>
       </div>
       <template #footer>
         <button class="btn cancel" :disabled="accStore.submitting" @click="closeAccDelegate">取消</button>
@@ -443,6 +443,7 @@ import {
 import { useConfirm } from '../../composables/useConfirm'
 import BottomSheet from '../../components/base/BottomSheet.vue'
 import { SCROLL_CHROME_KEY } from '../../composables/scroll-chrome'
+import { useApiError } from '../../composables/useApiError'
 import {
   QUICK_PROMPT_DEFAULT,
   closeQuickPrompt,
@@ -452,6 +453,7 @@ import {
 
 defineOptions({ name: 'TasksView' })
 
+const apiError = useApiError()
 const router = useRouter()
 const { confirm } = useConfirm()
 

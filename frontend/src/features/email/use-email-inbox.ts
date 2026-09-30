@@ -18,6 +18,8 @@ export function useEmailInbox() {
   const classifying = ref(false)
   const classifyHint = ref('')
   const classifyCancel = ref(false)
+  /** 在途归类请求的中止器；点「取消」时 abort，让 HTTP 层真正断掉。 */
+  const classifyAbort = ref<AbortController | null>(null)
   const purgeBusy = ref(false)
 
   const selectedCount = computed(() => selected.value.size)
@@ -70,15 +72,27 @@ export function useEmailInbox() {
     }
   }
 
+  /**
+   * 强行终止归类：既要停批间循环，也要真的 abort 在途 HTTP 请求。
+   * 原实现只置 classifyCancel 标记，用户点「取消」后当前这批仍会跑满
+   * （逐封调 LLM，单批可达分钟级），表现为「点了没反应」。
+   */
+  function cancelClassify() {
+    classifyCancel.value = true
+    classifyAbort.value?.abort()
+  }
+
   async function runClassify(list: LocalEmail[]): Promise<LocalEmail[]> {
     if (classifying.value) return list
     classifying.value = true
     classifyCancel.value = false
     classifyHint.value = '正在归类…'
+    const controller = new AbortController()
+    classifyAbort.value = controller
     let next = list
     try {
       do {
-        const report = await emailApi.classifyInbox(20)
+        const report = await emailApi.classifyInbox(20, controller.signal)
         const done = report.classified ?? 0
         const remain = report.remaining ?? 0
         classifyHint.value = classifyProgressLabel(Math.max(1, done), done + remain)
@@ -96,9 +110,16 @@ export function useEmailInbox() {
       const leftover = next.filter((m) => isUncategorized(m.category)).length
       classifyHint.value = leftover ? `已暂停，仍有 ${leftover} 封未归类` : '归类完成'
     } catch (e) {
-      const raw = e instanceof Error ? e.message : '归类失败'
-      classifyHint.value = sanitizeFetchHint(raw) === raw ? raw : '归类中断，已保存已完成的分类'
+      if (controller.signal.aborted) {
+        // 用户主动中止：已落库的部分保留，如实说明停在哪
+        const leftover = next.filter((m) => isUncategorized(m.category)).length
+        classifyHint.value = leftover ? `已取消，仍有 ${leftover} 封未归类` : '归类完成'
+      } else {
+        const raw = e instanceof Error ? e.message : '归类失败'
+        classifyHint.value = sanitizeFetchHint(raw) === raw ? raw : '归类中断，已保存已完成的分类'
+      }
     } finally {
+      classifyAbort.value = null
       classifying.value = false
     }
     return next
@@ -107,6 +128,7 @@ export function useEmailInbox() {
   return {
     selectMode, selected, selectedCount, searchOpen, search, moreOpen,
     classifying, classifyHint, classifyCancel, purgeBusy,
-    visibleEmails, enterSelect, exitSelect, toggle, toggleSearch, confirmSearch, clearSearch, confirmPurge, runClassify,
+    visibleEmails, enterSelect, exitSelect, toggle, toggleSearch, confirmSearch, clearSearch, confirmPurge,
+    runClassify, cancelClassify,
   }
 }

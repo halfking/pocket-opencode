@@ -154,12 +154,12 @@ function back() {
 .error { padding: 8px 12px; background: var(--err-bg); color: var(--err-fg); border-radius: 6px; margin-bottom: 8px; }
 .article { padding: 12px 0; }
 .meta-row { font-size: 12px; color: var(--text-muted); display: flex; gap: 12px; margin-bottom: 12px; }
-.meta-row a { color: var(--accent); }
+.meta-row a { color: var(--brand-primary); }
 .summary { font-size: 15px; line-height: 1.6; margin-bottom: 16px; }
 .content { font-size: 14px; line-height: 1.6; }
 .actions-bar { position: sticky; bottom: 0; display: flex; gap: 8px; padding: 12px; background: var(--bg); border-top: 1px solid var(--border); }
 .btn { display: inline-flex; align-items: center; gap: 4px; padding: 8px 16px; border: 1px solid var(--border); background: var(--bg-elevated); border-radius: 6px; cursor: pointer; }
-.btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
+.btn-primary { background: var(--brand-primary); color: white; border-color: var(--brand-primary); }
 .icon { padding: 4px 8px; border: none; background: transparent; cursor: pointer; font-size: 20px; }
 .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
 .modal { background: var(--bg-elevated); border-radius: 8px; padding: 16px; width: 90%; max-width: 520px; }

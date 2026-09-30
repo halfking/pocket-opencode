@@ -155,6 +155,7 @@ import { useRoute } from 'vue-router'
 import * as gw from '../../api/gateway'
 import type { WorkType, TaskDefaultRouting } from '../../api/gateway'
 import { useToast } from '../../composables/useToast'
+import { useApiError } from '../../composables/useApiError'
 import { useConfirm } from '../../composables/useConfirm'
 
 const route = useRoute()
@@ -169,6 +170,7 @@ const L1_TASKS = ['chat', 'reasoning', 'code', 'agent', 'creative', 'long_contex
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
+const apiError = useApiError()
 
 // 任务类型
 const workTypes = ref<WorkType[]>([])
@@ -234,7 +236,7 @@ async function reload() {
       }
     }
   } catch (e: any) {
-    error.value = e?.message || String(e)
+    error.value = apiError(e, 'errors.loadGatewayFailed')
   } finally {
     loading.value = false
   }
@@ -262,7 +264,7 @@ async function saveRoutes(wt: WorkType) {
     editing.value = ''
     toast.success(`已更新「${wt.key}」的路由`)
   } catch (e: any) {
-    toast.error('保存失败：' + (e?.message || String(e)))
+    toast.error(apiError(e, 'errors.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -285,7 +287,7 @@ async function createDefault() {
     toast.success('已新增默认路由')
     await reload()
   } catch (e: any) {
-    toast.error('新增失败：' + (e?.message || String(e)))
+    toast.error(apiError(e, 'errors.operateFailed'))
   } finally {
     saving.value = false
   }
@@ -304,7 +306,7 @@ async function removeDefault(d: TaskDefaultRouting) {
     toast.success('已删除')
     await reload()
   } catch (e: any) {
-    toast.error('删除失败：' + (e?.message || String(e)))
+    toast.error(apiError(e, 'errors.operateFailed'))
   } finally {
     saving.value = false
   }
@@ -329,7 +331,7 @@ async function saveFeatured() {
     toast.success('精选模型已保存')
     editingFeatured.value = false
   } catch (e: any) {
-    toast.error('保存失败：' + (e?.message || String(e)))
+    toast.error(apiError(e, 'errors.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -382,7 +384,7 @@ onMounted(reload)
   background: var(--bg-base); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: 10px; outline: none; font-family: inherit;
 }
-.routes-input { font-family: 'SF Mono', Menlo, monospace; resize: vertical; }
+.routes-input { font-family: var(--font-mono); resize: vertical; }
 .routes-input:focus, .inp:focus { border-color: var(--primary, #4c8dff); }
 .editor-actions { display: flex; gap: 8px; margin-top: 8px; }
 .mini-btn {
@@ -403,7 +405,7 @@ onMounted(reload)
 .raw-json {
   margin: 0; padding: 10px; font-size: 11px; line-height: 1.6;
   background: var(--bg-subtle); border-radius: 8px; overflow-x: auto;
-  font-family: 'SF Mono', Menlo, monospace; color: var(--text-primary);
+  font-family: var(--font-mono); color: var(--text-primary);
   white-space: pre-wrap; word-break: break-all;
 }
 </style>

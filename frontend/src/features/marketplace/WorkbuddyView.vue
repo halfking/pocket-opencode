@@ -11,7 +11,7 @@
       <button type="button" :disabled="store.loading" @click="refresh">刷新</button>
     </div>
 
-    <div v-if="store.error" class="error" role="alert">{{ store.error }}</div>
+    <div v-if="store.error" class="error" role="alert">{{ apiError(store.error, 'errors.loadSettingsFailed') }}</div>
     <div v-else-if="store.loading" class="state">加载中…</div>
     <div v-else-if="filtered.length === 0" class="state">
       <p>暂无工作流模板</p>
@@ -54,7 +54,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { useMarketplaceStore } from './store'
 import type { MarketplacePackage, PackageVersion } from './types'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const store = useMarketplaceStore()
 const search = ref('')
 const installing = ref(false)

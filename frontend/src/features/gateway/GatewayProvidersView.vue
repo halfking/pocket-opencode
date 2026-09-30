@@ -78,8 +78,10 @@ import { ApiError } from '../../api/http'
 import * as gw from '../../api/gateway'
 import type { GatewayProvider } from '../../api/gateway'
 import { useConfirm } from '../../composables/useConfirm'
+import { useApiError } from '../../composables/useApiError'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -105,7 +107,7 @@ async function load() {
     if (e instanceof ApiError && e.status === 403) {
       permissionHint.value = '该网关账号权限不足：供应商列表需要网关 super_admin 角色。到节点页重新探测可确认当前角色。'
     } else {
-      error.value = e?.message || '加载失败'
+      error.value = apiError(e, 'errors.loadGatewayFailed')
     }
   } finally {
     loading.value = false
@@ -146,7 +148,7 @@ async function toggle(p: GatewayProvider) {
     if (e instanceof ApiError && e.status === 403) {
       error.value = '需要 pocket admin 角色 + 网关 super_admin 才能变更供应商状态'
     } else {
-      error.value = e?.message || `${verb}失败`
+      error.value = apiError(e, 'errors.operateFailed')
     }
   } finally {
     busy.value = null

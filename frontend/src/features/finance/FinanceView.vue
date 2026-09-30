@@ -97,10 +97,12 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { financeApi, type FinanceStats, type FinanceTransaction, type FinanceParseResult } from '../../api/finance'
 import { useToast } from '../../composables/useToast'
+import { useApiError } from '../../composables/useApiError'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
 defineOptions({ name: 'FinanceView' })
 
+const apiError = useApiError()
 const toast = useToast()
 const loading = ref(false)
 const error = ref('')
@@ -158,7 +160,7 @@ async function load() {
       statsError.value = '统计加载失败，以下金额可能不准确'
     }
   } catch (e: any) {
-    error.value = e?.message || '加载失败'
+    error.value = apiError(e, 'errors.loadFinanceFailed')
   } finally {
     loading.value = false
   }
@@ -201,7 +203,7 @@ async function quickConfirm() {
     quickText.value = ''
     await load()
   } catch (e: any) {
-    toast.error(e?.message || '入账失败')
+    toast.error(apiError(e, 'errors.operateFailed'))
   }
 }
 
@@ -211,7 +213,7 @@ async function remove(tx: FinanceTransaction) {
     txs.value = txs.value.filter((t) => t.id !== tx.id)
     await load()
   } catch (e: any) {
-    toast.error(e?.message || '删除失败')
+    toast.error(apiError(e, 'errors.operateFailed'))
   }
 }
 

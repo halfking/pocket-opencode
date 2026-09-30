@@ -156,6 +156,7 @@ import { ref, computed, onMounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
 import { createScrollHideChrome } from '../../composables/useScrollHideChrome'
+import { useApiError } from '../../composables/useApiError'
 import { saveSettingLocalFirst } from '../../native/config-sync/runtime'
 
 const router = useRouter()
@@ -275,6 +276,8 @@ const saving = ref(false)
 
 type StatusKind = 'info' | 'success' | 'error'
 const status = ref<{ kind: StatusKind; text: string } | null>(null)
+/** 后端/网络原文（如 "Failed to fetch"）不直接上屏，统一归一为可读文案。 */
+const apiError = useApiError()
 
 const canTest = computed(() => form.baseURL.trim().length > 0)
 const canSave = computed(
@@ -293,10 +296,17 @@ onMounted(async () => {
     // 目录已有缓存模型时直接可作为勾选候选
     if (cfg.models.length > 0) catalogModels.value = cfg.models
   } catch (err: any) {
-    setStatus('error', '加载失败：' + (err?.message || err))
+    setStatus('error', apiError(err, 'errors.loadGatewayFailed'), 0)
   }
 })
 
+/**
+ * ttl 默认 5000ms 自动消失。
+ * 但「测试连接」的**结果本身就是这条提示的内容** —— 5 秒后自动清空，
+ * 用户扫一眼页面再回来就什么都不剩，还得重新点一次。
+ * 真机实测（360dp）：失败提示在 ~5s 后消失，页面回到无任何状态的样子。
+ * 所以结果类状态一律传 ttl=0（常驻到下一次操作），只有纯提示性的才用默认值。
+ */
 function setStatus(kind: StatusKind, text: string, ttl = 5000) {
   status.value = { kind, text }
   if (ttl > 0) {
@@ -319,7 +329,7 @@ async function onTest() {
     }
     const r: GatewayTestResult = await api.testGateway()
     if (r.ok) {
-      setStatus('success', `✓ 连通 (HTTP ${r.status}) · ${r.models?.length || 0} 个模型`)
+      setStatus('success', `✓ 连通 (HTTP ${r.status}) · ${r.models?.length || 0} 个模型`, 0)
       try {
         const cfg = await api.getGatewayConfig()
         Object.assign(original, cfg, { models: cfg.models ?? [], preferredModels: cfg.preferredModels ?? [] })
@@ -327,10 +337,11 @@ async function onTest() {
         if ((r.models ?? []).length > 0) catalogModels.value = r.models ?? catalogModels.value
       } catch {}
     } else {
-      setStatus('error', `✗ 失败：${r.error || r.response || 'HTTP ' + r.status}`)
+      setStatus('error', `✗ ${apiError(r, 'errors.gatewayUnreachable')}`, 0)
     }
   } catch (err: any) {
-    setStatus('error', '✗ ' + (err?.message || String(err)))
+    // 原来是 `'✗ ' + err.message`，真机上直接把 "Failed to fetch" 摆给用户
+    setStatus('error', `✗ ${apiError(err, 'errors.gatewayUnreachable')}`, 0)
   } finally {
     testing.value = false
   }
@@ -341,10 +352,10 @@ async function onSave() {
   try {
     const models = catalogModels.value.length > 0 ? catalogModels.value : original.models
     await persistGateway(models)
-    setStatus('success', '✓ 已保存到本地，并同步服务端')
+    setStatus('success', '✓ 已保存到本地，并同步服务端', 0)
     setTimeout(() => router.back(), 800)
   } catch (err: any) {
-    setStatus('error', '保存失败：' + (err?.message || err))
+    setStatus('error', `✗ ${apiError(err, 'errors.saveFailed')}`, 0)
   } finally {
     saving.value = false
   }
@@ -501,7 +512,7 @@ function goBack() {
   width: 100%;
   padding: 12px 14px;
   font-size: 14px;
-  font-family: 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   background: var(--bg-card);
   color: var(--text-primary);
   border: 1px solid var(--border);
@@ -521,7 +532,7 @@ function goBack() {
 }
 
 .form-hint code {
-  font-family: 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   background: var(--bg-subtle);
   padding: 1px 5px;
   border-radius: 4px;
@@ -550,7 +561,7 @@ function goBack() {
 
 .key-row .form-input {
   flex: 1;
-  font-family: 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
 }
 
 .key-toggle {

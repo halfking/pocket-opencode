@@ -231,7 +231,12 @@ onMounted(async () => {
 .hint, .muted { margin: 0; color: var(--text-muted); font-size: 12px; }
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
 .input { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2); background: var(--bg-base); color: var(--text-primary); }
-.dates { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+/* 真机（360dp）实测：grid `1fr` 实际是 `minmax(auto, 1fr)`，auto 下限取子项 min-content，
+   而 `<input type="date">` 在 Android WebView 里的 min-content 约 180px，
+   两列各撑到 180px + gap 8 = 368px，比容器 332px 多出 36px ——「结束日期」整块溢出屏幕。
+   改用 minmax(0, 1fr) 允许列窄于输入框的固有宽度，并给输入框 min-width: 0。 */
+.dates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+.dates .input { min-width: 0; width: 100%; }
 .actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
 .primary, .ghost, .danger { border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); cursor: pointer; }
 .primary { border: 0; background: var(--brand-primary); color: var(--text-inverse); font-weight: 600; }

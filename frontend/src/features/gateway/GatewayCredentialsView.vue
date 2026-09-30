@@ -81,8 +81,10 @@ import { ApiError } from '../../api/http'
 import * as gw from '../../api/gateway'
 import type { GatewayCredential } from '../../api/gateway'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
+import { useApiError } from '../../composables/useApiError'
 import { useConfirm } from '../../composables/useConfirm'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -104,7 +106,7 @@ async function load() {
     credentials.value = res.credentials ?? []
     meta.value = res.meta ?? null
   } catch (e: any) {
-    error.value = e?.message || '加载失败'
+    error.value = apiError(e, 'errors.loadGatewayFailed')
   } finally {
     loading.value = false
   }
@@ -145,7 +147,7 @@ async function act(c: GatewayCredential, kind: 'promote' | 'demote' | 'disable' 
     if (e instanceof ApiError && e.status === 403) {
       error.value = '需要 pocket admin 角色才能变更网关状态'
     } else {
-      error.value = e?.message || `${labels[kind]}失败`
+      error.value = apiError(e, 'errors.operateFailed')
     }
   } finally {
     busy.value = null

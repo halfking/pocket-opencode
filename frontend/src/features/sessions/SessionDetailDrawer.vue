@@ -21,7 +21,9 @@ import {
   type SessionStats,
 } from './useSessionEvents'
 import { downloadTextFile, DownloadUnsupportedError } from '../../utils/download'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const props = defineProps<{
   visible: boolean
   sessionId: string
@@ -193,7 +195,7 @@ async function exportMarkdown(): Promise<void> {
   flex: 0 0 auto;
   color: var(--text-muted);
   font-size: var(--text-xs);
-  font-family: 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
 }
 .stats-card {
   margin-bottom: var(--space-4);

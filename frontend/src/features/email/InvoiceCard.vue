@@ -110,7 +110,7 @@ const receivedLabel = computed(() => invoiceReceivedLabel(props.inv.emailDate, p
   display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap;
   font-size: 11px; color: var(--text-secondary);
 }
-.mono { font-family: 'SF Mono', Menlo, monospace; }
+.mono { font-family: var(--font-mono); }
 .cat-badge {
   padding: 2px 8px; border-radius: 999px; font-size: 10px;
   background: var(--bg-subtle); border: 1px solid var(--border);

@@ -124,8 +124,10 @@ import { ApiError } from '../../api/http'
 import * as gw from '../../api/gateway'
 import type { CredentialModelStatus, GatewayCredential, ModelEffectiveState } from '../../api/gateway'
 import { useConfirm } from '../../composables/useConfirm'
+import { useApiError } from '../../composables/useApiError'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -154,7 +156,7 @@ async function load() {
     cred.value = res.credentials?.[0] ?? null
     if (!cred.value) error.value = '未找到该凭据'
   } catch (e: any) {
-    error.value = e?.message || '加载失败'
+    error.value = apiError(e, 'errors.loadGatewayFailed')
   } finally {
     loading.value = false
   }
@@ -202,7 +204,7 @@ async function toggle(m: CredentialModelStatus, action: 'online' | 'offline') {
     if (e instanceof ApiError && e.status === 403) {
       error.value = '需要 pocket admin 角色才能变更模型状态'
     } else {
-      error.value = e?.message || `${verb}失败`
+      error.value = apiError(e, 'errors.operateFailed')
     }
   } finally {
     busyModel.value = null

@@ -240,7 +240,9 @@ import { isLocalTestAddress } from './providers'
 import { EmptyState } from '../../components'
 import { useToast } from '../../composables/useToast'
 import { useConfirm } from '../../composables/useConfirm'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const router = useRouter()
 const toast = useToast()
 const { confirm } = useConfirm()
@@ -301,7 +303,7 @@ async function loadAll() {
       loadError.value = sync.error
     }
   } catch (e: any) {
-    loadError.value = e?.message || '加载邮箱设置失败'
+    loadError.value = apiError(e, 'errors.loadEmailSettingsFailed')
   } finally {
     loading.value = false
   }
@@ -347,7 +349,7 @@ async function saveRules(a: EmailAccount) {
     Object.assign(a, updated)
     toast.success(`已保存「${a.displayName}」过滤策略（${payload.rules.length} 条）`)
   } catch (e: any) {
-    toast.error(e?.message || '保存过滤策略失败')
+    toast.error(apiError(e, 'errors.saveFailed'))
   } finally {
     savingRulesId.value = ''
   }
@@ -361,7 +363,7 @@ async function toggleEnabled(a: EmailAccount, enabled: boolean) {
     Object.assign(a, updated)
     toast.success(enabled ? `已启用 ${a.displayName}` : `已停用 ${a.displayName}`)
   } catch (e: any) {
-    toast.error(e?.message || '更新失败')
+    toast.error(apiError(e, 'errors.operateFailed'))
   }
 }
 
@@ -371,7 +373,7 @@ async function syncNow(a: EmailAccount) {
     const r = await emailApi.syncNow(a.id)
     toast.success(`同步完成：新邮件 ${r.new ?? 0} 封`)
   } catch (e: any) {
-    toast.error(e?.message || '同步失败')
+    toast.error(apiError(e, 'errors.operateFailed'))
   } finally {
     syncingId.value = ''
   }
@@ -383,7 +385,7 @@ async function testSmtp(a: EmailAccount) {
     const r = await emailApi.testSmtp(a.id)
     toast.success(`SMTP 测试通过：${r.smtp}`)
   } catch (e: any) {
-    toast.error(e?.message || 'SMTP 测试失败')
+    toast.error(apiError(e, 'errors.operateFailed'))
   } finally {
     testingId.value = ''
   }
@@ -405,7 +407,7 @@ async function removeAccount(a: EmailAccount) {
     accounts.value = accounts.value.filter((x) => x.id !== a.id)
     toast.success('已删除')
   } catch (e: any) {
-    toast.error(e?.message || '删除失败')
+    toast.error(apiError(e, 'errors.operateFailed'))
   }
 }
 
@@ -422,7 +424,7 @@ async function saveInterval(a: EmailAccount, raw: string) {
     Object.assign(a, updated)
     toast.success('已保存同步间隔')
   } catch (e: any) {
-    toast.error(e?.message || '保存失败')
+    toast.error(apiError(e, 'errors.saveFailed'))
   }
 }
 
@@ -477,7 +479,7 @@ async function doSaveVacation(a: EmailAccount, v: VacationReply) {
     delete vacDrafts.value[a.id]
     toast.success(`已保存「${a.displayName}」自动回复`)
   } catch (e: any) {
-    toast.error(e?.message || '保存自动回复失败')
+    toast.error(apiError(e, 'errors.saveFailed'))
   } finally {
     savingVacId.value = ''
   }

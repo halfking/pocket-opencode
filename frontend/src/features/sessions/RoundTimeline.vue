@@ -21,6 +21,7 @@ import { useToast } from '../../composables/useToast'
 import DiffBlock from '../../components/business/DiffBlock.vue'
 import JsonBlock from '../../components/base/JsonBlock.vue'
 import { extractDiffText } from '../../utils/diffParse.ts'
+import { useApiError } from '../../composables/useApiError'
 import {
   countRoundEvents,
   groupMessagesIntoRounds,
@@ -30,6 +31,7 @@ import {
   type TimelineMessageLike,
 } from './useSessionEvents'
 
+const apiError = useApiError()
 const props = defineProps<{
   messages: TimelineMessageLike[]
   /** round_index → round.completed 数据（事件可用时非空）。 */
@@ -328,7 +330,7 @@ function cachedDiffText(output: unknown): string | null {
                       </div>
                       <div v-if="c.error" class="tool-section error">
                         <div class="tool-section-title">错误</div>
-                        <pre>{{ c.error }}</pre>
+                        <pre>{{ apiError(c.error, 'errors.operateFailed') }}</pre>
                       </div>
                     </details>
                   </template>
@@ -556,7 +558,7 @@ function cachedDiffText(output: unknown): string | null {
 .tool-icon { font-size: var(--text-sm); }
 .tool-name {
   font-weight: var(--font-weight-semibold);
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
 }
 .tool-state {
@@ -574,7 +576,7 @@ function cachedDiffText(output: unknown): string | null {
   margin-left: var(--space-2);
   font-size: var(--text-xs);
   color: var(--text-muted);
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 .tool-section {
   margin-top: var(--space-2);
@@ -600,7 +602,7 @@ function cachedDiffText(output: unknown): string | null {
 .tool-section pre {
   margin: 0;
   font-size: var(--text-xs);
-  font-family: 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   white-space: pre-wrap;
   word-break: break-all;
   background: var(--bg-subtle);
@@ -615,7 +617,7 @@ function cachedDiffText(output: unknown): string | null {
   background: var(--bg-subtle);
   border-radius: var(--radius-sm);
   font-size: var(--text-xs);
-  font-family: 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   color: var(--text-secondary);
   white-space: pre-line;
   display: -webkit-box;
@@ -674,7 +676,7 @@ function cachedDiffText(output: unknown): string | null {
 }
 .markdown-body :deep(li) { margin: var(--space-1) 0; }
 .markdown-body :deep(code) {
-  font-family: 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
   background: var(--bg-subtle);
   padding: 1px 5px;

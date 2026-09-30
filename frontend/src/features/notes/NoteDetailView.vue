@@ -122,7 +122,9 @@ import { ErrorState } from '../../components'
 import { useAuthStore } from '../../stores/auth'
 import { useConfirm } from '../../composables/useConfirm'
 import { markListDirty } from '../../composables/list-scene-store'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const route = useRoute()
 const { confirm } = useConfirm()
 const router = useRouter()
@@ -178,7 +180,7 @@ async function load() {
     note.value = fetched
     if (fetched) await loadRelated(fetched)
   } catch (e: any) {
-    loadError.value = e?.message || '加载笔记失败，请稍后重试。'
+    loadError.value = apiError(e, 'errors.loadNotesFailed')
   } finally {
     loading.value = false
   }
@@ -237,7 +239,7 @@ async function reclassify() {
     reclassifyError.value = ''
   } catch (e: any) {
     console.warn('[note] 重新分类失败:', e)
-    reclassifyError.value = e?.message || '重新分类失败，请稍后重试'
+    reclassifyError.value = apiError(e, 'errors.operateFailed')
   } finally {
     reclassifying.value = false
   }
@@ -272,7 +274,7 @@ async function summarize() {
     bookkeepingMismatch.value = res.bookkeeping_mismatch ?? false
     if (!summary.value) summaryError.value = '模型未返回内容，请稍后重试'
   } catch (e: any) {
-    summaryError.value = e?.message || '总结生成失败（需要已配置 LLM 网关）'
+    summaryError.value = apiError(e, 'errors.summaryFailed')
   } finally {
     summarizing.value = false
   }
@@ -363,7 +365,7 @@ function formatTime(ms: number) {
   background: var(--bg-subtle);
   padding: 1px 6px;
   border-radius: var(--radius-sm);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
 }
 .markdown-body :deep(pre) {

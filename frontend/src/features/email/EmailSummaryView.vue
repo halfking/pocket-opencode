@@ -243,7 +243,7 @@ onMounted(loadByMode)
 .markdown :deep(ol) { padding-left: var(--space-5); margin: var(--space-2) 0; }
 .markdown :deep(li) { margin: 2px 0; }
 .markdown :deep(code) {
-  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-family: var(--font-mono);
   background: var(--bg-subtle);
   padding: 1px 4px;
   border-radius: 4px;

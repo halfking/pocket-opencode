@@ -293,7 +293,9 @@ async function requestCode() {
     debugCode.value = res.debug_code || ''
     startCooldown()
   } catch (e: any) {
-    error.value = e?.body?.error || e?.message || '发送验证码失败'
+    // 后端原文（e.body.error / e.message）可能是英文技术码，直接上屏用户无法据此行动
+    console.warn('[login] 发送验证码失败（原始信息）:', e?.body?.error || e?.message || e)
+    error.value = '发送验证码失败，请稍后重试'
   } finally {
     loading.value = false
   }
@@ -310,7 +312,8 @@ async function handleCodeLogin() {
     const res = await codeLogin(codeEmail.value, codeValue.value)
     await completeAuth(res.token, res.user, res.user_id, res.workspace_id)
   } catch (e: any) {
-    error.value = e?.body?.error || e?.message || '验证码登录失败'
+    console.warn('[login] 验证码登录失败（原始信息）:', e?.body?.error || e?.message || e)
+    error.value = '验证码登录失败，请确认验证码是否已过期'
   } finally {
     loading.value = false
   }
@@ -376,7 +379,8 @@ async function ssoLogin() {
     const url = await fetchSsoLoginUrl(redirectUrl)
     window.location.href = url
   } catch (e: any) {
-    error.value = `SSO 登录失败：${e?.message || e}`
+    console.warn('[login] SSO 登录失败（原始信息）:', e?.message || e)
+    error.value = 'SSO 登录失败，请稍后重试或改用密码登录'
     loading.value = false
   }
 }
@@ -417,7 +421,10 @@ async function unlock() {
     unlockPassword.value = ''
     router.replace(unlockRedirectPath(router.currentRoute.value.query))
   } catch (e: any) {
-    error.value = `解锁失败（主密码错误？）：${e.message || e}`
+    // 主密码错误和解锁机制异常对用户是同一件事：让他重输一次即可，
+    // 不必把内部异常信息（如 "Unsupported state or unable to authenticate data"）摆出来。
+    console.warn('[login] 解锁失败（原始信息）:', e?.message || e)
+    error.value = '解锁失败，请确认主密码是否正确'
   } finally {
     loading.value = false
   }
@@ -544,10 +551,14 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
         }
         error.value = '后端未部署认证接口'
       } else {
-        error.value = e.message || '登录失败'
+        // 不把 e.message（可能是 "Failed to fetch" / 英文技术码）抛给用户，
+        // 原始信息留档到控制台，界面上给可行动的领域文案。
+        console.warn('[login] 登录失败（原始信息）:', e?.message || e)
+        error.value = '登录失败，请检查网络连接与后端地址后重试'
       }
     } else {
-      error.value = e.message || '登录失败'
+      console.warn('[login] 登录失败（原始信息）:', e?.message || e)
+      error.value = '登录失败，请检查网络连接与后端地址后重试'
     }
   } finally {
     loading.value = false
@@ -832,7 +843,7 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
 }
 
 code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   background: var(--bg-subtle);
   padding: 2px 6px;
   border-radius: 4px;
