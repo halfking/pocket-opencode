@@ -3189,4 +3189,21 @@ Execute: incomplete input (code 1): , while compiling …COALESCE(NULLIF(old.sea
 
 在这两条之一做完之前，**不要**把它写成「已确认缺陷」，也**不要**改代码碰运气。
 
+### 4.35.1 ⚠️ 跨会话冲突面从 9 涨到 10（本轮新增 `server.go`）
+
+修 BUG-AE 动了 `backend/internal/server/server.go`，而**并发会话也在改同一个文件**。
+`check-main-overlap.mjs` 现在报 10 个重叠：
+
+```
+backend/internal/server/server.go            ← 本轮新增（BUG-AE）
+frontend/src/features/sessions/SessionListView.vue
+frontend/src/features/study/StudyHubView.vue
+frontend/src/locales/{de-DE,es-ES,fr-FR,ja-JP,ko-KR,pt-BR,zh-TW}.json
+```
+
+**后果**：主工作区不能快进；而且如果并发会话先提交 `server.go`，
+**BUG-AE 的方法白名单会被 revert 掉**（`TestInstances_RejectsNonGET` 会立刻红 ——
+这是本轮特意加回归锁的原因，它能替我们抓住这种回退）。
+**不要用 `git merge -f` 绕过。**
+
 
