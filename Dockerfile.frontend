@@ -3,6 +3,9 @@ WORKDIR /app
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend ./
+# This Dockerfile produces the Nginx Web app, whose /api path is same-origin.
+# The native Capacitor bundle uses build-mobile.mjs with an explicit API base.
+ENV MOBILE_ALLOW_EMPTY_API_BASE=1
 RUN npm run build
 
 FROM nginx:alpine

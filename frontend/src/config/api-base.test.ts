@@ -66,17 +66,16 @@ describe('resolveApiBase', () => {
     )
   })
 
-  it('empty override does not swallow the build default', () => {
-    // 取舍说明：真机 Capacitor 的 origin 是 https://localhost，「同源」等于本地壳，
-    // /api 必然打不到后端（收信/归类会 Failed to fetch）。所以空串 override
-    // 不清空构建默认值，而是继续用 buildDefault —— 代价是 ServerSelectView
-    // 的「与页面同源」在有构建默认值时并非字面意义上的同源，预览由
-    // previewServerBase 如实展示 buildDefault 而不是空地址。
+  it('uses explicit same-origin on Web but keeps the backend on a Capacitor shell', () => {
     assert.equal(
-      resolveApiBase({ override: '', buildDefault: 'https://build.example' }),
+      resolveApiBase({ override: '', buildDefault: 'https://build.example', pageOrigin: 'https://app.example' }),
+      '',
+    )
+    assert.equal(
+      resolveApiBase({ override: '', buildDefault: 'https://build.example', pageOrigin: 'http://localhost' }),
       'https://build.example',
     )
-    assert.equal(resolveApiBase({ override: '', buildDefault: '' }), '')
+    assert.equal(resolveApiBase({ override: '', buildDefault: '', pageOrigin: 'https://localhost' }), '')
   })
 
   it('missing override falls back to build default then origin', () => {
@@ -170,12 +169,37 @@ describe('isCapacitorShellOrigin / resolveRuntimeApiBase (BUG-J)', () => {
   })
 })
 
-describe('probeHealthz', () => {  it('accepts HTTP 200 with body ok', async () => {
+describe('probeHealthz', () => {
+  it('accepts HTTP 200 with body ok', async () => {
     const result = await probeHealthz('https://pocket.itestu.cn', async (input) => {
       assert.equal(String(input), 'https://pocket.itestu.cn/healthz')
       return new Response('ok', { status: 200 })
     })
     assert.deepEqual(result, { ok: true })
+  })
+
+  it('checks the API through the same-origin proxy when /healthz is only the frontend', async () => {
+    const requested: string[] = []
+    const result = await probeHealthz('http://localhost:4175/', async (input) => {
+      requested.push(String(input))
+      return requested.length === 1
+        ? new Response('frontend ok', { status: 200 })
+        : new Response('ok', { status: 200 })
+    })
+    assert.deepEqual(requested, [
+      'http://localhost:4175/healthz',
+      'http://localhost:4175/api/healthz',
+    ])
+    assert.deepEqual(result, { ok: true })
+  })
+
+  it('reports a failed API behind a healthy frontend', async () => {
+    const result = await probeHealthz('http://localhost:4175', async (input) =>
+      String(input).endsWith('/api/healthz')
+        ? new Response('upstream down', { status: 502 })
+        : new Response('frontend ok', { status: 200 }),
+    )
+    assert.deepEqual(result, { ok: false, error: 'HTTP 502' })
   })
 
   it('fails on non-ok body or network error', async () => {

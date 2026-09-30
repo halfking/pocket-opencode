@@ -133,4 +133,17 @@ describe('保存自定义地址后重载不得回落到 origin', () => {
     const outcome = resolveServerSave(choice, { buildDefault: '', pageOrigin: ORIGIN, storage })
     assert.equal(preview, outcome.persistValue)
   })
+
+  it('同源预览与保存按 Web 和 Capacitor 壳分别解析', () => {
+    const choice = { kind: 'origin', custom: '' }
+    const buildDefault = 'https://build.example'
+    const webOrigin = 'https://app.example'
+    const webStorage = memoryStorage()
+    assert.equal(previewServerBase(choice, buildDefault, webOrigin), '')
+    assert.equal(resolveServerSave(choice, { buildDefault, pageOrigin: webOrigin, storage: webStorage }).resolved, '')
+
+    const shellStorage = memoryStorage()
+    assert.equal(previewServerBase(choice, buildDefault, ORIGIN), buildDefault)
+    assert.equal(resolveServerSave(choice, { buildDefault, pageOrigin: ORIGIN, storage: shellStorage }).resolved, buildDefault)
+  })
 })
