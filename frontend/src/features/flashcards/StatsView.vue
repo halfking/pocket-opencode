@@ -126,12 +126,12 @@
           <span class="retention-num">{{ estimatedRetention.toFixed(1) }}%</span>
         </div>
         <p class="retention-hint">
-          t('flashcards.stats.retentionHint', {
+          {{ t('flashcards.stats.retentionHint', {
             again: ratingBreakdown.again,
             hard: ratingBreakdown.hard,
             good: ratingBreakdown.good,
             easy: ratingBreakdown.easy,
-          })
+          }) }}
         </p>
       </section>
     </main>
