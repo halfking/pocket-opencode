@@ -3533,10 +3533,16 @@ capacitor 壳 origin 下**回退到生产入口 `https://pocket.itestu.cn`**，�
 > 或在构建 shell 里显式 `VITE_API_BASE=http://127.0.0.1:8088`。**
 > 临时兜底：运行时用 `scripts/set-app-api-base.mjs` 写 `pocket_api_base` 覆盖
 > （`resolveRuntimeApiBase` 的第一优先级就是读它），无需重新构建。
+
+> **⚠️ 本节此前一条「另注」是错的，已撤回**：曾写「`build-mobile.mjs` 的 bundle sanity check
+> 没拦住空 base」。**这是误判**——当时只 grep 了 `index-<hash>.js` **一个** chunk，
+> 而 vite 本次产出 **119 个 chunk**，base 实际在 `index-Banbq3-P.js` 里，递归 grep 正确命中。
+> sanity check 一直是好的。「Failed to fetch」的真正原因只是那次构建**确实用了**
+> `.env.android-dev` 里连不上的 `192.168.31.20:8088`——这是构建的**正确**行为，不是缺陷。
 >
-> 另注：`build-mobile.mjs` 的 bundle sanity check（用 `grep -F` 找 base 字符串）这次**没有拦住**
-> 空 base——值得单独查（`grep` 跨平台/编码差异，或 check 只在某些分支跑），否则「构建成功」仍不等于
-> 「base 正确注入」，与 §4.40.6「构建成功≠内容已更新」是同一类风险。
+> **教训（比原结论更有价值）**：验证「base 有没有进 bundle」时**必须递归查 `dist/assets` 全部文件**
+> （`Select-String` 要对 `dist/assets/*.js` 全部匹配，或 `grep -rl`），只查单个 entry chunk 会
+> 得出「没注入」的错误结论——**差点把一次正确的构建保护机制误报成 bug**。
 
 
 
