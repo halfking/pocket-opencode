@@ -352,7 +352,12 @@
     }
   },
   "email": {
-    "dailySummary": "每日摘要"
+    "dailySummary": "每日摘要",
+    "fetchHintNetwork": "背景收信未完成，已顯示已同步郵件",
+    "fetchHintClassifierOff": "自動歸類服務未啟用，郵件已同步但未自動分類",
+    "fetchHintAuth": "登入狀態已失效，請重新登入",
+    "fetchHintUnavailable": "背景服務暫不可用，郵件已同步",
+    "fetchHintHttpError": "背景收信未完成（{code}），已顯示已同步郵件"
   },
   "errors": {
     "rssNotConfigured": "RSS 訂閱源尚未設定，請先新增一個訂閱源",

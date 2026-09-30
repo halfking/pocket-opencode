@@ -56,14 +56,16 @@ type llmGatewayState struct {
 //
 // 2026-09-30: 优先 POCKET_LLM_GATEWAY_URL env；未设置时回落到
 // opencode.DefaultLLMGatewayBaseURL（https://llm.kxpms.cn/v1）。APIKey
-// 同样 env-first：API Key 只读 POCKET_LLM_GATEWAY_API_KEY；preferred
-// 模型列表来自 opencode.DefaultLLMGatewayPreferredModels。
+// 同样 env-first，env 未注入时回落到内置的自家网关默认 key
+// （opencode.DefaultLLMGatewayAPIKey），这样全新实例不配 env 也能在设置页
+// 直接看到"已设置"并连通。preferred 模型列表来自
+// opencode.DefaultLLMGatewayPreferredModels。
 func defaultLLMGatewayState() llmGatewayState {
 	models := append([]string(nil), opencode.DefaultLLMGatewayPreferredModels...)
 	preferred := append([]string(nil), opencode.DefaultLLMGatewayPreferredModels...)
 	return llmGatewayState{
 		BaseURL:         canonicalGatewayURL(envOr("POCKET_LLM_GATEWAY_URL", opencode.DefaultLLMGatewayBaseURL)),
-		APIKey:          strings.TrimSpace(os.Getenv("POCKET_LLM_GATEWAY_API_KEY")),
+		APIKey:          strings.TrimSpace(envOr("POCKET_LLM_GATEWAY_API_KEY", opencode.DefaultLLMGatewayAPIKey)),
 		Models:          models,
 		Format:          defaultGatewayFormat,
 		PreferredModels: preferred,
@@ -367,10 +369,20 @@ func (s *Server) syncGatewayUserSetting(r *http.Request, workspaceID string, st 
 		log.Printf("[llm-gateway] sync user setting: marshal payload: %v", err)
 		return
 	}
+	// usersetting 用 unix 秒做 LWW（lww.go 的 DecidePut：相同则保留服务端行）。
+	// 直接写 time.Now().Unix() 会在"同一秒内已有一次写入"时被静默丢弃——
+	// 表现为保存成功但读回旧值，正是本次要消灭的现象。抬到比现有行新 1 秒，
+	// 保证同秒连写也一定生效。
+	updatedAt := time.Now().Unix()
+	if existing, err := s.userSettings.Get(userID, workspaceID, "llm_gateway", "default"); err == nil && existing != nil {
+		if existing.UpdatedAt >= updatedAt {
+			updatedAt = existing.UpdatedAt + 1
+		}
+	}
 	if _, err := s.userSettings.Put(usersetting.Record{
 		UserID: userID, WorkspaceID: workspaceID,
 		Namespace: "llm_gateway", ID: "default",
-		Payload: payload, Secret: st.APIKey, UpdatedAt: time.Now().Unix(),
+		Payload: payload, Secret: st.APIKey, UpdatedAt: updatedAt,
 	}); err != nil {
 		log.Printf("[llm-gateway] sync user setting failed (non-fatal): %v", err)
 	}

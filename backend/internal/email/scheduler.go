@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -76,6 +77,27 @@ type Scheduler struct {
 
 	lastTick atomic.Int64
 	nextTick atomic.Int64
+
+	// nextPipeline 下一次每日流水线的触发时刻（unix 秒），0 = 未排期。
+	// 用于运维观测「定时到底排到几点」，与 LastTickUnix 对称。
+	nextPipeline atomic.Int64
+
+	// startMu 保护 started / startCtx。SetPipelineRunner 允许在 Start 之后
+	// 调用（cmd/pocketd 里 server 实例晚于 scheduler 构造），因此「注入」和
+	// 「已启动」是两个独立事件，需要在同一把锁下判定，避免重复起 loop。
+	startMu      sync.Mutex
+	started      bool
+	startCtx     context.Context
+	pipelineOnce sync.Once
+	nowFn        func() time.Time
+}
+
+// now 返回当前时间；测试可替换 nowFn 驱动定时触发。
+func (s *Scheduler) now() time.Time {
+	if s.nowFn != nil {
+		return s.nowFn()
+	}
+	return time.Now()
 }
 
 // OAuthProviderConfig describes how to refresh tokens for a given provider.
@@ -110,6 +132,7 @@ func NewScheduler(store *Store, fetcher *Fetcher, enabled bool) *Scheduler {
 		providers: make(map[string]OAuthProviderConfig),
 		stop:      make(chan struct{}),
 		enabled:   enabled,
+		nowFn:     time.Now,
 	}
 	s.tzOffsetSec.Store(int64(defaultTimezoneOffsetSec))
 	return s
@@ -151,9 +174,41 @@ func (s *Scheduler) SetIntentExecutor(executor IntentExecutor) {
 
 // SetPipelineRunner 注入每日流水线执行器；hour<0 表示关闭定时触发
 // （手动 API 仍可用）。不注入 runner 时 loop 不启动。
+//
+// 允许在 Start() 之后调用：cmd/pocketd 里 emailScheduler 先 Start()，
+// server 实例（含流水线依赖）稍后才构造完毕。若此时才注入 runner，这里
+// 直接补起 pipelineLoop，避免「配好了却永远不触发」的死代码。
 func (s *Scheduler) SetPipelineRunner(runner PipelineRunner, hour int) {
+	s.startMu.Lock()
 	s.pipelineRunner = runner
 	s.pipelineHour = hour
+	started := s.started
+	ctx := s.startCtx
+	s.startMu.Unlock()
+
+	if runner == nil || hour < 0 {
+		return
+	}
+	if !started {
+		return // Start() 会按当时的依赖状态决定是否起 loop
+	}
+	s.startPipelineLoop(ctx)
+}
+
+// startPipelineLoop 幂等起每日流水线 loop（pipelineOnce 保证只起一个）。
+func (s *Scheduler) startPipelineLoop(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.pipelineOnce.Do(func() {
+		log.Printf("[email/scheduler] daily pipeline runner injected (hour=%d)", s.pipelineHour)
+		go s.pipelineLoop(ctx)
+	})
+}
+
+// NextPipelineUnix 返回下一次每日流水线的触发时刻（unix 秒）；0 = 未排期。
+func (s *Scheduler) NextPipelineUnix() int64 {
+	return s.nextPipeline.Load()
 }
 
 // SetTimezoneOffset 设置用户时区偏移（秒），用于 DailySummary 的"日"边界。
@@ -173,6 +228,10 @@ func (s *Scheduler) Start(ctx context.Context) {
 		log.Printf("[email/scheduler] disabled via cfg.EmailFetchEnabled=false")
 		return
 	}
+	s.startMu.Lock()
+	s.started = true
+	s.startCtx = ctx
+	s.startMu.Unlock()
 	// Fetch polling only makes sense with an IMAP fetcher; deployments without
 	// one (intent-only / summary-only scheduler, tests) must not spin a ticker
 	// whose tick() would be a no-op. The other loops already gate themselves on
@@ -191,7 +250,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 		go s.refreshLoop(ctx)
 	}
 	if s.pipelineRunner != nil && s.pipelineHour >= 0 {
-		go s.pipelineLoop(ctx)
+		s.startPipelineLoop(ctx)
 	}
 }
 
@@ -609,30 +668,42 @@ func (s *Scheduler) tick(ctx context.Context) {
 
 // pipelineLoop 每日在 pipelineHour 点（本地时区）触发一轮完整流水线。
 // 与 dailySummaryLoop 相同的 nextTime 模式：触发后立即排下一天。
+//
+// 等待时长用注入时钟 s.now() 计算（而不是 time.Until），测试可以替换 nowFn
+// 把触发点拉到几百毫秒内，从而真正验证「到点会跑」而不必等到第二天。
 func (s *Scheduler) pipelineLoop(ctx context.Context) {
 	for {
+		s.startMu.Lock()
 		hour := s.pipelineHour
-		if hour < 0 {
+		runner := s.pipelineRunner
+		s.startMu.Unlock()
+		if runner == nil || hour < 0 {
 			return
 		}
 		if hour > 23 {
 			hour = 23
 		}
-		next := nextTime(hour, 0, 0)
+		next := nextTimeAt(s.now(), hour, 0, 0)
+		s.nextPipeline.Store(next.Unix())
 		log.Printf("[email/scheduler] pipeline scheduled at %s", next.Format(time.RFC3339))
+		delay := next.Sub(s.now())
+		if delay < 0 {
+			delay = 0
+		}
 		select {
 		case <-s.stop:
 			return
 		case <-ctx.Done():
 			return
-		case <-time.After(time.Until(next)):
+		case <-time.After(delay):
 		}
 		runCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		rep := s.pipelineRunner.RunEmailPipeline(runCtx)
+		rep := runner.RunEmailPipeline(runCtx)
 		cancel()
 		if rep != nil && len(rep.Errors) > 0 {
 			log.Printf("[email/scheduler] pipeline finished with %d errors: %v", len(rep.Errors), rep.Errors)
 		}
+		s.nextPipeline.Store(0)
 	}
 }
 
@@ -794,7 +865,11 @@ func (s *Scheduler) summarizeUser(ctx context.Context, userID, workspaceID, date
 }
 
 func nextTime(hour, min, sec int) time.Time {
-	now := time.Now()
+	return nextTimeAt(time.Now(), hour, min, sec)
+}
+
+// nextTimeAt 是 nextTime 的可注入时钟版本（pipelineLoop 与测试共用）。
+func nextTimeAt(now time.Time, hour, min, sec int) time.Time {
 	next := time.Date(now.Year(), now.Month(), now.Day(), hour, min, sec, 0, now.Location())
 	if !next.After(now) {
 		next = next.Add(24 * time.Hour)

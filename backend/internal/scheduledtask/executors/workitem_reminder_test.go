@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -27,25 +28,43 @@ type fakeWorkItemStore struct {
 	cleared   map[string]int64
 	parts     map[string][]task.Participant
 	listErr   error
+	// askedWS is the workspace every scan was issued against, and clearedWS /
+	// listedWS record the workspace each per-item write used. They are the only
+	// way to see which tenant the executor actually touched.
+	askedWS    string
+	scanCall   int
+	askedLimit int
+	clearedWS  map[string]string
+	listedWS   map[string]string
 }
 
 func newFakeStore() *fakeWorkItemStore {
-	return &fakeWorkItemStore{cleared: map[string]int64{}, parts: map[string][]task.Participant{}}
+	return &fakeWorkItemStore{
+		cleared:   map[string]int64{},
+		parts:     map[string][]task.Participant{},
+		clearedWS: map[string]string{},
+		listedWS:  map[string]string{},
+	}
 }
 
-func (f *fakeWorkItemStore) DueTaskReminders(_ context.Context, _ string, _ int64, _ int) ([]task.Task, error) {
+func (f *fakeWorkItemStore) DueTaskReminders(_ context.Context, wsID string, _ int64, limit int) ([]task.Task, error) {
+	f.askedWS = wsID
+	f.askedLimit = limit
+	f.scanCall++
 	return f.due, f.dueErr
 }
 
-func (f *fakeWorkItemStore) ClearTaskRemindAt(_ context.Context, id, _ string, next int64) error {
+func (f *fakeWorkItemStore) ClearTaskRemindAt(_ context.Context, id, wsID string, next int64) error {
 	f.cleared[id] = next
+	f.clearedWS[id] = wsID
 	return nil
 }
 
-func (f *fakeWorkItemStore) ListParticipants(_ context.Context, id, _ string) ([]task.Participant, error) {
+func (f *fakeWorkItemStore) ListParticipants(_ context.Context, id, wsID string) ([]task.Participant, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
+	f.listedWS[id] = wsID
 	if p, ok := f.parts[id]; ok {
 		return p, nil
 	}
@@ -106,6 +125,7 @@ func num(t *testing.T, out map[string]any, key string) int {
 }
 
 func TestWorkItemReminderFiresDueReminder(t *testing.T) {
+	pinServerZone(t)
 	store := newFakeStore()
 	fireAt := recent(60)
 	store.due = []task.Task{{ID: "t-1", Title: "Ship P3", OwnerID: "alice", RemindAt: fireAt}}
@@ -162,8 +182,25 @@ func windowAroundNow() (task.QuietWindow, int) {
 	}, nowMin
 }
 
+// pinServerZone fixes the server's local zone for the duration of a test.
+//
+// The executor resolves do-not-disturb in the owner's zone, and with no stored
+// preference that is the server's. On a UTC+8 machine the *server* zone is
+// eight hours away from the UTC minute-of-day these fixtures are written in,
+// so without this they fail by clock rather than by logic — which is the same
+// hidden UTC assumption the production bug came from. The non-UTC behaviour
+// itself is covered in workitem_reminder_quiet_test.go, which drives the zone
+// through user settings rather than through the machine.
+func pinServerZone(t *testing.T) {
+	t.Helper()
+	orig := time.Local
+	time.Local = time.UTC
+	t.Cleanup(func() { time.Local = orig })
+}
+
 // A reminder inside quiet hours is moved, not fired and not dropped.
 func TestWorkItemReminderDefersInsideQuietHours(t *testing.T) {
+	pinServerZone(t)
 	store := newFakeStore()
 	window, _ := windowAroundNow()
 	fireAt := recent(60) // one minute ago → inside the ±30m window
@@ -203,6 +240,7 @@ func TestWorkItemReminderDefersInsideQuietHours(t *testing.T) {
 
 // Quiet hours disabled means the reminder fires at its own time.
 func TestWorkItemReminderFiresWhenQuietHoursDisabled(t *testing.T) {
+	pinServerZone(t)
 	store := newFakeStore()
 	window, _ := windowAroundNow()
 	store.due = []task.Task{{ID: "t-1", Title: "Late", OwnerID: "alice", RemindAt: recent(60)}}
@@ -240,6 +278,7 @@ func TestWorkItemReminderSilentWhenNothingIsDue(t *testing.T) {
 
 // One failing work item must not take the rest of the batch down.
 func TestWorkItemReminderBatchSurvivesOneFailure(t *testing.T) {
+	pinServerZone(t)
 	store := newFakeStore()
 	store.due = []task.Task{
 		{ID: "bad", Title: "Bad", OwnerID: "alice", RemindAt: recent(60)},
@@ -266,6 +305,7 @@ func TestWorkItemReminderBatchSurvivesOneFailure(t *testing.T) {
 // A dispatch failure is logged, not propagated: the reminder already fired, so
 // failing the run would make the scheduler retry a write that succeeded.
 func TestWorkItemReminderNotificationFailureIsSwallowed(t *testing.T) {
+	pinServerZone(t)
 	store := newFakeStore()
 	store.due = []task.Task{{ID: "t-1", Title: "Ship", OwnerID: "alice", RemindAt: recent(60)}}
 	notif := &fakeWorkNotifier{err: errors.New("channel down")}
@@ -282,6 +322,7 @@ func TestWorkItemReminderNotificationFailureIsSwallowed(t *testing.T) {
 // A nil notification client (remote-only / notifycenter not ready) must not
 // panic and must still fire the event.
 func TestWorkItemReminderToleratesNilNotifier(t *testing.T) {
+	pinServerZone(t)
 	store := newFakeStore()
 	store.due = []task.Task{{ID: "t-1", Title: "Ship", OwnerID: "alice", RemindAt: recent(60)}}
 	ex := NewWorkItemReminderExecutor(store, nil)
@@ -334,6 +375,7 @@ func TestWorkItemReminderPropagatesScanFailure(t *testing.T) {
 // notification volume when a deployment turns every past-due row into a
 // backlog: without it, ten thousand stale rows become ten thousand pushes.
 func TestWorkItemReminderRetiresStaleReminders(t *testing.T) {
+	pinServerZone(t)
 	store := newFakeStore()
 	store.due = []task.Task{
 		{ID: "ancient", Title: "Old", OwnerID: "alice", RemindAt: recent(72 * 3600)},
@@ -391,6 +433,7 @@ func TestWorkItemReminderStaleBeatsQuietHours(t *testing.T) {
 // Setting the bound to 0 disables it, which is how a deployment that genuinely
 // wants every past-due row to fire can opt in.
 func TestWorkItemReminderStaleBoundIsConfigurable(t *testing.T) {
+	pinServerZone(t)
 	store := newFakeStore()
 	store.due = []task.Task{{ID: "ancient", Title: "Old", OwnerID: "alice", RemindAt: recent(72 * 3600)}}
 	ex := NewWorkItemReminderExecutor(store, &fakeWorkNotifier{})
@@ -405,5 +448,132 @@ func TestWorkItemReminderStaleBoundIsConfigurable(t *testing.T) {
 	}
 	if len(store.events) != 1 {
 		t.Errorf("with the bound disabled the reminder should fire, got %d events", len(store.events))
+	}
+}
+
+// --- tenancy (B-4) ---
+
+// The payload must not be able to point the executor at another tenant. It
+// used to: `wsID := p.WorkspaceID` won over the scheduled task's own workspace,
+// so any authenticated user could aim their reminder job at somebody else's
+// workspace and have it write events and push notifications over there.
+func TestWorkItemReminderIgnoresPayloadWorkspace(t *testing.T) {
+	pinServerZone(t)
+	store := newFakeStore()
+	store.due = []task.Task{{ID: "t-1", Title: "Ship", OwnerID: "alice", WorkspaceID: "ws-1", RemindAt: recent(60)}}
+	store.parts["t-1"] = []task.Participant{{UserID: "alice", Role: task.RoleOwner}}
+	notif := &fakeWorkNotifier{}
+	ex := NewWorkItemReminderExecutor(store, notif)
+
+	st := schedTask()
+	st.Payload = json.RawMessage(`{"workspace_id":"ws-victim","user_id":"mallory","limit":50}`)
+
+	if _, err := ex.Execute(context.Background(), st); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if store.askedWS != "ws-1" {
+		t.Errorf("scanned workspace %q, want ws-1 (the scheduled task's own tenant)", store.askedWS)
+	}
+	for id, ws := range store.clearedWS {
+		if ws != "ws-1" {
+			t.Errorf("remind_at of %s was cleared in workspace %q, want ws-1", id, ws)
+		}
+	}
+	for id, ws := range store.listedWS {
+		if ws != "ws-1" {
+			t.Errorf("participants of %s were read in workspace %q, want ws-1", id, ws)
+		}
+	}
+	for _, ev := range store.events {
+		if ev.WorkspaceID != "ws-1" {
+			t.Errorf("event written in workspace %q, want ws-1", ev.WorkspaceID)
+		}
+	}
+	for _, ev := range notif.events {
+		if ev.WorkspaceID != "ws-1" {
+			t.Errorf("notification dispatched in workspace %q, want ws-1", ev.WorkspaceID)
+		}
+	}
+	// The payload is still allowed to lower the batch, which is a scheduling
+	// knob rather than a permission.
+	if store.askedLimit != ex.batch {
+		t.Errorf("limit = %d, want the batch cap %d", store.askedLimit, ex.batch)
+	}
+}
+
+// A payload limit may shrink the tick but never grow it past the batch cap:
+// the cap is what stops an outage backlog returning as one huge burst.
+func TestWorkItemReminderPayloadLimitCannotExceedBatch(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		limit   int
+		wantCap bool
+	}{
+		{"a client asking for 200", 200, true},
+		{"a client asking for the exact batch size", 50, true},
+		{"a client asking for less", 5, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore()
+			ex := NewWorkItemReminderExecutor(store, &fakeWorkNotifier{})
+			st := schedTask()
+			st.Payload = json.RawMessage(`{"limit":` + strconv.Itoa(tc.limit) + `}`)
+
+			if _, err := ex.Execute(context.Background(), st); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if tc.wantCap && store.askedLimit > ex.batch {
+				t.Errorf("payload raised the batch to %d, cap is %d", store.askedLimit, ex.batch)
+			}
+			if !tc.wantCap && store.askedLimit != tc.limit {
+				t.Errorf("limit = %d, want the requested %d", store.askedLimit, tc.limit)
+			}
+		})
+	}
+}
+
+// A row that claims a different workspace than the job is never written,
+// retired or notified — the scan is already scoped, so this can only happen if
+// that scoping is ever broken, and then it must fail closed.
+func TestWorkItemReminderSkipsRowFromAnotherWorkspace(t *testing.T) {
+	pinServerZone(t)
+	store := newFakeStore()
+	store.due = []task.Task{{ID: "foreign", Title: "Not mine", OwnerID: "victim", WorkspaceID: "ws-victim", RemindAt: recent(60)}}
+	notif := &fakeWorkNotifier{}
+	ex := NewWorkItemReminderExecutor(store, notif)
+
+	res, err := ex.Execute(context.Background(), schedTask())
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(store.events) != 0 {
+		t.Errorf("a row outside the job's workspace must not be written, got %+v", store.events)
+	}
+	if len(store.cleared) != 0 {
+		t.Errorf("a row outside the job's workspace must not be retired, got %v", store.cleared)
+	}
+	if len(notif.events) != 0 {
+		t.Errorf("a row outside the job's workspace must not notify")
+	}
+	out := decode(t, res)
+	if num(t, out, "fired") != 0 || num(t, out, "notified") != 0 {
+		t.Errorf("result = %+v, want nothing fired", out)
+	}
+}
+
+// No workspace on the job means no scan: guessing a default tenant would read
+// — and write — a workspace the job was never granted.
+func TestWorkItemReminderFailsClosedWithoutWorkspace(t *testing.T) {
+	store := newFakeStore()
+	ex := NewWorkItemReminderExecutor(store, &fakeWorkNotifier{})
+
+	st := schedTask()
+	st.WorkspaceID = ""
+
+	if _, err := ex.Execute(context.Background(), st); err == nil {
+		t.Fatal("a scheduled task with no workspace must fail, not default to somebody's tenant")
+	}
+	if store.scanCall != 0 {
+		t.Errorf("the store was queried %d times despite the missing workspace", store.scanCall)
 	}
 }

@@ -55,7 +55,9 @@ if [ -f "$ROOT_ENV" ]; then
   GW_KEY="$(read_env_key POCKET_LLM_GATEWAY_API_KEY)"
   export POCKET_LLM_GATEWAY_URL="${POCKET_LLM_GATEWAY_URL:-$GW_URL}"
   export POCKET_LLM_GATEWAY_API_KEY="${POCKET_LLM_GATEWAY_API_KEY:-$GW_KEY}"
-  echo "AI 网关: ${POCKET_LLM_GATEWAY_URL:-<未配置>} (key: ${POCKET_LLM_GATEWAY_API_KEY:+已注入})"
+  # env 没注入时 pocketd 会回落到内置默认网关（opencode.DefaultLLMGateway*），
+  # 这里照实打印来源，别再显示成"未配置"——那会让人以为对话不可用。
+  echo "AI 网关: ${POCKET_LLM_GATEWAY_URL:-https://llm.kxpms.cn/v1 (内置默认)} (key: ${POCKET_LLM_GATEWAY_API_KEY:+env 已注入}${POCKET_LLM_GATEWAY_API_KEY:-内置默认})"
 fi
 
 # 私网/loopback 放行：本地 dev 环境有时需要连内网 AI 网关（如 192.168.x.x），

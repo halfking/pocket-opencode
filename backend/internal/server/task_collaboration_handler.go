@@ -363,6 +363,70 @@ func (s *Server) appendWorkItemEvent(ctx context.Context, taskID, wsID, eventTyp
 // and swallowed, because the comment and the delegation have already been
 // persisted and reporting 500 would invite the client to retry a write that
 // actually succeeded.
+// notifyWorkItemStatusChange records a status transition in the activity
+// stream and notifies the people §4.2 names.
+//
+// This is the producer that was missing. `NotificationKind` has mapped
+// `status_changed` and `completed` to notification kinds since P3, and
+// NotifyRecipients has decided who hears about them, but nothing ever wrote
+// either event: a task could be completed by a teammate and every participant
+// would be told nothing at all. The original requirement ("包括通知") was met on
+// paper only.
+//
+// Both steps are best effort. The status is already persisted by the time this
+// runs, so failing the request would make the client retry a write that
+// succeeded; losing the notification is bad, losing the update is worse.
+func (s *Server) notifyWorkItemStatusChange(ctx context.Context, before, after *task.Task, wsID string) {
+	if before == nil || after == nil || s.taskStore == nil {
+		return
+	}
+	eventType := task.StatusChangeEventType(before.Status, after.Status)
+	if eventType == "" {
+		return
+	}
+	// The actor is whoever is making the request, never a body field. When
+	// there is no request context (a scheduler, a test) the owner is the best
+	// available attribution; an empty actor would only cost one extra
+	// notification, since NotifyRecipients then excludes nobody.
+	ev, err := s.appendWorkItemEvent(ctx, after.ID, wsID, eventType, s.statusChangeActor(ctx, after),
+		task.EventPayload{TaskTitle: after.Title, Status: after.Status}, "")
+	if err != nil {
+		log.Printf("[work_item] status change event for %s failed: %v", after.ID, err)
+		return
+	}
+	parts, err := s.taskStore.ListParticipants(ctx, after.ID, wsID)
+	if err != nil {
+		log.Printf("[work_item] participants of %s unavailable, notifying owner only: %v", after.ID, err)
+		parts = nil
+	}
+	s.dispatchWorkItemNotification(ctx, after, parts, ev)
+}
+
+// statusChangeActor is the user credited with the change. PATCH runs in the
+// caller's request context, and the actor is deliberately not taken from the
+// body.
+func (s *Server) statusChangeActor(ctx context.Context, t *task.Task) string {
+	if s == nil || t == nil {
+		return ""
+	}
+	if id, ok := ctx.Value(actorContextKey{}).(string); ok {
+		return strings.TrimSpace(id)
+	}
+	// No request context (a scheduler or a test): the owner is the best
+	// available attribution, and an empty actor only costs one extra
+	// notification.
+	return strings.TrimSpace(t.OwnerID)
+}
+
+// actorContextKey carries the authenticated user id for helpers that are not
+// handed the *http.Request.
+type actorContextKey struct{}
+
+// withActor records the authenticated user id on ctx.
+func withActor(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, actorContextKey{}, userID)
+}
+
 func (s *Server) dispatchWorkItemNotification(ctx context.Context, t *task.Task, parts []task.Participant, ev task.WorkItemEvent) {
 	if s.notifySvc == nil {
 		return

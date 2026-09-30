@@ -352,7 +352,12 @@
     }
   },
   "email": {
-    "dailySummary": "Daily digest"
+    "dailySummary": "Daily digest",
+    "fetchHintNetwork": "Background fetching did not finish; showing synced messages",
+    "fetchHintClassifierOff": "Auto-categorization is off; messages synced but not categorized",
+    "fetchHintAuth": "Your session expired. Please sign in again.",
+    "fetchHintUnavailable": "Background service unavailable; messages synced",
+    "fetchHintHttpError": "Background fetch incomplete ({code}); messages synced"
   },
   "errors": {
     "rssNotConfigured": "No RSS feed configured yet. Add a feed to get started.",

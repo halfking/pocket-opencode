@@ -431,7 +431,11 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 			fromAddr = m.Envelope.From[0].Addr()
 			fromName = m.Envelope.From[0].Name
 		}
-		subject := m.Envelope.Subject
+		// IMAP ENVELOPE 的 Subject/个人名是 RFC 2047 编码字，go-imap 不解码。
+		// 不解的话列表里所有中文主题都是 `=?GBK?B?...?=`，而且发票关键词匹配
+		// 全部落空（主题里明明写着「发票」）。实测企业微信邮箱 5/5 封中招。
+		fromName = decodeMIMEWord(fromName)
+		subject := decodeMIMEWord(m.Envelope.Subject)
 		uid := m.UID
 		// 缺 Date 头的邮件（少数自动化系统）envelope Date 是 Go 零值，直接
 		// .Unix() 会落成 -62135596800 这类负值，该邮件从此进不了任何 date

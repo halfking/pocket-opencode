@@ -104,6 +104,9 @@ type Server struct {
 	// meeting) into a title+summary for the one-click capture paths.
 	learningSources *sources.Resolver
 	transcriber    *stt.Transcriber // nil = 云端 STT 兜底未配置
+	// sttDiscovery 缓存网关 ASR 候选的真实探测结果（10 分钟 TTL）。
+	// 自动发现必须出网打网关，不能每次录音都重扫一遍。
+	sttDiscovery *stt.DiscoveryCache
 	mcpClient      *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// RSS 订阅与分享（PG store + 后台 scheduler）。nil = 关闭模块。
 	// 由 cmd/pocketd/main.go 通过 SetRSSStore / SetRSSScheduler 注入。
@@ -152,6 +155,10 @@ type Server struct {
 	// 邮件流水线（收信→清理垃圾→提醒→发票采集→飞书/汇总）。惰性构造单例。
 	emailPipeline     *email.Pipeline
 	emailPipelineOnce sync.Once
+	// emailPipelineMu 串行化整轮流水线的执行（含本轮 dryRunSpam 覆盖）。
+	// Pipeline 是单例，定时任务与 HTTP 手动触发会并发进来；没有这把锁时，
+	// 一次手动 dryRunSpam:false 会在另一轮预演进行中把开关改掉。
+	emailPipelineMu sync.Mutex
 	// AI 对话智能体角色管理（PG Store 或 SQLiteStore 都实现 StoreIface）。
 	// nil = /api/chat-agents 返回 503。
 	chatAgentStore chatagent.StoreIface
@@ -304,6 +311,16 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 			WriteBufferSize: 1024,
 			CheckOrigin:     buildOriginChecker(cfg.AllowedOrigins, cfg.DevAuth),
 		},
+	}
+
+	// STT 引擎：无论 main.go 是否传了 env 兜底 transcribe，都保证有一台
+	// 「按用户设置解析目标」的引擎。目标解析要看用户/工作区（设置页可手工调整），
+	// 所以引擎挂在 Server 上而不是进程级单例。
+	s.sttDiscovery = stt.NewDiscoveryCache(10 * time.Minute)
+	if s.transcriber == nil {
+		s.transcriber = stt.NewResolver(func(ctx context.Context, scope stt.Scope) (*stt.Target, error) {
+			return s.resolveSTTTarget(ctx, scope)
+		})
 	}
 
 	// 初始化 RedClaw 桥接（如果配置了 RedClaw）
@@ -591,6 +608,7 @@ func requestBodyLimitMiddleware(next http.Handler) http.Handler {
 		limit := int64(maxRequestBodyBytes)
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/api/stt/transcribe"),
+			strings.HasPrefix(r.URL.Path, "/api/stt/probe"),
 			strings.HasPrefix(r.URL.Path, "/api/meetings/") && strings.HasSuffix(r.URL.Path, "/transcribe"):
 			limit = maxAudioBodyBytes
 		case r.URL.Path == "/api/llm/stream" && r.Method == http.MethodPost:
@@ -734,6 +752,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/vault/sync/", s.requireAuth(s.handleVaultSync))
 	// STT 云端兜底（消耗外部 API 配额，必须认证）
 	mux.HandleFunc("/api/stt/transcribe", s.requireAuth(s.handleSttTranscribe))
+	// 语音转写设置：推荐模型 + 网关自动发现 + 用真实录音试转。
+	mux.HandleFunc("/api/stt/config", s.requireAuth(s.handleSTTConfig))
+	mux.HandleFunc("/api/stt/discover", s.requireAuth(s.handleSTTDiscover))
+	mux.HandleFunc("/api/stt/probe", s.requireAuth(s.handleSTTProbe))
 	mux.HandleFunc("/api/meetings", s.requireAuth(s.handleMeetings))
 	mux.HandleFunc("/api/meetings/", s.requireAuth(s.handleMeetingRouter))
 	// RSS 订阅：sources / items / filters / share 一棵子树。
@@ -1356,6 +1378,14 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		if req.OwnerID == "" {
 			req.OwnerID = s.userIDFromRequest(r)
 		}
+		// A parent is validated the same way on create and on re-parent.
+		// This used to run only on PATCH, so POST could write a self-parenting
+		// row (a task that is its own parent makes the roll-up undecidable) or
+		// point at a parent id from another tenant.
+		if msg, ok := s.validateReparent(r, req.ID, req.ParentID); !ok {
+			http.Error(w, msg, http.StatusBadRequest)
+			return
+		}
 		if err := s.taskStore.CreateTask(r.Context(), &req); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -1366,6 +1396,14 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			{UserID: req.OwnerID, Role: task.RoleOwner},
 		}); err != nil {
 			log.Printf("[tasks] seed owner participant for %s failed: %v", req.ID, err)
+		}
+		// `assignees` and the participant list are two views of the same fact.
+		// An assignee who is not a participant can neither open a private work
+		// item nor be notified about it, so the two are reconciled here and on
+		// every assignees write. Best effort for the same reason as above.
+		if err := s.taskStore.SyncAssigneeParticipants(r.Context(), req.ID, req.WorkspaceID,
+			req.OwnerID, req.Assignees); err != nil {
+			log.Printf("[tasks] sync assignees for %s failed: %v", req.ID, err)
 		}
 
 		// 广播任务创建事件
@@ -1644,6 +1682,20 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 		}
 		if current.Status != updated.Status {
 			s.auditTaskStatusChange(r, updated, current.Status)
+			// The actor is the authenticated caller, so it travels on the
+			// context rather than being read out of the request body.
+			s.notifyWorkItemStatusChange(withActor(r.Context(), s.userIDFromRequest(r)), current, updated, workspaceID)
+		}
+		// Re-assignment changes who is on the work item, so the participant
+		// list has to follow — otherwise the new assignee can neither open the
+		// private item nor hear about later changes to it.
+		if update.Assignees != nil {
+			if err := s.taskStore.SyncAssigneeParticipants(r.Context(), path, workspaceID,
+				updated.OwnerID, updated.Assignees); err != nil {
+				// The row is already updated; failing the request now would
+				// invite a retry of a write that succeeded.
+				log.Printf("[tasks] sync assignees for %s failed: %v", path, err)
+			}
 		}
 		s.broadcastTaskEvent("task_updated", updated)
 		w.Header().Set("Content-Type", "application/json")

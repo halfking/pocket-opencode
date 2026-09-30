@@ -53,6 +53,24 @@ data/*.sqlite-wal
 data/email-invoices/
 deploy-local.sh.bak-*
 
+# 2026-10-01 audit: encrypted/decrypted MIME bodies fetched from REAL mailboxes.
+# These are per-host user content, not source. A `git add -A` in the email
+# pipeline worktree staged 13 real bodies (data/email-bodies/*.bin) as
+# untracked — same class of leak as data/email_master.key above, so the
+# whole directory is ignored, not just the master key.
+data/email-bodies/
+
+# 2026-10-01 audit: ad-hoc probe scripts + captured audio dropped at the repo
+# root by debugging sessions (ASR endpoint scans, model probes, one speech
+# sample). Probe *scripts* that earn their keep live in scripts/ under a real
+# name; these throwaways do not. Durable probes use scripts/, not tmp-*.
+/tmp-*.mjs
+/tmp-*.ts
+/tmp-*.sh
+/tmp-*.log
+/tmp-speech.wav
+/tmp-*.wav
+
 # === 2026-09-09 list-sync-rules plan-cleanup ===
 # Local-only dev/runtime artifacts, build logs, and stray test evidence that
 # are NOT part of the shipped product nor the validated plan.

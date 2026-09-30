@@ -1418,6 +1418,71 @@ func (s *Store) UpdateAccountScoped(ctx context.Context, a *Account, userID, wor
 	return tx.Commit(ctx)
 }
 
+// ErrStaleWrite 表示 LWW 守卫拒绝了一次写：服务端这一行在客户端上次读到之后
+// 已经被改过（updated_at 比客户端携带的基准新）。调用方（HTTP 层）应回 409
+// 并附上服务端当前 updated_at，让客户端改走下行覆盖，而不是静默丢弃。
+var ErrStaleWrite = errors.New("email: account updated on server after client's base version")
+
+// UpdateAccountLWTScoped 是 UpdateAccountScoped 的 LWW 版本：带 baseUpdatedAt
+// 守卫，客户端携带「我上次读到的 updated_at」来写。
+//
+// 需求原文：「这个信息有最后修改时间，在服务端与客户端中，以最后时间为准来
+// 更新旧的一方。」旧实现无条件 `updated_at = now()` 覆盖，离线客户端回传
+// 旧配置会把服务端的新配置冲掉（last-write-by-arrival，不是 last-write-by-time）。
+//
+// 守卫用 `updated_at <= $base` 而不是 `<`：客户端的基准若因时钟偏差偏大，
+// 仍允许其写入（它手上的确实更新），只有「服务端被别人写得更晚」才拒绝。
+// 写入后的 updated_at 取 max(now, base+1)，保证单调递增——否则秒级时间戳
+// 可能与旧值相同，客户端下一轮会误判成「没变过」。
+//
+// baseUpdatedAt <= 0 时退化为旧行为（服务端无条件覆盖），供不带版本的旧客户端
+// 与服务端内部调用使用。
+func (s *Store) UpdateAccountLWTScoped(ctx context.Context, a *Account, userID, workspaceID, credential string, updateCredential bool, baseUpdatedAt int64) error {
+	if baseUpdatedAt <= 0 {
+		return s.UpdateAccountScoped(ctx, a, userID, workspaceID, credential, updateCredential)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	next := time.Now().Unix()
+	if next <= baseUpdatedAt {
+		next = baseUpdatedAt + 1
+	}
+	a.UpdatedAt = next
+	query := `UPDATE email_accounts SET display_name=$1, imap_host=$2, imap_port=$3,
+		auth_type=$4, sync_interval_min=$5, rules=$6, enabled=$7, updated_at=$8
+		WHERE id=$9 AND user_id=$10 AND workspace_id=$11 AND updated_at <= $12`
+	args := []any{a.DisplayName, a.IMAPHost, a.IMAPPort, a.AuthType, a.SyncIntervalMin, nullStr(a.Rules), a.Enabled, next, a.ID, userID, workspaceID, baseUpdatedAt}
+	if updateCredential {
+		query = `UPDATE email_accounts SET display_name=$1, imap_host=$2, imap_port=$3,
+			auth_type=$4, sync_interval_min=$5, rules=$6, enabled=$7, updated_at=$8, credential_encrypted=$9
+			WHERE id=$10 AND user_id=$11 AND workspace_id=$12 AND updated_at <= $13`
+		args = []any{a.DisplayName, a.IMAPHost, a.IMAPPort, a.AuthType, a.SyncIntervalMin, nullStr(a.Rules), a.Enabled, next, credential, a.ID, userID, workspaceID, baseUpdatedAt}
+	}
+	res, err := tx.Exec(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		// 区分「不存在/不属于本 scope」与「存在但版本过期」：前者 404，后者 409。
+		var cur int64
+		err := s.pool.QueryRow(ctx,
+			`SELECT updated_at FROM email_accounts WHERE id=$1 AND user_id=$2 AND workspace_id=$3`,
+			a.ID, userID, workspaceID).Scan(&cur)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		a.UpdatedAt = cur
+		return ErrStaleWrite
+	}
+	return tx.Commit(ctx)
+}
+
 // DeleteAccountScoped deletes an account only when it belongs to the scope.
 func (s *Store) DeleteAccountScoped(ctx context.Context, id, userID, workspaceID string) error {
 	res, err := s.pool.Exec(ctx, `DELETE FROM email_accounts WHERE id=$1 AND user_id=$2 AND workspace_id=$3`, id, userID, workspaceID)

@@ -59,6 +59,41 @@ const emptyReport = (): SyncReport => ({
 })
 
 /**
+ * 下行：把服务端账户按 LWW 写入本地镜像。返回 {applied, skipped}。
+ * 单独抽出来是为了 409（服务端更新胜出）时只重跑下行，不重入整个双向同步。
+ */
+async function pullAccountsToLocal(remote: ServerAccount[]): Promise<{ applied: number; skipped: number }> {
+  let applied = 0
+  let skipped = 0
+  for (const a of remote) {
+    if (isLocalTestAddress(a.emailAddress)) {
+      skipped++
+      continue
+    }
+    try {
+      const updatedAt = a.updatedAt ?? a.createdAt ?? 0
+      const won = await writeAccountIfNewer({
+        id: a.id,
+        displayName: a.displayName,
+        emailAddress: a.emailAddress,
+        imapHost: a.imapHost,
+        imapPort: a.imapPort,
+        authType: a.authType,
+        syncIntervalMin: a.syncIntervalMin ?? 15,
+        enabled: !!a.enabled,
+        updatedAt,
+      })
+      if (won) applied++
+      else skipped++
+    } catch (e: unknown) {
+      skipped++
+      console.warn('[email] mirror account write skipped:', a.emailAddress, e)
+    }
+  }
+  return { applied, skipped }
+}
+
+/**
  * 拉服务端账户并按 LWW 写入本地；本地更新的已有账户再上行元数据。
  */
 export async function syncAccountsFromServer(): Promise<SyncReport> {
@@ -78,31 +113,7 @@ export async function syncAccountsBidirectional(): Promise<SyncReport> {
       return { fetched: remote.length, applied, skipped, pushed, online: true }
     }
     try {
-      for (const a of remote) {
-        if (isLocalTestAddress(a.emailAddress)) {
-          skipped++
-          continue
-        }
-        try {
-          const updatedAt = a.updatedAt ?? a.createdAt ?? 0
-          const won = await writeAccountIfNewer({
-            id: a.id,
-            displayName: a.displayName,
-            emailAddress: a.emailAddress,
-            imapHost: a.imapHost,
-            imapPort: a.imapPort,
-            authType: a.authType,
-            syncIntervalMin: a.syncIntervalMin ?? 15,
-            enabled: !!a.enabled,
-            updatedAt,
-          })
-          if (won) applied++
-          else skipped++
-        } catch (e: unknown) {
-          skipped++
-          console.warn('[email] mirror account write skipped:', a.emailAddress, e)
-        }
-      }
+      ;({ applied, skipped } = await pullAccountsToLocal(remote))
 
       for (const a of await listAccounts()) {
         if (isLocalTestAddress(a.emailAddress)) {
@@ -131,6 +142,9 @@ export async function syncAccountsBidirectional(): Promise<SyncReport> {
           displayName: l.displayName,
           syncIntervalMin: l.syncIntervalMin,
           enabled: l.enabled,
+          // 基准版本取**本地**那一份：它才是我们这次改动的出发点。
+          // 用 target（服务端）的 updatedAt 会让守卫永远放行，等于没有守卫。
+          updatedAt: l.updatedAt,
         })
         if (ok) pushed++
       }
@@ -148,23 +162,31 @@ export async function syncAccountsBidirectional(): Promise<SyncReport> {
 }
 
 export async function pushAccountToServer(_a: ServerAccount): Promise<boolean> {
+  // 带上本地基准版本：服务端据此做 LWW 守卫。若它手里的副本更新，会回 409
+  // 而不是被我们的旧值静默覆盖（需求 8「以最后修改时间为准」）。
+  const patch = {
+    displayName: _a.displayName,
+    syncIntervalMin: _a.syncIntervalMin,
+    enabled: _a.enabled,
+    updatedAt: _a.updatedAt ?? 0,
+  }
   try {
-    await emailApi.updateAccount(_a.id, {
-      displayName: _a.displayName,
-      syncIntervalMin: _a.syncIntervalMin,
-      enabled: _a.enabled,
-    })
+    await emailApi.updateAccount(_a.id, patch)
     return true
-  } catch {
+  } catch (e: unknown) {
+    // 409 = 服务端更新，本地下行覆盖即可（不是「推送失败」，别进 outbox 干等）。
+    const status = (e as { status?: number } | null)?.status
+    if (status === 409) {
+      console.warn('[email] account push rejected as stale; server copy wins', _a.id)
+      const res = await emailApi.listAccounts().catch(() => null)
+      if (res?.accounts) await pullAccountsToLocal(res.accounts).catch(() => undefined)
+      return true
+    }
     void import('../../native/config-sync/outbox').then((m) =>
       m.enqueueConfigPush({
         namespace: 'email_account',
         id: _a.id,
-        payload: {
-          displayName: _a.displayName,
-          syncIntervalMin: _a.syncIntervalMin,
-          enabled: _a.enabled,
-        },
+        payload: patch,
         updatedAt: _a.updatedAt ?? Math.floor(Date.now() / 1000),
       }),
     )

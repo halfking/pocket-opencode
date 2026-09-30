@@ -352,7 +352,12 @@
     }
   },
   "email": {
-    "dailySummary": "Tägliche Zusammenfassung"
+    "dailySummary": "Tägliche Zusammenfassung",
+    "fetchHintNetwork": "Hintergrund-Abruf nicht abgeschlossen; synchronisierte Nachrichten werden angezeigt",
+    "fetchHintClassifierOff": "Automatische Kategorisierung ist deaktiviert; Nachrichten synchronisiert, aber nicht kategorisiert",
+    "fetchHintAuth": "Sitzung abgelaufen. Bitte erneut anmelden.",
+    "fetchHintUnavailable": "Hintergrunddienst nicht verfügbar; Nachrichten synchronisiert",
+    "fetchHintHttpError": "Hintergrund-Abruf unvollständig ({code}); Nachrichten synchronisiert"
   },
   "errors": {
     "rssNotConfigured": "Noch kein RSS-Feed eingerichtet. Füge einen Feed hinzu.",

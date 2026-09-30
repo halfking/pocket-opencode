@@ -71,13 +71,26 @@ var (
 
 // HarvestAll 对所有待采集发票执行一轮下载/渲染。
 func (h *InvoiceHarvester) HarvestAll(ctx context.Context) HarvestResult {
-	var res HarvestResult
 	if h == nil || h.Store == nil || h.Fetcher == nil || h.DataDir == "" {
-		return res
+		return HarvestResult{}
 	}
 	invoices, err := h.Store.ListHarvestableInvoices(ctx, 100)
 	if err != nil {
 		log.Printf("[email/invoice-harvest] list harvestable: %v", err)
+		return HarvestResult{}
+	}
+	return h.HarvestInvoices(ctx, invoices)
+}
+
+// HarvestInvoices 对指定清单执行一轮下载/渲染。
+//
+// 与 HarvestAll 的区别是**不自己查库**：手动入口（POST /api/emails/invoices/harvest）
+// 已经按 user/workspace 取好了清单，这里直接处理，避免又走一遍无 scope 的
+// ListHarvestableInvoices（那会把别的 workspace 的待采集发票也拉进来重试）。
+// 「重试耗尽转 failed」的清理仍然保留——手动重试同样要受重试上限约束。
+func (h *InvoiceHarvester) HarvestInvoices(ctx context.Context, invoices []Invoice) HarvestResult {
+	var res HarvestResult
+	if h == nil || h.Store == nil || h.Fetcher == nil || h.DataDir == "" {
 		return res
 	}
 	for i := range invoices {
@@ -94,6 +107,11 @@ func (h *InvoiceHarvester) HarvestAll(ctx context.Context) HarvestResult {
 		default:
 			res.Skipped++
 		}
+	}
+	// 空清单直接返回：没有处理任何东西时不该去扫全库的 pending（既无必要，
+	// 也会让没有 pool 的调用方炸在 CleanupStalePendingInvoices 上）。
+	if len(invoices) == 0 {
+		return res
 	}
 	// 重试耗尽的记录转 failed（终态，人工介入）
 	if stale, serr := h.Store.CleanupStalePendingInvoices(ctx, MaxInvoiceAttempts, time.Now().Unix()); serr == nil && stale > 0 {
@@ -269,6 +287,21 @@ func isXMLFile(att ParsedAttachment) bool {
 	}
 	ct := strings.ToLower(att.ContentType)
 	return strings.Contains(ct, "xml")
+}
+
+// HasInvoiceAttachment 判断一封邮件里是否带着「可归档票据」附件：
+// PDF、图片（拍照发票）或 XML（电子发票数据）。用于放宽规则层的建档门槛——
+// 金额只印在附件里的账单邮件必须能进采集流程（见 ExtractInvoiceLoose）。
+func HasInvoiceAttachment(atts []ParsedAttachment) bool {
+	for _, att := range atts {
+		if len(att.Data) == 0 {
+			continue
+		}
+		if isPDFBytes(att.Data) || isImageBytes(att.Data) || isXMLFile(att) {
+			return true
+		}
+	}
+	return false
 }
 
 // extractInvoiceURLs 从 HTML/纯文本提取候选下载链接，按发票平台特征排序。

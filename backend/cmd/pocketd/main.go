@@ -412,7 +412,15 @@ func main() {
 			log.Printf("WARN: email master key: %v — email fetcher disabled", err)
 		} else {
 			if cfg.EmailMasterKey == "" {
-				log.Printf("WARN: POCKET_EMAIL_MASTER_KEY not set; auto-generated key persisted to %s/email_master.key", dataDir)
+				// 必须打绝对路径：dataDir 来自相对的 DBPath，进程 CWD 一变，
+				// 密钥文件就落到别的目录，同一套凭证全部解不开
+				// （cipher: message authentication failed），而两个实例打出来的
+				// 都是 "data/email_master.key"，看起来一模一样。踩过一次。
+				absKeyPath, absErr := filepath.Abs(filepath.Join(dataDir, "email_master.key"))
+				if absErr != nil {
+					absKeyPath = filepath.Join(dataDir, "email_master.key")
+				}
+				log.Printf("WARN: POCKET_EMAIL_MASTER_KEY not set; using auto-generated key at %s", absKeyPath)
 			}
 			ec, err := email.NewCrypto(key)
 			if err != nil {
@@ -497,13 +505,19 @@ func main() {
 
 	// 网关 base：显式配置优先，否则回退到默认网关（https://llm.kxpms.cn/v1）。
 	// 注意 NewClient 会自动剥离结尾的 /v1，因此无论写不带还是带 /v1 都能正确拼接。
+	// key 同理：env 优先，未注入时用内置的自家网关默认 key——否则未配 env 的
+	// 实例会因为 key 为空掉进直连分支，/api/embed、/api/llm/chat 直接 503。
 	gwBase := cfg.LLMGatewayURL
 	if gwBase == "" {
 		gwBase = opencode.DefaultLLMGatewayBaseURL
 	}
-	if gwBase != "" && cfg.LLMGatewayAPIKey != "" {
+	gwKey := cfg.LLMGatewayAPIKey
+	if gwKey == "" {
+		gwKey = opencode.DefaultLLMGatewayAPIKey
+	}
+	if gwBase != "" && gwKey != "" {
 		// 企业网关模式：代理到 llm-gateway-go（统一流量治理/审计/限流）
-		gwClient := llmgateway.NewClient(gwBase, cfg.LLMGatewayAPIKey)
+		gwClient := llmgateway.NewClient(gwBase, gwKey)
 		embedder = &llmGatewayEmbedderAdapter{gwClient, cfg.EmbedModel}
 		llm = &llmGatewayLLMAdapter{gwClient}
 		log.Printf("LLM/Embed gateway enabled (enterprise): %s", gwBase)
@@ -653,11 +667,16 @@ func main() {
 	if learningService != nil {
 		learningService.SetResolver(learningSources)
 	}
+	// Held beyond this block: the scheduled work-item reminder executor needs
+	// the same store to resolve each user's do-not-disturb timezone, which is
+	// how a 22:30 window means 22:30 *where the user is*.
+	var userSettingsRepo usersetting.Repository
 	if pool != nil {
 		if us, err := usersetting.NewStore(pool); err != nil {
 			log.Printf("WARN: user settings store: %v", err)
 		} else {
 			srv.SetUserSettingsStore(us)
+			userSettingsRepo = us
 			log.Println("User settings dual-store enabled (PG)")
 		}
 	}
@@ -711,6 +730,13 @@ func main() {
 	// OAuthBroadcaster 接口。
 	if emailScheduler != nil {
 		emailScheduler.SetBroadcaster(srv.WSHub())
+		// 每日定时流水线（收信→清垃圾→重要提醒→发票采集→飞书推送/共享汇总）。
+		// *server.Server 自身实现 email.PipelineRunner：RunEmailPipeline 按
+		// EmailExecutionMode 决定在本进程跑（默认 local）还是委托远端编排。
+		// 这一句是「每天定时处理」成立的前提——漏掉它则清垃圾/发票采集/飞书推送
+		// 只能手动 POST /api/email/pipeline/run 触发。
+		// hour<0（POCKET_EMAIL_PIPELINE_HOUR）关闭定时，手动触发仍可用。
+		emailScheduler.SetPipelineRunner(srv, cfg.EmailPipelineHour)
 	}
 
 	// 注入 audit writer：email 包内 oauth callback / scheduler refresh+revoke
@@ -843,8 +869,9 @@ func main() {
 	// /api/llm/models）。采用「动态 Provider」：每次请求时按 workspace 解析网关配置
 	// （启动环境变量 POCKET_LLM_GATEWAY_URL/_API_KEY 的默认值 + 运行时
 	// /api/llm-gateway/config 保存的配置），因此用户在「设置 → AI 模型」里修改网关
-	// 后，对话功能无需重启 pocketd 即可生效。POCKET_LLM_GATEWAY_API_KEY 仍必须配置
-	// （或在设置里保存），否则对话请求会返回 503。
+	// 后，对话功能无需重启 pocketd 即可生效。网关地址/密钥缺省时回落到内置默认
+	// （https://llm.kxpms.cn/v1 + opencode.DefaultLLMGatewayAPIKey），
+	// POCKET_LLM_GATEWAY_URL/_API_KEY 仍可用于换成别的租户网关。
 	{
 		provider := server.NewDynamicLLMGatewayBFFProvider(func(wsID, userID string) server.GatewayConfig {
 			return srv.ResolveGatewayForUser(userID, wsID)
@@ -1004,6 +1031,10 @@ func main() {
 		// 同构晚绑通知客户端。
 		if taskStore != nil {
 			workItemExec = scheduledexecutors.NewWorkItemReminderExecutor(taskStore, nil)
+			// Per-user do-not-disturb: the window is expressed in the owner's
+			// local time, so without this the executor would apply one zone to
+			// everybody and a 23:50 reminder would push at 23:50 UTC.
+			workItemExec.SetQuietPreferences(scheduledexecutors.NewSettingsQuietPreferences(userSettingsRepo))
 			if err := sched.Register(workItemExec); err != nil {
 				log.Printf("WARN: register work item reminder scheduled executor: %v", err)
 			} else {

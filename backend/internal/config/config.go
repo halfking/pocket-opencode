@@ -1,4 +1,4 @@
-package config
+﻿package config
 
 import (
 	"fmt"
@@ -104,10 +104,16 @@ type Config struct {
 	// 邮件流水线（收信→清理垃圾→提醒→发票采集→飞书/汇总）
 	EmailPipelineHour int    // POCKET_EMAIL_PIPELINE_HOUR：每日触发小时（本地时区，默认 8；<0 关闭定时）
 	EmailExecutionMode string // POCKET_EMAIL_EXECUTION_MODE：local（默认，设备本地执行）| server（委托远端编排）
+	// POCKET_EMAIL_SPAM_DRYRUN：true（默认）时每日流水线的清垃圾步骤只判定不 MOVE。
+	// 垃圾规则没在真实邮箱上验证过，先看判定结果，确认无误再置 false。
+	EmailSpamDryRun        bool
 	EmailServerPipelineURL string // POCKET_EMAIL_SERVER_PIPELINE_URL：server 模式的远端流水线 URL
 
 	// 飞书出站（发票推送）：复用回调的 AppID/Secret，另需接收群 chat_id
 	FeishuInvoiceChatID string // POCKET_FEISHU_INVOICE_CHAT_ID：发票文件推送目标群
+	// POCKET_FEISHU_INVOICE_FOLDER_TOKEN：共享台账（电子表格）建在哪个云空间目录；
+	// 为空则建在根目录。
+	FeishuInvoiceFolderToken string
 
 	// ---- Phase C: 龙虾无状态 AI 网关 ----
 	// pocketd 作为无状态代理：只转发嵌入/LLM 请求，不存任何用户数据。
@@ -256,9 +262,11 @@ func Load() Config {
 		// 邮件流水线
 		EmailPipelineHour:      getEnvInt("POCKET_EMAIL_PIPELINE_HOUR", 8),
 		EmailExecutionMode:     getEnv("POCKET_EMAIL_EXECUTION_MODE", "local"),
+		EmailSpamDryRun:        getEnv("POCKET_EMAIL_SPAM_DRYRUN", "true") == "true",
 		EmailServerPipelineURL: getEnv("POCKET_EMAIL_SERVER_PIPELINE_URL", ""),
 		// 飞书出站（发票推送）
 		FeishuInvoiceChatID: getEnv("POCKET_FEISHU_INVOICE_CHAT_ID", ""),
+		FeishuInvoiceFolderToken: getEnv("POCKET_FEISHU_INVOICE_FOLDER_TOKEN", ""),
 		// Phase C 无状态 AI 网关
 		EmbedBaseURL: getEnv("POCKET_EMBED_BASE_URL", ""),
 		EmbedAPIKey:  getFirstEnv([]string{"POCKET_EMBED_API_KEY", "POCKET_OPENAI_API_KEY"}, ""),
@@ -613,3 +621,4 @@ func loadCompanionOverlay() {
 		_ = os.Setenv(k, v)
 	}
 }
+

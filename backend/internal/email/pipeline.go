@@ -43,9 +43,24 @@ type Pipeline struct {
 	Harvest  *InvoiceHarvester
 	Pusher   InvoicePusher      // 可为 nil：跳过飞书，直接走共享文档
 	Notifier ImportantNotifier  // 可为 nil：跳过提醒
+	// Ledger 发布飞书共享台账（电子表格）。为 nil 或不可用时只生成本地 CSV/MD。
+	Ledger   LedgerPublisher
 	DataDir  string
 	// SpamLookbackDays 垃圾清理扫描窗口（默认 7 天）。
 	SpamLookbackDays int
+	// SpamDryRun=true 时第 2 步只判定不 MOVE（真实邮箱首次运行的安全阀）。
+	SpamDryRun bool
+}
+
+// spamPreviewCap 每个账户在预演报告里最多列多少个主题样本。
+const spamPreviewCap = 10
+
+// SpamPreviewItem 是预演报告里一个账户的判定结果。
+type SpamPreviewItem struct {
+	AccountID string   `json:"accountId"`
+	Count     int      `json:"count"`
+	Why       string   `json:"why"`
+	Subjects  []string `json:"subjects,omitempty"`
 }
 
 // PipelineReport 一轮执行的结果汇总。
@@ -57,18 +72,36 @@ type PipelineReport struct {
 	NewEmails     int    `json:"newEmails"`
 	SpamMoved     int    `json:"spamMoved"`
 	SpamLocalOnly int    `json:"spamLocalOnly"`
+	// SpamDryRun>0 表示本轮是预演：这 SpamDryRun 封「本可以移走但没移」，
+	// 逐账户列在 SpamDryRunSamples 里。真实邮箱上先看这个再决定是否真移。
+	SpamDryRun        int               `json:"spamDryRun,omitempty"`
+	SpamDryRunSamples []SpamPreviewItem `json:"spamDryRunSamples,omitempty"`
 	RemindersSent int    `json:"remindersSent"`
 	Invoices      HarvestResult `json:"invoices"`
 	FeishuPushed  int    `json:"feishuPushed"`
 	FeishuFailed  int    `json:"feishuFailed"`
 	ShareDocCSV   string `json:"shareDocCsv,omitempty"`
 	ShareDocMD    string `json:"shareDocMd,omitempty"`
+	// ShareDocURL 是飞书共享台账链接（未配置飞书时为空，本地 CSV/MD 仍会生成）。
+	ShareDocURL string `json:"shareDocUrl,omitempty"`
 	Errors        []string `json:"errors,omitempty"`
 }
 
 // AddError 记录非致命错误（流水线继续跑完）。
 func (r *PipelineReport) AddError(format string, args ...any) {
 	r.Errors = append(r.Errors, fmt.Sprintf(format, args...))
+}
+
+// stepStart 打一条分步进度日志：步骤名 + 距本轮开始的耗时。
+//
+// 背景：真实邮箱上一轮 Run 跑了 9 分钟仍未结束，而日志里只有开头两行和最后
+// 一行汇总，中途完全没有可观测信息，无法判断卡在哪个账户、哪一步。收 5 个
+// 真实账户（最大 62 封）本该是秒级，这里每步都留下耗时与计数后才谈得上定位
+// 与优化。
+func stepStart(rep *PipelineReport, start time.Time, format string, args ...any) {
+	log.Printf("[email/pipeline] step %s (t+%s)",
+		fmt.Sprintf(format, args...),
+		time.Since(start).Round(time.Millisecond))
 }
 
 // Run 执行一轮完整流水线。
@@ -89,27 +122,44 @@ func (p *Pipeline) Run(ctx context.Context) *PipelineReport {
 		rep.AddError("list accounts: %v", err)
 		return rep
 	}
+	stepStart(rep, start, "1/5 sync %d account(s)", len(accounts))
 	for _, acc := range accounts {
+		// 逐步检查取消：HTTP 客户端断开或 15 分钟上限到点后，go-imap 正在
+		// 进行的那次读不可中断（库内 read 30s / literal 5min 上限），但循环
+		// 本身必须立刻退出，否则剩下每个账户还会各拖一个超时。
+		if cerr := ctx.Err(); cerr != nil {
+			rep.AddError("run cancelled at step1 before %s: %v", acc.EmailAddress, cerr)
+			log.Printf("[email/pipeline] step1 cancelled before %s: %v", acc.EmailAddress, cerr)
+			break
+		}
+		t0 := time.Now()
 		n, err := p.Fetcher.Sync(ctx, acc.ID)
+		cost := time.Since(t0).Round(time.Millisecond)
 		if err != nil {
+			log.Printf("[email/pipeline] step1 sync %s FAILED after %s: %v", acc.EmailAddress, cost, err)
 			rep.AddError("sync %s: %v", acc.EmailAddress, err)
 			continue
 		}
+		log.Printf("[email/pipeline] step1 sync %s new=%d in %s", acc.EmailAddress, n, cost)
 		rep.AccountsSynced++
 		rep.NewEmails += n
 	}
 
 	// 1.5) 发票候选自动建档（供第 4 步采集下载；背景见函数注释）
+	stepStart(rep, start, "1.5/5 invoice candidates")
 	p.extractInvoiceCandidates(ctx, accounts, rep)
 
 	// 2) 垃圾清理
+	stepStart(rep, start, "2/5 spam clean (dryRun=%v)", p.SpamDryRun)
 	p.cleanSpam(ctx, rep)
 
 	// 3) 重要邮件提醒
+	stepStart(rep, start, "3/5 important reminders")
 	p.notifyImportant(ctx, rep)
 
 	// 4) 发票采集（下载/渲染/命名落盘）
 	if p.Harvest != nil {
+		stepStart(rep, start, "4/5 invoice harvest")
 		rep.Invoices = p.Harvest.HarvestAll(ctx)
 	}
 
@@ -122,6 +172,7 @@ func (p *Pipeline) Run(ctx context.Context) *PipelineReport {
 			scopes[[2]string{acc.UserID, defaultWorkspace(acc.WorkspaceID)}] = struct{}{}
 		}
 	}
+	stepStart(rep, start, "5/5 push+ledger over %d scope(s)", len(scopes))
 	for sc := range scopes {
 		invoices, err := p.Store.ListInvoicesScoped(ctx, sc[0], sc[1], "downloaded", 500)
 		if err != nil {
@@ -129,6 +180,13 @@ func (p *Pipeline) Run(ctx context.Context) *PipelineReport {
 			continue
 		}
 		p.pushInvoiceSet(ctx, invoices, sc[0], sc[1], rep)
+		// 共享台账：飞书可用时在飞书上建一张真表格（可分享），
+		// 本地 CSV/MD 始终生成（离线兜底 + 对账留存）。
+		if url, lerr := p.PublishLedgerScoped(ctx, sc[0], sc[1]); lerr != nil {
+			rep.AddError("publish ledger scope=%v: %v", sc, lerr)
+		} else if url != "" {
+			rep.ShareDocURL = url
+		}
 		if _, _, err := p.BuildInvoiceSummaryDocs(ctx, sc[0], sc[1]); err != nil {
 			rep.AddError("summary docs scope=%v: %v", sc, err)
 		}
@@ -157,6 +215,7 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 		}
 	}
 	created := 0
+	bodyFetches := 0
 	for i := range emails {
 		e := emails[i]
 		sc, ok := scope[e.AccountID]
@@ -171,12 +230,27 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 		// 几十封，每封拉一次完整 IMAP 会话会把流水线拖到分钟级甚至触发
 		// 服务商连接频控。与 server 侧 extractInvoicesAsync 的门槛一致。
 		if !hit && e.UID > 0 && p.Fetcher != nil && InvoiceCandidate(e) {
+			bodyFetches++
 			raw, ferr := p.Fetcher.FetchMessageRaw(ctx, e.AccountID, e.UID)
 			if ferr != nil {
 				continue
 			}
 			if parsed, perr := ParseMIMEMessage(raw); perr == nil {
-				inv, hit = ExtractInvoice(e, parsed.TextBody+"\n"+parsed.HTMLBody)
+				// 金额常常只印在附件里（主题写「对账单」、正文写「见附件」），
+				// 所以把「有没有发票类附件」一起告诉规则层，否则这封邮件会在
+				// 采集器看到附件之前就被丢掉。
+				inv, hit = ExtractInvoiceLoose(e, parsed.TextBody+"\n"+parsed.HTMLBody,
+					HasInvoiceAttachment(parsed.Attachments))
+			}
+		}
+		// 命中了但**没有开票日期**：IMAP 路径只落 envelope，正文里的「开票日期」
+		// 看不到，于是规范文件名退化成下载当天（实测真发票
+		// 「其他-杭州创客家…-3500.00-2026-10-01.pdf」，票面其实是 5 月开的）。
+		// 这里补一次正文读取——只针对「已命中 + 缺日期」的候选，量很小。
+		if hit && inv.InvoiceDate == "" && e.UID > 0 && p.Fetcher != nil {
+			bodyFetches++
+			if d := p.fetchInvoiceDateFromBody(ctx, e); d != "" {
+				inv.InvoiceDate = d
 			}
 		}
 		if !hit {
@@ -188,12 +262,36 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 		}
 		created++
 	}
+	log.Printf("[email/pipeline] step1.5 scanned=%d rawBodyFetches=%d autoCreated=%d",
+		len(emails), bodyFetches, created)
 	if created > 0 {
 		log.Printf("[email/pipeline] auto-created %d invoice candidates", created)
 	}
 }
 
+// fetchInvoiceDateFromBody 拉原文正文找开票日期。失败返回空串（不阻断流水线）。
+func (p *Pipeline) fetchInvoiceDateFromBody(ctx context.Context, e Email) string {
+	raw, err := p.Fetcher.FetchMessageRaw(ctx, e.AccountID, e.UID)
+	if err != nil {
+		return ""
+	}
+	parsed, perr := ParseMIMEMessage(raw)
+	if perr != nil {
+		return ""
+	}
+	text := parsed.TextBody
+	if text == "" {
+		text = parsed.HTMLBody
+	}
+	return ParseInvoiceDate(text)
+}
+
 // cleanSpam 扫描近期邮件，把广告/垃圾移进 IMAP 垃圾箱并落本地标记。
+//
+// SpamDryRun=true 时**只判定不移动**：把「会移哪些、为什么」写进报告，
+// 不发任何 IMAP MOVE、也不改本地分类。这是给真实邮箱上的第一次运行留的
+// 安全阀——垃圾判定规则没在真实邮箱上验证过，让它无人值守地搬真实邮件
+// 风险太大；先看判定结果，确认无误再关掉 dryRun。
 func (p *Pipeline) cleanSpam(ctx context.Context, rep *PipelineReport) {
 	lookback := p.SpamLookbackDays
 	if lookback <= 0 {
@@ -207,6 +305,7 @@ func (p *Pipeline) cleanSpam(ctx context.Context, rep *PipelineReport) {
 	}
 	byAccount := map[string][]int64{}
 	whyByAccount := map[string]string{}
+	samplesByAccount := map[string][]string{}
 	for i := range emails {
 		e := emails[i]
 		if e.Category == "spam" || e.Category == "archived" {
@@ -219,7 +318,23 @@ func (p *Pipeline) cleanSpam(ctx context.Context, rep *PipelineReport) {
 			if whyByAccount[e.AccountID] == "" {
 				whyByAccount[e.AccountID] = v.Why
 			}
+			if len(samplesByAccount[e.AccountID]) < spamPreviewCap {
+				samplesByAccount[e.AccountID] = append(samplesByAccount[e.AccountID], e.Subject)
+			}
 		}
+	}
+	if p.SpamDryRun {
+		for accountID, uids := range byAccount {
+			rep.SpamDryRun++
+			rep.SpamDryRunSamples = append(rep.SpamDryRunSamples, SpamPreviewItem{
+				AccountID: accountID,
+				Count:     len(uids),
+				Why:       whyByAccount[accountID],
+				Subjects:  samplesByAccount[accountID],
+			})
+		}
+		log.Printf("[email/pipeline] spam dry-run: %d mail(s) would be moved, nothing was moved", rep.SpamDryRun)
+		return
 	}
 	for accountID, uids := range byAccount {
 		if p.Fetcher != nil {
@@ -322,6 +437,40 @@ func (p *Pipeline) PushInvoicesScoped(ctx context.Context, ids []string, userID,
 	p.pushInvoiceSet(ctx, invoices, userID, workspaceID, rep)
 	rep.FinishedAt = time.Now().Unix()
 	return rep
+}
+
+// PublishLedgerScoped 把该 scope 的全部发票清单发布成共享台账（飞书电子表格）。
+//
+// 与 BuildInvoiceSummaryDocs 的分工：后者写设备本地文件（离线兜底/留存），
+// 这里产出**别人能打开的**共享文档。发布器为空或不可用时返回空 URL + nil error，
+// 调用方据此不报错——本地汇总照常生成。
+//
+// 复用：同一 (workspace, user) 在进程内已经建过台账时直接返回上一次的链接。
+// 没有这一步，GET /api/emails/invoices/summary 每刷新一次就新建一张飞书表格，
+// 用户的云盘会被同一个清单刷屏——读接口产生这种副作用本身就是错的。
+// 飞书目前没有「按标题查表」的接口可用，所以复用只能做到进程级；
+// 重启后第一次读仍会新建一张，之后复用。
+func (p *Pipeline) PublishLedgerScoped(ctx context.Context, userID, workspaceID string) (string, error) {
+	if p.Ledger == nil || !p.Ledger.Available() {
+		return "", nil
+	}
+	if url := p.Ledger.PublishedURL(workspaceID, userID); url != "" {
+		return url, nil
+	}
+	invoices, err := p.Store.ListInvoicesScoped(ctx, userID, workspaceID, "", 500)
+	if err != nil {
+		return "", fmt.Errorf("list invoices: %w", err)
+	}
+	if len(invoices) == 0 {
+		return "", nil
+	}
+	title := LedgerTitle(workspaceID, time.Now())
+	url, err := p.Ledger.PublishLedger(ctx, title, invoices)
+	if err != nil {
+		return "", err
+	}
+	p.Ledger.RememberPublished(workspaceID, userID, url)
+	return url, nil
 }
 
 // BuildInvoiceSummaryDocs 生成共享汇总文档（CSV 清单 + Markdown 报表，
