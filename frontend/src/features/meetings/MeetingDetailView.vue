@@ -114,11 +114,13 @@ import MeetingSettingsSheet from './MeetingSettingsSheet.vue'
 import MeetingStudioMenu from './MeetingStudioMenu.vue'
 import SpeakerLabelSheet from './SpeakerLabelSheet.vue'
 import { useApiError } from '../../composables/useApiError'
+import { useAuthStore } from '../../stores/auth'
 
 const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
+const auth = useAuthStore()
 const meetingId = computed(() => String(route.params.id || ''))
 const loading = ref(true)
 const meeting = ref<LocalMeeting | null>(null)
@@ -270,7 +272,11 @@ function onOpenRelated(item: RecommendItem) {
 
 async function refreshRelated() {
   const q = relatedQueryFromTranscript(displaySegments.value.map((s) => s.text))
-  noteRecs.value = await searchRelatedContext(q, { excludeMeetingId: meetingId.value })
+  // 笔记按 workspace_id 分区，不传会落到 'default'、关联笔记永远为空
+  noteRecs.value = await searchRelatedContext(q, {
+    excludeMeetingId: meetingId.value,
+    workspaceId: auth.workspaceId || 'default',
+  })
 }
 
 onMounted(async () => {

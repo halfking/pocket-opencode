@@ -2387,6 +2387,13 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
 ## 5. 已验证 / 未验证（严禁外推）
 
 ### ✅ 已验证（有证据）
+- **BUG-AK 本地库 workspace 分区错配已修**（`NoteListView` 8 个调用点漏传 `workspaceId`，
+  4 个是写操作；另修 `EmailDetailView` / `MeetingDetailView` 同类 2 处）：
+  - 错配取证：真机 `localStorage.pocket_workspace_id = ws_user-admin` vs 列表查询 `default`（`MISMATCH: true`）
+  - 笔记写路径 `verify-notes-inputtext.mjs` **2/2**（`cards=4 found=true`；同脚本修复前 `cards=0 found=false`）
+  - 跨路由冒烟 `smoke-routes.mjs` **11/11**，零 console error；`npx vue-tsc --noEmit` exit 0
+  - ⚠️ 该缺陷是**潜伏型**——早期 CRUD 6/6 全过是因为当时 `auth.workspaceId` 为空、
+    读写同落 `'default'`。详见 §4.44.2
 - **网关模块 UI 写路径通**（真机 `verify-gateway-writepath.mjs` **12/12，连跑两轮稳定**）：
   先探后端契约 6/6（空 body 400 / 完整 201 / 更新真生效 / 阴性对照 404），
   再真机走「点『+ 新增』→ 填表 → 保存 → **直接查 PG** 行数 +1 且名称一致 →
@@ -2558,6 +2565,13 @@ if (/已新增|已保存|失败|错误|不能为空|required/i.test(bodyText)) b
   提交时**必须路径限定**，不要 `git add -A`。
 
 ### ❌ 未验证（下一轮必须补）
+- **BUG-AK 的历史数据订正未做**：修复只纠正「此后」的读写。若此前有笔记被写进
+  `'default'` 分区（§4.43 期间用旧 bundle 建的），它们在 `ws_user-admin` 视图中**仍不可见**。
+  真机列表 4 张中新建的 `NI-xxxxxx` 可见，但**未逐条核对**是否还有遗留在 `default` 的旧行。
+  SQLCipher 加密，需应用内迁移。
+- **BUG-AK 附带的两处同类修复只过了类型检查，未做真机行为验证**：
+  邮件→联系人跳转、会议关联笔记推荐。缺可复现前置数据（真实聚合的联系人、带转写的会议），
+  **不得据此宣称「已验证」**。
 - **`study.decks.*` 整块 7 个键在 7 种语言里未翻译**（与 en-US 逐字节相同，
   即整块英文）。`scripts/audit-deck-cta-i18n.mjs` 判据 C 持续报出，只报不拦。
   本轮**未修** —— 42 条译文需逐条审，不宜混进同一次提交（§4.28.6）
@@ -3981,9 +3995,160 @@ bash 4.2，不是开发机的 bash 5.x**——integration test 必须至少在�
 - 正文 placeholder 是 `点击 ⛶ 全屏编辑…`（`NoteEditView.vue:34`），
   不是 flow 里假设的独立 textarea。
 
-#### 4.43.3 打通笔记验证的可行路径（下一轮）
+#### 4.43.3 夹具问题已解决（进展），但暴露下一个独立问题
 
-1. **首选**：真机 Maestro（解锁「USB 安装」后）——它走真实触摸/键盘，能正确驱动 v-model。
-2. **备选**：CDP 改用 `Input.insertText` / `Input.dispatchKeyEvent`（真键盘事件）而非
-   setter 注入，可能触发 v-model。
-3. 在此之前，**不要**把笔记写路径写成「已验证」。
+**好消息**：§4.43.2 里的备选路径 ② **可行**——用 CDP `Input.dispatchMouseEvent` 点击聚焦 +
+`Input.insertText` 真实键盘事件，能触发 `UnifiedComposer` 的 v-model
+（保存按钮从 `disabled=true` 变 `disabled=false`，实测有效）。这解除了「CDP 驱动不了笔记编辑器」的卡点。
+
+**但**：按钮 enable 后点保存，笔记**仍未进列表**（0 张卡），后端 `opencode_pocket.notes` 也**没有**该条
+（标题以 `NI-` 开头的 0 行）。此时出现一个**独立于夹具**的问题：
+
+- 列表读的是**本地 SQLCipher**（local-first），后端有旧笔记（`ws_user-admin`）但列表空，
+  这在「本地优先 + 只推不拉」的设计下**可能是正常的**（本地库 `pm clear` 后本就空）。
+- 但**刚创建的那条**也没进列表、也没进后端 → **保存动作可能真失败了**（silent fail），
+  也可能是本地库/同步链路的其它问题。
+
+**定性**：这个新问题**在 CDP 下无法定性**（需要确认「保存是否真落本地库」，而本地库是 SQLCipher 加密的，
+静态拉文件读不了）。**不下结论**——既不写「笔记保存有 bug」，也不写「已验证」。
+需要真机 Maestro（真实触摸 + 完整会话）或专门查 `NoteEditView` 的保存→本地库→列表刷新链路才能定性。
+
+> **后续更新**：不必等 Maestro。§4.44 证明「落库」根本不是问题——
+> 笔记**确实**写进了本地库，只是 `NoteListView` 从**另一个 workspace 分区**查询。
+> 这里的「无法定性」是当时信息不足，不是真的不能定性。
+
+#### 4.43.4 打通笔记验证的可行路径（下一轮）
+
+1. **首选**：真机 Maestro（解锁「USB 安装」后）——真实触摸能正确驱动 v-model + 保存，
+   且能看到真实会话下的列表，**一次定性**「保存→列表」到底通不通。
+2. **可先做**：`verify-notes-inputtext.mjs` 已经把夹具修好了，Maestro 解锁后可以立刻复跑，
+   它的判据（保存按钮 enable + 列表回显）是对的，只是结果取决于保存本身。
+3. 在保存→列表定性之前，**不要**把笔记写路径写成「已验证」或「有 bug」。
+
+> 上面 3 条已作废——不需要 Maestro 也能定性。见 §4.44：这是**产品 bug**，且已在真机验证修复。
+
+### 4.44 BUG-AK：本地库 workspace 分区错配——「保存成功但列表看不见」
+
+§4.43.3 记的「保存后列表空」在本轮**定性为产品缺陷，不是夹具问题，也不需要 Maestro**。
+根因与修复、运行时证据、真机回归结果如下。
+
+#### 4.44.1 根因
+
+本地 SQLite（`local_notes`）**按 `workspace_id` 分区**。各 store 函数形如
+`listNotes(opts)` / `updateNote(id, patch, workspaceId = 'default')`，
+**不传 `workspaceId` 就静默回退到字面量 `'default'`**。
+
+而 `auth.workspaceId` 来自后端 `EnsureDefaultWorkspace`（`stores/auth.ts:124-127`），
+真机实测是 **`ws_user-admin`**，不是 `'default'`。
+
+于是同一个 feature 内出现了分区错配：
+
+| 视图 | 传入的 workspaceId | 实际落库/查询分区 |
+|---|---|---|
+| `NoteEditView.onSave` | `currentWorkspaceId()` → `ws_user-admin` | `ws_user-admin` |
+| `NoteDetailView.getNote/deleteNote/searchSemantic` | `currentWorkspaceId()` → `ws_user-admin` | `ws_user-admin` |
+| **`NoteListView` 全部调用** | **不传 → 回退 `'default'`** | **`default`** |
+
+结果：**写进 `ws_user-admin` 的笔记，列表从 `default` 查，永远查不到**。
+同一原因也解释了「后端 `ws_user-admin` 有旧笔记、但列表一张卡都没有」。
+
+`NoteListView` 一共 **8 个调用点**全部漏传，其中 **4 个是写操作**，危害比读更大：
+
+| # | 位置 | 操作 | 错分区下的后果 |
+|---|---|---|---|
+| 1 | `load()` | `listNotes({limit,offset,domain})` | 列表恒空 |
+| 2 | `load()` | `listDraftNotes()` | 草稿横幅永不出现 |
+| 3 | `loadMore()` | `listNotes({...})` | 翻页拿不到数据 |
+| 4 | `onSearch()` | `searchNotesWithIntent(q)` | 笔记搜索恒空 |
+| 5 | `createVoiceDraft()` | `createNote({...})` | 语音草稿落进 `default` 分区 |
+| 6 | 语音草稿总结 | `updateNote(id,{summary})` | 总结写不到真实行 |
+| 7 | `onMetaSave()` | `updateNote(id,{...,status:'saved'})` | 草稿转正式**静默失效** |
+| 8 | `onMetaDelete()` | `deleteNote(id)` | 软删打在 `default` 分区，**真行删不掉**（静默无反应） |
+
+#### 4.44.2 为什么早期「笔记 CRUD 6/6 全过」却没抓到这个 bug
+
+本文档 §「笔记写路径」曾记录真机 `redmi-write-ops.mjs` **6/6 全过**
+（新建回显 / 重启仍在 / 编辑回显 / 删除生效）。与本 bug **不矛盾**，原因是：
+
+- 那次跑测时 `auth.workspaceId` 为空 → `currentWorkspaceId()` 回退 `'default'`，
+  **写和读都落在 `'default'` 同一个分区**，错配不显现。
+- 真正登录后 `EnsureDefaultWorkspace` 下发 `ws_user-admin`，
+  `NoteEditView`/`NoteDetailView` 切到 `ws_user-admin`，而 `NoteListView` 留在 `default` —— 分叉才发生。
+
+**教训**：凡是「默认值恰好等于实际值」的缺陷都是**潜伏**的，
+只有当真实环境值与默认值不同时才显形。
+因此**任何依赖 `xxx = 'default'` 兜底的分区/租户/用户字段，都必须显式传值**，
+不能靠「默认值对」来判定调用点没问题。这也解释了 §4.40「https 下空列表」为何
+一度指向别处——两个症状都可能由环境漂移或分区错配引起，排查时不能只看表象。
+
+#### 4.44.3 运行时证据（真机，非代码推测）
+
+`scripts/diag-notes-workspace-id.mjs` 从真机 WebView 读 `localStorage`：
+
+```json
+{ "workspaceKeyName": "pocket_workspace_id",
+  "authWorkspaceId": "ws_user-admin",
+  "listQueryValue": "default",
+  "MISMATCH": true, "route": "#/notes", "noteCards": "none=0" }
+```
+
+同一进程里 `auth.workspaceId = ws_user-admin`，而列表查询值是 `default` —— 错配成立。
+
+> 诊断脚本踩坑：CDP `Runtime.evaluate` 的表达式**必须单行**。多行且以 `(` 开头会被
+> 当成续行解析，报 `TypeError: (intermediate value)(...) is not a function`。
+
+#### 4.44.4 同类缺陷的另外两处（全仓扫出来的，不止笔记）
+
+对所有「`workspaceId = 'default'` 默认参数」的导出函数做了调用方全量核查，
+除笔记外还有两处同样的错配，一并修了：
+
+- `EmailDetailView.vue` → `findContactByEmail(fromAddress)` 未传 workspaceId，
+  而 `ContactListView` 写入用真实 workspaceId ⇒ **从邮件跳联系人永远提示「联系人不存在」**。
+- `MeetingDetailView.vue` → `searchRelatedContext(q)` 内部 `searchHybrid(q, limit)` 未传
+  ⇒ **会议的「关联笔记」推荐恒为空**。
+
+核查结论：其余带 `workspaceId='default'` 默认值的导出函数
+（`contacts-store` / `pkm-store` / `notes-search`）其调用方**均已正确传入**；
+`importEnex` 无调用方；SQL 层无硬编码 `workspace_id = 'default'`。
+
+#### 4.44.5 改动
+
+- `frontend/src/features/notes/NoteListView.vue` —— 引入 `useAuthStore`，
+  新增 `currentWorkspaceId()`，8 个调用点全部补传（含 4 个写操作）。
+- `frontend/src/features/email/EmailDetailView.vue` —— 同上，`findContactByEmail` 补传。
+- `frontend/src/features/meetings/meeting-related-search.ts` —— `searchRelatedNotes` /
+  `searchRelatedContext` 增加 `workspaceId` 形参并透传。
+- `frontend/src/features/meetings/MeetingDetailView.vue` —— 调用方补传。
+
+约定：`currentWorkspaceId()` 三个视图统一为 `auth.workspaceId || 'default'`，
+与既有 `NoteEditView` / `NoteDetailView` 写法一致。
+
+#### 4.44.6 验证
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| 类型检查 | `npx vue-tsc --noEmit`（`frontend/`） | **exit 0**，无输出 |
+| 错配取证 | `node scripts/diag-notes-workspace-id.mjs` | `MISMATCH: true`，`noteCards: none=0`（修复前） |
+| 笔记写路径 | `node scripts/verify-notes-inputtext.mjs` | **2/2**，`cards=4 found=true` |
+| 跨路由冒烟 | `node scripts/smoke-routes.mjs` | **11/11**，11 条路由 `landed=true` 且零 console error |
+
+**受控对照**：同一脚本、同一台真机、同一判据，只有代码变了。
+修复前 `cards=0 found=false`（§4.43.3 记录），修复后 `cards=4 found=true`。
+判据 `.note-card` 内含本次唯一时间戳标题 `NI-xxxxxx`（**状态读，非 toast 反馈类**），
+且已先核对 `NoteListView.vue:59` 卡片 class 确为 `.note-card`，不会假阴性。
+
+#### 4.44.7 仍未定性 / 遗留风险
+
+1. **历史数据仍在错误分区**。本修复只纠正「此后」的读写。此前若有笔记被写进
+   `default` 分区（例如 §4.43 期间用旧 bundle 建的），它们在 `ws_user-admin` 视图中
+   **仍不可见**。真机实测列表为 4 张，其中新建的 `NI-xxxxxx` 可见，
+   但**未逐条核对**是否还有遗留在 `default` 的旧行——需一次性数据订正，
+   本轮**未做**（SQLCipher 加密，需应用内迁移）。
+2. **`handleServerEvent` 的同类隐患**（`notes-store.ts:33`）：
+   `const workspaceId = note.workspaceId ?? 'default'`。若服务端 `note.created`
+   推送不带 `workspace_id`（`ws-bus.ts:63` 允许为 `null`），笔记会落进 `default`。
+   **未确认服务端是否总会下发**，故本轮**未改**——属推测性修改，列为风险。
+3. 邮件联系人跳转、会议关联笔记两处**只做了类型检查，未做真机行为验证**
+   （缺少可复现的前置数据：真实聚合的联系人、带转写的会议）。不得据此宣称「已验证」。
+
+

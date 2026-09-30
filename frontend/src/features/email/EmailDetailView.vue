@@ -98,11 +98,17 @@ import {
 } from './translate-email'
 import { markListDirty } from '../../composables/list-scene-store'
 import { useApiError } from '../../composables/useApiError'
+import { useAuthStore } from '../../stores/auth'
 
 const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
+const auth = useAuthStore()
+
+function currentWorkspaceId(): string {
+  return auth.workspaceId || 'default'
+}
 const email = ref<LocalEmail | null>(null)
 const loading = ref(true)
 const loadError = ref('')
@@ -303,7 +309,9 @@ async function toggleStar() {
 async function navigateToContact() {
   if (!email.value?.fromAddress) return
   try {
-    const contact = await findContactByEmail(email.value.fromAddress)
+    // 联系人按 workspace_id 分区，查找必须用当前登录 workspace，
+    // 否则永远落到 'default' 分区、永远提示「联系人不存在」。
+    const contact = await findContactByEmail(email.value.fromAddress, currentWorkspaceId())
     if (contact) router.push(`/contacts/${contact.id}`)
     else toast.info('联系人不存在，请先在联系人页面聚合')
   } catch (e: any) {

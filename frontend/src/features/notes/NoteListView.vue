@@ -109,10 +109,12 @@ import { DEFAULT_LIST_PAGE_SIZE, pageHasMore } from '../../native/list-sync/page
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
 import { useListScene } from '../../composables/use-list-scene'
+import { useAuthStore } from '../../stores/auth'
 
 defineOptions({ name: 'NoteListView' })
 
 const router = useRouter()
+const auth = useAuthStore()
 const notes = ref<LocalNote[]>([])
 const loading = ref(true)
 const loadingMore = ref(false)
@@ -160,6 +162,13 @@ function relTime(ms: number) {
   return `${Math.floor(hr / 24)}天前`
 }
 
+/** 本地库按 workspace_id 分区。读写必须用当前登录 workspace，否则会写到/读到
+ * 另一分区——表现为「保存成功但列表看不到」「删除没反应」。与 NoteEditView /
+ * NoteDetailView 的同名函数保持一致。 */
+function currentWorkspaceId(): string {
+  return auth.workspaceId || 'default'
+}
+
 async function load() {
   loading.value = true
   dbNotReady.value = false
@@ -168,10 +177,11 @@ async function load() {
       limit: DEFAULT_LIST_PAGE_SIZE,
       offset: 0,
       domain: domain.value === 'all' ? undefined : domain.value,
+      workspaceId: currentWorkspaceId(),
     })
     notes.value = page
     hasMore.value = pageHasMore(page.length)
-    const drafts = await notesStore.listDraftNotes()
+    const drafts = await notesStore.listDraftNotes(currentWorkspaceId())
     draftBanner.value = drafts[0] ?? null
   } catch (e: unknown) {
     if (e instanceof Error && e.message.includes('LocalDB 未初始化')) dbNotReady.value = true
@@ -188,6 +198,7 @@ async function loadMore() {
       limit: DEFAULT_LIST_PAGE_SIZE,
       offset: notes.value.length,
       domain: domain.value === 'all' ? undefined : domain.value,
+      workspaceId: currentWorkspaceId(),
     })
     const seen = new Set(notes.value.map((n) => n.id))
     notes.value = [...notes.value, ...page.filter((n) => !seen.has(n.id))]
@@ -204,7 +215,7 @@ async function onSearch() {
   if (!q) { briefing.value = null; await load(); return }
   loading.value = true
   try {
-    briefing.value = await searchNotesWithIntent(q)
+    briefing.value = await searchNotesWithIntent(q, currentWorkspaceId())
     notes.value = briefing.value.results.map((r) => r.note)
   } finally {
     loading.value = false
@@ -230,6 +241,7 @@ async function createVoiceDraft(text: string, audioBlob: Blob, durationMs: numbe
     createdByVoice: true,
     audioBlob,
     audioDurationMs: durationMs,
+    workspaceId: currentWorkspaceId(),
   })
   metaOpen.value = true
   await load()
@@ -240,7 +252,7 @@ async function createVoiceDraft(text: string, audioBlob: Blob, durationMs: numbe
     const { summary } = await notesApi.summarize(metaNote.value.id)
     if (summary && metaNote.value) {
       metaNote.value = { ...metaNote.value, summary }
-      await notesStore.updateNote(metaNote.value.id, { summary })
+      await notesStore.updateNote(metaNote.value.id, { summary }, currentWorkspaceId())
       await load()
     }
   } catch (e: unknown) {
@@ -258,7 +270,7 @@ function resumeDraft() {
 
 async function onMetaSave(data: { title: string; domain: string; tags: string[] }) {
   if (!metaNote.value) return
-  await notesStore.updateNote(metaNote.value.id, { ...data, status: 'saved' })
+  await notesStore.updateNote(metaNote.value.id, { ...data, status: 'saved' }, currentWorkspaceId())
   metaOpen.value = false
   metaNote.value = null
   await load()
@@ -266,7 +278,7 @@ async function onMetaSave(data: { title: string; domain: string; tags: string[] 
 
 async function onMetaDelete() {
   if (!metaNote.value) return
-  await notesStore.deleteNote(metaNote.value.id)
+  await notesStore.deleteNote(metaNote.value.id, currentWorkspaceId())
   metaOpen.value = false
   metaNote.value = null
   await load()
