@@ -190,6 +190,16 @@ func (c *DiscoveryCache) Peek(baseURL, apiKey string) (DiscoveryResult, bool) {
 	return c.get(baseURL, apiKey)
 }
 
+// Seed 预置一条探测结论。
+//
+// 这是**测试注入点**，不是生产路径：生产上探测结论只能由 Discover 产生。
+// 之所以要导出它，是因为 internal/server 的测试要构造「网关探测已跑完、结论是
+// no_provider」这种确定性前置状态，而 put/get 都是本包私有方法，跨包够不着。
+// 2026-10-01 并入 feat/2026-10-01-stt-service 时恢复出来的 server 测试就依赖它。
+func (c *DiscoveryCache) Seed(baseURL, apiKey string, r DiscoveryResult) {
+	c.put(baseURL, apiKey, r)
+}
+
 // ListGatewayModels 拉取网关模型目录。
 func ListGatewayModels(ctx context.Context, client *http.Client, baseURL, apiKey string) ([]GatewayModel, error) {
 	body, status, err := getJSON(ctx, client, strings.TrimRight(baseURL, "/")+"/models", apiKey)
@@ -473,7 +483,13 @@ func extractText(raw json.RawMessage) string {
 }
 
 // missingAudioRe 命中即认为「上游没收到音频」，返回的是幻觉文本而非转写。
-var missingAudioRe = regexp.MustCompile(`(?i)(no audio|not (?:see|receiv|receiv\w*|access|accessible)|didn'?t (?:receiv|get|hear)|cannot (?:access|listen|hear)|unable to (?:access|listen|hear)|can'?t (?:access|listen|hear)|没有(?:附上|收到|听到|音频|录音|文件)|未(?:收到|听到)|无法(?:访问|听到|读取)(?:音频|录音)|抱歉.{0,12}(?:没有|未)|please (?:re-?upload|upload|provide|send) (?:the |your )?(?:audio|recording|file))`)
+//
+// 2026-10-01 审计：补了独立的 `don'?t` / `do not` / `does not` 形式，并加上
+// see|find|detect|listen。原来只覆盖 `didn't receive/get/hear` 与 `not see`，
+// 于是网关最常见的一句「I don't see any audio file attached to this message.」
+// 匹配不上 —— 而这正是本函数要拦的那类幻觉。漏掉就意味着它被当成转写结果写进
+// 会议记录，且不报任何错。新增措辞与「正常转写」用例无交集（已回归验证）。
+var missingAudioRe = regexp.MustCompile(`(?i)(no audio|(?:didn'?t|don'?t|do not|does not) (?:see|receiv|get|hear|find|detect|access|listen)|not (?:see|receiv|receiv\w*|access|accessible)|cannot (?:access|listen|hear)|unable to (?:access|listen|hear)|can'?t (?:access|listen|hear)|没有(?:附上|收到|听到|音频|录音|文件)|未(?:收到|听到)|无法(?:访问|听到|读取)(?:音频|录音)|抱歉.{0,12}(?:没有|未)|please (?:re-?upload|upload|provide|send) (?:the |your )?(?:audio|recording|file))`)
 
 // LooksLikeMissingAudio 识别「200 但音频被丢弃」的幻觉回复。
 // 2026-10-01 实测网关 auto 模型：拿到 base64 音频后回答

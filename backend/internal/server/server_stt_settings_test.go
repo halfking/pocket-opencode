@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,11 +16,53 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/usersetting"
 )
 
+// errFakeASRNoNetwork 是「出网已被测试拦下」的哨兵错误。
+//
+// 2026-10-01 审计：它和下面的 installFakeASR 一样，都是从
+// feat/2026-10-01-stt-service 恢复出来的测试所依赖、却在那次 git clean 事故里
+// 跟辅助文件一起被卷走的符号。原先那个 SetSTTHTTPClient setter 不存在，是因为
+// Server.sttHTTPClient 当时根本没人读（见 sttHTTPClientOr 的说明）；现在该字段
+// 真正生效，注入点也才成为真的。
+var errFakeASRNoNetwork = errors.New("fake asr: 出网已被测试拦截")
+
 // noNetworkClient 让任何出网请求立刻失败：单测绝不能真打 llm.kxpms.cn。
 func noNetworkClient() *http.Client {
 	return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return nil, errFakeASRNoNetwork
 	})}
+}
+
+// installFakeASR 给 srv 装上一个会返回固定转写文本的假 ASR，让「试转」链路
+// 可以在完全不联网的情况下被端到端验证。
+//
+// 走**外部通道**：网关 key 在 sttTestServer 里被显式置空。外部 base URL 直接写进
+// store，而不是走 PUT /api/stt/config —— 后者有 SSRF 校验，127.0.0.1 的 httptest
+// 地址会被拒（正是 TestSttConfigRejectsDangerousExternalURL 断言的行为）。
+// 同一台 httptest 服务器既是转写目标、又是 srv.sttHTTPClient，两边都指过去，
+// 因此整个 /api/stt/probe 请求从头到尾不出机器。
+func installFakeASR(t *testing.T, srv *Server, text string) {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/audio/transcriptions") {
+			http.Error(w, `{"error":"unexpected path"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"text": text})
+	}))
+	t.Cleanup(upstream.Close)
+
+	store, ok := srv.userSettings.(*memUserSettings)
+	if !ok {
+		t.Fatalf("userSettings 不是 *memUserSettings：%T", srv.userSettings)
+	}
+	store.Put(seedSTTSetting("shared-user", "ws-a",
+		`{"channel":"external","externalBaseURL":"`+upstream.URL+`/v1","externalModel":"fake-asr"}`,
+		"sk-fake"))
+
+	// 关键：注入后 /api/stt/probe 才会用这台假服务器，
+	// 而不是硬编码的 gatewayHTTPClient 真实出网。
+	srv.sttHTTPClient = upstream.Client()
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -38,7 +81,7 @@ func sttTestServer(t *testing.T, gatewayKey string) (*Server, *memUserSettings) 
 	srv, _ := newWorkspaceIsolationServer(t)
 	store := newMemUserSettings()
 	srv.userSettings = store
-	srv.SetSTTHTTPClient(noNetworkClient())
+	srv.sttHTTPClient = noNetworkClient()
 	srv.sttDiscovery = stt.NewDiscoveryCache(0)
 	return srv, store
 }
@@ -339,7 +382,7 @@ func TestSttProbeRejectsAudioDroppedByGateway(t *testing.T) {
 			`{"choices":[{"message":{"content":"您似乎没有附上录音文件，请重新上传。"}}],"usage":{"total_characters":0}}`)
 	}))
 	defer upstream.Close()
-	srv.SetSTTHTTPClient(upstream.Client())
+	srv.sttHTTPClient = upstream.Client()
 	engine := stt.NewResolver(func(context.Context, stt.Scope) (*stt.Target, error) {
 		return &stt.Target{BaseURL: upstream.URL + "/v1", APIKey: "k", Model: "auto",
 			Transport: stt.TransportChatAudio, Channel: stt.ChannelGateway}, nil

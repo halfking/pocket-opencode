@@ -240,34 +240,13 @@ func TestLooksLikeMissingAudio(t *testing.T) {
 	}
 }
 
-// TestProbeClassifiesBothTransportsMissing 网关两种传输形态都不存在时，
-// 必须判 endpoint_missing 而不是 failed。
+// TestProbeClassifiesBothTransportsMissing 见 discovery_endpoint_missing_test.go。
 //
-// 这条守的是 2026-10-01 审计发现的真实缺陷：ProbeEndpointMissing 是个死常量
-// （声明了、配了中文文案，但生产代码从不赋值），于是「网关没开转写端点」
-// 全都落到 ProbeFailed，设置页把上游原始 JSON 拼成
-// 「探测失败(http 404: {"choices":…})」甩给用户。
-func TestProbeClassifiesBothTransportsMissing(t *testing.T) {
-	f := &fakeGateway{
-		models:         []GatewayModel{{ID: "no-asr-here"}},
-		transcriptions: map[string]int{}, // 空 map → 假网关回 404
-		chatStatus:     map[string]int{}, // 空 map → 假网关也回 404
-	}
-	srv := httptest.NewServer(f.handler(t))
-	defer srv.Close()
-
-	c := ProbeModel(context.Background(), srv.Client(), srv.URL+"/v1", "key", "no-asr-here")
-	if c.Status != ProbeEndpointMissing {
-		t.Fatalf("status=%s want %s（detail=%s）", c.Status, ProbeEndpointMissing, c.Detail)
-	}
-	if c.Usable() {
-		t.Error("没有转写端点的网关不能被判为可用")
-	}
-	// Detail 会进设置页文案，绝不能是上游原始响应体。
-	if strings.Contains(c.Detail, "{") || strings.Contains(c.Detail, "choices") {
-		t.Errorf("Detail 泄漏了上游原始响应体：%q", c.Detail)
-	}
-}
+// 2026-10-01 审计：本文件是从 feat/2026-10-01-stt-service 恢复出来的，里面有一份
+// 同名同义的 TestProbeClassifiesBothTransportsMissing，与已在 main 的那份重复
+// 声明，导致整个 stt 包编译不过（duplicate symbol）。保留 main 那份：它除同样
+// 的三条断言外，还多断言 Detail 不含 no_candidate，并配了反向用例
+// TestProbeNoProviderIsNotEndpointMissing 一起钉住「探测失败 ≠ 端点缺失」。
 
 // TestProbePrefersTranscriptionsEndpoint 外部服务（OpenAI/Groq 兼容）走
 // /audio/transcriptions 就该直接判 ok，不再去试 chat。
