@@ -1,0 +1,17 @@
+=== A. 前端哨兵 /healthz（nginx 本地，不穿透）===
+GET :18080/healthz -> 200 body=frontend ok
+=== B. 后端直连 /healthz（pocketd）===
+GET :18088/healthz -> 200 body=ok
+=== C. /api/healthz 穿透（BUG 修复点：必须等于 B，不能是哨兵）===
+GET :18080/api/healthz -> 200 body=ok
+=== D. 通用 /api/ 代理（requireAuth 应打到后端 401，而非 nginx 404/502）===
+GET :18080/api/instances -> 401 body={"code":"unauthenticated","error":"missing authorization token","request_id":"598b20ae060d86237cab9d9688ce4908","retryab
+=== E. 静态资源（index.html 同源壳）===
+GET :18080/ -> 200 bodyhead=<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta ch
+=== F. 反证：停 pocketd 后 /api/healthz 必须 502 而 /healthz 仍哨兵 ===
+pocketd stopped: GET :18080/api/healthz -> 200 body=ok
+pocketd stopped: GET :18080/healthz    -> 200 body=frontend ok
+pocketd restarted: GET :18080/api/healthz -> 200 body=ok
