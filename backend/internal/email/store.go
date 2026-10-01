@@ -77,7 +77,7 @@ func (s *Store) migrate() error {
 		is_read BOOLEAN DEFAULT FALSE,
 		is_starred BOOLEAN DEFAULT FALSE,
 		category TEXT,
-		importance TEXT,
+		importance TEXT CHECK (importance IN ('','high','medium','low')),
 		ai_summary TEXT,
 		suggested_action TEXT,
 		action_reason TEXT,
@@ -86,6 +86,34 @@ func (s *Store) migrate() error {
 		UNIQUE(account_id, message_id),
 		FOREIGN KEY (account_id) REFERENCES email_accounts(id) ON DELETE CASCADE
 	);
+	-- 重要度只能是 '' / high / medium / low。
+	--
+	-- 上面 CREATE TABLE 里那行内联 CHECK 只对**新库**生效，PostgreSQL 不会
+	-- 给已经建好的表补约束，所以老库需要这段幂等补丁。列级 CHECK 的自动名字
+	-- 就是 emails_importance_check，与内联那个同名，因此新库跑到这里会跳过。
+	--
+	-- 为什么要有这层兜底：同文件的 email_accounts.auth_type 早就有 CHECK，
+	-- 而 importance 一直没有。§7af 修了 NormalizeImportance（把 "High"/"高"/"1"
+	-- 归一成 high，无法识别的落空串）之后上层不再写脏值，但**历史脏值**仍会
+	-- 留在库里，而 splitReminderCandidates 用 case "high" 精确匹配——脏值既
+	-- 不触发提醒也不计入 unclassified，是最坏情况。约束让脏值进不来。
+	--
+	-- 空串是合法值，语义是「未分类」。列可空，NULL 同样表示未分类：
+	-- NULL IN (...) 求值为 NULL，而 CHECK 只在结果为 FALSE 时拒绝，所以
+	-- NULL 会照常放行——这一点是刻意的，不能改成 NOT NULL。
+	DO $pocket$
+	BEGIN
+		IF NOT EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = 'emails'::regclass
+			  AND conname = 'emails_importance_check'
+		) THEN
+			ALTER TABLE emails ADD CONSTRAINT emails_importance_check
+				CHECK (importance IN ('','high','medium','low'));
+		END IF;
+	END
+	$pocket$;
+
 	-- IMAP fallback 去重：仅当 message_id 缺失时按 (account_id, subject, date)
 	-- 去重。用部分唯一索引而非全局 UNIQUE 约束，否则两封不同 message_id
 	-- 但同主题同日期（如 "Daily report"、"Out of office"）的邮件会被
