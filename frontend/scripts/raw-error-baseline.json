@@ -1,11 +1,4 @@
 {
   "note": "把后端/JS 原始 message 直接上屏的存量；只许减少不许增加。",
-  "sites": [
-    "composables/usePromptOptimizer.ts\u0000optimizeError.value = err.message || String(err)",
-    "features/ai-chat/AgentSyncSheet.vue\u0000lastError.value = e?.message || String(e)",
-    "features/ai-chat/AgentSyncSheet.vue\u0000lastError.value = e?.message || String(e)",
-    "features/ai-chat/aiChatStore.ts\u0000modelsError.value = e?.message || String(e)",
-    "features/sessions/SessionDetailDrawer.vue\u0000toast.error(e.message)",
-    "features/tasks/useInstanceApprovals.ts\u0000loadError.value = err instanceof Error ? err.message : '待审批拉取失败'"
-  ]
+  "sites": []
 }

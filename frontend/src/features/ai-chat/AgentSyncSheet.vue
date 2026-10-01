@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 import { useToast } from '../../composables/useToast'
+import { useApiError } from '../../composables/useApiError'
 
 const props = defineProps<{
   show: boolean
@@ -14,6 +15,7 @@ const emit = defineEmits<{
 const agentStore = useChatAgentStore()
 const toast = useToast()
 const lastError = ref('')
+const apiError = useApiError()
 
 onMounted(() => {
   // 首次打开时探测同步可用性
@@ -53,7 +55,7 @@ async function handleUpload() {
       lastError.value = '云端版本比本地新，请先「下载」合并后再上传'
       toast.error('版本冲突：云端有更新的版本')
     } else {
-      lastError.value = e?.message || String(e)
+      lastError.value = apiError(e, '同步失败，请稍后重试')
       toast.error('上传失败')
     }
   }
@@ -69,7 +71,7 @@ async function handleDownload() {
       toast.info('云端无新内容')
     }
   } catch (e: any) {
-    lastError.value = e?.message || String(e)
+    lastError.value = apiError(e, '同步失败，请稍后重试')
     toast.error('下载失败')
   }
 }

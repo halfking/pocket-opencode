@@ -23,6 +23,7 @@ import {
   type QuestionInfo,
 } from '../../api/approvals'
 import { useConnectivityStore } from '../../stores/connectivity'
+import { storeApiError } from '../../api/store-error'
 import { usePendingApprovals, type ReplyStatus } from '../../composables/usePendingApprovals'
 import { useHaptics } from '../../composables/useHaptics'
 import { initIdempotentWsBus, subscribe } from '../../services/idempotentWsBus'
@@ -121,7 +122,7 @@ export function useInstanceApprovals(instanceId: () => string): UseInstanceAppro
       loadError.value = ''
     } catch (err) {
       // 拉取失败保留上次列表，分诊条退化为无审批信号。
-      loadError.value = err instanceof Error ? err.message : '待审批拉取失败'
+      loadError.value = storeApiError(err, '待审批拉取失败')
     } finally {
       refreshing = false
     }

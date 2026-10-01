@@ -12,6 +12,7 @@
 import { ref } from 'vue'
 import { llmBffApi, type ChatMessage } from '../api/llm-bff'
 import type { ChatStreamHandle } from '../native/aiStreamRuntime'
+import { storeApiError } from '../api/store-error'
 
 const OPTIMIZE_SYSTEM_PROMPT =
   '你是一个文本润色助手。用户会给你一段草稿，请在保持原意与语言（中文/英文跟随原文）的前提下，' +
@@ -82,7 +83,7 @@ export function usePromptOptimizer(options: PromptOptimizerOptions = {}) {
           isOptimizing.value = false
           optimizeRetryHint.value = ''
           handle = null
-          optimizeError.value = err.message || String(err)
+          optimizeError.value = storeApiError(err, '提示词优化失败，请稍后重试')
           handlers.onError?.(err)
         },
       },
