@@ -3230,6 +3230,118 @@ tick=2s），并在注释里写明为什么必须避开 tick 边界。
 
 ---
 
+## §7bj 给 IMAP 阶段一个无条件上界：POP3 回退不再拿不到预算（`bb21c6d`）
+
+### 起因：§7bi 只修了一半
+
+`imapHardTimeout` 的滚动续期被夹住之后，还剩一半问题：
+`syncBudget` 的注释说它是「单个账户的**总**墙钟预算，IMAP 与 POP3 降级共用」，
+但代码上 **IMAP 路径从头到尾没有检查过它** —— `remaining()` 只被传给 POP3 分支。
+
+于是：IMAP 一旦跑超 → `remaining()` 变负 → `syncPOP3Fallback` 第一行就是
+
+```go
+if budget <= 0 {
+    return 0, fmt.Errorf("imap failed and no time left for POP3 fallback (%s)", ...)
+}
+```
+
+降级路径**恰好在最需要它的时候没有预算**。线上原文（§7bh）：
+
+```
+21:38:02 imap login huangxutao@kxpms.cn failed: ... i/o timeout
+        — trying POP3 fallback (budget -10s left)
+```
+
+### 修法：到点直接 Close
+
+不是「给 IMAP 加检查」—— go-imap 不响应 ctx（`imapclient.Options` 没有
+ReadTimeout 也没有 ctx），唯一的**立即**手段是 `Close`。`Close` 是同步的、
+不依赖任何定时器，所以它和 §7bi 里那个「要等看门狗 tick」的 deadline 机制是
+两种不同的兜底，缺一不可。
+
+```go
+const syncBudget = 70 * time.Second   // 生产
+pop3Reserve     = 20 * time.Second   // 无条件留给 POP3
+imapStageBudget = syncBudget - pop3Reserve   // 50s
+
+stopIMAPStage := time.AfterFunc(imapStageBudget, func() {
+    log.Printf("imap stage budget %s exhausted for %s — closing connection to leave %s for POP3 fallback", ...)
+    _ = client.Close()
+})
+defer stopIMAPStage.Stop()
+```
+
+取 50s 而不是 `imapHardTimeout`(45s)：让 deadline 机制先按它自己的节奏收尾，
+`Close` 只是兜底。正常同步实测 0.25~1.4s，远够不着这两个值。
+
+**一个配置坑顺手堵掉**：若 `syncBudget <= pop3Reserve`，`imapStageBudget` 会算成
+非正数，而 `time.AfterFunc` 拿到非正周期会**立刻触发** —— 每一轮都直接走降级，
+比超预算更难排查。所以 `imapStageBudget <= 0` 时退回 `syncBudget / 2`。
+
+### 为什么把两个 const 改成可注入字段
+
+`syncBudget` / `pop3Reserve` 从 const 变成 `Fetcher` 的字段（零值仍取生产默认），
+理由与 `imapDialWithIdle` 完全一样：**50s 的生产值测试等不了**，而「Sync 里到底
+装没装那个 AfterFunc」这条契约只能在 Sync 的真实路径上验。
+
+### 测试：第一版测的是测试自己
+
+我第一版写的是「直接测 `time.AfterFunc` + `client.Close` 能断开挂住的读」——
+那条**把 Sync 里那行删掉照样绿**，因为它根本没经过 Sync。这正是本项目反复
+踩的「测测试自己」（见 `selectInboxWithClientID` 那次），所以重写了。
+
+`sync_budget_test.go` 走完整 Sync：真 store（隔离 schema）+ 真 account +
+`dialTLS` 指向黑洞 IMAP 服务器，预算缩到 `syncBudget=4s / pop3Reserve=2s`。
+
+关键设计：把 `dialTLS` 的 idle 设成 60s、硬截止设 0，**保证在 2.5s 的测试窗口
+里 deadline 机制完全不可能成为终结者** —— 唯一的终结者只能是 Sync 自己装的
+那个 AfterFunc。IMAP 登录挂住后走 POP3 分支，而 POP3 端点解析不出来，所以返回
+的错误**必然**是 `no POP3 endpoint`，而不是 `no time left for POP3 fallback`。
+
+### 修复后
+
+```
+22:07:53 imap stage budget 2s exhausted for budget@example.com — closing connection
+         to leave 2s for POP3 fallback
+22:07:53 imap login budget@example.com failed: unexpected EOF — trying POP3 fallback (budget 2s left)
+22:07:53 budget@example.com sync trace total 2.018s
+--- PASS: TestSyncLeavesBudgetForPOP3Fallback (2.28s)
+     IMAP stage closed at 2.019s, POP3 fallback entered with a positive budget:
+     no POP3 endpoint for budget@example.com (imaphost=127.0.0.1)
+```
+
+`budget **2s left**` 是**正数**，而且真的走进了 POP3 分支（而不是停在「没预算」）。
+
+### 负控：忠实复现了生产缺陷
+
+把 AfterFunc 周期改成 1h（等于不设上界）：
+
+```
+22:09:07 imap login budget@example.com failed: ... i/o timeout
+         — trying POP3 fallback (budget -56s left)
+--- FAIL: TestSyncLeavesBudgetForPOP3Fallback (60.30s)
+     sync_budget_test.go:112: POP3 回退仍然没拿到预算（elapsed=1m0.021s）：
+     imap failed and no time left for POP3 fallback (budget@example.com)
+```
+
+`budget **-56s** left` 与线上那条 `budget -10s left` **同构** —— 缺陷被完整
+复现（负控期间 `idle=60s` 的 deadline 兜底成了唯一终结者，耗时 60.3s，也正是
+「deadline 机制不作为时 Sync 会跑多久」的实测值），而修复消除了它。
+
+### 两条负控合起来说明的事
+
+| 机制 | 负控（撤掉后） | 修复后 |
+|---|---|---|
+| §7bi 硬截止夹取 | 读在 6.000s 断（越过 hard=3s） | 4.001s |
+| §7bj IMAP 阶段上界 | `budget -56s left`，POP3 直接放弃 | `budget 2s left`，走进 POP3 |
+
+两者是**互补**的兜底：deadline 机制精细但依赖 tick 准时，`Close` 粗糙但立即。
+只留后者，IMAP 阶段会硬切在 50s（正常同步无所谓，但长列表分页会被切）；只留
+前者，就有了 §7bi 那个「上界可能越界」的问题。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
