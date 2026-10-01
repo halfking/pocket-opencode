@@ -132,6 +132,7 @@ func TestWorkItemReminderFiresDueReminder(t *testing.T) {
 	store.parts["t-1"] = []task.Participant{{UserID: "alice", Role: task.RoleOwner}, {UserID: "bob", Role: task.RoleAssignee}}
 	notif := &fakeWorkNotifier{}
 	ex := NewWorkItemReminderExecutor(store, notif)
+	quietHoursOff(ex)
 
 	res, err := ex.Execute(context.Background(), schedTask())
 	if err != nil {
@@ -196,6 +197,19 @@ func pinServerZone(t *testing.T) {
 	orig := time.Local
 	time.Local = time.UTC
 	t.Cleanup(func() { time.Local = orig })
+}
+
+// quietHoursOff makes a test that is about *firing* independent of the hour it
+// runs at.
+//
+// The default window is 22:30-07:30 and pinServerZone pins time.Local to UTC, so
+// a suite that runs between those minutes defers every reminder and fails for
+// reasons unrelated to what it asserts — batch survival, a nil notifier, the
+// staleness bound. Those cases are not about quiet hours, so they say so
+// explicitly instead of inheriting a window from the wall clock. The deferral
+// path keeps its own coverage, with a window built by windowAroundNow.
+func quietHoursOff(ex *WorkItemReminderExecutor) {
+	ex.SetQuietWindow(task.QuietWindow{})
 }
 
 // A reminder inside quiet hours is moved, not fired and not dropped.
@@ -287,6 +301,7 @@ func TestWorkItemReminderBatchSurvivesOneFailure(t *testing.T) {
 	store.appendErr = errors.New("db down")
 	notif := &fakeWorkNotifier{}
 	ex := NewWorkItemReminderExecutor(store, notif)
+	quietHoursOff(ex)
 
 	res, err := ex.Execute(context.Background(), schedTask())
 	if err != nil {
@@ -310,6 +325,7 @@ func TestWorkItemReminderNotificationFailureIsSwallowed(t *testing.T) {
 	store.due = []task.Task{{ID: "t-1", Title: "Ship", OwnerID: "alice", RemindAt: recent(60)}}
 	notif := &fakeWorkNotifier{err: errors.New("channel down")}
 	ex := NewWorkItemReminderExecutor(store, notif)
+	quietHoursOff(ex)
 
 	if _, err := ex.Execute(context.Background(), schedTask()); err != nil {
 		t.Fatalf("Execute propagated a notification failure: %v", err)
@@ -326,6 +342,7 @@ func TestWorkItemReminderToleratesNilNotifier(t *testing.T) {
 	store := newFakeStore()
 	store.due = []task.Task{{ID: "t-1", Title: "Ship", OwnerID: "alice", RemindAt: recent(60)}}
 	ex := NewWorkItemReminderExecutor(store, nil)
+	quietHoursOff(ex)
 
 	if _, err := ex.Execute(context.Background(), schedTask()); err != nil {
 		t.Fatalf("Execute with a nil notifier: %v", err)
@@ -383,6 +400,7 @@ func TestWorkItemReminderRetiresStaleReminders(t *testing.T) {
 	}
 	notif := &fakeWorkNotifier{}
 	ex := NewWorkItemReminderExecutor(store, notif)
+	quietHoursOff(ex)
 
 	res, err := ex.Execute(context.Background(), schedTask())
 	if err != nil {
@@ -438,6 +456,7 @@ func TestWorkItemReminderStaleBoundIsConfigurable(t *testing.T) {
 	store.due = []task.Task{{ID: "ancient", Title: "Old", OwnerID: "alice", RemindAt: recent(72 * 3600)}}
 	ex := NewWorkItemReminderExecutor(store, &fakeWorkNotifier{})
 	ex.SetStaleAfter(0)
+	quietHoursOff(ex)
 
 	res, err := ex.Execute(context.Background(), schedTask())
 	if err != nil {
