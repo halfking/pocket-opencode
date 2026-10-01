@@ -7433,6 +7433,85 @@ if p.Pusher == nil || !p.Pusher.Available() {
 
 ---
 
+## §7dg 【需求 8】LWW 链路逐段查清：实现是对的，但本地时间戳单位混存（2026-10-02）
+
+需求 8「配置有最后修改时间，服务端与客户端以最后时间为准」是这批需求里**唯一
+一条服务端与客户端都实现了的机制**，但此前从没有人把这条链路从头到尾验过一遍。
+本轮逐段查了五跳，结论是**实现正确**，只在最后一跳发现一个单位混存。
+
+### 五跳逐段核对（全部实测，不是读印象）
+
+1. **契约**：`email.Account.UpdatedAt` 带 `json:"updatedAt"`（`model.go:29`，
+   注释明写「配置的最后修改时间（Unix 秒）」）。客户端 `EmailAccount.updatedAt`
+   声明为 Unix 秒（`api/email.ts:29-30`）。两侧单位声明一致。
+2. **增量拉取**：`handleEmailAccounts` GET → `filterEmailAccountsSince`
+   （`server_since.go:110`），`parseSinceQuery` 把毫秒输入归一成秒，
+   `stampAfterSince` 容忍秒/毫秒混存。秒/毫秒混用在这里是**被处理掉的**。
+3. **服务端 LWW 守卫**：`UpdateAccountLWTScoped`（`store.go:1583`）用
+   `WHERE ... AND updated_at <= $base` 做乐观并发，并保证
+   `next = max(now, base+1)` 单调递增（否则秒级时间戳可能与旧值相同，
+   客户端下一轮会误判「没变过」）。`ErrStaleWrite` 与 `ErrNotFound` 分开返回。
+4. **HTTP 映射**：`server_assistant.go:1226-1236` 把 `ErrStaleWrite` 映射成
+   **409 + 当前 updatedAt**（客户端可直接覆盖本地镜像），`ErrNotFound` → 404。
+5. **客户端上行**：`account-sync.ts:130` 显式用**本地**的 `l.updatedAt` 作基准，
+   代码里还写了注释说明「用 target 的 updatedAt 会让守卫永远放行」；
+   收到 409 走下行覆盖而**不进 outbox 干等**（`account-sync.ts:160-166`）。
+
+**结论：这条链路没有「看起来是 LWW、实际是 last-arrival-wins」的问题。**
+服务端守卫生效，客户端传对了版本号，409 的处理也是对的。
+
+### 【已实测的缺陷】`local_email_accounts.updated_at` 单位混存：秒与毫秒
+
+- `emails-store.ts:78` 的 `saveAccount`：`const now = Date.now()` → **毫秒**，
+  写进 `created_at` 与 `updated_at`。
+- `emails-store.ts:126` 的 `updateAccount`：`Math.floor(Date.now()/1000)` → **秒**。
+- 下行写入（`account-mirror-write.ts:37/49`）用的是服务端值 → **秒**。
+- 读回（`emails-store.ts:431` 的 `rowToAccount`）：`updatedAt: r.updated_at ?? 0`，
+  **不做任何归一**。
+
+于是同一列里既有秒也有毫秒。实测后果（用 `planAccountSync` 真实函数跑的，
+不是推演）：
+
+```
+server updated_at (s) = 1789480000
+client updated_at (ms)= 1789480000000
+plan = {"pullIds":[],"pushIds":["acc-1"]}
+push base sent to server = 1789480000000
+guard accepts stale write? (stored<=base) = true      ← 守卫被架空
+```
+
+服务端守卫是 `updated_at <= base`。客户端用毫秒当基准时，基准比服务端现存值大
+约 1000 倍，**无论服务端那份是不是更新的，这个写都会被接受**。这正是需求 8
+要防的「旧的一方覆盖新的一方」。
+
+**但影响面比第一眼看上去窄，必须说清楚**：`saveAccount` 不是主路径。
+`EmailAccountSetup.vue:430-456` 里它是 `emailApi.addAccount` 失败
+（404 或 ≥500）后的**回落**。所以触发条件是三条同时成立：
+① 账户是在云端 API 不可用时于设备上创建的；
+② 之后同一邮箱在服务端也存在了（否则 `planAccountSync` 配不上，`pushIds` 为空，
+毫秒值没有出口）；
+③ 之后发生一次上行。
+
+**未修**，两个原因：一是修法涉及「本地已写入的历史行要不要回填」，
+属于数据迁移决策；二是主路径正确，只补回落路径可以按最小改动做。
+候选修法（两条都做才彻底，因为存量行已经在库里）：
+写时 `saveAccount` 改用秒；读时 `rowToAccount` 对 `> 1e12` 的值除以 1000。
+
+### 顺带记一条：`last_synced_at` 用毫秒是**对的**，不要一起「修」
+
+`updateSyncState`（`emails-store.ts:334-338`）把 `Date.now()` 写进
+`last_synced_at`，那列本来就是毫秒语义，且不参与 LWW 比较。
+把单位混存当通病去全库统一，会把这一列改坏。
+
+### 回归
+
+`npm.cmd run test:email` 实测 **242 用例全绿、0 失败**（含
+`account-lww-real.test.mjs` / `account-sync.test.mjs` /
+`account-mirror-write.test.mjs` 三份需求 8 用例）。本节**未改任何生产代码**，
+取证用的临时探针已删除（`git status` 干净）。
+
+---
+
 ## §7cz 【需求 6/7】邮件的增量同步**永远退化成全量拉取**，而它的「正确」是靠这个 bug 换来的（2026-10-02）
 
 需求 7「在邮件窗口查看各类邮件」的 UI 链路本身是完整的，我逐段验过：
