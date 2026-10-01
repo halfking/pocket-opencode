@@ -115,6 +115,14 @@ func (s *Store) migrate() error {
 		UNIQUE(user_id, summary_date)
 	);
 	CREATE INDEX IF NOT EXISTS idx_daily_summaries_user ON daily_summaries(user_id);
+	-- emails.updated_at：自定义目录的 move / 删除目录回退都写这一列，但 emails
+	-- 从来没有过这一列，导致 store_folders.go 的两条 UPDATE 在运行时直接
+	-- 报 column "updated_at" of relation "emails" does not exist
+	-- （TestFoldersAndOpsLog 与真机上的删除目录 500 都是它）。
+	-- 沿用本文件既有的幂等 ALTER 写法；存量行用 created_at 回填，避免新建行
+	-- updated_at 为 NULL 而老行有值的分叉。
+	ALTER TABLE emails ADD COLUMN IF NOT EXISTS updated_at BIGINT;
+	UPDATE emails SET updated_at = created_at WHERE updated_at IS NULL;
 	-- S0-A: workspace_id isolation (idempotent).
 	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
 	ALTER TABLE emails ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
@@ -516,14 +524,14 @@ func (s *Store) InsertEmail(ctx context.Context, e Email) error {
 		//     若直接赋值，一次同步就能把正常摘要刷成空白，这比留着旧 MIME 更糟。
 		//   - subject / from_address 同样是从信封派生的，但本轮没有证据表明它们
 		//     出过错，暂不扩大刷新面。
-		`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments, created_at)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments, created_at, updated_at)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 			 ON CONFLICT (id) DO UPDATE SET
 			   snippet = CASE WHEN EXCLUDED.snippet <> '' THEN EXCLUDED.snippet ELSE emails.snippet END`,
 		e.ID, e.AccountID, defaultWorkspace(e.WorkspaceID), nullStr(e.MessageID), e.UID,
 		e.FromAddress, e.FromName, e.Subject, e.Snippet, e.Date,
 		e.IsRead, e.IsStarred, e.Category, e.Importance, e.AISummary, e.SuggestedAction,
-		nullStr(e.ActionReason), e.HasAttachments, time.Now().Unix())
+		nullStr(e.ActionReason), e.HasAttachments, time.Now().Unix(), time.Now().Unix())
 
 	return err
 }

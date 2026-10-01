@@ -361,7 +361,7 @@ func (s *Store) InsertOpsLogScoped(ctx context.Context, entries []OpsLogEntry, u
 			INSERT INTO email_ops_log (id, user_id, workspace_id, account_id, email_id, uid, action,
 				target_folder, subject, status, idempotency_key, created_at, updated_at)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-			ON CONFLICT (idempotency_key) DO NOTHING`,
+			ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
 			e.ID, nullStr(e.UserID), nullStr(e.WorkspaceID), e.AccountID, e.EmailID, e.UID,
 			e.Action, e.TargetFolder, e.Subject, e.Status, nullStr(e.IdempotencyKey), e.CreatedAt, e.UpdatedAt)
 		if err != nil {
