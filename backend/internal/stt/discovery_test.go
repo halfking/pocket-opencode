@@ -3,6 +3,7 @@ package stt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,13 +14,13 @@ import (
 
 // fakeGateway 造一个可控的假网关：模型目录 + 两种转写端点的行为都可编排。
 type fakeGateway struct {
-	models        []GatewayModel
+	models         []GatewayModel
 	transcriptions map[string]int    // model -> status
-	transcribeText map[string]string  // model -> text
-	chatStatus    map[string]int
-	chatText      map[string]string
-	chatChars     int
-	lastAuth      string
+	transcribeText map[string]string // model -> text
+	chatStatus     map[string]int
+	chatText       map[string]string
+	chatChars      int
+	lastAuth       string
 }
 
 func (f *fakeGateway) handler(t *testing.T) http.Handler {
@@ -82,9 +83,15 @@ func writeJSONStatus(w http.ResponseWriter, status int, text string) {
 }
 
 // multipartModel 从 multipart 体里抠出 model 字段（探测用）。
-func multipartModel(body string) string {
+func multipartModel(body string) string { return multipartField(body, "model") }
+
+// multipartField 从 multipart 体里抠出任意一个普通字段的值。
+//
+// 注意它只认「Content-Disposition 行在值之前一行」的简单布局——真实解析要用
+// mime/multipart，这里为了断言足够、且避免把 WAV 二进制误当字段。
+func multipartField(body, name string) string {
 	for _, part := range strings.Split(body, "\r\n") {
-		if strings.HasPrefix(part, "Content-Disposition") && strings.Contains(part, `name="model"`) {
+		if strings.HasPrefix(part, "Content-Disposition") && strings.Contains(part, `name="`+name+`"`) {
 			idx := strings.Index(body, part)
 			rest := body[idx+len(part):]
 			rest = strings.TrimPrefix(rest, "\r\n\r\n")
@@ -119,6 +126,14 @@ func TestIsASRCandidate(t *testing.T) {
 			"语音合成（音色克隆）不是转写，不该占探测预算、也不该出现在转写失败文案里"},
 		{GatewayModel{ID: "mimo-v2.5-tts-voicedesign", Modality: "text"}, false,
 			"语音合成（音色设计）同上"},
+		// 裸的 mimo-v2.5-tts（不带 voiceclone/voicedesign 后缀）同样在目录里。
+		// 刻意**不**在这里加它的断言：负控对照实测过，把 ttsNameRe 里的 `tts`
+		// 整个去掉，这条断言照样通过——因为 asrNameRe 本来也不匹配它。
+		// 也就是说裸 tts 真正被 ttsNameRe 挡住的前提是**它同时命中某个弱 ASR
+		// 标记**（如 voice / audio），而这类名字 -voiceclone、-voicedesign 已经覆盖。
+		// 加一条恒绿的断言只会制造「有测试保护」的错觉。
+		{GatewayModel{ID: "mimo-v2.5-tts", Modality: "audio"}, false,
+			"裸 TTS 合成模型即使用 modality=audio 也不该当转写候选"},
 		// TTS 词 + 强 ASR 标记的混合命名不能被误杀。
 		{GatewayModel{ID: "whisper-tts-hybrid", Modality: "text"}, true,
 			"带 whisper 强标记，即使名字含 tts 也不排除"},
@@ -144,9 +159,9 @@ func TestDiscoverClassifiesNoProvider(t *testing.T) {
 		// 网关没有 /audio/transcriptions 端点（404），chat 一律 no_candidate。
 		transcriptions: map[string]int{},
 		chatStatus: map[string]int{
-			"gpt-audio":       http.StatusServiceUnavailable,
-			"gpt-audio-mini":  http.StatusServiceUnavailable,
-			"mimo-v2.5-asr":   http.StatusServiceUnavailable,
+			"gpt-audio":      http.StatusServiceUnavailable,
+			"gpt-audio-mini": http.StatusServiceUnavailable,
+			"mimo-v2.5-asr":  http.StatusServiceUnavailable,
 		},
 	}
 	srv := httptest.NewServer(f.handler(t))
@@ -338,8 +353,12 @@ func TestRecommendedModelsCoverBothGroups(t *testing.T) {
 			ext++
 		}
 	}
-	if gw != 3 || ext != 3 {
-		t.Fatalf("预置应为网关 3 + 外部 3，实际 gateway=%d external=%d", gw, ext)
+	// 数量断言只守下限，不写死具体个数：用户要求「尽可能费用少」，候选表
+	// 会随调研持续增补（2026-10-01 从 3 个扩到 7 个），写死上限会让正常的
+	// 新增候选变成测试失败，从而诱导后来者不去补候选。
+	// 上限仍然要设——防止有人把整张 OpenRouter 模型表灌进来。
+	if gw != 3 || ext < 7 || ext > 20 {
+		t.Fatalf("预置应为网关 3 + 外部 7..20，实际 gateway=%d external=%d", gw, ext)
 	}
 	for _, o := range all {
 		if o.Model == "" || o.Note == "" {
@@ -366,5 +385,55 @@ func TestNormalizeChannelAndTransport(t *testing.T) {
 	}
 	if NormalizeTransport("chat-audio") != TransportChatAudio {
 		t.Error("chat-audio 应被识别")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 2026-10-01 网关改了 503 的响应体形状
+//
+// 早先的 503 体是 {"error":{"code":"no_candidate",...}}；实测（同一天下午）
+// 变成了 {"error":{"alternatives":{"requested_model":"mimo-v2.5-asr",
+// "task_type":"code","alternatives":[…]}}}。
+//
+// 语义没变——「这个模型没有上游 provider，附上它能用的备选」——但只认
+// no_candidate 的 isNoProvider 会把它判成 ProbeFailed。后果不是分类难看：
+// 设置页显示「探测失败」而不是「网关无上游 provider」，用户看不出该去开通
+// provider 还是换模型，正是这个功能最初要解决的可行动性问题。
+// ---------------------------------------------------------------------------
+
+func TestIsNoProviderRecognizesGatewayAlternativesShape(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		err    string
+		want   bool
+	}{
+		{"旧形状 no_candidate", 503, `{"error":{"code":"no_candidate","message":"No available provider"}}`, true},
+		{"旧形状 no available provider", 503, "No available provider for model 'x'", true},
+		{
+			"2026-10-01 新形状 requested_model+alternatives", 503,
+			`http 503: {"error":{"alternatives":{"requested_model":"mimo-v2.5-asr","task_type":"code",` +
+				`"alternatives":[{"model":"deepseek-v4-flash","family":"deepseek","context_window":131072,` +
+				`"featured":true,"reason":"task_match"}]}}}`,
+			true,
+		},
+		// 只出现 requested_model、没有 alternatives 的 503 不能判成 no_provider：
+		// 那是别的错误，误判会让用户去开通 provider，而真实原因是别的事。
+		{"只有 requested_model", 503, `{"error":{"requested_model":"gpt-audio"}}`, false},
+		// 非 503 一律不算
+		{"500 不是 no_provider", 500, `{"error":{"alternatives":{"requested_model":"x","alternatives":[]}}}`, false},
+		{"404 不是 no_provider", 404, `{"error":{"code":"no_candidate"}}`, false},
+		{"nil err", 503, "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var err error
+			if c.err != "" {
+				err = errors.New(c.err)
+			}
+			if got := isNoProvider(c.status, err); got != c.want {
+				t.Errorf("isNoProvider(%d, %q) = %v，期望 %v", c.status, c.err, got, c.want)
+			}
+		})
 	}
 }

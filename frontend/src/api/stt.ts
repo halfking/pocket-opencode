@@ -11,6 +11,7 @@
 import { sherpa } from '../native/sherpa'
 import { http, LONG_REQUEST_TIMEOUT_MS } from './http'
 import { blobToBase64 } from '../utils/base64'
+import { filenameForMimeType } from './stt-filename'
 import {
   CLOUD_STT_NEED_BLOB,
   requireCloudAudioBlob,
@@ -27,17 +28,9 @@ export interface SttResult {
 export type { SttOptions }
 export { CLOUD_STT_NEED_BLOB, requireCloudAudioBlob }
 
-function filenameForMimeType(mimeType: string): string {
-  const normalized = mimeType.toLowerCase().split(';', 1)[0]
-  const extension = {
-    'audio/mp4': 'm4a',
-    'audio/mpeg': 'mp3',
-    'audio/ogg': 'ogg',
-    'audio/wav': 'wav',
-    'audio/webm': 'webm',
-  }[normalized] || 'webm'
-  return `recording.${extension}`
-}
+// 文件名推导已抽到 stt-filename.ts：单次/全量/即时三条转写路径必须共用
+// 同一张 MIME→扩展名映射，否则会出现「单次能转、全量转不出」的割裂。
+export { filenameForMimeType }
 export const sttApi = {
   /**
    * Transcribe recorded audio with automatic fallback.

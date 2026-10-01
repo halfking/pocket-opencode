@@ -2529,6 +2529,10 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[stt] transcribed %d bytes (%s) via %s/%s -> %d chars",
 		len(audioData), filename, result.Channel, result.Model, len(result.Text))
+	// 字段与 stt.Result 一一对应。costCents/durationMs 不是"顺手加上"的：
+	// frontend/src/api/stt.ts 的 cloudTranscribe() 已经在读 res.costCents，
+	// 这里不返回就等于成本统计永远是 undefined，而且没有任何报错——
+	// 这种"契约写了一半"的缺口最难查。
 	writeJSON(w, http.StatusOK, map[string]any{
 		"text":       result.Text,
 		"confidence": result.Confidence,

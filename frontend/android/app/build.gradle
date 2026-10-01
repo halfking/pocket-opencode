@@ -20,6 +20,18 @@ android {
         debug {
             // 开发/测试构建：允许 WebView mixed-content（ws:// from https://localhost）
             debuggable true
+            // 联调用旁挂包：`gradlew assembleDebug -PsttDevApp` 会把调试包改成
+            // 独立的 applicationId，与手机上已装的正式包**并存**、数据互不干扰。
+            //
+            // 为什么需要它：调试包通常要 VITE_API_BASE 指向本机 pocketd 才能联调，
+            // 而正式包里的 localStorage 覆盖（pocket_api_base）优先级高于构建期
+            // base，localStorage 又按 origin+包名隔离——不换 applicationId 就只能
+            // 改用户的「后端服务器」设置，那会连带清掉他已登录的会话。
+            // 默认不传这个属性，行为与之前完全一致。
+            if (project.hasProperty('sttDevApp')) {
+                applicationIdSuffix ".sttdev"
+                versionNameSuffix "-sttdev"
+            }
         }
         release {
             minifyEnabled false

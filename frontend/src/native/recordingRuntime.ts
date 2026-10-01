@@ -43,6 +43,8 @@ import {
   stopBackgroundMic, listenBackgroundMicParts, nativePartToBlob,
 } from './background-mic'
 import { sttApi } from '../api/stt'
+import { sttSettingsApi } from '../api/stt-settings'
+import { filenameForMimeType } from '../api/stt-filename'
 import { sherpa } from './sherpa'
 import {
   RecordingVoicePrompt, makeWebSpeaker, type MicTrackLike, type VoicePromptDeps,
@@ -153,6 +155,12 @@ export class MeetingRecorderRuntime {
   private partSeq = 0
   private unlistenNative: (() => void) | null = null
   private nativeMode = false
+  /**
+   * 后台录音不可用的真实原因（原生插件 reject 的原文）。
+   * 空串 = 没试过或试成了。切后台时用它解释「为什么这台手机录不了后台」，
+   * 否则用户只看到「请保持应用在前台」却不知道权限/占用等具体原因。
+   */
+  private backgroundMicReason = ref('')
   private stopCaption: (() => void) | null = null
   private stopping = false
   // 在途分段转写 promise:stop() 必须等它们落库,否则 refine 拿到的
@@ -178,7 +186,15 @@ export class MeetingRecorderRuntime {
 
   private onHidden = () => {
     if (document.visibilityState !== 'hidden' || !this.isRecording.value || this.nativeMode) return
-    this.toast.error('浏览器无法在后台继续录音，请保持应用在前台或使用 Android 客户端')
+    // 切到后台才告知来不及：用户是在录音途中切走的，此刻弹窗最贴近现场。
+    // 把后台录音失败的真实原因一并带出来，否则用户只会得到一句
+    // 「请保持应用在前台」而不知道为什么自己的手机明明支持。
+    const reason = this.backgroundMicReason.value
+    this.toast.error(
+      reason
+        ? `切到后台将停止录音（后台录音不可用：${reason}）。请保持应用在前台。`
+        : '浏览器无法在后台继续录音，请保持应用在前台或使用 Android 客户端',
+    )
   }
 
   /**
@@ -234,10 +250,13 @@ export class MeetingRecorderRuntime {
 
     try {
       this.nativeMode = false
+      this.backgroundMicReason.value = ''
       if (isBackgroundMicSupported()) {
         const nativeInputs = await listNativeMicInputs()
         if (nativeInputs.length) this.inputs.value = nativeInputs
-        this.nativeMode = await startBackgroundMic({ meetingId, deviceId: opts?.deviceId })
+        const started = await startBackgroundMic({ meetingId, deviceId: opts?.deviceId })
+        this.nativeMode = started.ok
+        if (!started.ok) this.backgroundMicReason.value = started.reason || '未知原因'
         if (this.nativeMode) {
           this.selectedInput.value = this.inputs.value.find((i) => i.deviceId === opts?.deviceId)
             || this.inputs.value[0]
@@ -544,6 +563,28 @@ export class NoteRecorderRuntime {
   private committed = ''
   private unlisten: { remove: () => void } | null = null
   private nativeListening = false
+  /**
+   * 本场录音的即时转写会话 id（每场新生成）。
+   *
+   * 服务端靠它维持**跨片去重**状态：3 秒定长切片必然切在词中间，两片交界处
+   * 同一个词会被各识别一次，本地拼接会得到「今天今天下午三点」。没有会话 id
+   * 就只能各片独立转写，去重无从谈起。
+   *
+   * 空 = 本场没开即时转写（原生 sherpa 流式可用时走那条路，无需云端会话）。
+   */
+  private sttSessionId = ''
+  /**
+   * 分片转写的串行链。
+   *
+   * 必须存在的原因：服务端按**到达顺序**累积会话文本，客户端并发发送会让
+   * 响应乱序返回，而会话已被按到达顺序改写——客户端拿到的累计文本会跳变丢字。
+   */
+  private sliceChain: Promise<void> = Promise.resolve()
+  /**
+   * 停止时置位：让 recorder.stop() 派发的最后一片带上 isFinal，
+   * 让服务端立刻释放会话而不是等 LRU 淘汰。
+   */
+  private releaseOnNextSlice = false
   /** 正在执行的 stop() 收尾;重入直接复用同一个 promise,不重复拆麦克风。 */
   private stopInFlight: Promise<{ text: string; audioBlob: Blob; durationMs: number } | null> | null = null
 
@@ -595,14 +636,28 @@ export class NoteRecorderRuntime {
       this.chunks = []
       this.committed = ''
       this.transcript.value = ''
+      // 每场录音一个新会话：跨片去重的累积文本不能跨会话沿用，否则第二场
+      // 笔记会接着第一场显示。id 带上时间戳是为了让服务端日志能分辨会话。
+      this.sttSessionId = `note-${Date.now().toString(36)}`
+      this.sliceChain = Promise.resolve()
+      this.releaseOnNextSlice = false
       const mimeType = detectRecorderMime()
       this.mediaRecorder = mimeType
         ? new MediaRecorder(this.mediaStream, { mimeType })
         : new MediaRecorder(this.mediaStream)
       this.mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) this.chunks.push(e.data)
-        if (!this.nativeListening && e.data.size > 0 && this.phase.value === 'recording') {
+        if (this.nativeListening || e.data.size === 0) return
+        // 录音中：每 3 秒一片送即时转写。
+        if (this.phase.value === 'recording') {
           void this.transcribeSlice(e.data)
+          return
+        }
+        // 停止时 recorder.stop() 派发的最后一片：也要送，并带 isFinal 让服务端
+        // 释放会话。不送的话这最后 3 秒会丢——而它通常正是用户最后说的那句。
+        if (this.releaseOnNextSlice) {
+          this.releaseOnNextSlice = false
+          void this.transcribeSlice(e.data, true)
         }
       }
       this.mediaRecorder.start(NOTE_CHUNK_MS)
@@ -646,16 +701,49 @@ export class NoteRecorderRuntime {
     }
   }
 
-  private async transcribeSlice(blob: Blob) {
+  private async transcribeSlice(blob: Blob, isFinal = false) {
+    // 串行化：每一片都必须等上一片回来再发。
+    //
+    // 为什么必须排队：即时转写的去重状态是**服务端会话**里的，服务端按到达
+    // 顺序累积文本。若两片并发发出，响应可能乱序返回，而服务端已经按到达
+    // 顺序把两者都累积进会话了——客户端拿到的「累计文本」就会跳变、丢字，
+    // 且这种问题只在网络抖动时偶发，极难排查。
+    this.sliceChain = this.sliceChain.then(() => this.sendSlice(blob, isFinal)).catch(() => {
+      /* 单片失败不阻断后续分片 */
+    })
+    await this.sliceChain
+  }
+
+  private async sendSlice(blob: Blob, isFinal: boolean) {
+    if (!this.sttSessionId) return
+    const startSec = this.elapsedMs.value / 1000 - NOTE_CHUNK_MS / 1000
     try {
-      const result = await sttApi.transcribe({ audioBlob: blob })
-      if (result.text.trim()) {
-        const next = appendTranscript(this.committed, this.transcript.value, '', result.text)
-        this.committed = next.committed
-        this.transcript.value = next.display
+      const res = await sttSettingsApi.transcribeIncremental({
+        audioBlob: blob,
+        sessionId: this.sttSessionId,
+        filename: `chunk${filenameForMimeType(blob.type || 'audio/webm', '')}`,
+        startSec: Math.max(0, startSec),
+        endSec: this.elapsedMs.value / 1000,
+        // 3 秒定长切片是**硬切**（不在停顿处），所以不能告诉服务端「这段
+        // 尾部有静音」——那会让它按静音边界做去重，反而吃掉真实的相邻文字。
+        silenceCut: false,
+        isFinal,
+      })
+      if (isFinal) this.sttSessionId = ''
+      if (res.error) {
+        // 单片失败**不清空**已有文本：服务端在这种情况下也会回填累计文本。
+        this.error.value = sttFailureText(res.error, '转写失败，将在下一段重试')
+        return
       }
-    } catch {
-      /* 分片失败等下一段 */
+      // 服务端返回的是**累计文本**（已跨片去重），所以这里必须整体替换，
+      // 不能像原来那样本地拼接——本地拼接会把边界重复字叠加上去。
+      if (res.text.trim()) {
+        this.committed = res.text.trim()
+        this.transcript.value = this.committed
+      }
+    } catch (e) {
+      if (isFinal) this.sttSessionId = ''
+      this.error.value = sttFailureText(e, '转写失败，将在下一段重试')
     }
   }
 
@@ -688,6 +776,9 @@ export class NoteRecorderRuntime {
     this.recording.value = false
     this.stopTick()
     const durationMs = Date.now() - this.startedAt
+    // 让 recorder.stop() 派发的最后一片带上 isFinal（见 ondataavailable）。
+    // 不置位的话这最后 3 秒不会送去转写，而它通常正是用户最后说的那句。
+    this.releaseOnNextSlice = this.sttSessionId !== ''
     // 兜底：部分 Android WebView 在 timeslice MediaRecorder 上,即便我们调 stop()
     // 也不会派 onstop(dataavailable 已停在 INACTIVE,但 recorder 没把队列里的
     // onstop 事件 flush)。三秒兜底后强制 resolve 并继续清理,避免 UI 卡死。
@@ -717,13 +808,37 @@ export class NoteRecorderRuntime {
       const audioBlob = this.chunks.length
         ? new Blob(this.chunks, { type: blobType })
         : new Blob([], { type: blobType })
-      // 分片转写一条都没回来时,用整段音频兜底转写。这是"停止"链路里
-      // 唯一的长耗时 IO,必须加超时 —— 否则后端不响应时 phase 永远停在
-      // 'stopping',录音按钮彻底锁死。
+      // 等在途分片落库再继续收尾，否则最后一片的转写结果会晚于
+      // pendingResult 交付，用户拿到的笔记少最后一句。上限 10s 防止个别
+      // 请求挂死把停止流程卡住（那会让 phase 停在 'stopping'，录音按钮锁死）。
+      if (this.sttSessionId !== '') {
+        await Promise.race([
+          this.sliceChain,
+          new Promise((resolve) => setTimeout(resolve, 10_000)),
+        ])
+      }
+      // 分片转写一条都没回来时,用整段音频兜底转写。
+      //
+      // 2026-10-01：这里从 sttApi.transcribe 换成 transcribeFull，因为任何 ASR
+      // 都不允许无限长音频单次上传（智谱 30 秒 / OpenRouter ~60 秒 / MiniMax 500 秒）。
+      // 原实现对超过上限的录音会直接失败，用户表现为「录了五分钟一句话都转不出来」。
+      // 服务端现在会自动按静音边界切段并聚合，所以长录音也能兜住。
+      //
+      // 超时上限同步放大：服务端串行跑 N 段，用 20 秒会让长录音必然超时。
+      // 但**必须有上限**——否则后端不响应时 phase 永远停在 'stopping'，
+      // 录音按钮彻底锁死（这正是 withTimeout 存在的理由）。
       if (!this.transcript.value.trim() && audioBlob.size > 0) {
         try {
-          const result = await withTimeout(sttApi.transcribe({ audioBlob }), 20000)
+          const result = await withTimeout(
+            sttSettingsApi.transcribeFull(audioBlob, `note${filenameForMimeType(blobType)}`),
+            10 * 60_000,
+          )
           this.transcript.value = result.text
+          // 部分段失败时整体仍成功（保住成功段内容），但必须告诉用户
+          // 「有 N 段没转出来」——否则用户会以为记录是完整的。
+          if (result.failed > 0) {
+            this.error.value = `有 ${result.failed} 段未能转写，已保留其余 ${result.succeeded} 段内容`
+          }
         } catch (e) {
           // 2026-10-01：原来直接甩 e.message，等于把 `stt_unavailable: …` 连错误码
           // 一起怼给界面；但反过来无脑显示原文又会把 `dial tcp …: i/o timeout`

@@ -117,8 +117,8 @@ import { DEFAULT_LIST_PAGE_SIZE, pageHasMore } from '../../native/list-sync/page
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
 import { useListScene } from '../../composables/use-list-scene'
-import { useApiError } from '../../composables/useApiError'
 import { useAuthStore } from '../../stores/auth'
+import { useApiError } from '../../composables/useApiError'
 
 defineOptions({ name: 'NoteListView' })
 
@@ -150,13 +150,23 @@ const {
 /**
  * 录音停止后的转写错误文案。
  *
- * recError 存的是原始异常文本（"Failed to fetch" / 后端错误 JSON），
- * 与 NoteRecordingStudio 用同一套归一：已知类别走 i18n，识别不出时
- * 再兜底一次多语言转文字失败。
+ * 2026-10-01 真机复现修正：这里**不能套 apiError**。
+ *
+ * recError 就是 runtime 的 `error`（见 useNoteRecording：`error: rt.error`），
+ * runtime 在**写入时**已经调过 `sttFailureText()`，存进来的是面向用户的成品
+ * 文案，`stt_unavailable:` 前缀已被剥掉。而 apiError 内部 `extractErrorCode()`
+ * 取第一个冒号前的片段当错误码，前缀没了就取不到 → 落回 `errors.notConfigured`
+ * 「该功能尚未完成配置」，把唯一可行动的信息整个盖掉。
+ *
+ * 真机证据（Redmi，笔记即时录音 23 秒后点停止）：
+ *   录音中  显示「网关暂无可用的语音转写模型（…）；stt_unavailable: 外部语音
+ *            转写服务未配置 API Key（设置 → 语音转写）」← 完整
+ *   停止后  显示「该功能尚未完成配置」                        ← 信息被抹掉
+ *
+ * 同一个值、同一个页面，只是换了一条渲染路径就丢信息。NoteRecordingStudio
+ * 早已按正确口径直出，这里是漏掉的姊妹路径。
  */
-const recordErrorText = computed(() =>
-  recError.value ? apiError(recError.value, 'errors.sttNotConfigured') : '',
-)
+const recordErrorText = computed(() => recError.value || '')
 
 const DOMAINS = [
   { value: 'all', label: '全部', emoji: '🗂' },

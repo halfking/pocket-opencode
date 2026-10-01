@@ -29,10 +29,10 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
 	"github.com/halfking/pocket-opencode/backend/internal/finance"
 	"github.com/halfking/pocket-opencode/backend/internal/flashcards"
-	"github.com/halfking/pocket-opencode/backend/internal/learning"
-	"github.com/halfking/pocket-opencode/backend/internal/learning/sources"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/learning"
+	"github.com/halfking/pocket-opencode/backend/internal/learning/sources"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/lobster"
 	"github.com/halfking/pocket-opencode/backend/internal/marketplace"
@@ -103,18 +103,14 @@ type Server struct {
 	// learningSources resolves a content-domain row (note / email / RSS /
 	// meeting) into a title+summary for the one-click capture paths.
 	learningSources *sources.Resolver
-	transcriber    *stt.Transcriber // nil = 云端 STT 兜底未配置
+	transcriber     *stt.Transcriber // nil = 云端 STT 兜底未配置
 	// sttDiscovery 缓存网关 ASR 候选的真实探测结果（10 分钟 TTL）。
 	// 自动发现必须出网打网关，不能每次录音都重扫一遍。
 	sttDiscovery *stt.DiscoveryCache
 	// sttHTTPClient 是 STT 自动发现/试转的出网客户端。默认走 gatewayHTTPClient
 	// （带 SSRF 防护）；测试注入一个拒绝出网的实现，保证单测不打真实网关。
 	sttHTTPClient *http.Client
-	// sttSettingsMem 是 user_settings（PG）不可用时的 STT 设置进程内兜底。
-	// 没有它，无 PG 部署下语音转写设置根本存不下来，功能等于不可用。
-	sttSettingsMem  *sttMemSettings
-	sttSettingsOnce sync.Once
-	mcpClient       *mcp.Client // nil = ACC 任务整合未配置（Phase 5 才激活）
+	mcpClient     *mcp.Client // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// RSS 订阅与分享（PG store + 后台 scheduler）。nil = 关闭模块。
 	// 由 cmd/pocketd/main.go 通过 SetRSSStore / SetRSSScheduler 注入。
 	rssStore     *rss.Store
@@ -616,6 +612,12 @@ func requestBodyLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limit := int64(maxRequestBodyBytes)
 		switch {
+		// 前缀匹配已覆盖 transcribe / transcribe-full / transcribe-incremental
+		// 三个端点（它们都以 /api/stt/transcribe 开头）。这里显式列出是为了让
+		// 后续新增端点时能看到「音频体积白名单」这个清单，而不是靠前缀隐式命中。
+		case r.URL.Path == "/api/stt/transcribe-full":
+			// 整场录音的 base64 体积（两小时会议约 310MB），比单次转写大两个数量级。
+			limit = int64(maxFullAudioBytes*4/3 + 1024)
 		case strings.HasPrefix(r.URL.Path, "/api/stt/transcribe"),
 			strings.HasPrefix(r.URL.Path, "/api/stt/probe"),
 			strings.HasPrefix(r.URL.Path, "/api/meetings/") && strings.HasSuffix(r.URL.Path, "/transcribe"):
@@ -775,6 +777,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/stt/config", s.requireAuth(s.handleSTTConfig))
 	mux.HandleFunc("/api/stt/discover", s.requireAuth(s.handleSTTDiscover))
 	mux.HandleFunc("/api/stt/probe", s.requireAuth(s.handleSTTProbe))
+	// 长录音的**全量**转写（服务端按静音边界切段、逐段转写、按序聚合）与
+	// 录音进行中的**即时**转写（分段增量 + 跨段去重）。两者与 /api/stt/transcribe
+	// 共用同一套目标解析，因此通道/key/SSRF 防护完全一致。
+	mux.HandleFunc("/api/stt/transcribe-full", s.requireAuth(s.handleSttTranscribeFull))
+	mux.HandleFunc("/api/stt/transcribe-incremental", s.requireAuth(s.handleSttTranscribeIncremental))
 	mux.HandleFunc("/api/meetings", s.requireAuth(s.handleMeetings))
 	mux.HandleFunc("/api/meetings/", s.requireAuth(s.handleMeetingRouter))
 	// RSS 订阅：sources / items / filters / share 一棵子树。

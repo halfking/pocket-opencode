@@ -65,7 +65,40 @@ describe('语音转写设置页', () => {
     assert.match(view, /@click="pickRecommended\(m\)"/, '推荐项不可点击')
     // 外部组必须显示成本，且没有报价时要明说「无公开报价」而不是显示 0。
     assert.match(view, /无公开报价/, '未报价模型没有明确标注')
-    assert.match(view, /usdPerHour\.toFixed\(2\)/, '未展示每小时成本')
+    // 成本必须走 formatCost 而不是内联 toFixed(2)：最便宜档是 $0.012/小时，
+    // toFixed(2) 会显示成 $0.01，把 1 分钱档之间的差异抹平——而「尽可能费用少」
+    // 正是这个字段存在的理由。见 src/api/stt-presentation.ts。
+    assert.match(view, /formatCost\(m\.usdPerHour\)/, '未通过 formatCost 展示每小时成本')
+    assert.equal(
+      /usdPerHour\s*\.toFixed\(2\)/.test(view), false,
+      '不得内联 toFixed(2)，低价 ASR 候选会被四舍五入成同一个价',
+    )
+  })
+
+  it('展示「即时出字能力」与单次时长上限的取舍', () => {
+    // 调研结论：便宜的 ASR 普遍不支持服务端真流式（OpenRouter 上游约 60 秒超时），
+    // 「省钱」与「逐字出字」需要二选一。这个取舍必须在选模型时就看得见。
+    assert.match(view, /streamingHint\(m\)/, '未提示流式能力差异')
+    assert.match(view, /maxSecondsHint\(m\.maxSeconds\)/, '未提示单次时长上限')
+  })
+
+  it('展示录音语音提示的引擎可用性', () => {
+    // 播报失败是静默的：没有 TTS 引擎时用户听不到声音，只会以为功能没做。
+    // 国内 ROM 常移除 Google TTS，所以必须把结论显式摆在设置页。
+    assert.match(view, /probeVoicePromptSupport/, '未探测语音提示可用性')
+    assert.match(view, /voice-prompt-state/, '未展示语音提示状态')
+  })
+
+  it('模板标签配对完整（vue-tsc 不校验模板，构建才会报）', () => {
+    // 2026-10-01 实测：编辑模板时吃掉了一个 <section>/<label> 开标签，
+    // `vue-tsc --noEmit` 仍然 exit 0（它只查类型，不查标签配对），
+    // 只有 vite build 报 Invalid end tag。源码级契约能提前一步。
+    const opens = (view.match(/<section\b/g) || []).length
+    const closes = (view.match(/<\/section>/g) || []).length
+    assert.equal(opens, closes, `<section> 开闭标签不配对（${opens} 开 / ${closes} 闭）`)
+    const labels = (view.match(/<label\b/g) || []).length
+    const labelCloses = (view.match(/<\/label>/g) || []).length
+    assert.equal(labels, labelCloses, `<label> 开闭标签不配对（${labels} 开 / ${labelCloses} 闭）`)
   })
 
   it('外部服务地址与 key 可手工填写，key 不回显', () => {
@@ -126,5 +159,70 @@ describe('STT API 客户端', () => {
   it('试转走 JSON base64，与既有 /api/stt/transcribe 契约一致', () => {
     assert.match(api, /audioBase64/, '试转未用 base64 音频')
     assert.match(api, /filenameForMimeType/, '试转未按 MIME 推导文件名')
+  })
+})
+
+/**
+ * 2026-10-01 真机回归：设置页把上游 503 响应体直接甩给用户。
+ *
+ * 证据（真机截图 logs/real-device-stt-20261001-033020/31-stt-settings-page.png）：
+ * mimo-v2.5-asr 候选卡片下方渲染出五六行
+ * `{"error":{"alternatives":{"requested_model":"mimo-v2.5-asr",…}}`。
+ * 后端 `providerDetail` 是按字节截断到 300 字符，断在 JSON 中间反而更难读。
+ *
+ * 徽章已经说明了「网关无上游 provider」这个**状态**，原始响应对用户决策没有
+ * 增量价值（要查细节看服务端日志），所以渲染层只放行人话细节。
+ */
+describe('候选详情不泄漏上游原始响应', () => {
+  it('模板渲染的是 candidateDetail(c) 而不是裸 c.detail', () => {
+    assert.match(
+      view,
+      /\{\{\s*candidateDetail\(c\)\s*\}\}/,
+      '候选详情仍在直接渲染 c.detail',
+    )
+    assert.doesNotMatch(
+      view,
+      /candidate-detail[^>]*>\s*\{\{\s*c\.detail\s*\}\}/,
+      '候选详情仍直接输出 c.detail',
+    )
+  })
+
+  it('candidateDetail 对 JSON / 长 URL 细节返回空，对短句截断', () => {
+    const fn = view.slice(view.indexOf('function candidateDetail'))
+    // 整体是上游 JSON 就不显示
+    assert.ok(fn.includes('/^[[{]/'), '未拦截以 { 或 [ 开头的上游响应体')
+    // 截断在 JSON 中间（以 } 或 ] 结尾）同样不显示
+    assert.ok(fn.includes('/[\\]}]$/'), '未拦截被截断的 JSON 尾巴')
+    // 长 URL 技术串不显示
+    assert.ok(fn.includes('/https?:\\/\\/\\S{40,}/'), '未拦截长 URL 技术串')
+    // 短句截到 80 字
+    assert.match(fn, /length > 80[\s\S]{0,80}slice\(0, 80\)/, '短句未截断到 80 字')
+  })
+
+  it('样式层双保险：detail 最多占两行', () => {
+    const style = view.slice(view.lastIndexOf('<style'))
+    const block = style.slice(style.indexOf('.candidate-detail'))
+    assert.match(block.slice(0, 400), /-webkit-line-clamp:\s*2|line-clamp:\s*2/,
+      'candidate-detail 未限制行数，漏判时仍会撑爆卡片')
+  })
+
+  // 2026-10-01 真机：外部服务地址/key/模型都配好了，页面却仍然显示
+  // 「尚未确定（…且外部服务未配置）」。用户会以为自己没配，去反复检查一个
+  // 已经配好的东西；而 auto 通道实际是会回退到外部的（后端 resolveSTTTarget
+  // 就是这个顺序，黑盒第 5 条也在验它）。
+  it('「当前生效」不能说反：外部已配好时 auto 要说清会回退到哪个模型', () => {
+    const fn = view.slice(view.indexOf('const externalMissing'))
+    assert.match(fn, /const externalMissing = computed/, '缺少 externalMissing：无法区分「没配」与「配了但缺哪项」')
+    assert.match(fn, /hasExternalKey/, 'externalMissing 没把 API Key 算进可用性判断')
+    assert.match(fn, /externalBaseURL/, 'externalMissing 没把服务地址算进可用性判断')
+    assert.match(fn, /将回退到外部服务/, 'auto 通道没说明会回退到外部服务')
+    // 三种通道各自的措辞都要在，别让某一支落回笼统的「尚未确定」
+    assert.match(fn, /form\.channel === 'gateway'/, '缺少仅网关通道的独立措辞（它不能提回退外部）')
+    assert.match(fn, /form\.channel === 'external'/, '缺少仅外部通道的独立措辞')
+    assert.doesNotMatch(
+      fn,
+      /: '尚未确定（网关暂无可用模型，且外部服务未配置）'/,
+      '仍存在无条件断言「外部服务未配置」的分支',
+    )
   })
 })
