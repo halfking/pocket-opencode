@@ -185,7 +185,8 @@ func (s *Server) resolveSTTTarget(ctx context.Context, scope stt.Scope) (*stt.Ta
 		return &stt.Target{
 			BaseURL: base, APIKey: externalKey, Model: model,
 			Transport: p.ExternalTransport, Channel: stt.ChannelExternal,
-			Label: "外部服务", CostUSDPerHour: stt.KnownUSDPerHour(model),
+			Language: p.Language,
+			Label:    "外部服务", CostUSDPerHour: stt.KnownUSDPerHour(model),
 		}, nil
 	}
 
@@ -205,7 +206,8 @@ func (s *Server) resolveSTTTarget(ctx context.Context, scope stt.Scope) (*stt.Ta
 					return &stt.Target{
 						BaseURL: gw.BaseURL, APIKey: gw.APIKey, Model: c.Model,
 						Transport: c.Transport, Channel: stt.ChannelGateway,
-						Label: "网关（手动指定）", CostUSDPerHour: stt.KnownUSDPerHour(c.Model),
+						Language: p.Language,
+						Label:    "网关（手动指定）", CostUSDPerHour: stt.KnownUSDPerHour(c.Model),
 					}, nil
 				}
 			}
@@ -221,7 +223,8 @@ func (s *Server) resolveSTTTarget(ctx context.Context, scope stt.Scope) (*stt.Ta
 		return &stt.Target{
 			BaseURL: gw.BaseURL, APIKey: gw.APIKey, Model: c.Model,
 			Transport: c.Transport, Channel: stt.ChannelGateway,
-			Label: "网关（自动发现）", CostUSDPerHour: stt.KnownUSDPerHour(c.Model),
+			Language: p.Language,
+			Label:    "网关（自动发现）", CostUSDPerHour: stt.KnownUSDPerHour(c.Model),
 		}, nil
 	}
 

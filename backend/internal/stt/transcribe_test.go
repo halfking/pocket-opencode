@@ -12,10 +12,11 @@ import (
 
 // transcribeUpstream 造一个可控的 /audio/transcriptions 上游。
 type transcribeUpstream struct {
-	status  int
-	body    string
-	lastKey string
-	lastMdl string
+	status   int
+	body     string
+	lastKey  string
+	lastMdl  string
+	lastLang string
 }
 
 func (u *transcribeUpstream) handler(t *testing.T) http.Handler {
@@ -25,6 +26,7 @@ func (u *transcribeUpstream) handler(t *testing.T) http.Handler {
 		u.lastKey = r.Header.Get("Authorization")
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 8<<20))
 		u.lastMdl = multipartModel(string(body))
+		u.lastLang = multipartField(string(body), "language")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(u.status)
 		_, _ = io.WriteString(w, u.body)
@@ -167,6 +169,63 @@ func TestTranscribeForStripsThinkTags(t *testing.T) {
 	}
 	if res.Text != "今天下午三点开会。" {
 		t.Errorf("text=%q", res.Text)
+	}
+}
+
+// TestTranscribeForSendsLanguageField 转写请求必须带 language。
+//
+// 为什么这条要单独立测试：whisper / gpt-4o-transcribe 在**不传** language 时
+// 靠模型自己猜语种，中文会议录音会被判成英语——输出夹英文甚至整段转错，
+// 而请求本身 200 成功，任何只看「有没有转写出文字」的验收都发现不了。
+// 负控对照：把 transcriptions() 里那三行 language 去掉，本条立刻转红。
+func TestTranscribeForSendsLanguageField(t *testing.T) {
+	up := &transcribeUpstream{status: 200, body: `{"text":"今天下午三点开项目评审会。"}`}
+	srv := httptest.NewServer(up.handler(t))
+	defer srv.Close()
+
+	cases := []struct {
+		name string
+		lang string
+		want string
+	}{
+		{"未指定 → 默认中文", "", "zh"},
+		{"显式英文", "en", "en"},
+		{"地区后缀收敛", "zh-CN", "zh"},
+		{"大小写与空白收敛", "  JA  ", "ja"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := engineFor(t, srv, &Target{
+				BaseURL: srv.URL + "/v1", APIKey: "sk-test", Model: "gpt-4o-mini-transcribe",
+				Transport: TransportTranscriptions, Channel: ChannelExternal, Language: c.lang,
+			})
+			if _, err := e.TranscribeFor(context.Background(), Scope{}, ToneWAV(8000, 100), "a.wav"); err != nil {
+				t.Fatalf("TranscribeFor: %v", err)
+			}
+			if got := up.lastLang; got != c.want {
+				t.Errorf("language=%q want %q（未带 language 时上游会自行猜语种，中文会被当英语）", got, c.want)
+			}
+		})
+	}
+}
+
+// TestTranscribeForDoesNotMutateResolverTarget 归一化不能就地改调用方的 Target：
+// resolver 常常返回缓存/共享的结构体，就地改会把上一次请求的语种带到下一次。
+func TestTranscribeForDoesNotMutateResolverTarget(t *testing.T) {
+	up := &transcribeUpstream{status: 200, body: `{"text":"好。"}`}
+	srv := httptest.NewServer(up.handler(t))
+	defer srv.Close()
+
+	shared := &Target{
+		BaseURL: srv.URL + "/v1", APIKey: "sk-test", Model: "gpt-4o-mini-transcribe",
+		Transport: TransportTranscriptions, Channel: ChannelExternal,
+	}
+	e := engineFor(t, srv, shared)
+	if _, err := e.TranscribeFor(context.Background(), Scope{}, ToneWAV(8000, 100), "a.wav"); err != nil {
+		t.Fatalf("TranscribeFor: %v", err)
+	}
+	if shared.Language != "" {
+		t.Errorf("resolver 返回的 Target 被就地改写了：Language=%q", shared.Language)
 	}
 }
 

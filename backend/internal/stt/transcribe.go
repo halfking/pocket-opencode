@@ -131,6 +131,12 @@ func (t *Transcriber) TranscribeFor(ctx context.Context, scope Scope, audio []by
 	if filename == "" {
 		filename = "audio.wav"
 	}
+	// 语种归一化放在这里而不是各个 Target 构造点：Target 有 5 处构造
+	// （设置页外部/网关自动/网关手动、试转外部/网关、env 兜底），漏一处就等于
+	// 中文录音在那个入口上被按英语转写。复制一份再改，不动调用方的结构体。
+	shallow := *target
+	shallow.Language = NormalizeLanguage(target.Language)
+	target = &shallow
 	if t.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, t.timeout)
@@ -204,6 +210,11 @@ func (t *Transcriber) transcriptions(ctx context.Context, target *Target, audio 
 	}
 	_ = w.WriteField("model", target.Model)
 	_ = w.WriteField("response_format", "json")
+	// 语种必须显式给：不传时 whisper / gpt-4o-transcribe 会自己猜，
+	// 中文会议录音会被当成英语（见 Target.Language 的注释）。
+	if lang := strings.TrimSpace(target.Language); lang != "" {
+		_ = w.WriteField("language", lang)
+	}
 	w.Close()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,

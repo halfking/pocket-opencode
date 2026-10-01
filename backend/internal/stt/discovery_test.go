@@ -83,9 +83,15 @@ func writeJSONStatus(w http.ResponseWriter, status int, text string) {
 }
 
 // multipartModel 从 multipart 体里抠出 model 字段（探测用）。
-func multipartModel(body string) string {
+func multipartModel(body string) string { return multipartField(body, "model") }
+
+// multipartField 从 multipart 体里抠出任意一个普通字段的值。
+//
+// 注意它只认「Content-Disposition 行在值之前一行」的简单布局——真实解析要用
+// mime/multipart，这里为了断言足够、且避免把 WAV 二进制误当字段。
+func multipartField(body, name string) string {
 	for _, part := range strings.Split(body, "\r\n") {
-		if strings.HasPrefix(part, "Content-Disposition") && strings.Contains(part, `name="model"`) {
+		if strings.HasPrefix(part, "Content-Disposition") && strings.Contains(part, `name="`+name+`"`) {
 			idx := strings.Index(body, part)
 			rest := body[idx+len(part):]
 			rest = strings.TrimPrefix(rest, "\r\n\r\n")

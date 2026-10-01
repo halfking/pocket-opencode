@@ -393,6 +393,10 @@ func tryTranscriptions(ctx context.Context, client *http.Client, baseURL, apiKey
 	buf.WriteString("Content-Disposition: form-data; name=\"model\"\r\n\r\n" + model + "\r\n")
 	buf.WriteString("--" + boundary + "\r\n")
 	buf.WriteString("Content-Disposition: form-data; name=\"response_format\"\r\n\r\njson\r\n")
+	// 探测必须和真实转写发一样的语种：某些服务在缺 language 时会换一条完全不同的
+	// 推理路径（先做语种识别），探测能过、实际中文转写崩掉，且两边都看不出差别。
+	buf.WriteString("--" + boundary + "\r\n")
+	buf.WriteString("Content-Disposition: form-data; name=\"language\"\r\n\r\n" + DefaultLanguage + "\r\n")
 	buf.WriteString("--" + boundary + "--\r\n")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,

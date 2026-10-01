@@ -80,8 +80,36 @@ type Target struct {
 	Label          string  `json:"label"`
 	CostUSDPerHour float64 `json:"costUsdPerHour,omitempty"`
 
+	// Language 是发给上游的语种提示（OpenAI 兼容的 `language` 表单字段）。
+	//
+	// 为什么必须有：whisper / gpt-4o-transcribe 系列在**不传** language 时靠模型
+	// 自己猜语种，中文会议录音会被判成英语，输出夹英文或直接转错。本项目的场景
+	// （会议、笔记语音录入）几乎全是中文，所以默认 zh；用户可以改成 en/ja 等。
+	// 空字符串 = 不发这个字段（给那些不接受 language 的服务留退路）。
+	Language string `json:"language,omitempty"`
+
 	// APIKey 只在服务端内存里流转，不进 JSON。
 	APIKey string `json:"-"`
+}
+
+// DefaultLanguage 是未显式指定语种时的默认值。
+//
+// 与 server 层探测用的 p.Language 默认值保持一致（都是 zh）：探测时假定中文，
+// 真转写时也必须假定中文，否则「探测通过、实际转写跑偏」会变成一个极难查的坑。
+const DefaultLanguage = "zh"
+
+// NormalizeLanguage 归一化语种：空 → DefaultLanguage；统一小写并把 zh-CN 之类
+// 的地区后缀收敛成 zh（上游只认 ISO-639-1，传 zh-CN 会被拒或被忽略）。
+func NormalizeLanguage(s string) string {
+	v := strings.ToLower(strings.TrimSpace(s))
+	switch v {
+	case "":
+		return DefaultLanguage
+	case "zh-cn", "zh_cn", "zh-hans", "cmn":
+		return "zh"
+	default:
+		return v
+	}
 }
 
 // ModelOption 是设置页展示的一条推荐模型。
