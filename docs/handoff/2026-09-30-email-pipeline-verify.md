@@ -6025,6 +6025,91 @@ NEGCTL-1/2 转红前**曾经是绿的** —— 也就是说这一节的两个结
 
 ---
 
+## §7co 【真 bug】`Email.MessageID` 在生产里恒为空——发票自愈的强身份闸门一直是关着的（2026-10-02）
+
+补 `recoverPOP3SourcedRaw` 覆盖率时撞出来的。先是两个成功路径用例**红**在
+「IMAP resolved uid=11 returned a DIFFERENT message」——明明取的正是同一封
+（Message-ID 相等、主题发件人日期全同）。负控没有转红，查下去才发现是
+**产品代码的缺陷**，不是测试写错。
+
+### 现象与证据
+
+`emails.message_id` 一直在**写**：`fetcher.go:821`（IMAP 同步）与
+`fetcher.go:944`（POP3 落库）都填了。但**没有任何读路径把它读出来**——
+`GetEmailByID`（原 store.go:400）与 `GetEmailByIDScoped`（原 store.go:1742）
+的 SELECT 列表里没有这一列，Scan 也没有对应目标。
+
+实测（先确认写进去了，免得把「没写」误判成「没读」）：
+
+    DB column message_id = "REAL-MSG-ID@example.com"
+    GetEmailByID        em.MessageID = ""      <- 修复前
+    GetEmailByIDScoped  em.MessageID = ""      <- 修复前
+
+全 `backend/` 树里所有 `SELECT ... message_id` 都在 `diag_*_test.go` 的诊断
+工具里（裸 SQL，不经过 `Email` 结构体）。所以 `Email.MessageID` 在生产里
+**恒为空串**。
+
+### 后果不是「少一个字段」，是**静默废掉一道安全闸**
+
+`harvestOne` → `recoverPOP3SourcedRaw` → `sameEmailMessage` 用 `em.MessageID`
+做「真实 Message-ID 强确认 / 强否定」（代码注释里称之为「最强」）。
+em.MessageID 恒空 ⇒ `emHasReal` 恒 false ⇒ **那条分支在生产里从不执行**，
+只剩 `subject + from + 同一天` 的弱判据。
+
+而弱判据在真实数据上区分不了同名邮件——`invoice_selfheal_test.go` 的
+`TestSameEmailMessage_DifferentInvoiceRejected` 早就把这个边界写明了：
+两张 QQ Wallet 发票**主题/发件人/日期全同**，只有正文发票号不同。
+也就是说这道闸门恰恰在最需要它的场景下是失效的。
+
+### 修法
+
+两个 getter 的 SELECT + Scan 各加一处 `message_id`，共 4 个点。
+`GetEmailByID_MessageIDIsOptional` 守住 `message_id` 可空（旧行/客户端推送
+的邮件就是空的），不让修复顺手把 NULL 变成崩溃。
+
+### 双向负控
+
+| 步骤 | 结果 |
+|---|---|
+| 撤回修复（4 处都还原成不读该列） | **4 红**：`GetEmailByID_ReturnsMessageID`、`GetEmailByIDScoped_ReturnsMessageID`、`RecoverPOP3SourcedRaw_POP3UnavailableFallsBackToIMAP`、`RecoverPOP3SourcedRaw_UniqueHitWithMatchingMessageSucceeds` |
+| 恢复修复 | 全绿 |
+
+### 一个必须如实说明的限定：**当前真实数据上 blast radius 为 0**
+
+psql 实测 `opencode_pocket`：
+
+    emails 中 id LIKE 'em-pop3-%' 的行数 : 0
+    120 封邮件的 message_id             : 全部是真实值（非 'pop3-%' 合成值）
+    email_invoices                      : 仅 1 行，status=downloaded
+    emails 中 body_path 非空            : 0
+
+所以：修复本身是**经单测证实的真 bug**，但在**当前这份数据上不会被触发**——
+`isPOP3SourcedEmail` 依赖 `em-pop3-` 前缀，而库里一封都没有。
+
+**同时更正本文档早先的说法**：§7co 之前多处提到「两张真实 QQ Wallet 发票
+（uid=134/135）永远 failed」「POP3 侧 279 封」。那些描述对应的是
+**已被恢复掉的旧 schema 状态**（§7bo 记着 schema 被别人恢复），
+与现在这 120 封的库**对不上**。不要拿旧描述推断当前数据。
+
+### §7cp 顺带补上的自愈测试
+
+`invoice_harvest_selfheal_test.go`，6 个用例：
+POP3 腿不可用时降级到 IMAP、0 命中不猜、>1 命中不猜、
+反查到的 UID 取回另一封必须丢弃（且不得回填缓存、不得存文件）、
+唯一命中且内容相符则成功并回填缓存、空主题直接拒绝。
+IMAP 服务器的 `UID SEARCH` 现在会真的回 UID 集合（原来恒回空）。
+
+**POP3 那条腿仍然测不了**，原因是缺测试缝：`RefetchPOP3RawByIndex` 内部用
+`pop3EndpointFor(acc)` 从**邮箱域名**推导出 POP3 主机，没有注入口。
+对照 IMAP 的 `Fetcher.dialTLS`（fetcher.go:30，注释明写「仅为测试留缝」），
+POP3 侧四个入口全部直接 `net.Dialer{}.DialContext`。要补这条腿得先给
+pop3_fetcher 加 dial 缝——那是生产代码改动，已列为待决项，本轮未擅自做。
+
+覆盖率（同口径四次实测）：包总量 **60.0% → 60.7% → 62.2% → 63.4%**；
+`recoverPOP3SourcedRaw` **0% → 75.0%**，`ResolveRealUIDByHeader` 75.0%。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：

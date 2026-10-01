@@ -395,11 +395,21 @@ func (s *Store) MarkStarred(ctx context.Context, id string, starred bool) error 
 func (s *Store) GetEmailByID(ctx context.Context, id string) (*Email, error) {
 	var e Email
 	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction sql.NullString
+	var messageID sql.NullString
 	var uid sql.NullInt64
+	// message_id 必须在这里读出来（2026-10-02 修）。
+	//
+	// 漏掉它的后果不是「少一个字段」，而是**静默废掉一道安全闸**：
+	// harvestOne -> recoverPOP3SourcedRaw -> sameEmailMessage 拿 em.MessageID
+	// 做「真实 Message-ID 强确认」。em.MessageID 恒为空 ⇒ emHasReal 恒 false ⇒
+	// 强确认/强否定那条分支**在生产里从不执行**，只剩 subject+from+同日的弱判据。
+	// 而那两张卡住的真实 QQ Wallet 发票（uid 134/135）恰恰是 subject/from/date
+	// 全同的——弱判据区分不了它们（invoice_selfheal_test.go 的
+	// TestSameEmailMessage_DifferentInvoiceRejected 已经把这个边界记下来了）。
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, account_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments
+		SELECT id, account_id, uid, from_address, from_name, message_id, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments
 		FROM emails WHERE id = $1
-	`, id).Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments)
+	`, id).Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &messageID, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -408,6 +418,9 @@ func (s *Store) GetEmailByID(ctx context.Context, id string) (*Email, error) {
 	}
 	if uid.Valid {
 		e.UID = uid.Int64
+	}
+	if messageID.Valid {
+		e.MessageID = messageID.String
 	}
 	if fromName.Valid {
 		e.FromName = fromName.String
@@ -1733,18 +1746,19 @@ func (s *Store) ListDeletedEmailIDsScoped(ctx context.Context, since int64, user
 
 // GetEmailByIDScoped returns a message only within the requested scope.
 //
-// 比 scanEmail 多读 uid + body_path：handleEmailBody 用 uid 拉 IMAP 正文，
-// 用 body_path 判断加密缓存是否已落盘。其余 list 路径不需要这两列。
+// 比 scanEmail 多读 uid + body_path + message_id：handleEmailBody 用 uid 拉 IMAP 正文，
+// 用 body_path 判断加密缓存是否已落盘。message_id 同样必须读出来
+// （见 GetEmailByID 里的说明：漏掉它会静默废掉发票自愈的强身份判据）。
 func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID string) (*Email, error) {
 	var e Email
-	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath sql.NullString
+	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath, messageID sql.NullString
 	var uid sql.NullInt64
-	err := s.pool.QueryRow(ctx, `SELECT e.id, e.account_id, e.uid, e.from_address, e.from_name, e.subject, e.snippet,
+	err := s.pool.QueryRow(ctx, `SELECT e.id, e.account_id, e.uid, e.from_address, e.from_name, e.message_id, e.subject, e.snippet,
 		e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments,
 		e.body_path
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
 		WHERE e.id=$1 AND a.user_id=$2 AND a.workspace_id=$3`, id, userID, workspaceID).
-		Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead,
+		Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &messageID, &subject, &snippet, &e.Date, &e.IsRead,
 			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPath)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -1754,6 +1768,9 @@ func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID 
 	}
 	if uid.Valid {
 		e.UID = uid.Int64
+	}
+	if messageID.Valid {
+		e.MessageID = messageID.String
 	}
 	if fromName.Valid {
 		e.FromName = fromName.String

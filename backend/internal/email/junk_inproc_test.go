@@ -78,6 +78,10 @@ type imapServer struct {
 	// 所以这不是人造的边界情况。
 	ignorePartial bool
 
+	// searchUIDs 是 `UID SEARCH` 回的命中集合（供 imap_resolve 的自愈路径）。
+	// 空 = 0 命中。
+	searchUIDs []int64
+
 	// mailboxes 是 LIST 返回的信箱列表。
 	mailboxes []testMailbox
 	// loginOK 控制 LOGIN 是否成功（用它反证「有没有真的去连」）。
@@ -342,8 +346,18 @@ func (s *imapServer) handleUID(tag, args string, writeln func(string, ...any), w
 		writeln("%s OK STORE done", tag)
 
 	case "SEARCH":
-		s.record("UID SEARCH")
-		writeln("* SEARCH")
+		s.record("UID SEARCH " + rest)
+		// 必须真的回 UID 列表：`UIDSearch` 的结果集来自这里，
+		// 永远回空 `* SEARCH` 的话 pickUniqueUID 只会走「0 命中」分支，
+		// 于是 imap_resolve 那条自愈路径根本测不到成功情形。
+		s.mu.Lock()
+		searchUIDs := append([]int64(nil), s.searchUIDs...)
+		s.mu.Unlock()
+		parts := make([]string, 0, len(searchUIDs))
+		for _, u := range searchUIDs {
+			parts = append(parts, " "+strconv.FormatInt(u, 10))
+		}
+		writeln("* SEARCH%s", strings.Join(parts, ""))
 		writeln("%s OK SEARCH done", tag)
 
 	case "FETCH":
