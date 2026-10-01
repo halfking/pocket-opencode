@@ -1304,3 +1304,97 @@ total = round2(float64(cents) / 100)
   本轮没查它是否有同样的浮点问题。
 - 多币种混合时 `total` 把不同币种直接相加（USD + CNY），语义上不成立。
   需求没提多币种，属产品决策，未擅自改。
+
+---
+
+## §7ad 本地 CSV/MD 汇总的「账不平」缺陷（2026-10-01）
+
+### 起因
+
+§7ac 末尾自列的相邻风险之一：「`BuildInvoiceSummaryDocs` 写的**本地 CSV/MD**
+走的是另一条金额格式化路径，本轮没查它是否有同样的浮点问题」。
+`WriteInvoiceSummaryDocs`（`pipeline.go:870`）确实是独立实现，遂查。
+
+### 实测结论：问题**不是**浮点噪声，是舍入口径不一致
+
+先验证「本地路径有没有 §7ac 那个字面量问题」——**没有**：
+
+```
+100 x 0.07 -> 裸累加 = 7.000000000000009
+           -> %.2f  = 7.00        ← 格式化把噪声掩盖了
+```
+
+这正是两条路径的差别：飞书表格（`LedgerRows`）把 float64 **原样 json.Marshal**
+所以噪声裸露；本地 CSV/MD 走 `%.2f`，噪声被掩盖。
+
+但换了个方向仍然有错账。真实缺陷是**明细行与合计行用了不同的舍入口径**：
+
+| 位置 | 旧写法 |
+|------|--------|
+| 明细行 | `fmt.Sprintf("%.2f", inv.Amount)` —— 直接格式化**原始** float64 |
+| 合计行 | `total += inv.Amount` 后 `%.2f` —— 对**未舍入的累加值**格式化 |
+
+对 `.005` 结尾的金额，两者会给出不同的分位：
+
+```
+明细 1.005 / 2.675 / 8.615
+  逐行 %.2f = 1.00 / 2.67 / 8.62  -> 相加 12.30
+  裸累加 %.2f                    -> 12.29     ← 差 1 分
+```
+
+用户拿计算器把明细行加起来，发现和合计行差 1 分——**账不平**。
+
+### 修复
+
+合计改用整数分累加，且明细与合计共用同一个 `round2` 口径
+（复用 §7ac 新增的 `round2`，`ledger.go:63`）：
+
+```go
+var cents int64
+for _, inv := range invoices {
+    amount := round2(inv.Amount)
+    cents += int64(math.Round(amount * 100))
+    rows = append(rows, []string{ ..., fmt.Sprintf("%.2f", amount), ... })
+}
+total := float64(cents) / 100
+```
+
+这样 `total ≡ sum(round2(每行))`，恒等。`pipeline.go` 补 `math` import。
+
+### 负控对照（2 例转红，报错原文即缺陷）
+
+明细退回不 round2、合计退回裸累加：
+
+```
+--- FAIL: TestWriteInvoiceSummaryDocs_DetailSumsToTotal
+    detail rows sum to 12.29 but total row says 12.30 — the ledger does not balance
+--- FAIL: TestWriteInvoiceSummaryDocs_DetailAmountRoundedToCents
+```
+
+已还原。`go clean -testcache` 后 email 包全量 **ok 4.700s**。
+
+### 过程中修正的两处自身错误
+
+1. `readCSVAmounts` 初版按索引 2 解析合计行，报
+   `parse total "": invalid syntax`。实测列位后发现**两条行格式不同**：
+   明细金额在索引 2，合计行 `合计,,,,,,,%.2f,` 的金额在**索引 7**。
+   已按实测修正解析器——**是测试写错，生产代码无误**。
+2. 改 `pipeline.go` 时用了 `math.Round` 但没加 `math` import，
+   首次跑测试即 build failed，补 import 后通过。
+
+### 证据
+
+- `summary_docs_sum_test.go` 5 个顶层用例
+  - `DetailSumsToTotal` —— 核心契约：明细逐行相加 == 合计行，且 MD 与 CSV 合计一致
+  - `TwoDecimalHidesAccumulationNoise` —— 钉住「本地路径用 %.2f，噪声被掩盖」
+    （与 §7ac 飞书路径形成对照，防止以后有人混淆两者）
+  - `DetailAmountRoundedToCents` / `EmptyStillHasTotal` / `RealInvoiceTotals`
+- `pipeline.go`：`WriteInvoiceSummaryDocs` 累加逻辑 + `math` import
+- `go build ./...` 通过；`go test ./internal/email/ -count=1` → `ok 4.700s`
+
+### 仍未处理
+
+- **多币种合计**：`total` 仍把 USD 与 CNY 直接相加（两条路径都有此问题），
+  财务上不成立。需求没提多币种，属产品决策。
+- 合计行没有区分币种——若清单里混了两种币种，合计行的语义本身就不成立，
+  即使数值上「加起来了」。

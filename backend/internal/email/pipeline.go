@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -875,15 +876,21 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 	csvPath := filepath.Join(dir, "invoices-summary-"+stamp+".csv")
 	mdPath := filepath.Join(dir, "invoices-summary-"+stamp+".md")
 
-	var total float64
+	// 合计与明细行必须用**同一个** round2 口径，否则用户拿计算器逐行相加
+	// 会对不上账。实测（2026-10-01）：明细 1.005 / 2.675 / 8.615 时，
+	// 逐行 %.2f 相加 = 12.30，而裸 float64 累加再 %.2f = 12.29，差 1 分。
+	// 整数分累加保证 total 与 sum(round2(每行)) 恒等。
+	var cents int64
 	rows := make([][]string, 0, len(invoices))
 	for _, inv := range invoices {
-		total += inv.Amount
+		amount := round2(inv.Amount)
+		cents += int64(math.Round(amount * 100))
 		rows = append(rows, []string{
-			inv.Category, inv.Seller, fmt.Sprintf("%.2f", inv.Amount), inv.Currency,
+			inv.Category, inv.Seller, fmt.Sprintf("%.2f", amount), inv.Currency,
 			inv.InvoiceNo, inv.InvoiceDate, inv.Status, inv.FileName, inv.Subject,
 		})
 	}
+	total := float64(cents) / 100
 
 	csv := &strings.Builder{}
 	csv.WriteString("费用类型,对方单位,金额,币种,发票号,日期,状态,文件名,来源邮件\n")
