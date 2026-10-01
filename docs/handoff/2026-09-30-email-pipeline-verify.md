@@ -2616,6 +2616,132 @@ npm run gates  →  ✗ 在第一步 typecheck 就断
 
 ---
 
+## §7be step1.5 取正文每封挂 150s：降级通道的两个真缺陷（`843b3c4`）
+
+### 起因
+
+`TestSyncGreenmail`（`fetcher_greenmail_test.go`）首次真正跑起来时，日志是：
+
+```
+step1.5 scanned=138 rawBodyFetches=4 fetchFailed=4
+每封耗时 150.06 / 150.07 / 150.09 / 150.06 s
+错误：imapwire: expected SP, got "{"; textproto fallback: read greeting: EOF
+```
+
+**每封恰好 150.0x 秒**这个数字本身就说明问题：不是随机网络抖动，是某个固定上界
+在起作用。之前一直记为「可能是并发压 Greenmail 的假象，也可能是真实缺陷」，
+这次用探针把它钉死了。
+
+### 抓原始响应：一个 stdlib 探针就够
+
+不解 go-imap，直接用 `crypto/tls` + `bufio` 手写一遍 `LOGIN / ID / SELECT /
+UID FETCH <n> BODY.PEEK[]<0.8388608>`，把响应行原样打印：
+
+```
+"greeting <- * OK IMAP4rev1 Server GreenMail v2.1.14 ready"
+"A2 ID   -> A2 BAD Invalid command."          <- 163 为什么要发 ID 的又一次印证
+"FETCH  -> * 18 FETCH (UID 26 BODY[]<0>{1510}"   <- 注意这里
+```
+
+`BODY[]<0>` 与 `{1510}` 之间**没有空格**。RFC 3501 的 `msg-att` 里 literal 前的
+SP 是可选项，常见服务器都会给；但 imapwire 在 section 之后强制期待 SP，于是
+`expected SP, got "{"`。**主路径失败 → 掉进降级通道 → 降级通道又挂 150s。**
+
+### 缺陷 A：建连之后零读超时（生产影响）
+
+`fetchRawByTextproto` 原来只有 `net.Dialer{Timeout: 30 * time.Second}`，而
+`Dialer.Timeout` **只管三次握手**。握手之后 `br.ReadString('\n')` 能挂多久完全看
+服务器脸色，而且**不看 ctx** —— ctx 只喂给了 `DialContext`。
+
+后果：任何「accept 了 TCP 但一句话不说」的服务器可以让单封邮件**永久**阻塞。
+这直接违反同文件 `maxMessageBytes` 注释里自己写下的不变量：
+
+> 也不能让一轮流水线没有上界。
+
+讽刺的是 `fetcher.go:118-122` 已经把这个坑写得很清楚（「`net.Dialer.Timeout`
+只管建连，建好之后的读操作没有任何时间上限」），并且为此造了 `deadlineConn`，
+**只是 go-imap 主路径套了、降级路径漏了**。
+
+修法：复用 `deadlineConn`（滚动空闲 60s + 绝对硬截止 45s），再加一个 ctx 取消
+看门狗（ctx 一到期就把 deadline 钉到过去，正在阻塞的读立刻返回）。
+
+### 缺陷 B：TLS 判定写死 `acc.IMAPPort == 993`
+
+对 qq/163 恰好正确（生产全是 993），但对任何非 993 的**明文**端口是必然的协议
+错配：客户端说 TLS、服务端等明文 greeting，双向互等，最后以 `read greeting: EOF`
+收场。Greenmail 的 IMAPS 端口是 3993，正好落进这个坑。
+
+改成与 `fetcher.dial` 走**同一条** `isPlainIMAPPort` 规则。**不把 993 放掉是
+刻意的** —— 那等于把加密通道悄悄降级成明文，163 上会变成明文外发 LOGIN 密码。
+取的是「与主路径一致」，不是「尽量猜」。
+
+### 效果（同一个用例，前后对照）
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 4 次取正文 | 各 **150.06s** 后失败 | 各 **~90ms** 成功 |
+| `fetchFailed` | 4 | **0** |
+| `email_invoices` 行 | 0 | **4** |
+| `HarvestAll` | 无事可做，processed 恒 0 | Processed=4（2 downloaded / 2 pending）|
+| 用例结果 | 8 分钟预算耗尽后失败 | **PASS 0.44s** |
+
+顺带拿到需求 3 命名格式的**首次真实 IMAP 端到端**产物：
+
+```
+通信-开票中心-128.00-2026-09-24.pdf
+其他-杭州创客家投资管理有限公司-3500.00-2026-09-24-26332000008261110741.pdf
+```
+
+末尾那串是发票号，来自撞名保护（`5e16d4f`）。
+
+### 新增 3 例（不依赖 Greenmail / PG / Docker）
+
+`mime_textproto_deadline_test.go`：
+
+1. `TestUnblocksWhenServerNeverGreets` —— 服务器 accept 后一句话不说且**不关
+   连接**，ctx 800ms，断言 5s 内返回且错误落在 `read greeting`。
+2. `TestNonPlainPortGetsImplicitTLS` —— 随机端口的纯明文服务器，断言错误是
+   `tls handshake`（而不是 `read greeting`）。
+3. `TestPlainPortHappyPathFetchesBody` —— 1143 明文端口上完整跑一遍协议，正文
+   逐字节相等。响应刻意模仿 Greenmail（`BODY[]<0>{30}`，partial 与 literal
+   之间无空格）。
+
+### 负控：三条都验证过「能红」，且都是编译通过后转红
+
+| 注入 | 结果 |
+|---|---|
+| 摘掉整套 deadline 机制 | `ctx 已到期 800ms，实际耗时 20.0010313s 才返回` → FAIL |
+| `!isPlainIMAPPort(addr)` 改回 `acc.IMAPPort == 993` | `期望 tls handshake 失败，实际 read greeting: ... i/o timeout` → FAIL |
+| `parseBodyLiteralSize` 的 `return size` 改 `return 0` | `no BODY literal in UID FETCH response` → FAIL |
+
+**两条过程中的自我纠正**（都是负控暴露出来的，不是事后想通的）：
+
+- **第一次负控没红，是我注入不完整，不是断言无效。** 只把 `conn = dc` 摘掉、
+  留着 ctx 看门狗，测试照样通过 —— 因为 `deadlineConn.SetDeadline` 会透传到被
+  包装的底层 conn，看门狗照样能打断读。必须整套摘掉才暴露。这条正好印证
+  「负控全绿先分清是断言无效还是注入位置错」。
+- **第三次负控第一次是编译失败**（`syntax error` / `declared and not used`），
+  按纪律**不算有效负控**，补 `_ = size` 后重跑才拿到真正的红。
+
+### 用例自身修掉的 3 个 bug
+
+1. **`count invoices` 用了 60s 的 `ctx` 而不是 `ctxCand`** —— 我自己新写的代码
+   里的 ctx 复用错误，让后续断言因 deadline 假失败。
+2. 假 IMAP 服务器用 `strings.Contains(line, "ID ")` 分派命令，结果
+   `A2 UID FETCH ...` 里也含 `"ID "`，FETCH 被误判成 ID 命令 → 客户端在 FETCH
+   循环里读到 `A0 BAD Invalid command.` 然后干等 20s。改成按 tag 前缀分派。
+3. 假服务器写 literal 时漏了闭合 `}`（`{30` 而非 `{30}`）。`parseBodyLiteralSize`
+   正确地拒绝猜测并报 `no BODY literal` —— 这条恰好成了上面第三个负控。
+
+### 撤掉一条臆测的注释
+
+`fetcher_greenmail_test.go` 原来写着「Greenmail 测试邮件的附件是占位 %PDF 内容，
+harvester 会落到 failed 但 processed>0」。那是**写测试时臆测的、从未真跑过**的
+说法。实测恰好相反：附件是真 PDF，2 封走 **downloaded**、2 封因无可用附件走
+**pending**。已按实测改写。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
@@ -2642,6 +2768,11 @@ npm run gates  →  ✗ 在第一步 typecheck 就断
    真机重启行为未验证，见 §7aw。要不要安排一次真机验证。
 8. 需求 2 的**真实 IMAP MOVE 已跑通**（`4a06c28`，Greenmail standalone jar，
    不需要 Docker）。见 §7ba。
+9. **step1.5 取正文每封挂 150s 的根因已查明并修掉**（`843b3c4`）：降级取正文
+   通道建连后零读超时 + TLS 端口判定写死 993。见 §7be。用例从 8 分钟超时失败
+   变为 PASS 0.44s。**新暴露的一点仍未验证**：Greenmail 对部分取回回的
+   `BODY[]<0>{n}`（partial 与 literal 之间无空格）会让 go-imap 主路径解析失败，
+   真实 qq/163 是否也这样未测 —— 目前靠降级通道兜住，但主路径等于闲置。
 
 **环境问题**：
 
