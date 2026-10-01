@@ -858,3 +858,187 @@ message_id 与状态可迁移性）。
 - 需求 6 的「委托服务端执行」：`delegatePipeline` 只是 HTTP 转发，**对端编排服务不在本仓**；
   默认 `local` 判定已由 §7r 的纯函数 + 4 用例（含负控）守护。
 - 前端改动（3×3 入口、409 走行覆盖）只过了 typecheck，**未做真机 UI 验证**。
+
+---
+
+## §7y 飞书事件回调验签：官方算法核实与实现修正（2026-10-01）
+
+### 起因
+
+`verify_signature_test.go` 首次运行即 FAIL（`AcceptsFeishuOfficialSignature` 红），
+暴露 `handler.go` 验签实现与飞书官方算法不符。**真实回调会恒返回 401**。
+
+### 取证过程（三次，含两次自我推翻）
+
+1. `web_search`「X-Lark-Signature 验签」→ 结果**全部是自定义机器人 Webhook** 的签名
+   （`HMAC(key=timestamp+secret, data=空)`）。**不能**作为事件订阅回调的证据，未采信。
+2. `web_fetch` 飞书官方「请求地址配置」文档 → URL 被重定向到「使用长连接接收事件」页面全文，
+   签名算法原文仍缺失。
+3. 改从搜索结果外置 artifact 中定位到官方原文（`Signature verification example code`
+   段落，中英文各含五语言示例）：
+
+   ```
+   b1 = (timestamp + nonce + encrypt_key).encode('utf-8')
+   b  = b1 + body
+   s  = sha256(b)        # 裸 SHA-256
+   校验 s == X-Lark-Signature
+   ```
+
+   官方英文描述：*"Concatenate the request headers X-Lark-Request-Timestamp,
+   X-Lark-Request-Nonce with encrypt_key, encode ... and then concatenate with the
+   original request body ... Use the sha256 algorithm to hash b"*。
+   PHP 示例：`hash('sha256', $timestamp . $nonce . $encrypt_key . $body)`。
+
+### 旧实现三处错误（均已确认，非推测）
+
+| # | 项 | 旧实现 | 官方 |
+|---|-----|--------|------|
+| 1 | 摘要算法 | `hmac.New(sha256.New, key)` | **裸 `sha256.Sum256`** |
+| 2 | body 位置 | 作为 HMAC 的 data，密钥串不含 body | 拼进**被哈希的明文**，与 ts/nonce/key 同级 |
+| 3 | 输出编码 | `base64.StdEncoding` | **小写 `hex`** |
+
+**自我更正**：本轮开始时我先入为主判断官方是 `HMAC(key=ts+nonce+key, data=空)`，
+并据此写了「body 不参与签名」的测试。读到官方原文后**证伪了自己**——
+body 明确参与哈希，且根本不是 HMAC。测试已按原文重写。
+
+### 密钥字段修正
+
+官方用的是「事件与回调 > 加密策略」中的 **Encrypt Key**，即 `POCKET_FEISHU_ENCRYPT_KEY`。
+本仓历史字段 `POCKET_FEISHU_VERIFY_SECRET` 保留为**回退**（新增 `signatureKey()` 纯函数，
+Encrypt Key 优先，两者皆空才是 dev 模式跳过验签）。原先只用 VerifySecret 配验签，
+若用户按 `config.go` 注释理解只配 EncryptKey，会**静默跳过验签**——该隐患一并消除。
+
+### 证据
+
+- `handler.go:165-187`（`verifySignature` 官方实现）、`handler.go:193-198`（`signatureKey`）
+- `verify_signature_test.go` 8 用例，其中 `RejectsLegacyHmacBase64Variant` 直接用旧算法
+  构造签名断言必须被拒（把旧算法钉成反例）
+- `go build ./...` 通过；`go test ./internal/feishu/...` → `ok 1.037s`
+
+### 负控对照
+
+把实现改回 `HMAC + base64 + body 作 data`：
+
+```
+--- FAIL: TestVerifySignature_AcceptsFeishuOfficialSignature
+--- FAIL: TestVerifySignature_BodyParticipatesInSignature
+--- FAIL: TestVerifySignature_RejectsLegacyHmacBase64Variant
+```
+
+3 例转红、另 5 例仍绿（它们守的是时间戳窗口/dev 模式/密钥选取等**别的**语义，
+不受该负控影响）→ 测试确实在测算法本身，不是摆设。已还原。
+
+**负控过程中的一次失败记录**：第一次注入负控时只改算法、没补 import，
+`go test` 报的是 `encoding/hex imported and not used` **编译失败**，
+不是断言转红。这**不构成有效负控**（证明不了测试能捕获算法错误），
+补 `_ = hex.EncodeToString` 占位让包能编译后才拿到上面的 3 例红。
+
+### 仍未验证
+
+- 回调端点 `https://m.kxpms.cn/callback/feishu` **未实际部署联调**，无真实回调样本。
+  本条修正的依据是官方文档 + 单测，**不是**真实 200 响应。
+- 官方文档说明：配置 Encrypt Key 后事件体本身会被加密（AES-256-CBC），**本仓未实现解密**。
+  即配了 EncryptKey 虽能过验签，但 `body` 仍是密文 → 事件解析会失败。
+  这是**独立的第二个缺口**，本轮未修，需单独处理。
+
+---
+
+## §7z 飞书加密事件体解密（AES-256-CBC）——§7y 遗留缺口的修复（2026-10-01）
+
+### 起因
+
+§7y 修了验签，但留下一个**独立缺口**：飞书官方文档明确说明，配了 Encrypt Key 后
+事件体本身会被加密（`{"encrypt":"<base64>"}`），而本仓**没有实现解密**。
+后果：配了 Encrypt Key 虽能过验签，`body` 仍是密文 → 事件解析必然失败。
+这是「按 §7y 配置上线就会踩」的坑，属本轮主动补齐。
+
+### 取证
+
+从 §7y 已取证的官方文档 artifact 中直接定位到「事件解密 / Event decryption」段原文
+（含 Python/Java/Golang/Node/PHP 五语言示例）：
+
+```
+key  = sha256(encrypt_key)                        # 32 字节
+raw  = base64decode(encrypt)
+iv   = raw[:16]                                   # IV 内嵌密文头部，非配置项
+body = AES-256-CBC-decrypt(key, iv, raw[16:]) → PKCS#7 unpad
+```
+
+关键细节（易错点）：
+
+- key 是 `sha256(encrypt_key)` 的 **32 字节**摘要，**不是** encrypt_key 本身
+- **IV 内嵌在密文前 16 字节**，不需要单独配置
+- 官方 Python 示例用 `AES.MODE_CBC, iv`；Java 示例写死 `AES/CBC/NOPADDING`
+  再手工去 padding——两者等价，本仓用 Go 标准 `cipher.NewCBCDecrypter` + 显式去 padding
+
+### 真值锚点：官方自带测试向量
+
+**没有自己造密文**，直接用官方文档 Python/Java 示例里的同一组数据：
+
+| 项 | 值 |
+|----|-----|
+| `encrypt_key` | `test key` |
+| `encrypt` | `P37w+VZImNgPEO1RBhJ6RtKl7n6zymIbEG1pReEzghk=` |
+| 明文 | `hello world` |
+
+该向量来源可追溯（官方示例代码中逐字出现），比自造 round-trip 更有说服力。
+`TestDecryptEvent_OfficialTestVector` 直接锁它。
+
+### 实现
+
+- `decryptEvent(encryptKey, encrypted string) ([]byte, error)` — `handler.go`
+- `unpadPKCS7(b []byte, blockSize int)` — 显式校验填充字节范围与一致性，
+  **不**用「信任密文」的写法，避免畸形输入被静默截断成看似合法的明文
+- handler 新增**分支 0**（`env.Encrypt != ""`），顺序严格是：
+  **验签（对原始加密 body）→ 解密 → 解析明文 → dispatch**
+  验签用原始 body 而非明文，否则签名对不上
+
+### 证据
+
+- `decrypt_event_test.go` 9 个顶层用例（含 5 个畸形子用例）全绿
+- `go build ./...` 通过
+- `go test`：feishu / email / email-rules / config / server 五包全绿（server 5.453s）
+
+覆盖的用例：
+
+- 官方向量真值锚点
+- round-trip（自造密文，验证加解密对称）
+- 畸形输入 5 例：空 key / 非 base64 / 过短 / 只有 IV 无密文 / 密文非块对齐
+- PKCS#7 非法填充 5 例：填充字节 0 / 超块长 / 超数据长 / 内容不一致 / 空输入
+- 端到端 handler：加密 body → 200 且正确派发
+- 加密事件 + 错误签名 → 401（**解密分支不能成为验签旁路**）
+- 加密事件 + 未配 key → 401（不能静默当明文解析）
+
+### 负控对照（两次，均 3 例转红）
+
+1. **IV 取错**（改成取后 16 字节）：
+   ```
+   --- FAIL: TestDecryptEvent_OfficialTestVector   invalid PKCS#7 padding byte 172
+   --- FAIL: TestDecryptEvent_RoundTrip            invalid PKCS#7 padding byte 118
+   --- FAIL: TestHandler_EncryptedEventEndToEnd    400 decrypt failed
+   ```
+2. **key 不做 sha256 派生**（直接用 encrypt_key 当 AES key）：
+   ```
+   --- FAIL: TestDecryptEvent_OfficialTestVector   invalid key size 8
+   --- FAIL: TestDecryptEvent_RoundTrip            invalid key size 5
+   --- FAIL: TestHandler_EncryptedEventEndToEnd    400 decrypt failed
+   ```
+
+两次都是 3 例红、其余 6 例绿（它们守的是畸形输入/验签旁路等别的语义）。
+两个负控分别独立证明了「IV 位置」和「key 派生」这两个易错点被真正锁住。
+均已还原并复跑全绿。
+
+### 过程中抓到的一个测试自身 bug
+
+`TestHandler_EncryptedEventEndToEnd` 首次 FAIL，期望 `dispatched == "im.message.receive_v1"`。
+查 `dispatch` → `handleMessageEvent` 后确认：**是我测试写错了**——`broadcast` 收到的是
+转换后的 `"feishu.message"`，不是原始 event type。生产代码行为正确，已改测试期望。
+这与 §7v/§7w/§7x「只查一侧就下结论」是同一类毛病，测试期望同样需要核到实现。
+
+### 仍未验证
+
+- 端点 `https://m.kxpms.cn/callback/feishu` **未实际部署联调**，无真实回调样本。
+  验签（§7y）与解密（本节）都只有「官方文档 + 单测」依据，**没有真实 200 响应**。
+- 官方向量只覆盖 16 字节密文（1 个块）的最短路径；多块密文靠 round-trip 用例覆盖，
+  但**同样不是真实飞书密文**。
+- 长连接模式（长连接事件订阅）本仓未实现，本节只覆盖「发送至开发者服务器」模式。
