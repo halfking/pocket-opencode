@@ -85,6 +85,38 @@ func TestSyncGreenmail(t *testing.T) {
 		t.Fatalf("insert account: %v", err)
 	}
 
+	// 跑完删掉账户，否则线上 pocketd 每 60 秒会对这个「用临时 master key 加密
+	// 的测试账户」报一次 decrypt credential，把真实故障埋进日志。
+	// 同样用 t.Cleanup，t.Fatal 也会删。详见 junk_greenmail_test.go 的说明。
+	//
+	// **必须自己开连接**：测试里是 `defer pool.Close()`，而 defer 在函数返回时
+	// 先于 t.Cleanup 执行 —— 复用 pool 会拿到 `closed pool`，清理静默失败。
+	// 那是第一版真踩的：日志里三条 `cleanup ...: closed pool`，账户照样留着。
+	t.Cleanup(func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer ccancel()
+		cpool, cerr := pgxpool.New(cctx, dsn)
+		if cerr != nil {
+			t.Logf("cleanup pool: %v", cerr)
+			return
+		}
+		defer cpool.Close()
+		// 三张表的 WHERE 列不一样：email_accounts 是父表，只有 id，没有
+		// account_id。第一版对三张表统一写 `WHERE account_id=$1 OR id=$1`，
+		// 父表那句直接报 `column "account_id" does not exist` —— 清理**静默**
+		// 失败，账户照样留着。子表先删、父表后删。
+		for _, d := range []struct{ table, where string }{
+			{"email_invoices", "account_id"},
+			{"emails", "account_id"},
+			{"email_accounts", "id"},
+		} {
+			if _, err := cpool.Exec(cctx,
+				`DELETE FROM `+d.table+` WHERE `+d.where+`=$1`, acctID); err != nil {
+				t.Logf("cleanup %s: %v", d.table, err)
+			}
+		}
+	})
+
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel2()
 	n, err := fetcher.Sync(ctx2, acctID)

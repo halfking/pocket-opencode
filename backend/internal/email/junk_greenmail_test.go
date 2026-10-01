@@ -180,6 +180,41 @@ func TestMoveToJunkGreenmail(t *testing.T) {
 		t.Fatalf("insert account: %v", err)
 	}
 
+	// **跑完必须把账户删掉**。这两个 greenmail 账户是故意用 t.TempDir() 里的
+	// 临时 master key 加密的，而线上 pocketd 每 60 秒扫一遍启用账户，于是它会
+	// 永远地打 `decrypt credential: cipher: message authentication failed`。
+	// 实测（2026-10-01 21:43 读线上 logs/pocketd-18099d.err.log）：这个账户从
+	// 20:34 起每分钟报一次，一小时几百行，把真实故障埋在里面。
+	// 之前只在开头清理（保证重复跑幂等），忘了收尾，等于把测试垃圾留在了
+	// 共享库里。这里用 t.Cleanup 保证即使 t.Fatal 也会删。
+	//
+	// **必须自己开连接**：测试里是 `defer pool.Close()`，而 defer 在函数返回时
+	// 先于 t.Cleanup 执行 —— 复用 pool 会拿到 `closed pool`，清理静默失败。
+	// 那是第一版真踩的：日志里三条 `cleanup ...: closed pool`，账户照样留着。
+	t.Cleanup(func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer ccancel()
+		cpool, cerr := pgxpool.New(cctx, dsn)
+		if cerr != nil {
+			t.Logf("cleanup pool: %v", cerr)
+			return
+		}
+		defer cpool.Close()
+		// 三张表的 WHERE 列不一样：email_accounts 是父表，只有 id，没有
+		// account_id（第一版统一写 `WHERE account_id=$1 OR id=$1`，父表那句
+		// 报 column "account_id" does not exist，清理静默失败）。
+		for _, d := range []struct{ table, where string }{
+			{"email_invoices", "account_id"},
+			{"emails", "account_id"},
+			{"email_accounts", "id"},
+		} {
+			if _, err := cpool.Exec(cctx,
+				`DELETE FROM `+d.table+` WHERE `+d.where+`=$1`, greenmailJunkAcctID); err != nil {
+				t.Logf("cleanup %s: %v", d.table, err)
+			}
+		}
+	})
+
 	before := snapshotMailboxes(t, fetcher, greenmailJunkAcctID)
 	if len(before.inbox) < 3 {
 		t.Skipf("收件箱只有 %d 封，不足以验证「部分移动」，请先经 3025 投递 3 封以上", len(before.inbox))
