@@ -91,6 +91,24 @@ func (s *Store) UpsertFolderScoped(ctx context.Context, f *MailFolder, userID, w
 	if f.Source == "" {
 		f.Source = "user"
 	}
+	// 归属校验：account_id 来自请求体，必须先确认它确实在调用者的 scope 内。
+	// 与 UpsertVacationReplyScoped 用的是同一套守卫（那边注释写明是"阻止
+	// 创建 vacation 后修改 accountID 指向他人账户的越权"）。少了这一步，
+	// POST /api/email/folders 就能在别人的账户上凭空登记目录；再加上
+	// email_folders 的 UNIQUE(account_id, name)，攻击者还能抢注目录名，
+	// 受害者自建同名目录时 ON CONFLICT 会去改攻击者那行。
+	var owned bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM email_accounts
+			WHERE id = $1 AND user_id = $2 AND workspace_id = $3
+		)
+	`, f.AccountID, userID, workspaceID).Scan(&owned); err != nil {
+		return err
+	}
+	if !owned {
+		return ErrNotFound
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO email_folders (id, account_id, workspace_id, user_id, name, display_name, special, source, server_synced, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)

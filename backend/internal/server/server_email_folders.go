@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -80,6 +81,12 @@ func (s *Server) handleEmailFolders(w http.ResponseWriter, r *http.Request) {
 			f.ServerSynced = true
 		}
 		if err := s.emailStore.UpsertFolderScoped(r.Context(), f, uid, wsID); err != nil {
+			// accountId 不在调用者作用域内：与任务写守卫同一口径返 404，
+			// 不回 500 也不回 403 —— 不泄露"这个 account 存不存在"。
+			if errors.Is(err, email.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "email account not found")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
