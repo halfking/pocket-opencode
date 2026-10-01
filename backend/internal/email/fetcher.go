@@ -137,6 +137,21 @@ const imapIdleTimeout = 60 * time.Second
 // 单账户 90s 上界，给后面的步骤留足余量。
 const imapHardTimeout = 45 * time.Second
 
+// syncBudget 是单个账户的**总**墙钟预算，IMAP 与 POP3 降级共用。
+//
+// 取 70s = IMAP 硬截止 45s + POP3 最多 25s。必须明显小于 pipeline 的
+// 90s 上界（DefaultAccountSyncTimeout），留 20s 给后面的步骤（落库、
+// 发票建档）——之前取 80s 时实测仍然整轮 90619ms 超时，因为 80+ 收尾
+// 已经把 90s 吃满了。
+//
+// 它被提到包级是为了让「IMAP 不得吃光预算」这条约束可被断言：硬截止只在
+// 看门狗 tick（idle/3 = 20s）上判定，所以 IMAP 的**实际**断开点是
+// 「第一个严格大于 imapHardTimeout 的 tick」，不是 imapHardTimeout 本身。
+// 生产实测 45s→实际 60s，只剩 10s 给 POP3 兜底；这条余量一旦被调窄，
+// syncPOP3Fallback 会在 budget<=0 上直接返回
+// "no time left for POP3 fallback"，降级通道形同虚设。
+const syncBudget = 70 * time.Second
+
 // deadlineConn 给 IMAP 连接套两道保险：滚动空闲 deadline + 绝对硬截止。
 //
 // **第一道（滚动空闲）** 只在连接上确实有数据流动时才续期，静默则到期报错。
@@ -582,13 +597,6 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 	addr := fmt.Sprintf("%s:%d", acc.IMAPHost, acc.IMAPPort)
 	tr := newSyncTrace(acc.EmailAddress)
 	defer tr.done()
-	// syncBudget 是单个账户的**总**墙钟预算，IMAP 与 POP3 降级共用。
-	//
-	// 取 70s = IMAP 硬截止 45s + POP3 最多 25s。必须明显小于 pipeline 的
-	// 90s 上界（DefaultAccountSyncTimeout），留 20s 给后面的步骤（落库、
-	// 发票建档）——之前取 80s 时实测仍然整轮 90619ms 超时，因为 80+ 收尾
-	// 已经把 90s 吃满了。
-	const syncBudget = 70 * time.Second
 	deadline := time.Now().Add(syncBudget)
 	// 降级时能用的时间 = 总预算减去 IMAP 已经花掉的。
 	remaining := func() time.Duration { return time.Until(deadline) }
