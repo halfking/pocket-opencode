@@ -5810,6 +5810,56 @@ go vet ./... = 0，go test ./internal/email/ 54.0s 通过，-race 通过
 
 ---
 
+## §7ck 把「发票重复」从待查推断变成有证据的事实（2026-10-02）
+
+§7be 起我一直把「一封多张只记首张 / 跨邮件同发票记两行」记成**待拍板项**。
+本节把它变成**可复核的证据**——因为「要不要加唯一约束」是产品决策，
+而决策该建立在事实上，不建立在推断上。
+
+## 先用真实库确认约束（不靠读代码）
+
+`opencode_pocket.email_invoices` 的全部索引（psql 实测）：
+
+    email_invoices_pkey        UNIQUE (id)
+    email_invoices_email_id_key UNIQUE (email_id)   <- 唯一的业务约束
+    idx_email_invoices_ws      (workspace_id, user_id, created_at DESC)
+    idx_email_invoices_status  (workspace_id, status)
+
+**`invoice_no` 确实没有任何唯一约束。**
+
+`email_invoices` 当前 **0 行** ⇒ 这个重复在真实数据上**尚未发生**。
+
+## 代码侧：同一封邮件是幂等的
+
+`invoice_store.go:98` 的 `ON CONFLICT (email_id) DO UPDATE` 保证
+**同一封邮件**重复建档只落一行，且**复用旧行 ID**（不新生成 ID，
+否则旧行变孤儿——`scheduler.go:848` 的注释记着这个坑）。
+
+## 缺口：跨邮件同一发票号会重复计入
+
+`invoice_dedup_test.go` 用三条用例把它固定下来：
+
+1. `TestUpsertInvoice_SameEmailIsIdempotent` —— 同邮件重复 ⇒ 1 行、ID 复用。
+2. `TestUpsertInvoice_SecondPassDoesNotWipeKnownFields` —— 第二轮提取只剩
+   envelope 信息时，**不得**把第一轮解析出的发票号/日期/销售方/金额抹成空串
+   （`ON CONFLICT` 里那 4 个 `CASE WHEN ... <> ''` 就是干这个的）。
+3. `TestInvoiceNoHasNoUniqueConstraintAcrossEmails` —— **记录当前真实行为**：
+
+       已证实：同一发票号跨两封邮件 -> 2 行、合计 1000（应为 500）
+
+   这条断言的是**现状**而不是「应该不重复」。若将来决定加唯一约束，
+   它会红，那时它就自动变成需求的守卫。
+
+## 真实场景
+
+供应商先发确认函、后发正式发票（两封不同邮件、同一个 invoice_no），
+或同一张发票因网络重发被收两次 —— 需求 3 的「汇总金额」就会**多算一倍**。
+
+**这是决策项不是缺陷**：跨账户的同一张发票（公司替员工垫付）也许**应当**分开记。
+我替不了用户定这个。但现在它有了可复核的证据。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
