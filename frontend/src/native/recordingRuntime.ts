@@ -58,6 +58,12 @@ import { decideMeetingStart, decideNoteStart } from './recordingPolicy'
 // ---------------------------------------------------------------------------
 
 const VOICE_PROMPT_KEY = '__openpocket_recordingVoicePrompt__'
+/**
+ * BUG-AU 降级结论的持久化键：本机是否已被证明「系统 TTS 会抢走前台」。
+ * 存 localStorage 而非只留内存，是因为被劫持过一次之后，用户重启 App
+ * 也不该再被同一个弹窗打断。
+ */
+const VOICE_PROMPT_HIJACK_KEY = 'openpocket.voicePrompt.hijacked'
 type GlobalWithVoicePrompt = typeof globalThis & {
   [VOICE_PROMPT_KEY]?: RecordingVoicePrompt
 }
@@ -78,7 +84,16 @@ function detectVoicePromptDeps(): VoicePromptDeps {
     typeof window !== 'undefined'
     && 'speechSynthesis' in window
     && typeof SpeechSynthesisUtterance !== 'undefined'
-  return { nativeRegistered, webSpeechAvailable }
+  return {
+    nativeRegistered,
+    webSpeechAvailable,
+    // BUG-AU：系统 TTS 在部分 ROM（MIUI 实测）上会拉起授权页抢前台。
+    // 播报前后比对可见性，命中就让播报永久让位于录音。
+    readVisibility: () => (typeof document !== 'undefined' ? document.visibilityState : 'visible'),
+    onForegroundHijack: () => {
+      try { localStorage.setItem(VOICE_PROMPT_HIJACK_KEY, '1') } catch { /* 无痕模式等 */ }
+    },
+  }
 }
 
 /** 原生 TTS：与 useSpeech 同一个插件，不引入第二套引擎。动态 import，Web 构建不打包。 */
@@ -101,6 +116,12 @@ function voicePrompt(): RecordingVoicePrompt {
       SpeechSynthesisUtterance: new (t: string) => SpeechSynthesisUtterance
     })(engine, text)
   })
+  // 恢复上次的降级结论：本机已被证明会被系统 TTS 抢前台，就别再试了。
+  try {
+    if (localStorage.getItem(VOICE_PROMPT_HIJACK_KEY) === '1') {
+      g[VOICE_PROMPT_KEY]!.restoreForegroundHijack()
+    }
+  } catch { /* 无痕模式读不到就当没降级过 */ }
   return g[VOICE_PROMPT_KEY]
 }
 

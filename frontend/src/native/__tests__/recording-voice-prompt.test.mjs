@@ -241,6 +241,94 @@ describe('makeWebSpeaker', () => {
   })
 })
 
+describe('BUG-AU · 系统 TTS 抢前台的自愈降级（2026-10-01 真机确证）', () => {
+  // MIUI 上开始录音 → TextToSpeech.speak() → 系统「系统语音引擎」拉起授权页
+  // （索要「录制音频」）→ 页面 visibilityState=hidden → WebView 被节流
+  // （rAF 停、setInterval 钳到 1/min）→ 全局录音指示条时钟冻在最后一帧。
+  // 真机受控对照：未录音 0/3 被抢，录音中 8/8；手动关掉授权页后再录仍 6/6。
+  it('播报把页面从 visible 打成 hidden → 判定为劫持，之后不再播报', async () => {
+    const spoken = []
+    let vis = 'visible'
+    let notified = 0
+    const p = new RecordingVoicePrompt(
+      { ...NATIVE, readVisibility: () => vis, onForegroundHijack: () => { notified++ } },
+      async (_e, t) => { spoken.push(t); vis = 'hidden' }, // 引擎把 App 打到后台
+    )
+    p.announce('start')
+    await p.drain()
+    assert.deepEqual(spoken, ['开始录音'], '第一次仍应播报（要先试出来）')
+    assert.equal(p.hasForegroundHijack(), true, '必须判定为前台被抢')
+    assert.equal(notified, 1, '降级结论要回调出去以便持久化')
+
+    p.announce('stop')
+    await p.drain()
+    assert.deepEqual(spoken, ['开始录音'], '判定劫持后必须彻底闭嘴，不能再打扰录音')
+  })
+
+  it('正常播报（可见性不变）绝不能被误降级', async () => {
+    const spoken = []
+    let notified = 0
+    const p = new RecordingVoicePrompt(
+      { ...NATIVE, readVisibility: () => 'visible', onForegroundHijack: () => { notified++ } },
+      async (_e, t) => { spoken.push(t) },
+    )
+    p.announce('start')
+    await p.drain()
+    p.announce('stop')
+    await p.drain()
+    assert.deepEqual(spoken, ['开始录音', '录音结束'], '正常设备上播报必须照常工作')
+    assert.equal(p.hasForegroundHijack(), false, '没被打断就不该降级')
+    assert.equal(notified, 0)
+  })
+
+  it('播报前页面本来就是后台（用户自己切走了）→ 不算引擎的锅', async () => {
+    let notified = 0
+    const p = new RecordingVoicePrompt(
+      { ...NATIVE, readVisibility: () => 'hidden', onForegroundHijack: () => { notified++ } },
+      async () => {},
+    )
+    p.announce('start')
+    await p.drain()
+    assert.equal(p.hasForegroundHijack(), false, '播报前后都是 hidden，不构成「被抢」')
+    assert.equal(notified, 0)
+  })
+
+  it('restoreForegroundHijack 能从持久化恢复降级（重启后不再被同一个弹窗打断）', async () => {
+    const spoken = []
+    const p = new RecordingVoicePrompt(NATIVE, async (_e, t) => { spoken.push(t) })
+    p.restoreForegroundHijack()
+    p.announce('start')
+    await p.drain()
+    assert.deepEqual(spoken, [], '已标记降级的机器上不应该再播报')
+  })
+
+  it('降级路径自身抛错也不该影响录音（持久化失败必须被吞掉）', async () => {
+    let vis = 'visible'
+    const spoken = []
+    const p = new RecordingVoicePrompt(
+      {
+        ...NATIVE,
+        readVisibility: () => vis,
+        onForegroundHijack: () => { throw new Error('localStorage 不可用') },
+      },
+      async (_e, t) => { spoken.push(t); vis = 'hidden' },
+    )
+    p.announce('start')
+    await p.drain()
+    assert.equal(p.hasForegroundHijack(), true, '即使回调抛错，降级结论本身也要生效')
+    p.announce('stop')
+    await p.drain()
+    assert.deepEqual(spoken, ['开始录音'], '回调抛错后仍要闭嘴，且不能因为抛错而中断')
+  })
+
+  it('runtime 侧确实接上了可见性读取与持久化键', () => {
+    const runtime = read('../recordingRuntime.ts')
+    assert.ok(runtime.includes('readVisibility'), 'runtime 未传 readVisibility，降级永不触发')
+    assert.ok(runtime.includes('VOICE_PROMPT_HIJACK_KEY'), 'runtime 未持久化降级结论')
+    assert.ok(runtime.includes('restoreForegroundHijack'), 'runtime 未恢复上次的降级结论')
+  })
+})
+
 describe('录音提示契约（源码级）', () => {
   const src = read('../recording-voice-prompt.ts')
 

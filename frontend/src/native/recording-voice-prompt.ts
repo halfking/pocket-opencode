@@ -56,6 +56,16 @@ export interface VoicePromptDeps {
   nativeRegistered: boolean
   /** 浏览器是否具备 speechSynthesis */
   webSpeechAvailable: boolean
+  /**
+   * 读当前页面可见性。用于检测「系统 TTS 把 App 打到后台」。
+   * 缺省视为**始终可见**——即不做自动降级（纯 Web 单测/无 DOM 环境安全）。
+   */
+  readVisibility?: () => 'visible' | 'hidden'
+  /**
+   * 检出「系统 TTS 抢走前台」时回调一次，用于持久化（重启后不再播报）。
+   * 抛错必须被吞掉——降级路径本身绝不能让录音失败。
+   */
+  onForegroundHijack?: () => void
 }
 
 /**
@@ -103,6 +113,8 @@ export class RecordingVoicePrompt {
    */
   private generation = 0
   private muted = false
+  /** 系统 TTS 是否已把本 App 打到后台过（见 speakSafely 的降级判定）。 */
+  private foregroundHijacked = false
   private readonly deps: VoicePromptDeps
   private readonly speak: VoiceSpeaker
 
@@ -119,6 +131,21 @@ export class RecordingVoicePrompt {
 
   isMuted(): boolean {
     return this.muted
+  }
+
+  /**
+   * 系统 TTS 是否已把本 App 打到后台过。
+   *
+   * 设置页据此把「语音提示」显示成「已自动关闭（系统语音引擎会打断录音界面）」，
+   * 而不是让用户以为功能坏了 —— 播报失败本来就是静默的（见 probeVoicePromptSupport）。
+   */
+  hasForegroundHijack(): boolean {
+    return this.foregroundHijacked
+  }
+
+  /** 启动时恢复上次的降级结论（持久化在调用方，这里只管置位）。 */
+  restoreForegroundHijack(): void {
+    this.foregroundHijacked = true
   }
 
   support(): VoicePromptSupport {
@@ -189,9 +216,9 @@ export class RecordingVoicePrompt {
     await this.queue
   }
 
-  /** 前置过滤：静音 / 未知事件 / 无引擎 → 返回 null 表示「本节点不播报」。 */
+  /** 前置过滤：静音 / 未知事件 / 无引擎 / 已被系统抢占过 → 返回 null 表示「本节点不播报」。 */
   private plan(event: RecordingEvent): { engine: 'native' | 'web'; text: string } | null {
-    if (this.muted) return null
+    if (this.muted || this.foregroundHijacked) return null
     const text = promptTextFor(event)
     if (!text) return null
     const { supported, engine } = this.support()
@@ -201,11 +228,47 @@ export class RecordingVoicePrompt {
 
   private async speakSafely(gen: number, engine: 'native' | 'web', text: string): Promise<void> {
     if (gen !== this.generation) return // 入队后发生过 clear()，内容作废
+    // 播报前先记可见性：系统 TTS 若把 App 打到后台，播报本身就是破坏者。
+    const visBefore = this.visibility()
     try {
       await this.speak(engine, text)
     } catch {
       // 无 TTS 引擎 / 引擎被系统回收 / 权限异常：提示音缺失不应打断录音。
     }
+    this.detectForegroundHijack(visBefore)
+  }
+
+  private visibility(): 'visible' | 'hidden' {
+    try {
+      return this.deps.readVisibility?.() ?? 'visible'
+    } catch {
+      return 'visible'
+    }
+  }
+
+  /**
+   * 「播报把 App 打到后台」自愈降级（BUG-AU，2026-10-01 真机确证）。
+   *
+   * 现场：MIUI 上开始会议录音 → announceSilenced('start') → TextToSpeech.speak()
+   * → 系统「系统语音引擎」拉起授权页（索要「录制音频」）并抢走前台
+   * → 页面 visibilityState 变 hidden → WebView 被节流（rAF 停、setInterval 钳到
+   *   1/min）→ 全局录音指示条的时钟冻在最后一帧。真机受控对照：未录音时 0/3
+   *   被抢，开始录音后 8/8 被抢；手动关掉授权页后再录仍然 6/6 —— **不是一次性
+   *   首启体验，是每次录音都被劫持**。
+   *
+   * 为什么必须让位：需求是「录音时播一段语音」，但**录音本身绝不能被打断**是
+   * 更高阶的要求——被系统弹窗盖住时用户既看不到录音界面也停不下，而播报只是
+   * 锦上添花。所以这里不是「禁用 TTS 功能」，而是「一旦发现它会破坏录音，就
+   * 本机永久让位」，并把结论回调给调用方持久化。
+   *
+   * 判定用**播报前后的可见性差**，不用设备白名单：白名单要维护、且换个 ROM
+   * 就失效；可见性是系统给的客观事实，跨设备通用。
+   */
+  private detectForegroundHijack(visBefore: 'visible' | 'hidden'): void {
+    if (this.foregroundHijacked) return
+    if (visBefore !== 'visible' || this.visibility() !== 'hidden') return
+    this.foregroundHijacked = true
+    try { this.deps.onForegroundHijack?.() } catch { /* 持久化失败不该影响录音 */ }
   }
 }
 
