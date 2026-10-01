@@ -132,6 +132,14 @@ def transcribe(audio_bytes: bytes, language: str | None) -> tuple[str, float]:
         beam_size=1,          # CPU 上求速度；要更高准确度可调 5
         vad_filter=True,      # 过滤静音，避免幻觉出「字幕bySubtitle」之类的东西
         condition_on_previous_text=False,
+        # 强制简体输出。Whisper 系列在中文上默认吐**繁体**（2026-10-01 实测：
+        # 简体的「帮我记一下明天要买牛奶和面包」被识别成繁体的
+        # 「幫我記一下明天要買牛奶和麵包」，用字完全正确、只是字形不对）。
+        # 这不是本服务的 bug，而是所有 whisper 系模型的共同行为 ——
+        # 设置页预置的外部候选里就有 openai/whisper-large-v3-turbo，
+        # 所以这是**产品侧要处理的真实问题**，不是这里可以绕过的小事。
+        # OpenAI 官方给出的解法就是给一个普通话 initial_prompt 做偏置。
+        initial_prompt="以下是普通话的句子，请用简体中文输出。",
     )
     text = "".join(s.text for s in segments).strip()
     log(

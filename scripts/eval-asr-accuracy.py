@@ -82,8 +82,125 @@ def strip_punct(s: str) -> str:
     return "".join(ch for ch in s if not _is_punct_or_space(ch))
 
 
-def normalize(s: str) -> str:
-    """比较用的规范化：只做无争议的变换，不做数字等价展开。"""
+# ---------------------------------------------------------------------------
+# 数字归一化
+# ---------------------------------------------------------------------------
+#
+# 为什么需要第二个指标：实测 2026-10-01，whisper-base 把「二零二六年十月十五号
+# 上午十点」输出成「2026年10月15号上午10点」。**内容完全正确**，只是把中文
+# 数字写成了阿拉伯数字 —— 对笔记场景这其实是**更好的**输出（可搜索、可计算）。
+#
+# 但严格 CER 会把它整段算成错误，于是 base（长句 5.7%）与 tiny（长句 12.9%）
+# 的真实差距被数字格式的噪声盖住，总体分几乎一样（都 22.1%）。
+#
+# 所以报两个数：
+#   CER_strict    不做数字归一 —— 反映「用户逐字看到的差异」
+#   CER_norm      中文数字↔阿拉伯数字视为等价 —— 反映「信息有没有听错」
+# 两个数差得越多，说明问题出在格式而不是听错。
+#
+# 注意：CER_norm 只能免除**格式**差异，不能免除**数值**差异。
+# 「十二万三千四百五十」→「12,450」 数值本身就错了，两个指标都会算错。
+
+_CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10000, "亿": 100000000}
+# 常见口语量词，不影响数值本身
+_CN_MEASURE = {"个", "块", "元", "毛", "角"}
+
+
+def _cn_num_to_int(s: str):
+    """把一段纯中文数字转成 int；无法解析返回 None。
+
+    三种读法必须分开处理，混在一起就会算错（2026-10-01 自测实测）：
+
+    1. **位值读法**：十二万三千四百五十 = 123450
+       遇到十/百/千/万/亿 走位值累加。
+    2. **逐位读法**：二零二六 = 2026
+       年份、编号、日期都这么读。**整段没有位值单位时按位拼接**，
+       否则「二零二六」会被当成 2+0+2+6 算成 10（自测实测曾错成 6）。
+    3. **百分之**：百分之十八 = 百分之18
+       「百」在「百分之」里是词不是位值，必须整词识别。
+
+    遇到「点」（小数）直接放弃解析，交给严格指标去报 ——
+    宁可少归一，也不要归一错。
+    """
+    if not s:
+        return None
+    # 3. 百分之 / 千分之 整词先行
+    for pct, mult in (("百分之", None), ("千分之", None)):
+        if s.startswith(pct):
+            rest = s[len(pct):]
+            v = _cn_num_to_int(rest) if rest else None
+            return None if v is None else v  # 「百分之」本身不是数值，交给外层拼接
+    if any(c not in _CN_DIGITS and c not in _CN_UNITS and c not in _CN_MEASURE
+           for c in s):
+        return None
+
+    has_unit = any(c in _CN_UNITS for c in s)
+    # 2. 无位值单位 → 逐位拼接
+    if not has_unit:
+        digits = "".join(str(_CN_DIGITS[c]) for c in s if c in _CN_DIGITS)
+        if digits and len(digits) == len([c for c in s if c in _CN_DIGITS]):
+            return int(digits)
+        return None
+
+    # 1. 位值读法
+    total, section, digit = 0, 0, 0
+    for ch in s:
+        if ch in _CN_DIGITS:
+            digit = _CN_DIGITS[ch]
+        elif ch in _CN_UNITS:
+            u = _CN_UNITS[ch]
+            if u >= 10000:
+                section = (section + digit) * u
+                total += section
+                section, digit = 0, 0
+            else:
+                # 「十五」= 10 + 5，前面没有数字时十本身就是 10
+                section += (digit or 1) * u
+                digit = 0
+        elif ch in _CN_MEASURE:
+            pass  # 量词不影响数值，**不能**把待定数字清零（自测踩过）
+    total += section + digit
+    return total if total else None
+
+
+def normalize_numerals(s: str) -> str:
+    """把中文数字串替换成阿拉伯数字，让两种写法可比。"""
+    out = []
+    i = 0
+    keys = sorted(set(_CN_DIGITS) | set(_CN_UNITS) | set(_CN_MEASURE),
+                  key=len, reverse=True)
+    while i < len(s):
+        # 「百分之」整体识别：只换后面的数字，「百」本身是词不是位值
+        for pct in ("百分之", "千分之"):
+            if s.startswith(pct, i):
+                out.append(pct)
+                i += len(pct)
+                break
+        else:
+            # 数字串在**量词处断开**：量词不属于数值本身，必须原样保留。
+            # 否则「三个议题」会变成「3议题」（自测实测踩过）。
+            if s[i] in set(_CN_DIGITS) | set(_CN_UNITS):
+                j = i
+                while j < len(s) and (s[j] in _CN_DIGITS or s[j] in _CN_UNITS):
+                    j += 1
+                run = s[i:j].split("点")[0]
+                v = _cn_num_to_int(run)
+                if v is not None:
+                    out.append(str(v))
+                    i = j
+                    continue
+            out.append(s[i])
+            i += 1
+    return "".join(out)
+
+
+def normalize(s: str, numerals: bool = False) -> str:
+    """比较用的规范化：只做无争议的变换，不做标点/大小写之外的改写。
+
+    numerals=True 时额外做中文数字→阿拉伯数字的等价替换（见上方说明）。
+    """
     s = strip_punct(s.strip())
     # 全角英数 → 半角
     out = []
@@ -93,17 +210,17 @@ def normalize(s: str) -> str:
             out.append(chr(o - 0xFEE0))
         else:
             out.append(ch)
-    return "".join(out).lower()
+    s = "".join(out).lower()
+    if numerals:
+        s = normalize_numerals(s)
+    return s
 
 
-def cer(ref: str, hyp: str) -> dict:
-    """标准 Levenshtein，返回 (S, D, I) 与 CER。"""
-    ref, hyp = normalize(ref), normalize(hyp)
+def _levenshtein(ref: str, hyp: str) -> int:
     n, m = len(ref), len(hyp)
     if n == 0:
-        return {"S": 0, "D": 0, "I": m, "cer": 1.0 if m else 0.0, "exact": m == 0}
+        return m
     prev = list(range(m + 1))
-    back = []
     for i in range(1, n + 1):
         cur = [i] + [0] * m
         for j in range(1, m + 1):
@@ -111,10 +228,19 @@ def cer(ref: str, hyp: str) -> dict:
                 cur[j] = prev[j - 1]
             else:
                 cur[j] = 1 + min(prev[j - 1], prev[j], cur[j - 1])
-        back.append(cur)
         prev = cur
-    edits = prev[m]
-    return {"edits": edits, "cer": edits / n, "exact": edits == 0, "ref_len": n}
+    return prev[m]
+
+
+def cer(ref: str, hyp: str, numerals: bool = False) -> dict:
+    """CER。两个指标：
+       numerals=False → CER_strict（用户逐字看到的差异）
+       numerals=True  → CER_norm（信息有没有听错，免除数字格式差异）
+    """
+    r, h = normalize(ref, numerals), normalize(hyp, numerals)
+    edits = _levenshtein(r, h)
+    return {"edits": edits, "cer": edits / len(r) if r else (1.0 if h else 0.0),
+            "exact": edits == 0, "ref_len": len(r)}
 
 
 def post_audio(endpoint: str, path: str, language: str = "zh") -> dict:
@@ -174,16 +300,19 @@ def main() -> int:
             rows.append({**it, "hyp": "", "error": err, "seconds": el})
             continue
 
-        m = cer(it["text"], hyp)
-        flag = "OK " if m["exact"] else ("~  " if m["cer"] <= 0.2 else "ERR")
+        ms_strict = cer(it["text"], hyp, numerals=False)
+        ms_norm = cer(it["text"], hyp, numerals=True)
+        flag = "OK " if ms_norm["exact"] else ("~  " if ms_norm["cer"] <= 0.2 else "ERR")
         rtf = (el / dur) if dur else 0
-        print(f"[{flag} {it['id']:<12}] CER={m['cer'] * 100:5.1f}%  {dur:5.1f}s  {el:5.1f}s (rtf={rtf:.2f})  [{it['category']}]")
+        print(f"[{flag} {it['id']:<12}] CER strict={ms_strict['cer'] * 100:5.1f}%  "
+              f"norm={ms_norm['cer'] * 100:5.1f}%  {dur:5.1f}s  {el:5.1f}s (rtf={rtf:.2f})  [{it['category']}]")
         print(f"      参考: {it['text']}")
         print(f"      识别: {hyp}")
         rows.append({
             "id": it["id"], "category": it["category"], "ref": it["text"],
             "hyp": hyp, "duration": dur, "seconds": el, "rtf": rtf,
-            "cer": m["cer"], "exact": m["exact"], "error": None,
+            "cer_strict": ms_strict["cer"], "cer_norm": ms_norm["cer"],
+            "exact": ms_norm["exact"], "error": None,
         })
 
     ok = [r for r in rows if r["error"] is None]
@@ -191,25 +320,33 @@ def main() -> int:
         print("\n没有任何一段成功转写 —— 引擎或链路有问题，不能谈准确率。")
         return 2
 
-    total_ref = sum(cer(r["ref"], r["hyp"])["ref_len"] for r in ok)
-    total_edits = sum(cer(r["ref"], r["hyp"])["edits"] for r in ok)
-    overall = total_edits / total_ref if total_ref else 0
+    n_ref = sum(cer(r["ref"], r["hyp"])["ref_len"] for r in ok)
+    e_strict = sum(cer(r["ref"], r["hyp"])["edits"] for r in ok)
+    e_norm = sum(cer(r["ref"], r["hyp"], numerals=True)["edits"] for r in ok)
+    ov_s = e_strict / n_ref if n_ref else 0
+    ov_n = e_norm / n_ref if n_ref else 0
     exact_n = sum(1 for r in ok if r["exact"])
 
-    print("\n" + "=" * 64)
-    print(f"总体 CER        : {overall * 100:.1f}%   （{total_edits} 处错误 / {total_ref} 字）")
+    print("\n" + "=" * 72)
+    print(f"CER_strict（逐字差异）: {ov_s * 100:.1f}%   （{e_strict} 处 / {n_ref} 字）")
+    print(f"CER_norm  （信息听错）: {ov_n * 100:.1f}%   （{e_norm} 处 / {n_ref} 字）")
+    if e_strict - e_norm > n_ref * 0.02:
+        print(f"  → 两者差 {(e_strict - e_norm) / n_ref * 100:.1f} 个百分点："
+              "这部分是**格式差异**（如「二零二六年」写成「2026年」），不是听错。")
+        print("    对笔记场景这通常是**好事**（可搜索），不必算作缺陷。")
     print(f"完全正确        : {exact_n}/{len(ok)} 段 ({exact_n / len(ok) * 100:.0f}%)")
     print(f"平均实时率 RTF  : {sum(r['rtf'] for r in ok) / len(ok):.2f}  （<1 表示比实时快）")
 
     by_cat: dict[str, list] = {}
     for r in ok:
-        by_cat.setdefault(r["category"], []).append(cer(r["ref"], r["hyp"]))
+        by_cat.setdefault(r["category"], []).append(r)
     print("\n分类别：")
-    for cat, ms in sorted(by_cat.items()):
-        n = sum(m["ref_len"] for m in ms)
-        e = sum(m["edits"] for m in ms)
-        ex = sum(1 for m in ms if m["exact"])
-        print(f"  {cat:<11} CER={e / n * 100:5.1f}%   完全正确 {ex}/{len(ms)}")
+    for cat, rs in sorted(by_cat.items()):
+        n = sum(cer(r["ref"], r["hyp"])["ref_len"] for r in rs)
+        es = sum(cer(r["ref"], r["hyp"])["edits"] for r in rs)
+        en = sum(cer(r["ref"], r["hyp"], numerals=True)["edits"] for r in rs)
+        ex = sum(1 for r in rs if r["exact"])
+        print(f"  {cat:<11} strict={es / n * 100:5.1f}%  norm={en / n * 100:5.1f}%  完全正确 {ex}/{len(rs)}")
 
     print(
         "\n解读：\n"
@@ -224,7 +361,8 @@ def main() -> int:
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
             json.dump(
-                {"endpoint": args.endpoint, "overall_cer": overall,
+                {"endpoint": args.endpoint,
+                 "cer_strict": ov_s, "cer_norm": ov_n,
                  "exact": exact_n, "n": len(ok), "rows": rows},
                 f, ensure_ascii=False, indent=2)
         print(f"\n明细: {args.out}")

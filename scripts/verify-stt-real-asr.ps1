@@ -27,6 +27,29 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
+
+# 按 UTF-8 显式解码的 JSON 调用（见下面登录处的说明）。
+# 注意：内部变量**不能**叫 $args —— 那是 PowerShell 的自动变量（未绑定参数），
+# 在函数里赋值再 splat 会让解析器错乱，实测报「意外的标记 }」（2026-10-01）。
+function Invoke-Json([string]$Uri, [string]$Method = 'Get', $Body = $null, $Headers = $null, [int]$TimeoutSec = 900) {
+  $params = @{
+    Uri             = $Uri
+    Method          = $Method
+    TimeoutSec      = $TimeoutSec
+    UseBasicParsing = $true
+  }
+  if ($Headers) { $params.Headers = $Headers }
+  if ($null -ne $Body) {
+    $params.ContentType = 'application/json; charset=utf-8'
+    # Body 本身也要是 UTF-8 字节，否则中文参数会在发送前就坏掉
+    $params.Body = [System.Text.Encoding]::UTF8.GetBytes($Body)
+  }
+  $resp = Invoke-WebRequest @params
+  $text = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
+  if (-not $text) { return $null }
+  return $text | ConvertFrom-Json
+}
+
 $corpus = Join-Path $root '.verify-stt-data\asr-corpus'
 $gtPath = Join-Path $corpus 'groundtruth.json'
 if (-not (Test-Path $gtPath)) { throw "缺少语料：$gtPath（先跑 make-asr-groundtruth.ps1）" }
@@ -34,7 +57,7 @@ if (-not (Test-Path $gtPath)) { throw "缺少语料：$gtPath（先跑 make-asr-
 # ---------- 0. ASR 服务健康检查 ----------
 Write-Host "== 0. 本地 ASR 服务 =="
 try {
-  $health = Invoke-RestMethod "http://127.0.0.1:$AsrPort/" -TimeoutSec 8
+  $health = Invoke-Json "http://127.0.0.1:$AsrPort/" -TimeoutSec 8
 } catch {
   throw "本地 ASR 服务没起来（http://127.0.0.1:$AsrPort/）：$($_.Exception.Message)"
 }
@@ -75,16 +98,25 @@ try {
     -WindowStyle Hidden -PassThru
   $base = "http://127.0.0.1:$Port"
 
+  # 健康检查端点是 /healthz（与 verify-stt.ps1 一致）。
+  # 之前这里写成 /api/health —— 该路由不存在，于是永远探测不到就绪，
+  # 白等 20 秒还报「未就绪」，而 pocketd 其实早已 listening。
   $ready = $false
   foreach ($i in 1..40) {
     Start-Sleep -Milliseconds 500
-    try { $null = Invoke-RestMethod "$base/api/health" -TimeoutSec 2; $ready = $true; break } catch { }
+    try { $null = Invoke-RestMethod "$base/healthz" -TimeoutSec 2; $ready = $true; break } catch { }
   }
   if (-not $ready) { throw "pocketd 40 次探测仍未就绪，日志：$(Join-Path $dataDir 'realasr.err.log')" }
   Write-Host "  就绪"
 
   # ---------- 3. 登录 ----------
-  $login = Invoke-RestMethod "$base/api/auth/login" -Method Post -ContentType 'application/json' `
+  # 统一走 Invoke-Json：PowerShell 5.1 的 Invoke-RestMethod 遇到
+  # Content-Type 里没有 charset 的 JSON 会按 Latin-1 解码，中文全变乱码
+  # （2026-10-01 实测：后端返回的「帮我记一下明天要买牛奶和面包」在脚本里
+  # 变成「å¸å¸º...」。用 curl 直连后端验过，后端返回的中文**完全正确**，
+  # 所以这是读取侧的问题，不是产品的问题 —— 但证据文件乱码同样没法用，
+  # 必须在这里显式按 UTF-8 解码。）
+  $login = Invoke-Json "$base/api/auth/login" -Method Post `
     -Body (@{ username = 'admin'; password = 'Veritrans&9527' } | ConvertTo-Json)
   $hdr = @{ Authorization = "Bearer $($login.token)" }
   Write-Host "  已登录"
@@ -98,8 +130,8 @@ try {
     externalApiKey   = 'local-asr-no-key-needed'
     language         = 'zh'
   }
-  $saved = Invoke-RestMethod "$base/api/stt/config" -Method Put -Headers $hdr `
-    -ContentType 'application/json' -Body ($cfg | ConvertTo-Json -Compress)
+  $saved = Invoke-Json "$base/api/stt/config" -Method Put -Headers $hdr `
+    -Body ($cfg | ConvertTo-Json -Compress)
   if (-not $saved.hasExternalKey) { throw "外部 key 未保存" }
   Write-Host "  已保存：$($saved.externalModel) @ $($saved.externalBaseURL)"
 
@@ -112,8 +144,8 @@ try {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $body = @{ audioBase64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($wav)); language = 'zh' } | ConvertTo-Json -Compress
     try {
-      $r = Invoke-RestMethod "$base/api/stt/transcribe" -Method Post -Headers $hdr `
-        -ContentType 'application/json' -Body $body -TimeoutSec 900
+      $r = Invoke-Json "$base/api/stt/transcribe" -Method Post -Headers $hdr `
+        -Body $body -TimeoutSec 900
       $sw.Stop()
       $rows += [pscustomobject]@{
         id = $it.id; cat = $it.category; ref = $it.text; hyp = $r.text
@@ -132,7 +164,6 @@ try {
 
   # ---------- 6. 汇总 ----------
   $okRows = $rows | Where-Object { $_.ok }
-  $empty = $rows.Count - $okRows.Count
   Write-Host ""
   Write-Host "== 5. 汇总 =="
   Write-Host "  成功 $($okRows.Count)/$($rows.Count) 段返回非空文本"
