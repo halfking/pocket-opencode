@@ -23,7 +23,12 @@ export const EMAIL_PROVIDERS: EmailProvider[] = [
     id: 'exmail',
     label: '腾讯企业邮',
     hint: '公司域名，如 @kxpms.cn',
-    domains: ['exmail.qq.com'],
+    // 腾讯企业邮的 IMAP 主机由腾讯统一提供（imap.exmail.qq.com），邮箱地址用的
+    // 是租户自己的公司域名。所以这里不能只列 exmail.qq.com：用户填
+    // huangxutao@kxpms.cn 时 inferProviderId 会退回 'other'，IMAP/SMTP 主机
+    // 不会被自动填成企业邮的那一套，用户得自己手填。
+    // hint 里已经向用户承诺「公司域名，如 @kxpms.cn」，匹配逻辑必须与之相符。
+    domains: ['exmail.qq.com', 'kxpms.cn'],
     imapHost: 'imap.exmail.qq.com',
     imapPort: 993,
     smtpHost: 'smtp.exmail.qq.com',
