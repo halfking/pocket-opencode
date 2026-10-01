@@ -37,16 +37,28 @@ export interface AccountSyncPlan {
  */
 export function planAccountSync(local: AccountStamp[], remote: AccountStamp[]): AccountSyncPlan {
   const localById = new Map(local.map((a) => [a.id, a]))
+  const localByEmail = new Map(local.map((a) => [a.emailAddress.toLowerCase(), a]))
   const remoteById = new Map(remote.map((a) => [a.id, a]))
   const remoteByEmail = new Map(remote.map((a) => [a.emailAddress.toLowerCase(), a]))
   const pullIds: string[] = []
   const pushIds: string[] = []
   for (const r of remote) {
-    const l = localById.get(r.id)
+    // 配对必须与上行**同一套规则**：先 id，再邮箱。
+    //
+    // 2026-10-01 修复。此前下行只按 id 找本地（localById.get(r.id)），配不上就
+    // 直接 pull——哪怕本地有同一邮箱、且**本地更新**，也会被判成「本地没有这
+    // 个账户」而下行覆盖，把用户较新的本地改动冲掉，同时上行又按邮箱配上了
+    // 同一条，同一账户既 pull 又 push，结果取决于执行顺序：这不是 LWW，
+    // 是「谁后执行谁赢」。
+    //
+    // 场景是真实的：服务端重建账户 id 后，客户端仍留着旧 id。
+    const l = localById.get(r.id) ?? localByEmail.get(r.emailAddress.toLowerCase())
     if (!l || r.updatedAt > l.updatedAt) pullIds.push(r.id)
   }
+  const pulledRemotes = new Set(pullIds)
   for (const l of local) {
     const r = remoteById.get(l.id) ?? remoteByEmail.get(l.emailAddress.toLowerCase())
+    if (r && pulledRemotes.has(r.id)) continue
     if (r && l.updatedAt > r.updatedAt) pushIds.push(l.id)
   }
   return { pullIds, pushIds }
