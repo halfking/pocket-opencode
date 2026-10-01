@@ -6945,6 +6945,57 @@ git diff --name-only backend/internal/email/   ->  空
 
 ---
 
+## §7db 需求 6 的服务端委托腿 `delegatePipeline` 此前**零覆盖**（2026-10-02）
+
+`execution_mode_test.go` 只测了**判定**（`shouldDelegatePipeline`：mode/URL
+怎么算才算委托）。真正干活的 `delegatePipeline`
+（`server_email_pipeline.go:273`）——**把带邮箱权限的整条流水线 POST 到远端
+的那个函数** —— 全树零用例。
+
+判定绿了不等于委托能跑：URL 校验、非 200、解码失败、请求到底发没发出去，
+一条都没有守护。而这类代码的失败模式特别难看：配置写错时它**静默地把请求
+发到别处**，或者返回一条与真实原因无关的 decode 报错。
+
+新增 `backend/internal/server/delegate_pipeline_test.go`，5 条：
+
+| 用例 | 断言 |
+|---|---|
+| `DecodesRemoteReport` | 远端报告被如实解码（定时任务只看 `len(rep.Errors)`，字段丢了只剩空报告） |
+| `RejectsNonHTTPSchemes` | `file://` / `ftp://` / 无 scheme / `https://` / 空 / 纯空白 全部在**发请求之前**被挡；判据是「远端一次都没被敲」 |
+| `Non200ReportsStatusNotDecodeError` | 5xx 错误页不得掉进 JSON decode |
+| `MalformedJSONIsLabelledDecode` | 200 但非法 JSON 必须标成 `delegate decode`（与「远端挂了」区分） |
+| `UnreachableRemoteSurfacesError` | 连不上必须报错，不能返回空报告骗过定时任务 |
+
+### 两条负控（都实测转红）
+
+1. **去掉 scheme 校验**（只留 `target.Host == ""`）→
+   `RejectsNonHTTPSchemes` 红：`ftp://example.com/run` 一路走到
+   `client.Do` 才炸，报的是 `unsupported protocol scheme` 而不是配置项名。
+2. **去掉 non-200 分支** → `Non200ReportsStatusNotDecodeError` 红，且
+   精确演示了那条分支存在的理由：502 的 HTML 错误页会变成
+   `delegate decode: invalid character '<'` —— 排障的人会去查 JSON 格式，
+   而真正的问题是远端挂了。
+
+### 顺手把一条契约钉成断言
+
+实测确认：委托请求**不带任何凭证、不带 body**（远端用自己的配置跑）。
+这不是「应该这样」，是当前实现的事实。写死成断言是为了当 **tripwire**：
+谁给它加了鉴权，用例会红，迫使他同时更新本节与部署文档，而不是悄悄改掉
+「谁能触发带邮箱权限的流水线」这个事实。
+
+**这也是一条待决项**：远端编排服务当前是无鉴权触发。是否需要共享密钥，
+属部署语义，本轮不擅自加。
+
+### 回归
+
+`internal/server` 全量：除两个**既有**失败
+（`TestTaskWriteGuardBlocksPlainMemberPatch/Delete`，即 §7az 记的 404/403
+语义分歧，非邮件分支、非本轮引入）外全绿，11.0s。
+`git diff --name-only backend/internal/server/server_email_pipeline.go` 为空 ——
+生产文件逐字节还原。
+
+---
+
 ## §7cz 【需求 6/7】邮件的增量同步**永远退化成全量拉取**，而它的「正确」是靠这个 bug 换来的（2026-10-02）
 
 需求 7「在邮件窗口查看各类邮件」的 UI 链路本身是完整的，我逐段验过：
