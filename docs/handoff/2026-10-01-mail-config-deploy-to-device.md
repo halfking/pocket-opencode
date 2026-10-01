@@ -68,6 +68,41 @@ KAIXUAN_PW=... QQ_PW=... N163_FK_PW=... N163_FK1_PW=... N163_KH_PW=... \
 - adb 路径：`C:\Users\86133\AppData\Local\Android\platform-tools\adb.exe`（不在 PATH）。
 - 设备：`192.168.31.19:5555`。
 
+### 2.3 发票文件下载/导出 404 与 400 的根因：`dataDir` 跟着进程 CWD 跑
+
+**症状**：在 18099 实例上
+- `GET /api/emails/invoices/{id}/file` → **404**
+- `POST /api/emails/invoices/export` → **400 `no harvested invoice files in selection`**
+
+**看着像功能坏了，其实不是。** `cmd/pocketd/main.go:65` 是
+`dataDir := filepath.Dir(cfg.DBPath)` —— `dataDir` 由**相对**的 `DBPath` 派生，
+进程 CWD 一变目录就跟着变。发票采集时写在主工作区 `C:\workspace\openpocket\data\`，
+而 18099 实例的 dataDir 指向 `wt3\logs\pocketd-data`，`os.Stat` 自然找不到。
+这与 handoff §7b.5 记的 master key 问题是**同一个根因**。
+
+**证实方式**（不是靠推理）：用同一个二进制起一个 `POCKET_DB_PATH` 指向主工作区的
+隔离实例（端口 18100），同一张发票立刻正常：
+
+```
+单张下载   157,615 bytes  magic=%PDF
+A4 2x2     count=1 skipped=0  invoices-a4-2x2-20261001-181824.pdf  157,061 bytes %PDF
+A4 3x3     count=1 skipped=0  invoices-a4-3x3-20261001-181824.pdf  157,059 bytes %PDF
+```
+
+> **顺带记一个我自己踩过并已排除的误判**：单张导出后我查 `/MediaBox` 看到
+> `595 x 396`，而代码常量 `a4HeightPt = 841.89` 是 A4 竖版，于是判「页面被裁成横版」
+> —— **这是错的**。原始发票本身就是 `595.2756 x 396.8504`（横向），
+> 单张时 pdfcpu 不触发网格重排，保持原尺寸是正确的。
+> 多张才排成 A4 竖版，`TestExportInvoiceGrid_2x2FitsOneA4Page` 8 个用例全绿可证。
+> **教训：看到尺寸与常量不符，先查被测文件本身，别直接判缺陷。**
+
+### 2.4 A4 导出的调用姿势（两个都踩过）
+
+- `POST /api/emails/invoices/export` 的 `grid` 在 **body** 里（`{ids:[], grid:2|3}`），
+  放 query 会 400；
+- `ids` **必填**，省略同样 400（`ids required`）；
+- 该端点返回 JSON（含 `url`），PDF 要再 `GET <url>` 下载，不是直接返回 PDF。
+
 ## 3. 仍然卡住：adb 会话 offline（未完成）
 
 **现象**：`adb connect 192.168.31.19:5555` 返回 `already connected`，
