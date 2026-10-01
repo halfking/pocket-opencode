@@ -252,11 +252,12 @@ UPDATE email_invoices SET
 	invoice_date = CASE WHEN $8 <> '' THEN $8 ELSE invoice_date END,
 	invoice_no   = CASE WHEN $9 <> '' THEN $9 ELSE invoice_no END,
 	seller       = CASE WHEN $10 <> '' THEN $10 ELSE seller END,
-	amount       = CASE WHEN $11 > 0 THEN $11 ELSE amount END
+	amount       = CASE WHEN $11 > 0 THEN $11 ELSE amount END,
+	currency     = CASE WHEN $13 <> '' THEN $13 ELSE currency END
 WHERE id=$12`,
 		inv.Status, inv.FileName, inv.FilePath, inv.FileSource,
 		inv.Attempts, inv.LastError, inv.UpdatedAt,
-		inv.InvoiceDate, inv.InvoiceNo, inv.Seller, inv.Amount, inv.ID)
+		inv.InvoiceDate, inv.InvoiceNo, inv.Seller, inv.Amount, inv.ID, inv.Currency)
 	if err != nil {
 		return err
 	}
