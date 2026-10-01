@@ -127,7 +127,10 @@ try {
   $gw = @($cfg.recommended | Where-Object { $_.group -eq 'gateway' })
   $ext = @($cfg.recommended | Where-Object { $_.group -eq 'external' })
   if ($gw.Count -eq 3) { Ok "网关组预置 3 个: $(($gw.model) -join ', ')" } else { Bad "网关组应为 3 个，实际 $($gw.Count)" }
-  if ($ext.Count -eq 3) { Ok "外部组预置 3 个: $(($ext.model) -join ', ')" } else { Bad "外部组应为 3 个，实际 $($ext.Count)" }
+  # 数量只守区间，不写死：外部候选表会随调研增补（2026-10-01 从 3 个扩到 7 个，
+  # 依据是 10 月的 ASR 成本/精度对比），写死上限会把正常新增判成失败。
+  # 上限仍设，防止有人把整张 OpenRouter 模型表灌进来。
+  if ($ext.Count -ge 7 -and $ext.Count -le 20) { Ok "外部组预置 $($ext.Count) 个（区间 7..20）: $(($ext.model) -join ', ')" } else { Bad "外部组应落在 7..20，实际 $($ext.Count)" }
   $noPrice = @($ext | Where-Object { -not $_.usdPerHour })
   if ($noPrice.Count -eq 0) { Ok "外部组均带每小时成本" } else { Bad "外部组有模型缺成本: $(($noPrice.model) -join ', ')" }
   if ($cfg.raw -match 'sk-' -or ($cfg | ConvertTo-Json -Depth 6) -match '"apiKey":"[^"]+"') {

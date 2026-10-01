@@ -396,3 +396,64 @@ powershell -ExecutionPolicy Bypass -File scripts/verify-stt.ps1
 # 网关侧原始探测（不依赖本仓库改动）
 node scripts/gw-audio-probe.mjs
 ```
+
+---
+
+## §9 真机联调本机后端：不要改用户 App 的「后端服务器」设置
+
+2026-10-01 真机验证时踩出来的坑，逐条都有对照证据。**任何人想在真机上验本机
+pocketd 的改动，都按这里来。**
+
+### §9.1 为什么不能直接改 base
+
+`frontend/src/config/api-base.ts` 的 `resolveRuntimeApiBase`：`VITE_API_BASE` 为空时
+Capacitor 壳会回退生产入口 `https://pocket.itestu.cn`；而 localStorage 里的
+`pocket_api_base` 覆盖**优先级高于构建期 base**，且 localStorage 按 origin + 包名隔离。
+于是调试包即使带着 `VITE_API_BASE=http://127.0.0.1:18099` 装上去，只要正式包里存过
+覆盖，它照样打生产——表现是 `/api/stt/config` 404（生产没有 STT 路由），前端显示
+「读取语音转写设置失败：找不到对应的内容」。
+
+改设置页里的后端地址确实能切过去，但 `persistApiBase` 会连带清掉已登录 session，
+等于把用户手机上的登录态洗掉。**所以不这么做。**
+
+### §9.2 正解：挂一个并存调试包
+
+`frontend/android/app/build.gradle` 的 debug buildType 支持 `-PsttDevApp`：
+
+```
+gradlew assembleDebug -PsttDevApp     # → com.kaixuan.opencode.pocket.sttdev
+```
+
+与正式包并存、数据互不干扰，验证完 `adb uninstall com.kaixuan.opencode.pocket.sttdev`
+即可。不传该属性时 applicationId 与行为和以前完全一致。
+
+### §9.3 三个必须同时满足的条件（缺一个就是「连不上」）
+
+1. `adb reverse tcp:<port> tcp:<port>`（真机没有 localhost，用 emulator 的
+   `10.0.2.2` 不适用于真机）。
+2. 本机 pocketd **必须**带 `POCKET_DEV_AUTH=true`。否则 `buildOriginChecker`
+   不放行 `localhost` / `127.0.0.1`，`corsMiddleware` 不发
+   `Access-Control-Allow-Origin`，WebView 侧每个请求都是 CORS 失败——而
+   `scripts/verify-stt.ps1` 起的实例默认就带这个变量。
+3. 明文后端要用 `CAP_ANDROID_SCHEME=http` 构建（`frontend/capacitor.config.ts`
+   里已写好的逃生舱）。默认 `https` 壳下 `http://` 的 XHR 被 mixed content 拦死，
+   表现为 `fetch` **一直 pending、不报错**。
+
+### §9.4 改完端口/reverse 一定要重启 App
+
+WebView 会缓存到旧实例的连接池。实测：换了 reverse 之后 fetch 仍报旧实例的
+CORS 错误，`force-stop` + 重启即恢复。
+
+### §9.5 `screencap` 返回 0 字节时改用 CDP
+
+设备上 `adb exec-out screencap -p` / `screencap -p /sdcard/x.png` 全部返回 0 字节时
+（SurfaceFlinger 抖动、或另一会话正在占设备），用 WebView 调试协议读页面文本：
+
+```
+adb forward tcp:9303 localabstract:webview_devtools_remote_<pid>
+# Node 22 自带 WebSocket，直接发 CDP：Runtime.evaluate / Input.dispatchMouseEvent
+```
+
+注意两点：① `Runtime.evaluate` 里 `el.click()` **不算用户手势**，
+`getUserMedia` 一类 API 会拒绝，要用 `Input.dispatchMouseEvent`；
+② 页面被切到后台时渲染进程被冻结，CDP 会无响应——先把 App 拉回前台。
