@@ -3618,6 +3618,348 @@ pg_namespace where nspname like 'chatagent_test_%' -> （空，cleanup 正常）
 是否要恢复内置角色。**未擅自处理。**
 
 ---
+## §7bn `learning` / `quota` 的失败定性：3 类根因，其中只有 1 个是真缺陷（2026-10-02）
+
+### 起因与第一个坑：「全绿」本身可能是假的
+
+待办里挂着一条「`learning` / `quota` 的 5 个失败定性（时间相关还是共享数据）」。
+我第一件事是重跑：
+
+```
+$env:TEST_DATABASE_URL='postgres://...?search_path=opencode_pocket'
+go test ./internal/learning/... ./internal/quota/... -count=1
+→ ok internal/learning 0.249s / ok internal/quota 1.124s      # 「全绿」
+```
+
+**这个「全绿」是假的。** 这两个包的 `pgDSN()`（`learning/store_pg_test.go`、
+`quota/pg_store_test.go:20`）只认 `POCKET_TEST_POSTGRES_DSN` 和
+`POCKET_POSTGRES_DSN`，我给的是 `TEST_DATABASE_URL` → 走 `t.Skip` →
+`go test` 照样打印 `ok`。
+
+换成正确的变量名，失败立刻回来了，而且**比 §7bl 记的还多一条**：
+
+```
+$env:POCKET_TEST_POSTGRES_DSN='postgres://...?search_path=opencode_pocket'
+--- FAIL: TestActiveDayTimestamps            store_pg_test.go:200
+--- FAIL: TestReminderLifecycle              store_pg_test.go:547,555,562
+--- FAIL: TestPGStore_BudgetsFor_FiltersByPeriod    pg_store_test.go:70
+--- FAIL: TestPGStore_BudgetsFor_AcceptsZeroPeriod   pg_store_test.go:91
+--- FAIL: TestPGStore_RejectsEmptyWorkspace          pg_store_test.go:104
+```
+
+> 记一条方法论：**`ok` 不等于跑过了。** DB 门控的包在 DSN 变量名写错时会**静默
+> 跳过**并报 `ok`。任何「全后端全绿」的结论，都必须先确认目标包真的执行了
+> （看 `ok <pkg> 0.0s` 后面有没有 `(cached)`/`[no test files]`，或临时把
+> `t.Skip` 改成 `t.Fatal` 验一次）。
+
+---
+
+### 根因 1（`quota`，3 条）：测试助手把 `search_path` 拼成了两个参数
+
+`quota/pg_store_test.go:49`：
+
+```go
+scopedPool, err := pgxpool.New(ctx, dsn+"&search_path="+schema)
+```
+
+字符串**追加**。本机 DSN 自带 `search_path=opencode_pocket`，拼出来就是
+`...&search_path=opencode_pocket&search_path=quota_test_<hex>`。`&` 在 DSN 里是
+参数分隔符，没有转义，于是 `search_path` 的值被解析成
+`opencode_pocket&search_path=quota_test_<hex>` —— 一个**不存在的 schema 名**，
+`CREATE TABLE` 无处可建：
+
+```
+NewPGStore: quota migrate: ERROR: no schema has been selected to create in (SQLSTATE 3F000)
+```
+
+**决定性对照**（只改 DSN，其它一切不变）：
+
+```
+$env:POCKET_TEST_POSTGRES_DSN='postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable'
+go test ./internal/quota/... -count=1        → ok  0.988s
+```
+
+不带 `search_path` 的干净 DSN 下拼接是正确的（`dsn` 末尾是 `?sslmode=disable`，
+拼成 `?sslmode=disable&search_path=quota_test_x`），全绿。
+
+**定性：纯测试助手缺陷，生产代码零影响。** CI 用的正是不带 `search_path` 的干净
+DSN，所以「CI 绿、本地红」——**不是**「本地环境有问题」，是本地 DSN 多带了一个参数。
+跑完 `pg_namespace` 无 `quota_test_*` 残留。
+
+正确写法照抄 learning 即可：不要拼字符串，用
+`pgxpool.ParseConfig(dsn)` 再改 `cfg.ConnConfig.RuntimeParams["search_path"]`。
+
+---
+
+### 根因 1b（`finance`，3 条）：**同一个错误，但形态更危险** —— 而且揭示了根因 1 之外的东西
+
+`internal/finance` 之前从没在失败清单里出现过，因为它之前**一直被静默跳过**。
+改对 DSN 变量名之后它才浮出来：
+
+```
+--- FAIL: TestPGStore_CreateScoped_Concurrent   pg_store_concurrent_test.go:46
+--- FAIL: TestPGStore_ConflictRecovery          pg_store_conflict_test.go:30
+--- FAIL: TestPGStore_ConcurrentConflictRetry   pg_store_conflict_test.go:93
+    NewPGStore: finance migration failed: ERROR: no schema has been selected to create in (SQLSTATE 3F000)
+```
+
+**同一句 `3F000`，但 finance 的 harness 比 quota 危险得多**：
+
+```go
+// finance/pg_store_conflict_test.go:22
+pool, err := pgxpool.New(ctx, dsn)      // 原始 DSN，一字不改
+s, err := NewPGStore(ctx, pool)          // migrate: CREATE TABLE finance_transactions
+pool.Exec(ctx, `DELETE FROM finance_transactions WHERE note_ref LIKE 'test-conflict-%'`)
+```
+
+它**根本不建隔离 schema**，直接吃调用方的 DSN，然后对
+**`search_path` 解析到的表**建表 + 跑 `DELETE`。只把 DSN 换成不带
+`search_path` 的版本就全绿（`ok 0.358s`）—— 也就是说它**成功地在 `public` 里
+建了 `finance_transactions` 并写进了测试数据**。
+
+我已经把自己留下的那 1 行删掉了（`note_ref='note:conc_1'`，`owner_id='user-conc'`，
+`created_at 2026-10-01 22:47:06`），`finance_transactions` 回到 0 行。
+**表本身我没有动** —— 它可能是生产表，删表是不可逆操作，留给你定。
+
+`quota` 和 `finance` 的差别值得记下来：
+
+| | 是否自建 schema | 失败时的落点 |
+|---|---|---|
+| `quota` | 建了 `quota_test_<hex>` | 拼串出错 → 3F000，**没写任何东西** |
+| `finance` | **没有** | 用 DSN 的 search_path → **写进了 `public`** |
+
+---
+
+### 根因 1c：为什么本机 DSN 一带 `search_path` 就全盘 3F000
+
+上面两条能成立，是因为**本机 DSN 里的那个 schema 压根不存在**：
+
+```
+select count(*) from pg_namespace where nspname='opencode_pocket'   →  0
+```
+
+而 `opencode_pocket` 是 `config.go:236` 里 `POCKET_PG_SCHEMA` 的**默认值**
+（`getEnv("POCKET_PG_SCHEMA", "opencode_pocket")`）。于是：
+
+- 任何**只读**的查询：PG 静默回落到 `public`，看起来一切正常；
+- 任何**建表**：无处可建，3F000；
+- 任何 `finance` 那类**没隔离的 harness**：安静地改建到 `public`。
+
+这正是我在 §7bm 里写的那句话在更大范围内的重演：
+**「静默回落让缺表变成看不见，而不是报错」。** 只是这次它把一整个 schema 藏了
+整整两天。详见 §7bo。
+
+---
+
+### 根因 2（`learning`，1 条）：**真缺陷** —— `ActiveDayTimestamps` 漏过滤 `captured_at`
+
+`learning/store.go:440-461`：
+
+```go
+rows, err := s.pool.Query(ctx, `
+    SELECT captured_at, updated_at
+    FROM learning_items
+    WHERE workspace_id = $1 AND user_id = $2 AND deleted_at = 0
+      AND (captured_at >= $3 OR updated_at >= $3)`,   // ← 行级过滤
+...`)
+for rows.Next() {
+    if capturedAt > 0 { out = append(out, capturedAt) }   // ← 时间戳级不过滤
+    if updatedAt  > 0 { out = append(out, updatedAt)  }
+}
+```
+
+`since` 只在 SQL 里用来**筛行**。一行只要 `captured_at` 或 `updated_at` **任一**
+过线就整行返回，然后 Go 侧把**两个时间戳都无条件 append**。
+
+实测证据（就是失败输出本身）：
+
+```
+now     = 1790865684
+since   = now-1800 = 1790863884
+返回      [1790862084  1790865684]
+                 ^^^^^^^^ 比 since 还早 1800 秒，照样被返回
+```
+
+`store.go:431-433` 的文档写明「returns every timestamp at which the user did
+something **since sinceUnix**」——返回了窗口外的时间戳，是**契约违反**。
+
+**影响面要说实话，不夸大**：生产调用的 `since` 是 730 天前
+（`service.go:271,287` `streakWindowDays = 730`），所以泄漏的只能是**窗口外**的
+时间戳。而 `ComputeStreak`（`streak.go:55-96`）只用这批 day 算两件事：
+`Longest`（历史最长）和**锚定在 today / today-1 的 `Current`**。一个 730 天前的
+day 不可能与 today 相邻，所以：
+
+- **不会**虚增 `Current`（当前连续天数）；
+- **可能**让 `Longest` 虚增一天 —— 当且仅当泄漏出来的那个窗口外 day 恰好紧贴
+  窗口左边界、且那一段本来是连续的。
+
+罕见、影响小，但确实是真缺陷，不是测试写错。
+
+---
+
+### 根因 3（`learning`，3 条）：**测试期望写错**，不是缺陷
+
+三条同源，全在 `TestReminderLifecycle`：
+
+**(a) `store_pg_test.go:546`** 期望 snooze 是「从原有排期再往后推」：
+
+```go
+s.MarkReminderSent(ctx, ..., due.ID, now+86400)   // 排到 now+86400
+next, _ := s.SnoozeReminder(ctx, ..., due.ID, 120)
+if next <= now+86400 { t.Errorf("want later than the previous 86400 offset") }
+```
+
+而实现（`store.go:399-400`）是**从当前时刻起算**：
+
+```go
+now := time.Now().Unix()
+until := now + minutes*60
+```
+
+实测 `next - now = 7200` 秒 = 120 分钟，与实现**完全吻合**。测试的期望比实现多
+要求了 86400 秒。
+
+**(b)(c) `:555` / `:562`** 是 (a) 的连带，不是独立问题。测试 ack 的是
+`future.ID`（另一条），却断言「due 队列为空、pending=0」。但 `due` 这时是
+`snoozed` 状态，而两个查询都**明确把 snoozed 计入**：
+
+```go
+// DueReminders        store.go:356
+AND state IN ('pending', 'snoozed', 'sent')
+// CountPendingReminders store.go:514
+WHERE ... AND state IN ('pending', 'snoozed')
+```
+
+所以 `due` 被 snooze 到 `now+7200`，在 `DueReminders(now+100000)` 的时间点
+**本来就该被返回**，`pending=1` 也是对的。测试的前提（「acking the only
+pending one」）本身不成立——`due` 一直健在。
+
+**语义上到底是哪种对，不该由我定。** 我的判断是「实现更合理」：用户点
+「2 小时后再提醒」，期望的就是 `now+2h`，而不是「24 小时后那次再往后推 2 小时」。
+但这是**产品语义**，而且全仓**只有这一个测试**钉住 snooze 的基准点，没有第二处
+证据可以交叉验证。**不擅自改，留给你定。**
+
+---
+
+### 顺带记下一个潜伏隐患（learning 助手）
+
+`learning/store_pg_test.go` 的 `newTestStore` 用的是
+
+```go
+cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
+```
+
+**追加了 `public`。** 这正是 §7bm 里「静默回落」的形态：一旦它自己的表没建出来，
+查询会**静悄悄**落到生产的 `public.learning_items` 上，而不是报错。现在没出事
+只是因为 `EnsureSchema` 先跑了、而且 §7bm 之后 `public` 里也确实没有 email 之外的
+影子表被测试碰到过 —— 但这是**运气，不是隔离**。修 quota 的时候顺手把它也改成
+「只指向自己的 schema」更稳妥。**未擅自改。**
+
+---
+
+### 处置
+
+三个根因**全部不在邮件分支**（`internal/learning`、`internal/quota` 本轮 diff
+零改动），与 §7az 里 `internal/server` 那两条 404/403 是同一类问题：测试或产品
+语义要一起定。按既有纪律**只定性、不改代码**，已列入待决清单。
+
+---
+
+## §7bo 停下来报告：`opencode_pocket` schema 不存在，本机库与文档记录对不上（2026-10-02）
+
+**这一节不是结论，是一份「我查到了什么 / 我不知道什么」的移交。定性工作没有做完，
+因为它撞上了一个比我原本任务大得多的问题。**
+
+### 触发
+
+§7bn 为了给 `quota` 做「换干净 DSN」的对照实验，我顺手看了一眼本机 PG 到底有哪些
+schema —— 因为 `3F000` 只在 schema 不存在时才合理。结果：
+
+```
+select nspname from pg_namespace where nspname not like 'pg_%'
+  and nspname <> 'information_schema';
+→ meeting_test_9f53af8f624c
+→ meeting_test_d3703153a1e1
+→ public
+```
+
+**没有 `opencode_pocket`。** 只有 `public` 和两个残留的 `meeting_test_*` schema。
+
+### 与文档记录的直接冲突
+
+| 文档记录（§7bh，2026-10-01 21:46 实测） | 2026-10-02 现在的实测 |
+|---|---|
+| `email_accounts`: 5 个真实邮箱 | `public.email_accounts` = **0 行** |
+| `emails` 非测试账户 = 120 | `public.emails` = **0 行**，且 `n_tup_ins = 0` |
+| schema = `opencode_pocket` | 该 schema **不存在** |
+
+`public` 一共只有 **11 张 base table**，全库只有 `chat_agents` 有数据（3 行）。
+`public.emails` 的 `pg_stat_user_tables.n_tup_ins = 0`、`n_tup_del = 0`、
+`last_vacuum` 为空 —— **这张表自统计重置以来从未进过一行**，所以那 138 行
+（120 真实 + 18 greenmail）**从来就不在 `public`**。
+
+同时，运行中的 pocketd（PID 33948，端口 18099）**确实连的就是这个本机实例** ——
+它自己的查询语句出现在 `logs\pg\pg.err2.log` 里（`SELECT ... FROM tasks`、
+`scheduled_tasks` 的 `relation does not exist`），而它的启动日志写着：
+
+```
+20:18:42 Postgres pool initialized (schema="opencode_pocket")
+```
+
+也就是说 20:18 启动时这个 schema 还是好的（能读出 5 个真实账户、能同步），
+现在它不在了。
+
+### 文件侧：**没有**发现对应损失
+
+`C:\workspace\openpocket\data\email-invoices\ws_user-admin\` 现在 5 个文件，
+其中 4 个正是待决清单里那 4 个「孤儿 PDF」。我此前记录的「132 个文件」经复核
+**很可能是我把整棵 `email-invoices` 树（含 `exports\`）一起数了**，而不是
+`ws_user-admin` 单目录 —— `exports\ws_user-admin\` 里确实有大量 A4 导出与汇总文件
+（最新的 `invoices-summary-20261001-204124.md` 时间戳 20:41，与记录吻合）。
+**所以文件侧我不宣称丢失。**
+
+回收站也查过了（`mavis-trash` 走 PowerShell 回收站，390 条 `$I*` 元数据），
+**没有任何一条路径指向 `email-invoices` / `email-bodies` / openpocket\data** ——
+不是被 mavis-trash 移走的。
+
+### 我已经排除的
+
+- **不是本仓库的测试删的**：全仓 `grep 'DROP SCHEMA|DROP DATABASE'`（含非测试代码）
+  **零命中**；所有 `DROP SCHEMA <name> CASCADE` 的测试用的都是自己随机生成的
+  `<pkg>_test_<hex>` 名，没有任何一处从 DSN 的 `search_path` 取名字去 DROP。
+- **不是 `finance` 那条**：`finance_transactions` 是 `public` 里一张独立表，
+  与 `opencode_pocket` 无关；而且我把 DSN 换成干净的之后它才建的表，
+  建表时间是 22:47，在 schema 消失之后。
+
+### 我不知道的（**不猜**）
+
+1. `opencode_pocket` 是在 21:47 ~ 22:47 之间被谁、以什么方式删掉的。
+   我这一小时里跑的命令我都列得出来（两次 `go test ./...`、两次 `go test -race ./...`），
+   但**没有任何一条能解释它**，所以我不敢把锅扣在测试上。
+2. 也存在另一种可能：**我此前那些「实测」本来就打到了别的库**，
+   文档里的 5 账户 / 120 邮件 / 138 行从一开始就记错了。这两种解释我目前**分不开**。
+3. 部署脚本 `deploy-252.sh:73` 写着「openpocket 权威 PG 在 **252 本机 docker** 中」，
+   而本机这个 PG 又是运行实例在连的 —— 到底哪个才是权威库，我没法从机器上判断。
+
+### 为什么停在这里
+
+接下来的动作（恢复、备份、从 WAL 捞、还是确认只是记录错误）**都是不可逆或
+高风险的写操作**，而且**依赖一个只有你能回答的前提**：那个 schema 是不是本来就
+该在这儿。我不擅自 DROP / 不擅自从 WAL 恢复 / 不擅自改 `POCKET_PG_SCHEMA`。
+
+### 顺带一个已经能确定的产品问题
+
+即使数据问题另有解释，**「`POCKET_PG_SCHEMA` 默认值指向一个不存在的 schema」**
+这件事本身就该修：它让所有「缺表」都变成静默回落 `public`
+（`internal/db/pg.go:53-54` 的注释明确说**故意不**把 `public` 加进 `search_path`，
+就是为了避免这种混用 —— 但只要 schema 不存在，PG 就会回落到 `public`，
+那条防线等于不存在）。
+
+建议在 `db.New` 之后加一条启动断言：`search_path` 的第一个 schema 必须真实存在，
+否则启动即失败并打印实际解析结果。**未擅自改** —— 它会改变启动行为，需要你点头。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
@@ -3664,6 +4006,16 @@ pg_namespace where nspname like 'chatagent_test_%' -> （空，cleanup 正常）
     `DROP TABLE`/`TRUNCATE`）。且 `ImportBuiltinAgents(ctx, repoPath)` 要的是
     markdown 仓库路径，**不是一条现成的恢复路径**。已如实标注为「不猜」。
     见 §7bm。
+
+13. **【需要你回答，优先级高于本分支其余所有待决项】本机 PG 里
+    `opencode_pocket` schema 不存在，与 §7bh 记录的数据对不上**。
+    现在 `public` 只有 11 张表、仅 `chat_agents` 有 3 行；`emails` /
+    `email_accounts` 都是 0 行，且 `public.emails` 的 `n_tup_ins=0`
+    （从没进过数据）。而运行中的 pocketd 确实连的就是这个本机实例，
+    启动日志写着 `schema="opencode_pocket"`，现在却在报
+    `relation "tasks" does not exist`。**原因未查清，我没有做任何写操作**
+    （未 DROP、未从 WAL 恢复、未改 `POCKET_PG_SCHEMA`），也没找到任何
+    本仓库的测试或代码会删这个 schema。详见 §7bo。
 
 **环境问题**：
 
