@@ -241,6 +241,16 @@ func (c *deadlineConn) start() {
 //
 // 夹取之后：任何一次续期的 deadline 都不超过 hard，socket 上的绝对上界
 // 就是 hard 本身，看门狗延迟也不会把它推得更远。
+//
+// **残余缺口（实测到，未解释）**：合成实验里 hard=3s 时读在 4.001s 才返回
+// 而不是 3.0s，说明除 socket deadline 外还有一条「tick 到点后才把 deadline
+// 钉到过去」的路径在收尾，即上界是 `hard + 一个 tick 量级`（生产约 45+20=65s），
+// 不是精确的 hard。原因没有去查（要进 go-imap 读 goroutine 内部）。
+//
+// 这条缺口目前**不影响** Sync 的总时长上界：Sync 里另有一个
+// `time.AfterFunc(imapStageBudget, client.Close)` 兜底（50s，立即生效），
+// 与本机制互补。也就是说不必依赖这里的精确性，但读代码时别把 imapHardTimeout
+// 当成精确值。
 func (c *deadlineConn) nextIdle() time.Time {
 	d := time.Now().Add(c.idle)
 	if !c.hard.IsZero() && d.After(c.hard) {
