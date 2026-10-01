@@ -170,6 +170,7 @@ func TestSplitWAVRejectsNonPCM(t *testing.T) {
 type stubASR struct {
 	failIndexes map[int]bool
 	seen        []float64 // 每个请求的音频秒数
+	langs       []string  // 每个请求收到的 language 字段
 	mu          sync.Mutex
 }
 
@@ -180,6 +181,8 @@ func (s *stubASR) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body := readMultipartAudio(r)
 	secs, _ := wavDurationSeconds(body)
 	s.seen = append(s.seen, secs)
+	// readMultipartAudio 已经调过 ParseMultipartForm，这里能直接读普通字段。
+	s.langs = append(s.langs, r.FormValue("language"))
 
 	idx := len(s.seen) - 1
 	if s.failIndexes[idx] {
@@ -361,5 +364,44 @@ func TestRecommendedExternalModelsAreSortedByCost(t *testing.T) {
 		if !have[want] {
 			t.Errorf("预置缺少 %s 的候选", want)
 		}
+	}
+}
+
+// TestTranscribeFullSendsLanguageOnEverySegment 长会议全量转写是**逐段**发上游的，
+// 所以「language 有没有被带上」必须在每段上都成立，不能只看第一段或只看单次转写。
+//
+// 这条会随实现演进而失效：哪天有人给 TranscribeFull 加一条不经过
+// TranscribeFor 的快速路径，语种就会在长会议上悄悄丢掉——而单次转写的
+// 那条测试仍然是绿的，正是最典型的假绿。
+func TestTranscribeFullSendsLanguageOnEverySegment(t *testing.T) {
+	stub := &stubASR{}
+	srv := httptest.NewServer(stub)
+	defer srv.Close()
+
+	tr := NewResolver(func(context.Context, Scope) (*Target, error) {
+		return &Target{
+			BaseURL: srv.URL + "/v1", APIKey: "k", Model: "stub-model",
+			Transport: TransportTranscriptions, Channel: ChannelExternal,
+		}, nil
+	})
+	tr.SetHTTPClient(srv.Client())
+
+	// 36 秒（10 秒有声 + 2 秒静音，重复 3 次）。默认切段上限 25 秒，
+	// 所以必然切成 ≥2 段——段数不够就说明测不到逐段行为，必须直接失败。
+	res, err := tr.TranscribeFull(context.Background(), Scope{}, pcmWAV(16000, 10, 2, 3), "meeting.wav")
+	if err != nil {
+		t.Fatalf("TranscribeFull: %v", err)
+	}
+	if len(stub.langs) < 2 {
+		t.Fatalf("这段音频应被切成多段，实际只发了 %d 段，测不到逐段行为", len(stub.langs))
+	}
+	for i, lang := range stub.langs {
+		if lang != DefaultLanguage {
+			t.Errorf("第 %d 段 language=%q，want %q（长会议逐段请求缺语种 = 中文被按英语转写）",
+				i, lang, DefaultLanguage)
+		}
+	}
+	if res == nil || res.Text == "" {
+		t.Errorf("全量转写没有聚合出文本：%+v", res)
 	}
 }
