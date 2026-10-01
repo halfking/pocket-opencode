@@ -734,32 +734,6 @@ func splitReminderCandidates(emails []Email, notified []int64) (toNotify []Email
 }
 
 // notifyImportant 对未提醒过的重要邮件派发通知并记录时间。
-// splitReminderCandidates 把扫描到的邮件分成「该提醒」与「还没被分类过」两组。
-//
-// 抽成纯函数是为了能脱离数据库验证这段判定 —— 它决定需求 4 到底是
-// 「链路正常、只是这批邮件不重要」还是「邮件根本没进过 AI 分类」，
-// 而这两种情况在旧的 `remindersSent=0` 里长得一模一样。
-func splitReminderCandidates(emails []Email, notified []int64) (toNotify []Email, unclassified int) {
-	for i := range emails {
-		if i >= len(notified) {
-			break
-		}
-		e := emails[i]
-		if notified[i] > 0 || e.Category == "spam" {
-			continue
-		}
-		switch e.Importance {
-		case "high":
-			toNotify = append(toNotify, e)
-		case "":
-			// 还没被 AI 分类过：既不是「已提醒」，也不是「不重要」，
-			// 它只是**不知道**。单独计数，否则报告里的 0 无法解释。
-			unclassified++
-		}
-	}
-	return toNotify, unclassified
-}
-
 func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 	if p.Notifier == nil {
 		return
