@@ -78,7 +78,21 @@ type SpamVerdict struct {
 
 // LooksLikeSpam 判定一封邮件是否广告/垃圾。invoiceCandidate 与
 // important 由调用方短路传入（true 时永远返回非垃圾）。
-func LooksLikeSpam(from, subject, snippet string, invoiceCandidate, important bool) SpamVerdict {
+//
+// senderVolume 是同一发件人在本批邮件里出现的封数（0/1 表示"未统计"）。
+//
+// 为什么需要它：实测真实信箱 430 封里 spamHits=0，而 14 封 near-miss
+// **全部**卡在 30 分，Why 只有「营销发件人特征:edm/newsletter/promotion」。
+// 补退订特征（查摘要）在这份数据上无效——真实 emails.snippet 存的是
+// **原始 MIME 头**（实测 105 封形如 "------=_Part_... Content-Type: text/html"），
+// 不是正文摘要，"退订"两个字压根不在里面。
+//
+// 真正稳定的判据是发件人本身：这三家 InfoQChina@edm.infoq.com.cn(8)、
+// newsletter@newsletter.aliyun.com(5)、promotion@news.ecloudrover.com(1)
+// 发的每一封都是列表推送。一对一的人际邮件不会来自同一地址成批发来。
+// 单看一封无从判断，看同一地址的量就能判断——所以这个信号必须由调用方
+// 统计后传进来，纯函数自己不掌握跨封信息。
+func LooksLikeSpam(from, subject, snippet string, invoiceCandidate, important bool, senderVolume int) SpamVerdict {
 	if invoiceCandidate || important {
 		return SpamVerdict{}
 	}
@@ -139,6 +153,26 @@ func LooksLikeSpam(from, subject, snippet string, invoiceCandidate, important bo
 		if strings.Contains(fromLower, h) {
 			add(30, "营销发件人特征:"+h)
 			break
+		}
+	}
+	// 同发件人成批推送。阈值取 5 是照着真实数据定的：这三家分别是 8/5/1 封。
+	//
+	// 5 封以上 + 营销发件人特征（30）= 100，正好过线。**不**单靠这一条：
+	// 同一个域下 5 封以上的地址也可能是同事群发或监控告警，必须叠加已有的
+	// 营销特征，避免把「同一个人多封邮件」误当成营销。
+	if senderVolume >= 5 {
+		hasHint := false
+		for _, h := range spamSenderHints {
+			if strings.Contains(fromLower, h) {
+				hasHint = true
+				break
+			}
+		}
+		if hasHint {
+			add(70, "同发件人批量推送×"+strconv.Itoa(senderVolume))
+		} else {
+			// 不计分但记进 Why：预演报告要能看出「只是量大、不是营销」。
+			whys = append(whys, "同发件人批量推送×"+strconv.Itoa(senderVolume)+"(无营销特征,不计分)")
 		}
 	}
 	for _, p := range spamSubjectPatterns {

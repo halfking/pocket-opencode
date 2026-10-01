@@ -25,7 +25,10 @@ package email
 // 防误伤由既有的 TestLooksLikeSpam_DoesNotFireOnWorkMail 覆盖（发票/账单/
 // CI/生产变更/白名单域），本文件不重复，但会跑一遍确认新词没抬高基线。
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // 真实信箱里出现过的形态。from/subject 仿真实值，snippet 取 newsletter
 // HTML 摘要的典型开头（含退订尾巴）。
@@ -52,7 +55,7 @@ func TestLooksLikeSpam_NewsletterWithUnsubscribeInSnippet(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			v := LooksLikeSpam(c.from, c.subject, c.snippet, false, false)
+			v := LooksLikeSpam(c.from, c.subject, c.snippet, false, false, 1)
 			if !v.Spam {
 				t.Fatalf("技术资讯推送未判为垃圾: from=%q subject=%q score=%d why=%q",
 					c.from, c.subject, v.Score, v.Why)
@@ -68,7 +71,7 @@ func TestLooksLikeSpam_NewsletterWithUnsubscribeInSnippet(t *testing.T) {
 // 这类靠弱信号密度过线，不依赖退订。
 func TestLooksLikeSpam_PureDigestWithoutUnsubscribe(t *testing.T) {
 	v := LooksLikeSpam("digest@tech-media.example.com",
-		"技术周报：本周精选文章", "本周精选文章与行业动态汇总", false, false)
+		"技术周报：本周精选文章", "本周精选文章与行业动态汇总", false, false, 1)
 	if !v.Spam {
 		t.Fatalf("纯资讯周报未判为垃圾: score=%d why=%q", v.Score, v.Why)
 	}
@@ -84,10 +87,63 @@ func TestLooksLikeSpam_DigestWordingOnWorkMail(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if v := LooksLikeSpam(c.from, c.subject, c.snippet, false, false); v.Spam {
+			if v := LooksLikeSpam(c.from, c.subject, c.snippet, false, false, 1); v.Spam {
 				t.Fatalf("工作邮件被误判为垃圾: from=%q subject=%q score=%d why=%s",
 					c.from, c.subject, v.Score, v.Why)
 			}
 		})
+	}
+}
+
+// 同发件人成批推送 —— 真实信箱里唯一可靠的判据。
+//
+// 为什么不能靠退订词：实测 emails.snippet 存的是**原始 MIME 头**（形如
+// "------=_Part_...  Content-Type: text/html"），不是正文摘要，"退订"两个字
+// 根本不在里面。真实库上补退订特征后 spamHits 仍是 0。真正区分「列表推送」
+// 与「人际邮件」的是同一个地址的封数。
+//
+// 这三组 from/subject 是真实信箱里的原值（2026-10-01，430 封实测）。
+func TestLooksLikeSpam_SenderVolumeOnRealEDM(t *testing.T) {
+	cases := []struct {
+		name, from, subject, snippet string
+		volume                       int
+	}{
+		{"InfoQ 推送", "InfoQChina@edm.infoq.com.cn", "Harness AI：AI 时代的 6 个工程追问", "", 8},
+		{"阿里云月刊", "newsletter@newsletter.aliyun.com", "阿里云产品动态(8月刊)", "", 5},
+		{"InfoQ 活动", "InfoQChina@edm.infoq.com.cn", "免费领AICon深圳站PPT干货合集！", "", 8},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := LooksLikeSpam(c.from, c.subject, c.snippet, false, false, c.volume)
+			if !v.Spam {
+				t.Fatalf("EDM 推送未判为垃圾: from=%q volume=%d score=%d why=%q",
+					c.from, c.volume, v.Score, v.Why)
+			}
+		})
+	}
+}
+
+// 批量信号**不能**单独定罪：同一地址成批发来也可能是同事群发或监控告警。
+// 必须叠加营销发件人特征才过线。
+func TestLooksLikeSpam_VolumeAloneIsNotEnough(t *testing.T) {
+	// 同事发来 20 封，量大但没有任何营销特征
+	v := LooksLikeSpam("zhangsan@partner.example.com", "接口联调进度同步", "今天已完成第 3 轮", false, false, 20)
+	if v.Spam {
+		t.Fatalf("仅凭批量就判垃圾会误伤人际邮件: score=%d why=%s", v.Score, v.Why)
+	}
+	// 批量信号必须出现在 Why 里，否则预演报告看不出它被考虑过
+	if !strings.Contains(v.Why, "同发件人批量推送") {
+		t.Fatalf("Why 里应记录批量信号: %q", v.Why)
+	}
+}
+
+// 阈值以下不判：真实信箱里 promotion@news.ecloudrover.com 只有 1 封，
+// 达不到 5 封批量阈值，保留是正确的（实测 near-miss 恰好剩这一封）。
+func TestLooksLikeSpam_SingleEDMNotJudged(t *testing.T) {
+	v := LooksLikeSpam("promotion@news.ecloudrover.com",
+		"【诚邀线上参会】迈向 Agentic Enterprise：企业级 AI Agent 构建、治理与应用实践(AD)",
+		"", false, false, 1)
+	if v.Spam {
+		t.Fatalf("单封不应判垃圾（量不足）: score=%d why=%s", v.Score, v.Why)
 	}
 }

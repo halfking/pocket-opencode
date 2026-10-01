@@ -17,6 +17,7 @@ import (
 	"context"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,9 +94,17 @@ func TestSpamRuleOnRealMailboxData(t *testing.T) {
 		score                    int
 	}
 	var nears []near
+	// 与 pipeline.go 生产路径同口径：按发件人统计本批封数再传入。
+	// 这里若传 0，验证就退化成「不带批量信号」，与生产行为不一致——
+	// 那样即使 spamHits 变 0 也说明不了任何问题。
+	senderVolume := map[string]int{}
+	for _, r := range all {
+		senderVolume[strings.ToLower(strings.TrimSpace(r.from))]++
+	}
 	for _, r := range all {
 		v := LooksLikeSpam(r.from, r.subject, r.snippet,
-			InvoiceCandidate(Email{Subject: r.subject, Snippet: r.snippet}), false)
+			InvoiceCandidate(Email{Subject: r.subject, Snippet: r.snippet}), false,
+			senderVolume[strings.ToLower(strings.TrimSpace(r.from))])
 		switch {
 		case v.Spam:
 			hits = append(hits, hit{r.acct, r.from, r.subject, v.Why, v.Score})

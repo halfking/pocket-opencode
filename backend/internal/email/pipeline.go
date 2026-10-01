@@ -45,11 +45,11 @@ type Pipeline struct {
 	Store    *Store
 	Fetcher  *Fetcher
 	Harvest  *InvoiceHarvester
-	Pusher   InvoicePusher      // 可为 nil：跳过飞书，直接走共享文档
-	Notifier ImportantNotifier  // 可为 nil：跳过提醒
+	Pusher   InvoicePusher     // 可为 nil：跳过飞书，直接走共享文档
+	Notifier ImportantNotifier // 可为 nil：跳过提醒
 	// Ledger 发布飞书共享台账（电子表格）。为 nil 或不可用时只生成本地 CSV/MD。
-	Ledger   LedgerPublisher
-	DataDir  string
+	Ledger  LedgerPublisher
+	DataDir string
 	// SpamLookbackDays 垃圾清理扫描窗口（默认 7 天）。
 	SpamLookbackDays int
 	// SpamDryRun=true 时第 2 步只判定不 MOVE（真实邮箱首次运行的安全阀）。
@@ -221,21 +221,21 @@ func countNearMiss(items []SpamPreviewItem) int {
 
 // PipelineReport 一轮执行的结果汇总。
 type PipelineReport struct {
-	StartedAt     int64  `json:"startedAt"`
-	FinishedAt    int64  `json:"finishedAt"`
-	DurationMs    int64  `json:"durationMs"`
+	StartedAt      int64 `json:"startedAt"`
+	FinishedAt     int64 `json:"finishedAt"`
+	DurationMs     int64 `json:"durationMs"`
 	AccountsSynced int   `json:"accountsSynced"`
-	NewEmails     int    `json:"newEmails"`
-	SpamMoved     int    `json:"spamMoved"`
-	SpamLocalOnly int    `json:"spamLocalOnly"`
+	NewEmails      int   `json:"newEmails"`
+	SpamMoved      int   `json:"spamMoved"`
+	SpamLocalOnly  int   `json:"spamLocalOnly"`
 	// SpamDryRun>0 表示本轮是预演：这 SpamDryRun 封「本可以移走但没移」，
 	// 逐账户列在 SpamDryRunSamples 里。真实邮箱上先看这个再决定是否真移。
 	SpamDryRun        int               `json:"spamDryRun,omitempty"`
 	SpamDryRunSamples []SpamPreviewItem `json:"spamDryRunSamples,omitempty"`
 	// SpamNearMiss 是「未判垃圾但有分」的邮件，按账户分组。
 	// 开真实 MOVE 之前这是必看项：命中数低不代表规则贴近真实数据。
-	SpamNearMiss []SpamPreviewItem `json:"spamNearMiss,omitempty"`
-	RemindersSent int    `json:"remindersSent"`
+	SpamNearMiss  []SpamPreviewItem `json:"spamNearMiss,omitempty"`
+	RemindersSent int               `json:"remindersSent"`
 	// RemindersScanned 是本轮进入提醒判定的邮件数；RemindersUnclassified 是
 	// 其中 **importance 为空** 的数量。
 	//
@@ -248,16 +248,16 @@ type PipelineReport struct {
 	//
 	// 和 §spam 那次 near-miss 是同一类问题：可观测性缺口让「功能是否失灵」
 	// 没法判断。有了这两个计数，看报告就知道该去配 AI 还是该去调规则。
-	RemindersScanned      int `json:"remindersScanned,omitempty"`
-	RemindersUnclassified int `json:"remindersUnclassified,omitempty"`
-	Invoices      HarvestResult `json:"invoices"`
-	FeishuPushed  int    `json:"feishuPushed"`
-	FeishuFailed  int    `json:"feishuFailed"`
-	ShareDocCSV   string `json:"shareDocCsv,omitempty"`
-	ShareDocMD    string `json:"shareDocMd,omitempty"`
+	RemindersScanned      int           `json:"remindersScanned,omitempty"`
+	RemindersUnclassified int           `json:"remindersUnclassified,omitempty"`
+	Invoices              HarvestResult `json:"invoices"`
+	FeishuPushed          int           `json:"feishuPushed"`
+	FeishuFailed          int           `json:"feishuFailed"`
+	ShareDocCSV           string        `json:"shareDocCsv,omitempty"`
+	ShareDocMD            string        `json:"shareDocMd,omitempty"`
 	// ShareDocURL 是飞书共享台账链接（未配置飞书时为空，本地 CSV/MD 仍会生成）。
-	ShareDocURL string `json:"shareDocUrl,omitempty"`
-	Errors        []string `json:"errors,omitempty"`
+	ShareDocURL string   `json:"shareDocUrl,omitempty"`
+	Errors      []string `json:"errors,omitempty"`
 }
 
 // AddError 记录非致命错误（流水线继续跑完）。
@@ -631,13 +631,20 @@ func (p *Pipeline) cleanSpam(ctx context.Context, rep *PipelineReport) {
 	// 特征）——它们就卡在门槛外侧。阈值该不该调、这些订阅该不该留，只能由你
 	// 看着具体主题决定，规则自己不该替你决定。
 	nearByAccount := map[string][]SpamNearMiss{}
+	// 同发件人在本批里的封数：判断「列表推送 vs 人际邮件」需要跨封信息，
+	// 纯函数 LooksLikeSpam 自己拿不到，由这里统计后传进去。
+	senderVolume := map[string]int{}
+	for i := range emails {
+		senderVolume[strings.ToLower(strings.TrimSpace(emails[i].FromAddress))]++
+	}
 	for i := range emails {
 		e := emails[i]
 		if e.Category == "spam" || e.Category == "archived" {
 			continue
 		}
 		inv := InvoiceCandidate(e)
-		v := LooksLikeSpam(e.FromAddress, e.Subject, e.Snippet, inv, e.Importance == "high")
+		v := LooksLikeSpam(e.FromAddress, e.Subject, e.Snippet, inv, e.Importance == "high",
+			senderVolume[strings.ToLower(strings.TrimSpace(e.FromAddress))])
 		if v.Spam {
 			byAccount[e.AccountID] = append(byAccount[e.AccountID], e.UID)
 			if whyByAccount[e.AccountID] == "" {

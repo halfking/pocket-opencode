@@ -37,7 +37,7 @@ func TestLooksLikeSpam(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := LooksLikeSpam(c.from, c.subject, c.snippet, c.inv, c.imp)
+			got := LooksLikeSpam(c.from, c.subject, c.snippet, c.inv, c.imp, 1)
 			if got.Spam != c.want {
 				t.Fatalf("spam=%v score=%d why=%q, want %v", got.Spam, got.Score, got.Why, c.want)
 			}
