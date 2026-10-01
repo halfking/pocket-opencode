@@ -80,6 +80,16 @@ const opened = async () => (await ev(`document.querySelectorAll('.create-task-fo
 
 console.log('页面状态:', JSON.stringify(await rect()))
 
+// 先确保在任务看板（#/ai 与 #/tasks 都渲染 TasksView），否则下面量的不是目标按钮。
+await ev(`location.hash='#/ai'`)
+await sleep(2500)
+const g0 = await rect()
+if (g0.hash && g0.hash !== '#/ai') {
+  console.log(`⚠️ 导航未生效（hash=${g0.hash}），页面状态可能不对`)
+}
+await reset()
+await sleep(500)
+
 const g = await rect()
 const { x, y } = g
 if (!x) { console.log('找不到「+ 新任务」按钮'); process.exit(6) }

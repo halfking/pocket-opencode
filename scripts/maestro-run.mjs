@@ -250,14 +250,23 @@ async function assertDeviceReachesBackend() {
   let list = ''
   try { list = adb(['reverse', '--list'], 15000) } catch { /* 没配 reverse */ }
   const mapping = list.split(/\r?\n/).map((l) => l.trim()).find((l) => new RegExp(`tcp:${port}\\s`).test(l))
+  const target = mapping ? (mapping.match(/tcp:\d+\s+tcp:(\d+)/) || [])[1] : null
   if (!mapping) {
-    console.error(`[preflight] ❌ 设备上没有 tcp:${port} 的 adb reverse 映射`)
-    console.error(`           App 在设备上访问 127.0.0.1:${port} 会直接失败，所有读取静默变空列表。`)
-    console.error(`           修复：adb -s ${DEVICE} reverse tcp:${port} tcp:${port}`)
-    return false
-  }
-  const target = (mapping.match(/tcp:\d+\s+tcp:(\d+)/) || [])[1]
-  if (target !== port) {
+    // 设备重连（adb kill-server / WiFi 抖动 / 换 USB 模式）会把 reverse 映射整个清掉。
+    // 正确映射唯一（App 的 API 基址端口 → 宿主同一端口），直接补上。
+    console.error(`[preflight] ⚠️ 设备上没有 tcp:${port} 的 adb reverse 映射，正在补建`)
+    try {
+      adb(['reverse', `tcp:${port}`, `tcp:${port}`], 15000)
+      const after = adb(['reverse', '--list'], 15000)
+        .split(/\r?\n/).map((l) => l.trim()).find((l) => new RegExp(`tcp:${port}\\s`).test(l))
+      const now = after ? (after.match(/tcp:\d+\s+tcp:(\d+)/) || [])[1] : null
+      if (now !== port) { console.error(`[preflight] ❌ 补建失败，当前映射：${after || '<无>'}`); return false }
+      console.error(`[preflight] ✅ 已补建为 tcp:${port} → tcp:${port}`)
+    } catch (e) {
+      console.error(`[preflight] ❌ 补建失败：${e?.message || e}`)
+      return false
+    }
+  } else if (target !== port) {
     // 这个映射在本次调试里被外力改回去过至少三次（另一条 worktree 的调试、
     // adb server 重连都会动它），每次都让人重新排查一轮。
     // 正确映射是唯一的（App 的 API 基址端口 → 宿主同一端口），所以直接自愈，
