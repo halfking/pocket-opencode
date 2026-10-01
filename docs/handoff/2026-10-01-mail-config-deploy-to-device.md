@@ -245,6 +245,25 @@ A4 3x3     count=1 skipped=0  invoices-a4-3x3-20261001-181824.pdf  157,059 bytes
 > **教训**：看到「同一个标题出现 N 次」不要直接判重复推送。
 > **先看 created_at 是否相同** —— 同秒 = 不同邮件，跨秒才可能是重复。
 
+### 2.3.1 POCKET_DATA_DIR 真正生效后，各脚本的实际影响（2026-10-01 逐个核过）
+
+`POCKET_DATA_DIR` 之前对后端**完全是空转的**（只被 `loadCompanionOverlay` 用来找
+`companion.env`），真正的 dataDir 一直是 `Dir(POCKET_DB_PATH)` 对着
+`-WorkingDirectory` 解析出来的。改成「`POCKET_DATA_DIR` 说了算 + 恒为绝对路径」
+之后，所有只设前者、没设后者的脚本都会**真的换目录**。逐个核的结果：
+
+| 脚本 | 改动前实际目录 | 改动后 | 处置 |
+|---|---|---|---|
+| `scripts/start-local-backend.ps1` | `repo\backend\data`（cwd=repo/backend） | 同左 | 默认值改成 `backend\data` + 补 `POCKET_DB_PATH`，**行为零变化**（冒烟实测 `data dir = ...\backend\data`） |
+| `scripts/verify-stt.ps1` | — | — | 本来两个都设、已自洽，不动 |
+| `scripts/verify-meeting-persistence-ab.mjs` | `wt3\backend\data`（唯一 spawn 点 cwd 固定） | `logs\ab-data-<tag>-<port>` | **顺带修好**：此前该 A/B 脚本所有实例共用同一份 `chat_agents.sqlite` + `email_master.key`，声明的每实例目录从未生效，隔离是假的 |
+
+> `logs\pocketd-data` 这个旧默认值**从未生效过**（目录根本不存在）。如果照着
+> 声明值切过去，8088 实例会在新目录自动生成**新的 `email_master.key`**，
+> 库里 5 个账户的凭证全部变成
+> `decrypt credential: cipher: message authentication failed` ——
+> 正是本节记的那个 master key 事故的复现路径。所以对齐现状，而不是对齐声明。
+
 ## 3. 腾讯系 IMAP 间歇性挂 80s（现象已定位到「只在腾讯系发生」，根因未定位）
 
 **现象**：`POST /api/emails/sync` 或 scheduler 轮询时，**只有腾讯系两个账户**会挂满 80s：
