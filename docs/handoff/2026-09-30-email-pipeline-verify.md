@@ -2479,6 +2479,57 @@ imapclient/move.go:25-34   COPY 之后补 STORE \Deleted + (UID)EXPUNGE
 
 ---
 
+## §7bb 整条 `gates` 门禁的实际状态（`a0266a4` 的连带发现）
+
+§7av 把 `test:email` 接进了 `gates`，但当时**只单独验了新增那一步，没跑过整条链**。
+本轮补跑，发现一个必须诚实说明的事。
+
+### 逐步实测
+
+```
+npm run gates  →  ✗ 在第一步 typecheck 就断
+```
+
+逐个单跑的结果：
+
+| 步骤 | exit | 原因 | 与邮件相关？ |
+|---|---|---|---|
+| `typecheck` | ✗ 1 | `recording-voice-prompt` 模块缺失（`recordingRuntime.ts` 3 处 TS2307/TS7006） | ❌ 录音模块 |
+| `build:gate` | ✗ 1 | `Could not resolve "./recording-voice-prompt"`（同一根因） | ❌ 同上 |
+| `test:native` | ✅ 0 | | |
+| `test:email` | ✅ 0 | **本轮新增的步骤，绿** | ✅ |
+| `check:vm-gaps` | ✅ 0 | | |
+| `check:i18n` | ✅ 0 | | |
+| `check:icons` | ✗ 1 | `graphic_eq` 在字体子集里合不出连字（`src/features/settings/SettingsView.vue`） | ❌ 设置页图标 |
+
+**3 个红步骤全是既有问题，没有一个与邮件有关。**
+
+### 必须说明的后果：`test:email` 目前是**不起作用**的
+
+`gates` 是 `&&` 串联，`typecheck` 一红就短路，**`test:email` 根本轮不到执行**。
+
+所以 `a0266a4` 那次改动在本分支上的**实际保护力为零**——它只有在
+`recording-voice-prompt` 那个缺失模块被解决之后才开始生效。
+这一点不能含糊：不能说「邮件测试已纳入门禁所以有保护」。
+
+`check:icons` 的修法脚本自己都写明了：
+`node scripts/build-material-symbols-subset.mjs` 重建字体后提交产物。
+属录音/设置页的事，**未擅自处理**。
+
+### 对「本分支能否合并」的影响
+
+三条路：
+
+1. 先解决 `recording-voice-prompt`（cherry-pick `895d950` 或 rebase），
+   顺带重建字体子集 → 门禁恢复全绿，`test:email` 开始生效
+2. 临时把 `test:email` 从 `gates` 摘掉，等基线修好再加回 → 门禁仍红，
+   但不会给人「已纳入保护」的错觉
+3. 维持现状 → 明确记录门禁在本分支不提供邮件保护
+
+**等用户选**，未擅自改。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
