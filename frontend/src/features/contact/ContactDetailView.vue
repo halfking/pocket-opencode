@@ -85,9 +85,9 @@ onMounted(load)
 .profile { text-align: center; margin-bottom: 20px; }
 .avatar { width: 68px; height: 68px; margin: 0 auto 10px; display: grid; place-items: center; border-radius: 50%; background: var(--brand-primary); color: var(--text-inverse); font-size: 22px; font-weight: 700; }
 h1 { margin: 0; font-size: 22px; }
-.profile p { margin: 4px 0; color: var(--text-secondary); font-size: 12px; }
+.profile p { margin: 4px 0; color: var(--text-secondary); font-size: var(--text-sm); }
 .card { padding: 14px; background: var(--bg-card); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
-h2 { margin: 0 0 10px; font-size: 16px; }
+h2 { margin: 0 0 10px; font-size: var(--text-lg); }
 .muted, .state { color: var(--text-secondary); }
 .state { padding: 48px; text-align: center; }
 .timeline { list-style: none; padding: 0; margin: 0; }
@@ -96,8 +96,8 @@ h2 { margin: 0 0 10px; font-size: 16px; }
 .dot { width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: var(--brand-primary); flex-shrink: 0; }
 .timeline div { min-width: 0; }
 .timeline strong, .timeline p, .timeline small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.timeline p { margin: 4px 0; color: var(--text-secondary); font-size: 12px; }
-.timeline small { color: var(--text-muted); font-size: 10px; }
+.timeline p { margin: 4px 0; color: var(--text-secondary); font-size: var(--text-sm); }
+.timeline small { color: var(--text-muted); font-size: var(--text-xs); }
 .secondary { width: 100%; margin-top: 14px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); color: var(--text-primary); cursor: pointer; }
 .secondary:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-primary); }
 </style>

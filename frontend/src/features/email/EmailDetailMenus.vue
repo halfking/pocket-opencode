@@ -67,7 +67,7 @@ const moreOpen = computed({
   border: none;
   background: transparent;
   color: var(--text-primary);
-  font-size: 15px;
+  font-size: var(--text-md);
   cursor: pointer;
 }
 .sheet-item.on { color: var(--brand-primary); font-weight: 600; }

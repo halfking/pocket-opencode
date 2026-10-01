@@ -93,14 +93,14 @@ function typeLabel(type: string): string {
 }
 .insight-body { flex: 1; overflow-y: auto; padding: 0 12px 12px; }
 .summary { margin: 0 0 10px; font-size: 13px; line-height: 1.6; color: var(--text-primary); }
-.muted { color: var(--text-muted); font-size: 12px; }
-ul { margin: 0 0 10px; padding-left: 16px; font-size: 12px; color: var(--text-secondary); line-height: 1.7; }
+.muted { color: var(--text-muted); font-size: var(--text-sm); }
+ul { margin: 0 0 10px; padding-left: 16px; font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.7; }
 .block { margin-top: 12px; }
 .label { font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
 .todo, .rec {
   display: flex; justify-content: space-between; gap: 8px; width: 100%;
   padding: 8px 0; border: none; border-bottom: 1px solid var(--border-subtle);
-  background: transparent; color: var(--text-primary); font-size: 12px; text-align: left;
+  background: transparent; color: var(--text-primary); font-size: var(--text-sm); text-align: left;
 }
 .todo-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .todo-actions button {

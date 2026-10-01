@@ -187,7 +187,7 @@ onMounted(load)
 }
 .status-bar {
   padding: var(--space-2) var(--space-3);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .status-err {
   background: color-mix(in srgb, var(--danger) 15%, transparent);
@@ -204,7 +204,7 @@ onMounted(load)
   padding: 40px 20px;
   text-align: center;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .list {
   display: flex;
@@ -224,7 +224,7 @@ onMounted(load)
 }
 .name {
   flex: 1;
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -253,7 +253,7 @@ onMounted(load)
   background: var(--text-secondary);
 }
 .sub {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   margin-top: 4px;
 }

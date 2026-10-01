@@ -208,12 +208,12 @@ useListScene('pkm-today', loadRecent)
   opacity: 0.85;
 }
 .daily-title {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 700;
   margin: 0 0 4px;
 }
 .daily-hint {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary, #666);
   margin: 0;
 }
@@ -225,7 +225,7 @@ useListScene('pkm-today', loadRecent)
   padding: 10px 14px;
   border: 1px solid var(--border, #e5e7eb);
   border-radius: 10px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: var(--bg-input, #fff);
 }
 .note-list {
@@ -245,11 +245,11 @@ useListScene('pkm-today', loadRecent)
   background: var(--bg-hover, #f7f7f9);
 }
 .n-title {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
 }
 .n-snippet {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary, #888);
   overflow: hidden;
   text-overflow: ellipsis;

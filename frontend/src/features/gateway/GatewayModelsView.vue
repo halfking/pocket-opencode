@@ -210,19 +210,19 @@ onMounted(load)
   border: 1px solid var(--border);
   background: var(--bg-subtle);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .featured-toggle {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   flex: none;
 }
 .status-bar {
   padding: var(--space-2) var(--space-3);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .status-err {
   background: color-mix(in srgb, var(--danger) 15%, transparent);
@@ -239,7 +239,7 @@ onMounted(load)
   padding: 40px 20px;
   text-align: center;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .model-list {
   display: flex;
@@ -272,7 +272,7 @@ onMounted(load)
   color: var(--text-secondary);
 }
 .group-sub {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   margin-top: 2px;
 }
@@ -300,21 +300,21 @@ onMounted(load)
   flex: 1;
 }
 .cred-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 500;
 }
 .cred-meta {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   margin-top: 2px;
 }
 .cred-block {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--danger);
   margin-top: 2px;
 }
 .cred-price {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   flex: none;
 }
@@ -322,7 +322,7 @@ onMounted(load)
   width: 100%;
   margin-top: 8px;
   padding: 7px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 8px);

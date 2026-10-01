@@ -49,7 +49,7 @@ const errorText = computed(() => props.error || '')
   min-height: 40vh;
 }
 .studio-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
 }
 .studio-input {
@@ -62,7 +62,7 @@ const errorText = computed(() => props.error || '')
   border-radius: var(--radius-md);
   background: var(--bg-card);
   color: var(--text-primary);
-  font-size: 15px;
+  font-size: var(--text-md);
   line-height: 1.6;
   resize: vertical;
   font-family: inherit;

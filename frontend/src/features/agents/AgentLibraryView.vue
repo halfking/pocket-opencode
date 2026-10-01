@@ -265,7 +265,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
   padding: 10px 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: var(--bg-base);
   color: var(--text-primary);
 }
@@ -328,7 +328,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
   text-align: center;
   padding: 40px 20px;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .create-btn {
@@ -338,7 +338,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
   color: var(--text-inverse);
   border: none;
   border-radius: 8px;
-  font-size: 14px;
+  font-size: var(--text-base);
   cursor: pointer;
 }
 
@@ -348,7 +348,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
 
 .group-header {
   margin: 0 0 12px;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-secondary);
   padding-left: 4px;
@@ -394,13 +394,13 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
 }
 
 .agent-name {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .custom-badge {
-  font-size: 10px;
+  font-size: var(--text-xs);
   padding: 2px 6px;
   background: var(--brand-primary);
   color: var(--text-inverse);

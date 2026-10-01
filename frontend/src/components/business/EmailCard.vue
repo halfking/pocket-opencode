@@ -128,7 +128,7 @@ const handleClick = () => {
 }
 
 .from-name {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
   overflow: hidden;
@@ -138,17 +138,17 @@ const handleClick = () => {
 
 .star-icon {
   flex-shrink: 0;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .email-time {
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--color-text-tertiary);
 }
 
 .email-subject {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
   margin: 0 0 var(--space-2) 0;
@@ -158,7 +158,7 @@ const handleClick = () => {
 }
 
 .email-snippet {
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--color-text-secondary);
   line-height: 1.5;
   margin: 0 0 var(--space-3) 0;

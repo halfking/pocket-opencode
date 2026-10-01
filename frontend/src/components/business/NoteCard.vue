@@ -105,7 +105,7 @@ const handleClick = () => {
 }
 
 .note-title {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
   margin: 0;
@@ -117,7 +117,7 @@ const handleClick = () => {
 
 .note-domain {
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 2px 8px;
   background: var(--gradient-primary);
   color: var(--text-inverse);
@@ -126,7 +126,7 @@ const handleClick = () => {
 }
 
 .note-content {
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--color-text-secondary);
   line-height: 1.6;
   margin: 0 0 var(--space-3) 0;
@@ -146,7 +146,7 @@ const handleClick = () => {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--color-text-tertiary);
 }
 
@@ -159,6 +159,6 @@ const handleClick = () => {
 }
 
 .note-badge {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 </style>

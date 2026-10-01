@@ -269,7 +269,7 @@ async function saveAndVerify() {
 }
 .back-btn { border: 0; background: transparent; color: var(--text-primary); padding: 4px; }
 .page-title { margin: 0; font-size: var(--text-xl); }
-.steps { color: var(--text-muted); font-size: 12px; }
+.steps { color: var(--text-muted); font-size: var(--text-sm); }
 .panel { display: flex; flex-direction: column; gap: var(--space-2); }
 .hint, .auth-box p { margin: 0; color: var(--text-secondary); font-size: 13px; }
 .prov {
@@ -277,8 +277,8 @@ async function saveAndVerify() {
   border-radius: var(--radius-md); padding: var(--space-3); cursor: pointer;
 }
 .prov strong { display: block; }
-.prov span { font-size: 12px; color: var(--text-muted); }
-.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.prov span { font-size: var(--text-sm); color: var(--text-muted); }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: var(--text-sm); color: var(--text-secondary); }
 .input { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2); background: var(--bg-base); color: var(--text-primary); }
 .auth-box { background: var(--bg-subtle); border-radius: var(--radius-md); padding: var(--space-3); font-size: 13px; }
 .auth-box ol { margin: var(--space-2) 0; padding-left: 1.2rem; }

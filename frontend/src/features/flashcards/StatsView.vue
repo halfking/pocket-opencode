@@ -326,7 +326,7 @@ onMounted(() => {
   gap: var(--space-2);
   padding: var(--space-4);
 }
-.head h1 { flex: 1; margin: 0; font-size: 18px; color: var(--text-primary); }
+.head h1 { flex: 1; margin: 0; font-size: var(--text-xl); color: var(--text-primary); }
 .back-btn {
   border: 0;
   background: transparent;
@@ -342,7 +342,7 @@ onMounted(() => {
   background: var(--bg-card);
   color: var(--text-secondary);
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
 }
@@ -420,7 +420,7 @@ onMounted(() => {
 }
 
 .pie-text {
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: var(--font-weight-bold);
   fill: var(--text-primary);
 }
@@ -494,7 +494,7 @@ onMounted(() => {
 
 .empty-line {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-tertiary);
   text-align: center;
 }
@@ -520,7 +520,7 @@ onMounted(() => {
 }
 
 .retention-num {
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: var(--font-weight-bold);
   color: var(--text-primary);
   min-width: 64px;

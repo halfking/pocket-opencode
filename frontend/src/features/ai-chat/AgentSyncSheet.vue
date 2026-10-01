@@ -190,7 +190,7 @@ function formatTime(ms: number): string {
 
 .sheet-header h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: 600;
 }
 
@@ -226,7 +226,7 @@ function formatTime(ms: number): string {
 }
 
 .banner-hint {
-  font-size: 12px;
+  font-size: var(--text-sm);
   opacity: 0.85;
 }
 
@@ -295,7 +295,7 @@ function formatTime(ms: number): string {
   border-radius: 10px;
   background: var(--bg-secondary, #f9fafb);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 500;
   cursor: pointer;
   transition: background 0.2s;

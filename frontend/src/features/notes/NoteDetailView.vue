@@ -320,7 +320,7 @@ function formatTime(ms: number) {
   padding: var(--space-3) var(--space-4);
   background: var(--bg-card);
   border-radius: var(--radius-md);
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   box-shadow: var(--shadow-sm);
 }
@@ -335,7 +335,7 @@ function formatTime(ms: number) {
 .domain-tag.domain-study { background: var(--cat-study-bg); color: var(--cat-study); }
 .domain-tag.domain-life { background: var(--cat-life-bg); color: var(--cat-life); }
 .domain-tag.domain-idea { background: var(--cat-idea-bg); color: var(--cat-idea); }
-.meta-text { font-size: 12px; }
+.meta-text { font-size: var(--text-sm); }
 .meta-tag.voice, .meta-tag.text {
   padding: 2px 6px;
   background: var(--bg-subtle);
@@ -357,15 +357,15 @@ function formatTime(ms: number) {
   padding: var(--space-5);
   box-shadow: var(--shadow-sm);
   color: var(--text-primary);
-  font-size: 15px;
+  font-size: var(--text-md);
   line-height: 1.7;
 }
 .markdown-body :deep(h1),
 .markdown-body :deep(h2),
 .markdown-body :deep(h3) { margin: var(--space-4) 0 var(--space-2); font-weight: 700; }
 .markdown-body :deep(h1) { font-size: 20px; }
-.markdown-body :deep(h2) { font-size: 18px; }
-.markdown-body :deep(h3) { font-size: 16px; }
+.markdown-body :deep(h2) { font-size: var(--text-xl); }
+.markdown-body :deep(h3) { font-size: var(--text-lg); }
 .markdown-body :deep(p) { margin: var(--space-2) 0; }
 .markdown-body :deep(code) {
   background: var(--bg-subtle);
@@ -398,7 +398,7 @@ function formatTime(ms: number) {
   box-shadow: var(--shadow-sm);
 }
 .section-title {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-secondary);
   margin: 0 0 var(--space-3) 0;
@@ -416,7 +416,7 @@ function formatTime(ms: number) {
 .related-card.domain-idea { border-left-color: var(--cat-idea); }
 .related-title { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
 .related-snippet {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -435,7 +435,7 @@ function formatTime(ms: number) {
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--bg-card);
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 500;
   cursor: pointer;
   color: var(--text-primary);
@@ -478,17 +478,17 @@ function formatTime(ms: number) {
   margin-top: var(--space-3); padding-top: var(--space-3);
   border-top: 1px dashed var(--border);
 }
-.txs-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
+.txs-title { font-size: var(--text-sm); font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
 .txs-mismatch {
-  margin: 0 0 6px; font-size: 12px; line-height: 1.6;
+  margin: 0 0 6px; font-size: var(--text-sm); line-height: 1.6;
   color: var(--warning, #d97706);
 }
 .tx-line {
   display: flex; align-items: center; justify-content: space-between;
-  font-size: 12px; color: var(--text-secondary); padding: 3px 0;
+  font-size: var(--text-sm); color: var(--text-secondary); padding: 3px 0;
 }
 .tx-amt.income { color: var(--success, #10b981); font-weight: 600; }
 .tx-amt.expense { color: var(--danger); font-weight: 600; }
-.txs-link { display: inline-block; margin-top: 8px; font-size: 12px; color: var(--brand-primary); text-decoration: none; }
-.summary-hint { margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+.txs-link { display: inline-block; margin-top: 8px; font-size: var(--text-sm); color: var(--brand-primary); text-decoration: none; }
+.summary-hint { margin: 0; font-size: var(--text-sm); color: var(--text-muted); line-height: 1.6; }
 </style>

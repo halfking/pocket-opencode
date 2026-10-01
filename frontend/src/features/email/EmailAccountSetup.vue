@@ -538,7 +538,7 @@ onMounted(loadList)
 
 <style scoped>
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
-.hint { font-size: 12px; color: var(--text-muted); margin-top: var(--space-2); }
+.hint { font-size: var(--text-sm); color: var(--text-muted); margin-top: var(--space-2); }
 
 .account-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .account-card {
@@ -550,15 +550,15 @@ onMounted(loadList)
   gap: var(--space-2);
 }
 .acct-main { flex: 1; min-width: 0; }
-.acct-name { font-weight: 600; color: var(--text-primary); font-size: 14px; }
-.acct-addr { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.acct-name { font-weight: 600; color: var(--text-primary); font-size: var(--text-base); }
+.acct-addr { font-size: var(--text-sm); color: var(--text-secondary); margin-top: 2px; }
 .acct-meta { display: flex; gap: var(--space-1); align-items: center; font-size: 11px; color: var(--text-muted); margin-top: var(--space-1); }
 .sep { color: var(--border-strong); }
 .acct-actions { display: flex; gap: var(--space-1); }
 .icon-btn {
   border: none; background: var(--bg-subtle);
   width: 32px; height: 32px; border-radius: var(--radius-sm);
-  font-size: 14px; cursor: pointer; color: var(--text-secondary);
+  font-size: var(--text-base); cursor: pointer; color: var(--text-secondary);
 }
 .icon-btn:active { background: var(--border); }
 .icon-btn.danger { color: var(--danger); }
@@ -570,7 +570,7 @@ onMounted(loadList)
   padding: var(--space-4);
   box-shadow: var(--shadow-sm);
 }
-.form-title { font-size: 16px; font-weight: 600; margin: 0 0 var(--space-3); color: var(--text-primary); }
+.form-title { font-size: var(--text-lg); font-weight: 600; margin: 0 0 var(--space-3); color: var(--text-primary); }
 .templates-label { font-size: 13px; color: var(--text-secondary); margin-bottom: var(--space-2); }
 .template-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
 .tpl-btn {
@@ -588,7 +588,7 @@ onMounted(loadList)
 
 .form-fields { display: flex; flex-direction: column; gap: var(--space-3); margin-top: 0; }
 .field { display: flex; flex-direction: column; gap: var(--space-1); }
-.field-label { font-size: 12px; color: var(--text-secondary); }
+.field-label { font-size: var(--text-sm); color: var(--text-secondary); }
 .hint-inline { font-size: 11px; color: var(--text-muted); margin-left: var(--space-1); }
 .input {
   border: 1px solid var(--border);
@@ -596,7 +596,7 @@ onMounted(loadList)
   color: var(--text-primary);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
-  font-size: 14px;
+  font-size: var(--text-base);
   outline: none;
 }
 .input:focus { border-color: var(--brand-primary); }
@@ -611,7 +611,7 @@ onMounted(loadList)
 .section-hint { font-size: 11px; color: var(--text-muted); }
 .checkbox-field {
   display: flex; align-items: center; gap: var(--space-2);
-  font-size: 12px; color: var(--text-secondary);
+  font-size: var(--text-sm); color: var(--text-secondary);
 }
 
 .form-actions { display: flex; gap: var(--space-2); margin-top: var(--space-1); }
@@ -622,7 +622,7 @@ onMounted(loadList)
   color: var(--text-primary);
   padding: var(--space-3);
   border-radius: var(--radius-md);
-  font-size: 14px;
+  font-size: var(--text-base);
   cursor: pointer;
 }
 .ghost-btn:active { background: var(--bg-subtle); }
@@ -633,7 +633,7 @@ onMounted(loadList)
   color: var(--text-inverse);
   padding: var(--space-3);
   border-radius: var(--radius-md);
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   cursor: pointer;
 }

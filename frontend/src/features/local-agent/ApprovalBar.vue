@@ -53,7 +53,7 @@ const desc = computed(() => {
 .title { margin: 0; font-size: 13px; font-weight: var(--font-weight-semibold); }
 .desc {
   margin: 2px 0 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   word-break: break-all;
 }

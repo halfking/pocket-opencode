@@ -192,7 +192,7 @@ onBeforeUnmount(() => { if (previewTimer) clearTimeout(previewTimer) })
 .save-link { color: var(--brand-primary); font-weight: 600; }
 .form { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-4) var(--space-3) 100px; }
 label { font-size: 13px; font-weight: 600; color: var(--text-secondary); display: flex; flex-direction: column; gap: 6px; }
-input, textarea, select { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); font: inherit; font-size: 14px; }
+input, textarea, select { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); font: inherit; font-size: var(--text-base); }
 textarea { resize: vertical; }
 small { color: var(--text-muted); font-weight: 400; }
 .advanced { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }

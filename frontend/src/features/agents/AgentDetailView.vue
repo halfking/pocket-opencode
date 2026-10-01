@@ -133,7 +133,7 @@ function goToEdit() {
   align-items: center;
   justify-content: center;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .detail-content {
@@ -209,7 +209,7 @@ function goToEdit() {
 
 .section-title {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -221,7 +221,7 @@ function goToEdit() {
 
 .role-desc {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
   line-height: 1.6;
   padding: 16px;
@@ -247,9 +247,9 @@ function goToEdit() {
   font-weight: 600;
 }
 
-.prompt-preview :deep(h1) { font-size: 16px; }
-.prompt-preview :deep(h2) { font-size: 15px; }
-.prompt-preview :deep(h3) { font-size: 14px; }
+.prompt-preview :deep(h1) { font-size: var(--text-lg); }
+.prompt-preview :deep(h2) { font-size: var(--text-md); }
+.prompt-preview :deep(h3) { font-size: var(--text-base); }
 
 .prompt-preview :deep(p) {
   margin: 8px 0;
@@ -270,7 +270,7 @@ function goToEdit() {
   padding: 2px 6px;
   border-radius: 4px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .prompt-preview :deep(strong) {
@@ -318,6 +318,6 @@ function goToEdit() {
 
 .mono {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 </style>

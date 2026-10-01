@@ -202,7 +202,7 @@ watch(deckId, hydrate)
   gap: var(--space-3);
   padding: var(--space-4);
 }
-.head h1 { flex: 1; margin: 0; font-size: 18px; color: var(--text-primary); }
+.head h1 { flex: 1; margin: 0; font-size: var(--text-xl); color: var(--text-primary); }
 .back-btn {
   border: 0;
   background: transparent;
@@ -233,7 +233,7 @@ input {
   background: var(--bg-card);
   color: var(--text-primary);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .group {
@@ -248,7 +248,7 @@ input {
 
 .group legend {
   padding: 0 var(--space-1);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-semibold);
   color: var(--text-tertiary);
   text-transform: uppercase;

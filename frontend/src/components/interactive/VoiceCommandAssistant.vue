@@ -348,7 +348,7 @@ const handleClose = () => {
 }
 
 .status-text {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-medium);
   color: var(--text-inverse);
 }
@@ -363,7 +363,7 @@ const handleClose = () => {
   border: none;
   border-radius: var(--radius-full);
   color: var(--text-inverse);
-  font-size: 16px;
+  font-size: var(--text-lg);
   cursor: pointer;
 }
 
@@ -376,7 +376,7 @@ const handleClose = () => {
 }
 
 .transcription-text {
-  font-size: 16px;
+  font-size: var(--text-lg);
   line-height: 1.6;
   color: var(--text-inverse);
   margin: 0;
@@ -384,7 +384,7 @@ const handleClose = () => {
 }
 
 .transcription-placeholder {
-  font-size: 14px;
+  font-size: var(--text-base);
   color: rgba(255, 255, 255, 0.5);
   margin: 0;
 }
@@ -395,7 +395,7 @@ const handleClose = () => {
 }
 
 .suggestions-title {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   color: rgba(255, 255, 255, 0.6);
   margin: 0 0 var(--space-2) 0;
@@ -439,7 +439,7 @@ const handleClose = () => {
 
 .result-text {
   flex: 1;
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--text-inverse);
 }
 

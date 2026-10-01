@@ -538,7 +538,7 @@ function goBack() {
 }
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-8); }
 .state.error { color: var(--danger); }
-.link-btn { background: none; border: none; color: var(--brand-primary); cursor: pointer; font-size: 14px; }
+.link-btn { background: none; border: none; color: var(--brand-primary); cursor: pointer; font-size: var(--text-base); }
 
 .sections {
   flex: 1;
@@ -566,7 +566,7 @@ function goBack() {
   display: flex; align-items: center; justify-content: space-between;
   gap: var(--space-2); margin-bottom: var(--space-2);
 }
-.card-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.card-head h3 { margin: 0; font-size: var(--text-md); font-weight: 600; }
 .head-actions { display: flex; align-items: center; gap: var(--space-1); flex-shrink: 0; }
 .head-hint { font-size: 11px; color: var(--text-muted); }
 
@@ -574,7 +574,7 @@ function goBack() {
   border: none; border-radius: var(--radius-md);
   background: var(--brand-primary); color: var(--text-inverse);
   padding: 6px 10px;
-  font-size: 12px; font-weight: 600; cursor: pointer;
+  font-size: var(--text-sm); font-weight: 600; cursor: pointer;
 }
 .primary-btn.slim { margin-top: var(--space-2); }
 .primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -585,16 +585,16 @@ function goBack() {
   border-bottom: 1px solid var(--border-subtle);
 }
 .acct-row:last-child { border-bottom: none; }
-.acct-name { font-size: 14px; font-weight: 600; }
-.acct-sub { font-size: 12px; color: var(--text-secondary); }
+.acct-name { font-size: var(--text-base); font-weight: 600; }
+.acct-sub { font-size: var(--text-sm); color: var(--text-secondary); }
 .acct-sub.muted { color: var(--text-muted); }
 .acct-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
 
-.switch { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
+.switch { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--text-secondary); cursor: pointer; }
 .mini-btn {
   border: 1px solid var(--border); border-radius: var(--radius-md);
   background: var(--bg-subtle); color: var(--text-primary);
-  padding: 6px 10px; font-size: 12px; cursor: pointer;
+  padding: 6px 10px; font-size: var(--text-sm); cursor: pointer;
 }
 .mini-btn.danger { color: var(--danger); border-color: var(--danger); }
 .mini-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -605,7 +605,7 @@ function goBack() {
 .rule-block-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2); }
 .rule-acct { font-size: 13px; font-weight: 600; }
 .legacy-hint { margin: 0 0 var(--space-2); font-size: 11px; color: var(--warning); }
-.rule-empty { font-size: 12px; color: var(--text-muted); padding: var(--space-2) 0; }
+.rule-empty { font-size: var(--text-sm); color: var(--text-muted); padding: var(--space-2) 0; }
 .rule-row {
   display: flex; flex-direction: column; gap: var(--space-2);
   padding: var(--space-2); margin-bottom: var(--space-2);
@@ -617,7 +617,7 @@ function goBack() {
 }
 .rule-pattern { width: 100%; box-sizing: border-box; }
 .rule-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
-.rule-act { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
+.rule-act { display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-sm); color: var(--text-secondary); cursor: pointer; }
 .rule-param { width: 110px; }
 
 /* 处理逻辑 */
@@ -644,8 +644,8 @@ function goBack() {
 .queue-note {
   margin-top: var(--space-3); padding: var(--space-3);
   background: var(--bg-subtle); border-radius: var(--radius-md);
-  font-size: 12px; color: var(--text-secondary); line-height: 1.6;
+  font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.6;
 }
-.queue-note h4 { margin: 0 0 4px; font-size: 12px; }
+.queue-note h4 { margin: 0 0 4px; font-size: var(--text-sm); }
 .queue-note code { background: var(--bg-card); padding: 1px 4px; border-radius: 4px; }
 </style>

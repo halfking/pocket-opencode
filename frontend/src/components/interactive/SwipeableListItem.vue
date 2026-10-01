@@ -222,7 +222,7 @@ defineExpose({ reset })
   gap: 4px;
   border: none;
   color: var(--text-inverse);
-  font-size: 12px;
+  font-size: var(--text-sm);
   cursor: pointer;
   transition: all 0.2s ease;
   user-select: none;

@@ -119,6 +119,6 @@ onMounted(async () => {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
-.hint { color: var(--text-secondary, #666); font-size: 14px; }
-.error { color: #d33; font-size: 14px; text-align: center; }
+.hint { color: var(--text-secondary, #666); font-size: var(--text-base); }
+.error { color: #d33; font-size: var(--text-base); text-align: center; }
 </style>

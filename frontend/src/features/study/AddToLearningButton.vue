@@ -128,7 +128,7 @@ async function add() {
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 500;
   cursor: pointer;
   min-height: 32px;
@@ -136,7 +136,7 @@ async function add() {
 }
 
 .add-learning .material-symbols-outlined {
-  font-size: 16px;
+  font-size: var(--text-lg);
   color: var(--brand-primary, #4c8dff);
 }
 

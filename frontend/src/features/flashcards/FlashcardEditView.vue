@@ -432,7 +432,7 @@ onMounted(() => {
   gap: var(--space-3);
   padding: var(--space-4);
 }
-.head h1 { flex: 1; margin: 0; font-size: 18px; color: var(--text-primary); }
+.head h1 { flex: 1; margin: 0; font-size: var(--text-xl); color: var(--text-primary); }
 .back-btn, .save-link {
   border: 0;
   background: transparent;
@@ -469,7 +469,7 @@ onMounted(() => {
 }
 
 .tab .material-symbols-outlined {
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 .tab.active {
@@ -489,7 +489,7 @@ input, textarea, select {
   background: var(--bg-card);
   color: var(--text-primary);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 textarea { resize: vertical; font-family: var(--font-mono); font-size: 13px; }
 
@@ -502,12 +502,12 @@ textarea { resize: vertical; font-family: var(--font-mono); font-size: 13px; }
   background: var(--brand-bg, rgba(76, 141, 255, 0.06));
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.4;
 }
 
 .hint .material-symbols-outlined {
-  font-size: 16px;
+  font-size: var(--text-lg);
   color: var(--brand-primary);
   flex-shrink: 0;
   margin-top: 1px;
@@ -517,7 +517,7 @@ textarea { resize: vertical; font-family: var(--font-mono); font-size: 13px; }
   margin: -4px 0 0;
   padding: 0 var(--space-1);
   color: var(--brand-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -530,7 +530,7 @@ textarea { resize: vertical; font-family: var(--font-mono); font-size: 13px; }
   background: var(--bg-card);
   color: var(--text-primary);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--text-base);
   cursor: pointer;
 }
 .actions .primary { background: var(--brand-gradient); border: 0; color: var(--text-inverse); }
@@ -548,14 +548,14 @@ textarea { resize: vertical; font-family: var(--font-mono); font-size: 13px; }
   border: 1px dashed var(--border);
   border-radius: var(--radius-sm);
   color: var(--brand-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   align-self: flex-start;
   min-height: 32px;
 }
 
-.media-launch .material-symbols-outlined { font-size: 16px; }
+.media-launch .material-symbols-outlined { font-size: var(--text-lg); }
 
 .media-strip {
   display: flex;
@@ -598,7 +598,7 @@ textarea { resize: vertical; font-family: var(--font-mono); font-size: 13px; }
   justify-content: center;
 }
 
-.thumb-x .material-symbols-outlined { font-size: 14px; }
+.thumb-x .material-symbols-outlined { font-size: var(--text-base); }
 
 .media-add {
   display: inline-flex;

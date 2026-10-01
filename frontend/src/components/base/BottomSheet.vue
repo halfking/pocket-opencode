@@ -248,7 +248,7 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
 }
 .sheet-title {
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
   margin: 0;

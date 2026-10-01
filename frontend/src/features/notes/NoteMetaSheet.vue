@@ -166,16 +166,16 @@ function onClose() {
 .status, .err {
   margin: 0 0 var(--space-3);
   padding: 8px 12px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.55;
   background: var(--bg-card);
   color: var(--text-secondary);
 }
 .err { color: var(--danger); }
-.field > span { font-size: 12px; color: var(--text-muted); }
+.field > span { font-size: var(--text-sm); color: var(--text-muted); }
 .field input {
   padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md);
-  background: var(--bg-base); color: var(--text-primary); font-size: 14px;
+  background: var(--bg-base); color: var(--text-primary); font-size: var(--text-base);
 }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
@@ -187,7 +187,7 @@ function onClose() {
 .tag-row input { flex: 1; }
 .extract {
   flex-shrink: 0; padding: 0 10px; border-radius: var(--radius-md);
-  border: 1px solid var(--border); background: var(--bg-subtle); font-size: 12px;
+  border: 1px solid var(--border); background: var(--bg-subtle); font-size: var(--text-sm);
 }
 .actions { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
 .btn { flex: 1; padding: 12px; border-radius: var(--radius-md); border: none; font-weight: 600; }

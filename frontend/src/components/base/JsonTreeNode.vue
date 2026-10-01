@@ -128,7 +128,7 @@ function displayValue(v: unknown, t: string): string {
 }
 
 .json-toggle .material-symbols-outlined {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .json-key {

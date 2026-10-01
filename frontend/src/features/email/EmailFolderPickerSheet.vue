@@ -96,11 +96,11 @@ async function firstAccountId(): Promise<string> {
 
 <style scoped>
 .new-row { display: flex; gap: 8px; padding: 4px 0 10px; }
-.new-input { flex: 1; min-height: 38px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 10px; background: var(--bg-card); color: var(--text-primary); font-size: 14px; }
+.new-input { flex: 1; min-height: 38px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 10px; background: var(--bg-card); color: var(--text-primary); font-size: var(--text-base); }
 .new-btn { min-height: 38px; padding: 0 14px; border: none; border-radius: var(--radius-sm); background: var(--brand-primary); color: var(--text-inverse); }
 .new-btn:disabled { opacity: .5; }
-.sheet-item { display: flex; justify-content: space-between; align-items: center; width: 100%; text-align: left; padding: 12px 4px; border: none; background: transparent; color: var(--text-primary); font-size: 15px; cursor: pointer; }
+.sheet-item { display: flex; justify-content: space-between; align-items: center; width: 100%; text-align: left; padding: 12px 4px; border: none; background: transparent; color: var(--text-primary); font-size: var(--text-md); cursor: pointer; }
 .sheet-item.on { color: var(--brand-primary); font-weight: 600; }
-.folder-count { font-size: 12px; color: var(--text-muted); }
-.err { color: var(--danger); font-size: 12px; margin: 6px 0 0; }
+.folder-count { font-size: var(--text-sm); color: var(--text-muted); }
+.err { color: var(--danger); font-size: var(--text-sm); margin: 6px 0 0; }
 </style>

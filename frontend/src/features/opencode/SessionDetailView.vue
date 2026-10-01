@@ -351,7 +351,7 @@ function getActorName(actor: string): string {
 
 .back-btn, .export-btn {
   padding: 8px 12px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -468,7 +468,7 @@ function getActorName(actor: string): string {
 }
 
 .info-item .value {
-  font-size: 15px;
+  font-size: var(--text-md);
   color: var(--text-primary);
   font-weight: 500;
 }
@@ -480,7 +480,7 @@ function getActorName(actor: string): string {
 }
 
 .stats-card h3, .summary-card h3, .timeline-card h3 {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
   margin: 0 0 16px 0;
   color: var(--text-primary);
@@ -530,7 +530,7 @@ function getActorName(actor: string): string {
 }
 
 .stat-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -618,7 +618,7 @@ function getActorName(actor: string): string {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 .timeline-event.message .event-icon {
@@ -677,12 +677,12 @@ function getActorName(actor: string): string {
 }
 
 .event-time {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
 }
 
 .event-body {
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
   line-height: 1.5;
   margin-bottom: 8px;
@@ -698,7 +698,7 @@ function getActorName(actor: string): string {
 }
 
 .metadata-item {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -730,7 +730,7 @@ function getActorName(actor: string): string {
 
 .retry-btn {
   padding: 12px 24px;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-inverse);
   background: var(--brand-primary);

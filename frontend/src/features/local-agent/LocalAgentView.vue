@@ -274,11 +274,11 @@ watch(() => store.activeId, () => {
   border-radius: var(--radius-full);
   background: var(--bg-subtle);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   white-space: nowrap;
   cursor: pointer;
 }
-.chip-btn .material-symbols-outlined { font-size: 16px; }
+.chip-btn .material-symbols-outlined { font-size: var(--text-lg); }
 
 .pickers {
   padding: var(--space-2) var(--space-3);
@@ -289,7 +289,7 @@ watch(() => store.activeId, () => {
   gap: 6px;
 }
 .picker-label { margin: 0; font-size: 11px; color: var(--text-muted); }
-.picker-desc { margin: 0; font-size: 12px; color: var(--text-secondary); }
+.picker-desc { margin: 0; font-size: var(--text-sm); color: var(--text-secondary); }
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
   padding: 4px 12px;
@@ -297,7 +297,7 @@ watch(() => store.activeId, () => {
   border: 1px solid var(--border);
   background: var(--bg-subtle);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   cursor: pointer;
 }
 .chip.active {
@@ -330,7 +330,7 @@ watch(() => store.activeId, () => {
   max-width: 86%;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
@@ -351,7 +351,7 @@ watch(() => store.activeId, () => {
 .system-note {
   margin: 0 auto;
   text-align: center;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--danger, #e5484d);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
@@ -386,7 +386,7 @@ watch(() => store.activeId, () => {
   border-radius: var(--radius-md);
   background: var(--bg-subtle);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
   padding: var(--space-2) var(--space-3);
   line-height: 1.5;
 }
@@ -410,7 +410,7 @@ watch(() => store.activeId, () => {
   margin: 0;
   padding: 0 var(--space-3) var(--space-1);
   text-align: right;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   background: var(--bg-card);
 }

@@ -518,7 +518,7 @@ async function setDailyDigest(time: string) {
 }
 
 .hero-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   opacity: 0.85;
 }
@@ -542,7 +542,7 @@ async function setDailyDigest(time: string) {
   padding: var(--space-2) var(--space-3);
   background: rgba(255, 255, 255, 0.18);
   border-radius: var(--radius-full);
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -569,13 +569,13 @@ async function setDailyDigest(time: string) {
   align-items: center;
   gap: var(--space-1);
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
 }
 
 .group-head .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
   color: var(--brand-primary);
 }
 
@@ -606,7 +606,7 @@ async function setDailyDigest(time: string) {
 }
 
 .head-actions .link-btn .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .link-btn:active {
@@ -622,18 +622,18 @@ async function setDailyDigest(time: string) {
   padding: 4px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-full);
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
 .streak .material-symbols-outlined {
-  font-size: 15px;
+  font-size: var(--text-md);
   color: #e8a33d;
   align-self: center;
 }
 
 .streak-num {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -668,7 +668,7 @@ async function setDailyDigest(time: string) {
 }
 
 .due-cell .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
   color: var(--brand-primary, #4c8dff);
 }
 
@@ -688,7 +688,7 @@ async function setDailyDigest(time: string) {
 
 /* ===== 提醒 ===== */
 .reminder-next {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   font-family: var(--font-mono);
 }
@@ -698,7 +698,7 @@ async function setDailyDigest(time: string) {
   background: var(--bg-card);
   border: 1px dashed var(--border);
   border-radius: var(--radius-md);
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-tertiary);
 }
 
@@ -725,7 +725,7 @@ async function setDailyDigest(time: string) {
 }
 
 .preset-btn .material-symbols-outlined {
-  font-size: 16px;
+  font-size: var(--text-lg);
   color: var(--text-tertiary);
 }
 
@@ -751,7 +751,7 @@ async function setDailyDigest(time: string) {
   border-radius: 999px;
   background: var(--brand-bg, rgba(76, 141, 255, 0.12));
   color: var(--brand-primary, #4c8dff);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -787,7 +787,7 @@ async function setDailyDigest(time: string) {
 }
 
 .inbox-icon .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .inbox-body {
@@ -806,7 +806,7 @@ async function setDailyDigest(time: string) {
 }
 
 .inbox-title {
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -834,7 +834,7 @@ async function setDailyDigest(time: string) {
 }
 
 .inbox-advance .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .inbox-advance:disabled {
@@ -875,7 +875,7 @@ async function setDailyDigest(time: string) {
 
 .deck-name {
   flex: 1;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-medium);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -887,7 +887,7 @@ async function setDailyDigest(time: string) {
   border-radius: 999px;
   background: var(--brand-bg, rgba(76, 141, 255, 0.12));
   color: var(--brand-primary, #4c8dff);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-semibold);
   flex-shrink: 0;
 }
@@ -941,12 +941,12 @@ async function setDailyDigest(time: string) {
 }
 
 .notes-title {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
 }
 
 .notes-hint {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -1007,7 +1007,7 @@ async function setDailyDigest(time: string) {
   color: var(--danger);
   background: var(--danger-bg);
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .state {
@@ -1015,6 +1015,6 @@ async function setDailyDigest(time: string) {
 }
 
 .state .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 </style>

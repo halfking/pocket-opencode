@@ -167,7 +167,7 @@ function buildTree(value: unknown, key?: string, depth = 0, path: string[] = [])
   border-radius: 6px;
   overflow: hidden;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 
@@ -246,7 +246,7 @@ function buildTree(value: unknown, key?: string, depth = 0, path: string[] = [])
 }
 
 .json-fs-btn .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .json-body {
@@ -258,7 +258,7 @@ function buildTree(value: unknown, key?: string, depth = 0, path: string[] = [])
 
 .json-block.is-fullscreen .json-body {
   padding: 16px 24px;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .json-text {
@@ -270,7 +270,7 @@ function buildTree(value: unknown, key?: string, depth = 0, path: string[] = [])
 
 .json-hint {
   margin-top: 4px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-tertiary, #999);
 }
 </style>

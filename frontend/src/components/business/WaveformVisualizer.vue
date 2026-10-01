@@ -392,7 +392,7 @@ defineExpose({
   display: flex;
   justify-content: center;
   gap: var(--space-1);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;

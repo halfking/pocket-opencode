@@ -147,7 +147,7 @@ defineExpose({
   gap: var(--space-2);
   padding: var(--space-6);
   color: var(--color-text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .loading-text,
@@ -175,7 +175,7 @@ defineExpose({
   color: var(--text-inverse);
   border: none;
   border-radius: var(--radius-md);
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-out);

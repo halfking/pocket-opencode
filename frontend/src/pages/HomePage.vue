@@ -379,7 +379,7 @@ const handleNavChange = (id: string) => {
 
 .greeting p {
   margin: 0 0 var(--space-4) 0;
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--color-text-secondary);
 }
 
@@ -414,14 +414,14 @@ const handleNavChange = (id: string) => {
 
 .quick-label {
   display: block;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   margin-bottom: 4px;
 }
 
 .quick-count {
   display: block;
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: var(--font-weight-bold);
 }
 
@@ -430,7 +430,7 @@ const handleNavChange = (id: string) => {
   padding: 2px 8px;
   background: rgba(255, 255, 255, 0.3);
   border-radius: var(--radius-full);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .content-sections {
@@ -452,7 +452,7 @@ const handleNavChange = (id: string) => {
 
 .section-header h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
 }
@@ -495,7 +495,7 @@ const handleNavChange = (id: string) => {
 
 .task-text {
   flex: 1;
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--color-text-primary);
 }
 
@@ -524,7 +524,7 @@ const handleNavChange = (id: string) => {
 
 .ai-greeting p {
   margin: 0 0 var(--space-4) 0;
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--color-text-secondary);
 }
 
@@ -551,7 +551,7 @@ const handleNavChange = (id: string) => {
 }
 
 .section-title {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-secondary);
   margin: 0 0 var(--space-3) 0;

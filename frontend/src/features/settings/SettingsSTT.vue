@@ -644,7 +644,7 @@ function goBack() {
 }
 .form-label {
   display: block;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   margin-bottom: 8px;
 }
@@ -656,7 +656,7 @@ function goBack() {
   width: 100%;
   box-sizing: border-box;
   padding: 10px 12px;
-  font-size: 15px;
+  font-size: var(--text-md);
   border-radius: 8px;
   border: 1px solid var(--border, #d0d3d8);
   background: var(--surface, #fff);
@@ -674,7 +674,7 @@ function goBack() {
 /* 语音提示可用性：不可用时用警示色，让「听不到声音」有据可查。 */
 .voice-prompt-state {
   margin: 6px 0 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
   color: var(--success, #16a34a);
 }
@@ -703,7 +703,7 @@ function goBack() {
   opacity: 0.5;
 }
 .meta-line {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary, #6b7280);
   margin-bottom: 8px;
   word-break: break-all;
@@ -747,14 +747,14 @@ function goBack() {
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .candidate-model {
   font-family: var(--font-mono);
   word-break: break-all;
 }
 .candidate-detail {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: #b45309;
   margin-top: 6px;
   word-break: break-all;
@@ -802,7 +802,7 @@ function goBack() {
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 .group-head {
   margin-top: 14px;
@@ -834,7 +834,7 @@ function goBack() {
 }
 .rec-cost {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary, #6b7280);
   white-space: nowrap;
 }
@@ -856,7 +856,7 @@ function goBack() {
 .rec-note,
 .rec-acc,
 .rec-probe {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary, #6b7280);
   margin-top: 4px;
   line-height: 1.5;
@@ -883,12 +883,12 @@ function goBack() {
   margin-top: 8px;
 }
 .ok-head {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: #065f46;
   margin-bottom: 6px;
 }
 .ok-text {
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
@@ -909,7 +909,7 @@ function goBack() {
   border: none;
   border-radius: 8px;
   padding: 12px 20px;
-  font-size: 15px;
+  font-size: var(--text-md);
   cursor: pointer;
 }
 .primary-btn:disabled {

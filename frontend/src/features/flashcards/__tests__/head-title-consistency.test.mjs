@@ -21,6 +21,30 @@ import { describe, it } from 'node:test'
 const here = dirname(fileURLToPath(import.meta.url))
 const moduleDir = join(here, '..')
 
+/**
+ * token 名 → 像素值。
+ *
+ * 2026-10-03：本模块的字号已统一走 token（18px 那一批整体换成
+ * `var(--text-xl)`），于是原先只认 `font-size: Npx` 的检测器**全部失明**——
+ * `.head h1` 一处都扫不到，`inner`/`outer` 变空集合。
+ *
+ * 好在防空跑用例（`finds enough instances`）当场报红而不是静默放过。
+ * 这就是那条断言存在的意义：判据的失败面是「什么都没扫到 → 集合为空 → 绿」。
+ *
+ * 所以现在把两种写法都解析成**实际像素**再比，判据问的仍然是
+ * 「同角色是否同字号」，而不是「源码里写的是不是同一种字面形式」。
+ */
+function loadTokenScale() {
+  const css = readFileSync(join(moduleDir, '..', '..', 'styles', 'tokens.css'), 'utf8')
+  const scale = {}
+  for (const m of css.matchAll(/(--text-[a-z0-9-]+)\s*:\s*(\d+(?:\.\d+)?)px/g)) {
+    scale[m[1]] = m[2]
+  }
+  return scale
+}
+
+const TOKEN_SCALE = loadTokenScale()
+
 /** 收集该模块下所有 .vue（含 components/ 子目录）。 */
 function vueFiles(dir) {
   const out = []
@@ -33,7 +57,7 @@ function vueFiles(dir) {
 }
 
 /**
- * 抽出 `.head h1` 的字号。
+ * 抽出 `.head h1` 的**实际字号（px）**。
  * compact=true 表示 `.outer .head h1`（紧凑变体），与内层分开统计。
  */
 function headTitleSizes(files) {
@@ -42,11 +66,16 @@ function headTitleSizes(files) {
   // 选择器里 `.outer` 是可选前缀。必须从选择器**起点**匹配：若先匹配内层的
   // `.head h1`，它也会命中 `.outer .head h1` 的子串（第一版就是这么错的，
   // 而且错法恰好让 outer 集合变空——被防空跑断言抓住才没变成永远绿）。
-  const re = /(?:(\.outer)\s+)?(\.head)\s+h1\s*\{[^}]*font-size:\s*(\d+(?:\.\d+)?)px/g
+  //
+  // 两种写法都收：写死 px，或 var(--text-*)。未知 token 一律跳过而不是当 0，
+  // 否则一个拼错的 token 名会伪装成「0px」参与比较。
+  const re = /(?:(\.outer)\s+)?(\.head)\s+h1\s*\{[^}]*font-size\s*:\s*(?:(\d+(?:\.\d+)?)px|var\((--text-[a-z0-9-]+)\))/g
   for (const f of files) {
     const src = readFileSync(f, 'utf8')
     for (const m of src.matchAll(re)) {
-      ;(m[1] ? outer : inner).push({ file: f, size: m[3] })
+      const px = m[3] ?? TOKEN_SCALE[m[4]]
+      if (px === undefined) continue
+      ;(m[1] ? outer : inner).push({ file: f, size: px, via: m[3] ? `${m[3]}px` : m[4] })
     }
   }
   return { inner, outer }

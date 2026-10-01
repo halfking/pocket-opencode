@@ -694,9 +694,9 @@ watch([lang, bodyText], () => {
 .detail { display: flex; flex-direction: column; gap: var(--space-3); padding-bottom: var(--space-6); }
 .meta { padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }
 .from { display: flex; flex-direction: column; min-width: 0; }
-.from-name { font-weight: 600; font-size: 15px; color: var(--text-primary); }
-.from-addr { font-size: 12px; color: var(--text-muted); word-break: break-all; }
-.subline { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
+.from-name { font-weight: 600; font-size: var(--text-md); color: var(--text-primary); }
+.from-addr { font-size: var(--text-sm); color: var(--text-muted); word-break: break-all; }
+.subline { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-top: 4px; font-size: var(--text-sm); color: var(--text-secondary); }
 .subject { font-size: 20px; font-weight: 650; margin: var(--space-2) 0 0; line-height: 1.35; color: var(--text-primary); }
 .tag { font-size: 11px; padding: 1px 6px; border-radius: var(--radius-sm); }
 .cat-work { background: var(--cat-work-bg); color: var(--cat-work); }
@@ -717,11 +717,11 @@ watch([lang, bodyText], () => {
 }
 .ai-text { margin: 0; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
 .summarize-btn {
-  padding: 5px 12px; font-size: 12px; border-radius: 8px; cursor: pointer;
+  padding: 5px 12px; font-size: var(--text-sm); border-radius: 8px; cursor: pointer;
   background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text-primary);
 }
 .summarize-btn:disabled { opacity: .6; cursor: progress; }
-.body { margin: 0; font-size: 15px; line-height: 1.7; color: var(--text-primary); word-break: break-word; }
+.body { margin: 0; font-size: var(--text-md); line-height: 1.7; color: var(--text-primary); word-break: break-word; }
 /* 正文兜底字体栈：邮件自带的 font-family 可能不含汉字，落到 Roboto 会缺字/变方框。 */
 .body.text {
   white-space: pre-wrap;
@@ -739,7 +739,7 @@ watch([lang, bodyText], () => {
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
   padding: 6px var(--space-3); margin-bottom: var(--space-2);
   background: var(--bg-subtle); border-radius: var(--radius-sm);
-  font-size: 12px; color: var(--text-secondary);
+  font-size: var(--text-sm); color: var(--text-secondary);
 }
 
 /* 引用块：左竖线 + 淡底，与正文明确区隔但不抢视觉。 */
@@ -747,18 +747,18 @@ watch([lang, bodyText], () => {
 .quoted-toggle {
   display: flex; align-items: center; gap: 4px;
   border: none; background: none; cursor: pointer; padding: 2px 0;
-  color: var(--text-secondary); font-size: 12px;
+  color: var(--text-secondary); font-size: var(--text-sm);
 }
 .quoted-toggle:active { color: var(--brand-primary); }
-.quoted-toggle .material-symbols-outlined { font-size: 16px; }
-.quoted-body { margin-top: var(--space-2); color: var(--text-secondary); font-size: 14px; }
+.quoted-toggle .material-symbols-outlined { font-size: var(--text-lg); }
+.quoted-body { margin-top: var(--space-2); color: var(--text-secondary); font-size: var(--text-base); }
 .quoted-body :deep(blockquote) { border-left: 2px solid var(--border); margin: var(--space-2) 0; padding-left: var(--space-2); }
 
 /* 签名档：更小更淡，明确是「非正文」。 */
 .signature {
   margin-top: var(--space-4); padding-top: var(--space-2);
   border-top: 1px solid var(--border);
-  font-size: 12px; color: var(--text-muted); line-height: 1.5;
+  font-size: var(--text-sm); color: var(--text-muted); line-height: 1.5;
 }
 .body-error { color: var(--danger); font-size: 13px; }
 </style>

@@ -203,11 +203,11 @@ useListScene('meetings', load)
 .meeting-list { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
 .meeting-card { padding: var(--space-3); background: var(--bg-card); cursor: pointer; }
 .card-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
-.card-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.card-title { margin: 0; font-size: var(--text-md); font-weight: 600; color: var(--text-primary); }
 .status-badge { font-size: 11px; padding: 2px 8px; border-radius: var(--radius-full); background: var(--bg-subtle); color: var(--text-muted); flex-shrink: 0; }
 .status-badge.recording { background: var(--danger-bg); color: var(--danger); }
 .card-topic, .card-summary { margin: var(--space-2) 0 0; font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
-.card-meta { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-2); font-size: 12px; color: var(--text-muted); }
+.card-meta { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-2); font-size: var(--text-sm); color: var(--text-muted); }
 .fab {
   position: fixed; right: var(--space-4); bottom: calc(var(--bottom-chrome-height) + var(--space-4));
   width: 56px; height: 56px; border-radius: 50%; border: none;
@@ -217,5 +217,5 @@ useListScene('meetings', load)
 }
 .fab.recording { background: var(--danger); }
 .fab:disabled { opacity: 0.7; }
-.more { padding: 16px 0 24px; text-align: center; font-size: 12px; color: var(--text-muted); }
+.more { padding: 16px 0 24px; text-align: center; font-size: var(--text-sm); color: var(--text-muted); }
 </style>

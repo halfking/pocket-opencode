@@ -159,7 +159,7 @@ onBeforeUnmount(() => {
   min-height: 200px;
   outline: none;
   line-height: 1.7;
-  font-size: 15px;
+  font-size: var(--text-md);
 }
 .pkm-body :deep(.wikilink) {
   color: var(--accent, #2563eb);

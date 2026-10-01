@@ -183,7 +183,7 @@ function go(to: string) {
 }
 
 .user-name {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: var(--font-weight-semibold);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -191,7 +191,7 @@ function go(to: string) {
 }
 
 .user-action {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -283,7 +283,7 @@ function go(to: string) {
 }
 
 .cell-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   line-height: 1.3;
 }
@@ -291,11 +291,11 @@ function go(to: string) {
 .grid-cell.compact .cell-label {
   flex: 1;
   text-align: left;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .cell-chevron {
-  font-size: 18px;
+  font-size: var(--text-xl);
   color: var(--text-tertiary, var(--text-muted));
 }
 

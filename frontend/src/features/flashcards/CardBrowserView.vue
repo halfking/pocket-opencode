@@ -316,8 +316,8 @@ onMounted(() => {
   gap: var(--space-2);
   padding: var(--space-4);
 }
-.head h1 { flex: 1; margin: 0; font-size: 18px; color: var(--text-primary); }
-.result-count { font-size: 12px; color: var(--text-tertiary); }
+.head h1 { flex: 1; margin: 0; font-size: var(--text-xl); color: var(--text-primary); }
+.result-count { font-size: var(--text-sm); color: var(--text-tertiary); }
 .back-btn {
   border: 0;
   background: transparent;
@@ -338,7 +338,7 @@ onMounted(() => {
   border-radius: var(--radius-full);
 }
 
-.search-icon { color: var(--text-tertiary); font-size: 18px; }
+.search-icon { color: var(--text-tertiary); font-size: var(--text-xl); }
 .search-input {
   flex: 1;
   border: none;
@@ -346,7 +346,7 @@ onMounted(() => {
   background: transparent;
   color: var(--text-primary);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .filters {
@@ -365,14 +365,14 @@ onMounted(() => {
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   min-height: 32px;
 }
 
 .chip .material-symbols-outlined {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .chip.active {
@@ -389,7 +389,7 @@ onMounted(() => {
   background: transparent;
   border: none;
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   cursor: pointer;
 }
 
@@ -412,7 +412,7 @@ onMounted(() => {
 
 .row-front {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
   line-height: 1.4;
@@ -423,7 +423,7 @@ onMounted(() => {
 
 .row-back {
   margin: 4px 0 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -452,7 +452,7 @@ onMounted(() => {
 
 .state-badge {
   display: inline-block;
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: var(--font-weight-semibold);
   padding: 1px 6px;
   border-radius: 4px;
@@ -481,7 +481,7 @@ onMounted(() => {
 
 .picker h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -508,7 +508,7 @@ onMounted(() => {
   text-align: left;
   cursor: pointer;
   font: inherit;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .picker ul li:last-child .picker-row { border-bottom: none; }

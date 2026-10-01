@@ -91,7 +91,7 @@ function onSubmit(payload: { text: string }) {
 
 <style scoped>
 .to-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--space-3); }
-.to-label { font-size: 12px; color: var(--text-secondary); }
+.to-label { font-size: var(--text-sm); color: var(--text-secondary); }
 .to-input {
   width: 100%;
   box-sizing: border-box;
@@ -100,7 +100,7 @@ function onSubmit(payload: { text: string }) {
   border-radius: var(--radius-md);
   background: var(--bg-card);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
-.err { margin: var(--space-2) 0 0; color: var(--danger); font-size: 12px; }
+.err { margin: var(--space-2) 0 0; color: var(--danger); font-size: var(--text-sm); }
 </style>

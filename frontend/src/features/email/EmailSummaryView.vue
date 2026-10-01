@@ -181,7 +181,7 @@ onMounted(loadByMode)
 
 <style scoped>
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
-.hint { font-size: 12px; color: var(--text-muted); margin-top: var(--space-2); }
+.hint { font-size: var(--text-sm); color: var(--text-muted); margin-top: var(--space-2); }
 
 .summary-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .summary-card {
@@ -193,7 +193,7 @@ onMounted(loadByMode)
 }
 .summary-card:active { background: var(--bg-subtle); }
 .card-top { display: flex; justify-content: space-between; align-items: center; }
-.date { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.date { font-size: var(--text-base); font-weight: 600; color: var(--text-primary); }
 .badge {
   font-size: 11px;
   padding: 2px 8px;
@@ -202,7 +202,7 @@ onMounted(loadByMode)
   color: var(--text-secondary);
 }
 .badge.important { background: var(--danger-bg); color: var(--danger); }
-.total { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.total { font-size: var(--text-sm); color: var(--text-muted); margin-top: 2px; }
 .preview {
   margin-top: var(--space-2);
   font-size: 13px;
@@ -221,8 +221,8 @@ onMounted(loadByMode)
   padding: var(--space-4);
   box-shadow: var(--shadow-sm);
 }
-.detail-title { font-size: 18px; font-weight: 700; margin: 0; color: var(--text-primary); }
-.meta { font-size: 12px; color: var(--text-muted); margin-top: var(--space-1); display: flex; gap: var(--space-2); align-items: center; }
+.detail-title { font-size: var(--text-xl); font-weight: 700; margin: 0; color: var(--text-primary); }
+.meta { font-size: var(--text-sm); color: var(--text-muted); margin-top: var(--space-1); display: flex; gap: var(--space-2); align-items: center; }
 .meta .emph { color: var(--danger); font-weight: 600; }
 .dot { color: var(--text-muted); }
 
@@ -231,13 +231,13 @@ onMounted(loadByMode)
   border-radius: var(--radius-md);
   padding: var(--space-4);
   box-shadow: var(--shadow-sm);
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1.7;
   color: var(--text-primary);
 }
-.markdown :deep(h1) { font-size: 18px; font-weight: 700; margin: var(--space-3) 0 var(--space-2); }
-.markdown :deep(h2) { font-size: 16px; font-weight: 600; margin: var(--space-3) 0 var(--space-2); }
-.markdown :deep(h3) { font-size: 14px; font-weight: 600; margin: var(--space-2) 0; }
+.markdown :deep(h1) { font-size: var(--text-xl); font-weight: 700; margin: var(--space-3) 0 var(--space-2); }
+.markdown :deep(h2) { font-size: var(--text-lg); font-weight: 600; margin: var(--space-3) 0 var(--space-2); }
+.markdown :deep(h3) { font-size: var(--text-base); font-weight: 600; margin: var(--space-2) 0; }
 .markdown :deep(p) { margin: var(--space-2) 0; }
 .markdown :deep(ul),
 .markdown :deep(ol) { padding-left: var(--space-5); margin: var(--space-2) 0; }

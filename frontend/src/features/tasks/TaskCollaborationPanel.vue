@@ -330,18 +330,18 @@ function formatTime(sec?: number): string {
 }
 
 .collab-head h2 {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   margin: 0;
 }
 
 .collab-head .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
   color: var(--brand-primary, #4c8dff);
 }
 
 .collab-count {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-tertiary, #888);
 }
 
@@ -361,7 +361,7 @@ function formatTime(sec?: number): string {
   padding: 4px 8px 4px 4px;
   border: 1px solid var(--border);
   border-radius: var(--radius-full);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .avatar {
@@ -411,7 +411,7 @@ function formatTime(sec?: number): string {
   flex: 1;
   min-width: 0;
   padding: 6px 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 6px);
   background: var(--bg-base);
@@ -428,7 +428,7 @@ function formatTime(sec?: number): string {
   align-items: center;
   gap: 4px;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 6px);
   background: var(--bg-base);
@@ -444,7 +444,7 @@ function formatTime(sec?: number): string {
 
 .delegate button .material-symbols-outlined,
 .comment button .material-symbols-outlined {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .stream-title {
@@ -465,7 +465,7 @@ function formatTime(sec?: number): string {
 .event {
   display: flex;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -494,7 +494,7 @@ function formatTime(sec?: number): string {
 
 .empty {
   margin: 0 0 var(--space-2);
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-tertiary, #888);
 }
 
@@ -549,7 +549,7 @@ function formatTime(sec?: number): string {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .child-status {
@@ -588,7 +588,7 @@ function formatTime(sec?: number): string {
   flex: 1;
   min-width: 0;
   padding: 6px 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 6px);
   background: var(--bg-base);
@@ -600,7 +600,7 @@ function formatTime(sec?: number): string {
   align-items: center;
   gap: 4px;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 6px);
   background: var(--bg-base);
@@ -614,7 +614,7 @@ function formatTime(sec?: number): string {
 }
 
 .subtask button .material-symbols-outlined {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 /* 审批 */
@@ -646,7 +646,7 @@ function formatTime(sec?: number): string {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .approval-kind {

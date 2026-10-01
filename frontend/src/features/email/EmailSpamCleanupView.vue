@@ -238,8 +238,8 @@ onMounted(async () => {
 }
 .back-btn { border: 0; background: transparent; color: var(--text-primary); padding: 4px; }
 .page-title { margin: 0; font-size: var(--text-xl); }
-.hint, .muted { margin: 0; color: var(--text-muted); font-size: 12px; }
-.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.hint, .muted { margin: 0; color: var(--text-muted); font-size: var(--text-sm); }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: var(--text-sm); color: var(--text-secondary); }
 .input { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2); background: var(--bg-base); color: var(--text-primary); }
 /* 真机（360dp）实测：grid `1fr` 实际是 `minmax(auto, 1fr)`，auto 下限取子项 min-content，
    而 `<input type="date">` 在 Android WebView 里的 min-content 约 180px，
@@ -255,9 +255,9 @@ onMounted(async () => {
 .primary:disabled, .danger:disabled, .ghost:disabled { opacity: 0.5; cursor: not-allowed; }
 .err { color: var(--danger); margin: 0; }
 .ok { color: var(--success); margin: 0; }
-.failed { margin: 0; padding-left: 1.2rem; color: var(--danger); font-size: 12px; }
+.failed { margin: 0; padding-left: 1.2rem; color: var(--danger); font-size: var(--text-sm); }
 .preview { display: flex; flex-direction: column; gap: var(--space-2); }
 .row { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-2); }
 .from { font-weight: 600; font-size: 13px; }
-.subj { font-size: 14px; }
+.subj { font-size: var(--text-base); }
 </style>

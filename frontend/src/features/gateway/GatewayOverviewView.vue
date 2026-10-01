@@ -246,7 +246,7 @@ onMounted(load)
   padding: 40px 20px;
   text-align: center;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .card {
   background: var(--bg-card);
@@ -256,7 +256,7 @@ onMounted(load)
   margin-bottom: var(--space-2-5);
 }
 .card-title {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   margin: 0 0 var(--space-3);
   display: flex;
@@ -296,13 +296,13 @@ onMounted(load)
   color: var(--warning);
 }
 .block-error {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--danger);
   word-break: break-word;
 }
 .inline-warn {
   margin-top: var(--space-3);
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--warning);
 }
 .link-btn {

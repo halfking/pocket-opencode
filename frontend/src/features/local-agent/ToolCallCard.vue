@@ -110,11 +110,11 @@ const clippedResult = computed(() => {
   cursor: pointer;
   text-align: left;
 }
-.icon { font-size: 18px; color: var(--text-secondary); }
+.icon { font-size: var(--text-xl); color: var(--text-secondary); }
 .tool-card.st-running .icon { color: var(--brand-primary, #4c8dff); }
 .name { font-weight: var(--font-weight-semibold); }
 .risk-chip {
-  font-size: 10px;
+  font-size: var(--text-xs);
   padding: 1px 6px;
   border-radius: var(--radius-full);
   background: rgba(230, 159, 0, 0.14);
@@ -123,11 +123,11 @@ const clippedResult = computed(() => {
 .state-text {
   margin-left: auto;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .tool-card.st-completed .state-text { color: var(--success, #2e7d32); }
 .tool-card.st-error .state-text { color: var(--danger, #e5484d); }
-.chev { font-size: 18px; color: var(--text-muted); }
+.chev { font-size: var(--text-xl); color: var(--text-muted); }
 
 .body {
   padding: 0 var(--space-3) var(--space-3);
@@ -147,7 +147,7 @@ const clippedResult = computed(() => {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-all;

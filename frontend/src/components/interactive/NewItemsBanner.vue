@@ -124,7 +124,7 @@ function handleClick() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1;
 }
 

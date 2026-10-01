@@ -114,7 +114,7 @@ defineEmits<{
 }
 
 .theme-tab-icon {
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1;
 }
 </style>

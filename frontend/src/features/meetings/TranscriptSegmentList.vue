@@ -100,13 +100,13 @@ watch(() => props.segments.length, async () => {
 }
 
 .speaker {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--brand-primary);
 }
 
 .lang-tag {
-  font-size: 10px;
+  font-size: var(--text-xs);
   padding: 1px 6px;
   background: var(--bg-subtle);
   border-radius: var(--radius-full);
@@ -121,7 +121,7 @@ watch(() => props.segments.length, async () => {
 
 .segment-text {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-md);
   line-height: 1.6;
   color: var(--text-primary);
 }
@@ -137,7 +137,7 @@ watch(() => props.segments.length, async () => {
   align-items: center;
   gap: var(--space-2);
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: var(--text-base);
   padding: var(--space-4) 0;
 }
 

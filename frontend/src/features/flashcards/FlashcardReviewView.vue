@@ -297,7 +297,7 @@ const dueCountHint = computed(() => total.value)
   gap: var(--space-3);
   padding: var(--space-4);
 }
-.head h1 { flex: 1; margin: 0; font-size: 18px; color: var(--text-primary); }
+.head h1 { flex: 1; margin: 0; font-size: var(--text-xl); color: var(--text-primary); }
 .head .progress { font-size: 13px; color: var(--text-secondary); }
 .back-btn {
   border: 0;
@@ -334,7 +334,7 @@ const dueCountHint = computed(() => total.value)
   text-align: center;
   cursor: pointer;
 }
-.card-display p { font-size: 18px; color: var(--text-primary); margin: 0; line-height: 1.4; }
+.card-display p { font-size: var(--text-xl); color: var(--text-primary); margin: 0; line-height: 1.4; }
 .card-display small { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: var(--space-2); }
 .card-display .back { color: var(--text-primary); }
 
@@ -353,7 +353,7 @@ const dueCountHint = computed(() => total.value)
   border-radius: var(--radius-sm);
   background: var(--bg-subtle);
 }
-.hint { text-align: center; font-size: 12px; color: var(--brand-primary); margin: 0 0 var(--space-3); }
+.hint { text-align: center; font-size: var(--text-sm); color: var(--brand-primary); margin: 0 0 var(--space-3); }
 
 .ratings { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-2); padding: 0 var(--space-4); }
 .ratings.compact { grid-template-columns: 1fr 1fr; }
@@ -376,9 +376,9 @@ const dueCountHint = computed(() => total.value)
 .rating.hard { color: var(--warning, #f59e0b); }
 .rating.good { color: var(--success); }
 .rating.easy { color: var(--brand-primary); }
-.rating .material-symbols-outlined { font-size: 18px; }
+.rating .material-symbols-outlined { font-size: var(--text-xl); }
 
-.remaining { margin: var(--space-3) var(--space-4) 0; font-size: 12px; color: var(--text-secondary); }
+.remaining { margin: var(--space-3) var(--space-4) 0; font-size: var(--text-sm); color: var(--text-secondary); }
 .fuzz-note { margin: var(--space-2) var(--space-4) var(--space-5); font-size: 11px; color: var(--text-muted); }
 .complete {
   margin: var(--space-5) var(--space-4);
@@ -391,9 +391,9 @@ const dueCountHint = computed(() => total.value)
 
 .outer { padding: 0 var(--space-3); }
 .outer .head { padding-top: var(--space-3); padding-bottom: var(--space-2); }
-.outer .head h1 { font-size: 15px; }
+.outer .head h1 { font-size: var(--text-md); }
 .outer .card-display { min-height: 160px; margin: var(--space-2); padding: var(--space-3); }
-.outer .card-display p { font-size: 15px; }
+.outer .card-display p { font-size: var(--text-md); }
 .cta { padding: 0 var(--space-3); margin-top: var(--space-3); }
 .cta .primary {
   width: 100%;

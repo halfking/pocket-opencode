@@ -279,7 +279,7 @@ input {
 }
 .add-form input, .add-form select, .add-form textarea {
   padding: var(--space-2); border-radius: var(--radius-sm);
-  border: 1px solid var(--border); background: var(--bg-card); color: var(--text-primary); font-size: 14px;
+  border: 1px solid var(--border); background: var(--bg-card); color: var(--text-primary); font-size: var(--text-base);
 }
 .add-form textarea { resize: vertical; min-height: 60px; }
 .sync-status {
@@ -309,7 +309,7 @@ input {
 }
 .entry-icon { font-size: 22px; }
 .entry-body { flex: 1; }
-.entry-title { font-weight: 600; font-size: 14px; }
-.entry-user { color: var(--text-secondary); font-size: 12px; }
+.entry-title { font-weight: 600; font-size: var(--text-base); }
+.entry-user { color: var(--text-secondary); font-size: var(--text-sm); }
 .arrow { color: var(--text-muted); }
 </style>

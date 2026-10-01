@@ -269,7 +269,7 @@ defineExpose({
 }
 
 .secondary-title {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
   margin: 0;
@@ -285,7 +285,7 @@ defineExpose({
   border: none;
   border-radius: var(--radius-md);
   color: var(--color-text-tertiary);
-  font-size: 18px;
+  font-size: var(--text-xl);
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-out);
 }

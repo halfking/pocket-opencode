@@ -184,7 +184,7 @@ function onTap(): void {
   border-radius: var(--radius-full);
   background: var(--danger);
   color: var(--text-inverse);
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   line-height: 16px;
   text-align: center;

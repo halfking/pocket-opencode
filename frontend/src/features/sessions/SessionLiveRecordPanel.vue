@@ -91,7 +91,7 @@ function onMicChange(e: Event) {
 .slr-mic, .slr-mic-name {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--color-text-secondary);
 }
 .slr-mic {
@@ -110,6 +110,6 @@ function onMicChange(e: Event) {
   color: #fff;
   font-size: 13px;
 }
-.slr-err { margin: 0 12px 8px; font-size: 12px; color: #ef4444; }
-.slr-hint { margin: 0 12px 8px; font-size: 12px; color: var(--color-text-tertiary); }
+.slr-err { margin: 0 12px 8px; font-size: var(--text-sm); color: #ef4444; }
+.slr-hint { margin: 0 12px 8px; font-size: var(--text-sm); color: var(--color-text-tertiary); }
 </style>

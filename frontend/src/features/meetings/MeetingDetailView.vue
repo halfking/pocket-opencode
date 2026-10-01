@@ -305,7 +305,7 @@ onUnmounted(() => {
 <style scoped>
 .studio { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .state { padding: var(--space-3); }
-.status, .err { margin: 0; padding: 8px 12px; font-size: 12px; flex-shrink: 0; }
+.status, .err { margin: 0; padding: 8px 12px; font-size: var(--text-sm); flex-shrink: 0; }
 .status { color: var(--text-secondary); background: var(--bg-card); }
 .err { color: var(--danger); }
 .split {

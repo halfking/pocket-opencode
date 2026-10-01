@@ -211,16 +211,16 @@ onUnmounted(() => {
 .summary-label { font-size: 11px; color: var(--text-secondary); }
 .filter-row, .file-ops { display: flex; gap: 6px; padding: 0 var(--space-3) var(--space-2); flex-wrap: wrap; align-items: center; }
 .file-ops .spacer { flex: 1; }
-.chip { padding: 5px 12px; font-size: 12px; background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 999px; color: var(--text-secondary); cursor: pointer; }
+.chip { padding: 5px 12px; font-size: var(--text-sm); background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 999px; color: var(--text-secondary); cursor: pointer; }
 .chip.active { background: var(--brand-primary, #4c8dff); color: #fff; border-color: transparent; }
 .chip.export { color: var(--brand-primary, #4c8dff); }
 .chip.feishu { color: var(--success, #10b981); }
 .chip:disabled { opacity: 0.5; cursor: not-allowed; }
-.status-err { margin: 0 var(--space-3) var(--space-2); padding: var(--space-2) var(--space-3); font-size: 12px; color: var(--danger); }
+.status-err { margin: 0 var(--space-3) var(--space-2); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); color: var(--danger); }
 .body { padding: 0 var(--space-3) 100px; display: flex; flex-direction: column; gap: var(--space-2); }
 .state { padding: 40px 20px; text-align: center; color: var(--text-secondary); }
-.hint { font-size: 12px; margin-top: 8px; }
-.more { padding: 16px 0 24px; text-align: center; font-size: 12px; color: var(--text-muted); }
+.hint { font-size: var(--text-sm); margin-top: 8px; }
+.more { padding: 16px 0 24px; text-align: center; font-size: var(--text-sm); color: var(--text-muted); }
 /* 整理作业进行中的状态行。放在 summary-card 里而不是 toast：toast 一闪而过，
    而这一轮实测要 1m30s 以上，切页回来还可能仍在跑，需要一个常驻位置。 */
 .job-hint {

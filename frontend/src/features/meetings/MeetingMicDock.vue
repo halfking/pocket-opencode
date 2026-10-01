@@ -26,11 +26,11 @@ defineEmits<{ toggle: [] }>()
   min-width: 72px; height: 56px; padding: 0 16px;
   border: none; border-radius: 999px;
   background: var(--brand-gradient, linear-gradient(135deg, #667eea, #764ba2));
-  color: var(--text-inverse); font-weight: 700; font-size: 14px;
+  color: var(--text-inverse); font-weight: 700; font-size: var(--text-base);
   display: flex; align-items: center; justify-content: center; gap: 6px;
   box-shadow: var(--shadow-lg); z-index: var(--z-fab);
 }
 .mic.recording { background: var(--danger); }
 .mic.busy { opacity: 0.75; }
-.icon { font-size: 18px; }
+.icon { font-size: var(--text-xl); }
 </style>

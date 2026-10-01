@@ -87,19 +87,19 @@ function handleBlur(event: FocusEvent) {
 .textarea--small {
   min-height: 64px;
   padding: var(--space-2) var(--space-3);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .textarea--medium {
   min-height: 80px;
   padding: var(--space-2) var(--space-4);
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 .textarea--large {
   min-height: 112px;
   padding: var(--space-3) var(--space-4);
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .textarea--focused {

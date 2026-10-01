@@ -35,7 +35,17 @@ test('UnifiedComposer keeps the textarea wide, editable and copyable', () => {
   assert.match(source, /min-height: 88px/)
   assert.match(source, /max-height: 40vh/)
   assert.match(source, /user-select: text/)
-  assert.match(source, /font-size: 16px/)
+  // 2026-10-03：这条原先断言的是 `font-size: 16px` 这个**字面形式**。
+  // 它真正要锁的是「输入框字号是 16px」——iOS 上小于 16px 的输入框会在聚焦时
+  // 被浏览器自动放大，页面整体错位。字号换成等值的 `var(--text-lg)`（也是
+  // 16px）之后行为完全一样，字面形式却变了，于是这条红了。
+  //
+  // 判据问的应该是**实际字号**不是写法。两种等价写法都收。
+  assert.match(
+    source,
+    /font-size\s*:\s*(?:16px|var\(--text-lg\))/,
+    '输入框字号必须是 16px（等价 token：--text-lg）——更小的字号会让 iOS 聚焦时自动放大、页面错位',
+  )
 })
 
 test('UnifiedComposer reuses shared multimodal composables and agent sheet', () => {

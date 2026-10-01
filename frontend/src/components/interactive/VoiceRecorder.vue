@@ -246,7 +246,7 @@ onUnmounted(() => {
 }
 
 .recorder-hint {
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--color-text-secondary);
   font-weight: var(--font-weight-medium);
   transition: all var(--duration-base) var(--ease-out);
@@ -283,7 +283,7 @@ onUnmounted(() => {
 }
 
 .transcript-indicator {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--color-error);
   font-weight: var(--font-weight-medium);
   animation: blink 1.5s ease-in-out infinite;
@@ -295,7 +295,7 @@ onUnmounted(() => {
 }
 
 .transcript-text {
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1.5;
   color: rgba(255, 255, 255, 0.9);
 }

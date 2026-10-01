@@ -530,7 +530,7 @@ function goBack() {
 .form-input {
   width: 100%;
   padding: 12px 14px;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-family: var(--font-mono);
   background: var(--bg-card);
   color: var(--text-primary);
@@ -592,7 +592,7 @@ function goBack() {
   border: 1px solid var(--border);
   background: var(--bg-card);
   cursor: pointer;
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .action-row {
@@ -674,7 +674,7 @@ function goBack() {
 .group-head::after {
   content: '▾';
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   transition: transform 160ms ease;
 }
 
@@ -722,7 +722,7 @@ function goBack() {
 }
 
 .chip-check {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .chip-name {
@@ -736,7 +736,7 @@ function goBack() {
 .btn-primary {
   flex: 1;
   padding: 14px;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   border: none;
   border-radius: 999px;

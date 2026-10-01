@@ -32,12 +32,12 @@ defineProps<{
   gap: var(--space-2);
 }
 .icon { font-size: 56px; }
-h2 { margin: 0; font-size: 18px; color: var(--text-primary); }
-.desc { color: var(--text-secondary); font-size: 14px; max-width: 280px; }
+h2 { margin: 0; font-size: var(--text-xl); color: var(--text-primary); }
+.desc { color: var(--text-secondary); font-size: var(--text-base); max-width: 280px; }
 .phase {
   margin: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   background: var(--bg-subtle);
   padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-full);

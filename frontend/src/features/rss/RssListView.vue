@@ -168,7 +168,7 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
 .actions { display: flex; gap: 8px; }
 .btn-primary, .btn-secondary { display: inline-flex; align-items: center; gap: 4px; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); cursor: pointer; background: var(--bg-elevated); }
 .btn-primary { background: var(--brand-primary); color: white; border-color: var(--brand-primary); }
-.badge { background: var(--brand-primary); color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+.badge { background: var(--brand-primary); color: white; padding: 2px 8px; border-radius: 10px; font-size: var(--text-sm); }
 .tabs { display: flex; gap: 16px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
 .tabs button { padding: 8px 4px; border: none; background: transparent; cursor: pointer; border-bottom: 2px solid transparent; }
 .tabs button.active { border-bottom-color: var(--brand-primary); color: var(--brand-primary); }
@@ -182,15 +182,15 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
 .item-list li:hover { background: var(--bg-hover); }
 .item-list li.read .title { color: var(--text-muted); font-weight: normal; }
 .title { font-weight: 600; margin-bottom: 4px; }
-.meta { font-size: 12px; color: var(--text-muted); display: flex; gap: 8px; }
+.meta { font-size: var(--text-sm); color: var(--text-muted); display: flex; gap: 8px; }
 .star { color: var(--warn); }
 .summary { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }
 .source-list { list-style: none; padding: 0; }
 .source-list li { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .src-info { flex: 1; }
 .src-title { font-weight: 600; }
-.src-url { font-size: 12px; color: var(--text-muted); word-break: break-all; }
-.src-meta { font-size: 12px; color: var(--text-muted); margin-top: 4px; display: flex; gap: 8px; }
+.src-url { font-size: var(--text-sm); color: var(--text-muted); word-break: break-all; }
+.src-meta { font-size: var(--text-sm); color: var(--text-muted); margin-top: 4px; display: flex; gap: 8px; }
 .src-meta .err { color: var(--err-fg); }
 .src-meta .dim { color: var(--text-faint); }
 .src-actions { display: flex; gap: 4px; }

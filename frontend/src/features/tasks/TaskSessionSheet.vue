@@ -63,7 +63,7 @@ const sheetTitle = computed(() => title.value || props.row?.title || '会话')
 <style scoped>
 .sheet-body { display: flex; flex-direction: column; gap: 10px; max-height: 70vh; overflow: auto; }
 .actions { display: flex; gap: 8px; }
-.actions button { font-size: 12px; }
+.actions button { font-size: var(--text-sm); }
 .summary { font-size: 13px; color: var(--text-secondary, #666); margin: 0; }
 .empty { font-size: 13px; color: var(--text-secondary, #888); }
 </style>

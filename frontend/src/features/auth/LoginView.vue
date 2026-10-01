@@ -683,7 +683,7 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
   gap: 12px;
   margin: 4px 0;
   color: var(--text-tertiary, #999);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .bio-divider::before,
@@ -701,7 +701,7 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
   gap: 12px;
   margin: 16px 0 8px;
   color: var(--text-tertiary, #999);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .sso-divider::before,
 .sso-divider::after {
@@ -722,7 +722,7 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
   opacity: 0.6;
 }
 .sso-btn .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .error-message {

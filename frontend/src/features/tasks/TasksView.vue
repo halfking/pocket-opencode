@@ -1420,7 +1420,7 @@ function timeAgo(dateStr?: string): string {
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   white-space: nowrap;
@@ -1435,9 +1435,9 @@ function timeAgo(dateStr?: string): string {
   border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
   background: color-mix(in srgb, var(--danger) 8%, var(--bg-card));
 }
-.triage-dot { font-size: 10px; line-height: 1; }
+.triage-dot { font-size: var(--text-xs); line-height: 1; }
 .triage-text {
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1469,13 +1469,13 @@ function timeAgo(dateStr?: string): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-semibold);
   color: var(--danger);
 }
 .triage-card-head .link-btn { font-size: 11px; }
 .triage-empty {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   text-align: center;
   padding: 8px 0;
@@ -1498,7 +1498,7 @@ function timeAgo(dateStr?: string): string {
 }
 .attn-kind {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   padding: 1px 6px;
   border-radius: 4px;
@@ -1609,7 +1609,7 @@ function timeAgo(dateStr?: string): string {
 }
 
 .badge {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   padding: 1px 6px;
   border-radius: 999px;
@@ -1627,7 +1627,7 @@ function timeAgo(dateStr?: string): string {
 }
 
 .link-btn {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--brand-primary);
   background: none;
@@ -1641,7 +1641,7 @@ function timeAgo(dateStr?: string): string {
   margin-left: 8px;
 }
 .acc-hint {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   margin: -8px 0 14px;
 }
@@ -1652,7 +1652,7 @@ function timeAgo(dateStr?: string): string {
   margin-top: 4px;
 }
 .acc-error {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--danger);
   background: var(--danger-bg, rgba(239, 68, 68, 0.08));
   padding: 6px 10px;
@@ -1750,7 +1750,7 @@ function timeAgo(dateStr?: string): string {
   }
 }
 .instance-tag {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 600;
   padding: 1px 6px;
   border-radius: 4px;
@@ -1791,7 +1791,7 @@ function timeAgo(dateStr?: string): string {
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 500;
   cursor: pointer;
   min-height: 30px;
@@ -1811,7 +1811,7 @@ function timeAgo(dateStr?: string): string {
 }
 
 .chip-count {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-family: var(--font-mono);
   opacity: 0.75;
 }
@@ -1822,13 +1822,13 @@ function timeAgo(dateStr?: string): string {
   align-items: center;
   gap: 6px;
   padding: var(--space-2) var(--space-1) 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-tertiary);
 }
 
 .type-tag {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 600;
   padding: 1px 6px;
   border-radius: 4px;
@@ -1839,7 +1839,7 @@ function timeAgo(dateStr?: string): string {
 }
 
 .due-tag {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 600;
   padding: 1px 6px;
   border-radius: 4px;
@@ -1864,7 +1864,7 @@ function timeAgo(dateStr?: string): string {
 }
 
 .assignee-tag {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 600;
   padding: 1px 6px;
   border-radius: 4px;
@@ -1885,13 +1885,13 @@ function timeAgo(dateStr?: string): string {
   gap: 2px;
 }
 .meta-muted .meta-icon {
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 .meta-muted.time {
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 .chevron {
-  font-size: 16px;
+  font-size: var(--text-lg);
   color: var(--text-muted);
   flex-shrink: 0;
   opacity: 0.5;
@@ -1904,7 +1904,7 @@ function timeAgo(dateStr?: string): string {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-secondary);
   margin-bottom: 6px;
@@ -1975,7 +1975,7 @@ function timeAgo(dateStr?: string): string {
   text-align: center;
 }
 .empty-text {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
 }
 
@@ -1984,7 +1984,7 @@ function timeAgo(dateStr?: string): string {
   cursor: pointer;
 }
 .expand-icon {
-  font-size: 16px;
+  font-size: var(--text-lg);
   color: var(--text-muted);
   transition: transform 200ms;
 }
@@ -2012,7 +2012,7 @@ function timeAgo(dateStr?: string): string {
   align-items: center;
   justify-content: space-between;
   padding: 2px 2px 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   color: var(--text-secondary);
 }
@@ -2083,7 +2083,7 @@ function timeAgo(dateStr?: string): string {
   height: 32px;
   border-radius: 50%;
   border: none;
-  font-size: 16px;
+  font-size: var(--text-lg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2160,7 +2160,7 @@ function timeAgo(dateStr?: string): string {
 }
 .form-group label {
   display: block;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-secondary);
   margin-bottom: 4px;
@@ -2170,7 +2170,7 @@ function timeAgo(dateStr?: string): string {
 .form-group select {
   width: 100%;
   padding: 10px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: var(--bg-subtle);
   color: var(--text-primary);
   border: 1px solid transparent;
@@ -2194,7 +2194,7 @@ function timeAgo(dateStr?: string): string {
 .btn {
   flex: 1;
   padding: 10px;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   border: none;
   border-radius: 10px;

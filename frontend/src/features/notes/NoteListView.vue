@@ -414,7 +414,7 @@ useListScene('notes', load)
 .context-row::-webkit-scrollbar { display: none; }
 .chip {
   padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border);
-  background: var(--bg-base); color: var(--text-secondary); font-size: 12px; flex-shrink: 0;
+  background: var(--bg-base); color: var(--text-secondary); font-size: var(--text-sm); flex-shrink: 0;
 }
 .chip.active { background: var(--brand-bg); color: var(--text-primary); border-color: var(--brand-primary); }
 .search-bar { padding: 8px var(--space-3); }
@@ -435,12 +435,12 @@ useListScene('notes', load)
 .note-card.domain-study { border-left-color: var(--cat-study); }
 .note-card.domain-life { border-left-color: var(--cat-life); }
 .note-card.domain-idea { border-left-color: var(--cat-idea); }
-.note-title { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+.note-title { font-weight: 600; font-size: var(--text-base); margin-bottom: 4px; }
 .note-snippet {
-  color: var(--text-secondary); font-size: 12px; line-height: 1.4;
+  color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.4;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
-.note-meta { display: flex; gap: 8px; margin-top: 8px; font-size: 10px; color: var(--text-muted); }
+.note-meta { display: flex; gap: 8px; margin-top: 8px; font-size: var(--text-xs); color: var(--text-muted); }
 .time { margin-left: auto; }
-.more { padding: 16px 0 24px; text-align: center; font-size: 12px; color: var(--text-muted); }
+.more { padding: 16px 0 24px; text-align: center; font-size: var(--text-sm); color: var(--text-muted); }
 </style>

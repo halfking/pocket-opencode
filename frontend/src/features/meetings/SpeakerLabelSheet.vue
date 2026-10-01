@@ -95,7 +95,7 @@ function save() {
 
 .sheet-title {
   margin: 0 0 var(--space-2);
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
 }
 
@@ -110,7 +110,7 @@ function save() {
   padding: var(--space-4);
   text-align: center;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .speaker-list {
@@ -142,7 +142,7 @@ function save() {
 
 .name {
   flex: 1;
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 500;
   color: var(--text-primary);
 }
@@ -163,14 +163,14 @@ function save() {
   font-size: 13px;
 }
 
-.field span { color: var(--text-muted); font-size: 12px; }
+.field span { color: var(--text-muted); font-size: var(--text-sm); }
 
 .field input {
   padding: 10px 12px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--bg-base);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .save-btn {
@@ -180,7 +180,7 @@ function save() {
   color: var(--text-inverse);
   border: none;
   border-radius: var(--radius-md);
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   cursor: pointer;
 }

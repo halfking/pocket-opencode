@@ -128,15 +128,15 @@ const receivedLabel = computed(() => invoiceReceivedLabel(props.inv.emailDate, p
   color: inherit; cursor: pointer; padding: 0;
 }
 .inv-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.inv-seller { font-size: 14px; font-weight: 600; color: var(--text-primary); word-break: break-all; }
-.inv-amount { flex: none; font-size: 15px; font-weight: 700; }
+.inv-seller { font-size: var(--text-base); font-weight: 600; color: var(--text-primary); word-break: break-all; }
+.inv-amount { flex: none; font-size: var(--text-md); font-weight: 700; }
 .inv-meta {
   display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap;
   font-size: 11px; color: var(--text-secondary);
 }
 .mono { font-family: var(--font-mono); }
 .cat-badge {
-  padding: 2px 8px; border-radius: 999px; font-size: 10px;
+  padding: 2px 8px; border-radius: 999px; font-size: var(--text-xs);
   background: var(--bg-subtle); border: 1px solid var(--border);
 }
 .inv-subject, .inv-file {
@@ -151,7 +151,7 @@ const receivedLabel = computed(() => invoiceReceivedLabel(props.inv.emailDate, p
 .status-pill.failed { color: var(--danger); }
 .pick { display: flex; align-items: center; margin-right: 8px; }
 .act-btn {
-  padding: 5px 12px; font-size: 12px;
+  padding: 5px 12px; font-size: var(--text-sm);
   background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 8px;
   color: var(--text-primary); cursor: pointer;
 }

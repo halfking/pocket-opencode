@@ -21,5 +21,5 @@ defineProps<{
   border: 1px solid var(--brand-primary);
 }
 .brief-title { margin: 0 0 6px; font-size: 13px; color: var(--brand-primary); }
-.brief-text { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-primary); }
+.brief-text { margin: 0; font-size: var(--text-base); line-height: 1.5; color: var(--text-primary); }
 </style>

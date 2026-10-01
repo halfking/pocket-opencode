@@ -207,7 +207,7 @@ onMounted(async () => {
   justify-content: space-between;
   padding: var(--space-4) var(--space-4) var(--space-2);
 }
-.head h1 { margin: 0; font-size: 18px; color: var(--text-primary); }
+.head h1 { margin: 0; font-size: var(--text-xl); color: var(--text-primary); }
 .add-btn {
   border: 0;
   background: transparent;
@@ -244,7 +244,7 @@ onMounted(async () => {
   font: inherit;
 }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.card h2 { margin: 0; font-size: 15px; color: var(--text-primary); }
+.card h2 { margin: 0; font-size: var(--text-md); color: var(--text-primary); }
 .badge {
   font-size: 11px;
   padding: 3px 9px;
@@ -253,7 +253,7 @@ onMounted(async () => {
   color: var(--text-inverse);
 }
 .badge.empty { background: var(--bg-subtle); color: var(--text-secondary); }
-.meta { margin: 0; font-size: 12px; color: var(--text-secondary); display: flex; gap: 14px; }
+.meta { margin: 0; font-size: var(--text-sm); color: var(--text-secondary); display: flex; gap: 14px; }
 .empty { text-align: center; padding: 60px var(--space-4); color: var(--text-secondary); }
 .empty .primary {
   margin-top: var(--space-3);
@@ -292,5 +292,5 @@ onMounted(async () => {
 }
 .outer { padding: 0 var(--space-3); }
 .outer .head { padding-top: var(--space-3); padding-bottom: 0; }
-.outer .head h1 { font-size: 15px; }
+.outer .head h1 { font-size: var(--text-md); }
 </style>

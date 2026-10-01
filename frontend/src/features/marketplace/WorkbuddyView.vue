@@ -132,16 +132,16 @@ function refresh() {
 .list { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
 .card { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); }
 .card header { display: flex; align-items: center; gap: 8px; }
-.card h2 { flex: 1; margin: 0; font-size: 15px; color: var(--text-primary); }
+.card h2 { flex: 1; margin: 0; font-size: var(--text-md); color: var(--text-primary); }
 .kind { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--success); color: var(--text-inverse); }
 .meta { margin: 7px 0; font-size: 13px; color: var(--text-secondary); }
-.deps { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--text-secondary); align-items: center; }
+.deps { display: flex; flex-wrap: wrap; gap: 6px; font-size: var(--text-sm); color: var(--text-secondary); align-items: center; }
 .chip { padding: 2px 8px; border-radius: 999px; background: var(--bg-subtle); color: var(--text-primary); }
 .card footer { display: flex; gap: 7px; margin-top: 11px; }
-.card footer button { flex: 1; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); padding: 7px 12px; font-size: 12px; }
+.card footer button { flex: 1; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); padding: 7px 12px; font-size: var(--text-sm); }
 .card footer .primary { color: var(--text-inverse); background: var(--brand-gradient); border: 0; }
 .state { padding: 48px 20px; text-align: center; color: var(--text-secondary); }
-.state .hint { color: var(--text-muted); font-size: 12px; }
+.state .hint { color: var(--text-muted); font-size: var(--text-sm); }
 .error { margin: var(--space-3); padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); font-size: 13px; }
 .confirm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 50; }
 .confirm-dialog { background: var(--bg-card); border-radius: var(--radius-md); padding: var(--space-4); width: min(90vw, 360px); }

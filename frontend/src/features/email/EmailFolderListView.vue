@@ -245,12 +245,12 @@ onMounted(() => {
 .folders-scroll { flex: 1; min-height: 0; }
 .sync-card { margin: var(--space-3); padding: var(--space-3); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); }
 .sync-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.sync-info { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.sync-info { display: flex; align-items: center; gap: 8px; font-size: var(--text-base); }
 .badge { font-size: 11px; padding: 1px 8px; border-radius: var(--radius-full); background: var(--warning); color: #fff; }
-.muted { font-size: 12px; color: var(--text-muted); }
+.muted { font-size: var(--text-sm); color: var(--text-muted); }
 .sync-btn { min-height: 34px; padding: 0 14px; border: none; border-radius: var(--radius-sm); background: var(--brand-primary); color: var(--text-inverse); }
 .sync-btn:disabled { opacity: .5; }
-.ops-head { display: flex; justify-content: space-between; align-items: center; margin-top: var(--space-3); font-size: 12px; color: var(--text-muted); }
+.ops-head { display: flex; justify-content: space-between; align-items: center; margin-top: var(--space-3); font-size: var(--text-sm); color: var(--text-muted); }
 .pick-all { display: flex; align-items: center; gap: 4px; }
 .ops-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
 .ops-row:last-child { border-bottom: none; }
@@ -263,19 +263,19 @@ onMounted(() => {
 .ops-status.failed { color: var(--danger); }
 .ops-status.applied { color: var(--success, var(--brand-primary)); }
 .ops-status.pushed { color: var(--text-secondary); }
-.ops-subject { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ops-sync-one { border: 1px solid var(--border); background: var(--bg-card); color: var(--brand-primary); border-radius: var(--radius-sm); font-size: 12px; padding: 3px 10px; }
+.ops-subject { font-size: var(--text-sm); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-sync-one { border: 1px solid var(--border); background: var(--bg-card); color: var(--brand-primary); border-radius: var(--radius-sm); font-size: var(--text-sm); padding: 3px 10px; }
 .folder-section { margin: 0 var(--space-3) var(--space-6); }
 .section-title { font-size: 13px; color: var(--text-muted); margin: var(--space-3) 0 var(--space-2); font-weight: 600; }
 .folder-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 8px; cursor: pointer; text-align: left; }
 .folder-icon { color: var(--brand-primary); font-size: 20px; }
-.folder-name { flex: 1; min-width: 0; font-size: 14px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.folder-count { font-size: 12px; color: var(--text-muted); }
-.folder-del { color: var(--text-muted); font-size: 18px; padding: 4px; }
+.folder-name { flex: 1; min-width: 0; font-size: var(--text-base); color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-count { font-size: var(--text-sm); color: var(--text-muted); }
+.folder-del { color: var(--text-muted); font-size: var(--text-xl); padding: 4px; }
 .new-row { display: flex; gap: 8px; padding: 4px 0 8px; }
-.new-input { flex: 1; min-height: 38px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 10px; background: var(--bg-card); color: var(--text-primary); font-size: 14px; }
+.new-input { flex: 1; min-height: 38px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 10px; background: var(--bg-card); color: var(--text-primary); font-size: var(--text-base); }
 .new-btn { min-height: 38px; padding: 0 14px; border: none; border-radius: var(--radius-sm); background: var(--brand-primary); color: var(--text-inverse); }
 .new-btn:disabled { opacity: .5; }
-.err { color: var(--danger); font-size: 12px; margin: 4px 0 0; }
-.hint { font-size: 12px; color: var(--text-muted); margin: 8px 0 0; }
+.err { color: var(--danger); font-size: var(--text-sm); margin: 4px 0 0; }
+.hint { font-size: var(--text-sm); color: var(--text-muted); margin: 8px 0 0; }
 </style>

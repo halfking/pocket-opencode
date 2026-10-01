@@ -173,7 +173,7 @@ function formatLastSeen(timestamp: string): string {
 
 .back-btn, .refresh-btn {
   padding: 8px 12px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -231,7 +231,7 @@ function formatLastSeen(timestamp: string): string {
 
 .retry-btn {
   padding: 12px 24px;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-inverse);
   background: var(--brand-gradient);
@@ -260,14 +260,14 @@ function formatLastSeen(timestamp: string): string {
 }
 
 .group-header h2 {
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
 }
 
 .instance-count {
-  font-size: 14px;
+  font-size: var(--text-base);
   padding: 4px 12px;
   background: var(--brand-bg);
   color: var(--brand-primary);
@@ -332,7 +332,7 @@ function formatLastSeen(timestamp: string): string {
 }
 
 .instance-id {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   margin: 0 0 12px 0;
   font-family: var(--font-mono);
@@ -353,7 +353,7 @@ function formatLastSeen(timestamp: string): string {
 }
 
 .stat-icon {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .offline-text {
@@ -382,12 +382,12 @@ function formatLastSeen(timestamp: string): string {
 }
 
 .empty-state p {
-  font-size: 16px;
+  font-size: var(--text-lg);
   margin: 0 0 8px 0;
 }
 
 .empty-hint {
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--text-muted);
 }
 </style>

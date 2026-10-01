@@ -940,7 +940,7 @@ function formatTime(ts: number): string {
   border: 1px solid var(--border);
   background: var(--bg-base);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   flex-shrink: 0;
@@ -949,7 +949,7 @@ function formatTime(ts: number): string {
 }
 .chip:active { background: var(--bg-subtle); }
 .chip.ghost { background: transparent; color: var(--text-secondary); }
-.chip-icon { font-size: 14px; flex-shrink: 0; }
+.chip-icon { font-size: var(--text-base); flex-shrink: 0; }
 .chip-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -979,7 +979,7 @@ function formatTime(ts: number): string {
   background: var(--bg-subtle);
   color: var(--text-primary);
   border: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   transition: background var(--duration-fast) var(--ease-out);
@@ -987,7 +987,7 @@ function formatTime(ts: number): string {
   overflow: hidden;
 }
 .chat-convo-btn:active { background: var(--border); }
-.chat-convo-btn .material-symbols-outlined { font-size: 16px; flex-shrink: 0; }
+.chat-convo-btn .material-symbols-outlined { font-size: var(--text-lg); flex-shrink: 0; }
 .chat-convo-btn .convo-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1022,7 +1022,7 @@ function formatTime(ts: number): string {
   font-family: var(--font-sans);
 }
 .cs-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 500;
   line-height: 1.2;
   color: var(--text-secondary);
@@ -1030,7 +1030,7 @@ function formatTime(ts: number): string {
 }
 .cs-chip {
   flex: none;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.2;
   font-weight: 500;
   padding: 4px 10px;
@@ -1042,7 +1042,7 @@ function formatTime(ts: number): string {
 }
 .cs-edit {
   flex: none;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.2;
   font-weight: 500;
   color: var(--brand-primary);
@@ -1070,7 +1070,7 @@ function formatTime(ts: number): string {
   max-width: 100%;
   padding: 10px 14px;
   border-radius: 14px;
-  font-size: 15px;
+  font-size: var(--text-md);
   line-height: 1.6;
   word-break: break-word;
   white-space: normal;
@@ -1110,23 +1110,23 @@ function formatTime(ts: number): string {
 }
 
 .usage-row, .usage {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   margin: 3px 2px 0;
 }
 .msg-error {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--danger);
   margin-top: 3px;
 }
 .msg-interrupted {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--warning, #f59e0b);
   margin-top: 3px;
 }
 /* auto 回退重试进度提示（retry 帧）：灰色小字，风格同 msg-error 但不告警 */
 .msg-retry {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   margin-top: 3px;
 }
@@ -1296,13 +1296,13 @@ function formatTime(ts: number): string {
   border-radius: 0 0 0 8px;
   background: rgba(0, 0, 0, 0.55);
   color: var(--text-inverse);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1;
   cursor: pointer;
 }
 .attach-hint {
   flex: none;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   white-space: nowrap;
 }
@@ -1325,7 +1325,7 @@ function formatTime(ts: number): string {
 /* 模态徽标 & 设置行 */
 .modality-badge {
   flex: none;
-  font-size: 10px;
+  font-size: var(--text-xs);
   padding: 2px 7px;
   border-radius: 999px;
   background: var(--bg-subtle);
@@ -1342,7 +1342,7 @@ function formatTime(ts: number): string {
 }
 .modality-name {
   flex: 0 0 64px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 .modality-sel { flex: 1; }
@@ -1355,7 +1355,7 @@ function formatTime(ts: number): string {
   color: var(--text-primary);
   border-radius: 16px;
   padding: 10px 14px;
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1.5;
   max-height: 120px;
   outline: none;
@@ -1435,7 +1435,7 @@ function formatTime(ts: number): string {
   border-radius: 6px;
   cursor: pointer;
 }
-.conv-act .material-symbols-outlined { font-size: 18px; }
+.conv-act .material-symbols-outlined { font-size: var(--text-xl); }
 .conv-act:active { color: var(--brand-primary); background: var(--bg-subtle); }
 .conv-act.danger:active { color: var(--danger); }
 .conv-empty { text-align: center; color: var(--text-muted); padding: 30px; font-size: 13px; }
@@ -1454,10 +1454,10 @@ function formatTime(ts: number): string {
 .model-check { width: 16px; height: 16px; accent-color: var(--brand-primary); }
 .model-name { flex: 1; font-size: 13px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-name .star { color: var(--warning, #f59e0b); margin-right: 2px; }
-.model-current { font-size: 10px; color: var(--brand-primary); }
+.model-current { font-size: var(--text-xs); color: var(--brand-primary); }
 .sheet-confirm {
   width: 100%; padding: 12px; border: none; border-radius: 999px;
-  background: var(--brand-primary, #4c8dff); color: var(--text-inverse); font-size: 15px; font-weight: 600;
+  background: var(--brand-primary, #4c8dff); color: var(--text-inverse); font-size: var(--text-md); font-weight: 600;
   cursor: pointer;
 }
 
@@ -1467,7 +1467,7 @@ function formatTime(ts: number): string {
 .field-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
 .field input[type='range'] { width: 100%; accent-color: var(--brand-primary); }
 .num-input, .sys-input, .sel-input {
-  width: 100%; padding: 9px 12px; font-size: 14px;
+  width: 100%; padding: 9px 12px; font-size: var(--text-base);
   background: var(--bg-base); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: 8px; outline: none;
 }
@@ -1496,7 +1496,7 @@ function formatTime(ts: number): string {
   min-width: 0;
 }
 .agent-card-name {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   margin-bottom: 4px;
 }
@@ -1511,14 +1511,14 @@ function formatTime(ts: number): string {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-base);
-  font-size: 14px;
+  font-size: var(--text-base);
   cursor: pointer;
 }
 .no-agent {
   text-align: center;
   padding: 16px;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .no-agent p {
   margin: 0 0 12px 0;
@@ -1529,7 +1529,7 @@ function formatTime(ts: number): string {
   border-radius: 8px;
   background: var(--bg-base);
   color: var(--brand-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 500;
   cursor: pointer;
 }
@@ -1561,6 +1561,6 @@ function formatTime(ts: number): string {
 .modality-badge[data-mod='embedding'] { color: var(--text-muted); }
 
 .modality-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.modality-name { flex: none; font-size: 12px; color: var(--text-secondary); min-width: 80px; }
+.modality-name { flex: none; font-size: var(--text-sm); color: var(--text-secondary); min-width: 80px; }
 .modality-sel { flex: 1; }
 </style>

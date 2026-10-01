@@ -103,7 +103,7 @@ watch(
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 16px; border-bottom: 1px solid var(--border);
 }
-.head h3 { margin: 0; font-size: 15px; }
+.head h3 { margin: 0; font-size: var(--text-md); }
 .icon { background: none; border: none; color: var(--text-primary); cursor: pointer; }
 .body { flex: 1; min-height: 240px; overflow: auto; background: var(--bg-subtle); }
 .full-img { display: block; width: 100%; height: auto; }

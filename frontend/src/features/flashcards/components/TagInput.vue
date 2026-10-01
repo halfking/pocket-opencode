@@ -132,7 +132,7 @@ function onPaste(e: ClipboardEvent) {
   background: var(--brand-bg, rgba(76, 141, 255, 0.12));
   color: var(--brand-primary, #4c8dff);
   border-radius: 999px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   line-height: 1.4;
 }
@@ -159,7 +159,7 @@ function onPaste(e: ClipboardEvent) {
 }
 
 .chip-x .material-symbols-outlined {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .chip-x:hover {
@@ -174,7 +174,7 @@ function onPaste(e: ClipboardEvent) {
   background: transparent;
   color: var(--text-primary);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--text-base);
   padding: 4px 6px;
 }
 </style>

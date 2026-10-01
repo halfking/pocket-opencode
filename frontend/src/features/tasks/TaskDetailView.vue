@@ -262,7 +262,7 @@ function formatDate(d?: string): string {
   margin-bottom: 8px;
 }
 .priority-chip {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   padding: 2px 8px;
   border-radius: 4px;
@@ -285,7 +285,7 @@ function formatDate(d?: string): string {
   white-space: nowrap;
 }
 .status-chip {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 600;
   padding: 2px 8px;
   border-radius: 999px;
@@ -318,14 +318,14 @@ function formatDate(d?: string): string {
   align-items: center;
   gap: 2px;
 }
-.stat-icon { font-size: 14px; }
+.stat-icon { font-size: var(--text-base); }
 .stat-val {
   font-size: 13px;
   font-weight: 700;
   color: var(--text-primary);
 }
 .stat-lbl {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
 }
 
@@ -341,7 +341,7 @@ function formatDate(d?: string): string {
   align-items: center;
   gap: 4px;
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -376,7 +376,7 @@ function formatDate(d?: string): string {
   margin-bottom: 10px;
 }
 .section-header h3 {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
@@ -385,7 +385,7 @@ function formatDate(d?: string): string {
   gap: 6px;
 }
 .badge {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   padding: 1px 6px;
   border-radius: 999px;
@@ -393,7 +393,7 @@ function formatDate(d?: string): string {
   color: var(--text-secondary);
 }
 .link-btn {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--brand-primary);
   background: none;
@@ -424,7 +424,7 @@ function formatDate(d?: string): string {
 }
 .session-info { flex: 1; min-width: 0; }
 .session-id {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-primary);
   font-family: var(--font-mono);
@@ -442,7 +442,7 @@ function formatDate(d?: string): string {
   color: var(--text-muted);
 }
 .chevron {
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--text-muted);
   opacity: 0.5;
 }
@@ -451,7 +451,7 @@ function formatDate(d?: string): string {
   padding: 24px 0;
 }
 .empty-text {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
 }
 
@@ -461,7 +461,7 @@ function formatDate(d?: string): string {
 }
 .form-group label {
   display: block;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-secondary);
   margin-bottom: 4px;
@@ -470,7 +470,7 @@ function formatDate(d?: string): string {
 .form-group select {
   width: 100%;
   padding: 10px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: var(--bg-subtle);
   color: var(--text-primary);
   border: 1px solid transparent;
@@ -485,7 +485,7 @@ function formatDate(d?: string): string {
 .btn {
   flex: 1;
   padding: 10px;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   border: none;
   border-radius: 10px;

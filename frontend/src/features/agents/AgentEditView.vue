@@ -306,7 +306,7 @@ async function handleSave() {
   border-radius: 8px;
   background: var(--warning-bg);
   color: var(--warning);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 /* 头像快选 */
@@ -354,7 +354,7 @@ async function handleSave() {
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: var(--bg-base);
   color: var(--text-primary);
   font-family: inherit;
@@ -388,7 +388,7 @@ async function handleSave() {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--brand-primary);
   cursor: pointer;
 }

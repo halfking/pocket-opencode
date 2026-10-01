@@ -177,7 +177,7 @@ function onReject(): void {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .approval-row .label {
   color: var(--text-secondary, #6b7280);
@@ -203,7 +203,7 @@ function onReject(): void {
   background: var(--surface-soft, #f6f7f9);
   padding: 12px;
   border-radius: 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
@@ -227,7 +227,7 @@ function onReject(): void {
 }
 .approval-banner-hint {
   opacity: 0.85;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .approval-actions {
   display: flex;
@@ -235,7 +235,7 @@ function onReject(): void {
   margin-bottom: 8px;
 }
 .approval-hint {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary, #6b7280);
   margin: 0;
 }
@@ -243,7 +243,7 @@ function onReject(): void {
   flex: 1;
   padding: 12px 8px;
   border-radius: 8px;
-  font-size: 14px;
+  font-size: var(--text-base);
   cursor: pointer;
   border: 1px solid transparent;
   min-height: 44px;

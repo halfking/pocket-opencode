@@ -204,7 +204,7 @@ function formatLastUpdate(timestamp?: string): string {
 
 .back-btn, .refresh-btn {
   padding: 8px 12px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -244,7 +244,7 @@ function formatLastUpdate(timestamp?: string): string {
 }
 
 .banner-info h3 {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
   margin: 0 0 4px 0;
 }
@@ -298,14 +298,14 @@ function formatLastUpdate(timestamp?: string): string {
 }
 
 .group-header h2 {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
 }
 
 .session-count {
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 4px 10px;
   background: var(--brand-bg);
   color: var(--brand-primary);
@@ -363,7 +363,7 @@ function formatLastUpdate(timestamp?: string): string {
 }
 
 .session-content h3 {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   color: var(--text-primary);
   margin: 0 0 8px 0;
@@ -383,7 +383,7 @@ function formatLastUpdate(timestamp?: string): string {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
 }
 
@@ -394,7 +394,7 @@ function formatLastUpdate(timestamp?: string): string {
 .file-changes {
   display: flex;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-family: var(--font-mono);
 }
 
@@ -430,12 +430,12 @@ function formatLastUpdate(timestamp?: string): string {
 }
 
 .empty-state p {
-  font-size: 16px;
+  font-size: var(--text-lg);
   margin: 0 0 8px 0;
 }
 
 .empty-hint {
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--text-muted);
 }
 </style>

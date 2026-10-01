@@ -97,14 +97,14 @@ async function markAllRead() {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px var(--space-3);
 }
-.ntf-count { font-size: 12px; color: var(--text-secondary); }
+.ntf-count { font-size: var(--text-sm); color: var(--text-secondary); }
 .ntf-markall {
   border: 1px solid var(--border); background: var(--bg-card); color: var(--text-primary);
   border-radius: 999px; padding: 6px 14px; font-size: 13px;
 }
 .ntf-markall:disabled { opacity: 0.5; }
-.ntf-state { text-align: center; color: var(--text-secondary); padding: var(--space-6); font-size: 14px; }
-.ntf-hint { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
+.ntf-state { text-align: center; color: var(--text-secondary); padding: var(--space-6); font-size: var(--text-base); }
+.ntf-hint { margin-top: 6px; font-size: var(--text-sm); color: var(--text-muted); }
 .ntf-list { list-style: none; margin: 0; padding: 0 var(--space-3) 96px; display: flex; flex-direction: column; gap: 8px; }
 .ntf-item {
   display: flex; gap: 10px; width: 100%; text-align: left;
@@ -115,7 +115,7 @@ li.unread .ntf-item { border-left: 3px solid var(--brand-primary, #2f6fed); }
 .ntf-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--text-muted); margin-top: 6px; flex-shrink: 0; }
 .ntf-dot.high, .ntf-dot.urgent, .ntf-dot.high_quiet { background: var(--danger, #e5484d); }
 .ntf-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.ntf-title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.ntf-title { font-size: var(--text-base); font-weight: 600; color: var(--text-primary); }
 .ntf-body { font-size: 13px; color: var(--text-secondary); line-height: 1.4; }
 /* 2026-10-01 真机审计：标题与正文必须能断词。
  *

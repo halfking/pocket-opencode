@@ -172,7 +172,7 @@ function goAccount() {
 }
 
 .user-name {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: var(--font-weight-semibold);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -180,7 +180,7 @@ function goAccount() {
 }
 
 .user-action {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -247,12 +247,12 @@ function goAccount() {
 
 .menu-label {
   flex: 1;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-medium);
 }
 
 .menu-chevron {
-  font-size: 18px;
+  font-size: var(--text-xl);
   color: var(--text-tertiary, var(--text-muted));
 }
 

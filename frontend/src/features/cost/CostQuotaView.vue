@@ -286,7 +286,7 @@ onUnmounted(() => {
   padding: 40px 20px;
   text-align: center;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .state-inline {
   padding: var(--space-3);
@@ -301,7 +301,7 @@ onUnmounted(() => {
 }
 
 .card-title {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-primary);
   margin: 0 0 var(--space-3);
@@ -356,7 +356,7 @@ onUnmounted(() => {
 }
 
 .block-error {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--danger);
   word-break: break-word;
 }
@@ -378,7 +378,7 @@ onUnmounted(() => {
 .quota-meta-row {
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .quota-meta-label {
   color: var(--text-secondary);
@@ -418,7 +418,7 @@ onUnmounted(() => {
   font-weight: 600;
 }
 .budget-limit {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 .budget-limit strong {
@@ -437,7 +437,7 @@ onUnmounted(() => {
   width: 100%;
   margin-top: var(--space-3);
   padding: var(--space-3);
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   background: var(--bg-card);
   color: var(--brand-primary);

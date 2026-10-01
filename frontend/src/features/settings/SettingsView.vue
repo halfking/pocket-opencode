@@ -549,7 +549,7 @@ async function handleLogout() {
 }
 
 .theme-option .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .theme-option.active {

@@ -99,12 +99,12 @@ function formatTime(ts: number): string {
   background: var(--bg-hover, #f7f7f9);
 }
 .bl-item-title {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--accent, #2563eb);
 }
 .bl-snippet {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary, #888);
   overflow: hidden;
   text-overflow: ellipsis;

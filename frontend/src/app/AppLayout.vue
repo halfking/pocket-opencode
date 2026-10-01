@@ -487,7 +487,7 @@ function focusMain() {
   border-radius: 999px;
   background: var(--danger, #e5484d);
   color: #fff;
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 600;
   line-height: 16px;
   text-align: center;

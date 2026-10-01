@@ -344,7 +344,7 @@ const { confirm } = useConfirm()
   white-space: nowrap;
 }
 .chip-icon {
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 /* ── 快捷指令：工具行最左侧的 44×44 方形按钮条（横向可滚，mic/全屏不被挤走） ── */

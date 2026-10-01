@@ -437,7 +437,7 @@ onBeforeUnmount(() => {
   font-family: 'Material Symbols Outlined', 'Material Icons';
   font-weight: normal;
   font-style: normal;
-  font-size: 18px;
+  font-size: var(--text-xl);
   line-height: 1;
 }
 </style>
