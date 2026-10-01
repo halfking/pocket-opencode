@@ -510,6 +510,40 @@ Email scheduler started (fetch_enabled=true, kxmemory=false, ...)
 > 磁盘上的发票文件是唯一的幸存副本 —— 而 §2.3 那个 dataDir 缺陷会让它们
 > 「明明在磁盘上却下载 404」。两件事撞在一起才会让这次恢复这么被动。
 
+### 5.6 事故根因（部分）：同一环境里有**另一个会话在跑邮件域测试**
+
+20:36 复核账户时发现第 6 个账户冒了出来：
+
+```
+acct-greenmail-junk  huangxutao@kxmail.local
+  displayName: Greenmail 垃圾箱测试
+  imapHost: 127.0.0.1   imapPort: 3993   smtpPort: (空)
+  createdAt: 1790858212 = 20:36:52
+```
+
+对比我的 5 个目标账户 `createdAt = 1790855713`（19:55:13，部署脚本落库时刻）。
+部署脚本的「无非目标账户残留」检查当时是 **PASS** 的，所以这个账户是在那之后
+才被写进来的。**它不是我写的**：我的冒烟测试用的是隔离 schema
+`pocketd_scripttest`，写不进 `opencode_pocket`；而且我从未跑过 Greenmail。
+
+进程侧证据：
+
+```
+pid=10972  greenmail-standalone-2.1.14.jar
+  -Dgreenmail.users=huangxutao@kxmail.local:h8pass
+  -Dgreenmail.hostname=127.0.0.1
+  监听 127.0.0.1:3993，父进程 pid=29672（已退出）
+```
+
+即：某个短生命周期脚本拉起了 Greenmail 作为常驻 IMAP 测试服务器，并往
+`opencode_pocket` 里塞了 fixture 账户。**这是与 19:47 清库高度吻合的并发活动。**
+
+> **给下一个会话**：这个工作区/数据库/后端端口是**共享**的。
+> 跑测试前先确认没有别人在用；发现陌生的 fixture 账户
+> （`*.local` 域、`127.0.0.1` IMAP、`acct-greenmail-*` 之类）
+> **不要当成脏数据删掉** —— 那是别人正在用的东西。
+> 要清理时先和用户确认；本会话没有动它。
+
 ## 6. adb 恢复后要做的事
 
 1. `adb reverse tcp:18099 tcp:18099`，确认 App 能登录。
