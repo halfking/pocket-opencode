@@ -160,9 +160,21 @@ export async function http<T = any>(path: string, opts: HttpOptions = {}): Promi
   }
 }
 
-/** 不可恢复 401 的兜底清理：单飞，避免并发请求重复跳转。 */
+/**
+ * 不可恢复 401 的兜底清理：单飞，避免并发请求重复跳转。
+ *
+ * 导出给 api/client.ts 的 authFetch 复用（BUG-AX，2026-10-01 13:05 真机实测）。
+ * 之前它只在 http() 这条链上生效，而 `api/client.ts` 整个面（getTasks /
+ * getTask / createTask / …，任务、会话、实例等模块都在用）走的是 authFetch，
+ * **完全绕过了这个兜底**。实测后果：
+ *   · 后端换 JWT secret 之后，设备上的旧 token 全部 401
+ *   · 任务页 catch 住错误、把 tasks 置空，页面显示「暂无运行中的任务」
+ *     和分诊条的「全部正常 · 0」，**既不报错也不跳登录**
+ *   · 用户拿着一枚死 token 卡在各个模块里，和 BUG-I 当初描述的死法一模一样
+ * 也就是说 BUG-I 的修复只打了一半：兜底存在，但没覆盖真正被大量调用的那条路。
+ */
 let reauthInFlight = false
-function forceReauth(): void {
+export function forceReauth(): void {
   if (reauthInFlight) return
   // 已在登录页/登录相关路径上就不再跳，避免重定向循环
   const hash = (typeof location !== 'undefined' ? location.hash : '') || ''

@@ -1,13 +1,25 @@
 # 登录/解锁子流程（被其它 flow 用 runFlow 引用）
 #
-# 这个子流程存在的原因，是本项目在真机上**有三种**可能的起始状态，
-# 2026-10-01 首次真机 Maestro 三种都撞上了：
+# 这个子流程存在的原因，是本项目在真机上**有四种**可能的起始状态，
+# 2026-10-01 首次真机 Maestro 三种都撞上了，第四种当天稍后才撞上：
 #
 #   A. 已登录 + 本地库已解锁  -> 什么都不用做
 #   B. 已登录 + 本地库未解锁  -> 只差主密码（页面标题「解锁本地数据」）
 #   C. 完全未登录              -> 要账号密码（页面有「输入用户名」）
+#   D. 登录成功但**没有主密码** -> 弹「创建主密码」对话框（2026-10-01 12:10 实测撞上）
 #
-# B 最容易误判：它**长得像**需要登录，但 localStorage 里 token 还在，
+# D 最阴险，它是**登录之后**才弹的，而且会让 A/B/C 三种判据全部失效：
+# LoginView.handleLogin / completeAuth 在 `!cryptoConfig.cfg.hasMasterPassword`
+# 时 `showMasterPasswordDialog = true; return` —— 直接 return，**不跳 /ai**。
+# 于是 App 停在登录页 + 一个模态框上，「打开菜单」「输入用户名」都还在，
+# 看起来像 C；但你点登录会重复弹，永远出不去。
+# 触发条件：`hasMasterPassword` 只是 localStorage 里的 `pocket_crypto_cfg`
+# 标志（stores/crypto-config.ts），后端无记录、Keystore 也不一定有。
+# MIUI 清一次站点数据 / 重装 / 存储回收，这个标志就没了，本地加密库却还在。
+# ⚠️ 该状态下**必须用与现有本地库相同的主密码**（$POCKET_MASTER），
+#    换一个会与已有库密钥不一致（详见 handoff §4.74 BUG-AV）。
+#
+# B 容易误判：它**长得像**需要登录，但 localStorage 里 token 还在，
 # 输账号密码是错的。本地 SQLCipher 的 crypto key 只存在于内存，
 # 进程一死就丢，守卫就把用户弹到这个页面（handoff §4.48.1 记过同一现象）。
 #
@@ -17,7 +29,7 @@
 # （TasksView.vue:1443），设备上留一条待处理任务就会假失败。踩过。
 #
 # 口令全部从环境变量读，本文件里没有任何明文：
-#   POCKET_MASTER   —— 本地库主密码（解锁用）
+#   POCKET_MASTER   —— 本地库主密码（解锁用 / D 态创建用）
 #   POCKET_DEV_PASS —— dev 旁路账号口令（登录用）
 # 由 scripts/maestro-run.mjs 注入。变量缺失应直接失败，不要退化成硬编码。
 appId: com.kaixuan.opencode.pocket
@@ -28,8 +40,13 @@ appId: com.kaixuan.opencode.pocket
 #    DOM 里元素已经在了（启动器用 CDP 确认过），无障碍树还没推过来，
 #    裸 assert 会在树就绪前那一瞬间直接判 false。
 #    实测踩到过：preflight 刚报「App 外壳已渲染」，flow 第一条 assert 仍失败。
+# ⚠️ 2026-10-01 12:10 实测的**第四种失败**：上一轮 run 死在 D 态（主密码弹窗），
+#    弹窗留在屏幕上没关。下一轮起手就撞上它，此时「打开菜单」「输入用户名」
+#    都不成立（模态框挡着、且 D 态本来就没登录），于是这里**只等三个旧判据会
+#    直接超时 60s**，flow 第一条就 FAILED，看起来像 App 坏了。
+#    ⇒ 判据集合必须包含「创建主密码」，并且后面的 D 分支要能收拾它。
 - extendedWaitUntil:
-    visible: "打开菜单"
+    visible: "打开菜单|主导航|解锁本地数据|输入用户名|创建主密码"
     timeout: 60000
 
 # ⚠️ 必须**先把锁定守卫逼出来**，否则 B 分支永远轮不到执行。
@@ -47,9 +64,10 @@ appId: com.kaixuan.opencode.pocket
     text: "会议"
     optional: true
 # 探完受保护路由后可能落在四种状态之一：已解锁的 App 外壳 / 解锁页 / 登录页 /
-# 还在切换中。不能只等外壳 —— 被守卫弹到解锁页时外壳的「打开菜单」本来就不在。
+# D 态主密码弹窗 / 还在切换中。不能只等外壳 —— 被守卫弹到解锁页时外壳的
+# 「打开菜单」本来就不在。
 - extendedWaitUntil:
-    visible: "打开菜单|主导航|解锁本地数据|输入用户名"
+    visible: "打开菜单|主导航|解锁本地数据|输入用户名|创建主密码"
     timeout: 20000
 
 # ---- B. 已登录但本地库锁定：只输主密码 ----
@@ -80,7 +98,22 @@ appId: com.kaixuan.opencode.pocket
       - assertNotVisible: "输入用户名"
       - assertVisible: "打开菜单"
 
+# ---- D-1. 上一轮 run 死在主密码弹窗上，弹窗还留在屏幕上 ----
+# 必须排在 C 之前：模态框挡着时「输入用户名」在无障碍树里**仍然可见**
+# （实测 step-005 的导出里登录页整棵树都在），所以 C 的条件会误成立，
+# 于是又去点一次「登录」，弹窗再弹一次，永远出不去。
+- runFlow:
+    when:
+      visible: "创建主密码"
+    commands:
+      - runFlow: _set-master-password.yaml
+
 # ---- C. 完全未登录：账号密码登录 ----
+# ⚠️ 登录之后不能直接等「打开菜单」：LoginView.handleLogin 在
+#    !hasMasterPassword 时弹主密码对话框并 return（不跳 /ai）。
+#    所以要么落到外壳、要么落到 D 态弹窗，两个都得算成功。
+# ⚠️ 同理不能 assertNotVisible "输入用户名"：D 态下登录页在模态框**背后**，
+#    无障碍树里照旧可见，断言必假失败。
 - runFlow:
     when:
       visible: "输入用户名"
@@ -88,17 +121,43 @@ appId: com.kaixuan.opencode.pocket
       - tapOn: "输入用户名"
       - eraseText
       - inputText: "admin"
+      # ⚠️ 必须断言输入框的**实际值**。2026-10-01 13:00 实测：不加这条时，
+      #    用户名框里躺的是 `administrationundefinedy` 这种脏值，登录必然失败，
+      #    现场只留下一句「登录失败：用户名或密码错误」——会把人引去查后端鉴权，
+      #    而真因是 MIUI 输入法在这台设备上把合成输入搅坏了。
+      #    加了断言，失败点就落在「输入没落进去」上，而不是下游的登录失败。
+      #    （无障碍树里 input[type=text] 和 input[type=password] 都暴露了值，
+      #      所以这条断言成立。若哪天 WebView 不再暴露，改用坐标 + 重试。）
+      - assertVisible: { text: "^admin$" }
       - tapOn: "输入密码"
       - inputText: ${POCKET_DEV_PASS}
+      # ⚠️ 这里**不能**写 `assertVisible: { text: "^${POCKET_DEV_PASS}$" }`。
+      #    实测两次：Maestro 在**选择器**里不展开 ${POCKET_DEV_PASS}，
+      #    直接把断言变成 `^undefined$`，于是必然红；而同一变量写在
+      #    `inputText:` 里是能正常展开的（登录确实用对了口令）。
+      #    启动器已打印「POCKET_DEV_PASS=14 字符」证明变量确实传到了子进程，
+      #    所以是 Maestro 选择器侧的展开问题，不是注入问题。
+      #    ⇒ 改用等价但不含变量的判据：**「登录」按钮 enabled=true**。
+      #    它在两个字段任一为空时是 disabled（LoginView 的 disabled 绑定），
+      #    所以它证明了「两个字段都真的填进去了」，覆盖面与值断言相当。
+      - assertVisible: { text: "登录", enabled: true }
       - hideKeyboard
       - tapOn: "登录"
       - extendedWaitUntil:
-          visible: "打开菜单"
+          visible: "打开菜单|创建主密码"
           timeout: 60000
-      - assertNotVisible: "输入用户名"
-      - assertVisible: "打开菜单"
+      - assertNotVisible: "解锁本地数据"
 
-# ---- 兜底：三种都没命中说明没落在 App 里，直接报出来 ----
+# ---- D-2. 上面那次登录触发的「创建主密码」 ----
+# 与 D-1 是同一个条件，**必须判两次**：D-1 处理「开场就带着弹窗」，
+# D-2 处理「刚登录完才弹」。少任何一个都会停在弹窗上。
+- runFlow:
+    when:
+      visible: "创建主密码"
+    commands:
+      - runFlow: _set-master-password.yaml
+
+# ---- 兜底：四种都没命中说明没落在 App 里，直接报出来 ----
 - assertVisible: "打开菜单"
 
 # ⚠️ 这里等的是 **「主导航」**（底部导航容器的 aria-label），不是「+ 新任务」。
@@ -111,7 +170,7 @@ appId: com.kaixuan.opencode.pocket
     timeout: 30000
 - assertVisible: "主导航"
 
-# ⚠️⚠️ 收尾的**硬判据**：解锁页与登录页必须都不在了。
+# ⚠️⚠️ 收尾的**硬判据**：解锁页、登录页、主密码弹窗必须都不在了。
 #
 # 这是本文件最关键的一行，删掉它整套真机结果都不可信。
 # 「打开菜单」是 App 外壳 header 的 aria-label，而**解锁页是渲染在 App 外壳里的**
@@ -122,5 +181,8 @@ appId: com.kaixuan.opencode.pocket
 # （证据：2026-10-01 凌晨 ~4 次尝试，scripts/verify-au-fix2.mjs 的
 #   P3 硬前置因此一直不满足 —— 那个判据拒绝出结论是对的，
 #   否则就会拿着一份「被抢 0/6」的假读数宣布修好了。）
+# 「创建主密码」是 2026-10-01 12:10 补的第**四**条：上轮 run 死在弹窗上、
+# 弹窗残留，下游 flow 会在登录页上全部失败，而只判前两条时它不会被发现。
 - assertNotVisible: "解锁本地数据"
 - assertNotVisible: "输入用户名"
+- assertNotVisible: "创建主密码"

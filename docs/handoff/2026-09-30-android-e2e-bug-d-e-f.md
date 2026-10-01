@@ -7039,4 +7039,330 @@ const ERROR_STATE = [
 
 未扫 10 条的条件见 §4.72，其中 `/contacts/:id` 是**后端缺端点**，
 `/gateway/…/credentials/:credentialId` 需要可用网关节点 + 已建凭据。
+#### 4.74 2026-10-01 12:00~13:15：真机轮次的四处更正与两个新缺陷
+
+这一节记的是**我自己的判据出错**和**当前 APK 与仓库代码不一致**两件事，
+外加两个由此暴露的真实缺陷。所有结论都有可复现的命令与真机证据。
+
+##### 4.74.1 更正一：`_login.yaml` 只覆盖了三种起始态，漏了第四种
+
+`LoginView.handleLogin` / `completeAuth` 在登录成功后，若
+`!cryptoConfig.cfg.hasMasterPassword` 就 `showMasterPasswordDialog = true`
+并**直接 return，不跳 `/ai`**（LoginView.vue:332 / 522）。
+于是真机上出现第四种起始态：**登录页 + 「创建主密码」模态框**。
+
+它最阴险的地方是**骗过了原有的全部判据**：登录页在模态框背后，
+无障碍树里「输入用户名」照样可见，看起来像未登录态 C；而点「登录」
+会再弹一次，永远出不去。实测现场（`~/.maestro/tests/2026-10-01_121046`）：
+flow 第一条就 FAILED，导出树里同时有登录页和 `android.app.Dialog t="创建主密码"`。
+
+**已修**：新增 `.maestro/_set-master-password.yaml`，并在 `_login.yaml` 里
+**判两次**——D-1 处理「开场就带着弹窗」（上一轮 run 死在弹窗上、弹窗残留），
+D-2 处理「刚登录完才弹」。少任何一个都会卡住。
+弹窗里三个 input 在无障碍树里 `text` 全是空（`type=password` 且无 content-desc，
+placeholder 不进 a11y 树），只能按坐标点：`50%,46%` / `50%,53%`，
+坐标来自 720x1640 实机导出（弹窗 `[40,480][680,1160]`，高 680，
+视口 1640 → 垂直居中，位置稳定）。收尾硬判据也补了
+`assertNotVisible: "创建主密码"`。
+
+⚠️ 必须用**与现有本地库相同**的主密码（`$POCKET_MASTER`），理由见 §4.74.6 BUG-AV。
+
+##### 4.74.2 更正二：设备上的 APK 是**旧的**，我一直在测不是当前代码的产物
+
+追「空列表下 `+ 新任务` 点不动」时挖出来的。实测（`scripts/diag-tap-newtask.mjs`）：
+
+| 投递方式 | 结果 |
+|---|---|
+| A `Input.dispatchTouchEvent`（最接近真手指） | create-task-form = **0** |
+| B `Input.dispatchMouseEvent`（Maestro 合成点击走这条） | create-task-form = **0** |
+| C DOM `.click()`（对照组） | create-task-form = **1** |
+
+`elementFromPoint` 在按钮中心返回 `div.refresh-text`——下拉刷新提示文字
+（bounds `156,107,204,125`）完整盖住了 `+ 新任务`（`148,104,211,128`）。
+
+我一度以为是漏写的 `pointer-events: none`：源码 `PullToRefresh.vue:284` 明明有，
+`frontend/dist` 的构建产物里也有。**但设备上跑的 CSS 是另一个版本**
+（`scripts/diag-indicator-css.mjs` 直接读设备 CSSOM）：
+
+| | 仓库源码 / dist 产物 | 设备上实际生效 |
+|---|---|---|
+| scope id | `data-v-fd017b03` | `data-v-c82569d1` |
+| `pointer-events` | `none` | **无此声明**（算出来 `auto`） |
+| `height` | `56px` | 无此声明（内联 `height:0px`） |
+| 定位方式 | 固定 56px + 位移揭开 | `transform: translateY(-100%)` |
+
+⇒ **不是没修，是设备上的 APK 早于这次修复**。这也印证了 §4.67 里
+「当前 APK 从未回归」这条欠账是真的会咬人：我前面几轮的真机结论
+有一部分是在测一份**不是当前代码**的产物。
+
+**处置**：重建 `frontend` → `cap sync` → `assembleDebug` → `adb install -r -g`，
+之后所有真机结论才建立在当前代码上。
+
+##### 4.74.3 更正三：「列表恒空」有两条环境原因，都极像产品缺陷
+
+PG 里 17 条任务一条不少，App 任务页却显示「运行中 0 / 全部正常」且**无任何错误**。
+分两步查到，**每一步都先排除了产品**：
+
+1. **宿主 18099 上没有后端**。`18111` 上跑的是**另一个 worktree** 的 pocketd
+   （`C:\workspace\openpocket-wt-stt\backend\.verify-bin\pocketd.exe`）。
+   App 配的 API 基址是 `http://127.0.0.1:18099`，那会儿没人监听。
+   ⇒ 新增 `scripts/start-local-backend.ps1`（含 `POCKET_AUTH_LEGACY_ONLY=true`，
+   否则 pocketd 直接拒绝启动），并把 `/healthz` 轮询写进去——
+   「进程在」不等于「后端可用」。
+2. **`adb reverse` 指向了别的端口**：`host-33 tcp:18099 tcp:18111`。
+   这条最阴险：**设备上 `curl 127.0.0.1:18099/healthz` 照样返回 200**，
+   所有健康检查都绿，功能却是空的。必须**比对映射目标端口**才能发现。
+
+⇒ `scripts/maestro-run.mjs` 的 preflight 现在有两道守卫：
+`assertBackendUp()`（宿主 `/healthz`）与 `assertDeviceReachesBackend()`
+（核对 `adb reverse` 目标端口，并从设备侧 curl 复核）。
+**这两条守卫的价值不在于现在，在于它们把一类「所有健康检查都绿、
+功能却是空的」陷阱变成了显式失败。**
+
+⚠️ 这两道守卫**还没做负控**（故意把后端停掉、看守卫是否真红），属未完成项。
+
+##### 4.74.4 BUG-AV（P1，未修）：`hasMasterPassword` 丢失会误触发「创建主密码」，无任何防护
+
+`hasMasterPassword` **只是 localStorage 里的 `pocket_crypto_cfg` 标志**
+（`stores/crypto-config.ts:13`），后端无记录，Keystore 也不保证有
+（`persistMasterSecretIfBound` 只在已绑定生物识别时才写）。
+标志一丢（MIUI 清站点数据 / 重装 / 存储回收），登录后必弹「创建主密码」，
+而本地 SQLCipher 库**可能已经存在且用旧主密码加密**。
+
+弹窗只有「创建」，**没有「用已有主密码解锁」**。用户若输入新密码：
+
+- `local-db.ts:138` 的 `setEncryptionSecret` 抛错被 `catch` 掉，
+  注释写着「这种场景下假定密码一致（用户重启 App 时常见）」⇒ **假设成真**；
+- 随后 `cryptoConfig.setMasterPassword()` 照常执行 ⇒ UI 认为主密码已创建；
+- 实际 DB 仍用旧密钥 ⇒ 下次解锁要旧密码，而用户已经忘了。
+
+**我没有在真机上复现锁死**（要复现需先让标志丢失且库已加密，代价高），
+但代码路径是确定的。**需要产品定夺**：是把「已设主密码」这件事落到
+WebView 存储之外（Keystore / 服务端），还是在这个弹窗里补「我已有主密码」的解锁入口。
+我没有擅自改加密流程。
+
+##### 4.74.5 BUG-AX（P1，已修代码）：401 被渲染成「空列表 + 全部正常」
+
+`http.ts` 里其实**有** 401 兜底（`forceReauth()`，BUG-I 当时加的）。
+但 `api/client.ts` 整个面（`getTasks`/`getTask`/`createTask`…，
+任务、会话、实例等模块都在用）走的是 `authFetch`，**完全绕过了那条链**：
+
+```ts
+// client.ts:27
+async function authFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const response = await fetch(input, { ...init, headers })
+  if (!response.ok) {
+    // …只把 401 包成 ApiError 抛出去，没有任何「清登录态 + 跳登录页」
+    throw new ApiError(response.status, message)
+  }
+}
+```
+
+而 `TasksView.loadTasks()` 把错误 `catch` 掉、`tasks.value = []`
+（TasksView.vue:1006-1008），**不给用户任何提示**。
+实测证据（`scripts/diag-empty-list.mjs`，设备侧）：
+
+```
+tasksStatus: 401   body: {"code":"unauthenticated","error":"invalid or expired token"}
+cards: 0
+emptyShown: "暂无运行中的任务 / 点击「+ 新任务」创建…"
+triageText: "🟢 0"
+```
+
+⇒ 死 token 被渲染成「你一个任务都没有」，和 BUG-I 当初描述的死法一模一样。
+**BUG-I 的修复只打了一半**：兜底存在，但没覆盖真正被大量调用的那条路。
+
+**修法**：把 `forceReauth()` 从 `http.ts` 导出，`authFetch` 遇到 401 时调用它
+（清本地态 + 跳 `#/login?reason=expired`）。改动两处，各一行调用。
+⚠️ **代码已改，真机回归要等重建装机后重跑 `tasks-crud.yaml` 才有结论。**
+
+##### 4.74.6 真机 harness 的三条硬规矩（都是实测撞出来的，不是推理）
+
+1. **重排之后不能立刻 tap 坐标会变的元素。**
+   最初 `tasks-crud` 是「先 tap 收起（折叠分诊区）→ 再 tap + 新任务」，
+   后者报 COMPLETED 但弹窗不开。两者坐标差 ~1100px（y≈1368 → y≈202）。
+   WebView **异步发布**无障碍树：收起点完 DOM 已重排、树还没跟上，
+   Maestro 取到的仍是旧坐标。
+   ⇒ 去掉「收起」就通了。**`retryTapIfNoChange` 救不了**：任务列表里
+   「无响应 · 13 小时」这类相对时间持续变化，屏幕永远「变了」，它压根不会重试。
+2. **`visible` 会把折叠线以下 2px 的节点判成「可见」。**
+   新建的卡片 bounds 实测 `[94,1638][606,1640]`——只有 2px 高，还被底部
+   主导航（y≥1496）压着。Maestro 照样把 `visible` 判真，接着的
+   `tapOn` 打在 y≈1639 的窄条上，点了个寂寞。
+   ⇒ 必须 `scrollUntilVisible` + `visibilityPercentage: 60`，
+   把「可见」拉回「用户真看得见」。
+3. **登录必须断言输入框的实际值。**
+   实测用户名框里躺的是 `administrationundefinedy` 这种脏值，
+   现场只剩一句「登录失败：用户名或密码错误」——会把人引去查后端鉴权，
+   而真因是这台设备上合成输入被搅坏。
+   ⇒ `_login.yaml` 加 `assertVisible: { text: "^admin$" }` 与密码同款断言，
+   失败点立刻落在「输入没落进去」上。
+
+另外三条环境事实（**不记成产品缺陷**）：
+
+- Maestro 是 JVM 程序，中文 Windows 下按 **GBK** 往 stdout 写，
+  用 Node 的 utf8 读全是乱码——而乱码会让人以为「页面上没这个文案」
+  然后去 Vue 模板里猜 placeholder。⇒ `scripts/hier-dump.mjs` 负责解码，
+  `scripts/decode-hier.mjs` 会用「登录 / 用户名」这类已知文案自证编码选对了没有。
+- 本机跑完 `maestro hierarchy` 之后，WebView 的 devtools socket 会一段时间
+  不接受连接，`/json/list` 挂到超时。⇒ 抓树放最后，抓完就别再指望 CDP。
+- **我自己的 CDP 封装一度把整条消息当结果回传再读 `.result.value`**，恒为
+  undefined，看起来像「CDP 断了」——实际是取值层级错了（响应是
+  `{id, result:{result:{value}}}`）。`cdp.mjs` 传的是 `msg.result` 所以它一直是对的。
+  **这个误判差点让我把「socket 抖动」当成环境限制、放弃用 CDP 定位问题。**
+  现已在 `hier-dump.mjs` / `diag-*.mjs` 里统一修正并写了注释。
+
+##### 4.74.7 本轮新增工具
+
+| 脚本 | 用途 |
+|---|---|
+| `scripts/hier-dump.mjs` | 导航 + 抓真机 a11y 树 + GBK 解码 + 打印可写进 flow 的选择器 |
+| `scripts/decode-hier.mjs` | 按编码读回 hierarchy 输出，并用已知文案**自证**编码选对 |
+| `scripts/parse-hier.mjs` | 把 hierarchy JSON 压成可读列表（BOM 容错） |
+| `scripts/diag-create-sheet.mjs` | 弹窗出现与否 + 所有控件的 css 矩形 → Maestro point 百分比 |
+| `scripts/verify-sheet-a11y.mjs` | 三条独立通道（CDP / 截图 / 树）交叉证明弹窗状态 |
+| `scripts/diag-tap-newtask.mjs` | A 真触摸 / B 合成鼠标 / C DOM click 三路分离「点不动」 |
+| `scripts/diag-empty-list.mjs` | 空列表定性：token / 接口状态码 / 命中元素一起量 |
+| `scripts/diag-indicator-css.mjs` | 读**设备上真正生效**的 CSSOM（用来发现 APK 是旧的） |
+| `scripts/start-local-backend.ps1` | 起本 worktree 的 pocketd@18099，轮询 `/healthz` |
+| `.maestro/_set-master-password.yaml` | D 态「创建主密码」子流程 |
+| `.maestro/_dismiss-system-dialogs.yaml` | 清 MIUI 一次性系统弹窗（实测会在解锁输密码时抢前台） |
+| `.maestro/tasks-crud.yaml` | 任务写路径（创建 → 列表回显 → 进详情），**当前仍是半成品** |
+
+##### 4.74.8 本节口径（不夸大）
+
+- 本节所有「已修」都指**代码已改**，**不等于**已在当前 APK 上真机确证。
+- BUG-AV 定性为 P1 但**未复现**，且我没有擅自改加密流程，需要产品先定方向。
+- `maestro-run.mjs` 的两道新守卫**还没做负控**。
+- `tasks-crud.yaml` 还没跑绿：最后一步仍是「进详情后故意失败取树」，
+  因为重建装机后才拿到当前代码的详情页结构。
+- 「列表恒空」这两条是**环境问题**（后端没起 / `adb reverse` 指错端口），
+  不是产品缺陷；但它们暴露出的「401 无提示」是产品缺陷（BUG-AX）。
+#### 4.75 2026-10-01 13:00~13:50：§4.74 之后又查出的五件事，以及 tasks-crud 的真实状态
+
+本节是对 §4.74 的补充与更正。**先说结论：`tasks-crud.yaml` 至今没有跑绿**，
+下面记的是查到哪里、卡在哪、以及哪些是已确证、哪些还只是假设。
+
+##### 4.75.1 「tap 报 COMPLETED 但没反应」的真正机制：陈旧的无障碍坐标
+
+§4.74.6 第 1 条当时只归因到「先点收起导致重排」。继续查发现**同一个坑还有第二种触发方式**，
+而且第二种更隐蔽：**任务数据是异步到达的**。
+
+登录后任务页先渲染空态（`+ 新任务` 在 y≈208），数据到了之后列表撑开、
+按钮整体下移到 y≈1368，**差约 1100px**。而 `extendedWaitUntil: visible "\\+ 新任务"`
+可能在**空态**就满足了，紧接着的 `tapOn` 拿到的是数据到达**之前**的坐标。
+
+已加 `waitForAnimationToEnd` + `assertVisible` 兜底，**但没有稳定治好**：
+13:16 / 13:36 / 13:49 三次里仍有两次弹窗没开。
+⇒ 目前**只能说是「高度疑似」，不是已确证**：我没有做到在 tap 的同一瞬间
+抓一次 a11y 树来证明「Maestro 用的是旧坐标」。
+
+**这条线索本身价值很高**（任何「异步加载 + 固定坐标」的 Maestro flow 都会踩），
+下一轮应当先把机制钉死再写 flow，方法见 §4.75.5。
+
+##### 4.75.2 Maestro **不会在选择器里展开 `${VAR}`**（实测两次）
+
+写「断言密码框里的值」时加了一条：
+
+```yaml
+- assertVisible: { text: "^${POCKET_DEV_PASS}$" }
+```
+
+结果 Maestro 把它变成字面量 **`^undefined$`**，断言必然红。
+为排除「变量没传过去」，在启动器里加了一行**只打长度、不打明文**的自检：
+
+```
+[preflight] 注入子进程：POCKET_MASTER=14 字符 / POCKET_DEV_PASS=14 字符
+```
+
+⇒ 变量确实到了子进程；**同一变量写在 `inputText:` 里能正常展开**（登录确实用对口令了），
+**写在选择器里不行**。这是 Maestro 侧的行为，不是我的注入问题。
+
+**已改**：换成不含变量的等价判据 `assertVisible: { text: "登录", enabled: true }`
+——两个字段任一为空时登录按钮就是 disabled，所以它同样证明了「都填进去了」。
+⚠️ 这是**降低判据精度**的取舍，不是等价替换：值断言能发现「串了字符」，
+enabled 断言只能发现「有内容」。用户名那条值断言保留（`^admin$` 不含变量，实测可用），
+所以「输入被搅坏」这个风险仍被部分覆盖，但密码字段的字符级正确性不再被断言。
+下一轮若要恢复，得先找到 Maestro 侧可用的展开方式。
+
+##### 4.75.3 `spawnSync` 会被孙进程继承的管道句柄拖住（卡了 3 分钟）
+
+让 preflight 自动拉起后端时踩的：ps1 内部用 `Start-Process` 拉 pocketd，
+那个孙进程继承了 spawnSync 的 stdout/stderr。`spawnSync` 默认 `stdio:'pipe'`，
+于是它一直等这些管道关闭 —— **表现是「后端明明已经起来了（/healthz 200），
+preflight 却卡住不动」**。改成 `stdio:'ignore'` 立刻返回。
+
+**已修**（`ensureBackend()`）。
+
+##### 4.75.4 后端 JWT secret 必须固定，否则每次重启都在作废设备上的 token
+
+原本 `start-local-backend.ps1` 每次生成随机 `POCKET_JWT_SECRET`，形成死循环：
+重启后端 ⇒ 设备上 token 全部作废 ⇒ App 每个请求 401 ⇒ 任务列表恒空、
+「创建」点下去没反应 ⇒ **看起来像 tasks 写路径坏了，真因是环境**。
+改成固定 secret（仅限本机 dev；脚本注释里写明共享/生产绝不可用）。
+
+配套地，`maestro-run.mjs` 的 preflight 现在**每次 run 都清掉 App 登录态**，
+逼它真实走一遍登录（而不是带着一枚可能已作废的 token 静默跑）。
+关掉：`POCKET_RESET_AUTH=0`。
+
+**这一整套（守卫 + 自愈 + 清登录态）是本轮最有复用价值的产出**：
+它把一类「所有健康检查都绿、功能却是空的」陷阱变成了显式失败。
+⚠️ 守卫的**负控还没做**（故意把后端停掉／把 reverse 指错，看是否真红）——
+实际上它**误报过一次正面**：13:41 那轮正是靠它拦下 `adb reverse` 被改回 18111，
+所以「能拦住」这件事有正面证据，「不会误伤」还没有。
+
+##### 4.75.5 下一轮该怎么把 §4.75.1 钉死（不要直接改 flow 试）
+
+用 Maestro 自己的日志做交叉验证，**不要靠猜**：
+
+1. 跑一次失败 run，读 `~/.maestro/tests/<ts>/tasks-crud/logs/maestro.log`，
+   找到 `Tap on "\+ 新任务" RUNNING` 那一行里 Maestro **自己打印的**
+   `TreeNode(... bounds=[...])` —— 那是它**实际使用**的坐标。
+2. 同一时刻用 `scripts/hier-dump.mjs '#/ai'` 抓一棵树，比对 `+ 新任务` 的 bounds。
+3. 两者不一致 ⇒ 陈旧坐标**确证**；一致 ⇒ 问题在别处（合成点击没被当 click），
+   转向 `scripts/diag-tap-newtask.mjs` 那套 A/B/C 三路投递做分离。
+
+判据必须能区分这两种可能，否则改了 flow 也不知道改对没有。
+
+##### 4.75.6 本轮产出清单（代码 / 脚本 / flow）
+
+**产品代码（已改，已进 APK，未在真机上确证行为改变）**
+
+| 改动 | 文件 |
+|---|---|
+| BUG-AX：`forceReauth()` 导出并在 `authFetch` 的 401 分支调用 | `frontend/src/api/http.ts`、`frontend/src/api/client.ts` |
+
+**Maestro flow**
+
+| 文件 | 变化 |
+|---|---|
+| `.maestro/_login.yaml` | 新增 D-1 / D-2 两个「创建主密码」分支；登录加用户名值断言与登录按钮 enabled 断言；收尾加 `assertNotVisible: "创建主密码"`；判据集合从 3 个状态扩到 4 个 |
+| `.maestro/_set-master-password.yaml` | 新增（坐标点两个密码框） |
+| `.maestro/_dismiss-system-dialogs.yaml` | 新增（清 MIUI 一次性系统弹窗） |
+| `.maestro/tasks-crud.yaml` | 新建，**当前仍红** |
+
+**harness / 工具**
+
+| 文件 | 作用 |
+|---|---|
+| `scripts/maestro-run.mjs` | preflight 增加：后端可达性守卫、`adb reverse` 目标端口核对+自愈、后端自动拉起、清 App 登录态、注入变量长度自检；每次 run 前置系统弹窗清理 |
+| `scripts/start-local-backend.ps1` | 起本 worktree 的 pocketd@18099（固定 JWT secret、日志名带时间戳避免文件锁） |
+| `scripts/hier-dump.mjs` / `decode-hier.mjs` / `parse-hier.mjs` | 抓真机 a11y 树并正确解码 |
+| `scripts/diag-create-sheet.mjs` / `verify-sheet-a11y.mjs` | 弹窗出现与否、控件坐标、三通道交叉取证 |
+| `scripts/diag-tap-newtask.mjs` | 真触摸 / 合成鼠标 / DOM click 三路分离 |
+| `scripts/diag-empty-list.mjs` / `diag-app-network.mjs` / `diag-indicator-css.mjs` | 空列表定性、App 真实请求面、设备上真正生效的 CSSOM |
+| `scripts/diag-create-click.mjs` / `diag-sheet-footer-hit.mjs` | 提交链路取证、弹窗底部按钮命中元素 |
+| `scripts/append-handoff-part.mjs` + `docs/handoff/_part-4.74.md` | 保持 CRLF/无 BOM 的文档追加（正文与脚本分离，避开模板字符串里的反引号） |
+
+##### 4.75.7 口径（重申，不夸大）
+
+- `tasks-crud.yaml` **未通过**。已确证的部分：能打开创建弹窗（重建 APK 后）、
+  能把标题填进输入框、「创建」按钮能随输入解禁。**未确证**：
+  提交是否发到后端（实测 PG 里**没有**新行）、删除路径、详情页结构。
+  所以 **BUG-AX 的真机回归尚未完成**——代码改了、APK 装了，但没跑到能证明它的地方。
+- BUG-AY 的定性是**「设备上的 APK 是旧的」**，不是漏写 `pointer-events`。
+  已重建并装机，且**拆开 APK 回读**确认产物里是 `data-v-fd017b03` + `pointer-events:none`。
+- BUG-AV（P1）**未复现**，且我没有擅自改加密流程，需要产品先定方向。
+- 本节新增的 harness 能力里，`maestro-run.mjs` 的守卫**缺负控**；
+  §4.75.1 的机制**缺确证**。两条都记在案，不当作已完成。
 
