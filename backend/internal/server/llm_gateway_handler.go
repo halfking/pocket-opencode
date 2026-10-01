@@ -144,10 +144,21 @@ func (s *Server) EnsureLLMGatewayDefaults(workspaceIDs ...string) {
 		}
 		if existing != nil {
 			if obsoleteLocalGatewayURL(existing.BaseURL) {
-				if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, def); saveErr != nil {
+				// 这里要改的只是 URL，绝不能拿 def 覆盖整份配置。
+				//
+				// 原来的写法是 SaveConfig(wsID, def)：def 的 APIKey 只来自
+				// POCKET_LLM_GATEWAY_API_KEY 且无内置默认值，env 没配时就是空串。
+				// 于是一个**解密得好好的**遗留配置（key、models、preferred_models
+				// 全在）在启动时被换成一条没有 key 的行——而且这条路径不需要任何
+				// 解密失败就会触发，只要 base_url 里带 llm-gateway-local-8782。
+				//
+				// 正确语义就是这行注释说的"把旧的本机网关地址改写成正式网关"：
+				// 保留读出来的状态，只规范化 URL 与 format。
+				migrated := rewriteObsoleteGateway(*existing)
+				if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, migrated); saveErr != nil {
 					log.Printf("[llm-gateway] replace obsolete local gateway failed for %s: %v", wsID, saveErr)
 				} else {
-					log.Printf("[llm-gateway] replaced obsolete local gateway for workspace=%s baseURL=%s", wsID, def.BaseURL)
+					log.Printf("[llm-gateway] replaced obsolete local gateway for workspace=%s baseURL=%s", wsID, migrated.BaseURL)
 				}
 			}
 			continue
@@ -624,22 +635,45 @@ func (s *Server) LoadLLMGatewayFromDB(workspaceIDs ...string) {
 			wsID = "default"
 		}
 		st, err := s.llmGWStore.LoadConfig(context.Background(), wsID)
+		// fromDB 记录这份状态是否真的来自数据库。后面凡是"要落库"的动作都必须
+		// 带上它：一次失败的加载拼出来的 state 带着空的 key，写回去就是毁配置。
+		fromDB := err == nil
 		if err != nil {
-			// 与 EnsureLLMGatewayDefaults 同理：不可解密/损坏的行自愈为
-			// env 默认配置，避免每次启动重复解密失败且无法恢复。
-			log.Printf("[llm-gateway] load from DB failed for %s: %v; self-healing with env defaults", wsID, err)
+			// LoadConfig 的契约（llm_gateway_store.go）：**没有 active 行时返回
+			// (nil, nil)，不报错**。所以这个 err != nil 分支永远不可能是"给新
+			// workspace 首次 seed"（那由下面的 st == nil 走 env 默认值），它只可能
+			// 发生在一份真实配置已经存在、但解不开或读不出来之后。
+			//
+			// 而 SaveConfig 的语义是"先把该 workspace 全部行 is_active=false，再插
+			// 一条新的 active 行"。在这里无条件调它，等于用 defaultLLMGatewayState()
+			// 覆盖那份配置；而该 default 的 APIKey 只来自 POCKET_LLM_GATEWAY_API_KEY
+			// 且无内置默认值，env 没配时就是空串——原本"解不开但还在"的 key 被换成
+			// 一条永久没有 key 的行，配置不可逆地丢失。这条路径比
+			// EnsureLLMGatewayDefaults 的同一处更危险：cmd/pocketd/main.go 在启动时
+			// 对**每个 workspace** 调本函数，一次解密失败就全员遭殃。
+			//
+			// 与 EnsureLLMGatewayDefaults 保持同一口径：env 无 key 时只告警、不落库，
+			// 磁盘上那份行原样保留，等 key 修好后下次启动就能读回来。
 			def := defaultLLMGatewayState()
-			if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, def); saveErr != nil {
-				log.Printf("[llm-gateway] self-heal SaveConfig failed for %s: %v", wsID, saveErr)
-				continue
+			if strings.TrimSpace(def.APIKey) == "" {
+				log.Printf("[llm-gateway] load from DB failed for %s: %v; 跳过自愈落库"+
+					"（env 未配置 POCKET_LLM_GATEWAY_API_KEY，覆写会把该 workspace 的 active 行"+
+					"换成一条无 key 的行，配置不可逆丢失）；内存退回 env 默认值，磁盘行保留", wsID, err)
+				st = &def
+			} else {
+				log.Printf("[llm-gateway] load from DB failed for %s: %v; self-healing with env defaults", wsID, err)
+				if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, def); saveErr != nil {
+					log.Printf("[llm-gateway] self-heal SaveConfig failed for %s: %v", wsID, saveErr)
+					continue
+				}
+				st = &def
 			}
-			st = &def
 		}
 		if st == nil {
 			continue
 		}
 		rewritten := rewriteObsoleteGateway(*st)
-		if rewritten.BaseURL != st.BaseURL && s.llmGWStore != nil {
+		if fromDB && rewritten.BaseURL != st.BaseURL && s.llmGWStore != nil {
 			if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, rewritten); saveErr != nil {
 				log.Printf("[llm-gateway] rewrite obsolete URL persist failed for %s: %v", wsID, saveErr)
 			} else {

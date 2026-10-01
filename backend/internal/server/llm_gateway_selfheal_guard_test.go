@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -83,5 +84,95 @@ func TestEnsureLLMGatewayDefaults_ExistingRowIsNeverOverwritten(t *testing.T) {
 
 	if len(store.saveCalls) != 0 {
 		t.Fatalf("SaveConfig called %d time(s) for a workspace that already has an active row; want 0 (idempotent)", len(store.saveCalls))
+	}
+}
+
+// 遗留本机网关地址的迁移只该改 URL，不该换掉整份配置。
+//
+// 这条路径**不需要任何解密失败**：配置读得好好的（key 在手），只因为
+// base_url 里带 llm-gateway-local-8782 就走迁移分支。原实现传的是 `def`
+// 而不是读出来的 `existing`，而 def 的 APIKey 只来自 env 且无内置默认值——
+// env 没配时就是空串，于是租户刚存好的 key 连同 models/preferred_models
+// 一起被抹成一条无 key 的行。
+func TestEnsureLLMGatewayDefaults_ObsoleteURLMigrationKeepsKey(t *testing.T) {
+	t.Setenv("POCKET_LLM_GATEWAY_API_KEY", "")
+
+	store := &fakeGWStore{loaded: &llmGatewayState{
+		BaseURL:         "http://llm-gateway-local-8782/v1",
+		APIKey:          "sk-tenant-real-key",
+		Models:          []string{"m-keep-1", "m-keep-2"},
+		PreferredModels: []string{"m-keep-1"},
+	}}
+	s := &Server{llmGWStore: store}
+
+	s.EnsureLLMGatewayDefaults("ws-legacy")
+
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("SaveConfig called %d time(s), want 1 (the obsolete URL still has to be migrated)", len(store.saveCalls))
+	}
+	got := store.saveCalls[0]
+	if got.APIKey != "sk-tenant-real-key" {
+		t.Errorf("migrated APIKey = %q, want the stored key; "+
+			"用 def 覆盖会把租户的 key 换成空串，且不可逆", got.APIKey)
+	}
+	if strings.Contains(got.BaseURL, "llm-gateway-local-8782") {
+		t.Errorf("migrated BaseURL = %q, still points at the obsolete local gateway", got.BaseURL)
+	}
+	if len(got.Models) != 2 || len(got.PreferredModels) != 1 {
+		t.Errorf("migration dropped the model lists: models=%v preferred=%v", got.Models, got.PreferredModels)
+	}
+}
+
+// LoadLLMGatewayFromDB 的自愈分支与 EnsureLLMGatewayDefaults 是同一个陷阱，
+// 但危害更大：cmd/pocketd/main.go 启动时对**每个 workspace** 调它。
+//
+// 判定依据是 LoadConfig 的契约——没有 active 行时它返回 (nil, nil) 而**不报错**
+// （见 llm_gateway_store.go），所以 err != nil 只可能意味着"有行但解不开"，
+// 绝不可能是"新 workspace 首次 seed"。因此 env 无 key 时落库就是纯粹的破坏。
+func TestLoadLLMGatewayFromDB_SelfHealDoesNotWipeKeyWhenEnvEmpty(t *testing.T) {
+	t.Setenv("POCKET_LLM_GATEWAY_API_KEY", "")
+
+	store := &fakeGWStore{loadErr: errors.New("decrypt api key: cipher: message authentication failed")}
+	s := &Server{llmGWStore: store}
+
+	s.LoadLLMGatewayFromDB("ws-load-guard")
+
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("SaveConfig called %d time(s) with an empty env key; "+
+			"这会把该 workspace 的 active 行置空并换上一条无 key 的行，配置不可逆地丢失",
+			len(store.saveCalls))
+	}
+}
+
+func TestLoadLLMGatewayFromDB_SelfHealStillRunsWhenEnvHasKey(t *testing.T) {
+	t.Setenv("POCKET_LLM_GATEWAY_API_KEY", "sk-env-recovery-key")
+
+	store := &fakeGWStore{loadErr: errors.New("decrypt api key: corrupted row")}
+	s := &Server{llmGWStore: store}
+
+	s.LoadLLMGatewayFromDB("ws-load-recover")
+
+	// env 有 key 时自愈是期望行为：拿 env 的 key 把毒化行换掉，配置才救得回来。
+	// 守卫不能把它一并禁掉，否则就退化成"每次启动都失败且永远不恢复"。
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("SaveConfig called %d time(s), want 1 (self-heal must still work when env provides a key)", len(store.saveCalls))
+	}
+	if got := store.saveCalls[0].APIKey; got != "sk-env-recovery-key" {
+		t.Errorf("self-healed APIKey = %q, want the env value", got)
+	}
+}
+
+// 没有 active 行是 LoadConfig 的 (nil, nil) 情形，不是错误：此时不应有任何写入，
+// 也不应因为 st == nil 而崩。env 无 key 时更不能凭空造一条无 key 的 active 行。
+func TestLoadLLMGatewayFromDB_NoRowIsNotAnErrorAndWritesNothing(t *testing.T) {
+	t.Setenv("POCKET_LLM_GATEWAY_API_KEY", "")
+
+	store := &fakeGWStore{loaded: nil} // (nil, nil)：库里没有该 workspace 的行
+	s := &Server{llmGWStore: store}
+
+	s.LoadLLMGatewayFromDB("ws-fresh")
+
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("SaveConfig called %d time(s) for a workspace with no stored row; want 0", len(store.saveCalls))
 	}
 }
