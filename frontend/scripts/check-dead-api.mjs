@@ -55,57 +55,95 @@ for (const f of apiFiles) {
 //    区分两种「没人用」：只被 __tests__ 引用 vs 连测试都没有。
 //    前者说明能力被测过但**没接进 App**，后者是彻底的死代码——两者处置方式不同。
 const isTest = (p) => p.includes('__tests__') || /\.(test|spec)\.[tj]s$/.test(p)
-// api/ 内的非测试文件不能算「使用自己的导出」；但 api/ 内的**测试文件**要算，
-// 否则会把「仅被测试引用」误判成「完全无引用」——第一版就栽在这：
-// api/__tests__/reconnectPolicy.test.ts 明明 import 了 nextReconnectDelay /
-// RECONNECT_BASE_MS / RECONNECT_MAX_MS，却被过滤掉、连带产出假阳性基线。
-const consumers = all.filter((p) => (p.startsWith(apiDir) ? isTest(p) : true))
-/** @type {Set<string>} */
-const used = new Set()
-/** @type {Set<string>} */
-const usedByTestOnly = new Set()
-for (const p of consumers) {
-  const text = readFileSync(p, 'utf8')
-  for (const [, sym] of exportsByFile) {
-    for (const name of sym.names) {
-      if (!new RegExp(`\\b${name}\\b`).test(text)) continue
-      const key = `${sym.file}:${name}`
-      if (isTest(p)) usedByTestOnly.add(key)
-      else used.add(key)
+
+// ── 分类必须分四类，不能只分「死/活」──
+// 第二版把整个 api/ 排除出消费者，犯了个**严重假阳性**：
+//   api/websocket.ts:2  import { nextReconnectDelay } from './reconnectPolicy'
+//   api/websocket.ts:77 const delay = nextReconnectDelay(this.reconnectAttempts)
+// 退避策略**确实接进了 App**，却被判成「仅测试引用」。
+//   同理 RECONNECT_FACTOR/JITTER 在 reconnectPolicy.ts:15/18 被**本模块自己**使用，
+//   也被判成「完全无引用」。
+// ⇒ 同包内其它模块的引用、以及模块内部的引用，都是**真实使用**，必须计入。
+//
+// 四类：
+//   wired          被本文件以外的**非测试**文件引用 ⇒ 已接进 App
+//   testOnly       只被测试引用（能力被测过但没接进 App）
+//   moduleInternal 只在本模块体内被引用（常量/内部 helper，外部拿不到）
+//   dead           哪都没被引用 —— 这才是「写好了没人接线」，棘轮管的就是它
+// ── 计数必须在**剥掉注释**的源码上做 ──
+// 第三版又踩了同一个坑的变体：assets.ts 的文件头注释里写着「调 assetsApi.sync() 上传」，
+// 于是 `assetsApi` 被算成「模块内部使用」——**注释不是使用**。
+// 这和 i18n 卡口那个「统计未排除注释行」的坑是同一类，
+// 说明「计数类判据」几乎一定要显式处理注释，否则基线从第一天就是错的。
+function stripComments(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')   // 块注释
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1') // 行注释（避开 http:// 里的 //）
+}
+
+function countRefs(sym, files) {
+  const re = new RegExp(`\\b${sym}\\b`, 'g')
+  let app = 0
+  let test = 0
+  for (const p of files) {
+    const text = stripComments(readFileSync(p, 'utf8'))
+    if (!re.test(text)) continue
+    re.lastIndex = 0
+    let m
+    while ((m = re.exec(text))) {
+      if (isTest(p)) test++
+      else app++
     }
   }
+  return { app, test }
 }
 
-const dead = []
-const testOnly = []
+const classified = []
 for (const [, info] of exportsByFile) {
+  const own = join(apiDir, info.file)
+  const ownText = stripComments(readFileSync(own, 'utf8'))
   for (const name of info.names) {
-    const key = `${info.file}:${name}`
-    if (used.has(key)) continue
-    if (usedByTestOnly.has(key)) testOnly.push({ file: info.file, symbol: name })
-    else dead.push({ file: info.file, symbol: name })
+    const re = new RegExp(`\\b${name}\\b`, 'g')
+    // 模块内出现次数减去「导出声明」那一次
+    let ownRefs = (ownText.match(re) || []).length
+    if (new RegExp(`export\\s+(?:const|function|async\\s+function|class)\\s+${name}\\b`).test(ownText)) ownRefs--
+    if (new RegExp(`export\\s*\\{[^}]*\\b${name}\\b`).test(ownText)) ownRefs = Math.max(0, ownRefs - 1)
+
+    const others = all.filter((p) => p !== own)
+    const { app, test } = countRefs(name, others)
+
+    let kind
+    if (app > 0) kind = 'wired'
+    else if (test > 0) kind = 'testOnly'
+    else if (ownRefs > 0) kind = 'moduleInternal'
+    else kind = 'dead'
+    classified.push({ file: info.file, symbol: name, kind, app, test, ownRefs })
   }
 }
-dead.sort((a, b) => (a.file + a.symbol).localeCompare(b.file + b.symbol))
-testOnly.sort((a, b) => (a.file + a.symbol).localeCompare(b.file + b.symbol))
 
-const totalSyms = [...exportsByFile.values()].reduce((n, s) => n + s.names.length, 0)
+const of = (k) => classified.filter((c) => c.kind === k).sort((a, b) => (a.file + a.symbol).localeCompare(b.file + b.symbol))
+const dead = of('dead')
+const testOnly = of('testOnly')
+const moduleInternal = of('moduleInternal')
+const wired = of('wired')
+
+const totalSyms = classified.length
 console.log(`【死能力卡口】api/ 下 ${apiFiles.length} 个模块，导出 ${totalSyms} 个符号`)
-console.log(`完全无引用 ${dead.length} 个；仅被 __tests__ 引用（有能力但没接进 App）${testOnly.length} 个\n`)
+console.log(
+  `已接进 App ${wired.length} · 仅测试引用 ${testOnly.length} · 仅模块内部使用 ${moduleInternal.length} · ` +
+    `**完全无人使用 ${dead.length}**\n`,
+)
 
-const byFile = {}
-for (const d of dead) (byFile[d.file] ||= []).push(d.symbol)
-for (const [f, names] of Object.entries(byFile)) {
-  console.log(`  ❌ ${f.padEnd(22)} ${names.join(', ')}`)
+const group = (title, list, mark) => {
+  if (!list.length) return
+  const byFile = {}
+  for (const d of list) (byFile[d.file] ||= []).push(d.symbol)
+  console.log(`  ${mark} ${title}`)
+  for (const [f, names] of Object.entries(byFile)) console.log(`      ${f.padEnd(22)} ${names.join(', ')}`)
 }
-if (testOnly.length) {
-  const byFile2 = {}
-  for (const d of testOnly) (byFile2[d.file] ||= []).push(d.symbol)
-  for (const [f, names] of Object.entries(byFile2)) {
-    console.log(`  ⚠️  ${f.padEnd(22)} ${names.join(', ')}   (仅测试引用)`)
-  }
-}
-if (!dead.length && !testOnly.length) console.log('  （无）')
+group('完全无人使用（棘轮管的就是这批）', dead, '❌')
+group('仅被 __tests__ 引用：能力被测过，但没接进 App', testOnly, '⚠️ ')
+group('仅本模块内部使用：外部拿不到，常量/内部 helper', moduleInternal, 'ℹ️ ')
 
 // ---- 棘轮 ----
 let baseline = { note: '允许存在的「导出了但无人调用」符号；只许减少不许增加。', dead: [] }

@@ -3,15 +3,12 @@
   "dead": [
     "assets.ts:assetsApi",
     "auth.ts:resetPassword",
-    "error-message.ts:ERROR_CODE_I18N_KEYS",
     "gateway.ts:getCredentialHistory",
     "gateway.ts:getNode",
     "gateway.ts:getRoutingHealth",
     "gateway.ts:getWorkTypeStats",
     "gateway.ts:updateTaskDefault",
     "gateway.ts:updateWorkType",
-    "reconnectPolicy.ts:RECONNECT_FACTOR",
-    "reconnectPolicy.ts:RECONNECT_JITTER",
     "vault.ts:vaultApi"
   ]
 }

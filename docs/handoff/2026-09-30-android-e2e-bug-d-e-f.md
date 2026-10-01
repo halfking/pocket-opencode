@@ -6007,3 +6007,85 @@ PKM / contacts / imports 三处 `assetStore.upsert` 写入的数据**只存在�
 - i18n ~800 条未翻译：已钉基线，**未翻译**。
 - https 生产路径、Keystore 原生插件、其余模块写路径：仍无真机回归。
 
+
+### 4.61 死能力卡口的三次修正：为什么「先信工具」是危险的
+
+§4.60 引入的 `check-dead-api` 第一版基线是 **12 条**。
+本轮按计划去清存量，第一件事是读代码而不是信工具——**结果工具错了三次**。
+
+#### 4.61.1 第一次错：把「同包内其它模块的引用」当不存在
+
+我盯着 `reconnectPolicy.ts:RECONNECT_FACTOR/JITTER` 这两条「完全无引用」，
+直觉是「这可能是退避算法缺了系数和抖动」——**这是个真 bug 的样子**。
+于是去读实现：
+
+```
+api/reconnectPolicy.ts:15   let d = RECONNECT_BASE_MS * Math.pow(RECONNECT_FACTOR, a)
+api/reconnectPolicy.ts:18   const jitter = 1 + (rand() * 2 - 1) * RECONNECT_JITTER
+api/websocket.ts:2          import { nextReconnectDelay } from './reconnectPolicy'
+api/websocket.ts:77         const delay = nextReconnectDelay(this.reconnectAttempts)
+```
+
+**两条常量在本模块里被用着，退避策略也确实接进了 WebSocket 客户端。**
+根因：第一版把 `consumers` 过滤成「`api/` 之外的文件」，
+于是**任何被同包内另一个模块使用的符号都会被误报**。
+若基线就这么落盘，这两条会永久「合法」，而且 `nextReconnectDelay` 也会被
+错误地标成「仅测试引用、没接进 App」——**等于凭空造出一个不存在的缺陷**。
+
+#### 4.61.2 第二次错：把「注释里提到」当「使用」
+
+改成四类分类后，`assetsApi` 跑到了「仅本模块内部使用」——可它是本节的主角，
+按理该是「完全无人使用」。查 `api/assets.ts` 的文件头注释：
+
+> 2. 把改动加密后调 **assetsApi.sync()** 上传，同时拉取其他设备的改动
+
+**注释不是使用。** 这和 i18n 卡口那个「统计未排除注释行」的坑是同一类，
+说明**计数类判据几乎一定要显式处理注释**，否则基线从第一天就错。
+修法：计数前先 `stripComments()`（块注释 + 行注释，且避开 `http://` 里的 `//`）。
+
+#### 4.61.3 第三次错：只有「死/活」二分
+
+「完全无引用」和「仅测试引用」的处置方式完全不同：
+前者是「彻底该删」，后者是「有能力、被测过、只是没接线」。
+混在一起会让人把「没接线」当成「该删」而误删。
+
+#### 4.61.4 修完后的分类（101 个符号）
+
+```
+已接进 App 84 · 仅测试引用 5 · 仅模块内部使用 3 · 完全无人使用 9
+```
+
+**完全无人使用 9 个**（棘轮管的就是这批）：
+
+| 文件 | 符号 | 判断 |
+|---|---|---|
+| `assets.ts` | `assetsApi` | **确认**：本地资产同步编排层未实现（§4.60） |
+| `vault.ts` | `vaultApi` | 已知死代码 |
+| `auth.ts` | `resetPassword` | 密码重置入口未接 |
+| `gateway.ts` | `getNode` / `getRoutingHealth` / `getCredentialHistory` / `getWorkTypeStats` / `updateTaskDefault` / `updateWorkType` | 网关详情/统计能力未接 |
+
+「仅测试引用」5 个：`error-message.ts:extractErrorCode/resolveErrorI18nKey`、
+`reconnectPolicy.ts:RECONNECT_BASE_MS/RECONNECT_MAX_MS`、`stt-error.ts:STT_UNAVAILABLE_CODE`。
+「仅模块内部使用」3 个：`ERROR_CODE_I18N_KEYS`、`RECONNECT_FACTOR`、`RECONNECT_JITTER`
+——这三个是**正常**的模块私有常量/内部 helper，不该被当成问题。
+
+#### 4.61.5 两个针对性负控（不只测「该红的会红」）
+
+| 负控 | 构造 | 期望 | 实测 |
+|---|---|---|---|
+| A 注释不算使用 | 一个符号只出现在注释里 + 一个纯未用符号 | 两者都判死 | ✅ `__negctlAlsoOnlyInComment`、`__negctlOnlyInComment` 均被判死，**EXIT=1** |
+| B 同包引用不算死 | `__negctl-lib.ts` 导出 `__negctlHelper`，被 `__negctl-consumer.ts` import | `__negctlHelper` **不**判死；真正没用的 `__negctlHelper2` 判死 | ✅ 正是如此，EXIT=1 |
+
+移除全部临时文件后 `EXIT=0`，基线 9 条。
+（清理时又踩一次：`mavis-trash.cmd` 不接受逗号分隔的多路径，会被当成单个路径而失败。）
+
+#### 4.61.6 教训
+
+- **「工具报了个看起来很像 bug 的东西」时，先读代码再下结论。**
+  这次「退避算法缺系数和抖动」差点被我写进 handoff 当成新缺陷。
+- **假阳性比漏报更危险**：它会写进基线，从此永久合法。
+- 计数类判据（符号引用、key 数量、文案条数）**几乎都要显式处理注释**——
+  本项目已经在 i18n 卡口和死能力卡口上各踩了一次。
+- 一条判据在落地前被自查出三次错，说明「先跑一遍 + 构造它该红的场景 + 构造它不该红的场景」
+  应该成为新卡口的**固定流程**，而不是可选项。
+
