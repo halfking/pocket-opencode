@@ -218,13 +218,14 @@ func report(rows []row, top int) {
 	fmt.Printf(`
 [probe] 只读连接 schema 校验通过（写尝试已被 PG 拒绝）
 [probe] 邮件 %d 封（deleted_at=0）
+[probe] 测量时刻 %s —— 运行中的 pocketd 每分钟在改库，复现请带时刻
 
 ── 需求 1 垃圾判定 ──────────────────────────────────────────
-  会判为垃圾（score>=100）        %d 封
+  会判为垃圾（score 过线）            %d 封
   发票候选（判定时短路，不参与）  %d 封
   importance=high（判定时短路）   %d 封
   未判垃圾但有分（near-miss）     %d 封
-`, len(rows), len(hits), len(invoiceCands), countHigh(impDist), len(unclassified))
+`, len(rows), time.Now().Format("15:04:05"), len(hits), len(invoiceCands), countHigh(impDist), len(unclassified))
 
 	if len(hits) == 0 && len(unclassified) == 0 {
 		fmt.Println("\n  ⚠ 0 命中且 0 near-miss —— 规则在这批数据上完全没给出任何信号。")
