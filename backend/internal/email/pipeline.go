@@ -398,17 +398,7 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 		inv, hit := ExtractInvoice(e, "")
 		c := invoiceCandidate{email: e, scope: sc, inv: inv, hit: hit, jobAt: -1}
 		if p.Fetcher != nil && e.UID > 0 {
-			switch {
-			case !hit && InvoiceCandidate(e):
-				// 关键词命中才值得读正文：24h 窗口内 miss 邮件可能几十封。
-				// 与 server 侧 extractInvoicesAsync 的门槛一致。
-				c.reason = "candidate"
-			case hit && inv != nil && inv.InvoiceDate == "":
-				// 命中了但**没有开票日期**：IMAP 路径只落 envelope，正文里的
-				// 「开票日期」看不到，于是规范文件名退化成下载当天（实测真发票
-				// 「其他-杭州创客家…-3500.00-2026-10-01.pdf」，票面其实是 5 月开的）。
-				c.reason = "date"
-			}
+			c.reason = invoiceBodyReason(hit, inv, e)
 			if c.reason != "" {
 				c.jobAt = len(jobs)
 				jobs = append(jobs, bodyJob{email: e, reason: c.reason})
@@ -457,9 +447,7 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 					text = b.parsed.HTMLBody
 				}
 				if c.reason == "date" {
-					if d := ParseInvoiceDate(text); d != "" {
-						c.inv.InvoiceDate = d
-					}
+					applyParsedBodyDate(c.inv, text)
 				} else {
 					// 金额常常只印在附件里（主题写「对账单」、正文写「见附件」），
 					// 所以把「有没有发票类附件」一起告诉规则层，否则这封邮件会在
@@ -544,6 +532,46 @@ func limitInvoiceBodyJobs(jobs []bodyJob) []int {
 		}
 	}
 	return kept
+}
+
+// invoiceBodyReason 判定这封邮件本轮值不值得拉原文，拉了为什么。
+//
+// 抽成纯函数是因为这个判定原先埋在 step1.5 的巨型循环里（invoiceCandidate
+// 是函数内局部类型），从外部**完全无法测试**——而 "date" 这条分支正是为
+// 真实缺陷加的：IMAP 路径只落 envelope，开票日期在正文里，导致规范文件名
+// 退化成采集当天。修了却没有任何测试保护，等于没修。
+//
+// 返回 "date" | "candidate" | ""。
+func invoiceBodyReason(hit bool, inv *Invoice, e Email) string {
+	switch {
+	case !hit && InvoiceCandidate(e):
+		// 关键词命中才值得读正文：24h 窗口内 miss 邮件可能几十封。
+		// 与 server 侧 extractInvoicesAsync 的门槛一致。
+		return "candidate"
+	case hit && inv != nil && inv.InvoiceDate == "":
+		// 命中了但**没有开票日期**：正文里的「开票日期」看不到，
+		// 规范文件名会退化成采集当天（真库实测：
+		// 「其他-杭州创客家…-3500.00-2026-10-01.pdf」里的 2026-10-01
+		// 是采集当天，不是票面开票日期——该行的 invoice_date 至今为空）。
+		return "date"
+	}
+	return ""
+}
+
+// applyParsedBodyDate 用拉回来的正文补开票日期。已有日期时**不覆盖**——
+// 正文里的散落日期可能不是票面日期，envelope/XML 解析出的值更可信。
+// 返回最终生效的日期（空串表示仍无日期）。
+func applyParsedBodyDate(inv *Invoice, text string) string {
+	if inv == nil || inv.InvoiceDate != "" || text == "" {
+		if inv == nil {
+			return ""
+		}
+		return inv.InvoiceDate
+	}
+	if d := ParseInvoiceDate(text); d != "" {
+		inv.InvoiceDate = d
+	}
+	return inv.InvoiceDate
 }
 
 // fetchBodies 有界并发地拉取这些 job 的原文并解析。
