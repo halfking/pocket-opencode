@@ -74,7 +74,9 @@ func ParseInvoiceXML(raw []byte) *XMLInvoiceFields {
 	walk = func(n xmlNode) {
 		tag := n.XMLName.Local
 		if label := labelMatch(tag); label != "" {
-			applyXMLField(fields, label, strings.TrimSpace(deepText(n)))
+			// nodeText 而非 deepText：父节点（如 <Seller>）要下钻到「名称」叶子，
+			// 否则会把名称和税号拼在一起。
+			applyXMLField(fields, label, strings.TrimSpace(nodeText(n)))
 		}
 		// attribute 形式：<Item AmountTotal="123.00" .../>
 		for _, attr := range n.Attrs {
@@ -151,8 +153,8 @@ func mergeXMLFields(inv *Invoice, f *XMLInvoiceFields) {
 	if inv.Amount == 0 {
 		inv.Amount = f.Amount
 	}
-	if f.Seller != "" {
-		inv.Seller = firstNonEmpty(f.Seller, inv.Seller)
+	if inv.Seller == "" {
+		inv.Seller = f.Seller
 	}
 	if inv.Title == "" {
 		inv.Title = f.BuyerTitle
@@ -194,4 +196,49 @@ func deepText(n xmlNode) string {
 	}
 	rec(n)
 	return b.String()
+}
+
+// leafNameKeys 是「名称类」叶子的标签。真实数电票把销售方拆成
+//
+//	<Seller><销售方名称>腾讯…</销售方名称><销售方纳税人识别号>9144…</销售方纳税人识别号></Seller>
+//
+// 无条件 deepText 会把名称和税号拼成
+//「腾讯科技（深圳）有限公司9144030071526726XG」——那不是任何一方的名字，
+// 直接进 {费用类型}-{对方单位}-{金额}-{日期}.pdf 就会产出一个畸形文件名。
+// 所以父节点命中时优先下钻到「名称」叶子，只有找不到才退回 deepText。
+var leafNameKeys = []string{"名称", "name"}
+
+// nodeText 取一个节点作为字段值时的文本：优先返回其「名称」子叶子的文本。
+func nodeText(n xmlNode) string {
+	if t := findNameLeaf(n); t != "" {
+		return t
+	}
+	return deepText(n)
+}
+
+// findNameLeaf 广度优先找第一个「名称」类叶子节点的文本。
+func findNameLeaf(n xmlNode) string {
+	queue := []xmlNode{n}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, c := range cur.Children {
+			tag := strings.ToLower(strings.TrimSpace(c.XMLName.Local))
+			isName := false
+			for _, k := range leafNameKeys {
+				if k != "" && strings.Contains(tag, k) {
+					isName = true
+					break
+				}
+			}
+			if isName {
+				if txt := strings.TrimSpace(deepText(c)); txt != "" {
+					return txt
+				}
+				continue // 名称节点本身没文本，继续往下找
+			}
+			queue = append(queue, c)
+		}
+	}
+	return ""
 }

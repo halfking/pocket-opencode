@@ -1042,3 +1042,185 @@ body = AES-256-CBC-decrypt(key, iv, raw[16:]) → PKCS#7 unpad
 - 官方向量只覆盖 16 字节密文（1 个块）的最短路径；多块密文靠 round-trip 用例覆盖，
   但**同样不是真实飞书密文**。
 - 长连接模式（长连接事件订阅）本仓未实现，本节只覆盖「发送至开发者服务器」模式。
+
+---
+
+## §7aa 需求 5（A4 网格导出）复核 + 那 7 个 FAIL 的根因定性（2026-10-01）
+
+### A. 需求 5 不是「已完成」，是「已复核为真」
+
+之前只在待验证清单里记了 `export_pdf.go` 存在，没验过它测的是不是生产代码
+（同 §7u 需求 8「假测试」的教训）。本轮实测：
+
+- `export_pdf_test.go` 直接调 `ExportInvoiceGrid`（生产函数），**没有自带副本**
+- 断言很硬：真开产物数页 `api.PageCountFile`，并用 `api.PageDimsFile` 验每页
+  **是 A4 尺寸**（容差 1.5pt），不是「函数没报错」式空测
+- 9 个用例全绿（`-count=1` 强制重跑 4.906s，非缓存）
+
+覆盖到的需求要点：
+
+| 需求原文 | 对应用例 | 结果 |
+|---------|---------|------|
+| 4 张 2x2 ⇒ 1 页 A4 | `2x2FitsOneA4Page` | PASS（含 A4 尺寸断言） |
+| 页数 = ceil(n/grid²) | `PageCountFollowsCeiling` | PASS（5 张：2x2⇒2 页 / 3x3⇒1 页） |
+| 多页发票按格数算 | `MultiPageInvoiceFollowsCellCount` | PASS（12 格⇒3 页） |
+| 多张发票合成一个 PDF | 同上（单文件多页） | PASS |
+| 打印后剪裁 | — | **未覆盖，见下** |
+
+**负控**：把 `PageDim` 改大 1.3 倍 ⇒
+`--- FAIL: 2x2FitsOneA4Page  page is not A4: 773.86x1094.46 pt`。
+证明 A4 断言真的在量产物、不是在验常量。已还原并 `-count=1` 复跑确认真绿。
+
+### 发现的真实缺口：无裁切线
+
+需求原文「打印后可直接剪裁」。当前实现 `export_pdf.go:123` 是 `Border: false`，
+输出网格**没有任何裁切标记**。用户打印 A4 后面对 4/9 张发票，没有可对齐的裁切线，
+「直接剪裁」这一步实际不可执行（只能凭发票白边目测）。
+
+这**不是 bug 而是缺功能**——代码从一开始就没做。判断：属产品决策（要不要默认加线、
+线条粗细、是否做成可配置），未擅自改。若加，默认方案是在每格边框画 0.25pt 细线。
+
+### B. 那 7 个 `TestWorkItemReminder*` FAIL 的根因（纠正上一轮结论）
+
+**上一轮我说这是「真实功能缺陷」，是错的，本轮纠正。**
+
+根因：测试自身的时钟耦合，不是执行器逻辑问题。
+
+- `workitem_reminder_test.go:194-199` `pinServerZone` 把 `time.Local` 钉成 UTC
+- 默认免打扰窗口 `task.DefaultQuietWindow()` = 22:30→07:30（`task/quiet.go:106-108`）
+- 现在是 **CST 11:59 = UTC 03:59**，落在窗口内 ⇒ `quiet.Defer()` 把提醒改期
+  ⇒ `fired=0`、事件未写、`remind_at` 被改写而非清空 ⇒ 7 个断言全挂
+
+**双向对照实测**（临时探针，已删）：
+
+| 条件 | minute-of-day | `Defer` 改期? | 结果 |
+|------|---------------|--------------|------|
+| 钉 UTC（现状） | 239 = 03:59 | 是 | 7 FAIL |
+| 固定 UTC+8（反控） | 719 = 11:59 | 否 | 探针 PASS |
+
+`workitem_reminder.go:211-217` 的「免打扰内改期而非丢弃」正是它文档承诺的行为
+（`workitem_reminder.go:17-19`），**逻辑是对的**。
+
+讽刺点：`pinServerZone` 的注释（`:185-193`）自称要消除「隐藏的 UTC 假设」，
+但它只固定了**时区**、没固定**时刻**——只解决了一半，于是换了个形式重新引入
+「依赖真实时钟」的假设。这批测试**只在 UTC 07:30–22:30 绿**，是
+flaky-by-time，不是 flaky-by-change。
+
+排除本轮回归的证据：父提交 `a23c5a9` 单独开探测 worktree 跑同一包，**7 FAIL
+报错逐字相同**；该包源文件哈希与 HEAD 完全一致（`4701F053…`）。
+探测 worktree 已 `git worktree remove` 清理。
+
+**与邮件需求无关**：这批是**任务提醒**（`task.Task.remind_at`），
+不是需求 4 的邮件重要提醒。邮件提醒走 `pipeline.go` 的 `splitReminderCandidates`，
+该链路本轮全绿。
+
+修法（未擅自做）：在测试夹具里增加「把当前时刻推到非免打扰窗口」，
+让断言与真实时钟解耦，只改 `_test.go` 不碰生产代码。
+
+---
+
+## §7ab 需求 3 的 XML 路径：零覆盖 → 13 用例，并修掉 2 个真缺陷（2026-10-01）
+
+### 起因
+
+复核需求 3 时发现一个**此前完全没人碰过的盲区**：需求原文明确要求
+「原邮件中有 PDF 下载地址（可直接下载已有 PDF），也有 XML 数据格式
+（可解析后重新渲染）」。PDF 那条路径本轮验过（`invoice_qqwallet_test.go`
+用的是真实 QQ Wallet 邮件），**XML 那条从来没被验证过**。
+
+证据：`grep 'ParseInvoiceXML|mergeXMLFields' **/*_test.go` → **零命中**。
+全仓唯一提到 XML 的 `invoice_font_test.go` 里也没有这两个函数的调用
+（只有字体查找 + PDF 渲染）。也就是说 XML 解析器可能早就坏了，
+而因为没人测过所以一直没人知道。
+
+### 新增 13 个用例（`xmlinvoice_test.go`）
+
+夹具按**真实**全电票（数电票）结构写，不自造简化格式：
+
+| 用例 | 覆盖 |
+|------|------|
+| `RealChineseFullEInvoice` | 中文标签嵌套 `<发票><发票号码>` + 价税合计 `￥126.00` |
+| `EnglishKeyValue` | 英文清单 `InvoiceNo` / `TotalAmount` / `SellerName` |
+| `AttributeStyle` | 属性形式 `AmountTotal="454.50"`（`xmlinvoice.go:80-84` 显式支持） |
+| `StripsUTF8BOM` | Windows 工具导出带 BOM，解析前须剥 |
+| `HandlesNamespacePrefix` | `xsi:` 命名空间前缀 |
+| `UnrelatedXMLReturnsNil` ×4 | 空 / 畸形 / 无关 / 只有卖方（无票号金额）→ 必须 nil |
+| `OnlyFillsEmptyFields` | mergeXMLFields 的优先级边界 |
+| `AmountCleaning` ×4 | `￥` / `元` / `RMB` / `CNY` + 千分位 |
+| `TrimsMaskingAsterks` | 票号带 `**` 掩码 |
+| `LabelMatch_WideSubstringBehaviour` | 词典边界（含 `date`/`number` 这类宽泛子串） |
+
+### 首次运行：2 个 FAIL —— 都是生产代码的真缺陷
+
+#### 缺陷 1：XML 无条件覆盖主题提取值
+
+`xmlinvoice.go:154-155` 旧写法：
+
+```go
+if f.Seller != "" {
+    inv.Seller = firstNonEmpty(f.Seller, inv.Seller)   // ← XML 排在前面
+}
+```
+
+`firstNonEmpty` 第一个非空即返回，所以 **XML 值永远赢**。这与该函数自己的
+文档注释「只在原字段为空/为零时覆盖，**保持邮件主题提取值的优先级**」正好相反——
+注释和实现是矛盾的，实现赢。其它 5 个字段（InvoiceNo/Date/Amount/Title/Category）
+都正确地写成 `if inv.X == ""`，**只有 Seller 这一处不一致**，像是漏改。
+
+已修为 `if inv.Seller == "" { inv.Seller = f.Seller }`，与同函数其它字段统一。
+
+#### 缺陷 2：`<Seller>` 把税号拼进单位名
+
+真实数电票结构：
+
+```xml
+<Seller>
+  <销售方名称>腾讯科技（深圳）有限公司</销售方名称>
+  <销售方纳税人识别号>9144030071526726XG</销售方纳税人识别号>
+</Seller>
+```
+
+`labelMatch("Seller")` 命中 seller 类别，于是对整个 `<Seller>` 调 `deepText`——
+而 `deepText`（`xmlinvoice.go:190-201`）**无条件拼接所有后代的 chardata**，
+得到 `腾讯科技（深圳）有限公司9144030071526726XG`。
+
+这个值会直接进需求 3 的规范文件名 `{费用类型}-{对方单位}-{金额}-{日期}.pdf`，
+产出畸形文件名（例如 `其他-腾讯科技（深圳）有限公司9144030071526726XG-126.00-….pdf`）。
+
+修法：新增 `nodeText()` / `findNameLeaf()`——父节点命中时**广度优先下钻到
+「名称」类叶子**（`名称` / `name`），只有找不到名称叶子才退回 `deepText`。
+`walk` 改调 `nodeText`。这样纯文本结构（`<销售方名称>X</销售方名称>` 直接命中，
+无子节点）行为不变，`<Seller><Name>X</Name></Seller>` 也能拿到干净的 X。
+
+### 负控对照（两次，各自精确命中 1 例）
+
+1. 还原 `firstNonEmpty(f.Seller, inv.Seller)`：
+   `--- FAIL: TestMergeXMLFields_OnlyFillsEmptyFields`（其余 12 例绿）
+2. `nodeText` 退回直接 `return deepText(n)`：
+   ```
+   --- FAIL: TestParseInvoiceXML_RealChineseFullEInvoice
+       Seller = "腾讯科技（深圳）有限公司9144030071526726XG", want 腾讯科技（深圳）有限公司
+   ```
+   报错原文就是那个畸形拼接值，缺陷 2 被直接复现。
+
+两次均已还原，`go clean -testcache` 后 email 包全量 **ok 4.612s**（非缓存）。
+
+### 过程中修正的一处自身错误
+
+`TestMergeXMLFields_OnlyFillsEmptyFields` 初版写 `inv.BuyerTitle`，编译报
+`type *Invoice has no field or method BuyerTitle`。查 `invoice.go:19-40` 发现
+字段叫 **`Title`**（注释「发票抬头」= 购方），已改。属测试写错，生产代码无误。
+
+### 证据
+
+- `xmlinvoice_test.go` 13 个顶层用例（含 4 个子用例）
+- `xmlinvoice.go`：`nodeText` / `findNameLeaf` / `leafNameKeys`（新增）、
+  `mergeXMLFields` Seller 分支、`walk` 调用点
+- `go build ./...` 通过；`go test ./internal/email/ -count=1` → `ok 4.612s`
+
+### 仍未验证
+
+- 夹具是按**已知真实结构**写的，但**没有真实数电票 XML 原文样本**。
+  本轮所有发票实证（126.00 / 328.50 / 454.50）都来自 PDF 附件，
+  没拿到过真实 XML 附件。真实 XML 的标签组合可能还有本文未覆盖的写法。
+- `FileSource=xml-render` 这条重渲染链路端到端未跑（需要真实 XML 附件）。
