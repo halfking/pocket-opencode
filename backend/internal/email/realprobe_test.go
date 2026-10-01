@@ -105,9 +105,13 @@ func readMailboxState(addr, user, pass string, uid int64) (mailboxState, error) 
 }
 
 func TestRealImapPrimaryPath(t *testing.T) {
+	// 刻意**不**用 greenmailDSN()：本文件是只读真实数据探针，它要连的正是
+	// 生产 schema（§7by 记录的那 120 封真实邮件就在那里），且 POCKET_REAL_KEYS
+	// 是配套的第二道门控。这里读 PG_DSN 是有意的，不是漂移 ——
+	// 护栏 pgisolation_guard_test.go 对本文件显式豁免并写明理由。
 	dsn := os.Getenv("PG_DSN")
 	if dsn == "" {
-		t.Skip("PG_DSN not set")
+		t.Skip("PG_DSN not set (realprobe: this one intentionally targets the real schema)")
 	}
 	keyPaths := strings.Split(os.Getenv("POCKET_REAL_KEYS"), ";")
 	if len(keyPaths) == 1 && keyPaths[0] == "" {

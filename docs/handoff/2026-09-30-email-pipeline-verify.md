@@ -5532,6 +5532,88 @@ go test ./internal/email/ 52.6s 通过，go test -race 63.6s 通过（0 DATA RAC
 
 ---
 
+## §7ch 覆盖率定位到需求 1 的不可逆路径：Greenmail 从未执行（2026-10-02）
+
+继续按 §7cg 的方法量剩余缺口（`cov.after.out`，逐文件聚合 0 覆盖语句）：
+
+| 文件 | 0 覆盖语句 | 与需求的关系 |
+|---|---:|---|
+| store.go | 420 | 多为迁移/低频路径 |
+| pop3_fetcher.go | 306 | 163 邮箱路径 |
+| fetcher.go | 240 | 含真实 IMAP 协议面 |
+| **junk.go** | **69** | **需求 1「移到垃圾邮件箱」——不可逆** |
+| scheduler.go | 163 | 需求 4 触发 |
+
+`junk.go` 69 条 0% 优先级最高：它是**唯一不可逆**的操作
+（IMAP MOVE 一旦发出，邮件就离开收件箱）。
+
+## 根因：两套 DSN 变量名并存，两个方向都报 ok
+
+查 `junk.go` 零覆盖的原因，发现三个文件各自硬编码 `os.Getenv("PG_DSN")`：
+`fetcher_greenmail_test.go` / `junk_greenmail_test.go` / `realprobe_test.go`，
+而本包其余二十多处走 `testDSN()`（认 `POCKET_TEST_POSTGRES_DSN`）。
+
+后果是双向的，而且**都报 ok**：
+
+1. 只设标准变量 → 这三处 `t.Skip`。需求 1 那条不可逆链路在 CI 与本地
+   **从未执行**，报告是绿的。
+2. 设 `PG_DSN` → 它们真的连上去，而本仓库惯例是同一个 DSN 既喂服务也喂测试
+   ⇒ `PG_DSN` 极可能就是**生产 schema**（这正是 `b3c057c` 修过的那类污染）。
+
+## 处置：统一入口 + 护栏
+
+新增 `greenmailDSN()`（`pgscope_test.go`），**只认 `POCKET_TEST_POSTGRES_DSN`**，
+刻意**不**回退 `POCKET_POSTGRES_DSN` —— 这几个用例会写库（建账户、插邮件、
+标 spam），让「忘了设测试变量」的后果是 skip 而不是连上生产库。
+
+`realprobe_test.go` **保持读 `PG_DSN` 并显式豁免**：它是 `-tags=realprobe`
+手动启用的**只读**探针，刻意连生产 schema（§7by 那 120 封真实邮件就在那里），
+且另有 `POCKET_REAL_KEYS` 第二道门控。改它才是错的。
+
+## 护栏的判据为什么是 AST 而不是正则
+
+`pgisolation_guard_test.go` 挡的是**值被读**（`os.Getenv("PG_DSN")`），
+不是某种写法。用 AST 是因为正则有两个已知的绕过面，换行/多空格就能躲开。
+
+### 四种负控形态，逐个实测
+
+| 注入形态 | 期望 | 实测 |
+|---|---|---|
+| 直接 `os.Getenv("PG_DSN")` | 红 | **红** |
+| `os.Getenv(\n "PG_DSN",\n)` 换行+多空格 | 红 | **红** |
+| 只写进注释（行注释 + 块注释） | **不红** | **不红** |
+| `os.Getenv(\`PG_DSN\`)` 原始字符串 | 红 | 未单独跑（AST 的 `lit.Value` 两种引号同值，随第 1 条一并覆盖） |
+
+「只写进注释必须不红」这一条是刻意设计的：我前几轮栽过「注释能满足任何
+源码扫描断言」的坑（见 agent memory「变体三」）。所以这里不仅负控它、
+还把 `stripGoComments` 本身单测了 6 个形态（行/块注释、字符串、原始字符串、
+rune 字面量、`http://` 不误伤）。
+
+护栏另有防空跑断言：`checked == 0` 直接 fail，并 `t.Logf` 报扫了几个文件
+（实测 136 个）。
+
+## build tag 掩盖的一个编译错误
+
+改完 `-tags=greenmail` 才暴露：`fetcher_greenmail_test.go` 与
+`junk_greenmail_test.go` 的 `os` 导入变成 unused。
+**`go vet ./...` 默认不带 tag，编译不到这两个文件**，所以第一轮
+`VET=0` 是假的。`go vet -tags=greenmail` 与 `-tags=realprobe` 各跑一遍才干净。
+
+## 本机跑不了 Greenmail（诚实记录）
+
+`docker version` 报 `open //./pipe/docker_engine: The system cannot find the
+file specified` —— **Docker daemon 未运行**。所以需求 1 的真实 IMAP MOVE
+链路在本机**依然未验证**，本节只修好了「让它能跑起来」的前置条件。
+真实邮箱上跑 MOVE 仍需单独授权（不可逆）。
+
+## 回归
+
+go build ./... = 0
+go vet ./... = 0；**go vet -tags=greenmail = 0；-tags=realprobe = 0**
+go test ./internal/email/ 通过，-race 通过（0 DATA RACE）
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：

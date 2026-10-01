@@ -20,7 +20,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -28,15 +27,15 @@ import (
 )
 
 func TestSyncGreenmail(t *testing.T) {
-	dsn := os.Getenv("PG_DSN")
+	dsn := greenmailDSN()
 	if dsn == "" {
-		t.Skip("PG_DSN not set; skipping greenmail integration test")
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping greenmail integration test")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// 隔离 schema：PG_DSN 若指向生产库，直接用就会把测试账户写进生产表。
-	// 详见 pgscope_test.go 的说明。
+	// 隔离 schema：dsn 由 greenmailDSN() 保证只来自 POCKET_TEST_POSTGRES_DSN，
+	// 仍建独立 schema 兜底。详见 pgscope_test.go 的说明。
 	buf := make([]byte, 6)
 	if _, err := rand.Read(buf); err != nil {
 		t.Fatalf("rand: %v", err)

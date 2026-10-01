@@ -26,9 +26,35 @@ package email
 
 import (
 	"context"
+	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// greenmailDSN 是 greenmail / realprobe 一类集成测试取 DSN 的**唯一**入口。
+//
+// ## 为什么统一到这里
+//
+// 此前这三个文件各自硬编码 `os.Getenv("PG_DSN")`：
+// fetcher_greenmail_test.go / junk_greenmail_test.go / realprobe_test.go。
+// 而本包其余二十多处走的是 `testDSN()`（认 POCKET_TEST_POSTGRES_DSN，
+// 回退 POCKET_POSTGRES_DSN）。两套变量名并存的后果：
+//
+//  1. 设了标准变量、这些用例**静默 skip** —— 需求 2「移到垃圾邮件箱」那条
+//     不可逆链路（junk.go 的 69 条语句）于是在 CI 与本地都从未执行，
+//     而报告是「ok」；
+//  2. 反过来设 PG_DSN 时，它们又真的连上去，而 PG_DSN 极可能就是生产
+//     DSN（本仓库惯例是同一个 DSN 既喂服务也喂测试）。
+//
+// ## 这里的取法比 testDSN 更严
+//
+// **不**回退 POCKET_POSTGRES_DSN。只认 POCKET_TEST_POSTGRES_DSN：
+// 这几个用例会**写**库（建账户、插邮件、标记 spam），让「忘了设测试变量」
+// 的后果是 skip，而不是连上生产库。
+//
+// 用绿色目录放 PG_DSN 的风险由 pgisolation_guard_test.go 的护栏兜底
+// （源码里再出现 `os.Getenv("PG_DSN")` 会让那条护栏转红）。
+func greenmailDSN() string { return os.Getenv("POCKET_TEST_POSTGRES_DSN") }
 
 // newScopedPool 建一个 search_path 只指向 schema 的连接池。
 // schema 必须已经由调用方 CREATE 过。
