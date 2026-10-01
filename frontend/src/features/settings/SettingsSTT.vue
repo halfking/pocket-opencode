@@ -346,15 +346,37 @@ const channelHint = computed(
   () => channelHints.value[form.channel] || '优先用网关里探测通过的 ASR 模型，没有再退到外部服务',
 )
 
+// 外部服务「真的能用」缺哪一项。空串 = 齐了。
+//
+// 为什么不直接看 form.externalModel：地址和 key 缺一个，外部通道照样转不了，
+// 而 2026-10-01 真机上就出现过「明明配了外部服务，页面却写『外部服务未配置』」
+// 这种反着说的提示——用户会以为自己没配，去反复检查一个已经配好的东西。
+const externalMissing = computed(() => {
+  if (!form.externalBaseURL) return '未配置外部转写服务地址'
+  if (!form.hasExternalKey && !form.externalApiKey) return '外部服务未配置 API Key'
+  if (!form.externalModel) return '未选择外部转写模型'
+  return ''
+})
+
 const effectiveText = computed(() => {
   if (effectiveModel.value) {
     return effectiveNote.value
       ? `${effectiveModel.value}（${effectiveNote.value}）`
       : effectiveModel.value
   }
-  return form.channel === 'external'
-    ? form.externalModel || '未选择外部模型'
-    : '尚未确定（网关暂无可用模型，且外部服务未配置）'
+  if (form.channel === 'gateway') {
+    // 仅网关：外部配得再好也用不上，所以不能说「回退到外部」。
+    return '尚未确定（网关暂无可用模型，可点「重新扫描网关」）'
+  }
+  if (form.channel === 'external') {
+    return externalMissing.value || form.externalModel
+  }
+  // auto：网关没有可用模型时会**回退到外部服务**（后端 resolveSTTTarget 就是
+  // 这个顺序），所以这里必须说清会落到哪个模型，而不是笼统一句「尚未确定」。
+  if (!externalMissing.value) {
+    return `${form.externalModel}（网关暂无可用模型，将回退到外部服务）`
+  }
+  return `尚未确定（网关暂无可用模型，且${externalMissing.value}）`
 })
 
 const usableCandidates = computed(() =>

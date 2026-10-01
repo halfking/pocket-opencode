@@ -205,4 +205,24 @@ describe('候选详情不泄漏上游原始响应', () => {
     assert.match(block.slice(0, 400), /-webkit-line-clamp:\s*2|line-clamp:\s*2/,
       'candidate-detail 未限制行数，漏判时仍会撑爆卡片')
   })
+
+  // 2026-10-01 真机：外部服务地址/key/模型都配好了，页面却仍然显示
+  // 「尚未确定（…且外部服务未配置）」。用户会以为自己没配，去反复检查一个
+  // 已经配好的东西；而 auto 通道实际是会回退到外部的（后端 resolveSTTTarget
+  // 就是这个顺序，黑盒第 5 条也在验它）。
+  it('「当前生效」不能说反：外部已配好时 auto 要说清会回退到哪个模型', () => {
+    const fn = view.slice(view.indexOf('const externalMissing'))
+    assert.match(fn, /const externalMissing = computed/, '缺少 externalMissing：无法区分「没配」与「配了但缺哪项」')
+    assert.match(fn, /hasExternalKey/, 'externalMissing 没把 API Key 算进可用性判断')
+    assert.match(fn, /externalBaseURL/, 'externalMissing 没把服务地址算进可用性判断')
+    assert.match(fn, /将回退到外部服务/, 'auto 通道没说明会回退到外部服务')
+    // 三种通道各自的措辞都要在，别让某一支落回笼统的「尚未确定」
+    assert.match(fn, /form\.channel === 'gateway'/, '缺少仅网关通道的独立措辞（它不能提回退外部）')
+    assert.match(fn, /form\.channel === 'external'/, '缺少仅外部通道的独立措辞')
+    assert.doesNotMatch(
+      fn,
+      /: '尚未确定（网关暂无可用模型，且外部服务未配置）'/,
+      '仍存在无条件断言「外部服务未配置」的分支',
+    )
+  })
 })
