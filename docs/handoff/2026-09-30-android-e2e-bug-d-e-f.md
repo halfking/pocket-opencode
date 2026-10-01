@@ -5926,3 +5926,356 @@ PG 的 `opencode_pocket.notes` 属于**另一个模块**（`features/notes/notes
   `local_assets`（表名带 `local_` 前缀；句柄是 Capacitor SQLite 插件，方法是 `all`/`run`，
   不是 `query`/`execute`，写错列名只会得到一个**不带消息的裸 Error**）
 
+
+### 4.60 「本地资产不同步」的定性结论 + 死能力卡口
+
+§4.59 结尾留了个问题：`e2ee_local_first` 的本地资产到底应不应该同步到服务端。
+本节把这个问题从「不确定」变成**有证据的结论**。
+
+#### 4.60.1 结论：这是**已知未实现的功能缺口**，不是回归
+
+逐环核对（静态，排除注释行）：
+
+| 环节 | 状态 | 证据 |
+|---|---|---|
+| 后端端点 | ✅ **已实现并注册** | `server.go:770` `mux.HandleFunc("/api/assets/sync", s.requireAuth(s.handleAssetSync))`；`server_lobster.go` 有完整 push/pull handler |
+| 本地存储 | ✅ **已实现** | `asset-store.ts:265 listDirty()`、`:278 markSynced()` |
+| API 客户端 | ✅ **已实现** | `api/assets.ts:47 export const assetsApi`（含 `sync()`） |
+| **编排层** | ❌ **根本不存在** | `syncAssets()` 只出现在**注释**里（`api/assets.ts:12`、`asset-store.ts:9`、`:100`），**没有定义、没有调用方**；`assetsApi` 除了定义处**零调用方** |
+
+而 `api/assets.ts:12` 的注释原文就是：**「见 native/asset-store.ts 末尾的 syncAssets() 流程编排（**待 F0.4 接入**）」**。
+
+⇒ 整条同步链路在**客户端编排层是断的**。`dirty=1` 会一直累积，
+`connectivity.lastSyncAt` 永远是 0（本轮活体实测就是 0），
+`pendingCount=0` 也说明不了问题——它压根没接进队列。
+
+**这解释了 §4.59 的观测，但不构成新缺陷**：它是被显式记录在案的未完成项。
+PKM / contacts / imports 三处 `assetStore.upsert` 写入的数据**只存在于本机**。
+
+#### 4.60.2 新卡口：`check:dead-api`（导出了却没人调用）
+
+这类「能力写好了却没人接线」的问题最难发现：**编译通过、类型通过、gates 全绿、
+运行时也完全正常**——只是那件事从来没发生过。上面的 `assetsApi` 就是活例子。
+
+`frontend/scripts/check-dead-api.mjs` 扫 `api/**` 的导出符号，
+区分两种「没人用」并分别报告：
+
+- ❌ **完全无引用**（12 个）：`assets.ts:assetsApi`、`vault.ts:vaultApi`、
+  `auth.ts:resetPassword`、`error-message.ts:ERROR_CODE_I18N_KEYS`、
+  `gateway.ts` 的 6 个（getNode / getRoutingHealth / getCredentialHistory /
+  getWorkTypeStats / updateTaskDefault / updateWorkType）、
+  `reconnectPolicy.ts:RECONNECT_FACTOR/RECONNECT_JITTER`
+- ⚠️ **仅被 `__tests__` 引用**（12 个，能力被测过但**没接进 App**）：
+  `http.ts:TimeoutError`、`stt.ts:requireCloudAudioBlob` 等
+
+棘轮：基线 `dead-api-baseline.json` 钉住 12 条，**只许减不许增**；
+确有历史债要保留就 `--update-baseline` 并在注释里写明为什么不接。
+
+#### 4.60.3 这条新判据自己也踩了两个坑（都已修）
+
+1. **假阳性（更严重）。** 第一版把 `consumers` 过滤成「`api/` 之外的文件」，
+   于是 `api/__tests__/reconnectPolicy.test.ts` 被整个排除——
+   而它明明 `import` 了 `nextReconnectDelay` / `RECONNECT_BASE_MS` / `RECONNECT_MAX_MS`。
+   假阳性会**污染基线**，让后续真阳性混进来。已修为
+   「api/ 内非测试文件不算消费自己的导出，但 api/ 内的**测试文件**算（归入仅测试引用）」。
+   修完：完全无引用 23 → **12**，仅测试引用 1 → **12**。
+
+2. **分类缺失。** 第一版只有「死/活」二分，把「仅测试引用」和「完全无引用」混在一起。
+   两者处置方式不同（前者是「有能力没接线」，后者是「彻底该删」），已拆开。
+
+> 再次印证同一条纪律：**新判据上线前必须自己先跑一遍、并且专门构造它该红的场景**。
+> 假阳性的危害比漏报更大——它会写进基线，从此永久合法。
+
+**负控已做**：临时新增 `src/api/__negctl-probe.ts` 导出一个无人调用的符号 ⇒
+`❌ 新增死能力：__negctl-probe.ts:__negctlDeadApi`、`EXIT=1`；
+移除后 `EXIT=0`。变异全程只用**新文件**，没碰任何已跟踪文件。
+
+#### 4.60.4 验证
+
+| 项 | 结果 |
+|---|---|
+| `check:dead-api`（基线后） | **EXIT=0**，基线 12 条 |
+| **负控**（新增死导出） | **EXIT=1** 且指名道姓；移除后 EXIT=0 |
+| `npm run gates` | **EXIT=0**（native 38/38、stores 5/5、dueclock OK、vm-gaps 0、i18n 齐平、未翻译棘轮通过、**死能力棘轮通过**、icons OK） |
+
+#### 4.60.5 仍然没有做的事
+
+- **同步编排层没写。** 这是「打通所有功能点」里最大的一个洞，
+  但它是一个**完整功能**（push + pull + 冲突处理 + 加密 + 游标），
+  不是一行修补。**需要产品先确认它属于本期范围**，再决定谁做。
+  在那之前，本地数据不出设备这件事应该被当作**已知限制**写进用户可见的说明。
+- i18n ~800 条未翻译：已钉基线，**未翻译**。
+- https 生产路径、Keystore 原生插件、其余模块写路径：仍无真机回归。
+
+
+### 4.61 死能力卡口的三次修正：为什么「先信工具」是危险的
+
+§4.60 引入的 `check-dead-api` 第一版基线是 **12 条**。
+本轮按计划去清存量，第一件事是读代码而不是信工具——**结果工具错了三次**。
+
+#### 4.61.1 第一次错：把「同包内其它模块的引用」当不存在
+
+我盯着 `reconnectPolicy.ts:RECONNECT_FACTOR/JITTER` 这两条「完全无引用」，
+直觉是「这可能是退避算法缺了系数和抖动」——**这是个真 bug 的样子**。
+于是去读实现：
+
+```
+api/reconnectPolicy.ts:15   let d = RECONNECT_BASE_MS * Math.pow(RECONNECT_FACTOR, a)
+api/reconnectPolicy.ts:18   const jitter = 1 + (rand() * 2 - 1) * RECONNECT_JITTER
+api/websocket.ts:2          import { nextReconnectDelay } from './reconnectPolicy'
+api/websocket.ts:77         const delay = nextReconnectDelay(this.reconnectAttempts)
+```
+
+**两条常量在本模块里被用着，退避策略也确实接进了 WebSocket 客户端。**
+根因：第一版把 `consumers` 过滤成「`api/` 之外的文件」，
+于是**任何被同包内另一个模块使用的符号都会被误报**。
+若基线就这么落盘，这两条会永久「合法」，而且 `nextReconnectDelay` 也会被
+错误地标成「仅测试引用、没接进 App」——**等于凭空造出一个不存在的缺陷**。
+
+#### 4.61.2 第二次错：把「注释里提到」当「使用」
+
+改成四类分类后，`assetsApi` 跑到了「仅本模块内部使用」——可它是本节的主角，
+按理该是「完全无人使用」。查 `api/assets.ts` 的文件头注释：
+
+> 2. 把改动加密后调 **assetsApi.sync()** 上传，同时拉取其他设备的改动
+
+**注释不是使用。** 这和 i18n 卡口那个「统计未排除注释行」的坑是同一类，
+说明**计数类判据几乎一定要显式处理注释**，否则基线从第一天就错。
+修法：计数前先 `stripComments()`（块注释 + 行注释，且避开 `http://` 里的 `//`）。
+
+#### 4.61.3 第三次错：只有「死/活」二分
+
+「完全无引用」和「仅测试引用」的处置方式完全不同：
+前者是「彻底该删」，后者是「有能力、被测过、只是没接线」。
+混在一起会让人把「没接线」当成「该删」而误删。
+
+#### 4.61.4 修完后的分类（101 个符号）
+
+```
+已接进 App 84 · 仅测试引用 5 · 仅模块内部使用 3 · 完全无人使用 9
+```
+
+**完全无人使用 9 个**（棘轮管的就是这批）：
+
+| 文件 | 符号 | 判断 |
+|---|---|---|
+| `assets.ts` | `assetsApi` | **确认**：本地资产同步编排层未实现（§4.60） |
+| `vault.ts` | `vaultApi` | 已知死代码 |
+| `auth.ts` | `resetPassword` | 密码重置入口未接 |
+| `gateway.ts` | `getNode` / `getRoutingHealth` / `getCredentialHistory` / `getWorkTypeStats` / `updateTaskDefault` / `updateWorkType` | 网关详情/统计能力未接 |
+
+「仅测试引用」5 个：`error-message.ts:extractErrorCode/resolveErrorI18nKey`、
+`reconnectPolicy.ts:RECONNECT_BASE_MS/RECONNECT_MAX_MS`、`stt-error.ts:STT_UNAVAILABLE_CODE`。
+「仅模块内部使用」3 个：`ERROR_CODE_I18N_KEYS`、`RECONNECT_FACTOR`、`RECONNECT_JITTER`
+——这三个是**正常**的模块私有常量/内部 helper，不该被当成问题。
+
+#### 4.61.5 两个针对性负控（不只测「该红的会红」）
+
+| 负控 | 构造 | 期望 | 实测 |
+|---|---|---|---|
+| A 注释不算使用 | 一个符号只出现在注释里 + 一个纯未用符号 | 两者都判死 | ✅ `__negctlAlsoOnlyInComment`、`__negctlOnlyInComment` 均被判死，**EXIT=1** |
+| B 同包引用不算死 | `__negctl-lib.ts` 导出 `__negctlHelper`，被 `__negctl-consumer.ts` import | `__negctlHelper` **不**判死；真正没用的 `__negctlHelper2` 判死 | ✅ 正是如此，EXIT=1 |
+
+移除全部临时文件后 `EXIT=0`，基线 9 条。
+（清理时又踩一次：`mavis-trash.cmd` 不接受逗号分隔的多路径，会被当成单个路径而失败。）
+
+#### 4.61.6 教训
+
+- **「工具报了个看起来很像 bug 的东西」时，先读代码再下结论。**
+  这次「退避算法缺系数和抖动」差点被我写进 handoff 当成新缺陷。
+- **假阳性比漏报更危险**：它会写进基线，从此永久合法。
+- 计数类判据（符号引用、key 数量、文案条数）**几乎都要显式处理注释**——
+  本项目已经在 i18n 卡口和死能力卡口上各踩了一次。
+- 一条判据在落地前被自查出三次错，说明「先跑一遍 + 构造它该红的场景 + 构造它不该红的场景」
+  应该成为新卡口的**固定流程**，而不是可选项。
+
+
+### 4.62 9 条死能力逐个定性 + 删除 `vaultApi`
+
+§4.61 的基线是 9 条。本节**逐个查后端与 UI**，给出处置结论，而不是一刀切删或留。
+
+#### 4.62.1 定性表
+
+| 符号 | 打的后端路由 | 后端有无 | 前端 UI 有无 | 结论 |
+|---|---|---|---|---|
+| `assets.ts:assetsApi` | `POST /api/assets/sync` | ✅ `server.go` 已注册 | ❌ 无编排层 | **保留**。等同步编排层（§4.60）一起做，删了就把 client 端也一起废掉 |
+| `auth.ts:resetPassword` | `/api/auth/reset-password` | ✅ **已注册**（`server.go:682` `requireAuth(handleAuthResetPassword)`） | ❌ **无 UI 入口** | **半个用户可见功能**。用户没有「修改密码」入口，但后端与客户端都已就绪 |
+| `vault.ts:vaultApi` | `/api/vault/sync/`（仅同步子树） | ✅ 已注册 | ✅ `features/vault/VaultListView.vue` **直接 import `native/keystore`** | **纯冗余门面**。Vault 功能根本不经过它，全仓 **零导入者** ⇒ **本轮已删** |
+| `gateway.ts` 六个 | `/api/llm-gateway/nodes/{id}`、`/routing/health`、`/work-types/stats`、`/work-types/{key}`、`/api/admin/...task-defaults` | ✅ `server.go:843-844` 把 `/api/llm-gateway/nodes/` **整棵子树**交给 `handleLLMGatewayNodes` | ❌ 网关页有列表/增删改，**没有详情页 / 路由健康 / 任务类型统计 / 默认任务** | **功能没做**，不是接漏了。属于产品范围，不是死代码 |
+
+`gateway.ts` 一共 33 个导出函数，只有这 6 个没人用——**其余 27 个都在用**。
+（第一版一次性扫描脚本曾把 33 个全报成「无引用」，是脚本自己的 bug：PowerShell 里
+`'\\\\b'` 到 JS 变成字面 `\\b` 而非词边界。**别在 PowerShell 里手搓正则扫描**，
+写进文件里用。卡口本身是对的。）
+
+#### 4.62.2 本轮实际改动：删掉 `frontend/src/api/vault.ts`
+
+定性依据三条，都可复现：
+
+1. `vaultApi` 只是 `native/keystore` 的**门面包一层**（`import('../native/keystore')`），
+   而 `features/vault/VaultListView.vue` **直接** import `native/keystore`——功能根本不经过它。
+2. 全仓**没有任何文件** import `api/vault`（含类型引用，故删整个文件而非只删导出）。
+3. 删后 `npx vue-tsc --noEmit` **EXIT=0**——没有隐式类型依赖。
+
+基线随之 **9 → 8**。
+
+#### 4.62.3 三条待决（本轮只定性、未动手）
+
+- `resetPassword`：后端与客户端都好了，**只差一个 UI 入口**。
+  这是「用户可见功能缺失」而不是代码债，**建议排进 UI 工作**而不是删。
+- `gateway.ts` 六个：对应的是「节点详情 / 路由健康 / 任务类型统计 / 默认任务」四个页面，
+  **属于产品范围**。前端 API 客户端已备好，接页面即可。
+- `assetsApi`：等同步编排层。
+
+#### 4.62.4 验证
+
+| 项 | 结果 |
+|---|---|
+| 删除后 `npx vue-tsc --noEmit` | **EXIT=0** |
+| `check:dead-api` | `api/ 下 34 个模块，导出 100 个符号`，完全无人使用 **8**，基线 8 条，**EXIT=0** |
+
+
+### 4.63 BUG-AT：密码箱在 Android 上**完全不可用**，界面却展示成一个正常可用的解锁表单
+
+#### 4.63.1 取证（三方，不靠读代码猜）
+
+1. **Android 侧确实没有实现。** `frontend/android/app/src/main/java/.../plugins/` 下 15 个插件，
+   **没有 `KeystorePlugin.java`**。唯一含 "Keystore" 字样的 `BiometricAuthPlugin.java`
+   用的是 Android 原生 `KeyStore` API（生物识别密钥），与 Capacitor 的 `Keystore` 插件无关。
+2. **设备上确实没注册。** 活体问 Capacitor：
+   ```
+   Capacitor.Plugins = [BiometricAuth, App, AppSettings, TextToSpeech, StatusBar, SystemBars,
+     LocalNotifications, AiStreamKeepalive, Sherpa, BackgroundMic, SplashScreen, EmailFetch,
+     Camera, Haptics, CapacitorCookies, WebView, Filesystem, Share, CapacitorHttp, CapacitorSQLite]
+   hasKeystore: false
+   ```
+3. **三个方法全部 reject：**
+   ```
+   isVaultInitialized => REJECTED: "Keystore" plugin is not implemented on android
+   unlockWithPassword  => REJECTED: "Keystore" plugin is not implemented on android
+   listEntries         => REJECTED: "Keystore" plugin is not implemented on android
+   ```
+
+#### 4.63.2 根因：「优雅降级」只覆盖了 12 个方法里的 1 个
+
+`native/keystore.ts` 文件头写的设计意图是
+「UI 用 `isVaultInitialized()` 的可用性来 gate 密码箱功能」。
+但**插件缺失时 `registerPlugin` 不会返回 false，而是 reject**，
+所以这个 gate 只在**探针那一个方法**上成立：
+
+```ts
+// 修复前
+async function probe() {
+  try { initialized.value = await keystore.isVaultInitialized() }
+  catch {
+    initialized.value = isCryptoReady()   // 降级：把 initialized 置为真
+    if (!initialized.value) initError.value = '主密码尚未设置（登录后自动初始化）'
+  }
+}
+async function unlockBio() { try { ... } catch (e) { initError.value = e.message } }  // 无降级
+async function load()       { try { ... } catch (e) { initError.value = e.message } }  // 无降级
+```
+
+⇒ `initialized` 为真 → 模板走 `v-else` 分支 → 正常显示「解锁密码箱 / 指纹·面容解锁」；
+用户一点就撞上**原始英文技术错误**。
+更糟的是另一条降级路径把原因说成**「主密码尚未设置」**——
+与真实原因（插件压根不存在）毫无关系，**把人和后续排查都带偏**。
+
+#### 4.63.3 修复前后真机对照（同一个设备、同一条路由）
+
+| | 修复前（09:01 前的 APK） | 修复后（09:01:57 构建 / 装机） |
+|---|---|---|
+| `#/vault` 页面 | `🔐 解锁密码箱 / 指纹·面容解锁 / 解锁` | `🔐 当前平台未提供密码箱原生插件，功能不可用。` |
+| 点「指纹/面容解锁」 | 页面出现 `"Keystore" plugin is not implemented on android` | 无可点的操作（表单不再出现） |
+
+**改动**：
+
+- `native/keystore.ts`：新增 `isNotImplementedError(e)`（识别 Capacitor 的
+  `"X" plugin is not implemented on <platform>`）与 `isKeystoreAvailable()`（探针一次，
+  失败即视为不可用）。**只回答「能不能用」，不解释「为什么」**——后者交给调用方说人话。
+- `features/vault/VaultListView.vue`：`probe()` 先问平台可用性；不可用就
+  `supported=false` + 如实说明 + **不再渲染解锁/设置表单**（模板 `v-if="initError"`
+  本就会盖住两个表单）。另外两处 `initError.value = e.message` 改为
+  「插件缺失 → 如实说明；其它失败 → 通用文案」，**原始技术错误不再上屏**。
+
+**刻意没做**：没有去实现原生插件，也没有为此新建 `vault` i18n 命名空间
+（该视图整体是硬编码中文，属已知 i18n 欠账，另行处理）。
+**本轮只让 App 对自己「没有什么」保持诚实**，不假装功能存在。
+
+#### 4.63.4 验证
+
+| 项 | 结果 |
+|---|---|
+| `npx vue-tsc --noEmit` | **EXIT=0** |
+| 重建 + 装机 | vite exit=0 / cap sync ok / gradle BUILD SUCCESSFUL / install Success |
+| 真机 `#/vault` | 显示「当前平台未提供密码箱原生插件，功能不可用。」，**无解锁表单** |
+| 真机点解锁 | 不存在可点的解锁操作（修复前会显示原始英文错误） |
+| `npm run gates` | **EXIT=0** |
+
+#### 4.63.5 本轮的工具坑（又一次）
+
+CDP 探针里页内 `await` 的 promise 若**永不 settle**，`Runtime.evaluate` 的
+`awaitPromise:true` 会一直等 ⇒ 整条探针 `__frozen__`（连栽两次）。
+App 本身没事（pid 存活、logcat 无 JS 错误），是探针写法的问题。
+**修法：页内所有 await 都套 `Promise.race` 超时兜底**，保证一定 settle。
+判断依据要能区分「App 挂了」和「我的探针写错了」——先看 pid 与 logcat，别直接归因给产品。
+
+
+### 4.64 全路由巡检：BUG-AT 修完之后，49 条静态路由的横向复查
+
+BUG-AT（§4.63）是人肉点到的。既然「功能没实现、界面照常展示」这类问题
+长得都一样，逐个人工点就不现实 ⇒ 写了 `scripts/sweep-routes.mjs` 做**数据驱动**的全量巡检：
+路由表直接从 `src/app/router-mobile.ts` 解析（不手挑），逐条跳转、读 `innerText`、
+按「原始技术错误 / 渲染失败」特征串筛。只扫**静态**路由（path 无 `:param`）：
+带参数的路由天然会因 id 不存在而显示「未找到」，混进来会淹没真问题。
+
+#### 4.64.1 巡检判据自己错了三次（和 §4.61 同一个模式）
+
+| # | 症状 | 真相 |
+|---|---|---|
+| 1 | 第一版报「**0 红旗**，全部 ✅」 | **假阴性**。看「首个正文行」就发现：从 `/rss/add` 之后，`/login`、`/register`、`/servers`、`/marketplace/*`、`/flashcards/*` **全都显示同一个「RSS 订阅」**——导航在中途失效，后面全读的是陈旧 DOM。**没有「hash 必须真的落到目标」这条断言，就分不清「页面没问题」和「压根没跳过去」** |
+| 2 | 补上 hash 断言后，11 条「疑似未重渲染」 | **判据太弱**：只比**首行**，而很多页首行都是同一个返回按钮标签 `arrow_back`。改成比**整段正文**后 → 0 条 |
+| 3 | 第三次跑，18 条「导航未生效」 | **不是缺陷**：App 刚重启、本地库锁着，路由守卫**正确地**把数据路由重定向到 `#/login?returnTo=...&unlock=1`。这是**产品行为正确**。补了 `GUARDED_UNVERIFIED` 分类，并要求**先解锁再扫** |
+
+另外一次整轮探针 `TIMEOUT`，查下来是**焦点窗口被 `com.xiaomi.mibrain.speech`（小爱同学）抢走**，
+WebView 被系统弹窗盖住——不是 App 崩（logcat 无 ANR/FATAL），也不是我代码的问题。
+**先看 pid 与 logcat 再归因**，否则会把环境问题记成产品缺陷。
+
+#### 4.64.2 真实结果（先解锁、再全量扫）
+
+```
+红旗（把技术错误/失败态展示给用户）  0 条
+已确认落地并检查                    46 条
+被锁定守卫拦下、未验证               0 条
+疑似未重渲染                        0 条
+空页 / 探针失败                     0 条
+导航未生效                          3 条
+```
+
+⇒ **BUG-AT 修完之后，全站没有再发现第二处「把内部实现/失败态展示给用户」的页面。**
+3 条导航未生效都能解释：`/login`（已登录会跳首页）、`/auth/sso/callback`（消费 hash 后跳转）、
+`/meetings/new`（见下）。
+
+#### 4.64.3 巡检里冒出来的两个观察（一个已知、一个**未确认**）
+
+**1）`/meetings/new` 会「进页面即建会并开始录音」**（设计如此，非缺陷）
+落地 hash 是 `#/meetings/meeting-1790818166364-36dwhh?record=1`——
+访问「新建会议」直接创建了一条会议记录并带上 `record=1` 开始录音。
+所以「导航未生效」是**业务跳转**，判据把它误归到失败一类了。
+
+**2）⚠️ 录音指示器疑似不消失（未确认，别当缺陷记账）**
+从 `/forgot-password` 开始的**连续 16 条**路由，首个正文行都是 `录音中 00:01`，
+且计数一直冻在 00:01。两种可能，本轮**没分清**：
+- 真的没停：离开会议录音页后麦克风一直开着（电量与隐私问题，值得修）；
+- 只是 DOM 里的指示器节点陈旧、计数不再更新（纯显示问题）。
+
+**下一轮要专项验**：`/meetings/new` → 离开到 `/settings` → 查
+`BackgroundMicPlugin` 状态与录音计数是否继续增长。分清了再决定是不是缺陷。
+
+#### 4.64.4 顺带澄清一个旧疑问
+
+路由表里**有** `/marketplace/agents` 这个**前端页面**（`router-mobile.ts:447`），
+而**后端**没有 `/api/marketplace/agents` 路由（只有 packages / releases / nodes 子树）。
+§4.58 里「未鉴权返回 401 不能证明路由存在」的结论仍然成立，
+但现在知道了它为什么容易被混淆：**UI 有页面、API 没有对应端点**。
+
