@@ -4588,6 +4588,83 @@ mock server 能证明**协议层**——URL、鉴权头、multipart 结构、双
 
 ---
 
+## §7bw 用覆盖率给「从未被执行」的路径定点（2026-10-02）
+
+§7bv 抓到飞书那个 bug 之后，一个自然的问题是：**还有多少代码是「有实现、但一次都没
+被执行过」的？** 绿灯可能全来自没碰到它的包。用覆盖率把这类路径系统性地找出来。
+
+### 两组数字
+
+```
+go test ./internal/email/ -coverprofile                     → 50.4%   0% 函数 122
+go test -tags=greenmail ./internal/email/ -coverprofile     → 54.3%   0% 函数 116
+```
+
+加上 `-tags=greenmail` 只多覆盖了 **6 个**函数。所以这 116 个**不是被 build tag
+藏起来的**，是任何测试都碰不到的。
+
+按文件分布（0% 函数数）：
+
+```
+store.go 31   scheduler.go 17   fetcher.go 11   pipeline.go 10
+oauth_callback.go 9   invoice_store.go 7   invoice_harvest.go 5
+store_inbox.go 4   oauth.go 4   pop3_fetcher.go 4   mime.go 3
+cleanup.go 3   store_cleanup.go 3   junk.go 3   其余各 1
+```
+
+### 0% ≠ 有缺陷：两类要分开
+
+**（一）接线式，0% 很正常**，不必当问题：
+
+```
+scheduler.go:142 SetKxmemory        :148 SetOAuthRefresher    :160 SetBroadcaster
+             :165 SetVacationSender :221 SetTimezoneOffset   :226 timezoneOffset
+             :266 LastTickUnix      :271 NextTickUnix
+```
+
+这些是 setter / 一行 getter，被 `main.go` 接线时用，测试不需要碰。
+
+顺带澄清一个我自己差点搞错的点：看到 `LastTickUnix` / `NextTickUnix` 0% 时，
+我以为 §7aw 说「需求 1 重排已在单元测试层验证过」是假的。**查了才发现那说的
+是另一件事** —— `cc6753d` 是 **Android 侧**的修复，改的是
+`AndroidManifest.xml` + `EmailFetchReceiver.java` + 一个 **JUnit 5** 用例
+（开机重排闹钟），与这两个 Go 函数无关。**原说法准确，不用改。**
+
+**（二）带逻辑的，0% 才是猎场**：
+
+```
+scheduler.go:281  pollLoop            主轮询循环          → 需求 1
+scheduler.go:301  refreshLoop         账户刷新循环        → 需求 1
+scheduler.go:319  refreshOnce         单次刷新            → 需求 1
+scheduler.go:748  runDailySummary     每日摘要            → 需求 4
+scheduler.go:796  summarizeUser       单用户摘要          → 需求 4
+invoice_harvest.go:85   HarvestAll     采集入口            → 需求 3
+invoice_harvest.go:396  savePDF        落盘                → 需求 3
+invoice_harvest.go:435  downloadPDF    下载                → 需求 3
+invoice_harvest.go:643  InvoiceContentHash  内容哈希去重   → 需求 3
+```
+
+`InvoiceContentHash` 值得单独点一下：它是发票**去重**的依据，
+0% 意味着「按内容哈希去重」这条逻辑没有任何测试钉住。
+
+### 结论与用法
+
+**不宣称「这些都有 bug」** —— 覆盖率低本身不是缺陷，`pollLoop` 这类循环也确实
+难以用单测覆盖（它跑在真实时钟 + 真实网络 + 真实 DB 上）。
+
+但 §7bv 已经证明了一次：**0% 的路径里藏着一个让需求 3 直接失效的 bug**。
+所以这份清单的正确用法是「**下一轮排查的优先级排序**」，不是缺陷列表：
+
+- 优先级 1：`downloadPDF` / `savePDF` —— 需求 3 的成败点，
+  且**可以用 mock HTTP server 覆盖**（和 §7bv 同样的手法，不需要真实邮箱）
+- 优先级 2：`InvoiceContentHash` —— 纯函数，最容易写测试
+- 优先级 3：`refreshOnce` —— 需求 1 的开机重排判定，可以注入假时钟
+- 优先级 4：`pollLoop` / `runDailySummary` —— 循环体，适合用假 store + 假时钟
+
+**未做**：这一节只做定位，没有补这些测试，也没有改任何代码。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
