@@ -132,11 +132,27 @@ key 一丢，5 个真实邮箱的凭据全部作废、必须重新录入 —— 
    > 复现（`logs/emu-88-classify-stalled.png` 前两条即脏摘要），
    > 属服务端已知缺口，不是客户端镜像的新回归。
 
-2. **客户端列表刷新后仍显示旧摘要**。`emails-store.ts:199` 的
-   `ON CONFLICT(id) DO UPDATE SET snippet=excluded.snippet` 本身是对的，
-   但模拟器上下拉刷新后列表文本没变（`logs/emu-64-inbox-refreshed.png`）。
-   `EmailInboxView.vue` 用 KeepAlive，`onMounted(load)` 只跑首挂载一次；
-   刷新只写库不重渲列表。待跟进。
+2. ~~**客户端列表刷新后仍显示旧摘要**~~ —— **已于 `394ec6f` 修复**。
+   > 原文的归因（「KeepAlive 不重渲 / `onMounted(load)` 只跑首挂载」）是**错的**：
+   > `load()` 每次都跑，`emails.value` 也确实被重新赋值了。真正丢字段的是
+   > **合并函数**：`email-inbox-pagination.ts` 的 `applyRefreshPage` 只收
+   > 「全新 id」，同 id 的行整行丢弃。于是 `emails-store.ts` 的
+   > `ON CONFLICT ... SET snippet=excluded.snippet` 把摘要写进了本地库，
+   > 却在合并这一步被扔掉——**库是对的，列表是旧的**。
+   > 现改为「刷新页（去重）+ 刷新页未覆盖的已翻页行」，并把「无变化」
+   > 与「有更新」分开计数（`addedCount` / `updatedCount`）。
+   >
+   > **真机证据**：把服务端 `em-11` 的摘要改成 `[[REFRESH-PROBE]] …` 并
+   > 抬高 `created_at`（让增量同步带上它），重启 App 重新挂载后，
+   > 列表该行从 base64 串变成了探针文案（`logs/emu-97-merge-proven.png`），
+   > 顶部同时出现「已同步 4 个账户，新邮件 2」。随后已把该行
+   > `snippet`/`created_at` 按原值还原（503 字节，与实验前一致）。
+   > 负控（退回旧实现）6 个用例转红，见提交正文。
+   >
+   > 附带发现：**`adb input swipe` 触发不了这个 PullToRefresh**——
+   > 滑动中列表纹丝不动、`syncHint` 始终为空。真机验证改用
+   > 「force-stop + 重新挂载」走 `load()` 内部的 `showLocal(false)`，
+   > 那是同一条合并路径。
 
 3. ~~**「正在归类 1/120」卡住不动**~~ —— **已于 `48ae6aa` 修复**。
    原缺口是 `use-email-inbox.ts` 的 `runClassify` 用
