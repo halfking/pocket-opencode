@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
@@ -917,12 +918,34 @@ func sanitizeUIDLForID(uidl string) string {
 	return s
 }
 
-// truncateStr 按字节截断（最长 max 字节）。
+// truncateStr 按字节截断（最长 max 字节），但**回退到完整字符边界**。
+//
+// 为什么必须回退：中文一个字 3 字节，直接 s[:max] 会切在字的中间，产出
+// 非法 UTF-8。2026-10-02 实测：
+//
+//	truncateStr(<1120 字的中文>, 500) → 500 字节 / 168 rune，
+//	                                 utf8.ValidString = false，
+//	                                 末字节 e5 ae（半个「事」）
+//	PG INSERT 该串 → ERROR: invalid byte sequence for encoding "UTF8"
+//	                 (SQLSTATE 22021)
+//
+// 后果不是"存成乱码"，而是**整条写入直接失败**。它的调用点
+// fetcher.go:774 把结果赋给 em.Snippet，也就是邮件入库路径——
+// 一封正文超过 ~166 个中文字的邮件走到这条分支，整封就进不来。
+//
+// 保留"字节上限"而不是改成"字符上限"是有意的：调用点现有的长度预期
+// （snippet 500、prompt 摘要 600、note 正文 500）都是按字节定的，
+// 改成字符上限会让中文邮件的入库体积一下子涨 3 倍。回退最多丢 3 个字节。
 func truncateStr(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max]
+	cut := s[:max]
+	// 回退到最后一个完整 rune 的边界
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
 }
 
 // extractFirstEmailAddress 从 "Name <a@b.c>" / "a@b.c" 形态中提取纯地址。

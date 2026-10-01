@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
@@ -452,11 +453,34 @@ func parseRefineJSON(content string) (map[string]any, error) {
 	return parsed, nil
 }
 
+// truncateStr 按字节截断到最多 n 字节，但**回退到完整字符边界**。
+//
+// 为什么不直接 s[:n]：中文一个字 3 字节，切在字的中间会产出非法 UTF-8。
+// 2026-10-02 实测该串被 PostgreSQL 直接拒绝：
+//
+//	ERROR: invalid byte sequence for encoding "UTF8" (SQLSTATE 22021)
+//
+// 也就是说后果不是"存成乱码"，而是**写入直接失败**。本函数有三条调用点
+// 的结果会入库或返回给客户端，全都会踩到：
+//
+//	server_email_summary.go:226   邮件 AI 摘要 → SetClassificationScoped 写库
+//	server_meeting_ingest.go:186  笔记 snippet → 写库
+//	server_meeting.go:437         会议摘要兜底 → JSON 返回
+//
+// 保留"字节上限"是有意的：这些上限都是按字节定的（500/200），改成字符上限
+// 会让中文内容的体积涨 3 倍。回退最多丢 3 个字节，代价可以忽略。
+//
+// 同包 invoice_pdf.go 里的 truncateRunes 是**字符**上限 + 省略号，两种语义
+// 各有其用，不要混用。
 func truncateStr(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n]
+	cut := s[:n]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
 }
 
 // handleSttTranscribeBase64 — 支持 base64 音频转写（云端 Groq Whisper）

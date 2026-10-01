@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"unicode/utf8"
 )
 
 // Error 是 AgentAdapter 的结构化错误。
@@ -165,11 +166,20 @@ func isNetError(err error) bool {
 }
 
 // truncateStr 截断字符串到 maxLen（用于错误日志脱敏）。
+//
+// 回退到完整字符边界：中文一个字 3 字节，直接 s[:maxLen-3] 会切出非法
+// UTF-8，而这里的产物会被 JSON 编码后送到前端（adapter_pi.go:332 的
+// "pi exited with code %d"）。非法 UTF-8 在 Go 的 json.Marshal 里会被
+// 替换成 U+FFFD，界面就会出现「�」这种乱码方块。
 func truncateStr(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	cut := s[:maxLen-3]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + "..."
 }
 
 // 编译期检查 *Error 实现了 error 接口。
