@@ -24,7 +24,8 @@ import (
 //  1. 拉整封邮件原文（IMAP BODY[]），拆出附件与正文；
 //  2. 优先级：PDF 附件 > 正文/HTML 里的 PDF 下载链接 > XML 附件（解析后
 //     重渲染成 PDF）；
-//  3. 落盘 dataDir/email-invoices/<workspace>/{费用类型}-{对方单位}-{金额}-{日期}.pdf；
+//  3. 落盘 dataDir/email-invoices/<workspace>/{费用类型}-{对方单位}-{金额}-{日期}[-{发票号}].pdf
+//     （发票号段与限长见 InvoiceFileName；补发票号是为了同额同日的票不互相覆盖）；
 //  4. 下载失败置 pending（下一轮流水线自动重试）——对应「有可能需要多次
 //     操作才能下载到发票文件」；重试超限转 failed 终态。
 //

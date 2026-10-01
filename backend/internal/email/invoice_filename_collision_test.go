@@ -25,6 +25,7 @@ package email
 // 负控：把发票号从文件名里去掉 -> 本文件转红。
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,7 +141,45 @@ func TestInvoiceFileName_BoundedLengthForWindowsMaxPath(t *testing.T) {
 	}
 }
 
-// 无发票号时（采集早期/XML 未解析出）不加分隔段，避免 `-` 空段。
+// 已 downloaded/filed 的发票**不得**被重新采集。
+//
+// 这是「文件名格式从 4 段变 5 段」不需要迁移存量文件的前提：
+// 采集器只处理 status IN ('new','pending')，已落盘的发票永远不会被再次
+// 写入，因此旧名文件不会被改名、不会被新名文件顶掉、也不会产生孤儿。
+// 一旦将来把 downloaded 也纳入重跑（例如「重新下载」功能），这条立刻失效，
+// 存量文件就必须迁移——所以这里用测试钉住这个前提。
+//
+// 需要真库（无 POCKET_TEST_POSTGRES_DSN 时 skip）。
+func TestListHarvestableInvoices_ExcludesDownloadedAndFiled(t *testing.T) {
+	store, cleanup := newWorkspaceTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	seedInvoiceForStats(t, store, "inv-h-new", "CNY", "new", 10)
+	seedInvoiceForStats(t, store, "inv-h-pending", "CNY", "pending", 10)
+	seedInvoiceForStats(t, store, "inv-h-done", "CNY", "downloaded", 10)
+	seedInvoiceForStats(t, store, "inv-h-filed", "CNY", "filed", 10)
+	seedInvoiceForStats(t, store, "inv-h-failed", "CNY", "failed", 10)
+
+	got, err := store.ListHarvestableInvoices(ctx, 50)
+	if err != nil {
+		t.Fatalf("ListHarvestableInvoices: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, inv := range got {
+		ids[inv.ID] = true
+	}
+	if !ids["inv-h-new"] || !ids["inv-h-pending"] {
+		t.Fatalf("new/pending 应被采集，实际拿到 %v", ids)
+	}
+	for _, id := range []string{"inv-h-done", "inv-h-filed", "inv-h-failed"} {
+		if ids[id] {
+			t.Errorf("%s 不应被重新采集 —— 否则已落盘的旧名文件会被新名顶掉", id)
+		}
+	}
+}
+
+// 无发票号时（采集早期/XML 未解析出）不加那一段，避免留下 `-` 空段。
 func TestInvoiceFileName_NoInvoiceNoStillDeterministic(t *testing.T) {
 	inv := &Invoice{Category: "其他", Seller: "某供应商", Amount: 10, Currency: "CNY",
 		InvoiceDate: "2026-09-15"}
