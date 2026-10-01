@@ -328,11 +328,15 @@ func (s *Server) discoverGatewayASR(ctx context.Context, baseURL, apiKey string,
 // 分成两层是因为默认值需要一个与请求无关的超时（探测一次要打 6 个候选），
 // 而测试注入的是「拒绝一切出网」的实现——给它再包一层 Timeout 也毫无意义，
 // 反而会让失败从「立刻拒绝」变成「等到超时」，单测慢上几十倍。
+//
+// 必须用 sttOutboundHTTPClient 而不是 gatewayHTTPClient：后者的私网放行只看
+// POCKET_LLM_GATEWAY_ALLOW_PRIVATE，会让 POCKET_STT_ALLOW_PRIVATE 形同虚设
+// （设置页能存进去、一转写就被 dialer 拒）。详见 ssrf.go 里的说明。
 func (s *Server) sttClient(timeout time.Duration) *http.Client {
 	if s.sttHTTPClient != nil {
 		return s.sttHTTPClient
 	}
-	return gatewayHTTPClient(timeout)
+	return sttOutboundHTTPClient(timeout)
 }
 
 // SetSTTHTTPClient 注入 STT 出网客户端（供测试拒绝出网）。

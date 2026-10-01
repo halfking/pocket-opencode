@@ -15,10 +15,12 @@ package server
 // 与网关那个「连内网网关」不是一回事，默认严格。
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestSTTURLRejectsLoopbackEvenWhenGatewaySwitchOn 是这次缺陷的正面用例。
@@ -87,6 +89,94 @@ func TestSTTURLDefaultRejectsPrivate(t *testing.T) {
 	}
 	if err != nil && strings.Contains(err.Error(), "POCKET_LLM_GATEWAY_ALLOW_PRIVATE") {
 		t.Errorf("错误信息不应把用户导向网关开关（那是另一个语义），实际：%v", err)
+	}
+}
+
+// TestSTTOutboundDialerHonorsSameSwitchAsValidation 守住「校验层与拨号层认同一个开关」。
+//
+// 这是上一个缺陷留下的**同一个洞的第二层**：POCKET_STT_ALLOW_PRIVATE 只被
+// validateSTTOutboundURL 认，而运行时的出站 client 走 gatewayHTTPClient，
+// 只认 POCKET_LLM_GATEWAY_ALLOW_PRIVATE。后果是设置页能存进去、
+// 一转写就报 "resolved address is not allowed" —— 自建 ASR 彻底不可用。
+//
+// 上面几个用例全是**函数级**的，挡不住「调用点接错了 client」。
+// 这个用例真起一个 loopback 服务并真的去拨它。
+func TestSTTOutboundDialerHonorsSameSwitchAsValidation(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"text":"ok"}`))
+	}))
+	defer upstream.Close()
+	if !strings.Contains(upstream.URL, "127.0.0.1") {
+		t.Skipf("上游不在 loopback 上（%s），本用例失去意义", upstream.URL)
+	}
+
+	cases := []struct {
+		name       string
+		sttSwitch  string
+		gwSwitch   string
+		wantDialOK bool
+	}{
+		{"默认：两个开关都关", "", "", false},
+		{"只有 STT 开关开", "true", "", true},
+		// 关键一行：网关开关**不**放行 STT 拨号。
+		// 曾经在这里用「两个开关的并集」，结果配置层拒绝、拨号层放行 ——
+		// 拨号层变成绕过设置页校验的后门，而网关开关在「连内网网关」这种
+		// 极常见部署里本就会开，等于把 STT 的 SSRF 防护在最后一层静默关掉。
+		{"只有网关开关开：STT 拨号仍须被拒", "", "true", false},
+		{"两个都开", "true", "true", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("POCKET_STT_ALLOW_PRIVATE", c.sttSwitch)
+			t.Setenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE", c.gwSwitch)
+
+			// 1) 配置校验层的判定
+			validateErr := validateSTTOutboundURL(upstream.URL + "/v1")
+
+			// 2) 实际拨号层的判定
+			//
+			// 必须走 **s.sttClient() 这个调用点**，不能直接调
+			// sttOutboundHTTPClient()：本缺陷的性质就是「函数本身是对的、
+			// 调用点接错了 client」，只测函数的话负控**不会转红**
+			// （2026-10-01 实测踩过：注入 gatewayHTTPClient 后用例依然全绿）。
+			// 这里用一个没有注入 client 的裸 Server，走生产路径。
+			srv := &Server{}
+			dialErr := func() error {
+				resp, err := srv.sttClient(5 * time.Second).Get(upstream.URL + "/v1")
+				if err != nil {
+					return err
+				}
+				defer resp.Body.Close()
+				_, _ = io.Copy(io.Discard, resp.Body)
+				return nil
+			}()
+
+			// 核心不变量：两层判定必须一致。
+			// 不一致 = 用户能保存一个永远连不上的地址。
+			if (validateErr == nil) != (dialErr == nil) {
+				t.Fatalf("校验层与拨号层判定不一致：validate=%v  dial=%v\n"+
+					"这意味着用户能保存一个转写时必然失败的地址（自建 ASR 不可用）",
+					validateErr, dialErr)
+			}
+			if (dialErr == nil) != c.wantDialOK {
+				t.Errorf("拨号结果 = %v（dialErr=%v），期望可达=%v", dialErr == nil, dialErr, c.wantDialOK)
+			}
+		})
+	}
+}
+
+// TestSTTOutboundDialerAlwaysBlocksCloudMetadata 确认放行私网时元数据端点仍被拒。
+func TestSTTOutboundDialerAlwaysBlocksCloudMetadata(t *testing.T) {
+	t.Setenv("POCKET_STT_ALLOW_PRIVATE", "true")
+	t.Setenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE", "true")
+
+	c := sttOutboundHTTPClient(2 * time.Second)
+	for _, host := range []string{"169.254.169.254", "[fd00:ec2::254]"} {
+		if _, err := c.Get("http://" + host + "/latest/meta-data/"); err == nil {
+			t.Errorf("云元数据端点 %s 必须始终被拒", host)
+		} else if !strings.Contains(err.Error(), "not allowed") {
+			t.Errorf("元数据端点 %s 应被 SSRF 守卫拒绝，实际错误：%v", host, err)
+		}
 	}
 }
 

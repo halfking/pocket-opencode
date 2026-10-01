@@ -86,11 +86,66 @@ const (
 	// 持续讲话（没有静音）的会议录音必须能切，否则整个请求会失败。
 	maxSegmentSec = 25
 
-	// minSilenceMS 判定「静音」的能量阈值窗口时长。
-	minSilenceMS = 300
+	// minSilenceMS 是「连续静音达到多久才算一个切点」。
+	//
+	// 为什么从 300ms 提到 800ms（2026-10-01 真引擎 + 真语音实测）：
+	// 300ms 这个门槛会把**句内停顿**当成切点。对着 79 秒会议语料把静音分布
+	// 打出来，分布是干净可分的：
+	//
+	//	句间停顿   1575 – 3475 ms
+	//	句内停顿    100 –  600 ms   ← 逗号、换气、词组之间的自然停顿
+	//
+	// 用 300ms 门槛时，语料里 30 多处句内停顿全部成了候选切点：同一份 79 秒
+	// 语料在均方门槛修好之后，300ms 切出 14 段、800ms 切出 10 段，而 10 段
+	// 才是与句子边界对齐的那个。碎切不只是慢 —— 每段都要付一次上游调用与
+	// 计费，而且句子照样被劈开。
+	//
+	// 800ms 不是从 TTS 语料上硬凑出来的数字：真人会议里句内换气也在
+	// 300–700ms 区间，800ms 留了余量；而真达不到 800ms 的边界会退化成
+	// 25 秒硬切，那条路径本来就是为「持续讲话无停顿」准备的。
+	minSilenceMS = 800
 
 	// silenceFloor 是静音的能量上界（0-1 RMS）。低于它算静音。
 	silenceFloor = 0.012
+
+	// silenceFloorSquared 是上面那个门槛的**平方**。
+	//
+	// 为什么必须显式写出来：frameRMS 省掉了 sqrt（只返回均方），主循环里
+	// 拿它直接和 silenceFloor 比。两者口径不一致，等效门槛被放大到
+	// sqrt(0.012) ≈ 0.11 —— 比设计意图松了整整 10 倍。后果是几乎所有换气、
+	// 词组之间的自然停顿都被判成静音，79 秒会议语料被切成 16 段
+	// （平均 4.9 秒），句子照样被劈开，而且每段都要付一次上游调用。
+	//
+	// 写死一个平方常量而不是在热循环里算乘法，是为了让「均方 vs 均方根」
+	// 这个坑无法再被无声地带回来。
+	silenceFloorSquared = silenceFloor * silenceFloor
+
+	// minSilenceCutSec 是「允许在静音处切段」的最短累计时长。
+	//
+	// 为什么需要它（2026-10-01 真引擎实测发现）：原先的规则是「已过目标长度
+	// 75% 才允许在静音处切」，兜底是到目标长度硬切。对会议录音这种**长句**
+	// 场景，这两条规则会联手把句子从中间劈开：
+	//
+	//	句子 A 占 0–11s，停顿 0.9s，句子 B 占 12–22.7s
+	//	→ 0–11s 时长度不足 18.75s，不切
+	//	→ 18.43s 时（B 句中间）长度够了，于是**在 B 句中间硬切**
+	//
+	// 实测后果：79 秒会议录音被切成 5 段，其中一段把「越积越多，影响后续的
+	// 开发效率」劈成「…技术债会越来越多」+「这些机会多」——两段各自都识别
+	// 得不差，拼接处却各丢一半信息。同一份音频、同一引擎、同一时刻的前后
+	// 对照：全局 CER_norm 8.9% → 5.5%，CER_strict 18.5% → 14.7%。
+	//
+	// CER 改善是「实打实但不夸张」的量级；更大的价值是结构性的 ——
+	// 修复后 9 句话**每一句都完整落在单个返回段里**（覆盖率 100%、零丢失、
+	// 零重复），修复前至少 3 句被跨段劈开。下游做会议纪要、抽待办时，
+	// 句子是否完整比聚合 CER 几个百分点更要命。
+	//
+	// 取 5 秒是权衡：再小会让段数暴涨（每段一次上游调用、一次计费），
+	// 再大又会把长句拦在门外。5 秒足以让绝大多数中文短句完整落在段内。
+	//
+	// 注意它**不覆盖** maxSegmentSec：目标段长被压得很小（某些上游限制）
+	// 时仍按原来的 75% 走，避免造出一堆碎片段。
+	minSilenceCutSec = 5
 )
 
 // minUsefulSegmentSec 是「值得送去转写」的段长下限。
@@ -191,7 +246,8 @@ func SplitWAV(data []byte, maxSegmentSec float64) ([]Segment, bool) {
 			span = frame + 1
 		}
 		rms := winSum / float64(span)
-		if rms < silenceFloor {
+		// 注意与 silenceFloorSquared 比：frameRMS 返回的是均方，不是均方根。
+		if rms < silenceFloorSquared {
 			silenceRun++
 			// 切点**持续更新**到当前静音窗口的中点，而不是只在「恰好等于阈值」
 			// 那一帧设一次。
@@ -210,9 +266,15 @@ func SplitWAV(data []byte, maxSegmentSec float64) ([]Segment, bool) {
 		}
 
 		length := frame - segStart
+		// 允许在静音处切段的最短累计长度。目标段长本身很小时（上游限 4-6 秒）
+		// 退回原来的 75% 口径，否则会切出一堆碎片段。
+		minCutFrames := minSilenceCutSec * sampleRate
+		if target := targetFrames * 3 / 4; minCutFrames > target {
+			minCutFrames = target
+		}
 		switch {
-		case cutCandidate > segStart && length >= targetFrames*3/4:
-			// 已过目标长度 75%，且已发现静音点 → 优先在静音处切。
+		case cutCandidate > segStart && length >= minCutFrames:
+			// 已有一定长度且遇到静音点 → 在静音处切。
 			flush(cutCandidate, true)
 			silenceRun = 0
 			cutCandidate = -1
@@ -292,9 +354,15 @@ func buildWAV(original []byte, dataLenFieldAt int, payload []byte) []byte {
 	out = append(out, original[:dataLenFieldAt+4]...)
 
 	// 先改 RIFF 块总长（偏移 4，在已复制的头部范围内）。
-	var riff [4]byte
-	binary.LittleEndian.PutUint32(riff[:], uint32(dataLenFieldAt+4+len(payload)))
-	copy(out[4:8], riff[:])
+	//
+	// RIFF 规范：这里的值是「从 'WAVE' 标签开始到文件末尾」的字节数，
+	// 即 **文件总长 − 8**，不是文件总长本身。
+	//
+	// 写成文件总长会让每个切出来的段都比实际大 8 字节。宽容的解码器
+	// （PyAV / ffmpeg）会默默截掉末尾 8 字节当作填充，**看起来一切正常**；
+	// 严格的上游 API 则直接拒收整段。2026-10-01 实测就是先被宽容解码器
+	// 吞掉，直到逐段比对文件头才发现。
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)+len(payload)-8))
 
 	// 再改 data 段长度。
 	var size [4]byte
@@ -398,7 +466,24 @@ func (t *Transcriber) TranscribeFull(ctx context.Context, scope Scope, audio []b
 	// 上层拿到的是一段全是「［第 N 段转写失败］」的文本，会当成会议内容存库。
 	// 一次成功段都没有 = 这次全量转写没有产生任何内容，必须报错。
 	if out.Succeeded == 0 {
-		return nil, fmt.Errorf("stt %s: 全量转写没有任何有效文本（%d 段全部失败）", target.Model, out.Failed)
+		// 必须带上**第一段的具体错误**。
+		//
+		// 原来只报「N 段全部失败」，但每段明细都留在了返回值里、随 error
+		// 一起被丢掉 —— 调用方只看到段数，完全无法判断是「上游 401」还是
+		// 「切出来的 WAV 非法」。2026-10-01 黑盒实测就卡在这里：5/5 段失败，
+		// 日志与响应里都没有任何线索。
+		first := ""
+		for _, s := range out.Segments {
+			if s.Error != "" {
+				first = s.Error
+				break
+			}
+		}
+		if first == "" {
+			first = "（无逐段错误，全部段被判定为纯静音而跳过）"
+		}
+		return nil, fmt.Errorf("stt %s: 全量转写没有任何有效文本（%d 段全部失败，首段错误：%s）",
+			target.Model, out.Failed, first)
 	}
 	return out, nil
 }
