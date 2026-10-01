@@ -1,21 +1,17 @@
 {
   "note": "把后端/JS 原始 message 直接上屏的存量；只许减少不许增加。",
   "sites": [
-    "composables/usePromptOptimizer.ts:72",
-    "features/ai-chat/AgentSyncSheet.vue:56",
-    "features/ai-chat/AgentSyncSheet.vue:72",
-    "features/ai-chat/aiChatStore.ts:326",
-    "features/flashcards/FlashcardEditView.vue:240",
-    "features/flashcards/FlashcardListView.vue:174",
-    "features/servers/ServerSelectView.vue:121",
-    "features/servers/ServerSelectView.vue:156",
-    "features/sessions/SessionDetailDrawer.vue:73",
-    "features/study/StudyHubView.vue:174",
-    "features/tasks/useInstanceApprovals.ts:108",
-    "features/vault/VaultListView.vue:245",
-    "stores/chatAgentStore.ts:106",
-    "stores/chatAgentStore.ts:220",
-    "stores/chatAgentStore.ts:246",
-    "stores/chatAgentStore.ts:292"
+    "composables/usePromptOptimizer.ts\u0000optimizeError.value = err.message || String(err)",
+    "features/ai-chat/AgentSyncSheet.vue\u0000lastError.value = e?.message || String(e)",
+    "features/ai-chat/AgentSyncSheet.vue\u0000lastError.value = e?.message || String(e)",
+    "features/ai-chat/aiChatStore.ts\u0000modelsError.value = e?.message || String(e)",
+    "features/flashcards/FlashcardEditView.vue\u0000deckError.value = err instanceof Error ? err.message : String(err)",
+    "features/flashcards/FlashcardListView.vue\u0000deckError.value = err instanceof Error ? err.message : String(err)",
+    "features/servers/ServerSelectView.vue\u0000formError.value = err instanceof Error ? err.message : String(err)",
+    "features/servers/ServerSelectView.vue\u0000formError.value = err instanceof Error ? err.message : String(err)",
+    "features/sessions/SessionDetailDrawer.vue\u0000toast.error(e.message)",
+    "features/study/StudyHubView.vue\u0000deckError.value = err instanceof Error ? err.message : String(err)",
+    "features/tasks/useInstanceApprovals.ts\u0000loadError.value = err instanceof Error ? err.message : '待审批拉取失败'",
+    "features/vault/VaultListView.vue\u0000syncStatus.value = { type: 'err', msg: `同步失败: ${e.message || e}` }"
   ]
 }

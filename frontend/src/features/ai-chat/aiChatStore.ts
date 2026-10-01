@@ -17,8 +17,7 @@ import { llmBffApi, type ChatMessage } from '../../api/llm-bff'
 import type { ChatStreamHandle } from '../../native/aiStreamRuntime'
 import { listNodes, getAvailableModels, getFeaturedModels } from '../../api/gateway'
 import { useToast } from '../../composables/useToast'
-import { toUserMessage } from '../../api/error-message'
-import i18n from '../../i18n'
+import { storeApiError } from '../../api/store-error'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 
 export type ChatRole = 'system' | 'user' | 'assistant'
@@ -82,14 +81,6 @@ export interface ChatSettings {
   modelByModality: Record<ModalityKey, string>
 }
 
-/**
- * store 里没有组件实例，useApiError（内部 useI18n）不可靠；
- * 直接用 i18n.global.t 走同一套归一逻辑，错误文案与组件侧保持一致。
- * 真机曾直接显示 "Failed to fetch" / 英文错误码，就是没走这一步。
- */
-function storeApiError(err: unknown, fallbackKey: string): string {
-  return toUserMessage(err, (k: string) => i18n.global.t(k) as string, i18n.global.t(fallbackKey) as string)
-}
 
 const STORAGE_KEY_PREFIX = 'pocket:ai-chat:v2'
 const SETTINGS_KEY_PREFIX = 'pocket:ai-chat:settings:v2'
