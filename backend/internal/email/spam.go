@@ -81,17 +81,46 @@ type SpamVerdict struct {
 //
 // senderVolume 是同一发件人在本批邮件里出现的封数（0/1 表示"未统计"）。
 //
-// 为什么需要它：实测真实信箱 430 封里 spamHits=0，而 14 封 near-miss
-// **全部**卡在 30 分，Why 只有「营销发件人特征:edm/newsletter/promotion」。
-// 补退订特征（查摘要）在这份数据上无效——真实 emails.snippet 存的是
-// **原始 MIME 头**（实测 105 封形如 "------=_Part_... Content-Type: text/html"），
-// 不是正文摘要，"退订"两个字压根不在里面。
+// ## 为什么需要它（2026-10-02 按当前真库数据更正）
 //
-// 真正稳定的判据是发件人本身：这三家 InfoQChina@edm.infoq.com.cn(8)、
-// newsletter@newsletter.aliyun.com(5)、promotion@news.ecloudrover.com(1)
+// 原文写的是「实测真实信箱 430 封里 spamHits=0，14 封 near-miss 全部卡在
+// 30 分」，并据此断言「补退订特征无效——真实 emails.snippet 存的是**原始
+// MIME 头**（105 封形如 "------=_Part_... Content-Type: text/html"）」。
+//
+// **那条断言对当前数据已不成立**，它描述的是上一批数据来源。实测
+// opencode_pocket.emails 120 封（2026-10-02 05:5x）：
+//
+//	snippet 以 "------=_Part_" 开头   1 封
+//	snippet 以 "Content-Type" 开头   0 封
+//	snippet 以 RFC822 邮件头开头      0 封
+//	snippet 为空                      0 封
+//	snippet 平均长度                  377 字符（最长 501）
+//
+// 即 119/120 是**真实正文**（形如「极客时间 点击这里取消订阅 ------=_Part_…」——
+// 正文在前，MIME 边界在尾部）。所以退订特征**现在是有效的**，而且它是
+// 决定性信号：同一批 6 封命中里 Why 全部含「退订特征:取消订阅」。
+//
+// 当前分布实测（同一批 120 封）：命中 6、near-miss 1（30 分）。
+// 两极分化明显——要么明显是列表推送过线，要么几乎没特征，中间地带为空。
+//
+// ## 仍然成立的判据
+//
+// 发件人成批推送这条依然是最稳的：InfoQChina@edm.infoq.com.cn、
+// newsletter@newsletter.aliyun.com、promotion@news.ecloudrover.com
 // 发的每一封都是列表推送。一对一的人际邮件不会来自同一地址成批发来。
 // 单看一封无从判断，看同一地址的量就能判断——所以这个信号必须由调用方
 // 统计后传进来，纯函数自己不掌握跨封信息。
+//
+// ## 一个已知的自洽性问题（2026-10-02 实测，本轮未改）
+//
+// 同一发件人会出现**判定不一致**：InfoQChina@edm.infoq.com.cn 3 封里，
+// 2 封页脚带「点击这里取消订阅」→ 100 分判垃圾，第 3 封（InfoQ 每周精要
+// No.940）snippet 开头是正文、没匹配到退订 → 只 30 分留在收件箱。
+// 差别只在某一封的邮件模板有没有那个页脚链接。
+//
+// 「列表推送就是列表推送」，按单封模板决定去留在语义上说不通。
+// 但改成按发件人整体判定属于**产品语义**（会不会因此误杀同域的真人邮件），
+// 没有拍板前不改。已知问题记录在此，别当成没看见。
 func LooksLikeSpam(from, subject, snippet string, invoiceCandidate, important bool, senderVolume int) SpamVerdict {
 	if invoiceCandidate || important {
 		return SpamVerdict{}
