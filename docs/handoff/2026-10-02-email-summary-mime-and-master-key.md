@@ -120,11 +120,17 @@ key 一丢，5 个真实邮箱的凭据全部作废、必须重新录入 —— 
 
 ## 4. 已知缺口（如实记录，本轮未修）
 
-1. **服务端还剩 23 封脏摘要**，全部集中在 account `-2`，形态是
+1. **服务端还剩 23 封脏摘要**，形态是
    「多 part 正文里夹着 Content-* 头」：`looksLikeMIMEStructure` 判为真后
    直接返回空串，而 `InsertEmail` 的 `ON CONFLICT` 在新摘要为空时保留旧值，
    于是旧 MIME 摘要留在库里不更新。要彻底修需要把整段 `BODY[TEXT]` 当作一个
    MIME 文档解析（合成外层 boundary），风险比已修的三条大，没动手。
+
+   > 2026-10-02 02:40 更正：原文写「全部集中在 account `-2`」是**错的**。
+   > 实测这 23 封横跨 account `-1`/`-2`/`-3`/`-5`（`每日信用管家`、
+   > `企业微信邮箱登录提醒`、OpenAI 验证码等）。已在客户端收件箱顶部肉眼
+   > 复现（`logs/emu-88-classify-stalled.png` 前两条即脏摘要），
+   > 属服务端已知缺口，不是客户端镜像的新回归。
 
 2. **客户端列表刷新后仍显示旧摘要**。`emails-store.ts:199` 的
    `ON CONFLICT(id) DO UPDATE SET snippet=excluded.snippet` 本身是对的，
@@ -132,10 +138,26 @@ key 一丢，5 个真实邮箱的凭据全部作废、必须重新录入 —— 
    `EmailInboxView.vue` 用 KeepAlive，`onMounted(load)` 只跑首挂载一次；
    刷新只写库不重渲列表。待跟进。
 
-3. **「正在归类 1/120」卡住不动**。后端日志在刷
-   `[email/classify] em-xxx: llmbff: no provider configured` ——
-   没配 LLM provider 时分类器无限重试。需 kxmemory 地址才能验证。
+3. ~~**「正在归类 1/120」卡住不动**~~ —— **已于 `48ae6aa` 修复**。
+   原缺口是 `use-email-inbox.ts` 的 `runClassify` 用
+   `do{...}while(!classifyCancel.value)` 且终止条件只认 `remain <= 0`；
+   未配 LLM provider 时服务端恒返回 `classified=0 / remaining=120`，
+   循环永不退出，模拟器实测约 35 req/s、日志 8 秒涨约 630 KB。
+   现改为 `classifyRunVerdict` 判定（连续 2 轮零进展 → `stalled`），
+   并如实提示「归类未生效（AI 分类服务未配置），仍有 N 封未归类」。
+   修后 60 秒日志仅涨 4590 字节。
+   仍需 kxmemory 地址才能验证**成功**路径（配了 provider 时能真的归完类）。
 
-4. 模拟器登录页 Custom backend URL 丢失、回落 Build default
+4. **设备上同时存在两个包**（2026-10-02 02:3x 踩过，差点误判修复无效）：
+   本仓库新构建的 APK 装成 `com.kaixuan.opencode.pocket`；
+   而模拟器上还留着一个更早的 `com.kaixuan.opencode.pocket.sttdev`。
+   `adb install -r` 会报 Success 但**不会**更新你以为在用的那个包。
+   核验办法：`adb shell pm path <pkg>` 看 base.apk 的字节数/mtime，
+   再和本地产物 `app-debug.apk` 的 Length 对比；或
+   `adb shell dumpsys window | findstr mCurrentFocus` 确认当前前台包的包名。
+   本轮「装上了但 classify 仍在刷」的结论就是被这个旧包误导的，
+   实际旧包的 35 req/s 刷屏才是刷屏源（force-stop 后 10 秒零增长）。
+
+5. 模拟器登录页 Custom backend URL 丢失、回落 Build default
    `http://localhost:18099`（Android 上不可达）—— 用 `adb reverse` 规避，
    真机上同样会发生，未修。
