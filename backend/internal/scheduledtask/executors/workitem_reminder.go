@@ -295,8 +295,23 @@ func (q *quietResolver) resolve(ctx context.Context, item task.Task) (task.Quiet
 	return out.window, out.loc
 }
 
+// window returns the server-side do-not-disturb window for a work item whose
+// owner has no stored preference.
+//
+// The zero window is returned **as is**. It is not re-interpreted as
+// "unconfigured, use the default": SetQuietWindow documents the zero value as
+// "deferral disabled", and the per-user path already honours that same intent
+// (QuietPreferences.Disabled yields the zero window and it is passed straight
+// through). Substituting the default here made the two ways of switching
+// do-not-disturb off disagree — the settings path deferred nothing while this
+// one silently reinstated 22:30-07:30, so a caller that asked for no quiet
+// hours still lost every reminder that landed in them.
+//
+// The 22:30-07:30 default still applies when nothing configured one: it is
+// installed by NewWorkItemReminderExecutor, not reconstructed here. Production
+// never calls SetQuietWindow, so its behaviour is unchanged by this.
 func (q *quietResolver) window() task.QuietWindow {
-	if q == nil || q.fallback == (task.QuietWindow{}) {
+	if q == nil {
 		return task.DefaultQuietWindow()
 	}
 	return q.fallback
