@@ -51,11 +51,23 @@ func mustTestPool(t *testing.T) *pgxpool.Pool {
 	}
 	cfg.MaxConns = 4
 	// search_path 指向的 schema 必须真实存在，否则 CREATE TABLE 会报
-	// 3F000 (no schema has been selected to create in)。这里显式建好并在
-	// cleanup 时 CASCADE 清理；DSN 未带 search_path 时生成随机 schema。
-	schema := cfg.ConnConfig.RuntimeParams["search_path"]
-	if schema == "" {
-		schema = fmt.Sprintf("c8_auth_test_%d", time.Now().UnixNano())
+	// 3F000 (no schema has been selected to create in)。
+	//
+	// 这里**无条件**生成一次性 schema，绝不沿用 DSN 里带的 search_path。
+	// 原实现是"DSN 带了 search_path 就用它"，而 cleanup 会
+	// DROP SCHEMA ... CASCADE —— 于是 POCKET_TEST_POSTGRES_DSN 一旦带上生产
+	// schema（本仓库的惯例是同一个 DSN 既喂服务也喂测试），跑一次测试就会在
+	// 报告 ok 的同时把整个生产 schema 连表带数据删光。
+	//
+	// 2026-10-01 献祭 schema 实测：设 search_path=audit_sacrificial 跑
+	// TestC8_1，测试输出 `ok`，而该 schema 与其中的 canary 表、行一并消失。
+	// 本仓库其它 PG 测试助手（task / identity / lobster / notifycenter /
+	// vault / meeting / marketplace / redclaw / quota）都是**覆盖**
+	// search_path 为自己生成的名字，只有这里沿用调用方的。
+	schema := fmt.Sprintf("c8_auth_test_%d", time.Now().UnixNano())
+	if fromDSN := cfg.ConnConfig.RuntimeParams["search_path"]; fromDSN != "" {
+		t.Logf("忽略 DSN 里的 search_path=%q：本测试只操作自己生成的 %s，并在 cleanup 里 DROP 掉它",
+			fromDSN, schema)
 	}
 	// Citus 集群上 CREATE TABLE 的钩子会调用 public.columnar_insert_only_parents()，
 	// search_path 不含 public 时报 42883（2026-09-05 llm-gateway-pg 容器换新后暴露）。
@@ -76,6 +88,11 @@ func mustTestPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(func() {
 		pool.Close()
+		// 纵深防御：只 DROP 自己建的 schema。即使将来有人把上面的生成逻辑改回
+		// "沿用 DSN 的 search_path"，cleanup 也不会变成删生产库。
+		if !strings.HasPrefix(schema, "c8_auth_test_") {
+			return
+		}
 		rp, rerr := pgxpool.NewWithConfig(context.Background(), rootCfg)
 		if rerr == nil {
 			_, _ = rp.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
