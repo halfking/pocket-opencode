@@ -249,7 +249,16 @@ type PipelineReport struct {
 	// 没法判断。有了这两个计数，看报告就知道该去配 AI 还是该去调规则。
 	RemindersScanned      int `json:"remindersScanned,omitempty"`
 	RemindersUnclassified int `json:"remindersUnclassified,omitempty"`
-	Invoices      HarvestResult `json:"invoices"`
+	// 发票候选（步骤 1.5）的三个计数。同样的理由：只报 invoices.Processed
+	// 时，「扫了 0 封候选」和「这批邮件里没有发票」长得一模一样，
+	// 于是 0 到底是链路没跑、还是跑了但没命中，看报告分不出来。
+	// 2026-10-02 就是靠 scanned 这个计数才定位到 24h 窗口把历史邮件全挡在
+	// 外面——在那之前 invoices 全是 0，看上去像「邮箱里没有发票」。
+	InvoiceCandidatesScanned int `json:"invoiceCandidatesScanned,omitempty"`
+	InvoiceCandidatesCreated int `json:"invoiceCandidatesCreated,omitempty"`
+	// InvoiceBodyFetchDeferred 是超出单轮 IMAP 预算、顺延到下一轮的候选数。
+	InvoiceBodyFetchDeferred int           `json:"invoiceBodyFetchDeferred,omitempty"`
+	Invoices                 HarvestResult `json:"invoices"`
 	FeishuPushed  int    `json:"feishuPushed"`
 	FeishuFailed  int    `json:"feishuFailed"`
 	ShareDocCSV   string `json:"shareDocCsv,omitempty"`
@@ -355,7 +364,8 @@ func (p *Pipeline) Run(ctx context.Context) *PipelineReport {
 // IMAP 路径只落 envelope（snippet 为空、金额/发票号在正文里），因此候选命中
 // 后需 FetchMessageRaw 拉原文做二次提取（与手动提取端点同路径）。
 func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Account, rep *PipelineReport) {
-	emails, _, err := p.Store.ListEmailsSince(ctx, rep.StartedAt-86400, 500)
+	emails, _, err := p.Store.ListEmailsSince(ctx,
+		rep.StartedAt-int64(invoiceCandidateLookbackDays)*86400, invoiceCandidateScanLimit)
 	if err != nil {
 		rep.AddError("invoice candidates list: %v", err)
 		return
@@ -494,12 +504,37 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 	if fetchFailed > 0 {
 		rep.AddError("invoice raw body fetch failed for %d message(s) (IMAP 侧问题，本轮未建档)", fetchFailed)
 	}
-	log.Printf("[email/pipeline] step1.5 scanned=%d rawBodyFetches=%d fetchFailed=%d autoCreated=%d",
-		len(emails), len(keptIdx), fetchFailed, created)
+	deferred := len(jobs) - len(keptIdx)
+	rep.InvoiceCandidatesScanned = len(emails)
+	rep.InvoiceCandidatesCreated = created
+	rep.InvoiceBodyFetchDeferred = deferred
+	log.Printf("[email/pipeline] step1.5 window=%dd scanned=%d rawBodyFetches=%d deferred=%d fetchFailed=%d autoCreated=%d",
+		invoiceCandidateLookbackDays, len(emails), len(keptIdx), deferred, fetchFailed, created)
 	if created > 0 {
 		log.Printf("[email/pipeline] auto-created %d invoice candidates", created)
 	}
 }
+
+// invoiceCandidateLookbackDays 是第 1.5 步扫描「尚未建档的发票候选」的回看天数。
+//
+// 原实现硬编码 24 小时（rep.StartedAt-86400）。实测真实库：120 封邮件里只有
+// 2 封落在 24h 窗口内，唯一一张 envelope 就能识别的真实发票
+// （「…的发票，发票号码：2633…，金额：3500.00元…」）在窗口之外，
+// 于是 email_invoices 一直是 0 行——功能看起来实现了，实际对历史邮件、
+// 上次同步失败期间积压的邮件、延迟入库的邮件**从不触发**。定时任务每天
+// 跑一次，24h 窗口意味着任何一次漏掉的邮件就永久丢失。
+//
+// 放宽窗口不会让代价失控：envelope 判定（主题+摘要正则）不碰 IMAP，
+// 只是多扫一些行；真正贵的「拉原文」仍受 maxInvoiceBodyFetches 预算限制，
+// 超出的顺延到下一轮。
+const invoiceCandidateLookbackDays = 90
+
+// invoiceCandidateScanLimit 是第 1.5 步 envelope 扫描的行数上限。
+//
+// 必须与回看窗口配套调大：原来窗口 24h + LIMIT 500 时，500 行几乎必然被
+// 最近的邮件占满，回看窗口再宽也够不到旧邮件（ORDER BY date DESC 从最新
+// 开始取）。Store.ListEmailsSince 自身把 >2000 的值重置为 500，故此处取其上限。
+const invoiceCandidateScanLimit = 2000
 
 // maxInvoiceBodyFetches 是第 1.5 步单轮最多拉多少封原文。
 //
