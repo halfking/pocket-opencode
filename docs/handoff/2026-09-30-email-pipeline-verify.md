@@ -541,6 +541,9 @@ BodyCache 当时是 nil —— 第 8 次事故把 `server_email_pipeline.go` / `
 
 > **仍未验证**：自愈路径**没有在真实 QQ 邮箱上跑过**（只读约束）。要生效前提是
 > 那两封还在 QQ 的 POP3 收件箱（位置 134/135 未漂移）。需要一次只读 RETR 授权。
+>
+> **已由 §7s 实测证伪** —— 见下。位置序号已漂移，方案本身不成立；但
+> `sameEmailMessage` 闸门按设计拦住了错误邮件。
 
 ## 7o. 需求 3 的规范文件名在真实 QQ 发票上是废的
 
@@ -624,6 +627,60 @@ tsc 当场抓到 `export { x } from` **不会把名字引入本模块作用域**
 而不是委托进一个必然报错的分支（`delegatePipeline` 遇空 URL 直接返回错误，
 等于那轮什么都没跑）。
 
+## 7s. 真实 POP3 只读实测：位置补取被证伪，闸门按设计生效
+
+用户授权「只读 RETR」后在**独立 worktree**（见 §7t）跑真实 QQ POP3
+（`pop.qq.com:995`），只发 STAT/UIDL/RETR/QUIT，**不发 DELE、不发任何 IMAP 写命令**。
+
+**连接与取回都成功**：`FetchPOP3MessageByIndex` 连上 `pop.qq.com:995`，
+位置 134 取回 2870 字节、135 取回 3345 字节。**但两封都不是目标邮件**：
+
+```
+index=134  db:   from="56551681@qq.com" subj="[QQ Wallet] Electronic Invoice Issuance Notice"
+         pop3: from="速云U站API <u1@syapi.cn>" subj="您的额度即将用尽"
+index=135  db:   from="56551681@qq.com" subj="[QQ Wallet] Electronic Invoice Issuance Notice"
+         pop3: from="API VibeCoding <695562094@qq.com>" subj="[API VibeCoding] 余额充值成功"
+```
+
+**结论：§7n 的位置补取方案被证伪。** POP3 位置序号（第几封）会随邮件
+增删而漂移——这两封发票是后来才落库的，现在 134/135 位置上坐的是别的邮件。
+位置序号只在**当次同步那一刻**有效，事后回取不可靠。
+
+> **闸门按设计生效**：`sameEmailMessage` 把两封都判为「不是那一封」并**拒绝**。
+> 若没有这道闸门，这两封无关邮件的附件会被当成 QQ Wallet 发票存成错误的
+> PDF —— 这正是 §7n 反复强调的「绝不拿不确定的原文」。**安全底线在真实数据上
+> 第一次得到验证。**
+
+**根因（比方案失效更值得记）**：库里 `message_id` 是合成的
+`pop3-ZL0007_…`，而真实 Message-ID 形如 `1788749656…@syapi.cn`。
+**POP3 落库时没解析出真实 Message-ID**（POP3 协议本身不返回它，只能从
+RETR 后的邮件头里解析，而当时那条路径没做）。因此：
+- 无法按 Message-ID 精确回取；
+- `email_pop3_seen` 的 UIDL 去重与 `UNIQUE(account_id, message_id)` 都只能靠
+  合成值，这也是 §重复副本 47 组脏数据的机制来源。
+
+**要真正救回这两张发票，可行的只有**：下次这两封被重新同步时，在 POP3 落库
+环节**解析并保存真实 Message-ID + 原文缓存**（两件事一起做），此后才有精确
+回取的可能。存量这两封——**没有可靠路径能救回**，只能人工从 QQ 邮箱下载。
+
+## 7t. 独立 worktree（用户决策：改用）
+
+共享工作区累计 10 次 `git stash -u` 后，用户选择改用独立 worktree：
+
+```
+C:/workspace/openpocket-wt-email   90b6d36 [email-pipeline-snapshot-2026-10-01]
+```
+
+要点：
+- 建在**仓库外**（`C:\workspace\openpocket-wt-email`），不与主工作区共享
+  未跟踪文件，`git stash -u` 影响不到它；
+- 检出的是快照分支（不是我改动的产物），**建后 16 项符号逐条核验全中**，
+  `go build ./...` 通过、email 包全量 `ok(37.5s)`；
+- 本仓已有 4 个其它 worktree（`wt3` / `wt-822f` / `wt-head` / `wt-stt`），
+  并发会话各自占用，**不要动它们**；
+- worktree 里的 `.git` 是**文件**不是目录 —— `psql -f .git/xxx.sql` 这类
+  写法会失败，临时文件放 `%TEMP%`。
+
 ## 8. 仍未验证 / 未完成（不得外推）
 
 - **真实邮箱已接入（6/6）**，但只做了**只读同步 + 发票采集**。仍未在真实邮箱上验证的：
@@ -633,13 +690,24 @@ tsc 当场抓到 `export { x } from` **不会把名字引入本模块作用域**
   - **发票开票日期**没从附件 PDF 里抽到，文件名日期退化为下载当天。
     （另注：**主题/摘要里的英文字段**提取曾整体失效，已由 §7o/§7p 修复并有真实
     数据验证；**附件 PDF 内的字段**仍未抽，二者是两回事。）
-- **飞书推送未验证**：`POCKET_FEISHU_APP_ID/SECRET/INVOICE_CHAT_ID` 未配置，
-  真实 `SendInvoiceFile` 与电子表格接口都**只在 httptest 假服务器上跑过**，
-  没有对着真实租户跑过一次（需要应用开通电子表格权限）。
-  已验证的只是**无凭证也成立的那部分**：`PublishLedgerScoped` 5 用例全绿，其中
+- **飞书推送未验证**：`POCKET_FEISHU_INVOICE_CHAT_ID` 未配置，**「发消息到指定群」
+  从未真实跑过**（上传文件 / 电子表格部分已验证，见上）。
+  事件回调 `https://m.kxpms.cn/callback/feishu` 的部署与飞书格式响应亦未验。
+  已验证的只是无凭证也成立的那部分：`PublishLedgerScoped` 5 用例全绿，其中
   `SkipsWhenUnavailable` 守住「未配置时返回空 URL 且不报错、不编造 `shareDocUrl`」；
   推送失败保留 `feishu_sent_at=0`，由共享汇总文档兜底。
-- **POP3 自愈路径（§7n）没有在真实 QQ 邮箱验证过**，两张发票仍是 `failed`。
+- **POP3 自愈路径（§7n）已在真实邮箱被证伪**（§7s）：位置序号漂移，取回的
+  是无关邮件，闸门拦住了。两张发票**存量无法可靠救回**，只能人工下载。
+  真正的修法是让 POP3 落库时保存真实 Message-ID + 原文缓存（**未做**）。
+- **飞书真实租户链路已验证**（2026-10-01）：`tenant_access_token` 获取、
+  建电子表格、写 4 行 20 单元格（含两笔发票 + 合计 454.50）、读回确认，
+  全部 `code=0`。**未验证的**是「发送消息到指定群」——缺
+  `POCKET_FEISHU_INVOICE_CHAT_ID`（真实 chat_id），以及事件回调
+  `https://m.kxpms.cn/callback/feishu` 的部署与飞书格式响应未验。
+- 需求 7 前端 UI：**用户选择跳过**真机/浏览器 UI 验证。已确认的是
+  构建通过（`build-gate` 绿、三个 email 视图独立 chunk）、viewmodel 缺口 0、
+  i18n / 裸文案门禁全绿、以及 `/api/emails` 与 `/api/emails/invoices`
+  在真实后端返回真实数据。**未验证**的是实际渲染与交互。
 - **「多次操作才能下载到发票」只做到跨轮重试**（`MaxInvoiceAttempts=8` + pending 重试），
   没有「打开邮件→点确认→再下载」这类交互式多步。
 - 定时流水线**到点执行**没有等过一次真实 06:00（用注入时钟单测 + 启动排期日志代替）。
