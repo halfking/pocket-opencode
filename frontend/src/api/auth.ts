@@ -15,6 +15,12 @@ export type CodePurpose = 'register' | 'reset' | 'login'
 export interface SendCodeResponse {
   ok: true
   ttl_sec: number
+  /**
+   * 'smtp' = 本部署有邮件通道，验证码会真的发出去；
+   * 'none' = 未配置 SMTP，验证码只入库、不会发邮件（此时不要提示用户「已发送」）。
+   * 缺失时按老后端处理，视为 'smtp' 以免误伤已部署的实例。
+   */
+  delivery?: 'smtp' | 'none'
   /** 仅当 POCKET_SMTP_DEBUG_ECHO=true 且 SMTP 未配置时回显 */
   debug_code?: string
 }

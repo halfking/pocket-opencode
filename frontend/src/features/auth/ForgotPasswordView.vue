@@ -4,7 +4,7 @@
       <div class="header">
         <div class="logo">🔴</div>
         <h1 class="title">重置密码</h1>
-        <p class="subtitle">通过邮箱验证码重置 Redclaw 密码（密码统一由 RedClaw 管理）</p>
+        <p class="subtitle">通过邮箱验证码重置登录密码</p>
       </div>
 
       <ol class="steps" aria-label="重置步骤">
@@ -96,6 +96,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { sendCode, forgotPassword } from '../../api/auth'
+import { judgeCodeDelivery } from './code-delivery'
 
 const router = useRouter()
 const step = ref<1 | 2 | 3>(1)
@@ -130,6 +131,15 @@ async function requestCode() {
   loading.value = true
   try {
     const res = await sendCode(email.value, 'reset')
+    // 后端 delivery='none' 表示这台部署没有配 SMTP，验证码只入库、根本不会发邮件。
+    // 此时若还推进到第 2 步，用户会一直卡在「输入验证码」且看不到任何原因——
+    // 这正是修复前的行为。真机上是静默失败，不是「稍后重试」能解决的。
+    // 唯一例外是 dev 模式：SMTP_DEBUG_ECHO 会把验证码回显出来，流程仍可走通。
+    const verdict = judgeCodeDelivery(res)
+    if (!verdict.advance) {
+      error.value = verdict.error
+      return
+    }
     code.value = ''
     debugCode.value = res.debug_code || ''
     step.value = 2
