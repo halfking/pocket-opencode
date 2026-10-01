@@ -44,18 +44,45 @@ func LedgerRows(invs []Invoice) (rows [][]any, total float64) {
 	rows = append(rows, []any{
 		"费用类型", "对方单位", "金额", "币种", "发票号", "开票日期", "状态", "文件名", "来源邮件",
 	})
-	var cents int64
+	// 按币种分组累加。单一币种（当前真实数据 7 张全是 CNY）时只出一行合计，
+	// 与旧行为完全一致；混入外币时每个币种各出一行——USD 与 CNY 直接相加
+	// 没有财务意义，需求要求「汇总金额」，而跨币种的和不是金额。
+	centsByCur := map[string]int64{}
+	countByCur := map[string]int{}
+	var order []string // 保持首次出现顺序，合计行跟着明细顺序走
 	for _, inv := range invs {
 		// 四舍五入到分再累加：发票金额本身是两位小数，
 		// 但解析器可能产出 126.005 这类值，直接转 int64 会截断。
-		cents += int64(math.Round(inv.Amount * 100))
+		cur := currencyOrDefault(inv.Currency)
+		if _, seen := centsByCur[cur]; !seen {
+			order = append(order, cur)
+		}
+		centsByCur[cur] += int64(math.Round(round2(inv.Amount) * 100))
+		countByCur[cur]++
 		rows = append(rows, []any{
-			inv.Category, inv.Seller, round2(inv.Amount), currencyOrDefault(inv.Currency),
+			inv.Category, inv.Seller, round2(inv.Amount), cur,
 			inv.InvoiceNo, inv.InvoiceDate, inv.Status, inv.FileName, inv.Subject,
 		})
 	}
-	total = round2(float64(cents) / 100)
-	rows = append(rows, []any{"合计", "", total, "", "", "", "", fmt.Sprintf("共 %d 张", len(invs)), ""})
+	multi := len(order) > 1
+	if len(order) == 0 {
+		// 空清单也必须有合计行（需求：「整理一个列表…并汇总金额」）：
+		// 只有表头 + 一行 0 合计，下游按行数算写入范围的逻辑才不用特判。
+		rows = append(rows, []any{"合计", "", 0.0, "", "", "", "", "共 0 张", ""})
+		return rows, 0
+	}
+	for _, cur := range order {
+		sum := round2(float64(centsByCur[cur]) / 100)
+		if !multi {
+			// 单币种：合计行不带币种标签，与旧输出一致（下游按列位取值）。
+			rows = append(rows, []any{"合计", "", sum, "", "", "", "", fmt.Sprintf("共 %d 张", len(invs)), ""})
+		} else {
+			// 多币种：每币种一行，且必须标出币种与该币种的张数——
+			// 否则两行「合计」加起来仍然没有意义。
+			rows = append(rows, []any{"合计", "", sum, cur, "", "", "", fmt.Sprintf("共 %d 张", countByCur[cur]), ""})
+		}
+		total += sum
+	}
 	return rows, total
 }
 

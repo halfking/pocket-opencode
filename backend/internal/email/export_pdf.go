@@ -1,13 +1,13 @@
-﻿package email
+package email
 
 import (
 	"bytes"
 	"errors"
 	"fmt"
-	"log"
 	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,6 +48,7 @@ type GridExport struct {
 // ErrNoUsableInvoiceFile 表示选中的发票文件一个都用不了（全是畸形 PDF/图片）。
 // 调用方应回 400 而不是 500：这是用户选择/上游附件的问题，不是服务故障。
 var ErrNoUsableInvoiceFile = errors.New("email: no usable invoice file to export")
+
 // ExportInvoiceGrid 把 invoiceFiles 合并为 A4 网格 PDF，返回输出文件绝对路径。
 // grid 只接受 2（2x2，每页 4 张）或 3（3x3，每页 9 张）。
 //
@@ -66,7 +67,14 @@ func ExportInvoiceGrid(outDir string, invoiceFiles []string, grid int) (string, 
 }
 
 // ExportInvoiceGridDetailed 同 ExportInvoiceGrid，但额外返回实际入网格的张数与被跳过的文件名。
-func ExportInvoiceGridDetailed(outDir string, invoiceFiles []string, grid int) (res *GridExport, err error) {
+func ExportInvoiceGridDetailed(outDir string, invoiceFiles []string, grid int) (*GridExport, error) {
+	return exportNUp(outDir, invoiceFiles, grid, true)
+}
+
+// exportNUp 是 ExportInvoiceGridDetailed 的实现，Border 可指定。
+// 生产路径恒传 true（需求「打印后可直接剪裁」）；参数化只为让测试能导出
+// 「不画线」的对照产物，用字节数证明线确实被画进 PDF 了。
+func exportNUp(outDir string, invoiceFiles []string, grid int, border bool) (res *GridExport, err error) {
 	if len(invoiceFiles) == 0 {
 		return nil, fmt.Errorf("no invoice files to export")
 	}
@@ -116,22 +124,28 @@ func ExportInvoiceGridDetailed(outDir string, invoiceFiles []string, grid int) (
 
 	// 3) 网格化：PageGrid 模式下输出页 = PageDim × Grid，即 PageDim 是单格
 	// 尺寸。要输出整张 A4，PageDim 取 A4 的 1/grid，每张发票缩放进格子。
+	//
+	// Border=true：需求原文「打印后可直接剪裁」。不加裁切线的话，打印出来的
+	// A4 上 4/9 张发票没有可对齐的切割依据，只能凭发票白边目测，剪歪是必然的。
+	// pdfcpu 的 Border 会在每个格子四边各画一条线，页边界处会与相邻格重合，
+	// 正好形成完整的裁切网格。
 	nup := &model.NUp{
 		PageDim:  &types.Dim{Width: a4WidthPt / float64(grid), Height: a4HeightPt / float64(grid)},
 		UserDim:  true,
 		Grid:     &types.Dim{Width: float64(grid), Height: float64(grid)},
 		PageGrid: true,
-		Border:   false,
+		Border:   border,
 	}
+	// 文件名用纳秒而非秒：同一秒内连续导出两次（导出对照、或并发导出）
+	// 会撞名并让后一次覆盖前一次。UnixNano 已在 merge 临时文件里用过。
 	outFile := filepath.Join(outDir, fmt.Sprintf("invoices-a4-%dx%d-%s.pdf",
-		grid, grid, time.Now().Format("20060102-150405")))
+		grid, grid, time.Now().Format("20060102-150405.000000000")))
 	if err := api.NUpFile([]string{merged}, outFile, nil, nup, nil); err != nil {
 		_ = os.Remove(outFile)
 		return nil, fmt.Errorf("pdfcpu nup: %w", err)
 	}
 	return &GridExport{Path: outFile, Count: len(normalized), Skipped: skipped}, nil
 }
-
 
 // normalizeInvoiceFilesToPDF 把混合清单归一成「全是可合并的 PDF」：
 //   - PDF：先 Validate，畸形件跳过（记入 skipped）；
@@ -243,8 +257,3 @@ func imageFileToA4PDF(src, dst string) error {
 	}
 	return pdf.OutputFileAndClose(dst)
 }
-
-
-
-
-
