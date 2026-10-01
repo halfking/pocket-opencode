@@ -457,3 +457,39 @@ adb forward tcp:9303 localabstract:webview_devtools_remote_<pid>
 注意两点：① `Runtime.evaluate` 里 `el.click()` **不算用户手势**，
 `getUserMedia` 一类 API 会拒绝，要用 `Input.dispatchMouseEvent`；
 ② 页面被切到后台时渲染进程被冻结，CDP 会无响应——先把 App 拉回前台。
+---
+
+## §10 最终验证矩阵（2026-10-01 13:20）
+
+分支 `feat/2026-10-01-stt-service`。每一行的「怎么验的」都写在右列，
+**绿灯本身不算证据**——负控对照一栏才是。
+
+| 层面 | 结果 | 怎么验的 |
+|---|---|---|
+| `go test ./internal/stt/... ./internal/server/...` | 全绿 | 每次改完强制 `-count=1`，不复用缓存 |
+| `go vet` / `vue-tsc --noEmit` | 无输出 | — |
+| 前端断言 | 103/103 | `node --test`（无 vitest/jsdom，直接断言源码与渲染链） |
+| 黑盒·转写主链路 | **19/0** | `scripts/verify-stt.ps1`，真打 llm.kxpms.cn |
+| 黑盒·长录音/即时增量 | **22/0** | `scripts/verify-stt-stream.ps1`，真进程真端口 + 本地假 ASR |
+| 真机·设置页 | ✅ | 读到本地后端真实配置；「重新扫描网关」出 602 模型 / 0 可用 / 逐个中文原因 |
+| 真机·会议录音 | ✅ | 录音中真实失败原因上屏；停止后转写区**无占位文本** |
+| 真机·外部成功路径 | 部分 | 后端直连 + 假上游：6.68 秒真实中文语音完整到达上游并回传文本；**设备麦克风 → 外部真实服务**这一段未验（无 key） |
+| 负控对照 | 6 组 | JSON 泄漏、line-clamp、isNoProvider 新形状、language 字段（单次 + 逐段）、转写响应字段、设置页「当前生效」——逐条实测改回去会转红 |
+
+### §10.1 仍然没验的一件事
+
+**真实 ASR 服务的识别质量**。原因不是代码问题：`api.openai.com` 在本机
+i/o timeout，网关侧 2026-10-01 实测一个可用 ASR 上游都没有。
+假 ASR 只能证明「音频真的到了上游、请求形状正确、返回被正确解析」，
+**不能**证明「中文识别得准」。设置页的「录 3 秒试转」就是为这件事准备的，
+需要一把能用的外部 key。
+
+### §10.2 两个反复咬人的环境事实
+
+1. **本机 pocketd 必须带 `POCKET_DEV_AUTH=true`**，否则 `corsMiddleware`
+   不发 `Access-Control-Allow-Origin`，WebView 每个请求都 CORS 失败；
+   而不带 PG 时设置落在**进程内**的 `sttFallbackSettings`——重启即丢，
+   验证脚本每次都要重新 PUT。
+2. 另一会话会周期性抢占真机：我的 App 一被切到后台，WebView 渲染进程冻结、
+   CDP 无响应，`screencap` 还会间歇性返回 0 字节。要抢时间就得把整条操作
+   压进一次连续执行。
