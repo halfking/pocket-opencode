@@ -35,20 +35,56 @@ export interface PreloadOptions {
   maxTotalBytes?: number
 }
 
-/** 从 HTML 里抓出远程图片 URL（去重、保持顺序）。 */
-export function collectRemoteImages(html: string): string[] {
+/**
+ * 协议相对 URL（`//host/path`）归一为 https 绝对地址。
+ *
+ * 2026-10-02 探针实测的缺口：原 `collectRemoteImages` 的正则只认 `https?://`，
+ * 于是 `<img src="//host/x.png">`、无引号的 `src=//host/x.png`、
+ * 以及 CSS 的 `background-image:url(//host/x.png)` **三种写法一个都抓不到**，
+ * 无法内联。而邮件正文在 WebView 里的基址是应用自己的（capacitor://），
+ * 协议相对 URL 会被解析成 `capacitor://host/...` —— 必然加载失败。
+ * 这与 cid: 那次是同一类缺陷（同一段 HTML 里三种合法写法，只覆盖了一种）。
+ *
+ * 归一到 https 而不是 http：邮件图床几乎都支持 https，且不引入明文传输。
+ */
+export function normalizeRemoteUrl(raw: string): string {
+  return raw.startsWith('//') ? `https:${raw}` : raw
+}
+
+/** 一处远程图片引用：raw 是 HTML 里的原样写法，url 是可抓取的绝对地址。 */
+export interface RemoteImageRef {
+  raw: string
+  url: string
+}
+
+/**
+ * 从 HTML 里抓出远程图片引用（去重、保持顺序）。
+ *
+ * 协议：https 绝对 与 协议相对（`//host/...`）都收；引号可有可无。
+ * 返回的 `url` 一律是绝对地址（抓取用），`raw` 保留 HTML 原样写法（回填用），
+ * 否则回填时会在 HTML 里找不到 `//host/x.png` 这个原值。
+ */
+export function collectRemoteImageRefs(html: string): RemoteImageRef[] {
   if (!html) return []
-  const out: string[] = []
+  const out: RemoteImageRef[] = []
   const seen = new Set<string>()
-  const re = /<img\b[^>]*?\bsrc\s*=\s*(["']?)(https?:\/\/[^"'\s>]+)\1/gi
+  // 注意 alternation 顺序：`//` 必须排在 `https?://` 前面，
+  // 否则 `https://…` 会先被 `//` 之外的长匹配吃掉一部分。
+  const re = /<img\b[^>]*?\bsrc\s*=\s*(["']?)((?:\/\/|https?:\/\/)[^"'\s>]+)\1/gi
   let m: RegExpExecArray | null
   while ((m = re.exec(html)) !== null) {
-    const url = m[2]
+    const raw = m[2]
+    const url = normalizeRemoteUrl(raw)
     if (seen.has(url)) continue
     seen.add(url)
-    out.push(url)
+    out.push({ raw, url })
   }
   return out
+}
+
+/** 从 HTML 里抓出远程图片 URL（去重、保持顺序，绝对地址）。 */
+export function collectRemoteImages(html: string): string[] {
+  return collectRemoteImageRefs(html).map((r) => r.url)
 }
 
 /** 只接受能安全内联的 content-type。 */
@@ -128,16 +164,16 @@ export async function preloadRemoteImages(
   const fetchImpl = options.fetchImpl ?? (typeof fetch !== 'undefined' ? fetch : null)
   if (!fetchImpl) return html
 
-  const urls = collectRemoteImages(html).slice(0, options.maxImages ?? MAX_IMAGES)
-  if (!urls.length) return html
+  const refs = collectRemoteImageRefs(html).slice(0, options.maxImages ?? MAX_IMAGES)
+  if (!refs.length) return html
 
   const timeoutMs = options.timeoutMs ?? TIMEOUT_MS
   const maxTotal = options.maxTotalBytes ?? MAX_TOTAL_BYTES
 
   let budget = maxTotal
-  const inlined = await mapWithConcurrency(urls, CONCURRENCY, async (url) => {
+  const inlined = await mapWithConcurrency(refs, CONCURRENCY, async (ref) => {
     if (budget <= 0) return null
-    const dataUri = await fetchOne(url, fetchImpl, timeoutMs, options.signal)
+    const dataUri = await fetchOne(ref.url, fetchImpl, timeoutMs, options.signal)
     if (!dataUri) return null
     // base64 长度 ≈ 原始字节 * 4/3
     const approx = Math.floor((dataUri.length * 3) / 4)
@@ -147,15 +183,46 @@ export async function preloadRemoteImages(
   })
 
   let out = html
-  urls.forEach((url, i) => {
+  refs.forEach((ref, i) => {
     const dataUri = inlined[i]
     if (!dataUri) return
-    // 只替换精确匹配的 src 值，避免误伤其它属性里的同名字符串。
+    out = inlineDataUri(out, ref.raw, ref.url, dataUri)
+  })
+  return out
+}
+
+/**
+ * 把 HTML 里所有指向该图片的引用换成 data URI。
+ *
+ * 必须覆盖三种合法写法，否则「抓到了但没换上」等于没抓到：
+ *   1. 带引号 src   `<img src="URL">` / `src='URL'`
+ *   2. 无引号 src   `<img src=URL>`（HTML 允许）
+ *   3. CSS url()    `background-image:url(URL)` / `url("URL")` —— 营销与通知邮件的
+ *      背景图大量走这条，只处理 src 会让背景图默默空掉（cid: 那次已修过一次，
+ *      这次是同一段逻辑的远程图分支）。
+ *
+ * raw 与 url 都要替换：抓取用的是归一后的 url，而 HTML 里写的是 raw。
+ */
+function inlineDataUri(html: string, raw: string, url: string, dataUri: string): string {
+  let out = html
+  for (const form of new Set([raw, url])) {
+    const esc = escapeRe(form)
+    // 1) 带引号 src
     out = out.replace(
-      new RegExp(`(\\bsrc\\s*=\\s*["'])${escapeRe(url)}(["'])`, 'gi'),
+      new RegExp(`(\\bsrc\\s*=\\s*["'])${esc}(["'])`, 'gi'),
       (_m, pre: string, post: string) => `${pre}${dataUri}${post}`,
     )
-  })
+    // 2) 无引号 src（后面必须是非引号/空白/尖括号，避免吃掉半个属性）
+    out = out.replace(
+      new RegExp(`(\\bsrc\\s*=\\s*)${esc}(?=["'\\s>])`, 'gi'),
+      (_m, pre: string) => `${pre}${dataUri}`,
+    )
+    // 3) CSS url()：带引号与不带引号两种
+    out = out.replace(
+      new RegExp(`(url\\(\\s*["']?)${esc}(["']?\\s*\\))`, 'gi'),
+      (_m, pre: string, post: string) => `${pre}${dataUri}${post}`,
+    )
+  }
   return out
 }
 
