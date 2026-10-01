@@ -131,7 +131,7 @@ POCKET_MCP_ENABLED=false
    # 修改环境变量
    Environment="POCKET_MCP_ENABLED=true"
    Environment="POCKET_MCP_URL=https://mcp.kxpms.cn/acc/mcp"
-   Environment="POCKET_MCP_API_KEY=sk-mcp-sa0cXjxzPKhU77CYNFiFDP1I7B4wMnBc"
+   Environment="POCKET_MCP_API_KEY=sk-mcp-<REDACTED-ROTATE-ME>"
    
    # 重启服务
    systemctl daemon-reload

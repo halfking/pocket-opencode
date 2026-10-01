@@ -18,7 +18,7 @@ func TestMaskKey(t *testing.T) {
 		// 密钥（sk-6tGL…K51YV）前后缀均不同——判定为合成夹具，非真实密钥。
 		// 即便如此仍换成下方无歧义的合成串，让「这把 key 是不是真的」
 		// 这个问题永久关闭；maskKey 是纯字符串操作，语义不受影响。
-		{"sk-test-fixture-not-a-real-key-000111", "sk-******000111"},
+		{"sk-test-fixture-not-a-real-key-000111", "sk-******000111"}, // secret-scan-ok — 合成串，非真实凭据
 	}
 	for _, c := range cases {
 		if got := maskKey(c.in); got != c.want {

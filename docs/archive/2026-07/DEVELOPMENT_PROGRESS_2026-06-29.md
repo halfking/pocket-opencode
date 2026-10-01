@@ -55,7 +55,7 @@
 
 4. ✅ 获取 ACC API Key
    - **Key ID**: 17
-   - **Key**: `sk-mcp-sa0cXjxzPKhU77CYNFiFDP1I7B4wMnBc`
+   - **Key**: `sk-mcp-<REDACTED-ROTATE-ME>`
    - **过期时间**: 2027-06-29 (365天)
    - 配置文档: `backend/config/mcp-config.md`
 
@@ -146,7 +146,7 @@ export POCKET_MCP_ENABLED=true
 export POCKET_MCP_URL=https://mcp.kxpms.cn/acc/mcp
 
 # MCP API Key (30天有效期)
-export POCKET_MCP_API_KEY=sk-mcp-sa0cXjxzPKhU77CYNFiFDP1I7B4wMnBc
+export POCKET_MCP_API_KEY=sk-mcp-<REDACTED-ROTATE-ME>
 ```
 
 ---

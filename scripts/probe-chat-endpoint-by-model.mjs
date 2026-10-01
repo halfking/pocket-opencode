@@ -78,7 +78,7 @@ for (const m of MODELS) {
 }
 
 console.log('\n--- 负控：故意用错密钥 ---');
-const neg = await probe(MODELS[0], 'sk-definitely-not-a-real-key-000000');
+const neg = await probe(MODELS[0], 'sk-definitely-not-a-real-key-000000'); // secret-scan-ok — 负控，故意用错的密钥
 console.log(`${neg.ok ? '❌ 网关竟接受了错密钥' : '✅ 网关正确拒绝'} ${neg.status} ${neg.ms}ms ${neg.detail}`);
 
 const worked = rows.filter(r => r.ok);
