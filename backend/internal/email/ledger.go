@@ -37,6 +37,38 @@ type CurrencyTotal struct {
 	Count    int
 }
 
+// SumByCurrency 按币种分组求和，返回每币种的合计与张数。
+//
+// 为什么单独暴露一个函数：这条规则（「跨币种的算术和不是金额」）在仓库里已经
+// 有三处实现（LedgerRows、WriteInvoiceSummaryDocs、InvoiceListStats），三处都各
+// 自聚合、各自配了用例。第四处（server 层 handleEmailInvoiceSummary 的 amountTotal）
+// 此前是裸 `total += inv.Amount` —— 前三处修的时候审计范围只在 internal/email，
+// server 层的手写求和没被看到。
+//
+// 汇总端点已经**持有**发票切片（要输出 rows），所以按切片聚合而不是再查一次库，
+// 计数与合计也就来自同一份数据、不会一边被 500 上限截断一边没有。
+func SumByCurrency(invs []Invoice) []CurrencyTotal {
+	centsByCur := map[string]int64{}
+	countByCur := map[string]int{}
+	var order []string
+	for _, inv := range invs {
+		cur := currencyOrDefault(inv.Currency)
+		if _, seen := centsByCur[cur]; !seen {
+			order = append(order, cur)
+		}
+		// 整数分累加，保证 total 与 sum(round2(每行)) 恒等（见 round2 处的说明）。
+		centsByCur[cur] += int64(math.Round(round2(inv.Amount) * 100))
+		countByCur[cur]++
+	}
+	out := make([]CurrencyTotal, 0, len(order))
+	for _, cur := range order {
+		out = append(out, CurrencyTotal{
+			Currency: cur, Amount: float64(centsByCur[cur]) / 100, Count: countByCur[cur],
+		})
+	}
+	return out
+}
+
 // LedgerRows 把发票清单转成表格二维数组：表头 + 每张票一行 + 每币种一行合计。
 //
 // 合计单独占行（而不是只在文字里提一句），这样对账时能直接在表里排序/求和。

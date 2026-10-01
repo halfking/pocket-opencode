@@ -472,7 +472,16 @@ export interface EmailInvoicePushResult {
 
 export interface EmailInvoiceSummary {
   count: number
+  /**
+   * 仅在**单一币种**时有意义（与 /api/emails/invoices 的 amount 同口径）。
+   * 混入多种币种时它是 0 且 `amounts` 非空 —— 跨币种的算术和不是金额，
+   * 直接渲染这个标量会把外币当成人民币。消费前请优先读 `amounts`。
+   */
   amountTotal: number
+  /** amountTotal 对应的币种；单币种时非空，多币种时为空串。 */
+  currency?: string
+  /** 按币种分组的合计。多币种时**必须**逐组展示，不能合并成一个数。 */
+  amounts?: { currency: string; amount: number; count: number }[]
   downloaded: number
   pending: number
   failed: number

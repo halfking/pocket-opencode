@@ -7696,6 +7696,83 @@ handler 的 stat 阶段能过——文件存在——要到 `pdfPageCountSafe` �
 
 ---
 
+## §7dk 「跨币种求和不是金额」的第**四**处实现：汇总端点的 amountTotal（2026-10-02）
+
+`internal/email/ledger.go` 新增 `SumByCurrency`，
+`internal/server/server_email_pipeline.go` 的 `handleEmailInvoiceSummary` 改用它，
+新增 `server_email_invoice_summary_test.go`（5 用例），
+`frontend/src/api/email.ts` 的 `EmailInvoiceSummary` 补上 `currency` / `amounts`。
+
+### 这条规则已经被修过三次，第四次在审计范围外
+
+「跨币种的算术和不是金额」在仓库里有三处实现，且三处都配了用例：
+
+1. `email.LedgerRows`（`ledger.go`）
+2. `email.WriteInvoiceSummaryDocs`（`pipeline.go`）
+3. `email.InvoiceListStats`（`invoice_list.go`，SQL 层聚合——最容易骗过人，
+   `invoice_list_stats_test.go:9` 自己就写着「这是同一条规则的前两处已修，第三处」）
+
+2026-10-01 修第三处时，**审计范围只在 `internal/email`**，
+server 层那处手写求和没被看到：
+
+```go
+var total float64
+for _, inv := range invoices {
+    total += inv.Amount      // ← 100.00 USD + 50.00 CNY = 150
+```
+
+而且它是四处里**唯一**把标量直接交给前端的。另外三处要么返回 `[]CurrencyTotal`
+（`LedgerRows` 的调用点还故意写成 `rows, _ :=` 丢弃它，逼下一个人必须自己按币种处理），
+要么把多币种时的标量置 0。
+
+### 实测的影响面（如实，不夸大）
+
+**前端没有任何地方读 `amountTotal`。** `api/email.ts` 里只有类型声明；
+发票页合计区走的是客户端自己的 `summaryMoney(sumByCurrency(list))`
+（`use-invoice-list.ts:82`）。所以这个错数**当前不显示**——
+按「闸门逻辑上一直关着、目前没造成损失」记，而不是「已造成错账」。
+
+但它是个**已声明的 API 字段**（`amountTotal: number`），任何人接上它就会拿到
+错的账，而且 150 这种数连币种标签都没有。实测负控还发现更糟的一点：
+裸求和的 `currency` 会被赋成**最后遍历到的那一组**的币种，于是响应变成
+`amountTotal=150, currency="USD"` —— 一个有明确币种标签的错数，
+比没有标签的错数更容易让人信。
+
+### 改法与为什么不用现成的 `InvoiceListStats`
+
+`InvoiceListStats` 已按币种分组，但它返回**未导出**类型，且走 SQL 全表聚合。
+汇总端点本来就持有发票切片（要输出 `rows`），按切片聚合的好处是
+**`count` 与合计来自同一份数据**，不会一边被 `ListInvoicesScoped(..., 500)`
+截断、一边是全量。
+
+顺带记一个**已存在但不在本轮范围**的既有不一致：`count` 用 `len(invoices)`
+（500 上限），若发票超过 500 张，`count` 会被截断而金额不会。单独立项价值低，
+记在这里备查。
+
+### 用例
+
+五条：多币种时 `amountTotal` 必须为 0 且 `currency` 为空、`amounts` 两组齐全；
+单币种时标量仍可用（否则前端全要改）；空币种归 CNY；零张发票不 panic；
+以及**汇总端点真的生成了共享文档**（CSV + MD，文件存在且非空）——
+这条在当前部署尤其重要，因为飞书没配，**这条路就是实际生效的那条**。
+
+### 负控（实测）
+
+把 `len(amounts) == 1` 的条件去掉，改成遍历分组裸求和
+→ `TestInvoiceSummary_MultiCurrencyHasNoCrossCurrencyTotal` 转红，报出
+`amountTotal = 150，多币种时它必须是 0（150 不是金额）` 与
+`currency = "USD"`。
+
+`TestInvoiceSummary_SingleCurrencyKeepsScalar` 在该负控下**仍绿**（单币种求和
+与分组求和结果相同）——这正是「哪些取值躲过了变异」的典型，如实记下。
+
+### 回归
+
+`internal/email` 9.758s 全绿；`internal/server` 23.0s 只剩那两个既有失败；
+`npm.cmd run typecheck` 干净。
+
+---
+
 ## §7cz 【需求 6/7】邮件的增量同步**永远退化成全量拉取**，而它的「正确」是靠这个 bug 换来的（2026-10-02）
 
 需求 7「在邮件窗口查看各类邮件」的 UI 链路本身是完整的，我逐段验过：

@@ -523,11 +523,25 @@ func (s *Server) handleEmailInvoiceSummary(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 合计**按币种分组**。此前这里是裸 `total += inv.Amount`，把 USD 与 CNY
+	// 直接相加后放进 amountTotal —— 跨币种的算术和不是金额。
+	// 这条规则在仓库里已有三处实现（LedgerRows、WriteInvoiceSummaryDocs、
+	// InvoiceListStats），三处都配了用例；那三次修复的审计范围只在 internal/email，
+	// server 层这处手写求和没被看到。它是第四处，也是唯一一处直接把标量交给前端。
+	//
+	// 行为与列表端点 handleEmailInvoices 保持一致：单一币种时 amountTotal 可用，
+	// 混入多币种时它是 0 且 amounts 非空 —— 给一个「看起来正常」的标量会直接
+	// 误导（前端会把它渲染成 ¥）。
+	amounts := email.SumByCurrency(invoices)
 	var total float64
+	var totalCurrency string
+	if len(amounts) == 1 {
+		total = amounts[0].Amount
+		totalCurrency = amounts[0].Currency
+	}
 	var downloaded, pendingCount, failed int
 	rows := make([]map[string]any, 0, len(invoices))
 	for _, inv := range invoices {
-		total += inv.Amount
 		switch inv.Status {
 		case "downloaded", "filed":
 			if inv.FilePath != "" {
@@ -558,8 +572,12 @@ func (s *Server) handleEmailInvoiceSummary(w http.ResponseWriter, r *http.Reques
 		log.Printf("[email/summary] publish feishu ledger: %v", ledgerErr)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"count":       len(invoices),
+		"count": len(invoices),
+		// amountTotal 仅在**单一币种**时有意义（多币种时为 0 且 amounts 非空）。
+		// 前端绝不能把跨币种的数渲染成 ¥。
 		"amountTotal": total,
+		"currency":    totalCurrency,
+		"amounts":     amounts,
 		"downloaded":  downloaded,
 		"pending":     pendingCount,
 		"failed":      failed,
@@ -569,4 +587,3 @@ func (s *Server) handleEmailInvoiceSummary(w http.ResponseWriter, r *http.Reques
 		"shareDocUrl": ledgerURL,
 	})
 }
-
