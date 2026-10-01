@@ -427,6 +427,27 @@ func main() {
 				log.Printf("WARN: email crypto init: %v — fetcher disabled", err)
 			} else {
 				emailCrypto = ec
+				// 启动自检：config.Validate 只保证 POCKET_EMAIL_MASTER_KEY「非空」，
+				// 不保证它「对」。一把错的 key 会让进程照常启动、调度器照常打印
+				// "Email scheduler started"，然后每个账户每次同步都撞
+				// `decrypt credential: …` —— 从外面看服务在跑，实际一封新邮件都收不到。
+				// 实测过：某台机器磁盘上有 4 处 email_master.key，只有 1 把能解开
+				// 真实库 5 个账户的凭据，用另外 3 把启动全程零报错（docs §7bf）。
+				// 这里把「key 拿错了」从静默变成启动日志里的一行。
+				if emailStore != nil {
+					if chk, cerr := email.CheckCredentials(context.Background(), emailStore, emailCrypto); cerr != nil {
+						log.Printf("WARN: email credential self-check failed to run: %v", cerr)
+					} else if chk.AllFailed() {
+						log.Printf("ERROR: %s", chk.Summary())
+						log.Printf("ERROR:   凭据是用 POCKET_EMAIL_MASTER_KEY（或 <dataDir>/email_master.key）加密的，"+
+							"当前这把它一把都解不开。请确认这个环境的 key 与写入凭据时用的是同一把；"+
+							"改 key 前不要直接重启，否则所有邮箱都会停止同步。")
+					} else if !chk.AllDecryptable() {
+						log.Printf("WARN: %s", chk.Summary())
+					} else {
+						log.Printf("Email credential self-check: %s", chk.Summary())
+					}
+				}
 				emailPending = email.NewPendingOAuth()
 				go emailPending.GCLoop(context.Background())
 				if emailStore != nil {

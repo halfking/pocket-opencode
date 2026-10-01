@@ -2841,6 +2841,122 @@ server，真实 qq/163 都正常给了空格，主路径 268ms~1.1s 直接取回
 
 ---
 
+## §7bg master key 拿错是静默的：加一道启动自检（2026-10-01）
+
+### 起因：§7bf 那个「推断」被代码证伪了一半
+
+§7bf 说「线上多半是靠 `POCKET_EMAIL_MASTER_KEY` 环境变量拿 key 的」，
+并注明那是推断。查完代码，结论要改写成**可证的事实**：
+
+- `config.go:258`：`EmailFetchEnabled` **默认 true**。
+- `config.go:441-443`：`EmailFetchEnabled && EmailMasterKey == ""` → 直接
+  `return error`。
+- `main.go:59-61`：`cfg.Validate()` 出错就 `log.Fatalf`，进程根本不启动。
+
+所以**只要邮件抓取是开着的，`POCKET_EMAIL_MASTER_KEY` 就一定被设了**
+（否则 pocketd 起不来）。`main.go:414-424` 那段「回落到磁盘 key 并打 WARN」
+的代码，只有在 `EmailFetchEnabled=false` 时才可能走到。
+
+但这引出一个更值得修的东西：**闸门只查「非空」，不查「对不对」。**
+填一把**错**的 key，`Validate()` 照样通过，进程照常启动，调度器照常打印
+`Email scheduler started`，然后每个账户每次同步都撞
+`decrypt credential: …`（`fetcher.go:338`）。从外面看「服务在跑」，
+实际一封新邮件都收不到，而且没有任何一行日志指向真正的原因。
+
+这不是假想 —— §7bf 实测到本机 4 处 `email_master.key` 里 3 把是错的，
+**用错的那把启动全程零报错**。
+
+### 修法：启动时真解一次
+
+新增 `credential_check.go` 的 `CheckCredentials(ctx, store, crypto)`，
+在 `main.go` 构造好 `emailCrypto` 之后调用：
+
+| 判定 | 触发条件 | 日志级别 |
+|---|---|---|
+| `AllFailed()` | 有凭据且**一把都**解不开 | **ERROR**，点名首个失败账户 + 原因 + 处置提示 |
+| 部分可解 | 有一把解不开、一把能解开 | WARN |
+| `AllDecryptable()` | 无失败 | INFO |
+| 0 账户 / 全占位 | 全新部署 | INFO，`nothing to verify` |
+
+边界写死在注释里，别过度承诺：
+
+- 只验「能不能解密」，**不验**密码是否仍有效、IMAP 是否可达。
+- **不修**任何东西，只把静默变成一行日志。
+- 只扫 `enabled = TRUE` 的账户（停用账户的坏凭据不该报警）。
+
+### 三个计数，不是一个
+
+账户实际分三类，混在一起算会出现两种误判：
+
+1. 能解开 → 成功
+2. 空凭据 / `oauth-pending-no-credential` → **不是 key 错了，是还没配完**
+3. 有密文却解不开 → key 错了
+
+所以 `Decryptable` / `Skipped` / `Failed` 分开，且 `AllFailed()` 必须把
+`Skipped` 排除掉，否则全新部署会被误报成「master key 拿错了」——那是会让
+运维去追一个不存在的问题的假警报。
+
+### 测试当场抓到一个真缺陷
+
+第一版实现写成「先解密，再看解出来的明文是否为空」。写完用例一跑就红：
+
+```
+--- FAIL: TestCheckCredentials_PlaceholderCredentialsAreNotFailures
+    两个占位凭据都该记为 Skipped，实际 {Accounts:2 Decryptable:0 Skipped:1
+    Failed:1 FirstError:ciphertext too short}
+```
+
+**空密文根本走不到「解密成功」那一步**：`credential_encrypted` 是
+`TEXT NOT NULL` 但值可以是 `''`，而 `DecryptString("")` 直接返回
+`ciphertext too short`。于是「还没配凭据」被算成了「解密失败」。
+判据必须在 `DecryptString` **之前**。
+
+这是可达的生产状态（新建账户尚未配置凭据），不是假想边界。
+
+### 负控
+
+把 `if strings.TrimSpace(r.CredentialCipher) == "" { res.Skipped++ }`
+改成 `res.Failed++` → `TestCheckCredentials_PlaceholderCredentialsAreNotFailures`
+转红（`Skipped:1 Failed:1`）。6 例全绿在改回去后复验。
+
+**过程中的一个操作失误**：负控注入后我用 `git checkout --` 还原，但
+`credential_check.go` 是**未跟踪的新文件**，`git checkout` 对它无效
+（`did not match any file(s) known to git`），而且我把错误输出吞掉了。
+结果下一次全包测试莫名 FAIL（30.8s）——真因是负控代码还留在文件里，不是
+新代码有问题。**教训：还原未跟踪文件不能用 `git checkout`，要么先
+`git add`，要么留一份备份并核对哈希。**
+
+### 真实库上的实际输出（不是想象的文案）
+
+`realprobe` 拿 3 把真实存在的 key 跑同一个自检：
+
+```
+KEY ...\wt-maildeploy\backend\data\email_master.key: 可解出凭据的账户数 = 0
+  AllDecryptable=false AllFailed=true -> MASTER KEY LOOKS WRONG: none of the 7
+  configured email account(s) decrypt (first: account=acct-...-2
+  56551681@qq.com: cipher: message authentication failed)
+
+KEY C:\workspace\openpocket\data\email_master.key: 可解出凭据的账户数 = 0
+  AllDecryptable=false AllFailed=true -> MASTER KEY LOOKS WRONG: …（同上）
+
+KEY C:\workspace\openpocket\wt3\backend\data\email_master.key: 可解出凭据的账户数 = 5
+  AllDecryptable=false AllFailed=false -> partial: 5/7 configured email
+  account(s) decrypt with the current master key (first failure:
+  account=acct-greenmail-junk …: cipher: message authentication failed)
+```
+
+第三行正是 `partial` 分支在真实数据上的验证：2 个 greenmail 测试账户是用
+临时目录的 key 加密的，所以「5/7」，而自检**没有**把它误报成「key 拿错了」
+—— 换成两计数实现这一格就会误报。
+
+### 仍未处置
+
+这把正确的 key 到底该固定注入到哪些启动方式、还是复制回真正在用的 data 目录，
+仍然需要先知道线上怎么启动 pocketd。见 §7az 第 11 条。
+本次只加「看得见」，不自动搬 key、不自动改配置。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：

@@ -1229,6 +1229,41 @@ func (s *Store) UpdateSyncState(ctx context.Context, id string, lastUID int64, l
 	return err
 }
 
+// AccountCredentialID 是一个账户的 ID 与其加密凭据。
+type AccountCredentialID struct {
+	ID               string
+	EmailAddress     string
+	CredentialCipher string
+}
+
+// ListEnabledAccountCredentials 返回所有**启用**账户的 ID 与加密凭据。
+//
+// 用途只有一个：启动自检（见 CheckCredentials）。config.Validate 只检查
+// POCKET_EMAIL_MASTER_KEY「非空」，不检查它对不对；一把**错**的 key 会让
+// 进程照常启动、界面照常打开，然后每一个账户都解不开凭据。要发现这种状态，
+// 必须在启动时真解一次。
+//
+// 刻意不返回明文，也不写库。
+func (s *Store) ListEnabledAccountCredentials(ctx context.Context) ([]AccountCredentialID, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, email_address, COALESCE(credential_encrypted, '')
+		FROM email_accounts WHERE enabled = TRUE ORDER BY created_at
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AccountCredentialID
+	for rows.Next() {
+		var r AccountCredentialID
+		if err := rows.Scan(&r.ID, &r.EmailAddress, &r.CredentialCipher); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ListEnabledAccounts 返回所有启用的账户。
 //
 // Deprecated: 该查询的 SELECT 不含 workspace_id 列，返回的 Account.WorkspaceID

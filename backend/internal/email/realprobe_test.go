@@ -161,6 +161,16 @@ func TestRealImapPrimaryPath(t *testing.T) {
 			}
 		}
 		fmt.Printf("KEY %s: 可解出凭据的账户数 = %d\n", p, ok)
+		// 直接跑一次新加的启动自检，把**用错 key 时用户实际会看到的那行字**
+		// 抓出来（而不是只在文档里描述它应该长什么样）。
+		if c != nil {
+			if chk, cerr := CheckCredentials(ctx, store, c); cerr != nil {
+				fmt.Printf("      self-check error: %v\n", cerr)
+			} else {
+				fmt.Printf("      AllDecryptable=%v AllFailed=%v -> %s\n",
+					chk.AllDecryptable(), chk.AllFailed(), chk.Summary())
+			}
+		}
 		if ok > 0 && working == nil {
 			working = key
 		}
