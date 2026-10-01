@@ -588,6 +588,28 @@ export class NoteRecorderRuntime {
   /** 正在执行的 stop() 收尾;重入直接复用同一个 promise,不重复拆麦克风。 */
   private stopInFlight: Promise<{ text: string; audioBlob: Blob; durationMs: number } | null> | null = null
 
+  /** 兜底全量转写的在途请求;非 null = 用户可以中止它。 */
+  private transcribeAbort: AbortController | null = null
+
+  /**
+   * 强行终止兜底转写（需求「后台执行的 api 可以强行终止」）。
+   *
+   * 只有用户点「停止转写」才会调它——**切页绝不能调**：录音所有权在进程级
+   * 单例就是为了跨页继续，用户离开页面不等于他改主意了。
+   *
+   * abort 会真的传到服务端：handleSttTranscribeFull 的 ctx 派生自
+   * r.Context()，连接断开后 TranscribeFull 立刻带着错误返回，不再白烧
+   * 上游 ASR 配额。
+   *
+   * @returns 是否确实中止了一个在途转写（false = 没有在途转写可停）
+   */
+  cancelTranscription(): boolean {
+    const c = this.transcribeAbort
+    if (!c || c.signal.aborted) return false
+    c.abort()
+    return true
+  }
+
   private syncTitle() {
     if (this.phase.value === 'recording') setHeaderTitle(`录音 ${formatRecordingClock(this.elapsedMs.value)}`)
     else setHeaderTitle(null)
@@ -828,9 +850,19 @@ export class NoteRecorderRuntime {
       // 但**必须有上限**——否则后端不响应时 phase 永远停在 'stopping'，
       // 录音按钮彻底锁死（这正是 withTimeout 存在的理由）。
       if (!this.transcript.value.trim() && audioBlob.size > 0) {
+        // 这段兜底转写最长 10 分钟，是整条录音链路上唯一一段**用户既看不见
+        // 进度、又完全没有中止手段**的等待（需求「后台执行的 api 可以强行
+        // 终止」在这里是空的）。加上中止器：服务端 handleSttTranscribeFull
+        // 派生自 r.Context()，abort 是真终止，不只是前端撒手。
+        const controller = new AbortController()
+        this.transcribeAbort = controller
         try {
           const result = await withTimeout(
-            sttSettingsApi.transcribeFull(audioBlob, `note${filenameForMimeType(blobType)}`),
+            sttSettingsApi.transcribeFull(
+              audioBlob,
+              `note${filenameForMimeType(blobType)}`,
+              controller.signal,
+            ),
             10 * 60_000,
           )
           this.transcript.value = result.text
@@ -840,11 +872,20 @@ export class NoteRecorderRuntime {
             this.error.value = `有 ${result.failed} 段未能转写，已保留其余 ${result.succeeded} 段内容`
           }
         } catch (e) {
-          // 2026-10-01：原来直接甩 e.message，等于把 `stt_unavailable: …` 连错误码
-          // 一起怼给界面；但反过来无脑显示原文又会把 `dial tcp …: i/o timeout`
-          // 这类技术串甩给用户。sttFailureText 是窄口径：只放行带 stt_unavailable
-          // 码的整理文案（剥前缀、截断 160 字），没有稳定错误码的一律走通用兜底。
-          this.error.value = sttFailureText(e, '转写失败')
+          if (controller.signal.aborted) {
+            // 用户主动中止：不是错误，别把 AbortError 当转写失败弹给用户。
+            // 音频已经拿到了（pendingResult 照常落），所以这句要说清楚
+            // 「文字没转出来但录音还在」，否则用户会以为整段录音丢了。
+            this.error.value = '已停止转写，本次录音没有文字；音频仍已保存'
+          } else {
+            // 2026-10-01：原来直接甩 e.message，等于把 `stt_unavailable: …` 连错误码
+            // 一起怼给界面；但反过来无脑显示原文又会把 `dial tcp …: i/o timeout`
+            // 这类技术串甩给用户。sttFailureText 是窄口径：只放行带 stt_unavailable
+            // 码的整理文案（剥前缀、截断 160 字），没有稳定错误码的一律走通用兜底。
+            this.error.value = sttFailureText(e, '转写失败')
+          }
+        } finally {
+          this.transcribeAbort = null
         }
       }
       this.pendingResult = { text: this.transcript.value.trim(), audioBlob, durationMs }

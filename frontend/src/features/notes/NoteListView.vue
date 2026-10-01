@@ -43,6 +43,18 @@
       -->
       <p v-else-if="recorderUi.statusText" class="studio-busy" role="status" aria-live="polite">
         {{ recorderUi.statusText }}
+        <!--
+          兜底转写最长 10 分钟。此前这段窗口里全应用没有任何中止手段，
+          用户只能干等或重启应用 —— 需求「后台执行的 api 可以强行终止」
+          在这条链路上是空的。abort 会真传到服务端（ctx 派生自
+          r.Context()），不是前端单方面撒手。
+        -->
+        <button
+          v-if="recorderUi.canCancel"
+          type="button"
+          class="studio-busy-stop"
+          @click="cancelTranscription"
+        >停止转写</button>
       </p>
       <template v-else>
         <div class="context-row">
@@ -156,6 +168,7 @@ const {
   transcript: liveTranscript,
   error: recError,
   toggle: toggleRecording,
+  cancelTranscription,
   consumePendingResult,
 } = useNoteRecording()
 
@@ -373,6 +386,13 @@ useListScene('notes', load)
   margin: 0 0 var(--space-2);
   color: var(--text-secondary);
   font-size: 13px;
+  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+}
+/* 中止兜底转写。与状态同行而不是另起一行：这是一次性操作，
+   用完就该消失，不该在界面上占一个常驻位置。 */
+.studio-busy-stop {
+  border: none; background: none; padding: 0;
+  color: var(--brand-primary); font-size: var(--text-sm); font-weight: 600;
 }
 /* 这两个按钮经 HeaderActionsPortal teleport 到 AppLayout 的 .header-actions，
    scope 属性只挂在按钮自己身上，`:deep(.notes-action)` 编译成

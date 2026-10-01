@@ -23,16 +23,29 @@ export interface NoteRecorderUiState {
   ariaLabel: string
   /** 列表页要显示的状态文案；空串 = 不显示。 */
   statusText: string
+  /**
+   * 状态行是否要给出「停止转写」入口。
+   *
+   * 只在 'stopping' 为真：那正是兜底转写在跑（最长 10 分钟）的窗口，此前
+   * 全应用在这一段**没有任何中止手段**——需求「后台执行的 api 可以强行
+   * 终止」在这里是空的，用户只能干等或重启应用。
+   */
+  canCancel: boolean
 }
 
 export function noteRecorderUiState(phase: RecordingPhase): NoteRecorderUiState {
   if (phase === 'recording') {
-    return { busy: false, ariaLabel: '停止录音', statusText: '' }
+    return { busy: false, ariaLabel: '停止录音', statusText: '', canCancel: false }
   }
   if (phase === 'stopping') {
-    return { busy: true, ariaLabel: '正在转写录音，请稍候', statusText: '正在转写录音，请稍候…' }
+    return {
+      busy: true,
+      ariaLabel: '正在转写录音，请稍候',
+      statusText: '正在转写录音，请稍候…',
+      canCancel: true,
+    }
   }
-  return { busy: false, ariaLabel: '开始录音', statusText: '' }
+  return { busy: false, ariaLabel: '开始录音', statusText: '', canCancel: false }
 }
 
 export function formatRecordingClock(ms: number): string {

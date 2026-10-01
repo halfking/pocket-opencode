@@ -200,12 +200,18 @@ export const sttSettingsApi = {
    *
    * 必须检查 `failed`：部分段失败时整体仍返回 ok=true（保住成功段的内容），
    * 但前端要把「有 N 段没转出来」告诉用户，否则用户会以为记录是完整的。
+   *
+   * 传 signal 才能中止（需求「后台执行的 api 可以强行终止」）：服务端
+   * handleSttTranscribeFull 是 `context.WithTimeout(r.Context(),
+   * fullTranscribeTimeout)`，客户端断开即中止——否则这段最长 10 分钟的兜底
+   * 转写期间，用户只能干等。
    */
-  async transcribeFull(audioBlob: Blob, filename = 'meeting.wav'): Promise<SttFullResult> {
+  async transcribeFull(audioBlob: Blob, filename = 'meeting.wav', signal?: AbortSignal): Promise<SttFullResult> {
     const base64 = await blobToBase64(audioBlob)
     return http<SttFullResult>('/api/stt/transcribe-full', {
       method: 'POST',
       body: JSON.stringify({ audioBase64: base64, filename }),
+      signal,
       timeoutMs: FULL_TRANSCRIBE_TIMEOUT_MS,
     })
   },
