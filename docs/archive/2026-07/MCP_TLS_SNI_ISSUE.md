@@ -25,7 +25,7 @@ remote error: tls: unrecognized name
 #### 从 184 服务器测试
 ```bash
 curl -k -v -X POST https://mcp.kxpms.cn/acc/mcp \
-  -H 'Authorization: Bearer sk-mcp-sa0cXjxzPKhU77CYNFiFDP1I7B4wMnBc' \
+  -H 'Authorization: Bearer sk-mcp-<REDACTED-ROTATE-ME>' \
   -d '{"jsonrpc":"2.0","method":"session.search","params":{"query":"","limit":5},"id":1}'
 
 # 结果：
@@ -36,7 +36,7 @@ OpenSSL/3.0.13: error:0A000458:SSL routines::tlsv1 unrecognized name
 ```bash
 curl -k -X POST https://14.103.169.56/acc/mcp \
   -H 'Host: mcp.kxpms.cn' \
-  -H 'Authorization: Bearer sk-mcp-sa0cXjxzPKhU77CYNFiFDP1I7B4wMnBc' \
+  -H 'Authorization: Bearer sk-mcp-<REDACTED-ROTATE-ME>' \
   ...
 
 # 结果：同样的 TLS SNI 错误

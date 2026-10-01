@@ -54,7 +54,7 @@ const shapes = [
   },
   {
     label: '5 鉴权故意写错（对照组）',
-    args: ['-X', 'POST', '-H', 'Authorization: Bearer sk-invalid-key-for-control', '-H', 'Content-Type: application/json',
+    args: ['-X', 'POST', '-H', 'Authorization: Bearer sk-invalid-key-for-control' /* secret-scan-ok: 对照组故意写错的密钥 */, '-H', 'Content-Type: application/json',
       '-d', JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'hi' }], max_tokens: 16 }),
       `${V1}/chat/completions`],
   },

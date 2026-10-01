@@ -217,7 +217,7 @@ POCKET_VERSION_CONFIG_PATH=/data/services/opencode-pocket/backend/config/version
 # MCP Configuration (ENABLED)
 POCKET_MCP_ENABLED=true
 POCKET_MCP_URL=https://mcp.kxpms.cn/acc/mcp
-POCKET_MCP_API_KEY=sk-mcp-sa0cXjxzPKhU77CYNFiFDP1I7B4wMnBc
+POCKET_MCP_API_KEY=sk-mcp-<REDACTED-ROTATE-ME>
 
 # OpenCode Instances
 OPENCODE_INSTANCES_JSON=[{"id":"acc-mcp","displayName":"ACC MCP Server","apiBaseURL":"https://mcp.kxpms.cn/acc/mcp","environment":"production"}]

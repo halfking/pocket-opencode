@@ -71,8 +71,7 @@ route 级测试落进 main；§5.2 三项清理全部闭环，其中 `sk-` 夹�
    全历史核查——该字面量只在引入它的 `14e35a1`（2026-09-05 掩码测试）
    出现过，从未在配置/证据/脚本中被使用，与租户 key（sk-6tGL…K51YV）
    前后缀均不同 → **判定合成夹具**（`bf15387`）。已换成
-   `sk-test-fixture-not-a-real-key-000111` 无歧义合成串（maskKey 纯字符串
-   操作，语义不变），并留定性注释。
+   `sk-test-fixture-not-a-real-key-000111` 无歧义合成串（maskKey 纯字符串操作，语义不变），并留定性注释。 <!-- secret-scan-ok：上一行的合成串是 sk- 形态，密钥卡口按行豁免（标记必须与命中同行） -->
 3. **scripts/ 探针归档**：8 个一次性脚本 → `scripts/archive/2026-09-probes/`
    （probe-invoice-* / gw-audio-probe / cdp-doc-open-* /
    locales-add-fetchhint / **verify-real-invoice-e2e / verify-real-mailbox-readonly**
