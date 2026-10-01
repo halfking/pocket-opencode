@@ -4944,6 +4944,81 @@ ON CONFLICT (email_id) DO UPDATE SET ...
 
 ---
 
+## §7ca 又一次按位置猜职责：`refreshOnce` 不是开机重排（2026-10-02）
+
+§7bw 的清单里写：
+
+> 优先级 3：`refreshOnce` —— 需求 1 的开机重排判定，可以注入假时钟
+
+**这行是错的。** `scheduler.go:319 refreshOnce` 读完整实现是
+**OAuth token 定时刷新**（`ListExpiredOAuthTokens` → `GetAccountByIDScoped` →
+查 provider 配置 → `RefreshAccessToken` → 永久失败才撤销），
+与「开机重排」毫无关系。
+
+开机重排的真实位置是 **Android 原生层**：`cc6753d` 修的就是
+`EmailFetchReceiver` 的 `BOOT_COMPLETED` / `MY_PACKAGE_REPLACED`
+intent-filter，并抽出静态纯函数 `shouldReschedule(action)` 供 JUnit 覆盖 ——
+**那部分已有 5 个用例 + 负控**（负控：让 `shouldReschedule` 恒 false → 2 个转红）。
+
+### 这是同一个错误的第二次
+
+§7bz 是第一次：`InvoiceContentHash` 被我当成「去重依据」，
+实际零调用点。两次的共同形状是：**我按「文件在哪个模块 / 函数挨着什么」猜职责，
+没读实现**。区别只在于这次我甚至没读就写进了优先级清单。
+
+写覆盖率清单这类东西，最容易犯的错就是给每个 0% 函数配一句
+「它大概是干什么的」—— 读起来像结论，其实只是位置推断。
+**清单里凡是带「大概 / 应该是 / 用于 X」的，一律要回读实现才能留。**
+
+### 实际补的测试（`scheduler_refresh_test.go`，7 个用例）
+
+`refreshOnce` 值得测的理由在 `oauth_refresh.go` 的注释里写得很直白：
+
+> 5xx and 429 are transient. Anything else falls into the transient bucket so
+> the scheduler will retry on the next tick instead of **nuking the account**.
+
+「nuking」= `RevokeOAuthTokenScoped`（`store.go:2139-2143`）：
+`DELETE FROM email_oauth_tokens` + `UPDATE email_accounts SET auth_type='password',
+enabled=FALSE`。**撤销之后这个账户不再收信，用户必须重新走一次 OAuth 授权。**
+
+所以核心命题只有一条：**临时失败绝不能撤销账户**。
+
+| 用例 | 锁住的语义 |
+|---|---|
+| `NilRefresherReturnsBeforeTouchingStore` | 早退在 store 之前 —— **故意把 store 设成 nil 指针**，越过早退就会 panic。「不 panic」比「mock 没被调用」更强，不可假绿 |
+| `NilCryptoReturnsBeforeTouchingStore` | 同上，另一条早退 |
+| `UnconfiguredProviderSkipsWithoutRevoking` | provider 没配好就跳过，且账户**保持启用** —— 还没试过刷新就禁掉是最糟的误伤 |
+| `TransientFailureKeepsTokenAndAccount` | **核心断言**：临时失败 token 行仍在、账户仍启用；且 refresher 收到的是**解密后的明文** |
+| `PermanentFailureRevokes` | 永久失败才撤销：token 行归零 + `auth_type='password'` + `enabled=false` |
+| `SuccessPersistsNewTokenAndPushesExpiry` | 成功时 `expires_at` 被推到未来（否则每 5 分钟刷一次），且不禁用账户 |
+| `UncoveredCodesAndUnknownStatuses` | 只补已有表格**确实没有**的两点：`invalid_request` / `invalid_scope` 两个永久码；**非标准 status**（418/499/599）必须落 transient |
+
+最后一条是刻意收窄的。`oauth_refresh_test.go:183` 的
+`TestClassifyRefreshStatus` 已经覆盖 5xx / 429 / invalid_grant /
+invalid_client / unauthorized_client / 400-unknown / 410 / network / 200，
+`TestIsPermanentRefreshError_TypeAssertions` 也已经测了非 `RefreshError`。
+我第一版把那些**全部重抄了一遍**（还起名叫 `_5xxAnd429AreTransient`，
+名字只提 5xx/429 实际测了 10 个 case）—— 那是维护负担，不是保障，已删。
+
+### 负控（双向转红）
+
+把 `scheduler.go:362` 的 `if !IsPermanentRefreshError(err)` 反转成
+`if IsPermanentRefreshError(err)`：
+
+```
+TestRefreshOnce_TransientFailureKeepsTokenAndAccount
+    token rows = 0, want 1: a transient failure must NOT revoke      FAIL
+TestRefreshOnce_PermanentFailureRevokes
+    token rows = 1, want 0: a permanent failure must revoke          FAIL
+```
+
+**两个方向都红了**，说明这两条断言都不是「怎么都绿」的那种。
+（第一次注入我写成 `if !IsPermanentRefreshError(err) && true` ——
+`&& true` 恒真，**逻辑根本没变**，差点据此判定护栏失效。
+注入后必须打点确认「注入生效=True」再读结论。）
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
