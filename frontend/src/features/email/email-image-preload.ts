@@ -60,6 +60,18 @@ export interface RemoteImageRef {
 /**
  * 从 HTML 里抓出远程图片引用（去重、保持顺序）。
  *
+ * 覆盖四种写法，少一种就等于「那段 HTML 里的图永远不会被内联」：
+ *
+ *   1. `<img src="URL">`   带引号 / 无引号都收
+ *   2. `<img data-src=…>`  懒加载占位。营销与通知邮件极常见：真地址放在
+ *      data-src / data-original / data-lazy-src 里，而 src 是个 1×1 追踪像素
+ *      或空。**只认 src 等于永远抓不到真图**。
+ *   3. `url(URL)`          CSS 背景图。inlineDataUri 一直会替换它，但**收集侧
+ *      以前从不抓它**，于是那段替换逻辑是够不到的死代码——背景图永远不会被
+ *      内联，只能靠 WebView 自己发请求，而基址是 capacitor://，相对/远程
+ *      背景图照样加载不出来。
+ *   4. `<table background="URL">` 老式邮件排版背景，Outlook 时代写法。
+ *
  * 协议：https 绝对 与 协议相对（`//host/...`）都收；引号可有可无。
  * 返回的 `url` 一律是绝对地址（抓取用），`raw` 保留 HTML 原样写法（回填用），
  * 否则回填时会在 HTML 里找不到 `//host/x.png` 这个原值。
@@ -68,17 +80,49 @@ export function collectRemoteImageRefs(html: string): RemoteImageRef[] {
   if (!html) return []
   const out: RemoteImageRef[] = []
   const seen = new Set<string>()
-  // 注意 alternation 顺序：`//` 必须排在 `https?://` 前面，
-  // 否则 `https://…` 会先被 `//` 之外的长匹配吃掉一部分。
-  const re = /<img\b[^>]*?\bsrc\s*=\s*(["']?)((?:\/\/|https?:\/\/)[^"'\s>]+)\1/gi
-  let m: RegExpExecArray | null
-  while ((m = re.exec(html)) !== null) {
-    const raw = m[2]
+  const push = (raw: string) => {
+    if (!raw) return
     const url = normalizeRemoteUrl(raw)
-    if (seen.has(url)) continue
+    if (seen.has(url)) return
     seen.add(url)
     out.push({ raw, url })
   }
+
+  // 注意 alternation 顺序：`//` 必须排在 `https?://` 前面，
+  // 否则 `https://…` 会先被 `//` 之外的长匹配吃掉一部分。
+  const remote = '(?:\\/\\/|https?:\\/\\/)[^"\'\\s>)]+'
+
+  // 1) + 2) <img> 标签里的 src / data-src / data-original / data-lazy-src。
+  //
+  //    先把标签切出来、再在标签内部找属性，**不能**用
+  //    `<img[^>]*?\bsrc\s*=\s*…` 一条正则直接扫全文：那样每个标签只可能
+  //    匹配一次（`<img` 锚点 + 惰性量词命中第一个属性后 lastIndex 就越过了
+  //    整个标签），于是 `src="追踪像素" data-src="真图"` 只会收到追踪像素，
+  //    真图永远收不到——而这恰恰是营销邮件最常见的写法。
+  const tagRe = /<img\b[^>]*>/gi
+  const attrRe = new RegExp(
+    `\\b(?:src|data-src|data-original|data-lazy-src)\\s*=\\s*(["']?)(${remote})\\1`,
+    'gi',
+  )
+  let tm: RegExpExecArray | null
+  while ((tm = tagRe.exec(html)) !== null) {
+    const tag = tm[0]
+    attrRe.lastIndex = 0
+    let am: RegExpExecArray | null
+    while ((am = attrRe.exec(tag)) !== null) push(am[2])
+  }
+
+  // 3) CSS url()：出现在 style 属性里和 <style> 块里，形态相同。
+  const cssRe = new RegExp(`url\\(\\s*["']?(${remote})["']?\\s*\\)`, 'gi')
+  let m: RegExpExecArray | null
+  while ((m = cssRe.exec(html)) !== null) push(m[1])
+
+  // 4) 老式邮件排版的 background 属性：<td background="…"> 比 <table background>
+  //    常见得多（每个色块一个单元格），所以这里不限定标签名，任何元素的
+  //    background 属性都收。
+  const bgRe = new RegExp(`\\sbackground\\s*=\\s*(["']?)(${remote})\\1`, 'gi')
+  while ((m = bgRe.exec(html)) !== null) push(m[2])
+
   return out
 }
 
@@ -160,7 +204,12 @@ export async function preloadRemoteImages(
   html: string,
   options: PreloadOptions = {},
 ): Promise<string> {
-  if (!html || !/<img\b/i.test(html)) return html
+  if (!html) return html
+  // 注意：**不能**用 `if (!/<img\b/i.test(html)) return html` 提前返回。
+  // 排版型邮件（很多通知/营销邮件）整封只有表格 + CSS 背景图，一个 <img> 都没有；
+  // 那样早退会让这批邮件的图**一张都进不了待抓列表**，而 WebView 基址是
+  // capacitor://，这些背景图自己发请求也加载不出来 —— 详情页表现为「缺图」。
+  // 是否真有可内联的图，交给下面的 collectRemoteImageRefs 判。
   const fetchImpl = options.fetchImpl ?? (typeof fetch !== 'undefined' ? fetch : null)
   if (!fetchImpl) return html
 

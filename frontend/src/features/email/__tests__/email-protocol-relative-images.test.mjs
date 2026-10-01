@@ -57,11 +57,15 @@ describe('协议相对图片被收集到', () => {
   it('单引号 src', () => {
     assert.deepEqual(collectRemoteImages(`<img src='${rel}'>`), [abs])
   })
-  it('CSS url() 出现在 style 属性里（收集阶段不收，但回填阶段要能换）', () => {
-    // collect 只看 <img src>，这是既有契约；CSS 的覆盖在下面 inlineDataUri 用例里验。
+  it('CSS url() 出现在 style 属性里（现在**收**，此前收不到）', () => {
+    // 2026-10-02 之前这条断言写的是 `[]`：「collect 只看 <img src>，这是既有契约」。
+    // 那不是契约，那是**把缺陷固化成了期望**——inlineDataUri 一直会替换
+    // url()，它的注释也写着「营销邮件的背景图大量走这条」，但收集侧从不抓，
+    // 于是那段替换逻辑是够不到的死代码，背景图永远不会被内联。
+    // 现已改为收集，断言随之翻转。
     const html = `<td style="background-image:url(${rel})"></td>`
-    assert.deepEqual(collectRemoteImages(html), [])
-    assert.equal(collectRemoteImageRefs(html).length, 0)
+    assert.deepEqual(collectRemoteImages(html), [abs])
+    assert.equal(collectRemoteImageRefs(html).length, 1)
   })
   it('去重：同一张图出现两次只收一次，且保留 raw 原样写法', () => {
     const refs = collectRemoteImageRefs(`<img src="${rel}"><img src="${abs}">`)
