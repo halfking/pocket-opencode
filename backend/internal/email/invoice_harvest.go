@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // invoice_harvest.go — 发票文件采集流水线（对应需求「收取发票类邮件并解析
@@ -586,7 +587,33 @@ func InvoiceFileName(inv *Invoice) string {
 	if no := sanitizeFileName(inv.InvoiceNo, ""); no != "" {
 		name += "-" + no
 	}
-	return name + ".pdf"
+	name += ".pdf"
+	// 整名兜底长度（2026-10-01 补）。
+	//
+	// 为什么需要：sanitizeFileName 对**每个**字段各截到 60，四个字段拼起来
+	// 最坏可达 60*3 + 金额 + 日期 + 发票号 ≈ 208 字节；加上
+	// `<dataDir>/email-invoices/<workspace>/` 这段前缀后实测全路径 269 字节，
+	// **超过 Windows MAX_PATH 260**——os.WriteFile 会直接失败（报
+	// "File name too long"），采集器 markRetry 重试也是白试。
+	//
+	// 名字对「可读」的要求低于对「唯一」的要求，所以超长时优先砍
+	// 发票号（尾部），保住 {费用类型}-{对方单位}-{金额}-{日期} 这段
+	// 需求约定的可读部分。
+	// 上界 180 而不是 200：实测 200 时全路径 263 字节仍超 MAX_PATH，
+	// 数据目录前缀在不同部署下可能更长，留足余量。180 对应的全路径约 243。
+	const maxNameBytes = 180
+	if len(name) > maxNameBytes {
+		cut := name[:maxNameBytes]
+		// 不要把 .pdf 切掉，也尽量不要切在多字节字符中间
+		if i := strings.LastIndex(cut, ".pdf"); i > 0 {
+			cut = cut[:i]
+		}
+		for len(cut) > 0 && !utf8.ValidString(cut) {
+			cut = cut[:len(cut)-1]
+		}
+		name = strings.TrimRight(cut, "-.") + ".pdf"
+	}
+	return name
 }
 
 func sanitizeFileName(s, fallback string) string {

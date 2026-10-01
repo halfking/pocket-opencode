@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // 撞名：不同的票必须得到不同的文件名。
@@ -104,7 +105,42 @@ func TestSaveInvoiceFile_SameNameOverwritesSilently(t *testing.T) {
 	// 所以 InvoiceFileName 必须保证唯一。上面的用例才是防线。
 }
 
-// 无发票号时（采集早期/失败重试）也必须给出一个稳定且可区分的名字。
+// 超长字段不得把全路径顶过 Windows MAX_PATH(260)。
+//
+// 回归护栏：加发票号后名字变长，而 sanitizeFileName 对每个字段各截到 60，
+// 四段拼起来最坏 ~208 字节，加数据目录前缀实测全路径 269 字节 > 260，
+// os.WriteFile 会直接报 "File name too long" 失败，采集器 markRetry 重试白试。
+func TestInvoiceFileName_BoundedLengthForWindowsMaxPath(t *testing.T) {
+	long := strings.Repeat("长", 60) // sanitizeFileName 的单字段上限
+	inv := &Invoice{
+		Category: long, Seller: long, Amount: 1234567.89, Currency: "CNY",
+		InvoiceNo: long, InvoiceDate: "2026-09-15",
+	}
+	name := InvoiceFileName(inv)
+	const dataDirPrefix = `C:\workspace\openpocket-wt-email\data\email-invoices\default\`
+	if full := len(dataDirPrefix) + len(name); full > 260 {
+		t.Fatalf("full path %d bytes exceeds Windows MAX_PATH 260 (name=%d): %q", full, len(name), name)
+	}
+	// 超长时优先砍发票号，必须保住需求约定的可读部分
+	if !strings.HasPrefix(name, long[:20]) {
+		t.Errorf("超长时应保留开头的费用类型段: %q", name)
+	}
+	// 切出来的名字必须是合法 UTF-8（不能切在多字节字符中间）
+	if !utf8.ValidString(name) {
+		t.Errorf("截断后不是合法 UTF-8: %q", name)
+	}
+	// 扩展名必须还在
+	if !strings.HasSuffix(name, ".pdf") {
+		t.Errorf("截断后丢了扩展名: %q", name)
+	}
+	// 不能以连字符或点结尾（避免 `-` 或 `..` 之类的怪名字）
+	base := strings.TrimSuffix(name, ".pdf")
+	if strings.HasSuffix(base, "-") || strings.HasSuffix(base, ".") {
+		t.Errorf("截断后以分隔符结尾: %q", name)
+	}
+}
+
+// 无发票号时（采集早期/XML 未解析出）不加分隔段，避免 `-` 空段。
 func TestInvoiceFileName_NoInvoiceNoStillDeterministic(t *testing.T) {
 	inv := &Invoice{Category: "其他", Seller: "某供应商", Amount: 10, Currency: "CNY",
 		InvoiceDate: "2026-09-15"}
