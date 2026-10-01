@@ -6178,6 +6178,80 @@ store 侧：`GetEmailByIDScoped` 的 SELECT + Scan 各加一处
 
 ---
 
+## §7cr 给这一类缺陷做静态护栏——**前两版是废的，负控把它们抓了出来**（2026-10-02）
+
+两个同类缺陷都是偶然撞上的，所以想固化成护栏。**但护栏本身比它要防的 bug
+更容易骗人**：第一版和第二版都「全绿」，而负控证明它们**根本抓不到**
+自己声称要防的那个回归。
+
+### 第一版：按字段名判「有没有被读过」——做不到
+
+第一版：拿结构体字段清单，检查它在非测试代码里是否作为 `Scan` 目标
+（`&x.Field`）或被赋过值（`x.Field =`）。
+
+诊断实测（临时探针，打完就删）：
+
+    &x.MessageID 形式的 Scan 目标：一个都没有
+    x.MessageID = 的位置：fetcher.go:959、mime.go:438、store.go:423、store.go:1786
+
+因为 `GetEmailByID` 那几处是**先**把列 Scan 进一个 `sql.NullString` 局部变量
+（`&messageID`），**再**赋给结构体（`e.MessageID = messageID.String`）。
+字段名级的分析根本看不到「DB → 结构体」这一跳。
+
+而「只要被赋值过就算读过」的退路更糟：`fetcher.go:959` 与 `mime.go:438`
+是**在内存里构造** Email 时赋的值，与 DB 无关，照样满足判据。
+⇒ 第一版负控**不转红**，护栏形同虚设。
+
+### 第二版：把范围锚到单个函数内——**还是被注释骗了**
+
+第二版：若函数体里出现 `X.Field = ...`，则**同一个函数**的源码里必须出现
+该字段对应的列名。逻辑上更紧，但负控**仍然不转红**。
+
+原因很荒唐：我自己在 `GetEmailByID` 上方写的那段解释性注释里就有
+「message_id 必须在这里读出来」这句话，而判据用
+`strings.Contains(函数体源码, "message_id")` —— **注释满足了对 bug 的检查**。
+
+`pgisolation_guard_test.go` 的文件头就写着「注释能满足任何源码扫描，
+所以这个测试先 strip 注释再匹配」，我**在同一个包里又犯了一次**。
+
+### 第三版（落地）：只认字符串字面量
+
+SQL 一定在字符串字面量里，所以改成遍历 AST、只收集 `token.STRING` 字面量，
+再在里面找列名，天然免疫注释。两条负控都转红：
+
+| 负控 | 注入 | 结果 |
+|---|---|---|
+| NEGCTL-A | 从 `GetEmailByID` 的 SELECT 删掉 `message_id` | **红** |
+| NEGCTL-B | 把 `GetEmailByIDScoped` 的 `body_purged` 硬编码成 `FALSE` | **红** |
+
+### 顺带：护栏还抓出了第三个候选，结论是「死字段」不是 bug
+
+扫 `Email.DeletedAt` 时命中。查证结论与前两个**不同**：
+
+- 软删除完全由 **SQL 谓词**执行（`WHERE deleted_at = 0`、部分表用
+  `deleted_at IS NULL`），没有任何生产代码读 `Email.DeletedAt`——
+  `soft_delete_test.go:14` 那句读的是另一个结构体
+  `soft_delete.SoftDeleteRecord` 的同名字段。
+- 所以它是**死字段**，不是**失效的守卫**。两者处置完全不同：前者是清理项，
+  后者是修 bug。已列入待拍板（留着是个陷阱：下一个人写 `if em.DeletedAt`
+  会得到一个永不触发的守卫），**没有擅自删**。
+
+### 护栏的取舍（如实记录，不要当它比实际更强）
+
+- 只守**已经出过事**的两个字段。全字段扫会误报一堆（有些字段是纯入参载体、
+  有些函数的 SQL 在 helper 里），天天误报的护栏最后没人看。宁可少守。
+- 豁免必须写理由（与本包 `pgDSNGuardExempt` 同一条规矩）。当前两条：
+  - `ParseMIMEMessage`：Message-ID 从 MIME 头解析，与 DB 无关；
+  - `syncPOP3Fallback`：赋的是**合成** Message-ID（`"pop3-"+uidl`），
+    这正是 `sameEmailMessage` 用 `HasPrefix(msgID,"pop3-")` 把它排除在
+    强确认之外的原因。**这条是第二版护栏才抓出来的**。
+- 遍历 358 个函数；若一个函数都没遍历到（checked==0）直接失败——
+  解析器坏了就静默放行是最坏的失败方式（同 `pgisolation_guard_test.go`）。
+
+回归：`internal/email` 全量 80.0s 通过，注入无残留。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
