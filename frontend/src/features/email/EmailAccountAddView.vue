@@ -268,7 +268,7 @@ async function saveAndVerify() {
   background: var(--bg-base);
 }
 .back-btn { border: 0; background: transparent; color: var(--text-primary); padding: 4px; }
-.page-title { margin: 0; font-size: 18px; }
+.page-title { margin: 0; font-size: var(--text-xl); }
 .steps { color: var(--text-muted); font-size: 12px; }
 .panel { display: flex; flex-direction: column; gap: var(--space-2); }
 .hint, .auth-box p { margin: 0; color: var(--text-secondary); font-size: 13px; }
