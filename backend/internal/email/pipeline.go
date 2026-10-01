@@ -957,6 +957,7 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 	mdPath := filepath.Join(dir, "invoices-summary-"+stamp+".md")
 
 	var total float64
+	counted := 0
 	rows := make([][]string, 0, len(invoices))
 	for _, inv := range invoices {
 		// 合计口径与 LedgerRows 保持一致：**只统计已下载的**。
@@ -964,8 +965,12 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 		// failed 发票若带着错误抽取出的非零金额，会静默把对账总额算高，
 		// 而且没有任何地方会提示。两处口径必须一致，否则 CSV 与飞书表格
 		// 的「合计」会给出两个不同的数。
+		//
+		// counted 与 total 在同一处递增：把「计入了几张」和「合计多少钱」
+		// 绑在一起，才能在 Markdown 头部如实说明覆盖范围。
 		if (inv.Status == "downloaded" || inv.Status == "filed") && inv.FilePath != "" {
 			total += inv.Amount
+			counted++
 		}
 		rows = append(rows, []string{
 			inv.Category, inv.Seller, fmt.Sprintf("%.2f", inv.Amount), inv.Currency,
@@ -995,8 +1000,15 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 
 	md := &strings.Builder{}
 	md.WriteString("# 发票汇总\n\n")
-	md.WriteString(fmt.Sprintf("生成时间：%s · 共 %d 张 · 合计金额 **%.2f**\n\n",
-		time.Now().Format("2006-01-02 15:04"), len(invoices), total))
+	// 「共 N 张」和合计金额必须用各自的口径说清楚。
+	//
+	// 原来头部写的是 len(invoices)（**全部**发票），而 total 只累加
+	// status ∈ {downloaded, filed} 且 FilePath 非空的。于是只要清单里混进
+	// pending/failed 发票，头部就是「共 3 张 · 合计金额 100.00」——读者必然
+	// 以为这 3 张都算进了 100，实际只有 1 张。和 2026-10-01 修过的
+	// LedgerTotal 是同一类问题：同一个数字在两处用不同口径，且没有任何提示。
+	md.WriteString(fmt.Sprintf("生成时间：%s · 共 %d 张（计入合计 %d 张）· 合计金额 **%.2f**\n\n",
+		time.Now().Format("2006-01-02 15:04"), len(invoices), counted, total))
 	md.WriteString("| 费用类型 | 对方单位 | 金额 | 发票号 | 日期 | 状态 | 文件 |\n")
 	md.WriteString("|---|---|---:|---|---|---|---|\n")
 	for _, r := range rows {

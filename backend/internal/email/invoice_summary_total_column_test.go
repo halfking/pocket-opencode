@@ -124,3 +124,43 @@ func TestInvoiceSummaryCSV_TotalRowNotLeakedIntoMarkdown(t *testing.T) {
 		t.Errorf("Markdown 缺少合计金额：\n%s", data)
 	}
 }
+
+// Markdown 头部必须说清「列了几张」和「几张进了合计」。
+//
+// 2026-10-02 实测：头部用的是 len(invoices)（全部发票），而合计只累加
+// status ∈ {downloaded, filed} 且 FilePath 非空的。于是 pending/failed 发票
+// 一旦存在，头部会写「共 3 张 · 合计金额 3500.00」——读者自然以为这 3 张都
+// 算进了 3500，实际只有 1 张。和 2026-10-01 修过的 LedgerTotal 口径是同一类
+// 问题：同一个数字在两处用不同口径，且没有任何提示。
+func TestInvoiceSummaryCSV_MarkdownHeaderDistinguishesListedVsCounted(t *testing.T) {
+	dir := t.TempDir()
+	invs := []Invoice{
+		{Category: "其他", Seller: "甲", Amount: 100, Status: "downloaded",
+			FilePath: "email-invoices/ws/a.pdf", Subject: "发票"},
+		{Category: "交通", Seller: "乙", Amount: 23.45, Status: "pending", Subject: "待下载"},
+		{Category: "其他", Seller: "丙", Amount: 999, Status: "failed", Subject: "抽取错误"},
+	}
+	_, mdPath, err := WriteInvoiceSummaryDocs(dir, "ws_user-admin", invs)
+	if err != nil {
+		t.Fatalf("WriteInvoiceSummaryDocs: %v", err)
+	}
+	data, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatalf("read md: %v", err)
+	}
+	head := strings.SplitN(string(data), "\n", 4)[2]
+	// 断言必须精确到「计入合计 N 张」这个措辞。不能只判 Contains(head, "1")——
+	// 日期里的 2026-10-02 就带 1，那样缺陷在、断言照样绿（我自己先写错过一次）。
+	if !strings.Contains(head, "共 3 张") {
+		t.Errorf("头部应说明共列出 3 张，实际：%q", head)
+	}
+	if !strings.Contains(head, "计入合计 1 张") {
+		t.Errorf("头部未说明只有 1 张计入合计（3 张里 1 张 pending、1 张 failed），"+
+			"读者会以为 3500/100 覆盖了全部 3 张；实际头部：%q", head)
+	}
+	// 合计必须只等于已落盘的那张。
+	if !strings.Contains(string(data), "合计金额 **100.00**") {
+		t.Errorf("合计应为 100.00（pending/failed 不计入）：\n%s", data)
+	}
+	t.Logf("头部实测：%s", head)
+}
