@@ -5824,3 +5824,105 @@ PG `decks|notes|cards = 1|1|1`；卡片 `overdue_by_sec=25`；
 - `TICK_MS=30s` 与「后台暂停 tick」仍是**我选的默认值，未经产品确认**；
   真机上后台暂停这一条**没有专门验过**（flow 全程 App 在前台）。
 
+
+### 4.59 i18n 未翻译棘轮卡口 + notes-crud 新证据 + 一次「问错问题」的自纠
+
+#### 4.59.1 新卡口：`check:i18n` 一直没为翻译欠账负过责
+
+现有 `check-i18n-keys.mjs` 只校验「代码在用的 key 在每份语言文件里**都存在**」，
+**完全不校验值是否翻译**。实测以 `en-US`（377 key）为基准，逐语言统计「值与 en-US 逐字相同」：
+
+| 语言 | 未翻译 | 语言 | 未翻译 |
+|---|---|---|---|
+| de-DE | 148 | ko-KR | 138 |
+| es-ES | 144 | pt-BR | 146 |
+| fr-FR | **153** | ja-JP | 100 |
+| zh-TW | 100 | zh-CN | 6 |
+
+而 `check:i18n` **全绿**。也就是说这批欠账一直是**静默通过**的。
+
+形态（`npm --prefix frontend run audit:i18n-untranslated` 可复现，按一级命名空间聚合）：
+不是零散几条，而是 `settings.*` / `nav.*` / `routes.*` **整块仍是英文**。
+例：`fr-FR` 的 `settings.logout="Log Out"`、`settings.checkUpdates="Check for Updates"`、
+`settings.versionFormat="v{version} (Build {buildNumber})"`。
+少数同值是合理的（`app.title="Redclaw"`、`nav.rss="RSS"`、`nav.ai="AI"` 这类品牌名/缩写）。
+
+**做法是棘轮，不是一刀切要求清零**：这批债成片，一次改完属于大规模内容变更，
+不该由一个卡口顺手决定。
+
+- `scripts/i18n-untranslated-baseline.json` 钉住当前每种语言的未翻译条数
+- 任何语言欠账**增加** → `exit 1`（不许变差）
+- 欠账**减少** → 提示基线可下调，需显式 `--update-baseline` 才落盘
+- 新语言缺基线 → `exit 1`，必须显式确认
+
+这样债既可见、可量化、可增量偿还，又不阻塞日常提交；改一批就能降一次基线。
+
+**判据的区分能力已验证（负控）**：往 `en-US` 注入一条同值 key 后，
+8 种语言全部转红（de-DE 148→149 … zh-CN 6→7，`EXIT=1`），还原后全绿。
+注入用的临时改动已 `git checkout` 还原，`frontend/src/locales` 现无任何 diff。
+
+> 判据自身的第一版漏了 `readdirSync` 导入直接崩；这类低级错说明
+> **新卡口上线前必须自己先跑一遍**，不能只看别人 CI 的绿灯。
+
+#### 4.59.2 notes-crud.yaml 在新 APK 上全绿（NOTES_EXIT=0）
+
+前置 `scripts/pkm-test-fixture.mjs` 报了 `DB_NOT_READY`，但 flow 自身的
+「^暂无笔记$」前置断言通过（列表确实是空的），所以判据仍成立、跑法仍有效。
+（另外发现 `cmd | Select-Object` 管道会吃掉 `$LASTEXITCODE`，脚本里的 exit 判断可能失效。）
+
+独立取证（不采信 flow 自证）——借 `connectivity.runtime.deps.db()` 直读本地库：
+
+```
+local_assets: [{"id":"ast_muosqyyc_0ggtnw","workspace_id":"ws_user-admin","kind":"note",
+                "title":"MaestroPKM笔记","client_rev":4,"sync_mode":"e2ee_local_first",
+                "deleted_at":null}]
+按 workspace 分组: [{"workspace_id":"ws_user-admin","n":1}]
+```
+
+⇒ **BUG-AR 的分区修复在新 APK 上依然成立**：写侧落 `ws_user-admin`，**`default` 分区 0 行**。
+
+#### 4.59.3 自纠：判据没错，是我**问错了问题**
+
+拿到 notes-crud 绿灯后，我在 PG 全 schema 搜这条笔记，**418 个文本列实查 0 失败 0 命中**。
+第一反应是「PKM 笔记没落库」——**这是错的**。
+
+`pkm-store.saveNote` 走的是
+`assetStore.upsert({ ..., syncMode: 'e2ee_local_first' })`，
+写的是**设备本地 SQLCipher 的 `local_assets` 表**（表名带 `local_` 前缀，不叫 `assets`）；
+PG 的 `opencode_pocket.notes` 属于**另一个模块**（`features/notes/notes-persist.ts`）。
+所以「PG 里搜不到」根本不是缺陷证据。
+
+`find-note-in-pg.mjs` 这个判据**执行本身是对的**（而且它的第一版有个致命缺陷：
+无条件 `select workspace_id::text`，而多数表没这列，查询报错被 catch 吞成空串，
+最后打出「全 schema 都没搜到」这个**假的否定结论**——比报错危险得多。已修成
+「只取命中列、有 workspace_id 才附带、统计失败列数、失败即判定结论不可信」）。
+
+但**问题问错了**。教训三条：
+
+1. 「某处搜不到」不能直接推出「没落库」——**先确认它该落在哪**。
+   模块之间可能压根不共用存储。
+2. 判据「跑通」不等于「问对」。这一条最容易骗人：脚本没有 bug、结果也没有 bug，
+   错的是**提问**。
+3. 被 catch 吞掉的查询错误会伪装成「干净的否定结果」。负向结论必须单独计数失败次数。
+
+#### 4.59.4 由此暴露的**未验证项**（不要当已修）
+
+活体 `connectivity` 读数：`online=true`、`syncing=false`、
+**`lastSyncAt=0`（从未同步过）**、`pendingCount=0`、`deadLetterCount=0`、`lastError=""`。
+
+也就是说：**`e2ee_local_first` 的本地资产到底应不应该同步到服务端、
+以及那条同步链路通不通，本轮完全没有验证。** `pendingCount=0` 也不足以说明问题——
+它可能压根没有把本地资产接进同步队列。这正是「打通所有功能点」里还没打通的那些点之一，
+且比 UI 层缺陷更严重（数据不出设备）。**下一轮优先做这个。**
+
+#### 4.59.5 沉淀的探针
+
+- `frontend/scripts/audit-i18n-untranslated.mjs` —— 按形态/命名空间给欠账画像
+- `scripts/find-note-in-pg.mjs` —— 全 schema 文本列搜索，**并统计查询失败列数**
+- `scripts/diag-pkm-sync.mjs` / `diag-pkm-sync2.mjs` —— connectivity 与 store 枚举
+  （注意 Pinia 的 `_s` 是 **Map**，枚举要用 `Array.from(pinia._s.keys())`，
+  `Object.keys()` 返回 `[]`，第一版就栽在这）
+- `scripts/diag-pkm-local-assets.mjs` —— 借 `runtime.deps.db()` 直读本地
+  `local_assets`（表名带 `local_` 前缀；句柄是 Capacitor SQLite 插件，方法是 `all`/`run`，
+  不是 `query`/`execute`，写错列名只会得到一个**不带消息的裸 Error**）
+
