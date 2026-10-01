@@ -14,20 +14,23 @@ import (
 // intentExecutor 消费 email_action_intents 里 route-folder / trigger-autoreply 意图。
 //
 // 设计取舍：
-//   - route-folder 本期只标记 applied（不做真实 IMAP MOVE）。MOVE 需要 fetcher 暴露
-//     UID MOVE 能力 + UIDVALIDITY 处理，超出本次切片；返回 ErrSkipIntent 让调度器
-//     标 skipped（终态），意图仍保留行可观测，后续接 IMAP MOVE 时改 Execute 即可。
+//   - route-folder 现在做真实 IMAP MOVE（经注入的 email.UIDMover，即 *Fetcher）：
+//     UID MOVE 到 intent.Folder，目标目录不存在时由 MoveUIDsToMailbox 自动创建
+//     （服务器不支持 MOVE 扩展时 go-imap 自动回退 COPY+\Deleted+EXPUNGE）。
+//     mover 为 nil（IMAP 未装配的部署）时维持旧行为：标 skipped 留行可观测。
 //   - trigger-autoreply 复用 vacation 配置（若账户有 enabled 且在时间窗内的 vacation，
 //     用其 subject/body）作为自动回复正文；无 vacation 配置时用默认模板。SMTP 发送
 //     复用 smtpSendMessage（与 vacation/handleEmailSend 同一安全姿态）。
 type intentExecutor struct {
 	store  *email.Store
 	crypto *email.Crypto
+	mover  email.UIDMover
 }
 
-// NewIntentExecutor 返回调度器可注入的 IntentExecutor。store/crypto 缺一不可。
-func NewIntentExecutor(store *email.Store, crypto *email.Crypto) email.IntentExecutor {
-	return &intentExecutor{store: store, crypto: crypto}
+// NewIntentExecutor 返回调度器可注入的 IntentExecutor。store/crypto 缺一不可；
+// mover 可空（IMAP 未装配时 route-folder 退化为 skipped）。
+func NewIntentExecutor(store *email.Store, crypto *email.Crypto, mover email.UIDMover) email.IntentExecutor {
+	return &intentExecutor{store: store, crypto: crypto, mover: mover}
 }
 
 func (e *intentExecutor) Execute(ctx context.Context, intent email.ActionIntent) error {
@@ -36,14 +39,45 @@ func (e *intentExecutor) Execute(ctx context.Context, intent email.ActionIntent)
 	}
 	switch intent.Action {
 	case "route-folder":
-		// 本期不真实 IMAP MOVE；标 skipped 留行可观测。后续接 MOVE 时改这里。
-		return email.ErrSkipIntent
+		return e.executeRouteFolder(ctx, intent)
 	case "trigger-autoreply":
 		return e.executeAutoReply(ctx, intent)
 	default:
 		// archive 不会进 intent（fetcher 落库即归档）；未知 action 标 failed 而非静默。
 		return fmt.Errorf("intent executor: unsupported action %q", intent.Action)
 	}
+}
+
+// executeRouteFolder 把规则命中的邮件真实移到目标 IMAP 目录。
+func (e *intentExecutor) executeRouteFolder(ctx context.Context, intent email.ActionIntent) error {
+	folder := strings.TrimSpace(intent.Folder)
+	if folder == "" {
+		return email.ErrSkipIntent
+	}
+	if e.mover == nil {
+		// IMAP 未装配（纯缓存部署）：终态跳过，规则意图保留行可观测。
+		return email.ErrSkipIntent
+	}
+	em, err := e.store.GetEmailByID(ctx, intent.EmailID)
+	if err != nil {
+		return fmt.Errorf("route-folder: load email: %w", err)
+	}
+	if em == nil || em.UID <= 0 || em.AccountID == "" {
+		return email.ErrSkipIntent
+	}
+	moved, err := e.mover.MoveUIDsToMailbox(ctx, em.AccountID, []int64{em.UID}, folder)
+	if err != nil {
+		return fmt.Errorf("route-folder: imap move to %s: %w", folder, err)
+	}
+	if len(moved) == 0 {
+		return email.ErrSkipIntent
+	}
+	// 服务器侧已迁移，同步本地归属记录，收件箱视图随即隐藏该邮件。
+	if _, err := e.store.SetEmailsFolderScoped(ctx, []string{em.ID}, intent.UserID, intent.WorkspaceID, folder); err != nil {
+		// 只记日志不失败：IMAP 已成功，本地标记失败会在下次 sync 收敛。
+		_ = err
+	}
+	return nil
 }
 
 // executeAutoReply 发送一封自动回复给原邮件发件人。

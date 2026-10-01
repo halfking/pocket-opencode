@@ -38,6 +38,7 @@
       <div class="subline">
         <time>{{ formatEmailDate(email.date) }}</time>
         <span v-if="email.hasAttachments">附件</span>
+        <span v-if="email.folder" class="tag folder-tag">📁 {{ email.folder }}</span>
         <span v-if="email.category" class="tag" :class="`cat-${email.category}`">{{ emailCatLabel(email.category) }}</span>
         <span v-if="translating" class="lang-hint">翻译中…</span>
         <span v-else-if="lang !== 'original'" class="lang-hint">{{ langShortLabel(lang) }}译文</span>
@@ -106,11 +107,13 @@
     :is-read="!!email?.isRead"
     :converting="converting"
     @choose-lang="chooseLang"
+    @move="moreOpen = false; moveOpen = true"
     @forward="openCompose('forward'); moreOpen = false"
     @todo="openCompose('todo'); moreOpen = false"
     @star="toggleStar(); moreOpen = false"
     @read="toggleRead(); moreOpen = false"
   />
+  <EmailFolderPickerSheet v-model:open="moveOpen" :current="email?.folder || ''" :account-id="email?.accountId" @pick="onMoveToFolder" />
   <EmailComposeSheet
     :kind="composeKind"
     :from-name="email?.fromName || email?.fromAddress || ''"
@@ -136,6 +139,8 @@ import { findContactByEmail } from '../contact/contacts-store'
 import { pickEmailDetailBody, readEmailBodyLocal, writeEmailBodyLocal } from './email-body-cache'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
+import { recordOpsEntry } from './email-folders-store'
+import EmailFolderPickerSheet from './EmailFolderPickerSheet.vue'
 import EmailComposeSheet from './EmailComposeSheet.vue'
 import EmailDetailMenus from './EmailDetailMenus.vue'
 import { defaultForwardSubject, defaultReplySubject, todoFromDraft, toggleCompose, type ComposeKind } from './compose-mode'
@@ -612,6 +617,32 @@ async function toggleRead() {
   markListDirty('email')
 }
 
+// ── 移动到目录（详情页单封） ────────────────────────────────────────────
+const moveOpen = ref(false)
+
+/** 本地立即生效 + 记操作日志；服务端 move 尽力即时 IMAP MOVE，失败留待同步按钮。 */
+async function onMoveToFolder(folderName: string) {
+  const mail = email.value
+  if (!mail) return
+  try {
+    await recordOpsEntry({
+      accountId: mail.accountId, emailId: mail.id, uid: mail.uid ?? 0,
+      action: 'move', targetFolder: folderName, subject: mail.subject || '',
+    })
+    await emailsStore.setFolder(mail.id, folderName)
+    mail.folder = folderName
+    markListDirty('email')
+    try {
+      const rep = await emailApi.moveEmails([mail.id], folderName)
+      toast.success(rep.pending > 0 ? `已移入「${folderName || '收件箱'}」（待同步到服务器）` : `已移入「${folderName || '收件箱'}」`)
+    } catch {
+      toast.info(`已本地移入「${folderName || '收件箱'}」，稍后可在「邮件目录」同步到服务器`)
+    }
+  } catch (e: any) {
+    toast.error(apiError(e, 'errors.operateFailed'))
+  }
+}
+
 async function toggleStar() {
   if (!email.value) return
   email.value.isStarred = !email.value.isStarred
@@ -675,6 +706,7 @@ watch([lang, bodyText], () => {
 .cat-marketing { background: var(--cat-marketing-bg); color: var(--cat-marketing); }
 .cat-spam { background: var(--cat-spam-bg); color: var(--cat-spam); }
 .lang-hint { color: var(--brand-primary); }
+.folder-tag { background: var(--bg-subtle); color: var(--text-secondary); }
 .ai {
   margin: 0; padding: var(--space-2) var(--space-3);
   background: var(--bg-subtle); border-radius: var(--radius-md);

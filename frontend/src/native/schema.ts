@@ -189,12 +189,51 @@ CREATE TABLE IF NOT EXISTS local_emails (
     updated_at INTEGER NOT NULL DEFAULT 0,
     deleted_at INTEGER NOT NULL DEFAULT 0,
     body_purged INTEGER NOT NULL DEFAULT 0,
+    folder TEXT DEFAULT '',          -- 所在目录（IMAP 信箱名，空 = INBOX；2026-10-01）
     UNIQUE(account_id, message_id),
     FOREIGN KEY (account_id) REFERENCES local_email_accounts(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_emails_date ON local_emails(date DESC);
 CREATE INDEX IF NOT EXISTS idx_emails_updated ON local_emails(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_emails_unread ON local_emails(is_read) WHERE is_read = 0;
+
+-- ============================================================
+-- 自定义邮件目录镜像（2026-10-01）：服务端 email_folders 的离线缓存。
+-- folder 记录邮件所在目录名（空 = INBOX），与 emails.folder_name 对齐；
+-- 列已内联在 local_emails 的 CREATE TABLE 里（旧库由 local-db 迁移补列）。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_email_folders (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    name TEXT NOT NULL,              -- 完整 IMAP 信箱名
+    display_name TEXT NOT NULL DEFAULT '',
+    special TEXT NOT NULL DEFAULT '', -- inbox/trash/junk/sent/... 空=普通
+    source TEXT NOT NULL DEFAULT 'user', -- user=本产品创建 server=服务器发现
+    server_synced INTEGER NOT NULL DEFAULT 0,
+    email_count INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(account_id, name)
+);
+
+-- ============================================================
+-- 本地迁移操作日志（2026-10-01）：移动/删除先记 pending，同步按钮推送
+-- 服务端 /api/emails/ops（幂等键去重），由服务端经 IMAP 真正迁移/删除。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_email_ops (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    email_id TEXT NOT NULL,
+    uid INTEGER NOT NULL DEFAULT 0,
+    action TEXT NOT NULL,            -- move | delete
+    target_folder TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending', -- pending | pushed | applied | failed
+    error TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_ops_status ON local_email_ops(status);
 
 -- ============================================================
 -- 发票本地镜像（服务端 /api/emails/invoices 的离线缓存）

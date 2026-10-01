@@ -15,6 +15,15 @@
           <button
             class="chat-icon-btn"
             type="button"
+            :aria-label="`移动已选 ${inbox.selectedCount.value} 封到目录`"
+            :disabled="!inbox.selectedCount.value || moveBusy"
+            @click="moveOpen = true"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">drive_file_move</span>
+          </button>
+          <button
+            class="chat-icon-btn"
+            type="button"
             :aria-label="`删除已选 ${inbox.selectedCount.value} 封`"
             :disabled="!inbox.selectedCount.value || inbox.purgeBusy.value"
             @click="onPurge"
@@ -44,10 +53,14 @@
         <button type="button" @click="go('/email/summary')">{{ t('email.dailySummary') }}</button>
         <button type="button" @click="go('/email/invoices')">发票整理</button>
         <button type="button" @click="go('/email/cleanup')">清理垃圾</button>
+        <button type="button" @click="go('/email/folders')">邮件目录</button>
+        <button type="button" :disabled="organizing" @click="onOrganize">
+          {{ organizing ? '整理中…' : '智能整理' }}
+        </button>
         <button type="button" @click="go('/email/settings')">邮箱设置</button>
         <!-- 真机 360dp 实测：删除入口挤在顶栏时标题「邮箱」被截成「邮...」，
              移入更多菜单后顶栏动作 4→3，标题恢复完整。 -->
-        <button type="button" @click="onEnterSelectFromMenu">批量删除</button>
+        <button type="button" @click="onEnterSelectFromMenu">批量操作</button>
       </div>
 
       <ScrollChromePortal>
@@ -154,6 +167,9 @@
     </template>
     </PullToRefresh>
 
+    <!-- 移动到目录：多选模式下的批量移动；详情页单封移动走详情自己的入口。 -->
+    <EmailFolderPickerSheet v-model:open="moveOpen" @pick="onMoveToFolder" />
+
     <!--
       回顶按钮：下滑超过一屏后浮现。
       旧列表没有这个，用户在长列表里想回顶部只能一直上滑。
@@ -175,7 +191,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Skeleton, EmptyState, PullToRefresh, DbLockedState } from '../../components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
@@ -188,6 +204,8 @@ import { pullInboxFromServer, readInboxPage } from './email-inbox-page'
 import { prefetchEmailBody, prefetchEmailBodySeries } from './email-body-prefetch.ts'
 import { readEmailBodyLocal, writeEmailBodyLocal } from './email-body-cache.ts'
 import { extractEmailBody } from './email-body-format.ts'
+import { recordOpsEntry } from './email-folders-store'
+import EmailFolderPickerSheet from './EmailFolderPickerSheet.vue'
 import {
   INBOX_PAGE_SIZE,
   advanceInboxPage,
@@ -209,6 +227,7 @@ import { useListScene } from '../../composables/use-list-scene'
 defineOptions({ name: 'EmailInboxView' })
 
 const router = useRouter()
+const route = useRoute()
 const { t } = useI18n()
 const emails = ref<LocalEmail[]>([])
 const loading = ref(true)
@@ -221,6 +240,11 @@ const categoryChips = INBOX_CATEGORY_CHIPS
 const sinceLocal = ref('')
 const untilLocal = ref('')
 const shownEmails = computed(() => inbox.visibleEmails(emails.value))
+// 目录视图：/email?folder=<name> 时只看该目录（空串 = 收件箱默认视图）。
+const activeFolder = ref(typeof route.query.folder === 'string' ? route.query.folder : '')
+const moveOpen = ref(false)
+const moveBusy = ref(false)
+const organizing = ref(false)
 
 /**
  * 分页游标状态。
@@ -273,7 +297,18 @@ async function onClassify() {
 
 async function onPurge() {
   if (!inbox.selectedCount.value) return
-  if (!window.confirm(`删除选中的 ${inbox.selectedCount.value} 封邮件？正文将清空，仅保留标题和摘要。`)) return
+  if (!window.confirm(`删除选中的 ${inbox.selectedCount.value} 封邮件？正文将清空，仅保留标题和摘要；同步后服务器侧也会移入垃圾箱。`)) return
+  // 删除前记操作日志（delete op）：本地已删的邮件，服务器侧（IMAP 移入垃圾箱）
+  // 由目录页「同步到服务器」按钮执行——离线删除也不丢。
+  const ids = [...inbox.selected.value]
+  for (const id of ids) {
+    const m = emails.value.find((x) => x.id === id)
+    if (!m) continue
+    await recordOpsEntry({
+      accountId: m.accountId, emailId: m.id, uid: m.uid ?? 0,
+      action: 'delete', targetFolder: '', subject: m.subject || '',
+    })
+  }
   await inbox.confirmPurge()
   await load()
 }
@@ -285,7 +320,7 @@ async function onPurge() {
  * （下拉刷新与后台同步），避免把用户已翻开的分页丢掉。
  */
 async function showLocal(replace = true) {
-  const page = await readInboxPage(activeCategory.value, 0)
+  const page = await readInboxPage(activeCategory.value, 0, activeFolder.value)
   if (replace) {
     emails.value = page
     pageState.value = advanceInboxPage(createInboxPageState(), page.length, page.length, INBOX_PAGE_SIZE)
@@ -293,6 +328,72 @@ async function showLocal(replace = true) {
     const { list, addedCount } = applyRefreshPage(emails.value, page)
     emails.value = list
     pageState.value = advanceInboxPage(pageState.value, page.length, addedCount, INBOX_PAGE_SIZE)
+  }
+}
+
+/**
+ * 批量移动已选邮件到目录（多选模式）。本地立即生效 + 记操作日志（离线可
+ * 重放），服务端 move 尽力即时 IMAP MOVE；失败的操作留在日志里由
+ * 目录页的「同步到服务器」按钮收口。
+ */
+async function onMoveToFolder(folderName: string) {
+  const ids = [...inbox.selected.value]
+  if (!ids.length || moveBusy.value) return
+  moveBusy.value = true
+  try {
+    const moved = emails.value.filter((m) => ids.includes(m.id))
+    for (const m of moved) {
+      await recordOpsEntry({
+        accountId: m.accountId, emailId: m.id, uid: m.uid ?? 0,
+        action: 'move', targetFolder: folderName, subject: m.subject || '',
+      })
+      await emailsStore.setFolder(m.id, folderName)
+      m.folder = folderName
+    }
+    inbox.exitSelect()
+    if (activeFolder.value) await load()
+    try {
+      const rep = await emailApi.moveEmails(ids, folderName)
+      syncHint.value = rep.pending > 0
+        ? `已移动 ${rep.moved} 封（${rep.pending} 封待同步到服务器）`
+        : `已移动 ${rep.moved} 封到${folderName || '收件箱'}`
+    } catch {
+      syncHint.value = `已本地移动 ${ids.length} 封，稍后可在「邮件目录」同步到服务器`
+    }
+  } finally {
+    moveBusy.value = false
+  }
+}
+
+/**
+ * 智能整理：识别系统通知类邮件（验证码/物流/订阅/同标题群发…），
+ * dryRun 预览数量，确认后整批移入「通知」目录。
+ */
+async function onOrganize() {
+  if (organizing.value) return
+  organizing.value = true
+  inbox.moreOpen.value = false
+  try {
+    const preview = await emailApi.organizeInbox({ dryRun: true })
+    const count = preview.count ?? 0
+    if (count === 0) {
+      syncHint.value = '没有识别到系统通知类邮件'
+      return
+    }
+    const folder = preview.folder || '通知'
+    if (!window.confirm(`识别到 ${count} 封系统通知类邮件，移入目录「${folder}」？`)) return
+    const rep = await emailApi.organizeInbox({ folder })
+    const moved = rep.moved ?? 0
+    syncHint.value = rep.pending && rep.pending > 0
+      ? `已整理 ${moved} 封进「${folder}」（${rep.pending} 封待同步到服务器）`
+      : `已整理 ${moved} 封进「${folder}」`
+    // 本地镜像同步收敛：服务端已改 folder_name，这里重拉列表。
+    await pullInboxFromServer().catch(() => {})
+    await showLocal(false)
+  } catch (e: any) {
+    syncHint.value = e?.message || '智能整理失败'
+  } finally {
+    organizing.value = false
   }
 }
 
@@ -353,7 +454,7 @@ async function loadMore() {
   if (loading.value || pageState.value.loadingMore || !pageState.value.hasMore) return
   pageState.value = { ...pageState.value, loadingMore: true }
   try {
-    const page = await readInboxPage(activeCategory.value, pageState.value.nextOffset)
+    const page = await readInboxPage(activeCategory.value, pageState.value.nextOffset, activeFolder.value)
     const merged = mergeInboxPages(emails.value, page)
     const addedCount = merged.length - emails.value.length
     emails.value = merged
@@ -431,7 +532,7 @@ async function onRefresh() {
   refreshing.value = true
   try {
     await pullInboxFromServer()
-    const page = await readInboxPage(activeCategory.value, 0)
+    const page = await readInboxPage(activeCategory.value, 0, activeFolder.value)
     const { list, addedCount } = applyRefreshPage(emails.value, page)
     emails.value = list
     // 刷新不改游标：已加载的分页仍然有效，nextOffset 继续指向「已索取过的行数」。
@@ -476,6 +577,17 @@ async function markRead(m: LocalEmail, read: boolean) {
 watch(() => inbox.search.value, (s) => {
   setHeaderTitle(formatInboxSearchLabel(s) || null)
 }, { deep: true })
+// 目录视图标题：进入目录时把页头换成目录名，返回收件箱恢复默认。
+watch(activeFolder, (f) => {
+  setHeaderTitle(f ? `目录：${f}` : null)
+  pageState.value = resetInboxPage(pageState.value)
+  void load()
+})
+// 目录页点目录跳 /email?folder=x：KeepAlive 下组件不重建，靠路由查询驱动。
+watch(() => route.query.folder, (v) => {
+  const f = typeof v === 'string' ? v : ''
+  if (f !== activeFolder.value) activeFolder.value = f
+})
 onMounted(load)
 /* KeepAlive 现场保持：筛选/分类保留在组件实例上；仅当详情页登记过
    email 数据变更（已读/加星等）才刷新，并恢复滚动位置。 */

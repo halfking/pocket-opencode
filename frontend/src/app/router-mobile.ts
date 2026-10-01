@@ -167,6 +167,13 @@ const router = createRouter({
       component: EmailInvoiceListView,
       meta: { requiresAuth: true, requiresLobster: true, title: '发票整理', canGoBack: true, bottomNav: false }
     },
+    // 邮箱 — 自定义目录 + 本地迁移操作日志/同步按钮（须在 /email/:id 之前声明）
+    {
+      path: '/email/folders',
+      name: 'email-folders',
+      component: () => import('../features/email/EmailFolderListView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '邮件目录', canGoBack: true, bottomNav: false }
+    },
     // 记账（手动 + 笔记自动入账）
     {
       path: '/finance',

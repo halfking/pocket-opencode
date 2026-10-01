@@ -8,9 +8,14 @@ import type { LocalEmail } from './emails-store'
 
 export { inboxHasMore, inboxListFilter } from './email-inbox-filter'
 
-export async function readInboxPage(category: string, offset: number): Promise<LocalEmail[]> {
+/**
+ * 读一页本地邮件。folder 语义与服务端一致：
+ * '' = 收件箱（默认视图，不在任何目录里的邮件）；具体目录名 = 该目录。
+ */
+export async function readInboxPage(category: string, offset: number, folder = ''): Promise<LocalEmail[]> {
   return emailsStore.listEmails({
     ...inboxListFilter(category),
+    ...(folder ? { folder } : {}),
     limit: DEFAULT_LIST_PAGE_SIZE,
     offset,
   })

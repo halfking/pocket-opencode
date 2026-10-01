@@ -38,6 +38,9 @@ func NewStore(pool *pgxpool.Pool) (*Store, error) {
 	if err := s.migrateInboxPurge(context.Background()); err != nil {
 		return nil, fmt.Errorf("email inbox purge migrate: %w", err)
 	}
+	if err := s.migrateFolders(context.Background()); err != nil {
+		return nil, fmt.Errorf("email folders migrate: %w", err)
+	}
 	return s, nil
 }
 
@@ -278,7 +281,7 @@ func (s *Store) ListAccounts(ctx context.Context, userID string) ([]Account, err
 // --- Emails ---
 
 func (s *Store) ListEmails(ctx context.Context, filter ListFilter) ([]Email, error) {
-	q := `SELECT id, account_id, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments FROM emails`
+	q := `SELECT id, account_id, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments, COALESCE(folder_name, '') FROM emails`
 	where := []string{}
 	args := []any{}
 	argIdx := 1
@@ -366,12 +369,12 @@ func (s *Store) MarkStarred(ctx context.Context, id string, starred bool) error 
 // 避免上层 handler 用 ListEmails + 客户端过滤这种 O(N) 写法。
 func (s *Store) GetEmailByID(ctx context.Context, id string) (*Email, error) {
 	var e Email
-	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction sql.NullString
+	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, folderName sql.NullString
 	var uid sql.NullInt64
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, account_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments
+		SELECT id, account_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments, COALESCE(folder_name, '')
 		FROM emails WHERE id = $1
-	`, id).Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments)
+	`, id).Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &folderName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -380,6 +383,9 @@ func (s *Store) GetEmailByID(ctx context.Context, id string) (*Email, error) {
 	}
 	if uid.Valid {
 		e.UID = uid.Int64
+	}
+	if folderName.Valid {
+		e.FolderName = folderName.String
 	}
 	if fromName.Valid {
 		e.FromName = fromName.String
@@ -680,7 +686,7 @@ func (s *Store) ListEmailsByDay(ctx context.Context, userID, date string, tzOffs
 	endUnix := t.Add(24 * time.Hour).Unix()
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet, e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments
+		SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet, e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments, COALESCE(e.folder_name, '')
 		FROM emails e
 		JOIN email_accounts a ON a.id = e.account_id
 		WHERE a.user_id = $1 AND e.date >= $2 AND e.date < $3
@@ -694,9 +700,12 @@ func (s *Store) ListEmailsByDay(ctx context.Context, userID, date string, tzOffs
 	var out []Email
 	for rows.Next() {
 		var e Email
-		var fromName, subject, snippet, category, importance, aiSummary, suggestedAction sql.NullString
-		if err := rows.Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments); err != nil {
+		var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, folderName sql.NullString
+		if err := rows.Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &folderName); err != nil {
 			return nil, err
+		}
+		if folderName.Valid {
+			e.FolderName = folderName.String
 		}
 		if fromName.Valid {
 			e.FromName = fromName.String
@@ -1531,7 +1540,8 @@ func (s *Store) DeleteAccountScoped(ctx context.Context, id, userID, workspaceID
 // ListEmailsScoped lists mail belonging to the requested user/workspace.
 func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID, workspaceID string) ([]Email, error) {
 	q := `SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet, e.date,
-		e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments
+		e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments,
+		COALESCE(e.folder_name, '')
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
 		WHERE a.user_id=$1 AND a.workspace_id=$2 AND COALESCE(e.deleted_at, 0)=0`
 	args := []any{userID, workspaceID}
@@ -1552,6 +1562,17 @@ func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID,
 	}
 	if filter.Uncategorized {
 		q += " AND (e.category IS NULL OR e.category = '')"
+	}
+	// Folder 过滤："" = 收件箱默认视图（不在任何目录里）；具体名字 = 该目录；
+	// "__all__" = 全部（清理/整理等跨目录场景）。迁移到目录的邮件会从
+	// 收件箱视图消失，但仍在目录视图与全量视图里可见。
+	switch filter.Folder {
+	case "__all__":
+	case "":
+		q += " AND COALESCE(e.folder_name, '') = ''"
+	default:
+		q += fmt.Sprintf(" AND COALESCE(e.folder_name, '') = $%d", len(args)+1)
+		args = append(args, filter.Folder)
 	}
 	if filter.Since > 0 {
 		sinceSec, sinceMs := filter.Since, filter.Since
@@ -1640,15 +1661,15 @@ func (s *Store) ListDeletedEmailIDsScoped(ctx context.Context, since int64, user
 // 用 body_path 判断加密缓存是否已落盘。其余 list 路径不需要这两列。
 func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID string) (*Email, error) {
 	var e Email
-	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath sql.NullString
+	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath, folderName sql.NullString
 	var uid sql.NullInt64
 	err := s.pool.QueryRow(ctx, `SELECT e.id, e.account_id, e.uid, e.from_address, e.from_name, e.subject, e.snippet,
 		e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments,
-		e.body_path
+		e.body_path, COALESCE(e.folder_name, '')
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
 		WHERE e.id=$1 AND a.user_id=$2 AND a.workspace_id=$3`, id, userID, workspaceID).
 		Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead,
-			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPath)
+			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPath, &folderName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -1657,6 +1678,9 @@ func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID 
 	}
 	if uid.Valid {
 		e.UID = uid.Int64
+	}
+	if folderName.Valid {
+		e.FolderName = folderName.String
 	}
 	if fromName.Valid {
 		e.FromName = fromName.String
@@ -1835,9 +1859,9 @@ func (s *Store) UpdateEmailFlagsScoped(ctx context.Context, id, userID, workspac
 
 func scanEmail(row interface{ Scan(...any) error }) (*Email, error) {
 	var e Email
-	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction sql.NullString
+	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, folderName sql.NullString
 	err := row.Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead,
-		&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments)
+		&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &folderName)
 	if err != nil {
 		return nil, err
 	}
@@ -1861,6 +1885,9 @@ func scanEmail(row interface{ Scan(...any) error }) (*Email, error) {
 	}
 	if suggestedAction.Valid {
 		e.SuggestedAction = suggestedAction.String
+	}
+	if folderName.Valid {
+		e.FolderName = folderName.String
 	}
 	return &e, nil
 }
@@ -1962,7 +1989,8 @@ func (s *Store) ListEmailsByDayScoped(ctx context.Context, userID, workspaceID, 
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet, e.date,
-		       e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments
+		       e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments,
+		       COALESCE(e.folder_name, '')
 		FROM emails e
 		JOIN email_accounts a ON a.id = e.account_id
 		WHERE a.user_id = $1 AND a.workspace_id = $2 AND e.date >= $3 AND e.date < $4
@@ -1977,12 +2005,15 @@ func (s *Store) ListEmailsByDayScoped(ctx context.Context, userID, workspaceID, 
 	var out []Email
 	for rows.Next() {
 		var e Email
-		var fromName, subject, snippet, category, importance, aiSummary, suggestedAction sql.NullString
+		var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, folderName sql.NullString
 		if err := rows.Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date,
-			&e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments); err != nil {
+			&e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &folderName); err != nil {
 			return nil, err
 		}
 		e.WorkspaceID = defaultWorkspace(workspaceID)
+		if folderName.Valid {
+			e.FolderName = folderName.String
+		}
 		if fromName.Valid {
 			e.FromName = fromName.String
 		}

@@ -70,6 +70,15 @@ const EMAIL_INBOX_V1_COLUMNS = [
   { table: 'local_emails', column: 'body_purged', sql: 'ALTER TABLE local_emails ADD COLUMN body_purged INTEGER DEFAULT 0' },
 ]
 
+// 自定义邮件目录 + 本地迁移操作日志（2026-10-01）：
+//   - local_emails.folder 记录邮件所在目录（空 = INBOX）；
+//   - local_email_folders 是服务端目录的本地镜像；
+//   - local_email_ops 是本地移动/删除操作的离线队列，同步按钮把 pending 推给
+//     服务端 /api/emails/ops（幂等键去重），由服务端经 IMAP 真正迁移。
+const EMAIL_FOLDERS_V1_COLUMNS = [
+  { table: 'local_emails', column: 'folder', sql: "ALTER TABLE local_emails ADD COLUMN folder TEXT DEFAULT ''" },
+]
+
 const LIST_SYNC_V1_COLUMNS = [
   { table: 'local_email_invoices', column: 'email_date', sql: 'ALTER TABLE local_email_invoices ADD COLUMN email_date INTEGER DEFAULT 0' },
   { table: 'local_email_invoices', column: 'dirty', sql: 'ALTER TABLE local_email_invoices ADD COLUMN dirty INTEGER DEFAULT 0' },
@@ -230,7 +239,62 @@ class LocalDB {
     } catch (e) {
       console.warn('[localDB] email inbox v1 migration failed:', e)
     }
+    try {
+      await this.runEmailFoldersV1Migration()
+    } catch (e) {
+      console.warn('[localDB] email folders v1 migration failed:', e)
+    }
     this.initialized = true
+  }
+
+  /** 自定义邮件目录 + 本地迁移操作日志（2026-10-01）。 */
+  private async runEmailFoldersV1Migration(): Promise<void> {
+    if (!this.conn) return
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        version TEXT PRIMARY KEY,
+        description TEXT,
+        applied_at INTEGER NOT NULL
+      );
+    `, false)
+    for (const col of EMAIL_FOLDERS_V1_COLUMNS) {
+      try { await this.conn.execute(col.sql, false) } catch { /* 列可能已存在 */ }
+    }
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS local_email_folders (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        display_name TEXT NOT NULL DEFAULT '',
+        special TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'user',
+        server_synced INTEGER NOT NULL DEFAULT 0,
+        email_count INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(account_id, name)
+      );
+    `, false)
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS local_email_ops (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        email_id TEXT NOT NULL,
+        uid INTEGER NOT NULL DEFAULT 0,
+        action TEXT NOT NULL,
+        target_folder TEXT NOT NULL DEFAULT '',
+        subject TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        error TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_email_ops_status ON local_email_ops(status);
+    `, false)
+    await this.conn.execute(
+      "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-10-01-email-folders-v1', '自定义目录/本地迁移操作日志', strftime('%s', 'now') * 1000);",
+      false,
+    )
   }
 
   /** 会议模块 v2：为旧库补列，列已存在则跳过 */
