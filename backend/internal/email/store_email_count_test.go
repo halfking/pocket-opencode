@@ -89,19 +89,29 @@ func TestCountEmailsScopedMatchesListEmailsScoped(t *testing.T) {
 		{"since 秒单位", ListFilter{Since: base.Add(3 * 24 * time.Hour).Unix()}},
 	}
 	for _, c := range cases {
-		// ListLimit 取最小值，证明 count 与 limit 无关。
+		// 1) limit=1：证明 list 尊重 limit（所以不能拿它去和 count 比大小）。
 		f := c.filter
 		f.Limit = 1
-		list, err := store.ListEmailsScoped(ctx, f, "alice", "ws-a")
+		limited, err := store.ListEmailsScoped(ctx, f, "alice", "ws-a")
 		if err != nil {
 			t.Fatalf("%s list: %v", c.name, err)
 		}
+		if len(limited) != 1 {
+			t.Errorf("%s：limit=1 的 list=%d，应为 1", c.name, len(limited))
+		}
+
+		// 2) 不带 limit（走默认 200）：与 count 比对，证明两者描述同一集合。
+		//    这一步才是"count 与 limit 无关"的真正判据。
 		n, err := store.CountEmailsScoped(ctx, c.filter, "alice", "ws-a")
 		if err != nil {
 			t.Fatalf("%s count: %v", c.name, err)
 		}
-		if int(n) != len(list) {
-			t.Errorf("%s：count=%d 但 limit=1 的 list=%d，两者必须是同一集合的大小", c.name, n, len(list))
+		all, err := store.ListEmailsScoped(ctx, c.filter, "alice", "ws-a")
+		if err != nil {
+			t.Fatalf("%s list(all): %v", c.name, err)
+		}
+		if int(n) != len(all) {
+			t.Errorf("%s：count=%d 但不限 limit 的 list=%d，两者必须是同一集合的大小", c.name, n, len(all))
 		}
 		if n < 2 {
 			t.Errorf("%s：count=%d，用例没能区分 limit 效果，换个数据", c.name, n)
