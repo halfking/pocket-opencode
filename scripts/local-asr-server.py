@@ -39,6 +39,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "4")
 
 MODEL = None
 MODEL_NAME = "?"
+IGNORE_PROMPT = False
 DEVICE = "cpu"
 COMPUTE_TYPE = "int8"
 STATS = {"requests": 0, "chars": 0, "audio_bytes": 0, "seconds": 0.0, "last_text": ""}
@@ -118,11 +119,21 @@ def decode_to_pcm16k(audio_bytes: bytes):
     return decode_audio(io.BytesIO(audio_bytes), sampling_rate=16000)
 
 
-def transcribe(audio_bytes: bytes, language: str | None) -> tuple[str, float]:
-    """跑真识别。返回 (文本, 音频秒数)。"""
+def transcribe(audio_bytes: bytes, language: str | None, upstream_prompt: str | None = None,
+               use_builtin_bias: bool = True) -> tuple[str, float]:
+    """跑真识别。返回 (文本, 音频秒数)。
+
+    use_builtin_bias=False 时**连内置兜底也一起关掉** —— 只丢上游 prompt
+    而留着内置的，负控就不成立了（2026-10-01 实测踩过：B 组仍然返回简体，
+    因为内置 prompt 还在兜着，对照完全无效）。
+    """
     t0 = time.time()
     pcm = decode_to_pcm16k(audio_bytes)
     dur = len(pcm) / 16000.0
+
+    bias = None
+    if use_builtin_bias:
+        bias = upstream_prompt or "以下是普通话的句子，请用简体中文输出。"
 
     model = get_model(MODEL_NAME)
     segments, info = model.transcribe(
@@ -139,7 +150,8 @@ def transcribe(audio_bytes: bytes, language: str | None) -> tuple[str, float]:
         # 设置页预置的外部候选里就有 openai/whisper-large-v3-turbo，
         # 所以这是**产品侧要处理的真实问题**，不是这里可以绕过的小事。
         # OpenAI 官方给出的解法就是给一个普通话 initial_prompt 做偏置。
-        initial_prompt="以下是普通话的句子，请用简体中文输出。",
+        # use_builtin_bias=False 时整条偏置关掉，用于负控对照。
+        initial_prompt=bias,
     )
     text = "".join(s.text for s in segments).strip()
     log(
@@ -187,7 +199,7 @@ class Handler(BaseHTTPRequestHandler):
         audio = None
 
         if ctype.startswith("multipart/form-data"):
-            audio, language = self._parse_multipart(raw, ctype)
+            audio, language, prompt = self._parse_multipart(raw, ctype)
         else:
             # JSON 形态：{"audio": "<base64>"}
             try:
@@ -196,6 +208,7 @@ class Handler(BaseHTTPRequestHandler):
 
                 audio = base64.b64decode(j.get("audio", ""))
                 language = j.get("language")
+                prompt = j.get("prompt")
             except Exception as e:
                 self._json(400, {"error": f"cannot parse body: {e}"})
                 return
@@ -203,9 +216,18 @@ class Handler(BaseHTTPRequestHandler):
         if not audio:
             self._json(400, {"error": "no audio field"})
             return
+        # 上游 prompt 作为 initial_prompt 透传给 faster-whisper ——
+        # 这与真实 OpenAI 兼容服务的语义一致。
+        # 但 --no-bias 会把**所有** prompt（上游带来的与内置的）都丢掉，
+        # 用来模拟「上游完全不吃 prompt」的情形，作为简体偏置那条修复的
+        # **负控对照**：那时应当回落到繁体。
+        if IGNORE_PROMPT:
+            if prompt:
+                log("已收到上游 prompt，但 --no-bias 生效，故意忽略（负控）")
+            prompt = None
 
         try:
-            text, dur = transcribe(audio, language)
+            text, dur = transcribe(audio, language, prompt or None, use_builtin_bias=not IGNORE_PROMPT)
         except Exception as e:  # 真实引擎会抛真错，不要吞
             log(f"ERROR {type(e).__name__}: {e}")
             self._json(500, {"error": {"message": f"{type(e).__name__}: {e}"}})
@@ -234,6 +256,7 @@ class Handler(BaseHTTPRequestHandler):
         boundary = ("--" + m.group(1)).encode()
         audio = None
         language = None
+        prompt = None
         for part in raw.split(boundary):
             if b"\r\n\r\n" not in part:
                 continue
@@ -247,18 +270,23 @@ class Handler(BaseHTTPRequestHandler):
                 audio = body
             elif name == b"language":
                 language = body.decode("utf-8", "ignore").strip()
-        return audio, language
+            elif name == b"prompt":
+                prompt = body.decode("utf-8", "ignore").strip()
+        return audio, language, prompt
 
 
 def main() -> int:
-    global MODEL_NAME
+    global MODEL_NAME, IGNORE_PROMPT
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=18900)
     ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--no-bias", action="store_true",
+                    help="忽略所有 prompt（含上游带来的），用作简体偏置修复的负控对照")
     ap.add_argument("--model", default="small",
                     help="faster-whisper 模型名：tiny/base/small/medium/large-v3")
     args = ap.parse_args()
     MODEL_NAME = args.model
+    IGNORE_PROMPT = args.no_bias
 
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     log(f"listening on http://{args.host}:{args.port} (model={args.model})")
