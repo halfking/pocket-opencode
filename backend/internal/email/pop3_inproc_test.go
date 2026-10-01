@@ -380,9 +380,17 @@ func TestFetchPOP3Mailbox_NeverIssuesDELE(t *testing.T) {
 	if len(deleted) != 0 {
 		t.Fatalf("client issued DELE for %v; that permanently deletes mail on the server", deleted)
 	}
-	// 也要确认确实正常收尾了（QUIT），否则会话是被掐断的。
-	if !containsCmd(srv.commands(), "QUIT") {
-		t.Errorf("client never sent QUIT; saw %v", srv.commands())
+
+	// 顺带确认会话走完了标准流程（greeting → 鉴权 → 列举 → 取信）。
+	//
+	// 这里**刻意不断言 QUIT**：生产代码是 `_ = writeLine("QUIT")`（尽力而为），
+	// 紧接着就 conn.Close()。服务器读循环与客户端关闭之间是竞态 ——
+	// 实测约一半的运行里服务器来不及读到 QUIT。这条断言因此是**间歇失败**的，
+	// 而它要求的事本就不该要求。教训：加断言前先问「这个行为是保证的吗」。
+	for _, want := range []string{"USER", "PASS", "UIDL"} {
+		if !containsCmd(srv.commands(), want) {
+			t.Errorf("client never sent %s; saw %v", want, srv.commands())
+		}
 	}
 }
 
