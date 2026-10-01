@@ -5269,6 +5269,82 @@ cmd/wasmprobe/email-fetcher  额外调 email.NewFetcher  8.56 MB
 
 ---
 
+## §7ce 试图测「wasm 边界成本」—— **没测出来，如实记录**（2026-10-02）
+
+这是 §7cb/§7cc/§7cd 反复提到的最后一个未知数：wasm 堆 ↔ 宿主数据结构的传递成本。
+**结论是没测出来**，所以本节记录的是问题、已排除的原因、以及仍未定位的那个。
+
+### 问题本身有效
+
+§7cd 证明了「纯逻辑编到 wasm 后与原生行为完全一致」，但那只覆盖**计算**。
+设备端 SQLite 在 JS 侧（仓库里已有 `frontend/public/assets/sql-wasm.wasm`
+= sql.js 的先例），wasm 只做纯函数，于是**每封邮件都要穿过 wasm 边界**。
+
+关键点：**AI 分类的 HTTP 不能在 wasm 里发**（js/wasm 没有 `fetch`，`net` 也不可用），
+必须由 JS 侧发起。于是真实架构是：
+
+```
+JS(sql.js 取行) → wasm(判是否要分类) → JS(fetch LLM) → wasm(解析结果)
+```
+
+**每封邮件至少两次跨界**。bulk 形态（一次 JSON 串过边界）在这个架构里
+根本不会出现 —— 它假设数据一次性进出，中途要调外部服务时这个假设就破了。
+拿 bulk 的数字论证 A 路线会**系统性低估**边界成本。
+
+所以要测的是三种形态：bulk（1 次跨界）、struct（N×M 次）、
+permail（2N 次，**这个才是真实模型**）。
+
+### 已排除的四个原因
+
+调试过程中连续踩了四个坑，每一个的症状都长得像「wasm 没跑」：
+
+1. **`require('wasm_exec_node.js')`** —— 它是**立即执行**的命令行包装器，
+   模块被 require 的瞬间就 `WebAssembly.instantiate(fs.readFileSync(process.argv[2]))`。
+   driver 的 argv[2] 指向的是它自己，于是**读它的源码当 wasm**，
+   报 `expected magic word 00 61 73 6d, found 2f 2f 20 43`（`// C` 版权注释）。
+2. **`go.exit = process.exit`** —— Go runtime 在 main 返回后调它，
+   直接结束 Node 进程，driver 后续代码根本执行不到（stdout 空）。
+3. **`readFileSync(0, 'utf8')` 读管道会截断** —— 实测 19036 字节的 payload
+   只读到 1919 字符。后果是 wasm 侧 `json.Unmarshal` 失败 → 提前 `return` →
+   stdout 全空，父进程报 `Unexpected end of JSON input`，**看起来像 wasm 没跑**。
+4. **`js.ValueOf(int64)` panic** —— 我为了调试把 `map[string]any` 挂到
+   `globalThis`，wasm 侧直接 `panic: ValueOf: invalid value`。
+
+### 仍未定位的那一个
+
+`scripts/marshal-driver.mjs` 最终状态：**退出码 0、stderr 全空、stdout 0 字节**。
+
+js/wasm 的 `os.Stdout` 在 `wasm_exec.js` 里被接到 **`console.log`**
+（`fs.writeSync` polyfill 的实现是 `console.log(outputBuf.substring(0, nl))`）。
+Node 的 `console.log` 对 pipe 是**异步**的，我据此判断「进程退出时缓冲没刷完」，
+改成劫持 `console.log` 并用 `fs.writeSync(1, ...)` 同步转发 —— **现象不变**。
+
+这个推断没有被证实，也没有被推翻。**不宣称边界成本是多少。**
+
+### 代码保留的意义
+
+`backend/cmd/wasmprobe/marshal/` 这套代码本身是好的，已实测：
+
+- `go run ./cmd/wasmprobe/marshal/` → 正常输出 JSON
+- `go run ./cmd/wasmprobe/marshal/ -emit-corpus` → 正常输出 120 封语料
+- `GOOS=js GOARCH=wasm go build` → 正常产出 wasm
+- `go vet` → 干净
+
+native 基线与三种 wasm 形态的 wasm 侧实现都已就位，驱动一旦修好即可直接产出数据。
+而且上面那四个坑的结论本身就是可复用的知识。
+
+### 一个副产品：减法在这里根本不成立
+
+`go run` 的 native 基线输出 `elapsed_ns: 0` —— `classifyAll` 只做字符串归一化，
+120 封装不满 1ms，计时器分辨率下就是 0。
+
+第一版的判据是「wasm 总耗时 − native 总耗时」，**一旦计算耗时落到分辨率以下，
+减法就变成 0 − 0，边界成本被彻底抹掉**。现在 wasm 侧改成 read / calc / write
+三段各自 `time.Now()` 直接测绝对值，这是正确口径 —— 但因为驱动没跑通，
+**这些数字一个也没拿到**。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
