@@ -1652,3 +1652,259 @@ Web 同源部署确需空值时用 `MOBILE_ALLOW_EMPTY_API_BASE=1` 放行。
 文档会把内容写成 GBK（整段变乱码）。已从 HEAD 还原。中文内容一律用
 编辑工具直接写，或显式 `-Encoding UTF8` 且确认 `UTF8Encoding($false)` 无 BOM。
 
+---
+
+# 第三轮：静默错值类缺陷（2026-10-01 续）
+
+上一轮（§7a~§7ag）修的是「做不出来的功能」。这一轮修的是一类更难发现的：
+**代码照常运行、测试照常通过、界面上显示一个看起来完全正常的数字**。
+
+贯穿全轮的方法论是 **负控必须能编译后断言红**。编译失败不算有效负控
+（只证明函数缺失）；断言全绿则必须先分清是「断言无效」还是「注入位置错」——
+本轮两者各发生一次，见 §7ai-4。
+
+---
+
+## §7ah 本地 CSV/MD 汇总把不同币种直接相加（`39c38fc`）
+
+**起因**：§7ae 只发现 `Currency` 标对了、合计行仍是裸加。本轮查本地路径。
+
+飞书路径（`WriteInvoiceSummaryDocs`）此前已改，但**本地** CSV/MD 汇总走的是
+另一条路，没跟着改——典型的「修 A 漏 B」。
+
+`LedgerRows` 原返回一个标量 `total`，内部对所有币种裸加：
+
+```go
+total += inv.Amount          // 624.50 + 40.00 EUR = 664.50  ← 不是任何金额
+```
+
+**后果**：一张 624.50 CNY + 一张 40.00 EUR 的发票，汇总里显示「合计 664.50」。
+这个数在任何币种下都不成立，但它看起来完全正常。
+
+**修复**：`LedgerRows` 改为按币种分组返回 `[]CurrencyTotal`（`ledger.go:34`、
+`ledger.go:59`）。**直接删除误导性的标量返回值，而不是加注释**——
+留着 `total` 字段早晚会有人再次拿来用。
+
+**决策：单币种时输出形状逐字节不变**。对账习惯是一种真实资产，为了修多币种
+而改变单币种的输出会让所有历史对账失效。
+
+**负控**：还原裸加 → 2 例转红；额外返回跨币种标量 → 2 例转红（断言点名
+`624.5`）；返回值与表格行对不上 → 转红（`EUR:40`）。
+
+## §7ai 采集回写漏写 category / title（`1a1521f`）
+
+**这是本轮最能说明问题的一个缺陷**，因为它同时具备三个隐蔽条件：
+
+1. `invoiceSelectCols` 读 25 列，UPDATE 只写 11 列——**读得到但不写**；
+2. 写入的 11 列看起来都正确，不缺列不报错；
+3. 落库后数据「有值」，只是值是错的。
+
+真库复现：采集回写后 `category` 变成默认值 `"其他"`，而邮件实际是 `"交通"`。
+
+**修复**：`UpdateInvoiceHarvest`（`invoice_store.go:255`）补 `category` / `title`
+两列，用 `CASE WHEN $14 <> ''` 守卫——空值不写，避免把已有值抹成空。
+
+**判定修好的方法**：不能只看函数返回 nil，**必须从生产读路径
+（`GetInvoiceByIDScoped`）读回核对**。这次就是这么做的：UPDATE 之后走一次
+和前端一样的 SELECT，确认 `category` 真的落成了 `交通`。
+
+**方法论教训**：「写进去了」和「读出来是对的」是两个断点。只验前者会漏掉
+一半的字段丢失类缺陷。
+
+### 负控的两次失败
+
+1. **注入位置错**：我改了 `append` 之后的局部变量，测试全绿。当时判为
+   「断言无效」，其实是注入打在了不参与返回值的地方。改正后转红。
+2. **断言无效**（163 ID 头那轮）：第一版测试自己手搓 ID 命令，删掉生产代码
+   全绿。改为抽出生产函数、由真实 go-imap 客户端驱动后才成为有效负控。
+
+**结论：负控全绿时，先证明注入真的改变了被测行为，再怀疑断言。**
+
+## §7aj AI 分类的 action_reason 被 DTO 静默丢弃（`3aaeaf0`）
+
+契约 `docs/2026-07-02-kxmemory-api-contract.md` 的响应示例明写返回
+`action_reason`，但客户端 DTO（`kxmemory/client.go:281`）**没有这个字段**。
+
+Go 的 `encoding/json` 对未知字段**静默丢弃**——不报错、不警告。所以：
+
+- 契约里有这个字段 ✓
+- HTTP 响应里有 ✓
+- DTO 里没有 → 静默丢弃
+- 落库时永远是空串
+
+**真库证据**：162 封已分类邮件，`ai_summary` 有值而 `action_reason`
+**162/162 全为空**。这正是「契约里写了、代码里没了」的典型指纹——
+上游一直在发，我们一直在丢。
+
+**修复**：`EmailClassificationResult` 补 `ActionReason`（`client.go:281`），
+新增 `SetClassificationWithReasonScoped`（`store.go:502`）带
+`CASE WHEN $8 <> ''` 守卫。
+
+**为什么新增方法而不改老方法**：老的 `SetClassification` 被规则引擎在
+`InsertEmail` 时用来写命中依据。如果让它也覆盖 `action_reason`，AI 分类跑一次
+就会把规则引擎写的依据抹掉——**修一个 bug 制造另一个**。老方法保持不写该列，
+并有专门用例（`classification_reason_persist_test.go:95`）钉住这个约束。
+
+**负控**：DTO 改 `json:"-"` → kxmemory 包转红；SQL 去掉 `action_reason` 赋值
+→ email 包转红。
+
+## §7ak 163 ID 头补自动化证据（`c7f2c26`）
+
+163 邮箱（IMAP）访问要求带一个 ID 头，否则部分账号拒绝连接。原实现有该逻辑，
+但**没有能真正驱动它的测试**——只有读代码确认。
+
+**做法**：把拼接 ID 命令的逻辑抽成生产函数 `selectInboxWithClientID`
+（`mime.go:66`），测试用**真实 go-imap 客户端**驱动它，而不是自己手搓命令。
+这样删掉生产代码才会转红（见 §7ai 的「断言无效」对照）。
+
+顺带修 `pop3_fetcher_test.go` 里 12 行 GBK 乱码注释。
+
+**保留的反向夹具**：`mime_header_decode_test.go` 里的 `鍙戠エ` 是**故意**的
+GBK 误解码样本（用来证明解码器能还原中文），不是乱码，已加注释说明，**未改**。
+
+## §7al 发票列表合计与前端金额展示按币种（`b71b4c4`）
+
+三个 `¥` 硬编码 + 一条 SQL 跨币种 `SUM`：
+
+- `InvoiceListStats` 去掉裸 `SUM(amount)`，改 `GROUP BY 1` 按币种分组
+  （`invoice_list.go:145`）。单币种保留标量 `Amount`+`Currency`（兼容旧前端），
+  多币种时 `Amount` 置 0 并附 `Amounts`。
+- 前端抽出 `invoice-money.ts`（`round2` / `normalizeCurrency` / `formatMoney` /
+  `sumByCurrency` / `summaryMoney`），供生产代码与测试**共用**——避免测试里
+  复制一份算法，两份实现悄悄分叉。
+- CSV 导出加币种列。
+
+**决策：跨币种场景下 `Amount` 置 0，而非跨币种之和。** 0 至少不会冒充成正确
+金额；前端 `singleAmount` 用 `null` 是同一理由。
+
+**负控**：卡片改回硬编码 `¥` → 1 例转红；SQL 去掉 `GROUP BY` → 4 例全红。
+
+## §7am 外币发票入账按钮（`2233df7`）
+
+财务模块没有 currency 概念，外币入账是**有意的正确保护**。但原实现让按钮
+**凭空消失**——用户看不出「为什么不给我入账」。
+
+**改为可见 + 禁用 + 显示原因**（`use-invoice-list.ts:106` 的 `bookBlockReason`），
+并且 `book()` 自身也要守卫（前端保护不能替代后端保护）。
+
+**负控**：改回 `v-if="canBook"` → 1 例转红；移除 `book()` 守卫 → 1 例转红。
+
+## §7an 规范文件名补发票号（`5e16d4f`）
+
+需求原文的格式 `{费用类型}-{对方单位}-{金额}-{日期}.pdf` **不足以唯一标识一张票**。
+真实后果：同额同日、同对方的两张发票生成**完全相同的文件名**，后者静默覆盖
+前者——**凭证永久丢失，且没有任何报错**。
+
+**修复**：`InvoiceFileName`（`invoice_harvest.go:579`）补发票号段：
+`{费用类型}-{对方单位}-{金额}-{日期}[-{发票号}].pdf`。发票号是发票的唯一标识，
+也符合「凭证可追溯」的意图。无发票号时不加该段（避免留下 `-` 空段）。
+
+**存量文件为什么不用迁移**：`ListHarvestableInvoices`
+（`invoice_store.go:196`）只取 `status IN ('new','pending')`，已 `downloaded`
+的发票永不被重新采集，所以旧名文件不会被改名、不会被新名顶掉。
+这个前提本轮用 `TestListHarvestableInvoices_ExcludesDownloadedAndFiled`
+（提交 `3f4b23f`）显式钉住——**将来若加入「重新下载」功能，该测试立刻转红**。
+
+**负控**：去掉发票号 → 2 例转红。
+
+## §7ao 文件名限长防超 Windows MAX_PATH（`11004f6`）
+
+补了发票号后文件名变长，可能超过 Windows `MAX_PATH`（260）导致落盘失败。
+`InvoiceFileName` 整名限长 180 字节：保 UTF-8 合法、不丢扩展名、不留悬空分隔符。
+
+**决策：超长时优先砍发票号（尾部）**，保住需求约定的可读部分。
+
+**负控**：去掉长度上限 → 1 例转红（复现出 269 字节的超长名）。
+
+---
+
+## §7ap 本轮新增测试清单
+
+| 文件 | 覆盖 |
+|---|---|
+| `summary_docs_sum_test.go` | 多币种分组合计、空清单补「合计 0.00」 |
+| `invoice_meta_persist_test.go` | 采集回写 category/title（从生产读路径读回） |
+| `classification_reason_persist_test.go` | action_reason 落库；老方法不得覆盖规则引擎写的依据 |
+| `invoice_list_stats_test.go` | 按币种分组统计 |
+| `invoice_filename_collision_test.go` | 撞名、限长、无发票号、已下载不再采集 |
+| `imap_clientid_test.go` | 真实 go-imap 客户端驱动 ID 头协议 |
+| `kxmemory/classify_action_reason_test.go` | 契约字段必须解出来 |
+| `frontend/.../invoice-currency-ui.test.mjs` | 14 例金额/币种 UI |
+| `invoice_harvest_test.go` | 扩充 |
+
+**负控汇总（13 组，全部做到能编译 + 断言红）**：
+
+1. 还原跨币种裸合计 → 2 例红
+2. 去掉空清单守卫 → 2 例红
+3. 额外返回跨币种标量 → 2 例红（点名 `624.5`）
+4. 返回值与表格行不一致 → 红（`EUR:40`）
+5. DTO 改 `json:"-"` → kxmemory 红
+6. SQL 去掉 `action_reason` → email 红
+7. 卡片改回硬编码 `¥` → 1 例红
+8. SQL 去掉 `GROUP BY` → 4 例红
+9. 按钮改回 `v-if="canBook"` → 1 例红
+10. 移除 `book()` 守卫 → 1 例红
+11. 去掉发票号 → 2 例红
+12. 去掉长度上限 → 1 例红（复现 269 字节）
+13. 采集器纳入 `downloaded` → 1 例红
+
+**最终验证**：`go build ./...` exit=0；`go vet ./internal/email/` exit=0；
+`go test ./internal/email/`（带真库 DSN）→ **ok 27.636s**；
+前端邮件模块 **209/209** 全绿。
+
+---
+
+## §7aq 真实数据目录里的孤儿文件与 `invoice_date` 全空
+
+本轮扫 `C:\workspace\openpocket\data\email-invoices\ws_user-admin\`，发现两组
+同名内容重复文件：
+
+| 文件 A | 文件 B | SHA256 前 12 位 | 字节 |
+|---|---|---|---|
+| `其他-云服务开票中心-1280.00-2026-09-28.pdf` | `其他-云服务开票中心-发票抬头-1280.00-2026-09-28.pdf` | `7AB3033721A5` | 1537 |
+| `其他-财务部-0.00-2026-09-30.pdf` | `其他-财务部-0.00-2026-10-01.pdf` | `CFA3181C1EE3` | 69 |
+
+**这 4 个文件在 `email_invoices` 表里都查不到（count=0）**——是早期迭代遗留的
+**孤儿文件**，不是活跃发票。`email_invoices` 唯一有记录的是
+`其他-杭州创客家投资管理有限公司-3500.00-2026-10-01.pdf`
+（`inv_1790785758514563200_1`）。
+
+第一组正是 `5e16d4f` 所修缺陷的历史残留：**同额同日的票互相覆盖留下了
+带发票号的副本**。这为该修复提供了真实数据佐证。
+
+**另一个发现（尚未评估影响）**：`email_invoices` **所有行的 `invoice_date`
+都为空**。也就是说文件名里的日期实际来自**采集当天**（`time.Now()` 兜底），
+而不是票面开票日期。需求格式要求日期字段，当前值语义存疑。
+
+**这两项都待用户决定，未擅自删除或改动。**
+
+---
+
+## §7ar 本轮仍未验证 / 仍是阻塞
+
+**阻塞（需要外部条件，非代码问题）**：
+
+- `POCKET_FEISHU_INVOICE_CHAT_ID` 未提供；回调 `https://m.kxpms.cn/callback/feishu`
+  未部署 → 验签/解密**只有单测证据，无真实 200 样本，不能称已修好**。
+  微信回调完全未实现。
+- `POCKET_KXMEMORY_BASE_URL` 未配置 → 需求 4 对**新邮件**无法生效
+  （已分类的 162 封是历史数据）。
+
+**待用户决策（写操作，不可逆）**：
+
+1. 3 组 REAL_DUP 是否合并（阿里云周报、2 封 geopod 推送）
+2. 13 封判垃圾是否跑真实 IMAP MOVE（真实邮箱本轮只做只读验证）
+3. `folder_name` / `processed_at` 两个死列是否清理
+4. 4 个孤儿 PDF 是否删除
+5. `invoice_date` 全空是否需要处理
+
+**环境问题**：
+
+- 主仓 `frontend/src/native/recording-voice-prompt.ts` 带 6 组未解决的
+  `<<<<<<< HEAD` 冲突标记 → 从 main 分支构建必然失败（esbuild `Unexpected "<"`）。
+  本分支已用 `wt3` 的干净副本验证 `vite build` 成功（11.93s），临时文件已
+  移出工作区、未提交。修法是 cherry-pick `895d950` 或 rebase，**未擅自做**。
+- PG 后端间歇崩溃 `0xC0000142`（非本轮引入，9-30 日志已有）。规避有效：
+  绕开阻塞的 `pg_ctl`，用 `Start-Process` 直接起 `postgres.exe`。
+- 两张真实 QQ Wallet 发票（uid=134/135）存量无法可靠救回。
+
