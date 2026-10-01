@@ -368,10 +368,22 @@ func (s *Store) GetEmailByID(ctx context.Context, id string) (*Email, error) {
 	var e Email
 	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction sql.NullString
 	var uid sql.NullInt64
+	var messageID sql.NullString
+	var bodyPurged sql.NullBool
+	// message_id 与 body_purged 必须在这条 SELECT 里。
+	//
+	// 少了 message_id：invoice_harvest.harvestOne 拿本方法的返回值去调
+	// sameEmailMessage(em, raw)，那条判据靠 em.MessageID 做「真实 Message-ID
+	// 强确认/强否定」。列没查出来 ⇒ emHasReal 恒 false ⇒ 生产里只剩
+	// subject+from+同日 的弱判据，而真实数据里两张同名发票的头部完全一样。
+	// 少了 body_purged：server_email_summary.summarizeBody 第一道守卫
+	// `if em.BodyPurged { return "" }` 恒不触发，用户软删并清空正文的邮件
+	// 会被 IMAP 重新回源、喂给 LLM、再把摘要写回已删除的行。
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, account_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments
+		SELECT id, account_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments,
+		       message_id, COALESCE(body_purged, FALSE)
 		FROM emails WHERE id = $1
-	`, id).Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments)
+	`, id).Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &messageID, &bodyPurged)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -401,6 +413,12 @@ func (s *Store) GetEmailByID(ctx context.Context, id string) (*Email, error) {
 	}
 	if suggestedAction.Valid {
 		e.SuggestedAction = suggestedAction.String
+	}
+	if messageID.Valid {
+		e.MessageID = messageID.String
+	}
+	if bodyPurged.Valid {
+		e.BodyPurged = bodyPurged.Bool
 	}
 	return &e, nil
 }
@@ -1642,13 +1660,19 @@ func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID 
 	var e Email
 	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath sql.NullString
 	var uid sql.NullInt64
+	var messageID sql.NullString
+	var bodyPurged sql.NullBool
+	// message_id / body_purged 的理由同 GetEmailByID：这两列一旦漏查，
+	// 下游拿到的结构体就是「字段恒零值」，守卫分支在生产里从不执行，
+	// 而且不产生任何错误信号。见 GetEmailByID 上方的注释。
 	err := s.pool.QueryRow(ctx, `SELECT e.id, e.account_id, e.uid, e.from_address, e.from_name, e.subject, e.snippet,
 		e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments,
-		e.body_path
+		e.body_path, e.message_id, COALESCE(e.body_purged, FALSE)
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
 		WHERE e.id=$1 AND a.user_id=$2 AND a.workspace_id=$3`, id, userID, workspaceID).
 		Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead,
-			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPath)
+			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPath,
+			&messageID, &bodyPurged)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -1681,6 +1705,12 @@ func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID 
 	}
 	if bodyPath.Valid {
 		e.BodyPath = bodyPath.String
+	}
+	if messageID.Valid {
+		e.MessageID = messageID.String
+	}
+	if bodyPurged.Valid {
+		e.BodyPurged = bodyPurged.Bool
 	}
 	return &e, nil
 }
