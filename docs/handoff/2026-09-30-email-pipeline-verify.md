@@ -5089,6 +5089,108 @@ IMAP/POP3/SMTP 必须走真实 TCP，而 WebView 里的 Go 拿不到 socket。
 
 ---
 
+## §7cc 补上 §7cb 留的口子：纯逻辑编成 wasm **可行**，但要付 4.85MB（2026-10-02）
+
+§7cb 末尾我留了一句「wasm 那一半没有验证」。这一节就是那个验证。
+
+### 为什么 `go build` exit 0 不能当判据
+
+上一轮实测：`GOOS=js GOARCH=wasm go build` 对 `internal/email`（**含 socket**）
+和 `internal/email/rules`（**零 socket**）**都** exit 0。判据毫无区分度 ——
+因为 §7cb 那个 `ENOSYS` 是**运行时**错误，编译期完全看不见。
+
+唯一有区分度的判据是：**编出可执行产物、在宿主里真跑一遍、逐字节比对结果**。
+
+### 实测：8 个用例，native == wasm 逐字节相同
+
+探针 `backend/cmd/wasmprobe/main.go`，样本选 `internal/email/rules`
+（实测 **293 行**非测试，import 只有 `regexp/strings/sort/json/time/bytes/fmt`，
+**零 net**）。它就是需求 2（垃圾清理）的规则引擎。
+
+```
+cd backend
+GOOS=js GOARCH=wasm go build -o cmd/wasmprobe/rulesprobe.wasm ./cmd/wasmprobe/
+node C:\tools\go\lib\wasm\wasm_exec_node.js cmd/wasmprobe/rulesprobe.wasm
+```
+
+| | |
+|---|---|
+| 原生 `windows/amd64` | 2247 字节 JSON |
+| `js/wasm` + Node v22.23.2 | 2247 字节 JSON |
+| 比对结果 | **IDENTICAL** |
+
+覆盖的 8 个用例刻意跨越了每种形态：黑名单命中、主题关键词、
+`label-category` 带副参数、`route-folder` 带 folder、importance 阈值、
+**旧版 `{"blacklist":[...]}` 格式**、不命中（`actions: null`）、`SupportedActions`。
+
+**结论**：纯计算那部分搬进 WebView 并**保持行为完全一致**是成立的。
+A 路线第一阶段不是空中楼阁。
+
+### 但代价是 4.85MB，而且 strip 压不动
+
+```
+未 strip      5,086,065 字节（4.85 MB）
+-s -w strip   4,997,442 字节（4.77 MB）   只省 1.7%
+```
+
+strip 后重跑，结果仍 IDENTICAL。**体积几乎全是 Go runtime，不是你的代码** ——
+293 行规则撑不起 4.8MB，wasm 把 runtime 一起带进去了。
+
+所以 A 路线的成本模型要改写成两笔账：
+
+- **代码账**（§7cb 算的）：必须 Java 化 ≈1700 行，可复用 ≈9800 行
+- **包体账**（本节新增）：**+4.85MB**，且**只付一次**（所有纯逻辑编进
+  **同一个** wasm 二进制，不是每个模块一份 runtime）
+
+对移动端 APK 来说 4.85MB 不是小数目，但也不是否决项 ——
+仓库里已有 `sql-wasm.wasm` 的先例，运行时可用。这笔账应当进决策，不该被藏起来。
+
+### 更正 §7cb 里的三个数字（凭印象写的，实测不符）
+
+| §7cb 写的 | 实测 |
+|---|---|
+| 垃圾规则 1599 行 | `junk.go` 149 + `rules/engine.go` 293 = **442** |
+| PDF 网格 670 行 | `export_pdf.go` = **245** |
+| 分类飞书 323 行（算在 email 包里） | 它在**独立包** `internal/feishu` = **770 行**（3 文件），根本不在 email 包的 40 文件内 |
+
+email 包非测试的真实分布（前 12）：
+
+```
+store.go 2077   fetcher.go 1070   pipeline.go 975   scheduler.go 824
+pop3_fetcher.go 661   invoice_harvest.go 635   mime.go 583   invoice.go 356
+invoice_store.go 335   xmlinvoice.go 271   export_pdf.go 245   oauth_callback.go 244
+```
+
+「≈1700 行 socket 面 / ≈9800 行可复用」这两个数**仍然成立** ——
+它们是由 socket 触点 grep 出来的，不是印象。而上面那三个具体行数是拍的。
+
+**这是同一个毛病的第三次**（前两次：`InvoiceContentHash`、`refreshOnce` 的职责）。
+区别在于这次错的是**行数**不是职责，但成因一样：先写数字再找证据。
+纪律不变：**任何出现在方案里的数字，都要能指到一次实际量测。**
+
+### 副产品：规则 JSON 的两种形态很容易写错
+
+探针自己踩了两次，两次都是「格式猜错」而非逻辑错：
+
+1. 我写 `[{"type":...,"values":[...]}]` → `json: cannot unmarshal array into
+   Go value of type map[string]jsontext.Value`。真实形态是
+   **对象** `{"rules":[{"type","pattern","actions"}]}`，字段叫 `pattern` 不叫 `values`
+2. 我写 `{"action":"label-category","category":"work"}` → `action[0]: missing name`。
+   对象形式的键是 **`name`**（`actionSpec.Name` 的 tag）
+
+第 1 条的错误信息不指向真实原因（用户配置写错时也会看到这条），
+第 2 条倒是够清楚。写进这里是因为：**A 路线迁移时这套 JSON 形态要跨语言复刻**，
+形态含糊会成为迁移期的 bug 来源。
+
+### 仍然没测的
+
+- **wasm 堆 ↔ SQLite 的数据 marshalling 成本**（§7cb 提过，本节也没测）
+- 其余 9800 行纯逻辑**整体**编进一个 wasm 的体积（只测了 293 行的样本，
+  5MB 里 4.8MB 是 runtime，所以增量应该很小 —— 但这是推断，不是实测）
+- 在真机 WebView 里跑（Node ≠ Android WebView，`wasm_exec.js` 的宿主 API 有差异）
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：

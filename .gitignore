@@ -144,3 +144,9 @@ downloads/
 
 # Local debug log (pocketd / dev tooling run from repo root)
 debug.log
+
+# 需求 6 A 路线 wasm 探针的编译产物（单个 ~4.85MB，几乎全是 Go runtime）。
+# 由 scripts/wasmprobe-run.mjs 生成，用完自删；这里兜底防止手动构建时误提交。
+# 注意：frontend/public/assets/*.wasm 是**前端产物**，已在上面单独处理，别一起排除。
+backend/cmd/wasmprobe/*.wasm
+backend/cmd/wasmprobe/.rulesprobe-*.json
