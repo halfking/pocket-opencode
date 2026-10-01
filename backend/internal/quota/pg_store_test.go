@@ -19,12 +19,9 @@ import (
 )
 
 func testDSN() string {
-	for _, k := range []string{"POCKET_TEST_POSTGRES_DSN", "POCKET_POSTGRES_DSN"} {
-		if v := os.Getenv(k); v != "" {
-			return v
-		}
-	}
-	return ""
+	// 只认测试专用 DSN。回退读 POCKET_POSTGRES_DSN 会让本地 `go test ./...`
+	// 零配置地打到生产库——实测已在生产库留下 meeting_test_* 残留 schema。
+	return os.Getenv("POCKET_TEST_POSTGRES_DSN")
 }
 
 func newTestPGStore(t *testing.T) (*PGStore, func()) {

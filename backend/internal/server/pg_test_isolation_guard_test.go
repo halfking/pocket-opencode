@@ -43,8 +43,82 @@ var pgOpenRe = regexp.MustCompile(`pgxpool\.New|pgx\.Connect|sql\.Open\(\s*"post
 // isolatedSchemaRe 要求文件里存在自建测试 schema 的字面量前缀。
 var isolatedSchemaRe = regexp.MustCompile(`"(\w*_test_)`)
 
-// productionDSNRe 是被禁止出现在测试里的生产连接串环境变量。
-var productionDSNRe = regexp.MustCompile(`os\.Getenv\(\s*"POCKET_POSTGRES_DSN"`)
+// productionDSNRe 匹配测试**代码**里对生产 DSN 变量字面量的引用。
+//
+// 2026-10-02 实测的漏网（这条规则此前等于不存在）：13 个助手写成
+//
+//	for _, k := range []string{"POCKET_TEST_POSTGRES_DSN", "POCKET_POSTGRES_DSN"} {
+//	    if v := os.Getenv(k); v != "" { ... }
+//
+// 字面量在切片里、传给 Getenv 的是变量 k，所以旧判据
+// `os\.Getenv\(\s*"POCKET_POSTGRES_DSN"` 一条都匹配不到。实测后果不是理论上的：
+// 生产库里至今躺着 2 个 `meeting_test_*` schema（各带 2 张表）——有人只带了
+// POCKET_POSTGRES_DSN 就跑了 `go test ./internal/meeting/`，测试在生产**数据库**里
+// 建了 schema。护栏写了、CI 也在跑，却一条都没拦住。
+//
+// 现在改为「字面量作为实参出现」（前面是 `(` 或 `,`）：
+//   - `os.Getenv("POCKET_POSTGRES_DSN"`      → 命中（直接读）
+//   - `[]string{"..._TEST_...", "POCKET_..."}` → 命中（切片回退）
+//   - `t.Skip("... or POCKET_POSTGRES_DSN not set")` → 不命中（嵌在更长的提示文本里）
+var productionDSNRe = regexp.MustCompile(`(?:\(\s*|,\s*)"POCKET_POSTGRES_DSN"`)
+
+// productionDSNWriteRe 匹配**写入**该变量的合法用法：测试用假值覆盖环境变量。
+//
+// 必须以 `\($` 结尾锚定：规则 1 的回看窗口是 `code[from:h[0]]`，而 h[0] 指向
+// 匹配串的**第一个字符**，也就是那个 `(`。所以窗口的末尾正好是 `...Setenv`
+// 而**不含** `(` 与引号——早先写成 `(?:t|os)\.Setenv\(\s*"POCKET_POSTGRES_DSN"`
+// 时它永远匹配不上，排除逻辑形同虚设（config_test.go 被误判就是它暴露的）。
+var productionDSNWriteRe = regexp.MustCompile(`(?:t|os)\.Setenv\(\s*$`)
+
+// pgProductionDSNWriteOnly 列出「出现生产 DSN 字面量但只写不读」的文件。
+// 判据是"字面量作为实参出现"，它分不清读与写，所以这类文件必须显式登记理由。
+var pgProductionDSNWriteOnly = map[string]string{
+	// 两处都是写：TestLoadDefaults 把一批 env key（含 POCKET_POSTGRES_DSN）
+	// 逐个 t.Setenv(key, "") 清空以验证默认值；TestLoadProductionAlias 用
+	// t.Setenv 写入假 DSN "postgres://user:pass@localhost/pocket" 验证 prod 别名。
+	// 这个文件不打开任何 PG 连接（无 pgxpool.New / pg.Conn / sql.Open）。
+	"internal/config/config_test.go": "只用 t.Setenv 写空值/假值来验证配置默认值与别名，不读也不连库",
+}
+
+// stripGoComments 在匹配前剥掉注释。
+//
+// 旧实现只剥「整行是注释」的行，剥不掉两件事，而这两件都能让违规代码隐身：
+//   - 行尾注释：`schema := x // 顺便说一句 POCKET_POSTGRES_DSN`
+//   - 块注释的中间行（不以 * 开头）
+// 另外 `//` 必须要求前面不是 `:`，否则 `"https://..."` 会被当成注释起点
+// 把整行截断——那是「因为判据太宽而漏报」，方向同样危险。
+func stripGoComments(src string) string {
+	var b strings.Builder
+	b.Grow(len(src))
+	inBlock := false
+	for _, ln := range strings.Split(src, "\n") {
+		if inBlock {
+			i := strings.Index(ln, "*/")
+			if i < 0 {
+				continue
+			}
+			ln = " " + ln[i+2:]
+			inBlock = false
+		}
+		if i := strings.Index(ln, "/*"); i >= 0 {
+			if j := strings.Index(ln[i+2:], "*/"); j >= 0 {
+				ln = ln[:i] + " " + ln[i+2+j+2:]
+			} else {
+				ln = ln[:i]
+				inBlock = true
+			}
+		}
+		for i := 0; i < len(ln); i++ {
+			if ln[i] == '/' && i+1 < len(ln) && ln[i+1] == '/' && (i == 0 || ln[i-1] != ':') {
+				ln = ln[:i]
+				break
+			}
+		}
+		b.WriteString(ln)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
 
 // dsnSearchPathAppendRe 匹配「往 DSN 字符串后面拼 search_path 参数」。
 //
@@ -138,22 +212,34 @@ func TestPGTestsNeverTargetTheProductionSchema(t *testing.T) {
 		checked++
 
 		// 规则只对**可执行代码**生效：注释里出现的反例（说明"不要这么写"）
-		// 不该把文件判红。按行剥掉纯注释行（// 开头、或块注释的 * 开头）。
-		var codeLines []string
-		for _, ln := range strings.Split(src, "\n") {
-			t := strings.TrimSpace(ln)
-			if strings.HasPrefix(t, "//") || strings.HasPrefix(t, "*") || t == "/*" {
-				continue
-			}
-			codeLines = append(codeLines, ln)
-		}
-		code := strings.Join(codeLines, "\n")
+		// 不该把文件判红。必须剥掉行尾注释与块注释，只看代码。
+		code := stripGoComments(src)
 
-		// 规则 1：任何测试都不得读生产 DSN 变量。
-		if productionDSNRe.MatchString(code) {
-			t.Errorf("%s: 测试读取了 POCKET_POSTGRES_DSN（服务自己的生产连接串）。\n"+
-				"  测试必须只认 POCKET_TEST_POSTGRES_DSN：同一个 DSN 既喂服务也喂测试时，\n"+
-				"  读生产变量等于零配置地把测试打到生产库。", rel)
+		// 规则 1：任何测试都不得**读**生产 DSN 变量（Setenv 写假值不算）。
+		if hits := productionDSNRe.FindAllStringIndex(code, -1); len(hits) > 0 {
+			reads := 0
+			for _, h := range hits {
+				from := h[0] - 64
+				if from < 0 {
+					from = 0
+				}
+				if productionDSNWriteRe.MatchString(code[from:h[0]]) {
+					continue
+				}
+				reads++
+			}
+			if reads > 0 {
+				if reason, ok := pgProductionDSNWriteOnly[rel]; ok {
+					t.Logf("allowlist(只写不读): %s — %s", rel, reason)
+				} else {
+					t.Errorf("%s: 测试读取了 POCKET_POSTGRES_DSN（服务自己的生产连接串）%d 处。\n"+
+					"  测试必须只认 POCKET_TEST_POSTGRES_DSN：同一个 DSN 既喂服务也喂测试时，\n"+
+					"  读生产变量等于零配置地把测试打到生产库——CI 只设 TEST 变量，所以本地\n"+
+					"  `go test ./...` 才会踩到，而它会在生产库里建表/建 schema 并报告 ok。\n"+
+					"  切片回退（[]string{\"POCKET_TEST_POSTGRES_DSN\", \"POCKET_POSTGRES_DSN\"}）\n"+
+					"  同样算读：字面量在切片里、传给 Getenv 的是变量。", rel, reads)
+				}
+			}
 		}
 
 		// 规则 3：不得靠拼接 DSN 字符串来设置 search_path（见上面的注释）。
@@ -189,4 +275,59 @@ func TestPGTestsNeverTargetTheProductionSchema(t *testing.T) {
 		t.Errorf("只扫描到 %d 个测试文件，路径推导可能不对（本护栏会因此失明）", checked)
 	}
 	t.Logf("已扫描 %d 个 _test.go", checked)
+}
+
+// TestStripGoCommentsHandlesTheThreeWaysToHideCode 锁住 stripGoComments 自己的
+// 语义，而不是它的实现细节。
+//
+// 为什么必须有这条：判据是「剥注释后再匹配」。判据一坏，两边都错——
+// 剥得太狠会把真违规连同代码一起删掉（永远绿），剥得太弱会让注释冒充代码
+// （误报）。这两种都只能靠对**输入**的直接断言发现，光看护栏整体是绿的没用。
+//
+// 负控：把 trailing / block / URL 三个子用例里的任意一个实现改回旧行为
+// （只剥整行注释），本测试必须转红。
+func TestStripGoCommentsHandlesTheThreeWaysToHideCode(t *testing.T) {
+	const lit = `"POCKET_POSTGRES_DSN"`
+
+	cases := []struct {
+		name string
+		in   string
+		// wantGone: 剥完后不应再出现该字面量（它只存在于注释里）
+		wantGone bool
+		// wantKept: 剥完后必须仍然出现（它在代码里，剥注释不能误伤）
+		wantKept string
+	}{
+		{
+			name:     "行尾注释必须被剥掉",
+			in:       "\tdsn := os.Getenv(\"POCKET_TEST_POSTGRES_DSN\") // 以前还会回退读 " + lit + "\n",
+			wantGone: true,
+		},
+		{
+			name: "多行块注释（中间行不以 * 开头）必须被剥掉",
+			in: "/* 旧实现：\n" + lit + " 是回退项\n后来删掉了 */\ndsn := os.Getenv(\"POCKET_TEST_POSTGRES_DSN\")\n",
+			wantGone: true,
+		},
+		{
+			name:     "字符串里的 https:// 不能被当成注释起点",
+			in:       "\tu := \"https://example.com\" // 真注释\n",
+			wantKept: `"https://example.com"`,
+		},
+		{
+			name:     "代码里的字面量必须保留（剥注释不能误伤真违规）",
+			in:       "\tfor _, k := range []string{\"POCKET_TEST_POSTGRES_DSN\", " + lit + "} {\n",
+			wantKept: lit,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := stripGoComments(c.in)
+			if c.wantGone && strings.Contains(got, lit) {
+				t.Errorf("剥注释后字面量仍在，注释会冒充代码：\n%s", got)
+			}
+			if c.wantKept != "" && !strings.Contains(got, c.wantKept) {
+				t.Errorf("剥注释把代码误伤了，%q 消失：\n%s", c.wantKept, got)
+			}
+		})
+	}
 }

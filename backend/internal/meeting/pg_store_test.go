@@ -22,12 +22,11 @@ import (
 //	POCKET_TEST_POSTGRES_DSN=postgres://... go test ./internal/meeting/
 
 func pgDSN() string {
-	for _, k := range []string{"POCKET_TEST_POSTGRES_DSN", "POCKET_POSTGRES_DSN"} {
-		if v := os.Getenv(k); v != "" {
-			return v
-		}
-	}
-	return ""
+	// 只认测试专用 DSN。2026-10-02 实测：这里原本还会回退读
+	// POCKET_POSTGRES_DSN，于是只带了生产 DSN 的 `go test ./internal/meeting/`
+	// 直接在**生产数据库**里建出了 meeting_test_* schema（至今残留 2 个）。
+	// 护栏见 internal/server/pg_test_isolation_guard_test.go 规则 1。
+	return os.Getenv("POCKET_TEST_POSTGRES_DSN")
 }
 
 // newPGTestEnv 建一个独立 schema 的连接池，返回建好的 store 与清理函数。
@@ -77,7 +76,21 @@ func newPGTestEnv(t *testing.T) (*PGStore, func()) {
 		// timeout，所以这里必须给关闭加有界等待。
 		//
 		// 先 DROP SCHEMA 再关连接：这样即便 Close 卡住，测试库也已被清干净。
-		_, _ = rootPool.Exec(ctx, fmt.Sprintf("DROP SCHEMA %s CASCADE", schema))
+		//
+		// 两处不能照抄旧写法：
+		//
+		// 1. 不能用 `ctx`（context.Background()，无 deadline）。连接半死时
+		//    Exec 会一直等，cleanup 挂到 go test -timeout 才 panic —— 那正是
+		//    本文件 closeQuietly 要防的失败形态，清理阶段不该再制造一次。
+		// 2. 不能 `_, _ =` 吞掉错误。2026-10-02 实测：一次性库里跑完全量测试
+		//    后留下 2 个 meeting_test_* schema，而 DROP 失败这件事**没有任何
+		//    输出**——残留既不会被发现，也永远查不出为什么没删掉。清理失败
+		//    本身就是缺陷，必须让测试红。
+		dropCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if _, err := rootPool.Exec(dropCtx, fmt.Sprintf("DROP SCHEMA %s CASCADE", schema)); err != nil {
+			t.Errorf("清理失败：DROP SCHEMA %s CASCADE: %v（残留 schema 会一直留在库里，且本条错误曾被静默吞掉）", schema, err)
+		}
 		closeQuietly(pool)
 		closeQuietly(rootPool)
 	}

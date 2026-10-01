@@ -43,15 +43,11 @@ import (
 // 会把别的测试/真实数据也算进来，断言就变成噪声。
 func newTestPGEmailStore(t *testing.T) (*email.Store, string, func()) {
 	t.Helper()
-	dsn := ""
-	for _, key := range []string{"POCKET_TEST_POSTGRES_DSN", "POCKET_POSTGRES_DSN"} {
-		if v := os.Getenv(key); v != "" {
-			dsn = v
-			break
-		}
-	}
+	// 只认测试专用 DSN。回退读 POCKET_POSTGRES_DSN 会让本地 `go test ./...`
+	// 零配置地打到生产库——实测已在生产库留下 meeting_test_* 残留 schema。
+	dsn := os.Getenv("POCKET_TEST_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("POCKET_TEST_POSTGRES_DSN or POCKET_POSTGRES_DSN not set; skipping invoice summary total test")
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping invoice summary total test")
 	}
 	ctx := context.Background()
 	rootPool, err := pgxpool.New(ctx, dsn)

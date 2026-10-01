@@ -88,7 +88,10 @@ $env:POCKET_DATA_DIR = $dataDir
 $env:POCKET_DB_PATH = (Join-Path $dataDir 'pocket.sqlite')
 $env:POCKET_AUTH_LEGACY_ONLY = "true"
 $env:POCKET_AUTH_USER = "admin"
-$env:POCKET_AUTH_PASS = "Veritrans&9527"
+# 登录口令只从环境变量读。2026-10-02 密钥卡口实测：本行曾是明文硬编码，
+# 而口令已经在 git 历史里（git log -S 可取回）——**删字面量不等于失效，
+# 必须在签发方轮换**。脚本不接受内联明文。
+if (-not $env:POCKET_AUTH_PASS) { throw "POCKET_AUTH_PASS 未设置：请在父进程环境里提供登录口令" }
 # 允许 STT 指向 127.0.0.1（自建 ASR）。这是独立于网关的那个开关，不能混用。
 $env:POCKET_STT_ALLOW_PRIVATE = "true"
 # 本脚本不测网关通道，显式清空，避免继承父进程环境造成断言漂移
@@ -112,7 +115,7 @@ try {
   Write-Host "  就绪"
 
   $login = Invoke-Json "$base/api/auth/login" -Method Post `
-    -Body (@{ username = 'admin'; password = 'Veritrans&9527' } | ConvertTo-Json)
+    -Body (@{ username = 'admin'; password = $env:POCKET_AUTH_PASS } | ConvertTo-Json)
   $hdr = @{ Authorization = "Bearer $($login.token)" }
   Write-Host "  已登录"
 

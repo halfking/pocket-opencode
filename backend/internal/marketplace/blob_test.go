@@ -2,8 +2,8 @@ package marketplace
 
 // blob_test.go — 内容寻址 blob 存取的 PG 集成测试。
 //
-// 复用 store_test.go 的 newTestStore harness：需要 POCKET_TEST_POSTGRES_DSN
-// （或 POCKET_POSTGRES_DSN），否则整组测试自动 skip。每个测试运行在独立
+// 复用 store_test.go 的 newTestStore harness：需要 POCKET_TEST_POSTGRES_DSN，
+// 否则整组测试自动 skip。每个测试运行在独立
 // schema 中，可安全并行。
 
 import (

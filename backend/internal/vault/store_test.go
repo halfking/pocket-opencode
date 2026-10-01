@@ -13,19 +13,16 @@ import (
 )
 
 func vaultTestDSN() string {
-	for _, key := range []string{"POCKET_TEST_POSTGRES_DSN", "POCKET_POSTGRES_DSN"} {
-		if value := os.Getenv(key); value != "" {
-			return value
-		}
-	}
-	return ""
+	// 只认测试专用 DSN。回退读 POCKET_POSTGRES_DSN 会让本地 `go test ./...`
+	// 零配置地打到生产库——实测已在生产库留下 meeting_test_* 残留 schema。
+	return os.Getenv("POCKET_TEST_POSTGRES_DSN")
 }
 
 func newVaultTestStore(t *testing.T) (*Store, func()) {
 	t.Helper()
 	dsn := vaultTestDSN()
 	if dsn == "" {
-		t.Skip("POCKET_TEST_POSTGRES_DSN or POCKET_POSTGRES_DSN not set; skipping vault integration test")
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping vault integration test")
 	}
 
 	ctx := context.Background()
