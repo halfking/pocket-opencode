@@ -24,7 +24,13 @@ var spamStrongWords = []string{
 	"unsubscribe here", "click here to unsubscribe",
 }
 
-// spamWeakWords 弱信号词，两条以上或配合营销发件人特征才判垃圾。
+// spamWeakWords 弱信号词。命中数量按分级计分（见 LooksLikeSpam）。
+//
+// 表里同时收了「本周精选」「精选」「精选文章」这类**同一语义的不同形态**，
+// 不是为了重复计分，而是因为 strings.Contains 是子串匹配：主题写
+// 「本周精选文章」时，只有把这一串的各层前缀都收进来，才能在**任意**写法
+// 下都数出足够多的弱词。真实数据里营销文案的花样比词表长，靠形态覆盖
+// 比靠逐条枚举稳。
 var spamWeakWords = []string{
 	"促销", "优惠", "折扣", "特价", "新品上架", "会员日", "活动邀请",
 	"推广", "营销", "订阅更新", "订阅", "精选", "本周精选", "精选文章",
@@ -34,6 +40,10 @@ var spamWeakWords = []string{
 }
 
 // spamSenderHints 发件人 local-part / 域名特征。
+//
+// "news" 是刻意收进来的：企业营销部门的发件地址普遍是 news@ / newsroom@。
+// 它只值 30 分，单独不足以判垃圾（见 TestLooksLikeSpam 的「弱信号不足」），
+// 但与退订特征叠加刚好过线——这正是「今日精选好文（回复 退订）」那类邮件。
 var spamSenderHints = []string{
 	"promo", "promotion", "marketing", "newsletter", "advert", "edm",
 	"mailers", "bounce", "bulk", "offers@", "deals@",
@@ -101,8 +111,24 @@ func LooksLikeSpam(from, subject, snippet string, invoiceCandidate, important bo
 			}
 		}
 	}
-	if weakHits >= 2 {
-		add(40, "营销词×"+strconv.Itoa(weakHits)+":"+weakHit)
+	// 弱词按**数量**分级，而不是「≥2 就给固定 40 分」。
+	//
+	// 旧规则的问题：弱词只要够 2 个就加 40，永远够不到 100 的阈值，于是
+	// 「今日精选好文（回复 退订）」这类真实营销邮件永远漏判（实测 score=0
+	// —— 因为它只命中退订 + 1 个弱词）。改成按数量定性之后，弱信号密集
+	// 的邮件自己就能过线，不必依赖是否恰好撞上某个强词。
+	//
+	// 1 个弱词不给分：单个词（"促销"）太常见，真实工作邮件里也会出现。
+	switch {
+	case weakHits >= 4:
+		add(100, "营销词×"+strconv.Itoa(weakHits)+":"+weakHit)
+	case weakHits == 3:
+		add(70, "营销词×3:"+weakHit)
+	case weakHits == 2:
+		add(40, "营销词×2:"+weakHit)
+	default:
+		// 不计分，但仍记进 Why：预演报告要能看出「差一点」的邮件差在哪。
+		whys = append(whys, "营销词×"+strconv.Itoa(weakHits)+":"+weakHit)
 	}
 	for _, h := range spamSenderHints {
 		if strings.Contains(fromLower, h) {
@@ -112,7 +138,9 @@ func LooksLikeSpam(from, subject, snippet string, invoiceCandidate, important bo
 	}
 	for _, p := range spamSubjectPatterns {
 		if strings.Contains(subject, p) {
-			add(45, "退订特征:"+p)
+			// 70 而不是原来的 45：带退订头的邮件在实践中几乎都是可退订的营销
+			// 列表。45 + 弱词 40 = 85 仍差 15 分够不着阈值，等于白加。
+			add(70, "退订特征:"+p)
 			break
 		}
 	}
@@ -123,5 +151,13 @@ func LooksLikeSpam(from, subject, snippet string, invoiceCandidate, important bo
 	if score >= 100 {
 		return SpamVerdict{Spam: true, Score: score, Why: strings.Join(whys, "; ")}
 	}
-	return SpamVerdict{}
+	// 未达阈值也要返回 Score/Why，而不是零值。
+	//
+	// 返回零值时调用方分不出「压根没参与评分（豁免）」和「评过分但差一截」，
+	// 于是预演报告只有命中/未命中两态：阈值没法用真实数据校准，规则在真实
+	// 邮件上是否失灵也看不出来——2026-10-01 那次「443 封真实邮件 spamHits=0」
+	// 就卡在这里，无法区分「信箱里没广告」和「规则形同虚设」。
+	// 豁免路径（invoiceCandidate / important / 白名单域）仍然返回零值，
+	// 调用方靠 Score>0 判断「值得人看一眼」。
+	return SpamVerdict{Spam: false, Score: score, Why: strings.Join(whys, "; ")}
 }

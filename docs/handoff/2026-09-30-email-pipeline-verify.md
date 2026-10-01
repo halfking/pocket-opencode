@@ -368,22 +368,261 @@ QQ 上 IMAP 不可用时走 **POP3 降级路径**（实测 444 封里 **284 封*
 | kxpms 单账户 | `TIMED OUT after 1m30s` | `new=0 in 1.03~1.31s` |
 | 残留 993 连接 | **11 条**（且持续累积） | **0 条**（超时轮最多 1 条，60s 后自行归零） |
 
-## 7i. 共享工作树事故：六次 `git stash -u`
+## 7i. 共享工作树事故：十次 `git stash -u`，以及快照策略的一个致命缺陷
 
-04:04、~04:28、~04:38、~06:0x、~06:17 共**六次**被并发会话用 `git stash -u` / `git clean` 卷走未提交工作。其中 06:17 那次把 BUG-AX 的全部改动一次清空。
+04:04、~04:28、~04:38、~06:0x、~06:17、06:26、~06:48、~06:52、~07:0x 共**十次**被
+并发会话用 `git stash -u` / `git clean` 卷走未提交工作。其中两次造成了实质损害：
 
-处置与恢复：
+- **06:26（第 8 次）**：BUG-AV 的修复被整体清空 —— `invoice_harvest.go` 的
+  `isPOP3SourcedEmail` 守卫、`body_cache.go`、`pop3_uid_test.go` 全部消失。
+  工作区当时处于**危险状态**：`harvestOne` 正在拿 POP3 的**合成位置序号**去
+  `UID FETCH`，也就是 BUG-AV 的原始 bug 复现，会把别人的邮件当成发票存下来。
+- **~06:52（第 9 次）**：刚恢复的成果再次被清空。这一次是**新增的逐符号核验
+  拦住的** —— 它在建快照前发现 16 个关键符号缺失，从而避免把坏状态固化。
+  之后又发生两次，其中一次把 §7c~§7h 整段文档清空（靠快照 bce36f7 取回）。
 
-- **独立快照分支** `email-pipeline-snapshot-2026-10-01`（用 `GIT_INDEX_FILE` + `read-tree`/`write-tree`/`commit-tree`/`update-ref` 建立，**全程不动共享 HEAD、不动共享 index**）。工作已成为 git 对象，`stash -u` / `clean` / `checkout` 都清不掉。本轮共推进 8 个快照提交，每次恢复后立刻重建。
+### 快照策略的致命缺陷（比事故本身更值得记）
+
+快照用 `git add` 读**当前工作区**。所以一旦工作区已被破坏，之后建的每一个快照都会
+把**破坏后的状态**一起固化 —— 分支上看起来「有十几个提交、很安全」，实际上内容是坏的。
+
+实证：快照 #9（`9f7082a`）和 #10（`bce36f7`）就是污染源，它们建在 06:26 事故**之后**，
+都不含 BUG-AV 修复。真正干净的最后一个是 #8（`f923938`）。如果当时只按
+「取最新快照」恢复，就会从一个坏快照恢复，越还原越坏。
+
+修正：**建快照前必须逐符号核验**，一个都不缺才允许提交。当前核验清单（11 项）：
+
+```
+invoice_harvest.go      : isPOP3SourcedEmail, BodyCache
+fetcher.go              : deadlineConn, imapHardTimeout, ErrSyncInFlight,
+                          syncTrace, FetchPOP3MailboxWithIdle, MessageID
+pipeline.go             : SpamNearMiss, RemindersUnclassified, splitReminderCandidates
+pop3_fetcher.go         : pop3IdleTimeout, FetchPOP3MailboxWithIdle
+scheduler.go            : ErrSyncInFlight
+body_cache.go           : FileBodyCache
+server.go               : api/email/pipeline/run
+server_email_pipeline.go / main.go : BodyCache
+```
+
+恢复源的选择也因此变了：**不能盲取最新快照**，要扫一遍所有快照找出最后一个含
+关键符号的（`git show <c>:path | Select-String -Quiet '<符号>'`），再叠加更早快照里
+独有的部分。#13 就是「#11 提供 email 包 + f923938 提供 server 侧」双源拼出来的。
+
+### 处置与恢复
+
+- **独立快照分支** `email-pipeline-snapshot-2026-10-01`（`GIT_INDEX_FILE` +
+  `read-tree`/`write-tree`/`commit-tree`/`update-ref`，**全程不动共享 HEAD、不动共享
+  index**）。今天共推进 15 个快照提交。
 - 仓库外备份 `~/Documents/openpocket-email-backup-20261001/`。
 
 三个恢复坑：
 
-1. stash 索引会随并发会话**整体移位**，不能写死 `stash@{0}`，要循环 `git ls-tree -r --name-only "stash@{$i}^3" | Select-String -Quiet <文件名>` 动态定位；
+1. stash 索引会随并发会话**整体移位**，不能写死 `stash@{0}`，要循环
+   `git ls-tree -r --name-only "stash@{$i}^3" | Select-String -Quiet <文件名>` 动态定位；
 2. `git show "stash@{$i}^3:<path>"` 对未跟踪文件**静默返回 0 字节**，必须用 `git checkout`；
 3. 恢复**非一次性**，恢复完要 build + 测试 + 逐符号 grep 复核。
 
-> **教训**：6 次事故里至少有 2 次不是「被清空」而是**两个会话同时编辑同一文件在互相覆盖**（`spam.go` 的白名单一度出现重复条目，我从未写过重复）。这种情况下继续重试只会拉锯，正确做法是停手、如实记录哪一项没落地，并保住已经验证通过的那部分。
+> **教训**：
+> - 至少有 2 次不是「被清空」而是**两个会话同时编辑同一文件在互相覆盖**
+>   （`spam.go` 的白名单一度出现重复条目）。这种情况继续重试只会拉锯，
+>   正确做法是停手、如实记录哪一项没落地。
+> - 我自己的恢复清单漏过 server 侧文件（只列了 `backend/internal/email`），
+>   导致 BodyCache 装配没恢复，错误信息从 `cache miss` 退化成
+>   `no raw body cache configured` 才被发现。**恢复清单要按符号列，不按目录列。**
+> - **这个工作区已经不适合继续做增量开发**：一次恢复要 10 分钟以上，期间还可能
+>   再被清空；快照链也会被污染。已向用户提出改用独立 worktree。
+
+## 7k. `remindersSent=0`：不是规则失灵，是**看不见**（需求 4）
+
+连续多轮报告都是 `remindersSent=0`，而邮件表里明明有 58 封 `importance='high'`。
+只读 SQL 查下来是两件事叠加：
+
+1. **提醒链路是通的**。通知中心有 **53 条** `email.important` 记录，`notified_at`
+   集中在 01:40（42 封）和 04:04（9 封）。已提醒过的不重复提醒，符合设计。
+2. **但新邮件的 importance 全是空**。04:44 之后入库的邮件 importance 一律为空，
+   包括「企业微信邮箱授权码使用提醒」这种显然重要的。启动日志明写
+   `POCKET_KXMEMORY_BASE_URL not set; AI classification/SSOT disabled` ——
+   importance 是 AI 分类（kxmemory）写进去的，没配就永远不会有 high。
+
+判定依据：58 封 high **全部带 `ai_summary`**，说明它们是 AI 分类产物而非规则标注；
+而 7 个账户的 `rules` 列**全是空**（`<no rules>`），所以「账户规则标重要」这条路径
+根本没在用。
+
+结论：`remindersSent=0` 是两件事叠加 —— 已提醒过的不再提醒（正确），新邮件等不到
+high（缺 kxmemory）。**但报告上只有一个 0，分不清这两种情况**，需求 4 于是看起来
+像没实现。
+
+修（可观测性，不是改判定）：`PipelineReport` 增 `remindersScanned` /
+`remindersUnclassified`，并把判定抽成纯函数 `splitReminderCandidates` 以便脱离
+数据库验证。判定逻辑本身**没动** —— 重要邮件的召回率要不要靠启发式规则补，是产品
+判断，不该由我替你决定。
+
+> 这里有个容易写错的点，值得单独钉住：`Notifier == nil` 时必须**什么都不做**，
+> 尤其是不能把邮件标记成已提醒。一旦标了，等 Notifier 装好之后这些邮件就再也不会
+> 被提醒，而报告里依然显示 0。
+
+验证 `reminder_diag_test.go`，3 个纯函数用例，**含负控**：
+
+- `TestSplitReminderCandidates_SeparatesUnclassified`：三种状态（该提醒 / 已提醒过 /
+  未分类）必须分开，且「已分类为 medium」和「垃圾」都**不能**算进未分类。
+- `TestSplitReminderCandidates_AllUnclassifiedYieldsZeroButExplained`：复刻 kxmemory
+  没配的场景 —— 提醒为 0，但 unclassified 必须等于总数。
+- `TestSplitReminderCandidates_HandlesShortNotifiedSlice`：两个切片长度不一致时不越界。
+- **负控**：把 `unclassified++` 注释掉 → 前两个用例立刻转红
+  （`unclassified = 0, want 1` / `want 3`）。恢复后全绿。
+
+## 7l. POP3 发票为什么救不回来（一个尚未修的盲区）
+
+两张 QQ 发票至今 `failed`，错误是 `raw body cache miss`。查下来是**一个设计盲区**，
+不是数据坏了：
+
+`data/email-bodies-raw/` 目录**根本不存在** —— 原文缓存是 BUG-AV 的修复加的，
+「POP3 同步那一刻把原文落盘」。但 POP3 路径**只在 IMAP 失败时才走**，而 IMAP 现在
+一直正常，所以 POP3 同步从未被触发过，原文自然从未落盘。
+
+结果是一个死结：**存量 POP3 邮件的原文永远拿不到** —— 不会 IMAP FETCH（守卫不让，
+宁可失败也不下载错的），也不会有 POP3 缓存（POP3 不跑）。
+
+真实进程复验（`POST /api/emails/invoices/harvest`，`pocketd-v23`）：
+
+```
+{"processed":3,"result":{"Processed":3,"Downloaded":0,"Pending":0,"Failed":3,"Skipped":0}}
+inv_1790789580385036500_1 | failed | <nofile> | POP3-sourced email and no raw body cache configured; refusing to IMAP-FETCH
+```
+
+**守卫确实生效**：没有新落盘任何发票文件（目录里最新的仍是 0:29 那次成功的），
+即「宁可不下载，也不下载错邮件」在真实进程里成立。
+
+但这次复验还暴露了**我自己的一个恢复遗漏**：`no raw body cache configured` 说明
+BodyCache 当时是 nil —— 第 8 次事故把 `server_email_pipeline.go` / `main.go` 里的
+装配也清掉了，而我第一次恢复时只列了 `backend/internal/email`，没列 server 侧。
+补回后错误信息变成 `raw body cache miss (err=<nil>)`，说明它真的去查缓存了。
+
+> **自愈方案（已于 §7m 落地，但推翻过一次）**：最初的方案是「采集器在缓存未命中时，
+> 用 IMAP SEARCH 反查真实 UID」。那个方案对真实场景**无效** —— 详见 §7m 的两条硬证据。
+> 最终落地的是**回到 POP3 用位置序号 RETR**（`FetchPOP3MessageByIndex`）。
+
+## 7m. 我推翻了自己：「IMAP SEARCH 反查真实 UID」对真实场景无效
+
+§7l 的自愈方案先做成了 IMAP SEARCH 反查（`imap_resolve.go`），代码正确、测试扎实
+（3 用例含负控）。**下一轮自查时用真实数据推翻了自己**，两条硬证据：
+
+1. **两张 QQ Wallet 发票无法按头部区分** —— 主题、主题、发件人、日期**全同**
+   （`2026-10-01 01:24:12`，同一批落库），只有正文里的发票号不同
+   （`…7012698`/CNY 126.00 vs `…7012703`/CNY 328.50）。`HEADER Subject + From +
+   SINCE/BEFORE` 必然同时命中 134 和 135 → 落入自己写的 ambiguous 拒绝 → 白做。
+2. **邮件在 IMAP 侧根本不存在** —— QQ 账户 IMAP 侧 50 封里 Wallet/Invoice 主题
+   **零命中**，发票只存在于 POP3 路径的 279 封里。SEARCH 必然 0 命中。
+
+> **教训**：上轮只核了「守卫逻辑正确、测试扎实」，没核「这两封真实邮件在 IMAP
+> 侧到底在不在」。典型的局部证据支撑全局结论。真实数据诊断不是可选项。
+
+## 7n. 正确的自愈：回到 POP3 用位置序号 RETR
+
+位置序号（134/135）在 **POP3 侧是有效的**（它就是 POP3 自己的编号），拿它去 IMAP
+盲 FETCH 才危险。三处新增：
+
+- `FetchPOP3MessageByIndex`（`pop3_fetcher.go`）— 按位置序号 `RETR` 单封，
+  可选 UIDL 交叉校验防位置漂移。
+- `RefetchPOP3RawByIndex`（`fetcher.go`）— 用账户凭据走 `pop3EndpointFor`
+  解析出的 POP3 端点补取。
+- `recoverPOP3SourcedRaw`（`invoice_harvest.go`）— **POP3 补取优先**，
+  SEARCH 反查降为次选；拿到的原文回填缓存。
+
+两条路都过 `sameEmailMessage` 闸门：真实 Message-ID 相等=强确认，**不等=强否定
+直接拒绝**，否则要求主题+发件人相等且同一天。
+
+**测试抓到一个我自己没想到的缺口**：`TestSameEmailMessage_RealMessageIDMismatchRejected`
+一开始就红了 —— 我把「真实 Message-ID 不匹配」当成「无强确认」而继续走头部比对，
+于是放行。真实 Message-ID 明确不等就是另一封，必须立即拒绝。已修正为强否定。
+
+**负控**：`sameEmailMessage` 改成永远 `true` → 3 个「拒绝」用例全红、3 个「接受」
+仍绿，精确证明在测拒绝逻辑。
+
+> **仍未验证**：自愈路径**没有在真实 QQ 邮箱上跑过**（只读约束）。要生效前提是
+> 那两封还在 QQ 的 POP3 收件箱（位置 134/135 未漂移）。需要一次只读 RETR 授权。
+
+## 7o. 需求 3 的规范文件名在真实 QQ 发票上是废的
+
+翻库时发现两张真实发票的提取结果三字段全错：
+
+| 字段 | 库里的值 | 应该是什么 | 根因 |
+|---|---|---|---|
+| `invoice_no` | `Issuance` | `24317200000907012698` | 主题 `Invoice Issuance Notice` 里 `Invoice`+空格把纯字母 `Issuance`（8 字符过长度门槛）当发票号 |
+| `seller` | `name:` | `Tencent Cloud Computing Co Ltd` | snippet `Seller name:` 的标签词被当值 |
+| `amount` | `0.00` | `126.00` | `CNY 126.00` 的 ISO 货币代码不在 `[¥￥$€£]` 白名单 |
+
+后果：`{费用类型}-{对方单位}-{金额}-{日期}.pdf` 产出 `其他-name--0.00-2026-10-01.pdf`，
+**金额是空的，对账不可用**。
+
+修 `invoice.go` 四个共享正则：发票号值必须**含数字**（不用数字打头 —— 那会误杀
+`INV-TEST-0001`）、销售方支持 `Seller name` 复合标签、金额支持 ISO 货币代码、
+全部加 `(?i)`（真实英文标签是小写）。
+
+**两次负控都给了实质信息**：
+1. 撤 `reCurrency` 的 CNY，金额用例**没转红** —— 金额实际靠 `reAnyAmount` 兜底
+   路径，我改了两处却只撤了一处。撤对后 3 个用例全红。
+2. 全量测试抓到**修过头**：首版用 `[0-9]` 打头，`TestRealInvoice_Amount3500`
+   立刻回归（`INV-TEST-0001` 被误杀），当场修正。
+
+## 7p. 真实数据诊断抓出我上一轮引入的 seller 跨行缺陷
+
+§7o 的修复里，`reSeller` 值组改成 `(?:\s+…)*` 支持多词公司名，但 `\s` **含
+`\r\n`** —— 贪婪匹配把销售方后面那行一起吞了：
+
+```
+Seller="Tencent Cloud Computing Co Ltd\r\nInvoice details please see attachment (PDF)."
+```
+
+文件名退化成 `其他-Tencent-…-Invoice-details-please-see-a-126.00-….pdf`。
+
+**为什么单测没抓到**：我写的 snippet 恰好没触发这个边界。是把真实库 snippet 喂进
+提取器才暴露的。改为 `[^\S\r\n]+`（非换行空白）并限制最多 6 个词，负控换回 `\s`
+后断言立即转红。
+
+真实数据验证（两封各自正确）：
+
+```
+其他-Tencent-Cloud-Computing-Co-Ltd-126.00-2026-10-01.pdf
+其他-Tencent-Cloud-Computing-Co-Ltd-328.50-2026-10-01.pdf
+```
+
+> **边界**：字段提取修好了，但这两张发票的 **PDF 仍下载不了** —— 原文拿不到，
+> `status` 仍是 `failed`。字段提取与原文获取是两条独立线，后者依赖 §7n 的
+> 未验证自愈路径。存量 failed 记录需走 `/api/emails/invoices/extract` 单封重提取
+> 才会用上新正则（**没有批量入口**）。
+
+## 7q. 需求 8 客户端 LWW 一直在被「假测试」覆盖
+
+`account-sync.test.mjs` 里的 `planAccountSync` 是**测试文件自己复制的一份判定
+逻辑**，不是生产实现。生产判定埋在 `account-sync.ts`，而该模块 import 了
+`emailApi`/`localDB`/`vue`，node 测试环境整条依赖链解析不了 —— 这正是当初选择
+复制一份的原因。
+
+后果：**生产 LWW 判定怎么改，测试都全绿**。
+
+修法：抽出无任何 import 的纯模块 `account-lww.ts`，生产与测试共用同一份实现。
+tsc 当场抓到 `export { x } from` **不会把名字引入本模块作用域**（`TS2304`），
+改为 import + export 双向。
+
+**负控**：生产的 `>` 改成 `>=` → `equal timestamps do nothing` 立即转红；旧版
+假测试对同一改动完全无感。
+
+> **我的一次误判（已撤回）**：中途判定 `buildMirrorAccountWrite` 无条件 UPDATE
+> 覆盖、违反需求 8。**不成立** —— LWW 判断在调用方 `emails-store.ts:151`
+> （`if (local && local.updatedAt >= acc.updatedAt) return false`），
+> `buildMirrorAccountWrite` 只是 SQL 构造器。
+
+## 7r. 需求 6「默认本地执行」此前零测试守护
+
+判定埋在 `runEmailPipeline` 里，无测试。风险很实：把 `mode == "server"` 改成
+`mode != ""` 就让**默认**变成委托，而被委托的是带邮箱权限的整条流水线（POST 到
+远端编排服务）—— 不会让任何现有测试变红。
+
+抽出 `shouldDelegatePipeline` 纯函数 + 4 用例。负控用的正是那个危险改动，3 个
+用例转红。顺带固化一个隐含行为：配了 `server` 却没给 URL 时**落回本地**，
+而不是委托进一个必然报错的分支（`delegatePipeline` 遇空 URL 直接返回错误，
+等于那轮什么都没跑）。
 
 ## 8. 仍未验证 / 未完成（不得外推）
 
@@ -392,12 +631,18 @@ QQ 上 IMAP 不可用时走 **POP3 降级路径**（实测 444 封里 **284 封*
     要不要在真邮箱上开这条，建议你确认后再开。
   - **163 的特殊头**（CLIENTID 等）这次没被触发，代码路径未被真实流量覆盖。
   - **发票开票日期**没从附件 PDF 里抽到，文件名日期退化为下载当天。
+    （另注：**主题/摘要里的英文字段**提取曾整体失效，已由 §7o/§7p 修复并有真实
+    数据验证；**附件 PDF 内的字段**仍未抽，二者是两回事。）
 - **飞书推送未验证**：`POCKET_FEISHU_APP_ID/SECRET/INVOICE_CHAT_ID` 未配置，
-  真实 `SendInvoiceFile` 与新建的电子表格接口都**只在 httptest 假服务器上跑过**，
+  真实 `SendInvoiceFile` 与电子表格接口都**只在 httptest 假服务器上跑过**，
   没有对着真实租户跑过一次（需要应用开通电子表格权限）。
+  已验证的只是**无凭证也成立的那部分**：`PublishLedgerScoped` 5 用例全绿，其中
+  `SkipsWhenUnavailable` 守住「未配置时返回空 URL 且不报错、不编造 `shareDocUrl`」；
+  推送失败保留 `feishu_sent_at=0`，由共享汇总文档兜底。
+- **POP3 自愈路径（§7n）没有在真实 QQ 邮箱验证过**，两张发票仍是 `failed`。
 - **「多次操作才能下载到发票」只做到跨轮重试**（`MaxInvoiceAttempts=8` + pending 重试），
   没有「打开邮件→点确认→再下载」这类交互式多步。
 - 定时流水线**到点执行**没有等过一次真实 06:00（用注入时钟单测 + 启动排期日志代替）。
-- 需求 6 的「委托服务端执行」：`delegatePipeline` 只是 HTTP 转发，**对端编排服务不在本仓**，
-  默认 `local` 路径才是可验证的那条。
+- 需求 6 的「委托服务端执行」：`delegatePipeline` 只是 HTTP 转发，**对端编排服务不在本仓**；
+  默认 `local` 判定已由 §7r 的纯函数 + 4 用例（含负控）守护。
 - 前端改动（3×3 入口、409 走行覆盖）只过了 typecheck，**未做真机 UI 验证**。

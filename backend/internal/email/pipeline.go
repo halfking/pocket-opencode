@@ -2,10 +2,12 @@ package email
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +53,8 @@ type Pipeline struct {
 	SpamLookbackDays int
 	// SpamDryRun=true 时第 2 步只判定不 MOVE（真实邮箱首次运行的安全阀）。
 	SpamDryRun bool
+	// AccountSyncTimeout 单账户同步墙钟上限；<=0 时用 DefaultAccountSyncTimeout。
+	AccountSyncTimeout time.Duration
 }
 
 // spamPreviewCap 每个账户在预演报告里最多列多少个主题样本。
@@ -67,6 +71,13 @@ const spamPreviewCap = 10
 // 上限取 3 而不是账户数：一来避免同时对同一服务商开太多连接触发更严的限流
 // （本轮 QQ 已经很可能是被反复全量同步限流才不回命令），二来给 PG 留余量。
 const syncConcurrency = 3
+
+// DefaultAccountSyncTimeout 是单个账户同步的墙钟上限默认值。
+//
+// 依据：健康账户实测 0.3~1.5 秒（§7d.2）。而「连接建好但服务端不回命令」的
+// 账户实测能挂 7 分钟以上。90 秒对健康账户是三个数量级的余量，对卡死的
+// 账户则是明确的止损点。Pipeline.AccountSyncTimeout 可覆盖。
+const DefaultAccountSyncTimeout = 90 * time.Second
 
 // syncAccounts 有界并发地同步所有账户，逐账户记耗时。
 //
@@ -107,13 +118,58 @@ func (p *Pipeline) syncAccounts(ctx context.Context, accounts []Account, rep *Pi
 			defer wg.Done()
 			defer func() { <-sem }()
 			t0 := time.Now()
-			n, err := p.Fetcher.Sync(ctx, acc.ID)
-			results[idx] = result{new: n, err: err, elapse: time.Since(t0).Round(time.Millisecond), email: acc.EmailAddress}
-			if err != nil {
-				log.Printf("[email/pipeline] step1 sync %s FAILED after %s: %v", acc.EmailAddress, results[idx].elapse, err)
-				return
+			// 墙钟上限：go-imap 不响应 ctx 取消（imapclient.Options 里没有
+			// ReadTimeout 字段），所以外层 ctx 的 15 分钟**切不断在途的那次读**。
+			// 实测 exmail.qq.com / imap.qq.com 接受连接后不回命令，单个账户
+			// 能把整轮拖过 7 分钟。
+			//
+			// 双保险：
+			//   - 连接侧：fetcher 给每条 IMAP 连接挂了 60s 空闲 deadline
+			//     （见 fetcher.go 的 deadlineConn），卡死的那次读会自己变成
+			//     一条超时错误，Sync 能返回、`defer client.Close()` 能执行、
+			//     连接不会泄漏。
+			//   - 调度侧：这里到期就登记 TIMED OUT 并继续下一账户。Sync 若
+			//     真的超过上限仍在后台跑完（落库是幂等的：按 message_id
+			//     upsert、LastSyncedUID 单调），所以「放着它跑完」不污染数据。
+			//
+			// 两者都要有：只有调度侧没有连接侧，卡死的账户每轮泄漏一条连接，
+			// 实测攒到 7 条后新连接本身就开始变慢。
+			ch := make(chan result, 1) // 缓冲 1：超时后没人收也不会永久阻塞 goroutine
+			go func() {
+				n, err := p.Fetcher.Sync(ctx, acc.ID)
+				ch <- result{new: n, err: err, elapse: time.Since(t0).Round(time.Millisecond), email: acc.EmailAddress}
+			}()
+			limit := p.AccountSyncTimeout
+			if limit <= 0 {
+				limit = DefaultAccountSyncTimeout
 			}
-			log.Printf("[email/pipeline] step1 sync %s new=%d in %s", acc.EmailAddress, n, results[idx].elapse)
+			timer := time.NewTimer(limit)
+			defer timer.Stop()
+			select {
+			case r := <-ch:
+				results[idx] = r
+				if r.err != nil {
+					// 该账户已有一轮同步在跑（scheduler 或另一条流水线）。
+					// 这是正常现象不是失败：记日志即可，计进 errors 会让
+					// 每轮报告都挂一条红，淹没真正需要人看的故障。
+					if errors.Is(r.err, ErrSyncInFlight) {
+						log.Printf("[email/pipeline] step1 sync %s skipped after %s: %v", acc.EmailAddress, r.elapse, r.err)
+						results[idx] = result{elapse: r.elapse, email: acc.EmailAddress}
+						return
+					}
+					log.Printf("[email/pipeline] step1 sync %s FAILED after %s: %v", acc.EmailAddress, r.elapse, r.err)
+					return
+				}
+				log.Printf("[email/pipeline] step1 sync %s new=%d in %s", acc.EmailAddress, r.new, r.elapse)
+			case <-timer.C:
+				results[idx] = result{
+					elapse: limit.Round(time.Millisecond),
+					email:  acc.EmailAddress,
+					err:    fmt.Errorf("account sync exceeded %s (IMAP 未响应；后台仍在收尾，本轮不等)", limit),
+				}
+				log.Printf("[email/pipeline] step1 sync %s TIMED OUT after %s — 不再等待，继续后续步骤",
+					acc.EmailAddress, limit)
+			}
 		}(i, accounts[i])
 	}
 	wg.Wait()
@@ -137,6 +193,29 @@ type SpamPreviewItem struct {
 	Count     int      `json:"count"`
 	Why       string   `json:"why"`
 	Subjects  []string `json:"subjects,omitempty"`
+	// Near 是未判垃圾但拿到分数的邮件（参与评分、未过 100 阈值）。
+	Near []SpamNearMiss `json:"near,omitempty"`
+}
+
+// SpamNearMiss 是一封「参与了评分但没到垃圾阈值」的邮件。
+//
+// 存在意义：预演报告是用户决定开不开真实 MOVE 的唯一依据。只给
+// 命中/未命中两态时，规则离真实数据有多远是看不见的——2026-10-01 实测
+// 444 封真实邮件命中 0 封，却有 17 封拿到 30 分（newsletter/EDM 发件人特征），
+// 它们就卡在门槛外侧。阈值该不该调、这些订阅该不该留，得由人看着具体主题决定。
+type SpamNearMiss struct {
+	From    string `json:"from"`
+	Subject string `json:"subject"`
+	Score   int    `json:"score"`
+	Why     string `json:"why"`
+}
+
+func countNearMiss(items []SpamPreviewItem) int {
+	n := 0
+	for _, it := range items {
+		n += len(it.Near)
+	}
+	return n
 }
 
 // PipelineReport 一轮执行的结果汇总。
@@ -152,6 +231,9 @@ type PipelineReport struct {
 	// 逐账户列在 SpamDryRunSamples 里。真实邮箱上先看这个再决定是否真移。
 	SpamDryRun        int               `json:"spamDryRun,omitempty"`
 	SpamDryRunSamples []SpamPreviewItem `json:"spamDryRunSamples,omitempty"`
+	// SpamNearMiss 是「未判垃圾但有分」的邮件，按账户分组。
+	// 开真实 MOVE 之前这是必看项：命中数低不代表规则贴近真实数据。
+	SpamNearMiss []SpamPreviewItem `json:"spamNearMiss,omitempty"`
 	RemindersSent int    `json:"remindersSent"`
 	// RemindersScanned 是本轮进入提醒判定的邮件数；RemindersUnclassified 是
 	// 其中 **importance 为空** 的数量。
@@ -161,11 +243,11 @@ type PipelineReport struct {
 	// 未设置，启动日志明写 `AI classification/SSOT disabled`）新邮件的
 	// importance 永远是空，于是 RemindersSent 恒为 0 —— 但这个 0 **分不清**
 	// 「这批邮件里确实没有重要的」和「邮件根本没被分类过」。两者在报告里长得
-	// 一模一样，于是需求 4 看起来像没实现，其实只是缺一个依赖。
+	// 一模一样，于是需求 4 看起来像没实现，其实只是缺一个依赖配置。
 	//
 	// 和 §spam 那次 near-miss 是同一类问题：可观测性缺口让「功能是否失灵」
 	// 没法判断。有了这两个计数，看报告就知道该去配 AI 还是该去调规则。
-	RemindersScanned     int `json:"remindersScanned,omitempty"`
+	RemindersScanned      int `json:"remindersScanned,omitempty"`
 	RemindersUnclassified int `json:"remindersUnclassified,omitempty"`
 	Invoices      HarvestResult `json:"invoices"`
 	FeishuPushed  int    `json:"feishuPushed"`
@@ -285,7 +367,24 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 		}
 	}
 	created := 0
-	bodyFetches := 0
+
+	// 两类「需要拉原文」的邮件合并成一批并发处理：
+	//   - date：envelope 已命中发票但缺开票日期（IMAP 只落 envelope，日期在正文里）；
+	//   - candidate：主题/摘要命中关键词但 envelope 没命中，需要正文二次提取。
+	// 原实现是一个 for 循环逐封开一次完整 IMAP 会话，串行且无上限。实测
+	// 24h 窗口内 151 封未建档邮件时这一步跑了 6 分钟仍未完（客户端 5 分钟
+	// headers 超时先走），而 go-imap 不响应 ctx 取消，单封卡住就整步停摆。
+	type invoiceCandidate struct {
+		email  Email
+		scope  [2]string
+		inv    *Invoice // ExtractInvoice/ExtractInvoiceLoose 返回指针，hit=false 时可能为 nil
+		hit    bool
+		reason string // 对应 bodyJob.reason；无 job 时为空
+		jobAt  int    // jobs 下标，-1 表示本轮不拉原文
+	}
+	var cands []invoiceCandidate
+	var jobs []bodyJob
+
 	for i := range emails {
 		e := emails[i]
 		sc, ok := scope[e.AccountID]
@@ -296,47 +395,194 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 			continue // 已建档，幂等跳过
 		}
 		inv, hit := ExtractInvoice(e, "")
-		// 正文二次提取只对关键词命中的候选做：24h 窗口内 miss 邮件可能有
-		// 几十封，每封拉一次完整 IMAP 会话会把流水线拖到分钟级甚至触发
-		// 服务商连接频控。与 server 侧 extractInvoicesAsync 的门槛一致。
-		if !hit && e.UID > 0 && p.Fetcher != nil && InvoiceCandidate(e) {
-			bodyFetches++
-			raw, ferr := p.Fetcher.FetchMessageRaw(ctx, e.AccountID, e.UID)
-			if ferr != nil {
-				continue
+		c := invoiceCandidate{email: e, scope: sc, inv: inv, hit: hit, jobAt: -1}
+		if p.Fetcher != nil && e.UID > 0 {
+			switch {
+			case !hit && InvoiceCandidate(e):
+				// 关键词命中才值得读正文：24h 窗口内 miss 邮件可能几十封。
+				// 与 server 侧 extractInvoicesAsync 的门槛一致。
+				c.reason = "candidate"
+			case hit && inv != nil && inv.InvoiceDate == "":
+				// 命中了但**没有开票日期**：IMAP 路径只落 envelope，正文里的
+				// 「开票日期」看不到，于是规范文件名退化成下载当天（实测真发票
+				// 「其他-杭州创客家…-3500.00-2026-10-01.pdf」，票面其实是 5 月开的）。
+				c.reason = "date"
 			}
-			if parsed, perr := ParseMIMEMessage(raw); perr == nil {
-				// 金额常常只印在附件里（主题写「对账单」、正文写「见附件」），
-				// 所以把「有没有发票类附件」一起告诉规则层，否则这封邮件会在
-				// 采集器看到附件之前就被丢掉。
-				inv, hit = ExtractInvoiceLoose(e, parsed.TextBody+"\n"+parsed.HTMLBody,
-					HasInvoiceAttachment(parsed.Attachments))
-			}
-		}
-		// 命中了但**没有开票日期**：IMAP 路径只落 envelope，正文里的「开票日期」
-		// 看不到，于是规范文件名退化成下载当天（实测真发票
-		// 「其他-<销售方>…-3500.00-2026-10-01.pdf」，票面其实是 5 月开的）。
-		// 这里补一次正文读取——只针对「已命中 + 缺日期」的候选，量很小。
-		if hit && inv.InvoiceDate == "" && e.UID > 0 && p.Fetcher != nil {
-			bodyFetches++
-			if d := p.fetchInvoiceDateFromBody(ctx, e); d != "" {
-				inv.InvoiceDate = d
+			if c.reason != "" {
+				c.jobAt = len(jobs)
+				jobs = append(jobs, bodyJob{email: e, reason: c.reason})
 			}
 		}
-		if !hit {
+		cands = append(cands, c)
+	}
+
+	// 限量：date 类（已经确定是发票，只差日期）优先，candidate 类（推测性
+	// 扫描）按顺序补足。超出的不静默丢弃——记进日志，下一轮还会再来。
+	keptIdx := limitInvoiceBodyJobs(jobs)
+	if skipped := len(jobs) - len(keptIdx); skipped > 0 {
+		log.Printf("[email/pipeline] step1.5 raw-body budget %d exceeded, %d candidate(s) deferred to next run",
+			maxInvoiceBodyFetches, skipped)
+	}
+	// jobs 的下标 → keptIdx 结果的下标，便于回填
+	posInKept := make([]int, len(jobs))
+	for k, idx := range keptIdx {
+		posInKept[idx] = k
+	}
+
+	// 并发拉原文：与第 1 步同理，单封信不应拖住整步。
+	bodies := p.fetchBodies(ctx, keptIdx, jobs)
+
+	created = 0
+	fetchFailed := 0
+	for i := range cands {
+		c := &cands[i]
+		if c.jobAt >= 0 {
+			k := posInKept[c.jobAt]
+			var b bodyResult
+			if k < len(bodies) {
+				b = bodies[k]
+			}
+			if b.err != nil || b.parsed == nil {
+				fetchFailed++
+				if c.reason == "candidate" {
+					// 与原实现一致：正文拉不到就没法二次提取，本轮不建档。
+					// 下一轮会重来（幂等，不会重复建档）。
+					c.hit = false
+				}
+				// date 类拉不到就保持无日期建档，行为同 fetchInvoiceDateFromBody。
+			} else {
+				text := b.parsed.TextBody
+				if text == "" {
+					text = b.parsed.HTMLBody
+				}
+				if c.reason == "date" {
+					if d := ParseInvoiceDate(text); d != "" {
+						c.inv.InvoiceDate = d
+					}
+				} else {
+					// 金额常常只印在附件里（主题写「对账单」、正文写「见附件」），
+					// 所以把「有没有发票类附件」一起告诉规则层，否则这封邮件会在
+					// 采集器看到附件之前就被丢掉。
+					inv, hit := ExtractInvoiceLoose(c.email,
+						b.parsed.TextBody+"\n"+b.parsed.HTMLBody,
+						HasInvoiceAttachment(b.parsed.Attachments))
+					if !hit {
+						c.hit = false
+					} else {
+						c.inv = inv
+						c.hit = true
+						// 复用同一份正文补日期：原来要再开一次 IMAP 会话，
+						// 纯属浪费（单轮 151 封未建档时这一步是主要耗时来源）。
+						if c.inv.InvoiceDate == "" {
+							if d := ParseInvoiceDate(text); d != "" {
+								c.inv.InvoiceDate = d
+							}
+						}
+					}
+				}
+			}
+		}
+		if !c.hit {
 			continue
 		}
-		if _, err := p.Store.UpsertInvoice(ctx, inv, sc[0], sc[1]); err != nil {
-			rep.AddError("invoice upsert email=%s: %v", e.ID, err)
+		if _, err := p.Store.UpsertInvoice(ctx, c.inv, c.scope[0], c.scope[1]); err != nil {
+			rep.AddError("invoice upsert email=%s: %v", c.email.ID, err)
 			continue
 		}
 		created++
 	}
-	log.Printf("[email/pipeline] step1.5 scanned=%d rawBodyFetches=%d autoCreated=%d",
-		len(emails), bodyFetches, created)
+	if fetchFailed > 0 {
+		rep.AddError("invoice raw body fetch failed for %d message(s) (IMAP 侧问题，本轮未建档)", fetchFailed)
+	}
+	log.Printf("[email/pipeline] step1.5 scanned=%d rawBodyFetches=%d fetchFailed=%d autoCreated=%d",
+		len(emails), len(keptIdx), fetchFailed, created)
 	if created > 0 {
 		log.Printf("[email/pipeline] auto-created %d invoice candidates", created)
 	}
+}
+
+// maxInvoiceBodyFetches 是第 1.5 步单轮最多拉多少封原文。
+//
+// 每封原文 = 一次完整 IMAP 会话（dial/login/select/fetch）。实测 24h 窗口内
+// 151 封未建档邮件时，串行无上限的版本跑了 6 分钟仍未完。限量让单轮耗时
+// 有上界；超出的 candidate（推测性扫描）顺延到下一轮，date（已确定是发票
+// 只差日期）永远优先，不会被挤掉。
+const maxInvoiceBodyFetches = 24
+
+// bodyJob 是一封「需要拉原文」的邮件及拉它的目的。
+type bodyJob struct {
+	email  Email
+	reason string // "date" | "candidate"
+}
+
+// bodyResult 是拉原文的结果。
+type bodyResult struct {
+	parsed *ParsedMessage
+	err    error
+}
+
+// limitInvoiceBodyJobs 在 maxInvoiceBodyFetches 预算内挑选要拉原文的 job，
+// 返回被保留的 job 在原切片中的下标。date 类优先，candidate 类按原顺序补足。
+func limitInvoiceBodyJobs(jobs []bodyJob) []int {
+	if len(jobs) <= maxInvoiceBodyFetches {
+		kept := make([]int, len(jobs))
+		for i := range jobs {
+			kept[i] = i
+		}
+		return kept
+	}
+	kept := make([]int, 0, maxInvoiceBodyFetches)
+	for i := range jobs {
+		if jobs[i].reason == "date" && len(kept) < maxInvoiceBodyFetches {
+			kept = append(kept, i)
+		}
+	}
+	for i := range jobs {
+		if jobs[i].reason == "candidate" && len(kept) < maxInvoiceBodyFetches {
+			kept = append(kept, i)
+		}
+	}
+	return kept
+}
+
+// fetchBodies 有界并发地拉取这些 job 的原文并解析。
+func (p *Pipeline) fetchBodies(ctx context.Context, keptIdx []int, jobs []bodyJob) []bodyResult {
+	results := make([]bodyResult, len(keptIdx))
+	if len(keptIdx) == 0 {
+		return results
+	}
+	workers := syncConcurrency
+	if workers > len(keptIdx) {
+		workers = len(keptIdx)
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for k, idx := range keptIdx {
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(k, idx int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			e := jobs[idx].email
+			t0 := time.Now()
+			raw, err := p.Fetcher.FetchMessageRaw(ctx, e.AccountID, e.UID)
+			if err != nil {
+				results[k] = bodyResult{err: err}
+				log.Printf("[email/pipeline] step1.5 body fetch acct=%s uid=%d FAILED after %s: %v",
+					e.AccountID, e.UID, time.Since(t0).Round(time.Millisecond), err)
+				return
+			}
+			parsed, perr := ParseMIMEMessage(raw)
+			results[k] = bodyResult{parsed: parsed, err: perr}
+			log.Printf("[email/pipeline] step1.5 body fetch acct=%s uid=%d in %s",
+				e.AccountID, e.UID, time.Since(t0).Round(time.Millisecond))
+		}(k, idx)
+	}
+	wg.Wait()
+	return results
 }
 
 // fetchInvoiceDateFromBody 拉原文正文找开票日期。失败返回空串（不阻断流水线）。
@@ -376,6 +622,14 @@ func (p *Pipeline) cleanSpam(ctx context.Context, rep *PipelineReport) {
 	byAccount := map[string][]int64{}
 	whyByAccount := map[string]string{}
 	samplesByAccount := map[string][]string{}
+	// near-miss：参与了评分但没过 100 阈值的邮件。
+	//
+	// 为什么必须单独列出来：预演报告是你决定「要不要开真实 MOVE」的唯一依据，
+	// 而只看命中/未命中两态时，规则离真实数据有多远是看不见的。实测 444 封
+	// 真实邮件里命中 0 封，但有 17 封拿到 30 分（全是 newsletter/EDM 发件人
+	// 特征）——它们就卡在门槛外侧。阈值该不该调、这些订阅该不该留，只能由你
+	// 看着具体主题决定，规则自己不该替你决定。
+	nearByAccount := map[string][]SpamNearMiss{}
 	for i := range emails {
 		e := emails[i]
 		if e.Category == "spam" || e.Category == "archived" {
@@ -391,7 +645,20 @@ func (p *Pipeline) cleanSpam(ctx context.Context, rep *PipelineReport) {
 			if len(samplesByAccount[e.AccountID]) < spamPreviewCap {
 				samplesByAccount[e.AccountID] = append(samplesByAccount[e.AccountID], e.Subject)
 			}
+			continue
 		}
+		if v.Score > 0 && len(nearByAccount[e.AccountID]) < spamPreviewCap {
+			nearByAccount[e.AccountID] = append(nearByAccount[e.AccountID], SpamNearMiss{
+				From:    e.FromAddress,
+				Subject: e.Subject,
+				Score:   v.Score,
+				Why:     v.Why,
+			})
+		}
+	}
+	// 按分数降序：最接近阈值的排最前。
+	for _, list := range nearByAccount {
+		sort.Slice(list, func(i, j int) bool { return list[i].Score > list[j].Score })
 	}
 	if p.SpamDryRun {
 		for accountID, uids := range byAccount {
@@ -403,7 +670,22 @@ func (p *Pipeline) cleanSpam(ctx context.Context, rep *PipelineReport) {
 				Subjects:  samplesByAccount[accountID],
 			})
 		}
-		log.Printf("[email/pipeline] spam dry-run: %d mail(s) would be moved, nothing was moved", rep.SpamDryRun)
+		// near-miss 区块：即便一封都没命中也要输出，否则「0」和「规则失灵」
+		// 在报告里长得一模一样（这正是 2026-10-01 排查时踩的坑）。
+		accountIDs := make([]string, 0, len(nearByAccount))
+		for id := range nearByAccount {
+			accountIDs = append(accountIDs, id)
+		}
+		sort.Strings(accountIDs)
+		for _, id := range accountIDs {
+			rep.SpamNearMiss = append(rep.SpamNearMiss, SpamPreviewItem{
+				AccountID: id,
+				Count:     len(nearByAccount[id]),
+				Near:      nearByAccount[id],
+			})
+		}
+		log.Printf("[email/pipeline] spam dry-run: %d mail(s) would be moved, %d near-miss (未判垃圾但有分，开真实 MOVE 前值得人看一眼)",
+			rep.SpamDryRun, countNearMiss(rep.SpamNearMiss))
 		return
 	}
 	for accountID, uids := range byAccount {
@@ -452,6 +734,32 @@ func splitReminderCandidates(emails []Email, notified []int64) (toNotify []Email
 }
 
 // notifyImportant 对未提醒过的重要邮件派发通知并记录时间。
+// splitReminderCandidates 把扫描到的邮件分成「该提醒」与「还没被分类过」两组。
+//
+// 抽成纯函数是为了能脱离数据库验证这段判定 —— 它决定需求 4 到底是
+// 「链路正常、只是这批邮件不重要」还是「邮件根本没进过 AI 分类」，
+// 而这两种情况在旧的 `remindersSent=0` 里长得一模一样。
+func splitReminderCandidates(emails []Email, notified []int64) (toNotify []Email, unclassified int) {
+	for i := range emails {
+		if i >= len(notified) {
+			break
+		}
+		e := emails[i]
+		if notified[i] > 0 || e.Category == "spam" {
+			continue
+		}
+		switch e.Importance {
+		case "high":
+			toNotify = append(toNotify, e)
+		case "":
+			// 还没被 AI 分类过：既不是「已提醒」，也不是「不重要」，
+			// 它只是**不知道**。单独计数，否则报告里的 0 无法解释。
+			unclassified++
+		}
+	}
+	return toNotify, unclassified
+}
+
 func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 	if p.Notifier == nil {
 		return

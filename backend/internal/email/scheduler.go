@@ -658,6 +658,11 @@ func (s *Scheduler) tick(ctx context.Context) {
 			defer cancel()
 			n, err := s.fetcher.Sync(ctx, accountID)
 			if err != nil {
+				// 上一轮（或另一条流水线）还在同步这个账户：是并发保护正常
+				// 生效，不是故障。报 failed 会让每分钟的日志都挂一条假警。
+				if errors.Is(err, ErrSyncInFlight) {
+					return
+				}
 				log.Printf("[email/scheduler] sync %s failed: %v", accountID, err)
 				return
 			}

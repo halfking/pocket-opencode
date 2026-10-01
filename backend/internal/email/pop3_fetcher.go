@@ -42,14 +42,34 @@ type POP3Result struct {
 	NewUIDLs  []string // 本次新抓到的（已拉过的就跳过）
 }
 
+// pop3IdleTimeout 单次 POP3 会话的默认读写上限，与 IMAP 侧的 imapIdleTimeout 对齐。
+//
+// 取值理由：必须小于 pipeline 的单账户 90s 上界（DefaultAccountSyncTimeout）。
+// 原值 120s 比它还长，于是「IMAP login 已经挂满 60s → 转 POP3 → POP3 又挂
+// 120s」整轮必然超时，而 POP3 那条连接因为 handler 已放弃等待，一直占着不放
+// （实测 Sync 总耗时 1m40.137s）。需要更短预算时用 FetchPOP3MailboxWithIdle。
+const pop3IdleTimeout = 60 * time.Second
+
 // FetchPOP3Mailbox 用 POP3 拉取邮箱到当前时间点，拉过的 UIDL 跳过。
 //
+// 读写上限用默认值 pop3IdleTimeout。需要在更短预算内跑（IMAP 已经耗掉
+// 一段时间后的降级路径）时用 FetchPOP3MailboxWithIdle。
+func FetchPOP3Mailbox(ctx context.Context, host string, useTLS bool, user, pass string, seen map[string]struct{}) ([]string, [][]byte, error) {
+	return FetchPOP3MailboxWithIdle(ctx, host, useTLS, user, pass, seen, pop3IdleTimeout)
+}
+
+// FetchPOP3MailboxWithIdle 是可注入读写上限的版本。
+//
 // host:port   POP3 server（如 pop.163.com:995，端口 995 走隐式 TLS）。
-// user/pass    鉴权信息。
-// seenUIDLSet 之前已拉过的 UIDL（从 PG 持久化），保证增量。
+// user/pass   鉴权信息。
+// seen        之前已拉过的 UIDL（从 PG 持久化），保证增量。
+// idle        单次会话的读写上限（<=0 时用 pop3IdleTimeout）。
 //
 // 返回每封新邮件的 raw bytes（按服务器顺序），可在外部转 email.Email 入库。
-func FetchPOP3Mailbox(ctx context.Context, host string, useTLS bool, user, pass string, seen map[string]struct{}) ([]string, [][]byte, error) {
+func FetchPOP3MailboxWithIdle(ctx context.Context, host string, useTLS bool, user, pass string, seen map[string]struct{}, idle time.Duration) ([]string, [][]byte, error) {
+	if idle <= 0 {
+		idle = pop3IdleTimeout
+	}
 	if !strings.Contains(host, ":") {
 		// 默认端口 110 明文、995 隐式 TLS
 		if useTLS {
@@ -58,20 +78,28 @@ func FetchPOP3Mailbox(ctx context.Context, host string, useTLS bool, user, pass 
 			host += ":110"
 		}
 	}
-	dialer := net.Dialer{Timeout: 30 * time.Second}
+	// 建连上限也不能超过会话预算，否则光拨号就能把预算耗光。
+	dialTimeout := 30 * time.Second
+	if idle < dialTimeout {
+		dialTimeout = idle
+	}
+	dialer := net.Dialer{Timeout: dialTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp", host)
 	if err != nil {
 		return nil, nil, fmt.Errorf("pop3 dial %s: %w", host, err)
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(120 * time.Second))
+	conn.SetDeadline(time.Now().Add(idle))
 
 	var rawConn io.ReadWriteCloser = conn
 	if useTLS {
 		tlsConn := tls.Client(conn, &tls.Config{ServerName: strings.SplitN(host, ":", 2)[0]})
+		// 握手也要有上限：TCP 连上但 TLS 卡住同样会占着连接不放。
+		_ = tlsConn.SetDeadline(time.Now().Add(idle))
 		if err := tlsConn.Handshake(); err != nil {
 			return nil, nil, fmt.Errorf("pop3 tls handshake: %w", err)
 		}
+		_ = tlsConn.SetDeadline(time.Now().Add(idle))
 		rawConn = tlsConn
 	}
 	defer rawConn.Close()
@@ -228,4 +256,143 @@ func readPOP3Message(br *bufio.Reader) ([]byte, error) {
 		buf = append(buf, line...)
 		buf = append(buf, '\r', '\n')
 	}
+}
+
+// FetchPOP3MessageByIndex 按**位置序号**（第几封）补取单封邮件原文。
+//
+// 用途（真实死结的自愈，2026-10-01 实测）：
+// POP3 落库的邮件 `uid` 就是这个位置序号。发票采集器拿到 POP3 来源的邮件时，
+// IMAP 侧未必有对应的邮件（实测 QQ 账户 IMAP 侧 50 封里零封发票，两张真实
+// QQ Wallet 发票只存在于 POP3 路径的 279 封里），所以既不能 IMAP FETCH，
+// 又没有原文缓存可读——死结。
+//
+// 这个函数提供的第三条路：**回到 POP3 用位置序号 RETR**。位置序号在 POP3
+// 侧是有效的（它就是 POP3 自己的编号），不像 IMAP UID 那样跨协议无意义。
+//
+// wantUIDL 非空时会先 UIDL 校验该位置的 UIDL 是否等于 wantUIDL，不等就拒绝
+// 返回——防止「位置序号已经漂移」（服务器重排/删除）导致取到**另一封**邮件，
+// 那正是当初拒绝合成 IMAP UID 要防的事故。wantUIDL 为空则跳过校验。
+//
+// idle <=0 时用 pop3IdleTimeout。它与全量拉取共用同一套连接/读行/RETR 逻辑。
+func FetchPOP3MessageByIndex(ctx context.Context, host string, useTLS bool, user, pass string, index int, wantUIDL string, idle time.Duration) ([]byte, error) {
+	if idle <= 0 {
+		idle = pop3IdleTimeout
+	}
+	if index <= 0 {
+		return nil, fmt.Errorf("pop3: invalid index %d", index)
+	}
+	if !strings.Contains(host, ":") {
+		if useTLS {
+			host += ":995"
+		} else {
+			host += ":110"
+		}
+	}
+	dialTimeout := 30 * time.Second
+	if idle < dialTimeout {
+		dialTimeout = idle
+	}
+	dialer := net.Dialer{Timeout: dialTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp", host)
+	if err != nil {
+		return nil, fmt.Errorf("pop3 dial %s: %w", host, err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(idle))
+
+	var rawConn io.ReadWriteCloser = conn
+	if useTLS {
+		tlsConn := tls.Client(conn, &tls.Config{ServerName: strings.SplitN(host, ":", 2)[0]})
+		_ = tlsConn.SetDeadline(time.Now().Add(idle))
+		if err := tlsConn.Handshake(); err != nil {
+			return nil, fmt.Errorf("pop3 tls handshake: %w", err)
+		}
+		_ = tlsConn.SetDeadline(time.Now().Add(idle))
+		rawConn = tlsConn
+	}
+	defer rawConn.Close()
+
+	br := bufio.NewReader(rawConn)
+	writeLine := func(format string, args ...any) error {
+		_, err := fmt.Fprintf(rawConn, format+"\r\n", args...)
+		return err
+	}
+	readLine := func() (string, error) {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimRight(line, "\r\n"), nil
+	}
+	readStatus := func(op string) (string, error) {
+		line, err := readLine()
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", op, err)
+		}
+		switch {
+		case line == "+OK" || strings.HasPrefix(line, "+OK "):
+			return strings.TrimPrefix(line, "+OK"), nil
+		case line == "-ERR" || strings.HasPrefix(line, "-ERR "):
+			return "", fmt.Errorf("%s rejected: %s", op, strings.TrimPrefix(line, "-ERR"))
+		default:
+			return "", fmt.Errorf("%s: unexpected response %q", op, line)
+		}
+	}
+
+	if _, err := readStatus("greeting"); err != nil {
+		return nil, err
+	}
+	// APOP 不是必须；USER/PASS 即可（163/QQ 都支持）。用 writeLine 直接发，
+	// 与全量拉取保持一致。
+	if err := writeLine("USER %s", user); err != nil {
+		return nil, err
+	}
+	if _, err := readStatus("USER"); err != nil {
+		return nil, err
+	}
+	if err := writeLine("PASS %s", pass); err != nil {
+		return nil, err
+	}
+	if _, err := readStatus("PASS"); err != nil {
+		return nil, err
+	}
+
+	// UIDL 交叉校验：确认这个位置序号当前的 UIDL 就是目标邮件的。
+	if wantUIDL != "" {
+		if err := writeLine("UIDL %d", index); err != nil {
+			return nil, err
+		}
+		if _, err := readStatus("UIDL"); err != nil {
+			return nil, err
+		}
+		line, err := readLine()
+		if err != nil {
+			return nil, fmt.Errorf("pop3 uidl read: %w", err)
+		}
+		// 行形如 "134 ZL0007_xxx"
+		parts := strings.SplitN(strings.TrimSpace(line), " ", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("pop3: unexpected UIDL line %q for index %d", line, index)
+		}
+		if parts[0] != strconv.Itoa(index) {
+			return nil, fmt.Errorf("pop3: UIDL index mismatch (want %d, got %s) — position drifted", index, parts[0])
+		}
+		if parts[1] != wantUIDL {
+			return nil, fmt.Errorf("pop3: UIDL mismatch at index %d (want %q, got %q) — refusing to fetch the wrong message", index, wantUIDL, parts[1])
+		}
+	}
+
+	// RETR <index>
+	if err := writeLine("RETR %d", index); err != nil {
+		return nil, err
+	}
+	if _, err := readStatus("RETR"); err != nil {
+		return nil, err
+	}
+	payload, err := readPOP3Message(br)
+	if err != nil {
+		return nil, fmt.Errorf("pop3 retr %d read: %w", index, err)
+	}
+	_ = writeLine("QUIT")
+	return payload, nil
 }
