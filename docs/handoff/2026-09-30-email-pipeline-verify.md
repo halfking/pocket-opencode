@@ -4665,6 +4665,122 @@ invoice_harvest.go:643  InvoiceContentHash  内容哈希去重   → 需求 3
 
 ---
 
+## §7bx 照 §7bw 的优先级 1 动手：超限 PDF 静默截断，被记成「已下载」（2026-10-02）
+
+§7bw 把 `downloadPDF` / `savePDF` 排在优先级 1，并写了理由：「需求 3 的成败点，
+且可以用 mock HTTP server 覆盖」。这一节就是执行这条排序的结果 —— **又抓到一个
+真缺陷**，形态比 §7bv 那个更隐蔽：它不报错。
+
+### 缺陷
+
+`invoice_harvest.go:435` `downloadPDF` 修前最后一行：
+
+```go
+return io.ReadAll(io.LimitReader(resp.Body, MaxInvoicePDFBytes))
+```
+
+`MaxInvoicePDFBytes = 20 << 20`（`invoice_harvest.go:36-37`）。
+`io.LimitReader` 到上限就**停止读取并正常返回 nil error** —— 也就是说
+「文件超过 20MB」和「文件恰好 20MB」在这里**完全无法区分**。
+
+调用方 `invoice_harvest.go:348` 只做一件事：
+
+```go
+if !isPDFBytes(data) { ... }
+```
+
+而 `isPDFBytes` 只看头部 magic。被切掉尾巴的 PDF，**头部 `%PDF-` 完好无损**
+→ 判定通过 → `savePDF` 落盘 → 状态写成 `downloaded`。
+
+**净效果**：一个打不开的 PDF 被存进 `email-invoices/`，数据库里记着
+「已下载成功」，`last_error` 是空的，日志里没有任何异常。需求 3 交给用户的
+凭证附件是坏的，而且**没有任何地方会告诉你**。
+
+为什么这在真实场景里会发生：开票平台返回的「PDF」偶尔是扫描件合集或
+带完整附件流的响应，几十 MB 完全可能。
+
+### 修法
+
+```go
+body, err := io.ReadAll(io.LimitReader(resp.Body, MaxInvoicePDFBytes+1))
+if err != nil {
+    return nil, err
+}
+if int64(len(body)) > MaxInvoicePDFBytes {
+    return nil, fmt.Errorf("invoice file too large: exceeds %d bytes", MaxInvoicePDFBytes)
+}
+return body, nil
+```
+
+多读 1 字节再回头看长度 —— 这是判「超过上限」的最小代价写法（多 1 字节，
+不是多读整个 body）。**必须返回 error 而不是返回截断内容**，否则调用方
+照样会把它当成功。
+
+### 负控（决定性）
+
+把修复改回旧写法，跑同一个用例：
+
+```
+=== RUN   TestDownloadPDF_OversizeIsRejectedNotTruncated
+    invoice_download_test.go:107: oversize download must fail; got 20971520 bytes silently
+--- FAIL: TestDownloadPDF_OversizeIsRejectedNotTruncated (0.07s)
+=== RUN   TestDownloadPDF_JustUnderLimitStillPasses
+--- PASS: TestDownloadPDF_JustUnderLimitStillPasses (0.06s)
+```
+
+`got 20971520 bytes silently` 就是缺陷的原始形态：**正好 20MB、零错误**。
+注意 `JustUnderLimit` 在负控下仍然 PASS —— 这证明断言卡的是「超限」，
+不是「一律拒绝」。
+
+### 顺带钉住「第二道防线为什么不够」
+
+新增 `TestIsPDFBytes_CannotDetectTruncation`：构造修前代码会产出的那个字节串
+（正好 20MB、头部合法），断言 `isPDFBytes` **对它返回 true**。
+
+这不是缺陷测试，是**防退化**测试：它把「isPDFBytes 挡不住截断」这个事实写成
+可执行断言，免得后来者以为「下游还有个 magic 检查」而去削弱 `downloadPDF`
+的上限判定。
+
+### 测试清单（`invoice_download_test.go`，8 个用例）
+
+| 用例 | 锁住的行为 |
+|---|---|
+| `TestDownloadPDF_SendsUAAndAcceptHeaders` | UA 非空 + Accept 含 `application/pdf`（部分开票平台对空 UA 直接 403） |
+| `TestDownloadPDF_Non200IsAnError` | 403 的 HTML 错误页不能被当 PDF 收下 |
+| `TestDownloadPDF_OversizeIsRejectedNotTruncated` | **超限报错，且不把截断内容回传给调用方** |
+| `TestDownloadPDF_JustUnderLimitStillPasses` | 负控对照：差 1KB 仍原样通过 |
+| `TestIsPDFBytes_CannotDetectTruncation` | 防退化：截断的 PDF 过得了 magic 检查 |
+| `TestSaveInvoiceFile_WritesCanonicalNameAndMarksDownloaded` | 规范名 `{费用类型}-{对方单位}-{金额}-{日期}.pdf`、落盘内容一致、状态回写、无 `.tmp` 残渣 |
+| `TestSaveInvoiceFile_FillsDateFromBytesWhenMissing` | 缺日期时不生成带空日期的文件名 |
+| `TestSaveInvoiceFile_UnwritableDirIsNotReportedAsDownloaded` | 目录不可写时不得报 `downloaded`，且必须留下原因 |
+
+后三个需要 PG，用的是本包自己的 `newWorkspaceTestStore`（已钉 `search_path`
+并在 cleanup 里 DROP 自己的 schema），不碰 `public`（§7bq 的规矩）。
+
+### 回归
+
+```
+go build ./...                    build=0
+go vet  ./...                    vet=0
+go test       ./internal/email/...   ok 50.327s / rules ok 0.394s
+go test -race ./internal/email/...   ok 48.200s / rules ok 1.401s   0 DATA RACE
+```
+
+### 这一节的元教训
+
+§7bw 我写的是「**不宣称这些都有 bug**」，并把清单定性为「下一轮排查的
+优先级排序」。这条纪律是对的，而且**正因为克制才有效** —— 如果当时直接写成
+「这些路径有缺陷」，下一轮就会带着结论去找证据，而不是去看代码。
+
+结果是优先级 1 的两条里，**两条都真的有缺陷**（`downloadPDF` 静默截断；
+`savePDF` 本身没查出问题，是 `TestSaveInvoiceFile_WritesCanonicalNameAndMarksDownloaded`
+顺带确认了它是对的）。
+
+同时也要说清边界：`pollLoop` / `runDailySummary` 这类跑在真实时钟上的循环
+**本节没有覆盖**，它们是不是也有问题**仍然未知**，不宣称。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：

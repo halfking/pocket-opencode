@@ -451,7 +451,25 @@ func (h *InvoiceHarvester) downloadPDF(ctx context.Context, url string) ([]byte,
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("http %d", resp.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, MaxInvoicePDFBytes))
+	// 上限判定必须读 MaxInvoicePDFBytes+1 字节再回头看长度。
+	//
+	// 原先这里是 `io.ReadAll(io.LimitReader(resp.Body, MaxInvoicePDFBytes))`：
+	// 超限时**静默截断**成正好 20MB 并且不返回任何 error。而调用方
+	// （invoice_harvest.go:348）只判 `isPDFBytes(data)`，被截断的 PDF
+	// 头部 `%PDF-` 依然完好 → 判定通过 → 落盘 → 标记 `downloaded`。
+	// 后果是：需求 3 交付给用户的凭证附件是一个**打不开的 PDF**，
+	// 而库里记着「已下载成功」，没有任何报错可查。
+	//
+	// 这条路径此前 0% 覆盖（§7bw），所以缺陷一直藏着；给 downloadPDF
+	// 补 mock server 测试（invoice_download_test.go）第一轮就复现了。
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxInvoicePDFBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > MaxInvoicePDFBytes {
+		return nil, fmt.Errorf("invoice file too large: exceeds %d bytes", MaxInvoicePDFBytes)
+	}
+	return body, nil
 }
 
 // isPDFBytes 检查 PDF magic（允许头部有少量空白/BOM 的服务器差异）。
