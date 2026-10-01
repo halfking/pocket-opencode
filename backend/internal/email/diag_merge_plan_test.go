@@ -194,9 +194,12 @@ func TestDiagMergePlan(t *testing.T) {
 			ops = append(ops, "is_starred")
 		}
 		if shown < show {
+			// 必须打印**完整 id**。旧写法 g.pop3ID[len-16:] 只输出 UIDL 尾段，
+			// 看着像 id，实际拿去查库会 0 行——2026-10-01 执行合并前备份时
+			// 就因此以为「POP3 侧已被物理删除」，实际 285 封 em-pop3-* 都在。
+			// 截断后的值不能用于任何写操作。
 			t.Logf("MERGE %-42.42s imap=%s(uid=%d) <- pop3=%s(uid=%d) ops=[%s]",
-				g.subj, g.imapID[:min(30, len(g.imapID))], g.imapUID,
-				g.pop3ID[len(g.pop3ID)-16:], g.pop3UID, joinOps(ops))
+				g.subj, g.imapID, g.imapUID, g.pop3ID, g.pop3UID, joinOps(ops))
 			shown++
 		}
 	}
