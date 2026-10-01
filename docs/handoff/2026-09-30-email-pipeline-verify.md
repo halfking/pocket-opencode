@@ -2147,7 +2147,78 @@ A4 排版改成 A5——**制造一个需求 5 从未有过的缺陷**。
 
 ---
 
-## §7av 本轮仍未验证 / 仍是阻塞
+## §7av 8 个邮件前端测试从未被执行（`a0266a4`）
+
+### 起因
+
+复核需求 7「邮件窗口可查看各类邮件」时，注意到 `features/email/` 下有一批
+`*.test.ts`，而 `__tests__/` 下是 `*.test.mjs`。两种后缀会不会只有一种在跑？
+
+### 结论：`.ts` 测试一个都没跑
+
+`package.json` 的 `scripts` 里与测试相关的只有：
+
+```
+"test:native":      node --test src/native/__tests__/{4 个具名}.test.mjs
+"test:native:all":  node --test src/native/__tests__/*.test.mjs src/native/__tests__/*.test.ts
+"gates":            typecheck && build:gate && test:native && check:vm-gaps && check:i18n && check:icons
+```
+
+**没有任何脚本跑 `src/features/email/` 下的测试。** `gates` 只跑
+`test:native` 的 4 个具名 `.mjs`。
+
+实测（Node v22.23.2，原生支持跑 `.ts`，所以不是「跑不起来」，是「没人跑」）：
+
+| 范围 | 用例数 | 结果 |
+|---|---|---|
+| `src/features/email/*.test.ts`（8 个文件） | **33** | 全过 |
+| `src/features/email/__tests__/*.test.mjs` | **209** | 全过 |
+| 合计 | **242** | 全过 |
+| 全仓 `*.test.ts`（55 个文件） | 333 | 332 过 / **1 挂** |
+
+那 33 例包括 `email-categories` / `email-classify-run` / `email-fetch-run` /
+`email-inbox-page` / `email-inbox-search` / `email-inbox-select` /
+`email-soft-delete` / `invoice-list`——**分类归一化、收信执行、收件箱分页、
+搜索、软删除、发票列表**都在其中。它们看起来是覆盖，实际 CI 从不执行。
+
+**顺带纠正我自己之前的说法**：前面几轮我报「前端邮件模块 209/209 全绿」
+——这个数字对它所测量的东西是准确的，但**低估了 33 例**。真实覆盖是 242。
+
+### 修复
+
+新增 `test:email` 并接进 `gates`：
+
+```json
+"test:email": "node --test src/features/email/*.test.ts src/features/email/__tests__/*.test.mjs"
+```
+
+**负控**：把 `normalizeEmailCategory` 的未知值兜底从 `personal` 改成
+`marketing` → **exit 1**，
+
+```
+not ok 210 - email categories
+# tests 242  # pass 241  # fail 1
+```
+
+第 210 例正好是 209 个 `.mjs` 之后的第一个 `.ts` 用例，
+**证明 `.ts` 确已被纳入**（而不是脚本写对了但 glob 没匹配上）。已还原，
+复跑 **242/242 exit 0**。
+
+### 为什么没有把全仓 `.ts` 都接进 gates
+
+实测 55 个 `.ts` 文件 333 例里有 **1 例失败**：
+
+```
+not ok 21 - src/features/flashcards/utils/__tests__/flashcardIo.test.ts
+```
+
+闪卡模块，与邮件无关，且是既有问题。把它接进邮件分支的门禁会让
+`npm run gates` 整体变红，掩盖邮件自己的真实状态。
+**留给对应模块自己处理**，本分支只负责邮件。
+
+---
+
+## §7aw 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
 
