@@ -2218,7 +2218,93 @@ not ok 21 - src/features/flashcards/utils/__tests__/flashcardIo.test.ts
 
 ---
 
-## §7aw 本轮仍未验证 / 仍是阻塞
+## §7aw 需求 1：手机重启后定时收信静默停止（`cc6753d`）
+
+### 起因
+
+复核需求 1「每天定时或手工进行邮件接收」时，查调度侧。
+
+### 缺陷
+
+`EmailFetchReceiver.schedule()` 用的是：
+
+```java
+am.setInexactRepeating(
+    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+    SystemClock.elapsedRealtime() + gap, gap, pi);
+```
+
+**`ELAPSED_REALTIME` 基准的闹钟在设备重启后会被系统清空。**
+
+而原 manifest 里（`AndroidManifest.xml:46-48`）注册的是一个
+**没有 intent-filter** 的 receiver：
+
+```xml
+<receiver
+    android:name=".plugins.EmailFetchReceiver"
+    android:exported="false" />
+```
+
+全仓 grep `BOOT_COMPLETED` 只命中**一条 `uses-permission` 声明**
+（`AndroidManifest.xml:80`）——**没有任何 intent-filter，没有任何开机重排代码**。
+那条权限是死的，说明有人想过这件事但没实现。
+
+唯一会重排的地方是前端 `email-fetch-host.ts:11-19` 的 `bindNative()`，
+只有**用户打开 App** 时才跑。
+
+### 后果
+
+**手机重启一次，后台定时收信就永久停止**，直到用户手动打开 App。
+需求 1「每天定时」直接失效。现象是「偶发不收信」，
+与「确实没有新邮件」在观测上完全一样——极难归因。
+
+### 修复
+
+1. manifest 给 `EmailFetchReceiver` 加 `BOOT_COMPLETED` +
+   `MY_PACKAGE_REPLACED` intent-filter（`exported="false"` 仍可收系统广播）
+2. `onReceive` 收到这两类广播时调 `schedule()` 重排，并顺手补一次收信
+   （设备关着的那段时间收不到）
+3. 抽出静态纯函数 `shouldReschedule(action)`——Robolectric 未接入，
+   测不了 `AlarmManager` 的真实交互，但纯判定可以覆盖
+4. `DEFAULT_INTERVAL_MS` 与前端 `GAP_MS` 对齐并断言
+
+### 证据
+
+**环境坑**（本仓库首次跑 JUnit 必踩）：`gradlew :app:testDebugUnitTest`
+会挂在
+
+```
+Could not read script '.../capacitor-cordova-android-plugins/cordova.variables.gradle'
+  as it does not exist.
+```
+
+该文件由 `npx cap sync android` 生成。worktree 里没同步过 Android 平台，
+所以必须先跑一次 sync（生成目录在 `frontend/android/.gitignore:93` 被忽略，
+不会污染仓库）。
+
+**正向**：`:app:testDebugUnitTest --tests EmailFetchReceiverTest`
+→ `tests=5 skipped=0 failures=0 errors=0`，**BUILD SUCCESSFUL**
+
+**负控**：`shouldReschedule` 改成恒 `false`
+→ `tests=5 failures=2 errors=0`（**能编译并运行**，`errors=0` 证明不是编译失败）：
+
+```
+java.lang.AssertionError: 开机广播必须重排闹钟，否则重启后定时收信永久停止
+java.lang.AssertionError: 应用升级同样会清空 ELAPSED_REALTIME 闹钟
+```
+
+已还原并复跑 **BUILD SUCCESSFUL，5/5**。
+
+### 仍未验证
+
+- **真机行为未验证**：没有在真实 Android 设备上重启验证过闹钟确实重排。
+  单元测试只覆盖了「判定逻辑」，没覆盖 `AlarmManager` 真的接受了这个请求、
+  也没覆盖开机广播真的送达。
+- Android 机型/ROM 差异（国产 ROM 的后台限制）未评估。
+
+---
+
+## §7ax 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
 
@@ -2240,6 +2326,8 @@ not ok 21 - src/features/flashcards/utils/__tests__/flashcardIo.test.ts
    正文缓存加密），所以「正确文件名」现在还定不下来。
 6. **需求 6 走哪条路**（移植 Kotlin / pocketd 上设备 / 收窄为「本地触发」），
    见 §7au。这是本轮新发现的、**唯一一条真正未实现的需求**。
+7. 需求 1 的开机重排修复（`cc6753d`）**只在单元测试层验证过判定逻辑**，
+   真机重启行为未验证，见 §7aw。要不要安排一次真机验证。
 
 **环境问题**：
 
