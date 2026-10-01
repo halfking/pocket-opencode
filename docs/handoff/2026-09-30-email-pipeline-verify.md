@@ -5191,6 +5191,84 @@ invoice_store.go 335   xmlinvoice.go 271   export_pdf.go 245   oauth_callback.go
 
 ---
 
+## §7cd 把「wasm 那一半」测到底，并推翻我自己的一个结论（2026-10-02）
+
+§7cc 留了两个口子：体积增量是**推断**没实测；「死代码被链接器剔除」只有间接证据。
+这一节把两件事都测了，第二件还**推翻了我自己**。
+
+### 先修一个我自己造的坏判据
+
+第一版把两套探针塞进**同一个** `cmd/wasmprobe/main.go`，用 `-mode` 切换，
+测出来：
+
+```
+mode=rules  8.78 MB
+mode=email  8.78 MB      净增 0.00 MB
+```
+
+第一反应是「漂亮 —— 死代码确实被剔除了」。**这是错的。**
+`main.go` 顶层同时 `import` 了 `internal/email` 和 `rules`，而 `probeEmail()`
+在 switch 分支里可达，所以**无论 `-mode` 传什么，两个包的代码都进产物**。
+两个 mode 是**同一个二进制**，差值恒 0，比对毫无意义。
+
+教训与「判据要能失败」同源：**当两个样本的差值恰好是一个可疑的整齐值（0.00）时，
+先怀疑测量装置，别急着得出漂亮结论。** 拆成三个独立 `main` 才有区分度。
+
+### 三个独立产物的真实数字
+
+```
+cmd/wasmbaseline      空 main，只 fmt.Println      2.39 MB   ← Go runtime 底线
+cmd/wasmprobe         rules 引擎（293 行）          4.85 MB
+cmd/wasmprobe/email   email 包的纯逻辑              8.69 MB
+cmd/wasmprobe/email-fetcher  额外调 email.NewFetcher  8.56 MB
+```
+
+三个有输出的探针，native 与 wasm **全部逐字节 IDENTICAL**
+（rules 2131 chars / email 1699 chars / email-fetcher 84 chars）。
+
+2.39 MB 的 runtime 底线是 §7cc 里那 4.85 MB 无法解释的部分 ——
+它对应 `regexp` + `encoding/json` + `time` + reflect 等 stdlib 与 runtime 本身，
+293 行规则代码几乎不占地方。
+
+### 反向对照推翻了我自己的结论
+
+`email-fetcher` 探针只做一件事：调 `email.NewFetcher(nil, nil)`。
+它**不建连**（真正的 socket 在 `imapDialWithTimeout` 里），但足以把
+`fetcher.go` 及其 `net` / `crypto/tls` / `go-imap` / `go-sasl`
+**整个依赖闭包**拉进编译单元。
+
+结果：**8.56 MB，比纯逻辑版的 8.69 MB 还小一点**（差值 0.12 MB 属探针调用面
+不同的噪声范围）。也就是说 ——
+
+> §7cd 一度写的「搬纯逻辑比搬全包省 3.84 MB」**是误导性结论**。
+> 不是省了，是那些 socket 代码在 js/wasm 下**本来就不占地方**：
+> §7cb 那个 `ENOSYS` 空壳意味着 `net`/`tls` 在 wasm 目标下几乎不产生代码。
+
+所以对 A 路线的实际含义是：**包体不是决策依据**。
+「搬纯逻辑」和「连协议层一起搬」在体积上等价，
+真正的分界只有一条 —— wasm 里的 socket 一调用就是 `ENOSYS`。
+
+这条比「省了 3.84MB」更有用：它把决策从「要不要为体积做取舍」变成
+「哪部分必须用 Java」，而后者的答案是明确的（§7cb 那 3 个文件）。
+
+### 附带的两个「我以为验证了其实没有」
+
+- **探针 JSON 检查写死 `"name"` 字段** → `email-fetcher` 输出的是 `"probe"`，
+  脚本判它「produced no JSON」而失败。判据应该问「输出像不像 JSON」
+  （首字符是 `[` 或 `{`），而不是问「有没有某个特定字段」。
+- **`go build` 不接受运行时 flag** → `go build -o x ./cmd/ -mode rules` 会把
+  `-mode` 当包路径，报 `malformed import path "-mode": leading dash`。
+  它是运行时 flag，得由 `wasm_exec_node.js` 通过 `go.argv` 传进 wasm 内部。
+
+### 本节仍然没测
+
+- **wasm 堆 ↔ SQLite 的数据 marshalling 成本**（§7cb、§7cc 都提了，仍未测）
+- **真机 Android WebView**（本轮只在 Node 宿主验证；
+  `wasm_exec.js` 的宿主 API 在 WebView 里不同）
+- Java 侧重写 IMAP/POP3 的实际工作量（只量了 socket 面的行数，没估工时）
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：

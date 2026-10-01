@@ -88,9 +88,19 @@ type probeResult struct {
 
 func main() {
 	// time 会被 JSON 序列化碰到：ReceivedAt 零值必须能被 marshal。
-	// 带上真实时间是为了证明 wasm 里的 time 包可用。
+	// 带上**固定**时间是为了保证 native 与 wasm 的输出逐字节可比 ——
+	// 一旦这里用 time.Now()，两次运行必然不同，比对就失去意义。
 	base := time.Date(2026, 10, 2, 9, 0, 0, 0, time.FixedZone("CST", 8*3600))
 
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(probeRules(base)); err != nil {
+		fmt.Fprintln(os.Stderr, "encode:", err)
+		os.Exit(1)
+	}
+}
+
+func probeRules(base time.Time) []probeResult {
 	out := make([]probeResult, 0, len(cases))
 	for _, c := range cases {
 		in := c.in
@@ -111,14 +121,9 @@ func main() {
 		Actions: toActions(rules.SupportedActions()),
 		Rank:    rules.ImportanceRank("normal"),
 	})
-
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(out); err != nil {
-		fmt.Fprintln(os.Stderr, "encode:", err)
-		os.Exit(1)
-	}
+	return out
 }
+
 
 func toActions(names []string) []rules.ActionResult {
 	a := make([]rules.ActionResult, 0, len(names))
