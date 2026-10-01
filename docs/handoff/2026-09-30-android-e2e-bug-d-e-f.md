@@ -6089,3 +6089,48 @@ api/websocket.ts:77         const delay = nextReconnectDelay(this.reconnectAttem
 - 一条判据在落地前被自查出三次错，说明「先跑一遍 + 构造它该红的场景 + 构造它不该红的场景」
   应该成为新卡口的**固定流程**，而不是可选项。
 
+
+### 4.62 9 条死能力逐个定性 + 删除 `vaultApi`
+
+§4.61 的基线是 9 条。本节**逐个查后端与 UI**，给出处置结论，而不是一刀切删或留。
+
+#### 4.62.1 定性表
+
+| 符号 | 打的后端路由 | 后端有无 | 前端 UI 有无 | 结论 |
+|---|---|---|---|---|
+| `assets.ts:assetsApi` | `POST /api/assets/sync` | ✅ `server.go` 已注册 | ❌ 无编排层 | **保留**。等同步编排层（§4.60）一起做，删了就把 client 端也一起废掉 |
+| `auth.ts:resetPassword` | `/api/auth/reset-password` | ✅ **已注册**（`server.go:682` `requireAuth(handleAuthResetPassword)`） | ❌ **无 UI 入口** | **半个用户可见功能**。用户没有「修改密码」入口，但后端与客户端都已就绪 |
+| `vault.ts:vaultApi` | `/api/vault/sync/`（仅同步子树） | ✅ 已注册 | ✅ `features/vault/VaultListView.vue` **直接 import `native/keystore`** | **纯冗余门面**。Vault 功能根本不经过它，全仓 **零导入者** ⇒ **本轮已删** |
+| `gateway.ts` 六个 | `/api/llm-gateway/nodes/{id}`、`/routing/health`、`/work-types/stats`、`/work-types/{key}`、`/api/admin/...task-defaults` | ✅ `server.go:843-844` 把 `/api/llm-gateway/nodes/` **整棵子树**交给 `handleLLMGatewayNodes` | ❌ 网关页有列表/增删改，**没有详情页 / 路由健康 / 任务类型统计 / 默认任务** | **功能没做**，不是接漏了。属于产品范围，不是死代码 |
+
+`gateway.ts` 一共 33 个导出函数，只有这 6 个没人用——**其余 27 个都在用**。
+（第一版一次性扫描脚本曾把 33 个全报成「无引用」，是脚本自己的 bug：PowerShell 里
+`'\\\\b'` 到 JS 变成字面 `\\b` 而非词边界。**别在 PowerShell 里手搓正则扫描**，
+写进文件里用。卡口本身是对的。）
+
+#### 4.62.2 本轮实际改动：删掉 `frontend/src/api/vault.ts`
+
+定性依据三条，都可复现：
+
+1. `vaultApi` 只是 `native/keystore` 的**门面包一层**（`import('../native/keystore')`），
+   而 `features/vault/VaultListView.vue` **直接** import `native/keystore`——功能根本不经过它。
+2. 全仓**没有任何文件** import `api/vault`（含类型引用，故删整个文件而非只删导出）。
+3. 删后 `npx vue-tsc --noEmit` **EXIT=0**——没有隐式类型依赖。
+
+基线随之 **9 → 8**。
+
+#### 4.62.3 三条待决（本轮只定性、未动手）
+
+- `resetPassword`：后端与客户端都好了，**只差一个 UI 入口**。
+  这是「用户可见功能缺失」而不是代码债，**建议排进 UI 工作**而不是删。
+- `gateway.ts` 六个：对应的是「节点详情 / 路由健康 / 任务类型统计 / 默认任务」四个页面，
+  **属于产品范围**。前端 API 客户端已备好，接页面即可。
+- `assetsApi`：等同步编排层。
+
+#### 4.62.4 验证
+
+| 项 | 结果 |
+|---|---|
+| 删除后 `npx vue-tsc --noEmit` | **EXIT=0** |
+| `check:dead-api` | `api/ 下 34 个模块，导出 100 个符号`，完全无人使用 **8**，基线 8 条，**EXIT=0** |
+

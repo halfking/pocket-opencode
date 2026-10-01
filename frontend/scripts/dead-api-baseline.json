@@ -8,7 +8,6 @@
     "gateway.ts:getRoutingHealth",
     "gateway.ts:getWorkTypeStats",
     "gateway.ts:updateTaskDefault",
-    "gateway.ts:updateWorkType",
-    "vault.ts:vaultApi"
+    "gateway.ts:updateWorkType"
   ]
 }
