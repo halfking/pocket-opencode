@@ -351,14 +351,24 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 	}
 
 	// 2) 正文链接（HTML href 优先，纯文本 URL 兜底）
+	//
+	// linkErrs 收集每个链接的失败原因。downloadPDF 现在会把「下载到的不是
+	// PDF」（登录页/错误页）也变成 error，所以这里能拿到真正的原因；
+	// 原实现那条「既不是 PDF 也不是 err」的情况是静默的，last_error 最后只
+	// 报成 `no usable pdf/xml found`，把「链接存在但拿回来不对」误说成
+	// 「邮件里没有发票文件」。这正是需求「多次操作才能下载到」最需要看清的一步。
+	var linkErrs []string
 	for _, u := range extractInvoiceURLs(parsed.HTMLBody + "\n" + parsed.TextBody) {
 		data, dlErr := h.downloadPDF(ctx, u)
 		if dlErr == nil && (isPDFBytes(data) || isImageBytes(data)) {
 			return h.saveInvoiceFile(ctx, inv, data, "pdf-url")
 		}
+		why := "下载内容不是 PDF/图片"
 		if dlErr != nil {
-			log.Printf("[email/invoice-harvest] link download failed invoice=%s url=%s: %v", inv.ID, u, dlErr)
+			why = dlErr.Error()
 		}
+		log.Printf("[email/invoice-harvest] link download failed invoice=%s url=%s: %s", inv.ID, u, why)
+		linkErrs = append(linkErrs, u+" -> "+why)
 	}
 
 	// 3) XML 附件 → 解析补全字段 → 重渲染 PDF
@@ -378,6 +388,11 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 		}
 	}
 
+	// 链接存在但都拿不到发票时，把每个链接的失败原因写进 last_error，
+	// 而不是笼统的「邮件里没有 pdf/xml」。
+	if len(linkErrs) > 0 {
+		return h.markRetry(ctx, inv, "发票链接未能取到 PDF 文件："+strings.Join(linkErrs, "; "))
+	}
 	return h.markRetry(ctx, inv, "no usable pdf/xml found in message")
 }
 
@@ -439,6 +454,18 @@ func (h *InvoiceHarvester) saveInvoiceFile(ctx context.Context, inv *Invoice, da
 }
 
 // downloadPDF 从链接下载内容（带 UA、30s 超时、20MB 上限）。
+//
+// 2026-10-02 起额外校验内容：发票链接常带登录态/时效限制，对未授权请求
+// 会返回 **HTTP 200 + 一个 HTML 登录页**。原实现只判 `StatusCode != 200`，
+// 把这段 HTML 原样交给调用方；而调用方的判据是
+// `if dlErr == nil && (isPDFBytes(data) || isImageBytes(data))`，
+// 条件不成立时**既不记错误也不记录**就静默落到下一个分支，最终 last_error
+// 报成 `no usable pdf/xml found in message`——把「链接存在但拿回来不是发票」
+// 误报成「邮件里没有发票文件」。
+//
+// 这正好砸在需求「有可能我们需要多次操作才能下载到发票文件」上：真正的原因
+// （登录态过期 / 链接失效 / 返回错误页）被吞掉，人和后续排查都无从判断该不该重试。
+// 所以这里把内容校验前移成显式错误，并带上 Content-Type 便于定位。
 func (h *InvoiceHarvester) downloadPDF(ctx context.Context, url string) ([]byte, error) {
 	client := h.HTTPClient
 	if client == nil {
@@ -458,7 +485,21 @@ func (h *InvoiceHarvester) downloadPDF(ctx context.Context, url string) ([]byte,
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("http %d", resp.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, MaxInvoicePDFBytes))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxInvoicePDFBytes))
+	if err != nil {
+		return nil, err
+	}
+	// 内容校验：先用魔数认 PDF/图片（有些服务器 Content-Type 不准但内容确实
+	// 是发票文件）；两边都不认就是「拿回来的不是发票文件」，必须报错而不是
+	// 让调用方静默丢弃。
+	if isPDFBytes(data) || isImageBytes(data) {
+		return data, nil
+	}
+	ct := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if ct == "" {
+		ct = "(未声明)"
+	}
+	return nil, fmt.Errorf("not-pdf: 下载内容不是 PDF/图片（content-type=%s, %d 字节）", ct, len(data))
 }
 
 // isPDFBytes 检查 PDF magic（允许头部有少量空白/BOM 的服务器差异）。
