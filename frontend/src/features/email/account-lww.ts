@@ -28,6 +28,46 @@ export interface AccountSyncPlan {
 }
 
 /**
+ * 毫秒/秒的分界。与服务端 server_since.go 的 parseSinceQuery / stampAfterSince
+ * 用同一个阈值（1e12），避免两侧对「这是秒还是毫秒」的判断不一致。
+ */
+const MS_THRESHOLD = 1_000_000_000_000
+
+/**
+ * normalizeAccountStamp 把账户配置时间戳统一成 **Unix 秒**。
+ *
+ * ## 为什么需要它
+ *
+ * 契约上 `local_email_accounts.updated_at` 是秒（下行写的是服务端的秒值，
+ * `updateAccount` 写的也是 `Math.floor(Date.now()/1000)`）。但 `saveAccount`
+ * 写的是 `Date.now()`，即**毫秒**。读回路径原先是 `updated_at ?? 0`，
+ * 不做任何归一，于是同一列里混着两种单位。
+ *
+ * ## 后果（实测，见 handoff §7dg）
+ *
+ * `planAccountSync` 拿这个值与服务端的秒值比大小，再把它当作 base 版本上行；
+ * 服务端守卫是 `updated_at <= base`。毫秒值比秒值大约 1000 倍，于是
+ * `base` 恒大于服务端现存值，**无论服务端那份是不是更新的，写都会被接受** ——
+ * 需求 8 要防的「旧的一方覆盖新的一方」被静默架空。
+ *
+ * ## 放在读侧而不是只放写侧
+ *
+ * 只改 `saveAccount` 救不了**已经写进库的历史行**。读侧归一是唯一能同时
+ * 覆盖存量与增量的位置，所以 `rowToAccount` 必须调它。
+ *
+ * ## 不要推广到 last_synced_at
+ *
+ * `updateSyncState` 往 `last_synced_at` 写的 `Date.now()` 是**对的** ——
+ * 那一列本来就是毫秒语义，且不参与 LWW 比较。把本函数当通病全库套用
+ * 会把那一列改坏。
+ */
+export function normalizeAccountStamp(v: number | null | undefined): number {
+  if (v === null || v === undefined) return 0
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return 0
+  return v > MS_THRESHOLD ? Math.floor(v / 1000) : v
+}
+
+/**
  * planAccountSync 计算双向同步计划。
  *
  *   - 服务端 updatedAt > 本地 → 下行（pull）

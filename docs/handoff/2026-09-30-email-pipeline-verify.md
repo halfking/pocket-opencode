@@ -7512,6 +7512,65 @@ guard accepts stale write? (stored<=base) = true      ← 守卫被架空
 
 ---
 
+## §7dh 修掉 §7dg 的单位混存：写侧改秒 + 读侧归一，两侧都要（2026-10-02）
+
+`frontend/src/features/email/account-lww.ts` 新增 `normalizeAccountStamp`，
+`emails-store.ts` 的 `saveAccount` / `rowToAccount` 改用它，
+新增 `__tests__/account-stamp-units.test.mjs`（6 用例）。
+
+### 为什么放在 account-lww.ts 而不是就地写
+
+这个模块存在的理由就是「判定逻辑必须能被纯 node 测试 import」——`emails-store.ts`
+import 了 `native/local-db`，在 node 里根本解析不了。早年的教训正是：测试为了
+能跑，**在文件里复制了一份判定逻辑**，测试全绿但测的不是产品代码。归一函数放进
+同一个零依赖模块，就是为了让「守卫测的」和「生产跑的」是同一份实现。
+
+### 为什么必须**两侧**都改
+
+只改写侧（`saveAccount` 用秒）救不了**已经写进库的历史行**：它们仍是毫秒，
+读路径照样把毫秒喂进 `planAccountSync`。只改读侧则新增行还会继续写脏。
+所以：写侧挡住增量，读侧覆盖存量。
+
+### 用与服务端同一个阈值
+
+`1e12` 分界，与服务端 `server_since.go` 的 `parseSinceQuery` /
+`stampAfterSince` 一致。两侧对「这是秒还是毫秒」的判断不能有分歧，
+否则就会出现「服务端认为该过滤、客户端认为该推」的错配。
+
+### 用例设计
+
+关键那条是**端到端**的：把归一后的值喂进真实的 `planAccountSync`，断言
+`pushIds` 为空（归一后本地不再比服务端「新」）。同一条用例里还留了一段
+**对照**——不归一时 `pushIds === ['acct-1']` 且 `stored <= base` 恒成立——
+这样这条断言不是恒真，将来有人改坏归一逻辑能立刻看到差异。
+另有一条反向用例（本地确实更新时仍要能上行），防止「归一顺手把上行也废了」。
+
+### 负控（实测）
+
+把 `normalizeAccountStamp` 改成 passthrough（`return v`，即修复前的效果）
+→ **3 条转红**：毫秒换算、端到端那条、幂等那条。还原后 `git diff --numstat`
+只含预期的三个文件。
+
+### 一处**没有**负控，如实说明
+
+`rowToAccount` 里那一句 `normalizeAccountStamp(r.updated_at)` 的**调用点**
+没做负控 —— `emails-store.ts` 无法在 node 里 import（正是上面那个原因），
+所以从 node 侧点不到这一行。现有保障是 typecheck + 该调用是一处字面量替换。
+若要真正守住调用点，需要把 `rowToAccount` 也抽成纯函数，那是另一轮的事。
+
+### 顺手记一条防误伤
+
+`rowToAccount` 里 `lastSyncedAt` / `createdAt` **没有**跟着归一，这是对的：
+`updateSyncState` 往 `last_synced_at` 写的 `Date.now()` 本就是毫秒语义，
+且不参与 LWW 比较。代码里已就地写了注释，防止后来者「顺手统一」把它改坏。
+
+### 回归
+
+`npm.cmd run test:email` **248 全绿、0 失败**（242 → 248，新增 6）；
+`npm.cmd run typecheck` 干净。
+
+---
+
 ## §7cz 【需求 6/7】邮件的增量同步**永远退化成全量拉取**，而它的「正确」是靠这个 bug 换来的（2026-10-02）
 
 需求 7「在邮件窗口查看各类邮件」的 UI 链路本身是完整的，我逐段验过：
