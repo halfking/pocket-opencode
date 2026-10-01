@@ -547,19 +547,42 @@ func TestReminderLifecycle(t *testing.T) {
 		t.Errorf("snoozed until %d, want later than the previous 86400 offset from %d", next, now)
 	}
 
-	// Ack is terminal: it must leave both the due queue and the pending count.
+	// Ack is terminal for the reminder it names. It says nothing about the
+	// others, so the check is "the acked id is absent", not "the queue is
+	// empty" — r-due above is still snoozed and legitimately still in there.
 	if err := s.AckReminder(ctx, "ws-1", "alice", future.ID); err != nil {
 		t.Fatalf("AckReminder: %v", err)
 	}
-	if got, _ = s.DueReminders(ctx, "ws-1", "alice", now+100000, 50); len(got) != 0 {
-		t.Errorf("an acked reminder must never come due, got %d", len(got))
+	far := now + 100000
+	if got, _ = s.DueReminders(ctx, "ws-1", "alice", far, 50); len(got) != 0 {
+		for _, r := range got {
+			if r.ID == future.ID {
+				t.Errorf("an acked reminder must never come due again, but %s was in %+v", future.ID, got)
+			}
+		}
 	}
+	// A snoozed reminder is still armed, so it still counts as pending: the
+	// ack above removed r-future, not r-due.
 	pending, err := s.CountPendingReminders(ctx, "ws-1", "alice")
 	if err != nil {
 		t.Fatalf("CountPendingReminders: %v", err)
 	}
-	if pending != 0 {
-		t.Errorf("pending = %d, want 0 after acking the only pending one", pending)
+	if pending != 1 {
+		t.Errorf("pending = %d, want 1 (only the still-snoozed r-due)", pending)
+	}
+
+	// Acking the last one empties the armed set — that is the terminal
+	// behaviour, and it is what "ack" is for.
+	if err := s.AckReminder(ctx, "ws-1", "alice", due.ID); err != nil {
+		t.Fatalf("AckReminder (r-due): %v", err)
+	}
+	if pending, err = s.CountPendingReminders(ctx, "ws-1", "alice"); err != nil {
+		t.Fatalf("CountPendingReminders: %v", err)
+	} else if pending != 0 {
+		t.Errorf("pending = %d, want 0 once every reminder is acked", pending)
+	}
+	if got, _ = s.DueReminders(ctx, "ws-1", "alice", now+100000, 50); len(got) != 0 {
+		t.Errorf("nothing may be due once every reminder is acked, got %+v", got)
 	}
 }
 
