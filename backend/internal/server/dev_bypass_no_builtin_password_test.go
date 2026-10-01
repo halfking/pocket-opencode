@@ -76,28 +76,37 @@ func TestDevBypassHasNoBuiltinDefaultPassword(t *testing.T) {
 	}
 }
 
+// testOnlyPassword 是本文件测试用的合成口令。
+//
+// 它**刻意写成「像口令」的样子**：护栏 TestDevAuthPassHasNoSourceLevelDefault
+// 与 repohygiene 卡口都靠「字母+数字+符号」的形状识别口令，用一个一眼看穿的
+// 弱口令会让两道护栏失去负控样本。
+//
+// 用常量而非内联字面量：豁免标记只需出现在一行上，且改口令时只改一处。
+const testOnlyPassword = "Correct-Horse-Battery-9" // secret-scan-ok: 合成测试口令
+
 // 显式配置口令时旁路必须照常工作——否则这条护栏会把功能一起禁掉，
 // 而「一个恒拒绝的旁路」和「一个恒放行的旁路」同样是坏护栏。
 func TestDevBypassAcceptsExplicitlyConfiguredPassword(t *testing.T) {
 	s := &Server{cfg: config.Config{
 		DevAuth:     true,
 		DevAuthUser: "admin",
-		DevAuthPass: "Correct-Horse-Battery-9",
+		DevAuthPass: testOnlyPassword, // secret-scan-ok: 合成测试口令，非任何真实凭据
 	}}
 
-	if _, ok := s.devBypassCredentials("admin", "Correct-Horse-Battery-9"); !ok {
+	if _, ok := s.devBypassCredentials("admin", testOnlyPassword); !ok {
 		t.Error("显式配置的正确口令被拒绝——本轮修复把 dev 旁路一起禁掉了")
 	}
 	if _, ok := s.devBypassCredentials("admin", "wrong-password"); ok {
 		t.Error("错误口令被放行")
 	}
-	if _, ok := s.devBypassCredentials("notadmin", "Correct-Horse-Battery-9"); ok {
+	if _, ok := s.devBypassCredentials("notadmin", testOnlyPassword); ok {
 		t.Error("错误用户名被放行")
 	}
 
 	// 用户名留空时仍缺省 admin（这条行为没变，别顺手改掉）。
-	s2 := &Server{cfg: config.Config{DevAuthPass: "Correct-Horse-Battery-9"}}
-	if _, ok := s2.devBypassCredentials("admin", "Correct-Horse-Battery-9"); !ok {
+	s2 := &Server{cfg: config.Config{DevAuthPass: testOnlyPassword}}
+	if _, ok := s2.devBypassCredentials("admin", testOnlyPassword); !ok {
 		t.Error("DevAuthUser 留空时应缺省为 admin")
 	}
 }
