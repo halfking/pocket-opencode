@@ -181,7 +181,8 @@
     "finance": "Comptabilité",
     "financeDesc": "Manuel + automatique depuis les notes ·收支 mensuels",
     "language": "Langue de l'interface",
-    "apiAddressNotSaved": "L'adresse n'a pas pu être enregistrée. Vérifiez qu'elle n'est pas vide et qu'elle est une URL valide."
+    "apiAddressNotSaved": "L'adresse n'a pas pu être enregistrée. Vérifiez qu'elle n'est pas vide et qu'elle est une URL valide.",
+    "buildDefaultUnreachable": "La valeur par défaut de build {url} est injoignable sur cet appareil (elle pointe vers l'appareil lui-même), donc {fallback} est utilisée. Pour joindre un backend de votre propre machine, saisissez-le sous Adresse personnalisée."
   },
   "flashcards": {
     "list": {

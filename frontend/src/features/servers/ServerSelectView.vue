@@ -54,6 +54,7 @@
     </div>
 
     <div v-if="formError" class="test-result fail">{{ formError }}</div>
+    <div v-if="buildDefaultNotice" class="test-result fail">{{ buildDefaultNotice }}</div>
     <div v-if="testResult" :class="['test-result', testResult.ok ? 'ok' : 'fail']">
       {{ testResult.text }}
     </div>
@@ -70,13 +71,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
   PRODUCTION_API_BASE,
   BACKUP_API_BASE,
   probeHealthz,
+  resolveApiBaseWithSource,
 } from '../../config/api-base'
 import {
   detectServerChoice,
@@ -103,6 +105,21 @@ const testing = ref(false)
 const saving = ref(false)
 const formError = ref('')
 const testResult = ref<{ ok: boolean; text: string } | null>(null)
+
+/**
+ * 「构建默认」档在设备上到底还生不生效。
+ * 构建默认值里的 localhost 指向手机自己（实测真机/模拟器 localhost:18099 均
+ * Connection refused），解析器会把它换成生产入口。这里如实提示，否则登录页底部
+ * 突然显示另一个地址，用户会以为自己的设置又丢了。
+ */
+const buildDefaultRejected = resolveApiBaseWithSource({ override: null, buildDefault, pageOrigin })
+  .loopbackBuildRejected === true
+// 只有「构建默认 / 同源」两档会解析到构建默认值；选了自定义或预置入口就别打扰。
+const buildDefaultNotice = computed(() =>
+  buildDefaultRejected && (kind.value === 'build' || kind.value === 'origin')
+    ? t('settings.buildDefaultUnreachable', { url: buildDefault, fallback: PRODUCTION_API_BASE })
+    : '',
+)
 
 function previewBase(): string {
   return previewServerBase({ kind: kind.value, custom: customUrl.value }, buildDefault, pageOrigin)

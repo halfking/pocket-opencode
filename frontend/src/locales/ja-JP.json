@@ -181,7 +181,8 @@
     "finance": "家計簿",
     "financeDesc": "手動 + メモから自動記帳 · 月次の収支統計",
     "language": "表示言語",
-    "apiAddressNotSaved": "アドレスを保存できませんでした。空でないか、URL 形式かを確認してください"
+    "apiAddressNotSaved": "アドレスを保存できませんでした。空でないか、URL 形式かを確認してください",
+    "buildDefaultUnreachable": "ビルド既定値 {url} はこの端末から到達できません（端末自身を指しています）。代わりに {fallback} を使用します。ローカルバックエンドを使う場合は「カスタムアドレス」に入力してください。"
   },
   "flashcards": {
     "list": {
