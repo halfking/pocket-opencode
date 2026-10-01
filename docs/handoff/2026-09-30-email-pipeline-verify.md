@@ -6766,19 +6766,36 @@ near-miss（未判垃圾但有分）      1 封（30 分）
 需求 2/3 此前在真实数据上的执行证据是 0。新增只读探针
 `backend/cmd/invoiceprobe`（与 §7cx 同一套只读保证），把
 `InvoiceCandidate` / `ExtractInvoiceLoose` / `InvoiceFileName` 这些**纯函数**
-在真库 120 封邮件上跑一遍，得到与 `extractInvoiceCandidates`
-（pipeline.go 步骤 1.5）**完全相同**的结果。
+在真库 120 封邮件上跑一遍。
 
-### 实测
+> **2026-10-02 06:1x 更正**：本节初稿说探针结果「与流水线**完全相同**」，
+> 这个说法**是错的**，下面已按实测改正。保留更正记录是因为错误的因果链比
+> 没有结论更危险。
+
+### 流水线其实是两趟，探针只测了第一趟
+
+`extractInvoiceCandidates`（pipeline.go 步骤 1.5）分两趟：
+
+| 趟 | 位置 | 输入 | 门控 |
+|---|---|---|---|
+| 第 1 趟 | `pipeline.go:412` | `ExtractInvoice(e, "")` —— 只有 envelope | 无 |
+| 第 2 趟 | `pipeline.go:469` | `ExtractInvoiceLoose(e, 正文, HasInvoiceAttachment(附件))` —— IMAP 取回的完整正文 | `pipeline.go:414`：`p.Fetcher != nil && e.UID > 0` |
+
+探针复现的是**第 1 趟**（`ExtractInvoiceLoose(e, "", false)` 与
+`ExtractInvoice(e, "")` 是同一个函数）。第 2 趟要连真实 IMAP，离线做不了。
+
+**所以本节的「会建档 N 封」是下界，不是需求 2 的最终答案。**
+
+### 实测（测量时刻 06:12）
 
 ```
 发票候选（命中关键词）          6 封
-ExtractInvoiceLoose(false) 命中 1 封   ← 当前生产实际取值
-ExtractInvoiceLoose(true)  命中 6 封
-只因为 has_attachments 为真才被建档的   5 封
+第 1 趟 ExtractInvoiceLoose(false) 命中 1 封
+对照 ExtractInvoiceLoose(true)    命中 6 封   ← 这一列不是生产取值
+差值（只因 hasInvoiceAttachment 为真才成立）  5 封
 ```
 
-唯一能建档的那封，字段完整、命名正确：
+第 1 趟唯一能建档的那封，字段完整、命名正确：
 
 ```
 您收到来自杭州创客家投资管理有限公司的发票，发票号码：26332000008261110741…
@@ -6791,26 +6808,7 @@ ExtractInvoiceLoose(true)  命中 6 封
 即需求原文的 `{费用类型}-{对方单位}-{金额}-{日期}.pdf` 格式**在这封上是达标的**，
 日期来自主题，而不是 §7cs 那个必然失败的 `ParseInvoiceDateFromBytes`。
 
-### 查出一个真结构缺陷：`has_attachments` 恒为 false
-
-`ExtractInvoiceLoose` 的第三个参数决定要不要走「放宽建档」——那条路径当初
-就是为「主题写 9 月度对账单、金额只印在附件 PDF 里」加的，硬门槛会在采集器
-看到附件之前就把邮件扔掉。实测 **120 封里为真的是 0 封**，链路是断的：
-
-| 环节 | 状态 |
-|---|---|
-| POP3 路径 `fetcher.go:974` `em.HasAttachments = len(parsed.Attachments) > 0` | ✅ 正确置位 |
-| IMAP 路径插入时 | 只有 envelope，无从得知 |
-| IMAP 事后唯一机会 `MarkEmailBodyCached`（`store.go:1925`） | ❌ `has_attachments = COALESCE(has_attachments, FALSE)` —— **恒等操作**，把机会丢掉 |
-| harvest 回填 `invoice_harvest.go:317` | 只 `BodyCache.Put`，压根不调 `MarkEmailBodyCached` |
-| 全树 `HasAttachments: true` | 只出现在**测试文件**里 |
-
-`COALESCE(x, FALSE)` 只能把 NULL 变成 FALSE，**永远无法把 FALSE 变成 TRUE**。
-这不是「忘了写」，是**写了等于没写**。
-
-### 但不要把它当成「丢了 5 张发票」——我第一版的框架就是错的
-
-差出来的那 5 封是：
+### 差出来的那 5 封：不能说成「被丢弃」
 
 ```
 Xiaomi MiMo API 开放平台扣款成功通知        amount=0.00  no=(空)
@@ -6820,19 +6818,47 @@ AWS 账户提醒                                amount=0.00  no=(空)
 来自 Apple 西湖商务团队的问候 - 杭州开轩…    amount=0.00  no=(空)
 ```
 
-**它们的金额根本不在邮件正文里**（在门户/账户后台里）。放宽建档对它们
-救不回任何金额，只会在需求 3 的汇总文档里建出 5 条 `amount=0.00` 的记录、
-落 5 个 `其他-未知单位-0.00-<当天>.pdf` —— 那比丢弃更糟。
+`amount=0.00` 只说明**正文里没有金额**。金额可能在附件 PDF 或门户页里 ——
+那正是第 2 趟 + 采集器该干的事。初稿把这 5 封写成「会被丢弃」是**过度
+解读**：第 1 趟建不了档 ≠ 整条链路建不了档。
 
-准确的说法是：
+### `has_attachments` 那一列：不参与发票判定（初稿的因果链错了）
 
-- `has_attachments` 恒 false 是**真实的结构缺陷**，放宽路径因此从不执行；
-- 但在**当前这批数据**上它不是需求 2 的瓶颈。瓶颈是这批邮件压根不含金额；
-- 放宽建档只是让 `harvestOne` 有机会去取附件的**必要条件**，单独打开它
-  解决不了问题。
+初稿说「放宽路径因 `has_attachments` 恒 false 而从不执行，所以 5 封被丢」。
+**这是错的。** 第 2 趟的附件判定是
+`HasInvoiceAttachment(b.parsed.Attachments)` —— 从刚解析的 MIME **现场算**，
+**根本不读 DB 这一列**。全树 `e.HasAttachments` 只被 store 的扫描器读进
+结构体（store.go:351/412/773/1775/1970/2110），**没有任何业务逻辑消费它**。
 
-这条边界值得写清楚，否则下一个人会拿着「5/6 被丢弃」去汇报一个比实际
-严重得多的问题。
+这一列确实有真缺陷，但后果是另一件事：
+
+| 环节 | 状态 |
+|---|---|
+| POP3 路径 `fetcher.go:974` `em.HasAttachments = len(parsed.Attachments) > 0` | ✅ 正确置位 |
+| IMAP 插入时 | 只有 envelope，无从得知 |
+| IMAP 事后唯一机会 `MarkEmailBodyCached`（`store.go:1925`） | ❌ `has_attachments = COALESCE(has_attachments, FALSE)` —— **恒等操作** |
+| harvest 回填 `invoice_harvest.go:317` | 只 `BodyCache.Put`，不调它 |
+| 全树 `HasAttachments: true` | 只出现在**测试文件**里 |
+
+它唯一的消费者是**前端的 📎 标记**（`emails-store` → `EmailInboxView:130`
+`v-if="m.hasAttachments"`）。实测 120 封为真的 0 封 → **IMAP/客户端推送的邮件
+上 📎 恒不显示**。这是需求 7 的一个可见缺陷，但与发票建档无关。
+
+### 数据是活的：本节所有数字都只在测量时刻成立
+
+运行中的 pocketd 每分钟同步真实账户，库的内容在变。同一个查询两次实测：
+
+| 时刻 | `uid IS NULL` | `uid > 0` |
+|---|---|---|
+| 05:33 | **120 / 120** | 0 |
+| 06:11 | 0 | **120 / 120** |
+
+我曾据 05:33 的数据推断「第 2 趟因 `uid > 0` 为假而永不执行」——到 06:11
+这个前提已经不成立。**任何基于「当前库」的结论都必须带测量时刻**，
+否则下一轮复现就会得到不一样的数字、还会以为自己记错了。
+
+现在（第 2 趟门控已打开）要拿到需求 2 的最终答案，只差「授权跑一次真实
+IMAP 取原文」这一件事。
 
 ### 顺带发现：现存那条发票记录的 `file_name` 与当前命名规则不一致
 

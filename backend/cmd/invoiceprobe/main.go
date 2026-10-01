@@ -11,31 +11,43 @@
 // 不碰网络、不碰 IMAP、不写磁盘。把 emails 表读进内存就能得到和
 // `extractInvoiceCandidates`（pipeline.go 步骤 1.5）**完全相同**的结果。
 //
-// ## 顺带量一个真缺陷：has_attachments 在生产里恒为 false
+// ## 它测的是流水线的**第一趟**，不是整条需求 2
 //
-// `ExtractInvoiceLoose` 的第三个参数 hasInvoiceAttachment 决定要不要走
-// 「放宽建档」——那条路径当初就是为「主题写 9 月度对账单、金额只印在附件
-// PDF 里」加的，硬门槛会在采集器看到附件之前就把邮件扔掉。
+// `extractInvoiceCandidates`（pipeline.go 步骤 1.5）分两趟：
 //
-// 结构上这个信号确实拿不到：
-//   · POP3 路径正确置位（fetcher.go:974 `em.HasAttachments = len(parsed.Attachments) > 0`）
-//   · IMAP 路径只有 envelope，插入时未知；事后唯一有机会的
-//     `MarkEmailBodyCached` 写的是 `has_attachments = COALESCE(has_attachments, FALSE)`
-//     —— 恒等操作，把机会丢掉了
-//   · harvest 回填（invoice_harvest.go:317）压根不调 MarkEmailBodyCached
-//   · 全树 `HasAttachments: true` 只出现在**测试文件**里
-// 实测 opencode_pocket.emails 120 封 has_attachments 为真的 0 封。
+//	第 1 趟  pipeline.go:412  ExtractInvoice(e, "")            ← 只有 envelope
+//	         门控 pipeline.go:414 `p.Fetcher != nil && e.UID > 0`
+//	第 2 趟  pipeline.go:469  ExtractInvoiceLoose(e,
+//	         b.parsed.TextBody+"\n"+b.parsed.HTMLBody,           ← IMAP 取回的完整正文
+//	         HasInvoiceAttachment(b.parsed.Attachments))         ← 现场从 MIME 判定附件
 //
-// **但别把它当成「丢了 5 张发票」**：本探针两种取值都跑，实测结果是
-// 6 封候选里 false 命中 1 封、true 命中 6 封，差出来的 5 封全是
-// AWS/Amazon 账户提醒、扣款成功通知这类**金额根本不在邮件正文里**的通知
-// （amount=0.00、无发票号）。放宽建档对它们救不回任何金额，只会在需求 3 的
-// 汇总文档里建出 5 条零金额记录 —— 那比丢弃更糟。
+// 本探针**只复现第 1 趟**（`ExtractInvoiceLoose(e, "", false)` 与
+// `ExtractInvoice(e, "")` 是同一个函数）。第 2 趟需要连真实 IMAP 取原文，
+// 离线做不了 —— 所以本探针给出的「会建档 N 封」是**下界**，不是最终答案。
 //
-// 所以准确的说法是：has_attachments 恒 false 是**真实的结构缺陷**，放宽路径
-// 因此从不执行；但在**当前这批数据**上，它单独并不是需求 2 的瓶颈 ——
-// 瓶颈是这批邮件的金额压根不在邮件里（在门户/附件里）。放宽建档只是让
-// harvestOne 有机会去取附件的**必要条件**，单独打开它并不能解决。
+// 想要最终答案必须让第 2 趟真的跑一遍（需要授权跑真实 IMAP）。
+//
+// ## 关于 has_attachments 那一列：它不参与发票判定
+//
+// 容易误读成「附件标志拿不到所以发票建不了档」。**不是**：
+// 第 2 趟的附件判定是 `HasInvoiceAttachment(b.parsed.Attachments)`，从刚解析的
+// MIME 现场算，**根本不读 DB 这一列**。全树 `e.HasAttachments` 只被 store 的
+// 扫描器读进结构体，没有任何业务逻辑消费它。
+//
+// 那一列唯一的消费者是前端的 📎 标记（emails-store → EmailInboxView）。
+// 它确实有真缺陷：POP3 路径正确置位（fetcher.go:974），但 IMAP 路径只有
+// envelope、事后唯一机会 `MarkEmailBodyCached`（store.go:1925）写的是
+// `has_attachments = COALESCE(has_attachments, FALSE)` —— 恒等操作，
+// 全树 `HasAttachments: true` 只出现在测试文件里。实测 120 封为真的 0 封。
+//
+// 所以它导致的是**前端 📎 标记在 IMAP/客户端推送的邮件上恒为不显示**，
+// 而不是发票建档失败。两件事，别混。
+//
+// ## 数据是活的
+//
+// 运行中的 pocketd 每分钟同步真实账户，库的内容会变。实测记录：
+// 05:33 时 120/120 封 `uid IS NULL`；06:11 时已变成 120/120 封 `uid > 0`。
+// 所以本探针的每个数字都只在**测量时刻**成立，复现时要带时刻。
 //
 // ## 只读保证
 //
@@ -190,19 +202,22 @@ func report(rows []row) {
 	fmt.Printf(`
 [probe] 只读连接校验通过（写尝试已被 PG 拒绝）
 [probe] 邮件 %d 封，其中 has_attachments=true 的 %d 封
+[probe] 测量时刻 %s —— 运行中的 pocketd 每分钟在改库，复现请带时刻
 
-── 需求 2 发票提取 ────────────────────────────────────────
+── 需求 2 第 1 趟（只有 envelope，与 pipeline.go:412 的 ExtractInvoice(e,"") 同一函数）──
   发票候选（命中关键词）          %d 封
-  ExtractInvoiceLoose(false) 命中 %d 封  ← 当前生产实际取值
-  ExtractInvoiceLoose(true)  命中 %d 封
-  **只因为 has_attachments 为真才被建档的**  %d 封
-`, len(rows), attTrue, len(cands), len(strict), len(loose), onlyLoose)
+  ExtractInvoiceLoose(false) 命中 %d 封  ← 第 1 趟的实际取值
+  ExtractInvoiceLoose(true)  命中 %d 封  ← 仅作对照：这一列**不是生产取值**
+  差值（只因 hasInvoiceAttachment 为真才成立）  %d 封
+`, len(rows), attTrue, time.Now().Format("15:04:05"), len(cands), len(strict), len(loose), onlyLoose)
+
+	fmt.Println("\n  注意：第 1 趟只是**下界**。第 2 趟（pipeline.go:469）会 IMAP 取回完整正文，")
+	fmt.Println("  用 ExtractInvoiceLoose(email, 正文, HasInvoiceAttachment(附件)) 重跑一次，")
+	fmt.Println("  上面那批候选能不能建档，取决于它们正文/附件里到底有没有金额 —— 离线测不了。")
+	fmt.Println("  另外第 2 趟的门控是 `e.UID > 0`（pipeline.go:414），不是 has_attachments。")
 
 	if onlyLoose > 0 {
-		fmt.Println("\n  ⚠ 上面这批邮件在真实数据上会被**丢弃** —— 它们命中了发票关键词，")
-		fmt.Println("    但抽不到金额/发票号，而 has_attachments 恒为 false 让放宽路径永不触发。")
-		fmt.Println("    这正是当初加 ExtractInvoiceLoose 要解决的场景。")
-		fmt.Println("\n  【会被丢弃的候选明细】")
+		fmt.Println("\n  【第 1 趟建不了、需靠第 2 趟的候选】")
 		strictIDs := map[string]bool{}
 		for _, s := range strict {
 			strictIDs[s.EmailID] = true
@@ -214,6 +229,8 @@ func report(rows []row) {
 			fmt.Printf("    %-52s %-28s amount=%.2f no=%s\n",
 				trunc(l.Subject, 52), trunc(l.Seller, 28), l.Amount, orNone(l.InvoiceNo))
 		}
+		fmt.Println("    （amount=0.00 表示正文里没有金额，不代表它们是废邮件 ——")
+		fmt.Println("      金额可能在附件 PDF 或门户页里，那要第 2 趟 + 采集器才知道。）")
 	}
 
 	if len(strict) == 0 {
