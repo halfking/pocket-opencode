@@ -36,6 +36,14 @@
         单独显示出来，直到用户开始下一次录音（watch 里清空）。
       -->
       <p v-else-if="recError" class="studio-error" role="alert">{{ recordErrorText }}</p>
+      <!--
+        录音已停止、兜底转写仍在跑（最长 10 分钟）。这段窗口里 recording 已是
+        false、error 还是空的，界面没有任何东西说明"正在做什么"，用户看到的就是
+        「点了停止没反应」。见 note-recording.ts noteRecorderUiState 的注释。
+      -->
+      <p v-else-if="recorderUi.statusText" class="studio-busy" role="status" aria-live="polite">
+        {{ recorderUi.statusText }}
+      </p>
       <template v-else>
         <div class="context-row">
           <button
@@ -84,7 +92,7 @@
         </div>
       </template>
 
-      <VoiceRecorderWidget :recording="isRecording" @toggle="onMicToggle" />
+      <VoiceRecorderWidget :recording="isRecording" :busy="recorderUi.busy" @toggle="onMicToggle" />
       <NoteMetaSheet
         :open="metaOpen"
         :title="metaNote?.title"
@@ -113,6 +121,7 @@ import NoteMetaSheet from './NoteMetaSheet.vue'
 import NoteSearchBrief from './NoteSearchBrief.vue'
 import { notesApi } from '../../api/notes'
 import { useNoteRecording } from './useNoteRecording'
+import { noteRecorderUiState } from './note-recording'
 import { searchNotesWithIntent, type NoteSearchBriefing } from './note-search'
 import { useListSentinel } from '../../composables/use-list-sentinel'
 import { DEFAULT_LIST_PAGE_SIZE, pageHasMore } from '../../native/list-sync/page'
@@ -142,12 +151,16 @@ const metaNote = ref<LocalNote | null>(null)
 const summarizing = ref(false)
 const summarizeError = ref('')
 const {
+  phase: recordPhase,
   recording: isRecording,
   transcript: liveTranscript,
   error: recError,
   toggle: toggleRecording,
   consumePendingResult,
 } = useNoteRecording()
+
+/** 收尾转写中的显式 UI 状态（见 note-recording.ts noteRecorderUiState）。 */
+const recorderUi = computed(() => noteRecorderUiState(recordPhase.value))
 
 /**
  * 录音停止后的转写错误文案。
@@ -351,6 +364,14 @@ useListScene('notes', load)
 .studio-error {
   margin: 0 0 var(--space-2);
   color: var(--danger);
+  font-size: 13px;
+}
+
+/* 收尾转写中的状态行。刻意不用 danger 色：这不是错误，是进行中；
+   也不该抢 NoteRecordingStudio 的位置（它此刻已被 v-if 卸载）。 */
+.studio-busy {
+  margin: 0 0 var(--space-2);
+  color: var(--text-secondary);
   font-size: 13px;
 }
 /* 这两个按钮经 HeaderActionsPortal teleport 到 AppLayout 的 .header-actions，

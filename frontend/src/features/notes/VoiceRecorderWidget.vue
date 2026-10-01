@@ -1,24 +1,33 @@
 <!--
   列表页录音 FAB：点击切换开始/停止（不再长按）。
+
+  busy = 录音已停止但兜底转写仍在跑（phase === 'stopping'）。那段时间最长 10 分钟，
+  若不显式表达，界面表现为：点停止后 FAB 立刻变回「开始录音」外观、
+  实时文本消失、再点没反应——也就是用户报的「点击停止无效」。
 -->
 <template>
   <div class="recorder-fab">
     <button
       class="fab"
-      :class="{ recording }"
+      :class="{ recording, busy }"
       type="button"
-      :aria-label="recording ? '停止录音' : '开始录音'"
+      :aria-label="busy ? '正在转写录音，请稍候' : (recording ? '停止录音' : '开始录音')"
       :aria-pressed="recording"
+      :aria-busy="busy"
+      :disabled="busy"
       @click="$emit('toggle')"
     >
-      <span class="fab-icon" aria-hidden="true">{{ recording ? '⏹' : '🎤' }}</span>
+      <span class="fab-icon" aria-hidden="true">
+        <span v-if="busy" class="fab-spinner" />
+        <template v-else>{{ recording ? '⏹' : '🎤' }}</template>
+      </span>
     </button>
     <div v-if="recording" class="pulse" aria-hidden="true" />
   </div>
 </template>
 
 <script setup lang="ts">
-defineProps<{ recording: boolean }>()
+defineProps<{ recording: boolean; busy?: boolean }>()
 defineEmits<{ toggle: [] }>()
 </script>
 
@@ -41,6 +50,25 @@ defineEmits<{ toggle: [] }>()
   cursor: pointer;
 }
 .fab.recording { transform: scale(1.1); background: var(--danger); }
+/* 收尾转写中：不可点 + 明显不同外观。上一版没有这个态，点停止后 FAB 立刻
+   变回「开始录音」，再点又毫无反应，用户只能当成按钮坏了。 */
+.fab.busy {
+  background: var(--text-secondary);
+  cursor: progress;
+  opacity: 0.75;
+}
+.fab-spinner {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: fab-spin 0.9s linear infinite;
+}
+@keyframes fab-spin {
+  to { transform: rotate(360deg); }
+}
 .pulse {
   position: absolute;
   inset: 0;
