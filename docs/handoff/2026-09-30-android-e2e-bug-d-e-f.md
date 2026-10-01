@@ -6692,3 +6692,108 @@ Assert that ".*开始复习.*", enabled is visible... COMPLETED
   一条对照路由就定了性；指控 2 逼出了我自己该做而没做的当前 APK 回归。
   两边都照证据改，不预设立场。
 
+
+#### 4.68 带 :param 的 30 条详情/编辑页巡检（补上最大的盲区）
+
+`sweep-routes.mjs` 只扫 49 条**静态**路由，30 条带 `:param` 的详情/编辑页
+一条都没验过。而这些恰恰最容易「功能没做、界面照常展示」——列表页看着正常，
+点进去才发现是空壳。
+
+##### 4.68.1 真实 id 怎么来的：两次走错路，第三次才对
+
+**第一次：从列表页 DOM 抽 `a[href*="#/"]`** —— 失败。每个列表页只抓到 4 条链接，
+且都是底部导航。App 的列表项是 `@click` + `router.push`，**根本不渲染成 `<a>`**。
+
+**第二次：猜 API 端点** —— 翻车。`/api/flashcards/decks` 是 404，可卡组明明存在
+（卡组列表其实是 `/api/flashcards`，不带 `/decks`）；`/api/contacts`、
+`/api/accTasks` 同样 404。教训：**端点路径要从 `services/` 里读，不能猜。**
+
+**第三次：读 services 拿真实端点 + 多解一层包装** —— 成功。实测形状：
+`/api/flashcards` 直接是数组；`/api/emails`、`/api/agents`、`/api/meetings`、
+`/api/sessions`、`/api/email/summaries`、`/api/email/accounts` 都多包一层
+（`{emails:[…]}` 等）。还有一处：闪卡卡组的标识符是 `deckId` 不是 `name`——
+按 `name` 取会拿到「回归卡组」这种显示名。
+
+采到的真实 id（`scripts/harvest-route-ids.mjs`，在**页面上下文**里用 App 自己的
+token 采，不复刻鉴权）：
+
+```
+/api/flashcards        200  1  deck_87e69818f9c025a22736e565ac2489cd
+/api/flashcards/notes  200  1  note_82d291fc08d3a86f90a1be0437a7b378
+/api/notes             200  7  note-1790767908638675300-1
+/api/tasks             200  6  task-5f0efe1c689a6ff1e6366b3fe0428672
+/api/emails            200 200  em-1298896143-acct-1790784255240360000-5
+/api/meetings          200  7  mtg_1790818948067029300_1
+/api/email/accounts    200  7  acct-1790782486625898900-1
+/api/contacts          404        /api/accTasks 404
+/api/sessions 0 · /api/scheduled-tasks 0 · /api/rss/items 0 · /api/email/summaries 0
+```
+
+##### 4.68.2 巡检结果：17 条实扫，0 红旗；13 条采不到 id，逐条注明原因
+
+```
+实扫 17 条 / 30 条模板
+红旗 0 · 报未找到 2 · 空页 0 · 疑似陈旧 0 · 导航失败 1 · 探针失败 0
+```
+
+14 条确认落地（含 `/flashcards/decks/:id`、`/review`、`/options`、
+`/flashcards/notes/:id/edit`、7 条 `/gateway/:nodeId/*`、`/tasks/:id`、
+`/email/:id`、`/notes/:id/edit`）。
+
+**采不到 id 的 13 条**（**不假装测过**，逐条写明原因）：
+`/agents/:agentId`(±edit，取不到元素 id)、`/contacts/:id`(端点 404)、
+`/sessions/:id`(0 条)、`/opencode/sessions/:id`(无列表端点)、
+`/settings/scheduled-tasks/:id`(±edit，0 条)、`/rss/items/:id`(0 条)、
+`/email/summary/:date`(0 条)、`/vault/:id`(±edit，纯本地原生，BUG-AT 已定性)、
+`/pkm/n/:id`(落设备本地 `local_assets`)、`/gateway/:nodeId/credentials/:credentialId`
+(要先建凭据)。
+
+##### 4.68.3 ⚠️ 三条命中**全部是假阳性**，我自己的判据错了
+
+初判报了 3 条：`/notes/:id` 报未找到、`/meetings/:id` 报未找到、
+`/meetings/:id/record` 导航未生效。**写进 handoff 前逐条复核，三条都不成立。**
+
+复核一（`scripts/verify-param-findings.mjs`，打整页文本）：页面确实渲染了
+「笔记详情」「笔记不存在或已被删除」「会议详情」「会议不存在」。
+⇒ 文字是真的，但**id 是我采错的**。
+
+复核二（`scripts/diag-note-detail-mismatch.mjs`）：UI 的 `#/notes` 列表页显示
+「**还没有笔记**」——0 条，而 `/api/notes` 返回 7 条。⇒ 两者根本不是同一份数据，
+详情页对那个 id 报「不存在」是**正确行为**。
+
+复核三（`scripts/diag-meeting-detail-click.mjs`，直接点列表第一条）：
+```
+点中的文本: 10月1日 10:07 会议
+点击前 hash: #/meetings
+点击后 hash: #/meetings/meeting-1790820450173-babzi1
+```
+⇒ **UI 认的是 `meeting-*`，不是 `mtg_*`**。
+
+**根因**：我采 id 的端点和 UI 列表页读的数据源不是同一个。前端自建会议用
+`meeting-<ts>-<rand>`，后端 `/api/meetings` 表里是 `mtg_<ts>_<n>`。
+拿后端的 id 去开前端详情页，当然找不到。
+
+**教训**：假阳性比漏报更危险——写进 handoff 就成了「已确认缺陷」，
+下一个人会去查一个不存在的 bug。**列表-详情一致性这类判据，id 必须来自
+UI 自己**（点进去读 hash），不能来自 API。API 只能用来确认「服务端有数据」，
+不能用来证明「UI 认这个 id」。
+
+##### 4.68.4 顺带露出一个**未定性**的观察（别当缺陷记账）
+
+前端自建会议用 `meeting-*`、后端表用 `mtg_*`，**两套 id 体系不通**：
+`/api/meetings` 有 7 条 `mtg_*`，而 UI 会议列表里一条都没有它们。
+两种可能，本轮**没分清**：
+- 前端自建的会议**根本没同步**到后端表（那后端那 7 条是哪来的？）
+- 同步了但 id 映射断了（那后端那 7 条在 UI 里永远看不到）
+
+要定论得先答「后端那 7 条 `mtg_*` 是谁写的」。**本轮不下结论。**
+
+#### 4.69 工具沉淀（本轮新增，均已入库）
+
+- `scripts/audit-maestro-runs.mjs` —— 全量扫描 `~/.maestro/tests` 逐个判成败，不抽样
+- `scripts/harvest-route-ids.mjs` —— 在页面上下文用 App 自己的 token 采真实 id，输出端点形状
+- `scripts/sweep-param-routes.mjs` —— 30 条 :param 路由巡检，采不到 id 的显式列出原因
+- `scripts/verify-param-findings.mjs` —— 复核巡检命中，专治假阳性
+- `scripts/diag-note-detail-mismatch.mjs` / `diag-meeting-detail-click.mjs`
+  —— 列表/详情 id 体系是否一致的判别实验
+
