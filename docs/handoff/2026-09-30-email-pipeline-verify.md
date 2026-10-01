@@ -4286,6 +4286,107 @@ A 和 B 都是**架构级改动**，C 是**产品定义改动**。这三者要�
 
 ---
 
+## §7bt `test:email` 的门禁阻塞：不是 cherry-pick，是**一个文件**（2026-10-02）
+
+§7az 里我给的处置是「cherry-pick `895d950` 或 rebase」。这一节把它推翻并给出
+准确成本 —— 因为**实测结果和当时的判断不一样**。
+
+### 先纠正一处过时记录
+
+§7az 写的阻塞是「`recording-voice-prompt.ts` 带 6 组 `<<<<<<< HEAD` 冲突标记」。
+**现在不是这样了。** 并发会话已经动过这一块，当前真实状态是逐步实测出来的：
+
+```
+typecheck      exit=2   src/native/recordingRuntime.ts(49,8): TS2307 找不到模块
+build:gate     exit=1   Could not resolve "./recording-voice-prompt"
+test:native    exit=0
+test:email     exit=0   # tests 242  # pass 242  # fail 0
+check:vm-gaps  exit=0
+check:i18n     exit=0
+check:icons    exit=1   graphic_eq 在字体里合不出连字
+```
+
+**5 过 2 不过。** 另外确认一件之前只是推断的事：`.ts` 测试在
+`node v22.23.2` 下**确实能跑**（该版本默认开启类型剥离），
+`test:email` 的 242 个用例真实执行、真实通过。
+
+### 两个失败是同一个根因
+
+`typecheck` 报的 3 个 error，实际只有 1 个是根：
+
+```
+:49  TS2307  Cannot find module './recording-voice-prompt'      ← 根
+:96  TS7006  Parameter 'engine' implicitly has an 'any' type   ← 连带
+:96  TS7006  Parameter 'text'  implicitly has an 'any' type    ← 连带
+```
+
+两个 `TS7006` 的参数名 `engine` / `text` 正好对应缺失模块里的
+`VoiceSpeaker = (engine: 'native'|'web', text: string) => Promise<void>` ——
+模块解析不到，它的类型就是 `any`，参数于是「隐式 any」。
+
+`build:gate` 的 rollup 报错是同一句话：`Could not resolve
+"./recording-voice-prompt" from "src/native/recordingRuntime.ts"`。
+
+**所以不是两个问题，是一个缺文件。**
+
+### `895d950` 里的版本可以直接用，API 完全对得上
+
+不是「cherry-pick 会不会冲突」的猜测，是逐个符号核对：
+
+| 我分支 `recordingRuntime.ts:48-49` 导入 | `895d950` 版导出 |
+|---|---|
+| `RecordingVoicePrompt` | `export class RecordingVoicePrompt` ✓ |
+| `makeWebSpeaker` | `export function makeWebSpeaker(` ✓ |
+| `type MicTrackLike` | `export interface MicTrackLike` ✓ |
+| `type VoicePromptDeps` | `export interface VoicePromptDeps` ✓ |
+
+该文件在 `895d950` 里是 **324 行、0 个冲突标记**（`git show
+895d950:frontend/src/native/recording-voice-prompt.ts`）。
+
+### 实测：只恢复这一个文件，两个失败一起消失
+
+```
+git checkout 895d950 -- frontend/src/native/recording-voice-prompt.ts
+
+npm run typecheck    → exit 0        （此前 exit 2）
+npm run build:gate   → exit 0，✓ built in 22.06s   （此前 exit 1）
+```
+
+**整条 `gates` 因此第一次能跑到最后一步**，`test:native`（1.5s）与
+`test:email`（242 个用例）**在门禁里真实执行** —— 这正是
+「8 个邮件 .ts 测试接入 gates」当初想要的效果，此前一直是 0 保护。
+
+剩下的唯一阻塞是 `check:icons`：
+
+```
+[icon-font] ❌ 1 个名字在字体里合不出连字：graphic_eq
+             src\features\settings\SettingsView.vue 字面量
+修法：node scripts/build-material-symbols-subset.mjs 重建字体后提交产物。
+```
+
+报错信息自带修法，是**独立于上面那件事**的一步。
+
+### 我没有提交，理由
+
+我自己给这个分支定过一条约束：**不擅自把录音修复混入邮件分支**。
+这次虽然证据充分（一个文件、零 API 变更、两个门禁步骤转正），但它仍是
+**录音/TTS 的修复，与邮件需求无关**，而且正确的落点其实在 `main`
+（那边是冲突版本）。把邮件分支的形状改了，是你的决定。
+
+所以我：临时恢复 → 实测两个失败转正 → **已用 mavis-trash 移回，工作区干净**
+（HEAD 仍是 `44df48d`）。
+
+### 成本对照（更新 §7az 的第 2 条）
+
+| 处置 | 实际成本 | 实测结果 |
+|---|---|---|
+| cherry-pick `895d950` | 带进 8 个文件（含 4 个 diag 脚本、docs、测试） | 未做，收益与下同 |
+| rebase | 分支形状变更 | 未做 |
+| **只恢复 1 个文件** | `git checkout 895d950 -- frontend/src/native/recording-voice-prompt.ts` | **typecheck 0 / build:gate 0 / gates 跑到底** |
+| 重建字体子集 | `node scripts/build-material-symbols-subset.mjs` + 提交产物 | 未做，`check:icons` 仍红 |
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
@@ -4365,10 +4466,15 @@ A 和 B 都是**架构级改动**，C 是**产品定义改动**。这三者要�
   `main` 上做的「404/403 区分」属于同一件事的两面。**不在邮件分支修**，
   修它需要先确定产品上要哪种语义。
 
-- 主仓 `frontend/src/native/recording-voice-prompt.ts` 带 6 组未解决的
-  `<<<<<<< HEAD` 冲突标记 → 从 main 分支构建必然失败（esbuild `Unexpected "<"`）。
-  本分支已用 `wt3` 的干净副本验证 `vite build` 成功（11.93s），临时文件已
-  移出工作区、未提交。修法是 cherry-pick `895d950` 或 rebase，**未擅自做**。
+- **`frontend/src/native/recording-voice-prompt.ts` 缺失（不是冲突标记了，2026-10-02 更新）**
+  本分支里这个文件**根本不存在**，而 `recordingRuntime.ts:49` 导入它 →
+  `typecheck` 3 个 error（1 个 TS2307 + 2 个连带 TS7006）与 `build:gate` 的
+  `Could not resolve` 是**同一个根因**。实测：只从 `895d950` 恢复这**一个**文件
+  （324 行、0 冲突标记、4 个导出符号与导入完全对应），`typecheck` exit 0、
+  `build:gate` exit 0（22.06s），整条 `gates` 第一次跑到最后一步，
+  `test:email` 的 242 个用例**在门禁里真实执行**。
+  **未擅自做**（我自己定的约束：不把录音修复混入邮件分支），已移出工作区，
+  工作区干净。完整实测见 §7bt。主仓那边的冲突版本仍需单独解决。
 - PG 后端间歇崩溃 `0xC0000142`（非本轮引入，9-30 日志已有）。规避有效：
   绕开阻塞的 `pg_ctl`，用 `Start-Process` 直接起 `postgres.exe`。
 - 两张真实 QQ Wallet 发票（uid=134/135）存量无法可靠救回。
