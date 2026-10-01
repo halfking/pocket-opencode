@@ -34,6 +34,32 @@ func (f *fakeQuietPrefs) QuietPreferences(_ context.Context, _, userID string) (
 	return p, ok
 }
 
+// reminderAtLocal builds a remind_at at a fixed wall-clock time in loc, taken
+// from the current day in that same location.
+//
+// Absolute dates are a time bomb in this file, and one already went off. The
+// cases below used to pin 2026-09-30, which was the day they were written; on
+// 2026-10-01 the executor's staleness bound (DefaultStaleAfter, 24h) started
+// retiring them — workitem_reminder.go checks staleness *before* quiet hours, so
+// a fixture a day old is retired silently and the case that was asserting a
+// reminder is delivered reported zero events. The file went permanently red
+// while the code under test was unchanged and correct.
+//
+// Deriving the day from now keeps the minute-of-day each case is actually about
+// (23:50 Shanghai, noon UTC) and keeps the instant within half a day of the
+// executor's clock, so the staleness bound can never decide the outcome. It also
+// means the New York owner in the two-owner case is still in late morning,
+// whatever the date.
+func reminderAtLocal(loc *time.Location, hour, min int) int64 {
+	now := time.Now().In(loc)
+	at := time.Date(now.Year(), now.Month(), now.Day(), hour, min, 0, 0, loc)
+	if now.Sub(at) > 12*time.Hour {
+		// More than half a day behind us, so that wall-clock time is yesterday's.
+		at = at.AddDate(0, 0, 1)
+	}
+	return at.Unix()
+}
+
 // At 23:50 Shanghai time the reminder must be deferred; the same instant read
 // on the old UTC day boundary looked like 15:50 and sailed through.
 func TestWorkItemReminderDefersInTheOwnersTimezone(t *testing.T) {
@@ -41,8 +67,8 @@ func TestWorkItemReminderDefersInTheOwnersTimezone(t *testing.T) {
 	if err != nil {
 		t.Skipf("tzdata unavailable: %v", err)
 	}
-	// 23:50 on 2026-09-30 in Shanghai.
-	fireAt := time.Date(2026, time.September, 30, 23, 50, 0, 0, sh).Unix()
+	// 23:50 in Shanghai, on whatever day it happens to be.
+	fireAt := reminderAtLocal(sh, 23, 50)
 
 	store := newFakeStore()
 	store.due = []task.Task{{ID: "t-1", Title: "Late", OwnerID: "alice", WorkspaceID: "ws-1", RemindAt: fireAt}}
@@ -83,7 +109,7 @@ func TestWorkItemReminderFallsBackWithoutPreferences(t *testing.T) {
 	// A time well outside any window, so the only question is whether the
 	// reminder still fires.
 	store.due = []task.Task{{ID: "t-1", Title: "Noon", OwnerID: "alice", WorkspaceID: "ws-1",
-		RemindAt: time.Date(2026, time.September, 30, 12, 0, 0, 0, time.UTC).Unix()}}
+		RemindAt: reminderAtLocal(time.UTC, 12, 0)}}
 	ex := NewWorkItemReminderExecutor(store, &fakeWorkNotifier{})
 	ex.SetQuietPreferences(&fakeQuietPrefs{}) // knows nobody
 
@@ -100,7 +126,7 @@ func TestWorkItemReminderFallsBackWithoutPreferences(t *testing.T) {
 func TestWorkItemReminderHonoursDisabledQuietHours(t *testing.T) {
 	store := newFakeStore()
 	store.due = []task.Task{{ID: "t-1", Title: "Night owl", OwnerID: "alice", WorkspaceID: "ws-1",
-		RemindAt: time.Date(2026, time.September, 30, 23, 50, 0, 0, time.UTC).Unix()}}
+		RemindAt: reminderAtLocal(time.UTC, 23, 50)}}
 	prefs := &fakeQuietPrefs{byUser: map[string]task.QuietPreferences{
 		"alice": {Timezone: "UTC", Disabled: true},
 	}}
@@ -136,8 +162,8 @@ func TestWorkItemReminderJudgesEachOwnerSeparately(t *testing.T) {
 	if err != nil {
 		t.Skipf("tzdata unavailable: %v", err)
 	}
-	// One instant: 23:50 in Shanghai is 10:50 in New York.
-	instant := time.Date(2026, time.September, 30, 23, 50, 0, 0, sh).Unix()
+	// One instant: 23:50 in Shanghai is late morning in New York.
+	instant := reminderAtLocal(sh, 23, 50)
 
 	store := newFakeStore()
 	store.due = []task.Task{
