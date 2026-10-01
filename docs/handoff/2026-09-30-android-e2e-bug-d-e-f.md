@@ -6453,3 +6453,129 @@ not ok 5 - 降级路径自身抛错也不该影响录音
 - **uiautomator dump 抓不到 MIUI 的系统浮层**（dump 出来是 VPN App 的界面），
   系统授权页只能用 `screencap` + 已知坐标点。
 
+
+#### 4.65.5 ⚠️ 更正：§4.65 的根因**不完整**，BUG-AU 有**两条**独立触发路径
+
+§4.65.1 把根因写成了「`announceSilenced('start')` → `TextToSpeech.speak()`
+拉起系统授权页」。**这条只是其中一条**，而且**先触发的那条不是它**。
+重建 APK 装机复验时暴露的，必须记下来。
+
+复验经过（`scripts/verify-au-fix.mjs` / `verify-au-fix2.mjs`）：
+
+```
+=== 第一次录音（修复后，localStorage 降级键 = null）===
+  录音前: 降级键=null
+  [1] 前台=⚠️ com.xiaomi.mibrain.speech  vis=hidden  降级键=1   ← 被抢，且降级键被置上
+  → 被抢 6/6；录音后降级键=1
+=== 第二次录音（降级键已是 1，语音播报已被永久关掉）===
+  P1 前台=本应用 ✅   P2 hash=#/gateway ✅   降级键=1 ✅
+  [1] 前台=⚠️ com.xiaomi.mibrain.speech  vis=visible  降级键=1
+  ... 6 次全部仍被抢
+  ❌ 修复未生效：降级键已是 1，但仍有 6/6 次被抢。
+```
+
+注意 `vis` 从 `hidden` 变成了 `visible`：语音播报那一路确实被掐掉了
+（WebView 不再被节流，录音时钟会走），**但系统对话框仍然盖在 App 上**。
+所以还剩第二条路径。
+
+**隔离实验坐实第二条路径**（`scripts/diag-asr-trigger.mjs`）——单变量，
+不碰录音、不碰播报，只在页内起一个语音识别：
+
+```
+页内能力: {"SpeechRecognition":"undefined","webkitSpeechRecognition":"function"}
+起始前台=com.kaixuan.opencode.pocket
+new webkitSpeechRecognition().start()  →  STARTED
+[1..5] 前台=⚠️ com.xiaomi.mibrain.speech   vis=visible
+单独起语音识别即被系统抢前台：5/5 次
+```
+
+对应源码：`recordingRuntime.start()` 里 `this.startLiveCaption()`（:243）
+**先于**语音播报（:254）被调用，它 `new Rec()` + `caption.start()`
+走 Web Speech API，在 Android 上委托给系统 ASR ⇒ 打的是**同一个** MIUI
+系统语音引擎。
+
+| # | 路径 | 位置 | 与播报的先后 | 修复前 | 修复后 |
+|---|---|---|---|---|---|
+| ① | TTS 语音播报 | `announceSilenced('start')` :254 | 后 | 6/6 抢前台 | ✅ 已降级（`vis` 回到 visible） |
+| ② | 实时字幕语音识别 | `startLiveCaption()` :243 | **先** | 6/6 抢前台 | ❌ 本节修复 |
+
+#### 4.65.6 补修路径②：复用同一个降级标志，不做第二套探测
+
+两条路径打的是**同一个系统引擎**，所以「本机已被证明会被系统语音引擎抢前台」
+这个结论对两者同样成立。给 `startLiveCaption()` 加一道守卫，直接复用
+`voicePrompt().hasForegroundHijack()`——不引入第二套探测逻辑，也不维护
+第二份持久化键：
+
+```ts
+private startLiveCaption() {
+  if (voicePrompt().hasForegroundHijack()) return
+  const Rec = pickSpeechRecognition(...)
+```
+
+时序上成立：路径①在同一次 `start()` 里更早被调用（:254 > :243 是源码顺序，
+但路径①是 fire-and-forget 播报、其降级判定发生在 speak 落定之后），
+所以**从第二次录音起**标志已置位，路径②被拦住。
+
+**卡口与它的失败**：这条守卫只能做**源码级**断言（`startLiveCaption` 埋在
+带 Capacitor/DOM 依赖的类里，Node 加载不了）。第一版断言写成
+`body.includes('hasForegroundHijack()')`，负控时把守卫改成
+`if (false && voicePrompt().hasForegroundHijack()) return` —— **29 条全绿，一条没红**。
+恒真断言当卡口比没有卡口更危险，因为它会给人「已覆盖」的错觉。
+改成精确匹配整行 `if (voicePrompt().hasForegroundHijack()) return` 并校验其
+位置早于 `pickSpeechRecognition`，再跑负控：
+
+```
+守卫置空 → not ok 7 - BUG-AU 第二条路径：实时字幕也受同一个降级标志约束
+        → # pass 28  # fail 1
+恢复     → # pass 29  # fail 0
+```
+
+**教训**：文本存在性断言要问一句「它能不能恒真」。本轮就有两条断言栽在这
+（一条是 `hasForegroundHijack()` 的裸包含，一条是 `restoreForegroundHijack`
+的裸包含）——都改成了精确形式。
+
+#### 4.65.7 工具坑（本轮再补）
+
+- **给未注册路由当「中立页」会把 App 带进锁定守卫**：`location.hash = '#/__xxx__'`
+  在真机上直接落到 `#/login?returnTo=…&unlock=1`，于是后面所有采样都发生在
+  登录页却仍被当成「录音页的读数」。`sweep-routes.mjs` 用同样的手法没出问题，
+  但那是 App 已解锁时——**同一手法在不同状态下后果不同，不能想当然沿用**。
+- **残留的系统弹窗会污染下一轮测量**：第一次录音拉起的授权页没关掉时，
+  下一轮「谁在前台」恒为那个系统包，「被抢 N/6」恒真。复验脚本必须把
+  「录音开始前本应用在前台」写成**硬前置**，不满足就判本轮无效、不产出结论
+  （`verify-au-fix2.mjs` 的 P1/P2/P3 三条）。
+- 本地库 crypto key 只在内存，**进程一死就锁**。Maestro 解锁子流程跑完要
+  **立刻**接后续探针，中间任何一次 `am start`/重启都可能把它打回锁定态。
+
+
+#### 4.66 BUG-AU 当前状态：路径①已验证，路径②待复验（不夸大）
+
+**代码状态**：两条路径都已修，`npm run gates` → `GATES_EXIT=0`
+（typecheck + native 38/38 + 全部棘轮卡口），新增 6+1 条单测，两条新守卫都做过负控。
+
+| 路径 | 修复 | 单测 | 负控 | 真机端到端 |
+|---|---|---|---|---|
+| ① TTS 语音播报 | ✅ 自愈降级 + localStorage 持久化 | ✅ 5 条 | ✅ 置空后恰好 2 条转红 | ✅ **已验证**：降级键从 `null` 自动变 `1`；`vis` 由 `hidden` 回到 `visible`（WebView 不再被节流） |
+| ② 实时字幕语音识别 | ✅ 复用同一降级标志 | ✅ 1 条 | ✅ 守卫置空后恰好 1 条转红 | ⏳ **未完成**（见下） |
+
+**路径②为什么还没验成**：重建装机后，App 反复把导航弹回
+`#/login?returnTo=…&unlock=1`，本轮 4 次尝试都没能真正进到 `#/meetings/new`，
+`verify-au-fix2.mjs` 的 P3 前置因此**正确地拒绝产出结论**（这正是硬前置的价值，
+否则就会拿着一份「被抢 0/6」的假读数宣布修好了）。
+
+已排除的可能：不是 #/meetings/new 特有——只读的 `#/meetings` 同样被弹回；
+不是前台问题——`#/gateway` 能读到真实数据（`PROBE-NODE-948776-RENAMED`，
+走的是后端 API，不依赖本地加密库）。结论是**本地加密库在重装后始终没真正解锁成功**。
+
+**⚠️ 疑似假绿（未确认，留给下一轮查）**：`.maestro/_login.yaml` 用
+`extendedWaitUntil: visible: "打开菜单"` 判定解锁完成，而解锁页是**渲染在 App 外壳里**的，
+外壳的「打开菜单」在解锁页上很可能就已经可见 ⇒ 等待条件被立刻满足，
+**解锁失败也会被判成 COMPLETED**。本轮多次看到「解锁断言全 COMPLETED，
+但随后立刻被守卫弹回登录页」，与此吻合。**尚未用 a11y 树证实**，
+不要当已确认结论；若成立，该 flow 的成功判据应换成
+「页面不再含『解锁本地数据』」或「已落到 returnTo 路由」。
+
+**下一轮怎么补**：先修 `_login.yaml` 的成功判据（或绕过 Maestro，
+在 CDP 里直接解锁），确认本地库真的解开后，再跑
+`scripts/verify-au-fix2.mjs`——判据是**降级键=1 的前提下 0/6 被抢**。
+
