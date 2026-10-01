@@ -544,8 +544,37 @@ pid=10972  greenmail-standalone-2.1.14.jar
 > **不要当成脏数据删掉** —— 那是别人正在用的东西。
 > 要清理时先和用户确认；本会话没有动它。
 
-## 6. adb 恢复后要做的事
+## 5.7 需求对照核查：「默认放在设备本地执行」在当前架构下**没有真正落地**
 
+需求原文：「这些操作可以在设备本地进行，也可以委托服务端进行，
+**默认放在设备本地进行**」。
+
+代码层面这个二分是实现到位的（`internal/server/server_email_pipeline.go:13`）：
+
+| executionMode | 行为 |
+|---|---|
+| `local`（默认，`POCKET_EMAIL_EXECUTION_MODE`） | 在 pocketd **本进程**内跑流水线 |
+| `server` | 委托远端编排 URL（`POCKET_EMAIL_SERVER_PIPELINE_URL`） |
+
+注释里写「本地部署时 pocketd 就在设备本地」——**这个前提在 Android 端不成立**。
+
+实测（不是推测）：`frontend/android` 是 **Capacitor WebView 应用，没有自带 pocketd**。
+- 打包产物只有 `assets/public/*.js`，无后端二进制
+- 原生插件只有 `@capacitor-community/sqlite`（本地库）、`filesystem`、
+  `local-notifications`、camera、haptics、text-to-speech
+- APK 里没有任何 `pocketd` 相关 so/jar
+
+所以设备侧目前**真正本地**的只有三件事：本地库镜像（`local_emails` /
+`local_email_invoices`）、本地通知、账户配置 LWW 同步。而重活——IMAP 收取、
+清垃圾判定、发票解析与重渲染、A4 网格排版、台账汇总——**全部在 pocketd 侧**，
+而 pocketd 必须跑在别处（本机 18099）。
+
+> **这是需求与架构之间的实质缺口，不是 bug。** 要真正满足「默认设备本地执行」，
+> 需要把 pocketd 打进 APK（或做成设备侧守护进程），那是量级完全不同的改造，
+> 没有用户明确要求不擅自启动。当前形态下能确定的只是：
+> **服务端执行路径全部需求已实现并验证；设备本地执行路径未实现。**
+
+## 6. adb 恢复后要做的事
 1. `adb reverse tcp:18099 tcp:18099`，确认 App 能登录。
 2. 打开 App 的邮箱设置页，触发需求 8 的账户同步（登录后自动跑一次），
    确认列表里是 **5 个**真实邮箱、没有夹具账户。
