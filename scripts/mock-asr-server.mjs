@@ -55,7 +55,7 @@ function wavSeconds(buf) {
   while (pos + 8 <= buf.length) {
     const id = buf.toString('latin1', pos, pos + 4)
     const size = buf.readUInt32LE(pos + 4)
-    if (id === 'fmt ') byteRate = buf.readUInt32LE(pos + 16 + 8)
+    if (id === 'fmt ') byteRate = buf.readUInt32LE(pos + 16) // fmt 负载偏移 8（RIFF 头 8 + 块头 8）
     if (id === 'data') return byteRate ? size / byteRate : null
     pos += 8 + size + (size % 2)
   }
