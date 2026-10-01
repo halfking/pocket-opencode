@@ -3342,6 +3342,82 @@ defer stopIMAPStage.Stop()
 
 ---
 
+## §7bk 用 race detector 验本轮新增的并发代码（2026-10-01）
+
+### 为什么突然做这件事
+
+§7bi/§7bj 往 fetcher 里加了三处**新的并发**：
+
+1. `time.AfterFunc(imapStageBudget, client.Close)` —— 一个独立 goroutine，
+   在主 goroutine 正卡在 `Login().Wait()` 的读上时去 `Close()` 客户端。
+2. `deadlineConn` 的看门狗 goroutine 与 `touch()` 争 `c.mu`。
+3. `inflight` 这个 `sync.Map`（原有的，但同属并发面）。
+
+这三处正是 race detector 该管的区域。而在此之前，**本仓库的邮件测试从来没在
+-race 下跑过**。
+
+### 先确认工具链真的能跑 —— 别把「没检测到竞争」当成「没有竞争」
+
+本机 `C:\tools\w64devkit\w64devkit\bin\gcc.exe`（GCC 16.2.0）存在，
+`CGO_ENABLED=1` 时 `go test -race` 可用。
+
+但**「没报 DATA RACE」有一个致命假阴性：检测器可能根本没启用**。所以先用一个
+故意写错的临时包验工具链：
+
+```
+D:\temp\racetest\race_test.go   // 两个 goroutine 并发 x++
+go test -race ./... -count=1
+→ WARNING: DATA RACE
+  Read at 0x... by goroutine 9:  racetest.TestDeliberateRace.func1() race_test.go:13
+  Previous write at 0x... by goroutine 8: ...
+```
+
+检测器确实在工作。（顺带再踩一次 PowerShell 5.1 的坑：`Set-Content
+-Encoding UTF8` 写出的 `go.mod` 带 BOM，go 直接报
+`go.mod:1: unexpected input character '\ufeff'`。用
+`[IO.File]::WriteAllText(path, text, New-Object UTF8Encoding($false))`。）
+
+### 结果：全绿，0 DATA RACE
+
+```
+# 无 build tag（全部单测 + PG 集成）
+$env:PATH='C:\tools\w64devkit\w64devkit\bin;'+$env:PATH
+$env:CC='C:\tools\w64devkit\w64devkit\bin\gcc.exe'; $env:CGO_ENABLED='1'
+go test -race ./internal/email/ -count=1 -timeout 1800s
+→ ok  github.com/halfking/pocket-opencode/backend/internal/email  37.823s   exit=0
+
+# 真实 IMAP 路径（Greenmail）
+go test -race -tags=greenmail ./internal/email/ -run 'TestSyncGreenmail|TestMoveToJunkGreenmail' -count=1
+→ --- PASS: TestSyncGreenmail (0.44s)
+  --- PASS: TestMoveToJunkGreenmail (0.15s)
+  ok  ... 1.767s   exit=0
+```
+
+`TestSyncLeavesBudgetForPOP3Fallback`（§7bj 那条）**确实在 -race 下跑到了
+AfterFunc 触发的时刻** —— 它本身就是让 `client.Close()` 与挂住的读并发的用例，
+所以那段竞争窗口是被真实覆盖的，不是「跑过了但没碰到」。
+
+### 顺带：这次没有再污染生产库
+
+按 §7bh 的教训验了共享库（greenmail 用例是要往生产 schema 插账户的）：
+
+```
+accounts_total     = 5      <- 只有 5 个真实邮箱
+greenmail_left     = 0
+emails_real        = 120
+emails_greenmail   = 0
+```
+
+`t.Cleanup` 生效。§7bh 那次是我自己漏了收尾，这次修完就干净了。
+
+### 这条改变了什么
+
+不是「又通过了一次测试」，而是把**一类此前无法验证的风险**纳入了可验证范围：
+本仓库此后的邮件并发改动（尤其是「从另一个 goroutine 强行打断一个阻塞中的
+网络读」这种模式）可以在本机直接用 race detector 验，不必只靠代码审阅。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
