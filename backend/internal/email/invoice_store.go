@@ -239,7 +239,19 @@ func (s *Store) ListInvoicesByIDScoped(ctx context.Context, ids []string, userID
 }
 
 // UpdateInvoiceHarvest 写回 Harvest 流水线对一条发票的采集结果：文件字段、
-// 状态、尝试次数与最近错误。一次 UPDATE 落库，不改变 created_at。
+// 状态、尝试次数与最近错误，外加采集阶段补全出来的业务字段。
+// 一次 UPDATE 落库，不改变 created_at。
+//
+// 「读得到但不写」是这一层最容易漏的断点（2026-10-01 连续踩了三次：
+// currency、category、title）。invoiceSelectCols 读得到这些列，SELECT *
+// 看起来字段齐全，但 UPDATE 少写一列，采集器辛苦解析出来的值就在写回时
+// 蒸发，而且**单测只断言内存对象时完全发现不了**——inv.Currency 在内存里
+// 是对的，库里是错的。判断「修好了」必须从生产读路径（GetInvoiceByIDScoped
+// / ListInvoices）读回来核对。
+//
+// category 尤其关键：需求 3 的规范文件名是
+// `{费用类型}-{对方单位}-{金额}-{日期}.pdf`，第一段就取自 inv.Category。
+// 费用类型没落库 = 交付给用户的文件名第一段是错的。
 func (s *Store) UpdateInvoiceHarvest(ctx context.Context, inv *Invoice) error {
 	if inv == nil || inv.ID == "" {
 		return fmt.Errorf("email: invoice id required")
@@ -253,11 +265,14 @@ UPDATE email_invoices SET
 	invoice_no   = CASE WHEN $9 <> '' THEN $9 ELSE invoice_no END,
 	seller       = CASE WHEN $10 <> '' THEN $10 ELSE seller END,
 	amount       = CASE WHEN $11 > 0 THEN $11 ELSE amount END,
-	currency     = CASE WHEN $13 <> '' THEN $13 ELSE currency END
+	currency     = CASE WHEN $13 <> '' THEN $13 ELSE currency END,
+	category     = CASE WHEN $14 <> '' THEN $14 ELSE category END,
+	title        = CASE WHEN $15 <> '' THEN $15 ELSE title END
 WHERE id=$12`,
 		inv.Status, inv.FileName, inv.FilePath, inv.FileSource,
 		inv.Attempts, inv.LastError, inv.UpdatedAt,
-		inv.InvoiceDate, inv.InvoiceNo, inv.Seller, inv.Amount, inv.ID, inv.Currency)
+		inv.InvoiceDate, inv.InvoiceNo, inv.Seller, inv.Amount, inv.ID, inv.Currency,
+		inv.Category, inv.Title)
 	if err != nil {
 		return err
 	}
