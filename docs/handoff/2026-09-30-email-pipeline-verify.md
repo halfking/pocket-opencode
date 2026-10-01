@@ -7627,6 +7627,75 @@ import 了 `native/local-db`，在 node 里根本解析不了。早年的教训�
 
 ---
 
+## §7dj 需求 5 的 HTTP 成功路径：产物落盘 / url 可下载 / exported_at 只给真正入网格的票（2026-10-02）
+
+`backend/internal/server/server_email_invoice_export_test.go`，5 个测试函数。
+
+需求 5 的**核心算法**（`internal/email/export_pdf.go`）覆盖得相当扎实——页数取整、
+多页源、图片发票混入、非法 grid 拒绝、畸形件跳过、裁切线用「不画线对照产物」
+的字节差证明真被画进去。缺的是**接线层**：`handleEmailInvoiceExport` 此前 35.3%，
+也就是「文件真落盘、返回的 url 真能下载、exported_at 真被记上」从来没端到端跑过。
+
+### 覆盖率（本轮实测）
+
+| 函数 | 之前 | 现在 |
+|---|---|---|
+| `handleEmailInvoiceExport` | 35.3% | **79.4%** |
+| `handleEmailInvoiceExportDownload` | 78.6% | **100.0%** |
+
+`internal/server` 整包 45.9% → **46.1%**。
+
+### ★ 本轮守住的核心不变量
+
+`server_email_pipeline.go:404-406` 写着：
+
+> 记录导出时间 + 通知前端刷新。只给**真正进入网格**的票打时间戳：
+> 被跳过的坏文件不能算「已导出」，否则发票页会显示一张根本没导出的票已归档。
+
+这是「注释声明的不变量」。验法：混合清单塞两张合法 + 一张畸形 PDF（畸形件在
+handler 的 stat 阶段能过——文件存在——要到 `pdfPageCountSafe` 才被跳过），
+断言两张好票 `exported_at > 0`、坏票 `exported_at == 0`。
+
+**顺带查清了它凭什么成立**：`skipped` 集合是按 `filepath.Base(f)` 建的
+（`export_pdf.go:173` / `:181` 两条分支都是），而 handler 的过滤也是
+`skipped[filepath.Base(f)]`，键一致才对得上。我原本怀疑这里键不匹配（若 `Skipped`
+装的是归一后的临时名 `inv-*.pdf`，过滤就会全部落空、坏票照样被打上时间戳），
+读代码确认不是——**这条注释是真的在生效**，不是碰巧。
+
+### 另外四条
+
+- `grid=3` 被接受，且**产物文件名里含 `3x3`** —— 证明排版参数真的传到了算法层。
+- 非法 grid（1/4/-1）被拒 —— 核心算法层已有覆盖，这里钉的是接线层有没有透上来。
+- **重复导出不互相覆盖**：连导 3 次，产物文件名 3 个不同。`export_pdf.go:142-143`
+  的注释点名说要用纳秒就是为了防这个撞名，实测成立。
+- 9 张 / 2x2 ⇒ **3 页**，用 `api.PageCountFile` 数（不是字节扫描——输出 PDF 里
+  嵌着源发票的 Form XObject，扫出来的第一个页对象是内层的）。
+
+### 负控（实测，两条）
+
+1. 把 skipped 的按名过滤去掉（无条件 `MarkInvoiceExported`）
+   → `TestInvoiceExport_SuccessPathMarksOnlyUsableInvoices` 转红，报出
+   `被跳过的坏票被打上了 exported_at=1790897974`（带真实时间戳）。
+2. 把 `body.Grid == 0 → 2` 的缺省改掉
+   → 同一条转红，`export => (500, {"error":"grid must be 2 (2x2) or 3 (3x3), got 0"})`。
+
+还原后 `git diff --numstat` 为空，`server_email_pipeline.go` 逐字节未改。
+
+### 一处已知的低危边界（不单独立项，挂到命名/去重那一条下）
+
+`skipped` 按**文件名**匹配，所以两张不同目录、但**同名**的发票里，
+若其中一张畸形，另一张会被一并当成「已跳过」而**不**记 `exported_at`。
+方向是保守的（少记，不会多记），不产生错误归档。
+而发票命名规则 `{费用类型}-{对方单位}-{金额}-{日期}.pdf` 天然会撞名——
+这正是「发票命名/去重方案」那条待拍板项的一部分，不重复立项。
+
+### 回归
+
+`internal/server` 全包 18.1s，**只剩那两个既有失败**
+（`TestTaskWriteGuardBlocksPlainMemberPatch/Delete`），无新增失败。
+
+---
+
 ## §7cz 【需求 6/7】邮件的增量同步**永远退化成全量拉取**，而它的「正确」是靠这个 bug 换来的（2026-10-02）
 
 需求 7「在邮件窗口查看各类邮件」的 UI 链路本身是完整的，我逐段验过：
