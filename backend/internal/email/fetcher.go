@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -643,12 +644,15 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		// 的发票邮件再没被拉到）。
 		return 0, nil
 	}
-	if len(uids) > 50 {
-		uids = uids[len(uids)-50:]
+	window, dropped := selectUIDWindow(uids, syncUIDWindow)
+	if dropped > 0 {
+		log.Printf("[email/fetcher] 本轮待拉 %d 封，只处理最旧的 %d 封；"+
+			"剩下的 %d 封留给下一轮（last_synced_uid 只推进到本轮处理过的最大值，"+
+			"所以不会永久丢失）", len(uids), len(window), dropped)
 	}
 
 	var uidSet imap.UIDSet
-	for _, u := range uids {
+	for _, u := range window {
 		uidSet.AddNum(u)
 	}
 	fetchOpts := &imap.FetchOptions{
@@ -916,6 +920,40 @@ func sanitizeUIDLForID(uidl string) string {
 		s = "empty"
 	}
 	return s
+}
+
+// syncUIDWindow 单轮 UID SEARCH 之后实际处理的邮件数上限。
+const syncUIDWindow = 50
+
+// selectUIDWindow 从 UID SEARCH 的结果里挑出本轮要处理的窗口，返回
+// (窗口, 被推迟的封数)。
+//
+// **取最旧的 N 封，不是最新的。** 这不是口味问题，是正确性问题：
+//
+//	fetcher 末尾把 last_synced_uid 写成「本轮实际入库的最大 UID」，
+//	下轮 UID SEARCH 从 last_synced_uid+1 起。
+//
+//	若这里取**最新**的 50 封（uids[len-50:]，2026-10-02 之前的实现），
+//	那么被丢掉的是**更旧**的那些 UID —— 它们落在 last_synced_uid 之下，
+//	正常同步**永远不会再搜到**。2026-10-02 实测：生产库两个邮件账户各正好
+//	50 封，与「撞上限后只留最新 50」的表现一致；这批更早的邮件只能靠
+//	POST /api/email/backfill 手工捞，用户侧的观感就是「邮件管理有点奇怪、
+//	缺内容」，而且没有任何报错。
+//
+// 取最旧的 50 封则保证收敛：last_synced_uid 只推进到本轮真正处理过的
+// 最大值，剩下的留给下一轮。代价是新邮件多时收件箱会先看到较旧的那批
+//（追平 300 封需要 6 轮 × 15 分钟）。相比"永远收不到"，这个取舍是划算的。
+//
+// 附带把 uids 显式升序排一遍：RFC 3501 要求服务器按序返回，但不同实现
+// 未必都照做，而"取最旧的 N 封"这件事依赖有序输入。
+func selectUIDWindow(uids []imap.UID, limit int) ([]imap.UID, int) {
+	if limit <= 0 || len(uids) <= limit {
+		return uids, 0
+	}
+	sorted := make([]imap.UID, len(uids))
+	copy(sorted, uids)
+	slices.Sort(sorted)
+	return sorted[:limit], len(sorted) - limit
 }
 
 // truncateStr 按字节截断（最长 max 字节），但**回退到完整字符边界**。
