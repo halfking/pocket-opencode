@@ -88,6 +88,57 @@ KAIXUAN_PW=... QQ_PW=... N163_FK_PW=... N163_FK1_PW=... N163_KH_PW=... \
 > 不是下载当天 —— handoff §7b.4 记的「日期退化为下载日」是**附件 PDF 路径**
 > 的问题（PDF 内抽不到日期），XML 路径不受影响。
 
+### 1.2c 台账「汇总金额」口径统一 + 修掉第 4 个缺陷（2026-10-01 晚）
+
+目标原文：「需要整理一个列表，记录必要信息并汇总金额」。这个数字是拿去
+对账的，所以口径必须明确，而且**三处必须一致**。原来三处都是无条件
+`total += inv.Amount`：
+
+| 位置 | 用途 |
+| --- | --- |
+| `email.LedgerRows` | 飞书共享表格的合计行 |
+| `email.WriteInvoiceSummaryDocs` | 本地 CSV/MD 的合计 |
+| `server.handleEmailInvoiceSummary` | 界面上的 `amountTotal` |
+
+**为什么是缺陷而不只是「不够严谨」**：库里确实存在 `status=failed` 却残留
+脏字段的记录（两张 QQ Wallet：`seller="name:"`、`invoiceNo="Issuance"`，
+字段是从邮件错误段落抽出来的，见 handoff §7o）。金额当时恰好是 `0` 才没出事。
+将来某张 failed 发票若带着错误抽取出的非零金额，就会被静默算进总额，
+让对账虚高，**而且没有任何地方会提示**。
+
+判据统一为：`status ∈ {downloaded, filed}` **且** `FilePath != ""`。这与
+server 层紧邻的 `downloaded` 计数完全对齐 —— 界面上「已下载 N 张」和
+「合计 X 元」指向同一批发票，否则两个数字会同屏互相矛盾、用户无从判断该信哪个。
+
+**不计入合计 ≠ 从列表消失**：failed/pending 的行照样在表里、状态列写明，
+用户仍能看见「还有几张没拿到」，合计也才有对账意义。
+
+> **真库核对：线上台账数字不变。** 真实 3 张发票（downloaded 3500 +
+> failed 0 + failed 0），新旧口径都是 `3500.00`。这次修的是隐患，不是改现状。
+> 核对脚本 `ledger_realdata_diag_test.go`（`POCKET_REAL_MAIL_DSN` 驱动）留在
+> 仓库里，以后有存量变化时重跑一次即可确认。
+
+三处各自做了负控（判据改回无条件累加，确认测试转红）：
+
+| 改动点 | 负控结果 |
+| --- | --- |
+| `ledger.go` | 3 条转红（合计 5779.99 / 4499.99 / 4277，want 3500） |
+| `pipeline.go` | `TestWriteInvoiceSummaryDocs` 转红（合计 123.45，want 100.00） |
+| server 层 | 转红（合计 5557，want 4780） |
+
+`go vet` 通过；`internal/email` 与 `internal/server` 全量测试均 ok。
+
+> **两个夹具补了 `FilePath`，这不是迁就实现**：真实产物里 `downloaded` 一定有
+> `FilePath`（`saveInvoiceFile` 先写文件、再改状态），原夹具的形态在真实数据中
+> 根本不存在。补上之后，测试才真正在断言「文件确实落盘才算数」。
+
+> **写 server 层测试时踩到的坑（下次直接照抄）**：`UpsertInvoice` 的列清单里
+> **没有 `file_name` / `file_path`** —— 把 `FilePath` 塞进去会被**静默丢弃**，
+> 五张票的 `FilePath` 全空、合计自然是 0，而报错信息指向合计口径、真因在夹具。
+> 文件字段必须走 `UpdateInvoiceHarvest`（这条路径也正是生产顺序）。
+> 另外身份别硬编码：handler 无登录态时回落成 `("local", "default")`，
+> 从 `userIDFromRequest` / `workspaceIDFromRequest` 取，回落策略变了测试不会失效。
+
 ## 2. 关键环境事实（别再走错）
 
 ### 2.1 真机连的是 **18099**，不是 8088
