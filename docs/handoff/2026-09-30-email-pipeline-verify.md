@@ -5423,6 +5423,115 @@ UTC 午夜值，不依赖任何具体数字。
 
 ---
 
+## §7cg 补编排层覆盖率，一开就抓到**两个**真缺陷（2026-10-02）
+
+§7cf 证明了「补覆盖率能抓出真 bug」，于是这次先**量**再动：
+`go test -covermode=count` 出 `cov.email.out`，`internal/email` 总覆盖 **53.5%**。
+
+### 先说我自己造的坏测量工具
+
+`scripts/cov0.mjs` 第一版把 profile 行解析成 `[NaN]`
+（末尾两个独立字段被我当成「一个空格包起来的串」），
+于是 `count > 0` 恒 false —— 输出「3325 个函数全部 0 覆盖」。
+而全包明明是 53.5%。
+
+**这个输出看起来还挺合理**，没去核对总数就差点据此去补「最优先的 0% 区域」。
+第二版加了自检（归并后语句总数必须等于原始总数）才敢用。
+
+## 缺口定位
+
+`pipeline.go` 的 `Run` 主干 5 个 `stepStart` 区块
+（**298 / 302 / 306 / 310 / 314**）全部 0 覆盖 ——
+「收信 → 清垃圾 → 提醒 → 采发票 → 推飞书」这条主链路
+**从未被任何测试整体跑过**，之前每次只测了单步的纯函数。
+单步纯函数绿 ≠ 编排正确。
+
+## 缺陷一：`Fetcher.Sync` 缺 nil 接收者守卫 → 进程崩溃
+
+测试一跑就 panic：
+
+    panic: runtime error: invalid memory address or nil pointer dereference
+    email.(*Fetcher).Sync(...) fetcher.go:583
+    email.(*Pipeline).syncAccounts.func1.2() pipeline.go:140
+
+`Sync` 里**已经有** `if f.store == nil` 的同类检查，却漏了接收者本身
+（`f.syncHook` 解引用 nil 指针）。同包的 `FetchMessageRaw` 反而有
+`if f == nil || ...` —— 守卫漏在哪不是随机的。
+
+为什么这是**进程级**故障：`syncAccounts` 把 `p.Fetcher.Sync` 放在
+**独立 goroutine** 里调（pipeline.go:139-142），goroutine 内 panic
+直接崩掉整个进程，主流程的 `defer recover` 拦不住。
+
+场景不是纯理论：需求 6 走设备本地执行时，客户端推送路径本来就不建 Fetcher。
+
+## 缺陷二：`Run` 把汇总文档路径丢进 `_`
+
+    if _, _, err := p.BuildInvoiceSummaryDocs(ctx, sc[0], sc[1]); err != nil {
+
+文件**生成了**，路径却被丢弃 —— `PipelineReport.ShareDocCSV` /
+`ShareDocMD` 恒为空（这两个字段和 JSON 标签都在，就是没人填）。
+
+**为什么一直没人发现**：手动触发走的是另一条路 ——
+`server_email_pipeline.go:497` 单独调一次并回填到 HTTP 响应。
+所以**只有定时这一条路径受影响**。结果是需求 3 明确要的
+「共享文档 + 列表 + 金额汇总」在无人值守场景下等于没交付：
+文件在磁盘上，但日报里没有任何字段告诉你在哪。
+
+多 scope 时这两个字段是**单值**，只能指一个 scope（最后一轮赢，
+与 `ShareDocURL` 既有行为一致）；每个 scope 的文件都仍会落盘。
+
+## 双向负控
+
+两处修复各自回退后：
+
+| 回退 | 转红断言数 |
+|---|---|
+| `if f == nil` 改成 `return 0, nil` | 2 个用例（含 `AccountsSynced = 1, want 0` —— nil 守卫去掉后 go-imap 路径被走进去了） |
+| 回填改成 `else if false` | 5 个用例（全部是 `summary docs missing` / `md path empty`） |
+
+失败信息都精确指向被破坏的行为，不是笼统的红。
+
+## 附带测出的需求 4 核心判定
+
+`notifyImportant` 此前**完全没测**。新增用例钉住：
+只有 `importance='high'` 才提醒（medium/low 不提醒）；
+提醒过的不重复提醒（否则每轮轰炸）；提醒**失败不得**标记已通知
+（否则这封重要邮件被永久漏掉）；`RemindersUnclassified` 正确统计
+未分类邮件 —— 这个计数是需求 4 能否排查的关键，
+kxmemory 没配时它会告诉你「这批邮件根本没被分类过」，
+而不是让你对着恒为 0 的 `RemindersSent` 猜。
+
+## 我自己写错的两处断言（不是产品 bug）
+
+1. 一开始断言 `RemindersScanned > 0` 证明第 3 步跑了。
+   实际 `Notifier == nil` 时**按设计**整体早退（pipeline.go:788）。
+   改成断言「早退而非 panic」，第 3 步的真正判定另立用例。
+2. fixture 里没注入 Fetcher 却期望 `AccountsSynced == 1`。
+   该字段只在 `r.err == nil` 时递增。改用 `Fetcher.syncHook` 注入
+   假实现 —— **用钩子而不是改断言**：让 Fetcher 报错去断言「同步失败」
+   测的是降级路径，不是这里要的「五步编排正确」。
+
+## 回归
+
+go build ./... = 0，go vet ./... = 0
+go test ./internal/email/ 52.6s 通过，go test -race 63.6s 通过（0 DATA RACE）
+
+### 覆盖率增量（重测，不是估算）
+
+| 指标 | 改动前 | 改动后 |
+|---|---:|---:|
+| 总覆盖率 | 53.5% | **57.2%** |
+| 总语句数 | 5123 | 5128 |
+| 0 覆盖语句 | 2383 | **2194**（-189） |
+| 0 覆盖函数 | 1659 | 1573 |
+
+`pipeline.go` 原先最大的 5 个 9 语句 0% 区块（298/302/306/310/314）
+在改动后**全部消失**，剩余最大 0% 区块只有 4 语句。
+
+新增 `scripts/cov0.mjs`（带自检的覆盖率提取器）。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：

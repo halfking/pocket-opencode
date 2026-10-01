@@ -340,8 +340,22 @@ func (p *Pipeline) Run(ctx context.Context) *PipelineReport {
 		} else if url != "" {
 			rep.ShareDocURL = url
 		}
-		if _, _, err := p.BuildInvoiceSummaryDocs(ctx, sc[0], sc[1]); err != nil {
+		// 曾经写成 `if _, _, err := p.BuildInvoiceSummaryDocs(...)`：文件生成了，
+		// 路径却被丢进 `_` —— PipelineReport.ShareDocCSV / ShareDocMD 于是**恒为空**。
+		//
+		// 为什么一直没人发现：手动触发走的是另一条路
+		// （server_email_pipeline.go:497 单独调一次并回填到 HTTP 响应），
+		// 只有**定时**这一条路径受影响。于是「定时跑完的日报里看不到汇总文档
+		// 在哪」——需求 3 明确要的「共享文档 + 列表 + 金额汇总」在无人值守场景
+		// 下等于没有交付。
+		csvPath, mdPath, err := p.BuildInvoiceSummaryDocs(ctx, sc[0], sc[1])
+		if err != nil {
 			rep.AddError("summary docs scope=%v: %v", sc, err)
+		} else {
+			// 多 scope 时逐个覆盖：这两个字段是**单值**，报告只能指一个 scope。
+			// 最后一轮赢，与 ShareDocURL 的既有行为一致；每个 scope 的文件都已落盘。
+			rep.ShareDocCSV = csvPath
+			rep.ShareDocMD = mdPath
 		}
 	}
 	return rep

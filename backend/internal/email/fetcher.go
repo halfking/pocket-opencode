@@ -580,6 +580,16 @@ func (t *syncTrace) done() {
 }
 
 func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
+	// f == nil 的守卫：下面已经有 f.store == nil 的同类检查，却漏了接收者
+	// 本身。nil *Fetcher 上调 Sync 会 panic（syncHook 字段解引用）。
+	//
+	// 这不是纯理论：Pipeline.Fetcher 是可选依赖（客户端推送路径不建它），
+	// 而 pipeline.syncAccounts 在 goroutine 里裸调 p.Fetcher.Sync ——
+	// **panic 发生在独立 goroutine 里，process 直接崩，defer recover 拦不住**。
+	// 需求 6 走设备本地执行时，Fetcher 未就绪是真实启动顺序。
+	if f == nil {
+		return 0, fmt.Errorf("email: fetcher not configured")
+	}
 	if f.syncHook != nil {
 		return f.syncHook(ctx, accountID)
 	}
