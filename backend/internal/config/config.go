@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,7 @@ type Config struct {
 	Environment              string
 	HTTPPort                 string
 	DBPath                   string // 保留兼容；Postgres 迁移后仅用于 data 目录定位
+	DataDir                  string // POCKET_DATA_DIR：数据目录；留空则退回 Dir(DBPath)（见 ResolveDataDir）
 	PostgresDSN              string // Phase 0: pocket 后端统一数据层
 	PostgresSchema           string // pocket 私有的 PG schema 名（隔离共享 PG 上的其他模块表）
 	NPSBaseURL               string
@@ -217,6 +219,7 @@ func Load() Config {
 		Environment:              environment,
 		HTTPPort:                 getEnv("POCKET_HTTP_PORT", "8088"),
 		DBPath:                   getEnv("POCKET_DB_PATH", "./data/pocket.sqlite"),
+		DataDir:                  getEnv("POCKET_DATA_DIR", ""),
 		NPSBaseURL:               getFirstEnv([]string{"POCKET_INSTANCE_DISCOVERY_BASE_URL", "POCKET_NPS_BASE_URL"}, ""),
 		NPSAuthKey:               getFirstEnv([]string{"POCKET_INSTANCE_DISCOVERY_AUTH_TOKEN", "POCKET_NPS_AUTH_KEY"}, ""),
 		NPSAuthCryptKey:          getFirstEnv([]string{"POCKET_INSTANCE_DISCOVERY_AUTH_SECRET", "POCKET_NPS_AUTH_CRYPT_KEY"}, ""),
@@ -594,6 +597,49 @@ func parseStringList(s string) []string {
 func (c Config) IsProduction() bool {
 	value := strings.ToLower(strings.TrimSpace(c.Environment))
 	return value == "production" || value == "prod"
+}
+
+// ResolveDataDir 决定后端的数据目录（发票文件、master key、正文缓存、chat_agents
+// 库都落在这里）。
+//
+// **为什么需要单独一个函数**：dataDir 原本只有 `filepath.Dir(cfg.DBPath)` 一条路，
+// 而 DBPath 在 Postgres 迁移后已经**不再真的开 SQLite 库**（见 Config.DBPath 注释：
+// 「保留兼容；仅用于 data 目录定位」），默认值又是**相对**的 `./data/pocket.sqlite`。
+// 结果就是：数据目录取决于你从哪个目录启动二进制。这个坑咬过两次，两次症状
+// 完全不同，彼此也毫无关联，所以从日志上完全看不出是同一个根因：
+//
+//   - master key 落到别的目录 → 所有账户 `decrypt credential: cipher: message
+//     authentication failed`（两实例打出来的都是 "data/email_master.key"，看着一样）；
+//   - 发票采集写在 A 目录、下载时按 B 目录 os.Stat → 单张下载 404、
+//     A4 导出 400 `no harvested invoice files in selection`。
+//
+// 规则（顺序即优先级）：
+//  1. `POCKET_DATA_DIR` 非空 → 用它。这是显式指定，仓库里 5 个验证脚本
+//     （start-pocketd-verify / start-pocketd-email-verify / start-pocketd-classify-verify /
+//     verify-stt / start-local-backend）**早就按这个意图在设它了**，但在此之前
+//     它对后端完全是空转的（只被 loadCompanionOverlay 用来找 companion.env）。
+//  2. 否则退回 `Dir(DBPath)`，保持与旧行为一致。
+//  3. 两条路都转成**绝对路径**：绝对路径在进程运行期间不受 CWD 影响，
+//     且同一份配置无论从哪个目录启动都解析成同一个目录。
+//
+// 部署影响：无。容器里 `WORKDIR /app`（Dockerfile.pocketd-prebuilt:24），
+// 原本 `./data` 就解析成 `/app/data`，与 compose 设的 `POCKET_DATA_DIR=/app/data`
+// 是同一个目录 —— 这次只是让配置终于说了算。
+func ResolveDataDir(dbPath, override string) (string, error) {
+	candidate := strings.TrimSpace(override)
+	source := "POCKET_DATA_DIR"
+	if candidate == "" {
+		if strings.TrimSpace(dbPath) == "" {
+			return "", fmt.Errorf("config: cannot resolve data dir: both POCKET_DATA_DIR and POCKET_DB_PATH are empty")
+		}
+		candidate = filepath.Dir(dbPath)
+		source = "POCKET_DB_PATH"
+	}
+	abs, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", fmt.Errorf("config: resolve data dir from %s (%q): %w", source, candidate, err)
+	}
+	return abs, nil
 }
 
 func loadCompanionOverlay() {

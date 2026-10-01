@@ -62,10 +62,22 @@ func main() {
 	}
 
 	// Ensure data directory exists (still used for version.json, APK cache, etc.)
-	dataDir := filepath.Dir(cfg.DBPath)
+	//
+	// 必须用 config.ResolveDataDir 而不是裸的 filepath.Dir(cfg.DBPath)：
+	// DBPath 在 Postgres 迁移后已不再真的开 SQLite 库，默认值又是相对的
+	// `./data/pocket.sqlite`，于是数据目录取决于**从哪个目录启动二进制**。
+	// 这个根因咬过两次且症状毫无关联 —— master key 落到别的目录导致所有账户
+	// `decrypt credential: cipher: message authentication failed`；发票采集写
+	// 在 A 目录、下载按 B 目录 os.Stat 导致单张 404 / A4 导出 400。
+	// 详见 config.ResolveDataDir 的注释。
+	dataDir, err := config.ResolveDataDir(cfg.DBPath, cfg.DataDir)
+	if err != nil {
+		log.Fatalf("Failed to resolve data directory: %v", err)
+	}
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		log.Fatalf("Failed to create data directory: %v", err)
 	}
+	log.Printf("data dir = %s", dataDir)
 
 	// ---- Phase 0: shared PostgreSQL pool (replaces per-module SQLite) ----
 	// 可选依赖：未配置时降级为"无本地任务存储"模式，仅依赖 ACC/llm-gateway 等远程服务
@@ -423,15 +435,11 @@ func main() {
 			log.Printf("WARN: email master key: %v — email fetcher disabled", err)
 		} else {
 			if cfg.EmailMasterKey == "" {
-				// 必须打绝对路径：dataDir 来自相对的 DBPath，进程 CWD 一变，
-				// 密钥文件就落到别的目录，同一套凭证全部解不开
-				// （cipher: message authentication failed），而两个实例打出来的
-				// 都是 "data/email_master.key"，看起来一模一样。踩过一次。
-				absKeyPath, absErr := filepath.Abs(filepath.Join(dataDir, "email_master.key"))
-				if absErr != nil {
-					absKeyPath = filepath.Join(dataDir, "email_master.key")
-				}
-				log.Printf("WARN: POCKET_EMAIL_MASTER_KEY not set; using auto-generated key at %s", absKeyPath)
+				// 这里不再单独 Abs：dataDir 在 main 开头已由 ResolveDataDir 解析成绝对路径。
+				// 原来这处补丁只护住了这行日志输出，护不住真正写文件的 EnsureMasterKey /
+				// NewFileBodyCache —— 那才是出事的地方，所以两次故障都还会发生。
+				log.Printf("WARN: POCKET_EMAIL_MASTER_KEY not set; using auto-generated key at %s",
+					filepath.Join(dataDir, "email_master.key"))
 			}
 			ec, err := email.NewCrypto(key)
 			if err != nil {
