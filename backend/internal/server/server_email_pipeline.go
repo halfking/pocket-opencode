@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // server_email_pipeline.go — 邮件流水线的 server 侧装配与 HTTP handlers。
 //

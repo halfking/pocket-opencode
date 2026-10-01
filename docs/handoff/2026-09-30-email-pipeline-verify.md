@@ -6996,6 +6996,109 @@ git diff --name-only backend/internal/email/   ->  空
 
 ---
 
+## §7dc 【工具链】UTF-8 BOM 让 `internal/server` **整包无法做覆盖率插桩**（2026-10-02）
+
+给 §7db 补完覆盖后顺手想给 `internal/server` 出一份覆盖率数字，结果：
+
+```
+internal\server\server_email_invoice.go:1:1: invalid BOM in the middle of the file
+FAIL github.com/halfking/pocket-opencode/backend/internal/server [build failed]
+```
+
+而 `go vet ./internal/server/` **通过**、不带 `-coverprofile` 的 `go test` **通过**
+（11.0s，只有那两个既有失败）。也就是说：
+
+> **「这个包有没有测试」和「这个包能不能被测量」是两件事，
+> 而后者坏了没有任何人会发现。**
+
+后果直接：`internal/server` 在此之前**从来没有过覆盖率数字**，于是
+`delegatePipeline`（需求 6 服务端委托腿）零覆盖能长期躺着（§7db）。
+
+### 因果链是实测的，不是推断
+
+只去掉 `server_email_invoice.go` 的 BOM 后重跑，错误**精确移动到下一个文件**：
+
+```
+internal\server\server_email_pipeline.go:1:1: invalid BOM in the middle of the file
+```
+
+两个都去掉才通过。两个文件各自只有一个 BOM、位于 offset 0
+（Go 报的 "in the middle" 是它的通用措辞，不是真在中间）。
+
+### BOM 分布：719 个 .go 文件里 8 个
+
+| 文件 | 类型 | 备注 |
+|---|---|---|
+| `internal/server/server_email_invoice.go` | 非测试 | 阻断 `internal/server` 覆盖率 |
+| `internal/server/server_email_pipeline.go` | 非测试 | 同上 |
+| `internal/config/config.go` | 非测试 | 阻断任何 `-coverpkg=./...` |
+| `internal/email/export_pdf_test.go` | 测试 | 不被插桩，无影响 |
+| `internal/email/mime_header_decode_test.go` | 测试 | 同上 |
+| `internal/email/pipeline_dryrun_test.go` | 测试 | 同上 |
+| `internal/feishu/client_test.go` | 测试 | 同上 |
+| `internal/server/server_vault_empty_blob_test.go` | 测试 | 同上 |
+
+8 个全部处理：非测试文件阻断覆盖率，测试文件留着是定时炸弹（哪天被人挪成
+非测试或被 `-coverpkg` 扫到就炸）。每个文件都断言**恰好少 3 字节**，
+`git diff --numstat` 每个都是 `1 1`。
+
+> **过程中我自己踩了一次坑并当场发现**：第一次用字节切片
+> `$b[3..($b.Length-1)]` 剥 BOM，把 `server_email_invoice.go` 写坏了 ——
+> 顺手删掉 5 行真实内容（`currency` / `amounts` 两个响应字段和它们的注释），
+> 文件从 14921 变成 14635 字节。是 `git diff` 的 numstat 1/6 露出来的，
+> 不是编译错误 —— **少两个 JSON 字段编译照过，接口只是悄悄变了**。
+> 回滚后改用「ReadAllText + UTF8Encoding(false) 重写 + 断言字节差恰为 3」，
+> 每次都验。写进这一节是因为那 5 行如果没被 numstat 抓到，就是一个上线后
+> 才发现的响应字段缺失。
+
+### 护栏：BOM 扫描器 + 扫描器自身的对照
+
+新增 `backend/internal/server/bom_guard_test.go`：
+
+- `TestNoGoFileHasUTF8BOM` — 从包目录向上找 `go.mod`，扫全模块所有 `.go`，
+  报出以 `EF BB BF` 开头的文件，并给出可直接粘贴的修法命令。
+  **找不到 go.mod 时 fail 而不是 skip**：Go module 里的包必然在模块根之下，
+  找不到就说明结构不对，那种情况下静默跳过正好会放行一个已经坏掉的仓库。
+- `TestFindBOMFilesDetectsBOM` — 临时目录里放带 BOM / 不带 BOM / 嵌套目录
+  / 非 .go 四种文件，必须只报出该报的。**没有这条，上面那条护栏可能因为
+  「什么都没扫到」而永远绿。**
+
+负控：给 `server_email_pipeline.go` 塞回 BOM → 护栏转红并指名道姓报出该文件
+→ 移除后恢复绿。
+
+BOM 的来源是环境默认行为（PowerShell 5.1 的 `Set-Content -Encoding UTF8`
+与 `>` 重定向都写 BOM），所以必须机器拦，靠人记不住。
+
+### 顺带：需求 2/3/5 的服务端 HTTP 层覆盖近乎为零
+
+覆盖率可测之后第一件事就是看邮件相关的 server 文件，结果：
+
+| 文件 | 覆盖 | 未覆盖块 | 对应需求 |
+|---|---|---|---|
+| `server_email_invoice.go` | **0%** | 138/138 | 需求 2/3/5 的全部 HTTP 端点 |
+| `server_email_classify.go` | **0%** | 38/38 | 分类端点 |
+| `server_email_invoice_file.go` | **0%** | 38/38 | 发票文件服务 |
+| `server_email_purge.go` | **0%** | 14/14 | 软删端点 |
+| `server_email_pipeline.go` | **7.3%** | 152/164 | 需求 1/3/4/6 手动触发端点 |
+| `server_email_summary.go` | 38.5% | 40/65 | 每日摘要 |
+| `server_email_classify_gateway.go` | 46.8% | 25/47 | AI 分类网关 |
+
+**`internal/server` 整体 43.7%**（这个数字在此之前不存在）。
+`internal/email` 63.5%。
+
+也就是说：业务逻辑（`internal/email`）测得不少，但**需求 2/3/5 的 HTTP 接线
+层一行都没测过** —— 而「端点有没有接对 store、scope 有没有带上、字段有没有
+漏」恰恰是这轮已经踩过两次的坑类型（`ShareDocCSV` 被丢进 `_`、
+`a0266a4` 因为门禁短路而零保护）。这是下一块该补的。
+
+### 回归
+
+`go build ./...` 干净；`config` / `feishu` / `email`(80.9s) 全绿；
+`server` 11.97s，只剩那两个既有失败（`TestTaskWriteGuardBlocksPlainMemberPatch/Delete`，
+§7az 的 404/403 语义分歧，非邮件分支、非本轮引入）。
+
+---
+
 ## §7cz 【需求 6/7】邮件的增量同步**永远退化成全量拉取**，而它的「正确」是靠这个 bug 换来的（2026-10-02）
 
 需求 7「在邮件窗口查看各类邮件」的 UI 链路本身是完整的，我逐段验过：

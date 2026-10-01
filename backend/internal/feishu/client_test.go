@@ -1,4 +1,4 @@
-﻿package feishu
+package feishu
 
 // client_test.go — 出站客户端的 mock server 覆盖。
 //

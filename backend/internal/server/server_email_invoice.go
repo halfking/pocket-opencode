@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // server_email_invoice.go — 邮件发票自动整理 HTTP handlers。
 //

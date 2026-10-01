@@ -1,4 +1,4 @@
-﻿package email
+package email
 
 // mime_header_decode_test.go — RFC 2047 头字段解码（BUG-AP 的回归）。
 //
