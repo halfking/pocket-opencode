@@ -177,19 +177,55 @@ func (f *Fetcher) FetchMessageRaw(ctx context.Context, accountID string, uid int
 // 类型化解析器）。Go 的 net/textproto 让我们直接拼装命令，错误信息更直观。
 func (f *Fetcher) fetchRawByTextproto(ctx context.Context, acc *Account, password string, uid, maxBytes int64) ([]byte, error) {
 	dialer := net.Dialer{Timeout: 30 * time.Second}
-	conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", acc.IMAPHost, acc.IMAPPort))
+	addr := fmt.Sprintf("%s:%d", acc.IMAPHost, acc.IMAPPort)
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
 
-	// IMAPS（993/995 一类）必须先做 TLS 握手再谈 IMAP 文本协议。原来这里
-	// 直接用明文 TCP，于是对 993 端口的服务端来说：我们在等 greeting，它在等
-	// ClientHello，双方互等 → 读 greeting 直接 EOF。实测真实账户
-	// （qq/163 全部 993）的降级路径 100% 失败，报
-	// `fetch raw uid=135 (textproto): read greeting: EOF`，把 go-imap 主路径
-	// 真正的原因盖掉了。降级通道对 IMAPS 账户原本就是条死路。
-	if acc.IMAPPort == 993 {
+	// **建连之后一个 deadline 都没有**（这是本函数原来最大的问题）。
+	// `net.Dialer.Timeout` 只管三次握手，之后 `br.ReadString('\n')` 能挂多久
+	// 完全看服务器脸色，而且**不看 ctx** —— ctx 只喂给了 DialContext。
+	// 于是「服务器 accept 了 TCP 但一句话不说」的组合会让单封邮件**永久**
+	// 阻塞，整轮流水线失去上界，正是上方 maxMessageBytes 注释里明确要求的
+	// 「也不能让一轮流水线没有上界」那条不变量。
+	//
+	// 复用 fetcher.go 的 deadlineConn（滚动空闲 60s + 绝对硬截止 45s）：
+	// go-imap 主路径早就套了它，降级路径当时漏了。
+	dc := &deadlineConn{
+		Conn: conn,
+		idle: imapIdleTimeout,
+		hard: time.Now().Add(imapHardTimeout),
+	}
+	dc.start()
+	conn = dc
+	// ctx 取消也要能打断正在阻塞的读：把 deadline 钉到过去即可让 Read
+	// 立刻返回；连接关闭后 deadlineConn 的看门狗自行退出。
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = dc.SetDeadline(time.Now().Add(-time.Second))
+		case <-done:
+		}
+	}()
+
+	// 明文 / 隐式 TLS 的判定必须与 fetcher.dial 用同一条规则
+	// （isPlainIMAPPort），降级通道才可能在主路径失败后真正救回场子。
+	//
+	// 原先是 `if acc.IMAPPort == 993` 这种写死判断：只认 993，143 与其它
+	// 一切端口都当隐式 TLS。对生产账户（qq/163 都是 993）恰好正确，但
+	// 对任何非 993 的**明文**端口就是必然的协议错配 —— 最典型的是 Greenmail
+	// 的明文 3143：我们说 TLS、服务端等明文 greeting，双向互等，最后以
+	// `read greeting: EOF` 收场。账户的 IMAP 端口是逐账户配置项，
+	// 143/1143/993 之外的值（例如自建邮件网关的 1993）在旧写法下必然走错分支。
+	//
+	// 反过来把 993 也放掉是不能接受的：那是把加密通道悄悄降级成明文，
+	// 163 上会变成明文外发 LOGIN 密码。所以这里取的是「与主路径一致」，
+	// 而不是「尽量猜」。
+	if !isPlainIMAPPort(addr) {
 		tlsConn := tls.Client(conn, &tls.Config{
 			ServerName: acc.IMAPHost,
 			// 与 imapDialWithTimeout 保持一致：仅自签测试服务器才跳过校验，

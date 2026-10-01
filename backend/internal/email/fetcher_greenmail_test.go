@@ -96,9 +96,44 @@ func TestSyncGreenmail(t *testing.T) {
 		t.Fatal("no new emails fetched from greenmail")
 	}
 
-	// 触发发票提取，断言 harvester 处理真实邮件（不一定 Downloaded，因为
-	// Greenmail 测试邮件的附件是占位 %PDF 内容，harvester 会落到 failed 但
-	// processed>0；这是预期行为——测试的是「真实邮件被识别成发票/账单」）。
+	// Sync 只写 emails 行；**email_invoices 行是流水线 step1.5 建的**
+	// （extractInvoiceCandidates：ExtractInvoice -> UpsertInvoice）。
+	// 原测试直接跳到 HarvestAll，而它只处理已在 email_invoices 里的行，
+	// 于是 processed 恒为 0 —— 这个用例从来没被跑过，所以没人发现。
+	p := &Pipeline{Store: store, Fetcher: fetcher, DataDir: t.TempDir()}
+	rep := &PipelineReport{}
+	accs := []Account{*acc}
+	// step1.5 会为「命中发票但缺开票日期」的邮件逐封开 IMAP 会话拉原文，
+	// 真实服务器上单封可能耗时分钟级（代码注释里记过：151 封时跑了 6 分钟
+	// 未完）。这里给足预算，别复用上面 30s 的 ctx2——不够，会让**后续断言**
+	// 因 deadline 假失败（我第一版就踩了这个坑）。
+	ctxCand, cancelCand := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancelCand()
+	p.extractInvoiceCandidates(ctxCand, accs, rep)
+	fmt.Println("GREENMAIL CANDIDATES:", rep)
+
+	var invCount int
+	if err := pool.QueryRow(ctxCand, `SELECT count(*) FROM email_invoices WHERE account_id=$1`, acctID).Scan(&invCount); err != nil {
+		t.Fatalf("count invoices: %v", err)
+	}
+	fmt.Println("GREENMAIL INVOICE ROWS:", invCount)
+	if invCount == 0 {
+		t.Fatalf("step1.5 没建出任何发票行 —— HarvestAll 无从下手，后面的断言会假失败")
+	}
+
+	// 断言 harvester 真的处理了这些**真实邮件**。
+	//
+	// 实测结果（2026-10-01 Greenmail，18 封 INBOX）：Processed=4 Downloaded=2
+	// Pending=2 Failed=0。那 2 封 downloaded 是货真价实的 PDF 附件，被按需求 3
+	// 的命名格式落盘，例如：
+	//   通信-开票中心-128.00-2026-09-24.pdf
+	//   其他-杭州创客家投资管理有限公司-3500.00-2026-09-24-26332000008261110741.pdf
+	// （末尾那串是发票号，撞名保护追加的，见 invoice_harvest.go 的命名规则。）
+	// 另外 2 封 Pending 是因为邮件里根本没有可用的 PDF 附件，属于正常待重试。
+	//
+	// 早期版本这里写的是「附件是占位 %PDF 内容，harvester 会落到 failed」——
+	// 那是**写测试时臆测的**，从未真跑过。实测恰好相反：附件是真 PDF，走的是
+	// downloaded。注释按实测改掉，别再让它把后来的人带偏。
 	harv := &InvoiceHarvester{
 		Store:   store,
 		Fetcher: fetcher,
