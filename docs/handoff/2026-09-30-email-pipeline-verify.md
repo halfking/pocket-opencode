@@ -2742,6 +2742,105 @@ harvester 会落到 failed 但 processed>0」。那是**写测试时臆测的、
 
 ---
 
+## §7bf 真实邮箱只读探针：主路径是好的，但 master key 分布不一致（2026-10-01）
+
+### 目的
+
+§7be 留下一个无证据的问题：go-imap 主路径在 Greenmail 上必然失败
+（`BODY[]<0>{n}` 少一个空格），那**真实 qq/163 呢**？若同样失败，主路径等于
+长期闲置，每封发票正文都靠那条手搓的 textproto 通道兜底 —— 这决定了要不要
+为主路径补一条「重试不带 partial」的中间路径。
+
+### 只读是设计出来的，也是**测出来**的
+
+新增 `realprobe_test.go`（`-tags=realprobe` 手动启用，默认不跑）：
+
+- 只发 `LOGIN / ID / SELECT / UID SEARCH / UID FETCH BODY.PEEK[]`。
+  不发 `STORE / MOVE / COPY / EXPUNGE / DELETE` 任何一条。代码里
+  `FetchMessageRaw` 的 `FetchItemBodySection.Peek` 为 true，不置 `\Seen`。
+- **不靠承诺，靠前后快照证明**：跑前记下 INBOX 的 UNSEEN 计数与目标邮件的
+  flags，跑完再记一次，逐项必须相等，不等就 fail。刻意不比 UIDNEXT ——
+  探针运行期间真邮箱可能收到新邮件，那不是探针造成的。
+- 不写库：本文件只 `SELECT`。
+- 凭据解密刻意**不**用 `EnsureMasterKey` —— 它找不到 key 时会**新建**一个，
+  万一 dataDir 指错就会在真实目录里留垃圾。这里 `os.ReadFile` 显式读候选 key。
+
+### 结果：真实账户主路径全部可用
+
+```
+KEY C:\workspace\openpocket\data\email_master.key:              可解出凭据的账户数 = 0
+KEY C:\workspace\openpocket\backend\data\email_master.key:      可解出凭据的账户数 = 0
+KEY C:\workspace\openpocket\wt3\backend\data\email_master.key: 可解出凭据的账户数 = 5
+
+ACCT ...-2  56551681@qq.com        uid=10455      主路径可用  耗时=484ms  body=3300 字节   状态未变=true
+ACCT ...-1  huangxutao@kxpms.cn    uid=11         主路径可用  耗时=1.101s body=10399 字节  状态未变=true
+ACCT ...-3  feikemanager@163.com   uid=1669791329 主路径可用  耗时=268ms  body=12123 字节  状态未变=true
+ACCT ...-5  kimmy.huang@163.com    uid=1298896143 主路径可用  耗时=357ms  body=41656 字节  状态未变=true
+ACCT ...-4  feikemanager1@163.com  库里 0 封邮件，无 uid 可试
+```
+
+**结论：§7be 里「主路径可能长期闲置」的担心不成立。** Greenmail 是 quirk
+server，真实 qq/163 都正常给了空格，主路径 268ms~1.1s 直接取回正文。
+所以**不需要**为它补「重试不带 partial」的中间路径 —— 那会是为不存在的问题写代码。
+降级通道仍然值得留着（它兜的就是这类解析器兼容问题），但它现在是**备份**，
+不是主承重路径。
+
+### 顺带查出的真问题：master key 分散在三处，且只有一把对得上
+
+| 目录 | `email_master.key` | 发票文件 | 正文缓存 | 能解开真实库 5 个账户 |
+|---|---|---|---|---|
+| `openpocket\data` | 有 | 132 个 / 1.68 MB，**最新 20:41** | 41 个 | **0** |
+| `openpocket\backend\data` | 有 | 无 | 无 | **0** |
+| `openpocket\wt3\backend\data` | 有 | 10 个 / 3 KB，最新 19:56 | 无 | **5** |
+| `openpocket-wt-maildeploy\backend\data`（**当前 pocketd.exe 所在目录**） | 有 | 无 | 无 | **0** |
+
+也就是说：**当前活跃的数据目录（发票文件 20:41 还在写）和能解开凭据的 key
+不在同一个目录**。`pocketd.exe`（PID 33948，来自 `wt-maildeploy\backend\
+.verify-bin\`）那把 key 也解不开。
+
+**但不能就此断定线上 IMAP 登录是坏的**，理由有两条，必须都摆出来：
+
+1. §7b 记录 2026-10-01 凌晨真实邮箱接入 **6/6 账户连通**。若那把 key 解不开
+   凭据，就不可能连通。所以线上进程多半是通过 `POCKET_EMAIL_MASTER_KEY`
+   **环境变量**拿 key 的（`EnsureMasterKey` 是 env 优先），磁盘上那几把都是
+   历史残留。
+2. 我无法读取别人启动的进程的环境变量来证实第 1 条。**这一点是推断，不是实测。**
+
+**严重性（已查证，不要高估也不要低估）**：邮件代码在解密失败时**只返回错误、
+不回写凭据** —— `fetcher.go:338-343`、`fetcher.go:557-563`、
+`imap_resolve.go:71-76` 三处都是 `return fmt.Errorf("decrypt credential: %w", err)`，
+没有「自愈成默认值」的分支。所以这**不是**配置被毁的数据丢失事故，而是：
+
+> 任何回退到 `<dataDir>/email_master.key` 的进程（脚本、诊断工具、换一个
+> 工作目录启动的 pocketd）都会**一个账户都连不上**，而库里的配置看上去完好。
+
+这正是我此前记过的教训（多个 data 目录 → 各自一把 key → 互解不开）的又一次
+实证。**处置**：要么把 `POCKET_EMAIL_MASTER_KEY` 固定注入到所有启动方式，
+要么把唯一正确的 key 复制到真正在用的 data 目录并在文档里写死位置。
+**未擅自处置** —— 这需要知道线上到底怎么启动的。
+
+### 过程中我自己犯的一个错（差点误报成数据事故）
+
+探针第一版 SQL 写的是 `AND deleted_at IS NULL`，结果 5 个账户全部
+`no rows in result set`。我看了一眼就差点下结论「真实邮件全被软删除了」。
+
+实际：`deleted_at` 是 `bigint NOT NULL DEFAULT 0`，**0 才是未删除**
+（`store_inbox.go:15` 的 `idx_emails_alive` 偏索引就是这么写的）。
+真实分布是 138 行**全部 `deleted_at = 0`**，即一封都没删。
+
+教训：**看到「查询返回 0 行」时，先怀疑自己的谓词，再怀疑数据**。
+
+### 顺带确认：`test:email` 本身是全绿的
+
+`npm run test:email` 单独跑：**242 tests / 242 pass / 0 fail**。
+
+所以 §7bb 记的「`test:email` 目前保护力为零」需要精确化：不是它自己有问题，
+而是 `gates` 用 `&&` 串联、在 typecheck 就短路，它**根本没机会跑**。这让三个
+处置选项的利弊变清楚了 —— 「暂时从 gates 摘掉」今天不会损失任何东西（本来
+就没在跑），只有「先修基线」能真正恢复保护力。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
@@ -2769,10 +2868,19 @@ harvester 会落到 failed 但 processed>0」。那是**写测试时臆测的、
 8. 需求 2 的**真实 IMAP MOVE 已跑通**（`4a06c28`，Greenmail standalone jar，
    不需要 Docker）。见 §7ba。
 9. **step1.5 取正文每封挂 150s 的根因已查明并修掉**（`843b3c4`）：降级取正文
-   通道建连后零读超时 + TLS 端口判定写死 993。见 §7be。用例从 8 分钟超时失败
-   变为 PASS 0.44s。**新暴露的一点仍未验证**：Greenmail 对部分取回回的
-   `BODY[]<0>{n}`（partial 与 literal 之间无空格）会让 go-imap 主路径解析失败，
-   真实 qq/163 是否也这样未测 —— 目前靠降级通道兜住，但主路径等于闲置。
+   通道建连后零读超时 + TLS 端口判定写死 993。用例从 8 分钟超时失败变为
+   PASS 0.44s。见 §7be。
+10. **「主路径是否对真实 qq/163 同样失效」已用只读探针实测：不失效**。
+    4 个真实账户全部走 go-imap 主路径，268ms~1.1s 取回正文，且 UNSEEN 计数与
+    目标邮件 flags 前后不变（只读被证明）。所以**不需要**为它补「重试不带
+    partial」的中间路径。见 §7bf。
+11. **新查出的真问题：master key 分散在三处，只有 `wt3\backend\data` 那把能
+    解开真实库 5 个账户的凭据**；当前活跃的数据目录（发票文件 20:41 还在写）
+    和当前 `pocketd.exe` 所在目录的 key 都解不开。已查证这**不会**导致凭据被
+    自愈覆盖（邮件代码在解密失败时只返回错误），后果是「任何回退到
+    `<dataDir>/email_master.key` 的进程一个账户都连不上，而库里的配置看着
+    完好」。线上多半是靠 `POCKET_EMAIL_MASTER_KEY` 环境变量拿 key 的（推断，
+    非实测）。**处置需先知道线上启动方式，未擅自处理**。见 §7bf。
 
 **环境问题**：
 
