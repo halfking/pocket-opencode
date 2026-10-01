@@ -524,11 +524,23 @@ func (s *Server) handleEmailInvoiceSummary(w http.ResponseWriter, r *http.Reques
 	var downloaded, pendingCount, failed int
 	rows := make([]map[string]any, 0, len(invoices))
 	for _, inv := range invoices {
-		total += inv.Amount
+		// 合计口径与 email.LedgerRows / WriteInvoiceSummaryDocs 一致
+		// （2026-10-01 修正）：**只统计真正拿到文件的发票**。
+		//
+		// 原来这里无条件 `total += inv.Amount`。库里存在 status=failed 却
+		// 残留脏字段的记录（两张 QQ Wallet：seller="name:"、invoiceNo="Issuance"，
+		// 字段是从邮件错误段落抽出来的，见 handoff §7o），金额当时恰好是 0
+		// 才没出事。将来某张 failed 发票若带着错误抽取的非零金额，就会被
+		// 静默算进总额，让对账虚高且无处提示。
+		//
+		// 判定用 `FilePath != ""`（而不是 status=="downloaded"），与紧邻的
+		// downloaded 计数完全对齐 —— 界面上「已下载 N 张」和「合计 X 元」
+		// 指的是同一批发票，否则两个数字会互相矛盾。
 		switch inv.Status {
 		case "downloaded", "filed":
 			if inv.FilePath != "" {
 				downloaded++
+				total += inv.Amount
 			}
 		case "pending", "new":
 			pendingCount++

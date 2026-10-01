@@ -878,7 +878,14 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 	var total float64
 	rows := make([][]string, 0, len(invoices))
 	for _, inv := range invoices {
-		total += inv.Amount
+		// 合计口径与 LedgerRows 保持一致：**只统计已下载的**。
+		// 2026-10-01 修正（见 ledger.go 的详细说明）：原来无条件累加全部记录，
+		// failed 发票若带着错误抽取出的非零金额，会静默把对账总额算高，
+		// 而且没有任何地方会提示。两处口径必须一致，否则 CSV 与飞书表格
+		// 的「合计」会给出两个不同的数。
+		if (inv.Status == "downloaded" || inv.Status == "filed") && inv.FilePath != "" {
+			total += inv.Amount
+		}
 		rows = append(rows, []string{
 			inv.Category, inv.Seller, fmt.Sprintf("%.2f", inv.Amount), inv.Currency,
 			inv.InvoiceNo, inv.InvoiceDate, inv.Status, inv.FileName, inv.Subject,

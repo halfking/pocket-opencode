@@ -51,13 +51,19 @@ func (f *fakeLedger) PublishLedger(ctx context.Context, title string, invs []Inv
 }
 
 func sampleInvoices() []Invoice {
+	// FilePath 必须有值：合计口径是「status 属于已下载态 **且** FilePath 非空」
+	// （2026-10-01 收紧，见 ledger.go）。真实产物里 downloaded 的记录一定有
+	// FilePath —— saveInvoiceFile 是先写文件再置状态；FilePath 为空只出现在
+	// 文件被外部删掉、或落盘失败却已改状态的异常记录上，那种不该计入金额。
 	return []Invoice{
 		{Category: "交通", Seller: "某某出行", Amount: 1280, Currency: "CNY",
 			InvoiceNo: "25332000000123456789", InvoiceDate: "2026-09-28",
-			Status: "downloaded", FileName: "交通-某某出行-1280.00-2026-09-28.pdf", Subject: "行程单"},
+			Status: "downloaded", FileName: "交通-某某出行-1280.00-2026-09-28.pdf",
+			FilePath: "email-invoices/ws-1/交通-某某出行-1280.00-2026-09-28.pdf", Subject: "行程单"},
 		{Category: "通信", Seller: "云服务商", Amount: 256.5,
 			InvoiceNo: "25332000000999999999", InvoiceDate: "2026-09-29",
-			Status: "downloaded", FileName: "通信-云服务商-256.50-2026-09-29.pdf", Subject: "云账单"},
+			Status: "downloaded", FileName: "通信-云服务商-256.50-2026-09-29.pdf",
+			FilePath: "email-invoices/ws-1/通信-云服务商-256.50-2026-09-29.pdf", Subject: "云账单"},
 	}
 }
 

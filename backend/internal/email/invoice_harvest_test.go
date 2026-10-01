@@ -190,7 +190,12 @@ func TestExportInvoiceGrid(t *testing.T) {
 func TestWriteInvoiceSummaryDocs(t *testing.T) {
 	dir := t.TempDir()
 	invoices := []Invoice{
-		{Category: "餐饮", Seller: "甲", Amount: 100, InvoiceDate: "2026-09-01", Status: "downloaded", FileName: "a.pdf"},
+		// 真实产物里 downloaded 一定有 FilePath：saveInvoiceFile 先写文件、
+		// 再改状态（见 invoice_harvest.go）。原夹具没给 FilePath，于是这张票
+		// 在收紧后的口径下不计入合计，测试跟着暴露 —— 这正是要修的缺陷。
+		{Category: "餐饮", Seller: "甲", Amount: 100, InvoiceDate: "2026-09-01",
+			Status: "downloaded", FileName: "a.pdf", FilePath: "email-invoices/default/a.pdf"},
+		// pending：明细行照样要列出来（能追），但不进合计。
 		{Category: "交通", Seller: "乙", Amount: 23.45, InvoiceDate: "2026-09-02", Status: "pending"},
 	}
 	csvPath, mdPath, err := WriteInvoiceSummaryDocs(dir, "default", invoices)
@@ -198,12 +203,20 @@ func TestWriteInvoiceSummaryDocs(t *testing.T) {
 		t.Fatal(err)
 	}
 	csvData, _ := os.ReadFile(csvPath)
-	if !strings.Contains(string(csvData), "123.45") {
-		t.Fatalf("csv total missing: %s", csvData)
+	csv := string(csvData)
+	// 合计只含已下载的 100.00。口径与 email.LedgerRows / server 的
+	// handleEmailInvoiceSummary 一致：三处若不一致，CSV、飞书表格和界面
+	// 会给出三个不同的总数，对账时没人说得清差在哪。
+	if !strings.Contains(csv, "合计,,,,,,,100.00,") {
+		t.Fatalf("csv 合计应为 100.00（只计已下载），实际:\n%s", csv)
+	}
+	// pending 那张的明细必须仍在表里：不计入合计 ≠ 从列表消失。
+	if !strings.Contains(csv, "交通,乙,23.45") {
+		t.Fatalf("pending 发票的明细行丢失了:\n%s", csv)
 	}
 	mdData, _ := os.ReadFile(mdPath)
-	if !strings.Contains(string(mdData), "合计金额 **123.45**") {
-		t.Fatalf("md total missing: %s", mdData)
+	if !strings.Contains(string(mdData), "合计金额 **100.00**") {
+		t.Fatalf("md 合计应为 100.00，实际:\n%s", mdData)
 	}
 }
 
