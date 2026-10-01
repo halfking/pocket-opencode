@@ -11,6 +11,7 @@ package email
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -32,21 +33,34 @@ type LedgerPublisher interface {
 //
 // 合计单独占一行（而不是只在文字里提一句），这样对账时能直接在表里排序/求和。
 // 列顺序与 WriteInvoiceSummaryDocs 的 CSV 表头保持一致，方便两处对照。
+//
+// 合计用**整数分**累加而不是裸 `total += inv.Amount`。实测（2026-10-01）：
+// 100 张 0.07 的发票，float64 累加得 7.00000000000000888178，
+// json.Marshal 后以字面量 `7.000000000000009` 写进飞书表格——
+// 金额是财务数据，表格里出现这种数字就是错账。整数分累加后
+// `float64(cents)/100` 的最短表示恰好是 `7`。
 func LedgerRows(invs []Invoice) (rows [][]any, total float64) {
 	rows = make([][]any, 0, len(invs)+2)
 	rows = append(rows, []any{
 		"费用类型", "对方单位", "金额", "币种", "发票号", "开票日期", "状态", "文件名", "来源邮件",
 	})
+	var cents int64
 	for _, inv := range invs {
-		total += inv.Amount
+		// 四舍五入到分再累加：发票金额本身是两位小数，
+		// 但解析器可能产出 126.005 这类值，直接转 int64 会截断。
+		cents += int64(math.Round(inv.Amount * 100))
 		rows = append(rows, []any{
-			inv.Category, inv.Seller, inv.Amount, currencyOrDefault(inv.Currency),
+			inv.Category, inv.Seller, round2(inv.Amount), currencyOrDefault(inv.Currency),
 			inv.InvoiceNo, inv.InvoiceDate, inv.Status, inv.FileName, inv.Subject,
 		})
 	}
+	total = round2(float64(cents) / 100)
 	rows = append(rows, []any{"合计", "", total, "", "", "", "", fmt.Sprintf("共 %d 张", len(invs)), ""})
 	return rows, total
 }
+
+// round2 把金额规整到分（2 位小数），消除二进制浮点的表示误差。
+func round2(v float64) float64 { return math.Round(v*100) / 100 }
 
 func currencyOrDefault(c string) string {
 	if c == "" {

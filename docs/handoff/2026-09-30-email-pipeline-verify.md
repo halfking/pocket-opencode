@@ -1224,3 +1224,83 @@ if f.Seller != "" {
   本轮所有发票实证（126.00 / 328.50 / 454.50）都来自 PDF 附件，
   没拿到过真实 XML 附件。真实 XML 的标签组合可能还有本文未覆盖的写法。
 - `FileSource=xml-render` 这条重渲染链路端到端未跑（需要真实 XML 附件）。
+
+---
+
+## §7ac 需求 3「汇总金额」的浮点精度缺陷（2026-10-01）
+
+### 起因
+
+需求原文：「需要整理一个列表，记录必要信息并**汇总金额**」。
+`ledger.go` 是这条的实现（写飞书电子表格），但金额是财务数据，
+值得实测累加精度——浮点加法是经典出错点。
+
+### 实测证据（不靠推断）
+
+用探针复刻 `LedgerRows` 的累加：
+
+```
+100 张 0.07 -> float64 累加 = 7.00000000000000888178
+0.1 x 10                        = 0.99999999999999988898
+126.00 + 328.50                 = 454.5        （这两张恰好没有误差）
+```
+
+关键的一步是**看它实际发出去什么**。金额经 `json.Marshal` 后原样
+PUT 给飞书 `/open-apis/sheets/v2/spreadsheets/{token}/values`：
+
+```json
+{"values":[["合计","",7.000000000000009,"","","","","共 100 张",""]]}
+```
+
+也就是说**共享台账的合计格里会直接显示 `7.000000000000009`**。
+这不是内部精度问题，是用户能在表格里看到的错账。
+
+### 修复
+
+`ledger.go` 改用**整数分累加**：
+
+```go
+var cents int64
+for _, inv := range invs {
+    cents += int64(math.Round(inv.Amount * 100))   // 四舍五入到分再累加
+    rows = append(rows, []any{ ..., round2(inv.Amount), ... })  // 明细行同样规整
+}
+total = round2(float64(cents) / 100)
+```
+
+新增 `round2(v) = math.Round(v*100)/100`。整数分累加后
+`float64(cents)/100` 的最短表示恰好是 `7`（而非 `7.000000000000009`）。
+
+明细行也一并 `round2`：解析器可能给出 `126.005` 这类三位小数值
+（§7ab 的金额清洗链路就接受任意精度输入），不规整会直接混进金额列。
+
+### 负控对照（3 例转红）
+
+改回 `total += inv.Amount` + 明细不 round2：
+
+```
+--- FAIL: TestLedgerRows_TotalIsExactInJSON
+--- FAIL: TestLedgerRows_DetailAmountRoundedToCents
+    detail amount must be rounded to cents, got [...,126.005,...]
+--- FAIL: TestLedgerRows_RealInvoiceTotals/mixed_decimals
+```
+
+第二条的报错原文把缺陷值 `126.005` 直接打了出来。已还原。
+
+### 证据
+
+- `ledger_sum_test.go` 4 个顶层用例（含 4 个子用例）
+- `ledger.go`：`LedgerRows` 累加逻辑 + 新增 `round2`
+- `go build ./...` 通过；`go test ./internal/email/ -count=1` → `ok 4.496s`（清缓存后）
+
+### 过程中的一处自身错误
+
+改 `LedgerRows` 时多留了一个 `}`，`go vet` 报
+`ledger.go:64:1: expected declaration, found '}'`，构建失败。已删。
+
+### 未覆盖的相邻风险（本轮未动）
+
+- `BuildInvoiceSummaryDocs` 写的**本地 CSV/MD** 走的是另一条金额格式化路径，
+  本轮没查它是否有同样的浮点问题。
+- 多币种混合时 `total` 把不同币种直接相加（USD + CNY），语义上不成立。
+  需求没提多币种，属产品决策，未擅自改。
