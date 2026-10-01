@@ -349,7 +349,11 @@ async function onTest() {
         Object.assign(original, cfg, { models: cfg.models ?? [], preferredModels: cfg.preferredModels ?? [] })
         if ((cfg.models ?? []).length > 0) catalogModels.value = cfg.models ?? []
         if ((r.models ?? []).length > 0) catalogModels.value = r.models ?? catalogModels.value
-      } catch {}
+      } catch {
+        // 连通性上面已经测通了（成功状态已设）。这里的 getGatewayConfig 只是
+        // 刷新本地快照，失败不影响已得出的结论，故静默。
+        // 护栏：src/__tests__/silent-catch-must-explain-itself.test.mjs
+      }
     } else {
       setStatus('error', `✗ ${apiError(r, 'errors.gatewayUnreachable')}`, 0)
     }
