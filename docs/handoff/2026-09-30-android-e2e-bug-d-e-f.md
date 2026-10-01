@@ -6279,3 +6279,177 @@ WebView 被系统弹窗盖住——不是 App 崩（logcat 无 ANR/FATAL），�
 §4.58 里「未鉴权返回 401 不能证明路由存在」的结论仍然成立，
 但现在知道了它为什么容易被混淆：**UI 有页面、API 没有对应端点**。
 
+
+#### 4.65.0 起点：§4.64.3 那个「未确认」的观察，这次分清了 —— 而且真相比预想严重
+
+§4.64.3 留了个尾巴：「录音指示器疑似不消失，连续 16 条路由都是 `录音中 00:01`
+且计数冻住」，当时明确写了**没分清**「真的没停」还是「DOM 陈旧」，并要求下一轮专项验。
+本节把它结掉。
+
+```
+scripts/diag-recording-state.mjs  → 指示条在，文本「会议录音中 05:15 1 s」，8s×3 不动
+```
+
+第一次读数就自相矛盾：同一个 `.rec-pill` 上，`.rec-clock` 显示 `05:15`（=315s）
+而 `.rec-secs` 显示 `1 s`。两者都由同一个 `elapsedMs` 推导，**不可能同时成立**。
+这个矛盾是本节的关键线索——它说明不是「一个时钟停了」，而是**两个读数各自停在了不同的机制上**：
+
+| 读数 | 渲染机制 | 依赖 |
+|---|---|---|
+| `.rec-clock` | 纯 computed 文本 | 200ms `setInterval`（值取 `Date.now() - startTime`，永远是对的，只是刷新频率受节流） |
+| `.rec-secs` | `AnimatedNumber` | `useCountUp` 的 `requestAnimationFrame`（页面不可见时**完全停摆**，停在最后一帧） |
+
+第三种解释「暂停导致停表」被**代码排除**：`isPaused` 在全代码库**从未被赋值**
+（只有 `recordingRuntime.ts:114` 声明、`:248` 读取），所以那条分支恒为假。
+
+于是只剩「页面被节流」与「timer 被 clear」两种。写 `scripts/diag-page-heartbeat.mjs`
+直接测页内心跳来分辨（满速基线：setInterval≈5/s、rAF≈60/s）。
+
+**第一次跑挂了**：`dumpsys window` 把设备 window 服务拖死，且 WebSocket `open`
+没有超时兜底，整条探针永久挂起。改成只用 `dumpsys power` + 给所有 adb/fetch/open
+加超时后重跑，得到：
+
+```
+实耗 2029ms：setInterval(200ms) 触发 10 次（4.93/s，满速≈5）
+           requestAnimationFrame 122 帧（60.13/s，满速≈60）
+{"vis":"visible","hasFocus":true}
+```
+
+满速，页面在前台——**节流假设被否证**。但此时 `.rec-clock`/`.rec-secs` 都查不到了：
+录音已经停了（上一轮点过停止按钮，只是当时 CDP 被掐断没回读到值）。
+
+「CDP 全 TIMEOUT」这个老症状的真凶也一并查清了：**`.asr.AsrRemovalNotice`
+把前台抢走了**。`topResumedActivity` 直接指认：
+
+```
+topResumedActivity=ActivityRecord{108829f u0 com.xiaomi.mibrain.speech/.asr.AsrRemovalNotice t567}
+```
+
+截屏坐实：屏幕上是 MIUI「系统语音引擎」首次授权页，索要**「录制音频（用于获取语音指令）」**，
+外加一层「语音搜索功能下线」温馨提示。我们的 App 被压在下面，`vis=hidden`，
+WebView 被节流 → 指示条冻在最后一帧。App 进程 CPU 0.0%、无 ANR、无 FATAL——
+不是崩溃，是被挡在后面。
+
+**麦克风有没有泄漏？** 这是「真的没停」那一支必须验的：
+```
+dumpsys activity services com.kaixuan.opencode.pocket
+  → 只有 WebView 的 SandboxedProcessService0，无前台录音服务
+dumpsys media.audio_flinger
+  → Input thread AudioIn_136, type 3 (RECORD): No active record clients
+```
+⇒ **没有麦克风泄漏**，录音收得干净。「电量与隐私问题」这个担忧不成立。
+
+#### 4.65.1 但真凶是我们自己的代码：BUG-AU（P0）
+
+把「系统对话框抢焦点」当作外生污染写掉是不行的。做了受控实验
+（`scripts/diag-tts-dialog.mjs`）——**先采基线，再触发**，否则无法区分
+「录音触发的」与「本来就有的」：
+
+```
+=== 对照基线（未开始录音）===
+  [基线1] 前台=本应用  vis=visible focus=true 指示条=false
+  [基线2] 前台=本应用  vis=visible focus=true 指示条=false
+  [基线3] 前台=本应用  vis=visible focus=true 指示条=false
+  基线被抢焦点 0/3 次
+
+=== 实验：跳转 #/meetings/new 开始录音 ===
+  [录音1..8] 前台=⚠️ com.xiaomi.mibrain.speech  vis=hidden
+  开始录音后被系统对话框抢焦点：8/8 次
+```
+
+因果链完整闭合，每一环都指向我们的代码：
+
+```
+用户点「开始录音」
+  → recordingRuntime.start() 末尾 fire-and-forget 调
+    voicePrompt().announceSilenced('start', micTrack)      // recordingRuntime.ts:254
+  → speakNativeText() → TextToSpeech.speak()               // 需求原文：「录音时要播一段语音」
+  → MIUI 系统 TTS 引擎初始化 → 拉起授权页（索要录制音频）并抢走前台
+  → 本页 visibilityState = hidden
+  → WebView 被节流：rAF 停摆、setInterval 钳到 ~1/min
+  → 全局录音指示条的时钟冻住
+```
+
+根因与 BUG-AT（密码箱）**是同一类错误**：`detectVoicePromptSupport()` 只检查
+**Capacitor 插件是否注册**，就断言「可用（设备原生语音引擎）」。插件注册 ≠
+底层系统引擎就绪，更 ≠ 调用它不会反过来伤害主流程。
+
+**严重程度实测**：写 `scripts/diag-tts-retrigger.mjs` 构造「不该红的场景」——
+先手动关掉授权页（模拟用户已同意），再录一次：
+
+```
+[第1..6次] 前台=⚠️ com.xiaomi.mibrain.speech  vis=hidden
+授权页关闭后再录音，被抢前台 6/6 次
+```
+
+⇒ **不是一次性首启体验，是每次录音都被劫持**。会议录音这个主流程在 MIUI 上
+被系统 UI 反复打断，用户既看不到录音界面也停不下，而被抢的这一刻
+录音已经在跑了（页面在后台、时钟冻着）。
+
+#### 4.65.2 修复：自愈降级——让位给录音，而不是禁用功能
+
+需求是「录音时播一段语音」，但**录音本身绝不能被打断**是更高阶的要求；
+播报是锦上添花。所以不是「关掉 TTS 功能」，而是**一旦发现它会破坏录音，
+就本机永久让位**，并把结论持久化。
+
+判据用**播报前后的页面可见性差**，刻意**不用设备/ROM 白名单**：白名单要人工维护、
+换个 ROM 就失效；可见性是系统给的客观事实，跨设备通用。
+
+- `recording-voice-prompt.ts`：`VoicePromptDeps` 新增可选
+  `readVisibility()` 与 `onForegroundHijack()`（缺省 `readVisibility` 视为
+  始终可见 ⇒ 纯 Web/无 DOM 环境不做降级，安全）；新增 `foregroundHijacked`
+  状态、`hasForegroundHijack()`、`restoreForegroundHijack()`；
+  `plan()` 在已降级时直接返回 null（彻底闭嘴）；`speakSafely()` 播报前后比对可见性。
+- `recordingRuntime.ts`：传入 `readVisibility`（读 `document.visibilityState`）、
+  `onForegroundHijack`（写 localStorage 键 `openpocket.voicePrompt.hijacked`），
+  并在 `voicePrompt()` 构造后恢复上次结论——**重启后不该再被同一个弹窗打断**。
+
+降级路径自身的异常被吞掉：持久化失败（无痕模式等）不能让录音失败。
+
+单测 6 条（`recording-voice-prompt.test.mjs`），**两个方向都覆盖**：
+- 该降级的降级：visible→hidden 判定为劫持、之后不再播报、回调被调一次、
+  `restoreForegroundHijack()` 能恢复、回调抛错时降级结论仍生效；
+- **不该降级的绝不降级**：可见性不变时播报照常工作、播报前本来就是后台
+  （用户自己切走了）不算引擎的锅、runtime 侧确实接上了可见性读取与持久化键。
+
+**负控**（绿灯不算数，必须证明判据能红）：把 `detectForegroundHijack()` 首行
+临时置空后重跑——
+
+```
+not ok 1 - 播报把页面从 visible 打成 hidden → 判定为劫持，之后不再播报
+not ok 5 - 降级路径自身抛错也不该影响录音
+# pass 26  # fail 2
+```
+
+恰好 2 条转红，而「不该降级」那几条仍然绿 ⇒ 判据有区分能力，不是恒真断言。
+恢复实现后 **28/28 全绿**。
+
+#### 4.65.3 本轮自查：上一轮我的归因是错的
+
+必须写下来：**§4.64.3 那个「未确认」的观察，我当时倾向于记成「外部污染
+（小爱同学抢焦点），不是产品缺陷」——这个结论是错的。**
+真凶链路的第一环是我们自己的 TTS 调用。教训：
+
+1. 「某个系统对话框盖住了我们的 App」**不等于**「这个对话框是外生的」。
+   盖住我们的东西可能是我们自己招来的。必须做**带基线的受控实验**
+   （未触发 0/N vs 触发后 M/N），不能凭「它属于 com.xiaomi.mibrain.speech」
+   就认定是系统自己的事。
+2. 「它只出现一次」和「它每次都出现」严重程度差一个量级，必须专门构造
+   「已经出现过一次」的对照场景再测一遍——本例正是靠这一步从「首启体验」
+   升格为 P0。
+3. CDP 探针全 TIMEOUT 这个老症状，此前记为「小爱同学抢焦点导致」，
+   本轮证明它和 BUG-AU 是**同一条因果链**的两个断面，不是两件事。
+
+#### 4.65.4 工具坑（本轮新增）
+
+- **`dumpsys window` 会把设备 window 服务拖死**（`Broken pipe` / 永久挂起），
+  拿焦点信息请改用 `dumpsys activity activities` 的 `topResumedActivity`，
+  辅以 `dumpsys power`；**别在探针里放无超时兜底的 await**（WebSocket `open`、
+  `fetch`），否则一条挂起就带走整条探针。
+- **PowerShell 的 `>` 会把 PNG 写成乱码**（`screencap -p > file` 实测损坏）。
+  二进制一律走「设备端落盘 + `adb pull`」。
+- **`adb shell` 的参数里带 `|` 会被远端 sh 当成管道**，正则里的 `|` 会被拆成
+  两个文件名而报 `inaccessible or not found`。整段取回、Node 里过滤最省事。
+- **uiautomator dump 抓不到 MIUI 的系统浮层**（dump 出来是 VPN App 的界面），
+  系统授权页只能用 `screencap` + 已知坐标点。
+
