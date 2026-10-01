@@ -103,6 +103,28 @@ A4 3x3     count=1 skipped=0  invoices-a4-3x3-20261001-181824.pdf  157,059 bytes
 - `ids` **必填**，省略同样 400（`ids required`）；
 - 该端点返回 JSON（含 `url`），PDF 要再 `GET <url>` 下载，不是直接返回 PDF。
 
+### 2.5 通知中心 53 条 email.important 里的「重复标题」不是重复提醒
+
+我一度判定这是缺陷（同一封邮件被提醒多次），**已排除**。判据：
+
+```
+通知 53 条 / 唯一标题 46
+「重要邮件：您的额度即将用尽」×4 → created_at 全部 = 04:04:12（同一秒）
+「重要邮件：生产环境变更」×3   → 01:40:28, 01:40:28, 23:30:59（跨轮）
+```
+
+同一封邮件不可能在**同一秒内**被派发 4 次（`notifyImportant` 是 for 循环逐封发，
+一封一次）。所以那 4 条是**主题相同的 4 封不同邮件**（信用卡日汇总、额度告警
+这类周期性通知本就同主题）。跨轮的那 3 条更是分属不同时间的不同邮件。
+
+去重逻辑本身也是对的，已核源码：
+- `ListEmailsSince` 一次 query 同时取 `emails` 与 `notified_at`，两个切片**严格对齐**
+  （`store_pipeline.go:64`），`splitReminderCandidates` 按下标配对成立；
+- `MarkEmailsNotified(ids, now)` 在 `notifyImportant` 末尾统一回写。
+
+> **教训**：看到「同一个标题出现 N 次」不要直接判重复推送。
+> **先看 created_at 是否相同** —— 同秒 = 不同邮件，跨秒才可能是重复。
+
 ## 3. 仍然卡住：adb 会话 offline（未完成）
 
 **现象**：`adb connect 192.168.31.19:5555` 返回 `already connected`，
@@ -126,6 +148,53 @@ $adb='C:\Users\86133\AppData\Local\Android\platform-tools\adb.exe'
 `192.168.31.20:18099` 从局域网**实测可达**。App 侧改用
 `http://192.168.31.20:18099` 即可直连后端，不需要 adb reverse。
 但**装机、截图、UI 自动化仍必须 adb**，所以它终究要恢复。
+
+一键脚本（设备 online 时直接走完连设备 → reverse → 装 APK → 校验包名与后端）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-apk-to-device.ps1
+```
+
+## 3b. 另外两项卡在**外部凭证**，不是实现缺失
+
+这两项我已确认链路存在、缺的只是配置，因此**无法自行验证**，需要你提供。
+
+### 3b.1 飞书推送（目标：发票发到飞书 / 共享台账）
+
+需要：
+
+| 环境变量 | 用途 |
+|---|---|
+| `POCKET_FEISHU_APP_ID` | 飞书应用 |
+| `POCKET_FEISHU_APP_SECRET` | 同上 |
+| `POCKET_FEISHU_INVOICE_CHAT_ID` | 发票推送到哪个群 |
+| `POCKET_FEISHU_INVOICE_FOLDER_TOKEN` | 可选：共享台账建在哪个云空间目录 |
+
+本机**完全没有**这些凭证，已查：环境变量、`wt3/scripts/start-local-backend.ps1`、
+以及 seed 脚本依赖的 `~/workspace/ai-native-tools/envs`（该 loader 路径在
+Windows 下解析不到 `~/workspace`，也不存在）。
+
+> 电子表格链路（建表/写单元格/读回）此前已在真实租户验证过（handoff §8 记
+> `code=0`）。**未验证的只剩「发送消息到指定群」**，因为它需要 CHAT_ID。
+> 应用还需开通「查看、评论、编辑和管理电子表格」权限，否则报 1310213。
+
+### 3b.2 重要邮件提醒的 AI 分类（目标：对其它重要邮件进行提醒）
+
+提醒链路**本身是通的**：通知中心有 53 条 `email.important`，真实数据可查。
+但触发条件是 `importance='high'`，而 `importance` 由 kxmemory 写入。启动日志明写：
+
+```
+INFO: POCKET_KXMEMORY_BASE_URL not set; AI classification/SSOT disabled
+Email scheduler started (fetch_enabled=true, kxmemory=false, ...)
+```
+
+本机没有 kxmemory 服务（查过：只有两个 `local-asr-server.py` 进程在 18900，
+不是它）。所以需要 `POCKET_KXMEMORY_BASE_URL` 指向一个可用的 kxmemory 实例。
+
+> 不配的后果可量化：最近一轮流水线 `remindersScanned=155`、
+> `remindersUnclassified=5`、`remindersSent=0` —— 报告上的 0 分不清
+> 「这批邮件确实不重要」和「邮件根本没被分类过」。这正是 handoff §7k 补
+> `remindersUnclassified` 计数要解决的问题，现在它把缺口如实暴露出来了。
 
 ## 4. 恢复后要做的事
 
