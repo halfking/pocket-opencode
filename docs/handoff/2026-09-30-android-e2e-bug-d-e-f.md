@@ -6579,3 +6579,116 @@ private startLiveCaption() {
 在 CDP 里直接解锁），确认本地库真的解开后，再跑
 `scripts/verify-au-fix2.mjs`——判据是**降级键=1 的前提下 0/6 被抢**。
 
+
+#### 4.67 外部审计的四条指控：逐条用证据回应（两条我认，两条审计方不成立）
+
+本轮收到一份外部审计结论。它有对的地方也有错的地方，**两边都按证据记**，
+不因为「是自己写的」就护短，也不因为「是审计」就照单全收。
+
+**指控 1（高）：「真机 Maestro 从未成功执行一次（零安装包、零运行产物）」——不成立。**
+写 `scripts/audit-maestro-runs.mjs` 扫 `~/.maestro/tests` 全部产物（不抽样）：
+
+```
+有 maestro.log 的运行: 89
+  判定通过（无 CommandFailed）: 34
+  判定失败（含 CommandFailed）: 55
+  含闪卡判据的运行: 24（通过 3 / 失败 21）
+  含笔记判据的运行: 28（通过 5 / 失败 23）
+```
+
+产物里有逐步截图（`step-008-tapOnElement-解锁.png` 等），是真跑出来的。
+**审计方的判据大概只看了本轮会话目录，没看历史产物。**
+
+**指控 2（高）：「闪卡入口缺陷只记录未修」——该缺陷已修，但我要认另一笔账。**
+「新建卡组跳到卡片编辑页」是 **BUG-K**，早已修：列表页在零卡组时内联建组表单
+（`data-testid=deck-create-form`）、有卡组时有 `deck-create-toggle` 展开入口
+（`FlashcardListView.vue`），`createDeck` 在 services/stores 都在。
+
+但审计顺带逼出一件我该早做的事：**闪卡 flow 24 次里失败了 21 次**，
+通过的那 3 次里只有最后一次是**当前 APK**。此前 §4.58 说的「连绿两次」
+是 2026-10-01 08:19/08:21，之后 BUG-AT、BUG-AU 又各重建过一次 APK，
+**当前版本此前从未回归过**。本轮补上了（见 §4.67.2）。
+
+**指控 3（低）：「`/api/marketplace/agents` 返回 401，404 无法证实」——审计方对，404 现已坐实。**
+401 确实什么都证明不了（鉴权中间件先跑）。补上带 token 的探测，并加一条对照路由：
+
+```
+/api/marketplace/agents              -> 404
+/api/marketplace/packages            -> 200
+/api/marketplace/nodes               -> 404
+/api/definitely-not-a-route-xyz      -> 404   ← 对照组
+```
+
+⇒ 404 成立：前端有 `/marketplace/agents` 页面，后端**没有**该端点。
+顺带更正 §4.64.4 的一处错：我当时写「只有 packages / releases / nodes 子树」，
+**nodes 同样是 404**。
+
+**指控 4（中）：「写路径、https 回归、Keystore 未验，打通所有功能点不成立」——我认。**
+这确实没做完，不辩解。见 §4.68 待办。
+
+#### 4.67.1 顺手修了一个让所有真机结果都不可信的假绿
+
+上面闪卡 21 次失败，追下去发现根子在 `.maestro/_login.yaml`，而它**一直在撒谎**。
+
+**假绿长什么样**：解锁页是**渲染在 App 外壳里**的，而该文件原来只以
+`visible: "打开菜单"` 收尾 —— 外壳的「打开菜单」在解锁页上同样可见，
+所以 `extendedWaitUntil` 会被立刻满足：**主密码根本没输进去、库压根没解开，
+flow 也全程 COMPLETED**。实测到过多次「解锁断言全绿，几秒后 App 又被守卫弹回
+`#/login?returnTo=…&unlock=1`，下游全部跟着假绿」。
+本轮 §4.66 记的「verify-au-fix2 的 P3 硬前置一直不满足」，根子就在这里。
+
+还有第二层：解锁页只有在**导航到受保护路由**时才会被守卫渲染出来。
+App 冷启动停在 `#/ai` 时库可能是锁着的，但页面上根本没有「解锁本地数据」字样 ⇒
+`runFlow when` 条件不成立 ⇒ **整个解锁分支被 SKIPPIPPED** ⇒ 带着一把没开的锁继续跑。
+
+三处修改：
+
+1. 开头先 `tapOn 会议`（受保护路由，`optional: true`）把守卫和解锁页逼出来，
+   然后等**四种状态之一**（外壳 / 解锁页 / 登录页 / 切换中）——
+   不能只等外壳，被弹到解锁页时外壳元素本来就不在；
+2. 解锁分支里输入框改**按坐标点**（`50%,59%`，实测 720x1640 截屏），
+   不再用 `tapOn "主密码"`（label 点不一定给 input 焦点）；
+3. 收尾加**硬判据** `assertNotVisible: 解锁本地数据 / 输入用户名`，
+   并在点「解锁」前先 `assertVisible: {text: 解锁, enabled: true}`
+   —— 没有这条，合成 `inputText` 没落进 WebView 输入框、按钮恒 disabled、
+   tap 是空操作，flow 却一路 COMPLETED。
+
+**修复的效力是被证明的，不是声称的**：改完之后解锁分支**第一次真的执行了**
+（此前一直被 SKIPPED），并因此暴露出「点解锁后页面不动」——
+这正是旧版被假绿吞掉的真问题。
+
+#### 4.67.2 当前 APK 上闪卡写路径全绿（BUG-K/U/O/AS 一起验）
+
+前置 `node scripts/flashcards-test-fixture.mjs`（这次成功清掉 1 卡组/1 笔记/1 卡片），
+然后：
+
+```
+Run _login.yaml... COMPLETED          ← 带新增硬判据
+Assert that "暂无卡组.*" is visible... COMPLETED
+Assert that "新建卡组|New deck", disabled is visible... COMPLETED
+Tap on point (36%,26%) / Input text 回归卡组...
+Assert that "新建卡组|New deck", enabled is visible... COMPLETED
+Press Enter key... COMPLETED
+Assert that "暂无卡组.*" is not visible... COMPLETED
+Assert that ".*今日待复习.*" is visible... COMPLETED
+Assert that ".*回归正面.*" is visible... COMPLETED
+Assert that ".*今日待复习 1 张.*" is visible... COMPLETED   ×2
+Assert that ".*开始复习.*", enabled is visible... COMPLETED
+```
+
+**「今日待复习 1 张」连续两条断言**是 BUG-AS（到期时钟响应式）的真机判据：
+它要求不重新挂载也能从 0 变 1（靠 30s tick），修前是恒 0。
+**「开始复习 enabled」** 同时覆盖 BUG-O（卡片拉不回客户端导致 dueCount 恒 0）。
+**「新建卡组 disabled → 输入 → enabled」** 是 BUG-K 的判据（没填名字不许提交）。
+
+一次跑完，同时验掉 BUG-K / U / O / AS 四条，**且是在含 BUG-AT、BUG-AU 的当前 APK 上**。
+
+#### 4.67.3 教训
+
+- **判据的「成功」条件和「失败」条件一样重要**。`打开菜单` 只防「没进 App」，
+  不防「没解锁」——这两件事长得极像，混用就会把失败读成通过。
+  同 `verify-au-fix2` 的 P3：宁可拒绝出结论，也不要拿污染的读数下判断。
+- **别人的审计结论要用数据接，不能用态度接**。指控 1/3 靠一次全量扫描 +
+  一条对照路由就定了性；指控 2 逼出了我自己该做而没做的当前 APK 回归。
+  两边都照证据改，不预设立场。
+

@@ -13,7 +13,7 @@
 #
 # 「已进入 App」的标志统一用 **打开菜单**：它是已登录 App 外壳 header 上的
 # aria-label，登录页与解锁页都没有。**不要用「全部正常」**——那是 TasksView
-# 分诊条的标签，只在没有待处理任务时才出现，且 <380px 窄屏下被 CSS 隐藏
+# 的分诊条的标签，只在没有待处理任务时才出现，且 <380px 窄屏下被 CSS 隐藏
 # （TasksView.vue:1443），设备上留一条待处理任务就会假失败。踩过。
 #
 # 口令全部从环境变量读，本文件里没有任何明文：
@@ -32,18 +32,52 @@ appId: com.kaixuan.opencode.pocket
     visible: "打开菜单"
     timeout: 60000
 
+# ⚠️ 必须**先把锁定守卫逼出来**，否则 B 分支永远轮不到执行。
+#
+# 踩过的坑（2026-10-01，代价是一整轮假绿）：重建安装后 App 冷启动停在 #/ai，
+# 外壳可见、token 还在，但本地加密库其实**是锁着的**。而解锁页
+# 「解锁本地数据」只有在**导航到受保护路由**时才会被守卫渲染出来——
+# #/ai 不是受保护路由，于是页面上根本没有那句字，下面的 runFlow when
+# 条件不成立 ⇒ 整个解锁分支被 SKIPPIPPED ⇒ flow 带着一把没开的锁继续跑，
+# 下游每一步都失败，看起来像产品坏了。
+#
+# 办法：先点一次底部导航的「会议」（受保护路由），把守卫和解锁页逼出来。
+# 已解锁时这一步只是普通导航，无副作用；optional 保证点不到时不失败。
+- tapOn:
+    text: "会议"
+    optional: true
+# 探完受保护路由后可能落在四种状态之一：已解锁的 App 外壳 / 解锁页 / 登录页 /
+# 还在切换中。不能只等外壳 —— 被守卫弹到解锁页时外壳的「打开菜单」本来就不在。
+- extendedWaitUntil:
+    visible: "打开菜单|主导航|解锁本地数据|输入用户名"
+    timeout: 20000
+
 # ---- B. 已登录但本地库锁定：只输主密码 ----
 - runFlow:
     when:
       visible: "解锁本地数据"
     commands:
-      - tapOn: "主密码"
+      # ⚠️ 必须按坐标点输入框，不能 tapOn "主密码"。
+      #    「主密码」是 label，点它不一定把焦点交给 input；实测点完 input 仍为空，
+      #    「解锁」保持 disabled，于是后面的 tapOn 是个空操作，解锁页纹丝不动。
+      #    坐标来自 720x1640 实机截屏：input 中心约 (360,967) → 50%,59%。
+      - tapOn: { point: "50%,59%" }
       - inputText: ${POCKET_MASTER}
       - hideKeyboard
-      - tapOn: "解锁"
+      # ⚠️ 这条断言是本分支的关键：没有它，「解锁」点不动会被当成
+      #    「点了但页面没跳」而去怪 App。实测踩过 —— 合成 inputText 没落进
+      #    WebView 输入框，按钮恒 disabled，flow 却一路 COMPLETED。
+      #    和闪卡 flow 里「保存按钮必须随输入解禁」是同一条纪律。
       - extendedWaitUntil:
-          visible: "打开菜单"
+          visible: { text: "解锁", enabled: true }
+          timeout: 20000
+      - assertVisible: { text: "解锁", enabled: true }
+      - tapOn: { text: "解锁", enabled: true }
+      - extendedWaitUntil:
+          notVisible: "解锁本地数据"
           timeout: 60000
+      - assertNotVisible: "解锁本地数据"
+      - assertNotVisible: "输入用户名"
       - assertVisible: "打开菜单"
 
 # ---- C. 完全未登录：账号密码登录 ----
@@ -61,16 +95,12 @@ appId: com.kaixuan.opencode.pocket
       - extendedWaitUntil:
           visible: "打开菜单"
           timeout: 60000
+      - assertNotVisible: "输入用户名"
       - assertVisible: "打开菜单"
 
 # ---- 兜底：三种都没命中说明没落在 App 里，直接报出来 ----
 - assertVisible: "打开菜单"
 
-# 必须等到**页面结构**渲染完，不能停在「外壳可见」就往下走。
-# 「打开菜单」是 App 外壳 header 的 aria-label，路由还在恢复时它就已经在了；
-# 紧接着 tap 底部导航会被吞掉——Maestro 报 COMPLETED 但页面不动，
-# 而且因为 tap 坐标点击没有结果校验，所以看起来像成功。踩过两次，别删这段。
-#
 # ⚠️ 这里等的是 **「主导航」**（底部导航容器的 aria-label），不是「+ 新任务」。
 #    「+ 新任务」「运行中 6」这些是**数据依赖**的元素：列表重渲染时抓到的快照里
 #    可能正好没有它们（实测过一次，页面数据都到了、按钮却不在快照里），
@@ -80,3 +110,17 @@ appId: com.kaixuan.opencode.pocket
     visible: "主导航"
     timeout: 30000
 - assertVisible: "主导航"
+
+# ⚠️⚠️ 收尾的**硬判据**：解锁页与登录页必须都不在了。
+#
+# 这是本文件最关键的一行，删掉它整套真机结果都不可信。
+# 「打开菜单」是 App 外壳 header 的 aria-label，而**解锁页是渲染在 App 外壳里的**
+# —— 外壳的「打开菜单」在解锁页上同样可见。所以只拿它收尾的话，
+# 主密码输错、库根本没解开，flow 也会全程 COMPLETED。
+# 实测到过多次：解锁断言全绿，几秒后 App 又被守卫弹回
+# #/login?returnTo=…&unlock=1，下游 flow 全部跟着假绿。
+# （证据：2026-10-01 凌晨 ~4 次尝试，scripts/verify-au-fix2.mjs 的
+#   P3 硬前置因此一直不满足 —— 那个判据拒绝出结论是对的，
+#   否则就会拿着一份「被抢 0/6」的假读数宣布修好了。）
+- assertNotVisible: "解锁本地数据"
+- assertNotVisible: "输入用户名"
