@@ -28,31 +28,14 @@ export interface SyncReport {
   error?: string
 }
 
-export interface AccountStamp {
-  id: string
-  emailAddress: string
-  updatedAt: number
-}
-
-export function planAccountSync(local: AccountStamp[], remote: AccountStamp[]): {
-  pullIds: string[]
-  pushIds: string[]
-} {
-  const localById = new Map(local.map((a) => [a.id, a]))
-  const remoteById = new Map(remote.map((a) => [a.id, a]))
-  const remoteByEmail = new Map(remote.map((a) => [a.emailAddress.toLowerCase(), a]))
-  const pullIds: string[] = []
-  const pushIds: string[] = []
-  for (const r of remote) {
-    const l = localById.get(r.id)
-    if (!l || r.updatedAt > l.updatedAt) pullIds.push(r.id)
-  }
-  for (const l of local) {
-    const r = remoteById.get(l.id) ?? remoteByEmail.get(l.emailAddress.toLowerCase())
-    if (r && l.updatedAt > r.updatedAt) pushIds.push(l.id)
-  }
-  return { pullIds, pushIds }
-}
+// LWW 判定与 AccountStamp 类型已抽到无依赖的 account-lww.ts（见那里的说明：
+// 此前判定只在本文件内、测试却复制了一份，是假测试）。这里既 import 供本
+// 文件使用、又 export 保持既有 import 路径可用；测试则直接测 account-lww.ts。
+// 注意必须用 `import` + 单独 `export`，`export { x } from` 不会把名字引入
+// 本模块作用域（下面 syncAccountsBidirectional 还要用它）。
+import { planAccountSync, type AccountStamp } from './account-lww'
+export { planAccountSync }
+export type { AccountStamp }
 
 const emptyReport = (): SyncReport => ({
   fetched: 0, applied: 0, skipped: 0, pushed: 0, online: false,

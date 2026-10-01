@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
@@ -55,37 +56,90 @@ type sttConfigResponse struct {
 	ChannelHints map[string]string          `json:"channelHints"`
 }
 
+// sttMemSettings 是 user_settings 不可用时的进程内兜底。
+//
+// 2026-10-01 实测：pocketd 在没有 POCKET_POSTGRES_DSN 时会正常启动
+// （remote-only 模式），此时 s.userSettings == nil。若 STT 设置只落 PG，
+// 这种部署下「保存」直接 400 user settings store unavailable —— 整个语音
+// 转写功能等于不可用。所以补一份进程内存储：功能可用，重启后回到默认值
+// （这与「无 PG 部署本身就不持久」的既有事实一致，不制造虚假持久化预期）。
+type sttMemSettings struct {
+	mu   sync.Mutex
+	recs map[string]sttSettingsRecord
+}
+
+type sttSettingsRecord struct {
+	payload sttSettingsPayload
+	secret  string
+}
+
+func newSttMemSettings() *sttMemSettings {
+	return &sttMemSettings{recs: map[string]sttSettingsRecord{}}
+}
+
+func sttMemKey(userID, workspaceID string) string {
+	if userID == "" {
+		userID = "local"
+	}
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	return userID + "|" + workspaceID
+}
+
+// sttSettingsStore 返回进程内兜底存储（懒初始化，线程安全）。
+func (s *Server) sttSettingsStore() *sttMemSettings {
+	s.sttSettingsOnce.Do(func() { s.sttSettingsMem = newSttMemSettings() })
+	return s.sttSettingsMem
+}
+
 // loadSTTSettings 读取用户设置；没有记录时返回零值 + ok=false。
 func (s *Server) loadSTTSettings(userID, workspaceID string) (sttSettingsPayload, bool) {
 	var p sttSettingsPayload
-	if s == nil || s.userSettings == nil {
+	if s == nil {
 		return p, false
 	}
-	rec, err := s.userSettings.Get(userID, workspaceID, sttSettingsNamespace, sttSettingsID)
-	if err != nil || rec == nil {
+	if s.userSettings != nil {
+		rec, err := s.userSettings.Get(userID, workspaceID, sttSettingsNamespace, sttSettingsID)
+		if err != nil || rec == nil {
+			return p, false
+		}
+		if err := json.Unmarshal(rec.Payload, &p); err != nil {
+			return p, false
+		}
+		return p, true
+	}
+	mem := s.sttSettingsStore()
+	mem.mu.Lock()
+	defer mem.mu.Unlock()
+	rec, ok := mem.recs[sttMemKey(userID, workspaceID)]
+	if !ok {
 		return p, false
 	}
-	if err := json.Unmarshal(rec.Payload, &p); err != nil {
-		return p, false
-	}
-	return p, true
+	return rec.payload, true
 }
 
 // sttExternalKey 取该用户保存的外部 ASR key（密文不外泄）。
 func (s *Server) sttExternalKey(userID, workspaceID string) string {
-	if s == nil || s.userSettings == nil {
+	if s == nil {
 		return ""
 	}
-	rec, err := s.userSettings.Get(userID, workspaceID, sttSettingsNamespace, sttSettingsID)
-	if err != nil || rec == nil {
-		return ""
+	if s.userSettings != nil {
+		rec, err := s.userSettings.Get(userID, workspaceID, sttSettingsNamespace, sttSettingsID)
+		if err != nil || rec == nil {
+			return ""
+		}
+		return rec.Secret
 	}
-	return rec.Secret
+	mem := s.sttSettingsStore()
+	mem.mu.Lock()
+	defer mem.mu.Unlock()
+	return mem.recs[sttMemKey(userID, workspaceID)].secret
 }
 
 func (s *Server) saveSTTSettings(userID, workspaceID string, p sttSettingsPayload, externalKey string) error {
-	if s == nil || s.userSettings == nil {
-		return fmt.Errorf("user settings store unavailable")
+	if s == nil {
+		return fmt.Errorf("stt settings: nil server")
 	}
 	// 通道归一化 + 地址修剪，避免把脏值存进去后解析不出来。
 	p.Channel = stt.NormalizeChannel(p.Channel)
@@ -100,6 +154,20 @@ func (s *Server) saveSTTSettings(userID, workspaceID string, p sttSettingsPayloa
 		if err := validateGatewayURL(p.ExternalBaseURL); err != nil {
 			return err
 		}
+	}
+	if s.userSettings == nil {
+		mem := s.sttSettingsStore()
+		mem.mu.Lock()
+		defer mem.mu.Unlock()
+		k := sttMemKey(userID, workspaceID)
+		rec := mem.recs[k]
+		rec.payload = p
+		// 空 key = 保留原 key；显式清空走 "__clear__"（调用方转成空串 + 标记）。
+		if externalKey != "" {
+			rec.secret = externalKey
+		}
+		mem.recs[k] = rec
+		return nil
 	}
 	payload, err := json.Marshal(p)
 	if err != nil {

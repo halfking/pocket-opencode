@@ -169,6 +169,12 @@ func (s *Server) ensureInvoiceHarvester() *email.InvoiceHarvester {
 		Store:   s.emailStore,
 		Fetcher: s.emailFetcher,
 		DataDir: s.dataDir,
+		// POP3 降级路径同步来的邮件，其 UID 是位置序号而非 IMAP UID，
+		// 事后拿它去 IMAP FETCH 会取到**另一封**邮件（会下载到完全错误的
+		// 发票文件）。采集器对这些邮件改读同步时加密落盘的原文缓存。
+		// 见 email/body_cache.go 与 invoice_harvest.go 的 isPOP3SourcedEmail。
+		// crypto 为 nil 时 NewFileBodyCache 返回 nil，采集器按「无缓存」处理。
+		BodyCache: email.NewFileBodyCache(s.dataDir, s.emailCrypto),
 		XMLRenderer: func(name string, inv *email.Invoice, xmlRaw []byte) ([]byte, error) {
 			return email.RenderInvoiceXMLPDF(font, inv, xmlRaw)
 		},
@@ -217,6 +223,21 @@ func (s *Server) RunEmailPipeline(ctx context.Context) *email.PipelineReport {
 	return s.runEmailPipeline(ctx, nil)
 }
 
+// shouldDelegatePipeline 判定本轮是否委托远端编排服务（需求 6）。
+//
+// 需求 6：「这些操作可以在设备本地进行，也可以委托服务端进行，**默认放在
+// 设备本地进行**」。所以只有显式配成 server **且**给了远端 URL 才委托：
+//   - mode 为空/其它值/大小写不同/带空白 → 本地（默认）
+//   - mode=server 但 URL 为空 → 本地（配了却没法委托，落回本地而不是报错）
+//
+// 抽成纯函数是为了能脱离 Server 测这条「默认本地」契约——它原先埋在
+// runEmailPipeline 里，没有测试守护：有人把判断改成 `mode != ""` 就静默
+// 变成「默认委托」，而带邮箱权限的流水线会被 POST 到远端。
+func shouldDelegatePipeline(executionMode, serverPipelineURL string) bool {
+	mode := strings.ToLower(strings.TrimSpace(executionMode))
+	return mode == "server" && strings.TrimSpace(serverPipelineURL) != ""
+}
+
 // runEmailPipeline 是唯一真正执行流水线的地方。
 //
 // 整个函数体都在 emailPipelineMu 里：Pipeline 是单例，而定时任务与 HTTP 手动
@@ -227,8 +248,7 @@ func (s *Server) runEmailPipeline(ctx context.Context, spamOverride *bool) *emai
 	s.emailPipelineMu.Lock()
 	defer s.emailPipelineMu.Unlock()
 
-	mode := strings.ToLower(strings.TrimSpace(s.cfg.EmailExecutionMode))
-	if mode == "server" && strings.TrimSpace(s.cfg.EmailServerPipelineURL) != "" {
+	if shouldDelegatePipeline(s.cfg.EmailExecutionMode, s.cfg.EmailServerPipelineURL) {
 		return s.delegatePipeline(ctx)
 	}
 	p := s.ensurePipeline()

@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/emersion/go-imap/v2"
@@ -34,6 +36,24 @@ type Fetcher struct {
 	// 一些自签测试 IMAP server 不支持 IMAPS（端口 993）但支持 143+STARTTLS，
 	// 此选项打开后用 imapclient.DialStartTLS + InsecureSkipVerify。
 	useStartTLS bool
+	// BodyCache 为 nil 时不缓存 POP3 原文。见 body_cache.go：POP3 路径的 UID
+	// 是位置序号，事后无法用它 IMAP FETCH 回原文，所以必须在同步时存。
+	BodyCache BodyCache
+	// syncHook 直接顶替整个 Sync。仅用于测试「各账户耗时」这类时序行为
+	// （见 pipeline_concurrency_test.go）：真实 Sync 会连外部 IMAP，测不了
+	// 「一个慢账户是否拖住其它账户」。生产路径 nil，永远走真实 IMAP 逻辑。
+	syncHook func(ctx context.Context, accountID string) (int, error)
+	// inflight 记录正在同步的账户，防止同一账户被并发同步。
+	//
+	// 2026-10-01 实测：scheduler 的 pollLoop 每 60s 遍历一次，对
+	// `now - LastSyncedAt >= interval` 的账户起一个 goroutine 调 Sync，
+	// **没有互斥**。而 Sync 一旦卡住（LastSyncedAt 不更新），下一轮 tick
+	// 会再起一个 —— 实测进程里同时攒到 7 条到同一台 IMAP 服务器的
+	// Established 连接。pipeline 的第 1 步也会对同一账户再起一个。
+	//
+	// 重复同步不只是浪费连接：QQ 上 POP3 是**主路径**，重复同步等于把同一
+	// 批邮件反复拉一遍，正是 §重复副本那 47 组脏数据的来源之一。
+	inflight sync.Map // accountID -> struct{}
 }
 
 // NewFetcherWithOptions 同 NewFetcher，但允许开启证书跳过（自签 IMAPS 用）。
@@ -86,19 +106,161 @@ func (f *Fetcher) dial(addr string) (*imapclient.Client, error) {
 	return imapDialWithTimeout(addr, true, dialTimeout, nil)
 }
 
-func imapDialWithTimeout(addr string, secure bool, timeout time.Duration, tlsCfg *tls.Config) (*imapclient.Client, error) {
-	netDialer := net.Dialer{Timeout: timeout}
-	opts := &imapclient.Options{
-		Dialer: &netDialer,
-		// 给 read deadline 一个上限，防止 server 不规范致连接挂死。
+// imapIdleTimeout 单次 IMAP 读/写的**空闲**上限。
+//
+// 背景（2026-10-01 05:01~05:21 实测）：huangxutao@kxpms.cn 反复挂满 90s，
+// 进程里同时攒到 **7 条**到 120.226.165.33:993 的 Established 连接。
+// 原因是 `defer client.Close()` 只有在 Sync 返回时才执行，而 go-imap
+// 不响应 context 取消，Sync 一旦卡在某次读上就永远不返回——于是：
+// 上层 90s 放弃等待 → goroutine 继续挂着 → 连接不释放 → 下一轮又建一条。
+// 累积之后新连接越来越慢，形成正反馈。
+//
+// 为什么之前没被 deadline 兜住：`net.Dialer.Timeout` 只管**建连**，
+// 建好之后的读操作没有任何时间上限。而 `imapclient.Options` 根本没有
+// ReadTimeout/WriteTimeout 字段（只有 TLSConfig / DebugWriter /
+// UnilateralDataHandler / WordDecoder / Dialer）——所以只能自己 dial 拿到
+// net.Conn 再挂 deadline。
+//
+// 60s 的取法：必须大于单次正常 IMAP 操作（大邮件 BODY[] 实测数秒），
+// 又要小于单账户 90s 上限，这样「卡死」会先变成一条明确的超时错误，
+// Sync 能正常返回、连接被关闭、上层拿到可诊断的 err 而不是干等 90s。
+const imapIdleTimeout = 60 * time.Second
+
+// imapHardTimeout 单条 IMAP 连接的**绝对**寿命上限，不看有没有活动。
+//
+// 它兜的是 imapIdleTimeout 兜不住的那一类：连接活着、期间还有数据往来，
+// 但某条命令迟迟不返回。2026-10-01 实测 56551681@qq.com 的 imap login
+// 整整挂了 100s，空闲 deadline 一次都没触发，最后仍以 i/o timeout 收场
+// （Sync trace total 1m40.128s）。这类「活着但不干活」只有硬截止能治。
+//
+// 取 45s：实测正常单账户同步 1.0~1.4s，这里有 30 倍余量；又明显小于
+// 单账户 90s 上界，给后面的步骤留足余量。
+const imapHardTimeout = 45 * time.Second
+
+// deadlineConn 给 IMAP 连接套两道保险：滚动空闲 deadline + 绝对硬截止。
+//
+// **第一道（滚动空闲）** 只在连接上确实有数据流动时才续期，静默则到期报错。
+//
+// 这里踩过一个很典型的坑，值得记下来：**用定时器无条件续期是错的**。
+// 第一版写成 `ticker 每 idle/3 就 SetDeadline(now+idle)`，看起来正好实现
+// 「活跃则续期」，实际效果是**静默连接也被无限续命**——服务端一个字节都不发，
+// deadline 被一次次推后，Read 永远不返回。实测：SetDeadline 明确返回
+// nil（成功），而 Read 仍挂满 60s 整。所以续期条件必须是「距上次**活动**
+// 不到 idle/3」，而不是「定时器响了」。
+//
+// **第二道（绝对硬截止）** 是第一道兜不住的那一类：连接**活着、有活动，
+// 但某条命令迟迟不返回**。
+// 2026-10-01 实测 56551681@qq.com：imap login 阶段整整挂了 100s，
+// 空闲 deadline 一次都没触发（说明期间连接上有数据往来），最后仍以
+// `i/o timeout` 收场。对这类「活着但不干活」的情况，只有硬截止能兜住。
+type deadlineConn struct {
+	net.Conn
+	idle time.Duration
+	hard time.Time // 绝对截止；过了就断开，不看有没有活动
+
+	mu   sync.Mutex
+	last time.Time // 最近一次成功读/写的时间
+}
+
+func (c *deadlineConn) touch() {
+	c.mu.Lock()
+	c.last = time.Now()
+	c.mu.Unlock()
+}
+
+func (c *deadlineConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if n > 0 {
+		c.touch()
 	}
-	if tlsCfg != nil {
-		opts.TLSConfig = tlsCfg
+	return n, err
+}
+
+func (c *deadlineConn) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	if n > 0 {
+		c.touch()
+	}
+	return n, err
+}
+
+// start 启动看门狗。连接关闭后 SetDeadline 会持续返回错误，goroutine 随即
+// 自行退出，不会因为 Sync 卡死而永久泄漏。
+func (c *deadlineConn) start() {
+	c.touch()
+	_ = c.Conn.SetDeadline(time.Now().Add(c.idle))
+	go func() {
+		iv := c.idle / 3
+		if iv <= 0 {
+			return
+		}
+		t := time.NewTicker(iv)
+		defer t.Stop()
+		for range t.C {
+			now := time.Now()
+			c.mu.Lock()
+			since := now.Sub(c.last)
+			c.mu.Unlock()
+			switch {
+			case !c.hard.IsZero() && now.After(c.hard):
+				// 过了绝对截止：不管有没有活动，一律断开。
+				_ = c.Conn.SetDeadline(now.Add(-time.Second))
+			case since >= c.idle:
+				// 静默已超过上限：把 deadline 钉到过去，强制下一次读写立刻报错。
+				_ = c.Conn.SetDeadline(now.Add(-time.Second))
+			default:
+				// 最近有活动：续满。
+				_ = c.Conn.SetDeadline(now.Add(c.idle))
+			}
+		}
+	}()
+}
+
+func imapDialWithTimeout(addr string, secure bool, timeout time.Duration, tlsCfg *tls.Config) (*imapclient.Client, error) {
+	return imapDialWithIdle(addr, secure, timeout, imapIdleTimeout, imapHardTimeout, tlsCfg)
+}
+
+// imapDialWithIdle 是可注入超时参数的版本，生产走 imapDialWithTimeout。
+// 单独拆出来是为了让测试能用秒级值在真实 TCP 上复现「服务端接受连接后
+// 不响应」——生产值是几十秒，测试等不了，也没法在测试里证明这两道保险
+// 真的会让挂住的读返回。
+func imapDialWithIdle(addr string, secure bool, timeout, idle, hard time.Duration, tlsCfg *tls.Config) (*imapclient.Client, error) {
+	netDialer := net.Dialer{Timeout: timeout}
+	conn, err := netDialer.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
 	}
 	if secure {
-		return imapclient.DialTLS(addr, opts)
+		host, _, splitErr := net.SplitHostPort(addr)
+		if splitErr != nil {
+			host = addr
+		}
+		cfg := &tls.Config{ServerName: host}
+		if tlsCfg != nil {
+			cfg = tlsCfg.Clone()
+			if cfg.ServerName == "" {
+				cfg.ServerName = host
+			}
+		}
+		tconn := tls.Client(conn, cfg)
+		// 握手也要有上限：TCP 连上了但 TLS 协商卡住同样会泄漏一条连接。
+		_ = tconn.SetDeadline(time.Now().Add(timeout))
+		if err := tconn.Handshake(); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		// 握手成功后交给 deadlineConn 接管滚动 deadline。
+		_ = tconn.SetDeadline(time.Time{})
+		conn = tconn
 	}
-	return imapclient.DialInsecure(addr, opts)
+	// 必须调 start()：只构造 deadlineConn 不会设任何 deadline（net.Conn 的
+	// 零值 deadline = 永不超时），滚动刷新也就不会跑。
+	dc := &deadlineConn{Conn: conn, idle: idle}
+	if hard > 0 {
+		dc.hard = time.Now().Add(hard)
+	}
+	dc.start()
+	return imapclient.New(dc, &imapclient.Options{}), nil
 }
 
 // login 根据账户 authType 选择合适的 IMAP 鉴权机制。
@@ -298,10 +460,8 @@ func (f *Fetcher) fetchSnippetOnConnected(client *imapclient.Client, uid imap.UI
 	}
 	for _, bs := range messages[0].BodySection {
 		if len(bs.Bytes) > 0 {
-			// 2026-10-01 真机审计：原来直接取原始字节，用户在 /notifications 上
-			// 会直接看到整段 MIME（------=_Part_397111… / Content-Type: …）或字面
-			// HTML 标签。改走 DeriveSnippet：MIME 解析优先 → 剥 HTML 标签 → 按
-			// rune 截断（中文不会被劈出半个字符）。
+			// 2026-10-01 真机审计：原来直接取原始字节，用户会看到整段 MIME
+			//（--part_xxx / Content-Type: …）或字面 HTML 标签。改走 DeriveSnippet。
 			return DeriveSnippet(bs.Bytes, 500)
 		}
 	}
@@ -332,7 +492,58 @@ func sendClientID(client *imapclient.Client, emailAddress string) {
 	}
 }
 
+// ErrSyncInFlight 表示该账户已有一轮同步在跑，本次调用被跳过。
+//
+// 单独定义而不是复用普通 error，是为了让调用方能区分「真的同步失败」
+// （要报警/重试）与「上一轮还没跑完」（正常现象，不该报警）。定时链路
+// 每个 tick 都会撞上后者，报成失败只会淹没真正的问题。
+var ErrSyncInFlight = errors.New("email: sync already in flight for this account")
+
+// syncStepWarn 单个 Sync 阶段超过这个耗时就告警。
+const syncStepWarn = time.Second
+
+// syncTrace 给 Sync 的各阶段打点。
+//
+// 为什么需要它：2026-10-01 排查「某个账户卡满 90s」时，Sync 里**一个日志
+// 都没有**，只能看到 pipeline 外层的 `TIMED OUT after 1m30s`——完全不知道卡在
+// dial、login、SELECT、FETCH 还是落库。只能另写诊断程序在包外复刻一遍整条
+// 路径来二分定位（见 diag_kxpms_test.go）。有了这个打点，下次直接看日志就知道。
+//
+// 只打**慢**的阶段：正常同步每步都是几十毫秒，逐条打会淹掉日志。
+type syncTrace struct {
+	email string
+	start time.Time
+	last  time.Time
+}
+
+func newSyncTrace(email string) *syncTrace {
+	now := time.Now()
+	return &syncTrace{email: email, start: now, last: now}
+}
+
+// step 记录进入某个阶段。若上一个阶段耗时超阈值，说明卡点就在它后面那一步。
+func (t *syncTrace) step(name string) {
+	now := time.Now()
+	if d := now.Sub(t.last); d >= syncStepWarn {
+		log.Printf("[email/fetcher] %s SLOW step before %-16s took %s (total %s)",
+			t.email, name, d.Round(time.Millisecond), now.Sub(t.start).Round(time.Millisecond))
+	}
+	t.last = now
+}
+
+// done 收尾，把总耗时也记一笔（即使全程不慢，便于和 pipeline 的外层耗时对照）。
+func (t *syncTrace) done() {
+	log.Printf("[email/fetcher] %s sync trace total %s", t.email, time.Since(t.start).Round(time.Millisecond))
+}
+
 func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
+	if f.syncHook != nil {
+		return f.syncHook(ctx, accountID)
+	}
+	if _, loaded := f.inflight.LoadOrStore(accountID, struct{}{}); loaded {
+		return 0, fmt.Errorf("%w: %s", ErrSyncInFlight, accountID)
+	}
+	defer f.inflight.Delete(accountID)
 	if f.store == nil {
 		return 0, fmt.Errorf("email: store not configured")
 	}
@@ -352,25 +563,42 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 	}
 
 	addr := fmt.Sprintf("%s:%d", acc.IMAPHost, acc.IMAPPort)
+	tr := newSyncTrace(acc.EmailAddress)
+	defer tr.done()
+	// syncBudget 是单个账户的**总**墙钟预算，IMAP 与 POP3 降级共用。
+	//
+	// 取 70s = IMAP 硬截止 45s + POP3 最多 25s。必须明显小于 pipeline 的
+	// 90s 上界（DefaultAccountSyncTimeout），留 20s 给后面的步骤（落库、
+	// 发票建档）——之前取 80s 时实测仍然整轮 90619ms 超时，因为 80+ 收尾
+	// 已经把 90s 吃满了。
+	const syncBudget = 70 * time.Second
+	deadline := time.Now().Add(syncBudget)
+	// 降级时能用的时间 = 总预算减去 IMAP 已经花掉的。
+	remaining := func() time.Duration { return time.Until(deadline) }
+
+	tr.step("dial")
 	client, err := f.dial(addr)
 	if err != nil {
-		log.Printf("[email/fetcher] imap dial %s failed: %v — trying POP3 fallback", addr, err)
-		return f.syncPOP3Fallback(ctx, acc, cred)
+		log.Printf("[email/fetcher] imap dial %s failed: %v — trying POP3 fallback (budget %s left)", addr, err, remaining().Round(time.Second))
+		return f.syncPOP3Fallback(ctx, acc, cred, remaining())
 	}
 	defer client.Close()
 
+	tr.step("login")
 	if err := f.login(client, *acc, cred); err != nil {
-		log.Printf("[email/fetcher] imap login %s failed: %v — trying POP3 fallback", acc.EmailAddress, err)
-		return f.syncPOP3Fallback(ctx, acc, cred)
+		log.Printf("[email/fetcher] imap login %s failed: %v — trying POP3 fallback (budget %s left)", acc.EmailAddress, err, remaining().Round(time.Second))
+		return f.syncPOP3Fallback(ctx, acc, cred, remaining())
 	}
+	tr.step("ID")
 	sendClientID(client, acc.EmailAddress)
+	tr.step("SELECT")
 
 	mbox, err := client.Select("INBOX", nil).Wait()
 	if err != nil {
 		// 163 等服务在 ID 未发/陌生 IP 时 `NO SELECT Unsafe Login`（ID 已在
 		// sendClientID 发过，仍失败多为 IP 风控），降级 POP3 RETR。
-		log.Printf("[email/fetcher] imap select %s failed: %v — trying POP3 fallback", acc.EmailAddress, err)
-		return f.syncPOP3Fallback(ctx, acc, cred)
+		log.Printf("[email/fetcher] imap select %s failed: %v — trying POP3 fallback (budget %s left)", acc.EmailAddress, err, remaining().Round(time.Second))
+		return f.syncPOP3Fallback(ctx, acc, cred, remaining())
 	}
 	if err != nil {
 		return 0, fmt.Errorf("select INBOX: %w", err)
@@ -384,6 +612,7 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		uidSet.AddRange(imap.UID(acc.LastSyncedUID+1), uidNext)
 		criteria.UID = []imap.UIDSet{uidSet}
 	}
+	tr.step("UID SEARCH")
 	searchData, err := client.UIDSearch(criteria, nil).Wait()
 	if err != nil {
 		return 0, fmt.Errorf("search: %w", err)
@@ -416,6 +645,7 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 	// 认 imap.SeqSet / imap.UIDSet 值类型，*imap.UIDSet 会落到 default 分支直接
 	// panic("imap: invalid NumSet type")。之前这里传 &uidSet，任何搜到新邮件的
 	// Sync 都会 panic，整条抓取链路从未跑通过。
+	tr.step("FETCH envelope")
 	messages, err := client.Fetch(uidSet, fetchOpts).Collect()
 	if err != nil {
 		return 0, fmt.Errorf("fetch: %w", err)
@@ -454,14 +684,12 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		}
 		var snippet string
 		for _, bs := range m.BodySection {
-			// 2026-10-01 真机审计：原来是 strings.TrimSpace(string(bs.Bytes))
-			// 再按**字节**切 [:500]，三个问题同时命中用户：
-			//  1. 不解析 MIME —— 整段 multipart/alternative 原文直接落库，
-			//     /notifications 上原文照显，还把 .ntf-item 撑出横向溢出
-			//     （MIME boundary 是不可断长串，祖先 overflow-x:hidden 静默裁掉，
-			//     用户既看不到也滚不到）；
-			//  2. 不剥 HTML —— 字面的 <br/> 与 <a href=…> 透给用户；
-			//  3. 按字节切 —— 中文邮件在第 500 字节处劈出半个字符，乱码。
+			// 2026-10-01 真机审计：原来是把 bs.Bytes 直接转字符串再按字节截前 500，
+			// 三个问题叠在一起 ——
+			//  1. BODY[TEXT]<partial> 时 bs.Bytes 是 MIME 头本身，用户在
+			//     /notifications 上直接看到「--part_xxx / Content-Type: …」；
+			//  2. 只有 HTML 正文时标签原样透出（字面的 <br/> 与 <a href=…>）；
+			//  3. 按**字节**切，中文邮件会在第 500 字节处劈开半个字符产生乱码。
 			snippet = DeriveSnippet(bs.Bytes, 500)
 			break
 		}
@@ -469,6 +697,10 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 			// 批量 fetch 只取 envelope（Greenmail 对 BODY[TEXT]<partial> 响应
 			// 缺 SP 分隔符），snippet 在此复用同一连接按需单封补拉；失败仅
 			// 留空，不阻塞落库。
+			// 这里是 Sync 里最可疑的一段：同一连接上**逐封串行**发部分取回，
+			// 没有并发也没有单独预算。企业微信（imap.exmail.qq.com）实测在这
+			// 一步会挂到分钟级，而外层只能看到 90s 上界。单独打点。
+			tr.step(fmt.Sprintf("snippet uid=%d", uid))
 			snippet = f.fetchSnippetOnConnected(client, uid)
 		}
 		messageID := ""
@@ -555,6 +787,7 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 					}
 				}
 			}
+		tr.step(fmt.Sprintf("InsertEmail uid=%d", uid))
 		if err := f.store.InsertEmail(ctx, em); err != nil {
 			log.Printf("[email/fetcher] insert email uid=%d: %v", uid, err)
 			continue
@@ -564,6 +797,7 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 			highestUID = uid
 		}
 	}
+	tr.step("UpdateSyncState")
 	if err := f.store.UpdateSyncState(ctx, accountID, int64(highestUID), time.Now().Unix()); err != nil {
 		log.Printf("[email/fetcher] update sync state %s: %v", accountID, err)
 	}
@@ -575,7 +809,16 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 //   1. 解析账户的 email 域名（如 163 → 走 Provider.POP3Host）；
 //   2. POP3 RETR 每封新邮件，转成 email.Email 入库；
 //   3. 持久化 UIDL 已读集合（按 email_pop3_seen）保证幂等。
-func (f *Fetcher) syncPOP3Fallback(ctx context.Context, acc *Account, cred string) (int, error) {
+//
+// budget 是这次降级**还能花的时间**。它不是可有可无的参数：2026-10-01 实测
+// kxpms 的 Sync 总耗时 1m40.137s = IMAP login 挂满 60s（idle deadline 生效）
+// + POP3 又拿到了完整的一份 120s。IMAP 慢往往说明同一个服务商整体慢，
+// POP3 不会凭空变快，所以降级必须**共用剩余预算**而不是重新拿一份——
+// 否则单账户必然撞破 pipeline 的 90s 上界。
+func (f *Fetcher) syncPOP3Fallback(ctx context.Context, acc *Account, cred string, budget time.Duration) (int, error) {
+	if budget <= 0 {
+		return 0, fmt.Errorf("imap failed and no time left for POP3 fallback (%s)", acc.EmailAddress)
+	}
 	host, port, tls := pop3EndpointFor(acc)
 	if host == "" {
 		return 0, fmt.Errorf("no POP3 endpoint for %s (imaphost=%s)", acc.EmailAddress, acc.IMAPHost)
@@ -585,7 +828,7 @@ func (f *Fetcher) syncPOP3Fallback(ctx context.Context, acc *Account, cred strin
 		return 0, fmt.Errorf("list pop3 seen: %w", err)
 	}
 	addr := fmt.Sprintf("%s:%d", host, port)
-	uidls, payloads, err := FetchPOP3Mailbox(ctx, addr, tls, acc.EmailAddress, cred, seen)
+	uidls, payloads, err := FetchPOP3MailboxWithIdle(ctx, addr, tls, acc.EmailAddress, cred, seen, budget)
 	if err != nil {
 		return 0, fmt.Errorf("pop3 fetch: %w", err)
 	}
@@ -610,6 +853,16 @@ func (f *Fetcher) syncPOP3Fallback(ctx context.Context, acc *Account, cred strin
 		if parsed, perr := ParseMIMEMessage(raw); perr == nil {
 			em.FromAddress = parsed.From
 			em.FromName = parsed.Subject // 无独立 FromName；主题优先展示
+			// 优先用真实 Message-ID 头，而不是合成的 "pop3-<uidl>"。
+			//
+			// 为什么：同一封邮件走 IMAP 落一条（真实 message_id）、走 POP3 降级
+			// 再落一条（合成 message_id），两者不等，UNIQUE(account_id,
+			// message_id) 拦不住 → 邮件列表出现重复、发票/垃圾扫描各处理两遍。
+			// 实测 QQ 信箱 284/444 封走 POP3 路径，47 组是重复副本。
+			// 取不到真实头时才回退到 UIDL（UIDL 本身跨轮稳定，仍能保证幂等）。
+			if parsed.MessageID != "" {
+				em.MessageID = parsed.MessageID
+			}
 			if addr := extractFirstEmailAddress(parsed.From); addr != "" {
 				em.FromAddress = addr
 			}
@@ -617,8 +870,7 @@ func (f *Fetcher) syncPOP3Fallback(ctx context.Context, acc *Account, cred strin
 			em.Snippet = truncateStr(strings.TrimSpace(parsed.TextBody), 500)
 			if em.Snippet == "" {
 				// 2026-10-01 真机审计：原来直接塞 HTMLBody，字面的 <br/> 与
-				// <a href=…> 会原样透到通知列表（真机 5/50 条）。走 DeriveSnippet
-				// 剥标签并按 rune 截断。
+				// <a href=…> 会原样透到通知列表。这里走 DeriveSnippet 剥标签。
 				em.Snippet = DeriveSnippet([]byte(parsed.HTMLBody), 500)
 			}
 			if !parsed.Date.IsZero() {
@@ -636,6 +888,16 @@ func (f *Fetcher) syncPOP3Fallback(ctx context.Context, acc *Account, cred strin
 		if err := f.store.InsertEmail(ctx, em); err != nil {
 			log.Printf("[email/fetcher] pop3 insert email uidl=%s: %v", uidls[i], err)
 			continue
+		}
+		// POP3 同步是**唯一**能拿到这封邮件完整原文的机会：它的 UID 是位置
+		// 序号而不是 IMAP UID，事后再想取只能靠这个缓存（见 body_cache.go）。
+		// 缓存失败不阻断同步——同步本身已经成功，只是发票以后采不到。
+		if f.BodyCache != nil {
+			if rel, cerr := f.BodyCache.Put(em.ID, em.UID, raw); cerr != nil {
+				log.Printf("[email/fetcher] pop3 body cache put uidl=%s: %v", uidls[i], cerr)
+			} else if merr := f.store.MarkEmailBodyCached(ctx, em.ID, rel, len(raw)); merr != nil {
+				log.Printf("[email/fetcher] pop3 mark body cached uidl=%s: %v", uidls[i], merr)
+			}
 		}
 		nowUIDLSeen = append(nowUIDLSeen, uidls[i])
 		saved++
@@ -692,6 +954,45 @@ func (f *Fetcher) loadAccountPasswordFallback(acc *Account) (string, error) {
 
 // sanitizeUIDLForID 把 POP3 UIDL 清洗成可安全嵌入主键/Message-ID 的字符串
 //（只保留字母数字与连字符，其余替换为连字符；超长截断）。
+// RefetchPOP3RawByIndex 用账户凭据按 POP3 位置序号补取单封邮件原文。
+//
+// 这是 POP3 来源发票的死结自愈（2026-10-01 实测）：POP3 落库的邮件在 IMAP
+// 侧未必存在（实测 QQ 账户 IMAP 侧 50 封里零封发票，两张真实 QQ Wallet 发票
+// 只在 POP3 路径的 279 封里），原文缓存又从未落盘。此时既不能 IMAP FETCH、
+// 又无缓存可读。位置序号在 POP3 侧是**有效**的（它就是 POP3 自己的编号），
+// 所以回到 POP3 RETR 是第三条安全路径——不同于拿它去 IMAP 盲 FETCH。
+//
+// 安全性依赖调用方：拿到 raw 后应与库记录比对（Message-ID/主题/发件人）确认
+// 是同一封，位置序号若因服务器重排漂移就会取到别的邮件。本方法不内置该比对，
+// 因为 raw 解析属于 mime 层。
+func (f *Fetcher) RefetchPOP3RawByIndex(ctx context.Context, accountID string, index int) ([]byte, error) {
+	if f == nil || f.store == nil || f.crypto == nil {
+		return nil, fmt.Errorf("email: fetcher not configured")
+	}
+	acc, encryptedCred, err := f.store.GetAccountByID(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("load account: %w", err)
+	}
+	if !acc.Enabled {
+		return nil, fmt.Errorf("account disabled")
+	}
+	cred, err := f.crypto.DecryptString(encryptedCred)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt credential: %w", err)
+	}
+	if cred == "" || cred == "oauth-pending-no-credential" {
+		return nil, fmt.Errorf("account has no usable credential")
+	}
+	host, port, tlsFlag := pop3EndpointFor(acc)
+	if host == "" {
+		return nil, fmt.Errorf("no POP3 endpoint for %s (imaphost=%s)", acc.EmailAddress, acc.IMAPHost)
+	}
+	// 位置序号在 POP3 侧有效，不需要 UIDL 交叉校验（UIDL 被 sanitize 进 ID，
+	// 不可逆）；同一封的确认交给调用方比对原文。
+	return FetchPOP3MessageByIndex(ctx, fmt.Sprintf("%s:%d", host, port), tlsFlag,
+		acc.EmailAddress, cred, index, "", 0)
+}
+
 func sanitizeUIDLForID(uidl string) string {
 	var b strings.Builder
 	for _, r := range uidl {

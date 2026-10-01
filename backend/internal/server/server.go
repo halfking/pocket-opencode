@@ -110,7 +110,11 @@ type Server struct {
 	// sttHTTPClient 是 STT 自动发现/试转的出网客户端。默认走 gatewayHTTPClient
 	// （带 SSRF 防护）；测试注入一个拒绝出网的实现，保证单测不打真实网关。
 	sttHTTPClient *http.Client
-	mcpClient      *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
+	// sttSettingsMem 是 user_settings（PG）不可用时的 STT 设置进程内兜底。
+	// 没有它，无 PG 部署下语音转写设置根本存不下来，功能等于不可用。
+	sttSettingsMem  *sttMemSettings
+	sttSettingsOnce sync.Once
+	mcpClient       *mcp.Client // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// RSS 订阅与分享（PG store + 后台 scheduler）。nil = 关闭模块。
 	// 由 cmd/pocketd/main.go 通过 SetRSSStore / SetRSSScheduler 注入。
 	rssStore     *rss.Store
@@ -911,12 +915,26 @@ func (s *Server) Handler() http.Handler {
 //
 // 把判断提到中间件层之后，所有 SSE/长连接路由只需要挂上前缀白名单即可。
 // WebSocket 升级走的是 gorilla/websocket 自己的 deadline，不在 WriteTimeout 管辖
-// 范围，所以这里只覆盖 SSE 路径。
+// 范围，所以这里只覆盖 SSE 路径 + 明确会跑很久的同步批处理端点。
 var longLivedPaths = []string{
 	"/api/llm/stream",         // S0-B LLM BFF 流式聊天
 	"/api/llm-gateway/nodes/", // 网关运维控制面（live-stream 等）
 	"/api/mobile/sessions/",   // 移动端 session SSE（含 /event）
 	"/api/llmbff/stream",      // 同上的历史别名（保留兼容）
+	// 邮件流水线的长耗时同步端点。这些**不是** SSE，但同样会被 30s
+	// WriteTimeout 掐断，而且掐断的表现极具误导性：
+	//
+	//   2026-10-01 实测：pipeline/run 实跑 1m30.67s，服务端日志记
+	//   `POST /api/email/pipeline/run - 200`，而客户端拿到的是
+	//   `UND_ERR_SOCKET: other side closed` + `bytesRead: 0` —— 一个字节
+	//   都没收到。原因是连接在 30s 处写 deadline 到期、连接已废，handler 在
+	//   1m30s 才 writeJSON，写不进去了。**「服务端 200 / 客户端空响应」的
+	//   组合以后看到，先来查这条白名单，别再当成网络抖动。**
+	//
+	// 两者都有明确的自身上界，不存在无界风险：pipeline/run 内部
+	// `context.WithTimeout(ctx, 15*time.Minute)`，harvest 是 5 分钟。
+	"/api/email/pipeline/run",      // 手动触发一轮完整流水线（实测 1m30s）
+	"/api/emails/invoices/harvest", // 只下载发票文件（自带 5 分钟预算）
 }
 
 func longLivedPathMiddleware(next http.Handler) http.Handler {

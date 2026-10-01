@@ -147,6 +147,46 @@ func seedSTTSetting(userID, wsID, payload, secret string) usersetting.Record {
 	}
 }
 
+// TestSttConfigWorksWithoutPostgres 守护「无 PG 部署下 STT 设置仍可保存」。
+//
+// 背景：pocketd 在没有 POCKET_POSTGRES_DSN 时会正常启动（remote-only 模式），
+// 此时 s.userSettings == nil。旧实现直接返回 400 user settings store
+// unavailable，等于整个语音转写功能在这种部署下不可用 —— 而所有既有 STT 测试
+// 都经 sttTestServer 构造，那个构造**总是**给 userSettings 赋值，恰好掩盖了
+// 生产里的 nil。所以这里必须显式把 userSettings 置 nil 复现真实启动路径。
+func TestSttConfigWorksWithoutPostgres(t *testing.T) {
+	srv, _ := sttTestServer(t, "")
+	srv.userSettings = nil // 复现无 POCKET_POSTGRES_DSN 的 remote-only 启动
+	h := srv.Handler()
+	token := wsAToken(t)
+
+	body := `{"channel":"external","externalBaseURL":"https://api.openai.com/v1",` +
+		`"externalModel":"gpt-4o-mini-transcribe","externalApiKey":"sk-nopg-secret"}`
+	put := serveWorkspaceJSON(t, h, http.MethodPut, "/api/stt/config", token, body)
+	if put.Code != http.StatusOK {
+		t.Fatalf("无 PG 部署下 PUT 应可用，实际 status=%d body=%s", put.Code, put.Body.String())
+	}
+
+	// 回读必须拿到刚存的值，且不回显 key。
+	get := serveWorkspaceJSON(t, h, http.MethodGet, "/api/stt/config", token, "")
+	if get.Code != http.StatusOK {
+		t.Fatalf("GET status=%d body=%s", get.Code, get.Body.String())
+	}
+	if strings.Contains(get.Body.String(), "sk-nopg-secret") {
+		t.Fatalf("GET 响应泄露了 key：%s", get.Body.String())
+	}
+	var view sttConfigResponse
+	if err := json.Unmarshal(get.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if view.Settings.ExternalModel != "gpt-4o-mini-transcribe" || view.Settings.Channel != stt.ChannelExternal {
+		t.Errorf("进程内兜底没存上设置：%+v", view.Settings)
+	}
+	if !view.Settings.HasExternalKey {
+		t.Error("HasExternalKey 应为 true（key 存了但不该回显）")
+	}
+}
+
 // TestSttConfigListsBothRecommendedGroups 设置页必须同时拿到网关组与外部组预置，
 // 且外部组要带地址与成本依据（否则用户填了 key 也不知道打哪、花多少）。
 func TestSttConfigListsBothRecommendedGroups(t *testing.T) {

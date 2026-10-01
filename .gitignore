@@ -144,3 +144,10 @@ downloads/
 
 # Local debug log (pocketd / dev tooling run from repo root)
 debug.log
+
+# Python bytecode caches.
+# 2026-10-01: deploy/bin/lib/check-databases.py 被 `python3 -c 'import ...'`
+# 之类的调用顺带编译出 __pycache__/*.pyc，`git add -A` 把它一起提交了。
+# 桩/工具脚本不是可交付产物，且 .pyc 跨平台不可复现。
+__pycache__/
+*.py[cod]

@@ -28,6 +28,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${ROOT_DIR}"
 export DEPLOY_ENV="${DEPLOY_ENV:-local}"
 
+# Scoped lifecycle entry: never use compose down to stop only the UI.
+if [[ "${1:-}" == "--stop-frontend" ]]; then
+  [[ $# -eq 1 ]] || { echo "--stop-frontend 不接受其他参数" >&2; exit 2; }
+  [[ "$DEPLOY_ENV" == "local" ]] || { echo "--stop-frontend 仅允许 local" >&2; exit 2; }
+  exec bash "$ROOT_DIR/deploy/bin/stop.sh" --frontend-only
+fi
+
 # Validate before config/resource mutations.
 want_frontend=false want_backend=false
 for arg in "$@"; do

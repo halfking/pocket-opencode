@@ -1,16 +1,44 @@
 # 邮件摘要透出原始 MIME（2026-10-01 真机审计）
 
-> **状态更新（已修复）**：调用点补丁已提交 `d0014bd`，分支 `fix/email-snippet-callsites`
-> （worktree `C:\workspace\openpocket-wt-snippet`），**尚未并入 main**。
-> 下方「精确补丁」一节仍保留，作为补丁内容的说明。
+> **状态：已修复并全部并入 main**，共三个提交：
 >
-> 原文写的「调用点还没改」这一段留档如下：纯函数 `DeriveSnippet` 先由 `583f02e` 提交
-> （`internal/email/snippet.go` + 8 个用例），当时 `internal/email/fetcher.go` 正被并行
-> 会话修改（`git status` 显示 `MM`，行号在变动），按协作纪律没有抢写。
+> | 提交 | 内容 |
+> |---|---|
+> | `583f02e` | 纯函数 `DeriveSnippet`（`snippet.go` + 8 个用例） |
+> | `d0014bd` | 接进 fetcher 的三个摘要产生点 + 调用点护栏（`fix/email-snippet-callsites` 分支，已快进并入 main） |
+> | `fc3ed38` | 通知标题/正文断词（`fix(ui)`），修掉「超长串被祖先 overflow-x:hidden 静默裁掉」 |
+> | `a8837c1` | 让重跑同步能**刷新已入库的坏摘要**——见下方「存量数据」一节 |
+>
+> 下方「精确补丁」一节保留，作为补丁内容的说明。
+>
+> 原文写的「调用点还没改」这段留档：纯函数先由 `583f02e` 提交，当时
+> `internal/email/fetcher.go` 正被并行会话修改（`git status` 显示 `MM`，行号在变动），
+> 按协作纪律没有抢写。
 >
 > 插曲：随后 `94b55ff` 一次 merge 把 fetcher.go 的三处调用点**和**调用点护栏测试
 > `TestFetcherUsesDeriveSnippetAtEverySnippetSite` 一起连带删除，`DeriveSnippet` 退化成
 > 死代码——8 个纯函数用例照样全绿，缺陷静默回归。`d0014bd` 同时补回接线与护栏。
+
+## 0. 存量数据：代码修好 ≠ 数据变好（`a8837c1`）
+
+`d0014bd` 只拦**新写入**的坏摘要。已入库的老数据一点没动——而真机上那批数据
+正是问题本身（100 个通知正文里 46 个溢出、12,311px 被静默裁掉）。
+
+根因：`InsertEmail` 原来是 `ON CONFLICT (id) DO NOTHING`，snippet 由���是**只写一次**
+的不可自愈字段，没有任何路径能修好存量。`a8837c1` 改成只刷新 snippet：
+
+```sql
+ON CONFLICT (id) DO UPDATE SET
+  snippet = CASE WHEN EXCLUDED.snippet <> '' THEN EXCLUDED.snippet ELSE emails.snippet END
+```
+
+窄口径是刻意的：其余列一律不更新（否则每轮同步把「已读」标回未读）；`EXCLUDED.snippet`
+为空时保留旧值（DeriveSnippet 遇到「疑似 MIME 又剥不干净」会返回空串，直接赋值
+一次同步就能把正常摘要刷成空白）。
+
+**所以：存量坏摘要在下一次真实邮件同步后自动愈合**，不需要写迁移。但这一步需要
+一个能连的邮箱账户（163/QQ 授权码、`Unsafe Login` 风控）—— 桩验证证明不了。
+
 
 ## 1. 真机证据
 

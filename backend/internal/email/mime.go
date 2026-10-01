@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -40,12 +41,19 @@ type ParsedAttachment struct {
 
 // ParsedMessage 是一封邮件的结构化拆解结果。
 type ParsedMessage struct {
-	Subject     string
-	From        string
-	Date        time.Time
-	TextBody    string // text/plain 聚合
-	HTMLBody    string // text/html 聚合（发票链接多藏在 href 里）
-	Attachments []ParsedAttachment
+	Subject string
+	From    string
+	Date    time.Time
+	// MessageID 是 RFC 5322 的 Message-ID 头（已去尖括号）。
+	//
+	// POP3 降级路径以前不用它，自己合成 "pop3-<uidl>" 当 message_id，于是同一
+	// 封邮件走 IMAP 落一条、走 POP3 再落一条，两条 message_id 不同，
+	// UNIQUE(account_id, message_id) 拦不住 —— 实测 QQ 信箱 444 封里
+	// 284 封走 POP3 路径，其中 47 组是同一封的重复副本。
+	MessageID    string
+	TextBody     string // text/plain 聚合
+	HTMLBody     string // text/html 聚合（发票链接多藏在 href 里）
+	Attachments  []ParsedAttachment
 }
 
 // FetchMessageRaw 按 UID 单封拉整封原文。先用 go-imap 的 client.Fetch，
@@ -81,11 +89,27 @@ func (f *Fetcher) FetchMessageRaw(ctx context.Context, accountID string, uid int
 	if err := f.login(client, *acc, cred); err != nil {
 		return nil, fmt.Errorf("login %s: %w", acc.EmailAddress, err)
 	}
+	// SELECT 之前必须先发 RFC 2971 ID：网易 Coremail（163/126）在缺客户端标识时
+	// 直接 `NO SELECT Unsafe Login. Please contact kefu@188.com`，而不是鉴权失败。
+	// Sync 里一直有这一步（fetcher.go 的 sendClientID），但本函数原先漏了，
+	// 于是同一个 163 账户「常规同步成功、拉原文必失败」——发票二次提取与
+	// 发票采集（harvestOne 也走这里）在 163 邮箱上 100% 拿不到正文。
+	// 真实日志：acct-...-5 uid=1298896126 select INBOX: imap: NO SELECT Unsafe Login。
+	sendClientID(client, acc.EmailAddress)
 	if _, err := client.Select("INBOX", nil).Wait(); err != nil {
 		return nil, fmt.Errorf("select INBOX: %w", err)
 	}
 
-	const maxMessageBytes = 32 << 20
+	// 单封原文上限。发票 PDF 实际 <200KB，XML 几 KB，8MB 对「带附件的普通
+	// 邮件」仍然宽松。
+	//
+	// 为什么从 32MB 降下来：这是**唯一能给单次拉取耗时设上界的杠杆**——
+	// go-imap 不响应 ctx 取消（imapclient.Options 没有 ReadTimeout），所以
+	// 一封超大邮件的 BODY[] literal 读取可以一路拖到库内 5 分钟上限。
+	// 实测一封 QQ 邮件让第 4 步单张卡了 13 分钟（uid=134，attempts 都没来得及
+	// 递增），整轮采集因此无上界。宁可让超大邮件采集失败进 pending 等下一轮，
+	// 也不能让一轮流水线没有上界。
+	const maxMessageBytes = 8 << 20
 	var uidSet imap.UIDSet
 	uidSet.AddNum(imap.UID(uid))
 	fetchOpts := &imap.FetchOptions{
@@ -96,9 +120,19 @@ func (f *Fetcher) FetchMessageRaw(ctx context.Context, accountID string, uid int
 		}},
 	}
 	messages, fetchErr := client.Fetch(uidSet, fetchOpts).Collect()
-	if fetchErr == nil && len(messages) > 0 {
-		if body, ferr := findBodySection(messages[0].BodySection); ferr == nil && len(body) > 0 {
+	if fetchErr == nil {
+		if len(messages) == 0 {
+			// go-imap 没报错、却一条都没匹配到（uid 已被服务端 expunge、
+			// 或 UIDVALIDITY 变了）。不显式记下来就会掉到降级路径，
+			// 最终只报一句跟本问题无关的降级错误。
+			fetchErr = fmt.Errorf("go-imap matched 0 messages for uid=%d", uid)
+		} else if body, ferr := findBodySection(messages[0].BodySection); ferr == nil && len(body) > 0 {
 			return body, nil
+		} else {
+			// 匹配到了但没给出正文：单独记下来。原实现直接掉进降级路径，
+			// 最终只报降级的错（实测 `read greeting: EOF` / `<nil>`），主路径
+			// 这个真正有用的线索被完全吞掉。
+			fetchErr = fmt.Errorf("go-imap returned %d message(s) but no usable body section", len(messages))
 		}
 	}
 
@@ -130,6 +164,25 @@ func (f *Fetcher) fetchRawByTextproto(ctx context.Context, acc *Account, passwor
 	}
 	defer conn.Close()
 
+	// IMAPS（993/995 一类）必须先做 TLS 握手再谈 IMAP 文本协议。原来这里
+	// 直接用明文 TCP，于是对 993 端口的服务端来说：我们在等 greeting，它在等
+	// ClientHello，双方互等 → 读 greeting 直接 EOF。实测真实账户
+	// （qq/163 全部 993）的降级路径 100% 失败，报
+	// `fetch raw uid=135 (textproto): read greeting: EOF`，把 go-imap 主路径
+	// 真正的原因盖掉了。降级通道对 IMAPS 账户原本就是条死路。
+	if acc.IMAPPort == 993 {
+		tlsConn := tls.Client(conn, &tls.Config{
+			ServerName: acc.IMAPHost,
+			// 与 imapDialWithTimeout 保持一致：仅自签测试服务器才跳过校验，
+			// 生产走默认 CA 池验证，避免中间人攻击。
+			InsecureSkipVerify: f.insecureSkipVerify, //nolint:gosec // 仅测试服务器
+		})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return nil, fmt.Errorf("tls handshake: %w", err)
+		}
+		conn = tlsConn
+	}
+
 	br := bufio.NewReader(conn)
 	bw := bufio.NewWriter(conn)
 	readLine := func() (string, error) {
@@ -159,6 +212,19 @@ func (f *Fetcher) fetchRawByTextproto(ctx context.Context, acc *Account, passwor
 	}
 	if !strings.Contains(loginLine, " OK ") {
 		return nil, fmt.Errorf("login rejected: %s", loginLine)
+	}
+
+	// ID（RFC 2971）：与 go-imap 路径同样必须在 SELECT 之前发，否则网易 Coremail
+	// 回 `NO SELECT Unsafe Login`。它不是 CAPABILITY 必备命令，服务器不支持时
+	// 回 BAD/BADCHARSET 属正常，忽略继续即可（与 sendClientID 同语义）。
+	if _, err := bw.WriteString("A0 ID (\"name\" \"pocketd\" \"version\" \"1.0.0\" \"vendor\" \"openpocket\")\r\n"); err != nil {
+		return nil, fmt.Errorf("write id: %w", err)
+	}
+	if err := bw.Flush(); err != nil {
+		return nil, fmt.Errorf("flush id: %w", err)
+	}
+	if idLine, err := readLine(); err == nil {
+		log.Printf("[email/fetcher] textproto ID %s -> %s", acc.EmailAddress, strings.TrimSpace(idLine))
 	}
 
 	// SELECT INBOX — UID 命令需要先 SELECT 才能用
@@ -218,12 +284,21 @@ func (f *Fetcher) fetchRawByTextproto(ctx context.Context, acc *Account, passwor
 		}
 		if strings.HasPrefix(line, tag+" ") {
 			// tagged response，A2 OK / NO / BAD —— 结束
+			if !strings.Contains(line, " OK ") {
+				return collected.Bytes(), fmt.Errorf("server rejected UID FETCH: %s", strings.TrimSpace(line))
+			}
 			break
 		}
 		if len(line) == 0 {
 			// 跳过空行
 			continue
 		}
+	}
+	if collected.Len() == 0 {
+		// 契约：要么给正文，要么给错误。原来这里返回 (空, nil)，调用方只看到
+		// 「textproto fallback: <nil>」，把「一条 literal 都没解析到」这个
+		// 真正的线索吞掉了（真实 163/QQ 账户上就是这么变成一句废话报错的）。
+		return nil, fmt.Errorf("no BODY literal in UID FETCH response (uid=%d)", uid)
 	}
 	return collected.Bytes(), nil
 }
@@ -288,6 +363,15 @@ func quoteIMAPString(s string) string {
 	b.WriteByte('"')
 	return b.String()
 }
+// normalizeMessageID 取出 Message-ID 头的裸值（去掉 < > 和空白）。
+// 取不到时返回空串，由调用方决定回退策略。
+func normalizeMessageID(h string) string {
+	v := strings.TrimSpace(h)
+	v = strings.TrimPrefix(v, "<")
+	v = strings.TrimSuffix(v, ">")
+	return strings.TrimSpace(v)
+}
+
 // ParseMIMEMessage 把整封原文拆成正文与附件。
 func ParseMIMEMessage(raw []byte) (*ParsedMessage, error) {
 	msg, err := mail.ReadMessage(bytes.NewReader(raw))
@@ -296,6 +380,7 @@ func ParseMIMEMessage(raw []byte) (*ParsedMessage, error) {
 	}
 	out := &ParsedMessage{Subject: decodeMIMEWord(msg.Header.Get("Subject"))}
 	out.From = decodeMIMEWord(msg.Header.Get("From"))
+	out.MessageID = normalizeMessageID(msg.Header.Get("Message-Id"))
 	if d, err := mail.ParseDate(msg.Header.Get("Date")); err == nil {
 		out.Date = d
 	}
