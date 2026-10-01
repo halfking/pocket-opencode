@@ -53,6 +53,7 @@ func TestSttSettingsWorkWithoutPGStore(t *testing.T) {
 		t.Fatal("前置条件不成立：测试服务器本应没有 userSettings")
 	}
 	t.Setenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE", "1")
+	t.Setenv("POCKET_STT_ALLOW_PRIVATE", "1")
 
 	h := srv.Handler()
 	token := wsAToken(t)
@@ -97,11 +98,15 @@ func TestSttSettingsWorkWithoutPGStore(t *testing.T) {
 // 只把最后一跳的 HTTP 换成 httptest，才是端到端。
 func installFakeASR(t *testing.T, srv *Server, text string) {
 	t.Helper()
-	// httptest 监听 127.0.0.1，而 validateGatewayURL 默认拒绝私网/loopback
-	// （防 SSRF）。这里显式 opt-in 放行——否则测试永远在保存设置那一步就被
-	// 拒掉，测不到后面真正要测的转写链路。
+	// httptest 监听 127.0.0.1，而 STT 外部地址的 SSRF 守卫
+	// （validateSTTOutboundURL）默认拒绝私网/loopback。这里显式 opt-in 放行
+	// ——否则测试永远在保存设置那一步就被拒掉，测不到后面真正要测的转写链路。
+	// 放行要用**STT 自己的**开关 POCKET_STT_ALLOW_PRIVATE：网关那个开关
+	// （POCKET_LLM_GATEWAY_ALLOW_PRIVATE）现在刻意不再影响这里，理由见
+	// server_stt_url_test.go 顶部。
 	// 用 t.Setenv 而非 os.Setenv：它会在测试结束后自动还原，不污染同包其他用例。
 	t.Setenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE", "1")
+	t.Setenv("POCKET_STT_ALLOW_PRIVATE", "1")
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {

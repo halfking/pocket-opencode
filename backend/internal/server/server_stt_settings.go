@@ -135,7 +135,7 @@ func (s *Server) saveSTTSettings(userID, workspaceID string, p sttSettingsPayloa
 		p.Language = "zh"
 	}
 	if p.ExternalBaseURL != "" {
-		if err := validateGatewayURL(p.ExternalBaseURL); err != nil {
+		if err := validateSTTOutboundURL(p.ExternalBaseURL); err != nil {
 			return err
 		}
 	}
@@ -546,7 +546,7 @@ func (s *Server) probeTarget(r *http.Request, userID, wsID string, override stru
 		if key == "" {
 			return nil, fmt.Errorf("外部语音转写服务未配置 API Key（设置 → 语音转写）")
 		}
-		if err := validateGatewayURL(base); err != nil {
+		if err := validateSTTOutboundURL(base); err != nil {
 			return nil, err
 		}
 		return &stt.Target{BaseURL: base, APIKey: key, Model: override.Model,

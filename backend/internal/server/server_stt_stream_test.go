@@ -94,6 +94,7 @@ func installFakeASRUpstream(t *testing.T, srv *Server, up http.Handler) *httptes
 	// httptest listens on 127.0.0.1, which validateGatewayURL rejects by
 	// default (SSRF guard). Opt in explicitly, scoped to this test.
 	t.Setenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE", "1")
+	t.Setenv("POCKET_STT_ALLOW_PRIVATE", "1")
 	ts := httptest.NewServer(up)
 	t.Cleanup(ts.Close)
 	if err := srv.saveSTTSettings("shared-user", "ws-a", sttSettingsPayload{
