@@ -88,7 +88,7 @@ type Server struct {
 	emailStore       *email.Store
 	vaultStore       vaultSyncStorer
 	snippetStore     *snippet.Store
-	meetingStore     *meeting.Store
+	meetingStore     meeting.MeetingStore
 	chatSummaryStore *cs.Store
 	// flashcardStore holds the v1 spaced-repetition flashcard persistence
 	// (notes/cards/decks/revlogs). nil → /api/flashcards handlers return
@@ -353,8 +353,10 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 
 // SetOpenCodeManagers 由 main.go 在 server.New 之后注入 OpenCode 域管理器。
 // 使用 setter 而非扩展 New 签名，避免参数膨胀。所有 manager 允许为 nil。
-func (s *Server) SetMeetingStore(ms *meeting.Store) {
-	s.meetingStore = ms
+func (s *Server) SetMeetingStore(ms meeting.MeetingStore) {
+	if ms != nil {
+		s.meetingStore = ms
+	}
 }
 
 func (s *Server) SetOpenCodeManagers(ocMgr *opencode.Manager, eventMgr *opencode.EventStreamManager, permMgr *opencode.PermissionManager, quesMgr *opencode.QuestionManager) {
@@ -505,7 +507,7 @@ func (s *Server) SetLearningSources(r *sources.Resolver) {
 // MeetingStore returns the meeting store (nil-safe). cmd/pocketd uses it to
 // assemble the learning source resolver, because the store is created inside
 // newServer rather than in main.
-func (s *Server) MeetingStore() *meeting.Store {
+func (s *Server) MeetingStore() meeting.MeetingStore {
 	return s.meetingStore
 }
 

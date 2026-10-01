@@ -17,7 +17,26 @@ const (
 	legacyWorkspaceID = "default"
 )
 
+// MeetingStore 是会议存储的抽象，内存版（*Store）与 PG 版（*PGStore）共用。
+//
+// 这里显式列出服务端与 learning resolver 真正调用到的方法，而不是直接拿
+// *Store 当依赖：server.Server 里的字段类型、SetMeetingStore 的入参、
+// learning/sources.Resolver 的字段三处都要跟着变，提前定死接口可以让
+// 编译器在注入点就把"少实现了某个方法"拦下来。
+type MeetingStore interface {
+	CreateScoped(req CreateMeetingRequest, ownerID, workspaceID string) (*Meeting, error)
+	GetScoped(id, ownerID, workspaceID string) (*Meeting, error)
+	ListScoped(ownerID, workspaceID string) ([]*Meeting, error)
+	UpdateScoped(m *Meeting, ownerID, workspaceID string) error
+	DeleteScoped(id, ownerID, workspaceID string) error
+	// DeletedIDsSince 见 pg_store.go 同名方法：查询失败时返回 nil 而非 error。
+	DeletedIDsSince(ownerID, workspaceID string, since time.Time) []string
+}
+
 // Store 会议记录存储（内存实现）
+//
+// ⚠️ 进程一重启即全部丢失。生产路径由 cmd/pocketd 注入 meeting.PGStore
+// 覆盖它（见 Server.SetMeetingStore）；没有 PG 的测试环境才用这份。
 type Store struct {
 	mu       sync.RWMutex
 	meetings map[string]*Meeting
