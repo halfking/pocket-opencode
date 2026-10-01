@@ -2304,7 +2304,83 @@ java.lang.AssertionError: 应用升级同样会清空 ELAPSED_REALTIME 闹钟
 
 ---
 
-## §7ax 本轮仍未验证 / 仍是阻塞
+## §7ax 需求 2：垃圾箱定位的两个关键判定此前零测试（`038f560`）
+
+### 起因
+
+复核需求 2「清理广告与垃圾邮件，**将它们移到垃圾邮件箱**」。
+重点是「移到」这个动作——本轮只做只读验证，不跑真实 IMAP MOVE。
+
+### 现状（实现本身是扎实的）
+
+`junk.go` 的真实 IMAP MOVE 链设计得相当完整：
+
+- 定位垃圾箱：`\Junk` 特殊用途属性（RFC 6154）优先 → 7 种常见命名匹配
+  → 都没有则 `CREATE "Junk"`
+- 移动：优先 `UID MOVE` 扩展，服务器不支持时**自动回退
+  COPY + `\Deleted` + EXPUNGE**（`junk.go:22`）
+- 部分 UID 失败不影响其余（逐条 MOVE，幂等可重放）
+- `cleanup.go` 的 `RunCleanup` 支持 `dryRun`，且有
+  `TestCleanSpam_DryRunNeverMoves` 守住「dryRun 绝不移动」
+
+### 缺口：定位链的纯函数一个测试都没有
+
+`findJunkMailbox` 分两步，都已抽成纯函数，但零覆盖：
+
+| 函数 | 位置 | 作用 |
+|---|---|---|
+| `hasMailboxAttr` | `junk.go:70` | 判断是否带 `\Junk` 属性 |
+| `baseMailboxName` | `junk.go:80` | 剥掉层级前缀（`INBOX.Junk` → `Junk`） |
+
+**判错的后果是静默降级**：`MoveUIDsToJunk` 返回 `ErrNoJunkMailbox`，
+调用方就只做本地标记，**真实邮件不会被移进垃圾箱**，需求 2 失效且不报错。
+
+### 为什么没有真 IMAP 验证
+
+- `fetcher_greenmail_test.go` 挂在 `//go:build greenmail`，需要 Docker +
+  `PG_DSN`，且**只测 `TestSyncGreenmail`（同步），不覆盖 MOVE 路径**
+- 本机 Docker 未运行（`docker version` 报 pipe 不存在）
+- 真实邮箱按既定约束**只做只读验证**
+
+所以先把可测的判定部分钉住。
+
+### 新增 6 例（`junk_mailbox_test.go`）
+
+重点覆盖两个真实陷阱：
+
+1. **属性是切片**：真实 LIST 响应里一个信箱常带多个属性。只查 `attrs[0]`
+   的实现会在 `[NoInferiors, \Junk]` 这种形态上漏判。
+2. **`.` 是 IMAP 标准层级分隔符**：`baseMailboxName` 靠它把
+   `INBOX.Junk`（最常见形态）归一化成 `Junk`。去掉它就认不出来。
+
+另外断言 `INBOX` / `INBOX.Sent` / `其他文件夹/已发送` **不得**被误判成
+垃圾箱——误判会把正常邮件移走。
+
+**负控（均能编译后断言红）**：
+
+1. `hasMailboxAttr` 改成只查 `attrs[0]`
+   → `TestHasMailboxAttr_ScansWholeSlice` 红：
+   ```
+   \Junk 不在首位就没认出来 —— 说明只查了 attrs[0]
+   ```
+2. `baseMailboxName` 去掉 `.` 分隔符 → **2 例红**：
+   ```
+   baseMailboxName("INBOX.Junk") = "INBOX.Junk", want "Junk"（IMAP 标准层级分隔符 '.'）
+   baseMailboxName("INBOX.Junk")="INBOX.Junk" 未命中任何常见垃圾箱名
+   ```
+
+已还原并复跑。验证：`go build` exit=0；`go vet` exit=0；
+`go test ./internal/email/` → **ok 33.812s**。
+
+### 仍未验证
+
+- **真实 IMAP MOVE 未端到端验证**。需要 Docker 起 Greenmail，
+  且现有 greenmail 测试**不含 MOVE 用例**，需另写。
+- 13 封判垃圾的真实 MOVE 是否执行，仍等你确认（写操作）。
+
+---
+
+## §7ay 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
 
@@ -2328,6 +2404,8 @@ java.lang.AssertionError: 应用升级同样会清空 ELAPSED_REALTIME 闹钟
    见 §7au。这是本轮新发现的、**唯一一条真正未实现的需求**。
 7. 需求 1 的开机重排修复（`cc6753d`）**只在单元测试层验证过判定逻辑**，
    真机重启行为未验证，见 §7aw。要不要安排一次真机验证。
+8. 需求 2 的**真实 IMAP MOVE 未端到端验证**。需要 Docker 起 Greenmail，
+   且现有 `-tags=greenmail` 测试**不含 MOVE 用例**，要另写。见 §7ax。
 
 **环境问题**：
 
