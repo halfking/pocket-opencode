@@ -7571,6 +7571,62 @@ import 了 `native/local-db`，在 node 里根本解析不了。早年的教训�
 
 ---
 
+## §7di 修掉 §7dd 的 pdfcpu panic：缩略图路径补上导出路径早就定过的规矩（2026-10-02）
+
+`backend/internal/email/invoice_file.go` 的 `firstPDFEmbeddedImage` 加 recover，
+新增 `invoice_file_malformed_test.go`（4 用例）。
+
+### 这条为什么从「等拍板」变成「直接修」
+
+§7dd 记下 pdfcpu panic 时我把它列成待拍板，理由是「加 recover vs 给上游提 issue
+是依赖决策」。补做需求 5 的核查时找到了决定性的反证——**这个仓库自己早就为
+同一件事定过规矩，并且做了两遍**：
+
+- `export_pdf.go:55-59` 的注释白纸黑字写着：畸形 PDF（只有 Catalog、没有页树，
+  69 字节）会让 pdfcpu 的合并直接 panic（`slice bounds out of range [-1:]`），
+  「因此这里做两件事：1. 每个 PDF 先 Validate，坏文件跳过；2. 兜底 recover，
+  把 pdfcpu 的 panic 转成普通 error，**绝不让它冒到 handler**」。
+- `exportNUp`（:91-95）和 `pdfPageCountSafe`（:193-198）里各有一处 recover，
+  配套用例是 `TestExportInvoiceGrid_SkipsMalformedPDFAndKeepsGoodOnes`
+  与 `TestExportInvoiceGrid_AllMalformedReturnsError`。
+- 连函数签名都是为这件事准备的：`exportNUp` 用**具名返回值** `(res *GridExport,
+  err error)`，正因为 recover 里要改 `err`。
+
+也就是说这不是「新设计决策」，而是**缩略图这条路径当时漏掉了仓库既有的防御**。
+于是补它属于「修漏」而不是「改语义」，待拍板项作废。
+
+### 改法
+
+照抄 `pdfPageCountSafe` 的形状：`firstPDFEmbeddedImage` 改具名返回值
+`(img []byte, fileType string, err error)`，函数头加 recover，把 panic 转成
+`fmt.Errorf("unreadable invoice pdf: %v", r)`。`ExtractInvoiceThumb` 原本就有
+`if err != nil || len(img) == 0 { return nil, "", false }`，于是畸形发票的
+`GET /api/emails/invoices/{id}/thumb` 从 **500 变回 404 thumbnail unavailable**。
+
+### 用例
+
+四条，形状刻意与导出那两条对齐：畸形 PDF 不 panic、截断/空/非 PDF 不 panic、
+`firstPDFEmbeddedImage` 必须返回**非 nil error**（只断言「没 panic」会让
+「返回 nil,nil,nil」的写法蒙混过关）、合法 PDF 仍然不报错（防 recover 误伤）。
+
+### 负控（实测）
+
+去掉 recover → 2 条转红，报出的正是
+`runtime error: slice bounds out of range [-1:]`。
+
+**第一版负控没编译**：`fmt` 变成未使用导入。这已是本轮第二次撞上
+「负控必须能编译」，改成 `_ = fmt.Sprint(...)` 保引用后才跑通。
+
+`TestExtractInvoiceThumb_TruncatedPDFDoesNotPanic` 在负控下**仍绿**，
+这是预期的：那些输入在 `DetectInvoiceMedia` 就被拒了（没有 `%PDF` 头），
+根本进不到 pdfcpu。如实记下来，免得被当成「这条用例没守住什么」。
+
+### 回归
+
+`internal/email` 全包 **9.675s 全绿**，无新增失败。
+
+---
+
 ## §7cz 【需求 6/7】邮件的增量同步**永远退化成全量拉取**，而它的「正确」是靠这个 bug 换来的（2026-10-02）
 
 需求 7「在邮件窗口查看各类邮件」的 UI 链路本身是完整的，我逐段验过：
