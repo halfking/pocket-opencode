@@ -904,6 +904,11 @@ func (p *Pipeline) PublishLedgerScoped(ctx context.Context, userID, workspaceID 
 	return url, nil
 }
 
+// utf8BOM 是 UTF-8 字节序标记（EF BB BF）。
+//
+// 只用在会被 Excel 打开的 CSV 上——见 BuildInvoiceSummaryDocs 里的说明。
+const utf8BOM = "\xEF\xBB\xBF"
+
 // BuildInvoiceSummaryDocs 生成共享汇总文档（CSV 清单 + Markdown 报表，
 // 含合计金额）。返回两个文件的绝对路径。文件总在每轮流水线末尾重建，
 // 作为「无法发送飞书时的共享文档」兜底与对账清单。
@@ -993,7 +998,19 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 		}
 		csv.WriteString(strings.Join(cells, ",") + "\n")
 	}
-	if err := os.WriteFile(csvPath, []byte(csv.String()), 0o600); err != nil {
+	// CSV 必须带 UTF-8 BOM（2026-10-02 修，实测证据见 §7ct）。
+	//
+	// 为什么：中文 Windows 的 Excel 打开**无 BOM** 的 UTF-8 CSV 时，会按系统
+	// ANSI 代码页（GBK）解码，于是「费用类型/对方单位/金额」全变乱码。
+	// 真实文件实测首 3 字节 = E8 B4 B9（"费" 的 UTF-8 前三字节），确实没有 BOM。
+	// 这份 CSV 是需求 3 明确要交付的「整理一个列表」——用户拿到打不开就等于没做。
+	//
+	// 只给 CSV 加，不给 Markdown 加：MD 不由 Excel 打开，BOM 反而会在第一行
+	// 前面多出三个不可见字符。
+	//
+	// 无兼容风险：全树没有任何代码解析这些 CSV——它们只以**文件名**的形式
+	// 过 API（shareDocCsv），测试里也只有 os.Stat，不读内容。
+	if err := os.WriteFile(csvPath, append([]byte(utf8BOM), []byte(csv.String())...), 0o600); err != nil {
 		return "", "", err
 	}
 
