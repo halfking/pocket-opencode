@@ -176,3 +176,99 @@ describe('UA 默认等宽元素必须被接管', () => {
     )
   })
 })
+
+/**
+ * 顶栏页面标题的字号必须走 token。
+ *
+ * 2026-10-02 普查发现：`.top-bar h1` 这个**外壳顶栏标题**只有 opencode 模块自己
+ * 定义了字号，且三处都写死 20px；而设置页/邮件页的顶栏标题是
+ * `.title { font-size: var(--text-lg) }` = 16px。两条规则除字号外**完全相同**
+ * （flex:1 / font-weight:600 / 同一颜色），纯像素差 25%。
+ * 用户在「会话」和「设置」之间切页会看到标题忽大忽小——这正是「字体不对」。
+ *
+ * 为什么锁「必须用 token」而不是「必须等于 16px」：刻度将来整体调档时
+ * 改 token 一处即可；写成写死 16px 的规则会一改就红，久了就没人维护。
+ */
+const TOPBAR_H1_RE = /\.top-bar\s+h1\s*\{([^}]*)\}/g
+// 捕获整条声明而不是只捕获数字：报错信息里要能直接看到 `font-size: 20px`。
+// （第一版只捕获数字组，于是期望值写成 '20px' 而实际是 '20'，自检立刻报红。）
+const RAW_PX_FONT_RE = /font-size\s*:\s*\d+(?:\.\d+)?px/
+
+/**
+ * 匹配前必须剥注释。
+ *
+ * 2026-10-02 实测踩到的坑：`.top-bar h1` 的规则里我加了一句解释性注释
+ *   /* 走 token：与设置页的顶栏标题（`.title { font-size: var(--text-lg) }`）同源 * /
+ * 那个注释里含一个 `}`，而规则体正则用的是 `\{([^}]*)\}` —— 它在注释的 `}` 处
+ * 就截断了，于是**同一块里紧跟其后的 `font-size: 20px` 完全扫不到**，
+ * 负控把违规塞回去护栏都不红。
+ *
+ * 也就是说：注释里的括号能让违规隐身。这是「注释能满足任何源码扫描断言」
+ * 那一族的镜像——上次是注释让断言**误报**，这次是让断言**漏报**。
+ * `//` 要求前一个字符不是 `:`，否则 `'https://'` 会被当成注释起点。
+ */
+function stripCssComments(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
+}
+
+/** 从一段 CSS 文本里取出「顶栏标题写死了像素」的位置。 */
+function findRawPxTopBarTitles(css) {
+  const hits = []
+  for (const m of stripCssComments(css).matchAll(TOPBAR_H1_RE)) {
+    const f = m[1].match(RAW_PX_FONT_RE)
+    if (f) hits.push(f[0])
+  }
+  return hits
+}
+
+describe('顶栏页面标题必须走字号 token', () => {
+  it('检测器自检：认得出写死 px，也认得出走 token（防空跑）', () => {
+    // 这条判据的失败面是「什么都没扫到 → 数组为空 → 绿」。
+    // 真实违例可能恰好是 0 个，所以**不能**用「至少扫到 N 处」来防空跑，
+    // 必须直接验检测器本身对合成样本的行为。
+    assert.deepEqual(
+      findRawPxTopBarTitles('.top-bar h1 { font-size: 20px; }'),
+      ['font-size: 20px'],
+      '检测器认不出写死 px 的顶栏标题',
+    )
+    assert.deepEqual(
+      findRawPxTopBarTitles('.top-bar h1 { font-size: var(--text-lg); }'),
+      [],
+      '检测器把走 token 的写法误判成违规',
+    )
+    // 单行紧凑写法也必须认得（真实代码两种都有；注意回显的是原文，不做归一化）
+    assert.deepEqual(findRawPxTopBarTitles('.top-bar h1{font-size:17px}'), ['font-size:17px'])
+    // 对抗样本：注释里带 `}` 不得把同一规则块里后面的违规截断掉。
+    // 这不是假想——仓库里真的因为这么一句注释让负控不红过一次。
+    assert.deepEqual(
+      findRawPxTopBarTitles(
+        '.top-bar h1 {\n  /* 见 `.title { font-size: var(--text-lg) }` */\n  font-size: 20px;\n}',
+      ),
+      ['font-size: 20px'],
+      '注释里的 } 把规则块截断了，违规隐身',
+    )
+    // 注释里写了 px 也不该算违规（否则「在注释里解释旧写法」就会永久判红）
+    assert.deepEqual(
+      findRawPxTopBarTitles('.top-bar h1 {\n  /* 此前是 font-size: 20px */\n  font-size: var(--text-lg);\n}'),
+      [],
+      '把注释里的旧写法误判成违规',
+    )
+  })
+
+  it('仓库里没有写死像素的顶栏标题', () => {
+    const hits = []
+    for (const file of files) {
+      const rel = relative(ROOT, file).replace(/\\/g, '/')
+      for (const decl of findRawPxTopBarTitles(readFileSync(file, 'utf8'))) {
+        hits.push(`${rel}: ${decl}`)
+      }
+    }
+    assert.equal(
+      hits.length,
+      0,
+      `发现 ${hits.length} 处顶栏标题写死了像素字号（与全局 --text-lg 漂移，切页时标题忽大忽小）：\n  - ${hits.join('\n  - ')}`,
+    )
+  })
+})

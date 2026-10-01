@@ -219,7 +219,9 @@ function formatLastUpdate(timestamp?: string): string {
 
 .top-bar h1 {
   flex: 1;
-  font-size: 20px;
+  /* 走 token：与设置页/邮件页的顶栏标题（`.title { font-size: var(--text-lg) }`）
+     同源。此前这里写死 20px，与全局 16px 差 25%，是用户报的「字体不对」之一。 */
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
