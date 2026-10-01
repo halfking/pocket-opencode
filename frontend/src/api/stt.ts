@@ -9,8 +9,16 @@
  * On web (no native plugin), skips local and goes straight to cloud.
  */
 import { sherpa } from '../native/sherpa'
-import { http, LONG_REQUEST_TIMEOUT_MS } from './http'
+import { http } from './http'
 import { blobToBase64 } from '../utils/base64'
+
+/**
+ * 单段语音转写的客户端超时。
+ *
+ * 服务端 Transcriber 自身 120 秒。取 180 秒而不是取 120——见调用处的注释：
+ * **与服务端相等等于客户端先到点**。
+ */
+export const STT_TRANSCRIBE_TIMEOUT_MS = 3 * 60_000
 import { filenameForMimeType } from './stt-filename'
 import {
   CLOUD_STT_NEED_BLOB,
@@ -62,11 +70,16 @@ export const sttApi = {
       filename: filenameForMimeType(audioBlob.type || 'audio/webm'),
     })
 
-    // 音频转写比普通 CRUD 慢一个量级（整段 base64 上传 + 推理），
-    // 给到 LONG 上限；但仍必须有上限，否则录音停止链路会被拖死。
+    // 音频转写比普通 CRUD 慢一个量级（整段 base64 上传 + 推理）。
+    //
+    // 2026-10-03：原先用的是通用的 LONG_REQUEST_TIMEOUT_MS，正好 120 秒，
+    // 而服务端 Transcriber 自己就 120 秒（server.go 的 longLivedPaths
+    // 注释里记着）。**相等即错**：客户端计时从请求发出开始，服务端的从
+    // handler 进来开始，中间还隔着网络与鉴权，所以客户端实际总是先到点，
+    // 于是「刚好用满预算」的那一档必然失败。取 3 分钟。
     const res = await http<{ text: string; confidence: number; costCents?: number }>(
       '/api/stt/transcribe',
-      { method: 'POST', body, timeoutMs: LONG_REQUEST_TIMEOUT_MS },
+      { method: 'POST', body, timeoutMs: STT_TRANSCRIBE_TIMEOUT_MS },
     )
     return {
       text: res.text,

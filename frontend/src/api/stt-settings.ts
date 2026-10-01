@@ -24,6 +24,16 @@ import { blobToBase64 } from '../utils/base64'
  */
 const FULL_TRANSCRIBE_TIMEOUT_MS = 11 * 60_000
 
+/**
+ * 「试转」的客户端超时。
+ *
+ * 服务端 120 秒（server.go 的 longLivedPaths 注释：/api/stt/probe 120 秒）。
+ * 原先用的是通用的 LONG_REQUEST_TIMEOUT_MS，也正好 120 秒——**相等即错**：
+ * 客户端计时含网络与鉴权开销，实际总是先到点，于是「试转刚好用满预算」的
+ * 那一档必然失败，而这是设置页里用户主动点、最期待看到结果的一个按钮。
+ */
+export const STT_PROBE_TIMEOUT_MS = 3 * 60_000
+
 /** 转写通道。 */
 export type SttChannel = 'auto' | 'gateway' | 'external'
 
@@ -268,7 +278,7 @@ export const sttSettingsApi = {
         filename: filenameForMimeType(audio.type),
         ...opts,
       }),
-      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+      timeoutMs: STT_PROBE_TIMEOUT_MS,
     })
   },
 }

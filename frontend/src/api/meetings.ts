@@ -4,6 +4,31 @@
 import { http } from './http'
 import type { ActionItem, LiveSummary, MeetingSegment, RecommendItem } from '../features/meetings/meetings-store'
 
+/**
+ * 会议链路长请求的客户端超时。
+ *
+ * 2026-10-03 普查出来的：这两个调用点原先**都没传 timeoutMs**，一律吃
+ * http.ts 的默认 30 秒，而后端各自的预算是
+ *
+ *   handleMeetingSummary  context.WithTimeout(r.Context(), 45*time.Second)  ← 45s
+ *   handleMeetingRefine   context.WithTimeout(r.Context(), 90*time.Second)  ← 90s
+ *
+ * （server_meeting.go:224 / 313）
+ *
+ * 两条全中：客户端 30s < 服务端 45s/90s。表现是「服务端写完了、前端报失败」
+ * ——会议摘要偶尔转不出来、事后精翻一按就报错，而且只要推理真的用满预算就
+ * **每次都失败**。
+ *
+ * 取值留出余量而不是与服务端相等：客户端计时含网络与鉴权开销，取相等值时
+ * 客户端实际总是先到点。
+ *
+ * 同文件还有第三条 handleTranscribeMeeting（120s）目前**前端没有调用点**
+ * （录音走 /api/stt/*），所以这里不给它配常量——留一个没人引用的常量只会
+ * 让下一个人以为它生效了。
+ */
+export const MEETING_SUMMARY_TIMEOUT_MS = 90_000
+export const MEETING_REFINE_TIMEOUT_MS = 150_000
+
 export interface SummaryResult {
   summary: string
   keyPoints: string[]
@@ -57,6 +82,7 @@ export const meetingsApi = {
           prev_summary: prevSummary,
           meta,
         }),
+        timeoutMs: MEETING_SUMMARY_TIMEOUT_MS,
       })
       return normalizeSummary(raw)
     } catch {
@@ -99,6 +125,7 @@ export const meetingsApi = {
           target_langs: targetLangs,
           meta,
         }),
+        timeoutMs: MEETING_REFINE_TIMEOUT_MS,
       })
       return normalizeRefine(raw, segments)
     } catch {

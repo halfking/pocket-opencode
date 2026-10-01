@@ -61,6 +61,19 @@ export const BACKFILL_TIMEOUT_MS = 10 * 60_000
  */
 export const CLASSIFY_TIMEOUT_MS = 16 * 60_000
 
+/**
+ * 单封发票提取的客户端超时（要回 IMAP 拉原文）。
+ *
+ * 服务端 handleEmailInvoiceExtract **没有整体超时**——耗时全在
+ * `FetchMessageRaw(r.Context(), …)` 上。后端 longLivedPaths 的事故记录里
+ * 写着「命中发票但缺开票日期时，会只为这一封拉一次 IMAP 原文补日期，
+ * 实测这一封就能超过 30s」。
+ *
+ * 原来的症状正是那行注释描述的：发票行建好了，界面却报错，用户以为没提取
+ * 而反复点击。取 3 分钟，与 harvest 的 5 分钟同量级。
+ */
+export const INVOICE_EXTRACT_TIMEOUT_MS = 3 * 60_000
+
 export type EmailCategory =
   | 'work' | 'bill' | 'notification' | 'personal' | 'marketing' | 'spam'
 export type EmailImportance = 'high' | 'medium' | 'low'
@@ -519,10 +532,23 @@ export const emailApi = {
     const q = qs.toString()
     return http(`/api/emails/invoices${q ? `?${q}` : ''}`)
   },
-  extractInvoice(emailId: string): Promise<EmailInvoiceExtractResult> {
+  /**
+   * 手动对单封邮件做发票提取。
+   *
+   * 2026-10-03：这里原先没传 timeoutMs，吃默认 30s。而服务端
+   * handleEmailInvoiceExtract **根本没有设整体超时**——它的耗时全在
+   * `emailFetcher.FetchMessageRaw(r.Context(), …)` 回 IMAP 拉原文上，
+   * 后端 longLivedPaths 的事故记录里写着「实测单封就能超过 30s」。
+   *
+   * 后果是仓库里早就记过的那一幕：**发票行建好了，界面却报错**，用户以为
+   * 没提取而反复点击。取 3 分钟，与 harvest 的 5 分钟同量级。
+   */
+  extractInvoice(emailId: string, signal?: AbortSignal): Promise<EmailInvoiceExtractResult> {
     return http('/api/emails/invoices/extract', {
       method: 'POST',
       body: JSON.stringify({ emailId }),
+      signal,
+      timeoutMs: INVOICE_EXTRACT_TIMEOUT_MS,
     })
   },
   setInvoiceStatus(id: string, status: EmailInvoiceStatus): Promise<void> {
