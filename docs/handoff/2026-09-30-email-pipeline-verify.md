@@ -5614,6 +5614,87 @@ go test ./internal/email/ 通过，-race 通过（0 DATA RACE）
 
 ---
 
+## §7ci 绕开 Docker：用进程内 IMAP 服务器验证需求 1 的不可逆 MOVE（2026-10-02）
+
+§7ch 定位到 `junk.go` 69 条 0%，并修好了「让它能跑起来」的 DSN 前置条件，
+但 Docker daemon 未运行 ⇒ 需求 1 这条**唯一不可逆**的操作仍未执行。
+本节把这条路在不依赖任何外部进程的前提下走通。
+
+## 做法
+
+`Fetcher.dialTLS`（`fetcher.go:30`）本来就是为本地 IMAP server 留的测试缝。
+于是用 `net.Listen("127.0.0.1:0")` 在**进程内**起一个最小 IMAP 服务器，
+走真实 TCP + 真实 go-imap 客户端，只实现 `junk.go` 真正调用到的命令：
+CAPABILITY / LOGIN / LIST / SELECT / CREATE / UID MOVE / UID COPY / UID STORE。
+
+**故意不实现删除原邮件的能力** —— 一旦代码路径偏离预期，测试会红，
+而不是静悄悄通过。
+
+## 关键：断言「服务器收到了什么」，不是「调用没报错」
+
+MOVE 一旦发出，邮件就离开收件箱。`moved == 3` 只能证明循环跑完了。
+服务器侧**记录每一条收到的命令**，据此断言：
+
+1. 服务器确实收到了 `UID MOVE`；
+2. 目标是 **LIST 里发现出来的**垃圾箱，不是硬编码的 `"Junk"`；
+3. 三个 UID 一个不少都到了服务器；
+4. **`\Seen` 没被置上**（移动不该改变邮件的已读状态）。
+
+第 4 条是设计后才想到的：任何实现里只要混入一次 `UID STORE +FLAGS(\Seen)`，
+邮件就会被标成已读 —— 那是不可逆的副作用。
+
+## 9 个用例覆盖的分支
+
+| 分支 | 为什么要有 |
+|---|---|
+| 正常：`\Junk` 属性命中 | 主路径 |
+| 无 `\Junk` 属性，靠**名字**匹配 + 层级前缀 | 163/qq 都不发 `\Junk` 属性 |
+| 完全没有垃圾箱 → `CREATE "Junk"` | 否则需求 1 在这些账户上永远不生效 |
+| 没有垃圾箱且 `CREATE` 失败 → **必须报错** | 返回 nil error 会让调用方把「一封没移」当「移完了」 |
+| 空 UID 列表 → 不建连接 | 用 `loginOK=false` 反证 |
+| 账户 disabled → 拒绝 | 不可逆操作上没有这层 = 一次误配置搬空邮件 |
+| UID ≤ 0 → 跳过但不拖累整批 | POP3 来源邮件没有真 UID |
+| **LOGIN 失败 → MOVE 之前停住** | 认证没过就动邮件 = 搬走别人的邮件 |
+
+## 负控
+
+把 `MoveUIDsToJunk` 退化成「只发剥掉层级的短名」（`junkBox = baseMailboxName(junkBox)`）——
+这正是把邮件送进**错误信箱**的典型写法：
+
+    --- FAIL: TestMoveUIDsToJunk_FallsBackToNameMatching
+        moved to [Junk]; must use the full hierarchical name returned by LIST
+
+注入生效已打点（`NEGCTL=1`）。生产代码已恢复（`git diff junk.go` 为空）。
+
+## 写这个测试时踩的三个坑（都不是产品 bug）
+
+1. **BOM 污染中文信箱名**。我先用 PowerShell `.Replace()` 改文件，
+   `Set-Content -Encoding UTF8` 写入 BOM（PS 5.1 陷阱），又压掉了换行。
+   症状是 `in LIST: invalid UTF-8`。改用 `write` 工具 + 手工剥 BOM 解决。
+2. **`CREATE "Junk"` 带引号**，我把判据写成 `HasPrefix(cmd, "CREATE Junk")` ——
+   字符串前缀匹配，加了引号就永远匹配不上。改成 `sawCreate()` 解析后比较。
+3. **IMAP mailbox 名是 modified UTF-7**。直接发 UTF-8 字节的信箱名会被
+   客户端 `ExpectMailbox` 拒掉（同样报 `invalid UTF-8`）。该用例改用 ASCII
+   名 `Other Folders/Junk` —— 这里要验的是**层级剥离**，不是编码。
+
+第 3 个坑顺带暴露了我服务器实现的一个真 bug：用 `strings.Fields` 切参数，
+把 `COPY 11 "Other Folders/Junk"` 的信箱名截成了 `Folders/Junk`。
+改成按引号切分（`splitIMAPArgs`）后，这条断言才真正成立 ——
+**它现在顺带验证了 go-imap 确实给含空格的信箱名加了引号**。
+
+## 回归
+
+go build ./... = 0，go vet ./... = 0
+go test ./internal/email/ 通过，-race 通过（0 DATA RACE）
+
+## 仍然未验证的
+
+Greenmail（`-tags=greenmail`）那两条用例**本机依旧跑不了**，需要 Docker。
+本节覆盖的是**同一段 junk.go 逻辑**，但服务器是我自己写的最小实现，
+不覆盖 Greenmail 的 quirks。真实邮箱上的 MOVE 仍需单独授权（不可逆）。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
