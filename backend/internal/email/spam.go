@@ -37,6 +37,11 @@ var spamWeakWords = []string{
 	"好文", "专属福利", "扫码", "海报", "限时", "特惠", "福利",
 	"promo", "sale", "discount", "deal", "newsletter", "weekly digest",
 	"exclusive offer", "limited time",
+	// 资讯/摘要类。纯技术周报既没有促销词也未必带退订头，光靠上面那批
+	// 只能到 70 分，差 30 永远过不了 100 的阈值——实测「本周技术精选」
+	// 这类真实 newsletter 正是如此。它们与促销无关，但对「收发票 + 看重要
+	// 邮件」的系统是纯噪声，与退订营销是同一类东西。
+	"周报", "资讯", "简报", "每日精选", "行业动态", "技术分享", "公开课",
 }
 
 // spamSenderHints 发件人 local-part / 域名特征。
@@ -137,11 +142,19 @@ func LooksLikeSpam(from, subject, snippet string, invoiceCandidate, important bo
 		}
 	}
 	for _, p := range spamSubjectPatterns {
-		if strings.Contains(subject, p) {
-			// 70 而不是原来的 45：带退订头的邮件在实践中几乎都是可退订的营销
-			// 列表。45 + 弱词 40 = 85 仍差 15 分够不着阈值，等于白加。
-			add(70, "退订特征:"+p)
-			break
+		// 主题**和摘要**都要查。真实 newsletter 的退订链接几乎总在 HTML
+		// 摘要里，主题只是文章标题——只查主题等于漏掉整类「技术资讯/云厂商
+		// 周报」，而这正是本系统真实信箱里 score 最高的那批（实测 19 封
+		// near-miss 全部是这类，score=30 差的就是这个退订分）。
+		//
+		// 命中即 100：带退订头的邮件**按定义**就是可退订的营销列表，这不是
+		// 推断。原先给 70 是把「退订」当弱信号和别的词凑分，结果「阿里云
+		// 云安全中心周报」这种真实营销邮件只能到 70（退订 70 + 周报 1 个
+		// 弱词不给分），永远差 30 判不掉——而它确实是垃圾。
+		// 误伤风险由 invoiceCandidate / important 短路和白名单域兜住：
+		// 真实账单发票即使带退订也不会走到这里。
+		if strings.Contains(subject, p) || strings.Contains(snippet, p) {
+			return SpamVerdict{Spam: true, Score: 100, Why: "退订特征:" + p}
 		}
 	}
 	// 纯图片/纯 HTML 单元格堆叠类广告常见特征：摘要几乎无有效文本
