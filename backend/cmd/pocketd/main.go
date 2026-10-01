@@ -241,19 +241,11 @@ func main() {
 		}
 		userStore = us
 		if n, _ := us.CountUsers(context.Background()); n == 0 {
-			user := cfg.DevAuthUser
-			pass := cfg.DevAuthPass
-			if user == "" {
-				user = "admin"
-			}
-			if pass == "" {
-				if !cfg.DevAuth {
-					log.Printf("WARN: users table empty and POCKET_DEV_AUTH not set; refusing to auto-create admin/admin")
-				} else {
-					pass = "admin"
-				}
-			}
-			if pass != "" {
+			create, user, pass, note := bootstrapDecision(cfg.DevAuthUser, cfg.DevAuthPass)
+			switch {
+			case note != "":
+				log.Printf("WARN: %s", note)
+			case create:
 				if err := us.InsertUser(context.Background(), &auth.User{ID: "user-" + user, Username: user, Role: "admin"}, pass, ""); err != nil {
 					log.Printf("WARN: bootstrap first user %q: %v", user, err)
 				} else {
