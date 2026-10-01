@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,12 +52,36 @@ func newWorkspaceTestStore(t *testing.T) (*Store, func()) {
 		t.Fatalf("create schema: %v", err)
 	}
 
+	// 清理**必须在这里就注册**，不能等函数返回 cleanup 再由调用方 defer。
+	//
+	// 2026-10-02 实测：下面还有三处 t.Fatalf（parse dsn / scoped pool /
+	// NewStore migrate），而 t.Fatalf 走的是 runtime.Goexit() —— 栈上的
+	// defer 会跑，但**还没被返回的 cleanup 永远不会执行**，schema 就留在
+	// 生产库里了。当时实测残留 2 个 email_ws_test_* schema（各 9 张表）。
+	//
+	// cleanup 用 sync.Once 保证幂等：调用方显式 defer cleanup() 与
+	// t.Cleanup 收尾时都会触发一次，两条路径都安全。
+	var pool *pgxpool.Pool
+	var dropOnce sync.Once
+	cleanup := func() {
+		dropOnce.Do(func() {
+			if pool != nil {
+				pool.Close()
+			}
+			if _, err := rootPool.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+				t.Logf("drop schema %s: %v", schema, err)
+			}
+			rootPool.Close()
+		})
+	}
+	t.Cleanup(cleanup)
+
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatalf("parse dsn: %v", err)
 	}
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("scoped pool: %v", err)
 	}
@@ -66,13 +91,6 @@ func newWorkspaceTestStore(t *testing.T) (*Store, func()) {
 		t.Fatalf("NewStore (migrate): %v", err)
 	}
 
-	cleanup := func() {
-		pool.Close()
-		if _, err := rootPool.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE"); err != nil {
-			t.Logf("drop schema %s: %v", schema, err)
-		}
-		rootPool.Close()
-	}
 	return store, cleanup
 }
 
