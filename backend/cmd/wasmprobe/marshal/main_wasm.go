@@ -108,9 +108,18 @@ func main() {
 	// 在这个架构里根本不会出现 —— 它假设数据一次性进 wasm、算完一次性出，
 	// 可中间要调外部服务时这个假设就破了。
 	// 拿 bulk 的数字去论证 A 路线的可行性会**系统性低估**边界成本。
+	//
+	// **不要**写 `js.Global().Get("Array").New(arr)`：那是 `new Array(arr)`，
+	// 而 JS 的 `new Array(x)` 在 x 不是数字时创建的是**长度为 1、唯一元素就是 x
+	// 本身**的数组（不是拷贝、也不是展开）。于是 Length() 恒为 1，
+	// Index(0) 拿到的是整个 permail 数组，再对它 `.String()` 得到的是
+	// syscall/js 给 object 的 `"<object Value>"` ——
+	// json.Unmarshal 报 `invalid character '<'`，而这条 return 之前什么都没打，
+	// 于是外部看到的是「exit 0、stderr 空、stdout 0 字节」。
+	//
+	// 正确写法：js.Value 本身就有 Length()/Index()，直接用即可。
 	if arr := js.Global().Get("marshalPerMail"); arr.Type() == js.TypeObject {
-		list := js.Global().Get("Array").New(arr)
-		l := list.Length()
+		l := arr.Length()
 
 		// 预热：第一次 json.Marshal/Unmarshal 会触发编码器初始化。
 		_ = classifyAll([]mailIn{corpus(1)[0]})
@@ -118,7 +127,7 @@ func main() {
 		var readNs, calcNs, writeNs float64
 		digests := make([]mailOut, 0, l)
 		for i := 0; i < l; i++ {
-			one := list.Index(i).String() // JS → wasm 的字符串取值
+			one := arr.Index(i).String() // JS → wasm 的字符串取值
 
 			t0 := time.Now()
 			var m mailIn
@@ -157,13 +166,21 @@ func main() {
 		js.Global().Set("marshalError", "neither marshalInput (string) nor marshalRows (array) set by host")
 		return
 	}
-	arr := js.Global().Get("Array").New(rows)
-	l := arr.Length()
+	// 同上：直接用 marshalRows 本身，别用 `new Array(rows)` 包一层。
+	// 包一层的实测症状是 count 恒为 1（外层数组长度 1，元素是 rows 本身），
+	// 而 digest 又碰巧自洽 —— 探针的三方一致性校验**抓不到**它，
+	// 因为它比的是「四条路径结果是否一致」，不是「count 是否等于语料条数」。
+	// 所以这里显式断言条数，避免再出现「跑出了数字但数字是错的」。
+	l := rows.Length()
+	if l == 0 {
+		js.Global().Set("marshalError", "marshalRows is empty")
+		return
+	}
 	in := make([]mailIn, 0, l)
 
 	readStart := time.Now()
 	for i := 0; i < l; i++ {
-		row := arr.Index(i)
+		row := rows.Index(i)
 		in = append(in, mailIn{
 			From:       row.Get("from").String(),
 			Subject:    row.Get("subject").String(),

@@ -96,6 +96,21 @@ await go.run(instance);
 
 console.log = origLog;
 
+// wasm 侧的失败路径是 `js.Global().Set("marshalError", ...)` + 裸 `return`，
+// 它**不写 stderr、也不写 stdout**，退出码还是 0。2026-10-02 排查 §7ce 时
+// permail 形态就死在这：外层只看到「exit 0、stderr 空、stdout 0 字节」，
+// 连续四个假设（require 方式 / go.exit / 管道截断 / ValueOf panic）全被推翻，
+// 因为真正的信息在 wasm 堆里，宿主没去读。
+//
+// 实测 `globalThis.marshalError` 在 go.run() resolve **之后**仍然可读
+// （Node 侧读 globalThis 不需要 wasm 还活着），所以这里必须转储。
+// 判据是「有值就报错」，而不是「stdout 为空才报错」——后者在 bulk 正常时
+// 也会被 struct/permail 的空输出触发，噪声太大。
+if (globalThis.marshalError) {
+  process.stderr.write(`wasm reported marshalError: ${globalThis.marshalError}\n`);
+  process.exit(1);
+}
+
 if (exitCode !== null && exitCode !== 0) {
   process.stderr.write(`wasm exited with code ${exitCode}\n`);
   process.exit(1);

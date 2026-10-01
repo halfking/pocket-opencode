@@ -5310,16 +5310,18 @@ permail（2N 次，**这个才是真实模型**）。
 4. **`js.ValueOf(int64)` panic** —— 我为了调试把 `map[string]any` 挂到
    `globalThis`，wasm 侧直接 `panic: ValueOf: invalid value`。
 
-### 仍未定位的那一个
+### 仍未定位的那一个 —— **已定位，见 §7cv**
 
 `scripts/marshal-driver.mjs` 最终状态：**退出码 0、stderr 全空、stdout 0 字节**。
 
-js/wasm 的 `os.Stdout` 在 `wasm_exec.js` 里被接到 **`console.log`**
-（`fs.writeSync` polyfill 的实现是 `console.log(outputBuf.substring(0, nl))`）。
-Node 的 `console.log` 对 pipe 是**异步**的，我据此判断「进程退出时缓冲没刷完」，
-改成劫持 `console.log` 并用 `fs.writeSync(1, ...)` 同步转发 —— **现象不变**。
+~~js/wasm 的 `os.Stdout` 在 `wasm_exec.js` 里被接到 **`console.log`**~~
+~~（`fs.writeSync` polyfill 的实现是 `console.log(outputBuf.substring(0, nl))`）。~~
+~~Node 的 `console.log` 对 pipe 是**异步**的，我据此判断「进程退出时缓冲没刷完」，~~
+~~改成劫持 `console.log` 并用 `fs.writeSync(1, ...)` 同步转发 —— **现象不变**。~~
 
-这个推断没有被证实，也没有被推翻。**不宣称边界成本是多少。**
+**这个推断是错的，而且方向就错了**：问题从来不在 stdout 捕获。
+driver 原封不动就是好的 —— 真正的失败在 wasm 侧，而且是**静默**的。
+根因、修法、两条负控与实测数字全部在 §7cv。
 
 ### 代码保留的意义
 
@@ -5340,8 +5342,114 @@ native 基线与三种 wasm 形态的 wasm 侧实现都已就位，驱动一旦�
 
 第一版的判据是「wasm 总耗时 − native 总耗时」，**一旦计算耗时落到分辨率以下，
 减法就变成 0 − 0，边界成本被彻底抹掉**。现在 wasm 侧改成 read / calc / write
-三段各自 `time.Now()` 直接测绝对值，这是正确口径 —— 但因为驱动没跑通，
-**这些数字一个也没拿到**。
+三段各自 `time.Now()` 直接测绝对值，这是正确口径。**数字见 §7cv。**
+
+---
+
+## §7cv 【§7ce 收尾】driver 一直是对的，错的是 wasm 侧一个 JS 语义坑——边界成本数字终于拿到了（2026-10-02）
+
+§7ce 留下的「最后一个仍未定位的原因」已定位。**driver 的 stdout 捕获从头到尾
+都是好的**，四个被排除的假设方向也全错。
+
+### 复现与定位
+
+原封不动跑 `node scripts/marshal-driver.mjs <goroot> <wasm> bulk`，**一次就成功**
+（stdout 269B、exit 0、合法 JSON）。于是问题必然在别处。逐个变量隔离：
+
+| 试的东西 | 结果 |
+|---|---|
+| driver 直接跑（stdin 用文件重定向） | OK 269B |
+| `execFileSync` + `input`（探针真正用的方式） | OK 269B |
+| CWD 换到 worktree | OK 269B |
+| 先跑 native `go run` 再跑 driver | OK 269B |
+| **`mode=struct`** | **OK 但 `count=1`**（语料是 120） |
+| **`mode=permail`** | **exit 0 / stdout 0B / stderr 空** ← 原症状 |
+
+前四项排除了「stdin 类型 / 管道截断 / CWD / 执行顺序」，
+**问题只可能出在模式分支上**。这就是 §7ce 缺的那一步：
+当时只试过 bulk，而 bulk 恰好是三条分支里唯一没坏的。
+
+### 根因：`new Array(x)` 在 x 非数字时不是拷贝
+
+`main_wasm.go` 的 struct 与 permail 两条分支都写了：
+
+```go
+arr := js.Global().Get("Array").New(rows)   // 等价于 new Array(rows)
+```
+
+JS 语义：`new Array(x)` 在 `x` **不是数字**时，创建的是**长度为 1、唯一元素就是
+`x` 本身**的数组。于是：
+
+- `Length()` 恒为 **1**；
+- `Index(0)` 拿到的是**整个 rows 数组**，不是第一行；
+- 对它 `.String()` 得到 syscall/js 给 object 的字面量 `"<object Value>"`
+  → `json.Unmarshal` 报 `invalid character '<' looking for beginning of value`。
+
+两条分支的表现不同，但同源：
+
+- **struct**：`row.Get("from")` 在数组上取不到 → `js.TypeUndefined.String()`
+  返回 `"undefined"` → 造出 1 条全字段为 `"undefined"` 的假数据 →
+  **count=1，且 digest 自洽**（它只含 1 条，所以也"一致"）。
+- **permail**：`json.Unmarshal` 直接失败 → `Set("marshalError")` + **裸 `return`**，
+  return 之前一个字节都没打 → 外部看到「exit 0、stderr 空、stdout 0 字节」。
+
+**关键教训：struct 那条是「假绿」。** 探针本来就有「四条路径结果摘要一致」的
+校验，而它**照样通过** —— 因为一致性校验证明的是「各路径算法相同」，
+**不是「处理了正确数量的数据」**。这与 §7cr（护栏被注释骗过）、
+§7cs（`InvoiceContentHash` 全树无调用者）是同一族：判据问错了问题。
+
+修法：`js.Value` 本身就有 `Length()` / `Index()`，直接用，不必包一层。
+（`main_wasm.go:183` 的 `New(len(out))` 传的是数字，**本来就是对的**，没动。）
+
+### 两条负控（都实测转红）
+
+1. **撤回 struct 修复** → `[marshal] mode=struct: count=1, want 120`，exit 1。
+   命中的是本轮**新加**的条数断言，不是碰巧挂在别处。
+2. **撤回 permail 修复** → `wasm reported marshalError: invalid character '<'`，exit 1。
+
+### 顺带修掉的可观测性缺口
+
+wasm 侧所有失败路径都是 `Set("marshalError") + return`，**不写 stderr、不写
+stdout、退出码还是 0**。driver 现在在 `go.run()` resolve 之后读
+`globalThis.marshalError` 并转储（实测此时仍可读 —— Node 侧读 globalThis
+不需要 wasm 还活着）。判据取「有值就报错」而不是「stdout 为空才报错」，
+后者在 bulk 正常时也会被 struct/permail 的空输出触发，噪声太大。
+
+探针侧另加两处：`once()` 的 JSON 解析失败带上 `mode`（原来裸
+`Unexpected end of JSON input` 完全看不出是哪个形态），以及条数必须等于
+语料条数的断言。
+
+### 实测数字（120 封语料 / 7 轮取最小值 / 两次独立运行）
+
+```
+  形态            读(JS→wasm)    算(纯计算)  写(wasm→JS)          合计   边界占比
+  wasm-bulk     读   14.085  算    2.305  写    6.410   合计   22.799 ms   边界占比   89.9%
+  wasm-struct   读    8.605  算    1.298  写    6.141   合计   16.044 ms   边界占比   91.9%
+  wasm-permail  读   13.843  算    0.781  写    7.314   合计   21.938 ms   边界占比   96.4%   每封边界 0.1763 ms
+```
+
+第二轮：bulk 19.859 / struct 16.646 / permail 22.712 ms，每封边界 0.1826 ms。
+两次抖动 ≤ 4%，四条路径（native + 三形态）result_digest 完全一致。
+
+**能说的**（对齐 §7ce 的问题，不外推）：
+
+- A 路线的真实模型（permail）在 120 封规模下，**跨界成本 ≈ 0.18 ms/封**，
+  合计 22.7 ms，**边界占总耗时 96.5%** —— 纯计算只占 3.5%。
+- bulk 形态反而**不是**最省的：19.9 ms vs permail 22.7 ms。差距主要在写回
+  （bulk 4.4~6.4ms vs permail 7.3~7.5ms），因为 permail 每封都要单独
+  `Set("marshalScratch")` 回写一次。**所以「bulk 最优」这个直觉是错的**，
+  而它正是 §7ce 论证时默认的前提。
+- struct 形态**最快**（16.0~16.6 ms），读回最省（8.6ms vs 13~14ms）——
+  逐字段 `syscall/js` 属性访问比整串 JSON 反序列化便宜。
+
+**不能说的**：这些数字是 **Node 宿主**上量的。真机 Android WebView 的
+JS 引擎、sql.js 取行成本、以及真实邮件字段比语料更长的情况都没测（见下）。
+
+### 本节仍未测
+
+- 真机 Android WebView 跑同一探针（`wasm_exec.js` 的宿主 API 在 WebView 里不同）
+- sql.js 取行 → wasm 的那一段（现在测的是「已有 JS 值 → wasm」）
+- 语料是合成数据（8 种主题轮转），真实邮件的 snippet/HTML 长度分布未采样
 
 ---
 

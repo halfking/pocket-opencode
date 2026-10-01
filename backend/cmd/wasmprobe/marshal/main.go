@@ -1,21 +1,21 @@
 // marshal — 需求 6 A 路线的**最后一个未知数**：wasm 堆 ↔ 宿主数据结构的传递成本。
 //
-// ## 状态：native 侧已验证可用，wasm 侧的**驱动脚本未跑通**（2026-10-02）
+// ## 状态：native 与三种 wasm 形态**都已跑通**（2026-10-02 更新）
 //
-// 见 docs/handoff 的 §7ce。这个包本身是好的：
-//   · `go run ./cmd/wasmprobe/marshal/`            -> 正常输出 JSON
+// 见 docs/handoff 的 §7ce 与 §7cv。
+//   · `go run ./cmd/wasmprobe/marshal/`              -> 正常输出 JSON
 //   · `go run ./cmd/wasmprobe/marshal/ -emit-corpus` -> 正常输出 120 封语料
 //   · `GOOS=js GOARCH=wasm go build`                -> 正常产出 wasm
-//   · `go vet`                                     -> 干净
+//   · `node scripts/marshal-probe.mjs`              -> 四条路径数字 + 一致性校验
 //
-// 卡住的是 `scripts/marshal-driver.mjs` 取不到 wasm 的 stdout：
-// driver 退出码 0、stderr 全空、stdout 0 字节。已排除的原因见 driver 里的注释
-// （`require('wasm_exec_node.js')` 会立即执行并读错 argv[2]；
-//  `go.exit = process.exit` 会杀掉进程；`readFileSync(0)` 读管道会截断；
-//  `js.ValueOf(int64)` panic）。**最后一个仍未定位的原因**：
-// js/wasm 的 `os.Stdout` 被 wasm_exec.js 接到 `console.log`，而 Node 的
-// `console.log` 对 pipe 是异步的；劫持后改用 `fs.writeSync` 同步转发也没成功，
-// 现象不变。**结论：没有测出数字，不宣称任何边界成本。**
+// §7ce 记的那个「driver 退出码 0、stderr 全空、stdout 0 字节」已定位并修掉，
+// 根因是 wasm 侧的 `js.Global().Get("Array").New(arr)`（JS 语义坑：
+// `new Array(x)` 在 x 非数字时得到**长度为 1、元素就是 x 本身**的数组），
+// 不是 driver 的 stdout 捕获问题。修法与两条负控见 §7cv。
+//
+// **注意 `go vet` 在 host 上不编译 `//go:build js` 的文件** —— 改完
+// main_wasm.go 必须 `GOOS=js GOARCH=wasm go vet` 才算验过。本轮就被
+// 「host vet 绿、wasm build 红（undefined: arr）」坑过一次。
 //
 // 保留这套代码的价值：native 基线与三种 wasm 形态的 wasm 侧实现都已就位，
 // 驱动一旦修好即可直接产出数据；而且 §7ce 里那些排查结论本身是可复用的知识。

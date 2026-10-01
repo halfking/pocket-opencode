@@ -80,10 +80,21 @@ if (!existsSync(execNode)) {
 // Go/wasm 的 main 是一次性的：每个形态必须起独立子进程重新实例化。
 // 传 GOROOT 而不是 wasm_exec_node.js 路径 —— driver 只 require
 // wasm_exec.js（纯定义），见 marshal-driver.mjs 里的说明。
+//
+// 失败时必须带上 mode：2026-10-02 那次 permail 静默失败，裸
+// `JSON.parse('')` 报的 "Unexpected end of JSON input" 完全看不出是哪个形态，
+// 而 bulk/struct 都是好的 —— 少了这个信息就只能靠逐个手试。
 function once(mode, payload) {
-  return JSON.parse(run(process.execPath, [driverPath, goroot, wasmPath, mode], {
+  const out = run(process.execPath, [driverPath, goroot, wasmPath, mode], {
     input: JSON.stringify(payload), maxBuffer: 64 * 1024 * 1024,
-  }));
+  });
+  let parsed;
+  try {
+    parsed = JSON.parse(out);
+  } catch (err) {
+    throw new Error(`[marshal] mode=${mode}: driver stdout is not JSON (${out.length}B): ${err.message}`);
+  }
+  return parsed;
 }
 
 const best = {};
@@ -95,6 +106,14 @@ for (const [mode, payload] of [
   let b = null;
   for (let i = 0; i < ROUNDS; i++) {
     const r = once(mode, payload);
+    // 条数必须等于语料条数。这条断言是**必需**的，不是锦上添花：
+    // struct 形态曾经用 `new Array(rows)` 把 rows 包成长度 1 的新数组，
+    // 于是 count 恒为 1、算的是 1 封邮件的耗时 —— 而它算出来的 result_digest
+    // 同样只含 1 条，于是下面那套「四条路径结果一致」的校验**照样通过**。
+    // 一致性校验证明的是「各路径算法相同」，不是「处理了正确数量的数据」。
+    if (r.count !== COUNT) {
+      throw new Error(`[marshal] mode=${mode}: count=${r.count}, want ${COUNT} —— 该形态实际处理的数据量不对，耗时不可比`);
+    }
     if (!b || r.elapsed_ns < b.elapsed_ns) b = r;
   }
   best[mode] = b;
