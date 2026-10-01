@@ -1,4 +1,4 @@
-﻿import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { emailApi, type EmailInvoice, type EmailInvoiceStatus } from '../../api/email'
 import { financeApi } from '../../api/finance'
@@ -13,6 +13,10 @@ import {
   INVOICE_PAGE_SIZE, invoiceFileKind, invoiceHasFile,
   mergeInvoicePages, sortInvoicesByReceived, type InvoiceFileKind,
 } from './invoice-list'
+import {
+  formatMoney, normalizeCurrency, round2, sumByCurrency,
+  summaryMoney as summaryMoneyText, type CurrencyAmount,
+} from './invoice-money'
 
 export function useInvoiceList() {
   const toast = useToast()
@@ -25,7 +29,13 @@ export function useInvoiceList() {
   const error = ref('')
   const filter = ref<'' | EmailInvoiceStatus>('')
   const all = ref<EmailInvoice[]>([])
-  const summary = ref({ total: 0, filed: 0, amount: 0, downloaded: 0, pending: 0, failed: 0 })
+  // 合计按币种分组（groups）；singleAmount/singleCurrency 仅在恰好一种币种时有值。
+  // 不用单个 `amount`：跨币种相加得到的数字不是金额，渲染成 ¥ 就是错账。
+  const summary = ref({
+    total: 0, filed: 0, groups: [] as Array<{ currency: string; amount: number }>,
+    singleAmount: null as number | null, singleCurrency: null as string | null,
+    downloaded: 0, pending: 0, failed: 0,
+  })
   const bookingId = ref('')
   /** 飞书共享台账链接（推不出去时的兜底共享文档）。 */
   const shareDocUrl = ref('')
@@ -46,20 +56,39 @@ export function useInvoiceList() {
   const previewKind = computed<InvoiceFileKind>(() => invoiceFileKind(preview.value?.inv.fileName))
   const previewTitle = computed(() => preview.value?.inv.seller || '发票预览')
 
-  function applySummary(list: EmailInvoice[], totals?: { total: number; filed: number; amount: number }) {
+  function applySummary(list: EmailInvoice[], totals?: { total: number; filed: number; amount: number; currency?: string; amounts?: CurrencyAmount[] }) {
+    // 合计按币种分组：跨币种直接相加不是金额，而把它渲染成 ¥ 就是错账
+    // （需求 3「汇总金额」）。服务端多币种时 amount=0、amounts 非空，以它为准
+    // （它统计全量，不受分页截断）；否则用当前页的发票自行分组。
+    const groups: CurrencyAmount[] = totals?.amounts?.length
+      ? totals.amounts.map((a) => ({ currency: normalizeCurrency(a.currency), amount: round2(a.amount) }))
+      : totals?.amount
+        ? [{ currency: normalizeCurrency(totals.currency), amount: round2(totals.amount) }]
+        : sumByCurrency(list)
     summary.value = {
       total: totals?.total ?? list.length,
       filed: totals?.filed ?? list.filter((i) => i.status === 'filed').length,
-      amount: totals?.amount ?? list.reduce((s, i) => s + (Number(i.amount) || 0), 0),
+      groups,
+      // 单币种时保留一个标量，方便旧调用点；多币种为 null
+      // （不是 0——0 是个看起来正常的错数）。
+      singleAmount: groups.length === 1 ? groups[0]!.amount : null,
+      singleCurrency: groups.length === 1 ? groups[0]!.currency : null,
       downloaded: list.filter(invoiceHasFile).length,
       pending: list.filter((i) => i.status === 'pending' || i.status === 'new').length,
       failed: list.filter((i) => i.status === 'failed').length,
     }
   }
+  /** 合计区展示：单币种一个数，多币种逐币种拼。 */
+  function summaryMoney(): string {
+    return summaryMoneyText(summary.value.groups)
+  }
+  /** 单张发票的金额展示（用它自己的币种，不再一律 ¥）。 */
+  function invoiceMoney(inv: EmailInvoice): string {
+    return formatMoney(Number(inv.amount) || 0, inv.currency)
+  }
   function formatAmount(n: number): string {
     return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  }
-  function statusLabel(inv: EmailInvoice): string {
+  }  function statusLabel(inv: EmailInvoice): string {
     return ({ new: '待整理', pending: '待下载', downloaded: '已下载', failed: '失败', filed: '已归档' } as const)[inv.status] ?? inv.status
   }
   function bookable(inv: EmailInvoice): boolean {
@@ -284,7 +313,7 @@ export function useInvoiceList() {
       if (inv.status !== 'filed') {
         try { await emailApi.setInvoiceStatus(inv.id, 'filed'); inv.status = 'filed'; applySummary(all.value) } catch { /* ignore */ }
       }
-      toast.success(`${res.created ? '已入账' : '该发票已入账'} ¥${formatAmount(inv.amount)}`)
+      toast.success(`${res.created ? '已入账' : '该发票已入账'} ${invoiceMoney(inv)}`)
     } catch (e: any) {
       toast.error(apiError(e, 'errors.operateFailed'))
     } finally {
@@ -299,9 +328,12 @@ export function useInvoiceList() {
       if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
       return `"${s.replace(/"/g, '""')}"`
     }
-    const lines = [['开票日期', '收到日期', '销售方', '金额', '发票号', '类目', '状态'].map(cell).join(',')]
+    // 必须带币种列：不带的话导出的金额是裸数字，导出后再对账时无从判断是哪种货币。
+    const lines = [['开票日期', '收到日期', '销售方', '金额', '币种', '发票号', '类目', '状态'].map(cell).join(',')]
     for (const inv of rows) {
-      lines.push([inv.invoiceDate || '', inv.emailDate || '', inv.seller || '', (Number(inv.amount) || 0).toFixed(2), inv.invoiceNo || '', inv.category || '其他', inv.status].map(cell).join(','))
+      lines.push([inv.invoiceDate || '', inv.emailDate || '', inv.seller || '',
+        (Number(inv.amount) || 0).toFixed(2), inv.currency || 'CNY',
+        inv.invoiceNo || '', inv.category || '其他', inv.status].map(cell).join(','))
     }
     try {
       const saved = await downloadTextFile({ filename: 'openpocket-invoices.csv', content: '\uFEFF' + lines.join('\r\n'), mimeType: 'text/csv;charset=utf-8' })
@@ -331,7 +363,7 @@ export function useInvoiceList() {
     shareDocUrl,
     selectMode, selected, thumbs, thumbLoading, preview, invoices, previewSrc, previewBlob, previewKey,
     previewKind, previewTitle,
-    formatAmount, statusLabel, bookable, toggleSelectMode, selectAllDownloaded, togglePick,
+    formatAmount, formatMoney, summaryMoney, invoiceMoney, statusLabel, bookable, toggleSelectMode, selectAllDownloaded, togglePick,
     downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline,
     syncAndReload, exportGrid, pushFeishu, downloadInvoice, markFiled, markNew, book,
     exportCsv, remove,

@@ -31,7 +31,7 @@
             >
           </label>
           <span class="inv-seller">{{ inv.seller || '未知销售方' }}</span>
-          <span class="inv-amount">¥{{ amount }}</span>
+          <span class="inv-amount">{{ amount }}</span>
         </div>
         <div class="inv-meta">
           <span class="cat-badge">{{ inv.category || '其他' }}</span>
