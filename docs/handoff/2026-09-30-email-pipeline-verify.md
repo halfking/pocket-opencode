@@ -5860,6 +5860,91 @@ go vet ./... = 0，go test ./internal/email/ 54.0s 通过，-race 通过
 
 ---
 
+## §7cl `FetchBody` 的读取上限：写了用例、又用负控**推翻了我自己的结论**（2026-10-02）
+
+`fetcher.go:407-418` 的 `FetchBody` 有**两道**截断：请求里带部分取
+`<0.maxBytes>`（服务器少发），以及取回后客户端兜底 `body[:maxBytes]`
+（`fetcher.go:433-435`）。这一段此前**完全没测**。它是 §7bw 那个真 bug 的
+同一处失效模式：`downloadPDF` 原来 `io.LimitReader` 截到 20MB 时
+**返回 nil error**，调用方只做 `isPDFBytes` 落盘 + 标记成功 + 零报错。
+同样的形状落在 `FetchBody` 上，后果是发票 XML 解析失败却零报错。
+
+新文件 `fetcher_inproc_test.go`（7 用例），复用 §7ci 的进程内 IMAP 服务器。
+
+### 卡了两天的不是产品 bug，是我的服务器把 FETCH 响应写错了
+
+三个用例一直红在 `uid 11 not found`，而打点显示服务器**确实发了响应**。
+症状完全指错方向（看起来像被测代码没把 UID 取回来）。查 go-imap 源码
+（`imapclient/fetch.go`）后确认三处**响应格式**错误，全是我的锅：
+
+1. **部分取在请求和响应里语法不同。**
+   请求 `BODY[TEXT]<0.64>`（`writeSectionPartial` 写 `offset.size`）；
+   响应必须 `BODY[TEXT]<0>` —— **只有 offset**（`readPartialOffset` 是
+   `ExpectNumber` + `ExpectSpecial('>')`）。而且它在 `]` **之后**，
+   写进方括号里（`BODY[TEXT<0>]`）同样解码失败。
+   更反直觉的是：`matchFetchItemBodySection` 拿
+   `(cmd.Partial == nil) != (resp.Partial == nil)` 判不匹配，
+   **offset 必回显、size 反倒不能回显**（源码注释：not echoed back by the server）。
+2. **`* N FETCH` 里的 N 是序号不是 UID**，UID 只出现在数据项里。
+3. **响应必须带 `UID <uid>` 取件项。** 这条最隐蔽：客户端
+   `writeFetchItems` 会「Ensure we request UID as the first data item」，
+   而回包路由靠 `FetchCommand.recvUID`；`recvSeqNum` 对 `UIDSet` 直接
+   `set, ok := cmd.numSet.(imap.SeqSet)` 返回 false。
+   所以一个不带 UID 的 FETCH 回包会被**静默丢弃** —— 不报错、
+   `Collect()` 返回 0 条、调用方只看到 `uid not found`。
+
+### 负控推翻了我自己的结论：客户端那一半原本**根本没被覆盖**
+
+我原本写的是「maxBytes 双重截断已覆盖」。**这是错的。** 负控实测：
+把 `body[:maxBytes]` 改成 `&& false`（注入生效已验证），6 个用例**仍然全绿** ——
+因为我的服务器**老实按 `<0.64>` 截断了**，客户端兜底那条路径根本走不到。
+
+这正是负控不转红时的**第三种原因**：前两种（判据太松 / 注入没生效）
+我都会去排查，**只有「回头质疑结论」才暴露**。于是补
+`TestFetchBody_ClampsWhenServerIgnoresPartial` + `imapServer.ignorePartial`：
+让服务器**无视**部分取照发 5000 字节，这才逼出客户端兜底。
+现实依据是各家服务器对部分取的实现确有差异，这不是人造边界。
+
+### 第二个被推翻的判据：「没收到 STORE」判不出 PEEK
+
+`TestFetchBody_UsesPeekSoMailIsNotMarkedRead` 原来只断言
+「服务器没收到 `UID STORE`」。负控把 `Peek: true` 改成 `false`，**用例照样全绿** ——
+因为非 PEEK 是**服务器**置 `\Seen`，客户端**根本不会**为它发 STORE。
+判据查错了通道。现在改判取件项里有没有 `.PEEK`
+（`imapServer.sawFetchPeek()`），服务器也相应建模
+（收到非 PEEK 的 BODY 取件即置 `seenSet`）。
+
+### 五条负控全部转红，且各自只染红对应的那一条
+
+| 负控 | 注入 | 转红的用例 |
+|---|---|---|
+| NEGCTL-1 | 客户端 clamp 加 `&& false` | `ClampsWhenServerIgnoresPartial` |
+| NEGCTL-2 | `Peek: true` → `false` | `UsesPeekSoMailIsNotMarkedRead` |
+| NEGCTL-3 | 不再发部分取（`if false`） | `TruncatesToMaxBytes` + `ClampsWhenServerIgnoresPartial` |
+| NEGCTL-4 | 取不到邮件返回 `nil, nil` | `MissingUIDIsAnError` |
+| NEGCTL-5 | 忽略 LOGIN 错误 | `RejectsBadLogin` |
+
+NEGCTL-1/2 转红前**曾经是绿的** —— 也就是说这一节的两个结论是被负控
+抓出来的，不是被「用例通过」认证的。
+
+### 顺带一个环境坑：PowerShell 5.1 会静默吞掉 `.ps1` 的一整行
+
+`negctl.ps1` 里 NEGCTL-4 那次调用**从头到尾没执行过、且没有任何报错**。
+原因：PS 5.1 读**无 BOM** 的 `.ps1` 按 ANSI/GBK 解码，UTF-8 的中文注释
+被解出**行尾反斜杠**，于是变成续行符，把下一行整行并进注释。
+现象是「脚本少跑一条、不报错」，与「判据失效」难以区分。
+脚本改成纯 ASCII 注释后正常。**教训：临时脚本别放中文注释。**
+
+### 回归
+
+- `internal/email` 全量 66.5s 通过；`-race` 63.1s 通过、**0 DATA RACE**。
+- 覆盖率（`go test -covermode=count`，两次同口径实测）：
+  包总量 **60.0% → 60.7%**；
+  `fetcher.go:370 FetchBody` **0% → 80.4%**（此前没有任何用例调用过它）。
+  同区域 `findBodySection` 75.0%。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：

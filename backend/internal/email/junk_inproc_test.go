@@ -28,7 +28,9 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,7 +62,21 @@ type imapServer struct {
 	cmds      []string // 逐条收到的命令
 	movedTo   []string // 每次 MOVE/COPY 的目标信箱
 	movedUIDs []string // 每次 MOVE/COPY 带的 UID 串
+	fetchCmds_ []string // 每次 UID FETCH 的取件项（供 fetcher_inproc_test 断言）
 	seenSet   bool     // 是否收到过会置 \Seen 的命令
+
+	// bodyByUID 是各 UID 的正文（fetcher_inproc_test 用；junk 用例留空）。
+	bodyByUID map[int64]string
+
+	// ignorePartial 让服务器**无视**部分取、照发全文。
+	//
+	// 为什么需要它：handleFetch 默认会按 `<off.size>` 截断，于是
+	// FetchBody 里那句客户端兜底 `body[:maxBytes]` 永远走不到 ——
+	// 实测（negctl：删掉那句兜底，6 个用例仍然全绿）。要证明
+	// **客户端自己也会截**，就必须有一个不配合的服务器。
+	// 真实服务器里存在这种不配合者（各家对部分取的实现有差异），
+	// 所以这不是人造的边界情况。
+	ignorePartial bool
 
 	// mailboxes 是 LIST 返回的信箱列表。
 	mailboxes []testMailbox
@@ -71,6 +87,47 @@ type imapServer struct {
 
 	closeOnce sync.Once
 	wg        sync.WaitGroup
+}
+
+// fetchCmds 返回收到过的 UID FETCH 取件项。
+func (s *imapServer) fetchCmds() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.fetchCmds_...)
+}
+
+// sawFetchPartial 判断服务器是否收到过 `<offset.size>` 形式的部分取。
+func (s *imapServer) sawFetchPartial(offset, size int) bool {
+	want := fmt.Sprintf("<%d.%d>", offset, size)
+	for _, c := range s.fetchCmds() {
+		if strings.Contains(c, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// sawFetchPeek 判断服务器是否收到过带 `.PEEK` 的 BODY 取件。
+//
+// 判「有没有置 \Seen」的**正确**判据在这里：非 PEEK 的 BODY 取件由
+// **服务器**置 \Seen，客户端不会为此发 STORE，所以查 STORE 查不出来。
+func (s *imapServer) sawFetchPeek() bool {
+	for _, c := range s.fetchCmds() {
+		if strings.Contains(strings.ToUpper(c), "BODY.PEEK") {
+			return true
+		}
+	}
+	return false
+}
+
+// sawFetchPartialAny 判断是否收到过任何部分取。
+func (s *imapServer) sawFetchPartialAny() bool {
+	for _, c := range s.fetchCmds() {
+		if strings.Contains(c, "<") && strings.Contains(c, ".") && strings.Contains(c, ">") {
+			return true
+		}
+	}
+	return false
 }
 
 func newIMAPServer(t *testing.T, mailboxes []testMailbox) *imapServer {
@@ -235,8 +292,18 @@ func (s *imapServer) handle(conn net.Conn) {
 				writeln("%s NO mailbox cannot be created", tag)
 			}
 
+		case "ID":
+			// RFC 2971 客户端身份。FetchBody 开头会发 `ID (name "...")`。
+			//
+			// 第一版没实现它，服务器回 BAD —— 而客户端把 BAD 当成**致命**，
+			// 于是**根本不发 FETCH**，症状是「uid not found」，
+			// 看起来像 UID 解析错。真因在协议层，差了一层就断。
+			s.record("ID")
+			writeln("* ID NIL")
+			writeln("%s OK ID done", tag)
+
 		case "UID":
-			s.handleUID(tag, args, writeln)
+			s.handleUID(tag, args, writeln, w)
 
 		default:
 			s.record(strings.ToUpper(verb))
@@ -246,7 +313,7 @@ func (s *imapServer) handle(conn net.Conn) {
 }
 
 // handleUID 处理所有 `UID <subcommand>` 形式。
-func (s *imapServer) handleUID(tag, args string, writeln func(string, ...any)) {
+func (s *imapServer) handleUID(tag, args string, writeln func(string, ...any), w *bufio.Writer) {
 	sub, rest, _ := strings.Cut(args, " ")
 
 	switch strings.ToUpper(sub) {
@@ -274,10 +341,13 @@ func (s *imapServer) handleUID(tag, args string, writeln func(string, ...any)) {
 		}
 		writeln("%s OK STORE done", tag)
 
-	case "SEARCH", "FETCH":
-		s.record("UID " + strings.ToUpper(sub))
+	case "SEARCH":
+		s.record("UID SEARCH")
 		writeln("* SEARCH")
-		writeln("%s OK %s done", tag, sub)
+		writeln("%s OK SEARCH done", tag)
+
+	case "FETCH":
+		s.handleFetch(tag, rest, w)
 
 	case "EXPUNGE":
 		s.record("UID EXPUNGE")
@@ -288,6 +358,151 @@ func (s *imapServer) handleUID(tag, args string, writeln func(string, ...any)) {
 		writeln("%s BAD unsupported", tag)
 	}
 }
+
+// handleFetch 回一个真实的 BODY[] 响应。
+//
+// 关键：**按请求里的部分取 <offset.size> 截断**再发。
+// 若服务器无视部分取把全文发出来，客户端仍会截（它有兜底 `body[:maxBytes]`），
+// 但那样就测不出「服务器侧少发了」——而这正是读取上限要保证的事。
+func (s *imapServer) handleFetch(tag, rest string, w *bufio.Writer) {
+	s.record("UID FETCH")
+
+	s.mu.Lock()
+	s.fetchCmds_ = append(s.fetchCmds_, rest)
+	bodies := make(map[int64]string, len(s.bodyByUID))
+	for k, v := range s.bodyByUID {
+		bodies[k] = v
+	}
+	s.mu.Unlock()
+
+	// FETCH 的第一个字段才是序号集：`FETCH 11 (BODY[TEXT]<0.64>)`。
+	// 不能用 parseUIDMove —— 它把**最后一个**非数字 token 当 mailbox，
+	// 而 FETCH 没有 mailbox，那个 token 会是取件项。
+	uids := parseSeqSet(rest)
+	// 找第一个本地有的 UID。
+	var found int64 = -1
+	for _, u := range uids {
+		for _, cand := range strings.Split(u, ":") {
+			n, err := strconv.ParseInt(cand, 10, 64)
+			if err != nil {
+				continue
+			}
+			if _, ok := bodies[n]; ok {
+				found = n
+				break
+			}
+		}
+		if found > 0 {
+			break
+		}
+	}
+	if found < 0 {
+		// 故意**不回** NO：真实服务器对不存在的 UID 也回 OK + 空结果集，
+		// 由客户端去判断「没取到」。这才能测出调用方是否处理了空结果。
+		log.Printf("[imapServer] no local body: FETCH rest=%q seqset=%v known=%v", rest, uids, bodies)
+		_, _ = w.WriteString(tag + " OK FETCH done\r\n")
+		_ = w.Flush()
+		return
+	}
+
+	body := bodies[found]
+	// 应用部分取 <offset.size>（除非服务器被要求无视部分取）。
+	ignorePartial := s.ignorePartial
+	if m := partialRe.FindStringSubmatch(rest); m != nil && !ignorePartial {
+		off, _ := strconv.Atoi(m[1])
+		size, _ := strconv.Atoi(m[2])
+		if off > len(body) {
+			off = len(body)
+		}
+		end := off + size
+		if end > len(body) {
+			end = len(body)
+		}
+		body = body[off:end]
+	}
+
+	// section 必须是客户端请求的那个：FetchBody 用的是
+	// `Specifier: imap.PartSpecifierText` ⇒ 响应写 BODY[TEXT]（可选带部分取）。
+	// 写成 `BODY[<0> UID 11]` 会被客户端报 "section-spec: expected ']'" ——
+	// 那是**响应格式**错，不是被测代码的缺陷。
+	//
+	// 部分取在**请求和响应里语法不同**，这是本文件最难的一个坑：
+	//
+	//	请求  BODY[TEXT]<0.64>     （offset.size，见 writeSectionPartial）
+	//	响应  BODY[TEXT]<0>        （**只有 offset**，见 readPartialOffset）
+	//
+	// 客户端的 readSectionSpec 先 ExpectSpecial(']')、**再** readPartialOffset，
+	// 而 readPartialOffset 是 `ExpectNumber` + `ExpectSpecial('>')` ——
+	// 中间多一个 `.size` 就直接解码失败。我先前两个版本分别写成
+	// `BODY[TEXT]<0.64>` 和手工多包一层的 `TEXT<<0.64>>`，两次都表现为
+	// 「0 条消息 → uid not found」，症状完全指错方向（看起来像被测代码
+	// 没把 UID 取回来，其实是服务器没按 RFC 写响应）。
+	// 响应里 offset 必须回显：matchFetchItemBodySection 用
+	// `(cmd.Partial == nil) != (resp.Partial == nil)` 判不匹配，
+	// Size 反而**不能**回显（注释：not echoed back by the server）。
+	section := "TEXT"
+	partial := ""
+	if m := partialRe.FindStringSubmatch(rest); m != nil {
+		partial = "<" + m[1] + ">"
+	}
+
+	// PEEK 语义：非 PEEK 的 BODY 取件会让服务器给这封邮件打上 \Seen。
+	// 客户端**不会**为它发 STORE（STORE 是另一回事），所以「有没有
+	// 收到 STORE」根本不是判断依据 —— 我第一版就只断言了 STORE，
+	// 结果把 Peek 改成 false 用例照样全绿（实测 negctl-2）。
+	// 真正的判据是取件项里有没有 `.PEEK`。
+	if strings.Contains(strings.ToUpper(rest), "BODY") &&
+		!strings.Contains(strings.ToUpper(rest), "BODY.PEEK") {
+		s.mu.Lock()
+		s.seenSet = true
+		s.mu.Unlock()
+	}
+	// literal 语法：`{N}` 之后**必须紧接 N 字节内容**，中间不能有 CRLF
+	// （我第一版用 writeln 分两行写，客户端报 expected SP, got "\r"）。
+	// 注意部分取写在 `]` **之后**：`BODY[TEXT]<0>`，不是 `BODY[TEXT<0>]`。
+	//
+	// 最后一处、也是最隐蔽的一处：响应**必须带 `UID <uid>` 取件项**。
+	// 客户端 writeFetchItems 会「Ensure we request UID as the first data item
+	// for UID FETCH」，而路由回包靠的是 FetchCommand.recvUID ——
+	// recvSeqNum 对 UIDSet 直接 `set, ok := cmd.numSet.(imap.SeqSet)` 返回
+	// false。所以一个不带 UID 的 FETCH 回包会被**静默丢弃**：不报错、
+	// Collect() 返回 0 条、调用方只看到 `uid not found`。
+	// 这是本次三个用例卡了两天、症状完全指错方向的根因。
+	//
+	// `* N FETCH` 里的 N 是**序号**不是 UID；UID 只出现在数据项里。
+	// 本服务器单邮箱单封，两者数值恰好相同，序号按 1 起算。
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "* 1 FETCH (UID %d BODY[%s]%s {%d}\r\n", found, section, partial, len(body))
+	sb.WriteString(body)
+	sb.WriteString(")\r\n")
+	sb.WriteString(tag + " OK FETCH done\r\n")
+	log.Printf("[imapServer] FETCH response for uid=%d section=%q partial=%q len=%d", found, section, partial, len(body))
+	_, _ = w.WriteString(sb.String())
+	_ = w.Flush()
+}
+
+// parseSeqSet 取 FETCH/STORE/SEARCH 参数里的**第一个**序号集
+// （`FETCH 11 (...)` / `FETCH 1,3:5 (...)`）。
+func parseSeqSet(rest string) []string {
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return nil
+	}
+	first := rest
+	if i := strings.IndexAny(rest, " \t"); i >= 0 {
+		first = rest[:i]
+	}
+	var out []string
+	for _, f := range strings.Split(first, ",") {
+		if isUIDSet(strings.TrimSpace(f)) {
+			out = append(out, strings.TrimSpace(f))
+		}
+	}
+	return out
+}
+
+// partialRe 匹配 IMAP 部分取 `<offset.size>`。
+var partialRe = regexp.MustCompile(`<(\d+)\.(\d+)>`)
 
 // parseUIDMove 拆 `MOVE 11:13 Junk` / `COPY 11,12 "Junk E-mail"`。
 //
