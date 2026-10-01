@@ -326,6 +326,16 @@ export class MeetingRecorderRuntime {
   }
 
   private startLiveCaption() {
+    // BUG-AU 第二条触发路径：实时字幕走 Web Speech API（Android 上是
+    // webkitSpeechRecognition），同样委托给系统 ASR → MIUI「系统语音引擎」会拉起
+    // 授权页抢前台。隔离实测（scripts/diag-asr-trigger.mjs）：不碰录音、不碰播报，
+    // 只 new webkitSpeechRecognition().start()，系统包 5/5 抢前台。
+    //
+    // 为什么复用语音播报那个降级标志：两条路径打的是**同一个系统引擎**，
+    // 所以「本机已被证明会被系统语音引擎抢前台」这个结论对两者同样成立，
+    // 不需要第二套探测逻辑。播报那路在 start() 里更早被调用，会先把标志置上，
+    // 于是从第二次录音起实时字幕就不再启动。
+    if (voicePrompt().hasForegroundHijack()) return
     const Rec = pickSpeechRecognition(typeof window === 'undefined' ? null : (window as unknown as {
       SpeechRecognition?: new () => SpeechRecLike
       webkitSpeechRecognition?: new () => SpeechRecLike

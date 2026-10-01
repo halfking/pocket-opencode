@@ -327,6 +327,33 @@ describe('BUG-AU · 系统 TTS 抢前台的自愈降级（2026-10-01 真机确�
     assert.ok(runtime.includes('VOICE_PROMPT_HIJACK_KEY'), 'runtime 未持久化降级结论')
     assert.ok(runtime.includes('restoreForegroundHijack'), 'runtime 未恢复上次的降级结论')
   })
+
+  it('BUG-AU 第二条路径：实时字幕也受同一个降级标志约束', () => {
+    // 真机教训：只修播报那一路不够。startLiveCaption() 用 webkitSpeechRecognition，
+    // 同样打 MIUI 系统语音引擎，且在 start() 里**先于**播报被调用。
+    // 隔离实测（diag-asr-trigger.mjs）：单独 start() 即 5/5 抢前台。
+    //
+    // ⚠️ 这是**源码级**守卫，不是行为级：startLiveCaption 埋在带 Capacitor /
+    // DOM 依赖的类里，Node 下加载不了。上一版这里只断言「文本里出现过
+    // hasForegroundJudgment()」，负控时把守卫改成 `if (false && ...)` 仍然全绿
+    // —— 恒真断言当卡口比没有卡口更危险。所以改成精确匹配整行守卫。
+    // 真正的行为证明在真机复验（scripts/verify-au-fix2.mjs）。
+    const runtime = read('../recordingRuntime.ts')
+    const i = runtime.indexOf('private startLiveCaption')
+    assert.ok(i > 0, '未找到 startLiveCaption')
+    const body = runtime.slice(i, i + 900)
+    const guard = 'if (voicePrompt().hasForegroundHijack()) return'
+    assert.ok(
+      body.includes(guard),
+      `startLiveCaption 缺少精确守卫 "${guard}" —— 系统语音引擎仍会经实时字幕抢前台`,
+    )
+    const recAt = body.indexOf('pickSpeechRecognition')
+    assert.ok(recAt > 0, '未找到 pickSpeechRecognition 调用')
+    assert.ok(
+      body.indexOf(guard) < recAt,
+      '守卫必须排在 pickSpeechRecognition 之前，否则拦不住',
+    )
+  })
 })
 
 describe('录音提示契约（源码级）', () => {
