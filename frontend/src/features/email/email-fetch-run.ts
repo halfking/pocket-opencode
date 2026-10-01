@@ -7,7 +7,7 @@ import { formatFetchHint, resolveFetchApiBase, sanitizeFetchHint } from './email
 import { configureNativeEmailFetch, runNativeEmailFetch } from './email-fetch-native'
 import { pullInboxFromServer, syncInboxFromServer } from './email-inbox-page'
 
-export { formatFetchHint, sanitizeFetchHint, shouldRunBackgroundFetch } from './email-fetch-plan'
+export { formatFetchHint, sanitizeFetchHint, decideFetchKick } from './email-fetch-plan'
 
 async function prepareNative(): Promise<boolean> {
   const auth = useAuthStore()

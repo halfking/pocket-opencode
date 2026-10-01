@@ -4,8 +4,49 @@ export function formatFetchHint(syncHint: string, classified: number): string {
   return syncHint
 }
 
-export function shouldRunBackgroundFetch(now: number, lastAt: number, minGapMs = 15 * 60_000): boolean {
-  return lastAt <= 0 || now - lastAt >= minGapMs
+/** 一次后台收信成功后的间隔：太短会白烧 IMAP 与 LLM 配额。 */
+export const FETCH_SUCCESS_GAP_MS = 15 * 60_000
+
+/**
+ * 上一次**失败**后的重试间隔。
+ *
+ * 2026-10-03 的缺陷：早先只有 `lastAt` 一个字段，而且在发请求**之前**就写入
+ * `lastAt = now`。于是「断网 / 服务端 5xx」这类失败照样占掉整整 15 分钟的
+ * 节流窗口，而且失败被 `.catch(() => {})` 吞掉、界面上没有任何提示——
+ * 用户看到的就是「邮件不刷新了，重开也没用」，要等 15 分钟才可能自愈。
+ *
+ * 失败不该享有成功后的长间隔：失败恰恰是最需要尽快重试的情形。
+ */
+export const FETCH_RETRY_GAP_MS = 60_000
+
+export interface FetchKickState {
+  /** 上一次**发起**请求的时刻（不管成功失败）；0 = 从未发起过。 */
+  lastAttemptAt: number
+  /** 上一次是否失败。决定用长间隔还是短重试间隔。 */
+  lastAttemptFailed: boolean
+  /** 上一次是否还没结束。用于防止并发起两轮。 */
+  inFlight: boolean
+}
+
+export type FetchKickOutcome = 'run' | 'in-flight' | 'throttled'
+
+/**
+ * 后台收信该不该现在跑一轮。
+ *
+ * 三种结果分开返回而不是压成一个 boolean，是因为调用方要区分：
+ * `in-flight` 时不必记时间戳（否则会把窗口算在一次还没跑完的尝试上）。
+ */
+export function decideFetchKick(
+  s: FetchKickState,
+  now: number,
+  opts: { successGapMs?: number; retryGapMs?: number } = {},
+): FetchKickOutcome {
+  if (s.inFlight) return 'in-flight'
+  if (s.lastAttemptAt <= 0) return 'run'
+  const gap = s.lastAttemptFailed
+    ? (opts.retryGapMs ?? FETCH_RETRY_GAP_MS)
+    : (opts.successGapMs ?? FETCH_SUCCESS_GAP_MS)
+  return now - s.lastAttemptAt >= gap ? 'run' : 'throttled'
 }
 
 export type EmailFetchStage = 'native-sync' | 'js-sync' | 'pull-list'
