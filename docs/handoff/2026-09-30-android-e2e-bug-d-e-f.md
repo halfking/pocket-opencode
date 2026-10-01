@@ -5664,3 +5664,163 @@ node scripts/build-material-symbols-subset.mjs     # 131 → 138 个图标，352
 - 空断言最隐蔽：「没碰过的基线」和「正确的不变」在断言上长得一模一样。
   要判「不变」，就必须先**主动触发**那个本该不变的东西。
 
+
+### 4.58 BUG-AS 真机端到端确证 + `flashcards-write.yaml` **首次全绿**（连绿两次）
+
+§4.57 交付的是代码层与卡口层的修复，**当时明确写了「真机未验」**。
+本节把那半句补上：重建 APK、装机、重装，并拿到**修复前红 / 修复后绿两次**的对照。
+
+#### 4.58.1 修复前的真机现象（不是静态推断，是三方对照）
+
+设备：`192.168.31.19:5555`（红米折叠屏，展开内屏），装机 `com.kaixuan.opencode.pocket`。
+08:08:04 那轮 `flashcards-write.yaml` 跑到**最后一条**断言才红，前面全过：
+
+```
+... Assert that ".*回归正面.*" is visible... COMPLETED
+    Assert that ".*今日待复习 1 张.*" is visible... FAILED
+```
+
+失败现场的可访问性树（`scripts/dump-a11y-text.mjs` 压平后）：
+
+```
+[[0,204][720,406]] enabled  <> 1卡组0今日待复习 0 张0复习
+[[28,552][692,702]] enabled  <> 回归正面 — New
+```
+
+**卡片在（正面文本可见），但到期数是 0。** 三方取证：
+
+| 通道 | 读数 | 结论 |
+|---|---|---|
+| PG `flashcard_cards` | `state=0, due=1790813334`；查询时 `now=1790813410` | 卡片**早已到期**（逾期 76s） |
+| 服务端 `GET /api/flashcards/decks/:id/due` | `{"totalDue":1}` | 服务端认为**该到期** |
+| 客户端 `store.dueByDeck` | `[]`（空 Map） | 客户端**不算** |
+
+同一时刻在活体页面里逐条求值判据（`scripts/diag-fc-duecount-why.mjs`）：
+
+```
+cond_deleted_skipped      : false
+cond_isLearning_state0_1_3: true
+cond_due_le_now           : true
+verdict_isDue             : true
+就地重算（不经 computed）  : [["deck_83277a9...", 1]]   <-- 数据完全支持 1
+store.dueByDeck 连续读两次 : []  /  []                    <-- computed 却给 0
+```
+
+#### 4.58.2 判别实验：区分「从不重算」与「重算了但 now 是冻的」
+
+上面还剩两种可能：(a) computed **自己从不重算**；(b) 它会重算，但内部 `now` 是冻结的旧值。
+两者修法完全不同，**必须分开**。判别方法：给 `cards` 换一个**同内容的新数组**——
+这必然让 computed 失效（`scripts/diag-fc-dirty-test.mjs`）：
+
+```
+now=1790813522  card.due=1790813334
+0) 初始        []
+1) 换新数组后  [["deck_83277a9...", 1]]
+2) 再换一次    [["deck_83277a9...", 1]]
+```
+
+⇒ 强制失效后立刻算对 ⇒ 是 **(a) 从不重算** ⇒ §4.55 的静态诊断**在真机上成立**。
+若换数组后仍是 0，那才说明设备 bundle 里的 `nowSec` 另有实现，工作区源码的结论在设备上不成立，
+必须去 bundle 里看（`scripts/diag-fc-bundle-source.mjs` 就是为此写的，本轮它没派上用场）。
+
+#### 4.58.3 修复后：重建、装机、连绿两次
+
+```
+node scripts/flashcards-test-fixture.mjs                 # 清 PG + localStorage
+node scripts/maestro-run.mjs .maestro/flashcards-write.yaml
+```
+
+**装机前先验证 bundle 里真的有修复**（`dist/assets/flashcards-*.js` 是闪卡 store 的懒加载 chunk，
+不在 `index-*.js` 里——只 grep 主 bundle 会误判成「没修」）：
+
+```
+Ct=3e4                                  <-- TICK_MS=30000
+Ae=M($())                              <-- 模块级 ref，初值取真实时间
+function $(){return Math.floor(Date.now()/1e3)}   <-- liveNowSec
+function K(){return Ae.value}           <-- dueNowSec 读 ref（响应式）
+function Ie(){$t()||(Ae.value=$())}     <-- tick：先判 hidden 再推进
+Tt(){...document.hidden||Ie()}          <-- 回前台立刻补 tick
+Ft(){...addEventListener("visibilitychange",Tt),setInterval(Ie,Ct)...}
+```
+
+| 轮次 | APK | 结果 |
+|---|---|---|
+| 08:08:04 | 修复前 | **FAILED** @ `.*今日待复习 1 张.*` |
+| 08:26 前后 | 修复后（08:13:44 构建 / 08:14:26 装机） | **FLOW_EXIT=0**，全部 COMPLETED |
+| 08:28 前后 | 同一 APK | **FLOW2_EXIT=0**，全部 COMPLETED |
+
+全绿那两轮的收尾四条：
+
+```
+Assert that ".*回归正面.*" is visible... COMPLETED
+Assert that ".*今日待复习 1 张.*" is visible... COMPLETED
+Assert that ".*回归正面.*" is visible... COMPLETED            <-- 后置：卡片还在
+Assert that ".*开始复习.*", enabled is visible... COMPLETED   <-- 按钮解禁
+```
+
+flow 自身的断言之外，另做**独立取证**（不信 flow 自证）：
+PG `decks|notes|cards = 1|1|1`；卡片 `overdue_by_sec=25`；
+活体 `dueByDeck` 有值；两个「开始复习」按钮 `disabled` 均由 `true` 变 `false`（外屏那个 `rect=[0,0,0,0]` 也在内）；服务端 `totalDue:1`。
+
+#### 4.58.4 flow 本身的三处改造（都是「判据要能分辨」）
+
+1. **收尾 `timeout` 30000 → 90000。**
+   到期数靠 30s tick 推进，30s 超时**恰好等于一个 tick、没有任何余量**，必然随机红。
+   原 30s 是在**没有 tick 的旧代码**上定的，改了修法就必须改判据。
+
+2. **加两条后置断言**（`.*回归正面.*` 可见 + `.*开始复习.*` enabled）。
+   BUG-AS 的关键性质是「数字变了而页面没重新挂载」。少了这两条，
+   「退出页面再进来也能显示 1」这种非响应式修法同样能蒙混过关——而那正是修复前的行为。
+
+3. **「更多」加 `retryTapIfNoChange: true`、入口等待放宽到 40000。**
+   08:16 那轮实测点「更多」后 Maestro 报 COMPLETED 但**页面没动**（仍停在 `#/ai`），
+   「闪卡」断言 20s 超时失败；08:08 同一段是过的 ⇒ **抖动，不是重建 APK 引入的回归**
+   （两次 APK 只差 BUG-AS 修复，只碰 `stores/flashcards.ts`，不可能影响底部导航）。
+   这正是 `_login.yaml` 注释里早就记过的坑：tap 底部导航会被吞掉，且没有结果校验、看起来像成功。
+   活体实测「更多」是 `<A class="nav-item">`，可及名是 `"apps 更多"`（图标连字文本拼在前面）。
+
+#### 4.58.5 本轮的一次自纠：自己污染了自己的读数
+
+08:15 那轮 flow 我**同时**在跑 `flashcards-test-fixture.mjs`（它走 CDP 清 localStorage），
+违反了「绝不能同时跑两个驱动同一台设备的自动化进程」。该轮在很早的
+「暂无卡组」断言就红了——**那轮数据作废，不是产品缺陷**。之后所有真机跑法改为严格串行。
+另有一处**误报**：我一度以为 `flashcards-write.yaml` 被并发会话改过（8290 → 5254 字节），
+实际是我把 JS **字符串长度**（5254 字符）和**字节数**（8290，中文占 3 字节）混着比了。文件没被改。
+
+#### 4.58.6 顺带核实的三件事
+
+**1. `/api/marketplace/agents` 不是 404，是 401。**
+未鉴权请求先被 `requireAuth` 拦下，**401 完全不能证明路由是否存在**。
+路由表在 `backend/internal/server/server.go:823-826`，只有 `packages` / `releases` /
+`packages/` 与兜底的 `/` → `handleMarketplaceRouter`；没有 `agents`。
+带 token 时才会落到 router 的 default 分支返回 404。**未鉴权探测不可用于判定路由存在性。**
+
+**2. 闪卡入口「新建卡组 → 卡片编辑页」在当前代码里已不存在。**
+`FlashcardListView.vue:15-17` 的按钮用 `flashcards.list.create`（=「新建卡片」/New card），
+跳 `/flashcards/new` 建卡片，**标签与行为一致**；所有建卡组入口都用 `flashcards.deck.create`
+（=「新建卡组」/New deck）且真的建卡组。BUG-AA 在 `StudyHubView.vue:167-177` 已改成内联建组。
+**不要再把它当未修缺陷。**
+
+**3. i18n 未翻译量（实测，不是估计）。** 以 `en-US` 为基准（377 key），
+逐语言统计「值与 en-US 完全相同或缺失」：
+
+| 语言 | 未翻译 | 语言 | 未翻译 |
+|---|---|---|---|
+| zh-CN | 6 | ja-JP | 100 |
+| zh-TW | 100 | ko-KR | 138 |
+| de-DE | 148 | pt-BR | 146 |
+| es-ES | 144 | fr-FR | 153 |
+
+现有 `check:i18n` 卡口**只查 key 齐平、不查是否翻译**，所以这些是静默通过的。
+典型例子：`study.decks.*` 在 7 种语言里仍是英文（`New deck` / `No decks yet` / `{count} due`）。
+
+#### 4.58.7 仍未验证 / 仍未完成
+
+- 本轮**只**覆盖了闪卡写路径与 BUG-AS。PKM 之外其余模块的写路径、https 生产路径、
+  Keystore 原生插件**依旧没有真机回归**。「打通所有功能点」**不成立**。
+- `notes-crud.yaml`（PKM 写路径）本轮没重跑——它此前已连绿两次且有 DB 直读，
+  但**不是本轮的新证据**。
+- i18n 那 100~153 条未翻译**只做了测量，没有修**。
+- `TICK_MS=30s` 与「后台暂停 tick」仍是**我选的默认值，未经产品确认**；
+  真机上后台暂停这一条**没有专门验过**（flow 全程 App 在前台）。
+

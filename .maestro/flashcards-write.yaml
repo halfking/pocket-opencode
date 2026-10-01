@@ -37,13 +37,19 @@ appId: com.kaixuan.opencode.pocket
 - runFlow: _login.yaml
 
 # ---------- 1. 进闪卡（不在底部主导航里，在「更多」九宫格内）----------
+# ⚠️ retryTapIfNoChange 不是凑数：2026-10-01 08:16 实测点「更多」后 Maestro 报
+# COMPLETED 但页面**没动**（仍停在 #/ai），「闪卡」断言 20s 超时失败；
+# 08:08 同一段是过的 ⇒ 抖动，不是回归（两次 APK 只差 BUG-AS 修复，不碰导航）。
+# 这正是 _login.yaml 注释里记过的坑：tap 底部导航会被吞掉，且没有结果校验、看起来像成功。
 - extendedWaitUntil:
     visible: "更多|More"
     timeout: 45000
-- tapOn: "更多|More"
+- tapOn:
+    text: "更多|More"
+    retryTapIfNoChange: true
 - extendedWaitUntil:
     visible: "闪卡|Flashcards|Flashcard"
-    timeout: 20000
+    timeout: 40000
 - tapOn: "闪卡|Flashcards|Flashcard"
 
 # ---------- 2. BUG-U：零卡组时必须**就地**有建卡组入口 ----------
@@ -133,7 +139,21 @@ appId: com.kaixuan.opencode.pocket
 #   一个、紧接着的 assertVisible 匹配到另一个 → 必然时红时绿。
 #   改成断言**到期数本身**（修前恒为 0 张），无歧义且比「能不能点」更硬。
 #   这条同时覆盖 BUG-O：修前 card 拉不回来，dueCount 恒 0。
+# BUG-AS 的真机端到端判据（2026-10-01 08:20 确证）。
+#
+# 修复前在真机上的实测（不是静态推断）：
+#   PG 里卡片 state=0、due 已过；服务端 /due 返回 totalDue=1；
+#   客户端 store.dueByDeck 却是空 Map；把同样四条判据就地重算得 [[deck,1]]；
+#   给 cards 换一个同内容的新数组强制失效后，dueByDeck 立刻变成 [[deck,1]]。
+#   ⇒ 它**自己从不重算**：nowSec() 读 Date.now()，不是响应式依赖，又没有任何定时器推进。
+#
+# 所以这里的判据必须是「不重新挂载也能变对」。timeout 给到 90s：
+# 到期数靠 30s tick 推进，30s 超时恰好等于一个 tick、没有余量，必然随机红。
 - extendedWaitUntil:
     visible: { text: ".*今日待复习 1 张.*" }
-    timeout: 30000
+    timeout: 90000
 - assertVisible: { text: ".*今日待复习 1 张.*" }
+# 后置断言：数字变了，但页面没被重新挂载、卡片没消失。
+# 少了这两条，「退出页面再进来也能显示 1」这种非响应式修法同样能蒙混过关 —— 而那正是修复前的行为。
+- assertVisible: { text: ".*回归正面.*" }
+- assertVisible: { text: ".*开始复习.*", enabled: true }
