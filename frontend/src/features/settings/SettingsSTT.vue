@@ -610,10 +610,14 @@ function goBack() {
   border-bottom: 1px solid var(--border, #e3e5e8);
 }
 .title {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0;
   flex: 1;
+  /* 与 SettingsLLMGateway / SettingsView / SettingsPermissionsView 的页头对齐。
+     原来这里是 18px、那边是 16px，同一个 top-bar 里的同一个 h1 在两个设置
+     子页渲染出不同字号；而且两处都写死 px，token 体系管不到它们。 */
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
 }
 .top-spacer {
   width: 40px;

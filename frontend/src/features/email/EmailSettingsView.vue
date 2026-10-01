@@ -520,7 +520,10 @@ function goBack() {
 .page-title {
   flex: 1;
   min-width: 0;
-  font-size: 17px;
+  /* 与另两个邮件子页（EmailAccountAddView / EmailSpamCleanupView）的 .page-title
+     同源。那两页是 18px，这里是 17px —— 全应用没有任何 token 等于 17px，
+     所以它既偏离了同族兄弟，也脱离了整个字号体系。--text-xl 恰好就是 18px。 */
+  font-size: var(--text-xl);
   font-weight: 600;
   margin: 0;
   overflow: hidden;

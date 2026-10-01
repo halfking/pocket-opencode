@@ -469,7 +469,8 @@ function goBack() {
 
 .title {
   flex: 1;
-  font-size: 16px;
+  /* 走 token：与 SettingsSTT 的 .title 保持同源，避免两边各自写死 px 后漂移。 */
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text-primary);
 }

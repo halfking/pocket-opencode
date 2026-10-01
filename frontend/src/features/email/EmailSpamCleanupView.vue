@@ -237,7 +237,7 @@ onMounted(async () => {
   background: var(--bg-base);
 }
 .back-btn { border: 0; background: transparent; color: var(--text-primary); padding: 4px; }
-.page-title { margin: 0; font-size: 18px; }
+.page-title { margin: 0; font-size: var(--text-xl); }
 .hint, .muted { margin: 0; color: var(--text-muted); font-size: 12px; }
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
 .input { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2); background: var(--bg-base); color: var(--text-primary); }
