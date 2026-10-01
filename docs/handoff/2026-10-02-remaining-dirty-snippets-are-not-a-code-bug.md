@@ -78,6 +78,47 @@ readable? true   hasCJK? true
 
 ---
 
+## 顺带核实（同日第二轮）
+
+### 列表路径也不返回 message_id / uid —— 是缺口，但当前无影响
+
+`ListEmailsScoped`（收件箱列表主查询，`GET /api/emails`）的 SELECT 只有 14 列，
+不含 `message_id` / `uid`。实测同一封邮件两条路径的序列化：
+
+```
+列表路径：{"id":"em-1298896143-…","accountId":"…","fromAddress":…}   ← 无 messageId / uid
+单条路径：{"id":"em-1298896143-…","messageId":"417785526.8505719.…","uid":1298896143, …}
+```
+
+客户端 `syncEmailsFromServer` 因此**硬编码** `messageId: null, uid: null`
+（`emails-store.ts:271-272`），靠 `COALESCE(excluded.message_id, local_emails.message_id)`
+保住本地旧值。
+
+**为什么没按缺陷修**：客户端本地镜像的 `uid` / `message_id` 经检索**没有任何读取方**
+（`rowToEmail` 读出来只写进 `LocalEmail` 对象，没人用）。所以这个缺口当前
+**没有可证实的用户可见影响**。
+
+与 Go 侧 `ActionReason` / `Email.DeletedAt` 是同一类：**死字段的下游**。
+要真正修需要先给这两个字段接上消费方（或决定废弃），属独立工作，未擅自改。
+
+> 注意区分：这里「服务端不返回 + 客户端写死 null」**双方都有代码**，
+> 不像缺陷 13 那样是单边漏列。所以不是修一端就能消除的缺口。
+
+### boundary 尾巴只有 4 封，且属既有历史脏数据
+
+全库 120 封里 4 封 snippet 带 `------=_Part_…--` 尾巴。实测
+`stripTrailingBoundary` 对这 4 封**全部能正确剥掉**：
+
+```
+"极客时间 点击这里取消订阅 ------=_Part_172449_2115296577.1789970890196--"
+  → "极客时间 点击这里取消订阅"
+```
+
+即当前代码处理是正确的，这些是修复前写入、且原文未落盘无法重算的历史值
+（同上节的结论），**不是新缺陷**。当前 re-sync 即可刷掉。
+
+---
+
 ## 怎么让这 25 封变干净
 
 自愈路径已经就位（`store.go:515`）：
