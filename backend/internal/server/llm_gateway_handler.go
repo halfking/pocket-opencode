@@ -121,6 +121,21 @@ func (s *Server) EnsureLLMGatewayDefaults(workspaceIDs ...string) {
 			// 密文不可解（如 JWT secret 轮换后 cipher 校验失败）或行损坏：
 			// 用 env 默认配置覆写毒化行，而不是永远跳过——否则每次启动都
 			// 解密失败并静默回退，租户配置再也救不回来。
+			//
+			// 但"自愈"绝不能变成"毁配置"：SaveConfig 会先把该 workspace 全部
+			// 行置为 inactive 再插新的 active 行。当 env 也没配 key 时
+			//（def.APIKey == ""，这是 POCKET_LLM_GATEWAY_API_KEY 未设时的常态），
+			// 这次覆写等于：把一条"只是暂时解不开"的行，连同它本来可用的
+			// 旧 active 行一起废掉，换成一条永久没有 key 的行——配置从
+			// "解不开但还在"变成"永久丢失"，且不可逆。
+			//
+			// 因此 env 无 key 时只告警、不落库：宁可保持"读不出来"让用户
+			// 去设置页重新填 key，也不要静默销毁已有配置。
+			if strings.TrimSpace(def.APIKey) == "" {
+				log.Printf("[llm-gateway] default-seed LoadConfig failed for %s: %v; "+
+					"跳过自愈（env 未配置 POCKET_LLM_GATEWAY_API_KEY，覆写会清掉现有 key）", wsID, err)
+				continue
+			}
 			log.Printf("[llm-gateway] default-seed LoadConfig failed for %s: %v; self-healing with env defaults", wsID, err)
 			if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, def); saveErr != nil {
 				log.Printf("[llm-gateway] default-seed self-heal SaveConfig failed for %s: %v", wsID, saveErr)
