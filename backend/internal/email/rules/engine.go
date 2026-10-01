@@ -21,12 +21,25 @@ import (
 
 // Action 分类后的执行动作。
 //
-//   - mark-important / label-category：fetcher 立即写入 emails.importance / .category。
-//   - archive / route-folder / trigger-autoreply：fetcher 写入 email_action_intents 表
-//     （带幂等键），由后续 scheduler / IMAP job 消费。
+// 实际执行分两类，**archive 属于第一类**（这一点原注释写错过）：
 //
-// 所有 action 的“实际副作用”需由账户级 enable_dangerous_actions 开关放行
-// （详见 server 层 handler 校验）；fetcher 默认只落“建议意图”，不直接改信。
+//   - mark-important / label-category / archive：fetcher 在**入库时直接落地**
+//     ——写 emails.importance / .category，archive 额外置 category=archived +
+//     is_read=true。archive **不入** email_action_intents（见 scheduler.go
+//     intentLoop 注释「archive 不入队」）。
+//   - route-folder / trigger-autoreply：fetcher 写 email_action_intents 表
+//     （带幂等键），由 scheduler.intentLoop 每分钟 claim 后执行真实副作用
+//     （IMAP MOVE / SMTP 自动回复）。
+//
+// **没有开关。** 本文件早先的注释称「所有 action 的实际副作用需由账户级
+// enable_dangerous_actions 开关放行（详见 server 层 handler 校验）」，这是
+// 错的：全仓不存在该开关、账户表没有该字段、handler 也没有该校验。
+// 今天的行为是——只要账户 rules 命中，副作用就会发生，没有 opt-in。
+//
+// 这个差别不是学术问题：route-folder / trigger-autoreply 会真的动用户的
+// 信箱（移信、发信）。给不给这两类动作加显式 opt-in 是产品决策，
+// 见 docs/handoff/2026-10-02-phantom-enable-dangerous-actions-switch.md。
+// 在那之前，这里按「无闸门」如实描述，不写成有闸门。
 type Action string
 
 const (
@@ -153,8 +166,8 @@ func ParseRules(raw string) ([]Rule, error) {
 		rs = append(rs, Rule{Type: "sender-whitelist", Pattern: from, Actions: []actionSpec{{Name: "mark-important"}}})
 	}
 	for _, from := range legacy.Blacklist {
-		// 黑名单语义：默认 archive。Caller 是否真正执行取决于账户级
-		// enable_dangerous_actions 开关。
+		// 黑名单语义：默认 archive。注意 archive 是**入库即落地**（fetcher
+		// 置 category=archived + 已读），不经过意图队列，也没有开关拦截。
 		rs = append(rs, Rule{Type: "sender-blacklist", Pattern: from, Actions: []actionSpec{{Name: "archive"}}})
 	}
 	for _, kw := range legacy.Keywords {
