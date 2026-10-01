@@ -5,25 +5,14 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestPGStore_ConflictRecovery 验证 ON CONFLICT 后回查失败时的错误处理
 func TestPGStore_ConflictRecovery(t *testing.T) {
-	dsn := testPGDSN()
-	if dsn == "" {
-		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping PG conflict recovery test")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	pool := newIsolatedPGPool(t)
 
 	s, err := NewPGStore(ctx, pool)
 	if err != nil {
@@ -74,19 +63,10 @@ func TestPGStore_ConflictRecovery(t *testing.T) {
 
 // TestPGStore_ConcurrentConflictRetry 验证真实并发冲突时的回查成功路径
 func TestPGStore_ConcurrentConflictRetry(t *testing.T) {
-	dsn := testPGDSN()
-	if dsn == "" {
-		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping PG concurrent conflict test")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	pool := newIsolatedPGPool(t)
 
 	s, err := NewPGStore(ctx, pool)
 	if err != nil {

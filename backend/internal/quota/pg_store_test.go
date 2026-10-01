@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,7 +34,14 @@ func newTestPGStore(t *testing.T) (*PGStore, func()) {
 		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping quota PG integration test")
 	}
 	ctx := context.Background()
-	rootPool, err := pgxpool.New(ctx, dsn)
+	// rootPool 不带 search_path：所有 DDL/DROP 都显式带 schema 名，不依赖它。
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	rootCfg := cfg.Copy()
+	delete(rootCfg.ConnConfig.RuntimeParams, "search_path")
+	rootPool, err := pgxpool.NewWithConfig(ctx, rootCfg)
 	if err != nil {
 		t.Fatalf("pgxpool.New: %v", err)
 	}
@@ -46,15 +54,25 @@ func newTestPGStore(t *testing.T) (*PGStore, func()) {
 	if _, err := rootPool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
-	scopedPool, err := pgxpool.New(ctx, dsn+"&search_path="+schema)
+	// 覆盖式设置 search_path，不能往 DSN 字符串后面拼 `&search_path=`：
+	// 本仓库的惯例是同一个 DSN 既喂服务也喂测试，DSN 里往往已经带了
+	// search_path（生产 schema）。拼接会得到两个同名参数，pgx 取第一个，
+	// 于是隔离静默失效、NewPGStore 的建表迁移直接落到那个 schema 里。
+	// 献祭 schema 实测：修复前 quota_budgets 被建到了 sacrificial_prod，
+	// 且 TestPGStore_BudgetsFor_AcceptsZeroPeriod 因此失败。
+	scopedCfg := cfg.Copy()
+	scopedCfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
+	scopedPool, err := pgxpool.NewWithConfig(ctx, scopedCfg)
 	if err != nil {
-		// DSN may not accept search_path param; fall back to SET per session.
-		scopedPool = rootPool
-		if _, err := rootPool.Exec(ctx, "SET search_path TO "+schema); err != nil {
-			t.Fatalf("set search_path: %v", err)
-		}
+		t.Fatalf("create scoped pool: %v", err)
 	}
 	cleanup := func() {
+		scopedPool.Close()
+		// 纵深防御：只 DROP 自己生成的那一个 schema 名。
+		if !strings.HasPrefix(schema, "quota_test_") {
+			rootPool.Close()
+			return
+		}
 		_, _ = rootPool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
 		rootPool.Close()
 	}

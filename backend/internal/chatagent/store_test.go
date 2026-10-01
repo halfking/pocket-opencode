@@ -2,13 +2,18 @@ package chatagent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
+
+const chatAgentTestSchemaPrefix = "chatagent_test_"
 
 func setupTestStore(t *testing.T) (*Store, context.Context) {
 	t.Helper()
@@ -20,12 +25,53 @@ func setupTestStore(t *testing.T) (*Store, context.Context) {
 		t.Skip("POCKET_TEST_POSTGRES_DSN not set")
 	}
 
-	pool, err := pgxpool.New(ctx, dbURL)
+	// 隔离 schema —— 绝不在 DSN 默认的 search_path 上建表或删数据。
+	//
+	// 本仓库的惯例是同一个 DSN 既喂服务也喂测试，所以 DSN 的 search_path
+	// 完全可能就是生产 schema。原来的实现直接在那个连接上 store.Init() 建表，
+	// 并对**活表**执行下面那条 DELETE。实测生产库后果：chat_agents 里 id 以
+	// "custom" 开头的内置 agent `customer-success-manager`（客户成功经理）
+	// 会被 `id LIKE 'custom%'` 误伤删掉，而测试照报 ok。
+	cfg, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
-		t.Skipf("PostgreSQL not available: %v", err)
+		t.Skipf("parse pgx config: %v", err)
 	}
-	// pgxpool.New 只解析 DSN 不建连：DSN 已设但 PG 不可达时要到 Ping 才能发现。
-	// 连接失败与环境未设 DSN 同待遇 t.Skip，避免预置问题污染 CI。
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	schema := chatAgentTestSchemaPrefix + hex.EncodeToString(suffix[:])
+
+	rootCfg := cfg.Copy()
+	delete(rootCfg.ConnConfig.RuntimeParams, "search_path")
+	rootPool, err := pgxpool.NewWithConfig(ctx, rootCfg)
+	if err != nil {
+		t.Skipf("pgx connect (root): %v", err)
+	}
+	if perr := rootPool.Ping(ctx); perr != nil {
+		rootPool.Close()
+		t.Skipf("PostgreSQL not reachable: %v", perr)
+	}
+	if _, err := rootPool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		rootPool.Close()
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		// 纵深防御：只 DROP 自己生成的那一个 schema 名。
+		if !strings.HasPrefix(schema, chatAgentTestSchemaPrefix) {
+			return
+		}
+		if _, err := rootPool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schema+" CASCADE"); err != nil {
+			t.Logf("cleanup: drop schema %s: %v", schema, err)
+		}
+		rootPool.Close()
+	})
+
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Skipf("create test pool: %v", err)
+	}
 	pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second)
 	if perr := pool.Ping(pingCtx); perr != nil {
 		pingCancel()
@@ -40,8 +86,10 @@ func setupTestStore(t *testing.T) (*Store, context.Context) {
 		t.Fatalf("Init failed: %v", err)
 	}
 
-	// 清空测试数据（'custom%' 覆盖精确 id 'custom' 与 'custom-a/b' 等变体）
-	if _, err := pool.Exec(ctx, "DELETE FROM chat_agents WHERE id LIKE 'test-%' OR id LIKE 'custom%' OR id IN ('builtin', 'builtin-agent', 'c1', 'c2')"); err != nil {
+	// 清空测试数据。原先用 `id LIKE 'custom%'` 想覆盖精确 id 'custom' 与
+	// 'custom-a/b'，但前缀匹配会连内置 agent 一起删——生产库里
+	// `customer-success-manager`（客户成功经理）就是这样被误伤的。改为显式枚举。
+	if _, err := pool.Exec(ctx, "DELETE FROM chat_agents WHERE id LIKE 'test-%' OR id IN ('custom', 'custom-a', 'custom-b', 'builtin', 'builtin-agent', 'c1', 'c2')"); err != nil {
 		t.Logf("cleanup warning: %v", err)
 	}
 

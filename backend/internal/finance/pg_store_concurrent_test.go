@@ -2,44 +2,21 @@ package finance
 
 import (
 	"context"
-	"os"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-// testPGDSN 与 server/email 包一致：POCKET_TEST_POSTGRES_DSN 优先。
-func testPGDSN() string {
-	for _, key := range []string{"POCKET_TEST_POSTGRES_DSN", "POCKET_POSTGRES_DSN"} {
-		if v := os.Getenv(key); v != "" {
-			return v
-		}
-	}
-	return ""
-}
 
 // TestPGStore_CreateScoped_Concurrent 并发同一 note_ref 双写：验证 ON CONFLICT
 // DO NOTHING 命中后 RowsAffected==0 的回查分支——所有并发调用方都拿到同一条
 // 记录、库中只有一行、无 error。此前该分支只有内存版测试 + SQL 语义推演。
-// 需要 PG；无 DSN 时 skip（与 audit/email 的 PG 集成测试同约定）。
+// 需要 PG；无测试 DSN 时 skip。所有 PG 访问都经 newIsolatedPGPool，
+// 绝不落到生产 schema 上。
 func TestPGStore_CreateScoped_Concurrent(t *testing.T) {
-	dsn := testPGDSN()
-	if dsn == "" {
-		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping finance PG concurrency test")
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer pool.Close()
-	if err := pool.Ping(ctx); err != nil {
-		t.Fatalf("ping: %v", err)
-	}
+	pool := newIsolatedPGPool(t)
 
 	store, err := NewPGStore(ctx, pool)
 	if err != nil {
