@@ -2957,6 +2957,154 @@ KEY C:\workspace\openpocket\wt3\backend\data\email_master.key: 可解出凭据�
 
 ---
 
+## §7bh 读线上日志：master key 推断被证实，同时发现我的测试在污染生产库（2026-10-01）
+
+### 起因
+
+§7bf/§7bg 都在讨论「线上到底受不受 master key 影响」，但都停在推断。
+这次直接读**正在跑的那个实例**的日志。
+
+日志文件 `openpocket-wt-maildeploy\logs\pocketd-18099d.err.log`（PID 33948，
+端口 18099，20:18:42 启动，正在实时写入）。读它要用允许共享读的句柄 ——
+`[IO.File]::ReadAllBytes` 会报「正由另一进程使用」：
+
+```powershell
+$fs = New-Object System.IO.FileStream($f, 'Open', 'Read', 'ReadWrite')
+$sr = New-Object System.IO.StreamReader($fs, [Text.Encoding]::UTF8); $t = $sr.ReadToEnd()
+```
+
+### 发现 A：master key 那条推断，现在有实据了
+
+启动头部逐行是：
+
+```
+20:18:42 data dir = C:\workspace\openpocket\data
+20:18:42 Postgres pool initialized (schema="opencode_pocket")
+20:18:42 INFO: POCKET_KXMEMORY_BASE_URL not set; AI classification/SSOT disabled
+20:18:42 Email scheduler started (fetch_enabled=true, kxmemory=false, ...)
+```
+
+**没有** `WARN: POCKET_EMAIL_MASTER_KEY not set; using auto-generated key at …`
+这一行。而那行在 `main.go:423`，位于 `main.go:472` 的
+`Email scheduler started` **之前** —— 两者都出现/不出现的顺序是确定的。
+
+所以：线上进程确实带着 `POCKET_EMAIL_MASTER_KEY` 环境变量启动，
+`data dir` 指向 `C:\workspace\openpocket\data`（与 20:41 还在写发票的那个
+目录一致），磁盘上那把解不开的 key **根本没被用上**。
+
+§7bf 写的「线上多半是靠环境变量拿 key 的（推断，非实测）」——
+**这条推断现在升级为实测**。同时它也说明 §7bg 那道自检的价值：它防的不是
+「环境变量没设」（那种情况 `Validate()` 已经拦住了、进程根本起不来），
+而是「环境变量设了但**值是错的**」。
+
+顺带确认需求 4 在生产上确实是关的：
+`POCKET_KXMEMORY_BASE_URL not set; AI classification/SSOT disabled`。
+
+### 发现 B（更刺眼）：我自己的测试在污染生产库
+
+同一份日志里，`decrypt credential` 错误的来源是：
+
+```
+20:34:42 [email/scheduler] sync acct-greenmail-junk failed: decrypt credential: cipher: message authentication failed
+21:03:42 [email/scheduler] sync acct-greenmail-realrun failed: ...
+21:42:42 [email/scheduler] sync acct-greenmail-realrun failed: ...
+```
+
+**每 60 秒一次，从 20:34 连续报到 21:42，一个多小时几百行。**
+`acct-greenmail-junk` / `acct-greenmail-realrun` 是 §7ba/§7bf 那两个
+Greenmail 集成用例插进**生产 schema** 的账户，凭据用 `t.TempDir()` 里的
+临时 master key 加密 —— 线上 pocketd 拿到的是另一把 key，于是每轮同步都失败。
+
+而同一时刻 5 个真实账户全部正常：
+
+```
+[email/fetcher] feikemanager1@163.com sync trace total 292ms
+[email/fetcher] 56551681@qq.com      sync trace total 549ms
+[email/fetcher] huangxutao@kxpms.cn  sync trace total 1.121s
+```
+
+也就是说：**563 行日志里绝大多数是测试垃圾，真正的故障会被它淹没。**
+这不是「顺手发现的小瑕疵」，是把自己的验证工作变成了生产噪声。
+
+### 修法：跑完删掉自己的账户
+
+两个用例各加 `t.Cleanup`（`t.Fatal` 也会执行），子表先删、父表后删。
+
+只在开头清理是**不够**的：开头那次只能保证「重复跑幂等」，不能保证
+「跑完不留」。
+
+### 清理本身连踩两个坑，都是静默失败
+
+用例照常 PASS、账户照样留在库里，日志里只有一行 `t.Logf` 级别的提示：
+
+1. **复用测试里的连接池 → `closed pool`。**
+   `defer pool.Close()` 在测试函数返回时**先于** `t.Cleanup` 执行，池已经关了。
+   改成清理时用 DSN 自己开一条短连接。
+2. **三张表统一写 `WHERE account_id=$1 OR id=$1` → 父表报错。**
+   `email_accounts` 是父表，只有 `id`，没有 `account_id`，于是
+   `ERROR: column "account_id" does not exist (SQLSTATE 42703)`。
+   改成按表指定列。
+
+两条都是**测试看着全绿、实际什么都没删**。这类「清理失败」比清理代码本身
+更容易骗过人 —— 它不会让任何断言变红。
+
+### 验证
+
+两个用例 PASS 且**零 cleanup 错误**：
+
+```
+=== RUN   TestSyncGreenmail
+--- PASS: TestSyncGreenmail (0.41s)
+=== RUN   TestMoveToJunkGreenmail
+--- PASS: TestMoveToJunkGreenmail (0.16s)
+```
+
+共享库现状：
+
+```
+email_accounts: 5 个，全部是真实邮箱（无 acct-greenmail%）
+emails    where account_id like 'acct-greenmail%' : 0
+invoices  where account_id like 'acct-greenmail%' : 0
+emails    非测试账户                            : 120   ← 真实邮件一封没少
+```
+
+（顺带修正一个此前记录的数字：`emails` 表现共 138 行，其中 18 行是 greenmail
+测试邮件，真实邮件是 **120** 行，不是之前文档里写的 416。）
+
+**闭环验证在日志上**：清理前最后一次测试账户报错是 `21:45:42`，之后：
+
+```
+21:46:42 [email/fetcher] feikemanager1@163.com sync trace total 298ms
+21:46:42 [email/fetcher] 56551681@qq.com      sync trace total 490ms
+21:46:43 [email/fetcher] huangxutao@kxpms.cn  sync trace total 1.092s
+21:47:42 [email/fetcher] feikemanager1@163.com sync trace total 259ms
+21:47:43 [email/fetcher] 56551681@qq.com      sync trace total 534ms
+21:47:43 [email/fetcher] huangxutao@kxpms.cn  sync trace total 1.19s
+```
+
+只剩真实账户的同步记录，**再没有一条 `decrypt credential`**。
+即：测试删除 → 共享库清干净 → 线上调度器下一轮不再扫到 → 日志恢复干净，
+三段都验过。这条链只看数据库是验不出来的 —— 数据没了但调度器还可能缓存，
+必须回到日志确认。
+
+### 顺带记一条偶发现象
+
+```
+21:38:02 [email/fetcher] imap login huangxutao@kxpms.cn failed:
+        cannot read tag: read tcp 192.168.31.20:56534->36.158.243.217:993: i/o timeout
+        — trying POP3 fallback (budget -10s left)
+21:38:02 [email/fetcher] huangxutao@kxpms.cn SLOW step login took 1m20.001s
+21:38:02 [email/scheduler] sync ...-1 failed: imap failed and no time left for POP3 fallback
+```
+
+单账户登录整整挂 80 秒后超时，POP3 回退因预算已耗尽而跳过，**该账户这一轮
+没同步成功**；但下一个 60 秒轮次 1.121s 正常。属于 §7g/§7j 同族的瞬时网络
+停顿，**已被 deadlineConn 兜住没有泄漏连接**（同一时刻没有出现连接堆积），
+但「单账户 90s 上界耗尽后 POP3 回退拿不到预算」这一条值得单独记一笔：
+回退路径在最需要它的时刻恰恰没有预算。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
