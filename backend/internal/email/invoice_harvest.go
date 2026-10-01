@@ -269,6 +269,15 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 		_ = h.Store.UpdateInvoiceHarvest(ctx, inv)
 		return "failed"
 	}
+	// Attempts++ 必须在**取原文之前**：BodyCache 命中 / POP3 自愈 / IMAP FETCH
+	// 三条路径都要计数。
+	//
+	// 原来它只写在 IMAP FETCH 那一个分支里（`} else { inv.Attempts++; ... }`），
+	// 于是命中缓存或走 POP3 自愈的发票虽然也会到 markRetry，Attempts 却停在
+	// 进入本轮时的值 —— 状态机不再前进，pending → failed 的收敛对它们永久
+	// 失效。后果：这类发票每轮都占 MaxInvoicesPerHarvestRound=20 的预算，
+	// 变成一张永远重试的僵尸发票，还把同轮的正常发票挤出去。
+	inv.Attempts++
 	var raw []byte
 	if isPOP3SourcedEmail(*em) {
 		// POP3 降级路径给的 UID 是**位置序号**（第几封），不是 IMAP UID。
@@ -322,7 +331,7 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 			raw = cached
 		}
 	} else {
-		inv.Attempts++
+		// Attempts++ 已在本函数开头统一做过，这里不再重复计数。
 		var err error
 		raw, err = h.Fetcher.FetchMessageRaw(ctx, inv.AccountID, em.UID)
 		if err != nil {

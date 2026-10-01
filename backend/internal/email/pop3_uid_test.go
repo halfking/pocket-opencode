@@ -66,9 +66,13 @@ func TestParseMIMEMessage_MessageIDAbsentIsEmpty(t *testing.T) {
 
 // TestHarvestOne_RefusesPOP3PositionalUID 是本文件的核心安全性质。
 //
-// 判据不是「返回了 failed」这么笼统，而是 **Attempts 没有被 +1**：Attempts++
-// 紧接着就是 FetchMessageRaw，所以只要 Attempts 仍是 0，就证明采集器在真正
-// 去 FETCH 之前就停住了。如果哪天这个判断被删掉，Attempts 会变成 1，测试变红。
+// 判据不是「返回了 failed」这么笼统，而是 **Fetcher 是 nil 而采集仍然平安返回**
+// —— 若实现退化成去调 FetchMessageRaw，这个 nil 一定会被解引用并 panic。
+// 这是直接判据，不用代理指标。
+//
+// （判据原先用的是 `Attempts == 0`，因为 Attempts++ 紧挨着 FetchMessageRaw。
+// 2026-10-01 修「缓存命中路径不计数」时把 Attempts++ 提到了取原文之前统一计数，
+// 代理指标随之失效 —— 意图不变，换成直接判据。）
 func TestHarvestOne_RefusesPOP3PositionalUID(t *testing.T) {
 	store, cleanup := newWorkspaceTestStore(t)
 	defer cleanup()
@@ -93,16 +97,17 @@ func TestHarvestOne_RefusesPOP3PositionalUID(t *testing.T) {
 		t.Fatalf("用例前提不成立：%q 应被识别为 POP3 来源", em.ID)
 	}
 
-	h := &InvoiceHarvester{Store: store, Fetcher: &Fetcher{}, DataDir: t.TempDir()}
+	// Fetcher 刻意留 nil：任何真的去 FetchMessageRaw 的路径都会 panic。
+	// 采集平安返回即证明没有拿合成 UID 去 FETCH。
+	h := &InvoiceHarvester{Store: store, Fetcher: nil, DataDir: t.TempDir()}
 	inv := &Invoice{ID: "inv-pop3-1", EmailID: em.ID, Status: "pending"}
 
 	got := h.harvestOne(ctx, inv)
 	if got != "failed" {
 		t.Fatalf("harvestOne = %q, want \"failed\"（合成 UID 绝不能拿去 IMAP FETCH）", got)
 	}
-	if inv.Attempts != 0 {
-		t.Fatalf("inv.Attempts = %d, want 0 —— Attempts++ 之后紧跟 FetchMessageRaw，"+
-			"非 0 说明真的去 FETCH 了合成 UID（会取到另一封邮件）", inv.Attempts)
+	if inv.Status != "failed" {
+		t.Fatalf("Status=%q, want \"failed\"", inv.Status)
 	}
 	if !strings.Contains(inv.LastError, "POP3") {
 		t.Fatalf("LastError=%q, want 包含 POP3 的明确原因（运维要能看懂为什么失败）", inv.LastError)
