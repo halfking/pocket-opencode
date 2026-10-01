@@ -8,6 +8,7 @@ import { downloadTextFile, downloadFile, DownloadUnsupportedError } from '../../
 import { isLocalOnlyId } from '../../native/list-sync/planner'
 import * as invoiceStore from './invoices-store'
 import { pullInvoiceServerPage, pushDirtyInvoices } from './invoice-list-pull'
+import { cancelPipelineRun, emailJobs, finishPipelineRun, startPipelineRun } from './email-job-runtime'
 import { useInvoiceThumbs } from './use-invoice-thumbs.ts'
 import {
   INVOICE_PAGE_SIZE, invoiceFileKind, invoiceHasFile,
@@ -20,6 +21,14 @@ export function useInvoiceList() {
   const router = useRouter()
   const loading = ref(false)
   const syncing = ref(false)
+  // 整理作业的 running 放在进程级单例里（见 email-job-runtime.ts）：早先是局部
+  // ref，切页后按钮恢复可点，用户能对同一批发票再起一轮并发流水线，而后者会在
+  // 后端 emailPipelineMu 上排队——界面上就是「转圈不动」。
+  //
+  // 与 syncing 分开是必须的：syncing 是本页的瞬时态（syncAndReload 用），
+  // 若共用同一个标志，syncAndReload 结束时会顺手把仍在跑的整理作业的
+  // running 抹成 false，等于又造一个「看不见正在跑」的洞。
+  const pipelineRunning = emailJobs.pipeline.running
   const exporting = ref(false)
   const pushing = ref(false)
   const error = ref('')
@@ -182,17 +191,36 @@ export function useInvoiceList() {
       loadingMore.value = false
     }
   }
+  /**
+   * 手动跑一轮完整流水线（收信 → 清垃圾 → 发票采集 → 飞书/汇总）。
+   *
+   * 2026-10-03 之前这里有两个问题，都已修：
+   *   - 客户端 30s 超时，而后端实测 1m30s ⇒ **每次都报失败**，而邮件其实已经
+   *     处理完了，用户会反复重试（见 api/email.ts 的 PIPELINE_TIMEOUT_MS）；
+   *   - 只有一个 syncing 标志，没有中止入口。现在中止走 AbortController，
+   *     服务端 handler 派生自 r.Context()，所以这是真终止。
+   */
   async function runPipeline() {
-    syncing.value = true
+    const controller = startPipelineRun()
     try {
-      const rep = await emailApi.runPipeline()
-      toast.success(`整理完成：新邮件 ${rep.newEmails ?? 0}`)
+      const rep = await emailApi.runPipeline(controller.signal)
+      if (!rep.errors?.length) {
+        toast.success(`整理完成：新邮件 ${rep.newEmails ?? 0}`)
+      } else {
+        toast.error(`整理完成但有 ${rep.errors.length} 项失败：${rep.errors[0]}`)
+      }
       await load()
     } catch (e: any) {
-      toast.error(apiError(e, 'errors.operateFailed'))
+      if (controller.signal.aborted) toast.info('已停止本轮整理')
+      else toast.error(apiError(e, 'errors.operateFailed'))
     } finally {
-      syncing.value = false
+      finishPipelineRun()
     }
+  }
+
+  /** 强行终止正在跑的整理作业（切页回来后依然有效——中止器在进程级单例上）。 */
+  function cancelPipeline() {
+    cancelPipelineRun()
   }
   async function syncAndReload() {
     syncing.value = true
@@ -328,11 +356,13 @@ export function useInvoiceList() {
   })
   return {
     loading, loadingMore, hasMore, syncing, exporting, pushing, error, filter, summary, bookingId,
+    pipelineRunning,
     shareDocUrl,
     selectMode, selected, thumbs, thumbLoading, preview, invoices, previewSrc, previewBlob, previewKey,
     previewKind, previewTitle,
     formatAmount, statusLabel, bookable, toggleSelectMode, selectAllDownloaded, togglePick,
     downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline,
+    cancelPipeline,
     syncAndReload, exportGrid, pushFeishu, downloadInvoice, markFiled, markNew, book,
     exportCsv, remove,
   }

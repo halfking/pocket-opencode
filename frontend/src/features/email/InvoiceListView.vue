@@ -5,10 +5,32 @@
 <template>
   <div class="page">
     <HeaderActionsPortal>
-      <button type="button" class="icon-btn" :disabled="syncing" aria-label="收信整理" @click="runPipeline">
+      <!--
+        整理作业进行中：同一个位置换成「停止」。早先这里只有 disabled，
+        于是用户看得见按钮在转圈、却没有任何办法终止；而这轮实测要跑 1m30s
+        以上（后端 15 分钟预算），切页回来更是连转圈都看不见。
+      -->
+      <button
+        v-if="pipelineRunning"
+        type="button"
+        class="icon-btn is-running"
+        aria-label="停止整理"
+        aria-busy="true"
+        @click="cancelPipeline"
+      >
+        <span class="material-symbols-outlined">stop_circle</span>
+      </button>
+      <button
+        v-else
+        type="button"
+        class="icon-btn"
+        :disabled="syncing"
+        aria-label="收信整理"
+        @click="runPipeline"
+      >
         <span class="material-symbols-outlined">auto_awesome</span>
       </button>
-      <button type="button" class="icon-btn" :disabled="syncing" aria-label="同步" @click="syncAndReload">
+      <button type="button" class="icon-btn" :disabled="syncing || pipelineRunning" aria-label="同步" @click="syncAndReload">
         <span class="material-symbols-outlined">sync</span>
       </button>
       <button type="button" class="icon-btn" aria-label="导出 CSV" @click="exportCsv">
@@ -24,6 +46,14 @@
           <template v-if="summary.downloaded > 0">· 文件 {{ summary.downloaded }}</template>
         </span>
       </div>
+      <!--
+        状态行：整理在后台跑时（可能已经跑了很久，用户中途切走过）这里必须有
+        明确说明 + 停止入口。role="status" 让读屏也能听到。
+      -->
+      <p v-if="pipelineRunning" class="job-hint" role="status">
+        <span>正在整理邮件…收信 → 清理 → 发票采集，通常需要 1~2 分钟</span>
+        <button type="button" class="job-hint-stop" @click="cancelPipeline">停止</button>
+      </p>
     </div>
 
     <div class="file-ops">
@@ -135,10 +165,11 @@ defineOptions({ name: 'InvoiceListView' })
 
 const {
   loading, loadingMore, hasMore, syncing, exporting, pushing, error, filter, summary, bookingId, shareDocUrl,
+  pipelineRunning,
   selectMode, selected, thumbs, thumbLoading, preview, invoices, previewSrc, previewBlob, previewKey,
   previewKind, previewTitle,
   formatAmount, statusLabel, bookable, toggleSelectMode, selectAllDownloaded, togglePick,
-  downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline,
+  downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline, cancelPipeline,
   syncAndReload, exportGrid, pushFeishu, downloadInvoice, markFiled, markNew, book,
   exportCsv, remove,
 } = useInvoiceList()
@@ -190,5 +221,18 @@ onUnmounted(() => {
 .state { padding: 40px 20px; text-align: center; color: var(--text-secondary); }
 .hint { font-size: 12px; margin-top: 8px; }
 .more { padding: 16px 0 24px; text-align: center; font-size: 12px; color: var(--text-muted); }
+/* 整理作业进行中的状态行。放在 summary-card 里而不是 toast：toast 一闪而过，
+   而这一轮实测要 1m30s 以上，切页回来还可能仍在跑，需要一个常驻位置。 */
+.job-hint {
+  display: flex; align-items: center; gap: var(--space-2);
+  margin: var(--space-2) 0 0; padding-top: var(--space-2);
+  border-top: 1px solid var(--border-color, var(--border));
+  font-size: var(--text-sm); color: var(--text-secondary);
+}
+.job-hint .job-hint-stop {
+  flex: none; border: none; background: none; padding: 0;
+  color: var(--brand-primary, #4c8dff); font-size: var(--text-sm); font-weight: 600;
+}
+.icon-btn.is-running { color: var(--danger, #ef4444); }
 </style>
 

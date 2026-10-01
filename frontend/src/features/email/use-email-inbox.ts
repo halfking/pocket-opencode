@@ -3,6 +3,7 @@ import { emailApi } from '../../api/email'
 import i18n from '../../i18n'
 import { normalizeEmailCategory } from './email-categories'
 import { applyClassifyResult, classifyDoneHint, classifyProgressLabel, DEFAULT_CLASSIFY_MAX_ROUNDS, isUncategorized, shouldContinueClassify } from './email-classify-run'
+import { cancelClassifyRun, emailJobs, finishClassifyRun, startClassifyRun } from './email-job-runtime'
 import { sanitizeFetchHint } from './email-fetch-plan'
 import { hasInboxSearch, matchInboxSearch, type InboxSearch } from './email-inbox-search'
 import { selectedIdList, toggleSelect } from './email-inbox-select'
@@ -16,12 +17,13 @@ export function useEmailInbox() {
   const searchOpen = ref(false)
   const search = ref<InboxSearch>({})
   const moreOpen = ref(false)
-  const classifying = ref(false)
-  const classifyHint = ref('')
-  const classifyCancel = ref(false)
-  /** 在途归类请求的中止器；点「取消」时 abort，让 HTTP 层真正断掉。 */
-  const classifyAbort = ref<AbortController | null>(null)
   const purgeBusy = ref(false)
+
+  // 归类作业的状态与中止器放在**进程级单例**里（见 email-job-runtime.ts）：
+  // 早先是本 composable 的局部 ref，于是切页卸载后进度与「取消」按钮一起
+  // 消失，而后台循环照跑；切回来是新实例、看着像没跑过，再点一次就起第二个
+  // 并发作业。需求「切页后仍能执行 + 后台 api 可强行终止」两条都因此落空。
+  const { running: classifying, hint: classifyHint, cancelRequested: classifyCancel } = emailJobs.classify
 
   const selectedCount = computed(() => selected.value.size)
 
@@ -77,19 +79,18 @@ export function useEmailInbox() {
    * 强行终止归类：既要停批间循环，也要真的 abort 在途 HTTP 请求。
    * 原实现只置 classifyCancel 标记，用户点「取消」后当前这批仍会跑满
    * （逐封调 LLM，单批可达分钟级），表现为「点了没反应」。
+   *
+   * 与局部 ref 版本的另一个差别：中止器在进程级单例上，所以切页之后回来点
+   * 「取消」依然能停掉**正在跑的那一轮**，而不是一个已经作废的旧实例的请求。
    */
   function cancelClassify() {
-    classifyCancel.value = true
-    classifyAbort.value?.abort()
+    cancelClassifyRun()
   }
 
   async function runClassify(list: LocalEmail[]): Promise<LocalEmail[]> {
     if (classifying.value) return list
-    classifying.value = true
-    classifyCancel.value = false
     classifyHint.value = '正在归类…'
-    const controller = new AbortController()
-    classifyAbort.value = controller
+    const controller = startClassifyRun()
     let next = list
     try {
       // 轮次上限与终止条件都在纯函数里（email-classify-run.ts），可单测。
@@ -146,8 +147,7 @@ export function useEmailInbox() {
         classifyHint.value = sanitizeFetchHint(raw, tr) === raw ? raw : '归类中断，已保存已完成的分类'
       }
     } finally {
-      classifyAbort.value = null
-      classifying.value = false
+      finishClassifyRun()
     }
     return next
   }

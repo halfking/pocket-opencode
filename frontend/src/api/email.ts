@@ -7,6 +7,31 @@ import { assertNotHTML } from './jsonGuard'
 import { resolveRuntimeApiBase } from '../config/api-base'
 import { useAuthStore } from '../stores/auth'
 
+/**
+ * 邮件流水线（收信 → 清垃圾 → 重要提醒 → 发票采集 → 飞书/汇总）的客户端超时。
+ *
+ * 2026-10-03 审计到的缺陷：`runPipeline()` 早先**没有**传 timeoutMs，于是吃
+ * 默认的 30s（http.ts 的 DEFAULT_TIMEOUT_MS）。而后端这一轮的实测耗时是
+ * **1m30.67s**（见 backend/internal/server/server.go 里 longLivedPaths 的
+ * 事故记录）。结果是必然的、每次都复现的：
+ *
+ *   - 30s 时前端 abort，报「操作失败」；
+ *   - 后端毫不知情，继续跑到 1m30s 把发票行建好、推完飞书；
+ *   - 用户以为没成，再点一次 → 第二个作业排队等 `emailPipelineMu`。
+ *
+ * 「操作成功但界面报错」和「用户重复点击」是两个后果，都比超时本身更糟。
+ *
+ * 取值必须**大于**后端自身的预算，否则前端会比服务端先放弃：
+ *   runEmailPipeline: context.WithTimeout(ctx, 15*time.Minute)
+ *   delegatePipeline: http.Client{Timeout: 16 * time.Minute}（server 模式委托）
+ * 所以取 17 分钟留出余量。这条约束由
+ * `__tests__/email-long-request-budget.test.mjs` 反推后端源码来守护。
+ */
+export const PIPELINE_TIMEOUT_MS = 17 * 60_000
+
+/** 历史回补（按日期窗口回 IMAP 取回）的客户端超时。 */
+export const BACKFILL_TIMEOUT_MS = 10 * 60_000
+
 export type EmailCategory =
   | 'work' | 'bill' | 'notification' | 'personal' | 'marketing' | 'spam'
 export type EmailImportance = 'high' | 'medium' | 'low'
@@ -319,13 +344,14 @@ export const emailApi = {
    *
    * 幂等：按 (account_id, message_id) 去重，重复调用安全。
    */
-  backfill(opts: { accountId?: string; days?: number; maxMessages?: number } = {}): Promise<{
+  backfill(opts: { accountId?: string; days?: number; maxMessages?: number } = {}, signal?: AbortSignal): Promise<{
     accounts: Array<{ accountId: string; fetched: number; saved: number; skipped: number; days: number; error?: string }>
   }> {
     return http('/api/email/backfill', {
       method: 'POST',
       // 走 IMAP 逐批取回，30 天大邮箱要跑几十秒到几分钟，不能用默认超时。
-      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+      timeoutMs: BACKFILL_TIMEOUT_MS,
+      signal,
       body: JSON.stringify({
         ...(opts.accountId ? { accountId: opts.accountId } : {}),
         ...(opts.days ? { days: opts.days } : {}),
@@ -532,9 +558,21 @@ export const emailApi = {
   },
 
   // ── 邮件处理流水线 ──────────────────────────────────────────────────
-  /** 手动触发一轮：收信 → 清理垃圾 → 重要提醒 → 发票采集 → 飞书/汇总。 */
-  runPipeline(): Promise<EmailPipelineReport> {
-    return http('/api/email/pipeline/run', { method: 'POST', body: '{}' })
+  /**
+   * 手动触发一轮：收信 → 清理垃圾 → 重要提醒 → 发票采集 → 飞书/汇总。
+   *
+   * 传 signal 才能真正中止（需求「后台执行的 api 可以强行终止」）：服务端
+   * handler 把 r.Context() 一路传进 `context.WithTimeout(ctx, 15*time.Minute)`，
+   * 客户端断开即中止。
+   */
+  runPipeline(signal?: AbortSignal): Promise<EmailPipelineReport> {
+    return http('/api/email/pipeline/run', {
+      method: 'POST',
+      body: '{}',
+      signal,
+      // 必须给足：后端实测 1m30s，默认 30s 会让每次都「假失败」。
+      timeoutMs: PIPELINE_TIMEOUT_MS,
+    })
   },
 }
 

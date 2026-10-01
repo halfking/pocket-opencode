@@ -157,8 +157,75 @@ describe('切页不得 abort 在途请求/流', () => {
     const inbox = readFileSync(join(SRC, 'features', 'email', 'use-email-inbox.ts'), 'utf8')
     assert.match(
       inbox,
-      /function cancelClassify\(\)\s*\{[\s\S]{0,200}?\.abort\(\)/,
-      'cancelClassify 必须真的 abort 在途请求，只置取消标记会让当前这批跑满',
+      /function cancelClassify\(\)\s*\{[^}]*cancelClassifyRun\(\)/,
+      'cancelClassify 必须接到真正做中止的那一层，只置取消标记会让当前这批跑满',
+    )
+    // 2026-10-03：中止实现从 use-email-inbox 搬进了进程级单例
+    // email-job-runtime（为了让切页回来之后仍能停掉正在跑的那一轮）。
+    // 断言跟着搬——**搬的是断言的落点，不是断言的意图**。意图是
+    //「取消按钮 → 真的 abort 在途 HTTP」，两层都要在。
+    //
+    // 顺带记一条教训：这条断言原先长成
+    // `/function cancelClassify\(\)\s*\{[\s\S]{0,200}?\.abort\(\)/`，
+    // 它把**实现落点**当成了契约，于是重构必然让它转红。重构是对的、
+    // 断言是错的——这种情况要改断言，不是改回代码。
+    const runtime = readFileSync(join(SRC, 'features', 'email', 'email-job-runtime.ts'), 'utf8')
+    // 判据必须**函数作用域内**：早先写成
+    // `/export function cancelClassifyRun\(\)[\s\S]{0,300}?\.abort\(\)/`，
+    // 结果把 cancelClassifyRun 里的 abort 注释掉之后它照样绿——因为
+    // 300 字窗口里还塞着 startPipelineRun 的 `controller?.abort()`。
+    // 跨函数的文本匹配会互相顶包，这条负控就是逼出它的。
+    assert.equal(
+      /function cancelClassifyRun\(\)[\s\S]*?\{/.test(runtime),
+      true,
+      'runtime 里找不到 cancelClassifyRun',
+    )
+    const body = goLikeBody(runtime, 'cancelClassifyRun')
+    assert.notEqual(body, null, '取不到 cancelClassifyRun 的函数体（判据可能已失效）')
+    assert.match(
+      body,
+      /\.abort\(\)/,
+      'cancelClassifyRun 必须真的 abort 在途请求，只置取消标记会让当前这批跑满',
     )
   })
+
+  it('上面两条中止断言自带负控（防空跑通过）', () => {
+    // 更新后的断言换了落点，得重新证明它**会红**。两条各坏一次。
+    const runtime = readFileSync(join(SRC, 'features', 'email', 'email-job-runtime.ts'), 'utf8')
+    // 注意负控要**删掉** abort，不能只是注释掉：第一版写的是
+    // `replace('c.abort()', '/* c.abort() */')`，结果替换后的文本里
+    // 仍然含有 `.abort()` 三个字符，判据照样绿。**负控样本自己也可能是错的**，
+    // 这已经是本轮第二次被它绊到。
+    const broken = runtime.replace('c.abort()', 'void 0')
+    assert.notEqual(broken, runtime, '负控样本没有真的摘掉 abort（替换没命中）')
+    assert.equal(
+      /\.abort\(\)/.test(goLikeBody(broken, 'cancelClassifyRun')),
+      false,
+      '判据被注释骗过了——它必须只认代码，不能被说明文字满足',
+    )
+
+    const inbox = readFileSync(join(SRC, 'features', 'email', 'use-email-inbox.ts'), 'utf8')
+    const reInbox = /function cancelClassify\(\)\s*\{[^}]*cancelClassifyRun\(\)/
+    assert.equal(reInbox.test(inbox), true, '判据在真实代码上就没命中过')
+    const brokenInbox = inbox.replace('cancelClassifyRun()', 'void 0')
+    assert.notEqual(brokenInbox, inbox, '负控样本没有真的摘掉调用（替换没命中）')
+    assert.equal(reInbox.test(brokenInbox), false, '判据被注释骗过了')
+  })
 })
+
+/** 取 `function <name>(...) { … }` 的函数体（大括号配平）。 */
+function goLikeBody(src, name) {
+  const start = src.indexOf(`function ${name}(`)
+  if (start < 0) return null
+  const open = src.indexOf('{', start)
+  if (open < 0) return null
+  let depth = 0
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}') {
+      depth--
+      if (depth === 0) return src.slice(open, i + 1)
+    }
+  }
+  return null
+}
