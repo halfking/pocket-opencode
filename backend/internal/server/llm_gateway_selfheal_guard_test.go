@@ -176,3 +176,29 @@ func TestLoadLLMGatewayFromDB_NoRowIsNotAnErrorAndWritesNothing(t *testing.T) {
 		t.Fatalf("SaveConfig called %d time(s) for a workspace with no stored row; want 0", len(store.saveCalls))
 	}
 }
+
+// nilCipher 用来造一个"装着 nil 指针的 interface"：interface 变量本身非 nil，
+// 但任何方法调用都会在 nil receiver 上崩。
+type nilCipher struct{}
+
+func (*nilCipher) EncryptString(string) (string, error) { return "", nil }
+func (*nilCipher) DecryptString(string) (string, error) { return "", nil }
+
+// NewLLMGatewayStore 必须挡住 typed-nil cipher。
+//
+// 调用方（cmd/pocketd/main.go）传的是 *email.Crypto 这个**具体指针类型**。
+// 当 POCKET_EMAIL_MASTER_KEY 长度不对时 emailCrypto 为 nil，装进接口后
+// `cipher == nil` 判断会放行、构造"成功"，直到第一次 SaveConfig 才 panic——
+// 进程启动即崩，而不是报"master key 配错了"。2026-10-01 实测到的栈：
+// email.(*Crypto).EncryptString(0x0, ...) <- encryptAPIKey <- SaveConfig。
+func TestNewLLMGatewayStore_RejectsTypedNilCipher(t *testing.T) {
+	var c apiKeyCipher = (*nilCipher)(nil)
+	if c == nil {
+		t.Fatal("precondition: 一个装着 nil 指针的 interface 必须非 nil，" +
+			"否则本用例复现不了被绕过的那个检查")
+	}
+	if _, err := NewLLMGatewayStore(nil, c); err == nil {
+		t.Fatal("NewLLMGatewayStore 接受了 typed-nil cipher；" +
+			"nil 检查被绕过，第一次 encrypt 就会在 nil receiver 上 panic")
+	}
+}
