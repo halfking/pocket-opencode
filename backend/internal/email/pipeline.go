@@ -783,8 +783,7 @@ func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 	candidates, unclassified := splitReminderCandidates(emails, notified)
 	rep.RemindersUnclassified = unclassified
 	if unclassified > 0 {
-		log.Printf("[email/pipeline] %d/%d 封邮件 importance 为空 —— 未被 AI 分类过，"+
-			"不会进入重要提醒（检查 POCKET_KXMEMORY_BASE_URL）", unclassified, len(emails))
+		log.Printf("[email/pipeline] %s", reminderUnclassifiedHint(unclassified, len(emails)))
 	}
 	var ids []string
 	var sent []Email
@@ -803,6 +802,30 @@ func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 		rep.RemindersSent = len(ids)
 		log.Printf("[email/pipeline] reminders sent: %v", emailSubjects(sent))
 	}
+}
+
+// reminderUnclassifiedHint 组装「importance 为空」的诊断提示。
+//
+// 单独抽成纯函数，是因为这段提示本身是被当排查入口用的，写错比不写更糟。
+// 它原来只说「未被 AI 分类过（检查 POCKET_KXMEMORY_BASE_URL）」，但 importance
+// 在生产里其实有**两条**写入路径，只提一条会把排查方向带偏：
+//
+//  1. 账户规则：fetcher.go 里 `rules.Evaluate` 命中 mark-important 时，
+//     入库即写 importance=high，与 AI 完全无关。前提是该账户配了
+//     email_accounts.rules（为空时 ParseRules 返回 nil，整条路径不执行）。
+//  2. AI 分类：classify_run.go → SetClassificationScoped，需要
+//     POCKET_KXMEMORY_BASE_URL 或已接线的 LLM provider。
+//
+// 真实库实测（2026-10-02）：5 个账户 rules 全为 NULL，kxmemory 未配、
+// llmbff 报 no provider configured —— 两条路都不通，importance 恒为空。
+// 这时只提示去配 kxmemory，等于让人在一条根本不通的路上排查。
+func reminderUnclassifiedHint(unclassified, scanned int) string {
+	return fmt.Sprintf("%d/%d 封邮件 importance 为空 —— 不会进入重要提醒。"+
+		"importance 只有两条写入路径：① 账户规则（email_accounts.rules 里的 "+
+		"mark-important，入库即生效，与 AI 无关）② AI 分类"+
+		"（POCKET_KXMEMORY_BASE_URL 或已接线的 LLM provider）。"+
+		"两条都不通时就是这个结果，先确认账户有没有配 rules。",
+		unclassified, scanned)
 }
 
 // pushInvoices 已由 Run 内的 scope 循环实现（见上）。
