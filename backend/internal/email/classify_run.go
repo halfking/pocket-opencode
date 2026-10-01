@@ -2,6 +2,7 @@ package email
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
@@ -19,12 +20,42 @@ func BuildClassifyWrites(in []RawClassifyResult) []RawClassifyResult {
 	out := make([]RawClassifyResult, 0, len(in))
 	for _, r := range in {
 		r.Category = NormalizeCategory(r.Category)
+		// Importance 也要归一化。修复前这里只处理了 Category：kxmemory
+		// 返回什么就原样落库，而下游 splitReminderCandidates 用
+		// `case "high"` 精确匹配（pipeline.go:727）——上游返回 "High" 时
+		// 重要邮件会**静默漏提醒**，报告里 remindersSent=0 也不报错。
+		// DB 层没有 CHECK 约束兜底（实测 pg_constraint 对 emails 返回 0 行），
+		// 脏值会一直留着。
+		r.Importance = NormalizeImportance(r.Importance)
 		if r.EmailID == "" || r.Category == "" {
 			continue
 		}
 		out = append(out, r)
 	}
 	return out
+}
+
+// NormalizeImportance 把上游（kxmemory / 规则）返回的重要度归一成
+// high / medium / low 三档之一；无法识别时返回空串。
+//
+// 空串的语义是「未分类」——splitReminderCandidates 会把它计入
+// unclassified，让报告里的 0 变得可解释；这比落一个匹配不上的脏值好得多
+// （脏值既不提醒也不计数，是最坏情况）。
+//
+// 覆盖上游常见偏差：大小写（"High"）、中文（"高"）、数字档位（"1"）。
+func NormalizeImportance(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	switch s {
+	case "":
+		return ""
+	case "high", "h", "1", "高", "重要", "紧急", "urgent", "critical":
+		return "high"
+	case "medium", "med", "m", "2", "中", "普通", "normal":
+		return "medium"
+	case "low", "l", "3", "低", "次要", "minor":
+		return "low"
+	}
+	return ""
 }
 
 func ShouldProcessAfterFetch(syncedAccounts, newEmails int) bool {

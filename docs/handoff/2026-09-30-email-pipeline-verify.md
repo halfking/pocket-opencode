@@ -1502,3 +1502,111 @@ yuan_sign_is_cny 三个 CNY 用例仍绿**——说明改动没有把 CNY 场景
   直接相加。正确做法应是**按币种分组各出一个合计**。
   这需要你决定：分组显示 / 强制单币种 / 汇率换算。
 - 存量数据 7 张发票的 `currency` 列已是 CNY 且本来就都是 CNY，无需回填。
+
+---
+
+## §7af 需求 4：AI 分类的 importance 未归一化 → 重要邮件静默漏提醒（2026-10-01）
+
+### 起因
+
+需求 4「对其它重要邮件进行提醒」目前卡在 `POCKET_KXMEMORY_BASE_URL` 未配置。
+但「卡住」的是**部署配置**，不是代码正确性——代码路径仍可静态核实。
+本轮查 `importance` 从上游到落库再到提醒判定的整条链。
+
+### 核实过的部分（无问题）
+
+- `splitReminderCandidates`（pipeline.go:717）是纯函数，
+  `case "high"` / `case ""` 的语义清晰，未分类单独计数
+- `ListEmailsSince`（store_pipeline.go:64）在**同一次 rows 循环内**同时 append
+  `emails` 与 `notified`，两者索引严格对齐，`notified[i]` 对 `emails[i]` 安全
+- kxmemory 声明的取值空间是 `high / medium / low`，与 switch 分支一致
+
+### 找到的缺陷：BuildClassifyWrites 只归一化 Category，Importance 完全没管
+
+`classify_run.go:18`（修复前）：
+
+```go
+for _, r := range in {
+    r.Category = NormalizeCategory(r.Category)   // ← 有归一化
+    if r.EmailID == "" || r.Category == "" { continue }
+    out = append(out, r)                         // ← r.Importance 原样透传
+}
+```
+
+后果链（需求 4 的核心失效模式）：
+
+```
+kxmemory 返回 "High" / "HIGH" / "高"（LLM 的大小写与写法偏差很常见）
+  -> emails.importance 落成 "High"
+  -> splitReminderCandidates 的 `case "high"` 匹配不上（pipeline.go:727）
+  -> 重要邮件**静默漏提醒**
+  -> 报告里 remindersSent=0，且 unclassified 也不涨 —— 看起来「一切正常」
+```
+
+最后一行是关键：脏值**既不提醒也不计数**，报告无法解释，
+与「邮件确实不重要」在观测上完全一样。这正是需求 4 最难排查的失效。
+
+**DB 层没有兜底**：实测
+`SELECT conname FROM pg_constraint WHERE conrelid='...emails'::regclass AND contype='c'`
+返回 **0 行**——`emails` 表没有任何 CHECK 约束，脏值会一直留着。
+
+**真实数据现状**（所以从未暴露）：
+
+```
+importance 分布: (empty) 275 / medium 111 / high 56 / low 5
+```
+
+全是小写规范值，kxmemory 当前返回的取值恰好都是规范的。
+
+### 修复
+
+新增 `NormalizeImportance(raw string) string`，归一到 high/medium/low：
+
+- 大小写（`High`/`HIGH`）、空白（`" high "`）
+- 中文（`高`/`重要`/`紧急`、`中`/`普通`、`低`/`次要`）
+- 数字档位（`1`/`2`/`3`）、常见同义（`urgent`/`critical`/`normal`）
+- **无法识别返回空串**——语义是「未分类」，会被 `splitReminderCandidates`
+  计入 `unclassified`，报告里看得见；这比落一个匹配不上的脏值好得多
+
+并在 `BuildClassifyWrites` 里对 `r.Importance` 调用它（与 Category 同规则）。
+
+### 负控对照（2 例转红，脏值形态被直接复现）
+
+去掉 `r.Importance = NormalizeImportance(...)`：
+
+```
+--- FAIL: TestBuildClassifyWrites_NormalizesBothFields
+    importance "High" was not canonicalized (row e1)
+    importance "MEDIUM" was not canonicalized (row e2)
+    importance "Low" was not canonicalized (row e3)
+--- FAIL: TestBuildClassifyWrites_UnknownImportanceBecomesEmpty
+    unknown importance must become empty, got "critical-ish"
+```
+
+已还原。`go clean -testcache` 后 email 包全量 **ok 4.551s**。
+
+### 证据
+
+- `classify_normalize_test.go` 4 个顶层用例（24 个归一化输入断言）
+  - `NormalizeImportance_CanonicalizesUpstreamValues` —— 大小写/中文/数字/空白
+  - `SplitReminderCandidates_UpstreamCaseDoesNotLoseReminders` —— 端到端：
+    `high`/`High`/`HIGH` 三者归一后**都**进 toNotify（需求 4 的核心契约）
+  - `BuildClassifyWrites_NormalizesBothFields` —— 两个字段都要过一遍
+  - `BuildClassifyWrites_UnknownImportanceBecomesEmpty` —— 未知值变空且被计为 unclassified
+- `classify_run.go`：`NormalizeImportance`（新增）、`BuildClassifyWrites` + `strings` import
+- `go build ./...` 通过；`go test ./internal/email/ -count=1` → `ok 4.551s`（清缓存后）
+
+### 首次运行时测试即 build failed
+
+`NormalizeImportance` 尚不存在时，测试报
+`undefined: normalizeImportanceForTest`——**编译失败**。
+这只证明「函数缺失」，不构成对行为的负控证据；真正的负控是实现之后
+把调用去掉再跑（上面的 2 条 FAIL）。
+
+### 仍未验证
+
+- kxmemory 未部署，**没有真实的上游返回值样本**。归一化表覆盖的是
+  常见偏差形态，不是实测到的具体返回值。
+- 建议给 `emails.importance` 加 CHECK 约束（`IN ('high','medium','low','')`），
+  但这属于 schema 变更，未擅自做。
+- 存量 447 封里 `importance` 全是规范值或空，**无需回填**。
