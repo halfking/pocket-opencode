@@ -33,7 +33,11 @@ func TestLedgerRows_TotalIsExactInJSON(t *testing.T) {
 			Currency: "CNY", InvoiceNo: "X", InvoiceDate: "2026-10-01", Status: "downloaded",
 		})
 	}
-	rows, total := LedgerRows(invs)
+	rows, totals := LedgerRows(invs)
+	if len(totals) != 1 {
+		t.Fatalf("expected 1 currency total, got %+v", totals)
+	}
+	total := totals[0].Amount
 	if total != 7.00 {
 		t.Fatalf("total = %v, want 7.00", total)
 	}
@@ -56,7 +60,7 @@ func TestLedgerRows_DetailAmountRoundedToCents(t *testing.T) {
 		Category: "办公", Seller: "供应商", Amount: 126.005,
 		Currency: "CNY", InvoiceNo: "A", InvoiceDate: "2026-10-01",
 	}}
-	rows, total := LedgerRows(invs)
+	rows, totals := LedgerRows(invs)
 	detail, err := json.Marshal(rows[1])
 	if err != nil {
 		t.Fatal(err)
@@ -68,8 +72,8 @@ func TestLedgerRows_DetailAmountRoundedToCents(t *testing.T) {
 	}
 	// 合计必须与规整后的明细一致
 	want := rows[1][2].(float64)
-	if total != want {
-		t.Fatalf("total %v must equal the rounded detail %v", total, want)
+	if len(totals) != 1 || totals[0].Amount != want {
+		t.Fatalf("total %+v must equal the rounded detail %v", totals, want)
 	}
 }
 
@@ -90,9 +94,20 @@ func TestLedgerRows_RealInvoiceTotals(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, total := LedgerRows(tc.invs)
-			if total != tc.want {
-				t.Fatalf("total = %v, want %v", total, tc.want)
+			_, totals := LedgerRows(tc.invs)
+			// 空清单没有币种可归组，返回 0 个合计（合计行仍会写进表格，
+			// 由 TestLedgerRows_TotalRowAlwaysPresent 负责）。
+			if tc.invs == nil {
+				if len(totals) != 0 {
+					t.Fatalf("empty list must produce 0 currency totals, got %+v", totals)
+				}
+				return
+			}
+			if len(totals) != 1 {
+				t.Fatalf("expected 1 currency total, got %+v", totals)
+			}
+			if totals[0].Amount != tc.want {
+				t.Fatalf("total = %v, want %v", totals[0].Amount, tc.want)
 			}
 		})
 	}

@@ -1,4 +1,4 @@
-﻿package email
+package email
 
 // ledger_test.go — 共享台账的行生成与发布流程。
 //
@@ -62,7 +62,7 @@ func sampleInvoices() []Invoice {
 }
 
 func TestLedgerRows_HasHeaderDetailAndTotalRow(t *testing.T) {
-	rows, total := LedgerRows(sampleInvoices())
+	rows, totals := LedgerRows(sampleInvoices())
 	if len(rows) != 4 { // 表头 + 2 明细 + 合计
 		t.Fatalf("rows = %d, want 4", len(rows))
 	}
@@ -76,6 +76,10 @@ func TestLedgerRows_HasHeaderDetailAndTotalRow(t *testing.T) {
 			t.Fatalf("header[%d] = %v, want %q", i, header[i], w)
 		}
 	}
+	if len(totals) != 1 {
+		t.Fatalf("expected 1 currency total, got %+v", totals)
+	}
+	total := totals[0].Amount
 	if total != 1536.5 {
 		t.Fatalf("total = %v, want 1536.5", total)
 	}

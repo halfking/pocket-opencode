@@ -119,6 +119,9 @@ func (p *feishuLedgerPublisher) PublishLedger(ctx context.Context, title string,
 	if err != nil {
 		return "", err
 	}
+	// 合计已经按币种写进 rows 里（多币种时每币种一行），所以这里不需要
+	// 也不应该再取一个总额出来。LedgerRows 的第二个返回值是 []CurrencyTotal，
+	// 需要按币种展示时从它取，别自己把各币种加起来——那不是金额。
 	rows, _ := email.LedgerRows(invs)
 	if err := p.client.WriteValues(ctx, ss.Token, email.LedgerCellRange(sheetID, rows), rows); err != nil {
 		return ss.URL, err

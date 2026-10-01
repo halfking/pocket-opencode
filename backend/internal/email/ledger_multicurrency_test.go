@@ -32,13 +32,32 @@ func totalRows(rows [][]any) [][]any {
 	return out
 }
 
+// onlyTotal 取唯一的那个币种合计；清单不是单币种时直接判失败。
+//
+// 2026-10-01 起 LedgerRows 的第二个返回值是 []CurrencyTotal（按币种分组），
+// 不再是一个可以跨币种相加的标量。凡是「只关心单币种总额」的用例
+// （本文件外还有 ledger_sum_test.go 等）都改走这个辅助函数，
+// 这样单币种断言不会因为签名变化而悄悄变成「把多币种加起来」的错误断言。
+func onlyTotal(t *testing.T, invs []Invoice) float64 {
+	t.Helper()
+	_, totals := LedgerRows(invs)
+	if len(totals) != 1 {
+		t.Fatalf("expected exactly 1 currency total, got %d: %+v", len(totals), totals)
+	}
+	return totals[0].Amount
+}
+
 // 单币种：必须只有一行合计、且不带币种标签（与旧行为一致）。
 func TestLedgerRows_SingleCurrencyKeepsLegacyShape(t *testing.T) {
 	invs := []Invoice{
 		{Amount: 126.00, Currency: "CNY", Category: "其他", Seller: "腾讯"},
 		{Amount: 328.50, Currency: "CNY", Category: "其他", Seller: "腾讯"},
 	}
-	rows, total := LedgerRows(invs)
+	rows, totals := LedgerRows(invs)
+	if len(totals) != 1 {
+		t.Fatalf("single currency must produce 1 CurrencyTotal, got %+v", totals)
+	}
+	total := totals[0].Amount
 	if total != 454.50 {
 		t.Fatalf("total = %v, want 454.50", total)
 	}
@@ -67,7 +86,7 @@ func TestLedgerRows_MultiCurrencyEmitsOneTotalPerCurrency(t *testing.T) {
 		{Amount: 50.00, Currency: "USD", Category: "其他", Seller: "AWS"},
 		{Amount: 20.00, Currency: "EUR", Category: "其他", Seller: "EU Vendor"},
 	}
-	rows, total := LedgerRows(invs)
+	rows, totals := LedgerRows(invs)
 	trs := totalRows(rows)
 	if len(trs) != 3 {
 		t.Fatalf("3 currencies must produce 3 total rows, got %d: %v", len(trs), trs)
@@ -99,10 +118,30 @@ func TestLedgerRows_MultiCurrencyEmitsOneTotalPerCurrency(t *testing.T) {
 		t.Errorf("EUR count = %q, want 共 1 张", countByCur["EUR"])
 	}
 
-	// 返回的 total 仍是各币种之和（调用方只把它当参考值，不落进表里），
-	// 但表格本身**没有**任何一行是跨币种的单一「合计」。
-	if total != 624.50 {
-		t.Errorf("aggregate return = %v, want 624.50 (sum of per-currency totals)", total)
+	// 返回值必须按币种分开，不能再是一个跨币种的标量总额
+	// （2026-10-01 改签名的原因：624.50 = 454.50 CNY + 150 USD + 20 EUR，
+	//  这个数字被写进任何报表都是错账）。
+	if len(totals) != 3 {
+		t.Fatalf("expected 3 CurrencyTotal entries, got %d: %+v", len(totals), totals)
+	}
+	byReturned := map[string]float64{}
+	for _, ct := range totals {
+		byReturned[ct.Currency] = ct.Amount
+	}
+	if byReturned["CNY"] != 454.50 || byReturned["USD"] != 150.00 || byReturned["EUR"] != 20.00 {
+		t.Fatalf("per-currency returned totals wrong: %v", byReturned)
+	}
+	// 返回值与写进表格的行必须一致（不能一个分币种一个不分）。
+	if len(totals) != len(trs) {
+		t.Fatalf("returned totals (%d) and total rows (%d) must agree", len(totals), len(trs))
+	}
+	for _, ct := range totals {
+		if byCur[ct.Currency] != ct.Amount {
+			t.Errorf("%s: row says %v but returned total says %v", ct.Currency, byCur[ct.Currency], ct.Amount)
+		}
+		if ct.Count == 0 {
+			t.Errorf("%s: returned Count must be set, got 0", ct.Currency)
+		}
 	}
 }
 

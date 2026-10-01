@@ -78,10 +78,14 @@ func TestXMLInvoiceMultiCurrencyGroupedInLedger(t *testing.T) {
 		{Amount: 100, Currency: "USD", Seller: "AWS"},
 		{Amount: 454.50, Currency: "CNY", Seller: "腾讯"},
 	}
-	rows, _ := LedgerRows(invs)
+	rows, totals := LedgerRows(invs)
 	trs := totalRows(rows)
 	if len(trs) != 2 {
 		t.Fatalf("两种币种应产生 2 行合计，got %d: %v", len(trs), trs)
+	}
+	// 返回值也必须分组（2026-10-01 起不再返回跨币种的标量总额）
+	if len(totals) != 2 {
+		t.Fatalf("两种币种应产生 2 个 CurrencyTotal, got %+v", totals)
 	}
 	byCur := map[string]float64{}
 	for _, r := range trs {
