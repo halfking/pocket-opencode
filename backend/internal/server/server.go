@@ -954,6 +954,31 @@ var longLivedPaths = []string{
 	// `context.WithTimeout(ctx, 15*time.Minute)`，harvest 是 5 分钟。
 	"/api/email/pipeline/run",      // 手动触发一轮完整流水线（实测 1m30s）
 	"/api/emails/invoices/harvest", // 只下载发票文件（自带 5 分钟预算）
+
+	// 语音转写：这些端点是「同步等上游 ASR 回来」的阻塞式调用，
+	// 服务端耗时上限远大于 http.Server 的 30s WriteTimeout：
+	//
+	//	/api/stt/transcribe-full         fullTranscribeTimeout = 10 分钟
+	//	/api/stt/transcribe-incremental  90 秒
+	//	/api/stt/transcribe              Transcriber 自身 120 秒
+	//	/api/stt/probe                   120 秒（试转一段真实语音）
+	//	/api/stt/discover                90 秒（逐个探测网关候选）
+	//
+	// 2026-10-01 实测的故障：不豁免时，一段 79 秒的会议录音转写耗时
+	// **30.17 秒**，后端日志明明打了 `[SLOW] POST /api/stt/transcribe-full - 200`，
+	// 客户端收到的却是**空响应**（curl exit 52 / PowerShell
+	// 「connection was closed by the server」）—— 写 deadline 在 handler
+	// 返回前就已经过期，服务器直接掐掉连接，一个字节都没发出去。
+	//
+	// 这个故障特别难查，因为它有三个伪装：
+	//   1. 后端日志写着 200，看起来是成功的；
+	//   2. 客户端拿到的是网络错误而不是 504，看不出是超时；
+	//   3. 耗时正好卡在 30 秒边界附近，**时快时慢、时好时坏**。
+	// 而「一场会议转写超过 30 秒」在真实部署里是常态（云端 ASR + 手机网络），
+	// 不是边角情况。
+	"/api/stt/transcribe", // 含 -full / -incremental（前缀已覆盖）
+	"/api/stt/probe",      // 试转，含真实上游调用
+	"/api/stt/discover",   // 网关候选逐个探测
 }
 
 func longLivedPathMiddleware(next http.Handler) http.Handler {

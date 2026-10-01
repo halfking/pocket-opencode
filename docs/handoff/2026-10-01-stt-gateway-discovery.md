@@ -575,3 +575,531 @@ POST 过去。能打到 loopback 就意味着能打到实例自己暴露的内�
 只有那条端到端用例转红 —— 因为函数本身没错，错的是调用点接错了函数。
 函数级测试挡不住接线错误，这正是
 `TestSTTConfigRejectsLoopbackUnderGatewaySwitch` 必须存在的原因。
+## §14 识别质量已实测：从「悬案」变成数字（2026-10-01 19:30）
+
+§10.1 挂了一整天的「真实 ASR 识别质量未验证」，本节结案。**没有花一分钱，
+不需要任何 API Key。**
+
+### 免费资源（三个都是本机现成的）
+
+| 资源 | 用途 | 成本 |
+|---|---|---|
+| Windows 自带 SAPI 中文语音（Microsoft Huihui Desktop, zh-CN） | 合成**已知内容**的中文音频 → ground truth | 0，不装任何东西 |
+| faster-whisper（CTranslate2，CPU） | 本地真 ASR，不依赖 PyTorch、不需要系统 ffmpeg | 0，权重从 HuggingFace 免费下 |
+| hf-mirror.com | 权重镜像（HF 直连在本机只有 ~150KB/s） | 0 |
+
+关键点：此前**没有 ground truth** 是这个问题的真正死结 —— 真机录的真实中文
+（`tmp-speech.wav`）没有对应文本，准不准只能靠感觉。文本自己写、音频自己
+合成，死结就解开了。
+
+### 实测结果
+
+| 模型 | CER_strict | CER_norm | 完全正确 | RTF(CPU) |
+|---|---|---|---|---|
+| faster-whisper **tiny** | 22.1% | 16.7% | 2/8 (25%) | 0.11 |
+| faster-whisper **base** | 22.1% | **12.7%** | **3/8 (38%)** | 0.11 |
+
+分类别（CER_norm）：
+
+| 场景 | tiny | base | 备注 |
+|---|---|---|---|
+| dictation 口语短句 | **0.0%** | **0.0%** | 2/2 一字不差 |
+| meeting 长句书面语 | 12.9% | 5.7% | base 强一倍 |
+| numbers 数字日期 | 12.7% | 16.4% | tiny 反而略好，见下 |
+| mixed 中英混排 | 37.5% | 27.1% | **最差的一类** |
+
+端到端（音频 → Go 后端 → 真 ASR → 文本）：**8/8 段成功，平均 0.62 秒**，
+后端返回字段齐全（`channel` / `confidence` / `costCents` / `durationMs` /
+`label` / `model` / `transport`）。
+
+### 修掉的真问题：Whisper 中文默认输出**繁体**
+
+简体的「帮我记一下明天要买牛奶和面包」被识别成繁体的
+「幫我記一下明天要買牛奶和麵包」—— 用字全对，只是字形不对。
+
+这不是本测试脚本的瑕疵：**所有 whisper 系模型都有这个行为**，而设置页
+预置的外部候选里就有 `openai/whisper-large-v3-turbo`。解法是加一个普通话
+`initial_prompt`（OpenAI 官方给的做法），加完输出「帮我记一下明天要买牛奶
+和面包。」，一字不差。
+
+**负控**：不加 `initial_prompt` 时转繁体的实测结果已记录（首次真转写就是
+繁体输出）。
+
+### 方法论修正：严格 CER 把「格式差异」算成「听错」
+
+base 把「二零二六年」写成「2026年」—— 内容完全正确，而且对笔记场景其实是
+**更好的**输出（可搜索、可计算）。但严格 CER 整段算错，于是 tiny 与 base
+的总体分几乎一样（都 22.1%），完全看不出 base 在长句上强一倍。
+
+改报两个指标：
+
+- **`CER_strict`** —— 逐字差异，用户实际看到的
+- **`CER_norm`** —— 免除中文数字↔阿拉伯数字的**格式**等价，信息有没有听错
+
+base 的 numbers 类严格 50.9% 里，**34.5 个百分点是格式、只有 16.4% 是真听错**。
+
+> 重要边界：`CER_norm` 只免除**格式**差异，不免除**数值**差异。
+> 「十二万三千四百五十」→「12,450」数值本身就错，两个指标都算错。
+> 这条在 `.verify-stt-data/numeral-selftest.py` 里有性质断言钉住。
+
+### 数字归一化自己踩的 3 个坑
+
+自测（8 条用例 + 2 组性质断言）抓到的：
+
+- `二零二六年` → `6年` —— 年份是**逐位读法**（二零二六 = 2026），不是位值
+- `百分之十八` → `100分之18` —— 百分之里的「百」是词不是位值
+- `三个议题` 的量词把待定数字清零，导致归一化直接不生效
+
+负控：把逐位读法分支关掉 → 年份用例转红。
+
+### 对产品决策的影响（实测数据支撑）
+
+1. **`tiny` 不适合做会议录音的推荐模型** —— 长句 12.9%、中英混排 37.5%、
+   `Docker 镜像` 整段崩成「马拉托克进向推倒参哭了」。设置页若把
+   whisper 系小模型列为「低成本推荐」，等于给会议场景埋雷。
+2. **短语音输入用 tiny 完全够** —— 口语类 2/2 一字不差，RTF 0.11。
+   语音输入与会议录音应该**分开推荐**，不该用同一套默认。
+3. **数字类不能靠 ASR** —— 即使最好的模型，预算「十二万三千四百五十」
+   也会被听成「12万三千四五十」。业务若依赖精确数字，应在展示层二次确认。
+4. **中英混排是普遍雷区** —— 术语（API/Redis/Docker）识别错误率 27~37%。
+   产品内应提供**术语热词**入口（`initial_prompt` / `hotwords`），
+   否则技术类会议笔记基本不可用。
+
+### 仍未验证
+
+- `small` / `medium` / `large-v3` 档位没测（权重更大，本机下载与 CPU 推理
+  都吃不消）。上面的趋势（模型越大长句越准）只有 tiny→base 两点支撑。
+- `mixed-02` 那条的糟糕结果部分是**语料缺陷**：Windows TTS 读英文
+  「Docker 镜像」发音很怪。真实人念这句话不会这么难，所以 mixed 类的
+  真实 CER 应低于此表。
+- 设备麦克风 → 后端 → 真 ASR 这一段仍缺（测试机 adb 协议握手不通，
+  见 §12.2）。
+### §14.1 繁体问题已修，并用真引擎做了因果对照（2026-10-01 19:55）
+
+§14 里那条「whisper 中文默认吐繁体」不是记录完就算数——它是**产品缺陷**，
+而设置页预置的外部候选里就有 `openai/whisper-large-v3-turbo`。已修。
+
+#### 修法
+
+`Transcriber.transcriptions()` 构造 multipart 的地方，中文时多写一个
+`prompt` 字段：
+
+```
+prompt = "以下是普通话的句子，请用简体中文输出。"
+```
+
+放在**单一入口**而不是 5 个 Target 构造点，与 `language` 归一化同一条理由：
+构造点漏一处就等于那个入口仍然吐繁体。
+
+只在语种为中文时发送——给英文录音塞一段中文 prompt 纯属添乱。ChatAudio
+通道（网关多模态）没有 prompt 字段，走聊天接口由模型自己决定字形，不在此处理。
+
+#### 因果对照实验（`.verify-stt-data/bias-control.py`）
+
+光看「请求体里多了一个字段」不算证明。做了真引擎 A/B：
+
+| 组 | 本地 ASR 服务 | 输出 |
+|---|---|---|
+| **A 正常** | 接受上游 prompt | 帮我记一下明天要买牛奶和面包。 ← **简体** |
+| **B 负控** | `--no-bias` 丢弃全部 prompt | 幫我記一下明天要買牛奶和麵包 ← **繁体** |
+
+同一段音频、同一套语料、同一个后端二进制，**只有 prompt 是否被上游接受
+不同**，字形就翻转。因果确凿。
+
+**这个负控第一次跑是无效的**，值得记下来：`--no-bias` 最初只丢弃了上游
+传来的 prompt，而 `transcribe()` 里还有一句内置兜底
+`upstream_prompt or "以下是普通话…"` 在托着，B 组照样返回简体，对照完全
+不成立。改成 `use_builtin_bias=False` 把内置兜底一起关掉之后才转成繁体。
+> 负控不成立时脚本自己报了 exit=2 并说明「无法证明因果」，而不是含糊地
+> 报成功——这条行为本身比结果更重要。
+
+#### 单元测试与负控
+
+`TestTranscribeForSendsSimplifiedChineseBiasPrompt` 四条子用例：
+zh-CN 带 / 未指定语种（默认中文）带 / 英文不带 / 日文不带。
+
+| 负控 | 实测结果 |
+|---|---|
+| 条件改 `if false` | 两条中文用例转红：`prompt="" want "以下是普通话的句子，请用简体中文输出。"` |
+| 条件改 `if true` | 英文/日文用例转红：`非中文语种不应带简体偏置` |
+
+另加 `TestSimplifiedChineseBiasPromptMentionsSimplified` 守文案本身：
+护栏是「有人把文案改成一句普通普通话时」——那样上游照收、功能测试**全绿**，
+但偏置已不起作用，只有断言文案内容才拦得住。
+### §14.2 三档位实测完成：模型大小对准确率的影响（2026-10-01 20:15）
+
+§14 只测了 tiny/base 两点，趋势不足。补上 `small`，三点成线。
+
+| 模型 | 权重 | CER_strict | **CER_norm** | 完全正确 | RTF(CPU) |
+|---|---|---|---|---|---|
+| faster-whisper **tiny** | 75 MB | 22.1% | 16.7% | 2/8 (25%) | 0.11 |
+| faster-whisper **base** | 145 MB | 22.1% | 12.7% | 3/8 (38%) | 0.11 |
+| faster-whisper **small** | 484 MB | 17.2% | **6.4%** | **5/8 (62%)** | 0.39 |
+
+分类别（CER_norm）：
+
+| 场景 | tiny | base | small |
+|---|---|---|---|
+| dictation 口语短句 | 0.0% | 0.0% | **0.0%**（2/2 一字不差） |
+| meeting 会议长句 | 12.9% | 5.7% | **0.0%**（2/2 一字不差） |
+| numbers 数字日期 | 12.7% | 16.4% | 7.3% |
+| mixed 中英混排 | 37.5% | 27.1% | **18.8%** |
+
+**会议长句从 12.9% → 0%** 是这轮最关键的结论：small 在 484 MB 权重下把两段
+会议书面语**一字不差**地识别出来。tiny 在同一批音频上是 12.9%。
+
+`mixed-02` 的对比也很有说服力：
+- tiny：「不属完成了马拉托克进向推倒参哭了没有」
+- small：「部署完成了马达克镜像推到仓库了没有」（Docker → 马达克，
+  但整句结构与语序全对）
+
+#### 修正 §14 里那条「tiny 适合语音输入」的结论
+
+原话是「短语音输入用 tiny 完全够」。实测 small 在**同一批**口语样本上
+CER 同样是 0%，而 tiny 的 `dictation-02` 虽也是 0%，但整段语料里 tiny 只有
+2/8 完全正确。结论应该收紧为：
+
+> **语音输入**：tiny 够用（0% CER），但没有任何优势可言 —— small 在这批
+> 样本上同样是 0%，而 tiny 在长句与混排上大幅落后。
+> **会议录音**：必须 ≥ small。tiny 不可用。
+
+#### 中英混排仍是雷区，但误差在收敛
+
+37.5% → 27.1% → 18.8%。单调下降但**远高于其它三类**。技术术语
+（Docker 镜像）被音译成「马达克镜像」，语义没丢但字面不可搜索。
+产品内应提供**术语热词**（`initial_prompt` / hotwords）入口 —— 这条结论
+在三个档位上都被复现了，可以确定。
+
+#### 数字类：三个档位都在 7~16% 徘徊
+
+`numbers-02`「十二万三千四百五十元」在 small 上被识别为「12万三千四十五元」
+—— 数值本身就错，`CER_norm` 也算错（7.3%）。**任何档位的 ASR 都不能保证
+数字准确**，业务依赖精确数字时必须在展示层二次确认。
+
+#### 推理成本
+
+CPU int8 下 RTF 0.11 → 0.11 → 0.39。small 仍比实时快 2.5 倍，本机完全可用。
+真机（无 GPU 的 Redmi）上 small 的实时性**未测**，但按 CPU 推理经验值估计
+仍应可接受 —— 这一项**没有实测数据**，不要当结论用。
+
+### §14.3 下载模型时踩的两个坑（都会静默产生坏文件）
+
+**1. curl 静默截断。** 早前用 `curl -o` 下 small 的 `tokenizer.json`，
+没有校验大小，实际只下了 2,122,968 字节（正确值 2,203,239）。表现是
+faster-whisper 报
+
+```
+Exception: EOF while parsing a string at line 97305 column 12
+```
+
+`tiny` 的 `model.bin` 同样踩过（只下了 15,565,203 / 75,538,270），
+所以 tiny 第一轮是**下坏了的**才需要重下。教训：**下载后必须比对远端
+content-length**。
+
+> 本项目老坑重演：黑盒 `verify-stt.ps1` 每次都重建二进制正是因为
+> 「改了代码但验证的还是老逻辑」这种假绿比红更危险。同理，下载的权重
+> 不校验就是「验证的不是你以为的那个东西」。
+
+**2. `curl -C -` 在 308 重定向后会丢 Range 头。** 续传时服务端忽略 Range
+返回 200，curl 就从 0 重下并**覆盖**已有内容，文件越传越小
+（124.6 MB → 122.8 MB → 120.5 MB）。改用自己写的分块续传
+（`.verify-stt-data/download-parallel.py`），并显式处理「服务端忽略 Range
+就重置重下」这个分支。多连接并行把单连接 ~150 KB/s 提到 ~0.44 MB/s。
+
+**3. hf-mirror 对 HEAD 请求会抛 SSL EOF。** 同一地址的 GET 流式完全正常。
+所以取尺寸也要用 GET 读响应头，不能用 HEAD。实测过程中镜像还出现过
+一段时间 HEAD/httpx 全挂、只有 curl 能通的情况 —— **curl 比 httpx 更皮实**，
+国内镜像优先用它。
+
+**4. 意外的解法**：whisper 各档位**共用同一份 tokenizer.json 与 vocabulary.txt**，
+只有 `config.json` 与 `model.bin` 不同。所以 small 的 tokenizer 直接从
+已验证可用的 base 复制，比重新下载更快也更可靠。
+
+---
+
+## §15 会议长录音走通真引擎，撞出三个「既有验证结构上就看不见」的缺陷（2026-10-01 20:35）
+
+§14 验的是「一段音频 → 真引擎」。这一节验的是**会议录音真正走的路**：
+`POST /api/stt/transcribe-full` → `full.go` 按静音切段 → 每段送引擎 → 拼回全文。
+
+这两条路的差别正是问题所在：既有验证要么用**纯音调**（`New-ToneWav`，
+只有切分逻辑与顺序，验不出「切完那段真能不能识出话」），要么用**假上游**
+（写死返回文本，验不出切出来的音频是否合法）。于是三个缺陷长期假绿。
+
+### §15.0 新增的验证资产
+
+| 资产 | 作用 |
+| --- | --- |
+| `.verify-stt-data/make-meeting-wav.py` | 把 8 段语料拼成 79.2s 会议长录音（句间插静音），并额外产出一份 12s **纯静音**样本 |
+| `scripts/verify-stt-long-asr.ps1` | 端到端黑盒：起 pocketd → 配本地 ASR → 打 transcribe-full → 纯静音幻觉检查 |
+| `scripts/eval-long-asr.py` | 全局 CER + 逐句覆盖 + 幻觉/丢失/重复判定 |
+| `backend/internal/stt/full_dump_test.go` | 把 `SplitWAV` 的切分结果落盘，供真引擎逐段验证（`STT_DUMP_SEGMENTS` 开关，默认 skip） |
+
+语料用 Windows SAPI（Microsoft Huihui Desktop）合成，文本自己写，
+所以每句的正确转写是**已知**的。SAPI 输出 22050Hz，脚本做线性重采样到
+16kHz（保时间，meeting-01 源 10.99s → 重采样后仍 10.99s）。
+
+### §15.1 三个缺陷
+
+**1. `buildWAV` 的 RIFF 块长度多写了 8 字节**（`full.go`）
+RIFF 规范要求该字段 = 文件总长 − 8，代码写的是文件总长。宽容的解码器
+（PyAV / ffmpeg）默默截掉末尾 8 字节当作填充，**看起来一切正常**；
+严格的上游 API 会直接拒收整段。
+负控：`TestSplitWAVSegmentsAreValidWAVAndLossless` 补上 RIFF 字段断言后，
+把 `buildWAV` 改回去，5 段全部转红。
+这个字段此前**从未被任何断言校验过** —— 既有测试只查 `data` 段长度，
+而 `parsePCMWAV` 是自己写的解析器，对自己的坏输出当然读得动。
+
+**2. 静音判定把「均方」和「均方根」门槛混用**（`full.go`）
+`frameRMS` 省掉 sqrt 只返回均方，主循环却拿它直接和按均方根定义的
+`silenceFloor`（0.012）比 —— 等效门槛被放大到 √0.012 ≈ 0.11，**松了 10 倍**。
+后果：几乎所有换气、词组间的自然停顿都被判成静音，79 秒语料被切成
+16 段（平均 4.9 秒），句子照样被劈开，每段还要付一次上游调用与计费。
+负控：新增 `TestSplitWAVDoesNotTreatQuietSpeechAsSilence`（amp=0.05 的轻声
+「说话」），改回去后 12 秒被切成 4 段，用例转红。
+
+**3. 切点门槛太松，且静音切被 75% 上限掣肘**（`full.go`）
+- `minSilenceMS` 300 → **800ms**。先把语料的静音分布打出来再定阈值：
+  句间停顿 1575–3475ms、句内停顿 100–600ms，分界干净。同一份语料
+  （均方门槛已修）300ms 切 14 段、800ms 切 10 段，后者才与句界对齐。
+- 新增 `minSilenceCutSec = 5`：原先必须「已过目标长度 75%」（18.75s）
+  才允许在静音处切，会议长句必然跨过这条线，于是**退化成句中硬切**。
+负控：新增 `TestSplitWAVPrefersRealPauseOverIntraSentenceBreath`。
+第一版用例用 0.3s 换气做样本，**负控不转红** —— 25ms 滑动窗口要排空
+上一段语音的能量，300ms 间隙在窗口 RMS 上根本看不出来。换成语料里实测到的
+句内停顿上界 0.6s 才真正区分得开。
+
+**附带**：修一个可诊断性缺陷。`TranscribeFull` 在「全部段失败」时只返回
+段数，把逐段明细随 error 一起丢掉 —— 黑盒实测就卡在这里：5/5 段失败，
+响应与日志里零线索，分不清是上游 401 还是切出的 WAV 非法。现在带上首段错误。
+（正是这条改动让缺陷 1、3 得以被定位。）
+
+### §15.2 修复前后对照（同一份 79.2s 语料、同一引擎 faster-whisper small）
+
+| 切分 | 段数 | 句界对齐 | 整句丢失 | 跨段重复 | CER_strict | CER_norm |
+| --- | --- | --- | --- | --- | --- | --- |
+| 修复前（25s 硬切劈句中） | 5 | 3 句被跨段劈开 | 0 | 0 | 18.5% | 8.9% |
+| 修复后（静音句界切） | 10 | **9/9 完整** | 0 | 0 | 14.7% | **5.5%** |
+
+> CER 改善是实打实但不夸张的量级。**更大的价值是结构性的**：修复后每一句
+> 都完整落在单个返回段里，下游做会议纪要/抽待办时，句子是否完整比聚合
+> CER 几个百分点更要命。
+>
+> 另：修复前的中间稿曾用「逐句重叠拼接」算出 142% 的 CER，那是**度量缺陷**
+> —— 切点落在静音中点，一个返回段常横跨「上句尾巴+下句开头」，把邻居的词
+> 也算进了这句。长音频的通行口径是全局对齐。`eval-long-asr.py` 已改成
+> 逐句只报覆盖、只在全局算 CER。
+
+端到端耗时 25.0s / 79.2s 音频（RTF 0.32，含 10 次上游调用）。
+
+### §15.3 纯静音不产生幻觉
+
+`transcribe-full` 打一份 12s 纯数字静音：返回 `ok=false`、0 段、0 文本。
+这是**正确**行为（`Succeeded==0` 必须报错，不能把空当成功）。
+
+为什么必须单独造这份音频：会议语料里那 2 秒静音夹在两句话之间，切分出来的
+段会横跨静音与语音，拿它判幻觉只会得到假阳性 —— 这一点在评估器改口径时
+真的踩到过一次（13 秒的段被报成「静音段产生幻觉」）。评估器现在的规则是
+**只有完全落在静音窗内的段**才能用于幻觉判定；一个都没有时报「未验证」
+而不是默认通过。
+
+### §15.4 评估器自带负控
+
+`.verify-stt-data/long-selftest.py` 造 4 组假的后端返回：
+完美对齐（期望 0）、静音段出文本（期望 2）、整句丢失（期望 2）、静音段未返回（期望 0）。
+
+第一版自测**自己写错了路径**（多套一层 `dirname`），`hallucination` 与
+`lost-sentence` 两组是**假通过** —— 文件根本没找到，退出码恰好也是 2。
+`perfect` 那组抓了出来。这类「期望 2 的用例在 2 时通过」的组合必须有一条
+期望 0 的用例兜底。
+
+### §15.5 回归状态
+
+- `go vet` + `go test -count=1 ./internal/stt/... ./internal/server/...` 全绿
+- 黑盒 `verify-stt.ps1`（换到空闲端口）**21/0**
+- 黑盒 `verify-stt-real-asr.ps1` 8/8 段成功，平均 2.61s
+- 黑盒 `verify-stt-long-asr.ps1` 长录音全链路通过
+- `node scripts/check-maestro-flows.mjs` OK
+- `vue-tsc --noEmit` 干净
+- `node --test` 899/900 —— 唯一失败是 `flashcards/flashcardIo.test.ts`
+  （`Cannot find module src/native/pocket-native`），**与本任务无关**：
+  该目录 `git status` 无任何改动，本轮也未触碰前端。
+
+### §15.6 踩坑记录
+
+**1. 端口被并行会话占着，会伪装成回归。** `verify-stt.ps1` 一度报
+PASS=15 FAIL=6，其中「提示没有指向 POCKET_STT_ALLOW_PRIVATE」看起来是我刚
+修的 §13 被人回退了。实际是端口 18099 上跑着**另一个 worktree** 的
+pocketd（`wt-maildeploy`，早 11 分钟启动），脚本连的是那个**旧二进制**。
+换到空闲端口后 21/0。
+→ 黑盒报回归时，先 `Get-NetTCPConnection -LocalPort <p> -State Listen`
+确认监听者是不是自己刚起的那个进程。**不要去 kill 别人的进程。**
+
+**2. `make-meeting-wav.py` 原来硬断言 16kHz**，而 SAPI 出的是 22050Hz。
+修法是线性插值重采样，**不是放宽断言** —— 放宽断言会让文件头写着 16kHz、
+内容其实还是 22050Hz，后面量出来的 duration 与时间轴全错，测的就不是同一个东西。
+
+**3. PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会写 BOM**，
+`json.load` 默认 utf-8 会直接报 `Unexpected UTF-8 BOM`。评估器统一用
+`utf-8-sig` 打开。
+
+**4. `eval-asr-accuracy.py` 文件名带连字符，不能 `import`**，必须用
+`importlib.util.spec_from_file_location` 按路径加载。直接 import 会语法报错。
+
+---
+
+## §16 继续本机验证：又撞出一个 P0，并补齐两条未测分支（2026-10-01 23:55）
+
+§15 修完切分之后继续做本机验证，扩了三块：全量后端测试、race 检测、
+以及把 `full.go` 剩下的一条分支（连续讲话 → 25 秒硬切）也用真语音走一遍。
+
+### §16.1 又撞出一个 P0：30s WriteTimeout 把 STT 端点的响应整个掐掉（提交 `2985cfe`）
+
+`POST /api/stt/transcribe-full` 服务端耗时超过 **30 秒**时，**响应一个字节都发不出去**。
+
+决定性对照（同一份 79.2s 语料、同一引擎，只改 ASR 端点的人为延迟）：
+
+| 白名单 | 客户端实测 | 后端日志 |
+| --- | --- | --- |
+| 有豁免 | 完成 **76.0s**，收到完整结果，CER_norm 5.5% | `[SLOW] ... - 200 (1m16.0s)` |
+| 无豁免 | **curl exit 52（Empty reply from server）** | `[SLOW] ... - 200 (1m50.5s)` |
+
+机制：Go 在读完请求头时就给连接定了写 deadline = now + WriteTimeout
+（`cmd/pocketd/main.go:1304` 的 30s）。handler 在那之后才算出结果、才开始写，
+deadline 早已过期，服务器直接关连接。`longLivedPathMiddleware` 本来就是干这个的，
+但白名单里只有 SSE 与网关控制面，`/api/stt/*` 全都不在。
+
+**为什么难查**（三个伪装叠加，这一节值得单独记住）：
+
+1. 后端日志写着 200 —— 它记的是 handler 的产出，**不是网络层是否送达**；
+2. 客户端拿到的是 EOF / Empty reply，**不是 504**，看不出是超时；
+3. 卡在 30 秒边界附近，**时好时坏**：同一份输入 27.95s 成功、30.17s 失败。
+
+影响面不止 transcribe-full：`/api/stt/transcribe-incremental`（90s）、
+`/api/stt/transcribe`（120s）、`/api/stt/probe`（120s）、`/api/stt/discover`（90s）
+的内部超时上限全部远超 30s。在真实部署里（云端 ASR + 手机网络），
+「一场会议转写超过 30 秒」是**常态**而不是边角情况。
+
+测试的关键点：**不能用 `httptest.NewServer`**（它默认没有 WriteTimeout，
+测出来永远是「慢请求也能拿到响应」——这正是这个 bug 能活到现在的原因）。
+新测试自己起 `&http.Server{WriteTimeout: 150ms}` 跑在真 TCP 上，并且带一条
+**对照组**（`/api/stt/config` 不在白名单，必须仍然被掐断），
+否则「加了白名单所以好了」和「WriteTimeout 根本没生效」会一起绿。
+负控：删掉白名单三行后转红，报错正是生产症状本身（`Get "...": EOF`）。
+
+### §16.2 补齐硬切分支：连续讲话 vs 句间有停顿
+
+§15 验的语料句间有 0.4–1.2s 停顿，走的是静音切分。另一条分支
+（**全程讲话、找不到静音点 → 每 25 秒硬切**）此前只用纯音调验过。
+
+造语料时踩了个坑：第一版直接首尾相接拼 8 段，**结果 10 段全是 `silenceCut=true`**
+—— Windows SAPI 自己每段句末就带静音，根本没测到硬切。必须**裁掉每段首尾静音**
+再拼，才得到 3 段、全部 `silenceCut=false`、边界精确落在 25.00s。
+
+同一批 9 句话、同一引擎（small）：
+
+| 语料 | 切分 | 段数 | CER_strict | CER_norm |
+| --- | --- | --- | --- | --- |
+| 句间有停顿 | 静音切（句界对齐） | 10 | 14.7% | **5.5%** |
+| 连续讲话 | 25s 硬切（劈句中） | 3 | 16.0% | 6.8% |
+
+**诚实的解读**：硬切的代价比预想的小，约 1.3 个百分点的 CER_norm。
+所以「优先在静音处切」是**锦上添花而不是生死攸关** —— §15 里那个
+「142% → 5.5%」的数字来自有缺陷的度量口径，不能再引用。
+硬切真正的问题仍是结构性的：3 段里有 2 句被跨段劈开，下游做会议纪要时更难处理。
+
+### §16.3 换模型复验：切分修复与模型无关
+
+同一份 79.2s 语料、**完全相同的 10 段边界**，只换引擎：
+
+| 引擎 | CER_strict | CER_norm | 段数 | 覆盖/丢失/重复 |
+| --- | --- | --- | --- | --- |
+| faster-whisper small | 14.7% | **5.5%** | 10 | 100% / 0 / 0 |
+| faster-whisper base | 20.2% | 11.8% | 10 | 100% / 0 / 0 |
+
+段边界逐字节相同是必然的：`SplitWAV` 是纯信号处理函数，与引擎无关。
+这也说明 §15 的切分修复不是对某个模型的过拟合。
+
+### §16.4 全量后端测试：7 个包失败，全部与本任务无关
+
+`go test -count=1 -p 2 ./internal/...`：**47 个包 ok，7 个包 FAIL**。
+逐个查过原因，**没有一个与 STT 有关**（本轮只碰 `internal/stt` 与 `internal/server`）：
+
+| 包 | 失败原因 | 性质 |
+| --- | --- | --- |
+| `internal/agent` | 测试写 `fake-pi.sh` 拿去 exec，Windows 报 `%1 is not a valid Win32 application` | Unix-only 测试 |
+| `internal/email` | `TestWriteKeyAtomic` 断言文件 mode 0600，Windows 无 POSIX mode（got 666） | Windows 环境 |
+| `internal/email` | POP3 测试 socket 被本机中止 | Windows 环境 |
+| `internal/scheduledtask/executors` | `TestWorkItemReminderFallsBackWithoutPreferences` 夹具硬编码绝对日期 2026-09-30，已越过 24h 陈旧上限 | **定时炸弹**，见下 |
+
+最后一条是**预期之中的**：那批夹具写于 2026-09-30，当天只有 1 个红，
+其余几个当时才 20.5 小时，**跨过 24 小时后必然一起转红**。与本任务无关，
+但它会在 CI 上长期挂着，建议按「夹具用 `time.Now()` 派生」修掉。
+
+### §16.5 race 检测与前端
+
+- `go test -race ./internal/stt/... ./internal/server/...` 全绿（0 DATA RACE）。
+  需要先 `PATH` 里加 `C:\tools\w64devkit\w64devkit\bin` 并设 `CC`/`CGO_ENABLED=1`，
+  gcc 16.2.0 是现成的。
+- 前端 `node scripts/build-mobile.mjs android dev` 构建成功
+  （worktree 缺 `.env.android-dev`，从主工作区复制了一份，只含 `VITE_API_BASE`）。
+
+### §16.6 踩坑记录（都是「看起来像回归、其实不是」的类型）
+
+**1. `verify-stt.ps1` 一度报 15/6，疑似 §13 的修复被人回退。**
+实际是端口 18099 上跑着**另一个 worktree** 的 pocketd（`wt-maildeploy`，
+早 11 分钟启动），脚本连的是那个**旧二进制**。换到空闲端口后 21/0。
+→ 黑盒报回归时，先 `Get-NetTCPConnection -LocalPort <p> -State Listen`
+确认监听者是不是自己刚起的那个。**不要去 kill 别人的进程。**
+
+**2. `verify-stt-stream.ps1` 用 `-Port 18102` 会得到 10/12 的假失败。**
+该脚本的假上游端口是**硬编码**的 `$fakePort = 18102`，与 `-Port` 无关。
+传 18102 时 pocketd 与假上游抢同一端口，所有请求打错进程、返回空，
+于是 12 条断言连锁失败。复现确认：`-Port 18102` → 10/12，`-Port 18103` → 22/0。
+→ 这是个真实的易用性缺陷（脚本没有任何端口占用检查），建议把 `$fakePort`
+改成随 `$Port` 派生并在启动前探测占用。**本轮没有改这个文件** ——
+它当时正被并行会话编辑，避免覆盖对方未提交的 WIP。
+
+**3. `Invoke-WebRequest` 不能用来发长录音的 POST。**
+PowerShell 5.1 在这个请求上抛「connection was closed by the server」，
+而同时后端日志明明写着 200 —— 会把「服务端成功」误报成「链路失败」。
+`verify-stt-long-asr.ps1` 已改用 `curl.exe` + `--data-binary @file`。
+（先误以为是产品 bug，查了 `fullTranscribeTimeout = 10 分钟` 才发现不是。）
+
+**4. PowerShell 的 `cd` 不改变 .NET 的当前目录。**
+`cd X` 之后 `[System.IO.File]::ReadAllBytes('相对路径')` 仍然相对**进程**工作目录
+（即会话工作区），不是 PowerShell 的当前位置。表现为
+「文件明明在那儿却读不到」。→ 写文件/读文件一律用**绝对路径**。
+
+**5. 用 `-join "`r`n"` 重组行会把 LF 文件全变成 CRLF。**
+`gofmt -l` 随即把整个文件判为未格式化（`gofmt -d` 显示 2355 行全变）。
+Go 仓库的工作区是 LF。注入负控后要按原行尾写回。
+
+### §16.7 本机验证总账（本轮）
+
+| 项 | 结果 |
+| --- | --- |
+| `go vet` + `go test` stt/server | 全绿 |
+| `go test -race` stt/server | 全绿，0 DATA RACE |
+| `go test ./internal/...` | 47 ok / 7 FAIL（全部与本任务无关，见 §16.4） |
+| 黑盒 `verify-stt.ps1` | **21/0**（需换到空闲端口） |
+| 黑盒 `verify-stt-stream.ps1` | **22/0**（不能用 `-Port 18102`） |
+| 黑盒 `verify-stt-real-asr.ps1` | 8/8 段成功 |
+| 黑盒 `verify-stt-long-asr.ps1` | 静音切 22/0、硬切 22/0、76 秒长请求全链路通过 |
+| 纯静音幻觉检查 | 12s 纯静音 → 0 段 0 文本 |
+| `check-maestro-flows.mjs` | OK |
+| `vue-tsc --noEmit` | 干净 |
+| 前端 android dev 构建 | 成功 |
+| `node --test` | 899/900（唯一失败是 flashcards 的既有模块解析问题） |
+| 真机 adb | **仍 offline**，两条 Maestro 流与设备麦克风链路未能在真机跑 |
+
+### §16.8 未完成
+
+- **large-v3-turbo 权重仍在下载**（`deepdml/faster-whisper-large-v3-turbo-ct2`，
+  1.62 GB，hf-mirror 实测 0.17 MB/s，约需 3 小时）。设置页预置的
+  `openai/whisper-large-v3-turbo` 至今**没有本机实测数据**。
+  下载进度写在 `.verify-stt-data/dl-turbo.out.log`，分片在
+  `.verify-stt-data/models/faster-whisper-large-v3-turbo/model.bin.p*`。
+- 真机 adb 仍 offline（端口 5555 TCP 可通、协议握手不完成），
+  需用户在手机上解锁并重新确认 USB 调试授权。
+- `medium` / `large-v3` 档位未测（权重 1.5GB / 3.1GB，CPU 推理本机吃不消）。

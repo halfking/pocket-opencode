@@ -132,12 +132,53 @@ func validateGatewayURL(rawURL string) error {
 	return nil
 }
 
+// sttOutboundHTTPClient 返回**语音转写**专用的出网客户端。
+//
+// 2026-10-01 实测的缺陷：sttClient() 直接复用了 gatewayHTTPClient()，于是
+// 运行时的私网放行只看 POCKET_LLM_GATEWAY_ALLOW_PRIVATE。结果是
+// POCKET_STT_ALLOW_PRIVATE 变成一个**半吊子开关**——
+//
+//	PUT /api/stt/config   放行（validateSTTOutboundURL 认这个开关），保存成功
+//	POST /api/stt/transcribe  拦截（dialer 认的是另一个开关）
+//
+//	→ 报 "resolved address is not allowed"，自建 ASR 完全不可用。
+//
+// 而且症状极具误导性：设置页一切正常、一转写就失败，错误信息里还带着
+// 另一个开关的语义 nowhere，用户根本猜不到该开哪个。配置校验与实际拨号
+// 必须认**同一个**开关，否则前者就是一句空话。
+//
+// 放行条件**只有** POCKET_STT_ALLOW_PRIVATE 这一个开关，网关开关在这里
+// 刻意不参与：
+//
+// 曾试过用「两个开关的并集」，被本文件末尾的
+// TestSTTOutboundDialerHonorsSameSwitchAsValidation 直接判红——
+//
+//	只开网关开关时：配置校验层**拒绝**（正确，用户不能存 loopback 地址），
+//	              拨号层却**放行**
+//
+//	→ 拨号层成了绕过设置页校验的后门。而网关开关恰恰是「为了连内网网关」
+//	  这种极常见部署才会打开的，等于把 STT 的 SSRF 防护在最后一层静默关掉，
+//	  只剩设置页那一道 UI 级校验。
+//
+// 拨号层是最后一道防线，不能依赖上层已经校验过。STT 走内网网关节点同样
+// 需要开 POCKET_STT_ALLOW_PRIVATE —— 那是一次显式的、语义正确的决定。
+//
+// 云元数据端点无论开关如何始终拒绝。
+func sttOutboundHTTPClient(timeout time.Duration) *http.Client {
+	return newGuardedHTTPClient(timeout, sttAllowPrivate())
+}
+
 // gatewayHTTPClient 返回访问网关节点用的 client。
 //
 // timeout 由调用方决定：普通 admin API 用 15s，SSE 长连接必须传 0（否则
 // http.Client.Timeout 会在中途掐断整个流，而不只是握手阶段）。
 func gatewayHTTPClient(timeout time.Duration) *http.Client {
-	allowPrivate := gatewayAllowPrivate()
+	return newGuardedHTTPClient(timeout, gatewayAllowPrivate())
+}
+
+// newGuardedHTTPClient 是上面两者的共同实现：allowPrivate 决定私网/loopback
+// 是否放行，云元数据端点永远拒绝。
+func newGuardedHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{

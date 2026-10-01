@@ -98,6 +98,22 @@ type Target struct {
 // 真转写时也必须假定中文，否则「探测通过、实际转写跑偏」会变成一个极难查的坑。
 const DefaultLanguage = "zh"
 
+// SimplifiedChineseBiasPrompt 是中文转写时随请求带上的简体偏置提示。
+//
+// 2026-10-01 本机用 faster-whisper 实测（handoff §14）：语音内容是
+// 「帮我记一下明天要买牛奶和面包」，识别结果是**繁体**的
+// 「幫我記一下明天要買牛奶和麵包」—— 用字全对，只是字形不对。
+// 加上这段提示后同一段音频输出一字不差的简体。
+//
+// 这是 whisper 系模型的**共同行为**，不是某个部署的怪癖：whisper 的训练
+// 语料繁简混杂，简体音频也可能被解码成繁体。而设置页预置的外部候选里
+// 就有 openai/whisper-large-v3-turbo，用户写简体笔记却拿到繁体正文，
+// 属于产品必须处理的字形问题。
+//
+// 措辞照 OpenAI 官方给的做法：一句普通话 + 明确要求简体。
+// 只在语种为中文时发送（见 Transcriber.transcriptions）。
+const SimplifiedChineseBiasPrompt = "以下是普通话的句子，请用简体中文输出。"
+
 // NormalizeLanguage 归一化语种：空 → DefaultLanguage；统一小写并把 zh-CN 之类
 // 的地区后缀收敛成 zh（上游只认 ISO-639-1，传 zh-CN 会被拒或被忽略）。
 func NormalizeLanguage(s string) string {

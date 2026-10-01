@@ -212,8 +212,26 @@ func (t *Transcriber) transcriptions(ctx context.Context, target *Target, audio 
 	_ = w.WriteField("response_format", "json")
 	// 语种必须显式给：不传时 whisper / gpt-4o-transcribe 会自己猜，
 	// 中文会议录音会被当成英语（见 Target.Language 的注释）。
-	if lang := strings.TrimSpace(target.Language); lang != "" {
+	lang := NormalizeLanguage(target.Language)
+	if lang != "" {
 		_ = w.WriteField("language", lang)
+	}
+	// 简体偏置。2026-10-01 本机用 faster-whisper 实测（见 handoff §14）：
+	// 简体的「帮我记一下明天要买牛奶和面包」被识别成繁体的
+	// 「幫我記一下明天要買牛奶和麵包」——用字全对，只是字形不对。
+	// 这是 **whisper 系模型的共同行为**，而设置页预置的外部候选里就有
+	// openai/whisper-large-v3-turbo，用户写简体笔记却拿到繁体正文。
+	// OpenAI 官方给的解法就是给一段普通话 initial_prompt 做偏置。
+	//
+	// 为什么放在这里（transcriptions 的 multipart 构造）而不是各个 Target
+	// 构造点：和 language 归一化同一条理由 —— 构造点有 5 处，漏一处就等于
+	// 那个入口仍然吐繁体。放单一入口则天然覆盖全部外部转写通道。
+	//
+	// 只在中文时加：给英文录音塞一段中文 prompt 纯属添乱。
+	// ChatAudio 通道（网关多模态）没有 prompt 字段，那条路走的是聊天接口，
+	// 由模型自己决定输出字形，不在此处处理。
+	if strings.HasPrefix(lang, "zh") {
+		_ = w.WriteField("prompt", SimplifiedChineseBiasPrompt)
 	}
 	w.Close()
 

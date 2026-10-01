@@ -337,11 +337,15 @@ func (s *Server) discoverGatewayASR(ctx context.Context, baseURL, apiKey string,
 // 各自硬编码 gatewayHTTPClient(...)，所以「测试注入拒绝出网实现」根本没生效 ——
 // 从 feat/2026-10-01-stt-service 恢复出来的 server_stt_settings_test.go 依赖的
 // SetSTTHTTPClient 也因此根本不存在，整包编译不过。
+//
+// 必须用 sttOutboundHTTPClient 而不是 gatewayHTTPClient：后者的私网放行只看
+// POCKET_LLM_GATEWAY_ALLOW_PRIVATE，会让 POCKET_STT_ALLOW_PRIVATE 形同虚设
+// （设置页能存进去、一转写就被 dialer 拒）。详见 ssrf.go 里的说明。
 func (s *Server) sttClient(timeout time.Duration) *http.Client {
 	if s.sttHTTPClient != nil {
 		return s.sttHTTPClient
 	}
-	return gatewayHTTPClient(timeout)
+	return sttOutboundHTTPClient(timeout)
 }
 
 // SetSTTHTTPClient 注入 STT 出网客户端（供测试拒绝出网）。

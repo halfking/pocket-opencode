@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -120,6 +121,104 @@ func TestSplitWAVNeverExceedsMaxSegment(t *testing.T) {
 	}
 }
 
+// waveTrain 造一段「语音—静音—语音」交替的 WAV，音量由 amp 控制。
+//
+// 与 pcmWAV 的区别是**可以控制音量**：静音判定卡在 0.012 这个门槛上，
+// 必须用不同音量的样本才能验出「安静但不是静音」有没有被误判。
+func waveTrain(sampleRate, speechSec, silenceSec, cycles int, amp float64) []byte {
+	var pcm bytes.Buffer
+	per := sampleRate * speechSec
+	sil := sampleRate * silenceSec
+	for c := 0; c < cycles; c++ {
+		for i := 0; i < per; i++ {
+			writeSample(&pcm, amp)
+		}
+		for i := 0; i < sil; i++ {
+			writeSample(&pcm, 0)
+		}
+	}
+	return wrapWAV(sampleRate, pcm.Bytes())
+}
+
+// TestSplitWAVDoesNotTreatQuietSpeechAsSilence 钉住「均方 vs 均方根」这个坑。
+//
+// frameRMS 省掉 sqrt 返回均方，主循环却拿它直接和按均方根定义的 silenceFloor
+// 比，等效门槛被放大到 sqrt(0.012)≈0.11。后果是**所有安静的说话声都被当成
+// 静音**：79 秒会议语料被切成 16 段（平均 4.9 秒），句子照样被劈开。
+//
+// 这里的 amp=0.05 正弦，RMS≈0.035：高于设计门槛 0.012，远低于被放大后的 0.11。
+// 正确实现应当认定它全程有声 → 12 秒在 25 秒上限下切成 1 段。
+func TestSplitWAVDoesNotTreatQuietSpeechAsSilence(t *testing.T) {
+	wav := waveTrain(16000, 12, 0, 1, 0.05) // 12 秒轻声「说话」，中途无任何静音
+	segs, ok := SplitWAV(wav, defaultSegmentSec)
+	if !ok {
+		t.Fatal("SplitWAV 应接受该 WAV")
+	}
+	if len(segs) != 1 {
+		var cuts []int
+		for _, s := range segs {
+			cuts = append(cuts, int(s.StartSec*100))
+		}
+		t.Errorf("全程有声且时长未超上限，应当只切出 1 段，实际 %d 段（起点 %v）——"+
+			"安静的说话声被误判成静音了", len(segs), cuts)
+	}
+}
+
+// TestSplitWAVPrefersRealPauseOverIntraSentenceBreath 钉住切点门槛。
+//
+// 真人/TTS 语音里，句内换气是 100–600ms，句间停顿是 800ms 以上（对 79 秒
+// 会议语料实测的分布：句内 100–600ms，句间 1575–3475ms）。门槛若定在 300ms，
+// 句内换气会全部变成切点 —— 实测同一份语料从 10 段（句界对齐）碎成 14 段。
+//
+// 场景：12s 说话 → 0.6s 换气 → 7.7s 说话 → 1.2s 句间停顿 → 12s 说话。
+// 期望：只在 1.2s 那个停顿处切一刀，共 2 段；0.6s 换气处不许切。
+func TestSplitWAVPrefersRealPauseOverIntraSentenceBreath(t *testing.T) {
+	const rate = 16000
+	var pcm bytes.Buffer
+	// ms 版静音：句内换气 600ms、句间停顿 1200ms。
+	//
+	// 换气取 600ms 而不是更短的 300ms：25ms 滑动窗口要排空上一段语音的能量，
+	// 300ms 的间隙在窗口 RMS 上**根本看不出来**（实测把门槛调回 300ms 时
+	// 这个用例照样绿）。600ms 是 79 秒会议语料里实测到的**句内停顿上界**，
+	// 用它才能真正区分「句内换气」与「句间停顿」。
+	tone := func(sec float64) {
+		for i := 0; i < int(float64(rate)*sec); i++ {
+			writeSample(&pcm, 0.3)
+		}
+	}
+	quiet := func(sec float64) {
+		for i := 0; i < int(float64(rate)*sec); i++ {
+			writeSample(&pcm, 0)
+		}
+	}
+	tone(12)   // 0 – 12
+	quiet(0.6) // 句内换气，12 – 12.6
+	tone(7.7)  // 12.6 – 20.3
+	quiet(1.2) // 句间停顿，20.3 – 21.5
+	tone(12)   // 21.5 – 33.5
+	wav := wrapWAV(rate, pcm.Bytes())
+
+	segs, ok := SplitWAV(wav, defaultSegmentSec)
+	if !ok {
+		t.Fatal("SplitWAV 应接受该 WAV")
+	}
+	if len(segs) != 2 {
+		var desc []string
+		for _, s := range segs {
+			desc = append(desc, fmt.Sprintf("[%.2f-%.2f silenceCut=%v]", s.StartSec, s.EndSec, s.SilenceCut))
+		}
+		t.Fatalf("应当只在 20.3s 的句间停顿处切一刀（共 2 段），实际 %d 段：%v",
+			len(segs), desc)
+	}
+	// 切点必须落在 20.3–21.5 之间，而不是 12.0–12.3 的换气处。
+	if s := segs[0].EndSec; s < 20.0 || s > 21.6 {
+		t.Errorf("第一段应在句间停顿处结束（20.3–21.5s），实际结束于 %.2fs", s)
+	}
+	if !segs[0].SilenceCut {
+		t.Error("在静音处切的段应标记 SilenceCut")
+	}
+}
+
 func TestSplitWAVSegmentsAreValidWAVAndLossless(t *testing.T) {
 	wav := pcmWAV(16000, 2, 1, 4) // 12 秒
 	segs, ok := SplitWAV(wav, 3)
@@ -130,6 +229,16 @@ func TestSplitWAVSegmentsAreValidWAVAndLossless(t *testing.T) {
 	for i, s := range segs {
 		if string(s.Audio[0:4]) != "RIFF" || string(s.Audio[8:12]) != "WAVE" {
 			t.Fatalf("段 %d 不是合法 WAV 头", i)
+		}
+		// RIFF 块长度（偏移 4）必须等于「文件总长 − 8」。
+		//
+		// 这一条以前**从来没被校验过**，所以 buildWAV 里 +8 的错误一直假绿：
+		// parsePCMWAV 对长度是宽容的（自己写的解析器当然读得动），
+		// 宽容的上游解码器（PyAV/ffmpeg）也只是默默截掉末尾 8 字节。
+		// 2026-10-01 用真 ASR 引擎跑会议长录音时，逐段比对文件头才发现。
+		if got, want := int(binary.LittleEndian.Uint32(s.Audio[4:8])), len(s.Audio)-8; got != want {
+			t.Errorf("段 %d 的 RIFF 块长度 = %d，应为 文件总长-8 = %d（差 %d 字节）",
+				i, got, want, got-want)
 		}
 		// data 段长度字段必须与实际载荷一致（切分代码最常见的 bug）
 		payload, rate, bits, ch, _, ok := parsePCMWAV(s.Audio)

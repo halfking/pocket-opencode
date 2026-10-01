@@ -12,11 +12,12 @@ import (
 
 // transcribeUpstream 造一个可控的 /audio/transcriptions 上游。
 type transcribeUpstream struct {
-	status   int
-	body     string
-	lastKey  string
-	lastMdl  string
-	lastLang string
+	status    int
+	body      string
+	lastKey   string
+	lastMdl   string
+	lastLang  string
+	lastPromp string
 }
 
 func (u *transcribeUpstream) handler(t *testing.T) http.Handler {
@@ -27,6 +28,7 @@ func (u *transcribeUpstream) handler(t *testing.T) http.Handler {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 8<<20))
 		u.lastMdl = multipartModel(string(body))
 		u.lastLang = multipartField(string(body), "language")
+		u.lastPromp = multipartField(string(body), "prompt")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(u.status)
 		_, _ = io.WriteString(w, u.body)
@@ -206,6 +208,67 @@ func TestTranscribeForSendsLanguageField(t *testing.T) {
 				t.Errorf("language=%q want %q（未带 language 时上游会自行猜语种，中文会被当英语）", got, c.want)
 			}
 		})
+	}
+}
+
+// TestTranscribeForSendsSimplifiedChineseBiasPrompt 中文转写必须带简体偏置 prompt。
+//
+// 2026-10-01 本机 faster-whisper 实测（handoff §14）：简体的
+// 「帮我记一下明天要买牛奶和面包」被识别成繁体的
+// 「幫我記一下明天要買牛奶和麵包」——用字全对、字形不对。
+// 加上 initial_prompt 后同一段音频输出一字不差的简体。
+//
+// 这条要单独立测试的理由和上面 language 那条一样：**请求 200 成功、
+// 也确实有文本**，只验「有没有转写出文字」完全发现不了，必须断言
+// 请求体里到底带了什么。
+//
+// 负控对照：把 transcriptions() 里那段 `if strings.HasPrefix(lang, "zh")`
+// 去掉，中文用例会转红；把条件改成恒真，英文用例会转红。
+func TestTranscribeForSendsSimplifiedChineseBiasPrompt(t *testing.T) {
+	up := &transcribeUpstream{status: 200, body: `{"text":"今天下午三点开项目评审会。"}`}
+	srv := httptest.NewServer(up.handler(t))
+	defer srv.Close()
+
+	cases := []struct {
+		name      string
+		lang      string
+		wantField bool
+	}{
+		{"中文（含地区后缀）应带简体偏置", "zh-CN", true},
+		{"未指定语种（默认中文）应带", "", true},
+		{"英文录音不应带中文 prompt", "en", false},
+		{"日文不应带", "ja", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := engineFor(t, srv, &Target{
+				BaseURL: srv.URL + "/v1", APIKey: "sk-test", Model: "whisper-large-v3-turbo",
+				Transport: TransportTranscriptions, Channel: ChannelExternal, Language: c.lang,
+			})
+			if _, err := e.TranscribeFor(context.Background(), Scope{}, ToneWAV(8000, 100), "a.wav"); err != nil {
+				t.Fatalf("TranscribeFor: %v", err)
+			}
+			got := up.lastPromp
+			if c.wantField && got != SimplifiedChineseBiasPrompt {
+				t.Errorf("prompt=%q want %q（whisper 系模型中文默认吐繁体，没有这段偏置用户拿到的是繁体正文）",
+					got, SimplifiedChineseBiasPrompt)
+			}
+			if !c.wantField && got != "" {
+				t.Errorf("非中文语种不应带简体偏置，实际 prompt=%q（给英文录音塞中文 prompt 纯属添乱）", got)
+			}
+		})
+	}
+}
+
+// TestSimplifiedChineseBiasPromptMentionsSimplified 偏置文案本身必须真的在要求简体。
+// 护栏：有人把文案改成一句普通普通话时，本条立刻转红 —— 那样虽然仍有
+// prompt，但起不到偏置作用，而**没有任何功能测试会发现**（因为上游照收）。
+func TestSimplifiedChineseBiasPromptMentionsSimplified(t *testing.T) {
+	if !strings.Contains(SimplifiedChineseBiasPrompt, "简体") {
+		t.Errorf("偏置文案必须明确要求简体输出，实际：%q", SimplifiedChineseBiasPrompt)
+	}
+	if strings.ContainsAny(SimplifiedChineseBiasPrompt, "繁體") {
+		t.Errorf("偏置文案里不该出现繁体示例字（会与要求相矛盾）：%q", SimplifiedChineseBiasPrompt)
 	}
 }
 
