@@ -5019,6 +5019,76 @@ TestRefreshOnce_PermanentFailureRevokes
 
 ---
 
+## §7cb 需求 6 走 A 路线的硬约束：Go 不能编到 WASM 去跑 IMAP（2026-10-02）
+
+用户选了 A（设备本地执行）。动手前先验一件事 —— **不是「怎么写」，是「能不能」**。
+
+### 硬约束：`js/wasm` 下所有 socket syscall 直接 ENOSYS
+
+Go 1.27.1 源码 `src/syscall/net_js.go`（`//go:build js && wasm`）：
+
+```go
+func Socket(proto, sotype, unused int) (fd int, err error) { return 0, ENOSYS }
+func Connect(fd int, sa Sockaddr) error                     { return ENOSYS }
+func Sendto(fd int, p []byte, flags int, to Sockaddr) error { return ENOSYS }
+func Recvfrom(fd int, p []byte, flags int) (n int, from Sockaddr, err error) { return 0, nil, ENOSYS }
+```
+
+`src/net/fd_js.go` 的包注释把话说明白了：
+
+> **Fake** networking for js/wasm. It is intended to allow **tests** of other
+> package to pass.
+
+而且这解释了为什么**编译期完全看不出来**：我写了一个真实用例
+（`net.DialTimeout("tcp","imap.163.com:993")` + `crypto/tls` 握手），
+`GOOS=js GOARCH=wasm go build` **exit 0，产出 8,094,699 字节的 wasm**。
+`net/tcpsock_posix.go` 的 build tag 明确写着 `unix || js || wasip1 || windows`。
+**编译通过，运行时必挂** —— 只在真正建连时暴露。
+
+所以「把 Go 编成 wasm 塞进 WebView 就完成了需求 6」这条路是**不通的**。
+IMAP/POP3/SMTP 必须走真实 TCP，而 WebView 里的 Go 拿不到 socket。
+
+设备端能执行真实 TCP 的只有 **Java 层**（`javax.net.ssl.SSLSocket`）。
+现有 `EmailFetchRunner.java` 78 行里只有两个 HTTP POST，
+类注释第一句就是「后台线程委托 pocketd 收信+归类；**设备不直连 IMAP**」。
+
+### 但 A 路线的成本比 §7bs 估的低一个量级
+
+关键在于把「触及 socket 的面」量出来。全包 grep
+`net.Dial|tls.Client|imapclient.Dial|pop3.|smtp.Dial` 只命中 **3 个生产文件**：
+
+| 文件 | 行数 | socket 触点 |
+|---|---|---|
+| `fetcher.go` | 1070 | 6 |
+| `pop3_fetcher.go` | 661 | 8 |
+| `mime.go` | 583 | 3 —— **只有 `fetchRawByTextproto` 一个函数**（178-260 行） |
+
+全包非测试共 **40 文件 / 11502 行**（§7bs 记的 11777/41 是更早的快照）。
+
+也就是说：
+
+- **必须用 Java 重写**：IMAP 主路径 + POP3 + 那一个 textproto 通道
+  ≈ **1700 行量级**，且里面最值钱的不是协议样板而是**已踩过的坑**：
+  `net.Dialer.Timeout` 只管三次握手（`mime.go:188-190` 原注释）、
+  建连后必须自己夹 deadline、POP3 回退要拿到同一份预算（`bb21c6d`/`6c78fbb`）、
+  partial 与 literal 之间那个空格（`§7be`）
+- **纯计算，可复用**（≈9800 行）：MIME/XML 解析、垃圾规则 1599、
+  PDF 网格 670、分类飞书 323、发票提取/命名/汇总
+
+纯计算那部分有两个去处：编成 wasm（设备端已有 `sql-wasm.wasm`，
+说明 wasm 运行时可用），或直接移植成 TS。
+**注意一个尚未量化的成本**：wasm 堆 ↔ SQLite 之间的数据 marshalling，
+这一步的真实开销我**没有测**，不宣称。
+
+### 本节的边界
+
+这一节**只做了可行性判定与面的量测**，没有写任何 A 路线的实现。
+分阶段方案、每阶段的验收口径、wasm/SQLite marshalling 的取舍都**还没定**。
+文档里出现「≈1700 行」时，指的是**触及 socket 的文件行数**，
+不是「重写工作量」—— 这两者的差额正是那些已修过的 deadline / 预算 / 协议细节。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
