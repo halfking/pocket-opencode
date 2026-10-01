@@ -2011,7 +2011,70 @@ worktree 的 `.git` 是文件、索引在主仓且会被 `read-tree` 重新变�
 
 ---
 
-## §7at 本轮仍未验证 / 仍是阻塞
+## §7at 需求 5 复核：差点把没问题的代码改坏（`adf622a`）
+
+### 起因
+
+需求 5「单个 PDF 含多张发票，按 A4 规范排版，2x2 或 3x3，打印后可剪裁」
+是全部需求里最具体、最该能用产物验证的一条。本轮做一次复核。
+
+### 一次被自己拦下的误判
+
+读 `export_pdf.go` 的 NUp 配置时，我认定代码有 bug：
+
+```go
+PageDim: &types.Dim{Width: a4WidthPt / float64(grid), Height: a4HeightPt / float64(grid)}
+```
+
+推理链是：`RectsForGrid()`（pdfcpu `nup.go:126-130`）用
+`maxX = PageDim.Width`、`gw = maxX/cols` 算目标矩形，矩形从 0 铺到
+`PageDim.Width`——**说明 `PageDim` 是输出页尺寸**。那么 `grid=2` 时
+`PageDim = 297.64 × 420.9`，输出页就是 **A5，不是 A4**，需求 5 没做到。
+
+**这个推理是错的。** 完整读 pdfcpu 后发现两处相消：
+
+| 位置 | 作用 |
+|---|---|
+| `nup.go:694-697` | `PageDim *= Grid.Width/Height`（**先把 PageDim 放大**） |
+| `nup.go:800-803` | 输出 MediaBox = `PageDim × Grid` |
+| `nup.go:126-130` | `RectsForGrid` 再按 cols/rows 把（已放大的）PageDim 切格 |
+
+`RectsForGrid` 单独看确实像「PageDim 是整页」，但它读到的是**已经乘过
+Grid 的** PageDim。净效果 = 输出页 = 原 PageDim × Grid = A4。
+现有写法正确。
+
+如果没停下来去读 pdfcpu 源码，而是直接按推理「修」，就会把本来正确的
+A4 排版改成 A5——**制造一个需求 5 从未有过的缺陷**。
+已在 `export_pdf.go` 注释里写清这个陷阱，注明具体行号。
+
+### 真正补上的缺口：3x3 没有尺寸断言
+
+`TestExportInvoiceGrid_DrawsCutLines` 断言了 2x2 的 A4 尺寸
+（`absf(w-a4WidthPt) > 1.5`），但 **`TestExportInvoiceGrid_3x3AlsoDrawn`
+只断言页数 = 1**。
+
+`PageDim` 是按 `grid` 动态算的，3x3 一旦算错就会输出非 A4 页——
+而**页数仍然是 1**。「1 页」看起来完全正常，这正是需求 5 最该被抓住
+却最容易被漏掉的错误。已补上尺寸断言。
+
+**负控**：`PageDim.Height` 改成 `a4HeightPt / (grid*grid)` → **4 例转红**，
+其中新断言报出：
+
+```
+3x3 must still be A4: got 595.28x280.63 pt, want 595.28x841.89
+```
+
+验证：`go build` exit=0；`go vet` exit=0；`go test ./internal/email/`
+→ **ok 29.991s**（12 个 ExportInvoiceGrid 用例全绿）。
+
+### 顺带清理
+
+`export_pdf.go` 原有两行重复的函数文档注释（`ExportInvoiceGrid` 的说明
+被复制粘贴了两次），已删。
+
+---
+
+## §7au 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
 
@@ -2033,6 +2096,22 @@ worktree 的 `.git` 是文件、索引在主仓且会被 `read-tree` 重新变�
    正文缓存加密），所以「正确文件名」现在还定不下来。
 
 **环境问题**：
+
+- **本分支 `internal/server` 有 2 个既有失败**（非邮件引入，本轮 diff 只碰
+  `internal/email` 两个文件）：
+
+  ```
+  --- FAIL: TestTaskWriteGuardBlocksPlainMemberPatch
+      task_write_guard_route_test.go:108: bob PATCH someone else's private
+      work item = 404, want 403: task not found
+  --- FAIL: TestTaskWriteGuardBlocksPlainMemberDelete
+      task_write_guard_route_test.go:130: 同上（DELETE）
+  ```
+
+  守卫对「越权访问他人私有条目」返回 **404**，测试期望 **403**。
+  这是授权语义的分歧（404 不泄露资源存在性，403 明说），与并发会话在
+  `main` 上做的「404/403 区分」属于同一件事的两面。**不在邮件分支修**，
+  修它需要先确定产品上要哪种语义。
 
 - 主仓 `frontend/src/native/recording-voice-prompt.ts` 带 6 组未解决的
   `<<<<<<< HEAD` 冲突标记 → 从 main 分支构建必然失败（esbuild `Unexpected "<"`）。
