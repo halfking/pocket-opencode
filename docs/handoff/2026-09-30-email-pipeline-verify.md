@@ -4874,6 +4874,76 @@ KEY C:\workspace\openpocket-wt-maildeploy\backend\data\email_master.key 可解�
 
 ---
 
+## §7bz 更正 §7bw 的一个错误推断：发票「去重」根本没有接线（2026-10-02）
+
+§7bw 把 `InvoiceContentHash`（`invoice_harvest.go:661`）列为优先级 2，并写：
+
+> `InvoiceContentHash` 值得单独点一下：它是发票**去重**的依据，
+> 0% 意味着「按内容哈希去重」这条逻辑没有任何测试钉住。
+
+**这句话是错的。** 它是从函数上方那行注释「供测试与幂等校验」推出来的，
+我没查调用点。全仓 grep 的实际结果是：
+
+```
+invoice_harvest.go:660  // InvoiceContentHash 供测试与幂等校验...
+invoice_harvest.go:661  func InvoiceContentHash(b []byte) string {
+docs/handoff/...         （本文件里的三处提及）
+```
+
+**零生产调用点、零测试调用点。** 这不是一个「覆盖不足的逻辑」，
+是一个**根本没被使用的函数**。上一轮把它当既有功能来讨论，本身就错了。
+
+### 去重实际靠什么
+
+`email_invoices` 的索引（实测）：
+
+```
+email_invoices_pkey        UNIQUE (id)
+email_invoices_email_id_key UNIQUE (email_id)
+idx_email_invoices_ws       (workspace_id, user_id, created_at DESC)
+idx_email_invoices_status   (workspace_id, status)
+```
+
+写入路径 `invoice_store.go:98`：
+
+```sql
+ON CONFLICT (email_id) DO UPDATE SET ...
+```
+
+所以去重语义是 **「按 email_id」**：同一封邮件重复采集幂等更新。
+采集侧 `pipeline.go:455` 每个 email 候选只产出**一个** `c.inv`
+（`ExtractInvoiceLoose` 返回单个 `Invoice`），所以这个 `ON CONFLICT`
+在当前架构下**不是覆盖 bug**，是正常的幂等路径。
+
+### 但顺着查下去发现两条真实的能力边界
+
+**边界 1：一封邮件含多张发票 → 只记第一张。**
+解析器返回单个 `Invoice`，没有「一张邮件产出 N 张」的形状。
+需求 3 写的是「将发票文件进行整理…汇总金额」，若一封邮件里有多张，
+其余的**静默丢失**，汇总金额相应少算。这是能力缺口，不是 bug ——
+没有任何代码声称支持多张。
+
+**边界 2：同一张发票出现在两封邮件 → 记两行，金额翻倍。**
+`invoice_no` 列存在，但**没有任何唯一约束**（见上面 4 个索引）。
+发票被转发、重发、或同一张票分别进两个邮箱时，`email_id` 不同 → 两行。
+
+`InvoiceContentHash` 恰好是为边界 2 准备的 —— 但它没被接线。
+接线需要三件事一起做：加内容哈希列、加唯一约束、决定冲突时保留哪行。
+这是设计变更，**等用户拍板**，本节不做。
+
+### 本节实际产出
+
+`invoice_hash_test.go`，3 个用例（全部实测 PASS）：与 `sha256.Sum256`
+逐字节一致、64 位 hex；`nil` 与空切片一致且等于空串的已知 sha256
+（`e3b0c442…`），不返回空串——否则「没算出来」和「内容为空」无法区分；
+差一个字节必然不同、相同输入必然稳定（它作为去重依据的唯一前提）。
+
+**刻意没写的东西**：一个「断言它尚未被接线」的守卫用例只能写成 `t.Skip`，
+而**永远跳过的测试是假守卫** —— 让人以为这事被盯住了，实际什么也没盯。
+「零调用点」这个事实由 grep 给出，且会在有人接线时由那处改动本身暴露。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
