@@ -6797,3 +6797,90 @@ UI 自己**（点进去读 hash），不能来自 API。API 只能用来确认�
 - `scripts/diag-note-detail-mismatch.mjs` / `diag-meeting-detail-click.mjs`
   —— 列表/详情 id 体系是否一致的判别实验
 
+
+#### 4.70 https 生产路径回归：设备侧做不完（环境），但服务端侧挖出一个真发现
+
+生产基址是 `https://pocket.itestu.cn`（`api/http.ts` 里 `resolveRuntimeApiBase`
+的兜底）。此前所有真机验证都跑在 `adb reverse` 的 `http://127.0.0.1:8088` 上，
+**https 这条路一次都没走过**。本节用 `scripts/verify-https-prod.mjs`
+（靠 `localStorage.pocket_api_base` 覆盖，不重建 APK）试。
+
+##### 4.70.1 服务端侧：生产是活的 ✅
+
+宿主与**真机原生 curl** 都通：
+
+```
+宿主 → /api/auth/login 405 / /api/tasks 401 / / 200
+真机 curl -v https://pocket.itestu.cn/api/tasks
+  < Strict-Transport-Security: max-age=63072000; includeSubDomains
+  < X-Pocket-Upstream: 100.106.192.58:8090, 172.16.2.210:8090
+  {"code":"unauthenticated","error":"missing authorization token","request_id":"c587…","retryable":false}
+```
+
+dev 凭据在生产可登录（token 291 字符），登录后 `/api/tasks`、`/api/notes`、
+`/api/meetings`、`/api/agents`、`/api/email/accounts`、`/api/email/summaries`、
+`/api/scheduled-tasks`、`/api/app/check-update` 均 200。
+
+##### 4.70.2 ⚠️ 真发现：**生产后端落后于本地代码，5 个端点不一致**
+
+同一套凭据、逐条对照生产与本地：
+
+| 端点 | 生产 https | 本地 8088 | 差异含义 |
+|---|---|---|---|
+| `/api/flashcards` | **404** | 200 | 闪卡模块在生产上**整个不存在** |
+| `/api/flashcards/notes` | **404** | 200 | 同上 |
+| `/api/rss/items` | **404** | 200 | |
+| `/api/chat-agents` | **500** | 200 | 不是缺失，是**服务端报错** |
+| `/api/marketplace/packages` | **404** | 200 | |
+
+前两条意味着：即便前端按当前代码打包，**生产上闪卡也是全灭的**。
+`/api/chat-agents` 的 500 比 404 更糟——它会渲染成「加载失败」而不是「未实现」。
+其余 10 个端点两边一致，说明生产不是整体挂掉，而是**落后若干次部署**。
+
+**这是部署问题不是代码问题**，要动的是把本地后端推到生产。
+
+##### 4.70.3 ❌ 设备侧 https 回归：**做不完，且原因是环境不是产品**
+
+WebView 内打生产，全部 `Failed to fetch`。逐层排除：
+
+```
+未鉴权 fetch        -> Failed to fetch
+mode: 'no-cors'     -> Failed to fetch      ← 若是纯 CORS，这个会成功（不透明响应）
+OPTIONS 预检        -> Failed to fetch      ← 预检都失败 ⇒ 请求根本没拿到响应
+```
+
+先怀疑是「App 自己装了 fetch 包装器把请求拦了」——项目 CHANGELOG 里确实提过
+`buildOriginChecker`。查源码：**没有**运行时 fetch 包装器，也**没有** CSP
+（grep 命中的 `window.fetch =` 全部在 `__tests__/` 的测试替身里）。排除。
+
+同源对照 + 外部对照（`scripts/diag-webview-https-fail.mjs`）：
+
+```
+页面 origin = https://localhost
+  401  local  http://127.0.0.1:8088/api/tasks   ct=application/json  bodyLen=131
+  ❌   prod   https://pocket.itestu.cn
+  ❌   prod   no-cors
+  ❌   prod   OPTIONS preflight
+  ❌   example.com        https://example.com/
+  ❌   gstatic            http://www.gstatic.com/generate_204
+```
+
+⇒ **WebView 上所有外网都不可达**，localhost 正常、同一台设备原生 curl 正常。
+这是**测试设备的网络环境问题**（设备上装着一款 VPN/代理 App，WebView 很可能
+被其路由进了黑洞，而 curl 绕过了），**不是产品缺陷**。
+
+按本项目一贯纪律：环境问题不得记成产品缺陷。所以：
+
+- ✅ **服务端侧 https 路径已验证可用**（TLS、鉴权、读取、边缘回源都正常）
+- ❌ **设备侧 WebView → 生产 https 的端到端回归本轮未完成**，阻塞在设备外网出口，
+  不是代码。需要一台能正常上外网的设备（或在设备上启用代理）才能补上
+- ⏳ 对生产的**写路径**一律没做：那是共享部署，单方面写入属于不该擅自做的副作用，
+  需产品/运维授权
+
+##### 4.70.4 本轮沉淀
+
+- `scripts/verify-https-prod.mjs` —— 用 localStorage 覆盖换基址跑完整 https 链路，
+  **跑完自动还原覆盖值**（不污染后续 dev 会话）
+- `scripts/diag-webview-https-fail.mjs` —— 「Failed to fetch」归因：同源对照 +
+  no-cors + OPTIONS 预检 + 外部对照，四步把「CORS / TLS / 探针坏了 / 环境」分开
+
