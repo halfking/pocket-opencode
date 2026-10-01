@@ -2,6 +2,8 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { rssApi, type RSSItem } from '../../api/rss'
+import { useI18n } from 'vue-i18n'
+import { toUserMessage } from '../../api/error-message'
 import AddToLearningButton from '../study/AddToLearningButton.vue'
 
 const route = useRoute()
@@ -13,6 +15,7 @@ const shareOpen = ref(false)
 const shareCaption = ref('')
 const shareResult = ref<{ copyText?: string; deepLink?: string; hint?: string } | null>(null)
 const shareBusy = ref(false)
+const { t } = useI18n()
 
 async function load() {
   loading.value = true
@@ -26,7 +29,7 @@ async function load() {
       } catch { /* ignore */ }
     }
   } catch (e: any) {
-    errorMsg.value = e?.message ?? String(e)
+    errorMsg.value = toUserMessage(e, t, t('errors.loadRssFailed'))
   } finally {
     loading.value = false
   }
@@ -69,7 +72,7 @@ async function toggleStar() {
   try {
     item.value = await rssApi.setStarred(item.value.id, newStar)
   } catch (e: any) {
-    errorMsg.value = e?.message ?? String(e)
+    errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
   }
 }
 

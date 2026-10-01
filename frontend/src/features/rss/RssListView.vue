@@ -57,7 +57,7 @@ async function toggleSource(src: RSSSource) {
     await rssApi.patchSource(src.id, { enabled: !src.enabled })
     await refresh()
   } catch (e: any) {
-    errorMsg.value = e?.message ?? String(e)
+    errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
   }
 }
 async function deleteSource(src: RSSSource) {
@@ -68,7 +68,7 @@ async function deleteSource(src: RSSSource) {
     await rssApi.deleteSource(src.id)
     await refresh()
   } catch (e: any) {
-    errorMsg.value = e?.message ?? String(e)
+    errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
   }
 }
 const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unreadCount || 0), 0))

@@ -2,6 +2,8 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { rssApi, type RSSSeed, type RSSCandidate } from '../../api/rss'
+import { useI18n } from 'vue-i18n'
+import { toUserMessage } from '../../api/error-message'
 
 const router = useRouter()
 const step = ref<'input' | 'discover' | 'confirm'>('input')
@@ -12,6 +14,7 @@ const errorMsg = ref('')
 const busy = ref(false)
 const interval = ref('30m')
 const enabled = ref(true)
+const { t } = useI18n()
 
 async function start() {
   const url = inputUrl.value.trim()
@@ -63,7 +66,7 @@ async function addDirect() {
     await rssApi.addSource({ url: inputUrl.value.trim(), enabled: enabled.value, fetchInterval: interval.value })
     router.replace({ name: 'rss' })
   } catch (e: any) {
-    errorMsg.value = e?.message ?? String(e)
+    errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
   } finally {
     busy.value = false
   }
