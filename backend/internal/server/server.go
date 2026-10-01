@@ -990,20 +990,135 @@ var longLivedPaths = []string{
 	// 也就是说**操作成功了，界面却报错**，用户会以为没提取而重复点击。
 	// 根因就是漏了这条白名单。
 	"/api/emails/invoices/extract",
+
+	// 会议链路。这四个动作都同步等推理/STT 回来，自身预算全部超过 30s：
+	//
+	//	/api/meetings/{id}/transcribe  handleTranscribeMeeting  120s
+	//	/api/meetings/{id}/refine      handleMeetingRefine        90s
+	//	/api/meetings/{id}/summary     handleMeetingSummary       45s
+	//
+	// 注意这里**不能**用 "/api/meetings/" 前缀整段豁免：那样连
+	// GET /api/meetings/{id}（纯数据库读，毫秒级）也会被解除写超时保护。
+	// 精确模式见 longLivedPatterns。
+
+	// 邮件自动归类。单封的网关分类器自带 25s 预算（classifyViaGateway），
+	// 而这个端点一次默认处理 20 封（handleEmailClassify: limit<=0 → 20），
+	// 串行下来最坏 500s。
+	//
+	// 2026-10-02 实测的故障：客户端 `POST /api/emails/classify {"limit":3}`
+	// 拿到「基础连接已经关闭：连接被意外关闭」，一个字节都没有——正是本段
+	// 描述的「服务端还在算 / 客户端空响应」。用户看到的就是"邮件没有自动
+	// 归纳整理的能力"，而后端其实一封都没写进去。
+	"/api/emails/classify",
+
+	// 历史回补。按日期窗口把 Sync 漏掉的邮件拉回来（每轮 50 封上限，
+	// maxMessages 可到 2000），全程同步 IMAP，必然超过 30s。
+	"/api/email/backfill",
+}
+
+// longLivedSuffixes 按**结尾**匹配白名单。
+//
+// 为什么需要它：有一类路由的耗时段固定在路径末尾，而资源 ID 在中间——
+//
+//	/api/notes/{id}/summarize     handleNoteSummarize  context 60s
+//	/api/emails/{id}/summarize    handleEmailSummary   同上
+//
+// 这两个都要同步等 LLM 回来（网关自动路由到 glm-5.2 这类推理模型时，
+// 单次实测 6s+）。用前缀表达只能把整个 /api/notes/、/api/emails/ 子树
+// 一起放宽——那会把一堆纯 DB 读写端点也解除写超时保护，粒度太粗。
+var longLivedSuffixes = []string{
+	"/summarize",
+}
+
+// longLivedExemption 是一次「手工豁免」的完整交代。
+type longLivedExemption struct {
+	// Route 是这个 handler 实际对应的请求路径。审计测试会拿它去
+	// longLivedPaths / longLivedSuffixes 里核对一遍——**光在账本上写
+	// 一行字是糊弄不过去的**，路径没被真正豁免，测试照样转红。
+	Route string
+	// Reason 是可核查的预算来源（文件 + 行号 + 时长）。
+	Reason string
+}
+
+// longLivedHandlerExemptions 记录那些**路由前缀比耗时段宽得多**、
+// 无法用前缀或后缀自动表达的 handler。
+//
+// 目前只有一处：发票 harvest 由 /api/emails/invoices/ 这个 router 按路径
+// 分段 switch 分发（不是 strings.HasSuffix，推不出 "/harvest"），
+// 而白名单里精确到 /api/emails/invoices/harvest。
+//
+// 这份账本是给人看的，也是给审计测试用的：新增条目必须写得出真实路径，
+// 且该路径必须真的在白名单里。
+var longLivedHandlerExemptions = map[string]longLivedExemption{
+	"handleEmailInvoiceHarvest": {
+		Route:  "/api/emails/invoices/harvest",
+		Reason: "server_email_invoice.go:322 context.WithTimeout 5 分钟，批量下载发票文件",
+	},
+}
+
+// longLivedPatterns 是**逐段**匹配的精确模式，`*` 代表恰好一个路径段。
+//
+// 为什么前缀和后缀都不够用：会议那组路由注册在 /api/meetings/ 下，
+// 真正花钱的是它下面那几个动作（transcribe / refine / summary）。
+//
+//	用前缀 "/api/meetings/"  → GET /api/meetings/{id} 这种毫秒级的数据库读
+//	                          也被解除写超时保护，范围过宽；
+//	用后缀 "/summary"        → /api/emails/invoices/summary 这类短端点被误伤
+//	                          （longlived_paths_test.go 明确断言它不该放宽）。
+var longLivedPatterns = []string{
+	"/api/meetings/*/transcribe",
+	"/api/meetings/*/refine",
+	"/api/meetings/*/summary",
+}
+
+// matchPathPattern 逐段比较；`*` 匹配恰好一个非空段。
+func matchPathPattern(pattern, path string) bool {
+	ps := strings.Split(strings.Trim(pattern, "/"), "/")
+	xs := strings.Split(strings.Trim(path, "/"), "/")
+	if len(ps) != len(xs) {
+		return false
+	}
+	for i := range ps {
+		if ps[i] == "*" {
+			if xs[i] == "" {
+				return false
+			}
+			continue
+		}
+		if ps[i] != xs[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func isLongLivedPath(path string) bool {
+	for _, p := range longLivedPaths {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	for _, s := range longLivedSuffixes {
+		if strings.HasSuffix(path, s) {
+			return true
+		}
+	}
+	for _, pat := range longLivedPatterns {
+		if matchPathPattern(pat, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func longLivedPathMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		for _, p := range longLivedPaths {
-			if strings.HasPrefix(path, p) {
-				// 只清"当前连接"的写 deadline，不动全局 server.WriteTimeout。
-				// 中间件包装过的 ResponseWriter（cors/logging/recovery）通常仍
-				// 支持 NewResponseController；不支持的则降级到被 30s 掐断。
-				rc := http.NewResponseController(w)
-				_ = rc.SetWriteDeadline(time.Time{})
-				break
-			}
+		if isLongLivedPath(r.URL.Path) {
+			// 只清"当前连接"的写 deadline，不动全局 server.WriteTimeout。
+			// 中间件包装过的 ResponseWriter（cors/logging/recovery）通常仍
+			// 支持 NewResponseController；不支持的则降级到被 30s 掐断。
+			rc := http.NewResponseController(w)
+			_ = rc.SetWriteDeadline(time.Time{})
 		}
 		next.ServeHTTP(w, r)
 	})

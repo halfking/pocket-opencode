@@ -621,7 +621,21 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 			{Role: "user", Content: prompt},
 		},
 		Temperature: 0.3,
-		MaxTokens:   300,
+		// 300 → 2048。
+		//
+		// 网关（https://llm.kxpms.cn/v1）自动路由到的 glm-5.2 是**推理模型**：
+		// 它先把 token 花在 reasoning_content 上，正文 content 最后才吐。
+		// 2026-10-02 实测同一段提示词：
+		//
+		//	max_tokens=300   → content 长度 0，finish_reason=length，
+		//	                    usage.completion_tokens 恰好 300（推理吃光）
+		//	max_tokens=2000  → content 63 字，finish_reason=stop，
+		//	                    reasoning 985 + 正文 63
+		//
+		// 也就是说 300 这个预算下，模型**答了**，但接口返回 HTTP 200 +
+		// summary 空串，界面上就表现为「没有即时总结」——一个字节都不报错。
+		// 笔记总结只要 3~5 句话，2048 足够容纳推理开销加正文。
+		MaxTokens: 2048,
 		User:        uid,
 	}
 
