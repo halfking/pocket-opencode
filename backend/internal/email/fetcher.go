@@ -188,7 +188,7 @@ func (c *deadlineConn) Write(b []byte) (int, error) {
 // 自行退出，不会因为 Sync 卡死而永久泄漏。
 func (c *deadlineConn) start() {
 	c.touch()
-	_ = c.Conn.SetDeadline(time.Now().Add(c.idle))
+	_ = c.Conn.SetDeadline(c.nextIdle())
 	go func() {
 		iv := c.idle / 3
 		if iv <= 0 {
@@ -209,11 +209,37 @@ func (c *deadlineConn) start() {
 				// 静默已超过上限：把 deadline 钉到过去，强制下一次读写立刻报错。
 				_ = c.Conn.SetDeadline(now.Add(-time.Second))
 			default:
-				// 最近有活动：续满。
-				_ = c.Conn.SetDeadline(now.Add(c.idle))
+				// 最近有活动：续满——但**必须夹在绝对截止之内**。
+				_ = c.Conn.SetDeadline(c.nextIdle())
 			}
 		}
 	}()
+}
+
+// nextIdle 返回「滚动空闲续期」应设的 socket deadline，且**永远不超过硬截止**。
+//
+// ## 为什么必须有这个夹取
+//
+// 原来续期直接写 `SetDeadline(now.Add(c.idle))`。生产值 idle=60s / hard=45s：
+// 第一次 tick 在 T+20s（iv = idle/3），此时 now 还**没超过** hard=45s，于是走
+// default 分支把 deadline 设成 **T+80s** —— 一个比宣称的绝对上界还晚 35s 的
+// 时间点。此后 socket 上的 deadline 已经越界，能不能被拉回来完全取决于
+// T+40 / T+60 两次 tick 是否准时跑（GC 停顿、调度饥饿、进程繁忙都会推迟）。
+//
+// 也就是说：`imapHardTimeout` 注释里写的「绝对寿命上限」在代码上**从来没有
+// 成立过**，真正生效的是「hard + idle/3」甚至更久。线上实测（2026-10-01
+// 21:38:02，huangxutao@kxpms.cn）login 阶段整整 80.001s 才返回 i/o timeout，
+// 正是 idle/3=20s 的两次续期把 deadline 推到 80s 的结果 —— 而这条 80s 已经
+// 吃掉了单账户 70s 总预算，POP3 回退只拿到 `budget -10s left` 直接放弃。
+//
+// 夹取之后：任何一次续期的 deadline 都不超过 hard，socket 上的绝对上界
+// 就是 hard 本身，看门狗延迟也不会把它推得更远。
+func (c *deadlineConn) nextIdle() time.Time {
+	d := time.Now().Add(c.idle)
+	if !c.hard.IsZero() && d.After(c.hard) {
+		return c.hard
+	}
+	return d
 }
 
 func imapDialWithTimeout(addr string, secure bool, timeout time.Duration, tlsCfg *tls.Config) (*imapclient.Client, error) {
