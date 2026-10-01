@@ -937,6 +937,16 @@ var longLivedPaths = []string{
 	// `context.WithTimeout(ctx, 15*time.Minute)`，harvest 是 5 分钟。
 	"/api/email/pipeline/run",      // 手动触发一轮完整流水线（实测 1m30s）
 	"/api/emails/invoices/harvest", // 只下载发票文件（自带 5 分钟预算）
+	// 手动对单封邮件做发票提取。它命中发票但缺开票日期时，会**只为这一封**
+	// 拉一次 IMAP 原文补日期（handleEmailInvoiceExtract:235），实测这一封就
+	// 能超过 30s。
+	//
+	// 2026-10-01 实测的故障：客户端拿到「基础连接已经关闭：连接被意外关闭」、
+	// 一个字节都没有（正是本段注释描述的「服务端成功 / 客户端空响应」），
+	// 而服务端其实已经把发票行建好了（summary 里 count=1、pending=1）——
+	// 也就是说**操作成功了，界面却报错**，用户会以为没提取而重复点击。
+	// 根因就是漏了这条白名单。
+	"/api/emails/invoices/extract",
 }
 
 func longLivedPathMiddleware(next http.Handler) http.Handler {
