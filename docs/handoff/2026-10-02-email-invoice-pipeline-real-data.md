@@ -120,8 +120,13 @@ em-10435 的 subject/snippet：
 - **飞书推送 / 共享台账**：缺 `POCKET_FEISHU_APP_ID` / `APP_SECRET` /
   `INVOICE_CHAT_ID`（应用需开通「查看、评论、编辑和管理电子表格」，
   否则报 `1310213`）
-- **重要邮件提醒**：`remindersSent=0` 的根因是 `importance` 恒空，
-  即 AI 分类从未跑过——缺 `POCKET_KXMEMORY_BASE_URL`
+- **重要邮件提醒**：~~`remindersSent=0` 的根因是 `importance` 恒空~~
+  **（2026-10-02 05:4x 更正：这个结论是错的，见
+  [correction-important-reminder-works-without-kxmemory.md](./correction-important-reminder-works-without-kxmemory.md)）**
+  实际上 `importance` 由本地规则引擎（`fetcher.go:771`）写入、与 kxmemory 无关，
+  真实库里 28 封 `importance='high'`、24 封已提醒，`GET /api/notifications`
+  能读到 `[email/email.important]` 通知。**重要邮件提醒是通的**。
+  kxmemory 缺的是 AI 摘要 / 建议 / 每日总结。
 - **清垃圾真实 MOVE**：默认 `SpamDryRun=true` 预演模式（只判定不移动）。
   需先看判定结果再决定是否关掉预演
 - **发票多来源**：本次只跑通了「正文 XML 链接/附件」这一类；
