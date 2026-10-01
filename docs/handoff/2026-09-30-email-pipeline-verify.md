@@ -1610,3 +1610,45 @@ importance 分布: (empty) 275 / medium 111 / high 56 / low 5
 - 建议给 `emails.importance` 加 CHECK 约束（`IN ('high','medium','low','')`），
   但这属于 schema 变更，未擅自做。
 - 存量 447 封里 `importance` 全是规范值或空，**无需回填**。
+
+## §7ag 前端构建验证（2026-10-01）
+
+需求 7「邮件窗口可查看各类邮件」此前只有代码层证据。本轮装上依赖做了
+真实构建验证。
+
+**环境**：`frontend/node_modules` 原本缺失，`npm ci` 装入 293 个包（7s，
+本机有缓存）。`node_modules/` 与 `dist/` 都在 `.gitignore:1-2`，不污染仓库。
+
+**结果**：`vite build` 成功（`✓ built in 12.25s`，exit=0），
+`EmailInboxView` / `EmailDetailView` / `InvoiceListView` 均产出 bundle。
+邮件模块 188 例 `node --test` 全绿。
+
+**两个既有问题（都不是本次邮件改动引入的）**：
+
+1. `vue-tsc --noEmit` 报 3 个错，**全部**在 `src/native/recordingRuntime.ts`：
+   `Cannot find module './recording-voice-prompt'` 及由此连带的两个
+   TS7006 implicit any。邮件模块类型检查零错误。
+
+2. `vite build` 同样卡在这个缺失模块上。根因：**该文件在本分支的 HEAD 树里
+   根本不存在**，但在别的分支上存在——`git log --all --
+   frontend/src/native/recording-voice-prompt.ts` 命中 `beffeae` /
+   `895d950`，且主仓与另外三个 worktree（`.wt-pdf` / `wt3` / 主仓）都有
+   这个文件。即本 worktree 的分支从未包含它，属既有分支分叉。
+
+   为验证邮件代码本身可构建，临时从主仓复制该文件到本 worktree，构建通过后
+   已移出工作区（留存于 `%TEMP%\recording-voice-prompt.ts.proof`）。
+   **未提交**——把录音修复混进邮件分支是错的。修法应是 cherry-pick
+   `895d950`，或 rebase 到包含该提交的基线。
+
+**构建门禁**：首次 `vite build` 失败于「拒绝构建：VITE_API_BASE 为空」。
+这是 `vite.config.ts` 里 `assertApiBaseForBuild` 的**有意设计**（防移动端
+静默回落到同源，导致 /api 返回 index.html 而非 JSON），不是环境故障。
+Web 同源部署确需空值时用 `MOBILE_ALLOW_EMPTY_API_BASE=1` 放行。
+
+**PowerShell 环境**：`npm` / `npx` 会被执行策略拦（`npm.ps1` 不允许运行），
+必须用 `npm.cmd` / `npx.cmd`。
+
+**写文件教训**：用 PowerShell 的 `[IO.File]::AppendAllText` 追加中文到本
+文档会把内容写成 GBK（整段变乱码）。已从 HEAD 还原。中文内容一律用
+编辑工具直接写，或显式 `-Encoding UTF8` 且确认 `UTF8Encoding($false)` 无 BOM。
+
