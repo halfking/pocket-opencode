@@ -3105,6 +3105,131 @@ emails    非测试账户                            : 120   ← 真实邮件一
 
 ---
 
+## §7bi 「绝对硬截止」在代码上从未成立（`51d04aa`）
+
+### 起因：一行 80.001s 的日志
+
+§7bh 顺带记了一条没解释的现象：
+
+```
+21:38:02 [email/fetcher] imap login huangxutao@kxpms.cn failed:
+        in response: cannot read tag: read tcp 192.168.31.20:56534->36.158.243.217:993: i/o timeout
+        — trying POP3 fallback (budget -10s left)
+21:38:02 [email/fetcher] huangxutao@kxpms.cn SLOW step login took 1m20.001s
+        (total 1m20.167s) — 该阶段以失败/提前返回结束
+```
+
+login 阶段整整 **80.001s**。而 `fetcher.go:138` 的 `imapHardTimeout` 写的是
+`45 * time.Second`，注释把它称作「**绝对**寿命上限，不看有没有活动」。
+
+两个时间的量级完全对不上：45s 的绝对上界，不可能跑出 80s。
+
+> 顺带一个更正：`SLOW step` 那条带阶段署名的日志**不在本分支上**，它是并发
+> 会话在 `feat/mail-config-deploy`（`openpocket-wt-maildeploy`）上加的 —
+> 那边的 `syncTrace` 多一个 `cur` 字段，并在 `done()` 里补报「最后一个阶段」的
+> 耗时。正因为有了它，线上这 80s 才有名字。两边的超时**常量完全相同**
+> （10s / 60s / 45s / 70s），所以问题在这两条分支上都存在。
+
+### 根因：滚动续期没有���硬截止夹住
+
+`deadlineConn.start()` 的看门狗有三个分支：
+
+```go
+switch {
+case !c.hard.IsZero() && now.After(c.hard):
+    _ = c.Conn.SetDeadline(now.Add(-time.Second))   // 过了绝对截止，断开
+case since >= c.idle:
+    _ = c.Conn.SetDeadline(now.Add(-time.Second))   // 静默超时，断开
+default:
+    _ = c.Conn.SetDeadline(now.Add(c.idle))         // 最近有活动：续满
+}
+```
+
+**第三条没有用 `hard` 夹。** 生产 `idle=60s` / `hard=45s`，tick = `idle/3` = 20s：
+
+- T+20s 那次 tick：`now`(20s) **还没超过** `hard`(45s) → 走 default →
+  `SetDeadline(T+80s)`。**一个比宣称绝对上界还晚 35 秒的时间点。**
+- 此后 socket 上的 deadline 已经越界，能不能被拉回来完全取决于 T+40 / T+60
+  两次 tick 是否**准时**跑（GC 停顿、调度饥饿、进程繁忙都会推迟）。
+
+也就是说：`imapHardTimeout` 注释里写的「绝对寿命上限」**在代码上从来没有成立过**，
+真正生效的是「`hard` + `idle/3`」，甚至更久。
+
+### 修法
+
+新增 `nextIdle()`，任何续期的 deadline 都夹在 `hard` 之内，`start()` 的初始
+deadline 也走它：
+
+```go
+func (c *deadlineConn) nextIdle() time.Time {
+    d := time.Now().Add(c.idle)
+    if !c.hard.IsZero() && d.After(c.hard) {
+        return c.hard
+    }
+    return d
+}
+```
+
+socket 上的绝对上界从此**就是 `hard` 本身**，与 tick 是否准时无关。
+
+### 实测两个数据点
+
+黑洞服务器（accept 后不响应、也不关连接），读一个必然要靠 deadline 才返回的
+`CAPABILITY`。`idle=6s` / `hard=3s` / tick=2s：
+
+| | 初始 socket deadline | 实测返回时刻 |
+|---|---|---|
+| 不夹取 | `T+6`（**越过 hard=3s**） | **6.000s** |
+| 夹取 | `min(T+6, T+3) = T+3` | **4.001s** |
+
+线性对应到生产参数：不夹取时 T+20 那次续期把 deadline 推到 **T+80** ——
+与线上观测到的 **80.001s 完全吻合**。
+
+### 诚实标注残余缺口
+
+夹取后仍在 **4.001s** 而不是精确的 3.0s。说明除 socket deadline 外，还有另一条
+「tick 到点后才把 deadline 钉到过去」的路径在收尾 —— 即上界是
+**`hard` + 一个 tick 量级**（生产约 `45 + 20 = 65s`），不是精确的 `hard`。
+
+这一点我**没有去猜原因**（可能是 go-imap 读 goroutine 的时序，也可能是 tick
+被推迟），但必须写下来：否则下一个人读代码会以为 `imapHardTimeout` 是精确值，
+再按它去推算预算就会算错。
+
+顺带一个可以确定的结论：不夹取时实测 6.000s **恰好是初始 socket deadline 的
+到点时刻**，说明 socket deadline 本身是生效的 —— 问题只在「被续期推到了上界
+之外」，不在「deadline 不管用」。
+
+### 测试
+
+新增 `deadline_clamp_test.go` 两条：
+
+- `TestNextIdleIsClampedByHard` —— 纯函数断言：返回值不得超过 `hard`；`hard`
+  为零值时**必须**退回纯 idle 续期（不能变成立刻超时，否则没有硬截止的调用方
+  会被误伤）；`idle < hard` 时不该被提前夹到 `hard`（夹取只能收窄）。
+- `TestHardDeadlineIsNotExceededByIdleRenewal` —— 时序断言，上界 5s（夹取 4.0s
+  绿 / 不夹取 6.0s 红）。
+
+**第一版时序参数选错过**：我把 `hard` 正好设成 tick 的整数倍，两种实现只差
+0.5s，断言抓不住回归 —— 等于写了一条永远绿的测试。已重新标定（`hard=3s`、
+tick=2s），并在注释里写明为什么必须避开 tick 边界。
+
+原有三条 deadline 用例全部仍绿，其中
+`TestIMAPIdleDeadlineAllowsSlowButActiveConnection` 尤其关键：夹取只收紧上限，
+**不会误杀「慢但在动」的正常连接**。
+
+### 仍然存在的一半问题（本次没修）
+
+`syncBudget` 的注释说它是「单个账户的**总**墙钟预算，IMAP 与 POP3 降级共用」，
+但代码里 **IMAP 路径从头到尾没有检查过它** —— `remaining()` 只被传给 POP3
+分支。于是即使硬截止修好了，单账户同步仍可能超过 70s，POP3 回退照样拿不到
+预算（线上那条 `budget -10s left` 就是这么来的）。
+
+要真正兜住，得给 IMAP 阶段一个**独立于 deadline 机制**的上界（最可靠的是
+到点直接 `client.Close()`，它是立即的，而 deadline 实测要等 tick）。这是下一步，
+本次只把 deadline 机制本身修对，不顺手扩大改动面。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
