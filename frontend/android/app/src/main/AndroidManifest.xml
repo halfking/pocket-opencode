@@ -45,7 +45,15 @@
             android:foregroundServiceType="dataSync" />
         <receiver
             android:name=".plugins.EmailFetchReceiver"
-            android:exported="false" />
+            android:exported="false">
+            <!-- ELAPSED_REALTIME 闹钟在重启/升级后被系统清空；没有这两个
+                 intent-filter，用户重启一次后台定时收信就永久停掉（需求 1）。
+                 exported=false 仍可收系统广播。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 
     <!-- Permissions -->
