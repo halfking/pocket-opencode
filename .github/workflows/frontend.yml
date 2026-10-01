@@ -125,6 +125,18 @@ jobs:
       - name: Run ALL .test.mjs / .test.ts with execution census
         run: npm run test:all
 
+      # ── 跨行 needle 的 CRLF 护栏（2026-10-02 接进 CI）──────────────────
+      # 为什么这张卡口在 Linux 上也有意义（而不是"Windows 才需要"）：
+      # 本护栏不只看"本机有没有炸"，它断言的是**needle 真的还能命中**。
+      # 事故形态是：needle 依赖 LF 文本、而 Windows 检出是 CRLF →
+      # 判据静默失效。Linux 上永远是 LF，所以 Linux 跑不出这个 bug；
+      # 但只要有人把归一化删掉、或新增一个没归一化的跨行 needle，
+      # 这张卡口在 Linux 上就会因为"两边都匹配不上/没归一化"而报警，
+      # 从而在合并前拦住，而不是等某个 Windows 开发者本地踩。
+      # 反过来：它对**已正确归一化**的代码保持沉默（实测 NEG-1b）。
+      - name: Guard against EOL-fragile multi-line needles
+        run: npm run check:crlf-needles
+
       - name: Build HarmonyOS ArkWeb assets
         run: MOBILE_FAST=1 VITE_API_BASE=https://harmony-ci.example.invalid node scripts/build-harmony.mjs dev
 

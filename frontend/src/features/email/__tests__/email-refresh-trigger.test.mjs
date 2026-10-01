@@ -34,7 +34,22 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC = path.resolve(HERE, '..', '..', '..')            // frontend/src
 const HOST = path.join(SRC, 'features', 'email', 'email-fetch-host.ts')
 
-const hostSrc = fs.readFileSync(HOST, 'utf8')
+// 归一化行尾后再用。
+//
+// 为什么不直接用 fs.readFileSync 的原始结果：本文件下面有几处**跨行**的
+// 字符串针（`'state.lastAttemptAt = now\n    state.inFlight = true'`），
+// 而 Windows 上 core.autocrlf=true 会把工作区里的 .ts 检出成 CRLF——
+// 仓库里存的是 LF。于是原始文本里根本没有 `...\n    state...`，
+// `.replace()` 静默不命中，负控样本等于「没变异过」，断言
+// `notEqual(broken, hostCode, '替换没命中')` 就会红。
+//
+// 症状是「CI 全绿、本机全红」：.github/workflows/*.yml 全部 runs-on
+// ubuntu-latest，Linux 检出是 LF，针必然命中；只有 Windows 开发机炸。
+// 2026-10-02 本机 `npm.cmd run gates` 实测：1444 个用例里就它 1 个红。
+//
+// 教训（与 email-job-runtime-singleton 那两处同源）：**跨行字符串针必须
+// 对行尾归一化**，否则判据的实际有效性取决于检出机器的换行配置。
+const hostSrc = fs.readFileSync(HOST, 'utf8').replace(/\r\n/g, '\n')
 
 /** 去掉注释（判据不能被源码里的说明文字满足）。 */
 export function codeOnly(src) {
