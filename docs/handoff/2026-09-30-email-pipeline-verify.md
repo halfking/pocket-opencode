@@ -7211,6 +7211,115 @@ case strings.HasPrefix(rest, "export/"):  // 前缀
 
 ---
 
+## §7de 分类 / 清理两个写操作端点：0% → 可证，并查出两条会静默失效的语义（2026-10-02）
+
+`backend/internal/server/server_email_write_ops_test.go`，8 个测试函数。
+
+选这两个文件的原因：它们比发票那组更危险，因为**改数据**。classify 把分类结果
+写回 `emails` 行，purge 软删邮件**并删掉磁盘上的正文缓存**。接线错一个字符的代价
+是「邮件被误分类」或「正文文件被删」，而两者都不会报错。
+
+### 覆盖率（本轮实测）
+
+| 函数 | 之前 | 现在 |
+|---|---|---|
+| `handleEmailClassify` | 0.0% | **92.9%** |
+| `classifyOneEmail` | 0.0% | **100.0%** |
+| `classifyViaKxmemory` | 0.0% | **77.8%** |
+| `classifyViaGateway` | 0.0% | **67.8%** |
+| `emailClassifyModel` | 0.0% | **80.0%** |
+| `firstNonEmptyStr` | 0.0% | **100.0%** |
+| `handleEmailPurge` | 0.0% | **90.5%** |
+
+文件级：`server_email_classify.go` 0% → **51.5%**（34/66）；
+`server_email_classify_gateway.go` → **39.1%**（36/92）；
+`server_email_purge.go` 0% → **61.9%**（13/21）。
+`internal/server` 整包 44.7% → **45.4%**。
+
+### 【待拍板】`cfg.LLMModel` 对邮件分类是**无效配置**
+
+`emailClassifyModel`（`server_email_classify_gateway.go:107`）取网关
+`PreferredModels` 的第一项，`cfg.LLMModel` 只是兜底。而
+`defaultLLMGatewayState()` 在**没有任何运行时配置**时也会把
+`opencode.DefaultLLMGatewayPreferredModels` 整份填进 `PreferredModels`，
+那是**非空的硬编码默认**。于是：**默认部署下 `cfg.LLMModel` 这条兜底永远走不到**，
+分类模型实际由网关 preferredModels 决定（当前是 `glm-5.2`）。
+
+实测方式：我在回退用例里断言「模型 = cfg.LLMModel」直接转红，拿到的是 `glm-5.2`。
+已由 `TestEmailClassifyModel_PrefersGatewayOverCfg` 钉住 —— 这条钉住很重要，
+因为该列表同时是 auto 模式的降级链顺序（`config_writer.go:53` 的注释明说了），
+**改列表会静默换掉邮件分类模型，且改之前不会红**。
+
+是否要让 `cfg.LLMModel` 真正生效，是产品语义，不擅自改。
+
+### 【待拍板】显式指定 ids 会被**静默截断**成「ids ∩ 最新 ≤20 页」
+
+`handleEmailClassify` 的过滤是「先 `ListUnclassifiedScoped(limit)` 取**最新一页**
+（`ORDER BY e.date DESC LIMIT ≤20`），再用 `CapClassifyIDs(ids, limit)` 建的
+allow 集合去取交集」（`server_email_classify.go:55-72`）。后果：
+
+- 指定 1 封**很老的**未分类邮件 → `classified: 0`、无错误、无提示。
+- 不指定 ids → 正常分类最新 20 封，`remaining` 正确（实测 25 封 → 分类 20、剩 5）。
+
+需求上 classify 是「自动归纳整理」的入口，不报错但没整理，运维很难发现。
+已由 `TestClassify_ExplicitIDsAreIntersectedWithNewestPage` 把当前行为钉住
+（并附「行为已变请更新本用例」的提示）。要不要改成真按 ids 取，是待拍板项。
+
+### 负控（实测）
+
+1. 把 ids 过滤关掉（`len(body.IDs) > 0 && false`）
+   → `TestClassify_ExplicitIDsAreIntersectedWithNewestPage` 转红。**这一条顺带量出了
+   blast radius**：指定 1 封邮件会变成**分类 20 封完全不相关的邮件**。
+2. 把 purge 的 `if s.dataDir != ""` 反过来并换成空 dataDir
+   → `TestPurge_DeletesCachedBodyFiles` 转红（正文缓存没删）。
+3. 把 `classifyOneEmail` 的 `if s.kxmemory != nil` 换成 `if true`
+   → 见下，这条**第一次没转红**。
+
+### 负控 3 不转红的原因（第三种：结论本身错了）
+
+我把负控 3 对准了 `TestClassify_FallsBackToGatewayWhenKxmemoryFails`，结果**全绿**。
+排查后确认：该用例本来就把 `kxmemory` 设成了 fake，所以
+`if s.kxmemory != nil` 本来就是 true，这个变异对它是 **no-op**。
+
+改查 `TestClassify_ExplicitIDsAreIntersectedWithNewestPage`（那个 Server 只有
+`llm`、`kxmemory` 为 nil）→ **直接 nil pointer panic**。所以 nil 守卫**是**被覆盖的，
+只是我一开始挑错了用例。
+
+这也是「不转红不等于判据太松」的又一例：先怀疑结论，比先改判据更省事。
+
+### 顺带钉住的三件事
+
+1. **kxmemory 优先于网关**（`TestClassify_PrefersKxmemoryOverGateway`）。重要是因为
+   `POCKET_KXMEMORY_BASE_URL` 没配，生产上 kxmemory 这条腿**从未跑过**；只验
+   「调不通时退回网关」不足以说明「调得通时它是对的」。
+2. **分类结果的 `EmailID` 取自请求、忽略分类器响应里自带的 id**
+   （`classifyViaKxmemory` 的 `out := classifyResultJSON{EmailID: it.ID}`）。
+   我最初断言反了（以为取自响应），转红后读代码才发现 —— 这是**更安全**的行为：
+   分类器认错了邮件也不会把结果写到别人的行上。fake 故意返回
+   `"from-kxmemory"` 就是为了钉住这一点。
+3. **purge 的越权不变量**：换成别的 user 的 claims 打同一端点，实测 `purged: 0`、
+   正文缓存文件保留、原邮件未标记；再用本人 claims 打则 `purged: 1`。
+   走的是真 handler（claims 注入 request context，与 `requireAuth` 一样），
+   不是直接调 store —— 后者只能验 SQL 的 WHERE，漏掉「handler 传错 userID」
+   这类更常见的接线错误。走真 handler 的代价是必须再验一次本人能删成功，
+   否则「越权删不掉」可能只是「端点根本没在工作」。
+
+### 仍然没覆盖（诚实记录）
+
+- `classifyViaGateway` 的错误分支：LLM 报错、模型输出不可解析、`SetClassification`
+  写库失败。写库失败需要构造 store 故障，本轮没做。
+- `classifyViaKxmemory` 的「空结果」分支（`resp.Results` 为空）。
+- purge 的 `SoftDeleteEmailsScoped` 报错分支。
+
+### 回归
+
+`internal/server` 全包 14.7s，**只剩那两个既有失败**
+（`TestTaskWriteGuardBlocksPlainMemberPatch/Delete`），无新增失败。
+两个生产文件（`server_email_classify.go` / `server_email_purge.go`）在负控后
+`git diff --numstat` 为空，逐字节验过。
+
+---
+
 ## §7cz 【需求 6/7】邮件的增量同步**永远退化成全量拉取**，而它的「正确」是靠这个 bug 换来的（2026-10-02）
 
 需求 7「在邮件窗口查看各类邮件」的 UI 链路本身是完整的，我逐段验过：
