@@ -945,3 +945,161 @@ pocketd（`wt-maildeploy`，早 11 分钟启动），脚本连的是那个**旧�
 
 **4. `eval-asr-accuracy.py` 文件名带连字符，不能 `import`**，必须用
 `importlib.util.spec_from_file_location` 按路径加载。直接 import 会语法报错。
+
+---
+
+## §16 继续本机验证：又撞出一个 P0，并补齐两条未测分支（2026-10-01 23:55）
+
+§15 修完切分之后继续做本机验证，扩了三块：全量后端测试、race 检测、
+以及把 `full.go` 剩下的一条分支（连续讲话 → 25 秒硬切）也用真语音走一遍。
+
+### §16.1 又撞出一个 P0：30s WriteTimeout 把 STT 端点的响应整个掐掉（提交 `2985cfe`）
+
+`POST /api/stt/transcribe-full` 服务端耗时超过 **30 秒**时，**响应一个字节都发不出去**。
+
+决定性对照（同一份 79.2s 语料、同一引擎，只改 ASR 端点的人为延迟）：
+
+| 白名单 | 客户端实测 | 后端日志 |
+| --- | --- | --- |
+| 有豁免 | 完成 **76.0s**，收到完整结果，CER_norm 5.5% | `[SLOW] ... - 200 (1m16.0s)` |
+| 无豁免 | **curl exit 52（Empty reply from server）** | `[SLOW] ... - 200 (1m50.5s)` |
+
+机制：Go 在读完请求头时就给连接定了写 deadline = now + WriteTimeout
+（`cmd/pocketd/main.go:1304` 的 30s）。handler 在那之后才算出结果、才开始写，
+deadline 早已过期，服务器直接关连接。`longLivedPathMiddleware` 本来就是干这个的，
+但白名单里只有 SSE 与网关控制面，`/api/stt/*` 全都不在。
+
+**为什么难查**（三个伪装叠加，这一节值得单独记住）：
+
+1. 后端日志写着 200 —— 它记的是 handler 的产出，**不是网络层是否送达**；
+2. 客户端拿到的是 EOF / Empty reply，**不是 504**，看不出是超时；
+3. 卡在 30 秒边界附近，**时好时坏**：同一份输入 27.95s 成功、30.17s 失败。
+
+影响面不止 transcribe-full：`/api/stt/transcribe-incremental`（90s）、
+`/api/stt/transcribe`（120s）、`/api/stt/probe`（120s）、`/api/stt/discover`（90s）
+的内部超时上限全部远超 30s。在真实部署里（云端 ASR + 手机网络），
+「一场会议转写超过 30 秒」是**常态**而不是边角情况。
+
+测试的关键点：**不能用 `httptest.NewServer`**（它默认没有 WriteTimeout，
+测出来永远是「慢请求也能拿到响应」——这正是这个 bug 能活到现在的原因）。
+新测试自己起 `&http.Server{WriteTimeout: 150ms}` 跑在真 TCP 上，并且带一条
+**对照组**（`/api/stt/config` 不在白名单，必须仍然被掐断），
+否则「加了白名单所以好了」和「WriteTimeout 根本没生效」会一起绿。
+负控：删掉白名单三行后转红，报错正是生产症状本身（`Get "...": EOF`）。
+
+### §16.2 补齐硬切分支：连续讲话 vs 句间有停顿
+
+§15 验的语料句间有 0.4–1.2s 停顿，走的是静音切分。另一条分支
+（**全程讲话、找不到静音点 → 每 25 秒硬切**）此前只用纯音调验过。
+
+造语料时踩了个坑：第一版直接首尾相接拼 8 段，**结果 10 段全是 `silenceCut=true`**
+—— Windows SAPI 自己每段句末就带静音，根本没测到硬切。必须**裁掉每段首尾静音**
+再拼，才得到 3 段、全部 `silenceCut=false`、边界精确落在 25.00s。
+
+同一批 9 句话、同一引擎（small）：
+
+| 语料 | 切分 | 段数 | CER_strict | CER_norm |
+| --- | --- | --- | --- | --- |
+| 句间有停顿 | 静音切（句界对齐） | 10 | 14.7% | **5.5%** |
+| 连续讲话 | 25s 硬切（劈句中） | 3 | 16.0% | 6.8% |
+
+**诚实的解读**：硬切的代价比预想的小，约 1.3 个百分点的 CER_norm。
+所以「优先在静音处切」是**锦上添花而不是生死攸关** —— §15 里那个
+「142% → 5.5%」的数字来自有缺陷的度量口径，不能再引用。
+硬切真正的问题仍是结构性的：3 段里有 2 句被跨段劈开，下游做会议纪要时更难处理。
+
+### §16.3 换模型复验：切分修复与模型无关
+
+同一份 79.2s 语料、**完全相同的 10 段边界**，只换引擎：
+
+| 引擎 | CER_strict | CER_norm | 段数 | 覆盖/丢失/重复 |
+| --- | --- | --- | --- | --- |
+| faster-whisper small | 14.7% | **5.5%** | 10 | 100% / 0 / 0 |
+| faster-whisper base | 20.2% | 11.8% | 10 | 100% / 0 / 0 |
+
+段边界逐字节相同是必然的：`SplitWAV` 是纯信号处理函数，与引擎无关。
+这也说明 §15 的切分修复不是对某个模型的过拟合。
+
+### §16.4 全量后端测试：7 个包失败，全部与本任务无关
+
+`go test -count=1 -p 2 ./internal/...`：**47 个包 ok，7 个包 FAIL**。
+逐个查过原因，**没有一个与 STT 有关**（本轮只碰 `internal/stt` 与 `internal/server`）：
+
+| 包 | 失败原因 | 性质 |
+| --- | --- | --- |
+| `internal/agent` | 测试写 `fake-pi.sh` 拿去 exec，Windows 报 `%1 is not a valid Win32 application` | Unix-only 测试 |
+| `internal/email` | `TestWriteKeyAtomic` 断言文件 mode 0600，Windows 无 POSIX mode（got 666） | Windows 环境 |
+| `internal/email` | POP3 测试 socket 被本机中止 | Windows 环境 |
+| `internal/scheduledtask/executors` | `TestWorkItemReminderFallsBackWithoutPreferences` 夹具硬编码绝对日期 2026-09-30，已越过 24h 陈旧上限 | **定时炸弹**，见下 |
+
+最后一条是**预期之中的**：那批夹具写于 2026-09-30，当天只有 1 个红，
+其余几个当时才 20.5 小时，**跨过 24 小时后必然一起转红**。与本任务无关，
+但它会在 CI 上长期挂着，建议按「夹具用 `time.Now()` 派生」修掉。
+
+### §16.5 race 检测与前端
+
+- `go test -race ./internal/stt/... ./internal/server/...` 全绿（0 DATA RACE）。
+  需要先 `PATH` 里加 `C:\tools\w64devkit\w64devkit\bin` 并设 `CC`/`CGO_ENABLED=1`，
+  gcc 16.2.0 是现成的。
+- 前端 `node scripts/build-mobile.mjs android dev` 构建成功
+  （worktree 缺 `.env.android-dev`，从主工作区复制了一份，只含 `VITE_API_BASE`）。
+
+### §16.6 踩坑记录（都是「看起来像回归、其实不是」的类型）
+
+**1. `verify-stt.ps1` 一度报 15/6，疑似 §13 的修复被人回退。**
+实际是端口 18099 上跑着**另一个 worktree** 的 pocketd（`wt-maildeploy`，
+早 11 分钟启动），脚本连的是那个**旧二进制**。换到空闲端口后 21/0。
+→ 黑盒报回归时，先 `Get-NetTCPConnection -LocalPort <p> -State Listen`
+确认监听者是不是自己刚起的那个。**不要去 kill 别人的进程。**
+
+**2. `verify-stt-stream.ps1` 用 `-Port 18102` 会得到 10/12 的假失败。**
+该脚本的假上游端口是**硬编码**的 `$fakePort = 18102`，与 `-Port` 无关。
+传 18102 时 pocketd 与假上游抢同一端口，所有请求打错进程、返回空，
+于是 12 条断言连锁失败。复现确认：`-Port 18102` → 10/12，`-Port 18103` → 22/0。
+→ 这是个真实的易用性缺陷（脚本没有任何端口占用检查），建议把 `$fakePort`
+改成随 `$Port` 派生并在启动前探测占用。**本轮没有改这个文件** ——
+它当时正被并行会话编辑，避免覆盖对方未提交的 WIP。
+
+**3. `Invoke-WebRequest` 不能用来发长录音的 POST。**
+PowerShell 5.1 在这个请求上抛「connection was closed by the server」，
+而同时后端日志明明写着 200 —— 会把「服务端成功」误报成「链路失败」。
+`verify-stt-long-asr.ps1` 已改用 `curl.exe` + `--data-binary @file`。
+（先误以为是产品 bug，查了 `fullTranscribeTimeout = 10 分钟` 才发现不是。）
+
+**4. PowerShell 的 `cd` 不改变 .NET 的当前目录。**
+`cd X` 之后 `[System.IO.File]::ReadAllBytes('相对路径')` 仍然相对**进程**工作目录
+（即会话工作区），不是 PowerShell 的当前位置。表现为
+「文件明明在那儿却读不到」。→ 写文件/读文件一律用**绝对路径**。
+
+**5. 用 `-join "`r`n"` 重组行会把 LF 文件全变成 CRLF。**
+`gofmt -l` 随即把整个文件判为未格式化（`gofmt -d` 显示 2355 行全变）。
+Go 仓库的工作区是 LF。注入负控后要按原行尾写回。
+
+### §16.7 本机验证总账（本轮）
+
+| 项 | 结果 |
+| --- | --- |
+| `go vet` + `go test` stt/server | 全绿 |
+| `go test -race` stt/server | 全绿，0 DATA RACE |
+| `go test ./internal/...` | 47 ok / 7 FAIL（全部与本任务无关，见 §16.4） |
+| 黑盒 `verify-stt.ps1` | **21/0**（需换到空闲端口） |
+| 黑盒 `verify-stt-stream.ps1` | **22/0**（不能用 `-Port 18102`） |
+| 黑盒 `verify-stt-real-asr.ps1` | 8/8 段成功 |
+| 黑盒 `verify-stt-long-asr.ps1` | 静音切 22/0、硬切 22/0、76 秒长请求全链路通过 |
+| 纯静音幻觉检查 | 12s 纯静音 → 0 段 0 文本 |
+| `check-maestro-flows.mjs` | OK |
+| `vue-tsc --noEmit` | 干净 |
+| 前端 android dev 构建 | 成功 |
+| `node --test` | 899/900（唯一失败是 flashcards 的既有模块解析问题） |
+| 真机 adb | **仍 offline**，两条 Maestro 流与设备麦克风链路未能在真机跑 |
+
+### §16.8 未完成
+
+- **large-v3-turbo 权重仍在下载**（`deepdml/faster-whisper-large-v3-turbo-ct2`，
+  1.62 GB，hf-mirror 实测 0.17 MB/s，约需 3 小时）。设置页预置的
+  `openai/whisper-large-v3-turbo` 至今**没有本机实测数据**。
+  下载进度写在 `.verify-stt-data/dl-turbo.out.log`，分片在
+  `.verify-stt-data/models/faster-whisper-large-v3-turbo/model.bin.p*`。
+- 真机 adb 仍 offline（端口 5555 TCP 可通、协议握手不完成），
+  需用户在手机上解锁并重新确认 USB 调试授权。
+- `medium` / `large-v3` 档位未测（权重 1.5GB / 3.1GB，CPU 推理本机吃不消）。
