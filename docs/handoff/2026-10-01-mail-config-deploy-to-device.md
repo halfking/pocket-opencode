@@ -125,7 +125,53 @@ A4 3x3     count=1 skipped=0  invoices-a4-3x3-20261001-181824.pdf  157,059 bytes
 > **教训**：看到「同一个标题出现 N 次」不要直接判重复推送。
 > **先看 created_at 是否相同** —— 同秒 = 不同邮件，跨秒才可能是重复。
 
-## 3. 仍然卡住：adb 会话 offline（未完成）
+## 3. 腾讯系 IMAP 间歇性挂 80s（现象已定位到「只在腾讯系发生」，根因未定位）
+
+**现象**：`POST /api/emails/sync` 或 scheduler 轮询时，**只有腾讯系两个账户**会挂满 80s：
+
+```
+[email/fetcher] imap login huangxutao@kxpms.cn failed: in response: cannot read tag:
+    read tcp 192.168.31.20:53479->36.158.243.217:993: i/o timeout — trying POP3 fallback
+[email/fetcher] huangxutao@kxpms.cn sync trace total 1m20.136s
+```
+
+**分布（18099 实例全量日志）**：kxpms 20 次、QQ 7 次、**三个 163 账户 0 次**。
+挂死全部发生在**每小时的 `:59` 分**（18:03:59 / 18:07:59 / … / 18:42:59），
+与 `pollLoop` 的 1 分钟 ticker 对齐。下一分钟往往立刻恢复正常（959ms / 513ms）。
+
+**80s 的构成**：`imapIdleTimeout=60s` 打断挂住的读 + POP3 降级预算耗尽，
+所以总时长 ≈ 60 + 20 = 80s。超时机制本身按设计工作。
+
+### 已排除的五个方向（都做过对照，不是推理）
+
+| 假设 | 实验 | 结果 |
+|---|---|---|
+| 凭证错 | 直连 TLS + `LOGIN` | 617ms `a1 OK Success login ok` ✅ 凭证有效 |
+| 某个 IP 有问题 | 4 个 IP 逐个直连 LOGIN | 全部 608–701ms 成功，含挂死时用的 `36.158.243.217` ✅ |
+| 服务端限流 | 连续 6 次快速 LOGIN | 全部 173–259ms 成功 ✅ |
+| 并发压力 | 5 账户并发 LOGIN | 全部 47–681ms 成功 ✅ |
+| 两个实例抢连接 | 停掉 18100 隔离实例后观察 4 分钟 | 仍挂（18:46:59 QQ 挂 80s，18:47:40 恢复 513ms）❌ 假设不成立 |
+
+另外排除了进程侧：18099 进程 CPU 12.5s / 内存 60MB / 993 端口 Established 连接 **0 条**
+（无 goroutine/连接泄漏）。
+
+### 尚未定位的部分
+
+**只在腾讯系发生，且直连完全正常** —— 说明差异在 go-imap 客户端与 pocketd 的
+交互上，而非网络或账号。已排除的还有：`sendClientID`（失败点在 LOGIN 之前，
+`ID` 在 LOGIN 之后才发）、`ListEmailsSince` 切片错位（两切片同 query 严格对齐）。
+
+**建议的下一步**（需要能反复复现的环境）：
+1. 给 `f.login` 加逐步打点（`Capability` / `Login` 分开计时），
+   确认是卡在 TLS 后首个读，还是 LOGIN 应答本身；
+2. 挂死时抓 `netstat -ano` 看该连接是否已 ESTABLISHED 且无在途数据；
+3. 对照试验：把 `imapDialWithTimeout` 换成不带 `deadlineConn` 的裸连接，
+   看是 `deadlineConn` 干扰了 go-imap 的读写时序，还是纯服务端行为。
+
+> 影响面有限：80s 上界有生效（不会无限挂），下一分钟自动恢复，
+> 5 个账户整轮同步通常 1.5–2.9s。**不阻塞部署，但会让偶发轮次变慢。**
+
+## 4. 仍然卡住：adb 会话 offline（未完成）
 
 **现象**：`adb connect 192.168.31.19:5555` 返回 `already connected`，
 但 `adb devices` 始终是 `offline`；`ping` 通、`Test-NetConnection` 到 5555 也 **True**，
@@ -155,11 +201,11 @@ $adb='C:\Users\86133\AppData\Local\Android\platform-tools\adb.exe'
 powershell -ExecutionPolicy Bypass -File scripts\install-apk-to-device.ps1
 ```
 
-## 3b. 另外两项卡在**外部凭证**，不是实现缺失
+## 5. 另外两项卡在**外部凭证**，不是实现缺失
 
 这两项我已确认链路存在、缺的只是配置，因此**无法自行验证**，需要你提供。
 
-### 3b.1 飞书推送（目标：发票发到飞书 / 共享台账）
+### 5.1 飞书推送（目标：发票发到飞书 / 共享台账）
 
 需要：
 
@@ -178,7 +224,7 @@ Windows 下解析不到 `~/workspace`，也不存在）。
 > `code=0`）。**未验证的只剩「发送消息到指定群」**，因为它需要 CHAT_ID。
 > 应用还需开通「查看、评论、编辑和管理电子表格」权限，否则报 1310213。
 
-### 3b.2 重要邮件提醒的 AI 分类（目标：对其它重要邮件进行提醒）
+### 5.2 重要邮件提醒的 AI 分类（目标：对其它重要邮件进行提醒）
 
 提醒链路**本身是通的**：通知中心有 53 条 `email.important`，真实数据可查。
 但触发条件是 `importance='high'`，而 `importance` 由 kxmemory 写入。启动日志明写：
@@ -196,7 +242,7 @@ Email scheduler started (fetch_enabled=true, kxmemory=false, ...)
 > 「这批邮件确实不重要」和「邮件根本没被分类过」。这正是 handoff §7k 补
 > `remindersUnclassified` 计数要解决的问题，现在它把缺口如实暴露出来了。
 
-## 4. 恢复后要做的事
+## 6. adb 恢复后要做的事
 
 1. `adb reverse tcp:18099 tcp:18099`，确认 App 能登录。
 2. 打开 App 的邮箱设置页，触发需求 8 的账户同步（登录后自动跑一次），
