@@ -4483,6 +4483,111 @@ ENVS_LOADER 默认 = $HOME/workspace/ai-native-tools/envs/loader.sh
 
 ---
 
+## §7bv 给飞书出站客户端补测试，**当场抓出一个真 bug**：`content` 多包了一层（2026-10-02）
+
+需求 3（发票文件发飞书）与需求 4（重要邮件提醒）这两条，线上都因为缺配置而
+**从未真正执行过一次**（`POCKET_FEISHU_INVOICE_CHAT_ID` / `POCKET_KXMEMORY_BASE_URL`
+未设）。我此前把它们记为「已实现、只是缺外部条件」——这个说法**过于乐观**：
+实现存在 ≠ 实现正确。给它们补上测试之后，第一轮就红了。
+
+### 缺口本身
+
+`internal/feishu/client.go` 的三个出站方法此前**一个测试都没有**：
+
+```
+TenantAccessToken   client.go:64    → 需求 3/4 的前提
+UploadFile          client.go:98    → 需求 3「发票文件发到飞书」
+SendMessage/Text/File/InvoiceFile  client.go:147/175/181/192
+```
+
+而同包的 `sheet_test.go` **已经**用 `httptest.NewServer` 覆盖了表格 API，
+`client.go:30-31` 也明写「BaseURL 默认 https://open.feishu.cn；**测试可覆盖**」——
+基础设施是现成的，只是没人写。
+
+### 抓到的 bug
+
+```go
+// 修前
+payload, _ := json.Marshal(map[string]string{"content": contentText})
+body, _ := json.Marshal(map[string]any{..., "content": string(payload)})
+```
+
+飞书 `im/v1/messages` 的 `content` 字段要的就是**消息体本身**（text 时是
+`{"text":"..."}`，file 时是 `{"file_key":"..."}`），只不过它要求这个消息体以
+**字符串**形式出现 —— 也就是**只双重编码一次**。原代码把它包成
+`{"content": contentText}` 再塞进去，于是线上实际发出的是：
+
+```json
+{"receive_id":"...","msg_type":"text","content":"{\"content\":\"{\\\"text\\\":\\\"...\\\"}\"}"}
+```
+
+飞书解出来看到的是一个叫 `content` 的**未知字段**。后果：
+
+- `SendText` → 消息正文为空（需求 4 的提醒等于没发）
+- `SendFile` / `SendInvoiceFile` → 拿不到 `file_key`，文件消息发不出去（需求 3 直接废）
+
+**`SendText` 和 `SendInvoiceFile` 对真实飞书 API 必然失败。**
+
+### 为什么这个 bug 能活下来
+
+只有一个原因：**这条路径从未被执行过**。需求 3/4 在线上都是关的，
+`Available()` 返回 false，上层走共享文档兜底（§5b），
+`UploadFile` / `SendMessage` 一次都没被调到。绿灯全来自与它无关的包。
+
+这就是「单测全绿 ≠ 功能可用」的另一个实例：这次的盲区不在构造器，
+而在**整条调用链从未被触发**。
+
+### 修法与验证
+
+一行：把 `content` 直接设为 `contentText`，不再包内层。
+
+```
+修后：go test ./internal/feishu/ -count=1  → ok 1.290s（12 个新用例全绿）
+```
+
+**负控**（把 `payload` 那行塞回去，其余不动）：
+
+```
+client_test.go:317: content.text = "", want 发票已归档
+client_test.go:354: file_key not threaded into the message: map[content:{"file_key":"key_42"}]
+FAIL
+```
+
+精确复现、且只有这两条红。恢复修复后 `payload` 在文件中出现 **0 次**。
+
+### 新增用例锁住的行为
+
+| 用例 | 锁住的语义 |
+|---|---|
+| `TenantAccessToken_PostsAppCredentialsAndParsesSnakeCase` | 路径 + app_id/secret + 飞书特有的 snake_case 响应 |
+| `TenantAccessToken_CachesUntilExpiry` | 缓存真生效（3 次调用只打 1 次飞书） |
+| `TenantAccessToken_UnconfiguredFailsWithoutRequest` | 无凭据直接失败，**且不发请求** |
+| `UploadFile_SendsMultipartWithAuthAndReturnsFileKey` | `Bearer` 头 + `file`/`file_type=pdf`/`file_name` 三字段 + 字节原样 |
+| `UploadFile_EmptyFileKeyIsAnError` | code≠0 与空 key 都必须报错 |
+| `SendMessage_DoubleEncodesContentAndSetsReceiveIDType` | **本次 bug 的哨兵**：`content` 解码后仍须是合法 JSON |
+| `SendFile_UploadsThenSendsFileMessage` | 先传后发，file_key 必须串进消息 |
+| `SendInvoiceFile_UsesChatIDAndPassesNameThrough` | 需求 3 入口固定 `chat_id` |
+| `SendMessage_HTTPErrorIncludesBody` | 非 200 必须把响应体带进 error |
+| `TenantAccessToken_ConcurrentCallersHitEndpointOnce` | Client 声称并发安全，16 个 goroutine 只打 1 次 |
+
+### 回归
+
+```
+go build ./...                 → 0
+go vet ./...                   → 0
+go test ./internal/feishu/...  → ok 1.427s
+go test ./internal/email/...   → ok 81.549s / rules ok 0.536s
+```
+
+### 仍未验证（边界要说清楚）
+
+mock server 能证明**协议层**——URL、鉴权头、multipart 结构、双重编码。
+证明不了：真实群权限、真实文件大小限制、事件回调解密与验签的联调、
+以及「发票真的出现在群里」。后者仍然需要
+`POCKET_FEISHU_INVOICE_CHAT_ID` + 回调部署。**不能说「需求 3 已修好」。**
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
