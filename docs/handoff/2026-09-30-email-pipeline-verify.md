@@ -2548,12 +2548,24 @@ npm run gates  →  ✗ 在第一步 typecheck 就断
 | `test:native` | ✅ 0 | | |
 | `test:email` | ✅ 0 | **本轮新增的步骤，绿** | ✅ |
 | `check:vm-gaps` | ✅ 0 | | |
-| `check:i18n` | ✅ 0 | | |
-| `check:icons` | ✗ 1 | `graphic_eq` 在字体子集里合不出连字（`src/features/settings/SettingsView.vue`） | ❌ 设置页图标 |
+| `check:i18n` | ✅ 0 | | | 
+| `check:icons` | ✅ 0 | **2026-10-02 已修**：`graphic_eq` 字形缺失，字体子集重建。详见 §7cw | ❌ 设置页图标 |
 
-**3 个红步骤全是既有问题，没有一个与邮件有关。**
+> **2026-10-02 更新**：本表是历史快照（当时 3 红）。`typecheck` / `build:gate`
+> 的 `recording-voice-prompt` 缺失已在 §7bt 解决（从 `895d950` 恢复该文件），
+> `check:icons` 已在 §7cw 解决。**现在整条 `gates` 首跑 exit=0**，
+> 7 个步骤全绿，`test:email` 242 用例在门禁里真实执行。
+
+**3 个红步骤全是既有问题，没有一个与邮件有关。**（历史结论）
 
 ### 必须说明的后果：`test:email` 目前是**不起作用**的
+
+> **2026-10-02 已作废**：下面这段说的短路问题**已经不存在了**。
+> `typecheck` / `build:gate` 的 `recording-voice-prompt` 缺失在 §7bt 解决后，
+> `gates` 第一次完整跑完，**`test:email` 的 242 个用例在门禁里真实执行**
+> （实测 `# pass 242 / # fail 0`），`a0266a4` 那次改动从此**真的有保护力**。
+> 保留原文是为了留痕：当时说「不能说邮件测试已纳入门禁所以有保护」是对的，
+> 现在才可以这么说。
 
 `gates` 是 `&&` 串联，`typecheck` 一红就短路，**`test:email` 根本轮不到执行**。
 
@@ -2563,7 +2575,7 @@ npm run gates  →  ✗ 在第一步 typecheck 就断
 
 `check:icons` 的修法脚本自己都写明了：
 `node scripts/build-material-symbols-subset.mjs` 重建字体后提交产物。
-属录音/设置页的事，**未擅自处理**。
+~~属录音/设置页的事，**未擅自处理**。~~ **2026-10-02 已按此修完，见 §7cw。**
 
 ### 对「本分支能否合并」的影响
 
@@ -5450,6 +5462,82 @@ JS 引擎、sql.js 取行成本、以及真实邮件字段比语料更长的情�
 - 真机 Android WebView 跑同一探针（`wasm_exec.js` 的宿主 API 在 WebView 里不同）
 - sql.js 取行 → wasm 的那一段（现在测的是「已有 JS 值 → wasm」）
 - 语料是合成数据（8 种主题轮转），真实邮件的 snippet/HTML 长度分布未采样
+
+---
+
+## §7cw 【gates 最后红点】`graphic_eq` 缺字形：已提交的字体子集比源码旧 8.5 小时（2026-10-02）
+
+`check:icons` 是 `gates` 七步里最后一个红的。修完这条，整条门禁**首跑 exit=0**。
+
+### 现象与两个判据为什么打架
+
+```
+[icons]  ✅ 所有声明式图标都在字体子集内          ← check-icon-subset.mjs 绿
+[icon-font] ❌ 1 个名字在字体里合不出连字：graphic_eq  ← check-icon-font.mjs 红
+```
+
+两个脚本问的不是同一个问题，这不是矛盾：
+
+- `check-icon-subset.mjs` 比对**名字集合**（扫源码收集的名字 vs FALLBACK），
+  **从没打开过字体**，所以字体陈旧它照样绿。
+- `check-icon-font.mjs` 打开**已提交的 woff2**，用 harfbuzz 对每个名字做真实
+  连字成形。它自带正反对照（`light_mode` 必须合 / `zzzznotanicon` 必须不合），
+  判据是「`名字 + 空格` 成形后恰好 2 个字形」。
+
+即 `graphic_eq` 在**上游完整字体**里是能合字的（所以被判为真图标名，不是误报），
+只是**不在我们裁出来的子集里**。
+
+### 因果链（git 实测，不是推测）
+
+```
+82233060  2026-09-30 20:07:10  feat(learning,task) ...   ← 字体子集最后一次重建
+2340f3fd  2026-10-01 04:36:37  recover(stt): 恢复 STT 文件并补回四处前端接入
+                                                ↑ graphic_eq 在这里引入
+git merge-base --is-ancestor 2340f3fd 82233060 → exit 1（非祖先）
+```
+
+STT 功能在 `SettingsView.vue:60` 加了
+`<span class="material-symbols-outlined">graphic_eq</span>`，
+比字体最后一次重建**晚 8.5 小时**，而产物没跟着重建。门禁从那一刻起就一直红。
+
+### 验证走的是非破坏性路径
+
+`build-material-symbols-subset.mjs` 提供 `POCKET_ICON_FONT_OUT`、
+`check-icon-font.mjs` 提供 `POCKET_ICON_FONT` —— 先重建到临时文件、
+拿门禁测新字体，绿了才覆盖正式产物（避免每次试验都去动那个 3.5 MB 的已跟踪文件）。
+
+先确认采集规则收得到它（`--list`，脚本注释说这是排查该类问题的唯一可靠入口）：
+
+```
+[subset] 工程用到 + 兜底共 138 个图标
+graphic_eq          ← 在清单里
+```
+
+所以不是采集规则漏扫，**纯粹是产物没重建**。重建到临时文件后门禁绿，
+再落到 `src/assets/fonts/material-symbols-outlined.woff2`
+（3614020 字节 / 3.45 MB，比旧产物略小），`check:icons` exit=0。
+
+### 整条 gates 首跑全绿
+
+```
+test:email   # pass 242  # fail 0        ← 在门禁里真实执行
+check:vm-gaps ✅ 命中 0
+check:i18n   ✅ 9 份语言文件 key 齐平
+check:icons  ✅ 全部图标名在字体里都能合成连字
+GATES exit=0
+```
+
+这一条的意义超出设置页：**`test:email` 从此在门禁里真的有保护力**。
+在此之前 `gates` 因 `typecheck` 短路，242 个邮件用例根本没被执行过
+（§7bt 解决 `recording-voice-prompt` 缺失后才有第一次完整执行，
+本节是补上最后一个红点）。
+
+### 一条可复用的教训
+
+「同名门禁一个绿一个红」时，**先确认两个判据分别问的是什么**，
+别急着认定其中一个坏了。这次是名字清单绿、字体实测红，
+差值本身就是答案（清单里有、字体里没有 = 产物陈旧），
+不需要猜、不需要改采集规则、也不需要改判据。
 
 ---
 
