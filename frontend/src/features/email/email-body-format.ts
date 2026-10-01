@@ -333,24 +333,54 @@ export function resolveCidImages(html: string, parts: MimePart[]): string {
   if (!byId.size) return html
 
   let budget = MAX_TOTAL_INLINE_BYTES
-  return html.replace(
+  const inline = (cid: string): string | null => {
+    const part = byId.get(normalizeCid(safeDecodeCid(cid)))
+    if (!part || !part.contentType.startsWith('image/')) return null
+    // 图片字节是二进制的，不能按文本解码；base64 直接取，7bit/8bit 才转码。
+    const isBase64 = part.encoding.toLowerCase() === 'base64'
+    const raw64 = isBase64
+      ? part.body.replace(/\s+/g, '')
+      : b64FromBytes(base64ToBytesSafe(part.body))
+    if (!raw64) return null
+    // base64 长度 ≈ 原始字节 * 4/3
+    const approxBytes = Math.floor((raw64.length * 3) / 4)
+    if (approxBytes > MAX_INLINE_IMAGE_BYTES || approxBytes > budget) return null
+    budget -= approxBytes
+    return `data:${part.contentType};base64,${raw64}`
+  }
+
+  // 1) 带引号的 src="cid:..."（原始实现覆盖的形态）
+  let out = html.replace(
     /(src\s*=\s*)(["'])\s*cid:([^"'\s>]+)\s*\2/gi,
     (whole, prefix: string, quote: string, cid: string) => {
-      const part = byId.get(normalizeCid(safeDecodeCid(cid)))
-      if (!part || !part.contentType.startsWith('image/')) return whole
-      // 图片字节是二进制的，不能按文本解码；base64 直接取，7bit/8bit 才转码。
-      const isBase64 = part.encoding.toLowerCase() === 'base64'
-      const raw64 = isBase64
-        ? part.body.replace(/\s+/g, '')
-        : b64FromBytes(base64ToBytesSafe(part.body))
-      if (!raw64) return whole
-      // base64 长度 ≈ 原始字节 * 4/3
-      const approxBytes = Math.floor((raw64.length * 3) / 4)
-      if (approxBytes > MAX_INLINE_IMAGE_BYTES || approxBytes > budget) return whole
-      budget -= approxBytes
-      return `${prefix}${quote}data:${part.contentType};base64,${raw64}${quote}`
+      const data = inline(cid)
+      return data ? `${prefix}${quote}${data}${quote}` : whole
     },
   )
+
+  // 2) CSS 的 url(cid:...)。营销/通知类 HTML 邮件的背景图大量走
+  //    <td style="background-image:url(cid:logo@corp)">。style 属性在
+  //    email-detail-format.ts 的 ALLOWED_ATTR 白名单里，净化会放行，
+  //    但 cid: 对 WebView 依然不可解析 —— 少了这一步就是「正文在、图全空」。
+  //    这里刻意不区分引号有无：CSS 里 url() 的引号是可选的，两种都要覆盖。
+  out = out.replace(
+    /(url\(\s*)["']?\s*cid:([^"')]+?)\s*["']?\s*(\))/gi,
+    (whole, prefix: string, cid: string, close: string) => {
+      const data = inline(cid)
+      return data ? `${prefix}${data}${close}` : whole
+    },
+  )
+
+  // 3) 无引号的 src=cid:...。HTML 允许属性值不带引号，部分发信方就这么写。
+  out = out.replace(
+    /(\ssrc\s*=\s*)cid:([^\s>]+)/gi,
+    (whole, prefix: string, cid: string) => {
+      const data = inline(cid)
+      return data ? `${prefix}${data}` : whole
+    },
+  )
+
+  return out
 }
 
 /** cid 里的 %xx 是 URL 编码，但 @ 与 . 常常裸露；非法转义时退回原串。 */
