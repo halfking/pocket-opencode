@@ -6134,3 +6134,89 @@ api/websocket.ts:77         const delay = nextReconnectDelay(this.reconnectAttem
 | 删除后 `npx vue-tsc --noEmit` | **EXIT=0** |
 | `check:dead-api` | `api/ 下 34 个模块，导出 100 个符号`，完全无人使用 **8**，基线 8 条，**EXIT=0** |
 
+
+### 4.63 BUG-AT：密码箱在 Android 上**完全不可用**，界面却展示成一个正常可用的解锁表单
+
+#### 4.63.1 取证（三方，不靠读代码猜）
+
+1. **Android 侧确实没有实现。** `frontend/android/app/src/main/java/.../plugins/` 下 15 个插件，
+   **没有 `KeystorePlugin.java`**。唯一含 "Keystore" 字样的 `BiometricAuthPlugin.java`
+   用的是 Android 原生 `KeyStore` API（生物识别密钥），与 Capacitor 的 `Keystore` 插件无关。
+2. **设备上确实没注册。** 活体问 Capacitor：
+   ```
+   Capacitor.Plugins = [BiometricAuth, App, AppSettings, TextToSpeech, StatusBar, SystemBars,
+     LocalNotifications, AiStreamKeepalive, Sherpa, BackgroundMic, SplashScreen, EmailFetch,
+     Camera, Haptics, CapacitorCookies, WebView, Filesystem, Share, CapacitorHttp, CapacitorSQLite]
+   hasKeystore: false
+   ```
+3. **三个方法全部 reject：**
+   ```
+   isVaultInitialized => REJECTED: "Keystore" plugin is not implemented on android
+   unlockWithPassword  => REJECTED: "Keystore" plugin is not implemented on android
+   listEntries         => REJECTED: "Keystore" plugin is not implemented on android
+   ```
+
+#### 4.63.2 根因：「优雅降级」只覆盖了 12 个方法里的 1 个
+
+`native/keystore.ts` 文件头写的设计意图是
+「UI 用 `isVaultInitialized()` 的可用性来 gate 密码箱功能」。
+但**插件缺失时 `registerPlugin` 不会返回 false，而是 reject**，
+所以这个 gate 只在**探针那一个方法**上成立：
+
+```ts
+// 修复前
+async function probe() {
+  try { initialized.value = await keystore.isVaultInitialized() }
+  catch {
+    initialized.value = isCryptoReady()   // 降级：把 initialized 置为真
+    if (!initialized.value) initError.value = '主密码尚未设置（登录后自动初始化）'
+  }
+}
+async function unlockBio() { try { ... } catch (e) { initError.value = e.message } }  // 无降级
+async function load()       { try { ... } catch (e) { initError.value = e.message } }  // 无降级
+```
+
+⇒ `initialized` 为真 → 模板走 `v-else` 分支 → 正常显示「解锁密码箱 / 指纹·面容解锁」；
+用户一点就撞上**原始英文技术错误**。
+更糟的是另一条降级路径把原因说成**「主密码尚未设置」**——
+与真实原因（插件压根不存在）毫无关系，**把人和后续排查都带偏**。
+
+#### 4.63.3 修复前后真机对照（同一个设备、同一条路由）
+
+| | 修复前（09:01 前的 APK） | 修复后（09:01:57 构建 / 装机） |
+|---|---|---|
+| `#/vault` 页面 | `🔐 解锁密码箱 / 指纹·面容解锁 / 解锁` | `🔐 当前平台未提供密码箱原生插件，功能不可用。` |
+| 点「指纹/面容解锁」 | 页面出现 `"Keystore" plugin is not implemented on android` | 无可点的操作（表单不再出现） |
+
+**改动**：
+
+- `native/keystore.ts`：新增 `isNotImplementedError(e)`（识别 Capacitor 的
+  `"X" plugin is not implemented on <platform>`）与 `isKeystoreAvailable()`（探针一次，
+  失败即视为不可用）。**只回答「能不能用」，不解释「为什么」**——后者交给调用方说人话。
+- `features/vault/VaultListView.vue`：`probe()` 先问平台可用性；不可用就
+  `supported=false` + 如实说明 + **不再渲染解锁/设置表单**（模板 `v-if="initError"`
+  本就会盖住两个表单）。另外两处 `initError.value = e.message` 改为
+  「插件缺失 → 如实说明；其它失败 → 通用文案」，**原始技术错误不再上屏**。
+
+**刻意没做**：没有去实现原生插件，也没有为此新建 `vault` i18n 命名空间
+（该视图整体是硬编码中文，属已知 i18n 欠账，另行处理）。
+**本轮只让 App 对自己「没有什么」保持诚实**，不假装功能存在。
+
+#### 4.63.4 验证
+
+| 项 | 结果 |
+|---|---|
+| `npx vue-tsc --noEmit` | **EXIT=0** |
+| 重建 + 装机 | vite exit=0 / cap sync ok / gradle BUILD SUCCESSFUL / install Success |
+| 真机 `#/vault` | 显示「当前平台未提供密码箱原生插件，功能不可用。」，**无解锁表单** |
+| 真机点解锁 | 不存在可点的解锁操作（修复前会显示原始英文错误） |
+| `npm run gates` | **EXIT=0** |
+
+#### 4.63.5 本轮的工具坑（又一次）
+
+CDP 探针里页内 `await` 的 promise 若**永不 settle**，`Runtime.evaluate` 的
+`awaitPromise:true` 会一直等 ⇒ 整条探针 `__frozen__`（连栽两次）。
+App 本身没事（pid 存活、logcat 无 JS 错误），是探针写法的问题。
+**修法：页内所有 await 都套 `Promise.race` 超时兜底**，保证一定 settle。
+判断依据要能区分「App 挂了」和「我的探针写错了」——先看 pid 与 logcat，别直接归因给产品。
+

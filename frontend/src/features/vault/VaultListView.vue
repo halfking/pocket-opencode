@@ -86,7 +86,7 @@ import { onMounted, ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { EmptyState } from '../../components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
-import { keystore } from '../../native/keystore'
+import { keystore, isKeystoreAvailable, isNotImplementedError } from '../../native/keystore'
 import * as vaultStore from './vault-store'
 import * as syncStore from './sync-store'
 import { isCryptoReady } from '../../native/crypto'
@@ -112,11 +112,35 @@ const newEntry = reactive({
   title: '', username: '', url: '', category: 'login', password: '', notes: '',
 })
 
+// BUG-AT（2026-10-01 真机取证）：Android 模块里**没有** KeystorePlugin.java，
+// Capacitor.Plugins 19 个插件里也没有 Keystore，所有方法 reject
+// `"Keystore" plugin is not implemented on android`。
+//
+// 原实现只对**探针那一个方法**做了 crypto 降级，initialized 因此为真、界面照常显示
+// 「解锁密码箱 / 指纹·面容解锁」，而其余 11 个方法仍直接抛错——
+// 用户点一下就撞原始英文技术错误。更糟的是另一条降级路径把原因说成
+// 「主密码尚未设置」，与真实原因（插件不存在）完全无关，把人和排查都带偏。
+//
+// 现在：先问「这个平台到底能不能用」，不能用就**如实说不可用**，
+// 宁可少一个入口，也不给一个必然失败的操作。
+const UNSUPPORTED_MSG = '当前平台未提供密码箱原生插件，功能不可用。'
+
+const supported = ref<boolean | null>(null)
+
 async function probe() {
+  if (!(await isKeystoreAvailable())) {
+    supported.value = false
+    initialized.value = false
+    unlocked.value = false
+    // 注意：这里绝不能写「主密码尚未设置」——那与真实原因无关。
+    initError.value = UNSUPPORTED_MSG
+    return
+  }
+  supported.value = true
   try {
     initialized.value = await keystore.isVaultInitialized()
   } catch {
-    // cap-keystore 不可用（Web/dev）：用本地 crypto 降级
+    // 插件在、但探针失败：这时才轮到本地 crypto 降级
     initialized.value = isCryptoReady()
     if (!initialized.value) {
       initError.value = '主密码尚未设置（登录后自动初始化）'
@@ -138,7 +162,9 @@ async function unlockBio() {
     unlocked.value = true
     await load()
   } catch (e: any) {
-    initError.value = e.message
+    // BUG-AT：插件缺失时 e.message 是 `"Keystore" plugin is not implemented on android`
+    // 这种原始英文技术错误，直接显示等于把内部实现扔给用户。
+    initError.value = isNotImplementedError(e) ? UNSUPPORTED_MSG : '解锁失败，请重试'
   }
 }
 
@@ -157,7 +183,7 @@ async function load() {
   try {
     entries.value = await vaultStore.listEntries()
   } catch (e: any) {
-    initError.value = e.message
+    initError.value = isNotImplementedError(e) ? UNSUPPORTED_MSG : '读取密码箱失败'
   }
 }
 

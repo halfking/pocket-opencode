@@ -112,3 +112,36 @@ export const keystore: CapKeystorePlugin = new Proxy(
     },
   },
 )
+
+/** Capacitor 对「插件没实现」给出的错误文案，形如
+ *  `TypeError: "Keystore" plugin is not implemented on android`。 */
+const NOT_IMPLEMENTED_RE = /plugin is not implemented on/i
+
+/** 这次失败是不是「插件压根没实现」。 */
+export function isNotImplementedError(e: unknown): boolean {
+  return NOT_IMPLEMENTED_RE.test(String((e as { message?: string })?.message ?? e))
+}
+
+/**
+ * 原生插件在本平台**是否真的可用**。
+ *
+ * 为什么需要它（BUG-AT，2026-10-01 真机取证）：
+ *   文件头写的设计意图是「UI 用 isVaultInitialized() 的可用性来 gate 密码箱功能」，
+ *   但**插件缺失时 registerPlugin 不会返回 false，而是 reject**
+ *   `"Keystore" plugin is not implemented on android`。
+ *   于是「优雅降级」只对**探针那一个方法**成立，
+ *   其余 11 个方法仍直接抛错 —— 用户点一下就撞原始英文技术错误。
+ *   真机实测：Capacitor.Plugins 19 个插件里没有 Keystore，
+ *   三个方法全部 REJECTED，界面把原文直接显示给用户。
+ *
+ * 这里只回答「能不能用」，不解释「为什么不能用」——后者交给调用方按上下文说人话。
+ */
+export async function isKeystoreAvailable(): Promise<boolean> {
+  try {
+    await (await load()).value.isVaultInitialized()
+    return true
+  } catch {
+    // 探针失败一律按不可用处理：宁可少显示一个入口，也不要给一个必然失败的操作。
+    return false
+  }
+}
