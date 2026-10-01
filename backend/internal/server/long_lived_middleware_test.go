@@ -105,7 +105,18 @@ func TestLongLivedPathSurvivesServerWriteTimeout(t *testing.T) {
 		payload      = `{"ok":true}`
 	)
 
-	for _, p := range []string{"/api/email/pipeline/run", "/api/emails/invoices/harvest"} {
+	// 这里必须**硬编码**端点，不能遍历 longLivedPaths：遍历只能证明
+	// 「名单里的都能过」，而这个用例要证明的是「具体某条路径能过」。
+	// 遍历的话，往名单里加错一个前缀也会跟着变绿。
+	//
+	// 2026-10-01 新增 /api/emails/invoices/extract：它命中发票但缺开票日期时
+	// 会只为一封邮件拉 IMAP 原文补日期，实测单封就超过 30s，客户端拿到
+	// 「连接被意外关闭」而服务端已把发票行建好（操作成功、界面报错）。
+	for _, p := range []string{
+		"/api/email/pipeline/run",
+		"/api/emails/invoices/harvest",
+		"/api/emails/invoices/extract",
+	} {
 		t.Run(p, func(t *testing.T) {
 			srv := newWriteTimeoutServer(t, writeTimeout, longLivedPathMiddleware(
 				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -70,16 +70,46 @@ func ParseInvoiceXML(raw []byte) *XMLInvoiceFields {
 	}
 	fields := &XMLInvoiceFields{}
 	hits := 0
+	// pendingXMLField 是「容器节点」的聚合值：先记下，等更具体的子节点
+	// 走完之后再兜底应用（子节点没提供同名字段时才用）。
+	type pendingXMLField struct {
+		label string
+		text  string
+	}
+	var pending []pendingXMLField
 	var walk func(n xmlNode)
 	walk = func(n xmlNode) {
 		tag := n.XMLName.Local
-		if label := labelMatch(tag); label != "" {
-			applyXMLField(fields, label, strings.TrimSpace(deepText(n)))
-		}
 		// attribute 形式：<Item AmountTotal="123.00" .../>
+		//
+		// 属性先于元素处理（2026-10-01 端到端实测发现）：属性是**该节点自身**
+		// 的值，而元素形式在带子节点时是聚合值。同一节点两者都命中时，属性
+		// 更精确，不该被后面的元素覆盖。
 		for _, attr := range n.Attrs {
 			if label := labelMatch(attr.Name.Local); label != "" {
 				applyXMLField(fields, label, strings.TrimSpace(attr.Value))
+			}
+		}
+		// 元素形式的值在**叶子节点优先**。
+		//
+		// 原来对任何命中标签的节点都用 deepText 聚合全部后代，于是
+		// <Seller><销售方名称>云服务开票中心</销售方名称>
+		//        <纳税人识别号>91330100MA2XXXXXXX</纳税人识别号></Seller>
+		// 里的 <Seller> 本身也命中 "seller" 词典，deepText 把两个子节点的
+		// 文本拼成 "云服务开票中心91330100MA2XXXXXXX"；而 applyXMLField 是
+		// 先到先得不覆盖，父节点先赢 → **销售方字段被税号污染**。
+		// 后果直击需求 3：文件名里的「对方单位」变成一串税号，对账认不出人。
+		//
+		// 改法：只在**没有子节点**（或子节点都不带文本）时才用聚合值；
+		// 有实质子节点时把聚合权留给更具体的子节点。
+		if label := labelMatch(tag); label != "" {
+			if txt := strings.TrimSpace(deepText(n)); txt != "" {
+				if !hasTextChild(n) {
+					applyXMLField(fields, label, txt)
+				} else {
+					// 容器节点：登记聚合值，但排在子节点之后才生效。
+					pending = append(pending, pendingXMLField{label: label, text: txt})
+				}
 			}
 		}
 		for _, c := range n.Children {
@@ -87,6 +117,11 @@ func ParseInvoiceXML(raw []byte) *XMLInvoiceFields {
 		}
 	}
 	walk(root)
+	// 容器节点的聚合值兜底：子节点没给出同名字段时才用（例如 XML 只有
+	// <Seller>供应商甲</Seller> 而没有 <销售方名称>）。
+	for _, p := range pending {
+		applyXMLField(fields, p.label, p.text)
+	}
 	// 统计命中：金额或发票号至少拿到一个才算有效解析
 	if fields.InvoiceNo != "" {
 		hits++
@@ -179,6 +214,22 @@ type xmlNode struct {
 	Attrs    []xml.Attr `xml:",any,attr"`
 	Text     string     `xml:",chardata"`
 	Children []xmlNode  `xml:",any"`
+}
+
+// hasTextChild 判断节点是否有**带非空文本的直接子节点**。有的话，说明
+// 聚合值会把多个子字段（如 销售方名称 + 纳税人识别号）拼在一起，此时应
+// 让更具体的子节点各自出值。
+func hasTextChild(n xmlNode) bool {
+	for _, c := range n.Children {
+		if strings.TrimSpace(c.Text) != "" {
+			return true
+		}
+		// 孙子节点带文本也算（例如 <Seller><Info><Name>x</Name></Info></Seller>）
+		if strings.TrimSpace(deepText(c)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // deepText 聚合节点及其所有后代的 chardata。字段值常包在一层结构里

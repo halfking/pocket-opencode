@@ -979,6 +979,17 @@ var longLivedPaths = []string{
 	"/api/stt/transcribe", // 含 -full / -incremental（前缀已覆盖）
 	"/api/stt/probe",      // 试转，含真实上游调用
 	"/api/stt/discover",   // 网关候选逐个探测
+
+	// 手动对单封邮件做发票提取。它命中发票但缺开票日期时，会**只为这一封**
+	// 拉一次 IMAP 原文补日期（handleEmailInvoiceExtract:235），实测这一封就
+	// 能超过 30s。
+	//
+	// 2026-10-01 实测的故障：客户端拿到「基础连接已经关闭：连接被意外关闭」、
+	// 一个字节都没有（正是本段注释描述的「服务端成功 / 客户端空响应」），
+	// 而服务端其实已经把发票行建好了（summary 里 count=1、pending=1）——
+	// 也就是说**操作成功了，界面却报错**，用户会以为没提取而重复点击。
+	// 根因就是漏了这条白名单。
+	"/api/emails/invoices/extract",
 }
 
 func longLivedPathMiddleware(next http.Handler) http.Handler {

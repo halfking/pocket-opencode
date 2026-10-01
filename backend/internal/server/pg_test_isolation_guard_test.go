@@ -65,7 +65,7 @@ var pgSafeWithoutIsolation = map[string]string{
 	// 需要两个显式开关才会运行：POCKET_DIAG_*=1 且 POCKET_REAL_MAIL_DSN。
 	// 第三个开关的测试文件永远 skip。
 	"internal/email/diag_pop3_backfill_test.go": "需 POCKET_DIAG_POP3_BACKFILL=1 + POCKET_REAL_MAIL_DSN 双重开关",
-	"internal/email/diag_pop3_invoice_test.go":   "需 POCKET_DIAG_POP3=1 + POCKET_REAL_MAIL_DSN 双重开关",
+	"internal/email/diag_pop3_invoice_test.go":  "需 POCKET_DIAG_POP3=1 + POCKET_REAL_MAIL_DSN 双重开关",
 
 	// 需要 build tag `greenmail`，`go test ./...` 永远不会编译它；
 	// 且只删自己 acctID 名下的行。
@@ -74,8 +74,23 @@ var pgSafeWithoutIsolation = map[string]string{
 	// 下面两个是**有意**指向真实 schema 的只读诊断探针——指向真实库正是
 	// 它们的目的，所以不能要求它们自建隔离 schema。两者均无任何写语句
 	// （INSERT/UPDATE/DELETE/DROP/CREATE/TRUNCATE 一个都没有），且门控极严。
-	"internal/email/diag_kxpms_test.go": "只读真实库探针：无写语句；需 POCKET_DIAG_ACCOUNT + POCKET_DIAG_ALLOW=1 + POCKET_REAL_MAIL_DSN + POCKET_DIAG_DATA_DIR",
+	"internal/email/diag_kxpms_test.go":    "只读真实库探针：无写语句；需 POCKET_DIAG_ACCOUNT + POCKET_DIAG_ALLOW=1 + POCKET_REAL_MAIL_DSN + POCKET_DIAG_DATA_DIR",
 	"internal/email/spam_realdata_test.go": "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（目的就是读真实 schema）",
+
+	// 下面三个是 2026-10-02 合入 feat/mail-config-deploy 时被本护栏判红的，
+	// 逐个核过后确认安全，理由可核查：
+	//   · 只用 pool.Query，**一次 Exec 都没有**（2026-10-02 全文件扫
+	//     INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT：0 命中）；
+	//   · 门控变量是 POCKET_REAL_MAIL_DSN，与测试用的 POCKET_TEST_POSTGRES_DSN
+	//     是**两个不同的变量**，而 CI（backend-pg.yml）只设后者，
+	//     所以这三个文件在任何 CI 与常规 go test 中都 skip；
+	//   · 它们要的就是「读真实 schema」，所以显式把 search_path 指向
+	//     POCKET_REAL_MAIL_SCHEMA（缺省 opencode_pocket），自建隔离 schema
+	//     反而会让诊断「查了个空库」并输出「数据没了」的假结论
+	//     ——ledger_realdata_diag_test.go 的注释记的就是这个坑。
+	"internal/email/diag_schema_present_test.go":    "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN + POCKET_DIAG_SCHEMA（目的是查真实 schema 在不在）",
+	"internal/email/ledger_realdata_diag_test.go":   "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（核对台账合计口径在真实数据上的变化）",
+	"internal/email/reminder_notified_diag_test.go": "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN（核对 remindersSent 计数在真实数据上的来源）",
 
 	// vendored 第三方代码，需 -tags=integration + IDENTITY_SHADOW_DSN。
 	"third_party/identity-go/shadow/dao_test.go": "vendored 第三方，需 -tags=integration + IDENTITY_SHADOW_DSN",

@@ -32,13 +32,33 @@ type LedgerPublisher interface {
 //
 // 合计单独占一行（而不是只在文字里提一句），这样对账时能直接在表里排序/求和。
 // 列顺序与 WriteInvoiceSummaryDocs 的 CSV 表头保持一致，方便两处对照。
+//
+// **合计只统计 status == "downloaded" 的发票**（2026-10-01 修正）。
+// 原来是无条件 `total += inv.Amount` 累加全部记录。当前真实数据下两种口径
+// 结果相同（3 张：failed 0 + failed 0 + downloaded 3500 = 3500），所以这个
+// 问题一直没被暴露。
+//
+// 但库里确实存在 status=failed 却残留脏字段的记录（两张 QQ Wallet：
+// `seller="name:"`、`invoiceNo="Issuance"`）—— 那些字段是从邮件的错误段落
+// 里抽出来的（handoff §7o 记的同一批根因），金额当时恰好是 0 才没出事。
+// 若将来某张 failed 发票带着一个非零但错误的金额，它会被静默算进合计，
+// 让对账总额虚高，而没有任何地方会提示。
+//
+// 注意：**不计入合计 ≠ 从列表消失**。failed/pending 的行照样在表里、状态列
+// 照样写明，用户依然看得到「有几张没拿到」—— 这正是合计能用来对账的前提。
+// 若改成只在表里留已下载的，用户会以为「一共就这些」，总额反而更不可信。
 func LedgerRows(invs []Invoice) (rows [][]any, total float64) {
 	rows = make([][]any, 0, len(invs)+2)
 	rows = append(rows, []any{
 		"费用类型", "对方单位", "金额", "币种", "发票号", "开票日期", "状态", "文件名", "来源邮件",
 	})
 	for _, inv := range invs {
-		total += inv.Amount
+		// 判据与 server 层 handleEmailInvoiceSummary 的 downloaded 计数
+		// 完全一致（status 属于已下载态 **且** FilePath 非空），否则界面上
+		// 「已下载 N 张」和「合计 X 元」会指向两批不同的发票。
+		if (inv.Status == "downloaded" || inv.Status == "filed") && inv.FilePath != "" {
+			total += inv.Amount
+		}
 		rows = append(rows, []any{
 			inv.Category, inv.Seller, inv.Amount, currencyOrDefault(inv.Currency),
 			inv.InvoiceNo, inv.InvoiceDate, inv.Status, inv.FileName, inv.Subject,

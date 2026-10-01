@@ -65,6 +65,10 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(com.kaixuan.opencode.pocket.plugins.BackgroundMicPlugin.class);
         registerPlugin(com.kaixuan.opencode.pocket.plugins.EmailFetchPlugin.class);
         registerPlugin(com.kaixuan.opencode.pocket.plugins.AiStreamKeepalivePlugin.class);
+        // Document：Android WebView 不渲染 PDF（真机实测全白），内置 PdfRenderer 逐页
+        // 栅格化预览 + MediaStore 静默落盘。必须显式注册，否则前端 registerPlugin('Document')
+        // 拿不到实现，会静默回落到 <iframe> 空白预览。
+        registerPlugin(com.kaixuan.opencode.pocket.plugins.DocumentPlugin.class);
         super.onCreate(savedInstanceState);
         // edge-to-edge：让 WebView 内容延伸至状态栏之下。Android WebView 不提供
         // env(safe-area-inset-top)（iOS 才有），所以这里把系统 insets 换算成 CSS px

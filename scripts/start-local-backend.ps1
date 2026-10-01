@@ -29,7 +29,21 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-if (-not $DataDir) { $DataDir = Join-Path $root "logs\pocketd-data" }
+# DataDir defaults to backend\data, NOT logs\pocketd-data.
+#
+# 2026-10-01: POCKET_DATA_DIR used to be inert on the backend (it was only read
+# by loadCompanionOverlay to find companion.env), so the real data directory was
+# always filepath.Dir(POCKET_DB_PATH) = Dir("./data/pocket.sqlite") resolved
+# against -WorkingDirectory, i.e. <root>\backend\data -- where the live
+# chat_agents.sqlite and email_master.key actually live. POCKET_DATA_DIR now
+# decides it for real (config.ResolveDataDir), so keeping the logs\ default
+# would have silently moved this instance to an empty directory: a fresh
+# email_master.key would be generated and every account would fail with
+# "decrypt credential: cipher: message authentication failed".
+#
+# The old default was simply never in effect, so aligning it with reality
+# changes nothing for existing instances and makes the two env vars agree.
+if (-not $DataDir) { $DataDir = Join-Path $root "backend\data" }
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $bin = Join-Path $root "backend\.verify-bin\pocketd.exe"
 $goSrc = Join-Path $root "backend\internal\server\server_assistant.go"
@@ -63,6 +77,14 @@ $env:POCKET_POSTGRES_DSN = "postgresql://postgres@127.0.0.1:5432/postgres?sslmod
 $env:POCKET_PG_SCHEMA   = $Schema
 $env:POCKET_HTTP_PORT   = "$Port"
 $env:POCKET_DATA_DIR    = $DataDir
+# Keep POCKET_DB_PATH inside the same directory. It no longer opens a SQLite
+# file (Postgres is the store); config.ResolveDataDir falls back to
+# Dir(DBPath) whenever POCKET_DATA_DIR is unset, so pointing both at the same
+# place means the instance stays self-consistent no matter which one wins.
+# This is the fix for "dataDir depends on the directory you launched from",
+# which showed up as invoice 404s and A4 export 400s (see handoff 2026-10-01
+# section 2.3).
+$env:POCKET_DB_PATH     = Join-Path $DataDir "pocket.db"
 $env:POCKET_DEV_AUTH    = "true"
 # Without this the process refuses to start:
 #   "POCKET_REDCLAW_ADMIN_URL must be set (or set POCKET_AUTH_LEGACY_ONLY=true

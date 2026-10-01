@@ -514,6 +514,7 @@ type syncTrace struct {
 	email string
 	start time.Time
 	last  time.Time
+	cur   string // 最近一次 step() 进入的阶段名（用于给「卡死的阶段」署名）
 }
 
 func newSyncTrace(email string) *syncTrace {
@@ -524,16 +525,32 @@ func newSyncTrace(email string) *syncTrace {
 // step 记录进入某个阶段。若上一个阶段耗时超阈值，说明卡点就在它后面那一步。
 func (t *syncTrace) step(name string) {
 	now := time.Now()
-	if d := now.Sub(t.last); d >= syncStepWarn {
-		log.Printf("[email/fetcher] %s SLOW step before %-16s took %s (total %s)",
-			t.email, name, d.Round(time.Millisecond), now.Sub(t.start).Round(time.Millisecond))
+	if d := now.Sub(t.last); d >= syncStepWarn && t.cur != "" {
+		log.Printf("[email/fetcher] %s SLOW step %-16s took %s (total %s)",
+			t.email, t.cur, d.Round(time.Millisecond), now.Sub(t.start).Round(time.Millisecond))
 	}
 	t.last = now
+	t.cur = name
 }
 
 // done 收尾，把总耗时也记一笔（即使全程不慢，便于和 pipeline 的外层耗时对照）。
+//
+// 必须在 done 里补报「最后一个阶段」的耗时：step() 只在**进入下一阶段**时
+// 结算上一阶段，而失败路径是直接 return 的（Sync:login 失败 → 不再调
+// tr.step("ID")），于是**恰好卡在失败点上的那段时间永远不会被记录**。
+//
+// 2026-10-01 实测：腾讯系账户 login 挂满 80s，日志里只有
+// `imap login ... failed` 和 `sync trace total 1m20.143s`，
+// `SLOW step` 一条都没有（计数为 0）——最该被记录的那 80s 恰恰是空的。
+// 这也是当初「Sync 里一个日志都没有、只能到包外复刻整条路径二分定位」的
+// 同一个坑，打点加了却仍然漏掉了失败路径。
 func (t *syncTrace) done() {
-	log.Printf("[email/fetcher] %s sync trace total %s", t.email, time.Since(t.start).Round(time.Millisecond))
+	total := time.Since(t.start).Round(time.Millisecond)
+	if d := time.Since(t.last); d >= syncStepWarn && t.cur != "" {
+		log.Printf("[email/fetcher] %s SLOW step %-16s took %s (total %s) — 该阶段以失败/提前返回结束",
+			t.email, t.cur, d.Round(time.Millisecond), total)
+	}
+	log.Printf("[email/fetcher] %s sync trace total %s", t.email, total)
 }
 
 func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
