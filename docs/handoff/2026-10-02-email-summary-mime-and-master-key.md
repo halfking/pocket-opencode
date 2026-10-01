@@ -120,17 +120,20 @@ key 一丢，5 个真实邮箱的凭据全部作废、必须重新录入 —— 
 
 ## 4. 已知缺口（如实记录，本轮未修）
 
-1. **服务端还剩 23 封脏摘要**，形态是
-   「多 part 正文里夹着 Content-* 头」：`looksLikeMIMEStructure` 判为真后
-   直接返回空串，而 `InsertEmail` 的 `ON CONFLICT` 在新摘要为空时保留旧值，
-   于是旧 MIME 摘要留在库里不更新。要彻底修需要把整段 `BODY[TEXT]` 当作一个
-   MIME 文档解析（合成外层 boundary），风险比已修的三条大，没动手。
+1. **服务端还剩 23 封脏摘要** —— **2026-10-02 04:5x 已查清：不是代码缺陷。**
+   见 [`2026-10-02-remaining-dirty-snippets-are-not-a-code-bug.md`](./2026-10-02-remaining-dirty-snippets-are-not-a-code-bug.md)。
+   当前 `DeriveSnippet` 对真实 rawMIME 形态处理是正确的（实测剥掉首行 boundary
+   后 `ParseMIMEMessage` 成功、QP 折行正确还原、摘要干净可读）。这批是修复前
+   写入的历史脏数据，且 `body_path` 全空——**原文从未落盘，无法就地重算**。
+   自愈路径已就位（`store.go:515` 的 `ON CONFLICT` 刷新 snippet），重置
+   `last_synced_uid` 重新同步即可刷干净；因会真的登录真实邮箱，未擅自执行。
 
    > 2026-10-02 02:40 更正：原文写「全部集中在 account `-2`」是**错的**。
    > 实测这 23 封横跨 account `-1`/`-2`/`-3`/`-5`（`每日信用管家`、
    > `企业微信邮箱登录提醒`、OpenAI 验证码等）。已在客户端收件箱顶部肉眼
    > 复现（`logs/emu-88-classify-stalled.png` 前两条即脏摘要），
-   > 属服务端已知缺口，不是客户端镜像的新回归。
+   > 属服务端历史脏数据，不是客户端镜像的新回归。
+
 
 2. ~~**客户端列表刷新后仍显示旧摘要**~~ —— **已于 `394ec6f` 修复**。
    > 原文的归因（「KeepAlive 不重渲 / `onMounted(load)` 只跑首挂载」）是**错的**：
