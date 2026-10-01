@@ -30,6 +30,27 @@ import (
 // asrNameRe 命中即视为 ASR 候选（配合 modality 一起判定）。
 var asrNameRe = regexp.MustCompile(`(?i)(asr|whisper|transcri|speech|audio|omni|voice)`)
 
+// strongASRRe 是**强 ASR 标记**：命中即说明这个模型确实做转写，
+// 优先级高于 ttsNameRe 的排除判定。
+//
+// 存在的理由是真实存在混合命名的模型（实测网关有 whisper-tts-hybrid 这类
+// ASR+TTS 双模态模型）。若只按「名字含 tts 就排除」，这类模型会被漏掉——
+// 而它恰恰是能用上的候选。反过来「名字含 tts 就全排除」会误杀，所以规则是：
+// 强 ASR 标记 > tts 排除 > 弱 ASR 标记。
+var strongASRRe = regexp.MustCompile(`(?i)(asr|whisper|transcri|speech-?to-?text|stt)`)
+
+// ttsNameRe 是 **TTS/音频生成**（合成）模型的排除名单。
+//
+// 为什么必须显式排除：asrNameRe 里有 `voice`，于是 mimo-v2.5-tts-voiceclone
+// （音色克隆）、mimo-v2.5-tts-voicedesign（音色设计）这类**合成**模型全部被
+// 误判成转写候选。后果有两个，都不是「多探一次」的小事：
+//  1. 白白消耗探测预算（网关限流 12 次/分钟，maxProbeCandidates=6），
+//     把真正可用的 ASR 候选挤出预算。
+//  2. 更糟的是它们**探测可能成功** —— TTS 端点收到音频能返回 200 与一段
+//     无关文本，于是设置页把一个 TTS 模型标成「转写可用」，用户选了它
+//     之后拿到的是垃圾。
+var ttsNameRe = regexp.MustCompile(`(?i)(tts|voice-?clone|voice-?design|voiceclon|voicedesign|speak|cosyvoice|fish-speech|f5-?tts|xtts)`)
+
 // GatewayModel 是网关 /models 里的一个条目。
 type GatewayModel struct {
 	ID       string `json:"id"`
@@ -39,10 +60,19 @@ type GatewayModel struct {
 
 // IsASRCandidate 判定一个网关模型是否值得探测。
 func IsASRCandidate(m GatewayModel) bool {
+	id := m.ID
+	// 强 ASR 标记优先：混合模型（whisper-tts-hybrid）必须保留。
+	if strongASRRe.MatchString(id) {
+		return true
+	}
+	// TTS 排除：纯合成模型不是转写候选，即使 modality=audio。
+	if ttsNameRe.MatchString(id) {
+		return false
+	}
 	if strings.EqualFold(strings.TrimSpace(m.Modality), "audio") {
 		return true
 	}
-	return asrNameRe.MatchString(m.ID)
+	return asrNameRe.MatchString(id)
 }
 
 // 探测结论。
@@ -79,10 +109,10 @@ func (c Candidate) Usable() bool { return c.Status == ProbeOK }
 
 // DiscoveryResult 是一次网关扫描的完整结论。
 type DiscoveryResult struct {
-	BaseURL    string      `json:"baseURL"`
-	TotalModels int        `json:"totalModels"`
-	Candidates []Candidate `json:"candidates"`
-	ScannedAt  int64       `json:"scannedAt"`
+	BaseURL     string      `json:"baseURL"`
+	TotalModels int         `json:"totalModels"`
+	Candidates  []Candidate `json:"candidates"`
+	ScannedAt   int64       `json:"scannedAt"`
 	// Error 非空表示连模型目录都没拉到（例如 key 无效）。
 	Error string `json:"error,omitempty"`
 }
@@ -163,6 +193,20 @@ func (c *DiscoveryCache) put(baseURL, apiKey string, r DiscoveryResult) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.data[cacheKey(baseURL, apiKey)] = cacheEntry{result: r, expires: c.now().Add(c.ttl)}
+}
+
+// Seed 直接写入一条已知结论，绕过探测。
+//
+// 两个正当用途，缺了它们相关代码就没法测：
+//  1. **测试**：真实网关的探测要出网且吃限流（12 次/分钟），单测必须能
+//     预置「某网关的候选全是 no_provider」这类结论，而不能真去探测。
+//  2. **运维预置**：网关侧已知结论（例如此前 604 个模型里一个 ASR 上游都没有）
+//     可以由运维侧写入，避免每次用户打开设置页都重新探一遍并再次吃到限流。
+//
+// 与 put 的区别：put 保留调用方传入的地址与 key 作为缓存键的输入；Seed 做
+// 同样的事，但显式声明为「外部注入」，便于将来加审计日志区分两者。
+func (c *DiscoveryCache) Seed(baseURL, apiKey string, r DiscoveryResult) {
+	c.put(baseURL, apiKey, r)
 }
 
 // Peek 返回缓存中的结论（不触发探测）。
@@ -453,7 +497,11 @@ func extractText(raw json.RawMessage) string {
 }
 
 // missingAudioRe 命中即认为「上游没收到音频」，返回的是幻觉文本而非转写。
-var missingAudioRe = regexp.MustCompile(`(?i)(no audio|not (?:see|receiv|receiv\w*|access|accessible)|didn'?t (?:receiv|get|hear)|cannot (?:access|listen|hear)|unable to (?:access|listen|hear)|can'?t (?:access|listen|hear)|没有(?:附上|收到|听到|音频|录音|文件)|未(?:收到|听到)|无法(?:访问|听到|读取)(?:音频|录音)|抱歉.{0,12}(?:没有|未)|please (?:re-?upload|upload|provide|send) (?:the |your )?(?:audio|recording|file))`)
+//
+// 口径说明：宁可放宽也不可漏拦——误拦的代价是给一条明确报错，漏拦的代价是
+// 把幻觉文本静默写进用户的会议记录。但放宽必须有边界，否则会误伤正常转写
+// （例如「附件里没有提到预算上限」），所以只收「明确指向音频/录音缺失」的措辞。
+var missingAudioRe = regexp.MustCompile(`(?i)(no audio|not (?:see|receiv|receiv\w*|access|accessible)|didn'?t (?:receiv|get|hear)|don'?t (?:see|receiv|get|hear)|cannot (?:access|listen|hear)|unable to (?:access|listen|hear)|can'?t (?:access|listen|hear)|没有(?:附上|收到|听到|音频|录音|文件)|未(?:收到|听到)|无法(?:访问|听到|读取)(?:音频|录音)|抱歉.{0,12}(?:没有|未)|please (?:re-?upload|upload|provide|send) (?:the |your )?(?:audio|recording|file))`)
 
 // LooksLikeMissingAudio 识别「200 但音频被丢弃」的幻觉回复。
 // 2026-10-01 实测网关 auto 模型：拿到 base64 音频后回答
@@ -492,12 +540,12 @@ func ToneWAV(sampleRate, durationMS int) []byte {
 	_ = binary.Write(buf, binary.LittleEndian, uint32(36+len(data)))
 	buf.WriteString("WAVEfmt ")
 	_ = binary.Write(buf, binary.LittleEndian, uint32(16))
-	_ = binary.Write(buf, binary.LittleEndian, uint16(1))  // PCM
-	_ = binary.Write(buf, binary.LittleEndian, uint16(1))  // mono
+	_ = binary.Write(buf, binary.LittleEndian, uint16(1)) // PCM
+	_ = binary.Write(buf, binary.LittleEndian, uint16(1)) // mono
 	_ = binary.Write(buf, binary.LittleEndian, uint32(sampleRate))
 	_ = binary.Write(buf, binary.LittleEndian, uint32(sampleRate))
-	_ = binary.Write(buf, binary.LittleEndian, uint16(1))  // block align
-	_ = binary.Write(buf, binary.LittleEndian, uint16(8))  // bits
+	_ = binary.Write(buf, binary.LittleEndian, uint16(1)) // block align
+	_ = binary.Write(buf, binary.LittleEndian, uint16(8)) // bits
 	buf.WriteString("data")
 	_ = binary.Write(buf, binary.LittleEndian, uint32(len(data)))
 	buf.Write(data)
@@ -509,8 +557,19 @@ func isNoProvider(status int, err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return status == http.StatusServiceUnavailable &&
-		(strings.Contains(msg, "no_candidate") || strings.Contains(msg, "no available provider"))
+	if status != http.StatusServiceUnavailable {
+		return false
+	}
+	// 2026-10-01 网关改了 503 的响应体形状：早先是 no_candidate，现在返回
+	//   {"error":{"alternatives":{"requested_model":"mimo-v2.5-asr",
+	//                             "task_type":"code","alternatives":[…]}}}
+	// 语义仍然是「这个模型没有上游 provider，附上它能用的备选」。只认
+	// no_candidate 会把它误判成 ProbeFailed，用户在设置页看到的就变成
+	// 不可解释的「探测失败」，而不是可行动的「网关无上游 provider」。
+	// requested_model + alternatives 一起出现才判，避免误伤别的 503。
+	return strings.Contains(msg, "no_candidate") ||
+		strings.Contains(msg, "no available provider") ||
+		(strings.Contains(msg, `"requested_model"`) && strings.Contains(msg, `"alternatives"`))
 }
 
 func providerDetail(status int, err error) string {
