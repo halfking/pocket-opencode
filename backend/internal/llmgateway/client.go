@@ -63,6 +63,22 @@ var discoveredFormats sync.Map // baseURL(normalized) -> string
 //     /v1/chat/completions 既不返结果也不返错误（连接挂死），此前无该上限时
 //     会让前端等满 60s；加 ResponseHeaderTimeout 后能 30s 内即触发 client
 //     错误，handler 再把错误作为 SSE error 事件写回。
+//
+// 已知代价（2026-10-03 审计记录，先记录不擅自改）：
+//
+//	ResponseHeaderTimeout 约束的是「响应头何时到达」，而**非流式**调用要等上游
+//	真正开始回包才发头。对推理模型（本项目网关自动路由到 glm-5.2）来说这很致命：
+//	它先把 token 花在 reasoning_content 上，正文 content 最后才吐
+//	（2026-10-02 实测：一句 63 字的总结，reasoning 用了 985 token）。
+//	于是任何给这类模型留了 >30s 预算的 handler，实际预算都被压到 30s——
+//	例如 handleNoteSummarize 的 `context.WithTimeout(r.Context(), 60*time.Second)`
+//	只有前 30 秒是真能用的，30~60 秒是死预算。
+//
+//	为什么没有直接调大：30s 是为上面那次挂死事故加的，调大会把「快速失败」
+//	换回来；虽然整体 Timeout 90s 仍在（不会无界挂死），但失败时间会从 30s
+//	变成最多 90s，前端体验上是退步。这个取舍需要人拍板。
+//	若将来决定调大，client_test.go 的 TestNewClient_TransportTimeouts 要同步改，
+//	并把上面的注释改成"为什么是当前这个数"。
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		BaseURL: normalizeBaseURL(baseURL),

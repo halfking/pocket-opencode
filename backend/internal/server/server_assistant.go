@@ -607,6 +607,17 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 
+	// 注意预算死区（2026-10-03 审计记录，见 llmgateway/client.go 的同名注释）：
+	// 这个 60 秒**并不真的可用**。非流式调用走 llmgateway.Client，而那个客户端
+	// 设了 `Transport.ResponseHeaderTimeout = 30s`——响应头要到上游真正开始回包
+	// 才发出。对本路由的模型（网关自动路由到 glm-5.2，**推理模型**，先把 token
+	// 花在 reasoning_content 上、正文最后才吐）来说，"开始回包"本来就可能晚于
+	// 30 秒。于是实际预算是 min(60s, 30s) = **30 秒**，30~60 秒这一段是死预算。
+	//
+	// 为什么先不改数值：30s 是 2026-08-31 为修「部分 model 收下请求既不回结果也
+	// 不回错误、前端等满 60s」刻意加的，有 client_test.go 锁定；把它调大会把那次
+	// 事故的快速失败换回来。整体 Timeout 仍是 90s，所以调大不会无界。
+	// 取舍要人拍板，故此处只把事实钉在注释里，别让它悄悄漂移。
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
