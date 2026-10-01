@@ -421,10 +421,15 @@ func (s *imapServer) handleFetch(tag, rest string, w *bufio.Writer) {
 		body = body[off:end]
 	}
 
-	// section 必须是客户端请求的那个：FetchBody 用的是
-	// `Specifier: imap.PartSpecifierText` ⇒ 响应写 BODY[TEXT]（可选带部分取）。
-	// 写成 `BODY[<0> UID 11]` 会被客户端报 "section-spec: expected ']'" ——
-	// 那是**响应格式**错，不是被测代码的缺陷。
+	// section 必须**原样回显**客户端请求的那个，不能写死。
+	//
+	//	FetchBody        请求 BODY.PEEK[TEXT]<0.64>  -> 响应 BODY[TEXT]<0>
+	//	FetchMessageRaw  请求 BODY.PEEK[]<0.8388608> -> 响应 BODY[]<0>
+	//
+	// 客户端 matchFetchItemBodySection 会比对 Specifier 与 Part：写死成
+	// BODY[TEXT] 时，`BODY[]` 的请求永远匹配不上，整封邮件取不回来。
+	// 写成 `BODY[<0> UID 11]` 则会被客户端报 "section-spec: expected ']'"
+	// —— 那是**响应格式**错，不是被测代码的缺陷。
 	//
 	// 部分取在**请求和响应里语法不同**，这是本文件最难的一个坑：
 	//
@@ -440,7 +445,7 @@ func (s *imapServer) handleFetch(tag, rest string, w *bufio.Writer) {
 	// 响应里 offset 必须回显：matchFetchItemBodySection 用
 	// `(cmd.Partial == nil) != (resp.Partial == nil)` 判不匹配，
 	// Size 反而**不能**回显（注释：not echoed back by the server）。
-	section := "TEXT"
+	section := requestedSectionSpec(rest)
 	partial := ""
 	if m := partialRe.FindStringSubmatch(rest); m != nil {
 		partial = "<" + m[1] + ">"
@@ -499,6 +504,21 @@ func parseSeqSet(rest string) []string {
 		}
 	}
 	return out
+}
+
+// bodySectionRe 匹配请求里的 BODY 取件项：`BODY[.PEEK][<spec>]`。
+// 捕获组 1 是可选的 `.PEEK`，组 2 是 section spec（可能为空，即 `BODY[]`）。
+var bodySectionRe = regexp.MustCompile(`(?i)BODY(\.PEEK)?\[([^\]]*)\]`)
+
+// requestedSectionSpec 从 FETCH 取件项里取出要回显的 section spec。
+//
+// 取不到就回退成 "TEXT"：那是 FetchBody 的用法，且总比空串更容易看出
+// 「回显失败」而不是「服务器没数据」。
+func requestedSectionSpec(rest string) string {
+	if m := bodySectionRe.FindStringSubmatch(rest); m != nil {
+		return strings.TrimSpace(m[2])
+	}
+	return "TEXT"
 }
 
 // partialRe 匹配 IMAP 部分取 `<offset.size>`。

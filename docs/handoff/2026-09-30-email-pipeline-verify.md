@@ -5945,6 +5945,86 @@ NEGCTL-1/2 转红前**曾经是绿的** —— 也就是说这一节的两个结
 
 ---
 
+## §7cm 0 覆盖清单：把「没测过」和「是死代码」分开（2026-10-02）
+
+`internal/email` 共 **96 个函数 0 覆盖**。这个数字本身没用——0 覆盖可能是
+「有真实调用方但没测」，也可能是「根本没人调用」。两者的处置完全相反。
+用覆盖率输出 + 全树引用计数把它们分开：
+
+- **A 类：0 覆盖且全树零引用**（名字在所有非测试 .go 里只出现 1 次 = 声明本身）
+
+      store.go:275   ListAccounts
+      store.go:1372  RevokeOAuthToken
+
+  两条都逐个 grep 复核过，全 `backend/` 树内确实只有声明行。
+  - `ListAccounts` 是 `ListAccountsScoped` 的无 scope 版本，而 `*Scoped`
+    才是这个代码库的约定（server 侧三处调用的全是 `ListAccountsScoped`）。
+    它只按 `user_id` 过滤、**没有 workspace 条件** —— 留着就是个跨工作区
+    越权的地雷。
+  - `RevokeOAuthToken` 的文档写着「Called only after we've already validated
+    that the failure is permanent」，但没人调。它的实际副作用是
+    `auth_type='password', enabled=FALSE` —— 也就是说 OAuth 令牌被吊销后
+    **没有任何代码禁用该账户**，只会一直失败下去。
+  - **我没有删它们**：删除是不可逆动作，且与 `folder_name`/`processed_at`
+    死列是同一类待决项。已列为新的待拍板项。
+
+- **B 类：0 覆盖但生产代码有真实调用方** —— 94 个，是「真未测」。
+
+## 顺带查了一个疑似越权，结论是**排除**
+
+`invoice_harvest.go:89` 的 `HarvestAll` 用的是**无 scope** 的
+`ListHarvestableInvoices`，而 `HarvestInvoices` 的注释明确写着要走 scoped
+清单「避免又走一遍无 scope 的 ListHarvestableInvoices（那会把别的 workspace
+的待采集发票也拉进来重试）」。看着像跨工作区泄露。
+
+**实际不是**：全树只有两处调用——
+- `pipeline.go:316`（调度器，本来就要处理所有账户，无 scope 正确）
+- `server_email_invoice.go:329` 的手动入口走的是 `HarvestInvoices` + scoped 清单。
+
+所以**没有**泄露。没有 bug，如实记录为「已排查、已排除」。
+
+## §7cn 补 `HarvestAll`：流水线第 4 步此前是**零执行证据**（2026-10-02）
+
+`HarvestAll` 是流水线第 4 步（发票采集，需求 2/3）的入口。它此前唯一的测试在
+`fetcher_greenmail_test.go:181`，而那个文件顶部是 `//go:build greenmail`。
+本机 Docker daemon 没起来 ⇒ **这一步在本机从未真正跑过**
+（覆盖率表里 `invoice_harvest.go:85 HarvestAll 0.0%`）。
+
+用 §7ci 的进程内 IMAP 服务器重写，绕开 Docker。新增
+`invoice_harvest_all_test.go`，7 个用例：未配置早退、只捞 new/pending、
+列库时截断的预算语义、重试耗尽收尾、Fetcher 缺失早退、空清单 no-op、
+以及一条真走 IMAP 拉原文的。
+
+**顺带把 IMAP 服务器的 section 回显改成原样回显**（`requestedSectionSpec`）：
+之前写死 `BODY[TEXT]`，而 `FetchMessageRaw` 请求的是 `BODY[]`，
+客户端 `matchFetchItemBodySection` 比对 Specifier，写死就永远匹配不上。
+
+### 五条负控，第三条又一次抓到我自己的错
+
+| 负控 | 注入 | 转红的用例 |
+|---|---|---|
+| NEGCTL-6 | 不在列库时截断 | `RoundBudgetTruncatesAtListTime` |
+| NEGCTL-7 | 捞取条件放宽成 `status <> 'filed'` | `OnlyPicksNewAndPending` |
+| NEGCTL-8 | 去掉空清单早退 | `HarvestInvoices_EmptyList`（既有） |
+| NEGCTL-9 | 让重试收尾永不命中 | `ExhaustedRetriesBecomeFailed` |
+| NEGCTL-10 | 捞取条件去掉 `pending` | `OnlyPicksNewAndPending` + `ExhaustedRetriesBecomeFailed` |
+
+**NEGCTL-9 第一版不转红**，而且是我写的用例本身有问题：我直接把那条
+「重试耗尽」的发票种在预算内，harvestOne 跑一遍就把它置成 failed 了
+（uid<=0 走 "no IMAP uid" 分支），收尾逻辑有没有被调**根本观察不到**。
+又是 §7cl 那个第三种原因。改法：先种满 20 张 new 占掉预算，再把那条
+耗尽发票用更大的 `created_at` 排到最后 —— 它这轮轮不到，
+状态变化就**只能**来自收尾逻辑。
+
+### 回归
+
+覆盖率（同口径三次实测）：包总量 **60.0% → 60.7% → 62.2%**。
+`invoice_harvest.go:85 HarvestAll` **0% → 80.0%**，
+`HarvestInvoices` 81.2%，`harvestOne` 55.9%。
+`recoverPOP3SourcedRaw`（POP3 发票自愈）**仍 0%**，下一轮目标。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
