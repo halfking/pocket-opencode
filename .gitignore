@@ -151,3 +151,9 @@ debug.log
 # 桩/工具脚本不是可交付产物，且 .pyc 跨平台不可复现。
 __pycache__/
 *.py[cod]
+
+# 本地验证用的后端二进制（scripts/start-local-backend.ps1 等脚本的构建产物）。
+# 它是仓库脚本**引用**的路径（backend\.verify-bin\pocketd.exe），但二进制本身不入库：
+# 每个平台/架构都不同，入库只会让 git status 长期挂着未跟踪噪声，并诱导别人
+# `git add -A` 把几十 MB 的可执行文件提交进去。
+backend/.verify-bin/
