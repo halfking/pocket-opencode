@@ -7089,13 +7089,125 @@ BOM 的来源是环境默认行为（PowerShell 5.1 的 `Set-Content -Encoding U
 也就是说：业务逻辑（`internal/email`）测得不少，但**需求 2/3/5 的 HTTP 接线
 层一行都没测过** —— 而「端点有没有接对 store、scope 有没有带上、字段有没有
 漏」恰恰是这轮已经踩过两次的坑类型（`ShareDocCSV` 被丢进 `_`、
-`a0266a4` 因为门禁短路而零保护）。这是下一块该补的。
+`a0266a4` 因为门禁短路而零保护）。这块已在 §7dd 补上。
 
 ### 回归
 
 `go build ./...` 干净；`config` / `feishu` / `email`(80.9s) 全绿；
 `server` 11.97s，只剩那两个既有失败（`TestTaskWriteGuardBlocksPlainMemberPatch/Delete`，
 §7az 的 404/403 语义分歧，非邮件分支、非本轮引入）。
+
+---
+
+## §7dd 需求 2/3/5 的 HTTP 接线层：把「落到哪个 handler」从读代码变成可证（2026-10-02）
+
+§7dc 末尾列的缺口已补：`backend/internal/server/server_email_invoice_dispatch_test.go`，
+4 个测试函数（其中 nil-store 分派表是 18 条逐条列出的子用例）。
+
+### 接线层真正要挡的是什么
+
+`handleEmailInvoiceDispatch`（`server_email_invoice.go:80`）的 switch 有一条**顺序依赖**：
+
+```go
+case rest == "export":                    // 精确相等
+...
+case strings.HasPrefix(rest, "export/"):  // 前缀
+```
+
+把第一条从 `==` 改成 `HasPrefix`（一个看起来完全合理的重构），`export/download`
+（下载端点）就会被前一条抢走、变成去**生成**新 PDF。这类 bug 在真实链路上表现为
+「下载按钮点下去生成了一个新文件」—— 功能看起来还在跑，不会有人从日志里发现。
+
+### 为什么必须分两部分测
+
+`Server.emailStore` 是**具体类型** `*email.Store`，不是接口，所以只有 nil 和真库两种
+状态。实测下来：
+
+- **nil-store 部分**能钉住每道守卫的**顺序**，但**证明不了分派**。extract/harvest/
+  export/push 四个都回 `405 "POST only"`；ops/file/thumb 三个都回
+  `503 "email store not configured"`。同一个二元组 = nil 状态的表达力上限。
+  （我第一版给 nil-store 用例加了一条「签名必须互不相同」的断言，结果 9 条直接转红
+  —— 那条判据本身是错的：它要求一个真实且正确的实现去满足一个不成立的条件。已删。）
+- **真 store 部分**（自建隔离 schema）给每个 handler 造**唯一**签名，这才是分派的证明：
+
+| 子路径 | 响应 |
+|---|---|
+| `extract` | 404 `email not found` |
+| `harvest` | 503 `email fetcher not configured (IMAP unavailable)` |
+| `export` | 400 `no harvested invoice files in selection` |
+| `export/download` | 404 `export not found` |
+| `{id}`（不存在） | 404 `invoice not found` |
+| `{id}`（存在） | 200 + 发票 JSON |
+| `{id}/file` | 200 + PDF 字节 + 规范文件名 |
+| `{id}/thumb` | 404 `thumbnail unavailable` |
+
+最后三行用同一条记录、同一套 URL 形态，靠**响应体形态**分开，不是靠错误消息。
+
+### 负控（实测）
+
+`case rest == "export"` → `strings.HasPrefix(rest, "export")`：
+两个测试函数**同时**转红，共 4 条断言报出 `export/download` 被劫持。
+还原后 `git diff --numstat` 为空（逐字节验过，不是「记得改回去了」）。
+
+### 顺带查出的三件事
+
+1. **建档要串三层 FK**：`email_invoices.email_id` → `emails.id` → `email_accounts.id`。
+   测试里不给真邮件行，`UpsertInvoice` 直接 23503。这是条隐含约束：发票不可能脱离
+   真实邮件凭空存在。
+2. **`UpsertInvoice` 刻意不写采集列**（`invoice_store.go:94` 的 INSERT 列表里没有
+   `file_name`/`file_path`/...），所以它**返回的结构体里的 `FilePath` 是内存回显，
+   不是读回来的值**。落盘路径必须另走 `UpdateInvoiceHarvest`。调用方若以为
+   「upsert 完读回自己的对象就是库里的状态」，会拿到一个库中不存在的事实。
+3. **守卫顺序在同族里不一致**（已全部钉进用例）：
+   - `handleEmailInvoices` / `handleEmailInvoiceOps` / `loadScopedInvoiceFile`：
+     **先查库**。于是无库实例上「用错方法」的 405 **永远出不来**，
+     「缺 invoice id」的 400 也永远出不来。
+   - `handleEmailInvoiceExport`：**先查 dataDir**。
+   这不是 bug，但意味着「方法不对」这个错误在降级配置下会被静默换成一个
+   看起来无关的 503。
+
+### 【新发现·低危，未修】pdfcpu v0.11.0 在畸形 PDF 上 panic
+
+`GET /api/emails/invoices/{id}/thumb` → `ExtractInvoiceThumb` → `firstPDFEmbeddedImage`
+→ `api.ExtractImagesRaw` → pdfcpu `model.skipStringLit`（`pkg/pdfcpu/model/parse.go:1273`）
+**`panic: slice bounds out of range [-1:]`**。
+
+- 触发输入：结构不完整的 PDF（我最初手写的 `%PDF-1.4 ... %%EOF` 裸字节）。
+  换成 gofpdf 生成的合法 PDF 就不炸。
+- 影响面：`ExtractInvoiceThumb` 全仓只有一个调用点（thumb handler），生产上有
+  `recoveryMiddleware`（`middleware.go:67`）兜底，所以是 **500 而不是 404
+  `thumbnail unavailable`**，不会拖垮进程。
+- **未修**：修法要么在 `firstPDFEmbeddedImage` 外面加 `recover`，要么给 pdfcpu
+  上游提 issue。前者是一行防御，后者是依赖决策 —— 都不该我单方面定，故留待拍板。
+  测试里用合法 PDF 绕开，不把这个 bug 钉成「预期行为」。
+
+### 覆盖率变化
+
+| 文件 | 之前 | 现在 |
+|---|---|---|
+| `server_email_invoice.go` | 0%（138/138） | 43/231 = **18.6%** |
+| `server_email_invoice_file.go` | 0%（38/38） | 21/64 = **32.8%** |
+| `server_email_pipeline.go` | — | 43/285 = **15.1%** |
+| `internal/server` 整包 | 43.7% | **44.7%** |
+
+函数级亮点：`handleEmailInvoiceDispatch` 100%、`atoiSafe` 100%、
+`handleEmailInvoiceFile` 86.7%、`handleEmailInvoiceExportDownload` 78.6%、
+`invoiceFileAbs` 71.4%。
+
+### 仍然没覆盖（诚实记录）
+
+- `handleEmailInvoiceExport` 的成功路径（真实多文件 2x2/3x3 拼版）—— 需要真实
+  已采集文件 + pdfcpu 渲染，本轮没造。
+- `handleEmailInvoiceHarvest` / `handleEmailInvoicePush` / `handleEmailInvoiceSummary`
+  的**成功**路径 —— 分别需要 IMAP fetcher、飞书凭据、pipeline 实例，前置条件都未提供。
+- `extractInvoicesAsync`（0%）—— fire-and-forget goroutine，需要 scheduler。
+- `handleEmailInvoiceOps` 的 PATCH/DELETE 成功分支（41.9%）。
+
+### 回归
+
+`internal/server` 全包 18.0s，**只剩那两个既有失败**
+（`TestTaskWriteGuardBlocksPlainMemberPatch/Delete`，§7az 的 404/403 语义分歧，
+非邮件分支、非本轮引入），无新增失败。
 
 ---
 
