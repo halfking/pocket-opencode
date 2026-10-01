@@ -90,6 +90,18 @@ const RED_FLAGS = [
   [/渲染出 NaN|NaN\s*张|NaN\s*条/, '渲染出 NaN'],
 ]
 const NOT_FOUND = [/未找到|不存在|Not Found|not found|404/]
+// ⚠️ 「友好失败文案」必须单列一类，不能混进红旗也不能算通过。
+// 上一轮把 7 条 /gateway/* 判成 ✅，原因就是这里：它们渲染的是
+// 「加载网关信息失败」——**既不含任何技术错误串，也确实是个错误态**。
+// 结果是「✅」被当成了「功能正常」，而实际只是「没命中我的正则」。
+//
+// 为什么不直接并进 RED_FLAGS：BUG-AT 那种**诚实降级**也含失败字样
+// （「当前平台未提供密码箱原生插件，功能不可用」），那是**正确**行为，
+// 并进去会制造假阳性。所以单列 ERROR_STATE，表示「未验证」，由人判定。
+const ERROR_STATE = [
+  /加载.{0,6}失败/, /获取.{0,6}失败/, /请求失败/, /服务不可用/, /连接失败/,
+  /无法连接/, /稍后重试/, /出错了/,
+]
 const CHROME_WORDS = ['跳到主要内容', 'menu', 'notifications', '首页', '学习', '会议', '更多', '主导航', 'Redclaw']
 const KNOWN_GOOD = [/当前平台未提供密码箱原生插件/, /功能不可用/]
 
@@ -150,6 +162,7 @@ for (const [tpl, url] of todo) {
   const knownGood = KNOWN_GOOD.some((re) => re.test(txt))
   const hits = RED_FLAGS.filter(([re]) => re.test(txt)).map(([, w]) => w)
   const notFound = !hits.length && NOT_FOUND.some((re) => re.test(txt))
+  const errState = !knownGood ? ERROR_STATE.filter((re) => re.test(txt)).map((re) => (txt.match(re) || [''])[0]) : []
   const body = txt.split('\n').map((s) => s.trim()).filter((s) => s && !CHROME_WORDS.includes(s))
   const fullBody = body.join('\n')
   if (hits.length && !knownGood) {
@@ -161,6 +174,9 @@ for (const [tpl, url] of todo) {
   } else if (notFound) {
     findings.push({ tpl, url, kind: 'NOT_FOUND', detail: 'id 来自真实列表，页面却说找不到', sample: body.slice(0, 2).join(' | ').slice(0, 80) })
     console.log(`  ⚠️  ${url.padEnd(48)} 报「未找到」（id 来自真实列表）`)
+  } else if (errState.length) {
+    findings.push({ tpl, url, kind: 'ERROR_STATE', detail: errState.join('/'), sample: body.slice(0, 3).join(' | ').slice(0, 100) })
+    console.log(`  ⚠️  ${url.padEnd(48)} 错误态文案：${errState.join('/')} —— **未验证**，不是「功能正常」`)
   } else if (body.length === 0) {
     findings.push({ tpl, url, kind: 'EMPTY', detail: '除导航壳外无任何内容' })
     console.log(`  ⚠️  ${url.padEnd(48)} 除导航壳外无内容`)
@@ -177,7 +193,10 @@ for (const [tpl, url] of todo) {
 const by = (k) => findings.filter((f) => f.kind === k)
 console.log(`\n===== 汇总 =====`)
 console.log(`实扫 ${todo.length} 条 / 30 条模板；采不到 id 未扫 ${noId.length} 条（已逐条注明原因）`)
-console.log(`红旗 ${by('RED_FLAG').length} · 报未找到 ${by('NOT_FOUND').length} · 空页 ${by('EMPTY').length} · 疑似陈旧 ${by('SUSPECT_STALE').length} · 导航失败 ${by('NAV_FAIL').length} · 探针失败 ${by('PROBE_FAIL').length}`)
+console.log(`红旗 ${by('RED_FLAG').length} · **错误态(未验证)** ${by('ERROR_STATE').length} · 报未找到 ${by('NOT_FOUND').length} · 空页 ${by('EMPTY').length} · 疑似陈旧 ${by('SUSPECT_STALE').length} · 导航失败 ${by('NAV_FAIL').length} · 探针失败 ${by('PROBE_FAIL').length}`)
+const notOk = ['RED_FLAG', 'ERROR_STATE', 'NOT_FOUND', 'NAV_FAIL', 'EMPTY', 'SUSPECT_STALE', 'PROBE_FAIL']
+  .reduce((n, k) => n + by(k).length, 0)
+console.log(`⇒ 真正确认落地 ${todo.length - notOk} / ${todo.length} 条（其余为错误态/已定性/环境所阻，**不等于功能正常**）`)
 for (const f of findings) console.log(`  [${f.kind}] ${f.url}  ${f.detail}  ${f.sample || ''}`)
 console.log(`\n--- 未扫（采不到真实 id，附原因）---`)
 for (const [tpl, , why] of noId) console.log(`  ${tpl.padEnd(46)} ${why}`)
