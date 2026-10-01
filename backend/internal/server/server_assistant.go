@@ -1327,6 +1327,8 @@ func (s *Server) handleEmails(w http.ResponseWriter, r *http.Request) {
 		Category:   r.URL.Query().Get("category"),
 		Importance: r.URL.Query().Get("importance"),
 		UnreadOnly: r.URL.Query().Get("unread") == "1",
+		// folder：空 = 收件箱默认视图；具体目录名 = 该目录；"__all__" = 全部。
+		Folder: r.URL.Query().Get("folder"),
 	}
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -1704,6 +1706,7 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 	// 直接交给 extractEmailBody()——它需要完整 MIME 树才能把
 	// <img src="cid:..."> 内联成 data URI、在 multipart/alternative 里选 HTML。
 	// 两者对不上，就是真机报的「详情展示不正常、缺失图片或内容」。
+	cacheFormat := bodyCacheFormatMIME
 	body, err := s.emailFetcher.FetchMessageRaw(ctx, em.AccountID, em.UID)
 	if err != nil {
 		// 整封原文拿不到（部分服务器/代理对 BODY[] 有限制）→ 退回 BODY[TEXT]。
@@ -1716,8 +1719,11 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 		}
 		log.Printf("[email/body] email=%s uid=%d: BODY[] unavailable (%v), fell back to BODY[TEXT]（详情将无图无 HTML）", emailID, em.UID, err)
 		body = text
+		// 兜底正文按 text 版本落盘：它是该服务器能给的最好结果，下次直接命中，
+		// 不当 legacy 处理（否则服务器不支持 BODY[] 时会每次详情都回源重拉）。
+		cacheFormat = bodyCacheFormatText
 	}
-	if writeErr := s.writeCachedEmailBody(ctx, emailID, body); writeErr != nil {
+	if writeErr := s.writeCachedEmailBody(ctx, emailID, body, cacheFormat); writeErr != nil {
 		log.Printf("[email/body] cache write email=%s: %v", emailID, writeErr)
 		// 缓存写失败仍返回内容，避免阻塞前端
 	}
@@ -1776,6 +1782,20 @@ func (s *Server) emailBodyResponse(emailID, source string, raw []byte) map[strin
 // bodyCacheDirName 缓存目录名；放在 dataDir 内、模式 0700，仅进程可读。
 const bodyCacheDirName = "email-bodies"
 
+// 正文缓存格式版本（文件布局：8 字节 UID + 1 字节 format + 密文）。
+//
+// 历史包袱：2026-10-01 之前的版本没有 format 字节，密文紧跟在 8 字节 UID
+// 之后，且部分内容是旧逻辑落进去的「拍平展示文本」（ExtractDisplayBody），
+// 前端拿它解析不出 cid 内联图/HTML 分支，详情页表现为「只显示一部分」。
+// base64 密文首字符取值域是 A-Za-z0-9+/=（最小 0x2B），不可能撞上 0x01/0x02，
+// 所以把「第 9 字节不是已知版本号」判为 legacy：读路径视为未命中（自愈——
+// 下一次访问会回源 IMAP 重拉完整 MIME 并以 v1 覆写），不再让旧缓存永久占坑。
+const (
+	bodyCacheFormatLegacy byte = 0x00 // 旧版文件（无 format 字节），读时按未命中处理
+	bodyCacheFormatMIME   byte = 0x01 // 完整 MIME 原文（BODY.PEEK[]）
+	bodyCacheFormatText   byte = 0x02 // BODY[TEXT] 兜底纯文本（服务器不支持 BODY[] 时合法产物，不触发自愈）
+)
+
 // emailIDPathSafe 报告 email ID 是否可安全用于拼接缓存文件路径。
 // 客户端推送路径允许自带 ID，含路径分隔符（或 ".."）的 ID 会把
 // email-bodies 缓存的读写引到目录之外。
@@ -1803,8 +1823,9 @@ func (s *Server) bodyCacheDir() (string, error) {
 	return dir, nil
 }
 
-// readCachedEmailBody 读缓存并解密；不存在 / 损坏 / UID 不匹配时返回 nil+nil。
-// 缓存头部写入 8 字节 UID，便于账号迁移后定位旧 UID 失效。
+// readCachedEmailBody 读缓存并解密；不存在 / 损坏 / UID 不匹配 / legacy 格式时返回 nil+nil。
+// 缓存头部写入 8 字节 UID + 1 字节格式版本，便于账号迁移后定位旧 UID 失效、
+// 以及让旧「拍平文本」缓存在下次访问时自动回源重拉（见 bodyCacheFormat* 注释）。
 func (s *Server) readCachedEmailBody(ctx context.Context, emailID string, expectedUID int64) ([]byte, error) {
 	if !emailIDPathSafe(emailID) {
 		return nil, nil
@@ -1821,14 +1842,20 @@ func (s *Server) readCachedEmailBody(ctx context.Context, emailID string, expect
 		}
 		return nil, err
 	}
-	if len(data) < 8 {
+	if len(data) < 9 {
 		return nil, nil
 	}
 	prefixUID := int64(binary.BigEndian.Uint64(data[:8]))
 	if expectedUID > 0 && prefixUID != expectedUID {
 		return nil, nil // 旧缓存，视为未命中
 	}
-	bodyEnc := string(data[8:])
+	switch data[8] {
+	case bodyCacheFormatMIME, bodyCacheFormatText:
+		// 已知格式，继续解密。
+	default:
+		return nil, nil // legacy（无版本字节）：视为未命中，触发回源自愈
+	}
+	bodyEnc := string(data[9:])
 	body, err := s.emailCrypto.DecryptString(bodyEnc)
 	if err != nil {
 		return nil, nil // 损坏视为未命中
@@ -1836,8 +1863,8 @@ func (s *Server) readCachedEmailBody(ctx context.Context, emailID string, expect
 	return []byte(body), nil
 }
 
-// writeCachedEmailBody 原子写入（临时文件 + rename），避免 reader 撞上半文件。
-func (s *Server) writeCachedEmailBody(ctx context.Context, emailID string, body []byte) error {
+// writeCachedEmailBody 以指定格式版本原子写入（临时文件 + rename），避免 reader 撞上半文件。
+func (s *Server) writeCachedEmailBody(ctx context.Context, emailID string, body []byte, format byte) error {
 	if !emailIDPathSafe(emailID) {
 		return fmt.Errorf("email id not safe for cache path")
 	}
@@ -1860,10 +1887,11 @@ func (s *Server) writeCachedEmailBody(ctx context.Context, emailID string, body 
 			_ = os.Remove(tmpPath)
 		}
 	}()
-	hdr := make([]byte, 8)
+	hdr := make([]byte, 9)
 	// UID 在缓存写入时被省略（0），让 readCachedEmailBody 跳过 UID 校验，
 	// 避免 sync 增量 UID 改变导致命中旧内容。
-	binary.BigEndian.PutUint64(hdr, 0)
+	binary.BigEndian.PutUint64(hdr[:8], 0)
+	hdr[8] = format
 	if _, err := tmp.Write(hdr); err != nil {
 		_ = tmp.Close()
 		return err

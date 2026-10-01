@@ -475,7 +475,8 @@ func main() {
 					emailScheduler.SetVacationSender(server.NewSMTPVacationSender())
 					// 消费 email_action_intents（route-folder / trigger-autoreply）。
 					// emailStore / emailCrypto 在本块上方已构造（与 vacation sender 同源）。
-					emailScheduler.SetIntentExecutor(server.NewIntentExecutor(emailStore, emailCrypto))
+					// emailFetcher 同时作为 route-folder 的真实 IMAP MOVE 执行器注入。
+					emailScheduler.SetIntentExecutor(server.NewIntentExecutor(emailStore, emailCrypto, emailFetcher))
 					// 时区：默认 UTC+8（中国大陆）；可由 POCKET_TIMEZONE_OFFSET_SEC 覆盖。
 					emailScheduler.SetTimezoneOffset(cfg.TimezoneOffsetSec)
 					emailScheduler.Start(context.Background())

@@ -748,6 +748,14 @@ func (s *Server) Handler() http.Handler {
 	// 发票自动整理（列表 + 按邮件手动提取；须在 /api/emails/ 子树之前声明）
 	mux.HandleFunc("/api/emails/invoices", s.requireAuth(s.handleEmailInvoices))
 	mux.HandleFunc("/api/emails/invoices/", s.requireAuth(s.handleEmailInvoiceDispatch))
+	// 自定义邮件目录（同服务器能力：IMAP CREATE/LIST/MOVE）+ 本地迁移操作日志
+	// 与「同步到服务器」按钮（可选/全量）。均须在 /api/emails/ 子树之前声明。
+	mux.HandleFunc("/api/email/folders", s.requireAuth(s.handleEmailFolders))
+	mux.HandleFunc("/api/email/folders/", s.requireAuth(s.handleEmailFolderOps))
+	mux.HandleFunc("/api/emails/move", s.requireAuth(s.handleEmailMove))
+	mux.HandleFunc("/api/emails/organize", s.requireAuth(s.handleEmailOrganize))
+	mux.HandleFunc("/api/emails/ops/sync", s.requireAuth(s.handleEmailOpsSync))
+	mux.HandleFunc("/api/emails/ops", s.requireAuth(s.handleEmailOpsLog))
 	mux.HandleFunc("/api/emails/", s.requireAuth(s.handleEmailOps))
 	// /api/email/accounts/test-smtp is intentionally NOT registered — the
 	// {id}/test-smtp path is dispatched by handleEmailAccountOps so the
