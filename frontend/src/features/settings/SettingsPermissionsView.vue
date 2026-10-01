@@ -567,7 +567,11 @@ onMounted(async () => {
 }
 
 .hint {
-  font-size: var(--text-xs);
+  /* 说明文字与 SettingsSTT / SettingsLLMGateway 的 .form-hint 同档（12px）。
+     此前这里是 var(--text-xs)=10px，而那档 token 在 tokens.css 里注明用途是
+     「极小文本（时间戳、徽章）」——套到两行中文说明段落上会明显偏小，
+     正是用户报的「设置页显示错误」。 */
+  font-size: var(--text-sm);
   color: var(--text-muted);
   line-height: 1.6;
   margin: var(--space-2) 0 0;

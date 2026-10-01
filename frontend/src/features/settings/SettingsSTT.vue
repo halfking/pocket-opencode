@@ -663,7 +663,10 @@ function goBack() {
   color: inherit;
 }
 .form-hint {
-  font-size: 12px;
+  /* 走 token：渲染值不变（--text-sm 就是 12px），与 SettingsLLMGateway /
+     SettingsPermissionsView 的说明文字同源。此前三处一个写 12px、一个写
+     var(--text-xs)、一个写 var(--text-sm)，同一角色两个值。 */
+  font-size: var(--text-sm);
   color: var(--text-secondary, #6b7280);
   margin-top: 6px;
   line-height: 1.5;

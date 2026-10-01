@@ -542,7 +542,9 @@ function goBack() {
 }
 
 .form-hint {
-  font-size: 12px;
+  /* 走 token：渲染值不变（--text-sm 就是 12px），与 SettingsSTT /
+     SettingsPermissionsView 的说明文字同源。 */
+  font-size: var(--text-sm);
   color: var(--text-muted);
 }
 
