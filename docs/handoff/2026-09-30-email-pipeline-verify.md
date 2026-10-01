@@ -1398,3 +1398,107 @@ total := float64(cents) / 100
   财务上不成立。需求没提多币种，属产品决策。
 - 合计行没有区分币种——若清单里混了两种币种，合计行的语义本身就不成立，
   即使数值上「加起来了」。
+
+---
+
+## §7ae 币种被硬编码成 CNY（多币种合计问题的真正根因）（2026-10-01）
+
+### 起因
+
+§7ac / §7ad 末尾自列的第二条相邻风险：「多币种合计语义」。当时判断是产品决策，
+本轮先查**事实**再谈决策。
+
+### 查证：真实数据里现在全是 CNY
+
+```
+SELECT currency, count(*), sum(amount) FROM email_invoices GROUP BY 1;
+  CNY | 7 | 6060.00
+```
+
+只有 CNY，所以「多币种合计」在真实数据上**从未出问题**。但顺着查下去发现
+根因比「合计语义」严重得多。
+
+### 真正的缺陷：Currency 字段是硬编码的
+
+`invoice.go:286`（修复前）：
+
+```go
+inv := &Invoice{
+    ...
+    Currency: "CNY",      // ← 硬编码
+}
+```
+
+而 `reCurrency`（`invoice.go:82`）其实**早就能识别** ISO 4217 代码：
+
+```go
+reCurrency = `[¥￥$€£]?\s*(?:CNY|RMB|USD|EUR|GBP|HKD|JPY)?\s*`
+```
+
+也就是说：**能识别，但识别结果被丢掉了**。2026-09-30 修 QQ Wallet 英文发票时
+（当时 `CNY 126.00` 抽不出金额）只把币种加进正则让它能匹配数字，币种本身
+始终没被写进 `Invoice.Currency`。
+
+后果链：
+
+1. 一张 `Total tax-inclusive amount: USD 126.00` 的外币发票，
+   `Currency` 被标成 **CNY**（错的）；
+2. 共享台账/CSV 的「币种」列显示 CNY（错的）；
+3. 合计把 USD 与 CNY **直接相加**——数值上「加起来了」，但没有财务意义。
+   §7ac/§7ad 修的是**精度**，修不了**币种语义**：精度对了但币种错了，
+   合计依然是错的。
+
+### 修复
+
+1. `reAmountTotal` / `reAnyAmount` 加捕获组取出币种标记；
+   `reAnyAmount` 拆成两个分支（符号 / ISO 码），调用点按分支取不同索引。
+2. 新增 `normalizeCurrency(mark, fallback)`：符号与代码都映射到 ISO 4217
+   （`¥ ￥ 元 RMB → CNY`、`$ → USD`、`€ → EUR`、`£ → GBP` …），
+   无法识别时回退 CNY。
+3. 两条金额路径（主正则 + 兜底 `reAnyAmount`）都写入 `inv.Currency`。
+
+### 负控对照（精确命中，CNY 用例仍绿）
+
+`normalizeCurrency` 恒返回 `"CNY"`（还原旧行为）：
+
+```
+--- FAIL: TestNormalizeCurrency_SymbolsAndCodes
+--- FAIL: TestExtractInvoice_ForeignCurrencyNotHardcodedCNY/usd_code      Currency = "CNY", want "USD"
+--- FAIL: TestExtractInvoice_ForeignCurrencyNotHardcodedCNY/dollar_sign   Currency = "CNY", want "USD"
+--- FAIL: TestExtractInvoice_ForeignCurrencyNotHardcodedCNY/euro_code     Currency = "CNY", want "EUR"
+--- FAIL: TestExtractInvoice_ForeignCurrencyNotHardcodedCNY/hkd_code      Currency = "CNY", want "HKD"
+--- FAIL: TestExtractInvoice_ForeignCurrencyViaFallbackPath               Currency = "CNY", want USD
+```
+
+4 个外币子用例 + 兜底路径全红，而 **cny_stays_cny / rmb_is_cny /
+yuan_sign_is_cny 三个 CNY 用例仍绿**——说明改动没有把 CNY 场景弄坏。
+已还原。
+
+### 证据
+
+- `invoice_currency_test.go` 4 个顶层用例（含 7 个子用例）
+  - `NormalizeCurrency_SymbolsAndCodes` —— 17 个符号/代码映射
+  - `ExtractInvoice_ForeignCurrencyNotHardcodedCNY` —— 7 个子用例（4 外币 + 3 CNY 回归）
+  - `ExtractInvoice_ForeignCurrencyViaFallbackPath` —— 兜底路径也认币种
+  - `ExtractInvoice_RealQQWalletStillParses` —— 真实 CNY 场景回归守卫
+- `invoice.go`：`normalizeCurrency`（新增）、`reCurrency`/`reAmountTotal`/`reAnyAmount`、两个调用点
+- `go build ./...` 通过；`go test ./internal/email/ -count=1` → `ok 4.707s`（清缓存后）
+
+### 过程中修正的自身错误
+
+1. `ExtractInvoice` 签名是 `(e Email, bodyText string)`——**按值传 Email + 必带 bodyText**。
+   初版写成 `ExtractInvoice(e)` 编译报 `not enough arguments`，三处都改了。
+2. 用 PowerShell + `[IO.File]::ReadAllText($p)` 做批量替换时，**相对路径基于进程 CWD
+   而非 shell 的 `cd`**，报「未能找到路径 C:\workspace\openpocket\internal\...」。
+   该脚本因 `$t` 为 null 全部失败且 `WriteAllText` 也未执行——**文件没有被破坏**
+   （事后 Read 确认内容完好）。改用 Edit 工具逐处精确修改。
+3. 注入负控时只改了函数签名行，残留了原 switch 体，导致 **build failed**。
+   编译失败**不构成有效负控**（证明不了测试能捕获行为变化），
+   删掉残留块重跑才拿到上面的 6 条 FAIL。
+
+### 仍未处理（需要产品决策）
+
+- **多币种合计语义**本身没动：现在 `Currency` 标对了，但合计行仍把所有币种
+  直接相加。正确做法应是**按币种分组各出一个合计**。
+  这需要你决定：分组显示 / 强制单币种 / 汇率换算。
+- 存量数据 7 张发票的 `currency` 列已是 CNY 且本来就都是 CNY，无需回填。
