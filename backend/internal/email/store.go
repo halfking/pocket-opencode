@@ -1598,6 +1598,58 @@ func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID,
 	return out, rows.Err()
 }
 
+// CountEmailsScoped counts mail matching the same filter as ListEmailsScoped,
+// without the limit.
+//
+// 客户端缓存自愈要比「本地行数 vs 服务端行数」来判定缺口。用 listEmails 的
+// 返回长度当行数是错的：列表接口限流（上限 500），邮箱里超过 500 封时返回
+// 长度恒等于 limit，缺口信号被彻底抹平 —— 正是「邮件丢了但自愈不触发」的
+// 又一处根因。客户端 email-cache-heal 的 server-ahead 信号依赖这个真值。
+func (s *Store) CountEmailsScoped(ctx context.Context, filter ListFilter, userID, workspaceID string) (int64, error) {
+	q := `SELECT COUNT(*) FROM emails e JOIN email_accounts a ON a.id=e.account_id
+		WHERE a.user_id=$1 AND a.workspace_id=$2 AND COALESCE(e.deleted_at, 0)=0`
+	args := []any{userID, workspaceID}
+	if filter.AccountID != "" {
+		q += fmt.Sprintf(" AND e.account_id=$%d", len(args)+1)
+		args = append(args, filter.AccountID)
+	}
+	if filter.Category != "" {
+		q += fmt.Sprintf(" AND e.category=$%d", len(args)+1)
+		args = append(args, filter.Category)
+	}
+	if filter.Importance != "" {
+		q += fmt.Sprintf(" AND e.importance=$%d", len(args)+1)
+		args = append(args, filter.Importance)
+	}
+	if filter.UnreadOnly {
+		q += " AND e.is_read=FALSE"
+	}
+	if filter.Uncategorized {
+		q += " AND (e.category IS NULL OR e.category = '')"
+	}
+	if filter.Since > 0 {
+		// 与 ListEmailsScoped 的 since 语义逐字一致，否则 count 与 list
+		// 统计的不是同一个集合，客户端会拿两个不同集合的大小相减。
+		sinceSec, sinceMs := filter.Since, filter.Since
+		if sinceMs > 1_000_000_000_000 {
+			sinceSec = sinceMs / 1000
+		} else if sinceSec > 1_000_000_000 {
+			sinceMs = sinceSec * 1000
+		}
+		stamp := "GREATEST(e.date, COALESCE(e.processed_at, 0), e.created_at)"
+		q += fmt.Sprintf(
+			" AND ((%s > 1000000000000 AND %s > $%d) OR (%s <= 1000000000000 AND %s > $%d))",
+			stamp, stamp, len(args)+1, stamp, stamp, len(args)+2,
+		)
+		args = append(args, sinceMs, sinceSec)
+	}
+	var n int64
+	if err := s.pool.QueryRow(ctx, q, args...).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // ListDeletedEmailIDsScoped 返回 deleted_at 晚于 since 的软删除邮件 id
 // （墓碑清单），供客户端把「其他端已删除」的行从本地缓存移除。
 // since 语义与 ListFilter.Since 一致：Unix 秒；毫秒（>1e12）自动归一。

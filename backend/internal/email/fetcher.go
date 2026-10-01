@@ -657,144 +657,31 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		log.Printf("[email/fetcher] parse rules for %s failed: %v (skipping rules)", acc.EmailAddress, ruleErr)
 	}
 	for _, m := range messages {
-		if m.Envelope == nil {
+		// 取件映射 + 规则评估统一走 emailFromMessage / applyInlineRules，
+		// 与 BackfillHistory 同一份实现。
+		//
+		// 之前这里另写一份：messageID 兜底、缺 Date 头按 INTERNALDATE 兜底、
+		// snippet 派生、规则语义各写一遍。两处漂移的后果是产出不兼容的行，
+		// 重跑时互相覆盖（同一封邮件被后写入的一方改写掉分类/重要标记）。
+		em, ok, pending := f.emailFromMessage(m, *acc, client, rulesParsed, tr.step)
+		if !ok {
 			continue
 		}
-		fromAddr, fromName := "", ""
-		if len(m.Envelope.From) > 0 {
-			fromAddr = m.Envelope.From[0].Addr()
-			fromName = m.Envelope.From[0].Name
-		}
-		// IMAP ENVELOPE 的 Subject/个人名是 RFC 2047 编码字，go-imap 不解码。
-		// 不解的话列表里所有中文主题都是 `=?GBK?B?...?=`，而且发票关键词匹配
-		// 全部落空（主题里明明写着「发票」）。实测企业微信邮箱 5/5 封中招。
-		fromName = decodeMIMEWord(fromName)
-		subject := decodeMIMEWord(m.Envelope.Subject)
-		uid := m.UID
-		// 缺 Date 头的邮件（少数自动化系统）envelope Date 是 Go 零值，直接
-		// .Unix() 会落成 -62135596800 这类负值，该邮件从此进不了任何 date
-		// 时间窗口扫描（发票提取/垃圾清理/提醒），这里按 INTERNALDATE 兜底。
-		date := m.Envelope.Date.Unix()
-		if m.Envelope.Date.IsZero() {
-			if !m.InternalDate.IsZero() {
-				date = m.InternalDate.Unix()
-			} else {
-				date = time.Now().Unix()
+		for _, pi := range pending {
+			// 副作用型动作（route-folder / trigger-autoreply）落 intent 表，
+			// 由 scheduler.intentLoop 消费（IMAP MOVE / SMTP 自动回复）。
+			if err := f.recordActionIntent(ctx, pi.email, *acc, pi.action); err != nil {
+				log.Printf("[email/fetcher] record action intent %s email=%s: %v", pi.action.Action, pi.email.ID, err)
 			}
 		}
-		var snippet string
-		for _, bs := range m.BodySection {
-			// 2026-10-01 真机审计：原来是把 bs.Bytes 直接转字符串再按字节截前 500，
-			// 三个问题叠在一起 ——
-			//  1. BODY[TEXT]<partial> 时 bs.Bytes 是 MIME 头本身，用户在
-			//     /notifications 上直接看到「--part_xxx / Content-Type: …」；
-			//  2. 只有 HTML 正文时标签原样透出（字面的 <br/> 与 <a href=…>）；
-			//  3. 按**字节**切，中文邮件会在第 500 字节处劈开半个字符产生乱码。
-			snippet = DeriveSnippet(bs.Bytes, 500)
-			break
-		}
-		if snippet == "" {
-			// 批量 fetch 只取 envelope（Greenmail 对 BODY[TEXT]<partial> 响应
-			// 缺 SP 分隔符），snippet 在此复用同一连接按需单封补拉；失败仅
-			// 留空，不阻塞落库。
-			// 这里是 Sync 里最可疑的一段：同一连接上**逐封串行**发部分取回，
-			// 没有并发也没有单独预算。企业微信（imap.exmail.qq.com）实测在这
-			// 一步会挂到分钟级，而外层只能看到 90s 上界。单独打点。
-			tr.step(fmt.Sprintf("snippet uid=%d", uid))
-			snippet = f.fetchSnippetOnConnected(client, uid)
-		}
-		messageID := ""
-		if m.Envelope.MessageID != "" {
-			// go-imap returns the message ID already wrapped in < >. Strip them
-			// so the UNIQUE(account_id, message_id) index is consistent.
-			messageID = strings.TrimPrefix(strings.TrimSuffix(m.Envelope.MessageID, ">"), "<")
-		}
-		// 部分 IMAP server（Greenmail、自建测试）不返回 Message-ID，导致同
-		// 账户多封邮件 messageID 都为空字符串，触发 UNIQUE(account_id,
-		// message_id) 冲突被 ON CONFLICT DO NOTHING 静默跳过。补一个
-		// uid 维度的合成键，确保每封邮件都能落库。
-		if messageID == "" {
-			messageID = fmt.Sprintf("uid-%d", uid)
-		}
-		em := Email{
-			ID:        fmt.Sprintf("em-%d-%s", uid, accountID),
-			AccountID: accountID,
-			// 抓取任务的作用域来自账户行自带的 workspace，不来自任何请求上下文。
-			// 之前没带这个字段，InsertEmail 的 defaultWorkspace 兜底把所有邮件都
-			// 写成 'default'。
-			WorkspaceID: acc.WorkspaceID,
-			MessageID:   messageID,
-			UID:         int64(uid),
-			FromAddress: fromAddr,
-			FromName:    fromName,
-			Subject:     subject,
-			Snippet:     snippet,
-			Date:        date,
-		}
-		// 评估账户规则。规则输出分两类落地：
-		//   - 内联型（mark-important / label-category / archive）：直接写邮件字段，
-		//     archive 置 category=archived + 已读，入库即生效，不需要后续消费。
-		//   - 延迟型（route-folder / trigger-autoreply）：写入 email_action_intents，
-		//     由 scheduler.intentLoop 消费（IMAP MOVE / SMTP 自动回复）。
-			if ruleErr == nil && len(rulesParsed) > 0 {
-				apply := rules.Evaluate(rulesParsed, rules.EmailInput{
-					From:       fromAddr,
-					Subject:    subject,
-					Body:       snippet,
-					Importance: em.Importance,
-					Category:   em.Category,
-					ReceivedAt: m.Envelope.Date,
-				})
-				if len(apply) > 0 {
-					reasons := make([]string, 0, len(apply))
-					imSet := false
-					for _, act := range apply {
-						switch act.Action {
-						case rules.ActionMarkImportant:
-							em.Importance = "high"
-							imSet = true
-						case rules.ActionLabelCategory:
-							// 规则可在 action 里携带 category（如
-							// {"name":"label-category","category":"work"}）。
-							// 持久化到 emails.category，让前端可以立即
-							// 在列表里看到分类结果，不必等待 kxmemory。
-							if cat := strings.TrimSpace(act.Category); cat != "" {
-								em.Category = cat
-							}
-						case rules.ActionArchive:
-							// 归档直接在入库时落地：分类标 archived + 标已读，
-							// 避免引入 IMAP MOVE 副作用与 intent 队列复杂度。
-							// 行为可预测、可重放（重跑 sync 不会重复 MOVE）。
-							em.Category = "archived"
-							em.IsRead = true
-						case rules.ActionRouteFolder, rules.ActionTriggerAutoReply:
-							// 副作用型动作落 intent 表，由 scheduler 消费：
-							//   route-folder → 标记 applied（真实 IMAP MOVE 延后）
-							//   trigger-autoreply → SMTP 自动回复
-							if err := f.recordActionIntent(ctx, em, *acc, act); err != nil {
-								log.Printf("[email/fetcher] record action intent %s email=%s: %v", act.Action, em.ID, err)
-							}
-						}
-						if act.Action != rules.ActionUnsupported {
-							reasons = append(reasons, string(act.Action)+": "+act.Reason)
-						}
-					}
-					if len(reasons) > 0 {
-						em.ActionReason = strings.Join(reasons, "; ")
-					}
-					if imSet {
-						log.Printf("[email/fetcher] uid=%d mark-important applied (account=%s)", uid, acc.ID)
-					}
-				}
-			}
-		tr.step(fmt.Sprintf("InsertEmail uid=%d", uid))
+		tr.step(fmt.Sprintf("InsertEmail uid=%d", em.UID))
 		if err := f.store.InsertEmail(ctx, em); err != nil {
-			log.Printf("[email/fetcher] insert email uid=%d: %v", uid, err)
+			log.Printf("[email/fetcher] insert email uid=%d: %v", em.UID, err)
 			continue
 		}
 		saved++
-		if uid > highestUID {
-			highestUID = uid
+		if imap.UID(em.UID) > highestUID {
+			highestUID = imap.UID(em.UID)
 		}
 	}
 	tr.step("UpdateSyncState")

@@ -1343,11 +1343,20 @@ func (s *Server) handleEmails(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// total 是**不受 limit 影响**的匹配总数（CountEmailsScoped）。客户端缓存
+	// 自愈要比「本地行数 vs 服务端行数」，若拿 len(list) 当总数，邮箱超过
+	// limit 时这个数字恒等于 limit，缺口信号会被彻底抹平。
+	total, err := s.emailStore.CountEmailsScoped(r.Context(), f, s.userIDFromRequest(r), s.workspaceIDFromRequest(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	// 增量同步信封：serverTimeMs 供客户端校正时钟漂移；带 since 时附带
 	// 软删除墓碑（deletedIds），客户端据此移除本地缓存行（无刷新删除）。
 	resp := map[string]any{
 		"emails":       list,
 		"serverTimeMs": time.Now().UnixMilli(),
+		"total":        total,
 	}
 	if f.Since > 0 {
 		deletedIDs, err := s.emailStore.ListDeletedEmailIDsScoped(r.Context(), f.Since, s.userIDFromRequest(r), s.workspaceIDFromRequest(r), 500)

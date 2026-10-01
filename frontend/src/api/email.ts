@@ -220,7 +220,9 @@ export const emailApi = {
   // Emails
   // 响应信封：带 since 时附 deletedIds（软删除墓碑）与 serverTimeMs（服务器时钟），
   // 客户端据此做无刷新差异合并。见 docs/2026-09-09-list-sync-rules.md §增量同步协议。
-  listEmails(filter: EmailFilter = {}): Promise<{ emails: Email[]; deletedIds?: string[]; serverTimeMs?: number }> {
+  // total 是**不受 limit 影响**的匹配总数，用来做缓存缺口判定（见 email-cache-heal）；
+  // 老服务端不返回时为 undefined，调用方需退回 emails.length。
+  listEmails(filter: EmailFilter = {}): Promise<{ emails: Email[]; deletedIds?: string[]; serverTimeMs?: number; total?: number }> {
     const qs = new URLSearchParams()
     if (filter.accountId) qs.set('account_id', filter.accountId)
     if (filter.category) qs.set('category', filter.category)
@@ -241,6 +243,32 @@ export const emailApi = {
    */
   getEmailBody(id: string): Promise<EmailBodyResult> {
     return http(`/api/emails/${id}/body`)
+  },
+  /**
+   * 服务端历史回补：让服务端按**日期窗口**从 IMAP 重新拉取最近 N 天的邮件
+   * 并入库（默认 30 天，见 backend/internal/email/backfill.go）。
+   *
+   * 为什么需要它：增量同步只按 `LastSyncedUID` 往后搜新邮件，且每轮只取最近
+   * 50 封。客户端再怎么样回补 `since`，也只能补回**服务端库里已有**的行——
+   * 如果那一天的邮件当初就没进过服务端库（被 50 封上限截断、或首次同步时
+   * 就在窗口外），客户端无论拉多少次都补不回来。这一层是唯一能回到 IMAP
+   * 源头重新取数的入口。
+   *
+   * 幂等：按 (account_id, message_id) 去重，重复调用安全。
+   */
+  backfill(opts: { accountId?: string; days?: number; maxMessages?: number } = {}): Promise<{
+    accounts: Array<{ accountId: string; fetched: number; saved: number; skipped: number; days: number; error?: string }>
+  }> {
+    return http('/api/email/backfill', {
+      method: 'POST',
+      // 走 IMAP 逐批取回，30 天大邮箱要跑几十秒到几分钟，不能用默认超时。
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+      body: JSON.stringify({
+        ...(opts.accountId ? { accountId: opts.accountId } : {}),
+        ...(opts.days ? { days: opts.days } : {}),
+        ...(opts.maxMessages ? { maxMessages: opts.maxMessages } : {}),
+      }),
+    })
   },
   patchEmail(id: string, patch: { isRead?: boolean; isStarred?: boolean }): Promise<void> {
     return http(`/api/emails/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })

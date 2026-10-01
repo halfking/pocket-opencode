@@ -160,11 +160,20 @@ func TestDeriveSnippet_DecodesQuotedPrintable(t *testing.T) {
 // 提交（94b55ff）里被连带删除 —— 缺陷静默回归且没有任何测试转红。所以这里断言
 // 的是「源码里不允许再出现的旧写法」+「调用点数量」，而不只是跑一遍纯函数。
 func TestFetcherUsesDeriveSnippetAtEverySnippetSite(t *testing.T) {
-	src, err := os.ReadFile("fetcher.go")
-	if err != nil {
-		t.Fatalf("读不到 fetcher.go：%v", err)
+	// 共享取件映射 emailFromMessage 住在 backfill.go（Sync 与历史回补共用同一
+	// 份实现，见 backfill.go），所以护栏必须同时扫两个文件：只扫 fetcher.go 会
+	// 让「IMAP 批量主路径」这个调用点从视野里消失，断言从 3 变 2 看着像通过，
+	// 实际是护栏静默变弱。
+	var buf strings.Builder
+	for _, name := range []string{"fetcher.go", "backfill.go"} {
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("读不到 %s：%v", name, err)
+		}
+		buf.Write(src)
+		buf.WriteString("\n")
 	}
-	text := string(src)
+	text := buf.String()
 
 	// 护栏必须只看**代码**不看注释：这些禁用写法的名字经常出现在解释「原来错在哪」
 	// 的注释里，不剥离就会自己把自己判成 FAIL（第一版就踩了这个坑）。
@@ -210,6 +219,6 @@ func TestFetcherUsesDeriveSnippetAtEverySnippetSite(t *testing.T) {
 	}
 
 	if n := strings.Count(codeText, "DeriveSnippet("); n != 3 {
-		t.Errorf("fetcher.go 里的 DeriveSnippet 调用数 = %d，期望 3（按需补拉 / IMAP 批量主路径 / POP3 HTML 回退）", n)
+		t.Errorf("fetcher.go + backfill.go 里的 DeriveSnippet 调用数 = %d，期望 3（按需补拉 / IMAP 批量主路径 / POP3 HTML 回退）", n)
 	}
 }

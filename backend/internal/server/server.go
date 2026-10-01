@@ -733,6 +733,8 @@ func (s *Server) Handler() http.Handler {
 	// {id}/test-smtp (POST). See handleEmailAccountOps for routing.
 	mux.HandleFunc("/api/email/accounts/", s.requireAuth(s.handleEmailAccountOps))
 	mux.HandleFunc("/api/email/summaries", s.requireAuth(s.handleEmailSummaries))
+	// 历史回补：把 Sync 漏掉的历史邮件（每次只取最近 50 封）按日期窗口拉回。
+	mux.HandleFunc("/api/email/backfill", s.requireAuth(s.handleEmailBackfill))
 	mux.HandleFunc("/api/email/summaries/", s.requireAuth(s.handleEmailSummaryOps))
 	mux.HandleFunc("/api/email/vacations", s.requireAuth(s.handleEmailVacations))
 	mux.HandleFunc("/api/email/vacations/", s.requireAuth(s.handleEmailVacationOps))
