@@ -74,27 +74,33 @@ func snapshotMailboxes(t *testing.T, f *Fetcher, accountID string) mailboxSnapsh
 	if err != nil {
 		t.Fatalf("findJunkMailbox: %v", err)
 	}
-	if junkBox == "" {
-		t.Skipf("该 Greenmail 实例没有垃圾箱，无法验证 MOVE（junkBox 为空）")
-	}
-	return mailboxSnapshot{
+	// junkBox 为空是**合法**场景，不是失败：Greenmail 默认没建垃圾箱，
+	// 真实服务器也常没有。此时 MoveUIDsToJunk 会走 CREATE "Junk" 兜底
+	// （junk.go:127-133），那条分支同样需要被验证。
+	snap := mailboxSnapshot{
 		junkBox: junkBox,
 		inbox:   uidsIn(t, client, "INBOX"),
-		junk:    uidsIn(t, client, junkBox),
+		junk:    map[imap.UID]bool{},
 	}
+	if junkBox != "" {
+		snap.junk = uidsIn(t, client, junkBox)
+	}
+	return snap
 }
 
-// uidsIn 列出某信箱的全部 UID。移动后 UID 保持不变（IMAP UID 是单调的），
-// 所以可以直接用移动前的 UID 集合去移动后的信箱里比对。
+// uidsIn 列出某信箱的全部 UID。
+//
+// UID 是**按信箱独立编号**的：邮件从 INBOX 移入 Junk 会在 Junk 拿到全新 UID，
+// 所以跨信箱**不能**拿 UID 比对。跨信箱只用**数量**判定增量；
+// 「被选中的离开 INBOX」「未选中的仍在 INBOX」这类判断发生在**同一个信箱内**，
+// UID 在那里是稳定且可比的。
 func uidsIn(t *testing.T, client *imapclient.Client, mailbox string) map[imap.UID]bool {
 	t.Helper()
 	if _, err := client.Select(mailbox, nil).Wait(); err != nil {
 		t.Fatalf("select %s: %v", mailbox, err)
 	}
-	// nil criteria = 全部邮件；搜索范围是上面 Select 选中的信箱。
-	// 必须用 UIDSearch：普通 Search 返回的 SearchData.All 是序号集（NumSet），
-	// 只有 UIDSearch 才保证 All 是 imap.UIDSet。
-	res, err := client.UIDSearch(nil, nil).Wait()
+	// 空 criteria = 全部邮件；不能传 nil，imapclient.searchCriteriaIsASCII 会解引用。
+	res, err := client.UIDSearch(&imap.SearchCriteria{}, nil).Wait()
 	if err != nil {
 		t.Fatalf("uidsearch %s: %v", mailbox, err)
 	}
@@ -104,10 +110,9 @@ func uidsIn(t *testing.T, client *imapclient.Client, mailbox string) map[imap.UI
 	}
 	uidSet, ok := res.All.(imap.UIDSet)
 	if !ok {
-		t.Fatalf("UIDSearch 的 All 不是 UIDSet（拿到 %T），无法按 UID 比对", res.All)
+		t.Fatalf("UIDSearch 的 All 不是 UIDSet（拿到 %T）", res.All)
 	}
-	// Nums 展开区间；第二个返回值为 false 表示集合是动态的（含 '*'），
-	// 那种情况不能静态枚举，直接失败比静默漏邮件好。
+	// Nums 展开区间；false 表示集合是动态的（含 '*'），不能静态枚举。
 	nums, static := uidSet.Nums()
 	if !static {
 		t.Fatalf("UIDSearch 返回动态 UID 集合（可能含 '*'），无法静态枚举")
@@ -179,6 +184,11 @@ func TestMoveToJunkGreenmail(t *testing.T) {
 	if len(before.inbox) < 3 {
 		t.Skipf("收件箱只有 %d 封，不足以验证「部分移动」，请先经 3025 投递 3 封以上", len(before.inbox))
 	}
+	if before.junkBox == "" {
+		t.Log(`该实例没有垃圾箱 —— 本次会顺带验证 CREATE "Junk" 兜底分支`)
+	} else {
+		t.Logf("已有垃圾箱 %q —— 本次验证既有垃圾箱的移动路径", before.junkBox)
+	}
 	t.Logf("移动前: junkBox=%q inbox=%d 封 junk=%d 封",
 		before.junkBox, len(before.inbox), len(before.junk))
 
@@ -199,15 +209,22 @@ func TestMoveToJunkGreenmail(t *testing.T) {
 
 	// 关键：新连接上复核，邮件真的换地方了。
 	after := snapshotMailboxes(t, fetcher, greenmailJunkAcctID)
-	if after.junkBox != before.junkBox {
-		t.Fatalf("垃圾箱名在移动前后不一致：%q -> %q", before.junkBox, after.junkBox)
+
+	// 移动前没有垃圾箱时，MoveUIDsToJunk 会 CREATE "Junk"（junk.go:127-133），
+	// 所以名字从 "" 变成 "Junk" 是**预期**，不是不一致。
+	switch {
+	case before.junkBox == "":
+		if after.junkBox != "Junk" {
+			t.Fatalf("没有垃圾箱时应被 CREATE 成 %q，实际 %q", "Junk", after.junkBox)
+		}
+	case after.junkBox != before.junkBox:
+		t.Fatalf("既有垃圾箱名在移动前后不应变化：%q -> %q", before.junkBox, after.junkBox)
 	}
+
+	// INBOX 内部用 UID 比对是有效的——UID 在同一信箱内稳定。
 	for _, u := range targets {
 		if after.inbox[u] {
 			t.Errorf("uid %d 移动后仍在 INBOX —— 邮件没被移走", u)
-		}
-		if !after.junk[u] {
-			t.Errorf("uid %d 移动后不在垃圾箱 %q —— 邮件丢了", u, after.junkBox)
 		}
 	}
 	for u := range before.inbox {
@@ -215,10 +232,13 @@ func TestMoveToJunkGreenmail(t *testing.T) {
 			t.Errorf("uid %d 未被选中却从 INBOX 消失 —— 误伤", u)
 		}
 	}
-	for u := range before.junk {
-		if !after.junk[u] {
-			t.Errorf("uid %d 移动前就在垃圾箱，移动后却消失 —— 误伤既有垃圾箱", u)
-		}
+	// 跨信箱只能用**数量**判定：UID 是按信箱独立编号的，移过去的邮件会在
+	// Junk 里拿到全新 UID，拿 INBOX 的 UID 去 Junk 里找必然找不到。
+	// 我第一版就是这么误报的：「邮件丢了」与「误伤既有垃圾箱」同时报，
+	// 而移动其实完全成功。
+	if want, got := len(before.junk)+len(targets), len(after.junk); got != want {
+		t.Errorf("垃圾箱邮件数 %d，期望 %d（移动前 %d + 移动 %d）—— 邮件可能丢失或被误移",
+			got, want, len(before.junk), len(targets))
 	}
 }
 
