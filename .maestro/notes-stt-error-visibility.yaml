@@ -29,6 +29,21 @@
 #   2. pocketd 带 POCKET_DEV_AUTH=true（否则 corsMiddleware 不发 ACAO）
 #   3. 明文后端：APK 须以 CAP_ANDROID_SCHEME=http 构建，否则 fetch 一直 pending
 #   4. 设备麦克风权限已授予
+#   5. **设备语言必须是 zh-CN**（2026-10-02 首次实跑补上的一条，见下）
+#
+# ⚠️ 第 5 条是这条流第一次真正跑起来才发现的（2026-10-02，模拟器 emulator-5556）：
+#   模拟器默认 `en-US`，App 随之渲染**英文**底部导航（`en-US.json` 里就是
+#   `"study": "Study"`），于是 `tapOn: "学习"` 直接 FAILED。
+#   ⇒ 这不是产品缺陷，是**流把设备语言当成了隐含前提**：任何英文语言的设备
+#     跑这条流都会在同一处挂掉，而且挂得毫无信息量。
+#   本流下面的断言文案全是中文，所以正解是**把设备语言钉死**而不是把选择器改成双语：
+#     adb -s <serial> root
+#     adb -s <serial> shell setprop persist.sys.locale zh-CN
+#     adb -s <serial> shell setprop ctl.restart zygote   # 重启后等 boot_completed=1
+#     adb -s <serial> reverse tcp:18099 tcp:18099        # reverse 会在重启后丢，要重设
+#   （setprop persist.sys.locale 需要 root，否则报 "Failed to set property"。）
+#   底部导航的选择器仍写成双语，纯属兜底：万一又有人在英文设备上跑，它至少能
+#   走到下一个断言、而不是死在入口。
 #
 # 运行：
 #   $env:JAVA_HOME = 'C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot'
@@ -56,7 +71,10 @@ appId: com.kaixuan.opencode.pocket.sttdev
           timeout: 30000
 
 # ---- 进笔记页 ----
-- tapOn: "学习"
+# 双语兜底：zh-CN 是「学习」，en-US 是「Study」（src/locales/en-US.json）。
+# 真正的修法是前置第 5 条把设备语言钉成 zh-CN，这里只是不再死在入口。
+- tapOn:
+    text: "学习|Study"
 - extendedWaitUntil:
     visible: "还没有笔记"
     timeout: 25000
