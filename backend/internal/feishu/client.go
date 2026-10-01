@@ -149,9 +149,16 @@ func (c *Client) SendMessage(ctx context.Context, receiveIDType, receiveID, msgT
 	if err != nil {
 		return err
 	}
-	payload, _ := json.Marshal(map[string]string{"content": contentText})
+	// 飞书 im/v1/messages 的 content 字段是「一个字符串，内容是被序列化的
+	// 消息体」：{"receive_id":"oc_x","msg_type":"text","content":"{\"text\":\"hi\"}"}。
+	//
+	// 也就是说 content 要装的是 contentText **本身**。原来这里先把 contentText
+	// 包成 {"content": ...} 得到 payload，再把 payload 塞进 body 的 content，
+	// 于是发出去的是 {"content":"{\"content\":\"{\\\"text\\\":...}\"}"} —— 多包一层，
+	// 飞书解析不出 text/file_key 键，**每一条消息都会失败**。
+	// 这条链路此前一次都没跑过（飞书凭证未提供），所以问题一直没暴露。
 	url := fmt.Sprintf("%s/open-apis/im/v1/messages?receive_id_type=%s", c.BaseURL, receiveIDType)
-	body, _ := json.Marshal(map[string]any{"receive_id": receiveID, "msg_type": msgType, "content": string(payload)})
+	body, _ := json.Marshal(map[string]any{"receive_id": receiveID, "msg_type": msgType, "content": contentText})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
