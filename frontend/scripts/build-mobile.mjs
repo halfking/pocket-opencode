@@ -37,7 +37,7 @@
 // empty. Override only in exceptional cases with MOBILE_ALLOW_EMPTY_API_BASE=1.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -159,12 +159,26 @@ if (build.status !== 0) {
 }
 
 console.log(`[build-mobile] cap sync ${platform}`);
+// BUG-V3 (2026-10-01): this spawnSync must pass shell:true on Windows.
+// `npx` ships as npx.cmd, and spawnSync without a shell cannot execute a
+// .cmd — it returns status:null with error ENOENT, which the check below
+// then reports as "cap sync failed (exit=null)". Measured on this machine:
+//
+//   spawnSync("npx", ["--version"])              -> status=null  error=ENOENT
+//   spawnSync("npx", ["--version"], {shell:true}) -> status=0     "10.9.8"
+//
+// Effect before the fix: the sanctioned Android build path could never finish
+// on Windows even though `vite build` had already succeeded — the artifact on
+// disk was left half-updated and the script exited nonzero. Matches the above
+// vite-build call, which already passes shell:true.
 const sync = spawnSync("npx", ["cap", "sync", platform], {
   cwd: frontendRoot,
   env: envVars,
   stdio: "inherit",
+  shell: true,
 });
 if (sync.status !== 0) {
+  if (sync.error) console.error(`[build-mobile] cap sync could not start: ${sync.error.code || sync.error.message}`);
   console.error(`[build-mobile] cap sync failed (exit=${sync.status})`);
   process.exit(sync.status ?? 1);
 }
@@ -181,16 +195,44 @@ if (sync.status !== 0) {
     process.exit(1);
   }
   if (effectiveAPIBase) {
-    // -F 固定字符串匹配：URL 中的 + ? | 等不再有正则转义/alternation 风险；
-    // grep 退出码 1（无匹配）与 2（出错）都必须让构建失败，绝不降级跳过。
+    // BUG-V4 (2026-10-01): this used to shell out to `grep -rlF`. grep does not
+    // exist on Windows, so execFileSync threw ENOENT and the catch below
+    // reported it as "expected API base ... not found in dist/assets" — a
+    // message that sends you hunting for a VITE_API_BASE problem that does not
+    // exist. Verified locally: the base was in dist/assets the whole time.
+    // Reading the bundle from Node removes the platform dependency, and lets a
+    // genuine read error be reported as a read error instead of a false miss.
+    // (The original intent is preserved: a missing base must still be FATAL —
+    // a silently-skipped check is exactly how the 2026-09-05 empty-base APK shipped.)
+    let hit = null;
+    let readError = null;
     try {
-      execFileSync("grep", ["-rlF", effectiveAPIBase, distAssets], { encoding: "utf8" });
+      const walk = (dir) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const p = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(p);
+          else if (/\.(js|mjs|css|html|json)$/.test(entry.name) && readFileSync(p, "utf8").includes(effectiveAPIBase)) {
+            hit = p;
+            return;
+          }
+        }
+      };
+      walk(distAssets);
+      if (!hit && readFileSync(distIndex, "utf8").includes(effectiveAPIBase)) hit = distIndex;
     } catch (e) {
+      readError = e;
+    }
+    if (readError) {
+      console.error(`[build-mobile] sanity check could not read the bundle: ${readError.code || readError.message}`);
+      console.error("[build-mobile] this is a READ failure, not a missing API base");
+      process.exit(1);
+    }
+    if (!hit) {
       console.error(`[build-mobile] sanity check failed: expected API base ${effectiveAPIBase} not found in dist/assets`);
       console.error("[build-mobile] verify that VITE_API_BASE is exported into the build environment");
       process.exit(1);
     }
-    console.log(`[build-mobile] sanity check passed: ${effectiveAPIBase} present in bundle`);
+    console.log(`[build-mobile] sanity check passed: ${effectiveAPIBase} present in ${path.relative(frontendRoot, hit)}`);
   }
 }
 

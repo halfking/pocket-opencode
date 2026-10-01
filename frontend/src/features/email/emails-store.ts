@@ -46,6 +46,8 @@ export interface LocalEmail {
   updatedAt: number
   deletedAt: number
   bodyPurged: boolean
+  /** 邮件所在目录（IMAP 信箱名）。空 = INBOX。 */
+  folder: string
 }
 
 export interface ListFilter {
@@ -54,6 +56,8 @@ export interface ListFilter {
   importance?: string
   unreadOnly?: boolean
   uncategorized?: boolean
+  /** 目录过滤：'' = 收件箱（默认）；具体目录名 = 该目录；'__all__' = 全部。 */
+  folder?: string
   limit?: number
   offset?: number
 }
@@ -168,6 +172,11 @@ export async function listEmails(filter: ListFilter = {}): Promise<LocalEmail[]>
   if (filter.importance) { sql += ' AND importance = ?'; vals.push(filter.importance) }
   if (filter.unreadOnly) { sql += ' AND is_read = 0' }
   if (filter.uncategorized) { sql += " AND (category IS NULL OR category = '')" }
+  // 目录过滤与服务端同语义：'' = 收件箱（不在任何目录里）；具体名 = 该目录；
+  // '__all__' = 全部。迁移到目录的邮件从收件箱视图消失、在目录视图可见。
+  if (filter.folder === '__all__') { /* 不过滤 */ }
+  else if (filter.folder) { sql += " AND IFNULL(folder, '') = ?"; vals.push(filter.folder) }
+  else { sql += " AND IFNULL(folder, '') = ''" }
   sql += ' AND IFNULL(deleted_at, 0) = 0'
   sql += ' ORDER BY date DESC LIMIT ? OFFSET ?'
   vals.push(filter.limit ?? 200, filter.offset ?? 0)
@@ -180,20 +189,27 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
   const id = e.id || `email-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const now = Date.now()
   const updatedAt = e.updatedAt && e.updatedAt > 0 ? e.updatedAt : now
-  const existing = await localDB.queryOne<{ deleted_at: number | null; body_purged: number | null }>(
-    'SELECT deleted_at, body_purged FROM local_emails WHERE id = ?',
+  const existing = await localDB.queryOne<{ deleted_at: number | null; body_purged: number | null; folder: string | null }>(
+    'SELECT deleted_at, body_purged, folder FROM local_emails WHERE id = ?',
     [id],
   )
   if (existing && (Number(existing.deleted_at) > 0 || Number(existing.body_purged) === 1)) {
     return false
+  }
+  // 待同步的本地移动不能被服务端快照打回：本地已在某目录（且还有 pending 的
+  // 迁移操作）时保留本地 folder，等「同步到服务器」完成后再随服务端收敛。
+  let folder = e.folder ?? null
+  if (existing && existing.folder) {
+    const { hasPendingOpsForEmail } = await import('./email-folders-store')
+    if (await hasPendingOpsForEmail(id)) folder = existing.folder
   }
   try {
     await localDB.run(
       `INSERT INTO local_emails
          (id, account_id, message_id, uid, from_address, from_name, subject, snippet,
           date, is_read, is_starred, category, importance, ai_summary, suggested_action,
-          has_attachments, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          has_attachments, created_at, updated_at, folder)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET
          subject=excluded.subject,
          snippet=excluded.snippet,
@@ -209,11 +225,12 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
          is_starred=local_emails.is_starred,
          uid=COALESCE(excluded.uid, local_emails.uid),
          message_id=COALESCE(excluded.message_id, local_emails.message_id),
+         folder=COALESCE(excluded.folder, local_emails.folder),
          updated_at=excluded.updated_at`,
       [id, e.accountId, e.messageId ?? null, e.uid ?? null, e.fromAddress, e.fromName ?? null,
        e.subject ?? null, e.snippet ?? null, e.date, e.isRead ? 1 : 0, e.isStarred ? 1 : 0,
        e.category ?? null, e.importance ?? null, e.aiSummary ?? null, e.suggestedAction ?? null,
-       e.hasAttachments ? 1 : 0, now, updatedAt],
+       e.hasAttachments ? 1 : 0, now, updatedAt, folder],
     )
     return true
   } catch (err) {
@@ -283,6 +300,7 @@ export async function syncEmailsFromServer(limit = 200, since = 0): Promise<numb
       suggestedAction: e.suggestedAction ?? null,
       hasAttachments: !!e.hasAttachments,
       updatedAt: e.updatedAt && e.updatedAt > 0 ? e.updatedAt : dateMs,
+      folder: e.folderName ?? '',
     })
     if (ok) n++
     else failed++
@@ -309,6 +327,11 @@ export async function markRead(id: string, read: boolean): Promise<void> {
 
 export async function setStarred(id: string, starred: boolean): Promise<void> {
   await localDB.run('UPDATE local_emails SET is_starred = ? WHERE id = ?', [starred ? 1 : 0, id])
+}
+
+/** 本地记录邮件目录变更（服务端 move API 成功后调用，保持两端一致）。 */
+export async function setFolder(id: string, folder: string): Promise<void> {
+  await localDB.run('UPDATE local_emails SET folder = ? WHERE id = ?', [folder || '', id])
 }
 
 export async function setAiClassification(id: string, category: string, importance: string, summary: string, action: string): Promise<void> {
@@ -443,6 +466,7 @@ function rowToEmail(r: any): LocalEmail {
     updatedAt: r.updated_at ?? 0,
     deletedAt: Number(r.deleted_at) || 0,
     bodyPurged: r.body_purged === 1,
+    folder: r.folder || '',
   }
 }
 

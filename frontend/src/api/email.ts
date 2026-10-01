@@ -152,6 +152,65 @@ export interface Email {
   hasAttachments: boolean
   /** 服务端变更时间（Unix ms）；缺省时客户端回退到 date。 */
   updatedAt?: number
+  /** 邮件所在目录（IMAP 信箱名）。空/缺省 = INBOX。 */
+  folderName?: string
+}
+
+// ── 自定义邮件目录 ──────────────────────────────────────────────────────
+
+export interface EmailFolder {
+  id: string
+  accountId: string
+  /** 完整 IMAP 信箱名（可含层级分隔符）。 */
+  name: string
+  displayName?: string
+  /** inbox/trash/junk/sent/drafts/archive/... 空 = 普通目录。 */
+  special?: string
+  /** user = 本产品创建；server = IMAP LIST 发现。 */
+  source?: string
+  serverSynced?: boolean
+  createdAt?: number
+  updatedAt?: number
+  /** 查询期派生字段：目录内邮件数。 */
+  extra?: { emailCount?: number }
+}
+
+export interface EmailOpsEntry {
+  id: string
+  accountId: string
+  emailId: string
+  uid?: number
+  action: 'move' | 'delete'
+  targetFolder?: string
+  subject?: string
+  status: 'pending' | 'applied' | 'failed' | 'skipped'
+  error?: string
+  idempotencyKey?: string
+  createdAt: number
+  updatedAt: number
+  appliedAt?: number
+}
+
+export interface EmailOpsSyncReport {
+  executed: number
+  applied: number
+  failed: number
+  skipped: number
+  remaining: number
+  errors?: string[]
+}
+
+export interface EmailOrganizeReport {
+  dryRun?: boolean
+  folder?: string
+  count?: number
+  ids?: string[]
+  reasons?: string[]
+  scanned?: number
+  moved?: number
+  applied?: number
+  pending?: number
+  errors?: string[]
 }
 
 export interface DailySummary {
@@ -173,6 +232,8 @@ export interface EmailFilter {
   limit?: number
   /** 只拉 updatedAt > since 的变更（Unix ms）。 */
   since?: number
+  /** 目录过滤：'' = 收件箱；具体目录名 = 该目录；'__all__' = 全部。 */
+  folder?: string
 }
 
 export const emailApi = {
@@ -228,6 +289,8 @@ export const emailApi = {
     if (filter.unreadOnly) qs.set('unread', '1')
     if (filter.limit) qs.set('limit', String(filter.limit))
     if (filter.since && filter.since > 0) qs.set('since', String(filter.since))
+    if (filter.folder === '__all__') qs.set('folder', '__all__')
+    else if (filter.folder) qs.set('folder', filter.folder)
     const q = qs.toString()
     return http(`/api/emails${q ? `?${q}` : ''}`)
   },
@@ -287,6 +350,66 @@ export const emailApi = {
     return http('/api/emails/purge', {
       method: 'POST',
       body: JSON.stringify({ ids }),
+    })
+  },
+
+  // ── 自定义邮件目录（同邮箱服务器能力：创建/列表/移动） ────────────────
+  listFolders(accountId?: string): Promise<{ folders: EmailFolder[] }> {
+    const qs = accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''
+    return http(`/api/email/folders${qs}`)
+  },
+  /** 在服务器上真实创建目录（IMAP CREATE）并登记。 */
+  createFolder(accountId: string, name: string, displayName?: string): Promise<{ folder: EmailFolder }> {
+    return http('/api/email/folders', {
+      method: 'POST',
+      body: JSON.stringify({ accountId, name, displayName }),
+    })
+  },
+  /** 删除目录登记（目录内邮件退回收件箱视图；服务器目录本身不删）。 */
+  deleteFolder(id: string): Promise<{ deleted: boolean }> {
+    return http(`/api/email/folders/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  },
+  /**
+   * 移动邮件到目录（folder 传 '' = 移回收件箱）。本地立即生效并记操作日志，
+   * 服务端尽力即时 IMAP MOVE；失败的操作留在日志里等 /ops/sync 重放。
+   */
+  moveEmails(ids: string[], folder: string): Promise<{ moved: number; applied: number; pending: number; errors?: string[]; folder?: string }> {
+    return http('/api/emails/move', {
+      method: 'POST',
+      body: JSON.stringify({ ids, folder }),
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+    })
+  },
+
+  // ── 本地迁移操作日志 + 同步按钮 ────────────────────────────────────────
+  /** 服务端操作日志（status: pending/applied/failed，空 = 全部）。 */
+  listOps(status?: string, limit?: number): Promise<{ ops: EmailOpsEntry[] }> {
+    const qs = new URLSearchParams()
+    if (status) qs.set('status', status)
+    if (limit) qs.set('limit', String(limit))
+    const q = qs.toString()
+    return http(`/api/emails/ops${q ? `?${q}` : ''}`)
+  },
+  /** 离线队列回放：把本地 pending 操作推给服务端日志（幂等键去重）。 */
+  pushOps(ops: { accountId: string; emailId: string; uid?: number; action: string; targetFolder?: string; subject?: string; idempotencyKey: string }[]): Promise<{ recorded: number }> {
+    return http('/api/emails/ops', { method: 'POST', body: JSON.stringify({ ops }) })
+  },
+  /** 同步执行：keys 传幂等键数组 = 可选同步；不传 = 全量 pending。 */
+  syncOps(keys?: string[]): Promise<EmailOpsSyncReport> {
+    return http('/api/emails/ops/sync', {
+      method: 'POST',
+      body: JSON.stringify(keys?.length ? { ids: keys } : {}),
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+    })
+  },
+
+  // ── 智能识别系统通知邮件 → 整理进目录 ─────────────────────────────────
+  /** dryRun=true 只预览（返回命中的 id 与原因）；false 直接整理。 */
+  organizeInbox(opts: { accountId?: string; folder?: string; dryRun?: boolean } = {}): Promise<EmailOrganizeReport> {
+    return http('/api/emails/organize', {
+      method: 'POST',
+      body: JSON.stringify(opts),
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     })
   },
 
