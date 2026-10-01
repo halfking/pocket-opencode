@@ -37,6 +37,8 @@ const SRC = path.resolve(HERE, '..', '..', '..')          // frontend/src
 const REPO = path.resolve(SRC, '..', '..')                 // 仓库根
 const FRONTEND_API = path.join(SRC, 'api', 'email.ts')
 const BACKEND_PIPELINE = path.join(REPO, 'backend', 'internal', 'server', 'server_email_pipeline.go')
+const BACKEND_CLASSIFY = path.join(REPO, 'backend', 'internal', 'server', 'server_email_classify.go')
+const BACKEND_CLASSIFY_GW = path.join(REPO, 'backend', 'internal', 'server', 'server_email_classify_gateway.go')
 
 // ─────────────────────────────────────────────────────────────────────
 // 纯函数：把「客户端超时 vs 服务端预算」抽出来，才能喂合成样本做负控。
@@ -198,6 +200,158 @@ function findHttpOptionsObject(body) {
   visit(body)
   return found
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// 第二条不变式：批量端点的预算 = 单次预算 × 批量条数
+// ─────────────────────────────────────────────────────────────────────
+
+/** 从 Go 源码里取形如 `context.WithTimeout(<x>, N*time.Unit)` 的毫秒数。 */
+function withTimeoutMsIn(src, fnName) {
+  const body = goFuncBody(stripGoComments(src), fnName)
+  if (body === null) return null
+  const m = /context\.WithTimeout\(\s*\w+\s*,\s*([0-9]+)\s*\*\s*time\.(Second|Minute|Hour)\s*\)/.exec(body)
+  if (!m) return null
+  return Number(m[1]) * { Second: 1000, Minute: 60_000, Hour: 3_600_000 }[m[2]]
+}
+
+/**
+ * 归类的服务端最坏预算。
+ *
+ * 与 pipeline 不同，handleEmailClassify **没有整体超时**——它的预算是
+ * 一个循环：每封先试 kxmemory（20s），失败再回落 LLM 网关（25s）。
+ * 所以是 (kxmemory + 网关) × 默认 limit，不是某个字面量。
+ */
+export function classifyServerBudgetMs(classifyGo, gatewayGo) {
+  const perKx = withTimeoutMsIn(classifyGo, 'classifyViaKxmemory')
+  const perGw = withTimeoutMsIn(gatewayGo, 'classifyViaGateway')
+  if (perKx === null || perGw === null) return null
+  // 默认 limit 在 handleEmailClassify 里：`if limit <= 0 { limit = 20 }`
+  const handler = goFuncBody(stripGoComments(classifyGo), 'handleEmailClassify')
+  const m = handler && /limit\s*=\s*([0-9]+)/.exec(handler)
+  if (!m) return null
+  return (perKx + perGw) * Number(m[1])
+}
+
+/** 与 pipelineWiring 同形，只是找 classifyInbox。 */
+export function classifyWiring(src) {
+  const sf = ts.createSourceFile('email.ts', src, ts.ScriptTarget.Latest, true)
+  let found = null
+  const visit = (node) => {
+    if (found) return
+    if (ts.isMethodDeclaration(node) && node.name && node.name.getText(sf) === 'classifyInbox') {
+      found = node
+      return
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sf)
+  if (!found || !found.body) return { signal: false, timeoutMs: false, timeoutExpr: null }
+
+  let obj = null
+  const scan = (node) => {
+    if (obj) return
+    if (ts.isCallExpression(node) && node.expression.getText() === 'http') {
+      const second = node.arguments[1]
+      if (second && ts.isObjectLiteralExpression(second)) obj = second
+      return
+    }
+    ts.forEachChild(node, scan)
+  }
+  scan(found.body)
+  if (!obj) return { signal: false, timeoutMs: false, timeoutExpr: null }
+
+  let signal = false
+  let timeoutMs = false
+  let timeoutExpr = null
+  for (const p of obj.properties) {
+    let key = null
+    if (ts.isPropertyAssignment(p)) key = p.name.getText(sf).replace(/['"]/g, '')
+    else if (ts.isShorthandPropertyAssignment(p)) key = p.name.getText(sf)
+    if (key === 'signal') signal = true
+    if (key === 'timeoutMs' && ts.isPropertyAssignment(p)) {
+      timeoutMs = true
+      timeoutExpr = p.initializer.getText(sf)
+    }
+  }
+  return { signal, timeoutMs, timeoutExpr }
+}
+
+const classifyGo = fs.readFileSync(BACKEND_CLASSIFY, 'utf8')
+const classifyGwGo = fs.readFileSync(BACKEND_CLASSIFY_GW, 'utf8')
+
+describe('归类 客户端超时 vs 服务端最坏预算', () => {
+  it('能从后端源码反推出「单封 × 条数」的最坏预算（反推不能空跑）', () => {
+    const budget = classifyServerBudgetMs(classifyGo, classifyGwGo)
+    assert.notEqual(budget, null, '没从 classify 源码反推出预算——判据失效，不是代码有问题')
+    // 20s(kxmemory) + 25s(网关) × 20 封 = 900_000
+    assert.equal(budget, 900_000, `反推出 ${budget}ms，与「(20+25) 秒 × 20 封」对不上`)
+  })
+
+  it('客户端超时严格大于服务端最坏预算', () => {
+    const server = classifyServerBudgetMs(classifyGo, classifyGwGo)
+    const client = evalConstMs(apiSrc, 'CLASSIFY_TIMEOUT_MS')
+    assert.notEqual(client, null, 'api/email.ts 里找不到 CLASSIFY_TIMEOUT_MS')
+    assert.ok(
+      client > server,
+      `CLASSIFY_TIMEOUT_MS=${client}ms 必须大于服务端最坏预算 ${server}ms；` +
+      `否则前端会比服务端先放弃——而服务端 ctx 派生自 r.Context()，断连会把它` +
+      `当场杀掉，一批邮件只能处理掉前两三封，用户却什么都看不出来`,
+    )
+  })
+
+  it('classifyInbox 真的接上了那个常量（不是又退回通用 120s）', () => {
+    const w = classifyWiring(apiSrc)
+    assert.equal(w.timeoutMs, true, 'classifyInbox 没有传 timeoutMs')
+    assert.equal(
+      w.timeoutExpr,
+      'CLASSIFY_TIMEOUT_MS',
+      'classifyInbox 又用回了通用的 LONG_REQUEST_TIMEOUT_MS（120s < 900s）',
+    )
+    assert.equal(w.signal, true, 'classifyInbox 没有把 signal 传给 http()')
+  })
+})
+
+describe('判据自检（归类部分）：负控必须转红', () => {
+  it('客户端超时改回 120s → 预算判据转红', () => {
+    const broken = apiSrc.replace(
+      /export const CLASSIFY_TIMEOUT_MS = [^\r\n]*/,
+      'export const CLASSIFY_TIMEOUT_MS = 120_000',
+    )
+    assert.notEqual(broken, apiSrc, '负控样本没有真的改到 CLASSIFY_TIMEOUT_MS（替换没命中）')
+    assert.ok(
+      evalConstMs(broken, 'CLASSIFY_TIMEOUT_MS') <= classifyServerBudgetMs(classifyGo, classifyGwGo),
+      '负控本该转红却判成了通过——判据坏了',
+    )
+  })
+
+  it('服务端把默认 limit 从 20 调到 50 → 预算判据跟着变大', () => {
+    // 反向证明判据真的在读源码：改后端条数，预算必须从 900s 变成 2250s。
+    // 写死 900_000 的判据在这里会纹丝不动——那才是假护栏。
+    const broken = classifyGo.replace('limit = 20', 'limit = 50')
+    assert.notEqual(broken, classifyGo, '负控样本没有真的改到 limit（替换没命中）')
+    assert.equal(classifyServerBudgetMs(broken, classifyGwGo), 2_250_000)
+  })
+
+  it('注释里的 limit=20 / WithTimeout 不计入预算', () => {
+    const inflated = classifyGo.replace(
+      'func (s *Server) handleEmailClassify(',
+      '// limit = 99\r\n// context.WithTimeout(ctx, 99*time.Hour)\r\nfunc (s *Server) handleEmailClassify(',
+    )
+    assert.notEqual(inflated, classifyGo, '负控样本没有插进注释（替换没命中）')
+    assert.equal(
+      classifyServerBudgetMs(inflated, classifyGwGo),
+      classifyServerBudgetMs(classifyGo, classifyGwGo),
+      '注释里的数字被算进去了——反推判据必须剥注释',
+    )
+  })
+
+  it('classifyInbox 的 signal 被摘掉 → 接线判据转红', () => {
+    const broken = mutateAfter(apiSrc, "'/api/emails/classify'",
+      /\r?\n\s*signal,(?=\r?\n)/)
+    assert.notEqual(broken, apiSrc, '负控样本没有真的删掉 signal（替换没命中）')
+    assert.equal(classifyWiring(broken).signal, false)
+  })
+})
 
 // ─────────────────────────────────────────────────────────────────────
 // 真源断言

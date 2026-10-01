@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import { emailApi } from '../../api/email'
+import { TimeoutError } from '../../api/http'
 import i18n from '../../i18n'
 import { normalizeEmailCategory } from './email-categories'
 import { applyClassifyResult, classifyDoneHint, classifyProgressLabel, DEFAULT_CLASSIFY_MAX_ROUNDS, isUncategorized, shouldContinueClassify } from './email-classify-run'
@@ -136,9 +137,18 @@ export function useEmailInbox() {
         perRound: PER_ROUND,
       })
     } catch (e) {
-      if (controller.signal.aborted) {
+      const leftover = next.filter((m) => isUncategorized(m.category)).length
+      if (e instanceof TimeoutError) {
+        // 2026-10-03：这一支原先落到 else，于是把 http 层抛的
+        // `请求超时（120s）：/api/emails/classify` 原样显示给用户。
+        // 那是带路由名的技术串——用户既不知道发生了什么，也不知道该做什么。
+        // 而且它掩盖了真正的事实：**服务端是被我们断连杀掉的**，不是它坏了。
+        // 已落库的部分照实保留并说明停在哪。
+        classifyHint.value = leftover
+          ? `归类超时中断，仍有 ${leftover} 封未归类（已完成的已保存，可再点一次继续）`
+          : '归类完成'
+      } else if (controller.signal.aborted) {
         // 用户主动中止：已落库的部分保留，如实说明停在哪
-        const leftover = next.filter((m) => isUncategorized(m.category)).length
         classifyHint.value = leftover ? `已取消，仍有 ${leftover} 封未归类` : '归类完成'
       } else {
         const raw = e instanceof Error ? e.message : '归类失败'

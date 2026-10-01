@@ -32,6 +32,35 @@ export const PIPELINE_TIMEOUT_MS = 17 * 60_000
 /** 历史回补（按日期窗口回 IMAP 取回）的客户端超时。 */
 export const BACKFILL_TIMEOUT_MS = 10 * 60_000
 
+/**
+ * 邮件归类（/api/emails/classify）的客户端超时。
+ *
+ * 与 PIPELINE_TIMEOUT_MS 同源的问题，但这里的账更难算，因为服务端**没有**
+ * 整体超时——它的预算来自一个循环：
+ *
+ *   handleEmailClassify（server_email_classify.go）
+ *     for 每封（默认 limit=20）:
+ *       classifyViaKxmemory  context.WithTimeout(ctx, 20s)   ← 先试 kxmemory
+ *       失败则回落 classifyViaGateway  context.WithTimeout(ctx, 25s)
+ *
+ * 所以单封最坏是 **20 + 25 = 45 秒**（kxmemory 慢/失败再走网关），20 封就是
+ * **900 秒 = 15 分钟**。而这��请求原先吃的是通用的 LONG_REQUEST_TIMEOUT_MS
+ * （120 秒）。
+ *
+ * 后果不是「慢一点」，是**静默截断**：120 秒时前端 abort，http 层断开连接，
+ * 而服务端 handler 的 ctx 派生自 r.Context()，于是服务端当场被杀——按 45s/封
+ * 算只能处理掉 2~3 封。剩下 17 封留在原地，用户看到的是
+ * `请求超时（120s）：/api/emails/classify` 这样一条**原始技术串**，
+ * 没有任何地方说「是超时，不是你没点对」。
+ *
+ * 这正是用户报的「邮件管理没有自动归纳整理的能力」最难查的那一种形态：
+ * 链路是通的、网关是好的，只是批太大、窗口太短。
+ *
+ * 取 16 分钟（> 900 秒），由 __tests__/email-long-request-budget.test.mjs
+ * 从后端源码反推 20s + 25s 与默认 limit 来守护。
+ */
+export const CLASSIFY_TIMEOUT_MS = 16 * 60_000
+
 export type EmailCategory =
   | 'work' | 'bill' | 'notification' | 'personal' | 'marketing' | 'spam'
 export type EmailImportance = 'high' | 'medium' | 'low'
@@ -397,7 +426,9 @@ export const emailApi = {
       body: JSON.stringify({ limit }),
       signal,
       // 归类逐封调 LLM，天然慢；给足额度再由用户手动中止。
-      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+      // 注意不能用通用的 120s：服务端单封最坏 45s × 20 封 = 900s，
+      // 见 CLASSIFY_TIMEOUT_MS 的注释。
+      timeoutMs: CLASSIFY_TIMEOUT_MS,
     })
   },
   purgeEmails(ids: string[]): Promise<{ purged: number }> {
