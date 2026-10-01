@@ -110,6 +110,21 @@ jobs:
       - name: Run Evernote ENEX parser tests
         run: node --test src/features/imports/evernote-parser.test.ts
 
+      # ── 孤儿测试卡口（2026-10-02 接进 CI）──────────────────────────────
+      # 为什么必须进 CI：这张卡口本机在 npm run gates 里执行，而 CI 从来**不跑 gates**
+      # （它逐条手列 node --test）。只接本机的话，"新增测试没人跑"在 CI 上照样静默通过
+      # —— 护栏存在但没人执行，等于没有护栏，正是这批测试当初的成因。
+      #
+      # 两步的分工：
+      #   check:test-coverage  静态：任一 *.test.mjs / *.test.ts 没被 gates 可达脚本覆盖即失败
+      #   test:all             运行时：全量 145 个文件，并核对"枚举 ⊆ 实际执行且都有产出"
+      # 上面那些手列步骤**不要删**：它们各自带注释说明锁的是哪个历史缺陷，保留可追溯性。
+      - name: Check every test file is covered by a gates-reachable script
+        run: npm run check:test-coverage
+
+      - name: Run ALL .test.mjs / .test.ts with execution census
+        run: npm run test:all
+
       - name: Build HarmonyOS ArkWeb assets
         run: MOBILE_FAST=1 VITE_API_BASE=https://harmony-ci.example.invalid node scripts/build-harmony.mjs dev
 

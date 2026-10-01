@@ -17,21 +17,21 @@
 //   - 枚举用自己写的 glob 匹配器把每个脚本的测试 glob 展开到真实文件上，
 //     任何一个 *.test.mjs 没被覆盖就失败；看起来像测试 glob 却匹配 0 个文件的也失败（静默失配探测器）。
 //   - 运行时那一半（"真的被执行过、且产出用例"）由 run-mjs-tests.mjs + 普查 reporter 负责。
-import { readFileSync, readdirSync, statSync, existsSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
 import { join, dirname, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(here, '..')
-const BASELINE = join(here, 'test-coverage-baseline.json')
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', '.vite', '.wrangler', '.git'])
 
-// 强制卡口的测试类：.mjs 全部必须被执行。
-const ENFORCED_SUFFIX = '.test.mjs'
-// 只做棘轮的测试类：见文件末尾「已知遗留」。
-const ADVISORY_SUFFIX = '.test.ts'
+// 强制卡口的测试类：.mjs 与 .ts 都必须被执行。
+// （曾经以为 .ts "跑不了"——那是 4cd6e7e 的结论。2026-10-02 实测：55 个 .test.ts 里
+//   54 个共 333 个用例在 node 22 下全部通过，只有 flashcardIo.test.ts 因源码无扩展名
+//   import 跑不起来。333 个从不执行的测试比 91 个 .mjs 更值得接进 gates。）
+const ENFORCED_SUFFIXES = ['.test.mjs', '.test.ts']
 
 function walk(dir, suffix, out = []) {
   for (const name of readdirSync(dir)) {
@@ -129,13 +129,18 @@ for (const name of reachable) {
 }
 
 // ── 3. 判据 ──
-const enforced = walk(ROOT, ENFORCED_SUFFIX).sort()
-const advisory = walk(ROOT, ADVISORY_SUFFIX).sort()
+// 豁免清单与运行时普查共用一份：只登记"确实跑不起来"或"确实零产出"的存量，
+// 每条必须写理由。豁免指向**已不存在**的文件时硬失败——否则删掉文件就等于永久免检。
+const WAIVERS = JSON.parse(readFileSync(join(here, 'test-coverage-waivers.json'), 'utf8'))
+const waived = { ...(WAIVERS.unrunnable ?? {}), ...(WAIVERS.zeroCase ?? {}) }
 
-if (!enforced.length) {
-  console.error(`❌ 整个 frontend/ 下没找到任何 *${ENFORCED_SUFFIX} —— 判据本身失效了，别空转绿灯。`)
+const found = ENFORCED_SUFFIXES.flatMap((s) => walk(ROOT, s)).sort()
+if (!found.length) {
+  console.error(`❌ 整个 frontend/ 下没找到任何测试文件（${ENFORCED_SUFFIXES.join(' / ')}）—— 判据本身失效了，别空转绿灯。`)
   process.exit(2)
 }
+const staleWaivers = Object.keys(waived).filter((f) => !found.includes(f))
+const enforced = found.filter((f) => !waived[f])
 
 for (const p of patterns) p.matched = matchAll(p.glob, enforced)
 const covered = new Set(patterns.flatMap((p) => p.matched))
@@ -143,7 +148,11 @@ const orphans = enforced.filter((f) => !covered.has(f))
 // 静默失配：看起来是测试 glob，却一个真实文件都没匹配到
 const deadGlobs = patterns.filter((p) => p.matched.length === 0)
 
-console.log(`【孤儿测试卡口】gates 可达脚本 ${reachable.size} 个 · ${ENFORCED_SUFFIX} 文件 ${enforced.length} 个`)
+const byExt = (list, ext) => list.filter((f) => f.endsWith(ext)).length
+console.log(
+  `【孤儿测试卡口】gates 可达脚本 ${reachable.size} 个 · 测试文件 ${found.length} 个` +
+    `（.mjs ${byExt(found, '.test.mjs')} / .ts ${byExt(found, '.test.ts')}，其中 ${Object.keys(waived).length} 个在豁免名单）`,
+)
 for (const p of patterns) {
   if (!p.glob.includes('*')) continue // 显式文件路径只统计数量，逐个打印会淹没真正的信号
   const via = p.matched.length === 0 ? ' ❗零匹配' : ''
@@ -153,6 +162,13 @@ const explicit = patterns.filter((p) => !p.glob.includes('*'))
 const explicitMiss = explicit.filter((p) => p.matched.length === 0)
 console.log(`    另有 ${explicit.length} 条显式文件路径（test:native / test:stt 等分组脚本），全部命中`)
 console.log(`    被覆盖 ${covered.size} / ${enforced.length}${orphans.length ? ` · **孤儿 ${orphans.length}**` : ''}\n`)
+
+if (staleWaivers.length) {
+  console.error('❌ 豁免名单里有文件已经不存在了——这会让"删掉测试"变成永久免检，请清理：')
+  for (const f of staleWaivers) console.error(`   ${f}`)
+  console.error('   （文件已删 → 从 test-coverage-waivers.json 移除；文件被改名 → 改成新名字）\n')
+  process.exit(1)
+}
 
 if (deadGlobs.length || explicitMiss.length) {
   console.error('❌ 以下 gates 脚本里的测试 glob / 路径一个文件都没匹配到（静默失配，node 不会报错）：')
@@ -169,37 +185,9 @@ if (orphans.length) {
   process.exit(1)
 }
 
-// ── 4. 已知遗留：.test.ts 从不执行（棘轮，只许减少）──
-//   这批文件目前**跑不了**：源文件用无扩展名 import（from '.../src/native/pocket-native'），
-//   Node 的 ESM 解析器要求显式扩展名；加 --experimental-strip-types 也救不了。
-//   要启用得改源码 import 或引入 loader/alias，属于更大的改动，不在本卡口范围内。
-//   但必须钉住数字：**不许再往这个洞里加文件**，否则"反正也不跑"会掩盖新增的孤儿。
-let baseline = { note: '允许存在的"从不执行" .test.ts 文件数；只许减少不许增加。', unwiredTestTs: 0 }
-if (existsSync(BASELINE)) {
-  try {
-    baseline = JSON.parse(readFileSync(BASELINE, 'utf8'))
-  } catch (e) {
-    console.error(`❌ 基线解析失败：${BASELINE}\n   ${e.message}`)
-    process.exit(2)
-  }
+for (const [f, why] of Object.entries(waived)) {
+  console.log(`   豁免 ${f}\n      ${why}`)
 }
-if (process.argv.includes('--update-baseline')) {
-  writeFileSync(BASELINE, JSON.stringify({ ...baseline, unwiredTestTs: advisory.length }, null, 2) + '\n', 'utf8')
-  console.log(`✅ 基线已更新（${advisory.length} 个 .test.ts）`)
-  process.exit(0)
-}
-
-const advisoryCovered = new Set(patterns.flatMap((p) => matchAll(p.glob, advisory)))
-const unwired = advisory.filter((f) => !advisoryCovered.has(f))
-console.log(`ℹ️  ${ADVISORY_SUFFIX} ${advisory.length} 个，其中 **${unwired.length} 个从未被执行**（已知遗留，见文件末尾注释）`)
-if (unwired.length > (baseline.unwiredTestTs ?? 0)) {
-  console.error(
-    `❌ 从不执行的 ${ADVISORY_SUFFIX} 文件增加到 ${unwired.length} 个（棘轮基线 ${baseline.unwiredTestTs}）。` +
-      `\n   要么让它真的跑起来，要么别再加。`,
-  )
-  process.exit(1)
-}
-
 console.log(`\n✅ 无孤儿测试文件（gates 可达脚本 ${reachable.size} 个，覆盖 ${covered.size}/${enforced.length}）`)
 if (unreachable.length) {
   console.log(`   （定义在 gates 之外、因此不计入覆盖的 script：${unreachable.join(', ')}）`)
