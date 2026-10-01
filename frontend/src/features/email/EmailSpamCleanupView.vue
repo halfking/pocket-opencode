@@ -82,14 +82,15 @@ import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { emailApi, type EmailAccount } from '../../api/email'
 import { previewEmailCleanup, runEmailCleanup, type EmailCleanupItem } from '../../api/email-cleanup'
-import { ApiError } from '../../api/http'
 import { deleteEmailsByIds } from './emails-store'
 import { formatEmailRelTime, hasCleanupConstraint } from './cleanup-filter'
 import { isLocalTestAddress } from './providers'
 import { useConfirm } from '../../composables/useConfirm'
+import { useApiError } from '../../composables/useApiError'
 
 const router = useRouter()
 const { confirm } = useConfirm()
+const apiError = useApiError()
 const accounts = ref<EmailAccount[]>([])
 const subject = ref('')
 const from = ref('')
@@ -144,7 +145,7 @@ async function syncFirst() {
     const fail = r.failed?.length ? `，失败 ${r.failed.length}` : ''
     syncMsg.value = `已同步 ${r.synced ?? 0} 个账户，新邮件 ${r.new ?? 0}${fail}`
   } catch (e) {
-    syncMsg.value = e instanceof ApiError ? e.message : (e instanceof Error ? e.message : '同步失败')
+    syncMsg.value = apiError(e, '同步失败')
   } finally {
     syncing.value = false
   }
@@ -179,7 +180,7 @@ async function preview() {
     resultMsg.value = r.matched === 0 ? '没有匹配的邮件' : `将处理 ${r.matched} 封`
     resultOk.value = true
   } catch (e) {
-    formError.value = e instanceof ApiError ? e.message : (e instanceof Error ? e.message : '预览失败')
+    formError.value = apiError(e, '预览失败')
   } finally {
     busy.value = false
   }
@@ -209,7 +210,7 @@ async function confirmDelete() {
     resetPreview()
   } catch (e) {
     resultOk.value = false
-    resultMsg.value = e instanceof ApiError ? e.message : (e instanceof Error ? e.message : '清理失败')
+    resultMsg.value = apiError(e, '清理失败')
   } finally {
     busy.value = false
   }

@@ -108,12 +108,13 @@
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { emailApi } from '../../api/email'
-import { ApiError } from '../../api/http'
 import {
   EMAIL_PROVIDERS, type EmailProviderId, inferProviderId, providerById,
 } from './providers'
+import { useApiError } from '../../composables/useApiError'
 
 const router = useRouter()
+const apiError = useApiError()
 const step = ref<1 | 2 | 3>(1)
 const providerId = ref<EmailProviderId>('qq')
 const provider = computed(() => providerById(providerId.value))
@@ -225,7 +226,7 @@ async function saveAndVerify() {
       }
     } catch (e) {
       imapOk.value = false
-      imapMsg.value = e instanceof ApiError ? e.message : (e instanceof Error ? e.message : 'IMAP 失败')
+      imapMsg.value = apiError(e, 'IMAP 失败')
     }
     if (smtpHost.value.trim()) {
       try {
@@ -234,7 +235,7 @@ async function saveAndVerify() {
         smtpMsg.value = smtp.smtp
       } catch (e) {
         smtpOk.value = false
-        smtpMsg.value = e instanceof ApiError ? e.message : (e instanceof Error ? e.message : 'SMTP 失败')
+        smtpMsg.value = apiError(e, 'SMTP 失败')
       }
     } else {
       smtpOk.value = true
@@ -245,7 +246,7 @@ async function saveAndVerify() {
       : `已保存 ${created.emailAddress}，但连接未全部通过`
     step.value = 3
   } catch (e) {
-    formError.value = e instanceof ApiError ? `保存失败：${e.message}` : (e instanceof Error ? e.message : '保存失败')
+    formError.value = apiError(e, '保存失败')
   } finally {
     busy.value = false
   }

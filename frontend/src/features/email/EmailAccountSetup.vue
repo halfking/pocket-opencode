@@ -175,11 +175,13 @@ import { emailApi } from '../../api/email'
 import type { EmailAccount as ApiEmailAccount, EmailCredentialInput } from '../../api/email'
 import { ApiError } from '../../api/http'
 import { useConfirm } from '../../composables/useConfirm'
+import { useApiError } from '../../composables/useApiError'
 
 const router = useRouter()
 const accounts = ref<EmailAccount[]>([])
 const loading = ref(true)
 const { confirm } = useConfirm()
+const apiError = useApiError()
 
 const showForm = ref(false)
 const testing = ref(false)
@@ -393,9 +395,8 @@ async function onTestSmtp() {
     form.clearSmtpCredential = false
   } catch (e) {
     testOk.value = false
-    testMsg.value = e instanceof ApiError
-      ? `SMTP 测试失败：HTTP ${e.status} ${e.message}`
-      : `SMTP 测试失败：${e instanceof Error ? e.message : '未知错误'}`
+    const status = e instanceof ApiError ? `HTTP ${e.status} ` : ''
+    testMsg.value = `SMTP 测试失败：${status}${apiError(e, '未知错误')}`
   } finally {
     smtpTesting.value = false
   }
@@ -472,13 +473,10 @@ async function testAndSave() {
     showForm.value = false
   } catch (e) {
     testOk.value = false
-    if (e instanceof ApiError) {
-      testMsg.value = `连接失败：HTTP ${e.status} ${e.message}`
-    } else if (e instanceof Error) {
-      testMsg.value = `连接失败：${e.message}`
-    } else {
-      testMsg.value = '连接失败：未知错误'
-    }
+    // 状态码是可行动的诊断信息（404 / 535 / 401 各指向不同处理），保留；
+    // 但 message 是后端原文（可能是英文技术串），交给 apiError 映射成用户文案。
+    const status = e instanceof ApiError ? `（HTTP ${e.status}）` : ''
+    testMsg.value = `连接失败${status}：${apiError(e, '未知错误')}`
   } finally {
     testing.value = false
   }
