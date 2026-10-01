@@ -75,7 +75,42 @@ test('合计按币种分组，而不是一个标量 amount', () => {
   assert.match(src, /singleAmount/)
 })
 
-// --- 真实实现的行为断言 ---
+test('入账按钮：外币发票禁用但**可见**，并带原因（不再凭空消失）', () => {
+  const card = readSrc('InvoiceCard.vue')
+  // 按钮的 v-if 不能再只看 canBook
+  assert.ok(!/v-if="canBook"/.test(card), '按钮仍在外币时被整个藏掉——用户看不到原因')
+  assert.match(card, /v-if="showBook"/)
+  // 禁用态 + 悬浮原因
+  assert.match(card, /:disabled="booking \|\| !canBook"/)
+  assert.match(card, /:title="bookReason \|\| undefined"/)
+
+  const list = readSrc('InvoiceListView.vue')
+  assert.match(list, /:book-reason="bookBlockReason\(inv\)"/)
+})
+
+test('book() 自身也守外币（不能只靠按钮禁用）', () => {
+  const src = readSrc('use-invoice-list.ts')
+  const m = src.match(/async function book\([\s\S]*?\n  \}/)
+  assert.ok(m, '未找到 book()')
+  const body = m[0]
+  assert.match(body, /bookBlockReason\(inv\)/, 'book() 没有兜底守卫：直接调用会把 USD 当 CNY 入账')
+  assert.ok(
+    /const blocked = bookBlockReason\(inv\)[\s\S]*?if \(blocked\)/.test(body),
+    'book() 应在守卫后直接返回',
+  )
+})
+
+test('bookBlockReason：外币与无金额分别给出可读原因', () => {
+  const src = readSrc('use-invoice-list.ts')
+  const m = src.match(/function bookBlockReason\([\s\S]*?\n  \}/)
+  assert.ok(m, '未找到 bookBlockReason')
+  const body = m[0]
+  assert.match(body, /未解析出金额/)
+  assert.match(body, /CNY/)
+  assert.match(body, /只记人民币/)
+  // 可入账时必须返回空串（bookable 就是靠它判空）
+  assert.match(body, /return ''/)
+})
 // 直接 import 抽出来的 invoice-money.ts（生产代码与测试共用同一份），
 // 不用正则从 use-invoice-list.ts 里刨代码——刨出来的片段会带 TS 类型注解。
 // 抽模块的原因之一就是这个：原先逻辑埋在闭包里，只能靠文本断言，行为无法验证。

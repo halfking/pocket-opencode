@@ -92,6 +92,7 @@
         :status-text="statusLabel(inv)"
         :amount="invoiceMoney(inv)"
         :can-book="bookable(inv)"
+        :book-reason="bookBlockReason(inv)"
         @preview="openPreview(inv)"
         @open-email="openEmail(inv)"
         @toggle-select="togglePick(inv.id)"
@@ -137,7 +138,7 @@ const {
   loading, loadingMore, hasMore, syncing, exporting, pushing, error, filter, summary, bookingId, shareDocUrl,
   selectMode, selected, thumbs, thumbLoading, preview, invoices, previewSrc, previewBlob, previewKey,
   previewKind, previewTitle,
-  formatAmount, summaryMoney, invoiceMoney, statusLabel, bookable, toggleSelectMode, selectAllDownloaded, togglePick,
+  formatAmount, summaryMoney, invoiceMoney, statusLabel, bookable, bookBlockReason, toggleSelectMode, selectAllDownloaded, togglePick,
   downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline,
   syncAndReload, exportGrid, pushFeishu, downloadInvoice, markFiled, markNew, book,
   exportCsv, remove,

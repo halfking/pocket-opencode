@@ -88,11 +88,29 @@ export function useInvoiceList() {
   }
   function formatAmount(n: number): string {
     return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  }  function statusLabel(inv: EmailInvoice): string {
+  }
+  function statusLabel(inv: EmailInvoice): string {
     return ({ new: '待整理', pending: '待下载', downloaded: '已下载', failed: '失败', filed: '已归档' } as const)[inv.status] ?? inv.status
   }
+  /**
+   * 能否入账 + 不能的原因。
+   *
+   * 财务模块没有 currency 概念，入账金额一律按人民币解释——把 100 USD
+   * 当 100 CNY 记进账是错账，所以外币**必须**挡住（这是有意的正确保护，
+   * 不是缺陷）。
+   *
+   * 但此前只用 `v-if="canBook"` 把按钮**整个藏掉**：用户看到一张带金额的
+   * 发票却没有「入账」按钮，既不知道能不能入账，也不知道为什么不行——
+   * 看起来像功能坏了。改成禁用 + 悬浮说明，让原因可见。
+   */
+  function bookBlockReason(inv: EmailInvoice): string {
+    if ((Number(inv.amount) || 0) <= 0) return '未解析出金额，无法入账'
+    const cur = inv.currency || 'CNY'
+    if (cur !== 'CNY') return `${cur} 发票暂不支持入账（账本只记人民币）`
+    return ''
+  }
   function bookable(inv: EmailInvoice): boolean {
-    return (Number(inv.amount) || 0) > 0 && (!inv.currency || inv.currency === 'CNY')
+    return bookBlockReason(inv) === ''
   }
   function toggleSelectMode() {
     selectMode.value = !selectMode.value
@@ -304,6 +322,13 @@ export function useInvoiceList() {
   }
   async function book(inv: EmailInvoice) {
     if (bookingId.value) return
+    // 兜底：按钮已禁用，但 book() 也可能被直接调用（快捷键 / 将来复用）。
+    // 财务账本没有 currency 概念，外币金额进去就是错账。
+    const blocked = bookBlockReason(inv)
+    if (blocked) {
+      toast.error(blocked)
+      return
+    }
     bookingId.value = inv.id
     try {
       const res = await financeApi.create({
@@ -363,7 +388,7 @@ export function useInvoiceList() {
     shareDocUrl,
     selectMode, selected, thumbs, thumbLoading, preview, invoices, previewSrc, previewBlob, previewKey,
     previewKind, previewTitle,
-    formatAmount, formatMoney, summaryMoney, invoiceMoney, statusLabel, bookable, toggleSelectMode, selectAllDownloaded, togglePick,
+    formatAmount, formatMoney, summaryMoney, invoiceMoney, statusLabel, bookable, bookBlockReason, toggleSelectMode, selectAllDownloaded, togglePick,
     downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline,
     syncAndReload, exportGrid, pushFeishu, downloadInvoice, markFiled, markNew, book,
     exportCsv, remove,
