@@ -1,4 +1,4 @@
-package learning
+﻿package learning
 
 // PostgreSQL persistence for the learning domain. Follows the same conventions
 // as the rest of the repository (see ADR-005): the schema is created
@@ -392,22 +392,35 @@ func (s *Store) MarkReminderSent(ctx context.Context, wsID, userID, id string, n
 
 // SnoozeReminder pushes a reminder into the future. A non-positive duration is
 // rejected so a bad client value cannot make a reminder permanently silent.
+//
+// The new time is measured from the reminder's own next_due_at (floored at
+// now), not from now. Measuring from now meant a snooze could pull a reminder
+// *forward*: snoozing a daily digest that was due in 24 hours by two hours
+// rescheduled it to two hours from now, so the "later" the user asked for
+// arrived twenty-two hours earlier than the rule intended — and the daily
+// schedule stopped matching RuleValue. The GREATEST floor also keeps an
+// already-overdue reminder from staying overdue when snoozed by a short
+// duration.
 func (s *Store) SnoozeReminder(ctx context.Context, wsID, userID, id string, minutes int64) (int64, error) {
 	if minutes <= 0 {
 		return 0, fmt.Errorf("snooze minutes must be positive")
 	}
 	now := time.Now().Unix()
-	until := now + minutes*60
-	tag, err := s.pool.Exec(ctx, `
+	var until int64
+	err := s.pool.QueryRow(ctx, `
 		UPDATE learning_reminders
-		SET state = 'snoozed', snoozed_until = $1, next_due_at = $1, updated_at = $2
+		SET state = 'snoozed',
+		    snoozed_until = GREATEST(next_due_at, $1) + $2 * 60,
+		    next_due_at = GREATEST(next_due_at, $1) + $2 * 60,
+		    updated_at = $1
 		WHERE id = $3 AND workspace_id = $4 AND user_id = $5
-	`, until, now, id, normalizeWorkspace(wsID), userID)
+		RETURNING next_due_at
+	`, now, minutes, id, normalizeWorkspace(wsID), userID).Scan(&until)
+	if err == pgx.ErrNoRows {
+		return 0, ErrNotFound
+	}
 	if err != nil {
 		return 0, fmt.Errorf("snooze learning reminder: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return 0, ErrNotFound
 	}
 	return until, nil
 }
@@ -436,6 +449,13 @@ func (s *Store) AckReminder(ctx context.Context, wsID, userID, id string) error 
 // day needs the caller's timezone offset, and doing the arithmetic in SQL with
 // an offset spliced in is where off-by-one-day bugs live. The Go side owns
 // DayIndex instead, and it is unit-tested.
+//
+// sinceUnix is applied **per timestamp**, not per row. The WHERE clause keeps
+// any row that has at least one timestamp inside the window, but a row that
+// was captured long ago and updated just now carries both, and emitting the
+// old captured_at would credit activity before the caller's window — which is
+// the streak's input, so it inflates the streak rather than merely returning
+// an extra number.
 func (s *Store) ActiveDayTimestamps(ctx context.Context, wsID, userID string, sinceUnix int64) ([]int64, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT captured_at, updated_at
@@ -454,10 +474,10 @@ func (s *Store) ActiveDayTimestamps(ctx context.Context, wsID, userID string, si
 		if err := rows.Scan(&capturedAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("active day timestamps: scan: %w", err)
 		}
-		if capturedAt > 0 {
+		if capturedAt >= sinceUnix && capturedAt > 0 {
 			out = append(out, capturedAt)
 		}
-		if updatedAt > 0 {
+		if updatedAt >= sinceUnix && updatedAt > 0 {
 			out = append(out, updatedAt)
 		}
 	}
