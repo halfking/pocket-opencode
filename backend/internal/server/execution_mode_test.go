@@ -20,6 +20,16 @@ func TestShouldDelegatePipeline_DefaultModeIsLocal(t *testing.T) {
 	if shouldDelegatePipeline("", "") {
 		t.Fatal("empty mode must default to local (requirement 6: 默认放在设备本地)")
 	}
+	// 2026-10-01 补：原用例只测了 mode+URL **同时为空**的组合，而那种组合
+	// 在新旧两种实现下都是 false——把判定改成「非空即委托」它照样绿，
+	// 拦不住真正的高风险改动。危险组合是「mode 非 server 但配了 URL」：
+	// 线上若把 POCKET_EMAIL_EXECUTION_MODE 写成 "Local"（大小写/空白差异，
+	// 或运维写成 "device"/"standalone"），而 URL 又确实配了，委托就会发生。
+	for _, m := range []string{"local", "Local", "LOCAL", " local ", "device", "standalone", "unknown"} {
+		if shouldDelegatePipeline(m, "http://pipeline.internal/run") {
+			t.Errorf("mode=%q 配了 URL 也不得委托 —— 需求 6 的默认是本地执行", m)
+		}
+	}
 }
 
 func TestShouldDelegatePipeline_ServerWithURLDelegates(t *testing.T) {
