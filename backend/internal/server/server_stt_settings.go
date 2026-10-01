@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
@@ -47,21 +48,57 @@ type sttSettingsView struct {
 
 // sttConfigResponse 是 GET /api/stt/config 的响应。
 type sttConfigResponse struct {
-	Settings     sttSettingsView            `json:"settings"`
-	Recommended  []stt.ModelOption          `json:"recommended"`
-	Gateway      *stt.DiscoveryResult       `json:"gateway"`
-	GatewayBase  string                     `json:"gatewayBaseURL"`
-	GatewayHasKey bool                      `json:"gatewayHasKey"`
-	ChannelHints map[string]string          `json:"channelHints"`
+	Settings      sttSettingsView      `json:"settings"`
+	Recommended   []stt.ModelOption    `json:"recommended"`
+	Gateway       *stt.DiscoveryResult `json:"gateway"`
+	GatewayBase   string               `json:"gatewayBaseURL"`
+	GatewayHasKey bool                 `json:"gatewayHasKey"`
+	ChannelHints  map[string]string    `json:"channelHints"`
+}
+
+// sttFallbackSettings 是「没有 PG 时的进程内兜底存储」。
+//
+// 为什么需要它：pocketd 没有配 POCKET_POSTGRES_DSN 时会正常启动
+// （remote-only 模式），此时 s.userSettings 为 nil，而 saveSTTSettings
+// 直接返回 "user settings store unavailable" → PUT /api/stt/config 恒 400。
+// 后果不是「设置存不下来」这么轻：**整个 STT 功能对用户不可用**——
+// 连试转、连手动填 key 的通道都进不去，因为没有地方存。
+//
+// 2026-10-01 黑盒验证实测：真实 pocketd（无 PG）上 PUT 恒 400，
+// 后续所有转写请求都因「未配置 API Key」失败。
+//
+// 为什么不自己造结构：usersetting.MemStore 已经实现 Repository 接口
+// 且带锁，直接复用，少一份并发正确性的负担。
+//
+// 边界（必须让用户知道，不能制造虚假持久化预期）：
+//   - **重启即丢**，回落到默认值。
+//   - 按 (user, workspace, namespace, id) 隔离，语义与 PG 路径一致。
+type sttFallbackStore struct {
+	once sync.Once
+	mu   sync.Mutex
+	repo usersetting.Repository
+}
+
+var sttFallback sttFallbackStore
+
+// sttSettingsRepo 取出可用的设置存储：优先 PG，回落进程内。
+func (s *Server) sttSettingsRepo() usersetting.Repository {
+	if s != nil && s.userSettings != nil {
+		return s.userSettings
+	}
+	sttFallback.once.Do(func() { sttFallback.repo = usersetting.NewMemStore() })
+	sttFallback.mu.Lock()
+	defer sttFallback.mu.Unlock()
+	return sttFallback.repo
 }
 
 // loadSTTSettings 读取用户设置；没有记录时返回零值 + ok=false。
 func (s *Server) loadSTTSettings(userID, workspaceID string) (sttSettingsPayload, bool) {
 	var p sttSettingsPayload
-	if s == nil || s.userSettings == nil {
+	if s == nil {
 		return p, false
 	}
-	rec, err := s.userSettings.Get(userID, workspaceID, sttSettingsNamespace, sttSettingsID)
+	rec, err := s.sttSettingsRepo().Get(userID, workspaceID, sttSettingsNamespace, sttSettingsID)
 	if err != nil || rec == nil {
 		return p, false
 	}
@@ -73,10 +110,10 @@ func (s *Server) loadSTTSettings(userID, workspaceID string) (sttSettingsPayload
 
 // sttExternalKey 取该用户保存的外部 ASR key（密文不外泄）。
 func (s *Server) sttExternalKey(userID, workspaceID string) string {
-	if s == nil || s.userSettings == nil {
+	if s == nil {
 		return ""
 	}
-	rec, err := s.userSettings.Get(userID, workspaceID, sttSettingsNamespace, sttSettingsID)
+	rec, err := s.sttSettingsRepo().Get(userID, workspaceID, sttSettingsNamespace, sttSettingsID)
 	if err != nil || rec == nil {
 		return ""
 	}
@@ -84,9 +121,10 @@ func (s *Server) sttExternalKey(userID, workspaceID string) string {
 }
 
 func (s *Server) saveSTTSettings(userID, workspaceID string, p sttSettingsPayload, externalKey string) error {
-	if s == nil || s.userSettings == nil {
-		return fmt.Errorf("user settings store unavailable")
+	if s == nil {
+		return fmt.Errorf("server not initialized")
 	}
+	repo := s.sttSettingsRepo()
 	// 通道归一化 + 地址修剪，避免把脏值存进去后解析不出来。
 	p.Channel = stt.NormalizeChannel(p.Channel)
 	p.ExternalBaseURL = strings.TrimRight(strings.TrimSpace(p.ExternalBaseURL), "/")
@@ -105,7 +143,7 @@ func (s *Server) saveSTTSettings(userID, workspaceID string, p sttSettingsPayloa
 	if err != nil {
 		return err
 	}
-	_, err = s.userSettings.Put(usersetting.Record{
+	_, err = repo.Put(usersetting.Record{
 		UserID: userID, WorkspaceID: workspaceID,
 		Namespace: sttSettingsNamespace, ID: sttSettingsID,
 		Payload: payload, Secret: strings.TrimSpace(externalKey),
@@ -239,9 +277,12 @@ func describeProbe(c stt.Candidate) string {
 	case stt.ProbeEndpointMissing:
 		return "无转写端点"
 	case stt.ProbeFailed:
-		if c.Detail != "" {
-			return "探测失败(" + c.Detail + ")"
-		}
+		// 2026-10-01 黑盒实测：c.Detail 是上游响应体（providerDetail 按字节
+		// 截断到 300），网关的 503 现在返回
+		// {"error":{"alternatives":{"requested_model":"…","task_type":"code",…}}。
+		// 逐个候选内联进去，4 个候选就把消息顶到 1029 字符——设置页/toast 撑爆，
+		// 而且按字节截断断在 JSON 中间，用户读到的只有半截花括号。
+		// 这里只保留状态，原始响应去服务端日志查。
 		return "探测失败"
 	case "":
 		return "未探测"
@@ -260,8 +301,28 @@ func (s *Server) discoverGatewayASR(ctx context.Context, baseURL, apiKey string,
 	if len(stt.RecommendedGatewayModels()) > 0 {
 		timeout = 90 * time.Second
 	}
-	return stt.Discover(ctx, gatewayHTTPClient(timeout), s.sttDiscovery, baseURL, apiKey, force)
+	return stt.Discover(ctx, s.sttClient(timeout), s.sttDiscovery, baseURL, apiKey, force)
 }
+
+// sttClient 取出网客户端：测试注入过就用注入的，否则走带 SSRF 防护的默认实现。
+//
+// 分成两层是因为默认值需要一个与请求无关的超时（探测一次要打 6 个候选），
+// 而测试注入的是「拒绝一切出网」的实现——给它再包一层 Timeout 也毫无意义，
+// 反而会让失败从「立刻拒绝」变成「等到超时」，单测慢上几十倍。
+func (s *Server) sttClient(timeout time.Duration) *http.Client {
+	if s.sttHTTPClient != nil {
+		return s.sttHTTPClient
+	}
+	return gatewayHTTPClient(timeout)
+}
+
+// SetSTTHTTPClient 注入 STT 出网客户端（供测试拒绝出网）。
+//
+// 存在的理由不是「为了可测性」这种套话，而是 2026-10-01 的实际事故：
+// newServer 装上转写器后，server_stt_settings_test.go 里的 meeting/transcribe
+// 用例顺着默认网关配置**真的出网打了生产网关**——耗时 2.3 秒、把 6 个候选的
+// 503 全打了一遍，还吃到了网关限流 429。测试污染生产流量，且让单测变得随机失败。
+func (s *Server) SetSTTHTTPClient(c *http.Client) { s.sttHTTPClient = c }
 
 // ---------------------------------------------------------------- handlers
 
@@ -288,13 +349,26 @@ func (s *Server) handleSTTConfig(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 		// 网关侧结论：只查缓存，不在 GET 里触发真实探测（否则打开设置页就打网关）。
-		if res, ok := s.sttDiscovery.Peek(gw.BaseURL, gw.APIKey); ok {
-			resp.Gateway = &res
-			view.Effective = effectiveModelName(p, &res)
+		//
+		// 两处判空都是必须的，不是防御性冗余：
+		//  - sttDiscovery 可能为 nil（不走 newServer 默认初始化的部署路径）。
+		//    对 nil 指针调 Peek 会 panic，而这个 handler 是**打开设置页**的必经
+		//    之路——一旦 panic，整个 STT 功能对用户就是不可用的。
+		//  - resp.Gateway 在缓存未命中时保持 nil，原来紧接着无条件调
+		//    resp.Gateway.Best()，同样 panic。注意这条是**必然触发**的：
+		//    用户首次打开设置页时缓存必然未命中，所以这不是边缘情况，
+		//    而是「STT 设置页从来没被成功打开过」——单测第一次跑就抓到了。
+		if s.sttDiscovery != nil {
+			if res, ok := s.sttDiscovery.Peek(gw.BaseURL, gw.APIKey); ok {
+				resp.Gateway = &res
+				view.Effective = effectiveModelName(p, &res)
+			}
 		}
-		if best, ok := resp.Gateway.Best(); ok && p.GatewayModel == "" {
-			view.Effective = best.Model
-			view.EffectiveNote = "网关自动发现"
+		if resp.Gateway != nil {
+			if best, ok := resp.Gateway.Best(); ok && p.GatewayModel == "" {
+				view.Effective = best.Model
+				view.EffectiveNote = "网关自动发现"
+			}
 		}
 		resp.Settings = view
 		writeJSON(w, http.StatusOK, resp)
@@ -411,7 +485,7 @@ func (s *Server) handleSTTProbe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	engine := stt.NewResolver(func(context.Context, stt.Scope) (*stt.Target, error) { return target, nil })
-	engine.SetHTTPClient(gatewayHTTPClient(120 * time.Second))
+	engine.SetHTTPClient(s.sttClient(120 * time.Second))
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 	res, err := engine.TranscribeFor(ctx, stt.Scope{UserID: userID, WorkspaceID: wsID}, audio, filename)

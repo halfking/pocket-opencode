@@ -36,6 +36,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
+	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
 
@@ -2440,14 +2441,24 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 		filename = "audio.wav"
 	}
 
-	// 调用 Groq Whisper Large v3 Turbo
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	// 目标由该用户的语音转写设置解析（网关自动发现 / 外部服务 / env 兜底），
+	// 不再写死 Groq Whisper。整段 base64 上传 + 推理比普通 CRUD 慢一个量级，
+	// 而录音停止链路是同步等它的，30s 太紧，给到 120s。
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	result, err := s.transcriber.Transcribe(ctx, audioData, filename)
+	scope := stt.Scope{UserID: s.userIDFromRequest(r), WorkspaceID: s.workspaceIDFromRequest(r)}
+	result, err := s.transcriber.TranscribeFor(ctx, scope, audioData, filename)
 	if err != nil {
 		log.Printf("[stt] transcribe failed: %v", err)
-		writeError(w, http.StatusBadGateway, "transcription failed: "+err.Error())
+		// 已经带错误码的（stt_unavailable: …）原样回传：前端 error-message.ts
+		// 取第一个冒号前的 [a-z0-9_]+ 当错误码，再套一层前缀会让它匹配失败，
+		// 用户就只能看到通用「服务端错误」而不是可行动的原因。
+		msg := err.Error()
+		if !strings.HasPrefix(msg, "stt_unavailable:") {
+			msg = "transcription failed: " + msg
+		}
+		writeError(w, http.StatusBadGateway, msg)
 		return
 	}
 

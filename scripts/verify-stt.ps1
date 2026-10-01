@@ -78,7 +78,17 @@ $env:POCKET_DB_PATH = (Join-Path $dataDir 'pocket.sqlite')
 $env:POCKET_AUTH_LEGACY_ONLY = "true"
 $env:POCKET_AUTH_USER = "admin"
 $env:POCKET_AUTH_PASS = "Veritrans&9527"
-$env:POCKET_LLM_GATEWAY_API_KEY = (Get-Content (Join-Path $root 'logs\.gateway-key') -Raw).Trim()
+# 网关密钥来源优先级：已存在的环境变量 > $root/logs/.gateway-key。
+# 加这一层是因为脚本经常在另一个 worktree 里跑（比如主工作区有密钥、
+# 验证在 wt 里做），此时不该为了跑一次验证就把凭据复制一份出去。
+if (-not $env:POCKET_LLM_GATEWAY_API_KEY) {
+  $keyFile = Join-Path $root 'logs\.gateway-key'
+  if (-not (Test-Path $keyFile)) {
+    throw "找不到网关密钥：环境变量 POCKET_LLM_GATEWAY_API_KEY 未设，且 $keyFile 不存在"
+  }
+  $env:POCKET_LLM_GATEWAY_API_KEY = (Get-Content $keyFile -Raw).Trim()
+}
+if (-not $env:POCKET_LLM_GATEWAY_API_KEY) { throw "网关密钥为空" }
 
 $proc = Start-Process -FilePath $bin -WorkingDirectory (Join-Path $root 'backend') `
   -RedirectStandardOutput (Join-Path $dataDir 'pocketd.out.log') `
