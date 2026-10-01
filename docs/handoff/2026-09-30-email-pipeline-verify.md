@@ -2374,9 +2374,68 @@ java.lang.AssertionError: 应用升级同样会清空 ELAPSED_REALTIME 闹钟
 
 ### 仍未验证
 
-- **真实 IMAP MOVE 未端到端验证**。需要 Docker 起 Greenmail，
-  且现有 greenmail 测试**不含 MOVE 用例**，需另写。
+- **真实 IMAP MOVE 未端到端验证**。用例已在本轮写出（见 §7ba），
+  但本机 Docker 未运行，**只验证了编译，没跑过**。
 - 13 封判垃圾的真实 MOVE 是否执行，仍等你确认（写操作）。
+
+---
+
+## §7ba 需求 2 的真实 IMAP MOVE 用例已写出，但未跑过（`af63e2e`）
+
+`junk_greenmail_test.go`（`-tags=greenmail`）证明的是纯函数证明不了的三件事：
+
+1. `findJunkMailbox` 在**真实 LIST 响应**里能定位到垃圾箱
+2. `MoveUIDsToJunk` 的逐条 MOVE 在真实连接上全部成功
+3. **开新连接**复核邮件真的换地方了：
+   - 被选的 uid 离开 INBOX、出现在垃圾箱
+   - 未被选的仍在 INBOX（**部分移动不误伤**）
+   - 移动前已在垃圾箱的没消失
+
+**刻意不复用 `MoveUIDsToJunk` 内部的连接**——否则只能证明同一会话里的
+内存状态，证明不了服务端真的变了。收件箱需 ≥3 封而只移动 2 封，
+是为了让「部分移动」成为可判定的事实。
+
+### 当前状态：只验证了编译
+
+```
+go vet -tags=greenmail ./internal/email/   exit=0
+go vet ./internal/email/                    exit=0
+go test ./internal/email/                   ok
+```
+
+**运行时行为仍属未验证**——本机 Docker 未运行（`docker version` 报
+`open //./pipe/docker_engine` 不存在），无法起 Greenmail。
+文件头注释写明了完整前置步骤与运行命令。
+
+编译校验不是走过场，它抓到了 3 个真实的 API 用错（若不校验，这个文件
+直接跑不起来却看不出）：
+
+| 错误写法 | 正确写法 |
+|---|---|
+| `client.Search("INBOX", SearchOptions{}, nil)` | `client.UIDSearch(nil, nil)` |
+| `res.UIDs` | `res.All`（且必须用 `UIDSearch` 才保证是 `UIDSet`） |
+| `range uidSet` | `uidSet.Nums()`（`UIDSet` 是 `[]UIDRange` 切片，不是 map） |
+
+### 顺带核实：junk.go 的回退注释是准确的
+
+`junk.go:22` 声称「服务器不支持 MOVE 扩展时自动回退 COPY + `\Deleted` +
+EXPUNGE」，而 `junk.go:147` 本身只有一句 `client.Move(...)`，**没有任何回退
+分支**。一度以为是注释虚报。
+
+查 go-imap v2 beta.8 源码确认**注释是对的**，回退在库里：
+
+```
+imapclient/move.go:16      if !c.Caps().Has(imap.CapMove) { cmdName = "COPY" }
+imapclient/move.go:25-34   COPY 之后补 STORE \Deleted + (UID)EXPUNGE
+```
+
+**但有个更隐蔽的副作用**：`move.go:31` 只有在服务端支持 `UIDPLUS` 时才用
+`UID EXPUNGE`；否则退回整箱 `Expunge()`——那会连带清掉 INBOX 里其它已被
+标记 `\Deleted` 的邮件。UIDPLUS 支持广泛，暂不处理，仅记录。
+
+**这是本会话第三次「怀疑代码有 bug → 查证后确认是对的」**（前两次：
+需求 5 的 PageGrid 语义、需求 2 的 MOVE 回退）。教训一致：
+*读到一个可疑点不等于发现了缺陷，必须查到依赖库/协议的原文再下结论。*
 
 ---
 
@@ -2444,8 +2503,8 @@ java.lang.AssertionError: 应用升级同样会清空 ELAPSED_REALTIME 闹钟
    见 §7au。这是本轮新发现的、**唯一一条真正未实现的需求**。
 7. 需求 1 的开机重排修复（`cc6753d`）**只在单元测试层验证过判定逻辑**，
    真机重启行为未验证，见 §7aw。要不要安排一次真机验证。
-8. 需求 2 的**真实 IMAP MOVE 未端到端验证**。需要 Docker 起 Greenmail，
-   且现有 `-tags=greenmail` 测试**不含 MOVE 用例**，要另写。见 §7ax。
+8. 需求 2 的**真实 IMAP MOVE 用例已写出**（`af63e2e`），但本机 Docker 未运行，
+   **只验证了编译、没跑过**。见 §7ba。要跑需先起 Greenmail。
 
 **环境问题**：
 
