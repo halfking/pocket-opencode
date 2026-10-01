@@ -1746,20 +1746,33 @@ func (s *Store) ListDeletedEmailIDsScoped(ctx context.Context, since int64, user
 
 // GetEmailByIDScoped returns a message only within the requested scope.
 //
-// 比 scanEmail 多读 uid + body_path + message_id：handleEmailBody 用 uid 拉 IMAP 正文，
-// 用 body_path 判断加密缓存是否已落盘。message_id 同样必须读出来
-// （见 GetEmailByID 里的说明：漏掉它会静默废掉发票自愈的强身份判据）。
+// 比 scanEmail 多读 uid + body_path + message_id + body_purged：
+//   - handleEmailBody 用 uid 拉 IMAP 正文，用 body_path 判断加密缓存是否已落盘；
+//   - message_id 见 GetEmailByID 里的说明（漏掉会静默废掉发票自愈的强身份判据）；
+//   - body_purged 见下面的说明（漏掉会让 summarizeBody 的「禁止回源」守卫失效）。
 func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID string) (*Email, error) {
 	var e Email
 	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath, messageID sql.NullString
 	var uid sql.NullInt64
+	var bodyPurged sql.NullBool
+	// body_purged 必须读出来（2026-10-02 修）。
+	//
+	// 漏掉它的后果：server_email_summary.go 的 summarizeBody 第一句是
+	// `if em.BodyPurged { return "" }`——模型注释写明这表示
+	//「正文已清空且**禁止回源**」。而该 handler 拿到的 em 只来自本方法，
+	// em.BodyPurged 恒 false ⇒ 守卫从不生效 ⇒ 用户已删除（body_purged=TRUE、
+	// body_path=NULL）的邮件仍会被 IMAP 回源拉回正文、喂给 LLM，
+	// 再用 SetSummaryScoped 把摘要写回那行已删除的记录
+	// （那个 UPDATE 也没有 deleted_at=0 过滤）。
+	//
+	// 与 message_id 同一类缺陷：字段一直写、从不读。
 	err := s.pool.QueryRow(ctx, `SELECT e.id, e.account_id, e.uid, e.from_address, e.from_name, e.message_id, e.subject, e.snippet,
 		e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments,
-		e.body_path
+		e.body_path, COALESCE(e.body_purged, FALSE)
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
 		WHERE e.id=$1 AND a.user_id=$2 AND a.workspace_id=$3`, id, userID, workspaceID).
 		Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &messageID, &subject, &snippet, &e.Date, &e.IsRead,
-			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPath)
+			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPath, &bodyPurged)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -1771,6 +1784,9 @@ func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID 
 	}
 	if messageID.Valid {
 		e.MessageID = messageID.String
+	}
+	if bodyPurged.Valid {
+		e.BodyPurged = bodyPurged.Bool
 	}
 	if fromName.Valid {
 		e.FromName = fromName.String

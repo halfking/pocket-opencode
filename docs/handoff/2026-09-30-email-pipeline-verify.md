@@ -6110,6 +6110,74 @@ pop3_fetcher 加 dial 缝——那是生产代码改动，已列为待决项，�
 
 ---
 
+## §7cq 把 message_id 那一类缺陷**系统性**查一遍：又抓到第二个（2026-10-02）
+
+§7co 那类缺陷的特点是**单个字段**既不报错也不告警，只在下游某个 `if` 上
+悄悄失效。所以修一个不够，我把 `Email` / `Account` / `Invoice` 三个结构体的
+**全部字段**做了一遍「写了但从不读回」的扫描：取每个字段在**非测试** Go 代码里
+是否作为 `Scan` 目标或被赋过值，没命中的就是候选。
+
+结果：修完 message_id 后只剩一个 —— **`Email.BodyPurged`**。
+
+### 第二个同类缺陷：摘要的「禁止回源」守卫一直关着
+
+`model.go:57` 写明 `BodyPurged` 的语义是「正文已清空且**禁止回源**」。
+`server_email_summary.go:178` 的 `summarizeBody` 第一句就是拿它当守卫：
+
+```go
+if em.BodyPurged { return "" }
+```
+
+而这个 handler 的 `em` **只**来自 `GetEmailByIDScoped`（同文件 :69），
+那个方法的 SELECT 列表里**没有** `body_purged` ⇒ `em.BodyPurged` 恒 false
+⇒ 守卫**从不触发**。
+
+守卫失效后的实际行为：用户软删除一封邮件（`SoftDeleteEmailsScoped` 会置
+`body_purged=TRUE`、`body_path=NULL`、清空 snippet）之后，再对这封邮件点
+「总结」——
+
+1. 守卫不生效；
+2. `readCachedEmailBody` 失败（body_path 已 NULL）；
+3. 继续回落到 `FetchMessageRaw(em.AccountID, em.UID)`，**把用户已删除的
+   正文从 IMAP 重新拉回来**；
+4. 喂给 LLM；
+5. `SetSummaryScoped` 把摘要**写回那行已删除的记录**——那个 UPDATE
+   （store.go:518）也没有 `deleted_at=0` 过滤。
+
+也就是说这不只是浪费一次 LLM 调用，而是把「已删除、禁止回源」的数据
+重新取回并回写。
+
+### 真实数据现状（如实记录）
+
+psql 实测 `opencode_pocket.emails`：120 行，`body_purged=TRUE` **0 行**，
+`deleted_at>0` **0 行**，有摘要的 19 行。
+
+⇒ 这个缺陷**目前没有实际影响**。它是「闸门在逻辑上一直关着」，
+不是「已经造成了损失」。与 §7co 一样，**不夸大**。
+
+### 修法与负控
+
+store 侧：`GetEmailByIDScoped` 的 SELECT + Scan 各加一处
+`COALESCE(e.body_purged, FALSE)`。
+消费端：`server_email_summary_purged_test.go` 守 `summarizeBody` 必须在
+**任何读取动作之前**短路（用 `&Server{}` 不注入 store/fetcher，碰了就会暴露）。
+
+负控：把该列硬编码成 `FALSE`（= 字段不被填充，等价于原缺陷）→
+`TestGetEmailByIDScoped_ReturnsBodyPurged` 转红；恢复后转绿。
+
+**API 面影响**：`BodyPurged` 带 `json:"bodyPurged,omitempty"`，所以修好之后
+只有**确实被清空**的邮件才会多出这个字段，false 被 omitempty 吞掉——
+正常邮件的响应体不变。
+
+### 回归
+
+`internal/email` 全量 73.0s 通过。`internal/server` 11.7s，
+**仅剩那两个既有失败**（`TestTaskWriteGuardBlocksPlainMemberPatch` /
+`Delete`，404/403 语义分歧，见 §7az，非本轮引入、不在邮件分支）；
+本轮新增的 `TestSummarizeBody_*` 两条通过。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：

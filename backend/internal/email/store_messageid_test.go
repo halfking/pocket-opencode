@@ -116,3 +116,50 @@ func TestGetEmailByID_MessageIDIsOptional(t *testing.T) {
 		t.Errorf("MessageID=%q, want 空串", em.MessageID)
 	}
 }
+
+// TestGetEmailByIDScoped_ReturnsBodyPurged 守住 body_purged 的读路径。
+//
+// 与 message_id **同一类**缺陷（字段一直写、从不读），后果是
+// server_email_summary.go 里 `if em.BodyPurged { return "" }` 这道
+// 「正文已清空且禁止回源」的守卫**从不生效**：用户已删除的邮件仍会被
+// IMAP 回源拉回正文、喂给 LLM，再把摘要写回那行已删除的记录。
+//
+// 与 message_id 不同，这个字段带 `json:"bodyPurged,omitempty"`，
+// 修好之后只有**确实被清空**的邮件才会多出这个字段，false 会被 omitempty
+// 吞掉，所以正常邮件的响应体不变。
+func TestGetEmailByIDScoped_ReturnsBodyPurged(t *testing.T) {
+	store, cleanup := newWorkspaceTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	seedAccount(t, store, "acct-purge", "u", "ws-purge")
+
+	seed := func(id string, purged bool) {
+		t.Helper()
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO emails (id, account_id, workspace_id, message_id, from_address,
+			                    subject, snippet, date, created_at, body_purged)
+			VALUES ($1,'acct-purge','ws-purge','m-'||$1,'a@b.example','s','x',1700000000,1700000000,$2)
+			ON CONFLICT (id) DO UPDATE SET body_purged = EXCLUDED.body_purged`, id, purged); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	seed("em-purged", true)
+	seed("em-alive", false)
+
+	purged, err := store.GetEmailByIDScoped(ctx, "em-purged", "u", "ws-purge")
+	if err != nil || purged == nil {
+		t.Fatalf("GetEmailByIDScoped: %v (em=%v)", err, purged)
+	}
+	if !purged.BodyPurged {
+		t.Errorf("已清空正文的邮件 BodyPurged=false；" +
+			"summarizeBody 的「禁止回源」守卫会因此失效（em.BodyPurged 恒为 false）")
+	}
+
+	alive, err := store.GetEmailByIDScoped(ctx, "em-alive", "u", "ws-purge")
+	if err != nil || alive == nil {
+		t.Fatalf("GetEmailByIDScoped: %v (em=%v)", err, alive)
+	}
+	if alive.BodyPurged {
+		t.Error("未清空正文的邮件 BodyPurged=true")
+	}
+}
