@@ -4387,6 +4387,102 @@ npm run build:gate   → exit 0，✓ built in 22.06s   （此前 exit 1）
 
 ---
 
+## §7bu 恢复途径逐一排除：重建只需重启，但账户配置要手工回填（2026-10-02）
+
+§7bp 把时间窗钉住了，§7bo 停在了「不知道怎么办」。这一节把**能不能救**这件事
+做完，全是只读检查，没有执行任何恢复动作。
+
+### 一、数据库层面的恢复：确定不可能
+
+```
+archive_mode     = off
+archive_command  = (disabled)
+wal_level        = replica          （但没有归档，replica 级别没有意义）
+data_directory   = C:/workspace/openpocket/logs/pg/data
+```
+
+- **没有 WAL 归档 = 没有 PITR**。`DROP SCHEMA ... CASCADE` 的记录和数据页都只在
+  WAL 段里，段会被循环覆盖。
+- `pg` 目录下**没有任何** `*.backup` / `base.tar*` / `*.dump`。
+- 部署脚本 `rebuild-db-local.sh` 的默认备份目录
+  `${POCKET_BACKUP_DIR:-~/Downloads/kaixuan/opp/backup}` —— **不存在**，
+  连 `~/Downloads/kaixuan` 都没有。
+- `pg_waldump.exe` 本身在，但如上所述没有可用的历史段。
+
+**结论：数据层面的恢复是零。** 这不是「还没找」，是「不存在这条路」。
+
+### 二、重建本身：不需要手工 SQL，重启 pocketd 就行
+
+这一点很重要，因为它决定了处置的**代价**：
+
+```
+cmd/pocketd/main.go:73   db.New(ctx, cfg.PostgresDSN, cfg.PostgresSchema)
+internal/db/pg.go:80     createSchemaOnce → CREATE SCHEMA IF NOT EXISTS
+cmd/pocketd/main.go:126  email.NewStore(pool)   → 自己的 migrate
+```
+
+`db.New` 启动时就会 `CREATE SCHEMA IF NOT EXISTS`，之后各 store 的构造函数
+各自跑 migration。所以 **pocketd 一重启，schema 和全部表结构就回来了（空的）**。
+
+不需要我写任何 DDL，也不需要手工 `CREATE SCHEMA`。
+
+### 三、但数据不会自己回来，分三类
+
+**确定丢失（无任何副本）：**
+
+- `email_accounts` 5 行 —— 凭据是加密的，加密密钥的分布问题另见 §7bf
+- `emails` 120 行
+- `email_invoices` 行
+- **各账户的 `last_synced_uid` 水位** —— 丢了意味着重连 IMAP 后会**从头抓**，
+  而不是增量。这既是坏消息（慢、可能撞 UNIQUE）也是好消息（不会漏邮件）
+
+**确定没丢：**
+
+- 磁盘上的发票 PDF：`data\email-invoices\ws_user-admin\` 5 个文件，
+  `data\email-invoices\exports\ws_user-admin\` 一批 A4 导出与汇总
+- 正文缓存：`data\email-bodies\` 41 个文件（加密）
+- **凭据本身** —— 5 个邮箱的 IMAP/SMTP 参数与授权码都在你最初的需求文本里
+- 代码（显然）
+
+### 四、账户配置怎么回来：脚本在，但它的凭据源不在
+
+`scripts/seed_email_accounts.sh` 就是为此存在的：它通过 HTTP API 把 5 个账户
+种回 PG，**幂等**（同 emailAddress 已存在则 PUT 刷新），凭据只从
+**仓库外**的 envs loader 读、不写进仓库。
+
+但：
+
+```
+ENVS_LOADER 默认 = $HOME/workspace/ai-native-tools/envs/loader.sh
+→ C:\Users\86133\workspace\ai-native-tools\envs\loader.sh
+→ 不存在（C:\workspace 下也没有任何 envs 目录）
+```
+
+**所以这个脚本在当前机器上跑不起来**，缺的是 envs loader，不缺脚本。
+
+可行的替代：按 API 直接重填 5 个账户，凭据从你最初的需求文本取。代价是手工，
+不是不可行。
+
+### 五、所以完整路径是这样（**未执行，等你点头**）
+
+1. **先备份磁盘上还在的东西**：`data\email-invoices\` 与 `data\email-bodies\`。
+   数据库可以重建，这些文件重建不出来。
+2. 重启 pocketd → schema 与表结构自动回来（空）。
+3. 手工回填 5 个邮箱账户（IMAP/SMTP/授权码）。
+4. 触发一次同步 → 从 IMAP 从头抓，邮件回来。
+5. 发票由 pipeline 重新 harvest（`email-invoices` 行会重建，
+   PDF 重新下载；磁盘上已有的 5 个旧文件会变成「无 DB 记录的孤儿」）。
+
+第 5 步的副作用正好是 §7az 里那条待决项（「4 个孤儿 PDF 是否删除」）——
+到那时它们的意义会变，得重新看一遍。
+
+### 六、我仍然什么都没做
+
+没有 `CREATE SCHEMA`、没有重启 pocketd、没有回填账户、没有删任何文件。
+第 1 步的备份尤其该由你决定**备份到哪里**——那是个写操作，而且是覆盖不了的。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
