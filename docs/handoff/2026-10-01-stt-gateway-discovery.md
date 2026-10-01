@@ -452,3 +452,60 @@ adb -s 192.168.31.19:5555 reverse tcp:18099 tcp:18111
 前置三条缺一即「连不上」：db reverse；pocketd 带 POCKET_DEV_AUTH=true；
 APK 以 CAP_ANDROID_SCHEME=http 构建。另外 STT 未配置时后端 1 秒内回 503，
 真机**开麦即可**（不需要真的说话），但录音权限要先授予。
+
+### §12.1 设备离线期间发现的**流自身 bug**（2026-10-01 17:20）
+
+用源码核验选择器时，发现本分支新写的流自己就点不到按钮：
+
+```yaml
+# 初版（错）
+- tapOn:
+    id: "fab"
+```
+
+而 `frontend/src/features/notes/VoiceRecorderWidget.vue` 实际是：
+
+```html
+<button class="fab" :aria-label="recording ? '停止录音' : '开始录音'">
+```
+
+**它没有 id 属性**。`class="fab"` 在 WebView a11y 树里也不保证暴露，
+Maestro 的 `id:` 走的是 resource-id / content-desc，真机上大概率匹配不到。
+已改为 `tapOn: "开始录音"` / `tapOn: "停止录音"` —— aria-label 会进
+content-desc，且随录音状态自动切换。
+
+这类错在设备在线时表现为「流红了但看不出为什么」，很费时间，所以把它变成
+了自动检查：`scripts/check-maestro-flows.mjs` 的第 4 类检查会要求每条
+**正向**锚点在 `frontend/src` 里找得到出处，且 id 锚点必须在源码里真的是
+id 属性、class 不算。
+
+两个设计要点，都是被自己的第一版打脸后改的：
+
+1. **不查负向断言。** `assertNotVisible` 的文本（`stt_unavailable`、
+   `i/o timeout`）是**故意**期望不出现的技术串，拿去溯源等于要求
+   「泄漏了才通过」。第一版把它们也查了，直接误报 6 条。
+2. **语料包含 `locales/*.json`。** 界面文案是 i18n 的，文本锚点常常只在
+   语言包里 —— 实测「学习」只在 `zh-CN.json`，不在任何 `.vue` 里。
+   只搜 `.vue` 会把合法锚点误判成「找不到出处」。
+
+检查器六组负控（逐条实测会转红、复原后 OK）：
+`id: "fab"`（原始 bug）/ 繁体断言 / 命令名拼错 / appId 写回正式包 /
+断言放 emoji / 流文件不存在。
+
+### §12.2 设备恢复进度（2026-10-01 17:20）
+
+把 adb 侧能试的路都试过了，设备仍未恢复：
+
+| 尝试 | 结果 |
+|---|---|
+| `adb connect`（多次） | `already connected` 但状态 offline |
+| `adb disconnect` → `adb connect` | disconnect 成功，connect 报 failed |
+| `adb kill-server` → `start-server` → connect | 仍 failed |
+| `adb reconnect offline` | 无变化 |
+| `Test-NetConnection 192.168.31.19:5555` | **True（端口是通的）** |
+| `adb mdns services` | 仍广播 `adb-4c308e2e  192.168.31.19:5555` |
+
+端口通、mDNS 在广播、服务在监听，但 **adb 协议握手完不成** —— 这是设备端
+adbd 处于「等授权弹窗」或「已锁屏挂起」的特征。USB 通道
+（`4c308e2e`）是同一台设备的另一条通道，同时 offline。
+**需要在手机上解锁并重新确认 USB 调试授权**，这一步只能由人做。
