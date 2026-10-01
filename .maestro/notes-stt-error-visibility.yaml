@@ -1,0 +1,88 @@
+# Maestro 真机功能流 · 笔记录音转写失败原因可见性
+#
+# 这条流守的是 2026-10-01 真机复现并修复的缺陷（见
+# docs/handoff/2026-10-01-stt-gateway-discovery.md §11）：
+#   录音中显示完整失败原因，点停止后横幅却变成「该功能尚未完成配置」。
+#
+# 为什么必须用 Maestro 而不是只看 CDP 读数：
+#   缺陷的整条链路是「后端 stt_unavailable 文案 → sttFailureText 归一 →
+#   rt.error → 渲染层」。前面每一段都有单测，缺的正是**最后一段在真机上
+#   到底显示什么**。这条流把「停止后仍能看到可行动原因」变成可重复执行的
+#   断言，而不是一次性的截图。
+#
+# 断言只认两样东西：
+#   1. 行动指引「语音转写」（说明是 sttFailureText 的成品文案，不是通用兜底）
+#   2. 通用兜底的两个 i18n 文案**都不在**（errors.notConfigured / errors.sttNotConfigured）
+# 通用兜底的具体文案随 locale 变，断言它们不存在比断言新文案更抗改。
+#
+# 前置（2026-10-01 实测，缺一即「连不上」）：
+#   1. adb reverse tcp:18099 tcp:18111
+#   2. pocketd 带 POCKET_DEV_AUTH=true（否则 corsMiddleware 不发 ACAO）
+#   3. 明文后端：APK 须以 CAP_ANDROID_SCHEME=http 构建，否则 fetch 一直 pending
+#   4. 设备麦克风权限已授予
+#
+# 运行：
+#   $env:JAVA_HOME = 'C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot'
+#   $env:PATH     = "$env:JAVA_HOME\bin;$env:PATH"
+#   & C:\workspace\openpocket\logs\maestro\dist\maestro\bin\maestro.bat `
+#       --device 192.168.31.19:5555 test .maestro\notes-stt-error-visibility.yaml
+#
+# appId 用 sttdev 并存包：调试包带独立 applicationIdSuffix，与正式包数据隔离，
+# 不动用户正式 App 的后端设置（那会清掉登录态）。
+appId: com.kaixuan.opencode.pocket.sttdev
+---
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: ".*(笔记|解锁本地数据|AI 工具).*"
+    timeout: 45000
+
+# ---- 进入笔记页 ----
+- runFlow:
+    when:
+      visible: "解锁本地数据"
+    commands:
+      - tapOn: ".*"
+      - tapOn: "主密码"
+      - inputText: "PocketStt9527"
+      - tapOn: "解锁"
+      - extendedWaitUntil:
+          visible: "AI 工具"
+          timeout: 30000
+- tapOn: "学习"
+- extendedWaitUntil:
+    visible: ".*还没有笔记.*"
+    timeout: 25000
+
+# ---- 开始录音 ----
+- tapOn:
+    id: "fab"
+- extendedWaitUntil:
+    visible: "即时转写"
+    timeout: 25000
+
+# 等一轮增量转写返回。STT 未配置时后端 1 秒内就会回 503，
+# 不需要真的录满一个分片周期。
+- extendedWaitUntil:
+    visible: ".*外部语音转写服务未配置.*|.*网关暂无可用的语音转写模型.*|.*Failed to fetch.*"
+    timeout: 40000
+
+# ---- 停止录音，回到列表页 ----
+- tapOn:
+    id: "fab"
+- extendedWaitUntil:
+    notVisible: "即时转写"
+    timeout: 30000
+
+# ---- 核心断言：停止后仍显示**可行动原因**，而不是通用兜底 ----
+- assertVisible:
+    text: ".*语音转写.*"
+    optional: false
+- assertNotVisible: "该功能尚未完成配置"
+- assertNotVisible: "语音转写服务尚未配置"
+
+# ---- 负向锚点：界面里不该出现任何裸错误码或技术串 ----
+- assertNotVisible: "stt_unavailable"
+- assertNotVisible: ".*i/o timeout.*"
+- assertNotVisible: ".*ERR_CONNECTION.*"
+- takeScreenshot: "logs/maestro/notes-stt-error-after-stop"
