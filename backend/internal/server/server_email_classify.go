@@ -132,8 +132,8 @@ func (s *Server) classifyViaKxmemory(ctx context.Context, it email.ClassifyItem,
 	out.Category = email.NormalizeCategory(row.Category)
 	out.Importance = row.Importance
 	out.Summary = row.Summary
-	if err := s.emailStore.SetClassificationScoped(callCtx, it.ID, userID, workspaceID,
-		out.Category, out.Importance, out.Summary, row.SuggestedAction); err != nil {
+	if err := s.emailStore.SetClassificationWithReasonScoped(callCtx, it.ID, userID, workspaceID,
+		out.Category, out.Importance, out.Summary, row.SuggestedAction, row.ActionReason); err != nil {
 		out.Error = err.Error()
 		return out, err
 	}

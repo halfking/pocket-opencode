@@ -477,12 +477,35 @@ func (s *Store) SetClassification(ctx context.Context, id, category, importance,
 }
 
 // SetClassificationScoped updates classification only within one user/workspace.
+//
+// 不写 action_reason：老的调用方（规则引擎在 InsertEmail 时写入的依据）拿不到
+// 分类理由，强行用空串覆盖会抹掉已有值。AI 分类路径请用下面的
+// SetClassificationWithReasonScoped。
 func (s *Store) SetClassificationScoped(ctx context.Context, id, userID, workspaceID, category, importance, aiSummary, suggestedAction string) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE emails e SET category = $1, importance = $2, ai_summary = $3, suggested_action = $4
 		FROM email_accounts a
 		WHERE e.id = $5 AND e.account_id = a.id AND a.user_id = $6 AND a.workspace_id = $7
 	`, category, importance, aiSummary, suggestedAction, id, userID, workspaceID)
+	return err
+}
+
+// SetClassificationWithReasonScoped 在 SetClassificationScoped 的基础上补写
+// action_reason（AI 判定该重要度的依据）。
+//
+// 2026-10-01 补。kxmemory 的分类响应契约里带 action_reason
+// （docs/2026-07-02-kxmemory-api-contract.md），但客户端 DTO 漏了这个字段，
+// JSON 反序列化时静默丢弃，真库里 162 封已分类邮件的 action_reason 全是空串。
+// 「为什么这封被判为重要」拿不到，提醒就不可信——用户无法判断该不该点开。
+//
+// 与其它字段同口径「非空才写」：分类器没给理由时保留旧值，不用空串抹掉。
+func (s *Store) SetClassificationWithReasonScoped(ctx context.Context, id, userID, workspaceID, category, importance, aiSummary, suggestedAction, actionReason string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE emails e SET category = $1, importance = $2, ai_summary = $3, suggested_action = $4,
+			action_reason = CASE WHEN $8 <> '' THEN $8 ELSE e.action_reason END
+		FROM email_accounts a
+		WHERE e.id = $5 AND e.account_id = a.id AND a.user_id = $6 AND a.workspace_id = $7
+	`, category, importance, aiSummary, suggestedAction, id, userID, workspaceID, actionReason)
 	return err
 }
 
