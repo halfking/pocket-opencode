@@ -113,7 +113,7 @@ func TestTranscribeForRejectsEmptyTranscript(t *testing.T) {
 func TestTranscribeForRejectsHallucinatedTranscript(t *testing.T) {
 	up := &transcribeUpstream{
 		status: 200,
-		body:    `{"text":"您好，您似乎没有附上录音文件。请重新上传需要转写的音频。"}`,
+		body:   `{"text":"您好，您似乎没有附上录音文件。请重新上传需要转写的音频。"}`,
 	}
 	srv := httptest.NewServer(up.handler(t))
 	defer srv.Close()
@@ -151,7 +151,7 @@ func TestTranscribeForChatAudioDroppedIsRejected(t *testing.T) {
 func TestTranscribeForStripsThinkTags(t *testing.T) {
 	up := &transcribeUpstream{
 		status: 200,
-		body:    `{"text":"<think>用户让我转写这段录音。</think>今天下午三点开会。"}`,
+		body:   `{"text":"<think>用户让我转写这段录音。</think>今天下午三点开会。"}`,
 	}
 	srv := httptest.NewServer(up.handler(t))
 	defer srv.Close()

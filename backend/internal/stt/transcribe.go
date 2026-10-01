@@ -95,6 +95,7 @@ type Result struct {
 //  1. 目标由 resolver 决定（网关自动发现 / 用户手工指定 / env 兜底）。
 //  2. 空文本算失败——上游返回 200 但没有内容不能当成功。
 //  3. 命中 LooksLikeMissingAudio 一律判失败并说明原因——网关会收下音频却丢掉它，
+//
 // Transcribe 把音频（wav/mp3/m4a/webm）转写成文字，使用空作用域（进程级兜底）。
 func (t *Transcriber) Transcribe(ctx context.Context, audio []byte, filename string) (*Result, error) {
 	return t.TranscribeFor(ctx, Scope{}, audio, filename)

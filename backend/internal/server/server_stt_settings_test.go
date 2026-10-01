@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,13 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/usersetting"
 )
 
+// errFakeASRNoNetwork 是 noNetworkClient 统一返回的错误。
+//
+// 为什么必须是包级变量而不是内联 errors.New：单测里有多处要断言
+// 「出网被拒」这个行为，共享同一哨兵值才能用 errors.Is 判定，
+// 内联新建的 error 值无法比较。
+var errFakeASRNoNetwork = errors.New("fake asr: network disabled in tests")
+
 // noNetworkClient 让任何出网请求立刻失败：单测绝不能真打 llm.kxpms.cn。
 func noNetworkClient() *http.Client {
 	return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -25,6 +33,101 @@ func noNetworkClient() *http.Client {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestSttSettingsWorkWithoutPGStore 锁住「无 PG 也能保存 STT 设置」。
+//
+// 2026-10-01 黑盒验证实测的真实 bug：pocketd 未配 POCKET_POSTGRES_DSN 时
+// 正常启动（remote-only 模式），但 s.userSettings 为 nil，
+// saveSTTSettings 直接返回 "user settings store unavailable"
+// → PUT /api/stt/config 恒 400。
+//
+// 后果不是「设置存不下来」这么轻：**整个 STT 功能对用户不可用**——
+// 连试转、连手工填 key 的通道都进不去，因为根本没有地方存。
+// 上一轮 handoff 曾声称已修（加了 sttMemSettings），但那份实现并未落在代码里。
+//
+// 这条测试是「设置页能不能用」的底线：它绿，STT 至少是可配置的。
+func TestSttSettingsWorkWithoutPGStore(t *testing.T) {
+	srv, _ := newWorkspaceIsolationServer(t)
+	// 刻意不设置 srv.userSettings —— 模拟无 PG 部署
+	if srv.userSettings != nil {
+		t.Fatal("前置条件不成立：测试服务器本应没有 userSettings")
+	}
+	t.Setenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE", "1")
+
+	h := srv.Handler()
+	token := wsAToken(t)
+
+	body := strings.NewReader(`{"channel":"external","externalBaseURL":"http://127.0.0.1:9/v1",` +
+		`"externalModel":"gpt-4o-mini-transcribe","externalTransport":"transcriptions",` +
+		`"externalApiKey":"k-abc"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/stt/config", body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("无 PG 部署下保存 STT 设置应成功，实际 %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// 读回来：设置必须真的存住了，且 key 只能以 hasExternalKey 形式存在
+	get := httptest.NewRequest(http.MethodGet, "/api/stt/config", nil)
+	get.Header.Set("Authorization", "Bearer "+token)
+	rr2 := httptest.NewRecorder()
+	h.ServeHTTP(rr2, get)
+	var cfg sttConfigResponse
+	if err := json.Unmarshal(rr2.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if cfg.Settings.ExternalModel != "gpt-4o-mini-transcribe" {
+		t.Errorf("设置未回读到，externalModel=%q", cfg.Settings.ExternalModel)
+	}
+	if !cfg.Settings.HasExternalKey {
+		t.Error("hasExternalKey 应为 true（key 已保存）")
+	}
+	if strings.Contains(rr2.Body.String(), "k-abc") {
+		t.Errorf("GET 响应泄露明文 key: %s", rr2.Body.String())
+	}
+}
+
+// installFakeASR 把 STT 出网指向一个假的 OpenAI 兼容上游，让 /api/stt/transcribe
+// 与 /api/stt/probe 能真的走完「配置解析 → 目标解析 → 发出请求 → 拿回文本」这条链路。
+//
+// 为什么不直接换掉 s.transcriber：换掉会让 handler 绕过设置解析（目标从哪来、
+// 通道怎么选、SSRF 校验走没走），测不到真正该测的东西。保持 resolver 真实、
+// 只把最后一跳的 HTTP 换成 httptest，才是端到端。
+func installFakeASR(t *testing.T, srv *Server, text string) {
+	t.Helper()
+	// httptest 监听 127.0.0.1，而 validateGatewayURL 默认拒绝私网/loopback
+	// （防 SSRF）。这里显式 opt-in 放行——否则测试永远在保存设置那一步就被
+	// 拒掉，测不到后面真正要测的转写链路。
+	// 用 t.Setenv 而非 os.Setenv：它会在测试结束后自动还原，不污染同包其他用例。
+	t.Setenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE", "1")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"` + text + `"}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	// 存一条指向假上游的 external 设置，让目标解析走真实路径。
+	// key 是独立参数（不进 payload）——外部 ASR 的 key 与对话模型配置刻意分开。
+	//
+	// 作用域必须与 wsAToken() 签出来的身份一致（shared-user / ws-a）：
+	// 设置按 (userID, workspaceID) 存取，作用域写错的话 handler 读到的是空设置，
+	// 症状是「配了 key 却报未配置」——与真实的 key 丢失故障无法区分。
+	if err := srv.saveSTTSettings("shared-user", "ws-a", sttSettingsPayload{
+		Channel:         stt.ChannelExternal,
+		ExternalBaseURL: upstream.URL + "/v1",
+		ExternalModel:   "gpt-4o-mini-transcribe",
+	}, "test-key"); err != nil {
+		t.Fatalf("保存假 ASR 设置失败: %v", err)
+	}
+	srv.SetSTTHTTPClient(upstream.Client())
+}
 
 // sttTestServer 起一个自足的 server：内存用户设置 + 拒绝出网的 STT 客户端。
 //
@@ -129,8 +232,16 @@ func TestSttConfigListsBothRecommendedGroups(t *testing.T) {
 			t.Errorf("负报价：%+v", m)
 		}
 	}
-	if gw != 3 || ext != 3 {
-		t.Fatalf("推荐模型应为网关 3 + 外部 3，实际 gateway=%d external=%d", gw, ext)
+	// 只守下限不写死上限：用户要求「尽可能费用少」，外部候选会随调研增补
+	// （2026-10-01 从 3 个扩到 7 个）。写死上限会诱导后来者不去补候选。
+	if gw != 3 || ext < 7 {
+		t.Fatalf("推荐模型应为网关 3 + 外部 ≥7，实际 gateway=%d external=%d", gw, ext)
+	}
+	// 每个外部候选都必须带地址：用户只填一把 key，地址得由推荐给出。
+	for _, m := range resp.Recommended {
+		if m.Group == "external" && m.BaseURL == "" {
+			t.Errorf("外部候选 %s 缺 BaseURL", m.Model)
+		}
 	}
 	if resp.Settings.Channel != "" && resp.Settings.Channel != stt.ChannelAuto {
 		t.Errorf("未配置时通道应是 auto，实际 %q", resp.Settings.Channel)
