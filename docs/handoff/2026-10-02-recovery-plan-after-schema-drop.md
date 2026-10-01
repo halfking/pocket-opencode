@@ -16,8 +16,15 @@
   以及 `rebuild-db-local.sh` 约定的 `~/Downloads/kaixuan/opp/backup`
   （该目录从未创建过——那个脚本针对的是 Docker 里的另一套 PG）。
 - `pg_stat_statements` 未安装、`log_statement=none` ⇒ **DROP 的语句文本已无法
-  从 PG 侧恢复**，责任人无法指认。详见
+  从 PG 侧恢复**。
+- **已定位到元凶代码的位置**：6 个 worktree 仍在用未修复的
+  `server_auth_extended_test.go`（DSN 带 `search_path` 时 cleanup 会
+  `DROP SCHEMA … CASCADE`）。逐个 worktree 的对照表见
   `2026-10-02-schema-drop-incident-2026-10-01-1947.md`。
+
+> **恢复前请先做这件事**：把 6 个未修复的 worktree 同步到 main，否则一边恢复
+> 一边可能再被删一次。
+
 
 ## 损失清单
 
