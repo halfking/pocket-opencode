@@ -3418,6 +3418,125 @@ emails_greenmail   = 0
 
 ---
 
+## §7bl 全后端 -race 回归：0 竞争，但挖出一个「定时炸弹」（`d6b4ebe`）
+
+### 起因：把刚拿到的能力用起来
+
+§7bk 确认本机可以跑 `-race` 之后，顺手做一次**全后端**回归，看邮件改动有没有
+外溢。
+
+```
+$env:PATH='C:\tools\w64devkit\w64devkit\bin;'+$env:PATH
+$env:CC='C:\tools\w64devkit\w64devkit\bin\gcc.exe'; $env:CGO_ENABLED='1'
+go test -race ./... -count=1 -timeout 3600s
+```
+
+**DATA RACE 计数 = 0。** `internal/email` `ok 56.087s`，
+`internal/email/rules` `ok`。
+
+5 个包 FAIL：`chatagent`、`learning`、`quota`、`scheduledtask/executors`、`server`。
+
+### 先做边界判定，别急着归因
+
+我记过的纪律：**绿→红边界做 `git diff --stat`，相关目录零差异则二分方向错了**。
+
+```
+git diff --stat <merge-base> HEAD -- backend/internal/{chatagent,learning,quota,scheduledtask}
+→ backend/internal/scheduledtask/executors/workitem_reminder_test.go | 39 ++++++++-----
+```
+
+只有 `executors` 被我的分支碰过，而且提交是
+`0f3b4f4 email: A4 裁切线 + 多币种分组合计 + reminder 测试时钟夹具` ——
+同一个提交里既有邮件改动也有 reminder 测试夹具改动。所以不能推给「无关」。
+
+失败清单：
+
+```
+chatagent/store_test.go:130    ws-a should see 2 agents (custom-a + builtin), got 278
+learning/store_pg_test.go:200  narrow window got 2 timestamps, want 1
+learning/store_pg_test.go:547  snoozed until 1790871471, want later than ... 86400 offset
+learning/store_pg_test.go:555  an acked reminder must never come due, got 1
+learning/store_pg_test.go:562  pending = 1, want 0 after acking the only pending one
+quota/pg_store_test.go:99      zero-period budget must always apply, got 2
+executors/workitem_reminder_quiet_test.go:94  a user with no stored preferences must still get their reminder, got 0 events
+server/task_write_guard_route_test.go:108,130  bob PATCH/DELETE ... = 404, want 403
+```
+
+`chatagent` 那条 `got 278` 很说明问题：它**期望隔离 schema，却读到了生产
+schema 的 278 个 agent** —— 这正是我记忆里那条「PG 测试助手沿用 DSN 的
+search_path」的形态。`server` 两条是 §7az 里早已记录的既有 404/403 分歧。
+
+**真正值得挖的是 `executors` 那条**，它和记忆里的一类缺陷完全吻合。
+
+### 确诊：钉死的绝对日期 + 24 小时陈旧上界 = 永久红
+
+生产代码（`workitem_reminder.go`）：
+
+```
+:99   const DefaultStaleAfter = 24 * time.Hour
+:172  now := time.Now().Unix()                 // 用的是墙上时钟
+:195  // Staleness is checked before quiet hours: a three-day-old reminder
+:197  if e.staleAfter > 0 && now-item.RemindAt > int64(e.staleAfter/time.Second) {
+```
+
+夹具（`workitem_reminder_quiet_test.go`）钉死 `time.Date(2026, time.September, 30, …)`。
+写完当天绿，**跨过 24h 之后永久红**。
+
+2026-10-01 22:12 实测：
+
+```
+--- FAIL: TestWorkItemReminderFallsBackWithoutPreferences
+    a user with no stored preferences must still get their reminder, got 0 events
+```
+
+因为陈旧判定**排在免打扰之前**，夹具被 `ClearTaskRemindAt(…, 0)` 直接退役，
+**根本没走到免打扰逻辑**。这个症状（「提醒没触发」）与「免打扰判定错了」
+几乎一样，极易把排查方向带偏 —— 我第一反应也差点去找免打扰的 bug。
+
+**为什么姊妹文件没红**：`workitem_reminder_test.go` 的夹具早就是相对时间
+（`recent(...)`），而且验陈旧本事的用例在 `:468` 明确 `ex.SetStaleAfter(0)`。
+只有 `quiet` 这个文件留着 4 个硬编码日期。
+
+### 修法：两件事，缺一不可
+
+1. `wallClockAt(t, loc, hour, minute)` —— 返回「loc 时区今天 hh:mm」，
+   若那一刻**还没到**就退回昨天。退回昨天而不是往后推，是因为
+   `DueTaskReminders` 只取 `remind_at <= now`，往后的夹件根本不会到期。
+2. `freshExecutor(...)` —— 统一 `ex.SetStaleAfter(0)`。**陈旧不是这 4 条用例的
+   主题**，它们测的是「免打扰窗口属于 owner」以及四条分支各自的判定。
+   与 `workitem_reminder_test.go:468` 的既有约定对齐。
+
+### 负控：精确复现原报错，且失败严格跟着 24h 上界走
+
+把 12:00 那个夹具换回 `time.Date(2026, time.September, 30, 12, …)` 并去掉
+`SetStaleAfter(0)`：
+
+```
+--- FAIL: TestWorkItemReminderFallsBackWithoutPreferences
+    a user with no stored preferences must still get their reminder, got 0 events
+```
+
+同一条用例、同一句报错。
+
+**只有一条红**，而这是对诊断最有力的印证：另外三个夹具当时**还没跨过 24h**
+（23:50 上海 = 15:50 UTC，差 22.4h；23:50 UTC，差 14.4h），所以照常绿。
+失败严格跟着陈旧上界走 —— 如果根因是别的，不可能这么整齐。
+
+### 覆盖面没有被削弱
+
+24 例全绿，其中三条专门测陈旧逻辑的
+（`RetiresStaleReminders` / `StaleBeatsQuietHours` / `StaleBoundIsConfigurable`）
+仍然全绿：只摘掉了与这些用例无关的耦合，陈旧行为本身仍由它们守着。
+
+### 一条方法论
+
+这是同一类缺陷的**第二次**命中（第一次是邮件包的排查，结论是「邮件包不存在
+该风险」——那是对的，因为邮件包用的是 `time.Now()` 派生夹具）。
+判据是同一条：**夹具的绝对日期 + 生产代码的时间上界 = 定时炸弹**。
+所以每次新写夹具都该问一句「这个日期会过期吗」，而不是跑绿就收工。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
