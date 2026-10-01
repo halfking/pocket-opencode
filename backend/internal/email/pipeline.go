@@ -923,6 +923,29 @@ func (p *Pipeline) BuildInvoiceSummaryDocs(ctx context.Context, userID, workspac
 	return WriteInvoiceSummaryDocs(p.DataDir, workspaceID, invoices)
 }
 
+// invoiceSummaryHeader 是汇总 CSV 的列定义。合计行按**这张表**定位「金额」列，
+// 不再靠手数字符串里的逗号个数。
+var invoiceSummaryHeader = []string{
+	"费用类型", "对方单位", "金额", "币种", "发票号", "日期", "状态", "文件名", "来源邮件",
+}
+
+// invoiceSummaryTotalRow 生成合计行，长度与表头一致，金额落在「金额」列。
+//
+// 2026-10-02 修正：原来写死 `"合计,,,,,,,%.2f,\n"`，7 个逗号把 3500.00 放到了
+// **第 8 列「文件名」**——用 CSV 解析器实测确认（金额列空着、文件名列写着合计）。
+// 需求原文要的是「汇总金额」，落在文件名列里，人在 Excel 里根本对不上账。
+// 改成按表头定位，以后调整列顺序也不会再错位。
+func invoiceSummaryTotalRow(total float64) []string {
+	row := make([]string, len(invoiceSummaryHeader))
+	row[0] = "合计"
+	for i, col := range invoiceSummaryHeader {
+		if col == "金额" {
+			row[i] = fmt.Sprintf("%.2f", total)
+		}
+	}
+	return row
+}
+
 // WriteInvoiceSummaryDocs 把发票清单写为 CSV + Markdown 汇总文档。
 func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (string, string, error) {
 	dir := filepath.Join(dataDir, "email-invoices", "exports", defaultWorkspace(workspaceID))
@@ -951,7 +974,7 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 	}
 
 	csv := &strings.Builder{}
-	csv.WriteString("费用类型,对方单位,金额,币种,发票号,日期,状态,文件名,来源邮件\n")
+	csv.WriteString(strings.Join(invoiceSummaryHeader, ",") + "\n")
 	for _, r := range rows {
 		cells := make([]string, len(r))
 		for i, c := range r {
@@ -959,7 +982,13 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 		}
 		csv.WriteString(strings.Join(cells, ",") + "\n")
 	}
-	csv.WriteString(fmt.Sprintf("合计,,,,,,,%.2f,\n", total))
+	// 合计行只进 CSV。它不能混进 rows —— Markdown 表格按 7 列渲染每一行，
+	// 塞进去会多出一张空壳的「合计 | | | 3500.00 | ...」行（金额会落在状态列）。
+	sumCells := invoiceSummaryTotalRow(total)
+	for i, c := range sumCells {
+		sumCells[i] = csvSafeCell(c)
+	}
+	csv.WriteString(strings.Join(sumCells, ",") + "\n")
 	if err := os.WriteFile(csvPath, []byte(csv.String()), 0o600); err != nil {
 		return "", "", err
 	}
