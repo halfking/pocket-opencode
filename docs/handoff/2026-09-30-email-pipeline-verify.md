@@ -7320,6 +7320,119 @@ allow 集合去取交集」（`server_email_classify.go:55-72`）。后果：
 
 ---
 
+## §7df 需求 1 的定时入口与三个外部适配器：0% → 可证，并钉住「预演开关不泄漏」这个安全不变量（2026-10-02）
+
+`backend/internal/server/server_email_pipeline_adapters_test.go`，9 个测试函数。
+
+### 为什么这块优先级高
+
+`handleEmailPipelineRun` 是「每天定时或手工进行邮件接收，然后进行处理」里
+**手工**那一半的入口，此前 0% 覆盖。而它身上挂着一个安全性不变量
+（`server_email_pipeline.go:261-266`）：
+
+```go
+if spamOverride != nil && *spamOverride != p.SpamDryRun {
+    prev := p.SpamDryRun
+    p.SpamDryRun = *spamOverride
+    defer func() { p.SpamDryRun = prev }()
+}
+```
+
+**一次 `dryRunSpam:false` 就是对真实邮箱执行不可逆的 IMAP MOVE。**
+若这个覆盖泄漏到下一轮，用户某次调试按了「真实执行」之后，每天 06:00 的定时
+任务都会真的搬邮件，而没人会去看配置项是否被改过。这条此前只靠一行注释守着。
+
+### 覆盖率（本轮实测）
+
+| 函数 | 之前 | 现在 |
+|---|---|---|
+| `handleEmailPipelineRun` | 0.0% | **100.0%** |
+| `RunEmailPipeline`（scheduler 入口） | 0.0% | **100.0%** |
+| `runEmailPipeline` | 0.0% | **94.7%** |
+| `ensurePipeline` | 18.2% | **95.5%** |
+| `ensureInvoiceHarvester` | 0.0% | **80.0%** |
+| `feishuInvoicePusher.Available` | 0.0% | **100.0%** |
+| `feishuLedgerPublisher.Available` | 0.0% | **100.0%** |
+| `feishuLedgerPublisher.PublishedURL` | 0.0% | **100.0%** |
+| `feishuLedgerPublisher.RememberPublished` | 0.0% | **100.0%** |
+| `notifycenterEmailNotifier.NotifyImportantEmail` | 0.0% | 18.2%（只钉 nil 守卫） |
+
+`server_email_pipeline.go` 文件级 43/285 → **84/285 = 29.5%**；
+`internal/server` 整包 45.4% → **45.9%**。
+
+### 钉住的行为事实
+
+1. **预演开关不泄漏**（核心）。`SpamDryRun=true` 起手，手动跑一轮
+   `dryRunSpam:false`，之后必须恢复成 `true`；再跑一轮不带覆盖，仍是 `true`。
+   `RunEmailPipeline`（定时入口）额外钉住它**不传覆盖** —— 定时路径不该有
+   能力改预演开关。
+2. **什么都没配时端点回 HTTP 200**，错误只在 body 的 `errors` 数组里
+   （`"email pipeline not configured"`）。不是 bug，但只判状态码的调用方
+   会以为跑成功了。已把「200 + errors 非空」这个组合钉住。
+3. **台账发布器的 `Available` 不需要 chatID**（建表只用 app 凭据），而
+   pusher 的 `Available` 需要 —— 三条件缺一不可，其中 chatID 最容易被忘
+   （app_id/secret 都配了就是不发）。两条分开钉，免得重构时被「统一」掉。
+4. **未配置时 `PublishLedger` 必须返回 error**，不能是空串+nil，否则调用方
+   会把「没配」当成「发布成功但没链接」。
+5. **台账链接记忆按 (workspace, user) 隔离**；空 URL 不得覆盖已有链接；
+   nil 接收者安全。
+6. **`ensureInvoiceHarvester` 缺任一依赖（store/fetcher/dataDir）都返回 nil**，
+   四种缺法各测一遍。附带纠正一处我自己的误解：它**每次都新建实例**，
+   被单例缓存的是 `Pipeline` 而不是 harvester；「共用」指共用构造函数与配置。
+
+### 【已查清的行为，非缺陷】飞书未配置时，发票推送**静默跳过**，报告里看不出来
+
+`internal/email/pipeline.go:836` 的 `pushInvoiceSet`：
+
+```go
+if p.Pusher == nil || !p.Pusher.Available() {
+    return          // ← 无 error、无计数
+}
+```
+
+于是报告是 `FeishuPushed=0 / FeishuFailed=0 / Errors=[]` —— 与「有发票但都推
+成功了」的三个数字**完全一样**，唯一线索是启动时那一行 log。
+
+**影响**：需求 3「发送到飞书」在当前部署（`POCKET_FEISHU_INVOICE_CHAT_ID`
+未提供）里是**结构上跑不起来的**，而报告看不出来。验收时不能只看报告数字。
+
+需求允许「发不出去就建共享文档兜底」，所以**降级本身是设计内的**；缺的是
+「跳过」这件事在报告里可见。加一个 skipped 计数或 Reason 字段是产品语义，
+留待拍板，这里只把现状钉住。
+
+### 负控（实测）
+
+把 `defer func() { p.SpamDryRun = prev }()` 改成恢复成 `*spamOverride`
+→ `TestRunPipeline_DryRunOverrideDoesNotLeak` 转红（两条断言）。
+
+**第一版负控直接删掉那一行，结果 `prev` 变成未使用变量、编译失败。**
+负控必须能编译，否则「build failed」会被误当成测试通过或护栏问题。
+
+### 一条**没有**负控的用例，及原因（不假装它有效）
+
+`TestPipeline_FeishuSkipIsInvisibleInReport` 断言「飞书未配置时报告里三个 0」。
+我原计划的负控是去掉 `!p.Pusher.Available()` 短路，但隔离 schema 里**没有任何
+发票**，`pushInvoiceSet` 的循环体一次都不执行 —— 无论短路在不在，报告都是那
+三个 0。**这条负控在当前夹具下不可能转红。** 要给它配负控，需先在隔离 schema
+放一条 `status=downloaded`、`feishu_sent_at=0`、`FilePath` 指向真实文件的发票；
+那会让流水线去真的发网络请求，属于另一轮的工作。
+
+### 仍然没覆盖（诚实记录）
+
+- `feishuInvoicePusher.PushInvoice` 0% —— 需要真实飞书凭据 + 网络。
+- `feishuLedgerPublisher.PublishLedger` 16.7%（只覆盖了未配置那一支）。
+- `notifycenterEmailNotifier.NotifyImportantEmail` 18.2% —— 只钉了 nil 守卫，
+  真实 `Dispatch` 需要构造 notifycenter.Service。
+- `handleEmailInvoicePush` 18.9% / `handleEmailInvoiceSummary` 21.2% 的成功路径。
+
+### 回归
+
+`internal/server` 全包 19.2s，**只剩那两个既有失败**
+（`TestTaskWriteGuardBlocksPlainMemberPatch/Delete`），无新增失败。
+`server_email_pipeline.go` 在负控后 `git diff --numstat` 为空，逐字节验过。
+
+---
+
 ## §7cz 【需求 6/7】邮件的增量同步**永远退化成全量拉取**，而它的「正确」是靠这个 bug 换来的（2026-10-02）
 
 需求 7「在邮件窗口查看各类邮件」的 UI 链路本身是完整的，我逐段验过：
