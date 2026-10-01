@@ -424,7 +424,10 @@ async function load() {
     } catch { /* 保持本地列表 */ }
     // 自动归纳整理：拉完新邮件后,只要还有未归类就触发 runClassify 把后端
     // 队列清空(用户无需再点"归类"按钮)。后台静默运行,失败也不冒泡阻塞 UI。
-    try { await showLocal(false) } catch { /* 保持本地列表 */ }
+    //
+    // 原先这里还有一句一模一样的 showLocal(false)：它与上面那句之间状态没有任何
+    // 变化（改稿残留），而 load() 会被 换分类/换目录/删除后/首屏 五处调用，
+    // 每次都白读一遍本地库。已删。
     if (await hasUncategorized()) {
       try {
         emails.value = await inbox.runClassify(emails.value)
