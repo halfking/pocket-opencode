@@ -25,6 +25,7 @@ import {
   recordReview,
 } from '../services/flashcards'
 import { useFsrs } from '../composables/useFsrs'
+import { dueNowSec, liveNowSec, startDueClock } from './flashcardDueClock'
 import type {
   FlashcardCard,
   FlashcardDeckConfig,
@@ -156,11 +157,19 @@ function mergeById<T extends { id: string; updatedAt?: number } | { deckId: stri
   return [...map.values()]
 }
 
-function nowSec(): number {
-  return Math.floor(Date.now() / 1000)
-}
-
+/**
+ * BUG-AS（handoff §4.55）：这里原本是个直接读 `Date.now()` 的 `liveNowSec()`。
+ * 三个到期判据 computed 依赖它，而 `Date.now()` 不是响应式依赖 ⇒
+ * 卡片在页面打开期间跨过到期时刻，computed 不重算，到期数与「开始复习」都卡住。
+ *
+ * 现在拆成两个来源，写之前先想清楚要哪一个：
+ *   - `dueNowSec()`：响应式，专门给**到期判据**用（computed 依赖它才会重算）
+ *   - `liveNowSec()`：真实时间，给**记录时间戳**用（enqueuedAt / reviewedAt 等），
+ *     免得被 tick 间隔拖成最多 30 秒的旧值
+ */
 export const useFlashcardsStore = defineStore('flashcards', () => {
+  // 到期数要随时间自己走（BUG-AS）：时钟是模块级单例，这里启动一次即可
+  startDueClock()
   const notes = ref<FlashcardNote[]>([])
   const cards = ref<FlashcardCard[]>([])
   const deckConfigs = ref<FlashcardDeckConfig[]>([])
@@ -185,7 +194,8 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
 
   // ---------- computed ----------
   const dueByDeck = computed(() => {
-    const now = nowSec()
+    // 响应式时间：卡片在页面打开期间跨过到期时刻时，本 computed 才会重算（BUG-AS）
+    const now = dueNowSec()
     const map = new Map<string, number>()
     for (const card of cards.value) {
       if (card.deletedAt && card.deletedAt > 0) continue
@@ -210,7 +220,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
         updatedAt: cfg.updatedAt,
       })
     }
-    const now = nowSec()
+    const now = dueNowSec()
     for (const card of cards.value) {
       if (card.deletedAt && card.deletedAt > 0) continue
       let summary = summaries.get(card.deckId)
@@ -237,7 +247,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
   })
 
   const dueCardsForDeck = computed(() => (deckId: string) => {
-    const now = nowSec()
+    const now = dueNowSec()
     return cards.value
       .filter((c) => c.deckId === deckId && !(c.deletedAt && c.deletedAt > 0))
       .filter((c) => {
@@ -333,7 +343,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
   /** 入队一个新 outbox 事件（按 seq 自增；online 时立即 flush）。 */
   function enqueue(item: OutboxItem) {
     const seq = (outbox.value[outbox.value.length - 1]?.seq ?? 0) + 1
-    outbox.value = [...outbox.value, { ...item, seq, enqueuedAt: nowSec() }]
+    outbox.value = [...outbox.value, { ...item, seq, enqueuedAt: liveNowSec() }]
     persistOutbox()
     if (online.value) void flushOutbox()
   }
@@ -343,7 +353,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
     const idx = cards.value.findIndex((c) => c.id === cardId)
     if (idx < 0) return null
     const prev = cards.value[idx]
-    const now = nowSec()
+    const now = liveNowSec()
     const updated = useFsrs().applyReview(prev, rating, now)
     cards.value = [
       ...cards.value.slice(0, idx),
@@ -388,7 +398,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
       cardId,
       rating,
       elapsedMs,
-      reviewedAt: nowSec(),
+      reviewedAt: liveNowSec(),
       fsrs: {
         due: card.due,
         state: card.state,
@@ -487,7 +497,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
   /** 视图层辅助：按 deckId 拉一次服务端 due 数，失败时退回本地计算。 */
   async function fetchDueCount(deckIdArg: string): Promise<number> {
     try {
-      return await fetchDueCountSvc(deckIdArg, nowSec())
+      return await fetchDueCountSvc(deckIdArg, liveNowSec())
     } catch {
       return dueByDeck.value.get(deckIdArg) ?? 0
     }
@@ -523,7 +533,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
   function saveDeckConfig(next: FlashcardDeckConfig) {
     const idx = deckConfigs.value.findIndex((d) => d.deckId === next.deckId)
     if (idx < 0) return
-    const updated = { ...next, updatedAt: nowSec() }
+    const updated = { ...next, updatedAt: liveNowSec() }
     deckConfigs.value.splice(idx, 1, updated)
     persistCache()
   }

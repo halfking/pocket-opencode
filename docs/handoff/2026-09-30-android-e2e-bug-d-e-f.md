@@ -5051,8 +5051,20 @@ App 会记住 `pocket:lastRoute` 并在重启后恢复过去，实测撞到过�
 下一步该查的是 PkmNoteView 在 `id=new` 时的加载路径，以及它是否在某个分支里重定向到了设置页。
 **这一条是推测，不是结论**，下一轮不要当已知事实用。
 
-**`notes-crud.yaml` / `flashcards-write.yaml` 的功能闭环没有跑通。**
-流程本身的坑已经定位并修掉大半（上面 8 条），但最后卡在一个**环境层面**的问题：
+**⚠️ 本条已过时，读时以 §4.53 / §4.54 为准。** 当时的结论是
+「`notes-crud.yaml` / `flashcards-write.yaml` 的功能闭环没有跑通，卡在设备状态被外部改动」。
+
+后来查明：外部改动确实存在，但**不是唯一原因**，而且其中一次造成了极具误导性的假象——
+`window.fetch` 被运行时换成了一个只记日志、不返回响应的包装器，
+于是**全 App 的网络请求都返回 `undefined`**、每个 `http()` 调用都在读 `res.ok` 时炸，
+看起来就像「闪卡的写路径坏了」。
+
+现状：
+- ✅ **`notes-crud.yaml` 已跑通并连绿两次**（§4.53，含 DB 直读 + 两侧负控）
+- ⚠️ **`flashcards-write.yaml` 的写路径功能已证实是通的**（PG 三方对照
+  `decks=1 / notes=1 / cards=1`，卡片在卡组页可见、到期数 1），
+  但**这条 flow 至今没有跑出过一次全绿**，卡在最后一条到期数文案断言（§4.54.3）。
+  **不要写成「闪卡已验证通过」。**
 
 跑到某一轮时设备上的 App 状态被外部改动了——`localStorage` 从 24 个键被清到只剩
 `pocket_api_base` + `pocket:lastRoute`，App 停在 `#/servers`（服务器选择页），
@@ -5284,4 +5296,371 @@ BUG-AK 与 BUG-AR 都是同一形状，靠人眼发现两次。所以沉淀成�
   编辑页 `input` 是独立节点，值为标题本身，纯字符串可匹配。
 - 判据红了先看失败现场层级快照：`~/.maestro/tests/<时间戳>/<flow>/screen-hierarchy/step-*.json`，
   结构是 `attributes.text` / `attributes.class`。
+
+## 4.54 闪卡 flow 重写 + 挖出一个会把「某个功能坏了」伪装成产品缺陷的运行时污染
+
+接着 §4.53 往下推 `flashcards-write.yaml`（最后一个没闭环的真机写路径）。
+**结论先说：闪卡的写路径本身是好的**（PG 三方对照 decks=1 / notes=1 / cards=1），
+但这条 flow **至今没有跑出过一次全绿**，不能算完成。过程中挖出一条影响面很大的东西。
+
+### 4.54.1 旧 flow 测的是**已经不存在的 UI**
+
+`flashcards-write.yaml` 写于 BUG-K 之前，从写出来那天起就不可能通过：
+它第 1 步 tap「新建卡片」后断言「卡组名称」——那是当时的「新建卡片」页。
+BUG-K 把建卡组挪到了**列表页**（零卡组时内联表单 / 有卡组时 deck-toggle 展开），
+`FlashcardEditView` 上**已经没有**「卡组名称」字段，只剩一个卡组 `<select>`。
+首轮实跑就卡在这里（`~/.maestro/tests/2026-10-01_062539`）。
+
+真机可见结构（`scripts/diag-page-elements.mjs` 实测，不是读模板猜的）：
+
+| 页面 | 元素 |
+|---|---|
+| `#/flashcards` 零卡组 | `div.empty[data-testid=flashcards-empty]`；`form[data-testid=deck-create-form]`；`input`（**t="" cd=""**，placeholder/aria-label 都没暴露）；`button.primary` 文本「新建卡组」**初始 enabled=false** |
+| `#/flashcards/decks/:id` | `button.add-btn[aria-label=添加卡片]`；「开始复习」**两个**同名按钮（外屏 `.review` rect 实测 `[0,0,0,0]` 不可见 + 内屏 `.primary.review-btn`） |
+| `#/flashcards/new` | `button.save-link`「保存」；两个 `textarea`（placeholder 正面/背面）；`select` 已自动选中卡组；页脚还有一份卡组内联建表单 |
+
+### 4.54.2 ⚠️⚠️ 重大发现：`window.fetch` 被运行时替换，**全 App 网络请求失效**
+
+排查「新建卡组」一直失败的过程中挖到的。现象极具误导性。
+
+**症状**：闪卡建卡组点下去毫无反应，`PG` 0 行、后端日志里**连请求都没有**，
+页面上也没有任何错误文案（`deckError` 是空的）。
+
+**逐层定位**（`scripts/diag-fetch-shapes.mjs`）：真机上 `window.fetch` 对
+6 种请求形态（绝对/相对 URL、带/不带 token、GET/POST、存在/不存在的路径）
+**全部返回 `undefined`**。于是 `api/http.ts` 里 `await fetch(...)` 拿到 undefined，
+下一行读 `res.ok` 直接炸：`Cannot read properties of undefined (reading 'ok')`。
+
+**交叉验证哪一层坏了**（`scripts/diag-http-layers.mjs`）：
+
+| 通道 | 结果 |
+|---|---|
+| `window.fetch` | **UNDEFINED**（6/6 种形态） |
+| `XMLHttpRequest` | **200 ok** |
+| `CapacitorHttp.request`（原生层） | **200** |
+| `navigator.sendBeacon` | true |
+
+⇒ 网络与原生 HTTP 层都是好的，**只有 fetch 这一条路被换掉了**。
+再看 `String(window.fetch)`：不是 `[native code]`，而是一段 JS 包装器，
+里面写着 `window.__reqLog.push(rec...)` —— 它把请求记进 `window.__reqLog`，
+**却没有把底层响应 return 出去**。
+
+**它从哪来的**：
+- `git grep __reqLog`（wt3 与主工作区）→ 无
+- `dist/assets/*.js` 与 `android/app/src/main/assets/public/assets/*.js` → 无
+⇒ **既不在仓库也不在构建产物里，是运行时注入的残留**（探针或并发会话留下的）。
+
+**决定性对照**：`am force-stop` 后重新启动 App，`fetchName` 变回 `"fetch"`、
+`fetchIsNative: true`，6 种形态全部恢复正常（200/401/201/404），
+`POST /api/flashcards/decks` 直接 **201** 并建出卡组。
+
+⇒ **不是产品缺陷，是设备状态被污染。** 但它伪装得极像：看起来像「这个功能的写路径坏了」，
+实际是全 App 的网络都断了。这与 §4.52.11「App 自主跳转」是同一类陷阱——
+**外部污染看起来和 bug 一模一样**。
+
+**已沉淀成守卫**：`scripts/maestro-run.mjs` 的 preflight 现在会检查
+`String(window.fetch).includes('[native code]')`，不是原生就**直接中止**并提示重启，
+不再浪费一整轮 run 去查一个不存在的 bug。实测输出 `[preflight] fetch 为原生实现 ✅`。
+
+### 4.54.3 闪卡写路径的实际状态：功能是通的，flow 还没绿
+
+**已证实（三方对照）**：
+
+```
+PG: decks=1  notes=1  cards=1
+卡组页断言 ".*回归正面.*"  visible  → COMPLETED      ← BUG-O 的核心判据已达成
+解锁后重进卡组页：dueByDeck = [["deck_48c0…", 1]]
+                 两个「开始复习」按钮 disabled = false
+```
+
+即：零状态建卡组 → 建卡（服务端生成 card）→ 回卡组页看见卡片 → 到期数为 1，整条链路成立。
+
+**仍未跑绿的最后一条**：断言到期数文案 `.*今日待复习 1 张.*`。
+试过 `{ text: ".*开始复习.*", enabled: true }`，因卡组页有**两个同名按钮**
+（外屏那个 rect 实测 `[0,0,0,0]`、真机不可见）导致选择器有歧义，
+表现为 `extendedWaitUntil` 通过、紧接着 `assertVisible` 又红 ⇒ 时红时绿。
+换成内容判据后仍红，**根因未定位**，下一轮从这里接手，不要重复前面 8 轮试错。
+
+### 4.54.4 沉淀的测试基础设施
+
+| 文件 | 作用 |
+|---|---|
+| `scripts/flashcards-test-fixture.mjs` | 清 PG 闪卡表 **+ 清 App 的 `flashcards:v1` 缓存**，让 flow 每次从零卡组起步 |
+| `scripts/diag-page-elements.mjs` | 通用只读探针：倒出当前页**真实可见**的可交互元素（只取 `getClientRects().length>0`）。别再读模板猜 UI |
+| `scripts/read-maestro-hierarchy.mjs` | 读 Maestro 落的 screen-hierarchy JSON 并打印（只在断言失败时才落盘） |
+| `scripts/diag-fetch-shapes.mjs` / `diag-http-layers.mjs` | fetch / XHR / CapacitorHttp / sendBeacon 四路交叉验证 |
+| `scripts/diag-fc-duecount.mjs` | 直接读 store 的 cards / dueByDeck / 按钮 disabled |
+| `scripts/diag-textarea-bounds.mjs` | 取 textarea 与保存按钮的坐标百分比 |
+| `.maestro/_probe-a11y.yaml` | **故意失败**的探针 flow，用来逼出某一页的可访问性树 |
+
+**为什么夹具必须同时清 localStorage**：`stores/flashcards.ts:291` 的
+`deckConfigs = mergeById(本地, 服务端)` 是**增量合并**，删除只走
+`envelope.deletedIds` 这条增量通道。夹具是绕开 API 的硬删，客户端本就无从知晓
+——**这是增量同步的正常行为，不是产品缺陷**。只删 PG 不清缓存的话，flow 会一直跑在
+「有卡组」的旧数据上，零卡组分支根本测不到。
+
+### 4.54.5 本轮踩到的 Maestro / WebView 语义（补 §4.52）
+
+- **没有 `disabled` 这个选择器属性**。写了会报 `Unknown Property: disabled`。
+  禁用状态要用 `{ text: ..., enabled: false }`。
+- `text` 是**整串正则全匹配**。包含语义必须写 `.*X.*`；只写 `X.*` 要求从**开头**匹配，
+  而合并节点常以别的文字开头（实测 `今日待复习.*` 匹配不到「回归卡组 今日待复习 0 张 …」）。
+- **合成 tap 不会触发 WebView 里 `<form>` 的 submit**。建卡组按钮
+  `type=submit`，Maestro 的 tap 报 COMPLETED 但 submit 没发生（加
+  `retryTapIfNoChange` 也不行）；同一时刻页面内 `button.click()` 正常建出卡组。
+  改用 `pressKey: Enter`（单行 input 在 form 内会隐式提交）**成功**。
+- **同名元素会有歧义**：同一句「开始复习」在同一页有两个节点，选择器可能命中不同那个。
+  判据尽量用**内容**（如「今日待复习 1 张」）而不是**状态**（enabled）。
+- `uiautomator dump` 在这台 MIUI 上被稳定 SIGKILL（exit 137，重试 5 次全败），
+  拿不到可访问性树；改用「故意失败的 flow」让 Maestro 自己落盘。
+- `assertVisible` 的 **V 是大写**。批量替换选择器时按小写 `visible:` 去匹配会全部落空
+  （`scripts/fix-flow-contains.mjs` 就踩了这个，`fix-flow-contains2.mjs` 补齐）。
+
+### 4.54.6 一次假通过（自查抓到）
+
+第一版 flow 用 `visible: "回归卡组.*"` 断言卡组建出来了，**通过了**——
+但匹配到的是**建卡组输入框里刚输入的值**，不是卡组列表项。
+当时 PG 0 行、后端无请求，真实情况是「卡组压根没建出来」。
+⇒ 判据会被页面上恰好同名的元素喂饱。已改成断言零状态空态**消失** +
+PG 侧三方对照，这类「假通过」以后必须用**数据层证据**兜底。
+
+## 4.55 BUG-AS（静态可证，未在真机确认）：到期数是「快照」而非「实时」，页面开着不会变
+
+接着 §4.54 往下查「开始复习」为什么时红时绿时，在读代码时发现一个**不需要真机就能确定**的问题。
+**注意：它并不能解释 flow 的抖动**（flow 里那张卡是创建时即到期，且 store 里确实有它），
+这是两件事，别混。
+
+### 4.55.1 现象与静态证据
+
+`stores/flashcards.ts` 里三个 computed 都拿 `nowSec()` 当判据：
+
+```ts
+function nowSec(): number {
+  return Math.floor(Date.now() / 1000)   // ← 读真实时钟，**不是响应式依赖**
+}
+
+const dueByDeck = computed(() => {         // :187
+  const now = nowSec()
+  ... if (!isDue) continue               // isDue 依赖 now
+})
+const deckSummaries = computed(() => { const now = nowSec(); ... })   // :201/:213
+const dueCardsForDeck = computed(() => () => { const now = nowSec(); ... })  // :239/:240
+```
+
+Vue 的 computed 只在**响应式依赖变化**时重算。这里的依赖只有 `cards.value`（数组本身）；
+`Date.now()` 不是 ref、不触发任何依赖。同一文件里也**没有任何 setInterval / setTimeout**
+去推进时间（grep 过，只有 outbox 的 enqueue/flush 与 review 用到 nowSec）。
+
+⇒ 一张卡片在**页面打开期间**跨过到期时刻，`dueByDeck` **不会重算**：
+到期数不变、「开始复习」的 `:disabled="dueCount === 0"` 也不变。
+只有当别的响应式依赖动了（新增/打patch、`refresh()` 整体替换数组、进出页面重新挂载）才会刷新。
+
+**用户可见症状**：09:00 打开卡组页，某张卡 09:30 到期，页面一直显示「今日待复习 0 张」、
+「开始复习」保持置灰，直到用户切走再回来。
+
+### 4.55.2 建议修法（**本轮没做**，因为无法在真机验证）
+
+把时间变成响应式：store 内加一个每秒/每 30s 推进的 `nowRef = ref(Math.floor(Date.now()/1000))`，
+用 `setInterval` 更新，三个 computed 改读 `nowRef.value`；组件卸载时清掉定时器。
+需要一并决定的：**重算频率**（30s 够不够）与**页面不可见时是否暂停**（省电），
+属产品/性能取舍，所以没有擅自改。
+
+### 4.55.3 ⚠️ 本轮真正的阻塞：设备被并发会话持续驱动，真机读数不可信
+
+这是第三次实证，证据都在日志里：
+
+| 现象 | 出处 |
+|---|---|
+| flow 跑到「添加卡片」后，App 出现在 `#/ai-chat` | `logs/m-probe-a11y.log` + 该轮 screen-hierarchy |
+| flow 失败后 App 被挪到 `#/settings`，`store.cards=0` | `diag-fc-duecount-timeline` 连续 7 次采样，稳定在 `#/settings` |
+| 同一轮里 PG `decks=1 notes=0 cards=0`，而 App 侧 `cards=0` | `logs/m-fc13.log` |
+| 坐标点击 `(50%,29%)` 时灵时不灵（一次成功一次点空） | fc10 成功、fc13 失败在同一坐标 |
+
+⇒ **在并发会话停下来之前，真机回归的结论一律不可信**：
+读到的是「谁最后动了设备」的快照，不是被测代码的行为。
+这也是为什么 `flashcards-write.yaml` 到现在还没有一次全绿——
+不是 flow 一定还有 bug，而是**它测的东西一直在被别人改**。
+需要用户决定是否让并发会话暂停设备操作。
+
+## 4.56 合并并发会话的 20 笔提交后跑全量 gates，抓到一个会**在真机上显示字面文本**的图标缺陷
+
+设备被并发会话占着，没法跑真机回归；但**合并后的树还没有人验证过能不能过卡口**。
+这件事不需要设备，于是先做了。
+
+### 4.56.1 现象
+
+`npm run gates`（typecheck + build:gate + test:native + check:vm-gaps + check:i18n + check:icons）
+在 `check:icons` 一步失败，`EXIT=1`：
+
+```
+[icon-font] ❌ 1 个名字在字体里合不出连字，真机会显示字面文本：
+  graphic_eq               src\features\settings\SettingsView.vue 字面量
+[icon-font] 修法：node scripts/build-material-symbols-subset.mjs 重建字体后提交产物。
+```
+
+来源是并入的 STT 改动：`SettingsView.vue:60` 的语音转写入口用了
+`<span class="material-symbols-outlined">graphic_eq</span>`，
+而项目提交的是**裁剪过的字体子集**（只含工程用到的图标），
+`graphic_eq` 不在里面。
+
+⇒ **在真机上那一行的图标位置会直接显示 "graphic_eq" 这几个字母**，
+不是空白也不是别的图标，而是字面文本。这个缺陷靠肉眼截图很容易漏，
+因为界面其余部分完全正常。
+
+### 4.56.2 修复与判据（先红后绿）
+
+按卡口自己给的官方修法重建字体产物：
+
+```
+cd frontend
+node scripts/build-material-symbols-subset.mjs     # 131 → 138 个图标，3529.3 KB
+```
+
+判据是仓库里**已有的** `check:icons`，属先红后绿：
+
+| 时点 | 命令 | 结果 |
+|---|---|---|
+| 修复前 | `npm --prefix frontend run check:icons` | **EXIT=1**，报 `graphic_eq` 合不出连字 |
+| 修复后 | 同上 | **EXIT=0**，`✅ 全部图标名在字体里都能合成连字` |
+| 修复后全量 | `npm run gates` | **EXIT=0**（typecheck / build gate / native 测试 / vm gaps / i18n / icons 全过） |
+
+改动只有一个文件：`frontend/src/assets/fonts/material-symbols-outlined.woff2`（3614020 字节）。
+**没有改 `SettingsView.vue`** —— 因为换成别的图标只是绕过问题，
+真正缺的是字体子集，而卡口的修法就是重建它。
+
+### 4.56.3 教训
+
+- **合并别人 20 笔提交之后，必须自己跑一遍全量卡口。** 冲突为零 ≠ 合并后的树是健康的；
+  这一条就没人跑过，缺陷已经进了 main。
+- 卡口是**先红后绿**的判据，比「看起来没问题」强得多；
+  本仓库的 gates 已经能抓到「真机显示字面文本」这类只有上机才看得见的缺陷。
+- 这一类缺陷**不需要真机就能验**，设备被占用时优先做这类事。
+
+
+### 4.57 BUG-AS 修复：到期判据改用响应式时钟（并抓到一个「文档写了但没实现」）
+
+§4.55 只做了静态取证，根因是：
+
+`dueByDeck` / `deckSummaries` / `dueCardsForDeck` 三个 computed 拿 `Date.now()`
+当到期判据，而 `Date.now()` **不是任何响应式依赖**，同文件也没有任何定时器推进时间。
+⇒ 卡片在页面打开期间跨过到期时刻时，computed 不重算，到期数与「开始复习」都卡住，
+直到别的依赖动了（增删改卡片 / refresh 整体替换数组 / 进出页面重新挂载）。
+
+#### 4.57.1 修法：把时间本身变成响应式值，按用途拆两路
+
+新增 `frontend/src/stores/flashcardDueClock.ts`：
+
+| 导出 | 数据来源 | 用途 |
+|---|---|---|
+| `dueNowSec()` | 模块级 `ref`，由 tick 推进 | **到期判据**（三个 computed 依赖它才会重算） |
+| `liveNowSec()` | 直接读 `Date.now()` | **记录时间戳**（`enqueuedAt` / `reviewedAt` / `updatedAt` / 传给服务端的 `now`） |
+| `startDueClock()` | — | 在 store 创建路径上启动 tick（幂等） |
+| `stopDueClock()` | — | 停 tick 并摘监听，仅测试/热重载 |
+
+拆两路的原因：到期判据要「能被 Vue 追踪」，记录时间戳要「真实」——
+如果全用 tick 值，`enqueuedAt`/`reviewedAt` 会被拖成最多 30 秒的旧值。
+
+行为取舍集中在两个常量/开关，**默认值由我选定**（尚未经产品确认）：
+`TICK_MS = 30_000`、`document.hidden` 时暂停 tick（回前台立刻补一次，不等下个周期）。
+
+`flashcards.ts` 接线后分布（`check:dueclock` 逐点核对）：
+
+| 位置 | 用哪个 | 理由 |
+|---|---|---|
+| `dueByDeck` :198 | `dueNowSec()` | 到期判据 |
+| `deckSummaries` :223 | `dueNowSec()` | 到期判据 |
+| `dueCardsForDeck` :250 | `dueNowSec()` | 到期判据 |
+| `enqueue` 的 `enqueuedAt` :346 | `liveNowSec()` | 记录时间戳 |
+| `applyReviewLocally` 的 `now` :356 | `liveNowSec()` | 传给 FSRS 的真实时间 |
+| `reviewedAt` :401 | `liveNowSec()` | 记录时间戳 |
+| `fetchDueCount` 的服务端 `now` :500 | `liveNowSec()` | 查询参数要准，不能用旧值 |
+| `updatedAt` :536 | `liveNowSec()` | 记录时间戳 |
+
+#### 4.57.2 过程里的一次自纠：接线脚本静默失败
+
+接线用一次性脚本 `wire-dueclock.mjs` 做，它的锚点字符串写的是 `\n`，
+而本仓库文件是 **CRLF** ⇒ 三处到期判据锚点**全部未命中**。
+脚本只打印了三行「未命中(可能已改)」就**照样写盘退出 0**，
+结果三个 computed 全被接到 `liveNowSec()`（不响应式）—— **修复等于没做，而且看起来做完了。**
+
+这是本轮最值得记的一条：把「未命中」当提示而不是失败，等于没有失败。
+
+处置：删掉该脚本，改用 `edit` 精确改三行，并补上会报红的静态判据
+`scripts/verify-dueclock-wiring.mjs`（逐点核对「哪一行该用哪个时间源」+ 数量分布）。
+
+判据自己也踩了 4 个坑，都已写进脚本注释：
+1. 锚点只用字段名找会命中**类型定义**里的同名字段（`enqueuedAt: number`）⇒ 必须要求同一行含时间调用；
+2. 1-based 行号喂给数组要减 1；
+3. 从 computed 锚点找时间调用不能只看紧邻几行（`deckSummaries` 的 `now` 在锚点后 15 行）⇒ 截到块结束；
+4. 统计必须**排除注释行**——本文件的说明块里就写着 `dueNowSec()` 字样，会把 3/5 数成 4/7。
+
+#### 4.57.3 单元测试抓到「文档写了但没实现」
+
+`src/stores/__tests__/flashcardDueClock.test.mjs`，5 条全绿：
+
+| # | 断言 | 作用 |
+|---|---|---|
+| 1 | 读 `dueNowSec()` 的 computed 随时间推进重算（含时间回退） | 正例，挡住 BUG-AS 复发 |
+| 2 | 读 `liveNowSec()`（修复前写法）**不重算** | 自带负控：证明判据有鉴别力 |
+| 3 | `tick()` 真的把 ref 推进（不是手动拨动的假象） | 排掉「测试自己拨了时间」 |
+| 4 | 替换 `setInterval` 数定时器：3 次 start 只注册 1 个、间隔 = TICK_MS、stop 幂等且可再启动 | 排掉「根本没挂定时器」 |
+| 5 | **后台不推进、回前台立刻补一次** | 见下 |
+
+第 5 条**第一次跑是红的**，而且红得有价值：
+`flashcardDueClock.ts` 的文件头注释写着「`document.hidden` 时暂停 tick」，
+但 `tick()` 里**根本没有 hidden 判断**，定时器在后台照跑不误。
+这正是「只是声明一下就当完成」的典型——注释比实现先跑到了。
+
+处置：补实现 `if (isHidden()) return`，并**对这条做负控**（把守卫拿掉 → 第 5 条转红 → 恢复）。
+同时第 5 条自己也重写过一遍：初版没重置时间基线、也没真正触发定时器回调，
+「后台不推进」实际是断言了一个没被碰过的值——空断言，同样不算数。
+
+#### 4.57.4 卡口接入与结果
+
+新增两个 npm 脚本并挂进 `gates`：
+- `test:stores` → `node --test src/stores/__tests__/flashcardDueClock.test.mjs`
+- `check:dueclock` → `node ../scripts/verify-dueclock-wiring.mjs`
+
+判据的区分能力由 `scripts/dueclock-negctl.mjs` 证明（对**缺陷副本**跑判据，必须报红）：
+
+| 缺陷侧 | 判据结果 |
+|---|---|
+| 三个判据全接 `liveNowSec()`（= 修复前 / 脚本静默失败产物） | EXIT=1，5 项 FAIL |
+| 少接一处（只还原 `dueByDeck`） | EXIT=1，3 项 FAIL |
+| 反向错误（`enqueuedAt` 接成 `dueNowSec()`） | EXIT=1，3 项 FAIL |
+
+#### 4.57.5 验证结果与**尚未验证的部分**
+
+已验证：
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| 时钟单测 | `node --test src/stores/__tests__/flashcardDueClock.test.mjs` | **5/5 通过** |
+| hidden 守卫负控 | 拿掉 `if (isHidden()) return` 后重跑 | **第 5 条转红**（EXIT=1），恢复后 5/5 |
+| 接线判据 | `npm --prefix frontend run check:dueclock` | **EXIT=0**，逐点 OK + 分布 3/5 |
+| 接线判据负控 | `node scripts/dueclock-negctl.mjs` | **三种缺陷侧均报红** |
+| 全量卡口 | `npm --prefix frontend run gates` | **EXIT=0** |
+
+**尚未验证（不要当成已修好）**：
+
+- **真机上「到期数随时间自己走」没有验证过。** 真机仍被并发会话占用（§4.55 记录第三次实证），
+  且 `flashcards-write.yaml` 里剩下的 `.*今日待复习 1 张.*` 断言**根因未定位**——
+  它和本节的响应式缺陷**是两件事**，别混：本节修的是「时间推进后不重算」，
+  那条断言红的是「文案/选择器对不上」。两者的证据要分开看。
+- **单测用的是 `dueByDeck` 的最小复刻，不是真实 store。** 真实 store 在 node 里跑不起来
+  （`stores/flashcards.ts` 用无扩展名导入 `../services/flashcards`，Node ESM 解析不了
+  `ERR_MODULE_NOT_FOUND`；不为此造解析器钩子）。
+  因此「真实文件的三个 computed 确实接到了响应式时钟」由 `check:dueclock` 静态保证，
+  「响应式时钟确实驱动重算」由单测保证——两段证据拼起来，**中间那一环没有端到端覆盖**。
+
+#### 4.57.6 教训
+
+- **注释/文档里的行为描述也是「声明」，必须和实现一起被测。** 本轮第 5 条测试的红灯，
+  就是唯一抓到「后台暂停根本没实现」的东西。
+- 一次性迁移脚本里，**「未命中」必须 exit 非 0**。允许它写盘退出 0，
+  等于给「什么都没改成」发了一张通行证。
+- 判据自己也要有负控，而且负控的**变异必须真的改到了文件**（脚本里显式检查
+  `mutated === orig` 就报失败），否则负控可能只是在测空气。
+- 空断言最隐蔽：「没碰过的基线」和「正确的不变」在断言上长得一模一样。
+  要判「不变」，就必须先**主动触发**那个本该不变的东西。
 

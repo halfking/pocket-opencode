@@ -1,0 +1,29 @@
+# 一次性探针 flow：故意失败，让 Maestro 把当前页的 screen-hierarchy 落盘。
+# 用途：本机 uiautomator dump 被稳定 SIGKILL(137)，拿不到可访问性树；
+#      而 Maestro 只在断言失败时落盘。跑完去
+#      ~/.maestro/tests/<最新时间戳>/_probe-a11y/screen-hierarchy/ 读 JSON。
+# 不要把它当成回归测试，它**永远失败**，这是设计如此。
+appId: com.kaixuan.opencode.pocket
+---
+- runFlow: _login.yaml
+- extendedWaitUntil:
+    visible: "更多|More"
+    timeout: 45000
+- tapOn: "更多|More"
+- extendedWaitUntil:
+    visible: "闪卡|Flashcards|Flashcard"
+    timeout: 20000
+- tapOn: "闪卡|Flashcards|Flashcard"
+- extendedWaitUntil:
+    visible: ".*回归卡组.*"
+    timeout: 25000
+- tapOn: ".*回归卡组.*"
+- extendedWaitUntil:
+    visible: ".*添加卡片.*|.*Add card.*"
+    timeout: 20000
+- tapOn: ".*添加卡片.*|.*Add card.*"
+- extendedWaitUntil:
+    visible: ".*保存.*|.*Save.*"
+    timeout: 20000
+# 故意失败：逼出这一页的可访问性树
+- assertVisible: "ZZZ_故意失败_用来抓可访问性树"
