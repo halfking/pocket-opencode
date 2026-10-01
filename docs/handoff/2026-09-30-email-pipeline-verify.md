@@ -6761,6 +6761,109 @@ near-miss（未判垃圾但有分）      1 封（30 分）
 
 ---
 
+## §7cy 【需求 2】真实数据取证：6 封发票候选只建档 1 封；顺带查出 `has_attachments` 在生产里恒为 false（2026-10-02）
+
+需求 2/3 此前在真实数据上的执行证据是 0。新增只读探针
+`backend/cmd/invoiceprobe`（与 §7cx 同一套只读保证），把
+`InvoiceCandidate` / `ExtractInvoiceLoose` / `InvoiceFileName` 这些**纯函数**
+在真库 120 封邮件上跑一遍，得到与 `extractInvoiceCandidates`
+（pipeline.go 步骤 1.5）**完全相同**的结果。
+
+### 实测
+
+```
+发票候选（命中关键词）          6 封
+ExtractInvoiceLoose(false) 命中 1 封   ← 当前生产实际取值
+ExtractInvoiceLoose(true)  命中 6 封
+只因为 has_attachments 为真才被建档的   5 封
+```
+
+唯一能建档的那封，字段完整、命名正确：
+
+```
+您收到来自杭州创客家投资管理有限公司的发票，发票号码：26332000008261110741…
+  kind=e-invoice  category=其他  seller=杭州创客家投资管理有限公司
+  amount=3500.00 CNY  invoiceNo=26332000008261110741  invoiceDate=2026-09-24
+  文件名: 其他-杭州创客家投资管理有限公司-3500.00-2026-09-24-26332000008261110741.pdf
+金额汇总（按币种分组）: CNY 3500.00 (1 张)
+```
+
+即需求原文的 `{费用类型}-{对方单位}-{金额}-{日期}.pdf` 格式**在这封上是达标的**，
+日期来自主题，而不是 §7cs 那个必然失败的 `ParseInvoiceDateFromBytes`。
+
+### 查出一个真结构缺陷：`has_attachments` 恒为 false
+
+`ExtractInvoiceLoose` 的第三个参数决定要不要走「放宽建档」——那条路径当初
+就是为「主题写 9 月度对账单、金额只印在附件 PDF 里」加的，硬门槛会在采集器
+看到附件之前就把邮件扔掉。实测 **120 封里为真的是 0 封**，链路是断的：
+
+| 环节 | 状态 |
+|---|---|
+| POP3 路径 `fetcher.go:974` `em.HasAttachments = len(parsed.Attachments) > 0` | ✅ 正确置位 |
+| IMAP 路径插入时 | 只有 envelope，无从得知 |
+| IMAP 事后唯一机会 `MarkEmailBodyCached`（`store.go:1925`） | ❌ `has_attachments = COALESCE(has_attachments, FALSE)` —— **恒等操作**，把机会丢掉 |
+| harvest 回填 `invoice_harvest.go:317` | 只 `BodyCache.Put`，压根不调 `MarkEmailBodyCached` |
+| 全树 `HasAttachments: true` | 只出现在**测试文件**里 |
+
+`COALESCE(x, FALSE)` 只能把 NULL 变成 FALSE，**永远无法把 FALSE 变成 TRUE**。
+这不是「忘了写」，是**写了等于没写**。
+
+### 但不要把它当成「丢了 5 张发票」——我第一版的框架就是错的
+
+差出来的那 5 封是：
+
+```
+Xiaomi MiMo API 开放平台扣款成功通知        amount=0.00  no=(空)
+所需操作：AWS 账户提示                      amount=0.00  no=(空)
+Amazon Web Services Account Alert           amount=0.00  no=(空)
+AWS 账户提醒                                amount=0.00  no=(空)
+来自 Apple 西湖商务团队的问候 - 杭州开轩…    amount=0.00  no=(空)
+```
+
+**它们的金额根本不在邮件正文里**（在门户/账户后台里）。放宽建档对它们
+救不回任何金额，只会在需求 3 的汇总文档里建出 5 条 `amount=0.00` 的记录、
+落 5 个 `其他-未知单位-0.00-<当天>.pdf` —— 那比丢弃更糟。
+
+准确的说法是：
+
+- `has_attachments` 恒 false 是**真实的结构缺陷**，放宽路径因此从不执行；
+- 但在**当前这批数据**上它不是需求 2 的瓶颈。瓶颈是这批邮件压根不含金额；
+- 放宽建档只是让 `harvestOne` 有机会去取附件的**必要条件**，单独打开它
+  解决不了问题。
+
+这条边界值得写清楚，否则下一个人会拿着「5/6 被丢弃」去汇报一个比实际
+严重得多的问题。
+
+### 顺带发现：现存那条发票记录的 `file_name` 与当前命名规则不一致
+
+`email_invoices` 全表只有 1 行：
+
+```
+file_name     = 其他-杭州创客家投资管理有限公司-3500.00-2026-09-24.pdf
+invoice_no    = 26332000008261110741
+invoice_date  = 2026-09-24
+status        = downloaded
+attempts      = 1
+```
+
+`InvoiceFileName`（`invoice_harvest.go:597`）在发票号非空时会追加一段
+`-<发票号>`（`:591` 注释：「发票号为空时不加这一段」）。库里 `invoice_no`
+明明有值，文件名却没有这一段 —— 说明它是**旧版命名规则**的产物。
+
+今天按同样输入重采会算出 `...-2026-09-24-26332000008261110741.pdf`，
+与现存文件名**不同**。而 §7cs 已证实 `saveInvoiceFile` 从不删旧文件，
+所以这是「同一张发票在磁盘上出现两份」的**又一条独立成因**：
+不是日期缺失导致的重名，而是**命名规则随代码变过**。
+
+该行状态是 `downloaded`，今天不会自动重采，所以还没发生；但只要它被重置
+或人工重新采集就会触发。命名/去重方案（待拍板）必须把这一条一起覆盖。
+
+### 回归
+
+`go build ./...` 与 `go vet ./cmd/...` 干净（本节只新增 cmd，未改行为）。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
