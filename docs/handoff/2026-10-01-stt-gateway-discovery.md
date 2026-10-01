@@ -509,3 +509,69 @@ id 属性、class 不算。
 adbd 处于「等授权弹窗」或「已锁屏挂起」的特征。USB 通道
 （`4c308e2e`）是同一台设备的另一条通道，同时 offline。
 **需要在手机上解锁并重新确认 USB 调试授权**，这一步只能由人做。
+
+## §13 黑盒重跑暴露的 SSRF 缺陷（2026-10-01 17:35）
+
+这一节不是原计划内的，是**重跑已有黑盒**时撞出来的。之前记的 19/0 一直
+没人质疑过 —— 绿灯本身不算证据，这次因为改了后端错误文案、必须重跑，
+才发现那条断言有问题。
+
+### 现象
+
+`scripts/verify-stt.ps1` 的「危险地址应被拒绝」在**父进程设了
+`POCKET_LLM_GATEWAY_ALLOW_PRIVATE`** 的环境里从 PASS 变 FAIL（18/1）：
+
+```
+[FAIL] 接受了危险地址 http://127.0.0.1:8080/v1
+```
+
+同一条断言，在没设开关的默认环境里 PASS、设了就 FAIL。
+
+### 两个独立的问题
+
+**(1) 断言是环境相关的（测试问题）**
+
+`verify-stt.ps1` 原本**完全不碰**这两个开关，直接继承父进程环境。所以
+19/0 这个数字只在特定环境下成立。已修：脚本显式清空两个开关，并把
+「网关开关打开时」的行为交给 Go 端到端用例钉住。
+
+**(2) 真的 SSRF 缺陷（产品问题）**
+
+`server_stt_settings.go` 的 `externalBaseURL` 校验调的是
+`validateGatewayURL` —— 而那个函数读 `POCKET_LLM_GATEWAY_ALLOW_PRIVATE`。
+
+于是：**任何为了「连上内网 LLM 网关」而打开网关开关的部署，STT 的 SSRF
+防护被静默关掉。** 用户可以把外部服务地址填成
+`http://127.0.0.1:<本机任意端口>/v1`，后端把用户的录音（会议、语音输入）
+POST 过去。能打到 loopback 就意味着能打到实例自己暴露的内部管理面。
+
+这不是本次引入的 —— 那两行调用来自 2026-09-30 的快照提交 `88cb5a2`。
+仓库里 `TestValidateOutboundURLUnaffectedByGatewaySwitch` 正是为守住
+「网关开关不得影响出站校验」这条不变量而写的，但它只覆盖
+`validateOutboundURL`，**漏了 STT 这个调用点**。
+
+### 修法
+
+独立开关 `POCKET_STT_ALLOW_PRIVATE`：
+
+| | 默认 | `POCKET_STT_ALLOW_PRIVATE=true` |
+|---|---|---|
+| 私网 / loopback | 拒绝 | 放行（自建 ASR 场景） |
+| 云元数据端点 | 拒绝 | **仍拒绝** |
+| 网关开关的影响 | 无 | 无 |
+
+错误文案也一并改：旧文案把用户导向 `POCKET_LLM_GATEWAY_ALLOW_PRIVATE`，
+导向错了等于**教用户一步步把 STT 的 SSRF 防护也关掉** —— 那正是这个缺陷
+的成因。
+
+### 负控对照
+
+| 改动 | 改回去后的实测结果 |
+|---|---|
+| 调用点改回 `validateGatewayURL` | `TestSTTConfigRejectsLoopbackUnderGatewaySwitch` 转红，并打出实际证据：`PUT /api/stt/config` 返回 **200** 且把 `http://127.0.0.1:9/v1` **存了进去** |
+| 修复后，父进程**开着**网关开关重跑黑盒 | **21/0**（比原来的 19/0 更苛刻的环境） |
+
+**一个值得记的发现**：负控下，函数级用例（`TestSTTURL*`）**全部仍然通过**，
+只有那条端到端用例转红 —— 因为函数本身没错，错的是调用点接错了函数。
+函数级测试挡不住接线错误，这正是
+`TestSTTConfigRejectsLoopbackUnderGatewaySwitch` 必须存在的原因。
