@@ -67,14 +67,44 @@ try {
   $dirty = @(& git -C $RepoRoot status --porcelain 2>$null | Where-Object { $_ -notmatch '^\?\?' }).Count
 } catch { $dirty = '<git failed>' }
 
+# Whole-worktree dirty is the WRONG question in a shared worktree: 8 concurrent
+# sessions work out of the same repo, so backend/e2e/docs churn is normal and has
+# zero effect on this APK. What actually decides attribution is whether any file
+# inside the APK's input closure is dirty. Report BOTH -- this ADDS a signal, it
+# does not weaken the warning above (2026-10-01).
+$apkInputClosure = @(
+  'frontend/src', 'frontend/public', 'frontend/index.html', 'frontend/vite.config.ts',
+  'frontend/package.json', 'frontend/capacitor.config.ts', 'frontend/android'
+)
+# NOTE: the closure count deliberately ALSO includes untracked (??) files, unlike
+# the whole-worktree number above. An untracked new file under frontend/src is
+# perfectly buildable locally and would silently change the bundle, so for
+# attribution purposes it must count.
+$closureDirty = '<git failed>'
+try {
+  $closureDirty = @(& git -C $RepoRoot status --porcelain -- $apkInputClosure 2>$null).Count
+} catch { $closureDirty = '<git failed>' }
+
 Add-Content $OutFile "=== Source provenance ==="
 Add-Content $OutFile ("RepoRoot       : {0}" -f $RepoRoot)
 Add-Content $OutFile ("git commit     : {0}" -f $commit)
 Add-Content $OutFile ("git branch     : {0}" -f $branch)
 Add-Content $OutFile ("dirty (tracked): {0}" -f $dirty)
+Add-Content $OutFile ("dirty in APK input closure: {0}   <- the number that decides attribution" -f $closureDirty)
 if ($dirty -ne '0') {
   Add-Content $OutFile "[!] WORKTREE HAS UNCOMMITTED TRACKED CHANGES - the APK below cannot be"
   Add-Content $OutFile "[!] attributed to a commit. Do not treat a green runbook check as proof."
+  if ($closureDirty -eq '0') {
+    Add-Content $OutFile "[i] ...but every dirty file is OUTSIDE the APK input closure, so this"
+    Add-Content $OutFile "[i] specific APK still corresponds to the commit above. See the closure"
+    Add-Content $OutFile "[i] list below; it is the authoritative statement, not the count above."
+  }
+}
+if ($closureDirty -ne '0' -and $closureDirty -ne '<git failed>') {
+  Add-Content $OutFile "[!] FILES INSIDE THE APK INPUT CLOSURE ARE DIRTY - this APK genuinely"
+  Add-Content $OutFile "[!] cannot be attributed to a commit:"
+  & git -C $RepoRoot status --porcelain -- $apkInputClosure 2>$null |
+    ForEach-Object { Add-Content $OutFile ("      " + $_) }
 }
 Add-Content $OutFile ""
 
