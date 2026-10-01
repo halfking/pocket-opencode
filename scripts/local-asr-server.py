@@ -120,13 +120,21 @@ def decode_to_pcm16k(audio_bytes: bytes):
 
 
 def transcribe(audio_bytes: bytes, language: str | None, upstream_prompt: str | None = None,
-               use_builtin_bias: bool = True) -> tuple[str, float]:
+               use_builtin_bias: bool = True, delay_ms: int = 0) -> tuple[str, float]:
     """跑真识别。返回 (文本, 音频秒数)。
 
     use_builtin_bias=False 时**连内置兜底也一起关掉** —— 只丢上游 prompt
     而留着内置的，负控就不成立了（2026-10-01 实测踩过：B 组仍然返回简体，
     因为内置 prompt 还在兜着，对照完全无效）。
+
+    delay_ms 用于**把单次转写人为拉长**。它存在的唯一理由是复现一个真实故障：
+    http.Server 的 WriteTimeout=30s 会让「服务端耗时超过 30 秒」的请求
+    **一个字节的响应都发不出去**（客户端只看到 EOF / Empty reply）。
+    本机 CPU 推理够快，79 秒会议录音只要 28 秒，天然撞不到那条边界，
+    所以必须能人为把请求推到 30 秒以上才能验证那条修复。
     """
+    if delay_ms:
+        time.sleep(delay_ms / 1000.0)
     t0 = time.time()
     pcm = decode_to_pcm16k(audio_bytes)
     dur = len(pcm) / 16000.0
@@ -227,7 +235,7 @@ class Handler(BaseHTTPRequestHandler):
             prompt = None
 
         try:
-            text, dur = transcribe(audio, language, prompt or None, use_builtin_bias=not IGNORE_PROMPT)
+            text, dur = transcribe(audio, language, prompt or None, use_builtin_bias=not IGNORE_PROMPT, delay_ms=DELAY_MS)
         except Exception as e:  # 真实引擎会抛真错，不要吞
             log(f"ERROR {type(e).__name__}: {e}")
             self._json(500, {"error": {"message": f"{type(e).__name__}: {e}"}})
@@ -276,10 +284,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    global MODEL_NAME, IGNORE_PROMPT
+    global MODEL_NAME, IGNORE_PROMPT, DELAY_MS
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=18900)
     ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--delay-ms", type=int, default=0,
+                    help="每段人为延迟多少毫秒，用来把总耗时推过 http.Server 的 30s WriteTimeout")
     ap.add_argument("--no-bias", action="store_true",
                     help="忽略所有 prompt（含上游带来的），用作简体偏置修复的负控对照")
     ap.add_argument("--model", default="small",
@@ -287,6 +297,7 @@ def main() -> int:
     args = ap.parse_args()
     MODEL_NAME = args.model
     IGNORE_PROMPT = args.no_bias
+    DELAY_MS = args.delay_ms
 
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     log(f"listening on http://{args.host}:{args.port} (model={args.model})")

@@ -21,6 +21,10 @@
 param(
   [int]$Port = 18241,          # 验证用 pocketd 端口
   [int]$AsrPort = 18900,       # 本地 ASR 服务端口
+  # 要测的长录音。默认是 make-meeting-wav.py 产出的 meeting-long.wav（句间有停顿，
+  # 走静音切分）。传 meeting-nogap.wav 则走**连续讲话**路径，只能 25 秒硬切 ——
+  # 那条分支用真语音从未被验过。
+  [string]$Wav = '',
   [switch]$SkipBuild
 )
 
@@ -49,7 +53,9 @@ function Invoke-Json([string]$Uri, [string]$Method = 'Get', $Body = $null, $Head
 }
 
 $dataDir = Join-Path $root '.verify-stt-data'
-$wav = Join-Path $dataDir 'meeting-long.wav'
+if (-not $Wav) { $Wav = 'meeting-long.wav' }
+if (-not [System.IO.Path]::IsPathRooted($Wav)) { $Wav = Join-Path $dataDir $Wav }
+$wav = $Wav
 $timeline = "$wav.json"
 if (-not (Test-Path $wav)) { throw "缺少长录音：$wav（先跑 make-meeting-wav.py）" }
 if (-not (Test-Path $timeline)) { throw "缺少时间轴：$timeline" }
@@ -123,19 +129,43 @@ try {
   Write-Host "  已保存：$($saved.externalModel) @ $($saved.externalBaseURL)"
 
   # ---------- 4. 长录音全量转写 ----------
+  # 这一步**必须用 curl.exe**，不能用 Invoke-WebRequest。
+  #
+  # 2026-10-01 实测：PowerShell 5.1 的 Invoke-WebRequest 在这个请求上会抛
+  # 「The underlying connection was closed: ... closed by the server」，
+  # 而同时后端日志里明明白白写着
+  #     [SLOW] POST /api/stt/transcribe-full - 200 (30.1958247s)
+  # —— 服务端**成功**了 200，是客户端在长响应上断了 keep-alive 连接。
+  # 一次 3.4MB base64 的 POST 要等 30 秒以上，正好落在这个坑里。
+  # 用它做长录音验证会把「服务端成功」误报成「链路失败」。
   $dur = [math]::Round((Get-Item $wav).Length / 2 / 16000, 1)
   Write-Host ""
   Write-Host "== 4. POST /api/stt/transcribe-full（${dur}s 合成语音）=="
   $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($wav))
-  Write-Host "  base64 长度 $($b64.Length)，等待切分+逐段转写（大头是本机 CPU 推理）…"
-  $sw = [System.Diagnostics.Stopwatch]::StartNew()
-  $res = Invoke-Json "$base/api/stt/transcribe-full" -Method Post -Headers $hdr `
-    -Body (@{ audioBase64 = $b64; filename = 'meeting-long.wav'; language = 'zh' } | ConvertTo-Json -Compress) `
-    -TimeoutSec 1800
-  $sw.Stop()
+  $tag = [System.IO.Path]::GetFileNameWithoutExtension($wav)
+  $bodyFile = Join-Path $dataDir "$tag-request.json"
+  $out = Join-Path $dataDir "$tag-result.json"
+  # 显式写 UTF-8 无 BOM：带 BOM 时 Go 的 JSON 解码会直接失败。
+  [System.IO.File]::WriteAllText($bodyFile,
+    (@{ audioBase64 = $b64; filename = (Split-Path $wav -Leaf); language = 'zh' } | ConvertTo-Json -Compress),
+    (New-Object System.Text.UTF8Encoding($false)))
+  Write-Host "  请求体 $([math]::Round((Get-Item $bodyFile).Length / 1MB, 1)) MB，等待切分+逐段转写（大头是本机 CPU 推理）…"
 
-  $out = Join-Path $dataDir 'long-asr-result.json'
-  $res | ConvertTo-Json -Depth 6 | Set-Content -Path $out -Encoding UTF8
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  $code = & curl.exe -s -o $out -w '%{http_code}' -m 1800 `
+    -X POST "$base/api/stt/transcribe-full" `
+    -H "Authorization: Bearer $($login.token)" `
+    -H 'Content-Type: application/json; charset=utf-8' `
+    --data-binary "@$bodyFile"
+  $sw.Stop()
+  if ($LASTEXITCODE -ne 0) { throw "curl 失败，exit=$LASTEXITCODE" }
+  if ($code -ne '200') {
+    $raw = [System.IO.File]::ReadAllText($out)
+    throw "transcribe-full 返回 HTTP $code：$($raw.Substring(0, [Math]::Min(400, $raw.Length)))"
+  }
+  $res = [System.IO.File]::ReadAllText($out) | ConvertFrom-Json
+  if (-not $res.ok) { throw "transcribe-full 返回 ok=false：$($res.error)" }
+
   Write-Host ("  完成 {0:N1}s（{1} 段，failed={2}）" -f ($sw.ElapsedMilliseconds / 1000), $res.segments.Count, $res.failed)
   Write-Host "  全文：$($res.text)"
   Write-Host "  明细: $out"
