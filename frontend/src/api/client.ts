@@ -14,7 +14,7 @@
  */
 import { resolveRuntimeApiBase as resolveApiBase } from '../config/api-base'
 import { useAuthStore } from '../stores/auth'
-import { ApiError, assertNotHTML } from './http'
+import { ApiError, assertNotHTML, forceReauth } from './http'
 import { buildTasksUrl, type TaskListFilters } from './tasks-url.ts'
 
 /**
@@ -43,6 +43,14 @@ async function authFetch(input: string, init: RequestInit = {}): Promise<Respons
     } catch {
       // 响应不是 JSON，用 statusText
     }
+    // BUG-AX（2026-10-01 13:05 真机实测）：401 必须走 forceReauth，
+    // 否则调用方只会拿到一个 ApiError 并把它吞掉。实测后果是
+    // 「后端换了 JWT secret → 设备上旧 token 全 401 → 任务页 catch 后
+    //   把 tasks 置空 → 页面显示『暂无运行中的任务』『全部正常 · 0』，
+    //   既不报错也不跳登录」，用户拿着死 token 卡死却看不出发生了什么。
+    // 这正是 http.ts 里 BUG-I 描述的死法；那次修复只落在 http() 这条链上，
+    // 而本文件整个面（任务/会话/实例…）都走 authFetch，全部绕过了兜底。
+    if (response.status === 401) forceReauth()
     throw new ApiError(response.status, message)
   }
 

@@ -202,7 +202,172 @@ async function assertFetchIntact() {
   }
 }
 
+/**
+ * 守卫：App 配的后端必须真的在监听。
+ *
+ * 为什么要有这个守卫（2026-10-01 12:45 实测，代价是一整轮误判）：
+ *   App 的 API 基址是 http://127.0.0.1:18099。那次这个实例**没了**，
+ *   而 18111 上跑着另一个 worktree 的 pocketd。结果：
+ *     · PostgreSQL 里 17 条任务一条不少
+ *     · App 任务页显示「运行中 0 / 全部正常」，**且没有任何错误提示**
+ *   这和「列表功能坏了 / BUG-AL 复发」在现象上几乎无法区分，
+ *   差点把环境问题当成产品缺陷去查。判据不硬就必然误判。
+ *   ⇒ 每次 run 前探一次 /healthz；不通就明确报出来并给启动命令，
+ *     不要让 flow 去跑一个注定失败的场景。
+ */
+async function assertBackendUp() {
+  const base = process.env.POCKET_API_BASE || 'http://127.0.0.1:18099'
+  try {
+    const r = await fetch(`${base}/healthz`, { signal: AbortSignal.timeout(6000) })
+    if (r.ok) { console.log(`[preflight] 后端可达 ${base} ✅`); return true }
+    console.error(`[preflight] ❌ ${base}/healthz 返回 ${r.status}`)
+  } catch (e) {
+    console.error(`[preflight] ❌ ${base} 连不上：${e?.message || e}`)
+  }
+  console.error('           App 的一切读取都会静默变成空列表，flow 会给出误导性的失败。')
+  console.error('           先起后端：powershell -ExecutionPolicy Bypass -File scripts/start-local-backend.ps1')
+  return false
+}
+
+/**
+ * 守卫：从**设备侧**确认 App 真的能打到我们这个后端。
+ *
+ * 为什么宿主侧的健康检查不够（2026-10-01 12:57 实测，第二次误判）：
+ *   宿主 18099 已经起来了、/healthz 也 200，看起来一切正常。可 App 依然
+ *   显示「运行中 0 / 全部正常」且无任何错误。原因是 `adb reverse` 的映射
+ *   还指着**别的端口**：
+ *       host-33 tcp:18099 tcp:18111      ← 设备 18099 → 宿主 18111
+ *   18111 上跑的是另一个 worktree（openpocket-wt-stt）的 pocketd，
+ *   它连的是另一份状态。设备上 curl 18099 照样 200，所以**设备侧探测
+ *   也不会报错**，只是内容不对。
+ *   ⇒ 光看「通不通」分辨不出来，必须**比对映射目标端口**。
+ *   这是那种「所有健康检查都绿、功能却是空的」陷阱，只能靠显式断言挡住。
+ */
+async function assertDeviceReachesBackend() {
+  const base = process.env.POCKET_API_BASE || 'http://127.0.0.1:18099'
+  const port = (base.match(/:(\d+)/) || [])[1]
+  if (!port) { console.log('[preflight] 解析不出端口，跳过设备侧检查'); return true }
+  let list = ''
+  try { list = adb(['reverse', '--list'], 15000) } catch { /* 没配 reverse */ }
+  const mapping = list.split(/\r?\n/).map((l) => l.trim()).find((l) => new RegExp(`tcp:${port}\\s`).test(l))
+  const target = mapping ? (mapping.match(/tcp:\d+\s+tcp:(\d+)/) || [])[1] : null
+  if (!mapping) {
+    // 设备重连（adb kill-server / WiFi 抖动 / 换 USB 模式）会把 reverse 映射整个清掉。
+    // 正确映射唯一（App 的 API 基址端口 → 宿主同一端口），直接补上。
+    console.error(`[preflight] ⚠️ 设备上没有 tcp:${port} 的 adb reverse 映射，正在补建`)
+    try {
+      adb(['reverse', `tcp:${port}`, `tcp:${port}`], 15000)
+      const after = adb(['reverse', '--list'], 15000)
+        .split(/\r?\n/).map((l) => l.trim()).find((l) => new RegExp(`tcp:${port}\\s`).test(l))
+      const now = after ? (after.match(/tcp:\d+\s+tcp:(\d+)/) || [])[1] : null
+      if (now !== port) { console.error(`[preflight] ❌ 补建失败，当前映射：${after || '<无>'}`); return false }
+      console.error(`[preflight] ✅ 已补建为 tcp:${port} → tcp:${port}`)
+    } catch (e) {
+      console.error(`[preflight] ❌ 补建失败：${e?.message || e}`)
+      return false
+    }
+  } else if (target !== port) {
+    // 这个映射在本次调试里被外力改回去过至少三次（另一条 worktree 的调试、
+    // adb server 重连都会动它），每次都让人重新排查一轮。
+    // 正确映射是唯一的（App 的 API 基址端口 → 宿主同一端口），所以直接自愈，
+    // 但**必须大声打印**：它改变了设备状态，不能悄悄发生。
+    console.error(`[preflight] ⚠️ 设备 tcp:${port} 被映射到了宿主 tcp:${target}，正在自愈`)
+    console.error(`           App 读到的是别的实例（很可能是另一个 worktree）的数据，`)
+    console.error(`           表现为「列表恒空但没有任何报错」，极易被误判成产品缺陷。`)
+    try {
+      adb(['reverse', '--remove', `tcp:${port}`], 15000)
+      adb(['reverse', `tcp:${port}`, `tcp:${port}`], 15000)
+      const after = adb(['reverse', '--list'], 15000)
+        .split(/\r?\n/).map((l) => l.trim()).find((l) => new RegExp(`tcp:${port}\\s`).test(l))
+      const now = (after || '').match(/tcp:\d+\s+tcp:(\d+)/)
+      if (!now || now[1] !== port) {
+        console.error(`[preflight] ❌ 自愈失败，当前映射：${after || '<无>'}`)
+        return false
+      }
+      console.error(`[preflight] ✅ 已自愈为 tcp:${port} → tcp:${port}`)
+    } catch (e) {
+      console.error(`[preflight] ❌ 自愈失败：${e?.message || e}`)
+      return false
+    }
+  }
+  // 映射对了，再确认设备上真的能拿到 200（reverse 存在但宿主没监听也会失败）
+  try {
+    const out = adb(['shell', `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${port}/healthz`], 20000).trim()
+    if (out !== '200') {
+      console.error(`[preflight] ❌ 设备 curl 127.0.0.1:${port}/healthz 返回 "${out}"`)
+      console.error(`           先起后端：powershell -ExecutionPolicy Bypass -File scripts/start-local-backend.ps1`)
+      return false
+    }
+  } catch {
+    console.log(`[preflight] 设备侧 curl 不可用，跳过（映射本身已核对为 tcp:${port} → tcp:${port}）`)
+  }
+  console.log(`[preflight] 设备可达后端 ${base}（reverse tcp:${port} → tcp:${target}）✅`)
+  return true
+}
+
+/**
+ * 可选：每次 run 前清掉 App 的登录态，逼它走一遍真实登录。
+ *
+ * 为什么需要（2026-10-01 13:15~13:35 实测）：
+ *   App 把 token 存在 localStorage。后端每重启一次（尤其换 JWT secret），
+ *   设备上那枚 token 就作废；而 App **不会自己重新登录**，于是：
+ *     · 任务列表恒空（每个请求都 401）
+ *     · 「创建」点下去没反应（请求根本没发出去，PG 里查不到新行）
+ *   这两个现象看起来都像「tasks 写路径坏了」，真因是环境。
+ *   ⇒ 默认清登录态：这样每次 run 的 token 一定是当前后端签的，
+ *     顺带把登录路径也真实跑一遍（而不是跳过它）。
+ *   设 POCKET_RESET_AUTH=0 可关闭。
+ */
+async function resetAppAuth() {
+  if (process.env.POCKET_RESET_AUTH === '0') return true
+  try {
+    const info = await cdpEval(`(function(){
+      try {
+        var before = (localStorage.getItem('pocket_token')||'').length;
+        ['pocket_token','pocket_user','pocket_workspace_id','pocket_auth_method'].forEach(function(k){localStorage.removeItem(k)});
+        return JSON.stringify({removedTokenLen: before, after: (localStorage.getItem('pocket_token')||'').length});
+      } catch (e) { return JSON.stringify({err: String(e && e.message || e)}) }
+    })()`)
+    const o = JSON.parse(String(info))
+    if (o.err) { console.log(`[preflight] 清理登录态未生效（${o.err}），继续`); return true }
+    console.log(`[preflight] 已清除 App 登录态（原 token ${o.removedTokenLen} 字符）→ 本次会真实走一遍登录`)
+    return true
+  } catch (e) {
+    console.log(`[preflight] 清理登录态失败（${e?.message || e}），不阻断`)
+    return true
+  }
+}
+
+async function ensureBackend() {
+  if (await assertBackendUp()) return true
+  const base = process.env.POCKET_API_BASE || 'http://127.0.0.1:18099'
+  // 只有本地后端才自动拉起；指向远端时拉起本机 pocketd 是错的。
+  if (!/127\.0\.0\.1|localhost/.test(base)) return false
+  if (process.env.POCKET_AUTOSTART_BACKEND === '0') return false
+  console.error('[preflight] 尝试自动拉起本 worktree 的 pocketd …')
+  const ps = resolve(ROOT, 'scripts', 'start-local-backend.ps1')
+  // ⚠️ stdio 必须是 'ignore'：ps1 内部用 Start-Process 拉起 pocketd，
+  //    那个孙进程会继承这里的 stdout/stderr 句柄。若用默认的 'pipe'，
+  //    spawnSync 会一直等这些管道关闭 —— 表现是「后端明明起来了，
+  //    preflight 却卡住不动」，实测卡了 3 分钟。踩过。
+  const r = spawnSync('powershell', ['-ExecutionPolicy', 'Bypass', '-File', ps], {
+    cwd: ROOT, encoding: 'utf8', timeout: 180000, stdio: 'ignore',
+  })
+  if (r.status !== 0) {
+    console.error(`[preflight] ❌ 启动脚本失败（exit=${r.status}）：${(r.stderr || '').slice(0, 300)}`)
+    return false
+  }
+  if (await assertBackendUp()) {
+    console.error('[preflight] ✅ 后端已拉起')
+    return true
+  }
+  console.error('[preflight] ❌ 拉起后 /healthz 仍不通')
+  return false
+}
+
 async function preflight() {
+  if (!(await ensureBackend())) return false
+  if (!(await assertDeviceReachesBackend())) return false
   if (!(await ensureDriver())) return false
   console.log('[preflight] 强停并重新启动 App（绕开 MIUI 吞掉 force-stop 后启动意图的问题）')
   try { adb(['shell', 'am', 'force-stop', PKG]) } catch { /* 本来就没跑 */ }
@@ -252,13 +417,26 @@ if (!(await preflight())) process.exit(3)
     : '[preflight] ⚠️ 复位路由/等渲染未成功，flow 的起始状态可能不确定')
 }
 
+// 复位完成后再清登录态：顺序不能反，否则清完 token 页面又会把旧壳渲染回来。
+await resetAppAuth()
+
 // --no-reinstall-driver 是这台机器上能不能跑通 Maestro 的关键：
 // Maestro 2.11 **默认每次 test 之前都重装 driver**，而它的重装是「先卸载再安装」。
 // MIUI 会拦下安装那一步，于是每跑一次就亲手把 driver 卸掉且装不回来，
 // 下一轮继续卡在 installMaestroApks —— 破坏性循环（实测连踩三次，
 // 分别卡在 installMaestroDriverApp / installMaestroServerApp）。
 // 改成不重装，driver 由本脚本的 ensureDriver() 负责自愈。
-const args = ['--device', DEVICE, 'test', '--no-reinstall-driver', ...flows]
+// 每次 run 前面插一段 _dismiss-system-dialogs：MIUI 的一次性系统弹窗会在
+// flow 中段抢前台（2026-10-01 12:29 实测：抢在 unlock 分支输主密码时，
+// 把键盘输入吃掉，「解锁」恒 disabled），用 optional tap 清掉。
+// 注入给子进程前自检：只打长度，不打明文。
+// 2026-10-01 13:40 实测踩到过「Maestro 把 ${POCKET_DEV_PASS} 展开成字符串
+// "undefined"」，现场只留下一条 assert `^undefined$` 不成立，根因看不见。
+// 这行让「变量到底传没传过去」一眼可见（口令本身仍不落 stdout）。
+console.log(`[preflight] 注入子进程：POCKET_MASTER=${(process.env.POCKET_MASTER || 'PocketTest2026').length} 字符 / POCKET_DEV_PASS=${(m[1] || '').length} 字符`)
+
+const SYSTEM_DIALOG_FLOW = '.maestro/_dismiss-system-dialogs.yaml'
+const args = ['--device', DEVICE, 'test', '--no-reinstall-driver', SYSTEM_DIALOG_FLOW, ...flows]
 const r = spawnSync(MAESTRO, args, {
   cwd: ROOT,
   stdio: 'inherit',

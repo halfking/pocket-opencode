@@ -32,6 +32,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
 	"github.com/halfking/pocket-opencode/backend/internal/lobster"
 	"github.com/halfking/pocket-opencode/backend/internal/marketplace"
+	"github.com/halfking/pocket-opencode/backend/internal/meeting"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
@@ -90,6 +91,7 @@ func main() {
 		scheduledTaskStore *scheduledtask.Store
 		marketplaceStore   *marketplace.Store
 		financeStore       finance.FinanceStore
+	meetingStore       meeting.MeetingStore
 		rssStore           *rss.Store
 		// v1 闪卡模块（docs/flashcards-contract.md §1, §5）。PG 就绪时构造
 		// store 与 EnsureSchema；remote-only 模式下保持 nil，handler 返 503。
@@ -143,6 +145,15 @@ func main() {
 			log.Fatalf("finance store: %v", err)
 		}
 		financeStore = fs
+		// 会议存储同款：内存版重启即清空，会议逐字稿/摘要/待办会全丢。
+		// 4 张表（含墓碑表）都是新引入，fail-fast 语义与 flashcards 一致。
+		mtgCtx, mtgCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		mts, err := meeting.NewPGStore(mtgCtx, pool)
+		mtgCancel()
+		if err != nil {
+			log.Fatalf("meeting store: %v", err)
+		}
+		meetingStore = mts
 		ms, err := initMarketplaceStore(context.Background(), pool)
 		if err != nil {
 			log.Fatalf("marketplace store: %v", err)
@@ -631,6 +642,12 @@ func main() {
 		dataDir, pool, flashcardStore)
 	if financeStore != nil {
 		srv.SetFinanceStore(financeStore)
+	}
+	// 必须在下面 sources.New(..., srv.MeetingStore()) 之前注入，
+	// 否则 learning resolver 会拿到已被替换掉的那份内存 store。
+	if meetingStore != nil {
+		srv.SetMeetingStore(meetingStore)
+		log.Println("Meeting store: PostgreSQL (meetings + tombstones persisted)")
 	}
 	if scheduledTaskStore != nil {
 		srv.SetScheduledTaskStore(scheduledTaskStore)

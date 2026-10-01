@@ -6797,3 +6797,787 @@ UI 自己**（点进去读 hash），不能来自 API。API 只能用来确认�
 - `scripts/diag-note-detail-mismatch.mjs` / `diag-meeting-detail-click.mjs`
   —— 列表/详情 id 体系是否一致的判别实验
 
+
+#### 4.70 https 生产路径回归：设备侧做不完（环境），但服务端侧挖出一个真发现
+
+生产基址是 `https://pocket.itestu.cn`（`api/http.ts` 里 `resolveRuntimeApiBase`
+的兜底）。此前所有真机验证都跑在 `adb reverse` 的 `http://127.0.0.1:8088` 上，
+**https 这条路一次都没走过**。本节用 `scripts/verify-https-prod.mjs`
+（靠 `localStorage.pocket_api_base` 覆盖，不重建 APK）试。
+
+##### 4.70.1 服务端侧：生产是活的 ✅
+
+宿主与**真机原生 curl** 都通：
+
+```
+宿主 → /api/auth/login 405 / /api/tasks 401 / / 200
+真机 curl -v https://pocket.itestu.cn/api/tasks
+  < Strict-Transport-Security: max-age=63072000; includeSubDomains
+  < X-Pocket-Upstream: 100.106.192.58:8090, 172.16.2.210:8090
+  {"code":"unauthenticated","error":"missing authorization token","request_id":"c587…","retryable":false}
+```
+
+dev 凭据在生产可登录（token 291 字符），登录后 `/api/tasks`、`/api/notes`、
+`/api/meetings`、`/api/agents`、`/api/email/accounts`、`/api/email/summaries`、
+`/api/scheduled-tasks`、`/api/app/check-update` 均 200。
+
+##### 4.70.2 ⚠️ 真发现：**生产后端落后于本地代码，5 个端点不一致**
+
+同一套凭据、逐条对照生产与本地：
+
+| 端点 | 生产 https | 本地 8088 | 差异含义 |
+|---|---|---|---|
+| `/api/flashcards` | **404** | 200 | 闪卡模块在生产上**整个不存在** |
+| `/api/flashcards/notes` | **404** | 200 | 同上 |
+| `/api/rss/items` | **404** | 200 | |
+| `/api/chat-agents` | **500** | 200 | 不是缺失，是**服务端报错** |
+| `/api/marketplace/packages` | **404** | 200 | |
+
+前两条意味着：即便前端按当前代码打包，**生产上闪卡也是全灭的**。
+`/api/chat-agents` 的 500 比 404 更糟——它会渲染成「加载失败」而不是「未实现」。
+其余 10 个端点两边一致，说明生产不是整体挂掉，而是**落后若干次部署**。
+
+**这是部署问题不是代码问题**，要动的是把本地后端推到生产。
+
+##### 4.70.3 ❌ 设备侧 https 回归：**做不完，且原因是环境不是产品**
+
+WebView 内打生产，全部 `Failed to fetch`。逐层排除：
+
+```
+未鉴权 fetch        -> Failed to fetch
+mode: 'no-cors'     -> Failed to fetch      ← 若是纯 CORS，这个会成功（不透明响应）
+OPTIONS 预检        -> Failed to fetch      ← 预检都失败 ⇒ 请求根本没拿到响应
+```
+
+先怀疑是「App 自己装了 fetch 包装器把请求拦了」——项目 CHANGELOG 里确实提过
+`buildOriginChecker`。查源码：**没有**运行时 fetch 包装器，也**没有** CSP
+（grep 命中的 `window.fetch =` 全部在 `__tests__/` 的测试替身里）。排除。
+
+同源对照 + 外部对照（`scripts/diag-webview-https-fail.mjs`）：
+
+```
+页面 origin = https://localhost
+  401  local  http://127.0.0.1:8088/api/tasks   ct=application/json  bodyLen=131
+  ❌   prod   https://pocket.itestu.cn
+  ❌   prod   no-cors
+  ❌   prod   OPTIONS preflight
+  ❌   example.com        https://example.com/
+  ❌   gstatic            http://www.gstatic.com/generate_204
+```
+
+⇒ **WebView 上所有外网都不可达**，localhost 正常、同一台设备原生 curl 正常。
+这是**测试设备的网络环境问题**（设备上装着一款 VPN/代理 App，WebView 很可能
+被其路由进了黑洞，而 curl 绕过了），**不是产品缺陷**。
+
+按本项目一贯纪律：环境问题不得记成产品缺陷。所以：
+
+- ✅ **服务端侧 https 路径已验证可用**（TLS、鉴权、读取、边缘回源都正常）
+- ❌ **设备侧 WebView → 生产 https 的端到端回归本轮未完成**，阻塞在设备外网出口，
+  不是代码。需要一台能正常上外网的设备（或在设备上启用代理）才能补上
+- ⏳ 对生产的**写路径**一律没做：那是共享部署，单方面写入属于不该擅自做的副作用，
+  需产品/运维授权
+
+##### 4.70.4 本轮沉淀
+
+- `scripts/verify-https-prod.mjs` —— 用 localStorage 覆盖换基址跑完整 https 链路，
+  **跑完自动还原覆盖值**（不污染后续 dev 会话）
+- `scripts/diag-webview-https-fail.mjs` —— 「Failed to fetch」归因：同源对照 +
+  no-cors + OPTIONS 预检 + 外部对照，四步把「CORS / TLS / 探针坏了 / 环境」分开
+
+
+#### 4.71 :param 巡检覆盖率 17 → 30 中的 20 条，并分清两类「没进去」
+
+§4.68 跑完后有 13 条采不到 id。本轮用 `scripts/probe-empty-sources.mjs` 把
+「没数据」和「后端根本没这个端点」分开，又找到一个**之前漏掉的数据源**。
+
+##### 4.71.1 `/api/agents` 是 null，但 `/api/chat-agents` 里有真实 agent
+
+```
+/api/agents        200  {"agents":null}
+/api/chat-agents   200  {"agents":[{"id":"academic-anthropologist","name":"人类学家",…}]}
+/api/sessions       200  {"sessions":[],"total":0}
+/api/scheduled-tasks 200 {"tasks":[]}
+/api/rss/items      200  {"count":0,"items":[]}
+/api/email/summaries 200 {"summaries":[]}
+/api/contacts       404  404 page not found
+```
+
+⇒ `/agents/:agentId` 的 id 应该取自 **chat-agents**（`academic-anthropologist`），
+不是 `/api/agents`（那个是用户自建 agent，现在是 null）。
+另加一条**日期型**路由 `/email/summary/:date` —— 日期参数不需要先有数据也能开页面，
+拿 `2026-10-01` 就能验。
+
+##### 4.71.2 覆盖率 17 → 20，解锁后重跑 0 红旗
+
+```
+实扫 20 条 / 30 条模板
+红旗 0 · 报未找到 2 · 空页 0 · 疑似陈旧 0 · 导航失败 1 · 探针失败 0
+✅ /agents/academic-anthropologist            ✅ /agents/academic-anthropologist/edit
+✅ /email/em-1298896143-…                    ✅ /email/summary/2026-10-01
+✅ /notes/note-…/edit  ✅ /tasks/task-…  ✅ /flashcards/… ×4  ✅ /gateway/… ×7
+```
+
+**这 3 条剩下的不是新缺陷**，逐条定性：
+- `/notes/:id`、`/meetings/:id` 报「未找到」—— §4.68.3 已证伪（采的 id 与
+  UI 列表页数据源不同：前端 `meeting-*` vs 后端 `mtg_*`；notes 同理）
+- `/meetings/:id/record` 导航「未生效」—— §4.64.3 早就记过：
+  `/meetings/*` 进页面会自动带 `?record=1` 并开始录音，**业务跳转，不是失败**
+
+⇒ **20 条实扫里 17 条确认落地，3 条是已定性的假阳性/既定行为，0 红旗。**
+
+##### 4.71.3 一个容易误判的现象：**「导航未生效」可能是锁库，不是导航坏**
+
+第一遍跑时有 6 条报 `NAV_FAIL`，hash 全部停在
+`#/login?returnTo=…&unlock=1`。看着像路由坏了，其实是**本地加密库被锁**。
+
+而且它**有规律**，不是随机：
+
+| 被打回 | 正常 |
+|---|---|
+| `/notes/*`、`/email/*`、`/meetings/*` | `/tasks/*`、`/flashcards/*`、`/gateway/*`、`/agents/*` |
+
+⇒ 被打回的三个是**离线优先、走本地加密库**的模块，库一锁就被守卫弹回；
+通的那几个是纯服务端模块，不依赖本地库。解锁后重跑，这 6 条全部恢复正常，
+其中 `/email/:id` 与 `/email/summary/:date` 转为 ✅。
+
+**教训**：判「路由坏了」之前先看 hash 停在哪。停在 `#/login?...&unlock=1`
+是**环境状态**，不是路由缺陷。巡检脚本把这类单独打成 NAV_FAIL 而不是
+混进「未找到」，就是为了不让它污染缺陷账。
+
+#### 4.72 剩余 10 条未扫模板的解锁条件（已探明，可直接执行）
+
+| 模板 | 解锁条件 |
+|---|---|
+| `/contacts/:id` | **后端无该端点**（404 page not found）—— 属缺功能，不是造数据能解 |
+| `/sessions/:id` | 需先造一条会话 |
+| `/settings/scheduled-tasks/:id`(±edit) | 需先造一条定时任务 |
+| `/rss/items/:id` | 需先订阅一个源并拉到条目 |
+| `/opencode/sessions/:id` | 无列表端点可采 id |
+| `/vault/:id`(±edit) | 纯本地原生，BUG-AT 已定性 Android 不可用 |
+| `/pkm/n/:id` | 落设备本地 `local_assets`，需先在 UI 建一条 PKM 笔记 |
+| `/gateway/:nodeId/credentials/:credentialId` | 需先建一个凭据 |
+
+
+#### 4.73 ⚠️ 更正 §4.71 的「17 条确认落地」——**实际只有 11 条**
+
+§4.71 报「20 条实扫里 17 条确认落地，3 条已定性，0 红旗」。
+追 `/gateway/:nodeId/credentials/:credentialId` 时发现不对，逐页打文本：
+
+```
+#/gateway/PROBE-NODE-948776-RENAMED/credentials
+   跳到主要内容 | arrow_back | 凭据 | notifications | refresh | 加载网关信息失败
+#/gateway/…/models    … | 模型路由 | refresh | 只看精选 | 加载网关信息失败
+#/gateway/…/catalog   … | 模型目录 | refresh | … | 加载网关信息失败
+#/gateway/…/providers … | 供应商 | refresh | 加载网关信息失败
+```
+
+**这些是错误态，却被我判成了 ✅。**
+
+##### 4.73.1 根因：我的 RED_FLAGS 只认「技术错误串」
+
+原判据只有：`TypeError` / `Failed to fetch` / `undefined` / `NaN` /
+`[object Object]` / `plugin is not implemented` …… 全是**技术性**特征。
+而 App 给用户看的是**友好失败文案**「加载网关信息失败」——
+既不含任何技术错误串，也不是空页，于是「没命中正则」被当成了「页面正常」。
+
+**「✅」在旧判据下的真实含义只是「没命中我的正则」，不是「功能正常」。**
+这是我第二次栽在同一类坑上（第一次是 §4.68.3 采错 id 源），
+但这次更隐蔽：它不是假阳性，是**假阴性**——把未验证的东西算进了「已落地」。
+
+##### 4.73.2 修复：新增 `ERROR_STATE` 类别，且**不**并进 RED_FLAGS
+
+为什么不直接并进红旗：BUG-AT 那种**诚实降级**也含失败字样
+（「当前平台未提供密码箱原生插件，功能不可用」），那是**正确**行为，
+并进去会制造假阳性。所以单列一类，含义是「**未验证**」，交人判定：
+
+```js
+const ERROR_STATE = [
+  /加载.{0,6}失败/, /获取.{0,6}失败/, /请求失败/, /服务不可用/, /连接失败/,
+  /无法连接/, /稍后重试/, /出错了/,
+]
+```
+
+汇总行同时改成显式口径，不再让「✅」含混：
+
+```
+红旗 0 · 错误态(未验证) 6 · 报未找到 2 · 空页 0 · 疑似陈旧 0 · 导航失败 1
+⇒ 真正确认落地 11 / 20 条（其余为错误态/已定性/环境所阻，**不等于功能正常**）
+```
+
+##### 4.73.3 那 6 条为什么验不了（不是缺陷，是设备上没法验）
+
+节点 4 `PROBE-NODE-948776-RENAMED` 的 baseURL 是
+`https://probe-948776.invalid.test`——**故意指向不可解析的假主机**。
+后端去打它直接 502：
+
+```
+/api/llm-gateway/nodes/4/credentials -> 502
+  {"error":"gateway login failed: Post \"https://probe-948776.invalid.test/api/auth/token\":
+    lookup probe-948776.invalid.test: no such host"}
+```
+
+另一个节点 2 `default` 指向真实主机 `https://llmgo.kxpms.cn`，但
+`adminUsername: ""`、`adminPasswordSet: false`——**没配 admin 凭据**，同样取不到数据。
+
+⇒ 要真正验证这 6 条，需要一台**配置好凭据且可达的网关节点**。
+本机两台都不满足。**App 在这种情况下如实显示「加载网关信息失败」、
+而不是渲染一个空列表假装成功——这一点是符合 BUG-AT 那条原则的正确行为。**
+但它同时意味着这 6 个页面**功能未被验证**，不能记成「已落地」。
+
+**顺带**：这也印证了 §4.62 里「gateway 六个函数对应四个页面 = 功能没做」
+那条死能力定性——网关这块在真机上确实还没有一条走通的完整路径。
+
+##### 4.73.4 当前真实口径
+
+| 类别 | 数量 | 含义 |
+|---|---|---|
+| 真正确认落地 | **11** / 20 | 页面渲染且无错误态 |
+| 错误态（未验证） | 6 | 全是 `/gateway/*`，设备无可用网关节点 |
+| 报未找到（已证伪） | 2 | §4.68.3：采的 id 与 UI 数据源不同 |
+| 导航未生效（既定行为） | 1 | §4.64.3：`/meetings/*` 自动带 `?record=1` |
+| 红旗（真缺陷） | **0** | — |
+
+未扫 10 条的条件见 §4.72，其中 `/contacts/:id` 是**后端缺端点**，
+`/gateway/…/credentials/:credentialId` 需要可用网关节点 + 已建凭据。
+#### 4.74 2026-10-01 12:00~13:15：真机轮次的四处更正与两个新缺陷
+
+这一节记的是**我自己的判据出错**和**当前 APK 与仓库代码不一致**两件事，
+外加两个由此暴露的真实缺陷。所有结论都有可复现的命令与真机证据。
+
+##### 4.74.1 更正一：`_login.yaml` 只覆盖了三种起始态，漏了第四种
+
+`LoginView.handleLogin` / `completeAuth` 在登录成功后，若
+`!cryptoConfig.cfg.hasMasterPassword` 就 `showMasterPasswordDialog = true`
+并**直接 return，不跳 `/ai`**（LoginView.vue:332 / 522）。
+于是真机上出现第四种起始态：**登录页 + 「创建主密码」模态框**。
+
+它最阴险的地方是**骗过了原有的全部判据**：登录页在模态框背后，
+无障碍树里「输入用户名」照样可见，看起来像未登录态 C；而点「登录」
+会再弹一次，永远出不去。实测现场（`~/.maestro/tests/2026-10-01_121046`）：
+flow 第一条就 FAILED，导出树里同时有登录页和 `android.app.Dialog t="创建主密码"`。
+
+**已修**：新增 `.maestro/_set-master-password.yaml`，并在 `_login.yaml` 里
+**判两次**——D-1 处理「开场就带着弹窗」（上一轮 run 死在弹窗上、弹窗残留），
+D-2 处理「刚登录完才弹」。少任何一个都会卡住。
+弹窗里三个 input 在无障碍树里 `text` 全是空（`type=password` 且无 content-desc，
+placeholder 不进 a11y 树），只能按坐标点：`50%,46%` / `50%,53%`，
+坐标来自 720x1640 实机导出（弹窗 `[40,480][680,1160]`，高 680，
+视口 1640 → 垂直居中，位置稳定）。收尾硬判据也补了
+`assertNotVisible: "创建主密码"`。
+
+⚠️ 必须用**与现有本地库相同**的主密码（`$POCKET_MASTER`），理由见 §4.74.6 BUG-AV。
+
+##### 4.74.2 更正二：设备上的 APK 是**旧的**，我一直在测不是当前代码的产物
+
+追「空列表下 `+ 新任务` 点不动」时挖出来的。实测（`scripts/diag-tap-newtask.mjs`）：
+
+| 投递方式 | 结果 |
+|---|---|
+| A `Input.dispatchTouchEvent`（最接近真手指） | create-task-form = **0** |
+| B `Input.dispatchMouseEvent`（Maestro 合成点击走这条） | create-task-form = **0** |
+| C DOM `.click()`（对照组） | create-task-form = **1** |
+
+`elementFromPoint` 在按钮中心返回 `div.refresh-text`——下拉刷新提示文字
+（bounds `156,107,204,125`）完整盖住了 `+ 新任务`（`148,104,211,128`）。
+
+我一度以为是漏写的 `pointer-events: none`：源码 `PullToRefresh.vue:284` 明明有，
+`frontend/dist` 的构建产物里也有。**但设备上跑的 CSS 是另一个版本**
+（`scripts/diag-indicator-css.mjs` 直接读设备 CSSOM）：
+
+| | 仓库源码 / dist 产物 | 设备上实际生效 |
+|---|---|---|
+| scope id | `data-v-fd017b03` | `data-v-c82569d1` |
+| `pointer-events` | `none` | **无此声明**（算出来 `auto`） |
+| `height` | `56px` | 无此声明（内联 `height:0px`） |
+| 定位方式 | 固定 56px + 位移揭开 | `transform: translateY(-100%)` |
+
+⇒ **不是没修，是设备上的 APK 早于这次修复**。这也印证了 §4.67 里
+「当前 APK 从未回归」这条欠账是真的会咬人：我前面几轮的真机结论
+有一部分是在测一份**不是当前代码**的产物。
+
+**处置**：重建 `frontend` → `cap sync` → `assembleDebug` → `adb install -r -g`，
+之后所有真机结论才建立在当前代码上。
+
+##### 4.74.3 更正三：「列表恒空」有两条环境原因，都极像产品缺陷
+
+PG 里 17 条任务一条不少，App 任务页却显示「运行中 0 / 全部正常」且**无任何错误**。
+分两步查到，**每一步都先排除了产品**：
+
+1. **宿主 18099 上没有后端**。`18111` 上跑的是**另一个 worktree** 的 pocketd
+   （`C:\workspace\openpocket-wt-stt\backend\.verify-bin\pocketd.exe`）。
+   App 配的 API 基址是 `http://127.0.0.1:18099`，那会儿没人监听。
+   ⇒ 新增 `scripts/start-local-backend.ps1`（含 `POCKET_AUTH_LEGACY_ONLY=true`，
+   否则 pocketd 直接拒绝启动），并把 `/healthz` 轮询写进去——
+   「进程在」不等于「后端可用」。
+2. **`adb reverse` 指向了别的端口**：`host-33 tcp:18099 tcp:18111`。
+   这条最阴险：**设备上 `curl 127.0.0.1:18099/healthz` 照样返回 200**，
+   所有健康检查都绿，功能却是空的。必须**比对映射目标端口**才能发现。
+
+⇒ `scripts/maestro-run.mjs` 的 preflight 现在有两道守卫：
+`assertBackendUp()`（宿主 `/healthz`）与 `assertDeviceReachesBackend()`
+（核对 `adb reverse` 目标端口，并从设备侧 curl 复核）。
+**这两条守卫的价值不在于现在，在于它们把一类「所有健康检查都绿、
+功能却是空的」陷阱变成了显式失败。**
+
+⚠️ 这两道守卫**还没做负控**（故意把后端停掉、看守卫是否真红），属未完成项。
+
+##### 4.74.4 BUG-AV（P1，未修）：`hasMasterPassword` 丢失会误触发「创建主密码」，无任何防护
+
+`hasMasterPassword` **只是 localStorage 里的 `pocket_crypto_cfg` 标志**
+（`stores/crypto-config.ts:13`），后端无记录，Keystore 也不保证有
+（`persistMasterSecretIfBound` 只在已绑定生物识别时才写）。
+标志一丢（MIUI 清站点数据 / 重装 / 存储回收），登录后必弹「创建主密码」，
+而本地 SQLCipher 库**可能已经存在且用旧主密码加密**。
+
+弹窗只有「创建」，**没有「用已有主密码解锁」**。用户若输入新密码：
+
+- `local-db.ts:138` 的 `setEncryptionSecret` 抛错被 `catch` 掉，
+  注释写着「这种场景下假定密码一致（用户重启 App 时常见）」⇒ **假设成真**；
+- 随后 `cryptoConfig.setMasterPassword()` 照常执行 ⇒ UI 认为主密码已创建；
+- 实际 DB 仍用旧密钥 ⇒ 下次解锁要旧密码，而用户已经忘了。
+
+**我没有在真机上复现锁死**（要复现需先让标志丢失且库已加密，代价高），
+但代码路径是确定的。**需要产品定夺**：是把「已设主密码」这件事落到
+WebView 存储之外（Keystore / 服务端），还是在这个弹窗里补「我已有主密码」的解锁入口。
+我没有擅自改加密流程。
+
+##### 4.74.5 BUG-AX（P1，已修代码）：401 被渲染成「空列表 + 全部正常」
+
+`http.ts` 里其实**有** 401 兜底（`forceReauth()`，BUG-I 当时加的）。
+但 `api/client.ts` 整个面（`getTasks`/`getTask`/`createTask`…，
+任务、会话、实例等模块都在用）走的是 `authFetch`，**完全绕过了那条链**：
+
+```ts
+// client.ts:27
+async function authFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const response = await fetch(input, { ...init, headers })
+  if (!response.ok) {
+    // …只把 401 包成 ApiError 抛出去，没有任何「清登录态 + 跳登录页」
+    throw new ApiError(response.status, message)
+  }
+}
+```
+
+而 `TasksView.loadTasks()` 把错误 `catch` 掉、`tasks.value = []`
+（TasksView.vue:1006-1008），**不给用户任何提示**。
+实测证据（`scripts/diag-empty-list.mjs`，设备侧）：
+
+```
+tasksStatus: 401   body: {"code":"unauthenticated","error":"invalid or expired token"}
+cards: 0
+emptyShown: "暂无运行中的任务 / 点击「+ 新任务」创建…"
+triageText: "🟢 0"
+```
+
+⇒ 死 token 被渲染成「你一个任务都没有」，和 BUG-I 当初描述的死法一模一样。
+**BUG-I 的修复只打了一半**：兜底存在，但没覆盖真正被大量调用的那条路。
+
+**修法**：把 `forceReauth()` 从 `http.ts` 导出，`authFetch` 遇到 401 时调用它
+（清本地态 + 跳 `#/login?reason=expired`）。改动两处，各一行调用。
+⚠️ **代码已改，真机回归要等重建装机后重跑 `tasks-crud.yaml` 才有结论。**
+
+##### 4.74.6 真机 harness 的三条硬规矩（都是实测撞出来的，不是推理）
+
+1. **重排之后不能立刻 tap 坐标会变的元素。**
+   最初 `tasks-crud` 是「先 tap 收起（折叠分诊区）→ 再 tap + 新任务」，
+   后者报 COMPLETED 但弹窗不开。两者坐标差 ~1100px（y≈1368 → y≈202）。
+   WebView **异步发布**无障碍树：收起点完 DOM 已重排、树还没跟上，
+   Maestro 取到的仍是旧坐标。
+   ⇒ 去掉「收起」就通了。**`retryTapIfNoChange` 救不了**：任务列表里
+   「无响应 · 13 小时」这类相对时间持续变化，屏幕永远「变了」，它压根不会重试。
+2. **`visible` 会把折叠线以下 2px 的节点判成「可见」。**
+   新建的卡片 bounds 实测 `[94,1638][606,1640]`——只有 2px 高，还被底部
+   主导航（y≥1496）压着。Maestro 照样把 `visible` 判真，接着的
+   `tapOn` 打在 y≈1639 的窄条上，点了个寂寞。
+   ⇒ 必须 `scrollUntilVisible` + `visibilityPercentage: 60`，
+   把「可见」拉回「用户真看得见」。
+3. **登录必须断言输入框的实际值。**
+   实测用户名框里躺的是 `administrationundefinedy` 这种脏值，
+   现场只剩一句「登录失败：用户名或密码错误」——会把人引去查后端鉴权，
+   而真因是这台设备上合成输入被搅坏。
+   ⇒ `_login.yaml` 加 `assertVisible: { text: "^admin$" }` 与密码同款断言，
+   失败点立刻落在「输入没落进去」上。
+
+另外三条环境事实（**不记成产品缺陷**）：
+
+- Maestro 是 JVM 程序，中文 Windows 下按 **GBK** 往 stdout 写，
+  用 Node 的 utf8 读全是乱码——而乱码会让人以为「页面上没这个文案」
+  然后去 Vue 模板里猜 placeholder。⇒ `scripts/hier-dump.mjs` 负责解码，
+  `scripts/decode-hier.mjs` 会用「登录 / 用户名」这类已知文案自证编码选对了没有。
+- 本机跑完 `maestro hierarchy` 之后，WebView 的 devtools socket 会一段时间
+  不接受连接，`/json/list` 挂到超时。⇒ 抓树放最后，抓完就别再指望 CDP。
+- **我自己的 CDP 封装一度把整条消息当结果回传再读 `.result.value`**，恒为
+  undefined，看起来像「CDP 断了」——实际是取值层级错了（响应是
+  `{id, result:{result:{value}}}`）。`cdp.mjs` 传的是 `msg.result` 所以它一直是对的。
+  **这个误判差点让我把「socket 抖动」当成环境限制、放弃用 CDP 定位问题。**
+  现已在 `hier-dump.mjs` / `diag-*.mjs` 里统一修正并写了注释。
+
+##### 4.74.7 本轮新增工具
+
+| 脚本 | 用途 |
+|---|---|
+| `scripts/hier-dump.mjs` | 导航 + 抓真机 a11y 树 + GBK 解码 + 打印可写进 flow 的选择器 |
+| `scripts/decode-hier.mjs` | 按编码读回 hierarchy 输出，并用已知文案**自证**编码选对 |
+| `scripts/parse-hier.mjs` | 把 hierarchy JSON 压成可读列表（BOM 容错） |
+| `scripts/diag-create-sheet.mjs` | 弹窗出现与否 + 所有控件的 css 矩形 → Maestro point 百分比 |
+| `scripts/verify-sheet-a11y.mjs` | 三条独立通道（CDP / 截图 / 树）交叉证明弹窗状态 |
+| `scripts/diag-tap-newtask.mjs` | A 真触摸 / B 合成鼠标 / C DOM click 三路分离「点不动」 |
+| `scripts/diag-empty-list.mjs` | 空列表定性：token / 接口状态码 / 命中元素一起量 |
+| `scripts/diag-indicator-css.mjs` | 读**设备上真正生效**的 CSSOM（用来发现 APK 是旧的） |
+| `scripts/start-local-backend.ps1` | 起本 worktree 的 pocketd@18099，轮询 `/healthz` |
+| `.maestro/_set-master-password.yaml` | D 态「创建主密码」子流程 |
+| `.maestro/_dismiss-system-dialogs.yaml` | 清 MIUI 一次性系统弹窗（实测会在解锁输密码时抢前台） |
+| `.maestro/tasks-crud.yaml` | 任务写路径（创建 → 列表回显 → 进详情），**当前仍是半成品** |
+
+##### 4.74.8 本节口径（不夸大）
+
+- 本节所有「已修」都指**代码已改**，**不等于**已在当前 APK 上真机确证。
+- BUG-AV 定性为 P1 但**未复现**，且我没有擅自改加密流程，需要产品先定方向。
+- `maestro-run.mjs` 的两道新守卫**还没做负控**。
+- `tasks-crud.yaml` 还没跑绿：最后一步仍是「进详情后故意失败取树」，
+  因为重建装机后才拿到当前代码的详情页结构。
+- 「列表恒空」这两条是**环境问题**（后端没起 / `adb reverse` 指错端口），
+  不是产品缺陷；但它们暴露出的「401 无提示」是产品缺陷（BUG-AX）。
+#### 4.75 2026-10-01 13:00~13:50：§4.74 之后又查出的五件事，以及 tasks-crud 的真实状态
+
+本节是对 §4.74 的补充与更正。**先说结论：`tasks-crud.yaml` 至今没有跑绿**，
+下面记的是查到哪里、卡在哪、以及哪些是已确证、哪些还只是假设。
+
+##### 4.75.1 「tap 报 COMPLETED 但没反应」的真正机制：陈旧的无障碍坐标
+
+§4.74.6 第 1 条当时只归因到「先点收起导致重排」。继续查发现**同一个坑还有第二种触发方式**，
+而且第二种更隐蔽：**任务数据是异步到达的**。
+
+登录后任务页先渲染空态（`+ 新任务` 在 y≈208），数据到了之后列表撑开、
+按钮整体下移到 y≈1368，**差约 1100px**。而 `extendedWaitUntil: visible "\\+ 新任务"`
+可能在**空态**就满足了，紧接着的 `tapOn` 拿到的是数据到达**之前**的坐标。
+
+已加 `waitForAnimationToEnd` + `assertVisible` 兜底，**但没有稳定治好**：
+13:16 / 13:36 / 13:49 三次里仍有两次弹窗没开。
+⇒ 目前**只能说是「高度疑似」，不是已确证**：我没有做到在 tap 的同一瞬间
+抓一次 a11y 树来证明「Maestro 用的是旧坐标」。
+
+**这条线索本身价值很高**（任何「异步加载 + 固定坐标」的 Maestro flow 都会踩），
+下一轮应当先把机制钉死再写 flow，方法见 §4.75.5。
+
+##### 4.75.2 Maestro **不会在选择器里展开 `${VAR}`**（实测两次）
+
+写「断言密码框里的值」时加了一条：
+
+```yaml
+- assertVisible: { text: "^${POCKET_DEV_PASS}$" }
+```
+
+结果 Maestro 把它变成字面量 **`^undefined$`**，断言必然红。
+为排除「变量没传过去」，在启动器里加了一行**只打长度、不打明文**的自检：
+
+```
+[preflight] 注入子进程：POCKET_MASTER=14 字符 / POCKET_DEV_PASS=14 字符
+```
+
+⇒ 变量确实到了子进程；**同一变量写在 `inputText:` 里能正常展开**（登录确实用对口令了），
+**写在选择器里不行**。这是 Maestro 侧的行为，不是我的注入问题。
+
+**已改**：换成不含变量的等价判据 `assertVisible: { text: "登录", enabled: true }`
+——两个字段任一为空时登录按钮就是 disabled，所以它同样证明了「都填进去了」。
+⚠️ 这是**降低判据精度**的取舍，不是等价替换：值断言能发现「串了字符」，
+enabled 断言只能发现「有内容」。用户名那条值断言保留（`^admin$` 不含变量，实测可用），
+所以「输入被搅坏」这个风险仍被部分覆盖，但密码字段的字符级正确性不再被断言。
+下一轮若要恢复，得先找到 Maestro 侧可用的展开方式。
+
+##### 4.75.3 `spawnSync` 会被孙进程继承的管道句柄拖住（卡了 3 分钟）
+
+让 preflight 自动拉起后端时踩的：ps1 内部用 `Start-Process` 拉 pocketd，
+那个孙进程继承了 spawnSync 的 stdout/stderr。`spawnSync` 默认 `stdio:'pipe'`，
+于是它一直等这些管道关闭 —— **表现是「后端明明已经起来了（/healthz 200），
+preflight 却卡住不动」**。改成 `stdio:'ignore'` 立刻返回。
+
+**已修**（`ensureBackend()`）。
+
+##### 4.75.4 后端 JWT secret 必须固定，否则每次重启都在作废设备上的 token
+
+原本 `start-local-backend.ps1` 每次生成随机 `POCKET_JWT_SECRET`，形成死循环：
+重启后端 ⇒ 设备上 token 全部作废 ⇒ App 每个请求 401 ⇒ 任务列表恒空、
+「创建」点下去没反应 ⇒ **看起来像 tasks 写路径坏了，真因是环境**。
+改成固定 secret（仅限本机 dev；脚本注释里写明共享/生产绝不可用）。
+
+配套地，`maestro-run.mjs` 的 preflight 现在**每次 run 都清掉 App 登录态**，
+逼它真实走一遍登录（而不是带着一枚可能已作废的 token 静默跑）。
+关掉：`POCKET_RESET_AUTH=0`。
+
+**这一整套（守卫 + 自愈 + 清登录态）是本轮最有复用价值的产出**：
+它把一类「所有健康检查都绿、功能却是空的」陷阱变成了显式失败。
+⚠️ 守卫的**负控还没做**（故意把后端停掉／把 reverse 指错，看是否真红）——
+实际上它**误报过一次正面**：13:41 那轮正是靠它拦下 `adb reverse` 被改回 18111，
+所以「能拦住」这件事有正面证据，「不会误伤」还没有。
+
+##### 4.75.5 下一轮该怎么把 §4.75.1 钉死（不要直接改 flow 试）
+
+用 Maestro 自己的日志做交叉验证，**不要靠猜**：
+
+1. 跑一次失败 run，读 `~/.maestro/tests/<ts>/tasks-crud/logs/maestro.log`，
+   找到 `Tap on "\+ 新任务" RUNNING` 那一行里 Maestro **自己打印的**
+   `TreeNode(... bounds=[...])` —— 那是它**实际使用**的坐标。
+2. 同一时刻用 `scripts/hier-dump.mjs '#/ai'` 抓一棵树，比对 `+ 新任务` 的 bounds。
+3. 两者不一致 ⇒ 陈旧坐标**确证**；一致 ⇒ 问题在别处（合成点击没被当 click），
+   转向 `scripts/diag-tap-newtask.mjs` 那套 A/B/C 三路投递做分离。
+
+判据必须能区分这两种可能，否则改了 flow 也不知道改对没有。
+
+##### 4.75.6 本轮产出清单（代码 / 脚本 / flow）
+
+**产品代码（已改，已进 APK，未在真机上确证行为改变）**
+
+| 改动 | 文件 |
+|---|---|
+| BUG-AX：`forceReauth()` 导出并在 `authFetch` 的 401 分支调用 | `frontend/src/api/http.ts`、`frontend/src/api/client.ts` |
+
+**Maestro flow**
+
+| 文件 | 变化 |
+|---|---|
+| `.maestro/_login.yaml` | 新增 D-1 / D-2 两个「创建主密码」分支；登录加用户名值断言与登录按钮 enabled 断言；收尾加 `assertNotVisible: "创建主密码"`；判据集合从 3 个状态扩到 4 个 |
+| `.maestro/_set-master-password.yaml` | 新增（坐标点两个密码框） |
+| `.maestro/_dismiss-system-dialogs.yaml` | 新增（清 MIUI 一次性系统弹窗） |
+| `.maestro/tasks-crud.yaml` | 新建，**当前仍红** |
+
+**harness / 工具**
+
+| 文件 | 作用 |
+|---|---|
+| `scripts/maestro-run.mjs` | preflight 增加：后端可达性守卫、`adb reverse` 目标端口核对+自愈、后端自动拉起、清 App 登录态、注入变量长度自检；每次 run 前置系统弹窗清理 |
+| `scripts/start-local-backend.ps1` | 起本 worktree 的 pocketd@18099（固定 JWT secret、日志名带时间戳避免文件锁） |
+| `scripts/hier-dump.mjs` / `decode-hier.mjs` / `parse-hier.mjs` | 抓真机 a11y 树并正确解码 |
+| `scripts/diag-create-sheet.mjs` / `verify-sheet-a11y.mjs` | 弹窗出现与否、控件坐标、三通道交叉取证 |
+| `scripts/diag-tap-newtask.mjs` | 真触摸 / 合成鼠标 / DOM click 三路分离 |
+| `scripts/diag-empty-list.mjs` / `diag-app-network.mjs` / `diag-indicator-css.mjs` | 空列表定性、App 真实请求面、设备上真正生效的 CSSOM |
+| `scripts/diag-create-click.mjs` / `diag-sheet-footer-hit.mjs` | 提交链路取证、弹窗底部按钮命中元素 |
+| `scripts/append-handoff-part.mjs` + `docs/handoff/_part-4.74.md` | 保持 CRLF/无 BOM 的文档追加（正文与脚本分离，避开模板字符串里的反引号） |
+
+##### 4.75.7 口径（重申，不夸大）
+
+- `tasks-crud.yaml` **未通过**。已确证的部分：能打开创建弹窗（重建 APK 后）、
+  能把标题填进输入框、「创建」按钮能随输入解禁。**未确证**：
+  提交是否发到后端（实测 PG 里**没有**新行）、删除路径、详情页结构。
+  所以 **BUG-AX 的真机回归尚未完成**——代码改了、APK 装了，但没跑到能证明它的地方。
+- BUG-AY 的定性是**「设备上的 APK 是旧的」**，不是漏写 `pointer-events`。
+  已重建并装机，且**拆开 APK 回读**确认产物里是 `data-v-fd017b03` + `pointer-events:none`。
+- BUG-AV（P1）**未复现**，且我没有擅自改加密流程，需要产品先定方向。
+- 本节新增的 harness 能力里，`maestro-run.mjs` 的守卫**缺负控**；
+  §4.75.1 的机制**缺确证**。两条都记在案，不当作已完成。
+#### 4.76 2026-10-01 13:50~14:05：守卫负控通过、坐标假设仍未确证，以及设备掉线
+
+本节是 §4.75 的收尾：把「守卫到底靠不靠谱」用**负控**验掉，
+并如实记下两件没做成的事。
+
+##### 4.76.1 「陈旧坐标」假设：对账失败，**仍然只是假设**
+
+§4.75.5 写的方法是「flow 跑的同时用 CDP 连续采样按钮坐标，
+再和 maestro.log 里 Maestro 自己打印的 bounds 按时间对账」。
+本轮照做了，工具也入库了（`trace-newtask-bounds.mjs` + `compare-tap-bounds.mjs`），
+**但这次对账作废**，原因有两条，都要记下来：
+
+1. **采样窗口和 tap 时刻没重叠。**
+   采样覆盖 13:50:36~13:51:21（App 停在 `#/login?returnTo=/ai`），
+   而三次 tap 发生在 13:51:29 / 13:51:42 / 13:51:46 —— 全在采样结束之后。
+   Maestro 的 preflight 会 force-stop + 重启 App（pid 变、devtools socket 重建），
+   tracer 在那之后就没能重新挂上。
+2. **我自己的对账脚本先坏了一次。**
+   第一版把 `epochGuess` 写成「构造本地时间再减 8 小时」，于是窗口全部落空，
+   脚本输出「该时刻没有采样（采样断流）」。
+   **那是判据自己的 bug，不是采样断流。** 修掉多减的 8 小时后仍然没窗口，
+   才确认是第 1 条。
+   ⇒ 教训照旧：**判据坏了先修判据**，而且「没有数据」和「数据说明没断流」
+   必须分开报，否则会把判据故障当成观测结果。
+
+所以 **「Maestro 用了旧坐标」至今未被证实**。它在逻辑上依然成立
+（`+ 新任务` 在空态 y≈208、加载完 y≈1368，差约 1100px，而 WebView 异步发布无障碍树），
+但**没有同刻证据**，下一轮不许当成已确证来改 flow。
+
+**下一步该怎么取证**（比并发采样更可靠）：
+不用 CDP，改用 Maestro 自己的日志做单点对账 ——
+失败 run 的 `maestro.log` 里 `Tapping on element: UiElement(treeNode=TreeNode(... bounds=[...]))`
+那行就是它**实际使用**的坐标；再在同一 run 里插入一条
+`assertVisible` 去打一个「位置变了就会变」的判据（数据加载前后按钮的 y 差 1100px），
+用断言的通过/失败反推当时页面处于哪个布局态。
+这不需要并发进程，也不会被 socket 抖动打断。
+
+##### 4.76.2 preflight 四道守卫的负控：过了
+
+之前只说「它拦住过」，没验证「不会误伤」。本轮补了两组对照：
+
+| 场景 | 期望 | 实测 |
+|---|---|---|
+| 后端停掉 + `POCKET_AUTOSTART_BACKEND=0` | 守卫报红并阻断 | ✅ `[preflight] ❌ …连不上：fetch failed` + **exit=3**，flow 没有跑 |
+| 后端停掉 + 自动拉起（默认） | 自动拉起并继续 | ✅ `尝试自动拉起… → 后端可达 ✅ → 已拉起`，且**不再卡死** |
+| 设备不可达（adb offline） | 设备侧守卫阻断 | ✅ `⚠️ 没有 tcp:18099 映射，正在补建 → ❌ 补建失败`，**没有继续跑出误导性结果** |
+
+第三条同时是一次**意外的负控**：设备掉线时守卫没有放行，
+所以「设备不通」不会被伪装成「功能坏了」。
+
+**仍未验的**：`assertDeviceReachesBackend` 的「映射存在但指错端口」自愈路径
+在本轮没有设备可用，**没跑过**。它在 13:41 那次是**只报错未自愈**的旧版本。
+
+##### 4.76.3 设备掉线（环境，非产品）
+
+14:00 前后 `192.168.31.19:5555` 与 `4c308e2e` 同时变成 `offline`。
+已做的恢复尝试与结果：
+
+| 尝试 | 结果 |
+|---|---|
+| `ping 192.168.31.19` | **通**（网络层活着） |
+| `adb connect` ×3 | `already connected`，但状态仍是 `offline` |
+| `adb kill-server` + `start-server` | 两台仍 `offline` |
+| `adb disconnect` → `connect` | `failed to connect` |
+| 检查是否有第二个 adb server 占用 5037 | 没有（只有一个，pid 189156） |
+
+⇒ 判定为 **adb-over-WiFi 握手卡死（设备侧 adbd 不接受连接）**，
+不是本机 adb 的问题，也不是网络不通。**本轮到此为止无法继续真机工作。**
+
+设备恢复后的第一件事：`node scripts/maestro-run.mjs .maestro/tasks-crud.yaml`
+（preflight 会自动补建 reverse 映射、拉起后端、清登录态）。
+
+##### 4.76.4 本轮新增/修改
+
+| 文件 | 说明 |
+|---|---|
+| `scripts/trace-newtask-bounds.mjs` | 新增：250ms 连续采样 `+ 新任务` 的 CSS 矩形/hash/卡片数，带毫秒时间戳落 CSV；断流会计数并在断流多于有效采样时**主动声明判据不可用** |
+| `scripts/compare-tap-bounds.mjs` | 新增：从 maestro.log 抽 `Tapping on element` 的 bounds 与时间戳，和 CSV 按 ±1.5s 窗口对齐，逐条标 ✅一致/❌不一致；采样不足 20 条时拒绝下结论 |
+| `scripts/maestro-run.mjs` | `assertDeviceReachesBackend` 增加「映射**缺失**」分支的自愈（此前只处理「指错」）；设备重连会把映射整个清掉，实测过 |
+| `scripts/diag-tap-newtask.mjs` | 增加先导航到 `#/ai` 再测量，避免在别的路由上量错按钮 |
+
+##### 4.76.5 口径
+
+- **守卫的负控：宿主侧两条 + 设备不可达一条，都已实测通过**；
+  「映射指错端口」的自愈分支**仍未跑过**。
+- **「陈旧坐标」假设：未确证。** 对账工具已入库但本次采样窗口没覆盖 tap 时刻，
+  按 §4.76.1 换方法重做。
+- **`tasks-crud.yaml` 仍是红的；BUG-AX 的真机回归仍未完成。** 这两条不变。
+- 本节**没有任何新的产品结论**——这一轮的产出是「把守卫验了」和「把假设留在假设」。
+
+---
+
+## §4.77 BUG-AW：会议数据零持久化（本轮修复 + 真进程 A/B 证实）
+
+设备第六次恢复失败（§4.77.1），真机工作依旧停滞。本轮改为把**不依赖设备**
+的缺陷结掉。选中的是上一轮发现但一直没处理的严重项：**会议记录完全不落库**。
+
+### 4.77.1 设备恢复：第 6 次，仍失败（环境，非产品）
+
+| 尝试 | 结果 |
+|---|---|
+| `adb devices -l` | `4c308e2e offline` + `192.168.31.19:5555 offline` |
+| `kill-server` + 有界 20s `start-server` | 服务起来了，设备仍 offline |
+| 有界 25s `adb connect 192.168.31.19:5555` | `failed to connect`（不是 `already connected` 也不是超时，是明确拒绝） |
+| 复核 `adb devices` | 两台仍 `offline` |
+
+前一轮已排除本机因素（5037 无第二个 adb server、ping 通、TCP 5555 通）。
+**本轮不再消耗时间在 adb 上**：这是设备侧 adbd 的问题，机器侧无解。
+⇒ `tasks-crud.yaml` 仍红、BUG-AX 真机回归仍未完成，**这两条的口径不变**。
+
+### 4.77.2 BUG-AW 根因
+
+`backend/internal/server/server.go` 里 `meetingStore: meeting.NewStore()`，
+而 `internal/meeting/store.go` 的 `NewStore()` 返回的是
+`meetings map[string]*Meeting` + `tombstones` —— **纯内存，零持久化**。
+
+PG schema `opencode_pocket` 里没有任何 meeting 表，与代码一致。
+**所以后端每次重启，所有会议记录（逐字稿、摘要、关键决策、待办清单）全部消失。**
+在这个产品里这是代价最高的一类数据：丢了找不回来，却只活在内存里。
+
+**顺带结掉一个旧疑问**：此前「后端有 7 条 `mtg_*` 但 UI 里看不到」，
+根因就是重启清空 + `mtg_*` id 与前端 `meeting-*` 命名不一致被误读，
+**不是两套 id 体系不通**（见 §4.76 之前那轮的端点对照）。
+
+### 4.77.3 修法：照抄仓库自己已有的 finance 范式
+
+本仓库早就有正确范式：`finance.NewStore()`（内存）作默认，
+`main.go` 在 pool 就绪时经 `srv.SetFinanceStore(finance.NewPGStore(...))` 覆盖。
+**没有另起一套设计**，直接对齐：
+
+| 文件 | 改动 |
+|---|---|
+| `internal/meeting/pg_store.go` | **新增**：`PGStore` + `NewPGStore(ctx, pool)`，自建 `meetings` / `meeting_tombstones` 两表；JSONB 往返；删除与墓碑同事务 |
+| `internal/meeting/store.go` | 新增 `MeetingStore` 接口（6 个方法），`Server`/resolver 的依赖类型从 `*meeting.Store` 改为它；`var _ MeetingStore = (*PGStore)(nil)` 编译期兜底 |
+| `internal/server/server.go` | 字段 / `SetMeetingStore` / `MeetingStore()` 三处签名改接口；setter 加 nil 守卫 |
+| `internal/learning/sources/resolver.go` | 字段与构造参数改接口 |
+| `cmd/pocketd/main.go` | pool 就绪时建 PG store 并注入；**注入点必须在 `sources.New(..., srv.MeetingStore())` 之前**，否则 learning resolver 会拿到已被替换掉的内存 store（已在代码注释里写死这条） |
+
+无 PG 的测试环境仍走内存版，零依赖。
+
+### 4.77.4 判据：两套，互相独立
+
+**（A）单元判据 `internal/meeting/pg_store_test.go`** — 每个测试独立 PG schema。
+
+核心是**成对正负控** `TestPersistence_PositiveAndNegativeControl`：
+同一场景（建 7 条 → 换新实例 → 读）对两种实现给**相反期望**：
+
+| 实现 | 期望 | 实测 |
+|---|---|---|
+| `PGStore` | 换新实例后 7 条都在 | ✅ |
+| 内存 `*Store` | 换新实例后 0 条 | ✅ |
+
+成对的理由：只测 PGStore 的话，「读到的其实是同一个 map」这种假绿测不出来。
+
+其余覆盖：JSONB 三列往返（`key_decisions`/`action_items`/`tags`）、
+墓碑跨重启、workspace/owner 隔离、越权删/改、更新不存在必须报错、入参校验、
+200 条并发创建 ID 唯一。
+
+**（B）真进程 A/B 判据 `scripts/verify-meeting-persistence-ab.mjs`** —
+两个**真实 pocketd 进程**、两个独立 PG schema、同一个探针，只换期望值：
+
+| | 建 3 条 | 杀进程重启后 | 按 id 复查 | PG 直读 |
+|---|---|---|---|---|
+| 老版本 `11b7da5`（内存） | 201 ×3 | **0 条** | 404 / 404 / 404 | **根本没有 `meetings` 表** |
+| 新版本（PG） | 201 ×3 | **3 条** | 200 / 200 / 200 | **3 行** |
+
+脚本先 `DROP SCHEMA IF EXISTS` 再跑，可重复执行。
+JWT secret 固定 ⇒ 重启后 token 仍有效，**「登录态没了」不会被混成「数据没了」**。
+
+### 4.77.5 判据自己也坏了两次（都记下来）
+
+绿了不算数。以下两处是**判据自己的缺陷**，是跑负控时暴露的：
+
+1. **`pgxpool.Close()` 在失败路径上死锁。**
+   负控（把 `CreateScoped` 的 INSERT 短路成 no-op）时，断言失败 →
+   `t.Fatalf` → `runtime.Goexit` → 跑 cleanup → `pgxpool.Close()` 内部
+   `puddle.Pool` 的 WaitGroup 永远等不到归零，
+   **测试不是干脆报错而是挂到 `-timeout` 才 panic（45s）**。
+   判据一坏，「红」就变成难查的 timeout。
+   修法：`closeQuietly()` 有界关闭，且**先 DROP SCHEMA 再关连接**。
+   修完负控 **5.4s 干脆报错**。
+
+2. **A/B 脚本两侧套了同一套期望。**
+   第一版老侧按 id 复查全 404 ⇒ `every(ok)` 为假 ⇒ 明明复现了缺陷却被判
+   「判据不自洽」。**是判据写错，不是被测代码**。
+   改法：每侧带 `expectByIdOk`（老侧 `false`、新侧 `true`），
+   期望随被测版本变，但**探针与断言本身完全相同**。
+   顺带修掉 `psql` 调用（本机这个构建把 DSN 之后的 `-t/-A/-c` 全当多余参数吞掉，
+   改用 `PGHOST/PGPORT/...` 环境变量），并让「表不存在」单独报成
+   「该版本会议只存内存」而不是空字符串。
+
+### 4.77.6 全量测试：4 个失败，**基线对照确认是既有问题**
+
+`go build ./...` exit 0。`go test` 有 4 个失败：
+
+| 测试 | 失败信息 |
+|---|---|
+| `TestTaskWriteGuardBlocksPlainMemberPatch` | `bob PATCH someone else's private work item = 404, want 403` |
+| `TestTaskWriteGuardBlocksPlainMemberDelete` | `bob DELETE … = 404, want 403` |
+| `TestActiveDayTimestamps` | `narrow window got 2 timestamps, want 1: [1790831929 1790835529]` |
+| `TestReminderLifecycle` | `an acked reminder must never come due, got 1` 等 3 条 |
+
+**对照方法**：`git worktree add --detach` 出 `11b7da5` 的干净副本，
+在**同一条 DSN、同一时刻**跑同一组测试 → **4 条逐字复现**。
+⇒ **既有问题，不是本轮引入的回归。**
+（那两个 task 守卫是 404/403 期望差；两个 learning 的是时间窗/时钟精度，
+与 `store.go` 里记的「Windows 上 `time.Now()` 没有纳秒精度」同类。）
+
+### 4.77.7 口径
+
+- **BUG-AW：已修，且在两个真实进程上 A/B 证实**（老侧丢、新侧留、PG 行数对得上）。
+  这不是「已改代码」的声明，是同一条探针在两侧给出相反结果的实测。
+- **设备：仍然不可用（第 6 次失败）。** 真机相关的一切——`tasks-crud.yaml`、
+  BUG-AX 真机回归、「tap 没反应」的机制——**本轮一条都没有推进**。
+- **「陈旧坐标」假设仍未确证**，「reverse 指错端口自愈分支」仍未验，口径不变。
+- 本轮**没有引入新的产品行为变更**；改动集中在后端存储层 + 测试判据。

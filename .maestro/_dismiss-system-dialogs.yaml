@@ -1,0 +1,31 @@
+# 子流程：清掉会抢前台的**系统**对话框（被 maestro-run.mjs 作为每次 run 的第一段执行）
+#
+# 为什么需要（2026-10-01 12:29 实测）：MIUI 弹了一个系统级「温馨提示」——
+# 「即日起本应用将不再支持"语音搜索"功能…」，带一个「我知道了」按钮。
+# 它出现在 **unlock 分支输主密码的正中间**，把键盘输入吃掉，
+# 于是「解锁」按钮恒 disabled，_login.yaml 的硬判据正确地报了红。
+#
+# 定性：**环境问题，不是产品缺陷**。和 BUG-AU 那次「系统语音引擎抢前台」同类
+# （系统 UI 抢走前台 → WebView 节流/失焦）。判别依据是它在
+# `com.android.*` / MIUI 的窗口里，不在 App 的 WebView 树内。
+#
+# 为什么放成「每次 run 都跑」而不是只在 preflight：
+#   它出现的时机不确定（这次是在 flow 中段），只在开头清一次清不掉。
+#   全部 optional，点不到就跳过，不会给别的 flow 添乱。
+#   MIUI 对同一提示只弹一次，第二次起这里就是纯开销（~1s）。
+appId: com.kaixuan.opencode.pocket
+---
+- runFlow:
+    when:
+      visible: "我知道了"
+    commands:
+      - tapOn: "我知道了"
+
+# MIUI 另有「允许通知」等一次性系统弹，同类处理。
+- runFlow:
+    when:
+      visible: "允许|Allow"
+    commands:
+      - tapOn:
+          text: "允许|Allow"
+          optional: true

@@ -46,11 +46,11 @@ type Resolver struct {
 	notes   *notes.Store
 	emails  emailScopedReader
 	rss     *rss.Store
-	meeting *meeting.Store
+	meeting meeting.MeetingStore
 }
 
 // New builds a resolver. All arguments are optional.
-func New(notesStore *notes.Store, emailStore *email.Store, rssStore *rss.Store, meetingStore *meeting.Store) *Resolver {
+func New(notesStore *notes.Store, emailStore *email.Store, rssStore *rss.Store, meetingStore meeting.MeetingStore) *Resolver {
 	return &Resolver{notes: notesStore, emails: emailStore, rss: rssStore, meeting: meetingStore}
 }
 
