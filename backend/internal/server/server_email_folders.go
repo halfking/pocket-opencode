@@ -63,6 +63,20 @@ func (s *Server) handleEmailFolders(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "folder name too long")
 			return
 		}
+		// 归属校验必须在**任何 IMAP 副作用之前**。
+		// 下面 CreateMailbox → dialAndLogin → GetAccountByID 不带用户维度，
+		// 拿到的是该 account 自己的凭据。只在 UpsertFolderScoped 里补校验是不够的：
+		// 那样攻击者虽然登记不了本地行，却已经在别人邮箱里建出了目录。
+		owned, oerr := s.emailStore.AccountOwnedBy(r.Context(), body.AccountID, uid, wsID)
+		if oerr != nil {
+			writeError(w, http.StatusInternalServerError, oerr.Error())
+			return
+		}
+		if !owned {
+			// 与任务写守卫同一口径返 404，不泄露"这个 account 存不存在"。
+			writeError(w, http.StatusNotFound, "email account not found")
+			return
+		}
 		// 与服务器能力对齐：真实在 IMAP 上创建。失败时不登记本地行——
 		// 目录视图的数据源是 emails.folder_name，登记一个服务器上不存在、
 		// 且以后 MOVE 也会失败的目录只会造成「看得到移不进」的死目录。
@@ -75,14 +89,13 @@ func (s *Server) handleEmailFolders(w http.ResponseWriter, r *http.Request) {
 		if s.emailFetcher != nil {
 			if err := s.emailFetcher.CreateMailbox(r.Context(), body.AccountID, name); err != nil {
 				log.Printf("[email/folders] imap create %s: %v", name, err)
-				writeError(w, http.StatusBadGateway, "imap create failed: "+err.Error())
+				writeError(w, http.StatusBadGateway, "创建邮件目录失败，请稍后重试")
 				return
 			}
 			f.ServerSynced = true
 		}
 		if err := s.emailStore.UpsertFolderScoped(r.Context(), f, uid, wsID); err != nil {
-			// accountId 不在调用者作用域内：与任务写守卫同一口径返 404，
-			// 不回 500 也不回 403 —— 不泄露"这个 account 存不存在"。
+			// 兜底：store 层也有一道同样的校验（其它调用方不走这个 handler）。
 			if errors.Is(err, email.ErrNotFound) {
 				writeError(w, http.StatusNotFound, "email account not found")
 				return

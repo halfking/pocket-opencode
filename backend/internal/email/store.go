@@ -27,6 +27,25 @@ type Store struct {
 
 var ErrNotFound = errors.New("email: not found")
 
+// AccountOwnedBy 判定某个邮件账户是否在 (userID, workspaceID) 作用域内。
+//
+// 这是"account_id 来自请求体"这类写路径的统一归属判据。凡是拿请求里的
+// account_id 去动数据或去动 IMAP 的，必须先过这一关——IMAP 侧尤其要紧：
+// Fetcher.dialAndLogin 只按 account_id 取凭据（GetAccountByID 不带用户维度），
+// 归属一旦没校验，调用方就能用别人的账户去连 IMAP、建目录、移信。
+func (s *Store) AccountOwnedBy(ctx context.Context, accountID, userID, workspaceID string) (bool, error) {
+	var ok bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM email_accounts
+			WHERE id = $1 AND user_id = $2 AND workspace_id = $3
+		)
+	`, accountID, userID, workspaceID).Scan(&ok); err != nil {
+		return false, err
+	}
+	return ok, nil
+}
+
 func NewStore(pool *pgxpool.Pool) (*Store, error) {
 	s := &Store{pool: pool}
 	if err := s.migrate(); err != nil {
@@ -933,37 +952,35 @@ func (s *Store) UpsertVacationScoped(ctx context.Context, v *VacationReply, user
 	v.UpdatedAt = time.Now().Unix()
 
 	// 1. 先确认目标 account 在 scope 内。
-	var ok bool
-	if err := s.pool.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM email_accounts
-			WHERE id = $1 AND user_id = $2 AND workspace_id = $3
-		)
-	`, v.AccountID, userID, workspaceID).Scan(&ok); err != nil {
+	owned, err := s.AccountOwnedBy(ctx, v.AccountID, userID, workspaceID)
+	if err != nil {
 		return err
 	}
-	if !ok {
+	if !owned {
 		return ErrNotFound
 	}
 
 	// 2. 如果 record 已存在，再校验它绑定的 account 是否在 scope 内。
 	//    这一步阻止"创建 vacation 后修改 accountID 指向他人账户"的越权。
+	//    注意查的是**已存在那一行**绑的 account，与第 1 步的入参不是同一个，
+	//    所以不能复用 AccountOwnedBy。
 	if wasExisting {
+		var existingOwned bool
 		if err := s.pool.QueryRow(ctx, `
 			SELECT EXISTS (
 				SELECT 1 FROM email_vacation_replies r
 				JOIN email_accounts a ON a.id = r.account_id
 				WHERE r.id = $1 AND a.user_id = $2 AND a.workspace_id = $3
 			)
-		`, v.ID, userID, workspaceID).Scan(&ok); err != nil {
+		`, v.ID, userID, workspaceID).Scan(&existingOwned); err != nil {
 			return err
 		}
-		if !ok {
+		if !existingOwned {
 			return ErrNotFound
 		}
 	}
 
-	_, err := s.pool.Exec(ctx, `
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO email_vacation_replies
 			(id, account_id, workspace_id, enabled, start_at, end_at, subject, body_text, last_sent_at, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)

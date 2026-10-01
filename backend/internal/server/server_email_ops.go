@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -134,6 +135,12 @@ func (s *Server) handleEmailOpsLog(w http.ResponseWriter, r *http.Request) {
 		}
 		n, err := s.emailStore.InsertOpsLogScoped(r.Context(), models, uid, ws)
 		if err != nil {
+			// accountId 不在调用者作用域内 → 404（不回 403/500，不泄露存在性）。
+			// 这条尤其要紧：ops 行会被 /ops/sync 真的拿去 IMAP 执行。
+			if errors.Is(err, email.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "email account not found")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

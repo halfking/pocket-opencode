@@ -97,19 +97,14 @@ func (s *Store) UpsertFolderScoped(ctx context.Context, f *MailFolder, userID, w
 	// POST /api/email/folders 就能在别人的账户上凭空登记目录；再加上
 	// email_folders 的 UNIQUE(account_id, name)，攻击者还能抢注目录名，
 	// 受害者自建同名目录时 ON CONFLICT 会去改攻击者那行。
-	var owned bool
-	if err := s.pool.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM email_accounts
-			WHERE id = $1 AND user_id = $2 AND workspace_id = $3
-		)
-	`, f.AccountID, userID, workspaceID).Scan(&owned); err != nil {
+	owned, err := s.AccountOwnedBy(ctx, f.AccountID, userID, workspaceID)
+	if err != nil {
 		return err
 	}
 	if !owned {
 		return ErrNotFound
 	}
-	_, err := s.pool.Exec(ctx, `
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO email_folders (id, account_id, workspace_id, user_id, name, display_name, special, source, server_synced, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		ON CONFLICT (account_id, name) DO UPDATE SET
@@ -374,6 +369,21 @@ func (s *Store) InsertOpsLogScoped(ctx context.Context, entries []OpsLogEntry, u
 		}
 		if e.UserID == "" {
 			e.UserID = userID
+		}
+		// 归属校验：account_id 来自请求体。
+		//
+		// 这条比目录登记那条更危险：ops 行不只是"写一行脏数据"，它会被
+		// /api/emails/ops/sync **执行**。ClaimPendingOpsScoped 按调用者的
+		// user/workspace 取 pending，攻击者自己种下的行因此会回到他自己手里，
+		// 然后 executeOpsEntries 调 Fetcher.MoveUIDsToMailbox(ctx, accountID, ...)。
+		// 而 dialAndLogin → GetAccountByID 不带用户维度，会直接取出**受害者**
+		// 解密后的 IMAP 凭据去连服务器 —— 等于可以用别人的账户移信。
+		owned, oerr := s.AccountOwnedBy(ctx, e.AccountID, userID, workspaceID)
+		if oerr != nil {
+			return inserted, oerr
+		}
+		if !owned {
+			return inserted, ErrNotFound
 		}
 		tag, err := s.pool.Exec(ctx, `
 			INSERT INTO email_ops_log (id, user_id, workspace_id, account_id, email_id, uid, action,
