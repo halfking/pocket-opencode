@@ -814,3 +814,134 @@ content-length**。
 **4. 意外的解法**：whisper 各档位**共用同一份 tokenizer.json 与 vocabulary.txt**，
 只有 `config.json` 与 `model.bin` 不同。所以 small 的 tokenizer 直接从
 已验证可用的 base 复制，比重新下载更快也更可靠。
+
+---
+
+## §15 会议长录音走通真引擎，撞出三个「既有验证结构上就看不见」的缺陷（2026-10-01 20:35）
+
+§14 验的是「一段音频 → 真引擎」。这一节验的是**会议录音真正走的路**：
+`POST /api/stt/transcribe-full` → `full.go` 按静音切段 → 每段送引擎 → 拼回全文。
+
+这两条路的差别正是问题所在：既有验证要么用**纯音调**（`New-ToneWav`，
+只有切分逻辑与顺序，验不出「切完那段真能不能识出话」），要么用**假上游**
+（写死返回文本，验不出切出来的音频是否合法）。于是三个缺陷长期假绿。
+
+### §15.0 新增的验证资产
+
+| 资产 | 作用 |
+| --- | --- |
+| `.verify-stt-data/make-meeting-wav.py` | 把 8 段语料拼成 79.2s 会议长录音（句间插静音），并额外产出一份 12s **纯静音**样本 |
+| `scripts/verify-stt-long-asr.ps1` | 端到端黑盒：起 pocketd → 配本地 ASR → 打 transcribe-full → 纯静音幻觉检查 |
+| `scripts/eval-long-asr.py` | 全局 CER + 逐句覆盖 + 幻觉/丢失/重复判定 |
+| `backend/internal/stt/full_dump_test.go` | 把 `SplitWAV` 的切分结果落盘，供真引擎逐段验证（`STT_DUMP_SEGMENTS` 开关，默认 skip） |
+
+语料用 Windows SAPI（Microsoft Huihui Desktop）合成，文本自己写，
+所以每句的正确转写是**已知**的。SAPI 输出 22050Hz，脚本做线性重采样到
+16kHz（保时间，meeting-01 源 10.99s → 重采样后仍 10.99s）。
+
+### §15.1 三个缺陷
+
+**1. `buildWAV` 的 RIFF 块长度多写了 8 字节**（`full.go`）
+RIFF 规范要求该字段 = 文件总长 − 8，代码写的是文件总长。宽容的解码器
+（PyAV / ffmpeg）默默截掉末尾 8 字节当作填充，**看起来一切正常**；
+严格的上游 API 会直接拒收整段。
+负控：`TestSplitWAVSegmentsAreValidWAVAndLossless` 补上 RIFF 字段断言后，
+把 `buildWAV` 改回去，5 段全部转红。
+这个字段此前**从未被任何断言校验过** —— 既有测试只查 `data` 段长度，
+而 `parsePCMWAV` 是自己写的解析器，对自己的坏输出当然读得动。
+
+**2. 静音判定把「均方」和「均方根」门槛混用**（`full.go`）
+`frameRMS` 省掉 sqrt 只返回均方，主循环却拿它直接和按均方根定义的
+`silenceFloor`（0.012）比 —— 等效门槛被放大到 √0.012 ≈ 0.11，**松了 10 倍**。
+后果：几乎所有换气、词组间的自然停顿都被判成静音，79 秒语料被切成
+16 段（平均 4.9 秒），句子照样被劈开，每段还要付一次上游调用与计费。
+负控：新增 `TestSplitWAVDoesNotTreatQuietSpeechAsSilence`（amp=0.05 的轻声
+「说话」），改回去后 12 秒被切成 4 段，用例转红。
+
+**3. 切点门槛太松，且静音切被 75% 上限掣肘**（`full.go`）
+- `minSilenceMS` 300 → **800ms**。先把语料的静音分布打出来再定阈值：
+  句间停顿 1575–3475ms、句内停顿 100–600ms，分界干净。同一份语料
+  （均方门槛已修）300ms 切 14 段、800ms 切 10 段，后者才与句界对齐。
+- 新增 `minSilenceCutSec = 5`：原先必须「已过目标长度 75%」（18.75s）
+  才允许在静音处切，会议长句必然跨过这条线，于是**退化成句中硬切**。
+负控：新增 `TestSplitWAVPrefersRealPauseOverIntraSentenceBreath`。
+第一版用例用 0.3s 换气做样本，**负控不转红** —— 25ms 滑动窗口要排空
+上一段语音的能量，300ms 间隙在窗口 RMS 上根本看不出来。换成语料里实测到的
+句内停顿上界 0.6s 才真正区分得开。
+
+**附带**：修一个可诊断性缺陷。`TranscribeFull` 在「全部段失败」时只返回
+段数，把逐段明细随 error 一起丢掉 —— 黑盒实测就卡在这里：5/5 段失败，
+响应与日志里零线索，分不清是上游 401 还是切出的 WAV 非法。现在带上首段错误。
+（正是这条改动让缺陷 1、3 得以被定位。）
+
+### §15.2 修复前后对照（同一份 79.2s 语料、同一引擎 faster-whisper small）
+
+| 切分 | 段数 | 句界对齐 | 整句丢失 | 跨段重复 | CER_strict | CER_norm |
+| --- | --- | --- | --- | --- | --- | --- |
+| 修复前（25s 硬切劈句中） | 5 | 3 句被跨段劈开 | 0 | 0 | 18.5% | 8.9% |
+| 修复后（静音句界切） | 10 | **9/9 完整** | 0 | 0 | 14.7% | **5.5%** |
+
+> CER 改善是实打实但不夸张的量级。**更大的价值是结构性的**：修复后每一句
+> 都完整落在单个返回段里，下游做会议纪要/抽待办时，句子是否完整比聚合
+> CER 几个百分点更要命。
+>
+> 另：修复前的中间稿曾用「逐句重叠拼接」算出 142% 的 CER，那是**度量缺陷**
+> —— 切点落在静音中点，一个返回段常横跨「上句尾巴+下句开头」，把邻居的词
+> 也算进了这句。长音频的通行口径是全局对齐。`eval-long-asr.py` 已改成
+> 逐句只报覆盖、只在全局算 CER。
+
+端到端耗时 25.0s / 79.2s 音频（RTF 0.32，含 10 次上游调用）。
+
+### §15.3 纯静音不产生幻觉
+
+`transcribe-full` 打一份 12s 纯数字静音：返回 `ok=false`、0 段、0 文本。
+这是**正确**行为（`Succeeded==0` 必须报错，不能把空当成功）。
+
+为什么必须单独造这份音频：会议语料里那 2 秒静音夹在两句话之间，切分出来的
+段会横跨静音与语音，拿它判幻觉只会得到假阳性 —— 这一点在评估器改口径时
+真的踩到过一次（13 秒的段被报成「静音段产生幻觉」）。评估器现在的规则是
+**只有完全落在静音窗内的段**才能用于幻觉判定；一个都没有时报「未验证」
+而不是默认通过。
+
+### §15.4 评估器自带负控
+
+`.verify-stt-data/long-selftest.py` 造 4 组假的后端返回：
+完美对齐（期望 0）、静音段出文本（期望 2）、整句丢失（期望 2）、静音段未返回（期望 0）。
+
+第一版自测**自己写错了路径**（多套一层 `dirname`），`hallucination` 与
+`lost-sentence` 两组是**假通过** —— 文件根本没找到，退出码恰好也是 2。
+`perfect` 那组抓了出来。这类「期望 2 的用例在 2 时通过」的组合必须有一条
+期望 0 的用例兜底。
+
+### §15.5 回归状态
+
+- `go vet` + `go test -count=1 ./internal/stt/... ./internal/server/...` 全绿
+- 黑盒 `verify-stt.ps1`（换到空闲端口）**21/0**
+- 黑盒 `verify-stt-real-asr.ps1` 8/8 段成功，平均 2.61s
+- 黑盒 `verify-stt-long-asr.ps1` 长录音全链路通过
+- `node scripts/check-maestro-flows.mjs` OK
+- `vue-tsc --noEmit` 干净
+- `node --test` 899/900 —— 唯一失败是 `flashcards/flashcardIo.test.ts`
+  （`Cannot find module src/native/pocket-native`），**与本任务无关**：
+  该目录 `git status` 无任何改动，本轮也未触碰前端。
+
+### §15.6 踩坑记录
+
+**1. 端口被并行会话占着，会伪装成回归。** `verify-stt.ps1` 一度报
+PASS=15 FAIL=6，其中「提示没有指向 POCKET_STT_ALLOW_PRIVATE」看起来是我刚
+修的 §13 被人回退了。实际是端口 18099 上跑着**另一个 worktree** 的
+pocketd（`wt-maildeploy`，早 11 分钟启动），脚本连的是那个**旧二进制**。
+换到空闲端口后 21/0。
+→ 黑盒报回归时，先 `Get-NetTCPConnection -LocalPort <p> -State Listen`
+确认监听者是不是自己刚起的那个进程。**不要去 kill 别人的进程。**
+
+**2. `make-meeting-wav.py` 原来硬断言 16kHz**，而 SAPI 出的是 22050Hz。
+修法是线性插值重采样，**不是放宽断言** —— 放宽断言会让文件头写着 16kHz、
+内容其实还是 22050Hz，后面量出来的 duration 与时间轴全错，测的就不是同一个东西。
+
+**3. PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会写 BOM**，
+`json.load` 默认 utf-8 会直接报 `Unexpected UTF-8 BOM`。评估器统一用
+`utf-8-sig` 打开。
+
+**4. `eval-asr-accuracy.py` 文件名带连字符，不能 `import`**，必须用
+`importlib.util.spec_from_file_location` 按路径加载。直接 import 会语法报错。
