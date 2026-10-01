@@ -6884,3 +6884,76 @@ OPTIONS 预检        -> Failed to fetch      ← 预检都失败 ⇒ 请求根�
 - `scripts/diag-webview-https-fail.mjs` —— 「Failed to fetch」归因：同源对照 +
   no-cors + OPTIONS 预检 + 外部对照，四步把「CORS / TLS / 探针坏了 / 环境」分开
 
+
+#### 4.71 :param 巡检覆盖率 17 → 30 中的 20 条，并分清两类「没进去」
+
+§4.68 跑完后有 13 条采不到 id。本轮用 `scripts/probe-empty-sources.mjs` 把
+「没数据」和「后端根本没这个端点」分开，又找到一个**之前漏掉的数据源**。
+
+##### 4.71.1 `/api/agents` 是 null，但 `/api/chat-agents` 里有真实 agent
+
+```
+/api/agents        200  {"agents":null}
+/api/chat-agents   200  {"agents":[{"id":"academic-anthropologist","name":"人类学家",…}]}
+/api/sessions       200  {"sessions":[],"total":0}
+/api/scheduled-tasks 200 {"tasks":[]}
+/api/rss/items      200  {"count":0,"items":[]}
+/api/email/summaries 200 {"summaries":[]}
+/api/contacts       404  404 page not found
+```
+
+⇒ `/agents/:agentId` 的 id 应该取自 **chat-agents**（`academic-anthropologist`），
+不是 `/api/agents`（那个是用户自建 agent，现在是 null）。
+另加一条**日期型**路由 `/email/summary/:date` —— 日期参数不需要先有数据也能开页面，
+拿 `2026-10-01` 就能验。
+
+##### 4.71.2 覆盖率 17 → 20，解锁后重跑 0 红旗
+
+```
+实扫 20 条 / 30 条模板
+红旗 0 · 报未找到 2 · 空页 0 · 疑似陈旧 0 · 导航失败 1 · 探针失败 0
+✅ /agents/academic-anthropologist            ✅ /agents/academic-anthropologist/edit
+✅ /email/em-1298896143-…                    ✅ /email/summary/2026-10-01
+✅ /notes/note-…/edit  ✅ /tasks/task-…  ✅ /flashcards/… ×4  ✅ /gateway/… ×7
+```
+
+**这 3 条剩下的不是新缺陷**，逐条定性：
+- `/notes/:id`、`/meetings/:id` 报「未找到」—— §4.68.3 已证伪（采的 id 与
+  UI 列表页数据源不同：前端 `meeting-*` vs 后端 `mtg_*`；notes 同理）
+- `/meetings/:id/record` 导航「未生效」—— §4.64.3 早就记过：
+  `/meetings/*` 进页面会自动带 `?record=1` 并开始录音，**业务跳转，不是失败**
+
+⇒ **20 条实扫里 17 条确认落地，3 条是已定性的假阳性/既定行为，0 红旗。**
+
+##### 4.71.3 一个容易误判的现象：**「导航未生效」可能是锁库，不是导航坏**
+
+第一遍跑时有 6 条报 `NAV_FAIL`，hash 全部停在
+`#/login?returnTo=…&unlock=1`。看着像路由坏了，其实是**本地加密库被锁**。
+
+而且它**有规律**，不是随机：
+
+| 被打回 | 正常 |
+|---|---|
+| `/notes/*`、`/email/*`、`/meetings/*` | `/tasks/*`、`/flashcards/*`、`/gateway/*`、`/agents/*` |
+
+⇒ 被打回的三个是**离线优先、走本地加密库**的模块，库一锁就被守卫弹回；
+通的那几个是纯服务端模块，不依赖本地库。解锁后重跑，这 6 条全部恢复正常，
+其中 `/email/:id` 与 `/email/summary/:date` 转为 ✅。
+
+**教训**：判「路由坏了」之前先看 hash 停在哪。停在 `#/login?...&unlock=1`
+是**环境状态**，不是路由缺陷。巡检脚本把这类单独打成 NAV_FAIL 而不是
+混进「未找到」，就是为了不让它污染缺陷账。
+
+#### 4.72 剩余 10 条未扫模板的解锁条件（已探明，可直接执行）
+
+| 模板 | 解锁条件 |
+|---|---|
+| `/contacts/:id` | **后端无该端点**（404 page not found）—— 属缺功能，不是造数据能解 |
+| `/sessions/:id` | 需先造一条会话 |
+| `/settings/scheduled-tasks/:id`(±edit) | 需先造一条定时任务 |
+| `/rss/items/:id` | 需先订阅一个源并拉到条目 |
+| `/opencode/sessions/:id` | 无列表端点可采 id |
+| `/vault/:id`(±edit) | 纯本地原生，BUG-AT 已定性 Android 不可用 |
+| `/pkm/n/:id` | 落设备本地 `local_assets`，需先在 UI 建一条 PKM 笔记 |
+| `/gateway/:nodeId/credentials/:credentialId` | 需先建一个凭据 |
+

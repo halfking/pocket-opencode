@@ -59,16 +59,19 @@ const PLAN = [
   ['/gateway/:nodeId/catalog', `/gateway/${ID.gwNode}/catalog`],
   ['/gateway/:nodeId/routing-config', `/gateway/${ID.gwNode}/routing-config`],
   ['/gateway/:nodeId/live', `/gateway/${ID.gwNode}/live`],
+  // 第二轮补：/api/agents 是 {"agents":null}（无用户自建 agent），但
+  // **/api/chat-agents 里有真实 agent**，id 形如 academic-anthropologist。
+  // 日期型参数不需要先有数据也能开页面。
+  ['/agents/:agentId', '/agents/academic-anthropologist'],
+  ['/agents/:agentId/edit', '/agents/academic-anthropologist/edit'],
+  ['/email/summary/:date', '/email/summary/2026-10-01'],
   // 无 id 可采的：写明原因，不假装测过
-  ['/agents/:agentId', null, '/api/agents 返回 {agents:[…]} 但取不到元素 id'],
-  ['/agents/:agentId/edit', null, '同上'],
-  ['/contacts/:id', null, '/api/contacts 是 404（后端无该端点）'],
-  ['/sessions/:id', null, '/api/sessions 返回 0 条'],
+  ['/contacts/:id', null, '/api/contacts 是 404「404 page not found」——后端无该端点，造数据也没用'],
+  ['/sessions/:id', null, '/api/sessions 返回 {sessions:[],total:0}，需先造数据'],
   ['/opencode/sessions/:id', null, '无列表端点可采 id'],
-  ['/settings/scheduled-tasks/:id', null, '/api/scheduled-tasks 返回 0 条'],
+  ['/settings/scheduled-tasks/:id', null, '/api/scheduled-tasks 返回 {tasks:[]}，需先造数据'],
   ['/settings/scheduled-tasks/:id/edit', null, '同上'],
-  ['/rss/items/:id', null, '/api/rss/items 返回 0 条'],
-  ['/email/summary/:date', null, '/api/email/summaries 返回 0 条'],
+  ['/rss/items/:id', null, '/api/rss/items 返回 {count:0,items:[]}，需先造数据'],
   ['/vault/:id', null, '密码箱是纯本地原生功能，BUG-AT 已定性为 Android 不可用'],
   ['/vault/:id/edit', null, '同上'],
   ['/pkm/n/:id', null, 'PKM 落设备本地 local_assets，无后端 id 可采'],
