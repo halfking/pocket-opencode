@@ -547,9 +547,33 @@ func scoreInvoiceURL(u string) int {
 	return score
 }
 
-// InvoiceFileName 生成规范文件名 {费用类型}-{对方单位}-{金额}-{日期}.pdf。
-// 非法字符（路径分隔符/空白/Windows 保留符）替换为连字符；字段缺省用
-// "未知"。重名冲突由调用方（确定性命名 + 幂等 upsert）天然规避。
+// InvoiceFileName 生成规范文件名。
+//
+// 格式：`{费用类型}-{对方单位}-{金额}-{日期}[-{发票号}].pdf`
+//
+// 关于发票号这一段（2026-10-01 补）：需求原文写的是
+// `{费用类型}-{对方单位}-{金额}-{日期}.pdf`，但**这个格式不足以唯一标识一张票**。
+// 实测三张不同的发票得到同一个文件名：
+//
+//	云服务-AWS-100.00-2026-09-15.pdf  票 A（CNY，发票号 …741）
+//	云服务-AWS-100.00-2026-09-15.pdf  票 B（USD，发票号 …001）
+//	云服务-AWS-100.00-2026-09-15.pdf  票 C（CNY，发票号 …742）
+//
+// 而 saveInvoiceFile 用 `os.Rename(tmp, path)` 落盘——**同名直接静默覆盖**，
+// 不报错、不重试。两行 DB 记录都 status='downloaded'、file_path 指向同一个
+// 文件，但磁盘上只剩最后写入的那张票，另一张的凭证永久丢失，列表里两张
+// 看起来都正常、点开却是同一份内容。
+//
+// 「同一天、同一供应商、同一金额」在真实场景很常见（充值两次、订阅续费、
+// 重开发票），这不是边角情况。发票号是发票的**唯一标识**，加进去既符合
+// 需求意图（凭证可追溯），又让文件名真正唯一。
+//
+// 发票号为空时（采集早期/XML 未解析出）不加这一段，保持需求原文的格式。
+// 同一输入必须稳定：重跑采集不会换名字（幂等）。这个分支仍可能在
+// 「同额同日同单位且都没有发票号」时撞名——但那要求两张票连发票号都
+// 解析不出来，属于采集完全失败的场景，优先级低于「有发票号却撞名」
+// 这种日常场景。若后续发现它也发生，应在 saveInvoiceFile 里检测目标
+// 已存在并加序号，而不是继续往文件名里塞字段。
 func InvoiceFileName(inv *Invoice) string {
 	category := sanitizeFileName(inv.Category, "其他")
 	seller := sanitizeFileName(inv.Seller, "未知单位")
@@ -558,7 +582,11 @@ func InvoiceFileName(inv *Invoice) string {
 	if date == "" {
 		date = time.Now().Format("2006-01-02")
 	}
-	return fmt.Sprintf("%s-%s-%s-%s.pdf", category, seller, amount, date)
+	name := fmt.Sprintf("%s-%s-%s-%s", category, seller, amount, date)
+	if no := sanitizeFileName(inv.InvoiceNo, ""); no != "" {
+		name += "-" + no
+	}
+	return name + ".pdf"
 }
 
 func sanitizeFileName(s, fallback string) string {
