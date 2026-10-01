@@ -386,6 +386,44 @@ Email scheduler started (fetch_enabled=true, kxmemory=false, ...)
 所以 `remindersUnclassified=5` 持续增长、新的重要邮件永远等不到提醒。
 这是**依赖缺失**，不是代码问题。
 
+## 5.5 事故：`opencode_pocket` schema 被清空（2026-10-01 19:47，根因未定）
+
+**发生了什么**：19:46:13 邮件同步还正常；19:47:12 起日志开始刷
+`relation "email_accounts" does not exist`。查库发现 `opencode_pocket` 里
+**所有表都是 0 行**（`email_accounts` / `emails` / `email_invoices` …），
+`tasks` / `scheduled_tasks` 同样报错 —— **不是邮件模块的问题，整个 schema 都被清了**。
+
+**丢了什么**：
+- 5 个邮箱账户（已用部署脚本重新落库，`12 PASS / 0 FAIL`，IMAP+SMTP 齐备）
+- 3 张发票的数据库行、约 155 封已同步邮件、提醒去重历史
+- **发票 PDF 文件本身没丢**：`C:\workspace\openpocket\data\email-invoices\ws_user-admin\`
+  下那张 3500 的 PDF（157,615 字节）还在磁盘上
+
+**根因未定，不要臆断**。已排除的方向：
+- 后端代码里**没有**任何针对这些表的 `DROP TABLE` / `TRUNCATE`（全量 grep 过）
+- 事故窗口内（19:46–19:47）本会话只跑了 `gofmt` / `go build` /
+  `go test ./internal/config/`；`internal/config` 包**完全不引用 pgx**，
+  且 `go test` 带 `-run TestResolveDataDir` 过滤
+- `deploy/bin/rebuild-db-local.sh:119` 确实是 `DROP SCHEMA ... CASCADE` + `CREATE SCHEMA`，
+  形态完全吻合，但**它的备份目录 `~/Downloads/kaixuan/opp/backup` 不存在**，
+  而该脚本会先备份再删 —— 所以不能断定就是它
+- 同一 PG 上残留 `meeting_test_*` / `task_test_*` 两个测试 schema，
+  说明**有别的测试/会话在同一实例上活动**。共享工作区被并发会话改动不是第一次。
+
+**恢复动作与结果**：
+1. `scripts/deploy-email-accounts-to-device.mjs` 重部署 5 个账户 → 12 PASS / 0 FAIL
+2. 凭证解密正常（无 `message authentication failed`）——
+   master key 仍用 `wt3/backend/data/email_master.key` 以 base64 注入，没换
+3. `POST /api/emails/sync` → 2.88s，`{"mode":"imap_fetch","new":2,"synced":5}`，
+   与事故前基线（1.5–2.9s / synced=5）一致
+4. 重启实例时把 `POCKET_DATA_DIR` 显式指向 `C:\workspace\openpocket\data`
+   （发票 PDF 真正所在处），日志确认 `data dir = C:\workspace\openpocket\data`。
+   **这就是 §2.3 那个缺陷的正解**：以前只能靠「碰巧从对的目录启动」。
+
+> **教训**：邮件相关的库数据没有任何备份。schema 被人清空时，
+> 磁盘上的发票文件是唯一的幸存副本 —— 而 §2.3 那个 dataDir 缺陷会让它们
+> 「明明在磁盘上却下载 404」。两件事撞在一起才会让这次恢复这么被动。
+
 ## 6. adb 恢复后要做的事
 
 1. `adb reverse tcp:18099 tcp:18099`，确认 App 能登录。
