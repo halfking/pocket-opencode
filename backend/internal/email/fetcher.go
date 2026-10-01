@@ -43,6 +43,13 @@ type Fetcher struct {
 	// （见 pipeline_concurrency_test.go）：真实 Sync 会连外部 IMAP，测不了
 	// 「一个慢账户是否拖住其它账户」。生产路径 nil，永远走真实 IMAP 逻辑。
 	syncHook func(ctx context.Context, accountID string) (int, error)
+	// syncBudget / pop3Reserve 是单账户同步的时间预算，零值时用生产默认
+	// （70s / 20s）。做成字段而不是 const，是为了**能测**：
+	// 「IMAP 阶段到点是否真的会 Close 连接、POP3 回退是否真拿到正预算」
+	// 这条契约只能在 Sync 的真实路径上验，而 50s 的生产值测试等不了 ——
+	// 这与 imapDialWithIdle 拆出可注入超时是同一个理由。
+	syncBudgetOverride  time.Duration
+	pop3ReserveOverride time.Duration
 	// inflight 记录正在同步的账户，防止同一账户被并发同步。
 	//
 	// 2026-10-01 实测：scheduler 的 pollLoop 每 60s 遍历一次，对
@@ -597,7 +604,35 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 	// 90s 上界（DefaultAccountSyncTimeout），留 20s 给后面的步骤（落库、
 	// 发票建档）——之前取 80s 时实测仍然整轮 90619ms 超时，因为 80+ 收尾
 	// 已经把 90s 吃满了。
-	const syncBudget = 70 * time.Second
+	syncBudget := f.syncBudgetOverride
+	if syncBudget <= 0 {
+		syncBudget = 70 * time.Second
+	}
+	pop3Reserve := f.pop3ReserveOverride
+	if pop3Reserve <= 0 {
+		pop3Reserve = 20 * time.Second
+	}
+	// pop3Reserve 是**无条件**留给 POP3 降级的时间。
+	//
+	// 之前这个数字只体现在注释里（「70s = IMAP 硬截止 45s + POP3 最多 25s」），
+	// 代码上**没有任何地方保证它**：IMAP 路径从头到尾不检查 syncBudget，
+	// `remaining()` 只被传给 POP3 分支。于是 IMAP 一旦跑超，POP3 拿到的就是
+	// 负数，syncPOP3Fallback 直接返回
+	// `imap failed and no time left for POP3 fallback` —— 降级路径恰好在
+	// 最需要它的时候没有预算。线上实测（2026-10-01 21:38:02）：
+	// `trying POP3 fallback (budget -10s left)`。
+	//
+	// 修法不是「给 IMAP 加检查」——go-imap 不响应 ctx，唯一的立即手段是
+	// Close。所以用 time.AfterFunc 在 imapStageBudget 到点时直接
+	// client.Close()，**不依赖 deadline 机制**（deadline 实测要等看门狗 tick，
+	// 见 §7bi；上界是 hard + 一个 tick 量级，不是精确值）。
+	imapStageBudget := syncBudget - pop3Reserve
+	if imapStageBudget <= 0 {
+		// 预算配错（syncBudget <= pop3Reserve）时给 IMAP 留一半，而不是负数。
+		// 负的 AfterFunc 周期会让 time.AfterFunc 立刻触发，把 IMAP 阶段秒断，
+		// 之后每一轮都直接走降级 —— 那比超预算更难排查。
+		imapStageBudget = syncBudget / 2
+	}
 	deadline := time.Now().Add(syncBudget)
 	// 降级时能用的时间 = 总预算减去 IMAP 已经花掉的。
 	remaining := func() time.Duration { return time.Until(deadline) }
@@ -609,6 +644,20 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		return f.syncPOP3Fallback(ctx, acc, cred, remaining())
 	}
 	defer client.Close()
+
+	// IMAP 阶段的无条件上界。到点直接 Close：它是立即的，而 deadline 兜底
+	// 实测要等看门狗 tick（上界 hard + 一个 tick，见 §7bi），不足以保证
+	// remaining() 一定为正。加上这一条之后，POP3 降级**结构上**必然拿得到
+	// pop3Reserve，不会再出现「budget -10s left」。
+	//
+	// 取 imapStageBudget(50s) 而不是 imapHardTimeout(45s)：让 deadline 机制
+	// 先按它自己的节奏收尾，Close 只是兜底，正常同步（实测 0.25~1.4s）远够不着。
+	stopIMAPStage := time.AfterFunc(imapStageBudget, func() {
+		log.Printf("[email/fetcher] imap stage budget %s exhausted for %s — closing connection to leave %s for POP3 fallback",
+			imapStageBudget, acc.EmailAddress, pop3Reserve)
+		_ = client.Close()
+	})
+	defer stopIMAPStage.Stop()
 
 	tr.step("login")
 	if err := f.login(client, *acc, cred); err != nil {

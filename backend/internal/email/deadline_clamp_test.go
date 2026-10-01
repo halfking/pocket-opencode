@@ -107,6 +107,46 @@ func TestHardDeadlineIsNotExceededByIdleRenewal(t *testing.T) {
 		elapsed.Round(time.Millisecond), hard, idle, err)
 }
 
+// TestCloseClientAfterBreaksHungReadIndependentOfDeadline 证明 Sync 里那条
+// `time.AfterFunc(imapStageBudget, client.Close)` 兜底**确实是它**在收尾，
+// 而不是 deadline 机制顺手断的。
+//
+// 参数是刻意这样配的：idle 给 60s（远超测试窗口），所以在这 2.5 秒里
+// deadline 机制**不可能**成为终结原因（滚动续期只会把 deadline 往后推，
+// 见 §7bi）。唯一的终结者是 AfterFunc 里的 Close。
+//
+// 负控：去掉那个 AfterFunc，这一条会挂到 60s idle 才断（测试超时/超时断言）——
+// 也就是「POP3 回退拿不到预算」的那个老问题。
+func TestCloseClientAfterBreaksHungReadIndependentOfDeadline(t *testing.T) {
+	addr := startSilentServer(t)
+
+	// idle 60s / hard 0：模拟「deadline 机制在测试窗口内完全不作为」。
+	client, err := imapDialWithIdle(addr, false, 5*time.Second, 60*time.Second, 0, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	const imapStage = 1 * time.Second
+	stop := time.AfterFunc(imapStage, func() { _ = client.Close() })
+	defer stop.Stop()
+
+	start := time.Now()
+	_, err = client.Capability().Wait()
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("连接被关掉了却还返回成功，测试无意义")
+	}
+	if elapsed > 2500*time.Millisecond {
+		t.Fatalf("读在 %s 才返回，AfterFunc 定的上界是 %s —— 兜底没生效"+
+			"（idle=60s 说明不是 deadline 断的）（err=%v）",
+			elapsed.Round(time.Millisecond), imapStage, err)
+	}
+	t.Logf("hung read broken by Close after %s (idle=60s never fired): %v",
+		elapsed.Round(time.Millisecond), err)
+}
+
 // TestNextIdleIsClampedByHard 直接钉住那个夹取函数本身：它的返回值永远
 // 不得超过 hard。这是一个纯函数断言，不依赖任何时序，负控必然精确。
 func TestNextIdleIsClampedByHard(t *testing.T) {
