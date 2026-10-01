@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 )
 
 // mime.go — 发票采集流水线的全文抓取与 MIME 解析。
@@ -54,6 +55,20 @@ type ParsedMessage struct {
 	TextBody     string // text/plain 聚合
 	HTMLBody     string // text/html 聚合（发票链接多藏在 href 里）
 	Attachments  []ParsedAttachment
+}
+
+// selectInboxWithClientID 声明 RFC 2971 客户端标识后 SELECT INBOX。
+//
+// 顺序是硬约束：网易 Coremail 在 SELECT 之前没收到 ID 就回
+// `NO SELECT Unsafe Login`。sendClientID 内部对失败只记日志不阻断
+// （ID 是扩展命令，服务器 CAPABILITY 里没有时返回 BAD 属正常），
+// 但 163 会因为「没发」而拒绝 SELECT，所以必须发。
+func selectInboxWithClientID(client *imapclient.Client, emailAddress string) error {
+	sendClientID(client, emailAddress)
+	if _, err := client.Select("INBOX", nil).Wait(); err != nil {
+		return fmt.Errorf("select INBOX: %w", err)
+	}
+	return nil
 }
 
 // FetchMessageRaw 按 UID 单封拉整封原文。先用 go-imap 的 client.Fetch，
@@ -95,9 +110,13 @@ func (f *Fetcher) FetchMessageRaw(ctx context.Context, accountID string, uid int
 	// 于是同一个 163 账户「常规同步成功、拉原文必失败」——发票二次提取与
 	// 发票采集（harvestOne 也走这里）在 163 邮箱上 100% 拿不到正文。
 	// 真实日志：acct-...-5 uid=1298896126 select INBOX: imap: NO SELECT Unsafe Login。
-	sendClientID(client, acc.EmailAddress)
-	if _, err := client.Select("INBOX", nil).Wait(); err != nil {
-		return nil, fmt.Errorf("select INBOX: %w", err)
+	//
+	// 抽成 selectInboxWithClientID 是为了让「ID 必须在 SELECT 之前」这条协议
+	// 约束能被**真实调用**验证：早期版本的测试自己手搓 ID 命令，结果把
+	// mime.go 里这行 sendClientID 删掉测试照样全绿——测的是测试自己写的命令，
+	// 不是生产代码。负控：删掉本函数里的 sendClientID -> imap_clientid_test.go 转红。
+	if err := selectInboxWithClientID(client, acc.EmailAddress); err != nil {
+		return nil, err
 	}
 
 	// 单封原文上限。发票 PDF 实际 <200KB，XML 几 KB，8MB 对「带附件的普通

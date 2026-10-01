@@ -1,4 +1,4 @@
-﻿package email
+package email
 
 import (
 	"bufio"
@@ -9,11 +9,11 @@ import (
 	"testing"
 )
 
-// startFakePOP3 璧蜂竴涓渶灏?RFC 1939 鏈嶅姟鍣細greeting + USER/PASS/STAT/UIDL/RETR銆?
-// 鍥炲綊浠峰€硷細姝ゅ墠鐘舵€佽璇敤 textproto.ReadResponse(200)锛堝彧璁?HTTP 鏁板瓧 code锛夛紝
-// 鐪熷疄 163 鏈嶅姟鍣ㄧ殑 "+OK Welcome..." greeting 鐩存帴鎶?invalid response code锛?
-// 鍙︽湁姝ｆ枃 bufio 涓庣姸鎬?bufio 鍙屽眰缂撳啿浜掔浉鍚炴暟鎹殑闂銆備袱鑰呴兘闇€瑕佷竴涓?
-// 浼氳瘽绾?fake server 鎵嶈兘鏆撮湶銆?
+// startFakePOP3 起一个最小 RFC 1939 服务器：greeting + USER/PASS/STAT/UIDL/RETR。
+// 回归价值：此前状态行调用 textproto.ReadResponse(200)（只认 HTTP 数字 code），
+// 真实 163 服务器的 "+OK Welcome..." greeting 直接报 invalid response code；
+// 另有正文 bufio 与状态行 bufio 两层缓冲互相抢数据的问题。两者都只有一个
+// 会话级 fake server 才能暴露。
 func startFakePOP3(t *testing.T, messages map[int]string) net.Addr {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -98,12 +98,12 @@ func TestFetchPOP3MailboxFetchesNew(t *testing.T) {
 	if len(newUIDLs) != 2 || len(payloads) != 2 {
 		t.Fatalf("want 2 new messages, got uidls=%v payloads=%d", newUIDLs, len(payloads))
 	}
-	// dot-unstuffing锛氳棣?".." 杩樺師涓?"."锛圧FC 822 杞箟锛?
+	// dot-unstuffing：行首 ".." 还原为 "."（RFC 822 转义）
 	if !strings.Contains(string(payloads[1]), "\r\n.line starts with dot\r\n") {
 		t.Errorf("dot-escape line mismatch: %q", payloads[1])
 	}
 
-	// 澧為噺锛氬凡瑙佽繃鐨?UIDL 璺宠繃
+	// 增量：已见过的 UIDL 跳过
 	seen := map[string]struct{}{"uidl-1": {}, "uidl-2": {}}
 	newUIDLs, payloads, err = FetchPOP3Mailbox(context.Background(), addr.String(), false, "u@163.com", "authcode", seen)
 	if err != nil {
@@ -126,10 +126,10 @@ func TestFetchPOP3MailboxAuthRejected(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		// 涓?handle() 鍚屾牱鐨勩€屽厛璇诲悗鍐欍€嶈妭濂忥細涓€娆℃€ф妸涓夋潯鍝嶅簲绯婁笂鍘诲啀绔嬪埢
-		// Close锛學indows 涓婁細鍥犳帴鏀剁紦鍐插尯閲岃繕鏈夋湭璇荤殑瀹㈡埛绔懡浠よ€屽彂 RST锛?
-		// 瀹㈡埛绔笅涓€娆″啓鐩存帴鎷垮埌 wsasend WSAECONNABORTED锛屼簬鏄繖鏉＄敤渚嬫祴鍒扮殑
-		// 鏄紶杈撳眰閿欒鑰屼笉鏄畠鎯虫柇瑷€鐨勩€?ERR 鐘舵€佽琚€忎紶銆嶃€?
+		// 与 handle() 同样的「先读后写」节奏：一次性把单条响应写完再读下一条命令
+		// Close。Windows 上会因接收缓冲区里还粘着未读的客户端命令而发 RST，
+		// 客户端下一次写直接撞到 wsasend WSAECONNABORTED，于是「这个用例测的
+		// 是传输层错误而不是它想断言的东西」——ERR 状态行被错传。
 		br := bufio.NewReader(conn)
 		readCmd := func() string {
 			line, err := br.ReadString('\n')
@@ -147,7 +147,7 @@ func TestFetchPOP3MailboxAuthRejected(t *testing.T) {
 			return
 		}
 		fmt.Fprint(conn, "-ERR Unable to log on\r\n")
-		// 璇诲共鍒?EOF 鍐嶅叧锛岄伩鍏嶅湪瀹㈡埛绔瀹屼箣鍓?RST銆?
+		// 读到 EOF 再关，避免在客户端读完之后才 RST。
 		br.ReadString('\n')
 	}()
 	_, _, err = FetchPOP3Mailbox(context.Background(), ln.Addr().String(), false, "u", "bad", nil)
