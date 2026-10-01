@@ -4781,6 +4781,99 @@ go test -race ./internal/email/...   ok 48.200s / rules ok 1.401s   0 DATA RACE
 
 ---
 
+## §7by schema 已经回来了，但**处理链路一行没跑过**（2026-10-02 00:3x）
+
+§7bo 报告「`opencode_pocket` schema 不存在」并给出 5 步恢复路径，§7bu 逐一排除了
+所有恢复途径。用户随后点头执行恢复。**动手前先查现状，发现前提已经不成立** ——
+这一节记的是那个转折。
+
+### 前提已变：schema 存在，数据也在
+
+```
+select nspname from pg_namespace ...  ->  opencode_pocket 存在
+opencode_pocket 下 68 张表（含 email_accounts / emails / email_invoices）
+```
+
+行数：
+
+| 表 | 行数 |
+|---|---|
+| `opencode_pocket.email_accounts` | **5** |
+| `opencode_pocket.emails` | **120** |
+| `opencode_pocket.email_invoices` | 0 |
+| `opencode_pocket.users` / `workspaces` | 1 / 1 |
+| `opencode_pocket.tasks` / `scheduled_tasks` | 0 / 0 |
+
+5 个账户的 `created_at` 全是 **`2026-10-01 23:56:02`**（`updated_at` 同值），
+即**在我上轮报告之后、用户点头之前**就有人完成了一次完整回填。
+凭据密文长度全部 60，一致。
+
+**所以「执行恢复」这件事不需要我做。** 备份仍做了
+（`D:\temp\email-backup-20261002-0030`，`email-invoices` 132 文件 +
+`email-bodies` 41 文件，逐目录文件数与源比对 MATCH；`exports` 在
+`email-invoices\exports` 下，127 文件，已含在内）—— 备份的价值在于
+后续任何写操作都有退路，不在于它是否必要。
+
+### 但真正的结论是下一句
+
+120 封邮件确实是真实数据（覆盖 4 个账户，时间跨 2026-09-05 → 2026-10-01），
+可是：
+
+```
+select count(*) filter (where processed_at > 0)          -> 0
+select count(*) filter (where category <> '')            -> 0
+select count(*) filter (where importance <> '')          -> 0
+email_invoices                                             -> 0 行
+```
+
+**采集回写、分类、重要性判定、发票解析，一样都没跑过。**
+
+这把需求的定性彻底改了。§7bo/§7bu 的框架是「数据库没了，怎么恢复」，
+而实际局面是「数据库好了，**处理链路一次都没被真实数据走过**」。
+需求 1（定时/手工收信处理）、2（垃圾清理）、3（发票采集）、4（重要提醒）
+的真实实现，在这份 120 封的数据上**零执行证据**。
+
+### master key：四选一，不是「找不到」
+
+用 `realprobe_test.go`（`-tags=realprobe`，第 1 步纯本地不发网络）逐把试：
+
+```
+真实库里启用账户 5 个
+KEY C:\workspace\openpocket\data\email_master.key                    可解出 = 0
+    AllDecryptable=false AllFailed=true
+    -> MASTER KEY LOOKS WRONG: ... cipher: message authentication failed
+      (first: account=acct-1790870162070526000-4 feikemanager1@163.com)
+KEY C:\workspace\openpocket\wt3\backend\data\email_master.key        可解出 = 5
+    AllDecryptable=true AllFailed=false
+    -> all 5 enabled email account(s) decrypt with the current master key
+KEY C:\workspace\openpocket\backend\data\email_master.key             可解出 = 0
+KEY C:\workspace\openpocket-wt-maildeploy\backend\data\email_master.key 可解出 = 0
+```
+
+**只有 `wt3\backend\data\email_master.key` 一把能解开全部 5 个账户。**
+这与 §7bf 的结论一致（真实库的 key 在 wt3），现在拿到了逐把对照的硬证据。
+
+注意那三把错 key 的输出形态：`cipher: message authentication failed`。
+**这就是 §7bg 那个启动自检在生产里会打印的那一行** —— 当初写它的时候
+只是推演用户「应该」看到什么，这次是真实抓出来的。
+
+### 因此下一步不是「恢复」而是「跑一次」
+
+恢复已由别人完成；现在要回答的是需求 1-5 在真实数据上到底能不能跑通。
+但这一步**不是纯读操作**，它会：
+
+1. 写 `body_path` 正文缓存到磁盘
+2. 调 LLM 做分类（走 `llm.kxpms.cn` 那把 key，**仍在计费可用**）
+3. 对判为垃圾的邮件执行 **IMAP MOVE**（真实改动邮箱状态，13 封待决）
+4. 下载发票 PDF 并尝试**发飞书**（`POCKET_FEISHU_INVOICE_CHAT_ID` 仍缺）
+
+第 3 步不可逆，所以**先只跑 1+2（采集 + 分类，不 MOVE、不发飞书）**，
+把 120 封的分类结果拿出来看，再单独决定要不要动 IMAP。
+
+**未做**：上述分步尚未执行，等用户对「允许对真实邮箱跑采集+分类」点头。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
