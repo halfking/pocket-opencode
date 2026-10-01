@@ -110,7 +110,11 @@ type Server struct {
 	// sttHTTPClient 是 STT 自动发现/试转的出网客户端。默认走 gatewayHTTPClient
 	// （带 SSRF 防护）；测试注入一个拒绝出网的实现，保证单测不打真实网关。
 	sttHTTPClient *http.Client
-	mcpClient      *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
+	// sttSettingsMem 是 user_settings（PG）不可用时的 STT 设置进程内兜底。
+	// 没有它，无 PG 部署下语音转写设置根本存不下来，功能等于不可用。
+	sttSettingsMem  *sttMemSettings
+	sttSettingsOnce sync.Once
+	mcpClient       *mcp.Client // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// RSS 订阅与分享（PG store + 后台 scheduler）。nil = 关闭模块。
 	// 由 cmd/pocketd/main.go 通过 SetRSSStore / SetRSSScheduler 注入。
 	rssStore     *rss.Store
