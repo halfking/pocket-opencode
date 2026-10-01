@@ -173,6 +173,7 @@ func TestDiagTencentIMAPStackAB(t *testing.T) {
 
 	// 阶段一：生产 stack（TLS + deadlineConn 看门狗 + go-imap）。
 	stackSlow := 0
+	retried := 0
 	for i := 1; i <= n; i++ {
 		start := time.Now()
 		// 10s 与生产 f.dial() 里的局部常量 dialTimeout 保持一致。
@@ -189,6 +190,23 @@ func TestDiagTencentIMAPStackAB(t *testing.T) {
 			stackSlow++
 			t.Logf("stack #%02d LOGIN failed after %s: %v", i, time.Since(start).Round(time.Millisecond), err)
 			_ = client.Close()
+			// 关键观测：挂掉之后**立刻**换一条新连接重试，多半能成。
+			// 这决定「login 失败就重试一次」这个缓解手段到底有没有用 ——
+			// 如果重试也挂，那重试只是把 80s 变成 160s，方案就是错的。
+			retryStart := time.Now()
+			rc, rerr := imapDialWithTimeout(addr, true, 10*time.Second, &tls.Config{
+				ServerName: host, MinVersion: tls.VersionTLS12,
+			})
+			if rerr != nil {
+				t.Logf("  └ retry #%02d dial failed after %s: %v", i, time.Since(retryStart).Round(time.Millisecond), rerr)
+			} else if rerr2 := rc.Login(user, pass).Wait(); rerr2 != nil {
+				t.Logf("  └ retry #%02d LOGIN also failed after %s: %v", i, time.Since(retryStart).Round(time.Millisecond), rerr2)
+				_ = rc.Close()
+			} else {
+				retried++
+				t.Logf("  └ retry #%02d ok after %s  ← 重试有效", i, time.Since(retryStart).Round(time.Millisecond))
+				_ = rc.Close()
+			}
 			time.Sleep(time.Second)
 			continue
 		}
@@ -202,7 +220,11 @@ func TestDiagTencentIMAPStackAB(t *testing.T) {
 		_ = client.Close()
 		time.Sleep(time.Second)
 	}
-	t.Logf("=== stack 模式：%d 次，异常/慢 %d 次 ===", n, stackSlow)
+	t.Logf("=== stack 模式：%d 次，异常/慢 %d 次，其中重试成功 %d 次 ===", n, stackSlow, retried)
+	if stackSlow > 0 {
+		t.Logf("挂起后立刻换新连接重试的成功率 = %d/%d —— 这是「login 失败就重试一次」"+
+			"这个缓解手段有没有用的直接依据。", retried, stackSlow)
+	}
 	if stackSlow == 0 {
 		t.Logf("生产 stack %d 次也全正常 → 单独复现不了，"+
 			"触发条件还缺「并发」或「长时间持续运行」这类生产特有的因素。", n)
