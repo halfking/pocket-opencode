@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 import { emailApi } from '../../api/email'
 import i18n from '../../i18n'
 import { normalizeEmailCategory } from './email-categories'
-import { applyClassifyResult, classifyProgressLabel, isUncategorized } from './email-classify-run'
+import { applyClassifyResult, classifyProgressLabel, classifyRunVerdict, isUncategorized } from './email-classify-run'
 import { sanitizeFetchHint } from './email-fetch-plan'
 import { hasInboxSearch, matchInboxSearch, type InboxSearch } from './email-inbox-search'
 import { selectedIdList, toggleSelect } from './email-inbox-select'
@@ -91,8 +91,11 @@ export function useEmailInbox() {
     const controller = new AbortController()
     classifyAbort.value = controller
     let next = list
+    let noProgressPasses = 0
+    let stalled = false
     try {
-      do {
+      let running = true
+      while (running) {
         const report = await emailApi.classifyInbox(20, controller.signal)
         const done = report.classified ?? 0
         const remain = report.remaining ?? 0
@@ -106,10 +109,28 @@ export function useEmailInbox() {
             )
           }
         }
-        if (classifyCancel.value || remain <= 0) break
-      } while (!classifyCancel.value)
+        const verdict = classifyRunVerdict({
+          classified: done,
+          remaining: remain,
+          cancel: classifyCancel.value,
+          noProgressPasses,
+        })
+        noProgressPasses = 'noProgressPasses' in verdict ? verdict.noProgressPasses : noProgressPasses
+        // 零进展即停：没配 LLM provider 时 classified 恒为 0，原先只认
+        // remaining<=0 的循环永远退不出来，UI 停在「正在归类 1/120」，
+        // 服务端每轮被打一遍并刷一行 llmbff: no provider configured。
+        // 详见 email-classify-run.ts 的 classifyRunVerdict。
+        if (verdict.kind === 'stalled') stalled = true
+        running = verdict.kind === 'continue'
+      }
       const leftover = next.filter((m) => isUncategorized(m.category)).length
-      classifyHint.value = leftover ? `已暂停，仍有 ${leftover} 封未归类` : '归类完成'
+      if (stalled) {
+        classifyHint.value = leftover
+          ? `归类未生效（AI 分类服务未配置），仍有 ${leftover} 封未归类`
+          : '归类完成'
+      } else {
+        classifyHint.value = leftover ? `已暂停，仍有 ${leftover} 封未归类` : '归类完成'
+      }
     } catch (e) {
       if (controller.signal.aborted) {
         // 用户主动中止：已落库的部分保留，如实说明停在哪
