@@ -7,7 +7,10 @@
 ## Step 1: 在 184 上安装 nginx
 
 ```bash
-export SSHPASS='Kaixuan2026&#*9527'
+# 2026-10-02: 这里原先内联了 184 的 root SSH 明文口令。它自 2026-07 起就在
+# git 历史与 origin 远端里，必须视为已泄漏并轮换。改为从环境变量读，
+# 且不把口令写进任何受跟踪文件（sshpass 只认 SSHPASS 环境变量）。
+export SSHPASS='<184-root-password>'
 sshpass -e ssh -o StrictHostKeyChecking=no -p 25022 root@14.103.112.184 'apt update && apt install -y nginx && systemctl enable nginx --now'
 ```
 

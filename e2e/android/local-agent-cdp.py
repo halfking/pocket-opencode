@@ -9,7 +9,7 @@
   P3 审批放行:write_file → 审批条 → 点「允许」→ completed + 终答
   P4 审批拒绝:http_fetch/write_file → 点「拒绝」→ denied + 模型改道
 """
-import json, sys, time
+import json, os, sys, time
 import websocket
 
 WS_URL = sys.argv[1]
@@ -167,7 +167,16 @@ evaluate("""
 """, timeout=15)
 
 token = None
-for pwd in ("Veritrans&9527", "d18db57a2e35e792b5223e562be2c3ea"):
+# 2026-10-02: this used to be a hardcoded list of two candidate admin passwords
+# committed in clear text (and it also printed which one matched, prefix and all).
+# Candidates now come from the environment: E2E_PASSWORD, or E2E_PASSWORDS as a
+# comma-separated fallback list for people who keep more than one dev password.
+_raw = os.environ.get("E2E_PASSWORD") or os.environ.get("E2E_PASSWORDS", "")
+candidates = [p.strip() for p in _raw.split(",") if p.strip()]
+if not candidates:
+    print("ABORT: set E2E_PASSWORD (or E2E_PASSWORDS) to the dev admin password.")
+    sys.exit(2)
+for pwd in candidates:
     login = evaluate(f"""
       fetch('{API_BASE}/api/auth/login', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
@@ -176,9 +185,9 @@ for pwd in ("Veritrans&9527", "d18db57a2e35e792b5223e562be2c3ea"):
     """, timeout=20)
     token = (login or {}).get('token')
     if token:
-        print("login ok (password:", pwd[:6] + "...)")
+        print("login ok")
         break
-assert token, "login failed both passwords"
+assert token, "login failed for every candidate in E2E_PASSWORD/E2E_PASSWORDS"
 evaluate(f"""
   localStorage.setItem('pocket_token', {json.dumps(token)});
   localStorage.setItem('pocket_user', 'admin');

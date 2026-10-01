@@ -98,7 +98,7 @@ func (s *Server) userIDFromRequest(r *http.Request) string {
 //     RedClaw /api/v1/auth/login,拿到 RedClaw 颁发的 HS256 JWT 后原样
 //     回给前端（前端存进 localStorage 的 pocket_token）。
 //  2. RedClaw 不可达 + POCKET_DEV_AUTH=true（开发/故障恢复）：
-//     走本地 dev 旁路（admin / Veritrans&9527），本地 jwtSigner 签发。
+//     走本地 dev 旁路（需显式设置 POCKET_AUTH_USER/PASS；不再有内置缺省口令）。
 //  3. legacy 模式（POCKET_AUTH_LEGACY_ONLY=true）：直接走原本地 users 表。
 //
 // 兼容性：legacy/dev 模式仍保留 EnsureDefaultWorkspace + RecordShadow
@@ -201,8 +201,18 @@ type devCreds struct {
 	email    string
 }
 
-// devBypassCredentials 按 POCKET_AUTH_USER/PASS（缺省 admin / Veritrans&9527）
-// constant-time 校验 dev 旁路凭据。仅当 POCKET_DEV_AUTH=true 时由调用方触发。
+// devBypassCredentials 按 POCKET_AUTH_USER/PASS 校验 dev 旁路凭据。
+// 仅当 POCKET_DEV_AUTH=true 时由调用方触发。
+//
+// 2026-10-02：此前这里在 DevAuthPass 为空时回落到一个**写死在源码里**的
+// 默认口令。那把口令在 8 个受跟踪文件里明文出现（server_assistant.go、
+// start-dev.sh、verify-stt*.ps1、verify-https-prod.mjs、docs/archive/…），
+// 任何拿到仓库的人都知道，于是「dev 模式」实际等于「公开口令的 admin 旁路」。
+// 上一轮 336c883 已经把 bootstrap 建号路径的同类问题修掉（拒绝用内置口令建号），
+// 这条旁路是同一问题的残留入口。
+//
+// 现在：没有显式配置口令就**拒绝旁路**，并告警。要用 dev 旁路就必须显式给
+// POCKET_AUTH_PASS——那属于本机开发者的显式选择，不会随仓库扩散。
 func (s *Server) devBypassCredentials(username, password string) (devCreds, bool) {
 	devUser := s.cfg.DevAuthUser
 	if devUser == "" {
@@ -210,9 +220,10 @@ func (s *Server) devBypassCredentials(username, password string) (devCreds, bool
 	}
 	devPass := s.cfg.DevAuthPass
 	if devPass == "" {
-		// 未显式配置密码时给出一次性告警,便于审计发现默认凭据在用。
-		devPass = "Veritrans&9527"
-		log.Printf("WARN: POCKET_AUTH_PASS not set; using built-in dev default password")
+		// 不再回退到任何内置口令。缺配置 = 不提供旁路。
+		log.Printf("WARN: POCKET_AUTH_PASS not set; dev auth bypass disabled. " +
+			"Set POCKET_AUTH_PASS explicitly to use the dev bypass.")
+		return devCreds{}, false
 	}
 	if subtle.ConstantTimeCompare([]byte(username), []byte(devUser)) == 1 &&
 		subtle.ConstantTimeCompare([]byte(password), []byte(devPass)) == 1 {

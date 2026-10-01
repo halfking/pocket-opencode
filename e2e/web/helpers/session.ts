@@ -147,7 +147,7 @@ export async function apiLoginToken(request: APIRequestContext): Promise<string>
   const res = await request.post('/api/auth/login', {
     data: {
       username: process.env.E2E_USERNAME ?? 'admin',
-      password: process.env.E2E_PASSWORD ?? 'Veritrans&9527',
+      password: process.env.E2E_PASSWORD ?? '',
     },
   })
   if (!res.ok()) {

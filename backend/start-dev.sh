@@ -30,9 +30,18 @@ if [ -n "$OLD_PIDS" ]; then
 fi
 
 # dev 登录冒烟凭据：脚本原先从不导出 POCKET_AUTH_PASS，登录测试一直发空密码。
-# 未显式设置时回退到后端 dev 缺省（admin / Veritrans&9527）。
+#
+# 2026-10-02：这里原先回退到一个**写死在仓库里**的默认口令。它同时是后端
+# devBypassCredentials 的内置缺省，两边一致才让冒烟测试通过——但代价是这把
+# admin 口令随仓库公开。后端那侧已经改成「无显式配置即拒绝旁路」，这里同步：
+# 本地开发者显式给 POCKET_AUTH_PASS，不给就如实跳过登录冒烟，而不是拿一把
+# 公开口令去换一次绿灯。
 export POCKET_AUTH_USER="${POCKET_AUTH_USER:-admin}"
-export POCKET_AUTH_PASS="${POCKET_AUTH_PASS:-Veritrans&9527}"
+if [ -z "${POCKET_AUTH_PASS:-}" ]; then
+  echo "  [skip] POCKET_AUTH_PASS not set -> login smoke test skipped (no built-in default password)" >&2
+else
+  export POCKET_AUTH_PASS
+fi
 
 # AI 网关配置：从仓库根 .env 读取（不回显密钥），保证 /api/llm/* 开箱可用。
 ROOT_ENV="$(cd "$SCRIPT_DIR/.." && pwd)/.env"

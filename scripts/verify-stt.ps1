@@ -1,4 +1,4 @@
-﻿# verify-stt.ps1 — 语音转写功能的黑盒验证（2026-10-01）
+# verify-stt.ps1 — 语音转写功能的黑盒验证（2026-10-01）
 #
 # 为什么是黑盒而不是只跑单测：STT 的关键风险全在**真实上游行为**上——
 # 网关列了模型但没有 provider、网关收下音频却丢掉它并返回幻觉文本。
@@ -76,8 +76,14 @@ $env:POCKET_DB_PATH = (Join-Path $dataDir 'pocket.sqlite')
 # pocketd 启动硬要求：要么配 RedClaw Admin，要么显式走本地 legacy 旁路。
 # 这里选 legacy —— 验证脚本只需要一个能签 token 的本地身份，不需要企业后端。
 $env:POCKET_AUTH_LEGACY_ONLY = "true"
+# 2026-10-02: no built-in default password. The old one was committed in clear
+# text in this file, so anyone with the repo could log in as admin on a dev
+# instance. Pass it in explicitly; abort loudly rather than silently skipping.
+if (-not $env:POCKET_AUTH_PASS) {
+  Write-Host "ABORT: set POCKET_AUTH_PASS before running this script." -ForegroundColor Red
+  exit 2
+}
 $env:POCKET_AUTH_USER = "admin"
-$env:POCKET_AUTH_PASS = "Veritrans&9527"
 # SSRF 开关必须**显式清空**，不能继承父进程环境。
 #
 # 2026-10-01 踩过：这条脚本原来完全不碰这两个变量，于是「危险地址应被拒绝」
@@ -127,7 +133,7 @@ if (-not $ready) {
 Ok "pocketd 就绪 ($base)"
 
 function Get-Token {
-  $body = @{ username = 'admin'; password = 'Veritrans&9527' } | ConvertTo-Json
+  $body = @{ username = 'admin'; password = $env:POCKET_AUTH_PASS } | ConvertTo-Json
   (Invoke-RestMethod "$base/api/auth/login" -Method Post -Body $body -ContentType 'application/json').token
 }
 $token = Get-Token

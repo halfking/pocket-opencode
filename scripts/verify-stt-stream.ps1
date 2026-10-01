@@ -1,4 +1,4 @@
-﻿# verify-stt-stream.ps1 — 即时/全量转写端点的黑盒验证（2026-10-01）
+# verify-stt-stream.ps1 — 即时/全量转写端点的黑盒验证（2026-10-01）
 #
 # 为什么单测不够：本轮新增的 /api/stt/transcribe-full 与
 # /api/stt/transcribe-incremental 走的是**真实 HTTP 链路**——鉴权中间件、
@@ -73,8 +73,14 @@ $env:POCKET_ENV = "development"
 $env:POCKET_DATA_DIR = $dataDir
 $env:POCKET_DB_PATH = (Join-Path $dataDir 'pocket.sqlite')
 $env:POCKET_AUTH_LEGACY_ONLY = "true"
+# 2026-10-02: no built-in default password. The old one was committed in clear
+# text in this file, so anyone with the repo could log in as admin on a dev
+# instance. Pass it in explicitly; abort loudly rather than silently skipping.
+if (-not $env:POCKET_AUTH_PASS) {
+  Write-Host "ABORT: set POCKET_AUTH_PASS before running this script." -ForegroundColor Red
+  exit 2
+}
 $env:POCKET_AUTH_USER = "admin"
-$env:POCKET_AUTH_PASS = "Veritrans&9527"
 # 外部 ASR 指向 loopback 假上游：validateGatewayURL 默认拒私网（防 SSRF），
 # 这里显式 opt-in。这正是设置页保存 loopback 地址时的行为。
 $env:POCKET_LLM_GATEWAY_ALLOW_PRIVATE = "true"
@@ -97,7 +103,7 @@ try {
   }
   Ok "pocketd 就绪 ($base)"
 
-  $loginBody = @{ username = 'admin'; password = 'Veritrans&9527' } | ConvertTo-Json
+  $loginBody = @{ username = 'admin'; password = $env:POCKET_AUTH_PASS } | ConvertTo-Json
   $token = (Invoke-RestMethod "$base/api/auth/login" -Method Post -Body $loginBody -ContentType 'application/json').token
   $hdr = @{ Authorization = "Bearer $token" }
   Ok "登录取到 token"

@@ -84,14 +84,6 @@ func obsoleteLocalGatewayURL(u string) bool {
 	return strings.Contains(low, "llm-gateway-local-8782")
 }
 
-// pickAPIKey 取第一个非空候选。不再回退仓库内写死的租户 key。
-func pickAPIKey(primary, fallback string) string {
-	if strings.TrimSpace(primary) != "" {
-		return primary
-	}
-	return fallback
-}
-
 // EnsureLLMGatewayDefaults seeds a default config for any workspace that has no
 // active row yet. Idempotent: existing active rows are skipped, returning
 // (already, false). The cache is updated in-place so a subsequent LoadConfig

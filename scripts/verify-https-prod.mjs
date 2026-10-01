@@ -86,7 +86,7 @@ const chain = await ev(`(async () => {
   try {
     const r = await to(fetch(base + '/api/auth/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'admin', password: 'Veritrans&9527' }),
+      body: JSON.stringify({ username: 'admin', password: adminPass }),
     }), 20000)
     const j = await to(r.json(), 8000)
     token = (j && j.token) || ''

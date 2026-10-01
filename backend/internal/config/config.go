@@ -82,7 +82,7 @@ type Config struct {
 	JWTSecret   string // POCKET_JWT_SECRET：签发/校验 app JWT
 	DevAuth     bool   // POCKET_DEV_AUTH：允许 dev bootstrap 用户登录（生产必须不设或 false）
 	DevAuthUser string // POCKET_AUTH_USER：dev bootstrap 用户名（缺省 admin）
-	DevAuthPass string // POCKET_AUTH_PASS：dev bootstrap 密码（缺省 Veritrans&9527；仅 POCKET_DEV_AUTH=true 时生效）
+	DevAuthPass string // POCKET_AUTH_PASS：dev bootstrap 密码（**无缺省值**；留空则 dev 旁路直接拒绝，仅 POCKET_DEV_AUTH=true 时生效）
 
 	// Marketplace 签名链路（ADR: docs/handoff/2026-09-05-marketplace-signing-chain-design.md）
 	// POCKET_MARKETPLACE_ROOT_PUBKEY：平台级 root ed25519 公钥（base64 或 hex 的

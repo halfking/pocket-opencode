@@ -117,6 +117,50 @@ var secretRules = []secretRule{
 		`(?i)\b(?:api[_-]?key|apikey|secret[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token|password|passwd|master[_-]?key|credential)\b` +
 			`\s*[:=]\s*["']([A-Za-z0-9+/=_-]{24,})["']`),
 		[]string{"key", "secret", "token", "password", "passwd", "credential"}},
+
+	// ── 口令形态（2026-10-02 新增）────────────────────────────────────────
+	//
+	// 这条规则是**被一个真实漏检逼出来的**，不是预防性想象：
+	// `credential-assignment` 要求值 ≥24 个 base64 字符，于是
+	// `devPass = "Veritrans&9527"`（13 字符、含 `&`）整类漏网。
+	// 那把口令同时是生产代码 `server_assistant.go` 里 dev 旁路的**内置缺省**，
+	// 并明文出现在 8 个受跟踪文件（Go / sh / ps1 / mjs / py / ts）里。
+	// 上一轮 336c883 修掉了 bootstrap 建号路径的同类问题，dev 旁路是残留入口——
+	// 这正是「修了一处就以为这类闭合了」的又一次复发。
+	//
+	// 判据刻意比 credential-assignment 宽：口令通常**比 API key 短**，
+	// 而且几乎一定同时含字母与数字。因此：
+	//   · 变量名含 pass/pwd（覆盖 devPass / admin_password / POCKET_AUTH_PASS）
+	//   · 值是引号包裹的**字面量**（`$VAR`、`${VAR:-x}` 里的变量引用不算）
+	//   · 长度 ≥ 8
+	// 真正的强度判定交给占位符表 + 逐行豁免，不在这里猜。
+	//
+	// 为什么单独一条而不是放宽 credential-assignment：那条规则的 24 字符
+	// 下限是它不误报一堆测试夹具的关键，放宽会一次性炸出几十条噪声。
+	// 两条规则各管一段形态，比互相妥协好。
+	{"password-literal", regexp.MustCompile(
+		`(?i)\b[A-Za-z_]*(?:pass|pwd)[A-Za-z_]*\b\s*[:=]\s*` +
+			// 捕获组 1：双引号字面量（不含 $，即不是变量插值）
+			`(?:"([^"$]{8,})"|'([^'$]{8,})')`),
+		[]string{"pass", "pwd"}},
+}
+
+// passwordStrength 用来把 password-literal 的命中分成「像真口令」与「像占位符」。
+// 纯字母的长串（`irrelevant-for-stub`、`crossorigin`）在密码位置出现得太多了，
+// 混进来会让这条规则天天误报；而**同时含数字与字母**的串在密码位置上
+// 基本都是刻意构造的口令。含常见符号（& ! @ # % 等）进一步加强信号。
+//
+// 这不是密码学强度分析，只是一个**把噪声压到可逐条人工复核**的粗筛。
+// 粗筛放过的东西靠豁免兜底，粗筛拦下的东西逐条看。
+var passwordStrength = regexp.MustCompile(`^[A-Za-z0-9!@#$%^&*().,;:+=-]*$`)
+
+func looksLikeRealPassword(v string) bool {
+	if !passwordStrength.MatchString(v) {
+		return false
+	}
+	hasLetter := strings.ContainsAny(v, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	hasDigit := strings.ContainsAny(v, "0123456789")
+	return hasLetter && hasDigit
 }
 
 // placeholderValue 命中即视为占位符而非真凭据。
@@ -262,11 +306,20 @@ func scanContent(rel, content string) []finding {
 			}
 			for _, m := range rule.re.FindAllStringSubmatch(line, -1) {
 				secret := m[0]
-				// credential-assignment 规则的 m[0] 含变量名与引号，取捕获组才是值。
-				if len(m) > 1 && m[1] != "" {
-					secret = m[1]
+				// 多数规则的 m[0] 含变量名与引号，值在捕获组里。password-literal
+				// 有**两个**互斥捕获组（单引号 / 双引号），只有一个非空，
+				// 所以要取第一个非空的捕获组而不是固定取 m[1]——否则单引号写法
+				// 会退回 m[0]，把变量名连引号一起当成密钥值。
+				for _, g := range m[1:] {
+					if g != "" {
+						secret = g
+						break
+					}
 				}
 				if placeholderValue.MatchString(secret) {
+					continue
+				}
+				if rule.name == "password-literal" && !looksLikeRealPassword(secret) {
 					continue
 				}
 				out = append(out, finding{file: rel, line: i + 1, rule: rule.name, secret: secret})
