@@ -702,13 +702,42 @@ func randomID(prefix string) string {
 //
 // 性能：date 是 BIGINT（Unix 秒）所以用 `date >= start AND date < end` 范围查
 // 询（避免时区问题），命中 idx_emails_date 索引。
-func (s *Store) ListEmailsByDay(ctx context.Context, userID, date string, tzOffsetSec int) ([]Email, error) {
-	t, err := time.Parse("2006-01-02", date)
-	if err != nil {
-		return nil, fmt.Errorf("invalid date %q: %w", date, err)
-	}
+// parseDayStart 把 "YYYY-MM-DD" 解析成该日在用户时区的**起始时刻**。
+//
+// ## 为什么不能用 time.Parse + .In()
+//
+// 曾这么写（ListEmailsByDay / ListEmailsByDayScoped 两处同款缺陷）：
+//
+//	t, _ := time.Parse("2006-01-02", date)   // -> UTC 午夜
+//	loc := time.FixedZone("user", tzOffsetSec)
+//	t = t.In(loc)                            // 只改 Location 字段
+//	startUnix := t.Unix()                    // 恒等于 UTC 午夜
+//
+// `time.Time.In()` 只改变**显示用**的 Location，底层时刻（Unix 值）不变。
+// 所以 tzOffsetSec 传什么都没用，日界恒为 UTC 午夜。
+//
+// 正确写法是 `time.ParseInLocation`：直接在目标时区把 "2026-10-02" 解释成该
+// 时区的午夜（东八区 -> UTC 2026-10-01 16:00）。
+//
+// ## 影响
+//
+// 需求 4 的每日摘要窗口整体错位一个时区。对东八区（+8），用户每天
+// 00:00-08:00 之间触发的摘要，取到的是「当地昨天 08:00 到今天 08:00」的邮件 ——
+// 而非用户认知里的「今天」。late/summary 的邮件归属日整体偏一天。
+func parseDayStart(date string, tzOffsetSec int) (time.Time, error) {
 	loc := time.FixedZone("user", tzOffsetSec)
-	t = t.In(loc)
+	t, err := time.ParseInLocation("2006-01-02", date, loc)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid date %q: %w", date, err)
+	}
+	return t, nil
+}
+
+func (s *Store) ListEmailsByDay(ctx context.Context, userID, date string, tzOffsetSec int) ([]Email, error) {
+	t, err := parseDayStart(date, tzOffsetSec)
+	if err != nil {
+		return nil, err
+	}
 	startUnix := t.Unix()
 	endUnix := t.Add(24 * time.Hour).Unix()
 
@@ -2019,12 +2048,10 @@ func (s *Store) UpsertSummaryScoped(ctx context.Context, sum *DailySummary) erro
 // ListEmailsByDay joins on user_id only, so a multi-workspace user would get
 // every workspace's mail mixed into one summary.
 func (s *Store) ListEmailsByDayScoped(ctx context.Context, userID, workspaceID, date string, tzOffsetSec int) ([]Email, error) {
-	t, err := time.Parse("2006-01-02", date)
+	t, err := parseDayStart(date, tzOffsetSec)
 	if err != nil {
-		return nil, fmt.Errorf("invalid date %q: %w", date, err)
+		return nil, err
 	}
-	loc := time.FixedZone("user", tzOffsetSec)
-	t = t.In(loc)
 	startUnix := t.Unix()
 	endUnix := t.Add(24 * time.Hour).Unix()
 

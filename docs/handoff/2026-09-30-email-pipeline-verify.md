@@ -5345,6 +5345,84 @@ native 基线与三种 wasm 形态的 wasm 侧实现都已就位，驱动一旦�
 
 ---
 
+## §7cf 【真 bug】每日摘要的时区参数是**完全无效**的（2026-10-02）
+
+需求 4「对其它重要邮件进行提醒」的产出链路此前 0% 覆盖。补测试时撞上一个
+**真缺陷**：`ListEmailsByDayScoped` / `ListEmailsByDay` 的 `tzOffsetSec` 传什么都没用。
+
+### 缺陷
+
+```go
+t, _ := time.Parse("2006-01-02", date)   // -> UTC 午夜
+loc := time.FixedZone("user", tzOffsetSec)
+t = t.In(loc)                            // 只改 Location 字段
+startUnix := t.Unix()                    // 恒等于该日期的 UTC 午夜
+```
+
+`time.Time.In()` 只改变**显示用**的 Location，**底层时刻（Unix 值）不变**。
+所以日界恒为 UTC 午夜。正确写法是 `time.ParseInLocation`——直接在目标时区
+把 `"2026-10-02"` 解释成该时区的午夜。
+
+`store.go` 的 `ListEmailsByDay`（705 行）与 `ListEmailsByDayScoped`（2021 行）
+是**同款缺陷的两份拷贝**。唯一生产调用方是 `scheduler.go:798 summarizeUser`。
+
+### 影响：需求 4 的提醒窗口错 8 小时
+
+东八区（+8）用户认为的「今天 00:00」实际是 UTC 前一天 16:00。每天
+**00:00–08:00 之间**触发的每日摘要，取到的是「当地昨天 08:00 到今天 08:00」
+的邮件，而不是用户认知里的「今天」。邮件归属日整体偏一天。
+
+### 实测证据（负控先红后绿）
+
+修复前，断言写在「按正确语义应该包含的那封邮件」上，运行即红：
+
+```
+--- FAIL: TestListEmailsByDayScoped_HonorsTZOffset
+    an email at local 2026-10-02T01:00:00+08:00 (= 2026-10-01T17:00:00Z)
+    is missing from local day 2026-10-02 (tzOffsetSec=28800); got 2 rows
+```
+
+修复后 11 个新用例全绿。**双向负控**：把 `ParseInLocation` 反退回
+`time.Parse + .In`，两条断言同时转红，且暴露出缺陷的**第二个**表现——
+日期文本 round-trip 变成 `2026-10-01`（`west-5: round-tripped to 2026-10-01`）：
+
+```
+--- FAIL: TestListEmailsByDayScoped_HonorsTZOffset
+--- FAIL: TestParseDayStart
+    east+8: start.Unix() = 1790899200, want 1790870400
+    west-5: start.Unix() = 1790899200, want 1790917200
+    west-5: round-tripped to 2026-10-01, want 2026-10-02
+    tzOffsetSec had no effect: both returned unix 1790899200
+```
+
+`tzOffsetSec had no effect` 这条是死穴断言：缺陷版本对任何时区都返回同一个
+UTC 午夜值，不依赖任何具体数字。
+
+### 顺带修掉一个我自己写的假失败隐患
+
+新测试里三处原本用 `time.Now().Unix()` 当邮件时间戳。但 `time.Now().Format(...)`
+给的是**本地**日期，而查库以 UTC 午夜为界——东八区本地 00:00–08:00 期间
+本地日期比 UTC 快一天，此刻的 Unix 值落在日界**之前**，用例会在这 8 小时里
+假失败。改为取该日**正午**（`atNoon` 辅助函数），两种口径都在窗内。
+
+### 数字自查
+
+`TestParseDayStart` 里的基准值 `1790899200`（= 2026-10-02T00:00Z）第一版我
+凭印象写成 `1790918400`，**写完立刻用 PowerShell 独立算了一遍**才发现差
+57600 秒。现值与失败日志里的 `1790913600`（= UTC 04:00，即本地 12:00）
+交叉验证一致。
+
+### 回归
+
+- `go build ./...` exit 0 / `go vet ./...` exit 0
+- `go test ./internal/email/` **76.3s 通过**
+- `go test -race ./internal/email/` **66.7s 通过，0 DATA RACE**
+  （gcc 取 `C:\tools\w64devkit\w64devkit\bin`）
+- 注意：这些用例需要 `POCKET_TEST_POSTGRES_DSN`，否则 `newWorkspaceTestStore`
+  会 `t.Skip` —— **DSN 缺失时是「跳过」不是「失败」**，别把 skip 读成绿。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
