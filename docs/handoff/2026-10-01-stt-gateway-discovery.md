@@ -396,170 +396,59 @@ powershell -ExecutionPolicy Bypass -File scripts/verify-stt.ps1
 # 网关侧原始探测（不依赖本仓库改动）
 node scripts/gw-audio-probe.mjs
 ```
+## §12 Maestro 流已补齐但**尚未跑通**（2026-10-01 14:40）
 
----
+目标原文要求「用 Maestro 的方法做部署与测试验证」。此前 STT 侧的真机验证
+走的是 adb + CDP 手工点按，只有一次性截图、**没有可重复执行的断言** ——
+这不是形式问题：缺陷链路里前面每段（后端文案 → sttFailureText 归一 →
+rt.error）都有单测，缺的正是最后一段在真机上到底显示什么。
 
-## §9 真机联调本机后端：不要改用户 App 的「后端服务器」设置
+### 已交付
 
-2026-10-01 真机验证时踩出来的坑，逐条都有对照证据。**任何人想在真机上验本机
-pocketd 的改动，都按这里来。**
-
-### §9.1 为什么不能直接改 base
-
-`frontend/src/config/api-base.ts` 的 `resolveRuntimeApiBase`：`VITE_API_BASE` 为空时
-Capacitor 壳会回退生产入口 `https://pocket.itestu.cn`；而 localStorage 里的
-`pocket_api_base` 覆盖**优先级高于构建期 base**，且 localStorage 按 origin + 包名隔离。
-于是调试包即使带着 `VITE_API_BASE=http://127.0.0.1:18099` 装上去，只要正式包里存过
-覆盖，它照样打生产——表现是 `/api/stt/config` 404（生产没有 STT 路由），前端显示
-「读取语音转写设置失败：找不到对应的内容」。
-
-改设置页里的后端地址确实能切过去，但 `persistApiBase` 会连带清掉已登录 session，
-等于把用户手机上的登录态洗掉。**所以不这么做。**
-
-### §9.2 正解：挂一个并存调试包
-
-`frontend/android/app/build.gradle` 的 debug buildType 支持 `-PsttDevApp`：
-
-```
-gradlew assembleDebug -PsttDevApp     # → com.kaixuan.opencode.pocket.sttdev
-```
-
-与正式包并存、数据互不干扰，验证完 `adb uninstall com.kaixuan.opencode.pocket.sttdev`
-即可。不传该属性时 applicationId 与行为和以前完全一致。
-
-### §9.3 三个必须同时满足的条件（缺一个就是「连不上」）
-
-1. `adb reverse tcp:<port> tcp:<port>`（真机没有 localhost，用 emulator 的
-   `10.0.2.2` 不适用于真机）。
-2. 本机 pocketd **必须**带 `POCKET_DEV_AUTH=true`。否则 `buildOriginChecker`
-   不放行 `localhost` / `127.0.0.1`，`corsMiddleware` 不发
-   `Access-Control-Allow-Origin`，WebView 侧每个请求都是 CORS 失败——而
-   `scripts/verify-stt.ps1` 起的实例默认就带这个变量。
-3. 明文后端要用 `CAP_ANDROID_SCHEME=http` 构建（`frontend/capacitor.config.ts`
-   里已写好的逃生舱）。默认 `https` 壳下 `http://` 的 XHR 被 mixed content 拦死，
-   表现为 `fetch` **一直 pending、不报错**。
-
-### §9.4 改完端口/reverse 一定要重启 App
-
-WebView 会缓存到旧实例的连接池。实测：换了 reverse 之后 fetch 仍报旧实例的
-CORS 错误，`force-stop` + 重启即恢复。
-
-### §9.5 `screencap` 返回 0 字节时改用 CDP
-
-设备上 `adb exec-out screencap -p` / `screencap -p /sdcard/x.png` 全部返回 0 字节时
-（SurfaceFlinger 抖动、或另一会话正在占设备），用 WebView 调试协议读页面文本：
-
-```
-adb forward tcp:9303 localabstract:webview_devtools_remote_<pid>
-# Node 22 自带 WebSocket，直接发 CDP：Runtime.evaluate / Input.dispatchMouseEvent
-```
-
-注意两点：① `Runtime.evaluate` 里 `el.click()` **不算用户手势**，
-`getUserMedia` 一类 API 会拒绝，要用 `Input.dispatchMouseEvent`；
-② 页面被切到后台时渲染进程被冻结，CDP 会无响应——先把 App 拉回前台。
----
-
-## §10 最终验证矩阵（2026-10-01 13:55）
-
-分支 `feat/2026-10-01-stt-service`。每一行的「怎么验的」都写在右列，
-**绿灯本身不算证据**——负控对照一栏才是。
-
-| 层面 | 结果 | 怎么验的 |
-|---|---|---|
-| `go test ./internal/stt/... ./internal/server/...` | 全绿 | 每次改完强制 `-count=1`，不复用缓存 |
-| `go vet` / `vue-tsc --noEmit` | 无输出 | — |
-| 前端断言 | 106/106 | `node --test`（无 vitest/jsdom，直接断言源码与渲染链） |
-| 黑盒·转写主链路 | **19/0** | `scripts/verify-stt.ps1`，真打 llm.kxpms.cn |
-| 黑盒·长录音/即时增量 | **22/0** | `scripts/verify-stt-stream.ps1`，真进程真端口 + 本地假 ASR |
-| 真机·设置页 | ✅ | 读到本地后端真实配置；「重新扫描网关」出 602 模型 / 0 可用 / 逐个中文原因 |
-| 真机·会议录音 | ✅ | 录音中真实失败原因上屏；停止后转写区**无占位文本** |
-| 真机·笔记 `stt_unavailable` 分支 | ✅ | 录音 17 秒 → 停止：录音中与停止后横幅**都**显示完整可行动原因，结尾「（设置 → 语音转写）」；无裸错误码、无通用兜底（见 §11） |
-| 真机·外部成功路径 | 部分 | 后端直连 + 假上游：6.68 秒真实中文语音完整到达上游并回传文本；**设备麦克风 → 外部真实服务**这一段未验（无 key） |
-| 负控对照 | 8 组 | JSON 泄漏、line-clamp、isNoProvider 新形状、language 字段（单次 + 逐段）、转写响应字段、设置页「当前生效」、后端错误码去重、笔记页二次归一——逐条实测改回去会转红 |
-
-### §10.1 仍然没验的一件事
-
-**真实 ASR 服务的识别质量**。原因不是代码问题：`api.openai.com` 在本机
-i/o timeout，网关侧 2026-10-01 实测一个可用 ASR 上游都没有。
-假 ASR 只能证明「音频真的到了上游、请求形状正确、返回被正确解析」，
-**不能**证明「中文识别得准」。设置页的「录 3 秒试转」就是为这件事准备的，
-需要一把能用的外部 key。
-
-### §10.2 两个反复咬人的环境事实
-
-1. **本机 pocketd 必须带 `POCKET_DEV_AUTH=true`**，否则 `corsMiddleware`
-   不发 `Access-Control-Allow-Origin`，WebView 每个请求都 CORS 失败；
-   而不带 PG 时设置落在**进程内**的 `sttFallbackSettings`——重启即丢，
-   验证脚本每次都要重新 PUT。
-2. 另一会话会周期性抢占真机：我的 App 一被切到后台，WebView 渲染进程冻结、
-   CDP 无响应，`screencap` 还会间歇性返回 0 字节。要抢时间就得把整条操作
-   压进一次连续执行。
-
-## §11 笔记页停止后的错误提示曾把可行动原因抹掉（2026-10-01 13:55 真机复现并修复）
-
-### 现象
-
-同一段录音、同一个页面，**换一条渲染路径就丢信息**：
-
-| 时机 | 修复前显示 | 修复后显示 |
-|---|---|---|
-| 录音中（Studio） | 完整原因 | 完整原因（本来就对） |
-| 停止后（列表页横幅） | `该功能尚未完成配置` | 完整原因，结尾「（设置 → 语音转写）」 |
-
-截图：`logs/real-device-stt-20261001-112750/32-note-unavailable.png`（修复前）
-与 `35-note-stop-banner-fixed.png`（修复后）。
-
-### 根因
-
-`NoteListView.recordErrorText` 对 `recError` 又套了一次 `apiError()`。但
-`recError` 就是 `rt.error`（`useNoteRecording` 里 `error: rt.error`），
-runtime 在**写入时**已调过 `sttFailureText()` —— 存进来的是面向用户的成品
-文案，`stt_unavailable:` 前缀已被剥掉。`apiError` 内部
-`extractErrorCode()` 取第一个冒号前的片段当错误码，前缀没了就取不到码，
-于是落回通用兜底。`NoteRecordingStudio` 早在 2026-10-01 就按正确口径直出，
-这是漏掉的姊妹路径。
-
-### 为什么第一次审计没抓到：**两个假绿叠在一起**
-
-1. `stt-error-render-chain.test.mjs` 的守卫写的是
-   `/apiError\(\s*(?:props\.)?error\b/`，而实际调用是
-   `apiError(recError.value, …)` —— `error\b` 匹配不到 `recError.value`，
-   守卫**全程没生效**，测试绿灯而缺陷仍在。
-2. `note-recording-error-visibility.test.mjs` 里那条 2026-09-30 的断言
-   **正在强制要求这个 bug 存在**（`assert.match(view, /apiError\(recError\.value,\s*'errors\.sttNotConfigured'\)/)`）。
-   它的前提「recError 存的是原始异常文本」在 2026-09-30 成立，runtime 改成
-   写入时归一后就过期了，但没人回头改这条断言。
-
-本次两条都已改正：守卫正则扩到 `recError|error`，并新增一条用例直接断言
-守卫正则**能**匹配 `apiError(recError.value, …)` 与
-`apiError(props.error, …)` 两种真实形态（防再次假绿），同时反向断言不会误伤
-`apiError(e, 'errors.loadNotesFailed')` 这类无关调用。
-
-### 顺带修的后端问题：用户文案里出现第二个裸错误码
-
-`resolveSTTTarget` 的 auto 通道原本是 `fmt.Errorf("%s；%s", gwErr, extErr)`，
-两段各自带 `stt_unavailable:` 前缀。前端 `sttFailureText` 只剥**首位**前缀，
-中间那个会原样上屏：
-`…）；stt_unavailable: 外部语音转写服务未配置 API Key（设置 → 语音转写）`。
-现改为 `stripSTTErrorCode(extErr.Error())`，整体前缀保留（调用方的
-`strings.HasPrefix` 判断与前端窄口径都依赖它），只去掉第二段。
-
-### 真机上「两个不同文案」的完整解释
-
-修复前同一个缺陷在两次真机运行里显示过**两句不同**的通用文案，都能对上代码：
-
-- 后端尚未去重时，`sttFailureText` 的产物里残留了 `stt_unavailable`，
-  语义规则 `/…|unavailable/i` 命中 → `errors.notConfigured`
-  → 「该功能尚未完成配置」。
-- 后端去重后产物里再没有 ASCII 冒号也没有英文关键词，**所有规则都不命中**
-  → 直接走 fallback → `errors.sttNotConfigured` → 「语音转写服务尚未配置」。
-
-这解释了「同一个 bug 怎么换了句话」，也说明**不能靠肉眼比对文案判断修没修好**，
-必须回到 `resolveErrorI18nKey` 的分支上逐条对。
-
-### 负控对照
-
-| 改动 | 改回去后的实测结果 |
+| 文件 | 作用 |
 |---|---|
-| `NoteListView.recordErrorText` 直出 | 守卫用例转红：`渲染层不得再对 runtime 的 error 调 apiError` |
-| `stripSTTErrorCode` 去重 | `错误码应只出现 1 次，实际 2 次：stt_unavailable: 网关暂无可用…；stt_unavailable: 外部…` |
+| .maestro/notes-stt-error-visibility.yaml | 把 §11 缺陷变成可回归断言：停止后 ssertVisible(".*语音转写.*")；ssertNotVisible 两个通用兜底文案；ssertNotVisible 裸错误码与技术串 |
+| .maestro/_connectivity-sttdev.yaml | 连通性自检的 sttdev 版本（既有 _connectivity.yaml 写死正式包） |
+| scripts/check-maestro-flows.mjs | 流静态检查器：双文档结构、命令词表、appId 必须并存包、命令区禁 emoji |
+| scripts/.maestro-flows.json | 受检流清单 |
+
+断言通用兜底「不在」而不是断言新文案「在」：兜底文案随 locale 变，反向
+断言更抗改；正向锚点只保留稳定的中文片段。
+
+### 未跑通的原因（外部阻塞，非代码问题）
+
+执行到 device offline。测试机 4c308e2e 与 192.168.31.19:5555 是**同一台
+设备的 USB 与 WiFi 两个通道**，两者同时 offline；ping 通但 db connect
+被拒、db reconnect offline 无效 —— adbd 已不响应，需要在手机上重新
+开启 USB 调试或重启设备。**这一步只能由人在设备上做。**
+
+### 设备不可用期间的替代验证（做了什么、没做什么）
+
+- ✅ 两条流 YAML 可解析、17 + 2 条命令全部命中 Maestro 2.11 已知词表、
+  appId 正确、命令区无 emoji。
+- ✅ 检查器四组负控逐条实测会转红（命令名拼错 / appId 写回正式包 /
+  断言放 emoji / 流文件不存在），复原后为 OK。
+- ❌ **没有**证明这两条流能在真机上跑通。流是按既有
+  
+otes-crud.yaml / _connectivity.yaml 的约定写的（appId、选择器、
+  踩坑注释），但「约定一致」不等于「能跑」。
+- ℹ️ §11 那个缺陷的行为本身已由 CDP + 截图在真机上验证过
+  （35-note-stop-banner-fixed.png）。**未验证的是新写的流本身。**
+
+真机重新上线后的第一条命令：
+
+```powershell
+cd C:\workspace\openpocket-wt-stt
+node scripts\check-maestro-flows.mjs
+C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot = 'C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot'
+C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin;C:\Program Files\AdoptOpenJDK\jdk-17.0.0.20-hotspot\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\.minimax\bin;C:\Users\86133\.pi\agent\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\AppData\Local\Programs\Python\Python313\Scripts\;C:\Users\86133\AppData\Local\Programs\Python\Python313\;C:\Users\86133\AppData\Local\Programs\Python\Launcher\;C:\tools\mysql-8.4\bin;C:\tools\node-v22.23.2-win-x64;C:\tools\go\bin;C:\Users\86133\AppData\Local\Microsoft\WindowsApps;C:\Users\86133\AppData\Local\gitkraken\bin;C:\Program Files\7-Zip;C:\Program Files\7-Zip_actual_placeholder;C:\Program\Files\7-Zip;C:\Progra~1\7-Zip;C:\tools\docker-cli;C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin     = "C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin;C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin;C:\Program Files\AdoptOpenJDK\jdk-17.0.0.20-hotspot\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\.minimax\bin;C:\Users\86133\.pi\agent\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\AppData\Local\Programs\Python\Python313\Scripts\;C:\Users\86133\AppData\Local\Programs\Python\Python313\;C:\Users\86133\AppData\Local\Programs\Python\Launcher\;C:\tools\mysql-8.4\bin;C:\tools\node-v22.23.2-win-x64;C:\tools\go\bin;C:\Users\86133\AppData\Local\Microsoft\WindowsApps;C:\Users\86133\AppData\Local\gitkraken\bin;C:\Program Files\7-Zip;C:\Program Files\7-Zip_actual_placeholder;C:\Program\Files\7-Zip;C:\Progra~1\7-Zip;C:\tools\docker-cli;C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin"
+C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin;C:\Program Files\AdoptOpenJDK\jdk-17.0.0.20-hotspot\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\.minimax\bin;C:\Users\86133\.pi\agent\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\AppData\Local\Programs\Python\Python313\Scripts\;C:\Users\86133\AppData\Local\Programs\Python\Python313\;C:\Users\86133\AppData\Local\Programs\Python\Launcher\;C:\tools\mysql-8.4\bin;C:\tools\node-v22.23.2-win-x64;C:\tools\go\bin;C:\Users\86133\AppData\Local\Microsoft\WindowsApps;C:\Users\86133\AppData\Local\gitkraken\bin;C:\Program Files\7-Zip;C:\Program Files\7-Zip_actual_placeholder;C:\Program\Files\7-Zip;C:\Progra~1\7-Zip;C:\tools\docker-cli;C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin     = "C:\Users\86133\AppData\Local\Android\platform-tools;C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin;C:\Program Files\AdoptOpenJDK\jdk-17.0.0.20-hotspot\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\.minimax\bin;C:\Users\86133\.pi\agent\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\AppData\Local\Programs\Python\Python313\Scripts\;C:\Users\86133\AppData\Local\Programs\Python\Python313\;C:\Users\86133\AppData\Local\Programs\Python\Launcher\;C:\tools\mysql-8.4\bin;C:\tools\node-v22.23.2-win-x64;C:\tools\go\bin;C:\Users\86133\AppData\Local\Microsoft\WindowsApps;C:\Users\86133\AppData\Local\gitkraken\bin;C:\Program Files\7-Zip;C:\Program Files\7-Zip_actual_placeholder;C:\Program\Files\7-Zip;C:\Progra~1\7-Zip;C:\tools\docker-cli;C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin"
+adb connect 192.168.31.19:5555
+adb -s 192.168.31.19:5555 reverse tcp:18099 tcp:18111
+& C:\workspace\openpocket\logs\maestro\dist\maestro\bin\maestro.bat --device 192.168.31.19:5555 test .maestro\_connectivity-sttdev.yaml
+& C:\workspace\openpocket\logs\maestro\dist\maestro\bin\maestro.bat --device 192.168.31.19:5555 test .maestro\notes-stt-error-visibility.yaml
+```
+
+前置三条缺一即「连不上」：db reverse；pocketd 带 POCKET_DEV_AUTH=true；
+APK 以 CAP_ANDROID_SCHEME=http 构建。另外 STT 未配置时后端 1 秒内回 503，
+真机**开麦即可**（不需要真的说话），但录音权限要先授予。
