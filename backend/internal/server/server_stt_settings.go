@@ -245,7 +245,23 @@ func (s *Server) resolveSTTTarget(ctx context.Context, scope stt.Scope) (*stt.Ta
 		return extTarget, nil
 	}
 	// 两条通道都没通：优先报网关侧（更可能是用户想修的那条），并附上外部侧原因。
-	return nil, fmt.Errorf("%s；%s", gwErr.Error(), extErr.Error())
+	//
+	// 两段各自都带 `stt_unavailable:` 前缀，直接拼会在用户可见的中文句子中间
+	// 露出第二个裸错误码（真机 2026-10-01 实测：
+	// 「网关暂无可用的语音转写模型（…）；stt_unavailable: 外部…未配置 API Key」）。
+	// 前端 sttFailureText 只剥**首位**前缀，中间那个会原样显示给用户，所以在这里
+	// 去掉第二段的前缀。整体前缀保留，调用方的 HasPrefix 判断与前端窄口径都不受影响。
+	return nil, fmt.Errorf("%s；%s", gwErr.Error(), stripSTTErrorCode(extErr.Error()))
+}
+
+// stripSTTErrorCode 去掉 STT 错误消息开头的 `stt_unavailable: ` 前缀。
+// 只处理开头一次，不动消息内部可能出现的同名片段。
+func stripSTTErrorCode(msg string) string {
+	const prefix = "stt_unavailable:"
+	if !strings.HasPrefix(msg, prefix) {
+		return msg
+	}
+	return strings.TrimSpace(strings.TrimPrefix(msg, prefix))
 }
 
 const defaultExternalSTTBaseURL = "https://api.openai.com/v1"

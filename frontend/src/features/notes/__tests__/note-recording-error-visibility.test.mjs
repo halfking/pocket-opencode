@@ -10,6 +10,10 @@
  * 这里锁住两条约定：
  *   1. 录音结束后仍要把错误显示出来（不能随 Studio 一起卸载）
  *   2. 下一次录音开始时错误要被清空（不能一直挂着）
+ *
+ * 2026-10-01 追加：原第 2 条约定「错误文案走统一归一」已被**推翻**。
+ * 归一搬到了 runtime 写入时（sttFailureText），渲染层再归一一次会把
+ * 可行动原因压掉 —— 详见下面那条用例的注释。
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -32,9 +36,27 @@ describe('note recording error visibility', () => {
       '停止录音后必须仍渲染转写错误提示')
   })
 
-  it('错误文案走统一归一，不直接上屏原始异常', () => {
-    assert.match(view, /apiError\(recError\.value,\s*'errors\.sttNotConfigured'\)/,
-      '应复用 useApiError 归一，避免 "Failed to fetch" / 英文错误 JSON 上屏')
+  it('错误文案直接渲染 runtime 的成品文案，不得再套 apiError 二次归一', () => {
+    // 2026-10-01 真机复现修正 —— 这条断言原先是**反的**，它要求
+    // `apiError(recError.value, 'errors.sttNotConfigured')` 必须存在。
+    //
+    // 它的前提（注释原文：「recError 存的是原始异常文本」）在
+    // 2026-09-30 成立，但 recordingRuntime 后来把归一搬到了**写入时**
+    // （`sttFailureText()`），存进 rt.error 的已经是面向用户的成品文案，
+    // `stt_unavailable:` 前缀已被剥掉。再套 apiError：
+    //   extractErrorCode 取第一个冒号前的片段 → 取不到码
+    //   → 落回 errors.notConfigured「该功能尚未完成配置」
+    // 把「去设置里配外部服务」这条唯一行动指引整个抹掉。
+    //
+    // 真机（Redmi）证据：同一个录音，录音中显示完整原因，点停止后横幅变成
+    // 「该功能尚未完成配置」。技术串确实没上屏（那部分前提仍由
+    // recordingRuntime 的写入点不变量保证），但代价是**有用信息也没了**。
+    assert.match(view, /const recordErrorText = computed\(\(\) => recError\.value \|\| ''\)/,
+      '停止后的横幅应直出 runtime 已归一的成品文案')
+    assert.ok(
+      !/apiError\(\s*recError\b/.test(view),
+      '不得对已是成品文案的 recError 再调 apiError，会压掉可行动原因',
+    )
   })
 
   it('错误提示有实际样式（Studio 的 scoped 类不作用到本页）', () => {

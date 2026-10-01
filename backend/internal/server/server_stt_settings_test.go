@@ -354,6 +354,42 @@ func TestResolveTargetAutoReportsBothReasons(t *testing.T) {
 	}
 }
 
+func TestResolveTargetAutoBothChannelsUnavailable_NoDuplicateCode(t *testing.T) {
+	// 2026-10-01 真机（Redmi，笔记即时录音）复现：auto 通道两段原因都带
+	// `stt_unavailable:` 前缀，直接拼接会在用户可见的中文句子中间露出第二个
+	// 裸错误码 —— 前端 sttFailureText 只剥**首位**前缀，中间那个原样上屏：
+	//   「网关暂无可用的语音转写模型（…）；stt_unavailable: 外部…未配置 API Key」
+	// 错误码对用户没有信息量，且让「去设置里配外部服务」这条唯一行动指引
+	// 看起来像技术噪音。拼接只应保留首位前缀。
+	srv, store := sttTestServer(t, "sk-gateway-test")
+	store.Put(seedSTTSetting("shared-user", "ws-a", `{"channel":"auto"}`, ""))
+	gw := srv.ResolveGatewayForUser("shared-user", "ws-a")
+	srv.sttDiscovery.Seed(gw.BaseURL, gw.APIKey, stt.DiscoveryResult{
+		BaseURL: gw.BaseURL, TotalModels: 604,
+		Candidates: []stt.Candidate{
+			{Model: "gpt-audio", Status: stt.ProbeNoProvider, Detail: "No available provider"},
+		},
+	})
+	_, err := srv.resolveSTTTarget(context.Background(), stt.Scope{UserID: "shared-user", WorkspaceID: "ws-a"})
+	if err == nil {
+		t.Fatal("两条通道都不通时应报错")
+	}
+	msg := err.Error()
+
+	if !strings.HasPrefix(msg, "stt_unavailable:") {
+		t.Fatalf("整体前缀必须保留，调用方的 HasPrefix 判断与前端窄口径都依赖它：%s", msg)
+	}
+	if n := strings.Count(msg, "stt_unavailable:"); n != 1 {
+		t.Errorf("错误码应只出现 1 次，实际 %d 次：%s", n, msg)
+	}
+	// 去掉第二段前缀后，外部侧的行动指引必须仍然完整。
+	for _, want := range []string{"外部语音转写服务未配置 API Key", "设置 → 语音转写"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("外部侧原因被拼接破坏，缺 %q：%s", want, msg)
+		}
+	}
+}
+
 func TestResolveTargetGatewayChannelDoesNotSilentlySwitch(t *testing.T) {
 	// 同上：网关要有 key，才谈得上「选定的模型不可用时不能静默换模型」。
 	srv, store := sttTestServer(t, "sk-gateway-test")

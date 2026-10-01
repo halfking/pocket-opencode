@@ -459,7 +459,7 @@ adb forward tcp:9303 localabstract:webview_devtools_remote_<pid>
 ② 页面被切到后台时渲染进程被冻结，CDP 会无响应——先把 App 拉回前台。
 ---
 
-## §10 最终验证矩阵（2026-10-01 13:20）
+## §10 最终验证矩阵（2026-10-01 13:55）
 
 分支 `feat/2026-10-01-stt-service`。每一行的「怎么验的」都写在右列，
 **绿灯本身不算证据**——负控对照一栏才是。
@@ -468,13 +468,14 @@ adb forward tcp:9303 localabstract:webview_devtools_remote_<pid>
 |---|---|---|
 | `go test ./internal/stt/... ./internal/server/...` | 全绿 | 每次改完强制 `-count=1`，不复用缓存 |
 | `go vet` / `vue-tsc --noEmit` | 无输出 | — |
-| 前端断言 | 103/103 | `node --test`（无 vitest/jsdom，直接断言源码与渲染链） |
+| 前端断言 | 106/106 | `node --test`（无 vitest/jsdom，直接断言源码与渲染链） |
 | 黑盒·转写主链路 | **19/0** | `scripts/verify-stt.ps1`，真打 llm.kxpms.cn |
 | 黑盒·长录音/即时增量 | **22/0** | `scripts/verify-stt-stream.ps1`，真进程真端口 + 本地假 ASR |
 | 真机·设置页 | ✅ | 读到本地后端真实配置；「重新扫描网关」出 602 模型 / 0 可用 / 逐个中文原因 |
 | 真机·会议录音 | ✅ | 录音中真实失败原因上屏；停止后转写区**无占位文本** |
+| 真机·笔记 `stt_unavailable` 分支 | ✅ | 录音 17 秒 → 停止：录音中与停止后横幅**都**显示完整可行动原因，结尾「（设置 → 语音转写）」；无裸错误码、无通用兜底（见 §11） |
 | 真机·外部成功路径 | 部分 | 后端直连 + 假上游：6.68 秒真实中文语音完整到达上游并回传文本；**设备麦克风 → 外部真实服务**这一段未验（无 key） |
-| 负控对照 | 6 组 | JSON 泄漏、line-clamp、isNoProvider 新形状、language 字段（单次 + 逐段）、转写响应字段、设置页「当前生效」——逐条实测改回去会转红 |
+| 负控对照 | 8 组 | JSON 泄漏、line-clamp、isNoProvider 新形状、language 字段（单次 + 逐段）、转写响应字段、设置页「当前生效」、后端错误码去重、笔记页二次归一——逐条实测改回去会转红 |
 
 ### §10.1 仍然没验的一件事
 
@@ -493,3 +494,72 @@ i/o timeout，网关侧 2026-10-01 实测一个可用 ASR 上游都没有。
 2. 另一会话会周期性抢占真机：我的 App 一被切到后台，WebView 渲染进程冻结、
    CDP 无响应，`screencap` 还会间歇性返回 0 字节。要抢时间就得把整条操作
    压进一次连续执行。
+
+## §11 笔记页停止后的错误提示曾把可行动原因抹掉（2026-10-01 13:55 真机复现并修复）
+
+### 现象
+
+同一段录音、同一个页面，**换一条渲染路径就丢信息**：
+
+| 时机 | 修复前显示 | 修复后显示 |
+|---|---|---|
+| 录音中（Studio） | 完整原因 | 完整原因（本来就对） |
+| 停止后（列表页横幅） | `该功能尚未完成配置` | 完整原因，结尾「（设置 → 语音转写）」 |
+
+截图：`logs/real-device-stt-20261001-112750/32-note-unavailable.png`（修复前）
+与 `35-note-stop-banner-fixed.png`（修复后）。
+
+### 根因
+
+`NoteListView.recordErrorText` 对 `recError` 又套了一次 `apiError()`。但
+`recError` 就是 `rt.error`（`useNoteRecording` 里 `error: rt.error`），
+runtime 在**写入时**已调过 `sttFailureText()` —— 存进来的是面向用户的成品
+文案，`stt_unavailable:` 前缀已被剥掉。`apiError` 内部
+`extractErrorCode()` 取第一个冒号前的片段当错误码，前缀没了就取不到码，
+于是落回通用兜底。`NoteRecordingStudio` 早在 2026-10-01 就按正确口径直出，
+这是漏掉的姊妹路径。
+
+### 为什么第一次审计没抓到：**两个假绿叠在一起**
+
+1. `stt-error-render-chain.test.mjs` 的守卫写的是
+   `/apiError\(\s*(?:props\.)?error\b/`，而实际调用是
+   `apiError(recError.value, …)` —— `error\b` 匹配不到 `recError.value`，
+   守卫**全程没生效**，测试绿灯而缺陷仍在。
+2. `note-recording-error-visibility.test.mjs` 里那条 2026-09-30 的断言
+   **正在强制要求这个 bug 存在**（`assert.match(view, /apiError\(recError\.value,\s*'errors\.sttNotConfigured'\)/)`）。
+   它的前提「recError 存的是原始异常文本」在 2026-09-30 成立，runtime 改成
+   写入时归一后就过期了，但没人回头改这条断言。
+
+本次两条都已改正：守卫正则扩到 `recError|error`，并新增一条用例直接断言
+守卫正则**能**匹配 `apiError(recError.value, …)` 与
+`apiError(props.error, …)` 两种真实形态（防再次假绿），同时反向断言不会误伤
+`apiError(e, 'errors.loadNotesFailed')` 这类无关调用。
+
+### 顺带修的后端问题：用户文案里出现第二个裸错误码
+
+`resolveSTTTarget` 的 auto 通道原本是 `fmt.Errorf("%s；%s", gwErr, extErr)`，
+两段各自带 `stt_unavailable:` 前缀。前端 `sttFailureText` 只剥**首位**前缀，
+中间那个会原样上屏：
+`…）；stt_unavailable: 外部语音转写服务未配置 API Key（设置 → 语音转写）`。
+现改为 `stripSTTErrorCode(extErr.Error())`，整体前缀保留（调用方的
+`strings.HasPrefix` 判断与前端窄口径都依赖它），只去掉第二段。
+
+### 真机上「两个不同文案」的完整解释
+
+修复前同一个缺陷在两次真机运行里显示过**两句不同**的通用文案，都能对上代码：
+
+- 后端尚未去重时，`sttFailureText` 的产物里残留了 `stt_unavailable`，
+  语义规则 `/…|unavailable/i` 命中 → `errors.notConfigured`
+  → 「该功能尚未完成配置」。
+- 后端去重后产物里再没有 ASCII 冒号也没有英文关键词，**所有规则都不命中**
+  → 直接走 fallback → `errors.sttNotConfigured` → 「语音转写服务尚未配置」。
+
+这解释了「同一个 bug 怎么换了句话」，也说明**不能靠肉眼比对文案判断修没修好**，
+必须回到 `resolveErrorI18nKey` 的分支上逐条对。
+
+### 负控对照
+
+| 改动 | 改回去后的实测结果 |
+|---|---|
+| `NoteListView.recordErrorText` 直出 | 守卫用例转红：`渲染层不得再对 runtime 的 error 调 apiError` |
+| `stripSTTErrorCode` 去重 | `错误码应只出现 1 次，实际 2 次：stt_unavailable: 网关暂无可用…；stt_unavailable: 外部…` |
