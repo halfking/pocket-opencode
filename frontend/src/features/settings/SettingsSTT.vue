@@ -94,7 +94,9 @@
                 <span class="candidate-model">{{ c.model }}</span>
                 <span :class="['badge', `badge-${c.status}`]">{{ describeStatus(c) }}</span>
               </label>
-              <div v-if="c.detail && !isUsable(c)" class="candidate-detail">{{ c.detail }}</div>
+              <div v-if="candidateDetail(c) && !isUsable(c)" class="candidate-detail">
+                {{ candidateDetail(c) }}
+              </div>
             </li>
           </ul>
           <div v-else class="form-hint">
@@ -172,6 +174,18 @@
         />
       </section>
 
+      <!-- 录音语音提示的可用性：播报失败是静默的，必须让用户看得见 -->
+      <section class="form-section">
+        <label class="form-label">录音语音提示</label>
+        <div class="form-hint">
+          录音开始/结束时用扬声器播报一句语音（不是警告声）。播报期间会静音麦克风，
+          提示语不会被录进录音内容。
+        </div>
+        <p class="voice-prompt-state" :class="{ 'is-bad': !voicePrompt.supported }">
+          {{ voicePrompt.reason }}
+        </p>
+      </section>
+
       <!-- 推荐模型：网关组 + 外部组，分组展示，点一下即选中 -->
       <section class="form-section">
         <label class="form-label">推荐模型</label>
@@ -193,10 +207,18 @@
             >
               <div class="rec-head">
                 <span class="rec-model">{{ m.model }}</span>
-                <span v-if="m.usdPerHour" class="rec-cost">${{ m.usdPerHour.toFixed(2) }}/小时</span>
+                <span v-if="m.usdPerHour" class="rec-cost">{{ formatCost(m.usdPerHour) }}</span>
                 <span v-else class="rec-cost">无公开报价</span>
               </div>
               <div class="rec-note">{{ m.note }}</div>
+              <div
+                v-if="streamingHint(m)"
+                class="rec-badge"
+                :class="{ 'rec-badge--ok': m.streaming }"
+              >{{ streamingHint(m) }}</div>
+              <div v-if="maxSecondsHint(m.maxSeconds)" class="rec-acc">
+                {{ maxSecondsHint(m.maxSeconds) }}
+              </div>
               <div v-if="m.accuracy" class="rec-acc">{{ m.accuracy }}</div>
               <div v-if="gatewayStatusOf(m.model)" class="rec-probe">
                 网关探测：{{ gatewayStatusOf(m.model) }}
@@ -260,10 +282,21 @@ import {
   type SttProbeResult,
   type SttRecommendedModel,
 } from '../../api/stt-settings'
+import { formatCost, maxSecondsHint, streamingHint } from '../../api/stt-presentation'
+import { probeVoicePromptSupport } from '../../native/recording-voice-prompt'
 import { useApiError } from '../../composables/useApiError'
 
 const router = useRouter()
 const apiError = useApiError()
+
+/**
+ * 录音语音提示的引擎可用性。
+ *
+ * 播报失败是静默的（没有 TTS 引擎时 announce 直接返回），用户听不到声音只会
+ * 认为功能没做。国内 ROM 常移除 Google TTS，所以这不是理论风险——把结论
+ * 摆在设置页，用户才知道是设备问题还是应用问题。
+ */
+const voicePrompt = probeVoicePromptSupport()
 
 const form = reactive({
   channel: 'auto' as SttChannel,
@@ -313,15 +346,37 @@ const channelHint = computed(
   () => channelHints.value[form.channel] || '优先用网关里探测通过的 ASR 模型，没有再退到外部服务',
 )
 
+// 外部服务「真的能用」缺哪一项。空串 = 齐了。
+//
+// 为什么不直接看 form.externalModel：地址和 key 缺一个，外部通道照样转不了，
+// 而 2026-10-01 真机上就出现过「明明配了外部服务，页面却写『外部服务未配置』」
+// 这种反着说的提示——用户会以为自己没配，去反复检查一个已经配好的东西。
+const externalMissing = computed(() => {
+  if (!form.externalBaseURL) return '未配置外部转写服务地址'
+  if (!form.hasExternalKey && !form.externalApiKey) return '外部服务未配置 API Key'
+  if (!form.externalModel) return '未选择外部转写模型'
+  return ''
+})
+
 const effectiveText = computed(() => {
   if (effectiveModel.value) {
     return effectiveNote.value
       ? `${effectiveModel.value}（${effectiveNote.value}）`
       : effectiveModel.value
   }
-  return form.channel === 'external'
-    ? form.externalModel || '未选择外部模型'
-    : '尚未确定（网关暂无可用模型，且外部服务未配置）'
+  if (form.channel === 'gateway') {
+    // 仅网关：外部配得再好也用不上，所以不能说「回退到外部」。
+    return '尚未确定（网关暂无可用模型，可点「重新扫描网关」）'
+  }
+  if (form.channel === 'external') {
+    return externalMissing.value || form.externalModel
+  }
+  // auto：网关没有可用模型时会**回退到外部服务**（后端 resolveSTTTarget 就是
+  // 这个顺序），所以这里必须说清会落到哪个模型，而不是笼统一句「尚未确定」。
+  if (!externalMissing.value) {
+    return `${form.externalModel}（网关暂无可用模型，将回退到外部服务）`
+  }
+  return `尚未确定（网关暂无可用模型，且${externalMissing.value}）`
 })
 
 const usableCandidates = computed(() =>
@@ -343,6 +398,30 @@ function isUsable(c: SttGatewayCandidate): boolean {
 
 function describeStatus(c: SttGatewayCandidate): string {
   return describeSttProbeStatus(c)
+}
+
+/**
+ * 候选卡片上的补充说明。
+ *
+ * 2026-10-01 真机发现：后端 `providerDetail` 把上游 503 的响应体截断到 300 字符
+ * 原样回传（`{"error":{"alternatives":{"requested_model":"mimo-v2.5-asr",…}}`），
+ * 设置页直接渲染后，一个候选就刷出五六行半截 JSON，把整张卡片撑爆，而且因为
+ * 是按字节截断，断在 JSON 中间反而更难读。
+ *
+ * 徽章已经把「网关无上游 provider」这类**状态**说清楚了，原始响应对用户的
+ * 决策没有增量价值（要查细节看服务端日志）。所以这里只放行**人话**细节：
+ *  - 整体是 JSON/数组 → 直接不显示（交给徽章）
+ *  - 含长 URL / 路径的技术串 → 同样不显示
+ *  - 其余短句 → 截到 80 字
+ */
+function candidateDetail(c: SttGatewayCandidate): string {
+  const raw = (c.detail ?? '').trim()
+  if (!raw) return ''
+  // 上游响应体：{…} / […] 开头，或以 "{" / "[" 结尾（截断在 JSON 中间）
+  if (/^[[{]/.test(raw) || /[\]}]$/.test(raw)) return ''
+  if (/https?:\/\/\S{40,}/.test(raw)) return ''
+  const oneLine = raw.replace(/\s+/g, ' ')
+  return oneLine.length > 80 ? oneLine.slice(0, 80) + '…' : oneLine
 }
 
 /** 网关预置模型在本次扫描里的真实探测结论。 */
@@ -585,6 +664,16 @@ function goBack() {
   margin-top: 6px;
   line-height: 1.5;
 }
+/* 语音提示可用性：不可用时用警示色，让「听不到声音」有据可查。 */
+.voice-prompt-state {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--success, #16a34a);
+}
+.voice-prompt-state.is-bad {
+  color: var(--danger, #dc2626);
+}
 .section-head {
   display: flex;
   align-items: center;
@@ -662,6 +751,12 @@ function goBack() {
   color: #b45309;
   margin-top: 6px;
   word-break: break-all;
+  /* 双保险：即便 candidateDetail 漏判，detail 也最多占两行，不会把卡片撑爆。 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
 }
 .badge {
   margin-left: auto;
@@ -735,6 +830,21 @@ function goBack() {
   font-size: 12px;
   color: var(--text-secondary, #6b7280);
   white-space: nowrap;
+}
+/* 即时出字能力标记：让「省钱 vs 逐字」的取舍在选模型时就看得见。 */
+.rec-badge {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 1px 6px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-secondary, #6b7280);
+  width: fit-content;
+}
+.rec-badge--ok {
+  border-color: var(--success, #16a34a);
+  color: var(--success, #16a34a);
 }
 .rec-note,
 .rec-acc,

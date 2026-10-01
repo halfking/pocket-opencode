@@ -48,49 +48,48 @@ type sttSettingsView struct {
 
 // sttConfigResponse 是 GET /api/stt/config 的响应。
 type sttConfigResponse struct {
-	Settings     sttSettingsView            `json:"settings"`
-	Recommended  []stt.ModelOption          `json:"recommended"`
-	Gateway      *stt.DiscoveryResult       `json:"gateway"`
-	GatewayBase  string                     `json:"gatewayBaseURL"`
-	GatewayHasKey bool                      `json:"gatewayHasKey"`
-	ChannelHints map[string]string          `json:"channelHints"`
+	Settings      sttSettingsView      `json:"settings"`
+	Recommended   []stt.ModelOption    `json:"recommended"`
+	Gateway       *stt.DiscoveryResult `json:"gateway"`
+	GatewayBase   string               `json:"gatewayBaseURL"`
+	GatewayHasKey bool                 `json:"gatewayHasKey"`
+	ChannelHints  map[string]string    `json:"channelHints"`
 }
 
-// sttMemSettings 是 user_settings 不可用时的进程内兜底。
+// sttFallbackSettings 是「没有 PG 时的进程内兜底存储」。
 //
-// 2026-10-01 实测：pocketd 在没有 POCKET_POSTGRES_DSN 时会正常启动
-// （remote-only 模式），此时 s.userSettings == nil。若 STT 设置只落 PG，
-// 这种部署下「保存」直接 400 user settings store unavailable —— 整个语音
-// 转写功能等于不可用。所以补一份进程内存储：功能可用，重启后回到默认值
-// （这与「无 PG 部署本身就不持久」的既有事实一致，不制造虚假持久化预期）。
-type sttMemSettings struct {
+// 为什么需要它：pocketd 没有配 POCKET_POSTGRES_DSN 时会正常启动
+// （remote-only 模式），此时 s.userSettings 为 nil，而 saveSTTSettings
+// 直接返回 "user settings store unavailable" → PUT /api/stt/config 恒 400。
+// 后果不是「设置存不下来」这么轻：**整个 STT 功能对用户不可用**——
+// 连试转、连手动填 key 的通道都进不去，因为没有地方存。
+//
+// 2026-10-01 黑盒验证实测：真实 pocketd（无 PG）上 PUT 恒 400，
+// 后续所有转写请求都因「未配置 API Key」失败。
+//
+// 为什么不自己造结构：usersetting.MemStore 已经实现 Repository 接口
+// 且带锁，直接复用，少一份并发正确性的负担。
+//
+// 边界（必须让用户知道，不能制造虚假持久化预期）：
+//   - **重启即丢**，回落到默认值。
+//   - 按 (user, workspace, namespace, id) 隔离，语义与 PG 路径一致。
+type sttFallbackStore struct {
+	once sync.Once
 	mu   sync.Mutex
-	recs map[string]sttSettingsRecord
+	repo usersetting.Repository
 }
 
-type sttSettingsRecord struct {
-	payload sttSettingsPayload
-	secret  string
-}
+var sttFallback sttFallbackStore
 
-func newSttMemSettings() *sttMemSettings {
-	return &sttMemSettings{recs: map[string]sttSettingsRecord{}}
-}
-
-func sttMemKey(userID, workspaceID string) string {
-	if userID == "" {
-		userID = "local"
+// sttSettingsRepo 取出可用的设置存储：优先 PG，回落进程内。
+func (s *Server) sttSettingsRepo() usersetting.Repository {
+	if s != nil && s.userSettings != nil {
+		return s.userSettings
 	}
-	if workspaceID == "" {
-		workspaceID = "default"
-	}
-	return userID + "|" + workspaceID
-}
-
-// sttSettingsStore 返回进程内兜底存储（懒初始化，线程安全）。
-func (s *Server) sttSettingsStore() *sttMemSettings {
-	s.sttSettingsOnce.Do(func() { s.sttSettingsMem = newSttMemSettings() })
-	return s.sttSettingsMem
+	sttFallback.once.Do(func() { sttFallback.repo = usersetting.NewMemStore() })
+	sttFallback.mu.Lock()
+	defer sttFallback.mu.Unlock()
+	return sttFallback.repo
 }
 
 // loadSTTSettings 读取用户设置；没有记录时返回零值 + ok=false。
@@ -99,24 +98,14 @@ func (s *Server) loadSTTSettings(userID, workspaceID string) (sttSettingsPayload
 	if s == nil {
 		return p, false
 	}
-	if s.userSettings != nil {
-		rec, err := s.userSettings.Get(userID, workspaceID, sttSettingsNamespace, sttSettingsID)
-		if err != nil || rec == nil {
-			return p, false
-		}
-		if err := json.Unmarshal(rec.Payload, &p); err != nil {
-			return p, false
-		}
-		return p, true
-	}
-	mem := s.sttSettingsStore()
-	mem.mu.Lock()
-	defer mem.mu.Unlock()
-	rec, ok := mem.recs[sttMemKey(userID, workspaceID)]
-	if !ok {
+	rec, err := s.sttSettingsRepo().Get(userID, workspaceID, sttSettingsNamespace, sttSettingsID)
+	if err != nil || rec == nil {
 		return p, false
 	}
-	return rec.payload, true
+	if err := json.Unmarshal(rec.Payload, &p); err != nil {
+		return p, false
+	}
+	return p, true
 }
 
 // sttExternalKey 取该用户保存的外部 ASR key（密文不外泄）。
@@ -124,23 +113,18 @@ func (s *Server) sttExternalKey(userID, workspaceID string) string {
 	if s == nil {
 		return ""
 	}
-	if s.userSettings != nil {
-		rec, err := s.userSettings.Get(userID, workspaceID, sttSettingsNamespace, sttSettingsID)
-		if err != nil || rec == nil {
-			return ""
-		}
-		return rec.Secret
+	rec, err := s.sttSettingsRepo().Get(userID, workspaceID, sttSettingsNamespace, sttSettingsID)
+	if err != nil || rec == nil {
+		return ""
 	}
-	mem := s.sttSettingsStore()
-	mem.mu.Lock()
-	defer mem.mu.Unlock()
-	return mem.recs[sttMemKey(userID, workspaceID)].secret
+	return rec.Secret
 }
 
 func (s *Server) saveSTTSettings(userID, workspaceID string, p sttSettingsPayload, externalKey string) error {
 	if s == nil {
 		return fmt.Errorf("stt settings: nil server")
 	}
+	repo := s.sttSettingsRepo()
 	// 通道归一化 + 地址修剪，避免把脏值存进去后解析不出来。
 	p.Channel = stt.NormalizeChannel(p.Channel)
 	p.ExternalBaseURL = strings.TrimRight(strings.TrimSpace(p.ExternalBaseURL), "/")
@@ -151,29 +135,15 @@ func (s *Server) saveSTTSettings(userID, workspaceID string, p sttSettingsPayloa
 		p.Language = "zh"
 	}
 	if p.ExternalBaseURL != "" {
-		if err := validateGatewayURL(p.ExternalBaseURL); err != nil {
+		if err := validateSTTOutboundURL(p.ExternalBaseURL); err != nil {
 			return err
 		}
-	}
-	if s.userSettings == nil {
-		mem := s.sttSettingsStore()
-		mem.mu.Lock()
-		defer mem.mu.Unlock()
-		k := sttMemKey(userID, workspaceID)
-		rec := mem.recs[k]
-		rec.payload = p
-		// 空 key = 保留原 key；显式清空走 "__clear__"（调用方转成空串 + 标记）。
-		if externalKey != "" {
-			rec.secret = externalKey
-		}
-		mem.recs[k] = rec
-		return nil
 	}
 	payload, err := json.Marshal(p)
 	if err != nil {
 		return err
 	}
-	_, err = s.userSettings.Put(usersetting.Record{
+	_, err = repo.Put(usersetting.Record{
 		UserID: userID, WorkspaceID: workspaceID,
 		Namespace: sttSettingsNamespace, ID: sttSettingsID,
 		Payload: payload, Secret: strings.TrimSpace(externalKey),
@@ -215,7 +185,8 @@ func (s *Server) resolveSTTTarget(ctx context.Context, scope stt.Scope) (*stt.Ta
 		return &stt.Target{
 			BaseURL: base, APIKey: externalKey, Model: model,
 			Transport: p.ExternalTransport, Channel: stt.ChannelExternal,
-			Label: "外部服务", CostUSDPerHour: stt.KnownUSDPerHour(model),
+			Language: p.Language,
+			Label:    "外部服务", CostUSDPerHour: stt.KnownUSDPerHour(model),
 		}, nil
 	}
 
@@ -235,7 +206,8 @@ func (s *Server) resolveSTTTarget(ctx context.Context, scope stt.Scope) (*stt.Ta
 					return &stt.Target{
 						BaseURL: gw.BaseURL, APIKey: gw.APIKey, Model: c.Model,
 						Transport: c.Transport, Channel: stt.ChannelGateway,
-						Label: "网关（手动指定）", CostUSDPerHour: stt.KnownUSDPerHour(c.Model),
+						Language: p.Language,
+						Label:    "网关（手动指定）", CostUSDPerHour: stt.KnownUSDPerHour(c.Model),
 					}, nil
 				}
 			}
@@ -251,7 +223,8 @@ func (s *Server) resolveSTTTarget(ctx context.Context, scope stt.Scope) (*stt.Ta
 		return &stt.Target{
 			BaseURL: gw.BaseURL, APIKey: gw.APIKey, Model: c.Model,
 			Transport: c.Transport, Channel: stt.ChannelGateway,
-			Label: "网关（自动发现）", CostUSDPerHour: stt.KnownUSDPerHour(c.Model),
+			Language: p.Language,
+			Label:    "网关（自动发现）", CostUSDPerHour: stt.KnownUSDPerHour(c.Model),
 		}, nil
 	}
 
@@ -272,7 +245,23 @@ func (s *Server) resolveSTTTarget(ctx context.Context, scope stt.Scope) (*stt.Ta
 		return extTarget, nil
 	}
 	// 两条通道都没通：优先报网关侧（更可能是用户想修的那条），并附上外部侧原因。
-	return nil, fmt.Errorf("%s；%s", gwErr.Error(), extErr.Error())
+	//
+	// 两段各自都带 `stt_unavailable:` 前缀，直接拼会在用户可见的中文句子中间
+	// 露出第二个裸错误码（真机 2026-10-01 实测：
+	// 「网关暂无可用的语音转写模型（…）；stt_unavailable: 外部…未配置 API Key」）。
+	// 前端 sttFailureText 只剥**首位**前缀，中间那个会原样显示给用户，所以在这里
+	// 去掉第二段的前缀。整体前缀保留，调用方的 HasPrefix 判断与前端窄口径都不受影响。
+	return nil, fmt.Errorf("%s；%s", gwErr.Error(), stripSTTErrorCode(extErr.Error()))
+}
+
+// stripSTTErrorCode 去掉 STT 错误消息开头的 `stt_unavailable: ` 前缀。
+// 只处理开头一次，不动消息内部可能出现的同名片段。
+func stripSTTErrorCode(msg string) string {
+	const prefix = "stt_unavailable:"
+	if !strings.HasPrefix(msg, prefix) {
+		return msg
+	}
+	return strings.TrimSpace(strings.TrimPrefix(msg, prefix))
 }
 
 const defaultExternalSTTBaseURL = "https://api.openai.com/v1"
@@ -307,33 +296,18 @@ func describeProbe(c stt.Candidate) string {
 	case stt.ProbeEndpointMissing:
 		return "无转写端点"
 	case stt.ProbeFailed:
-		if c.Detail != "" {
-			return "探测失败(" + c.Detail + ")"
-		}
+		// 2026-10-01 黑盒实测：c.Detail 是上游响应体（providerDetail 按字节
+		// 截断到 300），网关的 503 现在返回
+		// {"error":{"alternatives":{"requested_model":"…","task_type":"code",…}}。
+		// 逐个候选内联进去，4 个候选就把消息顶到 1029 字符——设置页/toast 撑爆，
+		// 而且按字节截断断在 JSON 中间，用户读到的只有半截花括号。
+		// 这里只保留状态，原始响应去服务端日志查。
 		return "探测失败"
 	case "":
 		return "未探测"
 	default:
 		return c.Status
 	}
-}
-
-// sttHTTPClientOr 返回 STT 出网该用的客户端：优先用注入的 s.sttHTTPClient，
-// 没注入时回落到带 SSRF 防护的 gatewayHTTPClient(timeout)。
-//
-// 为什么要这个回落而不是直接用字段：生产环境（cmd/pocketd）从不注入这个字段，
-// 必须仍然拿到 gatewayHTTPClient 的 DNS 重绑定防护；字段为 nil 时直接返回会让
-// 出网直接 panic。
-//
-// 2026-10-01 审计新增。此前这个字段是死的：discoverGatewayASR 与 /api/stt/probe
-// 各自硬编码 gatewayHTTPClient(...)，所以「测试注入拒绝出网实现」根本没生效 ——
-// 从 feat/2026-10-01-stt-service 恢复出来的 server_stt_settings_test.go 依赖的
-// SetSTTHTTPClient 也因此根本不存在，整包编译不过。
-func (s *Server) sttHTTPClientOr(timeout time.Duration) *http.Client {
-	if s.sttHTTPClient != nil {
-		return s.sttHTTPClient
-	}
-	return gatewayHTTPClient(timeout)
 }
 
 // discoverGatewayASR 走缓存的网关 ASR 探测。
@@ -346,8 +320,37 @@ func (s *Server) discoverGatewayASR(ctx context.Context, baseURL, apiKey string,
 	if len(stt.RecommendedGatewayModels()) > 0 {
 		timeout = 90 * time.Second
 	}
-	return stt.Discover(ctx, s.sttHTTPClientOr(timeout), s.sttDiscovery, baseURL, apiKey, force)
+	return stt.Discover(ctx, s.sttClient(timeout), s.sttDiscovery, baseURL, apiKey, force)
 }
+
+// sttClient 取出网客户端：测试注入过就用注入的，否则走带 SSRF 防护的默认实现。
+//
+// 为什么要这个回落而不是直接用字段：生产环境（cmd/pocketd）从不注入这个字段，
+// 必须仍然拿到 gatewayHTTPClient 的 DNS 重绑定防护；字段为 nil 时直接返回会让
+// 出网直接 panic。
+//
+// 分成两层是因为默认值需要一个与请求无关的超时（探测一次要打 6 个候选），
+// 而测试注入的是「拒绝一切出网」的实现——给它再包一层 Timeout 也毫无意义，
+// 反而会让失败从「立刻拒绝」变成「等到超时」，单测慢上几十倍。
+//
+// 2026-10-01 审计新增。此前这个字段是死的：discoverGatewayASR 与 /api/stt/probe
+// 各自硬编码 gatewayHTTPClient(...)，所以「测试注入拒绝出网实现」根本没生效 ——
+// 从 feat/2026-10-01-stt-service 恢复出来的 server_stt_settings_test.go 依赖的
+// SetSTTHTTPClient 也因此根本不存在，整包编译不过。
+func (s *Server) sttClient(timeout time.Duration) *http.Client {
+	if s.sttHTTPClient != nil {
+		return s.sttHTTPClient
+	}
+	return gatewayHTTPClient(timeout)
+}
+
+// SetSTTHTTPClient 注入 STT 出网客户端（供测试拒绝出网）。
+//
+// 存在的理由不是「为了可测性」这种套话，而是 2026-10-01 的实际事故：
+// newServer 装上转写器后，server_stt_settings_test.go 里的 meeting/transcribe
+// 用例顺着默认网关配置**真的出网打了生产网关**——耗时 2.3 秒、把 6 个候选的
+// 503 全打了一遍，还吃到了网关限流 429。测试污染生产流量，且让单测变得随机失败。
+func (s *Server) SetSTTHTTPClient(c *http.Client) { s.sttHTTPClient = c }
 
 // ---------------------------------------------------------------- handlers
 
@@ -374,9 +377,20 @@ func (s *Server) handleSTTConfig(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 		// 网关侧结论：只查缓存，不在 GET 里触发真实探测（否则打开设置页就打网关）。
-		if res, ok := s.sttDiscovery.Peek(gw.BaseURL, gw.APIKey); ok {
-			resp.Gateway = &res
-			view.Effective = effectiveModelName(p, &res)
+		//
+		// 两处判空都是必须的，不是防御性冗余：
+		//  - sttDiscovery 可能为 nil（不走 newServer 默认初始化的部署路径）。
+		//    对 nil 指针调 Peek 会 panic，而这个 handler 是**打开设置页**的必经
+		//    之路——一旦 panic，整个 STT 功能对用户就是不可用的。
+		//  - resp.Gateway 在缓存未命中时保持 nil，原来紧接着无条件调
+		//    resp.Gateway.Best()，同样 panic。注意这条是**必然触发**的：
+		//    用户首次打开设置页时缓存必然未命中，所以这不是边缘情况，
+		//    而是「STT 设置页从来没被成功打开过」——单测第一次跑就抓到了。
+		if s.sttDiscovery != nil {
+			if res, ok := s.sttDiscovery.Peek(gw.BaseURL, gw.APIKey); ok {
+				resp.Gateway = &res
+				view.Effective = effectiveModelName(p, &res)
+			}
 		}
 		// resp.Gateway 只有缓存命中时才是非 nil，而 Best() 是**值接收者**：
 		// 直接 resp.Gateway.Best() 会在 nil 指针上解引用 panic，被中间件兜成
@@ -506,7 +520,7 @@ func (s *Server) handleSTTProbe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	engine := stt.NewResolver(func(context.Context, stt.Scope) (*stt.Target, error) { return target, nil })
-	engine.SetHTTPClient(s.sttHTTPClientOr(120 * time.Second))
+	engine.SetHTTPClient(s.sttClient(120 * time.Second))
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 	res, err := engine.TranscribeFor(ctx, stt.Scope{UserID: userID, WorkspaceID: wsID}, audio, filename)
@@ -548,7 +562,7 @@ func (s *Server) probeTarget(r *http.Request, userID, wsID string, override stru
 		if key == "" {
 			return nil, fmt.Errorf("外部语音转写服务未配置 API Key（设置 → 语音转写）")
 		}
-		if err := validateGatewayURL(base); err != nil {
+		if err := validateSTTOutboundURL(base); err != nil {
 			return nil, err
 		}
 		return &stt.Target{BaseURL: base, APIKey: key, Model: override.Model,

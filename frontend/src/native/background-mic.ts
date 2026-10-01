@@ -58,14 +58,29 @@ export async function listNativeMicInputs(): Promise<AudioInput[]> {
   }
 }
 
-export async function startBackgroundMic(opts: { meetingId: string; deviceId?: string }): Promise<boolean> {
+export interface BackgroundMicStartResult {
+  ok: boolean
+  /** 失败原因（原生插件 reject 的原文）。给用户看，不要吞掉。 */
+  reason?: string
+}
+
+/**
+ * 拉起 Android 前台录音服务。
+ *
+ * 原生侧（BackgroundMicPlugin.java）**不会**在 startForegroundService 之后立刻
+ * resolve：它要等服务真的开始采音才 resolve，失败则 reject（权限未授予、麦克风被
+ * 占用、startForeground 抛 SecurityException…）。所以这里的 reject 是**有信息量的**，
+ * 必须带回调用方——静默退回 getUserMedia 的代价是「切到后台才发现录不了」。
+ */
+export async function startBackgroundMic(opts: { meetingId: string; deviceId?: string }): Promise<BackgroundMicStartResult> {
   await ensureLoaded()
-  if (!_plugin) return false
+  if (!_plugin) return { ok: false, reason: '后台录音插件未注册' }
   try {
     await _plugin.start(opts)
-    return true
-  } catch {
-    return false
+    return { ok: true }
+  } catch (e) {
+    // e 是 unknown，必须收窄后才能取 message（vue-tsc 会拦）。
+    return { ok: false, reason: String((e as Error)?.message ?? e) }
   }
 }
 

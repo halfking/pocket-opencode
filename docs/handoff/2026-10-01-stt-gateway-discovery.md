@@ -396,3 +396,182 @@ powershell -ExecutionPolicy Bypass -File scripts/verify-stt.ps1
 # 网关侧原始探测（不依赖本仓库改动）
 node scripts/gw-audio-probe.mjs
 ```
+## §12 Maestro 流已补齐但**尚未跑通**（2026-10-01 14:40）
+
+目标原文要求「用 Maestro 的方法做部署与测试验证」。此前 STT 侧的真机验证
+走的是 adb + CDP 手工点按，只有一次性截图、**没有可重复执行的断言** ——
+这不是形式问题：缺陷链路里前面每段（后端文案 → sttFailureText 归一 →
+rt.error）都有单测，缺的正是最后一段在真机上到底显示什么。
+
+### 已交付
+
+| 文件 | 作用 |
+|---|---|
+| .maestro/notes-stt-error-visibility.yaml | 把 §11 缺陷变成可回归断言：停止后 ssertVisible(".*语音转写.*")；ssertNotVisible 两个通用兜底文案；ssertNotVisible 裸错误码与技术串 |
+| .maestro/_connectivity-sttdev.yaml | 连通性自检的 sttdev 版本（既有 _connectivity.yaml 写死正式包） |
+| scripts/check-maestro-flows.mjs | 流静态检查器：双文档结构、命令词表、appId 必须并存包、命令区禁 emoji |
+| scripts/.maestro-flows.json | 受检流清单 |
+
+断言通用兜底「不在」而不是断言新文案「在」：兜底文案随 locale 变，反向
+断言更抗改；正向锚点只保留稳定的中文片段。
+
+### 未跑通的原因（外部阻塞，非代码问题）
+
+执行到 device offline。测试机 4c308e2e 与 192.168.31.19:5555 是**同一台
+设备的 USB 与 WiFi 两个通道**，两者同时 offline；ping 通但 db connect
+被拒、db reconnect offline 无效 —— adbd 已不响应，需要在手机上重新
+开启 USB 调试或重启设备。**这一步只能由人在设备上做。**
+
+### 设备不可用期间的替代验证（做了什么、没做什么）
+
+- ✅ 两条流 YAML 可解析、17 + 2 条命令全部命中 Maestro 2.11 已知词表、
+  appId 正确、命令区无 emoji。
+- ✅ 检查器四组负控逐条实测会转红（命令名拼错 / appId 写回正式包 /
+  断言放 emoji / 流文件不存在），复原后为 OK。
+- ❌ **没有**证明这两条流能在真机上跑通。流是按既有
+  
+otes-crud.yaml / _connectivity.yaml 的约定写的（appId、选择器、
+  踩坑注释），但「约定一致」不等于「能跑」。
+- ℹ️ §11 那个缺陷的行为本身已由 CDP + 截图在真机上验证过
+  （35-note-stop-banner-fixed.png）。**未验证的是新写的流本身。**
+
+真机重新上线后的第一条命令：
+
+```powershell
+cd C:\workspace\openpocket-wt-stt
+node scripts\check-maestro-flows.mjs
+C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot = 'C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot'
+C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin;C:\Program Files\AdoptOpenJDK\jdk-17.0.0.20-hotspot\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\.minimax\bin;C:\Users\86133\.pi\agent\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\AppData\Local\Programs\Python\Python313\Scripts\;C:\Users\86133\AppData\Local\Programs\Python\Python313\;C:\Users\86133\AppData\Local\Programs\Python\Launcher\;C:\tools\mysql-8.4\bin;C:\tools\node-v22.23.2-win-x64;C:\tools\go\bin;C:\Users\86133\AppData\Local\Microsoft\WindowsApps;C:\Users\86133\AppData\Local\gitkraken\bin;C:\Program Files\7-Zip;C:\Program Files\7-Zip_actual_placeholder;C:\Program\Files\7-Zip;C:\Progra~1\7-Zip;C:\tools\docker-cli;C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin     = "C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin;C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin;C:\Program Files\AdoptOpenJDK\jdk-17.0.0.20-hotspot\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\.minimax\bin;C:\Users\86133\.pi\agent\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\AppData\Local\Programs\Python\Python313\Scripts\;C:\Users\86133\AppData\Local\Programs\Python\Python313\;C:\Users\86133\AppData\Local\Programs\Python\Launcher\;C:\tools\mysql-8.4\bin;C:\tools\node-v22.23.2-win-x64;C:\tools\go\bin;C:\Users\86133\AppData\Local\Microsoft\WindowsApps;C:\Users\86133\AppData\Local\gitkraken\bin;C:\Program Files\7-Zip;C:\Program Files\7-Zip_actual_placeholder;C:\Program\Files\7-Zip;C:\Progra~1\7-Zip;C:\tools\docker-cli;C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin"
+C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin;C:\Program Files\AdoptOpenJDK\jdk-17.0.0.20-hotspot\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\.minimax\bin;C:\Users\86133\.pi\agent\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\AppData\Local\Programs\Python\Python313\Scripts\;C:\Users\86133\AppData\Local\Programs\Python\Python313\;C:\Users\86133\AppData\Local\Programs\Python\Launcher\;C:\tools\mysql-8.4\bin;C:\tools\node-v22.23.2-win-x64;C:\tools\go\bin;C:\Users\86133\AppData\Local\Microsoft\WindowsApps;C:\Users\86133\AppData\Local\gitkraken\bin;C:\Program Files\7-Zip;C:\Program Files\7-Zip_actual_placeholder;C:\Program\Files\7-Zip;C:\Progra~1\7-Zip;C:\tools\docker-cli;C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin     = "C:\Users\86133\AppData\Local\Android\platform-tools;C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin;C:\Program Files\AdoptOpenJDK\jdk-17.0.0.20-hotspot\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\.minimax\bin;C:\Users\86133\.pi\agent\bin;C:\Program Files (x86)\VMware\VMware Workstation\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\Program Files (x86)\Microsoft SQL Server (x86) (x86) (x86)\90\Tools\binn\;C:\Program Files\Git\cmd;C:\Program Files\Netbird\;C:\Users\86133\AppData\Local\Programs\Python\Python313\Scripts\;C:\Users\86133\AppData\Local\Programs\Python\Python313\;C:\Users\86133\AppData\Local\Programs\Python\Launcher\;C:\tools\mysql-8.4\bin;C:\tools\node-v22.23.2-win-x64;C:\tools\go\bin;C:\Users\86133\AppData\Local\Microsoft\WindowsApps;C:\Users\86133\AppData\Local\gitkraken\bin;C:\Program Files\7-Zip;C:\Program Files\7-Zip_actual_placeholder;C:\Program\Files\7-Zip;C:\Progra~1\7-Zip;C:\tools\docker-cli;C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot\bin"
+adb connect 192.168.31.19:5555
+adb -s 192.168.31.19:5555 reverse tcp:18099 tcp:18111
+& C:\workspace\openpocket\logs\maestro\dist\maestro\bin\maestro.bat --device 192.168.31.19:5555 test .maestro\_connectivity-sttdev.yaml
+& C:\workspace\openpocket\logs\maestro\dist\maestro\bin\maestro.bat --device 192.168.31.19:5555 test .maestro\notes-stt-error-visibility.yaml
+```
+
+前置三条缺一即「连不上」：db reverse；pocketd 带 POCKET_DEV_AUTH=true；
+APK 以 CAP_ANDROID_SCHEME=http 构建。另外 STT 未配置时后端 1 秒内回 503，
+真机**开麦即可**（不需要真的说话），但录音权限要先授予。
+
+### §12.1 设备离线期间发现的**流自身 bug**（2026-10-01 17:20）
+
+用源码核验选择器时，发现本分支新写的流自己就点不到按钮：
+
+```yaml
+# 初版（错）
+- tapOn:
+    id: "fab"
+```
+
+而 `frontend/src/features/notes/VoiceRecorderWidget.vue` 实际是：
+
+```html
+<button class="fab" :aria-label="recording ? '停止录音' : '开始录音'">
+```
+
+**它没有 id 属性**。`class="fab"` 在 WebView a11y 树里也不保证暴露，
+Maestro 的 `id:` 走的是 resource-id / content-desc，真机上大概率匹配不到。
+已改为 `tapOn: "开始录音"` / `tapOn: "停止录音"` —— aria-label 会进
+content-desc，且随录音状态自动切换。
+
+这类错在设备在线时表现为「流红了但看不出为什么」，很费时间，所以把它变成
+了自动检查：`scripts/check-maestro-flows.mjs` 的第 4 类检查会要求每条
+**正向**锚点在 `frontend/src` 里找得到出处，且 id 锚点必须在源码里真的是
+id 属性、class 不算。
+
+两个设计要点，都是被自己的第一版打脸后改的：
+
+1. **不查负向断言。** `assertNotVisible` 的文本（`stt_unavailable`、
+   `i/o timeout`）是**故意**期望不出现的技术串，拿去溯源等于要求
+   「泄漏了才通过」。第一版把它们也查了，直接误报 6 条。
+2. **语料包含 `locales/*.json`。** 界面文案是 i18n 的，文本锚点常常只在
+   语言包里 —— 实测「学习」只在 `zh-CN.json`，不在任何 `.vue` 里。
+   只搜 `.vue` 会把合法锚点误判成「找不到出处」。
+
+检查器六组负控（逐条实测会转红、复原后 OK）：
+`id: "fab"`（原始 bug）/ 繁体断言 / 命令名拼错 / appId 写回正式包 /
+断言放 emoji / 流文件不存在。
+
+### §12.2 设备恢复进度（2026-10-01 17:20）
+
+把 adb 侧能试的路都试过了，设备仍未恢复：
+
+| 尝试 | 结果 |
+|---|---|
+| `adb connect`（多次） | `already connected` 但状态 offline |
+| `adb disconnect` → `adb connect` | disconnect 成功，connect 报 failed |
+| `adb kill-server` → `start-server` → connect | 仍 failed |
+| `adb reconnect offline` | 无变化 |
+| `Test-NetConnection 192.168.31.19:5555` | **True（端口是通的）** |
+| `adb mdns services` | 仍广播 `adb-4c308e2e  192.168.31.19:5555` |
+
+端口通、mDNS 在广播、服务在监听，但 **adb 协议握手完不成** —— 这是设备端
+adbd 处于「等授权弹窗」或「已锁屏挂起」的特征。USB 通道
+（`4c308e2e`）是同一台设备的另一条通道，同时 offline。
+**需要在手机上解锁并重新确认 USB 调试授权**，这一步只能由人做。
+
+## §13 黑盒重跑暴露的 SSRF 缺陷（2026-10-01 17:35）
+
+这一节不是原计划内的，是**重跑已有黑盒**时撞出来的。之前记的 19/0 一直
+没人质疑过 —— 绿灯本身不算证据，这次因为改了后端错误文案、必须重跑，
+才发现那条断言有问题。
+
+### 现象
+
+`scripts/verify-stt.ps1` 的「危险地址应被拒绝」在**父进程设了
+`POCKET_LLM_GATEWAY_ALLOW_PRIVATE`** 的环境里从 PASS 变 FAIL（18/1）：
+
+```
+[FAIL] 接受了危险地址 http://127.0.0.1:8080/v1
+```
+
+同一条断言，在没设开关的默认环境里 PASS、设了就 FAIL。
+
+### 两个独立的问题
+
+**(1) 断言是环境相关的（测试问题）**
+
+`verify-stt.ps1` 原本**完全不碰**这两个开关，直接继承父进程环境。所以
+19/0 这个数字只在特定环境下成立。已修：脚本显式清空两个开关，并把
+「网关开关打开时」的行为交给 Go 端到端用例钉住。
+
+**(2) 真的 SSRF 缺陷（产品问题）**
+
+`server_stt_settings.go` 的 `externalBaseURL` 校验调的是
+`validateGatewayURL` —— 而那个函数读 `POCKET_LLM_GATEWAY_ALLOW_PRIVATE`。
+
+于是：**任何为了「连上内网 LLM 网关」而打开网关开关的部署，STT 的 SSRF
+防护被静默关掉。** 用户可以把外部服务地址填成
+`http://127.0.0.1:<本机任意端口>/v1`，后端把用户的录音（会议、语音输入）
+POST 过去。能打到 loopback 就意味着能打到实例自己暴露的内部管理面。
+
+这不是本次引入的 —— 那两行调用来自 2026-09-30 的快照提交 `88cb5a2`。
+仓库里 `TestValidateOutboundURLUnaffectedByGatewaySwitch` 正是为守住
+「网关开关不得影响出站校验」这条不变量而写的，但它只覆盖
+`validateOutboundURL`，**漏了 STT 这个调用点**。
+
+### 修法
+
+独立开关 `POCKET_STT_ALLOW_PRIVATE`：
+
+| | 默认 | `POCKET_STT_ALLOW_PRIVATE=true` |
+|---|---|---|
+| 私网 / loopback | 拒绝 | 放行（自建 ASR 场景） |
+| 云元数据端点 | 拒绝 | **仍拒绝** |
+| 网关开关的影响 | 无 | 无 |
+
+错误文案也一并改：旧文案把用户导向 `POCKET_LLM_GATEWAY_ALLOW_PRIVATE`，
+导向错了等于**教用户一步步把 STT 的 SSRF 防护也关掉** —— 那正是这个缺陷
+的成因。
+
+### 负控对照
+
+| 改动 | 改回去后的实测结果 |
+|---|---|
+| 调用点改回 `validateGatewayURL` | `TestSTTConfigRejectsLoopbackUnderGatewaySwitch` 转红，并打出实际证据：`PUT /api/stt/config` 返回 **200** 且把 `http://127.0.0.1:9/v1` **存了进去** |
+| 修复后，父进程**开着**网关开关重跑黑盒 | **21/0**（比原来的 19/0 更苛刻的环境） |
+
+**一个值得记的发现**：负控下，函数级用例（`TestSTTURL*`）**全部仍然通过**，
+只有那条端到端用例转红 —— 因为函数本身没错，错的是调用点接错了函数。
+函数级测试挡不住接线错误，这正是
+`TestSTTConfigRejectsLoopbackUnderGatewaySwitch` 必须存在的原因。

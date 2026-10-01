@@ -42,6 +42,19 @@ const BACKEND =
   'stt_unavailable: 网关暂无可用的语音转写模型（mimo-v2.5-asr=网关无上游 provider）；' +
   '外部语音转写服务未配置 API Key（设置 → 语音转写）'
 
+/**
+ * 真机（Redmi 2026-10-01）auto 通道两段都不通时的**实际**后端原文。
+ *
+ * 与上面 BACKEND 的区别：第二段也带 `stt_unavailable:` 前缀。2026-10-01 之前
+ * `resolveSTTTarget` 直接 `fmt.Errorf("%s；%s", gwErr, extErr)`，两段各自带码，
+ * 于是用户在中文句子中间会看到一个裸错误码。后端已改为只保留首位前缀。
+ */
+const BACKEND_AUTO_BOTH = (() => {
+  const b = BACKEND
+  const i = b.indexOf('；')
+  return b.slice(0, i + 1) + 'stt_unavailable: ' + b.slice(i + 1)
+})()
+
 /** 假翻译器：只认本测试关心的两个 key，其余原样回显。 */
 const fakeT = (key) => (key === 'errors.sttNotConfigured' ? '语音转写服务尚未配置' : key)
 
@@ -74,11 +87,66 @@ describe('STT 失败原因在渲染链路上不被二次归一压掉', () => {
     ]) {
       const src = read(rel)
       assert.ok(
-        !/apiError\(\s*(?:props\.)?error\b/.test(src),
+        !/apiError\(\s*(?:props\.)?(?:recError|error)\b/.test(src),
         `${rel} 不应对已是成品文案的 error 再调 apiError：` +
         '会因错误码前缀已被 sttFailureText 剥掉而落回通用兜底',
       )
     }
+  })
+
+  it('守卫正则必须真的能匹配到 NoteListView 的调用形态（防假绿）', () => {
+    // 2026-10-01 假绿实录：上面的守卫写的是
+    //   /apiError\(\s*(?:props\.)?error\b/
+    // 而 NoteListView 实际写的是 `apiError(recError.value, 'errors.sttNotConfigured')`，
+    // `error\b` 匹配不到 `recError.value` —— 守卫全程没生效，测试绿灯而缺陷仍在，
+    // 真机才暴露出来。这里把两种真实调用形态都钉住。
+    const guard = /apiError\(\s*(?:props\.)?(?:recError|error)\b/
+    assert.ok(
+      guard.test("apiError(recError.value, 'errors.sttNotConfigured')"),
+      '守卫正则匹配不到 NoteListView 的真实调用形态，会再次假绿',
+    )
+    assert.ok(
+      guard.test('apiError(props.error, "errors.sttNotConfigured")'),
+      '守卫正则匹配不到 NoteRecordingStudio 的形态',
+    )
+    // 反向：不能误伤同文件里与 error 无关的 apiError 调用。
+    assert.ok(
+      !guard.test("apiError(e, 'errors.loadNotesFailed')"),
+      '守卫正则过宽，会误报与 runtime error 无关的调用',
+    )
+  })
+
+  it('笔记页停止后的横幅直出成品文案，可行动原因不被压掉', () => {
+    // 真机复现：录音中显示完整原因，点停止后横幅却变成「该功能尚未完成配置」。
+    const curated = sttFailureText({ message: BACKEND, body: { error: BACKEND } }, '转写失败')
+    // NoteListView 现在是 `computed(() => recError.value || '')`，直出。
+    const recordErrorText = curated || ''
+    assert.ok(
+      recordErrorText.includes('设置 → 语音转写'),
+      '停止后的横幅必须保留「去设置里配外部服务」这条唯一行动指引',
+    )
+    assert.ok(
+      !recordErrorText.includes('stt_unavailable'),
+      '用户可见文案里不该残留裸错误码',
+    )
+  })
+
+  it('auto 双通道失败的后端原文只带一个错误码前缀（后端拼接去重）', () => {
+    // 前端只能保证「首位前缀被剥掉」；第二段前缀的去除由后端 resolveSTTTarget
+    // 负责，对应 Go 侧用例 TestResolveSTTTargetAutoBothChannelsUnavailable_NoDuplicateCode。
+    // 这里钉住的是前端这半边的责任边界：sttFailureText 只处理首位。
+    const curated = sttFailureText(
+      { message: BACKEND_AUTO_BOTH, body: { error: BACKEND_AUTO_BOTH } },
+      '转写失败',
+    )
+    assert.ok(
+      !curated.startsWith('stt_unavailable'),
+      '首位前缀必须被剥掉',
+    )
+    assert.ok(
+      curated.includes('设置 → 语音转写'),
+      '尾部行动指引必须保留',
+    )
   })
 
   it('useVoiceInput 的转写失败不得把原始 e.message 拼到界面上（第三处漏网）', () => {

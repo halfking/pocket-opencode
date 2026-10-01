@@ -16,13 +16,17 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/usersetting"
 )
 
-// errFakeASRNoNetwork 是「出网已被测试拦下」的哨兵错误。
+// errFakeASRNoNetwork 是 noNetworkClient 统一返回的错误。
 //
 // 2026-10-01 审计：它和下面的 installFakeASR 一样，都是从
 // feat/2026-10-01-stt-service 恢复出来的测试所依赖、却在那次 git clean 事故里
 // 跟辅助文件一起被卷走的符号。原先那个 SetSTTHTTPClient setter 不存在，是因为
-// Server.sttHTTPClient 当时根本没人读（见 sttHTTPClientOr 的说明）；现在该字段
+// Server.sttHTTPClient 当时根本没人读（见 sttClient 的说明）；现在该字段
 // 真正生效，注入点也才成为真的。
+//
+// 为什么必须是包级变量而不是内联 errors.New：单测里有多处要断言
+// 「出网被拒」这个行为，共享同一哨兵值才能用 errors.Is 判定，
+// 内联新建的 error 值无法比较。
 var errFakeASRNoNetwork = errors.New("fake asr: 出网已被测试拦截")
 
 // noNetworkClient 让任何出网请求立刻失败：单测绝不能真打 llm.kxpms.cn。
@@ -32,42 +36,118 @@ func noNetworkClient() *http.Client {
 	})}
 }
 
-// installFakeASR 给 srv 装上一个会返回固定转写文本的假 ASR，让「试转」链路
-// 可以在完全不联网的情况下被端到端验证。
+// installFakeASR 把 STT 出网指向一个假的 OpenAI 兼容上游，让 /api/stt/transcribe
+// 与 /api/stt/probe 能真的走完「配置解析 → 目标解析 → 发出请求 → 拿回文本」这条链路。
 //
-// 走**外部通道**：网关 key 在 sttTestServer 里被显式置空。外部 base URL 直接写进
-// store，而不是走 PUT /api/stt/config —— 后者有 SSRF 校验，127.0.0.1 的 httptest
-// 地址会被拒（正是 TestSttConfigRejectsDangerousExternalURL 断言的行为）。
-// 同一台 httptest 服务器既是转写目标、又是 srv.sttHTTPClient，两边都指过去，
+// 为什么不直接换掉 s.transcriber：换掉会让 handler 绕过设置解析（目标从哪来、
+// 通道怎么选、SSRF 校验走没走），测不到真正该测的东西。保持 resolver 真实、
+// 只把最后一跳的 HTTP 换成 httptest，才是端到端。
+//
+// 走**外部通道**：网关 key 在 sttTestServer 里被显式置空。设置通过
+// saveSTTSettings 真实落库（而不是直接写 store），这样「保存 → 解析 → 出网」
+// 整条路径都在被测；为此需要显式放行 127.0.0.1 的 SSRF 校验，理由见下。
+// 同一台 httptest 服务器既是转写目标、又是 srv 的出网客户端，两边都指过去，
 // 因此整个 /api/stt/probe 请求从头到尾不出机器。
 func installFakeASR(t *testing.T, srv *Server, text string) {
 	t.Helper()
+	// httptest 监听 127.0.0.1，而 STT 外部地址的 SSRF 守卫
+	// （validateSTTOutboundURL）默认拒绝私网/loopback。这里显式 opt-in 放行
+	// ——否则测试永远在保存设置那一步就被拒掉，测不到后面真正要测的转写链路。
+	// 放行要用**STT 自己的**开关 POCKET_STT_ALLOW_PRIVATE：网关那个开关
+	// （POCKET_LLM_GATEWAY_ALLOW_PRIVATE）现在刻意不再影响这里，理由见
+	// server_stt_url_test.go 顶部。
+	// 用 t.Setenv 而非 os.Setenv：它会在测试结束后自动还原，不污染同包其他用例。
+	t.Setenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE", "1")
+	t.Setenv("POCKET_STT_ALLOW_PRIVATE", "1")
+
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/audio/transcriptions") {
-			http.Error(w, `{"error":"unexpected path"}`, http.StatusNotFound)
+		if r.URL.Path == "/v1/models" {
+			_, _ = w.Write([]byte(`{"data":[]}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"text": text})
+		_, _ = w.Write([]byte(`{"text":"` + text + `"}`))
 	}))
 	t.Cleanup(upstream.Close)
 
-	store, ok := srv.userSettings.(*memUserSettings)
-	if !ok {
-		t.Fatalf("userSettings 不是 *memUserSettings：%T", srv.userSettings)
+	// 存一条指向假上游的 external 设置，让目标解析走真实路径。
+	// key 是独立参数（不进 payload）——外部 ASR 的 key 与对话模型配置刻意分开。
+	//
+	// 作用域必须与 wsAToken() 签出来的身份一致（shared-user / ws-a）：
+	// 设置按 (userID, workspaceID) 存取，作用域写错的话 handler 读到的是空设置，
+	// 症状是「配了 key 却报未配置」——与真实的 key 丢失故障无法区分。
+	if err := srv.saveSTTSettings("shared-user", "ws-a", sttSettingsPayload{
+		Channel:         stt.ChannelExternal,
+		ExternalBaseURL: upstream.URL + "/v1",
+		ExternalModel:   "gpt-4o-mini-transcribe",
+	}, "sk-fake"); err != nil {
+		t.Fatalf("保存假 ASR 设置失败: %v", err)
 	}
-	store.Put(seedSTTSetting("shared-user", "ws-a",
-		`{"channel":"external","externalBaseURL":"`+upstream.URL+`/v1","externalModel":"fake-asr"}`,
-		"sk-fake"))
 
 	// 关键：注入后 /api/stt/probe 才会用这台假服务器，
 	// 而不是硬编码的 gatewayHTTPClient 真实出网。
-	srv.sttHTTPClient = upstream.Client()
+	srv.SetSTTHTTPClient(upstream.Client())
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestSttSettingsWorkWithoutPGStore 锁住「无 PG 也能保存 STT 设置」。
+//
+// 2026-10-01 黑盒验证实测的真实 bug：pocketd 未配 POCKET_POSTGRES_DSN 时
+// 正常启动（remote-only 模式），但 s.userSettings 为 nil，
+// saveSTTSettings 直接返回 "user settings store unavailable"
+// → PUT /api/stt/config 恒 400。
+//
+// 后果不是「设置存不下来」这么轻：**整个 STT 功能对用户不可用**——
+// 连试转、连手工填 key 的通道都进不去，因为根本没有地方存。
+// 上一轮 handoff 曾声称已修（加了 sttMemSettings），但那份实现并未落在代码里。
+//
+// 这条测试是「设置页能不能用」的底线：它绿，STT 至少是可配置的。
+func TestSttSettingsWorkWithoutPGStore(t *testing.T) {
+	srv, _ := newWorkspaceIsolationServer(t)
+	// 刻意不设置 srv.userSettings —— 模拟无 PG 部署
+	if srv.userSettings != nil {
+		t.Fatal("前置条件不成立：测试服务器本应没有 userSettings")
+	}
+	t.Setenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE", "1")
+	t.Setenv("POCKET_STT_ALLOW_PRIVATE", "1")
+
+	h := srv.Handler()
+	token := wsAToken(t)
+
+	body := strings.NewReader(`{"channel":"external","externalBaseURL":"http://127.0.0.1:9/v1",` +
+		`"externalModel":"gpt-4o-mini-transcribe","externalTransport":"transcriptions",` +
+		`"externalApiKey":"k-abc"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/stt/config", body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("无 PG 部署下保存 STT 设置应成功，实际 %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// 读回来：设置必须真的存住了，且 key 只能以 hasExternalKey 形式存在
+	get := httptest.NewRequest(http.MethodGet, "/api/stt/config", nil)
+	get.Header.Set("Authorization", "Bearer "+token)
+	rr2 := httptest.NewRecorder()
+	h.ServeHTTP(rr2, get)
+	var cfg sttConfigResponse
+	if err := json.Unmarshal(rr2.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if cfg.Settings.ExternalModel != "gpt-4o-mini-transcribe" {
+		t.Errorf("设置未回读到，externalModel=%q", cfg.Settings.ExternalModel)
+	}
+	if !cfg.Settings.HasExternalKey {
+		t.Error("hasExternalKey 应为 true（key 已保存）")
+	}
+	if strings.Contains(rr2.Body.String(), "k-abc") {
+		t.Errorf("GET 响应泄露明文 key: %s", rr2.Body.String())
+	}
+}
 
 // sttTestServer 起一个自足的 server：内存用户设置 + 拒绝出网的 STT 客户端。
 //
@@ -212,8 +292,16 @@ func TestSttConfigListsBothRecommendedGroups(t *testing.T) {
 			t.Errorf("负报价：%+v", m)
 		}
 	}
-	if gw != 3 || ext != 3 {
-		t.Fatalf("推荐模型应为网关 3 + 外部 3，实际 gateway=%d external=%d", gw, ext)
+	// 只守下限不写死上限：用户要求「尽可能费用少」，外部候选会随调研增补
+	// （2026-10-01 从 3 个扩到 7 个）。写死上限会诱导后来者不去补候选。
+	if gw != 3 || ext < 7 {
+		t.Fatalf("推荐模型应为网关 3 + 外部 ≥7，实际 gateway=%d external=%d", gw, ext)
+	}
+	// 每个外部候选都必须带地址：用户只填一把 key，地址得由推荐给出。
+	for _, m := range resp.Recommended {
+		if m.Group == "external" && m.BaseURL == "" {
+			t.Errorf("外部候选 %s 缺 BaseURL", m.Model)
+		}
 	}
 	if resp.Settings.Channel != "" && resp.Settings.Channel != stt.ChannelAuto {
 		t.Errorf("未配置时通道应是 auto，实际 %q", resp.Settings.Channel)
@@ -322,6 +410,42 @@ func TestResolveTargetAutoReportsBothReasons(t *testing.T) {
 	for _, want := range []string{"网关", "外部", "gpt-audio", "无上游 provider"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("错误信息缺 %q：%s", want, msg)
+		}
+	}
+}
+
+func TestResolveTargetAutoBothChannelsUnavailable_NoDuplicateCode(t *testing.T) {
+	// 2026-10-01 真机（Redmi，笔记即时录音）复现：auto 通道两段原因都带
+	// `stt_unavailable:` 前缀，直接拼接会在用户可见的中文句子中间露出第二个
+	// 裸错误码 —— 前端 sttFailureText 只剥**首位**前缀，中间那个原样上屏：
+	//   「网关暂无可用的语音转写模型（…）；stt_unavailable: 外部…未配置 API Key」
+	// 错误码对用户没有信息量，且让「去设置里配外部服务」这条唯一行动指引
+	// 看起来像技术噪音。拼接只应保留首位前缀。
+	srv, store := sttTestServer(t, "sk-gateway-test")
+	store.Put(seedSTTSetting("shared-user", "ws-a", `{"channel":"auto"}`, ""))
+	gw := srv.ResolveGatewayForUser("shared-user", "ws-a")
+	srv.sttDiscovery.Seed(gw.BaseURL, gw.APIKey, stt.DiscoveryResult{
+		BaseURL: gw.BaseURL, TotalModels: 604,
+		Candidates: []stt.Candidate{
+			{Model: "gpt-audio", Status: stt.ProbeNoProvider, Detail: "No available provider"},
+		},
+	})
+	_, err := srv.resolveSTTTarget(context.Background(), stt.Scope{UserID: "shared-user", WorkspaceID: "ws-a"})
+	if err == nil {
+		t.Fatal("两条通道都不通时应报错")
+	}
+	msg := err.Error()
+
+	if !strings.HasPrefix(msg, "stt_unavailable:") {
+		t.Fatalf("整体前缀必须保留，调用方的 HasPrefix 判断与前端窄口径都依赖它：%s", msg)
+	}
+	if n := strings.Count(msg, "stt_unavailable:"); n != 1 {
+		t.Errorf("错误码应只出现 1 次，实际 %d 次：%s", n, msg)
+	}
+	// 去掉第二段前缀后，外部侧的行动指引必须仍然完整。
+	for _, want := range []string{"外部语音转写服务未配置 API Key", "设置 → 语音转写"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("外部侧原因被拼接破坏，缺 %q：%s", want, msg)
 		}
 	}
 }

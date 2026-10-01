@@ -78,7 +78,31 @@ $env:POCKET_DB_PATH = (Join-Path $dataDir 'pocket.sqlite')
 $env:POCKET_AUTH_LEGACY_ONLY = "true"
 $env:POCKET_AUTH_USER = "admin"
 $env:POCKET_AUTH_PASS = "Veritrans&9527"
-$env:POCKET_LLM_GATEWAY_API_KEY = (Get-Content (Join-Path $root 'logs\.gateway-key') -Raw).Trim()
+# SSRF 开关必须**显式清空**，不能继承父进程环境。
+#
+# 2026-10-01 踩过：这条脚本原来完全不碰这两个变量，于是「危险地址应被拒绝」
+# 断言是**环境相关**的 —— 在没设开关的默认环境下 PASS，在父进程设了
+# POCKET_LLM_GATEWAY_ALLOW_PRIVATE 的环境里 FAIL（实测 18/1）。同一个缺陷，
+# 两种结论，比没有断言更危险。
+#
+# 这次暴露的真缺陷是：STT 的 externalBaseURL 调的是 validateGatewayURL，
+# 会被网关开关顺带放开 loopback。已改用独立的 validateSTTOutboundURL +
+# POCKET_STT_ALLOW_PRIVATE。这里显式清空，保证下面的 SSRF 断言跑在
+# 「两个开关都关」的确定环境里。网关开关打开时的行为由 Go 用例
+# TestSTTConfigRejectsLoopbackUnderGatewaySwitch 端到端钉住。
+$env:POCKET_LLM_GATEWAY_ALLOW_PRIVATE = ""
+$env:POCKET_STT_ALLOW_PRIVATE = ""
+# 网关密钥来源优先级：已存在的环境变量 > $root/logs/.gateway-key。
+# 加这一层是因为脚本经常在另一个 worktree 里跑（比如主工作区有密钥、
+# 验证在 wt 里做），此时不该为了跑一次验证就把凭据复制一份出去。
+if (-not $env:POCKET_LLM_GATEWAY_API_KEY) {
+  $keyFile = Join-Path $root 'logs\.gateway-key'
+  if (-not (Test-Path $keyFile)) {
+    throw "找不到网关密钥：环境变量 POCKET_LLM_GATEWAY_API_KEY 未设，且 $keyFile 不存在"
+  }
+  $env:POCKET_LLM_GATEWAY_API_KEY = (Get-Content $keyFile -Raw).Trim()
+}
+if (-not $env:POCKET_LLM_GATEWAY_API_KEY) { throw "网关密钥为空" }
 
 $proc = Start-Process -FilePath $bin -WorkingDirectory (Join-Path $root 'backend') `
   -RedirectStandardOutput (Join-Path $dataDir 'pocketd.out.log') `
@@ -117,7 +141,10 @@ try {
   $gw = @($cfg.recommended | Where-Object { $_.group -eq 'gateway' })
   $ext = @($cfg.recommended | Where-Object { $_.group -eq 'external' })
   if ($gw.Count -eq 3) { Ok "网关组预置 3 个: $(($gw.model) -join ', ')" } else { Bad "网关组应为 3 个，实际 $($gw.Count)" }
-  if ($ext.Count -eq 3) { Ok "外部组预置 3 个: $(($ext.model) -join ', ')" } else { Bad "外部组应为 3 个，实际 $($ext.Count)" }
+  # 数量只守区间，不写死：外部候选表会随调研增补（2026-10-01 从 3 个扩到 7 个，
+  # 依据是 10 月的 ASR 成本/精度对比），写死上限会把正常新增判成失败。
+  # 上限仍设，防止有人把整张 OpenRouter 模型表灌进来。
+  if ($ext.Count -ge 7 -and $ext.Count -le 20) { Ok "外部组预置 $($ext.Count) 个（区间 7..20）: $(($ext.model) -join ', ')" } else { Bad "外部组应落在 7..20，实际 $($ext.Count)" }
   $noPrice = @($ext | Where-Object { -not $_.usdPerHour })
   if ($noPrice.Count -eq 0) { Ok "外部组均带每小时成本" } else { Bad "外部组有模型缺成本: $(($noPrice.model) -join ', ')" }
   if ($cfg.raw -match 'sk-' -or ($cfg | ConvertTo-Json -Depth 6) -match '"apiKey":"[^"]+"') {
@@ -231,6 +258,30 @@ try {
         -Body (@{ channel = 'external'; externalBaseURL = $bad } | ConvertTo-Json -Compress)
       Bad "接受了危险地址 $bad"
     } catch { Ok "拒绝了 $bad" }
+  }
+
+  # 自建 ASR 的 opt-in 通路：开关打开时私网地址**应当**被接受，否则功能上
+  # 没法用；同时错误信息要把用户导向 POCKET_STT_ALLOW_PRIVATE，而不是
+  # POCKET_LLM_GATEWAY_ALLOW_PRIVATE（那是另一个语义，导向错了会让人去
+  # 打开网关开关，然后意外把 STT 的 SSRF 防护也一起关掉 —— 正是 2026-10-01
+  # 那个缺陷的成因）。
+  Section "被拒时提示正确的开关名"
+  try {
+    $null = Invoke-RestMethod "$base/api/stt/config" -Method Put -Headers $hdr -ContentType 'application/json' `
+      -Body (@{ channel = 'external'; externalBaseURL = 'http://127.0.0.1:8080/v1' } | ConvertTo-Json -Compress)
+    Bad "loopback 竟被接受，无法检查提示文案"
+  } catch {
+    $msg = $_.ErrorDetails.Message
+    if ($msg -match 'POCKET_STT_ALLOW_PRIVATE') {
+      Ok "提示指向 POCKET_STT_ALLOW_PRIVATE"
+    } else {
+      Bad "提示没有指向 POCKET_STT_ALLOW_PRIVATE：$msg"
+    }
+    if ($msg -match 'POCKET_LLM_GATEWAY_ALLOW_PRIVATE') {
+      Bad "提示错误地把用户导向网关开关（会顺带关掉 STT 的 SSRF 防护）：$msg"
+    } else {
+      Ok "提示未误导到网关开关"
+    }
   }
 
   # ---------- 8. 恢复 auto ----------

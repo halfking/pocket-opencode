@@ -1345,11 +1345,20 @@ func (s *Server) handleEmails(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// total 是**不受 limit 影响**的匹配总数（CountEmailsScoped）。客户端缓存
+	// 自愈要比「本地行数 vs 服务端行数」，若拿 len(list) 当总数，邮箱超过
+	// limit 时这个数字恒等于 limit，缺口信号会被彻底抹平。
+	total, err := s.emailStore.CountEmailsScoped(r.Context(), f, s.userIDFromRequest(r), s.workspaceIDFromRequest(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	// 增量同步信封：serverTimeMs 供客户端校正时钟漂移；带 since 时附带
 	// 软删除墓碑（deletedIds），客户端据此移除本地缓存行（无刷新删除）。
 	resp := map[string]any{
 		"emails":       list,
 		"serverTimeMs": time.Now().UnixMilli(),
+		"total":        total,
 	}
 	if f.Since > 0 {
 		deletedIDs, err := s.emailStore.ListDeletedEmailIDsScoped(r.Context(), f.Since, s.userIDFromRequest(r), s.workspaceIDFromRequest(r), 500)
@@ -2520,6 +2529,10 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[stt] transcribed %d bytes (%s) via %s/%s -> %d chars",
 		len(audioData), filename, result.Channel, result.Model, len(result.Text))
+	// 字段与 stt.Result 一一对应。costCents/durationMs 不是"顺手加上"的：
+	// frontend/src/api/stt.ts 的 cloudTranscribe() 已经在读 res.costCents，
+	// 这里不返回就等于成本统计永远是 undefined，而且没有任何报错——
+	// 这种"契约写了一半"的缺口最难查。
 	writeJSON(w, http.StatusOK, map[string]any{
 		"text":       result.Text,
 		"confidence": result.Confidence,

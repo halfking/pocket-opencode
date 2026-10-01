@@ -14,6 +14,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/meeting"
+	"github.com/halfking/pocket-opencode/backend/internal/stt"
 )
 
 // handleMeetingRouter dispatches /api/meetings/{id}/{action} and per-meeting
@@ -116,18 +117,26 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusBadRequest, "empty audio data")
 		return
 	}
-	if s.transcriber != nil {
-		result, err := s.transcriber.Transcribe(r.Context(), audioData, "meeting.wav")
-		if err != nil {
-			m.Status = "failed"
-			_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
-			writeError(w, http.StatusBadGateway, "transcription failed: "+err.Error())
-			return
+	// 转写目标由该用户的语音转写设置解析，不再写死 Groq Whisper；
+	// 会议录音停止链路是同步等推理结果的，30s 太紧，给到 120s。
+	scope := stt.Scope{UserID: uid, WorkspaceID: workspaceID}
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+	result, err := s.transcriber.TranscribeFor(ctx, scope, audioData, "meeting.wav")
+	if err != nil {
+		m.Status = "failed"
+		_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+		// 已带错误码的（stt_unavailable: …）原样回传。api/error-message.ts 取
+		// 第一个冒号前的 [a-z0-9_]+ 当错误码；再套 "transcription failed: "
+		// 前缀会让它匹配失败，用户就只能看到通用「服务端错误」。
+		msg := err.Error()
+		if !strings.HasPrefix(msg, "stt_unavailable:") {
+			msg = "transcription failed: " + msg
 		}
-		m.Transcript = result.Text
-	} else {
-		m.Transcript = "（STT 未配置，请设置 POCKET_GROQ_API_KEY）"
+		writeError(w, http.StatusBadGateway, msg)
+		return
 	}
+	m.Transcript = result.Text
 	m.Status = "transcribed"
 	if err := s.meetingStore.UpdateScoped(m, uid, workspaceID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist transcript")

@@ -264,6 +264,33 @@ export async function maxEmailUpdatedAt(): Promise<number> {
 }
 
 /**
+ * 本地未删除邮件数（墓碑行不算）。
+ *
+ * 缓存自愈要用它和服务端行数比大小。直接用 listEmails({limit:1}).length
+ * 只能拿到「有没有」而拿不到「有多少」，判定不出服务端是否领先。
+ */
+export async function countLocalEmails(): Promise<number> {
+  const row = await localDB.queryOne<{ c: number | null }>(
+    'SELECT COUNT(*) AS c FROM local_emails WHERE IFNULL(deleted_at, 0) = 0',
+  )
+  return Number(row?.c) || 0
+}
+
+/**
+ * 本地最新一封邮件的 `date`（毫秒），0 表示本地没有邮件。
+ *
+ * 判定缓存新鲜度**必须**用 date 而不是 updated_at：updated_at 会被重跑同步
+ * 刷新，一封一年前的邮件重跑后 updated_at 也是今天，拿它判新鲜度会把
+ * 陈旧缓存误判成「很新」，正好漏掉用户报的这类丢失。
+ */
+export async function newestLocalEmailDate(): Promise<number> {
+  const row = await localDB.queryOne<{ m: number | null }>(
+    'SELECT MAX(date) AS m FROM local_emails WHERE IFNULL(deleted_at, 0) = 0',
+  )
+  return Number(row?.m) || 0
+}
+
+/**
  * 从服务端增量拉取邮件并写入本地镜像。
  *
  * 增量同步协议（docs/2026-09-09-list-sync-rules.md）：
@@ -273,6 +300,32 @@ export async function maxEmailUpdatedAt(): Promise<number> {
  * - 写入路径始终先落本地 SQLite，列表随后从本地读（本地优先）。
  */
 export async function syncEmailsFromServer(limit = 200, since = 0): Promise<number> {
+  const r = await syncEmailsFromServerDetailed(limit, since)
+  return r.inserted
+}
+
+export interface SyncEmailsResult {
+  /** 本页写入本地成功的行数。 */
+  inserted: number
+  /** 本页收到的总行数（含重复）。 */
+  received: number
+  /** 本页携带的软删除墓碑数。 */
+  tombstones: number
+  /** 未能写入本地镜像的行数。 */
+  failed: number
+  /** 本页收到邮件里最早的 date（毫秒），用于回补翻页锚点。 */
+  oldestDateMs: number
+}
+
+/**
+ * 带明细的增量拉取。
+ *
+ * 回补翻页需要一个「本页实际收到的最早一封」作为锚点（见
+ * email-cache-heal.nextPageSince），只返回写入条数拿不到它；同时把
+ * received/failed/tombstones 分开，避免「拉到了但一条没写进去」被
+ * 当成同步成功。
+ */
+export async function syncEmailsFromServerDetailed(limit = 200, since = 0): Promise<SyncEmailsResult> {
   const { emailApi } = await import('../../api/email')
   const res = await emailApi.listEmails({ limit, since: since > 0 ? since : undefined })
   const incoming = (res.emails ?? []).slice(0, limit)
@@ -280,8 +333,10 @@ export async function syncEmailsFromServer(limit = 200, since = 0): Promise<numb
   // 「没写进去」和「本来就有」在返回值上无法区分，两者混在一起会让调用方
   // 以为同步成功。单独计数并告警，避免又变成一条查不出根因的静默路径。
   let failed = 0
+  let oldestDateMs = 0
   for (const e of incoming) {
     const dateMs = emailDateToMs(typeof e.date === 'number' ? e.date : Date.parse(String(e.date)) || 0) || Date.now()
+    if (oldestDateMs === 0 || dateMs < oldestDateMs) oldestDateMs = dateMs
     const ok = await upsertEmail({
       id: e.id,
       accountId: e.accountId,
@@ -318,7 +373,7 @@ export async function syncEmailsFromServer(limit = 200, since = 0): Promise<numb
     const { purgeEmailsLocal } = await import('./email-soft-delete')
     await purgeEmailsLocal(tombstones)
   }
-  return n
+  return { inserted: n, received: incoming.length, tombstones: tombstones.length, failed, oldestDateMs }
 }
 
 export async function markRead(id: string, read: boolean): Promise<void> {

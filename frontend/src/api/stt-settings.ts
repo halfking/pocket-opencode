@@ -14,6 +14,16 @@
 import { http, LONG_REQUEST_TIMEOUT_MS } from './http'
 import { blobToBase64 } from '../utils/base64'
 
+/**
+ * 全量转写的客户端超时。
+ *
+ * 为什么远大于 LONG_REQUEST_TIMEOUT_MS（120s）：服务端按静音边界把整场录音
+ * 切成 N 段**串行**转写（两小时会议约 288 段），服务端自身给到 10 分钟。
+ * 客户端必须比服务端更宽裕，否则会出现「服务端还在算、客户端先断开」，
+ * 而用户看到的是「转写失败」。
+ */
+const FULL_TRANSCRIBE_TIMEOUT_MS = 11 * 60_000
+
 /** 转写通道。 */
 export type SttChannel = 'auto' | 'gateway' | 'external'
 
@@ -38,6 +48,22 @@ export interface SttRecommendedModel {
   /** 美元/小时。0 = 无公开报价（不猜价）。 */
   usdPerHour?: number
   accuracy?: string
+  /**
+   * 该模型是否支持**服务端真流式**（SSE 边收边下发）。
+   *
+   * 与「能否出字」是两件事：所有模型都能出字，只有部分能边收边出。
+   * 调研结论（2026-10-01）：只有 MiniMax asr-1.0 与智谱 glm-asr-2512 支持；
+   * OpenRouter 转写端点不支持（上游约 60 秒超时）。所以选 OpenRouter 省钱
+   * 就只能接受「分段式即时」（每 3-15 秒冒出一段），而不是逐字。
+   */
+  streaming?: boolean
+  /**
+   * 该服务单次请求的音频时长上限（秒）。0 = 未知。
+   *
+   * 直接决定「全量转写」能否一把梭：智谱 30 秒 / OpenRouter 约 60 秒 /
+   * MiniMax 500 秒。超限必须先切段，所以前端展示长录音时要知道这个数。
+   */
+  maxSeconds?: number
 }
 
 export interface SttGatewayCandidate {
@@ -95,6 +121,46 @@ export interface SttProbeResult {
   error?: string
 }
 
+/** 全量转写里的一段。失败段 error 非空、text 为空。 */
+export interface SttFullSegment {
+  index: number
+  startSec: number
+  endSec: number
+  text?: string
+  error?: string
+}
+
+export interface SttFullResult {
+  ok: boolean
+  text: string
+  segments: SttFullSegment[]
+  /** 转写成功的段数。0 表示这次没产出任何内容。 */
+  succeeded: number
+  /** 失败的段数。前端必须把「有段失败」呈现出来，不能装作完整。 */
+  failed: number
+  durationMs?: number
+  costCents?: number
+  model?: string
+  channel?: SttChannel
+  error?: string
+}
+
+export interface SttIncrementalResult {
+  ok: boolean
+  /** 累计文本（跨片去重后）。段失败时也回填已有文本，不会清空。 */
+  text: string
+  /** 相对上一片新增的部分，供前端只追加不重排。 */
+  delta: string
+  startSec: number
+  endSec: number
+  isFinal?: boolean
+  model?: string
+  channel?: SttChannel
+  costCents?: number
+  /** 单片失败原因。非致命：已有文本仍然有效。 */
+  error?: string
+}
+
 // 走项目统一的 http()：自动带 Bearer、401 刷新、默认 30s 超时。
 // 试转/扫描都要出网等模型推理，所以显式给到 LONG 上限。
 export const sttSettingsApi = {
@@ -122,6 +188,57 @@ export const sttSettingsApi = {
   async discover(): Promise<SttDiscoveryResult> {
     return http<SttDiscoveryResult>('/api/stt/discover', {
       method: 'POST',
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+    })
+  },
+
+  /**
+   * **全量**转写：整段长录音一次性拿到完整文字。
+   *
+   * 服务端会按静音边界自动切段（任何 ASR 都不允许无限长音频单次上传），
+   * 逐段转写后按序聚合。所以**长录音不用在前端切**。
+   *
+   * 必须检查 `failed`：部分段失败时整体仍返回 ok=true（保住成功段的内容），
+   * 但前端要把「有 N 段没转出来」告诉用户，否则用户会以为记录是完整的。
+   */
+  async transcribeFull(audioBlob: Blob, filename = 'meeting.wav'): Promise<SttFullResult> {
+    const base64 = await blobToBase64(audioBlob)
+    return http<SttFullResult>('/api/stt/transcribe-full', {
+      method: 'POST',
+      body: JSON.stringify({ audioBase64: base64, filename }),
+      timeoutMs: FULL_TRANSCRIBE_TIMEOUT_MS,
+    })
+  },
+
+  /**
+   * **即时**转写：录音进行中送一片，返回累计文本 + 增量。
+   *
+   * sessionId 必填——服务端靠它维持跨片去重状态（切片有重叠，不去重会出现
+   *「今天今天下午三点」）。一场录音用同一个 id，最后一片传 isFinal。
+   */
+  async transcribeIncremental(body: {
+    audioBlob: Blob
+    sessionId: string
+    filename?: string
+    startSec?: number
+    endSec?: number
+    silenceCut?: boolean
+    isFinal?: boolean
+    reset?: boolean
+  }): Promise<SttIncrementalResult> {
+    const audioBase64 = await blobToBase64(body.audioBlob)
+    return http<SttIncrementalResult>('/api/stt/transcribe-incremental', {
+      method: 'POST',
+      body: JSON.stringify({
+        audioBase64,
+        filename: body.filename ?? 'chunk.wav',
+        sessionId: body.sessionId,
+        startSec: body.startSec ?? 0,
+        endSec: body.endSec ?? 0,
+        silenceCut: body.silenceCut ?? false,
+        isFinal: body.isFinal ?? false,
+        reset: body.reset ?? false,
+      }),
       timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     })
   },

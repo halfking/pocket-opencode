@@ -1,0 +1,16 @@
+# Maestro 连通性自检（sttdev 并存包）
+#
+# 与 _connectivity.yaml 的区别只有 appId：sttdev 是调试包的独立
+# applicationIdSuffix，用于 STT 真机联调，与正式包数据隔离。
+# 正式包那条流的断言（全部正常 / AI 工具）在这里同样成立。
+#
+# 断言文本里不要放 emoji（如 🟢）——Java 正则里该字符会导致匹配异常、
+# 整条断言直接判 false（2026-09-30 实测踩过）。状态胶囊的真实可见文本
+# 是「全部正常」，用它作为 WebSocket 连上的外部可观测面。
+appId: com.kaixuan.opencode.pocket.sttdev
+---
+- launchApp
+- extendedWaitUntil:
+    visible: ".*(全部正常|解锁本地数据).*"
+    timeout: 45000
+- assertVisible: ".*AI 工具.*"
