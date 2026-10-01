@@ -207,7 +207,7 @@ onMounted(async () => {
   justify-content: space-between;
   padding: var(--space-4) var(--space-4) var(--space-2);
 }
-.head h1 { margin: 0; font-size: 20px; color: var(--text-primary); }
+.head h1 { margin: 0; font-size: 18px; color: var(--text-primary); }
 .add-btn {
   border: 0;
   background: transparent;
@@ -292,5 +292,5 @@ onMounted(async () => {
 }
 .outer { padding: 0 var(--space-3); }
 .outer .head { padding-top: var(--space-3); padding-bottom: 0; }
-.outer .head h1 { font-size: 17px; }
+.outer .head h1 { font-size: 15px; }
 </style>
