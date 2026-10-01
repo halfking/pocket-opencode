@@ -2374,8 +2374,8 @@ java.lang.AssertionError: 应用升级同样会清空 ELAPSED_REALTIME 闹钟
 
 ### 仍未验证
 
-- **真实 IMAP MOVE 未端到端验证**。用例已在本轮写出（见 §7ba），
-  但本机 Docker 未运行，**只验证了编译，没跑过**。
+- **真实 IMAP MOVE 已端到端验证通过**（`4a06c28`，用 Greenmail standalone
+  jar 跑的，**不需要 Docker**）。见 §7ba。
 - 13 封判垃圾的真实 MOVE 是否执行，仍等你确认（写操作）。
 
 ---
@@ -2395,26 +2395,75 @@ java.lang.AssertionError: 应用升级同样会清空 ELAPSED_REALTIME 闹钟
 内存状态，证明不了服务端真的变了。收件箱需 ≥3 封而只移动 2 封，
 是为了让「部分移动」成为可判定的事实。
 
-### 当前状态：只验证了编译
+### 当前状态：**已真跑通过**（`4a06c28`）
+
+> 本节最初只做到「编译已验证、没跑过」。本轮补上了运行时证据。
+
+**关键发现：不需要 Docker。** Greenmail 有 standalone jar，`java -jar`
+直接就能起。本机 Docker Desktop 根本没装（只有 `C:\tools\docker-cli`
+的 CLI 壳，没有引擎/服务），但这条路完全绕开了它。
 
 ```
-go vet -tags=greenmail ./internal/email/   exit=0
-go vet ./internal/email/                    exit=0
-go test ./internal/email/                   ok
+下载 com.icegreen:greenmail-standalone:2.1.14（10.47 MB，Maven Central 可达）
+
+java -Dgreenmail.setup.test.all \
+     -Dgreenmail.users=huangxutao@kxmail.local:h8pass \
+     -jar greenmail-standalone-2.1.14.jar
+# → smtp:3025 / imap:3143 / imaps:3993 / pop3:3110 全部监听
+
+env PG_DSN=... go test -tags=greenmail ./internal/email/ -run TestMoveToJunkGreenmail -v
 ```
 
-**运行时行为仍属未验证**——本机 Docker 未运行（`docker version` 报
-`open //./pipe/docker_engine` 不存在），无法起 Greenmail。
-文件头注释写明了完整前置步骤与运行命令。
+**结果：PASS**
 
-编译校验不是走过场，它抓到了 3 个真实的 API 用错（若不校验，这个文件
-直接跑不起来却看不出）：
+```
+已有垃圾箱 "Junk" —— 本次验证既有垃圾箱的移动路径
+移动前: junkBox="Junk" inbox=15 封 junk=6 封
+--- PASS: TestMoveToJunkGreenmail (0.13s)
+```
 
-| 错误写法 | 正确写法 |
-|---|---|
-| `client.Search("INBOX", SearchOptions{}, nil)` | `client.UIDSearch(nil, nil)` |
-| `res.UIDs` | `res.All`（且必须用 `UIDSearch` 才保证是 `UIDSet`） |
-| `range uidSet` | `uidSet.Nums()`（`UIDSet` 是 `[]UIDRange` 切片，不是 map） |
+**负控**：把 `MoveUIDsToJunk` 改成「只回报成功、实际不移动」→ **3 条断言红**：
+
+```
+uid 5  移动后仍在 INBOX —— 邮件没被移走
+uid 16 移动后仍在 INBOX —— 邮件没被移走
+垃圾箱邮件数 6，期望 8（移动前 6 + 移动 2）—— 邮件可能丢失或被误移
+```
+
+已还原并复跑 PASS。`junk.go` 与 HEAD 的 diff 为空。
+
+### 用例自身修掉的 3 个错误（都是**测试的** bug，不是产品缺陷）
+
+1. **跨信箱拿 UID 比对是错的**——最值得记的一条。IMAP 的 UID 是
+   **按信箱独立编号**的，邮件从 INBOX 移入 Junk 会在 Junk 里拿到一个
+   **全新的 UID**。我第一版据此断言，于是「邮件丢了」和「误伤既有垃圾箱」
+   **同时误报**，而移动其实完全成功（收件箱确实少了 2 封）。
+
+   修法：**INBOX 内部用 UID 比对**（UID 在同一信箱内稳定，可比），
+   **跨信箱只用数量判定增量**。
+
+2. `UIDSearch(nil, nil)` 在 `imapclient.searchCriteriaIsASCII` 里解引用 nil
+   **直接 panic**，必须传 `&imap.SearchCriteria{}`。这是**运行时**才暴露的，
+   编译期完全看不出来。
+
+3. go-imap v2 beta.8 的 API 与直觉差得较远，踩了 4 次才对上：
+
+   | 直觉写法 | 实际 |
+   |---|---|
+   | `client.Search("INBOX", SearchOptions{}, nil)` | `client.UIDSearch(&imap.SearchCriteria{}, nil)` |
+   | `res.UIDs` | `res.All`（且必须 `UIDSearch` 才保证是 `UIDSet`） |
+   | `range uidSet` | `uidSet.Nums()`（`UIDSet` 是 `[]UIDRange` 切片） |
+   | `client.Fetch(uidSet, []FetchItem{...}, nil).Wait()` | `Fetch(uidSet, &imap.FetchOptions{...})`，`Next()` 两层迭代 + 类型断言 |
+
+### 「没有垃圾箱」从 skip 改成正常场景
+
+最初 Greenmail 默认没建垃圾箱，用例直接 skip 了。但那**正是**
+`MoveUIDsToJunk` 走 `CREATE "Junk"` 兜底（`junk.go:127-133`）的路径，
+是值得覆盖的真实分支。改成正常场景后，实测日志
+`[email/junk] created junk mailbox for huangxutao@kxmail.local`
+证实该分支可用。
+
+**这条用例现在同时覆盖两条分支**：有垃圾箱时验证移动，没有时验证 CREATE 兜底。
 
 ### 顺带核实：junk.go 的回退注释是准确的
 
@@ -2446,7 +2495,7 @@ imapclient/move.go:25-34   COPY 之后补 STORE \Deleted + (UID)EXPUNGE
 | # | 需求 | 结论 | 关键证据 / 缺口 |
 |---|---|---|---|
 | 1 | 每天定时或手工收信 | ⚠️ **修了一个真缺陷，真机未验** | `cc6753d`：ELAPSED_REALTIME 闹钟重启后被清空且无开机重排 → 手机重启一次定时收信永久停止。已修 + JUnit 5 例；**真机重启未验证** |
-| 2 | 清理广告垃圾邮件移到垃圾箱 | ⚠️ **实现扎实，真 MOVE 未验** | `junk.go` 完整（`\Junk` 属性 → 7 种命名 → CREATE；MOVE 扩展失败回退 COPY+\Deleted+EXPUNGE）；`dryRun` 有守卫。`038f560` 补了定位判定的零覆盖。**真实 IMAP MOVE 无端到端证据**（需 Docker Greenmail，且现有 greenmail 测试不含 MOVE） |
+| 2 | 清理广告垃圾邮件移到垃圾箱 | ✅ **已验证（含真实 IMAP）** | `junk.go` 完整（`\Junk` 属性 → 7 种命名 → CREATE；MOVE 扩展失败回退 COPY+\Deleted+EXPUNGE）；`dryRun` 有守卫。`038f560` 补定位判定覆盖。**`4a06c28` 用 Greenmail standalone jar 真跑通了 UID MOVE**（含 CREATE 兜底分支），负控 3 断言红 |
 | 3 | 发票收取/解析/下载/飞书 | ⚠️ **除飞书外已通** | XML 重渲染**真跑通**（15 例非 skip，中文字体可找到），生产确实接上（`server_email_pipeline.go:182`）。**飞书投递卡 `POCKET_FEISHU_INVOICE_CHAT_ID` 未提供 + 回调未部署** |
 | 4 | 其它重要邮件提醒 | ❌ **卡外部配置** | `POCKET_KXMEMORY_BASE_URL` 未配置 → 对**新邮件**不生效。162 封已分类是历史数据 |
 | 5 | 发票导出 A4 2x2/3x3 可剪裁 | ✅ **已验证** | `adf622a`：3x3 补了 A4 尺寸断言（此前只查页数）。A4 排版经核实**本来就是对的**（见 §7at 的 PageGrid 陷阱）。裁切线有内容流级证据 |
@@ -2471,9 +2520,9 @@ imapclient/move.go:25-34   COPY 之后补 STORE \Deleted + (UID)EXPUNGE
 ### 汇总
 
 - **真正未实现**：1 条（需求 6）
-- **实现完成但缺真机/真 IMAP 验证**：2 条（需求 1、2）
+- **实现完成但缺真机验证**：1 条（需求 1）
 - **卡外部配置**：2 条（需求 3 的飞书部分、需求 4）
-- **已验证**：2 条（需求 5、7、8 共 3 条）
+- **已验证**：4 条（需求 2、5、7、8）
 
 **整体不能称完成。**
 
@@ -2591,8 +2640,8 @@ npm run gates  →  ✗ 在第一步 typecheck 就断
    见 §7au。这是本轮新发现的、**唯一一条真正未实现的需求**。
 7. 需求 1 的开机重排修复（`cc6753d`）**只在单元测试层验证过判定逻辑**，
    真机重启行为未验证，见 §7aw。要不要安排一次真机验证。
-8. 需求 2 的**真实 IMAP MOVE 用例已写出**（`af63e2e`），但本机 Docker 未运行，
-   **只验证了编译、没跑过**。见 §7ba。要跑需先起 Greenmail。
+8. 需求 2 的**真实 IMAP MOVE 已跑通**（`4a06c28`，Greenmail standalone jar，
+   不需要 Docker）。见 §7ba。
 
 **环境问题**：
 
