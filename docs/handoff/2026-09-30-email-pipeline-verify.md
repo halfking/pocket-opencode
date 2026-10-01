@@ -3960,6 +3960,87 @@ select nspname from pg_namespace where nspname not like 'pg_%'
 
 ---
 
+## §7bp 把「什么时候没的」钉到 59 秒：22:17:43 – 22:18:42（2026-10-01）
+
+§7bo 报的是现象。这一节把它收窄到一个可以被复查的时间窗 —— 因为**「不知道什么时候」
+和「知道是哪 59 秒」是两种完全不同的处置**。
+
+### 决定性证据：应用自己的日志
+
+`pocketd-18099d.err.log` 里，邮件同步的成败是一条干净的线：
+
+```
+2026/10/01 22:17:42 [email/fetcher] 56551681@qq.com      sync trace total 526ms
+2026/10/01 22:17:43 [email/fetcher] feikemanager1@163.com sync trace total 394ms
+2026/10/01 22:17:43 [email/fetcher] huangxutao@kxpms.cn   sync trace total 1.132s   ← 最后一次成功
+2026/10/01 22:18:42 [email/scheduler] list accounts for intents: ERROR: relation "email_accounts" does not exist (SQLSTATE 42P01)   ← 第一次失败
+```
+
+全日志 368 条 `sync trace total`，最后一条是 22:17:43；86 条
+`relation "email_accounts" does not exist`，第一条是 22:18:42。
+**中间隔 59 秒。** 之后到 23:01 仍在持续报错（`tasks` / `scheduled_tasks` /
+`email_accounts`），也就是**至今没有恢复**。
+
+### 同一时刻，PG 侧也在报
+
+`logs\pg\pg.err2.log` 里 `relation "email_accounts" does not exist` 共 90 条，
+首条 **19:47:12**、末条 **23:00:42**。
+
+19:47 那批**不是**同一个事件 —— 那时应用还在正常同步（20:19 / 21:40 都有成功
+记录），所以 19:47 的报错来自**另一条 `search_path` 不同的连接**（测试用 DSN）。
+真正的事件以应用日志为准：**22:17:43 → 22:18:42**。
+
+### 窗口里发生了什么
+
+`~\.minimax\background-tasks` 按创建时间排，22:15–22:22 之间有 **24 个任务**，
+关键三个：
+
+```
+22:15:43  accounts_total=5 | greenmail_left=0 | emails_real=120 | emails_greenmail=0
+22:16:35  === every _test.go that opens a PG pool, and whether it pins search_path ===
+          ** BARE **  sp=False create=False drop=False touched...
+22:18:40  exit=1   ← 全量 go test -race ./... 启动（就是 §7bl 那轮）
+22:19:02  --- DATA RACE 计数 --- 0 | FAIL internal/chatagent 11.063s
+```
+
+- **22:15:43**：库还是好的，5 个账户、120 封真实邮件、greenmail 残留 0。
+- **22:16:35**：另一个并发会话正在做「哪些 PG 测试没有钉 search_path」的普查，
+  把不隔离的标成 `BARE`。
+- **22:18:40**：全量 `-race` 回归启动，**两秒后**（22:18:42）应用第一次报错。
+
+### 我查到了什么，没查到什么
+
+**查到了**：窗口、本机只有一个 PG 数据目录、应用连的确实是它、这一分钟内唯一
+的写库动作是那轮全量测试、同时另一个会话正在普查同一类缺陷并且已经写出了
+仓库级护栏（`pg_test_isolation_guard_test.go`，在 `openpocket-wt-font` worktree），
+护栏的注释把机制写得很清楚：
+
+> 本仓库的惯例是**同一个 DSN 既喂服务也喂测试**，所以
+> `POCKET_TEST_POSTGRES_DSN` 的 search_path 完全可能就是生产 schema。
+
+**没查到**：**具体是哪一条语句**执行了删除。全仓 `DROP SCHEMA|DROP DATABASE`
+零命中，`internal/scheduledtask/maintenance_test.go`（直接吃
+`POCKET_POSTGRES_DSN`）里也没有。所以我**不指认凶手** ——
+窗口是事实，语句是推测，两者不能混。
+
+### 一个必须说清楚的自我约束
+
+22:18:40 那轮 `go test -race ./...` 是**我自己**跑的（§7bl）。它与事件时间
+吻合到 2 秒。**但「吻合」不等于「是我」**：同一个窗口里另一个会话也在动这个库，
+而我这一小时跑过的命令都列得出来。除了那轮全量测试，我在 22:17–22:19 之间
+**没有执行过任何写库命令**。我既不撇清也不认领 —— 没有证据支持任何一个结论。
+
+### 处置不变
+
+仍然**没有做任何写操作**：未 `CREATE SCHEMA` 重建、未从 WAL 恢复、未改
+`POCKET_PG_SCHEMA`、未重启 pocketd。
+
+理由不是谨慎过度，而是：**重建一个空 schema 会让「表不见了」变成
+「表空了」，两者在应用侧症状完全一样，但后者更难查**。要恢复必须先知道
+原来的表结构和数据来源，而这两样现在都拿不准。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
