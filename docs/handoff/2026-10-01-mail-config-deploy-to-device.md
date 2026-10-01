@@ -238,9 +238,33 @@ Email scheduler started (fetch_enabled=true, kxmemory=false, ...)
 不是它）。所以需要 `POCKET_KXMEMORY_BASE_URL` 指向一个可用的 kxmemory 实例。
 
 > 不配的后果可量化：最近一轮流水线 `remindersScanned=155`、
-> `remindersUnclassified=5`、`remindersSent=0` —— 报告上的 0 分不清
-> 「这批邮件确实不重要」和「邮件根本没被分类过」。这正是 handoff §7k 补
-> `remindersUnclassified` 计数要解决的问题，现在它把缺口如实暴露出来了。
+> `remindersUnclassified=5`、`remindersSent=0`。
+
+### 5.2.1 `remindersSent=0` 已查清：**不是缺陷**（别再怀疑提醒链路）
+
+那 46 封 high 为何一封没提醒？用只读诊断直接查真库
+（`TestDiagnoseReminderNotifiedAt`，`POCKET_REAL_MAIL_DSN` 指向真实 schema）：
+
+```
+扫描窗口（近 2 天，与 ListEmailsSince 同条件）
+  扫描总数        = 155
+  importance=high = 46
+    其中已提醒    = 46   (notified_at > 0)
+    其中未提醒    = 0    (notified_at == 0)
+结论：46 封 high 全部已提醒过 —— remindersSent=0 符合设计。
+```
+
+**所以「库里有 46 封 high 却 remindersSent=0」不是矛盾，是去重在正常工作。**
+通知中心那 53 条 `email.important` 正是它们留下的记录。
+
+判定逻辑本身也被单测钉住（`reminder_window_test.go`）：46 封
+`category = work(38)/notification(6)/bill(2)`、`notified_at = 0` 的邮件
+**必须全部**进入候选 —— 防止将来有人把正常业务类别误当垃圾排除掉，
+那才会真的让提醒静默失效。
+
+**剩余的真实缺口只有一个**：新邮件拿不到 `importance`（kxmemory 未配），
+所以 `remindersUnclassified=5` 持续增长、新的重要邮件永远等不到提醒。
+这是**依赖缺失**，不是代码问题。
 
 ## 6. adb 恢复后要做的事
 
