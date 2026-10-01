@@ -5926,3 +5926,84 @@ PG 的 `opencode_pocket.notes` 属于**另一个模块**（`features/notes/notes
   `local_assets`（表名带 `local_` 前缀；句柄是 Capacitor SQLite 插件，方法是 `all`/`run`，
   不是 `query`/`execute`，写错列名只会得到一个**不带消息的裸 Error**）
 
+
+### 4.60 「本地资产不同步」的定性结论 + 死能力卡口
+
+§4.59 结尾留了个问题：`e2ee_local_first` 的本地资产到底应不应该同步到服务端。
+本节把这个问题从「不确定」变成**有证据的结论**。
+
+#### 4.60.1 结论：这是**已知未实现的功能缺口**，不是回归
+
+逐环核对（静态，排除注释行）：
+
+| 环节 | 状态 | 证据 |
+|---|---|---|
+| 后端端点 | ✅ **已实现并注册** | `server.go:770` `mux.HandleFunc("/api/assets/sync", s.requireAuth(s.handleAssetSync))`；`server_lobster.go` 有完整 push/pull handler |
+| 本地存储 | ✅ **已实现** | `asset-store.ts:265 listDirty()`、`:278 markSynced()` |
+| API 客户端 | ✅ **已实现** | `api/assets.ts:47 export const assetsApi`（含 `sync()`） |
+| **编排层** | ❌ **根本不存在** | `syncAssets()` 只出现在**注释**里（`api/assets.ts:12`、`asset-store.ts:9`、`:100`），**没有定义、没有调用方**；`assetsApi` 除了定义处**零调用方** |
+
+而 `api/assets.ts:12` 的注释原文就是：**「见 native/asset-store.ts 末尾的 syncAssets() 流程编排（**待 F0.4 接入**）」**。
+
+⇒ 整条同步链路在**客户端编排层是断的**。`dirty=1` 会一直累积，
+`connectivity.lastSyncAt` 永远是 0（本轮活体实测就是 0），
+`pendingCount=0` 也说明不了问题——它压根没接进队列。
+
+**这解释了 §4.59 的观测，但不构成新缺陷**：它是被显式记录在案的未完成项。
+PKM / contacts / imports 三处 `assetStore.upsert` 写入的数据**只存在于本机**。
+
+#### 4.60.2 新卡口：`check:dead-api`（导出了却没人调用）
+
+这类「能力写好了却没人接线」的问题最难发现：**编译通过、类型通过、gates 全绿、
+运行时也完全正常**——只是那件事从来没发生过。上面的 `assetsApi` 就是活例子。
+
+`frontend/scripts/check-dead-api.mjs` 扫 `api/**` 的导出符号，
+区分两种「没人用」并分别报告：
+
+- ❌ **完全无引用**（12 个）：`assets.ts:assetsApi`、`vault.ts:vaultApi`、
+  `auth.ts:resetPassword`、`error-message.ts:ERROR_CODE_I18N_KEYS`、
+  `gateway.ts` 的 6 个（getNode / getRoutingHealth / getCredentialHistory /
+  getWorkTypeStats / updateTaskDefault / updateWorkType）、
+  `reconnectPolicy.ts:RECONNECT_FACTOR/RECONNECT_JITTER`
+- ⚠️ **仅被 `__tests__` 引用**（12 个，能力被测过但**没接进 App**）：
+  `http.ts:TimeoutError`、`stt.ts:requireCloudAudioBlob` 等
+
+棘轮：基线 `dead-api-baseline.json` 钉住 12 条，**只许减不许增**；
+确有历史债要保留就 `--update-baseline` 并在注释里写明为什么不接。
+
+#### 4.60.3 这条新判据自己也踩了两个坑（都已修）
+
+1. **假阳性（更严重）。** 第一版把 `consumers` 过滤成「`api/` 之外的文件」，
+   于是 `api/__tests__/reconnectPolicy.test.ts` 被整个排除——
+   而它明明 `import` 了 `nextReconnectDelay` / `RECONNECT_BASE_MS` / `RECONNECT_MAX_MS`。
+   假阳性会**污染基线**，让后续真阳性混进来。已修为
+   「api/ 内非测试文件不算消费自己的导出，但 api/ 内的**测试文件**算（归入仅测试引用）」。
+   修完：完全无引用 23 → **12**，仅测试引用 1 → **12**。
+
+2. **分类缺失。** 第一版只有「死/活」二分，把「仅测试引用」和「完全无引用」混在一起。
+   两者处置方式不同（前者是「有能力没接线」，后者是「彻底该删」），已拆开。
+
+> 再次印证同一条纪律：**新判据上线前必须自己先跑一遍、并且专门构造它该红的场景**。
+> 假阳性的危害比漏报更大——它会写进基线，从此永久合法。
+
+**负控已做**：临时新增 `src/api/__negctl-probe.ts` 导出一个无人调用的符号 ⇒
+`❌ 新增死能力：__negctl-probe.ts:__negctlDeadApi`、`EXIT=1`；
+移除后 `EXIT=0`。变异全程只用**新文件**，没碰任何已跟踪文件。
+
+#### 4.60.4 验证
+
+| 项 | 结果 |
+|---|---|
+| `check:dead-api`（基线后） | **EXIT=0**，基线 12 条 |
+| **负控**（新增死导出） | **EXIT=1** 且指名道姓；移除后 EXIT=0 |
+| `npm run gates` | **EXIT=0**（native 38/38、stores 5/5、dueclock OK、vm-gaps 0、i18n 齐平、未翻译棘轮通过、**死能力棘轮通过**、icons OK） |
+
+#### 4.60.5 仍然没有做的事
+
+- **同步编排层没写。** 这是「打通所有功能点」里最大的一个洞，
+  但它是一个**完整功能**（push + pull + 冲突处理 + 加密 + 游标），
+  不是一行修补。**需要产品先确认它属于本期范围**，再决定谁做。
+  在那之前，本地数据不出设备这件事应该被当作**已知限制**写进用户可见的说明。
+- i18n ~800 条未翻译：已钉基线，**未翻译**。
+- https 生产路径、Keystore 原生插件、其余模块写路径：仍无真机回归。
+
