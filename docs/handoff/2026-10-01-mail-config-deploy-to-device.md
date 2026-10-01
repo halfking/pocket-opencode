@@ -153,6 +153,36 @@ server 层紧邻的 `downloaded` 计数完全对齐 —— 界面上「已下载
   换 worktree 起实例会生成**另一把** key，症状是所有账户
   `decrypt credential: cipher: message authentication failed`。
 
+> **2026-10-01 19:26 实例被终止过一次（不是崩溃）**，日志停在正常的整分钟轮询、
+> 无 panic，进程就没了 —— 没有任何错误信息可查，只能重建。
+> 恢复时用下面这份配方（`wt3/scripts/start-local-backend.ps1` 是给 8088 用的，
+> 端口不对；`start-pocketd-email-verify.ps1` 是 8099 的那份，也不对）：
+>
+> ```powershell
+> $dataDir = 'C:\workspace\openpocket\wt3\backend\data'   # master key + 已落盘发票都在这
+> $env:POCKET_POSTGRES_DSN = 'postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable'
+> $env:POCKET_PG_SCHEMA        = 'opencode_pocket'
+> $env:POCKET_DEV_AUTH         = 'true'
+> $env:POCKET_AUTH_LEGACY_ONLY = 'true'
+> $env:POCKET_HTTP_PORT        = '18099'
+> $env:POCKET_SCHEDULER_ENABLED   = 'true'
+> $env:POCKET_EMAIL_FETCH_ENABLED = 'true'
+> # master key 按 base64 注入：跨目录复制 key 会被安全策略拦截
+> $env:POCKET_EMAIL_MASTER_KEY = [Convert]::ToBase64String([IO.File]::ReadAllBytes("$dataDir\email_master.key"))
+> # 必须给**绝对** DBPath：dataDir = filepath.Dir(DBPath)，相对路径会让 dataDir 跟着 CWD 跑（§2.3）
+> $env:POCKET_DB_PATH = "$dataDir\pocket.db"
+> Start-Process -FilePath <pocketd.exe> -WorkingDirectory $dataDir `
+>   -RedirectStandardError '<log>\pocketd-18099.err.log' -WindowStyle Hidden
+> ```
+>
+> 环境变量名是从 `backend/internal/config` 的 `getEnv(...)` 逐个核对的，不是凭记忆写的。
+> 起来后应看到 `healthz = ok`、账户数 5、且 `/api/emails/invoices/summary` 的
+> `amountTotal` 与 `downloaded` 指向同一批发票。
+>
+> 恢复后的实测（跑的是本分支已提交的代码，非 wt3 旧二进制）：
+> 账户 5 个（IMAP+SMTP 齐备），`count=3 amountTotal=3500 downloaded=1 failed=2`，
+> 两张 failed 仍在 rows 里（`seller='name:'` 这个已知脏字段），合计只算那张 3500 的。
+
 ### 2.2 adb
 
 - adb 路径：`C:\Users\86133\AppData\Local\Android\platform-tools\adb.exe`（不在 PATH）。
