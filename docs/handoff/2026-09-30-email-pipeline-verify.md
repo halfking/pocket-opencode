@@ -2530,6 +2530,43 @@ npm run gates  →  ✗ 在第一步 typecheck 就断
 
 ---
 
+## §7bd 「硬编码日期 + TTL = 定时炸弹」排查：邮件包**不存在**该风险
+
+有一类缺陷值得单独排查：**测试夹具把时间钉死在绝对日期，而生产代码存在
+陈旧/过期上限**（且先判陈旧再判其它分支）。症状是「今天绿、某天永久红，
+代码毫无改动」，极易被误判成回归。
+
+### 排查方法与结果
+
+先找生产侧的时间依赖判定：
+
+| 位置 | 判定 | 是否时间炸弹 |
+|---|---|---|
+| `store_pipeline.go:98` `CleanupStalePendingInvoices` | 只看 `attempts >= maxAttempts`；`now` 仅用于写 `updated_at` | ❌ 否 |
+| `invoice_harvest.go:585` `InvoiceFileName` 的日期兜底 | `time.Now().Format(...)`，仅在 `InvoiceDate` 为空时用 | ❌ 否（见下） |
+| `fetcher.go:519/525` `syncTrace` | 只做慢步骤日志 | ❌ 否 |
+| `fetcher.go:840` POP3 落库时间戳 | 仅写 `updated_at` | ❌ 否 |
+
+再查测试侧的绝对日期夹具（`time.Date(20` 命中 7 处）：
+
+| 文件 | 夹具 | 为什么安全 |
+|---|---|---|
+| `scheduler_pipeline_test.go:64/86/116/139` | `2026-09-30 09:00` | **注入了 `fakeClock`（`s.nowFn`）**，时钟完全由测试接管，硬编码日期只是锚点。这是正确写法的反面样本 |
+| `ledger_test.go:120` | `now := time.Date(2026,9,30,...)` | `LedgerTitle(ws, now)` 把时间当**入参**，断言的是入参回显，纯函数 |
+| `ledger_test.go:170` / `store_workspace_test.go:267` | UTC 锚点 | 纯夹具数据，不参与时间比较 |
+
+**结论：邮件包不存在这类定时炸弹。** 调度测试尤其值得肯定——它没有
+去赌真实时钟，而是注入了 `fakeClock`。
+
+本轮新写的三个测试文件（`invoice_date_backfill_test.go`、
+`junk_mailbox_test.go`、`EmailFetchReceiverTest.java`）也都不含
+`time.Now()` 断言，属同一安全模式。
+
+**这是一次「查了、结论是没有」的记录**——写下来是为了下次不必重查，
+也为了标明风险已排除，而不是留白让人重新怀疑。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
