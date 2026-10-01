@@ -264,6 +264,7 @@ import {
   nextReminderAt,
 } from '../../utils/learning-due'
 import { listNotes } from '../notes/notes-store'
+import { useApiError } from '../../composables/useApiError'
 
 defineOptions({ name: 'StudyHubView' })
 
@@ -277,6 +278,7 @@ const localDue = computed(() =>
 )
 
 const due = ref<LearningDueSummary | null>(null)
+const apiError = useApiError()
 /** Learning Core 不可用时为 false —— 决定收件箱 / 提醒区是否出现。 */
 const learningAvailable = ref(false)
 const inboxItems = ref<LearningItem[]>([])
@@ -415,7 +417,7 @@ async function submitCreateDeck() {
     await store.createDeck(name)
     newDeckName.value = ''
   } catch (err) {
-    deckError.value = err instanceof Error ? err.message : String(err)
+    deckError.value = apiError(err, '加载学习卡片失败')
   } finally {
     deckCreating.value = false
   }

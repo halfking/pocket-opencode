@@ -177,7 +177,7 @@ async function submitCreateDeck() {
     await store.createDeck(name)
     newDeckName.value = ''
   } catch (err) {
-    deckError.value = err instanceof Error ? err.message : String(err)
+    deckError.value = apiError(err, t('flashcards.error.loadFailed'))
   } finally {
     deckCreating.value = false
   }

@@ -86,6 +86,7 @@ import {
 } from './server-select-logic'
 import { clearSelectedInstance } from '../../config/selected-instance'
 import { useAuthStore } from '../../stores/auth'
+import { useApiError } from '../../composables/useApiError'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -96,6 +97,7 @@ const buildDefault = String(import.meta.env.VITE_API_BASE || '')
 
 const initial = detectServerChoice(localStorage.getItem('pocket_api_base'), buildDefault)
 const kind = ref<ServerChoiceKind>(initial.kind)
+const apiError = useApiError()
 const customUrl = ref(initial.custom)
 const testing = ref(false)
 const saving = ref(false)
@@ -118,7 +120,7 @@ async function testConnection() {
       ? { ok: true, text: t('settings.healthOk') }
       : { ok: false, text: t('settings.testFailed', { error: result.error }) }
   } catch (err) {
-    formError.value = err instanceof Error ? err.message : String(err)
+    formError.value = apiError(err, '服务器连接失败')
   } finally {
     testing.value = false
   }
@@ -153,7 +155,7 @@ async function saveAndUse() {
     if (auth.isAuthenticated) router.replace('/settings')
     else router.replace('/login')
   } catch (err) {
-    formError.value = err instanceof Error ? err.message : String(err)
+    formError.value = apiError(err, '服务器连接失败')
   } finally {
     saving.value = false
   }

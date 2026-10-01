@@ -93,12 +93,14 @@ import { isCryptoReady } from '../../native/crypto'
 import type { VaultEntryMeta } from './vault-store'
 import { useListScene } from '../../composables/use-list-scene'
 import { useToast } from '../../composables/useToast'
+import { useApiError } from '../../composables/useApiError'
 
 defineOptions({ name: 'VaultListView' })
 
 const initialized = ref(false)
 const unlocked = ref(false)
 const initError = ref('')
+const apiError = useApiError()
 const master = ref('')
 const entries = ref<VaultEntryMeta[]>([])
 const showAdd = ref(false)
@@ -242,7 +244,7 @@ async function cloudSync() {
       syncStatus.value = { type: 'ok', msg: '本地和云端均为空，无需同步' }
     }
   } catch (e: any) {
-    syncStatus.value = { type: 'err', msg: `同步失败: ${e.message || e}` }
+    syncStatus.value = { type: 'err', msg: apiError(e, '同步失败') }
   } finally {
     syncing.value = false
   }
