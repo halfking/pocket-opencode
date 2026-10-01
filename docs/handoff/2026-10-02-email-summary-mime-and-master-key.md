@@ -174,6 +174,11 @@ key 一丢，5 个真实邮箱的凭据全部作废、必须重新录入 —— 
    本轮「装上了但 classify 仍在刷」的结论就是被这个旧包误导的，
    实际旧包的 35 req/s 刷屏才是刷屏源（force-stop 后 10 秒零增长）。
 
-5. 模拟器登录页 Custom backend URL 丢失、回落 Build default
-   `http://localhost:18099`（Android 上不可达）—— 用 `adb reverse` 规避，
-   真机上同样会发生，未修。
+5. ~~模拟器登录页 Custom backend URL 丢失、回落 Build default~~ —— **已修，
+   且原归因是错的**，见
+   [`2026-10-02-device-localhost-api-base-unreachable.md`](./2026-10-02-device-localhost-api-base-unreachable.md)。
+   地址一直存得好好的（`http://localhost` 分区里有
+   `pocket_api_base = http://10.0.2.2:18099`）；装机包 `androidScheme` 是
+   `https`，页面 origin 变成 `https://localhost`，而 localStorage 按 origin
+   分区，于是读不到那份 override。真正的问题是：**构建默认值里的
+   `localhost:18099` 在设备上指向手机自己**，此前全靠 `adb reverse` 才通。
