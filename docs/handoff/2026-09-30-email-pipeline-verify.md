@@ -1880,7 +1880,138 @@ GBK 误解码样本（用来证明解码器能还原中文），不是乱码，�
 
 ---
 
-## §7ar 本轮仍未验证 / 仍是阻塞
+## §7ar 开票日期回填链路：修了但测不到（`c6b5944`）
+
+### 起因
+
+§7aq 记录了「`email_invoices.invoice_date` 所有行为空」。本轮把根因查到底。
+
+**先纠正一条我自己写进代码注释里的、未经证实的断言。**
+
+原 `pipeline.go` 里有这么一段注释：
+
+```go
+case hit && inv != nil && inv.InvoiceDate == "":
+    // 命中了但**没有开票日期**：IMAP 路径只落 envelope，正文里的
+    // 「开票日期」看不到，于是规范文件名退化成下载当天（实测真发票
+    // 「其他-杭州创客家…-3500.00-2026-10-01.pdf」，票面其实是 5 月开的）。
+```
+
+「票面其实是 5 月开的」——**`2026-05-01` 只出现在
+`pop3_uid_test.go:172` 的测试夹具里**，那是我自己为了测 POP3 路径随手填的值。
+没有任何真机证据支持这句话，它却以「实测」的口吻写进了生产代码注释。
+
+已改成只陈述可验证的事实：文件名里的 `2026-10-01` 是采集当天、
+该行 `invoice_date` 为空。至于票面日期到底是什么，**目前不知道**。
+
+### 查证过程
+
+真库只有 3 行发票，唯一 `downloaded` 的是
+`inv_1790785758514563200_1`（`file_source=pdf-url`）：
+
+```
+ file_name    = 其他-杭州创客家投资管理有限公司-3500.00-2026-10-01.pdf
+ invoice_date = ''            ← 空
+ invoice_no   = 26332000008261110741   ← 解析到了
+```
+
+`UpdateInvoiceHarvest`（`invoice_store.go:264`）**确实**写 `invoice_date`
+（`CASE WHEN $8 <> ''`），所以不是写入丢失。
+
+两条取值来源都不通：
+
+1. **PDF 字节扫描**：`ParseInvoiceDateFromBytes`（`invoice.go:247`）只是对
+   原始字节做正则匹配。真实 PDF 的文字在压缩流里，扫不出来。函数注释自己
+   就写着「图片旁路无效」。
+2. **邮件正文**：正文缓存 `data/email-bodies/em-10435-…bin` 是**加密**的
+   （11304 字节，密文），没有 store 的 crypto 密钥无法解析。
+   DB 里的 `snippet` 只存了 500 字符，看不到日期。
+
+所以「票面日期是什么」这个问题，**在当前证据下无法回答**。
+
+### 真正的问题：这个修复从来测不到
+
+`pipeline.go:406` 的 `date` 分支正是为这个症状加的修复。但整段逻辑
+（`invoiceCandidate` 类型 + 判定 + 预算 + 回填）**全部写在 step1.5 函数的
+函数体内**，`invoiceCandidate` 是函数内局部类型——从包外**完全无法构造
+这个场景**。
+
+查证：`grep "date" *_test.go` 只在 `pipeline_budget_test.go` 命中，
+测的是 `limitInvoiceBodyJobs` 的**预算排序**（date 类优先），
+**没有任何测试驱动「拉回正文 → 解析出日期 → 落到文件名」这条链**。
+
+**修了等于没修。** 这与 §7ak 的 163 ID 头是同一类问题：修复存在，
+但没有能真正驱动它的测试。
+
+### 修复
+
+抽出两个纯函数（与 163 ID 头同样处理）：
+
+- `invoiceBodyReason(hit bool, inv *Invoice, e Email) string`
+  （`pipeline.go:545`）——判定本轮要不要拉原文、拉为什么
+- `applyParsedBodyDate(inv *Invoice, text string) string`
+  （`pipeline.go:564`）——用正文补日期，**已有日期不覆盖**
+
+后者顺带带来一个语义改进：原实现无条件 `c.inv.InvoiceDate = d`，
+而 `date` 分支进入的前提正是「当前没有日期」，所以行为上等价；
+但把「不覆盖已有日期」写进函数后，这个保证不再依赖调用点的巧合。
+
+新增 `invoice_date_backfill_test.go`，9 个用例，含端到端断言：
+补到的日期必须出现在 `InvoiceFileName()` 的结果里。
+
+**负控（均能编译后断言红）**：
+
+1. 改坏 `date` 分支条件 → `TestInvoiceBodyReason_DateWhenHitWithoutDate` 红
+   ```
+   invoiceBodyReason = "", want "date" —— 命中发票却缺日期时不拉原文，
+   规范文件名会用采集当天冒充开票日期
+   ```
+2. `applyParsedBodyDate` 改成无条件覆盖 →
+   `TestApplyParsedBodyDate_DoesNotOverwriteExisting` 红
+   ```
+   applyParsedBodyDate = "2026-05-01", want 2026-01-02（已有日期不得被正文覆盖）
+   ```
+
+验证：`go build` exit=0；`go vet` exit=0；`go test ./internal/email/`
+→ **ok 30.053s**。
+
+### 仍然遗留（需用户决策）
+
+**已 `downloaded` 的行永远不会被回填**：`pipeline.go:385` 对已建档发票
+直接 `continue`（幂等跳过）。所以：
+
+- 存量文件 `其他-杭州创客家…-3500.00-2026-10-01.pdf` 的**文件名不会自愈**
+- 该行 `invoice_date` 仍然是空
+
+要让存量自愈，需要一条独立的回填路径（重新拉正文 → 补 `invoice_date`
+→ 决定是否重命名文件）。这是**写操作**，且涉及重命名已交付给用户的凭证文件，
+**未擅自做**。
+
+---
+
+## §7as 本轮的环境教训：三种读视图不一致
+
+worktree 的 `.git` 是文件、索引在主仓且会被 `read-tree` 重新变陈旧。
+本轮又遇到一次**更隐蔽**的版本：编辑后的文件在数秒内被不同读取方式
+读出**三种不同内容**。
+
+| 读取方式 | 观察到的结果 |
+|---|---|
+| `read` 工具 | 编辑前的旧内容（行号偏移 9 行） |
+| `[IO.File]::ReadAllLines` / `ReadAllText` | 同样是旧内容，但 `mtime` 已是新的 |
+| `Select-String` | **正确的新内容** |
+| 独立 `GIT_INDEX_FILE` + `git diff` | 正确的改动统计 |
+
+最险的一步是用 `[regex]::Matches(ReadAllText(...))` 搜新函数名，
+返回 0 个，一度让我以为三次 `edit` 全部丢失并准备重做——
+**而实际全部写入成功**。若照着那个假阴性重写，就会覆盖掉已生效的改动。
+
+**判定纪律（本轮验证有效）**：确认文件内容一律用 `Select-String`，
+不用 `[IO.File]::ReadAllText` + 正则；`mtime` 新鲜**不代表**内容是新的。
+
+---
+
+## §7at 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
 
@@ -1896,7 +2027,10 @@ GBK 误解码样本（用来证明解码器能还原中文），不是乱码，�
 2. 13 封判垃圾是否跑真实 IMAP MOVE（真实邮箱本轮只做只读验证）
 3. `folder_name` / `processed_at` 两个死列是否清理
 4. 4 个孤儿 PDF 是否删除
-5. `invoice_date` 全空是否需要处理
+5. `invoice_date` 回填：已 `downloaded` 的行永不自愈（`pipeline.go:385`
+   对已建档发票直接 continue）。是否要建一条回填路径，见 §7ar。
+   另需注意：**票面真实开票日期目前无从得知**（PDF 压缩流扫不出、
+   正文缓存加密），所以「正确文件名」现在还定不下来。
 
 **环境问题**：
 
