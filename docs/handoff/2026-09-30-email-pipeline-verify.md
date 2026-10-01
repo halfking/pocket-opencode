@@ -681,6 +681,46 @@ C:/workspace/openpocket-wt-email   90b6d36 [email-pipeline-snapshot-2026-10-01]
 - worktree 里的 `.git` 是**文件**不是目录 —— `psql -f .git/xxx.sql` 这类
   写法会失败，临时文件放 `%TEMP%`。
 
+## 7u. 回填按 UIDL 取回原文（已实测 216/279 成功），根治重复副本的钥匙
+
+§7s 证伪了「按位置序号补取」。**正确**的入口是**按 UIDL**：UIDL 跨轮稳定
+（服务器重排也不变），所以先 `UIDL`（无参）拿「UIDL → 当前序号」映射，
+再 `RETR` 那个序号。新增 `FetchPOP3MessagesByUIDLs`（单连接批量）。
+
+> **踩到的坑 1**：逐封调用（每封重连 + 拉全量 UIDL）必然超时。QQ 账户 285 封
+> 时全量 UIDL 响应本身接近 45s 预算，实测每封都 `i/o timeout`。必须**一次
+> 登录、一次 UIDL、循环 RETR**。
+>
+> **踩到的坑 2**：`uidlFromEmailID` 一开始按第一个 `-` 切分 accountID，而
+> accountID 本身含 `-`（`acct-1790784184824054300-1`），把整段当成 UIDL，
+> 回填全找不到。必须**传入已知 accountID** 精确剥前缀。
+
+**真实只读实测**（`POCKET_DIAG_POP3_BACKFILL=1`，不发 DELE）：
+
+| 账户 | 取回 | 说明 |
+|---|---|---|
+| huangxutao@kxpms.cn | **6/6** | 全部成功 |
+| 56551681@qq.com | **216/279** | 63 封 MISS = 已被删除，不在收件箱 |
+
+取回内容与库记录**主题完全对应**，并拿到了**真实 Message-ID**，例如
+`mis_201A73A…@exmail.weixin.qq.com`、`tencent_E35ABE…@qq.com`。
+
+**为什么这是根治重复副本的钥匙**（实测库内 43 组疑似重复，模式统一为）：
+
+```
+em-10432-acct-…-3                    REAL  uid=10432  "AWS 账户提醒"
+em-pop3-acct-…-3-ZC0023_7u_NgG…10    SYNTH uid=260    "AWS 账户提醒"
+```
+
+同一封邮件，IMAP 侧用真实 IMAP UID + 真实 message_id 落一条，POP3 侧用
+**位置序号** + **合成 message_id** 再落一条；`UNIQUE(account_id, message_id)`
+因为两个值都不同而拦不住。回填真实 Message-ID 后，这两条就能按 message_id
+对齐并合并，从根上消掉重复。
+
+**尚未做**（诊断只读验证，未写库）：把 216 条真实 message_id 写回
+`emails.message_id`、把原文写入 BodyCache、再按 message_id 合并重复组。
+写库前需人工确认合并策略（保留 IMAP 侧还是 POP3 侧、发票/垃圾状态如何继承）。
+
 ## 8. 仍未验证 / 未完成（不得外推）
 
 - **真实邮箱已接入（6/6）**，但只做了**只读同步 + 发票采集**。仍未在真实邮箱上验证的：
