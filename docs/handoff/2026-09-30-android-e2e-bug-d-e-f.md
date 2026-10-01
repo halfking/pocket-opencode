@@ -5536,3 +5536,131 @@ node scripts/build-material-symbols-subset.mjs     # 131 → 138 个图标，352
   本仓库的 gates 已经能抓到「真机显示字面文本」这类只有上机才看得见的缺陷。
 - 这一类缺陷**不需要真机就能验**，设备被占用时优先做这类事。
 
+
+### 4.57 BUG-AS 修复：到期判据改用响应式时钟（并抓到一个「文档写了但没实现」）
+
+§4.55 只做了静态取证，根因是：
+
+`dueByDeck` / `deckSummaries` / `dueCardsForDeck` 三个 computed 拿 `Date.now()`
+当到期判据，而 `Date.now()` **不是任何响应式依赖**，同文件也没有任何定时器推进时间。
+⇒ 卡片在页面打开期间跨过到期时刻时，computed 不重算，到期数与「开始复习」都卡住，
+直到别的依赖动了（增删改卡片 / refresh 整体替换数组 / 进出页面重新挂载）。
+
+#### 4.57.1 修法：把时间本身变成响应式值，按用途拆两路
+
+新增 `frontend/src/stores/flashcardDueClock.ts`：
+
+| 导出 | 数据来源 | 用途 |
+|---|---|---|
+| `dueNowSec()` | 模块级 `ref`，由 tick 推进 | **到期判据**（三个 computed 依赖它才会重算） |
+| `liveNowSec()` | 直接读 `Date.now()` | **记录时间戳**（`enqueuedAt` / `reviewedAt` / `updatedAt` / 传给服务端的 `now`） |
+| `startDueClock()` | — | 在 store 创建路径上启动 tick（幂等） |
+| `stopDueClock()` | — | 停 tick 并摘监听，仅测试/热重载 |
+
+拆两路的原因：到期判据要「能被 Vue 追踪」，记录时间戳要「真实」——
+如果全用 tick 值，`enqueuedAt`/`reviewedAt` 会被拖成最多 30 秒的旧值。
+
+行为取舍集中在两个常量/开关，**默认值由我选定**（尚未经产品确认）：
+`TICK_MS = 30_000`、`document.hidden` 时暂停 tick（回前台立刻补一次，不等下个周期）。
+
+`flashcards.ts` 接线后分布（`check:dueclock` 逐点核对）：
+
+| 位置 | 用哪个 | 理由 |
+|---|---|---|
+| `dueByDeck` :198 | `dueNowSec()` | 到期判据 |
+| `deckSummaries` :223 | `dueNowSec()` | 到期判据 |
+| `dueCardsForDeck` :250 | `dueNowSec()` | 到期判据 |
+| `enqueue` 的 `enqueuedAt` :346 | `liveNowSec()` | 记录时间戳 |
+| `applyReviewLocally` 的 `now` :356 | `liveNowSec()` | 传给 FSRS 的真实时间 |
+| `reviewedAt` :401 | `liveNowSec()` | 记录时间戳 |
+| `fetchDueCount` 的服务端 `now` :500 | `liveNowSec()` | 查询参数要准，不能用旧值 |
+| `updatedAt` :536 | `liveNowSec()` | 记录时间戳 |
+
+#### 4.57.2 过程里的一次自纠：接线脚本静默失败
+
+接线用一次性脚本 `wire-dueclock.mjs` 做，它的锚点字符串写的是 `\n`，
+而本仓库文件是 **CRLF** ⇒ 三处到期判据锚点**全部未命中**。
+脚本只打印了三行「未命中(可能已改)」就**照样写盘退出 0**，
+结果三个 computed 全被接到 `liveNowSec()`（不响应式）—— **修复等于没做，而且看起来做完了。**
+
+这是本轮最值得记的一条：把「未命中」当提示而不是失败，等于没有失败。
+
+处置：删掉该脚本，改用 `edit` 精确改三行，并补上会报红的静态判据
+`scripts/verify-dueclock-wiring.mjs`（逐点核对「哪一行该用哪个时间源」+ 数量分布）。
+
+判据自己也踩了 4 个坑，都已写进脚本注释：
+1. 锚点只用字段名找会命中**类型定义**里的同名字段（`enqueuedAt: number`）⇒ 必须要求同一行含时间调用；
+2. 1-based 行号喂给数组要减 1；
+3. 从 computed 锚点找时间调用不能只看紧邻几行（`deckSummaries` 的 `now` 在锚点后 15 行）⇒ 截到块结束；
+4. 统计必须**排除注释行**——本文件的说明块里就写着 `dueNowSec()` 字样，会把 3/5 数成 4/7。
+
+#### 4.57.3 单元测试抓到「文档写了但没实现」
+
+`src/stores/__tests__/flashcardDueClock.test.mjs`，5 条全绿：
+
+| # | 断言 | 作用 |
+|---|---|---|
+| 1 | 读 `dueNowSec()` 的 computed 随时间推进重算（含时间回退） | 正例，挡住 BUG-AS 复发 |
+| 2 | 读 `liveNowSec()`（修复前写法）**不重算** | 自带负控：证明判据有鉴别力 |
+| 3 | `tick()` 真的把 ref 推进（不是手动拨动的假象） | 排掉「测试自己拨了时间」 |
+| 4 | 替换 `setInterval` 数定时器：3 次 start 只注册 1 个、间隔 = TICK_MS、stop 幂等且可再启动 | 排掉「根本没挂定时器」 |
+| 5 | **后台不推进、回前台立刻补一次** | 见下 |
+
+第 5 条**第一次跑是红的**，而且红得有价值：
+`flashcardDueClock.ts` 的文件头注释写着「`document.hidden` 时暂停 tick」，
+但 `tick()` 里**根本没有 hidden 判断**，定时器在后台照跑不误。
+这正是「只是声明一下就当完成」的典型——注释比实现先跑到了。
+
+处置：补实现 `if (isHidden()) return`，并**对这条做负控**（把守卫拿掉 → 第 5 条转红 → 恢复）。
+同时第 5 条自己也重写过一遍：初版没重置时间基线、也没真正触发定时器回调，
+「后台不推进」实际是断言了一个没被碰过的值——空断言，同样不算数。
+
+#### 4.57.4 卡口接入与结果
+
+新增两个 npm 脚本并挂进 `gates`：
+- `test:stores` → `node --test src/stores/__tests__/flashcardDueClock.test.mjs`
+- `check:dueclock` → `node ../scripts/verify-dueclock-wiring.mjs`
+
+判据的区分能力由 `scripts/dueclock-negctl.mjs` 证明（对**缺陷副本**跑判据，必须报红）：
+
+| 缺陷侧 | 判据结果 |
+|---|---|
+| 三个判据全接 `liveNowSec()`（= 修复前 / 脚本静默失败产物） | EXIT=1，5 项 FAIL |
+| 少接一处（只还原 `dueByDeck`） | EXIT=1，3 项 FAIL |
+| 反向错误（`enqueuedAt` 接成 `dueNowSec()`） | EXIT=1，3 项 FAIL |
+
+#### 4.57.5 验证结果与**尚未验证的部分**
+
+已验证：
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| 时钟单测 | `node --test src/stores/__tests__/flashcardDueClock.test.mjs` | **5/5 通过** |
+| hidden 守卫负控 | 拿掉 `if (isHidden()) return` 后重跑 | **第 5 条转红**（EXIT=1），恢复后 5/5 |
+| 接线判据 | `npm --prefix frontend run check:dueclock` | **EXIT=0**，逐点 OK + 分布 3/5 |
+| 接线判据负控 | `node scripts/dueclock-negctl.mjs` | **三种缺陷侧均报红** |
+| 全量卡口 | `npm --prefix frontend run gates` | **EXIT=0** |
+
+**尚未验证（不要当成已修好）**：
+
+- **真机上「到期数随时间自己走」没有验证过。** 真机仍被并发会话占用（§4.55 记录第三次实证），
+  且 `flashcards-write.yaml` 里剩下的 `.*今日待复习 1 张.*` 断言**根因未定位**——
+  它和本节的响应式缺陷**是两件事**，别混：本节修的是「时间推进后不重算」，
+  那条断言红的是「文案/选择器对不上」。两者的证据要分开看。
+- **单测用的是 `dueByDeck` 的最小复刻，不是真实 store。** 真实 store 在 node 里跑不起来
+  （`stores/flashcards.ts` 用无扩展名导入 `../services/flashcards`，Node ESM 解析不了
+  `ERR_MODULE_NOT_FOUND`；不为此造解析器钩子）。
+  因此「真实文件的三个 computed 确实接到了响应式时钟」由 `check:dueclock` 静态保证，
+  「响应式时钟确实驱动重算」由单测保证——两段证据拼起来，**中间那一环没有端到端覆盖**。
+
+#### 4.57.6 教训
+
+- **注释/文档里的行为描述也是「声明」，必须和实现一起被测。** 本轮第 5 条测试的红灯，
+  就是唯一抓到「后台暂停根本没实现」的东西。
+- 一次性迁移脚本里，**「未命中」必须 exit 非 0**。允许它写盘退出 0，
+  等于给「什么都没改成」发了一张通行证。
+- 判据自己也要有负控，而且负控的**变异必须真的改到了文件**（脚本里显式检查
+  `mutated === orig` 就报失败），否则负控可能只是在测空气。
+- 空断言最隐蔽：「没碰过的基线」和「正确的不变」在断言上长得一模一样。
+  要判「不变」，就必须先**主动触发**那个本该不变的东西。
+
