@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 import { emailApi } from '../../api/email'
 import i18n from '../../i18n'
 import { normalizeEmailCategory } from './email-categories'
-import { applyClassifyResult, classifyProgressLabel, isUncategorized } from './email-classify-run'
+import { applyClassifyResult, classifyDoneHint, classifyProgressLabel, DEFAULT_CLASSIFY_MAX_ROUNDS, isUncategorized, shouldContinueClassify } from './email-classify-run'
 import { sanitizeFetchHint } from './email-fetch-plan'
 import { hasInboxSearch, matchInboxSearch, type InboxSearch } from './email-inbox-search'
 import { selectedIdList, toggleSelect } from './email-inbox-select'
@@ -92,12 +92,26 @@ export function useEmailInbox() {
     classifyAbort.value = controller
     let next = list
     try {
-      do {
-        const report = await emailApi.classifyInbox(20, controller.signal)
+      // 轮次上限与终止条件都在纯函数里（email-classify-run.ts），可单测。
+      // 原实现在这里只有一个 `while (!classifyCancel)`：分类器逐封调 LLM，
+      // 失败是常态，而后端逐封失败仍返回 200、remaining 不变 ⇒ 无限重试。
+      const MAX_ROUNDS = DEFAULT_CLASSIFY_MAX_ROUNDS
+      const PER_ROUND = 20
+      let round = 0
+      let firstError = ''
+      let allFailed = false
+      let continueLoop = true
+      while (continueLoop) {
+        round++
+        const report = await emailApi.classifyInbox(PER_ROUND, controller.signal)
         const done = report.classified ?? 0
         const remain = report.remaining ?? 0
+        const rows = report.results ?? []
+        const errs = rows.map((r) => r.error).filter((e): e is string => !!e)
         classifyHint.value = classifyProgressLabel(Math.max(1, done), done + remain)
-        for (const row of report.results ?? []) {
+        if (errs.length > 0 && !firstError) firstError = errs[0]
+        allFailed = rows.length > 0 && errs.length === rows.length
+        for (const row of rows) {
           next = next.map((m) => applyClassifyResult(m, row))
           const category = normalizeEmailCategory(row.category)
           if (row.emailId && category && !row.error) {
@@ -106,10 +120,20 @@ export function useEmailInbox() {
             )
           }
         }
-        if (classifyCancel.value || remain <= 0) break
-      } while (!classifyCancel.value)
+        continueLoop = shouldContinueClassify({
+          round, maxRounds: MAX_ROUNDS, remaining: remain,
+          cancelled: classifyCancel.value, rowCount: rows.length, errorCount: errs.length,
+        })
+      }
       const leftover = next.filter((m) => isUncategorized(m.category)).length
-      classifyHint.value = leftover ? `已暂停，仍有 ${leftover} 封未归类` : '归类完成'
+      classifyHint.value = classifyDoneHint({
+        leftover,
+        firstError: firstError ? sanitizeFetchHint(firstError) : '',
+        allFailed,
+        hitMaxRounds: round >= MAX_ROUNDS,
+        maxRounds: MAX_ROUNDS,
+        perRound: PER_ROUND,
+      })
     } catch (e) {
       if (controller.signal.aborted) {
         // 用户主动中止：已落库的部分保留，如实说明停在哪
