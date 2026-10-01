@@ -6864,6 +6864,90 @@ attempts      = 1
 
 ---
 
+## §7cz 【需求 6/7】邮件的增量同步**永远退化成全量拉取**，而它的「正确」是靠这个 bug 换来的（2026-10-02）
+
+需求 7「在邮件窗口查看各类邮件」的 UI 链路本身是完整的，我逐段验过：
+
+```
+INBOX_CATEGORY_CHIPS（9 个 chip，含 重要/未分类/垃圾 三个虚拟值）
+  → EmailInboxView.setCategory → readInboxPage(activeCategory, offset)
+  → inboxListFilter：__important→{importance:'high'}、__spam→{category:'spam'}、__none→{uncategorized:true}
+  → emailsStore.listEmails：三个条件都正确落到本地 SQLite 的 WHERE
+syncEmailsFromServer：category / importance 都带下来了
+```
+
+虚拟值没有漏成字面量，`listEmails` 三个条件也都实现了 —— 这里没有 bug。
+**但往上游追一层，增量同步协议本身是坏的**，而且坏法很特别。
+
+### 表里根本没有 `updated_at`
+
+```
+information_schema 查 emails 的时间列：
+  created_at, date, deleted_at, notified_at, processed_at      ← 没有 updated_at
+processed_at 非零的行：0 / 120                                  ← 就是那个死列
+```
+
+于是服务端 `ListEmailsScoped` 的增量过滤（`store.go:1673`）实际比的是：
+
+```go
+stamp := "GREATEST(e.date, COALESCE(e.processed_at, 0), e.created_at)"
+```
+
+`processed_at` 恒 0 → 退化成 `GREATEST(date, created_at)`。
+
+而客户端游标来自 `MAX(updated_at) FROM local_emails`，服务端给过去的
+`UpdatedAt` 是**从 `date` 凭空合成的**（`store.go:1700-1704`：
+`if e.UpdatedAt == 0 { e.UpdatedAt = e.Date * 1000 }`，因为 SELECT 列表里
+根本没有 updated_at 列）。
+
+### 实测：游标永远追不上
+
+客户端游标 = `max(date)`，服务端过滤 = `GREATEST(date, created_at) > max(date)`：
+
+| 指标 | 实测值 |
+|---|---|
+| 游标取 `max(date)`=1790821420 时返回的行数 | **120 / 120（整箱）** |
+| `created_at > max(date)` 的行 | **120 / 120** |
+| `date > max(date)` 的行 | 0 |
+| `created_at − date` 最小间隔 | 48792 s（≈13.5 小时） |
+| 平均间隔 | 511744 s（≈5.9 天） |
+
+`created_at`（入库时间）比 `date`（邮件原始时间）晚 13.5 小时到 5.9 天，
+**每一行都是**。所以游标被钉死在 `max(date)`，每一轮增量拉取都把整个信箱
+重发一遍，永远如此。协议文档写的「since 只回传 updated_at 更晚的行」
+（docs/2026-09-09-list-sync-rules.md）在邮件这条链路上**没有兑现**。
+
+### 关键：需求 7 现在「看起来对」，靠的正是这个 bug
+
+因为整箱被重发，AI 分类写进去的 `category` / `importance` 每次都能覆盖到
+设备本地库，所以分类 chip 在设备上是有效的。
+
+但这个「有效」是**偶然**的：
+
+- 没有任何列记录「分类是什么时候发生的」（表里没有 `updated_at`，
+  `SetClassification*` 也不碰任何时间戳列）；
+- 所以一旦有人把游标改成「拉取时刻」来修掉全量重发，**分类变更就再也
+  不会下发给设备**，需求 7 的分类筛选会静默变成陈旧数据。
+
+**修效率就会破正确性，除非先给 `emails` 加真正的 `updated_at` 并让
+`SetClassification*` / `MarkEmailBodyCached` / 软删 / 标记已读都去 bump 它。**
+
+这与需求 8 的 LWW 是同一件事的两面：需求 8 要求「以最后修改时间为准」，
+而邮件这条链路上目前**根本没有一个可信的最后修改时间**。所以 8 的方案
+不能只做账户表，必须把 `emails.updated_at` 一起纳入 —— 否则「最后修改
+时间」在邮件上是空的。
+
+### 本轮不改
+
+这是 schema 级改动（加列 + 改所有写路径 + 迁移），且与需求 8 待拍板的
+账户归属语义耦合。本轮只记录，不擅自实施。
+
+---
+
+## §7az 本轮仍未验证 / 仍是阻塞
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
