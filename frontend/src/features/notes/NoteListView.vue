@@ -90,6 +90,8 @@
         :title="metaNote?.title"
         :content="metaNote?.content"
         :summary="metaNote?.summary"
+        :summary-error="summarizeError"
+        :summary-loading="summarizing"
         :domain="metaNote?.domain"
         :tags="metaNote?.tags"
         @close="onMetaClose"
@@ -285,6 +287,12 @@ async function createVoiceDraft(text: string, audioBlob: Blob, durationMs: numbe
       metaNote.value = { ...metaNote.value, summary }
       await notesStore.updateNote(metaNote.value.id, { summary }, currentWorkspaceId())
       await load()
+    } else {
+      // 第二种静默失败：api/notes.ts 的 summarize 注释写明「失败时返回空
+      // summary，前端不阻塞流程」——也就是 200 + {summary:''}，**不抛异常**。
+      // 原来的 `if (summary && ...)` 直接跳过，不设错误，于是用户看到的仍是
+      // 「没有总结、也没有任何提示」。这里补上兜底文案。
+      summarizeError.value = '未能生成 AI 总结（模型未返回内容），可稍后在笔记详情页重试'
     }
   } catch (e: unknown) {
     summarizeError.value = apiError(e, '总结失败，可稍后在笔记详情页重试')

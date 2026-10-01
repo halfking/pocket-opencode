@@ -72,3 +72,65 @@ describe('note recording error visibility', () => {
       'start() 必须清空上一轮的错误')
   })
 })
+
+/**
+ * 即时总结的可见性（2026-10-02 静态审计）。
+ *
+ * 用户报「录音停止后没有即时总结」。功能其实**存在**：
+ * NoteListView.createVoiceDraft() 落库草稿后调 /api/notes/{id}/summarize，
+ * NoteMetaSheet 顶部有 .ai-summary 块。真正的缺陷是**状态从来没被渲染**：
+ *
+ *   - summarizeError：声明(141) + 重置(281) + 赋值(290)，模板里 0 次出现
+ *   - summarizing：声明(140) + true(280) + false(292)，模板里 0 次出现
+ *
+ * 于是无论「还在生成」「失败抛异常」还是「压根没触发」，用户看到的都是同一
+ * 副样子：面板里没有总结、也没有任何提示。NoteListView 的注释写着
+ * 「只是顶部多出一行错误提示」——那句话此前是假的。
+ *
+ * 这类缺陷运行时不会报任何错，只能靠扫描源码文本守住，跟上面几条同一范式。
+ */
+describe('note 即时总结状态必须被渲染', () => {
+  const listView = read('../NoteListView.vue')
+  const sheet = read('../NoteMetaSheet.vue')
+
+  it('summarizeError / summarizing 真的传进了 NoteMetaSheet', () => {
+    const tag = listView.slice(listView.indexOf('<NoteMetaSheet'))
+    assert.match(tag, /:summary-error="summarizeError"/,
+      'summarizeError 必须传给 NoteMetaSheet，否则它只存在于 setup 里没人看')
+    assert.match(tag, /:summary-loading="summarizing"/,
+      'summarizing 必须传给 NoteMetaSheet，否则「生成中」永远看不见')
+  })
+
+  it('NoteMetaSheet 声明了这两个 prop', () => {
+    const props = sheet.slice(sheet.indexOf('defineProps'), sheet.indexOf('defineEmits'))
+    assert.match(props, /summaryError\?\s*:\s*string/, '缺少 summaryError prop')
+    assert.match(props, /summaryLoading\?\s*:\s*boolean/, '缺少 summaryLoading prop')
+  })
+
+  it('两个状态在模板里都有渲染出口（否则传了也等于没传）', () => {
+    const tpl = sheet.slice(0, sheet.indexOf('</template>'))
+    assert.match(tpl, /v-if="summaryLoading"/, '模板里没有渲染 summaryLoading')
+    assert.match(tpl, /v-else-if="summaryError"/, '模板里没有渲染 summaryError')
+  })
+
+  it('错误态有实际样式（scoped 类不作用到别处，且不能是纯文字无色）', () => {
+    const style = sheet.slice(sheet.lastIndexOf('<style'))
+    assert.match(style, /\.err\s*\{[\s\S]{0,120}var\(--danger\)/,
+      '错误提示要用 danger 颜色，否则与普通文字无法区分')
+  })
+
+  it('接口返回空 summary 时也要给提示，不能静默', () => {
+    // api/notes.ts 的 summarize 注释写明「失败时返回空 summary，前端不阻塞
+    // 流程」——也就是 200 + {summary:''}，**不抛异常**。原来的
+    // `if (summary && ...)` 直接跳过且不设错误，于是这条路径同样静默。
+    //
+    // 判据刻意锚在 else 分支本身，而不是「if 之后 N 个字符内」：第一版写成
+    // `[\s\S]{0,400}` 的窗口，被自己那段中文注释撑爆而误报。字符窗口对注释
+    // 长度敏感，改成语义锚点。
+    assert.match(
+      listView,
+      /if \(summary && metaNote\.value\)\s*\{[\s\S]{0,600}?\}\s*else\s*\{\s*(?:\/\/[^\n]*\n\s*)*summarizeError\.value\s*=/,
+      '200 + 空 summary 的分支必须设置提示文案，否则用户仍看不到任何反馈',
+    )
+  })
+})
