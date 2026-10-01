@@ -82,7 +82,7 @@ async function exportMarkdown(): Promise<void> {
     toast.success('已导出')
   } catch (e) {
     if (e instanceof DownloadUnsupportedError) {
-      toast.error(e.message)
+      toast.error(e.message) // raw-error-ok: 自有错误类，文案就是给人看的
       return
     }
     toast.error('导出失败')

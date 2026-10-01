@@ -277,7 +277,7 @@ async function createVoiceDraft(text: string, audioBlob: Blob, durationMs: numbe
       await load()
     }
   } catch (e: unknown) {
-    summarizeError.value = e instanceof Error ? e.message : '总结失败，可稍后在笔记详情页重试'
+    summarizeError.value = apiError(e, '总结失败，可稍后在笔记详情页重试')
   } finally {
     summarizing.value = false
   }
