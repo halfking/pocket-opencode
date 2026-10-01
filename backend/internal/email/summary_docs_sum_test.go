@@ -186,3 +186,161 @@ func TestWriteInvoiceSummaryDocs_RealInvoiceTotals(t *testing.T) {
 	}
 	_ = filepath.Join(dir, "x")
 }
+
+// ---------------------------------------------------------------------------
+// 跨币种：本地 CSV/MD 与飞书表格（LedgerRows）必须同口径
+// ---------------------------------------------------------------------------
+
+// readCSVRows 返回 CSV 的全部数据行（去掉表头），每行按逗号切分。
+func readCSVRows(t *testing.T, path string) [][]string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("csv too short: %q", string(b))
+	}
+	out := make([][]string, 0, len(lines)-1)
+	for _, ln := range lines[1:] {
+		out = append(out, strings.Split(strings.TrimSpace(ln), ","))
+	}
+	return out
+}
+
+// 合计行里的合计单元格。
+func totalRowsOf(rows [][]string) [][]string {
+	var out [][]string
+	for _, r := range rows {
+		if len(r) > 0 && r[0] == "合计" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// 缺陷：WriteInvoiceSummaryDocs 把所有币种直接相加。本地 CSV 里
+// 100.00 USD + 50.00 CNY 会写成一行「合计,,,,,,,150.00,」——币种列是空的，
+// 读者无从判断 150 是什么币。而飞书那条路径（LedgerRows）早已按币种分组。
+// 同一条需求的两条路径口径不一致 = 本地这份是错账。
+func TestWriteInvoiceSummaryDocs_MultiCurrencyNotSummedTogether(t *testing.T) {
+	dir := t.TempDir()
+	invs := []Invoice{
+		{Amount: 100.00, Currency: "USD", Seller: "AWS", Category: "云服务"},
+		{Amount: 50.00, Currency: "CNY", Seller: "腾讯", Category: "其他"},
+	}
+	csvPath, mdPath, err := WriteInvoiceSummaryDocs(dir, "ws-1", invs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trs := totalRowsOf(readCSVRows(t, csvPath))
+	if len(trs) != 2 {
+		t.Fatalf("2 currencies must produce 2 total rows, got %d: %v", len(trs), trs)
+	}
+	byCur := map[string]float64{}
+	for _, r := range trs {
+		cur := strings.TrimSpace(r[3])
+		if cur == "" {
+			t.Fatalf("multi-currency total row must carry its currency label, got %v", r)
+		}
+		v, err := strconv.ParseFloat(strings.TrimSpace(r[7]), 64)
+		if err != nil {
+			t.Fatalf("parse total %q: %v", r[7], err)
+		}
+		byCur[cur] = v
+	}
+	if byCur["USD"] != 100.00 || byCur["CNY"] != 50.00 {
+		t.Fatalf("per-currency totals wrong: %v", byCur)
+	}
+	// 绝不能出现 150.00 这种跨币种的数
+	for cur, v := range byCur {
+		if v == 150.00 {
+			t.Fatalf("%s total must not be the cross-currency sum 150.00: %v", cur, byCur)
+		}
+	}
+
+	// Markdown 抬头同样不能给无币种的裸数字。
+	md, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(md)
+	if strings.Contains(s, "**150.00**") {
+		t.Fatalf("markdown total must not be the cross-currency sum:\n%s", s)
+	}
+	if !strings.Contains(s, "USD 100.00") || !strings.Contains(s, "CNY 50.00") {
+		t.Fatalf("markdown must list per-currency totals:\n%s", s)
+	}
+}
+
+// 单币种时输出形状必须与旧版逐字节一致：不带币种标签的合计行、抬头一个裸数字。
+// 这条是「别顺手改坏既有对账习惯」的护栏。
+func TestWriteInvoiceSummaryDocs_SingleCurrencyKeepsLegacyShape(t *testing.T) {
+	dir := t.TempDir()
+	invs := []Invoice{
+		{Amount: 126.00, Currency: "CNY", Seller: "腾讯", Category: "其他"},
+		{Amount: 328.50, Currency: "CNY", Seller: "腾讯", Category: "其他"},
+	}
+	csvPath, mdPath, err := WriteInvoiceSummaryDocs(dir, "ws-1", invs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trs := totalRowsOf(readCSVRows(t, csvPath))
+	if len(trs) != 1 {
+		t.Fatalf("single currency must produce exactly 1 total row, got %d: %v", len(trs), trs)
+	}
+	if strings.TrimSpace(trs[0][3]) != "" {
+		t.Fatalf("single-currency total row must stay unlabeled (legacy shape), got %v", trs[0])
+	}
+	if strings.TrimSpace(trs[0][7]) != "454.50" {
+		t.Fatalf("total = %q, want 454.50", trs[0][7])
+	}
+	md, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(md), "合计金额 **454.50**") {
+		t.Fatalf("single-currency markdown must keep the bare total:\n%s", string(md))
+	}
+	// 单币种时不许冒出「按币种」小节
+	if strings.Contains(string(md), "按币种") {
+		t.Fatalf("single-currency markdown must not have a per-currency section:\n%s", string(md))
+	}
+}
+
+// 空清单仍然要有一行 0 合计（回归护栏：分组改造一度把它写没了）。
+func TestWriteInvoiceSummaryDocs_EmptyStillHasTotalRow(t *testing.T) {
+	dir := t.TempDir()
+	csvPath, _, err := WriteInvoiceSummaryDocs(dir, "ws-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trs := totalRowsOf(readCSVRows(t, csvPath))
+	if len(trs) != 1 {
+		t.Fatalf("empty list must still have exactly 1 total row, got %d: %v", len(trs), trs)
+	}
+	if strings.TrimSpace(trs[0][7]) != "0.00" {
+		t.Fatalf("empty total = %q, want 0.00", trs[0][7])
+	}
+}
+
+// 币种为空的发票按 CNY 归组（与 currencyOrDefault 同源），不能凭空多一个空币种。
+func TestWriteInvoiceSummaryDocs_EmptyCurrencyFoldsIntoCNY(t *testing.T) {
+	dir := t.TempDir()
+	invs := []Invoice{
+		{Amount: 100.00, Currency: "", Seller: "A", Category: "其他"},
+		{Amount: 50.00, Currency: "CNY", Seller: "B", Category: "其他"},
+	}
+	csvPath, _, err := WriteInvoiceSummaryDocs(dir, "ws-1", invs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trs := totalRowsOf(readCSVRows(t, csvPath))
+	if len(trs) != 1 {
+		t.Fatalf("empty currency must fold into CNY (1 total row), got %d: %v", len(trs), trs)
+	}
+	if strings.TrimSpace(trs[0][7]) != "150.00" {
+		t.Fatalf("total = %q, want 150.00", trs[0][7])
+	}
+}

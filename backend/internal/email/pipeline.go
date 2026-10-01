@@ -887,41 +887,96 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 	// 会对不上账。实测（2026-10-01）：明细 1.005 / 2.675 / 8.615 时，
 	// 逐行 %.2f 相加 = 12.30，而裸 float64 累加再 %.2f = 12.29，差 1 分。
 	// 整数分累加保证 total 与 sum(round2(每行)) 恒等。
-	var cents int64
+	//
+	// 合计**按币种分组**（2026-10-01 补）。本函数是 WriteInvoiceSummaryDocs，
+	// 与飞书表格那条路径（ledger.go:LedgerRows）是两段独立代码：LedgerRows
+	// 早已按币种分组出多行合计，而这里仍把所有币种直接相加，于是
+	// 100.00 USD + 50.00 CNY 会在本地 CSV 里写成「合计 150.00」——币种
+	// 列是空的、Markdown 标题里也没有币种，读者无从判断这个数字是什么。
+	// 跨币种相加不是金额。同一条需求（「汇总金额」）的两条路径必须同口径。
+	//
+	// 单一币种（当前真实数据 7 张全是 CNY）时保持旧输出形状不变：仍是一行
+	// 不带币种标签的合计，避免让已有的对账习惯（按下标取第 8 列）失效。
+	centsByCur := map[string]int64{}
+	countByCur := map[string]int{}
+	var curOrder []string
 	rows := make([][]string, 0, len(invoices))
 	for _, inv := range invoices {
 		amount := round2(inv.Amount)
-		cents += int64(math.Round(amount * 100))
+		cur := currencyOrDefault(inv.Currency)
+		if _, seen := centsByCur[cur]; !seen {
+			curOrder = append(curOrder, cur)
+		}
+		centsByCur[cur] += int64(math.Round(amount * 100))
+		countByCur[cur]++
 		rows = append(rows, []string{
 			inv.Category, inv.Seller, fmt.Sprintf("%.2f", amount), inv.Currency,
 			inv.InvoiceNo, inv.InvoiceDate, inv.Status, inv.FileName, inv.Subject,
 		})
 	}
-	total := float64(cents) / 100
+	// 每个币种一行合计：币种列（索引 3）带上币种，金额仍在索引 7，
+	// 与单币种旧形状的列位保持一致，下游解析不用分两套规则。
+	totalRows := make([][]string, 0, len(curOrder)+1)
+	for _, cur := range curOrder {
+		cells := []string{"合计", "", "", "", "", "", "", "", ""}
+		if len(curOrder) > 1 {
+			cells[3] = cur
+		}
+		cells[7] = fmt.Sprintf("%.2f", float64(centsByCur[cur])/100)
+		totalRows = append(totalRows, cells)
+	}
+	// 空清单也必须有合计行（需求：「整理一个列表…并汇总金额」）：
+	// 只有表头 + 一行 0 合计，下游按行数算范围时才不用特判。与 LedgerRows 同理。
+	if len(curOrder) == 0 {
+		totalRows = append(totalRows, []string{"合计", "", "", "", "", "", "", "0.00", ""})
+	}
+
+	// 供 Markdown 抬头用：单币种给一个数，多币种给逐币种的描述。
+	sumByCur := make([]string, 0, len(curOrder))
+	var total float64
+	for _, cur := range curOrder {
+		sum := float64(centsByCur[cur]) / 100
+		total += sum
+		if len(curOrder) > 1 {
+			sumByCur = append(sumByCur, fmt.Sprintf("%s %.2f", cur, sum))
+		}
+	}
 
 	csv := &strings.Builder{}
 	csv.WriteString("费用类型,对方单位,金额,币种,发票号,日期,状态,文件名,来源邮件\n")
-	for _, r := range rows {
+	for _, r := range append(append([][]string{}, rows...), totalRows...) {
 		cells := make([]string, len(r))
 		for i, c := range r {
 			cells[i] = csvSafeCell(c)
 		}
 		csv.WriteString(strings.Join(cells, ",") + "\n")
 	}
-	csv.WriteString(fmt.Sprintf("合计,,,,,,,%.2f,\n", total))
 	if err := os.WriteFile(csvPath, []byte(csv.String()), 0o600); err != nil {
 		return "", "", err
 	}
 
+	// 抬头必须说清是哪种货币：多币种时逐币种列出，绝不给一个无币种的裸数字。
+	amountSummary := fmt.Sprintf("%.2f", total)
+	if len(sumByCur) > 0 {
+		amountSummary = strings.Join(sumByCur, " + ")
+	}
 	md := &strings.Builder{}
 	md.WriteString("# 发票汇总\n\n")
-	md.WriteString(fmt.Sprintf("生成时间：%s · 共 %d 张 · 合计金额 **%.2f**\n\n",
-		time.Now().Format("2006-01-02 15:04"), len(invoices), total))
+	md.WriteString(fmt.Sprintf("生成时间：%s · 共 %d 张 · 合计金额 **%s**\n\n",
+		time.Now().Format("2006-01-02 15:04"), len(invoices), amountSummary))
 	md.WriteString("| 费用类型 | 对方单位 | 金额 | 发票号 | 日期 | 状态 | 文件 |\n")
 	md.WriteString("|---|---|---:|---|---|---|---|\n")
 	for _, r := range rows {
 		md.WriteString(fmt.Sprintf("| %s | %s | %s %s | %s | %s | %s | %s |\n",
 			r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]))
+	}
+	// 多币种时在明细表后附逐币种合计，单币种不加（与 CSV 一行合计对应）。
+	if len(sumByCur) > 0 {
+		md.WriteString("\n## 合计（按币种）\n\n")
+		for _, cur := range curOrder {
+			md.WriteString(fmt.Sprintf("- %s：%.2f（共 %d 张）\n",
+				cur, float64(centsByCur[cur])/100, countByCur[cur]))
+		}
 	}
 	if err := os.WriteFile(mdPath, []byte(md.String()), 0o600); err != nil {
 		return csvPath, "", err
