@@ -3536,7 +3536,88 @@ search_path」的形态。`server` 两条是 §7az 里早已记录的既有 404/
 所以每次新写夹具都该问一句「这个日期会过期吗」，而不是跑绿就收工。
 
 ---
+## §7bm chatagent 测试助手写的是**应用正在用的表**（`99637e5`）
 
+### 事实链（每条都有 file:line 或实测）
+
+1. `internal/chatagent/store_test.go` 的 `setupTestStore` 原来是
+   `pgxpool.New(ctx, dbURL)` —— **原样继承 DSN 的 `search_path`**，没有覆盖。
+2. PG 的规则：当前 schema 找不到 unqualified 名字就**回落到 `public`**。
+   本机 `search_path=opencode_pocket` 里**没有** `chat_agents` 表 → 落到
+   `public.chat_agents`。
+3. `cmd/pocketd/main.go:1473` `initChatAgentStores`：`pool != nil` 用 PG store，
+   否则才用 `<dataDir>/chat_agents.sqlite`。线上日志
+   `Postgres pool initialized (schema="opencode_pocket")` → 走 PG 分支。
+
+   也就是说 **`public.chat_agents` 就是应用自己正在用的那张表**；
+   `data/chat_agents.sqlite` 最后修改停在 2026-09-30 03:19，是更早 PG 不可用时
+   的 fallback 遗留。
+4. 于是这个 helper 每次跑都对**应用正在用的表**做两件事：
+
+   ```go
+   store.Init(ctx)   // CREATE TABLE IF NOT EXISTS —— 改的是生产表结构
+   // 以及
+   DELETE FROM chat_agents WHERE id LIKE 'test-%' OR id LIKE 'custom%'
+      OR id IN ('builtin','builtin-agent','c1','c2')          // 删的是生产行
+   ```
+
+### 实测症状
+
+`TestStore_List_WorkspaceIsolation` 报
+`ws-a should see 2 agents (custom-a + builtin), got 278` —— 看见 278 行自己从没
+建过的数据。`public.chat_agents` 现有 3 行：`builtin`（workspace 空）、`c1`、
+`c2`（ws-1），`created_at` 正是测试运行的时刻。
+
+### 修法
+
+自己生成 `chatagent_test_<hex>` schema，`search_path` **只**指向它
+（**不追加 public**）。这样既隔离写入，又让「引用一张不存在的表」变成**报错**
+而不是静默落到 public —— **静默回落正是这个缺陷的根因**。收尾只 DROP 自己那个
+schema。同一模式见 `internal/email/store_workspace_test.go:61`。
+
+顺带把那条 DELETE 收窄成 `DELETE FROM chat_agents`：隔离 schema 是本轮自己建的，
+没有历史数据，id 白名单只是历史包袱 —— 而白名单里的 `builtin`/`c1`/`c2`
+**正是生产表里真实存在的 id**，留着它等于留着一把指向生产行的枪。
+
+### 验证
+
+```
+go test ./internal/chatagent/ -count=1   -> ok 1.877s   （此前 FAIL: got 278）
+select count(*) from public.chat_agents  -> 3           （本次运行后**未变**）
+pg_namespace where nspname like 'chatagent_test_%' -> （空，cleanup 正常）
+```
+
+「public 计数未变」是这次修复最直接的证据：跑完整个包的测试，那张表一个字节
+都没被碰。
+
+### 刻意没有做的事
+
+**没有**为了取证把旧写法再注入回去跑负控 —— 那条负控**本身就是那条 DELETE**，
+会真的去删 `public.chat_agents` 里剩下的 3 行（其中 `builtin` 是生产 id）。
+取证已经足够（修复前的 `got 278` 记录 + 修复后 public 未变），不值得为一个
+已经能自证的结论去真的破坏数据。
+
+> 这是一次**有意识地放弃负控**，并把理由写在这里 —— 不是忘了做。
+
+### 仍未查清（不猜）
+
+`public.chat_agents` 现在只有 3 行，而 `internal/chatagent/seed/agents.json`
+里有 **277** 个内置角色。已确认：
+
+- `ImportBuiltinAgents` 在启动路径上**没有任何调用者**（`cmd/pocketd`、
+  `internal/server` 都没调），所以服务启动不会导入内置角色。
+- 它本身幂等：表里已有 builtin 就跳过（`importer.go:115-121`）。
+- `importer_test.go:166` 走的是 **NewSQLiteStore**（临时文件），不是 PG store。
+- 全仓**没有**任何 `DROP TABLE` / `TRUNCATE chat_agents`。
+
+所以那 277 行既不是服务启动写的，也不是那些测试写的，**来源与消失原因我都没
+查清**。`ImportBuiltinAgents(ctx, repoPath)` 要的是一个 markdown 仓库路径
+（不是那个 JSON），所以「重新导入」也不是一条现成的恢复路径。
+
+这属于「应用数据现状」，需要你判断 `public.chat_agents` 对你是否有价值、
+是否要恢复内置角色。**未擅自处理。**
+
+---
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
@@ -3577,6 +3658,12 @@ search_path」的形态。`server` 两条是 §7az 里早已记录的既有 404/
     `<dataDir>/email_master.key` 的进程一个账户都连不上，而库里的配置看着
     完好」。线上多半是靠 `POCKET_EMAIL_MASTER_KEY` 环境变量拿 key 的（推断，
     非实测）。**处置需先知道线上启动方式，未擅自处理**。见 §7bf。
+12. **`public.chat_agents` 只剩 3 行、内置角色有 277 个 —— 来源与消失原因均未
+    查清**。已排除「服务启动导入」（`ImportBuiltinAgents` 无调用者）、
+    「测试写的」（`importer_test.go:166` 走 SQLite）、「被 DROP」（全仓无
+    `DROP TABLE`/`TRUNCATE`）。且 `ImportBuiltinAgents(ctx, repoPath)` 要的是
+    markdown 仓库路径，**不是一条现成的恢复路径**。已如实标注为「不猜」。
+    见 §7bm。
 
 **环境问题**：
 
