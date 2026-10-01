@@ -4134,6 +4134,89 @@ go test ./internal/email/ -count=1         → ok 35.873s
 
 ---
 
+## §7br 普查本包剩下的 PG 测试：9 个里 8 个只读，1 个是有授权的写（2026-10-02）
+
+§7bq 修完 greenmail 两个用例之后，包里还剩 9 个测试会打开 PG 连接且**不钉
+`search_path`**。逐个定性，不靠「看起来像只读」。
+
+### 方法：两道扫描，缺一道会漏
+
+第一道只扫 SQL 动词（`INSERT INTO` / `UPDATE ` / `DELETE FROM` / `TRUNCATE` /
+`DROP ` / `CREATE TABLE` / `ALTER TABLE`）。**这道不够** —— 经 store API 的写入
+（`store.UpsertXxx`、`store.MarkXxx`）一个都扫不到，而那正是本包最可能出问题的地方。
+所以补了第二道：扫 `\.(\w+)\((` 形式的写方法调用。
+
+（顺带记一个操作细节：第一版把模式写进 PowerShell 变量，字符串里的 `Delete`
+触发了本地安全策略整条命令被拦。改用内容检索工具反而更直接 —— 这也正好印证
+「批量内容判据用检索工具逐个看，别写临时脚本」。）
+
+### 结果表
+
+| 文件 | build tag | 门控开关 | SQL 写 | store 写 | 判定 |
+|---|---|---|---|---|---|
+| `diag_kxpms_test.go` | — | `POCKET_DIAG_ACCOUNT`+`POCKET_DIAG_ALLOW=1`+`POCKET_REAL_MAIL_DSN`+`POCKET_DIAG_DATA_DIR` | 无 | 无 | 只读探针 |
+| `spam_realdata_test.go` | — | `POCKET_REAL_MAIL_DSN`+`POCKET_REAL_MAIL_SCHEMA` | 无 | 无 | 只读探针 |
+| `diag_backfill_align_test.go` | — | `POCKET_DIAG_ALIGN=1`+`POCKET_REAL_MAIL_DSN`+…+`DATA_DIR` | 无 | 无 | 只读 |
+| `diag_dup_report_test.go` | — | `POCKET_DIAG_DUP_REPORT=1`+… | 无 | 无 | 只读 |
+| `diag_merge_plan_test.go` | — | `POCKET_DIAG_MERGE_PLAN=1`+… | 无 | 无 | 只读 |
+| `diag_pop3_backfill_test.go` | — | `POCKET_DIAG_POP3_BACKFILL=1`+… | 无 | 无 | 只读 |
+| `diag_pop3_invoice_test.go` | — | `POCKET_DIAG_POP3=1`+… | 无 | 无 | 只读 |
+| `diag_rest_dupes_test.go` | — | `POCKET_DIAG_REST_DUPES=1`+… | 无 | 无 | 只读 |
+| `realprobe_test.go` | `realprobe` | `PG_DSN`+`POCKET_REAL_KEYS` | 无 | 无 | 只读 |
+| **`diag_merge_exec_test.go`** | — | `POCKET_DIAG_MERGE_EXEC=1`+… | **有** | 无 | **有意写** |
+
+第二道扫描的命中全部是无害的：`imap.SeqSet.AddNum`、`uidSet.AddNum`、
+`log.SetOutput` / `log.SetFlags`。**没有一处是 DB 写入。**
+
+两个容易误判的点，都核过：
+
+- `realprobe_test.go` 有一处 `UPDATE`，但它在**第 19 行的注释**里 ——
+  `//  3. 不写库：本文件只 SELECT，不 INSERT / UPDATE / DELETE。`
+  只扫字符串会把它当成写操作。
+- `diag_kxpms_test.go` 的 `set.AddRange` / `uidSet.AddNum` 是 imap UID 集合操作，
+  与持久化无关。
+
+### `diag_merge_exec_test.go` 为什么不算缺陷
+
+它是 2026-10-01 **经用户授权**执行的重复副本合并，属于一次性数据修复工具。
+它**故意**指向真实 schema —— 那正是它的用途。安全设计是完整的：
+
+```
+:48   if os.Getenv("POCKET_DIAG_MERGE_EXEC") != "1" { t.Skip(...) }   // 硬门禁
+:80   t.Fatal("backup table is empty — refusing to run a write without a rollback path")
+:82   t.Logf("backup rows = %d (rollback path verified)", backupRows)
+:218  t.Logf("rollback: UPDATE emails SET deleted_at=0 FROM emails_merge_backup_20261001 b ...")
+```
+
+**没有可验证的回滚路径就拒绝执行**，并在结束时把回滚语句原样打出来。这比
+「自建隔离 schema」的要求更高，不是更低。
+
+### 结论
+
+**这 9 个里 0 个是缺陷。** 加上 §7bq 修掉的 2 个 greenmail，本包的 PG 测试现在
+全部满足下面三条之一：
+
+1. 自建隔离 schema（greenmail 两个 + `store_workspace_test.go`）
+2. 只读，且门控开关 ≥ 2 个
+3. 有意写真实库，但有硬门禁 + 可验证回滚路径
+
+### 顺带一个给别人的交接项
+
+另一个并发会话已经写出仓库级护栏 `pg_test_isolation_guard_test.go`
+（在 `openpocket-wt-font` worktree），它维护一份「打开 PG 但不隔离仍然安全」的
+allowlist。我读了它当前的 allowlist，**只列了 5 个文件**，本包还有 **6 个没列**：
+
+```
+diag_backfill_align_test.go / diag_dup_report_test.go / diag_merge_plan_test.go
+diag_rest_dupes_test.go    / diag_merge_exec_test.go  / realprobe_test.go
+```
+
+按护栏现行规则，这 6 个会让它 FAIL。理由就是上表，逐条可核查。
+**我没有去改那个文件**（不在我的 worktree，且对方正在写），只把清单记在这里，
+合并时照抄即可。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
