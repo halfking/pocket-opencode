@@ -80,6 +80,14 @@ func TestExportInvoiceGrid_3x3AlsoDrawn(t *testing.T) {
 	if n := pdfPageCount(t, with); n != 1 {
 		t.Fatalf("9 invoices on 3x3 should be 1 page, got %d", n)
 	}
+	// 3x3 的页面尺寸此前没有断言，只查了页数。PageDim 是按 grid 动态算的
+	// （a4WidthPt/grid），3x3 一旦算错就会静默输出非 A4 页，而页数仍是 1 ——
+	// 「1 页」看起来完全正常，正是需求 5 最该被抓住的错误。
+	w, h := pdfFirstPageSize(t, with)
+	if absf(w-a4WidthPt) > 1.5 || absf(h-a4HeightPt) > 1.5 {
+		t.Fatalf("3x3 must still be A4: got %.2fx%.2f pt, want %.2fx%.2f",
+			w, h, a4WidthPt, a4HeightPt)
+	}
 }
 
 // countStrokeOps 解压 PDF 内容流，数「描边路径」算子（`<w>` 线宽 + `m`/`l` 画点连线 + `s` 描边）。

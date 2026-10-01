@@ -57,7 +57,6 @@ var ErrNoUsableInvoiceFile = errors.New("email: no usable invoice file to export
 // 请求打成 500。因此这里做两件事——
 //  1. 每个 PDF 先 Validate，坏文件跳过并计入 skipped（好文件照样导出）；
 //  2. 兜底 recover，把 pdfcpu 的 panic 转成普通 error，绝不让它冒到 handler。
-// ExportInvoiceGrid 把 invoiceFiles 合并为 A4 网格 PDF，返回输出文件绝对路径。
 func ExportInvoiceGrid(outDir string, invoiceFiles []string, grid int) (string, error) {
 	res, err := ExportInvoiceGridDetailed(outDir, invoiceFiles, grid)
 	if err != nil {
@@ -123,7 +122,11 @@ func exportNUp(outDir string, invoiceFiles []string, grid int, border bool) (res
 	}
 
 	// 3) 网格化：PageGrid 模式下输出页 = PageDim × Grid，即 PageDim 是单格
-	// 尺寸。要输出整张 A4，PageDim 取 A4 的 1/grid，每张发票缩放进格子。
+	//    尺寸。要输出整张 A4，PageDim 取 A4 的 1/grid，每张发票缩放进格子。
+	//    复核提示（2026-10-01）：PageGrid 语义容易被读反——pdfcpu 先把
+	//    PageDim 乘 Grid 算输出页 MediaBox（nup.go:800-803），再按 cols/rows
+	//    把 PageDim 切格（nup.go:126-130），两处相消。只看 RectsForGrid 会误判
+	//    PageDim 是整页尺寸、进而误以为 grid=2 输出 A5。差点把没问题的代码改坏。
 	//
 	// Border=true：需求原文「打印后可直接剪裁」。不加裁切线的话，打印出来的
 	// A4 上 4/9 张发票没有可对齐的切割依据，只能凭发票白边目测，剪歪是必然的。
