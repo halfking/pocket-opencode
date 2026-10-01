@@ -579,3 +579,100 @@ pid=10972  greenmail-standalone-2.1.14.jar
 2. 打开 App 的邮箱设置页，触发需求 8 的账户同步（登录后自动跑一次），
    确认列表里是 **5 个**真实邮箱、没有夹具账户。
 3. 截图留证：这是本目标唯一还没拿到证据的一环。
+
+> 真机 adbd 一直 offline，这一环改用模拟器完成了，见第 8 节。
+
+## 7. 第二次清库：根因终于定位（2026-10-01 23:33~23:57）
+
+第 5.5 节记的「schema 被清空、根因未定论」，这一轮**定位到了**，而且它同时
+解释了本轮新出现的现象：模拟器上「邮箱设置」页一直报
+`Could not load mail settings 重试`。
+
+### 7.1 症状与误导
+
+宿主用真实 admin token 打 `GET /api/email/accounts`：
+
+```
+500 {"error":"ERROR: relation \"email_accounts\" does not exist (SQLSTATE 42P01)"}
+```
+
+而**同一个 DSN 直连**，`public.email_accounts` 明明存在（information_schema
+查得到、`count(*)` 跑得通）。这个矛盾是整个排查的入口。
+
+（顺带排除一个误报：前端调的是 `/api/email/accounts` 单数，
+`/api/emails/accounts` 复数根本没注册——`server.go:751` 的 `/api/emails/`
+是**前缀**路由，请求落进 `handleEmailOps` 后按邮件 id 处理，于是报
+`relation "emails" does not exist`。用复数路径探测会得到误导性的错误文本。）
+
+### 7.2 真因
+
+pocketd 用 `db.New`（`backend/internal/db/pg.go:46-62`）把每条连接的
+`search_path` 钉死在 `POCKET_PG_SCHEMA`（本机 = `opencode_pocket`）。
+那个 schema **被别人删掉了**，而 `CREATE SCHEMA IF NOT EXISTS` 只在
+**启动时**跑一次。结果是：
+
+- 进程还活着，`/healthz` 200，`/api/auth/login` 正常 —— 看起来「服务好好的」；
+- 所有未限定表名一律 42P01；
+- 显式 `writeError` 的端点（邮箱）→ 500 + 裸 SQL 错误；
+- **吞掉错误的端点** → 200 + 空列表，看起来像「本来就没数据」。
+
+重启 pocketd 即恢复：启动日志 `Postgres pool initialized (schema="opencode_pocket")`，
+schema 与 64 张表被重新建出来。数据需要重新灌（部署脚本 12/12 +
+`POST /api/emails/sync` 15.66s / new=120 / synced=5）。
+
+### 7.3 三个把我带偏的假象（下次别重走）
+
+1. **pg_stat_activity 里那条跑着 `ListAccountsScoped` 的连接是诊断自己建的**，
+   不是后端的。差点据此断言「后端 search_path 是默认值」——
+   而恰恰相反，它被钉在一个已不存在的 schema 上。
+2. `SELECT current_setting('search_path') FROM pg_stat_activity` —— 这个函数
+   返回的是**查询者本会话**的设置，对每一行都返回同一个值。于是我看到
+   「所有连接都是 `"$user", public`，public 里的表当然看得见」，与 500 直接矛盾。
+   **别人的 search_path 没有直接查法**，只能靠「它那条查询能不能跑通」反推。
+3. `SET search_path TO <不存在的 schema>` **不报错**，后续未限定查询才 42P01。
+   所以「SET 成功」绝不能当作「schema 存在」的证据。
+
+### 7.4 顺带发现：`/api/tasks` 静默吞掉 DB 错误（未修，待决策）
+
+`backend/internal/server/server.go:1316-1324`：
+
+```go
+localTasks, err := s.taskStore.ListTasksScoped(...)
+if err == nil {          // 没有 else，err 直接丢掉
+    for _, t := range localTasks { ... }
+}
+```
+
+PG 全面 42P01 的那段时间里，`/api/tasks` 一直返回 `200 {"tasks":null}`，
+**没有任何错误提示**。这就是本次事故难查的直接原因：唯一「看起来正常」的
+信号恰恰是那个吞掉错误的端点。
+
+> **未擅自修改。** 两种改法（记 `log.Printf` / 改成 500）里，后者是对线上可见的
+> 行为变更（DB 抖动时任务列表从「空」变成「报错」），需要用户点头。
+
+### 7.5 遗留诊断
+
+`backend/internal/email/diag_schema_present_test.go`（默认 skip，需
+`POCKET_REAL_MAIL_DSN` + 可选 `POCKET_DIAG_SCHEMA`）只回答一个问题：
+**`POCKET_PG_SCHEMA` 指向的 schema 现在还在吗**。下次再遇到「数据凭空消失 /
+端点大面积 500」，先跑它。
+
+## 8. 模拟器 UI 取证（已完成）
+
+真机 `192.168.31.19:5555` 的 adbd 一直 offline（第 9 节），改用 Android 模拟器
+`pocket-test`（emulator-5556）取得同一份 APK 的 UI 证据。
+
+关键点：
+
+- SDK 根**不在标准路径**，在 `C:\Users\86133\AppData\Local\Android`
+  （`platform-tools\adb.exe` 与 `emulator\emulator.exe` 都在这）。
+- 模拟器到宿主用 `10.0.2.2`（不是 WLAN 的 `192.168.31.20` —— 模拟器 ping 不到
+  那个网段）。
+- 走 App 内「后端服务器 → Custom URL」填 `http://10.0.2.2:18099`，
+  **Test Connection 必须先显示 `Connected`** 再 Save and use。
+- 进邮箱域前要**解锁本地加密库**（主密码 = 管理员口令），否则跳回解锁页。
+- 后端重启后 token 失效（schema 重建 ⇒ users 表重建），要重新登录。
+
+证据：`logs/email-settings-5-accounts.png` —— 邮箱设置页显示 5 个真实邮箱、
+全部已启用、IMAP 主机端口正确、同步间隔 15 分钟、最近同步时间有值
+（`feikemanager1@163.com` 显示「从未」，与本轮 sync 结果一致）。
