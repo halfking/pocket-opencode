@@ -24,6 +24,8 @@ package email
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"strconv"
 	"testing"
@@ -134,7 +136,25 @@ func TestMoveToJunkGreenmail(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, dsn)
+
+	// 隔离 schema：PG_DSN 若指向生产库，直接用就会把测试账户写进生产表。
+	// 详见 pgscope_test.go 的说明。
+	buf := make([]byte, 6)
+	if _, err := rand.Read(buf); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	schema := "email_greenmail_test_" + hex.EncodeToString(buf)
+	rootPool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal("root pool:", err)
+	}
+	if _, err := rootPool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		rootPool.Close()
+		t.Fatal("create schema:", err)
+	}
+	rootPool.Close()
+
+	pool, err := newScopedPool(ctx, dsn, schema)
 	if err != nil {
 		t.Fatal("pool:", err)
 	}
@@ -183,35 +203,17 @@ func TestMoveToJunkGreenmail(t *testing.T) {
 	// **跑完必须把账户删掉**。这两个 greenmail 账户是故意用 t.TempDir() 里的
 	// 临时 master key 加密的，而线上 pocketd 每 60 秒扫一遍启用账户，于是它会
 	// 永远地打 `decrypt credential: cipher: message authentication failed`。
-	// 实测（2026-10-01 21:43 读线上 logs/pocketd-18099d.err.log）：这个账户从
-	// 20:34 起每分钟报一次，一小时几百行，把真实故障埋在里面。
-	// 之前只在开头清理（保证重复跑幂等），忘了收尾，等于把测试垃圾留在了
-	// 共享库里。这里用 t.Cleanup 保证即使 t.Fatal 也会删。
-	//
-	// **必须自己开连接**：测试里是 `defer pool.Close()`，而 defer 在函数返回时
-	// 先于 t.Cleanup 执行 —— 复用 pool 会拿到 `closed pool`，清理静默失败。
-	// 那是第一版真踩的：日志里三条 `cleanup ...: closed pool`，账户照样留着。
+
+	// 收尾：DROP 掉自建的 schema，而不是逐表 DELETE。
+	// 逐表 DELETE 是「假设表在生产库里」的做法；账户只可能落在本测试自己的
+	// schema 里。第一版需要它是因为当时没有隔离，那次的两个静默失败
+	// （复用已 Close 的 pool 拿到 `closed pool`；父表 email_accounts 没有
+	// account_id 列）记在这里，但它们已经不属于这条路径了。
 	t.Cleanup(func() {
 		cctx, ccancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer ccancel()
-		cpool, cerr := pgxpool.New(cctx, dsn)
-		if cerr != nil {
-			t.Logf("cleanup pool: %v", cerr)
-			return
-		}
-		defer cpool.Close()
-		// 三张表的 WHERE 列不一样：email_accounts 是父表，只有 id，没有
-		// account_id（第一版统一写 `WHERE account_id=$1 OR id=$1`，父表那句
-		// 报 column "account_id" does not exist，清理静默失败）。
-		for _, d := range []struct{ table, where string }{
-			{"email_invoices", "account_id"},
-			{"emails", "account_id"},
-			{"email_accounts", "id"},
-		} {
-			if _, err := cpool.Exec(cctx,
-				`DELETE FROM `+d.table+` WHERE `+d.where+`=$1`, greenmailJunkAcctID); err != nil {
-				t.Logf("cleanup %s: %v", d.table, err)
-			}
+		if err := dropScopedSchema(cctx, dsn, schema); err != nil {
+			t.Logf("drop schema %s: %v", schema, err)
 		}
 	})
 

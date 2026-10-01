@@ -4041,6 +4041,99 @@ select nspname from pg_namespace where nspname not like 'pg_%'
 
 ---
 
+## §7bq 修掉本包自己的同款缺陷：greenmail 用例直连调用方 DSN（2026-10-02）
+
+§7bp 把「什么时候没的」钉住了，但那只回答了**症状**。这一条是我顺着同一个缺陷类
+回头审**我自己的包**查出来的 —— 结论是：`internal/email` 里两个 greenmail 用例
+**就是 §7bh 那次污染生产库的元凶**，而且它们的形态和另一个会话普查出的 `BARE`
+完全一致。
+
+### 缺陷
+
+`fetcher_greenmail_test.go:29` / `junk_greenmail_test.go:131`：
+
+```go
+dsn := os.Getenv("PG_DSN")
+pool, err := pgxpool.New(ctx, dsn)     // 原样吃调用方 DSN，不建隔离 schema
+```
+
+本仓库的惯例是同一个 DSN 既喂服务也喂测试，所以 `PG_DSN` 的 `search_path`
+**完全可能就是生产 schema**。写操作本身是收敛的（`DELETE ... WHERE account_id=$1`
+/ `WHERE id=$1`），所以没删到别人的行；但「测试账户进了生产表」本身就是缺陷：
+线上 pocketd 每 60 秒对那个「用临时 master key 加密的测试账户」报一次
+`decrypt credential`，一小时几百行，把真实故障埋进日志 —— 这正是 §7bh 记录的
+那起事故。
+
+它**不是**删 schema 的凶手（全仓无 `DROP SCHEMA`，见 §7bp），但它属于同一族：
+**测试的写操作落点由调用方的 DSN 决定**。
+
+### 修法
+
+新增 `internal/email/pgscope_test.go`，两个助手：
+
+```go
+func newScopedPool(ctx, dsn, schema)   // ParseConfig 后覆盖 RuntimeParams["search_path"]
+func dropScopedSchema(ctx, dsn, schema) // 独立连接 + DROP SCHEMA ... CASCADE
+```
+
+两个用例各自 `CREATE SCHEMA email_greenmail_test_<hex>`，收尾改成 **DROP 掉自己
+的 schema**，逐表 `DELETE` 整段删掉。
+
+`search_path` **只**指向自己的 schema，**不追加 `public`** —— 让「引用一张不存在
+的表」变成报错，而不是静默落到 `public`。这比包里 `store_workspace_test.go:61`
+那份先例（`schema + ",public"`）更严；两者对各自用例都成立，新写的取严的。
+
+逐表 `DELETE` 为什么可以整段删掉：账户只可能落在本测试自己的 schema 里，逐表删
+反而是「**假设表在生产库里**」的做法。第一版需要它是因为当时没有隔离 —— 那次踩
+的两个静默失败（复用已 `Close` 的 pool 拿到 `closed pool`；三张表统一写
+`WHERE account_id=$1 OR id=$1` 而父表 `email_accounts` 没有 `account_id` 列）
+已经写进注释留档，但不再属于这条路径。
+
+### 验证：修后 vs 负控，两边都实测
+
+DSN 故意用**不带 `search_path`** 的（于是解析到 `public`），跑完整的
+`TestSyncGreenmail`（14 封同步、4 张发票建档并下载）：
+
+```
+修后： public.email_accounts / emails / email_invoices  n_tup_ins = 0 0 0
+       残留 email_greenmail_test_* schema = 0
+```
+
+负控（把 `newScopedPool` 换回 `pgxpool.New(ctx, dsn)`，其余不动）：
+
+```
+ok  	github.com/halfking/pocket-opencode/backend/internal/email	0.476s      ← 报告 PASS
+public.email_accounts | n_tup_ins=1 | n_live_tup=1
+public.emails         | n_tup_ins=12
+public.email_invoices | n_tup_ins=3
+```
+
+**负控才是这次的重点**：它证明这个绿**不是假绿** —— 旧写法在往生产表写数据的
+同时**照样报 `ok`**。这正是 §7bp 那类事件能悄无声息发生的土壤。
+
+负控造出来的 1 个账户 / 12 封邮件 / 3 张发票已按 `acct-greenmail%` 精确删除
+（`DELETE 3 / DELETE 12 / DELETE 1`），复查 `public` 三张表 `count(*) = 0`、
+无残留 schema。
+
+### 回归
+
+```
+go vet -tags=greenmail ./internal/email/   → 0
+go build ./...                              → 0
+go test ./internal/email/ -count=1         → ok 35.873s
+```
+
+### 还剩的（未擅自改）
+
+本包另有 10 个 PG 测试文件**不钉 `search_path`**，绝大多数是 `diag_*` 诊断探针，
+靠 `POCKET_DIAG_*=1` + `POCKET_REAL_MAIL_DSN` 双重开关门控，`go test ./...`
+不会执行。其中 `diag_merge_exec_test.go` 确实有写操作（合并重复邮件），
+`realprobe_test.go` 靠 `-tags=realprobe`。**逐个审需要逐个判断它是不是
+「有意指向真实库」**，与另一个会话正在做的仓库级护栏是同一件事，
+**不重复做**。
+
+---
+
 ## §7az 本轮仍未验证 / 仍是阻塞
 
 **阻塞（需要外部条件，非代码问题）**：
