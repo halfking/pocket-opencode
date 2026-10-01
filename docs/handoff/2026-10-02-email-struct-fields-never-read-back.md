@@ -61,6 +61,52 @@ if em.BodyPurged { return "" }
 **只有打真实 PG store 才测得到这一跳。** 这也是新增
 `store_getbyid_columns_test.go` 的原因。
 
+## 静态护栏（`store_getbyid_columns_guard_test.go`）
+
+PG 测试需要活 PostgreSQL；没设 `POCKET_TEST_POSTGRES_DSN` 时**整个文件被
+skip**——也就是说在无库环境（CI、别人的开发机）里这个回归是**无声通过**的。
+静态护栏不依赖任何外部服务，是最后一道网。实测：
+
+```
+无库环境：护栏 PASS，PG 测试 SKIP
+有库环境：护栏 PASS，PG 测试 PASS
+```
+
+**判据必须锚到 AST 的字符串字面量。** 前两版都废了：
+
+1. 找 `&x.MessageID` —— 一个都命中不了。真实代码是
+   `var messageID sql.NullString; ...Scan(&messageID); e.MessageID = ...`，
+   「DB → 结构体」这一跳经过**局部变量**，字段名级匹配原理上做不到。
+2. 锚到函数体做 `strings.Contains(源码, "message_id")` —— **被注释骗过**：
+   自己在函数上方写的解释性注释里就含 `message_id`，于是「把列删掉」这个
+   负控仍然全绿。**注释满足了对 bug 的检查。**
+
+SQL 查询串一定在 `token.STRING` 节点里，所以只收集字符串字面量再找列名，
+天然免疫注释。
+
+另有两处易错，已处理：
+- 两处查询都含 `body_path`，不能把「函数体内出现某列名」当判据——跨函数的
+  文本匹配会互相顶包。这里按**函数边界**切分后再查。
+- 匹配到 0 个目标函数时直接 fail。解析器坏了就静默放行是最坏的失败方式。
+
+**护栏负控 2 路：**
+
+| 负控 | 注入 | 结果 |
+|---|---|---|
+| A | `GetEmailByID` 删掉 `message_id` 列 | 精确报出该函数缺 `message_id` |
+| B | 两个函数都删掉两列 | **3 个问题全部报出**（不只报第一个） |
+
+## 一次真实的翻车（如实记录）
+
+做负控 2 时，我从**已经被负控 1 改坏的**工作区文件做了备份，然后用它"恢复"。
+结果恢复后护栏和 PG 测试双双 FAIL。原因：备份的时点不对。
+
+这是"注入是否生效"和"恢复来源是否可信"是两件事——
+后者要单独查：`git checkout -- <file>` 永远比手搓备份可靠。
+（另外 `git show` 因换行符不匹配会误报 `Contains` 为 False，差点让我
+对着一个正确的文件下错误结论。）
+
+
 ## 验证
 
 新增 `store_getbyid_columns_test.go`，三种读法都要拿到两个字段
