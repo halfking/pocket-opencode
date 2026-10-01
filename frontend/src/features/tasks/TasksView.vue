@@ -500,6 +500,7 @@ import { api, type Task, type TaskTypeGroup } from '../../api/client'
 import { readSelectedInstance } from '../../config/selected-instance'
 import wsClient from '../../api/websocket'
 import { useToast } from '../../composables/useToast'
+import { useListScene } from '../../composables/use-list-scene'
 import { useApprovalAlerts } from '../../composables/useApprovalAlerts'
 import { useAccTasksStore } from '../../stores/accTasks'
 import { useAuthStore } from '../../stores/auth'
@@ -956,6 +957,14 @@ watch(
 )
 
 // ── Lifecycle ──
+// 本视图在 App.vue 的 KeepAlive include 名单里（LIST_CACHE_NAMES 有 'TasksView'），
+// 进 /tasks/:id 只是被**失活**、不会卸载，所以 onMounted 不会重跑。
+// 之前没有任何 onActivated / useListScene，返回时列表保持进入详情前的样子。
+// WS 只覆盖 task_created / task_updated / session_attached，**没有删除事件**，
+// 于是「在详情页删掉任务 → 返回」列表里那条还在。
+// 详情页三处写操作已改为 markListDirty('tasks')，这里按脏标记刷新。
+useListScene('tasks', handleRefresh)
+
 onMounted(() => {
   currentInstance.value = readSelectedInstance()
   loadTasks()

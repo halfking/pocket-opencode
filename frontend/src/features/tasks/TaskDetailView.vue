@@ -120,6 +120,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { api, type Task, type TaskSessionBundle, type TaskSessionBundleRow } from '../../api/client'
 import { useConfirm } from '../../composables/useConfirm'
 import { useToast } from '../../composables/useToast'
+import { markListDirty } from '../../composables/list-scene-store'
 import BottomSheet from '../../components/base/BottomSheet.vue'
 import TaskSessionPanel from './TaskSessionPanel.vue'
 import TaskSessionSheet from './TaskSessionSheet.vue'
@@ -187,6 +188,9 @@ async function updateStatus(status: string) {
   task.value.status = status as Task['status']
   try {
     await api.updateTask(task.value.id, { status })
+    // 列表页 TasksView 在 KeepAlive 名单里，返回时不会重新 onMounted。
+    // 状态是列表直接展示的列，不登记脏标记就会看到旧状态。
+    markListDirty('tasks')
   } catch (e) {
     task.value.status = old
     console.error('Failed to update status:', e)
@@ -199,6 +203,9 @@ async function confirmDelete() {
   const deleted = task.value
   try {
     await api.deleteTask(deleted.id)
+    // 必须在 push 之前登记：push 之后列表页立刻被激活，
+    // 顺序反了 consumeListDirty 会读到还没置位的状态。
+    markListDirty('tasks')
     router.push('/ai')
   } catch (e) {
     console.error('Failed to delete task:', e)
@@ -218,6 +225,7 @@ async function handleAttach() {
     await loadBundle(task.value.id)
     newSession.value = { sessionId: '', instanceId: '', role: 'primary' }
     showAttachModal.value = false
+    markListDirty('tasks')
   } catch (e) {
     console.error('Failed to attach session:', e)
   }
