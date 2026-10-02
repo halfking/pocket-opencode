@@ -3,7 +3,7 @@ import { emailApi } from '../../api/email'
 import { TimeoutError } from '../../api/http'
 import i18n from '../../i18n'
 import { normalizeEmailCategory } from './email-categories'
-import { applyClassifyResult, classifyDoneHint, classifyProgressLabel, DEFAULT_CLASSIFY_MAX_ROUNDS, isUncategorized, shouldContinueClassify } from './email-classify-run'
+import { applyClassifyResult, classifyDoneHint, classifyProgressLabel, DEFAULT_CLASSIFY_MAX_ROUNDS, isUncategorized, MAX_NO_PROGRESS_PASSES, shouldContinueClassify } from './email-classify-run'
 import { cancelClassifyRun, emailJobs, finishClassifyRun, startClassifyRun } from './email-job-runtime'
 import { sanitizeFetchHint } from './email-fetch-plan'
 import { hasInboxSearch, matchInboxSearch, type InboxSearch } from './email-inbox-search'
@@ -93,6 +93,8 @@ export function useEmailInbox() {
     classifyHint.value = '正在归类…'
     const controller = startClassifyRun()
     let next = list
+    let noProgressPasses = 0
+    let stalled = false
     try {
       // 轮次上限与终止条件都在纯函数里（email-classify-run.ts），可单测。
       // 原实现在这里只有一个 `while (!classifyCancel)`：分类器逐封调 LLM，
@@ -122,6 +124,20 @@ export function useEmailInbox() {
             )
           }
         }
+        // 零进展即停：没配 LLM provider 时 classified 恒为 0，remaining 也恒
+        // 等于总数。shouldContinueClassify 的「整批全失败」分支要求 rowCount>0，
+        // 覆盖不到「服务端一行都没返回」这种形态，于是循环会一直打到轮次上限
+        // （20 轮 × 20 封）才停——不无限，但白烧 20 次请求，且最终提示说的是
+        // 「达到单次上限」，把真正的原因（provider 没配）指错了方向。
+        // 2026-10-02 模拟器实测：刷新一次收件箱，服务端日志每分钟多出上百行
+        // 相同的 llmbff: no provider configured，界面进度条纹丝不动。
+        // 连着 MAX_NO_PROGRESS_PASSES 轮一封都没归类成功即判定链路跑不通；
+        // 留两轮而不是一轮，是为了容忍单次网络抖动。
+        noProgressPasses = done > 0 ? 0 : noProgressPasses + 1
+        if (noProgressPasses >= MAX_NO_PROGRESS_PASSES) {
+          stalled = true
+          break
+        }
         continueLoop = shouldContinueClassify({
           round, maxRounds: MAX_ROUNDS, remaining: remain,
           cancelled: classifyCancel.value, rowCount: rows.length, errorCount: errs.length,
@@ -131,7 +147,9 @@ export function useEmailInbox() {
       classifyHint.value = classifyDoneHint({
         leftover,
         firstError: firstError ? sanitizeFetchHint(firstError) : '',
-        allFailed,
+        // stalled 与 allFailed 在提示上同义：都是「这条链路一次都没跑通」，
+        // 所以复用 classifyDoneHint 的「归类失败」分支，而不是新造一句文案。
+        allFailed: allFailed || stalled,
         hitMaxRounds: round >= MAX_ROUNDS,
         maxRounds: MAX_ROUNDS,
         perRound: PER_ROUND,

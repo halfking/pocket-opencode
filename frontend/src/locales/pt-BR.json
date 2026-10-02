@@ -181,7 +181,8 @@
     "finance": "Contabilidade",
     "financeDesc": "Manual + automático a partir de notas · receitas e despesas mensais",
     "language": "Idioma da interface",
-    "apiAddressNotSaved": "Não foi possível salvar o endereço. Verifique se não está vazio e se é uma URL válida."
+    "apiAddressNotSaved": "Não foi possível salvar o endereço. Verifique se não está vazio e se é uma URL válida.",
+    "buildDefaultUnreachable": "O padrão de compilação {url} é inacessível neste dispositivo (aponta para o próprio dispositivo), então {fallback} é usado. Para acessar um backend na sua própria máquina, informe-o em Endereço personalizado."
   },
   "flashcards": {
     "list": {

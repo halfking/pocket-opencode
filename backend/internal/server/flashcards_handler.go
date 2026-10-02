@@ -545,7 +545,8 @@ func (s *Server) flashcardsCreateDeck(w http.ResponseWriter, r *http.Request, us
 
 // newFlashcardID returns a 32-char hex id with a short prefix so the DB
 // inspector can tell note ids from card ids at a glance.
-func newFlashcardID(prefix string) string {	var b [16]byte
+func newFlashcardID(prefix string) string {
+	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return prefix + "_" + time.Now().Format("20060102150405.000000000")
 	}

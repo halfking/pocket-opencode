@@ -181,7 +181,8 @@
     "finance": "Buchhaltung",
     "financeDesc": "Manuell + automatisch aus Notizen · monatliche Einnahmen und Ausgaben",
     "language": "Sprache",
-    "apiAddressNotSaved": "Die Adresse konnte nicht gespeichert werden. Bitte prüfen, ob sie nicht leer und eine gültige URL ist."
+    "apiAddressNotSaved": "Die Adresse konnte nicht gespeichert werden. Bitte prüfen, ob sie nicht leer und eine gültige URL ist.",
+    "buildDefaultUnreachable": "Der Build-Standardwert {url} ist auf diesem Gerät nicht erreichbar (er verweist auf das Gerät selbst); stattdessen wird {fallback} verwendet. Für ein Backend auf dem eigenen Rechner gib es unter \"Benutzerdefinierte Adresse\" ein."
   },
   "flashcards": {
     "list": {

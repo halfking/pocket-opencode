@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -50,10 +50,10 @@ type ParsedMessage struct {
 	// 封邮件走 IMAP 落一条、走 POP3 再落一条，两条 message_id 不同，
 	// UNIQUE(account_id, message_id) 拦不住 —— 实测 QQ 信箱 444 封里
 	// 284 封走 POP3 路径，其中 47 组是同一封的重复副本。
-	MessageID    string
-	TextBody     string // text/plain 聚合
-	HTMLBody     string // text/html 聚合（发票链接多藏在 href 里）
-	Attachments  []ParsedAttachment
+	MessageID   string
+	TextBody    string // text/plain 聚合
+	HTMLBody    string // text/html 聚合（发票链接多藏在 href 里）
+	Attachments []ParsedAttachment
 }
 
 // FetchMessageRaw 按 UID 单封拉整封原文。先用 go-imap 的 client.Fetch，
@@ -149,10 +149,10 @@ func (f *Fetcher) FetchMessageRaw(ctx context.Context, accountID string, uid int
 }
 
 // fetchRawByTextproto 走原始 IMAP 文本协议直接拉取 BODY[]：
-//   1. 与 server 握手读 greeting；
-//   2. LOGIN user pass；
-//   3. UID FETCH <uid> BODY.PEEK[]<0.size>；
-//   4. 解析 {size}\r\n 字面量取字节。
+//  1. 与 server 握手读 greeting；
+//  2. LOGIN user pass；
+//  3. UID FETCH <uid> BODY.PEEK[]<0.size>；
+//  4. 解析 {size}\r\n 字面量取字节。
 //
 // 这是 Greenmail / 自建 quirk server 失败时的回退通道（绕过 go-imapwire
 // 类型化解析器）。Go 的 net/textproto 让我们直接拼装命令，错误信息更直观。
@@ -363,6 +363,7 @@ func quoteIMAPString(s string) string {
 	b.WriteByte('"')
 	return b.String()
 }
+
 // normalizeMessageID 取出 Message-ID 头的裸值（去掉 < > 和空白）。
 // 取不到时返回空串，由调用方决定回退策略。
 func normalizeMessageID(h string) string {
@@ -490,7 +491,25 @@ func decodePartBytes(r io.Reader, transferEncoding string) ([]byte, error) {
 		}
 		return raw, nil
 	case "quoted-printable":
-		return io.ReadAll(quotedprintable.NewReader(r))
+		// Go 的 quotedprintable.Reader **不认 CRLF 软换行**。RFC 2045 规定
+		// 邮件用 CRLF，于是真实邮件里的软换行是 "=\r\n"，喂给它会直接报
+		//     quotedprintable: invalid bytes after =: "\r\r\n"
+		// 整段正文被丢掉（decodePartBody 返回 err，调用方只看到空正文）。
+		// 2026-10-02 实测：把同一段中文正文用 LF 排版能解出，用 CRLF 排版
+		// 解出空串 —— 差别只有行尾。
+		// QP 载荷本身是 7bit ASCII 安全的，把行尾统一成 LF 不会改变任何
+		// 被编码的字节，所以这里先归一再解。
+		raw, err := io.ReadAll(r)
+		if err != nil {
+			return nil, err
+		}
+		if bytes.Contains(raw, []byte("\r\n")) {
+			raw = bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+		}
+		if bytes.Contains(raw, []byte("\r")) {
+			raw = bytes.ReplaceAll(raw, []byte("\r"), []byte("\n"))
+		}
+		return io.ReadAll(quotedprintable.NewReader(bytes.NewReader(raw)))
 	default:
 		return io.ReadAll(r)
 	}
@@ -536,6 +555,7 @@ func decodeCharset(data []byte, charset string) ([]byte, error) {
 		return data, nil
 	}
 }
+
 // ExtractDisplayBody 从整封原文提取可直接展示的正文文本：
 // 优先 text/plain 聚合，其次 text/html，解析失败退回原文本身。
 // 超长截断到 256KB，与 /api/emails/{id}/body 的拉取上限一致。

@@ -124,6 +124,90 @@ node scripts/verify-gateway-audio.mjs mimo-v2.5-asr
 > `C:\workspace\logs`，永远找不到 key，表现为「key 缺失」的**假故障**。
 > 脚本改为扫同级目录后正常。
 
+### §1.4 全量清单复核（16:5x）：604 → 606，且我此前的探测**漏了一条传输形态**
+
+控制面 `/providers/1?tab=models` 在这个内置浏览器里始终登录不上（两次核实
+URL 仍停在 `?login=1&redirect=...`、顶栏是访客态的「登录」按钮），改走 API。
+全量拉 `/v1/models` = **606 个模型**（此前分别见过 603/604，目录在变）落盘分析。
+
+**网关目录里根本没有 ASR 家族。** 按 family 聚合后，音频相关只有 6 个：
+
+| 模型 | modality | family | IsASRCandidate 判定 |
+|---|---|---|---|
+| `mimo-v2.5-asr` | text | mimo | ✅ 候选（强标记 `asr`） |
+| `gpt-audio` | audio | openai-gpt | ✅ 候选（modality） |
+| `gpt-audio-mini` | audio | openai-gpt | ✅ 候选（modality） |
+| `mimo-v2.5-tts` | text | mimo | ❌ 排除（TTS） |
+| `mimo-v2.5-tts-voiceclone` | **audio** | mimo | ❌ 排除（TTS） |
+| `mimo-v2.5-tts-voicedesign` | **audio** | mimo | ❌ 排除（TTS） |
+
+**没有 whisper、没有 paraformer/sensevoice/wenet、没有 qwen-asr、没有 glm-asr。**
+另外 `nemotron-3-nano-omni-30b-a3b-reasoning` 因名字含 `omni` 命中弱标记被收进
+候选，但它是个 reasoning 模型——这是一次**假阳性**，不过当前候选总数 4 < 预算
+6，挤不掉真候选，暂不动它（改了也说不清收益）。
+
+#### 我此前的探测漏了 form 2，于是「网关没有 ASR」这句话当时是不完整的
+
+`discovery.go` 有两条转写传输形态：
+form 1 = `POST /audio/transcriptions`；form 2 = chat 里塞音频。
+我前几轮只测了 form 1（404）和「chat 带纯文本」（503），**从没往 chat 里塞过
+真音频**。这跟「mino 拼写错」「根 android/ 看错目录」是同一类毛病：只测了一条
+路径就下了全局结论。
+
+补测 `scripts/verify-gateway-chat-audio.mjs`（3 秒 16kHz 音调 + `input_audio`
+内容块）：
+
+| 模型 | 结果 |
+|---|---|
+| `gpt-audio` | 503 `no_candidate`（446ms） |
+| `gpt-audio-mini` | 503 `no_candidate`（314ms） |
+
+**form 2 同样不通。** 至此两条形态都实测过，「网关当前无可用 ASR」这个结论
+才站得住。
+
+#### 最硬的一条证据：`tried: 0` 与 `tried: 9` 的区别
+
+单看「503」是不够的——网关在故障时也会返回 503。真正有判别力的是响应里的
+`gateway_debug`：
+
+```
+mimo-v2.5-asr  → "tried":0, "retryable":false, "attempts":null, "kind":"no_candidates"
+                 耗时 1.6s —— 路由器一次都没尝试
+对照组 deepseek-v4-pro（故障瞬间）→ "tried":9, "retryable":true, "kind":"transient"
+                 耗时 47.5s —— 有 9 个候选，挨个试了 9 遍全失败
+对照组 deepseek-v4-pro（60s 后）→ HTTP 200 / 2322ms
+对照组 minimax-m3            → HTTP 200 / 17761ms
+```
+
+`retryable:false` + `tried:0` 是网关在说「**这个模型我一条上游都没配**」，
+而不是「上游临时挂了」。配合两条 200 的对照组，可以排除 key 失效、限流、
+网关故障三种解释。
+
+#### 复核同时抓到一处测试数据失真
+
+`mimo-v2.5-tts-voiceclone` / `-voicedesign` 的 modality 已从 `text` 变成
+**`audio`**。这不是小事：一旦是 audio，即使名字不匹配任何 ASR 关键词，
+`IsASRCandidate` 也会走 `modality==audio` 分支**直接放行**——**只有 `ttsNameRe`
+拦得住**。而 `discovery_test.go` 里这两条用的还是 `Modality: "text"`，
+守着一个网关早已不再返回的形态。已改成 `audio` 并补注释说明。
+
+补完后再做负控，发现**那两条用例其实没有保护力**：从 `ttsNameRe` 里删掉
+`voice-?clone|voice-?design|voiceclon|voicedesign` 四个分支，用例表**仍然全绿**
+（因为名字里的 `tts` 同样会命中）。于是补了一条能真正区分的
+`{fish-speech, Modality:"audio"}` —— 名字里没有 `tts`，删掉 `fish-speech`
+分支就会转红。
+
+| 负控 | 结果 |
+|---|---|
+| A 整个 `ttsNameRe` 摘掉 | 转红 ✅ |
+| B 只摘 `tts` 这一个分支 | 转红 ✅（由裸 `mimo-v2.5-tts` + modality=audio 守护） |
+| D 只摘 `fish-speech` 分支 | 转红 ✅ |
+| C 只摘 `voice-?clone/voice-?design/voiceclon/voicedesign` | **仍然全绿** ⚠️ |
+
+C 这一行如实留着：这四个分支目前**没有**任何用例能单独证明它们有效。要补齐得
+引入目录里不存在的合成模型名（如 `cosyvoice-clone`），属于为覆盖率服务，
+本轮不做——**先把缺口写明，而不是假装覆盖到了**。
+
 ---
 
 ## §2 ASR 选型：便宜的都在 OpenRouter，流式只有 MiniMax/智谱

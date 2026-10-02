@@ -104,19 +104,69 @@ export function mergeInboxPages<T extends { id: string; date: number }>(
 }
 
 /**
- * 下拉刷新：只把「最新一页」并到列表顶部，**保留已加载的分页**。
+ * 行指纹：用于判断「刷新页的同一行内容是否真的变了」。
  *
- * 返回合并后的完整列表与是否真的有新邮件（用于提示「已是最新」）。
+ * 两侧的对象都出自同一个 rowToEmail 映射，键序稳定，故可直接序列化比较。
+ * 序列化失败（理论上不会：LocalEmail 是纯 DTO，无循环引用）时返回空串，
+ * 按「未变化」处理——宁可漏一次重建，也不要每次刷新都重建整个列表。
+ */
+function rowFingerprint<T>(row: T): string {
+  try {
+    return JSON.stringify(row) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 下拉刷新：把「最新一页」并到列表顶部，**保留已加载的分页**。
+ *
+ * 关键点：id 已存在的行**取刷新页的新值**，而不是把它丢掉。
+ * 早期实现只收「全新 id」（`freshPage.filter(e => !existingIds.has(e.id))`），
+ * 于是服务端重算过的摘要（例如 MIME 泄漏修复后重新同步的那些）永远到不了
+ * 列表，已读/加星/归类等任何字段变更同理——症状是
+ * 「下拉刷新后列表仍显示旧摘要」，而本地库里的值其实已经是新的。
+ *
+ * 为什么「新值覆盖旧值」是安全的：existing 是先前从**同一张本地表**
+ * 读到的页，freshPage 是重新读同一张表，两侧不可能有一边更新。
+ * emails.value 也从不就地改字段（只在整份重新赋值时变化），
+ * 所以不存在「只改在内存、还没落库」的乐观编辑被冲掉的情况。
+ *
+ * 返回值：
+ *  - list：合并后的完整列表；
+ *  - addedCount：**真正新增**的封数（不含被更新的行），用于「新增 N 封」
+ *    提示与分页游标——把更新算成新增会让提示虚高；
+ *  - updatedCount：被刷新页更新掉的行数。
+ *
+ * 没有任何新增、也没有任何行真的变了时，**原样返回 existing**，
+ * 避免 v-for 因无意义的引用变化全量重渲染。
  * 不修改传入的 state，也不做任何删除。
  */
 export function applyRefreshPage<T extends { id: string; date: number }>(
   existing: T[],
   freshPage: T[],
-): { list: T[]; addedCount: number } {
-  const existingIds = new Set(existing.map((e) => e.id))
-  const topNew = freshPage.filter((e) => e.id && !existingIds.has(e.id))
-  if (!topNew.length) return { list: existing, addedCount: 0 }
-  return { list: mergeInboxPages([], [...topNew, ...existing]), addedCount: topNew.length }
+): { list: T[]; addedCount: number; updatedCount: number } {
+  const existingById = new Map(existing.map((e) => [e.id, e]))
+  const seen = new Set<string>()
+  const freshRows: T[] = []
+  let addedCount = 0
+  let updatedCount = 0
+  for (const row of freshPage) {
+    if (!row.id || seen.has(row.id)) continue
+    seen.add(row.id)
+    freshRows.push(row)
+    const prev = existingById.get(row.id)
+    if (!prev) addedCount++
+    else if (rowFingerprint(prev) !== rowFingerprint(row)) updatedCount++
+  }
+  if (!addedCount && !updatedCount) {
+    return { list: existing, addedCount: 0, updatedCount: 0 }
+  }
+  // 刷新页覆盖到的行一律取刷新页的值（含「没变」的行，值相同但要占住位置）；
+  // 翻页进来的、刷新页里没有的行原样保留在后面。
+  const kept = existing.filter((e) => !seen.has(e.id))
+  const list = mergeInboxPages([], [...freshRows, ...kept])
+  return { list, addedCount, updatedCount }
 }
 
 /**

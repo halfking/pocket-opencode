@@ -13,6 +13,7 @@ import { useInvoiceThumbs } from './use-invoice-thumbs.ts'
 import {
   INVOICE_PAGE_SIZE, invoiceFileKind, invoiceHasFile,
   mergeInvoicePages, sortInvoicesByReceived, type InvoiceFileKind,
+  pipelineToast,
 } from './invoice-list'
 
 export function useInvoiceList() {
@@ -204,11 +205,13 @@ export function useInvoiceList() {
     const controller = startPipelineRun()
     try {
       const rep = await emailApi.runPipeline(controller.signal)
-      if (!rep.errors?.length) {
-        toast.success(`整理完成：新邮件 ${rep.newEmails ?? 0}`)
-      } else {
-        toast.error(`整理完成但有 ${rep.errors.length} 项失败：${rep.errors[0]}`)
-      }
+      // 判据在纯函数 pipelineToast 里（invoice-list.ts），这里只负责弹。
+      // 流水线是会失败的：5 个账户全部 IMAP 超时、垃圾箱 MOVE 被服务器拒绝、
+      // 发票下载失败……这些都会进 rep.errors，而原先这里无条件 toast.success，
+      // 于是「整轮失败」在界面上长得和「一切正常」一模一样，只能去翻日志。
+      const t = pipelineToast(rep)
+      if (t.kind === 'error') toast.error(t.text)
+      else toast.success(t.text)
       await load()
     } catch (e: any) {
       if (controller.signal.aborted) toast.info('已停止本轮整理')

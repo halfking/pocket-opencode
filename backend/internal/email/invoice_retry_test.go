@@ -149,6 +149,18 @@ func TestMarkRetry_SuccessPathIsTerminal(t *testing.T) {
 //
 // 修法：Attempts++ 提到取原文之前，三条路径（缓存 / POP3 自愈 / IMAP FETCH）
 // 统一计数。
+//
+// 2026-10-02 更正：原来这个用例的邮件 ID 是 `em-cached-acct-cached`，
+// **不带 `em-pop3-` 前缀**，于是 isPOP3SourcedEmail 为 false，BodyCache 根本
+// 没被查——它走的是 else 分支的 Fetcher.FetchMessageRaw，在空 &Fetcher{} 上
+// 立刻失败。也就是说：用例名字钉的是「缓存命中路径」，实际测的是
+// 「fetcher 失败路径」。因为期望本来就是失败，两条路径都能让它变绿，
+// 假绿就这么混过去了。
+//
+// 真实的两张 QQ Wallet 发票正是 POP3 来源，缓存命中才是生产里真正要走的那条
+// 路，所以这里把 ID 改成 em-pop3- 前缀，并**断言 last_error 证明确实走了缓存**
+// （缓存命中会一路解析到「邮件里没有可用 pdf/xml」；若哪天又退回 fetcher 分支，
+// last_error 会变成 "fetch raw: ..."，用例立刻转红）。
 func TestHarvestOne_CachedRawStillCountsAttempt(t *testing.T) {
 	store, cleanup := newWorkspaceTestStore(t)
 	defer cleanup()
@@ -160,14 +172,15 @@ func TestHarvestOne_CachedRawStillCountsAttempt(t *testing.T) {
 	raw := buildE2EMIME(t, "发票通知", body, nil)
 	// UID 必须 > 0：harvestOne 在 em.UID <= 0 时会直接 failed 返回
 	// （客户端推送的历史邮件没有 UID），走不到取原文与计数那一步。
+	// ID 必须带 em-pop3- 前缀，否则不会走 BodyCache 分支（见函数注释）。
 	if err := store.InsertEmail(ctx, Email{
-		ID: "em-cached-acct-cached", AccountID: "acct-cached", WorkspaceID: "ws-1",
+		ID: "em-pop3-cached-acct-cached", AccountID: "acct-cached", WorkspaceID: "ws-1",
 		FromAddress: "billing@vendor.example.com", Subject: "发票通知",
 		Snippet: body, Date: 1750000000, UID: 42,
 	}); err != nil {
 		t.Fatalf("insert email: %v", err)
 	}
-	em, err := store.GetEmailByID(ctx, "em-cached-acct-cached")
+	em, err := store.GetEmailByID(ctx, "em-pop3-cached-acct-cached")
 	if err != nil || em == nil {
 		t.Fatalf("get email: %v", err)
 	}
@@ -179,6 +192,13 @@ func TestHarvestOne_CachedRawStillCountsAttempt(t *testing.T) {
 	inv := &Invoice{
 		ID: "inv-cached", EmailID: em.ID, AccountID: "acct-cached",
 		UserID: "user-1", WorkspaceID: "ws-1", Status: "pending",
+	}
+	// 必须真的建档：harvestOne 每轮结尾都调 UpdateInvoiceHarvest 落库，
+	// 行不存在时它只会打一行 "update invoice: email: not found" 然后返回错误。
+	// 用例原本只读内存里的 inv，于是这条落库失败完全不影响结果——
+	// 声称在验「收敛到终态」，实际一次都没写进库。
+	if _, err := store.UpsertInvoice(ctx, inv, "user-1", "ws-1"); err != nil {
+		t.Fatalf("upsert invoice: %v", err)
 	}
 
 	for round := 1; round <= MaxInvoiceAttempts; round++ {
@@ -192,8 +212,27 @@ func TestHarvestOne_CachedRawStillCountsAttempt(t *testing.T) {
 				"这张发票会永远停在 pending、永远到不了 failed 终态，"+
 				"每轮还占采集预算挤掉正常发票", round, inv.Attempts, round)
 		}
+		// 防假绿：必须真的走了 BodyCache 分支。走了缓存才会一路解析 MIME 到
+		// 「邮件里没有可用 pdf/xml」；若退回 Fetcher 分支，last_error 会是
+		// "fetch raw: ..."，说明这个用例已经名不副实。
+		if strings.HasPrefix(inv.LastError, "fetch raw:") {
+			t.Fatalf("第 %d 轮 LastError=%q —— 取原文走的是 Fetcher 而不是 BodyCache，"+
+				"本用例已经不再测试它名字所声称的「缓存命中路径」", round, inv.LastError)
+		}
 	}
 	if inv.Status != "failed" {
 		t.Fatalf("第 %d 轮后 Status=%q, want \"failed\"（重试耗尽应收敛到终态）", MaxInvoiceAttempts, inv.Status)
+	}
+	// 终态必须真的落库，而不只是内存里改了变量。
+	dbInv, err := store.GetInvoiceByEmailID(ctx, em.ID)
+	if err != nil {
+		t.Fatalf("读回落库结果: %v", err)
+	}
+	if dbInv.Status != "failed" {
+		t.Fatalf("落库 status=%q, want \"failed\" —— 采集器每轮都调 UpdateInvoiceHarvest，"+
+			"不落库的话下一轮又会从库里把这条 pending 捞出来重试", dbInv.Status)
+	}
+	if dbInv.Attempts != MaxInvoiceAttempts {
+		t.Fatalf("落库 attempts=%d, want %d", dbInv.Attempts, MaxInvoiceAttempts)
 	}
 }

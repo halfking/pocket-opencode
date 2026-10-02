@@ -59,6 +59,8 @@ type Config struct {
 	FeishuAppSecret    string
 	FeishuVerifyToken  string // url_verification.token 匹配（可选）
 	FeishuVerifySecret string // X-Lark-Signature 验签密钥（留空 = dev 模式跳过）
+	// 当前**未被任何代码消费**（2026-10-02 全仓核实）：飞书回调里没有
+	// 任何 V1 加密事件的解密路径。设这个环境变量不会有任何效果。
 	FeishuEncryptKey   string // V1 加密事件解密用（V2 不加密，留空即可）
 
 	// ---- Phase 0: 个人助理模块新增配置 ----
@@ -97,6 +99,9 @@ type Config struct {
 	EmailGoogleClientSecret    string // POCKET_EMAIL_GOOGLE_CLIENT_SECRET
 	EmailMicrosoftClientID     string // POCKET_EMAIL_MICROSOFT_CLIENT_ID
 	EmailMicrosoftClientSecret string // POCKET_EMAIL_MICROSOFT_CLIENT_SECRET
+	// 当前**未被任何代码消费**（2026-10-02 全仓核实）：OAuth 授权 URL 里的
+	// redirect_uri 取自请求体的 redirectUri 字段（server_assistant.go
+	// startEmailOAuth），不是这里。设这个环境变量不会有任何效果。
 	EmailOAuthRedirectURL      string // POCKET_EMAIL_OAUTH_REDIRECT_URL（默认 http://localhost:8088/callback/email/oauth）
 	EmailFetchEnabled          bool   // POCKET_EMAIL_FETCH_ENABLED（默认 true；CI/dev 可关闭）
 	EmailIMAPInsecureSkipVerify bool  // POCKET_EMAIL_IMAP_INSECURE_SKIP_VERIFY：跳过自签 IMAPS 证书校验（仅测试用）

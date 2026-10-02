@@ -181,7 +181,8 @@
     "finance": "記帳",
     "financeDesc": "手動 + 筆記自動入帳 · 月度收支統計",
     "language": "介面語言",
-    "apiAddressNotSaved": "地址未能儲存，請檢查輸入是否為空或格式不正確"
+    "apiAddressNotSaved": "地址未能儲存，請檢查輸入是否為空或格式不正確",
+    "buildDefaultUnreachable": "建置預設值 {url} 在本裝置上無法連線（它指向裝置本身），已改用 {fallback}。若要連本機後端，請在「自訂地址」明確填寫。"
   },
   "flashcards": {
     "list": {

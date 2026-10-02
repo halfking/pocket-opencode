@@ -84,6 +84,13 @@ $env:POCKET_AUTH_USER = "admin"
 # 外部 ASR 指向 loopback 假上游：validateGatewayURL 默认拒私网（防 SSRF），
 # 这里显式 opt-in。这正是设置页保存 loopback 地址时的行为。
 $env:POCKET_LLM_GATEWAY_ALLOW_PRIVATE = "true"
+# ⚠️ 这两个开关**名字不同、作用不同**，不能只设一个。
+# POCKET_LLM_GATEWAY_ALLOW_PRIVATE 管网关地址，STT 外部转写服务另有一个
+# POCKET_STT_ALLOW_PRIVATE。2026-10-01 16:5x 踩过：只设了前者，脚本从
+# 「PASS 22 / FAIL 0」掉到「PASS 10 / FAIL 9」，9 条失败全部是这一条
+# 保存设置失败（URL host is not allowed）的下游——**不是产品回归**。
+# 判据：补上这个变量后立刻恢复 22/22。
+$env:POCKET_STT_ALLOW_PRIVATE = "true"
 
 $proc = Start-Process -FilePath $bin -WorkingDirectory (Join-Path $root 'backend') `
   -RedirectStandardOutput (Join-Path $dataDir 'pocketd.out.log') `

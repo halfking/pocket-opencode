@@ -262,3 +262,133 @@ func TestSyncReleasesInflightOnReturn(t *testing.T) {
 		t.Fatal("Sync 返回后 inflight 仍被占用 —— 该账户将永远无法再同步")
 	}
 }
+
+// TestHardDeadlineCheckedAtTickGranularity 钉住**生产形态**下的时序。
+//
+// 上面那条 TestIMAPHardDeadlineBreaksBusyButStuckConnection 用的是
+// idle=5s / hard=600ms：tick=idle/3=1.67s，而 hard=0.6s **小于**一个 tick，
+// 于是第一次 tick 就必然越过 hard——「硬截止生效」这件事在该用例里是
+// 白送的，tick 粒度这个真正的变量一次都没被测到。
+//
+// 生产取值恰好相反：imapIdleTimeout=60s → tick=20s，而
+// imapHardTimeout=45s > 20s。看门狗只在 tick 上判 hard，所以真实断开点是
+// **第一个严格大于 hard 的 tick**，不是 hard 本身。
+//
+// 这条用例把两者按生产比例缩放（idle=3s/tick=1s，hard=1.5s），断言断开落在
+// (hard, hard+tick] 这个窗口里——把「有效截止 = 向上取整到 tick」钉成事实。
+// 有人把 imapHardTimeout 调到 tick 的整数倍之外时，有效截止会静默翻倍，
+// 这条用例会先转红。
+func TestHardDeadlineCheckedAtTickGranularity(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		tk := time.NewTicker(50 * time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tk.C:
+				if _, err := c.Write([]byte("x")); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	raw, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer raw.Close()
+
+	const (
+		idle = 3 * time.Second
+		hard = 1500 * time.Millisecond // > tick(=1s)，与生产同形
+	)
+	tick := idle / 3
+	dc := &deadlineConn{Conn: raw, idle: idle, hard: time.Now().Add(hard)}
+	dc.start()
+
+	start := time.Now()
+	buf := make([]byte, 4)
+	var lastErr error
+	for time.Since(start) < 10*time.Second {
+		if _, err := dc.Read(buf); err != nil {
+			lastErr = err
+			break
+		}
+	}
+	el := time.Since(start)
+
+	if lastErr == nil {
+		t.Fatal("连接始终没被断开 —— hard 大于一个 tick 时看门狗漏判了")
+	}
+	// 有效截止应是「第一个严格大于 hard 的 tick」= 2s，不是 hard 本身。
+	wantLo, wantHi := hard, hard+tick
+	if el < wantLo {
+		t.Fatalf("断得太早：%s < hard=%s，说明 hard 被精确执行了（那不是看门狗的实际语义）", el, hard)
+	}
+	if el > wantHi+300*time.Millisecond {
+		t.Fatalf("断得太晚：%s > hard+tick=%s，有效截止比预期多了一个 tick", el, wantHi)
+	}
+	t.Logf("断开耗时 %s（hard=%s tick=%s → 有效截止落在 (hard, hard+tick]）", el.Round(time.Millisecond), hard, tick)
+}
+
+// TestIMAPLeavesBudgetForPOP3Fallback 钉住「降级通道必须可达」这条设计要求。
+//
+// 现实危害：IMAP 一旦把单账户预算 syncBudget 吃光，syncPOP3Fallback 会在
+// budget<=0 上直接返回 "imap failed and no time left for POP3 fallback"，
+// 于是「IMAP 一挂了就降级 POP3」这条兜底在**最需要它的时候**恰好不可用。
+// 2026-10-02 真实日志里这条错误出现了 76 次，且每一条的 budget 都是负的
+// （日志明写 "budget -10s left"）。
+//
+// # ⚠ 本用例下面的公式已被实测证伪（2026-10-02）
+//
+// 它假设「有效截止 = 第一个严格大于 imapHardTimeout 的 tick」，算出 60s、
+// 剩 10s，于是通过。但用生产常量实测（见 diag_hard_deadline_test.go，
+// 门禁 POCKET_DIAG_HARDDEADLINE=1）真实占用是 **80.0s**、余量 **-10.0s**，
+// 与线上 76 次 1m20.1xxs 完全吻合。
+//
+// 原因是 deadlineConn 的看门狗在**第 1 拍**就走了 REFRESH 分支
+// （SetDeadline(now+idle)），那个 OS 截止真正生效；等第 3 拍硬截止分支
+// 终于正确判定越界并 SetDeadline(过去) 时，已经阻塞的读**不再被它打断**，
+// 一直活到第 1 拍刷下的那个到期时刻。于是：
+//
+//	有效硬截止 = 首个 tick + imapIdleTimeout = 4/3 · idle = 80s
+//
+// 且**与 imapHardTimeout 无关**（只要 hard > 首个 tick）。把它从 45s 调到
+// 30s/15s 都不会提前断开——要真正生效必须 hard <= idle/3。
+//
+// 本用例保留是为了锁住「余量必须为正」这个意图（公式一旦被修正为实测值就会
+// 转红），但**不要再把它的通过当成 POP3 兜底可达的证据**。改 IMAP 超时
+// 前先重跑 diag_hard_deadline_test.go。
+func TestIMAPLeavesBudgetForPOP3Fallback(t *testing.T) {
+	tick := imapIdleTimeout / 3
+	// 有效截止 = 第一个严格大于 imapHardTimeout 的 tick。
+	effective := (imapHardTimeout/tick + 1) * tick
+
+	if effective >= syncBudget {
+		t.Fatalf(
+			"IMAP 有效截止 %s 已经吃光单账户预算 %s（tick=%s hard=%s）：POP3 兜底永远拿不到预算，"+
+				"IMAP 一挂 syncPOP3Fallback 就在 budget<=0 上返回，降级形同虚设",
+			effective, syncBudget, tick, imapHardTimeout)
+	}
+	left := syncBudget - effective
+	if left < 10*time.Second {
+		t.Fatalf("IMAP 有效截止 %s 之后只剩 %s 给 POP3 兜底，余量过窄（tick=%s hard=%s）",
+			effective, left, tick, imapHardTimeout)
+	}
+	t.Logf("IMAP 有效截止 %s / 预算 %s → POP3 兜底可用余量 %s", effective, syncBudget, left)
+}
+

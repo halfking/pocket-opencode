@@ -9,10 +9,10 @@ import {
   PRODUCTION_API_BASE,
   BACKUP_API_BASE,
   API_BASE_STORAGE_KEY,
-  isCapacitorShellOrigin,
   normalizeApiBase,
   readApiBaseOverride,
   resolveApiBase,
+  resolveApiBaseWithSource,
   type StorageLike,
 } from '../../config/api-base.ts'
 
@@ -38,14 +38,13 @@ export function detectServerChoice(
 /** 当前选择对应的实际生效地址（未落盘前的预览）。 */
 export function previewServerBase(choice: ServerChoice, buildDefault: string, pageOrigin: string): string {
   switch (choice.kind) {
+    // build / origin 都不落盘覆盖值，最终由「无 override」路径决定，
+    // 所以直接复用同一个解析器——否则设备上构建默认值被丢弃时，
+    // 预览仍显示 localhost、保存后实际却是生产入口，预览就在骗人。
     case 'build':
-      return buildDefault ? normalizeApiBase(buildDefault) : ''
+      return resolveApiBase({ override: null, buildDefault, pageOrigin })
     case 'origin':
-      // The browser uses /api on its origin; the native localhost shell needs
-      // the configured backend instead. Match resolveApiBase in both cases.
-      return isCapacitorShellOrigin(pageOrigin) && buildDefault
-        ? normalizeApiBase(buildDefault)
-        : ''
+      return resolveApiBase({ override: '', buildDefault, pageOrigin })
     case 'production':
       return PRODUCTION_API_BASE
     case 'backup':
@@ -77,6 +76,8 @@ export interface ServerSaveOutcome {
   changed: boolean
   /** 落盘后是否仍然是「同源/未设置」——自定义地址丢失时为 true。 */
   fellBackToOrigin: boolean
+  /** 落盘后生效地址其实是被换过的生产入口（原构建默认值在设备上不可达）。 */
+  loopbackBuildRejected: boolean
 }
 
 /**
@@ -98,11 +99,16 @@ export function resolveServerSave(
   else opts.storage.setItem(API_BASE_STORAGE_KEY, persistValue)
 
   const after = readApiBaseOverride(opts.storage)
-  const resolved = resolveApiBase({ storage: opts.storage, buildDefault: opts.buildDefault, pageOrigin: opts.pageOrigin })
+  const resolvedWithSource = resolveApiBaseWithSource({
+    storage: opts.storage,
+    buildDefault: opts.buildDefault,
+    pageOrigin: opts.pageOrigin,
+  })
   return {
     persistValue,
-    resolved,
-    changed: before !== resolved,
+    resolved: resolvedWithSource.base,
+    changed: before !== resolvedWithSource.base,
     fellBackToOrigin: after === null || after === '',
+    loopbackBuildRejected: resolvedWithSource.loopbackBuildRejected === true,
   }
 }

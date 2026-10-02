@@ -181,7 +181,8 @@
     "finance": "记账",
     "financeDesc": "手动 + 笔记自动入账 · 月度收支统计",
     "language": "界面语言",
-    "apiAddressNotSaved": "地址未能保存，请检查输入是否为空或格式不正确"
+    "apiAddressNotSaved": "地址未能保存，请检查输入是否为空或格式不正确",
+    "buildDefaultUnreachable": "构建默认值 {url} 在本设备上不可达（它指向设备自身），已改用 {fallback}。若要连本机后端，请在「自定义地址」里明确填写。"
   },
   "flashcards": {
     "list": {

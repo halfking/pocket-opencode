@@ -13,6 +13,7 @@ import (
 //   - 后端没有 POST /api/flashcards/decks（实测 404）
 //   - 前端列表页「新建卡组」按钮执行 router.push('/flashcards/new')，
 //     跳到的是「新建卡片」页（FlashcardEditView）
+//
 // 于是 decks=0 → selectedDeckId 取不到值 → 保存按钮恒 disabled →
 // 闪卡模块从零状态完全不可用。
 //

@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // server_email_invoice.go — 邮件发票自动整理 HTTP handlers。
 //
@@ -197,7 +197,7 @@ func (s *Server) handleEmailInvoiceExtract(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-inv, hit := email.ExtractInvoice(*e, "")
+	inv, hit := email.ExtractInvoice(*e, "")
 	log.Printf("[email/extract] enter email=%s uid=%d first_hit=%v fetcherNil=%v", e.ID, e.UID, hit, s.emailFetcher == nil)
 	if !hit {
 		// 摘要/主题没命中时拉正文：先 AES-GCM 缓存，无缓存主动从 IMAP
@@ -386,5 +386,3 @@ func (s *Server) handleEmailInvoiceOps(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "GET/PATCH/DELETE only")
 	}
 }
-
-

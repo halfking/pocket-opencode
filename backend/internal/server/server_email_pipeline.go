@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // server_email_pipeline.go — 邮件流水线的 server 侧装配与 HTTP handlers。
 //
@@ -136,22 +136,38 @@ func (n *notifycenterEmailNotifier) NotifyImportantEmail(ctx context.Context, e 
 	if n == nil || n.svc == nil {
 		return fmt.Errorf("notifycenter not configured")
 	}
-	userID := ""
-	if n.store != nil {
-		if acc, _, err := n.store.GetAccountByID(ctx, e.AccountID); err == nil && acc != nil {
-			userID = acc.UserID
-		}
+	// 收件人必须解析出来，否则这封提醒有两个**无声**的坏结局：
+	//
+	//  1. UserID 为空时 notifycenter 的 websocket 通道退化成**工作区全体广播**
+	//     （WebsocketSender.Send 的注释写明「无 user_id 退化为全局广播」）——
+	//     别人邮箱里的重要邮件会推给同 workspace 所有在线用户；
+	//  2. Dispatch 本身不报错，流水线的 notifyImportant 于是把这封记进
+	//     notified_at ＝「已提醒」。上面那条广播是一次的，这一条是**永久**的：
+	//     提醒再也不会重发。
+	//
+	// 所以解析不出归属就返回错误：流水线会把它记进 rep.Errors 且**不**写
+	// notified_at，下一轮还有机会重试。
+	if n.store == nil {
+		return fmt.Errorf("notify important email=%s: email store not configured", e.ID)
 	}
-	title := strings.TrimSpace(e.Subject)
-	if title == "" {
-		title = "重要邮件"
+	acc, _, err := n.store.GetAccountByID(ctx, e.AccountID)
+	if err != nil {
+		return fmt.Errorf("notify important email=%s: resolve account %s: %w", e.ID, e.AccountID, err)
 	}
-	_, err := n.svc.Dispatch(ctx, notifycenter.Event{
+	if acc == nil || acc.UserID == "" {
+		return fmt.Errorf("notify important email=%s: account %s has no user owner", e.ID, e.AccountID)
+	}
+	// 主题为空时不要再套一层前缀（否则标题变成「重要邮件：重要邮件」）。
+	title := "重要邮件"
+	if subject := strings.TrimSpace(e.Subject); subject != "" {
+		title = "重要邮件：" + subject
+	}
+	_, err = n.svc.Dispatch(ctx, notifycenter.Event{
 		WorkspaceID: e.WorkspaceID,
-		UserID:      userID,
+		UserID:      acc.UserID,
 		Source:      "email",
 		Kind:        "email.important",
-		Title:       "重要邮件：" + title,
+		Title:       title,
 		Body:        e.Snippet,
 		Priority:    "high",
 	})
@@ -578,4 +594,3 @@ func (s *Server) handleEmailInvoiceSummary(w http.ResponseWriter, r *http.Reques
 		"shareDocUrl": ledgerURL,
 	})
 }
-

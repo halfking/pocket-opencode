@@ -122,9 +122,20 @@ func TestIsASRCandidate(t *testing.T) {
 		// asrNameRe 里的 `voice` 会把语音**合成**模型拉进 ASR 候选。
 		// 这两个是 llm.kxpms.cn 上真实存在的模型名（真机录音失败文案里出现过），
 		// 命中 `voice` 但它们做的是 text-to-speech，转写它们永远失败。
-		{GatewayModel{ID: "mimo-v2.5-tts-voiceclone", Modality: "text"}, false,
-			"语音合成（音色克隆）不是转写，不该占探测预算、也不该出现在转写失败文案里"},
-		{GatewayModel{ID: "mimo-v2.5-tts-voicedesign", Modality: "text"}, false,
+		//
+		// Modality 用 **audio** 而不是 text：2026-10-01 16:5x 复核 /v1/models
+		// 发现这两个的 modality 已从 text 变成 audio。这不是小事——一旦是 audio，
+		// 即使 asrNameRe 也不匹配，IsASRCandidate 也会走 modality==audio 分支
+		// 直接放行，**只有 ttsNameRe 拦得住**。测试数据必须对齐真实目录，
+		// 否则测试守着的是一个网关已经不再返回的形态。
+		//
+		// 负控的诚实说明：这两条**不能**证明 ttsNameRe 里的
+		// `voice-?clone|voice-?design` 分支有效——名字里的 `tts` 同样会命中，
+		// 删掉 voice-* 那几个分支它们照样是 false。它们防的是「ttsNameRe 整体
+		// 被摘掉」。真正单独守护 `tts` 这个分支的是下面那条裸 mimo-v2.5-tts。
+		{GatewayModel{ID: "mimo-v2.5-tts-voiceclone", Modality: "audio"}, false,
+			"语音合成（音色克隆）不是转写，modality=audio 也不能放行"},
+		{GatewayModel{ID: "mimo-v2.5-tts-voicedesign", Modality: "audio"}, false,
 			"语音合成（音色设计）同上"},
 		// 裸的 mimo-v2.5-tts（不带 voiceclone/voicedesign 后缀）同样在目录里。
 		// 刻意**不**在这里加它的断言：负控对照实测过，把 ttsNameRe 里的 `tts`
@@ -134,6 +145,13 @@ func TestIsASRCandidate(t *testing.T) {
 		// 加一条恒绿的断言只会制造「有测试保护」的错觉。
 		{GatewayModel{ID: "mimo-v2.5-tts", Modality: "audio"}, false,
 			"裸 TTS 合成模型即使用 modality=audio 也不该当转写候选"},
+		// fish-speech 是真实存在的开源 TTS 家族（CoTTS），且名字里**没有 tts**。
+		// 它是当前用例表里唯一能单独守护 ttsNameRe 非 tts 分支的条目：删掉
+		// `fish-speech` 分支后，modality=audio 会立刻把它放行并让测试转红。
+		// 负控实测过：只删 `voice-?clone|voice-?design|voiceclon|voicedesign`
+		// 这几个分支，用例表仍全绿——说明它们当时是**没有保护**的。
+		{GatewayModel{ID: "fish-speech", Modality: "audio"}, false,
+			"不含 tts 字样的合成模型也必须被排除，否则 modality=audio 会放行它"},
 		// TTS 词 + 强 ASR 标记的混合命名不能被误杀。
 		{GatewayModel{ID: "whisper-tts-hybrid", Modality: "text"}, true,
 			"带 whisper 强标记，即使名字含 tts 也不排除"},

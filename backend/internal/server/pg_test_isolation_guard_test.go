@@ -145,6 +145,22 @@ var pgSafeWithoutIsolation = map[string]string{
 	// 且只删自己 acctID 名下的行。
 	"internal/email/fetcher_greenmail_test.go": "需 build tag greenmail + PG_DSN，go test ./... 不编译",
 
+	// diag_snippet_leak_test.go 是**唯一**带写语句的诊断探针，因此不能和上面
+	// 那些「无写语句」的条目混为一谈。逐条核过：
+	//   · 全文只有 1 条写语句（UPDATE email_accounts SET last_synced_uid=0,
+	//     last_synced_at=0），没有 INSERT/DELETE/DROP/CREATE/TRUNCATE/ALTER；
+	//   · 该写语句被**三重开关**挡住：POCKET_REAL_MAIL_DSN +
+	//     POCKET_DIAG_RESET_ACCOUNT + POCKET_DIAG_ALLOW_RESET=1；
+	//   · 写路径额外拒绝 schema 缺省值——本文件 schema 缺省是 opencode_pocket
+	//     （生产 schema），而 SQL 支持 who='ALL' 改写全部账户。2026-10-02 已补
+	//     这道闸：此前只要设 DSN + RESET_ACCOUNT 就能把生产库所有账户的同步
+	//     进度归零，触发全量重拉；
+	//   · 读路径（统计 rawMIME 摘要数）仍只需 POCKET_REAL_MAIL_DSN，且只用
+	//     pool.Query。
+	// 它要的就是读真实 schema 并（可选）改真实同步进度，自建隔离 schema 反而
+	// 会让诊断查了个空库、输出「数据没了」的假结论。
+	"internal/email/diag_snippet_leak_test.go": "诊断探针：1 条 UPDATE（重置 last_synced_uid 以便用当前二进制重写摘要），被 POCKET_REAL_MAIL_DSN + POCKET_DIAG_RESET_ACCOUNT + POCKET_DIAG_ALLOW_RESET=1 三重开关挡住，且写路径拒绝 schema 缺省值（缺省=生产库 opencode_pocket 且 who='ALL' 可改全部账户）；读路径只读",
+
 	// 下面两个是**有意**指向真实 schema 的只读诊断探针——指向真实库正是
 	// 它们的目的，所以不能要求它们自建隔离 schema。两者均无任何写语句
 	// （INSERT/UPDATE/DELETE/DROP/CREATE/TRUNCATE 一个都没有），且门控极严。

@@ -181,7 +181,8 @@
     "finance": "Bookkeeping",
     "financeDesc": "Manual + auto from notes · monthly income & expenses",
     "language": "Language",
-    "apiAddressNotSaved": "The address could not be saved. Check that it is not empty and is a valid URL."
+    "apiAddressNotSaved": "The address could not be saved. Check that it is not empty and is a valid URL.",
+    "buildDefaultUnreachable": "Build default {url} is unreachable on this device (it points at the device itself), so {fallback} is used instead. To reach a backend on your own machine, enter it under Custom address."
   },
   "flashcards": {
     "list": {

@@ -21,6 +21,19 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/email/rules"
 )
 
+// syncBudget 是单个账户的**总**墙钟预算，IMAP 与 POP3 降级共用。
+//
+// 取 70s = IMAP 硬截止 45s + POP3 最多 25s。必须明显小于 pipeline 的
+// 90s 上界（DefaultAccountSyncTimeout），留 20s 给后面的步骤（落库、
+// 发票建档）——之前取 80s 时实测仍然整轮 90619ms 超时，因为 80+ 收尾
+// 已经把 90s 吃满了。
+//
+// 它必须是**包级**常量而不是 Sync 里的局部变量：diag_hard_deadline_test.go
+// 与 imap_deadline_test.go 要拿它当生产常量来核对「POP3 兜底还剩多少」，
+// 而 POP3 兜底能不能跑成完全取决于这个数与 IMAP 实际耗时的差。收进函数里
+// 测试就只能自己抄一份 70s 常量，抄的那份与生产漂移时不会有任何信号。
+const syncBudget = 70 * time.Second
+
 // Fetcher 通过 IMAP 拉取邮件。
 type Fetcher struct {
 	store  *Store
@@ -584,13 +597,6 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 	addr := fmt.Sprintf("%s:%d", acc.IMAPHost, acc.IMAPPort)
 	tr := newSyncTrace(acc.EmailAddress)
 	defer tr.done()
-	// syncBudget 是单个账户的**总**墙钟预算，IMAP 与 POP3 降级共用。
-	//
-	// 取 70s = IMAP 硬截止 45s + POP3 最多 25s。必须明显小于 pipeline 的
-	// 90s 上界（DefaultAccountSyncTimeout），留 20s 给后面的步骤（落库、
-	// 发票建档）——之前取 80s 时实测仍然整轮 90619ms 超时，因为 80+ 收尾
-	// 已经把 90s 吃满了。
-	const syncBudget = 70 * time.Second
 	deadline := time.Now().Add(syncBudget)
 	// 降级时能用的时间 = 总预算减去 IMAP 已经花掉的。
 	remaining := func() time.Duration { return time.Until(deadline) }
@@ -697,11 +703,17 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 			}
 		}
 		tr.step(fmt.Sprintf("InsertEmail uid=%d", em.UID))
-		if err := f.store.InsertEmail(ctx, em); err != nil {
-			log.Printf("[email/fetcher] insert email uid=%d: %v", em.UID, err)
+		// 只有**真正插入新行**才算「新邮件」。InsertEmail 对已存在的 id 走
+		// ON CONFLICT DO UPDATE 并返回 nil，所以拿它的错误判断新旧是不行的；
+		// 重复同步同一封时必须不计，否则「整理完成：新邮件 N」会虚报。
+		isNew, ierr := f.store.InsertEmailIfNew(ctx, em)
+		if ierr != nil {
+			log.Printf("[email/fetcher] insert email uid=%d: %v", em.UID, ierr)
 			continue
 		}
-		saved++
+		if isNew {
+			saved++
+		}
 		if imap.UID(em.UID) > highestUID {
 			highestUID = imap.UID(em.UID)
 		}
@@ -794,8 +806,10 @@ func (f *Fetcher) syncPOP3Fallback(ctx context.Context, acc *Account, cred strin
 			em.Snippet = fmt.Sprintf("parse error: %v", perr)
 			log.Printf("[email/fetcher] pop3 parse uidl=%s failed: %v", uidls[i], perr)
 		}
-		if err := f.store.InsertEmail(ctx, em); err != nil {
-			log.Printf("[email/fetcher] pop3 insert email uidl=%s: %v", uidls[i], err)
+		// 同 IMAP 路径：只把**真正新插入**的计入 new，重复同步不计数。
+		isNew, ierr := f.store.InsertEmailIfNew(ctx, em)
+		if ierr != nil {
+			log.Printf("[email/fetcher] pop3 insert email uidl=%s: %v", uidls[i], ierr)
 			continue
 		}
 		// POP3 同步是**唯一**能拿到这封邮件完整原文的机会：它的 UID 是位置
@@ -809,7 +823,9 @@ func (f *Fetcher) syncPOP3Fallback(ctx context.Context, acc *Account, cred strin
 			}
 		}
 		nowUIDLSeen = append(nowUIDLSeen, uidls[i])
-		saved++
+		if isNew {
+			saved++
+		}
 	}
 	if err := f.store.MarkPOP3UIDLSeen(ctx, acc.ID, nowUIDLSeen, now); err != nil {
 		log.Printf("[email/fetcher] mark pop3 seen: %v", err)

@@ -468,9 +468,19 @@ Email scheduler started (fetch_enabled=true, kxmemory=false, ...)
 **必须全部**进入候选 —— 防止将来有人把正常业务类别误当垃圾排除掉，
 那才会真的让提醒静默失效。
 
-**剩余的真实缺口只有一个**：新邮件拿不到 `importance`（kxmemory 未配），
-所以 `remindersUnclassified=5` 持续增长、新的重要邮件永远等不到提醒。
-这是**依赖缺失**，不是代码问题。
+**剩余的真实缺口只有一个**：新邮件拿不到 AI 写的 `importance`
+（kxmemory 未配），所以 `remindersUnclassified` 会持续增长。
+
+> **2026-10-02 05:4x 更正**：本节原写「新邮件永远等不到提醒」——**这个说法
+> 过强、且已被实测否掉**。`importance` 有两条写入路径：AI 分类
+> （`SetClassification`）与**本地规则引擎**（`fetcher.go:771`
+> `rules.ActionMarkImportant`）。后者与 kxmemory 无关，规则命中即写
+> `importance='high'`。2026-10-02 实测：真实库 28 封 high / 24 封已提醒，
+> `GET /api/notifications` 能读到 `[email/email.important]` 通知，
+> **重要邮件提醒链路端到端是通的**。
+> kxmemory 缺的是 `ai_summary` / `suggested_action` / 每日总结这类 AI 增强，
+> 不是提醒本身。详见
+> [correction-important-reminder-works-without-kxmemory.md](./correction-important-reminder-works-without-kxmemory.md)。
 
 ## 5.5 事故：`opencode_pocket` schema 被清空（2026-10-01 19:47，根因未定）
 

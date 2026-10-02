@@ -397,11 +397,23 @@ func (s *Store) MarkStarred(ctx context.Context, id string, starred bool) error 
 func (s *Store) GetEmailByID(ctx context.Context, id string) (*Email, error) {
 	var e Email
 	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, folderName sql.NullString
+	var messageID sql.NullString
+	var bodyPurged sql.NullBool
 	var uid sql.NullInt64
+	// message_id / body_purged 不是「顺手多查两列」，漏掉它们不产生任何错误信号，
+	// 只让下游拿到零值结构体、守卫分支在生产里从不执行：
+	//   - 少了 message_id：invoice_harvest.harvestOne 拿本方法的返回值去调
+	//     sameEmailMessage(em, raw)，那条判据靠 em.MessageID 做「真实 Message-ID
+	//     强确认/强否定」。列没查出来 ⇒ emHasReal 恒 false ⇒ 生产里只剩
+	//     subject+from+同日 的弱判据，而真实数据里两张同名发票的头部完全一样。
+	//   - 少了 body_purged：server_email_summary.summarizeBody 第一道守卫
+	//     `if em.BodyPurged { return "" }` 恒不触发，用户软删并清空正文的邮件
+	//     会被 IMAP 重新回源、喂给 LLM、再把摘要写回已删除的行。
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, account_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments, COALESCE(folder_name, '')
+		SELECT id, account_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments,
+		       message_id, COALESCE(body_purged, FALSE), COALESCE(folder_name, '')
 		FROM emails WHERE id = $1
-	`, id).Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &folderName)
+	`, id).Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &messageID, &bodyPurged, &folderName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -410,6 +422,12 @@ func (s *Store) GetEmailByID(ctx context.Context, id string) (*Email, error) {
 	}
 	if uid.Valid {
 		e.UID = uid.Int64
+	}
+	if messageID.Valid {
+		e.MessageID = messageID.String
+	}
+	if bodyPurged.Valid {
+		e.BodyPurged = bodyPurged.Bool
 	}
 	if folderName.Valid {
 		e.FolderName = folderName.String
@@ -511,8 +529,22 @@ func (s *Store) SetSummaryScoped(ctx context.Context, id, userID, workspaceID, a
 // 这里按实际行为描述。
 //
 // 2026-10-01：冲突时**只**刷新 snippet，理由与边界见 SQL 注释。
+// InsertEmail 只关心「写成功没有」。需要区分「新插入」与「重跑刷新」的场景
+// 必须用 InsertEmailIfNew —— 见该函数关于「新邮件 N」虚报的说明。
 func (s *Store) InsertEmail(ctx context.Context, e Email) error {
-	_, err := s.pool.Exec(ctx,
+	_, err := s.InsertEmailIfNew(ctx, e)
+	return err
+}
+
+// InsertEmailIfNew 与 InsertEmail 写完全一样的一行，但**额外告诉你这是不是
+// 一次真正的插入**（inserted=true），而不是 ON CONFLICT 命中的刷新。
+//
+// 存在的理由：fetcher 拿写入成功与否统计「新邮件 N」。用 InsertEmail 的话，
+// 重复同步同一封已存在的邮件也会被计入，于是每次轮询都虚报一堆新邮件。
+// 判断依据是 `RETURNING (xmax = 0)`，由 PG 自己在同一条语句内给出，不存在
+// 「先查后插」的竞态窗口。
+func (s *Store) InsertEmailIfNew(ctx context.Context, e Email) (inserted bool, err error) {
+	err = s.pool.QueryRow(ctx,
 		// Two defects used to make this statement fail on every call, so no
 		// fetched email could ever be persisted:
 		//   1. a stray $19 with only 18 target columns ("INSERT has more
@@ -543,16 +575,35 @@ func (s *Store) InsertEmail(ctx context.Context, e Email) error {
 		//     若直接赋值，一次同步就能把正常摘要刷成空白，这比留着旧 MIME 更糟。
 		//   - subject / from_address 同样是从信封派生的，但本轮没有证据表明它们
 		//     出过错，暂不扩大刷新面。
-		`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments, created_at, updated_at)
+	//
+	// 2026-10-02 修正：importance / action_reason 也改为「规则判出来才刷新」。
+	// 原来连它们都不刷新，于是「先收信、后配 rules」这条路是断的：fetcher 里
+	// 算出的 importance=high 在 ON CONFLICT 分支被直接丢掉。症状极具迷惑性
+	// ——新邮件走 INSERT 有提醒，旧邮件走 DO UPDATE 永远补不上，而用户唯一能
+	// 让旧邮件重过一遍规则的办法（重置 last_synced_uid 重同步）走的正是
+	// ON CONFLICT。判据是 EXCLUDED 为空 = 这条规则没命中，此时必须保留旧值，
+	// 否则一次没配规则的重跑会把 AI 分类出的 importance 抹成空。
+	//
+	// category 刻意**不**加进来：label-category 只在入库时播种，之后由 AI
+	// 分类（SetClassificationScoped）拥有。若让规则在每次重跑时覆盖它，规则
+	// 就会反过来压过 AI 分类，与「AI 拥有分类结果」的既有语义相反。
+	//
+	// RETURNING (xmax = 0)：xmax 为 0 表示这一行走的是 INSERT 分支，非 0 表示
+	// 走的是 ON CONFLICT DO UPDATE 分支。这是判断「新邮件」的可靠信号——Exec
+	// 拿不到它，而靠「先查后插」会与并发同步竞态。
+	`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments, created_at, updated_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 			 ON CONFLICT (id) DO UPDATE SET
-			   snippet = CASE WHEN EXCLUDED.snippet <> '' THEN EXCLUDED.snippet ELSE emails.snippet END`,
+			   snippet = CASE WHEN EXCLUDED.snippet <> '' THEN EXCLUDED.snippet ELSE emails.snippet END,
+			   importance = CASE WHEN EXCLUDED.importance <> '' THEN EXCLUDED.importance ELSE emails.importance END,
+			   action_reason = CASE WHEN EXCLUDED.action_reason <> '' THEN EXCLUDED.action_reason ELSE emails.action_reason END
+			 RETURNING (xmax = 0) AS inserted`,
 		e.ID, e.AccountID, defaultWorkspace(e.WorkspaceID), nullStr(e.MessageID), e.UID,
 		e.FromAddress, e.FromName, e.Subject, e.Snippet, e.Date,
 		e.IsRead, e.IsStarred, e.Category, e.Importance, e.AISummary, e.SuggestedAction,
-		nullStr(e.ActionReason), e.HasAttachments, time.Now().Unix(), time.Now().Unix())
+		nullStr(e.ActionReason), e.HasAttachments, time.Now().Unix(), time.Now().Unix()).Scan(&inserted)
 
-	return err
+	return inserted, err
 }
 
 func (s *Store) Close() error { return nil }
@@ -1738,15 +1789,20 @@ func (s *Store) ListDeletedEmailIDsScoped(ctx context.Context, since int64, user
 // 用 body_path 判断加密缓存是否已落盘。其余 list 路径不需要这两列。
 func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID string) (*Email, error) {
 	var e Email
-	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath, folderName sql.NullString
+	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath, folderName, messageID sql.NullString
+	var bodyPurged sql.NullBool
 	var uid sql.NullInt64
+	// message_id / body_purged 的理由同 GetEmailByID：这两列一旦漏查，
+	// 下游拿到的结构体就是「字段恒零值」，守卫分支在生产里从不执行，
+	// 而且不产生任何错误信号。
 	err := s.pool.QueryRow(ctx, `SELECT e.id, e.account_id, e.uid, e.from_address, e.from_name, e.subject, e.snippet,
 		e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments,
-		e.body_path, COALESCE(e.folder_name, '')
+		e.body_path, e.message_id, COALESCE(e.body_purged, FALSE), COALESCE(e.folder_name, '')
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
 		WHERE e.id=$1 AND a.user_id=$2 AND a.workspace_id=$3`, id, userID, workspaceID).
 		Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead,
-			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPath, &folderName)
+			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPath,
+			&messageID, &bodyPurged, &folderName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -1755,6 +1811,12 @@ func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID 
 	}
 	if uid.Valid {
 		e.UID = uid.Int64
+	}
+	if messageID.Valid {
+		e.MessageID = messageID.String
+	}
+	if bodyPurged.Valid {
+		e.BodyPurged = bodyPurged.Bool
 	}
 	if folderName.Valid {
 		e.FolderName = folderName.String

@@ -249,7 +249,16 @@ type PipelineReport struct {
 	// 没法判断。有了这两个计数，看报告就知道该去配 AI 还是该去调规则。
 	RemindersScanned      int `json:"remindersScanned,omitempty"`
 	RemindersUnclassified int `json:"remindersUnclassified,omitempty"`
-	Invoices      HarvestResult `json:"invoices"`
+	// 发票候选（步骤 1.5）的三个计数。同样的理由：只报 invoices.Processed
+	// 时，「扫了 0 封候选」和「这批邮件里没有发票」长得一模一样，
+	// 于是 0 到底是链路没跑、还是跑了但没命中，看报告分不出来。
+	// 2026-10-02 就是靠 scanned 这个计数才定位到 24h 窗口把历史邮件全挡在
+	// 外面——在那之前 invoices 全是 0，看上去像「邮箱里没有发票」。
+	InvoiceCandidatesScanned int `json:"invoiceCandidatesScanned,omitempty"`
+	InvoiceCandidatesCreated int `json:"invoiceCandidatesCreated,omitempty"`
+	// InvoiceBodyFetchDeferred 是超出单轮 IMAP 预算、顺延到下一轮的候选数。
+	InvoiceBodyFetchDeferred int           `json:"invoiceBodyFetchDeferred,omitempty"`
+	Invoices                 HarvestResult `json:"invoices"`
 	FeishuPushed  int    `json:"feishuPushed"`
 	FeishuFailed  int    `json:"feishuFailed"`
 	ShareDocCSV   string `json:"shareDocCsv,omitempty"`
@@ -355,7 +364,8 @@ func (p *Pipeline) Run(ctx context.Context) *PipelineReport {
 // IMAP 路径只落 envelope（snippet 为空、金额/发票号在正文里），因此候选命中
 // 后需 FetchMessageRaw 拉原文做二次提取（与手动提取端点同路径）。
 func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Account, rep *PipelineReport) {
-	emails, _, err := p.Store.ListEmailsSince(ctx, rep.StartedAt-86400, 500)
+	emails, _, err := p.Store.ListEmailsSince(ctx,
+		rep.StartedAt-int64(invoiceCandidateLookbackDays)*86400, invoiceCandidateScanLimit)
 	if err != nil {
 		rep.AddError("invoice candidates list: %v", err)
 		return
@@ -494,12 +504,37 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 	if fetchFailed > 0 {
 		rep.AddError("invoice raw body fetch failed for %d message(s) (IMAP 侧问题，本轮未建档)", fetchFailed)
 	}
-	log.Printf("[email/pipeline] step1.5 scanned=%d rawBodyFetches=%d fetchFailed=%d autoCreated=%d",
-		len(emails), len(keptIdx), fetchFailed, created)
+	deferred := len(jobs) - len(keptIdx)
+	rep.InvoiceCandidatesScanned = len(emails)
+	rep.InvoiceCandidatesCreated = created
+	rep.InvoiceBodyFetchDeferred = deferred
+	log.Printf("[email/pipeline] step1.5 window=%dd scanned=%d rawBodyFetches=%d deferred=%d fetchFailed=%d autoCreated=%d",
+		invoiceCandidateLookbackDays, len(emails), len(keptIdx), deferred, fetchFailed, created)
 	if created > 0 {
 		log.Printf("[email/pipeline] auto-created %d invoice candidates", created)
 	}
 }
+
+// invoiceCandidateLookbackDays 是第 1.5 步扫描「尚未建档的发票候选」的回看天数。
+//
+// 原实现硬编码 24 小时（rep.StartedAt-86400）。实测真实库：120 封邮件里只有
+// 2 封落在 24h 窗口内，唯一一张 envelope 就能识别的真实发票
+// （「…的发票，发票号码：2633…，金额：3500.00元…」）在窗口之外，
+// 于是 email_invoices 一直是 0 行——功能看起来实现了，实际对历史邮件、
+// 上次同步失败期间积压的邮件、延迟入库的邮件**从不触发**。定时任务每天
+// 跑一次，24h 窗口意味着任何一次漏掉的邮件就永久丢失。
+//
+// 放宽窗口不会让代价失控：envelope 判定（主题+摘要正则）不碰 IMAP，
+// 只是多扫一些行；真正贵的「拉原文」仍受 maxInvoiceBodyFetches 预算限制，
+// 超出的顺延到下一轮。
+const invoiceCandidateLookbackDays = 90
+
+// invoiceCandidateScanLimit 是第 1.5 步 envelope 扫描的行数上限。
+//
+// 必须与回看窗口配套调大：原来窗口 24h + LIMIT 500 时，500 行几乎必然被
+// 最近的邮件占满，回看窗口再宽也够不到旧邮件（ORDER BY date DESC 从最新
+// 开始取）。Store.ListEmailsSince 自身把 >2000 的值重置为 500，故此处取其上限。
+const invoiceCandidateScanLimit = 2000
 
 // maxInvoiceBodyFetches 是第 1.5 步单轮最多拉多少封原文。
 //
@@ -748,8 +783,7 @@ func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 	candidates, unclassified := splitReminderCandidates(emails, notified)
 	rep.RemindersUnclassified = unclassified
 	if unclassified > 0 {
-		log.Printf("[email/pipeline] %d/%d 封邮件 importance 为空 —— 未被 AI 分类过，"+
-			"不会进入重要提醒（检查 POCKET_KXMEMORY_BASE_URL）", unclassified, len(emails))
+		log.Printf("[email/pipeline] %s", reminderUnclassifiedHint(unclassified, len(emails)))
 	}
 	var ids []string
 	var sent []Email
@@ -768,6 +802,30 @@ func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 		rep.RemindersSent = len(ids)
 		log.Printf("[email/pipeline] reminders sent: %v", emailSubjects(sent))
 	}
+}
+
+// reminderUnclassifiedHint 组装「importance 为空」的诊断提示。
+//
+// 单独抽成纯函数，是因为这段提示本身是被当排查入口用的，写错比不写更糟。
+// 它原来只说「未被 AI 分类过（检查 POCKET_KXMEMORY_BASE_URL）」，但 importance
+// 在生产里其实有**两条**写入路径，只提一条会把排查方向带偏：
+//
+//  1. 账户规则：fetcher.go 里 `rules.Evaluate` 命中 mark-important 时，
+//     入库即写 importance=high，与 AI 完全无关。前提是该账户配了
+//     email_accounts.rules（为空时 ParseRules 返回 nil，整条路径不执行）。
+//  2. AI 分类：classify_run.go → SetClassificationScoped，需要
+//     POCKET_KXMEMORY_BASE_URL 或已接线的 LLM provider。
+//
+// 真实库实测（2026-10-02）：5 个账户 rules 全为 NULL，kxmemory 未配、
+// llmbff 报 no provider configured —— 两条路都不通，importance 恒为空。
+// 这时只提示去配 kxmemory，等于让人在一条根本不通的路上排查。
+func reminderUnclassifiedHint(unclassified, scanned int) string {
+	return fmt.Sprintf("%d/%d 封邮件 importance 为空 —— 不会进入重要提醒。"+
+		"importance 只有两条写入路径：① 账户规则（email_accounts.rules 里的 "+
+		"mark-important，入库即生效，与 AI 无关）② AI 分类"+
+		"（POCKET_KXMEMORY_BASE_URL 或已接线的 LLM provider）。"+
+		"两条都不通时就是这个结果，先确认账户有没有配 rules。",
+		unclassified, scanned)
 }
 
 // pushInvoices 已由 Run 内的 scope 循环实现（见上）。
@@ -865,6 +923,29 @@ func (p *Pipeline) BuildInvoiceSummaryDocs(ctx context.Context, userID, workspac
 	return WriteInvoiceSummaryDocs(p.DataDir, workspaceID, invoices)
 }
 
+// invoiceSummaryHeader 是汇总 CSV 的列定义。合计行按**这张表**定位「金额」列，
+// 不再靠手数字符串里的逗号个数。
+var invoiceSummaryHeader = []string{
+	"费用类型", "对方单位", "金额", "币种", "发票号", "日期", "状态", "文件名", "来源邮件",
+}
+
+// invoiceSummaryTotalRow 生成合计行，长度与表头一致，金额落在「金额」列。
+//
+// 2026-10-02 修正：原来写死 `"合计,,,,,,,%.2f,\n"`，7 个逗号把 3500.00 放到了
+// **第 8 列「文件名」**——用 CSV 解析器实测确认（金额列空着、文件名列写着合计）。
+// 需求原文要的是「汇总金额」，落在文件名列里，人在 Excel 里根本对不上账。
+// 改成按表头定位，以后调整列顺序也不会再错位。
+func invoiceSummaryTotalRow(total float64) []string {
+	row := make([]string, len(invoiceSummaryHeader))
+	row[0] = "合计"
+	for i, col := range invoiceSummaryHeader {
+		if col == "金额" {
+			row[i] = fmt.Sprintf("%.2f", total)
+		}
+	}
+	return row
+}
+
 // WriteInvoiceSummaryDocs 把发票清单写为 CSV + Markdown 汇总文档。
 func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (string, string, error) {
 	dir := filepath.Join(dataDir, "email-invoices", "exports", defaultWorkspace(workspaceID))
@@ -876,6 +957,7 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 	mdPath := filepath.Join(dir, "invoices-summary-"+stamp+".md")
 
 	var total float64
+	counted := 0
 	rows := make([][]string, 0, len(invoices))
 	for _, inv := range invoices {
 		// 合计口径与 LedgerRows 保持一致：**只统计已下载的**。
@@ -883,8 +965,12 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 		// failed 发票若带着错误抽取出的非零金额，会静默把对账总额算高，
 		// 而且没有任何地方会提示。两处口径必须一致，否则 CSV 与飞书表格
 		// 的「合计」会给出两个不同的数。
+		//
+		// counted 与 total 在同一处递增：把「计入了几张」和「合计多少钱」
+		// 绑在一起，才能在 Markdown 头部如实说明覆盖范围。
 		if (inv.Status == "downloaded" || inv.Status == "filed") && inv.FilePath != "" {
 			total += inv.Amount
+			counted++
 		}
 		rows = append(rows, []string{
 			inv.Category, inv.Seller, fmt.Sprintf("%.2f", inv.Amount), inv.Currency,
@@ -893,7 +979,7 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 	}
 
 	csv := &strings.Builder{}
-	csv.WriteString("费用类型,对方单位,金额,币种,发票号,日期,状态,文件名,来源邮件\n")
+	csv.WriteString(strings.Join(invoiceSummaryHeader, ",") + "\n")
 	for _, r := range rows {
 		cells := make([]string, len(r))
 		for i, c := range r {
@@ -901,15 +987,28 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 		}
 		csv.WriteString(strings.Join(cells, ",") + "\n")
 	}
-	csv.WriteString(fmt.Sprintf("合计,,,,,,,%.2f,\n", total))
+	// 合计行只进 CSV。它不能混进 rows —— Markdown 表格按 7 列渲染每一行，
+	// 塞进去会多出一张空壳的「合计 | | | 3500.00 | ...」行（金额会落在状态列）。
+	sumCells := invoiceSummaryTotalRow(total)
+	for i, c := range sumCells {
+		sumCells[i] = csvSafeCell(c)
+	}
+	csv.WriteString(strings.Join(sumCells, ",") + "\n")
 	if err := os.WriteFile(csvPath, []byte(csv.String()), 0o600); err != nil {
 		return "", "", err
 	}
 
 	md := &strings.Builder{}
 	md.WriteString("# 发票汇总\n\n")
-	md.WriteString(fmt.Sprintf("生成时间：%s · 共 %d 张 · 合计金额 **%.2f**\n\n",
-		time.Now().Format("2006-01-02 15:04"), len(invoices), total))
+	// 「共 N 张」和合计金额必须用各自的口径说清楚。
+	//
+	// 原来头部写的是 len(invoices)（**全部**发票），而 total 只累加
+	// status ∈ {downloaded, filed} 且 FilePath 非空的。于是只要清单里混进
+	// pending/failed 发票，头部就是「共 3 张 · 合计金额 100.00」——读者必然
+	// 以为这 3 张都算进了 100，实际只有 1 张。和 2026-10-01 修过的
+	// LedgerTotal 是同一类问题：同一个数字在两处用不同口径，且没有任何提示。
+	md.WriteString(fmt.Sprintf("生成时间：%s · 共 %d 张（计入合计 %d 张）· 合计金额 **%.2f**\n\n",
+		time.Now().Format("2006-01-02 15:04"), len(invoices), counted, total))
 	md.WriteString("| 费用类型 | 对方单位 | 金额 | 发票号 | 日期 | 状态 | 文件 |\n")
 	md.WriteString("|---|---|---:|---|---|---|---|\n")
 	for _, r := range rows {
