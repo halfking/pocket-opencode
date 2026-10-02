@@ -62,41 +62,101 @@ token 去打每个端口，比较**哪个被接受**。只看状态码的话漂�
 
 ## 2b. 真机验收本轮实际做到了哪一步
 
-**没有重启 18099 那个进程**（它是并发会话 23:35 起的 `pocketd-invoicecheck`）。
-`start-local-backend.ps1` 要求一个显式 `POCKET_AUTH_PASS`/`POCKET_DEV_PASS`，
-仓库里**没有默认值**（2026-10-03 的安全整改有意删掉了那个硬编码口令），
-`.env` 里也没有。自造一个会让它与真机 App 登录用的口令不一致，
-制造出新的"看起来通了实际登不上"。
+**18099 已按授权重启完毕（`d6b4db7b` + `274c411b`）**，真机 App 现在
+**直连它自己配置的后端，零 workaround**。`adb reverse` 全程保持原始的
+18099→18099（上一轮临时指向 18100 的 workaround 已作废）。
 
-改走更轻的一条：**把 `adb reverse` 指向 18100**（认 App 会话的那台）。
+> 用户授权的是「按 start-local-backend.ps1 重启」，实际**没有用那个脚本**：
+> 它要求 `POCKET_AUTH_PASS`/`POCKET_DEV_PASS`，仓库刻意没有默认值
+> （2026-10-03 安全整改删掉了那个明文 devPass 常量），自造会制造新的
+> 口令不一致。改用 `scripts/restart-18099-aligned-secret.ps1` 显式设 env，
+> 每一项取自被替换实例**自己**的启动日志，且**复用同一个二进制**。
 
-| 步骤 | 结果 |
-|---|---|
-| `adb reverse tcp:18099 tcp:18100` | 设备侧 18099 → 主机 18100 |
-| App 的 token 在 18100 | **200，24 条通知** |
-| force-stop 后重启 App | 登录成功，首页加载出 `PG matrix probe`（并发会话的夹具 → 证明连对了后端） |
-| 「更多」→ 铃铛 | 通知中心正常渲染 24 条 `email.important` |
-| **收尾** | `adb reverse` 已还原为 `18099 → 18099`；pid 2196 未被我停止 |
+### 第一次重启只修了一半——而且漏的那一半在屏幕上完全看不出来
 
-### 过程中两次"装置坏了"而不是"实现坏了"
+重启后：token 200 ✓、API 24 条 ✓、healthz 200 ✓，但**真机通知中心显示
+「暂无通知」**。WebView console：
+
+```
+"Access to fetch at 'http://127.0.0.1:18099/api/notific...' ..."
+"Uncaught (in promise) TypeError: Failed to fetch"
+```
+
+实测 ACAO：`:18099 ACAO=null` / `:18100 ACAO=https://localhost`。
+**CORS 没配 ⇒ 浏览器拦掉响应 ⇒ 前端拿到网络错误而不是 0 条 ⇒ 渲染成空列表。**
+
+> 空列表与被拦掉的请求，**在屏幕上一模一样**。只看截图会判成"数据没了"
+> 或"store 逻辑坏了"——我第一反应就是去读 `notification.ts`，
+> 因为「API 返回 24 条」与「UI 显示 0 条」互相矛盾，矛盾的是**它们不是同一条链路**。
+
+补 `POCKET_ALLOWED_ORIGINS`（列 `https://localhost,capacitor://localhost,http://localhost`
+三个而不是只列 console 里出现的那一个——Android WebView 的 origin 随 scheme 变，
+只列碰巧出现过的那个，另一个照样静默失败）后：
+
+| Origin | status | ACAO | count |
+|---|---|---|---|
+| `https://localhost` | 200 | `https://localhost` | 24 |
+| `capacitor://localhost` | 200 | `capacitor://localhost` | 24 |
+| `http://localhost` | 200 | `http://localhost` | 24 |
+| `https://evil.example` | 200 | **null** | 24 |
+
+陌生 origin 仍被浏览器拦——放行名单没被写成通配。
+（`POCKET_ALLOWED_ORIGINS` 在生产模式是必填，`config.go:442-448`，
+所以这不是"多写一个保险"，是这个实例一直缺。）
+
+**最终真机验收**：force-stop → 重启 → 更多 → 铃铛 → 通知中心正常渲染
+24 条 email.important，且此刻无任何 workaround。
+
+### 重启门禁（读日志，不假设）
+
+```
+[OK] Postgres pool initialized (schema="opencode_pocket")
+[OK] Email credential self-check: all 5 enabled email account(s) decrypt
+[OK] daily pipeline runner injected
+[OK] pocketd listening on :18099
+[info] pipeline scheduled at 2026-10-03T08:00:00+08:00
+```
+
+邮件同步也真的恢复了（`56551681@qq.com sync trace total 58.816s`）。
+
+### 过程中三次"装置坏了"而不是"实现坏了"
 
 1. **`adb shell input tap` 全部无效**——连点「更多」这种有明确视觉反馈的都不动。
    根因在 `dumpsys input`：`FocusedWindows:` 是**空的**，输入焦点层丢了
    （`screencap` 走独立通道所以截图照常，KEYCODE_HOME 也照常生效）。
    按 HOME 再 `am start` 把窗口焦点抢回来后，tap 立刻正常。
-   **这类"tap 没反应"极易被误读成"App 卡了/坐标错了"**——
-   判据必须先做对照（点一个必然有反馈的地方）。
 2. **`uiautomator dump` 拿到的是别的 App 的窗口**（一个 VPN 界面），
-   因为焦点在别处。WebView 应用的 dump 也不含自身节点。
+   因为焦点在别处。WebView 应用的 dump 也不含自身节点——
    靠 `content-desc` 找坐标这条路在真机上走不通，只能截图 + 已知布局。
+3. **脚本「超时」是宿主在等长命后代进程，不是脚本卡死**。用两个最小复现
+   判别出来的：子进程自己退（3s）的版本 4.2s 就返回；子进程长命
+   （`ping -t`）的版本挂住。**我差点照着"超时"去"修"一个好脚本。**
+   判别方法：让子进程自终止再跑一次，看是否立即返回。
 
 ## 2c. 需求 4 在真机上**验不了的那一半**
 
 需求 4 要验的是"首次加载超过 50 条时不丢历史"。真库此刻只有 **24** 条，
 真机 UI 渲染 24 条完全正常——**这恰恰证明不了任何东西**。
-要验它必须先让库里超过 56 条（24 + 需求 4 明天推的 32）。
-这件事卡在"32 条积压提醒策略"那个待拍板项上（要不要限流），
-不是我单方面能推进的。
+要验它必须先让库里超过 56 条（24 + 需求 4 明天 08:00 推的 32，round24 §1 已
+把 09:00 更正为 08:00）。这件事卡在"32 条积压提醒策略"那个待拍板项上。
+
+## 2d. 顺带暴露的既有缺陷（不在本轮范围，未修）
+
+重启后第一轮同步打了 18 条
+
+```
+[email/fetcher] pop3 insert email uidl=...: ERROR: duplicate key value
+  violates unique constraint "emails_account_id_message_id_key" (SQLSTATE 23505)
+```
+
+逐实例对比：`210827 dup=0 pop3fallback=6` / `233541 dup=0 pop3fallback=2` /
+`000540 dup=18 pop3fallback=3`。所以**不是** POP3 兜底本身造成的。
+
+**没有邮件丢失**：23505 打在 `(account_id, message_id)` 唯一索引上，
+意味着这些邮件**已经在库里**，插入被拒只是"跳过一条已存在的"，
+而代码把它记成 ERROR 而不是幂等跳过。同步本身完成、healthz ok。
+这是个先前就存在的潜在缺陷，每次重启后第一轮同步都会暴露出来。
+
 
 
 
@@ -147,8 +207,8 @@ inserted=260  limit50=50 limit200=200 limit201=50 limit500=50
 
 用户本轮已确认：**这些全部保持等决定，不再推进。**
 
-另记一条**已查明但需你给口令才能做**的事：
-真机全程验收要按标准路径走，得让 18099 用
-`start-local-backend.ps1` 重起，而它要求 `POCKET_AUTH_PASS`（或
-`POCKET_DEV_PASS`）——仓库里刻意没有默认值。自造口令会让 App 登录用的
-口令与后端不一致，症状是"看起来通了实际登不上"。
+「移信要不要先落成 intent」已被 round24 §2 取消（不是需求 6 的前提），
+本轮未再复活它。
+
+推送条件见 round24 §3 补记：已是 fast-forward，但仍需授权才动。
+
