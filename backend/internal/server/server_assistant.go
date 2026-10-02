@@ -607,7 +607,7 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 
-	// 注意预算死区（2026-10-03 审计记录，见 llmgateway/client.go 的同名注释）：
+	// 注意预算死区（2026-10-02 审计记录，见 llmgateway/client.go 的同名注释）：
 	// 这个 60 秒**并不真的可用**。非流式调用走 llmgateway.Client，而那个客户端
 	// 设了 `Transport.ResponseHeaderTimeout = 30s`——响应头要到上游真正开始回包
 	// 才发出。对本路由的模型（网关自动路由到 glm-5.2，**推理模型**，先把 token

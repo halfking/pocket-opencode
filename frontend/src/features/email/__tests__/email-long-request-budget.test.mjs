@@ -3,7 +3,7 @@
 // 锁住一条跨语言的不变式：**前端给长请求设的客户端超时，必须大于后端自己
 // 给该请求设的执行预算。** 反了就是「服务端成功了、客户端报失败」。
 //
-// 2026-10-03 审计实测到的正是这一条：`emailApi.runPipeline()` 没有传
+// 2026-10-02 审计实测到的正是这一条：`emailApi.runPipeline()` 没有传
 // timeoutMs，于是吃 http.ts 的默认 30s；而后端这一轮实测 1m30.67s
 // （backend/internal/server/server.go 的 longLivedPaths 事故记录里写着）。
 // 后果每次必现、且极具误导性：

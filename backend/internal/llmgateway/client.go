@@ -64,7 +64,7 @@ var discoveredFormats sync.Map // baseURL(normalized) -> string
 //     会让前端等满 60s；加 ResponseHeaderTimeout 后能 30s 内即触发 client
 //     错误，handler 再把错误作为 SSE error 事件写回。
 //
-// 已知代价（2026-10-03 审计记录，先记录不擅自改）：
+// 已知代价（2026-10-02 审计记录，先记录不擅自改）：
 //
 //	ResponseHeaderTimeout 约束的是「响应头何时到达」，而**非流式**调用要等上游
 //	真正开始回包才发头。对推理模型（本项目网关自动路由到 glm-5.2）来说这很致命：

@@ -167,6 +167,28 @@ var pgSafeWithoutIsolation = map[string]string{
 	"internal/email/diag_kxpms_test.go":    "只读真实库探针：无写语句；需 POCKET_DIAG_ACCOUNT + POCKET_DIAG_ALLOW=1 + POCKET_REAL_MAIL_DSN + POCKET_DIAG_DATA_DIR",
 	"internal/email/spam_realdata_test.go": "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（目的就是读真实 schema）",
 
+	// internal/email/diag_credential_health_test.go（2026-10-02 新增，被本护栏判红后逐项核对）：
+	//   · 只用 pool.Query，**一次 Exec 都没有**（全文件扫
+	//     INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT：0 命中），
+	//     唯一的 SQL 是一条 SELECT ... FROM email_accounts ORDER BY email_address；
+	//   · 门控是 POCKET_REAL_MAIL_DSN + POCKET_REAL_DATA_DIR，**不认**
+	//     POCKET_TEST_POSTGRES_DSN，因此本地 `go test ./...` 不会踩到；
+	//   · 它的目的就是读生产 schema 里 email_accounts 的凭据密文并用本地
+	//     dataDir 里的 email_master.key 解密——自建隔离 schema 会让「查真实库
+	//     的凭据」这件事失去意义（隔离库里根本没有真实账户）。这与
+	//     spam_realdata_test.go / ledger_realdata_diag_test.go 同理；
+	//   · **绝不打印明文**：只输出「能否解密 / 明文长度 / 是否符合专用密码形态」，
+	//     长度与形态足以区分「完整密码」与「截断/存错字段」，无需看到内容。
+	//
+	// 【已实测的盲区，勿当成护栏在看着它】上面「0 写语句」是**一次性观察**，
+	// 不是机器维持的不变式。列入本表后护栏就**完全跳过**该文件——是「不看」，
+	// 不是「检查后放行」。负控实测（2026-10-02）：往该文件注入一段真实的
+	// `pool.Exec(ctx, "DELETE FROM email_accounts")`，本护栏**依然绿**。
+	// 所以改 diag_credential_health_test.go 的人必须自己保证不引入写语句，
+	// 并在同一次改动里跑一遍本护栏。若它将来真的需要写，正确做法不是把
+	// 理由改宽松，而是改成自建 *_test_ schema 隔离。
+	"internal/email/diag_credential_health_test.go": "只读真实库探针：无写语句（仅 SELECT）；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA + POCKET_REAL_DATA_DIR（判定库中凭据密文是否完好，隔离库无真实账户可查）；绝不打印明文。**注意：本条目使护栏完全跳过该文件（实测注入 DELETE 后仍绿），写语句无机器守护**",
+
 	// 下面三个是 2026-10-02 合入 feat/mail-config-deploy 时被本护栏判红的，
 	// 逐个核过后确认安全，理由可核查：
 	//   · 只用 pool.Query，**一次 Exec 都没有**（2026-10-02 全文件扫

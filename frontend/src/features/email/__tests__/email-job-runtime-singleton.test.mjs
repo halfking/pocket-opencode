@@ -2,7 +2,7 @@
 //
 // 锁住一条需求级不变式：**邮件长作业的状态必须活在进程里，而不是活在组件里。**
 //
-// 2026-10-03 审计到的缺陷：`useEmailInbox()` / `useInvoiceList()` 把
+// 2026-10-02 审计到的缺陷：`useEmailInbox()` / `useInvoiceList()` 把
 // classifying / syncing 放在 composable 的局部 `ref()` 里，而视图
 // `onUnmounted` 之后组件连同这些 ref 一起消失——**在途的 fetch 却不会跟着停**。
 // 于是：

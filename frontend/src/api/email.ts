@@ -10,7 +10,7 @@ import { useAuthStore } from '../stores/auth'
 /**
  * 邮件流水线（收信 → 清垃圾 → 重要提醒 → 发票采集 → 飞书/汇总）的客户端超时。
  *
- * 2026-10-03 审计到的缺陷：`runPipeline()` 早先**没有**传 timeoutMs，于是吃
+ * 2026-10-02 审计到的缺陷：`runPipeline()` 早先**没有**传 timeoutMs，于是吃
  * 默认的 30s（http.ts 的 DEFAULT_TIMEOUT_MS）。而后端这一轮的实测耗时是
  * **1m30.67s**（见 backend/internal/server/server.go 里 longLivedPaths 的
  * 事故记录）。结果是必然的、每次都复现的：
