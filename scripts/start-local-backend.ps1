@@ -90,11 +90,34 @@ if (-not $devPass) {
 
 # Refuse to double-bind: two pocketd on one port means the App may randomly
 # talk to the stale one, which is exactly the confusion described above.
+#
+# 2026-10-03: "stop, sleep 2, start" is NOT enough. The old process can still
+# hold the port when the new one tries to bind; the new one then dies with
+# "bind: Only one usage of each socket address", and the /healthz poll below
+# happily answers from the OLD process and reports "ready".
+# Observed consequence: asking for a rotated JWT secret, the script said it
+# started, but the old secret was still in force - every old token still
+# validated, so a BUG-AX regression run silently tested nothing.
 $existing = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
 if ($existing) {
-  Write-Host "[backend] port $Port held by pid $($existing.OwningProcess), stopping it first"
-  Stop-Process -Id $existing.OwningProcess -Force -ErrorAction SilentlyContinue
-  Start-Sleep -Seconds 2
+  $oldPid = $existing.OwningProcess
+  Write-Host "[backend] port $Port held by pid $oldPid, stopping it first"
+  Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue
+  # Wait for the port to actually be released. A fixed sleep is a guess; this
+  # is a fact we can check.
+  $freed = $false
+  for ($i = 0; $i -lt 30; $i++) {
+    Start-Sleep -Milliseconds 500
+    $still = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
+    if (-not $still) { $freed = $true; break }
+  }
+  if (-not $freed) {
+    Write-Host "[backend] FAILED: port $Port is still held by pid $oldPid after 15s."
+    Write-Host "[backend] Refusing to continue - a second pocketd would fail to bind and"
+    Write-Host "[backend] the /healthz check would answer from the stale process."
+    exit 1
+  }
+  Write-Host "[backend] port $Port released by pid $oldPid"
 }
 
 $env:POCKET_POSTGRES_DSN = "postgresql://postgres@127.0.0.1:5432/postgres?sslmode=disable"
@@ -153,7 +176,26 @@ for ($i = 0; $i -lt 60 -and -not $ok; $i++) {
   }
 }
 if ($ok) {
-  Write-Host "[backend] pid=$($p.Id) ready on $Port, schema=$Schema"
+  # "healthz answered" is NOT "the process I started is the one answering".
+  # 2026-10-03: a stale process that outlived Stop-Process (or a second pocketd
+  # that bound first) answers /healthz perfectly while the process we just
+  # launched has already exited. Reporting $p.Id as "ready" in that case is a
+  # lie that outlives the script - callers then attribute results to a binary
+  # and a JWT secret that are not the ones in play.
+  $owner = (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue).OwningProcess
+  if ($owner -ne $p.Id) {
+    Write-Host "[backend] FAILED: /healthz answers, but port $Port is owned by pid '$owner', not the pid $p.Id we launched."
+    Write-Host "[backend] The process we started is not the one serving. Refusing to report ready."
+    if (Get-Process -Id $p.Id -ErrorAction SilentlyContinue) {
+      Write-Host "[backend] stderr tail from the process we launched:"
+      Get-Content $err -Tail 20
+    } else {
+      Write-Host "[backend] pid $p.Id has already exited. Its stderr tail:"
+      Get-Content $err -Tail 20
+    }
+    exit 1
+  }
+  Write-Host "[backend] pid=$($p.Id) ready on $Port, schema=$Schema, port-owner-verified"
 } else {
   Write-Host "[backend] FAILED: /healthz unanswered after 30s. stderr tail:"
   Get-Content $err -Tail 20
