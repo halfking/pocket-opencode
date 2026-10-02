@@ -49,9 +49,20 @@ import (
 //
 // 只收已经出过事的字段。键是结构体字段名（跨类型同名时共用一个键；
 // 下面的判据按函数内出现与否判定，不区分接收者类型）。
+// ## 扩守 ActionReason 时的一条实测（2026-10-02，别把它当成有承重的护栏）
+//
+// 负控实测：把本条目连同下面那条 Sync 豁免一起去掉，护栏**仍然全绿**。
+// 也就是说 ActionReason 这一条目前是**惰性的**——包里唯一给 `.ActionReason`
+// 赋值的函数是 fetcher 的 Sync，而它已被豁免（值来自规则引擎，与 DB 无关）。
+//
+// 它仍然值得留着，理由是：豁免一旦被误删，条目会立刻生效并报出 Sync。
+// 但**不要**把它当成「AI 判定依据的读路径已被守住」的证据——那一层由
+// classification_reason_persist_test.go 的端到端用例负责（它打真 PG，
+// 真从 kxmemory 响应一路验到 emails.action_reason）。
 var readbackGuardedFields = map[string]string{
-	"MessageID":  "message_id",  // 发票自愈的强身份判据（§7co）
-	"BodyPurged": "body_purged", // 摘要的「禁止回源」守卫（§7cq）
+	"MessageID":    "message_id",    // 发票自愈的强身份判据（§7co）
+	"BodyPurged":   "body_purged",   // 摘要的「禁止回源」守卫（§7cq）
+	"ActionReason": "action_reason", // AI 判定依据（§7ec：真库 122/122 为空）
 }
 
 // readbackFnExempt 允许「从**非 SQL** 来源赋值」的函数，必须写明理由。
@@ -63,6 +74,12 @@ var readbackFnExempt = map[string]string{
 		"不是从库里读出来的。真实 Message-ID 在 POP3 侧根本不存在——" +
 		"这正是 sameEmailMessage 里用 strings.HasPrefix(msgID, \"pop3-\") " +
 		"把它排除在强确认之外的原因。护栏第二版（只看字符串字面量）才把它抓出来，添为豁免",
+	"Sync": "这里的 em.ActionReason 是**规则引擎的命中依据**（fetcher.go 里 " +
+		"reasons 拼成的 \"action: reason\" 串），在内存里生成，与 DB 无关；" +
+		"同一函数确实调 InsertEmail，而 action_reason 是那条 INSERT 的列之一，"+
+		"但 SQL 写在 store.InsertEmail 里、不在 Sync 的函数体内，所以本判据看不见。" +
+		"AI 分类那条路径（ClassifyUnclassified → SetClassificationWithReasonScoped）" +
+		"才是 §7ec 修的断点，它有自己的端到端用例盯着",
 }
 
 // TestGuard_FieldAssignmentIsBackedByItsColumn 结构护栏。

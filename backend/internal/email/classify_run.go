@@ -14,6 +14,21 @@ type RawClassifyResult struct {
 	Importance string
 	Summary    string
 	Action     string
+	// Reason 是 AI 判定该分类/重要度的依据。
+	//
+	// 2026-10-02 补。这个字段原先**根本不存在**：kxmemory 的分类响应契约里
+	// 带 action_reason（docs/2026-07-02-kxmemory-api-contract.md），
+	// client.Result.ActionReason 也早就解出来了，但 classifyRun 在构造
+	// RawClassifyResult 时只搬了 Category/Importance/Summary/SuggestedAction，
+	// action_reason 在**这一跳**被丢弃 —— 于是后面的
+	// SetClassificationScoped（不写这一列）拿不到它，分类器给出的判定依据
+	// 永远进不了库。
+	//
+	// 实测 blast radius：真库 122 封邮件 action_reason **全为空**，而同一响应里
+	// 的 ai_summary **122 封全有值**。两者来自同一个分类结果，这排除了
+	// 「分类器没返回」的解释——它返回了，只是被这里扔掉。
+	// 后果：提醒卡片无法回答「为什么这封被判为重要」，用户无从判断该不该点开。
+	Reason string
 }
 
 func BuildClassifyWrites(in []RawClassifyResult) []RawClassifyResult {
@@ -90,13 +105,19 @@ func ClassifyUnclassified(ctx context.Context, store *Store, kx kxmemory.Client,
 		writes := BuildClassifyWrites([]RawClassifyResult{{
 			EmailID: it.ID, Category: row.Category, Importance: row.Importance,
 			Summary: row.Summary, Action: row.SuggestedAction,
+			// 必须一起搬：漏了这一项 action_reason 就止步于此，
+			// 后面无论调哪个写库方法都补不回来（真库 122/122 为空的成因）。
+			Reason: row.ActionReason,
 		}})
 		if len(writes) == 0 {
 			cancel()
 			continue
 		}
 		w := writes[0]
-		err := store.SetClassificationScoped(callCtx, w.EmailID, userID, workspaceID, w.Category, w.Importance, w.Summary, w.Action)
+		// 走带 reason 的写库方法。用 SetClassificationScoped 会静默丢列——
+		// 那个方法的签名里就没有它，编译通过、运行不报错、库里永远是空。
+		err := store.SetClassificationWithReasonScoped(callCtx, w.EmailID, userID, workspaceID,
+			w.Category, w.Importance, w.Summary, w.Action, w.Reason)
 		cancel()
 		if err != nil {
 			continue

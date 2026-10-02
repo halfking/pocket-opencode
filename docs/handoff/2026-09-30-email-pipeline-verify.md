@@ -9951,3 +9951,122 @@ $ npm.cmd run gates              EXIT=0   tests 38 + 292 = 330 / fail 0 / skippe
 需求 1 的定时路径目前只有**日志实证**（2026-10-02 08:00:00 那次跑批），
 而那份日志来自旧二进制；当前代码的定时行为由 in-process IMAP 单测保证，
 **没有在生产二进制上复验过**——要复验得先重新构建并重启。
+
+## §7ec — 普查「列写了从不读回」：查出 action_reason 被整条链路丢弃（2026-10-02 11:0x）
+
+### 怎么开始的
+
+上两轮修掉 `Email.MessageID` / `Email.BodyPurged` 两个「字段写了从不读回」的缺陷后，
+它们其实是**同一类**。所以这一轮没有继续手翻代码，而是做了一次**全量普查**：
+把每张表的列按「INSERT/UPDATE 写过」与「SELECT 读过」对账，找出写了却从不被读回的。
+
+### 判据自己先错了三次（这一节比结论更值钱）
+
+普查脚本 `.col-census2.js` 前后经历了三轮，每一轮的「发现」都是**分析器的假报**，
+不是代码的问题。记下来是因为它们全都是同一族：判据没在判它声称在判的东西。
+
+| 轮次 | 症状 | 真因 |
+|---|---|---|
+| v1 | 6 张表全部「no sql found」 | 只提取双引号字符串，而 Go 的 SQL 全在**反引号**原始字符串里 |
+| v1.5 | `email_invoices` 整表 25 列 reads=0 | 一条巨型 `CREATE TABLE` 语句跨越 `;` 没被切开，于是**所有表共享同一份列清单** |
+| v2 | 同上，修了一半 | SELECT 列表由 `const invoiceSelectCols = ` + 拼接而成；标识符在**两个字面量之间**，先替换再提取也看不到（替换后内容落在反引号**之外**） |
+| v2.1 | `notified_at` 假报 | 内联后的列表残留 `` `+` ` + `` 拼接胶水，最后一列带着尾巴匹配不上 |
+
+判据从「只认字符串字面量」（免疫注释）改成「字面量 + 源码级常量替换 + 清洗拼接胶水」之后，
+`sel` 从 36 涨到 80，`email_invoices` 的 25 列假报全部清零。
+**四次假报全部指向分析器，没有一次是代码的问题**——这正是「先怀疑判据，再怀疑代码」那条规矩的又一次兑现。
+
+### 收敛后的真实结果
+
+普查最终只剩 3 条 `WRITTEN-NEVER-READ`，逐条查证：
+
+| 列 | 判定 |
+|---|---|
+| `emails.notified_at` | **假报**，只在 `pipelineEmailCols` 里被读到（判据胶水问题，已修） |
+| `emails.created_at` | **假报**，`store.go:556-559` 有注释明写「目前没有任何读路径消费它」——是**有意的死列** |
+| `emails.deleted_at` | **假报**，只做 `COALESCE(deleted_at,0)=0` 谓词，不进结构体；`Email.DeletedAt` 字段确实零使用（已单列为待拍板项） |
+| `emails.action_reason` | **真缺陷**，见下 |
+
+### 真缺陷：action_reason 在 122/122 封邮件上全为空
+
+**现象**（真库实测 `opencode_pocket.emails`）：
+
+    total=122  action_reason 非空=0  ai_summary 非空=122
+
+两者来自**同一个分类响应**。这直接排除了「分类器没返回 action_reason」这个解释——
+它返回了，只是在代码里被扔掉了。
+
+**断点在第三处**，而前两处早已修过：
+
+1. ✅ DTO 漏字段（`kxmemory/client.go:281`）——2026-10-01 已补
+2. ✅ 写回 SQL 不带这一列（`email/store.go` 的 `SetClassificationScoped`）——2026-10-01 已补，
+   并新增了 `SetClassificationWithReasonScoped`
+3. ❌ **`ClassifyUnclassified` 构造 `RawClassifyResult` 时压根没有 `Reason` 字段可搬**
+
+也就是说：前两处修完，`SetClassificationWithReasonScoped` 只有 `server_email_classify.go`
+和 `server_assistant.go` 两个手工触发的调用点在用；**定时/自动分类这条主链路
+（`ClassifyUnclassified`）从来没调用过它**，而它调的是那个签名里就没有 reason 的
+`SetClassificationScoped`。编译通过、运行不报错、库里永远是空。
+
+**修法**（`email/classify_run.go`，+19/-2）：
+
+- `RawClassifyResult` 加 `Reason` 字段，并把成因写进字段注释
+- `ClassifyUnclassified` 搬 `Reason: row.ActionReason`
+- 改调 `SetClassificationWithReasonScoped(..., w.Reason)`
+
+### 验证
+
+新增 3 条断言 + 1 条端到端：
+
+- `TestClassifyRunPersistsActionReason` —— **端到端**：fake kxmemory 返回带 `action_reason`
+  的分类结果 → 打 `ClassifyUnclassified` → 回读真 PG 的 `emails` 表。
+  前提断言 `classified==1` 与对照组 `ai_summary != ""` 都在，防止「夹具没生效」被误读成通过。
+- `TestBuildClassifyWritesCarriesReason` —— 纯函数层的透传
+- `TestRawClassifyResultHasReasonField` —— 编译期的「字段不许删」
+
+**两路互补负控**（不是合起来跑，是分开各跑一次）：
+
+| 变异 | 结果 |
+|---|---|
+| A：去掉 `Reason: row.ActionReason` 透传 | 转红 ✓ |
+| B：**保留**透传，只把写库方法换成 `SetClassificationScoped` | 转红 ✓ |
+
+B 单独转红说明断言钉的是**两处断点各自的正确那一半**，而不是「合在一起会红」。
+
+### 负控脚本自己翻车的一次（记下来）
+
+第一版还原脚本 `restore` 报 `RESTORE FAILED`：它读的「原始内容」是 **apply 之后**的文件，
+于是把变异态当成了原始态。第二版改成 apply 时先落 snapshot。
+更要紧的是——**脚本 exit 2 拒绝了那次变异之后，我仍然接着跑了测试**，
+拿到一个「2 个受管字段、仍然 PASS」的绿灯。这正是
+`negative-control-must-verify-mutation-landed` 记的「校验失败就不许跑测试」，
+我又犯了一次。**校验失败后的任何绿灯都必须当作不存在。**
+
+### 扩守 readback 护栏：一条**惰性**的条目（如实记）
+
+把 `ActionReason` 加进 `readback_guard_test.go` 的受管字段时触发了一次真实误报
+（`fetcher.go:924` 的 `Sync()`），加了豁免并写明理由。
+
+随后做了一次「这条条目有没有承重」的负控：**把条目连同 Sync 豁免一起去掉，护栏仍然全绿**。
+结论是这条扩守目前**是惰性的**——包里唯一给 `.ActionReason` 赋值的函数就是已豁免的 `Sync`。
+它仍值得留着（豁免一旦被误删会立刻生效），但**不能**当成「AI 判定依据的读路径已被守住」的证据；
+那一层由上面那条走真 PG 的端到端用例负责。这段说明已写进护栏文件本身。
+
+### 仍然存在的读路径缺口（属产品语义，未擅自决定）
+
+即使现在 reason 能落库了，**邮件列表接口也读不出它**：
+
+- `store.go:309`（收件箱列表）的 SELECT 列表里没有 `action_reason`
+- `pipelineEmailCols`（`store_pipeline.go:37`）也没有
+- 前端 `frontend/src` 对 `actionReason` **零引用**
+
+即：**落库了，但没有任何人显示它**。提醒卡片目前仍无法回答「为什么这封被判为重要」。
+这属于产品语义（提醒卡片要不要展示判定依据、列表要不要带这一列），**留给用户拍板**，
+本轮不动。同样地 `message_id` 也有一样的读路径缺口。
+
+### 顺带记一条
+
+`store.go:556-559` 的注释明写 `created_at`「目前没有任何读路径消费它」，
+所以普查把它报成 `WRITTEN-NEVER-READ` 是**符合事实的**——它是有意的死列，
+不是漏读。判据没错，分类要错。这类「代码里已经写明为什么」的列应当单独归类，
+不要混进缺陷列表。
