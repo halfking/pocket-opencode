@@ -19,27 +19,28 @@
     - 邮件 → 本地加密库（local_emails），库未解锁就查不到
     - 订阅 → 服务端 /api/rss/*（remote-only 部署下可能 503）
     - 任务消息 → 服务端 /api/notifications（同样可能 503）
-  所以一个源挂掉时另外两个**必须照常显示**。任何一次失败都被吞成「该来源为空 +
-  角标不显示」，绝不整页报错——一个订阅源挂了就看不到邮件，是不可接受的退化。
+  所以一个源挂掉时另外两个**必须照常显示**。任何一次失败都只降级成
+  「顶部一条说明哪个来源没加载上 + 该来源为空」，绝不整页报错——
+  一个订阅源挂了就看不到邮件，是不可接受的退化。
+
+  曾经这里用 `dbNotReady`（由**邮件**一路的失败推导）在失败时整页换成
+  「本地库未解锁，请解锁」：订阅和任务已经加载成功的内容会被一起收走，
+  而且用户被引导去按一个解决不了问题的按钮。listEmails 的失败原因也不止
+  「未解锁」（schema 迁移、加密配置、字段类型都能抛），把它一律说成
+  「未解锁」本身就是错的诊断。现在改成：整页只保留一条 per-source 错误条，
+  仅当**三个来源全挂**时才认为页面不可用。
 
   路由：`/messages`；进入：BottomNav 4 tab 的「消息」入口。
   深链：/email/:id、/rss/items/:id、/notifications 均保留。
 -->
 <template>
   <div class="msg-hub">
-    <DbLockedState
-      v-if="dbNotReady"
-      :hint="t('messagesHub.title')"
-      @relogin="router.push('/login')"
-    />
-
-    <template v-else>
-      <HeaderActionsPortal>
+    <HeaderActionsPortal>
         <button
           class="hdr-action"
           type="button"
           :aria-label="t('messagesHub.action.markAllRead')"
-          :disabled="!unreadTotal"
+          :disabled="!visibleUnread"
           data-testid="msg-hub-mark-all"
           @click="markAllRead"
         >
@@ -64,6 +65,14 @@
         />
       </ScrollChromePortal>
 
+      <!-- per-source 降级条：哪个来源没加载上就点名哪个，不牵连已成功的来源。
+           只在**确实有来源失败**时出现，全部成功时不占任何纵向空间。 -->
+      <p v-if="failedSources.length" class="src-error" role="status" data-testid="msg-hub-src-error">
+        <span class="material-symbols-outlined" aria-hidden="true">cloud_off</span>
+        <span>{{ t('messagesHub.partialFailure', { sources: failedSources.join(' · ') }) }}</span>
+        <button type="button" class="src-retry" @click="load">{{ t('common.retry') }}</button>
+      </p>
+
       <div v-if="loading" class="state">
         <Skeleton :count="4" />
       </div>
@@ -77,6 +86,9 @@
               :class="{ unread: row.unread, urgent: row.urgent }"
               @click="open(row)"
             >
+              <!-- 未读此前只靠左边框色 + 字重 + 底色表达，读屏用户完全无从分辨。
+                   补一份仅读屏可见的标记；.sr-only 是 scoped 规则，不依赖全局。 -->
+              <span v-if="row.unread" class="sr-only">{{ t('messagesHub.unreadBadge', { count: 1 }) }}</span>
               <span class="row-icon" :class="row.kind" aria-hidden="true">
                 <span class="material-symbols-outlined">{{ sourceIcon(row.kind) }}</span>
               </span>
@@ -123,15 +135,14 @@
           </button>
         </nav>
       </template>
-    </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { DbLockedState, EmptyState, Skeleton } from '../../components'
+import { EmptyState, Skeleton } from '../../components'
 import SourceFilterBar from '../../components/interactive/SourceFilterBar.vue'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import ScrollChromePortal from '../../components/layout/ScrollChromePortal.vue'
@@ -139,7 +150,7 @@ import { ICON, type IconName } from '../../constants/icons'
 import { rssApi } from '../../api/rss'
 import { useNotificationStore } from '../../stores/notification'
 import { listEmails, markRead as markEmailRead, type LocalEmail } from '../email/emails-store'
-import { formatRelative } from '../../utils/relative-time'
+import { formatRelative, toEpochSeconds } from '../../utils/relative-time'
 
 defineOptions({ name: 'MessagesHubView' })
 
@@ -161,8 +172,11 @@ interface HubRow {
   urgent: boolean
   important: boolean
   to: string
-  /** 点击时的副作用（已读上报）；失败不阻断跳转。 */
-  onOpen?: () => void
+  /**
+   * 点击时的副作用（已读上报）。**返回 promise**，好让「全部已读」能等它落地。
+   * 失败不阻断跳转：内部各自 catch，界面不弹 toast 打断心流。
+   */
+  onOpen?: () => Promise<unknown>
 }
 
 type Source = 'all' | RowKind
@@ -171,7 +185,8 @@ const PAGE = 50
 
 const source = ref<Source>('all')
 const loading = ref(true)
-const dbNotReady = ref(false)
+/** 加载失败的来源（用 i18n 的来源名展示给用户）。空数组 = 三个都成功。 */
+const failedSources = ref<string[]>([])
 const emails = ref<LocalEmail[]>([])
 const rssItems = ref<Awaited<ReturnType<typeof rssApi.listItems>>>([])
 const taskItems = ref<typeof notifications.inbox>([])
@@ -199,7 +214,9 @@ const emailRows = computed<HubRow[]>(() =>
     filterKey: 'email',
     id: e.id,
     // 用邮件本身的收信时间，不用同步时间：同步时间会把三天前的信顶到最上面。
-    ts: e.date,
+    // LocalEmail.date 是**毫秒**（emails-store 走 emailDateToMs），与
+    // RSS/任务的秒混排会让「全部」永远把邮件排在最前——假的统一时间线。
+    ts: toEpochSeconds(e.date),
     title: e.subject?.trim() || preview(e.snippet, 40) || t('nav.email'),
     // 「来自 X」而不是裸的发件人：裸名字在通知流里会和「来源」标签视觉打架
     // （上方已经有"邮件"二字），加前缀能让这一行读起来是完整的一句话。
@@ -212,7 +229,7 @@ const emailRows = computed<HubRow[]>(() =>
     urgent: false,
     important: e.importance === 'high',
     to: `/email/${encodeURIComponent(e.id)}`,
-    onOpen: () => { if (!e.isRead) void markEmailRead(e.id, true).catch(() => {}) },
+    onOpen: () => (e.isRead ? Promise.resolve() : markEmailRead(e.id, true).catch(() => {})),
   })),
 )
 
@@ -232,7 +249,7 @@ const rssRows = computed<HubRow[]>(() =>
     // 塞进 f(i)，因为它是**产品决定**（多高才算值得打断用户）。
     important: it.relevance >= 0.8,
     to: `/rss/items/${encodeURIComponent(it.id)}`,
-    onOpen: () => { if (it.status === 'unread') void rssApi.markRead(it.id).catch(() => {}) },
+    onOpen: () => (it.status === 'unread' ? rssApi.markRead(it.id).catch(() => {}) : Promise.resolve()),
   })),
 )
 
@@ -250,11 +267,12 @@ const taskRows = computed<HubRow[]>(() =>
     urgent: n.priority === 'urgent' || n.priority === 'high',
     important: n.priority === 'urgent' || n.priority === 'high',
     to: taskTarget(n.source),
-    onOpen: () => {
-      if (!n.read_at) {
-        void notifications.markRead(n.id).catch(() => {})
-        n.read_at = Math.floor(Date.now() / 1000)
-      }
+    onOpen: async () => {
+      if (n.read_at) return
+      // 先本地置已读：否则等服务端往返的这几百毫秒里，这一行仍显示未读，
+      // 用户会以为点了没反应。
+      n.read_at = Math.floor(Date.now() / 1000)
+      await notifications.markRead(n.id).catch(() => {})
     },
   })),
 )
@@ -275,10 +293,20 @@ const rows = computed<HubRow[]>(() =>
   source.value === 'all' ? allRows.value : allRows.value.filter((r) => r.kind === source.value),
 )
 
-const unreadTotal = computed(() => rows.value.filter((r) => r.unread).length)
+/**
+ * 「全部」chip 上的未读数必须是**全局**的，不是当前筛选的。
+ *
+ * 早先它直接用了 unreadTotal（= 当前筛选后的 rows），于是切到「订阅」时
+ * 「全部」只显示订阅的未读数；订阅已读完时角标整个消失，哪怕邮箱里还压着
+ * 20 封——「全部」这个 chip 的语义就是「你一共有多少事没处理」，
+ * 跟着筛选走等于让这个语义随用户点哪儿而变。
+ */
+const globalUnread = computed(() => allRows.value.filter((r) => r.unread).length)
+/** 当前筛选下的未读数：只用来决定「全部已读」该不该可点。 */
+const visibleUnread = computed(() => rows.value.filter((r) => r.unread).length)
 
 const sourceOptions = computed(() => [
-  { value: 'all', label: t('messagesHub.filter.all'), count: unreadTotal.value },
+  { value: 'all', label: t('messagesHub.filter.all'), count: globalUnread.value },
   {
     value: 'email',
     label: t('messagesHub.filter.email'),
@@ -316,15 +344,21 @@ function open(row: HubRow) {
  *
  * 刻意不做"三个来源无条件全清"：用户在「订阅」筛选下点一下就顺手清掉邮件，
  * 是一次不可逆且大概率非预期的动作。筛选即作用域，是这类批量操作的通用约定。
- * 上报失败不回滚本地态（row.onOpen 内部各自 catch），最后重拉一次与服务端对齐。
+ *
+ * 早先这里 `await nextTick()` 就去重拉——nextTick 只等 DOM flush，**不等网络**，
+ * 而 onOpen 里是 fire-and-forget 的上报，于是重拉很可能早于服务端落库，
+ * 行会「复活」成未读，用户以为按钮没生效。现在收集 promise 真的等它们落地，
+ * 且**不再走 load()**（那会把整页换成骨架屏，每点一次白闪一次）。
  */
 async function markAllRead() {
-  if (!unreadTotal.value) return
+  if (!visibleUnread.value) return
+  const jobs: Promise<unknown>[] = []
   for (const row of rows.value) {
-    if (row.unread) row.onOpen?.()
+    if (!row.unread) continue
+    const done = row.onOpen?.()
+    if (done) jobs.push(done)
   }
-  await nextTick()
-  void load().catch(() => {})
+  await Promise.allSettled(jobs)
 }
 
 onMounted(load)
@@ -350,23 +384,23 @@ async function load() {
   // 有缓存就不重复拉：store 内部本就按 since 增量，重复调用只是白跑一次网络。
   const needInbox = notifications.inbox.length === 0
   // 第三个结果刻意不解构：它的值无意义（见上），要的是 await 之后 store 的状态。
-  const [mail, feeds] = await Promise.allSettled([
+  const [mail, feeds, tasks] = await Promise.allSettled([
     listEmails({ limit: PAGE, folder: '__all__' }),
     rssApi.listItems({ status: 'unread', limit: PAGE }),
     needInbox ? notifications.loadInbox() : Promise.resolve(),
   ])
 
-  let locked = false
+  const failed: string[] = []
   if (mail.status === 'fulfilled') emails.value = mail.value
-  else locked = true
+  else failed.push(t('messagesHub.filter.email'))
   if (feeds.status === 'fulfilled') rssItems.value = feeds.value
+  else failed.push(t('messagesHub.filter.rss'))
   // 无论 loadInbox 成功还是失败，都回落到 store 当前值——它在 state 里
   // 初始化为 []，所以失败时 taskRows 拿到空数组而不是 undefined。
   taskItems.value = Array.isArray(notifications.inbox) ? notifications.inbox : []
+  if (tasks.status === 'rejected') failed.push(t('messagesHub.filter.task'))
 
-  // 邮件来自本地加密库：它失败基本等于库没解锁，订阅/任务来自服务端，
-  // 它们失败只是这一路没数据。两者不能同等对待。
-  dbNotReady.value = locked && emails.value.length === 0
+  failedSources.value = failed
   loading.value = false
 }
 </script>
@@ -403,6 +437,58 @@ async function load() {
 
 .state {
   padding-top: var(--space-2);
+}
+
+/* 仅读屏可见。仓库里另有一份同名规则，但它在别的组件的 <style scoped> 里，
+   scoped 不跨组件生效，这里必须自己声明。 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* per-source 降级条：不是阻塞态，所以不用整页接管；
+   用 warning 底色 + 图标点明「哪一路没加载上」，旁边给一个重试。 */
+.src-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  /* 错误文案里是来源名拼接，长度不可控，必须能断行 */
+  overflow-wrap: anywhere;
+}
+
+.src-error .material-symbols-outlined {
+  font-size: 17px;
+  flex-shrink: 0;
+}
+
+.src-error > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+
+.src-retry {
+  flex-shrink: 0;
+  padding: 2px var(--space-2);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: inherit;
+  font-size: var(--text-2xs);
+  cursor: pointer;
 }
 
 .row-list {

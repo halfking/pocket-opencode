@@ -18,7 +18,8 @@
     "error": "エラー",
     "warning": "警告",
     "info": "情報",
-    "close": "閉じる"
+    "close": "閉じる",
+    "retry": "再試行"
   },
   "app": {
     "title": "Redclaw",
@@ -370,6 +371,14 @@
       "title": "受信トレイ",
       "empty": "受信トレイは空です",
       "advance": "次へ進める"
+    },
+    "source": {
+      "note": "ノート",
+      "email": "メール",
+      "rss": "RSS",
+      "meeting": "会議",
+      "chat": "チャット",
+      "manual": "手動"
     }
   },
   "email": {
@@ -439,14 +448,6 @@
     "empty": "まだ素材がありません。ノート・メール・RSS で「学習に追加」を使ってください。",
     "advance": "学習を開始"
   },
-  "source": {
-    "note": "ノート",
-    "email": "メール",
-    "rss": "RSS",
-    "meeting": "会議",
-    "chat": "チャット",
-    "manual": "手動"
-  },
   "notesHub": {
     "title": "ノート",
     "filter": {
@@ -467,10 +468,8 @@
     },
     "empty": {
       "title": "まだメモがありません",
-      "hint": "右下のマイクで最初のメモを撮るか、会議を開始してください"
-    },
-    "state": {
-      "loading": "読み込み中…"
+      "hint": "右下のマイクで最初のメモを撮るか、会議を開始してください",
+      "filtered": "このソースにはまだ何もありません"
     },
     "meta": {
       "voice": "音声",
@@ -500,9 +499,6 @@
       "title": "新着はありません",
       "hint": "重要なメール、購読ニュース、タスクの更新がここに集まります"
     },
-    "state": {
-      "loading": "読み込み中…"
-    },
     "badge": {
       "important": "重要"
     },
@@ -510,7 +506,8 @@
       "from": "{name} から",
       "suggestedAction": "推奨：{action}"
     },
-    "unreadBadge": "未読 {count}"
+    "unreadBadge": "未読 {count}",
+    "partialFailure": "一部の読み込みに失敗：{sources}"
   },
   "timefmt": {
     "justNow": "たった今",

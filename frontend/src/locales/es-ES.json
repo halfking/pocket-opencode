@@ -18,7 +18,8 @@
     "error": "Error",
     "warning": "Advertencia",
     "info": "Información",
-    "close": "Cerrar"
+    "close": "Cerrar",
+    "retry": "Reintentar"
   },
   "app": {
     "title": "Redclaw",
@@ -370,6 +371,14 @@
       "title": "Bandeja de entrada",
       "empty": "La bandeja de entrada está vacía",
       "advance": "Procesar"
+    },
+    "source": {
+      "note": "Nota",
+      "email": "Correo",
+      "rss": "RSS",
+      "meeting": "Reunión",
+      "chat": "Chat",
+      "manual": "Manual"
     }
   },
   "email": {
@@ -439,14 +448,6 @@
     "empty": "Aún no hay material. Usa «Añadir al aprendizaje» en una nota, correo o RSS.",
     "advance": "Empezar"
   },
-  "source": {
-    "note": "Nota",
-    "email": "Correo",
-    "rss": "RSS",
-    "meeting": "Reunión",
-    "chat": "Chat",
-    "manual": "Manual"
-  },
   "notesHub": {
     "title": "Notas",
     "filter": {
@@ -467,10 +468,8 @@
     },
     "empty": {
       "title": "Aún no hay notas",
-      "hint": "Toca el micrófono para tu primera nota o inicia una reunión"
-    },
-    "state": {
-      "loading": "Cargando…"
+      "hint": "Toca el micrófono para tu primera nota o inicia una reunión",
+      "filtered": "Todavía no hay nada en esta fuente"
     },
     "meta": {
       "voice": "Nota de voz",
@@ -500,9 +499,6 @@
       "title": "Nada nuevo",
       "hint": "Los correos importantes, las noticias suscritas y las tareas llegan aquí"
     },
-    "state": {
-      "loading": "Cargando…"
-    },
     "badge": {
       "important": "Importante"
     },
@@ -510,7 +506,8 @@
       "from": "De {name}",
       "suggestedAction": "Sugerencia: {action}"
     },
-    "unreadBadge": "{count} sin leer"
+    "unreadBadge": "{count} sin leer",
+    "partialFailure": "Algunas fuentes no se pudieron cargar: {sources}"
   },
   "timefmt": {
     "justNow": "ahora mismo",

@@ -18,7 +18,8 @@
     "error": "Fehler",
     "warning": "Warnung",
     "info": "Info",
-    "close": "Schließen"
+    "close": "Schließen",
+    "retry": "Erneut versuchen"
   },
   "app": {
     "title": "Redclaw",
@@ -370,6 +371,14 @@
       "title": "Posteingang",
       "empty": "Posteingang ist leer",
       "advance": "Fortfahren"
+    },
+    "source": {
+      "note": "Notiz",
+      "email": "E-Mail",
+      "rss": "RSS",
+      "meeting": "Meeting",
+      "chat": "Chat",
+      "manual": "Manuell"
     }
   },
   "email": {
@@ -439,14 +448,6 @@
     "empty": "Noch nichts gesammelt. Nutze „Zum Lernen hinzufügen“ bei Notiz, E-Mail oder RSS.",
     "advance": "Lernen starten"
   },
-  "source": {
-    "note": "Notiz",
-    "email": "E-Mail",
-    "rss": "RSS",
-    "meeting": "Meeting",
-    "chat": "Chat",
-    "manual": "Manuell"
-  },
   "notesHub": {
     "title": "Notizen",
     "filter": {
@@ -467,10 +468,8 @@
     },
     "empty": {
       "title": "Noch keine Notizen",
-      "hint": "Tippe auf das Mikrofon für die erste Notiz oder starte ein Meeting"
-    },
-    "state": {
-      "loading": "Wird geladen…"
+      "hint": "Tippe auf das Mikrofon für die erste Notiz oder starte ein Meeting",
+      "filtered": "In dieser Quelle gibt es noch nichts"
     },
     "meta": {
       "voice": "Sprachnotiz",
@@ -500,9 +499,6 @@
       "title": "Nichts Neues",
       "hint": "Wichtige E-Mails, Feed-Neuigkeiten und Aufgaben landen hier"
     },
-    "state": {
-      "loading": "Wird geladen…"
-    },
     "badge": {
       "important": "Wichtig"
     },
@@ -510,7 +506,8 @@
       "from": "Von {name}",
       "suggestedAction": "Vorschlag: {action}"
     },
-    "unreadBadge": "{count} ungelesen"
+    "unreadBadge": "{count} ungelesen",
+    "partialFailure": "Einige Quellen konnten nicht geladen werden: {sources}"
   },
   "timefmt": {
     "justNow": "gerade eben",

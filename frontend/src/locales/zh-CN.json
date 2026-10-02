@@ -18,7 +18,8 @@
     "error": "操作失败",
     "warning": "警告",
     "info": "提示",
-    "close": "关闭"
+    "close": "关闭",
+    "retry": "重试"
   },
   "app": {
     "title": "Redclaw",
@@ -370,6 +371,14 @@
       "title": "收件箱",
       "empty": "收件箱已清空",
       "advance": "推进处理"
+    },
+    "source": {
+      "note": "笔记",
+      "email": "邮件",
+      "rss": "RSS",
+      "meeting": "会议",
+      "chat": "对话",
+      "manual": "手工"
     }
   },
   "email": {
@@ -439,14 +448,6 @@
     "empty": "还没有收集材料。在笔记、邮件或 RSS 里选择「加入学习」即可。",
     "advance": "开始学习"
   },
-  "source": {
-    "note": "笔记",
-    "email": "邮件",
-    "rss": "RSS",
-    "meeting": "会议",
-    "chat": "对话",
-    "manual": "手工"
-  },
   "notesHub": {
     "title": "笔记",
     "filter": {
@@ -467,10 +468,8 @@
     },
     "empty": {
       "title": "还没有笔记",
-      "hint": "点右下角录音记下第一条，或开始一次会议"
-    },
-    "state": {
-      "loading": "加载中…"
+      "hint": "点右下角录音记下第一条，或开始一次会议",
+      "filtered": "这个来源还没有内容"
     },
     "meta": {
       "voice": "语音",
@@ -500,9 +499,6 @@
       "title": "没有新消息",
       "hint": "重要邮件、订阅新闻和任务消息会汇总到这里"
     },
-    "state": {
-      "loading": "加载中…"
-    },
     "badge": {
       "important": "重要"
     },
@@ -510,7 +506,8 @@
       "from": "来自 {name}",
       "suggestedAction": "建议：{action}"
     },
-    "unreadBadge": "{count} 未读"
+    "unreadBadge": "{count} 未读",
+    "partialFailure": "部分来源未能加载：{sources}"
   },
   "timefmt": {
     "justNow": "刚刚",

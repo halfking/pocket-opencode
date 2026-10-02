@@ -44,9 +44,12 @@
 
     <!-- 今日明细：四项计数（仅服务端 Learning Core 可用时出现） -->
     <!-- 连续学习天数：不可用时整块不渲染（区别于「0 天」）
-         v-if 判的是 streak.streak.current 这个**内层**字段，不是 streak 本身：
-         外层判空挡不住「200 但体残缺」，那会让下面的两级解引用抛异常白屏。 -->
-    <div v-if="streak?.streak?.current" class="streak" data-testid="study-streak">
+         v-if 判的是 streak 本身（不是 streak.streak.current）：
+         归一化器 normalizeStreakView 把 `current: 0` 判为**合法**
+         （「今天还没学」是正常业务状态），若这里用 `?.current` 判，
+         0 仍 falsy → 「连续 0 天」又被藏起来，与归一化器的契约直接矛盾。
+         两级解引用的安全性由响应侧的形状校验保证，模板不必重复防御。 -->
+    <div v-if="streak" class="streak" data-testid="study-streak">
       <span class="material-symbols-outlined" aria-hidden="true">local_fire_department</span>
       <span class="streak-num">{{ streak.streak.current }}</span>
       <span class="streak-label">{{ t('study.streak.days') }}</span>

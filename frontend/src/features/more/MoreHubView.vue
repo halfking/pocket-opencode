@@ -105,8 +105,11 @@ interface HubItem { to: string; icon: IconName; label: string }
 const mainFeatures = computed<HubItem[]>(() => [
   { to: '/study', icon: 'style', label: t('nav.study') },
   { to: '/ai-chat', icon: 'forum', label: t('nav.aiChat') },
-  { to: '/notes', icon: 'edit_note', label: t('nav.notes') },
-  { to: '/messages', icon: 'notifications', label: t('nav.messages') },
+  // 「笔记」「消息」**刻意不在宫格里**：它们已经是底部两个一级 tab。
+  // 在「更多」里再摆一份，等于同一个目的地有两个入口而两者可能不同步
+  // （tab 上有未读角标，宫格那份没有），用户会以为是两个功能。
+  // 会议列表同理下沉到这里：它是会议筛选/归档页，不是笔记流的一部分。
+  { to: '/meetings', icon: 'mic', label: t('nav.meetings') },
   { to: '/email', icon: 'mail', label: t('nav.email') },
   { to: '/vault', icon: 'lock', label: t('nav.vault') },
   // BUG-Q（2026-09-30 可达性全量对账）：这里原来写的是 '/scheduled-tasks'，

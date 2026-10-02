@@ -73,6 +73,9 @@
       <template v-else>
         <!-- 概览条：只统计「加载成功」的来源，三个计数与下面的列表是同一份数据，
              避免出现「数字说 12 条、列表只有 5 条」这种自相矛盾的界面。 -->
+        <!-- 概览只列手记与会议：PKM 的量级通常与前两者不同量纲，
+             把它塞进同一行会让「0 手记 · 0 会议」在纯 PKM 用户眼里变成
+             「我是空的」。PKM 的入口在下方 see-all 里。 -->
         <p v-if="rows.length" class="overview" data-testid="notes-hub-overview">
           <span>{{ t('notesHub.count.notes', { count: counts.note }) }}</span>
           <span class="dot" aria-hidden="true">·</span>
@@ -89,7 +92,7 @@
                 <span class="row-title">{{ row.title }}</span>
                 <span v-if="row.preview" class="row-preview">{{ row.preview }}</span>
                 <span class="row-meta">
-                  <span class="row-source">{{ t(`notesHub.filter.${row.filterKey}`) }}</span>
+                  <span class="row-source">{{ t(`notesHub.filter.${row.sourceKey}`) }}</span>
                   <span v-if="row.voice" class="row-flag">
                     <span class="material-symbols-outlined" aria-hidden="true">mic</span>
                     {{ t('notesHub.meta.voice') }}
@@ -122,7 +125,7 @@
           size="sm"
           @action="go('/notes/new')"
         />
-        <EmptyState v-else icon="🔍" :title="t('notesHub.empty.title')" size="sm" />
+        <EmptyState v-else icon="🔍" :title="t('notesHub.empty.filtered')" size="sm" />
 
         <!-- 全量入口：chips 只切「看哪一类」，要看全部手记 / 全部会议 / PKM 工作台
              仍然需要一个地方把它们整个摊开。 -->
@@ -160,7 +163,7 @@ import { ICON, type IconName } from '../../constants/icons'
 import { listNotes } from '../notes/notes-store'
 import { listMeetings } from '../meetings/meetings-store'
 import { listNotes as listPkmNotes } from '../pkm/pkm-store'
-import { formatRelative } from '../../utils/relative-time'
+import { formatRelative, toEpochSeconds } from '../../utils/relative-time'
 
 defineOptions({ name: 'NotesHubView' })
 
@@ -168,14 +171,31 @@ const { t } = useI18n()
 const router = useRouter()
 
 /**
- * 统一行的形状。`filterKey` 直接对上 notesHub.filter.* 的 i18n key——
- * 行内「来源」标签与顶部 chips 用同一个 key 体系，不会出现两套说法。
+ * 统一行的形状。
+ *
+ * `kind` 与 `filterKey` **刻意是两个字段**，尽管值常常看起来该一样：
+ * kind 是数据来源（决定图标与跳转），filterKey 是 i18n 命名空间里的 key。
+ * 二者不同构——手记这一路的 kind 叫 'note'，而它在 chips 与行标签里的
+ * 文案 key 是 'manual'（手记）。曾经把 filterKey 也设成 'note'，
+ * 结果模板 `t(\`notesHub.filter.${row.filterKey}\`)` 渲染出字面量
+ * "notesHub.filter.note"——静态 i18n 卡口看不见模板字符串，空库冒烟
+ * 又因为列表根本不渲染而查不到，只有真机有数据时才会暴露。
+ * 分开定义正是为了让这种不一致在类型层面就被看见。
  */
 type RowKind = 'note' | 'meeting' | 'pkm'
+type SourceKey = 'manual' | 'meeting' | 'pkm'
+
+const KIND_TO_SOURCE_KEY: Record<RowKind, SourceKey> = {
+  note: 'manual',
+  meeting: 'meeting',
+  pkm: 'pkm',
+}
+
 interface HubRow {
   kind: RowKind
-  filterKey: RowKind
+  sourceKey: SourceKey
   id: string
+  /** Unix **秒**——三个来源的原始字段都是毫秒，必须在构造处归一。 */
   ts: number
   title: string
   preview: string
@@ -225,9 +245,10 @@ function meetingTitle(m: { title: string | null; summary: string | null; topic: 
 const noteRows = computed<HubRow[]>(() =>
   notes.value.map((n) => ({
     kind: 'note',
-    filterKey: 'note',
+    sourceKey: KIND_TO_SOURCE_KEY.note,
     id: n.id,
-    ts: n.updatedAt,
+    // LocalNote.updatedAt 是毫秒（写入用 Date.now()），不归一会永远显示「刚刚」。
+    ts: toEpochSeconds(n.updatedAt),
     title: n.title?.trim() || t('notesHub.filter.manual'),
     preview: preview(n.content),
     // 语音笔记得挂个标记：它们没有可读的正文摘要，光看两行裁剪后的转写，
@@ -241,9 +262,10 @@ const noteRows = computed<HubRow[]>(() =>
 const meetingRows = computed<HubRow[]>(() =>
   meetings.value.map((m) => ({
     kind: 'meeting',
-    filterKey: 'meeting',
+    sourceKey: KIND_TO_SOURCE_KEY.meeting,
     id: m.id,
-    ts: m.startedAt,
+    // LocalMeeting.startedAt 是毫秒，同上。
+    ts: toEpochSeconds(m.startedAt),
     title: meetingTitle(m),
     preview: preview(m.summary ?? m.refinedTranscript ?? m.transcript),
     duration: m.durationMs,
@@ -257,9 +279,10 @@ const meetingRows = computed<HubRow[]>(() =>
 const pkmRows = computed<HubRow[]>(() =>
   pkmNotes.value.map((p) => ({
     kind: 'pkm',
-    filterKey: 'pkm',
+    sourceKey: KIND_TO_SOURCE_KEY.pkm,
     id: p.id,
-    ts: p.updatedAt,
+    // asset-store 的 now() 是 Date.now()，毫秒。
+    ts: toEpochSeconds(p.updatedAt),
     title: p.title?.trim() || t('notesHub.filter.pkm'),
     preview: preview(p.html),
     to: `/pkm/n/${encodeURIComponent(p.id)}`,
@@ -310,7 +333,9 @@ function sourceIcon(kind: RowKind): IconName {
 function durationLabel(ms: number): string {
   if (!ms || ms <= 0) return ''
   const totalMin = Math.round(ms / 60000)
-  if (totalMin < 1) return t('notesHub.meta.minutes', { count: totalMin })
+  // 不足半分钟 → round 会得 0，那时显示「0 min」比不显示更糟：
+  // 它暗示这场会议时长为零，而实际只是太短。
+  if (totalMin < 1) return ''
   const hours = Math.floor(totalMin / 60)
   const mins = totalMin % 60
   // 整小时不显示多余的 ":00"；其余保留 M:SS 之外的 H:MM 紧凑形态。

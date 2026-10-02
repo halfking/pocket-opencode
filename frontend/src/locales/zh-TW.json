@@ -18,7 +18,8 @@
     "error": "操作失敗",
     "warning": "警告",
     "info": "提示",
-    "close": "關閉"
+    "close": "關閉",
+    "retry": "重試"
   },
   "app": {
     "title": "Redclaw",
@@ -370,6 +371,14 @@
       "title": "收件匣",
       "empty": "收件匣已清空",
       "advance": "推進處理"
+    },
+    "source": {
+      "note": "筆記",
+      "email": "郵件",
+      "rss": "RSS",
+      "meeting": "會議",
+      "chat": "對話",
+      "manual": "手動"
     }
   },
   "email": {
@@ -439,14 +448,6 @@
     "empty": "尚未收集材料。在筆記、郵件或 RSS 中選擇「加入學習」即可。",
     "advance": "開始學習"
   },
-  "source": {
-    "note": "筆記",
-    "email": "郵件",
-    "rss": "RSS",
-    "meeting": "會議",
-    "chat": "對話",
-    "manual": "手動"
-  },
   "notesHub": {
     "title": "筆記",
     "filter": {
@@ -467,10 +468,8 @@
     },
     "empty": {
       "title": "尚無筆記",
-      "hint": "點右下角錄音記下第一條，或開始一次會議"
-    },
-    "state": {
-      "loading": "載入中…"
+      "hint": "點右下角錄音記下第一條，或開始一次會議",
+      "filtered": "這個來源還沒有內容"
     },
     "meta": {
       "voice": "語音",
@@ -500,9 +499,6 @@
       "title": "沒有新訊息",
       "hint": "重要郵件、訂閱新聞與任務訊息會彙總到這裡"
     },
-    "state": {
-      "loading": "載入中…"
-    },
     "badge": {
       "important": "重要"
     },
@@ -510,7 +506,8 @@
       "from": "來自 {name}",
       "suggestedAction": "建議：{action}"
     },
-    "unreadBadge": "{count} 未讀"
+    "unreadBadge": "{count} 未讀",
+    "partialFailure": "部分來源未能載入：{sources}"
   },
   "timefmt": {
     "justNow": "剛剛",

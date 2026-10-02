@@ -149,10 +149,33 @@ async function findRawKeys(page) {
   })
 }
 
+/**
+ * 扫出渲染成字面量的 i18n key。
+ *
+ * ⚠️ 这条断言的强度取决于**行列表是否真的渲染出来**。
+ * 全新空库下 <ul> 里一行都没有，模板表达式根本没求值，于是「没有字面量 key」
+ * 是**空断言**——2026-10-03 审计正是用它当证据、实际漏掉了
+ * NotesHubView 的 `t(\`notesHub.filter.${row.filterKey}\`)` 渲染成
+ * "notesHub.filter.note" 的缺陷。所以这里把行数一起报出来，
+ * 让「没查到」和「根本没渲染」在输出上可区分。
+ *
+ * 空库场景下的该类缺陷现在由 check:i18n-keys.mjs 的「模板 key 前缀 +
+ * 片段组合」规则静态拦截（见该文件 TPL_KEY / KEY_PROP 注释），
+ * 不再依赖运行时冒烟。
+ */
+const uncovered = []
 async function checkNoRawKeys(page, where) {
   const raw = await findRawKeys(page)
-  if (raw.length) bad(`${where}：无字面量 i18n key`, raw.join(', '))
-  else ok(`${where}：无字面量 i18n key`)
+  const rowCount = await page.$$eval('[data-testid$="-hub-list"] > li', (els) => els.length).catch(() => 0)
+  if (raw.length) { bad(`${where}：无字面量 i18n key`, raw.join(', ')); return }
+  if (rowCount === 0) {
+    // 明确标成「未覆盖」而不是 pass。web fallback 的库是内存态（initWebStore
+    // 走 DOM 里的 jeepSqliteElement），外部无法预置数据，所以冒烟跑到的是空库。
+    uncovered.push(`${where}：行列表 0 行，字面量 key 维度未覆盖`)
+    console.log(`  ⚠️  ${where}：行列表 0 行 —— 「无字面量 key」本轮**未覆盖**（非通过）`)
+    return
+  }
+  ok(`${where}：无字面量 i18n key`, `${rowCount} 行已渲染`)
 }
 
 // ---------- 1. BottomNav ----------
@@ -252,6 +275,12 @@ server.close()
 
 const failed = results.filter((r) => !r.pass)
 console.log(`\n【IA 冒烟】${results.length - failed.length} / ${results.length} 通过`)
+if (uncovered.length) {
+  console.log('\n⚠️  以下维度本轮未覆盖（不是通过）：')
+  for (const u of uncovered) console.log(`   - ${u}`)
+  console.log('   空库场景下这类「行内模板 key」缺陷由 check:i18n-keys.mjs 的')
+  console.log('   模板前缀 + 片段组合规则静态拦截，不依赖运行时冒烟。')
+}
 if (failed.length) {
   console.log('失败项：')
   for (const f of failed) console.log(`  - ${f.n}${f.d ? ' — ' + f.d : ''}`)

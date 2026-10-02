@@ -18,7 +18,8 @@
     "error": "오류",
     "warning": "경고",
     "info": "정보",
-    "close": "닫기"
+    "close": "닫기",
+    "retry": "다시 시도"
   },
   "app": {
     "title": "Redclaw",
@@ -370,6 +371,14 @@
       "title": "수신함",
       "empty": "수신함이 비어 있습니다",
       "advance": "진행하기"
+    },
+    "source": {
+      "note": "노트",
+      "email": "메일",
+      "rss": "RSS",
+      "meeting": "회의",
+      "chat": "채팅",
+      "manual": "수동"
     }
   },
   "email": {
@@ -439,14 +448,6 @@
     "empty": "아직 수집한 자료가 없습니다. 노트·메일·RSS에서 \"학습에 추가\"를 사용하세요.",
     "advance": "학습 시작"
   },
-  "source": {
-    "note": "노트",
-    "email": "메일",
-    "rss": "RSS",
-    "meeting": "회의",
-    "chat": "채팅",
-    "manual": "수동"
-  },
   "notesHub": {
     "title": "노트",
     "filter": {
@@ -467,10 +468,8 @@
     },
     "empty": {
       "title": "아직 노트가 없습니다",
-      "hint": "오른쪽 아래 마이크로 첫 노트를 기록하거나 회의를 시작하세요"
-    },
-    "state": {
-      "loading": "불러오는 중…"
+      "hint": "오른쪽 아래 마이크로 첫 노트를 기록하거나 회의를 시작하세요",
+      "filtered": "이 소스에는 아직 내용이 없습니다"
     },
     "meta": {
       "voice": "음성",
@@ -500,9 +499,6 @@
       "title": "새 메시지가 없습니다",
       "hint": "중요 메일, 구독 뉴스, 작업 메시지가 여기에 모입니다"
     },
-    "state": {
-      "loading": "불러오는 중…"
-    },
     "badge": {
       "important": "중요"
     },
@@ -510,7 +506,8 @@
       "from": "{name} 발신",
       "suggestedAction": "추천: {action}"
     },
-    "unreadBadge": "읽지 않음 {count}"
+    "unreadBadge": "읽지 않음 {count}",
+    "partialFailure": "일부 소스 불러오기 실패: {sources}"
   },
   "timefmt": {
     "justNow": "방금",

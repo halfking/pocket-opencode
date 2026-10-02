@@ -22,6 +22,41 @@ const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 
 /**
+ * 毫秒/秒混合阈值。
+ *
+ * 与 `features/email/cleanup-filter.ts` 的 `emailDateToMs` 保持同一条规则
+ * （`value < 1e12` 视为秒），免得仓库里出现两套量纲判据。
+ * 1e12 秒 ≈ 公元 33658 年，1e12 毫秒 ≈ 2001 年——真实数据必然落在两侧，
+ * 不会踩到边界。
+ */
+const MS_THRESHOLD = 1e12
+
+/**
+ * 把「可能是毫秒也可能是秒」的时间戳归一成 Unix **秒**。
+ *
+ * ## 为什么需要它
+ *
+ * 本地库的 *_at 列**单位不统一**，且这个不一致贯穿整个仓库：
+ *   - LocalNote.updatedAt / LocalMeeting.startedAt / PkmNote.updatedAt
+ *     ← 写入时用 `Date.now()`，**毫秒**
+ *   - LocalEmail.date ← `emailDateToMs()`，**毫秒**
+ *   - Notification.created_at ← `Math.floor(Date.now() / 1000)`，**秒**
+ *   - RSS 的 publishedAt/fetchedAt 是 ISO 串，解析出来**毫秒**
+ *
+ * 只要有一个混进来，`formatRelative` 与「按时间倒序」就会一起错：
+ * 毫秒被当秒时 diff 是大负数 → 永远显示「刚刚」；排序时毫秒项恒大于秒项 →
+ * 「时间线」变成按来源分组的假时间线。**而且这两种错都不报错，只是看起来不对**，
+ * 是最难被验收抓到的一类。
+ *
+ * 所以归一必须发生在**行构造处**（数据进组件的第一道），而不是让
+ * formatRelative 去猜——通用工具猜量纲，出了错会静默影响所有调用方。
+ */
+export function toEpochSeconds(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0
+  return value < MS_THRESHOLD ? Math.floor(value) : Math.floor(value / 1000)
+}
+
+/**
  * @param ts       Unix 秒（与 localDB 的 *_at 列同单位）
  * @param t        vue-i18n 的 t
  * @param nowMs    注入当前毫秒，便于测试

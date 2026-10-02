@@ -18,7 +18,8 @@
     "error": "Error",
     "warning": "Warning",
     "info": "Info",
-    "close": "Close"
+    "close": "Close",
+    "retry": "Retry"
   },
   "app": {
     "title": "Redclaw",
@@ -370,6 +371,14 @@
       "title": "Inbox",
       "empty": "Inbox is empty",
       "advance": "Advance"
+    },
+    "source": {
+      "note": "Note",
+      "email": "Email",
+      "rss": "RSS",
+      "meeting": "Meeting",
+      "chat": "Chat",
+      "manual": "Manual"
     }
   },
   "email": {
@@ -439,14 +448,6 @@
     "empty": "Nothing collected yet. Use \"Add to learning\" on a note, email or RSS item.",
     "advance": "Start studying"
   },
-  "source": {
-    "note": "Note",
-    "email": "Email",
-    "rss": "RSS",
-    "meeting": "Meeting",
-    "chat": "Chat",
-    "manual": "Manual"
-  },
   "notesHub": {
     "title": "Notes",
     "filter": {
@@ -467,10 +468,8 @@
     },
     "empty": {
       "title": "No notes yet",
-      "hint": "Tap the mic to capture your first note, or start a meeting"
-    },
-    "state": {
-      "loading": "Loading…"
+      "hint": "Tap the mic to capture your first note, or start a meeting",
+      "filtered": "Nothing in this source yet"
     },
     "meta": {
       "voice": "Voice",
@@ -500,9 +499,6 @@
       "title": "Nothing new",
       "hint": "Important mail, subscribed news and task updates land here"
     },
-    "state": {
-      "loading": "Loading…"
-    },
     "badge": {
       "important": "Important"
     },
@@ -510,7 +506,8 @@
       "from": "From {name}",
       "suggestedAction": "Suggested: {action}"
     },
-    "unreadBadge": "{count} unread"
+    "unreadBadge": "{count} unread",
+    "partialFailure": "Some sources failed to load: {sources}"
   },
   "timefmt": {
     "justNow": "just now",

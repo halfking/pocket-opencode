@@ -18,7 +18,8 @@
     "error": "Erreur",
     "warning": "Avertissement",
     "info": "Info",
-    "close": "Fermer"
+    "close": "Fermer",
+    "retry": "Réessayer"
   },
   "app": {
     "title": "Redclaw",
@@ -370,6 +371,14 @@
       "title": "Boîte de réception",
       "empty": "La boîte de réception est vide",
       "advance": "Traiter"
+    },
+    "source": {
+      "note": "Note",
+      "email": "E-mail",
+      "rss": "RSS",
+      "meeting": "Réunion",
+      "chat": "Discussion",
+      "manual": "Manuel"
     }
   },
   "email": {
@@ -439,14 +448,6 @@
     "empty": "Rien de collecté pour l'instant. Utilisez « Ajouter à l'apprentissage » sur une note, un e-mail ou un flux RSS.",
     "advance": "Commencer"
   },
-  "source": {
-    "note": "Note",
-    "email": "E-mail",
-    "rss": "RSS",
-    "meeting": "Réunion",
-    "chat": "Discussion",
-    "manual": "Manuel"
-  },
   "notesHub": {
     "title": "Notes",
     "filter": {
@@ -467,10 +468,8 @@
     },
     "empty": {
       "title": "Aucune note pour le moment",
-      "hint": "Appuyez sur le micro pour votre première note ou lancez une réunion"
-    },
-    "state": {
-      "loading": "Chargement…"
+      "hint": "Appuyez sur le micro pour votre première note ou lancez une réunion",
+      "filtered": "Rien dans cette source pour le moment"
     },
     "meta": {
       "voice": "Note vocale",
@@ -500,9 +499,6 @@
       "title": "Rien de nouveau",
       "hint": "Les e-mails importants, les infos abonnées et les tâches arrivent ici"
     },
-    "state": {
-      "loading": "Chargement…"
-    },
     "badge": {
       "important": "Important"
     },
@@ -510,7 +506,8 @@
       "from": "De {name}",
       "suggestedAction": "Suggestion : {action}"
     },
-    "unreadBadge": "{count} non lus"
+    "unreadBadge": "{count} non lus",
+    "partialFailure": "Certaines sources n’ont pas pu être chargées : {sources}"
   },
   "timefmt": {
     "justNow": "à l'instant",
