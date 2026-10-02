@@ -1,5 +1,9 @@
 import { computed, ref } from 'vue'
 import { emailApi, type EmailClassifyReport } from '../../api/email'
+// 合并说明：main 侧还有一个 TimeoutError 的 import，解冲突时取了本分支这一侧
+// 把它弄丢了，而下面 classify 那段的 AbortError 分支仍在用它（typecheck 报
+// TS2304）。两侧的 import 取并集。
+import { TimeoutError } from '../../api/http'
 import i18n from '../../i18n'
 import { classifyStopHint, runClassifyLoop } from './email-classify-loop'
 import { normalizeEmailCategory } from './email-categories'
