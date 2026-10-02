@@ -10529,3 +10529,97 @@ LWW 判定与同步**已有实现且有测试**；仍待定的是**账户归属�
 **共同点**：它们都不报错，输出都长得像一份可信的结论清单。
 唯一可靠的防线是**对判据本身做自校验**（打印原始计数、让「全 0」这种
 不可能的结果当场暴露），以及**换一个独立的取证方式**交叉验证。
+
+## §7ei — 26 个「零测试导入」模块逐个核实，挖出一个真的：emails.updated_at 只在部分写路径赋值
+
+§7eh 留下 26 个前端模块「零测试导入」并明确说**不能**当结论。本节逐个核实，
+顺带查了增量同步的时间单位，结果发现一个**真实缺陷**。
+
+### 一、前端：传递闭包把 26 缩到 12，且**没有一个是死代码**
+
+先按**导入图的传递闭包**重算（不是只看直接 import）：
+从全部 144 个测试文件出发做可达性分析，`features/email` 下
+41 个 `.ts` 模块中 **12 个**从任何测试都不可达。
+
+关键：脚本同时打印了「谁 import 了它」，**12 个全部有真实使用者**，
+没有「nobody imports it」。例如 `emails-store.ts` 被 12 处引用
+（`EmailInboxView.vue`、`email-adapter.ts`、`ws-bus.ts`、`contacts-store.ts` …）。
+
+逐个看下来，零覆盖**基本是合理的**：
+- `emails-store.ts`（19KB / 21 个导出）主体是 I/O 编排（`localDB.queryOne`、
+  `emailApi.listEmails`、`await import()` 动态加载），天然难做纯函数单测；
+- `email-fetch-*.ts`（host/native/run）三条构成运行时探测链，依赖
+  `stores/connectivity.ts` 与 Capacitor 原生层；
+- `account-sync.ts` / `use-email-inbox.ts` / `invoices-store.ts` 是编排层。
+
+**结论**：这 12 个不是「漏写测试」，而是「测试缝还没开」。要判某个具体模块
+是否真缺覆盖，仍需逐个读——但**不能**把这个数字报成缺陷数量。
+这条候选清单到此为止，不再当结论引用。
+
+### 二、增量同步的时间单位（本来只是查一下）
+
+`ListDeletedEmailIDsScoped`（`store.go`）把 `since` 从秒换算成毫秒
+（`since *= 1000`）再比 `deleted_at`，这要求 `deleted_at` 存毫秒。
+实测真库 `deleted_at` **全为 0**（本部署没有墓碑），无法证伪，
+于是去比 `updated_at`：
+
+    updated_at min=1790870198 max=1790906472   created_at min=1790870198 max=1790911681
+
+量级 1.79e9 ⇒ **秒**，与客户端 `maxEmailUpdatedAt` 的口径一致。
+单位这一项没问题。
+
+### 三、真缺陷：两封最新邮件的 updated_at 是 NULL，增量同步永远看不到它们
+
+    emails_with_updated_at = 122 / 124
+
+缺的两行是**最新的两封**：
+
+    em-1298896146  "What we shipped in September"   created_at=1790910721  updated_at=NULL
+    em-1298896147  "每日信用管家"                    created_at=1790911681  updated_at=NULL
+
+两封都 `category="" importance="" no_summary=true no_reason=true`——
+即刚同步进来、还没被分类过。
+
+**为什么这是真缺陷**：客户端增量同步的 `since` 取本地
+`MAX(updated_at)`（`emails-store.ts` 的 `maxEmailUpdatedAt`），
+服务端按 `updated_at > since` 过滤。**SQL 里 `NULL > 任何值` 都是 NULL**，
+于是这两行**在任何增量请求里都不会被返回**——只要本地已经有了一封
+`updated_at` 更大的邮件，这两封就永远同步不到本地。
+
+直接量这条判据：
+
+    rows_visible_to_incremental(since=1790906472) = 0
+
+**为什么之前没被发现**：`emails` 表的 `updated_at` 是
+`bigint NULL`、**无默认值**，而只有部分写路径赋它：
+
+- `SetSummaryScoped`（`store.go:533`）`UPDATE emails SET updated_at = $2` ← 写了
+- `InsertEmail`（`store.go:560`）的 INSERT 列清单里**没有它** ← 没写
+
+于是规律是：**手动总结过的邮件有 `updated_at`，同步进来的没有**。
+122 vs 2 的分布正好对上（那 2 封是刚进来还没总结的）。
+
+这正是 §7cz 待办「emails 加真 updated_at」的**精确定位**——
+不是「要不要加列」（列早就有了），而是「**`InsertEmail` 不写它，
+导致增量同步对未分类邮件失明**」。
+
+**修法方向**（属产品语义，未擅自改）：`InsertEmail` 里
+`updated_at` 与 `created_at` 同填 `time.Now().Unix()`，并把列从
+`NULL` 改成 `NOT NULL DEFAULT 0`。但这会改变增量同步的行为
+（新邮件立即可见，而不是等到被总结后才可见）——所以**留给用户拍板**。
+
+### 四、本轮又一次判据翻车（第四次以上，但形态是新的）
+
+第一版探针写 `SELECT ... updated_at ...` 直接 Scan 进 `*int64`，
+报 `cannot scan NULL into *int64`，我据此一度以为「值是 0」，
+进而推出「updated_at 从未被写过、增量同步退化为全量」。
+
+实际是**NULL**。两者在 `COALESCE(updated_at,0)` 下等价，
+但语义完全不同：0 会被 `> since` 排除（因为 since>0），
+NULL 也被排除——**结论巧合相同，推理链却是错的**。
+我差点把「这是 NULL 不是 0」这个区别一笔带过，
+而它恰好是判断「列没默认值」还是「值真的是 0」的关键。
+
+**教训**：探针报错时，**先分清是「我的 Scan 类型不对」还是「数据不对」**。
+前者是探针 bug（改类型），后者才是结论（改代码）。本轮两者都发生了，
+我一开始差点当成后者。
