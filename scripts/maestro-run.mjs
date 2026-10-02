@@ -401,10 +401,27 @@ async function preflight() {
   return false
 }
 
-const src = readFileSync(GO, 'utf8')
-const m = src.match(/devPass\s*=\s*"([^"]+)"/)
-if (!m) {
-  console.error('未能从后端源码定位 dev 口令常量，拒绝以明文兜底')
+// ── dev 口令来源 ──────────────────────────────────────────────────────
+// 2026-10-02：这个壳原来是从 backend/internal/server/server_assistant.go 里
+// 正则抠 `devPass = "…"` 常量。后端**已经把那个常量删了**：
+//   server_assistant.go 现在只有 `devPass := cfg.DevAuthPass`，而
+//   config.go 的 DevAuthPass 读 POCKET_AUTH_PASS 且**无缺省值**（留空则 dev
+//   旁路直接拒绝），并且 internal/repohygiene/secrets_test.go 会专门把
+//   硬编码的 devPass 判成违规。
+// 所以「从源码抠口令」不只是失效，它要求的正是新策略禁止的那件事。
+//
+// 口令改为只从环境拿：优先 POCKET_DEV_PASS，其次 POCKET_AUTH_PASS。
+// 缺失时明确报错并退出 —— 不猜、不用明文兜底。操作者需要让**同一个值**
+// 同时出现在 POCKET_DEV_PASS 和后端进程的 POCKET_AUTH_PASS 上，否则登录
+// 一定会失败，而且失败原因会伪装成"任务列表是空的"（见 BUG-AX）。
+const DEV_PASS = process.env.POCKET_DEV_PASS || process.env.POCKET_AUTH_PASS || ''
+if (!DEV_PASS) {
+  console.error('[preflight] 未提供 dev 口令。')
+  console.error('  本仓库已移除源码里的硬编码 devPass（internal/repohygiene 会判违规），')
+  console.error('  口令必须显式提供，并且**同一个值**要同时给到两个地方：')
+  console.error('    $env:POCKET_DEV_PASS="<口令>"          # 本 harness，给 Maestro flow 用')
+  console.error('    $env:POCKET_AUTH_PASS="<口令>"         # 起 pocketd 时用')
+  console.error('  两者不一致的表现极具误导性：登录 401 -> 任务列表空 -> 看起来像列表功能坏了。')
   process.exit(2)
 }
 
@@ -440,7 +457,7 @@ await resetAppAuth()
 // 2026-10-01 13:40 实测踩到过「Maestro 把 ${POCKET_DEV_PASS} 展开成字符串
 // "undefined"」，现场只留下一条 assert `^undefined$` 不成立，根因看不见。
 // 这行让「变量到底传没传过去」一眼可见（口令本身仍不落 stdout）。
-console.log(`[preflight] 注入子进程：POCKET_MASTER=${(process.env.POCKET_MASTER || 'PocketTest2026').length} 字符 / POCKET_DEV_PASS=${(m[1] || '').length} 字符`)
+console.log(`[preflight] 注入子进程：POCKET_MASTER=${(process.env.POCKET_MASTER || 'PocketTest2026').length} 字符 / POCKET_DEV_PASS=${DEV_PASS.length} 字符`)
 
 const SYSTEM_DIALOG_FLOW = '.maestro/_dismiss-system-dialogs.yaml'
 const args = ['--device', DEVICE, 'test', '--no-reinstall-driver', SYSTEM_DIALOG_FLOW, ...flows]
@@ -450,7 +467,7 @@ const r = spawnSync(MAESTRO, args, {
   shell: true,
   env: {
     ...process.env,
-    POCKET_DEV_PASS: m[1], // 只进子进程 env
+    POCKET_DEV_PASS: DEV_PASS, // 只进子进程 env
     // 本地 SQLCipher 主密码是测试装置上本会话约定的值，不是仓库内推导出来的。
     // 仍然只经 env 传递，避免出现在 flow 文件里。
     POCKET_MASTER: process.env.POCKET_MASTER || 'PocketTest2026',
