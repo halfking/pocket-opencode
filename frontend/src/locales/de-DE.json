@@ -390,6 +390,7 @@
     "llmNotConfigured": "Noch kein Sprachmodell eingerichtet. Wähle eines in den Modell-Einstellungen.",
     "modelNotFound": "Dieses Modell existiert nicht mehr; es wurde möglicherweise entfernt.",
     "gatewayUnreachable": "Das Modell-Gateway ist nicht erreichbar. Prüfe Adresse und Netzwerk.",
+    "gatewayAdminMissing": "Für diesen Gateway-Knoten ist noch kein Administratorkonto hinterlegt. Bitte zuerst Benutzername und Passwort unter Modell-Gateway eintragen.",
     "workspaceNotFound": "Dieser Workspace wurde nicht gefunden.",
     "notConfigured": "Diese Funktion ist noch nicht eingerichtet.",
     "unauthorized": "Deine Sitzung ist abgelaufen. Bitte melde dich erneut an.",

@@ -54,6 +54,14 @@ $env:POCKET_AUTH_LEGACY_ONLY = 'true'
 # The startup self-check prints one ERROR line about this
 # (cmd/pocketd/main.go:448-459); do not ignore it.
 $env:POCKET_DATA_DIR     = 'C:\workspace\openpocket\data'
+# Same class of footgun, second instance: server.go loadVersionConfig() reads
+# "config/version.json" through os.ReadFile, i.e. **relative to the process CWD**,
+# even though the comment above it claims it is relative to the executable.
+# Run from the repo root (which this script does via Set-Location $Root) and the
+# file at backend\config\version.json is not found, so every boot logs
+# "version config not found ... using defaults" and the app reports a default
+# version instead of the real one. Pin the absolute path.
+$env:POCKET_VERSION_CONFIG_PATH = 'C:\workspace\openpocket\backend\config\version.json'
 # 注意：端口变量名是 POCKET_HTTP_PORT（config.go:210），不是 POCKET_PORT。
 # 写错的话会静默用默认 8088，看起来「生效了」其实没设。
 $env:POCKET_HTTP_PORT    = '8088'

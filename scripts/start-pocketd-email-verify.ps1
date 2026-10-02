@@ -29,6 +29,10 @@ $env:POCKET_EMAIL_PIPELINE_HOUR = '9'
 # was broken out of the box. The same key also decides where invoice
 # attachments land (config.go:626-634), so pointing it elsewhere is not an option.
 $env:POCKET_DATA_DIR     = 'C:\workspace\openpocket\data'
+# loadVersionConfig() resolves "config/version.json" against the process CWD
+# (not the executable, despite the comment saying so), so booting from the repo
+# root silently falls back to default version info. Pin the absolute path.
+$env:POCKET_VERSION_CONFIG_PATH = 'C:\workspace\openpocket\backend\config\version.json'
 New-Item -ItemType Directory -Force -Path $env:POCKET_DATA_DIR | Out-Null
 if (Test-Path $keyFile) { $env:POCKET_LLM_GATEWAY_API_KEY = (Get-Content -Raw -Path $keyFile).Trim() }
 
