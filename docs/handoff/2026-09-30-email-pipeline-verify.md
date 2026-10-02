@@ -8260,3 +8260,104 @@ do {
 `has_attachments` 仍是「列存在、UI 读它、生产里恒为 false」。
 `EmailCard.vue:35` 的 📎 标记因此**永不显示**。归入既有待拍板项「是否真置位」，
 本轮不动。
+
+---
+
+## §7do 【需求 3/5】发票合计的币种字段在**客户端转发层**被吃掉 —— §7dk 那类错账在下面一层又长出来一次（2026-10-03）
+
+### 链路与病灶
+
+```
+服务端 server_email_invoice.go:55-57
+    "amount": page.Amount      // 仅单一币种有意义；多币种时为 0
+    "currency": page.Currency  // 同上；多币种时为 ""
+    "amounts": page.Amounts    // 按币种分组的全量合计，不受分页截断
+      ↓
+转发层 invoice-list-pull.ts:37   ←←← 病灶
+      ↓
+判定层 use-invoice-list.ts applySummary:59-67
+      ↓
+展示   summaryMoney(groups)
+```
+
+修复前转发层返回的是：
+
+```ts
+totals: { total: res.total, filed: res.filed, amount: res.amount }
+```
+
+`currency` 与 `amounts` **被静默吃掉**。而下游的优先级判定
+（`applySummary`）写的是「`amounts` 优先 → 否则 `amount` + `currency`
+→ 否则本地分组」——**它要求三个字段都在**。少一个就出两种错账：
+
+| 场景 | 少了什么 | 后果 |
+|---|---|---|
+| **单一外币**（100 USD） | `currency` | `normalizeCurrency(undefined)` 兜底成 CNY → 合计渲染成 **「¥100.00」**。这正是 §7dk（`de8d76d1`）在服务端修掉的同一类错账 |
+| **多币种** | `amounts` | 服务端此时 `amount=0` → 退回 `sumByCurrency(当前页)` → 合计从「全量」缩成「**这一页**」，翻页时数字还会跳 |
+
+也就是说：**服务端修好了，客户端在它下面一层把修复抵消了**，而且完全静默。
+
+### 为什么按「修漏」而不是「新增设计」
+
+规则已经存在并已在一层之上落地（`applySummary` 的优先级判定、`invoice-money.ts`
+的 `sumByCurrency`/`summaryMoney`、§7dk 的服务端实现）。缺的只是转发层没把字段
+带下去。判据沿用本会话一贯的那条：**「仓库已有既定规则却被漏掉」按修漏处理**。
+
+### 修法
+
+`invoice-money.ts` 加两个纯函数（与 `account-lww.ts` / `email-classify-loop.ts`
+同一思路：**生产与测试共用同一份实现**）：
+
+- `invoiceTotalsFrom(res)` —— 转发层专用，**只做默认值兜底、不做任何裁剪**。
+  刻意不给 `amount` 加「多币种就归零」之类的加工：那该由服务端负责。
+- `resolveSummaryGroups(totals, list)` —— 把 `applySummary` 里那三行优先级
+  内联判定收进来，避免它和转发层分叉出两套规则。
+
+`invoice-list-pull.ts:37` 改用 `invoiceTotalsFrom(res)`；
+`use-invoice-list.ts` 改用 `resolveSummaryGroups(totals, list)`。
+
+改动很小：`use-invoice-list.ts` 净 -15/+11 行（见 `git diff`）。
+
+### 判据：行为断言 + 一条结构断言
+
+`__tests__/invoice-totals-chain.test.mjs`，11 条。
+
+**为什么不能只写行为断言**：`invoice-list-pull.ts` 依赖 Capacitor（`invoiceStore`
+→ native），没法在 `node --test` 里 import。所以行为断言只能覆盖
+`invoiceTotalsFrom` **本身**——若有人把转发层改回字面量，11 条行为断言
+**全部仍然全绿**，而那正是修复前的状态。
+
+因此补了一条**结构断言**（用例 10/11）钉住「转发层必须走 `invoiceTotalsFrom`」
+「`applySummary` 必须走 `resolveSummaryGroups`」。这里用源码匹配是刻意的取舍：
+判据匹配的是**函数调用结构**（`totals: invoiceTotalsFrom(res)`）而不是任意文本，
+且用例里明确说明了这层的边界。
+
+> 顺带一个实测：**`npm run typecheck` 抓不到「导入未使用」**（NEGCTL-2 里把转发层
+> 改回字面量后 typecheck 仍 exit 0），所以这条结构断言在做实事，不是冗余。
+
+### 负控 2 次
+
+| 负控 | 变异 | 结果 |
+|---|---|---|
+| NEGCTL-1 | `invoiceTotalsFrom` 不再返回 `currency`/`amounts`（模拟修复前的转发层） | **6 条转红**，含关键的「单一外币显示 $ 不是 ¥」 |
+| NEGCTL-2 | 把 `invoice-list-pull.ts` 改回字面量 | **精确 1 条转红**（结构用例 10）；行为断言 1~9 全绿——正是上面说的覆盖边界，结构断言补上的 |
+
+两次均已还原，`invoice-money.ts` / `invoice-list-pull.ts` 回到修复后状态。
+
+### 数字
+
+- `__tests__/invoice-totals-chain.test.mjs`：11 条全绿
+- `npm.cmd run test:email`：**281 → 292** 全绿（0 fail / 0 skipped）
+- `npm.cmd run typecheck`：exit 0
+- 生产代码改动：3 个文件，净 +76 / -12
+
+### 本轮**没有**做的事
+
+- **没有真机/端到端验证。** 上面验的是「服务端响应 → groups → 展示字符串」这条
+  纯逻辑链。真实列表页在真机上显示成什么样，仍未验。
+- **没有动服务端。** 服务端本来就是对的（`server_email_invoice.go:55-57` 三个字段
+  齐发），问题纯在客户端。
+- **没有审其它转发层。** 本轮只查了发票列表这一条。
+  `has_attachments`、`updated_at` 等字段是否也在某一层被静默丢弃，**未系统排查** ——
+  这是「字段写了/读了但中途没人传」这一族的系统性风险，建议单独排一轮
+  「DB 列 → API 类型 → 转发层 → 视图」四段的字段对账。

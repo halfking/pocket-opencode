@@ -14,8 +14,7 @@ import {
   mergeInvoicePages, sortInvoicesByReceived, type InvoiceFileKind,
 } from './invoice-list'
 import {
-  formatMoney, normalizeCurrency, round2, sumByCurrency,
-  summaryMoney as summaryMoneyText, type CurrencyAmount,
+  formatMoney, resolveSummaryGroups, summaryMoney as summaryMoneyText, type InvoiceTotals,
 } from './invoice-money'
 
 export function useInvoiceList() {
@@ -56,15 +55,11 @@ export function useInvoiceList() {
   const previewKind = computed<InvoiceFileKind>(() => invoiceFileKind(preview.value?.inv.fileName))
   const previewTitle = computed(() => preview.value?.inv.seller || '发票预览')
 
-  function applySummary(list: EmailInvoice[], totals?: { total: number; filed: number; amount: number; currency?: string; amounts?: CurrencyAmount[] }) {
+  function applySummary(list: EmailInvoice[], totals?: InvoiceTotals) {
     // 合计按币种分组：跨币种直接相加不是金额，而把它渲染成 ¥ 就是错账
-    // （需求 3「汇总金额」）。服务端多币种时 amount=0、amounts 非空，以它为准
-    // （它统计全量，不受分页截断）；否则用当前页的发票自行分组。
-    const groups: CurrencyAmount[] = totals?.amounts?.length
-      ? totals.amounts.map((a) => ({ currency: normalizeCurrency(a.currency), amount: round2(a.amount) }))
-      : totals?.amount
-        ? [{ currency: normalizeCurrency(totals.currency), amount: round2(totals.amount) }]
-        : sumByCurrency(list)
+    // （需求 3「汇总金额」）。判定优先级收在 resolveSummaryGroups 里，
+    // 与转发层 invoiceTotalsFrom 共用同一份实现，见那里的注释。
+    const groups = resolveSummaryGroups(totals, list)
     summary.value = {
       total: totals?.total ?? list.length,
       filed: totals?.filed ?? list.filter((i) => i.status === 'filed').length,

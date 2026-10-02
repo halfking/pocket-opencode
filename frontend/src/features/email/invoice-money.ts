@@ -70,3 +70,81 @@ export function summaryMoney(groups: CurrencyAmount[]): string {
   if (groups.length === 1) return formatMoney(groups[0]!.amount, groups[0]!.currency)
   return groups.map((g) => formatMoney(g.amount, g.currency)).join(' + ')
 }
+
+// ---------------------------------------------------------------------------
+// 服务端合计字段的「不许丢」链路
+// ---------------------------------------------------------------------------
+//
+// 服务端列表响应给的是**三件套**（server_email_invoice.go:55-57）：
+//
+//	"amount":   page.Amount,     // 仅单一币种有意义；多币种时为 0
+//	"currency": page.Currency,   // 同上；多币种时为 ""
+//	"amounts":  page.Amounts,    // 按币种分组的合计，统计全量、不受分页截断
+//
+// 下游的优先级判定要求三个字段**都在**。中间任何一层只转发
+// `{total, filed, amount}` 都会出两种错账：
+//
+//   - 单一外币（100 USD）：currency 丢失 → normalizeCurrency(undefined) 兜底成
+//     CNY → 合计渲染成「¥100.00」。这正是 §7dk 在服务端修掉的那一类。
+//   - 多币种：amounts 丢失且 amount=0 → 退回 sumByCurrency(当前页)
+//     → 合计从「全量」缩成「这一页」，翻页时数字还会跳。
+//
+// 所以这里把「转发」和「判定优先级」都收进纯函数，让「不许丢字段」变成
+// **能测的行为**，而不是一句口头约定（§7dn 同款思路）。
+
+/** 服务端列表响应的合计字段。 */
+export interface InvoiceTotals {
+  total: number
+  filed: number
+  amount: number
+  currency?: string
+  amounts?: CurrencyAmount[]
+}
+
+/**
+ * 把服务端列表响应的合计字段**原样**转发下去。
+ *
+ * 只做默认值兜底，**不做任何裁剪** —— 少转发一个字段就是错账，所以这里刻意
+ * 不给 `amount` 加「多币种就归零」之类的加工：那该由服务端负责。
+ */
+export function invoiceTotalsFrom(res: {
+  total?: number
+  filed?: number
+  amount?: number
+  currency?: string
+  amounts?: CurrencyAmount[]
+}): InvoiceTotals {
+  return {
+    total: res.total ?? 0,
+    filed: res.filed ?? 0,
+    amount: res.amount ?? 0,
+    currency: res.currency,
+    amounts: res.amounts,
+  }
+}
+
+/**
+ * 按优先级决定合计区展示哪一组数。
+ *
+ * 1. `amounts` —— 服务端按币种分组的全量合计，**以它为准**；
+ * 2. 否则 `amount` + `currency` —— 仅单一币种时服务端才给非零 amount；
+ * 3. 都拿不到才用当前页的发票自行分组（本地兜底，分页窗口内）。
+ *
+ * 顺序不能换：第 2 步的 `currency` 一旦丢了就会兜底成 CNY，所以第 1 步必须
+ * 优先于第 2 步，而第 1 步的数据又依赖转发层没把 `amounts` 吃掉。
+ */
+export function resolveSummaryGroups(
+  totals: Pick<InvoiceTotals, 'amount' | 'currency' | 'amounts'> | undefined,
+  list: Array<{ amount: number | string; currency?: string | null }>,
+): CurrencyAmount[] {
+  if (totals?.amounts?.length) {
+    return totals.amounts.map((a) => ({
+      currency: normalizeCurrency(a.currency),
+      amount: round2(a.amount),
+    }))
+  }
+  if (totals?.amount) {
+    return [{ currency: normalizeCurrency(totals.currency), amount: round2(totals.amount) }]
+  }
+  return sumByCurrency(list)
+}
