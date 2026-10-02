@@ -18,7 +18,8 @@
     "error": "エラー",
     "warning": "警告",
     "info": "情報",
-    "close": "閉じる"
+    "close": "閉じる",
+    "retry": "再試行"
   },
   "app": {
     "title": "Redclaw",
@@ -60,7 +61,8 @@
     "localAgent": "ローカルエージェント",
     "home": "Home",
     "study": "Study",
-    "flashcards": "フラッシュカード"
+    "flashcards": "フラッシュカード",
+    "messages": "メッセージ"
   },
   "routes": {
     "login": "ログイン",
@@ -371,6 +373,14 @@
       "title": "受信トレイ",
       "empty": "受信トレイは空です",
       "advance": "次へ進める"
+    },
+    "source": {
+      "note": "ノート",
+      "email": "メール",
+      "rss": "RSS",
+      "meeting": "会議",
+      "chat": "チャット",
+      "manual": "手動"
     }
   },
   "email": {
@@ -440,12 +450,71 @@
     "empty": "まだ素材がありません。ノート・メール・RSS で「学習に追加」を使ってください。",
     "advance": "学習を開始"
   },
-  "source": {
-    "note": "ノート",
-    "email": "メール",
-    "rss": "RSS",
-    "meeting": "会議",
-    "chat": "チャット",
-    "manual": "手動"
+  "notesHub": {
+    "title": "ノート",
+    "filter": {
+      "all": "すべて",
+      "manual": "手書きメモ",
+      "meeting": "会議メモ",
+      "pkm": "PKM ノート"
+    },
+    "action": {
+      "newNote": "新規メモ",
+      "startMeeting": "会議を開始",
+      "record": "録音でメモ"
+    },
+    "link": {
+      "allNotes": "すべてのメモ",
+      "allMeetings": "すべての会議",
+      "allPkm": "PKM を開く"
+    },
+    "empty": {
+      "title": "まだメモがありません",
+      "hint": "右下のマイクで最初のメモを撮るか、会議を開始してください",
+      "filtered": "このソースにはまだ何もありません"
+    },
+    "meta": {
+      "voice": "音声",
+      "pending": "処理中",
+      "minutes": "{count} 分",
+      "hoursMinutes": "{hours} 時間 {minutes} 分"
+    },
+    "count": {
+      "notes": "メモ {count} 件",
+      "meetings": "会議 {count} 件"
+    }
+  },
+  "messagesHub": {
+    "title": "メッセージ",
+    "filter": {
+      "all": "すべて",
+      "email": "メール",
+      "rss": "フィード",
+      "task": "タスク"
+    },
+    "action": {
+      "markAllRead": "すべて既読にする",
+      "openMail": "メールを開く",
+      "manageFeeds": "フィードを管理"
+    },
+    "empty": {
+      "title": "新着はありません",
+      "hint": "重要なメール、購読ニュース、タスクの更新がここに集まります"
+    },
+    "badge": {
+      "important": "重要"
+    },
+    "meta": {
+      "from": "{name} から",
+      "suggestedAction": "推奨：{action}"
+    },
+    "unreadBadge": "未読 {count}",
+    "partialFailure": "一部の読み込みに失敗：{sources}"
+  },
+  "timefmt": {
+    "justNow": "たった今",
+    "minutesAgo": "{count} 分前",
+    "hoursAgo": "{count} 時間前",
+    "daysAgo": "{count} 日前"
   }
 }

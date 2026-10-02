@@ -43,16 +43,19 @@
         <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>
       </button>
       <h1 class="title">{{ title }}</h1>
-      <!-- 通知中心入口(2026-09-20 通知体系 P1):常驻铃铛 + 未读徽标。 -->
-      <button
-        class="notif-btn"
-        type="button"
-        aria-label="通知中心"
-        @click="goNotifications"
-      >
-        <span class="material-symbols-outlined" aria-hidden="true">notifications</span>
-        <span v-if="unreadCount" class="notif-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-      </button>
+      <!--
+        2026-10-03 全局 IA 重组：原来的常驻铃铛（跳 /notifications）已移除。
+
+        为什么删而不是改指向：重组后「消息」tab 承载的是**同一批未读的超集**
+        （重要邮件 + 订阅新闻 + 任务消息），并自带未读角标。留着铃铛会出现
+        两个都带未读计数的入口指向两份不同的页面——用户点铃铛只看到任务消息，
+        点 tab 才看到全部，同一条数据两套「未读」账互相不同步。
+        「未读」在一个 App 里只能有一个真相，位置就是一级 tab。
+
+        /notifications 路由本身**保留**：它是系统推送（APNs/FCM）的 deepLink 落点
+        （services/notificationDispatchPolicy.ts 硬编码了这个路径），
+        外部点击通知必须还能直达，只是不再有常驻入口。
+      -->
       <!-- 页面经 HeaderActionsPortal 注入的标题栏右侧操作区（编辑/保存/筛选等）。
            与 ScrollChromePortal 同构，消灭 AgentDetail/Edit、CostQuota、MeetingRecord
            里的双层标题栏。 -->
@@ -112,7 +115,6 @@ import { useDevicePosture } from '../composables/useDevicePosture'
 import { createScrollHideChrome, bindScrollHideChrome } from '../composables/useScrollHideChrome'
 import { SCROLL_CHROME_KEY, isChromeToggleTap } from '../composables/scroll-chrome'
 import { headerTitleOverride } from '../composables/useAppHeaderTitle'
-import { useNotificationStore } from '../stores/notification'
 
 const { t } = useI18n()
 
@@ -328,12 +330,10 @@ function goBack() {
   }
 }
 
-// ---- 通知中心入口(2026-09-20 通知体系 P1) ----
-const notificationStore = useNotificationStore()
-const unreadCount = computed(() => notificationStore.unreadCount)
-function goNotifications() {
-  router.push('/notifications')
-}
+// ---- 通知中心入口 ----
+// 2026-10-03 全局 IA 重组：顶栏铃铛已移除，未读计数改由 BottomNav 的
+// 「消息」tab 角标承载（见 components/BottomNav.vue）。这里不再需要
+// notification store —— 铃铛的跳转与徽标逻辑已随按钮一起删除。
 
 function focusMain() {
   // Move focus to <main> so the skip link lands keyboard users at content.
@@ -455,42 +455,6 @@ function focusMain() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* 通知中心铃铛入口:与 menu-btn 同尺寸语言,叠加未读徽标。 */
-.notif-btn {
-  position: relative;
-  width: 44px;
-  height: 44px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-primary);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-full);
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.notif-btn .material-symbols-outlined {
-  font-size: 22px;
-}
-
-.notif-badge {
-  position: absolute;
-  top: 5px;
-  right: 3px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 999px;
-  background: var(--danger, #e5484d);
-  color: #fff;
-  font-size: var(--text-xs);
-  font-weight: 600;
-  line-height: 16px;
-  text-align: center;
 }
 
 /* 页面注入的右侧操作容器：横向排布，与 back-btn 同侧对齐 */

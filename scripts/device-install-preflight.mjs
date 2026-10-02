@@ -50,9 +50,38 @@
 //   POCKET_SERIAL  设备序列号（默认 192.168.31.19:5555）
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
 
+// adb 位置同样不能写死：原值是某台 Windows 开发机的
+// C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe，在别的宿主上
+// 直接 `[FAIL] adb 不存在` —— 而这条报错的措辞把矛头指向 adb，实际是本脚本
+// 绑死了一台机器。改为 env 覆盖 -> PATH -> 常见安装位置。
+function whichFirst(cands) {
+  for (const c of cands) {
+    if (!c) continue
+    if (c.includes('/') || c.includes('\\')) {
+      if (existsSync(c)) return c
+      continue
+    }
+    const r = execFileSync(process.platform === 'win32' ? 'where' : 'which', [c],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    const first = (r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0]
+    if (r.status === 0 && first) return first
+  }
+  return null
+}
+
+const IS_WIN = process.platform === 'win32'
 const ADB = process.env.POCKET_ADB
-  || 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
+  || process.env.POCKET_ADB_BIN
+  || whichFirst([
+    IS_WIN ? 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe' : null,
+    `${homedir()}/bin/adb`,              // arm64 包装脚本：自己设 LD_LIBRARY_PATH
+    `${homedir()}/Android/Sdk/platform-tools/adb`,
+    `${homedir()}/tools/android-sdk/platform-tools/adb`,
+    'adb',
+  ])
+  || 'adb'
 const S = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 const APK = process.argv[2]
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -60,18 +89,39 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const adb = (args, t = 120000) =>
   execFileSync(ADB, ['-s', S, ...args], { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
 
-// MIUI 弹窗的特征串：Activity 名 + 常见的按钮文案
+// 安装确认框的特征串：前台窗口（dialogShowing）与 uiautomator 层次树共用。
+//
+// ⚠️ 原来只有前三条（全是 MIUI 专属）。2026-10-03 在 vivo V2436A 上撞到
+// AOSP 自己的确认框：
+//   mCurrentFocus=Window{... com.android.packageinstaller/
+//                       com.android.packageinstaller.PackageInterceptActivity ...}
+// 脚本认不出来 → 不点 → `adb install` 一直挂着 → 150s 后判超时，
+// 报成「安装超时，未能完成观测」。现象像设备/驱动问题，真因是**这份名单
+// 只认小米**。下面的定位与点击逻辑本来就是通用的（按文案/资源 id 找确认键），
+// 缺的只是「这个窗口是确认框」的判定。
 const DIALOG_MARKERS = [
+  // MIUI / HyperOS
   'AdbInstallActivity',
   'com.miui.permcenter.install',
   'com.miui.securitycenter',
+  // AOSP 标准安装确认框（PackageInterceptActivity / ConfirmInstall 等）
+  'com.android.packageinstaller',
+  // 部分 OEM 把「安装未知应用」也挂在权限控制器下
+  'com.android.permissioncontroller',
 ]
 
 function log(...a) { console.log('[preflight]', ...a) }
 
 // ── 1. 设备在线 ────────────────────────────────────────────────────────────
 function requireDevice() {
-  if (!existsSync(ADB)) { console.error(`[FAIL] adb 不存在: ${ADB}`); process.exit(1) }
+  // 只有「带路径分隔符的名字」才能用 existsSync 判存在。裸命令名（'adb'，
+  // 靠 PATH 解析）用 existsSync 判必然为 false——那是相对于 CWD 找同名文件，
+  // 于是即便 `which adb` 明明能找到，也会被报成「adb 不存在」。2026-10-03 实测。
+  const isPathLike = ADB.includes('/') || ADB.includes('\\')
+  if (isPathLike && !existsSync(ADB)) {
+    console.error(`[FAIL] adb 不存在: ${ADB}`)
+    process.exit(1)
+  }
   let line = ''
   try { line = adb(['devices'], 20000) } catch (e) { console.error('[FAIL] adb devices 失败: ' + e.message); process.exit(1) }
   const mine = line.split(/\r?\n/).find((l) => l.includes(S)) || ''
@@ -83,12 +133,20 @@ function requireDevice() {
   log(`设备在线 ${S}`)
 }
 
-/** 当前前台窗口是否就是 MIUI 安装确认框。 */
+/** 当前前台窗口是否就是安装确认框（MIUI / AOSP / 各家 OEM）。 */
 function dialogShowing() {
   try {
     const w = adb(['shell', 'dumpsys', 'window'], 30000)
-    const focus = (w.match(/mCurrentFocus=(.*)/) || [])[1] || ''
-    return DIALOG_MARKERS.some((m) => focus.includes(m)) ? focus.trim() : ''
+    // `dumpsys window` 会输出**多条** mCurrentFocus=，且顺序不保证：
+    // 在 vivo V2436A / OriginOS 上实测，头一条是 `mCurrentFocus=null`
+    // （非当前 display 的段落），真正的安装框在后面第 292 行才出现：
+    //   186:  mCurrentFocus=null
+    //   292:  mCurrentFocus=Window{... com.android.packageinstaller/...PackageInterceptActivity}
+    // 只取第一个匹配 ⇒ 永远读到 "null" ⇒ 弹窗永远判不出来 ⇒ install 必然挂到超时。
+    // 2026-10-03 实测：加上这段之前，两轮安装都 150s 超时且**一行弹窗日志都没有**。
+    const focuses = [...w.matchAll(/mCurrentFocus=(.*)/g)].map((m) => m[1].trim())
+    const hit = focuses.find((f) => f && f !== 'null' && DIALOG_MARKERS.some((m) => f.includes(m)))
+    return hit || ''
   } catch { return '' }
 }
 
@@ -136,6 +194,10 @@ async function installWatching(apk) {
   const deadline = Date.now() + 120000
   let dialogSeen = ''
   let tapped = 0
+  // 见下方 vivo 风险勾选：每轮只勾一次。必须显式声明——
+  // .mjs 是 ES module（严格模式），漏声明会在 `if (!riskAcked)` 这一读操作上
+  // 抛 ReferenceError，整段安装监控直接死掉（而不是"没勾上"那种温和失败）。
+  let riskAcked = false
 
   while (Date.now() < deadline && !done) {
     await sleep(1000)
@@ -155,6 +217,25 @@ async function installWatching(apk) {
 
     const btns = [...dump.matchAll(/text="([^"]*)"[^>]*resource-id="([^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/g)]
       .map((m) => ({ text: m[1], id: m[2], cx: (+m[3] + +m[5]) / 2, cy: (+m[4] + +m[6]) / 2 }))
+
+    // vivo/ColorOS 的「安全守护」安装风险框多一道**前置勾选**：
+    //   已了解应用的风险检测结果  (packageinstaller:id/deleted_file_state_cb)
+    // 不勾它，下面的「继续安装」是 disabled，点下去没有任何反应，
+    // 于是 install 一直挂着直到 150s 超时——现象是「装不上」，
+    // 真因是少点了一个复选框。2026-10-03 在 V2436A 上实测。
+    // 每轮最多勾一次（勾完就该轮到确认键了，重复勾会把状态搞乱）。
+    if (!riskAcked) {
+      const cb = btns.find((b) => /已了解|风险|我已了解|checkbox|check_/i.test(b.text) || /checkbox|_cb$|ButtonCheck/i.test(b.id))
+      if (cb) {
+        adb(['shell', 'input', 'tap', String(cb.cx), String(cb.cy)], 20000)
+        log(`已勾选风险确认 "${cb.text || cb.id}" @${cb.cx},${cb.cy}`)
+        riskAcked = true
+        tapped++
+        await sleep(1200)
+        continue
+      }
+    }
+
     const hit = btns.find((b) => /^(安装|继续安装|确定|允许|继续)$/.test(b.text.trim()))
       || btns.find((b) => /install_yes|btn1|button1|positive/i.test(b.id))
     if (!hit) { log('弹窗在但没定位到确认键（不盲点，避免误触「取消」）'); continue }

@@ -1,0 +1,23 @@
+# _probe-tap.yaml —— 隔离出到底是哪类动作把设备服务器搞挂
+#
+# _probe-budget.yaml 已经证明 12 条纯 assertVisible 可以连过（exit 0），
+# 所以「命令条数预算」这个假设是错的。剩下的差别只有三类动作：
+#   1. tapOn      —— 通过 UiAutomation.injectInputEvent 注入触摸
+#   2. waitForAnimationToEnd
+#   3. 断言一个**不匹配**的元素（会触发 Maestro 的重试风暴）
+#
+# 这个探针只加第 1 类：点标题「AI 工具」。它是 <h1>，不可点，
+# 注入一次不会改变任何状态 —— 纯粹的「注入触摸」开销。
+appId: com.kaixuan.opencode.pocket
+---
+- assertVisible: "AI 工具"
+- tapOn: "AI 工具"
+- assertVisible: "AI 工具"
+- tapOn: "AI 工具"
+- assertVisible: "AI 工具"
+- tapOn: "AI 工具"
+- assertVisible: "AI 工具"
+- tapOn: "AI 工具"
+- assertVisible: "AI 工具"
+- tapOn: "AI 工具"
+- assertVisible: "AI 工具"
