@@ -173,6 +173,7 @@
     "newVersionAvailable": "New version v{version} available!\n\nChangelog:\n{changelog}",
     "alreadyLatest": "Already on the latest version!",
     "checkUpdateFailed": "Failed to check for updates, please try again later",
+    "versionConfigUnavailable": "Server-Versionskonfiguration nicht verfügbar, ein Update kann nicht geprüft werden. Bitte die Administration, config/version.json zu prüfen. {detail}",
     "redclawIntegration": "RedClaw-Integration",
     "redclawConnected": "Verbunden",
     "redclawMisconfigured": "Konfiguriert · Verbindungsfehler",

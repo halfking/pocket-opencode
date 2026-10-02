@@ -215,7 +215,7 @@ func (s *Server) ensurePipeline() *email.Pipeline {
 			chatID: s.cfg.FeishuInvoiceChatID,
 		}
 		notifier := &notifycenterEmailNotifier{svc: s.notifySvc, store: s.emailStore}
-		s.emailPipeline = &email.Pipeline{
+		p := &email.Pipeline{
 			Store:    s.emailStore,
 			Fetcher:  s.emailFetcher,
 			Harvest:  harvester,
@@ -227,6 +227,13 @@ func (s *Server) ensurePipeline() *email.Pipeline {
 			// 无人值守地搬用户邮件风险太大。置 POCKET_EMAIL_SPAM_DRYRUN=false 才真移。
 			SpamDryRun: s.cfg.EmailSpamDryRun,
 		}
+		// 第 1.6 步分类。默认不注入 Classifier ⇒ 整步跳过，报告里记 ClassifySkip。
+		// 需求 4 的提醒依赖 importance，而 importance 只在这里被写入。
+		if s.cfg.EmailClassifyViaGateway {
+			p.Classifier = s.classifyViaGatewayBatch
+		}
+		logClassifyWiring(s.cfg.EmailClassifyViaGateway)
+		s.emailPipeline = p
 		if s.cfg.EmailSpamDryRun {
 			log.Printf("[email/pipeline] 清垃圾为预演模式（只判定不移动）：POCKET_EMAIL_SPAM_DRYRUN=false 可开启真实 MOVE")
 		}

@@ -243,7 +243,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useApiError } from '../../composables/useApiError'
 import type { IconName } from '../../constants/icons'
-import { APP_VERSION, canDownloadApk, checkUpdate } from '../../utils/version'
+import { APP_VERSION, canDownloadApk, checkUpdate, VersionConfigUnavailableError } from '../../utils/version'
 import { runtimePlatform } from '../../native/runtime-platform'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
 import { http } from '../../api/http'
@@ -391,6 +391,17 @@ async function checkForUpdates() {
       toast.success(t('settings.alreadyLatest'))
     }
   } catch (error) {
+    if (error instanceof VersionConfigUnavailableError) {
+      // 这不是「稍后重试」类故障：服务端版本配置缺失/路径不对，
+      // 重试多少次都是同一个结果。给一条指向真正原因的提示，
+      // 并把服务端回传的候选路径原样带出来（唯一可定位的线索）。
+      console.error('服务端版本配置不可用:', error.detail ?? error.message)
+      toast.error(
+        t('settings.versionConfigUnavailable', { detail: error.detail ?? '' }),
+        { duration: 15000, closable: true }
+      )
+      return
+    }
     console.error('检查更新失败:', error)
     toast.error(t('settings.checkUpdateFailed'))
   }
