@@ -461,10 +461,25 @@ var (
 	// 摘要兜底。行锚点（reMIMEHeaderLine / reBoundaryLine）在压平后失效，
 	// 而压平后的那份恰恰是要返回给用户的那一份。详见 containsMIMESource。
 	//
-	// 边界 token 刻意收紧：只认 `--` 后紧跟 `=` / `_` / `-` 或 `part_` / `Part_`。
+	// 边界 token 刻意收紧：只认 `--` 后紧跟 `=` / `_` 或 `part_` / `Part_`。
 	// 真机实测的三种形态都覆盖到了：------=_Part_… / --_000_10f7b8d35f184af /
 	// --part_8057f3aacb3e5508e…；而「COVID-19--related」「见附件 --」不会误伤。
-	reBoundaryToken = regexp.MustCompile(`--(?:[=_-]|[Pp]art[_-])`)
+	//
+	// **裸 `-` 已从字符类里去掉**（原为 `[=_-]`）。这不是推测，是全库 180 条
+	// 真实摘要的实测（diag_boundary_tighten_candidates_test.go，带门控跑）：
+	//
+	//	现状 `--(?:[=_-]|[Pp]art[_-])`   命中 13 条
+	//	本式 `--(?:[=_]|[Pp]art[_-])`    命中 11 条
+	//
+	// 少掉的那 2 条逐条核过都不是 MIME：工行对账单的
+	// `---人民币(本位币)---`（@591）与 newsletter 的 22 连字符分割线（@353）。
+	// 保留的 11 条**全部**是真 `------=_Part_…` boundary 泄漏，含
+	// em-1669791317 的整段 MIME 源码（带 Content-Type/Content-Transfer-Encoding）。
+	//
+	// 关键：真机那三种形态在 `--` 后面分别是 `=` / `_` / `p`，**没有一个靠
+	// 裸 `-`**。而裸 `-` 正是 `---` 分隔线的来源，且它命中的后果不是「多挡
+	// 一点」——mime.go:645-648 会把整条正文丢弃，邮件列表显示空白（需求 7）。
+	reBoundaryToken = regexp.MustCompile(`--(?:[=_]|[Pp]art[_-])`)
 	// 头字段 token：`\b` 保证前面不是字母数字，避免「参见 MyContent-Type 规范」误判。
 	reMIMEHeaderToken = regexp.MustCompile(`(?i)\b(?:Content-Type|Content-Transfer-Encoding|Content-Disposition|Content-ID|MIME-Version)\s*:`)
 	// RFC 5322 的 field-name：可打印 ASCII，去掉冒号，且不能以空格开头。

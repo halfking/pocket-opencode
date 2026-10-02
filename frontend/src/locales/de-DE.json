@@ -18,7 +18,8 @@
     "error": "Fehler",
     "warning": "Warnung",
     "info": "Info",
-    "close": "Schließen"
+    "close": "Schließen",
+    "retry": "Erneut versuchen"
   },
   "app": {
     "title": "Redclaw",
@@ -60,7 +61,8 @@
     "localAgent": "Local Agent",
     "home": "Home",
     "study": "Study",
-    "flashcards": "Karteikarten"
+    "flashcards": "Karteikarten",
+    "messages": "Nachrichten"
   },
   "routes": {
     "login": "Anmelden",
@@ -154,6 +156,7 @@
     "version": "Version",
     "versionFormat": "v{version} (Build {buildNumber})",
     "buildDate": "Build Date",
+    "buildDateNote": "(konfigurierter Wert, nicht die gemessene Build-Zeit)",
     "apiAddress": "API Address",
     "privacy": "Privacy",
     "permissionsPrivacy": "Berechtigungen & Datenschutz",
@@ -370,6 +373,14 @@
       "title": "Posteingang",
       "empty": "Posteingang ist leer",
       "advance": "Fortfahren"
+    },
+    "source": {
+      "note": "Notiz",
+      "email": "E-Mail",
+      "rss": "RSS",
+      "meeting": "Meeting",
+      "chat": "Chat",
+      "manual": "Manuell"
     }
   },
   "email": {
@@ -439,12 +450,71 @@
     "empty": "Noch nichts gesammelt. Nutze „Zum Lernen hinzufügen“ bei Notiz, E-Mail oder RSS.",
     "advance": "Lernen starten"
   },
-  "source": {
-    "note": "Notiz",
-    "email": "E-Mail",
-    "rss": "RSS",
-    "meeting": "Meeting",
-    "chat": "Chat",
-    "manual": "Manuell"
+  "notesHub": {
+    "title": "Notizen",
+    "filter": {
+      "all": "Alle",
+      "manual": "Notizen",
+      "meeting": "Meeting-Notizen",
+      "pkm": "PKM-Notizen"
+    },
+    "action": {
+      "newNote": "Neue Notiz",
+      "startMeeting": "Meeting starten",
+      "record": "Notiz aufnehmen"
+    },
+    "link": {
+      "allNotes": "Alle Notizen",
+      "allMeetings": "Alle Meetings",
+      "allPkm": "PKM öffnen"
+    },
+    "empty": {
+      "title": "Noch keine Notizen",
+      "hint": "Tippe auf das Mikrofon für die erste Notiz oder starte ein Meeting",
+      "filtered": "In dieser Quelle gibt es noch nichts"
+    },
+    "meta": {
+      "voice": "Sprachnotiz",
+      "pending": "In Bearbeitung",
+      "minutes": "{count} Min.",
+      "hoursMinutes": "{hours} Std. {minutes} Min."
+    },
+    "count": {
+      "notes": "{count} Notizen",
+      "meetings": "{count} Meetings"
+    }
+  },
+  "messagesHub": {
+    "title": "Nachrichten",
+    "filter": {
+      "all": "Alle",
+      "email": "E-Mail",
+      "rss": "RSS-Feeds",
+      "task": "Aufgaben"
+    },
+    "action": {
+      "markAllRead": "Alle als gelesen markieren",
+      "openMail": "E-Mail öffnen",
+      "manageFeeds": "Feeds verwalten"
+    },
+    "empty": {
+      "title": "Nichts Neues",
+      "hint": "Wichtige E-Mails, Feed-Neuigkeiten und Aufgaben landen hier"
+    },
+    "badge": {
+      "important": "Wichtig"
+    },
+    "meta": {
+      "from": "Von {name}",
+      "suggestedAction": "Vorschlag: {action}"
+    },
+    "unreadBadge": "{count} ungelesen",
+    "partialFailure": "Einige Quellen konnten nicht geladen werden: {sources}"
+  },
+  "timefmt": {
+    "justNow": "gerade eben",
+    "minutesAgo": "vor {count} Min.",
+    "hoursAgo": "vor {count} Std.",
+    "daysAgo": "vor {count} T."
   }
 }

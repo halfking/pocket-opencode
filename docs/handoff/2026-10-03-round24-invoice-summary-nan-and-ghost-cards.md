@@ -627,6 +627,701 @@ select … from email_invoices where status='failed' or seller='name:'
 
 ---
 
+## §16 查清 §15.3 那三个实例各自**能做什么**——污染不是均匀的，但比想象的广
+
+§15.3 只列出了「三个实例都排了 08:00」。这一节把每个实例的实际能力查实，
+因为**三者的污染面完全不同**，明早读日志时不能一视同仁。
+
+### 16.1 18077（wt-a20，pid 23256）：**完整的一轮**
+
+```
+data dir = C:\workspace\openpocket\data          <- 与 18099 同一个
+Email credential self-check: all 5 enabled email account(s) decrypt with the current master key
+Email scheduler started (fetch_enabled=true, kxmemory=false, ...)
+```
+
+同一把 master key ⇒ **5 个账户全部能解密、能同步**，会跑完整的
+sync → 分类 → 垃圾清理 → 提醒 → 发票采集 → 飞书/汇总文档。
+⇒ 它的 08:00 那轮与 18099 **等价**。
+
+### 16.2 18100（.wt-e2e，pid 28160）：**同步全灭，但提醒步照样跑**
+
+它用的是 `.wt-e2e\backend\data` 下**自己的** master key，与生产加密的凭据不匹配：
+
+```
+[email/sync] account acct-…-5 (kimmy.huang@163.com): decrypt credential: cipher: message authentication failed
+[email/scheduler] sync acct-…-1/-2/-3/-4/-5 failed: decrypt credential: cipher: message authentication failed
+        （00:09:49、01:22:49 ×5、01:38:49 每次调度同步都这样）
+fetcher 日志行 = 0
+```
+
+**我一度据此推断「它推不了提醒，所以无害」——那是错的**，而且错在一个很容易犯的地方：
+以为同步失败会中止流水线。`pipeline.go` 的 `Run` 不是这么写的：
+
+- `syncAccounts` 的错误走 `rep.AddError(...)`，而 `AddError` 的注释明写「非致命错误（流水线继续跑完）」；
+- `Run` 里唯一的提前返回是 `ListEnabledAccountsWithWorkspace` 本身失败（第 402–406 行）；
+- 第 426 行 `p.notifyImportant(ctx, rep)` 是**无条件**执行的，不看 `AccountsSynced`。
+
+⇒ 18100 会在同步全灭的情况下继续跑 1.5 发票候选、1.6 分类、2 垃圾清理、
+**3 重要邮件提醒**、4 发票采集、5 推送+台账/汇总文档——
+**其中 3 这一步读的是共享生产 schema 里的那 34 条积压，与它能不能同步无关。**
+
+（`accounts` 来自数据库查询、不涉及解密，所以 `pipelineScopes(accounts)` 也是好的，
+第 5 步的推送与汇总文档同样会照常生成。）
+
+### 16.3 明早读日志时怎么区分这三轮
+
+| | `synced=` | 特征 | 提醒 |
+|---|---|---|---|
+| 18099 | 正常（5） | 完整一轮 | 基准 |
+| 18077 | 正常（5） | 与 18099 等价 | **第二个完整轮，是主要污染源** |
+| 18100 | 0，且 errors 含 5 条解密失败 | 同步全灭但仍走到第 3 步 | 仍会推 34 条积压 |
+
+⇒ 三轮都会调 `MarkEmailsNotified`（进程内锁不跨进程），
+所以 34 条积压可能被推 1 次、2 次或 3 次，**结果不可预测**。
+§11 的「24 + 34 = 58」只能当**下界**看，不能当预测。
+
+### 16.4 顺带记一条我自己刚犯又刚纠正的错
+
+「某实例解密失败 ⇒ 它不会推提醒」这个推断听起来很稳，但它依赖一个**我没验证的前提**：
+同步失败会中止流水线。实际不会。正确顺序是先读 `Run` 的控制流，
+再对每个实例的能力下结论——而不是从「解密失败」直接外推到「整轮无害」。
+
+这与 §12.3 那条同源：**缺席/失败的证据要先证明它对后续步骤意味着什么。**
+
+---
+
+## §17 刷新 08:00 基线——01:06 那份**已经漂了**，并记一个 psql 陷阱
+
+§11/§16 引用的基线取于 01:06，而并发会话整晚在触发 sync/classify。
+不刷新的话，08:00 的差值就是从一个错数起算的。重取于 02:00：
+`logs/zz-8am-baseline-refresh-20261003-0200.txt`（psql exit=0，stderr 为空）。
+
+```
+=== A notifications ===   total 24 | unread 0 | read 24 | newest 2026-10-02 05:38:33
+=== B invoices ===        downloaded 1 / 3500.00   |   new 3 / 58454.50
+=== C the 58000 row ===   inv_1790903383222583800_1  new  file=(none)  attempts=0
+                          updated 2026-10-02 09:09:43
+=== D importance ===      (empty) 4 | high 58 | medium 56 | low 61
+=== E eligible ===        175
+=== F emails total ===    179
+```
+
+### 17.1 与 01:06 基线的差异
+
+| | 01:06 | 02:00 |
+|---|---|---|
+| `notifications_unread` | 23 | **0** |
+| `emails_total` | 175 | **179** |
+| `importance` 为空 | 0 | **4** |
+| `notifications_newest` | 2026-10-02 05:38:33 | 同上（未变） |
+| 发票 / 58000 行 | — | 未变 |
+
+**未读从 23 掉到 0**：24 条全部被读过。不是我做的（我只做过只读 fetch 与 CDP 读文本），
+最可能是并发会话的 e2e 自动化点了通知中心。**这会影响明早的观察**：
+「未读数从 0 涨到 34」才是干净的信号；若从非零起算，就分不清是流水线推的还是别人点的。
+
+### 17.2 那 4 封 importance 为空的邮件，正好就是新到的那 4 封
+
+`179 - 4 = 175`，与 E 的 eligible 数吻合。**它们不会被 08:00 那轮提醒**：
+`POCKET_KXMEMORY_BASE_URL` 未配 ⇒ 定时路径不做自动分类（§11.2），
+新到邮件的 `importance` 恒为空 ⇒ 不进提醒窗口。
+⇒ §11.1 的「本轮将推送 34」在 02:00 这个基线上**仍然成立**（eligible 仍是 175），
+但前提是**明天那 4 封仍未被分类**——若并发会话明早又手工跑一次
+`/api/emails/classify`，它就会被算进 34。
+
+### 17.3 psql 陷阱：`to_char()` 在 bigint 列上报 "multiple decimal points"
+
+这份 SQL 第一版连着两次死在同一句错误上：
+
+```
+ERROR:  multiple decimal points
+```
+
+出错的那一行**一个小数点都没有**。真实原因：`notifications.created_at` 与
+`email_invoices.updated_at` 都是 **bigint epoch 秒**（实测 `pg_typeof` = bigint，
+值 1790890713）。`to_char(bigint, text)` 会静默解析成 `to_char(numeric, text)`，
+把 `'YYYY-MM-DD HH24:MI:SS'` 当作**数值格式化模板**去解析，于是抛
+"多个小数点"——错误文本完全不指向真正的原因。
+
+正确写法：
+
+```sql
+to_char(to_timestamp(max(created_at)), 'YYYY-MM-DD HH24:MI:SS')
+```
+
+⇒ 这类错误有个共同特征：**报错文本与出错行没有任何词面关联**。
+遇到荒谬的解析错误，先 `SELECT pg_typeof(col)`，别在那一行里找小数点。
+
+（另一个同场教训：先用中文注释写 `-f` 的 SQL 文件时我怀疑是编码，
+实测 `server_encoding` 与 `client_encoding` **都是 UTF8**，编码不是原因——
+把注释换成英文也没用，因为真正的错在查询里。两个假设都要用实测排除，不能只换一个就下结论。）
+
+---
+
+## §18 更正 §16.3 的框架：重复提醒是**顺序**问题，最可能只发生一次
+
+§16.3 我写的是「34 条可能被推 1 次、2 次或 3 次，58 只能当下界」。
+那是**上界**，没说清概率。这一节把机制查实，并给出更可能的结局——
+**它可能让「要不要打断并发会话」这个问题不再紧急**。
+
+### 18.1 落库层没有任何兜底（实测）
+
+```
+pg_constraint on opencode_pocket.notifications:
+  notifications_pkey | p | PRIMARY KEY (id)      <- id 每次插入新生成，不是业务键
+  （另有两个普通索引 idx_notif_ws_time / idx_notif_unread，都非唯一）
+pg_constraint on opencode_pocket.emails:
+  UNIQUE (account_id, message_id)                 <- 邮件去重，与提醒无关
+  notified_at 上没有任何约束
+```
+
+⇒ 代码层的去重**只是**一句 `UPDATE emails SET notified_at=$1 WHERE id=ANY($2)`
+（`store_pipeline.go:155-161`），配合读取时的 `COALESCE(notified_at,0)=0` 判断。
+**没有唯一约束兜底**，所以竞态一旦发生，重复通知会真的落库。
+
+### 18.2 但去重是「读—推—标记」，所以**后到者会跳过**
+
+`notifyImportant`（`pipeline.go:998-1050`）的顺序是：
+
+```
+1. ListEmailsSince(ctx, since, 2000)   -> 拿到 (emails, notified) 快照
+2. splitReminderCandidates(emails, notified)   -> 对着**那一刻的快照**判定
+3. for 每个 candidate: Notifier.NotifyImportantEmail  -> 逐条 INSERT notifications
+4. 循环结束后才 MarkEmailsNotified(ids)         -> UPDATE notified_at
+```
+
+**没有锁、没有事务、没有推送前复查。** 但正因为快照在第 1 步、标记在第 4 步，
+**只要某个进程在另一个进程读完快照之后才读完快照，它就会看到 notified_at≠0 而整批跳过。**
+
+### 18.3 谁会先到？——18100，因为它同步最快地**失败**
+
+- **18100**：解密在本地就失败，**不产生任何 IMAP 往返**（fetcher 日志 0 行），
+  所以第 1 步几乎瞬间结束，接着 1.5/1.6/2 都是轻量的，直接进第 3 步。
+- **18077 / 18099**：要做真实的 5 账户 IMAP 同步（18099 的日志里单次
+  `/api/emails/sync` 就要 2.5–3 秒，5 个账户更多），之后还有 1.5 发票候选
+  （可能去下正文链接）和 1.6 分类，才到第 3 步。
+
+⇒ **最可能的结果：18100 先读快照、推 34 条、标记；18077 与 18099 随后读到
+快照时 `notified_at` 已非 0，`RemindersPending=0`，一条都不推。**
+也就是**只推一次，总数 58**。
+
+### 18.4 但这仍是**预测**，明早要这样判别
+
+- 若三份日志里**只有一个**出现 `本轮将推送 34 条` + `reminders sent:` ⇒ 上面的顺序成立，58 成立。
+- 若出现 2~3 份 ⇒ 三者快照落在同一秒内，重复发生，此时**总数会 >58**，
+  且不能把多出来的部分算到任何一个进程头上。
+- 判别用每份日志的 `RemindersSent` 之和与 `notifications` 实际增量对账，不要只看 DB 差值。
+
+### 18.5 顺带记一个与 08:00 无关、但真实存在的健壮性缺口
+
+即使**只有单进程**，这段「先 INSERT 后 UPDATE、中间无事务」的写法也有一个洞：
+**进程在两者之间崩溃 / 被杀，下一轮会把这批邮件重推一遍。**
+更普遍地说，只要将来出现多实例部署（这个仓库现在就有 4 个 pocketd 实例在跑），
+重复就是结构性的。
+
+正解是让数据库兜住，而不是靠应用层的列值判断：
+`notifications` 上加一条以「来源邮件」为业务键的**部分唯一索引**，或
+用 `pg_try_advisory_lock` 把「读快照—推送—标记」整段包起来。
+**本轮没有动手改**——那是行为变更，涉及幂等语义与历史数据该不该回填，
+该由你拍板，不是我顺手就能定的。
+
+（`pending_high` 我用独立 SQL 复核过：`date >= now()-90d AND deleted_at=0
+AND notified_at=0 AND importance='high'` = **34**，与 01:14 那份只读诊断的
+`RemindersPending=34` 完全吻合。两个口径互相对上了。）
+
+---
+
+## §19 幽灵卡：把「怎么处理」这个待拍板项需要的账算清楚
+
+§2/§13 记的是「设备渲染 12 张 / 服务端 4 行」，那是数按钮数出来的，粗且不准。
+02:10 那次真机抓包给了完整页面文本（`logs/zz-invoice-ui-verified-20261003-0210.txt`，
+末行是「没有更多了」，**确认未截断**），按 `hide_image` 卡片标记逐张解析，
+再与服务端逐行对账，得到下面这张表。
+
+### 19.1 设备 7 个实体 vs 服务端 4 行
+
+服务端 `email_invoices` 实测（`logs/zz-ghost-count.out.txt`）：
+`rows_total = 4`；`seller='name:'` 的行 **0**；`invoice_no='Issuance'` 的行 **0**。
+
+| # | 设备上的实体 | 服务端对应行 |
+|---|---|---|
+| 1 | Tencent Cloud ¥328.50 待整理 `No.24317200000907012703` | ✓ `inv_1790957532673098600_2` |
+| 2 | Tencent Cloud ¥126.00 待整理 `No.24317200000907012698` | ✓ `inv_1790957532670968300_1` |
+| 3 | 中国工商银行 ¥58,000.00 待整理 | ✓ `inv_1790903383222583800_1` |
+| 4 | 杭州创客家 ¥3,500.00 已下载（文件式行） | ✓ `inv_1790884695419622800_1` |
+| 5 | **`name:` ¥0.00 已归档 `No.Issuance`** | ✗ **幽灵** |
+| 6 | **`name:` ¥0.00 失败 `No.Issuance`** | ✗ **幽灵** |
+| 7 | **云服务开票中心 ¥1,280.00 待下载 `No.25332000000123456789`** | ✗ **幽灵** |
+
+⇒ **3 张幽灵卡**，不是 8 张。§2 那个「12」是数「删除」按钮得来的——页面上
+除卡片外还有别的删除入口（文件列表/选择态），按按钮数会高估。
+**卡片数要用 `hide_image` 标记数，不是按钮数。**
+
+### 19.2 三张幽灵**不是同一类**，这会改变处理方式
+
+- 第 5、6 张：`seller='name:'`、`invoice_no='Issuance'`、`amount=0`。
+  它们是 §13.2 说的那两张 QQ Wallet——**当年就从服务端删掉了**，
+  本地镜像把 `last_error` 里的旧文案（`POP3-sourced email raw body cache miss…`）留着当卡片副标题。
+  其中一张状态是**失败**、一张是**已归档**。
+- 第 7 张完全不同：`seller='云服务开票中心'`、`amount=1280`、状态**待下载**、
+  单号 `25332000000123456789`。它**不是**删除残留，而是一条服务端从来就没有过的记录。
+
+⇒ 值得先问的是第 7 张：**它是怎么进本地镜像的？** 如果是某条写入路径
+（比如入账/手工添加）能把服务端不存在的行写进本地表，那问题就不只是"幽灵卡怎么清"，
+而是"本地表可以被写成服务端不认的行"。**这是两件不同的事，本轮没有查。**
+
+### 19.3 页面头部与列表自相矛盾（另一个可核查的证据）
+
+```
+¥3,500.00
+共 4 张 · 已归档 0 · 文件 6
+```
+
+- 「共 4 张」= 服务端计数，与 `rows_total=4` 一致；
+- 但设备列表有 **7** 个实体；
+- 「已归档 0」与第 5 张卡片标着**已归档**直接矛盾（服务端 `downloaded=1 / new=3`，无 filed）。
+
+⇒ 这三行不是"旧缓存"，是**服务端权威数**与**本地镜像状态**被并排渲染的结果。
+这也是为什么 §2 那个待拍板项本质上是：**本地镜像要不要接受服务端裁剪**。
+
+### 19.4 供拍板的三条路（我没有替你选）
+
+1. **按服务端权威集裁剪本地镜像**：最省事，`local_email_invoices` 只保留服务端返回的行。
+   代价：`待下载`（第 7 张）这种**纯本地状态**会被一起清掉——而它可能正代表一条
+   尚未采集完成的真实工作。
+2. **给本地表补 `workspace_id` / `user_id`**（`schema.ts:244-269` 现在两列都没有），
+   先解决隔离与归属问题，裁剪另议。代价：这是**设备 DB 迁移**，真机从未验证过。
+3. **不裁剪，只修呈现**：承认本地镜像可以有服务端没有的行，但不该把
+   `last_error` 旧文案渲染成卡片副标题（§13.1 第 1 条）。
+   最小改动，但 3 张幽灵卡仍然在。
+
+**第 7 张的来源没查清之前，这三条我都没法评估代价。** 那是我建议的下一步。
+
+---
+
+## §20 查清了第 7 张的机制——并因此**否掉 §19.4 的第 1 条路**
+
+### 20.1 本地表是**设计上**就允许存在服务端没有的行
+
+不是 bug，是明确设计。证据链（全部是仓库里现成的代码与用例）：
+
+```
+native/list-sync/planner.ts
+  isLocalOnlyId(id)         把 'local-' 前缀识别为「仅本地」
+  newLocalId('inv')         生成 local-inv-<...> 临时 id
+  planListSync(local, remote, { pushLocalOnly })
+      planner.test.ts:34  'local-only row is pushed by default'
+      planner.test.ts:39  'local-only row stays local when pushLocalOnly is false'
+                            ← pushLocalOnly=false 时它就**永远留在本地**
+
+features/email/invoice-list-sync.ts:9-29
+  matchInvoiceForAlign(local, remote)
+      注释：本地临时票对齐服务端：同邮件 + 票号，或同邮件 + 销售方 + 金额
+      硬条件：r.emailId !== l.emailId 直接 return false   （第 19 行）
+
+features/email/invoices-store.ts
+  upsertFromServer()  要求 inv.id，无 id 的跳过
+  remapLocalId()      把本地临时 id 换成服务端 id；目标已存在则删掉本地副本
+  listDirty() / clearDirty() / setLocalStatus()   ← 未回推的本地改动的账
+native/schema.ts:268  local_email_invoices.client_id TEXT DEFAULT ''
+```
+
+### 20.2 于是有两条路会让 `local-inv-*` 永久留在本地
+
+1. **回推没成功**（`pushLocalOnly=false`、outbox 失败、或服务端拒绝）。
+2. **remap 对不上**：`matchInvoiceForAlign` 硬要求 `r.emailId === l.emailId`。
+   只要服务端那一行来自**另一封邮件**（同一张票被重新采集、或原邮件被删后换源），
+   就永远匹配不上，本地行就一直以 `local-inv-*` 的身份渲染成卡片。
+
+第 7 张（`云服务开票中心` ¥1,280 `待下载` `No.25332000000123456789`）的形态
+与第 2 条完全吻合：它有一个**具体的发票号**、非零金额、真实商家、
+状态是「待下载」而不是失败——这不像删除残留（那两张是 `name:` / ¥0.00），
+更像一条**建了档、但上游始终没有对应行**的本地票。
+
+### 20.3 这否掉了 §19.4 的第 1 条路
+
+「按服务端权威集裁剪本地镜像」会**删掉尚未回推成功的真实发票**。
+这不是"可能有损失"，而是与 `client_id` / `remapLocalId` / `listDirty` /
+`pushLocalOnly` 这整套机制的设计意图**直接冲突**——那套机制的存在意义
+就是让服务端暂时没有的行能留在设备上。
+
+⇒ §19.4 的三条里，第 1 条**应当排除**，除非同时改成"只裁剪 `dirty=0`
+且从未有过 `local-` id 的行"，而那已经是另一套逻辑了。
+剩下第 2 条（补 `workspace_id`/`user_id`）与第 3 条（只修呈现）才是真正在桌上的。
+
+### 20.4 但有一件事我**没有验证**，别替我补上
+
+我**没有读到设备上的 `local_email_invoices` 表**（本地库在设备里，
+读取需要 vault 解锁或 root），所以：
+
+- 第 7 张的 id **是不是** `local-inv-*`，**未证实**；
+- §20.2 那两条机制是**从代码读出来的**，不是从这台设备上观察到的。
+
+要证实只需一件事：在设备上执行
+`SELECT id, seller, amount, status, client_id, dirty FROM local_email_invoices`
+（解锁后用 CDP 求值，或 `adb shell run-as` 读 SQLite）。
+**一条查询就能把 §20 从"机制成立"变成"这张卡就是这个机制产生的"。**
+在那之前，§20.3 的结论应读作「按设计就该排除第 1 条」，
+而不是「这台设备上的第 7 张已经被证明是 `local-inv-*`」。
+
+---
+
+## §21 ⚠️ 更正 §19 与 §20：设备直接查询推翻了这两节，**结论反过来了**
+
+§20.4 我自己写了"一条查询就能把 §20 从『机制成立』变成『这张卡就是这个机制产生的』"。
+02:15 跑了那条查询（走 App 自己的 `CapacitorSQLite` 插件，只读 SELECT，App 已解锁）。
+**结果否掉了 §20 的假设，也否掉了 §19 的计数。**
+
+存档：`logs/zz-local-invoices-20261003-0215.json`
+
+### 21.1 实测：本地 12 行 / 服务端 4 行 ⇒ **8 张幽灵卡**
+
+```
+count local rows          = 12
+present in server         =  4
+GHOSTS                    =  8     <- §19 说 3，错了
+client_id non-empty       =  0     <- 关键
+rows with id like local-* =  0     <- 关键
+dirty = 1                 =  1
+```
+
+### 21.2 §20 的机制假设**被否掉**
+
+§20 断定这些是 `local-inv-*` 临时票、等着回推。实测：
+
+- **12 个 id 全部是 `inv_<epoch>_<n>`**（服务端生成格式），**没有一个是 `local-inv-*`**；
+- **`client_id` 12 行全为空**。
+
+⇒ 它们**不是**"本地建的、服务端还没有"的行。它们**曾经存在于服务端**，
+后来被**服务端删掉了**，而本地镜像从来没有跟着删。
+§20.2 列的两条机制（`pushLocalOnly=false` / `emailId` 对不上）在**这台设备上
+一条都没发生**——那两条是从代码读出来的，读对了，但**不适用于这里**。
+
+**§19 的「3 张」也是错的**：我当时只数了页面上 `hide_image` 卡片的可见部分，
+而页面把 `已下载` 的行放在文件区（截图里那 6 个「已下载 / 下载」入口），
+所以少算了 5 行。§2 最早记的「12」其实是对的——那本来就是本地行数，
+我上一轮把它误当成"数按钮得来的高估值"了。
+
+### 21.3 8 张幽灵**不是随机的**，是按发票号成组的
+
+```
+26332000000907012703  Tencent        328.5  new         -> 服务端有
+24317200000907012698  Tencent        126    new         -> 服务端有
+58000 中国工商银行                  58000  new         -> 服务端有
+26332000008261110741  杭州创客家      3500  downloaded  -> 服务端有 1 条
+26332000008261110741  杭州创客家      3500  downloaded  -> 幽灵（同号重复采集）
+25332000000123456789  云服务开票中心   1280  pending     -> 幽灵
+25332000000123456789  云服务开票中心发票抬头 1280 downloaded -> 幽灵
+25332000000123456789  云服务开票中心   1280  downloaded  -> 幽灵
+Issuance              name:          0      filed       -> 幽灵（且 dirty=1）
+Issuance              name:          0      failed      -> 幽灵
+（无单号）             财务部          0      downloaded  -> 幽灵
+（无单号）             财务部          0      downloaded  -> 幽灵
+```
+
+三个发票号各自对应 2~3 条本地行，服务端只留 1 条或不留。
+⇒ **同一封/同一张票被重复采集过多次**（采集侧没有按 `invoice_no` 去重），
+服务端后来清掉了多余的，本地镜像留着。
+
+### 21.4 所以 §20.3 的结论**反过来了**
+
+§20.3 说「按服务端权威集裁剪本地镜像会删掉尚未回推成功的真实发票，应当排除」。
+**在实测数据上这个顾虑不成立**：
+
+- 没有任何一行在等回推（`client_id` 全空、没有 `local-*` id）；
+- 这 8 行是服务端**主动删掉**的，保留它们只会让用户继续看到已经不存在的账。
+
+⇒ **「按服务端权威集裁剪本地镜像」重新成为首选**，而且现在是**有实测支撑的**首选。
+§19.4 的第 2 条（补 `workspace_id`/`user_id`）解决的是隔离问题，与裁剪不冲突，
+可以叠加；第 3 条（只修呈现）仍然不解决 8 张幽灵卡本身。
+
+**唯一要在裁剪时单独处理的**是那 1 行 `dirty=1`
+（`inv_1790789580385036500_1`，`name:` / `filed`）：它是**唯一**有未回推本地改动的行。
+但服务端已经没有这条 id 了，`listDirty` 推过去只会拿到 404——
+**它本来就推不上去**，不是裁剪会造成的损失。裁剪时按
+「服务端没有 + 非 dirty」筛的话，它会被留下而不是被删，这是对的。
+
+### 21.5 顺带暴露一个采集侧的问题（独立于裁剪决策）
+
+同一个 `invoice_no` 在本地出现 2~3 次，说明**发票采集没有按发票号去重**。
+服务端目前靠事后清理压住（只剩 4 行），但只要采集继续跑，
+重复行还会不断产生——**裁剪只是把症状擦掉，根因在采集侧**。
+
+这需要单独查 `extractInvoiceCandidates` / `HarvestAll` 的写入路径有没有
+`invoice_no` 维度的存在性检查。**本轮没查，也没改。**
+
+### 21.6 这一节的教训
+
+§19 我凭一张截图数出「3 张」，§20 我又在这个数上建了一整套机制推断，
+两节都写得很确定。**推翻它们的是我自己在 §20.4 里点名的那条查询。**
+⇒ **截图与页面文本只能证明"渲染出了什么"，不能证明"表里有什么"。**
+表里有几行、id 是什么形态、哪些字段为空，只有查表才知道。
+
+---
+
+## §22 查清了 §21.5 的根因：**不是去重失效，是权威合计缺"票级身份"**
+
+§21.5 说「同一 `invoice_no` 出现 2~3 次 ⇒ 采集没按发票号去重」。查完要**修正这个说法**。
+
+### 22.1 去重完全按设计工作
+
+`invoice_store.go:93-110`：
+
+```sql
+INSERT INTO email_invoices (...) VALUES (...)
+ON CONFLICT (email_id) DO UPDATE SET ...
+```
+
+冲突目标是 **`email_id`**，即**每封邮件一行**。`invoice_dedup_test.go:42`
+（`TestUpsertInvoice_SameEmailIsIdempotent`）就是在钉这一条。
+
+设备那 12 行按 `invoice_no` 分组后，**每组的不同 `email_id` 数都等于行数**：
+
+```
+(empty)                  rows=3  distinct_email_id=3
+26332000008261110741     rows=2  distinct_email_id=2
+25332000000123456789     rows=3  distinct_email_id=3
+24317200000907012703     rows=1  distinct_email_id=1
+24317200000907012698     rows=1  distinct_email_id=1
+Issuance                 rows=2  distinct_email_id=2
+```
+
+⇒ **没有一行是同一封邮件建了两次。** 重复的成因是**同一张票出现在不同邮件里**
+（厂商首发一次、提醒一次、更正一次），这是真实世界常态，不是 bug。
+
+### 22.2 真正的问题在**合计那一侧**
+
+`LedgerRows`（飞书台账）与 `InvoiceListStats`（列表统计）都只共用
+`InvoiceCountsTowardTotal`（status ∈ downloaded/filed 且 file_path 非空），
+**两处都不看 `invoice_no`**。于是：
+
+- 同一张票在 3 封邮件里建了 3 行；
+- 若其中 2~3 行都走到 `downloaded` 且有文件；
+- **权威合计就把这张票算 2~3 次。**
+
+设备镜像里 `25332000000123456789` 正好是 **2 downloaded + 1 pending**（3 封邮件）。
+那 2 行若还在服务端，合计会多算 1280——**这不是假设，形状已经摆在那里**。
+
+服务端现状（`logs/zz-invoice-dup-extent.out.txt`）：
+
+```
+rows_total=4  distinct_email_ids=4
+按 invoice_no 分组：每个号各 1 行
+权威口径 counted_rows=1  amount_sum=3500.00
+```
+
+⇒ **当前没有错账**，这是**潜在**风险。服务端那 4 行是干净的，历史重复已被清掉。
+
+### 22.3 它与历史那个 61,500 是同一族，但缺的那一环不同
+
+61,500 那次（`InvoiceListStats` 注释原话）是「**完全没有过滤**，把整张表求和」。
+这次过滤是**对的**，缺的是**票级身份**：合计知道"哪些行算"，不知道"它们是不是同一张票"。
+
+建议（**是行为变更，涉及钱，不擅自动手**）：合计在累加前先按
+`invoice_no`（非空时）去重，同号只取一行；`invoice_no` 为空时才退回逐行计。
+落点是两处共用的那个口径，或在 `InvoiceCountsTowardTotal` 之上加一层
+「票级唯一」的过滤——但**前端 `sumByCurrency` 必须同步改**，
+否则同一张票在列表页会被算一次、在台账里又算一次。
+
+### 22.4 需要你拍板的一个口径问题
+
+**同号不同金额**时以哪一行为准？设备上 `25332000000123456789` 的三行金额都是 1280，
+但现实里"更正邮件"可能改金额。选项：
+
+1. 取 `updated_at` 最新的那行（更正邮件赢）；
+2. 取 `created_at` 最早的那行（首发邮件赢，语义上更接近"这张票本来是多少"）；
+3. 视为两张票分别计入（保持现状）。
+
+**这三条的账都不一样**，且都会改变已核对的数，所以必须你定。
+在此之前 §22.2 的结论应读作「有据可查的潜在风险」，不是「已经算错了」。
+
+---
+
+## §23 并发会话正在修 §18 那个跨进程竞态——但**今晚 08:00 不会生效**
+
+02:20 发现工作区里出现了 `backend/internal/email/pipeline_lock.go`
+（外加两个 `.negbak`——他们在跑负控）。只读查了一遍，结论如下。
+
+### 23.1 实现是**跨进程**的，而且接线接对了
+
+`pipeline_lock.go` 用 `pg_try_advisory_lock`（**会话级**，`DailyPipelineLockKey`
+= `"email:daily-pipeline"`），正是 §18.5 建议的那条。三处做得比我预期的周全：
+
+1. **三态而非两态**：`Busy`（别的实例在跑 → 跳过）与 `Unavailable`
+   （取不到连接/查询报错 → **降级照常跑**）。这样一次数据库抖动不会让
+   每日流水线永久静默，而日志里能区分「别人在跑」与「锁坏了」。
+2. **会话级锁的归还陷阱**：解锁失败时**销毁连接**（`Hijack` + `Close`）而不是
+   `Release` 回池子——否则下一个借用这条连接的查询会继承锁，
+   每日流水线被永久锁死且无错误日志指向原因。
+3. **测试里显式验证它没有退化成进程内状态**：`lockProbeOnFreshConn` 用同池的另一条
+   连接去取锁，取到就 `t.Fatal("the lock is not session-scoped, so it cannot
+   protect multiple pocketd instances")`。
+
+接线在 `server_email_pipeline.go:256-275` 的 `RunEmailPipeline`——**只有定时路径取锁**，
+手工路径 `handleEmailPipelineRun` 刻意绕过，用户显式点「跑一次」不会被另一轮挡住。
+开关 `POCKET_EMAIL_PIPELINE_ADVISORY_LOCK` **默认 true**（`config.go:315`）。
+
+⇒ 这份工作是对的，且比我 §18.5 写的建议更完整。
+
+### 23.2 但**跑着的二进制里没有它**（字节探测，实测）
+
+`logs/zz-probe-lock-in-binary-20261003.mjs`：
+
+```
+=== pocketd-invoicenan-fix.exe（18099 现在跑的就是它）===
+  ABSENT   每日定时流水线跨进程锁已被其它实例持有
+  ABSENT   POCKET_EMAIL_PIPELINE_ADVISORY_LOCK
+  ABSENT   email:daily-pipeline
+  ABSENT   pg_try_advisory_lock
+  ABSENT   daily pipeline already running in another instance
+  present  control: pocketd listening          <- 对照：扫描本身有效
+  present  control: pipeline scheduled at
+```
+
+`pocketd-invoicecheck.exe` 同样全缺。**这是「这个构建没有这条代码路径」，
+不是「这条路径没跑到」**——两者不能混。
+
+⇒ **今晚 08:00 那三个实例不会互斥**，除非并发会话提交后**重建 18099**
+（重建会带进他们的在制品，需要你授权；上次我重建时是带着授权做的）。
+
+### 23.3 所以 08:00 有两种可能签名
+
+| 条件 | 预期日志 |
+|---|---|
+| 18099 未重建（当前状态） | 靠**到达顺序**取胜：18100 同步全灭最先到第 3 步，推 34 并标记；18077/18099 随后 `RemindersPending=0`。**一份**日志出现「本轮将推送 34 条」+「reminders sent:」 |
+| 18099 被重建且带锁 | **一份**出现「本轮将推送 34 条」，另**两份**明确打印「每日定时流水线跨进程锁已被其它实例持有，本轮跳过」 |
+
+两种签名的结论相同（**只推一次，总数 58**），但要找的字符串不同。
+⇒ **先看三份日志里有没有「跨进程锁…本轮跳过」这一行**，有就是走了锁，
+没有就是走的顺序。08:00 的提醒里已写明这个判别顺序。
+
+### 23.4 锁本身**已被真实验证通过**（在当前这棵含其 WIP 的树上跑的）
+
+```
+go build ./...                    exit 0        （含并发会话 41 项在制品）
+go vet ./internal/email ./internal/server ./internal/config   exit 0
+POCKET_TEST_POSTGRES_DSN=... go test ./internal/email -run TestDailyPipelineLock -v
+  --- PASS  TestDailyPipelineLock_SecondAcquireIsBusy                       (0.40s)
+  --- PASS  TestDailyPipelineLock_ReleaseMakesItReacquirable                (0.37s)
+  --- PASS  TestDailyPipelineLock_ReleaseDoesNotLeakIntoPool                (0.39s)
+  --- PASS  TestDailyPipelineLock_IndependentPoolsAreMutuallyExclusive      (0.41s)
+  --- PASS  TestDailyPipelineLock_NoPoolIsUnavailableNotBusy               (0.00s)
+  --- PASS  TestDailyPipelineLock_StateStringIsDistinct                     (0.00s)
+  --- PASS  TestDailyPipelineLock_TestHarnessIsActuallyIsolated             (0.33s)
+  ok  github.com/halfking/pocket-opencode/backend/internal/email  2.035s
+```
+
+其中两条是最关键的：`IndependentPoolsAreMutuallyExclusive` 证明的是
+**两个独立连接池**互相排斥（这才是跨进程性质，纯进程内状态测不出来）；
+`TestHarnessIsActuallyIsolated` 是夹具自检，它的存在让上面 7 条不是"在别处
+的库上跑的绿灯"。
+
+顺带记一个它们的测试设计值得抄的地方：**没设 `POCKET_TEST_POSTGRES_DSN` 时，
+它们让测试大声 FAIL 而不是 skip**，失败信息写着
+`silently skipping would make every assertion above vacuously true`。
+我第一次跑就撞上这条红，按它给的路子补上 DSN 才跑起来。
+
+⇒ **重建 18099 的风险不在锁本身**（已验证），而在"会把并发会话另外 40 项
+在制品一起带进二进制"——那需要你授权，而不是技术判断。
+
+### 23.5 但那份诊断的第 2 步**测的不是它声称要测的东西**
+
+跑 `POCKET_DIAG_ADVISORY_REENTRANT=1 go test -run TestDiagAdvisoryReentrant -v`：
+
+```
+SAME SESSION: first=true second=true                      （可重入，假设成立）
+after ONE unlock, re-lock=true                            （计数仍>0，可重入坐实）
+OTHER SESSION while conn still holds: got=true (want false)   ← 期望 false，拿到 true
+pg_locks matching rows = 1   holding backend pid = 33136
+```
+
+最后那行**不是**锁坏了。查 pgx 源码坐实了原因：
+
+```
+pgxpool -> puddle/v2@v2.2.2/pool.go:133
+    idleResources *genstack.GenStack[*Resource[T]]     ← 栈
+    :302 tryAcquireIdleResource() { res, ok := p.idleResources.Pop() }
+```
+
+⇒ puddle 的空闲资源是**栈**：`Release` 推入、`Acquire` 弹出，
+**Release 之后紧接着 Acquire 拿回的是同一条连接**（LIFO 是 pgx 有意的性能选择）。
+
+而 `diag_advisory_reentrant_test.go` 的顺序是：
+
+```go
+conn.Release()          // :57  先把持锁的连接还回池子
+probe, _ := store.pool.Acquire(ctx)   // :60  紧接着取
+pg_try_advisory_lock(...)  // :66     于是拿到的是**同一条**连接 -> true
+```
+
+⇒ 那个 `probe` **不是别的会话**，它就是持锁的那条会话自己。
+所以 `got=true` 完全没有信息量，而这一行只是 `t.Logf`、**没有任何断言**，
+测试照样 PASS。问题在于日志里那句 `(want false)` 会被下一个人（包括 08:00 的我）
+读成「锁是坏的」。
+
+**修法**（属于并发会话的在制品，我**没有改**）：要么像
+`TestDailyPipelineLock_IndependentPoolsAreMutuallyExclusive` 那样开**第二个连接池**，
+要么至少把 `probe` 的 backend PID 也打出来、与 `connPID` 对比后再解释。
+
+**这不影响那 7 条锁用例**——它们用的是 `pg_locks` 探针与独立连接池，
+对可重入免疫（§23.4 实测全绿）。这是**诊断脚本自己的标签错了**，不是锁的缺陷。
+
+---
+
+## §24 ⚠️ 更正我自己早先的「全量回归」：那时 PG 集成测试其实是**静默 skip** 的
+
+02:26 在当前这棵**含并发会话 43 项在制品**的树上跑全量：
+
+```
+POCKET_TEST_POSTGRES_DSN=... go test ./internal/email  -count=1  -> ok  177.075s
+POCKET_TEST_POSTGRES_DSN=... go test ./internal/server -count=1  -> ok   77.002s
+```
+
+⇒ **全绿，包括他们那批在制品。** 但**耗时本身就推翻了我之前的说法**：
+
+| | 我先前报的 | 真实（含 PG 集成） |
+|---|---|---|
+| `internal/email` | ok **12.8s** | ok **177.1s** |
+| `internal/server` | ok **19.6s** | ok **77.0s** |
+
+差一个数量级。原因：`newWorkspaceTestStore` 在拿不到
+`POCKET_TEST_POSTGRES_DSN` 时走的是
+
+```go
+if dsn == "" { t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping ...") }
+```
+
+⇒ 我先前那两次「全量回归」**根本没跑那些需要真 PG 的用例**，它们静默 skip 了，
+而我在提交信息与上一轮汇报里都写成了「全量 ok」。**那是高估了覆盖范围。**
+
+（讽刺的是，同一个包里 `pipeline_lock_test.go` 的同类用例是**故意大声 FAIL**
+而不是 skip 的，失败信息写着 `silently skipping would make every assertion above
+vacuously true`——**约定已经在仓库里了，我先前没对齐它**。）
+
+### 24.1 结论本身没有变，但证据强度变了
+
+- 现在有证据：全量（含 PG 集成）在 43 项在制品共存时是绿的。
+- 之前没有：之前那次只能证明「不需要 PG 的那部分绿」。
+
+⇒ 引用本轮任何「全量 ok」的地方，都应带上 `POCKET_TEST_POSTGRES_DSN` 这一句，
+否则那不是全量。**这也是本轮第四次撞到同一族问题**（§19 数界面、§20 机制推断、
+§23.5 探针复用连接、这里 skip 被当成通过）：
+**"没报错"和"它真的被检查了"是两件事。**
+
+
+
+
+
+
+
+
+
+
+
+
+---
+
 ## §15 ¥NaN 修复已上 18099（前后字节对照）；但 08:00 归因已被 3 个实例搅了
 
 ### 15.1 修复已上线，同一端点前后两次抓包只差那三个键名
@@ -666,26 +1361,47 @@ scripts/restart-18099-aligned-secret.ps1 -Exe ...invoicenan-fix.exe
 `CurrencyTotal` 是这一坨里唯一漏 tag 的结构——这也是当初它能一路活到真机的原因：
 Go 侧解进 struct 时大小写不敏感，测试全绿。
 
-### 15.2 UI 那一半本轮**没验成**，不要当成已验
+### 15.2 UI 那一半**已补验**（2026-10-03 02:10，原文此节记的是"未验"）
 
-真机现在停在「检测到已有登录态，但本地加密库未解锁」：
+原文写的是"未验"，因为当时真机停在本地加密库解锁页。**后来并发会话把 App 解锁了**，
+02:10 重新验成——`pocket_api_base` 已被切回 `http://127.0.0.1:18099`（新二进制那个）：
+
+```
+¥3,500.00
+共 4 张 · 已归档 0 · 文件 6
+```
+
+截图 `logs/zz-invoice-total-verified-20261003-0210.png`，页面文本
+`logs/zz-invoice-ui-verified-20261003-0210.txt`。**`¥NaN` 这个症状消失了。**
+与修复前的 `logs/zz-invoice-nan.png` 构成前后对照。
+
+### 15.2.1 但这张截图**证明不了**它是走了哪条路（与测试侧同一个陷阱）
+
+本仓库这批数据里，服务端标量 `amount=3500` 与 `amounts[]` 分组金额 **3500 是同一个数**。
+所以这一屏无论走「amounts 路径」还是「落回标量路径」都显示 `¥3,500.00`，
+**渲染结果区分不了两者**。
+
+⇒ 「走的是 amounts 路径」这句结论的依据不是这张截图，而是：
+① wire 抓包里 `amounts[0]` 的键名已经是小驼峰（§15.1）；
+② `resolveSummaryGroups` 的优先级是 amounts > 标量 > 本地重算，且
+   新加的第 8/9 条用例（`invoice-totals-wire-keys.test.mjs`）已把这条钉住。
+
+这与本轮在测试侧发现的**同一个陷阱**（夹具让两条路径同值 ⇒ 判据装饰化），
+只是这次它出现在**真机观测**上而不是测试夹具上。记在这里以免下一个人
+把这张截图当成「amounts 链路在真机上被验证过」。
+
+---
+
+### 15.2 原文（保留：那为什么会验不成）
+
+真机当时停在「检测到已有登录态，但本地加密库未解锁」：
 
 ```
 pocket_crypto_cfg = {"fieldEncryption":"disabled","hasMasterPassword":true,...}
 ```
 
 解锁只有两条路（`features/auth/unlock-auth.ts:35-43`）：生物识别，或主密码。
-**我没有主密码，也不猜**，所以发票页的**渲染**这一半本轮没验。
-
-已验 / 未验要分清：
-
-- **已验**：服务端根因在真链路上修好了（15.1 的两次抓包）。
-- **已验**：TS 读键一侧由 7 条跨语言判据 + 负控钉住（删 Go tag → TS 2 条转红；
-  TS 单侧改名 → 仅跨语言那条转红）。
-- **未验**：真机界面上那个 `¥NaN` 字样是否已经消失。
-
-补验方式（任一）：解锁 App 后打开发票页看合计，应为 `¥3,500.00`；
-或拿早先那张 `logs/zz-invoice-nan.png` 当修复前证据做对照。
+**我没有主密码，也不猜**，所以当时只能验到 wire 层。补验见上面的 15.2。
 
 ### 15.3 ⚠️⚠️ §14.2 已经不成立了：现在有 **3 个生产 schema 实例**各排了一次 08:00
 
@@ -731,3 +1447,223 @@ pocket_crypto_cfg = {"fieldEncryption":"disabled","hasMasterPassword":true,...}
 对我的验证的直接后果：**不能依赖 App 的默认 base**。15.1 的两次抓取都是在 WebView 里
 **显式 fetch 18099** 完成的，`adb reverse tcp:18099` 至今完好。
 我没有把 base 改回去——那是别人的配置。
+
+## 25. 幽灵卡的根因定案：账号删除的级联，而客户端**没有任何回收方向的对账**
+
+> 02:32–03:05。本节推翻了我自己此前对"采集未按 `invoice_no` 去重"的猜测，
+> 并记录一次我自己犯的、且**仓库里早已写明**的错误。
+
+### 25.1 先记我自己的错：SQL 漏了 schema 限定，得到一份漂亮的假结论
+
+我第一版对账 SQL（`logs/zz-inv-server-reconcile-20261003.sql`）写的是
+`FROM email_invoices`、`LEFT JOIN emails`，**没有 schema 前缀**。
+结果：
+
+- `psql` exit=**0**，stderr **空**，输出排版正常；
+- `email_invoices` 返回 **0 行**；
+- 于是 12 行设备发票全部判成 `ABSENT-server`。
+
+如果我就此收工，结论会是"服务端把发票和邮件全删了"。**实际原因只是我查错了库**：
+`public.email_invoices` 这张表**存在且恰好是空的**（`public.emails` 同理），
+而真正的数据在 `opencode_pocket`。空表不报错、不告警、exit 仍为 0。
+
+`logs/zz-inv-server-reconcile2-20261003.sql` 重跑时加了自检段，取-2 才拿到真值：
+
+```sql
+=== G0 self-check: the schema I am about to trust must be NON-EMPTY ===
+   search_path   | pk_invoices | pk_emails | public_invoices
+-----------------+-------------+-----------+-----------------
+ "$user", public |           4 |       180 |               0
+(if pk_invoices = 0 then every "ABSENT" below is a false conclusion)
+```
+
+**这不是新知识。** `backend/internal/email/diag_merge_exec_test.go:35-68`（2026-10-02）
+已经把同一个陷阱写成了长段注释：备份检查用显式 `<schema>.` 前缀、业务查询用未限定表名
+靠 `search_path` 找表，两者不一致时"备份检查通过"与"写操作打在别处"会**同时发生**。
+我今天还是踩了同一个坑——因为我新写了一个 SQL 文件，**没有先读那条注释**。
+
+⇒ 写只读 SQL 的硬规则（本轮新增，写在文件头）：
+**1. 每张表显式 `<schema>.` 前缀；2. 文件第一段必须是"目标 schema 非空"自检；
+3. 自检不过就不许解释下面任何 `ABSENT`。**
+
+（注：并发会话已在 origin 上提交了 `scripts/check-pg-schema-hardcoded.mjs`
+——它查的是"schema 名被写死"，方向相反、不能替代上面这条"必须显式限定"的规则。
+本节不重复造那个卡口。）
+
+### 25.2 根因：`email_accounts → emails → email_invoices` 是 ON DELETE CASCADE
+
+`logs/zz-inv-fk-20261003.out.txt`（exit=0）：
+
+```
+ child                          | conname                          | def
+-------------------------------+----------------------------------+---------------------------------------------------
+ opencode_pocket.emails        | emails_account_id_fkey           | ... REFERENCES email_accounts(id) ON DELETE CASCADE
+ opencode_pocket.email_invoices| email_invoices_email_id_fkey     | ... REFERENCES emails(id)          ON DELETE CASCADE
+```
+
+账号被删 ⇒ 该账号的邮件被级联删 ⇒ 那些邮件的发票行再被级联删。**一条 SQL 都没有，
+服务端自己不留痕迹。** 后端代码也确实只发一条裸 DELETE：
+`store.go:1017 DeleteAccount` / `store.go:1825 DeleteAccountScoped`，级联交给 PG。
+
+而客户端这一侧**完全没有对应的回收路径**：
+
+| 位置 | 事实 |
+|---|---|
+| `email-cache-heal.ts:69-89 detectCacheGap` | 三个信号 `empty` / `server-ahead` / `stale`，**全部是"本地缺东西"的方向**。没有 `local-ahead`（本地比服务端多）这一路 |
+| `invoices-store.ts:1-4` 文件头注释 | "服务端是 SSOT；本地供首屏与离线。**同步只 upsert，禁止整表 DELETE。**" |
+| `invoices-store.ts:95-116 upsertFromServer/syncFromServer` | 只 INSERT OR REPLACE，无任何 DELETE |
+| `invoices-store.ts:155 removeLocal` | 全仓唯一调用方是 `use-invoice-list.ts:398` 的 UI 删除动作（它还会调 `emailApi.deleteInvoice`），**不是同步** |
+| `emails-store.ts:268 deleteEmailsByIds` | 按 id 逐条删，由用户动作驱动，同步不调 |
+
+所以级联在服务端是"原子且干净"的，客户端却只会**加**不会**减**。
+
+### 25.3 事件本身：2026-10-01 23:56 账号集被整体替换
+
+- 设备上 8 个 `account_id`，服务端只有 5 个，且**现存 5 个的
+  `created_at` 全是 `1790870162` = 2026-10-01 23:56:02**（同一秒批量建成）。
+- 设备上那 4 个服务端已无的账号：`acct-1790784184824054300-1`、
+  `acct-1790784248178102200-3`、`acct-1790784255240360000-5`、
+  `acct-1790811900843306300-1`。
+- 这 4 个旧账号在 `logs/pd-ax*.err.log`（10-01 05:00–07:00）里还在正常同步，
+  最后一个旧发票 `inv_1790789580385036500_1` 的采集日志是 10-01 07:00
+  （`pd-v24.err.log:55`）。**旧账号死于 10-01 07:00 之后、23:56 之前。**
+- 服务端 `emails` 中**没有一条**找不到所属账号（B3 = 0），说明级联执行得很干净。
+
+**我查不到"是谁在什么时候删的"**，照实说明而不是猜：
+`logs/pg/pg.err.log` 里没有 10-01 22:00–10-02 01:00 的 `email_accounts` DELETE
+（该窗口无日志，疑似轮转/重启），`emails_merge_backup_20261001` 备份表**已被删除**，
+10-01 那次操作是 `TombstoneDupeEmails`（合并重复副本、只写 `deleted_at` 墓碑、
+不动账号），解释不了账号消失。所以"删账号"这个动作本身在现有证据里**没有日志**。
+
+### 25.4 影响面比发票大：96 封邮件同样是孤儿
+
+设备 `local_emails` = **271 行 / 8 个账号**；服务端 `emails` = 180 行 / 4 个有邮件的账号。
+
+| 设备 `account_id` | 本地邮件 | 服务端 | 判定 |
+|---|---:|---:|---|
+| `acct-1790870162047413500-2`（QQ 私人） | 98 | 98 | 在 |
+| `acct-1790784248178102200-3` | 62 | **0** | **账号已不存在** |
+| `acct-1790870162079171800-5`（kimmy） | 57 | 58 | 在（服务端多 1，晚到） |
+| `acct-1790784255240360000-5` | 25 | **0** | **账号已不存在** |
+| `acct-1790870162063806800-3` | 14 | 14 | 在 |
+| `acct-1790811900843306300-1` | 7 | **0** | **账号已不存在** |
+| `acct-1790870162018873300-1`（企业邮） | 6 | 10 | 在 |
+| `acct-1790784184824054300-1` | 2 | **0** | **账号已不存在** |
+
+**271 里有 96 封（35%）属于服务端已经不存在的账号。** 收件箱里那 96 封不会
+被服务端"补发"（账号没了，永远不会再来），但会一直显示、一直计入未读
+（本地 `is_read=0` 共 242 封）。
+
+⇒ **只裁剪 `local_email_invoices` 是治标。** 真正缺的是"账号集对账"：
+服务端账号列表里没有的账号，其本地邮件/发票应当被回收或至少不再展示。
+这也推翻了我此前"按服务端权威集裁剪发票即可"的收敛结论——那条仍成立，
+但它处理的是*更小*的症状，不是根因。
+
+### 25.5 一处顺手修掉的陈旧注释
+
+`emails-store.ts:263-268` 的文档注释写的是"从服务端全量拉取近端邮件并 upsert 到本地镜像"，
+**与函数体完全相反**（函数体是逐条 `DELETE FROM local_emails`）。
+这是本次排查里读到的第一手误导，已改成它实际做的事。
+
+### 25.6 本节没有新增护栏，理由照实说
+
+我原本想加一条"同步必须回收服务端已无的行"的行为判据，但**没有加**：
+`invoices-store.ts` 直接 `import { localDB } from '../../native/local-db'`，
+在 Node 里 import 会触发 Capacitor 插件初始化；现有测试全部是**读源码文本**，
+没有真库 harness。要写行为判据就得先搭注入用的假 `localDB`，那是另一个工程。
+
+按本轮反复吃到的教训（判据自己要先证明它在检查你以为的东西），**我没有把握写出一条
+真能转红的行为判据，就不写一条只会恒绿的**。要补的话，形状是：
+把"哪些本地 id 该回收"抽成纯函数（例如 `orphansToDrop(localIds, serverIds, dirtySet)`），
+再用**能让两条路径给出不同结果**的夹具测它，并配 `email-cache-heal` 那条
+`local-ahead` 信号的用例。
+
+## 26. 08:00 基线刷新（03:15）：§11 的 34/58 已漂移，且我**在半小时内踩了两次同一个坑**
+
+### 26.1 我把同一个错误犯了第二次
+
+§25 里我因为 `deleted_at IS NOT NULL` 判出「180 封全部软删」，实际
+`deleted_at` 是 `bigint NOT NULL DEFAULT 0`、**0 = 未删**。我当场把这条写进了记忆。
+
+然后**紧接着的下一条查询**（`zz-8am-pending-take2`）我写了
+`notified_at IS NULL`，得出 `pending_high = 0`、并差点报成
+「08:00 已经没活可干了」。`notified_at` 是**完全同构**的一列：
+
+```
+ column_name  | data_type | column_default | is_nullable
+--------------+-----------+----------------+------------
+ notified_at  | bigint    | 0              | NO        <- 0 = 未通知
+ deleted_at   | bigint    | 0              | NO        <- 0 = 未删
+ processed_at | bigint    | (空)           | YES       <- 这列才允许 NULL
+ updated_at   | bigint    | (空)           | YES
+```
+
+正确判据是 `notified_at = 0`。两次都是 **exit=0、stderr 空、结果排版正常**，
+而且第二次的假结论（"今天没活干"）比第一次更诱人——它正好是我想听到的答案。
+
+**规则**：本表所有「时间戳型状态列」在写判据前，先
+`information_schema.columns` 读 `column_default` 与 `is_nullable`，
+**不许凭列名猜 0/null 的含义**。已在
+`zz-8am-pending-take3-20261003.sql` 的 M0 段固化成每次查询都跑的自检。
+
+### 26.2 刷新后的真值（`logs/zz-8am-pending-take3-20261003.out.txt`，exit=0 / stderr 空）
+
+| 量 | §11 记的（02:00 前） | 03:15 实测 | 变化 |
+|---|---:|---:|---|
+| `emails` 总数 | 179 | **180** | +1 |
+| `importance` 为空 | 4 | **0** | 4 封已被分类 |
+| eligible（已分类） | 175 | **180** | +5 |
+| `importance='high'` | 58 | **59** | +1 |
+| `notified_at > 0` | 24 | **24** | 不变 |
+| `notified_at = 0` | 155 | **156** | +1 |
+| **`pending_high`（08:00 的输入）** | **34** | **35** | **+1** |
+| `notifications` 总数 | 24 | 24 | 不变 |
+
+⇒ **§11 与 §15.3 写的「34 条积压」「24 + 34 = 58」都要改成 35 与 59。**
+今晚对账若按 58 去核，会得出「少推了一条」的假结论。
+
+### 26.3 08:00 至今**从未成功跑过**的硬证据
+
+`notified_at` 全表只有两个取值：
+
+```
+ notified_at |         at          |  n
+------------+---------------------+-----
+           0 | 1970-01-01 08:00:00 | 156
+ 1790890713 | 2026-10-02 05:38:33  |  24
+```
+
+- 那 24 条全部是 `high`，且**同一秒**写入 ⇒ 一次推送，且发生在
+  **10-02 05:38:33**（一次按需/手动运行，不是 08:00 定时）。
+- 定时任务排在 **2026-10-03T08:00:00+08:00**，到那一刻**一次都还没到过**。
+- 今晚 08:00 是这条链路的**首次定时执行**。若它跑成，
+  `notifications` 应从 24 涨到 **59**；这就是今晚唯一该断言的数字。
+
+### 26.4 仍然没有去重兜底（§18 的结论复查）
+
+`pg_indexes` 实测（`logs/zz-8am-pending-take2-20261003.out.txt` K5）：
+
+```
+ notifications_pkey    UNIQUE (id)                      <- 主键，无业务含义
+ idx_notif_unread      (workspace_id, read_at)          <- 非唯一
+ idx_notif_ws_time     (workspace_id, created_at DESC) <- 非唯一
+```
+
+**没有任何「同一封邮件只能有一条提醒」的唯一约束。** §15.3 表格里那三个
+生产 schema 实例各排了一次 08:00，若跨进程锁不生效，去重只靠
+`MarkEmailsNotified` 写在推送循环**之后**这一条时序。结论不变。
+
+### 26.5 幽灵卡根因带来的一个可核对数字
+
+服务端级联是干净的（`zz-8am-baseline-take2` J 段）：
+
+```
+ orphan_emails | orphan_invoices
+---------------+-----------------
+             0 |               0
+```
+
+⇒ 今晚 08:00 之后，若 `J` 段仍为 0 且 `orphan_emails` 没涨，
+就说明流水线没有重新造出孤儿；反之若涨了，说明它会为新账号重新采集，
+届时设备端又会多出一批「服务端有、本地没有」的**反向**缺口——
+那正是 `email-cache-heal` 的 `server-ahead` 方向覆盖的，无需新代码。

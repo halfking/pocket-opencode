@@ -82,8 +82,34 @@ const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
 const scripts = pkg.scripts ?? {}
 
 // ── 1. 从 gates 出发的传递闭包 ──
+// 2026-10-03：gates 的执行方式从 package.json 里的一条 `&&` 长串改成了
+// `node scripts/run-gates.mjs` + 名单在 gates.json（见 run-gates.mjs 头注释）。
+// 于是**不能再只靠正则从 gates 的命令串里抠 `npm run X`**：gates 自己那一条
+// 已经不含任何 npm run，闭包会退化成「只有 gates 一个脚本」，
+// 而它恰好一个测试文件都不覆盖 —— 判据不会报错，只会得出「191 个全是孤儿」。
+// 这就是本次实测踩到的：改完 gates 结构，孤儿卡口立刻从「0 孤儿」变「191 孤儿」。
+//
+// 所以种子从两处取：gates.json 的名单（现行，权威）+ gates 命令串里的 npm run（兼容旧结构）。
+const GATES_LIST = join(ROOT, 'gates.json')
+let gateNames = []
+if (existsSync(GATES_LIST)) {
+  const doc = JSON.parse(readFileSync(GATES_LIST, 'utf8'))
+  if (!Array.isArray(doc.gates)) {
+    console.error('❌ gates.json 里没有 gates 数组 —— 孤儿卡口无法确定哪些脚本算「gates 可达」')
+    process.exit(2)
+  }
+  gateNames = doc.gates
+  // 名单里写了一个不存在的 script 名：run-gates.mjs 会挡住真跑，但这里的结论
+  // 仍会基于一份残缺的可达集合算出来。宁可当场拒绝给结论。
+  const ghost = gateNames.filter((n) => typeof scripts[n] !== 'string')
+  if (ghost.length) {
+    console.error(`❌ gates.json 里有 ${ghost.length} 个名字在 package.json 的 scripts 里不存在：${ghost.join(', ')}`)
+    process.exit(2)
+  }
+}
+
 const reachable = new Set()
-const queue = ['gates']
+const queue = ['gates', ...gateNames]
 while (queue.length) {
   const name = queue.pop()
   if (reachable.has(name)) continue

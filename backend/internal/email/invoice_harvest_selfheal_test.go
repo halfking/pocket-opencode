@@ -36,8 +36,12 @@ import (
 //
 // miss=true 时 Get 永远未命中——这正是要触发自愈的前提（真实场景就是
 // QQ 上缓存从未落盘）。它同时记录 Put，用来断言自愈成功后**顺手回填了缓存**。
+//
+// raw 非 nil 时 Get 返回它（命中路径）。**既有调用方都不设 raw**，所以
+// 零值行为与从前完全一致——`miss` 仍然是唯一的开关。
 type stubBodyCache struct {
 	miss    bool
+	raw     []byte
 	puts    int
 	lastID  string
 	lastUID int64
@@ -53,6 +57,9 @@ func (s *stubBodyCache) Put(emailID string, uid int64, raw []byte) (string, erro
 func (s *stubBodyCache) Get(emailID string, uid int64) ([]byte, error) {
 	if s.miss {
 		return nil, nil
+	}
+	if s.raw != nil {
+		return s.raw, nil
 	}
 	return nil, nil
 }

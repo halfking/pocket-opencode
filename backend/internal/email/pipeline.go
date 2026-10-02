@@ -47,6 +47,11 @@ type Pipeline struct {
 	Harvest  *InvoiceHarvester
 	Pusher   InvoicePusher     // 可为 nil：跳过飞书，直接走共享文档
 	Notifier ImportantNotifier // 可为 nil：跳过提醒
+	// BodyCache 是 POP3 降级路径落盘的邮件原文缓存（见 body_cache.go）。
+	// 第 2 趟的取原文要靠它：POP3 来源的 em.UID 是位置序号，
+	// FetchMessageRaw（IMAP 专用）永远取不到原文，于是 POP3 发票建不了档。
+	// nil 时 POP3 来源取原文会明确失败（不退化成拿位置序号去 IMAP FETCH）。
+	BodyCache BodyCache
 	// Ledger 发布飞书共享台账（电子表格）。为 nil 或不可用时只生成本地 CSV/MD。
 	Ledger LedgerPublisher
 	// Classifier 对未归类邮件跑一次分类（需求 4 的定时路径）。可为 nil：
@@ -789,11 +794,20 @@ func (p *Pipeline) fetchBodies(ctx context.Context, keptIdx []int, jobs []bodyJo
 			defer func() { <-sem }()
 			e := jobs[idx].email
 			t0 := time.Now()
-			raw, err := p.Fetcher.FetchMessageRaw(ctx, e.AccountID, e.UID)
+			// 取原文必须**POP3 感知**：FetchMessageRaw 是 IMAP 专用的
+			// （mime.go:98 无条件 dial IMAPHost:IMAPPort），而 POP3 降级路径
+			// 落库的邮件 em.UID 是位置序号，对 IMAP UID FETCH 毫无意义。
+			// 此前这一趟直接调 FetchMessageRaw，于是 POP3 来源的发票候选
+			// 取原文必然失败 → 永远建不了档（2026-10-03 实测：两封通行费
+			// 电子发票 24.61 元一直没有台账行，而它们的原文就在
+			// data/email-bodies-raw/ 里躺着）。与采集器共用 resolveRawBody，
+			// 免得两处实现再次漂移——上一次漂移就是这么发生的。
+			raw, src, err := resolveRawBody(ctx, p.Fetcher, p.BodyCache, &e,
+				fmt.Sprintf(" step1.5 email=%s", e.ID))
 			if err != nil {
 				results[k] = bodyResult{err: err}
-				log.Printf("[email/pipeline] step1.5 body fetch acct=%s uid=%d FAILED after %s: %v",
-					e.AccountID, e.UID, time.Since(t0).Round(time.Millisecond), err)
+				log.Printf("[email/pipeline] step1.5 body fetch email=%s acct=%s uid=%d via=%s FAILED after %s: %v",
+					e.ID, e.AccountID, e.UID, src, time.Since(t0).Round(time.Millisecond), err)
 				return
 			}
 			parsed, perr := ParseMIMEMessage(raw)

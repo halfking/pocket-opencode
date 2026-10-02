@@ -207,3 +207,52 @@ test('形状完全不可信时整组作废并落回标量，而不是逐项跳�
   // 落回 amount + currency（4780 是服务端在这个响应里给的标量）
   assert.equal(text, '¥4,780.00', '不可信的 amounts 应整组作废并落回标量，而不是留下半截合计')
 })
+
+// ---------------------------------------------------------------------------
+// 5. 行为：上面第 6 条是**装饰性断言**，这一条才是能区分的
+// ---------------------------------------------------------------------------
+//
+// 2026-10-03 实测出来的（负控：把 normalizeAmounts 里 `?? a.Currency` /
+// `?? a.Amount` 两个兜底读取整个删掉）：
+//
+//   not ok  前端从 amounts[] 元素上读的每个键，都必须是 Go CurrencyTotal 的 tag
+//   not ok  灰度期兜底拼写必须正好是首选拼写的大写形式
+//   ok      真机实际收到的旧形状（PascalCase）不得渲染成 ¥NaN     ← 仍然绿
+//
+// 最后那条绿得毫无意义：它传进去的标量 `amount: 3500` 与 amounts 里的 3500
+// **完全相同**，所以「走 amounts 路径」和「落回标量路径」渲染出来一模一样。
+// 把兼容分支整个删掉它照样通过——而它的失败信息恰恰在写
+// 「兼容分支必须读大写拼写」。一条装饰性断言比没有更糟：
+// 下一个人会以为这条边界有人守着。
+//
+// 修法只有一个：**让标量与分组金额取不同的值**，两个路径才会给出不同的结果。
+// 这也是下面这条与上面第 7 条刻意共用同一个标量 4780、却得出相反结论的原因——
+// 变量只有「amounts 是否可读」一个。
+
+test('旧形状（PascalCase）下 amounts 必须压过标量：兼容分支删掉就会露馅', () => {
+  const groups = resolveSummaryGroups(
+    // 标量 4780 与分组里的 3500 **故意不同**：
+    //   兼容分支在  -> 用 amounts -> ¥3,500.00
+    //   兼容分支没了 -> 整组不可信 -> 落回标量 -> ¥4,780.00
+    { total: 4, filed: 0, amount: 4780, currency: 'CNY', amounts: [{ Currency: 'CNY', Amount: 3500, Count: 1 }] },
+    page,
+  )
+  const text = summaryMoney(groups)
+  assert.ok(!/NaN/.test(text), `渲染成 ${text}`)
+  assert.equal(text, '¥3,500.00',
+    'PascalCase 的 amounts 是可读的，必须压过标量；落回 4780 说明大写拼写的兜底读取没了')
+})
+
+test('同样两个值，camelCase 与 PascalCase 必须给出同一个合计（键名不该改变金额）', () => {
+  const camel = resolveSummaryGroups(
+    { total: 4, filed: 0, amount: 4780, currency: 'CNY', amounts: [{ currency: 'CNY', amount: 3500, count: 1 }] },
+    page,
+  )
+  const pascal = resolveSummaryGroups(
+    { total: 4, filed: 0, amount: 4780, currency: 'CNY', amounts: [{ Currency: 'CNY', Amount: 3500, Count: 1 }] },
+    page,
+  )
+  // 灰度期的意义就在这里：APK 与后端不会同时换，两种拼写都得显示对数。
+  assert.equal(summaryMoney(pascal), summaryMoney(camel),
+    '键名大小写不该改变合计金额——要么两边都读到了，要么两边都没读到')
+})

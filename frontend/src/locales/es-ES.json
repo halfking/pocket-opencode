@@ -18,7 +18,8 @@
     "error": "Error",
     "warning": "Advertencia",
     "info": "Información",
-    "close": "Cerrar"
+    "close": "Cerrar",
+    "retry": "Reintentar"
   },
   "app": {
     "title": "Redclaw",
@@ -60,7 +61,8 @@
     "localAgent": "Local Agent",
     "home": "Home",
     "study": "Study",
-    "flashcards": "Tarjetas"
+    "flashcards": "Tarjetas",
+    "messages": "Mensajes"
   },
   "routes": {
     "login": "Iniciar sesión",
@@ -154,6 +156,7 @@
     "version": "Version",
     "versionFormat": "v{version} (Build {buildNumber})",
     "buildDate": "Build Date",
+    "buildDateNote": "(valor configurado, no la hora de compilación medida)",
     "apiAddress": "API Address",
     "privacy": "Privacy",
     "permissionsPrivacy": "Permisos y privacidad",
@@ -370,6 +373,14 @@
       "title": "Bandeja de entrada",
       "empty": "La bandeja de entrada está vacía",
       "advance": "Procesar"
+    },
+    "source": {
+      "note": "Nota",
+      "email": "Correo",
+      "rss": "RSS",
+      "meeting": "Reunión",
+      "chat": "Chat",
+      "manual": "Manual"
     }
   },
   "email": {
@@ -439,12 +450,71 @@
     "empty": "Aún no hay material. Usa «Añadir al aprendizaje» en una nota, correo o RSS.",
     "advance": "Empezar"
   },
-  "source": {
-    "note": "Nota",
-    "email": "Correo",
-    "rss": "RSS",
-    "meeting": "Reunión",
-    "chat": "Chat",
-    "manual": "Manual"
+  "notesHub": {
+    "title": "Notas",
+    "filter": {
+      "all": "Todas",
+      "manual": "Notas",
+      "meeting": "Reuniones",
+      "pkm": "Notas PKM"
+    },
+    "action": {
+      "newNote": "Nueva nota",
+      "startMeeting": "Iniciar reunión",
+      "record": "Grabar una nota"
+    },
+    "link": {
+      "allNotes": "Todas las notas",
+      "allMeetings": "Todas las reuniones",
+      "allPkm": "Abrir PKM"
+    },
+    "empty": {
+      "title": "Aún no hay notas",
+      "hint": "Toca el micrófono para tu primera nota o inicia una reunión",
+      "filtered": "Todavía no hay nada en esta fuente"
+    },
+    "meta": {
+      "voice": "Nota de voz",
+      "pending": "Procesando",
+      "minutes": "{count} min",
+      "hoursMinutes": "{hours} h y {minutes} min"
+    },
+    "count": {
+      "notes": "{count} notas",
+      "meetings": "{count} reuniones"
+    }
+  },
+  "messagesHub": {
+    "title": "Mensajes",
+    "filter": {
+      "all": "Todos",
+      "email": "Correo",
+      "rss": "Suscripciones",
+      "task": "Tareas"
+    },
+    "action": {
+      "markAllRead": "Marcar todo como leído",
+      "openMail": "Abrir correo",
+      "manageFeeds": "Gestionar suscripciones"
+    },
+    "empty": {
+      "title": "Nada nuevo",
+      "hint": "Los correos importantes, las noticias suscritas y las tareas llegan aquí"
+    },
+    "badge": {
+      "important": "Importante"
+    },
+    "meta": {
+      "from": "De {name}",
+      "suggestedAction": "Sugerencia: {action}"
+    },
+    "unreadBadge": "{count} sin leer",
+    "partialFailure": "Algunas fuentes no se pudieron cargar: {sources}"
+  },
+  "timefmt": {
+    "justNow": "ahora mismo",
+    "minutesAgo": "hace {count} min",
+    "hoursAgo": "hace {count} h",
+    "daysAgo": "hace {count} d"
   }
 }

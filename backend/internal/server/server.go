@@ -2544,12 +2544,37 @@ func (s *Server) handleDownloadAPK(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// APK 文件路径（实际部署时应该指向真实的 APK 文件）
-	apkPath := "/data/www/pocket.kxpms.cn/downloads/opencode-pocket-latest.apk"
+	apkPath := strings.TrimSpace(s.cfg.APKDownloadPath)
+	if apkPath == "" {
+		apkPath = config.DefaultAPKDownloadPath
+	}
+
+	// 先确认文件在，**再**设下载头。
+	//
+	// 原来的写法是先设 Content-Type/Content-Disposition 再 ServeFile。文件不在时
+	// ServeFile 回 404，而 http.Error 会覆盖 Content-Type、却**不会删掉**
+	// Content-Disposition —— 于是 404 响应带着
+	// `attachment; filename=opencode-pocket.apk`，浏览器/下载器会照字面存下一个
+	// 19 字节的假 APK。真实原因（服务器上没部署 APK）在客户端表现为
+	// 「安装时解析失败」，排查方向被彻底带偏。
+	//
+	// 实测（2026-10-03 GET /api/app/download）：404 + Content-Length: 19 +
+	// Content-Disposition: attachment; filename=opencode-pocket.apk。
+	st, err := os.Stat(apkPath)
+	if err != nil {
+		// 路径属于服务端部署信息，不回显给调用方；只进日志。
+		log.Printf("APK download unavailable: stat %s: %v", apkPath, err)
+		http.Error(w, "apk not available", http.StatusNotFound)
+		return
+	}
+	if st.IsDir() {
+		log.Printf("APK download misconfigured: %s is a directory", apkPath)
+		http.Error(w, "apk not available", http.StatusNotFound)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/vnd.android.package-archive")
 	w.Header().Set("Content-Disposition", "attachment; filename=opencode-pocket.apk")
-
 	http.ServeFile(w, r, apkPath)
 }
 

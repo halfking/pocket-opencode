@@ -2,10 +2,16 @@
 // 与 check-main-worktree-conflict.mjs 的区别：那个是针对 BUG-AA 固定清单的断言，
 // 这个是**通用**的 —— 列出「待快进提交会碰到的文件」∩「主工作区已脏的文件」，
 // 用来回答「这轮推的东西会不会被并发会话覆盖掉」。
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = 'C:/workspace/openpocket';
-const g = (cmd) => execSync(`git -C ${ROOT} ${cmd}`, { encoding: 'utf8', maxBuffer: 1 << 28 });
+// 仓库根从脚本自身位置推导，不写死某台机器的绝对路径。
+// 原来这里是 'C:/workspace/openpocket'，在别的 checkout（Linux 宿主、CI、
+// 另一个 worktree）上直接 `fatal: cannot change to ...` 崩掉——一个用来
+// 「回答我这轮会不会被并发会话覆盖」的工具，在最需要它的时候反而没有输出。
+const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const g = (cmd) => execFileSync('git', ['-C', ROOT, ...cmd.split(' ')], { encoding: 'utf8', maxBuffer: 1 << 28 });
 
 const behind = g('rev-list --count main..origin/main').trim();
 const ahead = g('rev-list --count origin/main..main').trim();

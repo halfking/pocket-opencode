@@ -253,6 +253,37 @@ var pgSafeWithoutIsolation = map[string]string{
 	"internal/email/diag_kxpms_test.go":    "只读真实库探针：无写语句；需 POCKET_DIAG_ACCOUNT + POCKET_DIAG_ALLOW=1 + POCKET_REAL_MAIL_DSN + POCKET_DIAG_DATA_DIR",
 	"internal/email/spam_realdata_test.go": "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（目的就是读真实 schema）",
 
+	// internal/email/diag_spam_preview_test.go（2026-10-03 补登，提交 4de72306 时漏了，
+	// 当时把 internal/server 跑成了红的）：
+	//   · 只读：全文件只有一条 SELECT，INSERT/UPDATE/DELETE/DROP/CREATE 一个都没有。
+	//   · 门控：POCKET_DIAG_SPAM_PREVIEW=1 且 POCKET_DIAG_PG 必须非空，否则 t.Skip/t.Fatal。
+	//   · 隔离形态与上面几条**不同**：它不设 search_path，而是在 SQL 里把表名写死成
+	//     `FROM opencode_pocket.emails`（:77），所以它读的就是生产 schema，不受
+	//     DSN search_path 影响，也不会读到 public 空集。
+	//   · 已知的真实弱点（不属本护栏管辖，未擅自改动）：schema 名硬编码，
+	//     换 schema 需改代码；且它绕开 NewStore（那会 migrate 建表，是写操作）。
+	"internal/email/diag_spam_preview_test.go": "只读真实库探针：无写语句（仅一条 SELECT）；需 POCKET_DIAG_SPAM_PREVIEW=1 + POCKET_DIAG_PG。隔离靠 SQL 里显式限定 `FROM opencode_pocket.emails`（:77）而非 search_path，故不依赖 DSN 的 search_path。弱点：schema 名硬编码，换库需改代码",
+
+	// internal/email/pipeline_lock_test.go（2026-10-03 新增）：
+	//   · 它**确实**隔离，只是隔离逻辑在被复用的助手里，本文件因此没有
+	//     isolatedSchemaRe 要找的 `"*_test_` 字面量（schema 名由 helper 现场生成）。
+	//   · 证据：全部用例走 store_workspace_test.go 的 newWorkspaceTestStore，
+	//     该助手 CREATE SCHEMA "email_ws_test_<random>" 并把
+	//     RuntimeParams["search_path"] 钉成 "<schema>,public"（store_workspace_test.go:50-87），
+	//     退出时 DROP SCHEMA ... CASCADE。
+	//   · 另有一条自检用例 TestDailyPipelineLock_TestHarnessIsActuallyIsolated
+	//     断言 current_schema() 既非 public 也非空——helper 若退化成不隔离，这条会红。
+	//   · 只读吗？不是：NewStore 会 migrate 建表。但那 9 张表全部建在自建 schema 里。
+	"internal/email/pipeline_lock_test.go": "跨进程 advisory lock 的集成测试：确实隔离，全部用例走 newWorkspaceTestStore（该助手建 `email_ws_test_<random>` schema 并把 search_path 钉上去，store_workspace_test.go:50-87）。本文件无 `\"*_test_\"` 字面量是因为 schema 名由 helper 现场生成；自检用例 TestDailyPipelineLock_TestHarnessIsActuallyIsolated 断言 current_schema() 非 public",
+
+	// internal/scheduledtask/diag_claimdue_race_test.go（2026-10-03 新增）：
+	//   · 确实隔离：自建 `claim_race_diag_<unixnano>` schema，两个 pool 的
+	//     RuntimeParams["search_path"] 都钉成它，cleanup 里 DROP ... CASCADE。
+	//   · 判红原因只是 schema 名不含 `_test_` 子串（守卫的 isolatedSchemaRe
+	//     是 `"(\w*_test_)`），隔离本身是到位的。
+	//   · 它要写库（INSERT 一个到期任务），所以同时登记进 pgAllowlistedWrites。
+	"internal/scheduledtask/diag_claimdue_race_test.go": "并发 ClaimDue 诊断：自建 `claim_race_diag_<unixnano>` schema，两个 pool 的 search_path 都钉成它，cleanup DROP CASCADE。判红仅因 schema 名不含 `_test_` 子串",
+
 	// internal/email/diag_credential_health_test.go（2026-10-02 新增，被本护栏判红后逐项核对）：
 	//   · 只用 pool.Query，**一次 Exec 都没有**（全文件扫
 	//     INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT：0 命中），
@@ -391,6 +422,13 @@ var sqlWriteRe = regexp.MustCompile(`(?i)\b(INSERT\s+INTO|UPDATE\s+\w+|DELETE\s+
 // 「不豁免隔离」的同时被要求把写语句列进来。旧设计里「在 allowlist 里」
 // 一次性放行了所有检查，那正是盲区的来源。
 var pgAllowlistedWrites = map[string]string{
+	// internal/scheduledtask/diag_claimdue_race_test.go（2026-10-03 新增）：
+	// 写的是自己刚 CREATE 的 `claim_race_diag_<unixnano>` schema 里那一条
+	// scheduled_tasks 行（为了让它此刻到期），两个 pool 的 search_path 都钉在
+	// 该 schema 上；cleanup 里 DROP SCHEMA ... CASCADE。门控
+	// POCKET_DIAG_CLAIM_RACE=1，不设则 t.Skip。
+	"internal/scheduledtask/diag_claimdue_race_test.go": "自建隔离 schema（search_path 钉定），只 INSERT 一条 scheduled_tasks 制造到期竞态；门控 POCKET_DIAG_CLAIM_RACE=1；cleanup DROP 自己的 schema CASCADE",
+
 	// 需 build tag greenmail + PG_DSN，`go test ./...` 永不编译；
 	// 写的对象是自己刚 CREATE 的 schema，且只删自己 acctID 名下的行。
 	"internal/email/fetcher_greenmail_test.go": "build tag greenmail（go test ./... 不编译）；CREATE SCHEMA 的是自己刚建的隔离 schema，DELETE 只删自己 acctID 名下的行",

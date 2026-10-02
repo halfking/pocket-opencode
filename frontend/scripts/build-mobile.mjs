@@ -158,6 +158,30 @@ if (build.status !== 0) {
   process.exit(build.status ?? 1);
 }
 
+// 产物级门禁：确认「读原生构建身份」的修复**真的进了 dist/**。
+//
+// 为什么要这一层：判据与 vue-tsc 都跑在**源码**上，两者都绿并不代表修复进了
+// APK —— vite 会 tree-shake，改名/拆包也能让代码「还在仓库里、但不在产物里」。
+// 这正是 §4.74.2 的形态：仓库里是对的、设备上跑的不是，而没有任何一步会红。
+//
+// 放在 cap sync **之前**：门禁失败时 dist 还没被拷进原生工程，不会留下一个
+// 「已经 cap sync 过、但 bundle 是旧的」的平台目录。
+console.log(`[build-mobile] verify build identity in artifact`);
+const identity = spawnSync("node", ["scripts/verify-build-identity.mjs"], {
+  cwd: frontendRoot,
+  env: envVars,
+  stdio: "inherit",
+  shell: true,
+});
+if (identity.status !== 0) {
+  console.error(
+    `[build-mobile] build-identity gate failed (exit=${identity.status}) — ` +
+      `产物里缺少「读原生版本」相关内容，APK 会继续显示硬编码常量（§4.74.2）。` +
+      `已停止，未执行 cap sync。`
+  );
+  process.exit(identity.status ?? 1);
+}
+
 console.log(`[build-mobile] cap sync ${platform}`);
 // BUG-V3 (2026-10-01): this spawnSync must pass shell:true on Windows.
 // `npx` ships as npx.cmd, and spawnSync without a shell cannot execute a

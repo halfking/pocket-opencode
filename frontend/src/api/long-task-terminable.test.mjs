@@ -62,6 +62,13 @@ const LONG_TASK_CALL_SITES = [
     reason: 'moveEmails 已接 signal，但 EmailInboxView 只有 moveBusy 禁用态，无停止入口' },
   { file: 'api/email.ts', path: '/api/emails/ops/sync', state: 'plumbed', surface: '离线操作回放',
     reason: 'syncOps 已接 signal，调用点 email-folders-store 无中止器' },
+  // 2026-10-02 补：syncNow 原本吃 http() 的默认 30s，被放宽到
+  // LONG_REQUEST_TIMEOUT_MS(120s) 之后就被本判据认成「长任务」而必须在册。
+  // 记 plumbed 而不是 by-design：signal 形参与 http 选项都真的接上了，
+  // 只是两个调用点（email-inbox-page 的 syncInboxFromServer、
+  // use-invoice-list 的 syncAndReload）都还没有中止器，界面上按不掉。
+  { file: 'api/email.ts', path: '/api/emails/sync', state: 'plumbed', surface: '手动同步（全部账户）',
+    reason: 'syncNow 已接 signal 形参并传进 http 选项，但两个调用点都还没有 AbortController，界面上无「停止同步」入口' },
   { file: 'api/email.ts', path: '/api/emails/organize', state: 'plumbed', surface: '智能整理通知邮件',
     reason: 'organizeInbox 已接 signal，但 onOrganize 只有 organizing 禁用态，无停止入口' },
   { file: 'api/email.ts', path: '/api/emails/invoices/extract', state: 'wired', surface: '发票整理',

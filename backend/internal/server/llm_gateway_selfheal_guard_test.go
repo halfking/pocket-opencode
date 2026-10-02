@@ -177,6 +177,122 @@ func TestLoadLLMGatewayFromDB_NoRowIsNotAnErrorAndWritesNothing(t *testing.T) {
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 空 key 的 active 行：既不能造出来，造出来了也必须能被补上。
+//
+// 前两支守卫只管"解不开的行"，而 api_key_encrypted='' 是**另一个**状态：
+// decryptString 对空串直接返回 ("", nil)，LoadConfig 既不报错、existing 又非 nil，
+// 于是 EnsureLLMGatewayDefaults 直接 continue。结果是**永久**不可用——
+// 哪怕运维后来把 POCKET_LLM_GATEWAY_API_KEY 配好，也没有任何启动路径会碰它。
+//
+// 2026-10-02 真机实测坐实：21:08 那次启动明确设了
+// POCKET_LLM_GATEWAY_API_KEY，日志对 workspace=default 打的仍是
+// `loaded config from DB`，而 llm_gateway_configs id=1 至今 is_active=true
+// 且 api_key_encrypted=''。该 workspace 的 chat/embed 全程硬 503，App 内无提示。
+//
+// 判别点：HTTP 入口 POST /api/llm-gateway/config 本身就拒绝把首份配置存成空 key
+//（"apiKey required for first configuration"），启动播种不该绕过它造同样的状态。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 首份播种：env 无 key 时不许写出一条永久不可用的 active 行。
+func TestEnsureLLMGatewayDefaults_FirstSeedSkipsWhenEnvEmpty(t *testing.T) {
+	t.Setenv("POCKET_LLM_GATEWAY_API_KEY", "")
+
+	// (nil, nil)：该 workspace 还没有 active 行 —— 走首份播种分支
+	store := &fakeGWStore{loaded: nil}
+	s := &Server{llmGWStore: store}
+
+	s.EnsureLLMGatewayDefaults("ws-first-seed")
+
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("SaveConfig called %d time(s) while seeding a brand-new workspace with no env key; "+
+			"会写出一条 api_key_encrypted='' 的 active 行，而它永远不会被修复（"+
+			"decryptString 对空串不报错 ⇒ 自愈分支不触发；existing != nil ⇒ 直接 continue）",
+			len(store.saveCalls))
+	}
+}
+
+// 首份播种在 env 有 key 时**必须**照常播种，否则新 workspace 会永远配不上网关。
+func TestEnsureLLMGatewayDefaults_FirstSeedStillRunsWhenEnvHasKey(t *testing.T) {
+	t.Setenv("POCKET_LLM_GATEWAY_API_KEY", "sk-first-seed-key")
+
+	store := &fakeGWStore{loaded: nil}
+	s := &Server{llmGWStore: store}
+
+	s.EnsureLLMGatewayDefaults("ws-first-seed")
+
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("SaveConfig called %d time(s), want 1 (a brand-new workspace must still be seeded)", len(store.saveCalls))
+	}
+	if got := store.saveCalls[0].APIKey; got != "sk-first-seed-key" {
+		t.Errorf("seeded APIKey = %q, want the env value", got)
+	}
+}
+
+// 修复路径：已有 active 行但 key 是空的，且 env 现在有 key → 只补 key。
+func TestEnsureLLMGatewayDefaults_BackfillsEmptyKeyFromEnv(t *testing.T) {
+	t.Setenv("POCKET_LLM_GATEWAY_API_KEY", "sk-backfilled-from-env")
+
+	store := &fakeGWStore{loaded: &llmGatewayState{
+		BaseURL:         "https://llm.kxpms.cn/v1",
+		APIKey:          "", // <- 就是这条永久死路
+		Models:          []string{"m-keep-1", "m-keep-2"},
+		PreferredModels: []string{"m-keep-2"},
+		Format:          "anthropic-messages",
+	}}
+	s := &Server{llmGWStore: store}
+
+	s.EnsureLLMGatewayDefaults("ws-empty-key")
+
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("SaveConfig called %d time(s), want 1 (an active row with an empty key is otherwise永久不可修复)", len(store.saveCalls))
+	}
+	got := store.saveCalls[0]
+	if got.APIKey != "sk-backfilled-from-env" {
+		t.Errorf("backfilled APIKey = %q, want the env value", got.APIKey)
+	}
+	// 只改 key：用户自己设过的东西一律不许被 def 覆盖
+	if got.BaseURL != "https://llm.kxpms.cn/v1" {
+		t.Errorf("backfill changed BaseURL to %q; 只有 key 该被改", got.BaseURL)
+	}
+	if len(got.Models) != 2 || len(got.PreferredModels) != 1 {
+		t.Errorf("backfill dropped the model lists: models=%v preferred=%v", got.Models, got.PreferredModels)
+	}
+	if got.Format != "anthropic-messages" {
+		t.Errorf("backfill changed Format to %q; 只有 key 该被改", got.Format)
+	}
+}
+
+// 反向：env 也没 key 时不能为了"修"而反复重写同一行（否则每次启动都换一行，
+// 就是本轮查实的那条 churn）。此时应当保持静默跳过。
+func TestEnsureLLMGatewayDefaults_EmptyKeyNotRewrittenWhenEnvAlsoEmpty(t *testing.T) {
+	t.Setenv("POCKET_LLM_GATEWAY_API_KEY", "")
+
+	store := &fakeGWStore{loaded: &llmGatewayState{BaseURL: "https://llm.kxpms.cn/v1", APIKey: ""}}
+	s := &Server{llmGWStore: store}
+
+	s.EnsureLLMGatewayDefaults("ws-empty-both")
+
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("SaveConfig called %d time(s) with nothing to backfill; "+
+			"每次启动换一条新行正是 llm_gateway_configs 无限累积的成因", len(store.saveCalls))
+	}
+}
+
+// 反向：已有可用 key 的行绝不能被这条新分支碰到（幂等性不能被破坏）。
+func TestEnsureLLMGatewayDefaults_BackfillDoesNotTouchHealthyRow(t *testing.T) {
+	t.Setenv("POCKET_LLM_GATEWAY_API_KEY", "sk-env-key")
+
+	store := &fakeGWStore{loaded: &llmGatewayState{BaseURL: "https://llm.kxpms.cn/v1", APIKey: "sk-tenant-real-key"}}
+	s := &Server{llmGWStore: store}
+
+	s.EnsureLLMGatewayDefaults("ws-healthy")
+
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("SaveConfig called %d time(s) for a healthy active row; want 0 (must stay idempotent)", len(store.saveCalls))
+	}
+}
+
 // nilCipher 用来造一个"装着 nil 指针的 interface"：interface 变量本身非 nil，
 // 但任何方法调用都会在 nil receiver 上崩。
 type nilCipher struct{}

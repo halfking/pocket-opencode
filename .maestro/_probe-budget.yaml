@@ -1,0 +1,26 @@
+# _probe-budget.yaml —— 测量这台设备上 Maestro 设备服务器的「命令预算」
+#
+# 目的：把「跑长 flow 必挂」从观察变成数字。
+# 2026-10-03 vivo V2436A 实测：smoke-login（5 条 UI 命令）通过，
+# 而 tasks-crud/notes-crud/flashcards-write 分别在第 6/4/5 条挂掉，
+# 报错都是 DeviceServerDiedException + viewHierarchy 120s DEADLINE_EXCEEDED。
+# 设备端 logcat 显示驱动**没有崩溃**（无 FATAL / 无 ANR / 无 lmkd），
+# 14 次请求全部正常返回，之后才静默 ⇒ 像是每条命令消耗掉一份什么。
+#
+# 探针只做一件事：反复断言一个**永远可见**的元素「AI 工具」，
+# 看能连过多少条。不点任何东西、不导航，隔离掉业务逻辑。
+# 失败时看输出里 COMPLETED 的条数即可。
+appId: com.kaixuan.opencode.pocket
+---
+- assertVisible: "AI 工具"
+- assertVisible: "AI 工具"
+- assertVisible: "AI 工具"
+- assertVisible: "AI 工具"
+- assertVisible: "AI 工具"
+- assertVisible: "AI 工具"
+- assertVisible: "AI 工具"
+- assertVisible: "AI 工具"
+- assertVisible: "AI 工具"
+- assertVisible: "AI 工具"
+- assertVisible: "AI 工具"
+- assertVisible: "AI 工具"
