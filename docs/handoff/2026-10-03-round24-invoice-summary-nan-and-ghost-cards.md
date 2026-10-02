@@ -1058,6 +1058,85 @@ Issuance              name:          0      failed      -> 幽灵
 ⇒ **截图与页面文本只能证明"渲染出了什么"，不能证明"表里有什么"。**
 表里有几行、id 是什么形态、哪些字段为空，只有查表才知道。
 
+---
+
+## §22 查清了 §21.5 的根因：**不是去重失效，是权威合计缺"票级身份"**
+
+§21.5 说「同一 `invoice_no` 出现 2~3 次 ⇒ 采集没按发票号去重」。查完要**修正这个说法**。
+
+### 22.1 去重完全按设计工作
+
+`invoice_store.go:93-110`：
+
+```sql
+INSERT INTO email_invoices (...) VALUES (...)
+ON CONFLICT (email_id) DO UPDATE SET ...
+```
+
+冲突目标是 **`email_id`**，即**每封邮件一行**。`invoice_dedup_test.go:42`
+（`TestUpsertInvoice_SameEmailIsIdempotent`）就是在钉这一条。
+
+设备那 12 行按 `invoice_no` 分组后，**每组的不同 `email_id` 数都等于行数**：
+
+```
+(empty)                  rows=3  distinct_email_id=3
+26332000008261110741     rows=2  distinct_email_id=2
+25332000000123456789     rows=3  distinct_email_id=3
+24317200000907012703     rows=1  distinct_email_id=1
+24317200000907012698     rows=1  distinct_email_id=1
+Issuance                 rows=2  distinct_email_id=2
+```
+
+⇒ **没有一行是同一封邮件建了两次。** 重复的成因是**同一张票出现在不同邮件里**
+（厂商首发一次、提醒一次、更正一次），这是真实世界常态，不是 bug。
+
+### 22.2 真正的问题在**合计那一侧**
+
+`LedgerRows`（飞书台账）与 `InvoiceListStats`（列表统计）都只共用
+`InvoiceCountsTowardTotal`（status ∈ downloaded/filed 且 file_path 非空），
+**两处都不看 `invoice_no`**。于是：
+
+- 同一张票在 3 封邮件里建了 3 行；
+- 若其中 2~3 行都走到 `downloaded` 且有文件；
+- **权威合计就把这张票算 2~3 次。**
+
+设备镜像里 `25332000000123456789` 正好是 **2 downloaded + 1 pending**（3 封邮件）。
+那 2 行若还在服务端，合计会多算 1280——**这不是假设，形状已经摆在那里**。
+
+服务端现状（`logs/zz-invoice-dup-extent.out.txt`）：
+
+```
+rows_total=4  distinct_email_ids=4
+按 invoice_no 分组：每个号各 1 行
+权威口径 counted_rows=1  amount_sum=3500.00
+```
+
+⇒ **当前没有错账**，这是**潜在**风险。服务端那 4 行是干净的，历史重复已被清掉。
+
+### 22.3 它与历史那个 61,500 是同一族，但缺的那一环不同
+
+61,500 那次（`InvoiceListStats` 注释原话）是「**完全没有过滤**，把整张表求和」。
+这次过滤是**对的**，缺的是**票级身份**：合计知道"哪些行算"，不知道"它们是不是同一张票"。
+
+建议（**是行为变更，涉及钱，不擅自动手**）：合计在累加前先按
+`invoice_no`（非空时）去重，同号只取一行；`invoice_no` 为空时才退回逐行计。
+落点是两处共用的那个口径，或在 `InvoiceCountsTowardTotal` 之上加一层
+「票级唯一」的过滤——但**前端 `sumByCurrency` 必须同步改**，
+否则同一张票在列表页会被算一次、在台账里又算一次。
+
+### 22.4 需要你拍板的一个口径问题
+
+**同号不同金额**时以哪一行为准？设备上 `25332000000123456789` 的三行金额都是 1280，
+但现实里"更正邮件"可能改金额。选项：
+
+1. 取 `updated_at` 最新的那行（更正邮件赢）；
+2. 取 `created_at` 最早的那行（首发邮件赢，语义上更接近"这张票本来是多少"）；
+3. 视为两张票分别计入（保持现状）。
+
+**这三条的账都不一样**，且都会改变已核对的数，所以必须你定。
+在此之前 §22.2 的结论应读作「有据可查的潜在风险」，不是「已经算错了」。
+
+
 
 
 
