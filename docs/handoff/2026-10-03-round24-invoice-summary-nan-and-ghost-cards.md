@@ -424,3 +424,70 @@ stale_1_to_7_newest_mail= 10-02 10:00
 结论：**175 是真的，2021 是我判据的产物。** 数据本身干净（date 无 0、无未来日期，
 发件人是真人邮件而非夹具）。这与本轮已经吃过三次的坑同源：
 统计数量前先看**被计数的到底有哪几行**。
+
+---
+
+## §11 ⚠️ 更正：08:00 会推的是 **34** 条，不是 32；且定时路径不做自动分类
+
+### 11.1 先更正我自己
+
+我在前几段报告里说「08:00 会一次性推 32 条积压提醒 → 总数 56 > 50」。**32 是 round19
+（10-02 20:42）的数，已经过期。** 用生产判据的只读诊断
+（`TestDiagReminderBacklog`，存档 `logs/zz-reminder-backlog-20261003.txt`）重跑：
+
+```
+扫描行数          = 175
+importance 为空   = 0
+窗口外永不提醒的  = 0
+本轮将推送 RemindersPending = 34
+```
+
+high 从 round19 的 56 涨到 58（新邮件到达并被分类），所以待推从 32 变成 **34**。
+⇒ 08:00 之后通知总数应是 **24 + 34 = 58**，仍然 > 50，需求 4 的真机验收条件依然会满足。
+
+### 11.2 定时路径不做自动分类 —— 这让预测变稳，而不是变松
+
+今天的启动日志：
+
+```
+POCKET_KXMEMORY_BASE_URL not set; AI classification/SSOT disabled
+Email scheduler started (fetch_enabled=true, kxmemory=false, ...)
+[email/scheduler] daily pipeline runner injected (hour=8)
+[email/scheduler] pipeline scheduled at 2026-10-03T08:00:00+08:00
+```
+
+昨天 23:36 的旧实例把后果写得更直白：「同步后**不执行**自动分类……手动
+`/api/emails/classify` 有 LLM 网关兜底，定时路径没有。后果：新到邮件的 importance 恒为空」。
+
+⇒ 08:00 之前新到的邮件**不会被分类、也就不会被提醒**，34 就是全部。
+（当前 `importance 为空 = 0` 是并发会话那三次手工 `/api/emails/classify` 的结果，
+日志里能看到它们大量撞 llm-gateway `429 rate_limit_exceeded`。**需求 4 的前提是由
+我不控制的活动满足的**——这也是 §11.4 那个归因风险的一部分。）
+
+### 11.3 对「32 条要不要限流」这个待拍板项有用的分桶
+
+诊断本身就印了分桶（它写着「限流该不该分层，看这行」）：
+
+| 维度 | 分布 |
+|---|---|
+| category | notification 16 / work 14 / bill 4 |
+| 账户 | kimmy.huang@163.com 15 / 56551681@qq.com 11 / feikemanager@163.com 8 |
+| 账龄 | 0-2d 17 / 3-7d 8 / 8-30d 9 |
+
+逐条清单里，**14 条 `work` 全是我自己仓库的 CI 失败通知**
+（`[halfking/ai-native-gateway-core] Run failed: …`、`Trendaradar`、`ci - main`），
+真正的「账单类」只有 4 条（含 ICBC 对账单、可用额度低于预警值）。
+⇒ 若要限流，**按 category 分层**与**全局一刀切**的取舍差别很大：前者保住 4 条账单、
+压掉 14 条 CI 噪声；后者会把账单一起压掉。这条决策现在有了可依据的分桶。
+
+### 11.4 归因风险（明早验收时必须注意）
+
+今晚 00:16–01:07 之间，`POST /api/emails/sync` 被触发 **12 次**（00:47 那 3 次间隔仅 3–12 秒），
+`POST /api/emails/classify` 3 次，另有大量 `/api/llm/chat`。轮询器要求 900 秒静默，
+所以这些是**手工/API 驱动**的，来自并发会话，不是调度器。
+
+⇒ **明早若通知数或发票行发生变化，不能只看 DB 差值就归因给 08:00 那次流水线**；
+必须同时看日志里那一轮的报告行（`RemindersPending` / `RemindersSent` / harvest 结果）。
+另外 00:25:53 那次流水线只打印了两行配置、**没有打印报告行**，
+但它确实写出了 `invoices-summary-20261003-002553.csv/.md`（845/635 字节，比昨天的 426/389 大），
+说明它走到了汇总文档这一步。报告行缺失这件事本轮没有查清，**明早别把它当成常态**。
