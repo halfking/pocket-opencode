@@ -948,7 +948,13 @@ func (f *Fetcher) syncPOP3Fallback(ctx context.Context, acc *Account, cred strin
 				em.FromAddress = addr
 			}
 			em.Subject = parsed.Subject
-			em.Snippet = truncateStr(strings.TrimSpace(parsed.TextBody), 500)
+			// 摘要必须走 SnippetFromParsed，不能直接 truncateStr(parsed.TextBody)：
+			// TextBody 是**所有 text/plain 部件的聚合**（mime.go 里 `out.TextBody += body`），
+			// 对 multipart/mixed 里嵌一整封内层报文原文的形态（企业网关转发常见），
+			// 被聚合进来的就是那封内层报文——boundary 行和 Content-* 头一起进摘要。
+			// 2026-10-03 真机（Redmi 2411DRN47C）实测邮件列表 5/5 封的 snippet
+			// 直接显示 `------=_Part_8505717_… Content-Type: text/html; charset=utf-8`。
+			em.Snippet = SnippetFromParsed(parsed, 500)
 			if em.Snippet == "" {
 				// 2026-10-01 真机审计：原来直接塞 HTMLBody，字面的 <br/> 与
 				// <a href=…> 会原样透到通知列表。这里走 DeriveSnippet 剥标签。
