@@ -15,7 +15,7 @@
 > v1 说是「MIUI 装不上驱动」——错，理由见 §1；
 > v2 说是「真机跑通了前 5 步，卡在解锁页」——**也错**，理由见 §1。
 
-## 1. 真正的阻塞：Maestro 从未与设备建立会话
+## 1. 阻塞的两个层（已逐层定位）
 
 唯一那次看起来"跑了几步"的运行是 `~/.maestro/tests/2026-10-02_103958/`。
 初读它会以为流跑到了第 5 步（`tapOn 学习|Study`），但逐行读日志后结论相反：
@@ -39,7 +39,11 @@
 - `Tap on 学习|Study FAILED` 的直接原因是**没拿到设备视图**，
   而不是因为 App 停在解锁页。
 
-⇒ **那次运行的"5 步"是空转，不构成任何执行证据。**
+⇒ **该次运行确实没建立会话。
+
+> 后续补充（2026-10-02 11:34）：在驱动**成功安装**的那个窗口里，
+> 流真正连上了设备并执行了多步（本文档 §5 记录了新的失败点）。
+> 于是知道：驱动能装上时流就能跑，被拒时就完全不能跑。**
 （`MAESTRO_DEVICE_UDID=192.168.31.19:5555` 只是它启动时读到的环境变量，
 不代表会话建立成功。manifest 里的 `"source": "emulator"` 也只是
 logcat 采集来源标注 —— 两个字段都不能当作"它在设备上跑过"的证据。）
@@ -118,7 +122,67 @@ LLM 网关未配置 API Key（设置 → LLM 网关）；外部语音转写服�
 证据：`logs/real-device-stt-20261002-104353/`
 （`summary.md` + 实拍 `final-after-stop.png`，720×1640 / 66,683 bytes）。
 
-## 5. 接手者该做什么
+## 5. 为什么阻塞必须人工解除：完整机制（2026-10-02 11:50 实测）
+
+这段是本文档最值钱的部分。之前我只知道 `adb install` 失败，不知道它被什么拦截；
+现在已定位到具体归因：
+
+```
+dumpsys user | grep restrictions
+  Restrictions:            none
+  Effective restrictions:  none          <-- 系统层没有任何限制
+
+pm list packages -f | grep AdbInstall
+  com.miui.securitycenter/com.miui.permcenter.install.AdbInstallActivity
+  Action: "com.miui.securitycenter.intent.action.INSTALL_PACKAGE"   <-- 它把 ADB 安装劫持到了自己的确认页
+```
+
+即：限制**不在 AOSP 的 user_restriction 里**（所以改 `settings put` 的一系列开关都无效），
+而在 MIUI 自己的 SecurityCenter 里。它对每次 ADB 安装弹出确认页，
+页面上的那个开关就是「开发者选项 -> USB 安装」。
+
+### 已实测排除的所有自动路径
+
+| 尝试 | 结果 |
+|---|---|
+| `adb install -r -g` | 失败 INSTALL_FAILED_USER_RESTRICTED |
+| `pm install -r -g /data/local/tmp/…`（绕过 adb install） | 同样失败 —— 接口不是关键 |
+| 弹窗自动点「继续安装」 | 连点 2 次仍被系统撤销 |
+| `settings put global verifier_verify_adb_installs / adb_install_need_confirm / install_non_market_apps` | 实测本已是宽松值（0/0/1），改不动 |
+| `adb root` | `adbd cannot run as root in production builds` |
+| `cmd deviceidle whitelist +<pkg>` | 能执行，但与安装限制无关 |
+
+此外：系统层不保存任何 user_restriction，所以**没有 adb 可写的同等开关**。
+
+### 一个容易误判的现象
+
+一次安装成功过（`Success`），随后十分钟就又被拒。原因：
+
+**Maestro 每次开会话都会先 `uninstall` 再 `install` 驱动**，且把安装直接写在
+`AndroidDriver.installMaestroDriverApp` 的调用链上（完整堆栈：
+`MaestroSessionManager.createAndroid -> AndroidDriver.open -> installMaestroApks -> installMaestroDriverApp -> install`。
+
+所以：一次成功安装 **不代表之后的每一次运行都能成功** —— 开关必须在每次前都是开的。
+
+### 一另一个独立于安装的阻塞（已编入流）
+
+安装成功后又连跑三次，均失败在 `tapOn "学习|Study"`，而 Maestro 抓到的
+层级里是**桌面**（含 `launcher`/`WeChat`/`Calendar`）。根因是 **Maestro 抢跑**：
+
+```
+11:38:42.123  Launching app com.kaixuan.opencode.pocket.sttdev
+11:38:42.123  Stopping … app during launch
+11:38:42.614  Launch app COMPLETED      <-- 只用了 0.5s
+```
+
+而 App 实测需 1.6s 才 `Displayed`（`am start -W`: `+1s624ms`）。它紧接着去抓 hierarchy，
+抓到的就是还没切换完的桌面。已在流里补了 `waitForAnimationToEnd` +
+`extendedWaitUntil` 等 App 就绪，**但尚未在成功安装的窗口内验证过**。
+
+这个失败很容易被误读成「选择器写错」或「设备语言不对」——
+它实际上是时序问题。
+
+## 6. 接手者该做什么
 
 1. 手机上打开「开发者选项 → USB 安装」；
 2. 跑一次上面的 `maestro.bat test ...`；
@@ -127,7 +191,7 @@ LLM 网关未配置 API Key（设置 → LLM 网关）；外部语音转写服�
    NS 代理 App 而非安装框）。
 4. 跑通后请回填本文件 §5。
 
-## 6. 回填区（待填）
+## 7. 回填区（待填）
 
 - [ ] Maestro 在真机执行结果：PASS / FAIL
 - [ ] 若 FAIL，首个失败步骤与其输出：

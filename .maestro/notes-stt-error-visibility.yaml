@@ -54,31 +54,23 @@
 # appId 用 sttdev 并存包：调试包带独立 applicationIdSuffix，与正式包数据隔离，
 # 不动用户正式 App 的后端设置（那会清掉登录态）。
 #
-# ⚠️ 这条流在 MIUI/HyperOS 真机上**从未真正跑通**，别再重复踩（2026-10-02 实测）：
-#   唯一那次看起来跑了几步的运行是 ~/.maestro/tests/2026-10-02_103958/，
-#   但逐行读它的 maestro.log 后结论相反：
-#     - 日志里**没有任何"已连接设备"的记录**；
-#     - `Launch app` 之后立刻陷入 `Failed to record heartbeat`
-#       （java.io.IOException 另一个程序已锁定文件）——那是**本地文件锁**问题；
-#     - `screen-hierarchy/` 只抓到 1 帧，说明它对设备视图几乎没有采样；
-#     - `Tap on "学习|Study" FAILED` 的直接原因是**没拿到设备视图**。
-#   ⇒ 那次运行的"5 步"是空转，不构成任何执行证据。
-#   `MAESTRO_DEVICE_UDID=192.168.31.19:5555` 只是启动时读到的环境变量，
-#   manifest 里的 `"source": "emulator"` 也只是 logcat 采集来源标注 ——
-#   **两个字段都不能当作"它在设备上跑过"的证据。**
+# ⚠️ 这条流在 MIUI/HyperOS 真机上**需要驱动能装上才能跑**（2026-10-02 实测）：
+#   Maestro 每次开会话都会先 uninstall 再 install 驱动（调用链：
+#   AndroidDriver.open -> installMaestroApks -> installMaestroDriverApp -> install），
+#   而 MIUI 把 ADB 安装劫持到 com.miui.securitycenter 的确认页，
+#   对应开发者选项里的「USB 安装」开关。
+#   实测：adb install 与 pm install 均报 INSTALL_FAILED_USER_RESTRICTED；
+#   系统层 user_restriction 是 none（所以改 settings 的一系列开关都无效）；
+#   弹窗自动点「继续安装」连点 2 次被系统撤销；无 root。
+#   => 要跑这条流，先在手机「开发者选项 -> USB 安装」打开开关，
+#      并保持它为开的。一次成功安装 **不等于之后每次都能跑**。
 #
-#   根因是 Maestro 从未与设备建立会话（本机 `maestro.bat --device <serial>`
-#   常直接报 "not connected"），而建立会话需要设备侧驱动 App，而当下装不上：
-#     adb install maestro-app.apk
-#     -> Failure [INSTALL_FAILED_USER_RESTRICTED: Install canceled by user]
-#   MIUI 默认关闭「开发者选项 -> USB 安装」。弹窗点「继续安装」无效（连点 2 次
-#   被系统撤销），设备无 root（adbd cannot run as root in production builds），
-#   相关 settings（verifier_verify_adb_installs / adb_install_need_confirm /
-#   install_non_market_apps）实测全已是宽松值，改不动。
-#   ⇒ 要在 MIUI 上跑，先去手机「开发者选项」里打开「USB 安装」。
+#   另：驱动装上后可能失败在后续步骤。已实测的时序问题（已在本流下方补了等待）：
+#     11:38:42.123 Launching app / Stopping app during launch
+#     11:38:42.614 Launch app COMPLETED     <- 只用 0.5s，而 App 实测需 1.6s 才 Displayed
+#   它抢跑后去抓 hierarchy，抓到的是还没切完的桌面 -> `tapOn "学习|Study"` 报 Element not found。
+#   这很容易被误读成「选择器写错」或「设备语言不对」。
 #
-#   ⚠️ 另注意：本流的 `inputText` 在这台设备上**很可能吞字符**（见下面解锁段的
-#   实测记录）。若解锁后仍停在原页，先怀疑口令没输进去，而不是怀疑路由。
 #   详见 docs/handoff/2026-10-02-stt-maestro-flow-not-closed-on-device.md。
 #
 #   本次真机验收走的是**不依赖 Maestro 驱动**的等价路径，结论同样有效：
@@ -95,6 +87,18 @@ appId: com.kaixuan.opencode.pocket.sttdev
 ---
 - launchApp:
     clearState: false
+
+# 为什么要在这里等：2026-10-02 真机实测发现 Maestro 的 `Launch app`
+#   仅用 0.5s 就报 COMPLETED（日志 11:38:42.123 -> 11:38:42.614），
+#   而 App 实测需 1.6s 才 Displayed（am start -W: +1s624ms）。
+#   它抢跑后立即去抓 hierarchy，抓到的是还没切换完的桌面，
+#   因此 `tapOn "学习|Study"` 报 Element not found。
+#   这个失败很容易被误读成「选择器写错」或「设备语言不对」。
+- waitForAnimationToEnd:
+    timeout: 20000
+- extendedWaitUntil:
+    visible: "还没有笔记|AI 工具|解锁本地数据"
+    timeout: 30000
 
 # ---- 冷启动可能停在主密码解锁页，先处理掉 ----
 # 2026-10-02 真机（Redmi / Android 14 / WebView 126）实测补充：
