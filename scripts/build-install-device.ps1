@@ -58,7 +58,7 @@ if (-not (Test-Path (Join-Path $repo 'frontend\node_modules'))) {
 
 # Both must be exported in the SAME shell invocation or the build-mobile guard
 # reads a different effective value than the one that gets bundled.
-$env:CAP_ANDROID_SCHEME = 'https'
+$env:CAP_ANDROID_SCHEME = 'http'
 $env:VITE_API_BASE      = $apiBase
 if ($AllowPlaintextApi) {
   $env:POCKET_ALLOW_PLAINTEXT_API = '1'
@@ -68,7 +68,20 @@ if ($AllowPlaintextApi) {
   Remove-Item Env:\POCKET_ALLOW_PLAINTEXT_API -ErrorAction SilentlyContinue
   Write-Host "[inject] plaintext guard stays ON (pass -AllowPlaintextApi for a LAN debug build)" -ForegroundColor DarkGray
 }
-Write-Host "[inject] VITE_API_BASE=$apiBase  CAP_ANDROID_SCHEME=https"
+Write-Host "[inject] VITE_API_BASE=$apiBase  CAP_ANDROID_SCHEME=http"
+
+# CAP_ANDROID_SCHEME is http, NOT https, and that is load-bearing. The backend
+# speaks plain http, so an https://localhost page origin makes every API call
+# mixed content and the WebView blocks it. Measured on the emulator with an
+# https build, 2026-10-02:
+#   Mixed Content: ... requested an insecure resource
+#     'http://192.168.31.20:18099/api/app/check-update'
+#     'http://192.168.31.20:18099/api/tasks'
+#     insecure WebSocket endpoint 'ws://192.168.31.20:18099/ws?token=...'
+# i.e. the app would have launched as an empty shell. The trade-off of an http
+# origin is that localStorage is partitioned under http://localhost instead of
+# https://localhost, so a device switching schemes has to log in again once.
+# To use https the backend needs a real TLS terminator; there is none here.
 
 Write-Host "=== [1/5] build-mobile (vite) ===" -ForegroundColor Cyan
 # build-mobile.mjs refuses to build android/dev unless the profile file exists,
@@ -85,21 +98,35 @@ if (-not (Test-Path $envFile)) {
 Push-Location (Join-Path $repo 'frontend')
 node scripts/build-mobile.mjs android dev
 $buildExit = $LASTEXITCODE
-if ($buildExit -ne 0) {
-  Write-Host "[retry] first attempt failed (build-mobile's internal `cap sync` is known to exit null intermittently); retrying" -ForegroundColor Yellow
-  node scripts/build-mobile.mjs android dev
-  $buildExit = $LASTEXITCODE
-}
 Pop-Location
-if ($buildExit -ne 0) { Write-Host "BUILD_FAILED exit=$buildExit" -ForegroundColor Red; exit 1 }
-# build-mobile already greps dist/assets for the base and fails loudly if absent.
+# build-mobile runs `cap sync android` itself after the vite build, and that
+# step exits null here EVERY time (2026-10-02, twice in a row). The same command
+# run directly succeeds (exit=0, 1.42s); the log shows @capacitor/* resolving
+# from a DIFFERENT worktree's node_modules, so npx inside that child process
+# picks the wrong CLI. Do not treat it as fatal: the vite build and its own
+# dist/assets sanity check are what matter, and step 4 proves the result from
+# the APK itself. Our own cap sync below is the one that has to work.
+$distAssets = Join-Path $repo 'frontend\dist\assets'
+$distHasBase = $false
+if (Test-Path $distAssets) {
+  $distHasBase = @(Get-ChildItem $distAssets -Filter *.js |
+    Select-String -Pattern ([regex]::Escape($apiBase)) -List).Count -gt 0
+}
+if ($buildExit -ne 0) {
+  if ($distHasBase) {
+    Write-Host "[WARN] build-mobile exited $buildExit (its internal cap sync), but dist/assets DOES contain $apiBase. Continuing." -ForegroundColor Yellow
+  } else {
+    Write-Host "BUILD_FAILED exit=$buildExit and $apiBase is NOT in dist/assets." -ForegroundColor Red
+    exit 1
+  }
+}
 
-Write-Host "=== [2/5] cap sync (idempotent; tolerate the known exit=null) ===" -ForegroundColor Cyan
+Write-Host "=== [2/5] cap sync (this is the one that must succeed) ===" -ForegroundColor Cyan
 Push-Location (Join-Path $repo 'frontend')
 cmd /c "npx cap sync android"
 $syncExit = $LASTEXITCODE
 Pop-Location
-if ($syncExit -ne 0) { Write-Host "[WARN] cap sync exit=$syncExit; continuing. Step 4 proves the base from the APK itself." -ForegroundColor Yellow }
+if ($syncExit -ne 0) { Write-Host "[FAIL] cap sync exit=$syncExit" -ForegroundColor Red; exit 1 }
 
 # cap sync silently exits null sometimes; read the file back instead of trusting it.
 $cfg = Join-Path $repo 'frontend\android\app\src\main\assets\capacitor.config.json'
