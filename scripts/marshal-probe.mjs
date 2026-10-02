@@ -147,7 +147,7 @@ const rows = (label, r, perMailUnit) => {
 };
 
 console.log(`
-[marshal] ${COUNT} 封（对齐生产 opencode_pocket.emails 实测行数）/ ${ROUNDS} 轮取最小值
+[marshal] ${COUNT} 封（对齐生产实测行数）/ ${ROUNDS} 轮取最小值
          输入 ${(inputBytes / 1024).toFixed(1)} KB / wasm ${(wasmBytes / 1048576).toFixed(2)} MB
          native 计算基线 ${ms(nativeRun.elapsed_ns)} ms（低于计时分辨率，**不能用来做减法**）
 

@@ -23,6 +23,10 @@ const PORT = process.env.POCKET_CDP_PORT || '9263';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: t, maxBuffer: 33554432 });
 const PSQL = process.env.POCKET_PSQL || 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe';
+// 同 verify-finance-writepath.mjs：断言要直接查库，schema 必须跟被测后端一致。
+// 写死 opencode_pocket 会让本脚本只能对着共享库跑，失败时 SEED 就留在别人的库里。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
 const psql = (sql) => execFileSync(PSQL, ['-h','127.0.0.1','-p','5432','-U','postgres','-d','postgres','-t','-A','-c',sql], { encoding: 'utf8' }).trim();
 
 function api(path, { token, method='GET', body } = {}) {
@@ -97,7 +101,7 @@ process.on('uncaughtException',async e=>{ console.error('[未捕获异常]',e); 
 console.log('SEED =', NOTE, 'id=', seedId, 'status=', seed.status);
 
 // ---- 4. PG 看 SEED 的 owner/workspace ----
-const pgRow = psql(`select id||' | owner='||coalesce(owner_id,'NULL')||' | ws='||coalesce(workspace_id,'NULL') from opencode_pocket.finance_transactions where note='${NOTE}';`);
+const pgRow = psql(`select id||' | owner='||coalesce(owner_id,'NULL')||' | ws='||coalesce(workspace_id,'NULL') from ${SCHEMA}.finance_transactions where note='${NOTE}';`);
 console.log('PG 里 SEED =', pgRow || '(没找到!)');
 
 // ---- 5. App 上下文用自己的 token 调 list ----

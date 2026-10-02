@@ -46,6 +46,10 @@ const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: 
 // ---------- psql 解析（logs/ 是 gitignored，worktree 里没有） ----------
 function resolvePsql() {
   for (const c of [process.env.POCKET_PSQL, 'logs/pg/dist2/pgsql/bin/psql.exe', 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'].filter(Boolean)) {
+// PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
+// 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
     try { execFileSync(c, ['--version'], { stdio: 'ignore' }); return c } catch { /* next */ }
   }
   console.error('找不到 psql.exe，请设置 POCKET_PSQL')
@@ -111,7 +115,7 @@ check('API 播种 publish', publish.status >= 200 && publish.status < 300, `stat
 // ---------- 先核对 workspace：两边不在同一个数据孤岛里，后面才有意义 ----------
 const apiWs = (JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString()).workspace_id) || '(无)'
 
-const before = sql("select count(*) from opencode_pocket.marketplace_installations;").n
+const before = sql(`select count(*) from ${SCHEMA}.marketplace_installations;`).n
 console.log(`播种前 installations 行数 = ${before}（package=${PKG_ID}）`)
 
 // ---------- 连 CDP ----------
@@ -301,12 +305,12 @@ await ev(`(function(){
 })()`)
 await sleep(3500)
 
-const after = sql("select count(*) from opencode_pocket.marketplace_installations;").n
+const after = sql(`select count(*) from ${SCHEMA}.marketplace_installations;`).n
 check('UI 点击后 PG 落库（不信 DOM，不信接口返回）', after === before + 1, `安装前=${before} 安装后=${after}`)
 
 // 按 **name** 关联而不是 package_id —— 后端会自行推导 package_id（见上面的说明），
 // 用我传的 PKG_ID 去 join 永远匹配不到，会得出假的 0。
-const ours = sql(`select count(*) from opencode_pocket.marketplace_installations i join opencode_pocket.marketplace_releases r on r.release_id=i.release_id join opencode_pocket.marketplace_versions v on v.version_id=r.version_id where v.package_id like '%${STAMP}%';`).n
+const ours = sql(`select count(*) from ${SCHEMA}.marketplace_installations i join ${SCHEMA}.marketplace_releases r on r.release_id=i.release_id join ${SCHEMA}.marketplace_versions v on v.version_id=r.version_id where v.package_id like '%${STAMP}%';`).n
 check('落库的是刚播种的那个包（关联核对）', ours === 1, `命中=${ours}`)
 
 // ---------- 对照组：再点一次，不应新增 ----------
@@ -330,7 +334,7 @@ await ev(`(function(){
   return 'NO_CONFIRM_BTN';
 })()`)
 await sleep(3000)
-const after2 = sql("select count(*) from opencode_pocket.marketplace_installations;").n
+const after2 = sql(`select count(*) from ${SCHEMA}.marketplace_installations;`).n
 check('对照组：重复安装不新增行（唯一索引挡住了）', after2 === after, `再点后=${after2}`)
 
 const errs = errors.filter((e) => e && !/favicon/i.test(e))

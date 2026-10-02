@@ -12,6 +12,10 @@ const PKG = 'com.kaixuan.opencode.pocket'
 const PORT = process.env.POCKET_CDP_PORT || '9355'
 const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'
 const PSQL = process.env.POCKET_PSQL || 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'
+// PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
+// 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
 // psql 兜底串必须是纯 ASCII——中文经 ANSI 码页会报 invalid byte sequence
@@ -72,11 +76,11 @@ const SUB = 'SUB-' + TITLE
 const CMT = 'CMT-' + TITLE
 console.log('task title =', TITLE)
 
-const pgTaskId = () => psql(`select id from opencode_pocket.tasks where title = '${TITLE}' limit 1`)
-const pgSubCount = (tid) => psql(`select count(*) from opencode_pocket.tasks where title = '${SUB}' and parent_id = '${tid}'`)
+const pgTaskId = () => psql(`select id from ${SCHEMA}.tasks where title = '${TITLE}' limit 1`)
+const pgSubCount = (tid) => psql(`select count(*) from ${SCHEMA}.tasks where title = '${SUB}' and parent_id = '${tid}'`)
 // 评论正文在 work_item_events.payload (jsonb) 里，没有独立 comment 列
-const pgEventCount = (tid) => psql(`select count(*) from opencode_pocket.work_item_events where task_id = '${tid}' and payload::text like '%${CMT}%'`)
-const pgStatus = (tid) => psql(`select status from opencode_pocket.tasks where id = '${tid}'`)
+const pgEventCount = (tid) => psql(`select count(*) from ${SCHEMA}.work_item_events where task_id = '${tid}' and payload::text like '%${CMT}%'`)
+const pgStatus = (tid) => psql(`select status from ${SCHEMA}.tasks where id = '${tid}'`)
 
 await ensureUnlocked()
 await goto('#/ai')
@@ -162,7 +166,7 @@ console.log('点「删除」= ', del)
 await sleep(1500)
 await ev(`(function(){var bs=Array.prototype.slice.call(document.querySelectorAll('button'));for(var i=0;i<bs.length;i++){var t=(bs[i].textContent||'').trim();if(t==='删除'||t==='确认删除'||/确定删除/.test(t)){bs[i].click();return 1}}return 0})()`)
 await sleep(3000)
-const pgGone = await psql(`select count(*) from opencode_pocket.tasks where id = '${tid}'`)
+const pgGone = await psql(`select count(*) from ${SCHEMA}.tasks where id = '${tid}'`)
 check('删除后 PG 无该行', String(pgGone) === '0', `count=${pgGone}`)
 await goto('#/ai')
 const stillThere = await ev(`(function(){var cs=document.querySelectorAll('.task-card');for(var i=0;i<cs.length;i++){if((cs[i].textContent||'').indexOf(${JSON.stringify(TITLE)})>=0)return true}return false})()`)

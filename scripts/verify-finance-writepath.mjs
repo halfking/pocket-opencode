@@ -46,6 +46,12 @@ const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555';
 const PKG = 'com.kaixuan.opencode.pocket';
 const PORT = process.env.POCKET_CDP_PORT || '9262';
 const MASTER = process.env.POCKET_MASTER || '';
+// PG schema：这个脚本的判据靠**直接查库**对照 UI 写入，所以 schema 必须和被测后端一致。
+// 写死 `opencode_pocket` 意味着它只能对着共享库跑 —— 那正是 BUG-V14 里
+// 「失败会把 seed 留在别人的库里」的根源。改成跟随后端配置（config.go 的
+// POCKET_PG_SCHEMA，默认值相同），指向隔离后端时本脚本的断言才成立。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
 
 function resolvePsql() {
   const cands = [process.env.POCKET_PSQL, 'logs/pg/dist2/pgsql/bin/psql.exe', 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'].filter(Boolean);
@@ -58,10 +64,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: t, maxBuffer: 33554432 });
 // 兜底串必须纯 ASCII：中文经系统 ANSI 码页传给 psql 会报 invalid byte sequence
 const psql = (sql) => execFileSync(PSQL, ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-c', sql], { encoding: 'utf8' }).trim();
-const txCount = () => Number(psql('select count(*) from opencode_pocket.finance_transactions;').match(/-?\d+/)?.[0] ?? NaN);
+const txCount = () => Number(psql(`select count(*) from ${SCHEMA}.finance_transactions;`).match(/-?\d+/)?.[0] ?? NaN);
 // 最新一行：id|type|amount|category|source|note
 const newestTx = () => {
-  const row = psql("select id||'|'||type||'|'||amount||'|'||category||'|'||source||'|'||coalesce(note,'') from opencode_pocket.finance_transactions order by created_at desc, id desc limit 1;");
+  const row = psql(`select id||'|'||type||'|'||amount||'|'||category||'|'||source||'|'||coalesce(note,'') from ${SCHEMA}.finance_transactions order by created_at desc, id desc limit 1;`);
   if (!row || row.startsWith('(')) return null;
   const [id, type, amount, category, source, note] = row.split('|');
   return { id, type, amount, category, source, note };
@@ -201,7 +207,7 @@ async function cleanupSeed(reason) {
     console.log(`\n[cleanup:${reason}] 删除 SEED ${seedId} -> ${cl.status}，PG 终值 = ${txCount()}`);
   } catch (e) {
     console.error(`\n[cleanup:${reason}] 删除 SEED ${seedId} 失败：${String(e?.message || e).slice(0, 120)}`);
-    console.error(`   ⚠️ 这一行可能留在共享库里，需要手工清理：DELETE FROM opencode_pocket.<finance 表> WHERE id='${seedId}'`);
+    console.error(`   ⚠️ 这一行可能留在 ${SCHEMA} 里，需要手工清理：DELETE FROM ${SCHEMA}.finance_transactions WHERE id='${seedId}'`);
   }
 }
 process.on('unhandledRejection', async (e) => {
