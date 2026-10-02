@@ -31,6 +31,10 @@
  */
 import { execFileSync } from 'node:child_process'
 import { requireDevPass } from './lib/dev-pass.mjs'
+// 设备上装的是**生产 https 包**（实测 origin=https://localhost），
+// 而这一关原本写死开发包 http://localhost ⇒ 在当前设备上会在走到任何
+// 真正要验的判据之前就 exit 5。生产 https 回归用 POCKET_EXPECT_ORIGIN 放宽。
+const EXPECT_ORIGIN = process.env.POCKET_EXPECT_ORIGIN || 'http://localhost';
 const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
 const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 const PKG = 'com.kaixuan.opencode.pocket'
@@ -116,7 +120,7 @@ while (Date.now() < readyDl) {
   await sleep(500)
 }
 console.log('origin =', origin, ' (必须是 http://localhost)')
-if (origin !== 'http://localhost') {
+if (origin !== EXPECT_ORIGIN) {
   console.log('装的是生产(https)包或 WebView 尚未就绪 —— 后续断言无意义，直接中止。')
   process.exit(5)
 }

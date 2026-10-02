@@ -32,7 +32,11 @@ const ORIGIN_EXPECT = process.env.POCKET_EXPECT_ORIGIN || 'https://localhost'
 const HOST_LAN = process.env.POCKET_HOST_LAN || '192.168.31.20'
 const VERIFY_PORT = process.env.POCKET_VERIFY_PORT || '18101'
 const NEW_BASE = `http://${HOST_LAN}:${VERIFY_PORT}`
-const SCRIPTS = (process.env.POCKET_DEVICE_SCRIPTS || 'verify-finance-writepath.mjs').split(',').map((s) => s.trim()).filter(Boolean)
+// POCKET_DEVICE_SCRIPTS 支持带参数，空白分隔即可：
+//   POCKET_DEVICE_SCRIPTS='verify-finance-writepath.mjs --sabotage=hide-cta'
+// 证伪模式（--sabotage）必须能透传，否则「判据会不会红」根本没法验。
+const SCRIPTS = (process.env.POCKET_DEVICE_SCRIPTS || 'verify-finance-writepath.mjs')
+  .split(/\s+/).map((s) => s.trim()).filter(Boolean)
 const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
 const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 
@@ -112,14 +116,26 @@ try {
     }
     console.log(`\n脚本环境：API_PORT=${env.POCKET_API_PORT}  PG_SCHEMA=${env.POCKET_PG_SCHEMA}  ORIGIN=${env.POCKET_EXPECT_ORIGIN}`)
     let anyFailed = false
-    for (const s of SCRIPTS) {
-      console.log(`\n========== ${s} ==========`)
+    // 把 token 流切成「脚本名 + 其后的 -- 参数」若干组
+    const jobs = []
+    {
+      const toks = [...SCRIPTS]
+      while (toks.length) {
+        const name = toks.shift()
+        const args = []
+        while (toks.length && toks[0].startsWith('--')) args.push(toks.shift())
+        jobs.push({ name, args })
+      }
+    }
+    for (const job of jobs) {
+      const s = job.name
+      console.log(`\n========== ${s}${job.args.length ? ' ' + job.args.join(' ') : ''} ==========`)
       // ⚠️ 必须区分「子进程非 0 退出」与「runner 自己抛了」。
       //    execFileSync 在子进程非 0 时会 throw，错误对象带 status/stdout/stderr；
       //    不拆开的话，子脚本的失败会被报成 runner 的失败（BUG-V15 同类）。
       let r, status = 0
       try {
-        r = execFileSync(process.execPath, [`scripts/${s}`], { env, encoding: 'utf8', timeout: 600000, maxBuffer: 32 * 1024 * 1024 })
+        r = execFileSync(process.execPath, ['scripts/' + s, ...job.args], { env, encoding: 'utf8', timeout: 600000, maxBuffer: 32 * 1024 * 1024 })
       } catch (e) {
         if (typeof e.status === 'number') {
           status = e.status

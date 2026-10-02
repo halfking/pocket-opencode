@@ -10388,3 +10388,197 @@ App 其实能看到 SEED —— 读路径 FAIL 是时序/等待问题，不是�
 - 设备侧其余 CDP 族（约 14 个）**尚未**逐个实跑，只是把通道打开了。
 - BUG-AX 设备侧负控、闪卡两入口的**点击**、会议写入设备侧持久化，仍未做。
 - `default` vs `ws_user-admin` 的**时序/等待**问题需要单独复现，不是本节能结的。
+## §4.94 给 26/26 配负控：查出一条**恒假**的证伪判据（BUG-V18），并解掉 5 个脚本的 origin 硬写
+
+§4.93 拿到 `verify-finance-writepath.mjs` 真机 **26/26 通过**。但按一直守着的规矩，
+**绿灯本身不证明判据有区分力** —— 这一节就是去证明它。
+
+### §4.94.1 BUG-V18：证伪判定里有一条**设计上永远绿**的判据
+
+先跑 `--sabotage=hide-cta`（把「记账」按钮从 DOM 摘掉，模拟死 CTA）：
+
+```
+11/26 通过
+FAIL: 对照组 A：空输入时「记账」按钮 disabled
+FAIL: 点「记账」后预览出现（解析请求走通）
+FAIL: **直接查 PG** 确认真的写进去了
+FAIL: POST /api/finance 非 4xx/5xx
+FAIL: 删除按钮点得动 …（共 15 条红）
+证伪判定：❌ 判据没抓到破坏 —— 本次证伪无效
+```
+
+**15 条判据明明抓到了破坏，脚本自己却判「证伪无效」。** 查它的期望键：
+
+```js
+: ['页面就位：快速记账输入框与「记账」按钮都存在', '点「记账」后预览出现（解析请求走通）']
+```
+
+而脚本的执行顺序是：**先测 `页面就位`，再摘按钮**。所以在 hide-cta 模式下
+这条判据**必然 PASS** —— 它量的是破坏之前的状态。
+`expectKey.every(...)` 于是永远 false，**无论破坏多彻底都输出「证伪无效」**。
+
+这不是「判据不敏感」，是**恒假**：它要求一个不可能成立的条件。
+（同一文件里还留着两处同类自证的注释——`*` 只剥一边、failed 是对象数组——
+说明这条链已经栽过两次。）
+
+顺带一个标签问题：那条 `页面就位：…按钮都存在` 是在 sabotage **之后**打印的，
+此刻按钮已经被摘掉，日志却报 PASS 并声称「按钮都存在」。标签在说它没在说的东西。
+
+修法两处：
+
+1. 改名 `页面就位（sabotage 前基线）`，并**在摘除之后再测一次**按钮在不在，
+   把真实状态打成可核对的现场证据：
+   ```
+   [sabotage 生效确认] 摘除后：btn=false（期望 false） input=true（期望 true，说明只摘了按钮）
+   ```
+   `btn` 不是 false 就 `exit 8` —— sabotage 没生效的话，后面的红**不能**算「判据抓到了破坏」。
+2. hide-cta 的期望键换成 sabotage 真正会打坏的三条：
+   `点「记账」后预览出现` / `**直接查 PG** 确认真的写进去了` / `POST /api/finance 非 4xx/5xx`。
+
+修完复跑，两个负控都通过：
+
+```
+# hide-cta
+逐条匹配：HIT «点「记账」后预览出现（解析请求走通）»  HIT «直接查 PG 确认真的写进去了»  HIT «POST /api/finance 非 4xx/5xx»
+证伪判定：✅ 判据在有缺陷一侧如期失败
+
+# swallow-create（拦掉 POST /api/finance 并回一个假的 201 —— 复刻 BUG-AC）
+FAIL  ⚠️ 没出现「PG 未变却说成功」的假成功 — saidOk=true PG 1->1
+逐条匹配：HIT «直接查 PG 确认真的写进去了»  HIT «⚠️ 没出现「PG 未变却说成功」的假成功»  HIT «POST /api/finance 非 4xx/5xx»
+证伪判定：✅ 判据在有缺陷一侧如期失败
+```
+
+**⇒ 26/26 这个绿灯现在被证明不是恒真**：两种人为破坏下，判据都如期转红，
+且 swallow-create 精确复现了 BUG-AC 的原场景——界面报「已入账」、
+PG 停在 1→1，只有「直接查 PG」那条能识破。
+
+注意修判据之后**必须复跑负控**：我只是把一条恒假判据换掉，
+不验证新期望键能被命中的话，只是把恒假换成恒假。
+
+### §4.94.2 5 个写路径脚本 origin 硬写，在当前设备上一律 exit 5
+
+§4.92 查出设备装的是**生产 https 包**（`origin=https://localhost`），
+而这批脚本第一关写死开发包：
+
+| 脚本 | 原有断言 | CDP 端口 | API 端口 |
+|---|---|---|---|
+| verify-email-writepath.mjs | `origin !== 'http://localhost'` → exit 5 | `POCKET_CDP_PORT \|\| 9253` | env |
+| verify-gateway-writepath.mjs | 同上 | `… \|\| 9260` | env |
+| verify-marketplace-install.mjs | 同上 | `… \|\| 9250` | **写死 8088** |
+| verify-bug-u.mjs | 同上 | `… \|\| 9247` | env |
+| verify-bugaa-realdevice.mjs | 同上 | env | env |
+
+用当前设备跑，它们会在**还没走到任何真正要验的判据**之前就退出——
+看着像「脚本坏了」，实则是前置假设不成立。
+`verify-finance-writepath.mjs` 早留了这个口子（`POCKET_EXPECT_ORIGIN`，
+注释写明「做生产 https 回归时用…否则脚本会在第一关就退出」），这批漏了。
+
+新增 `scripts/migrate-expect-origin.mjs`（机械不变量：替换数一致、
+`EXPECT_ORIGIN` 恰好声明一次、`node --check` 对着**新内容**过、任一不满足则该文件不动），
+改掉 5 个文件；`verify-marketplace-install.mjs` 的 `const API_PORT = 8088`
+也改成 `Number(process.env.POCKET_API_PORT || 8088)`。
+
+**头一版 TARGETS 漏了 `verify-bugaa-realdevice.mjs`**，
+是迁移后的**全仓残留复查**把它捞出来的 —— 所以批量迁移之后必须再扫一遍全仓，
+不能只看「我列的那几个」。
+
+### §4.94.3 这一节没有解决什么
+
+- `verify-task / email / gateway / marketplace / bug-u / bugaa` 六个脚本**尚未逐个实跑**，
+  只是把前置条件解开了。
+- 它们仍**各写各的 `adb forward`**（约 14 处硬编码 CDP 端口），
+  尚未迁到 `lib/adb-cdp.mjs` 的 `tcp:0`。跑的时候要显式传 `POCKET_CDP_PORT` 避开撞端口。
+- 闪卡两入口的**点击**、BUG-AX 设备侧负控、会议写入设备侧持久化，仍未做。
+## §4.95 BUG-V19（退出码恒 0）+ 新门禁，以及一个刚坐实的 UI 缺陷（BUG-V20，待定位）
+
+### §4.95.1 BUG-V19：4 个脚本判出 FAIL 仍然 `process.exit(0)`
+
+`verify-task-writepath.mjs` 跑出 `exit=0 PASS=8 FAIL=1`。退出码是**写死**的：
+
+```js
+const passed = checks.filter((c) => c.pass).length
+console.log(`\n=== 汇总 ===\n${passed}/${checks.length} 通过`)
+ws.close()
+process.exit(0)          // ← 无论 passed 是多少
+```
+
+⇒ CI、批量 runner、`&&` 链**全都无从分辨**「跑过了」与「全绿」——
+绿灯是被无条件发出去的。与 BUG-V15（邮件同步探针退出码恒 0）同一类，
+只是那次的脚本我改了、这一批漏了。
+
+新增门禁 `scripts/check-exit-reflects-verdict.mjs`（`--selftest` 7/7：
+敏感度 2 / 特异度 3 / 变盲 2），判据是「含 `const checks = []` 或 `const check = (…)`
+的文件里不允许出现无条件收尾的 `process.exit(0)`」，
+首跑就抓出 3 个：`verify-notes-crud.mjs`、`verify-notes-inputtext.mjs`、
+`verify-scheduled-task-writepath.mjs`。连同 `verify-task-writepath.mjs` 全部改成
+`process.exitCode = checks.some(c => !c.pass) ? 1 : 0`，
+复跑门禁 **0 命中**。
+
+**刻意保持保守**：只看行首就是 `process.exit(0)` 的收尾行，且同文件没有
+`process.exitCode` 赋值、没被 `if (` 包住。全仓有一百多个 `process.exit(0)`，
+绝大多数是合理的（幂等追加器、诊断脚本、早退路径）——门禁宁可漏报也不误报。
+
+### §4.95.2 verify-task-writepath 修判据后：8/9，剩一条判红
+
+顺带修掉另一处判据缺陷：原来 `goto('#/ai')` 之后**立刻**读 DOM，
+把「慢」和「不刷新」混成一个结论。改成轮询到 15 秒并打印耗时：
+
+```
+FAIL  删除后列表不再回显（轮询至多 15s）  — found=true  耗时=15070ms
+      ⇒ 15s 内始终不消失，指向「删除后列表不刷新」
+exit=1
+```
+
+### §4.95.3 BUG-V20（待定位）：任务删除后，列表三种刷新方式都不更新
+
+新增 `scripts/diag-task-list-refresh.mjs` 做定性，实测（隔离库，2026-10-03 01:58）：
+
+```
+播种 LISTREFRESH-523881 -> 201 id=task-bee90b47bdbe2f3238ee52391595a47d
+① 删除前刷新一次，列表里能看到            = true
+② 服务端 DELETE -> 200；PG = 0            ← 服务端确实删了
+③ 删除后（不刷新）仍能看到                = true
+④ 离开再回来（没点刷新）仍能看到           = true
+⑤ 点刷新（clicked）后仍能看到              = true      ← 连手动刷新都救不回来
+```
+
+**服务端是对的（200 + PG 归零），UI 三种刷新方式都不更新。**
+这不是等待不足，也不是「缺一个刷新触发」——是**列表读到的数据源**不对。
+
+⚠️ **根因尚未定位，不下结论。** 待查的候选（都需要再验，不能现在就选一个）：
+- 本地缓存合并：闪卡那边有过一模一样的坑
+  （`stores/flashcards.ts:291` 的 `mergeById(本地, 服务端)` 只做增量合并、
+  删除只走 `envelope.deletedIds` 增量通道）。任务 store 若是同一模式，
+  被删的项会**从本地缓存里复活**。
+- 列表查询的作用域/来源与写入端不一致（写入 `ws_user-admin`，列表读别的）。
+- 列表走了不同的接口（`.task-card` 渲染的数据未必来自 `/api/tasks`）。
+
+**下一步该做的判据**（不要只靠肉眼看）：开着 `Network` 域，
+点刷新后抓 `/api/tasks` 的**响应体**，看服务端返回里到底还有没有那条。
+返回里有 ⇒ 前端合并/渲染问题；返回里没有 ⇒ 请求根本没发到隔离后端。
+这一条能把上面三个候选一刀切开。
+
+### §4.95.4 5 个写路径脚本的 origin 硬写已解（§4.94.2 已记）
+
+`verify-task-writepath` 已在解开的条件下实跑（8/9，剩 BUG-V20 那条）。
+`verify-email / gateway / marketplace / bug-u / bugaa` **尚未逐个实跑**。
+
+### §4.95.5 本轮新增/修改清单
+
+| 文件 | 变化 |
+|---|---|
+| `scripts/verify-finance-writepath.mjs` | BUG-V18 证伪判据修复 + sabotage 生效现场确认 |
+| `scripts/verify-task-writepath.mjs` | 列表回显改轮询 + 退出码反映判定 |
+| `scripts/verify-notes-crud.mjs` / `verify-notes-inputtext.mjs` / `verify-scheduled-task-writepath.mjs` | 退出码反映判定 |
+| `scripts/verify-email/gateway/marketplace/bug-u/bugaa-*.mjs` | origin 断言改 env |
+| `scripts/verify-marketplace-install.mjs` | API 端口改 env |
+| `scripts/migrate-expect-origin.mjs`（新） | 批量迁移，带机械不变量 |
+| `scripts/check-exit-reflects-verdict.mjs`（新） | 门禁，selftest 7/7 |
+| `scripts/diag-task-list-refresh.mjs`（新） | BUG-V20 定性探针 |
+| `scripts/run-device-against-isolated.mjs` | 支持透传 `--` 参数（证伪模式要用） |
+
+### §4.95.6 这一节没有解决什么
+
+- BUG-V20 根因未定位，**不能算已修**。
+- 5 个脚本未逐个实跑；约 14 处硬编码 CDP 端口未迁 `lib/adb-cdp.mjs`。
+- 闪卡两入口的**点击**、BUG-AX 设备侧负控、会议写入设备侧持久化，仍未做。

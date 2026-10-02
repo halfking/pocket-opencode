@@ -254,7 +254,24 @@ if (SABOTAGE === 'hide-cta') {
   await ev(`(function(){var b=(${PANE}).querySelector('.quick-btn');if(b)b.remove();return 1})()`);
   console.log('   [sabotage] 已从 DOM 摘除 .quick-btn');
 }
-check('页面就位：快速记账输入框与「记账」按钮都存在（缺失即 FAIL，不许空过）', hasInput === true && hasBtn === true, `input=${hasInput} btn=${hasBtn}`);
+// 这条判的是**进页时**（sabotage 之前）的状态。标签必须写清楚这一点 ——
+// 头一版它在 sabotage 之后才打印，却仍写「按钮都存在」，于是在 hide-cta 模式下
+// 按钮已经被摘掉、日志却报 PASS，标签在说它没在说的东西（BUG-V18）。
+check('页面就位（sabotage 前基线）：快速记账输入框与「记账」按钮都存在（缺失即 FAIL，不许空过）',
+  hasInput === true && hasBtn === true, `input=${hasInput} btn=${hasBtn}`);
+
+// sabotage 之后再测一次「按钮现在还在不在」，把真实状态显式打出来。
+// 这不是新判据，是给「证伪真的生效了」一个可核对的现场证据 ——
+// 之前只能靠「哪几条红了」反推，hide-cta 模式下反而推不出来。
+if (SABOTAGE === 'hide-cta') {
+  const btnAfter = await ev(`!!(${PANE}).querySelector('.quick-btn')`);
+  const inputAfter = await ev(`!!(${PANE}).querySelector('.quick-input')`);
+  console.log(`   [sabotage 生效确认] 摘除后：btn=${btnAfter}（期望 false） input=${inputAfter}（期望 true，说明只摘了按钮）`);
+  if (btnAfter !== false) {
+    console.error('   ❌ sabotage 没生效：按钮还在。下面的失败不能当作「判据抓到了破坏」。');
+    process.exitCode = 8;
+  }
+}
 
 // ---------- 4. 读路径：种下的记录渲染出来了 ----------
 // 轮询等目标卡片出现（给 load() 留足时间），而不是只看某一瞬间的快照 ——
@@ -473,9 +490,15 @@ if (SABOTAGE) {
   // 写 `failed.map(norm)` 会把每个对象 String() 成 "[object Object]"，
   // 于是永远匹配不上、永远报「证伪无效」—— 连续两轮都被这个坑挡住。
   const key = failed.map((f) => norm(f.n));
+  // ⚠️ BUG-V18：hide-cta 的期望键里原来写着「页面就位：…按钮都存在」，
+  //    而 sabotage 恰恰是**在测完那条之后**才把按钮摘掉的 ⇒ 那条判据**设计上永远绿**，
+  //    `every()` 永远 false，于是无论破坏多彻底都打印「证伪无效」。
+  //    这是一条**恒假**判据：不是判据不敏感，是它要求一个不可能成立的条件。
+  //    换成 sabotage 真正会打坏的判据：摘掉 CTA 之后，凡依赖「点那个按钮」的
+  //    都必须失败——预览出不来、写入不会发生、POST 也不会发出。
   const expectKey = SABOTAGE === 'swallow-create'
     ? ['**直接查 PG** 确认真的写进去了', '⚠️ 没出现「PG 未变却说成功」的假成功', 'POST /api/finance 非 4xx/5xx']
-    : ['页面就位：快速记账输入框与「记账」按钮都存在', '点「记账」后预览出现（解析请求走通）'];
+    : ['点「记账」后预览出现（解析请求走通）', '**直接查 PG** 确认真的写进去了', 'POST /api/finance 非 4xx/5xx'];
   const caught = expectKey.every((k) => key.some((n) => n.includes(norm(k))));
   console.log(`\n逐条匹配：${expectKey.map((k) => `${key.some((n) => n.includes(norm(k))) ? 'HIT' : 'MISS'} «${norm(k)}»`).join('  ')}`);
   console.log(`\n证伪判定：${caught ? '✅ 判据在有缺陷一侧如期失败' : '❌ 判据没抓到破坏 —— 本次证伪无效'}`);
