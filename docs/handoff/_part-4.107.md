@@ -1,9 +1,9 @@
 
-## §4.97 BUG-V20 定案：是**真产品缺陷**，不是探针假象
+## §4.107 BUG-V20 定案：是**真产品缺陷**，不是探针假象
 
-§4.96 留了两条互斥可能并说「都不算已坐实」。这轮把两条都排掉了。
+§4.106 留了两条互斥可能并说「都不算已坐实」。这轮把两条都排掉了。
 
-### §4.97.1 先给共享 helper 补上 `send` / `on`
+### §4.107.1 先给共享 helper 补上 `send` / `on`
 
 `lib/adb-cdp.mjs` 原来只暴露 `ev`（= `Runtime.evaluate`），
 **抓不到 CDP 事件**。要开 `Network.enable`、订阅 `Network.requestWillBeSent`，
@@ -13,7 +13,7 @@
   因为 `Network.getResponseBody` 的载荷在 `result.body`，只回传内层会整个丢掉。
 - `on(method, handler)` —— 订阅事件，返回退订函数；`close()` 时清空。
 
-### §4.97.2 排除 (b)：DELETE 请求**确实发出去了**
+### §4.107.2 排除 (b)：DELETE 请求**确实发出去了**
 
 新增 `scripts/diag-task-delete-network.mjs`：播种 → 进详情页 → 点 `.action-btn.delete`
 → **按选择器**点确认按钮（不再全页面文本匹配）→ 抓网络。
@@ -35,7 +35,7 @@ PG = 0
 不是 DELETE 对应的那个。事实只有两条：**`req DELETE` 存在**、**PG = 0**。
 ⇒ **「200」这个字我不采信，结论不依赖它。**
 
-### §4.97.3 用修好的探针重跑 verify-task-writepath：缺陷复现
+### §4.107.3 用修好的探针重跑 verify-task-writepath：缺陷复现
 
 把 `verify-task-writepath.mjs` 的确认点击从**全页面文本匹配**
 改成**按选择器点 `.dialog .dialog-footer` 里的最后一个按钮**，
@@ -54,7 +54,7 @@ FAIL  删除后列表不再回显（轮询至多 15s） — found=true  耗时=1
 返回列表后那张卡片仍然显示，15 秒不消失。**
 **(a) 成立：这是真产品缺陷。**
 
-### §4.97.4 链路按代码看是完整的，缺口在链路内部
+### §4.107.4 链路按代码看是完整的，缺口在链路内部
 
 ```js
 // TaskDetailView.confirmDelete
@@ -75,7 +75,7 @@ async function loadTasks() { … tasks.value = (await api.getTasks(undefined)) |
   若有第二处 `useListScene('tasks', …)` 先跑，它就把标记吃掉了）；
 - `handleRefresh` 跑了但 `loadTasks()` 拿到的东西仍含那条（已排除：接口返回里没有）。
 
-### §4.97.5 下一步那一条判据（工具已就位）
+### §4.107.5 下一步那一条判据（工具已就位）
 
 `lib/adb-cdp.mjs` 现在能订阅事件了，所以**一条观测就能切开**：
 
@@ -88,7 +88,7 @@ async function loadTasks() { … tasks.value = (await api.getTasks(undefined)) |
 以及数一下 `useListScene('tasks', …)` 在代码里到底有几处注册
 （`consumeListDirty` 是 delete-and-return，**多处注册会互相抢**）。
 
-### §4.97.6 这一节的净结论
+### §4.107.6 这一节的净结论
 
 - BUG-V20 **已确认存在**（服务端对、UI 不更新），**尚未定位到具体那一行**，**未修**。
 - 本轮修的是**探针**：确认点击从文本匹配改成选择器，并加了「点不中即作废本轮」的硬闸。
