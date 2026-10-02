@@ -20,11 +20,20 @@ export async function ingestSpeechBlob(opts: {
   diarizer: SpeakerDiarizer
   segments: MeetingSegment[]
   segmentProfiles: Map<string, string>
+  signal?: AbortSignal
 }): Promise<MeetingSegment | null> {
   const meetingId = unref(opts.meetingId)
   if (!meetingId) return null
+  // signal 一路传到 sttApi.transcribe：会议录音时每个语音块都是一次独立转写
+  // （各自 3 分钟预算），此前这一层是整条录音链上唯一**既跨页存活又完全无法
+  // 终止**的环节——录音 runtime 的 cancelTranscription() 只能停录完后的兜底
+  // 全量转写，停不了这些分片。
+  //
+  // 中止不在这里吞：Promise.all 会把 AbortError 原样抛给调用方，由
+  // processSegment 判断「是取消」还是「真失败」——真失败要给用户可行动的原因，
+  // 取消则一个字都不该显示。
   const [sttResult, embedding] = await Promise.all([
-    sttApi.transcribe({ audioBlob: opts.blob }),
+    sttApi.transcribe({ audioBlob: opts.blob }, opts.signal),
     extractEmbedding(opts.blob).catch(() => new Float32Array()),
   ])
   if (!sttResult.text.trim()) return null

@@ -6,6 +6,7 @@
 import { resolveRuntimeApiBase } from '../config/api-base'
 import { useAuthStore } from '../stores/auth'
 import { assertNotHTML } from './jsonGuard'
+import { isAbortError } from './abort'
 
 // 再导出：client.ts 等既有调用方统一从 ./http 取守卫。
 export { assertNotHTML }
@@ -59,6 +60,20 @@ export interface HttpOptions extends RequestInit {
   /** 覆盖本次请求的毫秒上限;传 0 表示不设上限(仅限长轮询等已知场景)。 */
   timeoutMs?: number
 }
+
+/**
+ * 判断一个错误是不是「调用方主动中止」。
+ *
+ * 权威定义在 ./abort（零依赖，可被护栏直接 import 跑行为断言）；这里再导出，
+ * 是为了让既有调用方统一从 ./http 取——错误形态由本文件决定，而
+ * httpOnce 里 caller abort 走 `controller.abort()`，`timedOut` 为 false，
+ * 于是 fetch 抛出的那个 AbortError 被**原样透传**（第 100-102 行下方）；
+ * 只有超时才被换成 TimeoutError。所以：
+ *
+ *   - `name === 'AbortError'` → 用户/调用方主动中止，**不是失败**
+ *   - `TimeoutError`（name = 'TimeoutError'）→ 失败，走降级逻辑
+ */
+export { isAbortError }
 
 /** 区分「超时」和「服务端返回 4xx/5xx」,让上层能给出可读提示。 */
 export class TimeoutError extends Error {
