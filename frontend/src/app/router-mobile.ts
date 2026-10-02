@@ -118,12 +118,22 @@ const router = createRouter({
       component: () => import('../features/agents/AgentDetailView.vue'),
       meta: { requiresAuth: true, title: '角色详情', bottomNav: false, canGoBack: true }
     },
-    // 个人助理 — 语音笔记
+    // 2026-10-03 全局 IA 重组：「笔记」tab 的落地页 —— 手记 + 会议纪要 + PKM
+    // 三类来源混排在一条时间线上，顶部 chips 切来源。
+    // 会议不再独占一级 tab（它的产出物就是一份纪要，属于笔记的一种来源）。
     {
       path: '/notes',
       name: 'notes',
+      component: () => import('../features/notes/NotesHubView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '笔记', bottomNav: true, scrollMode: 'self' }
+    },
+    // 笔记 — 全部手记（从 Hub 的「全部笔记」进入，chips 只切来源不摊开全量）
+    // 须在 /notes/:id 之前声明，否则 'voice' 会被当成笔记 id。
+    {
+      path: '/notes/voice',
+      name: 'notes-voice',
       component: NoteListView,
-      meta: { requiresAuth: true, requiresLobster: true, title: '笔记', bottomNav: true }
+      meta: { requiresAuth: true, requiresLobster: true, title: '手记', bottomNav: false, canGoBack: true }
     },
     // 个人助理 — 新建笔记
     {
@@ -270,19 +280,26 @@ const router = createRouter({
       meta: { requiresAuth: true, requiresLobster: true, title: '笔记', bottomNav: false, canGoBack: true }
     },
     // 2026-09-23 Phase 2：「学习」tab 聚合页 —— 合并 Flashcards + 笔记入口。
-    // 详情仍走独立路由（/flashcards、/notes），深链与历史收藏不受影响。
+    //
+    // 2026-10-03 全局 IA 重组：学习**降级为「更多」里的一个入口**（/study），
+    // 底部导航不再给它一级位置。路由与页面本身原样保留——闪卡用户的深链、
+    // 收藏、历史栈都不该因为导航改版而失效。
     {
       path: '/study',
       name: 'study',
       component: () => import('../features/study/StudyHubView.vue'),
-      meta: { requiresAuth: true, requiresLobster: true, title: '学习', bottomNav: true, scrollMode: 'self' }
+      meta: { requiresAuth: true, requiresLobster: true, title: '学习', bottomNav: false, canGoBack: true, scrollMode: 'self' }
     },
     // S2.2 会议记录：录音 → 转写 → AI 纪要 → Note/Task 沉淀
+    //
+    // 2026-10-03 全局 IA 重组后**不再是一级 tab**：会议作为「笔记」的一种来源
+    // 下沉到 NotesHubView，这里保留为「全部会议」的独立页面（筛选 / 归档管理 /
+    // 深链 / 历史收藏都还指向它），因此 bottomNav 关闭并给出返回。
     {
       path: '/meetings',
       name: 'meetings',
       component: () => import('../features/meetings/MeetingListView.vue'),
-      meta: { requiresAuth: true, requiresLobster: true, title: '会议', bottomNav: true, scrollMode: 'self' },
+      meta: { requiresAuth: true, requiresLobster: true, title: '会议', bottomNav: false, canGoBack: true, scrollMode: 'self' },
     },
     {
       path: '/meetings/new',
@@ -305,7 +322,18 @@ const router = createRouter({
       component: () => import('../features/meetings/MeetingDetailView.vue'),
       meta: { requiresAuth: true, requiresLobster: true, title: '会议详情', bottomNav: false, canGoBack: true, scrollMode: 'self' },
     },
-    // RSS 订阅：源管理 + 信息流 + 详情 + 一键分享
+    // 2026-10-03 全局 IA 重组：「消息」tab —— 重要邮件 / 订阅新闻 / 任务消息
+    // 三类来源合并成一条统一时间线，顶部 chips 切来源。
+    //
+    // 下面 /rss/* 与 /email/* 与 /notifications 全部**原样保留**：它们是这条
+    // 时间线每一行的落地页（深链、详情、管理页），只是不再各自占一级入口。
+    {
+      path: '/messages',
+      name: 'messages',
+      component: () => import('../features/messages/MessagesHubView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '消息', bottomNav: true, scrollMode: 'self' },
+    },
+    // RSS 订阅：源管理 + 信息流 + 详情 + 一键分享（「消息」tab 的订阅源管理页）
     {
       path: '/rss',
       name: 'rss',
@@ -646,8 +674,16 @@ import { beforeRouteTransition } from './routeTransition'
  * sessionStorage 标记 pocket:navigatedFromHome = '1'，AppLayout.goBack
  * 据此决定 router.back()（回到首页根）vs router.push('/ai')（兜底）。
  * 直接通过 router.push 进入非首页也置位（避免 entry 空页）。
+ *
+ * 2026-10-03 全局 IA 重组后同步维护：
+ *  - 新增两个一级 tab 根：/notes（笔记）、/messages（消息）、/more（更多）。
+ *    /more 此前**一直漏在这个集合外**——从「更多」进子页再按返回，会被推去
+ *    /ai 而不是退回「更多」，属于重组前就存在的返回路径 bug。
+ *  - 移除 /meetings 与 /study：两者已从一级 tab 降级为子页，它们现在是
+ *    「从笔记/更多进去的目标」，必须保留 navigatedFromHome 才能 router.back()
+ *    回到来的地方；留在集合里会把用户甩到 /ai。
  */
-const HOME_ROOTS = new Set(['/ai', '/tasks', '/ai-chat', '/notes', '/meetings', '/email', '/vault', '/pkm/today', '/instances', '/sessions', '/settings'])
+const HOME_ROOTS = new Set(['/ai', '/tasks', '/ai-chat', '/notes', '/messages', '/more', '/email', '/vault', '/pkm/today', '/instances', '/sessions', '/settings'])
 
 router.beforeEach((to, from, next) => {
   if (typeof sessionStorage !== 'undefined') {

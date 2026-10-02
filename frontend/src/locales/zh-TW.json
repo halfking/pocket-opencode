@@ -18,7 +18,8 @@
     "error": "操作失敗",
     "warning": "警告",
     "info": "提示",
-    "close": "關閉"
+    "close": "關閉",
+    "retry": "重試"
   },
   "app": {
     "title": "Redclaw",
@@ -60,7 +61,8 @@
     "localAgent": "本地智慧體",
     "home": "Home",
     "study": "Study",
-    "flashcards": "閃卡"
+    "flashcards": "閃卡",
+    "messages": "訊息"
   },
   "routes": {
     "login": "登入",
@@ -371,6 +373,14 @@
       "title": "收件匣",
       "empty": "收件匣已清空",
       "advance": "推進處理"
+    },
+    "source": {
+      "note": "筆記",
+      "email": "郵件",
+      "rss": "RSS",
+      "meeting": "會議",
+      "chat": "對話",
+      "manual": "手動"
     }
   },
   "email": {
@@ -440,12 +450,71 @@
     "empty": "尚未收集材料。在筆記、郵件或 RSS 中選擇「加入學習」即可。",
     "advance": "開始學習"
   },
-  "source": {
-    "note": "筆記",
-    "email": "郵件",
-    "rss": "RSS",
-    "meeting": "會議",
-    "chat": "對話",
-    "manual": "手動"
+  "notesHub": {
+    "title": "筆記",
+    "filter": {
+      "all": "全部",
+      "manual": "手記",
+      "meeting": "會議紀要",
+      "pkm": "PKM 筆記"
+    },
+    "action": {
+      "newNote": "新增筆記",
+      "startMeeting": "開始會議",
+      "record": "錄音記一筆"
+    },
+    "link": {
+      "allNotes": "全部筆記",
+      "allMeetings": "全部會議",
+      "allPkm": "開啟 PKM"
+    },
+    "empty": {
+      "title": "尚無筆記",
+      "hint": "點右下角錄音記下第一條，或開始一次會議",
+      "filtered": "這個來源還沒有內容"
+    },
+    "meta": {
+      "voice": "語音",
+      "pending": "處理中",
+      "minutes": "{count} 分鐘",
+      "hoursMinutes": "{hours} 小時 {minutes} 分鐘"
+    },
+    "count": {
+      "notes": "{count} 條筆記",
+      "meetings": "{count} 場會議"
+    }
+  },
+  "messagesHub": {
+    "title": "訊息",
+    "filter": {
+      "all": "全部",
+      "email": "郵件",
+      "rss": "訂閱",
+      "task": "任務"
+    },
+    "action": {
+      "markAllRead": "全部標為已讀",
+      "openMail": "開啟信箱",
+      "manageFeeds": "管理訂閱"
+    },
+    "empty": {
+      "title": "沒有新訊息",
+      "hint": "重要郵件、訂閱新聞與任務訊息會彙總到這裡"
+    },
+    "badge": {
+      "important": "重要"
+    },
+    "meta": {
+      "from": "來自 {name}",
+      "suggestedAction": "建議：{action}"
+    },
+    "unreadBadge": "{count} 未讀",
+    "partialFailure": "部分來源未能載入：{sources}"
+  },
+  "timefmt": {
+    "justNow": "剛剛",
+    "minutesAgo": "{count} 分鐘前",
+    "hoursAgo": "{count} 小時前",
+    "daysAgo": "{count} 天前"
   }
 }
