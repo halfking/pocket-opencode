@@ -417,6 +417,90 @@ func (h *InvoiceHarvester) markRetry(ctx context.Context, inv *Invoice, msg stri
 	return "pending"
 }
 
+// pickFreeInvoicePath 为一张发票挑一个不会覆盖别人的落盘路径。
+//
+// 为什么需要（2026-10-02 补）：`InvoiceFileName` 的格式是
+// `{费用类型}-{对方单位}-{金额}-{日期}[-{发票号}].pdf`，发票号段是 2026-10-01
+// 才加的防撞名措施。但它只在**规则层从邮件正文/主题解析出了发票号**时才有值——
+// attachment 与 pdf-url 两条路径都是拿邮件文本里那个号，
+// 发票号只印在 PDF 内部时就是空的。于是仍然会算出同名，
+// 而 `os.Rename` 在 Windows 上是**替换**语义：不报错、不重试，
+// 两行 DB 都是 status=downloaded 且指向同一个 file_path，
+// 磁盘上只剩最后写入的那张，另一张的凭证永久丢失。
+//
+// 判据是**内容**而不是存在性：
+//   · 目标不存在 → 用它；
+//   · 目标已存在且内容**相同** → 仍用它（同一张票的重跑必须幂等，
+//     否则每次补跑都多出 `-2`、`-3`，台账被副本淹没）；
+//   · 目标已存在但内容**不同** → 说明是另一张票，换 `-2`、`-3`……
+//
+// 这正是 InvoiceFileName 注释里写下的「若后续发现它也发生，应在
+// saveInvoiceFile 里检测目标已存在并加序号，而不是继续往文件名里塞字段」。
+// 目标路径的占用状态。区分「不存在」与「存在但内容不同」是必须的：
+// 前者直接占用，后者必须换名——把两者混为一谈会让候选循环走完
+// 直落回原名，等于没有防护。
+type invoicePathState int
+
+const (
+	invoicePathFree         invoicePathState = iota // 文件不存在，可安全占用
+	invoicePathSameContent                          // 已被**同一张**票占用（重跑）
+	invoicePathOtherContent                         // 被**另一张**票占用，必须换名
+)
+
+func pickFreeInvoicePath(dir, name string, data []byte) string {
+	want := sha256.Sum256(data)
+	for i := 1; i < 1000; i++ {
+		cand := filepath.Join(dir, name)
+		if i > 1 {
+			cand = filepath.Join(dir, withInvoiceSeq(name, i))
+		}
+		switch invoicePathStateOf(cand, data, want) {
+		case invoicePathFree, invoicePathSameContent:
+			return cand
+		}
+	}
+	// 序号用尽（1000 张同名不同内容的票）：仍返回首选名，交由 os.Rename 的
+	// 既有语义处理。这条实际上不可达，保留只是让函数总有返回值、不引入 panic。
+	return filepath.Join(dir, name)
+}
+
+// invoicePathStateOf 报告 path 的占用状态。
+//
+// 先比长度：长度不同必然内容不同，省掉一次整文件读。发票 PDF 动辄几百 KB，
+// 而这条在每次落盘时都会走。
+//
+// 长度基线必须来自 data 而不是 want（want 是 [32]byte 的摘要，
+// len(want) 恒为 32）。第一版就是写成 `len(raw) != len(want)`，
+// 于是 5 字节的夹具永远判成「内容不同」，幂等那条用例直接转红。
+func invoicePathStateOf(path string, data []byte, want [32]byte) invoicePathState {
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() {
+		return invoicePathFree
+	}
+	if st.Size() != int64(len(data)) {
+		return invoicePathOtherContent
+	}
+	raw, rerr := os.ReadFile(path)
+	if rerr != nil {
+		// 读不出来（有权限/是坏符号链接等）：按「已被占用」处理，宁可换名
+		// 也不要覆盖掉一个我们没能确认内容的东西。
+		return invoicePathOtherContent
+	}
+	if sha256.Sum256(raw) == want {
+		return invoicePathSameContent
+	}
+	return invoicePathOtherContent
+}
+
+// withInvoiceSeq 在扩展名前插入 `-N`：`a-b-1.00-2026-09-24.pdf` → `...-2.pdf`。
+func withInvoiceSeq(name string, n int) string {
+	ext := filepath.Ext(name)
+	if ext == "" {
+		return fmt.Sprintf("%s-%d", name, n)
+	}
+	return strings.TrimSuffix(name, ext) + fmt.Sprintf("-%d", n) + ext
+}
+
 // saveInvoiceFile 以规范文件名落盘并置 downloaded。图片保留原扩展名。
 func (h *InvoiceHarvester) savePDF(ctx context.Context, inv *Invoice, data []byte, source string) string {
 	return h.saveInvoiceFile(ctx, inv, data, source)
@@ -448,7 +532,7 @@ func (h *InvoiceHarvester) saveInvoiceFile(ctx context.Context, inv *Invoice, da
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return h.markRetry(ctx, inv, "mkdir: "+err.Error())
 	}
-	path := filepath.Join(dir, name)
+	path := pickFreeInvoicePath(dir, name, data)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return h.markRetry(ctx, inv, "write file: "+err.Error())
@@ -457,8 +541,8 @@ func (h *InvoiceHarvester) saveInvoiceFile(ctx context.Context, inv *Invoice, da
 		return h.markRetry(ctx, inv, "rename file: "+err.Error())
 	}
 	inv.Status = "downloaded"
-	inv.FileName = name
-	inv.FilePath = filepath.Join("email-invoices", defaultWorkspace(inv.WorkspaceID), name)
+	inv.FileName = filepath.Base(path)
+	inv.FilePath = filepath.Join("email-invoices", defaultWorkspace(inv.WorkspaceID), inv.FileName)
 	inv.FileSource = source
 	inv.LastError = ""
 	if err := h.Store.UpdateInvoiceHarvest(ctx, inv); err != nil {

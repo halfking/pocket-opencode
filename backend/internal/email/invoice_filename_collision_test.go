@@ -199,3 +199,143 @@ func TestInvoiceFileName_NoInvoiceNoStillDeterministic(t *testing.T) {
 		t.Errorf("文件名含非法字符: %q", got)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// 第二层防线（2026-10-02 补）：落盘选名。
+//
+// 上面那一组全部作用在 InvoiceFileName 上——**让名字唯一**。但发票号段
+// 只有在**规则层从邮件正文/主题解析出了发票号**时才有值：harvestOne 的
+// attachment 与 pdf-url 两条路径拿的都是邮件文本里那个号，
+// 发票号只印在 PDF 内部时它是空的。于是仍然会算出同名，
+// 而 os.Rename 是替换语义 → 凭证静默丢失。
+//
+// 本组不试图让 InvoiceFileName 更聪明（那要往名字里塞更多字段，
+// 见该函数注释的建议），而是在**落盘那一刻**发现名字已被别的内容占用
+// 就换名。判据是**内容**而不是存在性，这样同一张票的重跑仍然幂等。
+// ─────────────────────────────────────────────────────────────────────
+
+func writeCollT(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// 目标未占用 → 原名。
+func TestPickFreeInvoicePath_UnusedName(t *testing.T) {
+	dir := t.TempDir()
+	got := pickFreeInvoicePath(dir, "其他-某公司-100.00-2026-09-24.pdf", []byte("A"))
+	if filepath.Base(got) != "其他-某公司-100.00-2026-09-24.pdf" {
+		t.Fatalf("未占用的名字应原样返回，得到 %q", filepath.Base(got))
+	}
+}
+
+// 内容相同 → 仍用原名。重跑必须幂等，否则每次补跑多出 -2/-3，台账被副本淹没。
+func TestPickFreeInvoicePath_SameContentIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	name := "其他-某公司-100.00-2026-09-24.pdf"
+	writeCollT(t, filepath.Join(dir, name), "PDF-A")
+	for i := 0; i < 3; i++ {
+		got := pickFreeInvoicePath(dir, name, []byte("PDF-A"))
+		if filepath.Base(got) != name {
+			t.Fatalf("第 %d 次重跑改了名：%q → %q（会产生副本）", i+1, name, filepath.Base(got))
+		}
+	}
+}
+
+// 内容不同 → 换名，且原文件分毫不动。**这是本组的核心断言。**
+func TestPickFreeInvoicePath_DifferentContentGetsNewName(t *testing.T) {
+	dir := t.TempDir()
+	name := "其他-某公司-100.00-2026-09-24.pdf"
+	writeCollT(t, filepath.Join(dir, name), "PDF-A")
+
+	got := pickFreeInvoicePath(dir, name, []byte("PDF-B"))
+	if filepath.Base(got) != "其他-某公司-100.00-2026-09-24-2.pdf" {
+		t.Fatalf("撞名时应加序号，得到 %q", filepath.Base(got))
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil || string(raw) != "PDF-A" {
+		t.Fatalf("原文件被改动（这正是要防的凭证丢失）：err=%v content=%q", err, string(raw))
+	}
+}
+
+// 连续三张同名不同内容 → 序号递增，互不覆盖。
+func TestPickFreeInvoicePath_ChainsSequenceNumbers(t *testing.T) {
+	dir := t.TempDir()
+	name := "其他-某公司-100.00-2026-09-24.pdf"
+	var got []string
+	for _, content := range []string{"A", "B", "C"} {
+		p := pickFreeInvoicePath(dir, name, []byte(content))
+		got = append(got, filepath.Base(p))
+		writeCollT(t, p, content)
+	}
+	want := []string{
+		"其他-某公司-100.00-2026-09-24.pdf",
+		"其他-某公司-100.00-2026-09-24-2.pdf",
+		"其他-某公司-100.00-2026-09-24-3.pdf",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("第 %d 张得到 %q，应为 %q", i+1, got[i], want[i])
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, want[i]))
+		if err != nil || string(raw) != string([]string{"A", "B", "C"}[i]) {
+			t.Fatalf("第 %d 个文件内容不对：err=%v content=%q", i+1, err, string(raw))
+		}
+	}
+}
+
+// 崩溃恢复：上一轮已写成 -2（写盘后 DB 更新前崩了），重跑必须认回 -2。
+func TestPickFreeInvoicePath_ResumesExistingSequenceSlot(t *testing.T) {
+	dir := t.TempDir()
+	name := "其他-某公司-100.00-2026-09-24.pdf"
+	writeCollT(t, filepath.Join(dir, name), "PDF-A")
+	writeCollT(t, filepath.Join(dir, "其他-某公司-100.00-2026-09-24-2.pdf"), "PDF-B")
+
+	got := pickFreeInvoicePath(dir, name, []byte("PDF-B"))
+	if filepath.Base(got) != "其他-某公司-100.00-2026-09-24-2.pdf" {
+		t.Fatalf("应认回已存在的 -2，得到 %q", filepath.Base(got))
+	}
+}
+
+// 两张**真实形态**的票（发票号只印在 PDF 里、规则层没解析出）算出同一个名字，
+// 必须被分开。承重用例：用的就是 InvoiceFileName 的真实输出。
+func TestPickFreeInvoicePath_TwoInvoicesWithoutParsedNumberDoNotCollide(t *testing.T) {
+	dir := t.TempDir()
+	a := &Invoice{Category: "其他", Seller: "某服务商", Amount: 100,
+		InvoiceDate: "2026-09-24", Subject: "发票 A"}
+	b := &Invoice{Category: "其他", Seller: "某服务商", Amount: 100,
+		InvoiceDate: "2026-09-24", Subject: "发票 B"}
+
+	na, nb := InvoiceFileName(a), InvoiceFileName(b)
+	if na != nb {
+		t.Skipf("InvoiceFileName 已能区分这两张（%q vs %q），本用例前提不成立", na, nb)
+	}
+	pa := pickFreeInvoicePath(dir, na, []byte("PDF-A"))
+	writeCollT(t, pa, "PDF-A")
+	pb := pickFreeInvoicePath(dir, nb, []byte("PDF-B"))
+	writeCollT(t, pb, "PDF-B")
+
+	if pa == pb {
+		t.Fatalf("两张不同内容的发票落在同一路径 %q —— 凭证会被静默覆盖", pa)
+	}
+	rawA, _ := os.ReadFile(pa)
+	rawB, _ := os.ReadFile(pb)
+	if string(rawA) != "PDF-A" || string(rawB) != "PDF-B" {
+		t.Fatalf("落盘内容不对：A=%q B=%q", string(rawA), string(rawB))
+	}
+}
+
+// 图片发票走 .jpg，序号必须插在扩展名**之前**（否则变成 x.pdf-2）。
+func TestWithInvoiceSeq_InsertsBeforeExtension(t *testing.T) {
+	cases := map[string]string{
+		"a-b-1.00-2026-09-24.pdf": "a-b-1.00-2026-09-24-2.pdf",
+		"a-b-1.00-2026-09-24.jpg": "a-b-1.00-2026-09-24-2.jpg",
+		"noext":                   "noext-2",
+	}
+	for in, want := range cases {
+		if got := withInvoiceSeq(in, 2); got != want {
+			t.Fatalf("withInvoiceSeq(%q) = %q，应为 %q", in, got, want)
+		}
+	}
+}
