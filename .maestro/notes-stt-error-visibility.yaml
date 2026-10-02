@@ -54,17 +54,32 @@
 # appId 用 sttdev 并存包：调试包带独立 applicationIdSuffix，与正式包数据隔离，
 # 不动用户正式 App 的后端设置（那会清掉登录态）。
 #
-# ⚠️ 这条流在 MIUI/HyperOS 真机上当前**跑不起来**，别再重复踩（2026-10-02 实测）：
-#   Maestro 靠设备侧安装驱动 App（dev.mobile.maestro）工作，而 MIUI 默认关闭
-#   「开发者选项 → USB 安装」，`adb install` 一律返回
-#   `INSTALL_FAILED_USER_RESTRICTED: Install canceled by user`。
-#   弹窗点「继续安装」无效（实测连点 2 次仍被系统撤销），设备无 root
-#   （`adbd cannot run as root in production builds`），
+# ⚠️ 这条流在 MIUI/HyperOS 真机上**尚未跑通**，别再重复踩（2026-10-02 实测）：
+#   最新一次真机运行 `~/.maestro/tests/2026-10-02_103958/` 走到了第 5 步
+#   （launchApp → runFlow(解锁) → tapOn 学习|Study），失败于
+#     CommandFailed: Element not found: Text matching regex: 学习|Study
+#   原因是 App 停在**主密码解锁页**，底部导航不存在 —— 不是选择器写错。
+#
+#   ⚠️ 本段初版把阻塞归因成「Maestro 装不上驱动」，**那是错的**：
+#   那次运行有完整的 commands.json / screen-hierarchy / screenshots，
+#   说明驱动当时是装上的、能执行步骤。真正卡住的是解锁步骤没走完。
+#   （同目录 manifest 里的 `"source": "emulator"` 只是 logcat 采集来源标注，
+#     不代表运行设备；真机证据是 maestro.log 里的 MAESTRO_DEVICE_UDID。）
+#
+#   但当下驱动**又**装不上了（11:19 复测）：
+#     adb install maestro-app.apk
+#     → Failure [INSTALL_FAILED_USER_RESTRICTED: Install canceled by user]
+#   MIUI 默认关闭「开发者选项 → USB 安装」。弹窗点「继续安装」无效（连点 2 次
+#   被系统撤销），设备无 root（adbd cannot run as root in production builds），
 #   相关 settings（verifier_verify_adb_installs / adb_install_need_confirm /
 #   install_non_market_apps）实测全已是宽松值，改不动。
 #   ⇒ 要在 MIUI 上跑，先去手机「开发者选项」里打开「USB 安装」。
 #
-#   本次真机验收因此走的是**不依赖 Maestro 驱动**的等价路径，结论同样有效：
+#   ⚠️ 另注意：本流的 `inputText` 在这台设备上**很可能吞字符**（见下面解锁段的
+#   实测记录）。若解锁后仍停在原页，先怀疑口令没输进去，而不是怀疑路由。
+#   详见 docs/handoff/2026-10-02-stt-maestro-flow-not-closed-on-device.md。
+#
+#   本次真机验收走的是**不依赖 Maestro 驱动**的等价路径，结论同样有效：
 #     adb forward tcp:9333 localabstract:webview_devtools_remote_<pid>
 #     + CDP Runtime.evaluate 读 DOM 文本、element.click() 触发交互。
 #   为什么等价：这条流的断言**全部是文本断言**（assertVisible/NotVisible），
