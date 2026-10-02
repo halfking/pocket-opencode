@@ -641,8 +641,26 @@ M5  pending_high = 35
 
 ### 7.2 推送
 
-本轮 + 上一轮共 8 个提交在本地，**未推**。`origin/main` 持续前进
-（本轮开始时 behind 7 / ahead 13），需先 merge 再推。合并路径此前验证过零冲突。
+**2026-10-03 03:45 重测（上一版数字已作废）**：`origin/main` 已被并发会话推进到
+`7e615dbc`（一个把 `verify/e2e-20261002-v2` 合进 main 的 merge）。本地的
+ahead/behind 从 18/25 变成 **27/18**——所以**上一轮「behind 25、合并零冲突、
+四包全绿」的结论不能直接沿用**，已重做：
+
+| 项 | 结果 |
+|---|---|
+| `git merge --no-commit origin/main`（一次性 worktree，detached） | **零冲突**，`MERGE_HEAD` = `7e615dbc` 已核对 |
+| 合并规模 | 58 files changed, +5098 / −101 |
+| `go build ./...` | **EXIT=0** |
+| `internal/email`（带真 PG DSN） | ok 121.6s |
+| `internal/server` | ok 60.0s |
+| `internal/config` | ok 1.4s |
+| `internal/scheduledtask` | ok 4.9s |
+
+合并提交只存在于一次性 worktree（detached，未挂分支），验证后
+`git worktree remove` 已清理，主工作区与 `main` 未被触碰。
+
+**所以合并路径本身是通的**，仍**未推**，等授权。推之前请再 `git fetch` 一次——
+`origin/main` 在本轮内至少被推了 5 次。
 
 ### 7.3 其余待拍板（沿用上一轮清单，无变化）
 
