@@ -497,7 +497,27 @@ func (s *Store) SetSummaryScoped(ctx context.Context, id, userID, workspaceID, a
 //
 // 2026-10-01：冲突时**只**刷新 snippet，理由与边界见 SQL 注释。
 func (s *Store) InsertEmail(ctx context.Context, e Email) error {
-	_, err := s.pool.Exec(ctx,
+	_, err := s.InsertEmailIfNew(ctx, e)
+	return err
+}
+
+// InsertEmailIfNew 与 InsertEmail 写完全一样的一行，但**额外告诉你这是不是
+// 一封真正的新邮件**。
+//
+// 为什么需要它：ON CONFLICT (id) DO UPDATE 对「这行已经存在」是**成功**返回
+// 的（nil），不是错误。于是调用方无法区分「新入库」和「这封之前就同步过、
+// 这轮只是又拉了一遍」。而 fetcher 的两条路径都在 InsertEmail 之后无条件
+// `saved++`，于是**同一批被反复重拉的邮件会被报成「新邮件 N」**。
+//
+// 2026-10-02 真实证据：08:00 定时流水线报 new=2，但库里自前一晚 23:56:52
+// 起一行新邮件都没有（全量 120 行的 created_at 落在 14 秒内，是一次批量导入）。
+// 用户看到「整理完成：新邮件 2」，实际一封新的都没进来。
+//
+// 判据用 PostgreSQL 的 xmax 惯用法：INSERT 成功时 xmax=0；DO UPDATE 命中已有
+// 行时 xmax 非 0。它是 upsert 场景下唯一不额外多跑一次查询的可靠信号。
+func (s *Store) InsertEmailIfNew(ctx context.Context, e Email) (inserted bool, err error) {
+	var ins bool
+	err = s.pool.QueryRow(ctx,
 		// Two defects used to make this statement fail on every call, so no
 		// fetched email could ever be persisted:
 		//   1. a stray $19 with only 18 target columns ("INSERT has more
@@ -531,13 +551,14 @@ func (s *Store) InsertEmail(ctx context.Context, e Email) error {
 		`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments, created_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 			 ON CONFLICT (id) DO UPDATE SET
-			   snippet = CASE WHEN EXCLUDED.snippet <> '' THEN EXCLUDED.snippet ELSE emails.snippet END`,
+			   snippet = CASE WHEN EXCLUDED.snippet <> '' THEN EXCLUDED.snippet ELSE emails.snippet END
+			 RETURNING (xmax = 0) AS inserted`,
 		e.ID, e.AccountID, defaultWorkspace(e.WorkspaceID), nullStr(e.MessageID), e.UID,
 		e.FromAddress, e.FromName, e.Subject, e.Snippet, e.Date,
 		e.IsRead, e.IsStarred, e.Category, e.Importance, e.AISummary, e.SuggestedAction,
-		nullStr(e.ActionReason), e.HasAttachments, time.Now().Unix())
+		nullStr(e.ActionReason), e.HasAttachments, time.Now().Unix()).Scan(&ins)
 
-	return err
+	return ins, err
 }
 
 func (s *Store) Close() error { return nil }

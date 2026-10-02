@@ -813,11 +813,17 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 				}
 			}
 		tr.step(fmt.Sprintf("InsertEmail uid=%d", uid))
-		if err := f.store.InsertEmail(ctx, em); err != nil {
-			log.Printf("[email/fetcher] insert email uid=%d: %v", uid, err)
+		// 只有**真正插入新行**才算「新邮件」。InsertEmail 对已存在的 id 走
+		// ON CONFLICT DO UPDATE 并返回 nil，所以拿它的返回值判断新旧是不行的；
+		// 重复同步同一封时必须不计，否则「整理完成：新邮件 N」会虚报。
+		isNew, ierr := f.store.InsertEmailIfNew(ctx, em)
+		if ierr != nil {
+			log.Printf("[email/fetcher] insert email uid=%d: %v", uid, ierr)
 			continue
 		}
-		saved++
+		if isNew {
+			saved++
+		}
 		if uid > highestUID {
 			highestUID = uid
 		}
@@ -910,8 +916,10 @@ func (f *Fetcher) syncPOP3Fallback(ctx context.Context, acc *Account, cred strin
 			em.Snippet = fmt.Sprintf("parse error: %v", perr)
 			log.Printf("[email/fetcher] pop3 parse uidl=%s failed: %v", uidls[i], perr)
 		}
-		if err := f.store.InsertEmail(ctx, em); err != nil {
-			log.Printf("[email/fetcher] pop3 insert email uidl=%s: %v", uidls[i], err)
+		// 同 IMAP 路径：只把**真正新插入**的计入 new，重复同步不计数。
+		isNew, ierr := f.store.InsertEmailIfNew(ctx, em)
+		if ierr != nil {
+			log.Printf("[email/fetcher] pop3 insert email uidl=%s: %v", uidls[i], ierr)
 			continue
 		}
 		// POP3 同步是**唯一**能拿到这封邮件完整原文的机会：它的 UID 是位置
@@ -925,7 +933,9 @@ func (f *Fetcher) syncPOP3Fallback(ctx context.Context, acc *Account, cred strin
 			}
 		}
 		nowUIDLSeen = append(nowUIDLSeen, uidls[i])
-		saved++
+		if isNew {
+			saved++
+		}
 	}
 	if err := f.store.MarkPOP3UIDLSeen(ctx, acc.ID, nowUIDLSeen, now); err != nil {
 		log.Printf("[email/fetcher] mark pop3 seen: %v", err)
