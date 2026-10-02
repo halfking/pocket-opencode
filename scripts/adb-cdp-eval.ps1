@@ -12,6 +12,13 @@
 # 坐标换算（实测校准过）：CSS 像素 × devicePixelRatio = 设备像素。
 #   本机 360×820 CSS / dpr 2 / 720×1640，无状态栏偏移。
 #
+# 要截图时用 adb 的 screencap，不要走这里：同一台真机上曾出现
+# screencap 返回 0 字节文件的瞬时故障（三种调用方式同时中招），
+# 静止后重测即恢复正常 66,683 字节。**遇到 0 字节先重测，别当成环境限制。**
+# Windows 上 `adb shell screencap > file.png` 会被 CRLF 转码毁掉，
+# 用 exec-out + Start-Process -RedirectStandardOutput（见技能文档
+# references/adb-cheatsheet.md），或直接落设备再 adb pull（更稳）。
+#
 # 用法（PowerShell 5.1 下 ExecutionPolicy 会拦 .ps1，请用调用运算符在
 # 已加载脚本的会话里跑，或先 Set-ExecutionPolicy）：
 #   $code = [IO.File]::ReadAllText('scripts/adb-cdp-eval.ps1')
