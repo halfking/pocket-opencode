@@ -272,6 +272,26 @@ type PipelineReport struct {
 	//
 	// 注意这**不是**「发了多少条提醒」，两者不可互相替代。
 	RemindersOutOfWindow int `json:"remindersOutOfWindow,omitempty"`
+	// FeishuSkip 是「飞书推送这一步**根本没跑**」的原因，非空即表示本轮
+	// 飞书出站一步都没执行。
+	//
+	// 为什么必须有它（2026-10-02 真实库发现）：FeishuPushed 与 FeishuFailed
+	// 都是 0 时，下面两种情况在报告上**完全一样**：
+	//
+	//	「飞书没配，整步被跳过」
+	//	「飞书配了，但这轮没有需要推送的发票」
+	//
+	// 真实库里第二列的事实是前者——两张发票行 feishu_sent_at 都是 0，
+	// POCKET_FEISHU_APP_ID / APP_SECRET / INVOICE_CHAT_ID / INVOICE_FOLDER_TOKEN
+	// 四项在本机任何地方都没配，而 pushInvoiceSet 当时是**静默 return**，
+	// 报告上不留下任何痕迹。需求 3 的主交付物「发送到飞书上」于是看起来
+	// 像是「跑过了、0 条」，实际上是「一次都没跑过」。
+	//
+	// 和 RemindersUnclassified / RemindersOutOfWindow 是同一类问题的又一次：
+	// 缺的不是功能，是「没发生」与「发生了但结果是 0」之间的可区分性。
+	// 共享台账（PublishLedgerScoped）走同一个 client、同一个缺口，这里不重复
+	// 记一遍，避免两个字段说同一件事。
+	FeishuSkip string `json:"feishuSkip,omitempty"`
 	// RemindersPending 是「这轮**将要**推送的条数」——判定完候选、在真正
 	// 逐条 Notify 之前就记下来。
 	//
@@ -998,7 +1018,20 @@ func emailSubjects(emails []Email) []string {
 // pushInvoiceSet 把给定发票推飞书（下载文件读盘），成功标记 feishu_sent_at。
 // 推送失败保留 feishu_sent_at=0，由共享汇总文档兜底（需求允许两条路径）。
 func (p *Pipeline) pushInvoiceSet(ctx context.Context, invoices []Invoice, userID, workspaceID string, rep *PipelineReport) {
-	if p.Pusher == nil || !p.Pusher.Available() {
+	if p.Pusher == nil {
+		rep.FeishuSkip = "feishu pusher not configured"
+		return
+	}
+	if !p.Pusher.Available() {
+		// 这个函数每个 scope 调一次，所以只在第一次记时打日志，否则一轮
+		// 5 个账户就刷 5 行同样的告警，真正出事时反而看不见（与
+		// ClassifySkipOnce 同一个理由）。
+		if rep.FeishuSkip == "" {
+			log.Printf("[email/pipeline] 飞书推送被跳过：%s —— 本轮不会推任何发票到飞书，"+
+				"需求 3 的「发送到飞书」这一步没有执行。报告里 feishuSkip 非空即为此故。",
+				"feishu credentials missing (POCKET_FEISHU_APP_ID / APP_SECRET / INVOICE_CHAT_ID)")
+		}
+		rep.FeishuSkip = "feishu credentials missing (POCKET_FEISHU_APP_ID / APP_SECRET / INVOICE_CHAT_ID)"
 		return
 	}
 	var pushed []string
