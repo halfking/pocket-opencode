@@ -10762,3 +10762,55 @@ migrate 的 `CREATE TABLE emails`（store.go:63-88，26 列）里没有 updated_
 这与 §7ef 的教训是同一枚硬币的两面：
 §7ef 是**别把 false 当证据**，本节是**别把「出现在代码里」当证据**。
 两者都需要一个具体的量（这列有多少非空值）才能定性。
+
+## §7el — 补全 §7ej 断点 2 的因果：服务端有兜底，客户端没有
+
+§7ej 报「`updated_at IS NULL` ⇒ 增量请求永不返回」。本节把消费端读完，
+发现**服务端有一层兜底、客户端没有**，这让断点 2 的实际影响比 §7ej 描述的小，
+但也解释了为什么真库那 122 封「看起来是好的」。
+
+### 消费端的三个位置
+
+| 位置 | 取哪个值 | 有无兜底 |
+|---|---|---|
+| 服务端 `ListEmailsScoped`（store.go:1700-1705） | `e.UpdatedAt` | **有**：`== 0` 时回退 `e.Date` 并归一成毫秒 |
+| 客户端 `emails-store.ts:27` + `maxEmailUpdatedAt()` | 本地 `MAX(local_emails.updated_at)` | **无**：取到什么算什么 |
+| 客户端 `LocalEmail.updatedAt`（emails-store.ts:47） | 字段存在 | **无** |
+
+### 为什么真库那 122 封「有值」
+
+真库 `updated_at` 有值，是因为**它们被手动总结过**（`SetSummaryScoped` 写过）；
+而刚同步进来的两封是 NULL。走 `ListEmailsScoped` 时，
+那两封会被 `store.go:1700` 的兜底**改写成 `date`**（毫秒），
+所以响应体里它们的 `updatedAt` 其实是 `date` 的值，不是 NULL。
+
+**即服务端在读出口「修」了这个问题，客户端拿到的是一个看似正常的值。**
+这解释了为什么这个缺陷在真机上不容易显形——
+但它也意味着**服务端回填的 `date` 与真正被修改的时间无关**：
+一封 9 月 5 日的邮件若今天才被总结，它的 `updatedAt` 会跳到今天，
+让客户端把它当成「刚变更」重新拉取（幂等，无害），
+而一封 `updated_at` 真的为 NULL 且 `date` 很老的邮件，
+在客户端 `since` 超过它之后**永远拉不到增量更新**。
+
+### 因此断点 2 的准确表述
+
+- **不是**「所有 NULL 邮件都同步不到」——服务端兜底让它们至少能被首次拉取；
+- **是**「`updatedAt` 语义不可靠：它可能是 `date`（邮件时间）而非修改时间」，
+  导致 (a) 老邮件的更新可能被增量窗口跳过；(b) 时间线对不上（日期排序 vs 修改排序）。
+
+**修法 A（DDL 补列 + `InsertEmail` 填 `time.Now().Unix()`）同时解决语义与 DDL 两处**，
+并且会让 store.go:1700 的兜底变成 rarely-taken（而不是常态）。
+这一点强化了我倾向 A 的判断，但它仍然是行为变更，仍需拍板。
+
+### 顺带确认：客户端增量链路完整存在
+
+需求 6/7 的「本地优先 + 增量同步」在客户端是**真的实现了**，不是纸面需求：
+
+- `email-inbox-page.ts:27` `const since = await emailsStore.maxEmailUpdatedAt()`
+- `email-inbox-page.ts:30` `shouldRetryFullListPull(local.length, pulled, since)`
+  —— 拉取数异常时会**自动退回全量拉取**（`syncEmailsFromServer(200, 0)`），
+  这是一条对「增量失明」的**兜底路径**，
+  也解释了为什么 §7ej 的失明在真机上可能没被用户注意到。
+
+即需求 6/7 的客户端侧不是「未验」，而是「有实现、有兜底、但兜底会掩盖缺陷」。
+这与 §7eg/§7eh 的结论一致：**能力有覆盖，验收到什么程度要分开说。**
