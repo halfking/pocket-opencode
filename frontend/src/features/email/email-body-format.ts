@@ -89,9 +89,12 @@ const BLANK_LINE = /\r?\n\r?\n/
 export function extractEmailBody(raw: string): string {
   const src = (raw || '').trim()
   if (!src) return ''
-  if (!looksLikeMime(src)) return src
+  // 两条 fail-open，出口都必须剥首部：
+  // 「不是 MIME」与「解析不出部件」都可能是「一封没有 MIME 头的报文」，
+  // 直接 return src 就会把 From/Subject/Date 当正文渲染（见 stripMessageHeader）。
+  if (!looksLikeMime(src)) return stripMessageHeader(src)
   const parts = splitMimeParts(src)
-  if (!parts.length) return src
+  if (!parts.length) return stripMessageHeader(src)
 
   const html = parts.find((p) => p.contentType === 'text/html')
   if (html) {
@@ -153,13 +156,65 @@ function metaCharsetOf(html: string): string {
  */
 const MIME_HEAD_SCAN_LIMIT = 256 * 1024
 
+/**
+ * RFC 5322 的**核心**头字段名。用来判断「这是一封报文」而不是「一段正文」。
+ *
+ * 为什么不直接看「第一行像不像头字段行」：一封纯文本邮件的正文完全可以
+ * 写成 `Note: 已确认\r\n\r\n明天见` 这种形态，按「首行是 field-name」判就会把
+ * 正文的第一段剥掉。而 From / Subject / Date 这类字段名在正文里出现得极少，
+ * 拿已知字段名当锚点，误判面小一个数量级。
+ */
+const RFC5322_CORE_HEADER = /^(?:from|to|cc|bcc|sender|reply-to|subject|date|message-id|in-reply-to|references|return-path|received|mime-version|content-type|content-transfer-encoding|content-id|content-disposition)\s*:/i
+
+/**
+ * 判断输入是不是一封 RFC 5322 报文（首部字段行 + 第一个空行 + 正文）。
+ *
+ * ## 为什么要单独判
+ *
+ * 「不是 MIME」不等于「整段都是正文」。一封**没有 Content-Type** 的老式报文
+ * （部分老网关、老脚本发送方会省掉）同样是报文，它的 From / Subject / Date
+ * 属于协议头，不是正文。
+ *
+ * 2026-10-03 实测（与 54d2fc51 同一个缺陷类的另一个入口条件）：
+ * `extractEmailBody` 对这样一封邮件的 `looksLikeMime` 返回 false，于是走
+ * `return src` 把整段原文当正文返回——详情页首屏是
+ * `From: zhang@example.com` / `Subject: …` / `Date: …`。
+ *
+ * 上一轮修的是「头太长把 Content-Type 顶出窗口」，这一条是「压根没有 MIME
+ * 头」；两个入口都通向同一个 fail-open：`return src`。
+ */
+function looksLikeRFC5322Message(s: string): boolean {
+  const { headers, body } = splitHeadBody(s)
+  if (!body.trim()) return false
+  return headers.split(/\r?\n/).some((line) => RFC5322_CORE_HEADER.test(line.trim()))
+}
+
+/**
+ * 把报文的首部剥掉，只留正文；不是报文就原样返回。
+ *
+ * 这是所有「判定失败」的出口都必须过的那一道闸——**判定失败时的返回值本身
+ * 也要当成判据来审**。`return src` 看起来是「保守地什么都不做」，实际上
+ * 把协议头原样交给用户，比判错更难看。
+ */
+function stripMessageHeader(s: string): string {
+  if (!looksLikeRFC5322Message(s)) return s
+  return splitHeadBody(s).body
+}
+
 function looksLikeMime(s: string): boolean {
   // 结构判据：头部止于第一个空行（CRLF 与 LF 都认）。
   const head = splitHeadBody(s.slice(0, MIME_HEAD_SCAN_LIMIT)).headers
   if (/content-type\s*:/i.test(head) || /content-transfer-encoding\s*:/i.test(head)) return true
   if (/^mime-version\s*:/i.test(head)) return true
   // 非 multipart 的单部件 MIME 也可能只有边界式首行。
-  return /^--[\w'+=.-]+/m.test(s.slice(0, 200))
+  //
+  // 判据是「**首行**就是边界」，所以锚在字符串开头即可，**不设字符窗口**。
+  // 原来写的是 `/^--[\w'+=.-]+/m.test(s.slice(0, 200))`：窗口是当年随手挑的
+  // 一个「够用」数，作用是让失败静默——边界真在 200 字符之后时判据恒假，
+  // 而报出来的现象是「不是 MIME」，指向完全错误的方向。
+  // 去掉 `/m` 同时避免了另一种误判：正文里的分隔线（`---` 签名档、
+  // Markdown 的水平线）会让整段正文被判成 MIME。
+  return /^--[\w'+=.-]+/.test(s)
 }
 
 /** 递归解析 MIME 树，返回叶子部件（text/*、image/* 等实际内容）。 */
