@@ -20,6 +20,11 @@ coverage/
 # 而它**永远不该被提交**——里面是 base_fetcher.go 这类临时副本。
 # 规则写成前缀通配，是为了不必每来一个新临时目录就补一条。
 .scratch-*/
+# 2026-10-02：上面的 `.scratch-*/` **只匹配目录**（结尾斜杠的含义），
+# 而实际产生的临时文件是 `.scratch-xxx.txt` 这种带扩展名的普通文件，
+# 全部漏在版本控制之外，每次 git status 都要挂十几行噪声。
+# 去掉斜杠后同时覆盖目录与文件。
+.scratch-*
 
 # Nested git worktrees checked out INSIDE this repo (parallel branches under review).
 # These are full second checkouts (thousands of files); without this rule a stray
@@ -167,6 +172,10 @@ __pycache__/
 # 每个平台/架构都不同，入库只会让 git status 长期挂着未跟踪噪声，并诱导别人
 # `git add -A` 把几十 MB 的可执行文件提交进去。
 backend/.verify-bin/
+# 2026-10-02：真机验收时并行起了第二个实例，用 .verify-bin2 避免占用
+# 已经在跑的 .verify-bin 产物（那个二进制被别的会话/脚本按固定路径引用）。
+# 同理，端口不同的并行实例在 .verify-bin<N>/ 下，模式一并兜住。
+backend/.verify-bin*/
 # 需求 6 A 路线 wasm 探针的编译产物（单个 ~4-9MB，几乎全是 Go runtime）。
 # 由 scripts/wasmprobe-run.mjs 生成，用完自删；这里兜底防止手动构建时误提交。
 # 注意：frontend/public/assets/*.wasm 是**前端产物**，已在上面单独处理，别一起排除。
