@@ -104,14 +104,28 @@ cd backend && go build ./...                          → exit 0
 cd backend && go vet ./internal/config/... \
                   ./internal/email/... \
                   ./internal/notifycenter/... \
-                  ./internal/server/...               → exit 0
-cd backend && go test ./... -count=1                   → 见 §5
+                  ./internal/server/... \
+                  ./internal/repohygiene/...          → exit 0
+cd backend && go test ./... -count=1                   → exit 0，FAIL/--- 过滤输出为空
 ```
 
-（早前在同源码的更小范围上：`config` / `email` / `email/rules` / `notifycenter` /
-`feishu` / `server` 全部 ok，exit 0。）
+**注意：上面这条 `go test ./...` 第一次跑是红的**，唯一失败的是
+`internal/repohygiene` 的 `TestNoCommittedSecrets`（见 §5.2）。修完后重跑全绿。
 
-### 3.4 前端
+### 3.4 一个我造成又改掉的多余改动（记下来）
+
+用 `readFileSync`/`writeFileSync` 批量给 handoff 表格加标记时，我的正则带了
+`\s*$`，它把**表格最后一行与后面引用块之间的那个空行**一起吃掉了。
+`git show --numstat` 报出 `3 4` 而不是 `3 3`，暴露了它——我最初的断言
+（文件体积没异常缩水、行数没变）都没覆盖到这种「少一个空行」的情况。
+
+已用第二个脚本按「最后一个带标记的行 + 其后紧跟的非空行」这个形状精确定位并补回，
+`--amend` 后该提交对父提交是干净的 `3 3`，`go test ./internal/repohygiene/...` 仍绿。
+
+教训：**体积断言只挡得住大改动，挡不住「刚好少一行」。** 批量改别人的文件时，
+`--numstat` 的增删比是最便宜的自证手段——增删不对称就该立刻去看 diff。
+
+### 3.5 前端
 
 ```
 cd frontend && node node_modules/vue-tsc/bin/vue-tsc.js --noEmit
@@ -158,47 +172,133 @@ worktree 里 tracked 文件的 mtime。
 
 ---
 
-## 5. 遗留风险与未完成项
+## 5. 第二个发现：`TestNoCommittedSecrets` 在 origin/main 上就已经是红的
 
-| 项 | 状态 | 说明 |
-|---|---|---|
-| `go test ./...` 全包结果 | 见下节 | 全包含 server/email 等大包，耗时长；若与上文小范围结果不一致，以后者为准并重跑 |
-| 主工作区约 180 个未跟踪文件 | **未处理** | 绝大多数是同伴的 `.scratch-*.txt`、`.scratch/`、`frontend/dist/`、`downloads/`、`tmp-speech.wav`、`fe-test.txt` 等一次性垃圾。`.gitignore` 没有覆盖 `.scratch-*`，随时可能被某次 `git add -A` 卷进去。**属另一个会话的工作范围，本轮没动。** |
-| `scripts/_patch-unlock.mjs` | 未处理 | 0 字节死文件，未跟踪 |
-| `scripts/route-coverage-sweep.mjs` / `route-usage-crossref.mjs` | **建议入库** | 25KB + 50KB 的成品审计工具：前者把 `server.go` 注册的 139 条路由逐条探活分类；后者对账「注册了什么」与「产品代码有人调吗」，且自带 v1 判据正则的四种失效分析。这两个是这批未跟踪文件里唯一有长期价值的，烂在工作区可惜 |
-| `C:\workspace\openpocket-wt-a20` 孤儿目录 | **删除失败** | `git worktree remove` 报 `Invalid argument`（Windows 深层路径），改走可恢复删除路由后 `mavis-trash` 报 `The system call level is not correct`，同样失败。按规则**没有绕过**改用永久删除。目录已无 `.git`、已从 worktree 注册表移除，3694 个条目仍在磁盘上，可手工删 |
-| `C:\workspace` 下另有 10 个旧 worktree 目录 | 未处理 | `openpocket-wt-{apkbuild,base,maildeploy,mergeprobe,r9,snippet,stt}`、`wt-{audit,mailfix,verify}`，均非本仓库注册 worktree，是历轮遗留孤儿 |
-| 本机代理端口 | 已验活 | `~/.ssh/config` 写 7897，实测 7897 通、7890/10809/1080 不通。推送前先 `Test-NetConnection` 验活，别照抄任何记录里的端口号 |
+`go test ./...` 全包跑下来唯一失败项，命中 6 行：
 
-### 5.1 我明确**没有**验证的
+```
+docs/handoff/2026-09-30-android-e2e-bug-d-e-f.md:9449-9451
+docs/handoff/_part-4.87.md:81-83
+```
 
-- 主工作区那批未提交 WIP 是否能编译、是否自洽——**没验**，因为它每分钟都在变，
-  测出来的结果对应的是哪个时刻的文件无法确定。
-- 本轮没做真机验收。全部结论都来自代码与本地测试。
-- `go test ./...` 的完整包级结果需要在 §5 表格里对上；若出现与 §3.3 小范围结果
-  不一致的包，以实际输出为准并重跑。
+### 5.1 先做对照，再定性
+
+- `git log origin/main..audit/round26 -- <这两个文件>` **为空** ⇒ 本轮提交没碰过它们
+- `git show origin/main:<文件> | grep -c SomeRe` 两个文件**各 3 行** ⇒ 命中行在
+  origin/main 上就已存在，由 `04bfc5e8` / `5b123d07` 引入
+
+⇒ **是既有失败，不是我引入的回归。** 这一步不能省：把别人的锅算到自己头上，
+和把自己的锅推给别人一样，都比查清楚更糟。
+
+### 5.2 定性：合成夹具，不是真密钥
+
+那 6 行是 markdown 表格，右列写的是「命中」——它们本身就是 `password-literal`
+这条规则的文档化演示（讲清楚哪些写法会被这条正则拦下），值是 `SomeRealPassword123`
+之类的占位串。与 `secrets_test.go` 自身被整文件豁免属同一类情形。
+
+### 5.3 修法：逐行豁免，不做整文件豁免
+
+扫描器自己偏好的档位是「同一行出现 `secret-scan-ok` 即放行」，且明确规定
+**不允许目录级或全局白名单**。这里没走整文件豁免，因为这两个 handoff 正被并发
+会话持续追加（§4.94 当时正在写），整文件放行意味着将来谁往里面贴一个**真** key
+也会被一并放过。
+
+标记写成行尾 HTML 注释 `<!-- secret-scan-ok：… -->`：markdown 渲染不可见，但原始行
+里含标记，判据的 `strings.Contains(line, exemptionMarker)` 能命中。
+**没有为了迁就夹具去放宽 `secrets_test.go` 里的判据。**
+
+改完 `go test ./internal/repohygiene/... -count=1` → ok, exit 0。
+
+### 5.4 抄判据时踩的坑
+
+写补标脚本时我用 `/\b(?:pass|pwd)\b/` 去找目标行——那要求 `pass`/`pwd` 是独立词，
+于是 `adminPass`、`devPass` 都不匹配，每文件只改到 1 行。是**行数断言**
+（预期 6、实际 2）抓住的，不是肉眼。扫描器自己那条规则的形状是
+`(?i)\b[A-Za-z_]*(?:pass|pwd)[A-Za-z_]*\b`——标识符**含** pass/pwd 且大小写不敏感。
+
+抄一条判据时要把它的**匹配形状**一并抄准，不要凭印象重写。
 
 ---
 
-## 6. 下一轮提示词
+## 6. 遗留风险与未完成项
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| `verify/e2e-20261002-v2` + `.wt-e2e` | **本轮按用户决定保留** | 分支已 100% 合入 origin/main，但 worktree 正被活跃会话实时写入：11 个 tracked 脚本有未提交改动（+107/-18）、2 个新脚本、handoff §4.94、5 个 `.tmp-*.txt`，无 commit 无 stash 兜底。**删了就是真丢**，等那个会话收尾后再处理 |
+| `C:\workspace\openpocket-wt-r26` + `audit/round26` | **保留** | 已 100% 推入 origin/main，代码不会丢。留着是因为它的 `frontend/node_modules` 是指向主工作区的**目录联接**，而主工作区正被同伴使用；对联接执行 `git worktree remove` 有误删目标的风险。下一轮要清它时，**先单独删联接，再删 worktree** |
+| 主工作区约 180 个未跟踪文件 | 未处理 | 绝大多数是同伴的 `.scratch-*.txt`、`.scratch/`、`frontend/dist/`、`downloads/`、`tmp-speech.wav`、`fe-test.txt` 等一次性垃圾。`.gitignore` 没覆盖 `.scratch-*`，随时可能被某次 `git add -A` 卷进去。属另一个会话的工作范围 |
+| `scripts/_patch-unlock.mjs` | 未处理 | 0 字节死文件，未跟踪 |
+| `scripts/route-coverage-sweep.mjs` / `route-usage-crossref.mjs` | **建议入库** | 25KB + 50KB 的成品审计工具：前者把 `server.go` 注册的 139 条路由逐条探活分类；后者对账「注册了什么」与「产品代码有人调吗」，且自带 v1 判据正则的四种失效分析。这批未跟踪文件里唯一有长期价值的 |
+| `scripts/check-runtime-data-tracked.mjs` 没接进门禁 | **真实缺口** | 本轮只加了脚本，**没接进 `npm run gates` 任何一环**。所以它不会在常规流程或 CI 里自动跑，作为「防回归护栏」目前是半成品。下一轮优先补 |
+| `C:\workspace\openpocket-wt-a20` 孤儿目录 | **删除失败** | `git worktree remove` 报 `Invalid argument`（Windows 深层路径），改走可恢复删除路由后 `mavis-trash` 报 `The system call level is not correct`，同样失败。按规则**没有绕过**改用永久删除。目录已无 `.git`、已从注册表移除，3694 个条目仍在磁盘上，可手工删 |
+| `C:\workspace` 下另有 10 个旧 worktree 目录 | 未处理 | `openpocket-wt-{apkbuild,base,maildeploy,mergeprobe,r9,snippet,stt}`、`wt-{audit,mailfix,verify}`，均非本仓库注册 worktree，是历轮遗留孤儿 |
+| 本机代理端口 | 已验活 | `~/.ssh/config` 写 7897，实测 7897 通、7890/10809/1080 不通 |
+
+### 6.1 我明确**没有**验证的
+
+- 主工作区那批未提交 WIP 是否能编译、是否自洽——**没验**，它每分钟都在变。
+- `.wt-e2e` 里那 20 项在制品能否编译——**没验**，同理由。
+- 本轮**没有做真机验收**。全部结论来自代码与本地测试。
+
+---
+
+## 7. 本轮推送
+
+`origin/main` → `0fbba2e6`（`git ls-remote origin refs/heads/main` 核实过，不只看 push 的回显）。
+
+本轮自己的提交（从新到旧）：
+
+| 提交 | 内容 |
+|---|---|
+| `0fbba2e6` | docs(handoff)：本文件 |
+| `f66210a7` | fix(repohygiene)：6 行合成示例逐行豁免，`TestNoCommittedSecrets` 转绿 |
+| `69837eaa` | merge(main)：`.gitignore` 冲突取并集（两侧是同一次发现） |
+| `84e320d0` | Merge origin/main into audit/round26 |
+| `1b4499f1` | fix(gitignore)：并入并发会话的发现（两个落盘目录 + backend/data 侧） |
+| `3adb04ba` | fix(gitignore)：`data/` 整目录忽略 + 新增卡口 |
+
+分支清理：`audit/round20`、`mvs/email-fixes-20261002` 已删（均 100% 合入，用
+`git branch -d` 让 git 自己把关，没用 `-D`）。
+
+---
+
+## 8. 下一轮提示词
 
 ```
-审计 openpocket：接着 round27 往下做，重点是它列出的「遗留风险」表。
+审计 openpocket：接着 round27 往下做，重点是它 §6「遗留风险」表里标着
+「未处理 / 真实缺口」的那几项。先读那个文件，别重复本轮已做完的事。
 
-1. 先查并发：`mavis session list`（过滤非归档） + 各 worktree tracked 文件 mtime。
-   如果还有别的会话在写 C:\workspace\openpocket，继续用独立 worktree 干活，
-   不要碰主工作区，也不要提交它的未提交 WIP。
-2. 补上 round27 没做完的：
-   - 跑 `cd backend && go test ./... -count=1` 拿全包结果，对上 §5 表格
-   - 处理主工作区约 180 个未跟踪文件：判断 scripts/route-coverage-sweep.mjs 和
-     scripts/route-usage-crossref.mjs 值不值得正式入库（我认为值得），
-     .scratch-* 那一堆建议加进 .gitignore 而不是逐个删
-   - C:\workspace\openpocket-wt-a20 孤儿目录：可恢复删除路由已实测失败，
-     需要你决定是手工删还是继续留着
-3. 检查 scripts/check-runtime-data-tracked.mjs 有没有接进前端 gates 脚本
-   （npm run gates 那条链）——本轮只加脚本，没接进任何门禁，所以它目前
-   不会在 CI 或常规流程里自动跑。这是它作为「防回归护栏」的一个真实缺口。
-4. 常规：审计 → 修正 → 验证 → 提交 → 推 origin/main；推送前先
-   Test-NetConnection 验活代理端口，推大改动时加
+优先级从高到低：
+
+1. 把 scripts/check-runtime-data-tracked.mjs 接进 npm run gates。
+   本轮只加了脚本没接门禁，所以它不会自动跑——作为防回归护栏目前是半成品。
+   门禁跑在 frontend/ 下，注意 runner 真路径是 frontend/scripts/run-mjs-tests.mjs，
+   不是仓库根的 scripts/run-mjs-tests.mjs（那个文件不存在）。
+   接完要跑一次负控：临时 git add -f 一个 data/ 下的文件，确认 gates 真的会红。
+
+2. 处理 .wt-e2e（verify/e2e-20261002-v2）。本轮按用户决定保留，理由是当时
+   有 20 项在制品没提交、且会话还在实时写。**动手前先重新查它的状态**：
+   git -C .wt-e2e status --porcelain + tracked 文件 mtime。若已收尾提交，
+   删 worktree 再 git branch -d；`git worktree remove` 在本机可能报
+   Invalid argument（深层路径），那种情况下报告并交回用户决定，不要自行绕。
+
+3. 处理主工作区约 180 个未跟踪文件：判断 scripts/route-coverage-sweep.mjs 和
+   scripts/route-usage-crossref.mjs 值不值得正式入库（本轮认为值得，
+   它们是这批里唯一有长期价值的成品工具），.scratch-* 那一堆建议加进
+   .gitignore 而不是逐个删。
+
+4. 收尾 worktree 清理：C:\workspace\openpocket-wt-a20 孤儿目录（可恢复删除
+   路由已实测失败，需用户决定），以及 C:\workspace 下另有 10 个历轮遗留孤儿目录。
+   清 openpocket-wt-r26 时**先删 frontend/node_modules 目录联接再删 worktree**，
+   它是指向主工作区的联接，直接删 worktree 有误删目标的风险。
+
+5. 常规：审计 → 修正 → 验证 → 提交 → 推 origin/main。
+   推送前先 Test-NetConnection 127.0.0.1 -p 7897 验活代理
+   （端口会漂，别照抄任何记录里的端口号），推大改动时加
    GIT_SSH_COMMAND='ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=20'。
+
+开工第一步永远是查并发：mavis session list 过滤非归档 + 各 worktree tracked
+文件 mtime。这轮开工时发现 3 个会话在同一个主工作区实时写入，其中一个正把
+backend/internal/feishu/handler.go 改写成负控状态。status 稳定只说明树没变，
+不代表没人在写。发现有并发就用独立 worktree 干活。
 ```
