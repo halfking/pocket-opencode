@@ -120,11 +120,42 @@ func TestRealImapPrimaryPath(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, dsn)
+	// 【2026-10-02 修正】原来直接 `pgxpool.New(ctx, dsn)`，完全依赖 DSN 自带的
+	// search_path，而门控只有 PG_DSN + POCKET_REAL_KEYS 两个变量——
+	// 没有第二个变量告诉它「该读哪个 schema」。
+	//
+	// 本文件通过 NewStore(pool) 访问数据，而 Store 的 SQL 一律**不带 schema
+	// 限定符**（如 `SELECT uid FROM emails WHERE account_id=$1`），
+	// 所以它查哪个库完全由连接的 search_path 决定。打错库的后果是
+	// 探针扫到空集并输出「没有这批邮件」——与 reminder_notified_diag_test.go
+	// 同型（那里更进一步，会输出「不是缺陷」的结论）。
+	//
+	// 修法与姊妹文件统一：ParseConfig + RuntimeParams 覆盖式设置 + 当场验证。
+	// 目标 schema 从 PG_DSN 的 query 参数读出（不引入新门控变量，
+	// 因为这个文件的前提就是「PG_DSN 指向真库」，它已经带了 search_path）。
+	schema, serr := dsnSearchPathFromDSN(dsn)
+	if serr != nil {
+		t.Skipf("PG_DSN 未带 search_path 参数（%v）；本探针必须明确读哪个 schema", serr)
+	}
+	cfg, cerr := pgxpool.ParseConfig(dsn)
+	if cerr != nil {
+		t.Fatalf("parse dsn: %v", cerr)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal("pool:", err)
 	}
 	defer pool.Close()
+	// 当场验证：「以为钉住了」正是这个缺陷家族的特征。
+	var resolvedSchema string
+	if err := pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&resolvedSchema); err != nil {
+		t.Fatalf("verify search_path: %v", err)
+	}
+	if resolvedSchema != schema {
+		t.Fatalf("search_path 未生效：期望 %q，连接实际落在 %q。", schema, resolvedSchema)
+	}
+	t.Logf("search_path verified: current_schema() = %q", resolvedSchema)
 	store, err := NewStore(pool)
 	if err != nil {
 		t.Fatal("store:", err)

@@ -35,6 +35,12 @@ package server
 //	   规则 4 独立生效：allowlist 内的文件出现 SQL 写语句时，
 //	   必须把写语句登记进 pgAllowlistedWrites 并说明它为什么安全，否则判红。
 //	   豁免的语义从此是「不豁免写」。
+//	5. **豁免表内的文件若直连数据库，就必须显式钉 search_path。**
+//	   同样源于 allowlist 的一次性放行：规则 2 只要求出现 `*_test_` 字面量，
+//	   而真库诊断**不该**有那种 schema——它们「豁免隔离」后就没有任何东西
+//	   约束它查哪个库了。2026-10-02 复核时发现两个文件从未设置 search_path，
+//	   危害不是读到脏数据，而是**产出假结论**：查空库时
+//	   `if highUnnotified == 0 { 不是缺陷 }` 必然成立。
 //
 // 新增 PG 测试助手时若忘了隔离，本护栏会在 CI 里直接失败。
 
@@ -52,6 +58,58 @@ var pgOpenRe = regexp.MustCompile(`pgxpool\.New|pgx\.Connect|sql\.Open\(\s*"post
 
 // isolatedSchemaRe 要求文件里存在自建测试 schema 的字面量前缀。
 var isolatedSchemaRe = regexp.MustCompile(`"(\w*_test_)`)
+
+// dsnSearchPathHelperReUnpinned 匹配「读了 DSN 却不钉 search_path」的形态。
+//
+// 2026-10-02 复核豁免表时发现的第三个盲区（规则 5 的判据）：
+// 一个文件在 pgSafeWithoutIsolation 里被豁免，理由写「只读真实库探针」，
+// 但它 `pgxpool.New(ctx, dsn)` 之后**从不设置 search_path**——
+// 于是它查哪个库完全由 DSN 自带的那个决定。
+//
+// 危害不在于「读到脏数据」，而在于**产出假结论**：
+// reminder_notified_diag_test.go 的判据是
+//     if highUnnotified == 0 { 结论：remindersSent=0 符合设计，不是缺陷 }
+// DSN 指向 public 而非生产 schema 时它扫到 0 行，highUnnotified 自然是 0，
+// 于是输出「不是缺陷」。**查空库永远「符合设计」。**
+//
+// 同型的 realprobe_test.go 通过 NewStore(pool) 读，Store 的 SQL 不带 schema
+// 限定符，同样完全依赖 search_path。
+//
+// 反例（这些**不**该被判红）：
+//   · 显式带 schema. 前缀的查询（`FROM <schema>.emails`）——不依赖 search_path；
+//   · 刻意不钉的（diag_schema_present_test.go：它要站「默认视角」查
+//     schema 是否存在，查的是 information_schema 不是业务表）。
+// 这两类靠本判据抓不到，所以规则 5 只在「用了 pgxpool.New(直连) 且全文无
+// search_path 相关代码」时报警——宁可漏报，不可对正确写法误报。
+var dsnSearchPathHelperReUnpinned = regexp.MustCompile(`pgxpool\.New\s*\(\s*ctx\s*,`)
+
+// searchPathAnyRe 匹配**真正设置** search_path 的赋值形态。
+//
+// 【为什么不是 `search_path` 字面量】第一版就写成 `regexp.MustCompile("search_path")`，
+// 结果负控时判据**恒不转红**：即便把 RuntimeParams 那行删掉，文件里剩下的
+// `t.Fatalf("verify search_path: %v")`、`t.Logf("search_path verified: ...")`
+// 这些**运行时字符串**仍在代码里，字面量照样命中。
+// 「提到 search_path 这个词」不等于「设置了 search_path」——
+// 这与 round14 那条「[A-Za-z_] 后面接 \b 是静默陷阱」同源：
+// 判据锚在了错误的位置，于是恒真或恒假，而且不报错。
+//
+// 现在要求赋值形态：`...["search_path"] = ...`（覆盖式）或
+// `search_path=` 出现在字符串拼接里（拼接形态已被规则 3 判红，这里只做兜底）。
+var searchPathAnyRe = regexp.MustCompile(`(?:\[\s*"search_path"\s*\]\s*=|search_path=|"search_path"\s*:)`)
+
+// qualifiedTableRe 匹配「查询里显式带 schema 前缀」的两种写法。
+//
+// 2026-10-02 规则 5 的判据收窄时补的：这批诊断探针
+// （diag_backfill_align / diag_dup_report / diag_merge_plan /
+// diag_pop3_backfill / diag_pop3_invoice）每条查询都写成
+//
+//	FROM `+schema+`.emails
+//	FROM schema.emails
+//
+// 也就是说它们**完全不依赖 search_path**——查哪个库由 SQL 自己写死了。
+// 规则 5 必须放过这种正确写法，否则就是逼人把安全代码改危险。
+var qualifiedTableRe = regexp.MustCompile("(?i)FROM\\s+`?\\+?schema\\+?`?\\.")
+
 
 // productionDSNRe 匹配测试**代码**里对生产 DSN 变量字面量的引用。
 //
@@ -254,7 +312,7 @@ var pgSafeWithoutIsolation = map[string]string{
 	//     ——ledger_realdata_diag_test.go 的注释记的就是这个坑。
 	"internal/email/diag_schema_present_test.go":    "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN + POCKET_DIAG_SCHEMA（目的是查真实 schema 在不在）",
 	"internal/email/ledger_realdata_diag_test.go":   "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（核对台账合计口径在真实数据上的变化）",
-	"internal/email/reminder_notified_diag_test.go": "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN（核对 remindersSent 计数在真实数据上的来源）",
+	"internal/email/reminder_notified_diag_test.go": "只读真实库探针：0 写语句；**2026-10-02 复核发现它此前从不设置 search_path**，危害是产出**假结论**——它的判据 `if highUnnotified == 0 { 不是缺陷 }` 在查空库时必然成立。现已改为 RuntimeParams 覆盖 + current_schema() 验证。登记在 pgAllowlistedWrites 的理由同上（该文件在规则 5 下受检）",
 
 	// ===== 2026-10-02 合并 email 分支时本护栏新增判红的 7 个，逐个核过 =====
 	//
@@ -268,7 +326,7 @@ var pgSafeWithoutIsolation = map[string]string{
 	"internal/email/diag_dup_report_test.go":      "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（重复副本预演报表，产出为报告不落库）",
 	"internal/email/diag_merge_plan_test.go":       "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（合并迁移**预演**，只出计划不执行）",
 	"internal/email/diag_rest_dupes_test.go":      "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（剩余重复候选的定性排查）",
-	"internal/email/realprobe_test.go":            "只读真实库探针：0 写语句；search_path 显式指向 POCKET_REAL_MAIL_SCHEMA（目的就是读真实 schema，自建隔离 schema 反而会查出「数据没了」的假结论）",
+	"internal/email/realprobe_test.go":            "只读真实库探针：0 写语句；**2026-10-02 复核发现它此前从不设置 search_path**（只靠 PG_DSN 自带的那个），而它经 NewStore(pool) 读、Store 的 SQL 一律不带 schema 限定符，打错库会扫到空集。现已改为从 DSN 读出目标 schema 后 RuntimeParams 覆盖 + current_schema() 验证。登记在 pgAllowlistedWrites 的理由是「由 pgscope_test.go 的 dsnSearchPathFromDSN 解析 PG_DSN 的 search_path」，该函数有 7 个分支的测试",
 	//
 	// 第 2 组：**这个文件本身是隔离助手**，它实现隔离而不是违反隔离。
 	// pgscope_test.go 提供 newScopedPool（search_path 只指向调用方建好的
@@ -341,7 +399,12 @@ var pgAllowlistedWrites = map[string]string{
 	// 字样（t.Logf「重启 pocketd 会重新 CREATE SCHEMA 并跑迁移」），
 	// 规则 4 的正则分不出字符串是 SQL 还是提示文本，所以登记在册。
 	// 登记的是「这条 CREATE SCHEMA 是提示文本」这个事实，不是豁免写权限。
-	"internal/email/diag_schema_present_test.go": "只读真实库探针，可执行代码 0 写语句；登记原因是输出模板 t.Logf 里含「重启 pocketd 会重新 CREATE SCHEMA 并跑迁移」这句**提示文本**（非可执行 SQL），规则 4 的正则无法区分字符串用途",
+	"internal/email/diag_schema_present_test.go": "只读真实库探针，可执行代码 0 写语句；登记原因是输出模板 t.Logf 里含「重启 pocketd 会重新 CREATE SCHEMA 并跑迁移」这句**提示文本**（非可执行 SQL），规则 4 的正则无法区分字符串用途。该文件**刻意不钉 search_path**（L64 写明：要站「默认视角」），查的是 information_schema 而非业务表，故规则 5 不适用",
+
+	// 这两个 2026-10-02 复核时发现「从不设置 search_path」的文件。
+	// 危害是产出假结论，已修为 RuntimeParams 覆盖 + current_schema() 验证。
+	"internal/email/reminder_notified_diag_test.go": "只读真实库探针：0 写语句。**2026-10-02 复核发现它此前从不设置 search_path**（只靠 DSN 自带的），而它的判据是 `if highUnnotified == 0 { 结论：不是缺陷 }`——DSN 指向 public 时它扫到 0 行，该判据**必然成立**，于是输出「不是缺陷」。**查空库永远「符合设计」。** 已改为 ParseConfig + RuntimeParams 覆盖，并在查询前用 current_schema() 验证",
+	"internal/email/realprobe_test.go": "只读真实库探针：0 写语句。**2026-10-02 复核发现它此前从不设置 search_path**，而它经 NewStore(pool) 读、Store 的 SQL 一律不带 schema 限定符，打错库会扫到空集并输出「没有这批邮件」。已改为由 pgscope_test.go 的 dsnSearchPathFromDSN 读出目标 schema 后 RuntimeParams 覆盖 + current_schema() 验证",
 
 	// 合并重复副本的执行探针，三道闸门：POCKET_DIAG_MERGE_EXEC=1 显式开关；
 	// POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA 显式指定目标库；
@@ -572,6 +635,57 @@ func TestPGTestsNeverTargetTheProductionSchema(t *testing.T) {
 				"  若你确认这个函数名不涉及 search_path 拼接，改个名即可。", rel)
 		}
 
+		// 规则 5：豁免表内的文件若**直连**（pgxpool.New(ctx, dsn)），
+		// 就必须显式钉 search_path。
+		//
+		// 存在理由：2026-10-02 复核豁免表的登记理由时发现两个文件从未设置过
+		// search_path——reminder_notified_diag_test.go 与 realprobe_test.go。
+		// 它们的危害不是「读到脏数据」，而是**产出假结论**：
+		// reminder 那个的判据是 `if highUnnotified == 0 { 不是缺陷 }`，
+		// DSN 指向 public 时它扫到 0 行，于是输出「不是缺陷」。
+		// **查空库永远「符合设计」。**
+		//
+		// 【判据收窄的过程，勿改回宽版】第一版只判「直连 + 全文无
+		// search_path 字样」，结果判红 6 个文件，而其中 6 个**全是误报**：
+		// diag_backfill_align / diag_dup_report / diag_merge_plan /
+		// diag_pop3_backfill / diag_pop3_invoice 的每条查询都带**显式
+		// schema 前缀**（`FROM `+schema+`.emails`），根本不依赖 search_path；
+		// fetcher_greenmail_test.go 则自建了 `email_greenmail_test_` schema，
+		// 由 newScopedPool 覆盖 search_path。
+		// （收窄分两步：先加「无 `*_test_` schema」仍判红 4 个——
+		//  因为 isolatedSchemaRe 要求双引号字面量 `"(\w*_test_)`，
+		//  而这几个文件是 `+schema+` 拼接，没有那个字面量。
+		//  最后补上 qualifiedTableRe 才彻底收住。**两次都是我的判据太宽**，
+		//  不是这些文件有错。）
+		//
+		// 收窄后的判据：直连 + 无 search_path + 无 `*_test_` schema +
+		// 无显式 schema 前缀。四者同时成立才意味着**完全无从判断目标库**。
+		// 残留盲区（明说，不假装覆盖）：大部分查询带显式前缀、只有一处
+		// 未限定的文件，判据看不见。宁可漏报，不可对正确写法误报。
+		if _, exempt := pgSafeWithoutIsolation[rel]; exempt &&
+			dsnSearchPathHelperReUnpinned.MatchString(code) &&
+			!searchPathAnyRe.MatchString(code) &&
+			!isolatedSchemaRe.MatchString(code) &&
+			!qualifiedTableRe.MatchString(code) {
+			t.Errorf("%s: 在 pgSafeWithoutIsolation 里被豁免，直连数据库"+
+				"（pgxpool.New(ctx, dsn)），且既没有设置 search_path、"+
+				"也没有自建 `*_test_` schema。\n"+
+				"  它查哪个库完全无从判断，于是：\n"+
+				"    · DSN 指向 public 时，未限定表名的查询会扫到空集；\n"+
+				"    · 而「扫到空集」在这些诊断里会变成**假结论**——\n"+
+				"      reminder_notified_diag_test.go 的判据是\n"+
+				"        if highUnnotified == 0 { 结论：不是缺陷 }\n"+
+				"      查空库时 highUnnotified 必然是 0，于是输出「不是缺陷」。\n"+
+				"  2026-10-02 实测：reminder_notified_diag_test.go 与 realprobe_test.go\n"+
+				"  正是这个形态（姊妹文件 diag_snippet_leak_test.go / spam_realdata_test.go\n"+
+				"  都显式钉了 schema，只有这两个没有）。\n"+
+				"  修法二选一：\n"+
+				"    a) ParseConfig 后写 RuntimeParams[\"search_path\"] = schema + \",public\"，\n"+
+				"       并用 SELECT current_schema() 读回验证（推荐）；\n"+
+				"    b) 所有查询都带显式 `schema.` 前缀，完全不依赖 search_path——\n"+
+				"       本判据看到 `*_test_` 或 schema 前缀就会放过，所以这种写法安全。", rel)
+		}
+
 		// 规则 4：**豁免表内**的文件仍要登记它有哪些写语句。
 		//
 		// 这条规则存在的唯一理由：旧设计里「在 pgSafeWithoutIsolation 里」
@@ -716,6 +830,82 @@ func TestSearchPathHelperJudgeIsNotVacuous(t *testing.T) {
 		if dsnSearchPathAppendRe.MatchString(ok) {
 			t.Errorf("正确的覆盖式设置被字面判据判红：%q", ok)
 		}
+	}
+}
+
+// TestRule5SearchPathJudgesAreNotVacuous 钉住规则 5 的三个判据
+// （dsnSearchPathHelperReUnpinned / searchPathAnyRe / qualifiedTableRe）。
+//
+// 这条测试存在是因为一次负控失败：第一版把 searchPathAnyRe 写成
+// `regexp.MustCompile("search_path")`——匹配**字面量**。于是把
+// RuntimeParams 那行删掉之后判据**仍然转不了红**，因为文件里剩下的
+//     t.Fatalf("verify search_path: %v", err)
+//     t.Logf("search_path verified: current_schema() = %q", …)
+// 这些**运行时字符串**里照样有那个词。
+//
+// 「提到 search_path」不等于「设置了 search_path」。判据锚错了位置就会
+// 恒真，而且不报错——判据「看起来在工作」，因为它确实匹配了东西，
+// 只是匹配的是错误的东西。
+//
+// 负控：把 searchPathAnyRe 改回 `search_path` 字面量，本测试必须转红。
+func TestRule5SearchPathJudgesAreNotVacuous(t *testing.T) {
+	// searchPathAnyRe 正向：真正的赋值形态。
+	for _, ok := range []string{
+		`cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"`,
+		`cfg.ConnConfig.RuntimeParams["search_path"] = schema`,
+		`RuntimeParams["search_path"] = schema`,
+		`dsn = dsn + "&search_path=" + schema`, // 拼接形态（规则 3 主判据，兜底）
+	} {
+		if !searchPathAnyRe.MatchString(ok) {
+			t.Errorf("searchPathAnyRe 漏掉了赋值形态 %q——规则 5 会把正确写法判红。", ok)
+		}
+	}
+
+	// searchPathAnyRe 反向：**只提到**而没有赋值，必须放过。
+	// 这几条正是让第一版判据恒真的输入。
+	for _, notSet := range []string{
+		`t.Fatalf("verify search_path: %v", err)`,
+		`t.Logf("search_path verified: current_schema() = %q", s)`,
+		`t.Skip("PG_DSN has no search_path parameter")`,
+		`// 刻意不钉 search_path：要站在「默认视角」看这个 schema 还在不在`,
+		`u.Query().Get("search_path")`,
+	} {
+		if searchPathAnyRe.MatchString(notSet) {
+			t.Errorf("searchPathAnyRe 把「只提到 search_path」误判成「设置了」：%q\n"+
+				"  这会让规则 5 对真正的缺陷失明——负控实测 2026-09-02 就是这样\n"+
+				"  删掉 RuntimeParams 赋值后判据依然转不了红。", notSet)
+		}
+	}
+
+	// dsnSearchPathHelperReUnpinned 正向：直连。
+	for _, direct := range []string{
+		"pool, err := pgxpool.New(ctx, dsn)",
+		"pool, err := pgxpool.New(ctx, dsn, )",
+	} {
+		if !dsnSearchPathHelperReUnpinned.MatchString(direct) {
+			t.Errorf("未识别直连形态：%q", direct)
+		}
+	}
+	// 反向：走 ParseConfig 的不算「完全无从判断」——连接会落在 DSN
+	// 自带的 search_path 上，那至少是可见的。
+	if dsnSearchPathHelperReUnpinned.MatchString("pool, err := pgxpool.NewWithConfig(ctx, cfg)") {
+		t.Errorf("误把 NewWithConfig 当成直连")
+	}
+
+	// qualifiedTableRe 正向：显式 schema 前缀的两种写法。
+	for _, q := range []string{
+		"rows, _ := pool.Query(ctx, `SELECT id FROM `+schema+`.emails e WHERE x=1`)",
+		"rows, _ := pool.Query(ctx, `SELECT id FROM schema.emails WHERE x=1`)",
+		"FROM `+schema+`.email_accounts WHERE id=$1",
+	} {
+		if !qualifiedTableRe.MatchString(q) {
+			t.Errorf("qualifiedTableRe 漏掉了显式 schema 前缀：%q\n"+
+				"  这会让规则 5 把「每条查询都写死目标库」的正确写法判红。", q)
+		}
+	}
+	// 反向：未限定表名不是显式前缀。
+	if qualifiedTableRe.MatchString("pool.Query(ctx, `SELECT id FROM emails WHERE id=$1`)") {
+		t.Errorf("qualifiedTableRe 把未限定表名误判成显式前缀")
 	}
 }
 
