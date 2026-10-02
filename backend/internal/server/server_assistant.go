@@ -2145,6 +2145,19 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 	totalSaved := 0
 	synced := 0
 	failed := []string{}
+	// skipped = 本轮**没有真的失败**，而是该账户已有一轮同步在跑，本次调用
+	// 被 ErrSyncInFlight 正常跳过（fetcher.go 的 per-account 单飞锁）。
+	//
+	// 为什么必须单独成一类：scheduler.tick（scheduler.go:718）和 pipeline
+	// （pipeline.go:156）都已识别 ErrSyncInFlight，只有这条 HTTP 入口没有。
+	// 于是「正确跳过」被当成「同步失败」——响应里给用户报红一个其实好着的
+	// 账户，并且额外调 RecordSyncFailure 往库里写一条**假的失败记录**。
+	// 实测 2026-10-03：5 个账户全部同步成功（QQ uid 推进到 10410），响应却是
+	// {"synced":4,"failed":["56551681@qq.com"]}，因为定时器与手工 POST 同时
+	// 打到了同一个账户。那条假记录会一直挂在账户上，把后续「服务端在拒登」
+	// 这类排查引向错误方向——与 2026-10-02 记的 credential health 分类混淆
+	// 是同一类误判。
+	skipped := []string{}
 	for _, acc := range accounts {
 		if !acc.Enabled {
 			continue
@@ -2155,6 +2168,11 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 			return s.emailFetcher.Sync(syncCtx, acc.ID)
 		}()
 		if ferr != nil {
+			if syncSkippedNotFailed(ferr) {
+				log.Printf("[email/sync] account %s (%s): skipped, a sync is already in flight", acc.ID, acc.EmailAddress)
+				skipped = append(skipped, acc.EmailAddress)
+				continue
+			}
 			// 落库：手工触发失败也要变成可查询的事实。定时链路在
 			// scheduler.tick 里也记，两条入口都记，缺一条就会出现
 			// 「只有定时失败查得到、手工失败查不到」这种半截可观测性。
@@ -2193,7 +2211,24 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 	if len(failed) > 0 {
 		result["failed"] = failed
 	}
+	if len(skipped) > 0 {
+		result["skipped"] = skipped
+	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// syncSkippedNotFailed 判定一次 per-account Sync 错误是「被单飞锁正常跳过」
+// 还是「真的同步失败」。
+//
+// 抽成函数是为了能钉住它：`emailFetcher` 是具体类型 *email.Fetcher 而不是接口，
+// handler 测试没法注入一个必然返回 ErrSyncInFlight 的假 fetcher——硬要造就得
+// 真的跑一轮 in-flight 同步，测试会依赖 IMAP 与时序。判定本身是纯函数，
+// 在这里钉住，handler 只负责调用。
+//
+// 用 errors.Is 而不是 ==：fetcher.go:650 是 fmt.Errorf("%w: %s", ...) 包过的，
+// 裸比较永远不成立——这正是它当初漏网的原因之一。
+func syncSkippedNotFailed(ferr error) bool {
+	return errors.Is(ferr, email.ErrSyncInFlight)
 }
 
 // handleEmailSyncStatus — POST /api/email/sync/status
