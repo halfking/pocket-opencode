@@ -615,11 +615,35 @@ if t := strings.TrimSpace(msg.TextBody); t != "" && !containsMIMESource(msg.Text
 重新定界（例如要求 boundary 出现在行首、或要求 `=_Part_` 这类强特征），
 属于会影响邮件摘要取值的改动，且与 §7.5.5 的 QP 取证可能互相干扰。
 
-**注意：`go test ./internal/email/` 不带 DSN 时是红的，这是设计如此**——
-`TestDailyPipelineLock_TestHarnessIsActuallyIsolated`（`pipeline_lock_test.go:331`）
-在 `POCKET_TEST_POSTGRES_DSN` 未设时主动 `t.Fatal`，因为静默 skip 会让
-同文件其余 14 条断言全部变成恒真。判定这个包必须带 DSN 跑：
-本轮 107.2s ok（EXIT=0）。
+**【2026-10-03 round31 更正】这一段的定性是错的，已推翻。**
+原文写「`go test ./internal/email/` 不带 DSN 时是红的，这是设计如此」——
+**它不是设计如此，它是一条假红**，本轮已修掉。错在哪：
+
+- 那个担心（静默 skip ⇒ 同文件其余断言全部恒真）**是真的**，但补救选错了。
+  `store_workspace_test.go` 的包约定明写「否则 skip，好让没有数据库的机器上
+  `go test ./...` 保持绿」，这一条测试单方面推翻了它，于是**任何**没有测试库的
+  机器（含 CI、含任何新克隆、含任何没配 `POCKET_TEST_POSTGRES_DSN` 的同事）
+  上 `go test ./...` 恒红。恒红的门槛会被整体忽略，被牺牲的不只是这一个文件，
+  而是整套测试的红绿语义。
+- 它在无 DSN 时**提供的保护是零**：此时同文件其余用例同样 skip，没有任何断言
+  会变恒真，恒红只是噪声。它唯一真正生效的配置，恰恰是那批断言本来就在跑的
+  配置——而在那里它本来就绿。也就是说它把「一个配置下的假绿风险」换成了
+  「所有配置下的假红」，赔率是负的。
+- 顺带查出原判据本身有**盲区**：它只排除 `public`/空，而本仓库生产 schema 叫
+  `opencode_pocket`、`public` 恰恰是那个空的诱饵 schema。helper 一旦退化成
+  不隔离，`current_schema()` 会返回 `opencode_pocket` 并被**放行**。
+
+现状（round31 修完，两种配置都实测过）：
+
+| 配置 | 结果 |
+|---|---|
+| 无 `POCKET_TEST_POSTGRES_DSN` | `go test ./...` **exit 0**（锁用例 SKIP，两个 DB-free 护栏 PASS） |
+| 有 DSN（`postgres@127.0.0.1:5432`） | 锁用例 **9/9 PASS**（含真库隔离自检） |
+
+「不许静默变恒真」改由两个**不需要数据库**的用例承担
+（`TestDailyPipelineLock_SchemaIsolationPredicate` /
+`TestDailyPipelineLock_DBBackedTestsStayWired`），它们在所有环境都执行，
+覆盖面严格大于原来那一条。详见主 handoff §4.121。
 
 ### 7.5.8 收紧方案已用全库 180 条真实语料验完（待拍板，未改生产正则）
 

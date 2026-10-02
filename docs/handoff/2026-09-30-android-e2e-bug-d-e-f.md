@@ -12252,3 +12252,153 @@ lobster 是**用户主密码解锁的本地 SQLCipher 库 + 共享 AES key**
 - **未在真机复验** EmailSummaryView 的修复——它属于 29 条 `requiresLobster`
   路由之一，既需要主密码解锁，也需要重建安装 APK。
 - 仍未触碰并行会话的 18099 实例与其在 `backend/internal/email` 的作业。
+
+## §4.121 round31 审计：origin/main 上唯一的红是一条假红，而它自己的判据还有盲区
+
+### §4.121.0 先说范围：并发实况与本轮**没有**做的事
+
+开工时实测到三个并发会话正在同一个工作区 `C:\workspace\openpocket` 上作业：
+
+| 会话 | 标题 | 状态 |
+|---|---|---|
+| `mvs_8a0f6bf8…` | 完善邮件定时收取与发票处理需求 | started |
+| `mvs_9ba2f519…` | 对齐主分支并用 Maestro 真机测试修复功能 | started |
+| `mvs_5c016d70…` | 修复邮件详情显示原始字节问题 | idle（06:36 仍在更新） |
+
+证据不只是会话列表：`backend/internal/email/*.go` 的 mtime 落在 **06:42**，
+且 06:45:44 有一个属于另一个 agent 的 powershell 在跑 `go test ./internal/email/ -v`；
+两个 `pocketd.exe` 分别从主工作区与 `.wt-align` 在跑。本轮写 handoff 期间
+local `main` 自己从 `a5b131e8` 前进到 `cd0d984a`（并发会话 06:54 提交的
+「XML 里的开票方必须能覆盖发件地址兜底」）。
+
+**因此本轮全部作业在独立 worktree `C:\workspace\openpocket-wt-a31` 完成，
+一行都没有碰主工作区那 10 个未提交/未跟踪文件。** 它们属于上表的会话，
+不是本轮的产物，本轮既不提交也不推送它们。
+
+分支判定（4 个 worktree）：
+
+| 分支 | 已在 origin/main？ | 处置 |
+|---|---|---|
+| `audit/round28-gates` | 是（unmerged=0） | worktree 干净 → 已回收，分支已删 |
+| `audit/round29-cron` | 是（unmerged=0） | 同上 |
+| `audit/round30-merge` | 是（unmerged=0） | 同上 |
+| `align/main-20261003` | **否**（1 个未合并提交 `7d5ec0ed`） | **不动** |
+
+`align/main-20261003` 不动的理由是硬的：它归**正在运行的** maestro 会话所有，
+worktree 里还有 5 个未跟踪文件（`_my.patch` / `logs-gates-*.txt` 等）。
+「1 小时前不活跃就删」这条规则在这里会直接删掉别人正在跑的分支——
+**判据得先问「有没有人在用」，再问「多久没动」。**
+
+回收 `wt-r30` 时命中一个已知陷阱：它的 `frontend/node_modules` 是指向主库的
+Junction。`git worktree remove` 会把联接**原样留下**并返回 exit 0，
+此后任何针对残留目录的删除都可能顺着联接作用到主库。处置：先
+`fsutil reparsepoint delete` 摘掉链接（只删链接不动目标），再 remove。
+前后各量一次主库：`241 条目 / .bin 87 / vue 存在`，全程未变。
+
+### §4.121.1 基线：整个后端只有一条红
+
+在 `origin/main`（`f41e1b08`）的干净 worktree 上实测：
+
+| 检查 | 结果 |
+|---|---|
+| `go build ./...` | **exit 0** |
+| `go test ./...`（无 DSN） | **1 条 FAIL**：`TestDailyPipelineLock_TestHarnessIsActuallyIsolated`（`internal/email` 19.676s） |
+| `npm run gates`（前端 22 项） | **exit 0**，149.3s，孤儿测试覆盖 194/194 |
+
+全后端 grep `os.Getenv("POCKET_(TEST_)?POSTGRES_DSN") == ""` 只命中**一个**文件，
+所以这不是一类普遍写法，是一个孤立缺陷。
+
+### §4.121.2 根因，以及对 round28 那句「这是设计如此」的批判
+
+`pipeline_lock_test.go` 的自检用例在 `POCKET_TEST_POSTGRES_DSN` 未设时
+主动 `t.Fatal`，而**同包其它用例在同样条件下是 `t.Skip`**（`newWorkspaceTestStore`
+第一件事就是 `t.Skip`）。round28 的 handoff 把这个红写成
+「不带 DSN 时是红的，这是设计如此」。
+
+**本轮判定：那个定性是错的，它是一条假红。** 那个担心（静默 skip ⇒ 其余断言
+全变恒真）是真的，但补救的赔率是负的：
+
+1. 它推翻了包约定。`store_workspace_test.go` 的文件头明写「否则 skip，好让没有
+   数据库的机器上 `go test ./...` 保持绿」。实际后果是**任何**没有测试库的机器
+   （CI、任何新克隆、任何没配该环境变量的同事）上 `go test ./...` 恒红。
+   恒红的门槛会被整体忽略——被牺牲的不只是这一个文件，而是整套测试的红绿语义。
+2. 它在无 DSN 时**保护为零**：此时同文件其余用例同样 skip，没有任何断言会变恒真，
+   恒红只是噪声。它唯一真正生效的配置，恰恰是那批断言本来就在跑的配置，
+   而在那里它本来就绿。也就是把「一个配置下的假绿风险」换成了
+   「所有配置下的假红」。
+3. 顺带查出**原判据本身有盲区**（见 §4.121.3）。
+
+### §4.121.3 第二个缺陷：隔离判据只排除 `public`，而生产 schema 不叫 `public`
+
+原断言是 `schema != "public" && schema != ""`。本仓库生产 schema 叫
+**`opencode_pocket`**，而 `public` 恰恰是那个**空的诱饵** schema。于是最该被抓住的
+那种退化——helper 不再建自己的 schema、`search_path` 直接落在 DSN 自带的库上——
+会让 `current_schema()` 返回 `opencode_pocket`，旧判据**放行**，
+测试对着生产库加 advisory lock 并报绿。
+
+`pg_test_isolation_guard_test.go` 的豁免表登记里把这条自检写成
+「断言 current_schema() 非 public」——**与代码不符，且那个判据抓不到上面这个盲区**。
+两处都已更正。
+
+### §4.121.4 修法
+
+- 判据从「不是 public/空」收紧为「**必须带 `email_ws_test_` 前缀**」，
+  即「这个 schema 是本次测试自己建出来的」，抽成
+  `dailyPipelineLockSchemaIsIsolated` 以便脱离数据库被单测。
+- 自检在无 DSN 时改回 `t.Skip`（恢复包约定）。
+- 「不许静默变恒真」改由两个**不需要数据库**的用例承担，它们在所有环境都执行，
+  覆盖面严格大于原来那一条：
+  - `TestDailyPipelineLock_SchemaIsolationPredicate`：钉住判据真值表，
+    含 `opencode_pocket` 必须为 false；
+  - `TestDailyPipelineLock_DBBackedTestsStayWired`：逐条确认 5 条需真库的用例
+    仍经 `newWorkspaceTestStore`、没有被偷偷加无条件 `t.Skip`，
+    并确认 `testDSN()` 仍只认测试专用 DSN。
+- 「不得回退读生产 DSN」这条**否定**断言搬到
+  `internal/server/pg_test_isolation_guard_test.go`
+  （`TestEmailWorkspaceHelperNeverFallsBackToProductionDSN` + 判据自检
+  `TestProductionDSNReCatchesFallbackShapes`）。搬的原因是被规则 1 逼的：
+  那条规则是源码级 grep，想断言「没有回退」就得写出被禁的字面量，
+  断言自己被判红。豁免表里给个理由绕过去是错的（护栏自己写着「不要靠把理由
+  写宽松来绕过」），而这条不变量本来就是仓库级的。
+- 顺手更正 `store_workspace_test.go` 的文件头：它原本宣称
+  「Set POCKET_TEST_POSTGRES_DSN **or POCKET_POSTGRES_DSN**」，而 `testDSN()`
+  刻意**没有**这个回退（回退曾让本地 `go test ./...` 零配置打到生产库，
+  留下 `meeting_test_*` 残留 schema）。头注释与代码矛盾，且在教人踩雷。
+
+### §4.121.5 负控（含我自己被自己的护栏抓到的两次）
+
+| # | 变异 | 期望 | 实测 |
+|---|---|---|---|
+| 1 | 判据退回旧形态（只排除 public/空） | `SchemaIsolationPredicate` 转红 | **红**，`opencode_pocket` / `public_email_ws_test_1` / `my_email_ws_test_1` 三例 |
+| 2 | 前缀常量改错 | 真库下自检转红 | **红**，并报出真实 schema `email_ws_test_e15cddc93cb7` |
+| 3 | helper 加回生产 DSN 回退读 | 仓库级护栏转红 | **红**，`读了生产 DSN…` |
+
+**被抓到两次，都是真问题：**
+
+1. 第一版 `DBBackedTestsStayWired` 写成「出现 `t.Skip(` 就判红」，
+   把本文件**合法**的那条 DSN 门控 skip 也判红了。护栏把自己要保护的东西
+   判成缺陷，第二次就会被人加白名单绕过去——那比没有更糟。改成
+   「这个 skip 是否挂在一条判空的 `if` 上」。**判据过窄的代价是逼人加豁免。**
+2. 新的 `TestEmailWorkspaceHelper…` 第一版路径拼错成 `../internal/email/…`，
+   `os.ReadFile` 报错后走的是 `t.Skip` —— 于是**「读不到文件」伪装成「通过」**，
+   正是本轮一直在审计的那个失效模式。改成 `t.Fatalf` 并当场验证它真的执行。
+
+**一处必须说明的口径**：`gofmt -l` 在 `internal/email` / `internal/server` 下
+列出几乎全部文件。我用**没碰过的** `pipeline_lock.go` 做对照，同样是整文件 diff，
+所以这是仓库既有的 CRLF 状态，不是本轮引入的；本轮**没有**去改它
+（那会把 400 个文件翻成 LF，越过 `check:crlf-needles` 的既有约定）。
+本轮改动的文件全部保持 CRLF（988 CRLF / 0 裸 LF / 无 BOM）。
+
+### §4.121.6 口径
+
+- 改动文件：`backend/internal/email/pipeline_lock_test.go`、
+  `backend/internal/email/store_workspace_test.go`、
+  `backend/internal/server/pg_test_isolation_guard_test.go`、
+  `docs/handoff/2026-10-03-round28-daily-pipeline-cross-process-lock.md`（更正定性）、
+  本文件。
+- 测试：无 DSN `go test ./...` **exit 0**（修前那条红已消失）；
+  有 DSN 锁用例 **9/9 PASS**；`go vet ./internal/server/ ./internal/email/` 干净；
+  `npm run gates` 22/22 exit 0（前端未改动，基线复核）。
+- **未做**：没有动主工作区那 10 个未提交文件（属并发会话）；
+  没有合并 `align/main-20261003` 的 `7d5ec0ed`（属正在运行的会话）；
+  没有在真机复验任何东西（本轮改动全在后端测试与护栏，不涉及 APK）。
