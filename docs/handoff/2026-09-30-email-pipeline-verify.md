@@ -10809,8 +10809,22 @@ migrate 的 `CREATE TABLE emails`（store.go:63-88，26 列）里没有 updated_
 - `email-inbox-page.ts:27` `const since = await emailsStore.maxEmailUpdatedAt()`
 - `email-inbox-page.ts:30` `shouldRetryFullListPull(local.length, pulled, since)`
   —— 拉取数异常时会**自动退回全量拉取**（`syncEmailsFromServer(200, 0)`），
-  这是一条对「增量失明」的**兜底路径**，
-  也解释了为什么 §7ej 的失明在真机上可能没被用户注意到。
 
-即需求 6/7 的客户端侧不是「未验」，而是「有实现、有兜底、但兜底会掩盖缺陷」。
+**但这条兜底几乎覆盖不到本缺陷。** `email-fetch-plan.ts:73` 的判据是：
+
+    return localCount <= 0 && pulled <= 0 && since > 0
+
+三个条件要**同时**成立。§7ej 描述的场景是「本地已有 122 封、增量拉到 0 封」，
+此时 `localCount = 122 > 0` ⇒ **返回 false，不退回全量**。
+
+即：**首次装机的空库会被兜住，日常使用的非空库不会。**
+这正好是缺陷最容易显形的那类场景（用得越久越静默）。
+
+`shouldRetryFullListPull` 本身有单测（`email-fetch-plan.ts` 属 §7eh 普查里
+「零测试导入」的 12 个之一，但它导出的是纯函数、可测）——
+**但它测的是这个判据本身，没有测「判据能否覆盖 §7ej 的场景」**。
+这正是「断言钉在错误那一半」的形态：判据正确、覆盖范围与缺陷不对齐。
+
+即需求 6/7 的客户端侧不是「未验」，而是「有实现、有兜底，
+但兜底只覆盖首次装机（空库），不覆盖日常使用（非空库）」。
 这与 §7eg/§7eh 的结论一致：**能力有覆盖，验收到什么程度要分开说。**
