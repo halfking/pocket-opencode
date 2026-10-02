@@ -41,10 +41,16 @@ appId: com.kaixuan.opencode.pocket
     timeout: 20000
 - tapOn: { text: "登录", enabled: true }
 
-# 登录后有三种落点（见 .maestro/_login.yaml 顶部的 A/B/C/D 分析）：
-# 打开菜单（进 App）、创建主密码（D 态弹窗）、解锁本地数据（B 态）。
+# 登录后有三种落点：进 App / 创建主密码（D 态弹窗）/ 解锁本地数据（B 态）。
+# ⚠️ 2026-10-03 真机实测：原来的判据是 `visible: "打开菜单|创建主密码|解锁本地数据"`，
+# 其中「打开菜单」来自**早已删除的抽屉式菜单**（2026-09-05 抽屉收编成 MoreHubView，
+# 2026-10-03 又把一级导航换成固定底部 tab）。实测症状：登录成功后 90s 超时，
+# 报 `Assertion is false: "创建主密码|解锁本地数据|打开菜单" is visible` ——
+# 而 App 其实**已经登录成功并停在首页**了。
+# 现在的判据只保留仍然存在的两种落点（主密码弹窗 / 解锁屏），并额外硬断言
+# 已经进了带底部导航的 App（"主导航" 是 BottomNav 的 aria-label）。
 - extendedWaitUntil:
-    visible: "打开菜单|创建主密码|解锁本地数据"
+    visible: "创建主密码|解锁本地数据|主导航"
     timeout: 90000
 - takeScreenshot: "logs/maestro/2026-10-02-real-login"
 

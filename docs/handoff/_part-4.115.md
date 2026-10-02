@@ -1,7 +1,7 @@
 
-## §4.95 BUG-V19（退出码恒 0）+ 新门禁，以及一个刚坐实的 UI 缺陷（BUG-V20，待定位）
+## §4.115 BUG-V19（退出码恒 0）+ 新门禁，以及一个刚坐实的 UI 缺陷（BUG-V20，待定位）
 
-### §4.95.1 BUG-V19：4 个脚本判出 FAIL 仍然 `process.exit(0)`
+### §4.115.1 BUG-V19：4 个脚本判出 FAIL 仍然 `process.exit(0)`
 
 `verify-task-writepath.mjs` 跑出 `exit=0 PASS=8 FAIL=1`。退出码是**写死**的：
 
@@ -28,7 +28,7 @@ process.exit(0)          // ← 无论 passed 是多少
 `process.exitCode` 赋值、没被 `if (` 包住。全仓有一百多个 `process.exit(0)`，
 绝大多数是合理的（幂等追加器、诊断脚本、早退路径）——门禁宁可漏报也不误报。
 
-### §4.95.2 verify-task-writepath 修判据后：8/9，剩一条判红
+### §4.115.2 verify-task-writepath 修判据后：8/9，剩一条判红
 
 顺带修掉另一处判据缺陷：原来 `goto('#/ai')` 之后**立刻**读 DOM，
 把「慢」和「不刷新」混成一个结论。改成轮询到 15 秒并打印耗时：
@@ -39,7 +39,7 @@ FAIL  删除后列表不再回显（轮询至多 15s）  — found=true  耗时=
 exit=1
 ```
 
-### §4.95.3 BUG-V20（待定位）：任务删除后，列表三种刷新方式都不更新
+### §4.115.3 BUG-V20（待定位）：任务删除后，列表三种刷新方式都不更新
 
 新增 `scripts/diag-task-list-refresh.mjs` 做定性，实测（隔离库，2026-10-03 01:58）：
 
@@ -68,12 +68,12 @@ exit=1
 返回里有 ⇒ 前端合并/渲染问题；返回里没有 ⇒ 请求根本没发到隔离后端。
 这一条能把上面三个候选一刀切开。
 
-### §4.95.4 5 个写路径脚本的 origin 硬写已解（§4.94.2 已记）
+### §4.115.4 5 个写路径脚本的 origin 硬写已解（§4.114.2 已记）
 
 `verify-task-writepath` 已在解开的条件下实跑（8/9，剩 BUG-V20 那条）。
 `verify-email / gateway / marketplace / bug-u / bugaa` **尚未逐个实跑**。
 
-### §4.95.5 本轮新增/修改清单
+### §4.115.5 本轮新增/修改清单
 
 | 文件 | 变化 |
 |---|---|
@@ -87,7 +87,7 @@ exit=1
 | `scripts/diag-task-list-refresh.mjs`（新） | BUG-V20 定性探针 |
 | `scripts/run-device-against-isolated.mjs` | 支持透传 `--` 参数（证伪模式要用） |
 
-### §4.95.6 这一节没有解决什么
+### §4.115.6 这一节没有解决什么
 
 - BUG-V20 根因未定位，**不能算已修**。
 - 5 个脚本未逐个实跑；约 14 处硬编码 CDP 端口未迁 `lib/adb-cdp.mjs`。

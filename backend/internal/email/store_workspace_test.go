@@ -3,9 +3,16 @@ package email
 // store_workspace_test.go — workspace-isolation integration tests for the email
 // store's scoped methods.
 //
-// These need a live PostgreSQL instance. Set POCKET_TEST_POSTGRES_DSN (or
-// POCKET_POSTGRES_DSN) to run them; otherwise they skip so `go test ./...`
-// stays green on machines without a DB.
+// These need a live PostgreSQL instance. Set POCKET_TEST_POSTGRES_DSN to run
+// them; otherwise they skip so `go test ./...` stays green on machines without
+// a DB.
+//
+// ⚠ POCKET_TEST_POSTGRES_DSN only — there is deliberately **no** fallback to
+// POCKET_POSTGRES_DSN (see testDSN below). This header used to advertise the
+// fallback ("or POCKET_POSTGRES_DSN"), which contradicted the code and told
+// readers that pointing the tests at the live database was supported. It is
+// not, and doing it has already left meeting_test_* schemas in the production
+// database. Corrected 2026-10-03.
 //
 // Each test runs in its own schema, dropped on cleanup, so parallel runs are
 // safe.

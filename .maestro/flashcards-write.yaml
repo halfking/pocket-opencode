@@ -43,10 +43,14 @@ appId: com.kaixuan.opencode.pocket
 #    如实记录覆盖变窄：软键盘那套手势（tap 输入框起键盘 → inputText →
 #    hideKeyboard → tap 提交）本流程不再走。走的是同一个表单、同一个
 #    POST /api/auth/login、同一个 401/200 判定。键盘路径单列为遗留项。
+# ⚠️ 2026-10-03 真机实测：锚点文本随 IA 重组变了。原来等的是「AI 工具」——
+# 重组**前**首页 tab 的标签；现在一级 tab 是 首页 / 笔记 / 消息 / 更多
+# （BottomNav.vue items，locales zh-CN nav.home = 首页）。不改这里的话本 flow
+# 会在第一条断言就中止：`Assertion is false: "AI 工具" is visible`。
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: "首页"
     timeout: 45000
-- assertVisible: "AI 工具"
+- assertVisible: "首页"
 - assertNotVisible: "密码登录"
 
 # ---------- 1. 进闪卡（不在底部主导航里，在「更多」九宫格内）----------
