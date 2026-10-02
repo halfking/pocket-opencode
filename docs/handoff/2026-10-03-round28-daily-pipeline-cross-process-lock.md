@@ -682,6 +682,86 @@ Content-Transfer-Encoding: quoted-printable <p style=3D"text-align: center;">…
 
 ---
 
+## §7.6 三处修复已实施并用真实数据验证（2026-10-03 06:00，提交 `7e69fe1c` / 合并 `18abeeb6`）
+
+§7.4.4 与 §7.5.8 的方案已实施。三处，每处都有**能转红的负控**。
+
+### 7.6.1 ① POP3 发票建档死路（主因）
+
+取原文在本包里有**两套实现**，能力不一样：
+
+| 路径 | 改造前 | 改造后 |
+|---|---|---|
+| pipeline 第 2 趟（`pipeline.go`） | 直接 `FetchMessageRaw`（IMAP 专用，`mime.go:98` 无条件 `dial IMAPHost:IMAPPort`） | 共用 `resolveRawBody` |
+| `harvestOne`（采集器） | 已有 POP3 感知：BodyCache → POP3 位置序号 RETR → IMAP SEARCH 反查 | 共用 `resolveRawBody` |
+
+pipeline 从没跟上，于是 POP3 来源的发票候选取原文必然失败 → 永不建档。
+修法：新增 `raw_body_resolve.go` 的 `resolveRawBody` 作为**唯一**实现，
+两边共用；**删掉** `harvestOne` 里那份 `recoverPOP3SourcedRaw`。
+两套实现并存正是这个缺陷的成因，不合并就会再次漂移。
+`Pipeline` 新增 `BodyCache` 字段，server 侧与采集器共用同一实例。
+
+`invoice_harvest_selfheal_test.go` 的 5 个测试原本经 `HarvestAll` 端到端覆盖
+旧实现，改造后**自动转为覆盖 `resolveRawBody`**——安全不变量（0 命中不猜、
+多命中拒绝、取回别人的邮件必须丢弃）一条没丢。
+
+**负控**：
+- 把 pipeline 第 2 趟改回 `FetchMessageRaw` →
+  `TestPipelineStep15_POP3CandidateIsArchivedFromBodyCache` 转红
+- 去掉 `Pipeline.BodyCache` → 负控用例转红（`autoCreated=0 / fetchFailed=1`）
+
+### 7.6.2 ② 金额抽取认得「标签夹在金额前面」
+
+`invoice.go` 引入 `reHTMLTagRun`（`(?:<[^>\n]{0,200}>\s*)*`，限长 200 防跨篇乱找）。
+**真实数据验证**（重放 `data/email-bodies-raw/` 里那两封的加密原文）：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| `reAmountTotal` 匹配真实原文 | false | **true** |
+| 只加「共计」的变体 | false | **false**（证明起效的是标签容差本身） |
+| 建档 amount | **0 / 0** | **19 / 5.61** |
+
+两封真实发票金额复原（合计 24.61 元）。
+**负控**：清空 `reHTMLTagRun` → 正向用例转红。
+**反向护栏**（本条最要紧）：工行对账单的「合计人民币(本位币)12,838.93」
+仍然不命中——那是应还款额。命中它会把一笔应还款伪装成一张发票，
+「错误数字改对了一点，比错误数字更危险」（§7.2）。
+
+### 7.6.3 ③ MIME 边界守卫去掉裸 `-`
+
+`--(?:[=_-]|[Pp]art[_-])` → `--(?:[=_]|[Pp]art[_-])`。
+全库 180 条真实摘要实测 13 → 11（详见 §7.5.8）。
+原门控测试**已去门控转为常驻护栏**（缺陷已修，继续门控只会让它失去牙齿）。
+**负控**：把裸 `-` 加回去 → `TestDiagBoundaryFalsePositiveOnRealSnippets` 转红。
+
+### 7.6.4 过程中修掉的两处自身缺陷
+
+1. **一次真实回归**，被既有测试抓到：`pop3_uid_test.go` 的
+   `TestHarvestOne_RefusesPOP3PositionalUID` 要求 `LastError` 含 POP3 措辞，
+   而我把 `fetcher == nil` 检查提到函数最前，盖掉了 POP3 分支自己的错误。
+   已修成 POP3 **先判 BodyCache 再判 fetcher**——运维看到的失败原因必须指向
+   真正缺的那一样。
+2. **一处假绿被自检抓到**：新写的反向用例里，fixture 用的是「本期交易汇总」，
+   里面**根本没有「合计」二字**（「汇总」≠「合计」），主断言空转、靠
+   「样本里没有危险词」而通过。换成真正含「合计人民币(本位币)」的形态，
+   并保留自检防同类退化。
+
+### 7.6.5 仍未验证（不记为已完成）
+
+- **`invoiceNo` 仍为空**。两封的真实发票号在附件里，需采集器从 PDF/XML 解析。
+  这条链路**在真实数据上一次都没跑过**，所以「24.61 能否真正进台账合计」
+  仍无法离线回答——只是现在建档时 amount 已经是对的，不再依赖附件回填金额。
+- **飞书推送**：凭据四项缺失，真实环境一次没跑过。
+- **A4 拼版 / 汇总统计 / 下载**：代码与端点本就齐全
+  （`export_pdf.go` 2x2/3x3 + 裁剪线 + PDF/图片/webp 混排 + 畸形件容错；
+  `ledger.go` 按币种合计；端点 `invoices/{export,harvest,extract,push,summary}`），
+  本轮**未改动**，也未在真实发票集合上端到端跑过。
+- **08:00 的定时执行用的是旧二进制**（`pocketd-invoicenan-fix.exe`，构建于
+  本轮改动之前），所以 08:00 **不会**应用上述修复，两封通行费也不会在那一轮
+  建档。要生效需重启实例。
+
+---
+
 ## §7 仍然需要人工决定的事
 
 ### 7.0 08:00 会**推什么**进去（2026-10-03 03:0x 只读实测，规则可复算）
