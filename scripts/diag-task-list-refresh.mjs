@@ -1,6 +1,6 @@
 // diag-task-list-refresh.mjs —— 定性：任务删除后列表不刷新，是真缺陷还是缓存？
 //
-// 事实（§4.94 实测）：`verify-task-writepath.mjs` 删掉任务后，
+// 事实（§4.104 实测）：`verify-task-writepath.mjs` 删掉任务后，
 // PG 里 count=0，但轮询 15 秒卡片始终还在列表里。
 //
 // 两种可能，必须分开：

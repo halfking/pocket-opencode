@@ -1,10 +1,10 @@
 
-## §4.93 找到不动 `adb reverse` 也能让真机打到隔离库的办法，并让 3 个 finance 脚本真跑
+## §4.103 找到不动 `adb reverse` 也能让真机打到隔离库的办法，并让 3 个 finance 脚本真跑
 
-§4.92 说「设备 forward 指向并发会话的后端，改它是共享可变状态，动手前必须先确认对方没在跑」。
+§4.102 说「设备 forward 指向并发会话的后端，改它是共享可变状态，动手前必须先确认对方没在跑」。
 这轮找到了**不碰它**的办法，于是这个卡点解除了。
 
-### §4.93.1 解法：App 的后端地址是 `localStorage` 里一个可改的键
+### §4.103.1 解法：App 的后端地址是 `localStorage` 里一个可改的键
 
 `frontend/src/config/api-base.ts` 是 API 基址的 SSOT，优先级
 **localStorage 覆盖 > VITE_API_BASE > 同源**。关键在规则 1 与规则 2 的分工，
@@ -43,7 +43,7 @@ fetch http://192.168.31.20:18101/healthz  →  {"ok":true,"status":200,"body":"o
 一起兜（只写在 happy path 上，就会「跑失败就把 App 留在隔离库上」，
 让下一个人莫名打到一个空库 —— 与 BUG-V10/V14 同一类）。
 
-### §4.93.2 动手前先证明设备空闲，且分清「有人在用」与「App 轮询」
+### §4.103.2 动手前先证明设备空闲，且分清「有人在用」与「App 轮询」
 
 `scripts/probe-device-idle.mjs`：连续采样 `/api/` 请求条数。
 12 秒窗口 0 增长；但 60 秒窗口 +2，于是判红。**不能就此断定有人在驱设备** ——
@@ -56,7 +56,7 @@ fetch http://192.168.31.20:18101/healthz  →  {"ok":true,"status":200,"body":"o
 `/api/learning/*` `/api/llm-gateway/nodes` `/api/rss/*` `/api/emails*` `/api/tasks`
 `/api/marketplace/packages` `/api/scheduled-tasks` …
 
-### §4.93.3 verify-finance-writepath.mjs：真机 **26/26 通过**
+### §4.103.3 verify-finance-writepath.mjs：真机 **26/26 通过**
 
 对着隔离后端（`POCKET_API_PORT=18101` + `POCKET_PG_SCHEMA=opencode_pocket_verify`
 + `POCKET_EXPECT_ORIGIN=https://localhost`）实跑，全绿。关键几条：
@@ -99,7 +99,7 @@ finance 脚本的 `SCHEMA` 于是落回默认的 `opencode_pocket`（共享库�
 不拆开就会把子脚本失败报成 runner 失败；以及子脚本 exit=1 被吞掉、
 外层只把自己的 exitCode 带出去（管道里于是显示成 `EXIT=0`）。
 
-### §4.93.4 BUG-V17：diag-finance-workspace 的「App 看不到 SEED」结论是错的
+### §4.103.4 BUG-V17：diag-finance-workspace 的「App 看不到 SEED」结论是错的
 
 `diag-finance-workspace.mjs` 里那行「App token 调 list」用的是
 **相对路径** `fetch('/api/finance')`。Capacitor 壳的 origin 是 `https://localhost`，
@@ -136,7 +136,7 @@ App 其实能看到 SEED —— 读路径 FAIL 是时序/等待问题，不是�
 `diag-finance-samescope.mjs` 同一轮也自证了这一点：它原本记录的 FAIL 原因正是
 「跨工作区错配（测试播 ws_user-admin / App 看 default）」，改成同作用域后读路径正常。
 
-### §4.93.5 本轮我自己的两次失误
+### §4.103.5 本轮我自己的两次失误
 
 - `/^\\//.test(...)` 在正则字面量里被斜杠截断，`.` 之后报 `Unexpected token '.'`。
   改用 `startsWith('/')`。**在会被程序再读一遍的文本里，别嵌套你正在用的分隔符**
@@ -145,7 +145,7 @@ App 其实能看到 SEED —— 读路径 FAIL 是时序/等待问题，不是�
   自检在 `ev()` 里，没在 Node 侧；`node --check` 才抓到。
   **语法检查和语义自证是两道闸，不能只留一道。**
 
-### §4.93.6 这一节没有解决什么
+### §4.103.6 这一节没有解决什么
 
 - 设备侧其余 CDP 族（约 14 个）**尚未**逐个实跑，只是把通道打开了。
 - BUG-AX 设备侧负控、闪卡两入口的**点击**、会议写入设备侧持久化，仍未做。

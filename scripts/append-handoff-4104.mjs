@@ -1,26 +1,22 @@
-// append-handoff-495.mjs —— 把 docs/handoff/_part-4.95.md 追加到主 handoff 末尾。
-//
-// 与 486-494 同款，带两条自证：
-//   ① 追加前断言 MARK 真的在 part 文件里
-//   ② 回读时断言标记只出现一次
+// append-handoff-4104.mjs —— 把 docs/handoff/_part-4.104.md 追加到主 handoff 末尾。
 import fs from 'node:fs'
 import path from 'node:path'
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, '$1'), '..')
 const DOC = path.join(ROOT, 'docs', 'handoff', '2026-09-30-android-e2e-bug-d-e-f.md')
-const PART = path.join(ROOT, 'docs', 'handoff', '_part-4.95.md')
-const MARK = 'BUG-V20（待定位）'
+const PART = path.join(ROOT, 'docs', 'handoff', '_part-4.104.md')
+const MARK = '一条**设计上永远绿**的判据'
 
 const rawPart = fs.readFileSync(PART, 'utf8')
 if (!rawPart.includes(MARK)) {
-  console.error(`❌ MARK 与 _part-4.95.md 的内容对不上（MARK=${JSON.stringify(MARK)}）。`)
+  console.error(`❌ MARK 与 _part-4.104.md 的内容对不上（MARK=${JSON.stringify(MARK)}）。`)
   console.error('   追加后幂等检查会永远失效 —— 复跑会再追加一遍。先修 MARK。')
   process.exit(2)
 }
 
 const doc = fs.readFileSync(DOC, 'utf8')
 if (doc.includes(MARK)) {
-  console.log('已包含 §4.95，跳过（幂等）')
+  console.log('已包含 §4.104，跳过（幂等）')
   process.exit(0)
 }
 
@@ -45,7 +41,7 @@ for (let i = 0; i < buf.length; i++) {
 }
 const back = buf.toString('utf8')
 const times = back.split(MARK).length - 1
-console.log('已追加 §4.95')
+console.log('已追加 §4.104')
 console.log(`  bytes=${buf.length}  CRLF=${crlf}  bareLF=${bareLF}  BOM=${buf[0] === 0xef}`)
 console.log(`  标记出现次数=${times}`)
 if (times !== 1) { console.error(`❌ 标记出现了 ${times} 次，应为 1 次`); process.exit(1) }
