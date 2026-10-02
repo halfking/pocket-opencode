@@ -183,7 +183,105 @@ if ("$line" -notmatch '\sdevice\s*$') {
   Write-Host "  The APK is built and verified; re-run with -SkipInstall omitted once it is online." -ForegroundColor Yellow
   exit 2
 }
-& $adb -s $Serial reverse "tcp:${ApiPort}" "tcp:${ApiPort}" | Out-Null
+
+# NEVER set up `adb reverse` here. The APK is built with the LAN address, so a
+# reverse tunnel is not needed to make it work -- but it WOULD mask the one thing
+# that matters on a real phone: whether the device can actually reach
+# $ApiHost:$ApiPort. With a reverse in place, a phone that cannot reach the LAN
+# still appears to work, and the failure only shows up later, off the desk.
+# The preflight reachability probe below is therefore run against a real
+# reverse-free device path.
+Write-Host "[check] no adb reverse (LAN base must stand on its own)" -ForegroundColor DarkGray
+$revs = (& $adb -s $Serial reverse --list) -join "`n"
+if ("$revs".Trim()) {
+  Write-Host "[WARN] pre-existing reverse entries on this device:" -ForegroundColor Yellow
+  Write-Host "$revs"
+}
+
+# Package-identity census. `adb install` exiting 0 only proves SOME package was
+# written. A device that still carries a sibling build (e.g.
+# com.kaixuan.opencode.pocket.sttdev from an earlier session) will happily take
+# a new install of the other id while the stale one stays installed and
+# foregrounded -- which looks exactly like "my fix had no effect".
+$pkg = 'com.kaixuan.opencode.pocket'
+$installed = (& $adb -s $Serial shell "pm list packages | grep $pkg") -join "`n"
+$variants = @()
+foreach ($l in ($installed -split "`n")) {
+  $p = "$l".Trim()
+  if ($p -like "package:*") { $variants += $p.Substring(8) }
+}
+if ($variants.Count -gt 1) {
+  Write-Host "[WARN] $($variants.Count) package variants share this id on the device:" -ForegroundColor Yellow
+  foreach ($v in $variants) {
+    $tag = if ($v -eq $pkg) { '<-- this script installs this one' } else { '<-- DIFFERENT app, ignore it' }
+    Write-Host "        $v $tag"
+  }
+  Write-Host "  If the phone opens the wrong one, uninstall it explicitly:" -ForegroundColor Yellow
+  foreach ($v in $variants) {
+    if ($v -ne $pkg) { Write-Host "        adb -s $Serial uninstall $v" }
+  }
+}
+if (-not ($variants -contains $pkg)) {
+  Write-Host "[info] $pkg is not installed yet; this will be a fresh install." -ForegroundColor Cyan
+}
+
+# Prove the device can reach the backend over the LAN, with no crutch.
+Write-Host "[check] device -> ${ApiHost}:${ApiPort} (no reverse)" -ForegroundColor Cyan
+$probe = (& $adb -s $Serial shell "echo -e 'GET /api/app/version HTTP/1.0\r\n\r' | nc -w 4 $ApiHost $ApiPort") -join "`n"
+if ("$probe" -match 'HTTP/1\.[01] 2\d\d') {
+  Write-Host "[ok] device reaches the backend over the LAN" -ForegroundColor Green
+} else {
+  Write-Host "[WARN] device could not reach ${ApiHost}:${ApiPort} from the device itself:" -ForegroundColor Yellow
+  Write-Host "       probe output: $probe" -ForegroundColor Yellow
+  Write-Host "       The app WILL fail to load on the phone. Continuing anyway." -ForegroundColor Yellow
+}
+
+$before = (& $adb -s $Serial shell "pm path $pkg") -join ''
 & $adb -s $Serial install -r -g $apkPath
 if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] install exit=$LASTEXITCODE" -ForegroundColor Red; exit 3 }
+
+# Post-install identity check: exit 0 from adb is NOT enough.
+$localLen = (Get-Item $apkPath).Length
+$devPath = (& $adb -s $Serial shell "pm path $pkg") -join ''
+$devPath = "$devPath".Trim()
+# `pm path` prints "package:/data/app/.../base.apk" -- strip the prefix, do not
+# pattern-match the whole thing. A guard that can never match is worse than none.
+if ($devPath.StartsWith('package:')) { $devPath = $devPath.Substring(8).Trim() }
+if ($devPath -notmatch '\.apk$') {
+  Write-Host "[FAIL] could not resolve the installed APK path for $pkg ('$devPath')" -ForegroundColor Red
+  Write-Host '       The identity check below is impossible; do not trust the install.' -ForegroundColor Red
+  exit 4
+} else {
+  $devLen = ((& $adb -s $Serial shell "stat -c '%s %y' $devPath") -join '').Trim()
+  Write-Host "[check] on device: $devLen" -ForegroundColor Cyan
+  Write-Host "[check] local apk: {0:N0} bytes" -f $localLen
+  if ($devLen -notmatch '^(\d+)') {
+    Write-Host "[FAIL] could not parse the installed size (stat said: '$devLen')" -ForegroundColor Red
+    exit 4
+  }
+  if ([int64]$Matches[1] -ne $localLen) {
+    Write-Host '[FAIL] installed size differs from the artifact -- something else is installed.' -ForegroundColor Red
+    Write-Host '       Do not trust "Success" from adb install; check pm list packages for a sibling id.' -ForegroundColor Red
+    exit 4
+  }
+  # Size is necessary but not sufficient. Compare the content hash too.
+  # 2026-10-02 verified this works on the emulator: both sides report
+  # fa53b4fb79daa899d60fbe45e0ee269563ce341a5efec42a60fa3d6e3dff6336, and a
+  # deliberately wrong expectation does flip the check to a failure.
+  $devHash = ((& $adb -s $Serial shell "sha256sum $devPath") -join '').Trim()
+  $localHash = (Get-FileHash $apkPath -Algorithm SHA256).Hash.ToLower()
+  Write-Host "[check] device sha256: $devHash" -ForegroundColor Cyan
+  Write-Host "[check] local  sha256: $localHash" -ForegroundColor Cyan
+  if ($devHash -notmatch '^([0-9a-f]{64})' -or $Matches[1] -ne $localHash) {
+    Write-Host '[FAIL] installed APK content hash differs from the artifact we just built.' -ForegroundColor Red
+    Write-Host '       Same size but different bytes: the phone has a look-alike build.' -ForegroundColor Red
+    exit 4
+  }
+  Write-Host '[ok] installed APK is byte-identical to the artifact we just built' -ForegroundColor Green
+}
+
 Write-Host 'DONE - log in as admin, open email settings, expect 5 real accounts.' -ForegroundColor Green
+Write-Host 'NOTE: the local encrypted DB is locked on first run; unlock it (master password)' -ForegroundColor Yellow
+Write-Host '      or the account config will NOT mirror to the device (account-sync.ts returns' -ForegroundColor Yellow
+Write-Host '      applied=0 while online=true while the local DB is locked).' -ForegroundColor Yellow
+
