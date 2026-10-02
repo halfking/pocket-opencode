@@ -33,6 +33,23 @@ type Invoice struct {
 	// EmailDate 是来源邮件的收到时间（Unix 秒）。列表按它倒排；
 	// 不落 email_invoices 列，由 JOIN emails.date 填入。
 	EmailDate int64  `json:"emailDate,omitempty"`
+	// sellerIsFallback 标记 Seller 来自**信封兜底**（发件人名称/地址），
+	// 而不是从邮件正文或发票 XML 里解析出来的。
+	//
+	// 不落 email_invoices 列（同 EmailDate）。它只回答一个问题：
+	// 「这个单位名是**开票方**，还是只是邮件经过了谁的服务器？」
+	//
+	// 2026-10-03 真实数据实测：ExtractInvoiceLoose 在正文没写「销售方」时把
+	// inv.Seller 兜底成发件地址（noreply@toll.example），而 mergeXMLFields
+	// 只在「为空时补」⇒ 发票 XML 里权威的
+	// 「浙江沪杭甬高速公路股份有限公司」**永远进不来**，规范文件名退化成
+	// `其他-noreply@toll.example-5.61-2026-09-14-….pdf`——
+	// 需求原文 `{费用类型}-{对方单位}-{金额}-{日期}.pdf` 里的「对方单位」
+	// 那一段直接是错的，交给财务时看不出是谁开的票。
+	//
+	// 只给**发件人兜底**打标；「来自XX的发票」这类从主题解析出的单位名
+	// 是真证据，不打标，不许被 XML 覆盖。
+	sellerIsFallback bool
 	Subject   string `json:"subject"` // 来源邮件主题（便于回溯）
 	Status      string  `json:"status"`      // new | pending | downloaded | failed | filed
 	ExtractedBy string  `json:"extractedBy"` // rule | llm
@@ -694,6 +711,10 @@ func ExtractInvoiceLoose(e Email, bodyText string, hasInvoiceAttachment bool) (*
 		if inv.Seller == "" {
 			inv.Seller = e.FromAddress
 		}
+		// 打标：这是**路由痕迹**（邮件经过了谁的服务器），不是开票方。
+		// 发票 XML 里的 SellerName 是权威值，必须能覆盖它——
+		// 见 SellerIsFallback 注释与 mergeXMLFields。
+		inv.sellerIsFallback = inv.Seller != ""
 	}
 	if m := reTitle.FindStringSubmatch(joined); m != nil {
 		inv.Title = strings.TrimSpace(m[1])
