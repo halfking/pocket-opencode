@@ -2517,8 +2517,10 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 简单的版本比较
-	hasUpdate := req.CurrentVersion < latestVersion.Version || req.CurrentBuild < latestVersion.BuildNumber
+	// 版本判定走 hasUpdateAvailable（app_version_compare.go），不是字符串 `<`。
+	// 字典序从 1.10 / 1.10.10 起就全错：1.9 的设备收不到 1.10 的推送，
+	// 比服务端新的设备会被通知降级。症状是「永远不推送」，不报错不告警。
+	hasUpdate := hasUpdateAvailable(req.CurrentVersion, req.CurrentBuild, latestVersion.Version, latestVersion.BuildNumber)
 
 	resp := CheckUpdateResponse{
 		HasUpdate:   hasUpdate,
