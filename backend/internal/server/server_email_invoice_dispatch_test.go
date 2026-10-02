@@ -164,15 +164,15 @@ func TestAtoiSafe(t *testing.T) {
 // 追加 public 会让「表不存在」的测试悄悄读到真实库，从而把结论变成假绿。
 func newInvoiceScopedStore(t *testing.T) (*email.Store, func()) {
 	t.Helper()
-	dsn := ""
-	for _, key := range []string{"POCKET_TEST_POSTGRES_DSN", "POCKET_POSTGRES_DSN"} {
-		if v := os.Getenv(key); v != "" {
-			dsn = v
-			break
-		}
-	}
+	// 只认 POCKET_TEST_POSTGRES_DSN。原先还有一路 fallback 到
+	// POCKET_POSTGRES_DSN（服务自己的生产连接串），合并后被 main 的
+	// pg_test_isolation_guard_test.go 判红——那条判据是对的：
+	// 下面虽然建了隔离 schema（写操作不会落到生产表），但「连生产库这件事
+	// 本身」就不该发生。测试要用真实库时，把同一个库用**测试变量**传进来即可，
+	// search_path 会被钉到自建 schema 上，两者不冲突。
+	dsn := os.Getenv("POCKET_TEST_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("POCKET_TEST_POSTGRES_DSN or POCKET_POSTGRES_DSN not set; skipping invoice dispatch integration test")
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping invoice dispatch integration test")
 	}
 	ctx := context.Background()
 	rootPool, err := pgxpool.New(ctx, dsn)
