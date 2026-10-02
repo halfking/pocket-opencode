@@ -88,7 +88,17 @@ try {
       } catch(e){ return {ok:false,error:String(e&&e.message||e)} }
     })()`)
     console.log(`隔离后端可达性 ${NEW_BASE} →`, JSON.stringify(probe))
-    if (!probe.ok) { console.error('隔离后端从设备不可达 —— 不改 localStorage'); process.exitCode = 6 }
+    // ⚠️ 2026-10-03 修：这里原来只有 `process.exitCode = 6`，**没有真正停下**，
+    //    于是 ②③④ 照跑 —— 注释写着「连不上就别改 localStorage」，代码却把 App
+    //    指向了一个够不着的后端再跑一遍脚本。后果是自造假红：
+    //    实测 18101 从设备探不通时，verify-task-writepath 打出
+    //    「创建：PG 落库 FAIL / 列表回显 FAIL」，看起来像产品写路径坏了，
+    //    实际只是 App 打的 18099 当时根本没有后端在听。
+    //    探不通就直接退出：结论不可归因，不产出判据。
+    if (!probe.ok) {
+      console.error('隔离后端从设备不可达 —— 中止，不改 localStorage，不跑脚本（结论不可归因）')
+      process.exit(6)
+    }
 
     // ② 记原值
     originalBase = await cdp.ev(`localStorage.getItem('pocket_api_base')`)

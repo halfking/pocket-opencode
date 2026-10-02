@@ -43,6 +43,11 @@ await send('Runtime.enable')
 const checks = []
 const check = (n, pass, d) => { checks.push({ n, pass }); console.log(`${pass ? 'PASS' : 'FAIL'}  ${n}${d ? '  — ' + d : ''}`) }
 
+// 证伪模式：26/9 全绿本身不能证明判据有区分力，必须能证明「判据该红时真的会红」。
+// --sabotage=skip-confirm 故意不点确认弹层的按钮 ⇒ 删除根本不会发生。
+const SABOTAGE = (process.argv.find((a) => a.startsWith('--sabotage=')) || '').split('=')[1] || ''
+if (SABOTAGE) console.log(`\n⚠️ 证伪模式：${SABOTAGE} —— 判据**应该**失败，失败才算这个模式跑对\n`)
+
 async function ensureUnlocked() {
   if (await ev('!!document.querySelector(\'input[placeholder*="主密码"]\')')) {
     await ev(`(function(){var e=document.querySelector('input[placeholder*="主密码"]');var s=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(e),'value').set;s.call(e,${JSON.stringify(MASTER)});e.dispatchEvent(new Event('input',{bubbles:true}));return 1})()`)
@@ -71,10 +76,28 @@ async function typeInto(sel, text) {
 const clickText = (re) =>
   ev(`(function(){var b=Array.prototype.slice.call(document.querySelectorAll('button')).find(x=>new RegExp(${JSON.stringify(re.source)}).test(x.textContent||''));if(b){b.click();return 1}return 0})()`)
 
-const TITLE = 'TW-' + String(Date.now()).slice(-7)
-const SUB = 'SUB-' + TITLE
-const CMT = 'CMT-' + TITLE
+// ⚠️ 2026-10-03 修正 BUG-V20 的**误报**根因：
+//    原来是 `SUB = 'SUB-' + TITLE` / `CMT = 'CMT-' + TITLE`，
+//    而「删除后列表不再回显」判据用 `indexOf(TITLE) >= 0` 搜 `.task-card` 文本。
+//    子任务标题 `SUB-TW-xxx` **包含**父任务标题 `TW-xxx` ⇒
+//    父任务删干净之后，**子任务那张卡照样命中**，于是判据报「列表没刷新」。
+//
+//    实际产品行为是对的：diag-task-refresh-observability 实测
+//      确认点击后 +222ms 发出 GET /api/tasks，DOM 里那张卡 hitText=null（已消失），PG=0。
+//    刷新链路（onActivated → consumeListDirty → handleRefresh → loadTasks）完全正常。
+//
+//    修法：子任务/评论用**独立**标识，不再内嵌 TITLE，从根上消除子串碰撞。
+const RUN = String(Date.now()).slice(-7)
+const TITLE = 'TW-' + RUN
+const SUB = 'SB' + RUN      // 不含 TITLE
+const CMT = 'CM' + RUN      // 不含 TITLE
 console.log('task title =', TITLE)
+
+// 「这张卡还在不在」的表达式，删除前基线和删除后判定**必须用同一个**，
+// 否则前后两次量的是两把不同的尺子，before/after 对不起来。
+// ⚠️ 只搜 TITLE，不要搜任何包含 TITLE 的串（BUG-V20 的误报就出在这儿）。
+const stillThereExpr = `(function(){var cs=document.querySelectorAll('.task-card');for(var i=0;i<cs.length;i++){if((cs[i].textContent||'').indexOf(${JSON.stringify(TITLE)})>=0)return true}return false})()`
+const cardCountExpr = `document.querySelectorAll('.task-card').length`
 
 const pgTaskId = () => psql(`select id from ${SCHEMA}.tasks where title = '${TITLE}' limit 1`)
 const pgSubCount = (tid) => psql(`select count(*) from ${SCHEMA}.tasks where title = '${SUB}' and parent_id = '${tid}'`)
@@ -161,6 +184,33 @@ if (cmtInput) {
 check('评论落库', cmtOk, `pg count=${await pgEventCount(tid)}`)
 
 // ---------- 5. 删除 (DELETE) ----------
+// ⚠️ 2026-10-03 补「同视图删除前基线」。上一版只看删除后的 found=false，
+//    那个判据有个 vacuity 逃逸口：**列表整个空掉 / 渲染坏了，found 同样是 false**，
+//    会被记成「刷新正常」。before/after 必须成对：同一个列表视图上，
+//    删前确实看得到这张卡且列表是活的，删后它不见了且列表仍然活着。
+//    BUG-V20 的误报和这个逃逸口是同一句教训：先证明「它本来在」，再去说「它没了」。
+await goto('#/ai')
+let preHit = false
+let preCards = 0
+{
+  const dl = Date.now() + 12000
+  while (Date.now() < dl) {
+    preCards = await ev(cardCountExpr)
+    preHit = !!await ev(stillThereExpr)
+    if (preCards > 0 && preHit) break
+    await sleep(400)
+  }
+}
+check('删除前基线：同一列表视图里这张卡可见、列表是活的', preHit === true,
+  `cards=${preCards} found=${preHit}（cards=0 说明列表没渲染出来，删除判据无法自证）`)
+// 点回详情再删
+await ev(`(function(){var cs=document.querySelectorAll('.task-card');for(var i=0;i<cs.length;i++){if((cs[i].textContent||'').indexOf(${JSON.stringify(TITLE)})>=0){cs[i].click();return 1}}return 0})()`)
+await sleep(3000)
+const preHash = (await ev('location.hash')) || ''
+if (preHash.indexOf('#/tasks/') !== 0) {
+  console.error(`❌ 没能从列表回到任务详情（hash=${preHash}）—— 删除步骤的判据不可信`)
+  process.exitCode = 8
+}
 const del = await ev(`(function(){var b=document.querySelector('.action-btn.delete');if(b){b.click();return 1}return 0})()`)
 console.log('点「删除」= ', del)
 await sleep(1500)
@@ -170,7 +220,12 @@ await sleep(1500)
 //    确认按钮是**最后一个**，而全页面匹配会扫到别的视图/旧渲染里同文案的按钮，
 //    点空了就静悄悄跳过 —— 后面的「PG 无该行」也许是上一条删除的结果。
 //    改成**按选择器点弹层 footer 里的最后一个按钮**，并回报点了什么。
-const confirmHit = await ev(`(function(){
+let confirmHit
+if (SABOTAGE === 'skip-confirm') {
+  confirmHit = 'sabotage:故意不点确认'
+  console.log('   [sabotage] 不点确认弹层的按钮 ⇒ 删除不会发生，下面两条删除判据**应该**转红')
+} else {
+  confirmHit = await ev(`(function(){
   var f=document.querySelector('.dialog .dialog-footer');
   if(!f) return 'NO_FOOTER';
   var bs=f.querySelectorAll('button');
@@ -179,8 +234,9 @@ const confirmHit = await ev(`(function(){
   var t=(b.textContent||'').replace(/\\s+/g,' ').trim();
   b.click(); return 'clicked:'+t;
 })()`)
-console.log('点确认按钮 =', confirmHit)
-if (!String(confirmHit).startsWith('clicked:')) {
+  console.log('点确认按钮 =', confirmHit)
+}
+if (SABOTAGE !== 'skip-confirm' && !String(confirmHit).startsWith('clicked:')) {
   console.error('❌ 确认弹层没点中 —— 本轮的删除判据全部作废（不是产品缺陷，是探针没走到那一步）')
   process.exitCode = 8
 }
@@ -191,18 +247,39 @@ await goto('#/ai')
 // 判「列表不再回显」必须**轮询到有截止时间**，不能读某一瞬间的快照。
 // 头一版 goto 之后立刻读，2.2s 不够就报「还在」——把「慢」和「不刷新」混成一个结论。
 // 现在轮询到 15s，并打印实际耗时：若在窗口内消失 ⇒ 是慢；若始终不消失 ⇒ 真不刷新。
-const stillThereExpr = `(function(){var cs=document.querySelectorAll('.task-card');for(var i=0;i<cs.length;i++){if((cs[i].textContent||'').indexOf(${JSON.stringify(TITLE)})>=0)return true}return false})()`
 let stillThere = true
+let cardsAfter = -1
 const goneDl = Date.now() + 15000
 const t0 = Date.now()
 while (Date.now() < goneDl) {
-  stillThere = await ev(stillThereExpr)
+  stillThere = !!await ev(stillThereExpr)
+  cardsAfter = await ev(cardCountExpr)
   if (!stillThere) break
   await sleep(500)
 }
 const goneMs = Date.now() - t0
-check('删除后列表不再回显（轮询至多 15s）', !stillThere,
-  `found=${!!stillThere}  耗时=${goneMs}ms${stillThere ? '  ⇒ 15s 内始终不消失，指向「删除后列表不刷新」' : ''}`)
+// 歧义守卫：删前列表是活的（preCards>1）而删后整页 0 张卡 —— 那更像页面坏了，
+// 不是「刷新成功」。这种情形不能给 PASS，否则又是一条空过的判据。
+const blanked = !stillThere && cardsAfter === 0 && preCards > 1
+check('删除后列表不再回显（轮询至多 15s）', !stillThere && !blanked,
+  `found=${!!stillThere}  cardsBefore=${preCards} cardsAfter=${cardsAfter}  耗时=${goneMs}ms` +
+  (stillThere ? '  ⇒ 15s 内始终不消失，指向「删除后列表不刷新」' : '') +
+  (blanked ? '  ⇒ 列表整页空了，判据分不清「已刷新」与「页面坏掉」，不算通过' : ''))
+if (blanked) process.exitCode = 8
+
+// 证伪自检：--sabotage=skip-confirm 破坏的是「点确认」这一步，
+// 判据必须能把它抓住。抓不住 = 这套判据对删除这条路是装饰性的。
+if (SABOTAGE === 'skip-confirm') {
+  const expectFail = ['删除后 PG 无该行', '删除后列表不再回显']
+  const red = expectFail.filter((k) => checks.some((c) => c.n.indexOf(k) >= 0 && !c.pass))
+  if (red.length === expectFail.length) {
+    console.log(`✓ 证伪有效：${red.length}/${expectFail.length} 条如期转红 —— 判据确实在检查删除这件事`)
+  } else {
+    console.error(`✗ 证伪无效：不点确认本该让 ${expectFail.length} 条全红，实际只红了 ${red.length} 条 —— 判据没有区分力`)
+    process.exitCode = 8
+  }
+  console.log(`（证伪模式任务不会被删除，残留行 tid=${tid}，留在隔离 schema ${SCHEMA} 里可手工清）`)
+}
 
 const passed = checks.filter((c) => c.pass).length
 const failed = checks.length - passed
@@ -211,6 +288,12 @@ if (failed) console.error(`✗ ${failed} 条不通过 —— 如实记录，不�
 // BUG-V19：这里原本写死 `process.exit(0)`，于是哪怕 8/9 通过，退出码也是 0，
 // 调用方（run-device-against-isolated、CI）无从分辨「跑过了」与「全绿」。
 // 与 BUG-V15（邮件同步探针退出码恒 0）同一类。
+// ⚠️ 2026-10-03 又补一个：原来这行是 `process.exitCode = failed ? 1 : 0`，
+//    **无条件覆盖**。于是上面几处硬闸（confirmHit 没点中 exitCode=8、
+//    列表整页空了 exitCode=8、证伪无效 exitCode=8）全被冲回 0 —— 硬闸形同虚设，
+//    「探针没走到那一步」和「全绿」在退出码上长得一模一样。
+//    改成：已经有非零（8）就保留，否则按 failed 决定。
 // ⚠️ ws.close() 后仍可正常设 exitCode；不要用 process.exit()，那会跳过 close。
 ws.close()
-process.exitCode = failed ? 1 : 0
+if (failed) process.exitCode = 1
+else if (!process.exitCode) process.exitCode = 0
