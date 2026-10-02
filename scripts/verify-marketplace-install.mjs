@@ -32,6 +32,10 @@
 import { execFileSync } from 'node:child_process'
 import { requireDevPass } from './lib/dev-pass.mjs'
 import http from 'node:http'
+// 设备上装的是**生产 https 包**（实测 origin=https://localhost），
+// 而这一关原本写死开发包 http://localhost ⇒ 在当前设备上会在走到任何
+// 真正要验的判据之前就 exit 5。生产 https 回归用 POCKET_EXPECT_ORIGIN 放宽。
+const EXPECT_ORIGIN = process.env.POCKET_EXPECT_ORIGIN || 'http://localhost';
 
 const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
 const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555'
@@ -39,7 +43,10 @@ const PKG = 'com.kaixuan.opencode.pocket'
 const CDP_PORT = process.env.POCKET_CDP_PORT || '9250'
 const MASTER = process.env.POCKET_MASTER || ''
 const API_HOST = '127.0.0.1'
-const API_PORT = 8088
+// API 端口：跟随后端。写死 8088 时，脚本会对着一个**可能根本没人监听**的端口
+// 打 API，而判据照样往下跑 —— 拿到一堆看似「接口不通」的假失败。
+// 与 §4.89（API base 改 env）同一类，这里是端口。
+const API_PORT = Number(process.env.POCKET_API_PORT || 8088);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
 
@@ -149,7 +156,7 @@ while (Date.now() < readyDl) {
   await sleep(500)
 }
 console.log('origin =', origin)
-if (origin !== 'http://localhost') { console.log('非 http 调试包，断言无意义，终止'); process.exit(5) }
+if (origin !== EXPECT_ORIGIN) { console.log('非 http 调试包，断言无意义，终止'); process.exit(5) }
 
 // ---------- 会话恢复 ----------
 // ⚠️ 必须先清掉旧 token 强制重新登录。

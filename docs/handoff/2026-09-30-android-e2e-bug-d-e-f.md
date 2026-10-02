@@ -10388,3 +10388,375 @@ App 其实能看到 SEED —— 读路径 FAIL 是时序/等待问题，不是�
 - 设备侧其余 CDP 族（约 14 个）**尚未**逐个实跑，只是把通道打开了。
 - BUG-AX 设备侧负控、闪卡两入口的**点击**、会议写入设备侧持久化，仍未做。
 - `default` vs `ws_user-admin` 的**时序/等待**问题需要单独复现，不是本节能结的。
+## §4.94 给 26/26 配负控：查出一条**恒假**的证伪判据（BUG-V18），并解掉 5 个脚本的 origin 硬写
+
+§4.93 拿到 `verify-finance-writepath.mjs` 真机 **26/26 通过**。但按一直守着的规矩，
+**绿灯本身不证明判据有区分力** —— 这一节就是去证明它。
+
+### §4.94.1 BUG-V18：证伪判定里有一条**设计上永远绿**的判据
+
+先跑 `--sabotage=hide-cta`（把「记账」按钮从 DOM 摘掉，模拟死 CTA）：
+
+```
+11/26 通过
+FAIL: 对照组 A：空输入时「记账」按钮 disabled
+FAIL: 点「记账」后预览出现（解析请求走通）
+FAIL: **直接查 PG** 确认真的写进去了
+FAIL: POST /api/finance 非 4xx/5xx
+FAIL: 删除按钮点得动 …（共 15 条红）
+证伪判定：❌ 判据没抓到破坏 —— 本次证伪无效
+```
+
+**15 条判据明明抓到了破坏，脚本自己却判「证伪无效」。** 查它的期望键：
+
+```js
+: ['页面就位：快速记账输入框与「记账」按钮都存在', '点「记账」后预览出现（解析请求走通）']
+```
+
+而脚本的执行顺序是：**先测 `页面就位`，再摘按钮**。所以在 hide-cta 模式下
+这条判据**必然 PASS** —— 它量的是破坏之前的状态。
+`expectKey.every(...)` 于是永远 false，**无论破坏多彻底都输出「证伪无效」**。
+
+这不是「判据不敏感」，是**恒假**：它要求一个不可能成立的条件。
+（同一文件里还留着两处同类自证的注释——`*` 只剥一边、failed 是对象数组——
+说明这条链已经栽过两次。）
+
+顺带一个标签问题：那条 `页面就位：…按钮都存在` 是在 sabotage **之后**打印的，
+此刻按钮已经被摘掉，日志却报 PASS 并声称「按钮都存在」。标签在说它没在说的东西。
+
+修法两处：
+
+1. 改名 `页面就位（sabotage 前基线）`，并**在摘除之后再测一次**按钮在不在，
+   把真实状态打成可核对的现场证据：
+   ```
+   [sabotage 生效确认] 摘除后：btn=false（期望 false） input=true（期望 true，说明只摘了按钮）
+   ```
+   `btn` 不是 false 就 `exit 8` —— sabotage 没生效的话，后面的红**不能**算「判据抓到了破坏」。
+2. hide-cta 的期望键换成 sabotage 真正会打坏的三条：
+   `点「记账」后预览出现` / `**直接查 PG** 确认真的写进去了` / `POST /api/finance 非 4xx/5xx`。
+
+修完复跑，两个负控都通过：
+
+```
+# hide-cta
+逐条匹配：HIT «点「记账」后预览出现（解析请求走通）»  HIT «直接查 PG 确认真的写进去了»  HIT «POST /api/finance 非 4xx/5xx»
+证伪判定：✅ 判据在有缺陷一侧如期失败
+
+# swallow-create（拦掉 POST /api/finance 并回一个假的 201 —— 复刻 BUG-AC）
+FAIL  ⚠️ 没出现「PG 未变却说成功」的假成功 — saidOk=true PG 1->1
+逐条匹配：HIT «直接查 PG 确认真的写进去了»  HIT «⚠️ 没出现「PG 未变却说成功」的假成功»  HIT «POST /api/finance 非 4xx/5xx»
+证伪判定：✅ 判据在有缺陷一侧如期失败
+```
+
+**⇒ 26/26 这个绿灯现在被证明不是恒真**：两种人为破坏下，判据都如期转红，
+且 swallow-create 精确复现了 BUG-AC 的原场景——界面报「已入账」、
+PG 停在 1→1，只有「直接查 PG」那条能识破。
+
+注意修判据之后**必须复跑负控**：我只是把一条恒假判据换掉，
+不验证新期望键能被命中的话，只是把恒假换成恒假。
+
+### §4.94.2 5 个写路径脚本 origin 硬写，在当前设备上一律 exit 5
+
+§4.92 查出设备装的是**生产 https 包**（`origin=https://localhost`），
+而这批脚本第一关写死开发包：
+
+| 脚本 | 原有断言 | CDP 端口 | API 端口 |
+|---|---|---|---|
+| verify-email-writepath.mjs | `origin !== 'http://localhost'` → exit 5 | `POCKET_CDP_PORT \|\| 9253` | env |
+| verify-gateway-writepath.mjs | 同上 | `… \|\| 9260` | env |
+| verify-marketplace-install.mjs | 同上 | `… \|\| 9250` | **写死 8088** |
+| verify-bug-u.mjs | 同上 | `… \|\| 9247` | env |
+| verify-bugaa-realdevice.mjs | 同上 | env | env |
+
+用当前设备跑，它们会在**还没走到任何真正要验的判据**之前就退出——
+看着像「脚本坏了」，实则是前置假设不成立。
+`verify-finance-writepath.mjs` 早留了这个口子（`POCKET_EXPECT_ORIGIN`，
+注释写明「做生产 https 回归时用…否则脚本会在第一关就退出」），这批漏了。
+
+新增 `scripts/migrate-expect-origin.mjs`（机械不变量：替换数一致、
+`EXPECT_ORIGIN` 恰好声明一次、`node --check` 对着**新内容**过、任一不满足则该文件不动），
+改掉 5 个文件；`verify-marketplace-install.mjs` 的 `const API_PORT = 8088`
+也改成 `Number(process.env.POCKET_API_PORT || 8088)`。
+
+**头一版 TARGETS 漏了 `verify-bugaa-realdevice.mjs`**，
+是迁移后的**全仓残留复查**把它捞出来的 —— 所以批量迁移之后必须再扫一遍全仓，
+不能只看「我列的那几个」。
+
+### §4.94.3 这一节没有解决什么
+
+- `verify-task / email / gateway / marketplace / bug-u / bugaa` 六个脚本**尚未逐个实跑**，
+  只是把前置条件解开了。
+- 它们仍**各写各的 `adb forward`**（约 14 处硬编码 CDP 端口），
+  尚未迁到 `lib/adb-cdp.mjs` 的 `tcp:0`。跑的时候要显式传 `POCKET_CDP_PORT` 避开撞端口。
+- 闪卡两入口的**点击**、BUG-AX 设备侧负控、会议写入设备侧持久化，仍未做。
+## §4.95 BUG-V19（退出码恒 0）+ 新门禁，以及一个刚坐实的 UI 缺陷（BUG-V20，待定位）
+
+### §4.95.1 BUG-V19：4 个脚本判出 FAIL 仍然 `process.exit(0)`
+
+`verify-task-writepath.mjs` 跑出 `exit=0 PASS=8 FAIL=1`。退出码是**写死**的：
+
+```js
+const passed = checks.filter((c) => c.pass).length
+console.log(`\n=== 汇总 ===\n${passed}/${checks.length} 通过`)
+ws.close()
+process.exit(0)          // ← 无论 passed 是多少
+```
+
+⇒ CI、批量 runner、`&&` 链**全都无从分辨**「跑过了」与「全绿」——
+绿灯是被无条件发出去的。与 BUG-V15（邮件同步探针退出码恒 0）同一类，
+只是那次的脚本我改了、这一批漏了。
+
+新增门禁 `scripts/check-exit-reflects-verdict.mjs`（`--selftest` 7/7：
+敏感度 2 / 特异度 3 / 变盲 2），判据是「含 `const checks = []` 或 `const check = (…)`
+的文件里不允许出现无条件收尾的 `process.exit(0)`」，
+首跑就抓出 3 个：`verify-notes-crud.mjs`、`verify-notes-inputtext.mjs`、
+`verify-scheduled-task-writepath.mjs`。连同 `verify-task-writepath.mjs` 全部改成
+`process.exitCode = checks.some(c => !c.pass) ? 1 : 0`，
+复跑门禁 **0 命中**。
+
+**刻意保持保守**：只看行首就是 `process.exit(0)` 的收尾行，且同文件没有
+`process.exitCode` 赋值、没被 `if (` 包住。全仓有一百多个 `process.exit(0)`，
+绝大多数是合理的（幂等追加器、诊断脚本、早退路径）——门禁宁可漏报也不误报。
+
+### §4.95.2 verify-task-writepath 修判据后：8/9，剩一条判红
+
+顺带修掉另一处判据缺陷：原来 `goto('#/ai')` 之后**立刻**读 DOM，
+把「慢」和「不刷新」混成一个结论。改成轮询到 15 秒并打印耗时：
+
+```
+FAIL  删除后列表不再回显（轮询至多 15s）  — found=true  耗时=15070ms
+      ⇒ 15s 内始终不消失，指向「删除后列表不刷新」
+exit=1
+```
+
+### §4.95.3 BUG-V20（待定位）：任务删除后，列表三种刷新方式都不更新
+
+新增 `scripts/diag-task-list-refresh.mjs` 做定性，实测（隔离库，2026-10-03 01:58）：
+
+```
+播种 LISTREFRESH-523881 -> 201 id=task-bee90b47bdbe2f3238ee52391595a47d
+① 删除前刷新一次，列表里能看到            = true
+② 服务端 DELETE -> 200；PG = 0            ← 服务端确实删了
+③ 删除后（不刷新）仍能看到                = true
+④ 离开再回来（没点刷新）仍能看到           = true
+⑤ 点刷新（clicked）后仍能看到              = true      ← 连手动刷新都救不回来
+```
+
+**服务端是对的（200 + PG 归零），UI 三种刷新方式都不更新。**
+这不是等待不足，也不是「缺一个刷新触发」——是**列表读到的数据源**不对。
+
+⚠️ **根因尚未定位，不下结论。** 待查的候选（都需要再验，不能现在就选一个）：
+- 本地缓存合并：闪卡那边有过一模一样的坑
+  （`stores/flashcards.ts:291` 的 `mergeById(本地, 服务端)` 只做增量合并、
+  删除只走 `envelope.deletedIds` 增量通道）。任务 store 若是同一模式，
+  被删的项会**从本地缓存里复活**。
+- 列表查询的作用域/来源与写入端不一致（写入 `ws_user-admin`，列表读别的）。
+- 列表走了不同的接口（`.task-card` 渲染的数据未必来自 `/api/tasks`）。
+
+**下一步该做的判据**（不要只靠肉眼看）：开着 `Network` 域，
+点刷新后抓 `/api/tasks` 的**响应体**，看服务端返回里到底还有没有那条。
+返回里有 ⇒ 前端合并/渲染问题；返回里没有 ⇒ 请求根本没发到隔离后端。
+这一条能把上面三个候选一刀切开。
+
+### §4.95.4 5 个写路径脚本的 origin 硬写已解（§4.94.2 已记）
+
+`verify-task-writepath` 已在解开的条件下实跑（8/9，剩 BUG-V20 那条）。
+`verify-email / gateway / marketplace / bug-u / bugaa` **尚未逐个实跑**。
+
+### §4.95.5 本轮新增/修改清单
+
+| 文件 | 变化 |
+|---|---|
+| `scripts/verify-finance-writepath.mjs` | BUG-V18 证伪判据修复 + sabotage 生效现场确认 |
+| `scripts/verify-task-writepath.mjs` | 列表回显改轮询 + 退出码反映判定 |
+| `scripts/verify-notes-crud.mjs` / `verify-notes-inputtext.mjs` / `verify-scheduled-task-writepath.mjs` | 退出码反映判定 |
+| `scripts/verify-email/gateway/marketplace/bug-u/bugaa-*.mjs` | origin 断言改 env |
+| `scripts/verify-marketplace-install.mjs` | API 端口改 env |
+| `scripts/migrate-expect-origin.mjs`（新） | 批量迁移，带机械不变量 |
+| `scripts/check-exit-reflects-verdict.mjs`（新） | 门禁，selftest 7/7 |
+| `scripts/diag-task-list-refresh.mjs`（新） | BUG-V20 定性探针 |
+| `scripts/run-device-against-isolated.mjs` | 支持透传 `--` 参数（证伪模式要用） |
+
+### §4.95.6 这一节没有解决什么
+
+- BUG-V20 根因未定位，**不能算已修**。
+- 5 个脚本未逐个实跑；约 14 处硬编码 CDP 端口未迁 `lib/adb-cdp.mjs`。
+- 闪卡两入口的**点击**、BUG-AX 设备侧负控、会议写入设备侧持久化，仍未做。
+## §4.96 更正 §4.95：BUG-V20 的「已坐实」建立在一个**空对照**上，撤回
+
+§4.95 我把 BUG-V20 写成「已坐实」。这轮查下来，**那个结论的支撑不成立**，本节撤回它。
+
+### §4.96.1 我自己又写了一个没建立被测状态的判据
+
+新增 `scripts/diag-task-list-source.mjs` 想回答那个正确的问题
+（「删除后服务端 `/api/tasks` 返回里还有没有那条」）。
+头一版**只播种、没删除**，`cleanup` 是在 `finally` 里才跑的
+⇒ 查询时那条任务本来就在库里，探针据此打印
+「服务端返回里还有那条 ⇒ 不是 UI 问题」。
+
+**一个没先建立被测状态的判据，给出的结论看起来和真结论一模一样。**
+加上「先删再查」之后才拿到有意义的那组数据。
+
+### §4.96.2 §4.95 那个「点刷新」对照是空的
+
+§4.95 写「点刷新（clicked）后仍能看到」并据此断定「不是缺刷新触发」。
+但 `TasksView.vue` 里**没有** `button[aria-label="刷新"]`：
+
+```vue
+<PullToRefresh :on-refresh="handleRefresh" class="ai-hub-scroll">
+```
+
+刷新是**下拉手势**（`handleRefresh` → `loadTasks` + `loadSessions` + `approvals.refresh`），
+页面里根本没有那个 aria-label 的按钮。我的脚本用
+`document.querySelector('button[aria-label="刷新"]')` 去找，
+**在别的视图（或旧渲染）里匹配到了同名按钮，点它根本不会触发 `handleRefresh`**。
+
+⇒ 「三种刷新方式都不更新」这句话，**第三种是无效对照**。整条结论的强度塌了。
+
+### §4.96.3 产品的删除路径按代码看是对的
+
+`TaskDetailView.vue` 的 `confirmDelete`：
+
+```js
+await api.deleteTask(deleted.id)
+// 必须在 push 之前登记：push 之后列表页立刻被激活，
+// 顺序反了 consumeListDirty 会读到还没置位的状态。
+markListDirty('tasks')
+router.push('/ai')
+```
+
+列表侧 `loadTasks()` 是**整体替换** `tasks.value`（无 `mergeById` 式合并），
+`deleteTask` 也会 `filter` 掉。`TasksView` 在 KeepAlive 名单里、返回时靠
+`markListDirty` 触发重取——**这套设计就是专门为「详情页删掉→返回」准备的**，
+源码注释里还记着它修过一次同样的问题。
+
+而 `localStorage` 里**没有**任务缓存键 ⇒「本地缓存把被删项复活」这条也被证据否掉了。
+
+### §4.96.4 撤回后的准确表述
+
+已确认的事实：
+- 服务端删除是干净的：HTTP 200、PG 归零、`/api/tasks` 不再返回那条。
+- 产品的删除→回列表路径，**按代码看是对的**。
+- `verify-task-writepath.mjs` 走 UI 详情页删除后，列表里那条确实还在（轮询 15s 未消失）。
+
+**尚未确认的是**：这到底是不是产品缺陷。
+`verify-task-writepath` 的删除点击用的是「找文本为 删除/确认删除/确定删除 的按钮」，
+而确认弹层是 `useConfirm` 的 BottomSheet、`confirmText` 就是「删除」——
+**点到的未必是弹层里那个确认按钮**。它可能只点了个空转，
+后面 `sleep(3000)` 就直接查库，看到的「PG 无该行」其实是**上一条**删除的结果。
+
+⚠️ 所以现在有两条互斥的可能，都还没排除：
+- (a) 产品缺陷：删除后列表确实不刷新；
+- (b) 探针缺陷：确认弹层没点中，脚本测的压根不是删除成功后的状态。
+
+**下一步该做的判据**（不要只靠猜）：
+1. 抓删除点击后的 **Network 面板**：`DELETE /api/tasks/{id}` 到底发没发出去。
+   没发 ⇒ (b)；发了且 200 ⇒ 才是 (a)。
+2. 若是 (a)，再对比 `consumeListDirty('tasks')` 是否被调用
+   （在 `list-scene-store` 上挂一个只读计数，删完读一次）。
+3. `verify-task-writepath` 的确认点击应改成**按选择器点弹层里的确认按钮**
+   （`useConfirm` 的 BottomSheet 容器内的主按钮），而不是全页面文本匹配。
+
+### §4.96.5 这一节的教训
+
+「已坐实」这四个字，我在 §4.95 写下它的时候，手上只有：
+一条轮询超时 + 一个**点了个不存在的按钮**的对照。
+**一个空对照足以让一条观测看起来像三条。**
+
+⇒ 「我试了三种方式都不行」这类陈述，必须能回答
+「**这三种方式各自真的触发了目标行为吗**」。
+答不上来就只是「我试了三次」。
+## §4.97 BUG-V20 定案：是**真产品缺陷**，不是探针假象
+
+§4.96 留了两条互斥可能并说「都不算已坐实」。这轮把两条都排掉了。
+
+### §4.97.1 先给共享 helper 补上 `send` / `on`
+
+`lib/adb-cdp.mjs` 原来只暴露 `ev`（= `Runtime.evaluate`），
+**抓不到 CDP 事件**。要开 `Network.enable`、订阅 `Network.requestWillBeSent`，
+就得自己再搭一遍 WebSocket。现已补上：
+
+- `send(method, params)` —— 返回**整个 result 消息**（不是 `result.result`），
+  因为 `Network.getResponseBody` 的载荷在 `result.body`，只回传内层会整个丢掉。
+- `on(method, handler)` —— 订阅事件，返回退订函数；`close()` 时清空。
+
+### §4.97.2 排除 (b)：DELETE 请求**确实发出去了**
+
+新增 `scripts/diag-task-delete-network.mjs`：播种 → 进详情页 → 点 `.action-btn.delete`
+→ **按选择器**点确认按钮（不再全页面文本匹配）→ 抓网络。
+
+```
+点 .action-btn.delete = clicked
+确认弹层 = {"dialog":true,"title":"删除任务","footerButtons":["取消","删除"]}
+点确认按钮 = clicked:删除
+PG = 0
+   req  DELETE  /api/tasks/task-902c653b85f914aa682f32e38a2070ea
+判定：DELETE 已发出 ⇒ 不是「探针点空了」
+```
+
+顺带确认了弹层结构：它**不是** BottomSheet，是 `Dialog`
+（`ConfirmDialog.vue` → `Dialog.vue`），footer 里 `["取消","删除"]`，**确认是最后一个**。
+
+⚠️ 那个判定行里「响应 200」是**我自己的判据错**：
+`seen.find(s => s.kind === 'res')` 抓的是数组里**第一个**响应（详情页 GET 的 200），
+不是 DELETE 对应的那个。事实只有两条：**`req DELETE` 存在**、**PG = 0**。
+⇒ **「200」这个字我不采信，结论不依赖它。**
+
+### §4.97.3 用修好的探针重跑 verify-task-writepath：缺陷复现
+
+把 `verify-task-writepath.mjs` 的确认点击从**全页面文本匹配**
+改成**按选择器点 `.dialog .dialog-footer` 里的最后一个按钮**，
+并加一条硬闸：点不中就 `exitCode = 8` 并打印「本轮删除判据全部作废」。
+
+复跑（隔离库 18101）：
+
+```
+点确认按钮 = clicked:删除
+PASS  删除后 PG 无该行              — count=0
+FAIL  删除后列表不再回显（轮询至多 15s） — found=true  耗时=15015ms
+8/9 通过
+```
+
+⇒ **通过 UI 详情页删除任务，服务端删除成功（PG 归零），
+返回列表后那张卡片仍然显示，15 秒不消失。**
+**(a) 成立：这是真产品缺陷。**
+
+### §4.97.4 链路按代码看是完整的，缺口在链路内部
+
+```js
+// TaskDetailView.confirmDelete
+await api.deleteTask(deleted.id)
+markListDirty('tasks')     // 注释明说必须在 push 之前
+router.push('/ai')
+
+// TasksView
+useListScene('tasks', handleRefresh)   // onActivated → consumeListDirty → handleRefresh
+async function handleRefresh() { await Promise.all([loadTasks(), loadSessions(), approvals.refresh()]) }
+async function loadTasks() { … tasks.value = (await api.getTasks(undefined)) || [] … }   // 整体替换，无合并
+```
+
+设置端、消费端、替换语义**都对**。所以缺口只可能在这三者之间：
+
+- `onActivated` 没有真的触发（KeepAlive 名单命中、但返回时组件状态与预期不同）；
+- 脏标记被**别人先消费掉了**（`consumeListDirty` 是 delete-and-return，
+  若有第二处 `useListScene('tasks', …)` 先跑，它就把标记吃掉了）；
+- `handleRefresh` 跑了但 `loadTasks()` 拿到的东西仍含那条（已排除：接口返回里没有）。
+
+### §4.97.5 下一步那一条判据（工具已就位）
+
+`lib/adb-cdp.mjs` 现在能订阅事件了，所以**一条观测就能切开**：
+
+> 返回列表后，`GET /api/tasks` **有没有发出去**？
+> - 没发 ⇒ `onActivated`/`consumeListDirty` 这段没生效（脏标记被吃或没触发）
+> - 发了 ⇒ 接口返回里已无该条（已证），那么卡片还在就是**渲染/计算属性**层的问题
+
+同时可以顺手在页面上挂一个只读探针：
+`peekListDirty('tasks')` 在 push 前 / onActivated 后的取值，
+以及数一下 `useListScene('tasks', …)` 在代码里到底有几处注册
+（`consumeListDirty` 是 delete-and-return，**多处注册会互相抢**）。
+
+### §4.97.6 这一节的净结论
+
+- BUG-V20 **已确认存在**（服务端对、UI 不更新），**尚未定位到具体那一行**，**未修**。
+- 本轮修的是**探针**：确认点击从文本匹配改成选择器，并加了「点不中即作废本轮」的硬闸。
+  在这个硬闸之前，那条 FAIL 的可信度是打折的。

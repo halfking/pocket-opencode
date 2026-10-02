@@ -164,15 +164,53 @@ check('评论落库', cmtOk, `pg count=${await pgEventCount(tid)}`)
 const del = await ev(`(function(){var b=document.querySelector('.action-btn.delete');if(b){b.click();return 1}return 0})()`)
 console.log('点「删除」= ', del)
 await sleep(1500)
-await ev(`(function(){var bs=Array.prototype.slice.call(document.querySelectorAll('button'));for(var i=0;i<bs.length;i++){var t=(bs[i].textContent||'').trim();if(t==='删除'||t==='确认删除'||/确定删除/.test(t)){bs[i].click();return 1}}return 0})()`)
+// ⚠️ 2026-10-03 改：原来是**全页面文本匹配**「删除/确认删除/确定删除」。
+//    实测（diag-task-delete-network.mjs）确认弹层是 `Dialog`：
+//      .dialog > .dialog-footer 里 footerButtons = ["取消","删除"]
+//    确认按钮是**最后一个**，而全页面匹配会扫到别的视图/旧渲染里同文案的按钮，
+//    点空了就静悄悄跳过 —— 后面的「PG 无该行」也许是上一条删除的结果。
+//    改成**按选择器点弹层 footer 里的最后一个按钮**，并回报点了什么。
+const confirmHit = await ev(`(function(){
+  var f=document.querySelector('.dialog .dialog-footer');
+  if(!f) return 'NO_FOOTER';
+  var bs=f.querySelectorAll('button');
+  if(!bs.length) return 'NO_BUTTONS';
+  var b=bs[bs.length-1];
+  var t=(b.textContent||'').replace(/\\s+/g,' ').trim();
+  b.click(); return 'clicked:'+t;
+})()`)
+console.log('点确认按钮 =', confirmHit)
+if (!String(confirmHit).startsWith('clicked:')) {
+  console.error('❌ 确认弹层没点中 —— 本轮的删除判据全部作废（不是产品缺陷，是探针没走到那一步）')
+  process.exitCode = 8
+}
 await sleep(3000)
 const pgGone = await psql(`select count(*) from ${SCHEMA}.tasks where id = '${tid}'`)
 check('删除后 PG 无该行', String(pgGone) === '0', `count=${pgGone}`)
 await goto('#/ai')
-const stillThere = await ev(`(function(){var cs=document.querySelectorAll('.task-card');for(var i=0;i<cs.length;i++){if((cs[i].textContent||'').indexOf(${JSON.stringify(TITLE)})>=0)return true}return false})()`)
-check('删除后列表不再回显', !stillThere, `found=${!!stillThere}`)
+// 判「列表不再回显」必须**轮询到有截止时间**，不能读某一瞬间的快照。
+// 头一版 goto 之后立刻读，2.2s 不够就报「还在」——把「慢」和「不刷新」混成一个结论。
+// 现在轮询到 15s，并打印实际耗时：若在窗口内消失 ⇒ 是慢；若始终不消失 ⇒ 真不刷新。
+const stillThereExpr = `(function(){var cs=document.querySelectorAll('.task-card');for(var i=0;i<cs.length;i++){if((cs[i].textContent||'').indexOf(${JSON.stringify(TITLE)})>=0)return true}return false})()`
+let stillThere = true
+const goneDl = Date.now() + 15000
+const t0 = Date.now()
+while (Date.now() < goneDl) {
+  stillThere = await ev(stillThereExpr)
+  if (!stillThere) break
+  await sleep(500)
+}
+const goneMs = Date.now() - t0
+check('删除后列表不再回显（轮询至多 15s）', !stillThere,
+  `found=${!!stillThere}  耗时=${goneMs}ms${stillThere ? '  ⇒ 15s 内始终不消失，指向「删除后列表不刷新」' : ''}`)
 
 const passed = checks.filter((c) => c.pass).length
+const failed = checks.length - passed
 console.log(`\n=== 汇总 ===\n${passed}/${checks.length} 通过`)
+if (failed) console.error(`✗ ${failed} 条不通过 —— 如实记录，不当作通过。`)
+// BUG-V19：这里原本写死 `process.exit(0)`，于是哪怕 8/9 通过，退出码也是 0，
+// 调用方（run-device-against-isolated、CI）无从分辨「跑过了」与「全绿」。
+// 与 BUG-V15（邮件同步探针退出码恒 0）同一类。
+// ⚠️ ws.close() 后仍可正常设 exitCode；不要用 process.exit()，那会跳过 close。
 ws.close()
-process.exit(0)
+process.exitCode = failed ? 1 : 0

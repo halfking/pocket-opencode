@@ -174,4 +174,7 @@ check('删除后 PG 无该行', String(gone) === '0', `count=${gone}`)
 const passed = checks.filter((c) => c.pass).length
 console.log(`\n=== 汇总 ===\n${passed}/${checks.length} 通过`)
 ws.close()
-process.exit(0)
+// BUG-V19：原本写死 process.exit(0)，哪怕判出一堆 FAIL 退出码也是 0，
+// 调用方（CI / 批量 runner）无从分辨「跑过了」与「全绿」。
+// 改用 exitCode 按判定取值；不要用 process.exit()，那会跳过上面的 ws.close()。
+process.exitCode = checks.some((c) => !c.pass) ? 1 : 0
