@@ -19,7 +19,7 @@ const devPass = requireDevPass()
 function login(body) {
   return new Promise((res) => {
     const b = JSON.stringify(body)
-    const r = http.request({ host: '127.0.0.1', port: 8088, path: '/api/auth/login', method: 'POST',
+    const r = http.request({ host: '127.0.0.1', port: Number(process.env.POCKET_API_PORT || 8088), path: '/api/auth/login', method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(b) } }, (resp) => {
       let s = ''; resp.on('data', (c) => (s += c)); resp.on('end', () => res({ status: resp.statusCode, body: s }))
     })

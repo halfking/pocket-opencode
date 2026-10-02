@@ -8,8 +8,8 @@
 // 本脚本验证的是「空 blob 上传是否真的覆盖了已存数据」，不是「状态码好不好看」。
 import http from 'node:http';
 import { requireDevPass } from './lib/dev-pass.mjs'
-const HOST = '127.0.0.1';
-const PORT = 8088;
+const HOST = process.env.POCKET_API_HOST || '127.0.0.1';
+const PORT = Number(process.env.POCKET_API_PORT || 8088);
 const devPass = requireDevPass()
 
 function api(path, { token, method = 'GET', body } = {}) {

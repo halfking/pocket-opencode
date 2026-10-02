@@ -3,8 +3,8 @@
 // 可以在不占用设备、不受 UI 选择器干扰的前提下把「后端不支持」和「UI 有 bug」分开。
 import http from 'node:http';
 import { requireDevPass } from './lib/dev-pass.mjs'
-const HOST = '127.0.0.1';
-const PORT = 8088;
+const HOST = process.env.POCKET_API_HOST || '127.0.0.1';
+const PORT = Number(process.env.POCKET_API_PORT || 8088);
 const devPass = requireDevPass()
 
 function api(path, { token, method = 'GET', body } = {}) {

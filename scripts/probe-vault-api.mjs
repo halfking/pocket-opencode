@@ -6,8 +6,8 @@
 //   2. 前端 vault 用的那些端点，带 token 时分别返回什么？
 import http from 'node:http';
 import { requireDevPass } from './lib/dev-pass.mjs'
-const HOST = '127.0.0.1';
-const PORT = 8088;
+const HOST = process.env.POCKET_API_HOST || '127.0.0.1';
+const PORT = Number(process.env.POCKET_API_PORT || 8088);
 const devPass = requireDevPass()
 
 function api(path, { token, method = 'GET', body } = {}) {
