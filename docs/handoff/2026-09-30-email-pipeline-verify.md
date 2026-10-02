@@ -10242,3 +10242,126 @@ B 单独转红说明断言钉的是**两处断点各自的正确那一半**，�
 「PDF发票下载 / OFD发票下载 / XML发票下载」三个链接），
 但 `has_attachments` 一封都没记上（§7dq 已记 attachments JSON 列从未写入，
 与这条同源）。
+
+## §7ef — 核实「has_attachments 全库 123 封全 false」：不是缺陷，但也**没有被真实数据验证过**
+
+§7ee 顺带发现 `has_attachments` 全库 123 封全为 false，而 `uid=10435` 的正文里
+明明有「PDF发票下载 / OFD发票下载 / XML发票下载」三个链接。于是查它到底是
+修复没生效，还是历史数据。
+
+### 时间线
+
+修复提交 `24a8656b`（§7dq，给 `fetchOpts` 加 `BodyStructure`）落在本分支，
+时间 **2026-10-02 08:44:05**。以它为界切分真库：
+
+    total=123  created_before_fix=120  created_after_fix=3
+    has_attachments_true=0
+
+即：**120 封是修复前入库的**（当时 IMAP 路径根本没这个数据来源），
+只有 3 封可能检验新逻辑。
+
+### 差点又报了一次「修复未生效」
+
+我第一版探针的判据是「修复后入库且仍为 false ⇒ 修复未生效」，输出直接打了
+`VERDICT: 有 3 封修复后入库且仍为 false => 修复**未生效**`。
+**这个结论是错的**——判据只看了「值是 false」，没看**那封邮件到底有没有附件**。
+
+逐封查这 3 封（全部来自 `kimmy.huang@163.com`）：
+
+| 主题 | 性质 |
+|---|---|
+| 中国工商银行客户对账单 (ICBC Peony Card Bank Statement) | 正文版对账单，无附件 |
+| New: Jev Router picks the model and effort for each request | 服务商通知，无附件 |
+| What we shipped in September | Anthropic 月报，无附件 |
+
+**三封确实都没有附件**，所以 `has_attachments=false` 是**正确结果**。
+这与 §7dw 记的 72 次 `sync failed`、§7eb 记的生产二进制落后 8 小时，
+是同一族错误：**拿一个没有区分度的判据（false）去给修复定罪**。
+布尔值本身不携带信息——它只回答「是/不是」，不回答「本该是 yes 吗」。
+
+### 正确的结论
+
+**修复没有失效，但它也没有被真实数据验证过。**
+
+- 失效？否。那 3 封无附件邮件的 false 是对的；120 封历史数据产生于修复之前，
+  本来就无从判断。
+- 验证过？否。**没有一封真实带附件的邮件在修复后被同步过**，
+  所以 `bodyStructureHasAttachment` 在生产数据上一次都没被检验。
+
+已有的证据全部来自 `imapmemserver`（go-imap 自己的实现），而
+`fetcher_attachment.go` 的文件头自己就写明：
+它**不能**证明真实第三方 IMAP server 不会出问题
+（历史上加数据项曾导致部分 server 响应缺 SP 分隔符、`imapwire` 解析失败）。
+那一半仍卡在 Greenmail / Docker daemon 未运行。
+
+**要真正验证，需要一封真实带附件的邮件在修复后的二进制上被同步。**
+这依赖两件已知的阻断：① 生产二进制需重建重启（构建于 01:35，落后 HEAD）；
+② 需等真实邮箱收到带附件的新邮件，或授权做一次存量重扫（清 `last_synced_uid`）。
+
+### 顺带一个可疑点
+
+那 3 封的 `snippet` **是有内容的**（工行对账单正文、Anthropic 月报摘要），
+说明它们不是纯 envelope。`fetcher.go:1031` 那条 POP3 路径
+（`em.HasAttachments = len(parsed.Attachments) > 0`）只对 POP3 生效，
+而 `kimmy.huang@163.com` 走的是 IMAP（`last_synced_uid=1298896146`）。
+所以它们是 IMAP 路径入库、snippet 由别处填充的。**这条填充路径值得单独查**：
+如果它绕过了 `bodyStructureHasAttachment`，那么带附件的邮件从这条路进来
+仍会是 false。本轮未查，留作下一轮的入口。
+
+### §7ef 追查「IMAP 路径却有 snippet」的结论：确认了一个真实的覆盖缺口
+
+§7ef 末尾留了个可疑点：那 3 封是 IMAP 形态 id、账户走 `imap.163.com:993`、
+全库 `em-pop3-*` 为 0，可它们的 snippet 却有内容。本轮查清了。
+
+**线索链**：
+
+1. 三封的 `snippet` 都是**恰好 501 rune**、结尾带 `…`。
+   而 `truncateStr(s, 500)` 返回 `s[:500]`（**字节**），
+   中文 3 字节/字 ⇒ 500 字节最多约 166 rune，**对不上**。
+2. ⇒ snippet 不是 `truncateStr` 产的。按 rune 截断且加省略号的是
+   `DeriveSnippet`（`snippet.go:35`），`snippet_test.go:74` 正是拿
+   `utf8.RuneCountInString(strings.TrimSuffix(got, "…")) <= 500` 钉的。
+3. `snippet_test.go:172` 的护栏断言 fetcher.go 里有 **3 处** `DeriveSnippet` 调用，
+   注释写明是「**按需补拉 / IMAP 批量主路径 / POP3 HTML 回退**」。
+
+**结论**：IMAP 主路径确实会拉正文填 snippet，位置在 `fetcher.go:827`：
+
+    for _, bs := range m.BodySection {
+        snippet = DeriveSnippet(bs.Bytes, 500)
+        break
+    }
+
+**但这条路径不碰附件判定。** 附件走的是 `fetcher.go:873`：
+
+    HasAttachments: bodyStructureHasAttachment(m.BodyStructure)
+
+两者是**不同的数据源**：snippet 用 `m.BodySection`（已经拿到的正文字节），
+附件用 `m.BodyStructure`（BODYSTRUCTURE 数据项）。
+
+于是存在一个真实的覆盖缺口：
+
+- `m.BodySection` 拿到的是完整正文，**解析它就能知道有没有附件**
+  （`ParseMIMEMessage` 会填 `parsed.Attachments`，POP3 路径 `fetcher.go:1031`
+  就是这么算的）；
+- IMAP 路径明明已经把这坨字节喂给 `DeriveSnippet` 了，却**顺手没算一下附件**。
+
+**这是「收集 → 处理 → 写回」三段式里「处理侧清单与收集侧不一致」那一族**
+（与 `asserting-collection-is-not-asserting-substitution` 同源）：
+正文已经在手，附件信息就在同一坨字节里，却依赖另一个数据项，
+而那个数据项在真实 server 上**可能根本没有**（`bodyStructureHasAttachment`
+对 `bs == nil` 保守返回 false）。
+
+**但这还不能直接算缺陷**，因为：
+(a) `uid=10435` 那封真实发票邮件，它的正文里是「PDF发票下载 / OFD发票下载 /
+XML发票下载」三个**链接**，不是 MIME attachment part —— 即便从正文解析，
+`parsed.Attachments` 大概也是空的，**这个口径下它本来就不算附件**；
+(b) 中文发票邮件常把 PDF 直接内联在 HTML 里。
+
+所以真正的问题是**口径**，不是漏了一行代码：
+「发票邮件的 PDF 到底算不算附件」这个产品问题没定，
+而需求 7 的 📎 标记建立在这个口径上。**留给用户拍板**，本轮不动。
+
+**可以确定的**：`has_attachments` 在 IMAP 主路径上**只有一个数据源**
+（`m.BodyStructure`），而该数据源在真实第三方 server 上的兼容性
+**从未被验证**（Greenmail 卡在 Docker daemon 未运行）。
+一旦它拿不到，📎 标记就恒不显示——而同一时刻正文其实已经在手、可以判定。
