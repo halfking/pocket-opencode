@@ -1,6 +1,6 @@
 // diag-task-delete-network.mjs —— **定案 BUG-V20**：删除请求到底发没发出去。
 //
-// §4.106 留下的两条互斥可能：
+// §4.116 留下的两条互斥可能：
 //   (a) 产品缺陷：删除成功后列表不刷新
 //   (b) 探针缺陷：`verify-task-writepath` 用**全页面文本匹配**找「删除/确认删除」按钮，
 //       而确认弹层是 `Dialog`（不是 BottomSheet），footer 里 cancel 在前、confirm 在后；
@@ -116,7 +116,7 @@ try {
   }
   if (pgNow === '0' && !delSent) {
     console.log('⚠️ 注意：PG 已归零但没有 DELETE 事件 —— 说明是**别的**删除把它删掉了，')
-    console.log('   这正是 §4.106 怀疑的「看到的是上一条删除的结果」。')
+    console.log('   这正是 §4.116 怀疑的「看到的是上一条删除的结果」。')
   }
 } catch (e) {
   console.error(`失败：${e.message}`)
