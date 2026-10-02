@@ -143,6 +143,24 @@ func stripGoComments(src string) string {
 // RuntimeParams["search_path"] = schema + ",public"。
 var dsnSearchPathAppendRe = regexp.MustCompile(`dsn\s*\+\s*"&search_path=|dsn\s*\+\s*` + "`" + `&search_path=`)
 
+// dsnSearchPathHelperRe 匹配「把 search_path 拼进 DSN」的**辅助函数调用**。
+//
+// 2026-10-02 复核时发现的第二个盲区：原判据只匹配 `dsn+"&search_path="` 这个
+// **字面拼接**形态，而 internal/email/diag_merge_exec_test.go 把同一件事包进了
+// 辅助函数：
+//
+//	func appendSearchPath(dsn, schema string) string { return dsn + sep + "search_path=" + schema }
+//	if !hasSearchPath(dsn) { dsn = appendSearchPath(dsn, schema) }
+//
+// 拼接在辅助函数体内、调用处完全看不出意图，于是规则 3 判它**干净**。
+// 而它造成的真实后果比字面拼接更严重（备份检查走显式 schema 前缀、
+// 写操作走 search_path，两者可指向不同的库）。
+//
+// 正则的固有局限：把字符串拆开再拼、或用 fmt.Sprintf，都能绕过它。
+// 所以这条规则是**降低误用概率**而不是保证；真正的兜底是代码里那句
+// 「拼好之后用 current_schema() 读回来验证」。
+var dsnSearchPathHelperRe = regexp.MustCompile(`\b(append|with|set|add|build)\w*SearchPath\s*\(`)
+
 // pgSafeWithoutIsolation 逐个列出「打开 PG 连接但不隔离 schema 仍然安全」的
 // 文件，并写明理由。新增条目必须给出可核查的理由，不能写成"应该没事"。
 var pgSafeWithoutIsolation = map[string]string{
@@ -331,7 +349,18 @@ var pgAllowlistedWrites = map[string]string{
 	// 它只打墓碑（deleted_at）保留数据；文件里的 UPDATE 是**回滚语句**，
 	// 以 t.Logf 形式给出（pool.Exec 出现 0 次），不是可执行写操作。
 	// **待单独授权执行**。
-	"internal/email/diag_merge_exec_test.go": "三道闸门——POCKET_DIAG_MERGE_EXEC=1 显式开关 + POCKET_REAL_MAIL_DSN/POCKET_REAL_MAIL_SCHEMA 显式指定 + 备份表不存在或为空时 t.Fatal 拒绝执行；只打墓碑（deleted_at）保留数据，文件里的 UPDATE 是以 t.Logf 给出的回滚语句而非可执行写操作。**待单独授权执行**",
+	//
+	// 2026-10-02 复核登记理由时发现并修掉一个真实缺陷：它当时用
+	//   if !hasSearchPath(dsn) { dsn = appendSearchPath(dsn, schema) }
+	// 设 search_path —— 正是本护栏**规则 3 禁止的 DSN 拼接**。后果比规则 3
+	// 注释描述的更严重：该文件的**备份检查**走 `FROM <schema>.emails_merge_backup_`
+	// （显式 schema 前缀），而**写操作**走未限定表名（靠 search_path）。
+	// 两者不一致时会「备份检查通过」与「写操作打在别处」同时发生。
+	// 已改为 ParseConfig + RuntimeParams 覆盖式设置，并在任何写操作之前用
+	// current_schema() 当场验证连接实际落在哪个 schema。
+	// hasSearchPath / appendSearchPath 两个函数**已弃用**，仅保留给
+	// TestDiagMergeExecSearchPathIsPinned 作反例比对。
+	"internal/email/diag_merge_exec_test.go": "三道闸门——POCKET_DIAG_MERGE_EXEC=1 显式开关 + POCKET_REAL_MAIL_DSN/POCKET_REAL_MAIL_SCHEMA 显式指定 + 备份表不存在或为空时 t.Fatal 拒绝执行；只打墓碑（deleted_at）保留数据，文件里的 UPDATE 是以 t.Logf 给出的回滚语句而非可执行写操作。search_path 已于 2026-10-02 从 DSN 拼接改为 RuntimeParams 覆盖式设置（原先在 DSN 已带不同 search_path 时会打错库，而备份检查走显式前缀、写操作走 search_path，两者可指向不同的库）。**待单独授权执行**",
 
 	// vendored 第三方，需 -tags=integration + IDENTITY_SHADOW_DSN。
 	"third_party/identity-go/shadow/dao_test.go": "vendored 第三方；需 -tags=integration + IDENTITY_SHADOW_DSN，默认不编译",
@@ -523,11 +552,24 @@ func TestPGTestsNeverTargetTheProductionSchema(t *testing.T) {
 		}
 
 		// 规则 3：不得靠拼接 DSN 字符串来设置 search_path（见上面的注释）。
+		//
+		// 两个判据并存：字面拼接（dsnSearchPathAppendRe）与辅助函数调用
+		// （dsnSearchPathHelperRe）。后者是 2026-10-02 补的——原先只有前者，
+		// diag_merge_exec_test.go 把拼接包进 appendSearchPath() 就整套隐身。
 		if dsnSearchPathAppendRe.MatchString(code) {
 			t.Errorf("%s: 通过拼接 DSN 字符串（dsn+\"&search_path=\"）来隔离 schema。\n"+
 				"  本仓库的 DSN 往往已经带 search_path，拼接会产生两个同名参数、pgx 取第一个，\n"+
 				"  隔离静默失效而测试照样报告 ok。改用 ParseConfig 后的\n"+
 				"  RuntimeParams[\"search_path\"] = schema + \",public\"。", rel)
+		}
+		if dsnSearchPathHelperRe.MatchString(code) {
+			t.Errorf("%s: 调用了疑似「把 search_path 拼进 DSN」的辅助函数。\n"+
+				"  这类封装会让拼接**整套隐身**——拼接在函数体内，调用处看不出意图\n"+
+				"  （2026-10-02 实测：diag_merge_exec_test.go 的 appendSearchPath 就是这样\n"+
+				"  躲过了规则 3 的字面判据）。改用 ParseConfig 后的\n"+
+				"  RuntimeParams[\"search_path\"] = schema + \",public\"，\n"+
+				"  并在连接建立后用 SELECT current_schema() 读回来验证。\n"+
+				"  若你确认这个函数名不涉及 search_path 拼接，改个名即可。", rel)
 		}
 
 		// 规则 4：**豁免表内**的文件仍要登记它有哪些写语句。
@@ -608,6 +650,75 @@ func TestPGTestsNeverTargetTheProductionSchema(t *testing.T) {
 //
 // 负控：把 trailing / block / URL 三个子用例里的任意一个实现改回旧行为
 // （只剥整行注释），本测试必须转红。
+// TestSearchPathHelperJudgeIsNotVacuous 钉住规则 3 的**辅助函数判据**
+// （dsnSearchPathHelperRe）不会再次失明。
+//
+// 存在理由：2026-10-02 复核 pgAllowlistedWrites 的登记理由时，发现
+// internal/email/diag_merge_exec_test.go 与 diag_rest_dupes_test.go 都用了
+//
+//	func hasSearchPath(dsn string) bool { return strings.Contains(dsn, "search_path") }
+//	func appendSearchPath(dsn, schema string) string { ... dsn + sep + "search_path=" + schema ... }
+//
+// 这正是规则 3 禁止的 DSN 拼接，但原判据只匹配 `dsn+"&search_path="` 这个
+// **字面**形态，拼接被包进辅助函数后整套隐身——护栏判它干净。
+//
+// 而它造成的真实后果是「打错库」：DSN 已带**不同** search_path 时
+// hasSearchPath 返回 true → 不追加 → 连接落在 DSN 指定的 schema，
+// 而用户以为在动 POCKET_REAL_MAIL_SCHEMA 指定的库。
+// 在 diag_merge_exec_test.go 里更糟：备份检查走显式 schema 前缀、写操作走
+// search_path，两者可以指向不同的库，于是「备份检查通过」与「写操作打在
+// 别处」同时发生。
+//
+// 正则的固有局限（必须如实说明）：把字符串拆开再拼、或用 fmt.Sprintf，
+// 都能绕过它。这条规则降低误用概率，不提供保证。真正的兜底是代码里那句
+// 「拼好之后用 SELECT current_schema() 读回来验证」。
+//
+// 负控：把判据改回只匹配字面量（删掉 dsnSearchPathHelperRe 那一段），
+// 本测试必须转红。
+func TestSearchPathHelperJudgeIsNotVacuous(t *testing.T) {
+	// 正向：这些封装形态必须被抓到——它们都是把拼接藏起来的常见写法。
+	for _, in := range []string{
+		"if !hasSearchPath(dsn) {\n\tdsn = appendSearchPath(dsn, schema)\n}",
+		"dsn = withSearchPath(dsn, schema)",
+		"cfg.DSN = setSearchPath(cfg.DSN, schema)",
+		"dsn = addSearchPath(dsn, schema)",
+		"dsn = buildSearchPath(dsn, schema)",
+	} {
+		if !dsnSearchPathHelperRe.MatchString(in) {
+			t.Errorf("辅助函数判据漏掉了 %q——这种封装正是规则 3 要拦的形态。\n"+
+				"  2026-10-02 实测：diag_merge_exec_test.go 的 appendSearchPath 就这样\n"+
+				"  躲过了只匹配字面量的旧判据。", in)
+		}
+	}
+
+	// 正向：字面拼接仍由旧判据负责，两条判据并存。
+	const literal = `dsn = dsn + "&search_path=" + schema`
+	if !dsnSearchPathAppendRe.MatchString(literal) {
+		t.Errorf("字面拼接判据漏掉了 %q", literal)
+	}
+	if dsnSearchPathHelperRe.MatchString(literal) {
+		t.Logf("（对照）字面拼接同时命中辅助函数判据——不是问题，两条判据是 or 关系")
+	}
+
+	// 反向：普通的 search_path 覆盖式设置（正确写法）绝不能被判红，
+	// 否则这条规则会逼着人保留有害写法。
+	for _, ok := range []string{
+		`cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"`,
+		`cfg.ConnConfig.RuntimeParams["search_path"] = schema`,
+		`RuntimeParams["search_path"] = schema + ",public"`,
+		// 读 DSN 里的 search_path 值是正当的：
+		"if v := cfg.ConnConfig.RuntimeParams[\"search_path\"]; v != \"\" { ... }",
+	} {
+		if dsnSearchPathHelperRe.MatchString(ok) {
+			t.Errorf("正确的覆盖式设置被判红：%q\n"+
+				"  这会让人宁可留着打错库的拼接写法。", ok)
+		}
+		if dsnSearchPathAppendRe.MatchString(ok) {
+			t.Errorf("正确的覆盖式设置被字面判据判红：%q", ok)
+		}
+	}
+}
+
 func TestStripGoCommentsHandlesTheThreeWaysToHideCode(t *testing.T) {
 	const lit = `"POCKET_POSTGRES_DSN"`
 

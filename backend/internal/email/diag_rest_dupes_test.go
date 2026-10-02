@@ -42,9 +42,14 @@ func TestDiagRestDupes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
-	if !hasSearchPath(dsn) {
-		dsn = appendSearchPath(dsn, schema)
-	}
+	// 【2026-10-02 修正】原先这里是
+	//     if !hasSearchPath(dsn) { dsn = appendSearchPath(dsn, schema) }
+	//     cfg, cerr := pgxpool.ParseConfig(dsn)
+	// 那个拼接在 DSN 已带**不同** search_path 时会静默打错库——本文件要查的
+	// 是目标 schema 里的重复候选，打到别处会输出「重复很少/没有」的假结论。
+	// 与 diag_merge_exec_test.go 是同一个缺陷（那两个辅助函数已随那次修正删除）。
+	// 改用覆盖式设置：pgx 走 url.Values.Get 取 query 里**第一个** search_path，
+	// 拼接产生的第二个会被忽略（实测 2026-10-02）。
 	// MaxConns=1：这台机器上便携 PG 的后端进程会间歇性以 0xC0000142
 	// (STATUS_DLL_INIT_FAILED) 崩溃，并把整个实例带下去。实测对照：
 	// psql 单连接连打 5 次全 OK，而 pgxpool 默认 4 条并发连接几乎必崩——
@@ -55,6 +60,8 @@ func TestDiagRestDupes(t *testing.T) {
 	if cerr != nil {
 		t.Fatalf("parse dsn: %v", cerr)
 	}
+	// 覆盖而非追加。"+public" 让 pg_catalog 之外的内置函数与类型可解析。
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
 	cfg.MaxConns = 1
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
