@@ -62,7 +62,54 @@ Write-Host "[OK] APK installed" -ForegroundColor Green
 # --- 4. verify package + backend reachability ------------------------------------
 $pkg = (& $adb -s $serial shell pm list packages | Select-String 'opencode.pocket')
 Write-Host ("[pkg] " + ("$pkg" -replace '^\s+', ''))
-$re = Test-NetConnection -ComputerName '192.168.31.20' -Port 18099 -InformationLevel Quiet -WarningAction SilentlyContinue
-Write-Host "[backend] 192.168.31.20:18099 reachable = $re"
+# Reachability must be measured FROM THE DEVICE. A host-side
+# Test-NetConnection here measures the WRONG SUBJECT: it can only ever answer
+# "can this box reach itself", never "can the handset reach the backend".
+# The old check printed
+# "[backend] 192.168.31.20:18099 reachable = True" - a green line that was
+# true about the host while saying nothing about the only thing that matters.
+#
+# Measured on the handset (2026-10-03, Redmi 2411DRN47C / Android 14,
+# adb 192.168.31.19:5555): at the time this check was written the device could
+# not even ARP-resolve 192.168.31.20 (AP client isolation) while the host
+# check said True. Re-measured later the same day, all three now return 200.
+# The divergence is history; the blind spot is not. A host-side green line
+# still cannot distinguish "the phone can reach the baked address after a
+# data wipe" from "only the host can" - which is exactly the case that
+# matters, since a fresh install has no runtime override to fall back on.
+#
+# ASCII-ONLY COMMENTS ON PURPOSE: PowerShell 5.1 decodes a BOM-less .ps1 as
+# ANSI, so UTF-8 CJK comments get mangled and can break string quoting. Keep
+# this block English. (scripts/wecom-live-check.ps1 documents the same trap.)
+#
+# Device probe needs curl: verified /system/bin/curl exists on this handset.
+# The probe returns the literal string "unreachable" for anything that is not
+# a 3-digit status, so a missing curl degrades to a warning rather than a
+# silent pass.
+#
+# Two different addresses, deliberately reported separately:
+#   - 192.168.31.20 is what the APK BAKES IN (build-audit-apk.ps1 sets
+#     VITE_API_BASE). If this fails, a fresh install with no runtime override
+#     cannot reach the backend at all.
+#   - localhost works only because `adb reverse tcp:18099` is set up above,
+#     and it is what the device's pocket_api_base setting actually uses.
+$probe = {
+  param($url)
+  $out = (& $adb -s $serial shell "curl -s -o /dev/null -w '%{http_code}' --max-time 6 $url" 2>$null | Out-String).Trim()
+  if ($out -match '^\d{3}$') { return $out } else { return "unreachable" }
+}
+$baked = & $probe 'http://192.168.31.20:18099/healthz'
+$tunnel = & $probe 'http://localhost:18099/healthz'
+Write-Host "[backend from DEVICE] baked 192.168.31.20:18099/healthz -> $baked"
+Write-Host "[backend from DEVICE] adb-reverse localhost:18099/healthz -> $tunnel"
+if ($baked -ne '200') {
+  Write-Warning "[WARN] the address baked into the APK is NOT reachable from the phone."
+  Write-Warning "       A fresh install (app data cleared) will have no runtime override and cannot reach the backend."
+  Write-Warning "       Either fix the phone->host path, or build with the reversedev profile so localhost is baked in."
+}
+if ($tunnel -ne '200') {
+  Write-Warning "[FAIL] adb reverse tunnel is not working; the app cannot reach the backend right now." -ForegroundColor Red
+  exit 4
+}
 
 Write-Host "DONE - log in as admin, open the email settings page, expect 5 real accounts." -ForegroundColor Green

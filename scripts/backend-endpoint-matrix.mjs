@@ -7,9 +7,34 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BASE = process.env.POCKET_BASE || 'http://localhost:8088'
-const src = readFileSync(join(ROOT, 'backend/internal/server/server_assistant.go'), 'utf8')
-const pass = (src.match(/devPass\s*=\s*"([^"]+)"/) || [])[1]
-if (!pass) { console.error('CANNOT_READ_DEV_PASS'); process.exit(3) }
+
+// 2026-10-02 修复：这里原本从 Go 源码正则抓 `devPass = "..."` 常量，与
+// scripts/maestro-run.mjs 是同一个缺陷、同一场事故的漏网之鱼——那天做安全整改时
+// **有意删掉了那个硬编码口令**（server_assistant.go:221 现在是
+// `devPass := s.cfg.DevAuthPass`，取不到配置就关闭 dev 旁路并告警），于是本脚本
+// 每天都在登录前 exit(3)，整条端点矩阵直接不可用；而它报的那句
+// `CANNOT_READ_DEV_PASS` 指向的是一个**已经不存在的东西**，看报错完全猜不到
+// 真正原因是「该找环境变量了」。
+//
+// 正确的来源是环境变量：服务端读的就是 POCKET_AUTH_PASS，启动 pocketd 的那个
+// shell 里本来就有。改读 env 之后「口令不进仓库」这个安全属性一点没变（它本来
+// 就不在仓库里，是从源码抓的），反而更不容易和实际配置漂移。
+//
+// 顺序：POCKET_AUTH_PASS 环境变量 -> 旧版源码常量（仅当老 checkout 还在用）。
+// 环境变量优先，源码只当兜底，否则本地临时换的口令会被源码里的旧值盖掉。
+const GO = join(ROOT, 'backend/internal/server/server_assistant.go')
+let src = ''
+try { src = readFileSync(GO, 'utf8') } catch { /* 老 checkout 可能没有这个文件 */ }
+const pass = process.env.POCKET_AUTH_PASS || (src.match(/devPass\s*=\s*"([^"]+)"/) || [])[1]
+if (!pass) {
+  console.error(
+    '拿不到 dev 口令。请设置 POCKET_AUTH_PASS 环境变量，' +
+    '并确保它与启动 pocketd 时用的 POCKET_AUTH_PASS 一致。\n' +
+    '（服务端在 POCKET_AUTH_PASS 未设置时会直接关闭 dev 旁路，见 ' +
+    'server_assistant.go devBypassCredentials）',
+  )
+  process.exit(3)
+}
 
 const login = await fetch(`${BASE}/api/auth/login`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -42,7 +67,15 @@ const CASES = [
   ['vault sync subtree',  'GET',  '/api/vault/sync/latest', null],
   ['marketplace pkgs',    'GET',  '/api/marketplace/packages', null],
   ['marketplace releases','GET',  '/api/marketplace/releases', null],
-  ['marketplace router',  'GET',  '/api/marketplace/agents', null],
+  // 这一条 404 是**预期**，而且它验的是「catch-all 路由有没有挂上」：
+  // /api/marketplace/ 前缀由 server.go:857 的 handleMarketplaceRouter 兜住
+  // （submit/review/publish/install/revoke/rate 都走它），而 /agents 并不是
+  // 产品会调的子路径——前端 marketplaceApi（features/marketplace/api.ts）只用
+  // /packages、/releases、/packages/{id}/versions 和那 6 个写动作。
+  // 判别点在于**响应体形状**：路由挂着时返回 router 自己的 JSON
+  // {"error":"not found"}；没挂则是 Go mux 的纯文本 "404 page not found"。
+  // 写成别的名字会让人误以为是产品缺陷去追。
+  ['marketplace catch-all router mounted', 'GET', '/api/marketplace/agents', null],
   ['scheduled tasks',    'GET',  '/api/scheduled-tasks', null],
   ['email accounts',     'GET',  '/api/email/accounts', null],
   ['rss sources',        'GET',  '/api/rss/sources', null],
