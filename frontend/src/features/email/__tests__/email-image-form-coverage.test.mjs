@@ -174,10 +174,64 @@ describe('preloadRemoteImages 端到端', () => {
 
   it('纯背景图邮件（无 <img>）也能内联', async () => {
     const out = await preloadRemoteImages(
-      '<div style="background:url(https://cdn.com/only.png)"></div>',
+      '<div style="background:url(https://cdn.com/only.png)></div>',
       { fetchImpl: async () => okImage() },
     )
     assert.ok(out.includes('data:image/png;base64,'), '背景图没有被内联: ' + out)
+  })
+
+  // 2026-10-02 补：上面两条只证明了「被收集」。真正漏的是**替换**侧 ——
+  // 收集侧自 b9838fc2 起就收 data-original 与 background=，替换侧却只认
+  // `src=` 与 `url(`，于是这两类图被抓取、被下载，然后原样留在 HTML 里：
+  // 用户仍看到缺图，且每次打开都白付一次网络往返。
+  // 「断言了收集」并不蕴含「断言了替换」，这正是它能一路绿灯的原因。
+  it('background= 属性：抓到了就必须换上（不只是被抓到）', async () => {
+    const seen = []
+    const html = '<table width="600"><tr><td background="https://cdn.com/tile.png">hi</td></tr></table>'
+    const out = await preloadRemoteImages(html, {
+      fetchImpl: async (u) => {
+        seen.push(String(u))
+        return okImage()
+      },
+    })
+    assert.ok(seen.includes('https://cdn.com/tile.png'), 'background= 压根没被抓取')
+    assert.ok(!/https:\/\/cdn\.com\//.test(out), 'background= 被下载了却没被替换，HTML 里仍是远程地址:\n' + out)
+    assert.equal(out.match(/data:image\/png;base64,/g).length, 1, 'background= 没有换成 data URI:\n' + out)
+  })
+
+  it('data-original / data-lazy-src：抓到了就必须换上', async () => {
+    for (const attr of ['data-original', 'data-lazy-src', 'data-src']) {
+      const html = `<img src="https://cdn.com/track.gif" ${attr}="https://cdn.com/real.png">`
+      const out = await preloadRemoteImages(html, { fetchImpl: async () => okImage() })
+      assert.ok(
+        !new RegExp(`${attr}="https://`).test(out),
+        `${attr} 被下载了却没被替换，HTML 里仍是远程地址:\n` + out,
+      )
+      assert.ok(out.includes('data:image/png;base64,'), `${attr} 没有换成 data URI:\n` + out)
+    }
+  })
+
+  it('收集侧与替换侧的形态清单不得漂移（护栏）', async () => {
+    // 收集侧认得、替换侧认不得 → 白下载一次，且永远显示不出来。
+    // 这里逐个形态端到端跑一遍，任何一侧漏掉都会红。
+    const cases = {
+      'img src（带引号）': '<img src="https://cdn.com/a.png">',
+      'img src（无引号）': '<img src=https://cdn.com/a.png>',
+      'img data-src': '<img data-src="https://cdn.com/a.png">',
+      'img data-original': '<img data-original="https://cdn.com/a.png">',
+      'img data-lazy-src（无引号）': '<img data-lazy-src=https://cdn.com/a.png>',
+      'css url()（无引号）': '<div style="background:url(https://cdn.com/a.png)"></div>',
+      'css url()（带引号）': '<div style="background:url(\'https://cdn.com/a.png\')"></div>',
+      'td background（带引号）': '<td background="https://cdn.com/a.png">x</td>',
+      'td background（无引号）': '<td background=https://cdn.com/a.png>x</td>',
+    }
+    for (const [name, html] of Object.entries(cases)) {
+      const out = await preloadRemoteImages(html, { fetchImpl: async () => okImage() })
+      assert.ok(
+        !/https:\/\/cdn\.com\//.test(out),
+        `[${name}] 远程地址残留在 HTML 里 —— 收集到了却没替换:\n` + out,
+      )
+    }
   })
 
   it('抓取失败时保留原 URL，不毁排版（回归）', async () => {

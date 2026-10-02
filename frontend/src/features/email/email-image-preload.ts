@@ -243,12 +243,25 @@ export async function preloadRemoteImages(
 /**
  * 把 HTML 里所有指向该图片的引用换成 data URI。
  *
- * 必须覆盖三种合法写法，否则「抓到了但没换上」等于没抓到：
+ * 必须覆盖收集侧认得的**每一种**形态，否则「抓到了、也花流量下载了，却没换上」
+ * 等于没抓到 —— 而且比没抓到更糟：白付一次网络往返，HTML 里仍留着远程地址。
+ *
+ * 这一组必须与 collectRemoteImageRefs 的 4 类形态**一一对应**：
  *   1. 带引号 src   `<img src="URL">` / `src='URL'`
  *   2. 无引号 src   `<img src=URL>`（HTML 允许）
  *   3. CSS url()    `background-image:url(URL)` / `url("URL")` —— 营销与通知邮件的
  *      背景图大量走这条，只处理 src 会让背景图默默空掉（cid: 那次已修过一次，
- *      这次是同一段逻辑的远程图分支）。
+ *      这是同一段逻辑的远程图分支）。
+ *   4. 懒加载属性   `data-src` / `data-original` / `data-lazy-src`
+ *   5. background   `<td background="URL">` 老式邮件排版
+ *
+ * 2026-10-02 实测补上的 4 与 5：收集侧从 b9838fc2 起就收 data-original 与
+ * background=，但替换侧只认 `src=` 与 `url(`，于是
+ * `<td background="https://…">` 与 `<img data-original="https://…">`
+ * **被抓取、被下载、然后原样留在 HTML 里**。用户看到的仍是「缺图」，
+ * 而每次打开这封邮件都要多付两次无用往返。
+ * 既有测试只断言了这两类「被收集」，从没断言过「被换上」——
+ * 断言收集不蕴含断言替换，这正是它漏过去的原因。
  *
  * raw 与 url 都要替换：抓取用的是归一后的 url，而 HTML 里写的是 raw。
  */
@@ -256,14 +269,24 @@ function inlineDataUri(html: string, raw: string, url: string, dataUri: string):
   let out = html
   for (const form of new Set([raw, url])) {
     const esc = escapeRe(form)
-    // 1) 带引号 src
+    // 1) 带引号的属性赋值：src / data-src / data-original / data-lazy-src / background
+    //
+    //    属性名里带 `-` 时必须整体写进 alternation，不能只写 `src`：
+    //    `data-original` 里根本没有 `src` 子串，`\bsrc` 匹配不到。
+    //    （`data-src` 之所以「碰巧能用」，是因为 `\b` 在 `-` 后成立。）
     out = out.replace(
-      new RegExp(`(\\bsrc\\s*=\\s*["'])${esc}(["'])`, 'gi'),
+      new RegExp(
+        `(\\b(?:src|data-src|data-original|data-lazy-src|background)\\s*=\\s*["'])${esc}(["'])`,
+        'gi',
+      ),
       (_m, pre: string, post: string) => `${pre}${dataUri}${post}`,
     )
-    // 2) 无引号 src（后面必须是非引号/空白/尖括号，避免吃掉半个属性）
+    // 2) 无引号属性赋值（后面必须是非引号/空白/尖括号，避免吃掉半个属性）
     out = out.replace(
-      new RegExp(`(\\bsrc\\s*=\\s*)${esc}(?=["'\\s>])`, 'gi'),
+      new RegExp(
+        `(\\b(?:src|data-src|data-original|data-lazy-src|background)\\s*=\\s*)${esc}(?=["'\\s>])`,
+        'gi',
+      ),
       (_m, pre: string) => `${pre}${dataUri}`,
     )
     // 3) CSS url()：带引号与不带引号两种
