@@ -1447,3 +1447,133 @@ pocket_crypto_cfg = {"fieldEncryption":"disabled","hasMasterPassword":true,...}
 对我的验证的直接后果：**不能依赖 App 的默认 base**。15.1 的两次抓取都是在 WebView 里
 **显式 fetch 18099** 完成的，`adb reverse tcp:18099` 至今完好。
 我没有把 base 改回去——那是别人的配置。
+
+## 25. 幽灵卡的根因定案：账号删除的级联，而客户端**没有任何回收方向的对账**
+
+> 02:32–03:05。本节推翻了我自己此前对"采集未按 `invoice_no` 去重"的猜测，
+> 并记录一次我自己犯的、且**仓库里早已写明**的错误。
+
+### 25.1 先记我自己的错：SQL 漏了 schema 限定，得到一份漂亮的假结论
+
+我第一版对账 SQL（`logs/zz-inv-server-reconcile-20261003.sql`）写的是
+`FROM email_invoices`、`LEFT JOIN emails`，**没有 schema 前缀**。
+结果：
+
+- `psql` exit=**0**，stderr **空**，输出排版正常；
+- `email_invoices` 返回 **0 行**；
+- 于是 12 行设备发票全部判成 `ABSENT-server`。
+
+如果我就此收工，结论会是"服务端把发票和邮件全删了"。**实际原因只是我查错了库**：
+`public.email_invoices` 这张表**存在且恰好是空的**（`public.emails` 同理），
+而真正的数据在 `opencode_pocket`。空表不报错、不告警、exit 仍为 0。
+
+`logs/zz-inv-server-reconcile2-20261003.sql` 重跑时加了自检段，取-2 才拿到真值：
+
+```sql
+=== G0 self-check: the schema I am about to trust must be NON-EMPTY ===
+   search_path   | pk_invoices | pk_emails | public_invoices
+-----------------+-------------+-----------+-----------------
+ "$user", public |           4 |       180 |               0
+(if pk_invoices = 0 then every "ABSENT" below is a false conclusion)
+```
+
+**这不是新知识。** `backend/internal/email/diag_merge_exec_test.go:35-68`（2026-10-02）
+已经把同一个陷阱写成了长段注释：备份检查用显式 `<schema>.` 前缀、业务查询用未限定表名
+靠 `search_path` 找表，两者不一致时"备份检查通过"与"写操作打在别处"会**同时发生**。
+我今天还是踩了同一个坑——因为我新写了一个 SQL 文件，**没有先读那条注释**。
+
+⇒ 写只读 SQL 的硬规则（本轮新增，写在文件头）：
+**1. 每张表显式 `<schema>.` 前缀；2. 文件第一段必须是"目标 schema 非空"自检；
+3. 自检不过就不许解释下面任何 `ABSENT`。**
+
+（注：并发会话已在 origin 上提交了 `scripts/check-pg-schema-hardcoded.mjs`
+——它查的是"schema 名被写死"，方向相反、不能替代上面这条"必须显式限定"的规则。
+本节不重复造那个卡口。）
+
+### 25.2 根因：`email_accounts → emails → email_invoices` 是 ON DELETE CASCADE
+
+`logs/zz-inv-fk-20261003.out.txt`（exit=0）：
+
+```
+ child                          | conname                          | def
+-------------------------------+----------------------------------+---------------------------------------------------
+ opencode_pocket.emails        | emails_account_id_fkey           | ... REFERENCES email_accounts(id) ON DELETE CASCADE
+ opencode_pocket.email_invoices| email_invoices_email_id_fkey     | ... REFERENCES emails(id)          ON DELETE CASCADE
+```
+
+账号被删 ⇒ 该账号的邮件被级联删 ⇒ 那些邮件的发票行再被级联删。**一条 SQL 都没有，
+服务端自己不留痕迹。** 后端代码也确实只发一条裸 DELETE：
+`store.go:1017 DeleteAccount` / `store.go:1825 DeleteAccountScoped`，级联交给 PG。
+
+而客户端这一侧**完全没有对应的回收路径**：
+
+| 位置 | 事实 |
+|---|---|
+| `email-cache-heal.ts:69-89 detectCacheGap` | 三个信号 `empty` / `server-ahead` / `stale`，**全部是"本地缺东西"的方向**。没有 `local-ahead`（本地比服务端多）这一路 |
+| `invoices-store.ts:1-4` 文件头注释 | "服务端是 SSOT；本地供首屏与离线。**同步只 upsert，禁止整表 DELETE。**" |
+| `invoices-store.ts:95-116 upsertFromServer/syncFromServer` | 只 INSERT OR REPLACE，无任何 DELETE |
+| `invoices-store.ts:155 removeLocal` | 全仓唯一调用方是 `use-invoice-list.ts:398` 的 UI 删除动作（它还会调 `emailApi.deleteInvoice`），**不是同步** |
+| `emails-store.ts:268 deleteEmailsByIds` | 按 id 逐条删，由用户动作驱动，同步不调 |
+
+所以级联在服务端是"原子且干净"的，客户端却只会**加**不会**减**。
+
+### 25.3 事件本身：2026-10-01 23:56 账号集被整体替换
+
+- 设备上 8 个 `account_id`，服务端只有 5 个，且**现存 5 个的
+  `created_at` 全是 `1790870162` = 2026-10-01 23:56:02**（同一秒批量建成）。
+- 设备上那 4 个服务端已无的账号：`acct-1790784184824054300-1`、
+  `acct-1790784248178102200-3`、`acct-1790784255240360000-5`、
+  `acct-1790811900843306300-1`。
+- 这 4 个旧账号在 `logs/pd-ax*.err.log`（10-01 05:00–07:00）里还在正常同步，
+  最后一个旧发票 `inv_1790789580385036500_1` 的采集日志是 10-01 07:00
+  （`pd-v24.err.log:55`）。**旧账号死于 10-01 07:00 之后、23:56 之前。**
+- 服务端 `emails` 中**没有一条**找不到所属账号（B3 = 0），说明级联执行得很干净。
+
+**我查不到"是谁在什么时候删的"**，照实说明而不是猜：
+`logs/pg/pg.err.log` 里没有 10-01 22:00–10-02 01:00 的 `email_accounts` DELETE
+（该窗口无日志，疑似轮转/重启），`emails_merge_backup_20261001` 备份表**已被删除**，
+10-01 那次操作是 `TombstoneDupeEmails`（合并重复副本、只写 `deleted_at` 墓碑、
+不动账号），解释不了账号消失。所以"删账号"这个动作本身在现有证据里**没有日志**。
+
+### 25.4 影响面比发票大：96 封邮件同样是孤儿
+
+设备 `local_emails` = **271 行 / 8 个账号**；服务端 `emails` = 180 行 / 4 个有邮件的账号。
+
+| 设备 `account_id` | 本地邮件 | 服务端 | 判定 |
+|---|---:|---:|---|
+| `acct-1790870162047413500-2`（QQ 私人） | 98 | 98 | 在 |
+| `acct-1790784248178102200-3` | 62 | **0** | **账号已不存在** |
+| `acct-1790870162079171800-5`（kimmy） | 57 | 58 | 在（服务端多 1，晚到） |
+| `acct-1790784255240360000-5` | 25 | **0** | **账号已不存在** |
+| `acct-1790870162063806800-3` | 14 | 14 | 在 |
+| `acct-1790811900843306300-1` | 7 | **0** | **账号已不存在** |
+| `acct-1790870162018873300-1`（企业邮） | 6 | 10 | 在 |
+| `acct-1790784184824054300-1` | 2 | **0** | **账号已不存在** |
+
+**271 里有 96 封（35%）属于服务端已经不存在的账号。** 收件箱里那 96 封不会
+被服务端"补发"（账号没了，永远不会再来），但会一直显示、一直计入未读
+（本地 `is_read=0` 共 242 封）。
+
+⇒ **只裁剪 `local_email_invoices` 是治标。** 真正缺的是"账号集对账"：
+服务端账号列表里没有的账号，其本地邮件/发票应当被回收或至少不再展示。
+这也推翻了我此前"按服务端权威集裁剪发票即可"的收敛结论——那条仍成立，
+但它处理的是*更小*的症状，不是根因。
+
+### 25.5 一处顺手修掉的陈旧注释
+
+`emails-store.ts:263-268` 的文档注释写的是"从服务端全量拉取近端邮件并 upsert 到本地镜像"，
+**与函数体完全相反**（函数体是逐条 `DELETE FROM local_emails`）。
+这是本次排查里读到的第一手误导，已改成它实际做的事。
+
+### 25.6 本节没有新增护栏，理由照实说
+
+我原本想加一条"同步必须回收服务端已无的行"的行为判据，但**没有加**：
+`invoices-store.ts` 直接 `import { localDB } from '../../native/local-db'`，
+在 Node 里 import 会触发 Capacitor 插件初始化；现有测试全部是**读源码文本**，
+没有真库 harness。要写行为判据就得先搭注入用的假 `localDB`，那是另一个工程。
+
+按本轮反复吃到的教训（判据自己要先证明它在检查你以为的东西），**我没有把握写出一条
+真能转红的行为判据，就不写一条只会恒绿的**。要补的话，形状是：
+把"哪些本地 id 该回收"抽成纯函数（例如 `orphansToDrop(localIds, serverIds, dirtySet)`），
+再用**能让两条路径给出不同结果**的夹具测它，并配 `email-cache-heal` 那条
+`local-ahead` 信号的用例。

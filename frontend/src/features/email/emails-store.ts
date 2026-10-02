@@ -261,9 +261,13 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
 }
 
 /**
- * 从服务端全量拉取近端邮件并 upsert 到本地镜像（用于收件箱离线浏览）。
- * 上游必须带 category / importance（kxmemory 分类完成前的邮件为 NULL，会
- * 在 WS 收到 email.classified 后由 handleClassifiedEvent 补齐）。
+ * 按 id 逐条删除本地镜像里的邮件（用户主动删除时调用）。
+ *
+ * 注意这是**删除**，不是同步。服务端把邮件删掉后本地并不会自动跟着删：
+ * `email-cache-heal` 只检测「本地缺东西」（empty / server-ahead / stale），
+ * 没有「本地比服务端多」这一路；账号被删时服务端还会
+ * `email_accounts → emails → email_invoices` 三级 ON DELETE CASCADE，
+ * 而本地镜像不会收到任何通知。详见 handoff round24 §25。
  */
 export async function deleteEmailsByIds(ids: string[]): Promise<void> {
   for (const id of ids) {
