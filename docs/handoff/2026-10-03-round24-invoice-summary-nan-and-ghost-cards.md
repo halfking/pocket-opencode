@@ -390,3 +390,37 @@ internal\email\diag_qp_replay_test.go:89:6:  looksLikeMIME redeclared in this bl
   不 stash、不 checkout、不改对方文件（并行会话的 `git stash -u` 卷走过未提交工作，
   那是已吃过的亏）；也没把那个包复制到别处跑，那会造成代码分叉。
   等它编译过就能跑，08:00 那时大概率已提交或已修好。
+
+### 10.3 需求 7 遗留的 18 封乱码摘要：预登记「明早它不该变」
+
+基线（`logs/zz-snippet-baseline-20261003-0108.txt`）：
+
+```
+emails_total            = 175
+stale_ge8               = 18      ← 阈值 >= 8 处（单处会撞上「01:2」里的 =2 假阳性）
+stale_1_to_7            = 19
+stale_zero              = 138
+stale_ge8_newest_mail   = 10-02 22:08
+stale_1_to_7_newest_mail= 10-02 10:00
+```
+
+与真机 API 实测的「175 封里 18 封 snippet 含真转义」一致，两个独立口径互相对上了。
+
+**明早的预期结果：仍然是 18。** 理由：自愈路径是入库时
+`ON CONFLICT (id) DO UPDATE` 刷新 snippet，而**常规同步只拉 UID 更大的新邮件**，
+不会回头重读这 18 封；而 10-02 22:08 之后入库的邮件里没有新的乱码行
+（`stale_1_to_7` 的最新一封是 10-02 10:00，更早），说明现行二进制不再写转义摘要。
+
+⇒ **明早若还是 18，那是符合预期，不是「修复没生效」**；反过来若突然变成 0，
+才说明有东西真的重读了那批邮件（要查是谁触发的）。修它们仍需重置 `last_synced_uid`
+重同步 = 手工触发流水线，未授权。
+
+### 10.4 顺带记一次判据自己骗人
+
+第一次跑这条统计时我得到 `emails_total = 2021`、`stale = 0`，与直接计数的 175 矛盾。
+查下去是我的 SQL 有两个错：`regexp_matches` 是 set-returning 函数，不能出现在
+`WHERE` 里（后一次直接报了 `set-returning functions are not allowed in WHERE`），
+而先前那次是把命中数算在 CTE 的 SELECT 列里、外层过滤——写法合法但**输出串行了**。
+结论：**175 是真的，2021 是我判据的产物。** 数据本身干净（date 无 0、无未来日期，
+发件人是真人邮件而非夹具）。这与本轮已经吃过三次的坑同源：
+统计数量前先看**被计数的到底有哪几行**。
