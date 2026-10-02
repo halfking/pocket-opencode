@@ -53,12 +53,29 @@ export function formatMoney(amount: number, currency?: string | null): string {
  * `status` 设为必填而不是给个默认值：默认值会把「构造不出凭证的行」
  * 悄悄放行，那正是这次要消灭的歧义。造「未核验」行请显式传
  * `filePath: undefined`。
+ *
+ * 2026-10-02 补：`filePath` / `fileName` **两个都读**，规则仍然只有一条。
+ * 这不是把判据放松成「两个都行」——是同一张发票在两个数据源里字段名不同：
+ *
+ *   - 服务端列表：`file_path`（email.ts:675；invoice_list.go:29 真的 SELECT 出来）
+ *   - 设备本地镜像：本地表 `local_email_invoices` **没有 file_path 列**
+ *     （schema.ts:244-269 的建表与 local-db.ts 的迁移清单里都没有），
+ *     `rowToInvoice`（invoices-store.ts:18）也只产出 `fileName`。
+ *
+ * 只读 filePath 时，设备本地模式（需求 6 的默认姿态）下**每一行**都会被判成
+ * 「没凭证」而滤掉，合计恒为 ¥0.00。实测：本地镜像行 ¥0.00，同一行带 filePath
+ * 是 ¥3,500.00。
+ *
+ * 之所以不改成给本地表补 file_path 列：那是**设备 DB 迁移**，而真机从未验证过，
+ * 存量设备上迁不迁得成没有证据。判据读两个字段名是把「数据源形状差异」留在
+ * 判据里，迁移风险留在原地——后者无法验证，前者可以测。
  */
 export function invoiceCountsTowardTotal(it: {
   status: string
   filePath?: string | null
+  fileName?: string | null
 }): boolean {
-  return (it.status === 'downloaded' || it.status === 'filed') && !!it.filePath
+  return (it.status === 'downloaded' || it.status === 'filed') && !!(it.filePath || it.fileName)
 }
 
 /**
@@ -74,6 +91,7 @@ export function sumByCurrency(
     currency?: string | null
     status: string
     filePath?: string | null
+    fileName?: string | null
   }>,
 ): CurrencyAmount[] {
   const cents = new Map<string, number>()
@@ -162,9 +180,10 @@ export function invoiceTotalsFrom(res: {
  * 顺序不能换：第 2 步的 `currency` 一旦丢了就会兜底成 CNY，所以第 1 步必须
  * 优先于第 2 步，而第 1 步的数据又依赖转发层没把 `amounts` 吃掉。
  *
- * 第 3 步的 `list` 必须是带 status/filePath 的完整发票行：兜底重算要按与
- * 服务端相同的判据过滤，只给 `{amount, currency}` 会让类型系统放行一个
- * 必然算错的调用（那样算出来的是全表求和，正是 61,500 的来源）。
+ * 第 3 步的 `list` 必须是带 status 的完整发票行，且凭证字段至少有一个非空
+ * （服务端给 `filePath`、设备本地镜像给 `fileName`，见 invoiceCountsTowardTotal
+ * 的注释）：兜底重算要按与服务端相同的判据过滤，只给 `{amount, currency}` 会让
+ * 类型系统放行一个必然算错的调用（那样算出来的是全表求和，正是 61,500 的来源）。
  */
 export function resolveSummaryGroups(
   totals: Pick<InvoiceTotals, 'amount' | 'currency' | 'amounts'> | undefined,
@@ -173,6 +192,7 @@ export function resolveSummaryGroups(
     currency?: string | null
     status: string
     filePath?: string | null
+    fileName?: string | null
   }>,
 ): CurrencyAmount[] {
   if (totals?.amounts?.length) {
