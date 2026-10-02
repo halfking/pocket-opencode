@@ -9560,3 +9560,141 @@ go test ./internal/email/ -count=1           # 其余可用
 race detector 只能证明「这段并发代码没有数据竞争」，证不了「Stop 幂等」
 （「二次 close 会不会 panic」是逻辑性质，不是数据竞争）。两者是互补的，
 不是二选一。
+
+---
+
+## §7dz 两个红了一天的失败：不是「语义分歧」，是 11 分钟内两个提交造成的漏改
+
+### 起点
+
+上一轮发现本机能跑 `-race` 后，我说下一步用它重跑 `internal/server`——
+那正是每轮回归都出同样两个失败、却被我记成「404/403 语义分歧、
+非邮件分支、非本轮引入」的那包。
+
+### `-race` 先给出一个否定结论
+
+```
+$ go test -race ./internal/server/ -count=1
+--- FAIL: TestTaskWriteGuardBlocksPlainMemberPatch (0.44s)
+--- FAIL: TestTaskWriteGuardBlocksPlainMemberDelete (0.39s)
+FAIL  github.com/halfking/pocket-opencode/backend/internal/server  58.060s
+```
+
+**0 DATA RACE**，仍然只有这两个。并发层面没问题，失败是逻辑层面的。
+
+### 我此前的定性是错的
+
+拿失败详情：
+
+```
+task_write_guard_route_test.go:108: bob PATCH someone else's private work item
+    = 404, want 403: task not found
+task_write_guard_route_test.go:130: bob DELETE someone else's private work item
+    = 404, want 403: task not found
+```
+
+**代码返回 404，测试期望 403**。我记的「语义分歧」暗示两边各有道理、
+需要人来裁；实际不是——有一方是**过时的**。
+
+而且失败指向 `:108`/`:130`，而我几轮前读同一文件时那个断言在 `:123`/`:145`，
+内容还是「期望 404 + 一整段论证」。行号对不上，说明文件**已经变了**，
+而 `git status` 是干净的——即这是**已提交**的改动。
+
+### 两次提交，相隔 11 分钟
+
+| 时刻 | 提交 | 做了什么 |
+|---|---|---|
+| 2026-10-01 **03:25:35** | `d8237d92` | 引入 `workItemWriteGuard`，读不到→404、**没权限→403**；同一提交写下测试，期望 **403** |
+| 2026-10-01 **03:36:44** | `0c128c9a` | 在守卫里把 `CanReadWorkItem` 提到 `CanWriteWorkItem` **前面**，读不到就 404；**只改了 server.go（58 行），没动测试** |
+
+第二个提交之后，**这个测试就一直是红的**。`0c128c9a` 的注释把理由写得很清楚：
+
+```go
+// id 仍然与「不存在」不可区分，GetTaskScoped 已保证这一点。
+actor := s.userIDFromRequest(r)
+if !task.CanReadWorkItem(current, parts, actor) {
+    http.Error(w, "task not found", http.StatusNotFound)
+    return nil, false
+}
+if !task.CanWriteWorkItem(current, parts, actor) {
+    http.Error(w, "not the owner or a participant of this work item", http.StatusForbidden)
+    return nil, false
+}
+```
+
+403 会回答「这个 id 存在，你只是不能改」——那等于把**写路径**变成对不可见
+id 的**存在性预言机**，而读路径已经防着这件事（`GetTaskScoped` 的注释：
+"A cross-tenant ID is reported the same as a missing one"）。写路径一旦泄露，
+读路径的保护就被抵消。
+
+**所以：生产代码的当前行为是有意且有论证的，测试停在了 11 分钟前的中间状态。**
+按「仓库已有既定政策被漏掉 = 修漏」处理，只改测试、不动生产代码。
+
+### 顺带：403 分支不是死代码，缺的是能触发它的夹具
+
+`internal/task/access.go`：
+
+| | 条件 |
+|---|---|
+| `CanReadWorkItem` | owner / participant / **`Visibility == VisibilityWorkspace`** |
+| `CanWriteWorkItem` | **只有** owner / participant |
+
+所以「workspace 可见但非 owner/参与者」的任务 → **能读不能写 → 403**。
+403 分支完全可达。
+
+而原夹具里两个任务**都是 `VisibilityPrivate`**，于是 bob 两次都落在
+「读不到」那一侧 → 全部 404。**`CanWriteWorkItem` 那条 return 在路由层
+从未被执行过一次**——而那正是这次安全修复的主体逻辑。
+
+### 改了什么（测试文件，+74/-6）
+
+1. 夹具加 `wtg-shared`：`VisibilityWorkspace` + owner=carol + 参与者只有 carol
+   ⇒ bob 能读、不能写 ⇒ 403 唯一入口。
+2. 两条现有断言 403 → **404**，并把「存在性预言机」的论证写回注释
+   （`d8237d92` 当时删掉的那段，内容仍然正确且必要）。
+3. 新增 `TestTaskWriteGuardReadableButNotWritableIs403`：
+   先断言 **bob 对该任务 GET = 200**（前置条件，防止它悄悄退化成又一条 404 用例），
+   再断言 PATCH/DELETE 都是 403，最后回查标题未被改写。
+
+### 负控 2 路，互补
+
+| 负控 | 两条 404 用例 | 新增 403 用例 | 其余 4 条 |
+|---|---|---|---|
+| A：删掉 `CanReadWorkItem` 层 | 🔴 转红 | 🟢 绿 | 🟢 绿 |
+| B：把 `CanWriteWorkItem` 的 403 改成 404 | 🟢 绿 | 🔴 转红 | 🟢 绿 |
+
+A 还原的是 `d8237d92` 那个 03:25 的状态——**它精确复现了原始报错**，
+说明修复方向对得上；B 证明新增那条不是凑数的。
+两路都跑，才说明「404 钉住的是读权限层、403 钉住的是写权限层」，
+没有冗余也没有缺口。
+
+第一路 A 只红一部分**不是意外**：这正是「判据要问覆盖了哪些取值，
+不是跑过了几个用例」——之前 §7dx 的 `TestStop_EndsPipelineLoopBeforeTrigger`
+是同一个形态。
+
+### 顺带一个更可靠的格式测量法
+
+`gofmt -l` 把 `task_write_guard_route_test.go` 列出来了（266 行 CRLF）。
+上一轮我用来量「基线」的方法（`git show HEAD:x > file`）会被 PowerShell 的
+重定向改行尾，不可用。这次换成**先归一 CRLF 再 gofmt -d**：
+
+```
+task_write_guard_route_test.go   CRLF=266   归一后实质差异 = 0 行   ← 我改的
+server.go                        CRLF=2333  归一后实质差异 = 8 行   ← 我没碰
+```
+
+`server.go` 那 8 行是 import 顺序与结构体对齐，**仓库既有状态**，与本次无关。
+两个数字分开看才有意义——「某文件不在 `gofmt -l` 名单里」和「它符合 gofmt」
+是两回事。
+
+### 回归
+
+```
+$ go test -race ./internal/server/ -count=1
+ok  github.com/halfking/pocket-opencode/backend/internal/server  86.521s
+```
+
+**0 失败、0 DATA RACE**——这是该包第一次整体全绿（此前每轮回归都固定带
+那两个失败）。非 race 时同一包 58.060s。
+
+本次**只改测试文件**（`git diff --numstat` 仅一项），生产代码零改动。

@@ -67,6 +67,11 @@ func seedWriteGuardTasks(t *testing.T, store *task.Store) {
 	seed := []*task.Task{
 		{ID: "wtg-alice", WorkspaceID: writeGuardWorkspace, Title: "alice 私有项", Status: "active", Priority: "normal", Visibility: task.VisibilityPrivate, OwnerID: "alice"},
 		{ID: "wtg-carol", WorkspaceID: writeGuardWorkspace, Title: "carol 私有项", Status: "active", Priority: "normal", Visibility: task.VisibilityPrivate, OwnerID: "carol"},
+		// wtg-shared 是 workspace 可见的：bob **能读**它，但既不是 owner
+		// 也不是参与者，所以**不能写**。这一个任务是 403 分支唯一的入口——
+		// 少了它，workItemWriteGuard 里 `CanWriteWorkItem` 那条 return 就永远
+		// 不会被执行，而那正是本次安全修复的主体逻辑。
+		{ID: "wtg-shared", WorkspaceID: writeGuardWorkspace, Title: "carol 共享项", Status: "active", Priority: "normal", Visibility: task.VisibilityWorkspace, OwnerID: "carol"},
 	}
 	for _, tk := range seed {
 		if err := store.CreateTask(ctx, tk); err != nil {
@@ -84,6 +89,12 @@ func seedWriteGuardTasks(t *testing.T, store *task.Store) {
 	}); err != nil {
 		t.Fatalf("seed wtg-carol participants: %v", err)
 	}
+	// 参与者名单里**只有** owner —— bob 不在其中，CanWriteWorkItem 对他是 false。
+	if err := store.SetParticipants(ctx, "wtg-shared", writeGuardWorkspace, []task.Participant{
+		{UserID: "carol", Role: task.RoleOwner},
+	}); err != nil {
+		t.Fatalf("seed wtg-shared participants: %v", err)
+	}
 }
 
 func writeGuardRequest(t *testing.T, srv *Server, method, path, token, body string) *httptest.ResponseRecorder {
@@ -97,15 +108,32 @@ func writeGuardRequest(t *testing.T, srv *Server, method, path, token, body stri
 }
 
 // The core regression: before the guard, a same-workspace member could PATCH
-// someone else's private work item and got 200. Now 403, and the row must be
-// unchanged — a guard that 403s but still writes would be worse than none.
+// someone else's private work item and got 200. Now it is refused, and the row
+// must be unchanged — a guard that refuses but still writes would be worse than
+// none.
+//
+// **Why 404 and not 403, for a work item the caller cannot even read.**
+// 403 would answer "this id exists, you just may not touch it", which turns the
+// write path into an existence oracle for ids the caller is not allowed to see;
+// the read path is already built not to leak that way, and a write path that
+// leaked it would undo the read path's protection. So a denied write has to be
+// indistinguishable from a write to an id that does not exist — exactly what
+// TestTaskWriteGuardUnknownTaskIs404 pins.
+//
+// This is not a detail: `0c128c9a` (2026-10-01 03:36) put
+// `CanReadWorkItem` ahead of `CanWriteWorkItem` in workItemWriteGuard for
+// precisely this reason, eleven minutes after `d8237d92` (03:25) had written
+// this file expecting 403. That second commit changed the behaviour without
+// updating this assertion, so it has been red ever since. The two branches are
+// now both covered: readable-but-not-writable is 403 (see
+// TestTaskWriteGuardReadableButNotWritableIs403), not-readable is 404.
 func TestTaskWriteGuardBlocksPlainMemberPatch(t *testing.T) {
 	srv, store, tokens := newWorkItemGuardServer(t)
 	seedWriteGuardTasks(t, store)
 
 	rr := writeGuardRequest(t, srv, http.MethodPatch, "/api/tasks/wtg-alice", tokens["bob"], `{"title":"bob 改的"}`)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("bob PATCH someone else's private work item = %d, want 403: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("bob PATCH someone else's private work item = %d, want 404 (must be indistinguishable from an id that does not exist): %s", rr.Code, rr.Body.String())
 	}
 
 	rr = writeGuardRequest(t, srv, http.MethodGet, "/api/tasks/wtg-alice", tokens["alice"], "")
@@ -125,12 +153,52 @@ func TestTaskWriteGuardBlocksPlainMemberDelete(t *testing.T) {
 	srv, store, tokens := newWorkItemGuardServer(t)
 	seedWriteGuardTasks(t, store)
 
+	// 404 not 403 — the same existence-oracle argument as the PATCH case above.
 	rr := writeGuardRequest(t, srv, http.MethodDelete, "/api/tasks/wtg-alice", tokens["bob"], "")
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("bob DELETE someone else's private work item = %d, want 403: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("bob DELETE someone else's private work item = %d, want 404 (must be indistinguishable from an id that does not exist): %s", rr.Code, rr.Body.String())
 	}
 	if _, err := store.GetTaskScoped(context.Background(), "wtg-alice", writeGuardWorkspace); err != nil {
 		t.Fatalf("work item must survive the rejected DELETE, got: %v", err)
+	}
+}
+
+// The 403 branch of workItemWriteGuard: the caller **can** read the work item
+// (workspace-visible) but is neither its owner nor a participant.
+//
+// Without this case that branch is dead as far as the HTTP layer is concerned:
+// both seeded private items put the caller on the unreadable side, so the
+// pre-403 guard in server.go:1769 would swallow every denial and the
+// CanWriteWorkItem check — the actual subject of the security fix — would never
+// be exercised end to end.
+func TestTaskWriteGuardReadableButNotWritableIs403(t *testing.T) {
+	srv, store, tokens := newWorkItemGuardServer(t)
+	seedWriteGuardTasks(t, store)
+
+	// Precondition: bob really can read it, otherwise this would silently
+	// degrade into re-testing the 404 case above.
+	rr := writeGuardRequest(t, srv, http.MethodGet, "/api/tasks/wtg-shared", tokens["bob"], "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("precondition: bob GET a workspace-visible item = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+
+	rr = writeGuardRequest(t, srv, http.MethodPatch, "/api/tasks/wtg-shared", tokens["bob"], `{"title":"bob 改的"}`)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("bob PATCH a readable-but-not-his work item = %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+
+	rr = writeGuardRequest(t, srv, http.MethodDelete, "/api/tasks/wtg-shared", tokens["bob"], "")
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("bob DELETE a readable-but-not-his work item = %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+
+	// And the row must be untouched by both refused writes.
+	got, err := store.GetTaskScoped(context.Background(), "wtg-shared", writeGuardWorkspace)
+	if err != nil {
+		t.Fatalf("work item must survive the refused PATCH/DELETE: %v", err)
+	}
+	if got.Title != "carol 共享项" {
+		t.Fatalf("title = %q, want the untouched original", got.Title)
 	}
 }
 
