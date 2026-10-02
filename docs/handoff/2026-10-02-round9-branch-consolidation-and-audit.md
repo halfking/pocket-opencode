@@ -17,18 +17,27 @@ git 判定为「自动合并成功」的区域里**——它们不会让 merge �
 
 ## 1. 分支盘点与处置
 
-| 分支 | 相对 main | 处置 | 依据 |
+| 分支 | 相对新 main（7eee3669） | 处置 | 依据 |
 |---|---|---|---|
-| `audit/2026-10-02-24h` | 完全已合并（是 main 祖先） | **删** | `git log main..branch` 空 |
-| `ci/wire-style-guards-into-gates` | 完全已合并 | **删**（worktree 一并删） | 同上 |
-| `email-pipeline-snapshot-2026-10-01` | 完全已合并 | **删**（worktree 一并删） | 同上 |
-| `feat/2026-10-01-stt-service` | 完全已合并 | **删**（worktree 一并删） | 同上，14 个有效文件已先抢救 |
-| `feat/mail-config-deploy` | 领先 58 / 落后 58 | **本轮合并后删** | 见 §2 |
+| `audit/2026-10-02-24h` | ahead=0 | **删** | 完全已合并 |
+| `ci/wire-style-guards-into-gates` | ahead=0 | **删**（worktree 一并删） | 完全已合并 |
+| `feat/2026-10-01-stt-service` | ahead=0 | **删**（worktree 一并删） | 完全已合并，14 个有效文件已先抢救 |
+| `feat/mail-config-deploy` | ahead=0 | **本轮合并后删** | 是本次 merge 的第二父提交 |
+| `email-pipeline-snapshot-2026-10-01` | **ahead=161** | **保留，不删** | 见下 |
 | `audit/2026-10-02-pending-human-decisions` | 新建 | **保留** | 见 §5.2，含待批准改动 |
 
+> **`email-pipeline-snapshot-2026-10-01` 差点被误删。** 第一遍盘点时我把它
+> 判成「完全已合并」，依据是 `git log main..branch` 输出为空——但那个命令的
+> 161 行结果被我看成了下一个分支（`feat/mail-config-deploy`）的。删之前改用
+> `git rev-list --count 7eee3669..<branch>` 逐个复核，才发现它领先 161 个提交。
+>
+> **教训**：盘点分支是否已合并，判据要用**计数**（`rev-list --count`），
+> 不要用「`git log` 看起来空不空」——尤其当一次输出里有多个分支时，
+> 列表的归属极易串行。删分支是不可逆操作，判据必须是不会看错的那种。
+
 `feat/mail-config-deploy` 曾在 10-02 01:07 被 `5e8d899e` 合入过 25 个提交，
-之后分支继续作业，所以本轮是**真增量**（`main...branch` 89 文件 / +10235），
-不是重复合并。
+之后分支继续作业，所以本轮是**真增量**（`7eee3669` 相对其父为 89 文件 /
++10235），不是重复合并。
 
 **保留不动的 worktree**：`wt-apkbuild`（detached，持有 round8 判定 dirty=0 的
 那份可归因 APK，删了就没产物了）、`wt-mergeprobe`（**有并发会话正在使用**，
@@ -255,30 +264,91 @@ sha256 `1E6DA6F5…`），设备回来即可装。
 `POCKET_FEISHU_APP_ID` / `APP_SECRET` / `INVOICE_CHAT_ID` /
 `POCKET_KXMEMORY_BASE_URL` 全部缺失。只能由你提供，非代码问题。
 
-### 5.4 并发会话
+### 5.4 并发会话：本轮最重要的外部风险
 
-本轮全程 `wt-mergeprobe` 有**另一个会话**在作业（12:29 起持续写文件，13:00 后
-在跑 `ledger_*_test.go` / `pipeline_run_test.go`）。本轮全部动作放在
-`wt-r9` 独立 worktree，主工作区一个字节未改，`wt-mergeprobe` 未触碰。
-它当前也把 `main` 留在 `f927ab70`，与 `origin/main` 一致，无漂移。
+本轮全程有**另一个会话**在作业，且它也在做分支归并。两边从**同一个基点**
+`f927ab70` 出发做了两次独立合并：
 
-## 6. 下一轮提示词
+| 提交 | 内容 | 状态 |
+|---|---|---|
+| `7eee3669`（本轮） | f927ab70 + `feat/mail-config-deploy` 58 提交 | **已推送 origin/main** |
+| `dabe24c4`（并发会话） | f927ab70 + `email-pipeline-snapshot-2026-10-01` 160 提交，解 18 冲突 | 仅本地，未推送 |
+
+**两者互不包含**（`7eee3669` 不是 `dabe24c4` 的祖先，反之亦然），且都大改
+`email/fetcher.go` 与 `email/store.go`——**正是本轮已解决过冲突的两个文件**。
+把 `dabe24c4` 合进新 main 时，那两处会再次冲突。请优先复用本轮 §2.1–§2.4
+的结论（占位符/实参数量、读路径列并集、`syncBudget` 包级化、`InsertEmailIfNew`
+计数），不要重新按「取一侧」的思路解。
+
+本轮因此**没有**推进本地 `main`：主工作区被并发会话的未提交改动占着
+（`backend/internal/email/fetcher.go` 少了 121 行，是它对 `syncPOP3Fallback`
+重构的中间态），git 拒绝移动一个被检出的脏分支。改为**直接把 merge 提交推到
+origin/main**（`git push origin 7eee3669:refs/heads/main`，fast-forward，
+不碰工作区）。等主工作区干净后执行：
+
+```powershell
+cd C:\workspace\openpocket
+git fetch origin
+git merge --ff-only origin/main    # 让本地 main 追上 7eee3669
+```
+
+`wt-mergeprobe`（并发会话在用）与 `wt-apkbuild`（持有 round8 判定的
+dirty=0 APK）本轮**全程未触碰**。
+
+### 5.5 残留目录（需你手动删）
+
+`C:\workspace\openpocket-wt-maildeploy` 与 `wt-stt` 已从 `git worktree list`
+**注销**（不再被 git 识别，内容也已抢救完毕），但目录删除失败：文件被其它
+进程占用（`The process cannot access the file because it is being used by
+another process`）。`wt-font` 已成功移入回收站。
+
+关掉占用它们的进程后可直接删：
+
+```powershell
+rm -- C:\workspace\openpocket-wt-maildeploy C:\workspace\openpocket-wt-stt
+```
+
+## 6. 本轮验证记录
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 后端编译 | `go build ./...` | 通过 |
+| 后端静态检查 | `go vet ./...` | 通过 |
+| 后端测试 | `go test ./...` | **53 包 ok / 0 FAIL** / 11 无测试 |
+| 前端全门禁 | `npm run gates` | 通过（含孤儿测试 165/165） |
+| 接线护栏正控 | `node --test email-classify-loop-wiring.test.ts` | 5/5 绿 |
+| 接线护栏负控 NC-3 | 删掉判据接线 | **3 条转红**（承重） |
+| 合并 arity | 列数/占位符/实参计数 | 20 / 20 / 20 ✓ |
+| 诊断探针写语句 | 全文件扫 INSERT\|UPDATE\|DELETE\|DROP\|CREATE\|TRUNCATE | 1 条 UPDATE（已三重开关） |
+
+## 7. 下一轮提示词
 
 ```
 接着 openpocket 的 round9（docs/handoff/2026-10-02-round9-branch-consolidation-and-audit.md）：
 
-1. 先跑 `git fetch` 并确认 main 是否已被并发会话推进（round9 全程有另一个会话
-   在 wt-mergeprobe 作业）。若已推进，先 merge origin/main 再动手。
-2. 待你回复的两件事：
+0. 先做两件状态核对，再动手：
+   a) `git fetch origin && git log --oneline -1 origin/main` —— 本轮已把合并
+      推成 7eee3669，但**本地 main 还停在 f927ab70**（主工作区被并发会话的
+      未提交改动占着，git 拒绝移动脏的已检出分支）。主工作区干净后执行
+      `git merge --ff-only origin/main`。
+   b) 另一个会话已产出 `dabe24c4`（把 email-pipeline-snapshot 的 160 提交合进
+      f927ab70，解了 18 冲突），与本轮的 7eee3669 **互不包含**，且同样大改
+      email/fetcher.go 与 email/store.go。合它之前先读 round9 §2.1–§2.4：
+      占位符/实参数量（20/20/20）、读路径列并集（folder_name + message_id +
+      body_purged）、syncBudget 必须包级、InsertEmailIfNew 计数。**不要按
+      「取一侧」的思路重解**。
+
+1. 待你回复：
    a) 手机重开无线调试，回报新 IP:端口 → 装 round8 判定的 dirty=0 APK
       （wt-apkbuild，29048294，sha256 1E6DA6F5…），再跑
       .maestro/notes-stt-error-visibility.yaml。
    b) 是否批准 audit/2026-10-02-pending-human-decisions（3d067740）里的
       ResponseHeaderTimeout 30s→60s。批准则合入 main 并跑
       TestNewClient_TransportTimeouts；不批准则该分支可删。
-3. `tokens.css` 补了 --text-2xs/--text-smd 两档但**还没做替换**。若批准该分支，
-   下一步是把剩下 348 处 11px/13px 写死像素收敛为 var(--text-2xs)/var(--text-smd)，
-   并仿 4ed2d4d8 补一致性护栏。
+2. 删掉残留目录 C:\workspace\openpocket-wt-maildeploy 与 wt-stt
+   （已从 git 注销，仅因文件被占用而删不掉）。
+3. 若批准 (1b)，下一步是把剩下 348 处 11px/13px 写死像素收敛为
+   var(--text-2xs)/var(--text-smd)，并仿 4ed2d4d8 补一致性护栏。
 4. 飞书 / kxmemory 凭证仍未提供，feishuInvoicePusher 与委托流水线这两条腿
    依旧无法端到端验证。
 ```
