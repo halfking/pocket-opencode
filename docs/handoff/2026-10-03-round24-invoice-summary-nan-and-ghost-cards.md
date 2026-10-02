@@ -624,3 +624,110 @@ select … from email_invoices where status='failed' or seller='name:'
 
 ⇒ 08:00 验收期间**只保留 18099 这一个实例**。要验 §1 的修复（`CurrencyTotal` 的 json tag），
 等 08:00 验收结束后、或用户授权的同一次重启里做。
+
+---
+
+## §15 ¥NaN 修复已上 18099（前后字节对照）；但 08:00 归因已被 3 个实例搅了
+
+### 15.1 修复已上线，同一端点前后两次抓包只差那三个键名
+
+用户 01:29 授权 build + 重启。本轮实际做的：
+
+```
+go build -o ..\logs\pocketd-invoicenan-fix.exe ./cmd/pocketd   exit=0   （含并发会话对
+                                                                    llm_gateway_handler.go 的 WIP）
+go vet ./internal/server ./internal/email                     exit=0
+scripts/restart-18099-aligned-secret.ps1 -Exe ...invoicenan-fix.exe
+  -> 旧 pid 21404 已停；新 pid 8168 于 01:32:59 起来
+  -> 三道闸门全过：Postgres pool initialized / Email credential self-check: all 5
+                   / daily pipeline runner injected
+  -> pipeline scheduled at 2026-10-03T08:00:00+08:00
+/healthz -> 200 ok
+```
+
+**旧二进制 `logs/pocketd-invoicecheck.exe` 故意没覆盖**，留作回退路径与对照物。
+为此给重启脚本加了 `-Exe` 参数（默认值仍是旧那个，裸调用行为不变）。
+
+前后对照用的是**同一个端点 + 设备真实 session token**（WebView 里 `pocket_token`，
+291 字符的裸 JWT），两次相隔约 4 分钟：
+
+- 修复前：`"amounts":[{"Currency":"CNY","Amount":3500,"Count":1}]`
+- 修复后：`"amounts":[{"currency":"CNY","amount":3500,"count":1}]`
+
+存档：`logs/zz-invoice-wire-PREFIX-20261003-0130.txt`、
+`logs/zz-invoice-wire-POSTFIX-20261003-0134.txt`。
+
+**其余字段逐字节相同**：`amountTotal=3500`、`count=4`、`downloaded=1`、`pending=3`、
+4 行 `rows` 完全一致、58000 那行仍是 `status=new`。
+⇒ 两次之间唯一变化的变量就是 `CurrencyTotal` 的 json tag，与预期完全吻合。
+
+顺带把「为什么破口只有一处」钉死：同一次响应里 `rows[].amount`、`rows[].currency`、
+顶层 `amountTotal` / `count` / `currency` **全是小驼峰**，只有 `amounts[]` 里是大驼峰。
+`CurrencyTotal` 是这一坨里唯一漏 tag 的结构——这也是当初它能一路活到真机的原因：
+Go 侧解进 struct 时大小写不敏感，测试全绿。
+
+### 15.2 UI 那一半本轮**没验成**，不要当成已验
+
+真机现在停在「检测到已有登录态，但本地加密库未解锁」：
+
+```
+pocket_crypto_cfg = {"fieldEncryption":"disabled","hasMasterPassword":true,...}
+```
+
+解锁只有两条路（`features/auth/unlock-auth.ts:35-43`）：生物识别，或主密码。
+**我没有主密码，也不猜**，所以发票页的**渲染**这一半本轮没验。
+
+已验 / 未验要分清：
+
+- **已验**：服务端根因在真链路上修好了（15.1 的两次抓包）。
+- **已验**：TS 读键一侧由 7 条跨语言判据 + 负控钉住（删 Go tag → TS 2 条转红；
+  TS 单侧改名 → 仅跨语言那条转红）。
+- **未验**：真机界面上那个 `¥NaN` 字样是否已经消失。
+
+补验方式（任一）：解锁 App 后打开发票页看合计，应为 `¥3,500.00`；
+或拿早先那张 `logs/zz-invoice-nan.png` 当修复前证据做对照。
+
+### 15.3 ⚠️⚠️ §14.2 已经不成立了：现在有 **3 个生产 schema 实例**各排了一次 08:00
+
+§14.2 写的是「08:00 验收期间只保留 18099 这一个实例」。实测已经不成立，**而且都不是我起的**：
+
+| pid | 端口 | data dir | PG schema | 启动时间 |
+|---|---|---|---|---|
+| 8168 | 18099 | `C:\workspace\openpocket\data` | `opencode_pocket` | 10-03 01:32:59（本轮重启） |
+| 28160 | 18100 | `.wt-e2e\backend\data` | **`opencode_pocket`** | 10-02 22:26:49 |
+| 23256 | 18077 | **`C:\workspace\openpocket\data`** | **`opencode_pocket`** | 10-03 00:02:13 |
+| 12664 | 18101 | `.wt-e2e\backend\data-verify` | `opencode_pocket_verify` | 10-03 00:45:52 |
+
+前三个的启动日志里都有 `pipeline scheduled at 2026-10-03T08:00:00+08:00`。
+
+- `emailPipelineMu` 是**进程内**锁，跨进程完全不互斥
+  ⇒ 08:00 会有**最多三轮**流水线同时打生产库。
+- 更糟：18077 与 18099 **共用同一个 data dir** ⇒ 同一份 `email_master.key`、同一批 5 个账户。
+  三轮会对同一批邮件各自跑 `MarkEmailsNotified` 并各自推提醒。
+- 18101 走 `opencode_pocket_verify`，**不影响**生产归因。
+
+⇒ §11 的「24 + 34 = 58」**不再能直接采信**：明早的差值是三轮叠加的结果
+（同时跑则各看到 34 条 pending 各自推；串行跑则后两轮可能看到更少）。
+连 58000 那行会不会被采集都变得不确定。
+
+处置要用户拍板——这些进程不是我的，我没有停它们的授权：
+
+- **a) 08:00 前停掉 18100 与 18077，只留 18099**。最干净，代价是打断并发会话正在做的 e2e。
+- **b) 让它们跑，归因改为按进程分读日志**。可行：18100 的日志在
+  `.wt-e2e\logs\pocketd-18100-*.err.log`，18077 的在
+  `openpocket-wt-a20\logs\audit-18077-*.err.log`，各轮报告行落在各自文件里。
+  但要带 §12.4 那条约束：**只能拿二进制里实际的字符串去对**，旧二进制的日志文案与当前源码不一致。
+- **c) 推迟 08:00 验收**。
+
+### 15.4 顺带记一笔：设备的 API base 在验收途中被切走了
+
+```
+01:30  pocket_api_base = http://127.0.0.1:18099
+01:34  pocket_api_base = http://192.168.31.20:18101
+```
+
+⇒ 并发会话正在用这台真机跑它自己的 e2e（18101 就是它那个 verify-schema 实例）。
+
+对我的验证的直接后果：**不能依赖 App 的默认 base**。15.1 的两次抓取都是在 WebView 里
+**显式 fetch 18099** 完成的，`adb reverse tcp:18099` 至今完好。
+我没有把 base 改回去——那是别人的配置。

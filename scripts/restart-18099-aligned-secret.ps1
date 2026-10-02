@@ -37,18 +37,31 @@
 #   Email credential self-check: all 5 enabled accounts decrypt
 #   [email/scheduler] pipeline scheduled at <next 08:00>
 #
-# The SAME BINARY is reused on purpose: swapping in a different build would
-# change the code underneath a concurrent session, which is a different and
-# larger risk than the secret mismatch we are fixing here.
+# The binary is now selectable via -Exe (see param block). It still DEFAULTS
+# to the original one, so a bare call behaves exactly as before. Swapping the
+# build does change the code underneath a concurrent session, so do it only
+# when that is the point (2026-10-03: the invoice-summary NaN fix, where the
+# user explicitly authorized build + restart).
 #
 # Reverting: the old command line was just
 #   logs\pocketd-invoicecheck.exe
 # so `Start-Process` on it restores a working instance (wrong secret, but
 # working) at any time.
 
+param(
+  # Which pocketd binary to boot. Defaults to the historical one so an
+  # unqualified call still reproduces the original behavior.
+  #
+  # 2026-10-03: added for the invoice-summary NaN fix (commit 25c73017).
+  # The old default (pocketd-invoicecheck.exe, built 2026-10-02 23:34:44) is
+  # deliberately NOT overwritten: it is the pre-fix binary and is the revert
+  # path, so keep it around as long as the fix is unproven on device.
+  [string]$Exe = ''
+)
+
 $ErrorActionPreference = 'Continue'
 $Root  = 'C:\workspace\openpocket'
-$Exe   = Join-Path $Root 'logs\pocketd-invoicecheck.exe'
+if (-not $Exe) { $Exe = Join-Path $Root 'logs\pocketd-invoicecheck.exe' }
 $Port  = 18099
 
 if (-not (Test-Path $Exe)) { Write-Host "[FAIL] $Exe missing"; exit 1 }
