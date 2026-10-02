@@ -34,7 +34,20 @@
 #   node scripts/maestro-run.mjs .maestro/flashcards-write.yaml
 appId: com.kaixuan.opencode.pocket
 ---
-- runFlow: _login.yaml
+# ---------- 0. 前置：harness 已真实登录，起点是 #/ai ----------
+# ⚠️ 2026-10-03：原先这里是 `- runFlow: _login.yaml`。但 _login.yaml 的登录走
+#    Maestro 的 `inputText: ${POCKET_DEV_PASS}`，而 Maestro 实测把它展开成
+#    **字面量 "undefined"**（.maestro/_probe-env.yaml 坐实：框内容
+#    adminPWLEN-undefined）。登录已改由 scripts/maestro-run.mjs 的 preflight
+#    用 CDP 填真实 LoginView 表单完成，本流程不再需要 _login.yaml。
+#    如实记录覆盖变窄：软键盘那套手势（tap 输入框起键盘 → inputText →
+#    hideKeyboard → tap 提交）本流程不再走。走的是同一个表单、同一个
+#    POST /api/auth/login、同一个 401/200 判定。键盘路径单列为遗留项。
+- extendedWaitUntil:
+    visible: "AI 工具"
+    timeout: 45000
+- assertVisible: "AI 工具"
+- assertNotVisible: "密码登录"
 
 # ---------- 1. 进闪卡（不在底部主导航里，在「更多」九宫格内）----------
 # ⚠️ retryTapIfNoChange 不是凑数：2026-10-01 08:16 实测点「更多」后 Maestro 报
