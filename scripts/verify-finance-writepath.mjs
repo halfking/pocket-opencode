@@ -184,6 +184,37 @@ check('API 播种成功（2xx，拿到 id）', seed.status >= 200 && seed.status
 const afterSeed = txCount();
 check('播种后 PG 行数 +1（证明 API 写路径真的落库）', afterSeed === before + 1, `${before} -> ${afterSeed}`);
 
+// ---------- 失败路径也必须删掉 SEED ----------
+//
+// ⚠️ 2026-10-03 补：原先 DELETE 只写在脚本**末尾**，中间任何抛错都会把这一行
+// 留在**共享**开发库里。而那些行会被另一会话当成真实数据卷进它的基线 ——
+// 后果比「自己测试脏了」更糟，是**污染别人的运行**。
+// 与 BUG-V10（verify-https-prod.mjs 失败路径不还原覆盖值）同一类。
+// ⇒ 幂等清理函数 + 挂在 unhandledRejection / uncaughtException 上。
+//    process.on('exit') 不能 await，所以用前两个。
+let cleaned = false;
+async function cleanupSeed(reason) {
+  if (!seedId || cleaned) return;
+  cleaned = true;
+  try {
+    const cl = await api(`/api/finance/${seedId}`, { token, method: 'DELETE' });
+    console.log(`\n[cleanup:${reason}] 删除 SEED ${seedId} -> ${cl.status}，PG 终值 = ${txCount()}`);
+  } catch (e) {
+    console.error(`\n[cleanup:${reason}] 删除 SEED ${seedId} 失败：${String(e?.message || e).slice(0, 120)}`);
+    console.error(`   ⚠️ 这一行可能留在共享库里，需要手工清理：DELETE FROM opencode_pocket.<finance 表> WHERE id='${seedId}'`);
+  }
+}
+process.on('unhandledRejection', async (e) => {
+  console.error('\n[未处理的 rejection]', e);
+  await cleanupSeed('rejection');
+  process.exit(1);
+});
+process.on('uncaughtException', async (e) => {
+  console.error('\n[未捕获异常]', e);
+  await cleanupSeed('exception');
+  process.exit(1);
+});
+
 // ---------- 3. 进记账页 ----------
 // ⚠️ 踩过的坑：如果设备**已经**在 #/finance，`location.hash = '#/finance'` 不会触发
 // 导航，onMounted 不跑，列表是上一轮的陈旧数据 —— 读路径判据会假失败
@@ -415,11 +446,8 @@ check('对照组：删除没误伤，SEED 记录仍在 UI 上', stillSeed === tr
 // ---------- 14. 异常 ----------
 check('无未捕获 JS 异常', errors.length === 0, errors.slice(0, 2).join(' | ') || '0 条');
 
-// ---------- 清理：删掉种下的 SEED ----------
-if (seedId) {
-  const cl = await api(`/api/finance/${seedId}`, { token, method: 'DELETE' });
-  console.log(`\n清理 SEED ${seedId} -> ${cl.status}，PG 终值 = ${txCount()}`);
-}
+// ---------- 清理：删掉种下的 SEED（幂等，与失败路径共用同一函数） ----------
+await cleanupSeed('normal');
 
 const passed = checks.filter((c) => c.pass).length;
 const failed = checks.filter((c) => !c.pass);

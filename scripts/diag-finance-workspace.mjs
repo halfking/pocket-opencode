@@ -82,6 +82,18 @@ const STAMP = Date.now().toString().slice(-6);
 const NOTE = `DIAG-SEED-${STAMP}`;
 const seed = await api('/api/finance',{token:adminToken,method:'POST',body:{type:'expense',amount:11.11,category:'DIAG',note:NOTE,source:'manual'}});
 let seedId=null; try{ seedId=JSON.parse(seed.body).id }catch{}
+
+// 失败路径也必须删 SEED：这是**共享**开发库，中间任何抛错都会把行留下，
+// 而那些行会被另一会话当成真实数据卷进它的基线（= 污染别人的运行）。
+let cleaned=false;
+async function cleanupSeed(reason){
+  if(!seedId||cleaned) return; cleaned=true;
+  try{ const cl=await api(`/api/finance/${seedId}`,{token:adminToken,method:'DELETE'});
+       console.log(`[cleanup:${reason}] 删除 SEED ${seedId} -> ${cl.status}`); }
+  catch(e){ console.error(`[cleanup:${reason}] 删除 SEED ${seedId} 失败：${String(e?.message||e).slice(0,120)}`); }
+}
+process.on('unhandledRejection',async e=>{ console.error('[未处理的 rejection]',e); await cleanupSeed('rejection'); process.exit(1); });
+process.on('uncaughtException',async e=>{ console.error('[未捕获异常]',e); await cleanupSeed('exception'); process.exit(1); });
 console.log('SEED =', NOTE, 'id=', seedId, 'status=', seed.status);
 
 // ---- 4. PG 看 SEED 的 owner/workspace ----
@@ -117,5 +129,5 @@ if (appScope.workspace_id && adminScope.workspace_id && appScope.workspace_id !=
 }
 
 // 清理
-if (seedId) { const cl=await api(`/api/finance/${seedId}`,{token:adminToken,method:'DELETE'}); console.log('清理 SEED ->', cl.status); }
+await cleanupSeed('normal');
 process.exit(0);
