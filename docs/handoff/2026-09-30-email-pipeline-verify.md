@@ -11025,3 +11025,92 @@ email_accounts、OAuth token 表、通知表……全部不会建。
 §7em 的护栏 `updated_at_guard_test.go` 保持原样——
 它在两种情况下都有效：列不存在时报 DEFECT-1，列存在但 InsertEmail 不写时报 DEFECT-2。
 cherry-pick 主仓提交后它会自动变成全 FIXED，那正是它该有的结局。
+
+## §7ep 量化「把本分支合进 main」的真实成本（dry-run，非猜测）
+
+§7eo 记录了分叉事实但没给合并成本。本文在**临时 worktree**（`openpocket-wt-mergeprobe`，
+detached 于 `origin/main`）上做了两次 dry-run，测完即删，未触碰任何分支。
+
+### 分叉规模
+
+| 项 | 值 |
+|---|---|
+| merge-base | `90b6d36b` |
+| 本分支独有提交 | 160 |
+| main 独有提交 | 218 |
+| 相对 merge-base 改动的 email 域文件 | 本分支 109 / main 80 |
+| 两侧都改过的文件（全仓） | 40 |
+| 本分支 email+kxmemory 提交 | 76（其中 75 个非 docs） |
+
+### 第一次 dry-run：我用错了判据
+
+先试 `git cherry-pick --no-commit dadbd91d`（只 pick `action_reason` 修复的最后一跳），
+在 main 侧**只有一个文件是 content 冲突**，其余全是 `modify/delete`
+（`classification_reason_persist_test.go`、`readback_guard_test.go`、handoff 文档）——
+而 `modify/delete` 恰恰说明**这两个测试文件 main 上从来就没有**，
+即它们本就是本分支的新增物，保留即可。
+
+按这个输出，结论本该是「源码零冲突，成本≈0」。**这个结论是错的。**
+强行 build 后直接红：
+
+```
+internal\email\classify_run.go:79:16: row.ActionReason undefined
+    (type kxmemory.EmailClassificationResult has no field or method ActionReason)
+internal\email\classify_run.go:88:16: store.SetClassificationWithReasonScoped undefined
+    (type *Store has no field or method SetClassificationWithReasonScoped)
+```
+
+**根因**：`dadbd91d` 是这条修复链的**最后一跳**，不是全部。
+`action_reason` 从 LLM 响应走到 `emails.action_reason` 列要跨 4 处，
+分布在 2 个提交里：
+
+| 提交 | 改了什么 | main 上有没有 |
+|---|---|---|
+| `3aaeaf00` | `internal/kxmemory` DTO 加 `ActionReason` 字段（否则 JSON 反序列化静默丢） | **无** |
+| `3aaeaf00` | `store.go` 加 `SetClassificationWithReasonScoped` | **无** |
+| `dadbd91d` | `RawClassifyResult.Reason` + 透传 + 改调带 reason 的写库方法 | — |
+
+cherry-pick 单个提交时 git 只看到「`classify_run.go` 能干净地三方合并」，
+看不到**它引用的两个符号在本分支上是由别的提交定义的**。
+`store.go` 同样报了 `Auto-merging` 成功，但合并结果里根本没有那个方法。
+
+**教训**：`Auto-merging` / 「无 CONFLICT」衡量的是**文本三方合并**，
+不是**该提交能否独立应用**。后者要过编译。
+凡是要往别的分支带修复，判据必须是「pick 完能 build 且相关测试绿」，不是「无冲突」。
+
+### 第二次 dry-run：真合并的成本
+
+`git merge --no-commit --no-ff`（整个分支）→ **18 个冲突文件**：
+
+```
+backend/internal/email/fetcher.go                 backend/internal/email/pipeline.go
+backend/internal/email/ledger.go                  backend/internal/email/store.go
+backend/internal/email/xmlinvoice.go              backend/internal/email/invoice_retry_test.go
+backend/internal/email/reminder_window_test.go    frontend/src/features/email/InvoiceListView.vue
+frontend/src/features/email/use-email-inbox.ts     frontend/src/features/email/__tests__/email-classify-loop.test.mjs
+backend/internal/chatagent/store_test.go          backend/internal/scheduledtask/executors/workitem_reminder{,_quiet}_test.go
+backend/internal/server/server_email_pipeline.go  backend/internal/server/task_write_guard_route_test.go
+frontend/src/native/__tests__/recording-voice-prompt.test.mjs
+frontend/package.json   .gitignore
+docs/handoff/2026-09-30-email-pipeline-verify.md
+```
+
+email 域占 10 个，其中 7 个是 content 冲突（真语义分歧）、
+3 个是 add/add（两侧各自新建了同名测试文件，见 `48f5c1a1` 已处理过一次的
+`stripGoComments` 重名问题）。**这是人工可解的量，不是「合不进去」。**
+
+### 两侧互补关系已核实（非推测）
+
+| 修复 | 本分支 | main | 谁更完整 |
+|---|---|---|---|
+| `emails.updated_at` DDL | `2423bb15`（只补列，无默认） | `69c209aa` | **main**（多存量回填 `SET updated_at=created_at WHERE ... IS NULL` + `NOT NULL` + 补 `InsertEmail`） |
+| `action_reason` 全链 | `3aaeaf00` + `dadbd91d` | **完全没有**（DTO 无字段、store 无方法、`RawClassifyResult` 无 `Reason`） | **本分支** |
+
+即 main 缺 `action_reason` 整条链，本分支缺 `updated_at` 的存量回填与 `InsertEmail` 补值。
+**两侧都是净增量，没有一方是另一方的超集。**
+
+### 仍未做
+
+未执行合并、未解决任何冲突、未跑合并后回归（合并后是否绿**未知**）。
+探针 worktree 已 `git worktree remove --force` 删除，两个分支状态未变。
+合并策略属产品/工程决策，未擅自选定。
