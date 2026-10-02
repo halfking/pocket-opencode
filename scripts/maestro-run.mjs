@@ -372,10 +372,37 @@ async function ensureBackend() {
   return false
 }
 
+/**
+ * 唤醒并解锁设备。
+ *
+ * 2026-10-02 实测踩到：设备在无人操作时会自动熄屏，`mWakefulness=Asleep`。
+ * 这时 `monkey` 的启动意图发得出去，App 进程也真的会起来（pidof 有值），
+ * 但**屏幕上没有任何窗口**，于是下面那个"等进前台"的检查必然 60s 超时，
+ * 报出来的是「App 60s 内未进入前台，中止」—— 一句指向 App 的报错，
+ * 真因却是设备在睡觉。App 到底能不能起，跟它一点关系都没有。
+ *
+ * keyguard 同理：MIUI 的锁屏会让焦点停在 com.miui.home。
+ */
+function wakeDevice() {
+  try {
+    adb(['shell', 'input', 'keyevent', '224'], 15000)          // KEYCODE_WAKEUP
+    adb(['shell', 'wm', 'dismiss-keyguard'], 15000)
+    adb(['shell', 'input', 'keyevent', '82'], 15000)           // KEYCODE_MENU，解锁兜底
+    adb(['shell', 'svc', 'power', 'stayon', 'true'], 15000)   // 测试期间别再睡
+  } catch (e) {
+    // 唤醒失败不直接判死：部分设备/模拟器没有 keyguard，dismiss 会报错。
+    // 真正要不要继续，交给后面的前台检查去判。
+  }
+  const awake = /mWakefulness=Awake/.test(adb(['shell', 'dumpsys', 'power'], 20000) || '')
+  console.log(awake ? '[preflight] 设备已唤醒并保持常亮 ✅' : '[preflight] ⚠️ 设备唤醒未确认，后续前台检查可能失败')
+  return awake
+}
+
 async function preflight() {
   if (!(await ensureBackend())) return false
   if (!(await assertDeviceReachesBackend())) return false
   if (!(await ensureDriver())) return false
+  wakeDevice()
   console.log('[preflight] 强停并重新启动 App（绕开 MIUI 吞掉 force-stop 后启动意图的问题）')
   try { adb(['shell', 'am', 'force-stop', PKG]) } catch { /* 本来就没跑 */ }
   await sleep(1500)
