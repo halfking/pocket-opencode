@@ -7,7 +7,7 @@ const BASE = `http://127.0.0.1:${PORT}`
 const KEY = process.env.POCKET_GW_KEY || readFileSync('logs/.gateway-key', 'utf8').trim()
 const NEW = 'https://llm.kxpms.cn/v1'
 const OLD = 'https://llmgo.kxpms.cn/v1'
-const MODELS = ['glm-5.2', 'minimax-m3', 'kimi-k3', 'claude-sonnet-5', 'gpt-5.6-terra',
+const MODELS = ['glm-5.3', 'minimax-m3', 'kimi-k3', 'claude-sonnet-5', 'gpt-5.6-terra',
   'claude-opus-5', 'claude-fable-5', 'gpt-5.6-sol', 'gemini-3.5-flash']
 
 const login = await fetch(`${BASE}/api/auth/login`, {

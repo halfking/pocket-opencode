@@ -34,6 +34,18 @@ const DefaultLLMGatewayBaseURL = "https://llm.kxpms.cn/v1"
 // deepseek-v4-pro / mimo-v2.5-pro 已从默认勾选里移除（仍可在设置页手动加回，
 // 目录来自网关 /v1/models）。
 //
+// 2026-10-02 用户改口径：首选模型由 glm-5.2 改为 **glm-5.3**（其余 8 个不变、
+// 顺序不变）。实测依据（2026-10-02，key 取自 .env 的 POCKET_LLM_GATEWAY_API_KEY）：
+//   GET  /v1/models            → 200，606 个模型，glm-5.3 在目录里
+//   POST /v1/chat/completions  → 200，非流式 content="OK"
+//   POST /v1/chat/completions  → 200，SSE 正常，先出 reasoning_content 再出 content
+// 注意 glm-5.3 与 glm-5.2 一样是推理模型：max_tokens 给小了（例如 64）会把预算
+// 全花在 reasoning_content 上，content 为空串、finish_reason=length。这是上游
+// 模型的性质，不是链路故障——非流式 max_tokens=32 时同样返回过 content="OK"。
+// 上面「glm-5.2 HTTP 200 但 0 个 content delta」那条历史记录因此**不能**当成
+// glm-5.2 不可用的证据，它同样可能是 max_tokens 窗口不足造成的假象；
+// 本次只按用户口径改默认值，不据此对 glm-5.2 下「坏」的结论。
+//
 // 旧顺序的实测记录（保留作为后续调整依据，见下）：
 // 本列表同时是 auto 模式的降级链顺序（llmbff_provider_adapters.go 的
 // nextFallbackModel 按序取候选，每个候选 20s 尝试窗）。真机上 auto 模式实测
@@ -52,7 +64,7 @@ const DefaultLLMGatewayBaseURL = "https://llm.kxpms.cn/v1"
 // 网关侧模型可用性治理由网关负责，应用侧保持"链式降级 + 进度帧"这一既有设计。
 // 注意：本列表同时是 auto 模式的降级链顺序，改动会同时改变默认首选模型。
 var DefaultLLMGatewayPreferredModels = []string{
-	"glm-5.2",
+	"glm-5.3",
 	"minimax-m3",
 	"kimi-k3",
 	"claude-sonnet-5",

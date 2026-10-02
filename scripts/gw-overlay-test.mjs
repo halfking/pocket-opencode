@@ -20,8 +20,8 @@ const expr = `(async () => {
   // B) 写 user setting 覆盖层
   const payload = {
     baseURL: GW, format: 'openai-chat',
-    models: ${JSON.stringify(['glm-5.2', 'minimax-m3', 'kimi-k3', 'claude-sonnet-5', 'gpt-5.6-terra', 'claude-opus-5', 'claude-fable-5', 'gpt-5.6-sol', 'gemini-3.5-flash'])},
-    preferredModels: ${JSON.stringify(['glm-5.2', 'minimax-m3', 'kimi-k3', 'claude-sonnet-5', 'gpt-5.6-terra', 'claude-opus-5', 'claude-fable-5', 'gpt-5.6-sol', 'gemini-3.5-flash'])},
+    models: ${JSON.stringify(['glm-5.3', 'minimax-m3', 'kimi-k3', 'claude-sonnet-5', 'gpt-5.6-terra', 'claude-opus-5', 'claude-fable-5', 'gpt-5.6-sol', 'gemini-3.5-flash'])},
+    preferredModels: ${JSON.stringify(['glm-5.3', 'minimax-m3', 'kimi-k3', 'claude-sonnet-5', 'gpt-5.6-terra', 'claude-opus-5', 'claude-fable-5', 'gpt-5.6-sol', 'gemini-3.5-flash'])},
   };
   const put = await fetch(base + '/api/user-settings/llm_gateway/default', {
     method: 'PUT', headers: H,

@@ -9,11 +9,14 @@ import (
 	"testing"
 )
 
-// 用户 2026-09-30 指定的默认设置页配置：自家网关地址 + 9 个常用模型。
-// 实测依据：2026-09-30 GET https://llm.kxpms.cn/v1/models → 200 / 603 个模型，
-// 下面 9 个 id 全部命中。
+// 用户指定的默认设置页配置：自家网关地址 + 9 个常用模型。
+//
+// 2026-09-30 首次落地时实测 GET https://llm.kxpms.cn/v1/models → 200 / 603 个
+// 模型，9 个 id 全部命中。2026-10-02 用户把首选从 glm-5.2 改为 glm-5.3，
+// 复测：GET → 200 / **606** 个模型，glm-5.3 在目录里，且
+// POST /v1/chat/completions 非流式返回 content="OK"。
 var wantDefaultPreferredModels = []string{
-	"glm-5.2",
+	"glm-5.3",
 	"minimax-m3",
 	"kimi-k3",
 	"claude-sonnet-5",

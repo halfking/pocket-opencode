@@ -48,9 +48,9 @@ if [ -z "$TOKEN" ]; then
 fi
 
 # 默认勾选的常用模型 —— 与 backend/internal/opencode/config_writer.go 的
-# DefaultLLMGatewayPreferredModels 同源（用户 2026-09-30 指定）。改这里请同步改
+# DefaultLLMGatewayPreferredModels 同源（用户 2026-09-30 指定 / 2026-10-02 首选改 glm-5.3）。改这里请同步改
 # 那个常量，否则 seed 出来的库和全新实例的 seed 会不一致。
-MODELS_JSON='["glm-5.2","minimax-m3","kimi-k3","claude-sonnet-5","gpt-5.6-terra","claude-opus-5","claude-fable-5","gpt-5.6-sol","gemini-3.5-flash"]'
+MODELS_JSON='["glm-5.3","minimax-m3","kimi-k3","claude-sonnet-5","gpt-5.6-terra","claude-opus-5","claude-fable-5","gpt-5.6-sol","gemini-3.5-flash"]'
 GW_BODY="$(BASE_URL="$BASE_URL" API_KEY="$API_KEY" MODELS_JSON="$MODELS_JSON" python3 -c 'import json,os; print(json.dumps({"baseURL":os.environ["BASE_URL"],"apiKey":os.environ["API_KEY"],"format":"openai-chat","preferredModels":json.loads(os.environ["MODELS_JSON"])}))')"
 PUT_BODY="$(BASE_URL="$BASE_URL" API_KEY="$API_KEY" MODELS_JSON="$MODELS_JSON" NOW="$NOW" python3 -c 'import json,os; print(json.dumps({"payload":{"baseURL":os.environ["BASE_URL"],"format":"openai-chat","models":[],"preferredModels":json.loads(os.environ["MODELS_JSON"])},"updatedAt":int(os.environ["NOW"]),"secret":os.environ["API_KEY"]}))')"
 
