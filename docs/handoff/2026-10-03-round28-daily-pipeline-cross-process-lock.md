@@ -519,6 +519,48 @@ round26 把它记作「存量脏数据、修不修是外观问题」——**这�
 §7.6 的修复方案（离线 QP 重算）**仍需写库授权**，但优先级应从「可选清理」
 上调到「先判别 §7.5.5，再决定是只清存量还是还要改代码」。
 
+### 7.5.7 另一个独立缺陷：MIME 守卫把**正常业务文本**判成 MIME 源码
+
+这一条与 §7.5.5 的 QP 张力**无关**，是另一条路径，2026-10-03 03:37 实测
+（提交 `18f43739`，`diag_boundary_false_positive_test.go`）。
+
+`reBoundaryToken = --(?:[=_-]|[Pp]art[_-])`（`snippet.go:467`）只要求
+`--` 后面跟一个 `=`/`-`/`_`，于是**正文里的分隔符**照样命中：
+
+| 真实库摘要（原样片段） | boundary | containsMIMESource | 定性 |
+|---|---|---|---|
+| 工商银行对账单 `---人民币(本位币)---` | true | true | **误伤** |
+| 产品更新 newsletter `---------------` | true | true | **误伤** |
+| 消费明细 `------=_Part_8505717_` | true | true | 正确拦住（对照组） |
+
+后果不是「多挡一点」，而是**整条正文被丢弃**：
+
+```go
+// mime.go:645-648
+if t := strings.TrimSpace(msg.TextBody); t != "" && !containsMIMESource(msg.TextBody) { return t }
+```
+
+命中 ⇒ 返回空 ⇒ 回到 `fetcher.go:958` 的 `DeriveSnippet` 回落，而
+`DeriveSnippet` 内部同样调 `containsMIMESource` ⇒ **邮件列表那一格是空白**。
+需求 7「在邮件窗口中可以查看收到的各类邮件」直接受影响，且是**持续发生**的，
+不是存量数据问题。
+
+判据的牙齿：对照组那条 `legitimate=false`，若被放行会转红 ⇒ 不是恒真表达式。
+
+**为什么加 env 门控**：`POCKET_DIAG_BOUNDARY_FP=1` 才跑。带门控跑它是红的——
+因为它断言的是一个**尚未修的缺陷**。不加门控会把「缺陷」伪装成
+「这一轮改坏了」。收紧正则之后应**去掉门控**让它变成常驻护栏，那时它才有牙齿。
+
+**本轮不动生产正则**：收紧 `--[=_-]` 需要在「漏放真 MIME」与「误伤正文」之间
+重新定界（例如要求 boundary 出现在行首、或要求 `=_Part_` 这类强特征），
+属于会影响邮件摘要取值的改动，且与 §7.5.5 的 QP 取证可能互相干扰。
+
+**注意：`go test ./internal/email/` 不带 DSN 时是红的，这是设计如此**——
+`TestDailyPipelineLock_TestHarnessIsActuallyIsolated`（`pipeline_lock_test.go:331`）
+在 `POCKET_TEST_POSTGRES_DSN` 未设时主动 `t.Fatal`，因为静默 skip 会让
+同文件其余 14 条断言全部变成恒真。判定这个包必须带 DSN 跑：
+本轮 107.2s ok（EXIT=0）。
+
 ---
 
 ## §7 仍然需要人工决定的事
