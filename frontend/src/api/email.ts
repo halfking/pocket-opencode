@@ -433,45 +433,40 @@ export const emailApi = {
   sendEmail(input: EmailSendInput): Promise<EmailSendResult> {
     return http('/api/email/send', { method: 'POST', body: JSON.stringify(input) })
   },
-    // 2026-10-02 修复：这里原先既没传 timeoutMs、也没有 signal 形参，于是
-    // 既吃 http() 的默认 30s，又完全停不掉。
-    //
-    // 两半是同一个病：预算和中止必须一起给。
-    //
-    // ① 30s 默认超时过短。http.ts:56 注释把「同步/大音频/批量推理」点名为
-    //    天然慢的那一类，同文件的 classify / 发票提取 / 回填早就显式放宽到
-    //    LONG_REQUEST_TIMEOUT_MS，只有 syncNow 漏了。观察到的真实代价：
-    //    2026-10-02 23:37 一次同步里 imap.exmail.qq.com:993（112.49.56.19）
-    //    握手卡住，服务端打出
-    //      imap stage budget 50s exhausted … / SLOW step login took 50.001s
-    //    30s 时前端已抛 TimeoutError，界面报「请求超时（30s）：/api/emails/sync」，
-    //    而此刻另外 4 个账户早已同步完成、邮件其实到了。
-    //
-    // ② 但**加长超时不能变成"只能干等"**。这正是
-    //    src/api/long-task-terminable.test.mjs 的登记表要求 signal 的原因：
-    //    它把 timeoutMs >= 90s 的调用点当成「长任务」，逐个要求在册，
-    //    且在册的非 by-design 条目必须真的把 signal 传进 http 选项。
-    //    只放宽不接 signal 的话，用户就从「30s 后看到失败」变成「两分钟里
-    //    什么都干不了」——那不是修好。
-    //
-    // **这个 120s 覆盖的是「一个账户卡住」，不是「全部账户都卡住」**，别当成
-    // 保证：服务端 per-account 预算是 syncBudget=70s（fetcher.go:35），而
-    // backend/internal/email/diag_hard_deadline_test.go 记录的生产实测是 IMAP
-    // 单账户就占 80.1xx s（76 次，抖动仅十几毫秒），已经**超出** syncBudget；
-    // /api/emails/sync 又把所有启用账户串行跑完，N 个同时卡住时最坏是 N×80s。
-    // 真正的修法在服务端（把单账户工作量框进 syncBudget、或尽快返回部分结果），
-    // 那边已经有在跟的诊断。signal 就是留给这种「服务端还没修好」期间的出口。
-  //
-  // 合并说明（2026-10-03 round30）：feat/ia-notes-messages-20261003 在同一位置
-  // 改的是返回值的语义（新增 skipped），与 main 的 signal 是**两处正交**的增量，
-  // 因此两侧都保留：形参里 signal 与 accountId 并列，返回类型里 failed 与
-  // skipped 并列。丢掉任何一侧都会静默退化 —— 丢 signal ⇒ 长任务不可中止；
-  // 丢 skipped ⇒ 被单飞锁正常跳过的账户显示成红色，后端还写一条假失败记录。
   /**
    * `failed` = 真的同步失败。
    * `skipped` = 该账户已有一轮同步在跑，本轮被单飞锁正常跳过（不是失败）。
    * 二者必须分开：把 skipped 混进 failed 会让一个健康的账户显示为红色，
    * 并让后端往库里写一条假的失败记录。
+   *
+   * 2026-10-02 修复：这里原先既没传 timeoutMs、也没有 signal 形参，于是
+   * 既吃 http() 的默认 30s，又完全停不掉。
+   *
+   * 两半是同一个病：预算和中止必须一起给。
+   *
+   * ① 30s 默认超时过短。http.ts:56 注释把「同步/大音频/批量推理」点名为
+   *    天然慢的那一类，同文件的 classify / 发票提取 / 回填早就显式放宽到
+   *    LONG_REQUEST_TIMEOUT_MS，只有 syncNow 漏了。观察到的真实代价：
+   *    2026-10-02 23:37 一次同步里 imap.exmail.qq.com:993（112.49.56.19）
+   *    握手卡住，服务端打出
+   *      imap stage budget 50s exhausted … / SLOW step login took 50.001s
+   *    30s 时前端已抛 TimeoutError，界面报「请求超时（30s）：/api/emails/sync」，
+   *    而此刻另外 4 个账户早已同步完成、邮件其实到了。
+   *
+   * ② 但**加长超时不能变成"只能干等"**。这正是
+   *    src/api/long-task-terminable.test.mjs 的登记表要求 signal 的原因：
+   *    它把 timeoutMs >= 90s 的调用点当成「长任务」，逐个要求在册，
+   *    且在册的非 by-design 条目必须真的把 signal 传进 http 选项。
+   *    只放宽不接 signal 的话，用户就从「30s 后看到失败」变成「两分钟里
+   *    什么都干不了」——那不是修好。
+   *
+   * **这个 120s 覆盖的是「一个账户卡住」，不是「全部账户都卡住」**，别当成
+   * 保证：服务端 per-account 预算是 syncBudget=70s（fetcher.go:35），而
+   * backend/internal/email/diag_hard_deadline_test.go 记录的生产实测是 IMAP
+   * 单账户就占 80.1xx s（76 次，抖动仅十几毫秒），已经**超出** syncBudget；
+   * /api/emails/sync 又把所有启用账户串行跑完，N 个同时卡住时最坏是 N×80s。
+   * 真正的修法在服务端（把单账户工作量框进 syncBudget、或尽快返回部分结果），
+   * 那边已经有在跟的诊断。signal 就是留给这种「服务端还没修好」期间的出口。
    */
   syncNow(accountId?: string, signal?: AbortSignal): Promise<{ mode?: string; synced?: number; new?: number; failed?: string[]; skipped?: string[] }> {
     return http('/api/emails/sync', {

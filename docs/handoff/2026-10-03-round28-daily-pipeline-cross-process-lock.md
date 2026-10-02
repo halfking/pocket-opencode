@@ -371,13 +371,73 @@ MISS  信用额度 58,000.00
 3. **时敏**：08:00 今晚会跑流水线，此时改发票提取路径等于在验收前动被测对象。
    即便要改，也应在 08:00 之后单独一轮做，且必须带负控。
 
-### 7.4.3 可选出路（供拍板）
+### 7.4.3 可选出路（供拍板）—— **方案 A 已被实测证伪，见 §7.4.4**
 
 | 方案 | 效果 | 风险 |
 |---|---|---|
 | A 放宽 `reAmountTotal` 分隔符（加「共计/总共/合计」） | 通行费 24.61 进台账 | 可能让对账单命中「合计人民币…」；需配套负控 |
 | B 保持不动，靠附件下载后再建档 | 无 | 票根的发票在附件里，现路径拿不到 → 仍然漏 |
 | C 单独加一条「电子发票 + 金额标签 + 无对账单词」的旁路 | 精确命中票根类 | 新增一条判定路径，本身要负控 |
+
+### 7.4.4 【更正·04:55 实测】§7.4.1/§7.4.3 的根因**定错了**，方案 A 不成立
+
+`diag_toll_invoice_replay_test.go` 用**磁盘上的真实加密原文**（不是手写夹具）
+重放这两封邮件，调用**生产函数本身**：
+
+| 测量 | 结果 |
+|---|---|
+| 真实原文含「共计」 | **true** |
+| 真实原文形态 | `发票金额共计<span style='color: #FF9100;'>19</span>元` |
+| `reAmountTotal`（现）匹配 | **false** |
+| **把「共计」加进分隔符后匹配** | **仍然是 false** |
+| `ExtractInvoiceLoose(body, false)` | hit=**false**（现状） |
+| `ExtractInvoiceLoose(body, true)` | hit=**true**，但 `amount=0 invoiceNo="" date=2026-09-14` |
+
+**三处更正**：
+
+1. **§7.4.1 里的「真实写法：发票金额共计19元」是手写夹具的简化**。真实正文
+   在「共计」和数字之间夹着 HTML 标签（`<span style='color: #FF9100;'>`），
+   所以**方案 A 照原样实施在真实数据上不产生任何效果**——不是「有风险」，
+   是**无效**。
+2. **真正的阻断点不在正则，在取原文这一步**。`pipeline.go:792`（第 2 趟
+   `fetchInvoiceBodies`）直接 `p.Fetcher.FetchMessageRaw(ctx, e.AccountID, e.UID)`，
+   而 `mime.go:98` 无条件 `dial(acc.IMAPHost:acc.IMAPPort)` —— **IMAP 专用**。
+   这两封是 `em-pop3-…`，POP3 账户 ⇒ 第 2 趟必然失败。
+   注意 job **是排上了的**：`invoiceBodyReason`（`pipeline.go:739`）对
+   `!hit && InvoiceCandidate` 返回 `"candidate"`，subject 含「发票」⇒ 成立。
+   失败后走 `rep.AddError("invoice raw body fetch failed …")` 且不建档。
+3. **同包内两条路径能力不对称，这是可修的那一处**：
+
+   | 路径 | POP3 处理 | 读 body cache |
+   |---|---|---|
+   | `harvestOne`（`invoice_harvest.go:227/316`） | **有** `recoverPOP3SourcedRaw`（POP3 位置序号 RETR + `sameEmailMessage` 校验） | **先读缓存** |
+   | pipeline 第 2 趟（`pipeline.go:792`） | **无** | **无** |
+
+   而这两封的原文**就在 `data/email-bodies-raw/<id>.bin` 里**（本文件就是从那儿
+   解出来的，`body_purged=false`）。也就是说：**只要有台账行，采集这一步能走；
+   台账行建不出来，是因为第 2 趟没去读那份已经存在的缓存。**
+
+**仍然未解的一环**：即使第 2 趟能跑，建出来的行是 `amount=0`。金额设计上留给
+采集器从附件补（`invoice.go:609-620` 的注释），而附件解析**一次都没在真实数据上
+验过**。所以「24.61 能不能真正进合计」目前**无法离线回答**。
+
+**修法方向（三者需组合，且都改生产代码）**：
+① `pipeline.go:792` 改为先读 body cache、miss 再走 POP3 感知路径（复用
+`recoverPOP3SourcedRaw` 的思路）；② 金额提取对 HTML 标签不敏感（先剥标签或
+允许标签穿插）；③ 保留方案 C 的旁路思路作为兜底。
+**本轮仍不改生产代码**——②③ 会改变金额抽取语义，属产品决定。
+
+**方法论教训（比结论更重要）**：
+
+- §7.4.1 的「根因（已实测验证，不是推断）」标题**名不副实**——它实测的是
+  **正则对手写夹具**，不是真实原文。夹具越贴近现实，结论越像被验证过。
+  本轮用真实原文一测，夹具形态就假了。
+- 本轮第一次查这批数据时还踩了另一个坑：为绕开 `-Encoding UTF8` 的 BOM，
+  改用 `-Encoding ASCII` 写 SQL，**中文被替换成 `?`**，模式变成 `%??%`，
+  于是 `subject ILIKE '%发票%'` 静默返回 0 行，差点得出
+  「库里根本没有通行费邮件」的错误结论。正确写法是
+  `[IO.File]::WriteAllText($p, $sql, (New-Object System.Text.UTF8Encoding($false)))`。
+  已把中文模式是否查得到东西作为**每条查询的自检段**写进脚本。
 
 ---
 

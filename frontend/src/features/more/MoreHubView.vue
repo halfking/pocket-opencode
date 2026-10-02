@@ -113,10 +113,6 @@ const mainFeatures = computed<HubItem[]>(() => [
   // 会议列表同理下沉到这里：它是会议筛选/归档页，不是笔记流的一部分。
   { to: '/meetings', icon: 'mic', label: t('nav.meetings') },
   { to: '/email', icon: 'mail', label: t('nav.email') },
-  // 合并说明（2026-10-03 round30）：此处原有 `{ to: '/rss', ... }`。
-  // feat/ia-notes-messages-20261003 刻意移除它——订阅新闻已并入「消息」tab 的
-  // 统一时间线，管理订阅源从 MessagesHubView 底部直达（已核：那里有 go('/rss')）。
-  // 保留两处入口正是本文件上方注释警告的那种「两个入口、不同步的未读账」。
   // 密码箱：受能力门控（见下方 reachableMainFeatures）。留着这行是为了
   // 插件落地后入口自己回来，不是说它在所有平台都可用——别当成漏删的入口。
   { to: '/vault', icon: 'lock', label: t('nav.vault') },
