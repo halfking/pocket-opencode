@@ -146,22 +146,14 @@ func TestExtractInvoice_SellerIsNeverAColumnLabel(t *testing.T) {
 	assertNoLabelSegment(t, InvoiceFileName(inv))
 }
 
-// 缺陷形态：表格先出一整行**表头**，值行在后面。HTML 表格拍平成文本时单元格
-// 之间是换行，于是「销售方」后面紧跟的是下一个列头「发票抬头」——
-// 旧实现在这里产出 `其他-…-发票抬头-…-….pdf`（5 段）。
-//
-// 注意 reSeller 的值规则里分隔符用的是 [^\S\r\n]+（不含换行），所以真正的
-// 值在下一行时**根本抓不到**——这不是本次能修的（要跨行取值）。能修的是：
-// 抓到的那个列头**不得**被当成单位名，此时应落到发件人兜底。
-func TestExtractInvoice_HeaderRowTableDoesNotYieldLabel(t *testing.T) {
+// 表头行形态下真正的单位名在**下一行**：reSeller 的值分隔符不含换行，抓不到。
+// 这是跨行兜底存在的理由，也是它的承重用例。
+func TestExtractInvoice_HeaderRowTableRecoversSellerFromNextLine(t *testing.T) {
 	body := "销售方\n发票抬头\n发票号码\n开票日期\n价税合计\n" +
 		"杭州某某科技有限公司\n25332000000123456789\n2026-09-28\n1280.00\n"
 	e := Email{
-		ID: "em-hdr", AccountID: "acct-1",
+		ID: "em-cross", AccountID: "acct-1",
 		Subject:  "9 月批量开票明细",
-		// 摘要行带着发票号与金额：表头行形态下正文里号码与金额都**不挨着**
-		// 自己的列标签，正则抽不到。没有它们，ExtractInvoice 会按「金额 0 且
-		// 发票号空且无附件」判成营销邮件直接丢弃——那样就测不到销售方了。
 		Snippet:  "发票号码：25332000000123456789，价税合计 1280.00 元",
 		FromName: "云服务开票中心",
 	}
@@ -169,13 +161,85 @@ func TestExtractInvoice_HeaderRowTableDoesNotYieldLabel(t *testing.T) {
 	if !hit || inv == nil {
 		t.Fatalf("带表格的发票邮件应被识别，实际 hit=%v inv=%v", hit, inv)
 	}
-	if isInvoiceLabelWord(inv.Seller) {
-		t.Fatalf("销售方=%q 是列头标签（这正是实测产物的 5 段文件名来源）", inv.Seller)
-	}
-	if inv.Seller != "云服务开票中心" {
-		t.Errorf("销售方=%q，want 云服务开票中心（跨行取不到值时应回落到发件人名称）", inv.Seller)
+	if inv.Seller != "杭州某某科技有限公司" {
+		t.Errorf("销售方=%q，want 杭州某某科技有限公司（应跨过表头行取到下一行的单位名，而不是退化成发件人名）", inv.Seller)
 	}
 	assertNoLabelSegment(t, InvoiceFileName(inv))
+}
+
+// 兜底的三道闸各自都要能挡住东西，否则它就是个散文收割机。
+func TestSellerFromFollowingLines_Gates(t *testing.T) {
+	cases := []struct {
+		name string
+		rest string
+		want string
+	}{
+		{
+			// 闸 1：表头行里的其它列头被跳过且不计次数，才能走到真正的值。
+			name: "跳过其余列头",
+			rest: "\n发票号码\n开票日期\n价税合计\n杭州某某科技有限公司\n1280.00",
+			want: "杭州某某科技有限公司",
+		},
+		{
+			// 闸 2：日期不能当单位名（ParseFloat 认不出 2026-09-28）。
+			name: "跳过日期与票号",
+			rest: "\n2026-09-28\n25332000000123456789\n杭州某某科技有限公司",
+			want: "杭州某某科技有限公司",
+		},
+		{
+			// 闸 3：全是散文就别硬凑，退回空串让上层走发件人兜底。
+			name: "散文不当单位名",
+			rest: "\n如需\n您好\n详见附件",
+			want: "",
+		},
+		{
+			// 闸 4：最多试 3 个非列头行。三个散文候选都失败后，
+			// 第 4 行那个像模像样的公司名**也不取**——宁可退回空串。
+			name: "尝试次数上限后不再取",
+			rest: "\n如需\n您好\n详见附件\n甲乙丙丁公司",
+			want: "",
+		},
+		{
+			// 「标签：值」黏成一行：整行不能被当成单位名，且不计次数。
+			name: "跳过标签值黏行",
+			rest: "\n价税合计：1280.00\n发票号码 25332000000123456789\n杭州某某科技有限公司",
+			want: "杭州某某科技有限公司",
+		},
+		{
+			// 承重的鉴别用例：销售方那一列后面紧跟的是**买方**行。
+			// 「某某采购有限公司」以「公司」结尾，looksLikeEntityName 放行它，
+			// 只有 startsWithLabelField（发票抬头 + 「：」）能挡住。
+			// 没有这道闸，对方单位会被写成**采购方**——错得比退化成发件人还隐蔽。
+			name: "买方行不得被当成销售方",
+			rest: "\n发票抬头：某某采购有限公司\n杭州某某科技有限公司",
+			want: "杭州某某科技有限公司",
+		},
+		{
+			name: "英文单位名",
+			rest: "\nSeller\nTencent Cloud Computing Co Ltd",
+			want: "Tencent Cloud Computing Co Ltd",
+		},
+		{
+			name: "没有可取的行",
+			rest: "\n\n\n",
+			want: "",
+		},
+	}
+	for _, c := range cases {
+		if got := sellerFromFollowingLines("销售方"+c.rest, len("销售方")); got != c.want {
+			t.Errorf("%s: sellerFromFollowingLines = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// 日期/票号在**主路径**上也必须被当终止符：表头行形态下紧接着销售方标签的
+// 就是「开票日期」那一列。
+func TestCleanSellerValue_RejectsDateAndID(t *testing.T) {
+	for _, raw := range []string{"2026-09-28", "25332000000123456789", "2026年09月28日 开票日期"} {
+		if s, ok := cleanSellerValue(raw); ok {
+			t.Errorf("cleanSellerValue(%q) = (%q, true)，日期/票号不该被当成单位名", raw, s)
+		}
+	}
 }
 
 // 收敛不出单位名时，必须落到发件人兜底，而不是把列头留在销售方字段里。

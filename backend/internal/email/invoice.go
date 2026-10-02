@@ -198,7 +198,7 @@ func cleanSellerValue(raw string) (string, bool) {
 		// 数字是段落终止符，不是单位名：既挡住「跳过头部标签后剩下金额」
 		// （销售方\n发票抬头\n价税合计：1280.00），也挡住金额被粘在单位名后面
 		// （…\n云服务开票中心\n1280.00）。
-		if isNumericToken(tok) {
+		if isNumericToken(tok) || reDateLike.MatchString(tok) {
 			break
 		}
 		if isInvoiceLabelWord(f) {
@@ -218,6 +218,130 @@ func cleanSellerValue(raw string) (string, bool) {
 		return "", false
 	}
 	return out, true
+}
+
+// reDateLike 识别「纯日期 / 纯票号」形态的词。
+//
+// 它和 isNumericToken 一样是**终止符**而不是候选：表头行形态下销售方那一列的
+// 后面紧跟着的就是「开票日期 2026-09-28」这类行，ParseFloat 认不出
+// "2026-09-28"，没有这道闸它会被当成单位名写进文件名。
+var reDateLike = regexp.MustCompile(`^\d{4}[-/.年]\d{1,2}(?:[-/.月]\d{1,2})?日?$`)
+
+// invoiceSellerSuffix 是中文单位名常见的**结尾**。
+//
+// 判据用「有没有企业后缀」而不是「有几个汉字」：字数这道闸形同虚设——
+// 「详见附件」正好 4 个汉字，直接被当成了对方单位（实测踩过）。
+// 对方单位几乎必然带一个这样的结尾，散文则不会。
+// 只收两字以上的后缀，单字（「社」「厂」「店」）在散文里太常见。
+var invoiceSellerSuffix = []string{
+	"公司", "中心", "集团", "股份", "有限", "银行", "事务所", "研究院",
+	"科技", "商贸", "实业", "物业", "医院", "学校", "工作室", "分公司",
+}
+
+// looksLikeEntityName 判断一个字符串像不像「对方单位」。
+//
+// 中文走企业后缀；英文走「≥4 个字母且 ≥2 个词」（Tencent Cloud Computing Co Ltd）。
+//
+// 代价：短品牌名（如「美团」「腾讯」）在这条路上会被放行到发件人兜底。
+// 这道闸只作用于**跨行兜底**，不碰主路径，代价仅是「退一步」而不是「取错值」。
+func looksLikeEntityName(s string) bool {
+	for _, suf := range invoiceSellerSuffix {
+		if strings.HasSuffix(s, suf) {
+			return true
+		}
+	}
+	letters, words := 0, 0
+	inWord := false
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			letters++
+			if !inWord {
+				words++
+				inWord = true
+			}
+			continue
+		}
+		inWord = false
+	}
+	return letters >= 4 && words >= 2
+}
+
+// startsWithLabelField 判断整行是不是「标签：值」形态。
+//
+// 跨行兜底逐行看候选，而表格行常常是**黏**在一起的：
+// 「价税合计：1280.00」没有空格，cleanSellerValue 看到的是单个词
+// 「价税合计：1280.00」，跳过标签词那步根本触发不了（它按空白切词），
+// 整行会被当成单位名。这类行要在这里挡掉，且**不计入**尝试次数——
+// 它是别的字段，不是候选单位名。
+func startsWithLabelField(ln string) bool {
+	low := strings.ToLower(ln)
+	for w := range invoiceLabelWords {
+		lw := strings.ToLower(w)
+		if !strings.HasPrefix(low, lw) {
+			continue
+		}
+		rest := ln[len(w):]
+		if rest == "" {
+			return true
+		}
+		// rest[0] 是字节，直接和 rune 字面量比较会编译报错（'：' 溢出 byte），
+		// 所以用前缀判断而不是下标。
+		for _, sep := range []string{":", "：", "=", " ", "\t", "　"} {
+			if strings.HasPrefix(rest, sep) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// sellerFromFollowingLines 在紧邻取值「只剩列头」时，往后找真正的单位名。
+//
+// 场景（实测复现的形态）：批量开票邮件的表格拍平后先出**一整行表头**，
+// 值在后面的行里：
+//
+//	销售方
+//	发票抬头
+//	发票号码
+//	开票日期
+//	价税合计
+//	杭州某某科技有限公司
+//	1280.00
+//
+// reSeller 的值分隔符是 [^\S\r\n]+——刻意不含换行，否则会一路吞掉整段散文
+// （见 reSeller 上方注释）。代价就是它只能抓到紧邻的「发票抬头」这个列头，
+// 抓不到下一行的单位名，于是规范文件名里的「对方单位」只能退化成发件人名称。
+// 这个函数补上那一步。
+//
+// 四道闸，防止它变成散文收割机：
+//  1. 只在紧邻取值已经失败时启用（正常路径完全不受影响）；
+//  2. 表头行里的其它列头直接跳过、且**不计入**尝试次数；
+//  3. 每个候选都要过 cleanSellerValue（拒列头、拒纯数字、拒日期、拒 <2 字碎片）
+//     与 looksLikeEntityName（至少 2 个汉字或 3 个字母）；
+//  4. 最多试 3 个非列头行。
+func sellerFromFollowingLines(joined string, after int) string {
+	if after < 0 || after >= len(joined) {
+		return ""
+	}
+	tried := 0
+	for _, ln := range strings.Split(joined[after:], "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		// 表头行里的其它列头、以及「标签：值」形态的整行，都不是候选单位名，
+		// 跳过且不计次数——它们是别的字段。
+		if isInvoiceLabelWord(ln) || startsWithLabelField(ln) {
+			continue
+		}
+		if s, ok := cleanSellerValue(ln); ok && looksLikeEntityName(s) {
+			return s
+		}
+		if tried++; tried >= 3 {
+			break
+		}
+	}
+	return ""
 }
 
 // invoiceKeywordHit 判断文本是否像发票/账单邮件（主题或正文关键词）。
@@ -402,13 +526,17 @@ func ExtractInvoiceLoose(e Email, bodyText string, hasInvoiceAttachment bool) (*
 		inv.InvoiceNo = strings.TrimSpace(m[1])
 	}
 	inv.InvoiceDate = ParseInvoiceDate(joined)
-	if m := reSeller.FindStringSubmatch(joined); m != nil {
+	if loc := reSeller.FindStringSubmatchIndex(joined); loc != nil {
+		// loc[2]:loc[3] 是捕获组，即对方单位的候选值。
+		//
 		// reSeller 只保证「标签后 1–6 个词」，不保证那些词不是**另一个标签**
 		// （月度批量开票邮件的表格拍平后，「销售方」后面紧跟的就是「发票抬头」
-		// 这个列头）。这里按 cleanSellerValue 收敛；收敛不出单位名就当作
-		// 这次匹配无效，落到下面主题/发件人的兜底。
-		if s, ok := cleanSellerValue(m[1]); ok {
+		// 这个列头）。先按 cleanSellerValue 收敛；收敛不出单位名再往下一行找
+		// ——表头行形态下真正的单位名在下一行。两条都拿不到才落到主题/发件人兜底。
+		if s, ok := cleanSellerValue(joined[loc[2]:loc[3]]); ok {
 			inv.Seller = s
+		} else {
+			inv.Seller = sellerFromFollowingLines(joined, loc[1])
 		}
 	}
 	if inv.Seller == "" {
