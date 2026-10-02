@@ -172,8 +172,21 @@ async function cdpEval(expr, ms = 8000) {
 
 /** 用 CDP 把 App 复位到指定路由，并等 App 外壳真的渲染出来。
  *  只等 hash 匹配是不够的——hash 变了不代表 DOM 渲染完了，
- *  实测会在 flow 第一条断言就失败（连「打开菜单」都还不在视图树里）。 */
-async function setRoute(hash, readyExpr, timeoutMs = 30000) {
+ *  实测会在 flow 第一条断言就失败（连「打开菜单」都还不在视图树里）。
+ *
+ *  opts.settle = true 时，判据从「hash **精确等于**目标」放宽为
+ *  「hash 连续两次采样不变」。为什么需要这一档：调用方
+ *  「清完 token 后制造一次真实 hashchange」的目的是**让路由守卫自己决定**
+ *  去哪，而守卫命中未登录时会把 #/ai 重定向到
+ *  #/login?returnTo=/ai?__recheck=… —— 这个目标串**永远不等于**请求的串。
+ *  于是精确匹配在结构上不可能成立：2026-10-03 实测该步每次都空转满
+ *  timeout 并返回 false，紧接着的读 hash 拿到的是重定向**之前**的值，
+ *  于是 preflight 报「已清登录态但 App 停在 #/ai，没有落到登录页」并 exit 3。
+ *  手工复现同一步骤（清 token → 立刻设 #/ai?__recheck=…）是能正常落到
+ *  #/login 的，所以坏的是判据，不是 App。
+ *  其它调用方仍用精确匹配——那里「必须停在这个路由」就是真实要求。 */
+async function setRoute(hash, readyExpr, timeoutMs = 30000, opts = {}) {
+  const settle = opts.settle === true
   const pid = adb(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
   if (!pid) return false
   const socks = adb(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
@@ -205,11 +218,24 @@ async function setRoute(hash, readyExpr, timeoutMs = 30000) {
     })
     await ev(`location.hash=${JSON.stringify(hash)}`)
     const deadline = Date.now() + timeoutMs
+    let lastHash = null
+    let stable = 0
     while (Date.now() < deadline) {
       await sleep(800)
       const gotHash = (await ev('location.hash'))?.result?.value
       const gotReady = readyExpr ? (await ev(readyExpr))?.result?.value === true : true
-      if (gotHash === hash && gotReady) { ws.close(); return true }
+      if (settle) {
+        // 「连续两次采样不变」= 导航已经落定，无论它落在哪个路由。
+        if (gotHash && gotHash === lastHash) {
+          stable++
+          if (stable >= 1 && gotReady) { ws.close(); return true }
+        } else {
+          stable = 0
+        }
+        lastHash = gotHash
+      } else if (gotHash === hash && gotReady) {
+        ws.close(); return true
+      }
     }
     ws.close()
     return false
@@ -661,6 +687,30 @@ async function preflight() {
   if (!(await assertDeviceReachesBackend())) return false
   if (!(await ensureDriver())) return false
   wakeDevice()
+  // 被测 App 必须先确保是 enabled。2026-10-03 在 vivo V2436A（OriginOS，Android 16）
+  // 实测：上一轮跑完后系统把 com.kaixuan.opencode.pocket 置成
+  // `enabled=3`（DISABLED_FOR_USER），于是 monkey 报
+  // 「** No activities found to run, monkey aborted」——包还在、MainActivity
+  // 的 MAIN/LAUNCHER filter 也还在，但整个包被禁用，resolve-activity 直接
+  // 「No activity found」。现象是「App 装不上了/起不来」，真因是系统清理。
+  // ensureDriver() 只对 maestro 的两个包做 pm enable，被测 App 不在其中。
+  //
+  // enabled 取值：0=DEFAULT（按 manifest，正常）1=ENABLED 2=DISABLED
+  // 3=DISABLED_USER 4=DISABLED_UNTIL_USED。要救的是 2/3/4，0 和 1 都不动。
+  try {
+    const info = adb(['shell', 'dumpsys', 'package', PKG], 30000)
+    const u0 = (info.split(/\r?\n/).find((l) => l.trim().startsWith('User 0:')) || '')
+    const m = u0.match(/\benabled=(\d+)/)
+    const state = m ? Number(m[1]) : null
+    if (state === 2 || state === 3 || state === 4) {
+      adb(['shell', 'pm', 'enable', PKG], 30000)
+      console.log(`[preflight] 被测 App 处于 enabled=${state}（系统清理所致），已 pm enable ${PKG}`)
+    } else {
+      console.log(`[preflight] 被测 App enabled=${state === null ? '?' : state}（无需处理）`)
+    }
+  } catch (e) {
+    console.log(`[preflight] 检查 ${PKG} 启用状态失败（继续）：${String(e.message || e).slice(0, 120)}`)
+  }
   console.log('[preflight] 强停并重新启动 App（绕开 MIUI 吞掉 force-stop 后启动意图的问题）')
   try { adb(['shell', 'am', 'force-stop', PKG]) } catch { /* 本来就没跑 */ }
   await sleep(1500)
@@ -843,31 +893,40 @@ async function ensureLocalDbUnlocked() {
   }
 
   console.log(`[preflight] 本地库锁着（${s.hash}），用 CDP 填主密码解锁`)
+  // 解锁屏有**两种形态**，取决于设备是否已绑定生物特征：
+  //   A) 未绑定 → 一个 placeholder=「输入主密码解锁」的框 + 一个文本为「解锁」的按钮
+  //   B) 已绑定 → placeholder 变成「可留空，点认证使用指纹或人脸」，
+  //      按钮文本是「认证」（指纹/人脸），主密码仍可填在同一��框里
+  // 2026-10-03 在 vivo V2436A（Android 16，已录指纹）上实测撞的是 B：
+  // 旧代码只认 A 的 placeholder，于是报「没有 placeholder=输入主密码解锁 的
+  // 输入框」并中止——**把「这台机器的形态不同」报成了「解锁流程坏了」**。
+  // 现在按「密码类输入框」定位，按钮按「解锁/认证」两套文案都认。
   const filled = await cdpEval(`(function(){
-    var el = Array.prototype.slice.call(document.querySelectorAll('input'))
-      .filter(function (e) { return (e.placeholder || '') === '输入主密码解锁'; })[0];
+    var ins = Array.prototype.slice.call(document.querySelectorAll('input'));
+    var el = ins.filter(function (e) { return e.type === 'password'; })[0]
+      || ins.filter(function (e) { return (e.placeholder || '').indexOf('主密码') >= 0; })[0]
+      || ins.filter(function (e) { return e.type === 'password' || e.type === 'text'; })[0];
     if (!el) {
-      return '没有 placeholder=输入主密码解锁 的输入框；实际有：'
-        + Array.prototype.slice.call(document.querySelectorAll('input'))
-            .map(function (e) { return e.placeholder || e.type; }).join(' / ');
+      return '页面上没有可用的密码输入框；实际有：'
+        + ins.map(function (e) { return e.placeholder || e.type; }).join(' / ');
     }
     var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
     set.call(el, ${JSON.stringify(master)});
     el.dispatchEvent(new Event('input', { bubbles: true }));
-    return 'ok len=' + el.value.length;
+    return 'ok len=' + el.value.length + ' ph=' + (el.placeholder || '?');
   })()`)
   if (!String(filled).startsWith('ok ')) {
     console.error(`[preflight] ❌ 填主密码失败：${filled}`)
     return false
   }
-  // 解锁按钮必须随输入解禁 —— 这条同时证明 v-model 接上了值。
+  // 解锁/认证按钮必须随输入解禁 —— 这条同时证明 v-model 接上了值。
   const clicked = await cdpEval(`(function(){
-    var b = Array.prototype.slice.call(document.querySelectorAll('button'))
-      .filter(function (e) { return (e.innerText || '').trim() === '解锁'; })[0];
-    if (!b) return '没有文本为「解锁」的按钮';
-    if (b.disabled) return '「解锁」仍是 disabled：v-model 没接上值';
+    var bs = Array.prototype.slice.call(document.querySelectorAll('button'));
+    var b = bs.filter(function (e) { var t=(e.innerText||'').trim(); return t === '解锁' || t.indexOf('认证') >= 0; })[0];
+    if (!b) return '没有「解锁」/「认证」按钮；实际有：' + bs.map(function (e) { return (e.innerText||'').trim(); }).join(' / ');
+    if (b.disabled) return '「' + (b.innerText||'').trim() + '」仍是 disabled：v-model 没接上值';
     b.click();
-    return 'ok clicked';
+    return 'ok clicked ' + (b.innerText||'').trim();
   })()`)
   if (!String(clicked).startsWith('ok ')) {
     console.error(`[preflight] ❌ 点解锁失败：${clicked}`)
@@ -927,8 +986,10 @@ async function ensureLocalDbUnlocked() {
     // 保证目标字符串与当前 hash 必然不同，hashchange 一定触发。
     // timeout 给 5s：成功时 hash 变成 #/login，失败也只是回到原页，
     // 两种都不致命，真正的判据是下面那次读 hash。
+    // settle=true：这里要的只是「守卫已经算过一次并落定」，落点由守卫决定
+    // （见 setRoute 的注释：精确匹配在这里结构上不可能成立）。
     await setRoute(`${want}?__recheck=${Date.now()}`,
-      'true', 5000)
+      'true', 5000, { settle: true })
     try { h = String(await cdpEval('location.hash') || '') } catch { /* 通道也坏了 */ }
   }
   const atLogin = /#\/login/.test(h)
@@ -1073,19 +1134,38 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
 // 下一轮继续卡在 installMaestroApks —— 破坏性循环（实测连踩三次，
 // 分别卡在 installMaestroDriverApp / installMaestroServerApp）。
 // 改成不重装，driver 由本脚本的 ensureDriver() 负责自愈。
-// 每次 run 前面插一段 _dismiss-system-dialogs：MIUI 的一次性系统弹窗会在
-// flow 中段抢前台（2026-10-01 12:29 实测：抢在 unlock 分支输主密码时，
-// 把键盘输入吃掉，「解锁」恒 disabled），用 optional tap 清掉。
 // 注入给子进程前自检：只打长度，不打明文。
 // 2026-10-01 13:40 实测踩到过「Maestro 把 ${POCKET_DEV_PASS} 展开成字符串
 // "undefined"」，现场只留下一条 assert `^undefined$` 不成立，根因看不见。
 // 这行让「变量到底传没传过去」一眼可见（口令本身仍不落 stdout）。
-
 console.log(`[preflight] 注入子进程：POCKET_MASTER=${(process.env.POCKET_MASTER || 'PocketTest2026').length} 字符 / POCKET_DEV_PASS=${DEV_PASS.length} 字符`)
 
-
 const SYSTEM_DIALOG_FLOW = '.maestro/_dismiss-system-dialogs.yaml'
-const args = ['--device', DEVICE, 'test', '--no-reinstall-driver', SYSTEM_DIALOG_FLOW, ...flows]
+// 每次 run 前面插一段 _dismiss-system-dialogs：MIUI 的一次性系统弹窗会在
+// flow 中段抢前台（2026-10-01 12:29 实测：抢在 unlock 分支输主密码时，
+// 把键盘输入吃掉，「解锁」恒 disabled），用 optional tap 清掉。
+//
+// ⚠️ 只在 MIUI 系上插。2026-10-03 在 vivo V2436A（Android 16 折叠屏）实测：
+// 那两个弹窗是 Xiaomi 独有的，永不出现，于是每轮白白等 ~99s；更糟的是
+// vivo 的后台清理在这段时间里把 App 杀掉了（实测跑完 preflight 后
+// pidof 为空、焦点落到 com.vivo.browser），于是**真正要跑的 flow 一条都没开始
+// 就已经死了**。等一个属于别的厂商的提示，代价是整轮回归。
+// 「点不到就跳过」只有在这台机器真的会弹时才有意义。
+const isMiui = (() => {
+  try {
+    const brand = `${adb(['shell', 'getprop', 'ro.product.brand'], 15000)}`
+      + `${adb(['shell', 'getprop', 'ro.product.manufacturer'], 15000)}`.toLowerCase()
+    const miui = adb(['shell', 'getprop', 'ro.miui.ui.version.name'], 15000)
+    return /xiaomi|redmi|poco/i.test(brand) || String(miui).trim().length > 0
+  } catch {
+    return false
+  }
+})()
+const preFlows = isMiui ? [SYSTEM_DIALOG_FLOW] : []
+if (!isMiui) {
+  console.log('[preflight] 非 MIUI 设备：跳过 _dismiss-system-dialogs（那些弹窗是 Xiaomi 独有的）')
+}
+const args = ['--device', DEVICE, 'test', '--no-reinstall-driver', ...preFlows, ...flows]
 const r = spawnSync(MAESTRO, args, {
   cwd: ROOT,
   stdio: 'inherit',

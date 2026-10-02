@@ -50,9 +50,38 @@
 //   POCKET_SERIAL  设备序列号（默认 192.168.31.19:5555）
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
 
+// adb 位置同样不能写死：原值是某台 Windows 开发机的
+// C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe，在别的宿主上
+// 直接 `[FAIL] adb 不存在` —— 而这条报错的措辞把矛头指向 adb，实际是本脚本
+// 绑死了一台机器。改为 env 覆盖 -> PATH -> 常见安装位置。
+function whichFirst(cands) {
+  for (const c of cands) {
+    if (!c) continue
+    if (c.includes('/') || c.includes('\\')) {
+      if (existsSync(c)) return c
+      continue
+    }
+    const r = execFileSync(process.platform === 'win32' ? 'where' : 'which', [c],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    const first = (r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0]
+    if (r.status === 0 && first) return first
+  }
+  return null
+}
+
+const IS_WIN = process.platform === 'win32'
 const ADB = process.env.POCKET_ADB
-  || 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
+  || process.env.POCKET_ADB_BIN
+  || whichFirst([
+    IS_WIN ? 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe' : null,
+    `${homedir()}/bin/adb`,              // arm64 包装脚本：自己设 LD_LIBRARY_PATH
+    `${homedir()}/Android/Sdk/platform-tools/adb`,
+    `${homedir()}/tools/android-sdk/platform-tools/adb`,
+    'adb',
+  ])
+  || 'adb'
 const S = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 const APK = process.argv[2]
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -71,7 +100,14 @@ function log(...a) { console.log('[preflight]', ...a) }
 
 // ── 1. 设备在线 ────────────────────────────────────────────────────────────
 function requireDevice() {
-  if (!existsSync(ADB)) { console.error(`[FAIL] adb 不存在: ${ADB}`); process.exit(1) }
+  // 只有「带路径分隔符的名字」才能用 existsSync 判存在。裸命令名（'adb'，
+  // 靠 PATH 解析）用 existsSync 判必然为 false——那是相对于 CWD 找同名文件，
+  // 于是即便 `which adb` 明明能找到，也会被报成「adb 不存在」。2026-10-03 实测。
+  const isPathLike = ADB.includes('/') || ADB.includes('\\')
+  if (isPathLike && !existsSync(ADB)) {
+    console.error(`[FAIL] adb 不存在: ${ADB}`)
+    process.exit(1)
+  }
   let line = ''
   try { line = adb(['devices'], 20000) } catch (e) { console.error('[FAIL] adb devices 失败: ' + e.message); process.exit(1) }
   const mine = line.split(/\r?\n/).find((l) => l.includes(S)) || ''
