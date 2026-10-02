@@ -21,6 +21,7 @@ package email
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -626,6 +627,71 @@ func TestPipelineRun_NotificationFailureDoesNotMarkAsNotified(t *testing.T) {
 	}
 	if notified != 0 {
 		t.Error("a failed reminder was marked as notified; that email would never be retried")
+	}
+}
+
+// TestPipelineRun_RemindersPendingIsVisibleBeforeDelivery —— RemindersPending
+// 必须在**推送之前**就落进报告，否则它只是 RemindersSent 的影子。
+//
+// 背景（2026-10-02 真实库）：提醒窗口从 2 天放宽到 90 天（37c53e6d）之后，
+// 跑着的二进制第一次要跑这个窗口时，积压了 32 封未提醒的 high。而
+// notifyImportant 没有限流，候选多少就推多少——可在推之前，报告上**没有任何
+// 一个数字**能提前说出「这轮会推 32 条」。RemindersOutOfWindow 也救不了：
+// 它数的是窗口**外**的，积压全在窗口**内**。
+//
+// 判据选「全部推送失败」这个场景，因为它最能区分两种实现：
+//   - 写在推送循环里（跟着 sent 一起 +1）→ 失败时 Pending=0，与 Sent 恒等，
+//     这个字段什么也没多给；
+//   - 写在推送循环之前 → 失败时 Pending=1, Sent=0，差值就是「本该提醒却
+//     没提醒出去」的条数。
+func TestPipelineRun_RemindersPendingIsVisibleBeforeDelivery(t *testing.T) {
+	p, store, cleanup := newPipelineFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	seedScopedAccount(t, store, "acct-pend", "u-pend", "ws-pend")
+	const burst = 5
+	for i := 0; i < burst; i++ {
+		seedScoredEmail(t, store, fmt.Sprintf("em-pend-%d", i), "acct-pend", "ws-pend",
+			"boss@corp.example", fmt.Sprintf("重要 %d", i), "work", "high")
+	}
+
+	// 全失败：Sent 必然是 0，但 Pending 必须仍然是候选数。
+	p.Notifier = &fakeNotifier{err: context.DeadlineExceeded}
+	rep := p.Run(ctx)
+
+	if rep.RemindersSent != 0 {
+		t.Fatalf("RemindersSent = %d，尽管每条推送都失败了", rep.RemindersSent)
+	}
+	if rep.RemindersPending != burst {
+		t.Fatalf("RemindersPending = %d，want %d。推送全失败时它仍须是候选数——"+
+			"写在推送循环里的话这里会是 0，字段就退化成了 RemindersSent 的影子，"+
+			"而「本该提醒却没提醒出去」这个信息会彻底丢失",
+			rep.RemindersPending, burst)
+	}
+	// 差值本身要能用：Pending - Sent 就是丢失的条数。
+	if got := rep.RemindersPending - rep.RemindersSent; got != burst {
+		t.Errorf("Pending-Sent = %d，want %d（这批本该提醒却一条都没推出去）", got, burst)
+	}
+
+	// 推送恢复正常后，Pending 仍须等于候选数、Sent 追平它。
+	p.Notifier = &fakeNotifier{}
+	rep2 := p.Run(ctx)
+	if rep2.RemindersPending != burst {
+		t.Errorf("成功那轮 RemindersPending = %d，want %d", rep2.RemindersPending, burst)
+	}
+	if rep2.RemindersSent != burst {
+		t.Errorf("成功那轮 RemindersSent = %d，want %d", rep2.RemindersSent, burst)
+	}
+	// 第三轮：已提醒过的不再进候选，Pending 必须跟着掉到 0——
+	// 否则这个计数会一直显示「要推 N 条」而实际早推过了。
+	rep3 := p.Run(ctx)
+	if rep3.RemindersPending != 0 {
+		t.Errorf("已提醒过的那轮 RemindersPending = %d，want 0（否则计数与真实待推量脱节）",
+			rep3.RemindersPending)
+	}
+	if rep3.RemindersSent != 0 {
+		t.Errorf("已提醒过的那轮 RemindersSent = %d，want 0", rep3.RemindersSent)
 	}
 }
 

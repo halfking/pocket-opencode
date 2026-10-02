@@ -262,6 +262,22 @@ type PipelineReport struct {
 	//
 	// 注意这**不是**「发了多少条提醒」，两者不可互相替代。
 	RemindersOutOfWindow int `json:"remindersOutOfWindow,omitempty"`
+	// RemindersPending 是「这轮**将要**推送的条数」——判定完候选、在真正
+	// 逐条 Notify 之前就记下来。
+	//
+	// 为什么必须有它：RemindersSent 只有推完才知道，而 notifyImportant
+	// **没有限流**，候选有多少就推多少。2026-10-02 窗口从 2 天放宽到 90 天
+	// （37c53e6d）之后，跑着的二进制第一次要跑这个窗口时，真实库里积压了
+	// **32 封**未提醒的 high（用与生产等价的判据数出来的）——但在那之前，
+	// 报告上没有任何一个数字能提前说出「这轮会推 32 条」。
+	//
+	// RemindersOutOfWindow 救不了这个场景：它数的是窗口**外**的，而积压
+	// 全在窗口**内**。两个计数缺一不可，合起来才画得出全貌：
+	// 「窗外 N 封永远轮不到」+「窗内这轮要推 M 条」。
+	//
+	// 注意它与 RemindersSent 不可互相替代：推送失败时 Pending > Sent，
+	// 这个差值就是「本该提醒却没提醒出去」的条数。
+	RemindersPending int `json:"remindersPending,omitempty"`
 	// 发票候选（步骤 1.5）的三个计数。同样的理由：只报 invoices.Processed
 	// 时，「扫了 0 封候选」和「这批里没有发票」长得一模一样，
 	// 于是 0 到底是链路没跑、还是跑了但没命中，看报告分不出来。
@@ -886,6 +902,15 @@ func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 	rep.RemindersScanned = len(emails)
 	candidates, unclassified := splitReminderCandidates(emails, notified)
 	rep.RemindersUnclassified = unclassified
+	// 在推之前就把条数记下来。推送失败时 Pending > Sent，那个差值就是
+	// 「本该提醒却没提醒出去」的数量——只有 Sent 时这个信息就丢了。
+	rep.RemindersPending = len(candidates)
+	if rep.RemindersPending > 0 {
+		log.Printf("[email/pipeline] 本轮将推送 %d 条重要邮件提醒（%d 天窗口内、importance=high、"+
+			"从未提醒、非 spam）。notifyImportant 没有限流，条数就是候选数——"+
+			"积压会在首次覆盖到它们的这一轮一次性推出。",
+			rep.RemindersPending, importantReminderLookbackDays)
+	}
 	if unclassified > 0 {
 		log.Printf("[email/pipeline] %s", reminderUnclassifiedHint(unclassified, len(emails)))
 	}
