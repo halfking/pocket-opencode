@@ -20,11 +20,12 @@ import { execFileSync } from 'node:child_process'
 const PKG = 'com.kaixuan.opencode.pocket'
 const S = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 const PROD = 'https://pocket.itestu.cn'
-// ⚠️ 2026-10-03 修 BUG-V10：原先这里是 `const PORT = process.env.POCKET_CDP_PORT || '9472'`，
+// ⚠️ 2026-10-02 修 BUG-V10：原先这里是 `const PORT = process.env.POCKET_CDP_PORT || '9472'`，
 //    而第 32 行用 `tcp:${PORT}` 硬绑一个固定端口。固定端口是**共享可变状态**
-//    （同机还有别的会话在驱同一台设备，仓库里另有约 40 个 diag/verify 脚本
-//    各自硬编码了 9402-9476 之间的端口），撞上就抛 10048，且撞上时报错指向
-//    装置而不是「上次没清干净」。改成 tcp:0 让 adb 自己分配空闲端口。
+//    （同机还有别的会话在驱同一台设备；仓库里共 140 个 .mjs 硬编码了固定 CDP 端口，
+//    取值散布在 8088-9630，见 `node scripts/check-fixed-cdp-ports.mjs`），
+//    撞上就抛 10048，且撞上时报错指向装置而不是「上次没清干净」。
+//    改成 tcp:0 让 adb 自己分配空闲端口。
 const adb = (a, t = 25000) => execFileSync('C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe', ['-s', S, ...a], { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
 const adbSoft = (a) => { try { return adb(a, 8000) } catch { return '' } }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))

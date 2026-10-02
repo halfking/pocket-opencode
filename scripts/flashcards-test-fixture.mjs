@@ -17,13 +17,12 @@
 //
 // 用法：node scripts/flashcards-test-fixture.mjs [--dry]
 import { execFileSync } from 'node:child_process'
+import { openCdp } from './lib/adb-cdp.mjs'
 
 const PSQL = 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'
 const DRY = process.argv.includes('--dry')
 const USER = process.env.POCKET_PG_USER || 'user-admin'
 const PKG = 'com.kaixuan.opencode.pocket'
-const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555'
-const PORT = process.env.POCKET_CDP_PORT || '9420'
 const CACHE_KEYS = ['flashcards:v1', 'flashcards:v1:outbox']
 
 // 全部 ASCII，避免 PowerShell/psql 兜底串编码问题
@@ -46,38 +45,40 @@ if (DRY) {
   process.exit(0)
 }
 
-/** 清 App 里闪卡那两个 localStorage 键。App 没跑就跳过（flow 会自己重启）。 */
-function clearAppCache() {
-  const adb = (a, t = 60000) => execFileSync('C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe', ['-s', SERIAL, ...a], { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
-  const pid = adb(['shell', `pidof ${PKG}`]).trim().split(/\s+/)[0]
-  if (!pid) { console.log('  (App 未运行，跳过缓存清理；flow 的启动器会重启它)'); return }
-  const socks = adb(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`])
-    .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
-  adb(['forward', `tcp:${PORT}`, `localabstract:${socks.find((s) => s.endsWith(`_${pid}`)) || socks[socks.length - 1]}`])
-  return { adb, pid }
-}
+// CDP 通道走共享 helper（2026-10-02）：端口由 adb 分配（tcp:0），不再硬绑 9420。
+// 硬编码端口是**同机所有会话共享**的状态——本机同时有别的会话在驱同一台设备，
+// 撞上时 adb 抛 10048，而那句报错指向装置，看不出真问题是「上次没清干净」。
+let cdp = null
+try { cdp = await openCdp({ pkg: PKG }) }
+catch (e) { console.log(`  (跳过 localStorage 清理：${String(e?.message || e).split('\n')[0]})`); console.log('  (flow 的启动器会重启 App；未清缓存则这轮不覆盖零卡组分支)'); }
 
-const conn = clearAppCache()
-if (conn) {
-  const { adb } = conn
-  const page = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).find((t) => t.type === 'page')
-  const ws = new WebSocket(page.webSocketDebuggerUrl.replace(/:\d+\//, `:${PORT}/`))
-  let id = 0; const pending = new Map()
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data)
-    if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id) }
-  })
-  await new Promise((r) => ws.addEventListener('open', r))
-  const ev = (x) => new Promise((r) => {
-    const i = ++id
-    const t = setTimeout(() => r({ __t: 1 }), 15000)
-    pending.set(i, (y) => { clearTimeout(t); r(y) })
-    ws.send(JSON.stringify({ id: i, method: 'Runtime.evaluate', params: { expression: x, returnByValue: true, awaitPromise: true } }))
-  })
-  const expr = `(() => { const k=${JSON.stringify(CACHE_KEYS)}; const had=k.map(x=>[x, localStorage.getItem(x)!==null]); k.forEach(x=>localStorage.removeItem(x)); return JSON.stringify(had) })()`
-  const res = await ev(expr)
-  console.log(`  localStorage 清理：${res?.__t ? '超时(未确认)' : JSON.stringify(res?.result?.value)}`)
-  ws.close()
+let cacheErr = ''
+try {
+  if (cdp) {
+    const expr = `(() => { const k=${JSON.stringify(CACHE_KEYS)}; const had=k.map(x=>[x, localStorage.getItem(x)!==null]); k.forEach(x=>localStorage.removeItem(x)); return JSON.stringify(had) })()`
+    // 原来这里是「超时/异常就打印一句『未确认』然后继续跑 PG 删除，最后照样 ✅」。
+    // 那是把「零状态前置没生效」印成了成功：缓存没清 ⇒ 列表回显上一轮的卡组
+    // ⇒ 这轮测的是 deck-toggle 分支而不是零卡组分支，而且**不会红**。
+    // 现在改成硬失败——判据分不清就不许当它绿。
+    const res = await cdp.ev(expr)
+    if (typeof res !== 'string' || !res.startsWith('[[')) {
+      throw new Error(`CDP 返回了非预期形状：${JSON.stringify(res)?.slice(0, 200)}`)
+    }
+    const had = JSON.parse(res)
+    console.log(`  localStorage 清理：${JSON.stringify(had)}`)
+    if (!had.some(([, v]) => v)) console.log('  (本来就没有缓存键)')
+  }
+} catch (e) {
+  cacheErr = String(e?.message || e).slice(0, 300)
+} finally {
+  // 失败路径同样要还 forward；但**不**在这里 exit——
+  // process.exit() 不跑 finally，退出必须放到块外。
+  if (cdp) await cdp.close()
+}
+if (cacheErr) {
+  console.log(`❌ localStorage 清理失败：${cacheErr}`)
+  console.log('   前置没生效就不能声称「已清零」——否则这轮会静默地测错分支。')
+  process.exit(1)
 }
 
 q(`DELETE FROM opencode_pocket.flashcard_revlog WHERE card_id IN (
