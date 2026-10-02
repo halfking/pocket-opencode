@@ -594,3 +594,33 @@ select … from email_invoices where status='failed' or seller='name:'
 ⇒ 真机上「需求 3 的两张真实发票」目前**既不在服务端、也无法从界面取到**
 （那张卡点下载 / 归档 / 预览都是 404）。这不是采集失败，是**行被删了**。
 所以修它们不在「让采集重试」这一层，而在 §2 那个待拍板项（幽灵卡怎么处理）。
+
+---
+
+## §14 两条给 08:00 接手者的硬约束
+
+### 14.1 `/api/healthz` 404 不是缺陷，是我探错了路径
+
+```
+/healthz       -> 200  body='ok'
+/api/healthz   -> 404  body='404 page not found'
+```
+
+端点注册在 `server.go:662` 的 **`/healthz`**（无鉴权，`handleHealthz` 只写 200 "ok"）。
+我先前用 `/api/healthz` 探到 404 便记成「未解释的异常」，其实它压根没这个路由。
+（`longlived_paths_test.go:120` 里那份 `"api/healthz"` 名单也是**不存在**的路径——
+那份判据断言的是「它不该被加进慢请求白名单」，对一个不存在的路径恒真，所以从没被这个事实绊倒。
+**又一个恒真判据的实例**：它通过不是因为路径对，而是因为没人加。）
+
+### 14.2 ⚠️ 08:00 之前**不要**起第二个后端实例
+
+上一轮我拒绝起真进程验 §1 的修复，理由是「怕触发未授权的 IMAP MOVE」。现在多一条**更强**的理由：
+
+`[email/scheduler] daily pipeline runner injected (hour=8)` +
+`pipeline scheduled at 2026-10-03T08:00:00+08:00` 是**每个进程各自**打的——
+再起一个 pocketd 实例，它会**自己**排一次 08:00 的流水线。那意味着明早变成
+两轮流水线同时抢 `emailPipelineMu`、并发 `MarkEmailsNotified`，
+**把 §11 那次验收的归因彻底搅乱**。
+
+⇒ 08:00 验收期间**只保留 18099 这一个实例**。要验 §1 的修复（`CurrencyTotal` 的 json tag），
+等 08:00 验收结束后、或用户授权的同一次重启里做。
