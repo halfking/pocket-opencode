@@ -46,6 +46,44 @@ if emailScheduler != nil {
 `grep <标识符>` 一次只覆盖了人正在读的那一段文件。全仓结论必须由
 **独立的全仓检索**得出，不能由「我读的那段没有」推出。
 
+### 补证：2026-10-02 08:00 到点**真的跑了一次**（不只是排期成功）
+
+上面那两行只证明「排上了」。`2026-09-30-email-pipeline-verify.md:753` 记着
+「定时流水线到点执行没有等过一次真实 06:00」，这条缺口在 2026-10-02 补上了 ——
+运行进程（`pocketd-18099-20261002-013559.err.log`）里 08:00 的完整一轮：
+
+```
+08:00:00 [email/pipeline] step 1/5 sync 5 account(s) (t+2ms)
+08:00:00 step1 sync feikemanager1@163.com new=0 in 318ms
+08:00:00 step1 sync 56551681@qq.com   new=0 in 523ms
+08:00:00 step1 sync kimmy.huang@163.com new=1 in 363ms
+08:00:00 step1 sync feikemanager@163.com new=1 in 346ms
+08:00:01 step1 sync huangxutao@kxpms.cn new=0 in 1.125s
+08:00:01 [email/pipeline] step 1.5/5 invoice candidates (t+1.126s)
+08:00:01 step1.5 scanned=1 rawBodyFetches=0 fetchFailed=0 autoCreated=0
+08:00:01 [email/pipeline] step 2/5 spam clean (dryRun=true) (t+1.133s)
+08:00:01 spam dry-run: 0 mail(s) would be moved, 0 near-miss
+08:00:01 [email/pipeline] step 3/5 important reminders (t+1.135s)
+08:00:01 [email/pipeline] step 4/5 invoice harvest (t+1.135s)
+08:00:01 [email/pipeline] step 5/5 push+ledger over 1 scope(s) (t+1.136s)
+08:00:01 [email/pipeline] done synced=5 new=2 spam=0(+0 local) reminders=0 \
+          inv={Processed:0 Downloaded:0 Pending:0 Failed:0 Skipped:0} feishu=0/0 errors=0
+08:00:01 [email/scheduler] pipeline scheduled at 2026-10-03T08:00:00+08:00
+```
+
+判定（按三种情况分档，不混为一谈）：**5 个步骤全部执行 + 有 `done` 行 + 带
+`reminders=`/`inv={}` 计数 ⇒ 到点触发成立**；`errors=0`；触发后立刻把下一次
+排到 10-03 08:00。`reminders=0` 与更正 2 完全吻合（rules 全 NULL、AI 网关 429，
+两条写入路径都堵死，稳态下就该是 0）——没有出现「莫名冒出大量提醒」的情况，
+所以 importance 仍无带外来源。
+
+一个必须写下来的反直觉点：**`new=2` 是虚报**。库里自 10-01 23:56:52 起一行新
+邮件都没有（全量 120 行的 `created_at` 落在 23:56:38~23:56:52 的 14 秒内，是
+一次批量导入）。成因是 `InsertEmail` 对已存在的 id 走 `ON CONFLICT DO UPDATE`
+并返回 nil，fetcher 无条件 `saved++`，重复同步被算成新邮件。已由 `03885ba3`
+修掉（`InsertEmailIfNew` + xmax 判据）。也就是说**这一行日志的 `new` 在修复前
+不可信**，`synced=5` / `errors=0` / 步骤齐全这几项才可信。
+
 ---
 
 ## 更正 2：「重要邮件提醒靠本地规则引擎」——机制对，但真实库里这条路没通
