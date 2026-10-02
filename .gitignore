@@ -80,37 +80,49 @@ deploy-local.sh.bak-*
 # 而不是只忽略主密钥。
 data/email-bodies/
 
-# 2026-10-03 audit: 上面那句「整个目录忽略」在实现上没兑现——当时只逐个列出
-# 已知的子目录，于是每多一个子目录就再漏一次。实测漏了 data/email-bodies-raw/
-# （POP3 原始 MIME 落盘）：`git add -A` 的 dry-run 里有 45 个真实邮件正文
-# 会被加进暂存区。email_master.key 那条规则当时仍然拦得住，所以密钥没泄露，
-# 但正文泄露这条路是通的。
+# 2026-10-03: data/ 整目录忽略（本轮修的根因：意图写在注释里，实现没兑现）
 #
-# 这里改成整目录忽略，与本段已声明的意图一致：data/ 下装的是运行时数据
-# （sqlite、正文、发票、master key），仓库里一个都不该有 tracked。
-# 守卫见 scripts/check-runtime-data-tracked.mjs——它查的是「有没有被跟踪」，
-# 不依赖 .gitignore 的写法，所以以后再加子目录也不会复发。
-data/
-
-# 2026-10-03（并发会话同日独立发现同一漏洞，此处保留其增量）：邮件正文落盘其实
-# 有两个目录，格式不同，只覆盖一个就会漏另一个：
+# 上面 2026-10-01 那条注释已经写明了意图——「整个目录忽略，而不是只忽略主密钥」
+# ——但实现是**逐个列出已知子目录**，于是每多一个子目录就再漏一次。
+#
+# 被漏掉的是 email-bodies 的**兄弟目录** email-bodies-raw。落盘其实有两个目录，
+# 磁盘格式还不同：
 #   data/email-bodies/      = 8B 大端 UID + 1B format + base64 密文
 #   data/email-bodies-raw/  = 8B 大端 UID + base64 密文（body_cache.go:16）
-# 那侧实测 49 个 em-pop3-acct-*.bin 一直以未跟踪状态躺在工作区；我这侧用
-# `git add -A --dry-run` 独立数到 45 条。数量不同是统计时刻的抓取批次不同，
-# 两者指向同一批文件。合并的是同一次发现，不是两次不同的问题。
+# 当时只加了前一个，后一个既没被忽略、也没在本文里出现过，
+# 于是 49 个真实邮件正文缓存（em-pop3-acct-*.bin）一直以未跟踪状态躺在工作区，
+# 任何一次 `git add -A` 都会把它们卷进暂存区——与上面 2026-10-01 那次同类的泄露。
+# 另一条并发会话同日独立发现同一问题，用 `git add -A --dry-run` 数到 45 条；
+# 数量差是统计时刻的抓取批次不同，指向同一批文件，合并的是同一次发现。
 #
-# 上一条 `data/` 已经把 data/ 这一侧整目录覆盖了，这里显式再写一遍，是为了让
-# 「有两个落盘目录、且格式不同」这个事实留在文件里——正文格式差异另有文档记录，
-# 但忽略规则这一层不该依赖那份文档才写得全。
+# 实测确认（不是推断）：
+#   git check-ignore -v data/email-bodies-raw/<某个>.bin   -> exit 1（未忽略）
+#   git status --porcelain -uall                            -> 49 条 ?? data/email-bodies-raw/...
+#   git ls-files -- data/                                   -> 无跟踪项
+#   git add --dry-run -A | grep -c "'data/"                 -> 45
+#
+# 改法：整目录忽略，与本段早就写下的意图一致。data/ 下装的是运行时数据
+# （sqlite、正文、发票、master key），仓库里一个都不该有 tracked。
+# 显式再写一遍 email-bodies-raw/，是为了让「有两个落盘目录、格式不同」这个事实
+# 留在本文件里——不该只活在另一份文档里，否则改规则的人又会只改一半。
+data/
 data/email-bodies-raw/
 
-# 同理：POCKET_DATA_DIR 可以配到 backend/data。只在 data/ 上加规则，等于换个
-# data dir 就重新漏一次。backend/data/email_master.key 本文件后面已列过，
-# 正文缓存目录要一并覆盖，否则这条守卫在 POCKET_DATA_DIR=backend/data 的
-# 部署上形同虚设。
+# 同理：POCKET_DATA_DIR 可以配到 backend/data，只在 data/ 上加规则等于换个
+# data dir 就重新漏一次。
+#
+# 注：`.gitignore` 里 `data/`（无前导斜杠、带尾斜杠）匹配的是**任意层级**下名为
+# data 的目录，所以 `data/` 这条本身就已经把 backend/data/ 整目录覆盖了
+# （实测：造 backend/data/email-bodies-raw/probe.bin 后 check-ignore -v 报出
+# 的是本文 `data/` 那一行）。下面两行因此是冗余的，写出来是为了在有人把
+# `data/` 收窄回逐个列举时，这就是那次的真实原因。
 backend/data/email-bodies-raw/
 backend/data/email-bodies/
+
+# 守卫：scripts/check-runtime-data-tracked.mjs。它查的是「有没有被跟踪」，
+# 不是「.gitignore 怎么写」——后者只挡得住 `git add -A`，挡不住 `git add -f`、
+# 挡不住别人改了规则、也挡不住历史上已经入库的文件。跟踪状态是事实，
+# 忽略规则只是意图。所以以后再加子目录，这条不会跟着一起失效。
 
 # 2026-10-01 audit: 调试会话丢在仓库根目录的一次性探针脚本与采样音频
 # （ASR 端点扫描、模型探测、一段语音样本）。真正有价值的探针应该整理成
