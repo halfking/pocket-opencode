@@ -782,7 +782,145 @@ pipeline 从没跟上，于是 POP3 来源的发票候选取原文必然失败 �
   本轮**未改动**，也未在真实发票集合上端到端跑过。
 - **08:00 的定时执行用的是旧二进制**（`pocketd-invoicenan-fix.exe`，构建于
   本轮改动之前），所以 08:00 **不会**应用上述修复，两封通行费也不会在那一轮
-  建档。要生效需重启实例。
+  建档。要生效需重启实例。**→ 已在 §7.7.6 重启，本条作废。**
+
+---
+
+### 7.7 §7.6 之后继续做的四件事（06:00–07:20）
+
+§7.6.5 当时留下的「invoiceNo 仍为空」根因**不在解析器**，而在四个叠在一起的
+独立缺陷。每一个都得单独修，缺一个另外三个都白修。
+
+#### 7.7.1 ④ 电子发票 ZIP 不被当作附件（`a5b131e8`）
+
+真实形态：邮件带一个 136KB 的 zip（内含 `xml/*.xml` 2315/2337B、
+`ofd/*.ofd` 51007B、`pdf/*.pdf` 105854/105869B），**外加**两份 45KB 的
+「本期交易汇总」PDF。
+
+- 旧逻辑只认 PDF/图片，zip 被忽略 ⇒ 存下来的是那份 45KB 汇总单，
+  它**没有单张发票**，也就永远抽不出发票号。§7.6.5 的「invoiceNo 为空」
+  根因在此。
+- 新增 `internal/email/invoice_zip.go`：`readZipInvoiceContents`（只取
+  `pdf/` 与 `xml/`，**忽略 `ofd/`**——现有渲染链不产 OFD，硬转会造出打不开的
+  文件）、`isZipBytes`（magic 为主）、`zipAttachmentContents`；
+  三重解压上限（条目 64 / 单条目 20MB / 总量 80MB）。
+- `harvestOne` 在步骤 1（PDF/图片）**之前**插入「步骤 0」：先用 zip 内 XML
+  `mergeXMLFields` 补全字段，再存 zip 内票面 PDF（`source=zip-pdf`）；
+  zip 只有 XML 时走 `XMLRenderer`（`source=zip-xml-render`）。
+- `HasInvoiceAttachment` 改认「发票包」而不是「zip」——只装照片的普通 zip
+  不该触发建档。
+- 负控：删掉步骤 0 整段 ⇒ `TestHarvestOne_ZipInvoiceBeatsSummaryPDF` 转红
+  （发票号变空 = 又存成汇总单）。
+
+#### 7.7.2 ⑤ EUI 电子发票 XML 三处硬伤（`0578bf5d`，`xmlinvoice.go` 的 `labelMatch`）
+
+| # | 症状 | 真因 | 修法 |
+|---|---|---|---|
+| A | 两张票 `invoiceNo` **完全相同** | 词表含裸子串 `number`，把 `SpecificInformation/Toll/PlateNumber`（车牌 `浙AB59453`）当成发票号码 | 词表最前显式排除 `platenumber`/`车牌号`/`车牌` |
+| B | `amount=0` | EUI 元素名是 `TotalTax-includedAmount`，**中间有连字符**，词表不含 | 补 `totaltax-includedamount` / `totaltaxincludedamount` / `taxincludedamount` |
+| C | ZIP 不认附件 | 见 §7.7.1 | 见 §7.7.1 |
+
+A 这一条最阴险：`invoice_dedup` 是**按号判重**的，车牌号冒充发票号
+⇒ 同车的两张真票被判成同一张 ⇒ **悄悄丢掉一张**。不报错、不告警。
+
+B 的修法里**刻意不加裸 `amount`**：`IssuItemInformation/Amount` 是不含税
+单价 5.45，加进词表会让单价冒充总额 5.61。这是「让它更宽松」最典型的反例
+——负向代价大于正向收益。
+
+负控：删掉车牌排除 ⇒ 读成 `浙AB59453`；删掉金额变体 ⇒ `amount=0`。
+
+#### 7.7.3 ⑥ XML 里的开票方必须能覆盖「发件地址」兜底（`cd0d984a`）
+
+`ExtractInvoiceLoose` 在解析不出开票方时会拿发件人地址兜底，于是
+`f4958517@einvoice.chinatax.gov.cn` 被当成了开票方。
+
+- `Invoice` 新增**非导出**字段 `sellerIsFallback bool` 给兜底值打标。
+  **不能用「导出字段 + `json:"-"`」**——会被
+  `TestWireTagGuard_ExportedFieldsHaveJSONTags` 判红。
+- `mergeXMLFields` 允许 XML 的权威值覆盖带标的值；正文/主题解析出的
+  **真证据不打标、不可被顶掉**。
+- 效果：文件名从 `其他-noreply@toll.example-5.61-…`
+  → `其他-浙江沪杭甬高速公路股份有限公司-5.61-2026-09-14-26337904450900255091.pdf`
+
+#### 7.7.4 端到端离线验收（`cd0d984a` 新增 `diag_toll_e2e_offline_test.go`）
+
+用**真实加密原文缓存**（只读）+ 隔离 schema（`newWorkspaceTestStore`）
++ `t.TempDir()` 输出 + `Fetcher=nil` / `IMAPHost=""`（保证没联网），
+三段接起来：
+
+| | 邮件 A（uid 32） | 邮件 B（uid 33） |
+|---|---|---|
+| 原文缓存 | 316995 字节 | 317934 字节 |
+| 段1 `ExtractInvoice(envelope)` | hit=false | hit=false |
+| 段2 来源 / amount | `body-cache` / 5.61 | `body-cache` / 19.00 |
+| 段3 invoiceNo | `26337904450900255091` | `26337903130900517835` |
+| 段3 seller | 浙江沪杭甬高速公路股份有限公司 | 浙江高速公路智能收费运营服务有限公司 |
+| 落盘大小 | 105854 字节（票面） | 105869 字节（票面） |
+| FileSource | `zip-pdf` | `zip-pdf` |
+
+两票**发票号不同** ⇒ 不会再被 `invoice_dedup` 吞掉一张；落盘 105KB
+而不是 45KB ⇒ 存的是票面不是汇总单。
+
+#### 7.7.5 夹具形态会骗人（补记，呼应 §7.6.4 第 2 条）
+
+本轮四次被真实数据打脸：HTML 标签被夹具抹掉、EUI 元素名带连字符、
+车牌号排在 `InvoiceNumber` 之前、以及汇总单里根本没有「合计」二字。
+**真实数据优先于手写夹具**；反向用例的 fixture 必须先自证「它确实含
+被断言的那个东西」。
+
+#### 7.7.6 08:00 之前重启了 18099（07:13，用户显式授权）
+
+- §7.6.5 末条在 07:13 作废：新实例 PID **47068**，exe
+  `logs\pocketd-1007-new.exe`（构建自 `569420bf`，在一次性 worktree
+  `openpocket-wt-b1007` 内构建——主工作区有并发会话的未提交改动，
+  **不能**从那儿构建）。
+- **重启前先用 P/Invoke 读了旧进程（PID 8168）的环境块**，照抄它那 8 个
+  `POCKET_*` 键启动。这不是形式：`POCKET_EMAIL_MASTER_KEY` **根本不在环境里**，
+  靠 `EnsureMasterKey` 从 `data\email_master.key` 兜底——换一份配置启动，
+  全部邮箱凭据都会解不开，而进程照常起来、`healthz` 照样 200。
+  `logs\restart-pocketd.ps1` 可复用，三道守卫（端口归属 PID / exe 路径 /
+  exe SHA256）在**执行点**复量，对不上就在停任何东西之前中止。
+- 验收看 **email 子系统自己的启动行**，不看 `healthz`：
+  `Email credential self-check: all 5 enabled email account(s) decrypt`、
+  `Email scheduler started (fetch_enabled=true, …)`、
+  `[email/scheduler] daily pipeline runner injected (hour=8)`、
+  `[email/scheduler] pipeline scheduled at 2026-10-03T08:00:00+08:00` —— 四行全中。
+- `POCKET_KXMEMORY_BASE_URL` 仍未配（定时路径无分类器），
+  `POCKET_FEISHU_*` 四项仍缺（走共享汇总文档路径）。
+
+#### 7.7.7 【新发现的竞争】08:00 会有**两个**实例抢同一把锁（07:35 实测）
+
+并发会话在 `.wt-fix` 起了第二个 pocketd（PID 39564 / 18102 /
+`.wt-fix\logs\pocketd-18102-20261003-071140.err.log`），它**也**打印了
+`daily pipeline runner injected (hour=8)` 与
+`pipeline scheduled at 2026-10-03T08:00:00+08:00`。
+
+两个实例的 DSN 实测指向**同一个库**（`postgres@127.0.0.1:5432`，
+只差用户名/口令 2 个字符），schema 不同
+（`opencode_pocket` vs `opencode_pocket_align`）、dataDir 也不同。
+
+而 `pipeline_lock.go:77` 用的是
+`pg_try_advisory_lock(hashtextextended($1, 0))`——**advisory lock 是按库
+生效的，与 schema 无关**。所以：
+
+- 08:00 两个实例抢**同一把**锁，Try 语义不排队 ⇒ **只有一个真跑**，
+  另一个整轮跳过，跳过的只打一行
+  `[email/pipeline] 每日定时流水线跨进程锁已被其它实例持有，本轮跳过`。
+- **风险**：若 18102 抢到，生产实例 18099 跳过 ⇒ 两封通行费**不会建档**，
+  08:00 验不出本轮修复（假阴性）。
+- 补救路径已存在：手工入口 `handleEmailPipelineRun` → `runEmailPipeline`
+  **刻意不加锁**（`server_email_pipeline.go:269-270`，
+  `TestManualPathIgnoresTheLock` 钉住这条边界）。但它会写生产库、
+  可能推通知，**动手前须取得用户显式授权**。
+- 这一条不解决，下一轮接手的人会误以为「锁坏了/没生效」。
+
+**仍未验证（不记为已完成）**
+
+- 08:00 那一轮的**真实执行结果**（含 §7.7.7 的锁归属）：新代码第一次上生产，
+  结果待 08:20 核对。
+- **飞书推送**：凭据四项缺失，真实环境一次没跑过，整条链路唯一完全未验证环节。
+- **A4 拼版 / 按币种汇总 / 下载**：代码与端点本就齐全，本轮未改动，
+  也**未在真实发票集合上端到端跑过**。
 
 ---
 
@@ -986,3 +1124,25 @@ worktree 已 `git worktree remove`。
 
 改动既有文件：`config.go`（+2 字段）、`server_email_pipeline.go`（接线）、
 `pg_test_isolation_guard_test.go`（allowlist 登记）。
+
+### 9.1 §7.6 / §7.7 期间新增的文件
+
+| 文件 | 作用 |
+|---|---|
+| `internal/email/raw_body_resolve.go` | `resolveRawBody` —— 取原文的**唯一**实现（BodyCache → POP3 位置序号 RETR → IMAP 反查），替代被删掉的 `recoverPOP3SourcedRaw` |
+| `internal/email/invoice_zip.go` | ZIP 发票包解包 + 三重解压上限 |
+| `internal/email/pipeline_pop3_candidate_test.go` | POP3 建档死路的负控（§7.6.1） |
+| `internal/email/invoice_amount_html_tag_test.go` | 金额认 HTML 标签的负控（§7.6.2） |
+| `internal/email/xmlinvoice_eui_test.go` | EUI 车牌排除 + 价税合计变体（§7.7.2） |
+| `internal/email/invoice_zip_harvest_test.go` | ZIP 优先于汇总单的负控（§7.7.1） |
+| `internal/email/diag_toll_e2e_offline_test.go` | 真实原文缓存端到端离线验收（§7.7.4） |
+| `internal/email/diag_toll_attachment_test.go` / `diag_eui_xml_shape_test.go` / `diag_toll_invoice_replay_test.go` | 门控诊断（附件形态 / EUI XML 形态 / 原文重放） |
+| `internal/email/diag_boundary_tighten_candidates_test.go` | 180 条真实语料的边界收紧对比 |
+| `internal/email/diag_boundary_false_positive_test.go` | 边界误报常驻护栏（已去门控） |
+| `logs/restart-pocketd.ps1` / `logs/read-proc-env.ps1` / `logs/cmp-instance-dsn.ps1` | 带三道执行点守卫的重启脚本 / 读他进程环境块 / 比对两实例是否同库（§7.7.6、§7.7.7） |
+
+改动既有文件：`invoice_harvest.go`（步骤 0、删 `recoverPOP3SourcedRaw`）、
+`pipeline.go`（`BodyCache` 字段）、`invoice.go`（`reHTMLTagRun`、`sellerIsFallback`）、
+`xmlinvoice.go`（车牌排除 + 价税合计变体 + Seller 覆盖）、`snippet.go`（`reBoundaryToken`）、
+`server_email_pipeline.go`（`harvesterBodyCache` 装配）、
+`invoice_harvest_selfheal_test.go`（stub 加 raw 字段）。
