@@ -8361,3 +8361,113 @@ totals: { total: res.total, filed: res.filed, amount: res.amount }
   `has_attachments`、`updated_at` 等字段是否也在某一层被静默丢弃，**未系统排查** ——
   这是「字段写了/读了但中途没人传」这一族的系统性风险，建议单独排一轮
   「DB 列 → API 类型 → 转发层 → 视图」四段的字段对账。
+
+---
+
+## §7dp 字段四段对账（DB 列 → Go → API 类型 → store → 视图）+ `has_attachments` 在 IMAP 路径上是**结构性不可得**（2026-10-03）
+
+### 做了什么
+
+§7do 结尾留了一项「字段四段对账」，本轮把它跑掉：脚本从 `information_schema`
+取三张邮件表（`emails` / `email_invoices` / `email_accounts`，共 71 列）的权威列名，
+对每一列检查它在四个位置是否出现——Go 生产代码（非测试）、`api/email.ts`、
+`emails-store.ts` / `invoices-store.ts`、`features/**.vue`。
+
+脚本跑完就删（`probe-field-audit.cjs`，用 mavis-trash），**没有留在仓库里**——
+它是一次性量测工具，不是护栏。留下的是结论。
+
+### 结论一：粗扫的 23 条「断链候选」绝大部分是**有意的**，不能当缺陷报
+
+举三个我**逐一复核过**的：
+
+| 候选 | 复核结果 |
+|---|---|
+| `accounts.smtp_host` / `smtp_port`：API 类型有、store 没接、但 `.vue` 在用 | **假阳性，有据可查**。`EmailAccountSetup.vue:207-209` 明写「本地 store 的 EmailAccount 没有 SMTP 字段（SMTP 只在服务端生效），所以编辑态预填必须拿云端那份」，`:293` 走的是 `cloudAccounts`（直接来自 API）而不是本地 store。**设计如此** |
+| `accounts.credential_encrypted` / `smtp_credential_encrypted` | 凭证**本来就不该**进视图层。不接是正确 |
+| `*.workspace_id` / `*.user_id` | 作用域列，不进视图层是正确 |
+
+**这就是粗扫不能直接当结论的证据**——`smtp_host` 那条长得最像 bug（API 有、
+store 无、视图在用，三段自相矛盾），实际是刻意设计并写了注释。
+
+### 结论二：真正的问题——`has_attachments` 在 IMAP 路径上**没有任何数据来源**
+
+`emails.has_attachments` 只有两处写：
+
+- `store.go:560` INSERT（作为参数传 `e.HasAttachments`）
+- `store.go:1925` `SET ... has_attachments = COALESCE(has_attachments, FALSE)`
+  ——**恒等操作**，是 §7cy 记过的
+
+而 `e.HasAttachments` 全仓库**只有一处被赋值**：
+
+- `fetcher.go:974` `em.HasAttachments = len(parsed.Attachments) > 0`
+
+它在 **`syncPOP3Fallback` 的 POP3 循环里**（`fetcher.go:936-983`），基于
+`ParseMIMEMessage(raw)` 的解析结果——POP3 `RETR` 拿到的是完整 RFC 5322 原文，
+附件当然看得到。**这条路径是正确的。**
+
+而 IMAP 路径（`fetcher.go:731-738`）的 FETCH 只请求三项：
+
+```go
+fetchOpts := &imap.FetchOptions{
+    Envelope:     true,
+    UID:          true,
+    InternalDate: true,
+    // 部分 IMAP server（如 Greenmail）对 BODY[TEXT]<0.1024> 的响应缺
+    // SP 分隔符导致 imapwire 解析失败，因此仅 envelope + UID 起步，…
+}
+```
+
+`envelope` 里**没有附件信息**，代码也从未给 IMAP 路径的 `em.HasAttachments`
+赋过值 → 恒为 Go 零值 `false`。**不是漏写一行，是那条路径上根本没有数据。**
+
+### 实测（2026-10-03 08:25:22，schema `opencode_pocket`）
+
+运行中的 pocketd 每分钟同步真实账户，所以任何「当前库」结论都必须带测量时刻。
+
+```
+total=120
+pop3_sourced=0          ← 唯一会置位的那条路径，本库一封都没有
+imap_sourced=120        ← 全部来自结构性不可得的那条路径
+has_attachments_true=0
+attachments_col_nonempty=0
+```
+
+**「库里一封都没置真」的根因到此确定**：不是 IMAP 路径忘了写，是
+**120 封全部来自 IMAP 路径，而 IMAP 路径拿不到附件信息**；唯一能置位的 POP3 路径
+在本部署里产出为 0（与 §7de 记的「QQ 上 284/444 走 POP3」不矛盾——那是当时的
+另一批数据/另一轮配置，本库这 120 封没有一条 POP3 id）。
+
+`attachments` JSON 列同样**从未写入**（`attachments_col_nonempty=0`）。
+
+### 要修需要什么，以及它卡在哪
+
+1. `fetchOpts` 加 `BodyStructure: &imap.FetchItemBodyStructure{}`（go-imap
+   v2.0.0-beta.8 有这个 FetchItem，`imap.BodyStructure` 是
+   `*BodyStructureSinglePart` / `*BodyStructureMultiPart` 的联合，提供
+   `Walk()` / `Filename()` / `Disposition()`，判附件不难）。
+2. **踩坑预警**：我一度以为「ENVELOPE 自带 part 结构、近乎免费」——**实测证伪**：
+   v2 的 `imap.Envelope`（`fetch.go:85-95`）**没有 `Body` 字段**（v1 才有）。
+   所以必须新增 BODYSTRUCTURE 数据项，不是零成本。
+3. **真正的卡点**：`fetcher.go:735-737` 的注释明写这条 FETCH 是**被刻意裁剪过**
+   的——加数据项曾经导致 Greenmail 响应解析失败。现在再往这条已知脆弱的
+   FETCH 上加 BODYSTRUCTURE，**必须先在 Greenmail 上验**，
+   而 Greenmail 是本机唯一未启动的依赖（Docker daemon 未运行，
+   见待拍板项「启动 Docker daemon」）。
+4. POP3 路径已正确，无需改动；但它在本部署产出为 0，**帮不上忙**。
+
+所以这个待拍板项的形态变了：不是「要不要置位」（需求 7 的 📎 标记要它，显然要），
+而是「**在 fetch 脆弱性未验证前动不动**」。这是一个带成本的取舍，不是我能替你定的。
+
+### 数字与范围
+
+- 71 列 × 4 位置全量粗扫；**逐一复核 3 条候选，1 条假阳性（有据），2 条有意的**
+- 生产代码改动：**0**
+- 新增测试：**0**（本节是量测与取证，不是修复）
+- 仓库内无残留：探针脚本已删，`git status` 干净
+
+### 本轮**没有**做的事（如实列出）
+
+- **没有系统复核其余 20 条候选**。只抽查了 3 条。所以「其余候选也都无害」这句话
+  我**没有证据**，不下断言。脚本已删，要复核需要重跑。
+- **没有改任何生产代码**，也没有给 `has_attachments` 补测试。
+- **没有验 Greenmail**，因此 BODYSTRUCTURE 方案的实际风险未量化。
