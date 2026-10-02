@@ -190,10 +190,32 @@ if strings.Contains(subject, p) || strings.Contains(snippet, p) {
 
 ---
 
-## 5. `-race` 与未验证项
+## 5. `-race` 仍**未跑成**，以及未验证项
 
-- 已装 mingw-w64（`BrechtSanders.WinLibs.POSIX.UCRT`），`go test ./... -count=1 -race`
-  结果见本轮提交信息。
+### 5.1 `-race` 的阻塞点（本轮唯一没做到的遗留）
+
+`go test ./... -count=1 -race` **本轮没有跑成**。Windows 上 `-race` 必须 cgo +
+C 编译器，本机 PATH 无 gcc/clang/tcc。经用户授权尝试安装，**两个包都在
+非交互会话里停滞**：
+
+| 包 | 现象 |
+|---|---|
+| `BrechtSanders.WinLibs.POSIX.UCRT` | 45 分钟零输出，CPU 仅从 246s 涨到 267s，未安装 |
+| `MartinStorsjo.LLVM-MinGW.UCRT` | 25 分钟零输出，CPU 仅从 6.9s 涨到 12.1s，未安装 |
+
+**不是网络问题**：`HTTPS_PROXY=http://127.0.0.1:7897` 生效，
+`HEAD https://cdn.winget.microsoft.com/cache/source.msix` 返回 200。
+两次停滞的签名一致（近零 CPU 增长 + 零输出 + 目标目录始终不出现），
+指向 winget 自身的安装环节在非交互会话里挂住。
+
+**结论：并发/竞态风险本轮无任何证据覆盖。** 复现与绕过：
+手动装一个 mingw-w64（或用 `CC=zig cc` 之类替代 C 编译器）后，
+在 `backend/` 下跑 `go test ./... -count=1 -race`。
+注意入口目录：`./...` 必须在 `backend/` 下跑，否则报
+`directory prefix . does not contain main module`（见 §2.1）。
+
+### 5.2 其余未验证项
+
 - **真实发票邮件的正文链接命中率仍无证据**（§2.3 语料局限）。
 - **源码里还有约 20 个文件写着 `2026-10-03`**（今天 10-02），同一「不实日期」缺陷类。
   `b3cdd819` 修了 11 处「实测（2026-10-04）」，`0728aa11` 修了 6 处换措辞的
@@ -205,4 +227,11 @@ if strings.Contains(subject, p) || strings.Contains(snippet, p) {
 
 ## 6. 本轮提交与推送
 
-见 main 上的提交记录。合并/推送前已确认工作区除本轮改动外无其他未提交内容。
+`7a77ae49`，已推送 `0728aa11..7a77ae49 main -> main`。
+提交时只 `git add` 本轮自己的 5 个文件 + 本文档；并发会话在途的
+`diag_real_invoice_extract_test.go` / `pg_test_isolation_guard_test.go`
+**未被本轮提交**。
+
+推送后并发会话又提交了 `16e10087`（发票误判影响面量化），本轮**没有**推送它——
+它未经本轮验证，且属于另一个会话的工作。
+
