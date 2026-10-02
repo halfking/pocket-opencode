@@ -662,6 +662,45 @@ ahead/behind 从 18/25 变成 **27/18**——所以**上一轮「behind 25、合
 **所以合并路径本身是通的**，仍**未推**，等授权。推之前请再 `git fetch` 一次——
 `origin/main` 在本轮内至少被推了 5 次。
 
+### 7.2.1 实际已推送（2026-10-03 04:25，用户显式确认后执行）
+
+推送前又做了一轮，因为「已验证的树」和「要推的树」一度**不是同一棵**：
+
+| 检查 | 结果 |
+|---|---|
+| `git merge-tree --write-tree HEAD origin/main`（只读，不碰工作区） | 树 `e2634553`，零冲突 |
+| 与上一轮 worktree 里 build+测过的树 `61eed063` 对比 | **不同** ⇒ 没有直接推 |
+| `git diff 61eed063 e2634553` | **只有一个 handoff .md**（我自己写的 §7.2），Go 源码逐字节相同 |
+| push 前 `git fetch`，`origin/main` 是否仍是 `7e615dbc` | 是，否则中止 |
+| 一次性 worktree 正式 `git merge --no-ff origin/main` | 合并提交 **`99a11d68`**，树 = `e2634553`（与 dry-run 一致） |
+| `go build ./...` | **EXIT=0** |
+| `internal/email` / `server` / `config` / `scheduledtask` | **全绿**（177.3s / 55.5s / 0.8s / 0.8s） |
+| `git push origin HEAD:refs/heads/main` | **`7e615dbc..99a11d68`，EXIT=0** |
+
+**没在主工作区做 merge**：当时主工作区有 48 条并发会话的未提交改动，
+`git merge` 会拒绝或危及它们。合并与推送都在一次性 detached worktree 里做，
+worktree 已 `git worktree remove`。
+
+**本地 `main` 停在 `c224bd89`（origin 的祖先），未 fast-forward**——
+主工作区脏，快进会改动那 48 个文件。等工作区干净后再 `git merge --ff-only`。
+
+### 7.2.2 08:00 的实例：不是我停的，是并发会话停的
+
+用户授权停 18077 / 18100，但**执行点复量时两个都已经在监听了→已停**：
+
+```
+04:17:21  port=18077  NOT LISTENING
+04:17:21  port=18100  PID=28160 start=10-02 22:26:49 exe=.wt-e2e\pocketd.exe
+04:17:2x  port=18100  NOT LISTENING   ← 下一次调用时也已停
+04:17:57  port=18099  LISTEN PID=8168  （唯一存活）
+```
+
+因此**我没有 kill 任何进程**。停止脚本里写了执行点守卫
+（PID 必须仍等于 28160 且 exe 仍在 `.wt-e2e\` 下，否则 ABORT），
+正是它拦下了按旧 PID 去杀身份已变进程的操作。
+
+**净结果与授权意图一致**：08:00 只有 18099 一个实例跑，预期 **59 行**。
+
 ### 7.3 其余待拍板（沿用上一轮清单，无变化）
 
 - 34 条积压提醒的处置
