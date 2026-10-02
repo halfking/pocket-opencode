@@ -433,7 +433,6 @@ export const emailApi = {
   sendEmail(input: EmailSendInput): Promise<EmailSendResult> {
     return http('/api/email/send', { method: 'POST', body: JSON.stringify(input) })
   },
-  syncNow(accountId?: string, signal?: AbortSignal): Promise<{ mode?: string; synced?: number; new?: number; failed?: string[] }> {
     // 2026-10-02 修复：这里原先既没传 timeoutMs、也没有 signal 形参，于是
     // 既吃 http() 的默认 30s，又完全停不掉。
     //
@@ -462,6 +461,19 @@ export const emailApi = {
     // /api/emails/sync 又把所有启用账户串行跑完，N 个同时卡住时最坏是 N×80s。
     // 真正的修法在服务端（把单账户工作量框进 syncBudget、或尽快返回部分结果），
     // 那边已经有在跟的诊断。signal 就是留给这种「服务端还没修好」期间的出口。
+  //
+  // 合并说明（2026-10-03 round30）：feat/ia-notes-messages-20261003 在同一位置
+  // 改的是返回值的语义（新增 skipped），与 main 的 signal 是**两处正交**的增量，
+  // 因此两侧都保留：形参里 signal 与 accountId 并列，返回类型里 failed 与
+  // skipped 并列。丢掉任何一侧都会静默退化 —— 丢 signal ⇒ 长任务不可中止；
+  // 丢 skipped ⇒ 被单飞锁正常跳过的账户显示成红色，后端还写一条假失败记录。
+  /**
+   * `failed` = 真的同步失败。
+   * `skipped` = 该账户已有一轮同步在跑，本轮被单飞锁正常跳过（不是失败）。
+   * 二者必须分开：把 skipped 混进 failed 会让一个健康的账户显示为红色，
+   * 并让后端往库里写一条假的失败记录。
+   */
+  syncNow(accountId?: string, signal?: AbortSignal): Promise<{ mode?: string; synced?: number; new?: number; failed?: string[]; skipped?: string[] }> {
     return http('/api/emails/sync', {
       method: 'POST',
       body: JSON.stringify(accountId ? { account_id: accountId } : {}),

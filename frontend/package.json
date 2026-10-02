@@ -20,6 +20,7 @@
     "test:styles": "node --test src/styles/__tests__/*.test.mjs",
     "test:stt": "node --test src/api/__tests__/stt-error-render-chain.test.mjs src/api/__tests__/stt-presentation.test.mjs src/features/notes/__tests__/note-recording-error-visibility.test.mjs src/features/settings/__tests__/settings-stt.test.mjs src/native/__tests__/background-mic-contract.test.mjs src/native/__tests__/recording-voice-prompt.test.mjs",
     "test:email-heal": "node --test src/features/email/__tests__/email-cache-heal.test.mjs src/features/email/__tests__/email-cache-heal-run.test.mjs",
+    "test:ia": "node scripts/ia-smoke.mjs",
     "check:dueclock": "node ../scripts/verify-dueclock-wiring.mjs",
     "check:callback-routes": "node ../scripts/verify-callback-routes.mjs",
     "check:edge-route-reach": "node ../scripts/verify-edge-route-reach.mjs",
