@@ -74,7 +74,7 @@ function api(path, { token, method = 'GET', body } = {}) {
     const h = {};
     if (token) h.Authorization = 'Bearer ' + token;
     if (payload) { h['Content-Type'] = 'application/json'; h['Content-Length'] = Buffer.byteLength(payload); }
-    const r = http.request({ host: '127.0.0.1', port: 8088, path, method, headers: h }, (resp) => {
+    const r = http.request({ host: '127.0.0.1', port: Number(process.env.POCKET_API_PORT || 8088), path, method, headers: h }, (resp) => {
       let s = ''; resp.on('data', (c) => (s += c)); resp.on('end', () => res({ status: resp.statusCode, body: s }));
     });
     r.on('error', (e) => res({ status: 'ERR', body: e.message }));

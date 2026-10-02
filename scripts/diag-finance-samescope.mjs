@@ -10,7 +10,7 @@ const PKG='com.kaixuan.opencode.pocket';
 const PORT=process.env.POCKET_CDP_PORT||'9269';
 const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
 const adb=(a,t=60000)=>execFileSync(ADB,a,{encoding:'utf8',timeout:t,maxBuffer:33554432});
-function api(path,{token,method='GET',body}={}){return new Promise((res)=>{const payload=body?JSON.stringify(body):'';const h={};if(token)h.Authorization='Bearer '+token;if(payload){h['Content-Type']='application/json';h['Content-Length']=Buffer.byteLength(payload);}const req=http.request({host:'127.0.0.1',port:8088,path,method,headers:h,timeout:15000},(r)=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>res({status:r.statusCode,body:b}));});req.on('error',e=>res({status:0,body:String(e)}));req.on('timeout',()=>{req.destroy();res({status:0,body:'timeout'})});if(payload)req.write(payload);req.end();});}
+function api(path,{token,method='GET',body}={}){return new Promise((res)=>{const payload=body?JSON.stringify(body):'';const h={};if(token)h.Authorization='Bearer '+token;if(payload){h['Content-Type']='application/json';h['Content-Length']=Buffer.byteLength(payload);}const req=http.request({host:'127.0.0.1',port:Number(process.env.POCKET_API_PORT || 8088),path,method,headers:h,timeout:15000},(r)=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>res({status:r.statusCode,body:b}));});req.on('error',e=>res({status:0,body:String(e)}));req.on('timeout',()=>{req.destroy();res({status:0,body:'timeout'})});if(payload)req.write(payload);req.end();});}
 
 const pid=adb(['-s',SERIAL,'shell',`pidof ${PKG}`]).trim().split(/\s+/)[0];
 if(!pid){console.log('APP_NOT_RUNNING');process.exit(2);}

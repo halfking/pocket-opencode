@@ -8,7 +8,7 @@ const devPass = requireDevPass()
 function post(path,body){
   return new Promise((res)=>{
     const payload=JSON.stringify(body);
-    const req=http.request({host:'127.0.0.1',port:8088,path,method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(payload)},timeout:15000},(r)=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>res({status:r.statusCode,body:b}));});
+    const req=http.request({host:'127.0.0.1',port:Number(process.env.POCKET_API_PORT || 8088),path,method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(payload)},timeout:15000},(r)=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>res({status:r.statusCode,body:b}));});
     req.on('error',e=>res({status:0,body:String(e)}));
     req.write(payload);req.end();
   });
