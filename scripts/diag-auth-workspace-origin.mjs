@@ -8,15 +8,14 @@
 //   - 登录响应 workspace_id == "default"
 //       => 后端某条路径给 admin 铸了 default 工作区（后端 bug）
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-
+import { requireDevPass } from './lib/dev-pass.mjs'
 const ADB='C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe';
 const SERIAL=process.env.POCKET_SERIAL||'192.168.31.19:5555';
 const PKG='com.kaixuan.opencode.pocket';
 const PORT=process.env.POCKET_CDP_PORT||'9265';
 const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
 const adb=(a,t=60000)=>execFileSync(ADB,a,{encoding:'utf8',timeout:t,maxBuffer:33554432});
-const devPass=(readFileSync('backend/internal/server/server_assistant.go','utf8').match(/devPass\s*=\s*"([^"]+)"/)||[])[1]||'';
+const devPass = requireDevPass()
 
 const pid=adb(['-s',SERIAL,'shell',`pidof ${PKG}`]).trim().split(/\s+/)[0];
 if(!pid){console.log('APP_NOT_RUNNING');process.exit(2);}

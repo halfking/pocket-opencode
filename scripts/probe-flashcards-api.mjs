@@ -1,6 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { requireDevPass } from './lib/dev-pass.mjs'
 import http from 'node:http';
-const devPass=(readFileSync('backend/internal/server/server_assistant.go','utf8').match(/devPass\s*=\s*"([^"]+)"/)||[])[1]||'';
+const devPass = requireDevPass()
 function req(path,{token,method='GET'}={}){return new Promise((res)=>{const h={};if(token)h.Authorization='Bearer '+token;const r=http.request({host:'127.0.0.1',port:8088,path,method,headers:h,timeout:15000},(x)=>{let b='';x.on('data',c=>b+=c);x.on('end',()=>res({status:x.statusCode,body:b}))});r.on('error',e=>res({status:0,body:String(e)}));r.on('timeout',()=>{r.destroy();res({status:0,body:'timeout'})});r.end()})}
 const login=await req('/api/auth/login',{method:'POST'});
 // login needs body; do it manually

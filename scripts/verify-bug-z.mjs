@@ -26,13 +26,11 @@
  * 用法：node scripts/verify-bug-z.mjs
  */
 import http from 'node:http'
-import { readFileSync } from 'node:fs'
-
+import { requireDevPass } from './lib/dev-pass.mjs'
 const HOST = '127.0.0.1'
 const PORT = 8088
 
-const devPass =
-  (readFileSync('backend/internal/server/server_assistant.go', 'utf8').match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || ''
+const devPass = requireDevPass()
 
 function api(path, token, method = 'GET', body) {
   return new Promise((res) => {

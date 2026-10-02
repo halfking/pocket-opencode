@@ -13,7 +13,7 @@
 //   6. 用 admin token 从 Node 直调 /api/finance，看能不能看到 SEED
 // 两者可见性不同 → 作用域不一致（测试假象）；两者都不可见 → 服务端过滤 bug。
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { requireDevPass } from './lib/dev-pass.mjs'
 import http from 'node:http';
 
 const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe';
@@ -41,7 +41,7 @@ function api(path, { token, method='GET', body } = {}) {
   });
 }
 
-const devPass = (readFileSync('backend/internal/server/server_assistant.go','utf8').match(/devPass\s*=\s*"([^"]+)"/)||[])[1]||'';
+const devPass = requireDevPass()
 
 // ---- CDP ----
 const pid = adb(['-s',SERIAL,'shell',`pidof ${PKG}`]).trim().split(/\s+/)[0];
