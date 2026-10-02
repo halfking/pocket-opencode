@@ -75,9 +75,9 @@ func TestWriteInvoiceSummaryDocs_DetailSumsToTotal(t *testing.T) {
 	dir := t.TempDir()
 	// 这三个值是「%.2f 舍入方向会翻转」的典型：.005 结尾
 	invs := []Invoice{
-		{Category: "办公", Seller: "甲", Amount: 1.005, Currency: "CNY", InvoiceNo: "A", InvoiceDate: "2026-10-01"},
-		{Category: "办公", Seller: "乙", Amount: 2.675, Currency: "CNY", InvoiceNo: "B", InvoiceDate: "2026-10-01"},
-		{Category: "办公", Seller: "丙", Amount: 8.615, Currency: "CNY", InvoiceNo: "C", InvoiceDate: "2026-10-01"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Category: "办公", Seller: "甲", Amount: 1.005, Currency: "CNY", InvoiceNo: "A", InvoiceDate: "2026-10-01"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Category: "办公", Seller: "乙", Amount: 2.675, Currency: "CNY", InvoiceNo: "B", InvoiceDate: "2026-10-01"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Category: "办公", Seller: "丙", Amount: 8.615, Currency: "CNY", InvoiceNo: "C", InvoiceDate: "2026-10-01"},
 	}
 	csvPath, mdPath, err := WriteInvoiceSummaryDocs(dir, "ws-1", invs)
 	if err != nil {
@@ -114,7 +114,7 @@ func TestWriteInvoiceSummaryDocs_TwoDecimalHidesAccumulationNoise(t *testing.T) 
 	dir := t.TempDir()
 	invs := make([]Invoice, 100)
 	for i := range invs {
-		invs[i] = Invoice{Amount: 0.07, Currency: "CNY", Seller: "S", Category: "其他"}
+		invs[i] = Invoice{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 0.07, Currency: "CNY", Seller: "S", Category: "其他"}
 	}
 	csvPath, _, err := WriteInvoiceSummaryDocs(dir, "ws-1", invs)
 	if err != nil {
@@ -129,7 +129,7 @@ func TestWriteInvoiceSummaryDocs_TwoDecimalHidesAccumulationNoise(t *testing.T) 
 // 明细行金额本身要规整到分：解析器可能给 126.005 这类三位小数。
 func TestWriteInvoiceSummaryDocs_DetailAmountRoundedToCents(t *testing.T) {
 	dir := t.TempDir()
-	invs := []Invoice{{Amount: 126.005, Currency: "CNY", Seller: "S", Category: "其他"}}
+	invs := []Invoice{{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 126.005, Currency: "CNY", Seller: "S", Category: "其他"}}
 	csvPath, _, err := WriteInvoiceSummaryDocs(dir, "ws-1", invs)
 	if err != nil {
 		t.Fatal(err)
@@ -166,8 +166,8 @@ func TestWriteInvoiceSummaryDocs_EmptyStillHasTotal(t *testing.T) {
 func TestWriteInvoiceSummaryDocs_RealInvoiceTotals(t *testing.T) {
 	dir := t.TempDir()
 	invs := []Invoice{
-		{Amount: 126.00, Currency: "CNY", Seller: "Tencent", Category: "其他"},
-		{Amount: 328.50, Currency: "CNY", Seller: "Tencent", Category: "其他"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 126.00, Currency: "CNY", Seller: "Tencent", Category: "其他"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 328.50, Currency: "CNY", Seller: "Tencent", Category: "其他"},
 	}
 	csvPath, _, err := WriteInvoiceSummaryDocs(dir, "ws-1", invs)
 	if err != nil {
@@ -227,8 +227,8 @@ func totalRowsOf(rows [][]string) [][]string {
 func TestWriteInvoiceSummaryDocs_MultiCurrencyNotSummedTogether(t *testing.T) {
 	dir := t.TempDir()
 	invs := []Invoice{
-		{Amount: 100.00, Currency: "USD", Seller: "AWS", Category: "云服务"},
-		{Amount: 50.00, Currency: "CNY", Seller: "腾讯", Category: "其他"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 100.00, Currency: "USD", Seller: "AWS", Category: "云服务"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 50.00, Currency: "CNY", Seller: "腾讯", Category: "其他"},
 	}
 	csvPath, mdPath, err := WriteInvoiceSummaryDocs(dir, "ws-1", invs)
 	if err != nil {
@@ -279,8 +279,8 @@ func TestWriteInvoiceSummaryDocs_MultiCurrencyNotSummedTogether(t *testing.T) {
 func TestWriteInvoiceSummaryDocs_SingleCurrencyKeepsLegacyShape(t *testing.T) {
 	dir := t.TempDir()
 	invs := []Invoice{
-		{Amount: 126.00, Currency: "CNY", Seller: "腾讯", Category: "其他"},
-		{Amount: 328.50, Currency: "CNY", Seller: "腾讯", Category: "其他"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 126.00, Currency: "CNY", Seller: "腾讯", Category: "其他"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 328.50, Currency: "CNY", Seller: "腾讯", Category: "其他"},
 	}
 	csvPath, mdPath, err := WriteInvoiceSummaryDocs(dir, "ws-1", invs)
 	if err != nil {
@@ -329,8 +329,8 @@ func TestWriteInvoiceSummaryDocs_EmptyStillHasTotalRow(t *testing.T) {
 func TestWriteInvoiceSummaryDocs_EmptyCurrencyFoldsIntoCNY(t *testing.T) {
 	dir := t.TempDir()
 	invs := []Invoice{
-		{Amount: 100.00, Currency: "", Seller: "A", Category: "其他"},
-		{Amount: 50.00, Currency: "CNY", Seller: "B", Category: "其他"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 100.00, Currency: "", Seller: "A", Category: "其他"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 50.00, Currency: "CNY", Seller: "B", Category: "其他"},
 	}
 	csvPath, _, err := WriteInvoiceSummaryDocs(dir, "ws-1", invs)
 	if err != nil {

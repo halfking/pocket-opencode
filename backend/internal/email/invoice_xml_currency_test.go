@@ -75,8 +75,8 @@ func TestXMLInvoiceCurrencyOverridesSubject(t *testing.T) {
 // 账本层面：CNY 与 USD 必须分组，不能直接相加（14d3bd2 的语义在 XML 路径上同样成立）。
 func TestXMLInvoiceMultiCurrencyGroupedInLedger(t *testing.T) {
 	invs := []Invoice{
-		{Amount: 100, Currency: "USD", Seller: "AWS"},
-		{Amount: 454.50, Currency: "CNY", Seller: "腾讯"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 100, Currency: "USD", Seller: "AWS"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 454.50, Currency: "CNY", Seller: "腾讯"},
 	}
 	rows, totals := LedgerRows(invs)
 	trs := totalRows(rows)
@@ -100,8 +100,8 @@ func TestXMLInvoiceMultiCurrencyGroupedInLedger(t *testing.T) {
 //
 // 这不是本次要修的（需求原文的文件名格式里没有币种位），但要记录后果。
 func TestXMLInvoiceFileNameCollisionAcrossCurrencies(t *testing.T) {
-	a := &Invoice{Category: "其他", Seller: "某供应商", Amount: 100, Currency: "CNY", InvoiceDate: "2026-09-15"}
-	b := &Invoice{Category: "其他", Seller: "某供应商", Amount: 100, Currency: "USD", InvoiceDate: "2026-09-15"}
+	a := &Invoice{Status: "downloaded", FilePath: "ledger-fixture.pdf", Category: "其他", Seller: "某供应商", Amount: 100, Currency: "CNY", InvoiceDate: "2026-09-15"}
+	b := &Invoice{Status: "downloaded", FilePath: "ledger-fixture.pdf", Category: "其他", Seller: "某供应商", Amount: 100, Currency: "USD", InvoiceDate: "2026-09-15"}
 	if InvoiceFileName(a) == InvoiceFileName(b) {
 		t.Logf("确认：%s —— 需求原文的命名格式不含币种，两张不同币种的发票会撞名", InvoiceFileName(a))
 	} else {

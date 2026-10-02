@@ -31,6 +31,9 @@ func TestLedgerRows_TotalIsExactInJSON(t *testing.T) {
 		invs = append(invs, Invoice{
 			Category: "办公", Seller: "某供应商", Amount: 0.07,
 			Currency: "CNY", InvoiceNo: "X", InvoiceDate: "2026-10-01", Status: "downloaded",
+			// FilePath 是合计判据的另一半（与 status 缺一不可）。合并后判据收紧，
+			// 多行字面量没法用脚本批量补，这里手工跟上同文件其它夹具。
+			FilePath: "ledger-fixture.pdf",
 		})
 	}
 	rows, totals := LedgerRows(invs)
@@ -59,6 +62,7 @@ func TestLedgerRows_DetailAmountRoundedToCents(t *testing.T) {
 	invs := []Invoice{{
 		Category: "办公", Seller: "供应商", Amount: 126.005,
 		Currency: "CNY", InvoiceNo: "A", InvoiceDate: "2026-10-01",
+		Status: "downloaded", FilePath: "ledger-fixture.pdf",
 	}}
 	rows, totals := LedgerRows(invs)
 	detail, err := json.Marshal(rows[1])
@@ -85,11 +89,11 @@ func TestLedgerRows_RealInvoiceTotals(t *testing.T) {
 		want float64
 	}{
 		{"qq wallet pair", []Invoice{
-			{Amount: 126.00, Category: "其他", Seller: "Tencent-Cloud-Computing-Co-Ltd"},
-			{Amount: 328.50, Category: "其他", Seller: "Tencent-Cloud-Computing-Co-Ltd"},
+			{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 126.00, Category: "其他", Seller: "Tencent-Cloud-Computing-Co-Ltd"},
+			{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 328.50, Category: "其他", Seller: "Tencent-Cloud-Computing-Co-Ltd"},
 		}, 454.50},
-		{"single", []Invoice{{Amount: 126.00}}, 126.00},
-		{"mixed decimals", []Invoice{{Amount: 0.1}, {Amount: 0.2}}, 0.30},
+		{"single", []Invoice{{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 126.00}}, 126.00},
+		{"mixed decimals", []Invoice{{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 0.1}, {Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 0.2}}, 0.30},
 		{"empty", nil, 0},
 	}
 	for _, tc := range cases {

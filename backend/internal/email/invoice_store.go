@@ -256,6 +256,19 @@ func (s *Store) UpdateInvoiceHarvest(ctx context.Context, inv *Invoice) error {
 	if inv == nil || inv.ID == "" {
 		return fmt.Errorf("email: invoice id required")
 	}
+	// amount 上那两个 ::numeric **不是冗余，别删**（2026-10-02 修的真缺陷）。
+	//
+	// 原写法 `CASE WHEN $11 > 0 THEN $11 ELSE amount END`：PG 从比较式里的整数字面量
+	// `0` 反推 $11 的类型是 **int4**，于是 pgx 传的 float64 25.5 被按整数解析，
+	// 落库变成 25.00 —— 每张**带小数**的发票在写回时小数部分被静默截掉，
+	// 需求 3 的「汇总金额」直接少算，且没有任何地方会提示。
+	//
+	// 隔离实测（绕开业务代码直接打 PG，同一个 float64 25.5 三种写法）：
+	//	INSERT ... VALUES (25.5, $1, $2)              → 25.50  ✓（从目标列推断 numeric）
+	//	INSERT ... VALUES ($1)                        → 25.50  ✓
+	//	UPDATE ... CASE WHEN $1 > 0 THEN $1 ELSE col  → 25.00  ✗（$1 被推断成 int4）
+	// 也就是说 VALUES 位置参数没问题，**只有 CASE 里的** $n 会掉进 int4。
+	// 显式 ::numeric 把类型钉死，缺口就此堵上。
 	inv.UpdatedAt = time.Now().Unix()
 	tag, err := s.pool.Exec(ctx, `
 UPDATE email_invoices SET
@@ -264,7 +277,7 @@ UPDATE email_invoices SET
 	invoice_date = CASE WHEN $8 <> '' THEN $8 ELSE invoice_date END,
 	invoice_no   = CASE WHEN $9 <> '' THEN $9 ELSE invoice_no END,
 	seller       = CASE WHEN $10 <> '' THEN $10 ELSE seller END,
-	amount       = CASE WHEN $11 > 0 THEN $11 ELSE amount END,
+	amount       = CASE WHEN $11::numeric > 0 THEN $11::numeric ELSE amount END,
 	currency     = CASE WHEN $13 <> '' THEN $13 ELSE currency END,
 	category     = CASE WHEN $14 <> '' THEN $14 ELSE category END,
 	title        = CASE WHEN $15 <> '' THEN $15 ELSE title END

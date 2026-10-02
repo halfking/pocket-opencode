@@ -50,8 +50,8 @@ func onlyTotal(t *testing.T, invs []Invoice) float64 {
 // 单币种：必须只有一行合计、且不带币种标签（与旧行为一致）。
 func TestLedgerRows_SingleCurrencyKeepsLegacyShape(t *testing.T) {
 	invs := []Invoice{
-		{Amount: 126.00, Currency: "CNY", Category: "其他", Seller: "腾讯"},
-		{Amount: 328.50, Currency: "CNY", Category: "其他", Seller: "腾讯"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 126.00, Currency: "CNY", Category: "其他", Seller: "腾讯"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 328.50, Currency: "CNY", Category: "其他", Seller: "腾讯"},
 	}
 	rows, totals := LedgerRows(invs)
 	if len(totals) != 1 {
@@ -80,11 +80,11 @@ func TestLedgerRows_SingleCurrencyKeepsLegacyShape(t *testing.T) {
 // 多币种：每个币种一行合计，且**不能**把它们相加。
 func TestLedgerRows_MultiCurrencyEmitsOneTotalPerCurrency(t *testing.T) {
 	invs := []Invoice{
-		{Amount: 126.00, Currency: "CNY", Category: "其他", Seller: "腾讯"},
-		{Amount: 328.50, Currency: "CNY", Category: "其他", Seller: "腾讯"},
-		{Amount: 100.00, Currency: "USD", Category: "其他", Seller: "AWS"},
-		{Amount: 50.00, Currency: "USD", Category: "其他", Seller: "AWS"},
-		{Amount: 20.00, Currency: "EUR", Category: "其他", Seller: "EU Vendor"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 126.00, Currency: "CNY", Category: "其他", Seller: "腾讯"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 328.50, Currency: "CNY", Category: "其他", Seller: "腾讯"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 100.00, Currency: "USD", Category: "其他", Seller: "AWS"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 50.00, Currency: "USD", Category: "其他", Seller: "AWS"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 20.00, Currency: "EUR", Category: "其他", Seller: "EU Vendor"},
 	}
 	rows, totals := LedgerRows(invs)
 	trs := totalRows(rows)
@@ -148,8 +148,8 @@ func TestLedgerRows_MultiCurrencyEmitsOneTotalPerCurrency(t *testing.T) {
 // 明细行的币种列必须与发票一致（分组后仍能逐行核对）。
 func TestLedgerRows_DetailKeepsItsOwnCurrency(t *testing.T) {
 	invs := []Invoice{
-		{Amount: 100.00, Currency: "USD", Category: "其他", Seller: "AWS"},
-		{Amount: 200.00, Currency: "CNY", Category: "其他", Seller: "腾讯"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 100.00, Currency: "USD", Category: "其他", Seller: "AWS"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 200.00, Currency: "CNY", Category: "其他", Seller: "腾讯"},
 	}
 	rows, _ := LedgerRows(invs)
 	if rows[1][3] != "USD" || rows[2][3] != "CNY" {
@@ -160,8 +160,8 @@ func TestLedgerRows_DetailKeepsItsOwnCurrency(t *testing.T) {
 // 币种为空的行归入 CNY（与 currencyOrDefault 一致），不能凭空多出一个空币种合计。
 func TestLedgerRows_EmptyCurrencyFoldsIntoCNY(t *testing.T) {
 	invs := []Invoice{
-		{Amount: 100.00, Currency: "", Category: "其他", Seller: "A"},
-		{Amount: 50.00, Currency: "CNY", Category: "其他", Seller: "B"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 100.00, Currency: "", Category: "其他", Seller: "A"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 50.00, Currency: "CNY", Category: "其他", Seller: "B"},
 	}
 	rows, _ := LedgerRows(invs)
 	trs := totalRows(rows)
@@ -179,14 +179,14 @@ func TestLedgerRows_EmptyCurrencyFoldsIntoCNY(t *testing.T) {
 // 合计行在 JSON 里必须是干净数字（§7ac 的契约在多币种下同样成立）。
 func TestLedgerRows_MultiCurrencyTotalsAreExactInJSON(t *testing.T) {
 	invs := []Invoice{
-		{Amount: 0.07, Currency: "USD"},
-		{Amount: 0.07, Currency: "USD"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 0.07, Currency: "USD"},
+		{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 0.07, Currency: "USD"},
 	}
 	// 100 x 0.07 才会暴露浮点噪声，这里用 2 张 + 另一个币种
 	for i := 0; i < 98; i++ {
-		invs = append(invs, Invoice{Amount: 0.07, Currency: "USD"})
+		invs = append(invs, Invoice{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 0.07, Currency: "USD"})
 	}
-	invs = append(invs, Invoice{Amount: 0.07, Currency: "CNY"})
+	invs = append(invs, Invoice{Status: "downloaded", FilePath: "ledger-fixture.pdf", Amount: 0.07, Currency: "CNY"})
 	rows, _ := LedgerRows(invs)
 	for _, r := range totalRows(rows) {
 		b, err := json.Marshal(r[2])
