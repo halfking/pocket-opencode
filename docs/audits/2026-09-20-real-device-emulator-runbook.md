@@ -215,29 +215,55 @@ bcdedit /set hypervisorlaunchtype auto
 
 ---
 
-## 附：当前可归因的 APK（2026-10-02）
+## 附：当前可归因的 APK（2026-10-02 修订）
 
-需要一份**已验证与某个 commit 对齐**的现成 APK 时用这份，不要用 §0 那张表。
+> ⚠️ **本节在 2026-10-02 11:20 被推翻过一次，读之前先看这段。**
+> 初版（提交 `d4328112`）在这里放的是 `DCDBAE91…` / 34,272,370 bytes，
+> 对应 `b0123a1`。那份产物**落后 HEAD 85 个提交**，且 `b0123a1..HEAD`
+> 在 APK 输入闭包内有 **180 个文件**变更（含 `frontend/src/api/email.ts`、
+> `notes.ts`、`stt-settings.ts` 等必然进 bundle 的源码）。
+> 它只满足"输入闭包内无脏文件"这条**自造口径**，不满足待办原文的
+> **「与当前 commit 对齐」**，更不满足 `dirty=0`。
+> 把它标成"当前可归因"会把下一轮引到一份过期产物上 —— 已修正如下。
+
+### 达标产物
 
 | 项 | 值 |
 |---|---|
-| 路径 | `logs/apk/app-debug-b0123a1.apk` |
-| 大小 | 34,272,370 bytes |
-| SHA256 | `DCDBAE91FD3B282138DB1CFFABD56F920CD35C1A1D121548E7441517AF5E3A80` |
-| 对应 commit | `b0123a17eb0501f1deac826cb13697fae2caaa9c` |
-| 构建输入 | `frontend/.env.android-dev` → `VITE_API_BASE=http://192.168.31.20:8088`，`android dev` |
-| 入口 chunk | `assets/public/assets/index-z3PPz3ef.js`（537,403 bytes，`index.html` 的 `src=` 引用它） |
+| 路径 | `C:\workspace\openpocket-wt-apkbuild\frontend\android\app\build\outputs\apk\debug\app-debug.apk` |
+| 大小 | 34,044,622 bytes |
+| SHA256 | `1E6DA6F588E71E99DB477948BEC4817EDBE50C2EFBA171E7411E697627A07221` |
+| 构建 commit | `29048294`（worktree `openpocket-wt-apkbuild`，`git status --porcelain` 为空 ⇒ **dirty=0**） |
+| 构建时间 | 2026-10-02 10:19:43 |
+| 入口 chunk | `assets/public/assets/index-DAqDTu3h.js`（538,747 bytes，`index.html` 的 `src=` 引用它） |
+| 烘进的 API base | `http://192.168.31.20:8088` |
 | scheme | `https`（`assets/capacitor.config.json` → `server.androidScheme`） |
-| 归因口径 | APK **输入闭包**内脏文件数 = 0（整树当时脏 15，见 `logs/apk-fingerprint.txt`） |
 
-「输入闭包」指 `frontend/src`、`public`、`index.html`、`vite.config.ts`、
-`package.json`、`capacitor.config.ts`、`android`，**含未跟踪文件**。
-本地产物能构建、别人构建不出的新文件同样会改变 bundle，只数 tracked 会漏。
+**为什么它算「与当前 commit 对齐」**：`29048294..HEAD` 共 4 个提交、
+3 个文件（`docs/audits/…runbook.md`、`.maestro/…yaml`、`scripts/adb-cdp-eval.ps1`），
+**全部是 docs / test / script，一个都不进 APK 输入闭包**；
+实测 `git diff --name-only 29048294 HEAD -- <闭包>` = **0 个文件**。
+即它的物料输入与当前 HEAD 逐字节一致，且构建时工作区干净。
 
-⚠️ 要在这份 APK 里查证烘进去的配置，**先看 `assets/public/index.html` 的
-`src=` 引用了哪个 chunk**。产物里有 7 个 `index-*.js`，只有一个是主入口
-（这里 537KB 那个）；按名字猜会查到 10KB 的同名小 chunk，然后误判成
-"配置没烘进去"。
+### 复现方式
+
+```powershell
+cd C:\workspace\openpocket-wt-apkbuild        # 该 worktree 必须干净
+$env:VITE_API_BASE = 'http://192.168.31.20:8088'   # 环境变量注入，不落盘
+cd frontend
+node scripts\build-mobile.mjs android dev
+cd android
+.\gradlew.bat assembleDebug
+# 复现 build 时 C:\workspace\openpocket-wt-apkbuild\frontend\.env.android-dev
+# 已不存在（未跟踪文件，构建后被清理），所以 status 才是干净的。
+# 用环境变量注入即可得到同一份产物，不需要这个文件。
+```
+
+### 两个仍然适用的提醒
+
+⚠️ 查证产物里烘进的配置，**先看 `assets/public/index.html` 的 `src=`
+引用了哪个 chunk**。产物里可以有 7 个 `index-*.js`，只有一个是主入口；
+按名字猜会命中 10KB 的同名小 chunk，然后误判成"配置没烘进去"。
 
 ⚠️ 这份是 **https origin**（`localhost` 分区）。若要连明文后端，
 必须以 `CAP_ANDROID_SCHEME=http` 重新构建 —— 换了 scheme 等于换了整个
