@@ -9698,3 +9698,195 @@ ok  github.com/halfking/pocket-opencode/backend/internal/server  86.521s
 那两个失败）。非 race 时同一包 58.060s。
 
 本次**只改测试文件**（`git diff --numstat` 仅一项），生产代码零改动。
+
+---
+
+## §7ea 「learning 三条待改」的查清：一个 grep 参数引发的跨 worktree 误判
+
+### 起点：一条我记了很多轮、却从没查过内容的待办
+
+任务列表里挂着一条「learning 三条待改」。我记了它很多轮，
+但**从来没查过它到底指哪三条**。本轮决定查。
+
+### 第一次检索就出错了
+
+`grep` 不带 `path` 参数时，检索的是 **workspace 根**
+（`C:\workspace\openpocket`），**不是**我干活的 worktree
+（`C:\workspace\openpocket-wt-email`）。
+
+后果很具体：
+
+- 我用 `read` 传 worktree 的**绝对路径**读 `learning/store.go`，
+  看到的是 `if capturedAt > 0 { out = append(out, capturedAt) }`——**未修版本**
+- 紧接着 `grep` **不带 path**，看到的是同一文件里有
+  `sinceUnix is applied **per timestamp**, not per row` 的论证注释、
+  以及一个 `store_pg_regression_test.go` 精确复现该缺陷的回归测试
+- `git status` 对该文件是**干净**的，`LastWriteTime` 是 **10-01 10:26**（今天没动过）
+
+「文件在我读之后变了」的第一反应应该是并发会话在写，但**文件今天根本没被改过**——
+真因是两次检索看的**不是同一个 worktree**。
+
+这个坑我在 §7dz 踩过一次（那时以为是并发会话改了
+`task_write_guard_route_test.go`，行号对不上），现在知道真因了：
+**主仓已修好（404 版本），worktree 还没跟上（403 版本）。**
+
+### 同一个坑的两次表现，串起来才看得见
+
+| | 主仓 `C:\workspace\openpocket` | 我的 worktree `openpocket-wt-email` |
+|---|---|---|
+| `task_write_guard_route_test.go` | 期望 **404** + 存在性预言机论证 | 期望 **403**（过时） |
+| `learning/store.go` | 已修（`capturedAt >= sinceUnix`）+ 论证注释 + 回归测试 | **未修**（`if capturedAt > 0`） |
+
+两边是**同一个仓库的不同 worktree**，各自 checkout 在不同提交上。
+**worktree 的 HEAD SHA 只说明它 checkout 在哪，不代表文件内容。**
+
+### 追溯：主仓的 `a1dd9013` 已经把 learning 两条都修了
+
+`a1dd9013`（2026-10-01 11:10:55）`fix(learning): 延后提醒会往回拉、连续天数越过 since 边界虚增`：
+
+1. **`SnoozeReminder` 用 `now+minutes` 覆盖 `next_due_at`** ——
+   对一个 24 小时后才到期的提醒延后 120 分钟，提醒变成 `now+2h`，
+   **用户说「晚点提醒我」反而提前 22 小时触发**。改用
+   `GREATEST(next_due_at, now) + minutes*60`。
+2. **`ActiveDayTimestamps` 的 since 只过滤行不过滤时间戳** ——
+   正是我上面读到的那段。SQL 用 `(captured_at >= since OR updated_at >= since)`
+   选中行后，Go 把两个时间戳都无条件 append，「很久以前采集、刚刚更新」的行
+   会吐出久远的 `captured_at`；而这是**连续天数的输入**，多吐一个窗口外
+   时间戳等于给用户记上未活跃的一天。
+
+**第 1 条正是待办里「learning 三条待改」的根因 3** ——
+而我此前记的是「产品语义、只有这一个测试钉住、无第二处证据、**不擅自改**」。
+**主仓已经定了**：snooze 从「原排期再推」改成「从 max(原排期, 现在) 再推」，
+并用 `RETURNING` 读回实际落库值。
+
+**所以待办「learning 三条待改」作废**——不是被我改的，是主仓先定了并修了。
+
+### 顺带一次全仓 `-race`，以及它带来的两条方法论更正
+
+借 §7dy 刚打通的 `-race` 能力跑了一次全仓：
+
+```
+$ go test -race ./... -count=1
+EXIT=1   ok=51  no-test=18  FAIL=1  build_failed=0  DATA RACE=0
+```
+
+**70 个包里只有 `internal/learning` 红**，失败用例正是上面两条。
+`internal/server` 那两个 404/403 已在 §7dz 修掉，不在列表里。
+
+**自查一（防 OOM 静默跳过）**：该提交的 message 警告「默认并发下 `go build` 会
+OOM，随机若干包报 `[build failed]` 且集合每次不同」。所以不能只看 `go test` 的
+输出就断言「其余都好了」：
+
+```
+build_failed_count = 0
+ok(51) + no-test(18) + FAIL(1) = 70
+go list ./... 独立核对          = 70     ← 两个独立方法对上
+```
+
+**自查二（防静默 SKIP）**：该提交还指出「此前几轮全量未设
+`POCKET_TEST_POSTGRES_DSN`，依赖真 PG 的 4 个用例被**静默 SKIP** 而非 PASS，
+『零 FAIL』因此比实际证据弱」。本轮两次全量都**显式设了该变量**，且单独统计
+`--- SKIP` 计数。
+
+**更正到本分支的回归口径**：
+
+| 项 | 要求 |
+|---|---|
+| 退出码 | 用 `*> $log` 重定向后读 `$LASTEXITCODE`，**不要接管道**（`Select-String` 会顶掉退出码，把「全过」和「没查到 FAIL」变成同一个 (空, 0)） |
+| 缓存 | `-count=1`，并确认 `cached=0` |
+| DSN | 需要真 PG 的判定**必须**设 `POCKET_TEST_POSTGRES_DSN`，并查 `SKIP` 计数 |
+| 并发 | `-p 2`（默认并发会 OOM；集合随机，不能复现） |
+| 覆盖 | `ok + no-test + FAIL` 要与 `go list ./...` 的包数对上 |
+| race | 涉及并发的包必须带 `-race` |
+
+### 处置
+
+`cherry-pick a1dd9013` → `47895e2c`，**无冲突**（4 个文件，含
+`store_pg_regression_test.go` 与它的 handoff 文档）。
+
+验证：
+
+```
+$ go test -race ./internal/learning/... -count=1 -v
+EXIT=0   cached=0   skip=0   fail=0
+--- PASS: TestSnoozeNeverPullsAReminderForward
+--- PASS: TestSnoozeOfAnOverdueReminderStillLandsInTheFuture
+--- PASS: TestActiveDayTimestampsNeverReturnsBeforeSince
+--- PASS: TestActiveDayTimestamps
+--- PASS: TestStoreAndStreakAgree
+--- PASS: TestReminderLifecycle
+```
+
+`skip=0` 是这里最该看的一个数——它证明这些依赖真 PG 的用例**真的执行了**，
+而不是「零 FAIL」掩盖下的静默跳过。
+
+### 同步完 learning 后，全仓冒出**一个新失败**：`TestNoGoFileHasUTF8BOM`
+
+```
+bom_guard_test.go:110: 1 个 .go 文件以 UTF-8 BOM 开头，会让覆盖率插桩构建失败：
+bom_guard_test.go:112:   internal\learning\store.go
+```
+
+不是我的改动引入的——**主仓那个 `learning/store.go` 本来就带 BOM**，
+cherry-pick 只是原样同步（实测两边都是 BOM，而两边的 `server.go` 都无 BOM）。
+`bom_guard_test.go` 向上找 `go.mod` 后扫**整个 module root**，
+所以主仓跑同一个测试同样会红。
+
+`a1dd9013` 改过这个文件（40 行），BOM 很可能就是那次编辑带进去的——
+commit message 自己也点名了环境坑（PowerShell 的 `Set-Content -Encoding UTF8`
+与 `>` 重定向都会写 BOM）。
+
+**修法刻意只切 3 字节**：用 Node 读 Buffer、判前 3 字节、slice 掉再写回。
+不重新编码、不碰行尾、不碰任何其他内容——直接 `WriteAllText` 重写整个文件
+会把 CRLF 一起规范化，产生上百行与本次无关的 diff。
+
+```
+size_before=21018  had_BOM=true
+size_after=21015   BOM_removed=true
+```
+
+**独立复核**（不只信那个守卫）：用一段自己的 Node 遍历全仓 `.go` 逐个判 BOM，
+结果 `none`——确认没有第二个带 BOM 的文件。
+
+**负控**：把 3 字节 BOM 加回去，`EXIT=1` 并准确报出那一个文件；再还原。
+
+```
+bom_guard_EXIT=0   learning_EXIT=0        # 修后
+negctl_EXIT=1      --- FAIL: TestNoGoFileHasUTF8BOM   # 加回 BOM
+```
+
+### 终验：本分支第一次全仓全绿
+
+```
+$ go test -race ./... -count=1 -p 2
+EXIT=0
+ok=52   no-test=18   FAIL=0   合计=70
+skip=0            ← 依赖真 PG 的用例没有被静默跳过
+DATA RACE=0
+go list ./...  = 70   ← 两个独立方法对上
+```
+
+**这是本分支第一次全仓全绿**，且绿得「有据」而不是「看起来绿」：
+带 `-race`、显式设了 `POCKET_TEST_POSTGRES_DSN`、`skip=0` 证明那些依赖真
+PG 的用例真的执行过、包数与 `go list` 对上证明没有包被 OOM 静默跳过。
+
+对比本轮开头：同一个命令下 `internal/server` 2 红、`internal/learning` 2 红。
+四处失败现在全部清零，且其中三处是并发会话在主仓修好、这边同步过来的。
+
+
+
+### 教训（这一节最值钱的地方）
+
+> **在多 worktree 仓库里，任何内容检索都必须显式给 `path`。**
+> 默认路径是 workspace 根，而我干活的 worktree 在它之外。
+> 两者的文件可以差好几个提交，而 `git status` 对两边**都是干净的**——
+> 它不会告诉你「你看的是另一个 worktree」。
+
+配套的判据（与 `attribute-by-reading-files-not-git-history` 同源）：
+
+1. 「文件在我读之后变了」有三种可能，**按这个顺序排除**：
+   ① 别人在写（查 `LastWriteTime`）→ ② 我看的是另一个 worktree
+   （查检索的 `path`）→ ③ 我第一次就记错了（重读）。
+   本次直接跳到了 ①，白绕一圈。
+2. 看到「某个修复/文档/测试存在」时，**先确认它在哪个 worktree**，
+   再下「已有/没有」的结论。
