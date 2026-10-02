@@ -226,10 +226,20 @@ if (-not ($variants -contains $pkg)) {
 }
 
 # Prove the device can reach the backend over the LAN, with no crutch.
+# ANY HTTP status line proves reachability. 2026-10-02 real-device run: the probe
+# hit /api/app/version (no such route) and pocketd answered
+# "HTTP/1.0 404 Not Found" with X-Request-Id / X-Correlation-Id headers -- that
+# is a SUCCESSFUL trip to the backend. A predicate that only accepts 2xx reports
+# it as "cannot reach", which is exactly backwards.
 Write-Host "[check] device -> ${ApiHost}:${ApiPort} (no reverse)" -ForegroundColor Cyan
 $probe = (& $adb -s $Serial shell "echo -e 'GET /api/app/version HTTP/1.0\r\n\r' | nc -w 4 $ApiHost $ApiPort") -join "`n"
-if ("$probe" -match 'HTTP/1\.[01] 2\d\d') {
-  Write-Host "[ok] device reaches the backend over the LAN" -ForegroundColor Green
+if ("$probe" -match 'HTTP/1\.[01]\s+(\d{3})') {
+  $code = $Matches[1]
+  if ($code -like '2*') {
+    Write-Host "[ok] device reaches the backend over the LAN (HTTP $code)" -ForegroundColor Green
+  } else {
+    Write-Host "[ok] device reaches the backend over the LAN (HTTP $code - the route may be gone, but the round trip worked)" -ForegroundColor Green
+  }
 } else {
   Write-Host "[WARN] device could not reach ${ApiHost}:${ApiPort} from the device itself:" -ForegroundColor Yellow
   Write-Host "       probe output: $probe" -ForegroundColor Yellow
@@ -254,7 +264,7 @@ if ($devPath -notmatch '\.apk$') {
 } else {
   $devLen = ((& $adb -s $Serial shell "stat -c '%s %y' $devPath") -join '').Trim()
   Write-Host "[check] on device: $devLen" -ForegroundColor Cyan
-  Write-Host "[check] local apk: {0:N0} bytes" -f $localLen
+  Write-Host ("[check] local apk: {0:N0} bytes" -f $localLen)
   if ($devLen -notmatch '^(\d+)') {
     Write-Host "[FAIL] could not parse the installed size (stat said: '$devLen')" -ForegroundColor Red
     exit 4
