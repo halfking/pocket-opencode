@@ -5,8 +5,8 @@ const GW = 'https://llm.kxpms.cn/v1';
 const KEY = process.env.POCKET_GW_KEY || readFileSync('logs/.gateway-key', 'utf8').trim();
 const MODELS = (process.env.GW_MODELS || [
   // 与 backend/internal/opencode/config_writer.go 的
-  // DefaultLLMGatewayPreferredModels 同源（用户 2026-09-30 指定）
-  'glm-5.2', 'minimax-m3', 'kimi-k3', 'claude-sonnet-5', 'gpt-5.6-terra',
+  // DefaultLLMGatewayPreferredModels 同源（用户 2026-09-30 指定 / 2026-10-02 首选改 glm-5.3）
+  'glm-5.3', 'minimax-m3', 'kimi-k3', 'claude-sonnet-5', 'gpt-5.6-terra',
   'claude-opus-5', 'claude-fable-5', 'gpt-5.6-sol', 'gemini-3.5-flash',
   'gpt-4o-mini',
 ].join(',')).split(',').map((s) => s.trim()).filter(Boolean);

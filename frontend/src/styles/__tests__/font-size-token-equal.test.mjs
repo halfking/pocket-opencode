@@ -44,44 +44,24 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 // （第一版写了 3 级，去到了 frontend/，报出来的却是 ENOENT「文件不存在」——
 //  路径算错时的错误信息长得像源码缺失，很容易被误判成别的问题。）
 const SRC = path.resolve(HERE, '..', '..')
+import { blankComments, walkStyleFiles } from './style-scan-utils.mjs'
 
 /**
- * 把注释换成等长空格（长度必须不变——判据要按偏移回原文取上下文）。
- * 不剥注释的话，「在注释里解释旧写法」会被误判成违规，久了就没人敢写注释。
+ * 把注释换成等长空格。实现已抽到 style-scan-utils.mjs——
+ * 2026-10-03 起另有一条护栏（style-scanner-cannot-swallow-real-declarations）
+ * 要检验同一个函数，而**护栏之间不能互相 import**：.test.mjs 一被 import，
+ * 它顶层的 describe/it 就注册进当前进程，于是两个文件的测试互相取消
+ * （满屏 "test did not finish before its parent and was cancelled"，
+ *  看起来像判据坏了，其实是模块副作用）。共用逻辑只能放进非测试文件。
+ *
+ * 旧实现没有字符串感知，于是 .vue 模板里 accept 属性值中的 video 加星号
+ * 被当成块注释起点，一路吞到下一个注释收尾——NoteEditView.vue 里 7658 个字符的
+ * 真实 CSS 被整段抹成空格，其中正好有 2 处 font-size: 12px 是本判据
+ * 该抓的违规。**方向是 fail-open：判据看不见，于是测试一直绿。**
  */
-export function blankComments(src) {
-  const out = src.split('')
-  let i = 0
-  while (i < src.length) {
-    if (src.startsWith('/*', i)) {
-      const end = src.indexOf('*/', i + 2)
-      const stop = end < 0 ? src.length : end + 2
-      for (let k = i; k < stop; k++) if (out[k] !== '\n') out[k] = ' '
-      i = stop
-    } else if (src.startsWith('//', i)) {
-      let end = src.indexOf('\n', i)
-      if (end < 0) end = src.length
-      for (let k = i; k < end; k++) if (out[k] !== '\n') out[k] = ' '
-      i = end
-    } else {
-      i++
-    }
-  }
-  return out.join('')
-}
+export { blankComments } from './style-scan-utils.mjs'
 
-function walk(dir, acc = []) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, e.name)
-    if (e.isDirectory()) {
-      if (e.name === 'node_modules' || e.name.startsWith('.')) continue
-      walk(p, acc)
-    } else if (e.name.endsWith('.vue') || e.name.endsWith('.css')) {
-      acc.push(p)
-    }
-  }
-  return acc
-}
+const walk = walkStyleFiles
 
 /** token 名 → 像素值（从 tokens.css 现读，不写死刻度）。 */
 export function loadTokenScale(tokensCss) {
@@ -188,6 +168,50 @@ describe('判据自检：负控必须转红', () => {
   it('走 token 的写法当然不算违规', () => {
     const fake = [{ readFileSync: () => '.a { font-size: var(--text-sm); }' }]
     assert.equal(findTokenEqualRawPxWith(fake, scale).length, 0)
+  })
+})
+
+describe('判据自检：不能因为剥注释而漏扫真实声明（2026-10-03 的盲区）', () => {
+  // 这一组护的是**判据自己**。上一版 blankComments 没有字符串感知，
+  // `.vue` 模板里的 accept="video/*" 被当成块注释起点，把后面 7658 个字符的
+  // 真实 CSS 整段抹掉——其中有 2 处 font-size: 12px 是本判据该抓的违规。
+  // 测试当时是**绿的**。fail-open 的盲区不会自己出声，只能靠合成样本钉住。
+  const VIDEO_STAR_SRC =
+    '<input accept="video/*" class="hidden-file" />\n' +
+    '.extract-btn { font-size: 12px; }\n' +
+    '.media-hint { font-size: 12px; color: var(--text-muted); }\n'
+
+  it('模板里的 accept="video/*" 不会让后面的真实声明被当成注释吞掉', () => {
+    const masked = blankComments(VIDEO_STAR_SRC)
+    assert.equal(
+      masked.length,
+      VIDEO_STAR_SRC.length,
+      'blankComments 必须保持长度不变（判据要按偏移回原文取上下文）',
+    )
+    const hits = findTokenEqualRawPxWith([{ readFileSync: () => VIDEO_STAR_SRC }], scale)
+    assert.equal(
+      hits.length,
+      2,
+      `只抓到 ${hits.length} 处，期望 2 处——video/* 把真实声明吞了，这类盲区是 fail-open 的，测试会一直绿`,
+    )
+    assert.deepEqual(hits.map((h) => h.line), [2, 3], '行号指错会让报错信息没法用')
+  })
+
+  it('背景图 url(...) 里的 /* 同样不算注释', () => {
+    const src = '.a { background: url("assets/a/*.png"); }\n.b { font-size: 12px; }\n'
+    assert.equal(findTokenEqualRawPxWith([{ readFileSync: () => src }], scale).length, 1)
+  })
+
+  it('真注释仍然照常抹掉（修复不能把「剥注释」这个职责改没了）', () => {
+    const src = '/* 旧写法 font-size: 12px */\n.a { font-size: 12px; }\n'
+    const hits = findTokenEqualRawPxWith([{ readFileSync: () => src }], scale)
+    assert.deepEqual(hits.map((h) => h.line), [2], '注释里的旧写法被算成违规，或真实声明被漏掉')
+  })
+
+  it('模板正文里的英文撇号（don\'t）不会开启字符串态而吞掉后续声明', () => {
+    // 无差别把 ' 当字符串起点会反向 fail-open：吞得比原来更多。
+    const src = "<p>don't stop</p>\n.a { font-size: 12px; }\n"
+    assert.equal(findTokenEqualRawPxWith([{ readFileSync: () => src }], scale).length, 1)
   })
 })
 

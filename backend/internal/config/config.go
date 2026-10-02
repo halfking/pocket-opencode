@@ -63,6 +63,18 @@ type Config struct {
 	// 任何 V1 加密事件的解密路径。设这个环境变量不会有任何效果。
 	FeishuEncryptKey   string // V1 加密事件解密用（V2 不加密，留空即可）
 
+	// ---- 企业微信（WeCom）自建应用事件回调（m.kxpms.cn/callback/weixin）----
+	//
+	// 2026-10-02 用户拍板走**企业微信**而不是微信公众号：两者 URL 验证的加解密
+	// 算法相同，但签名参数名不同（企业微信 msg_signature 且把密文纳入签名，
+	// 公众号 signature 不含密文），POST 的响应格式也不同。详见 internal/wecom。
+	//
+	// 三项**缺一不可**：任一为空时 /callback/weixin 对签名请求一律 503 拒绝，
+	// 而不是放行——放行等于把回调端点变成任何人可伪造的公开入口。
+	WeComToken         string // POCKET_WECOM_TOKEN：自建应用「Token」
+	WeComEncodingAESKey string // POCKET_WECOM_ENCODING_AES_KEY：43 字符（不含 '='）
+	WeComCorpID        string // POCKET_WECOM_CORP_ID：企业 ID，用于校验密文尾部 receiveid
+
 	// ---- Phase 0: 个人助理模块新增配置 ----
 	// AI/STT 后端
 	GroqAPIKey                string // POCKET_GROQ_API_KEY：云端 Whisper Large v3 Turbo 兜底
@@ -239,6 +251,9 @@ func Load() Config {
 		FeishuVerifyToken:        getEnv("POCKET_FEISHU_VERIFY_TOKEN", ""),
 		FeishuVerifySecret:       getEnv("POCKET_FEISHU_VERIFY_SECRET", ""),
 		FeishuEncryptKey:         getEnv("POCKET_FEISHU_ENCRYPT_KEY", ""),
+		WeComToken:               getEnv("POCKET_WECOM_TOKEN", ""),
+		WeComEncodingAESKey:      getEnv("POCKET_WECOM_ENCODING_AES_KEY", ""),
+		WeComCorpID:              getEnv("POCKET_WECOM_CORP_ID", ""),
 		// Phase 0 个人助理模块
 		PostgresDSN:                getFirstEnv([]string{"POCKET_POSTGRES_DSN", "DATABASE_URL"}, ""),
 		PostgresSchema:             getEnv("POCKET_PG_SCHEMA", "opencode_pocket"),

@@ -127,12 +127,34 @@ test('多币种时用 amounts（服务端全量），而不是退回当前页的
 })
 
 test('服务端没给合计时，才退回当前页自行分组', () => {
+  // 2026-10-03 修：这条用例此前只传 {amount, currency}，而 bcd27ebd 已把
+  // sumByCurrency 的 status 收紧为**必填**（给默认值等于把「构造不出凭证的行」
+  // 悄悄放行，正是那次要消灭的歧义）。.mjs 不走类型检查，于是 TS 的必填要求
+  // 在这里没有任何拦截力，运行时全被 invoiceCountsTowardTotal 过滤掉，
+  // 断言拿到 '¥0.00' —— 一条**红着的**测试。
+  //
+  // 修法是补齐夹具而不是放宽实现：实现是那次真缺陷（61,500 vs 3,500）的正解。
   const page = [
-    { amount: 100, currency: 'CNY' },
-    { amount: 20, currency: 'USD' },
+    { amount: 100, currency: 'CNY', status: 'downloaded', filePath: '/f/1.pdf' },
+    { amount: 20, currency: 'USD', status: 'filed', filePath: '/f/2.pdf' },
   ]
   const groups = resolveSummaryGroups(invoiceTotalsFrom({}), page)
   assert.equal(summaryMoney(groups), '¥100.00 + $20.00')
+})
+
+test('兜底重算同样按「已核验」过滤，构造不出凭证的行不进合计', () => {
+  // 这条是上面那条的镜像：光补齐夹具只证明「能算对」，不证明「不该算的
+  // 没被算进去」。bcd27ebd 的 61,500 正是「全表无条件求和」这条路径。
+  const page = [
+    { amount: 3500, currency: 'CNY', status: 'downloaded', filePath: '/f/ok.pdf' },
+    { amount: 58000, currency: 'CNY', status: 'new', filePath: null },
+    { amount: 900, currency: 'CNY', status: 'downloaded', filePath: '' },
+    { amount: 700, currency: 'CNY', status: 'new', filePath: '/f/wip.pdf' },
+  ]
+  const groups = resolveSummaryGroups(invoiceTotalsFrom({}), page)
+  assert.equal(summaryMoney(groups), '¥3,500.00', '只该计入 3500 那一行')
+  assert.equal(groups[0].count, 1, '计入张数也必须按同一判据')
+  assert.ok(!summaryMoney(groups).includes('65,100'), '无过滤求和会把 65,100 显示给用户')
 })
 
 test('服务端给了 amounts 就以它为准，哪怕当前页完全对不上（分页会变，全量不会）', () => {

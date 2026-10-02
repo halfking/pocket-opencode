@@ -218,12 +218,24 @@ type ListFilter struct {
 
 // AccountSyncStatus reports per-account sync state for the front-end
 // EmailAccountSetup / status panel.
+//
+// LastAttemptAt / LastSyncError / SyncFailures（2026-10-02 加）是**可观测性**
+// 字段，不是顺手加的：last_synced_at 只在成功时写，所以只读它无法区分
+// 「没被调度到」与「每分钟被轮询一次但每次都失败」。详见 store.go 的
+// email_accounts 迁移注释。
 type AccountSyncStatus struct {
 	AccountID     string `json:"accountId"`
 	DisplayName   string `json:"displayName"`
 	EmailAddress  string `json:"emailAddress"`
 	LastSyncedAt  int64  `json:"lastSyncedAt,omitempty"`
 	LastSyncedUID int64  `json:"lastSyncedUid,omitempty"`
-	Enabled       bool   `json:"enabled"`
-	PendingCount  int    `json:"pendingCount"`
+	// LastAttemptAt 是最近一次**尝试**同步的时刻（成功或失败都推进）。
+	// 它与 LastSyncedAt 一起看才能判断「卡住了」还是「没在跑」。
+	LastAttemptAt int64 `json:"lastAttemptAt,omitempty"`
+	// LastSyncError 是最近一次失败的错误摘要；最近一次成功时为空串。
+	LastSyncError string `json:"lastSyncError,omitempty"`
+	// SyncFailures 是**连续**失败次数（任一次成功即归零）。
+	SyncFailures int  `json:"syncFailures,omitempty"`
+	Enabled      bool `json:"enabled"`
+	PendingCount int  `json:"pendingCount"`
 }

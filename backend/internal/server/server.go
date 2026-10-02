@@ -27,6 +27,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
+	"github.com/halfking/pocket-opencode/backend/internal/wecom"
 	"github.com/halfking/pocket-opencode/backend/internal/finance"
 	"github.com/halfking/pocket-opencode/backend/internal/flashcards"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
@@ -678,6 +679,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/app/download", s.handleDownloadAPK)
 	// 飞书事件回调 (m.kxpms.cn/callback/feishu 由 56 nginx 转发到 9010)
 	mux.HandleFunc("/callback/feishu", s.handleFeishuCallback)
+	// 企业微信事件回调 (m.kxpms.cn/callback/weixin)
+	//
+	// 与飞书一样**不套 requireAuth**：这两个端点由外部平台调用，
+	// 不会带本站的 JWT；它们的身份校验是各自协议的签名校验
+	// （飞书 X-Lark-Signature / 企业微信 msg_signature），
+	// 挂在 requireAuth 下面只会让签名请求永远 401。
+	mux.HandleFunc("/callback/weixin", s.handleWeComCallback)
 
 	// ---- Phase 0: 个人助理模块路由 ----
 	// 认证
@@ -2502,6 +2510,15 @@ func (s *Server) handleDownloadAPK(w http.ResponseWriter, r *http.Request) {
 // 由 feishu.PublicEntry 包装，传入 wsHub.Broadcast 闭包以推送 WebSocket。
 func (s *Server) handleFeishuCallback(w http.ResponseWriter, r *http.Request) {
 	feishu.PublicEntry(s.cfg, func(msgType string, payload interface{}) {
+		s.wsHub.Broadcast(msgType, payload)
+	})(w, r)
+}
+
+// handleWeComCallback 处理企业微信事件回调（m.kxpms.cn/callback/weixin）。
+// 2026-10-02 用户拍板走企业微信自建应用（不是微信公众号）——响应格式不同，
+// 详见 internal/wecom 包注释。
+func (s *Server) handleWeComCallback(w http.ResponseWriter, r *http.Request) {
+	wecom.PublicEntry(s.cfg, func(msgType string, payload interface{}) {
 		s.wsHub.Broadcast(msgType, payload)
 	})(w, r)
 }

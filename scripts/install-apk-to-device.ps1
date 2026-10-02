@@ -21,7 +21,10 @@ $ErrorActionPreference = 'Continue'
 
 $adb    = 'C:\Users\86133\AppData\Local\Android\platform-tools\adb.exe'
 $serial = '192.168.31.19:5555'
-$apk    = 'C:\workspace\openpocket-wt-maildeploy\frontend\android\app\build\outputs\apk\debug\app-debug.apk'
+$apk    = 'C:\workspace\openpocket\frontend\android\app\build\outputs\apk\debug\app-debug.apk'
+# 2026-10-02: 原先指向 C:\workspace\openpocket-wt-maildeploy\... 的临时 worktree。
+# 那个 worktree 可能被删或停用，脚本会直接 [FAIL] APK not found；
+# 正式产物在主工作区，由 scripts\build-audit-apk.ps1 生成。
 
 if (-not (Test-Path $apk)) { Write-Host "[FAIL] APK not found: $apk"; exit 1 }
 $ai = Get-Item $apk

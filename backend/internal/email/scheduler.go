@@ -711,8 +711,19 @@ func (s *Scheduler) tick(ctx context.Context) {
 			if err != nil {
 				// 上一轮（或另一条流水线）还在同步这个账户：是并发保护正常
 				// 生效，不是故障。报 failed 会让每分钟的日志都挂一条假警。
+				//
+				// 同理**不能**落库：sync_failures 每分钟加一涨到几千，
+				// 而这条路径几秒后就会成功——一个会自愈的状态被记成
+				// 「连续失败 N 次」，比不记更糟。
 				if errors.Is(err, ErrSyncInFlight) {
 					return
+				}
+				// 真失败：落库，让「在轮询但一直失败」成为可查询的事实。
+				// 2026-10-02 实测 kxpms 连挂 19 小时，库里没有任何记录。
+				if s.store != nil {
+					if rerr := s.store.RecordSyncFailure(ctx, accountID, err.Error()); rerr != nil {
+						log.Printf("[email/scheduler] record sync failure %s: %v", accountID, rerr)
+					}
 				}
 				log.Printf("[email/scheduler] sync %s failed: %v", accountID, err)
 				return

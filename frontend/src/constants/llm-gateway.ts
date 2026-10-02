@@ -25,7 +25,7 @@ export const DEFAULT_GATEWAY_FORMAT = 'openai-chat'
  * 顺序与后端常量一致（auto 模式按此顺序降级）。
  */
 export const DEFAULT_GATEWAY_PREFERRED_MODELS: readonly string[] = [
-  'glm-5.2',
+  'glm-5.3',
   'minimax-m3',
   'kimi-k3',
   'claude-sonnet-5',
