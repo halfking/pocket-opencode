@@ -689,6 +689,75 @@ fetcher 日志行 = 0
 
 这与 §12.3 那条同源：**缺席/失败的证据要先证明它对后续步骤意味着什么。**
 
+---
+
+## §17 刷新 08:00 基线——01:06 那份**已经漂了**，并记一个 psql 陷阱
+
+§11/§16 引用的基线取于 01:06，而并发会话整晚在触发 sync/classify。
+不刷新的话，08:00 的差值就是从一个错数起算的。重取于 02:00：
+`logs/zz-8am-baseline-refresh-20261003-0200.txt`（psql exit=0，stderr 为空）。
+
+```
+=== A notifications ===   total 24 | unread 0 | read 24 | newest 2026-10-02 05:38:33
+=== B invoices ===        downloaded 1 / 3500.00   |   new 3 / 58454.50
+=== C the 58000 row ===   inv_1790903383222583800_1  new  file=(none)  attempts=0
+                          updated 2026-10-02 09:09:43
+=== D importance ===      (empty) 4 | high 58 | medium 56 | low 61
+=== E eligible ===        175
+=== F emails total ===    179
+```
+
+### 17.1 与 01:06 基线的差异
+
+| | 01:06 | 02:00 |
+|---|---|---|
+| `notifications_unread` | 23 | **0** |
+| `emails_total` | 175 | **179** |
+| `importance` 为空 | 0 | **4** |
+| `notifications_newest` | 2026-10-02 05:38:33 | 同上（未变） |
+| 发票 / 58000 行 | — | 未变 |
+
+**未读从 23 掉到 0**：24 条全部被读过。不是我做的（我只做过只读 fetch 与 CDP 读文本），
+最可能是并发会话的 e2e 自动化点了通知中心。**这会影响明早的观察**：
+「未读数从 0 涨到 34」才是干净的信号；若从非零起算，就分不清是流水线推的还是别人点的。
+
+### 17.2 那 4 封 importance 为空的邮件，正好就是新到的那 4 封
+
+`179 - 4 = 175`，与 E 的 eligible 数吻合。**它们不会被 08:00 那轮提醒**：
+`POCKET_KXMEMORY_BASE_URL` 未配 ⇒ 定时路径不做自动分类（§11.2），
+新到邮件的 `importance` 恒为空 ⇒ 不进提醒窗口。
+⇒ §11.1 的「本轮将推送 34」在 02:00 这个基线上**仍然成立**（eligible 仍是 175），
+但前提是**明天那 4 封仍未被分类**——若并发会话明早又手工跑一次
+`/api/emails/classify`，它就会被算进 34。
+
+### 17.3 psql 陷阱：`to_char()` 在 bigint 列上报 "multiple decimal points"
+
+这份 SQL 第一版连着两次死在同一句错误上：
+
+```
+ERROR:  multiple decimal points
+```
+
+出错的那一行**一个小数点都没有**。真实原因：`notifications.created_at` 与
+`email_invoices.updated_at` 都是 **bigint epoch 秒**（实测 `pg_typeof` = bigint，
+值 1790890713）。`to_char(bigint, text)` 会静默解析成 `to_char(numeric, text)`，
+把 `'YYYY-MM-DD HH24:MI:SS'` 当作**数值格式化模板**去解析，于是抛
+"多个小数点"——错误文本完全不指向真正的原因。
+
+正确写法：
+
+```sql
+to_char(to_timestamp(max(created_at)), 'YYYY-MM-DD HH24:MI:SS')
+```
+
+⇒ 这类错误有个共同特征：**报错文本与出错行没有任何词面关联**。
+遇到荒谬的解析错误，先 `SELECT pg_typeof(col)`，别在那一行里找小数点。
+
+（另一个同场教训：先用中文注释写 `-f` 的 SQL 文件时我怀疑是编码，
+实测 `server_encoding` 与 `client_encoding` **都是 UTF8**，编码不是原因——
+把注释换成英文也没用，因为真正的错在查询里。两个假设都要用实测排除，不能只换一个就下结论。）
+
+
 
 ---
 
