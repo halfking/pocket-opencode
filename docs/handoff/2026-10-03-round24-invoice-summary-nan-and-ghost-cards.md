@@ -1196,6 +1196,36 @@ rows_total=4  distinct_email_ids=4
 ⇒ **先看三份日志里有没有「跨进程锁…本轮跳过」这一行**，有就是走了锁，
 没有就是走的顺序。08:00 的提醒里已写明这个判别顺序。
 
+### 23.4 锁本身**已被真实验证通过**（在当前这棵含其 WIP 的树上跑的）
+
+```
+go build ./...                    exit 0        （含并发会话 41 项在制品）
+go vet ./internal/email ./internal/server ./internal/config   exit 0
+POCKET_TEST_POSTGRES_DSN=... go test ./internal/email -run TestDailyPipelineLock -v
+  --- PASS  TestDailyPipelineLock_SecondAcquireIsBusy                       (0.40s)
+  --- PASS  TestDailyPipelineLock_ReleaseMakesItReacquirable                (0.37s)
+  --- PASS  TestDailyPipelineLock_ReleaseDoesNotLeakIntoPool                (0.39s)
+  --- PASS  TestDailyPipelineLock_IndependentPoolsAreMutuallyExclusive      (0.41s)
+  --- PASS  TestDailyPipelineLock_NoPoolIsUnavailableNotBusy               (0.00s)
+  --- PASS  TestDailyPipelineLock_StateStringIsDistinct                     (0.00s)
+  --- PASS  TestDailyPipelineLock_TestHarnessIsActuallyIsolated             (0.33s)
+  ok  github.com/halfking/pocket-opencode/backend/internal/email  2.035s
+```
+
+其中两条是最关键的：`IndependentPoolsAreMutuallyExclusive` 证明的是
+**两个独立连接池**互相排斥（这才是跨进程性质，纯进程内状态测不出来）；
+`TestHarnessIsActuallyIsolated` 是夹具自检，它的存在让上面 7 条不是"在别处
+的库上跑的绿灯"。
+
+顺带记一个它们的测试设计值得抄的地方：**没设 `POCKET_TEST_POSTGRES_DSN` 时，
+它们让测试大声 FAIL 而不是 skip**，失败信息写着
+`silently skipping would make every assertion above vacuously true`。
+我第一次跑就撞上这条红，按它给的路子补上 DSN 才跑起来。
+
+⇒ **重建 18099 的风险不在锁本身**（已验证），而在"会把并发会话另外 40 项
+在制品一起带进二进制"——那需要你授权，而不是技术判断。
+
+
 
 
 
