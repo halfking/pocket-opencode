@@ -614,21 +614,44 @@ func decodeCharset(data []byte, charset string) ([]byte, error) {
 // ExtractDisplayBody 从整封原文提取可直接展示的正文文本：
 // 优先 text/plain 聚合，其次 text/html，解析失败退回原文本身。
 // 超长截断到 256KB，与 /api/emails/{id}/body 的拉取上限一致。
+//
+// ## 「解析失败退回原文本身」这条兜底已被移除
+//
+// 原注释写着「解析失败退回原文本身」。实测这条兜底就是缺陷本身：
+// 2026-10-03 真机（Redmi 2411DRN47C）上它把整段 MIME 源码原样交给
+// LLM 摘要输入（server_email_summary.go），摘要质量随之塌掉；
+// 同一条路径也把 `------=_Part_… Content-Type: …` 灌进 assistant 上下文。
+//
+// 拆开看它原本想覆盖的两种情形：
+//   · 旧版本缓存下来的**拍平展示文本**（非 MIME）——不是 MIME 源码，
+//     containsMIMESource 放行，行为不变；
+//   · 真正的 MIME 源码但解析失败——**正是要拦的那一类**。
+//
+// 所以判据不是「解析成功没有」，而是「这段文本本身是不是 MIME 源码」：
+// 是就返回空串（宁可没有正文，也不要 MIME 转储），不是就照旧返回。
+// 判据用的是 containsMIMESource 而不是 looksLikeMIMEStructure，原因见
+// snippet.go 里那条注释——出口的字符串常已被压平成一行。
 func ExtractDisplayBody(raw []byte) string {
 	if len(raw) == 0 {
 		return ""
 	}
 	if msg, err := ParseMIMEMessage(raw); err == nil {
-		if t := strings.TrimSpace(msg.TextBody); t != "" {
+		// 判据跑在未压平的原文上：TextBody 是所有 text/plain 部件的聚合，
+		// 对 multipart/mixed 里嵌内层报文原文的形态会把 boundary 行和
+		// Content-* 头一起聚合进来（真机 5/5 封全中）。
+		if t := strings.TrimSpace(msg.TextBody); t != "" && !containsMIMESource(msg.TextBody) {
 			return t
 		}
-		if h := strings.TrimSpace(msg.HTMLBody); h != "" {
+		if h := strings.TrimSpace(msg.HTMLBody); h != "" && !containsMIMESource(msg.HTMLBody) {
 			return h
 		}
 	}
 	const maxDisplay = 256 * 1024
 	if len(raw) > maxDisplay {
 		raw = raw[:maxDisplay]
+	}
+	if containsMIMESource(string(raw)) {
+		return ""
 	}
 	return string(raw)
 }
