@@ -207,4 +207,59 @@ regexp.MustCompile(`(?:\[\s*"search_path"\s*\]\s*=|search_path=|"search_path"\s*
 
 ## 8. 下一轮提示词
 
-见文末。
+```
+接手 openpocket（仓库 C:\workspace\openpocket，Go module 在 backend/），
+继续 24 小时修正任务的审计与完善。上一轮是 round16
+（docs/handoff/2026-10-02-round16-audited-all-20-exemptions-found-two-unpinned.md）：
+复核 pgSafeWithoutIsolation 全部 20 条登记，挖出两个「从不设 search_path」
+的诊断探针——其中 reminder_notified_diag_test.go 的判据
+`if highUnnotified == 0 { 不是缺陷 }` 在查空库时必然成立，
+即「查空库永远符合设计」。护栏补了规则 5。
+
+本轮请按序做：
+
+1. 【并发前置】先跑 git worktree list / git log --oneline -5 /
+   git status --porcelain，再看目标文件 mtime。**禁止**对别人正在编辑的
+   文件跑 `git checkout HEAD --`（round11 失实提交 0728aa11 的成因）。
+
+2. 【重要：别照抄未验证的限制】round12 那条「go test -race 跑不了」被
+   round13/14/15/16 连续照抄 4 轮，实际跑一次就是 exit 0（round17 已证）。
+   **每轮 handoff 里的「仍未验证 / 跑不了」都应重新试一次。**
+   抄来的限制不是证据。`-race` 现在可跑：
+     $env:CC='C:\tools\w64devkit\w64devkit\bin\gcc.exe'; $env:CGO_ENABLED='1'
+     go test -p 2 -race -count=1 ./...
+   （$env:CC 仅单次 bash 调用内有效。）
+
+3. 【归属判定】工作区 FAIL ≠ 自己引入的回归。round17 遇到 8 个
+   TestLedgerRows_* 失败，用 detached worktree 在纯 HEAD 上复跑
+   （exit 0 通过）确定是并发会话对 ledger.go 的在途改动。
+   手法：git worktree add <dir> HEAD --detach → 跑 → 把自己的改动复制进去
+   再跑。切勿为让全绿去改别人的在途文件。
+
+4. 本轮（round16）遗留、尚未闭合的项：
+   - `current_schema()` 验证只加在部分文件，其余用 RuntimeParams 覆盖但
+     没读回验证。**round17 已补齐 7 个**：spam_realdata / diag_kxpms /
+     ledger_realdata_diag / diag_credential_health /
+     diag_real_invoice_extract / diag_real_invoice_gate / diag_rest_dupes。
+     改用 round17 之后请重新核实清单（§7 的那张表可能已过期）。
+   - 规则 5 的残留盲区：大部分查询带显式 schema 前缀、只有一处未限定的
+     文件，判据看不见。要彻底覆盖需解析 SQL，本轮明确不做。
+   - 登记理由仍是一轮性快照，改动后需重核（§1 有 20 条的完整结论）。
+
+5. 机械普查尚未闭合的缺陷类别：
+   - **恒假判据**：`\bUPDATE\s+[A-Za-z_]\b` 恒假（[A-Za-z_] 只吃一个字符）。
+     正确写法 \w+。报告「0 命中」时先拿已知存在的样本验判据本身。
+   - **恒真判据**：`regexp.MustCompile("search_path")` 匹配字面量，会被
+     t.Fatalf("...search_path...") 喂成恒真。正确写法要求赋值形态
+     `\["search_path"\]\s*=`。**报告「无问题」时同理，判据恒真是静默的。**
+   - sfnt.GlyphIndex(buf, r) 对「缺失」返回 (0, nil)，只判 err == nil 恒真。
+   - 不实日期：「实测 / 审计 / 审计记录 / 审计实测」几种措辞都要查。
+   - 空 catch / 吞错。
+   - RE2 vs JS 引擎差异：Go 正则无回溯，判据必须在最终运行的引擎里验。
+
+6. 【工程细节，踩过的坑】
+   - 工作区是 **CRLF**、HEAD 是 LF。批量脚本正则用 \n 结尾会静默 MISS。
+     `git status` 显示 M 但 `git diff` 无输出时，用
+     `git diff --ignore-cr-at-eol --stat` 看真实变更。
+   - 收尾：「下一轮提示词」那节必须真的写内容，写完核对不是空标题。
+```

@@ -194,4 +194,74 @@ L64 写明理由：它查 `information_schema` 而非业务表，要站「默认
 
 ## 7. 下一轮提示词
 
-见文末。
+```
+接手 openpocket（仓库 C:\workspace\openpocket，Go module 在 backend/），
+继续 24 小时修正任务的审计与完善。上一轮是 round17
+（docs/handoff/2026-10-02-round17-race-actually-runs-and-proves-it.md）：
+推翻了「go test -race 跑不了」这条连续 5 轮被照抄的结论（真跑 exit 0，
+并用必然触发 data race 的探针证明 detector 确实启用），并给 7 个诊断探针
+补上 current_schema() 读回验证。
+
+本轮请按序做：
+
+1. 【并发前置，务必先做】这个仓库有并发会话长期共用同一 main 工作区。
+   动手前先跑：
+     git worktree list
+     git log --oneline -5
+     git status --porcelain
+   再看目标文件的 mtime。**禁止**对别人正在编辑的文件跑 `git checkout HEAD --`
+   （round11 的失实提交 0728aa11 就是这么来的，已记入 round12 §1）。
+
+2. 【方法论，本轮最重要】每轮 handoff 里「仍未验证 / 跑不了 / 无法执行」
+   这类断言，都应当**至少被重新试一次**。round12 那条「-race 跑不了
+   （需 w64devkit 的 CC，$env:CC 仅单次调用内有效）」被 round13/14/15/16
+   **连续 4 轮照抄**并列为遗留风险，实际跑一次就是 exit 0。
+   **抄来的限制不是证据。** 本轮开工时先翻上一轮 handoff 的遗留清单，
+   逐条判断「这是真限制还是没人试过」。
+
+3. 【归属判定，务必用这个手法】工作区 FAIL 不等于自己引入的回归。
+   round17 遇到 8 个 TestLedgerRows_* 失败，用三层证据确定是并发会话对
+   ledger.go 的在途改动：
+     · git worktree add <dir> HEAD --detach      # 纯 HEAD
+     · 在该 worktree 跑同一个测试                # exit 0 → 问题不在 HEAD
+     · 把自己的改动复制进去（恰好等于「HEAD + 我的改动」）再跑 → 全绿
+   代价是一个 worktree，收益是能确定归属。**切勿为让全绿去改别人的在途文件。**
+
+4. `-race` 现在可以跑。命令（$env:CC 只在单次 bash 调用内有效）：
+     $env:CC='C:\tools\w64devkit\w64devkit\bin\gcc.exe'; $env:CGO_ENABLED='1'
+     go test -p 2 -race -count=1 ./...
+   **跑之前先放一个必然触发 data race 的探针**确认 detector 真的启用
+   （无同步的 counter++），否则「退出码 0」无法区分「真跑过」与
+   「静默降级成普通模式」。round17 的探针已删，需要时照 §1 重建。
+   排除并发会话未提交的 internal/wecom（它不在 HEAD 上）。
+
+5. 机械普查尚未闭合的缺陷类别：
+   - **恒假判据**（round14/16 各踩一次）：
+     · `\bUPDATE\s+[A-Za-z_]\b` —— [A-Za-z_] 只吃一个字符，尾部 \b 恒不成立。
+       正确写法是 \w+。普查报「0 命中」时，先拿一个**已知存在**的样本过一遍。
+     · `regexp.MustCompile("search_path")` —— 匹配字面量，会被
+       t.Fatalf("...search_path...") 这类运行时字符串喂成恒真。
+       正确写法是要求赋值形态 `\["search_path"\]\s*=`。
+     · 报告「无问题」时同理：判据恒真是**静默**的。
+   - **恒真判据**：sfnt.GlyphIndex(buf, r) 对「缺失」返回 (0, nil)，
+     只判 err == nil 会恒真——必须连零值一起判并加必然缺失的对照样本。
+   - 不实日期：「实测 / 审计 / 审计记录 / 审计实测」几种措辞都要查。
+   - 空 catch / 吞错。
+   - RE2 vs JS 引擎差异：Go 正则无回溯。判据必须在最终运行的引擎里验。
+
+6. 【工程细节，踩过的坑】
+   - 本仓库工作区是 **CRLF**，HEAD 里是 LF。批量脚本的正则若用 \n 结尾
+     会静默 MISS（round17 第一次批量插入只命中 1/7 就是这个原因）。
+     `git status` 显示 M 但 `git diff` 无输出时，用
+     `git diff --ignore-cr-at-eol --stat` 看真实变更，否则会把几百行
+     纯行尾变化误当成本轮改动提交。
+   - `git worktree remove` 会因未跟踪文件拒绝，加 `--force`
+     （仅对自己创建的隔离 worktree 用）。
+   - 提交信息里的残字/错字要逐字读一遍再提交——它会误导下一轮。
+
+7. 收尾：更新对应 handoff（**「下一轮提示词」那节必须真的写内容**，
+   写完核对它不是空标题），提交前
+   `git diff --cached --stat` 逐条核对文件列表与提交信息相符，
+   推送前 git fetch 确认无并发新提交，推送时用
+     $env:GIT_SSH_COMMAND='ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes'
+```

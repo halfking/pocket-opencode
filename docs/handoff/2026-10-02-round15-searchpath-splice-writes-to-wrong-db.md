@@ -172,6 +172,14 @@ appendSearchPathProbe(dsn, schema)     miss   ← 我用的这个
 
 **`go test -race` 仍未跑**（需 w64devkit 的 `CC`，`$env:CC` 仅单次调用有效）。
 
+> **【2026-10-02 round17 订正】这句话是错的，且它被 round13/14/15/16 连续照抄了 4 轮。**
+> round17 实际跑了一次：`RACE_EXIT=0`，ok 53 / FAIL 0 / no test files 18，
+> 并用「必然触发 data race 的探针」证明 detector 确实启用（报
+> `WARNING: DATA RACE`、exit 1），排除了「静默降级成普通模式」的可能。
+>
+> 本行保留原样，因为它记录的是**当时的状态**；但**不要把它当成限制引用**。
+> 教训见 round17 §6：**抄来的限制不是证据**，每轮都该重新试一次。
+
 ---
 
 ## 7. 遗留风险
@@ -201,4 +209,52 @@ appendSearchPathProbe(dsn, schema)     miss   ← 我用的这个
 
 ## 8. 下一轮提示词
 
-见文末。
+> **本节已于 2026-10-02 round17 补写。** 最初这里是空的「见文末」——
+> 我在最终回复里说了「见文末」却从未写过它。已补，并顺带把本文档
+> §6 里那句错误的「`-race` 仍未跑」加了订正批注。
+> 教训：**承诺的产物要核对它真的存在**，空标题和缺失内容长得一样。
+
+```
+接手 openpocket（仓库 C:\workspace\openpocket，Go module 在 backend/），
+继续 24 小时修正任务的审计与完善。上一轮是 round15
+（docs/handoff/2026-10-02-round15-searchpath-splice-writes-to-wrong-db.md）：
+复核登记理由时发现 diag_merge_exec_test.go / diag_rest_dupes_test.go
+用 DSN 拼接设 search_path——正是 PG 护栏规则 3 禁止的形态，而护栏判它
+干净（只匹配字面量，拼接被包进辅助函数后整套隐身）。
+
+本轮请按序做：
+
+1. 【并发前置】先跑 git worktree list / git log --oneline -5 /
+   git status --porcelain，再看目标文件 mtime。**禁止**对别人正在编辑的
+   文件跑 `git checkout HEAD --`（round11 失实提交 0728aa11 的成因）。
+
+2. 【本文档 §7 遗留，round16/17 已部分闭合】
+   - 其余豁免文件的登记理由未逐条核对 → **round16 已核完 20 条**，
+     并发现 reminder_notified_diag_test.go / realprobe_test.go
+     「从不设 search_path」，后者已在 round16 修掉。
+   - 规则 3 的辅助函数判据可被绕过（拆字符串、fmt.Sprintf、任意命名）。
+     真正的兜底是 current_schema() 验证。
+   - go test -race 至今没在 HEAD 上跑成过 → **round17 已推翻**：
+     真跑 exit 0，并用必然触发 data race 的探针证明 detector 确实启用。
+     抄来的限制不是证据。
+
+3. 机械普查尚未闭合的缺陷类别：
+   - **恒假判据**：`\bUPDATE\s+[A-Za-z_]\b` 恒假（[A-Za-z_] 只吃一个字符，
+     尾部 \b 几乎永不成立）。正确写法 \w+。普查报「0 命中」时先拿一个
+     **已知存在**的样本过一遍同一判据，验证判据本身会命中。
+   - **恒真判据**：匹配字面量（而非赋值形态）会被运行时字符串喂成恒真。
+     sfnt.GlyphIndex(buf, r) 对「缺失」返回 (0, nil)，只判 err == nil 恒真。
+   - 不实日期：「实测 / 审计 / 审计记录 / 审计实测」几种措辞都要查。
+   - 空 catch / 吞错。
+   - RE2 vs JS 引擎差异：Go 正则无回溯，判据必须在最终运行的引擎里验。
+
+4. 【方法论，务必执行】每轮 handoff 里的「仍未验证 / 跑不了 / 无法执行」
+   都应**至少重新试一次**。round12 那条「-race 跑不了」被连续照抄 4 轮，
+   实际跑一次就绿了。同理，本文 §6 那句也已加订正批注。
+
+5. 【工程细节】
+   - 工作区是 **CRLF**、HEAD 是 LF。批量脚本正则用 \n 结尾会静默 MISS。
+     `git status` 显示 M 但 `git diff` 无输出时，用
+     `git diff --ignore-cr-at-eol --stat` 看真实变更。
+   - 收尾：「下一轮提示词」那节必须真的写内容，写完核对不是空标题。
+```
