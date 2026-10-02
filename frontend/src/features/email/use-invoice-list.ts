@@ -1,4 +1,4 @@
-﻿import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { emailApi, type EmailInvoice, type EmailInvoiceStatus } from '../../api/email'
 import { financeApi } from '../../api/finance'
@@ -15,6 +15,9 @@ import {
   mergeInvoicePages, sortInvoicesByReceived, type InvoiceFileKind,
   pipelineToast,
 } from './invoice-list'
+import {
+  formatMoney, resolveSummaryGroups, summaryMoney as summaryMoneyText, type InvoiceTotals,
+} from './invoice-money'
 
 export function useInvoiceList() {
   const toast = useToast()
@@ -35,7 +38,13 @@ export function useInvoiceList() {
   const error = ref('')
   const filter = ref<'' | EmailInvoiceStatus>('')
   const all = ref<EmailInvoice[]>([])
-  const summary = ref({ total: 0, filed: 0, amount: 0, downloaded: 0, pending: 0, failed: 0 })
+  // 合计按币种分组（groups）；singleAmount/singleCurrency 仅在恰好一种币种时有值。
+  // 不用单个 `amount`：跨币种相加得到的数字不是金额，渲染成 ¥ 就是错账。
+  const summary = ref({
+    total: 0, filed: 0, groups: [] as Array<{ currency: string; amount: number }>,
+    singleAmount: null as number | null, singleCurrency: null as string | null,
+    downloaded: 0, pending: 0, failed: 0,
+  })
   const bookingId = ref('')
   /** 飞书共享台账链接（推不出去时的兜底共享文档）。 */
   const shareDocUrl = ref('')
@@ -56,15 +65,31 @@ export function useInvoiceList() {
   const previewKind = computed<InvoiceFileKind>(() => invoiceFileKind(preview.value?.inv.fileName))
   const previewTitle = computed(() => preview.value?.inv.seller || '发票预览')
 
-  function applySummary(list: EmailInvoice[], totals?: { total: number; filed: number; amount: number }) {
+  function applySummary(list: EmailInvoice[], totals?: InvoiceTotals) {
+    // 合计按币种分组：跨币种直接相加不是金额，而把它渲染成 ¥ 就是错账
+    // （需求 3「汇总金额」）。判定优先级收在 resolveSummaryGroups 里，
+    // 与转发层 invoiceTotalsFrom 共用同一份实现，见那里的注释。
+    const groups = resolveSummaryGroups(totals, list)
     summary.value = {
       total: totals?.total ?? list.length,
       filed: totals?.filed ?? list.filter((i) => i.status === 'filed').length,
-      amount: totals?.amount ?? list.reduce((s, i) => s + (Number(i.amount) || 0), 0),
+      groups,
+      // 单币种时保留一个标量，方便旧调用点；多币种为 null
+      // （不是 0——0 是个看起来正常的错数）。
+      singleAmount: groups.length === 1 ? groups[0]!.amount : null,
+      singleCurrency: groups.length === 1 ? groups[0]!.currency : null,
       downloaded: list.filter(invoiceHasFile).length,
       pending: list.filter((i) => i.status === 'pending' || i.status === 'new').length,
       failed: list.filter((i) => i.status === 'failed').length,
     }
+  }
+  /** 合计区展示：单币种一个数，多币种逐币种拼。 */
+  function summaryMoney(): string {
+    return summaryMoneyText(summary.value.groups)
+  }
+  /** 单张发票的金额展示（用它自己的币种，不再一律 ¥）。 */
+  function invoiceMoney(inv: EmailInvoice): string {
+    return formatMoney(Number(inv.amount) || 0, inv.currency)
   }
   function formatAmount(n: number): string {
     return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -72,8 +97,25 @@ export function useInvoiceList() {
   function statusLabel(inv: EmailInvoice): string {
     return ({ new: '待整理', pending: '待下载', downloaded: '已下载', failed: '失败', filed: '已归档' } as const)[inv.status] ?? inv.status
   }
+  /**
+   * 能否入账 + 不能的原因。
+   *
+   * 财务模块没有 currency 概念，入账金额一律按人民币解释——把 100 USD
+   * 当 100 CNY 记进账是错账，所以外币**必须**挡住（这是有意的正确保护，
+   * 不是缺陷）。
+   *
+   * 但此前只用 `v-if="canBook"` 把按钮**整个藏掉**：用户看到一张带金额的
+   * 发票却没有「入账」按钮，既不知道能不能入账，也不知道为什么不行——
+   * 看起来像功能坏了。改成禁用 + 悬浮说明，让原因可见。
+   */
+  function bookBlockReason(inv: EmailInvoice): string {
+    if ((Number(inv.amount) || 0) <= 0) return '未解析出金额，无法入账'
+    const cur = inv.currency || 'CNY'
+    if (cur !== 'CNY') return `${cur} 发票暂不支持入账（账本只记人民币）`
+    return ''
+  }
   function bookable(inv: EmailInvoice): boolean {
-    return (Number(inv.amount) || 0) > 0 && (!inv.currency || inv.currency === 'CNY')
+    return bookBlockReason(inv) === ''
   }
   function toggleSelectMode() {
     selectMode.value = !selectMode.value
@@ -306,6 +348,13 @@ export function useInvoiceList() {
   }
   async function book(inv: EmailInvoice) {
     if (bookingId.value) return
+    // 兜底：按钮已禁用，但 book() 也可能被直接调用（快捷键 / 将来复用）。
+    // 财务账本没有 currency 概念，外币金额进去就是错账。
+    const blocked = bookBlockReason(inv)
+    if (blocked) {
+      toast.error(blocked)
+      return
+    }
     bookingId.value = inv.id
     try {
       const res = await financeApi.create({
@@ -315,7 +364,7 @@ export function useInvoiceList() {
       if (inv.status !== 'filed') {
         try { await emailApi.setInvoiceStatus(inv.id, 'filed'); inv.status = 'filed'; applySummary(all.value) } catch { /* ignore */ }
       }
-      toast.success(`${res.created ? '已入账' : '该发票已入账'} ¥${formatAmount(inv.amount)}`)
+      toast.success(`${res.created ? '已入账' : '该发票已入账'} ${invoiceMoney(inv)}`)
     } catch (e: any) {
       toast.error(apiError(e, 'errors.operateFailed'))
     } finally {
@@ -330,9 +379,12 @@ export function useInvoiceList() {
       if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
       return `"${s.replace(/"/g, '""')}"`
     }
-    const lines = [['开票日期', '收到日期', '销售方', '金额', '发票号', '类目', '状态'].map(cell).join(',')]
+    // 必须带币种列：不带的话导出的金额是裸数字，导出后再对账时无从判断是哪种货币。
+    const lines = [['开票日期', '收到日期', '销售方', '金额', '币种', '发票号', '类目', '状态'].map(cell).join(',')]
     for (const inv of rows) {
-      lines.push([inv.invoiceDate || '', inv.emailDate || '', inv.seller || '', (Number(inv.amount) || 0).toFixed(2), inv.invoiceNo || '', inv.category || '其他', inv.status].map(cell).join(','))
+      lines.push([inv.invoiceDate || '', inv.emailDate || '', inv.seller || '',
+        (Number(inv.amount) || 0).toFixed(2), inv.currency || 'CNY',
+        inv.invoiceNo || '', inv.category || '其他', inv.status].map(cell).join(','))
     }
     try {
       const saved = await downloadTextFile({ filename: 'openpocket-invoices.csv', content: '\uFEFF' + lines.join('\r\n'), mimeType: 'text/csv;charset=utf-8' })
@@ -363,7 +415,7 @@ export function useInvoiceList() {
     shareDocUrl,
     selectMode, selected, thumbs, thumbLoading, preview, invoices, previewSrc, previewBlob, previewKey,
     previewKind, previewTitle,
-    formatAmount, statusLabel, bookable, toggleSelectMode, selectAllDownloaded, togglePick,
+    formatAmount, formatMoney, summaryMoney, invoiceMoney, statusLabel, bookable, bookBlockReason, toggleSelectMode, selectAllDownloaded, togglePick,
     downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline,
     cancelPipeline,
     syncAndReload, exportGrid, pushFeishu, downloadInvoice, markFiled, markNew, book,

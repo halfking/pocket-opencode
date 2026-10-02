@@ -40,7 +40,7 @@
 
     <div class="summary-card">
       <div class="summary-main">
-        <span class="summary-amount">¥{{ formatAmount(summary.amount) }}</span>
+        <span class="summary-amount">{{ summaryMoney() }}</span>
         <span class="summary-label">
           共 {{ summary.total }} 张 · 已归档 {{ summary.filed }}
           <template v-if="summary.downloaded > 0">· 文件 {{ summary.downloaded }}</template>
@@ -120,8 +120,9 @@
         :picked="selected.includes(inv.id)"
         :booking="bookingId === inv.id"
         :status-text="statusLabel(inv)"
-        :amount="formatAmount(inv.amount)"
+        :amount="invoiceMoney(inv)"
         :can-book="bookable(inv)"
+        :book-reason="bookBlockReason(inv)"
         @preview="openPreview(inv)"
         @open-email="openEmail(inv)"
         @toggle-select="togglePick(inv.id)"
@@ -169,7 +170,8 @@ const {
   selectMode, selected, thumbs, thumbLoading, preview, invoices, previewSrc, previewBlob, previewKey,
   previewKind, previewTitle,
   formatAmount, statusLabel, bookable, toggleSelectMode, selectAllDownloaded, togglePick,
-  downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline, cancelPipeline,
+  downloadableSelection, openEmail, openPreview, closePreview, load, loadMore, runPipeline,
+  cancelPipeline, summaryMoney, invoiceMoney, bookBlockReason,
   syncAndReload, exportGrid, pushFeishu, downloadInvoice, markFiled, markNew, book,
   exportCsv, remove,
 } = useInvoiceList()

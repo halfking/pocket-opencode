@@ -149,14 +149,21 @@ func (c *Client) SendMessage(ctx context.Context, receiveIDType, receiveID, msgT
 	if err != nil {
 		return err
 	}
-	// 飞书 im/v1/messages 的 content 字段是「一个字符串，内容是被序列化的
-	// 消息体」：{"receive_id":"oc_x","msg_type":"text","content":"{\"text\":\"hi\"}"}。
+	// content 直接放 contentText 本身，**不要再包一层** {"content": ...}。
 	//
-	// 也就是说 content 要装的是 contentText **本身**。原来这里先把 contentText
-	// 包成 {"content": ...} 得到 payload，再把 payload 塞进 body 的 content，
-	// 于是发出去的是 {"content":"{\"content\":\"{\\\"text\\\":...}\"}"} —— 多包一层，
-	// 飞书解析不出 text/file_key 键，**每一条消息都会失败**。
-	// 这条链路此前一次都没跑过（飞书凭证未提供），所以问题一直没暴露。
+	// 飞书 im/v1/messages 的 content 字段要的就是消息体本身（text 时是
+	// `{"text":"..."}`，file 时是 `{"file_key":"..."}`），只不过它要求这个
+	// 消息体以**字符串**形式出现（整体双重编码）。原先这里先把它包成
+	// `{"content": contentText}` 再塞进去，线上实际发出去的是
+	// `{"content":"{\"text\":\"...\"}"}` —— 飞书解出来看到的是一个叫
+	// `content` 的未知字段，于是 text 消息正文为空、file 消息拿不到
+	// file_key。**每一条消息都会失败。**
+	//
+	// 这个缺陷能活下来只有一个原因：这条路径**从未真正跑过**（线上缺
+	// POCKET_FEISHU_INVOICE_CHAT_ID，需求 3/4 都是关的）。两侧各自独立
+	// 发现了它并各自写了注释（本分支 bb1c5f10 带 mock server 测试
+	// client_test.go 复现，main 侧为 7eee3669），修复代码完全一致。
+	// 保留分支版注释，因为它指出了复现手段（mock server 测试）。
 	url := fmt.Sprintf("%s/open-apis/im/v1/messages?receive_id_type=%s", c.BaseURL, receiveIDType)
 	body, _ := json.Marshal(map[string]any{"receive_id": receiveID, "msg_type": msgType, "content": contentText})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))

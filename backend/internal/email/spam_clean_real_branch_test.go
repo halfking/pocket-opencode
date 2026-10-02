@@ -65,8 +65,13 @@ func TestCleanSpam_DryRunLeavesDatabaseUntouched(t *testing.T) {
 	seedSpamPair(t, store)
 
 	// 负控式自检：夹具必须真的能命中，否则后面全是恒真断言。
+	//
+	// 合并说明：末参是本分支给 LooksLikeSpam 加的 senderVolume（同一发件人
+	// 的历史投递量，用于识别群发）。本用例只关心「这封本身像不像广告」，
+	// 不涉及发件人历史，取 0 表示「未统计」——与 spam_samples_test.go 的
+	// 既有约定一致（那里注释写明 senderVolume=0 即「未统计」）。
 	if v := LooksLikeSpam("promo@shopmail.example.com",
-		"【限时优惠】本周精选好文，回复 退TD退订", "限时优惠精选好文", false, false); !v.Spam {
+		"【限时优惠】本周精选好文，回复 退TD退订", "限时优惠精选好文", false, false, 0); !v.Spam {
 		t.Fatalf("夹具没达到垃圾阈值（score=%d why=%q），本用例会变成恒真", v.Score, v.Why)
 	}
 

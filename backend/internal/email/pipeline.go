@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -44,11 +45,11 @@ type Pipeline struct {
 	Store    *Store
 	Fetcher  *Fetcher
 	Harvest  *InvoiceHarvester
-	Pusher   InvoicePusher      // 可为 nil：跳过飞书，直接走共享文档
-	Notifier ImportantNotifier  // 可为 nil：跳过提醒
+	Pusher   InvoicePusher     // 可为 nil：跳过飞书，直接走共享文档
+	Notifier ImportantNotifier // 可为 nil：跳过提醒
 	// Ledger 发布飞书共享台账（电子表格）。为 nil 或不可用时只生成本地 CSV/MD。
-	Ledger   LedgerPublisher
-	DataDir  string
+	Ledger  LedgerPublisher
+	DataDir string
 	// SpamLookbackDays 垃圾清理扫描窗口（默认 7 天）。
 	SpamLookbackDays int
 	// SpamDryRun=true 时第 2 步只判定不 MOVE（真实邮箱首次运行的安全阀）。
@@ -220,21 +221,21 @@ func countNearMiss(items []SpamPreviewItem) int {
 
 // PipelineReport 一轮执行的结果汇总。
 type PipelineReport struct {
-	StartedAt     int64  `json:"startedAt"`
-	FinishedAt    int64  `json:"finishedAt"`
-	DurationMs    int64  `json:"durationMs"`
+	StartedAt      int64 `json:"startedAt"`
+	FinishedAt     int64 `json:"finishedAt"`
+	DurationMs     int64 `json:"durationMs"`
 	AccountsSynced int   `json:"accountsSynced"`
-	NewEmails     int    `json:"newEmails"`
-	SpamMoved     int    `json:"spamMoved"`
-	SpamLocalOnly int    `json:"spamLocalOnly"`
+	NewEmails      int   `json:"newEmails"`
+	SpamMoved      int   `json:"spamMoved"`
+	SpamLocalOnly  int   `json:"spamLocalOnly"`
 	// SpamDryRun>0 表示本轮是预演：这 SpamDryRun 封「本可以移走但没移」，
 	// 逐账户列在 SpamDryRunSamples 里。真实邮箱上先看这个再决定是否真移。
 	SpamDryRun        int               `json:"spamDryRun,omitempty"`
 	SpamDryRunSamples []SpamPreviewItem `json:"spamDryRunSamples,omitempty"`
 	// SpamNearMiss 是「未判垃圾但有分」的邮件，按账户分组。
 	// 开真实 MOVE 之前这是必看项：命中数低不代表规则贴近真实数据。
-	SpamNearMiss []SpamPreviewItem `json:"spamNearMiss,omitempty"`
-	RemindersSent int    `json:"remindersSent"`
+	SpamNearMiss  []SpamPreviewItem `json:"spamNearMiss,omitempty"`
+	RemindersSent int               `json:"remindersSent"`
 	// RemindersScanned 是本轮进入提醒判定的邮件数；RemindersUnclassified 是
 	// 其中 **importance 为空** 的数量。
 	//
@@ -249,8 +250,19 @@ type PipelineReport struct {
 	// 没法判断。有了这两个计数，看报告就知道该去配 AI 还是该去调规则。
 	RemindersScanned      int `json:"remindersScanned,omitempty"`
 	RemindersUnclassified int `json:"remindersUnclassified,omitempty"`
+	// RemindersOutOfWindow 是「importance=high、从未提醒、但 date 比扫描窗口
+	// （notifyImportant 里硬编码的 2 天）更老」的邮件数。
+	//
+	// 为什么必须有它：那些邮件**永远不会被提醒**——不是「这轮没轮到」，是
+	// 「不在扫描范围里」。没有这个计数时，报告上的 0 分不清
+	// 「这批确实没有重要邮件」和「有 20 封重要的但它们太老了」，
+	// 需求 4 看起来就像没实现。和 RemindersUnclassified 是同一类问题的
+	// 时间维度版本（见 reminder_diag_test.go 记录的另一次）。
+	//
+	// 注意这**不是**「发了多少条提醒」，两者不可互相替代。
+	RemindersOutOfWindow int `json:"remindersOutOfWindow,omitempty"`
 	// 发票候选（步骤 1.5）的三个计数。同样的理由：只报 invoices.Processed
-	// 时，「扫了 0 封候选」和「这批邮件里没有发票」长得一模一样，
+	// 时，「扫了 0 封候选」和「这批里没有发票」长得一模一样，
 	// 于是 0 到底是链路没跑、还是跑了但没命中，看报告分不出来。
 	// 2026-10-02 就是靠 scanned 这个计数才定位到 24h 窗口把历史邮件全挡在
 	// 外面——在那之前 invoices 全是 0，看上去像「邮箱里没有发票」。
@@ -259,13 +271,13 @@ type PipelineReport struct {
 	// InvoiceBodyFetchDeferred 是超出单轮 IMAP 预算、顺延到下一轮的候选数。
 	InvoiceBodyFetchDeferred int           `json:"invoiceBodyFetchDeferred,omitempty"`
 	Invoices                 HarvestResult `json:"invoices"`
-	FeishuPushed  int    `json:"feishuPushed"`
-	FeishuFailed  int    `json:"feishuFailed"`
-	ShareDocCSV   string `json:"shareDocCsv,omitempty"`
-	ShareDocMD    string `json:"shareDocMd,omitempty"`
+	FeishuPushed             int           `json:"feishuPushed"`
+	FeishuFailed             int           `json:"feishuFailed"`
+	ShareDocCSV              string        `json:"shareDocCsv,omitempty"`
+	ShareDocMD               string        `json:"shareDocMd,omitempty"`
 	// ShareDocURL 是飞书共享台账链接（未配置飞书时为空，本地 CSV/MD 仍会生成）。
-	ShareDocURL string `json:"shareDocUrl,omitempty"`
-	Errors        []string `json:"errors,omitempty"`
+	ShareDocURL string   `json:"shareDocUrl,omitempty"`
+	Errors      []string `json:"errors,omitempty"`
 }
 
 // AddError 记录非致命错误（流水线继续跑完）。
@@ -348,8 +360,22 @@ func (p *Pipeline) Run(ctx context.Context) *PipelineReport {
 		} else if url != "" {
 			rep.ShareDocURL = url
 		}
-		if _, _, err := p.BuildInvoiceSummaryDocs(ctx, sc[0], sc[1]); err != nil {
+		// 曾经写成 `if _, _, err := p.BuildInvoiceSummaryDocs(...)`：文件生成了，
+		// 路径却被丢进 `_` —— PipelineReport.ShareDocCSV / ShareDocMD 于是**恒为空**。
+		//
+		// 为什么一直没人发现：手动触发走的是另一条路
+		// （server_email_pipeline.go:497 单独调一次并回填到 HTTP 响应），
+		// 只有**定时**这一条路径受影响。于是「定时跑完的日报里看不到汇总文档
+		// 在哪」——需求 3 明确要的「共享文档 + 列表 + 金额汇总」在无人值守场景
+		// 下等于没有交付。
+		csvPath, mdPath, err := p.BuildInvoiceSummaryDocs(ctx, sc[0], sc[1])
+		if err != nil {
 			rep.AddError("summary docs scope=%v: %v", sc, err)
+		} else {
+			// 多 scope 时逐个覆盖：这两个字段是**单值**，报告只能指一个 scope。
+			// 最后一轮赢，与 ShareDocURL 的既有行为一致；每个 scope 的文件都已落盘。
+			rep.ShareDocCSV = csvPath
+			rep.ShareDocMD = mdPath
 		}
 	}
 	return rep
@@ -407,17 +433,7 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 		inv, hit := ExtractInvoice(e, "")
 		c := invoiceCandidate{email: e, scope: sc, inv: inv, hit: hit, jobAt: -1}
 		if p.Fetcher != nil && e.UID > 0 {
-			switch {
-			case !hit && InvoiceCandidate(e):
-				// 关键词命中才值得读正文：24h 窗口内 miss 邮件可能几十封。
-				// 与 server 侧 extractInvoicesAsync 的门槛一致。
-				c.reason = "candidate"
-			case hit && inv != nil && inv.InvoiceDate == "":
-				// 命中了但**没有开票日期**：IMAP 路径只落 envelope，正文里的
-				// 「开票日期」看不到，于是规范文件名退化成下载当天（实测真发票
-				// 「其他-杭州创客家…-3500.00-2026-10-01.pdf」，票面其实是 5 月开的）。
-				c.reason = "date"
-			}
+			c.reason = invoiceBodyReason(hit, inv, e)
 			if c.reason != "" {
 				c.jobAt = len(jobs)
 				jobs = append(jobs, bodyJob{email: e, reason: c.reason})
@@ -466,9 +482,7 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 					text = b.parsed.HTMLBody
 				}
 				if c.reason == "date" {
-					if d := ParseInvoiceDate(text); d != "" {
-						c.inv.InvoiceDate = d
-					}
+					applyParsedBodyDate(c.inv, text)
 				} else {
 					// 金额常常只印在附件里（主题写「对账单」、正文写「见附件」），
 					// 所以把「有没有发票类附件」一起告诉规则层，否则这封邮件会在
@@ -580,6 +594,46 @@ func limitInvoiceBodyJobs(jobs []bodyJob) []int {
 	return kept
 }
 
+// invoiceBodyReason 判定这封邮件本轮值不值得拉原文，拉了为什么。
+//
+// 抽成纯函数是因为这个判定原先埋在 step1.5 的巨型循环里（invoiceCandidate
+// 是函数内局部类型），从外部**完全无法测试**——而 "date" 这条分支正是为
+// 真实缺陷加的：IMAP 路径只落 envelope，开票日期在正文里，导致规范文件名
+// 退化成采集当天。修了却没有任何测试保护，等于没修。
+//
+// 返回 "date" | "candidate" | ""。
+func invoiceBodyReason(hit bool, inv *Invoice, e Email) string {
+	switch {
+	case !hit && InvoiceCandidate(e):
+		// 关键词命中才值得读正文：24h 窗口内 miss 邮件可能几十封。
+		// 与 server 侧 extractInvoicesAsync 的门槛一致。
+		return "candidate"
+	case hit && inv != nil && inv.InvoiceDate == "":
+		// 命中了但**没有开票日期**：正文里的「开票日期」看不到，
+		// 规范文件名会退化成采集当天（真库实测：
+		// 「其他-杭州创客家…-3500.00-2026-10-01.pdf」里的 2026-10-01
+		// 是采集当天，不是票面开票日期——该行的 invoice_date 至今为空）。
+		return "date"
+	}
+	return ""
+}
+
+// applyParsedBodyDate 用拉回来的正文补开票日期。已有日期时**不覆盖**——
+// 正文里的散落日期可能不是票面日期，envelope/XML 解析出的值更可信。
+// 返回最终生效的日期（空串表示仍无日期）。
+func applyParsedBodyDate(inv *Invoice, text string) string {
+	if inv == nil || inv.InvoiceDate != "" || text == "" {
+		if inv == nil {
+			return ""
+		}
+		return inv.InvoiceDate
+	}
+	if d := ParseInvoiceDate(text); d != "" {
+		inv.InvoiceDate = d
+	}
+	return inv.InvoiceDate
+}
+
 // fetchBodies 有界并发地拉取这些 job 的原文并解析。
 func (p *Pipeline) fetchBodies(ctx context.Context, keptIdx []int, jobs []bodyJob) []bodyResult {
 	results := make([]bodyResult, len(keptIdx))
@@ -665,13 +719,20 @@ func (p *Pipeline) cleanSpam(ctx context.Context, rep *PipelineReport) {
 	// 特征）——它们就卡在门槛外侧。阈值该不该调、这些订阅该不该留，只能由你
 	// 看着具体主题决定，规则自己不该替你决定。
 	nearByAccount := map[string][]SpamNearMiss{}
+	// 同发件人在本批里的封数：判断「列表推送 vs 人际邮件」需要跨封信息，
+	// 纯函数 LooksLikeSpam 自己拿不到，由这里统计后传进去。
+	senderVolume := map[string]int{}
+	for i := range emails {
+		senderVolume[strings.ToLower(strings.TrimSpace(emails[i].FromAddress))]++
+	}
 	for i := range emails {
 		e := emails[i]
 		if e.Category == "spam" || e.Category == "archived" {
 			continue
 		}
 		inv := InvoiceCandidate(e)
-		v := LooksLikeSpam(e.FromAddress, e.Subject, e.Snippet, inv, e.Importance == "high")
+		v := LooksLikeSpam(e.FromAddress, e.Subject, e.Snippet, inv, e.Importance == "high",
+			senderVolume[strings.ToLower(strings.TrimSpace(e.FromAddress))])
 		if v.Spam {
 			byAccount[e.AccountID] = append(byAccount[e.AccountID], e.UID)
 			if whyByAccount[e.AccountID] == "" {
@@ -774,6 +835,16 @@ func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 		return
 	}
 	since := time.Now().AddDate(0, 0, -2).Unix()
+	// 窗口之外的高重要度邮件：它们**永远不会被提醒**，但报告上原本看不出来。
+	// 先数出来，再决定要不要改窗口——改窗口是产品取舍，可见性不是。
+	if n, err := p.Store.CountHighImportanceOutside(ctx, since, 2000); err != nil {
+		rep.AddError("reminder out-of-window count: %v", err)
+	} else if n > 0 {
+		rep.RemindersOutOfWindow = n
+		log.Printf("[email/pipeline] %d 封 importance=high 的邮件早于 %d 秒（2 天窗口），"+
+			"**永远不会进入重要提醒** —— 报告里 RemindersSent=0 有一部分是这个原因",
+			n, time.Now().Unix()-since)
+	}
 	emails, notified, err := p.Store.ListEmailsSince(ctx, since, 500)
 	if err != nil {
 		rep.AddError("reminder scan list: %v", err)
@@ -912,6 +983,11 @@ func (p *Pipeline) PublishLedgerScoped(ctx context.Context, userID, workspaceID 
 	return url, nil
 }
 
+// utf8BOM 是 UTF-8 字节序标记（EF BB BF）。
+//
+// 只用在会被 Excel 打开的 CSV 上——见 BuildInvoiceSummaryDocs 里的说明。
+const utf8BOM = "\xEF\xBB\xBF"
+
 // BuildInvoiceSummaryDocs 生成共享汇总文档（CSV 清单 + Markdown 报表，
 // 含合计金额）。返回两个文件的绝对路径。文件总在每轮流水线末尾重建，
 // 作为「无法发送飞书时的共享文档」兜底与对账清单。
@@ -935,12 +1011,18 @@ var invoiceSummaryHeader = []string{
 // **第 8 列「文件名」**——用 CSV 解析器实测确认（金额列空着、文件名列写着合计）。
 // 需求原文要的是「汇总金额」，落在文件名列里，人在 Excel 里根本对不上账。
 // 改成按表头定位，以后调整列顺序也不会再错位。
-func invoiceSummaryTotalRow(total float64) []string {
+//
+// 2026-10-04 合并修订：参数从 float64 改成 string。调用方现在按币种分组，
+// 每个币种的金额是**已经按整数分算好的字符串**（centsByCur[cur]/100），
+// 若这里再收 float64 走一遍 fmt("%.2f") 就等于允许调用方传一个没对齐
+// round2 的值——那正是本函数当初要消灭的那类错位。传字符串让「已格式化」
+// 这件事在类型上可见。
+func invoiceSummaryTotalRow(amount string) []string {
 	row := make([]string, len(invoiceSummaryHeader))
 	row[0] = "合计"
 	for i, col := range invoiceSummaryHeader {
 		if col == "金额" {
-			row[i] = fmt.Sprintf("%.2f", total)
+			row[i] = amount
 		}
 	}
 	return row
@@ -956,64 +1038,169 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 	csvPath := filepath.Join(dir, "invoices-summary-"+stamp+".csv")
 	mdPath := filepath.Join(dir, "invoices-summary-"+stamp+".md")
 
-	var total float64
-	counted := 0
+	// 合计与明细行必须用**同一个** round2 口径，否则用户拿计算器逐行相加
+	// 会对不上账。实测（2026-10-01）：明细 1.005 / 2.675 / 8.615 时，
+	// 逐行 %.2f 相加 = 12.30，而裸 float64 累加再 %.2f = 12.29，差 1 分。
+	// 整数分累加保证 total 与 sum(round2(每行)) 恒等。
+	//
+	// 合计**按币种分组**（2026-10-01 补）。本函数是 WriteInvoiceSummaryDocs，
+	// 与飞书表格那条路径（ledger.go:LedgerRows）是两段独立代码：LedgerRows
+	// 早已按币种分组出多行合计，而这里仍把所有币种直接相加，于是
+	// 100.00 USD + 50.00 CNY 会在本地 CSV 里写成「合计 150.00」——币种
+	// 列是空的、Markdown 标题里也没有币种，读者无从判断这个数字是什么。
+	// 跨币种相加不是金额。同一条需求（「汇总金额」）的两条路径必须同口径。
+	//
+	// 单一币种（当前真实数据 7 张全是 CNY）时保持旧输出形状不变：仍是一行
+	// 不带币种标签的合计，避免让已有的对账习惯（按下标取第 8 列）失效。
+	//
+	// 冲突记录：main 侧（243cda44）在这里只有一个裸 `var total float64` +
+	// `counted`，且合计行由 invoiceSummaryTotalRow(total) 单独追加在 CSV
+	// 末尾。取本分支侧的按币种分组形态，但把 main 的 `counted` 叠加进来
+	// （见下面 Markdown 抬头）——两者不是同一件事：counted 回答「几张被计入」，
+	// centsByCur 回答「各币种各多少」。单取任一侧都会丢掉另一半语义。
+	centsByCur := map[string]int64{}
+	countByCur := map[string]int{}
+	var curOrder []string
 	rows := make([][]string, 0, len(invoices))
 	for _, inv := range invoices {
-		// 合计口径与 LedgerRows 保持一致：**只统计已下载的**。
+		amount := round2(inv.Amount)
+		cur := currencyOrDefault(inv.Currency)
+		// 明细行：所有发票都列出来（不计入合计 ≠ 从列表消失）。
+		rows = append(rows, []string{
+			inv.Category, inv.Seller, fmt.Sprintf("%.2f", amount), inv.Currency,
+			inv.InvoiceNo, inv.InvoiceDate, inv.Status, inv.FileName, inv.Subject,
+		})
+		// 计入合计的门槛与 LedgerRows 保持一致：**只统计已下载的**。
 		// 2026-10-01 修正（见 ledger.go 的详细说明）：原来无条件累加全部记录，
 		// failed 发票若带着错误抽取出的非零金额，会静默把对账总额算高，
 		// 而且没有任何地方会提示。两处口径必须一致，否则 CSV 与飞书表格
 		// 的「合计」会给出两个不同的数。
 		//
-		// counted 与 total 在同一处递增：把「计入了几张」和「合计多少钱」
-		// 绑在一起，才能在 Markdown 头部如实说明覆盖范围。
-		if (inv.Status == "downloaded" || inv.Status == "filed") && inv.FilePath != "" {
-			total += inv.Amount
-			counted++
+		// 注意 counted 与 centsByCur 在同一处递增：把「计入了几张」和
+		// 「各币种各多少」绑在一起，才能在 Markdown 头部如实说明覆盖范围。
+		if !((inv.Status == "downloaded" || inv.Status == "filed") && inv.FilePath != "") {
+			continue
 		}
-		rows = append(rows, []string{
-			inv.Category, inv.Seller, fmt.Sprintf("%.2f", inv.Amount), inv.Currency,
-			inv.InvoiceNo, inv.InvoiceDate, inv.Status, inv.FileName, inv.Subject,
-		})
+		if _, seen := centsByCur[cur]; !seen {
+			curOrder = append(curOrder, cur)
+		}
+		centsByCur[cur] += int64(math.Round(amount * 100))
+		countByCur[cur]++
+	}
+	// counted 是**全部币种**的计入张数（不分币种），供 Markdown 抬头说清
+	// 覆盖范围；它与 countByCur 的关系是 sum(countByCur[cur]) == counted。
+	counted := 0
+	for _, cur := range curOrder {
+		counted += countByCur[cur]
+	}
+
+	// 每个币种一行合计：币种列带上币种，金额按**表头定位**而不是硬编码下标。
+	//
+	// 冲突记录：main 侧（243cda44）为此专门抽了 invoiceSummaryTotalRow，
+	// 因为原来的 `"合计,,,,,,,%.2f,\n"` 用 7 个逗号把金额放到了**第 8 列
+	// 「文件名」**——用 CSV 解析器实测确认过（金额列空着、文件名列写着合计）。
+	// 需求原文要的是「汇总金额」，落在文件名列里人在 Excel 里根本对不上账。
+	// 本分支的 totalRows 同样是硬编码下标，且第 7 位（索引 7）正好是「文件名」，
+	// 于是**继承了同一个缺陷**。这里取 main 的修法：按 invoiceSummaryHeader
+	// 里的列名定位，以后调整列顺序也不会再错位。
+	totalRows := make([][]string, 0, len(curOrder)+1)
+	for _, cur := range curOrder {
+		cells := invoiceSummaryTotalRow(fmt.Sprintf("%.2f", float64(centsByCur[cur])/100))
+		// 多币种时才在币种列标注；单币种保持旧形状（不带币种标签），
+		// 避免让已有的对账习惯失效。
+		if len(curOrder) > 1 {
+			for i, col := range invoiceSummaryHeader {
+				if col == "币种" {
+					cells[i] = cur
+				}
+			}
+		}
+		totalRows = append(totalRows, cells)
+	}
+	// 空清单也必须有合计行（需求：「整理一个列表…并汇总金额」）：
+	// 只有表头 + 一行 0 合计，下游按行数算范围时才不用特判。与 LedgerRows 同理。
+	// 同样走 invoiceSummaryTotalRow —— 这里也**不能**硬编码下标（见上）。
+	if len(curOrder) == 0 {
+		totalRows = append(totalRows, invoiceSummaryTotalRow("0.00"))
+	}
+
+	// 供 Markdown 抬头用：单币种给一个数，多币种给逐币种的描述。
+	sumByCur := make([]string, 0, len(curOrder))
+	var total float64
+	for _, cur := range curOrder {
+		sum := float64(centsByCur[cur]) / 100
+		total += sum
+		if len(curOrder) > 1 {
+			sumByCur = append(sumByCur, fmt.Sprintf("%s %.2f", cur, sum))
+		}
 	}
 
 	csv := &strings.Builder{}
 	csv.WriteString(strings.Join(invoiceSummaryHeader, ",") + "\n")
-	for _, r := range rows {
+	// 合计行只进 CSV。它不能混进 rows —— Markdown 表格按 7 列渲染每一行，
+	// 塞进去会多出一张空壳的「合计 | | | 3500.00 | ...」行（金额会落在状态列）。
+	for _, r := range append(append([][]string{}, rows...), totalRows...) {
 		cells := make([]string, len(r))
 		for i, c := range r {
 			cells[i] = csvSafeCell(c)
 		}
 		csv.WriteString(strings.Join(cells, ",") + "\n")
 	}
-	// 合计行只进 CSV。它不能混进 rows —— Markdown 表格按 7 列渲染每一行，
-	// 塞进去会多出一张空壳的「合计 | | | 3500.00 | ...」行（金额会落在状态列）。
-	sumCells := invoiceSummaryTotalRow(total)
-	for i, c := range sumCells {
-		sumCells[i] = csvSafeCell(c)
-	}
-	csv.WriteString(strings.Join(sumCells, ",") + "\n")
-	if err := os.WriteFile(csvPath, []byte(csv.String()), 0o600); err != nil {
-		return "", "", err
-	}
 
+	// 抬头必须说清是哪种货币：多币种时逐币种列出，绝不给一个无币种的裸数字。
+	amountSummary := fmt.Sprintf("%.2f", total)
+	if len(sumByCur) > 0 {
+		amountSummary = strings.Join(sumByCur, " + ")
+	}
 	md := &strings.Builder{}
 	md.WriteString("# 发票汇总\n\n")
-	// 「共 N 张」和合计金额必须用各自的口径说清楚。
+	// 抬头必须说清三件事：共几张、其中几张计入合计、合计金额是多少。
 	//
-	// 原来头部写的是 len(invoices)（**全部**发票），而 total 只累加
+	// 「共 N 张」和「计入合计 M 张」必须分开说。main 侧（243cda44）发现：
+	// 原来头部写的是 len(invoices)（**全部**发票），而金额只累加
 	// status ∈ {downloaded, filed} 且 FilePath 非空的。于是只要清单里混进
 	// pending/failed 发票，头部就是「共 3 张 · 合计金额 100.00」——读者必然
 	// 以为这 3 张都算进了 100，实际只有 1 张。和 2026-10-01 修过的
 	// LedgerTotal 是同一类问题：同一个数字在两处用不同口径，且没有任何提示。
-	md.WriteString(fmt.Sprintf("生成时间：%s · 共 %d 张（计入合计 %d 张）· 合计金额 **%.2f**\n\n",
-		time.Now().Format("2006-01-02 15:04"), len(invoices), counted, total))
+	//
+	// 而金额本身用 amountSummary（多币种时逐币种列出），那是本分支的形态：
+	// 绝不给一个无币种的裸数字。两者说的是不同的事，必须都在。
+	md.WriteString(fmt.Sprintf("生成时间：%s · 共 %d 张（计入合计 %d 张）· 合计金额 **%s**\n\n",
+		time.Now().Format("2006-01-02 15:04"), len(invoices), counted, amountSummary))
 	md.WriteString("| 费用类型 | 对方单位 | 金额 | 发票号 | 日期 | 状态 | 文件 |\n")
 	md.WriteString("|---|---|---:|---|---|---|---|\n")
 	for _, r := range rows {
 		md.WriteString(fmt.Sprintf("| %s | %s | %s %s | %s | %s | %s | %s |\n",
 			r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]))
+	}
+	// 多币种时在明细表后附逐币种合计，单币种不加（与 CSV 一行合计对应）。
+	if len(sumByCur) > 0 {
+		md.WriteString("\n## 合计（按币种）\n\n")
+		for _, cur := range curOrder {
+			md.WriteString(fmt.Sprintf("- %s：%.2f（共 %d 张）\n",
+				cur, float64(centsByCur[cur])/100, countByCur[cur]))
+		}
+	}
+	// CSV 必须带 UTF-8 BOM（2026-10-02 修，实测证据见 §7ct）。
+	//
+	// 为什么：中文 Windows 的 Excel 打开**无 BOM** 的 UTF-8 CSV 时，会按系统
+	// ANSI 代码页（GBK）解码，于是「费用类型/对方单位/金额」全变乱码。
+	// 真实文件实测首 3 字节 = E8 B4 B9（"费" 的 UTF-8 前三字节），确实没有 BOM。
+	// 这份 CSV 是需求 3 明确要交付的「整理一个列表」——用户拿到打不开就等于没做。
+	//
+	// 只给 CSV 加，不给 Markdown 加：MD 不由 Excel 打开，BOM 反而会在第一行
+	// 前面多出三个不可见字符。
+	//
+	// 无兼容风险：全树没有任何代码解析这些 CSV——它们只以**文件名**的形式
+	// 过 API（shareDocCsv），测试里也只有 os.Stat，不读内容。
+	//
+	// 合并事故记录：解 243cda44 的冲突时，这一整段（含 os.WriteFile）曾被
+	// 一起吞掉，函数只写 MD 就返回。症状很隐蔽——编译通过、vet 通过、
+	// 多数用例照常绿，只有真正去 stat CSV 的那几个转红
+	// （TestWriteInvoiceSummaryDocs_*、TestBuildInvoiceSummaryDocs_*），
+	// 报的却是「文件不存在」而不是「少了 WriteFile」。
+	if err := os.WriteFile(csvPath, append([]byte(utf8BOM), []byte(csv.String())...), 0o600); err != nil {
+		return "", "", err
 	}
 	if err := os.WriteFile(mdPath, []byte(md.String()), 0o600); err != nil {
 		return csvPath, "", err

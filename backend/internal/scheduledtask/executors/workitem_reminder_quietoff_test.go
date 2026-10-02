@@ -31,8 +31,26 @@ func reminderAtUTC(hour, min int) int64 {
 	return time.Date(now.Year(), now.Month(), now.Day(), hour, min, 0, 0, time.UTC).Unix()
 }
 
+// pinUTCServerZone 把 time.Local 钉成 UTC。
+//
+// 【合并时拆出来的】本文件原先调用共享的 pinServerZone，而那个 helper 在本分支
+// 被改成「钉到接近本地正午的固定时区」——理由很硬：钉到 UTC 时，「应当触发」
+// 的断言会随运行时刻翻转（UTC+8 机器上 11:59 本地 = 03:59 UTC，落在 22:30-07:30
+// 窗口内，实测 7 个用例红在 `remind_at was cleared`）。
+//
+// 但本文件要的恰好相反：它用 reminderAtUTC(2, 0) 造一封 **02:00 UTC** 的提醒，
+// 期望它被默认窗口推迟。只有 time.Local 真的是 UTC，这个时刻才落在窗口内。
+// 两侧对同一个 helper 的要求是相反的，所以拆开：正午钉法给「应当触发」的用例，
+// UTC 钉法给这个「应当推迟」的用例。谁都不必为对方让步。
+func pinUTCServerZone(t *testing.T) {
+	t.Helper()
+	orig := time.Local
+	time.Local = time.UTC
+	t.Cleanup(func() { time.Local = orig })
+}
+
 func TestSetQuietWindowZeroDisablesDeferral(t *testing.T) {
-	pinServerZone(t)
+	pinUTCServerZone(t)
 
 	t.Run("the default window defers a 02:00 reminder", func(t *testing.T) {
 		store := newFakeStore()
@@ -93,7 +111,7 @@ func TestSetQuietWindowZeroDisablesDeferral(t *testing.T) {
 // this is the half of the contract that the previous test's contrast depends
 // on, and it is what keeps production behaviour unchanged by the fix.
 func TestDefaultQuietWindowStillAppliesWithoutConfiguration(t *testing.T) {
-	pinServerZone(t)
+	pinUTCServerZone(t)
 	store := newFakeStore()
 	store.due = []task.Task{{ID: "t-1", Title: "Night owl", OwnerID: "alice",
 		WorkspaceID: "ws-1", RemindAt: reminderAtUTC(2, 0)}}

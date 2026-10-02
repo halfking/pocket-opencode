@@ -1,4 +1,4 @@
-﻿package learning
+package learning
 
 // PostgreSQL persistence for the learning domain. Follows the same conventions
 // as the rest of the repository (see ADR-005): the schema is created

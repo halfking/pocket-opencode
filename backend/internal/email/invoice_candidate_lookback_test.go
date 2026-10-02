@@ -41,7 +41,7 @@ func readPipelineSource(t *testing.T) string {
 // 仓库里已经因此栽过多次（见 handoff 里的护栏教训）。
 func extractFuncBody(t *testing.T, src, header string) string {
 	t.Helper()
-	noComment := stripGoComments(src)
+	noComment := stripGoCommentsKeepLines(src)
 	i := strings.Index(noComment, header)
 	if i < 0 {
 		t.Fatalf("源码里找不到 %s", header)
@@ -53,8 +53,13 @@ func extractFuncBody(t *testing.T, src, header string) string {
 	return rest
 }
 
-// stripGoComments 去掉 // 行注释与 /* */ 块注释（保留换行以免把两行粘成一行）。
-func stripGoComments(src string) string {
+// stripGoCommentsKeepLines 去掉 // 行注释与 /* */ 块注释（保留换行以免把两行粘成一行）。
+//
+// 与 pgisolation_guard_test.go 里的 stripGoComments 刻意**不合并**：那是个词法级
+// 实现（识别字符串/字符/反引号字面量，块注释压成一个空格），本文件依赖的是
+// 「块注释保留内部换行」——extractFuncBody 靠 "\n}\n" 切函数体，行结构被压平
+// 就会截错。两者语义不同、各服务各的判据，重名会掩盖这个区别。
+func stripGoCommentsKeepLines(src string) string {
 	var b strings.Builder
 	for i := 0; i < len(src); {
 		if src[i] == '/' && i+1 < len(src) {

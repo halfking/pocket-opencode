@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 )
 
 // mime.go — 发票采集流水线的全文抓取与 MIME 解析。
@@ -54,6 +55,20 @@ type ParsedMessage struct {
 	TextBody    string // text/plain 聚合
 	HTMLBody    string // text/html 聚合（发票链接多藏在 href 里）
 	Attachments []ParsedAttachment
+}
+
+// selectInboxWithClientID 声明 RFC 2971 客户端标识后 SELECT INBOX。
+//
+// 顺序是硬约束：网易 Coremail 在 SELECT 之前没收到 ID 就回
+// `NO SELECT Unsafe Login`。sendClientID 内部对失败只记日志不阻断
+// （ID 是扩展命令，服务器 CAPABILITY 里没有时返回 BAD 属正常），
+// 但 163 会因为「没发」而拒绝 SELECT，所以必须发。
+func selectInboxWithClientID(client *imapclient.Client, emailAddress string) error {
+	sendClientID(client, emailAddress)
+	if _, err := client.Select("INBOX", nil).Wait(); err != nil {
+		return fmt.Errorf("select INBOX: %w", err)
+	}
+	return nil
 }
 
 // FetchMessageRaw 按 UID 单封拉整封原文。先用 go-imap 的 client.Fetch，
@@ -95,9 +110,13 @@ func (f *Fetcher) FetchMessageRaw(ctx context.Context, accountID string, uid int
 	// 于是同一个 163 账户「常规同步成功、拉原文必失败」——发票二次提取与
 	// 发票采集（harvestOne 也走这里）在 163 邮箱上 100% 拿不到正文。
 	// 真实日志：acct-...-5 uid=1298896126 select INBOX: imap: NO SELECT Unsafe Login。
-	sendClientID(client, acc.EmailAddress)
-	if _, err := client.Select("INBOX", nil).Wait(); err != nil {
-		return nil, fmt.Errorf("select INBOX: %w", err)
+	//
+	// 抽成 selectInboxWithClientID 是为了让「ID 必须在 SELECT 之前」这条协议
+	// 约束能被**真实调用**验证：早期版本的测试自己手搓 ID 命令，结果把
+	// mime.go 里这行 sendClientID 删掉测试照样全绿——测的是测试自己写的命令，
+	// 不是生产代码。负控：删掉本函数里的 sendClientID -> imap_clientid_test.go 转红。
+	if err := selectInboxWithClientID(client, acc.EmailAddress); err != nil {
+		return nil, err
 	}
 
 	// 单封原文上限。发票 PDF 实际 <200KB，XML 几 KB，8MB 对「带附件的普通
@@ -158,19 +177,55 @@ func (f *Fetcher) FetchMessageRaw(ctx context.Context, accountID string, uid int
 // 类型化解析器）。Go 的 net/textproto 让我们直接拼装命令，错误信息更直观。
 func (f *Fetcher) fetchRawByTextproto(ctx context.Context, acc *Account, password string, uid, maxBytes int64) ([]byte, error) {
 	dialer := net.Dialer{Timeout: 30 * time.Second}
-	conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", acc.IMAPHost, acc.IMAPPort))
+	addr := fmt.Sprintf("%s:%d", acc.IMAPHost, acc.IMAPPort)
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
 
-	// IMAPS（993/995 一类）必须先做 TLS 握手再谈 IMAP 文本协议。原来这里
-	// 直接用明文 TCP，于是对 993 端口的服务端来说：我们在等 greeting，它在等
-	// ClientHello，双方互等 → 读 greeting 直接 EOF。实测真实账户
-	// （qq/163 全部 993）的降级路径 100% 失败，报
-	// `fetch raw uid=135 (textproto): read greeting: EOF`，把 go-imap 主路径
-	// 真正的原因盖掉了。降级通道对 IMAPS 账户原本就是条死路。
-	if acc.IMAPPort == 993 {
+	// **建连之后一个 deadline 都没有**（这是本函数原来最大的问题）。
+	// `net.Dialer.Timeout` 只管三次握手，之后 `br.ReadString('\n')` 能挂多久
+	// 完全看服务器脸色，而且**不看 ctx** —— ctx 只喂给了 DialContext。
+	// 于是「服务器 accept 了 TCP 但一句话不说」的组合会让单封邮件**永久**
+	// 阻塞，整轮流水线失去上界，正是上方 maxMessageBytes 注释里明确要求的
+	// 「也不能让一轮流水线没有上界」那条不变量。
+	//
+	// 复用 fetcher.go 的 deadlineConn（滚动空闲 60s + 绝对硬截止 45s）：
+	// go-imap 主路径早就套了它，降级路径当时漏了。
+	dc := &deadlineConn{
+		Conn: conn,
+		idle: imapIdleTimeout,
+		hard: time.Now().Add(imapHardTimeout),
+	}
+	dc.start()
+	conn = dc
+	// ctx 取消也要能打断正在阻塞的读：把 deadline 钉到过去即可让 Read
+	// 立刻返回；连接关闭后 deadlineConn 的看门狗自行退出。
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = dc.SetDeadline(time.Now().Add(-time.Second))
+		case <-done:
+		}
+	}()
+
+	// 明文 / 隐式 TLS 的判定必须与 fetcher.dial 用同一条规则
+	// （isPlainIMAPPort），降级通道才可能在主路径失败后真正救回场子。
+	//
+	// 原先是 `if acc.IMAPPort == 993` 这种写死判断：只认 993，143 与其它
+	// 一切端口都当隐式 TLS。对生产账户（qq/163 都是 993）恰好正确，但
+	// 对任何非 993 的**明文**端口就是必然的协议错配 —— 最典型的是 Greenmail
+	// 的明文 3143：我们说 TLS、服务端等明文 greeting，双向互等，最后以
+	// `read greeting: EOF` 收场。账户的 IMAP 端口是逐账户配置项，
+	// 143/1143/993 之外的值（例如自建邮件网关的 1993）在旧写法下必然走错分支。
+	//
+	// 反过来把 993 也放掉是不能接受的：那是把加密通道悄悄降级成明文，
+	// 163 上会变成明文外发 LOGIN 密码。所以这里取的是「与主路径一致」，
+	// 而不是「尽量猜」。
+	if !isPlainIMAPPort(addr) {
 		tlsConn := tls.Client(conn, &tls.Config{
 			ServerName: acc.IMAPHost,
 			// 与 imapDialWithTimeout 保持一致：仅自签测试服务器才跳过校验，

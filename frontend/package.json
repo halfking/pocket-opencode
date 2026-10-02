@@ -72,6 +72,7 @@
     "@vitejs/plugin-vue": "^5.2.1",
     "fontverter": "^2.0.0",
     "harfbuzzjs": "^1.6.1",
+    "jsdom": "^30.1.1",
     "material-symbols": "^0.47.4",
     "patch-package": "^8.0.1",
     "playwright": "^1.61.1",

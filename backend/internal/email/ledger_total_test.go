@@ -33,6 +33,25 @@ func ledgerInv(id, status string, amount float64) Invoice {
 	}
 }
 
+// singleCurrencyTotal 从 LedgerRows 的**按币种分组**合计里取出唯一币种的金额。
+//
+// 合并说明：LedgerRows 的第二个返回值原本是标量 float64，本分支的
+// edff8086 改成了 []CurrencyTotal（跨币种的算术和不是金额，标量会诱导下一个人
+// 直接相加）。本文件的用例全部只用 CNY，所以按「唯一币种」取数即可。
+//
+// 出现第二个币种时**直接失败**而不是把它们加起来：那正是这次改签名要防的
+// 事，测试里悄悄相加等于把刚堵上的坑又挖一遍。
+func singleCurrencyTotal(t *testing.T, totals []CurrencyTotal) float64 {
+	t.Helper()
+	if len(totals) == 0 {
+		return 0
+	}
+	if len(totals) > 1 {
+		t.Fatalf("出现 %d 个币种 %v —— 本文件的用例只该有一个币种", len(totals), totals)
+	}
+	return totals[0].Amount
+}
+
 // TestLedgerRows_TotalCountsOnlyDownloaded 固定合计口径。
 func TestLedgerRows_TotalCountsOnlyDownloaded(t *testing.T) {
 	invs := []Invoice{
@@ -41,8 +60,8 @@ func TestLedgerRows_TotalCountsOnlyDownloaded(t *testing.T) {
 		ledgerInv("b", "failed", 999.99),
 		ledgerInv("c", "pending", 1280),
 	}
-	rows, total := LedgerRows(invs)
-	if total != 3500 {
+	rows, totals := LedgerRows(invs)
+	if total := singleCurrencyTotal(t, totals); total != 3500 {
 		t.Fatalf("合计 = %v, want 3500 —— 只应计入 downloaded；"+
 			"failed/pending 的金额可能来自错误抽取，静默计入会让总额虚高", total)
 	}
@@ -69,8 +88,8 @@ func TestLedgerRows_FailedInvoiceStillGetsARow(t *testing.T) {
 		ledgerInv("a", "downloaded", 3500),
 		ledgerInv("b", "failed", 999.99),
 	}
-	rows, total := LedgerRows(invs)
-	if total != 3500 {
+	rows, totals := LedgerRows(invs)
+	if total := singleCurrencyTotal(t, totals); total != 3500 {
 		t.Fatalf("合计 = %v, want 3500", total)
 	}
 	// 按销售方列（第 2 列，索引 1）找 failed 那张 —— 台账行里没有 ID 列。
@@ -102,8 +121,8 @@ func TestLedgerRows_DownloadedButNoFileIsNotCounted(t *testing.T) {
 		// 状态说下好了，文件却不在（被清理脚本删掉/落盘失败）。
 		{ID: "ghost", Status: "downloaded", Amount: 777, Currency: "CNY", FilePath: ""},
 	}
-	_, total := LedgerRows(invs)
-	if total != 3500 {
+	_, totals := LedgerRows(invs)
+	if total := singleCurrencyTotal(t, totals); total != 3500 {
 		t.Fatalf("合计 = %v, want 3500 —— 没有落盘文件的发票不该计入", total)
 	}
 }
@@ -120,8 +139,8 @@ func TestLedgerRows_DownloadedButNoFileIsNotCounted(t *testing.T) {
 //
 // 真正要守住的是：**空输入不能凭空造出金额**（合计 0），且不能出现明细行。
 func TestLedgerRows_EmptyLedger(t *testing.T) {
-	rows, total := LedgerRows(nil)
-	if total != 0 {
+	rows, totals := LedgerRows(nil)
+	if total := singleCurrencyTotal(t, totals); total != 0 {
 		t.Fatalf("total = %v, want 0", total)
 	}
 	if len(rows) != 2 { // 表头 + 合计行

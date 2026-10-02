@@ -99,7 +99,7 @@ func (s *Store) migrate() error {
 		is_read BOOLEAN DEFAULT FALSE,
 		is_starred BOOLEAN DEFAULT FALSE,
 		category TEXT,
-		importance TEXT,
+		importance TEXT CHECK (importance IN ('','high','medium','low')),
 		ai_summary TEXT,
 		suggested_action TEXT,
 		action_reason TEXT,
@@ -108,6 +108,34 @@ func (s *Store) migrate() error {
 		UNIQUE(account_id, message_id),
 		FOREIGN KEY (account_id) REFERENCES email_accounts(id) ON DELETE CASCADE
 	);
+	-- 重要度只能是 '' / high / medium / low。
+	--
+	-- 上面 CREATE TABLE 里那行内联 CHECK 只对**新库**生效，PostgreSQL 不会
+	-- 给已经建好的表补约束，所以老库需要这段幂等补丁。列级 CHECK 的自动名字
+	-- 就是 emails_importance_check，与内联那个同名，因此新库跑到这里会跳过。
+	--
+	-- 为什么要有这层兜底：同文件的 email_accounts.auth_type 早就有 CHECK，
+	-- 而 importance 一直没有。§7af 修了 NormalizeImportance（把 "High"/"高"/"1"
+	-- 归一成 high，无法识别的落空串）之后上层不再写脏值，但**历史脏值**仍会
+	-- 留在库里，而 splitReminderCandidates 用 case "high" 精确匹配——脏值既
+	-- 不触发提醒也不计入 unclassified，是最坏情况。约束让脏值进不来。
+	--
+	-- 空串是合法值，语义是「未分类」。列可空，NULL 同样表示未分类：
+	-- NULL IN (...) 求值为 NULL，而 CHECK 只在结果为 FALSE 时拒绝，所以
+	-- NULL 会照常放行——这一点是刻意的，不能改成 NOT NULL。
+	DO $pocket$
+	BEGIN
+		IF NOT EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = 'emails'::regclass
+			  AND conname = 'emails_importance_check'
+		) THEN
+			ALTER TABLE emails ADD CONSTRAINT emails_importance_check
+				CHECK (importance IN ('','high','medium','low'));
+		END IF;
+	END
+	$pocket$;
+
 	-- IMAP fallback 去重：仅当 message_id 缺失时按 (account_id, subject, date)
 	-- 去重。用部分唯一索引而非全局 UNIQUE 约束，否则两封不同 message_id
 	-- 但同主题同日期（如 "Daily report"、"Out of office"）的邮件会被
@@ -212,6 +240,24 @@ func (s *Store) migrate() error {
 	-- 已派发的时间，防止流水线每轮重复推送同一封邮件。
 	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS updated_at BIGINT NOT NULL DEFAULT 0;
 	ALTER TABLE emails ADD COLUMN IF NOT EXISTS notified_at BIGINT NOT NULL DEFAULT 0;
+	-- updated_at 是邮件的「最后修改时间」，供客户端增量同步取 MAX(updated_at)
+	-- 作 since、服务端按 updated_at > since 过滤（需求 6/7 的本地优先架构）。
+	--
+	-- 2026-10-02 补。此前**代码引用了这一列而 migrate 不建它**：
+	-- SetSummaryScoped（store.go:531）写的是
+	--   UPDATE emails e SET ai_summary = $1, updated_at = $2 ...
+	-- 而 CREATE TABLE 与上面那批补丁里都没有这一列。实测在全新 schema 上：
+	--   ERROR: column "updated_at" of relation "emails" does not exist (42703)
+	-- 即**手动总结在全新部署上直接失败**。
+	-- 真库 opencode_pocket 之所以有这一列，是历史上有人手工加过——
+	-- 那是迁移遗留，不是本仓库的 migrate 产物（见 §7ej）。
+	--
+	-- 口径：Unix **秒**，与 created_at / date 一致，也与客户端
+	-- MAX(updated_at) 的用法一致。故意不给 DEFAULT：填 0 只会让
+	-- "0 > since" 恒为假，把「没有值」伪装成「很旧」，那比 NULL 更难查
+	-- （NULL 至少能被 ListEmailsScoped:1700 的 UpdatedAt==0 → date 兜底识别）。
+	-- 真正的赋值由 InsertEmail 补齐，那是独立的一处改动。
+	ALTER TABLE emails ADD COLUMN IF NOT EXISTS updated_at BIGINT;
 	CREATE TABLE IF NOT EXISTS email_vacation_replies (
 		id TEXT PRIMARY KEY,
 		account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
@@ -396,24 +442,28 @@ func (s *Store) MarkStarred(ctx context.Context, id string, starred bool) error 
 // 避免上层 handler 用 ListEmails + 客户端过滤这种 O(N) 写法。
 func (s *Store) GetEmailByID(ctx context.Context, id string) (*Email, error) {
 	var e Email
-	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, folderName sql.NullString
-	var messageID sql.NullString
+	// 冲突记录：两侧都独立发现了「message_id 漏查会静默废掉 sameEmailMessage
+	// 的强确认分支」（本分支 bb1c5f10 带 invoice_selfheal_test.go，
+	// main 为 a706bf55），但 main 还多修了 body_purged——漏查它会让
+	// summarizeBody 的第一道守卫恒不触发，软删并清空正文的邮件会被 IMAP
+	// 重新回源、喂给 LLM、再把摘要写回已删除的行。取 main 侧（超集），
+	// 并保留本分支对 uid 134/135 两张同名 QQ Wallet 发票的说明。
+	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, messageID, folderName sql.NullString
 	var bodyPurged sql.NullBool
 	var uid sql.NullInt64
 	// message_id / body_purged 不是「顺手多查两列」，漏掉它们不产生任何错误信号，
 	// 只让下游拿到零值结构体、守卫分支在生产里从不执行：
-	//   - 少了 message_id：invoice_harvest.harvestOne 拿本方法的返回值去调
-	//     sameEmailMessage(em, raw)，那条判据靠 em.MessageID 做「真实 Message-ID
-	//     强确认/强否定」。列没查出来 ⇒ emHasReal 恒 false ⇒ 生产里只剩
-	//     subject+from+同日 的弱判据，而真实数据里两张同名发票的头部完全一样。
+	//   - 少了 message_id：harvestOne -> recoverPOP3SourcedRaw ->
+	//     sameEmailMessage 拿 em.MessageID 做「真实 Message-ID 强确认/强否定」。
+	//     列没查出来 ⇒ emHasReal 恒 false ⇒ 生产里只剩 subject+from+同日的
+	//     弱判据，而真实数据里两张同名发票的头部完全一样（uid 134/135）。
 	//   - 少了 body_purged：server_email_summary.summarizeBody 第一道守卫
-	//     `if em.BodyPurged { return "" }` 恒不触发，用户软删并清空正文的邮件
-	//     会被 IMAP 重新回源、喂给 LLM、再把摘要写回已删除的行。
+	//     `if em.BodyPurged { return "" }` 恒不触发。
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, account_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments,
-		       message_id, COALESCE(body_purged, FALSE), COALESCE(folder_name, '')
+		SELECT id, account_id, uid, from_address, from_name, message_id, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments,
+		       COALESCE(body_purged, FALSE), COALESCE(folder_name, '')
 		FROM emails WHERE id = $1
-	`, id).Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &messageID, &bodyPurged, &folderName)
+	`, id).Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &messageID, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPurged, &folderName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -500,12 +550,62 @@ func (s *Store) SetClassification(ctx context.Context, id, category, importance,
 }
 
 // SetClassificationScoped updates classification only within one user/workspace.
+//
+// 不写 action_reason：老的调用方（规则引擎在 InsertEmail 时写入的依据）拿不到
+// 分类理由，强行用空串覆盖会抹掉已有值。AI 分类路径请用下面的
+// SetClassificationWithReasonScoped。
+// SetClassificationScoped updates classification only within one user/workspace.
+//
+// 2026-10-02 修正：importance 改成「规则判出的 high 对 AI 免疫」。
+//
+// 起因是一整条实测接起来的链：账户只配了 mark-important 时，入库后
+// importance='high' 而 category 仍为空；ListUnclassifiedScoped 挑待分类邮件
+// 过滤的是 **category**（不是 importance），于是这封照常进 AI 队列；LLM
+// 没给 importance 时 BuildClassifyWrites 只检查 category 就放行；最后这个
+// 方法是**全量覆盖**，importance 被写成 '' 或 'normal'。
+//
+// 结果：用户明确配了「这个发件人的邮件标重要」，被 AI 一句话降级，重要邮件
+// 提醒永远不发，且没有任何报错 —— 与「规则没落到库」症状相同，排查方向却
+// 相反，极其难定位。
+//
+// 口径：只有 high 受保护，且只在 AI 想把它降级时保护。其余情况（AI 给 high、
+// 旧值是 normal 或空）一律按 AI 的写，不做「一律保持 high」那种一刀切 ——
+// 那会让 AI 永远无法把邮件提升为重要。
+//
+// category 刻意不加同样保护：它归 AI 拥有（label-category 只在入库时播种），
+// 这是有意保留的语义边界，不是遗漏。
+//
+// 合并说明：本块原先在 main 侧的 5da2d9e9 里，但那次合并**没有把这段 SQL 带
+// 过来**——测试文件（store_classification_precedence_test.go）带过来了、实现没带，
+// 于是那两个用例在 main 上就一直红着。`git diff 5da2d9e9^ 5da2d9e9 -- store.go`
+// 可见原文。测试是红的这件事本身就是判据存在过的证据。
 func (s *Store) SetClassificationScoped(ctx context.Context, id, userID, workspaceID, category, importance, aiSummary, suggestedAction string) error {
 	_, err := s.pool.Exec(ctx, `
-		UPDATE emails e SET category = $1, importance = $2, ai_summary = $3, suggested_action = $4
+		UPDATE emails e SET category = $1,
+			importance = CASE WHEN e.importance = 'high' AND $2 <> 'high' THEN e.importance ELSE $2 END,
+			ai_summary = $3, suggested_action = $4
 		FROM email_accounts a
 		WHERE e.id = $5 AND e.account_id = a.id AND a.user_id = $6 AND a.workspace_id = $7
 	`, category, importance, aiSummary, suggestedAction, id, userID, workspaceID)
+	return err
+}
+
+// SetClassificationWithReasonScoped 在 SetClassificationScoped 的基础上补写
+// action_reason（AI 判定该重要度的依据）。
+//
+// 2026-10-01 补。kxmemory 的分类响应契约里带 action_reason
+// （docs/2026-07-02-kxmemory-api-contract.md），但客户端 DTO 漏了这个字段，
+// JSON 反序列化时静默丢弃，真库里 162 封已分类邮件的 action_reason 全是空串。
+// 「为什么这封被判为重要」拿不到，提醒就不可信——用户无法判断该不该点开。
+//
+// 与其它字段同口径「非空才写」：分类器没给理由时保留旧值，不用空串抹掉。
+func (s *Store) SetClassificationWithReasonScoped(ctx context.Context, id, userID, workspaceID, category, importance, aiSummary, suggestedAction, actionReason string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE emails e SET category = $1, importance = $2, ai_summary = $3, suggested_action = $4,
+			action_reason = CASE WHEN $8 <> '' THEN $8 ELSE e.action_reason END
+		FROM email_accounts a
+		WHERE e.id = $5 AND e.account_id = a.id AND a.user_id = $6 AND a.workspace_id = $7
+	`, category, importance, aiSummary, suggestedAction, id, userID, workspaceID, actionReason)
 	return err
 }
 
@@ -753,13 +853,42 @@ func randomID(prefix string) string {
 //
 // 性能：date 是 BIGINT（Unix 秒）所以用 `date >= start AND date < end` 范围查
 // 询（避免时区问题），命中 idx_emails_date 索引。
-func (s *Store) ListEmailsByDay(ctx context.Context, userID, date string, tzOffsetSec int) ([]Email, error) {
-	t, err := time.Parse("2006-01-02", date)
-	if err != nil {
-		return nil, fmt.Errorf("invalid date %q: %w", date, err)
-	}
+// parseDayStart 把 "YYYY-MM-DD" 解析成该日在用户时区的**起始时刻**。
+//
+// ## 为什么不能用 time.Parse + .In()
+//
+// 曾这么写（ListEmailsByDay / ListEmailsByDayScoped 两处同款缺陷）：
+//
+//	t, _ := time.Parse("2006-01-02", date)   // -> UTC 午夜
+//	loc := time.FixedZone("user", tzOffsetSec)
+//	t = t.In(loc)                            // 只改 Location 字段
+//	startUnix := t.Unix()                    // 恒等于 UTC 午夜
+//
+// `time.Time.In()` 只改变**显示用**的 Location，底层时刻（Unix 值）不变。
+// 所以 tzOffsetSec 传什么都没用，日界恒为 UTC 午夜。
+//
+// 正确写法是 `time.ParseInLocation`：直接在目标时区把 "2026-10-02" 解释成该
+// 时区的午夜（东八区 -> UTC 2026-10-01 16:00）。
+//
+// ## 影响
+//
+// 需求 4 的每日摘要窗口整体错位一个时区。对东八区（+8），用户每天
+// 00:00-08:00 之间触发的摘要，取到的是「当地昨天 08:00 到今天 08:00」的邮件 ——
+// 而非用户认知里的「今天」。late/summary 的邮件归属日整体偏一天。
+func parseDayStart(date string, tzOffsetSec int) (time.Time, error) {
 	loc := time.FixedZone("user", tzOffsetSec)
-	t = t.In(loc)
+	t, err := time.ParseInLocation("2006-01-02", date, loc)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid date %q: %w", date, err)
+	}
+	return t, nil
+}
+
+func (s *Store) ListEmailsByDay(ctx context.Context, userID, date string, tzOffsetSec int) ([]Email, error) {
+	t, err := parseDayStart(date, tzOffsetSec)
+	if err != nil {
+		return nil, err
+	}
 	startUnix := t.Unix()
 	endUnix := t.Add(24 * time.Hour).Unix()
 
@@ -1281,6 +1410,41 @@ func (s *Store) UpdateSyncState(ctx context.Context, id string, lastUID int64, l
 	return err
 }
 
+// AccountCredentialID 是一个账户的 ID 与其加密凭据。
+type AccountCredentialID struct {
+	ID               string
+	EmailAddress     string
+	CredentialCipher string
+}
+
+// ListEnabledAccountCredentials 返回所有**启用**账户的 ID 与加密凭据。
+//
+// 用途只有一个：启动自检（见 CheckCredentials）。config.Validate 只检查
+// POCKET_EMAIL_MASTER_KEY「非空」，不检查它对不对；一把**错**的 key 会让
+// 进程照常启动、界面照常打开，然后每一个账户都解不开凭据。要发现这种状态，
+// 必须在启动时真解一次。
+//
+// 刻意不返回明文，也不写库。
+func (s *Store) ListEnabledAccountCredentials(ctx context.Context) ([]AccountCredentialID, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, email_address, COALESCE(credential_encrypted, '')
+		FROM email_accounts WHERE enabled = TRUE ORDER BY created_at
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AccountCredentialID
+	for rows.Next() {
+		var r AccountCredentialID
+		if err := rows.Scan(&r.ID, &r.EmailAddress, &r.CredentialCipher); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ListEnabledAccounts 返回所有启用的账户。
 //
 // Deprecated: 该查询的 SELECT 不含 workspace_id 列，返回的 Account.WorkspaceID
@@ -1785,10 +1949,17 @@ func (s *Store) ListDeletedEmailIDsScoped(ctx context.Context, since int64, user
 
 // GetEmailByIDScoped returns a message only within the requested scope.
 //
-// 比 scanEmail 多读 uid + body_path：handleEmailBody 用 uid 拉 IMAP 正文，
-// 用 body_path 判断加密缓存是否已落盘。其余 list 路径不需要这两列。
+// 比 scanEmail 多读 uid + body_path + message_id + body_purged：
+//   - handleEmailBody 用 uid 拉 IMAP 正文，用 body_path 判断加密缓存是否已落盘；
+//   - message_id 见 GetEmailByID 里的说明（漏掉会静默废掉发票自愈的强身份判据）；
+//   - body_purged 见下面的说明（漏掉会让 summarizeBody 的「禁止回源」守卫失效）。
 func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID string) (*Email, error) {
 	var e Email
+	// 冲突记录：两侧在本方法上**已经等价**——都查了 message_id 与 body_purged
+	// （两侧各自独立发现这两个字段「一直写、从不读」：body_purged 漏查会让
+	// server_email_summary.summarizeBody 的 `if em.BodyPurged { return "" }`
+	// 守卫恒不触发，已软删的邮件会被 IMAP 回源、喂给 LLM、再把摘要写回已删除
+	// 的行），差别只是 SELECT 的列顺序与 Scan 的对应位置。取 main 侧。
 	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath, folderName, messageID sql.NullString
 	var bodyPurged sql.NullBool
 	var uid sql.NullInt64
@@ -2117,12 +2288,10 @@ func (s *Store) UpsertSummaryScoped(ctx context.Context, sum *DailySummary) erro
 // ListEmailsByDay joins on user_id only, so a multi-workspace user would get
 // every workspace's mail mixed into one summary.
 func (s *Store) ListEmailsByDayScoped(ctx context.Context, userID, workspaceID, date string, tzOffsetSec int) ([]Email, error) {
-	t, err := time.Parse("2006-01-02", date)
+	t, err := parseDayStart(date, tzOffsetSec)
 	if err != nil {
-		return nil, fmt.Errorf("invalid date %q: %w", date, err)
+		return nil, err
 	}
-	loc := time.FixedZone("user", tzOffsetSec)
-	t = t.In(loc)
 	startUnix := t.Unix()
 	endUnix := t.Add(24 * time.Hour).Unix()
 

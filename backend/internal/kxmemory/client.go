@@ -271,6 +271,14 @@ type EmailClassificationResult struct {
 	Importance      string `json:"importance"` // high / medium / low
 	Summary         string `json:"summary"`
 	SuggestedAction string `json:"suggested_action,omitempty"`
+	// ActionReason 是分类依据（契约 docs/2026-07-02-kxmemory-api-contract.md 有定义）。
+	//
+	// 2026-10-01 补。此前本结构没有这个字段，于是 JSON 里的 action_reason
+	// 在反序列化时被**静默丢弃**——Go 的 encoding/json 对未知字段不报错。
+	// 后果：emails.action_reason 列在真库里 162 封已分类邮件上**全为空**
+	// （ai_summary 有值、action_reason 全空），「为什么判成重要」这个信息
+	// 拿不到，用户无法判断提醒是否可信。
+	ActionReason string `json:"action_reason,omitempty"`
 }
 
 // ClassifyEmails 批量分类邮件（IMAP 抓取后调用）。

@@ -57,9 +57,9 @@ const (
 	// 又不至于让大邮箱一次涌入数万封把库和 UI 压垮。
 	DefaultBackfillDays = 30
 	// DefaultBackfillMax 单账户单次入库上限，防止一次把库写爆。
-	DefaultBackfillMax  = 2000
-	backfillBatchSize   = 200
-	backfillTimeout     = 5 * time.Minute
+	DefaultBackfillMax = 2000
+	backfillBatchSize  = 200
+	backfillTimeout    = 5 * time.Minute
 )
 
 // BackfillReport 是一次历史回补的结果。
@@ -291,6 +291,17 @@ func (f *Fetcher) emailFromMessage(
 		Subject:     subject,
 		Snippet:     snippet,
 		Date:        date,
+		// 附件判定（2026-10-01 修，需求 7 的 📎 标记靠它）。
+		//
+		// 原来只有 Sync 的内联实现设这一项，backfill 这条路径恒为 Go 零值 false。
+		// Sync 后来被重构成本函数（emailFromMessage 统一取件映射 + 规则评估），
+		// 判定必须跟着搬进来，否则重构会静默把修复丢掉。
+		//
+		// 用 bodyStructureHasAttachment 而不是 len(parsed.Attachments)：
+		// 批量 fetch 只带 envelope，附件信息要靠 BODYSTRUCTURE；
+		// 内联图（cid:）不算附件。bs==nil（POP3 / 历史补采无 BodyStructure）时
+		// 保守返回 false，POP3 路径随后会用真实解析结果覆盖（见 fetcher.go）。
+		HasAttachments: bodyStructureHasAttachment(m.BodyStructure),
 	}
 	em, pending := applyInlineRules(em, parsedRules, m.Envelope.Date)
 	return em, true, pending

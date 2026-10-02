@@ -50,8 +50,10 @@ func TestDiagnoseLedgerTotalOnRealData(t *testing.T) {
 	defer pool.Close()
 
 	// 逐行读出真实发票，保留 file_path 以便区分两种口径。
+	// currency 必须一起读出来：合并后 LedgerRows 的第二个返回值**按币种分组**
+	// （本分支的 edff8086 改的，原先是标量 float64 总额），不分组就比不了。
 	rows, err := pool.Query(ctx, `
-SELECT status, COALESCE(file_path, ''), COALESCE(amount, 0)
+SELECT status, COALESCE(file_path, ''), COALESCE(amount, 0), COALESCE(currency, '')
 FROM email_invoices
 ORDER BY created_at`)
 	if err != nil {
@@ -62,7 +64,7 @@ ORDER BY created_at`)
 	var all []Invoice
 	for rows.Next() {
 		var inv Invoice
-		if err := rows.Scan(&inv.Status, &inv.FilePath, &inv.Amount); err != nil {
+		if err := rows.Scan(&inv.Status, &inv.FilePath, &inv.Amount, &inv.Currency); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
 		all = append(all, inv)
@@ -74,27 +76,42 @@ ORDER BY created_at`)
 		t.Fatal("真实库里一张发票都没有 —— 核对不了口径，请在有数据时再跑")
 	}
 
-	// 旧口径：无条件累加。
-	var oldTotal float64
+	// 旧口径：无条件累加。同样按币种分组，否则跨币种相加不是金额，
+	// 拿它跟新口径比就没有意义了。
+	oldByCur := map[string]float64{}
+	var order []string
 	for _, inv := range all {
-		oldTotal += inv.Amount
+		cur := currencyOrDefault(inv.Currency)
+		if _, seen := oldByCur[cur]; !seen {
+			order = append(order, cur)
+		}
+		oldByCur[cur] += inv.Amount
 	}
 	// 新口径：与 LedgerRows / WriteInvoiceSummaryDocs / handleEmailInvoiceSummary 一致。
-	_, newTotal := LedgerRows(all)
+	_, newTotals := LedgerRows(all)
+	newByCur := map[string]float64{}
+	for _, ct := range newTotals {
+		newByCur[ct.Currency] = ct.Amount
+	}
 
 	t.Logf("真实发票 %d 张：", len(all))
 	for _, inv := range all {
 		counted := (inv.Status == "downloaded" || inv.Status == "filed") && inv.FilePath != ""
-		t.Logf("  status=%-10s amount=%8.2f file=%-5v 计入合计=%v",
-			inv.Status, inv.Amount, inv.FilePath != "", counted)
+		t.Logf("  status=%-10s amount=%8.2f cur=%-4s file=%-5v 计入合计=%v",
+			inv.Status, inv.Amount, currencyOrDefault(inv.Currency), inv.FilePath != "", counted)
 	}
-	t.Logf("旧口径（无条件累加）= %.2f", oldTotal)
-	t.Logf("新口径（只计已下载且已落盘）= %.2f", newTotal)
-	if oldTotal != newTotal {
-		t.Logf("注意：两个口径在真实数据上**不一致**，合计会从 %.2f 变成 %.2f —— "+
-			"这是对用户可见的变化，必须在发布说明里写清楚", oldTotal, newTotal)
-	} else {
-		t.Logf("两个口径在真实数据上一致（%.2f）：这次修复不改变线上台账数字，"+
-			"只是把「将来 failed 发票带脏金额时会被静默算进去」这个隐患堵上", newTotal)
+	same := true
+	for _, cur := range order {
+		o, n := oldByCur[cur], newByCur[cur]
+		t.Logf("币种 %s：旧口径（无条件累加）= %.2f  新口径（只计已下载且已落盘）= %.2f", cur, o, n)
+		if round2(o) != round2(n) {
+			same = false
+			t.Logf("注意：%s 的两个口径在真实数据上**不一致**，合计会从 %.2f 变成 %.2f —— "+
+				"这是对用户可见的变化，必须在发布说明里写清楚", cur, o, n)
+		}
+	}
+	if same {
+		t.Logf("两个口径在真实数据上一致：这次修复不改变线上台账数字，" +
+			"只是把「将来 failed 发票带脏金额时会被静默算进去」这个隐患堵上")
 	}
 }

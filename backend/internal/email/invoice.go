@@ -79,7 +79,7 @@ var (
 	// 「Total tax-inclusive amount: CNY 126.00」。旧正则只认 [¥￥$€£] 符号，
 	// `CNY ` 不在白名单，数字整个没被捕获 ⇒ amount=0 ⇒ 规范文件名退化成
 	// `其他-<单位>-0.00-<日期>.pdf`，对账时金额是空的。
-	reCurrency = `[¥￥$€£]?\s*(?:CNY|RMB|USD|EUR|GBP|HKD|JPY)?\s*`
+	reCurrency = `[¥￥]?\s*(?:CNY|RMB|USD|EUR|GBP|HKD|JPY)?\s*|[$€£]\s*`
 	// 价税合计优先，其次 合计/总额/金额/Amount；金额允许千分位与尾随「元」。
 	//
 	// 「金额」是实测补的：真发票邮件（QQ 邮箱，2026-09-30）主题写
@@ -88,8 +88,8 @@ var (
 	// 关键词表里没有「金额」⇒ amount=0 ⇒ 共享台账合计行直接少算这一张。
 	// 为了不误伤散文（「您本月的金额已超出额度」这种后面不跟数字的句子），
 	// 数值部分是必需的：没数字就不匹配。
-	reAmountTotal = regexp.MustCompile(`(?i)(?:价税合计|合计金额|合计|总额|金额|amount|Amount\s*(?:Due|Total)?)[:：（(]?(?:小写[)）]?)?[:：\s]*` + reCurrency + `([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*(?:元|[圆])?`)
-	reAnyAmount   = regexp.MustCompile(`(?i)(?:[¥￥]|[$€£]|CNY|RMB|USD|EUR|GBP|HKD|JPY)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
+	reAmountTotal = regexp.MustCompile(`(?i)(?:价税合计|合计金额|合计|总额|金额|amount|Amount\s*(?:Due|Total)?)[:：（(]?(?:小写[)）]?)?[:：\s]*(` + reCurrency + `)([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*(?:元|[圆])?`)
+	reAnyAmount   = regexp.MustCompile(`(?i)([¥￥$€£])\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)|(?i)(CNY|RMB|USD|EUR|GBP|HKD|JPY)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
 	// 销售方：标签里可能夹着 "name"/"名称" 之类的修饰词，值要取**冒号/空格
 	// 之后第一个非标签词**。
 	//
@@ -410,6 +410,36 @@ func normalizeInvoiceAmount(raw string) float64 {
 	return amt
 }
 
+// normalizeCurrency 把正则捕获到的币种标记归一成 ISO 4217 代码。
+// mark 可能是符号（¥ ￥ $ € £）或代码（CNY RMB USD EUR GBP HKD JPY）。
+// 空/无法识别时返回 fallback（默认 CNY）——宁可标成 CNY 也不要留空。
+//
+// 为什么需要它：提取器原先把 Currency 硬编码成 "CNY"（invoice.go:286），
+// 而 reCurrency 其实**已经能识别** USD/EUR 等——识别结果被丢掉了。
+// 后果是一张「Total tax-inclusive amount: USD 126.00」的外币发票会被标成
+// CNY，汇总时 USD 与 CNY 直接相加，得到的合计是错的。
+func normalizeCurrency(mark, fallback string) string {
+	m := strings.ToUpper(strings.TrimSpace(mark))
+	switch m {
+	case "CNY", "RMB", "¥", "￥", "元":
+		return "CNY"
+	case "USD", "$":
+		return "USD"
+	case "EUR", "€":
+		return "EUR"
+	case "GBP", "£":
+		return "GBP"
+	case "HKD":
+		return "HKD"
+	case "JPY":
+		return "JPY"
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return "CNY"
+}
+
 func normalizeInvoiceDate(raw string) string {
 	// 2026年09月05日 / 2026-09-05 / 2026/9/5 / 20260901 → 2026-09-05
 	r := strings.NewReplacer("年", "-", "月", "-", "日", "", ".", "-", "/", "-")
@@ -557,17 +587,29 @@ func ExtractInvoiceLoose(e Email, bodyText string, hasInvoiceAttachment bool) (*
 	}
 
 	if m := reAmountTotal.FindStringSubmatch(joined); m != nil {
-		inv.Amount = normalizeInvoiceAmount(m[1])
+		// m[1] = 币种标记（¥/CNY/USD…），m[2] = 金额
+		inv.Amount = normalizeInvoiceAmount(m[2])
+		inv.Currency = normalizeCurrency(m[1], inv.Currency)
 	}
 	if inv.Amount == 0 {
-		// 兜底：取文本里最大的 ¥ 金额
+		// 兜底：取文本里最大的金额。reAnyAmount 有两个分支：
+		//   分支 1（符号）: m[1]=符号, m[2]=金额
+		//   分支 2（ISO 码）: m[3]=代码, m[4]=金额
 		best := 0.0
+		var bestCur string
 		for _, m := range reAnyAmount.FindAllStringSubmatch(joined, -1) {
-			if v := normalizeInvoiceAmount(m[1]); v > best {
-				best = v
+			cur, num := m[1], m[2]
+			if num == "" {
+				cur, num = m[3], m[4]
+			}
+			if v := normalizeInvoiceAmount(num); v > best {
+				best, bestCur = v, cur
 			}
 		}
 		inv.Amount = best
+		if bestCur != "" {
+			inv.Currency = normalizeCurrency(bestCur, inv.Currency)
+		}
 	}
 
 	// 没有金额也没有发票号：营销邮件伪命中。

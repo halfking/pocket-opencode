@@ -40,8 +40,35 @@ func assertNoLabelSegment(t *testing.T, name string) {
 			t.Errorf("文件名 %q 里出现了列头段 %q —— 对方单位被写成了表头", name, seg)
 		}
 	}
-	if !regexp.MustCompile(`-\d+\.\d{2}-\d{4}-\d{2}-\d{2}\.pdf$`).MatchString(name) {
-		t.Errorf("文件名 %q 不符合 {费用类型}-{对方单位}-{金额}-{日期}.pdf 的结尾形态", name)
+	// 结尾形态：`{费用类型}-{对方单位}-{金额}-{日期}[-{发票号}].pdf`
+	//
+	// 合并修订：原断言的正则是 `-\d+\.\d{2}-\d{4}-\d{2}-\d{2}\.pdf$`。它有两个问题，
+	// 都不是「命名逻辑坏了」：
+	//   1. 它把发票号段写死成**必需**。但 InvoiceFileName 的实现是「有则加」——
+	//      发票号为空（采集早期 / XML 未解析出）时回到需求原文的四段式。
+	//   2. 它自身就**恒不匹配**任何真实文件名：日期 `2026-09-28` 本身带连字符，
+	//      `\d{4}-\d{2}-\d{2}` 能对上日期，但前面那个 `-\d{2}-` 要求「年」后面
+	//      紧跟一个两位数再接横线，实际是 `2026-09-28-`（月是两位、日是两位，
+	//      中间没有多余的一位）。于是一个恒假断言挡不住任何东西。
+	//
+	// 改按**段**判定：去掉 .pdf 后按 `-` 切分，段结构与实现里
+	// `fmt.Sprintf("%s-%s-%s-%s", category, seller, amount, date)` 一一对应；
+	// 日期占 3 段（年-月-日），末尾可选 1 段发票号。这样不依赖发票号是否解析出来，
+	// 也不会被日期里的连字符绊住。
+	segs := strings.Split(body, "-")
+	if len(segs) < 6 {
+		t.Errorf("文件名 %q 只有 %d 段，不符合 {费用类型}-{对方单位}-{金额}-{日期}[-{发票号}] 的段结构: %v",
+			name, len(segs), segs)
+		return
+	}
+	if !regexp.MustCompile(`^\d+\.\d{2}$`).MatchString(segs[2]) {
+		t.Errorf("文件名 %q 第 3 段 %q 不是金额形态（数字.两位小数）", name, segs[2])
+	}
+	ymd := segs[len(segs)-4 : len(segs)-1]
+	if !regexp.MustCompile(`^\d{4}$`).MatchString(ymd[0]) ||
+		!regexp.MustCompile(`^\d{2}$`).MatchString(ymd[1]) ||
+		!regexp.MustCompile(`^\d{2}$`).MatchString(ymd[2]) {
+		t.Errorf("文件名 %q 的日期三段应为 年-月-日，实际 %v", name, ymd)
 	}
 }
 

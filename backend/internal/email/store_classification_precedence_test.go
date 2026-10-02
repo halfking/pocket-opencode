@@ -83,23 +83,33 @@ func TestClassifyKeepsHighButAcceptsHighAndNormal(t *testing.T) {
 
 	seedAccount(t, store, "acct-rule", "user-1", "ws-a")
 	seedReminderEmail(t, store, "em-high", "acct-rule", "ws-a", "high", "")
-	seedReminderEmail(t, store, "em-normal", "acct-rule", "ws-a", "normal", "")
+	// 夹具原先写 "normal"，但 importance 列有 CHECK
+	// (importance IN ('','high','medium','low'))，直接插库会被约束拒绝。
+	// "normal" 只是 NormalizeImportance 的**输入别名**（输出归一成 medium），
+	// 落库的形态是 medium —— 这里必须用 medium 才符合真实数据。
+	seedReminderEmail(t, store, "em-normal", "acct-rule", "ws-a", "medium", "")
 	seedReminderEmail(t, store, "em-empty", "acct-rule", "ws-a", "", "")
 
-	// AI 把 high 判成 normal —— 规则优先，仍是 high。
-	if err := store.SetClassificationScoped(ctx, "em-high", "user-1", "ws-a", "work", "normal", "s", ""); err != nil {
+	// AI 把 high 判成 medium —— 规则优先，仍是 high。
+	// 传 "normal" 而不是 "medium"：前者要经过 NormalizeImportance 才对，
+	// 但 SetClassificationScoped 收的是**已归一**的值，测试不覆盖归一化
+	// （那在 classify_run_test.go 里有单独用例）。
+	if err := store.SetClassificationScoped(ctx, "em-high", "user-1", "ws-a", "work", "medium", "s", ""); err != nil {
 		t.Fatalf("classify em-high: %v", err)
 	}
 	// AI 把 normal 判成 high —— AI 可以升级。
 	if err := store.SetClassificationScoped(ctx, "em-normal", "user-1", "ws-a", "work", "high", "s", ""); err != nil {
 		t.Fatalf("classify em-normal: %v", err)
 	}
-	// AI 把空判成 normal —— 没有规则保护，按 AI 的写。
-	if err := store.SetClassificationScoped(ctx, "em-empty", "user-1", "ws-a", "work", "normal", "s", ""); err != nil {
+	// AI 把空判成 medium —— 没有规则保护，按 AI 的写。
+	if err := store.SetClassificationScoped(ctx, "em-empty", "user-1", "ws-a", "work", "medium", "s", ""); err != nil {
 		t.Fatalf("classify em-empty: %v", err)
 	}
 
-	for id, want := range map[string]string{"em-high": "high", "em-normal": "high", "em-empty": "normal"} {
+	// em-high 走的是「AI 想降级」分支（落库仍是 high）；em-normal 走「AI 升级」
+	// 分支；em-empty 走「无保护」分支。三条分支各占一个断言，缺一条就有一类
+	// 实现能蒙混过关。
+	for id, want := range map[string]string{"em-high": "high", "em-normal": "high", "em-empty": "medium"} {
 		var got string
 		if err := store.pool.QueryRow(ctx, `SELECT COALESCE(importance,'') FROM emails WHERE id=$1`, id).Scan(&got); err != nil {
 			t.Fatalf("read %s: %v", id, err)

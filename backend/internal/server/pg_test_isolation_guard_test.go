@@ -182,6 +182,40 @@ var pgSafeWithoutIsolation = map[string]string{
 	"internal/email/ledger_realdata_diag_test.go":   "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（核对台账合计口径在真实数据上的变化）",
 	"internal/email/reminder_notified_diag_test.go": "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN（核对 remindersSent 计数在真实数据上的来源）",
 
+	// ===== 2026-10-02 合并 email 分支时本护栏新增判红的 7 个，逐个核过 =====
+	//
+	// 背景：email 分支上有一批 2026-10-01 的只读诊断探针，此前 main 的护栏
+	// 没跑到它们身上；合并后护栏与探针第一次同处一个包，于是报出。
+	// 下面 7 个**性质各不相同**，不能一刀切，理由逐个写清。
+	//
+	// 第 1 组：纯只读，无任何写语句（INSERT|UPDATE|DELETE|DROP|CREATE|TRUNCATE
+	// 全文件 0 命中），且都要显式开关才运行。
+	"internal/email/diag_backfill_align_test.go": "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（核对 backfill 补采与对齐口径的差异）",
+	"internal/email/diag_dup_report_test.go":      "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（重复副本预演报表，产出为报告不落库）",
+	"internal/email/diag_merge_plan_test.go":       "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（合并迁移**预演**，只出计划不执行）",
+	"internal/email/diag_rest_dupes_test.go":      "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（剩余重复候选的定性排查）",
+	"internal/email/realprobe_test.go":            "只读真实库探针：0 写语句；search_path 显式指向 POCKET_REAL_MAIL_SCHEMA（目的就是读真实 schema，自建隔离 schema 反而会查出「数据没了」的假结论）",
+	//
+	// 第 2 组：**这个文件本身是隔离助手**，它实现隔离而不是违反隔离。
+	// pgscope_test.go 提供 newScopedPool（search_path 只指向调用方建好的
+	// schema）与 dropScopedSchema（只删调用方传进来的那个 schema 名）。
+	// 护栏的判据是文本扫写语句，扫到 `DROP SCHEMA IF EXISTS ... CASCADE`
+	// 就判红 —— 而这恰恰是「收尾只 DROP 自己那一个 schema」的正确模式，
+	// 与 chatagent/store_test.go 里的同一模式一样。属误报。
+	"internal/email/pgscope_test.go": "**隔离助手本身**：提供 newScopedPool（search_path 只指向调用方建好的 schema）与 dropScopedSchema（只删调用方传进来的 schema 名）。文本扫到 DROP SCHEMA 属误报——那正是「只删自己建的」的安全收尾模式",
+	//
+	// 第 3 组：**会在真实库执行写操作**，所以理由必须说清三道闸门，
+	// 不能套用「只读」那套话术。三道闸门都在代码里可查：
+	//   1. POCKET_DIAG_MERGE_EXEC=1 显式开关，不设直接 return（diag_merge_exec_test.go:48）；
+	//   2. POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA 显式指定目标库；
+	//   3. 备份表必须**存在且非空**，否则 t.Fatal 拒绝执行任何写操作
+	//      （:73-81，「没有回滚路径就不执行写操作」）。
+	// 三道之外它只打墓碑（deleted_at）保留数据，recover 语句在文件里以
+	// t.Logf 形式给出（pool.Exec 出现 0 次）。合并重复副本的**执行**仍
+	// 待单独授权 —— 本条 allowlist 只表示「护栏不该因它未自建 schema 而报红」，
+	// 不构成对该写操作的授权。
+	"internal/email/diag_merge_exec_test.go": "**会在真实库写**（合并重复副本，只打墓碑）：三道闸门——需 POCKET_DIAG_MERGE_EXEC=1 显式开关；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA；备份表不存在或为空时 t.Fatal 拒绝执行（无回滚路径不写）。pool.Exec 出现 0 次，recover 语句以 t.Logf 形式给出。**待单独授权执行**",
+
 	// vendored 第三方代码，需 -tags=integration + IDENTITY_SHADOW_DSN。
 	"third_party/identity-go/shadow/dao_test.go": "vendored 第三方，需 -tags=integration + IDENTITY_SHADOW_DSN",
 }

@@ -7,6 +7,7 @@
 import { localDB } from '../../native/local-db'
 import { encryptString } from '../../native/crypto'
 import { buildMirrorAccountWrite } from './account-mirror-write'
+import { normalizeAccountStamp } from './account-lww'
 import { emailDateToMs } from './cleanup-filter'
 
 export interface EmailAccount {
@@ -79,7 +80,10 @@ export async function saveAccount(input: {
 }): Promise<string> {
   const id = `acct-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const encrypted = await encryptCredential(input.password)
-  const now = Date.now()
+  // created_at / updated_at 用**秒**：updated_at 是 LWW 的基准，必须与服务端
+  // 同单位（服务端 email_accounts.updated_at 是 Unix 秒）。此前这里写
+  // Date.now()（毫秒），而读侧又不归一，导致同一列混着两种单位。
+  const now = Math.floor(Date.now() / 1000)
   await localDB.run(
     `INSERT INTO local_email_accounts
        (id, display_name, email_address, imap_host, imap_port, auth_type, credential_encrypted,
@@ -506,7 +510,10 @@ function rowToAccount(r: any): EmailAccount {
     imapHost: r.imap_host, imapPort: r.imap_port, authType: r.auth_type,
     syncIntervalMin: r.sync_interval_min, lastSyncedUid: r.last_synced_uid,
     lastSyncedAt: r.last_synced_at, enabled: r.enabled === 1, createdAt: r.created_at,
-    updatedAt: r.updated_at ?? 0,
+    // updated_at 必须归一成秒：本列混存过毫秒（saveAccount 写 Date.now()），
+    // 而它要拿去做 LWW 比较并当上行基准。单位错了会静默架空服务端守卫。
+    // lastSyncedAt / createdAt 各自另有语义，**不要**一起归一。
+    updatedAt: normalizeAccountStamp(r.updated_at),
   }
 }
 
