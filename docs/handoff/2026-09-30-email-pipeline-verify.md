@@ -8129,3 +8129,134 @@ dompurify 变不支持 → 净化器退化成原样返回 → 上面所有『危
    这一整条无效链路怎么办**：删掉，还是改用「不走 `<style>` 标签、直接把基准样式
    拼到宿主页面的 CSS 里」把它救活（后者能真正解决邮件正文的 CJK 字体兜底）。
    归入既有待拍板项「是否删除死字段与已证死函数」，**不擅自删**。
+
+---
+
+## §7dn 【需求 1/7】归类分批循环在分类器故障时**没有出口** —— 一次点击换一场对故障网关的持续压测（2026-10-03）
+
+### 症状与机制
+
+`use-email-inbox.ts` 的归类循环原本是：
+
+```ts
+do {
+  const report = await emailApi.classifyInbox(20, controller.signal)
+  ...
+  if (classifyCancel.value || remain <= 0) break
+} while (!classifyCancel.value)
+```
+
+它**唯一的自然退出条件是 `remaining <= 0`**，且没有批次数上限。
+
+而服务端 `POST /api/emails/classify`（`server_email_classify.go:88-92`）在
+**逐封分类全部失败**时返回的是：
+
+```json
+{ "classified": 0, "remaining": 25, "results": [ {"error": "..."} × 20 ] }
+```
+
+`classified` 的定义是「`Category != "" && Error == ""` 的条数」
+（`server_email_classify.go:82-87`），失败时为 0；而 `remaining` 数的是
+`category IS NULL OR category=''`（`store_inbox.go:63`），失败时根本没写库，
+**一封没少**。于是 `remaining <= 0` 永远不成立，循环**没有出口**：
+
+> 用户点一次「归类」，前端无限次打这个端点；每次调用服务端都要逐封跑分类；
+> 没有退避、没有上限。持续对一台**已经故障**的分类器施压。
+
+### 「逐封全部失败」不是边角状态
+
+新增 `backend/internal/server/server_email_classify_progress_test.go`，用两种
+**真实运行故障**复现（kxmemory 未配的部署——也就是本部署，
+`POCKET_KXMEMORY_BASE_URL` 未设——全靠网关这条腿）：
+
+| 场景 | 复现方式 | 断言 |
+|---|---|---|
+| A 网关调用失败 | `fakeLLM{err: 503}` | `classified=0`、`remaining=3` 不变、逐封 `Error != ""` |
+| B 输出无法解析 | `fakeLLM{reply: "这封邮件看起来是账单。"}` | 同上，`remaining=2` 不变 |
+| **不收敛** | 两种场景各**连打三次** | 三次 `classified` 恒 0、`remaining` 恒 5 |
+
+第三条是关键：只断言「一次返回 remaining>0」不够——有人会说「下一次就好了」。
+连打三次证明**故障不变时它永不收敛**，客户端那个循环**没有任何出口**。
+
+### 一条被否掉的假机制（留档以免有人重走）
+
+初稿假设主因是「网关对象配了但没选模型」→ `emailClassifyModel` 返回 `""` →
+`classifyViaGateway` 的 `model == ""` 早退（`:126-129`）。
+
+**实测不成立**：`cfg.LLMModel` 为空时 `ResolveGatewayForUser` 仍给出非空
+`PreferredModels`（`llm_gateway_resolve.go:122-128`），所以那条早退没被触发，
+日志显示实际走的是「调用了模型但输出无法解析」。**机制说错了**。
+
+结论本身不受影响——(A)(B) 两个场景由上面三条用例**独立**证明，不依赖那个假机制。
+写在这里是因为「猜出来的因果链」正是本轮 §7cy 在 `has_attachments` 上吃过的亏
+（初稿的因果链错了），这次是自己在同一小时内重犯，标注出来。
+
+### 修法：把循环抽成零依赖纯逻辑，并补上「零进展就停」
+
+新增 `frontend/src/features/email/email-classify-loop.ts`（与 `account-lww.ts`
+同一思路：**生产与测试共用同一份实现**，而不是让测试正则刨源码——刨出来的片段
+带类型注解，`new Function` 会 SyntaxError，这正是 `invoice-money.ts` 抽出前的
+老问题）。
+
+四条退出条件，顺序有讲究：
+
+1. `cancelled` —— 用户主动中止，最高优先；
+2. `drained` —— `remaining <= 0`，正常跑完；
+3. **`no-progress`** —— 修复的核心，两种写法：
+   - (a) `classified === 0`。**不需要上一轮的数就能判定，且可靠**：`classified`
+     为 0 意味着一封都没写库，`remaining` 自然一封没少。**第一批同样适用**。
+   - (b) `remaining` 没有比上一轮少。更隐蔽的形态：声称归类了几封但 remaining
+     纹丝不动（写库没生效 / 统计口径不一致）。从第二轮起才有意义。
+4. `batch-cap` —— 批次数硬上限（默认 200 批 = 4000 封/次点击），纯兜底。
+   命中时 `stopped` 如实为 `batch-cap`，**不静默收工**。
+
+`use-email-inbox.ts:99` 起改用它，`:117` 用 `classifyStopHint` 按终止原因
+给出**四种可区分**的文案——尤其把「分类器没返回结果，所以我停了」和
+「确实跑完了」分开，否则用户只会以为点了个寂寞（同一个坑：
+`reminder_diag_test.go` 记录的 RemindersSent 恒为 0）。
+
+### 实现里踩到的一个真坑（第一版是错的）
+
+第一版用 `prevRemaining = Infinity` 起手，想「保证第一批不误判」。结果
+`remaining >= Infinity` 恒假，**第一批的零进展根本判不出来**，要等到第二轮。
+两条用例当场转红（`not ok 3` / `not ok 5`），改成上面的 (a) 才修好。
+
+这个错误的形状值得记住：**用哨兵值规避误判，结果让真阳性漏掉了**。
+哨兵能防「第一批被误判成零进展」，但代价是「第一批的真零进展也判不出」。
+
+另外 `classified>0 但 remaining 不降` 这一形态**最早只能在第二批识破**——
+`remaining` 是分类**之后**的数，服务端没告诉我们分类之前是多少。这是有下限的，
+不是判据失效，用例里写明了 `calls === 2` 而不是 1。
+
+### 负控
+
+| 负控 | 变异 | 结果 |
+|---|---|---|
+| NEGCTL-1 | 把 `got <= 0` 与 `remaining >= prevRemaining` 两个守卫都改成 `&& batches > 1e9`（永不成立） | **2 条转红**（用例 3、5） |
+| NEGCTL-2 | 把 `use-email-inbox.ts` 的旧判定原样搬进测试跑一遍 | 用例 4 断言它会打到人为上限 50 次——**把「不收敛」也变成可复现证据**，而不是一句断言 |
+
+### 数字
+
+- `backend/.../server_email_classify_progress_test.go`：3 个用例（含 2 个子测试）全绿
+- `frontend/.../__tests__/email-classify-loop.test.mjs`：**16 条全绿**
+- `npm.cmd run test:email`：**265 → 281** 全绿（0 fail / 0 skipped）
+- `npm.cmd run typecheck`：exit 0
+- `go test ./internal/server/`：只剩**两个既有失败**
+  （`TestTaskWriteGuardBlocksPlainMemberPatch/Delete`，非邮件分支、非本轮引入，
+  每轮回归都出现，见待拍板项「internal/server 越权 404/403 语义分歧」）
+
+### 本轮**没有**做的事
+
+- **没有改服务端任何生产代码。** 只加了复现用例。服务端返回
+  `classified:0 / remaining:N` 本身是**诚实的**（它如实说了「一封都没成」），
+  问题在于客户端拿着这个诚实的回答**没有停**。改客户端就够了。
+- **没有给 `classifyInbox` 加退避/重试。** 分类器故障时立刻重试无意义；
+  真要重试应带退避，那是另一项设计，不在本轮偷偷加。
+- **没有真机验证。** 客户端循环的逻辑已抽成纯函数并测透，但「WebView 里点
+  归类按钮」的端到端表现仍未在真机验过。
+
+### 顺带确认（不改代码）
+
+`has_attachments` 仍是「列存在、UI 读它、生产里恒为 false」。
+`EmailCard.vue:35` 的 📎 标记因此**永不显示**。归入既有待拍板项「是否真置位」，
+本轮不动。

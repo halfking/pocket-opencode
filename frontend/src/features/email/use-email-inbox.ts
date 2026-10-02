@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
-import { emailApi } from '../../api/email'
+import { emailApi, type EmailClassifyReport } from '../../api/email'
 import i18n from '../../i18n'
+import { classifyStopHint, runClassifyLoop } from './email-classify-loop'
 import { normalizeEmailCategory } from './email-categories'
 import { applyClassifyResult, classifyProgressLabel, isUncategorized } from './email-classify-run'
 import { sanitizeFetchHint } from './email-fetch-plan'
@@ -92,24 +93,31 @@ export function useEmailInbox() {
     classifyAbort.value = controller
     let next = list
     try {
-      do {
-        const report = await emailApi.classifyInbox(20, controller.signal)
-        const done = report.classified ?? 0
-        const remain = report.remaining ?? 0
-        classifyHint.value = classifyProgressLabel(Math.max(1, done), done + remain)
-        for (const row of report.results ?? []) {
-          next = next.map((m) => applyClassifyResult(m, row))
-          const category = normalizeEmailCategory(row.category)
-          if (row.emailId && category && !row.error) {
-            await emailsStore.setAiClassification(
-              row.emailId, category, row.importance || '', row.summary || '', '',
-            )
+      // 循环的终止判定放在 email-classify-loop.ts：那里有「零进展就停」和批次数
+      // 上限，原来的 do/while 只判 remaining<=0，在分类器故障时会**无限打服务端**
+      // （详见该模块头部与 backend/.../server_email_classify_progress_test.go）。
+      const loop = await runClassifyLoop<EmailClassifyReport>({
+        fetchBatch: () => emailApi.classifyInbox(20, controller.signal),
+        onBatch: async (report) => {
+          const done = report.classified ?? 0
+          const remain = report.remaining ?? 0
+          classifyHint.value = classifyProgressLabel(Math.max(1, done), done + remain)
+          for (const row of report.results ?? []) {
+            next = next.map((m) => applyClassifyResult(m, row))
+            const category = normalizeEmailCategory(row.category)
+            if (row.emailId && category && !row.error) {
+              await emailsStore.setAiClassification(
+                row.emailId, category, row.importance || '', row.summary || '', '',
+              )
+            }
           }
-        }
-        if (classifyCancel.value || remain <= 0) break
-      } while (!classifyCancel.value)
-      const leftover = next.filter((m) => isUncategorized(m.category)).length
-      classifyHint.value = leftover ? `已暂停，仍有 ${leftover} 封未归类` : '归类完成'
+        },
+        isCancelled: () => classifyCancel.value,
+      })
+      classifyHint.value = classifyStopHint(
+        loop,
+        next.filter((m) => isUncategorized(m.category)).length,
+      )
     } catch (e) {
       if (controller.signal.aborted) {
         // 用户主动中止：已落库的部分保留，如实说明停在哪
