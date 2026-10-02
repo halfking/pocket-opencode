@@ -42,6 +42,13 @@ export interface LocalEmail {
   importance: string | null
   aiSummary: string | null
   suggestedAction: string | null
+  /**
+   * AI 判重要度的依据（q2）。null = 上游没给理由。
+   *
+   * 与 suggestedAction 的分工：后者是「该做什么」，本字段是「为什么这么判」。
+   * 判为重要时没有它，提醒就不可信——用户无法判断该不该点开。
+   */
+  actionReason: string | null
   hasAttachments: boolean
   createdAt: number
   updatedAt: number
@@ -211,9 +218,9 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
     await localDB.run(
       `INSERT INTO local_emails
          (id, account_id, message_id, uid, from_address, from_name, subject, snippet,
-          date, is_read, is_starred, category, importance, ai_summary, suggested_action,
+          date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason,
           has_attachments, created_at, updated_at, folder)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET
          subject=excluded.subject,
          snippet=excluded.snippet,
@@ -222,6 +229,10 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
          importance=excluded.importance,
          ai_summary=excluded.ai_summary,
          suggested_action=excluded.suggested_action,
+         -- COALESCE：服务端这轮没带理由时保留本地已有值。与服务端
+         -- SetClassificationWithReasonScoped 的「非空才写」同一口径，
+         -- 否则一次不带 reason 的同步会把已判定的依据抹掉。
+         action_reason=COALESCE(excluded.action_reason, local_emails.action_reason),
          has_attachments=excluded.has_attachments,
          -- 已读/星标是本地用户操作状态：服务端不做权威回传（IMAP seen 不同步），
          -- 同步覆盖会把用户刚在详情页标记的状态抹掉，故保留本地值。
@@ -234,6 +245,7 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
       [id, e.accountId, e.messageId ?? null, e.uid ?? null, e.fromAddress, e.fromName ?? null,
        e.subject ?? null, e.snippet ?? null, e.date, e.isRead ? 1 : 0, e.isStarred ? 1 : 0,
        e.category ?? null, e.importance ?? null, e.aiSummary ?? null, e.suggestedAction ?? null,
+       e.actionReason ?? null,
        e.hasAttachments ? 1 : 0, now, updatedAt, folder],
     )
     return true
@@ -427,7 +439,7 @@ export async function getEmail(id: string): Promise<LocalEmail | null> {
     from_address: string; from_name: string | null; subject: string | null;
     snippet: string | null; date: number; is_read: number; is_starred: number;
     category: string | null; importance: string | null; ai_summary: string | null;
-    suggested_action: string | null; has_attachments: number; created_at: number
+    suggested_action: string | null; action_reason: string | null; has_attachments: number; created_at: number
   }>('SELECT * FROM local_emails WHERE id = ?', [id])
   return row ? rowToEmail(row) : null
 }
@@ -448,6 +460,8 @@ export interface EmailClassifiedPayload {
   category?: string | null
   importance?: string | null
   summary?: string | null
+  /** AI 判重要度的依据（q2）。null = 服务端这轮没给理由。 */
+  actionReason?: string | null
 }
 
 /** 视图层订阅用的字段三元组。 */
@@ -487,13 +501,16 @@ export async function handleClassifiedEvent(payload: EmailClassifiedPayload): Pr
   const summary = payload.summary ?? null
 
   // 用 COALESCE：服务器字段为 null 时保留本地原值，避免覆盖用户手动设置的字段。
+  // action_reason 同口径：这一轮没带理由不代表判定变了，抹掉会让已判为重要的
+  // 邮件突然失去「为什么」——那正是这个字段存在的理由。
   await localDB.run(
     `UPDATE local_emails
        SET category = COALESCE(?, category),
            importance = COALESCE(?, importance),
-           ai_summary = COALESCE(?, ai_summary)
+           ai_summary = COALESCE(?, ai_summary),
+           action_reason = COALESCE(?, action_reason)
      WHERE id = ?`,
-    [category, importance, summary, payload.email_id],
+    [category, importance, summary, payload.actionReason ?? null, payload.email_id],
   )
 
   emailClassifiedHandlers.forEach((cb) => {
@@ -523,7 +540,8 @@ function rowToEmail(r: any): LocalEmail {
     fromAddress: r.from_address, fromName: r.from_name, subject: r.subject,
     snippet: r.snippet, date: r.date, isRead: r.is_read === 1, isStarred: r.is_starred === 1,
     category: r.category, importance: r.importance, aiSummary: r.ai_summary,
-    suggestedAction: r.suggested_action, hasAttachments: r.has_attachments === 1,
+    suggestedAction: r.suggested_action, actionReason: r.action_reason ?? null,
+    hasAttachments: r.has_attachments === 1,
     createdAt: r.created_at,
     updatedAt: r.updated_at ?? 0,
     deletedAt: Number(r.deleted_at) || 0,

@@ -184,6 +184,7 @@ CREATE TABLE IF NOT EXISTS local_emails (
     importance TEXT,                 -- high / medium / low
     ai_summary TEXT,                 -- LLM 分类时返回的摘要（只发 snippet 给 LLM）
     suggested_action TEXT,
+    action_reason TEXT,               -- AI 判重要度的依据（q2；老库靠 local-db.ts 的 COLUMN_MIGRATIONS 补列）
     has_attachments INTEGER DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL DEFAULT 0,

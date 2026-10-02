@@ -32,6 +32,13 @@ export interface ServerEmailClassifiedPayload {
   category?: string | null
   importance?: string | null
   summary?: string | null
+  /**
+   * AI 判重要度的依据（q2）。
+   *
+   * 缺省 = 服务端这一轮没给理由。**不是**「没有理由」的否定表述，
+   * 所以下面转发时必须原样透传 null，不能替换成空串或补默认值。
+   */
+  actionReason?: string | null
 }
 
 let _initialized = false
@@ -103,6 +110,7 @@ export function initWsBus(): void {
         category: payload.category ?? null,
         importance: payload.importance ?? null,
         summary: payload.summary ?? null,
+        actionReason: payload.actionReason ?? null,
       })
     } catch (e) {
       console.warn('[ws-bus] email.classified handler failed:', e)

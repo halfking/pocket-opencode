@@ -216,6 +216,16 @@ export interface Email {
   importance?: EmailImportance
   aiSummary?: string
   suggestedAction?: string
+  /**
+   * AI 判定该重要度/分类的**依据**（如「包含截止日期且需回复确认」）。
+   *
+   * 与 `suggestedAction` 的区别：后者是「该做什么」（动作），本字段是
+   * 「为什么这么判」（理由）。少了它，用户看到一封被判为重要的邮件却
+   * 不知道为什么，提醒就不可信、也无法判断该不该点开。
+   *
+   * 空/缺省 = 上游没给理由（不是「没有理由」的否定表述）。
+   */
+  actionReason?: string
   hasAttachments: boolean
   /** 服务端变更时间（Unix ms）；缺省时客户端回退到 date。 */
   updatedAt?: number

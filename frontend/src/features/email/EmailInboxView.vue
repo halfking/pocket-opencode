@@ -137,6 +137,22 @@
           <div class="subject">{{ m.subject }}</div>
           <div class="snippet">{{ m.snippet }}</div>
           <div v-if="m.aiSummary" class="ai-summary">💡 {{ m.aiSummary }}</div>
+          <!--
+            判定依据只在**重要**邮件上显示，且只在 importance=high 且有理由时出现。
+
+            为什么只挂在重要邮件上：action_reason 是 AI 判重要度的理由，
+            判成 low/normal 时它解释的是「为什么不重要」，那对用户没有行动价值，
+            全量展示会变成每张卡片都挂一行噪音。判成 high 时它回答的是
+            「为什么这封要提醒我」，正是用户决定要不要点开时需要的。
+
+            为什么要 title 属性兜底：理由可能很长，卡片高度有限。
+            title 让桌面端可悬停看全文，缺省行仍完整可读（CSS 里不截断）。
+          -->
+          <div
+            v-if="m.importance === 'high' && m.actionReason"
+            class="reason"
+            :title="m.actionReason"
+          >{{ m.actionReason }}</div>
           <div class="row-meta">
             <span v-if="m.category" class="tag" :class="`cat-${m.category}`">{{ catLabel(m.category) }}</span>
             <span v-if="m.importance === 'high'" class="importance">⭐ 重要</span>
@@ -639,6 +655,9 @@ onUnmounted(() => setHeaderTitle(null))
 .subject { font-size: var(--text-base); font-weight: 500; margin-bottom: var(--space-1); }
 .snippet { color: var(--text-secondary); font-size: var(--text-sm); -webkit-line-clamp: 1; -webkit-box-orient: vertical; display: -webkit-box; overflow: hidden; }
 .ai-summary { margin-top: var(--space-1); font-size: var(--text-sm); color: var(--brand-primary); background: var(--bg-subtle); padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); }
+/* 判定依据：与 .ai-summary 同族的提示块，但用中性色 + 左侧竖线，视觉权重低于摘要。
+   不截断（换行完整显示）——理由是判为重要的唯一依据，截掉等于没给。 */
+.reason { margin-top: var(--space-1); font-size: var(--text-xs); color: var(--text-secondary); background: var(--bg-subtle); padding: var(--space-1) var(--space-2); border-left: 2px solid var(--warning); border-radius: var(--radius-sm); word-break: break-word; }
 .row-meta { display: flex; gap: var(--space-2); align-items: center; margin-top: var(--space-2); }
 .tag { font-size: var(--text-xs); padding: 1px 6px; border-radius: var(--radius-sm); }
 .cat-work { background: var(--cat-work-bg); color: var(--cat-work); }

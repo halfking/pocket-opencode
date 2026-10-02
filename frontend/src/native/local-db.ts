@@ -77,6 +77,11 @@ const EMAIL_INBOX_V1_COLUMNS = [
 //     服务端 /api/emails/ops（幂等键去重），由服务端经 IMAP 真正迁移。
 const EMAIL_FOLDERS_V1_COLUMNS = [
   { table: 'local_emails', column: 'folder', sql: "ALTER TABLE local_emails ADD COLUMN folder TEXT DEFAULT ''" },
+  // q2：AI 判定重要度的依据。服务端早就写进 emails.action_reason 了，但读路径
+  // 从没读过它，于是「为什么这封被判为重要」在列表页拿不到 —— 提醒不可信。
+  // 已存在的本地库不会因为改了 CREATE TABLE 而补列（SQLite 的
+  // CREATE TABLE IF NOT EXISTS 对老库是 no-op），所以必须有这条迁移。
+  { table: 'local_emails', column: 'action_reason', sql: 'ALTER TABLE local_emails ADD COLUMN action_reason TEXT' },
 ]
 
 const LIST_SYNC_V1_COLUMNS = [

@@ -1780,7 +1780,8 @@ func (s *Store) DeleteAccountScoped(ctx context.Context, id, userID, workspaceID
 // ListEmailsScoped lists mail belonging to the requested user/workspace.
 func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID, workspaceID string) ([]Email, error) {
 	q := `SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet, e.date,
-		e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments,
+		e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action,
+		COALESCE(e.action_reason, ''), e.has_attachments,
 		COALESCE(e.folder_name, '')
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
 		WHERE a.user_id=$1 AND a.workspace_id=$2 AND COALESCE(e.deleted_at, 0)=0`
@@ -1960,19 +1961,23 @@ func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID 
 	// server_email_summary.summarizeBody 的 `if em.BodyPurged { return "" }`
 	// 守卫恒不触发，已软删的邮件会被 IMAP 回源、喂给 LLM、再把摘要写回已删除
 	// 的行），差别只是 SELECT 的列顺序与 Scan 的对应位置。取 main 侧。
-	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath, folderName, messageID sql.NullString
+	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath, folderName, messageID, actionReason sql.NullString
 	var bodyPurged sql.NullBool
 	var uid sql.NullInt64
 	// message_id / body_purged 的理由同 GetEmailByID：这两列一旦漏查，
 	// 下游拿到的结构体就是「字段恒零值」，守卫分支在生产里从不执行，
 	// 而且不产生任何错误信号。
+	//
+	// action_reason 同样属于「写进库了但读路径从不读」的一类（q2）：详情页
+	// 要展示「为什么这封被判为重要」，缺了它用户只能看到结论看不到依据。
 	err := s.pool.QueryRow(ctx, `SELECT e.id, e.account_id, e.uid, e.from_address, e.from_name, e.subject, e.snippet,
-		e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments,
+		e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action,
+		COALESCE(e.action_reason, ''), e.has_attachments,
 		e.body_path, e.message_id, COALESCE(e.body_purged, FALSE), COALESCE(e.folder_name, '')
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
 		WHERE e.id=$1 AND a.user_id=$2 AND a.workspace_id=$3`, id, userID, workspaceID).
 		Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead,
-			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPath,
+			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &actionReason, &e.HasAttachments, &bodyPath,
 			&messageID, &bodyPurged, &folderName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -1985,6 +1990,9 @@ func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID 
 	}
 	if messageID.Valid {
 		e.MessageID = messageID.String
+	}
+	if actionReason.Valid {
+		e.ActionReason = actionReason.String
 	}
 	if bodyPurged.Valid {
 		e.BodyPurged = bodyPurged.Bool
@@ -2169,9 +2177,19 @@ func (s *Store) UpdateEmailFlagsScoped(ctx context.Context, id, userID, workspac
 
 func scanEmail(row interface{ Scan(...any) error }) (*Email, error) {
 	var e Email
-	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, folderName sql.NullString
+	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, actionReason, folderName sql.NullString
+	// action_reason 的位置在 suggested_action 之后、has_attachments 之前，与
+	// ListEmailsScoped 的 SELECT 列序一一对应。**加列时两边必须同步改** ——
+	// Scan 的位置错位不会编译报错，只会让每封邮件的字段整体串位（这里会让
+	// HasAttachments 拿到 action_reason 的值），且不产生任何错误信号。
+	//
+	// 为什么补这一列（q2）：action_reason 早就写进库了（SetClassificationWithReasonScoped
+	// / applyInlineRules），但**读路径从来没读过它**——于是「为什么这封被判为重要」
+	// 在列表和详情页都拿不到，提醒不可信、用户无法判断该不该点开。
+	// 真库实测 122/122 为空是另一个问题（上游 DTO 曾丢字段，已修），但读路径
+	// 缺失是独立的一处：即使有值也显示不出来。
 	err := row.Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead,
-		&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &folderName)
+		&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &actionReason, &e.HasAttachments, &folderName)
 	if err != nil {
 		return nil, err
 	}
@@ -2195,6 +2213,9 @@ func scanEmail(row interface{ Scan(...any) error }) (*Email, error) {
 	}
 	if suggestedAction.Valid {
 		e.SuggestedAction = suggestedAction.String
+	}
+	if actionReason.Valid {
+		e.ActionReason = actionReason.String
 	}
 	if folderName.Valid {
 		e.FolderName = folderName.String
