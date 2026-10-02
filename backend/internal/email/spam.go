@@ -67,30 +67,32 @@ var spamDomainWhitelist = []string{
 	"taobao.com", "tmall.com", "pinduoduo.com", "ctrip.com", "qunar.com",
 	"flycua.com", "airchina", "ceair.com", "csair.com", "western airlines",
 	"exmail.qq.com", "kxpms.cn",
-	// monitor.aliyun.com：云厂商的服务通知（安全告警、账单、产品月刊）不是广告。
 	//
-	// 【2026-10-02 人工拍板：保留本条】冲突的两侧是：
-	//   - 规则侧：spamSubjectPatterns 命中「退订/取消订阅」即 Score 100 判垃圾，
-	//     且**主题和摘要都查**（见下方那段「命中即 100」），而
-	//     aliyun-product-monthly 的摘要含「点击此处退订。」；
-	//   - 样本侧：spam_samples_test.go 的 aliyun-product-monthly 期望非垃圾。
-	// 拍板取**保留白名单**：云厂商服务通知的误伤代价（MOVE 进垃圾箱、对真实
-	// 邮箱不可逆）高于漏判一份产品月刊。
+	// monitor.aliyun.com **不在**白名单里。
 	//
-	// 代价必须写清楚，别让它悄悄漂移：**白名单在 LooksLikeSpam 里是评分之前
-	// 就 return SpamVerdict{} 的**（见下方那个循环），所以那封信拿到的是
-	// score=0 why="" ——「看起来判成非垃圾」，实际是「压根没参与评分」。
-	// 也就是说对 monitor.aliyun.com 而言，退订规则**一次都没执行过**。
-	// 这是本次拍板接受的已知取舍，不是实现缺陷。
+	// 2026-10-02 人工拍板：冲突的两条规则里选「退订特征命中即判垃圾」
+	//（主题或摘要含 退订/取消订阅/拒收 ⇒ Score 100），而不是给它开后门。
+	// 这条决策当天被推翻过两次（见 docs/handoff/2026-10-02-round11 与 round13），
+	// 第一次以「保留白名单」的形式落地过，第二次改回移除——**最终口径是移除**。
 	//
-	// 判据：spam_samples_test.go 的
-	// TestLooksLikeSpam_AliyunExemptionIsTheOnlyReasonForZero 就是这条规则的
-	// 可判定点——它同时钉住「非豁免地址判 100」与「豁免地址严格零值」，
-	// 将来若要改口径（收回白名单或改退订规则），它会先红。
+	// 之前用「把 monitor.aliyun.com 加进白名单」来同时满足两侧的测试期望，
+	// 那等于用豁免掩盖规则冲突，而且比冲突本身更糟：白名单在 LooksLikeSpam 里
+	// 是**评分之前**就 `return SpamVerdict{}`（见下方那个循环），于是退订规则
+	// 根本没机会执行，实测得到 `score=0 why=""` —— **看起来「判成非垃圾」，
+	// 实际是「压根没判」**。判据（样本 spam:false）是绿的，实现却是空转。
+	// 用豁免掩盖规则冲突，会把冲突变成沉默。
 	//
-	// 不要用 aliyun.com 或 aliyuncs.com 整域放行：实测那样会把 6 封里该判的 2 封
-	// 一并豁免，垃圾判定形同虚设。只放行 monitor.* 这一支。
-	"monitor.aliyun.com",
+	// **代价（明确接受，非实现缺陷）**：阿里云产品月刊（正文带「点击此处退订」）
+	// 会被判为垃圾。真实服务通知 + 正文带退订链接这一类兜不住；误伤由
+	// invoiceCandidate / important 短路和出票/账单类域名白名单兜住。
+	//
+	// 可判定的收回点：spam_samples_test.go 的 aliyun-product-monthly 样本
+	// （期望 spam:true / minScore:100）以及
+	// TestLooksLikeSpam_AliyunHasNoDomainBackdoor（钉住「该域判定必须与
+	// 普通地址逐字相同」）——若将来要重新加回白名单，它们会先红。
+	//
+	// 也不要改成放行 aliyun.com / aliyuncs.com 整域：实测那样会把该判的
+	// 一起豁免，垃圾判定形同虚设。
 }
 
 // SpamVerdict 是判定结论。
