@@ -188,7 +188,52 @@ func ClassifySkipReason(kxConfigured bool, userID string) string {
 // 改成：任何一条失败都进日志，并汇总进返回的 error。调用点无需改动签名，
 // 它们现有的 `err != nil` 分支会把这件事打进日志。
 func ClassifyUnclassified(ctx context.Context, store *Store, kx kxmemory.Client, userID, workspaceID string, limit int) (int, error) {
-	if store == nil || kx == nil || userID == "" {
+	if kx == nil {
+		return 0, nil
+	}
+	return ClassifyUnclassifiedWith(ctx, store, userID, workspaceID, limit,
+		func(ctx context.Context, it ClassifyItem) (RawClassifyResult, error) {
+			resp, cerr := kx.ClassifyEmails(ctx, kxmemory.ClassifyEmailsRequest{
+				Emails: []kxmemory.EmailForClassification{{
+					EmailID: it.ID, Subject: it.Subject, Snippet: it.Snippet,
+					FromAddress: it.FromAddress, FromName: it.FromName,
+				}},
+			})
+			if cerr != nil {
+				return RawClassifyResult{}, cerr
+			}
+			if resp == nil || len(resp.Results) == 0 {
+				return RawClassifyResult{}, fmt.Errorf(
+					"kxmemory 返回空结果（resp=%v results=%d）", resp, resultCount(resp))
+			}
+			row := resp.Results[0]
+			return RawClassifyResult{
+				EmailID: it.ID, Category: row.Category, Importance: row.Importance,
+				Summary: row.Summary, Action: row.SuggestedAction,
+				// 必须一起搬：漏了这一项 action_reason 就止步于此，
+				Reason: row.ActionReason,
+			}, nil
+		})
+}
+
+// ClassifyOneFunc 对**单封**未归类邮件产出一次分类结果。
+//
+// 抽出来是为了让「定时流水线也能分类」不必重写一遍编排：分类的上游可以是
+// kxmemory，也可以是 LLM 网关兜底（server 包里 classifyViaGateway 的形状与
+// kxmemory 不同，硬塞进 kxmemory.Client 会造一个假接口）。
+type ClassifyOneFunc func(ctx context.Context, it ClassifyItem) (RawClassifyResult, error)
+
+// ClassifyUnclassifiedWith 是 ClassifyUnclassified 的通用编排：分类动作由调用方给。
+//
+// 抽取理由：需求 4 的定时路径此前**完全没有**分类（kxmemory 未配时
+// ClassifySkipReason 直接 return），而 LLM 网关兜底只接在 HTTP 端点上。
+// 不抽这一层的话，接线方要么复制整段编排（两份会各自漂移的代码），
+// 要么把网关硬塞成 kxmemory.Client（那是个谎报形状的接口）。
+//
+// 失败语义与原实现逐字保持：任一条失败都进日志并汇总进返回的 error，
+// 「这批没有待分类邮件」(0, nil) 与「全部失败」(0, err) 必须可区分。
+func ClassifyUnclassifiedWith(ctx context.Context, store *Store, userID, workspaceID string, limit int, one ClassifyOneFunc) (int, error) {
+	if store == nil || one == nil || userID == "" {
 		return 0, nil
 	}
 	items, err := store.ListUnclassifiedScoped(ctx, userID, workspaceID, limit)
@@ -206,30 +251,16 @@ func ClassifyUnclassified(ctx context.Context, store *Store, kx kxmemory.Client,
 		log.Printf("[email/classify] email=%s 分类失败: %v", id, cause)
 	}
 	for _, it := range items {
+		// 逐封一个 20s 上限：分类是逐条串行的，一封卡住不能连累后面的邮件，
+		// 也不能把整轮 ctx 拖到超时。
 		callCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		resp, cerr := kx.ClassifyEmails(callCtx, kxmemory.ClassifyEmailsRequest{
-			Emails: []kxmemory.EmailForClassification{{
-				EmailID: it.ID, Subject: it.Subject, Snippet: it.Snippet,
-				FromAddress: it.FromAddress, FromName: it.FromName,
-			}},
-		})
-		if cerr != nil || resp == nil || len(resp.Results) == 0 {
-			cause := cerr
-			if cause == nil {
-				cause = fmt.Errorf("kxmemory 返回空结果（resp=%v results=%d）", resp, resultCount(resp))
-			}
+		row, cerr := one(callCtx, it)
+		if cerr != nil {
 			cancel()
-			noteFailure(it.ID, cause)
+			noteFailure(it.ID, cerr)
 			continue
 		}
-		row := resp.Results[0]
-		writes := BuildClassifyWrites([]RawClassifyResult{{
-			EmailID: it.ID, Category: row.Category, Importance: row.Importance,
-			Summary: row.Summary, Action: row.SuggestedAction,
-			// 必须一起搬：漏了这一项 action_reason 就止步于此，
-			// 后面无论调哪个写库方法都补不回来（真库 122/122 为空的成因）。
-			Reason: row.ActionReason,
-		}})
+		writes := BuildClassifyWrites([]RawClassifyResult{row})
 		if len(writes) == 0 {
 			cancel()
 			noteFailure(it.ID, fmt.Errorf(
@@ -240,11 +271,11 @@ func ClassifyUnclassified(ctx context.Context, store *Store, kx kxmemory.Client,
 		w := writes[0]
 		// 走带 reason 的写库方法。用 SetClassificationScoped 会静默丢列——
 		// 那个方法的签名里就没有它，编译通过、运行不报错、库里永远是空。
-		err := store.SetClassificationWithReasonScoped(callCtx, w.EmailID, userID, workspaceID,
+		werr := store.SetClassificationWithReasonScoped(callCtx, w.EmailID, userID, workspaceID,
 			w.Category, w.Importance, w.Summary, w.Action, w.Reason)
 		cancel()
-		if err != nil {
-			noteFailure(it.ID, fmt.Errorf("写库失败: %w", err))
+		if werr != nil {
+			noteFailure(it.ID, fmt.Errorf("写库失败: %w", werr))
 			continue
 		}
 		n++

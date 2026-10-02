@@ -48,8 +48,21 @@ type Pipeline struct {
 	Pusher   InvoicePusher     // 可为 nil：跳过飞书，直接走共享文档
 	Notifier ImportantNotifier // 可为 nil：跳过提醒
 	// Ledger 发布飞书共享台账（电子表格）。为 nil 或不可用时只生成本地 CSV/MD。
-	Ledger  LedgerPublisher
-	DataDir string
+	Ledger LedgerPublisher
+	// Classifier 对未归类邮件跑一次分类（需求 4 的定时路径）。可为 nil：
+	// 为 nil 时第 1.6 步整步跳过，报告里 ClassifySkip 记下原因。
+	//
+	// 为什么需要它：importance 是**提醒的唯一入口**（splitReminderCandidates
+	// 只看 importance='high'），而它此前只有两条写入路径——账户规则与
+	// kxmemory 分类。kxmemory 未配时定时路径整步放弃，于是新邮件的
+	// importance 永远是空，需求 4 对新邮件恒 0 条提醒。手动端点
+	// /api/emails/classify 有 LLM 网关兜底，Scheduler 拿不到那个兜底
+	// （跨包）。这里开一个注入口，让上层把网关兜底接进来。
+	//
+	// 顺序是硬要求：必须排在第 3 步 notifyImportant **之前**。排在后面的话
+	// 本轮新邮件仍然不会被提醒，看起来「分类已经跑过」而需求 4 依旧不响。
+	Classifier EmailClassifier
+	DataDir    string
 	// SpamLookbackDays 垃圾清理扫描窗口（默认 7 天）。
 	SpamLookbackDays int
 	// SpamDryRun=true 时第 2 步只判定不 MOVE（真实邮箱首次运行的安全阀）。
@@ -57,6 +70,24 @@ type Pipeline struct {
 	// AccountSyncTimeout 单账户同步墙钟上限；<=0 时用 DefaultAccountSyncTimeout。
 	AccountSyncTimeout time.Duration
 }
+
+// EmailClassifier 对一个 (user, workspace) 下的未归类邮件跑一次分类，
+// 返回真正写库成功的条数。
+//
+// 签名与错误语义与 ClassifyUnclassified 保持一致：第二个返回值是**逐条失败**
+// 的汇总，不是「整个函数失败」——(0, nil) 与 (0, err) 必须在报告上可区分。
+type EmailClassifier func(ctx context.Context, userID, workspaceID string, limit int) (int, error)
+
+// classifyBatchLimit 单轮分类的封数上限。
+//
+// 上限存在的原因是分类是**逐条串行**的（每封一个 20s 超时），不设上限的话
+// 积压上千封时第 1.6 步会吃掉整轮时间预算，挤掉后面的提醒与发票采集。
+// 剩下的留给下一轮——分类本来就是可增量重入的。
+//
+// 取 20 还有个机械原因：Store.ListUnclassifiedScoped 自己把 >20 的值重置为
+// 20。写在这里是为了让这个上限**在本文件里可见**，而不是散落在 store 的
+// 静默钳制里——但要知道，真正生效的那道是 store 那道。
+const classifyBatchLimit = 20
 
 // spamPreviewCap 每个账户在预演报告里最多列多少个主题样本。
 const spamPreviewCap = 10
@@ -308,6 +339,17 @@ type PipelineReport struct {
 	// 注意它与 RemindersSent 不可互相替代：推送失败时 Pending > Sent，
 	// 这个差值就是「本该提醒却没提醒出去」的条数。
 	RemindersPending int `json:"remindersPending,omitempty"`
+	// Classified 是第 1.6 步本轮**写库成功**的分类条数。
+	// ClassifySkip 是「分类这一步**根本没跑**」的原因，非空即表示本轮
+	// 一封都没分类。
+	//
+	// 为什么需要它（与 FeishuSkip 同一类问题）：importance 是提醒的唯一入口，
+	// 而它只在分类里被写。kxmemory 未配时定时路径整步放弃，于是新邮件
+	// importance 恒空、需求 4 恒 0 条提醒——但报告上「没配分类器」与
+	// 「分类跑了但没有待分类的邮件」都表现为「0 条提醒」，长得一模一样。
+	// ClassifySkip 把第一种情况显式说出来，排查时不用再去翻启动日志。
+	Classified   int    `json:"classified,omitempty"`
+	ClassifySkip string `json:"classifySkip,omitempty"`
 	// 发票候选（步骤 1.5）的三个计数。同样的理由：只报 invoices.Processed
 	// 时，「扫了 0 封候选」和「这批里没有发票」长得一模一样，
 	// 于是 0 到底是链路没跑、还是跑了但没命中，看报告分不出来。
@@ -369,6 +411,12 @@ func (p *Pipeline) Run(ctx context.Context) *PipelineReport {
 	stepStart(rep, start, "1.5/5 invoice candidates")
 	p.extractInvoiceCandidates(ctx, accounts, rep)
 
+	// 1.6) 分类。**必须排在第 3 步之前**：importance 是提醒的唯一入口，
+	// 分类排在提醒之后的话本轮新邮件仍然不会被提醒，而报告上会显示
+	// 「分类已跑过 N 封」——看起来修好了，需求 4 其实还是不响。
+	stepStart(rep, start, "1.6/5 classify")
+	p.classifyPending(ctx, pipelineScopes(accounts), rep)
+
 	// 2) 垃圾清理
 	stepStart(rep, start, "2/5 spam clean (dryRun=%v)", p.SpamDryRun)
 	p.cleanSpam(ctx, rep)
@@ -386,12 +434,7 @@ func (p *Pipeline) Run(ctx context.Context) *PipelineReport {
 	// 5) 飞书推送 + 6) 共享汇总文档（总是生成，作为可核查的清单）。
 	// 发票行带 (user, workspace) 隔离：复用 intentLoop 的 scope 去重方式，
 	// 对每个 scope 独立推送与汇总，避免跨工作区串数据。
-	scopes := map[[2]string]struct{}{}
-	for _, acc := range accounts {
-		if acc.UserID != "" {
-			scopes[[2]string{acc.UserID, defaultWorkspace(acc.WorkspaceID)}] = struct{}{}
-		}
-	}
+	scopes := pipelineScopes(accounts)
 	stepStart(rep, start, "5/5 push+ledger over %d scope(s)", len(scopes))
 	for sc := range scopes {
 		invoices, err := p.Store.ListInvoicesScoped(ctx, sc[0], sc[1], "downloaded", 500)
@@ -426,6 +469,48 @@ func (p *Pipeline) Run(ctx context.Context) *PipelineReport {
 		}
 	}
 	return rep
+}
+
+// pipelineScopes 从账户列表推导需要按 (user, workspace) 隔离处理的 scope 集合。
+//
+// 抽成函数是因为它现在有**两个**调用点（第 1.6 步分类、第 5 步推送+台账）。
+// 留在两处各写一遍的话，任何一处漏掉「UserID 为空要跳过」或漏掉
+// defaultWorkspace 归一，两个步骤的 scope 口径就会分叉——而这种分叉
+// 表现为「有的发票被推了、有的没有」，极难从报告上看出是 scope 算错了。
+func pipelineScopes(accounts []Account) map[[2]string]struct{} {
+	scopes := make(map[[2]string]struct{}, len(accounts))
+	for _, acc := range accounts {
+		if acc.UserID == "" {
+			continue
+		}
+		scopes[[2]string{acc.UserID, defaultWorkspace(acc.WorkspaceID)}] = struct{}{}
+	}
+	return scopes
+}
+
+// classifyPending 是第 1.6 步：对每个 scope 分类尚未归类的邮件。
+//
+// 没有分类器时整步跳过，但**必须留下 ClassifySkip**：这一整步缺失与
+// 「跑了但没有待分类的邮件」在报告上都是「0 条提醒」，只有把这个原因
+// 显式记下来，需求 4 不响的时候才知道该去配分类器而不是去查邮件。
+func (p *Pipeline) classifyPending(ctx context.Context, scopes map[[2]string]struct{}, rep *PipelineReport) {
+	if p.Classifier == nil {
+		rep.ClassifySkip = "未注入分类器（POCKET_EMAIL_CLASSIFY_VIA_GATEWAY 未开启，" +
+			"或该部署没有 LLM 网关）——本轮新邮件 importance 不会被写入，需求 4 对新邮件不会有提醒"
+		log.Printf("[email/pipeline] %s", rep.ClassifySkip)
+		return
+	}
+	total := 0
+	for sc := range scopes {
+		n, err := p.Classifier(ctx, sc[0], sc[1], classifyBatchLimit)
+		if err != nil {
+			// 逐条失败汇总，不是整步失败：成功的那些已经写库了。
+			rep.AddError("classify scope=%v: %v", sc, err)
+		}
+		total += n
+	}
+	rep.Classified = total
+	log.Printf("[email/pipeline] classified %d email(s) across %d scope(s)", total, len(scopes))
 }
 
 // extractInvoiceCandidates 把近期入库、命中发票关键词但尚未建档的邮件自动
