@@ -154,8 +154,15 @@ async function ensureDriver() {
     let ok = false
     for (let attempt = 1; attempt <= 2 && !ok; attempt++) {
       console.log(`[driver] 安装 ${pkg}（第 ${attempt} 次）`)
-      const r = spawnSync(process.execPath, [resolve(ROOT, 'scripts/adb-install-confirm.mjs'), apk],
+      // 走 device-install-preflight.mjs 而不是旧的 adb-install-confirm.mjs：
+      // 2026-10-02 实测，MIUI 只对**全新安装**弹确认框（`-r` 覆盖已装包不弹），
+      // 而 Maestro 每次开会话都先 uninstall 再 install —— 撞的正是会弹那条路径。
+      // preflight 会盯窗口焦点、定位「继续安装」并点击；已用对照实验钉死因果：
+      // 点了就 Success（pm list 确认包真的在），不点即 USER_RESTRICTED。
+      const r = spawnSync(process.execPath, [resolve(ROOT, 'scripts/device-install-preflight.mjs'), apk],
         { cwd: ROOT, encoding: 'utf8', timeout: 180000 })
+      if (r.stdout) process.stdout.write(r.stdout)
+      if (r.stderr) process.stderr.write(r.stderr)
       if (have(pkg)) { ok = true; adb(['shell', 'pm', 'enable', pkg], 30000); break }
       console.log(`[driver] ${pkg} 第 ${attempt} 次安装未成功`)
     }

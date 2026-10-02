@@ -6,62 +6,89 @@
 
 ## 0. 结论先说
 
-1. **安装确认**：这台机上 `adb install` **本来就不弹窗**，弹窗兜底逻辑已收进
-   `scripts/device-install-preflight.mjs`（新文件）。但**没有任何一个 `settings`
-   开关是这件事的开关**——负控已证，见 §1。
-2. **网关 key**：已按 env 注入落地（根 `.env`，被 `.gitignore:8` 覆盖），
+1. **安装确认的真实形态**：MIUI/HyperOS 会对**全新安装**弹确认框，不点就
+   `INSTALL_FAILED_USER_RESTRICTED`。已交付并**接线**到 `scripts/device-install-preflight.mjs`，
+   弹窗时自动定位「继续安装」并点击，实测装得上（`pm list` 确认）。
+2. **没有任何 `settings` 键能关掉这个弹窗**——五个候选全部负控证伪，见 §1.2。
+3. **网关 key**：已按 env 注入落地（根 `.env`，被 `.gitignore:8` 覆盖），
    并写进真机 workspace 实测可用。**没有写进任何源码**——仓库有零容忍卡口，见 §3。
 
-## 1. 安装确认：`adb_install_need_confirm` 不是那个开关（负控实证）
+> ⚠️ **本文件 §1 的初版结论已被推翻并重写。**
+> 初版称"这台机不弹窗、`adb_install_need_confirm` 是那个开关"，那是**只在
+> `adb install -r` 更新路径上测**得出的结论，把路径巧合当成了门被关上。
+> 重测（§1.1）推翻了它。若你只看初版会被误导。
 
-我最初按直觉去调 `settings put global adb_install_need_confirm 0`，装包确实不弹。
-**但这不能证明是它干的**，于是做了负控：
+## 1. 安装确认：初版结论错了，错在**只测了一条路径**
 
-| 轮次 | 设置值 | 观测到的弹窗 | install |
+### 1.1 更新路径 vs 全新安装，是两条不同的路径
+
+初版我在 `adb install -r` 上测了四五轮，全都不弹窗，于是写下
+"这台机本来就不弹"。**这是把路径巧合当成了门被关上。**
+
+真机复测（同一台机、同一批设置）：
+
+| 场景 | 弹窗 | 结果 |
+|---|---|---|
+| `adb install -r` 覆盖**已装**的 `com.kaixuan.opencode.pocket` | **不弹** | Success |
+| 卸载后装**未装过**的 `maestro-server.apk` | **必弹** | 不点 → `INSTALL_FAILED_USER_RESTRICTED` |
+
+**为什么重要**：Maestro 每次开会话都先 `uninstall` 再 `install` driver
+（见 `2026-10-02-stt-maestro-flow-not-closed-on-device.md` 的实测堆栈），
+所以它撞的一直是**会弹**那条路径。只在 `-r` 上测，永远看不到用户的原始问题。
+
+⇒ 教训：**判据的覆盖面要覆盖缺陷真正发生的那条路径**，不是任一条能过的路径。
+
+### 1.2 五个 `settings` 候选，在**真会弹的路径**上逐个证伪
+
+初版我拿 `adb_install_need_confirm` 当解法，负控（改回 1）没转红，
+但我据此推断"这个键不承重、别的机制在放行"——**这一步推断是错的**。
+在**真会弹的路径**上重测，每个都回读确认写入成功：
+
+| 候选键 | 值 | 弹窗 | 结果 |
 |---|---|---|---|
-| 基线 | `adb_install_need_confirm=0` | 无 | Success |
-| **负控** | 改回 `adb_install_need_confirm=1` | **仍然无** | Success |
+| `global.adb_install_need_confirm` | 0 | **仍弹** | FAILED |
+| `global.verifier_verify_adb_installs` | 0 | **仍弹** | FAILED |
+| `global.package_verifier_enable` | 0 | **仍弹** | FAILED |
+| `secure.install_non_market_apps` | 1 | **仍弹** | FAILED |
+| `global.adb_install_enable`（= 开发者选项「USB 安装」） | 0 | **仍弹** | FAILED |
 
-**负控转红失败 ⇒ 那个键在这台机上根本不承重。** 如果当时只看"设成 0 之后不弹了"
-就收工，会把一个无效开关当成解决方案报出去——而它哪天被重置成 1（出厂/升级/换机），
-自动化就会突然开始卡住，而没人知道为什么。
+**结论：五个全部证伪，没有一个能关掉弹窗。**
+初版那个"负控没转红"的观察本身没错，错在**把它解释成了"别的机制在放行"**——
+真实解释是：**我测的那条路径压根不弹**，所以开关怎么改都看不出差别。
 
-### 真正在放行的是什么
+logcat 里的放行原因仍是 `(BAL_ALLOW_ALLOWLISTED_UID)` + Activity
+`visibleRequested:false`；真正的门在 `/data/user/0/com.miui.securitycenter`
+私有存储，**无 root 读不到**（实测 `Permission denied`，
+`run-as` 也报 `package not an application`）。
 
-抓 `adb logcat` 抓到了决定性一行：
+⇒ 想要**彻底不弹**，只能人工在手机上开「开发者选项 → USB 安装」；
+adb 侧做不到。因此脚本不宣称关掉弹窗，只做「弹了就点掉」这件被证实有效的事。
+
+### 1.3 自动点确认：有效，且用对照实验钉死了因果
+
+初版我说这个分支"从未在真机触发过、只做过判据级负控"。在真会弹的路径上
+实跑，**它确实被触发了，而且有效**：
 
 ```
-START u0 {cmp=com.miui.securitycenter/com.miui.permcenter.install.AdbInstallActivity ...}
-  callers: ...PmInjector.installVerify:65 PackageManagerServiceImpl.verifyInstallFromShell:1227
-  (BAL_ALLOW_ALLOWLISTED_UID) result code=0
-
-WindowManager: ActivityRecord{... AdbInstallActivity t683} init visibleRequested:false
+[preflight] 检测到安装确认弹窗，尝试自动确认
+[preflight] 已点击确认键 "继续安装" @207,1498
+[preflight] 已点击确认键 "继续安装" @207,1498
+[preflight] install 结果: Success | Performing Streamed Install | Success
 ```
 
-两点合起来才是完整解释：
+**正向**：点完 install Success，且 `pm list packages` 确认
+`package:dev.mobile.maestro.test` **真的装上了**（不拿 install 的回显当证据）。
 
-- **`BAL_ALLOW_ALLOWLISTED_UID`** —— 放行原因是 **MIUI 的 UID 白名单**，
-  不是那个 settings 键。
-- **`visibleRequested:false`** —— Activity **被启动了，但 MIUI 判定后没让它显示**。
-  所以抓窗口焦点只会看到 app 本身，看不到任何"弹窗出现过"的痕迹。
+**反向对照**（钉死因果，排除"本来就能装"）：紧接着 `adb uninstall`，
+重装同一 APK、不点任何东西 → **弹窗出现 + `INSTALL_FAILED_USER_RESTRICTED`**。
 
-⇒ 「弹不弹」的开关在 `/data/user/0/com.miui.securitycenter` 下（私有 DB / prefs），
-**无 root 读不到**（实测 `Permission denied`）。
+⇒ 成功是"点了"带来的，不是环境本来宽松。
 
-### 因此脚本的判据改成「实测安装」而不是「开关状态」
-
-`scripts/device-install-preflight.mjs`：
-- 阶段 1 照写那 4 个开关，但**明说它们只是"尽量不弹"**，每条都回读确认，
-  写不进去就如实打印，不假装成功；
-- 阶段 2 **真跑一次 `adb install` 并全程盯窗口焦点**：
-  没弹 → 静默通过；弹了 → `uiautomator dump` 定位确认键并点击 → 成功则 exit 0。
-
-**这是刻意不赌单个开关的设计**：判据落在"这次安装到底成没成、弹没弹"上，
-对任何一台 HyperOS 都成立，换机/重置也不失效。
-
-弹窗分支的定位逻辑刻意**不盲发回车**：MIUI 那个框的默认焦点在「取消」上，
-盲发回车等于点"拒绝"。必须先 dump 出层次结构、按文案/资源 id 定位到真正的
-确认键再点；定位不到就如实打印"不盲点"并继续等，不乱按。
+⚠️ **推翻了另一份 handoff 的记录**：
+`2026-10-02-stt-maestro-flow-not-closed-on-device.md:150` 记着
+"弹窗自动点「继续安装」｜连点 2 次仍被系统撤销"。本轮实测与之**相反**——
+连点两次后 install Success。两者冲突时以本轮的对照实验为准
+（它有正向+反向+包状态三重证据，且是本轮现场复现）。
 
 ## 2. 脚本自身踩的两个坑（都已修，且都做了负控）
 
@@ -136,21 +163,36 @@ POST /api/llm-gateway/test   -> ok=true, status=200, models=606
 # 体检 + 调优（不装包）
 node scripts\device-install-preflight.mjs
 
-# 体检 + 真装（判据是这次安装的实测结果）
+# 体检 + 真装（判据是这次安装的实测结果 + 弹窗是否被点掉）
 node scripts\device-install-preflight.mjs <apk路径>
+
+# 走 Maestro（内部已接到 device-install-preflight.mjs）
+node scripts\maestro-run.mjs ...
 
 # 网关 key 生效核对（key 从 .env 读，不回显）
 #   → GET /api/llm-gateway/config 看 apiKeySet
 #   → POST /api/llm-gateway/test 看 ok / status / models
 ```
 
-## 6. 未做 / 待办
+## 6. 本轮改动清单
 
-- **没有改 `scripts/adb-install-confirm.mjs`**：它作为独立兜底仍可用，
-  新脚本里已内联同等（且更严）的逻辑。等确认新脚本稳定后再决定是否合并，
-  避免同一件事两份实现漂移。
+| 文件 | 改动 |
+|---|---|
+| `scripts/device-install-preflight.mjs` | **新增**。装前调优 + 盯弹窗 + 自动点「继续安装」 |
+| `scripts/maestro-run.mjs:157` | **接线**：driver 安装从旧的 `adb-install-confirm.mjs` 换到 preflight，并把 stdout/stderr 打出来 |
+| `scripts/adb-install-confirm.mjs` | **删除**。活代码已无引用，留两份实现必然漂移 |
+| `.env`（gitignored） | 新增，网关 key 注入 |
+| 本 handoff | 新增 |
+
+## 7. 未做 / 待办
+
+- **彻底不弹窗需要人工操作**：五个 `settings` 键全部证伪后，唯一已知的
+  根治路径是手机上手动开「开发者选项 → USB 安装」。脚本不做这件事，
+  也不假装做了。若要让自动化在**新机/重置后**也完全无人工介入，
+  这一步必须进设备初始化清单。
 - **`check-maestro-flows.mjs` 仍未接进 gates**（沿自 round8 待办 5）。
-- **换机/重置后的行为未验证**：`BAL_ALLOW_ALLOWLISTED_UID` 是 MIUI 白名单态，
-  新机默认可能真的会弹。脚本对那种情况会走"弹窗 → 自动点确认"分支，
-  但**该分支本轮没有被真机触发过**（这台机不弹），只做过判据级负控。
-  ⇒ 该分支算"已实现且判据已验"，不算"已在真机跑通"。
+- **`maestro-run.mjs` 的完整会话未在本轮跑通**：只验证了它新接的那条
+  driver 安装链路（从卸载态装到 `pm list` 确认就位）。整条 Maestro
+  会话（启动 driver、跑 YAML flow、出报告）不在本轮范围内。
+- **`.env` 里的 key 需轮换时**，改 `.env` 那一行后重启 pocketd，
+  并重新 `POST /api/llm-gateway/config`（库里有密文副本，只改 env 不够）。

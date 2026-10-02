@@ -2,25 +2,45 @@
 //
 // ── 为什么需要这个脚本 ──
 //
-// HyperOS 会在 adb 安装时拉起
+// HyperOS 会在**全新安装**（包未在设备上）时拉起
 //   com.miui.securitycenter/com.miui.permcenter.install.AdbInstallActivity
-// 没人点就超时取消，自动化流程整个挂住。本脚本把「装之前把机器调好」和
-// 「万一还是要弹、就自动点掉」合成一条命令（方案 C）。
+// 没人点就超时，报 INSTALL_FAILED_USER_RESTRICTED: Install canceled by user，
+// 自动化流程整个挂住。本脚本把「装之前把机器调好」和「要弹就自动点掉」
+// 合成一条命令（方案 C）。
 //
-// ── 一个必须记下的实测结论：别去赌某个开关 ──
+// ── 三条必须记住的实测结论（都是负控/对照实验打出来的）──
 //
-// 2026-10-02 在 2411DRN47C / HyperOS V816 上实测：
-//   * `settings put global adb_install_need_confirm 0` → install 确实不弹；
-//   * 但把它**改回 1**（负控），install 照样不弹、直接 Success。
-// 负控转红失败 ⇒ 那个键在这台机上根本不承重，「不弹」是别的机制放行的。
-// 抓到的 logcat 显示放行原因是
-//   verifyInstallFromShell ... (BAL_ALLOW_ALLOWLISTED_UID) result code=0
-// 且 AdbInstallActivity 是 `visibleRequested:false` —— **Activity 被启动了，
-// 但 MIUI 判定后没让它显示**。真正把门的是 MIUI 的 UID 白名单 + 安全中心
-// 的安装确认状态，都在 /data/user/0/com.miui.securitycenter 下，无 root 读不到。
+// **① 更新路径与全新安装是两条不同的路径，结论不能互相外推。**
+// `adb install -r` 覆盖一个**已装**的包，实测**根本不弹窗**、直接 Success。
+// 而卸载后装一个**未装过**的包（实测用 maestro-server.apk）**必弹**且
+// 不点就 USER_RESTRICTED。Maestro 每次开会话都先 uninstall 再 install driver，
+// 所以它撞的一直是后一条路径。
+// ⚠️ 只在 `-r` 更新路径上测，会得出"这台机根本不弹窗"的错误结论——
+// 那是路径巧合，不是门被关上了。
 //
-// ⇒ 所以这里不宣称「关掉了某个开关」，而是**跑一次真实安装来判定**：
-// 没弹就静默通过；弹了就点掉。判据是这次安装的实测结果，不是任何单一设置项。
+// **② 没有任何 `settings` 键能关掉这个弹窗（四个候选全部证伪）。**
+// 在**真会弹的路径**上逐个实测，每个都回读确认写入成功：
+//   global.adb_install_need_confirm      = 0  -> 仍弹窗、仍 FAILED
+//   global.verifier_verify_adb_installs  = 0  -> 仍弹窗、仍 FAILED
+//   global.package_verifier_enable       = 0  -> 仍弹窗、仍 FAILED
+//   secure.install_non_market_apps       = 1  -> 仍弹窗、仍 FAILED
+//   global.adb_install_enable            = 0  -> 仍弹窗、仍 FAILED
+// logcat 显示放行走的是 (BAL_ALLOW_ALLOWLISTED_UID)，且 Activity 是
+// visibleRequested:false；真正的门在 /data/user/0/com.miui.securitycenter
+// 私有存储里，**无 root 读不到**（实测 Permission denied）。
+// ⇒ 本脚本**不宣称关掉了弹窗**，只做「弹了就点掉」这一件被证实有效的事。
+//
+// **③ 自动点确认键是有效的，且已用对照实验钉死因果。**
+// 装 maestro-server.apk：弹窗出现 → 定位到「继续安装」@207,1498 → 点击
+// → install Success，且 `pm list packages` 确认 dev.mobile.maestro.test
+// 真的装上了。紧接着卸载重装做反向对照：仍弹窗、不点即 USER_RESTRICTED。
+// ⇒ 成功是"点了"带来的，不是"本来就能装"。
+// （注：2026-10-02 一份 handoff 记着"自动点连点 2 次仍被系统撤销"——
+//  本轮实测与该记录相反，以本脚本的对照实验为准。）
+//
+// 弹窗分支刻意**不盲发回车**：MIUI 那个框的默认焦点在「取消」上，
+// 盲回车等于点"拒绝"。必须先 dump 出层次结构、按文案/资源 id 定位到
+// 真正的确认键再点；定位不到就如实打印"不盲点"并继续等，不乱按。
 //
 // 用法：
 //   node scripts/device-install-preflight.mjs            # 只体检 + 调优，不装
@@ -58,7 +78,6 @@ function requireDevice() {
   if (!/\sdevice\s*$/.test(mine)) {
     console.error(`[FAIL] 设备不在线: ${mine || '(未找到 ' + S + ')'}`)
     console.error('  必须在真机上操作：确认 WiFi 仍连着，重开一次无线调试并回报新端口。')
-    process.errorlevel = 1
     process.exit(2)
   }
   log(`设备在线 ${S}`)
