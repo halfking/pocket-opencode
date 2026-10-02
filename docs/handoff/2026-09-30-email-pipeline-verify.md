@@ -11114,3 +11114,99 @@ email 域占 10 个，其中 7 个是 content 冲突（真语义分歧）、
 未执行合并、未解决任何冲突、未跑合并后回归（合并后是否绿**未知**）。
 探针 worktree 已 `git worktree remove --force` 删除，两个分支状态未变。
 合并策略属产品/工程决策，未擅自选定。
+
+---
+
+## §7eq 合并已执行并全绿（推翻上一节的「仍未做」）
+
+上一节写于合并之前。合并随后真的执行了，结论如下。
+
+### 合并的实际规模
+
+主仓在首轮合并评估之后又前进了 **61 个提交**（`f927ab70` → `243cda44`），
+其中 50 个文件命中 email 域，且多为与本分支重叠的修复。所以首轮那份
+「18 个冲突、成本可控」的估计**不再适用**，重做了一次评估：
+
+- 相对共同祖先 `f927ab70`，本分支侧改 165 个文件，main 侧改 103 个
+- **重叠面 23 个文件**（比首轮的 18 个显式冲突少）
+- 在 `243cda44` 上新建探针 `openpocket-wt-merge2` 重做合并
+
+### 显式冲突 8 个，但真正的坑在别处
+
+`git diff --diff-filter=U` 只报出 8 个。**解完之后全仓扫 `^(<<<<<<<|>>>>>>>)`
+又找出 11 块残留**（`pipeline.go` 7 块、`store.go` 3 块）——git 把 add/add
+两侧的内容合进了共同部分，不报冲突但语义已错。这类只能靠扫标记发现。
+
+三处不是简单取一侧：
+
+- **`downloadPDF`（invoice_harvest.go）**：两侧各修一个独立缺陷，必须叠加。
+  main 加了魔数校验，本分支加了超限检测（原先 `LimitReader(MaxInvoicePDFBytes)`
+  会把超限文件静默截断成正好 20MB，魔数完好 → 落盘 → 标记「已下载」，
+  库里记着成功但凭证打不开）。顺序有意为之：先判超限。
+- **`feishu/client.go`**：两侧**独立**发现了同一个 bug（content 多包一层
+  JSON），修复代码完全一致，只合并注释。
+- **`use-email-inbox.ts`**：这是架构分歧。`git grep classifyRunVerdict 243cda44
+  -- frontend/src` 显示 main 那个判据函数在 main 自己的代码里**零引用**，
+  只出现在自己的单测与护栏里——正是它自己护栏要防的「判据存在、循环没接」。
+  取本分支的 `runClassifyLoop`，并改写护栏判据（它原先要求内联形态）。
+
+### 合并期查出的真实缺陷
+
+1. **解冲突时吞掉一整段 `os.WriteFile`**：CSV 落盘消失，函数只写 MD 就返回。
+   编译过、vet 过、大部分用例绿，只有 12 个真去 stat CSV 的转红，报的却是
+   「文件不存在」。补回后写了机械审计（比对两侧关键调用 + 函数名/常量名），
+   两个脚本都 OK 才算过。
+2. **两条恒假断言**：CSV 解析硬编码金额列下标 7（正是 main 修掉的错位列）且
+   没剥 BOM；命名正则匹配不上任何真实文件名（日期自带连字符），还把发票号
+   写死成必需（实现是「有则加」）。后者尤其危险——它**恒红**，看起来护栏在
+   工作，实际对任何实现都红。
+3. **假 PDF 夹具**：`[]byte("%PDF-1.7 body")` 只有魔数没有页对象，main 新增的
+   `pdfHasPages` 校验判成 unusable。补了 `minimalInvoicePDF()`（pdfcpu 实测 1 页）。
+4. **夹具没走被测路径**：`TestHarvestOne_CachedRawStillCountsAttempt` 的 email ID
+   不带 `em-pop3-` 前缀，而 `harvestOne` 只在 POP3 来源时才查 BodyCache。
+   该用例自己的防假绿断言正好抓到了它。
+
+### main 上一个未完成的修复，本轮补上
+
+`TestClassifyDoesNotDowngradeRuleImportance` 等 2 个用例在 **main(243cda44)
+上本来就红**（基线 worktree 实测，报错一字不差）。深挖发现问题在更下面：
+它们来自 main 的 `5da2d9e9`，那次提交**同时**加了测试文件和 `store.go` 里
+那段 `importance = CASE WHEN e.importance='high' AND $2<>'high' THEN ... END`，
+而某次合并**只带了测试、没带实现**。这不是遗留问题，是未完成的修复，
+本轮把实现补上（`git diff 5da2d9e9^ 5da2d9e9 -- store.go` 可见原文）。
+
+**教训**：看到 FAIL 先建基线 worktree 跑同样的用例，区分「本轮回归」与
+「既有问题」；但既有失败不能修完就算完，要查它是「谁留下的、为什么留着」。
+
+### 负控实测记录
+
+- wiring 护栏：拿掉 `runClassifyLoop` 调用只留 import 行 → **3 条转红**
+- 命名段结构判据：把「月」从 `\d{2}` 改成 `\d{5}` → **2 条转红**
+- importance 保护：把条件弱化成 `$2 <> ''` → **1 条转红**
+
+补一条**没转红**的：先试的「更严格」变异
+`CASE WHEN e.importance='high' OR $2='high' THEN 'high' ELSE $2 END`
+**exit 0**。逐格核对发现它与原式在所有可达输入上完全等价（`$2='high' THEN
+'high' ELSE $2` 恒等于 `$2`），是语义 no-op。**no-op 变异比转红更危险**——
+容易被读成「这条断言冗余」，进而把承重的断言删掉。挑变异要挑「真实世界会
+写错的那个版本」，不是「看起来更严格」的版本。
+
+### 验证
+
+- `go build ./...` EXIT=0 / `go vet ./...` EXIT=0
+- `go test ./... -count=1 -race -p 2`：**ok 53 + no-test 18 = 71 包**，
+  FAIL 包 0 / FAIL 用例 0 / SKIP 0 / cached 0 / DATA RACE 0
+- `npm run test:all` EXIT=0（`not ok` 零行）、`vue-tsc --noEmit` EXIT=0、
+  `check:crlf-needles` EXIT=0（172 个测试文件）
+- `email-detail-sanitize.test.mjs` 实跑 **17/17 绿**。此前一直标「未实跑」，
+  原因是首轮探针的 `node_modules` 是指向主仓的 junction、缺 `jsdom`；
+  新探针 `npm ci` 装齐 328 个包后已验证。
+
+### 仍然未验证（不随合并改变）
+
+需求 6 设备侧未实施、真机端到端从未验证、需求 1 真实 IMAP MOVE 未授权、
+飞书推送未验（`POCKET_FEISHU_INVOICE_CHAT_ID` 未配置）、真实第三方 IMAP
+BODYSTRUCTURE 兼容性未验（Docker daemon 未运行）。
+
+阿里云白名单 `monitor.aliyun.com` 已在代码里加上但**未获产品确认**，
+代码注释中显式标注了这一点。
