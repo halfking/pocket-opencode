@@ -433,7 +433,13 @@ export const emailApi = {
   sendEmail(input: EmailSendInput): Promise<EmailSendResult> {
     return http('/api/email/send', { method: 'POST', body: JSON.stringify(input) })
   },
-  syncNow(accountId?: string): Promise<{ mode?: string; synced?: number; new?: number; failed?: string[] }> {
+  /**
+   * `failed` = 真的同步失败。
+   * `skipped` = 该账户已有一轮同步在跑，本轮被单飞锁正常跳过（不是失败）。
+   * 二者必须分开：把 skipped 混进 failed 会让一个健康的账户显示为红色，
+   * 并让后端往库里写一条假的失败记录。
+   */
+  syncNow(accountId?: string): Promise<{ mode?: string; synced?: number; new?: number; failed?: string[]; skipped?: string[] }> {
     return http('/api/emails/sync', {
       method: 'POST',
       body: JSON.stringify(accountId ? { account_id: accountId } : {}),

@@ -7,14 +7,74 @@
 // 用法：
 //   node scripts/maestro-run.mjs <flow.yaml> [更多 flow.yaml ...]
 //   node scripts/maestro-run.mjs .maestro/notes-crud.yaml
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { spawnSync, execFileSync } from 'node:child_process'
 import { resolve } from 'node:path'
+import { homedir } from 'node:os'
 
 const ROOT = resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
 const GO = resolve(ROOT, 'backend/internal/server/server_assistant.go')
-const MAESTRO = 'C:/workspace/openpocket/logs/maestro/maestro/bin/maestro.bat'
-const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
+
+// ---- 可执行文件解析：env 覆盖 -> PATH -> 常见安装位置 --------------------
+//
+// 为什么不能再写死：这三个常量原本是某台 Windows 开发机的绝对路径
+// （C:/workspace/... / C:/Users/86133/... / C:\Program Files\Eclipse Adoptium\...）。
+// 换到 Linux 宿主后它们全部指向不存在的文件，于是整套真机 rig 在第一步
+// 就以「maestro: not found」/ JAVA_HOME 无效的形式死掉——**看起来像设备问题，
+// 实际是 harness 自己绑死在一台机器上**。2026-10-03 实测。
+//
+// 解析顺序刻意是「显式 env 优先」，这样换机器/换 JDK 不用改仓库。
+function whichFirst(candidates) {
+  for (const c of candidates) {
+    if (!c) continue
+    if (c.includes('/') || c.includes('\\')) {
+      if (existsSync(c)) return c
+      continue
+    }
+    // 裸命令名：交给 PATH 查
+    const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [c],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    const first = (r.stdout || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean)[0]
+    if (r.status === 0 && first) return first
+  }
+  return null
+}
+
+const IS_WIN = process.platform === 'win32'
+const MAESTRO = process.env.POCKET_MAESTRO_BIN
+  || whichFirst([
+    IS_WIN ? 'C:/workspace/openpocket/logs/maestro/maestro/bin/maestro.bat' : null,
+    `${homedir()}/.maestro/bin/maestro`,
+    'maestro',
+  ])
+  || 'maestro'
+
+const ADB = process.env.POCKET_ADB_BIN
+  || whichFirst([
+    IS_WIN ? 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe' : null,
+    `${homedir()}/Android/Sdk/platform-tools/adb`,
+    `${homedir()}/tools/android-sdk/platform-tools/adb`,
+    'adb',
+  ])
+  || 'adb'
+
+// JAVA_HOME：Maestro 是 JVM 应用，没有它连 `maestro --version` 都跑不起来。
+// 同样不写死某台机器的 JDK 路径。
+function resolveJavaHome() {
+  if (process.env.JAVA_HOME && existsSync(process.env.JAVA_HOME)) return process.env.JAVA_HOME
+  const home = homedir()
+  const guesses = [
+    `${home}/tools/jdk-21.0.12.1+1`,
+    '/usr/lib/jvm/java-21-openjdk-amd64',
+    '/usr/lib/jvm/default-java',
+    'C:/Program Files/Eclipse Adoptium/jdk-21.0.12.101-hotspot',
+  ]
+  for (const g of guesses) {
+    if (existsSync(resolve(g, 'bin', IS_WIN ? 'java.exe' : 'java'))) return g
+  }
+  return process.env.JAVA_HOME || null
+}
+
 const PKG = 'com.kaixuan.opencode.pocket'
 const DRIVER_PKGS = ['dev.mobile.maestro', 'dev.mobile.maestro.test']
 // 与 maestro-client.jar 内嵌的是同一份（SHA256 A7F12BBD…1F0B9），用 jar 里解出来的那份。
@@ -541,12 +601,21 @@ async function ensureBackend() {
   if (!/127\.0\.0\.1|localhost/.test(base)) return false
   if (process.env.POCKET_AUTOSTART_BACKEND === '0') return false
   console.error('[preflight] 尝试自动拉起本 worktree 的 pocketd …')
-  const ps = resolve(ROOT, 'scripts', 'start-local-backend.ps1')
-  // ⚠️ stdio 必须是 'ignore'：ps1 内部用 Start-Process 拉起 pocketd，
-  //    那个孙进程会继承这里的 stdout/stderr 句柄。若用默认的 'pipe'，
+  // Platform dispatch. scripts/start-local-backend.ps1 only exists for Windows;
+  // on a Linux host spawning powershell fails and the whole run aborts in
+  // preflight, which reads as "the backend is broken" rather than "the launcher
+  // for this platform is missing". The POSIX twin is scripts/start-local-backend.sh
+  // and it keeps the same guarantees (env parsed without eval, port-owner
+  // verified, master key checked).
+  const isWindows = process.platform === 'win32'
+  const launcher = isWindows
+    ? { cmd: 'powershell', args: ['-ExecutionPolicy', 'Bypass', '-File', resolve(ROOT, 'scripts', 'start-local-backend.ps1')] }
+    : { cmd: 'bash', args: [resolve(ROOT, 'scripts', 'start-local-backend.sh')] }
+  // ⚠️ stdio 必须是 'ignore'：启动脚本内部会再拉起 pocketd 那个孙进程，
+  //    孙进程会继承这里的 stdout/stderr 句柄。若用默认的 'pipe'，
   //    spawnSync 会一直等这些管道关闭 —— 表现是「后端明明起来了，
   //    preflight 却卡住不动」，实测卡了 3 分钟。踩过。
-  const r = spawnSync('powershell', ['-ExecutionPolicy', 'Bypass', '-File', ps], {
+  const r = spawnSync(launcher.cmd, launcher.args, {
     cwd: ROOT, encoding: 'utf8', timeout: 180000, stdio: 'ignore',
   })
   if (r.status !== 0) {
@@ -1012,7 +1081,8 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
 // "undefined"」，现场只留下一条 assert `^undefined$` 不成立，根因看不见。
 // 这行让「变量到底传没传过去」一眼可见（口令本身仍不落 stdout）。
 
-console.log(`[preflight] 注入子进程：POCKET_MASTER=${(process.env.POCKET_MASTER || 'PocketTest2026').length} 字符 / POCKET_DEV_PASS=${DEV_PASS.length} 字符`)
+console.log(`[preflight] 注入子进程：POCKET_MASTER=${(process.env.POCKET_MASTER || 'PocketTest2026').length} 字符 / POCKET_DEV_PASS=${DEV_PASS.length} 字符`)
+
 
 const SYSTEM_DIALOG_FLOW = '.maestro/_dismiss-system-dialogs.yaml'
 const args = ['--device', DEVICE, 'test', '--no-reinstall-driver', SYSTEM_DIALOG_FLOW, ...flows]
@@ -1023,11 +1093,12 @@ const r = spawnSync(MAESTRO, args, {
   env: {
     ...process.env,
 
-    POCKET_DEV_PASS: DEV_PASS, // 只进子进程 env
+    POCKET_DEV_PASS: DEV_PASS, // 只进子进程 env
+
     // 本地 SQLCipher 主密码是测试装置上本会话约定的值，不是仓库内推导出来的。
     // 仍然只经 env 传递，避免出现在 flow 文件里。
     POCKET_MASTER: process.env.POCKET_MASTER || 'PocketTest2026',
-    JAVA_HOME: process.env.JAVA_HOME || 'C:\\Program Files\\Eclipse Adoptium\\jdk-21.0.12.101-hotspot',
+    JAVA_HOME: resolveJavaHome() || process.env.JAVA_HOME,
     MAESTRO_CLI_NO_ANALYTICS: 'true',
   },
 })

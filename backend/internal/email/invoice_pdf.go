@@ -118,7 +118,20 @@ func systemFontCandidates() []string {
 		"/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
 		"/Library/Fonts/Arial Unicode.ttf",
 		// Linux（常见发行版包）
+		//
+		// 2026-10-03 实测补录：原来这里只有 arphic/uming.ttf 一条，而它在
+		// 现代 Ubuntu/Debian 上**默认不装**（本机 `fonts-arphic-uming`
+		// 未安装，路径不存在）。于是 Linux 宿主上 FindChineseFont 恒返回
+		// ""→RenderInvoiceXMLPDF 报「找不到中文字体」→harvestOne 的 XML
+		// 分支恒为 failed。实测本机：候选全不命中，而同机
+		// /usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf
+		// （fonts-droid-fallback，Ubuntu 桌面镜像基本都带）fontHasCJK=true，
+		// 4.0MB 完整 CJK ttf，却因为不在表里而完全没被考虑。
 		"/usr/share/fonts/truetype/arphic/uming.ttf",
+		"/usr/share/fonts/truetype/arphic/ukai.ttf",
+		"/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+		"/usr/share/fonts/truetype/droid/DroidSansFallback.ttf",
+		"/usr/share/fonts/droid/DroidSansFallbackFull.ttf",
 		// Windows：黑体/等线/仿宋/楷体都是独立 ttf，含完整 CJK
 		filepath.Join(winDir, "Fonts", "simhei.ttf"),
 		filepath.Join(winDir, "Fonts", "Deng.ttf"),
