@@ -80,6 +80,42 @@ func ShouldProcessAfterFetch(syncedAccounts, newEmails int) bool {
 	return syncedAccounts > 0
 }
 
+// ClassifySkipReason 说明「同步成功了但分类根本没跑」的原因；返回空串表示可以继续。
+//
+// 2026-10-02 补。原先 scheduler 的写法是
+//
+//	if s.kxmem == nil || userID == "" || !ShouldProcessAfterFetch(1, n) {
+//	    return
+//	}
+//
+// 三个条件里任意一个成立就直接 return，**不记日志、不报错、不计数**。
+// 而 `POCKET_KXMEMORY_BASE_URL` 未配置时 s.kxmem 恒为 nil，也就是
+// **每次同步之后自动分类都被静默跳过**——邮件进来了、importance 永远空、
+// 需求 4 永远不提醒，报告上却只有 RemindersUnclassified 一个数字。
+//
+// 特别值得警惕的是它与手动路径的**不对称**：HTTP 端点
+// （/api/emails/classify）有一条 LLM 网关兜底（server 包的
+// classifyViaGateway），kxmemory 没配也能分类；而 Scheduler 在
+// internal/email 包里，拿不到 Server 的网关，只能在 kxmem==nil 时放弃。
+// 于是同一次部署里「手动触发能分类、每天自动跑不分类」。
+//
+// 诊断页也帮不上忙：integration_status.go 会分别报
+// kxmemory disabled 与 llm-gateway enabled，两条**单看都准确**，
+// 合起来却让人以为自动分类有兜底。
+//
+// 这里只把原因**说出来**，不替产品决定要不要把网关兜底接进 Scheduler
+// （那是跨包的设计改动，需要单独拍板）。但至少它不再是无声的。
+func ClassifySkipReason(kxConfigured bool, userID string) string {
+	switch {
+	case !kxConfigured:
+		return "kxmemory 未配置（POCKET_KXMEMORY_BASE_URL 为空），" +
+			"自动分类被跳过；手动 /api/emails/classify 有 LLM 网关兜底，定时路径没有"
+	case userID == "":
+		return "账户没有 user 归属，自动分类被跳过"
+	}
+	return ""
+}
+
 // ClassifyUnclassified 委托 kxmemory 逐封处理未归类邮件。IMAP 在 Fetcher /
 // Scheduler 里跑，WebView 不碰邮箱协议。
 //

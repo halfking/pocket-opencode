@@ -646,6 +646,13 @@ func accountDueForSync(now, lastSyncedAt, intervalMin int64) bool {
 	return !(lastSyncedAt > 0 && now-lastSyncedAt < intervalSec)
 }
 
+// classifySkipOnce 保证「自动分类被跳过」这条告警每个进程只说一次。
+//
+// 轮询是每账户每分钟一轮，若不加限制就是每分钟 5 行同样的字。日志被
+// 重复内容淹没时，真正的新问题反而看不见——这与「不记日志」是两种失败，
+// 前者会让人养成忽略日志的习惯。
+var classifySkipOnce sync.Once
+
 func (s *Scheduler) tick(ctx context.Context) {
 	// nil fetcher is a supported degraded mode (intent/summary-only scheduler,
 	// tests). Fetch sync is the only thing tick does, so without a fetcher this
@@ -693,7 +700,17 @@ func (s *Scheduler) tick(ctx context.Context) {
 				log.Printf("[email/scheduler] sync %s failed: %v", accountID, err)
 				return
 			}
-			if s.kxmem == nil || userID == "" || !ShouldProcessAfterFetch(1, n) {
+			if reason := ClassifySkipReason(s.kxmem != nil, userID); reason != "" {
+				// 每个账户每次轮询都会走到这里，所以只说一次——否则就是每分钟
+				// 5 行同样的告警，真正出事时反而看不见。
+				classifySkipOnce.Do(func() {
+					log.Printf("[email/scheduler] 同步后**不执行**自动分类：%s。"+
+						"后果：新到邮件的 importance 恒为空，需求 4 不会提醒。"+
+						"（/api/emails/classify 手工触发不受影响）", reason)
+				})
+				return
+			}
+			if !ShouldProcessAfterFetch(1, n) {
 				return
 			}
 			if _, cerr := ClassifyUnclassified(ctx, s.store, s.kxmem, userID, wsID, 20); cerr != nil {
