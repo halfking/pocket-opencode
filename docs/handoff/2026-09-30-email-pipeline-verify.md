@@ -10895,3 +10895,59 @@ migrate 的 `CREATE TABLE emails`（store.go:63-88，26 列）里没有 updated_
 `InsertEmail` 里给 `updated_at` 与 `created_at` 同填 `time.Now().Unix()`，
 会让新邮件**立即**参与增量同步（不等被总结后才可见）——**这是行为变更**。
 护栏的 `DEFECT-2` 分支会一直报着，直到它被修。
+
+## §7en — 核实 §7em 那行 DDL 在真库上是精确 no-op（migrate 是单语句，失败会整批回滚）
+
+§7em 加了一行 ALTER TABLE emails ADD COLUMN IF NOT EXISTS updated_at BIGINT;
+但只验了它「让全新 schema 通过」，**没验它对已有真库是否安全**。这不是形式主义。
+
+### 为什么必须验：migrate() 是**单个** pool.Exec
+
+    func (s *Store) migrate() error {
+        _, err := s.pool.Exec(context.Background(), <整批 DDL 一条字符串>
+
+PostgreSQL 简单查询协议下，一条查询里的多条语句被包在**隐式事务**里：
+**任何一行失败，整批全部回滚**。也就是说——
+如果这行在真库上报错（比如列已存在但类型冲突），
+**不只是这一列没建成，而是整个 migrate 失败**：
+email_accounts、OAuth token 表、通知表……全部不会建。
+那是一个「加一行 DDL 弄瘫整库启动」的量级。
+
+### 实证：真库该列的定义与新 DDL 声明**完全一致**
+
+只读查 pg_attribute（**没有执行任何 ALTER**）：
+
+    schema          | column      | type  | not_null | default_expr
+    opencode_pocket | created_at  | bigint| t        |
+    opencode_pocket | date        | bigint| t        |
+    opencode_pocket | notified_at | bigint| t        | 0
+    opencode_pocket | updated_at  | bigint| f        |
+
+新 DDL 声明的是 updated_at BIGINT（**可空、无 DEFAULT**）
+——与真库现状逐项吻合。所以：
+
+- IF NOT EXISTS 命中已存在的列 ⇒ PostgreSQL **跳过**，不做类型检查也不改写；
+- 即使它没跳过，建出来的列也与现状逐字节相同。
+
+**结论：这行在真库上是精确 no-op，不会让 migrate 失败，也不动任何数据。**
+
+### 顺带一个「为什么补 DDL 反而把隐藏前提变显式」的点
+
+真库那一列是历史手工迁移加的，恰好就是「BIGINT + 可空 + 无默认值」——
+**当年手工加它的人用的口径与现在补的完全一致**，
+不存在「真库是 NOT NULL 而代码按 NULL 写」这类隐蔽分歧。
+这一点不查就无法排除：若真库是 NOT NULL，
+那么 §7ej 讨论的「InsertEmail 补赋值」在真库上会**立刻**撞 not-null 违例，
+修法 A 的风险评估要整个重写。
+
+**即：补这行 DDL 把一个隐藏的前提（列的约束口径）变成了可查的、已查过的。**
+
+### 全仓回归（补 §7em 缺的那一次）
+
+§7em 提交时只跑了 email 包。本轮补全仓：
+
+    go test ./... -count=1 -race -p 2   → EXIT=0
+    ok=52  no-test=18  合计=70 包
+    FAIL=0  SKIP=0  cached=0  DATA RACE=0
+
+与 §7eb 建立的基线一致，§7em 的 DDL 改动未引入任何回归。
