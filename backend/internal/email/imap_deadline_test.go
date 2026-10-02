@@ -349,12 +349,30 @@ func TestHardDeadlineCheckedAtTickGranularity(t *testing.T) {
 //
 // 现实危害：IMAP 一旦把单账户预算 syncBudget 吃光，syncPOP3Fallback 会在
 // budget<=0 上直接返回 "imap failed and no time left for POP3 fallback"，
-// 于是「IMAP 挂了就降级 POP3」这条兜底在**最需要它的时候**恰好不可用。
-// 2026-10-02 真实日志里这条错误出现了 50 次，且每一条的 budget 都是负的
+// 于是「IMAP 一挂了就降级 POP3」这条兜底在**最需要它的时候**恰好不可用。
+// 2026-10-02 真实日志里这条错误出现了 76 次，且每一条的 budget 都是负的
 // （日志明写 "budget -10s left"）。
 //
-// 关键是别拿 imapHardTimeout 直接比：看门狗只在 tick 上判 hard（见上面那条），
-// IMAP 的**实际**占用是「第一个严格大于 imapHardTimeout 的 tick」。
+// # ⚠ 本用例下面的公式已被实测证伪（2026-10-02）
+//
+// 它假设「有效截止 = 第一个严格大于 imapHardTimeout 的 tick」，算出 60s、
+// 剩 10s，于是通过。但用生产常量实测（见 diag_hard_deadline_test.go，
+// 门禁 POCKET_DIAG_HARDDEADLINE=1）真实占用是 **80.0s**、余量 **-10.0s**，
+// 与线上 76 次 1m20.1xxs 完全吻合。
+//
+// 原因是 deadlineConn 的看门狗在**第 1 拍**就走了 REFRESH 分支
+// （SetDeadline(now+idle)），那个 OS 截止真正生效；等第 3 拍硬截止分支
+// 终于正确判定越界并 SetDeadline(过去) 时，已经阻塞的读**不再被它打断**，
+// 一直活到第 1 拍刷下的那个到期时刻。于是：
+//
+//	有效硬截止 = 首个 tick + imapIdleTimeout = 4/3 · idle = 80s
+//
+// 且**与 imapHardTimeout 无关**（只要 hard > 首个 tick）。把它从 45s 调到
+// 30s/15s 都不会提前断开——要真正生效必须 hard <= idle/3。
+//
+// 本用例保留是为了锁住「余量必须为正」这个意图（公式一旦被修正为实测值就会
+// 转红），但**不要再把它的通过当成 POP3 兜底可达的证据**。改 IMAP 超时
+// 前先重跑 diag_hard_deadline_test.go。
 func TestIMAPLeavesBudgetForPOP3Fallback(t *testing.T) {
 	tick := imapIdleTimeout / 3
 	// 有效截止 = 第一个严格大于 imapHardTimeout 的 tick。
