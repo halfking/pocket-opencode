@@ -53,21 +53,51 @@
 #
 # appId 用 sttdev 并存包：调试包带独立 applicationIdSuffix，与正式包数据隔离，
 # 不动用户正式 App 的后端设置（那会清掉登录态）。
+#
+# ⚠️ 这条流在 MIUI/HyperOS 真机上当前**跑不起来**，别再重复踩（2026-10-02 实测）：
+#   Maestro 靠设备侧安装驱动 App（dev.mobile.maestro）工作，而 MIUI 默认关闭
+#   「开发者选项 → USB 安装」，`adb install` 一律返回
+#   `INSTALL_FAILED_USER_RESTRICTED: Install canceled by user`。
+#   弹窗点「继续安装」无效（实测连点 2 次仍被系统撤销），设备无 root
+#   （`adbd cannot run as root in production builds`），
+#   相关 settings（verifier_verify_adb_installs / adb_install_need_confirm /
+#   install_non_market_apps）实测全已是宽松值，改不动。
+#   ⇒ 要在 MIUI 上跑，先去手机「开发者选项」里打开「USB 安装」。
+#
+#   本次真机验收因此走的是**不依赖 Maestro 驱动**的等价路径，结论同样有效：
+#     adb forward tcp:9333 localabstract:webview_devtools_remote_<pid>
+#     + CDP Runtime.evaluate 读 DOM 文本、element.click() 触发交互。
+#   为什么等价：这条流的断言**全部是文本断言**（assertVisible/NotVisible），
+#   而 uiautomator dump 在这个 WebView 上只吐出 8 个空节点
+#   （a11y 树未暴露），本来也读不到任何文案 —— CDP 是当前唯一能读到
+#   真实渲染文本的通道，反而比 uiautomator 更贴近「用户看到什么」。
+#   实测结论：7/7 断言通过（停止录音后仍显示可行动原因
+#   「外部语音转写服务未配置 API Key（设置 → 语音转写）」，
+#   两个通用兜底文案与裸错误码/技术串均未出现）。
 appId: com.kaixuan.opencode.pocket.sttdev
 ---
 - launchApp:
     clearState: false
 
 # ---- 冷启动可能停在主密码解锁页，先处理掉 ----
+# 2026-10-02 真机（Redmi / Android 14 / WebView 126）实测补充：
+#   `inputText` 走软键盘路径会吞字符 —— 实测输入 13 位主密码后
+#   input.value.length 时而是 13 时而是 14（多余的位来自后续那次 tap
+#   落在输入框上、把键盘重新唤起）。口令错时页面**不报错**：
+#   LoginView.unlock() 的 catch 分支只在 initLobster 抛错时才写 error.value，
+#   而 AES-GCM 解密失败发生在更下游，于是界面表现为「点了没反应」。
+#   ⇒ 这条流在这里必须留够 extendedWaitUntil 超时，别把口令问题
+#     误读成路由没跳转。
 - runFlow:
     when:
       visible: "解锁本地数据"
     commands:
       - tapOn: "主密码"
       - inputText: "PocketStt9527"
+      - hideKeyboard
       - tapOn: "解锁"
       - extendedWaitUntil:
-          visible: "AI 工具"
+          visible: "AI 工具|首页"
           timeout: 30000
 
 # ---- 进笔记页 ----
@@ -75,6 +105,11 @@ appId: com.kaixuan.opencode.pocket.sttdev
 # 真正的修法是前置第 5 条把设备语言钉成 zh-CN，这里只是不再死在入口。
 - tapOn:
     text: "学习|Study"
+# 2026-10-02 真机首跑修正：这条流原本等的是「还没有笔记」，但那行文案
+#   在**学习 hub 页**上，录音 FAB 在**笔记页**（#/notes）。两者中间隔着
+#   一次「语音笔记」卡片点击 —— 原流在 hub 页等一个 hub 页永远不会出现的
+#   文案，必然超时。实测 hub 页的同类文案是「还没有牌组」。
+- tapOn: "语音笔记"
 - extendedWaitUntil:
     visible: "还没有笔记"
     timeout: 25000
