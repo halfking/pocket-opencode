@@ -31,6 +31,10 @@
  */
 import { execFileSync } from 'node:child_process'
 import { requireDevPass } from './lib/dev-pass.mjs'
+// 设备上装的是**生产 https 包**（实测 origin=https://localhost），
+// 而这一关原本写死开发包 http://localhost ⇒ 在当前设备上会在走到任何
+// 真正要验的判据之前就 exit 5。生产 https 回归用 POCKET_EXPECT_ORIGIN 放宽。
+const EXPECT_ORIGIN = process.env.POCKET_EXPECT_ORIGIN || 'http://localhost';
 const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
 const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 const PKG = 'com.kaixuan.opencode.pocket'
@@ -41,6 +45,10 @@ const MASTER = process.env.POCKET_MASTER || ''
  *  导致 count() 解析成 NaN（踩过一次）。
  *  psql 路径要能解析：`logs/` 是 gitignored，在 git worktree 里不存在，
  *  所以按 POCKET_PSQL → 相对路径 → 主仓库绝对路径 依次找。 */
+// PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
+// 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
 function resolvePsql() {
   const cands = [
     process.env.POCKET_PSQL,
@@ -69,11 +77,11 @@ function pg(sql) {
   const m = out.match(/-?\d+/)
   return m ? Number(m[0]) : NaN
 }
-const deckCount = () => pg('select count(*) from opencode_pocket.flashcard_deck_config;')
+const deckCount = () => pg(`select count(*) from ${SCHEMA}.flashcard_deck_config;`)
 const deckNames = () => execFileSync(PSQL, ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres',
   // 兜底串必须是纯 ASCII：中文会经系统 ANSI 码页传给 psql，报
   // `invalid byte sequence for encoding UTF8`（踩过一次）。
-  '-t', '-A', '-c', "select coalesce(string_agg(name,'|' order by created_at),'(none)') from opencode_pocket.flashcard_deck_config;"],
+  '-t', '-A', '-c', `select coalesce(string_agg(name,'|' order by created_at),'(none)') from ${SCHEMA}.flashcard_deck_config;`],
   { encoding: 'utf8' }).trim()
 
 // ---------- 连 CDP ----------
@@ -112,7 +120,7 @@ while (Date.now() < readyDl) {
   await sleep(500)
 }
 console.log('origin =', origin, ' (必须是 http://localhost)')
-if (origin !== 'http://localhost') {
+if (origin !== EXPECT_ORIGIN) {
   console.log('装的是生产(https)包或 WebView 尚未就绪 —— 后续断言无意义，直接中止。')
   process.exit(5)
 }
