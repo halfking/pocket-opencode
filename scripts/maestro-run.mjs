@@ -693,6 +693,144 @@ if (!(await preflight())) process.exit(3)
 // 复位完成后再清登录态：顺序不能反，否则清完 token 页面又会把旧壳渲染回来。
 await resetAppAuth()
 
+
+/**
+ * 守卫：确保本地 SQLCipher 库处于**已解锁**状态，并自证这个守卫不是恒真。
+ *
+ * 为什么要做（2026-10-03 真机实测）：
+ *   本地库的 AES key 走 crypto.ts:53 initAppCrypto() 的 PBKDF2 派生，需要主密码。
+ *   守卫只在「导航到依赖本地库的路由」那一刻才判定，所以：
+ *     · 停在 #/ai 时**看不出**库锁着（#/ai 不依赖本地库）
+ *     · 一进 #/pkm/today 就被弹到 #/login?...&unlock=1（routeGuards.ts:126-129
+ *       的 redirectUnlock）
+ *   `_goto-pkm.yaml` / `_login.yaml` 里那条 `inputText: ${POCKET_MASTER}`
+ *   就是为这件事准备的 —— 但它**必然失效**：Maestro 把 `${...}` 展开成字符串，
+ *   变量不在它变量域里时就变成字面量 `"undefined"`
+ *   （同 ${POCKET_DEV_PASS}，见本文件上方与 handoff §4.82.5/§4.83.6）。
+ *   `_goto-pkm.yaml` 自己的注释其实已经点破了机制：
+ *     `evalScript: ${location.hash='#/more'}` → Cannot set property 'hash' of undefined
+ *     「说明 evalScript 不在 WebView 的 JS 上下文里跑」
+ *
+ * 为什么用 CDP 而不是坐标：
+ *   那个密码框在 Android 无障碍树里是 `[EditText] t="" cd=""`，Maestro 只能按
+ *   坐标点（50%,59%），而坐标依赖布局与机型。DOM 里它有 placeholder
+ *   `输入主密码解锁` —— **可访问性树里没有的东西，DOM 里有**。按 placeholder
+ *   定位不依赖任何坐标。
+ *
+ * ⚠️ 判「解锁屏在不在」必须用 bodyText，不能用某个标签的精确文本匹配。
+ *    2026-10-03 实测踩过：`document.querySelectorAll('label,div,span,h1,h2')` 里
+ *    找 textContent === '解锁本地数据' **恒为 false**，而同一时刻
+ *    document.body.innerText 明明以「解锁本地数据 检测到已有登录态…」开头。
+ *    用那个检查当守卫 ⇒ 永远判「已解锁」⇒ 跳过解锁 ⇒ 后面全是不可解读的结果。
+ *    「恒为 false」的检查和「恒为 true」的一样有害。
+ *
+ * 收尾必须**再自证一次**：解锁完重新导航回 PKM 页，确认解锁屏**不再出现**。
+ * 只报「点了解锁」不算——那正是「判断自己成功」的形状。
+ */
+async function ensureLocalDbUnlocked() {
+  const master = process.env.POCKET_MASTER
+  if (!master) {
+    console.error('[preflight] 未提供 POCKET_MASTER，无法保证本地库已解锁。')
+    console.error('  PKM / 笔记 / 闪卡等依赖本地库的功能会落到解锁屏，断言不可解释。')
+    console.error('  $env:POCKET_MASTER="<主密码>"   # 本机测试装置上约定的那个值')
+    return false
+  }
+  // 已解锁的判定：页面上有没有这段文案。用它而不是标签匹配（见上）。
+  const ON_UNLOCK = '解锁本地数据'
+  const readScreen = async () => {
+    const raw = await cdpEval(`(function(){
+      try {
+        return JSON.stringify({
+          hash: location.hash,
+          body: (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 1200)
+        });
+      } catch (e) { return JSON.stringify({ err: String(e && e.message || e) }); }
+    })()`)
+    try { return JSON.parse(String(raw)) } catch { return { err: '读屏返回非 JSON: ' + raw } }
+  }
+  // 导航到依赖本地库的路由，逼守卫把解锁屏弹出来。
+  const goRoute = async (hash) => {
+    await cdpEval(`location.hash = ${JSON.stringify(hash)}; true`)
+    for (let i = 0; i < 15; i++) {
+      await sleep(1000)
+      const h = await cdpEval('location.hash')
+      if (h && !/^undefined$/.test(String(h))) return String(h)
+    }
+    return '(读不到)'
+  }
+
+  const probeRoute = '#/pkm/today'
+  await goRoute(`${probeRoute}?__unlockprobe=${Date.now()}`)
+  await sleep(2000)
+  let s = await readScreen()
+  if (s.err) {
+    console.error(`[preflight] ❌ 读屏失败：${s.err}`)
+    return false
+  }
+
+  if (!String(s.body || '').includes(ON_UNLOCK)) {
+    console.log(`[preflight] 本地库已解锁（${s.hash} 无「${ON_UNLOCK}」屏）`)
+    return true
+  }
+
+  console.log(`[preflight] 本地库锁着（${s.hash}），用 CDP 填主密码解锁`)
+  const filled = await cdpEval(`(function(){
+    var el = Array.prototype.slice.call(document.querySelectorAll('input'))
+      .filter(function (e) { return (e.placeholder || '') === '输入主密码解锁'; })[0];
+    if (!el) {
+      return '没有 placeholder=输入主密码解锁 的输入框；实际有：'
+        + Array.prototype.slice.call(document.querySelectorAll('input'))
+            .map(function (e) { return e.placeholder || e.type; }).join(' / ');
+    }
+    var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    set.call(el, ${JSON.stringify(master)});
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return 'ok len=' + el.value.length;
+  })()`)
+  if (!String(filled).startsWith('ok ')) {
+    console.error(`[preflight] ❌ 填主密码失败：${filled}`)
+    return false
+  }
+  // 解锁按钮必须随输入解禁 —— 这条同时证明 v-model 接上了值。
+  const clicked = await cdpEval(`(function(){
+    var b = Array.prototype.slice.call(document.querySelectorAll('button'))
+      .filter(function (e) { return (e.innerText || '').trim() === '解锁'; })[0];
+    if (!b) return '没有文本为「解锁」的按钮';
+    if (b.disabled) return '「解锁」仍是 disabled：v-model 没接上值';
+    b.click();
+    return 'ok clicked';
+  })()`)
+  if (!String(clicked).startsWith('ok ')) {
+    console.error(`[preflight] ❌ 点解锁失败：${clicked}`)
+    return false
+  }
+  for (let i = 0; i < 20; i++) {
+    await sleep(1000)
+    s = await readScreen()
+    if (!String(s.body || '').includes(ON_UNLOCK)) break
+  }
+  if (String(s.body || '').includes(ON_UNLOCK)) {
+    console.error(`[preflight] ❌ 点了解锁后 20s 内解锁屏仍在（hash=${s.hash}）`)
+    console.error('           主口令不对，或本地库根本没解锁成功。')
+    return false
+  }
+  console.log(`[preflight] 已解锁（hash=${s.hash}）`)
+
+  // ── 自证：回到 PKM 页确认解锁屏**不再出现** ──
+  // 少了这一步，上面的「解锁屏消失」可能只是路由换页的副作用，
+  // 而下一次导航又被弹回来 —— 也就是解锁其实没生效。
+  await goRoute(`${probeRoute}?__unlockverify=${Date.now()}`)
+  await sleep(2000)
+  const v = await readScreen()
+  if (String(v.body || '').includes(ON_UNLOCK)) {
+    console.error(`[preflight] ❌ 自证失败：重新导航到 ${probeRoute} 后解锁屏又出现了（hash=${v.hash}）`)
+    console.error('           说明刚才的解锁并没有真正生效，别继续跑 flow。')
+    return false
+  }
+  console.log(`[preflight] 自证通过：再次进入 ${probeRoute} 不再弹解锁屏 ✅`)
+  return true
+}
+
 // 清完 token 之后**必须再走一次路由**：routeGuards.ts 的 syncFromStorage()
 // 是在导航时才跑的，而上面那次复位发生在清 token 之前 —— 于是守卫用
 // 「还是登录态」的进程内 store 放行，App 就带着一个已经不存在的 token
@@ -822,6 +960,43 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
     process.exit(3)
   }
 }
+// 本地 SQLCipher 库要在**登录之后**才谈得上解锁：解锁屏的前提是「已有登录态」
+// （页面上原话：「检测到已有登录态，但本地加密库未解锁」）。所以这一步必须排在
+// 登录块之后；反过来的话守卫会先把你弹回登录页，解锁屏压根不出现。
+//
+// 旧的写法是把这个责任放在 _goto-pkm.yaml 里，用 `inputText: ${POCKET_MASTER}`。
+// 那条**必然失效**：Maestro 把 ${...} 展开成字符串，变量不在它变量域里时就是
+// 字面量 "undefined"（同 ${POCKET_DEV_PASS}，见 handoff §4.82.5 / §4.83.6）。
+// POCKET_SKIP_CDP_LOGIN=1 表示「本轮就是来测登录屏的」，此时不该去解锁：
+// 解锁屏的前提是「已有登录态」，没登录时那条路要么不出现、要么做了也白做，
+// 而且它会把 App 从登录屏带走到别的页面，恰好毁掉本轮要测的起点。
+if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
+  if (!(await ensureLocalDbUnlocked())) process.exit(3)
+}
+
+// ⚠️ 解锁会把 App 停在 #/pkm/today。起点路由是在**解锁之前**复位的，
+//    所以这里必须再复位一次，否则 flow 的第一条断言就不可解释。
+//    与 BUG-V8 同一个道理：必须制造真实的 hash 变化，守卫才会重算。
+{
+  const back = process.env.POCKET_START_ROUTE || '#/ai'
+  await setRoute(`${back}?__afterunlock=${Date.now()}`, 'true', 8000)
+  let h2 = '(读不到)'
+  try { h2 = String(await cdpEval('location.hash') || '') } catch { /* 通道也坏了 */ }
+  // ⚠️ 2026-10-03 实测踩到：POCKET_SKIP_CDP_LOGIN=1（有意不登录）时，
+  //    守卫会把 #/ai 正确地弹回 #/login?returnTo=/ai?…，而 h2.includes('#/ai')
+  //    为 false（那是 `returnTo=/ai`，没有 `#`）⇒ 被误判成「复位失败」。
+  //    弹回登录页在「有意不登录」时恰恰是**正确**行为，不能与失败混为一谈。
+  const skippedLogin = process.env.POCKET_SKIP_CDP_LOGIN === '1'
+  const backOk = skippedLogin ? /#\/login/.test(h2) : h2.includes(back)
+  console.log(backOk
+    ? `[preflight] 已复位到起点 ${h2}${skippedLogin ? '（有意不登录，落在登录页即为正确结果）' : ''}`
+    : `[preflight] ❌ 解锁后没能复位到起点，实际在 ${h2}`)
+  if (!backOk && process.env.POCKET_ALLOW_UNCERTAIN_START !== '1') {
+    console.error('           flow 的第一条断言就不可解释。先查起点路由为什么回不去。')
+    process.exit(3)
+  }
+}
+
 
 // --no-reinstall-driver 是这台机器上能不能跑通 Maestro 的关键：
 // Maestro 2.11 **默认每次 test 之前都重装 driver**，而它的重装是「先卸载再安装」。

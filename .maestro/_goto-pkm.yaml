@@ -52,26 +52,26 @@ appId: com.kaixuan.opencode.pocket
 
 - tapOn: "PKM笔记"
 
-# 守卫判定：本地库没解锁就把会话改写成 #/login?returnTo=/pkm/today&unlock=1
+# 守卫判定：本地库没解锁会把会话改写成 #/login?returnTo=/pkm/today&unlock=1
 #
-# ⚠️ 这里的密码框必须用**坐标**点，不能 tapOn "主密码"：
-#    在解锁页上「主密码」是一个 [View] 标签，密码框本身是 [EditText]（text 为空）。
-#    点标签不会让输入框获得焦点，接着的 inputText 就打进虚空，
-#    而 Maestro 照样把 tapOn 和 inputText 都报成 COMPLETED——
-#    结果：解锁按钮被点了、但密码是空的、解锁没发生（实测两次）。
-#    EditText 的 Android bounds 是 [82,924][638,1020] → 中心 50%,59%。
-- runFlow:
-    when:
-      visible: "解锁本地数据"
-    commands:
-      - tapOn:
-          point: "50%,59%"
-      - inputText: ${POCKET_MASTER}
-      - hideKeyboard
-      - tapOn: "解锁"
+# ⚠️ 2026-10-03：这里原来是一段 runFlow，用坐标点密码框 + `inputText: ${POCKET_MASTER}`
+#    去解锁。**那条路径必然失效** —— Maestro 把 ${...} 展开成字符串，变量不在它
+#    变量域里时就是字面量 "undefined"（与 ${POCKET_DEV_PASS} 同一个缺陷）。
+#    本文件自己的第 16 行注释其实已经点破了机制：
+#      `evalScript: ${location.hash='#/more'}` → Cannot set property 'hash' of undefined
+#      「说明 evalScript 不在 WebView 的 JS 上下文里跑」
+#    真机复核（2026-10-03）：这个解锁分支**不是死代码**，确实会被触发——
+#    导航到 #/pkm/today 会落到 `#/login?...&unlock=1`，localStorage 里有
+#    `pocket_crypto_salt`（PBKDF2 盐 ⇒ 主密码设过），解锁屏只有一个
+#    placeholder=输入主密码解锁 的密码框。
+#
+#    解锁已上移到 scripts/maestro-run.mjs 的 ensureLocalDbUnlocked()（用 CDP 按
+#    placeholder 定位，不依赖坐标）。本文件改为**硬断言**：解锁屏出现就红。
+#    为什么不再写成 runFlow when —— 那种写法在条件不满足时静默跳过，
+#    于是「harness 的解锁悄悄回归了」这件事没有任何人会看见。断言要响。
+- assertNotVisible: "解锁本地数据"
 
 - extendedWaitUntil:
     visible: "新建笔记"
     timeout: 60000
 - assertVisible: "新建笔记"
-- assertNotVisible: "解锁本地数据"
