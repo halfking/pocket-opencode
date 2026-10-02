@@ -920,7 +920,57 @@ B 的修法里**刻意不加裸 `amount`**：`IssuItemInformation/Amount` 是不
   结果待 08:20 核对。
 - **飞书推送**：凭据四项缺失，真实环境一次没跑过，整条链路唯一完全未验证环节。
 - **A4 拼版 / 按币种汇总 / 下载**：代码与端点本就齐全，本轮未改动，
-  也**未在真实发票集合上端到端跑过**。
+  也**未在真实发票集合上端到端跑过**。**→ 已在 §7.8 用两封真实通行费票跑通。**
+
+---
+
+### 7.8 A4 拼版 + 按币种汇总：首次在**真实发票集合**上端到端跑通（07:35）
+
+`diag_toll_a4_ledger_offline_test.go`（门控 `POCKET_DIAG_TOLL_E2E=1` +
+`POCKET_DIAG_QP_DATADIR`，可选 `POCKET_DIAG_EXPORT_OUT` 留产物）。
+复用 `diag_toll_e2e_offline_test.go` 的 `tollE2ECases`，同一批真实原文缓存、
+同一个采集器，把三段接起来：**采集 → A4 拼版 → 按币种汇总**。
+
+实测结果：
+
+| 环节 | 结果 |
+|---|---|
+| 采集落盘 | 105854 / 105869 字节（票面，`source=zip-pdf`），文件名含发票号 |
+| A4 拼版 2x2 | 1 页，**595.28 x 841.89 pt**（A4 竖版），117930 字节，`Count=2`、`Skipped` 空 |
+| A4 拼版 3x3 | 1 页，同尺寸，117964 字节，`Count=2`、`Skipped` 空 |
+| 坏件负控 | 混入畸形 PDF ⇒ 记入 `Skipped=[malformed.pdf]`，好件 2 张照常入网格 |
+| 汇总 | CNY 24.61 / 2 张（期望值由 `tollE2ECases` 现场算出，不是写死的常数） |
+| 台账行 | 4 行 = 表头 + 明细 2 + 合计 1；合计行 `计入 2 张 / 共 2 张` |
+| 混币种负控 | 混入 USD 50 ⇒ `CNY=24.61` / `USD=50` **两组**，没被加成一个数 |
+| 无凭证负控 | 清掉一张 `FilePath` ⇒ 合计 19.00 / 1 张，核验列转「未核验」，**明细行仍在** |
+
+**A4 判据的负控实测转红**（不是装饰性判据）：把宽高对调后立刻报
+`页高当页宽 = 841.89pt, want 595.28±0.50`——证明它真读到了 PDF 的 MediaBox。
+`Count` 判据同样实测转红（`Count = 2, want 3`）。
+
+#### 7.8.1 顺手查出一个**真发现**：合计口径在 server 层是手写的第四份
+
+第一版判据断言「`SumByCurrency` 会把无凭证的票剔掉」，**实测转红**。
+查证结论：这是**判据形态不匹配，不是产品缺陷**——
+`SumByCurrency` 的契约是「把给它的都加起来」，筛选是调用方职责，
+生产链路 `server_email_pipeline.go:622-627` 确实先筛后传。
+已改判据（不记成缺陷），并在用例里钉住真正该守的不变量：
+**同一批发票，调用方口径与 `LedgerRows` 的合计必须相等**。
+
+但顺着查出两件事：
+
+1. `server_email_pipeline.go:622-627` 的筛选是**手写的**
+   `case "downloaded","filed": if inv.FilePath != ""`——
+   而 `ledger.go:86` 明写 `InvoiceCountsTowardTotal` 是
+   「**唯一**的『这一张算不算进合计』判据」「为什么必须只有一处」。
+   今天两者等价，**没有错账**；但这是 2026-10-02 那起
+   `3,500 vs 61,500`（17.6 倍）事故的**同一个病**换了个位置。
+   改法很小：改成 `email.InvoiceCountsTowardTotal(inv)`，同时保住
+   `downloaded++` 计数与合计指向同一批。**本轮没改**——08:00 前动 server
+   代码要连带重建并重启 18099，风险不对等，留给下一轮。
+2. `SumByCurrency` 夹在「判据」与「调用方」之间，谁都可以绕过它。
+   若哪天有人直接 `SumByCurrency(全部发票)`，合计会静默虚高。
+   本轮用例的「调用方口径 vs LedgerRows 口径」断言就是为这条设的。
 
 ---
 
@@ -1136,6 +1186,7 @@ worktree 已 `git worktree remove`。
 | `internal/email/xmlinvoice_eui_test.go` | EUI 车牌排除 + 价税合计变体（§7.7.2） |
 | `internal/email/invoice_zip_harvest_test.go` | ZIP 优先于汇总单的负控（§7.7.1） |
 | `internal/email/diag_toll_e2e_offline_test.go` | 真实原文缓存端到端离线验收（§7.7.4） |
+| `internal/email/diag_toll_a4_ledger_offline_test.go` | 真实票的 A4 拼版 + 按币种汇总端到端离线验收（§7.8） |
 | `internal/email/diag_toll_attachment_test.go` / `diag_eui_xml_shape_test.go` / `diag_toll_invoice_replay_test.go` | 门控诊断（附件形态 / EUI XML 形态 / 原文重放） |
 | `internal/email/diag_boundary_tighten_candidates_test.go` | 180 条真实语料的边界收紧对比 |
 | `internal/email/diag_boundary_false_positive_test.go` | 边界误报常驻护栏（已去门控） |
