@@ -347,3 +347,46 @@ inv_1790903383222583800_1 | status=new | file_name=(空) | attempts=0 | last_err
 
 当前合计口径可复核：真机实测的 `GET /api/emails/invoices` 返回
 `"amounts":[{"currency":"CNY","amount":3500,"count":1}]`——58000 不在其中，与上表一致。
+
+---
+
+## §10 08:00 验收的基线已存档（以及一个并发会话挡路的事实）
+
+### 10.1 基线（2026-10-03 01:06，存档 `logs/zz-8am-baseline-20261003-0106.txt`）
+
+只做计数与时间戳，**不含任何判定**：
+
+```
+notifications_total       = 24
+notifications_unread      = 23
+notifications_newest      = 2026-10-02 05:38:33
+invoices_counted_by_total = 1
+invoices_counted_amount   = 3500.00
+row_58000_state           = new | file=(none) | attempts=0 | updated=10-02 09:09
+```
+
+`invoices_counted_*` 那两行是 `InvoiceCountsTowardTotal` 判据的 SQL 转写，
+**不是**独立判定，也不是权威数字——权威数字是真机实测的 API
+`amounts: [{CNY, 3500, count:1}]`，两者一致。
+
+08:00 之后跑同一条命令，差值就是归因：通知 24→?、合计 3500→?、
+58000 那行的 status/attempts/last_error 各变成什么。
+
+### 10.2 ⚠️ 并发会话的在制品让 `internal/email` 的测试二进制编译不过
+
+```
+internal\email\diag_qp_replay_test.go:227:3: unknown field legacy in struct literal of type qpOutcome
+internal\email\diag_qp_replay_test.go:89:6:  looksLikeMIME redeclared in this block
+```
+
+- 该文件**未被 git 跟踪**，mtime 在 01:05–01:06 之间还在变，错误信息两次不同
+  ⇒ 对方正在里边写边改。
+- 影响面：`go test ./internal/email` 与 `go vet ./internal/email` 整个包都跑不了
+  （测试二进制是整包编译的，`-run` 过滤救不了）。
+- **不影响**生产代码：`go build ./...` exit=0；本轮新增的护栏在 `internal/server`，
+  `TestInvoiceListWire_*` / `TestInvoiceSummaryWire_*` 照常通过。
+- 因此本轮没能跑成 `TestDiagReminderBacklog`（提醒积压那条只读诊断）与
+  `TestDiagInvoiceBacklog`——它们和上面那个文件同包。**没有绕过去**：
+  不 stash、不 checkout、不改对方文件（并行会话的 `git stash -u` 卷走过未提交工作，
+  那是已吃过的亏）；也没把那个包复制到别处跑，那会造成代码分叉。
+  等它编译过就能跑，08:00 那时大概率已提交或已修好。
