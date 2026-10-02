@@ -222,7 +222,7 @@ watch(deckId, hydrate)
 
 .form { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-3) var(--space-4) 100px; }
 
-label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+label { display: flex; flex-direction: column; gap: 6px; font-size: var(--text-smd); font-weight: 600; color: var(--text-secondary); }
 
 input {
   width: 100%;
@@ -255,7 +255,7 @@ input {
   letter-spacing: 0.4px;
 }
 
-.error { margin: 0; padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); font-size: 13px; }
+.error { margin: 0; padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); font-size: var(--text-smd); }
 
 .empty { padding: var(--space-5); text-align: center; color: var(--text-secondary); }
 </style>

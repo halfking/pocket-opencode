@@ -164,7 +164,7 @@ onMounted(load)
   border-radius: 12px; overflow: hidden;
 }
 .family-name {
-  margin: 0; padding: 10px 14px; font-size: 13px; font-weight: 600;
+  margin: 0; padding: 10px 14px; font-size: var(--text-smd); font-weight: 600;
   color: var(--text-secondary); background: var(--bg-subtle);
 }
 .model-row {
@@ -175,7 +175,7 @@ onMounted(load)
 .model-main { flex: 1; min-width: 0; }
 .model-name { font-size: var(--text-base); color: var(--text-primary); font-weight: 500; word-break: break-all; }
 .star { color: var(--warning); }
-.model-meta { font-size: 11px; color: var(--text-secondary); margin-top: 3px; word-break: break-all; }
+.model-meta { font-size: var(--text-2xs); color: var(--text-secondary); margin-top: 3px; word-break: break-all; }
 .mono { font-family: var(--font-mono); }
 .modality-badge {
   flex: none; font-size: var(--text-xs); padding: 3px 8px; border-radius: 999px;
@@ -183,6 +183,6 @@ onMounted(load)
 }
 .modality-badge[data-mod='vision'] { color: var(--primary, #4c8dff); }
 .model-detail { width: 100%; padding-top: 6px; }
-.detail-line { font-size: 11px; color: var(--text-secondary); margin-top: 4px; word-break: break-all; }
+.detail-line { font-size: var(--text-2xs); color: var(--text-secondary); margin-top: 4px; word-break: break-all; }
 .detail-line b { color: var(--text-primary); margin-right: 6px; }
 </style>

@@ -36,13 +36,13 @@ defineProps<{ item: TimelineItem }>()
   align-items: center;
   gap: 6px;
   margin: 0 0 var(--space-2);
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
 }
 .head .material-symbols-outlined { font-size: var(--text-xl); color: var(--brand-primary, #4c8dff); }
 .items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.items li { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--text-primary); }
+.items li { display: flex; align-items: flex-start; gap: 8px; font-size: var(--text-smd); color: var(--text-primary); }
 .items li.s-done .title { color: var(--text-muted); text-decoration: line-through; }
 .mark .material-symbols-outlined { font-size: var(--text-xl); vertical-align: -4px; color: var(--text-muted); }
 li.s-in_progress .mark .material-symbols-outlined { color: var(--brand-primary, #4c8dff); }

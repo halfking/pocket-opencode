@@ -71,7 +71,7 @@ function icon(type: string): string {
 
 .alert-msg {
   flex: 1;
-  font-size: 13px;
+  font-size: var(--text-smd);
   line-height: 1.4;
   color: var(--text-primary);
 }

@@ -232,7 +232,7 @@ onMounted(load)
   background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
 }
 .stat { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.stat-label { font-size: 11px; color: var(--text-secondary); }
+.stat-label { font-size: var(--text-2xs); color: var(--text-secondary); }
 .stat-val { font-size: var(--text-md); font-weight: 700; color: var(--text-primary); word-break: break-all; }
 .stat-val.income { color: var(--success, #10b981); }
 .stat-val.expense { color: var(--danger); }
@@ -246,7 +246,7 @@ onMounted(load)
 }
 .quick-input:focus { border-color: var(--brand-primary); }
 .quick-btn {
-  flex: none; padding: 0 16px; font-size: 13px; border-radius: 10px; border: none;
+  flex: none; padding: 0 16px; font-size: var(--text-smd); border-radius: 10px; border: none;
   background: var(--brand-primary, #4c8dff); color: #fff; cursor: pointer;
 }
 .quick-btn:disabled { opacity: 0.5; }
@@ -274,7 +274,7 @@ onMounted(load)
 }
 .cat-row { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 var(--space-3) var(--space-2); }
 .cat-chip {
-  font-size: 11px; padding: 3px 9px; border-radius: 999px;
+  font-size: var(--text-2xs); padding: 3px 9px; border-radius: 999px;
   background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text-secondary);
 }
 .body { padding: 0 var(--space-3) 100px; display: flex; flex-direction: column; gap: var(--space-2); }
@@ -298,13 +298,13 @@ onMounted(load)
 .tx-amount { flex: none; font-size: var(--text-md); font-weight: 700; }
 .tx-amount.expense { color: var(--danger); }
 .tx-amount.income { color: var(--success, #10b981); }
-.tx-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 11px; color: var(--text-secondary); }
+.tx-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: var(--text-2xs); color: var(--text-secondary); }
 .src-badge {
   padding: 1px 7px; border-radius: 999px; font-size: var(--text-xs);
   background: var(--bg-subtle); border: 1px solid var(--border);
 }
 .tx-note {
-  margin-top: 4px; font-size: 11px; color: var(--text-muted);
+  margin-top: 4px; font-size: var(--text-2xs); color: var(--text-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .tx-del {

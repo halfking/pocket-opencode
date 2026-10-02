@@ -135,7 +135,7 @@ function jump(index: number): void {
 }
 .rail-text {
   writing-mode: vertical-rl;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: var(--font-weight-semibold);
   letter-spacing: 3px;
 }

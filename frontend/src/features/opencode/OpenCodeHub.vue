@@ -348,7 +348,7 @@ function formatLastSeen(timestamp: string): string {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
 }
 

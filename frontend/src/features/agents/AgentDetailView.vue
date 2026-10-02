@@ -178,7 +178,7 @@ function goToEdit() {
 }
 
 .custom-badge {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 3px 8px;
   background: var(--brand-primary);
   color: var(--text-inverse);
@@ -192,7 +192,7 @@ function goToEdit() {
 }
 
 .role-dept {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
 }
 
@@ -215,7 +215,7 @@ function goToEdit() {
 }
 
 .section-hint {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
 }
 
@@ -234,7 +234,7 @@ function goToEdit() {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   line-height: 1.6;
   color: var(--text-primary);
   overflow-x: auto;
@@ -284,7 +284,7 @@ function goToEdit() {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--brand-primary);
   cursor: pointer;
 }
@@ -301,7 +301,7 @@ function goToEdit() {
   align-items: center;
   padding: 8px 0;
   border-bottom: 1px solid var(--border);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 
 .meta-row:last-child {

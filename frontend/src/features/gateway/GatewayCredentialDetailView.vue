@@ -303,18 +303,18 @@ onMounted(load)
   flex-wrap: wrap;
 }
 .sum-meta {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   margin-top: 8px;
 }
 .reason {
   margin-top: 8px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--warning);
   word-break: break-word;
 }
 .chip {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 7px;
   border-radius: var(--radius-full, 999px);
   background: var(--bg-subtle);
@@ -374,7 +374,7 @@ onMounted(load)
 }
 .model-name {
   flex: 1;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   word-break: break-all;
 }

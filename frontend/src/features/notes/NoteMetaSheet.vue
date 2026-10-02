@@ -180,7 +180,7 @@ function onClose() {
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
   padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border);
-  background: var(--bg-card); color: var(--text-secondary); font-size: 13px;
+  background: var(--bg-card); color: var(--text-secondary); font-size: var(--text-smd);
 }
 .chip.active { background: var(--brand-bg); color: var(--brand-primary); border-color: var(--brand-primary); }
 .tag-row { display: flex; gap: 8px; }

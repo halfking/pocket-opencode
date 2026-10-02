@@ -217,7 +217,7 @@ function formatTime(ms: number): string {
 .status-banner.error {
   background: color-mix(in srgb, var(--danger) 10%, transparent);
   color: var(--danger);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 
 .banner-title {
@@ -245,7 +245,7 @@ function formatTime(ms: number): string {
 }
 
 .status-label {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary, #6b7280);
   margin-bottom: 6px;
 }
@@ -257,7 +257,7 @@ function formatTime(ms: number): string {
 }
 
 .status-value-sm {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
   font-weight: 500;
 }
@@ -268,7 +268,7 @@ function formatTime(ms: number): string {
 
 .hint {
   margin: 8px 0;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary, #6b7280);
   line-height: 1.5;
 }

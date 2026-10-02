@@ -74,7 +74,7 @@ function tokenLine(row: TaskSessionRow): string {
 .lane h3 { margin: 0 0 8px; font-size: var(--text-base); display: inline-block; }
 .badge { font-weight: 400; opacity: 0.7; }
 .link-btn { float: right; background: none; border: 0; color: var(--accent, #3b82f6); }
-.empty { font-size: 13px; color: var(--text-secondary, #888); margin: 0; }
+.empty { font-size: var(--text-smd); color: var(--text-secondary, #888); margin: 0; }
 .session-row {
   display: block; width: 100%; text-align: left;
   padding: 10px 0; border: 0; border-bottom: 1px solid var(--border, #eee);

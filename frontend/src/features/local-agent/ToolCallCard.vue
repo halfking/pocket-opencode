@@ -106,7 +106,7 @@ const clippedResult = computed(() => {
   background: transparent;
   border: none;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   cursor: pointer;
   text-align: left;
 }
@@ -137,7 +137,7 @@ const clippedResult = computed(() => {
 }
 .section .label {
   margin: 0 0 2px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
 }
 .section .label.err { color: var(--danger, #e5484d); }
@@ -155,5 +155,5 @@ const clippedResult = computed(() => {
   overflow-y: auto;
 }
 .code.err { color: var(--danger, #e5484d); }
-.meta { margin: 0; font-size: 11px; color: var(--text-muted); }
+.meta { margin: 0; font-size: var(--text-2xs); color: var(--text-muted); }
 </style>

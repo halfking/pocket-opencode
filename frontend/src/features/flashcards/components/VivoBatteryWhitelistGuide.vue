@@ -175,7 +175,7 @@ defineExpose({ isVivoOriginOS, dismiss, visible })
 }
 .body .title {
   margin: 0 0 4px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
   font-weight: 500;
 }
@@ -196,7 +196,7 @@ defineExpose({ isVivoOriginOS, dismiss, visible })
   color: var(--text-inverse, #fff);
   padding: 8px 16px;
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: var(--text-smd);
   cursor: pointer;
 }
 </style>

@@ -373,7 +373,7 @@ function formatTime(sec?: number): string {
   border-radius: 50%;
   background: var(--brand-bg, rgba(76, 141, 255, 0.15));
   color: var(--brand-primary, #4c8dff);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: 600;
 }
 
@@ -386,7 +386,7 @@ function formatTime(sec?: number): string {
 }
 
 .role {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 1px 6px;
   border-radius: var(--radius-full);
   background: var(--bg-hover, rgba(0, 0, 0, 0.05));
@@ -448,7 +448,7 @@ function formatTime(sec?: number): string {
 }
 
 .stream-title {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   margin: var(--space-2) 0 var(--space-1);
 }
@@ -488,7 +488,7 @@ function formatTime(sec?: number): string {
 }
 
 .when {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary, #888);
 }
 
@@ -526,7 +526,7 @@ function formatTime(sec?: number): string {
 }
 
 .progress-text {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary, #888);
   white-space: nowrap;
 }
@@ -554,7 +554,7 @@ function formatTime(sec?: number): string {
 
 .child-status {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 1px 6px;
   border-radius: var(--radius-full);
   background: var(--bg-hover, rgba(0, 0, 0, 0.05));
@@ -629,7 +629,7 @@ function formatTime(sec?: number): string {
   border-radius: var(--radius-full);
   background: #e8a33d;
   color: #fff;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: 600;
 }
 

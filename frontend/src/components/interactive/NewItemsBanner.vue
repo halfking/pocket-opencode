@@ -88,7 +88,7 @@ function handleClick() {
   border: none;
   border-radius: var(--radius-full);
 
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: var(--font-weight-medium);
   line-height: 1.2;
   white-space: nowrap;

@@ -118,7 +118,7 @@ watch(
   color: var(--text-primary); cursor: pointer; padding: 4px 10px;
 }
 .pg:disabled { opacity: 0.35; cursor: default; }
-.pg-label { font-size: 13px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.pg-label { font-size: var(--text-smd); color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .foot {
   display: flex; gap: 8px; padding: 12px 16px 20px;
   border-top: 1px solid var(--border);

@@ -209,7 +209,7 @@ function go(to: string) {
 
 .grid-title {
   margin: 0 0 var(--space-1) var(--space-1);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: var(--font-weight-semibold);
   text-transform: uppercase;
   letter-spacing: 0.4px;
@@ -302,7 +302,7 @@ function go(to: string) {
 .version-foot {
   margin: 0;
   padding: var(--space-2) var(--space-1);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary, var(--text-muted));
   text-align: center;
 }

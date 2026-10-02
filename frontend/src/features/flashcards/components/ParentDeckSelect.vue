@@ -160,7 +160,7 @@ function select(id: string) {
 }
 
 .parent-label {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary, var(--text-muted));
   text-transform: uppercase;
   letter-spacing: 0.4px;
@@ -241,7 +241,7 @@ function select(id: string) {
 
 .picker-note {
   margin-left: var(--space-2);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary);
 }
 </style>

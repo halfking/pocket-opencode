@@ -184,7 +184,7 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
 .title { font-weight: 600; margin-bottom: 4px; }
 .meta { font-size: var(--text-sm); color: var(--text-muted); display: flex; gap: 8px; }
 .star { color: var(--warn); }
-.summary { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }
+.summary { font-size: var(--text-smd); color: var(--text-secondary); margin-top: 4px; }
 .source-list { list-style: none; padding: 0; }
 .source-list li { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .src-info { flex: 1; }

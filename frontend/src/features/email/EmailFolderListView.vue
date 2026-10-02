@@ -246,7 +246,7 @@ onMounted(() => {
 .sync-card { margin: var(--space-3); padding: var(--space-3); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); }
 .sync-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .sync-info { display: flex; align-items: center; gap: 8px; font-size: var(--text-base); }
-.badge { font-size: 11px; padding: 1px 8px; border-radius: var(--radius-full); background: var(--warning); color: #fff; }
+.badge { font-size: var(--text-2xs); padding: 1px 8px; border-radius: var(--radius-full); background: var(--warning); color: #fff; }
 .muted { font-size: var(--text-sm); color: var(--text-muted); }
 .sync-btn { min-height: 34px; padding: 0 14px; border: none; border-radius: var(--radius-sm); background: var(--brand-primary); color: var(--text-inverse); }
 .sync-btn:disabled { opacity: .5; }
@@ -256,9 +256,9 @@ onMounted(() => {
 .ops-row:last-child { border-bottom: none; }
 .pick { display: flex; align-items: center; }
 .ops-main { flex: 1; min-width: 0; }
-.ops-line { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.ops-line { display: flex; justify-content: space-between; gap: 8px; font-size: var(--text-smd); }
 .ops-action { color: var(--text-primary); }
-.ops-status { font-size: 11px; }
+.ops-status { font-size: var(--text-2xs); }
 .ops-status.pending { color: var(--warning); }
 .ops-status.failed { color: var(--danger); }
 .ops-status.applied { color: var(--success, var(--brand-primary)); }
@@ -266,7 +266,7 @@ onMounted(() => {
 .ops-subject { font-size: var(--text-sm); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ops-sync-one { border: 1px solid var(--border); background: var(--bg-card); color: var(--brand-primary); border-radius: var(--radius-sm); font-size: var(--text-sm); padding: 3px 10px; }
 .folder-section { margin: 0 var(--space-3) var(--space-6); }
-.section-title { font-size: 13px; color: var(--text-muted); margin: var(--space-3) 0 var(--space-2); font-weight: 600; }
+.section-title { font-size: var(--text-smd); color: var(--text-muted); margin: var(--space-3) 0 var(--space-2); font-weight: 600; }
 .folder-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 8px; cursor: pointer; text-align: left; }
 .folder-icon { color: var(--brand-primary); font-size: 20px; }
 .folder-name { flex: 1; min-width: 0; font-size: var(--text-base); color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

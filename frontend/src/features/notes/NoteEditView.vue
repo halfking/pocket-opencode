@@ -267,8 +267,8 @@ function goBack() {
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
 .edit-form { display: flex; flex-direction: column; gap: var(--space-4); padding-bottom: 120px; }
 .form-group { display: flex; flex-direction: column; gap: var(--space-2); }
-.form-group label { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
-.form-group .hint { font-size: 11px; font-weight: 400; color: var(--text-muted); }
+.form-group label { font-size: var(--text-smd); font-weight: 600; color: var(--text-secondary); }
+.form-group .hint { font-size: var(--text-2xs); font-weight: 400; color: var(--text-muted); }
 .tags-input {
   flex: 1; padding: var(--space-3); border-radius: var(--radius-md);
   border: 1px solid var(--border); background: var(--bg-card); color: var(--text-primary);

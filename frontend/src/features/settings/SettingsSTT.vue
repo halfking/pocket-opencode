@@ -696,7 +696,7 @@ function goBack() {
   border: 1px solid var(--border, #d0d3d8);
   border-radius: 8px;
   padding: 6px 10px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   cursor: pointer;
 }
 .ghost-btn:disabled {
@@ -713,7 +713,7 @@ function goBack() {
   padding: 10px 12px;
   border-radius: 8px;
   background: var(--bg, #f0f2f5);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .effective-label {
   color: var(--text-secondary, #6b7280);
@@ -767,7 +767,7 @@ function goBack() {
 }
 .badge {
   margin-left: auto;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 8px;
   border-radius: 999px;
   background: #e5e7eb;
@@ -790,7 +790,7 @@ function goBack() {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   cursor: pointer;
 }
 .key-row {
@@ -809,7 +809,7 @@ function goBack() {
   margin-bottom: 4px;
 }
 .group-name {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: var(--text-secondary, #6b7280);
 }
@@ -829,7 +829,7 @@ function goBack() {
 }
 .rec-model {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--text-smd);
   word-break: break-all;
 }
 .rec-cost {
@@ -845,7 +845,7 @@ function goBack() {
   padding: 1px 6px;
   border: 1px solid var(--border, #e5e7eb);
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary, #6b7280);
   width: fit-content;
 }
@@ -870,7 +870,7 @@ function goBack() {
   color: #9a3412;
   border-radius: 8px;
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   line-height: 1.5;
   margin-top: 8px;
   word-break: break-word;
@@ -900,7 +900,7 @@ function goBack() {
   margin-top: 10px;
 }
 .probe-timer {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary, #6b7280);
 }
 .primary-btn {
@@ -922,7 +922,7 @@ function goBack() {
 }
 .status-bar {
   padding: 10px 16px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   line-height: 1.5;
   word-break: break-word;
 }

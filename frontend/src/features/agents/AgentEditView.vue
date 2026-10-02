@@ -339,7 +339,7 @@ async function handleSave() {
 
 .field-label {
   display: block;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: var(--text-secondary);
   margin-bottom: 6px;
@@ -372,14 +372,14 @@ async function handleSave() {
 
 .prompt-input {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--text-smd);
   line-height: 1.6;
   resize: vertical;
 }
 
 .field-hint {
   margin-top: 6px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
 }
 

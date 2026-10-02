@@ -1473,7 +1473,7 @@ function timeAgo(dateStr?: string): string {
   font-weight: var(--font-weight-semibold);
   color: var(--danger);
 }
-.triage-card-head .link-btn { font-size: 11px; }
+.triage-card-head .link-btn { font-size: var(--text-2xs); }
 .triage-empty {
   font-size: var(--text-sm);
   color: var(--text-muted);
@@ -1514,7 +1514,7 @@ function timeAgo(dateStr?: string): string {
 .attn-title {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
@@ -1523,7 +1523,7 @@ function timeAgo(dateStr?: string): string {
 }
 .attn-wait {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
 }
 .attn-actions {
@@ -1535,7 +1535,7 @@ function timeAgo(dateStr?: string): string {
 .attn-btn {
   min-height: 36px;
   padding: 6px 14px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   border-radius: 8px;
   border: 1px solid var(--border);
@@ -1579,7 +1579,7 @@ function timeAgo(dateStr?: string): string {
   padding: 0 2px;
 }
 .section-header h2 {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: var(--text-secondary);
   margin: 0;
@@ -1647,7 +1647,7 @@ function timeAgo(dateStr?: string): string {
 }
 .char-counter {
   text-align: right;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
   margin-top: 4px;
 }
@@ -1695,7 +1695,7 @@ function timeAgo(dateStr?: string): string {
   min-width: 0;
 }
 .task-title {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
@@ -1719,7 +1719,7 @@ function timeAgo(dateStr?: string): string {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: 600;
   min-width: 0;
   overflow: hidden;
@@ -1805,7 +1805,7 @@ function timeAgo(dateStr?: string): string {
 }
 
 .chip.subtle {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 4px 9px;
   min-height: 26px;
 }
@@ -1878,7 +1878,7 @@ function timeAgo(dateStr?: string): string {
   padding: 0px 4px;
 }
 .meta-muted {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
   display: inline-flex;
   align-items: center;
@@ -1954,7 +1954,7 @@ function timeAgo(dateStr?: string): string {
   min-width: 0;
 }
 .session-title {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 500;
   color: var(--text-primary);
   overflow: hidden;
@@ -2065,7 +2065,7 @@ function timeAgo(dateStr?: string): string {
   flex: 1;
   border: none;
   background: transparent;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
   resize: none;
   outline: none;

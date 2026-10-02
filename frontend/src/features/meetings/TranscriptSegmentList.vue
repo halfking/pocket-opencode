@@ -114,7 +114,7 @@ watch(() => props.segments.length, async () => {
 }
 
 .time {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -127,7 +127,7 @@ watch(() => props.segments.length, async () => {
 }
 .segment-tr {
   margin: 4px 0 0;
-  font-size: 13px;
+  font-size: var(--text-smd);
   line-height: 1.5;
   color: var(--text-muted);
 }

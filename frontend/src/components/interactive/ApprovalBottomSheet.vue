@@ -196,7 +196,7 @@ function onReject(): void {
 .approval-details summary {
   cursor: pointer;
   color: var(--text-secondary, #6b7280);
-  font-size: 13px;
+  font-size: var(--text-smd);
   padding: 4px 0;
 }
 .approval-details-body {
@@ -212,7 +212,7 @@ function onReject(): void {
   margin-top: 12px;
   padding: 12px;
   border-radius: 8px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   display: flex;
   flex-direction: column;
   gap: 4px;

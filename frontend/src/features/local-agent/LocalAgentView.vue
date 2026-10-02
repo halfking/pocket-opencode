@@ -260,7 +260,7 @@ watch(() => store.activeId, () => {
   border-radius: var(--radius-sm);
   background: var(--bg-subtle);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   padding: 0 var(--space-2);
   text-overflow: ellipsis;
 }
@@ -288,7 +288,7 @@ watch(() => store.activeId, () => {
   flex-direction: column;
   gap: 6px;
 }
-.picker-label { margin: 0; font-size: 11px; color: var(--text-muted); }
+.picker-label { margin: 0; font-size: var(--text-2xs); color: var(--text-muted); }
 .picker-desc { margin: 0; font-size: var(--text-sm); color: var(--text-secondary); }
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
@@ -319,7 +319,7 @@ watch(() => store.activeId, () => {
   margin: auto;
   text-align: center;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--text-smd);
   line-height: 2;
 }
 .row { display: flex; flex-direction: column; }
@@ -360,7 +360,7 @@ watch(() => store.activeId, () => {
   max-width: 90%;
 }
 .status-pill {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
   background: var(--bg-subtle);
   border: 1px solid var(--border);

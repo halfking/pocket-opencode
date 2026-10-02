@@ -552,7 +552,7 @@ onMounted(loadList)
 .acct-main { flex: 1; min-width: 0; }
 .acct-name { font-weight: 600; color: var(--text-primary); font-size: var(--text-base); }
 .acct-addr { font-size: var(--text-sm); color: var(--text-secondary); margin-top: 2px; }
-.acct-meta { display: flex; gap: var(--space-1); align-items: center; font-size: 11px; color: var(--text-muted); margin-top: var(--space-1); }
+.acct-meta { display: flex; gap: var(--space-1); align-items: center; font-size: var(--text-2xs); color: var(--text-muted); margin-top: var(--space-1); }
 .sep { color: var(--border-strong); }
 .acct-actions { display: flex; gap: var(--space-1); }
 .icon-btn {
@@ -571,7 +571,7 @@ onMounted(loadList)
   box-shadow: var(--shadow-sm);
 }
 .form-title { font-size: var(--text-lg); font-weight: 600; margin: 0 0 var(--space-3); color: var(--text-primary); }
-.templates-label { font-size: 13px; color: var(--text-secondary); margin-bottom: var(--space-2); }
+.templates-label { font-size: var(--text-smd); color: var(--text-secondary); margin-bottom: var(--space-2); }
 .template-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
 .tpl-btn {
   border: 1px solid var(--border);
@@ -583,13 +583,13 @@ onMounted(loadList)
 }
 .tpl-btn.selected { border-color: var(--brand-primary); background: var(--brand-bg); }
 .tpl-icon { font-size: 22px; }
-.tpl-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.tpl-host { font-size: 11px; color: var(--text-muted); }
+.tpl-name { font-size: var(--text-smd); font-weight: 600; color: var(--text-primary); }
+.tpl-host { font-size: var(--text-2xs); color: var(--text-muted); }
 
 .form-fields { display: flex; flex-direction: column; gap: var(--space-3); margin-top: 0; }
 .field { display: flex; flex-direction: column; gap: var(--space-1); }
 .field-label { font-size: var(--text-sm); color: var(--text-secondary); }
-.hint-inline { font-size: 11px; color: var(--text-muted); margin-left: var(--space-1); }
+.hint-inline { font-size: var(--text-2xs); color: var(--text-muted); margin-left: var(--space-1); }
 .input {
   border: 1px solid var(--border);
   background: var(--bg-base);
@@ -607,8 +607,8 @@ onMounted(loadList)
   padding-top: var(--space-2);
   border-top: 1px solid var(--border);
 }
-.section-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.section-hint { font-size: 11px; color: var(--text-muted); }
+.section-title { font-size: var(--text-smd); font-weight: 600; color: var(--text-primary); }
+.section-hint { font-size: var(--text-2xs); color: var(--text-muted); }
 .checkbox-field {
   display: flex; align-items: center; gap: var(--space-2);
   font-size: var(--text-sm); color: var(--text-secondary);

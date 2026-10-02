@@ -386,7 +386,7 @@ onMounted(() => {
 
 .stat .label {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary);
 }
 
@@ -402,7 +402,7 @@ onMounted(() => {
 
 .chart-card h3 {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: var(--font-weight-semibold);
   color: var(--text-secondary);
 }
@@ -444,7 +444,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
 }
 
@@ -529,7 +529,7 @@ onMounted(() => {
 
 .retention-hint {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary);
   line-height: 1.4;
 }

@@ -210,7 +210,7 @@ onUnmounted(() => {
 .summary-card { margin: var(--space-3); padding: var(--space-3); background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; }
 .summary-main { display: flex; flex-direction: column; gap: 2px; }
 .summary-amount { font-size: 20px; font-weight: 700; }
-.summary-label { font-size: 11px; color: var(--text-secondary); }
+.summary-label { font-size: var(--text-2xs); color: var(--text-secondary); }
 .filter-row, .file-ops { display: flex; gap: 6px; padding: 0 var(--space-3) var(--space-2); flex-wrap: wrap; align-items: center; }
 .file-ops .spacer { flex: 1; }
 .chip { padding: 5px 12px; font-size: var(--text-sm); background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 999px; color: var(--text-secondary); cursor: pointer; }

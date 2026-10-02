@@ -274,7 +274,7 @@ function close() {
 }
 
 .agent-desc {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;

@@ -377,7 +377,7 @@ useListScene('notes', load)
 .studio-error {
   margin: 0 0 var(--space-2);
   color: var(--danger);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 
 /* 收尾转写中的状态行。刻意不用 danger 色：这不是错误，是进行中；
@@ -385,7 +385,7 @@ useListScene('notes', load)
 .studio-busy {
   margin: 0 0 var(--space-2);
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
 }
 /* 中止兜底转写。与状态同行而不是另起一行：这是一次性操作，
@@ -424,7 +424,7 @@ useListScene('notes', load)
 }
 .draft-banner {
   width: 100%; border: none; text-align: left; padding: 10px var(--space-3);
-  background: var(--warning-bg, #fff6e5); color: var(--text-primary); font-size: 13px;
+  background: var(--warning-bg, #fff6e5); color: var(--text-primary); font-size: var(--text-smd);
 }
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
 .note-list { display: flex; flex-direction: column; gap: 10px; padding: 0 var(--space-3) 96px; }

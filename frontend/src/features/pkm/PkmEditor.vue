@@ -176,7 +176,7 @@ onBeforeUnmount(() => {
   position: fixed;
   bottom: 80px;
   right: 16px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary, #888);
   background: var(--bg-elevated, #fff);
   padding: 3px 8px;

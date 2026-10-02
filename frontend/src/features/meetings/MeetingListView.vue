@@ -197,16 +197,16 @@ useListScene('meetings', load)
 
 <style scoped>
 .meetings-page { position: relative; height: 100%; min-height: 0; display: flex; flex-direction: column; }
-.hdr-filter { font-size: 13px; color: var(--text-secondary); }
+.hdr-filter { font-size: var(--text-smd); color: var(--text-secondary); }
 .hdr-filter.active { color: var(--brand-primary); font-weight: 700; }
 .list-scroll { flex: 1 1 auto; min-height: 0; }
 .meeting-list { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
 .meeting-card { padding: var(--space-3); background: var(--bg-card); cursor: pointer; }
 .card-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .card-title { margin: 0; font-size: var(--text-md); font-weight: 600; color: var(--text-primary); }
-.status-badge { font-size: 11px; padding: 2px 8px; border-radius: var(--radius-full); background: var(--bg-subtle); color: var(--text-muted); flex-shrink: 0; }
+.status-badge { font-size: var(--text-2xs); padding: 2px 8px; border-radius: var(--radius-full); background: var(--bg-subtle); color: var(--text-muted); flex-shrink: 0; }
 .status-badge.recording { background: var(--danger-bg); color: var(--danger); }
-.card-topic, .card-summary { margin: var(--space-2) 0 0; font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
+.card-topic, .card-summary { margin: var(--space-2) 0 0; font-size: var(--text-smd); color: var(--text-secondary); line-height: 1.5; }
 .card-meta { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-2); font-size: var(--text-sm); color: var(--text-muted); }
 .fab {
   position: fixed; right: var(--space-4); bottom: calc(var(--bottom-chrome-height) + var(--space-4));

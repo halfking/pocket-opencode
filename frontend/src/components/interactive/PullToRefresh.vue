@@ -331,7 +331,7 @@ const handleTouchEnd = async () => {
 
 .refresh-text {
   position: relative;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   line-height: 1.2;
   color: var(--text-muted);
   font-weight: var(--font-weight-medium);

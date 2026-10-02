@@ -290,7 +290,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
   border: 1px solid var(--border);
   border-radius: 16px;
   background: var(--bg-base);
-  font-size: 13px;
+  font-size: var(--text-smd);
   white-space: nowrap;
   cursor: pointer;
   color: var(--text-secondary);
@@ -312,7 +312,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
   cursor: pointer;
 }
@@ -408,7 +408,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
 }
 
 .agent-desc {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
   line-height: 1.4;
   margin-bottom: 4px;
@@ -419,7 +419,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
 }
 
 .agent-dept {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
 }
 

@@ -529,7 +529,7 @@ const handleNavChange = (id: string) => {
   padding: var(--space-2) var(--space-3);
   background: var(--color-bg-base);
   border-radius: var(--radius-md);
-  font-size: 13px;
+  font-size: var(--text-smd);
   line-height: 1.5;
 }
 
@@ -549,7 +549,7 @@ const handleNavChange = (id: string) => {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 
 .suggestion-icon {

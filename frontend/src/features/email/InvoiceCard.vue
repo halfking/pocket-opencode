@@ -139,7 +139,7 @@ const receivedLabel = computed(() => invoiceReceivedLabel(props.inv.emailDate, p
 .inv-amount { flex: none; font-size: var(--text-md); font-weight: 700; }
 .inv-meta {
   display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap;
-  font-size: 11px; color: var(--text-secondary);
+  font-size: var(--text-2xs); color: var(--text-secondary);
 }
 .mono { font-family: var(--font-mono); }
 .cat-badge {
@@ -147,12 +147,12 @@ const receivedLabel = computed(() => invoiceReceivedLabel(props.inv.emailDate, p
   background: var(--bg-subtle); border: 1px solid var(--border);
 }
 .inv-subject, .inv-file {
-  margin-top: 6px; font-size: 11px; color: var(--text-muted);
+  margin-top: 6px; font-size: var(--text-2xs); color: var(--text-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.inv-err { margin-top: 6px; font-size: 11px; color: var(--danger); word-break: break-all; }
+.inv-err { margin-top: 6px; font-size: var(--text-2xs); color: var(--danger); word-break: break-all; }
 .inv-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-.status-pill { font-size: 11px; }
+.status-pill { font-size: var(--text-2xs); }
 .status-pill.new, .status-pill.pending { color: var(--warning, #f59e0b); }
 .status-pill.downloaded, .status-pill.filed { color: var(--success, #10b981); }
 .status-pill.failed { color: var(--danger); }

@@ -415,7 +415,7 @@ const handleClose = () => {
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: var(--radius-full);
   color: var(--text-inverse);
-  font-size: 13px;
+  font-size: var(--text-smd);
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-out);
 }

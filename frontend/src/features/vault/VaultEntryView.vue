@@ -515,7 +515,7 @@ onBeforeUnmount(() => {
   font-size: var(--text-sm); color: var(--text-muted); margin-bottom: var(--space-1);
   display: flex; align-items: center; justify-content: space-between;
 }
-.totp-hint { font-size: 11px; color: var(--text-muted); }
+.totp-hint { font-size: var(--text-2xs); color: var(--text-muted); }
 .field-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: nowrap; }
 .field-value {
   flex: 1; min-width: 0;
@@ -528,7 +528,7 @@ onBeforeUnmount(() => {
 .field-icon-btn {
   background: var(--bg-subtle); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 6px 10px;
-  font-size: 13px; cursor: pointer; color: var(--text-primary);
+  font-size: var(--text-smd); cursor: pointer; color: var(--text-primary);
   white-space: nowrap; flex-shrink: 0;
 }
 .field-icon-btn:active { opacity: 0.7; }

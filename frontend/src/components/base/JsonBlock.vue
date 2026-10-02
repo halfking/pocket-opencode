@@ -207,7 +207,7 @@ function buildTree(value: unknown, key?: string, depth = 0, path: string[] = [])
   border: 1px solid transparent;
   border-radius: 4px;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary, #666);
   cursor: pointer;
 }

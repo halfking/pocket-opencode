@@ -211,7 +211,7 @@ onMounted(load)
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 8px);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   padding: 4px 6px;
 }
 .tab-nav {
@@ -225,7 +225,7 @@ onMounted(load)
 .tab {
   flex: none;
   padding: 6px 12px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: var(--radius-full, 999px);
@@ -233,7 +233,7 @@ onMounted(load)
 }
 .status-bar {
   padding: var(--space-2) var(--space-3);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .status-err {
   background: color-mix(in srgb, var(--danger) 15%, transparent);
@@ -282,12 +282,12 @@ onMounted(load)
   color: var(--danger);
 }
 .metric-label {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   margin-top: 2px;
 }
 .chip {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 7px;
   border-radius: var(--radius-full, 999px);
   background: var(--bg-subtle);
@@ -311,10 +311,10 @@ onMounted(load)
   border: none;
   padding: 0;
   color: var(--primary, #4c8dff);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .raw-json {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   background: var(--bg-subtle);
   padding: var(--space-2-5);
@@ -324,7 +324,7 @@ onMounted(load)
   max-height: 240px;
 }
 .footnote {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   text-align: center;
 }

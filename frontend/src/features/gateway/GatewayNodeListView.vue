@@ -261,7 +261,7 @@ onMounted(load)
 }
 .status-bar {
   padding: var(--space-2) var(--space-3);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .status-ok {
   background: color-mix(in srgb, var(--success) 15%, transparent);
@@ -345,7 +345,7 @@ onMounted(load)
   flex-wrap: wrap;
 }
 .chip {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 7px;
   border-radius: var(--radius-full, 999px);
   background: var(--bg-subtle);
@@ -361,7 +361,7 @@ onMounted(load)
   color: var(--text-secondary);
 }
 .time {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
 }
 .node-error {
@@ -378,7 +378,7 @@ onMounted(load)
 .btn-ghost {
   flex: 1;
   padding: 7px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 8px);
@@ -398,7 +398,7 @@ onMounted(load)
 }
 .footnote {
   margin-top: var(--space-3);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--warning);
 }
 .sheet-mask {
@@ -439,7 +439,7 @@ onMounted(load)
   box-sizing: border-box;
 }
 .form-hint {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   margin-top: 4px;
 }

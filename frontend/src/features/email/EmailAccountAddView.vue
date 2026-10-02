@@ -271,7 +271,7 @@ async function saveAndVerify() {
 .page-title { margin: 0; font-size: var(--text-xl); }
 .steps { color: var(--text-muted); font-size: var(--text-sm); }
 .panel { display: flex; flex-direction: column; gap: var(--space-2); }
-.hint, .auth-box p { margin: 0; color: var(--text-secondary); font-size: 13px; }
+.hint, .auth-box p { margin: 0; color: var(--text-secondary); font-size: var(--text-smd); }
 .prov {
   text-align: left; border: 1px solid var(--border); background: var(--bg-card);
   border-radius: var(--radius-md); padding: var(--space-3); cursor: pointer;
@@ -280,9 +280,9 @@ async function saveAndVerify() {
 .prov span { font-size: var(--text-sm); color: var(--text-muted); }
 .field { display: flex; flex-direction: column; gap: 4px; font-size: var(--text-sm); color: var(--text-secondary); }
 .input { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2); background: var(--bg-base); color: var(--text-primary); }
-.auth-box { background: var(--bg-subtle); border-radius: var(--radius-md); padding: var(--space-3); font-size: 13px; }
+.auth-box { background: var(--bg-subtle); border-radius: var(--radius-md); padding: var(--space-3); font-size: var(--text-smd); }
 .auth-box ol { margin: var(--space-2) 0; padding-left: 1.2rem; }
-.adv { display: flex; flex-direction: column; gap: var(--space-2); font-size: 13px; }
+.adv { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-smd); }
 .adv-title { margin: 0; font-weight: 600; color: var(--text-primary); }
 .host-port { display: grid; grid-template-columns: 1fr 5.5rem; gap: var(--space-2); }
 .link, .ghost, .primary { border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); cursor: pointer; }

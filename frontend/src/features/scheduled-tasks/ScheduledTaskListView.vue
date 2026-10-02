@@ -72,7 +72,7 @@ useListScene('scheduled-tasks', load)
 .page { min-height: 100%; background: var(--bg-base); }
 .header-action { color: var(--brand-primary); }
 .toolbar { display: flex; justify-content: space-between; align-items: center; padding: var(--space-3); border-bottom: 1px solid var(--border); }
-.filter { color: var(--text-secondary); font-size: 13px; display: flex; gap: 8px; align-items: center; }
+.filter { color: var(--text-secondary); font-size: var(--text-smd); display: flex; gap: 8px; align-items: center; }
 .refresh, .card-actions button, .primary, .error button { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); padding: 7px 12px; cursor: pointer; }
 .list { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
 .list-inner { display: flex; flex-direction: column; gap: var(--space-2); position: relative; }
@@ -84,10 +84,10 @@ useListScene('scheduled-tasks', load)
 .tlist-move { transition: transform 0.3s ease; }
 .card { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); cursor: pointer; }
 .card-head { display: flex; align-items: center; gap: 8px; } h2 { flex: 1; margin: 0; font-size: var(--text-md); color: var(--text-primary); }
-.status { font-size: 11px; padding: 3px 8px; border-radius: 999px; } .status.on { color: var(--success); background: var(--success-bg); } .status.off { color: var(--text-secondary); background: var(--bg-subtle); }
-.description { margin: 7px 0; font-size: 13px; color: var(--text-secondary); }
+.status { font-size: var(--text-2xs); padding: 3px 8px; border-radius: 999px; } .status.on { color: var(--success); background: var(--success-bg); } .status.off { color: var(--text-secondary); background: var(--bg-subtle); }
+.description { margin: 7px 0; font-size: var(--text-smd); color: var(--text-secondary); }
 .meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: var(--text-sm); color: var(--text-primary); margin-top: 7px; } .meta.secondary { color: var(--text-muted); }
 .card-actions { display: flex; gap: 7px; margin-top: 11px; } .card-actions button { flex: 1; font-size: var(--text-sm); } .card-actions .danger { color: var(--danger); }
 .state { padding: 48px 20px; text-align: center; color: var(--text-secondary); } .primary { color: var(--text-inverse); background: var(--brand-gradient); border: 0; }
-.error { margin: var(--space-3); padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); font-size: 13px; } .error button { margin-left: 8px; }
+.error { margin: var(--space-3); padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); font-size: var(--text-smd); } .error button { margin-left: 8px; }
 </style>

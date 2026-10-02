@@ -171,7 +171,7 @@ function isActive(item: NavItem) {
 }
 
 .label {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   line-height: 1;
   letter-spacing: 0.2px;
   max-width: 100%;

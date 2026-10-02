@@ -258,7 +258,7 @@ onMounted(load)
   margin-top: 4px;
 }
 .chip {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 7px;
   border-radius: var(--radius-full, 999px);
   background: var(--bg-subtle);
@@ -273,11 +273,11 @@ onMounted(load)
   flex-wrap: wrap;
 }
 .stat {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
 }
 .stat b {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
 }
 .stat b.ok {
@@ -291,7 +291,7 @@ onMounted(load)
 }
 .reason {
   margin-top: 8px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--warning);
   word-break: break-word;
 }
@@ -303,7 +303,7 @@ onMounted(load)
 .btn-ghost {
   flex: 1;
   padding: 7px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 8px);
@@ -314,7 +314,7 @@ onMounted(load)
 }
 .footnote {
   margin-top: var(--space-3);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   text-align: center;
 }

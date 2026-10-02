@@ -183,7 +183,7 @@ const handleClick = () => {
 }
 
 .email-tag {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 8px;
   border-radius: var(--radius-full);
   font-weight: var(--font-weight-medium);

@@ -252,7 +252,7 @@ onMounted(load)
   margin-top: 4px;
 }
 .chip {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 7px;
   border-radius: var(--radius-full, 999px);
   background: var(--bg-subtle);
@@ -270,11 +270,11 @@ onMounted(load)
   flex-wrap: wrap;
 }
 .count {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
 }
 .count b {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
 }
 .count b.ok {
@@ -304,7 +304,7 @@ onMounted(load)
   background: var(--success);
 }
 .binding-text {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   flex: none;
 }
@@ -335,6 +335,6 @@ onMounted(load)
   border: none;
   padding: 0;
   color: var(--primary, #4c8dff);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 </style>

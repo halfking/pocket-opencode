@@ -482,7 +482,7 @@ function goBack() {
 .status-bar {
   flex: 0 0 auto;
   padding: 10px 16px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   text-align: center;
   font-weight: 500;
   border-bottom: 1px solid var(--border);
@@ -522,7 +522,7 @@ function goBack() {
 }
 
 .form-label {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: var(--text-secondary);
 }
@@ -557,7 +557,7 @@ function goBack() {
   background: var(--bg-subtle);
   padding: 1px 5px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
 }
 
 .form-hint .model-chip {
@@ -659,7 +659,7 @@ function goBack() {
   align-items: center;
   justify-content: space-between;
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: var(--text-primary);
   cursor: pointer;
@@ -688,7 +688,7 @@ function goBack() {
 
 .group-count {
   margin-right: 10px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: 500;
   color: var(--text-secondary);
   background: var(--bg-subtle);

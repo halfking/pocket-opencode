@@ -144,7 +144,7 @@ const handleClick = () => {
   background: var(--color-error);
   color: var(--text-inverse);
   border-radius: var(--radius-full);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: var(--font-weight-bold);
   display: flex;
   align-items: center;

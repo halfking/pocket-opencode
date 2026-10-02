@@ -195,7 +195,7 @@ onMounted(loadByMode)
 .card-top { display: flex; justify-content: space-between; align-items: center; }
 .date { font-size: var(--text-base); font-weight: 600; color: var(--text-primary); }
 .badge {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 8px;
   border-radius: var(--radius-full);
   background: var(--bg-subtle);
@@ -205,7 +205,7 @@ onMounted(loadByMode)
 .total { font-size: var(--text-sm); color: var(--text-muted); margin-top: 2px; }
 .preview {
   margin-top: var(--space-2);
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
   line-height: 1.5;
   display: -webkit-box;
@@ -247,7 +247,7 @@ onMounted(loadByMode)
   background: var(--bg-subtle);
   padding: 1px 4px;
   border-radius: 4px;
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .markdown :deep(strong) { font-weight: 700; color: var(--text-primary); }
 
@@ -257,9 +257,9 @@ onMounted(loadByMode)
   padding: var(--space-3) var(--space-4);
   box-shadow: var(--shadow-sm);
 }
-.todos-title { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: var(--space-2); }
+.todos-title { font-size: var(--text-smd); font-weight: 600; color: var(--text-primary); margin-bottom: var(--space-2); }
 .todo-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-1); }
-.todo-list li { display: flex; gap: var(--space-2); align-items: flex-start; font-size: 13px; color: var(--text-primary); }
+.todo-list li { display: flex; gap: var(--space-2); align-items: flex-start; font-size: var(--text-smd); color: var(--text-primary); }
 .todo-list li .check { color: var(--text-muted); }
 .todo-list li.done .text { text-decoration: line-through; color: var(--text-muted); }
 

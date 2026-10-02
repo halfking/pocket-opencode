@@ -256,7 +256,7 @@ useListScene('pkm-today', loadRecent)
   white-space: nowrap;
 }
 .n-date {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary, #aaa);
 }
 .fab {

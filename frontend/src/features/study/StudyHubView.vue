@@ -531,7 +531,7 @@ async function setDailyDigest(time: string) {
 }
 
 .hero-text {
-  font-size: 13px;
+  font-size: var(--text-smd);
   opacity: 0.9;
 }
 
@@ -583,7 +583,7 @@ async function setDailyDigest(time: string) {
   background: transparent;
   border: none;
   color: var(--brand-primary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   padding: var(--space-1) var(--space-2);
@@ -680,7 +680,7 @@ async function setDailyDigest(time: string) {
 }
 
 .due-label {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   text-align: center;
   line-height: 1.3;
@@ -718,7 +718,7 @@ async function setDailyDigest(time: string) {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-family: var(--font-mono);
   cursor: pointer;
   min-height: 44px;
@@ -815,7 +815,7 @@ async function setDailyDigest(time: string) {
 }
 
 .inbox-meta {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary);
 }
 
@@ -965,7 +965,7 @@ async function setDailyDigest(time: string) {
   align-items: center;
   gap: var(--space-2);
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 
 .empty .primary {
@@ -977,7 +977,7 @@ async function setDailyDigest(time: string) {
   color: var(--text-inverse, #fff);
   border: none;
   border-radius: var(--radius-full);
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: var(--font-weight-semibold);
   cursor: pointer;
 }

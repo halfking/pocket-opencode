@@ -568,7 +568,7 @@ function goBack() {
 }
 .card-head h3 { margin: 0; font-size: var(--text-md); font-weight: 600; }
 .head-actions { display: flex; align-items: center; gap: var(--space-1); flex-shrink: 0; }
-.head-hint { font-size: 11px; color: var(--text-muted); }
+.head-hint { font-size: var(--text-2xs); color: var(--text-muted); }
 
 .primary-btn {
   border: none; border-radius: var(--radius-md);
@@ -603,8 +603,8 @@ function goBack() {
 .rule-block { padding: var(--space-3) 0; border-bottom: 1px solid var(--border-subtle); }
 .rule-block:last-child { border-bottom: none; }
 .rule-block-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2); }
-.rule-acct { font-size: 13px; font-weight: 600; }
-.legacy-hint { margin: 0 0 var(--space-2); font-size: 11px; color: var(--warning); }
+.rule-acct { font-size: var(--text-smd); font-weight: 600; }
+.legacy-hint { margin: 0 0 var(--space-2); font-size: var(--text-2xs); color: var(--warning); }
 .rule-empty { font-size: var(--text-sm); color: var(--text-muted); padding: var(--space-2) 0; }
 .rule-row {
   display: flex; flex-direction: column; gap: var(--space-2);
@@ -613,7 +613,7 @@ function goBack() {
 }
 .rule-select, .rule-pattern, .rule-param, .proc-input {
   padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
-  background: var(--bg-card); color: var(--text-primary); font-size: 13px;
+  background: var(--bg-card); color: var(--text-primary); font-size: var(--text-smd);
 }
 .rule-pattern { width: 100%; box-sizing: border-box; }
 .rule-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
@@ -623,22 +623,22 @@ function goBack() {
 /* 处理逻辑 */
 .proc-block { padding: var(--space-3) 0; border-bottom: 1px solid var(--border-subtle); }
 .proc-block:last-of-type { border-bottom: none; }
-.proc-head { font-size: 13px; font-weight: 600; margin-bottom: var(--space-2); }
+.proc-head { font-size: var(--text-smd); font-weight: 600; margin-bottom: var(--space-2); }
 .proc-row {
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
-  margin-bottom: var(--space-2); font-size: 13px; color: var(--text-secondary);
+  margin-bottom: var(--space-2); font-size: var(--text-smd); color: var(--text-secondary);
 }
 .proc-input { width: 170px; }
 .proc-input.wide { flex: 1; }
 .proc-area {
   flex: 1; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
-  background: var(--bg-card); color: var(--text-primary); font-size: 13px; font-family: inherit;
+  background: var(--bg-card); color: var(--text-primary); font-size: var(--text-smd); font-family: inherit;
   box-sizing: border-box;
 }
 .vacation { margin-top: var(--space-2); padding: var(--space-3); background: var(--bg-subtle); border-radius: var(--radius-md); }
 .vac-head {
   display: flex; align-items: center; justify-content: space-between;
-  font-size: 13px; font-weight: 600; margin-bottom: var(--space-2);
+  font-size: var(--text-smd); font-weight: 600; margin-bottom: var(--space-2);
 }
 .vac-form .proc-row { margin-bottom: var(--space-2); }
 .queue-note {

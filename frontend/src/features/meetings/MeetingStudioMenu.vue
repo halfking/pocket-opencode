@@ -70,7 +70,7 @@ function onPick(id: MeetingStudioAction) {
 .op:disabled { opacity: 0.45; }
 .hdr {
   min-height: 36px; padding: 0 10px; border: none; background: transparent;
-  color: var(--brand-primary); font-weight: 600; font-size: 13px;
+  color: var(--brand-primary); font-weight: 600; font-size: var(--text-smd);
 }
 .hdr.icon { width: 44px; }
 .hdr:disabled { opacity: 0.45; }

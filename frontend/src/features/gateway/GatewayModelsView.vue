@@ -259,12 +259,12 @@ onMounted(load)
 }
 .group-name {
   flex: 1;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   word-break: break-all;
 }
 .group-count {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
 }
 .chevron {
@@ -330,7 +330,7 @@ onMounted(load)
 }
 .footnote {
   margin-top: var(--space-3);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   text-align: center;
 }

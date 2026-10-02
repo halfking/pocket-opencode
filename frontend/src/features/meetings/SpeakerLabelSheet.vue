@@ -101,7 +101,7 @@ function save() {
 
 .sheet-hint {
   margin: 0 0 var(--space-4);
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-muted);
   line-height: 1.5;
 }
@@ -148,7 +148,7 @@ function save() {
 }
 
 .tag {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 8px;
   background: var(--bg-subtle);
   border-radius: var(--radius-full);
@@ -160,7 +160,7 @@ function save() {
   flex-direction: column;
   gap: 6px;
   margin-bottom: var(--space-3);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 
 .field span { color: var(--text-muted); font-size: var(--text-sm); }

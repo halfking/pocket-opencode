@@ -298,7 +298,7 @@ const dueCountHint = computed(() => total.value)
   padding: var(--space-4);
 }
 .head h1 { flex: 1; margin: 0; font-size: var(--text-xl); color: var(--text-primary); }
-.head .progress { font-size: 13px; color: var(--text-secondary); }
+.head .progress { font-size: var(--text-smd); color: var(--text-secondary); }
 .back-btn {
   border: 0;
   background: transparent;
@@ -335,7 +335,7 @@ const dueCountHint = computed(() => total.value)
   cursor: pointer;
 }
 .card-display p { font-size: var(--text-xl); color: var(--text-primary); margin: 0; line-height: 1.4; }
-.card-display small { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: var(--space-2); }
+.card-display small { display: block; font-size: var(--text-2xs); color: var(--text-muted); margin-bottom: var(--space-2); }
 .card-display .back { color: var(--text-primary); }
 
 .review-media {
@@ -363,7 +363,7 @@ const dueCountHint = computed(() => total.value)
   border-radius: var(--radius-sm);
   padding: 10px 0;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
   cursor: pointer;
   display: flex;
@@ -379,7 +379,7 @@ const dueCountHint = computed(() => total.value)
 .rating .material-symbols-outlined { font-size: var(--text-xl); }
 
 .remaining { margin: var(--space-3) var(--space-4) 0; font-size: var(--text-sm); color: var(--text-secondary); }
-.fuzz-note { margin: var(--space-2) var(--space-4) var(--space-5); font-size: 11px; color: var(--text-muted); }
+.fuzz-note { margin: var(--space-2) var(--space-4) var(--space-5); font-size: var(--text-2xs); color: var(--text-muted); }
 .complete {
   margin: var(--space-5) var(--space-4);
   padding: var(--space-5);

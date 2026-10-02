@@ -621,13 +621,13 @@ onUnmounted(() => setHeaderTitle(null))
 .more-menu { position: absolute; right: 8px; top: 8px; z-index: 4; display: flex; flex-direction: column; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); }
 .more-menu button { border: none; background: transparent; text-align: left; padding: 10px 14px; color: var(--text-primary); }
 .search-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 var(--space-3) var(--space-2); }
-.search-input { flex: 1 1 140px; min-height: 36px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 8px; background: var(--bg-card); color: var(--text-primary); font-size: 13px; }
+.search-input { flex: 1 1 140px; min-height: 36px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 8px; background: var(--bg-card); color: var(--text-primary); font-size: var(--text-smd); }
 .search-input.slim { flex: 0 1 110px; }
 .search-ok { min-height: 36px; padding: 0 12px; border: none; border-radius: var(--radius-sm); background: var(--brand-primary); color: var(--text-inverse); }
 .search-ok.ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
 .pick { display: flex; align-items: center; margin-right: 8px; }
 .card-main { flex: 1; min-width: 0; }
-.linkish { border: none; background: none; color: var(--brand-primary); font-size: 11px; }
+.linkish { border: none; background: none; color: var(--brand-primary); font-size: var(--text-2xs); }
 .filters { display: flex; gap: var(--space-2); overflow-x: auto; padding: var(--space-3);
   /* 横向 chip 条隐藏滚动条：与 AIChatView.context-row / NoteListView.context-row 一致，
      真机实测未隐藏时 chip 行下方常驻一条突兀灰条。 */
@@ -649,9 +649,9 @@ onUnmounted(() => setHeaderTitle(null))
 .email-card { display: flex; background: var(--bg-card); border-radius: var(--radius-md); padding: var(--spacing-card-padding); border: 1px solid var(--border); border-left: 3px solid transparent; }
 .email-card.high { border-left-color: var(--danger); }
 .email-card.unread { background: var(--bg-elevated); }
-.row1 { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 2px; }
+.row1 { display: flex; justify-content: space-between; font-size: var(--text-smd); margin-bottom: 2px; }
 .from { font-weight: 600; color: var(--text-primary); }
-.time { color: var(--text-muted); font-size: 11px; }
+.time { color: var(--text-muted); font-size: var(--text-2xs); }
 .subject { font-size: var(--text-base); font-weight: 500; margin-bottom: var(--space-1); }
 .snippet { color: var(--text-secondary); font-size: var(--text-sm); -webkit-line-clamp: 1; -webkit-box-orient: vertical; display: -webkit-box; overflow: hidden; }
 .ai-summary { margin-top: var(--space-1); font-size: var(--text-sm); color: var(--brand-primary); background: var(--bg-subtle); padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); }
@@ -666,9 +666,9 @@ onUnmounted(() => setHeaderTitle(null))
 .cat-notification { background: var(--cat-notification-bg); color: var(--cat-notification); }
 .cat-marketing { background: var(--cat-marketing-bg); color: var(--cat-marketing); }
 .cat-spam { background: var(--cat-spam-bg); color: var(--cat-spam); }
-.importance { font-size: 11px; color: var(--warning); }
-.read-btn { margin-left: auto; font-size: 11px; padding: 2px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-card); color: var(--brand-primary); }
-.sync-hint { margin: 0 var(--space-3) var(--space-2); font-size: 11px; color: var(--text-muted); }
+.importance { font-size: var(--text-2xs); color: var(--warning); }
+.read-btn { margin-left: auto; font-size: var(--text-2xs); padding: 2px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-card); color: var(--brand-primary); }
+.sync-hint { margin: 0 var(--space-3) var(--space-2); font-size: var(--text-2xs); color: var(--text-muted); }
 .more { padding: 16px 0 24px; text-align: center; font-size: var(--text-sm); color: var(--text-muted); }
 .more-loading { display: inline-flex; align-items: center; gap: 6px; }
 .more-spin { font-size: var(--text-md); color: var(--brand-primary); animation: more-spin 900ms linear infinite; }

@@ -271,7 +271,7 @@ input {
 }
 .btn-primary { background: var(--brand-gradient); color: var(--text-inverse); border: none; padding: var(--space-3); border-radius: var(--radius-md); font-weight: var(--font-weight-semibold); cursor: pointer; }
 .btn-bio { background: var(--bg-card); color: var(--brand-primary); border: 1px solid var(--brand-primary); padding: var(--space-3); border-radius: var(--radius-md); font-weight: 600; cursor: pointer; }
-.error { color: var(--danger); font-size: 13px; text-align: center; }
+.error { color: var(--danger); font-size: var(--text-smd); text-align: center; }
 .add-form {
   display: flex; flex-direction: column; gap: var(--space-2);
   margin-bottom: var(--space-3); padding: var(--space-3);
@@ -284,7 +284,7 @@ input {
 .add-form textarea { resize: vertical; min-height: 60px; }
 .sync-status {
   margin-bottom: var(--space-3); padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm); font-size: 13px;
+  border-radius: var(--radius-sm); font-size: var(--text-smd);
 }
 .sync-status.ok { background: var(--success-bg); color: var(--success); }
 .sync-status.err { background: var(--danger-bg); color: var(--danger); }
@@ -292,7 +292,7 @@ input {
 .vault-page { height: 100%; min-height: 0; }
 .vault-unlocked { height: 100%; min-height: 0; display: flex; flex-direction: column; }
 .vault-body { flex: 1; min-height: 0; }
-.btn-ghost { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-primary); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); font-size: 13px; cursor: pointer; }
+.btn-ghost { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-primary); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); font-size: var(--text-smd); cursor: pointer; }
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
 .entry-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .entry-card {

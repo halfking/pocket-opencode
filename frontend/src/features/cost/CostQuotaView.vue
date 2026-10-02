@@ -256,7 +256,7 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 8px);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   padding: var(--space-1) var(--space-2);
   min-height: 44px;
 }
@@ -267,7 +267,7 @@ onUnmounted(() => {
 
 .status-bar {
   padding: var(--space-2) var(--space-3);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .status-err {
   background: color-mix(in srgb, var(--danger) 15%, transparent);
@@ -337,13 +337,13 @@ onUnmounted(() => {
 }
 
 .metric-label {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   margin-top: 2px;
 }
 
 .chip {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 7px;
   border-radius: var(--radius-full, 999px);
   background: var(--bg-subtle);
@@ -362,7 +362,7 @@ onUnmounted(() => {
 }
 
 .footnote {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   text-align: center;
   margin: var(--space-3) 0 0;
@@ -388,7 +388,7 @@ onUnmounted(() => {
   font-family: var(--font-mono);
 }
 .quota-meta-value.small {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   word-break: break-all;
   text-align: right;
   max-width: 60%;
@@ -411,7 +411,7 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
 }
 .budget-kind {
@@ -428,7 +428,7 @@ onUnmounted(() => {
 }
 .budget-period {
   margin-top: 2px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
   font-family: var(--font-mono);
 }

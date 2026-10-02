@@ -250,7 +250,7 @@ function formatLastUpdate(timestamp?: string): string {
 }
 
 .banner-info p {
-  font-size: 13px;
+  font-size: var(--text-smd);
   margin: 0;
   opacity: 0.9;
 }
@@ -388,7 +388,7 @@ function formatLastUpdate(timestamp?: string): string {
 }
 
 .meta-icon {
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 
 .file-changes {

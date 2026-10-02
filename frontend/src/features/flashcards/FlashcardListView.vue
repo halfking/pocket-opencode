@@ -246,7 +246,7 @@ onMounted(async () => {
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .card h2 { margin: 0; font-size: var(--text-md); color: var(--text-primary); }
 .badge {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 3px 9px;
   border-radius: 999px;
   background: var(--brand-primary);

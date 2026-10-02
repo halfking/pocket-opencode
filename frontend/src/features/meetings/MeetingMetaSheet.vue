@@ -113,7 +113,7 @@ function onVisibleChange(v: boolean) {
   flex-direction: column;
   gap: 6px;
   margin-bottom: var(--space-3);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 
 .field span:first-child {

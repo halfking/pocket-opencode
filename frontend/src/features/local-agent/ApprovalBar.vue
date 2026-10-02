@@ -50,7 +50,7 @@ const desc = computed(() => {
 }
 .row { display: flex; gap: var(--space-2); align-items: flex-start; }
 .warn-icon { color: #b07a00; font-size: 20px; }
-.title { margin: 0; font-size: 13px; font-weight: var(--font-weight-semibold); }
+.title { margin: 0; font-size: var(--text-smd); font-weight: var(--font-weight-semibold); }
 .desc {
   margin: 2px 0 0;
   font-size: var(--text-sm);
@@ -61,7 +61,7 @@ const desc = computed(() => {
 .btn {
   border-radius: var(--radius-full);
   padding: 6px 18px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--text-primary);

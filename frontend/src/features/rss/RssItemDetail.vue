@@ -179,7 +179,7 @@ function back() {
 .preview-card img { width: 100%; height: auto; border-radius: 6px; }
 .share-buttons { display: flex; flex-direction: column; gap: 8px; }
 .share-buttons .btn { justify-content: center; }
-.result { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 13px; }
+.result { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: var(--text-smd); }
 .result pre { white-space: pre-wrap; word-break: break-all; padding: 6px; background: var(--bg); border-radius: 4px; }
 .hint { color: var(--text-muted); font-style: italic; margin-top: 4px; }
 </style>

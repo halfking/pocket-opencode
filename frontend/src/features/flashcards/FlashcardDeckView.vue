@@ -207,7 +207,7 @@ onMounted(() => {
   text-align: center;
 }
 .metric-num { display: block; font-size: 22px; font-weight: 600; color: var(--text-primary); }
-.metric-label { font-size: 11px; color: var(--text-secondary); }
+.metric-label { font-size: var(--text-2xs); color: var(--text-secondary); }
 
 .actions { display: flex; gap: var(--space-3); padding: var(--space-4); }
 .actions button {
@@ -268,7 +268,7 @@ onMounted(() => {
 }
 .review:disabled { opacity: 0.5; cursor: not-allowed; }
 .badge {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 3px 9px;
   border-radius: 999px;
   background: var(--brand-primary);

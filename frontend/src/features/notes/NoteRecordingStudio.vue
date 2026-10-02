@@ -70,6 +70,6 @@ const errorText = computed(() => props.error || '')
 .studio-error {
   margin: 0;
   color: var(--danger);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 </style>

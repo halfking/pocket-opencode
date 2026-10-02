@@ -86,8 +86,8 @@ function onMicChange(e: Event) {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
 }
-.slr-label { font-size: 13px; font-weight: 600; color: #ef4444; }
-.slr-time { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--color-text-secondary); }
+.slr-label { font-size: var(--text-smd); font-weight: 600; color: #ef4444; }
+.slr-time { font-variant-numeric: tabular-nums; font-size: var(--text-smd); color: var(--color-text-secondary); }
 .slr-mic, .slr-mic-name {
   flex: 1;
   min-width: 0;
@@ -108,7 +108,7 @@ function onMicChange(e: Event) {
   border-radius: 999px;
   background: #ef4444;
   color: #fff;
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .slr-err { margin: 0 12px 8px; font-size: var(--text-sm); color: #ef4444; }
 .slr-hint { margin: 0 12px 8px; font-size: var(--text-sm); color: var(--color-text-tertiary); }

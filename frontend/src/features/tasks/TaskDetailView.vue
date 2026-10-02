@@ -295,7 +295,7 @@ function formatDate(d?: string): string {
 .status-chip.completed { background: var(--brand-bg); color: var(--brand-primary); }
 
 .desc {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
   margin: 0 0 12px;
   line-height: 1.5;
@@ -320,7 +320,7 @@ function formatDate(d?: string): string {
 }
 .stat-icon { font-size: var(--text-base); }
 .stat-val {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 700;
   color: var(--text-primary);
 }

@@ -1091,11 +1091,11 @@ function formatTime(ts: number): string {
   padding: 10px;
   border-radius: 8px;
   overflow-x: auto;
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .ai-bubble :deep(code) {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .ai-bubble :deep(p) { margin: 6px 0; }
 .ai-bubble :deep(ul), .ai-bubble :deep(ol) { padding-left: 20px; margin: 6px 0; }
@@ -1103,7 +1103,7 @@ function formatTime(ts: number): string {
 @keyframes blink { 50% { opacity: 0; } }
 
 .msg-model {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: 600;
   color: var(--brand-primary);
   margin: 0 4px 4px;
@@ -1138,7 +1138,7 @@ function formatTime(ts: number): string {
   margin: 5px 2px 0;
 }
 .act {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   background: none;
   border: none;
@@ -1171,7 +1171,7 @@ function formatTime(ts: number): string {
   margin-bottom: 5px;
 }
 .cc-model {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: 600;
   color: var(--brand-primary);
   overflow: hidden;
@@ -1191,10 +1191,10 @@ function formatTime(ts: number): string {
 }
 .empty-emoji { font-size: 40px; }
 .empty-title { font-size: 17px; font-weight: 600; margin: 8px 0 4px; color: var(--text-primary); }
-.empty-sub { font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
+.empty-sub { font-size: var(--text-smd); color: var(--text-secondary); line-height: 1.5; }
 .empty-suggestions { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
 .sug {
-  font-size: 13px;
+  font-size: var(--text-smd);
   padding: 10px 14px;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -1390,7 +1390,7 @@ function formatTime(ts: number): string {
   padding: 8px 4px;
   border: none;
   background: transparent;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
   border-bottom: 2px solid transparent;
   cursor: pointer;
@@ -1419,10 +1419,10 @@ function formatTime(ts: number): string {
 .conv-item.active { background: var(--bg-subtle); }
 .conv-main { flex: 1; min-width: 0; }
 .conv-title {
-  font-size: 13px; font-weight: 500; color: var(--text-primary);
+  font-size: var(--text-smd); font-weight: 500; color: var(--text-primary);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.conv-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.conv-meta { font-size: var(--text-2xs); color: var(--text-muted); margin-top: 2px; }
 .conv-act {
   display: flex;
   align-items: center;
@@ -1438,9 +1438,9 @@ function formatTime(ts: number): string {
 .conv-act .material-symbols-outlined { font-size: var(--text-xl); }
 .conv-act:active { color: var(--brand-primary); background: var(--bg-subtle); }
 .conv-act.danger:active { color: var(--danger); }
-.conv-empty { text-align: center; color: var(--text-muted); padding: 30px; font-size: 13px; }
+.conv-empty { text-align: center; color: var(--text-muted); padding: 30px; font-size: var(--text-smd); }
 
-.sheet-state { font-size: 13px; color: var(--text-secondary); padding: 8px 0; line-height: 1.5; }
+.sheet-state { font-size: var(--text-smd); color: var(--text-secondary); padding: 8px 0; line-height: 1.5; }
 .link-btn { color: var(--brand-primary); background: none; border: none; cursor: pointer; margin-left: 6px; }
 
 .model-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; }
@@ -1452,7 +1452,7 @@ function formatTime(ts: number): string {
 .model-item.checked { border-color: var(--brand-primary); background: color-mix(in srgb, var(--brand-primary) 8%, transparent); }
 .model-item.plain { justify-content: flex-start; border: 1px solid var(--border); }
 .model-check { width: 16px; height: 16px; accent-color: var(--brand-primary); }
-.model-name { flex: 1; font-size: 13px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-name { flex: 1; font-size: var(--text-smd); color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-name .star { color: var(--warning, #f59e0b); margin-right: 2px; }
 .model-current { font-size: var(--text-xs); color: var(--brand-primary); }
 .sheet-confirm {
@@ -1463,8 +1463,8 @@ function formatTime(ts: number): string {
 
 /* 设置字段 */
 .field { margin-bottom: 16px; }
-.field-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
-.field-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
+.field-label { font-size: var(--text-smd); font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
+.field-hint { font-size: var(--text-2xs); color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
 .field input[type='range'] { width: 100%; accent-color: var(--brand-primary); }
 .num-input, .sys-input, .sel-input {
   width: 100%; padding: 9px 12px; font-size: var(--text-base);
@@ -1501,7 +1501,7 @@ function formatTime(ts: number): string {
   margin-bottom: 4px;
 }
 .agent-card-desc {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
   line-height: 1.4;
 }
@@ -1540,7 +1540,7 @@ function formatTime(ts: number): string {
   padding: 10px;
   background: transparent;
   border: none;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--brand-primary);
   cursor: pointer;
   text-align: center;

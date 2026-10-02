@@ -434,7 +434,7 @@ onMounted(() => {
 
 .row-meta {
   margin: var(--space-2) 0 0;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary);
   display: flex;
   gap: var(--space-2);
@@ -514,5 +514,5 @@ onMounted(() => {
 .picker ul li:last-child .picker-row { border-bottom: none; }
 .picker-row.active { color: var(--brand-primary); font-weight: var(--font-weight-semibold); }
 
-.empty-tags { color: var(--text-secondary); font-size: 13px; padding: var(--space-3); }
+.empty-tags { color: var(--text-secondary); font-size: var(--text-smd); padding: var(--space-3); }
 </style>

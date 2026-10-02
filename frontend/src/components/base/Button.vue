@@ -77,7 +77,7 @@ const handleClick = (event: MouseEvent) => {
 .button--small {
   height: 28px;                    /* 修改：32px → 28px */
   padding: 0 var(--space-2-5);     /* 修改：space-3 → space-2-5 (10px) */
-  font-size: 13px;                 /* 修改：14px → 13px */
+  font-size: var(--text-smd);                 /* 修改：14px → 13px */
 }
 
 .button--medium {

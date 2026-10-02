@@ -462,7 +462,7 @@ onMounted(() => {
   border: none;
   border-radius: var(--radius-full);
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   min-height: 32px;
@@ -479,7 +479,7 @@ onMounted(() => {
 }
 
 .form { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-3) var(--space-4) 100px; }
-label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+label { display: flex; flex-direction: column; gap: 6px; font-size: var(--text-smd); font-weight: 600; color: var(--text-secondary); }
 input, textarea, select {
   width: 100%;
   box-sizing: border-box;
@@ -491,7 +491,7 @@ input, textarea, select {
   font: inherit;
   font-size: var(--text-base);
 }
-textarea { resize: vertical; font-family: var(--font-mono); font-size: 13px; }
+textarea { resize: vertical; font-family: var(--font-mono); font-size: var(--text-smd); }
 
 .hint {
   display: flex;
@@ -536,7 +536,7 @@ textarea { resize: vertical; font-family: var(--font-mono); font-size: 13px; }
 .actions .primary { background: var(--brand-gradient); border: 0; color: var(--text-inverse); }
 .actions .danger { color: var(--danger); border-color: var(--danger); }
 .actions button:disabled { opacity: 0.5; cursor: not-allowed; }
-.error { margin: 0; padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); font-size: 13px; }
+.error { margin: 0; padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); font-size: var(--text-smd); }
 
 /* Phase 6：媒体挂载 */
 .media-launch {

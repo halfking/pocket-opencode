@@ -316,7 +316,7 @@ onUnmounted(() => {
 .speakers-btn {
   position: fixed; left: var(--space-4); bottom: calc(var(--app-safe-bottom, 12px) + var(--space-4));
   height: 40px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--border);
-  background: var(--bg-card); z-index: var(--z-fab); font-size: 13px;
+  background: var(--bg-card); z-index: var(--z-fab); font-size: var(--text-smd);
 }
 @media (max-width: 720px) {
   .split { grid-template-columns: 1fr; grid-template-rows: minmax(0, 7fr) minmax(140px, 3fr); }

@@ -89,14 +89,14 @@ function typeLabel(type: string): string {
 }
 .insight-head {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 10px 12px; font-size: 13px; font-weight: 600; flex-shrink: 0;
+  padding: 10px 12px; font-size: var(--text-smd); font-weight: 600; flex-shrink: 0;
 }
 .insight-body { flex: 1; overflow-y: auto; padding: 0 12px 12px; }
-.summary { margin: 0 0 10px; font-size: 13px; line-height: 1.6; color: var(--text-primary); }
+.summary { margin: 0 0 10px; font-size: var(--text-smd); line-height: 1.6; color: var(--text-primary); }
 .muted { color: var(--text-muted); font-size: var(--text-sm); }
 ul { margin: 0 0 10px; padding-left: 16px; font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.7; }
 .block { margin-top: 12px; }
-.label { font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
+.label { font-size: var(--text-2xs); color: var(--text-muted); margin-bottom: 6px; }
 .todo, .rec {
   display: flex; justify-content: space-between; gap: 8px; width: 100%;
   padding: 8px 0; border: none; border-bottom: 1px solid var(--border-subtle);
@@ -105,6 +105,6 @@ ul { margin: 0 0 10px; padding-left: 16px; font-size: var(--text-sm); color: var
 .todo-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .todo-actions button {
   border: 1px solid var(--border); border-radius: 999px; background: var(--bg-subtle);
-  font-size: 11px; padding: 2px 8px; color: var(--brand-primary);
+  font-size: var(--text-2xs); padding: 2px 8px; color: var(--brand-primary);
 }
 </style>

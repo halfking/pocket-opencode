@@ -239,7 +239,7 @@ onMounted(() => {
 }
 
 .stats dt {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.4px;
@@ -277,7 +277,7 @@ onMounted(() => {
   margin: 0;
   padding: var(--space-3);
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .message.ok { background: var(--success-bg); color: var(--success); }
 .message.err { background: var(--danger-bg); color: var(--danger); }

@@ -605,7 +605,7 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-full, 999px);
   background: var(--color-bg-surface);
   color: var(--color-text-secondary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   cursor: pointer;
 }
 .uc-chip--on {
@@ -632,7 +632,7 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-full, 999px);
   background: var(--brand-bg);
   color: var(--brand-primary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   cursor: pointer;
 }
 .uc-opt:disabled { opacity: 0.45; cursor: default; }

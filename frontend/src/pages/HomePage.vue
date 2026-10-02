@@ -460,7 +460,7 @@ const handleNavChange = (id: string) => {
 .view-all {
   background: none;
   border: none;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--color-primary);
   cursor: pointer;
 }
@@ -539,7 +539,7 @@ const handleNavChange = (id: string) => {
   background: var(--color-bg-base);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  font-size: 13px;
+  font-size: var(--text-smd);
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-out);
 }
@@ -580,7 +580,7 @@ const handleNavChange = (id: string) => {
 
 .stat-label {
   display: block;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--color-text-tertiary);
 }
 

@@ -67,7 +67,7 @@ defineEmits<{
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;

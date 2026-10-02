@@ -436,7 +436,7 @@ function getActorName(actor: string): string {
 .status-badge {
   padding: 6px 14px;
   border-radius: 20px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
 }
 
@@ -463,7 +463,7 @@ function getActorName(actor: string): string {
 }
 
 .info-item .label {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-muted);
 }
 
@@ -475,7 +475,7 @@ function getActorName(actor: string): string {
 
 .info-item .value.code {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--brand-primary);
 }
 
@@ -563,7 +563,7 @@ function getActorName(actor: string): string {
 
 .refresh-summary-btn {
   padding: 8px 16px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   background: var(--brand-primary);
   color: var(--text-inverse);
   border: none;
@@ -579,7 +579,7 @@ function getActorName(actor: string): string {
 }
 
 .timeline-count {
-  font-size: 13px;
+  font-size: var(--text-smd);
   padding: 4px 10px;
   background: var(--brand-bg);
   color: var(--brand-primary);
@@ -655,7 +655,7 @@ function getActorName(actor: string): string {
 }
 
 .event-actor {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   padding: 2px 8px;
   border-radius: 4px;

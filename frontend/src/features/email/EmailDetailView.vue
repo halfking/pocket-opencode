@@ -698,7 +698,7 @@ watch([lang, bodyText], () => {
 .from-addr { font-size: var(--text-sm); color: var(--text-muted); word-break: break-all; }
 .subline { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-top: 4px; font-size: var(--text-sm); color: var(--text-secondary); }
 .subject { font-size: 20px; font-weight: 650; margin: var(--space-2) 0 0; line-height: 1.35; color: var(--text-primary); }
-.tag { font-size: 11px; padding: 1px 6px; border-radius: var(--radius-sm); }
+.tag { font-size: var(--text-2xs); padding: 1px 6px; border-radius: var(--radius-sm); }
 .cat-work { background: var(--cat-work-bg); color: var(--cat-work); }
 .cat-bill { background: var(--cat-bill-bg); color: var(--cat-bill); }
 .cat-personal { background: var(--cat-personal-bg); color: var(--cat-personal); }
@@ -712,10 +712,10 @@ watch([lang, bodyText], () => {
   background: var(--bg-subtle); border-radius: var(--radius-md);
 }
 .ai-label {
-  display: block; font-size: 11px; color: var(--text-muted);
+  display: block; font-size: var(--text-2xs); color: var(--text-muted);
   margin-bottom: 2px; letter-spacing: .02em;
 }
-.ai-text { margin: 0; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
+.ai-text { margin: 0; font-size: var(--text-smd); line-height: 1.6; color: var(--text-secondary); }
 .summarize-btn {
   padding: 5px 12px; font-size: var(--text-sm); border-radius: 8px; cursor: pointer;
   background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text-primary);
@@ -760,5 +760,5 @@ watch([lang, bodyText], () => {
   border-top: 1px solid var(--border);
   font-size: var(--text-sm); color: var(--text-muted); line-height: 1.5;
 }
-.body-error { color: var(--danger); font-size: 13px; }
+.body-error { color: var(--danger); font-size: var(--text-smd); }
 </style>

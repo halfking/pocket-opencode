@@ -194,7 +194,7 @@ function goAccount() {
 
 .group-title {
   margin: 0 0 var(--space-1) var(--space-1);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: var(--font-weight-semibold);
   text-transform: uppercase;
   letter-spacing: 0.4px;
@@ -259,7 +259,7 @@ function goAccount() {
 .menu-foot {
   margin: 0;
   padding: 0 var(--space-1) var(--space-3);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary, var(--text-muted));
   text-align: center;
 }

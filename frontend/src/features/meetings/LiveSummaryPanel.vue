@@ -144,14 +144,14 @@ function typeIcon(type: string): string {
 }
 
 .summary-text {
-  font-size: 13px;
+  font-size: var(--text-smd);
   line-height: 1.6;
   color: var(--text-primary);
   margin: 0 0 var(--space-3);
 }
 
 .summary-empty {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-muted);
   margin: 0;
 }
@@ -165,7 +165,7 @@ function typeIcon(type: string): string {
 }
 
 .section-label {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: 600;
   color: var(--text-muted);
   text-transform: uppercase;
@@ -190,12 +190,12 @@ function typeIcon(type: string): string {
 
 .due {
   color: var(--brand-primary);
-  font-size: 11px;
+  font-size: var(--text-2xs);
 }
 
 .summary-loading {
   padding: var(--space-4);
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-muted);
   text-align: center;
 }

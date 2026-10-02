@@ -340,7 +340,7 @@ function formatTime(ms: number) {
   padding: 2px 6px;
   background: var(--bg-subtle);
   border-radius: var(--radius-sm);
-  font-size: 11px;
+  font-size: var(--text-2xs);
 }
 .tags { display: inline-flex; gap: var(--space-1); flex-wrap: wrap; }
 .tag-chip {
@@ -348,7 +348,7 @@ function formatTime(ms: number) {
   color: var(--text-secondary);
   padding: 2px 8px;
   border-radius: var(--radius-full);
-  font-size: 11px;
+  font-size: var(--text-2xs);
 }
 
 .markdown-body {
@@ -372,7 +372,7 @@ function formatTime(ms: number) {
   padding: 1px 6px;
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .markdown-body :deep(pre) {
   background: var(--bg-subtle);
@@ -414,7 +414,7 @@ function formatTime(ms: number) {
 .related-card.domain-study { border-left-color: var(--cat-study); }
 .related-card.domain-life { border-left-color: var(--cat-life); }
 .related-card.domain-idea { border-left-color: var(--cat-idea); }
-.related-title { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
+.related-title { font-weight: 600; font-size: var(--text-smd); margin-bottom: 2px; }
 .related-snippet {
   font-size: var(--text-sm);
   color: var(--text-secondary);
@@ -457,7 +457,7 @@ function formatTime(ms: number) {
   border-radius: var(--radius-md);
   background: var(--danger-bg);
   color: var(--danger);
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 500;
   line-height: 1.5;
 }
@@ -473,7 +473,7 @@ function formatTime(ms: number) {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: var(--radius-md); padding: var(--space-3) var(--space-4);
 }
-.summary-text { margin: 0; font-size: 13px; line-height: 1.7; color: var(--text-primary); white-space: pre-wrap; }
+.summary-text { margin: 0; font-size: var(--text-smd); line-height: 1.7; color: var(--text-primary); white-space: pre-wrap; }
 .summary-txs {
   margin-top: var(--space-3); padding-top: var(--space-3);
   border-top: 1px dashed var(--border);

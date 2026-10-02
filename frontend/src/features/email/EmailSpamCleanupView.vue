@@ -258,6 +258,6 @@ onMounted(async () => {
 .failed { margin: 0; padding-left: 1.2rem; color: var(--danger); font-size: var(--text-sm); }
 .preview { display: flex; flex-direction: column; gap: var(--space-2); }
 .row { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-2); }
-.from { font-weight: 600; font-size: 13px; }
+.from { font-weight: 600; font-size: var(--text-smd); }
 .subj { font-size: var(--text-base); }
 </style>

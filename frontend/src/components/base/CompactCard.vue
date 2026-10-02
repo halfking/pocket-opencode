@@ -171,7 +171,7 @@ defineExpose({
 
 .card-time {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--color-text-tertiary);
   white-space: nowrap;
 }
@@ -198,7 +198,7 @@ defineExpose({
 }
 
 .card-preview {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--color-text-secondary);
   line-height: 1.4;
   overflow: hidden;
@@ -214,7 +214,7 @@ defineExpose({
 }
 
 .tag {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 8px;
   background: var(--color-bg-base);
   color: var(--color-text-tertiary);

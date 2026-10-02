@@ -66,7 +66,7 @@ function formatTime(ts: number): string {
   margin-top: 8px;
 }
 .bl-title {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: var(--text-secondary, #666);
   margin: 0 0 8px;
@@ -75,10 +75,10 @@ function formatTime(ts: number): string {
   background: var(--bg-muted, #f0f0f0);
   border-radius: 10px;
   padding: 1px 7px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
 }
 .bl-empty {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary, #999);
   padding: 8px 0;
 }
@@ -111,7 +111,7 @@ function formatTime(ts: number): string {
   white-space: nowrap;
 }
 .bl-date {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary, #aaa);
 }
 </style>
