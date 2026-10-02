@@ -11,6 +11,10 @@ const PKG = 'com.kaixuan.opencode.pocket'
 const PORT = process.env.POCKET_CDP_PORT || '9365'
 const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'
 const PSQL = process.env.POCKET_PSQL || 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'
+// PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
+// 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
 const psql = (sql) => execFileSync(PSQL, ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-c', sql], { encoding: 'utf8' }).trim()
@@ -43,9 +47,9 @@ await ev(`location.hash='#/ai'`)
 await sleep(4000)
 
 console.log('=== PG: active 任务数 ===')
-console.log(psql(`select count(*) from opencode_pocket.tasks where status='active'`))
+console.log(psql(`select count(*) from ${SCHEMA}.tasks where status='active'`))
 console.log('=== PG: 各 workspace 分布 ===')
-console.log(psql(`select workspace_id || ' -> ' || count(*) from opencode_pocket.tasks group by workspace_id`))
+console.log(psql(`select workspace_id || ' -> ' || count(*) from ${SCHEMA}.tasks group by workspace_id`))
 
 const dump = await ev(`(function(){
   var root = document.querySelector('.ai-view') || document.body;
