@@ -31,6 +31,11 @@ coverage/
 # `git add -A` at the root would commit an entire nested repo.
 # 2026-09-30: wt3/ held branch fix/bugz-marketplace-conflict, 4052 files / 247 MB.
 /wt*/
+# 2026-10-02：同一条规则的第二个漏网点。`/wt*/` 匹配不到**点目录**——
+# git worktree add .wt-e2e 建出来的嵌套检出一直挂在 `git status` 的未跟踪里
+# （.wt-e2e/verify/e2e-20261002-v2，就是并发会话在用的那份），而 `git add -A`
+# 会把整个第二份检出（数千文件）扫进暂存区。点开头的 worktree 目录一并兜住。
+.wt-*/
 
 # Local nested worktree probe output
 .gotest-p2.txt
