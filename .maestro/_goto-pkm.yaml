@@ -25,11 +25,17 @@ appId: com.kaixuan.opencode.pocket
 - extendedWaitUntil:
     visible: "主导航"
     timeout: 30000
+# ⚠️ 2026-10-03 真机实测：目标从「更多」改成了「笔记」。
+# 旧写法点底部「更多」、再点宫格里的「PKM笔记」——那是 IA 重组**之前**的入口。
+# 2026-10-03 一级 tab 收敛为 首页 / 笔记 / 消息 / 更多之后：
+#   · 「PKM笔记」已从「更多」宫格移除（MoreHubView 的 items 里没有它了）
+#   · PKM 工作台改由一级 tab「笔记」(/notes) 页里的「打开 PKM」按钮进入
+# 旧流程的实测症状：在 `visible: "PKM笔记"` 上 20s 超时，整条 flow 中止。
 - extendedWaitUntil:
-    visible: "更多"
+    visible: "笔记"
     timeout: 20000
 
-- tapOn: "更多"
+- tapOn: "笔记"
 - waitForAnimationToEnd:
     timeout: 3000
 
@@ -39,18 +45,18 @@ appId: com.kaixuan.opencode.pocket
 #    把可能失败的等待放在最后一条。
 - runFlow:
     when:
-      notVisible: "PKM笔记"
+      notVisible: "打开 PKM"
     commands:
-      - tapOn: "更多"
+      - tapOn: "笔记"
       - waitForAnimationToEnd:
           timeout: 3000
 
 - extendedWaitUntil:
-    visible: "PKM笔记"
+    visible: "打开 PKM"
     timeout: 20000
-- assertVisible: "PKM笔记"
+- assertVisible: "打开 PKM"
 
-- tapOn: "PKM笔记"
+- tapOn: "打开 PKM"
 
 # 守卫判定：本地库没解锁会把会话改写成 #/login?returnTo=/pkm/today&unlock=1
 #

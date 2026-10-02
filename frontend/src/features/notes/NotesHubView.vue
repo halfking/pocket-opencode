@@ -128,7 +128,16 @@
         <EmptyState v-else icon="🔍" :title="t('notesHub.empty.filtered')" size="sm" />
 
         <!-- 全量入口：chips 只切「看哪一类」，要看全部手记 / 全部会议 / PKM 工作台
-             仍然需要一个地方把它们整个摊开。 -->
+             仍然需要一个地方把它们整个摊开。
+
+             ⚠️ 2026-10-03 真机实测挖出的可达性缺陷（IA 重组遗留）：
+             这一整块原来挂在 `v-if="counts.total"` 上，而 PKM 工作台在重组后
+             **只剩这一个入口**（重组前它在底部「更多」的宫格里，是常驻的）。
+             于是新装 / 空库用户 `counts.total === 0` ⇒ 走 EmptyState 分支 ⇒
+             「打开 PKM」根本不渲染 ⇒ **/pkm/today 在界面上不可达**，
+             除非用户先手写出一条笔记。
+             「全部笔记 / 全部会议」是**列表**入口，没数据时不该出现（合理）；
+             但「打开 PKM」是一个**工具入口**，该常驻。故把它拆出来放在 v-if 之外。 -->
         <nav v-if="counts.total" class="see-all" :aria-label="t('notesHub.title')">
           <button type="button" class="see-all-btn" @click="go('/notes/voice')">
             <span class="material-symbols-outlined" aria-hidden="true">mic</span>
@@ -140,6 +149,10 @@
             <span class="see-all-label">{{ t('notesHub.link.allMeetings') }}</span>
             <span class="material-symbols-outlined see-all-chevron" aria-hidden="true">chevron_right</span>
           </button>
+        </nav>
+
+        <!-- 常驻：PKM 工作台入口（不依赖库里有没有数据）。见上方说明。 -->
+        <nav class="see-all see-always" :aria-label="t('notesHub.title')">
           <button type="button" class="see-all-btn" @click="go('/pkm/today')">
             <span class="material-symbols-outlined" aria-hidden="true">sticky_note_2</span>
             <span class="see-all-label">{{ t('notesHub.link.allPkm') }}</span>
