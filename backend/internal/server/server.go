@@ -2395,7 +2395,26 @@ type VersionInfo struct {
 	ReleaseDate string   `json:"releaseDate"`
 }
 
+// ErrVersionConfigNotFound 表示版本配置文件一个候选路径都没命中。
+//
+// 它**曾经不存在**：loadVersionConfig 原来在这里静默回落一份内置默认值
+// （1.2.0 / build 2 / 一个写死的下载 URL），只打一行 Warning 就返回 nil error。
+// 代价不是「App 少报一次更新」，而是**App 拿一个和实际发版毫无关系的版本号
+// 去回答「你是不是最新的」**：配置路径写错 → 回落 1.2.0 → 真实发到 1.5.0
+// 的用户被告知「当前已是最新版本」。错的信息比没有信息更糟。
+//
+// 另一侧的账也要算清：两个启动脚本（start-pocketd-pg.ps1 /
+// start-pocketd-email-verify.ps1）都已显式设 POCKET_VERSION_CONFIG_PATH，
+// 仓库里 backend/config/version.json 也是被 git 跟踪的 —— 也就是说「找不到」
+// 在受支持的部署里本身就是异常，该冒泡而不是被吞掉。
+var ErrVersionConfigNotFound = errors.New("version config not found")
+
 // loadVersionConfig 从配置文件加载版本信息
+//
+// 契约（2026-10-02 起）：**找不到就返回 ErrVersionConfigNotFound**，不再回落
+// 默认值。调用方 handleCheckUpdate 把它翻成 503 + 明确 JSON，App 侧
+// checkUpdate() 对非 2xx 抛错、SettingsView 弹「检查更新失败」——
+// 这个失败是**真的**，且指向可修的原因，比一个自信的假版本号有用得多。
 func (s *Server) loadVersionConfig() (*VersionInfo, error) {
 	configPath := os.Getenv("POCKET_VERSION_CONFIG_PATH")
 	explicit := configPath != ""
@@ -2414,12 +2433,14 @@ func (s *Server) loadVersionConfig() (*VersionInfo, error) {
 	}
 
 	data, err := os.ReadFile(configPath)
+	tried := []string{configPath}
 	if err != nil && !explicit {
 		// CWD 找不到时再试可执行文件目录。部署布局常是 <root>/bin/pocketd 配
 		// <root>/config/version.json：从 <root> 启动能命中 CWD，从 <root>/bin
 		// 启动就落空。显式设了环境变量就不做这个猜测——那是有意的选择。
 		if exe, exeErr := os.Executable(); exeErr == nil {
 			alt := filepath.Join(filepath.Dir(exe), "config", "version.json")
+			tried = append(tried, alt)
 			if altData, altErr := os.ReadFile(alt); altErr == nil {
 				log.Printf("version config not at %s; using %s instead", configPath, alt)
 				data, err = altData, nil
@@ -2427,21 +2448,8 @@ func (s *Server) loadVersionConfig() (*VersionInfo, error) {
 		}
 	}
 	if err != nil {
-		// 如果文件不存在，使用默认配置
-		log.Printf("Warning: version config not found at %s, using defaults: %v", configPath, err)
-		return &VersionInfo{
-			Version:     "1.2.0",
-			BuildNumber: 2,
-			DownloadURL: "http://14.103.169.56:8088/api/app/download",
-			FileSize:    4200000,
-			Changelog: []string{
-				"✨ 全新移动端 UI 设计",
-				"✨ 添加登录系统",
-				"🐛 修复若干已知问题",
-			},
-			ForceUpdate: false,
-			ReleaseDate: time.Now().Format("2006-01-02"),
-		}, nil
+		// 不再回落默认值。逐条列出试过的路径，否则排查者仍只能猜。
+		return nil, fmt.Errorf("%w: tried %s (last error: %v)", ErrVersionConfigNotFound, strings.Join(tried, ", "), err)
 	}
 
 	var versionInfo VersionInfo
@@ -2490,6 +2498,20 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	// 从配置文件加载最新版本信息
 	latestVersion, err := s.loadVersionConfig()
 	if err != nil {
+		if errors.Is(err, ErrVersionConfigNotFound) {
+			// 503 而不是 500：这是**部署配置**没配对，不是服务端内部错误。
+			// 而且必须把试过的路径原样回给客户端——App 侧的报错文案里
+			// 唯一的线索就是它。
+			log.Printf("ERROR: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"error":   "version_config_not_found",
+				"message": "服务端版本配置缺失或路径不对，无法判断是否有更新",
+				"detail":  err.Error(),
+			})
+			return
+		}
 		log.Printf("Error loading version config: %v", err)
 		http.Error(w, "failed to load version info", http.StatusInternalServerError)
 		return
