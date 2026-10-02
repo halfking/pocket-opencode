@@ -291,9 +291,22 @@ async function loadBodyInBackground(found: NonNullable<typeof email.value>) {
     }
 
     // 复用点击预取的在途 Promise（弱网下第二次并发请求正是拖垮首屏的元凶）。
-    const remote = isBodyPrefetching(found.id)
-      ? await prefetchEmailBody(found.id, bodyPrefetchDeps)
-      : extractEmailBody((await emailApi.getEmailBody(found.id)).body)
+    let remote = ''
+    if (isBodyPrefetching(found.id)) {
+      const r = await prefetchEmailBody(found.id, bodyPrefetchDeps)
+      if (r.ok) {
+        // purged 是合法答案（正文被清除了），不该报错。
+        if (!r.purged) remote = r.body
+      } else if (!bodyText.value) {
+        // 预取失败必须**说出来**。直接 `if (remote)` 判空的话，失败会被当成
+        // "这封邮件本来就没有正文"，界面上只剩 snippet 且零提示——而且这条
+        // 静默路径只在"点击时预取恰好在途"时才走到，于是同一个网络故障
+        // 报不报错取决于时序（用户原话：邮件详情缺失内容）。
+        bodyError.value = apiError(r.error, 'errors.loadEmailBodyFailed')
+      }
+    } else {
+      remote = extractEmailBody((await emailApi.getEmailBody(found.id)).body)
+    }
 
     if (remote) {
       bodyText.value = pickEmailDetailBody(cached, remote)

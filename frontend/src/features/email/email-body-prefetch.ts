@@ -22,8 +22,34 @@
  * 本模块只做「读取 + 缓存」，不含任何删除语义。
  */
 
+/**
+ * 预取结果。
+ *
+ * 为什么要显式区分 ok / 失败，而**不是**回落到空串：
+ *
+ * 详情页 `loadBodyInBackground` 复用这条在途 Promise（弱网下第二次并发请求
+ * 正是拖垮首屏的元凶）。原来失败被 `.catch(() => '')` 抹成空串，于是
+ *
+ *   const remote = isBodyPrefetching(id) ? await prefetchEmailBody(id, deps) : …
+ *   if (remote) { …正文替换… }
+ *
+ * 失败时 `remote === ''` → `if` 不成立 → **既不写正文，也不抛错**，catch 也
+ * 进不去 → 详情页只剩 snippet（或空白），**没有任何提示**。
+ *
+ * 而不走预取的那条分支（直接 `emailApi.getEmailBody`）失败是会抛的，catch
+ * 里设了 `bodyError`。于是同一个网络故障，**报不报错取决于点击时预取是否
+ * 恰好在途**——时序相关的静默失败，比稳定报错更难查，也更像"邮件详情随机
+ * 缺内容"（用户原话：邮件的详情展示不正常，缺失图片或内容）。
+ *
+ * purged 单独标出来，是因为"这封正文被清除了"是一个**合法答案**，与失败
+ * 不是一回事：失败要提示，purged 不该报错。
+ */
+export type PrefetchResult =
+  | { ok: true; body: string; purged: boolean }
+  | { ok: false; error: unknown }
+
 /** 单个 id 的在途请求。用于去重，避免同一封邮件被并发拉两次。 */
-const inflight = new Map<string, Promise<string>>()
+const inflight = new Map<string, Promise<PrefetchResult>>()
 
 export interface PrefetchDeps {
   /** 取远端正文（通常是 emailApi.getEmailBody）。 */
@@ -52,27 +78,30 @@ export function inflightBodyCount(): number {
  * 行为：
  *  - 已有缓存 → 直接返回，不再联网。
  *  - 已在途   → 返回同一个 Promise（去重）。
- *  - 拉取失败 → 返回空串并清理在途记录，**不抛错**（预取是加速手段，
- *    失败不应影响列表点击本身）。
+ *  - 拉取失败 → **返回 `{ ok: false }`，不抛错**。预取是加速手段，失败不该
+ *    影响列表点击本身；但失败必须**可区分**，否则详情页会把失败当成"这封邮件
+ *    本来就没有正文"（见 PrefetchResult 的注释）。
  */
-export function prefetchEmailBody(id: string, deps: PrefetchDeps): Promise<string> {
-  if (!id) return Promise.resolve('')
+export function prefetchEmailBody(id: string, deps: PrefetchDeps): Promise<PrefetchResult> {
+  if (!id) return Promise.resolve({ ok: false, error: new Error('邮件 id 为空') })
 
   const existing = inflight.get(id)
   if (existing) return existing
 
-  const task = (async () => {
+  const task = (async (): Promise<PrefetchResult> => {
     // 先看缓存：命中就没必要联网（正文本就在本地）。
     const cached = await deps.readCache(id).catch(() => '')
-    if (cached) return cached
+    if (cached) return { ok: true, body: cached, purged: false }
 
     const remote = await deps.fetchBody(id)
-    if (remote?.purged || remote?.source === 'purged') return ''
+    if (remote?.purged || remote?.source === 'purged') {
+      return { ok: true, body: '', purged: true }
+    }
     const body = deps.extract(remote?.body || '')
     if (body) await deps.writeCache(id, body).catch(() => {})
-    return body
+    return { ok: true, body, purged: false }
   })()
-    .catch(() => '')
+    .catch((error): PrefetchResult => ({ ok: false, error }))
     .finally(() => {
       inflight.delete(id)
     })

@@ -140,7 +140,8 @@ test('点击预取：拉取远端正文并写入缓存', async () => {
   __resetInflightForTest()
   const { calls, deps } = makeDeps()
   const out = await prefetchEmailBody('em-1', deps)
-  assert.equal(out, '<p>body of em-1</p>')
+  assert.equal(out.ok, true)
+  assert.equal(out.body, '<p>body of em-1</p>')
   assert.deepEqual(calls, ['em-1'])
   assert.equal(inflightBodyCount(), 0, '完成后应清理在途记录')
 })
@@ -149,7 +150,8 @@ test('命中本地缓存时完全不联网（真机弱网下的关键快路径�
   __resetInflightForTest()
   const { calls, deps } = makeDeps({ readCache: async () => 'cached body' })
   const out = await prefetchEmailBody('em-2', deps)
-  assert.equal(out, 'cached body')
+  assert.equal(out.ok, true)
+  assert.equal(out.body, 'cached body')
   assert.deepEqual(calls, [], '有缓存就不该发起网络请求')
 })
 
@@ -179,12 +181,12 @@ test('并发调用同一封只发一次请求（真机上两次并发正是拖�
   ])
   assert.equal(calls.length, 1, `同封只应请求一次，实际 ${calls.length}`)
   assert.equal(peak, 1)
-  assert.equal(a, 'B')
-  assert.equal(b, 'B')
-  assert.equal(c, 'B')
+  assert.equal(a.ok && a.body, 'B')
+  assert.equal(b.ok && b.body, 'B')
+  assert.equal(c.ok && c.body, 'B')
 })
 
-test('预取失败不抛错（加速手段失败不该影响点击跳转）', async () => {
+test('预取失败不抛错，但**必须可区分**（加速手段失败不该影响点击跳转）', async () => {
   __resetInflightForTest()
   const { deps } = makeDeps({
     fetchBody: async () => {
@@ -192,8 +194,23 @@ test('预取失败不抛错（加速手段失败不该影响点击跳转）', as
     },
   })
   const out = await prefetchEmailBody('em-4', deps)
-  assert.equal(out, '', '失败应回落到空串而不是抛出')
+  // 意图没变：返回而不是抛出，调用方的 await 不会炸。
+  assert.equal(out.ok, false, '失败必须与「正文为空」区分开，否则详情页会静默显示空正文')
+  assert.match(String(out.error), /network down/, '失败原因要能透出去，界面才说得出为什么')
   assert.equal(isBodyPrefetching('em-4'), false, '失败后必须清理在途，否则该邮件再也预取不了')
+})
+
+test('「正文已被清除」是合法答案，不算失败（purged 不该报错）', async () => {
+  __resetInflightForTest()
+  const { deps } = makeDeps({
+    fetchBody: async () => ({ body: '', purged: true }),
+    writeCache: async () => {
+      throw new Error('不该被调用')
+    },
+  })
+  const out = await prefetchEmailBody('em-purged', deps)
+  assert.equal(out.ok, true, 'purged 是合法结果，不该走失败分支')
+  assert.equal(out.purged, true, '必须能被单独识别：失败要提示，purged 不该报错')
 })
 
 test('预取序列：只处理前 N 封，串行不挤占连接', async () => {
@@ -238,6 +255,8 @@ test('远端标记 purged 时不缓存正文', async () => {
     },
   })
   const out = await prefetchEmailBody('em-5', deps)
-  assert.equal(out, '')
+  assert.equal(out.ok, true)
+  assert.equal(out.body, '')
+  assert.equal(out.purged, true)
   assert.equal(wrote, false, '已清除正文的邮件不应再写缓存')
 })
