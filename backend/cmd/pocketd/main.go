@@ -453,6 +453,17 @@ func main() {
 						log.Printf("ERROR:   凭据是用 POCKET_EMAIL_MASTER_KEY（或 <dataDir>/email_master.key）加密的，"+
 							"当前这把它一把都解不开。请确认这个环境的 key 与写入凭据时用的是同一把；"+
 							"改 key 前不要直接重启，否则所有邮箱都会停止同步。")
+						// 同一把 key 还封着 **LLM 网关的 API key**
+						// （llm_gateway_store.go:198 的 decryptAPIKey 用的是同一个 cipher）。
+						// 不点破的后果很具体：运维看到"邮件解不开"，去修邮件，
+						// 而网关 key 那边只会安静地退回 env、env 没设就是**没有 key**，
+						// 于是"归类/总结/发票提取/语音转写全部不工作"会被当成另一件事
+						// 另开一轮排查。2026-10-02 本机实测：18100 那个实例同时命中
+						// 邮件 0/5 与 `[llm-gateway] decrypt api key: cipher: message
+						// authentication failed`，两边同一个根因。
+						log.Printf("ERROR:   同一把 key 也封着 LLM 网关的 API key。" +
+							"如果启动日志里有 `[llm-gateway] … decrypt api key: cipher: message authentication failed`、"+
+							"或网关显示未配置/调用全失败，**根因就是这一条**，不必另查。")
 					} else if !chk.AllDecryptable() {
 						log.Printf("WARN: %s", chk.Summary())
 					} else {
