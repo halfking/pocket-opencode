@@ -30,8 +30,7 @@
  * 用法：POCKET_SERIAL=... node scripts/probe-route-redirect.mjs
  */
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-
+import { requireDevPass } from './lib/dev-pass.mjs'
 const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
 const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 const PKG = 'com.kaixuan.opencode.pocket'
@@ -94,7 +93,7 @@ if (MASTER) {
     await sleep(4200)
   }
   if (await ev(`!!document.querySelector('input[placeholder*="用户名"]')`)) {
-    const devPass = (readFileSync('backend/internal/server/server_assistant.go', 'utf8').match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || ''
+    const devPass = requireDevPass()
     const fillBy = (sel, val) => `(function(){var el=document.querySelector(${JSON.stringify(sel)});if(!el)return 'NF';var s=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el),'value').set;s.call(el,${JSON.stringify(val)});el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return 'ok'})()`
     await ev(fillBy('input[placeholder*="用户名"]', 'admin'))
     await ev(fillBy('input[type="password"]', devPass)); await sleep(900)

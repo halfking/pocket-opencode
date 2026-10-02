@@ -1,11 +1,15 @@
 <!--
-  MoreHubView — 「更多」tab 聚合页面（2026-09-23 TabBar 4+1 重组 Phase 1）。
+  MoreHubView — 「更多」tab 聚合页面。
 
   设计动机：
-  - iOS HIG / Material 3 推荐 3-5 tab；openpocket 原 6 tab 偏多。
-  - 次要功能（Email / RSS / Vault / Settings ...）不再藏在左滑抽屉（2 跳），
-    而是 1 跳直访的 9 宫格页面。
+  - iOS HIG / Material 3 推荐 3-5 tab；一级目的地必须留给**每天都去**的地方。
+  - 次要功能（Email / Vault / Settings ...）不再藏在左滑抽屉（2 跳），
+    而是 1 跳直访的宫格页面。
   - 「设置与运维」分组与「主功能」分组视觉分割；用户感知层次更清晰。
+
+  2026-10-03 全局 IA 重组：本页在一级导航里的角色从「次要功能的收纳箱」变成
+  「学习 + 长尾工具的收纳箱」。一级 tab 收敛为 首页 / 笔记 / 消息 / 更多 四个，
+  学习（/study）从一级 tab 降级进本页宫格。
 
   路由：`/more`
   进入：BottomNav 4 tab 的「更多」入口。
@@ -28,7 +32,7 @@
     <section class="grid-section">
       <h2 class="grid-title">{{ t('nav.moreFeatures') }}</h2>
       <ul class="grid">
-        <li v-for="item in mainFeatures" :key="item.to">
+        <li v-for="item in reachableMainFeatures" :key="item.to">
           <button class="grid-cell" type="button" @click="go(item.to)">
             <span class="cell-icon" aria-hidden="true">
               <span class="material-symbols-outlined">{{ item.icon }}</span>
@@ -69,12 +73,13 @@
  * 历史：原本这些入口在 SettingsMenuDrawer 中；
  *       2026-09-23 TabBar 4+1 重组 → 迁到本页。
  */
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
-import type { IconName } from '../../constants/icons'
-import { APP_VERSION } from '../../utils/version'
+import { isKeystoreAvailable } from '../../native/keystore'
+import { applyCapabilityGates, type HubItem } from './hubItems.ts'
+import { APP_VERSION, resolveAppVersion } from '../../utils/version'
 
 defineOptions({ name: 'MoreHubView' })
 
@@ -82,16 +87,34 @@ const { t } = useI18n()
 const router = useRouter()
 const auth = useAuthStore()
 const userName = computed(() => auth.user)
-const version = computed(() => APP_VERSION.version)
+const version = ref(APP_VERSION.version)
 
-interface HubItem { to: string; icon: IconName; label: string }
+// HubItem 的定义已收敛到 ./hubItems.ts —— 9 宫格与密码箱门控共用同一份，
+// 免得两处各自声明一份、字段一漂移就静默失配。
 
-/* 主功能（9 宫格）。顺序按用户高频到低频排。 */
+/* 主功能宫格。顺序按用户高频到低频排。
+ *
+ * 2026-10-03 全局 IA 重组后的三处调整：
+ *  1. **学习（/study）进宫格**——它此前独占一个一级 tab，现在降级到这里。
+ *     闪卡用户从「更多 → 学习」进入，路径变长一跳，但换来的是一级 tab 从
+ *     4 个里腾出一个位置给「笔记」和「消息」这两个更高频的目的地。
+ *  2. **RSS（/rss）从宫格移除**——订阅新闻已经并入「消息」tab 的统一时间线，
+ *     在这里再摆一个平行入口会让用户面对两个都能看订阅的地方。
+ *     管理订阅源的完整页面从 MessagesHubView 底部直达，1 跳可达。
+ *  3. **通知中心（/notifications）从运维分组移除**——它是「消息」时间线里
+ *     的一个来源，不再是独立目的地；同一条通知在两处都能进会让"未读"变成
+ *     两套互不同步的账。 */
 const mainFeatures = computed<HubItem[]>(() => [
+  { to: '/study', icon: 'style', label: t('nav.study') },
   { to: '/ai-chat', icon: 'forum', label: t('nav.aiChat') },
-  { to: '/pkm/today', icon: 'sticky_note_2', label: t('nav.pkmNotes') },
+  // 「笔记」「消息」**刻意不在宫格里**：它们已经是底部两个一级 tab。
+  // 在「更多」里再摆一份，等于同一个目的地有两个入口而两者可能不同步
+  // （tab 上有未读角标，宫格那份没有），用户会以为是两个功能。
+  // 会议列表同理下沉到这里：它是会议筛选/归档页，不是笔记流的一部分。
+  { to: '/meetings', icon: 'mic', label: t('nav.meetings') },
   { to: '/email', icon: 'mail', label: t('nav.email') },
-  { to: '/rss', icon: 'rss_feed', label: t('nav.rss') },
+  // 密码箱：受能力门控（见下方 reachableMainFeatures）。留着这行是为了
+  // 插件落地后入口自己回来，不是说它在所有平台都可用——别当成漏删的入口。
   { to: '/vault', icon: 'lock', label: t('nav.vault') },
   // BUG-Q（2026-09-30 可达性全量对账）：这里原来写的是 '/scheduled-tasks'，
   // 而路由表里根本没有这个路径 —— 只有 '/settings/scheduled-tasks'。
@@ -115,10 +138,27 @@ const mainFeatures = computed<HubItem[]>(() => [
   { to: '/flashcards', icon: 'style', label: t('nav.flashcards') },
 ])
 
+/* 能力门控（2026-10-03）：密码箱在 Android 上永远打不开——原生侧没有
+   KeystorePlugin.java，StubKeystore 的 12 个方法全是 reject。把它放在和
+   「对话 / 邮箱」平级的位置上，等于给用户一个必然失败的入口。
+   这里问的是**真实能力**而不是 security.keystore_v1 那个恒 false 的静态开关：
+   插件真落地那天，入口会自己回来，不依赖谁记得改开关。
+   null = 探针还没回来（首帧），按不可用处理：先藏后现，好过先闪一个死入口。 */
+const vaultUsable = ref<boolean | null>(null)
+
+/** 真正渲染的宫格 = 目录里这个平台确实走得通的那些。 */
+const reachableMainFeatures = computed<HubItem[]>(() =>
+  applyCapabilityGates(mainFeatures.value, { '/vault': vaultUsable.value })
+)
+
+onMounted(async () => {
+  version.value = (await resolveAppVersion()).version
+  vaultUsable.value = await isKeystoreAvailable()
+})
+
 /* 设置与运维分组（横排列表项，每项带 chevron）。 */
 const opsFeatures = computed<HubItem[]>(() => [
   { to: '/settings', icon: 'settings', label: t('routes.settings') },
-  { to: '/notifications', icon: 'notifications', label: t('routes.notifications') || '通知中心' },
   { to: '/instances', icon: 'memory', label: t('routes.instances') },
   { to: '/sessions', icon: 'forum', label: t('routes.sessions') },
   { to: '/tasks', icon: 'checklist', label: t('routes.tasks') },

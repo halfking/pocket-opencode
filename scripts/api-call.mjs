@@ -13,8 +13,7 @@
  *   node scripts/api-call.mjs GET  /api/flashcards "" --noauth
  */
 import http from 'node:http'
-import { readFileSync } from 'node:fs'
-
+import { requireDevPass } from './lib/dev-pass.mjs'
 const HOST = process.env.POCKET_API_HOST || '127.0.0.1'
 const PORT = Number(process.env.POCKET_API_PORT || 8088)
 
@@ -42,8 +41,7 @@ function req(p, token, m = 'GET', b = '') {
 
 let token = ''
 if (!noauth) {
-  const devPass =
-    (readFileSync('backend/internal/server/server_assistant.go', 'utf8').match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || ''
+  const devPass = requireDevPass()
   const login = await req('/api/auth/login', '', 'POST', JSON.stringify({ username: 'admin', password: devPass }))
   try {
     token = JSON.parse(login.body).token || ''

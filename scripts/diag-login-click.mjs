@@ -9,8 +9,7 @@
  * 用法：POCKET_SERIAL=... POCKET_MASTER=... node scripts/diag-login-click.mjs
  */
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-
+import { requireDevPass } from './lib/dev-pass.mjs'
 const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
 const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 const PKG = 'com.kaixuan.opencode.pocket'
@@ -51,7 +50,7 @@ await send('Runtime.enable')
 await send('Network.enable')
 const ev = async (x) => (await send('Runtime.evaluate', { expression: x, returnByValue: true }))?.result?.value
 
-const devPass = (readFileSync('backend/internal/server/server_assistant.go', 'utf8').match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || ''
+const devPass = requireDevPass()
 console.log('devPass 长度 =', devPass.length, '(>0 才继续；不回显内容)')
 
 await ev(`(function(){try{localStorage.removeItem('pocket_token')}catch(e){};return 1})()`)

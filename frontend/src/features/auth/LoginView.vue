@@ -181,7 +181,14 @@
            拦截 (实测在 production build + WebView 126 上不加 .stop
            时该 click 被静默吞掉)。-->
       <div class="version-info">
-        <p>v1.2.0-mobile</p>
+        <!--
+          2026-10-03：原来这里是模板里的**裸字面量** v1.2.0-mobile。
+          它比 APP_VERSION 常量还糟 —— 连变量都不是，改版本号只能靠全文搜字符串，
+          很容易漏（事实上就漏了很多轮：设置页 / 更新弹窗 / 侧边抽屉都改过了，
+          唯独这行没人动）。而登录页恰恰是用户**第一眼**看到版本号的地方。
+          改读 resolveAppVersion()，与其它三处同源。
+        -->
+        <p>{{ appVersion }}</p>
         <button
           type="button"
           class="api-base-link"
@@ -226,10 +233,19 @@ import MasterPasswordDialog from './MasterPasswordDialog.vue'
 import { useCryptoConfig } from '../../stores/crypto-config'
 import { sendCode, codeLogin, fetchSsoLoginUrl, fetchSsoStatus } from '../../api/auth'
 import { displayApiBase } from '../../config/api-base'
+import { resolveAppVersion } from '../../utils/version'
 
 const router = useRouter()
 const auth = useAuthStore()
 const backendDisplay = displayApiBase()
+
+// 登录页底部的版本号（2026-10-03 从模板裸字面量 v1.2.0-mobile 改来）。
+// 初值用常量保证首帧就有内容，onMounted 后被原生真实版本替换。
+const appVersion = ref('')
+
+onMounted(async () => {
+  appVersion.value = (await resolveAppVersion()).version
+})
 
 const username = ref('admin')
 const password = ref('')

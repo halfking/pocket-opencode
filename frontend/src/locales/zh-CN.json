@@ -18,7 +18,8 @@
     "error": "操作失败",
     "warning": "警告",
     "info": "提示",
-    "close": "关闭"
+    "close": "关闭",
+    "retry": "重试"
   },
   "app": {
     "title": "Redclaw",
@@ -60,7 +61,8 @@
     "localAgent": "本地智能体",
     "home": "首页",
     "study": "学习",
-    "flashcards": "闪卡"
+    "flashcards": "闪卡",
+    "messages": "消息"
   },
   "routes": {
     "login": "登录",
@@ -154,6 +156,7 @@
     "version": "版本号",
     "versionFormat": "v{version} (Build {buildNumber})",
     "buildDate": "构建日期",
+    "buildDateNote": "（配置值，非实测构建时间）",
     "apiAddress": "API 地址",
     "privacy": "隐私",
     "permissionsPrivacy": "权限与隐私",
@@ -173,6 +176,7 @@
     "newVersionAvailable": "发现新版本 v{version}！\n\n更新内容:\n{changelog}",
     "alreadyLatest": "当前已是最新版本！",
     "checkUpdateFailed": "检查更新失败，请稍后重试",
+    "versionConfigUnavailable": "服务端版本配置不可用，无法判断是否有新版本。请管理员检查 config/version.json。{detail}",
     "redclawIntegration": "RedClaw 集成",
     "redclawConnected": "已连接",
     "redclawMisconfigured": "已配置 · 连接异常",
@@ -369,6 +373,14 @@
       "title": "收件箱",
       "empty": "收件箱已清空",
       "advance": "推进处理"
+    },
+    "source": {
+      "note": "笔记",
+      "email": "邮件",
+      "rss": "RSS",
+      "meeting": "会议",
+      "chat": "对话",
+      "manual": "手工"
     }
   },
   "email": {
@@ -438,12 +450,71 @@
     "empty": "还没有收集材料。在笔记、邮件或 RSS 里选择「加入学习」即可。",
     "advance": "开始学习"
   },
-  "source": {
-    "note": "笔记",
-    "email": "邮件",
-    "rss": "RSS",
-    "meeting": "会议",
-    "chat": "对话",
-    "manual": "手工"
+  "notesHub": {
+    "title": "笔记",
+    "filter": {
+      "all": "全部",
+      "manual": "手记",
+      "meeting": "会议纪要",
+      "pkm": "PKM 笔记"
+    },
+    "action": {
+      "newNote": "新建笔记",
+      "startMeeting": "开始会议",
+      "record": "录音记一笔"
+    },
+    "link": {
+      "allNotes": "全部笔记",
+      "allMeetings": "全部会议",
+      "allPkm": "打开 PKM"
+    },
+    "empty": {
+      "title": "还没有笔记",
+      "hint": "点右下角录音记下第一条，或开始一次会议",
+      "filtered": "这个来源还没有内容"
+    },
+    "meta": {
+      "voice": "语音",
+      "pending": "处理中",
+      "minutes": "{count} 分钟",
+      "hoursMinutes": "{hours} 小时 {minutes} 分钟"
+    },
+    "count": {
+      "notes": "{count} 条笔记",
+      "meetings": "{count} 场会议"
+    }
+  },
+  "messagesHub": {
+    "title": "消息",
+    "filter": {
+      "all": "全部",
+      "email": "邮件",
+      "rss": "订阅",
+      "task": "任务"
+    },
+    "action": {
+      "markAllRead": "全部已读",
+      "openMail": "打开邮箱",
+      "manageFeeds": "管理订阅"
+    },
+    "empty": {
+      "title": "没有新消息",
+      "hint": "重要邮件、订阅新闻和任务消息会汇总到这里"
+    },
+    "badge": {
+      "important": "重要"
+    },
+    "meta": {
+      "from": "来自 {name}",
+      "suggestedAction": "建议：{action}"
+    },
+    "unreadBadge": "{count} 未读",
+    "partialFailure": "部分来源未能加载：{sources}"
+  },
+  "timefmt": {
+    "justNow": "刚刚",
+    "minutesAgo": "{count} 分钟前",
+    "hoursAgo": "{count} 小时前",
+    "daysAgo": "{count} 天前"
   }
 }

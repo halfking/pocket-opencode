@@ -18,7 +18,8 @@
     "error": "오류",
     "warning": "경고",
     "info": "정보",
-    "close": "닫기"
+    "close": "닫기",
+    "retry": "다시 시도"
   },
   "app": {
     "title": "Redclaw",
@@ -60,7 +61,8 @@
     "localAgent": "로컬 에이전트",
     "home": "Home",
     "study": "Study",
-    "flashcards": "플래시카드"
+    "flashcards": "플래시카드",
+    "messages": "메시지"
   },
   "routes": {
     "login": "로그인",
@@ -154,6 +156,7 @@
     "version": "Version",
     "versionFormat": "v{version} (Build {buildNumber})",
     "buildDate": "Build Date",
+    "buildDateNote": "(설정값, 실측 빌드 시각이 아님)",
     "apiAddress": "API Address",
     "privacy": "Privacy",
     "permissionsPrivacy": "권한 및 개인정보",
@@ -173,6 +176,7 @@
     "newVersionAvailable": "New version v{version} available!\n\nChangelog:\n{changelog}",
     "alreadyLatest": "Already on the latest version!",
     "checkUpdateFailed": "Failed to check for updates, please try again later",
+    "versionConfigUnavailable": "서버 버전 설정을 사용할 수 없어 업데이트를 확인할 수 없습니다. 관리자에게 config/version.json 확인을 요청하세요. {detail}",
     "redclawIntegration": "RedClaw 연동",
     "redclawConnected": "연결됨",
     "redclawMisconfigured": "설정됨 · 연결 오류",
@@ -369,6 +373,14 @@
       "title": "수신함",
       "empty": "수신함이 비어 있습니다",
       "advance": "진행하기"
+    },
+    "source": {
+      "note": "노트",
+      "email": "메일",
+      "rss": "RSS",
+      "meeting": "회의",
+      "chat": "채팅",
+      "manual": "수동"
     }
   },
   "email": {
@@ -438,12 +450,71 @@
     "empty": "아직 수집한 자료가 없습니다. 노트·메일·RSS에서 \"학습에 추가\"를 사용하세요.",
     "advance": "학습 시작"
   },
-  "source": {
-    "note": "노트",
-    "email": "메일",
-    "rss": "RSS",
-    "meeting": "회의",
-    "chat": "채팅",
-    "manual": "수동"
+  "notesHub": {
+    "title": "노트",
+    "filter": {
+      "all": "전체",
+      "manual": "메모",
+      "meeting": "회의록",
+      "pkm": "PKM 노트"
+    },
+    "action": {
+      "newNote": "새 노트",
+      "startMeeting": "회의 시작",
+      "record": "녹음으로 기록"
+    },
+    "link": {
+      "allNotes": "전체 노트",
+      "allMeetings": "전체 회의",
+      "allPkm": "PKM 열기"
+    },
+    "empty": {
+      "title": "아직 노트가 없습니다",
+      "hint": "오른쪽 아래 마이크로 첫 노트를 기록하거나 회의를 시작하세요",
+      "filtered": "이 소스에는 아직 내용이 없습니다"
+    },
+    "meta": {
+      "voice": "음성",
+      "pending": "처리 중",
+      "minutes": "{count}분",
+      "hoursMinutes": "{hours}시간 {minutes}분"
+    },
+    "count": {
+      "notes": "노트 {count}개",
+      "meetings": "회의 {count}개"
+    }
+  },
+  "messagesHub": {
+    "title": "메시지",
+    "filter": {
+      "all": "전체",
+      "email": "이메일",
+      "rss": "구독",
+      "task": "작업"
+    },
+    "action": {
+      "markAllRead": "모두 읽음 처리",
+      "openMail": "메일 열기",
+      "manageFeeds": "구독 관리"
+    },
+    "empty": {
+      "title": "새 메시지가 없습니다",
+      "hint": "중요 메일, 구독 뉴스, 작업 메시지가 여기에 모입니다"
+    },
+    "badge": {
+      "important": "중요"
+    },
+    "meta": {
+      "from": "{name} 발신",
+      "suggestedAction": "추천: {action}"
+    },
+    "unreadBadge": "읽지 않음 {count}",
+    "partialFailure": "일부 소스 불러오기 실패: {sources}"
+  },
+  "timefmt": {
+    "justNow": "방금",
+    "minutesAgo": "{count}분 전",
+    "hoursAgo": "{count}시간 전",
+    "daysAgo": "{count}일 전"
   }
 }

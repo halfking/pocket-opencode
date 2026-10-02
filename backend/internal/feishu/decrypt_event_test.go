@@ -231,3 +231,90 @@ func TestHandler_EncryptedEventWithoutKeyIsRejected(t *testing.T) {
 		t.Fatalf("encrypted event without key must be 401, got %d", rec.Code)
 	}
 }
+
+// TestHandler_ProductionRejectsUnsignedWhenKeysEmpty 2026-10-03 安全回归。
+//
+// 修复前：signatureKey 为空时只打一行 WARNING 就放行，攻击者构造一条未签名的
+// im.message.receive_v1 就能把内容广播进所有已连接客户端的实时通道（端到端实测）。
+// 修复后：production 一律 503 拒绝，与企业微信侧 config.go:72-73 的自述策略一致。
+func TestHandler_ProductionRejectsUnsignedWhenKeysEmpty(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"schema": "2.0",
+		"header": map[string]any{"event_id": "e-unsigned", "event_type": "im.message.receive_v1"},
+		"event": map[string]any{
+			"type":    "im.message.receive_v1",
+			"app_id":  "cli_evil",
+			"message": map[string]any{"message_id": "om_evil", "chat_id": "oc_evil", "msg_type": "text", "content": "{\"text\":\"INJECTED\"}"},
+			"sender":  map[string]any{"sender_id": map[string]any{"open_id": "ou_evil"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	broadcasts := 0
+	h := PublicEntry(config.Config{Environment: "production"}, func(string, interface{}) {
+		broadcasts++
+	})
+	// 刻意不带任何 X-Lark-* 头：这就是攻击者能发出的请求
+	req := httptest.NewRequest(http.MethodPost, "/callback/feishu", strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("production + 无密钥 + 未签名事件应 503，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+	// 关键：不只看状态码。"返回 503 但事件已经广播出去"这种改动骗得过上面的断言
+	if broadcasts != 0 {
+		t.Fatalf("未验签事件在拒绝之后仍被广播了 %d 次——封堵必须在 dispatch 之前", broadcasts)
+	}
+}
+
+// TestHandler_DevStillSkipsWhenKeysEmpty 负控：守卫是**按环境**生效的。
+// 把守卫写成无条件的实现会让本条转红，从而证明上一条不是因为"总是拒绝"而绿。
+func TestHandler_DevStillSkipsWhenKeysEmpty(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"schema": "2.0",
+		"header": map[string]any{"event_id": "e-dev"},
+		"event":  map[string]any{"type": "im.message.receive_v1", "app_id": "cli_dev"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	broadcasts := 0
+	h := PublicEntry(config.Config{Environment: "development"}, func(string, interface{}) {
+		broadcasts++
+	})
+	req := httptest.NewRequest(http.MethodPost, "/callback/feishu", strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("development + 无密钥 + 未签名事件应保持 200（dev 流程不受影响），实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+	if broadcasts == 0 {
+		t.Fatal("development 下应仍然派发——若这里也 0，说明守卫被写成了无条件的")
+	}
+}
+
+// TestHandler_ProductionRejectsUnsignedProdAlias 同一条守卫对 legacy 别名
+// "prod" 也要生效：IsProduction() 接受两种写法，只测 "production" 会漏掉一半。
+func TestHandler_ProductionRejectsUnsignedProdAlias(t *testing.T) {
+	body, _ := json.Marshal(map[string]any{
+		"schema": "2.0",
+		"header": map[string]any{"event_id": "e-prod-alias"},
+		"event":  map[string]any{"type": "im.message.receive_v1"},
+	})
+	broadcasts := 0
+	h := PublicEntry(config.Config{Environment: "prod"}, func(string, interface{}) { broadcasts++ })
+	req := httptest.NewRequest(http.MethodPost, "/callback/feishu", strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Environment=\"prod\" 同样应 503，实际 %d", rec.Code)
+	}
+	if broadcasts != 0 {
+		t.Fatalf("prod 别名下未验签事件仍被广播 %d 次", broadcasts)
+	}
+}

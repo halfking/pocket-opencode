@@ -11,11 +11,12 @@
 #   real incident:
 #
 #   1. .env is parsed WITHOUT eval/source. POCKET_AUTH_PASS legitimately
-#      contains '&' (the dev admin password does). `set -a; . ./.env` runs
-#      `POCKET_AUTH_PASS=Veritrans&9527` as two commands: the variable is set to
-#      "Veritrans" and "9527" is executed. The backend then starts perfectly,
-#      /healthz answers 200, and login fails with "wrong password" - which is
-#      indistinguishable from a broken auth path. Measured on 2026-10-03.
+#      contains '&' (the dev admin password does). `set -a; . ./.env` runs an
+#      unquoted `POCKET_AUTH_PASS=<value-with-&>` as two commands: the variable
+#      is set to the part before the '&' and the rest is executed. The backend
+#      then starts perfectly, /healthz answers 200, and login fails with
+#      "wrong password" - which is indistinguishable from a broken auth path.
+#      Measured on 2026-10-03.
 #   2. Double-bind is refused and the port is waited until actually released.
 #      A second pocketd on one port means the App may talk to the stale one.
 #   3. "healthz answered" is not "the process I started is the one answering".
@@ -78,9 +79,20 @@ fi
 log "loaded env from $ENV_FILE"
 
 # Fail loudly on the exact mistake this file exists to prevent.
-if [ "${POCKET_AUTH_PASS:-}" = "Veritrans" ]; then
-  err "POCKET_AUTH_PASS looks TRUNCATED at the '&' - 'Veritrans&9527' must be"
-  err "quoted in .env as:  POCKET_AUTH_PASS='Veritrans&9527'"
+#
+# The check is on the **.env text**, not on a value: a bare `&` in an unquoted
+# assignment is the whole bug class, whatever the password happens to be.
+# The first version compared the loaded value against one hard-coded literal
+# and printed that literal in the error message — which (a) puts a real
+# credential into the repository, where TestNoCommittedSecrets correctly
+# fails on it, and (b) only ever protected that one password. Matching the
+# shape protects every password, including ones nobody has seen yet.
+if grep -Eq '^[[:space:]]*(export[[:space:]]+)?POCKET_AUTH_PASS=[^'"'"'"]*&' "$ENV_FILE"; then
+  err "POCKET_AUTH_PASS in $ENV_FILE contains '&' but is NOT quoted."
+  err "  Any shell that sources this file treats the '&' as a command separator,"
+  err "  silently keeping only the part before it. The backend would then start"
+  err "  fine and every login would fail with 'wrong password'."
+  err "  Fix: quote the whole value ->  POCKET_AUTH_PASS='<value containing &>'"
   exit 1
 fi
 if [ -z "${POCKET_AUTH_PASS:-}" ] && [ "${POCKET_DEV_AUTH:-}" = "true" ]; then

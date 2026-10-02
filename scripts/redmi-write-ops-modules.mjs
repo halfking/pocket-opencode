@@ -9,8 +9,7 @@
 //   $env:POCKET_MASTER='<本地库主密码>'
 //   node scripts/redmi-write-ops-modules.mjs
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-
+import { requireDevPass } from './lib/dev-pass.mjs'
 const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
 const SERIAL = process.env.POCKET_SERIAL || '4c308e2e'
 const PKG = 'com.kaixuan.opencode.pocket'
@@ -128,7 +127,7 @@ if (MASTER && await ev(`!!document.querySelector('input[placeholder*="主密码"
   await sleep(4000)
 }
 if (await ev(`!!document.querySelector('input[placeholder*="用户名"]')`)) {
-  const pass = (readFileSync('backend/internal/server/server_assistant.go', 'utf8').match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || ''
+  const pass = requireDevPass()
   await ev(fill('input[placeholder*="用户名"]', 'admin'))
   await ev(fill('input[type="password"]', pass)); await sleep(800)
   console.log('  login ->', await ev(click('登录', { exact: true })))

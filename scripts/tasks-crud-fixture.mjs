@@ -20,6 +20,10 @@ const PSQL = 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'
 const DRY = process.argv.includes('--dry')
 
 const q = (sql) => {
+// PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
+// 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
   const out = execFileSync(PSQL, ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-c', sql], {
     encoding: 'utf8', timeout: 60000, maxBuffer: 33554432,
   })
@@ -29,7 +33,7 @@ const q = (sql) => {
 // 前缀匹配而不是全等：flow 里将来可能给标题加后缀做区分。
 const MATCH = `title LIKE 'Maestro%'`
 
-const before = q(`SELECT count(*) FROM opencode_pocket.tasks WHERE ${MATCH}`)
+const before = q(`SELECT count(*) FROM ${SCHEMA}.tasks WHERE ${MATCH}`)
 console.log(`before [tasks matching ${MATCH}] = ${before}`)
 
 if (DRY) {
@@ -37,8 +41,8 @@ if (DRY) {
   process.exit(0)
 }
 
-const deleted = q(`WITH d AS (DELETE FROM opencode_pocket.tasks WHERE ${MATCH} RETURNING 1) SELECT count(*) FROM d`)
-const after = q(`SELECT count(*) FROM opencode_pocket.tasks WHERE ${MATCH}`)
+const deleted = q(`WITH d AS (DELETE FROM ${SCHEMA}.tasks WHERE ${MATCH} RETURNING 1) SELECT count(*) FROM d`)
+const after = q(`SELECT count(*) FROM ${SCHEMA}.tasks WHERE ${MATCH}`)
 console.log(`deleted = ${deleted}`)
 console.log(`after  [tasks matching ${MATCH}] = ${after}`)
 

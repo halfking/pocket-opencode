@@ -35,7 +35,7 @@
  * 用法：POCKET_SERIAL=... POCKET_MASTER=... node scripts/verify-finance-writepath.mjs
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { requireDevPass } from './lib/dev-pass.mjs'
 import http from 'node:http';
 
 const SABOTAGE = (process.argv.find((a) => a.startsWith('--sabotage=')) || '').split('=')[1] || '';
@@ -46,6 +46,12 @@ const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555';
 const PKG = 'com.kaixuan.opencode.pocket';
 const PORT = process.env.POCKET_CDP_PORT || '9262';
 const MASTER = process.env.POCKET_MASTER || '';
+// PG schema：这个脚本的判据靠**直接查库**对照 UI 写入，所以 schema 必须和被测后端一致。
+// 写死 `opencode_pocket` 意味着它只能对着共享库跑 —— 那正是 BUG-V14 里
+// 「失败会把 seed 留在别人的库里」的根源。改成跟随后端配置（config.go 的
+// POCKET_PG_SCHEMA，默认值相同），指向隔离后端时本脚本的断言才成立。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
 
 function resolvePsql() {
   const cands = [process.env.POCKET_PSQL, 'logs/pg/dist2/pgsql/bin/psql.exe', 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'].filter(Boolean);
@@ -58,10 +64,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: t, maxBuffer: 33554432 });
 // 兜底串必须纯 ASCII：中文经系统 ANSI 码页传给 psql 会报 invalid byte sequence
 const psql = (sql) => execFileSync(PSQL, ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-c', sql], { encoding: 'utf8' }).trim();
-const txCount = () => Number(psql('select count(*) from opencode_pocket.finance_transactions;').match(/-?\d+/)?.[0] ?? NaN);
+const txCount = () => Number(psql(`select count(*) from ${SCHEMA}.finance_transactions;`).match(/-?\d+/)?.[0] ?? NaN);
 // 最新一行：id|type|amount|category|source|note
 const newestTx = () => {
-  const row = psql("select id||'|'||type||'|'||amount||'|'||category||'|'||source||'|'||coalesce(note,'') from opencode_pocket.finance_transactions order by created_at desc, id desc limit 1;");
+  const row = psql(`select id||'|'||type||'|'||amount||'|'||category||'|'||source||'|'||coalesce(note,'') from ${SCHEMA}.finance_transactions order by created_at desc, id desc limit 1;`);
   if (!row || row.startsWith('(')) return null;
   const [id, type, amount, category, source, note] = row.split('|');
   return { id, type, amount, category, source, note };
@@ -74,7 +80,7 @@ function api(path, { token, method = 'GET', body } = {}) {
     const h = {};
     if (token) h.Authorization = 'Bearer ' + token;
     if (payload) { h['Content-Type'] = 'application/json'; h['Content-Length'] = Buffer.byteLength(payload); }
-    const r = http.request({ host: '127.0.0.1', port: 8088, path, method, headers: h }, (resp) => {
+    const r = http.request({ host: '127.0.0.1', port: Number(process.env.POCKET_API_PORT || 8088), path, method, headers: h }, (resp) => {
       let s = ''; resp.on('data', (c) => (s += c)); resp.on('end', () => res({ status: resp.statusCode, body: s }));
     });
     r.on('error', (e) => res({ status: 'ERR', body: e.message }));
@@ -82,7 +88,7 @@ function api(path, { token, method = 'GET', body } = {}) {
     r.end();
   });
 }
-const devPass = (readFileSync('backend/internal/server/server_assistant.go', 'utf8').match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || '';
+const devPass = requireDevPass()
 
 // ---------- CDP ----------
 const pid = adb(['-s', SERIAL, 'shell', `pidof ${PKG}`]).trim().split(/\s+/)[0];
@@ -184,6 +190,37 @@ check('API 播种成功（2xx，拿到 id）', seed.status >= 200 && seed.status
 const afterSeed = txCount();
 check('播种后 PG 行数 +1（证明 API 写路径真的落库）', afterSeed === before + 1, `${before} -> ${afterSeed}`);
 
+// ---------- 失败路径也必须删掉 SEED ----------
+//
+// ⚠️ 2026-10-03 补：原先 DELETE 只写在脚本**末尾**，中间任何抛错都会把这一行
+// 留在**共享**开发库里。而那些行会被另一会话当成真实数据卷进它的基线 ——
+// 后果比「自己测试脏了」更糟，是**污染别人的运行**。
+// 与 BUG-V10（verify-https-prod.mjs 失败路径不还原覆盖值）同一类。
+// ⇒ 幂等清理函数 + 挂在 unhandledRejection / uncaughtException 上。
+//    process.on('exit') 不能 await，所以用前两个。
+let cleaned = false;
+async function cleanupSeed(reason) {
+  if (!seedId || cleaned) return;
+  cleaned = true;
+  try {
+    const cl = await api(`/api/finance/${seedId}`, { token, method: 'DELETE' });
+    console.log(`\n[cleanup:${reason}] 删除 SEED ${seedId} -> ${cl.status}，PG 终值 = ${txCount()}`);
+  } catch (e) {
+    console.error(`\n[cleanup:${reason}] 删除 SEED ${seedId} 失败：${String(e?.message || e).slice(0, 120)}`);
+    console.error(`   ⚠️ 这一行可能留在 ${SCHEMA} 里，需要手工清理：DELETE FROM ${SCHEMA}.finance_transactions WHERE id='${seedId}'`);
+  }
+}
+process.on('unhandledRejection', async (e) => {
+  console.error('\n[未处理的 rejection]', e);
+  await cleanupSeed('rejection');
+  process.exit(1);
+});
+process.on('uncaughtException', async (e) => {
+  console.error('\n[未捕获异常]', e);
+  await cleanupSeed('exception');
+  process.exit(1);
+});
+
 // ---------- 3. 进记账页 ----------
 // ⚠️ 踩过的坑：如果设备**已经**在 #/finance，`location.hash = '#/finance'` 不会触发
 // 导航，onMounted 不跑，列表是上一轮的陈旧数据 —— 读路径判据会假失败
@@ -217,7 +254,24 @@ if (SABOTAGE === 'hide-cta') {
   await ev(`(function(){var b=(${PANE}).querySelector('.quick-btn');if(b)b.remove();return 1})()`);
   console.log('   [sabotage] 已从 DOM 摘除 .quick-btn');
 }
-check('页面就位：快速记账输入框与「记账」按钮都存在（缺失即 FAIL，不许空过）', hasInput === true && hasBtn === true, `input=${hasInput} btn=${hasBtn}`);
+// 这条判的是**进页时**（sabotage 之前）的状态。标签必须写清楚这一点 ——
+// 头一版它在 sabotage 之后才打印，却仍写「按钮都存在」，于是在 hide-cta 模式下
+// 按钮已经被摘掉、日志却报 PASS，标签在说它没在说的东西（BUG-V18）。
+check('页面就位（sabotage 前基线）：快速记账输入框与「记账」按钮都存在（缺失即 FAIL，不许空过）',
+  hasInput === true && hasBtn === true, `input=${hasInput} btn=${hasBtn}`);
+
+// sabotage 之后再测一次「按钮现在还在不在」，把真实状态显式打出来。
+// 这不是新判据，是给「证伪真的生效了」一个可核对的现场证据 ——
+// 之前只能靠「哪几条红了」反推，hide-cta 模式下反而推不出来。
+if (SABOTAGE === 'hide-cta') {
+  const btnAfter = await ev(`!!(${PANE}).querySelector('.quick-btn')`);
+  const inputAfter = await ev(`!!(${PANE}).querySelector('.quick-input')`);
+  console.log(`   [sabotage 生效确认] 摘除后：btn=${btnAfter}（期望 false） input=${inputAfter}（期望 true，说明只摘了按钮）`);
+  if (btnAfter !== false) {
+    console.error('   ❌ sabotage 没生效：按钮还在。下面的失败不能当作「判据抓到了破坏」。');
+    process.exitCode = 8;
+  }
+}
 
 // ---------- 4. 读路径：种下的记录渲染出来了 ----------
 // 轮询等目标卡片出现（给 load() 留足时间），而不是只看某一瞬间的快照 ——
@@ -415,11 +469,8 @@ check('对照组：删除没误伤，SEED 记录仍在 UI 上', stillSeed === tr
 // ---------- 14. 异常 ----------
 check('无未捕获 JS 异常', errors.length === 0, errors.slice(0, 2).join(' | ') || '0 条');
 
-// ---------- 清理：删掉种下的 SEED ----------
-if (seedId) {
-  const cl = await api(`/api/finance/${seedId}`, { token, method: 'DELETE' });
-  console.log(`\n清理 SEED ${seedId} -> ${cl.status}，PG 终值 = ${txCount()}`);
-}
+// ---------- 清理：删掉种下的 SEED（幂等，与失败路径共用同一函数） ----------
+await cleanupSeed('normal');
 
 const passed = checks.filter((c) => c.pass).length;
 const failed = checks.filter((c) => !c.pass);
@@ -439,9 +490,15 @@ if (SABOTAGE) {
   // 写 `failed.map(norm)` 会把每个对象 String() 成 "[object Object]"，
   // 于是永远匹配不上、永远报「证伪无效」—— 连续两轮都被这个坑挡住。
   const key = failed.map((f) => norm(f.n));
+  // ⚠️ BUG-V18：hide-cta 的期望键里原来写着「页面就位：…按钮都存在」，
+  //    而 sabotage 恰恰是**在测完那条之后**才把按钮摘掉的 ⇒ 那条判据**设计上永远绿**，
+  //    `every()` 永远 false，于是无论破坏多彻底都打印「证伪无效」。
+  //    这是一条**恒假**判据：不是判据不敏感，是它要求一个不可能成立的条件。
+  //    换成 sabotage 真正会打坏的判据：摘掉 CTA 之后，凡依赖「点那个按钮」的
+  //    都必须失败——预览出不来、写入不会发生、POST 也不会发出。
   const expectKey = SABOTAGE === 'swallow-create'
     ? ['**直接查 PG** 确认真的写进去了', '⚠️ 没出现「PG 未变却说成功」的假成功', 'POST /api/finance 非 4xx/5xx']
-    : ['页面就位：快速记账输入框与「记账」按钮都存在', '点「记账」后预览出现（解析请求走通）'];
+    : ['点「记账」后预览出现（解析请求走通）', '**直接查 PG** 确认真的写进去了', 'POST /api/finance 非 4xx/5xx'];
   const caught = expectKey.every((k) => key.some((n) => n.includes(norm(k))));
   console.log(`\n逐条匹配：${expectKey.map((k) => `${key.some((n) => n.includes(norm(k))) ? 'HIT' : 'MISS'} «${norm(k)}»`).join('  ')}`);
   console.log(`\n证伪判定：${caught ? '✅ 判据在有缺陷一侧如期失败' : '❌ 判据没抓到破坏 —— 本次证伪无效'}`);

@@ -18,7 +18,8 @@
     "error": "Erro",
     "warning": "Aviso",
     "info": "Informação",
-    "close": "Fechar"
+    "close": "Fechar",
+    "retry": "Tentar novamente"
   },
   "app": {
     "title": "Redclaw",
@@ -60,7 +61,8 @@
     "localAgent": "Local Agent",
     "home": "Home",
     "study": "Study",
-    "flashcards": "Cartões de memorização"
+    "flashcards": "Cartões de memorização",
+    "messages": "Mensagens"
   },
   "routes": {
     "login": "Entrar",
@@ -154,6 +156,7 @@
     "version": "Version",
     "versionFormat": "v{version} (Build {buildNumber})",
     "buildDate": "Build Date",
+    "buildDateNote": "(valor configurado, não o horário de build medido)",
     "apiAddress": "API Address",
     "privacy": "Privacy",
     "permissionsPrivacy": "Permissões e privacidade",
@@ -173,6 +176,7 @@
     "newVersionAvailable": "New version v{version} available!\n\nChangelog:\n{changelog}",
     "alreadyLatest": "Already on the latest version!",
     "checkUpdateFailed": "Failed to check for updates, please try again later",
+    "versionConfigUnavailable": "Configuração de versão do servidor indisponível; não é possível verificar atualizações. Peça ao administrador para conferir config/version.json. {detail}",
     "redclawIntegration": "Integração RedClaw",
     "redclawConnected": "Conectado",
     "redclawMisconfigured": "Configurado · erro de conexão",
@@ -369,6 +373,14 @@
       "title": "Caixa de entrada",
       "empty": "A caixa de entrada está vazia",
       "advance": "Processar"
+    },
+    "source": {
+      "note": "Nota",
+      "email": "E-mail",
+      "rss": "RSS",
+      "meeting": "Reunião",
+      "chat": "Chat",
+      "manual": "Manual"
     }
   },
   "email": {
@@ -438,12 +450,71 @@
     "empty": "Nada coletado ainda. Use \"Adicionar ao aprendizado\" em uma nota, e-mail ou RSS.",
     "advance": "Começar"
   },
-  "source": {
-    "note": "Nota",
-    "email": "E-mail",
-    "rss": "RSS",
-    "meeting": "Reunião",
-    "chat": "Chat",
-    "manual": "Manual"
+  "notesHub": {
+    "title": "Notas",
+    "filter": {
+      "all": "Todas",
+      "manual": "Notas",
+      "meeting": "Reuniões",
+      "pkm": "Notas PKM"
+    },
+    "action": {
+      "newNote": "Nova nota",
+      "startMeeting": "Iniciar reunião",
+      "record": "Gravar uma nota"
+    },
+    "link": {
+      "allNotes": "Todas as notas",
+      "allMeetings": "Todas as reuniões",
+      "allPkm": "Abrir PKM"
+    },
+    "empty": {
+      "title": "Ainda sem notas",
+      "hint": "Toque no microfone para a primeira nota ou inicie uma reunião",
+      "filtered": "Ainda não há nada nesta fonte"
+    },
+    "meta": {
+      "voice": "Nota de voz",
+      "pending": "Processando",
+      "minutes": "{count} min",
+      "hoursMinutes": "{hours} h e {minutes} min"
+    },
+    "count": {
+      "notes": "{count} notas",
+      "meetings": "{count} reuniões"
+    }
+  },
+  "messagesHub": {
+    "title": "Mensagens",
+    "filter": {
+      "all": "Todos",
+      "email": "E-mail",
+      "rss": "Assinaturas",
+      "task": "Tarefas"
+    },
+    "action": {
+      "markAllRead": "Marcar tudo como lido",
+      "openMail": "Abrir e-mail",
+      "manageFeeds": "Gerenciar assinaturas"
+    },
+    "empty": {
+      "title": "Nada novo",
+      "hint": "E-mails importantes, notícias assinadas e tarefas chegam aqui"
+    },
+    "badge": {
+      "important": "Importante"
+    },
+    "meta": {
+      "from": "De {name}",
+      "suggestedAction": "Sugestão: {action}"
+    },
+    "unreadBadge": "{count} não lidas",
+    "partialFailure": "Algumas fontes não puderam carregar: {sources}"
+  },
+  "timefmt": {
+    "justNow": "agora mesmo",
+    "minutesAgo": "há {count} min",
+    "hoursAgo": "há {count} h",
+    "daysAgo": "há {count} d"
   }
 }
