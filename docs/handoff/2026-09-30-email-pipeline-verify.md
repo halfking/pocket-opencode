@@ -8929,3 +8929,190 @@ OUT_OF_WINDOW(>2d, high, 未提醒)=27
 - **没有改窗口长度、没有加限流、没有加扫描游标**（都是产品取舍）
 - **没有改 `splitReminderCandidates`**（它的逻辑与本计数不重叠）
 - **没有验证通知渠道**（飞书/本地通知都未配置，真实提醒未跑通）
+
+---
+
+## §7du 需求 1「定时」路径：跑批真的发生了，但四个处理步骤全部空转
+
+### 起点
+
+前面 17 轮验的都是**手动入口** `POST /api/email/pipeline/run`。
+需求 1 写的是「每天**定时**或手工进行邮件接收，然后进行处理」——
+定时这一半一直只有「排期日志」的证据（§2），**没有到点执行的证据**。
+
+### 意外发现：真实实例的日志里有到点执行的完整记录
+
+`Get-Process pocketd` 指向的运行中实例来自**另一个 worktree**
+（`C:\workspace\openpocket-wt-maildeploy`，启动于 2026-10-02 01:36，
+不是本 worktree 的构建）。它的 stderr 有 93 MB：
+
+```
+logs\pocketd-18099-20261002-013559.err.log
+```
+
+搜 `[email/scheduler] pipeline` 命中两处，一处排期、一处**执行**：
+
+```
+01:36:00 [email/scheduler] daily pipeline runner injected (hour=8)
+01:36:00 [email/scheduler] pipeline scheduled at 2026-10-02T08:00:00+08:00
+...
+08:00:00 [email/pipeline] step 1/5 sync 5 account(s) (t+2ms)
+08:00:00 [email/pipeline] step1 sync feikemanager1@163.com new=0 in 318ms
+08:00:00 [email/pipeline] step1 sync 56551681@qq.com new=0 in 523ms
+08:00:00 [email/pipeline] step1 sync kimmy.huang@163.com new=1 in 363ms
+08:00:00 [email/pipeline] step1 sync feikemanager@163.com new=1 in 346ms
+08:00:01 [email/pipeline] step1 sync huangxutao@kxpms.cn new=0 in 1.125s
+08:00:01 [email/pipeline] step 1.5/5 invoice candidates (t+1.126s)
+08:00:01 [email/pipeline] step1.5 scanned=1 rawBodyFetches=0 fetchFailed=0 autoCreated=0
+08:00:01 [email/pipeline] step 2/5 spam clean (dryRun=true) (t+1.133s)
+08:00:01 [email/pipeline] spam dry-run: 0 mail(s) would be moved, 0 near-miss
+08:00:01 [email/pipeline] step 3/5 important reminders (t+1.135s)
+08:00:01 [email/pipeline] step 4/5 invoice harvest (t+1.135s)
+08:00:01 [email/pipeline] step 5/5 push+ledger over 1 scope(s) (t+1.136s)
+08:00:01 [email/pipeline] done synced=5 new=2 spam=0(+0 local) reminders=0
+          inv={Processed:0 Downloaded:0 Pending:0 Failed:0 Skipped:0} feishu=0/0 errors=0
+08:00:01 [email/scheduler] pipeline scheduled at 2026-10-03T08:00:00+08:00
+```
+
+**结论（需求 1 的「定时」这一半）**：
+
+- 定时触发**真的发生了**，在 `08:00:00` 整点，5 个真实账户全部同步
+- 触发后**正确排下一天**（10-03 08:00），没有变成每分钟重复触发
+- `POCKET_EMAIL_PIPELINE_HOUR` 默认 8 生效
+- `SetPipelineRunner` 在 `Start` 之后调用（`main.go:763` vs `:491`）这条补起路径**在生产上真的被走过**
+
+所以 §2 那个 BUG-AM 的修复在真实部署上确认有效，不再只是单测保证。
+
+**但同一份日志也把另一半摆出来了**：收信之外的四步——
+清垃圾 `spam=0`、重要提醒 `reminders=0`、发票采集
+`inv={Processed:0 ...}`、飞书推送 `feishu=0/0`——**全部为 0**。
+
+### 根因：`scanned=1`
+
+`step1.5 scanned=1` 是唯一的线索。回到 `pipeline.go:357-358`：
+
+```go
+func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Account, rep *PipelineReport) {
+	emails, _, err := p.Store.ListEmailsSince(ctx, rep.StartedAt-86400, 500)
+```
+
+`store_pipeline.go:69` 的 SQL：
+
+```sql
+SELECT ... FROM emails WHERE date >= $1 AND COALESCE(deleted_at,0)=0 ORDER BY date DESC LIMIT $2
+```
+
+**按 `date`（邮件头日期）筛最近 24 小时**。
+
+### 三个步骤三个窗口，同一个判据
+
+`ListEmailsSince` 全仓三个生产调用点，窗口各不相同：
+
+| 步骤 | 位置 | 窗口 | 库内 121 封的覆盖 |
+|---|---|---|---|
+| 发票候选 | `pipeline.go:358` | **1 天**（`rep.StartedAt-86400`） | **2 封（1.7%）** |
+| 重要提醒 | `pipeline.go:741` | **2 天** | **8 封（6.6%）** |
+| 清垃圾 | `pipeline.go:670` | **7 天**（`SpamLookbackDays`） | **78 封（64.5%）** |
+
+覆盖率数字测量时刻 **2026-10-02 09:26:20**，
+`SELECT count(*) … FROM emails WHERE COALESCE(deleted_at,0)=0`。
+
+### 探针：用真实代码量，不用手抄关键词表
+
+直接 psql 做关键词匹配是**不可靠的**——库里 snippet 有非 UTF-8 字节
+（`invalid byte sequence for encoding "UTF8": 0xb7` 实测三次），
+而且手抄 `invoiceKeywordHit` 的关键词表容易与代码漂移。
+
+改写一个临时探针（跑完即删），**直接调用真实的
+`ExtractInvoice` / `invoiceBodyReason`**，只读生产库：
+
+```
+MEASURED_AT=2026-10-02 09:24:59  cutoff_24h=2026-10-01 09:24:59
+COUNTS        total=121  in_24h=2  out_24h=119
+ENVELOPE_HIT  total=2    in_24h=1  out_24h=1
+NEEDS_RAWBODY total=5    in_24h=0  out_24h=5
+INVOICE_ROWS=2
+BLINDSPOT_SAMPLE (6 封，全部在 24h 窗外):
+  2026-09-22 uid=10424 hit=false reason="candidate" subj="来自 Apple 西湖商务团队的问候 - 杭州开轩科技有限公司"
+  2026-09-23 uid=10432 hit=false reason="candidate" subj="AWS 账户提醒"
+  2026-09-24 uid=10435 hit=true  reason=""          subj="您收到来自杭州创客家投资管理有限公司的发票，发票号码：2633200000826…"
+  2026-09-29 uid=10443 hit=false reason="candidate" subj="Amazon Web Services Account Alert"
+  2026-09-29 uid=10444 hit=false reason="candidate" subj="所需操作：AWS 账户提示"
+  2026-10-01 uid=1298896142 hit=false reason="candidate" subj="Xiaomi MiMo API 开放平台扣款成功通知"
+```
+
+### 这不是「历史遗留」，是当前活跃状态
+
+最关键的一组对比（测量时刻 09:23:00 / 09:26:02）：
+
+```
+total=121   by_date_24h=2    by_created_24h=121
+oldest=2026-09-05 15:37:15+08   newest=2026-10-02 09:07:39+08
+```
+
+- **121 封的 `created_at` 全部落在最近 24 小时内**——它们是**刚刚**批量入库的
+- 但它们的 `date`（邮件头日期）**跨越 2026-09-05 ~ 10-02 共一个月**
+- 于是这 119 封**刚进库就被 24h 窗口排除**
+
+这不是「去年攒下的旧数据没处理」，而是**当下正在发生的漏**：
+任何一次全量回填、任何一次服务器停机超过一天、
+任何一次 `last_synced_uid` 被清零，补进来的邮件日期都在窗口外，
+**从进库那一刻起就永远不会被定时跑批看到**。
+
+这与 §7dr（首次同步 >50 封老邮件被永久跳过）是**完全同型**的缺陷：
+`fetcher.go` 的注释早就写明「不能永久跳过」这条原则，
+同步层（§7dr）修了，**发票候选层留着同一个洞**。
+
+### 为什么没有任何东西把它救回来
+
+`emails.processed_at` 这一列**121 封全部为 0**——它从未被写入过。
+所以库里**没有任何「这封邮件已被发票候选扫过」的痕迹**：
+
+- 窗口内的邮件：每轮**重复**扫（幂等，不算错，但也没有记忆）
+- 窗口外的邮件：**没有任何机制**会在未来把它们带回来
+
+唯一的另一条入口 `server_assistant.go:2171`（同步后的异步提取）
+**同样是 24 小时窗口**（`time.Now().Unix()-86400`），不构成补偿。
+
+### 影响分级（按真实数据，不按推测）
+
+- **发票（需求 2/3）——最硬**：`uid=10435` 是 `hit=true` 的**确定真发票**
+  （主题带发票号码，envelope 层直接命中，连原文都不用拉），
+  却因为日期在窗外**永远不会建档**。另外 5 封 `candidate`
+  需要拉原文二次判定，也全在窗外。
+  发票是财务凭证，漏采不可逆。
+- **重要提醒（需求 4）**：§7dt 已把这条盲区做成报告里的
+  `remindersOutOfWindow=27`，**看得见**了，且窗口本身是有意设计（产品取舍）。
+- **清垃圾（需求 1）**：7 天窗口 + `dryRun=true` 默认安全阀，
+  过期邮件不再清理**符合直觉**，不视为缺陷。
+
+所以本节**只把发票这一条定性为缺陷**，另两条是设计取舍。
+
+### 由此可以怎么拍板
+
+修法有三条，取舍不同：
+
+- **A. 按入库时间兜底**（候选条件加 `OR created_at >= <上轮时间>`）：
+  改动最小，不需要新列。代价是每轮可能重复扫一批刚入库的旧 `date` 邮件。
+- **B. 游标 / watermark**（记录「扫到哪封了」）：
+  与 §7dr 的修法同构，语义最干净。代价是新增一个持久化位置。
+- **C. 复用 `processed_at` 死列**当「已扫描」标记：
+  正好激活一个语义完全吻合的死列（§todo 记录的 `processed_at` 死列），
+  零迁移。代价是把一个从未用过的列赋予新语义。
+
+**共同代价**：一旦窗口放开，上面那 5 封 `candidate` 会被**真实拉取 IMAP 原文**
+（每封一次完整 IMAP 会话）。这是只读 FETCH，不改邮箱状态，
+但确实是此前从未在无人值守场景发生过的负载。
+
+「先只处理未建档的存量、把 24h 窗口留给新邮件」这一折中我**没有**实现，
+因为它同样要拍板「存量补采到什么程度算够」。
+
+### 本轮**没有**做的事
+
+- **没有改任何窗口、没有加游标、没有动 `processed_at`**（都是产品取舍）
+- **没有跑真实 IMAP 拉原文**（那 5 封 `candidate` 的最终判定需要授权）
+- **没有验证 08:00 那次跑批的飞书/通知渠道**（未配置，`feishu=0/0` 无法区分
+  「没得推」和「推了但失败」——这与 todo 里「飞书未配置静默跳过」是同一条）
+- 探针脚本 `zz_probe_blindspot_test.go` 跑完已删（`git clean`），
+  `go.mod` 被 `-mod=mod` 顺带改动（`x/image` indirect→direct）已 `git checkout` 还原，
+  提交前 `git status` 为空
