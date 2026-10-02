@@ -3,6 +3,7 @@ package email
 import (
 	"context"
 	"os"
+	"sort"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -94,4 +95,89 @@ func emptyAsDash(d string) string {
 		return "(空)"
 	}
 	return d
+}
+
+// TestDiagRealInvoiceExtractionBlastRadius —— 把真实库**全部**邮件灌进当前抽取器，
+// 量化「被抽成发票」的数量与金额合计，并按金额降序列出。
+//
+// 上一条用例只证明了「工商银行信用卡对账单被抽成发票、金额取到信用额度
+// 58,000.00」这一例。关键问题不是这一张，而是**有多少张**：若只有 1 张，
+// 是个案；若成片出现，需求 3 的「汇总金额」在真实数据上就不可信。
+//
+// 只读。不写库。
+func TestDiagRealInvoiceExtractionBlastRadius(t *testing.T) {
+	dsn := os.Getenv("POCKET_REAL_MAIL_DSN")
+	if dsn == "" {
+		t.Skip("POCKET_REAL_MAIL_DSN not set; 跳过真实发票抽取影响面统计")
+	}
+	schema := os.Getenv("POCKET_REAL_MAIL_SCHEMA")
+	if schema == "" {
+		schema = "opencode_pocket"
+	}
+	ctx := context.Background()
+	cfg, perr := pgxpool.ParseConfig(dsn)
+	if perr != nil {
+		t.Fatalf("parse dsn: %v", perr)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	defer pool.Close()
+
+	rows, qerr := pool.Query(ctx, `
+		SELECT id, COALESCE(subject,''), COALESCE(snippet,''),
+		       COALESCE(from_address,''), COALESCE(from_name,'')
+		FROM emails
+		WHERE COALESCE(deleted_at,0)=0
+		ORDER BY date DESC`)
+	if qerr != nil {
+		t.Fatalf("query: %v", qerr)
+	}
+	defer rows.Close()
+
+	type rec struct {
+		id, subj, seller, cur, kind, date string
+		amt                                float64
+	}
+	var total, hit int
+	var sum float64
+	var all []rec
+	for rows.Next() {
+		total++
+		var e Email
+		if serr := rows.Scan(&e.ID, &e.Subject, &e.Snippet, &e.FromAddress, &e.FromName); serr != nil {
+			t.Fatalf("scan: %v", serr)
+		}
+		inv, ok := ExtractInvoiceLoose(e, e.Snippet, false)
+		if !ok {
+			continue
+		}
+		hit++
+		sum += inv.Amount
+		all = append(all, rec{e.ID, e.Subject, inv.Seller, inv.Currency, inv.Kind, inv.InvoiceDate, inv.Amount})
+	}
+	if rerr := rows.Err(); rerr != nil {
+		t.Fatalf("rows: %v", rerr)
+	}
+
+	// 降序：谁在撑大合计，一眼就能看出来。
+	sort.Slice(all, func(i, j int) bool { return all[i].amt > all[j].amt })
+
+	t.Logf("=== 影响面 ===")
+	t.Logf("真实邮件总数        : %d", total)
+	t.Logf("被抽成「发票」的邮件 : %d", hit)
+	t.Logf("这些发票的金额合计  : %.2f", sum)
+	t.Logf("")
+	t.Logf("=== 按金额降序（前 15 条） ===")
+	for i := 0; i < len(all) && i < 15; i++ {
+		r := all[i]
+		t.Logf("%12.2f %-4s kind=%-9s date=%-10s seller=%q",
+			r.amt, r.cur, r.kind, emptyAsDash(r.date), r.seller)
+		t.Logf("    主题: %s", emptyAsDash(r.subj))
+	}
+	if len(all) > 15 {
+		t.Logf("（其余 %d 条略）", len(all)-15)
+	}
 }
