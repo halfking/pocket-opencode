@@ -17,6 +17,7 @@
 import { readFileSync, readdirSync, statSync, existsSync, writeFileSync } from 'node:fs'
 import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { classifyRef, CLASS_BUCKETS } from './dead-api-classify.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcRoot = join(here, '..', 'src')
@@ -112,12 +113,7 @@ for (const [, info] of exportsByFile) {
     const others = all.filter((p) => p !== own)
     const { app, test } = countRefs(name, others)
 
-    let kind
-    if (app > 0) kind = 'wired'
-    else if (test > 0) kind = 'testOnly'
-    else if (ownRefs > 0) kind = 'moduleInternal'
-    else kind = 'dead'
-    classified.push({ file: info.file, symbol: name, kind, app, test, ownRefs })
+    classified.push({ file: info.file, symbol: name, kind: classifyRef({ app, test, ownRefs }), app, test, ownRefs })
   }
 }
 
@@ -141,9 +137,9 @@ const group = (title, list, mark) => {
   console.log(`  ${mark} ${title}`)
   for (const [f, names] of Object.entries(byFile)) console.log(`      ${f.padEnd(22)} ${names.join(', ')}`)
 }
-group('完全无人使用（棘轮管的就是这批）', dead, '❌')
-group('仅被 __tests__ 引用：能力被测过，但没接进 App', testOnly, '⚠️ ')
-group('仅本模块内部使用：外部拿不到，常量/内部 helper', moduleInternal, 'ℹ️ ')
+group(CLASS_BUCKETS.find((b) => b.kind === 'dead').title, dead, CLASS_BUCKETS.find((b) => b.kind === 'dead').mark)
+group(CLASS_BUCKETS.find((b) => b.kind === 'testOnly').title, testOnly, CLASS_BUCKETS.find((b) => b.kind === 'testOnly').mark)
+group(CLASS_BUCKETS.find((b) => b.kind === 'moduleInternal').title, moduleInternal, CLASS_BUCKETS.find((b) => b.kind === 'moduleInternal').mark)
 
 // ---- 棘轮 ----
 let baseline = { note: '允许存在的「导出了但无人调用」符号；只许减少不许增加。', dead: [] }
