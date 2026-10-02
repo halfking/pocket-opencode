@@ -80,6 +80,25 @@ deploy-local.sh.bak-*
 # 而不是只忽略主密钥。
 data/email-bodies/
 
+# 2026-10-03: 补上 email-bodies 的**兄弟目录** email-bodies-raw。
+#
+# 上一条修的是 data/email-bodies/（带 format 字节那份），但落盘其实有两个目录：
+#   data/email-bodies/      = 8B 大端 UID + 1B format + base64 密文
+#   data/email-bodies-raw/  = 8B 大端 UID + base64 密文（body_cache.go:16）
+# 当时只加了前一个，后一个既没被忽略、也没在本文里出现过，
+# 于是 49 个真实邮件正文缓存（em-pop3-acct-*.bin）一直以未跟踪状态躺在工作区，
+# 任何一次 `git add -A` 都会把它们卷进暂存区——与上面 2026-10-01 那次同类的泄露。
+#
+# 实测确认（不是推断）：
+#   git check-ignore -v data/email-bodies-raw/<某个>.bin   -> exit 1（未忽略）
+#   git status --porcelain -uall                            -> 49 条 ?? data/email-bodies-raw/...
+#   git ls-files -- data/                                   -> 无跟踪项
+data/email-bodies-raw/
+
+# 同理：POCKET_DATA_DIR 可配到 backend/data（本文后面已列过那里的
+# email_master.key），正文缓存目录也要一并覆盖，否则换个 data dir 就重新漏。
+backend/data/email-bodies-raw/
+
 # 2026-10-01 audit: 调试会话丢在仓库根目录的一次性探针脚本与采样音频
 # （ASR 端点扫描、模型探测、一段语音样本）。真正有价值的探针应该整理成
 # scripts/ 下的正经脚本，这些是一次性的，不入库。
