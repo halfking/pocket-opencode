@@ -40,6 +40,32 @@ const LIT = /['"`]([a-z][a-zA-Z0-9]*(?:\.[a-zA-Z0-9_-]+)+)['"`]/g
 
 const used = new Set()
 const dynamic = new Set()
+/** t(`prefix.${expr}`) 里出现过的静态前缀 */
+const usedPrefixes = new Set()
+/** file -> Set(静态前缀)，来自 t(`prefix.${expr}`) 模板字面量 */
+const templatePrefixes = new Map()
+/** file -> Set(被赋给 *Key / *Key: 属性的字符串字面量) */
+const keyFragments = new Map()
+
+// 2026-10-03：模板 key 的第三条采集规则。
+// 起因是真实白屏级缺陷：NotesHubView 写 t(`notesHub.filter.${row.filterKey}`)，
+// 而 row.filterKey 的值是 'note'，语言包里只有 notesHub.filter.manual ——
+// 界面每一行都渲染出字面量 "notesHub.filter.note"。
+//
+// 下面两条老规则都看不见它：
+//   - STATIC 只认 t('x.y.z') 的字面量形式，模板字符串整条不匹配；
+//   - KEY_TYPE 只从 `export type XxxKey = 'a.b' | ...` 联合类型里展开，
+//     而这里的片段来自对象字面量 `filterKey: 'note'`。
+// 而 ia-smoke 也没抓到：全新空库下行列表根本不渲染，"无字面量 key" 那条
+// 断言在空数据上是空断言。**只有真机有数据时才会暴露。**
+//
+// 这里补的规则是「前缀 + 片段」两段拼起来校验：
+//   1. 抽出 t(`prefix.${…}`) 的静态 prefix，要求每种语言在该 prefix 下至少有一个 key；
+//   2. 抽出同文件里 `*Key: 'frag'` 形式的片段，要求 prefix.frag 在语言包里真实存在。
+// 只在同一文件内组合，避免跨文件猜前缀造成误报。
+const TPL_KEY = /\bt\(\s*`([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_-]+)*)\.\$\{/g
+const KEY_PROP = /\b[A-Za-z_$][\w$]*Key\s*:\s*'([a-z][a-zA-Z0-9_-]*)'/g
+
 for (const f of walk(srcRoot)) {
   if (f.includes(join('locales'))) continue
   const text = readFileSync(f, 'utf8')
@@ -52,6 +78,34 @@ for (const f of walk(srcRoot)) {
     LIT.lastIndex = 0
     let lm
     while ((lm = LIT.exec(tm[1]))) dynamic.add(lm[1])
+  }
+  TPL_KEY.lastIndex = 0
+  let tpl
+  while ((tpl = TPL_KEY.exec(text))) {
+    if (!templatePrefixes.has(f)) templatePrefixes.set(f, new Set())
+    templatePrefixes.get(f).add(tpl[1])
+  }
+  KEY_PROP.lastIndex = 0
+  let frag
+  while ((frag = KEY_PROP.exec(text))) {
+    if (!keyFragments.has(f)) keyFragments.set(f, new Set())
+    keyFragments.get(f).add(frag[1])
+  }
+}
+
+/**
+ * 模板 key 的「前缀 + 片段」组合展开成完整 key 并入 used，
+ * 让它走下面同一套「9 语言齐平」校验。
+ *
+ * 另外单独记下用到的前缀：要求每种语言在该前缀下**至少有一个子 key**。
+ * 否则说明前缀本身拼错了（比如把 notesHub 写成 noteHub），
+ * 那种错会让整组模板 key 一起静默失效，光校验片段是发现不了的。
+ */
+for (const [f, prefixes] of templatePrefixes) {
+  const frags = keyFragments.get(f)
+  for (const p of prefixes) {
+    usedPrefixes.add(p)
+    if (frags) for (const frag of frags) used.add(`${p}.${frag}`)
   }
 }
 
@@ -71,9 +125,21 @@ for (const lf of localeFiles) {
   localeKeys[lf.replace('.json', '')] = flatten(JSON.parse(readFileSync(join(locDir, lf), 'utf8')))
 }
 
-console.log(`【i18n key 卡口】代码在用 ${used.size}（静态）/ ${dynamic.size}（动态候选），语言文件 ${localeFiles.length} 份`)
+console.log(`【i18n key 卡口】代码在用 ${used.size}（静态）/ ${dynamic.size}（动态候选），模板前缀 ${usedPrefixes.size} 个，语言文件 ${localeFiles.length} 份`)
 
 let failed = false
+
+// 模板前缀必须在每种语言下都真实存在至少一个子 key。
+// 前缀写错时，同一前缀下的所有片段校验会一起「碰巧通过」或一起报错，
+// 单看片段定位不到根因，所以单独验一遍前缀。
+for (const [loc, keys] of Object.entries(localeKeys)) {
+  const dead = [...usedPrefixes].filter((p) => !keys.has(p) && ![...keys].some((k) => k.startsWith(p + '.'))).sort()
+  if (dead.length) {
+    failed = true
+    console.error(`❌ ${loc} 的模板 key 前缀不存在任何子 key：${dead.join(', ')}`)
+  }
+}
+
 for (const [loc, keys] of Object.entries(localeKeys)) {
   const miss = all.filter((k) => !keys.has(k)).sort()
   if (miss.length) {

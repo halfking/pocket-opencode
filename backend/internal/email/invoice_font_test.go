@@ -15,20 +15,30 @@ import (
 )
 
 // 候选表必须覆盖本仓主要部署形态：C:\Windows（开发/桌面）、/system/fonts（Android）。
+//
+// 分隔符必须按宿主归一化后再比对：实现用的是 filepath.Join，它**故意**遵循
+// 宿主约定——在 Windows 上产出 `C:\Windows\Fonts\simhei.ttf`，在 Linux 上产出
+// `C:\Windows/Fonts/simhei.ttf`。2026-10-03 本条在 Linux 上转红，原因是断言把
+// 反斜杠写死了，而不是候选表少了条目。断言要问的是「Windows/安卓的 CJK 字体
+// 在不在表里」，路径分隔符不是这件事的一部分。
 func TestSystemFontCandidates_CoversWindowsAndAndroid(t *testing.T) {
 	cands := systemFontCandidates()
-	joined := strings.Join(cands, "|")
+	joined := normSeparators(strings.Join(cands, "|"))
 	for _, want := range []string{`\Fonts\simhei.ttf`, "/system/fonts/"} {
-		if !strings.Contains(joined, want) {
+		if !strings.Contains(joined, normSeparators(want)) {
 			t.Fatalf("systemFontCandidates missing %q: %v", want, cands)
 		}
 	}
 	// Windows 路径要用 SystemRoot 而不是硬编码盘符：服务跑在 D:\ 或容器里也会变。
 	t.Setenv("SystemRoot", `D:\Win`)
-	if got := systemFontCandidates(); !strings.Contains(strings.Join(got, "|"), `D:\Win\Fonts\simhei.ttf`) {
-		t.Fatalf("SystemRoot not honored: %v", got)
+	got := normSeparators(strings.Join(systemFontCandidates(), "|"))
+	if !strings.Contains(got, normSeparators(`D:\Win\Fonts\simhei.ttf`)) {
+		t.Fatalf("SystemRoot not honored: %v", systemFontCandidates())
 	}
 }
+
+// normSeparators 把 \ 统一成 /，让跨平台的路径断言只比较路径本身。
+func normSeparators(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 
 // 候选里出现的每个路径都必须能被 resolveFontFile 接受（.ttf 且存在），
 // 否则是死条目——曾经就有一条 wqy-zenhei.ttc 挂在表里永远匹配不上。

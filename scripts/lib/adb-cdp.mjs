@@ -42,9 +42,39 @@
 // 没给就一律 tcp:0。
 
 import { execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+
+// adb 位置不写死：原值是某台 Windows 开发机的绝对路径，在别的宿主上
+// openCdp 必然以 ENOENT 失败，而错误信息是 spawn 层面的，完全看不出
+// 「这个仓库的工具链绑在一台机器上」。解析顺序：env -> PATH -> 常见位置。
+function whichFirst(cands) {
+  for (const c of cands) {
+    if (!c) continue
+    if (c.includes('/') || c.includes('\\')) {
+      if (existsSync(c)) return c
+      continue
+    }
+    try {
+      const r = execFileSync(process.platform === 'win32' ? 'where' : 'which', [c],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      const first = (r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0]
+      if (r.status === 0 && first) return first
+    } catch { /* which/where 不可用就跳到下一个候选 */ }
+  }
+  return null
+}
 
 const ADB = process.env.POCKET_ADB
-  || 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
+  || process.env.POCKET_ADB_BIN
+  || whichFirst([
+    process.platform === 'win32' ? 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe' : null,
+    `${homedir()}/bin/adb`,
+    `${homedir()}/Android/Sdk/platform-tools/adb`,
+    `${homedir()}/tools/android-sdk/platform-tools/adb`,
+    'adb',
+  ])
+  || 'adb'
 const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 
 const adb = (args, t = 30000) =>
