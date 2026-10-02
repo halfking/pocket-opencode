@@ -41,6 +41,19 @@ $env:POCKET_POSTGRES_DSN = 'postgres://postgres@127.0.0.1:5432/postgres?sslmode=
 $env:POCKET_PG_SCHEMA    = 'opencode_pocket'
 $env:POCKET_DEV_AUTH     = 'true'
 $env:POCKET_AUTH_LEGACY_ONLY = 'true'
+# Pin the data dir explicitly; do NOT rely on inferring it from the CWD.
+# Third occurrence of this trap, 2026-10-02.
+# dataDir decides which <dataDir>/email_master.key is used. The 5 real mail
+# account credentials were encrypted with
+# C:\workspace\openpocket\data\email_master.key, while two other, different
+# keys also exist on this box (backend\data\ and .scratch-sttdev\data\ --
+# see config.go:626-634). With the wrong key the process starts normally,
+# healthz answers ok, the scheduler still logs "Email scheduler started",
+# and every account on every sync hits
+# `decrypt credential: cipher: message authentication failed` -- zero mail.
+# The startup self-check prints one ERROR line about this
+# (cmd/pocketd/main.go:448-459); do not ignore it.
+$env:POCKET_DATA_DIR     = 'C:\workspace\openpocket\data'
 # 注意：端口变量名是 POCKET_HTTP_PORT（config.go:210），不是 POCKET_PORT。
 # 写错的话会静默用默认 8088，看起来「生效了」其实没设。
 $env:POCKET_HTTP_PORT    = '8088'
@@ -90,6 +103,27 @@ if (Select-String -Path $log -Pattern 'Postgres pool initialized' -Quiet -ErrorA
   Select-String -Path $log -Pattern 'remote-only|Postgres pool' -ErrorAction SilentlyContinue |
     ForEach-Object { Write-Host "    $($_.Line)" }
   exit 2
+}
+# Second gate: the email credential self-check. Without it a wrong data dir
+# stays silent: healthz is ok, every endpoint answers, and no mail arrives.
+# Cost me a full round on 2026-10-02 before anyone noticed. The process
+# already prints its own verdict (cmd/pocketd/main.go:448-459); this turns
+# that line into a non-zero exit code.
+# The predicate is "the success line is present", NOT "no ERROR line": when
+# the email module is switched off no self-check runs at all, and reading
+# that silence as "check passed" would be exactly the bug this gate exists
+# to catch.
+if (Select-String -Path $log -Pattern 'Email credential self-check' -Quiet -ErrorAction SilentlyContinue) {
+  Write-Host "[OK] email credential self-check passed (current dataDir master key decrypts the real DB credentials)" -ForegroundColor Green
+} elseif (Select-String -Path $log -Pattern 'MASTER KEY LOOKS WRONG' -Quiet -ErrorAction SilentlyContinue) {
+  Write-Warning "[FAIL] wrong email master key: none of the real DB credentials decrypt, no mail account will sync."
+  Write-Warning "       the working key is C:\workspace\openpocket\data\email_master.key"
+  Write-Warning "       POCKET_DATA_DIR must point at C:\workspace\openpocket\data (see comment above)."
+  Select-String -Path $log -Pattern 'MASTER KEY LOOKS WRONG|email master key' -ErrorAction SilentlyContinue |
+    ForEach-Object { Write-Host "    $($_.Line)" }
+  exit 4
+} else {
+  Write-Host "[--] no email credential self-check line in this boot (email module may be off); gate skipped" -ForegroundColor Yellow
 }
 try {
   $hz = (Invoke-WebRequest -Uri 'http://localhost:8088/healthz' -TimeoutSec 8).Content

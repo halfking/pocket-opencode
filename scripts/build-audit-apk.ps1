@@ -4,7 +4,11 @@ $env:ANDROID_HOME = 'C:\Users\86133\AppData\Local\Android'
 # 真机 192.168.31.19 与工作站 192.168.31.20 同网段，直接指本机 pocketd。
 # mode 用 android-dev：守卫 assertApiBaseForBuild 会读到 .env.android-dev 而放行，
 # 而真正内联进 bundle 的是 process.env 里的 VITE_API_BASE（Vite 优先级 process.env 最高）。
-$env:VITE_API_BASE = 'http://192.168.31.20:8088'
+#
+# 2026-10-02: 8088 -> 18099。8088 上实测无任何进程监听（连接被拒），pocketd 实际
+# 监听 18099。此处原写 8088，会产出指向死端口的 APK。
+# 两处必须同时改：process.env（这里）与 .env.android-dev。
+$env:VITE_API_BASE = 'http://192.168.31.20:18099'
 $node = 'C:\tools\node-v22.23.2-win-x64\node.exe'
 $npx  = 'C:\tools\node-v22.23.2-win-x64\node_modules\npm\bin\npx-cli.js'
 

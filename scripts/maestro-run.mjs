@@ -401,10 +401,26 @@ async function preflight() {
   return false
 }
 
+// 2026-10-02 修复：这里原本从 Go 源码里正则抓 `devPass = "..."` 常量。
+// 那天做安全整改时**有意删掉了那个硬编码口令**（server_assistant.go 现在是
+// `devPass := s.cfg.DevAuthPass`，拿不到配置就关闭 dev 旁路），于是本脚本
+// 每天都在第 2 步 exit(2)，整条真机 Maestro 链路直接不可用——而且报错信息
+// （"未能从后端源码定位 dev 口令常量"）指向的是一个已经不存在的东西。
+//
+// 正确的来源是环境变量：服务端读的就是 POCKET_AUTH_PASS，
+// 启动 pocketd 的那个 shell 里本来就有。改读 env 之后，
+// 「口令不进仓库」这个安全属性一点没变（它本来就不在仓库里，是从源码抓的），
+// 反而更不容易和实际配置漂移。
+//
+// 顺序：POCKET_AUTH_PASS 环境变量 -> 旧版源码常量（仅当老 checkout 还在用）。
 const src = readFileSync(GO, 'utf8')
-const m = src.match(/devPass\s*=\s*"([^"]+)"/)
-if (!m) {
-  console.error('未能从后端源码定位 dev 口令常量，拒绝以明文兜底')
+const devPass = process.env.POCKET_AUTH_PASS || (src.match(/devPass\s*=\s*"([^"]+)"/) || [])[1]
+if (!devPass) {
+  console.error(
+    '拿不到 dev 口令。请设置 POCKET_AUTH_PASS 环境变量，' +
+    '并确保它与启动 pocketd 时用的 POCKET_AUTH_PASS 一致。\n' +
+    '（不提供明文兜底：口令只从环境来，不落仓库、不进命令行。）'
+  )
   process.exit(2)
 }
 
@@ -440,7 +456,7 @@ await resetAppAuth()
 // 2026-10-01 13:40 实测踩到过「Maestro 把 ${POCKET_DEV_PASS} 展开成字符串
 // "undefined"」，现场只留下一条 assert `^undefined$` 不成立，根因看不见。
 // 这行让「变量到底传没传过去」一眼可见（口令本身仍不落 stdout）。
-console.log(`[preflight] 注入子进程：POCKET_MASTER=${(process.env.POCKET_MASTER || 'PocketTest2026').length} 字符 / POCKET_DEV_PASS=${(m[1] || '').length} 字符`)
+console.log(`[preflight] 注入子进程：POCKET_MASTER=${(process.env.POCKET_MASTER || 'PocketTest2026').length} 字符 / POCKET_DEV_PASS=${(devPass || '').length} 字符`)
 
 const SYSTEM_DIALOG_FLOW = '.maestro/_dismiss-system-dialogs.yaml'
 const args = ['--device', DEVICE, 'test', '--no-reinstall-driver', SYSTEM_DIALOG_FLOW, ...flows]
@@ -450,7 +466,7 @@ const r = spawnSync(MAESTRO, args, {
   shell: true,
   env: {
     ...process.env,
-    POCKET_DEV_PASS: m[1], // 只进子进程 env
+    POCKET_DEV_PASS: devPass, // 只进子进程 env
     // 本地 SQLCipher 主密码是测试装置上本会话约定的值，不是仓库内推导出来的。
     // 仍然只经 env 传递，避免出现在 flow 文件里。
     POCKET_MASTER: process.env.POCKET_MASTER || 'PocketTest2026',
