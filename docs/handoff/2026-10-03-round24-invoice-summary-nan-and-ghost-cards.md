@@ -898,6 +898,74 @@ AND notified_at=0 AND importance='high'` = **34**，与 01:14 那份只读诊断
 
 **第 7 张的来源没查清之前，这三条我都没法评估代价。** 那是我建议的下一步。
 
+---
+
+## §20 查清了第 7 张的机制——并因此**否掉 §19.4 的第 1 条路**
+
+### 20.1 本地表是**设计上**就允许存在服务端没有的行
+
+不是 bug，是明确设计。证据链（全部是仓库里现成的代码与用例）：
+
+```
+native/list-sync/planner.ts
+  isLocalOnlyId(id)         把 'local-' 前缀识别为「仅本地」
+  newLocalId('inv')         生成 local-inv-<...> 临时 id
+  planListSync(local, remote, { pushLocalOnly })
+      planner.test.ts:34  'local-only row is pushed by default'
+      planner.test.ts:39  'local-only row stays local when pushLocalOnly is false'
+                            ← pushLocalOnly=false 时它就**永远留在本地**
+
+features/email/invoice-list-sync.ts:9-29
+  matchInvoiceForAlign(local, remote)
+      注释：本地临时票对齐服务端：同邮件 + 票号，或同邮件 + 销售方 + 金额
+      硬条件：r.emailId !== l.emailId 直接 return false   （第 19 行）
+
+features/email/invoices-store.ts
+  upsertFromServer()  要求 inv.id，无 id 的跳过
+  remapLocalId()      把本地临时 id 换成服务端 id；目标已存在则删掉本地副本
+  listDirty() / clearDirty() / setLocalStatus()   ← 未回推的本地改动的账
+native/schema.ts:268  local_email_invoices.client_id TEXT DEFAULT ''
+```
+
+### 20.2 于是有两条路会让 `local-inv-*` 永久留在本地
+
+1. **回推没成功**（`pushLocalOnly=false`、outbox 失败、或服务端拒绝）。
+2. **remap 对不上**：`matchInvoiceForAlign` 硬要求 `r.emailId === l.emailId`。
+   只要服务端那一行来自**另一封邮件**（同一张票被重新采集、或原邮件被删后换源），
+   就永远匹配不上，本地行就一直以 `local-inv-*` 的身份渲染成卡片。
+
+第 7 张（`云服务开票中心` ¥1,280 `待下载` `No.25332000000123456789`）的形态
+与第 2 条完全吻合：它有一个**具体的发票号**、非零金额、真实商家、
+状态是「待下载」而不是失败——这不像删除残留（那两张是 `name:` / ¥0.00），
+更像一条**建了档、但上游始终没有对应行**的本地票。
+
+### 20.3 这否掉了 §19.4 的第 1 条路
+
+「按服务端权威集裁剪本地镜像」会**删掉尚未回推成功的真实发票**。
+这不是"可能有损失"，而是与 `client_id` / `remapLocalId` / `listDirty` /
+`pushLocalOnly` 这整套机制的设计意图**直接冲突**——那套机制的存在意义
+就是让服务端暂时没有的行能留在设备上。
+
+⇒ §19.4 的三条里，第 1 条**应当排除**，除非同时改成"只裁剪 `dirty=0`
+且从未有过 `local-` id 的行"，而那已经是另一套逻辑了。
+剩下第 2 条（补 `workspace_id`/`user_id`）与第 3 条（只修呈现）才是真正在桌上的。
+
+### 20.4 但有一件事我**没有验证**，别替我补上
+
+我**没有读到设备上的 `local_email_invoices` 表**（本地库在设备里，
+读取需要 vault 解锁或 root），所以：
+
+- 第 7 张的 id **是不是** `local-inv-*`，**未证实**；
+- §20.2 那两条机制是**从代码读出来的**，不是从这台设备上观察到的。
+
+要证实只需一件事：在设备上执行
+`SELECT id, seller, amount, status, client_id, dirty FROM local_email_invoices`
+（解锁后用 CDP 求值，或 `adb shell run-as` 读 SQLite）。
+**一条查询就能把 §20 从"机制成立"变成"这张卡就是这个机制产生的"。**
+在那之前，§20.3 的结论应读作「按设计就该排除第 1 条」，
+而不是「这台设备上的第 7 张已经被证明是 `local-inv-*`」。
+
+
 
 
 
