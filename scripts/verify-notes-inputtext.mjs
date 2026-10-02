@@ -69,4 +69,6 @@ if(enabled){
 }
 const passed=checks.filter(c=>c.pass).length;
 console.log(`\n=== 汇总 ===\n${passed}/${checks.length} 通过`);
-process.exit(0);
+// BUG-V19：原本写死 process.exit(0)，哪怕判出 FAIL 退出码也是 0，
+// 调用方（CI / 批量 runner）无从分辨「跑过了」与「全绿」。
+process.exitCode = checks.some(c=>!c.pass) ? 1 : 0;

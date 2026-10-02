@@ -34,7 +34,12 @@ const q = (sql) => {
   return String(out).trim()
 }
 
-const countSql = `SELECT ${TABLES.map((t) => `(SELECT count(*) FROM opencode_pocket.${t})`).join(" || '|' || ")}`
+// PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
+// 写死 opencode_pocket 会让本夹具只能对着共享库跑 —— 它是**硬删**，删错库就是事故。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
+
+const countSql = `SELECT ${TABLES.map((t) => `(SELECT count(*) FROM ${SCHEMA}.${t})`).join(" || '|' || ")}`
 
 console.log(`before [decks|notes|cards|revlog] = ${q(countSql)}`)
 
@@ -81,11 +86,11 @@ if (cacheErr) {
   process.exit(1)
 }
 
-q(`DELETE FROM opencode_pocket.flashcard_revlog WHERE card_id IN (
-     SELECT c.id FROM opencode_pocket.flashcard_cards c WHERE c.user_id = '${USER}')`)
-q(`DELETE FROM opencode_pocket.flashcard_cards WHERE user_id = '${USER}'`)
-q(`DELETE FROM opencode_pocket.flashcard_notes WHERE user_id = '${USER}'`)
-q(`DELETE FROM opencode_pocket.flashcard_deck_config WHERE user_id = '${USER}'`)
+q(`DELETE FROM ${SCHEMA}.flashcard_revlog WHERE card_id IN (
+     SELECT c.id FROM ${SCHEMA}.flashcard_cards c WHERE c.user_id = '${USER}')`)
+q(`DELETE FROM ${SCHEMA}.flashcard_cards WHERE user_id = '${USER}'`)
+q(`DELETE FROM ${SCHEMA}.flashcard_notes WHERE user_id = '${USER}'`)
+q(`DELETE FROM ${SCHEMA}.flashcard_deck_config WHERE user_id = '${USER}'`)
 
 console.log(`after  [decks|notes|cards|revlog] = ${q(countSql)}`)
 const left = q(countSql).split('|').map(Number)

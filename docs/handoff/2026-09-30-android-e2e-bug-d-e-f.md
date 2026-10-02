@@ -9933,6 +9933,35 @@ CLEANED:rejection CALLS=["DELETE /api/finance/SEED-123"]
 和一大批功能点写路径；随后把 3 个已修好清理逻辑的 finance 脚本对着隔离环境实跑，
 确认「失败路径也会删」这条不只停在负控里。
 
+<!-- ============ 编号碰撞分界（2026-10-03 round29 合并 origin/main 时产生） ============
+
+     下面这一段来自 origin/main，它与上面那段是**两条互相独立的编号轨道**，
+     各自独立地把章节编到了 §4.91，合并时撞车。两边内容都是真的，一行都没丢。
+
+       · 上半段（本会话这条轨道）：§4.90 – §4.100
+         主题：更新通道字典序、版本显示点、边缘 /callback/ 可达性、
+               feikemanager 邮箱追查、/api/app/download 假 APK
+       · 下半段（origin/main 那条轨道）：§4.91 – §4.98
+         主题：隔离验证环境（POCKET_PG_SCHEMA）、写路径探针、
+               BUG-V15 ~ BUG-V22、BUG-V20 的三段定性反复
+
+     **为什么不在这里自动重编号**：这两条轨道各有 8~10 个章节，
+     且**互相引用自己的章节号**（例如下半段的「§4.96 更正 §4.95」、
+     「§4.98 撤回 §4.97 的定性」）。机械地把下半段整体 +10 会同时改掉
+     章节标题和章节**内部**的引用，而从文档外部指向它们的引用散落在
+     round26/27/28/29 等其它 handoff 文件里，一次 sed 改不干净，
+     留下的错误引用比重复编号更难发现。
+
+     所以本轮选择：**保留两侧原始编号 + 在此加分界说明**。
+     重复编号是**显式**的、能一眼看见的问题；错误交叉引用是**隐性**的。
+     重编号留给下一轮连同全量引用一起审计，别塞进 cron。
+
+     ⚠ 读下半段时注意：「§4.97」指的是 BUG-V20 的真产品缺陷，
+        **不是**上半段 §4.97 的飞书回调 nginx 缺陷。两者同号不同事。
+
+=========================================================================== -->
+
+
 # §4.91 更新通道：服务端字典序 bug 的黑盒定案 + 「设备跑的是哪个构建」改成读原生
 
 ## §4.91.0 结论
@@ -11018,3 +11047,973 @@ Content-Type = text/plain; charset=utf-8
   `config.go` CRLF=734/bareLF=0）；本轮新建的 `apk_download_test.go` 是 LF，
   与我上一轮建的 `app_version_compare.go` 一致。
 - `internal/server` 与 `internal/config` 全量测试均 exit 0；`go build ./...` exit 0。
+
+---
+
+<!-- ===== 编号碰撞分界以下：origin/main 那条独立轨道（§4.91 – §4.98） ===== -->
+
+## §4.91 隔离验证环境落地：把「不能安全跑」变成「能跑且不污染」，外加两个自己工具里的真缺陷
+
+本节记录一次以「解锁一批跑不了的验证」为目标的改动，以及在做的过程中
+**在自己的测量工具里**翻出来的两个缺陷（Bugs V15 / V16）。两个都不是新功能，
+但都属同一类：**判据说的话和判据实际做的事不是一回事**。
+
+### §4.91.1 隔离环境：`POCKET_PG_SCHEMA` 确实是硬隔离，不是纸面参数
+
+- 后端：`scripts/start-local-backend.ps1 -Port 18101 -Schema opencode_pocket_verify`
+  （DataDir `backend/data-verify`），与共享后端 18099 / 18077 / 18100 并存。
+- 隔离依据：`backend/internal/config/config.go:259`
+  `PostgresSchema: getEnv("POCKET_PG_SCHEMA", "opencode_pocket")`。
+
+验证脚本 `scripts/verify-schema-isolation.mjs`（11 条判据全过，exit 0）：
+
+| 判据 | 结果 |
+|---|---|
+| 隔离 schema 收到了这一行（同一 SQL 打 verify 返回 **1**） | PASS |
+| 共享 schema 没收到这一行 | PASS |
+| public schema 没收到这一行 | PASS |
+| DELETE 返回 204 / 按 id 复查隔离已空 / 按 id 复查共享为空 / 按 note 复查已空 | PASS |
+| 隔离 schema 总行数回到 POST **前**的基线 | PASS |
+| 共享 finance 表、共享 tasks 表总行数均未变 | PASS |
+| 阳性对照：共享 schema 确实有数据（`shared.tasks=2`） | PASS |
+
+**为什么要有「阳性对照」**：「共享库里数到 0」在**那张表根本不存在**时也会得到 0。
+所以除了阴性结果，还必须证明 psql 真的看得见 `opencode_pocket`（用 `shared.tasks > 0`），
+以及同一条 SQL 在隔离 schema 上**确实返回 1**（证明判据不是恒真）。
+
+**三次自伤换来的三条纪律**（都写进了脚本注释）：
+
+1. **基线必须在 POST 之前取。** 第一版把基线取在 POST 之后却标成「播种前基线」，
+   于是「删后回到基线」永远差 1。当时的输出是 `verify 总行 1（期望回到基线 2）`
+   ——看起来像隔离出了问题，实际上是**判据和它的标签一起说谎**。
+2. **「共享里 0」要配阳性对照。** 共享的 finance 表本身就是空的，
+   这条的强度有限；脚本会把它当 NOTE 打印出来，而不是假装它很强。
+3. **SQL 报错必须响亮退出。** 第一版 `catch` 里 `process.exit(2)`，
+   会把「查错了表」伪装成「结果是 0」——而第一版恰恰就写错过表名
+   （真表名是 `finance_transactions`，不是 `finance`），报的是
+   `relation "…finance" does not exist`。现在改成 `throw`，由异常钩子兜住清理。
+
+**故障注入负控**（`POCKET_FAULT=sql`，在播种**之后**故意执行一条会报错的 SQL）：
+
+```
+[清理 uncaughtException] DELETE txn_1790960258955121400 -> 204
+uncaughtException: Error: SQL 失败：SELECT count(*) FROM opencode_pocket_verify.no_such_table_xyz
+exit=1
+```
+
+顶层 `await` 抛错确实会触发 `uncaughtException`，钩子里的 `cleanup()` 真的把行删了。
+`process.on('exit')` 不能 await，所以钩子挂在 `unhandledRejection` / `uncaughtException` 上。
+
+顺带清掉一行历史遗留（`ISOLATE-856420`，时间戳早于已知的那次运行 ⇒ 是某次崩溃
+在跑到 DELETE 之前就挂了留下的，正是 BUG-V14 那一类）。`--purge-residue` 显式 opt-in，
+逐条走 API 删，不裸 SQL 写库。
+
+### §4.91.2 真实写负载下的隔离：共享库 66 张表两轮跑完零变动
+
+跑之前/之后各拍一次 `opencode_pocket` 全表行数快照，diff 必须为空：
+
+```
+before=66  after=66   SHARED SCHEMA UNCHANGED after 2 full probe runs (66 tables)
+```
+
+这是比「单条 finance 行落在哪」强得多的证据：它是**六个真写脚本各跑两遍**之后的
+全库零变动。
+
+### §4.91.3 6 个写路径探针首次实跑：6/6 exit 0，27 PASS
+
+`scripts/run-isolated-probes.mjs`（新，串行执行、逐个落日志、区分「脚本失败」与「runner 自己抛了」）：
+
+| 脚本 | exit | PASS | FAIL |
+|---|---|---|---|
+| probe-vault-api.mjs | 0 | 6 | 0 |
+| probe-vault-sync-empty-blob.mjs | 0 | 3 | 0 |
+| probe-gateway-nodes-api.mjs | 0 | 6 | 0 |
+| probe-email-account-api.mjs | 0 | 3 | 0 |
+| probe-email-sync-honesty.mjs | 0 | 5 | 0 |
+| verify-bug-z.mjs | 0 | 4 | 0 |
+
+这 6 个是**纯 API** 脚本：读 `POCKET_API_HOST`/`POCKET_API_PORT`，不碰 adb、不碰 CDP、
+不直接查 PG ⇒ 把 base 指到隔离后端，写入就落在隔离 schema。
+
+runner 里两处刻意写法：只统计**行首**的 `PASS`/`FAIL`（之前栽在 `Select-String`
+大小写不敏感上，响应体里的 `failed` 被数成了 FAIL）；`spawnSync` 的非 0 退出与
+「我自己抛了」分开归类。日志目录不存在时 `mkdirSync` 补上，且写日志失败不许中断整轮
+——头一版那行 `writeFileSync` 在 `try` 之外，目录不存在时 runner 自己崩掉，
+**第一个脚本的结果也一起丢了**。
+
+### §4.91.4 BUG-V15：邮件同步诚实性探针 —— 前置不自建 + 结论硬编码已过时 + 退出码恒 0
+
+首次实跑就报 `FAIL 找到那个指向不存在主机的账户（前置） — (没找到)`，
+但 **exit=0**。三处缺陷：
+
+1. **前置不自建。** 脚本只做 `accounts.find(a => a.imapHost === 'imap.invalid.test')`，
+   却从不创建那个账户。在干净环境里它**永远**跑不起来。
+2. **结论硬编码且已过时。** 脚本结尾无条件打印
+   「前端 `EmailAccountAddView` 只读 `sync.new`，不读 `sync.failed`，所以把失败显示成了成功」。
+   实测 `frontend/src/features/email/EmailAccountAddView.vue:219-226` **已经读**
+   `sync.failed` 并据此 `imapOk.value = false`——那个 bug 早就修了。
+   一句过时的断言留在脚本里，会让下一个读它的人以为问题还在。
+3. **退出码恒为 0。** 前置缺失时整段探针被 `if (target)` 跳过，
+   打印「0/1 通过」然后 exit 0 ——自动化无从分辨「跑过了」和「什么都没跑」。
+
+修法：
+
+- 自己建 `imap.invalid.test`（RFC 2606 保留 TDD，永不可解析）账户，跑完在
+  `finally` + 异常钩子里删；建不起来就 `exit 3`，响亮失败。
+- 结论改成**从源码推导**：读前端文件，判它到底读不读 `sync.failed`、有没有据此置 false。
+  修完实测输出是「前端确实读 / 确实置 false ⇒ **不存在**『把失败显示成成功』的问题」。
+- 退出码反映判定。
+
+**判据自证**（`--selftest`，10/10 通过）：每条读外部输入的判据都喂一个必须判 false 的
+输入——`{failed: []}`、`{}`、`null`、`'not json'`、空源码、只读 `sync.new` 的源码、
+读 failed 却仍置 `true` 的源码。**变盲对照**（`POCKET_FE_FILE` 指向不存在的文件）：
+
+```
+FAIL  前端确实读 sync.failed（否则失败会被显示成成功）
+FAIL  前端据 failed 把结果置为失败
+3/5 通过    exit=1
+```
+
+后端那三条仍 PASS ⇒ 不是整体变盲，只是前端那两条对「读不到文件」敏感。
+
+修完实跑：5/5 PASS，exit 0，账户删净（隔离 schema 里 `honesty-*` 两轮都清掉了）。
+
+### §4.91.5 BUG-V16：30 处写死 PG schema，把写路径脚本锁死在共享库上
+
+一批「直接查库对照」的探针把 `opencode_pocket.` 写进了 SQL。两个后果：
+
+1. 它们**只能**对着共享开发库跑 ⇒ 失败时 SEED 留在**另一会话**的库里（BUG-V14 的放大器）。
+2. 想在隔离后端上验证它们时，断言会去查**另一个** schema ——
+   要么假失败，要么更糟：静悄悄对着错库给出「通过」。
+
+- 门禁 `scripts/check-pg-schema-hardcoded.mjs`（新）：`--selftest` **11/11 通过**
+  （敏感度 2 / 特异度 5 / 变盲 2 / 自指豁免 1 / 注释归类 1），实跑 **0 命中**。
+- 迁移 `scripts/migrate-pg-schema.mjs`（新）：12 个文件 30 处，`flashcards-test-fixture.mjs`
+  与 `marshal-probe.mjs` 手改（前者是**跨行模板串**，逐行匹配处理不了，且它的 DELETE
+  是自清理部分，值得手工）。
+
+**迁移脚本自己也翻车了一次，值得记**：
+
+- 锚点规则太松：`process.env.POCKET_PSQL,` 这行落在 `resolvePsql()` 里**多行数组
+  字面量的中间**，SCHEMA 声明被插进去 ⇒ `verify-bugaa-realdevice.mjs` 语法错误。
+- 而 `node --check` 查的是**磁盘上的旧文件**（改完还没落盘），所以放行了。
+  **判据没对着被测对象。** 两处都修了：锚点必须在语句边界
+  （行尾 `;` 或行首 `const|let|function`），语法检查改为写临时文件后检查新内容、
+  `finally` 里删。
+
+**负控**：把 `verify-bugaa-realdevice.mjs` 的改前版本取成 `_negctl-bugaa.mjs` 再跑一次迁移 ——
+现在它**跳过并说明原因**（「找不到语句边界上的 POCKET_PSQL / psql 帮助函数锚点」），
+不再产出坏文件。旧行为是静悄悄写坏。
+
+判据与门禁的一致性也踩了一次：迁移头一版按**全文**数 `opencode_pocket.` 出现次数，
+而门禁按行排除整行注释 ⇒ 7 个跳过里有 6 个纯属这个不一致。已统一成同一个计数函数。
+
+### §4.91.6 隔离环境解锁不了什么（重要边界，别高估它）
+
+`verify-finance-writepath.mjs` / `diag-finance-*` 这类**真机 UI** 脚本，
+隔离环境**救不了**：UI 走哪个后端由设备侧 `adb reverse` 决定（当前指向 18099，
+是并发会话的后端），不是由脚本的 env 决定。改那个映射是**共享可变状态**，
+没跟对方确认之前不动。
+
+所以这轮的准确表述是：**3 个 finance 脚本已 schema 化（可对着隔离后端跑），但未实跑**。
+未实跑 ≠ 已验证。
+
+### §4.91.7 本轮自己的工具翻了车（记账）
+
+- runner 的 `writeFileSync` 在 `try` 之外，目录不存在时 runner 自己崩，第一个脚本结果一起丢。
+- 迁移的 `node --check` 查旧文件（上面已详述）。
+- 迁移的注释/代码判定与门禁不一致，导致 6 个假跳过。
+- `Out-File -Encoding UTF8` 造夹具时带出 BOM，`node --check` 报
+  `Invalid or unexpected token` ——那是夹具的问题不是迁移的问题。
+  **看到语法错先确认错在哪个文件**：那次的 BOM 来自 PowerShell，不是代码。
+## §4.92 三条外部审计缺口的定性：两条证伪、一条转化为新门禁
+
+外部审计回了三条缺口。逐条查证，结论是**两条不成立、一条成立但被我错误归类**。
+成立的那条又牵出一个此前没记录的前置条件。
+
+### §4.92.1 「闪卡入口『新建卡组』跳到卡片编辑页」—— 不复现
+
+审计说这是「本轮新发现、只记录未修」。逐层查下来它在当前代码里不存在：
+
+| 层 | 证据 | 结论 |
+|---|---|---|
+| i18n 值 | `list.create`="新建卡片"、`deck.create`="新建卡组"（zh-CN）；en-US 为 "New card"/"New deck" | 未对调 |
+| 9 种语言 | de/en/es/fr/ja/ko/pt/zh-CN/zh-TW 的 `list.create` 与 `deck.create` **全部互不相同** | 一致 |
+| 模板绑定 | `.add` → `goCreate()` → `/flashcards/new`（卡片编辑页）；`deck-create-toggle` → `showDeckForm = !showDeckForm`（**页内展开**，不导航） | 语义正确 |
+| 后端路由 | `server.go` 里无 `/api/marketplace/agents` 之类字面量 | — |
+
+历史：**§4.14 BUG-K** 就是这个缺陷（「按钮写新建卡组、实际跳到新建卡片页」），
+修法是把 `list.create` 从「新建卡组」改成「新建卡片」并新增 `deck.create`；
+**§4.28 BUG-AA** 补齐了 BUG-K 只改对 2/9 语言的问题。两轮都已闭环。
+
+**没做过的是真机侧**。新增 `scripts/probe-flashcards-entries-readonly.mjs`，
+**严格只读**（只 openCdp + 读 DOM，不导航、不点击、不碰 `adb reverse`），
+实跑结果：
+
+```
+CDP 已连：pid=21096 socket=webview_devtools_remote_21096 port=52330
+当前页面：origin=https://localhost hash=#/more
+当前不在闪卡页。**不跳转** —— 跳转是状态变更……
+本次结论：闪卡两入口的真机渲染「未验证」（不是「通过」，也不是「不通过」）。
+exit=2
+```
+
+`exit=2` 是刻意设计的：它把「没验」和「验过不通过」区分开，
+免得下一轮在汇总表里把这一项当成通过。跳转属于共享设备上的状态变更，
+而设备的 `adb reverse` 指向并发会话的后端，动手前必须先确认对方没在跑。
+
+跑完确认共享状态未动：`reverse` 仍是 `tcp:18099 → tcp:18099`，
+`forward --list` 为空（`close()` 清理干净），App 仍停在同一个 Activity。
+
+### §4.92.2 顺带查出一个没记录的前置条件：设备跑的是**生产 https 包**
+
+上面那次附着读到 `origin=https://localhost` —— 设备上装的是**生产包**，
+而 `verify-finance-writepath.mjs` / `verify-instances-readpath.mjs` 的
+`POCKET_EXPECT_ORIGIN` 默认值是 `http://localhost`（开发包）。
+
+⇒ **用默认值跑这两个脚本，会在第一关 `origin 与预期不符` 就 exit 5，
+根本走不到真正要验的判据上。** 跑它们必须带
+`POCKET_EXPECT_ORIGIN=https://localhost`（脚本本来就为「生产 https 回归」留了这个口子）。
+
+全仓只有这 2 处涉及该默认值，所以不是普遍问题，但它是**实跑前置条件**，
+之前从没记进 handoff。
+
+### §4.92.3 「/api/marketplace/agents 到底是 404 还是 401」—— 两个都不是缺陷
+
+审计说「本次只读探测下无法证实（返回 401）」。实测三种请求（隔离后端 18101）：
+
+```
+① 不带凭证      -> 401  {"code":"unauthenticated","error":"missing authorization token"}
+② 带错 token    -> 401  {"code":"unauthenticated","error":"invalid or expired token"}
+③ 带有效 token  -> 404  {"error":"not found"}
+```
+
+源码对照：`server.go` 里**没有** `/api/marketplace/agents` 这个字面量。
+
+所以两轮旧结论各自错在哪：
+
+- 「404 = 路由没注册」——**这句是对的**，但当时是**没带 token** 探测的，
+  被 `requireAuth` 先挡成 401，压根没走到路由判定。
+- 「市场接口 401」——同样是没带凭证的只读探测，401 只是鉴权中间件在工作。
+
+**真正的结论**：`frontend/src/features/marketplace/api.ts` 的
+`base = '/api/marketplace'` 下只列了 `packages` / `releases` /
+`packages/{id}/versions` / `submit` / `review` / `publish` / `install` / `revoke` / `rate`
+—— **没有任何地方调 `/api/marketplace/agents`**。它是一个**契约里不存在的 URL**。
+「智能体市场」页（`AgentMarketView`）走的是 `/api/marketplace/packages?kind=agent`，实测 200。
+
+⇒ 这不是缺陷，是个**反复被人当成缺陷讨论的幻影 URL**。为此新增门禁
+`scripts/check-marketplace-contract.mjs`：从 `api.ts` 抽出真实路径，
+逐个拿**有效 token** 打一遍，必须 2xx；写路径（submit/publish/install/revoke/review/rate）
+只 SKIP 不探。实跑 5/5 PASS：
+
+```
+200  /api/marketplace/packages          {"packages":[...]}
+200  /api/marketplace/releases          {"releases":[]}
+200  /api/marketplace/packages/X/versions {"versions":[]}
+404  /api/marketplace/agents（有效 token）
+401  /api/marketplace/agents（无凭证）
+```
+
+### §4.92.4 「真机 Maestro 从未成功执行一次（零安装包、零运行产物）」—— 不成立
+
+审计这条说「零安装包、零运行产物」。`~/.maestro/tests/` 下实际有 **155 个运行目录**：
+
+| flow | 运行次数 |
+|---|---|
+| flashcards-write | 26 |
+| notes-crud | 22 |
+| tasks-crud | 18 |
+| smoke-login | 9 |
+| login-gesture | 2 |
+
+每次运行的产物结构完整，例如 `2026-10-02_223553/flashcards-write/`：
+`commands.json` (21.9KB)、`manifest.json`、`logs/maestro.log` (24.4KB)、
+`logs/device-logcat.txt` (**980KB**)。`2026-10-02_231342/login-gesture/` 另有
+`takeScreenshot/logs/maestro/login-gesture-rejected.png` (197KB，本轮之前已目视核对)。
+
+设备侧 logcat 是**真机上的 Maestro 进程**留下的，不是模拟：
+
+```
+10-02 22:36:15.711 D/Maestro ( 9060): Requesting view hierarchy
+10-02 22:36:15.732 I/Maestro ( 9060): Skipping invisible child: … boundsInScreen: Rect(38, 10 - 38, 68) …
+```
+
+一点如实说明：Maestro 的 `manifest.json` 里把设备来源标成 `"source": "emulator"`，
+但设备是 `192.168.31.19:5555` 这台真机（前面那张截图里能看到真机状态栏与电量）。
+**那是 Maestro 自己的固定标签，不是设备类型。**
+
+### §4.92.5 这轮新门禁又把自己的作者判红了一次
+
+`check-marketplace-contract.mjs` 第一版把
+`${base}/packages${query}` 里的 `${query}` 当成路径参数替换成了 `X`，
+于是拼出 `/api/marketplace/packagesX` —— 一个**根本不存在的 URL**，
+然后门禁红灯，输出「有接口不可达 —— 这才是真缺陷」。
+
+真凶是抽取器，不是后端。修法：`${…}` 出现在**捕获串末尾**时它是查询串占位符
+（listPackages 专门拼 `?kind=`），不是路径段，去掉即可。
+
+**这条值得单独记**：门禁把作者的错报成后端的错，而那行结论写得很有把握
+（「这才是真缺陷」）。判据出错时，它输出结论的**语气**不会变——
+这跟 §4.91 的迁移脚本把文件改坏而 `node --check` 放行是同一类：
+**判据的错误会以结论的口气出现，而不会以「我不确定」出现。**
+## §4.93 找到不动 `adb reverse` 也能让真机打到隔离库的办法，并让 3 个 finance 脚本真跑
+
+§4.92 说「设备 forward 指向并发会话的后端，改它是共享可变状态，动手前必须先确认对方没在跑」。
+这轮找到了**不碰它**的办法，于是这个卡点解除了。
+
+### §4.93.1 解法：App 的后端地址是 `localStorage` 里一个可改的键
+
+`frontend/src/config/api-base.ts` 是 API 基址的 SSOT，优先级
+**localStorage 覆盖 > VITE_API_BASE > 同源**。关键在规则 1 与规则 2 的分工，
+源码注释写得很明确：
+
+> 构建默认值：Capacitor 壳上**且**是 loopback 时丢弃——真机不可达……
+> **用户显式填的地址不受影响**，因为 `adb reverse` 开发流确实需要用户主动指定 localhost。
+
+⇒ 设备上的 App 之所以打到 18099，是**用户显式填的**，不是构建烘进去的。
+实测（只读 CDP）：
+
+```
+origin            = https://localhost
+pocket_api_base   = "http://127.0.0.1:18099"
+pocket_token 长度 = 291
+最近的 /api/ 请求： http://127.0.0.1:18099/api/finance、/api/redclaw/health、…
+```
+
+那么换一个地址行不行？隔离后端 18101 绑在 `::`（全接口），主机 WLAN 是 `192.168.31.20`，
+设备 `192.168.31.19` 同网段。从**页面里**实测（只发 GET，不写任何数据）：
+
+```
+fetch http://192.168.31.20:18101/healthz  →  {"ok":true,"status":200,"body":"ok"}
+```
+
+**混合内容没有被拦**（Capacitor WebView 允许 cleartext）。所以：
+
+| 方案 | 动的东西 | 谁会受影响 |
+|---|---|---|
+| 改 `adb reverse` | 设备↔主机的端口映射 | **并发会话**（它就靠这个打自己的后端） |
+| **改 `localStorage.pocket_api_base`** | 这台设备上这个 App 的一个键 | 只有下一个用这个 App 的人，且**可原样写回** |
+
+选了后者。`scripts/run-device-against-isolated.mjs` 的纪律：
+动手前先探后端可达（连不上就不改，免得把 App 指到虚空）→ **原值原样记录** →
+改指向 → 跑脚本 → `finally` 写回，外加 `unhandledRejection` / `uncaughtException` 两个钩子
+一起兜（只写在 happy path 上，就会「跑失败就把 App 留在隔离库上」，
+让下一个人莫名打到一个空库 —— 与 BUG-V10/V14 同一类）。
+
+### §4.93.2 动手前先证明设备空闲，且分清「有人在用」与「App 轮询」
+
+`scripts/probe-device-idle.mjs`：连续采样 `/api/` 请求条数。
+12 秒窗口 0 增长；但 60 秒窗口 +2，于是判红。**不能就此断定有人在驱设备** ——
+`/api/redclaw/health`、`/api/scheduled-tasks?since=…` 这类很可能是 App 自带轮询器。
+`scripts/probe-device-request-cadence.mjs` 把 URL 逐条打出来区分二者，
+结果 45 秒窗口 **0 条新增，完全静止**。
+
+顺带白拿了一份**这个 App 真实会打的端点清单**（Performance 资源表反推，44 个去重端点）：
+`/api/finance` `/api/finance/stats` `/api/flashcards` `/api/flashcards/notes`
+`/api/learning/*` `/api/llm-gateway/nodes` `/api/rss/*` `/api/emails*` `/api/tasks`
+`/api/marketplace/packages` `/api/scheduled-tasks` …
+
+### §4.93.3 verify-finance-writepath.mjs：真机 **26/26 通过**
+
+对着隔离后端（`POCKET_API_PORT=18101` + `POCKET_PG_SCHEMA=opencode_pocket_verify`
++ `POCKET_EXPECT_ORIGIN=https://localhost`）实跑，全绿。关键几条：
+
+```
+PASS  API 播种成功（2xx，拿到 id）  — status=201 id=txn_1790962273121029200
+PASS  播种后 PG 行数 +1             — 0 -> 1
+PASS  读路径：API 播种的记录出现在 UI 列表里 — ↑UI测试-¥11.11 … SEED-273012
+PASS  点「记账」后预览出现            — "支出 · 交通 · ¥97.77 确认入账 取消"
+PASS  解析接口 2xx                  — status=200
+PASS  **直接查 PG** 确认真的写进去了   — 1 -> 2
+PASS  PG 最新一条的备注来自 UI 输入的自然语言原文 — note="打车花了 97.77 元"
+PASS  POST /api/finance 非 4xx/5xx  — status=201
+PASS  界面给出成功反馈（toast）        — toasts=["已入账"]
+PASS  ⚠️ 没有失败类反馈与成功类反馈并存
+PASS  ⚠️ 没出现「PG 未变却说成功」的假成功 — saidOk=true PG 1->2
+PASS  列表回显 / 统计联动（本月支出 -¥108.88）/ 删除生效（2 -> 1）/ 对照组 SEED 仍在
+PASS  无未捕获 JS 异常                — 0 条
+[cleanup:normal] 删除 SEED -> 204，PG 终值 = 0
+26/26 通过
+```
+
+跑完三件事同时成立：**共享库 66 表逐表一致**、**隔离库 finance 归零**、
+`pocket_api_base` 已写回 `"http://127.0.0.1:18099"`、`adb reverse` 仍是
+`host-25 tcp:18099 tcp:18099`（我一个字节没动）。
+
+#### 第一次跑 20/26 —— 6 条 FAIL 全是我 runner 的 bug，不是产品缺陷
+
+头一版 runner 传了 `POCKET_API_PORT` 却**漏了 `POCKET_PG_SCHEMA`**，
+finance 脚本的 `SCHEMA` 于是落回默认的 `opencode_pocket`（共享库），
+而 App 写的是隔离库 ⇒ 6 条「直接查 PG」判据全红，其中一条打印成
+`⚠️ 没出现「PG 未变却说成功」的假成功 — saidOk=true PG 0->0`
+——**看起来像一条很严重的真缺陷**。
+
+那条判据其实是对的：它看到的确实是「UI 报成功、它查的库没变」。
+**判据红不一定是产品坏了，先问「我查的是不是同一个库」。**
+补上 `POCKET_PG_SCHEMA` 后同一脚本 26/26。
+
+同时修掉 runner 两处会掩盖结论的地方：`execFileSync` 在子进程非 0 时会 throw，
+不拆开就会把子脚本失败报成 runner 失败；以及子脚本 exit=1 被吞掉、
+外层只把自己的 exitCode 带出去（管道里于是显示成 `EXIT=0`）。
+
+### §4.93.4 BUG-V17：diag-finance-workspace 的「App 看不到 SEED」结论是错的
+
+`diag-finance-workspace.mjs` 里那行「App token 调 list」用的是
+**相对路径** `fetch('/api/finance')`。Capacitor 壳的 origin 是 `https://localhost`，
+相对路径解析到 `https://localhost/api/finance` → 命中本地 index.html → 返回 HTML：
+
+```
+App token 调 list = {"error":"SyntaxError: Unexpected token '<', \"<!doctype \"…"}
+=== 判定 ===
+作用域一致但 App 看不到 SEED —— 需要继续查服务端 ListScoped 过滤或 App 的 fetch
+```
+
+两处都错：
+
+1. 真实 App 走的是 `api/http.ts` 的 `${resolveRuntimeApiBase()}${path}`，
+   即**绝对 base + 相对 path**。脚本测的那次请求**不是 App 发的请求**。
+2. `admin token` 直调同一个接口是 200/hasSeed=true —— 数据在库、作用域也对。
+
+按 `api-base.ts` 的解析顺序改掉（localStorage 覆盖优先，空串=同源），
+并把「实际用的 URL」和 Content-Type 一起回传 +
+`text/html` 时响亮报 `RETURNED_HTML` 而不是继续往下推。修后实测：
+
+```
+App token 调 list = {"url":"http://192.168.31.20:18101/api/finance","status":200,
+                     "count":1,"hasSeed":true,"notes":["DIAG-SEED-491547"]}
+   [自检] App 侧请求用的是绝对 base = YES
+=== 判定 ===
+App 其实能看到 SEED —— 读路径 FAIL 是时序/等待问题，不是作用域问题
+```
+
+⇒ §4.26.2 那个「`default` vs `ws_user-admin` 数据孤岛」**大半是探针自己造出来的**：
+一个用相对路径的假请求 + 一次播种作用域错配。两侧都用 `ws_user-admin` 时一切正常。
+这一条待办可以从「数据孤岛」降级为「时序/等待问题」继续查。
+
+`diag-finance-samescope.mjs` 同一轮也自证了这一点：它原本记录的 FAIL 原因正是
+「跨工作区错配（测试播 ws_user-admin / App 看 default）」，改成同作用域后读路径正常。
+
+### §4.93.5 本轮我自己的两次失误
+
+- `/^\\//.test(...)` 在正则字面量里被斜杠截断，`.` 之后报 `Unexpected token '.'`。
+  改用 `startsWith('/')`。**在会被程序再读一遍的文本里，别嵌套你正在用的分隔符**
+  （与 Go 块注释里写 `*/`、`.mjs` 模板串里写反引号是同一类）。
+- 第一次写 BUG-V17 修复时，`/^\\//` 那行同时被我自己的**自检判据**忽略了 ——
+  自检在 `ev()` 里，没在 Node 侧；`node --check` 才抓到。
+  **语法检查和语义自证是两道闸，不能只留一道。**
+
+### §4.93.6 这一节没有解决什么
+
+- 设备侧其余 CDP 族（约 14 个）**尚未**逐个实跑，只是把通道打开了。
+- BUG-AX 设备侧负控、闪卡两入口的**点击**、会议写入设备侧持久化，仍未做。
+- `default` vs `ws_user-admin` 的**时序/等待**问题需要单独复现，不是本节能结的。
+## §4.94 给 26/26 配负控：查出一条**恒假**的证伪判据（BUG-V18），并解掉 5 个脚本的 origin 硬写
+
+§4.93 拿到 `verify-finance-writepath.mjs` 真机 **26/26 通过**。但按一直守着的规矩，
+**绿灯本身不证明判据有区分力** —— 这一节就是去证明它。
+
+### §4.94.1 BUG-V18：证伪判定里有一条**设计上永远绿**的判据
+
+先跑 `--sabotage=hide-cta`（把「记账」按钮从 DOM 摘掉，模拟死 CTA）：
+
+```
+11/26 通过
+FAIL: 对照组 A：空输入时「记账」按钮 disabled
+FAIL: 点「记账」后预览出现（解析请求走通）
+FAIL: **直接查 PG** 确认真的写进去了
+FAIL: POST /api/finance 非 4xx/5xx
+FAIL: 删除按钮点得动 …（共 15 条红）
+证伪判定：❌ 判据没抓到破坏 —— 本次证伪无效
+```
+
+**15 条判据明明抓到了破坏，脚本自己却判「证伪无效」。** 查它的期望键：
+
+```js
+: ['页面就位：快速记账输入框与「记账」按钮都存在', '点「记账」后预览出现（解析请求走通）']
+```
+
+而脚本的执行顺序是：**先测 `页面就位`，再摘按钮**。所以在 hide-cta 模式下
+这条判据**必然 PASS** —— 它量的是破坏之前的状态。
+`expectKey.every(...)` 于是永远 false，**无论破坏多彻底都输出「证伪无效」**。
+
+这不是「判据不敏感」，是**恒假**：它要求一个不可能成立的条件。
+（同一文件里还留着两处同类自证的注释——`*` 只剥一边、failed 是对象数组——
+说明这条链已经栽过两次。）
+
+顺带一个标签问题：那条 `页面就位：…按钮都存在` 是在 sabotage **之后**打印的，
+此刻按钮已经被摘掉，日志却报 PASS 并声称「按钮都存在」。标签在说它没在说的东西。
+
+修法两处：
+
+1. 改名 `页面就位（sabotage 前基线）`，并**在摘除之后再测一次**按钮在不在，
+   把真实状态打成可核对的现场证据：
+   ```
+   [sabotage 生效确认] 摘除后：btn=false（期望 false） input=true（期望 true，说明只摘了按钮）
+   ```
+   `btn` 不是 false 就 `exit 8` —— sabotage 没生效的话，后面的红**不能**算「判据抓到了破坏」。
+2. hide-cta 的期望键换成 sabotage 真正会打坏的三条：
+   `点「记账」后预览出现` / `**直接查 PG** 确认真的写进去了` / `POST /api/finance 非 4xx/5xx`。
+
+修完复跑，两个负控都通过：
+
+```
+# hide-cta
+逐条匹配：HIT «点「记账」后预览出现（解析请求走通）»  HIT «直接查 PG 确认真的写进去了»  HIT «POST /api/finance 非 4xx/5xx»
+证伪判定：✅ 判据在有缺陷一侧如期失败
+
+# swallow-create（拦掉 POST /api/finance 并回一个假的 201 —— 复刻 BUG-AC）
+FAIL  ⚠️ 没出现「PG 未变却说成功」的假成功 — saidOk=true PG 1->1
+逐条匹配：HIT «直接查 PG 确认真的写进去了»  HIT «⚠️ 没出现「PG 未变却说成功」的假成功»  HIT «POST /api/finance 非 4xx/5xx»
+证伪判定：✅ 判据在有缺陷一侧如期失败
+```
+
+**⇒ 26/26 这个绿灯现在被证明不是恒真**：两种人为破坏下，判据都如期转红，
+且 swallow-create 精确复现了 BUG-AC 的原场景——界面报「已入账」、
+PG 停在 1→1，只有「直接查 PG」那条能识破。
+
+注意修判据之后**必须复跑负控**：我只是把一条恒假判据换掉，
+不验证新期望键能被命中的话，只是把恒假换成恒假。
+
+### §4.94.2 5 个写路径脚本 origin 硬写，在当前设备上一律 exit 5
+
+§4.92 查出设备装的是**生产 https 包**（`origin=https://localhost`），
+而这批脚本第一关写死开发包：
+
+| 脚本 | 原有断言 | CDP 端口 | API 端口 |
+|---|---|---|---|
+| verify-email-writepath.mjs | `origin !== 'http://localhost'` → exit 5 | `POCKET_CDP_PORT \|\| 9253` | env |
+| verify-gateway-writepath.mjs | 同上 | `… \|\| 9260` | env |
+| verify-marketplace-install.mjs | 同上 | `… \|\| 9250` | **写死 8088** |
+| verify-bug-u.mjs | 同上 | `… \|\| 9247` | env |
+| verify-bugaa-realdevice.mjs | 同上 | env | env |
+
+用当前设备跑，它们会在**还没走到任何真正要验的判据**之前就退出——
+看着像「脚本坏了」，实则是前置假设不成立。
+`verify-finance-writepath.mjs` 早留了这个口子（`POCKET_EXPECT_ORIGIN`，
+注释写明「做生产 https 回归时用…否则脚本会在第一关就退出」），这批漏了。
+
+新增 `scripts/migrate-expect-origin.mjs`（机械不变量：替换数一致、
+`EXPECT_ORIGIN` 恰好声明一次、`node --check` 对着**新内容**过、任一不满足则该文件不动），
+改掉 5 个文件；`verify-marketplace-install.mjs` 的 `const API_PORT = 8088`
+也改成 `Number(process.env.POCKET_API_PORT || 8088)`。
+
+**头一版 TARGETS 漏了 `verify-bugaa-realdevice.mjs`**，
+是迁移后的**全仓残留复查**把它捞出来的 —— 所以批量迁移之后必须再扫一遍全仓，
+不能只看「我列的那几个」。
+
+### §4.94.3 这一节没有解决什么
+
+- `verify-task / email / gateway / marketplace / bug-u / bugaa` 六个脚本**尚未逐个实跑**，
+  只是把前置条件解开了。
+- 它们仍**各写各的 `adb forward`**（约 14 处硬编码 CDP 端口），
+  尚未迁到 `lib/adb-cdp.mjs` 的 `tcp:0`。跑的时候要显式传 `POCKET_CDP_PORT` 避开撞端口。
+- 闪卡两入口的**点击**、BUG-AX 设备侧负控、会议写入设备侧持久化，仍未做。
+## §4.95 BUG-V19（退出码恒 0）+ 新门禁，以及一个刚坐实的 UI 缺陷（BUG-V20，待定位）
+
+### §4.95.1 BUG-V19：4 个脚本判出 FAIL 仍然 `process.exit(0)`
+
+`verify-task-writepath.mjs` 跑出 `exit=0 PASS=8 FAIL=1`。退出码是**写死**的：
+
+```js
+const passed = checks.filter((c) => c.pass).length
+console.log(`\n=== 汇总 ===\n${passed}/${checks.length} 通过`)
+ws.close()
+process.exit(0)          // ← 无论 passed 是多少
+```
+
+⇒ CI、批量 runner、`&&` 链**全都无从分辨**「跑过了」与「全绿」——
+绿灯是被无条件发出去的。与 BUG-V15（邮件同步探针退出码恒 0）同一类，
+只是那次的脚本我改了、这一批漏了。
+
+新增门禁 `scripts/check-exit-reflects-verdict.mjs`（`--selftest` 7/7：
+敏感度 2 / 特异度 3 / 变盲 2），判据是「含 `const checks = []` 或 `const check = (…)`
+的文件里不允许出现无条件收尾的 `process.exit(0)`」，
+首跑就抓出 3 个：`verify-notes-crud.mjs`、`verify-notes-inputtext.mjs`、
+`verify-scheduled-task-writepath.mjs`。连同 `verify-task-writepath.mjs` 全部改成
+`process.exitCode = checks.some(c => !c.pass) ? 1 : 0`，
+复跑门禁 **0 命中**。
+
+**刻意保持保守**：只看行首就是 `process.exit(0)` 的收尾行，且同文件没有
+`process.exitCode` 赋值、没被 `if (` 包住。全仓有一百多个 `process.exit(0)`，
+绝大多数是合理的（幂等追加器、诊断脚本、早退路径）——门禁宁可漏报也不误报。
+
+### §4.95.2 verify-task-writepath 修判据后：8/9，剩一条判红
+
+顺带修掉另一处判据缺陷：原来 `goto('#/ai')` 之后**立刻**读 DOM，
+把「慢」和「不刷新」混成一个结论。改成轮询到 15 秒并打印耗时：
+
+```
+FAIL  删除后列表不再回显（轮询至多 15s）  — found=true  耗时=15070ms
+      ⇒ 15s 内始终不消失，指向「删除后列表不刷新」
+exit=1
+```
+
+### §4.95.3 BUG-V20（待定位）：任务删除后，列表三种刷新方式都不更新
+
+新增 `scripts/diag-task-list-refresh.mjs` 做定性，实测（隔离库，2026-10-03 01:58）：
+
+```
+播种 LISTREFRESH-523881 -> 201 id=task-bee90b47bdbe2f3238ee52391595a47d
+① 删除前刷新一次，列表里能看到            = true
+② 服务端 DELETE -> 200；PG = 0            ← 服务端确实删了
+③ 删除后（不刷新）仍能看到                = true
+④ 离开再回来（没点刷新）仍能看到           = true
+⑤ 点刷新（clicked）后仍能看到              = true      ← 连手动刷新都救不回来
+```
+
+**服务端是对的（200 + PG 归零），UI 三种刷新方式都不更新。**
+这不是等待不足，也不是「缺一个刷新触发」——是**列表读到的数据源**不对。
+
+⚠️ **根因尚未定位，不下结论。** 待查的候选（都需要再验，不能现在就选一个）：
+- 本地缓存合并：闪卡那边有过一模一样的坑
+  （`stores/flashcards.ts:291` 的 `mergeById(本地, 服务端)` 只做增量合并、
+  删除只走 `envelope.deletedIds` 增量通道）。任务 store 若是同一模式，
+  被删的项会**从本地缓存里复活**。
+- 列表查询的作用域/来源与写入端不一致（写入 `ws_user-admin`，列表读别的）。
+- 列表走了不同的接口（`.task-card` 渲染的数据未必来自 `/api/tasks`）。
+
+**下一步该做的判据**（不要只靠肉眼看）：开着 `Network` 域，
+点刷新后抓 `/api/tasks` 的**响应体**，看服务端返回里到底还有没有那条。
+返回里有 ⇒ 前端合并/渲染问题；返回里没有 ⇒ 请求根本没发到隔离后端。
+这一条能把上面三个候选一刀切开。
+
+### §4.95.4 5 个写路径脚本的 origin 硬写已解（§4.94.2 已记）
+
+`verify-task-writepath` 已在解开的条件下实跑（8/9，剩 BUG-V20 那条）。
+`verify-email / gateway / marketplace / bug-u / bugaa` **尚未逐个实跑**。
+
+### §4.95.5 本轮新增/修改清单
+
+| 文件 | 变化 |
+|---|---|
+| `scripts/verify-finance-writepath.mjs` | BUG-V18 证伪判据修复 + sabotage 生效现场确认 |
+| `scripts/verify-task-writepath.mjs` | 列表回显改轮询 + 退出码反映判定 |
+| `scripts/verify-notes-crud.mjs` / `verify-notes-inputtext.mjs` / `verify-scheduled-task-writepath.mjs` | 退出码反映判定 |
+| `scripts/verify-email/gateway/marketplace/bug-u/bugaa-*.mjs` | origin 断言改 env |
+| `scripts/verify-marketplace-install.mjs` | API 端口改 env |
+| `scripts/migrate-expect-origin.mjs`（新） | 批量迁移，带机械不变量 |
+| `scripts/check-exit-reflects-verdict.mjs`（新） | 门禁，selftest 7/7 |
+| `scripts/diag-task-list-refresh.mjs`（新） | BUG-V20 定性探针 |
+| `scripts/run-device-against-isolated.mjs` | 支持透传 `--` 参数（证伪模式要用） |
+
+### §4.95.6 这一节没有解决什么
+
+- BUG-V20 根因未定位，**不能算已修**。
+- 5 个脚本未逐个实跑；约 14 处硬编码 CDP 端口未迁 `lib/adb-cdp.mjs`。
+- 闪卡两入口的**点击**、BUG-AX 设备侧负控、会议写入设备侧持久化，仍未做。
+## §4.96 更正 §4.95：BUG-V20 的「已坐实」建立在一个**空对照**上，撤回
+
+§4.95 我把 BUG-V20 写成「已坐实」。这轮查下来，**那个结论的支撑不成立**，本节撤回它。
+
+### §4.96.1 我自己又写了一个没建立被测状态的判据
+
+新增 `scripts/diag-task-list-source.mjs` 想回答那个正确的问题
+（「删除后服务端 `/api/tasks` 返回里还有没有那条」）。
+头一版**只播种、没删除**，`cleanup` 是在 `finally` 里才跑的
+⇒ 查询时那条任务本来就在库里，探针据此打印
+「服务端返回里还有那条 ⇒ 不是 UI 问题」。
+
+**一个没先建立被测状态的判据，给出的结论看起来和真结论一模一样。**
+加上「先删再查」之后才拿到有意义的那组数据。
+
+### §4.96.2 §4.95 那个「点刷新」对照是空的
+
+§4.95 写「点刷新（clicked）后仍能看到」并据此断定「不是缺刷新触发」。
+但 `TasksView.vue` 里**没有** `button[aria-label="刷新"]`：
+
+```vue
+<PullToRefresh :on-refresh="handleRefresh" class="ai-hub-scroll">
+```
+
+刷新是**下拉手势**（`handleRefresh` → `loadTasks` + `loadSessions` + `approvals.refresh`），
+页面里根本没有那个 aria-label 的按钮。我的脚本用
+`document.querySelector('button[aria-label="刷新"]')` 去找，
+**在别的视图（或旧渲染）里匹配到了同名按钮，点它根本不会触发 `handleRefresh`**。
+
+⇒ 「三种刷新方式都不更新」这句话，**第三种是无效对照**。整条结论的强度塌了。
+
+### §4.96.3 产品的删除路径按代码看是对的
+
+`TaskDetailView.vue` 的 `confirmDelete`：
+
+```js
+await api.deleteTask(deleted.id)
+// 必须在 push 之前登记：push 之后列表页立刻被激活，
+// 顺序反了 consumeListDirty 会读到还没置位的状态。
+markListDirty('tasks')
+router.push('/ai')
+```
+
+列表侧 `loadTasks()` 是**整体替换** `tasks.value`（无 `mergeById` 式合并），
+`deleteTask` 也会 `filter` 掉。`TasksView` 在 KeepAlive 名单里、返回时靠
+`markListDirty` 触发重取——**这套设计就是专门为「详情页删掉→返回」准备的**，
+源码注释里还记着它修过一次同样的问题。
+
+而 `localStorage` 里**没有**任务缓存键 ⇒「本地缓存把被删项复活」这条也被证据否掉了。
+
+### §4.96.4 撤回后的准确表述
+
+已确认的事实：
+- 服务端删除是干净的：HTTP 200、PG 归零、`/api/tasks` 不再返回那条。
+- 产品的删除→回列表路径，**按代码看是对的**。
+- `verify-task-writepath.mjs` 走 UI 详情页删除后，列表里那条确实还在（轮询 15s 未消失）。
+
+**尚未确认的是**：这到底是不是产品缺陷。
+`verify-task-writepath` 的删除点击用的是「找文本为 删除/确认删除/确定删除 的按钮」，
+而确认弹层是 `useConfirm` 的 BottomSheet、`confirmText` 就是「删除」——
+**点到的未必是弹层里那个确认按钮**。它可能只点了个空转，
+后面 `sleep(3000)` 就直接查库，看到的「PG 无该行」其实是**上一条**删除的结果。
+
+⚠️ 所以现在有两条互斥的可能，都还没排除：
+- (a) 产品缺陷：删除后列表确实不刷新；
+- (b) 探针缺陷：确认弹层没点中，脚本测的压根不是删除成功后的状态。
+
+**下一步该做的判据**（不要只靠猜）：
+1. 抓删除点击后的 **Network 面板**：`DELETE /api/tasks/{id}` 到底发没发出去。
+   没发 ⇒ (b)；发了且 200 ⇒ 才是 (a)。
+2. 若是 (a)，再对比 `consumeListDirty('tasks')` 是否被调用
+   （在 `list-scene-store` 上挂一个只读计数，删完读一次）。
+3. `verify-task-writepath` 的确认点击应改成**按选择器点弹层里的确认按钮**
+   （`useConfirm` 的 BottomSheet 容器内的主按钮），而不是全页面文本匹配。
+
+### §4.96.5 这一节的教训
+
+「已坐实」这四个字，我在 §4.95 写下它的时候，手上只有：
+一条轮询超时 + 一个**点了个不存在的按钮**的对照。
+**一个空对照足以让一条观测看起来像三条。**
+
+⇒ 「我试了三种方式都不行」这类陈述，必须能回答
+「**这三种方式各自真的触发了目标行为吗**」。
+答不上来就只是「我试了三次」。
+## §4.97 BUG-V20 定案：是**真产品缺陷**，不是探针假象
+
+§4.96 留了两条互斥可能并说「都不算已坐实」。这轮把两条都排掉了。
+
+### §4.97.1 先给共享 helper 补上 `send` / `on`
+
+`lib/adb-cdp.mjs` 原来只暴露 `ev`（= `Runtime.evaluate`），
+**抓不到 CDP 事件**。要开 `Network.enable`、订阅 `Network.requestWillBeSent`，
+就得自己再搭一遍 WebSocket。现已补上：
+
+- `send(method, params)` —— 返回**整个 result 消息**（不是 `result.result`），
+  因为 `Network.getResponseBody` 的载荷在 `result.body`，只回传内层会整个丢掉。
+- `on(method, handler)` —— 订阅事件，返回退订函数；`close()` 时清空。
+
+### §4.97.2 排除 (b)：DELETE 请求**确实发出去了**
+
+新增 `scripts/diag-task-delete-network.mjs`：播种 → 进详情页 → 点 `.action-btn.delete`
+→ **按选择器**点确认按钮（不再全页面文本匹配）→ 抓网络。
+
+```
+点 .action-btn.delete = clicked
+确认弹层 = {"dialog":true,"title":"删除任务","footerButtons":["取消","删除"]}
+点确认按钮 = clicked:删除
+PG = 0
+   req  DELETE  /api/tasks/task-902c653b85f914aa682f32e38a2070ea
+判定：DELETE 已发出 ⇒ 不是「探针点空了」
+```
+
+顺带确认了弹层结构：它**不是** BottomSheet，是 `Dialog`
+（`ConfirmDialog.vue` → `Dialog.vue`），footer 里 `["取消","删除"]`，**确认是最后一个**。
+
+⚠️ 那个判定行里「响应 200」是**我自己的判据错**：
+`seen.find(s => s.kind === 'res')` 抓的是数组里**第一个**响应（详情页 GET 的 200），
+不是 DELETE 对应的那个。事实只有两条：**`req DELETE` 存在**、**PG = 0**。
+⇒ **「200」这个字我不采信，结论不依赖它。**
+
+### §4.97.3 用修好的探针重跑 verify-task-writepath：缺陷复现
+
+把 `verify-task-writepath.mjs` 的确认点击从**全页面文本匹配**
+改成**按选择器点 `.dialog .dialog-footer` 里的最后一个按钮**，
+并加一条硬闸：点不中就 `exitCode = 8` 并打印「本轮删除判据全部作废」。
+
+复跑（隔离库 18101）：
+
+```
+点确认按钮 = clicked:删除
+PASS  删除后 PG 无该行              — count=0
+FAIL  删除后列表不再回显（轮询至多 15s） — found=true  耗时=15015ms
+8/9 通过
+```
+
+⇒ **通过 UI 详情页删除任务，服务端删除成功（PG 归零），
+返回列表后那张卡片仍然显示，15 秒不消失。**
+**(a) 成立：这是真产品缺陷。**
+
+### §4.97.4 链路按代码看是完整的，缺口在链路内部
+
+```js
+// TaskDetailView.confirmDelete
+await api.deleteTask(deleted.id)
+markListDirty('tasks')     // 注释明说必须在 push 之前
+router.push('/ai')
+
+// TasksView
+useListScene('tasks', handleRefresh)   // onActivated → consumeListDirty → handleRefresh
+async function handleRefresh() { await Promise.all([loadTasks(), loadSessions(), approvals.refresh()]) }
+async function loadTasks() { … tasks.value = (await api.getTasks(undefined)) || [] … }   // 整体替换，无合并
+```
+
+设置端、消费端、替换语义**都对**。所以缺口只可能在这三者之间：
+
+- `onActivated` 没有真的触发（KeepAlive 名单命中、但返回时组件状态与预期不同）；
+- 脏标记被**别人先消费掉了**（`consumeListDirty` 是 delete-and-return，
+  若有第二处 `useListScene('tasks', …)` 先跑，它就把标记吃掉了）；
+- `handleRefresh` 跑了但 `loadTasks()` 拿到的东西仍含那条（已排除：接口返回里没有）。
+
+### §4.97.5 下一步那一条判据（工具已就位）
+
+`lib/adb-cdp.mjs` 现在能订阅事件了，所以**一条观测就能切开**：
+
+> 返回列表后，`GET /api/tasks` **有没有发出去**？
+> - 没发 ⇒ `onActivated`/`consumeListDirty` 这段没生效（脏标记被吃或没触发）
+> - 发了 ⇒ 接口返回里已无该条（已证），那么卡片还在就是**渲染/计算属性**层的问题
+
+同时可以顺手在页面上挂一个只读探针：
+`peekListDirty('tasks')` 在 push 前 / onActivated 后的取值，
+以及数一下 `useListScene('tasks', …)` 在代码里到底有几处注册
+（`consumeListDirty` 是 delete-and-return，**多处注册会互相抢**）。
+
+### §4.97.6 这一节的净结论
+
+- BUG-V20 **已确认存在**（服务端对、UI 不更新），**尚未定位到具体那一行**，**未修**。
+- 本轮修的是**探针**：确认点击从文本匹配改成选择器，并加了「点不中即作废本轮」的硬闸。
+  在这个硬闸之前，那条 FAIL 的可信度是打折的。
+## §4.98 BUG-V20 结案：是**探针**的锚点子串碰撞，不是产品缺陷（撤回 §4.97 的定性）
+
+### §4.98.1 先撤回上一节的结论
+
+§4.97 写的是「BUG-V20 **已确认存在**（服务端对、UI 不更新）」。**这句话是错的**，本节把它撤回。
+
+错在哪：§4.97 的结论建立在 `verify-task-writepath.mjs` 的一次 FAIL 上，而那条 FAIL 的判据本身有缺陷。**判据坏了，红灯说明不了产品坏了。**
+
+### §4.98.2 真正的根因：子任务标题里嵌着父任务标题
+
+`verify-task-writepath.mjs` 原来这样造数据：
+
+```js
+const TITLE = 'TW-' + String(Date.now()).slice(-7)
+const SUB   = 'SUB-' + TITLE     // ⇒ 'SUB-TW-1234567'
+const CMT   = 'CMT-' + TITLE
+```
+
+而「删除后列表不再回显」这条判据是**子串搜索**：
+
+```js
+cs[i].textContent.indexOf(TITLE) >= 0
+```
+
+`SUB-TW-1234567` **包含** `TW-1234567`。所以父任务被删干净之后，**子任务那张卡照样命中这条判据**，脚本据此报「列表没刷新」。
+
+换句话说：那条判据问的其实是「**页面上还有没有任何一张卡的文本里出现过这个字符串**」，而正确的问题是「**父任务那张卡还在不在**」。父任务确实已经删掉了，判据却一直在看子任务。
+
+这跟 §4.96 撤回的是两个**不同**的缺陷（§4.96 是对照是空的、点了个不存在的按钮；这次是判据问错了对象），但教训是同一条：**判据必须先自证问的是它声称在问的那件事。**
+
+### §4.98.3 反向证据：产品这一侧是正常的
+
+新写 `scripts/diag-task-refresh-observability.mjs`，用 `lib/adb-cdp.mjs` 新补的 `on()` 订阅 CDP 的 `Network.requestWillBeSent`，在**同一个页面**上同时读三样东西：
+
+| 观测量 | 实测值 |
+|---|---|
+| 确认点击后 `GET /api/tasks` 发出次数与时刻 | **1 次，点击后 +222ms** |
+| 列表 DOM 里那张卡的 `textContent` | `null`（卡片已从 DOM 消失） |
+| PostgreSQL `opencode_pocket_verify.tasks` 对应行 | **0** |
+
+刷新链路 `onActivated → consumeListDirty('tasks') → handleRefresh → loadTasks` 完整跑通。全仓 `useListScene('tasks', handleRefresh)` **只注册一处**（grep 全仓确认），不存在 `consumeListDirty` 被多处抢走的情况。
+
+⇒ **产品无缺陷。** §4.26.2「数据孤岛」在本轮没有复现。
+
+### §4.98.4 改完锚点后的实测
+
+把 `SUB`/`CMT` 改成与 `TITLE` **完全不含重叠**的独立标识（`SB<run>` / `CM<run>`）后复跑：
+
+```
+exit=0  PASS=9 FAIL=0
+PASS  删除后 PG 无该行  — count=0
+PASS  删除后列表不再回显（轮询至多 15s）  — found=false 耗时=9ms
+```
+
+对比修复前的 `found=true 耗时=15015ms`（卡满整个窗口）。同一份代码、同一个设备、同一个后端，**只改锚点，结论就翻过来了**。
+
+### §4.98.5 顺手挖出两个新缺陷（都是判据/工装自己的，不是产品的）
+
+#### BUG-V21 `run-device-against-isolated.mjs` 探不通后**不中止**，自造假红
+
+```js
+if (!probe.ok) { console.error('隔离后端从设备不可达 —— 不改 localStorage'); process.exitCode = 6 }
+// ← 只是设了退出码，②③④ 照跑：照样改 localStorage、照样跑脚本
+```
+
+注释写的是「连不上就别改 localStorage」，代码做的正好相反。实测后果：本轮隔离后端从设备探不通时，`verify-task-writepath` 打出
+
+```
+FAIL  创建：PG 落库  — tasks.id=NONE
+FAIL  创建：列表回显  — cards=4 found=false
+```
+
+看起来像「任务写路径全坏」，实际只是 App 被指到了一个够不着的后端。**这两条红是我自己造出来的。** 已改成 `process.exit(6)`，并在探不通时明确不产出任何判据。
+
+修完在**同样的故障条件下**复跑验证（这次是真触发，不是推演）：
+
+```
+隔离后端可达性 http://192.168.31.20:18101 → {"ok":false,"error":"Failed to fetch"}
+隔离后端从设备不可达 —— 中止，不改 localStorage，不跑脚本（结论不可归因）
+=== RUNNER EXIT: 6 ===
+```
+
+后面**没有**「原 pocket_api_base」「现 pocket_api_base」「脚本环境」三行，也没有跑任何脚本。修复生效。
+
+#### BUG-V22 删除判据的硬闸 `exitCode=8` 被末尾无条件覆盖
+
+`verify-task-writepath.mjs` 末尾原来是
+
+```js
+process.exitCode = failed ? 1 : 0
+```
+
+**无条件覆盖**。于是前面三处硬闸（确认弹层没点中、列表整页空了、证伪无效）设的 `8` 会被冲回 `0` —— 判据全绿时 `0`、探针压根没走到那一步时也是 `0`，**调用方分辨不出来**。改成「已有非零就保留」。
+
+> 同类排查：`verify-finance-writepath.mjs` 末尾是 `process.exit(...)`，不会被冲成 0（最坏退 1），所以它的硬闸只是**语义**退化（8 → 1），不是静默放行。本轮没有改它。
+
+### §4.98.6 判据加固（代码已写，**本轮未跑过**）
+
+在 `verify-task-writepath.mjs` 里补了三处，如实标注状态：
+
+1. **同视图删除前基线**。原来只看删除后的 `found=false`，那个判据有个 vacuity 逃逸口：**列表整个空掉 / 渲染坏了，`found` 同样是 false**，会被记成「刷新正常」。现在先 `goto('#/ai')` 读一次「删前确实看得到这张卡、且列表是活的」，再点回详情删除，before/after 成对。
+2. **列表活体守卫**。删前 `cards>1` 而删后整页 0 张卡 ⇒ 更像页面坏了而不是刷新成功 ⇒ 该条不算通过，`exitCode=8`。
+3. **`--sabotage=skip-confirm`** 证伪模式：故意不点确认弹层的按钮，判据必须把「PG 仍有行」和「列表仍有卡」两条抓住；抓不住就报「判据没有区分力」并退 8。
+
+**状态：`node --check` 通过，但修复后（§4.98.6）没有在真机上完整跑过一轮绿灯，也没有跑过证伪负控。** 原因是 §4.98.7 的网络阻塞。**不能算已验证。**
+
+### §4.98.7 阻塞：设备现在连不上本机的 LAN IP（仓库外的问题）
+
+`localStorage` 改指这条路（§4.93 建立的）此刻**断了**。证据链，每一条都是实测：
+
+| 检查 | 结果 |
+|---|---|
+| 隔离后端 `18101/healthz`（本机 loopback） | **200** |
+| 隔离后端 `18101/healthz`（本机走 `192.168.31.20`） | **200** |
+| 监听状态 | `::` 18101，pid 12664 存活 |
+| 本机 WLAN IP | `192.168.31.20`（未变） |
+| 设备 → `192.168.31.20` ping | **100% 丢包，报 `+2 errors`** |
+| ping 原文 | `From 192.168.31.19: icmp_seq=1 Destination Host Unreachable` —— **设备自己发的错误**，即本机 ARP 应答 |
+| 设备 `/proc/net/arp` 里 `192.168.31.20` | flags **`0x0`**（未完成）；同表其余条目都是 `0x2`（已完成） |
+| Windows 防火墙 Public 档 | **Enabled=False**（不拦） |
+| 设备 → 网关 `192.168.31.1` / 公网 `223.5.5.5` / `.27` / `.100` | **全部 0% 丢包** |
+| 主机 → 设备 `192.168.31.19` | 0% 丢包 |
+| `Microsoft-Windows-TCPIP` 事件（8h） | **无记录**（没有 4199 地址冲突） |
+| `WLAN-AutoConfig/Operational`（3h） | **无记录**（没有断连/漫游） |
+
+结论：**不是应用层、不是防火墙、不是 IP 冲突、不是设备没网**。设备能到同网段的其它主机，唯独到不了本机 WLAN IP，而失败点在二层 ARP 应答。根因在 AP / 路由 / 无线驱动这一层，**不在仓库内，本轮没有能力从代码侧修**。
+
+⚠️ **因此本轮不产出任何真机写路径结论。** 设备当前 `pocket_api_base` 已还原为 `"http://127.0.0.1:18099"`（每轮 finally 都写回，本节两次运行均确认）；`adb reverse --list` 仍是 `host-25 tcp:18099 tcp:18099`，**本会话全程未碰过 adb reverse**。
+
+补充一条与本次故障无关但会误导排查的事实：并发会话原来那个 18099 后端（pid 21404）**已经不在进程表里**，所以现在设备指着 18099 也是打不通的。§4.97 那轮能跑通是因为当时 18099 还活着。
+
+### §4.98.8 本轮净结论
+
+- **BUG-V20 不是产品缺陷**，是探针锚点子串碰撞。根因、修法、反向证据都在上面。
+- **BUG-V21 / BUG-V22 是真缺陷**（都在工装里），都已修；BUG-V21 在真实故障条件下验证过修复生效，BUG-V22 只做了代码修正，**未在真机上验证过**（同 §4.98.6 的原因）。
+- §4.98.6 的三条判据加固**未跑过**，不计入成果。
+- 真机写路径本轮**整体未推进**，原因是网络阻塞，不是「测过了没问题」。
