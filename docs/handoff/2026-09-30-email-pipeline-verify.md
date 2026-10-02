@@ -9222,3 +9222,147 @@ envelope 判定不碰 IMAP，放宽几乎零代价；贵的拉原文仍受
 > `candidate` 各开一次完整 IMAP 会话拉原文（只读 FETCH，不改邮箱状态），
 > 并把 `uid=10435` 那张真发票建档 + 下载附件 + 推飞书。
 > 不开自动补采的话，可以改成手动 `POST /api/email/pipeline/run` 触发一次。
+
+---
+
+## §7dw 两条否定结论 + 又一次并发会话的独立修复
+
+### 起点：查 §7ds 留下的待修项
+
+§7ds 记了一条「**待修·未复现**：watermark 只在循环末尾写，中途 Close 会导致
+同一批反复重试」。这条一直没动，本轮先把它查清楚。
+
+### 否定结论 1：那条待修项的前提不成立
+
+`fetcher.go` 的逐封循环体（781–928 行）**没有任何 `return` 或 `break`**，
+只有两处 `continue`：
+
+- `if m.Envelope == nil { continue }`（:782）
+- `if err := f.store.InsertEmail(...); err != nil { continue }`（:920）
+
+IMAP 阶段的兜底 `stopIMAPStage`（:675 `time.AfterFunc` → `client.Close()`）
+即使中途把连接掐断，`fetchSnippetOnConnected` 也只是返回空串，循环照样跑完
+到 :929 的 `UpdateSyncState`。
+
+**所以「watermark 只在循环末尾写」是对的，不是缺陷**——「未复现」是它的
+正确状态。§7ds 那条待修项应当撤下。
+
+### 但读代码时发现了一个更精确的问题
+
+`highestUID` 的推进方式是**取已插入邮件的最大 UID**（:925-927），
+而不是 §7dr 注释里明确声明的「watermark 只能沿着**已处理的连续前缀**推进」。
+UID 1,2,3,4,5 中若第 3 封插入失败，watermark 仍会跳到 5 —— 第 3 封从此
+不在搜索范围内，与 §7dr 修掉的那个洞是同一类。
+
+而且 `m.Envelope == nil` 那处 `continue` **一行日志都没有**，跳过是静默的。
+
+### 否定结论 2：这个缺陷在真实数据上没发生过
+
+在决定改之前先量 blast radius（93MB 真实日志，进程 01:36–09:21）：
+
+| 模式 | 次数 |
+|---|---|
+| `insert email uid=` 失败 | **0** |
+| `fetch:` 错误 | **0** |
+| `search:` 错误 | **0** |
+| `sync ... failed` | **72** |
+
+`InsertEmail` 用 `ON CONFLICT (id)`，自然失败确实很难触发——真实日志里一次
+都没有。**于是没有改**：把一条从未发生的路径改成新逻辑，代价是引入新的
+watermark 语义，收益是零。这条留作「已知理论缺口，有日志可监控」。
+
+### 那 72 次失败是什么
+
+```
+40 次  huangxutao@kxpms.cn
+32 次  56551681@qq.com
+全部同一个原因：imap failed and no time left for POP3 fallback
+```
+
+展开一条完整上下文：
+
+```
+09:33:01  huangxutao@kxpms.cn sync trace total 1.045s      ← 成功
+09:34:00  feikemanager1@163.com sync trace total 292ms
+09:35:00  feikemanager1@163.com sync trace total 288ms
+09:35:01  56551681@qq.com    sync trace total 491ms
+09:35:20  imap login huangxutao@kxpms.cn failed: i/o timeout
+          — trying POP3 fallback (budget -10s left)
+09:35:20  SLOW step login took 1m20.019s
+09:35:20  [scheduler] sync acct-... failed
+```
+
+`budget -10s left` 与 `login 1m20.019s` 这两个数字，正是 `fetcher.go:231-240`
+注释里写着「**已修**」的两个症状（idle/3=20s 的两次续期把 deadline 推到 80s，
+连带把 70s 总预算吃穿）。第一反应是「修复没生效」——
+
+### 否定结论 3：那是旧二进制，不能报成现存缺陷
+
+核实构建时间线：
+
+| 时刻 | 事件 |
+|---|---|
+| 2026-10-02 00:09:11 | 仓库 HEAD = `a4965052` |
+| 2026-10-02 01:35:53 | **`pocketd.exe` 构建** |
+| 2026-10-02 03:57:27 | `46d9e779` 发票窗口 90d 修复 |
+| 2026-10-02 09:29:37 | `c459400a` last_synced_at 修复 |
+
+二进制比当前 HEAD 落后 **8 小时**。而且 `stopIMAPStage`（IMAP 阶段 50s 兜底
+Close）在 `feat/mail-config-deploy` 分支上**根本搜不到**——它只存在于本分支。
+
+**结论：这 72 次失败是 8 小时前的旧代码的行为，当前代码里已有兜底。**
+把它写成「生产仍在发生的缺陷」是错的。教训：拿到一份运行日志，
+第一件事是确认它是**哪次构建**跑出来的。
+
+### 但它暴露的真问题在当前代码里仍然成立
+
+`09:33:01` 成功、`09:34:00` 起连续失败 80s、然后**每分钟再来一次**——
+因为 `pollLoop` 的到期判据是
+
+```go
+if a.LastSyncedAt > 0 && now-a.LastSyncedAt < intervalSec { continue }
+```
+
+而 `UpdateSyncState` 只在**同步成功**时才写。失败 ⇒ `last_synced_at` 不变
+⇒ 下一轮照判到期。配置 15 分钟的间隔保护，对故障账户**形同虚设**。
+
+并发会话已在 `c459400a`（09:29:37）独立修掉，统计与我的量测同量级
+（它数 1430 条 sync trace，我数 1494 条）：
+
+```
+feikemanager@163.com   40 次 → ~12.3 分钟  ✅
+kimmy.huang@163.com    39 次 → ~12.4 分钟  ✅
+56551681@qq.com       435 次 → ~64 秒     ❌
+huangxutao@kxpms.cn   427 次 → ~65 秒     ❌
+feikemanager1@163.com 489 次 → ~57 秒     ❌
+```
+
+### 已 cherry-pick（`2ee85dc0`），无冲突
+
+- `fetcher.go`：IMAP 空结果路径写回 **UID 原值** + 刷新时间戳（两个 UID 与
+  时间戳是不同的事，写 `uidNext` 会永久跳过恰好分到该 UID 的新邮件）；
+  POP3 兜底两条成功出口都补上
+- `scheduler.go`：内联判据抽成纯函数 `accountDueForSync`，测试与生产共用
+  同一份判据（测试里抄一份的写法，漂移了也测不出来）
+
+自验：`go build` 0、`go vet` 0、全包 `ok 87.19s`。
+负控把 `accountDueForSync` 改成恒 true，实测转红
+`TestSyncWithNoNewMailAdvancesLastSyncedAt` +
+`TestAccountDueForSync` 的 5 个「未到期」子例，3 个「本就应到期」子例仍绿
+（阈值判据无盲区）。还原后 `git diff --numstat` 为空。
+
+### 又一次假绿，记下来
+
+负控脚本第一版 needle 写的是 `\n`，而 `internal/email` 整个包是**纯 CRLF**，
+于是 `includes()` 匹配不到、脚本按设计 `exit 2` 拒绝执行。
+
+**但我还是接着跑了测试**，于是又拿到一个无意义的 `ok`。
+第二次改对（`\r\n`）并加了 `if ($LASTEXITCODE -ne 0) { exit 1 }` 让脚本
+失败即中止测试。
+
+加上上一节记的 `.NET` 进程级 CWD 那次，这已经是**连续两次**因为
+「变异没落到目标文件」而拿到假绿。固化成一条规矩：
+
+> 负控脚本必须**自己校验改动已落盘**（回读目标文件、断言标志位），
+> 并且**校验失败就不许跑测试**——否则「全绿」这个信号毫无意义，
+> 比没有负控更危险。
