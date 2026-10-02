@@ -250,6 +250,17 @@ type PipelineReport struct {
 	// 没法判断。有了这两个计数，看报告就知道该去配 AI 还是该去调规则。
 	RemindersScanned      int           `json:"remindersScanned,omitempty"`
 	RemindersUnclassified int           `json:"remindersUnclassified,omitempty"`
+	// RemindersOutOfWindow 是「importance=high、从未提醒、但 date 比扫描窗口
+	// （notifyImportant 里硬编码的 2 天）更老」的邮件数。
+	//
+	// 为什么必须有它：那些邮件**永远不会被提醒**——不是「这轮没轮到」，是
+	// 「不在扫描范围里」。没有这个计数时，报告上的 0 分不清
+	// 「这批确实没有重要邮件」和「有 20 封重要的但它们太老了」，
+	// 需求 4 看起来就像没实现。和 RemindersUnclassified 是同一类问题的
+	// 时间维度版本（见 reminder_diag_test.go 记录的另一次）。
+	//
+	// 注意这**不是**「发了多少条提醒」，两者不可互相替代。
+	RemindersOutOfWindow int `json:"remindersOutOfWindow,omitempty"`
 	Invoices              HarvestResult `json:"invoices"`
 	FeishuPushed          int           `json:"feishuPushed"`
 	FeishuFailed          int           `json:"feishuFailed"`
@@ -789,6 +800,16 @@ func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 		return
 	}
 	since := time.Now().AddDate(0, 0, -2).Unix()
+	// 窗口之外的高重要度邮件：它们**永远不会被提醒**，但报告上原本看不出来。
+	// 先数出来，再决定要不要改窗口——改窗口是产品取舍，可见性不是。
+	if n, err := p.Store.CountHighImportanceOutside(ctx, since, 2000); err != nil {
+		rep.AddError("reminder out-of-window count: %v", err)
+	} else if n > 0 {
+		rep.RemindersOutOfWindow = n
+		log.Printf("[email/pipeline] %d 封 importance=high 的邮件早于 %d 秒（2 天窗口），"+
+			"**永远不会进入重要提醒** —— 报告里 RemindersSent=0 有一部分是这个原因",
+			n, time.Now().Unix()-since)
+	}
 	emails, notified, err := p.Store.ListEmailsSince(ctx, since, 500)
 	if err != nil {
 		rep.AddError("reminder scan list: %v", err)

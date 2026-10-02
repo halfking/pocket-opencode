@@ -8820,3 +8820,112 @@ IMAP 阶段的硬截止是 `time.AfterFunc(imapStageBudget, client.Close())`，
   企业微信的每次往返实际耗时**未量化**，所以「50 次串行 = 分钟级」这个推论
   **不由本次实测支撑**，只由代码注释里的线上观察支撑。
 - **没有复现「中途 Close 导致 watermark 不推进」**，理由见上。
+
+---
+
+## §7dt 【需求 4】2 天扫描窗口让 27/28 封未提醒的重要邮件**永远不会被提醒**；本轮只补可见性，不动窗口（2026-10-03）
+
+### 缺陷
+
+`notifyImportant` 里 `since := time.Now().AddDate(0, 0, -2).Unix()` 是**硬编码**的，
+扫描只覆盖最近 2 天。落在窗口之外、`importance=high`、且从未提醒过的邮件：
+
+> **不是「这轮没轮到」，是「不在扫描范围里」**——之后每一轮都不会再看到它。
+
+报告里原本有 `RemindersSent` / `RemindersScanned` / `RemindersUnclassified`，
+但 0 这个数**分不清**下面两种情况：
+
+- 「这批邮件里确实没有重要的」
+- 「有 27 封重要的，但它们太老了，永远不会被提醒」
+
+§7cu 在真实数据上量到过后者（当时 25 封 high 里 20 封已被永久漏掉），但报告上
+只能看到一个没有解释的 0。
+
+### 实测（2026-10-03 09:12:31，schema `opencode_pocket`）
+
+运行中的 pocketd 每分钟同步真实账户，所以任何「当前库」结论都带测量时刻。
+
+```
+total=121
+high_total=52
+high_unnotified=28
+OUT_OF_WINDOW(>2d, high, 未提醒)=27
+```
+
+**28 封未提醒的重要邮件里，27 封在 2 天窗口之外**，也就是说它们**永远不会被提醒**，
+只有 1 封落在窗口内。（§7cu 当时量到 25/20；现在 52/27，因为分类器在持续回填
+`importance`——这也说明那个比例不是偶然，是结构性的。）
+
+### 本轮只补可见性，**没有**动窗口
+
+「窗口该多长 / 要不要过期 / 首次上线要不要限流」是产品取舍（早就在待拍板项里），
+本轮**不擅自改**。只把那个不可观测的缺口补上，让取舍能带着实时数字做。
+
+这与 `reminder_diag_test.go` 记录的 `RemindersUnclassified` 是同一类问题的
+**时间维度**版本——同一个坑换一个方向又出现了一次，所以沿用同一套做法：
+加一个计数 + 报告字段 + 日志，不改变任何既有行为。
+
+### 改动
+
+- `Store.CountHighImportanceOutside(ctx, before, limit)`（`store_pipeline.go`）：
+  直接在 SQL 里数 `date < before AND importance='high' AND notified_at=0`，
+  带 limit 防全表扫。
+- `PipelineReport.RemindersOutOfWindow`（`pipeline.go`）：`json:"remindersOutOfWindow,omitempty"`。
+- `notifyImportant`：扫描前先数，>0 时写报告 + 打日志说明「RemindersSent=0 有一部分
+  是这个原因」。
+
+**纯增量**：`git diff --stat` = `pipeline.go` +21 / `store_pipeline.go` +34，
+零删除、零重排。（`gofmt -l` 报 `pipeline.go` 是仓库既有状态——只用了 `-l` 没用
+`-w`，既有文件一行没被格式化。）
+
+### 负控 1 次
+
+| 变异 | 结果 |
+|---|---|
+| 把 SQL 里的 `importance = 'high'` 判据去掉（改成 `= ''`） | **1 条转红**（`TestReminders_OutOfWindowHighIsCounted`，得 0 想要 1） |
+
+已还原。
+
+### 判据为什么这么写
+
+3 条用例覆盖三种「不该计入」的情况，因为这个计数一旦宽了就没意义：
+
+| 邮件 | 期望 | 原因 |
+|---|---|---|
+| `e-old-high`（9 天前 / high / 未提醒） | **计入** | 正是要抓的那一类 |
+| `e-old-medium`（9 天前 / **medium**） | 不计入 | 重要性不是 high，本来就不该提醒 |
+| `e-old-done`（9 天前 / high / **已提醒**） | 不计入 | 不是漏掉，是已经做过了 |
+| `e-fresh-high`（1 天前 / high） | 不计入（在第一组） | 它在窗口内，会被正常提醒 |
+
+另有 `TestReminders_OutOfWindowStillNotifiesTheFreshOne` 钉住**加这个计数没有
+改变原有行为**（窗口内那封仍被提醒，`RemindersSent=1`），以及
+`TestReminders_OutOfWindowIsZeroWhenNothingIsOld` 钉住**没有老邮件时必须是 0**——
+否则这个计数本身就变成又一个「0 分不清两种情况」。
+
+### 数字
+
+- `reminder_window_test.go`：3 条全绿
+- `go test ./internal/email/`：**全绿**（77.7s）
+- `go test ./internal/server/`：只剩**两个既有失败**
+  （`TestTaskWriteGuardBlocksPlainMemberPatch/Delete`，非邮件分支、非本轮引入）
+- 生产代码：+55 / -0
+
+### 由此可以怎么拍板（给决策用，不是结论）
+
+现在有了实时数字，取舍变得具体：
+
+- **保持 2 天**：那 27 封就一直不提醒，报告上会一直显示
+  `remindersOutOfWindow=27` —— 至少不再是「没解释的 0」。
+- **放宽窗口 / 去掉窗口**：`notified` 过滤本来就在（`splitReminderCandidates`），
+  500 条上限也还在，所以不会重复轰炸；但**首次会有 27 条提醒一次性涌进来**，
+  是否需要限流（首轮 N 条、其余排队）是随之而来的第二个问题。
+- **改成分批消化**（每轮多扫一些老的）：需要额外一个「扫描从哪开始」的游标，
+  比放宽窗口复杂，但首轮冲击可控。
+
+这三条我都不替你选——它决定的是「你的收件箱第一次会响几声」。
+
+### 本轮**没有**做的事
+
+- **没有改窗口长度、没有加限流、没有加扫描游标**（都是产品取舍）
+- **没有改 `splitReminderCandidates`**（它的逻辑与本计数不重叠）
+- **没有验证通知渠道**（飞书/本地通知都未配置，真实提醒未跑通）
