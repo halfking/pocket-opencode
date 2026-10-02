@@ -627,6 +627,71 @@ select … from email_invoices where status='failed' or seller='name:'
 
 ---
 
+## §16 查清 §15.3 那三个实例各自**能做什么**——污染不是均匀的，但比想象的广
+
+§15.3 只列出了「三个实例都排了 08:00」。这一节把每个实例的实际能力查实，
+因为**三者的污染面完全不同**，明早读日志时不能一视同仁。
+
+### 16.1 18077（wt-a20，pid 23256）：**完整的一轮**
+
+```
+data dir = C:\workspace\openpocket\data          <- 与 18099 同一个
+Email credential self-check: all 5 enabled email account(s) decrypt with the current master key
+Email scheduler started (fetch_enabled=true, kxmemory=false, ...)
+```
+
+同一把 master key ⇒ **5 个账户全部能解密、能同步**，会跑完整的
+sync → 分类 → 垃圾清理 → 提醒 → 发票采集 → 飞书/汇总文档。
+⇒ 它的 08:00 那轮与 18099 **等价**。
+
+### 16.2 18100（.wt-e2e，pid 28160）：**同步全灭，但提醒步照样跑**
+
+它用的是 `.wt-e2e\backend\data` 下**自己的** master key，与生产加密的凭据不匹配：
+
+```
+[email/sync] account acct-…-5 (kimmy.huang@163.com): decrypt credential: cipher: message authentication failed
+[email/scheduler] sync acct-…-1/-2/-3/-4/-5 failed: decrypt credential: cipher: message authentication failed
+        （00:09:49、01:22:49 ×5、01:38:49 每次调度同步都这样）
+fetcher 日志行 = 0
+```
+
+**我一度据此推断「它推不了提醒，所以无害」——那是错的**，而且错在一个很容易犯的地方：
+以为同步失败会中止流水线。`pipeline.go` 的 `Run` 不是这么写的：
+
+- `syncAccounts` 的错误走 `rep.AddError(...)`，而 `AddError` 的注释明写「非致命错误（流水线继续跑完）」；
+- `Run` 里唯一的提前返回是 `ListEnabledAccountsWithWorkspace` 本身失败（第 402–406 行）；
+- 第 426 行 `p.notifyImportant(ctx, rep)` 是**无条件**执行的，不看 `AccountsSynced`。
+
+⇒ 18100 会在同步全灭的情况下继续跑 1.5 发票候选、1.6 分类、2 垃圾清理、
+**3 重要邮件提醒**、4 发票采集、5 推送+台账/汇总文档——
+**其中 3 这一步读的是共享生产 schema 里的那 34 条积压，与它能不能同步无关。**
+
+（`accounts` 来自数据库查询、不涉及解密，所以 `pipelineScopes(accounts)` 也是好的，
+第 5 步的推送与汇总文档同样会照常生成。）
+
+### 16.3 明早读日志时怎么区分这三轮
+
+| | `synced=` | 特征 | 提醒 |
+|---|---|---|---|
+| 18099 | 正常（5） | 完整一轮 | 基准 |
+| 18077 | 正常（5） | 与 18099 等价 | **第二个完整轮，是主要污染源** |
+| 18100 | 0，且 errors 含 5 条解密失败 | 同步全灭但仍走到第 3 步 | 仍会推 34 条积压 |
+
+⇒ 三轮都会调 `MarkEmailsNotified`（进程内锁不跨进程），
+所以 34 条积压可能被推 1 次、2 次或 3 次，**结果不可预测**。
+§11 的「24 + 34 = 58」只能当**下界**看，不能当预测。
+
+### 16.4 顺带记一条我自己刚犯又刚纠正的错
+
+「某实例解密失败 ⇒ 它不会推提醒」这个推断听起来很稳，但它依赖一个**我没验证的前提**：
+同步失败会中止流水线。实际不会。正确顺序是先读 `Run` 的控制流，
+再对每个实例的能力下结论——而不是从「解密失败」直接外推到「整轮无害」。
+
+这与 §12.3 那条同源：**缺席/失败的证据要先证明它对后续步骤意味着什么。**
+
+
+---
+
 ## §15 ¥NaN 修复已上 18099（前后字节对照）；但 08:00 归因已被 3 个实例搅了
 
 ### 15.1 修复已上线，同一端点前后两次抓包只差那三个键名
