@@ -10709,3 +10709,56 @@ migrate 的 `CREATE TABLE emails`（store.go:63-88，26 列）里没有 updated_
 **注意 A 有一个单位陷阱**：负控里日志打出 updated_at=1790913072524（13 位 = **毫秒**）。
 真修法必须确认这一列的单位与客户端 MAX(updated_at)、服务端 > since **三者一致**。
 §7ei 已量过真库 updated_at 是**秒**（1.79e9 量级），所以应填 time.Now().Unix() 而非毫秒。
+
+## §7ek — 把 §7ej 的发现补全：真库多出的 3 列全部是空的（folder_name / processed_at / attachments）
+
+§7ej 发现真库 `opencode_pocket` 的 emails 有 28 列、而本仓库 migrate 建 26 列，
+多出 `updated_at` 与 `folder_name`。本节把「多出来的列」逐个量清楚，
+并顺带复核 §7dq 记的 `attachments`。
+
+### 实测（2026-10-02 11:5x，schema opencode_pocket，124 封 alive）
+
+| 列 | 非空数 | 代码里的使用情况 |
+|---|---|---|
+| `folder_name` | **0 / 124** | **非测试代码零引用**（grep 全仓只在本节与护栏注释里出现） |
+| `processed_at` | **0 / 124** | **有读无写**：`store.go:1673` 的 `GREATEST(e.date, COALESCE(e.processed_at,0), e.created_at)` 读它，但没有任何 UPDATE 写它 |
+| `attachments` | **0 / 124** | 与 §7dq 记录一致：该 JSON 列从未被写入 |
+| `updated_at` | 122 / 124 | §7ej 已详述：DDL 缺失 + InsertEmail 不写 |
+
+### `processed_at` 的实际影响（值得单独说）
+
+`ListFilter.Since` 的注释（`model.go:152`）写「只返回 GREATEST(date, processed_at, created_at) 更大的行」，
+听起来这是个三路比较。实测：
+
+    GREATEST sample=1790911681   max(date)=1790911496   max(created_at)=1790911681
+
+`processed_at` 恒 0 ⇒ 该 GREATEST **退化为 max(date, created_at)**，
+而实测样本里 `created_at` 更大，所以**当前排序键实际由 created_at 主导**，
+不是注释暗示的「date 主导」。
+
+这不是 bug（`COALESCE(...,0)` 的写法本身是安全的，且 created_at 参与比较
+对「刚同步进来的邮件立刻可见」而言是合理的），但**注释与实际不符**：
+读代码的人会以为 `processed_at` 参与了一个有意义的三路比较，
+而它是一个恒为 0 的死项。建议要么补写路径（若原设计确实打算用它），
+要么把它从 GREATEST 里去掉并改注释。**属清理项，留给用户拍板。**
+
+### 三列的处置分类（不是同一类问题）
+
+- `folder_name`：**纯孤儿列**。既不在 DDL 里、代码零引用、库里全空。
+  删除它对任何功能零影响（真库上有这列，migrate 没有，代码不碰）。
+- `processed_at`：**有读无写的死列**。代码主动读它，所以不能直接删列
+  （要先改 `GREATEST` 表达式），但可以确认它从未产生过任何行为差异。
+- `attachments`：**从未写入的预留列**。§7dq 已记，本轮只是复核它确实仍是 0。
+  它与 §7ef 查出的「`has_attachments` 在 IMAP 路径只依赖 BODYSTRUCTURE」
+  是**两件不同的事**：前者是明细列，后者是布尔标记。别混为一谈。
+
+### 一条方法论
+
+这四列的共同点是**「看起来像在工作」**：
+它们出现在 SELECT / GREATEST / 注释里，读代码时会以为它们是有效设计。
+只有把「非空数 = 0」这个**数字**拿出来，才能区分
+「有实现但当前无数据」与「有代码路径但值恒为零」。
+
+这与 §7ef 的教训是同一枚硬币的两面：
+§7ef 是**别把 false 当证据**，本节是**别把「出现在代码里」当证据**。
+两者都需要一个具体的量（这列有多少非空值）才能定性。
