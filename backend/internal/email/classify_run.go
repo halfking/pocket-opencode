@@ -2,6 +2,8 @@ package email
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -80,6 +82,29 @@ func ShouldProcessAfterFetch(syncedAccounts, newEmails int) bool {
 
 // ClassifyUnclassified 委托 kxmemory 逐封处理未归类邮件。IMAP 在 Fetcher /
 // Scheduler 里跑，WebView 不碰邮箱协议。
+//
+// 第二个返回值是**逐条失败**的汇总，不是「整个函数失败」。
+//
+// 2026-10-02 补。原来三处失败分支（kx 调用出错/返回空、写库出错、
+// BuildClassifyWrites 产出空）全是裸 `continue`：函数照常返回 (n, nil)，
+// 而 n 只是**成功数**。于是
+//
+//	「这批没有待分类邮件」      → (0, nil)
+//	「20 封全部分类失败」       → (0, nil)   ← 与上一行完全相同
+//
+// 三个调用点又都写成 `if _, err := ...`，把成功数也丢了。两个调用点
+// （scheduler.go 的定时分类、server_assistant.go 的收信后分类）都只在
+// `err != nil` 时打日志，于是**分类整体失效在日志和报告里都不留任何痕迹**。
+//
+// 后果不是理论上的：importance 写不进去 → splitReminderCandidates 把它们
+// 计入 unclassified → 需求 4 永远不提醒，而报告上只有
+// RemindersUnclassified 一个数字，读起来和「还没轮到分类」一模一样。
+// 真实库 2026-10-02 观测到的就是当天 7 封里 5 封未分类、其中 3 封已取回
+// 但从未被分类过。排查时最自然的错误结论是「分类器还没跑到」——
+// 真去检查 kxmemory 配置，而真实原因可能在上游返回或写库。
+//
+// 改成：任何一条失败都进日志，并汇总进返回的 error。调用点无需改动签名，
+// 它们现有的 `err != nil` 分支会把这件事打进日志。
 func ClassifyUnclassified(ctx context.Context, store *Store, kx kxmemory.Client, userID, workspaceID string, limit int) (int, error) {
 	if store == nil || kx == nil || userID == "" {
 		return 0, nil
@@ -89,6 +114,15 @@ func ClassifyUnclassified(ctx context.Context, store *Store, kx kxmemory.Client,
 		return 0, err
 	}
 	n := 0
+	var failed int
+	var firstErr error
+	noteFailure := func(id string, cause error) {
+		failed++
+		if firstErr == nil {
+			firstErr = cause
+		}
+		log.Printf("[email/classify] email=%s 分类失败: %v", id, cause)
+	}
 	for _, it := range items {
 		callCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		resp, cerr := kx.ClassifyEmails(callCtx, kxmemory.ClassifyEmailsRequest{
@@ -98,7 +132,12 @@ func ClassifyUnclassified(ctx context.Context, store *Store, kx kxmemory.Client,
 			}},
 		})
 		if cerr != nil || resp == nil || len(resp.Results) == 0 {
+			cause := cerr
+			if cause == nil {
+				cause = fmt.Errorf("kxmemory 返回空结果（resp=%v results=%d）", resp, resultCount(resp))
+			}
 			cancel()
+			noteFailure(it.ID, cause)
 			continue
 		}
 		row := resp.Results[0]
@@ -111,6 +150,9 @@ func ClassifyUnclassified(ctx context.Context, store *Store, kx kxmemory.Client,
 		}})
 		if len(writes) == 0 {
 			cancel()
+			noteFailure(it.ID, fmt.Errorf(
+				"分类结果不可用：EmailID=%q category=%q importance=%q（归一化后 category 为空）",
+				row.EmailID, row.Category, row.Importance))
 			continue
 		}
 		w := writes[0]
@@ -120,9 +162,23 @@ func ClassifyUnclassified(ctx context.Context, store *Store, kx kxmemory.Client,
 			w.Category, w.Importance, w.Summary, w.Action, w.Reason)
 		cancel()
 		if err != nil {
+			noteFailure(it.ID, fmt.Errorf("写库失败: %w", err))
 			continue
 		}
 		n++
 	}
+	if failed > 0 {
+		return n, fmt.Errorf("%d/%d 封分类失败（成功 %d）；首条错误: %w",
+			failed, len(items), n, firstErr)
+	}
 	return n, nil
+}
+
+// resultCount 只为让「kxmemory 返回空结果」这条日志能区分「resp 为 nil」
+// 与「resp 非 nil 但 Results 为空」——两者是不同的上游故障。
+func resultCount(resp *kxmemory.ClassifyEmailsResponse) int {
+	if resp == nil {
+		return 0
+	}
+	return len(resp.Results)
 }

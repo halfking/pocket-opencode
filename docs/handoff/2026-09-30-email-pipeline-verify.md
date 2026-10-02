@@ -11407,3 +11407,75 @@ handoff 文档 line 3145「### 根因：滚动续期没有<U+FFFD>硬截止夹�
 - **首次上线的推送风暴**：按当前数据，90 天窗口会让约 30 封积压的 high 一次性
   全部推送出来。要不要限流、要不要只推最近 N 条，是产品取舍，已单列待拍板。
 - 需求 6 设备侧、真实 IMAP MOVE、飞书联调仍未验（本轮不涉及）。
+
+
+## §7et 分类逐条失败此前完全不可观测——需求 4 能静默失效（2026-10-02）
+
+### 缺陷
+
+`ClassifyUnclassified` 有三处裸 `continue`：kx 调用出错/返回空、写库出错、
+`BuildClassifyWrites` 产出空。函数照常返回 `(成功数, nil)`，而三个调用点
+又都写成 `if _, err := ...`，把成功数也丢了：
+
+    「这批没有待分类邮件」   → (0, nil)
+    「20 封全部分类失败」   → (0, nil)   ← 与上一行完全相同
+
+两个调用点（`scheduler.go` 定时分类、`server_assistant.go` 收信后分类）
+都只在 `err != nil` 时打日志。于是**分类整体失效在日志和报告里都不留任何
+痕迹**：没有 error、没有计数器、没有一条 log。
+
+这与本仓库已经处理过多次的「不可观测的 0」是同一类，但更彻底——
+RemindersSent=0 至少还能被 RemindersUnclassified 解释，而这里连**一个
+能反推的数字都没有**。
+
+### 后果不是理论上的
+
+importance 写不进去 → `splitReminderCandidates` 计入 unclassified →
+需求 4 永远不提醒 → 报告上只剩 `RemindersUnclassified`，读起来与
+「还没轮到分类」一模一样。
+
+真实库 2026-10-02 只读观测到的正是这个形态：
+
+    当天到信 7 封 → 2 封有 importance，5 封没有
+    账户 last_synced 已推进到最新 uid（16:00 / 16:11，说明流水线确实跑过）
+    7 封所属账户 rules 全部为 NULL（规则路径确实没配）
+    ⇒ 2 封的成功只能来自 AI 路径，而该路径今天部分失效
+
+**这正是我本人当天踩的坑**：`reminderUnclassifiedHint` 上方那段注释写着
+「真实库实测：rules 全为 NULL，kxmemory 未配…importance 恒为空」。我直接
+引用它，断言「90 天窗口也一封不会提醒」，被真库数据打脸——实际 117/122 封
+已分类、24 封 high 已提醒过。
+
+教训与 `an-empty-grep-result-only-answers-the-question-the-pattern-asked`
+同源，且是它的代码注释版本：**记录旧状态的注释不会自己声明自己过期**。
+空 grep 结果和过期注释是同一类东西——它们都长得像「已查过」。
+
+### 改动：零签名变更
+
+- 三处 `continue` → `noteFailure(it.ID, cause)`，逐条打日志并累计
+- 任一条失败即汇总进返回的 error：`"%d/%d 封分类失败（成功 %d）；首条错误: %w"`
+- 调用点**无需改动**：已核对 `scheduler.go:699` 与 `server_assistant.go:2168`
+  都是 `log.Printf` 后继续，不会中断后续的发票提取
+
+刻意不改成返回结构体：那要动 3 个调用点 + 1 个既有测试，而聚合进 error
+已达成可见性目标，代价为零。
+
+### 四条判据 + 负控
+
+    SurfacesTotalFailure         100% 失败必须返回非 nil error
+    PartialFailureKeepsSuccesses  部分失败要报错，且成功的必须照常落库
+    AllSuccessReturnsNoError     对照组：全成功不得报错（防过度修复）
+    SurfacesUnusableResult       上游有结果但不可用，同样必须可见
+
+负控的关键细节：**先确认负控能编译**。第一次把三处 `noteFailure` 整个撤掉，
+`go vet` 报 `declared and not used: noteFailure`，测试根本跑不起来——
+**编译失败的负控不证明任何事**。改成保留调用、只撤掉 error 聚合后
+`go vet` EXIT=0，3 条精确转红。
+
+`AllSuccessReturnsNoError` 在负控下**仍绿**——这正是它该有的行为，证明
+它既不是恒红也不是恒真的凑数判据。
+
+### 边界
+
+本轮只让失败**可见**，没改分类行为、没加重试、没动调度策略。
+「分类器失败要不要退避重试」仍是待拍板项——现在至少它不再是无声的。
