@@ -10951,3 +10951,77 @@ email_accounts、OAuth token 表、通知表……全部不会建。
     FAIL=0  SKIP=0  cached=0  DATA RACE=0
 
 与 §7eb 建立的基线一致，§7em 的 DDL 改动未引入任何回归。
+
+## §7eo — 主仓已经修了 §7em 同一个缺陷，而且修得更完整（分叉必须处理，不是各修各的）
+
+§7em 我独立发现「migrate 不建 emails.updated_at」并修了。**本轮查 main 发现：
+并发会话在 2026-10-01 18:37（`69c209aa`）已经修了同一个缺陷。**
+
+### 主仓的修法（比我的完整三处）
+
+    ALTER TABLE emails ADD COLUMN IF NOT EXISTS updated_at BIGINT;
+    UPDATE emails SET updated_at = created_at WHERE updated_at IS NULL;   <- 存量回填
+    -- InsertEmail 的 INSERT 补上 updated_at，与 created_at 同填
+
+外加同一次提交还发现：这一列缺失同时导致**自定义目录 move / 删除目录 500**
+（`store_folders.go` 的 `MoveEmailsScoped` / `CleanFolderName` 也写它），
+以及 `email_ops_log` 的 `ON CONFLICT` 推不出**部分索引**导致 42P10。
+
+**即：主仓把 §7ej 的断点 1 与断点 2 一起修了，还顺手修了另一个同源缺陷。**
+我之前把断点 2 标为「等拍板（行为变更）」，而主仓已经按
+「与 created_at 同填」这个方向落地了。
+
+### 这改变了什么
+
+1. **§7ej 断点 2 不再需要拍板** —— 方向已被主仓选定并实施。
+   本分支应当 cherry-pick 主仓那批提交，而不是维持自己的分叉版本。
+2. **我 §7em 的 DDL 那一行与它改同一行**，直接 cherry-pick 会冲突，
+   且我的版本**没有存量回填**（少了 UPDATE 那一行）。
+3. **本分支落后 main 218 个提交**，其中 49 个是 email 域。
+
+### 分叉的真实规模：两边互补，不是替代
+
+按文件逐个判（`git ls-tree -r origin/main` 建 Set，再与本分支比对——
+**不用** `git diff` 的三点/两点形式，见下方教训）：
+
+    origin/main tracked files = 3124
+    HEAD         tracked files = 2974
+    仅本分支有 = 101   （绝大多数是 email 域的测试与探针）
+    仅 main 有   = ~290  （130+ 诊断/负控脚本、整套 handoff、maestro flows）
+
+**101 个「仅本分支有」的文件里绝大多数是 email 测试**
+（`invoice_dedup_test.go` / `fetcher_attachments_test.go` /
+`invoice_real_regress_test.go` …），**main 上完全没有**。
+反过来 main 上有 130+ 个 `scripts/diag-*.mjs` / `verify-*.mjs` / `negctl-*.mjs`，
+本分支没有。
+
+**结论：两个分支是互补的，合并是必要的，但**同步 218 个提交同时
+消解 101 个独有测试文件的工作量与风险都很大，属于需要显式决策的动作。**
+本轮只做「把事实查清楚并留档」，不擅自开始大规模 cherry-pick。
+
+### 一个 PowerShell 判据陷阱（又踩了一次）
+
+第一版「哪些文件仅本分支有」用 PowerShell 逐文件跑
+`git cat-file -e origin/main:<file> 2>$null` 并在 if 里判退出码，
+输出 **167/167 全部「仅本分支有」**——包括 `backend/cmd/pocketd/main.go`，
+而后者手工验证 `git cat-file -e origin/main:backend/cmd/pocketd/main.go`
+明确返回 0（存在）。
+
+**根因**：`2>$null` 吞掉了 stderr，且在 `if` 条件里没有正确读到 `$LASTEXITCODE`，
+于是每个文件都被判成「不存在」。输出看起来是一份**完整、可信、有条理的文件清单**——
+101 vs 167 这种量级差异本该立刻引起怀疑。
+
+**正确做法**（已按此重写并得到 101 这个数）：
+一次 `git ls-tree -r --name-only origin/main` 建 Set，
+再与本分支的 `ls-tree` 比对。**不逐文件起子进程、不依赖退出码。**
+这与 `judge-branch-value-by-file-presence`（memory）记的是同一条：
+**判定「分支还带不带来价值」必须逐文件问 main 里有没有，
+而逐文件问的方式本身要先验证对不对。**
+
+### 对 §7em 那次提交的处置
+
+**暂不改动**。理由：改 store.go 去对齐主仓版本，属于「为了合并而预先改代码」，
+在没有确定合并策略前做这件事只会增加冲突面。
+§7em 的护栏 `updated_at_guard_test.go` 保持原样——
+它在两种情况下都有效：列不存在时报 DEFECT-1，列存在但 InsertEmail 不写时报 DEFECT-2。
+cherry-pick 主仓提交后它会自动变成全 FIXED，那正是它该有的结局。
