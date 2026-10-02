@@ -9366,3 +9366,115 @@ feikemanager1@163.com 489 次 → ~57 秒     ❌
 > 负控脚本必须**自己校验改动已落盘**（回读目标文件、断言标志位），
 > 并且**校验失败就不许跑测试**——否则「全绿」这个信号毫无意义，
 > 比没有负控更危险。
+
+---
+
+## §7dx 补齐 Scheduler.Stop 的幂等性（仓库既定模式被漏掉的一处）
+
+### 为什么做
+
+上一轮 §7dw 收尾时把它列为「待定」。本轮查清后按**修漏**处理——
+仓库里已有既定模式，email 这个是漏掉的：
+
+```go
+// internal/scheduledtask/scheduler.go:244
+// Stop requests a graceful stop and waits for in-flight executions. It is
+// idempotent and safe when Start was never called.
+func (s *Scheduler) Stop() {
+	if s == nil { return }
+	s.stopOnce.Do(func() { close(s.stop) })
+	s.wg.Wait()
+}
+```
+
+另有 `redclaw/bridge_test.go` 里有显式的 `// Second stop should not panic` 用例。
+
+email 侧原本是裸 `close(s.stop)`（:263）。**当前生产路径上二次 Stop 不可达**
+（`main.go:492` 只有一处 `defer emailScheduler.Stop()`，`:491` Start 也只调一次），
+所以这是**潜在健壮性缺口而非活跃 bug**——但「不可达」不是「安全」。
+
+### 改了什么（+21 / -3）
+
+```go
+func (s *Scheduler) Stop() {
+	if s == nil {
+		return
+	}
+	s.stopOnce.Do(func() { close(s.stop) })
+}
+```
+
+外加 struct 里一个 `stopOnce sync.Once`。
+
+**刻意不做** `wg.Wait()`：这里的 loop（pollLoop / pipelineLoop / …）是裸
+`go` 起的，没有 WaitGroup 可等；而 pipelineLoop 等待时持有一次最长 30 分钟的
+`runner.RunEmailPipeline` 调用，让 `Stop` 阻塞那么久本身就是新问题。
+优雅收尾是另一件事，不在本次范围内。
+
+### 三条断言分三个层次
+
+只断言「不 panic」是不够的——那只能证明 close 没被调第二次，**证明不了
+loop 真的停了**。新增 `scheduler_stop_test.go`：
+
+| 用例 | 断言的性质 |
+|---|---|
+| `TestStop_IsIdempotent` | 连续三次 Stop 不 panic |
+| `TestStop_SafeWhenNeverStarted` | 未 Start 就 Stop 安全；nil 接收者安全 |
+| `TestStop_EndsPipelineLoopBeforeTrigger` | **loop 真的退出** |
+
+第三条用恒定冻结时钟把触发点固定在 400ms 后，在 50ms 处 Stop，
+然后断言 750ms 后 `runner.calls == 0`。
+
+### 写第三条时被自己的时钟打了一次
+
+第一版复用了 `scheduler_pipeline_test.go` 的 `fakeClock`，**用例直接转红**：
+```
+Stop 之后 pipelineLoop 仍然触发了 1 次
+```
+
+查下来是**测试设计错了，不是实现错了**。`fakeClock` 第二次起返回
+「已过触发点」的时间（它本来的用途是让 loop 第二轮把下次触发排到 24h 后），
+而 `pipelineLoop` 一轮里要取两次 now：
+
+```go
+next  := nextTimeAt(s.now(), hour, 0, 0)   // 第 1 次：fakeNow  → next = triggerAt
+delay := next.Sub(s.now())                 // 第 2 次：afterNow → delay = -200ms
+if delay < 0 { delay = 0 }                 // → clamp 成 0，loop 立刻触发
+```
+
+于是 loop 在**启动瞬间**就跑完了，Stop 根本没来得及生效。改用恒定
+`frozenClock` 后正常。
+
+值得记的是：**这条用例是「红→修」而不是「红→改测试」**——
+第一次转红先假设是实现有问题，读完 `pipelineLoop` 才发现是时钟语义不匹配。
+
+### 负控 2 路，互补（各自覆盖不同性质）
+
+| 负控 | 幂等 | nil 守卫 | loop 退出 |
+|---|---|---|---|
+| A：退回裸 `close(s.stop)` | 🔴 转红 | 🔴 转红 | 🟢 绿 |
+| B：保留 `Once` 但不 `close` | 🟢 绿 | 🟢 绿 | 🔴 转红 |
+
+第一路里第三条**仍绿**——它测的是另一个性质（Stop 有没有让 loop 退出），
+不是本次修复的承重用例。**没有就此放过它**：单跑第二路负控（保留 Once
+结构、只把 `close` 换成 `_ = s.stop`），确认第三条确实转红。
+
+两路互补才说明三条断言没有冗余也没有缺口。这个「第一路只红一部分」不是
+意外——它是「判据要问覆盖了哪些取值，不是跑过了几个用例」的又一个实例。
+
+### 两个操作教训
+
+1. **负控后不要用 `git checkout --` 还原**。它会连**自己未提交的正式修改**
+   一起还原掉（本次把 `stopOnce` 的改动一起冲掉了，只能重做一遍）。
+   改成让负控脚本自己带 `apply|restore` 两个模式，反向替换回去。
+2. **一次测量方法本身出了错，不能当证据**：想量「`scheduler.go` 改动前的
+   gofmt 基线」，用 `git show HEAD:… > file` 导出后再 gofmt，量出 2 行差异；
+   但 PowerShell 5.1 的 `>` 重定向会改行尾，把基线自己污染了。改成直接看
+   `gofmt -d` 里我改的那几行的形态——`-`/`+` **内容完全相同**，是纯
+   CRLF/LF 差异，而 `scheduler_stop_test.go` 根本没被 `gofmt -l` 列出，
+   才是能站得住的证据。
+
+### 回归
+
+`go build ./...` 0、`go vet ./internal/email/` 0、
+`go test ./internal/email/ -count=1` 全包 ok。

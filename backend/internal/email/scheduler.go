@@ -89,7 +89,12 @@ type Scheduler struct {
 	started      bool
 	startCtx     context.Context
 	pipelineOnce sync.Once
-	nowFn        func() time.Time
+	// stopOnce 让 Stop 幂等。裸 close(s.stop) 被调用两次会 panic
+	// （close of closed channel），而 Scheduler 是由 main 的 defer 持有的
+	// 生命周期对象——将来任何「先 Stop 再 Stop」的收尾路径（测试里 teardown
+	// 与用例体各调一次、优雅退出分两处触发）都会把整个进程带走。
+	stopOnce sync.Once
+	nowFn    func() time.Time
 }
 
 // now 返回当前时间；测试可替换 nowFn 驱动定时触发。
@@ -259,8 +264,21 @@ func (s *Scheduler) Start(ctx context.Context) {
 	}
 }
 
-// Stop 停止调度器。
-func (s *Scheduler) Stop() { close(s.stop) }
+// Stop 停止调度器。可重复调用，且在 Start 从未被调用过时也安全。
+//
+// 与 scheduledtask.Scheduler.Stop 的既定模式对齐（nil 守卫 + sync.Once），
+// 顺带把「幂等」这件事写进注释：裸 close 在第二次调用时会 panic。
+//
+// 刻意**不**像 scheduledtask 那样 wg.Wait()：这里的 loop（pollLoop /
+// pipelineLoop / …）是裸 go 起的，没有 WaitGroup 可等；而 pipelineLoop 正在
+// 等待时它持有一次最长 30 分钟的 runner.RunEmailPipeline 调用，让 Stop
+// 阻塞那么久本身就是新的问题。要等优雅收尾是另一件事，不在本次范围内。
+func (s *Scheduler) Stop() {
+	if s == nil {
+		return
+	}
+	s.stopOnce.Do(func() { close(s.stop) })
+}
 
 // LastTickUnix 返回最后一次 tick 的 Unix 时间戳。
 func (s *Scheduler) LastTickUnix() int64 {
