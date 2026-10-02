@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // server_email_pipeline.go — 邮件流水线的 server 侧装配与 HTTP handlers。
 //
@@ -119,6 +119,9 @@ func (p *feishuLedgerPublisher) PublishLedger(ctx context.Context, title string,
 	if err != nil {
 		return "", err
 	}
+	// 合计已经按币种写进 rows 里（多币种时每币种一行），所以这里不需要
+	// 也不应该再取一个总额出来。LedgerRows 的第二个返回值是 []CurrencyTotal，
+	// 需要按币种展示时从它取，别自己把各币种加起来——那不是金额。
 	rows, _ := email.LedgerRows(invs)
 	if err := p.client.WriteValues(ctx, ss.Token, email.LedgerCellRange(sheetID, rows), rows); err != nil {
 		return ss.URL, err
@@ -520,27 +523,34 @@ func (s *Server) handleEmailInvoiceSummary(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	var total float64
 	var downloaded, pendingCount, failed int
+	// 合计**按币种分组**。此前这里是裸 `total += inv.Amount`，把 USD 与 CNY
+	// 直接相加后放进 amountTotal —— 跨币种的算术和不是金额。
+	// 这条规则在仓库里已有三处实现（LedgerRows、WriteInvoiceSummaryDocs、
+	// InvoiceListStats），三处都配了用例；那三次修复的审计范围只在 internal/email，
+	// server 层这处手写求和没被看到。它是第四处，也是唯一一处直接把标量交给前端。
+	//
+	// 行为与列表端点 handleEmailInvoices 保持一致：单一币种时 amountTotal 可用，
+	// 混入多币种时它是 0 且 amounts 非空 —— 给一个「看起来正常」的标量会直接
+	// 误导（前端会把它渲染成 ¥）。
+	//
+	// 【合并后的叠加】先按「只统计真正拿到文件的发票」筛出 counted，再对它按币种
+	// 分组。两个修复解决的是**不同**问题，都要成立：
+	//   - 只统计已下载且 FilePath 非空：库里存在 status=failed 却残留脏字段的记录
+	//     （两张 QQ Wallet：seller="name:"、invoiceNo="Issuance"，字段是从邮件错误
+	//     段落抽出来的，见 handoff §7o），金额当时恰好是 0 才没出事。将来某张 failed
+	//     发票若带着错误抽取的非零金额，就会被静默算进总额，让对账虚高且无处提示。
+	//     判定与紧邻的 downloaded 计数完全对齐 —— 界面上「已下载 N 张」和「合计 X 元」
+	//     指的是同一批发票，否则两个数字会互相矛盾。
+	//   - 按币种分组：跨币种的算术和不是金额。
+	var counted []email.Invoice
 	rows := make([]map[string]any, 0, len(invoices))
 	for _, inv := range invoices {
-		// 合计口径与 email.LedgerRows / WriteInvoiceSummaryDocs 一致
-		// （2026-10-01 修正）：**只统计真正拿到文件的发票**。
-		//
-		// 原来这里无条件 `total += inv.Amount`。库里存在 status=failed 却
-		// 残留脏字段的记录（两张 QQ Wallet：seller="name:"、invoiceNo="Issuance"，
-		// 字段是从邮件错误段落抽出来的，见 handoff §7o），金额当时恰好是 0
-		// 才没出事。将来某张 failed 发票若带着错误抽取的非零金额，就会被
-		// 静默算进总额，让对账虚高且无处提示。
-		//
-		// 判定用 `FilePath != ""`（而不是 status=="downloaded"），与紧邻的
-		// downloaded 计数完全对齐 —— 界面上「已下载 N 张」和「合计 X 元」
-		// 指的是同一批发票，否则两个数字会互相矛盾。
 		switch inv.Status {
 		case "downloaded", "filed":
 			if inv.FilePath != "" {
 				downloaded++
-				total += inv.Amount
+				counted = append(counted, inv)
 			}
 		case "pending", "new":
 			pendingCount++
@@ -553,6 +563,13 @@ func (s *Server) handleEmailInvoiceSummary(w http.ResponseWriter, r *http.Reques
 			"invoiceDate": inv.InvoiceDate, "status": inv.Status, "fileName": inv.FileName,
 			"feishuSent": inv.FeishuSentAt > 0,
 		})
+	}
+	amounts := email.SumByCurrency(counted)
+	var total float64
+	var totalCurrency string
+	if len(amounts) == 1 {
+		total = amounts[0].Amount
+		totalCurrency = amounts[0].Currency
 	}
 	csvPath, mdPath, err := p.BuildInvoiceSummaryDocs(r.Context(), uid, wsID)
 	var csvName, mdName string
@@ -567,8 +584,12 @@ func (s *Server) handleEmailInvoiceSummary(w http.ResponseWriter, r *http.Reques
 		log.Printf("[email/summary] publish feishu ledger: %v", ledgerErr)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"count":       len(invoices),
+		"count": len(invoices),
+		// amountTotal 仅在**单一币种**时有意义（多币种时为 0 且 amounts 非空）。
+		// 前端绝不能把跨币种的数渲染成 ¥。
 		"amountTotal": total,
+		"currency":    totalCurrency,
+		"amounts":     amounts,
 		"downloaded":  downloaded,
 		"pending":     pendingCount,
 		"failed":      failed,

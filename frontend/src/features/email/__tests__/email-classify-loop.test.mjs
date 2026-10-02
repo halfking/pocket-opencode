@@ -16,12 +16,13 @@
 // `errorCount === rowCount` 改成 `false`，本文件必须转红。
 
 import assert from 'node:assert/strict'
-import { describe, it } from 'node:test'
+import { describe, it, test } from 'node:test'
 import {
   classifyDoneHint,
   DEFAULT_CLASSIFY_MAX_ROUNDS,
   shouldContinueClassify,
 } from '../email-classify-run.ts'
+import { runClassifyLoop, classifyStopHint, DEFAULT_MAX_BATCHES } from '../email-classify-loop.ts'
 
 /** 便捷构造：默认「一切正常、还有剩余、继续」。 */
 const st = (o = {}) => ({
@@ -114,10 +115,6 @@ describe('classify done hint', () => {
  * 还测「老逻辑不会停」——把旧判定原样写进测试里跑一遍，让它在有界步数内
  * 被强制中断，从而把「不收敛」这件事也变成可复现的证据，而不是一句断言。
  */
-
-import test from 'node:test'
-import assert from 'node:assert/strict'
-import { runClassifyLoop, classifyStopHint, DEFAULT_MAX_BATCHES } from '../email-classify-loop.ts'
 
 /** 造一个「每轮 classified=0、remaining 恒定」的 fetchBatch，返回计数。 */
 function stuckFetch(remaining) {

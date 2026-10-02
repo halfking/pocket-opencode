@@ -23,7 +23,32 @@ package email
 // 样本来自 5 个真实账户（huangxutao@kxpms.cn / 56551681@qq.com /
 // feikemanager@163.com / feikemanager1@163.com / kimmy.huang@163.com）
 // 共 155 封的抽样，**已合成化**：不含真实发票号、真实金额、真实内部地址。
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// senderIsExempt 复刻 spam.go 里的域名白名单判定：命中就是**不评分**的零值路径。
+//
+// 合并说明：TestLooksLikeSpam_ExposesScoreBelowThreshold 明确要求豁免/短路返回
+// 严格零值，好让调用方把「压根没参与评分」与「评过分但差一截」分开。合并后
+// 白名单多了 monitor.aliyun.com，于是下面那条「未达阈值必须有分数或理由」的
+// 断言会把**豁免样本**误判成「没参与评分的坏样本」。两者语义不同，
+// 所以这里显式区分，而不是放宽断言。
+func senderIsExempt(from string) bool {
+	fromLower := strings.ToLower(strings.TrimSpace(from))
+	i := strings.LastIndex(fromLower, "@")
+	if i < 0 {
+		return false
+	}
+	domain := fromLower[i+1:]
+	for _, w := range spamDomainWhitelist {
+		if strings.Contains(domain, w) {
+			return true
+		}
+	}
+	return false
+}
 
 type realSpamSample struct {
 	name    string
@@ -115,14 +140,18 @@ func TestLooksLikeSpam_OnRealMailboxSamples(t *testing.T) {
 		t.Run(s.name, func(t *testing.T) {
 			// 发票候选 / 已判重要 的邮件由调用方短路传入，永不判垃圾。
 			// 真实样本里都不是这两类，所以传 false。
-			got := LooksLikeSpam(s.from, s.subject, s.snippet, false, false)
+			got := LooksLikeSpam(s.from, s.subject, s.snippet, false, false, 0) /* senderVolume=0「未统计」*/
 			if got.Spam != s.spam {
 				t.Fatalf("Spam=%v, want %v (score=%d why=%q)", got.Spam, s.spam, got.Score, got.Why)
 			}
 			// 未达阈值的样本也必须带分数或理由，否则调用方分不出
 			// 「压根没参与评分（豁免）」和「评过分但差一截」——预演报告就
 			// 退化成命中/未命中两态，阈值没法用真实数据校准。
-			if !got.Spam && got.Score == 0 && got.Why == "" {
+			//
+			// 但**白名单豁免的样本是合法的全零**：它按设计就不参与评分
+			// （见 senderIsExempt 与 TestLooksLikeSpam_ExposesScoreBelowThreshold）。
+			// 只有「既非豁免、又交出全零」才是坏样本。
+			if !got.Spam && got.Score == 0 && got.Why == "" && !senderIsExempt(s.from) {
 				t.Fatalf("unclassified sample returned a zero verdict: nothing to calibrate against")
 			}
 			if got.Score < s.minScore {
@@ -140,7 +169,7 @@ func TestLooksLikeSpam_OnRealMailboxSamples(t *testing.T) {
 func TestLooksLikeSpam_InvoiceAndImportantAreNeverSpam(t *testing.T) {
 	// 对照组：一封营销邮件，在两个闸门都关闭时确实会被判垃圾。
 	promo := realSpamSamples[len(realSpamSamples)-2] // obvious-promo
-	base := LooksLikeSpam(promo.from, promo.subject, promo.snippet, false, false)
+	base := LooksLikeSpam(promo.from, promo.subject, promo.snippet, false, false, 0) /* senderVolume=0「未统计」*/
 	if !base.Spam {
 		t.Fatalf("control failed: promo sample should be spam with both gates open, got score=%d why=%q", base.Score, base.Why)
 	}
@@ -153,7 +182,7 @@ func TestLooksLikeSpam_InvoiceAndImportantAreNeverSpam(t *testing.T) {
 		{"both", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := LooksLikeSpam(promo.from, promo.subject, promo.snippet, tc.invoice, tc.imp)
+			got := LooksLikeSpam(promo.from, promo.subject, promo.snippet, tc.invoice, tc.imp, 0) /* senderVolume=0「未统计」*/
 			if got.Spam {
 				t.Fatalf("short-circuit failed: %s mail was classified as spam (score=%d)", tc.name, got.Score)
 			}
@@ -174,7 +203,7 @@ func TestRealSamples_NeverFlagWorkMail(t *testing.T) {
 		"westlakebusiness@apple.com",
 	}
 	for _, s := range realSpamSamples {
-		v := LooksLikeSpam(s.from, s.subject, s.snippet, false, false)
+		v := LooksLikeSpam(s.from, s.subject, s.snippet, false, false, 0) /* senderVolume=0「未统计」*/
 		for _, p := range protected {
 			if s.from == p && v.Spam {
 				t.Fatalf("work mail from %s classified as spam (score=%d why=%q) - MOVE is irreversible on a real mailbox", p, v.Score, v.Why)

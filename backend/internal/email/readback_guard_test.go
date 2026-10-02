@@ -74,12 +74,18 @@ var readbackFnExempt = map[string]string{
 		"不是从库里读出来的。真实 Message-ID 在 POP3 侧根本不存在——" +
 		"这正是 sameEmailMessage 里用 strings.HasPrefix(msgID, \"pop3-\") " +
 		"把它排除在强确认之外的原因。护栏第二版（只看字符串字面量）才把它抓出来，添为豁免",
-	"Sync": "这里的 em.ActionReason 是**规则引擎的命中依据**（fetcher.go 里 " +
-		"reasons 拼成的 \"action: reason\" 串），在内存里生成，与 DB 无关；" +
-		"同一函数确实调 InsertEmail，而 action_reason 是那条 INSERT 的列之一，"+
-		"但 SQL 写在 store.InsertEmail 里、不在 Sync 的函数体内，所以本判据看不见。" +
+	"applyInlineRules": "赋的是**规则引擎的命中依据**（在内存里把 reasons 拼成的 " +
+		"\"action: reason\" 串），与 DB 无关。action_reason 确实是 DB 列、由 " +
+		"InsertEmail 写入，只是那条 SQL 不在本函数体内，本判据看不见。" +
+		"合并前这段代码在 Sync 的函数体里，那时靠下面的 \"Sync\" 条目豁免；" +
+		"取件映射被重构成 emailFromMessage + applyInlineRules 之后，赋值点搬到了这里，" +
+		"豁免也必须跟着搬 —— **豁免跟的是赋值所在的那个函数，不是调用方**。" +
 		"AI 分类那条路径（ClassifyUnclassified → SetClassificationWithReasonScoped）" +
 		"才是 §7ec 修的断点，它有自己的端到端用例盯着",
+	"Sync": "合并后 Sync 已不再直接给这三个受管字段赋值（取件映射搬进了 " +
+		"emailFromMessage，ActionReason 的实际赋值在 applyInlineRules），" +
+		"所以这条豁免已无对应赋值点。保留是为了将来有人在这里新赋一个受管字段时" +
+		"能立刻看到说明，而不是凭空多一条无理由的静默豁免。真实理由见上面那条",
 }
 
 // TestGuard_FieldAssignmentIsBackedByItsColumn 结构护栏。

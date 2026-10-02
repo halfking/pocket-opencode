@@ -388,7 +388,7 @@ func TestPipelineRun_SummaryDocsContainAmount(t *testing.T) {
 		}
 		text := string(data)
 		if !strings.Contains(text, "1234.56") {
-			t.Errorf("%s does not contain the invoice amount; got:\n%s", name, truncate(text))
+			t.Errorf("%s does not contain the invoice amount; got:\n%s", name, truncate(text, 400))
 		}
 	}
 }
@@ -629,9 +629,6 @@ func TestPipelineRun_NotificationFailureDoesNotMarkAsNotified(t *testing.T) {
 	}
 }
 
-func truncate(s string) string {
-	if len(s) > 400 {
-		return s[:400] + "..."
-	}
-	return s
-}
+// 合并说明：本文件原来自己有一个固定 400 字节的 `truncate(s string)`，
+// 而 invoice_sources_e2e_test.go 有一个通用的 `truncate(s string, n int)`。
+// 同包同名两个定义无法编译（redeclared），取通用的那个，本文件的调用点补上 400。

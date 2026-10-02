@@ -79,6 +79,15 @@ func currencyInvoice(t *testing.T, store *email.Store, name, currency string, am
 	if err != nil {
 		t.Fatalf("UpsertInvoice %s: %v", name, err)
 	}
+	// file_path **不在** UpsertInvoice 的 INSERT 列里（那 18 列不含它），
+	// 落盘路径由 UpdateInvoiceHarvest 写。合计口径的判据是
+	// 「status 属于已下载态 **且** FilePath 非空」，两步都要走到。
+	// 合并前这个 helper 只做第一步，于是判据收紧后合计恒为 0。
+	inv.FilePath = "email-invoices/test/" + name + ".pdf"
+	inv.Status = "downloaded"
+	if err := store.UpdateInvoiceHarvest(context.Background(), inv); err != nil {
+		t.Fatalf("UpdateInvoiceHarvest %s: %v", name, err)
+	}
 	return inv
 }
 

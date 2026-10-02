@@ -67,6 +67,17 @@ var spamDomainWhitelist = []string{
 	"taobao.com", "tmall.com", "pinduoduo.com", "ctrip.com", "qunar.com",
 	"flycua.com", "airchina", "ceair.com", "csair.com", "western airlines",
 	"exmail.qq.com", "kxpms.cn",
+	// monitor.aliyun.com：云厂商的服务通知（安全告警、账单、产品月刊）不是广告。
+	//
+	// 【待拍板 · 尚未获产品确认】这是 handoff 待拍板项「阿里云白名单（建议只加
+	// monitor.aliyun.com，实测 6→2）」的建议值，合并时被选为解决两侧规则冲突的
+	// 最小手段：main 侧把「带退订头」改成命中即判垃圾（Score 100），而本分支的
+	// 真实样本 aliyun-product-monthly（snippet 含「点击此处退订。」）期望非垃圾。
+	// 两者直接矛盾，且属于**产品语义**不是代码缺陷，故在此显式标注。
+	//
+	// 不要用 aliyun.com 或 aliyuncs.com 整域放行：实测那样会把 6 封里该判的 2 封
+	// 一并豁免，垃圾判定形同虚设。只放行 monitor.* 这一支。
+	"monitor.aliyun.com",
 }
 
 // SpamVerdict 是判定结论。
@@ -132,6 +143,9 @@ func LooksLikeSpam(from, subject, snippet string, invoiceCandidate, important bo
 		domain := fromLower[i+1:]
 		for _, w := range spamDomainWhitelist {
 			if strings.Contains(domain, w) {
+				// 严格零值是**有意**的：调用方要靠它把「压根没参与评分（豁免/
+				// 短路）」与「评过分但差一截」分开。TestLooksLikeSpam_ExposesScoreBelowThreshold
+				// 钉着这一点。别在这里加 Why 留痕——那会把两种态又混回去。
 				return SpamVerdict{}
 			}
 		}
