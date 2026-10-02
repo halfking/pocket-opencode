@@ -104,12 +104,32 @@
 **算交集的方式**：按提交逐个 `git show --name-only` 枚举，不是在分叉分支上用两点
 `git diff`——那算的是 HEAD 与 origin/main 的差集，不是我要断言的「我的文件」。
 
+### 补记（2026-10-03 00:0x，状态又变了——上面两行已过期）
+
+写完上面那段之后，并发会话把 `origin/main` 合了进来（本地出现 `a25160cc`
+Merge remote-tracking branch）。于是：
+
+- `git merge-base --is-ancestor origin/main HEAD` → 退出码 **0**
+- `git log HEAD..origin/main` → **空**
+
+**现在推送是 fast-forward，连 merge 都不需要**，上一行「直接 push 会被拒」已不成立。
+
+「交集为 0 ⇒ 合并干净」当时是推断，之后**在一次性 worktree 里真合并了一次**：
+`git merge --no-commit --no-ff origin/main` → `Automatic merge went well`，
+退出码 0，`git diff --diff-filter=U` 为空。worktree 事后已 `merge --abort` +
+`worktree remove`，主工作区未被触碰（那里有并发会话未提交的改动）。
+
 ### 基线
 
 - `go test ./internal/email -count=1` → **EXIT=0**，104.410s（在新 HEAD `db8db615` 上）
+- `db8db615..HEAD` 之间**零个 `.go` 改动**（`git diff --name-only` 过滤 `\.go$` 为空）
+  ⇒ 上面那次绿测对应的 Go 代码至今未变，仍然有效。
+- 同一区间有 3 个前端文件变动（并发会话新增的 dead-api 检查器：
+  `frontend/scripts/dead-api-classify.mjs` 等）——**我没有重跑前端测试**，
+  不对前端当前状态作任何断言。
 - `internal/server` **未重跑**。工作区里有并发会话未提交的
   `llm_gateway_handler.go` / `llm_gateway_selfheal_guard_test.go` 等 6 个改动，
-  在这份工作树上跑 server 测试量的是**他们的 WIP**，不是我这 5 个提交。
+  在这份工作树上跑 server 测试量的是**他们的 WIP**，不是我这 6 个提交。
   不假装它绿。
 
 ---
