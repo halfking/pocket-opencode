@@ -614,6 +614,20 @@ func (s *Scheduler) sendVacationReply(ctx context.Context, delivery *VacationDel
 	})
 }
 
+// accountDueForSync 是 pollLoop 的到期判据，抽成纯函数是为了让测试能验
+// 「同步写没写 last_synced_at」的**后果**，而不是在测试里抄一份判据
+// （抄的那份和线上那份漂移了也测不出来）。
+//
+// now / lastSyncedAt 都是 Unix 秒；intervalMin <= 0 时按 15 分钟兜底。
+func accountDueForSync(now, lastSyncedAt, intervalMin int64) bool {
+	if intervalMin <= 0 {
+		intervalMin = 15
+	}
+	intervalSec := intervalMin * 60
+	// lastSyncedAt == 0（从没成功同步过）永远算到期。
+	return !(lastSyncedAt > 0 && now-lastSyncedAt < intervalSec)
+}
+
 func (s *Scheduler) tick(ctx context.Context) {
 	// nil fetcher is a supported degraded mode (intent/summary-only scheduler,
 	// tests). Fetch sync is the only thing tick does, so without a fetcher this
@@ -634,15 +648,10 @@ func (s *Scheduler) tick(ctx context.Context) {
 	}
 	now := time.Now().Unix()
 	for _, a := range accounts {
-		interval := int64(a.SyncIntervalMin)
-		if interval <= 0 {
-			interval = 15
-		}
-		intervalSec := interval * 60
-		if a.LastSyncedAt > 0 && now-a.LastSyncedAt < intervalSec {
+		accountID := a.ID
+		if !accountDueForSync(now, a.LastSyncedAt, int64(a.SyncIntervalMin)) {
 			continue
 		}
-		accountID := a.ID
 		userID := a.UserID
 		wsID := defaultWorkspace(a.WorkspaceID)
 		go func() {

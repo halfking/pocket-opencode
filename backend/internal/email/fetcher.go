@@ -648,6 +648,18 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		// 写成 uidNext（下一封的预分配 UID），下轮从 uidNext+1 起搜会永久
 		// 跳过恰好分到 uidNext 的那封新邮件（真实踩中：QQ 首轮同步后投递
 		// 的发票邮件再没被拉到）。
+		//
+		// 但 last_synced_at **必须**推进，两者不是一回事。scheduler 的到期
+		// 判据只读它（`now - a.LastSyncedAt < intervalSec` 才跳过，
+		// scheduler.go 的 pollLoop 每 60s 走一遍），与 UID 语义无关。
+		// 2026-10-02 实测：这一行原本直接 return，于是「没有新邮件」的账户
+		// last_synced_at 永远停在最后一次收到邮件的时刻，pollLoop 每轮都
+		// 判它到期 —— 7h41m 内 5 个账户被同步 1430 次，其中三个对着 163/QQ/
+		// 企业邮真实信箱各轮询了 427~489 次（配置 15 分钟，实际 ~60 秒）。
+		// 写法必须是「UID 原样回填、只刷新时间戳」。
+		if err := f.store.UpdateSyncState(ctx, accountID, acc.LastSyncedUID, time.Now().Unix()); err != nil {
+			log.Printf("[email/fetcher] update sync state (no new mail) %s: %v", acc.EmailAddress, err)
+		}
 		return 0, nil
 	}
 	if len(uids) > 50 {
@@ -863,7 +875,18 @@ func (f *Fetcher) syncPOP3Fallback(ctx context.Context, acc *Account, cred strin
 	if err != nil {
 		return 0, fmt.Errorf("pop3 fetch: %w", err)
 	}
+	// POP3 兜底此前**从不**写同步进度（整条路径只有 IMAP 收到新邮件时那一次
+	// UpdateSyncState），于是任何走兜底的账户 last_synced_at 恒为 0 或旧值，
+	// pollLoop 每 60s 必判它到期 —— 与 IMAP 空结果路径同一个病根。
+	// 两条成功出口都要覆盖：**没有新邮件**那次早退才是生产常态。UID 原样
+	// 回填：POP3 用位置序号而非 IMAP UID，不存在可推进的 UID 语义。
+	markSynced := func(at int64) {
+		if err := f.store.UpdateSyncState(ctx, acc.ID, acc.LastSyncedUID, at); err != nil {
+			log.Printf("[email/fetcher] pop3 update sync state %s: %v", acc.EmailAddress, err)
+		}
+	}
 	if len(uidls) == 0 {
+		markSynced(time.Now().Unix())
 		return 0, nil
 	}
 	saved := 0
@@ -940,6 +963,7 @@ func (f *Fetcher) syncPOP3Fallback(ctx context.Context, acc *Account, cred strin
 	if err := f.store.MarkPOP3UIDLSeen(ctx, acc.ID, nowUIDLSeen, now); err != nil {
 		log.Printf("[email/fetcher] mark pop3 seen: %v", err)
 	}
+	markSynced(now)
 	if saved > 0 {
 		log.Printf("[email/fetcher] pop3 fallback %s: %d new (uidls=%v)", acc.EmailAddress, saved, nowUIDLSeen)
 	}
