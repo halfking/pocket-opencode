@@ -8,7 +8,7 @@
 
 ---
 
-## 一、当日修掉的真缺陷（8 个）
+## 一、当日修掉的真缺陷（14 个）
 
 | # | 现象 | 根因 | 提交 |
 |---|---|---|---|
@@ -24,19 +24,22 @@
 | 10 | 台账 CSV 合计落在「文件名」列 | 手写格式串逗号数错 | `33239a3f` |
 | 11 | 台账 MD「共 N 张」与合计口径不一致 | 头部用 `len(invoices)`，合计用另一套 | `28096955` |
 | 12 | 幻影开关 `enable_dangerous_actions` | 注释承诺了一个不存在的闸门 | `992880c6` |
+| 13 | **手工「收信整理」把整轮失败报成成功** | `runPipeline` 无条件 `toast.success`，无视 `rep.errors`。实证：5.5 小时内 50 次同步失败期间，用户看到的都是「整理完成」 | `55fd74d8` |
+| 14 | **「新邮件 N」把重复同步算成新邮件** | `InsertEmail` 对已存 id 走 `ON CONFLICT DO UPDATE` 并返回 nil，fetcher 无条件 `saved++`。实证：08:00 报 `new=2`，而库里自前晚 23:56:52 起零新行 | `03885ba3` |
 
 ---
 
-## 二、当日推翻的旧结论（3 条）
+## 二、当日推翻的旧结论（5 条）
 
-继承的结论不能默认是对的——今天推翻 3 条、验证通过 1 条。
+继承的结论不能默认是对的——今天推翻 5 条、验证通过 1 条、**自己推翻自己 1 条**。
 
 | 旧结论 | 实情 | 文档 |
 |---|---|---|
-| 「每日定时流水线是死代码，`SetPipelineRunner` 全仓无调用点」 | **错**。调用点在 `cmd/pocketd/main.go:767`，运行日志有 `pipeline scheduled at 2026-10-02T08:00:00+08:00`，4 个测试早已存在 | `2026-10-02-correction-scheduled-pipeline-and-importance-provenance.md` |
+| 「每日定时流水线是死代码，`SetPipelineRunner` 全仓无调用点」 | **错**。调用点在 `cmd/pocketd/main.go:767`，运行日志有 `pipeline scheduled at 2026-10-02T08:00:00+08:00`，4 个测试早已存在。**且 2026-10-02 08:00 到点真的跑了一轮**（5 步齐全 + `done` + `errors=0`，触发后自排 10-03） | `2026-10-02-correction-scheduled-pipeline-and-importance-provenance.md` |
 | 「重要提醒靠本地规则引擎，所以真实数据上是通的」 | **归因错**。规则引擎需要账户配 `rules`，真实库 5 个账户 **rules 全为 NULL**，该路径一次都没执行。投递链路确实通（`reminders=24`），但稳态不会触发 | 同上 |
 | 「装机包连不上后端是 URL 丢失」 | **错**。真因是 localStorage 按 origin 分区，`androidScheme` 默认 https | `2026-10-02-device-localhost-api-base-unreachable.md` |
 | 「列表 `messageId`/`uid` 是死字段，无可证实影响」 | ✅ **成立**。已独立复核：邮件域内除 store 自身的类型/写入/读回外无消费方；`api/email-cleanup.ts` 里的 `uid` 是**响应**字段，请求侧用 accountId/subject/from/since/until，不依赖 uid | 本文档 |
+| **（我自己）**「当前部署下没有任何生产代码路径能写 `importance`」 | **错**。分类器**成功时不打任何日志**（`server_email_classify_gateway.go:174-189` 成功分支直接 `return out, nil`），所以「日志里只有失败行」推不出「从没成功过」。实证：`reminderUnclassifiedHint` 那行只在 `03:32:59` 出现过一次（`47/47 封 importance 为空`），`05:38:33` 与 `08:00:01` 两轮都没有 ⇒ 那时已无空 importance | 见第九节 |
 
 ---
 
@@ -141,3 +144,81 @@ pocketd 启动于 01:36，已运行 5 小时以上
 - `ListHarvestableInvoices` 是 `ORDER BY created_at` + 单轮只处理 20 张：
   pending 超过 20 时同批最老的会连跑 8 轮耗尽重试才轮到下一批。
   **有界、不会永久饿死**，但 pending 多时第 21 张要等 8 天
+
+---
+
+## 九、重要邮件提醒：投递层已验证通，卡的是分类层
+
+这是今天被我自己推翻、又用证据翻回来的一条，单独记。
+
+### 分类层：03:33~05:38 之间真的写进去了
+
+`reminderUnclassifiedHint`（`pipeline.go:785-787`）**只在 `unclassified > 0` 时打印**。
+它在全量日志里**只出现过一次**：
+
+```
+03:32:59  47/47 封邮件 importance 为空 —— 未被 AI 分类过…
+05:38:33  （没有这行）
+08:00:01  （没有这行）
+```
+
+后两轮它不出现 ⇒ 那时已经没有空 importance 的邮件 ⇒ 03:33~05:38 之间
+importance 从「47 封全空」变成了「一封不空」。
+
+**我此前据「日志里 `[email/classify]` 只有失败行」推断「从没成功过」，是错的**：
+分类器成功时一行日志都不打，把「没记录」当成了「没发生」。
+
+### 投递层：24 条提醒真实送达
+
+```
+05:38:33 [email/pipeline] step 3/5 important reminders
+05:38:33 reminders sent: [[halfking/Trendaradar] Run failed: …
+                         [halfking/pocket-opencode] Run failed: frontend …
+05:38:33 done … reminders=24 … errors=0
+05:38:33 [SLOW] POST /api/email/pipeline/run - 200 (1.0278306s)
+```
+
+`08:00` 那轮 `reminders=0` 反而是**防重复派发在正常工作**（`notified_at` 已置，
+不会每轮重发 24 条），不是链路坏了。
+
+### 现在真正的堵点：网关配额耗尽（不是速率超限）
+
+`llm-gateway chat 429: rate_limit_exceeded`，106 次，04:12→07:28，每小时
+14~38 次**分布均匀**，而同期 LLM 请求量极低。**均匀分布说明是配额被拒，不是
+突发超限——所以加退避重试无效**，只能由用户侧恢复配额/凭证。
+`llmgateway/client.go:179` 对非 200 直接返回错误、不重试，429 是终态。
+
+---
+
+## 十、幻影配置审计（`992880c6` 查法的推广）
+
+把 `config.go` 里 20 个邮件/飞书配置字段逐个统计「`config.go` 之外的引用数 /
+测试引用数」，两个是 **0 / 0**：
+
+| 配置 | 实际 |
+|---|---|
+| `POCKET_EMAIL_OAUTH_REDIRECT_URL` | redirect_uri 实际取自**请求体字段**（`startEmailOAuth`），而前端从不发这个字段 |
+| `POCKET_FEISHU_ENCRYPT_KEY` | 飞书回调里没有任何 V1 解密路径 |
+
+按 `992880c6` 的先例只加注「当前未被任何代码消费」，**零行为变更**（`63517ba`）。
+
+顺带查明 OAuth 绑定是**半成品**：服务端 `start` + `callback` 完整实现，但
+前端**零调用**（只有 `AuthType` 类型定义）；注释里让人调用的
+`POST /api/email/oauth/complete` **路由并不存在**。5 个真实账户都是 password
+鉴权，不阻塞当前需求。
+
+---
+
+## 十一、08:00 之后的其余提交
+
+| 提交 | 内容 |
+|---|---|
+| `699c1b0c` | 补上 IMAP 硬截止的 **tick 粒度**用例（既有用例用的 `hard < tick` 形态在生产里根本不出现）+ 「POP3 兜底必须可达」不变式 |
+| `7c287548` | A4 网格导出补验**真实几何**（每张发票各自落在独立格子）。实现本来就是对的 |
+| `bedc6fee` | 归类热循环（01:43~03:19 共 **856,160** 次、峰值 640 次/秒、89 MB 日志）+ 网关 429 的诊断记录 |
+| `25b3293d` | 补上「08:00 到点真跑过一次」的证据 |
+| `63517ba` | 两个幻影环境变量的如实标注 |
+
+**仍未查明（如实记录）**：运行进程 53 次 `imap login` 挂死全部是**精确的
+1m20.000s**，而按当前常量本地实测（静默 60.001s / 活跃但卡死 60.000s）两种
+形态都产不出 80s。结论只到「运行进程的行为与当前源码常量对不上」，机制未查明。
