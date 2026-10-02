@@ -15,6 +15,11 @@ coverage/
 
 # Local scratchpad for ad-hoc agent/device-test artifacts (previews, extracted dex, throwaway scripts)
 .scratch/
+# 2026-10-02: 又一个同性质的临时目录（.scratch-sttdev/，审计期的一次性脚本 +
+# 测试输出）。它当时不在忽略列表里，于是 `git status` 每次都把它报成未跟踪，
+# 而它**永远不该被提交**——里面是 base_fetcher.go 这类临时副本。
+# 规则写成前缀通配，是为了不必每来一个新临时目录就补一条。
+.scratch-*/
 
 # Nested git worktrees checked out INSIDE this repo (parallel branches under review).
 # These are full second checkouts (thousands of files); without this rule a stray
@@ -25,6 +30,11 @@ coverage/
 # Local nested worktree probe output
 .gotest-p2.txt
 /gotest-*.txt
+# 审计/测试运行的输出日志（fe-test.txt 等）——一次性的，不进版本库
+/fe-test*.txt
+/fe-tsc.txt
+# 提交信息草稿（用完即弃；真正要留的会写进 docs/handoff/）
+/.git-*-msg.txt
 
 # Backend / runtime logs
 logs/
