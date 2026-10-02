@@ -133,6 +133,14 @@ appId: com.kaixuan.opencode.pocket.sttdev
     timeout: 30000
 
 # ---- 核心断言：停止后仍显示**可行动原因**，而不是通用兜底 ----
+# 判别力说明（2026-10-02 复核）：单看 `assertVisible: ".*语音转写.*"` 会以为它
+# 太宽 —— 通用兜底「语音转写服务尚未配置」同样含"语音转写"四字。但实测判别表：
+#   修复态（可行动原因）  A1=true  A2=true  A3=true  => PASS
+#   缺陷态（只剩兜底）    A1=true  A2=false A3=false => FAIL
+# 即 A1 单独没有判别力，**真正的判别力来自它与下面两条 assertNotVisible 串联**。
+# 三条是一条都不能删的整体，拆开单跑任一条都会得到错误的绿灯。
+# （顺带：想用「文本里含 设置/API Key/配置」当可行动判据是**不行**的 ——
+#   兜底文案本身就含"配置"二字，该判据在缺陷态同样为真。）
 - assertVisible: ".*语音转写.*"
 - assertNotVisible: "该功能尚未完成配置"
 - assertNotVisible: "语音转写服务尚未配置"
