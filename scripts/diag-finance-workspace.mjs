@@ -105,16 +105,41 @@ const pgRow = psql(`select id||' | owner='||coalesce(owner_id,'NULL')||' | ws='|
 console.log('PG 里 SEED =', pgRow || '(没找到!)');
 
 // ---- 5. App 上下文用自己的 token 调 list ----
+//
+// ⚠️ 2026-10-03 修正：这里原来写的是 `fetch('/api/finance')`（**相对**路径）。
+//    Capacitor 壳里页面 origin 是 `https://localhost`（壳，不是后端），
+//    相对路径会解析到 `https://localhost/api/finance` → 命中本地 index.html →
+//    返回 HTML → `Unexpected token '<'`。实测就是这么炸的。
+//
+//    而真实 App 走的是 `api/http.ts` 的 `${resolveRuntimeApiBase()}${path}`，
+//    即**绝对 base + 相对 path**。两者不是同一个请求。
+//    ⇒ 头一版的「App token 调 list」根本没测到 App，它测的是一次手写相对 fetch；
+//       由此得出的「作用域一致但 App 看不到 SEED，需要查服务端 ListScoped 过滤」
+//       是**错的方向**，会把下一个人引去查一个不存在的服务端 bug。
+//
+// 修法：照抄 api-base.ts 的解析顺序（localStorage 覆盖优先，空串=同源），
+// 并把「实际用的 URL」与「Content-Type」一起回传 —— 下次再错会当场看得见。
 const appList = await ev(`(async function(){
   try{
     var t=localStorage.getItem('pocket_token')||'';
-    var r=await fetch('/api/finance',{headers:{Authorization:'Bearer '+t}});
+    var base=(localStorage.getItem('pocket_api_base')||'').replace(/\\/+$/,'');
+    var url=base ? base+'/api/finance' : '/api/finance';
+    var r=await fetch(url,{headers:{Authorization:'Bearer '+t}});
+    var ct=r.headers.get('content-type')||'';
+    if(ct.indexOf('text/html')>=0){
+      return { error:'RETURNED_HTML', url:url, contentType:ct,
+               hint:'请求打到了本地壳的 index.html，不是后端。检查 pocket_api_base。' };
+    }
     var j=await r.json();
     var arr=(j&&j.transactions)||[];
-    return { status:r.status, count:arr.length, hasSeed: arr.some(x=>(x.note||'').indexOf(${JSON.stringify(NOTE)})>=0), notes: arr.slice(0,5).map(x=>x.note) };
+    return { url:url, status:r.status, count:arr.length, hasSeed: arr.some(x=>(x.note||'').indexOf(${JSON.stringify(NOTE)})>=0), notes: arr.slice(0,5).map(x=>x.note) };
   }catch(e){ return { error:String(e) } }
 })()`);
 console.log('App token 调 list =', JSON.stringify(appList));
+// 判据自己要先站得住：URL 必须是配置里的 base，响应必须是 JSON。
+// 头一版这两个都没查，于是「返回 HTML」被当成「App 看不到数据」继续往下推。
+const appProbeOk = !!(appList && appList.url && !appList.url.startsWith('/') && typeof appList.status === 'number');
+console.log(`   [自检] App 侧请求用的是绝对 base = ${appProbeOk ? 'YES' : 'NO —— 这次比较的仍不是 App 的真实请求'}`);
 
 // ---- 6. admin token 从 Node 直调 list ----
 const adminList = await api('/api/finance',{token:adminToken});
