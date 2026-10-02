@@ -21,6 +21,27 @@ import (
 // （包括当前 `pocketd.exe` 所在目录那把）一把都解不开 —— 而用错的那把启动
 // 时**没有任何报错**。
 //
+// ## 2026-10-02 定案：是哪一把
+//
+// 逐个 data dir 跑 `diag_credential_health_test.go`（只 SELECT、本地解密、
+// 不碰 IMAP、不打印明文）实测 4 把：
+//
+//	C:\workspace\openpocket\data\email_master.key            5/5 解开 ← 权威
+//	C:\workspace\openpocket\backend\data\email_master.key    0/5
+//	C:\workspace\openpocket\.wt-e2e\backend\data\…           0/5
+//	C:\workspace\openpocket\.scratch-sttdev\data\…            0/5
+//
+// 4 把的 SHA-256 互不相同，确认是 4 把不同的 key 而非同一把的副本。
+// 权威那把 = `openpocket\data` 那把，与正文缓存 `data/email-bodies` 同目录，
+// 两个独立信号一致。
+//
+// **同一把 key 还封着 LLM 网关的 API key**（llm_gateway_store.go:198 用的是
+// 同一个 cipher），而这层在自检里原本没被点名：key 拿错时日志表现为「邮件
+// 解不开」，而网关那边只是安静退回 env、env 未设就是没有 key，于是
+// 归类/总结/发票提取/语音转写全都不工作会被当成另一件事另开一轮排查。
+// 18100 实例（data dir 指到 .wt-e2e）实测同时命中两边，见 main.go 那条
+// ERROR 的补充说明。
+//
 // ## 边界（别过度承诺）
 //
 // - 它只验「能不能解密」，**不验**密码是否仍有效、IMAP 是否可达。凭据正确但

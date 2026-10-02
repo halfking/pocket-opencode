@@ -19,17 +19,41 @@ import { execFileSync } from 'node:child_process'
 
 const PKG = 'com.kaixuan.opencode.pocket'
 const S = process.env.POCKET_SERIAL || '192.168.31.19:5555'
-const PORT = process.env.POCKET_CDP_PORT || '9472'
 const PROD = 'https://pocket.itestu.cn'
+// ⚠️ 2026-10-03 修 BUG-V10：原先这里是 `const PORT = process.env.POCKET_CDP_PORT || '9472'`，
+//    而第 32 行用 `tcp:${PORT}` 硬绑一个固定端口。固定端口是**共享可变状态**
+//    （同机还有别的会话在驱同一台设备，仓库里另有约 40 个 diag/verify 脚本
+//    各自硬编码了 9402-9476 之间的端口），撞上就抛 10048，且撞上时报错指向
+//    装置而不是「上次没清干净」。改成 tcp:0 让 adb 自己分配空闲端口。
 const adb = (a, t = 25000) => execFileSync('C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe', ['-s', S, ...a], { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
 const adbSoft = (a) => { try { return adb(a, 8000) } catch { return '' } }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// ---- BUG-V10：生产口令从环境取，缺就立刻停 ----
+// 背景：这个脚本原先在文件里有一个**硬编码的** `const adminPass = '…'`，
+// 被 b6187bc1（dev 旁路移除硬编码 admin 口令 + 卡口补 password-literal 规则）
+// 连同其它 7 个文件一起清掉了 —— 但**调用点被漏掉**：第 89 行还在写
+// `password: adminPass`。于是页内求值抛 ReferenceError，`ev` 返回异常，
+// 脚本必然 `exit 7`。**这条 https 设备侧回归从那次安全整改之后就一直是死的**，
+// 而 handoff 把它记成「设备侧受阻于环境（不是代码）」——把代码缺陷误判成了环境。
+//
+// 与 BUG-V5 同一类：安全整改删掉了一个字面量，某个消费者仍在按名字找它，
+// 而消费者的报错指向的是一个已经不存在的东西。
+// ⇒ 口令只能由环境提供；缺口令时**在碰设备之前**就停，不要跑到一半才发现。
+const PROD_PASS = process.env.POCKET_PROD_PASS || process.env.POCKET_AUTH_PASS || ''
+if (!PROD_PASS) {
+  console.log('POCKET_PROD_PASS 未设置 —— 这是**生产**口令，本机不猜、不兜底。')
+  console.log('  $env:POCKET_PROD_PASS="<生产口令>"')
+  process.exit(8)
+}
 
 const pid = adbSoft(['shell', `pidof ${PKG}`]).trim().split(/\s+/)[0]
 if (!pid) { console.log('APP_NOT_RUNNING'); process.exit(2) }
 const socks = adbSoft(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`])
   .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
-adbSoft(['forward', `tcp:${PORT}`, `localabstract:${socks.find((s) => s.endsWith(`_${pid}`)) || socks[socks.length - 1]}`])
+// BUG-V10：端口交给 adb 分配（tcp:0），不再硬绑固定端口。
+const PORT = Number(adbSoft(['forward', 'tcp:0', `localabstract:${socks.find((s) => s.endsWith(`_${pid}`)) || socks[socks.length - 1]}`]).trim())
+if (!Number.isInteger(PORT) || PORT <= 0) { console.log('CDP_FORWARD_NO_PORT'); process.exit(3) }
 const pages = await (await fetch(`http://127.0.0.1:${PORT}/json/list`, { signal: AbortSignal.timeout(10000) })).json()
 const page = pages.find((t) => t.type === 'page')
 if (!page) { console.log('NO_PAGE_TARGET'); process.exit(4) }
@@ -60,13 +84,35 @@ const ev = async (x, ms = 30000) => {
 const before = await ev(`(function(){ try { return localStorage.getItem('pocket_api_base') } catch (e) { return '__ERR__' } })()`)
 console.log(`原 localStorage.pocket_api_base = ${JSON.stringify(before.value)}`)
 
+// BUG-V10：还原必须是**必经之路**，不是「顺利跑完之后的收尾」。
+// 原先是顺序执行的直线代码：覆盖写在第 89 行、还原在第 148 行，
+// 而中间第 137 行有个 `process.exit(7)`（链路探针失败）。一旦触发，
+// 设备上的 pocket_api_base 就**永久留在 https://pocket.itestu.cn** ——
+// 下一个跑真机的人会以为自己在测本地后端，实际在打生产。
+// 这是典型的「失败路径不做清理」，而它留下的状态比错误信息本身危险得多。
+let restored = false
+async function restoreBase(reason) {
+  if (restored) return
+  restored = true
+  const r = await ev(`(function(){
+    try {
+      var v = ${JSON.stringify(before.value)}
+      if (v === null || v === '__ERR__') localStorage.removeItem('pocket_api_base')
+      else localStorage.setItem('pocket_api_base', v)
+      return localStorage.getItem('pocket_api_base')
+    } catch (e) { return 'RESTORE_FAIL: ' + String(e) }
+  })()`)
+  console.log(`已还原 localStorage.pocket_api_base = ${JSON.stringify(r.value)}${reason ? '（' + reason + '）' : ''}`)
+}
+process.on('exit', () => { if (!restored) console.log('!! 注意：进程退出时覆盖值**未**还原') })
+
 // ---- 2) 写入生产覆盖值 ----
 const setRes = await ev(`(function(){
   try { localStorage.setItem('pocket_api_base', ${JSON.stringify(PROD)}); return localStorage.getItem('pocket_api_base') }
   catch (e) { return 'SET_FAIL: ' + String(e) }
 })()`)
 console.log(`写入后 = ${JSON.stringify(setRes.value)}`)
-if (setRes.value !== PROD) { console.log('覆盖写入失败，本轮作废'); process.exit(6) }
+if (setRes.value !== PROD) { console.log('覆盖写入失败，本轮作废'); await restoreBase('覆盖写入失败'); ws.close(); process.exit(6) }
 
 // ---- 3) 从真机 WebView 内跑：登录 → 带 token 读 ----
 console.log(`\n=== 真机 WebView → ${PROD} 完整链路 ===`)
@@ -86,7 +132,7 @@ const chain = await ev(`(async () => {
   try {
     const r = await to(fetch(base + '/api/auth/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'admin', password: adminPass }),
+      body: JSON.stringify({ username: 'admin', password: ${JSON.stringify(PROD_PASS)} }),
     }), 20000)
     const j = await to(r.json(), 8000)
     token = (j && j.token) || ''
@@ -110,7 +156,13 @@ const chain = await ev(`(async () => {
   } catch (e) { /* ignore */ }
   return JSON.stringify(out)
 })()`, 60000)
-if (chain.err) { console.log('链路探针失败: ' + chain.err); process.exit(7) }
+// BUG-V10：失败路径也必须还原，否则设备会一直指着生产
+if (chain.err) {
+  console.log('链路探针失败: ' + chain.err)
+  await restoreBase('失败路径还原')
+  ws.close()
+  process.exit(7)
+}
 const c = JSON.parse(chain.value)
 for (const s of c.steps) {
   if (s.err) { console.log(`  ❌ ${s.name.padEnd(26)} ${s.err}`); continue }
@@ -120,25 +172,24 @@ for (const s of c.steps) {
   console.log(`  ${String(s.status).padEnd(4)} ${s.name.padEnd(26)}${extra}`)
 }
 
-// ---- 4) 还原覆盖值 ----
-const restore = await ev(`(function(){
-  try {
-    const v = ${JSON.stringify(before.value)}
-    if (v === null || v === '__ERR__') localStorage.removeItem('pocket_api_base')
-    else localStorage.setItem('pocket_api_base', v)
-    return localStorage.getItem('pocket_api_base')
-  } catch (e) { return 'RESTORE_FAIL: ' + String(e) }
-})()`)
-console.log(`\n已还原 localStorage.pocket_api_base = ${JSON.stringify(restore.value)}`)
+// ---- 4) 还原覆盖值（现在走必经的 restoreBase）----
+await restoreBase()
 
 // ---- 5) 判定 ----
+// BUG-V10：原先这里只打 ✅/❌ 然后**无条件 exit(0)** —— 也就是说全链路失败
+// 也会让任何自动化跑看到「成功」。判据必须能失败，否则它不是判据。
 console.log('\n=== 判读 ===')
 const unauth = c.steps.find((s) => s.name === 'unauth /api/tasks')
 const login = c.steps.find((s) => s.name === 'POST /api/auth/login')
 const reads = c.steps.filter((s) => s.name.startsWith('/api/'))
 const okRead = reads.filter((s) => s.status === 200)
-console.log(`  真机 TLS + JSON 正确（未被 index.html 顶替）: ${unauth && !unauth.err && /json/.test(unauth.contentType || '') ? '✅' : '❌'}`)
-console.log(`  生产登录签发 token: ${login && login.hasToken ? '✅' : '❌'}`)
+const tlsOk = !!(unauth && !unauth.err && /json/.test(unauth.contentType || ''))
+const loginOk = !!(login && login.hasToken)
+console.log(`  真机 TLS + JSON 正确（未被 index.html 顶替）: ${tlsOk ? '✅' : '❌'}`)
+console.log(`  生产登录签发 token: ${loginOk ? '✅' : '❌'}`)
 console.log(`  带 token 只读命中 200: ${okRead.length}/${reads.length} → ${reads.map((s) => s.name.replace('/api/', '') + '=' + s.status).join(' ')}`)
+
+const allOk = tlsOk && loginOk && reads.length > 0 && okRead.length === reads.length
 ws.close()
-process.exit(0)
+adbSoft(['forward', '--remove', `tcp:${PORT}`])
+process.exit(allOk ? 0 : 1)
