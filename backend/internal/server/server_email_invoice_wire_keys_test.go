@@ -169,7 +169,59 @@ func TestInvoiceListWire_SingleCurrency_AmountsKeysAreLowerCamel(t *testing.T) {
 	}
 }
 
-// 多币种：标量 amount 必须是 0，amounts 必须有两组且**每组**都是小驼峰。
+// 汇总端点是**同一个类型的第二个序列化现场**，同样要钉。
+//
+// 现状（2026-10-03 查证）：前端 `emailApi.invoiceSummary()` 全仓**只有定义、
+// 没有任何调用方**（`invoiceSummary` / `EmailInvoiceSummary` 只出现在 api/email.ts
+// 与一条测试的注释里），所以这个现场的错键今天**不显示**——按「闸门逻辑上一直
+// 关着、目前没造成损失」记录，而不是「已造成错账」。但它是个已声明的字段，
+// 任何人接上它就会拿到 undefined。
+//
+// ## 为什么既有的汇总用例没抓到（这是本文件最该被记住的一段）
+//
+// `server_email_invoice_summary_test.go` 的 `summaryResponse.Amounts` 元素带
+// `json:"currency"` 这类小驼峰 tag，却在修复前一直从 PascalCase 载荷里
+// **读到真值并断言成功**（byCur["USD"] == 100、Amounts[0].Amount == 75.5……）。
+//
+// 原因是 Go 的 `json.Unmarshal` 对字段名做**大小写不敏感**匹配：
+// `"Currency"` 能落进标了 `json:"currency"` 的字段。
+//
+// 于是「Go 侧用例全绿」根本不能证明线上键名对——它只证明了 Go 能读懂自己。
+// 真正发作的消费者是大小写敏感的 TS（round24 真机上的 ¥NaN）。
+// 这也是本文件全部断言都解到 map[string]any 的原因：解进 struct 会把这件事藏起来。
+func TestInvoiceSummaryWire_AmountsKeysAreLowerCamel(t *testing.T) {
+	s, store := summaryServer(t)
+	currencyInvoice(t, store, "wire-cny-sum.pdf", "CNY", 3500)
+
+	// 刻意不复用 getSummary：它把 body 解进 struct，而 struct 解码对键名
+	// 大小写不敏感——用它断言就等于用「Go 能读懂自己」冒充「线上键名正确」。
+	r := httptest.NewRequest(http.MethodGet, "/api/emails/invoices/summary", nil)
+	w := httptest.NewRecorder()
+	s.handleEmailInvoiceDispatch(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d，want 200；body=%s", w.Code, w.Body.String())
+	}
+
+	// amounts 的元素解成 map（键名大小写可见），顶层标量解成 struct 无妨。
+	var raw struct {
+		AmountTotal float64       `json:"amountTotal"`
+		Currency    string        `json:"currency"`
+		Amounts     []amountsWire `json:"amounts"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("响应不是合法 JSON: %v\n%s", err, w.Body.String())
+	}
+	if len(raw.Amounts) != 1 {
+		t.Fatalf("amounts 组数 = %d，want 1；body=%s", len(raw.Amounts), w.Body.String())
+	}
+	assertLowerCamelAmounts(t, "summary", raw.Amounts)
+	if raw.Amounts[0]["currency"] != "CNY" || raw.Amounts[0]["amount"] != float64(3500) {
+		t.Errorf("amounts[0] = %v，want CNY/3500", raw.Amounts[0])
+	}
+	if raw.AmountTotal != 3500 || raw.Currency != "CNY" {
+		t.Errorf("标量 amountTotal/currency = %v/%q，want 3500/CNY", raw.AmountTotal, raw.Currency)
+	}
+}
 //
 // 为什么单币种那条不够：多币种时前端只走 amounts 分支，标量是 0。
 // 「只把标量填对、amounts 仍然错键」这种实现能通过单币种用例里的一半断言，
