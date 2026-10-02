@@ -276,6 +276,14 @@ var pgSafeWithoutIsolation = map[string]string{
 	//   · 只读吗？不是：NewStore 会 migrate 建表。但那 9 张表全部建在自建 schema 里。
 	"internal/email/pipeline_lock_test.go": "跨进程 advisory lock 的集成测试：确实隔离，全部用例走 newWorkspaceTestStore（该助手建 `email_ws_test_<random>` schema 并把 search_path 钉上去，store_workspace_test.go:50-87）。本文件无 `\"*_test_\"` 字面量是因为 schema 名由 helper 现场生成；自检用例 TestDailyPipelineLock_TestHarnessIsActuallyIsolated 断言 current_schema() 非 public",
 
+	// internal/scheduledtask/diag_claimdue_race_test.go（2026-10-03 新增）：
+	//   · 确实隔离：自建 `claim_race_diag_<unixnano>` schema，两个 pool 的
+	//     RuntimeParams["search_path"] 都钉成它，cleanup 里 DROP ... CASCADE。
+	//   · 判红原因只是 schema 名不含 `_test_` 子串（守卫的 isolatedSchemaRe
+	//     是 `"(\w*_test_)`），隔离本身是到位的。
+	//   · 它要写库（INSERT 一个到期任务），所以同时登记进 pgAllowlistedWrites。
+	"internal/scheduledtask/diag_claimdue_race_test.go": "并发 ClaimDue 诊断：自建 `claim_race_diag_<unixnano>` schema，两个 pool 的 search_path 都钉成它，cleanup DROP CASCADE。判红仅因 schema 名不含 `_test_` 子串",
+
 	// internal/email/diag_credential_health_test.go（2026-10-02 新增，被本护栏判红后逐项核对）：
 	//   · 只用 pool.Query，**一次 Exec 都没有**（全文件扫
 	//     INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT：0 命中），
@@ -414,6 +422,13 @@ var sqlWriteRe = regexp.MustCompile(`(?i)\b(INSERT\s+INTO|UPDATE\s+\w+|DELETE\s+
 // 「不豁免隔离」的同时被要求把写语句列进来。旧设计里「在 allowlist 里」
 // 一次性放行了所有检查，那正是盲区的来源。
 var pgAllowlistedWrites = map[string]string{
+	// internal/scheduledtask/diag_claimdue_race_test.go（2026-10-03 新增）：
+	// 写的是自己刚 CREATE 的 `claim_race_diag_<unixnano>` schema 里那一条
+	// scheduled_tasks 行（为了让它此刻到期），两个 pool 的 search_path 都钉在
+	// 该 schema 上；cleanup 里 DROP SCHEMA ... CASCADE。门控
+	// POCKET_DIAG_CLAIM_RACE=1，不设则 t.Skip。
+	"internal/scheduledtask/diag_claimdue_race_test.go": "自建隔离 schema（search_path 钉定），只 INSERT 一条 scheduled_tasks 制造到期竞态；门控 POCKET_DIAG_CLAIM_RACE=1；cleanup DROP 自己的 schema CASCADE",
+
 	// 需 build tag greenmail + PG_DSN，`go test ./...` 永不编译；
 	// 写的对象是自己刚 CREATE 的 schema，且只删自己 acctID 名下的行。
 	"internal/email/fetcher_greenmail_test.go": "build tag greenmail（go test ./... 不编译）；CREATE SCHEMA 的是自己刚建的隔离 schema，DELETE 只删自己 acctID 名下的行",

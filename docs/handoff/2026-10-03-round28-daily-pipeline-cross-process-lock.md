@@ -7,25 +7,32 @@
 
 ## §1 一句话
 
-round27 定位的重复推送根因（进程内互斥挡不住多进程）已修：给 `RunEmailPipeline`
-加了 PostgreSQL 会话级 advisory lock，**只作用于定时触发**，手工触发不受影响。
-默认开启，`POCKET_EMAIL_PIPELINE_ADVISORY_LOCK=false` 可关。
+round27 定位的重复推送根因已修：email 每日定时流水线的"认领"此前只在**进程内**
+做（`emailPipelineMu` / `sync.Once`），共享同一个 PG 的多个 pocketd 各自都会跑一轮。
+现给 `RunEmailPipeline` 加了 PostgreSQL 会话级 advisory lock，**只作用于定时触发**，
+手工触发不受影响。默认开启，`POCKET_EMAIL_PIPELINE_ADVISORY_LOCK=false` 可关。
 
 **但 08:00 的止血仍需人工决定**——见 §7。代码修的是"以后"，
 18077 / 18100 上跑着的旧二进制不会因为这次提交而改变行为。
+
+⚠ **别把"多实例"本身当缺陷**。scheduledtask 的 dispatcher 同样是每进程一份
+tick 循环，但它在**数据库内**做租约式认领（`ClaimDue` 的
+`FOR UPDATE SKIP LOCKED` + 立即改期），实测多进程并发 scan 从不重复认领（§6）。
+**"认领只在进程内做"才是缺陷**——这正是本轮这把锁补的那一层。
 
 ---
 
 ## §2 为什么之前会重复推送（round27 的结论，本轮未重算）
 
 三个 pocketd（18099 / 18077 / 18100）共享 `opencode_pocket` schema，
-各自在**本进程内**排了同一点的每日流水线：
+各自在**本进程内**排了同一点的每日流水线。**认领这一步只发生在进程内**：
 
 - `emailPipelineMu`（`server_email_pipeline.go:274`）—— 进程内
 - `sync.Once`（`scheduler.go:208`）—— 进程内
 - `time.After` 调度循环 —— 每进程一份
 
-三者都跨不了进程。伤害不是"慢一点"：
+对比：scheduledtask 把同样的认领做在了数据库里，所以它没这个问题（§6）。
+伤害不是"慢一点"：
 
 - `MarkEmailsNotified` 写在**整个推送循环跑完之后**（`pipeline.go:1036` 循环 / `:1044` 标记）
 - `notifycenter.InsertNotification` 是裸 INSERT，唯一约束只有主键
@@ -192,18 +199,69 @@ panic: nil pointer dereference
 
 ---
 
-## §6 顺带查实：`POCKET_SCHEDULER_ADVISORY_LOCK` 是死配置
+## §6 `POCKET_SCHEDULER_ADVISORY_LOCK` 是死配置 —— 但**不是**因为 scheduledtask 缺锁
 
 `config.go:195` 声明、`config.go:340` 赋值，**全仓零消费方**
 （`Select-String` 全 `.go/.mjs/.md/.ts/.sql` 扫描，命中仅这两行）。
+这部分是事实。
 
-也就是说 scheduledtask 的 dispatcher **同样没有跨进程锁**——
-`store.go:329-332` 的注释自己写着"callers should also wrap the scheduler tick
-in a single pg_advisory_lock"，但没人包。
+### 6.1 【更正】本文档初稿写下的"scheduledtask 同样没有跨进程锁"是**错的**
 
-**本轮没有改 scheduledtask**：那不是邮件需求，且 08:00 前不该动无关的调度器。
-已加 `TestSchedulerAdvisoryLock_IsStillUnconsumed` 把"它当前确实是死的"
-记成一个会主动失败的事实——哪天有人接上了（那是好事），用例会转红提醒更新本文档。
+初稿从两件事推出结论：① 那个开关没人用；② `store.go:329-332` 的注释写着
+"callers should also wrap the scheduler tick in a single pg_advisory_lock"。
+**这是推断，不是实测。** 而且推错了。
+
+实测（`internal/scheduledtask/diag_claimdue_race_test.go`，门控
+`POCKET_DIAG_CLAIM_RACE=1`）：两个**独立 pool**（= 两个进程）同时 `ClaimDue`，
+只造 1 条此刻到期的任务。
+
+```
+instance A claimed: [t-race-1]  window=2202us
+instance B claimed: []          window=5485us
+the two ClaimDue windows DID overlap — concurrency was real
+```
+
+**20 次 + 5 次重跑全部一致：从不重叠。**
+
+⇒ **scheduledtask 并不缺跨进程保护。** `ClaimDue` 的
+`FOR UPDATE SKIP LOCKED` + 在同一条 `UPDATE ... RETURNING` 里立刻把
+`next_run_at` 推到 `$1 + GREATEST(300, timeout_sec + 60)`，本身就是**租约式**的
+跨进程认领：第二个实例的候选集里那行已经被改期，不再满足 `next_run_at <= $1`。
+
+### 6.2 判据里那句关键的自我设防
+
+第一版这个诊断**没有**记录两个 `ClaimDue` 的执行窗口，只看"有没有重复"。
+那样的话，"从不重复"可能仅仅是因为它们**恰好串行执行**了（pool 懒建连接，
+第一个调用建连接的几毫秒里第二个还在建）——它证明的会是"串行时不重复"，
+不是"并发时不重复"。
+
+补上窗口断言后每次都打印 `the two ClaimDue windows DID overlap`，
+并发是真的。若哪天这个断言不成立，用例会 `t.Fatalf` 而不是给出一个假安全结论。
+
+### 6.3 两个调度器的对照：同样要防多实例，答案却相反
+
+| | email 每日流水线 | scheduledtask dispatcher |
+|---|---|---|
+| 认领发生在哪里 | **进程内**（`emailPipelineMu`、`sync.Once`） | **数据库内**（`UPDATE...RETURNING` + `SKIP LOCKED`） |
+| 多实例下会重复吗 | **会**（实测 24 行 → 最多 126 行） | **不会**（实测 20+5 次零重叠） |
+| 修法 | 加会话级 advisory lock | 不需要 |
+
+所以"多实例"本身不是缺陷，**"认领只在进程内做"才是**。
+这也从反面印证了本轮 email 那把锁是加在正确位置的：
+它补的正是 scheduledtask 早就有的那一层（数据库级认领）。
+
+### 6.4 那个死配置怎么处理
+
+**本轮没有动它。** 它现在的状态是"配置存在但无人消费"，危害仅为
+误导下一个人以为 scheduledtask 需要加锁（我本轮就被它误导过，见 6.1）。
+两条可选出路，都属产品/配置语义决定，留给拍板：
+
+- 删掉 `config.go:195` + `:340`（承认它不需要）
+- 保留并在注释里写明"scheduledtask 用租约式认领，不需要这把锁"
+
+`TestSchedulerAdvisoryLock_IsStillUnconsumed`（`internal/config`）把
+"它当前确实是死的"记成一个会主动失败的事实——哪天有人真接上了，
+用例会转红提醒更新本文档。
 
 ---
 
@@ -278,8 +336,9 @@ in a single pg_advisory_lock"，但没人包。
 | `internal/email/pipeline_lock.go` | 跨进程锁实现 + 三态语义 |
 | `internal/email/pipeline_lock_test.go` | 7 条护栏（真 PG） |
 | `internal/email/diag_advisory_reentrant_test.go` | 可重入语义诊断（门控 env） |
+| `internal/scheduledtask/diag_claimdue_race_test.go` | 并发 ClaimDue 诊断（门控 env）—— §6 证伪用 |
 | `internal/server/server_email_pipeline_lock_test.go` | 4 条接线护栏（真 PG） |
 | `internal/config/config_email_pipeline_lock_test.go` | 4 条配置护栏 + 死配置审计 |
 
 改动既有文件：`config.go`（+2 字段）、`server_email_pipeline.go`（接线）、
-`pg_test_isolation_guard_test.go`（两条 allowlist）。
+`pg_test_isolation_guard_test.go`（allowlist 登记）。
