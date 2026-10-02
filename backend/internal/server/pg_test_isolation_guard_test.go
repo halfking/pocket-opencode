@@ -189,6 +189,18 @@ var pgSafeWithoutIsolation = map[string]string{
 	// 理由改宽松，而是改成自建 *_test_ schema 隔离。
 	"internal/email/diag_credential_health_test.go": "只读真实库探针：无写语句（仅 SELECT）；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA + POCKET_REAL_DATA_DIR（判定库中凭据密文是否完好，隔离库无真实账户可查）；绝不打印明文。**注意：本条目使护栏完全跳过该文件（实测注入 DELETE 后仍绿），写语句无机器守护**",
 
+	// 2026-10-02 新增的发票抽取诊断。逐项核对过：
+	//   · 4 处 DB 调用全是 pool.Query / pool.QueryRow，**0 写语句**
+	//     （扫 INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE：0 命中；
+	//     唯一的 "DELETE" 字样是 L133 `COALESCE(deleted_at,0)=0` 这个读条件，
+	//     不是 DELETE 语句——这类误报是本护栏要求人写理由的原因之一）；
+	//   · 双开关门控：POCKET_REAL_MAIL_DSN + POCKET_REAL_DATA_DIR，
+	//     缺任一即 t.Skip，且 L47 显式把 search_path 指向
+	//     POCKET_REAL_MAIL_SCHEMA —— 它要读的就是真实库里的真实发票，
+	//     自建隔离 schema 会让它「查了个空库」并输出「发票都没了」的假结论。
+	// 同上：**本条目使护栏完全跳过该文件**，写语句无机器守护。
+	"internal/email/diag_real_invoice_extract_test.go": "只读真实库诊断：0 写语句，4 处 pool.Query；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_DATA_DIR 双重开关（读真实库里的真实发票，隔离库会让它输出「发票都没了」的假结论）。**注意：本条目使护栏完全跳过该文件，写语句无机器守护**",
+
 	// 下面三个是 2026-10-02 合入 feat/mail-config-deploy 时被本护栏判红的，
 	// 逐个核过后确认安全，理由可核查：
 	//   · 只用 pool.Query，**一次 Exec 都没有**（2026-10-02 全文件扫
