@@ -6,6 +6,7 @@ import { useToast } from '../../composables/useToast'
 import { createMeeting, updateMeeting } from '../meetings/meetings-store'
 import { getRecordingBySession } from '../meetings/meetings-live'
 import { meetingsApi } from '../../api/meetings'
+import { isAbortError } from '../../api/http'
 
 export function useSessionLiveRecord(sessionId: () => string, sessionTitle: () => string) {
   const meetingId = ref('')
@@ -57,7 +58,13 @@ export function useSessionLiveRecord(sessionId: () => string, sessionTitle: () =
         status: 'refined',
       })
       toast.success('录音已结束，精翻完成')
-    } catch {
+    } catch (e) {
+      // 「已取消」和「失败」对用户是两件不同的事：前者不该被提示成
+      // 「稍后重试」，否则会让人以为录音或会议出了什么问题。
+      if (isAbortError(e)) {
+        toast.info('已停止精翻')
+        return
+      }
       toast.warning('录音已结束，精翻稍后可在会议详情重试')
     }
   }

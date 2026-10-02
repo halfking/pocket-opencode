@@ -195,9 +195,10 @@ export const sttSettingsApi = {
   },
 
   /** 强制重扫网关。会真实出网打网关（限流实测 12 次/分钟），所以只在用户点按钮时调。 */
-  async discover(): Promise<SttDiscoveryResult> {
+  async discover(signal?: AbortSignal): Promise<SttDiscoveryResult> {
     return http<SttDiscoveryResult>('/api/stt/discover', {
       method: 'POST',
+      signal,
       timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     })
   },
@@ -269,6 +270,7 @@ export const sttSettingsApi = {
   async probe(
     audio: Blob,
     opts: { model?: string; channel?: SttChannel; baseURL?: string; transport?: SttTransport } = {},
+    signal?: AbortSignal,
   ): Promise<SttProbeResult> {
     const base64 = await blobToBase64(audio)
     return http<SttProbeResult>('/api/stt/probe', {
@@ -279,6 +281,7 @@ export const sttSettingsApi = {
         ...opts,
       }),
       timeoutMs: STT_PROBE_TIMEOUT_MS,
+      signal,
     })
   },
 }
