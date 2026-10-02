@@ -99,3 +99,51 @@ SyntaxError，**整块用例被静默跳过**，汇总显示「# pass 4」——
   当前 `updatedAt`，客户端据此改走下行。链路完整。
 - `account-lww.ts` 的 `pullIds` 实际未被 `account-sync.ts` 使用（下行靠
   `writeAccountIfNewer` 自己判）。逻辑重复但不致错，未改。
+
+## 2026-10-02 09:45 补充：LWW 在真机运行时上的双向取证
+
+前面「服务端 LWW 守卫链路完整」是**读代码**得出的。本节是在真实 Android
+运行时上把两个方向都打了一遍的结果（模拟器 `emulator-5556`，app pid 21009，
+经 CDP 在 App 的 WebView 内发起，用 App 自己的 token 与链路）。
+
+### 下行：服务端 → 客户端本地库
+
+| 环节 | 实测 |
+|---|---|
+| `GET /api/email/accounts` | 200，`user-admin` / `ws_user-admin` 名下 **5 个账户** |
+| App 界面 `#/email/accounts` | 5 个账户全部渲染，主机端口正确 |
+| 设备本地 SQLCipher 镜像库 `lobster` | `local_email_accounts` **5 行** |
+| 字段比对 | `updated_at` 等与服务端**逐字段一致**（均为 1790875519） |
+
+### 上行守卫：过期基准版本号必须被拒
+
+模拟「本地拿着旧副本改了一下就推」：取账户当前 `updatedAt`，减 1000 当作
+本地基准版本号发 `PUT /api/email/accounts/{id}`。
+
+```
+stalePutStatus = 409
+stalePutBody   = {"error":"stale write: server copy is newer","updatedAt":1790875519}
+```
+
+复核那次被拒的 PUT **没有改动任何字段**（`displayName` / `imapHost` /
+`updatedAt` 与请求前完全一致）。即守卫不仅拒绝，还回传当前 `updatedAt`——
+正是 `account-sync.ts` 收到 409 后重新下行的依据。
+
+### 未能取证的部分（如实记录）
+
+**上行「成功写入」路径没有在设备上验过**，因为那会真实改动服务端数据。
+已验的是：上行守卫会正确拒绝过期写。且**上行 payload 是否真的带上了
+`updatedAt`** 仍只有单元测试与代码审读作证，没有设备侧实证。
+
+### 一个会让人误判的闸门
+
+`account-sync.ts` 在本地库未就绪时直接
+`return { fetched: remote.length, applied: 0, ..., online: true }`。
+设备端表现是进 `#/email/accounts` 被弹到
+`#/login?returnTo=/email/accounts&unlock=1`，页面写「检测到已有登录态，但本地
+加密库未解锁」。
+
+即：**本地库锁着的时候一个账户都不写本地，却报告 `online: true`**。
+真机首次使用必须先设主密码解锁，否则会误判成「同步没生效」。这是有意
+为之（不把 LocalDB 未初始化当成同步失败），未改。
+
