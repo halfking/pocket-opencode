@@ -164,7 +164,26 @@ check('评论落库', cmtOk, `pg count=${await pgEventCount(tid)}`)
 const del = await ev(`(function(){var b=document.querySelector('.action-btn.delete');if(b){b.click();return 1}return 0})()`)
 console.log('点「删除」= ', del)
 await sleep(1500)
-await ev(`(function(){var bs=Array.prototype.slice.call(document.querySelectorAll('button'));for(var i=0;i<bs.length;i++){var t=(bs[i].textContent||'').trim();if(t==='删除'||t==='确认删除'||/确定删除/.test(t)){bs[i].click();return 1}}return 0})()`)
+// ⚠️ 2026-10-03 改：原来是**全页面文本匹配**「删除/确认删除/确定删除」。
+//    实测（diag-task-delete-network.mjs）确认弹层是 `Dialog`：
+//      .dialog > .dialog-footer 里 footerButtons = ["取消","删除"]
+//    确认按钮是**最后一个**，而全页面匹配会扫到别的视图/旧渲染里同文案的按钮，
+//    点空了就静悄悄跳过 —— 后面的「PG 无该行」也许是上一条删除的结果。
+//    改成**按选择器点弹层 footer 里的最后一个按钮**，并回报点了什么。
+const confirmHit = await ev(`(function(){
+  var f=document.querySelector('.dialog .dialog-footer');
+  if(!f) return 'NO_FOOTER';
+  var bs=f.querySelectorAll('button');
+  if(!bs.length) return 'NO_BUTTONS';
+  var b=bs[bs.length-1];
+  var t=(b.textContent||'').replace(/\\s+/g,' ').trim();
+  b.click(); return 'clicked:'+t;
+})()`)
+console.log('点确认按钮 =', confirmHit)
+if (!String(confirmHit).startsWith('clicked:')) {
+  console.error('❌ 确认弹层没点中 —— 本轮的删除判据全部作废（不是产品缺陷，是探针没走到那一步）')
+  process.exitCode = 8
+}
 await sleep(3000)
 const pgGone = await psql(`select count(*) from ${SCHEMA}.tasks where id = '${tid}'`)
 check('删除后 PG 无该行', String(pgGone) === '0', `count=${pgGone}`)
