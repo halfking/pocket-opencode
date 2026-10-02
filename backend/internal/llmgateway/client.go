@@ -57,28 +57,33 @@ var discoveredFormats sync.Map // baseURL(normalized) -> string
 //
 // 超时策略：
 //   - 整体 Timeout 90s，留给长回答/流式首 token 充分时间；
-//   - Transport.ResponseHeaderTimeout 30s，避免上游对个别 model 挂死握手时
-//     整体请求一路等满 Timeout，导致前端聊天一直转圈。
-//     实测 2026-08-31：llm.kxpms.cn 在 preferred 模型里有两个 model 对
-//     /v1/chat/completions 既不返结果也不返错误（连接挂死），此前无该上限时
-//     会让前端等满 60s；加 ResponseHeaderTimeout 后能 30s 内即触发 client
-//     错误，handler 再把错误作为 SSE error 事件写回。
+//   - Transport.ResponseHeaderTimeout 60s。
 //
-// 已知代价（2026-10-02 审计记录，先记录不擅自改）：
+// ## 为什么是 60s（2026-10-02 人工拍板）
 //
-//	ResponseHeaderTimeout 约束的是「响应头何时到达」，而**非流式**调用要等上游
-//	真正开始回包才发头。对推理模型（本项目网关自动路由到 glm-5.2）来说这很致命：
-//	它先把 token 花在 reasoning_content 上，正文 content 最后才吐
-//	（2026-10-02 实测：一句 63 字的总结，reasoning 用了 985 token）。
-//	于是任何给这类模型留了 >30s 预算的 handler，实际预算都被压到 30s——
-//	例如 handleNoteSummarize 的 `context.WithTimeout(r.Context(), 60*time.Second)`
-//	只有前 30 秒是真能用的，30~60 秒是死预算。
+// 这个值换过一次，两次的理由都留在下面，**别只改数字不改这里**。
 //
-//	为什么没有直接调大：30s 是为上面那次挂死事故加的，调大会把「快速失败」
-//	换回来；虽然整体 Timeout 90s 仍在（不会无界挂死），但失败时间会从 30s
-//	变成最多 90s，前端体验上是退步。这个取舍需要人拍板。
-//	若将来决定调大，client_test.go 的 TestNewClient_TransportTimeouts 要同步改，
-//	并把上面的注释改成"为什么是当前这个数"。
+// **30s 那一版（2026-08-31 加的）**：llm.kxpms.cn 在 preferred 模型里有两个
+// model 对 /v1/chat/completions 既不返结果也不返错误（连接挂死），此前无该
+// 上限时前端要等满 60s；加上 30s 后能 30s 内即触发 client 错误，handler 再把
+// 错误作为 SSE error 事件写回。
+//
+// **它的代价（也是本次拍板的原因）**：ResponseHeaderTimeout 约束的是「响应头
+// 何时到达」，而非流式调用要等上游**真正开始回包**才发头。对推理模型（本项目
+// 网关自动路由到 glm-5.2）这很致命：它先把 token 花在 reasoning_content 上，
+// 正文 content 最后才吐（2026-10-02 实测：一句 63 字的总结，reasoning 用了
+// 985 token）。于是任何给这类模型留了 >30s 预算的 handler，实际预算都被压到
+// 30s——例如 handleNoteSummarize 的 `context.WithTimeout(..., 60*time.Second)`
+// 只有前 30 秒是真能用的，30~60 秒是**死预算**：handler 以为有 60s，用户看到
+// 的是 30s 就「总结失败」。
+//
+// 取舍：把失败时间从 30s 拉长到最多 60s（整体 Timeout 仍是 90s，不会无界
+// 挂死），换取推理模型那 30~60s 真的可用。**上游真挂死时用户要多等，最坏
+// 60s 而不是 30s** —— 这是本次拍板接受的代价。
+//
+// 改动落地时 client_test.go 的 TestNewClient_TransportTimeouts 同步改成 60s；
+// 那条测试锁的是**数字**，并且额外锁住「ResponseHeaderTimeout 必须小于整体
+// Timeout」这条不变量（60 < 90 成立）。
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		BaseURL: normalizeBaseURL(baseURL),
@@ -86,7 +91,7 @@ func NewClient(baseURL, apiKey string) *Client {
 		Client: &http.Client{
 			Timeout: 90 * time.Second,
 			Transport: &http.Transport{
-				ResponseHeaderTimeout: 30 * time.Second,
+				ResponseHeaderTimeout: 60 * time.Second,
 			},
 		},
 	}

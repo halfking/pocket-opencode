@@ -99,13 +99,23 @@ var realSpamSamples = []realSpamSample{
 	{
 		// 真实：阿里云产品月刊（handoff §7e 记为 near-miss）。
 		//
-		// 这里**不设** minScore 下界。实测 score=0 是**规则的正确行为**，
-		// 不是规则失灵 —— 查 spam.go 确认：
-		//   - spamSenderHints 只有 promo/marketing/newsletter/… 这类 local-part
-		//     与域名特征，`monitor@monitor.aliyun.com` 一个都不含；
-		//   - spamSubjectPatterns 只有 退订/取消订阅/…，主题「阿里云产品月刊」
-		//     一个都不含；
-		//   - 摘要里的「点击此处退订」是**正文**，退订规则只看主题，不计分。
+		// 【2026-10-02 人工拍板：判为非垃圾，保留域名豁免】理由是误杀代价：
+		// MOVE 进垃圾箱对真实邮箱不可逆，云厂商服务通知被误杀的代价高于漏判
+		// 一份产品月刊。
+		//
+		// 这里**不设** minScore 下界。因果订正过一次：更早的注释写「退订规则
+		// 只看主题，摘要里的『点击此处退订』不计分」——**那是错的**。spam.go 的
+		// 退订段「命中即 100」明确
+		// `strings.Contains(subject, p) || strings.Contains(snippet, p)`，
+		// 主题**和**摘要都查，这封信本该拿满 100 分。
+		//
+		// score=0 的真正原因是**顺序**：`monitor.aliyun.com` 在
+		// `spamDomainWhitelist` 里，而白名单判定在 LooksLikeSpam 里位于评分
+		// **之前**（spam.go 里那个循环直接 `return SpamVerdict{}`，`score`
+		// 变量在它之后才声明），所以退订规则一次都没执行过。
+		// 原注释把结果归因于「规则不查摘要」，会把人引去改一个没坏的规则，
+		// 而真正该拍板的是「这个域要不要豁免」。
+		//
 		// 保留这个样本的价值：它是「服务商正式通知 vs 营销列表」这条边界上
 		// 最容易被误伤的一类。规则一旦被改宽（把服务商域名加进营销特征表），
 		// 这个样本必须先转红。
@@ -158,6 +168,49 @@ func TestLooksLikeSpam_OnRealMailboxSamples(t *testing.T) {
 				t.Fatalf("score=%d, want >= %d (rule lost signal; why=%q)", got.Score, s.minScore, got.Why)
 			}
 		})
+	}
+}
+
+// TestLooksLikeSpam_AliyunExemptionIsTheOnlyReasonForZero 把上面那条因果说明
+// 变成可执行断言，而不是只写在注释里。注释不会自己保持正确，断言会。
+//
+// 钉住的是：「阿里云产品月刊拿到 score=0」这件事，原因是**域名豁免**，
+// 不是退订规则不查摘要。所以两端都要钉：
+//   - 非豁免地址上的同一封信必须拿满 100 分判垃圾 ⇒ 退订规则确实查摘要、
+//     且命中即 100；
+//   - 豁免地址上的同一封信必须是**严格零值**（不是垃圾、也不带 Why）⇒
+//     零值确实来自评分前的白名单 return，而不是规则没命中。
+//
+// 负控实测（2026-10-02）：把退订段改回 `if strings.Contains(subject, p)`
+// （只查主题），本测试如期转红；还原后转绿。判据有承重能力。
+//
+// 若将来要改口径（收回白名单让阿里云判垃圾，或改退订规则），本测试会先红——
+// 那正是需要重新拍板的时刻，不该被悄悄改掉。
+func TestLooksLikeSpam_AliyunExemptionIsTheOnlyReasonForZero(t *testing.T) {
+	// 与 realSpamSamples 里的 aliyun-product-monthly 逐字相同的邮件。
+	const (
+		subject = "阿里云产品月刊"
+		snippet = "本期精选：弹性计算最佳实践、云原生安全指南。点击此处退订。"
+	)
+
+	// 对照组：一个不在任何豁免表里的地址。monitor.aliyun.com 在白名单里，
+	// 而 aliyun.com 不在（判据是 strings.Contains(domain, "monitor.aliyun.com")）。
+	control := LooksLikeSpam("noreply@aliyun.com", subject, snippet, false, false, 0)
+	if !control.Spam || control.Score != 100 {
+		t.Fatalf("对照组应判垃圾 100 分（退订规则确实查摘要且命中即 100），"+
+			"实际 Spam=%v score=%d why=%q",
+			control.Spam, control.Score, control.Why)
+	}
+
+	// 实验组：豁免地址。必须是**严格零值**——不能是垃圾，也不能带 Why。
+	// 调用方靠零值区分「压根没参与评分（豁免）」与「评过分但差一截」，
+	// TestLooksLikeSpam_ExposesScoreBelowThreshold 钉着这一点。
+	exempt := LooksLikeSpam("monitor@monitor.aliyun.com", subject, snippet, false, false, 0)
+	if exempt.Spam || exempt.Score != 0 || exempt.Why != "" {
+		t.Fatalf("豁免地址应返回严格零值"+
+			"（本域的退订规则因白名单短路而从未执行，这是 2026-10-02 拍板接受的取舍），"+
+			"实际 spam=%v score=%d why=%q",
+			exempt.Spam, exempt.Score, exempt.Why)
 	}
 }
 

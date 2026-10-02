@@ -69,11 +69,24 @@ var spamDomainWhitelist = []string{
 	"exmail.qq.com", "kxpms.cn",
 	// monitor.aliyun.com：云厂商的服务通知（安全告警、账单、产品月刊）不是广告。
 	//
-	// 【待拍板 · 尚未获产品确认】这是 handoff 待拍板项「阿里云白名单（建议只加
-	// monitor.aliyun.com，实测 6→2）」的建议值，合并时被选为解决两侧规则冲突的
-	// 最小手段：main 侧把「带退订头」改成命中即判垃圾（Score 100），而本分支的
-	// 真实样本 aliyun-product-monthly（snippet 含「点击此处退订。」）期望非垃圾。
-	// 两者直接矛盾，且属于**产品语义**不是代码缺陷，故在此显式标注。
+	// 【2026-10-02 人工拍板：保留本条】冲突的两侧是：
+	//   - 规则侧：spamSubjectPatterns 命中「退订/取消订阅」即 Score 100 判垃圾，
+	//     且**主题和摘要都查**（见下方那段「命中即 100」），而
+	//     aliyun-product-monthly 的摘要含「点击此处退订。」；
+	//   - 样本侧：spam_samples_test.go 的 aliyun-product-monthly 期望非垃圾。
+	// 拍板取**保留白名单**：云厂商服务通知的误伤代价（MOVE 进垃圾箱、对真实
+	// 邮箱不可逆）高于漏判一份产品月刊。
+	//
+	// 代价必须写清楚，别让它悄悄漂移：**白名单在 LooksLikeSpam 里是评分之前
+	// 就 return SpamVerdict{} 的**（见下方那个循环），所以那封信拿到的是
+	// score=0 why="" ——「看起来判成非垃圾」，实际是「压根没参与评分」。
+	// 也就是说对 monitor.aliyun.com 而言，退订规则**一次都没执行过**。
+	// 这是本次拍板接受的已知取舍，不是实现缺陷。
+	//
+	// 判据：spam_samples_test.go 的
+	// TestLooksLikeSpam_AliyunExemptionIsTheOnlyReasonForZero 就是这条规则的
+	// 可判定点——它同时钉住「非豁免地址判 100」与「豁免地址严格零值」，
+	// 将来若要改口径（收回白名单或改退订规则），它会先红。
 	//
 	// 不要用 aliyun.com 或 aliyuncs.com 整域放行：实测那样会把 6 封里该判的 2 封
 	// 一并豁免，垃圾判定形同虚设。只放行 monitor.* 这一支。
