@@ -38,11 +38,35 @@ type XMLInvoiceFields struct {
 func labelMatch(name string) string {
 	n := strings.ToLower(strings.TrimSpace(name))
 	switch {
+	// 车牌号必须**先**排除。EUI 标准电子发票里有
+	// `EInvoiceData/SpecificInformation/Toll/PlateNumber`（通行费场景），
+	// 它含裸子串 "number"，会被下面 "no" 那条兜底判成**发票号码**。
+	//
+	// 2026-10-03 真实数据实测（data/email-bodies-raw 里两封通行费邮件的
+	// zip 内 XML）：两张**不同**的票（InvoiceNumber 分别是
+	// 26337904450900255091 / 26337903130900517835）因为开同一辆车，
+	// PlateNumber 都是「浙AB59453」，于是解析出的 invoiceNo **完全相同**。
+	//
+	// 后果不是「多一个字段」：invoice_dedup 按发票号判同一张票，
+	// 两张真票会被当成重复丢掉一张，**汇总合计随之少算**。
+	// 真正的号码在 `TaxSupervisionInfo/InvoiceNumber`，排在 PlateNumber 之后，
+	// first-wins 取错了。
+	case containsAny(n, "platenumber", "车牌号", "车牌"):
+		return ""
 	case containsAny(n, "发票号码", "发票号", "invoiceno", "invoice_no", "invoicenumber", "number"):
 		return "no"
 	case containsAny(n, "开票日期", "发票日期", "invoicedate", "invoice_date", "issuedate", "date"):
 		return "date"
-	case containsAny(n, "价税合计", "合计金额", "总额", "totalamount", "amounttotal", "total_amount", "totaltaxamount", "amountintotal"):
+	// 价税合计。EUI 标准的元素名是 `TotalTax-includedAmount`（**中间有连字符**），
+	// 拼写与 `TotaltaxIncludedAmount`（项目行）都不同，少了它们就一个都不匹配
+	// ⇒ amount=0。实测 5.61 与 19.0 两张票都取不到金额。
+	//
+	// 刻意**不**加裸 "amount"：`IssuItemInformation/Amount` 是**不含税单价**
+	// （实测 5.45，与价税合计 5.61 不同），加进去会把单价当总额。
+	case containsAny(n, "价税合计", "合计金额", "总额",
+		"totalamount", "amounttotal", "total_amount", "totaltaxamount", "amountintotal",
+		"totaltax-includedamount", "totaltaxincludedamount", "taxincludedamount",
+		"totalamountinc_tax", "amountincltax"):
 		return "amount"
 	case containsAny(n, "销售方名称", "销售方", "开票方", "sellername", "seller_name", "seller"):
 		return "seller"
