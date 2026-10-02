@@ -920,9 +920,26 @@ func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 //  2. AI 分类：classify_run.go → SetClassificationScoped，需要
 //     POCKET_KXMEMORY_BASE_URL 或已接线的 LLM provider。
 //
-// 真实库实测（2026-10-02）：5 个账户 rules 全为 NULL，kxmemory 未配、
-// llmbff 报 no provider configured —— 两条路都不通，importance 恒为空。
-// 这时只提示去配 kxmemory，等于让人在一条根本不通的路上排查。
+// 真实库实测（**2026-10-02 复核，此前版本记的是「importance 恒为空」，已被证伪**）：
+//
+//	importance 分布（127 封未删）：high 55 / medium 44 / low 23 / 空 5
+//	high 且 notified_at>0：24 封   ← 提醒链路历史上确实触发过
+//	email_accounts.rules：5 个账户**全为 NULL**（规则路径确实没配）
+//
+// 也就是说「两条路都不通」是**错的**：只有规则路径不通，AI 路径曾经通过。
+// 保持旧结论会让人把排查方向带到「去配 kxmemory」上，而真正该看的是
+// 定时路径为什么不再分类（见下）。
+//
+// **2026-10-02 另一个坑：kxmemory 未配时定时路径根本不分类。**
+// scheduler 同步成功后的判定里 `s.kxmem == nil` 会直接 return，而 LLM 网关
+// 兜底（server 包的 classifyViaGateway）只接在 HTTP 端点
+// /api/emails/classify 上，Scheduler 在本包内拿不到它。也就是
+// **手动触发能分类、每天自动跑不分类**，而这个差异此前无任何日志。
+// 现已由 ClassifySkipReason + sync.Once 日志暴露（见 classify_run.go）。
+//
+// 教训：这段注释自己写着「真实库实测」，但**记录状态的注释不会自己声明
+// 过期**。我本人 2026-10-02 就因为直接引用了上一版结论，误判成
+//「q4 的 90 天窗口一封也不会提醒」，被真库数据当场打脸。
 func reminderUnclassifiedHint(unclassified, scanned int) string {
 	return fmt.Sprintf("%d/%d 封邮件 importance 为空 —— 不会进入重要提醒。"+
 		"importance 只有两条写入路径：① 账户规则（email_accounts.rules 里的 "+
@@ -1045,7 +1062,7 @@ var invoiceSummaryHeader = []string{
 // 需求原文要的是「汇总金额」，落在文件名列里，人在 Excel 里根本对不上账。
 // 改成按表头定位，以后调整列顺序也不会再错位。
 //
-// 2026-10-04 合并修订：参数从 float64 改成 string。调用方现在按币种分组，
+// 2026-10-02 合并修订：参数从 float64 改成 string。调用方现在按币种分组，
 // 每个币种的金额是**已经按整数分算好的字符串**（centsByCur[cur]/100），
 // 若这里再收 float64 走一遍 fmt("%.2f") 就等于允许调用方传一个没对齐
 // round2 的值——那正是本函数当初要消灭的那类错位。传字符串让「已格式化」
