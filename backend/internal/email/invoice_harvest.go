@@ -299,6 +299,41 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 		return h.markRetry(ctx, inv, fmt.Sprintf("parse mime: %v", err))
 	}
 
+	// 0) 电子发票 ZIP 压缩包（EUI/数电票标准形态）——**必须排在步骤 1 之前**。
+	//
+	// 真实通行费邮件的附件是「通行费电子发票.zip」+ 两份**汇总单 PDF**。
+	// 步骤 1 认不出 zip，会先命中汇总单，把**汇总单当发票存盘**——而汇总单
+	// 不是发票凭证。宁可多解一层压缩包，也不能交出汇总单。
+	// 见 invoice_zip.go。
+	if zc := zipAttachmentContents(parsed.Attachments); !zc.Empty() {
+		// zip 内的 XML 发票数据能补全发票号/金额/日期/销售方。
+		// 先合并字段再存文件，规范文件名才不会退化、发票号才不会空。
+		for _, x := range zc.XMLs {
+			if fields := ParseInvoiceXML(x); fields != nil {
+				mergeXMLFields(inv, fields)
+			}
+		}
+		for _, pdf := range zc.PDFs {
+			if !isPDFBytes(pdf) {
+				continue
+			}
+			return h.saveInvoiceFile(ctx, inv, pdf, "zip-pdf")
+		}
+		// zip 里只有 XML（没有票面 PDF）时，走「解析后重新渲染」——
+		// 这正是需求原文那条路径，在这之前从未在真实数据上跑过。
+		if h.XMLRenderer != nil {
+			for _, x := range zc.XMLs {
+				pdfBytes, rerr := h.XMLRenderer(inv.InvoiceNo, inv, x)
+				if rerr == nil && isPDFBytes(pdfBytes) {
+					return h.saveInvoiceFile(ctx, inv, pdfBytes, "zip-xml-render")
+				}
+				if rerr != nil {
+					log.Printf("[email/invoice-harvest] zip xml render failed invoice=%s: %v", inv.ID, rerr)
+				}
+			}
+		}
+	}
+
 	// 1) PDF / 图片附件（拍照发票常见 jpg/png）
 	for _, att := range parsed.Attachments {
 		if isPDFBytes(att.Data) || isImageBytes(att.Data) {
@@ -598,12 +633,21 @@ func isXMLFile(att ParsedAttachment) bool {
 // HasInvoiceAttachment 判断一封邮件里是否带着「可归档票据」附件：
 // PDF、图片（拍照发票）或 XML（电子发票数据）。用于放宽规则层的建档门槛——
 // 金额只印在附件里的账单邮件必须能进采集流程（见 ExtractInvoiceLoose）。
+//
+// **ZIP 也算**：电子发票平台的标准下发形态是把票面 PDF、发票 XML 与 OFD
+// 装在一个压缩包里（2026-10-03 真实数据：通行费邮件附件是
+// `通行费电子发票.zip` 136KB + 两份汇总单 PDF，zip 内才有真票）。
+// 只认 PDF/图片/XML 的话，纯 zip 邮件连建档门槛都过不去。
+// 判「是不是发票包」而不是「是不是 zip」：一个装着照片的普通 zip 不该算票据。
 func HasInvoiceAttachment(atts []ParsedAttachment) bool {
 	for _, att := range atts {
 		if len(att.Data) == 0 {
 			continue
 		}
 		if isPDFBytes(att.Data) || isImageBytes(att.Data) || isXMLFile(att) {
+			return true
+		}
+		if isZipBytes(att.Data, att.Filename) && !readZipInvoiceContents(att.Data).Empty() {
 			return true
 		}
 	}
