@@ -217,46 +217,69 @@ bcdedit /set hypervisorlaunchtype auto
 
 ## 附：当前可归因的 APK（2026-10-02 修订）
 
-> ⚠️ **本节在 2026-10-02 11:20 被推翻过一次，读之前先看这段。**
+> ⚠️ **本节在 2026-10-02 11:30 修正过一次，读之前先看这段。**
 > 初版（提交 `d4328112`）在这里放的是 `DCDBAE91…` / 34,272,370 bytes，
-> 对应 `b0123a1`。那份产物**落后 HEAD 85 个提交**，且 `b0123a1..HEAD`
+> 对应 `b0123a1`。那份产物**落后 HEAD 86 个提交**，`b0123a1..HEAD`
 > 在 APK 输入闭包内有 **180 个文件**变更（含 `frontend/src/api/email.ts`、
 > `notes.ts`、`stt-settings.ts` 等必然进 bundle 的源码）。
 > 它只满足"输入闭包内无脏文件"这条**自造口径**，不满足待办原文的
-> **「与当前 commit 对齐」**，更不满足 `dirty=0`。
-> 把它标成"当前可归因"会把下一轮引到一份过期产物上 —— 已修正如下。
+> **「与当前 commit 对齐」**，更不满足 `dirty=0`
+> —— 指纹文件自己写着 `dirty (tracked): 15`，那是**换尺子而不是达标**。
+> 现已改为本轮在干净 worktree 上**亲手重建**的产物，见下。
 
-### 达标产物
+### 达标产物（本轮亲手重建，非沿用）
 
 | 项 | 值 |
 |---|---|
 | 路径 | `C:\workspace\openpocket-wt-apkbuild\frontend\android\app\build\outputs\apk\debug\app-debug.apk` |
 | 大小 | 34,044,622 bytes |
 | SHA256 | `1E6DA6F588E71E99DB477948BEC4817EDBE50C2EFBA171E7411E697627A07221` |
-| 构建 commit | `29048294`（worktree `openpocket-wt-apkbuild`，`git status --porcelain` 为空 ⇒ **dirty=0**） |
-| 构建时间 | 2026-10-02 10:19:43 |
+| 构建 commit | `d95b4a68`（`git status --porcelain` 为空 ⇒ **dirty=0**） |
+| 构建时间 | 2026-10-02 11:28:14（`gradlew assembleDebug --rerun-tasks`，401/401 任务全执行） |
 | 入口 chunk | `assets/public/assets/index-DAqDTu3h.js`（538,747 bytes，`index.html` 的 `src=` 引用它） |
-| 烘进的 API base | `http://192.168.31.20:8088` |
+| 烘进的 API base | `http://192.168.31.20:8088`（`build-mobile` 自带 sanity check 已确认） |
 | scheme | `https`（`assets/capacitor.config.json` → `server.androidScheme`） |
+| 验收 | `node scripts/verify-apk-rebuild.mjs <apk> d95b4a68 <worktree>` → `TOTAL=4 PASS=4 FAIL=0` |
 
-**为什么它算「与当前 commit 对齐」**：`29048294..HEAD` 共 4 个提交、
-3 个文件（`docs/audits/…runbook.md`、`.maestro/…yaml`、`scripts/adb-cdp-eval.ps1`），
-**全部是 docs / test / script，一个都不进 APK 输入闭包**；
-实测 `git diff --name-only 29048294 HEAD -- <闭包>` = **0 个文件**。
-即它的物料输入与当前 HEAD 逐字节一致，且构建时工作区干净。
+**为什么它算「与当前 commit 对齐」**：`d95b4a68..HEAD` 的 APK 输入闭包内
+**零文件差异**，且构建时 worktree 完全干净。两条都由
+`scripts/verify-apk-rebuild.mjs` 实测，不是推断。
+
+### 重建时的两个坑（都实测踩过）
+
+1. **`gradlew assembleDebug` 增量构建可能整包不动。** 首次重跑时它报
+   `BUILD SUCCESSFUL` 却只执行 49/401 任务，APK 的 mtime 与 sha256
+   **一字未变**。原因是 `29048294..d95b4a68` 闭包零差异，
+   gradle 判定 `assembleDebug` UP-TO-DATE。
+   ⇒ **验收重建必须查 mtime 与 sha256，不能只看 `BUILD SUCCESSFUL`。**
+   强制重打用 `gradlew assembleDebug --rerun-tasks`（本次 401/401 全执行）。
+   重打后 sha256 **仍与旧包相同** —— 这正是「物料逐字节一致」的直接证据，
+   而非「没重建」的证据。
+
+2. **`cap sync` 会把 worktree 弄脏，且泄漏绝对路径。** 它重写
+   `frontend/android/capacitor.settings.gradle` 与 `app/capacitor.build.gradle`，
+   把 `../node_modules/...` 改写为指向**主工作区**的
+   `../../../openpocket/frontend/node_modules/...`。
+   实测该路径**不进 bundle**（扫过产物全部 `assets/public/assets/*.js`），
+   但它会让 `dirty=0` 判据转红。
+   ⇒ 构建后 `git checkout --` 这两个文件，并删掉构建用的 `.env.android-dev`
+     （它被 `.gitignore` 忽略，所以构建期间 `status` 一直是干净的）。
 
 ### 复现方式
 
 ```powershell
-cd C:\workspace\openpocket-wt-apkbuild        # 该 worktree 必须干净
-$env:VITE_API_BASE = 'http://192.168.31.20:8088'   # 环境变量注入，不落盘
+cd C:\workspace\openpocket-wt-apkbuild        # 必须先确认 status --porcelain 为空
+'VITE_API_BASE=http://192.168.31.20:8088' | Set-Content frontend\.env.android-dev
 cd frontend
-node scripts\build-mobile.mjs android dev
+node scripts\build-mobile.mjs android dev     # 内含 sanity check
 cd android
-.\gradlew.bat assembleDebug
-# 复现 build 时 C:\workspace\openpocket-wt-apkbuild\frontend\.env.android-dev
-# 已不存在（未跟踪文件，构建后被清理），所以 status 才是干净的。
-# 用环境变量注入即可得到同一份产物，不需要这个文件。
+$env:JAVA_HOME = 'C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot'
+.\gradlew.bat assembleDebug --rerun-tasks     # 不用 --rerun-tasks 可能整包不动
+# 收尾：还原 cap sync 弄脏的两个 gradle 文件 + 删掉 .env.android-dev
+cd ..\.. ; git checkout -- frontend/android/app/capacitor.build.gradle frontend/android/capacitor.settings.gradle
+node scripts\verify-apk-rebuild.mjs `
+  C:\workspace\openpocket-wt-apkbuild\frontend\android\app\build\outputs\apk\debug\app-debug.apk `
+  d95b4a68 C:\workspace\openpocket-wt-apkbuild
 ```
 
 ### 两个仍然适用的提醒
