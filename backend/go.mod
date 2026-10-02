@@ -18,6 +18,7 @@ require (
 	github.com/pdfcpu/pdfcpu v0.11.0
 	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/crypto v0.53.0
+	golang.org/x/image v0.27.0
 	golang.org/x/net v0.56.0
 	golang.org/x/text v0.38.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -56,7 +57,6 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/image v0.27.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
