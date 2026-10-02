@@ -467,9 +467,30 @@ func (s *Store) SetClassification(ctx context.Context, id, category, importance,
 }
 
 // SetClassificationScoped updates classification only within one user/workspace.
+//
+// 2026-10-02 修正：importance 改成「规则判出的 high 对 AI 免疫」。
+//
+// 起因是一整条实测接起来的链：账户只配了 mark-important 时，入库后
+// importance='high' 而 category 仍为空；ListUnclassifiedScoped 挑待分类邮件
+// 过滤的是 **category**（不是 importance），于是这封照常进 AI 队列；LLM
+// 没给 importance 时 BuildClassifyWrites 只检查 category 就放行；最后这个
+// 方法是**全量覆盖**，importance 被写成 '' 或 'normal'。
+//
+// 结果：用户明确配了「这个发件人的邮件标重要」，被 AI 一句话降级，重要邮件
+// 提醒永远不发，且没有任何报错 —— 与「规则没落到库」症状相同，排查方向却
+// 相反，极其难定位。
+//
+// 口径：只有 high 受保护，且只在 AI 想把它降级时保护。其余情况（AI 给 high、
+// 旧值是 normal 或空）一律按 AI 的写，不做「一律保持 high」那种一刀切 ——
+// 那会让 AI 永远无法把邮件提升为重要。
+//
+// category 刻意不加同样保护：它归 AI 拥有（label-category 只在入库时播种），
+// 这是有意保留的语义边界，不是遗漏。
 func (s *Store) SetClassificationScoped(ctx context.Context, id, userID, workspaceID, category, importance, aiSummary, suggestedAction string) error {
 	_, err := s.pool.Exec(ctx, `
-		UPDATE emails e SET category = $1, importance = $2, ai_summary = $3, suggested_action = $4
+		UPDATE emails e SET category = $1,
+			importance = CASE WHEN e.importance = 'high' AND $2 <> 'high' THEN e.importance ELSE $2 END,
+			ai_summary = $3, suggested_action = $4
 		FROM email_accounts a
 		WHERE e.id = $5 AND e.account_id = a.id AND a.user_id = $6 AND a.workspace_id = $7
 	`, category, importance, aiSummary, suggestedAction, id, userID, workspaceID)
