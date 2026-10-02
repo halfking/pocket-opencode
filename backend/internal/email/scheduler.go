@@ -653,6 +653,15 @@ func accountDueForSync(now, lastSyncedAt, intervalMin int64) bool {
 // 前者会让人养成忽略日志的习惯。
 var classifySkipOnce sync.Once
 
+// neverSyncedOnce 同理：每轮 tick 都会经过这个判断，不加限制就是每分钟
+// 重复同一段告警。账号从「从没同步过」变成「已同步」是配置/凭据修好后的事，
+// 那种情况下 dead 变空、这条自然不再打，不需要复位 Once。
+var neverSyncedOnce sync.Once
+
+// logPrefix 让告警里的排查指引指向本包自己的日志前缀，避免写死字符串后
+// 与实际输出的 [email/scheduler] 不一致（判据指向错误的日志源比不指更糟）。
+const logPrefix = "[email/scheduler]"
+
 func (s *Scheduler) tick(ctx context.Context) {
 	// nil fetcher is a supported degraded mode (intent/summary-only scheduler,
 	// tests). Fetch sync is the only thing tick does, so without a fetcher this
@@ -670,6 +679,14 @@ func (s *Scheduler) tick(ctx context.Context) {
 	if err != nil {
 		log.Printf("[email/scheduler] list accounts: %v", err)
 		return
+	}
+	// 开了却从没同步成功过的账户：需求 1 对它等于没实现，而失败分支每分钟
+	// 只刷一行日志就滚走了。只说一次（每轮重报会变成每分钟 N 行噪音）。
+	if dead := NeverSyncedAccounts(accounts); len(dead) > 0 {
+		neverSyncedOnce.Do(func() {
+			log.Printf("[email/scheduler] ⚠ %s",
+				neverSyncedWarning(len(dead), len(accounts), strings.Join(dead, ", ")))
+		})
 	}
 	now := time.Now().Unix()
 	for _, a := range accounts {

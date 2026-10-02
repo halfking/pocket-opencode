@@ -80,6 +80,52 @@ func ShouldProcessAfterFetch(syncedAccounts, newEmails int) bool {
 	return syncedAccounts > 0
 }
 
+// NeverSyncedAccounts 挑出「enabled 但**从未成功同步过一次**」的账户地址。
+//
+// 2026-10-02 补。这是个真实的静默失效：调度器每分钟对每个到期账户跑一次
+// Sync，失败的分支是
+//
+//	log.Printf("[email/scheduler] sync %s failed: %v", accountID, err)
+//	return
+//
+// 也就是说一个**从上线起就一次都没连上过**的邮箱，只会在日志里每分钟刷一行，
+// 然后被下一行刷走。没有任何计数器、没有任何报告字段、诊断页也不看这个。
+// 结果就是需求 1（每天定时或手工收信）对它等于完全没实现，而界面上
+// 「5 个邮箱已配置、收信正常」与「其中 1 个从来没通过认证」长得一模一样。
+//
+// 真实库 2026-10-02 读到的实例：5 个 enabled 账户中
+// feikemanager1@163.com 的 last_synced_uid=0、last_synced_at=0、
+// 邮件数 0，而同库另外 4 个都在正常推进 UID。
+//
+// 单独抽成纯函数是为了能脱离数据库验证——这个判据本身极易写反
+// （把「同步过但很旧」和「从没同步过」混为一谈，而前者其实是正常的）。
+func NeverSyncedAccounts(accounts []Account) []string {
+	var out []string
+	for _, a := range accounts {
+		if !a.Enabled {
+			continue
+		}
+		if a.LastSyncedAt > 0 {
+			continue
+		}
+		out = append(out, a.EmailAddress)
+	}
+	return out
+}
+
+// neverSyncedWarning 组装「开了却从没同步成功过」的告警文案。
+//
+// 抽成纯函数是为了能断言文案本身，而不只断言「有没有打日志」——
+// 这类告警的价值几乎全在措辞上：只说「有 N 个邮箱没同步」而不说去哪儿看，
+// 排查入口是缺失的，而真正的原因（认证拒绝 / 地址错 / 端口不通）只出现在
+// 调度器日志里。
+func neverSyncedWarning(dead, total int, addrs string) string {
+	return fmt.Sprintf("%d/%d 个已启用邮箱**从未成功同步过**（last_synced_at=0）：%s。"+
+		"它们的凭据/服务器配置很可能不可用，需求 1 的收信对这几个账户完全没生效；"+
+		"同期其它账户正常。排查顺序：先看 %s 日志里的「sync <account> failed」那一行。",
+		dead, total, addrs, logPrefix)
+}
+
 // ClassifySkipReason 说明「同步成功了但分类根本没跑」的原因；返回空串表示可以继续。
 //
 // 2026-10-02 补。原先 scheduler 的写法是
