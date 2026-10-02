@@ -160,7 +160,7 @@ $t3 = $t2 -replace 'a', 'b', '' -replace 'c', '' -replace 'd', ''
 |---|---|---|---|
 | 1 定时/手工收信 | 充分 | `runPipeline` 有 **AST 级**判据 + 显式负控 | 已覆盖 |
 | 1 清理垃圾→垃圾箱 | `POCKET_EMAIL_SPAM_DRYRUN` 安全阀 | **只有 `cleanup-filter.ts` 纯函数被测**；「预览→确认→真移」这段零覆盖 | **本轮补上** |
-| 3 飞书推送 | 充分（`feishu_skip_reason_test.go` 等） | **`pushInvoicesToFeishu` 零覆盖**，含「推不出去时共享台账兜底」那条链 | **仍缺** |
+| 3 飞书推送 | 充分（`feishu_skip_reason_test.go` 等） | **`pushInvoicesToFeishu` 零覆盖**，含「推不出去时共享台账兜底」那条链 | 本轮补上（`see round26`） |
 | 5 A4 拼版导出 | 三层（合并/几何/裁切线） | 按钮 + 2×3 选择 + 下载 **零覆盖** | 本轮补上（`1cdc1acb`） |
 
 **为什么这类缺口值得补**：把「导出 A4 2×2」按钮删掉、或让「预览匹配」
