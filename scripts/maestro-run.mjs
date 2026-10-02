@@ -1165,7 +1165,58 @@ const preFlows = isMiui ? [SYSTEM_DIALOG_FLOW] : []
 if (!isMiui) {
   console.log('[preflight] 非 MIUI 设备：跳过 _dismiss-system-dialogs（那些弹窗是 Xiaomi 独有的）')
 }
-const args = ['--device', DEVICE, 'test', '--no-reinstall-driver', ...preFlows, ...flows]
+// --no-reinstall-driver 原本是**每台机器都必须开**的：Mixture 为它每次 test
+// 之前都重装 driver，而它的重装是「先卸载再安装」，MIUI 会拦下安装那一步，
+// 于是每跑一次就亲手把 driver 卸掉且装不回来（实测连踩三次）。
+//
+// 2026-10-03 vivo V2436A 实测到另一件事，方向相反：这里**不能**让 Maestro 重装。
+// 退化的是**长连接上的设备服务器**，不是设备、不是驱动包、不是我们的页面
+// （同一台机器跑原生 App、以及把 WebView 停在 about:blank，都是 0 失败）。
+// 而「重装」这条路在 vivo 上根本走不通：Maestro 的重装是 uninstall+install，
+// install 会拉起 vivo「安全守护」安装框，框上有前置勾选「已了解应用的风险检测结果」，
+// 不勾则确认键 disabled —— **Maestro 自己不会点这个勾**，于是它内部那条
+// `adb install` 必然挂到超时。2026-10-03 实测两轮都是 150s TIMEOUT 且
+// 一行弹窗日志都没有（那是因为 device-install-preflight 的 dialogShowing()
+// 只读第一条 mCurrentFocus=，在 OriginOS 上读到 "null"，永远看不见弹窗）。
+//
+// ⇒ 两个机型都不重装 driver，区别只在「怎么拿一个干净的设备服务器」：
+//   MIUI    ：不重装、也不 force-stop（卸载重装会毁掉 driver，见上）
+//   非 MIUI ：不重装、但每轮 force-stop driver 进程（包还在，Maestro 会重新拉起）
+const reinstallDriver = process.env.POCKET_REINSTALL_DRIVER === '1'
+const driverFlag = reinstallDriver ? [] : ['--no-reinstall-driver']
+if (reinstallDriver) {
+  console.log('[preflight] POCKET_REINSTALL_DRIVER=1：让 Maestro 每轮重装 driver')
+}
+// 每次 run 之前把 maestro 的 driver/server 进程杀掉，给这一轮一个干净的设备服务器。
+//
+// 为什么必须：2026-10-03 vivo V2436A 实测到 device server 是**跨轮存活**的，
+// 而 gRPC 通道的连接年龄一路涨：31s → 92s → 126s → 152s → 311s。年龄越大
+// viewHierarchy 越容易挂满 120s：
+//   DeviceServerDiedException ... 'viewHierarchy' (120115ms since last byte,
+//   connection age 126190ms) DEADLINE_EXCEEDED
+// 也就是说「设备服务器死了」多数时候不是被系统杀掉，而是**上一轮留下的那个还在
+// 跑、状态已经劣化**。实测每轮都杀掉 driver 后，同一轮里前两次 dump 从
+// 15~25s 降到 0.8s。
+//
+// 只 force-stop、**不卸载**：包还在原地，Maestro 靠 --no-reinstall-driver 直接
+// 把 instrumentation 重新拉起来，既拿到干净连接，又不碰那条会被 vivo 安装框
+// 拦死的 install 路径。
+//
+// 为什么放在 preflight（只对非 MIUI）：MIUI 上卸载重装 driver 就是那个
+// 「装不回来」的破坏性循环（见上面 --no-reinstall-driver 的注释），那边反而不
+// 能动它，靠 ensureDriver() 的 pm enable + 重试来救。
+if (!isMiui) {
+  for (const p of DRIVER_PKGS) {
+    try {
+      adb(['shell', 'am', 'force-stop', p], 30000)
+      console.log(`[preflight] 已 force-stop ${p}（避免复用上一轮已劣化的设备服务器）`)
+    } catch { /* 没装或已经不在 */ }
+  }
+  // 给系统一点时间回收，再让 Maestro 重新装
+  await sleep(1200)
+}
+
+const args = ['--device', DEVICE, 'test', ...driverFlag, ...preFlows, ...flows]
 const r = spawnSync(MAESTRO, args, {
   cwd: ROOT,
   stdio: 'inherit',
