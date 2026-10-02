@@ -7,6 +7,17 @@
 
 ## 0. APK 上下文
 
+> ⚠️ **下表这份 APK 已经不存在了，别按它去找**（2026-10-02 实测）。
+> `0B29C7AE…` / 34,426,857 bytes 那份已被后续构建覆盖，工作区的
+> `app-debug.apk` 现在是 34,227,285 bytes / `6D209EB1…`（2026-10-02 10:30 产物），
+> 两者都不是本表这一份。**本表是 2026-09-20 那次验收的历史上下文，
+> 刻意保持原样** —— 把它改指向某个新哈希，会让人误以为 09-20 的
+> 30min + Perfetto 验收跑的是那个新包，而那次验收已经无法复现。
+>
+> 要跑今天这份 runbook，请自己构建并用
+> `scripts/android-apk-fingerprint.ps1` 取当前指纹。
+> 需要一份**已验证可归因**的现成产物时，见文末「附：当前可归因的 APK」。
+
 | 项 | 值 |
 |---|---|
 | APK 路径 | `frontend/android/app/build/outputs/apk/debug/app-debug.apk` |
@@ -201,6 +212,36 @@ bcdedit /set hypervisorlaunchtype auto
 | 加速失败 → qemu TCG 软件模拟 | `qemu-system-x86_64-headless` 启动后 kernel cmdline 后无法维持 |
 
 > 任何**非 VMware guest** 的环境都会立即可用（原生 Win10/11 台式机或 Mac/Linux）。
+
+---
+
+## 附：当前可归因的 APK（2026-10-02）
+
+需要一份**已验证与某个 commit 对齐**的现成 APK 时用这份，不要用 §0 那张表。
+
+| 项 | 值 |
+|---|---|
+| 路径 | `logs/apk/app-debug-b0123a1.apk` |
+| 大小 | 34,272,370 bytes |
+| SHA256 | `DCDBAE91FD3B282138DB1CFFABD56F920CD35C1A1D121548E7441517AF5E3A80` |
+| 对应 commit | `b0123a17eb0501f1deac826cb13697fae2caaa9c` |
+| 构建输入 | `frontend/.env.android-dev` → `VITE_API_BASE=http://192.168.31.20:8088`，`android dev` |
+| 入口 chunk | `assets/public/assets/index-z3PPz3ef.js`（537,403 bytes，`index.html` 的 `src=` 引用它） |
+| scheme | `https`（`assets/capacitor.config.json` → `server.androidScheme`） |
+| 归因口径 | APK **输入闭包**内脏文件数 = 0（整树当时脏 15，见 `logs/apk-fingerprint.txt`） |
+
+「输入闭包」指 `frontend/src`、`public`、`index.html`、`vite.config.ts`、
+`package.json`、`capacitor.config.ts`、`android`，**含未跟踪文件**。
+本地产物能构建、别人构建不出的新文件同样会改变 bundle，只数 tracked 会漏。
+
+⚠️ 要在这份 APK 里查证烘进去的配置，**先看 `assets/public/index.html` 的
+`src=` 引用了哪个 chunk**。产物里有 7 个 `index-*.js`，只有一个是主入口
+（这里 537KB 那个）；按名字猜会查到 10KB 的同名小 chunk，然后误判成
+"配置没烘进去"。
+
+⚠️ 这份是 **https origin**（`localhost` 分区）。若要连明文后端，
+必须以 `CAP_ANDROID_SCHEME=http` 重新构建 —— 换了 scheme 等于换了整个
+localStorage 分区，用户存的 server 地址/token/语言/主题会全部读不到。
 
 ---
 
