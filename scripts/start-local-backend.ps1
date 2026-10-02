@@ -15,8 +15,9 @@
 # The script is deliberately ASCII-only: PowerShell 5.1 decodes a BOM-less
 # .ps1 as ANSI, so UTF-8 Chinese comments get mangled and can break string
 # quoting (it actually did - see the stray-quote parse error). Keep it ASCII.
-# The dev password is read from the Go source at runtime instead of being
-# written here, so no plaintext credential lands in a repo file.
+# The dev password is read from the environment at runtime, never from the Go
+# source and never from this file, so no plaintext credential lands in a repo
+# file. See the block further down for why there is no fallback.
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts\start-local-backend.ps1
@@ -24,7 +25,8 @@
 param(
   [int]$Port = 18099,
   [string]$Schema = "opencode_pocket",
-  [string]$DataDir = ""
+  [string]$DataDir = "",
+  [string]$JwtSecret = "pocket-local-dev-jwt-secret-do-not-use-in-shared-env"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,7 +48,6 @@ $root = Split-Path -Parent $PSScriptRoot
 if (-not $DataDir) { $DataDir = Join-Path $root "backend\data" }
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $bin = Join-Path $root "backend\.verify-bin\pocketd.exe"
-$goSrc = Join-Path $root "backend\internal\server\server_assistant.go"
 
 if (-not (Test-Path $bin)) {
   Write-Host "[backend] building pocketd ..."
@@ -56,13 +57,36 @@ if (-not (Test-Path $bin)) {
   Pop-Location
 }
 
-# Dev password: single source of truth is the Go constant. maestro-run.mjs
-# reads the same one, so the App and the backend cannot drift apart.
-$devPass = $null
-foreach ($line in (Get-Content $goSrc)) {
-  if ($line -match 'devPass\s*=\s*"([^"]+)"') { $devPass = $Matches[1]; break }
+# Dev password: read from the caller's environment, NEVER from the Go source.
+#
+# 2026-10-03: this used to scrape a hardcoded 'devPass = "..."' constant out of
+# server_assistant.go. The security remediation that removed that constant (the
+# password sat in plaintext in 8 tracked files, so "dev mode" was really "an
+# admin bypass guarded by a public password") left this script behind. Result:
+# the script threw "could not read devPass constant" and the local backend could
+# not be started AT ALL. maestro-run.mjs ensureBackend() calls this script, so
+# the whole real-device rig lost its self-healing path - and it failed in a way
+# that looked like "the backend is broken", not "the launcher is broken".
+#
+# Single source of truth is now the environment:
+#   POCKET_AUTH_PASS - what the backend actually reads (cfg.DevAuthPass)
+#   POCKET_DEV_PASS  - the name maestro-run.mjs uses; accepted as an alias
+# Both must be the same value: the App logs in over HTTP with this password, so
+# a mismatch is indistinguishable from a broken login path.
+#
+# Intentionally NO fallback and NO default. devBypassCredentials() refuses to
+# run without an explicit password; this script must not be the thing that
+# quietly puts one back.
+$devPass = $env:POCKET_AUTH_PASS
+if (-not $devPass) { $devPass = $env:POCKET_DEV_PASS }
+if (-not $devPass) {
+  Write-Host "[backend] POCKET_AUTH_PASS is not set."
+  Write-Host "[backend] The dev auth bypass refuses to run without an explicit password"
+  Write-Host "[backend] (see devBypassCredentials in backend/internal/server/server_assistant.go)."
+  Write-Host "[backend] Set it for this shell, then re-run, e.g.:"
+  Write-Host '[backend]   $env:POCKET_AUTH_PASS = "<your local dev password>"'
+  exit 1
 }
-if (-not $devPass) { throw "could not read devPass constant from $goSrc" }
 
 # Refuse to double-bind: two pocketd on one port means the App may randomly
 # talk to the stale one, which is exactly the confusion described above.
@@ -100,7 +124,10 @@ $env:POCKET_AUTH_PASS   = $devPass
 #    「点创建没反应」⇒ 看起来像 tasks 写路径坏了。真因是环境。
 #    固定 secret 后，重启后端不再销毁登录态，回归才能反复跑。
 #    仅限本机 dev 后端；共享/生产环境绝不能用固定 secret。
-$env:POCKET_JWT_SECRET  = "pocket-local-dev-jwt-secret-do-not-use-in-shared-env"
+#    -JwtSecret 存在的理由：BUG-AX 真机回归要复现的正是「后端换 secret ⇒ 旧 token
+#    全 401」这个场景，没有可切换的 secret 就只能靠伪造 token，而伪造 token 在
+#    启动期就被 /api/auth/refresh 的 401 清掉了，压根到不了 /api/tasks。
+$env:POCKET_JWT_SECRET  = $JwtSecret
 $env:POCKET_LLM_GATEWAY_ALLOW_PRIVATE = "true"
 
 # 日志文件名带时间戳：固定名会被上一个（刚 Stop-Process 但句柄尚未释放的）
