@@ -33,6 +33,17 @@ type RSSConfig struct {
 	WeiboClientID           string
 	WeiboClientSecret       string
 	WeiboRedirectURL        string
+	// DigestEnabled 打开"每天一份全部信息摘要"的后台生成与推送。
+	DigestEnabled bool
+	// DigestHour / DigestMinute 是每天生成日报的本地时刻。
+	DigestHour   int
+	DigestMinute int
+	// DigestMaxPerSection 是日报里每个分类最多放几条。
+	DigestMaxPerSection int
+	// DigestIncludeSummary 决定日报条目是否带摘要（分享到微博/朋友圈时更完整）。
+	DigestIncludeSummary bool
+	// DigestStartupRun 启动后立即补一次，覆盖进程重启跨过计划时刻的情况。
+	DigestStartupRun bool
 }
 
 // DefaultAPKDownloadPath 是 /api/app/download 的默认 APK 路径。
@@ -381,6 +392,12 @@ func Load() Config {
 			WeiboClientID:         getEnv("POCKET_RSS_WEIBO_CLIENT_ID", ""),
 			WeiboClientSecret:     getEnv("POCKET_RSS_WEIBO_CLIENT_SECRET", ""),
 			WeiboRedirectURL:      getEnv("POCKET_RSS_WEIBO_REDIRECT_URL", ""),
+			DigestEnabled:         getEnv("POCKET_RSS_DIGEST_ENABLED", "true") == "true",
+			DigestHour:            getEnvInt("POCKET_RSS_DIGEST_HOUR", 8),
+			DigestMinute:          getEnvInt("POCKET_RSS_DIGEST_MINUTE", 30),
+			DigestMaxPerSection:   getEnvInt("POCKET_RSS_DIGEST_MAX_PER_SECTION", 8),
+			DigestIncludeSummary:  getEnv("POCKET_RSS_DIGEST_INCLUDE_SUMMARY", "true") == "true",
+			DigestStartupRun:      getEnv("POCKET_RSS_DIGEST_STARTUP_RUN", "true") == "true",
 		},
 		// WebAuthn / 生物识别
 		WebAuthnRPDisplayName: getEnv("POCKET_WEBAUTHN_RP_DISPLAY_NAME", ""),
@@ -517,6 +534,13 @@ func (c Config) Validate() error {
 	}
 	if c.RSS.MaxConcurrency < 1 {
 		return fmt.Errorf("POCKET_RSS_MAX_CONCURRENCY must be >= 1")
+	}
+	// 日报时刻越界会让 nextRun 算出一个"永远到不了"的时间点，日报就静默不发了。
+	if c.RSS.DigestHour < 0 || c.RSS.DigestHour > 23 {
+		return fmt.Errorf("POCKET_RSS_DIGEST_HOUR must be 0-23")
+	}
+	if c.RSS.DigestMinute < 0 || c.RSS.DigestMinute > 59 {
+		return fmt.Errorf("POCKET_RSS_DIGEST_MINUTE must be 0-59")
 	}
 
 	return nil

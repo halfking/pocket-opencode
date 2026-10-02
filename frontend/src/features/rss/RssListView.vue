@@ -16,6 +16,31 @@ const loading = ref(false)
 const errorMsg = ref<string>('')
 const statusFilter = ref<'unread' | 'read' | 'starred' | 'archived' | ''>('unread')
 const search = ref('')
+const importing = ref(false)
+const importMsg = ref('')
+
+/** 一键把内置推荐源（IT / 财经 / 时事）加入订阅列表。幂等：已订阅的会跳过。 */
+async function importStarter() {
+  importing.value = true
+  importMsg.value = ''
+  errorMsg.value = ''
+  try {
+    const r = await rssApi.importStarter({})
+    importMsg.value = r.created > 0
+      ? `已导入 ${r.created} 个推荐源${r.skipped > 0 ? `（${r.skipped} 个已存在，跳过）` : ''}`
+      : `推荐源都已经在订阅列表里了（共 ${r.total} 个）`
+    tab.value = 'sources'
+    await refresh()
+  } catch (e: any) {
+    errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
+  } finally {
+    importing.value = false
+  }
+}
+
+function openDigest() {
+  router.push({ name: 'rss-digest' })
+}
 
 async function refresh() {
   loading.value = true
@@ -80,6 +105,15 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
       <h2>RSS 订阅</h2>
       <span v-if="totalUnread > 0" class="badge">{{ totalUnread }} 未读</span>
       <div class="actions">
+        <button class="btn-secondary" type="button" @click="openDigest">
+          <!--
+            用 subject 而不是 summarize：summarize 不在 material-symbols 子集字体里
+            （check-icon-font.mjs 会判红，真机上会显示 "summarize" 字面文本）。
+            重建字体要提交 3.4 MB 二进制，不值当；subject 已在子集内且语义接近。
+          -->
+          <span class="material-symbols-outlined">subject</span>
+          今日摘要
+        </button>
         <button class="btn-secondary" type="button" @click="refresh" :disabled="loading">
           <span class="material-symbols-outlined">refresh</span>
           刷新
@@ -90,6 +124,15 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
         </button>
       </div>
     </header>
+
+    <div v-if="sources.length === 0" class="starter-hint">
+      <div class="hint-text">还没有订阅。可以一键导入内置推荐源（IT / 财经 / 时事，全部经过真实抓取验证），也可以自己填地址。</div>
+      <button class="btn-primary" type="button" :disabled="importing" @click="importStarter">
+        <span class="material-symbols-outlined">auto_awesome</span>
+        {{ importing ? '导入中…' : '一键导入推荐源' }}
+      </button>
+    </div>
+    <div v-else-if="importMsg" class="notice">{{ importMsg }}</div>
 
     <nav class="tabs">
       <button :class="{ active: tab === 'items' }" @click="tab = 'items'">信息流</button>
@@ -129,8 +172,14 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
 
     <!-- 源 -->
     <section v-if="tab === 'sources'" class="sources">
+      <div v-if="sources.length > 0" class="starter-row">
+        <button class="btn-secondary" type="button" :disabled="importing" @click="importStarter">
+          <span class="material-symbols-outlined">auto_awesome</span>
+          {{ importing ? '导入中…' : '再导入推荐源' }}
+        </button>
+      </div>
       <div v-if="sources.length === 0" class="empty">
-        还没有订阅源。<button class="link" @click="openAdd">添加一个</button>。
+        还没有订阅源。<button class="link" @click="openAdd">添加一个</button>，或在上面一键导入推荐源。
       </div>
       <ul v-else class="source-list">
         <li v-for="src in sources" :key="src.id">
@@ -177,6 +226,10 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
 .filters input { flex: 1; }
 .empty { padding: 32px; text-align: center; color: var(--text-muted); }
 .error { padding: 8px 12px; background: var(--err-bg); color: var(--err-fg); border-radius: 6px; margin-bottom: 8px; }
+.starter-hint { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 12px; background: var(--bg-elevated); }
+.hint-text { font-size: var(--text-smd); color: var(--text-secondary); margin-bottom: 8px; }
+.starter-row { margin-bottom: 8px; }
+.notice { padding: 8px 12px; background: var(--bg-hover); border-radius: 6px; margin-bottom: 8px; font-size: var(--text-sm); }
 .item-list { list-style: none; padding: 0; margin: 0; }
 .item-list li { padding: 12px 8px; border-bottom: 1px solid var(--border); cursor: pointer; }
 .item-list li:hover { background: var(--bg-hover); }

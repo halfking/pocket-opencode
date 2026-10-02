@@ -59,10 +59,29 @@
           </form>
           <p v-if="deckError" class="error" role="alert">{{ deckError }}</p>
           <!--
-            这里**故意不放**「新建卡片」按钮：没有卡组时那页保存恒 disabled，
-            摆一个点了必然失败、又不解释原因的按钮比不放更糟。
-            建完组卡组立刻出现在下方列表，顶部 + 按钮即可继续建卡。
+            内置学习库：AI 知识点 / 智能体与大模型 / 英语单词+发音 / 英语常用句。
+            数据编译在后端二进制里，离线也能建库。导入幂等，重复点不会重复建卡。
           -->
+          <div v-if="starterDecks.length" class="starter" data-testid="flashcards-starter">
+            <p class="starter-title">内置学习库（{{ starterDecks.reduce((a, d) => a + d.cardCount, 0) }} 张卡）</p>
+            <ul class="starter-list">
+              <li v-for="d in starterDecks" :key="d.deckId">
+                <span class="s-name">{{ d.name }}</span>
+                <span class="s-count">{{ d.cardCount }} 张</span>
+              </li>
+            </ul>
+            <button
+              type="button"
+              class="primary"
+              data-testid="flashcards-starter-import"
+              :disabled="starterImporting"
+              @click="importStarter"
+            >
+              {{ starterImporting ? t('common.loading') : '一键导入内置学习库' }}
+            </button>
+            <p v-if="starterMsg" class="starter-msg">{{ starterMsg }}</p>
+            <p v-if="starterError" class="error" role="alert">{{ starterError }}</p>
+          </div>
         </div>
 
         <main v-else class="list">
@@ -100,6 +119,19 @@
               </button>
             </form>
             <p v-if="deckError" class="error" role="alert">{{ deckError }}</p>
+            <button
+              v-if="starterDecks.length"
+              type="button"
+              class="deck-toggle"
+              data-testid="flashcards-starter-toggle"
+              :disabled="starterImporting"
+              @click="importStarter"
+            >
+              <span class="material-symbols-outlined">auto_awesome</span>
+              <span>{{ starterImporting ? t('common.loading') : '导入内置学习库' }}</span>
+            </button>
+            <p v-if="starterMsg" class="starter-msg">{{ starterMsg }}</p>
+            <p v-if="starterError" class="error" role="alert">{{ starterError }}</p>
           </div>
           <article
             v-for="deck in decks"
@@ -142,6 +174,7 @@ import { useRouter } from 'vue-router'
 import FoldAwareLayout from './components/FoldAwareLayout.vue'
 import { useFlashcardsStore } from '../../stores/flashcards'
 import { useApiError } from '../../composables/useApiError'
+import { flashcardsStarterApi, type StarterDeckSummary } from '../../api/flashcards-starter'
 
 defineOptions({ name: 'FlashcardListView' })
 
@@ -185,6 +218,40 @@ async function submitCreateDeck() {
 
 const retryLabel = computed(() => t('flashcards.error.loadFailed') || 'Retry')
 
+// ===== 内置学习库 =====
+const starterDecks = ref<StarterDeckSummary[]>([])
+const starterImporting = ref(false)
+const starterMsg = ref('')
+const starterError = ref('')
+
+async function loadStarter() {
+  try {
+    const res = await flashcardsStarterApi.list()
+    starterDecks.value = res.decks ?? []
+  } catch (err) {
+    // 目录取不到不该挡住卡组列表本身：只提示，不阻断。
+    starterError.value = apiError(err, t('flashcards.error.loadFailed'))
+  }
+}
+
+async function importStarter() {
+  if (starterImporting.value) return
+  starterImporting.value = true
+  starterMsg.value = ''
+  starterError.value = ''
+  try {
+    const r = await flashcardsStarterApi.importAll()
+    starterMsg.value = r.cardsCreated > 0
+      ? `已导入 ${r.decks} 套牌组、${r.cardsCreated} 张卡${r.cardsSkipped > 0 ? `（${r.cardsSkipped} 张已存在，跳过）` : ''}`
+      : '内置学习库已经导入过了'
+    await store.refresh()
+  } catch (err) {
+    starterError.value = apiError(err, t('flashcards.error.loadFailed'))
+  } finally {
+    starterImporting.value = false
+  }
+}
+
 function totalLabel(total: number) {
   return `${total} cards`
 }
@@ -195,7 +262,7 @@ async function reload() {
 
 onMounted(async () => {
   store.loadFromCache()
-  await store.refresh().catch(() => {})
+  await Promise.all([store.refresh().catch(() => {}), loadStarter()])
 })
 </script>
 
@@ -266,6 +333,22 @@ onMounted(async () => {
 }
 .empty .primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .deck-create { display: flex; gap: var(--space-2); margin-top: var(--space-3); }
+.starter { margin-top: var(--space-4); text-align: left; }
+.starter-title { font-size: var(--text-sm); color: var(--text-secondary); margin: 0 0 var(--space-2); }
+.starter-list { list-style: none; margin: 0 0 var(--space-3); padding: 0; }
+.starter-list li { display: flex; justify-content: space-between; padding: 4px 0; font-size: var(--text-sm); }
+.starter-list .s-name { color: var(--text-primary); }
+.starter-list .s-count { color: var(--text-secondary); }
+.starter .primary {
+  padding: 10px 18px;
+  background: var(--brand-gradient);
+  border: 0;
+  color: var(--text-inverse);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.starter .primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.starter-msg { margin-top: var(--space-2); font-size: var(--text-sm); color: var(--text-secondary); }
 .deck-create input {
   flex: 1;
   padding: 10px 12px;

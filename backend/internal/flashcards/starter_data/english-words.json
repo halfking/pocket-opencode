@@ -1,0 +1,1094 @@
+{
+  "deckId": "starter-english-words",
+  "name": "英语单词与发音",
+  "description": "高频英语与职场商务词汇 120 词，每条附国际音标（IPA）、词性、释义和例句，适合 A2–B1 水平与日常职场沟通。",
+  "tags": [
+    "english",
+    "vocabulary",
+    "ipa"
+  ],
+  "newPerDay": 20,
+  "reviewsPerDay": 100,
+  "cards": [
+    {
+      "id": "starter-english-words-001",
+      "front": "decision",
+      "back": "IPA: /dɪˈsɪʒn/ · n. 决定；决策 · 例: \"We made a decision yesterday.\" 我们昨天做了个决定。",
+      "tags": [
+        "business",
+        "core"
+      ]
+    },
+    {
+      "id": "starter-english-words-002",
+      "front": "deliver",
+      "back": "IPA: /dɪˈlɪvə(r)/ · v. 递送；交付；发表 · 例: \"We will deliver the report by Friday.\" 我们周五前交付报告。",
+      "tags": [
+        "business",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-003",
+      "front": "develop",
+      "back": "IPA: /dɪˈveləp/ · v. 发展；开发；养成 · 例: \"She developed a habit of reading daily.\" 她养成了每天阅读的习惯。",
+      "tags": [
+        "business",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-004",
+      "front": "discuss",
+      "back": "IPA: /dɪˈskʌs/ · v. 讨论；商量 · 例: \"Let's discuss it after lunch.\" 我们午饭后讨论这件事。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-005",
+      "front": "document",
+      "back": "IPA: /ˈdɒkjumənt/ · n. 文件；文档 · 例: \"Please sign the document today.\" 请今天签署文件。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-006",
+      "front": "economy",
+      "back": "IPA: /ɪˈkɒnəmi/ · n. 经济；节约 · 例: \"The economy is growing slowly.\" 经济在缓慢增长。",
+      "tags": [
+        "business",
+        "topic"
+      ]
+    },
+    {
+      "id": "starter-english-words-007",
+      "front": "effort",
+      "back": "IPA: /ˈefət/ · n. 努力；气力 · 例: \"It took a lot of effort to finish.\" 完成它花了很大努力。",
+      "tags": [
+        "core",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-008",
+      "front": "encourage",
+      "back": "IPA: /ɪnˈkʌrɪdʒ/ · v. 鼓励；促进 · 例: \"My manager encouraged me to speak up.\" 经理鼓励我主动发言。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-009",
+      "front": "environment",
+      "back": "IPA: /ɪnˈvaɪrənmənt/ · n. 环境 · 例: \"We work in a friendly environment.\" 我们在友好的环境里工作。",
+      "tags": [
+        "core",
+        "topic"
+      ]
+    },
+    {
+      "id": "starter-english-words-010",
+      "front": "establish",
+      "back": "IPA: /ɪˈstæblɪʃ/ · v. 建立；确立 · 例: \"They established a new branch in 2019.\" 他们在 2019 年开了新分公司。",
+      "tags": [
+        "business",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-011",
+      "front": "evaluate",
+      "back": "IPA: /ɪˈvæljueɪt/ · v. 评估；评价 · 例: \"We evaluate performance twice a year.\" 我们每年评估两次绩效。",
+      "tags": [
+        "business",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-012",
+      "front": "evidence",
+      "back": "IPA: /ˈevɪdəns/ · n. 证据；迹象 · 例: \"There is no evidence to support that.\" 没有证据支持这个说法。",
+      "tags": [
+        "academic",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-013",
+      "front": "example",
+      "back": "IPA: /ɪɡˈzɑːmpl/ · n. 例子；榜样 · 例: \"For example, look at last quarter.\" 比如，看看上个季度。",
+      "tags": [
+        "core",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-014",
+      "front": "executive",
+      "back": "IPA: /ɪɡˈzekjətɪv/ · n. 高管；行政人员 · 例: \"She is a senior executive at the firm.\" 她是这家公司的高管。",
+      "tags": [
+        "business",
+        "role"
+      ]
+    },
+    {
+      "id": "starter-english-words-015",
+      "front": "experience",
+      "back": "IPA: /ɪkˈspɪəriəns/ · n. 经验；经历 · 例: \"He has ten years of experience.\" 他有十年经验。",
+      "tags": [
+        "core",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-016",
+      "front": "improve",
+      "back": "IPA: /ɪmˈpruːv/ · v. 改进；提高 · 例: \"We want to improve the user experience.\" 我们想改善用户体验。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-017",
+      "front": "include",
+      "back": "IPA: /ɪnˈkluːd/ · v. 包括；包含 · 例: \"The price includes tax and delivery.\" 价格含税和运费。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-018",
+      "front": "increase",
+      "back": "IPA: /ɪnˈkriːs/ · v. 增加；增长 · 例: \"Sales increased by 12 percent.\" 销售额增长了 12%。",
+      "tags": [
+        "business",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-019",
+      "front": "industry",
+      "back": "IPA: /ˈɪndəstri/ · n. 行业；工业 · 例: \"He works in the software industry.\" 他在软件行业工作。",
+      "tags": [
+        "business",
+        "topic"
+      ]
+    },
+    {
+      "id": "starter-english-words-020",
+      "front": "influence",
+      "back": "IPA: /ˈɪnfluəns/ · n. 影响；影响力 · 例: \"Price has a big influence on demand.\" 价格对需求影响很大。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-021",
+      "front": "introduce",
+      "back": "IPA: /ˌɪntrəˈdjuːs/ · v. 介绍；引进 · 例: \"Let me introduce my colleague Tom.\" 我来介绍一下我的同事汤姆。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-022",
+      "front": "knowledge",
+      "back": "IPA: /ˈnɒlɪdʒ/ · n. 知识；学识 · 例: \"He has a solid knowledge of finance.\" 他有扎实的金融知识。",
+      "tags": [
+        "academic",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-023",
+      "front": "maintain",
+      "back": "IPA: /meɪnˈteɪn/ · v. 维持；保养；坚持认为 · 例: \"We maintain daily backups of all data.\" 我们每天备份所有数据。",
+      "tags": [
+        "business",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-024",
+      "front": "measure",
+      "back": "IPA: /ˈmeʒə(r)/ · v. 测量；衡量 · 例: \"We measure success by user feedback.\" 我们用用户反馈衡量成功。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-025",
+      "front": "mention",
+      "back": "IPA: /ˈmenʃn/ · v. 提到；说起 · 例: \"She didn't mention the deadline.\" 她没提截止日期。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-026",
+      "front": "necessary",
+      "back": "IPA: /ˈnesəsəri/ · adj. 必要的；必需的 · 例: \"It is necessary to book in advance.\" 有必要提前预订。",
+      "tags": [
+        "core",
+        "adjective"
+      ]
+    },
+    {
+      "id": "starter-english-words-027",
+      "front": "negotiate",
+      "back": "IPA: /nɪˈɡəʊʃieɪt/ · v. 谈判；协商 · 例: \"They negotiated a better price.\" 他们谈到了更好的价格。",
+      "tags": [
+        "business",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-028",
+      "front": "obtain",
+      "back": "IPA: /əbˈteɪn/ · v. 获得；取得 · 例: \"You need a permit to obtain access.\" 你需要许可才能获得访问权。",
+      "tags": [
+        "academic",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-029",
+      "front": "opportunity",
+      "back": "IPA: /ˌɒpəˈtjuːnəti/ · n. 机会；时机 · 例: \"This is a great opportunity to learn.\" 这是个很好的学习机会。",
+      "tags": [
+        "core",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-030",
+      "front": "participate",
+      "back": "IPA: /pɑːˈtɪsɪpeɪt/ · v. 参与；参加 · 例: \"Everyone is welcome to participate.\" 欢迎所有人参与。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-031",
+      "front": "perform",
+      "back": "IPA: /pəˈfɔːm/ · v. 执行；表现；表演 · 例: \"The team performed well under pressure.\" 团队在压力下表现出色。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-032",
+      "front": "possible",
+      "back": "IPA: /ˈpɒsəbl/ · adj. 可能的 · 例: \"Is it possible to move the meeting?\" 会议有可能改期吗？",
+      "tags": [
+        "core",
+        "adjective"
+      ]
+    },
+    {
+      "id": "starter-english-words-033",
+      "front": "practice",
+      "back": "IPA: /ˈpræktɪs/ · n. 实践；惯例（英式） · 例: \"Best practice is to test before release.\" 最佳实践是发布前先测试。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-034",
+      "front": "prepare",
+      "back": "IPA: /prɪˈpeə(r)/ · v. 准备；预备 · 例: \"I need an hour to prepare for this call.\" 这通电话我需要准备一小时。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-035",
+      "front": "prevent",
+      "back": "IPA: /prɪˈvent/ · v. 阻止；预防 · 例: \"Regular updates prevent most bugs.\" 定期更新能预防大部分缺陷。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-036",
+      "front": "previous",
+      "back": "IPA: /ˈpriːviəs/ · adj. 先前的；以前的 · 例: \"The previous owner painted the walls.\" 之前的房主粉刷了墙面。",
+      "tags": [
+        "core",
+        "adjective"
+      ]
+    },
+    {
+      "id": "starter-english-words-037",
+      "front": "produce",
+      "back": "IPA: /prəˈdjuːs/ · v. 生产；产出 · 例: \"The factory produces about 500 units a day.\" 这家工厂每天产约 500 件。",
+      "tags": [
+        "business",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-038",
+      "front": "provide",
+      "back": "IPA: /prəˈvaɪd/ · v. 提供；供应 · 例: \"We provide support in three languages.\" 我们提供三种语言的支持。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-039",
+      "front": "purchase",
+      "back": "IPA: /ˈpɜːtʃəs/ · v./n. 购买；采购 · 例: \"Keep the receipt after every purchase.\" 每次采购后请保留收据。",
+      "tags": [
+        "business",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-040",
+      "front": "quality",
+      "back": "IPA: /ˈkwɒləti/ · n. 质量；品质 · 例: \"Quality matters more than speed here.\" 在这里质量比速度更重要。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-041",
+      "front": "receive",
+      "back": "IPA: /rɪˈsiːv/ · v. 收到；接到 · 例: \"I will confirm once I receive the file.\" 收到文件后我会确认。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-042",
+      "front": "recommend",
+      "back": "IPA: /ˌrekəˈmend/ · v. 推荐；建议 · 例: \"I recommend we start with a pilot.\" 我建议先做一个小规模试点。",
+      "tags": [
+        "business",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-043",
+      "front": "reduce",
+      "back": "IPA: /rɪˈdjuːs/ · v. 减少；降低 · 例: \"We reduced costs by a third.\" 我们把成本减少了三分之一。",
+      "tags": [
+        "business",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-044",
+      "front": "refer",
+      "back": "IPA: /rɪˈfɜː(r)/ · v. 提到；参考；指的是 · 例: \"Please refer to page twelve.\" 请参见第十二页。",
+      "tags": [
+        "academic",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-045",
+      "front": "relationship",
+      "back": "IPA: /rɪˈleɪʃnʃɪp/ · n. 关系；关联 · 例: \"We have a long relationship with this client.\" 我们与这位客户长期合作。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-046",
+      "front": "relevant",
+      "back": "IPA: /ˈreləvənt/ · adj. 相关的；切题的 · 例: \"Only relevant data is sent to the model.\" 只有相关数据才会发送给模型。",
+      "tags": [
+        "academic",
+        "adjective"
+      ]
+    },
+    {
+      "id": "starter-english-words-047",
+      "front": "require",
+      "back": "IPA: /rɪˈkwaɪə(r)/ · v. 需要；要求 · 例: \"This task requires two people.\" 这个任务需要两个人。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-048",
+      "front": "respond",
+      "back": "IPA: /rɪˈspɒnd/ · v. 回应；答复 · 例: \"She responded to the email within an hour.\" 她一小时内回复了邮件。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-049",
+      "front": "schedule",
+      "back": "IPA: /ˈʃedjuːl/ · n. 日程；时间表 · 例: \"The project is behind schedule.\" 项目进度落后于计划。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-050",
+      "front": "significant",
+      "back": "IPA: /sɪɡˈnɪfɪkənt/ · adj. 显著的；重要的 · 例: \"There was a significant drop in errors.\" 错误率明显下降。",
+      "tags": [
+        "academic",
+        "adjective"
+      ]
+    },
+    {
+      "id": "starter-english-words-051",
+      "front": "similar",
+      "back": "IPA: /ˈsɪmələ(r)/ · adj. 相似的；类似的 · 例: \"Our goals are similar to yours.\" 我们的目标和你们相似。",
+      "tags": [
+        "core",
+        "adjective"
+      ]
+    },
+    {
+      "id": "starter-english-words-052",
+      "front": "specific",
+      "back": "IPA: /spəˈsɪfɪk/ · adj. 具体的；特定的 · 例: \"Can you give a specific example?\" 你能举个具体例子吗？",
+      "tags": [
+        "core",
+        "adjective"
+      ]
+    },
+    {
+      "id": "starter-english-words-053",
+      "front": "strategy",
+      "back": "IPA: /ˈstrætədʒi/ · n. 战略；策略 · 例: \"Our growth strategy focuses on retention.\" 我们的增长策略聚焦留存。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-054",
+      "front": "success",
+      "back": "IPA: /səkˈses/ · n. 成功；成功的人或事 · 例: \"The launch was a huge success.\" 这次发布大获成功。",
+      "tags": [
+        "core",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-055",
+      "front": "suggest",
+      "back": "IPA: /səˈdʒest/ · v. 建议；提议；暗示 · 例: \"I suggest we postpone the review.\" 我建议我们推迟评审。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-056",
+      "front": "support",
+      "back": "IPA: /səˈpɔːt/ · v./n. 支持；支撑 · 例: \"Thanks for your support on this.\" 谢谢你在这件事上的支持。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-057",
+      "front": "technology",
+      "back": "IPA: /tekˈnɒlədʒi/ · n. 技术；科技 · 例: \"Technology has changed how we work.\" 技术改变了我们的工作方式。",
+      "tags": [
+        "business",
+        "topic"
+      ]
+    },
+    {
+      "id": "starter-english-words-058",
+      "front": "therefore",
+      "back": "IPA: /ˈðeəfɔː(r)/ · adv. 因此；所以 · 例: \"The data is incomplete; therefore we wait.\" 数据不完整，因此我们先等待。",
+      "tags": [
+        "academic",
+        "connector"
+      ]
+    },
+    {
+      "id": "starter-english-words-059",
+      "front": "understand",
+      "back": "IPA: /ˌʌndəˈstænd/ · v. 理解；明白 · 例: \"I understand your point, but I see it differently.\" 我理解你的观点，但我看法不同。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-060",
+      "front": "usually",
+      "back": "IPA: /ˈjuːʒuəli/ · adv. 通常；一般 · 例: \"I usually work until six.\" 我通常工作到六点。",
+      "tags": [
+        "core",
+        "adverb"
+      ]
+    },
+    {
+      "id": "starter-english-words-061",
+      "front": "various",
+      "back": "IPA: /ˈveəriəs/ · adj. 各种各样的；不同的 · 例: \"We tried various approaches to the problem.\" 我们尝试了多种方法。",
+      "tags": [
+        "academic",
+        "adjective"
+      ]
+    },
+    {
+      "id": "starter-english-words-062",
+      "front": "available",
+      "back": "IPA: /əˈveɪləbl/ · adj. 可获得的；有空的 · 例: \"The report is available on the intranet.\" 报告在内网可查。",
+      "tags": [
+        "business",
+        "adjective"
+      ]
+    },
+    {
+      "id": "starter-english-words-063",
+      "front": "benefit",
+      "back": "IPA: /ˈbenɪfɪt/ · n. 好处；益处 · 例: \"The main benefit is less manual work.\" 主要好处是手工活变少了。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-064",
+      "front": "budget",
+      "back": "IPA: /ˈbʌdʒɪt/ · n. 预算 · 例: \"We are working within budget.\" 我们在预算范围内推进。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-065",
+      "front": "client",
+      "back": "IPA: /ˈklaɪənt/ · n. 客户；委托人 · 例: \"The client asked for a progress update.\" 客户要求提供进展说明。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-066",
+      "front": "colleague",
+      "back": "IPA: /ˈkɒliːɡ/ · n. 同事 · 例: \"A colleague covered my shift.\" 一位同事替我值的班。",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-067",
+      "front": "company",
+      "back": "IPA: /ˈkʌmpəni/ · n. 公司；陪伴 · 例: \"Our company has 200 employees.\" 我们公司有 200 名员工。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-068",
+      "front": "customer",
+      "back": "IPA: /ˈkʌstəmə/ · n. 顾客；客户 · 例: \"Customer feedback shaped the new design.\" 顾客反馈影响了新设计。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-069",
+      "front": "deadline",
+      "back": "IPA: /ˈdedlaɪn/ · n. 截止日期；最后期限 · 例: \"The deadline has been moved to Monday.\" 截止日期改到了周一。",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-070",
+      "front": "department",
+      "back": "IPA: /dɪˈpɑːtmənt/ · n. 部门；系 · 例: \"She works in the marketing department.\" 她在市场部工作。",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-071",
+      "front": "design",
+      "back": "IPA: /dɪˈzaɪn/ · n./v. 设计；构思 · 例: \"The design was simple and clean.\" 设计简洁干净。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-072",
+      "front": "detail",
+      "back": "IPA: /ˈdiːteɪl/ · n. 细节；详情 · 例: \"Let's discuss the details tomorrow.\" 细节我们明天再谈。",
+      "tags": [
+        "core",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-073",
+      "front": "employee",
+      "back": "IPA: /ɪmˈplɔɪiː/ · n. 雇员；员工 · 例: \"Every employee gets two training days.\" 每位员工有两天培训假。",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-074",
+      "front": "expertise",
+      "back": "IPA: /ˌekspɜːˈtiːz/ · n. 专业知识；专长 · 例: \"We hired an expert in mobile security.\" 我们请了一位移动安全专家。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-075",
+      "front": "feedback",
+      "back": "IPA: /ˈfiːdbæk/ · n. 反馈；反馈意见 · 例: \"Thanks for the honest feedback.\" 谢谢你坦率的反馈。",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-076",
+      "front": "goal",
+      "back": "IPA: /ɡəʊl/ · n. 目标；进球 · 例: \"Our main goal is to cut costs.\" 我们的主要目标是降低成本。",
+      "tags": [
+        "core",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-077",
+      "front": "income",
+      "back": "IPA: /ˈɪnkʌm/ · n. 收入；所得 · 例: \"His income doubled after the promotion.\" 升职后他的收入翻倍了。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-078",
+      "front": "interview",
+      "back": "IPA: /ˈɪntəvjuː/ · n. 面试；访谈 · 例: \"I have a job interview next Monday.\" 我下周一有个工作面试。",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-079",
+      "front": "invest",
+      "back": "IPA: /ɪnˈvest/ · v. 投资；投入 · 例: \"They invested heavily in staff training.\" 他们在员工培训上投入很大。",
+      "tags": [
+        "business",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-080",
+      "front": "issue",
+      "back": "IPA: /ˈɪʃuː/ · n. 问题；议题 · 例: \"We fixed the login issue yesterday.\" 我们昨天修复了登录问题。",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-081",
+      "front": "legal",
+      "back": "IPA: /ˈliːɡl/ · adj. 合法的；法律的 · 例: \"Check the legal requirements first.\" 请先确认法律要求。",
+      "tags": [
+        "business",
+        "adjective"
+      ]
+    },
+    {
+      "id": "starter-english-words-082",
+      "front": "manage",
+      "back": "IPA: /ˈmænɪdʒ/ · v. 管理；设法做到 · 例: \"She manages a team of six.\" 她管理一个六人团队。",
+      "tags": [
+        "business",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-083",
+      "front": "method",
+      "back": "IPA: /ˈmeθəd/ · n. 方法；办法 · 例: \"This method saves a lot of time.\" 这个方法省很多时间。",
+      "tags": [
+        "academic",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-084",
+      "front": "network",
+      "back": "IPA: /ˈnetwɜːk/ · n. 网络；人脉 · 例: \"The system uses a neural network.\" 该系统使用神经网络。",
+      "tags": [
+        "tech",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-085",
+      "front": "partner",
+      "back": "IPA: /ˈpɑːtnə(r)/ · n. 合伙人；合作方 · 例: \"We signed a partnership agreement.\" 我们签了合作协议。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-086",
+      "front": "payment",
+      "back": "IPA: /ˈpeɪmənt/ · n. 付款；支付 · 例: \"Payment is due within 30 days.\" 货款需在 30 天内付清。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-087",
+      "front": "policy",
+      "back": "IPA: /ˈpɒləsi/ · n. 政策；方针 · 例: \"Our remote work policy is flexible.\" 我们的远程办公政策很灵活。",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-088",
+      "front": "process",
+      "back": "IPA: /ˈprəʊses/ · n. 流程；过程 · 例: \"The approval process takes three days.\" 审批流程需要三天。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-089",
+      "front": "progress",
+      "back": "IPA: /ˈprəʊɡres/ · n. 进展；进步 · 例: \"We made good progress this sprint.\" 这个迭代我们进展不错。",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-090",
+      "front": "purpose",
+      "back": "IPA: /ˈpɜːpəs/ · n. 目的；意图 · 例: \"The purpose of this call is alignment.\" 这次通话的目的是达成一致。",
+      "tags": [
+        "core",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-091",
+      "front": "recent",
+      "back": "IPA: /ˈriːsnt/ · adj. 最近的；近来的 · 例: \"In recent weeks the app got faster.\" 最近几周应用变快了。",
+      "tags": [
+        "core",
+        "adjective"
+      ]
+    },
+    {
+      "id": "starter-english-words-092",
+      "front": "refuse",
+      "back": "IPA: /rɪˈfjuːz/ · v. 拒绝 · 例: \"He politely refused the offer.\" 他礼貌地拒绝了提议。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-093",
+      "front": "responsibility",
+      "back": "IPA: /rɪˌspɒnsəˈbɪləti/ · n. 责任；职责 · 例: \"Taking ownership is part of your responsibility.\" 主动担责是你职责的一部分。",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-094",
+      "front": "result",
+      "back": "IPA: /rɪˈzʌlt/ · n. 结果；成果 · 例: \"The result exceeded our expectations.\" 结果超出我们的预期。",
+      "tags": [
+        "core",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-095",
+      "front": "revenue",
+      "back": "IPA: /ˈrevənjuː/ · n. 收入；营收 · 例: \"Revenue grew even without new ads.\" 没有新广告收入也在增长。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-096",
+      "front": "risk",
+      "back": "IPA: /rɪsk/ · n. 风险；危险 · 例: \"We reviewed the risk before signing.\" 签字前我们评估了风险。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-097",
+      "front": "role",
+      "back": "IPA: /rəʊl/ · n. 角色；职责 · 例: \"Her role changed last quarter.\" 上个季度她的职责变了。",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-098",
+      "front": "rule",
+      "back": "IPA: /ruːl/ · n. 规则；规定 · 例: \"The rule applies to everyone.\" 这条规则适用于所有人。",
+      "tags": [
+        "core",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-099",
+      "front": "security",
+      "back": "IPA: /sɪˈkjʊərəti/ · n. 安全；保障 · 例: \"Security asked everyone to re-enter.\" 安保要求所有人重新进入。",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-100",
+      "front": "senior",
+      "back": "IPA: /ˈsiːniə(r)/ · adj. 高级的；资深的 · 例: \"We spoke with their senior manager.\" 我们和他们的资深经理谈了。",
+      "tags": [
+        "workplace",
+        "adjective"
+      ]
+    },
+    {
+      "id": "starter-english-words-101",
+      "front": "solution",
+      "back": "IPA: /səˈluːʃn/ · n. 解决办法；解决方案 · 例: \"We haven't found a solution yet.\" 我们还没找到解决方案。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-102",
+      "front": "source",
+      "back": "IPA: /sɔːs/ · n. 来源；出处 · 例: \"Please cite the source of each number.\" 请注明每个数字的来源。",
+      "tags": [
+        "academic",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-103",
+      "front": "standard",
+      "back": "IPA: /ˈstændəd/ · n. 标准；水准 · 例: \"Our work meets the industry standard.\" 我们的工作符合行业标准。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-104",
+      "front": "status",
+      "back": "IPA: /ˈsteɪtəs/ · n. 状态；地位 · 例: \"Can you share an update on the status?\" 能同步一下进展吗？",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-105",
+      "front": "task",
+      "back": "IPA: /tɑːsk/ · n. 任务；工作 · 例: \"This task is on the critical path.\" 这个任务在关键路径上。",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-106",
+      "front": "team",
+      "back": "IPA: /tiːm/ · n. 团队；队 · 例: \"The team ships every week.\" 团队每周发版。",
+      "tags": [
+        "workplace",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-107",
+      "front": "value",
+      "back": "IPA: /ˈvæljuː/ · n. 价值；数值 · 例: \"Customers value quick replies.\" 客户看重快速回复。",
+      "tags": [
+        "business",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-108",
+      "front": "approach",
+      "back": "IPA: /əˈprəʊtʃ/ · n. 方法；途径 v. 接近 · 例: \"Let's try a different approach.\" 我们换个方法试试。",
+      "tags": [
+        "core",
+        "noun"
+      ]
+    },
+    {
+      "id": "starter-english-words-109",
+      "front": "apply",
+      "back": "IPA: /əˈplaɪ/ · v. 申请；应用；涂抹 · 例: \"I applied for the open position.\" 我申请了那个空缺职位。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-110",
+      "front": "arrange",
+      "back": "IPA: /əˈreɪndʒ/ · v. 安排；整理 · 例: \"I'll arrange a call for Thursday.\" 我安排周四通个电话。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-111",
+      "front": "attend",
+      "back": "IPA: /əˈtend/ · v. 出席；参加 · 例: \"About thirty people attended the talk.\" 约三十人参加了讲座。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-112",
+      "front": "confirm",
+      "back": "IPA: /kənˈfɜːm/ · v. 确认；证实 · 例: \"Please confirm the time tomorrow.\" 请明天确认时间。",
+      "tags": [
+        "workplace",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-113",
+      "front": "depend",
+      "back": "IPA: /dɪˈpend/ · v. 依赖；取决于 · 例: \"It depends on how much time we have.\" 这取决于我们有多少时间。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-114",
+      "front": "focus",
+      "back": "IPA: /ˈfəʊkəs/ · v./n. 集中；焦点 · 例: \"Today's focus is the payment bug.\" 今天的重点是支付缺陷。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-115",
+      "front": "identify",
+      "back": "IPA: /aɪˈdentɪfaɪ/ · v. 识别；确定 · 例: \"First we need to identify the root cause.\" 我们首先要确定根本原因。",
+      "tags": [
+        "academic",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-116",
+      "front": "solve",
+      "back": "IPA: /sɒlv/ · v. 解决；解答 · 例: \"They solved the bug in one day.\" 他们一天内修好了这个缺陷。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-117",
+      "front": "agree",
+      "back": "IPA: /əˈɡriː/ · v. 同意；一致 · 例: \"I agree with most of that plan.\" 那个方案我大部分同意。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-118",
+      "front": "allow",
+      "back": "IPA: /əˈlaʊ/ · v. 允许；容许 · 例: \"We don't allow personal accounts here.\" 这里不允许使用个人账号。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-119",
+      "front": "avoid",
+      "back": "IPA: /əˈvɔɪd/ · v. 避免；躲开 · 例: \"Try to avoid jargon in the summary.\" 摘要里尽量避免行话。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    },
+    {
+      "id": "starter-english-words-120",
+      "front": "consider",
+      "back": "IPA: /kənˈsɪdə(r)/ · v. 考虑；认为 · 例: \"We are considering two options.\" 我们在考虑两个方案。",
+      "tags": [
+        "core",
+        "verb"
+      ]
+    }
+  ]
+}

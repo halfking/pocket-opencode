@@ -1,0 +1,282 @@
+﻿[
+    {
+        "url":  "http://www.xinhuanet.com/politics/news_politics.xml",
+        "title":  "新华网时政",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/xml; charset=utf-8",
+        "items":  300,
+        "ms":  546,
+        "err":  ""
+    },
+    {
+        "url":  "http://www.xinhuanet.com/fortune/news_fortune.xml",
+        "title":  "新华网财经",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "text/xml; charset=utf-8",
+        "items":  300,
+        "ms":  350,
+        "err":  ""
+    },
+    {
+        "url":  "https://rss.huanqiu.com/",
+        "title":  "环球网",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/html",
+        "items":  0,
+        "ms":  228,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.huanqiu.com/rss",
+        "title":  "环球网(alt)",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/html",
+        "items":  0,
+        "ms":  9,
+        "err":  ""
+    },
+    {
+        "url":  "https://world.huanqiu.com/rss",
+        "title":  "环球国际",
+        "category":  "news",
+        "status":  404,
+        "ctype":  "",
+        "items":  0,
+        "ms":  195,
+        "err":  "远程服务器返回错误: (404) 未找到。"
+    },
+    {
+        "url":  "https://www.cankaoxiaoxi.com/rss",
+        "title":  "参考消息",
+        "category":  "news",
+        "status":  404,
+        "ctype":  "",
+        "items":  0,
+        "ms":  124,
+        "err":  "远程服务器返回错误: (404) 未找到。"
+    },
+    {
+        "url":  "https://news.cctv.com/rss/china.xml?x=1",
+        "title":  "央视新闻(retry)",
+        "category":  "news",
+        "status":  404,
+        "ctype":  "",
+        "items":  0,
+        "ms":  255,
+        "err":  "远程服务器返回错误: (404) 未找到。"
+    },
+    {
+        "url":  "https://news.cctv.com/2019/07/gaiban/cmsdatainterface/page/news_1.jsonp",
+        "title":  "央视(json)",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/html",
+        "items":  0,
+        "ms":  150,
+        "err":  ""
+    },
+    {
+        "url":  "https://feeds.bbci.co.uk/zhongwen/simp/rss.xml",
+        "title":  "BBC中文(retry)",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15023,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://www.thepaper.cn/rss_newlist.jsp",
+        "title":  "澎湃(retry)",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/html; charset=utf-8",
+        "items":  0,
+        "ms":  315,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.guancha.cn/rss.xml",
+        "title":  "观察者网",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/html; charset=utf-8",
+        "items":  0,
+        "ms":  221,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.guancha.cn/feed",
+        "title":  "观察者网(alt)",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/html; charset=utf-8",
+        "items":  0,
+        "ms":  88,
+        "err":  ""
+    },
+    {
+        "url":  "https://cn.nytimes.com/rss/",
+        "title":  "纽约时报中文(retry)",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15018,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://www.voachinese.com/api/zkvyteuiy",
+        "title":  "VOA中文(retry)",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15016,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://www.zaobao.com.sg/feed",
+        "title":  "早报(retry)",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/html",
+        "items":  0,
+        "ms":  910,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.straitstimes.com/news/world/rss.xml",
+        "title":  "海峡时报国际",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15054,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://www.scmp.com/rss/91/feed",
+        "title":  "SCMP新闻",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15012,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://feeds.a.dj.com/rss/RSSWorldNews.xml",
+        "title":  "WSJ World",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "application/rss+xml;charset=UTF-8",
+        "items":  20,
+        "ms":  754,
+        "err":  ""
+    },
+    {
+        "url":  "https://moxie.foxnews.com/google-publisher/world.xml",
+        "title":  "Fox News World",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/xml;charset=utf-8",
+        "items":  25,
+        "ms":  533,
+        "err":  ""
+    },
+    {
+        "url":  "https://xueqiu.com/hots/topic/rss",
+        "title":  "雪球热帖",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "text/xml;charset=UTF-8",
+        "items":  8,
+        "ms":  554,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.jiemian.com/lists/280.html",
+        "title":  "界面(retry)",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/html; charset=utf-8",
+        "items":  0,
+        "ms":  376,
+        "err":  ""
+    },
+    {
+        "url":  "https://a.jiemian.com/index.php?m=article\u0026a=rss",
+        "title":  "界面rss",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/xml; charset=utf-8",
+        "items":  30,
+        "ms":  256,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.cls.cn/telegraph",
+        "title":  "财联社(retry)",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "",
+        "items":  0,
+        "ms":  103,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.gelonghui.com/rss",
+        "title":  "格隆汇",
+        "category":  "finance",
+        "status":  404,
+        "ctype":  "",
+        "items":  0,
+        "ms":  86,
+        "err":  "远程服务器返回错误: (404) 未找到。"
+    },
+    {
+        "url":  "https://www.jin10.com/flash_newest.js",
+        "title":  "金十数据",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "text/javascript; charset=utf-8",
+        "items":  0,
+        "ms":  154,
+        "err":  ""
+    },
+    {
+        "url":  "https://feed.cnyes.com/rss",
+        "title":  "钜亨网",
+        "category":  "finance",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15029,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://www.moneydj.com/kmdj/news/news.aspx",
+        "title":  "MoneyDJ",
+        "category":  "finance",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15018,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://cn.reuters.com/rssFeed/CNTopGenNews",
+        "title":  "路透中文",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15014,
+        "err":  "The operation has timed out."
+    }
+]

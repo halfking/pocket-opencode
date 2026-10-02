@@ -4,11 +4,17 @@
 //
 //	GET    /api/rss/sources                  列出当前用户的 RSS 源
 //	POST   /api/rss/sources                  新增源（自动 discover → first-fetch）
-//	GET    /api/rss/sources/seeds            返回内置种子源（中文常见资讯/科技）
+//	GET    /api/rss/sources/seeds            返回内置种子源（= starter 目录，向后兼容别名）
+//	GET    /api/rss/sources/starter          内置推荐源目录（it / finance / news 三类）
+//	POST   /api/rss/sources/import-starter   一键把推荐源加入初始订阅列表（幂等）
 //	POST   /api/rss/sources/discover         {url} → 发现候选 feed URL
 //	PATCH  /api/rss/sources/{id}             部分更新（启用/间隔/标题等）
 //	DELETE /api/rss/sources/{id}             删除源（级联删除 items/drafts/attempts）
 //	POST   /api/rss/sources/{id}/refresh     立即拉取一次（scheduler.RunNow）
+//
+//	GET    /api/rss/digest                   每日全部信息摘要（?date=YYYY-MM-DD，缺省今天）
+//	POST   /api/rss/digest/run               立即生成并落库（?date=，缺省今天）
+//	GET    /api/rss/digests                  历史日报列表
 //
 //	GET    /api/rss/items                    列表（按 sourceId / status / 关键词 / 时间窗）
 //	GET    /api/rss/items/{id}               详情（含所属源摘要）
@@ -92,21 +98,6 @@ func (s *Server) requireRSSStore(w http.ResponseWriter) *rss.Store {
 		return nil
 	}
 	return st
-}
-
-// ===== Seeds（内置种子源） =====
-//
-// 不接远端，避免冷启动空状态。每一项都是 known-good 的 RSS/Atom feed。
-var rssSeedFeeds = []rssSeed{
-	{URL: "https://hnrss.org/frontpage", Title: "Hacker News — Front Page", SiteURL: "https://news.ycombinator.com/", Language: "en", Category: "tech"},
-	{URL: "https://www.36kr.com/feed", Title: "36氪", SiteURL: "https://www.36kr.com/", Language: "zh", Category: "tech"},
-	{URL: "https://rsshub.app/sspai/index", Title: "少数派", SiteURL: "https://sspai.com/", Language: "zh", Category: "tech"},
-	{URL: "https://www.ruanyifeng.com/blog/atom.xml", Title: "阮一峰的网络日志", SiteURL: "https://www.ruanyifeng.com/", Language: "zh", Category: "tech"},
-	{URL: "https://www.smashingmagazine.com/feed/", Title: "Smashing Magazine", SiteURL: "https://www.smashingmagazine.com/", Language: "en", Category: "design"},
-}
-
-type rssSeed struct {
-	URL, Title, SiteURL, Language, Category string
 }
 
 // ===== /sources =====
@@ -235,23 +226,244 @@ func (s *Server) handleRSSSources(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleRSSSourceSeeds 返回内置种子（不需要 store，但保持 requireAuth 一致）。
+// ===== 内置推荐源（starter catalog） =====
+//
+// 数据源是 rss.StarterFeeds（backend/internal/rss/catalog.go）。那里每一条
+// 都在 2026-10-03 用真实 HTTP 探测过（200 + XML + 有条目），证据见
+// logs/feed-probe-round*.json。新增条目前必须先过同样的探测。
+
+// handleRSSSourceSeeds 是 /sources/seeds 的向后兼容别名，行为等同 starter 目录。
+//
+// 注意这里**必须同时保留 `seeds` 与 `feeds` 两个键**：老前端
+// （features/rss/RssAddSource.vue → rssApi.listSeeds）读的是 res.seeds，
+// 只回 feeds 会让"添加订阅源"页静默变成空列表 —— 这类不报错的破坏最难查。
 func (s *Server) handleRSSSourceSeeds(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
-	out := make([]map[string]any, 0, len(rssSeedFeeds))
-	for _, s2 := range rssSeedFeeds {
-		out = append(out, map[string]any{
-			"url":      s2.URL,
-			"title":    s2.Title,
-			"siteUrl":  s2.SiteURL,
-			"language": s2.Language,
-			"category": s2.Category,
-		})
+	feeds := toStarterDTOs(rss.StarterFeedsByCategory())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"seeds":      feeds,
+		"feeds":      feeds,
+		"categories": rss.StarterCategories(),
+	})
+}
+
+// rssStarterDTO 是目录条目的对外形状。
+type rssStarterDTO struct {
+	URL           string `json:"url"`
+	Title         string `json:"title"`
+	SiteURL       string `json:"siteUrl"`
+	Language      string `json:"language"`
+	Category      string `json:"category"`
+	CategoryLabel string `json:"categoryLabel"`
+	Note          string `json:"note,omitempty"`
+	FetchInterval string `json:"fetchInterval,omitempty"`
+}
+
+func toStarterDTOs(feeds []rss.StarterFeed) []rssStarterDTO {
+	out := make([]rssStarterDTO, 0, len(feeds))
+	for _, f := range feeds {
+		dto := rssStarterDTO{
+			URL:           f.URL,
+			Title:         f.Title,
+			SiteURL:       f.SiteURL,
+			Language:      f.Language,
+			Category:      f.Category,
+			CategoryLabel: rss.StarterCategoryLabel(f.Category),
+			Note:          f.Note,
+		}
+		if f.FetchInterval > 0 {
+			dto.FetchInterval = f.FetchInterval.String()
+		}
+		out = append(out, dto)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"seeds": out})
+	return out
+}
+
+// handleRSSStarterCatalog 返回内置推荐源目录。?category=it,finance 可过滤。
+func (s *Server) handleRSSStarterCatalog(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	var categories []string
+	if raw := strings.TrimSpace(r.URL.Query().Get("category")); raw != "" {
+		for _, c := range strings.Split(raw, ",") {
+			if c = strings.TrimSpace(c); c != "" {
+				categories = append(categories, c)
+			}
+		}
+	}
+	feeds := rss.StarterFeedsByCategory(categories...)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"feeds":      toStarterDTOs(feeds),
+		"categories": rss.StarterCategories(),
+	})
+}
+
+type rssImportStarterBody struct {
+	Categories      []string `json:"categories"`
+	MaxPerCategory int      `json:"maxPerCategory"`
+	Enabled        *bool    `json:"enabled"`
+}
+
+// handleRSSImportStarter 把内置推荐源加入当前用户的订阅列表（幂等）。
+// 已订阅的会被跳过，不会覆盖用户改过的标题或拉取间隔。
+func (s *Server) handleRSSImportStarter(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	st := s.requireRSSStore(w)
+	if st == nil {
+		return
+	}
+	var body rssImportStarterBody
+	if r.Body != nil {
+		// 空 body 也允许（等价于"全部导入"），所以解码失败不当作致命错误。
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	enabled := true
+	if body.Enabled != nil {
+		enabled = *body.Enabled
+	}
+	result, err := st.ImportStarterSources(r.Context(), s.rssScopeFromClaims(r), rss.StarterImportOptions{
+		Categories:      body.Categories,
+		MaxPerCategory: body.MaxPerCategory,
+		Enabled:         enabled,
+	})
+	if err != nil {
+		writeRSSError(w, err)
+		return
+	}
+	created := make([]rssSourceDTO, 0, len(result.Sources))
+	for _, src := range result.Sources {
+		created = append(created, toSourceDTO(src, 0))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"created": result.Created,
+		"skipped": result.Skipped,
+		"total":   result.Total,
+		"sources": created,
+	})
+}
+
+// ===== 每日摘要 =====
+
+func rssDigestDateParam(r *http.Request) (string, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("date"))
+	if raw == "" {
+		return "", true
+	}
+	if _, err := time.Parse("2006-01-02", raw); err != nil {
+		return "", false
+	}
+	return raw, true
+}
+
+// handleRSSDigest 返回某天的日报；当天还没生成时按需生成并落库，
+// 这样"每天收到一份摘要"在用户第一次打开时也不会是空白页。
+func (s *Server) handleRSSDigest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	st := s.requireRSSStore(w)
+	if st == nil {
+		return
+	}
+	date, ok := rssDigestDateParam(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad date, want YYYY-MM-DD")
+		return
+	}
+	sc := s.rssScopeFromClaims(r)
+	if date != "" {
+		if d, err := st.GetDigest(r.Context(), sc, date); err == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"digest": d})
+			return
+		} else if !errors.Is(err, rss.ErrNotFound) {
+			writeRSSError(w, err)
+			return
+		}
+	}
+	day := time.Now().UTC()
+	if date != "" {
+		if parsed, perr := time.Parse("2006-01-02", date); perr == nil {
+			day = parsed
+		}
+	}
+	built, err := st.BuildDigest(r.Context(), sc, day, rss.DigestOptions{IncludeSummary: true})
+	if err != nil {
+		writeRSSError(w, err)
+		return
+	}
+	saved, err := st.SaveDigest(r.Context(), sc, built)
+	if err != nil {
+		writeRSSError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"digest": saved})
+}
+
+// handleRSSDigestRun 强制重新生成（手动"生成今日摘要"按钮）。
+func (s *Server) handleRSSDigestRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	st := s.requireRSSStore(w)
+	if st == nil {
+		return
+	}
+	date, ok := rssDigestDateParam(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad date, want YYYY-MM-DD")
+		return
+	}
+	day := time.Now().UTC()
+	if date != "" {
+		if parsed, perr := time.Parse("2006-01-02", date); perr == nil {
+			day = parsed
+		}
+	}
+	built, err := st.BuildDigest(r.Context(), s.rssScopeFromClaims(r), day, rss.DigestOptions{IncludeSummary: true})
+	if err != nil {
+		writeRSSError(w, err)
+		return
+	}
+	saved, err := st.SaveDigest(r.Context(), s.rssScopeFromClaims(r), built)
+	if err != nil {
+		writeRSSError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"digest": saved})
+}
+
+// handleRSSDigestList 返回历史日报列表。
+func (s *Server) handleRSSDigestList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	st := s.requireRSSStore(w)
+	if st == nil {
+		return
+	}
+	limit := 30
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			limit = n
+		}
+	}
+	list, err := st.ListDigests(r.Context(), s.rssScopeFromClaims(r), limit)
+	if err != nil {
+		writeRSSError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"digests": list})
 }
 
 // handleRSSDiscover 给一个页面 URL，返回候选 feed URL 列表。
@@ -854,12 +1066,17 @@ func (s *Server) handleRSSRouter(w http.ResponseWriter, r *http.Request) {
 	}
 	switch parts[0] {
 	case "sources":
-		// /sources, /sources/seeds, /sources/{id}[/refresh], /sources/discover
+		// /sources, /sources/seeds, /sources/starter, /sources/import-starter,
+		// /sources/{id}[/refresh], /sources/discover
 		switch {
 		case len(parts) == 1:
 			s.handleRSSSources(w, r)
 		case len(parts) == 2 && parts[1] == "seeds":
 			s.handleRSSSourceSeeds(w, r)
+		case len(parts) == 2 && parts[1] == "starter":
+			s.handleRSSStarterCatalog(w, r)
+		case len(parts) == 2 && parts[1] == "import-starter":
+			s.handleRSSImportStarter(w, r)
 		case len(parts) == 2 && parts[1] == "discover":
 			s.handleRSSDiscover(w, r)
 		default:
@@ -881,6 +1098,17 @@ func (s *Server) handleRSSRouter(w http.ResponseWriter, r *http.Request) {
 		}
 	case "filters":
 		s.handleRSSFilters(w, r)
+	case "digest":
+		switch {
+		case len(parts) == 1:
+			s.handleRSSDigest(w, r)
+		case len(parts) == 2 && parts[1] == "run":
+			s.handleRSSDigestRun(w, r)
+		default:
+			writeError(w, http.StatusNotFound, "unknown rss digest subpath: "+path)
+		}
+	case "digests":
+		s.handleRSSDigestList(w, r)
 	default:
 		writeError(w, http.StatusNotFound, "unknown rss subpath: "+path)
 	}
