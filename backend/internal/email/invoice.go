@@ -375,6 +375,55 @@ func InvoiceCandidate(e Email) bool {
 	return invoiceKeywordHit(e.Subject + "\n" + e.Snippet)
 }
 
+// reDebtNoticeShape 识别「债务通知」形态：信用卡/银行的对账单、还款提醒。
+//
+// 这类邮件在 invoiceKeywordHit 里必然放行——关键词表本来就含
+// 「账单」「对账单」「扣款」「支付成功」。而它们**不是发票**：
+// 2026-10-02 真实库实例（diag_real_invoice_extract_test.go 记录）：
+//
+//	inv_1790903383222583800_1  amount=58000.00  invoice_date=2026-10-25
+//	主题=中国工商银行客户对账单(ICBC Peony Card Bank Statement)
+//
+// 58000 是原文里的**信用额度**（由 invoice.go 的「兜底取全文最大值」选中），
+// 10-25 是**贷记卡到期还款日**。一笔根本没发生的 5.8 万元支出进了台账。
+var reDebtNoticeShape = regexp.MustCompile(`(?i)(对账单|账单周期|还款日|应还款|最低还款|信用额度|授信额度|信用卡|贷记卡|借记卡|account\s+statement|statement\s+of\s+account|billing\s+statement|credit\s*card|amount\s+due)`)
+
+// reTaxNo 识别开票方税号。开票方必须披露税号，没有它基本可断定不是发票。
+var reTaxNo = regexp.MustCompile(`(?i)(纳税人识别号|统一社会信用代码|销售方纳税人识别号|税\s*号|tax\s*id|VAT\s*(?:No|Number))`)
+
+// admitDebtNotice 判断一封「债务通知形态」的邮件是否仍应进发票台账。
+//
+// 规则：债务通知必须**另外**带至少一个真实发票语义信号——
+// 发票号、税号、或发票类附件——否则不建档。
+//
+// ## 为什么附件算一个信号
+//
+// 真实账单邮件的形态是「主题写月度对账单、金额只印在附件 PDF 里」
+// （见 ExtractInvoiceLoose 的注释）。那种邮件正文里本来就没有发票号，
+// 但它也不是发票；反过来，若它确实带着**发票类**附件（PDF/图片/XML），
+// 说明对方是当凭证发的，仍应建档交给采集器。判据保持与
+// ExtractInvoiceLoose 的 hasInvoiceAttachment 同源。
+//
+// ## 风险已用真实数据量化
+//
+// 收紧前准入门放行 7 封、最终建档 2 封（1 真 + 1 幽灵）。被放行但在
+// invoice.go 门槛处丢弃的 5 封逐个复核（2026-10-02）：
+//
+//	Xiaomi MiMo API 开放平台扣款成功通知   交易通知    非发票
+//	所需操作：AWS 账户提示                 发票词      非发票（操作提醒）
+//	Amazon Web Services Account Alert     对账单词    非发票（告警）
+//	AWS 账户提醒                           对账单词    非发票（提醒）
+//	来自 Apple 西湖商务团队的问候          发票词      非发票（商务拓展信）
+//
+// 5 封里 **0 封是真发票**，收紧的误杀在当前真实数据上为 0。
+func admitDebtNotice(joined string, hasInvoiceAttachment bool) bool {
+	if !reDebtNoticeShape.MatchString(joined) {
+		return true // 不是债务通知，行为不变
+	}
+	// 带真实发票语义才放行。
+	return hasInvoiceAttachment || reInvoiceNo.MatchString(joined) || reTaxNo.MatchString(joined)
+}
+
 // classifyInvoiceKind 按关键词判断票据种类。
 func classifyInvoiceKind(text string) string {
 	t := strings.ToLower(text)
@@ -581,6 +630,12 @@ func ExtractInvoiceLoose(e Email, bodyText string, hasInvoiceAttachment bool) (*
 		joined = subject + "\n" + snippet + "\n" + bodyText
 	}
 	if !invoiceKeywordHit(joined) {
+		return nil, false
+	}
+	// 债务通知形态（信用卡/银行对账单、还款提醒）额外要求真实发票语义。
+	// 详见 admitDebtNotice 的注释——那是 2026-10-02 真实库里那笔
+	// 「amount=58000（其实是信用额度）」幽灵发票的根因。
+	if !admitDebtNotice(joined, hasInvoiceAttachment) {
 		return nil, false
 	}
 
