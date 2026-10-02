@@ -5,7 +5,7 @@
 // 设备上的 App 通过 `localStorage.pocket_api_base` 决定打向哪个后端
 // （`frontend/src/config/api-base.ts` 规则 1：用户显式覆盖优先于构建默认值，
 //  代码注释明说「用户显式填的地址不受影响，因为 adb reverse 开发流确实需要
-//  用户主动指定 localhost」）。实测（§4.103）：
+//  用户主动指定 localhost」）。实测（§4.113）：
 //   - 当前值 = http://127.0.0.1:18099，靠 adb reverse 打到并发会话的后端
 //   - 页面 https://localhost 可以直连 http://192.168.31.20:18101/healthz → 200
 //     （Capacitor WebView 允许 cleartext，混合内容没被拦）
