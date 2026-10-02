@@ -543,6 +543,17 @@ func (s *Store) InsertEmailIfNew(ctx context.Context, e Email) (inserted bool, e
 		//   - 其余列一律不更新。is_read / is_starred / category / ai_summary 都是
 		//     用户或分类流程已经算好的状态，重跑同步不能覆盖（DO UPDATE 若带上它们，
 		//     每轮同步都会把「已读」标回未读）。
+		//   - 2026-10-02 修正：importance / action_reason 改为「规则判出来才刷新」。
+		//     原来连它们也不刷新，于是「先收信、后配 rules」这条路是断的：规则在
+		//     fetcher 里算出的 importance=high 在 ON CONFLICT 分支被直接丢掉。
+		//     症状极具迷惑性——新邮件走 INSERT 有提醒，旧邮件走 DO UPDATE 永远补不上，
+		//     而用户唯一能让旧邮件重过一遍规则的办法（重置 last_synced_uid 重同步）
+		//     走的正是 ON CONFLICT。判据是 EXCLUDED 为空 = 这条规则没命中，此时必须
+		//     保留旧值，否则一次没配规则的重跑会把 AI 分类出的 importance 抹成空。
+		//   - category 刻意**不**加进来：label-category 只在入库时播种，之后由 AI
+		//     分类（SetClassificationScoped）拥有。若让规则在每次重跑时覆盖它，
+		//     规则就会反过来压过 AI 分类，与「AI 拥有分类结果」的既有语义相反。
+		//     这一条是有意的边界，不是遗漏。
 		//   - EXCLUDED.snippet 为空时保留旧值。DeriveSnippet 在「疑似整段 MIME
 		//     又剥不干净」时会返回空串（宁可空着也不把 MIME 转储还给用户）；
 		//     若直接赋值，一次同步就能把正常摘要刷成空白，这比留着旧 MIME 更糟。
@@ -551,7 +562,9 @@ func (s *Store) InsertEmailIfNew(ctx context.Context, e Email) (inserted bool, e
 		`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments, created_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 			 ON CONFLICT (id) DO UPDATE SET
-			   snippet = CASE WHEN EXCLUDED.snippet <> '' THEN EXCLUDED.snippet ELSE emails.snippet END
+			   snippet = CASE WHEN EXCLUDED.snippet <> '' THEN EXCLUDED.snippet ELSE emails.snippet END,
+			   importance = CASE WHEN EXCLUDED.importance <> '' THEN EXCLUDED.importance ELSE emails.importance END,
+			   action_reason = CASE WHEN EXCLUDED.action_reason <> '' THEN EXCLUDED.action_reason ELSE emails.action_reason END
 			 RETURNING (xmax = 0) AS inserted`,
 		e.ID, e.AccountID, defaultWorkspace(e.WorkspaceID), nullStr(e.MessageID), e.UID,
 		e.FromAddress, e.FromName, e.Subject, e.Snippet, e.Date,
