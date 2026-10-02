@@ -9,6 +9,11 @@
   <div class="view-root">
     <template v-if="mode === 'list'">
       <div v-if="loading" class="state">加载中…</div>
+      <div v-else-if="loadError" class="state" role="alert">
+        <p class="err-text">{{ loadError }}</p>
+        <p class="hint">这与「暂无摘要」是两回事：摘要可能已经生成，只是这次没拉下来。</p>
+        <button class="retry" @click="loadByMode()">重试</button>
+      </div>
       <div v-else-if="summaries.length === 0" class="state">
         <p>暂无摘要。</p>
         <p class="hint">每日 21:00 自动生成；缺数据时先确认 pockend 调度器在线。</p>
@@ -35,6 +40,11 @@
 
     <template v-else-if="mode === 'detail'">
       <div v-if="loading" class="state">加载中…</div>
+      <div v-else-if="loadError" class="state" role="alert">
+        <p class="err-text">{{ loadError }}</p>
+        <p class="hint">这与「尚未生成」是两回事：摘要可能已经生成，只是这次没拉下来。</p>
+        <button class="retry" @click="loadByMode()">重试</button>
+      </div>
       <div v-else-if="!summary" class="state">
         <p>{{ date }} 当日的摘要暂未生成。</p>
         <p class="hint">每日 21:00 cron 自动生成，或手动触发抓取后会触发总结。</p>
@@ -91,19 +101,33 @@ const date = computed(() => (route.params.date as string | undefined) || '')
 const loading = ref(true)
 const summaries = ref<DailySummary[]>([])
 const summary = ref<DailySummary | null>(null)
+// loadError 只在「请求真的失败了」时非空。
+//
+// 原先两个 catch 都是「把数据置空」，404 分支和非 404 分支殊途同归：
+// 网络错误、500、404 全部渲染成「暂无摘要 / 当日摘要暂未生成」。
+// 那个 if/else 本来就是想区分这两件事的（404 = 后端还没这个 endpoint，
+// 其它 = 真出问题了），但结果一模一样，区分是**死代码**。
+// 后果不只是缺提示：文案会主动误导——「暂未生成」会让用户以为今天还没跑 cron，
+// 于是去查调度器，而真正的原因是这次请求挂了。
+const loadError = ref('')
 
 async function loadList() {
   loading.value = true
+  // 必须先清错误态：模板里 v-else-if="loadError" 排在空态和列表**之前**，
+  // 不清的话失败后点「重试」即使成功，错误分支仍然胜出，列表不会渲染 ——
+  // 重试按钮看起来完全没反应。
+  loadError.value = ''
   try {
     const res = await emailApi.listSummaries()
     summaries.value = res.summaries || []
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) {
-      // 后端 endpoint 尚未实现 → 空列表
+      // 后端 endpoint 尚未实现 → 空列表（这是「真的没有」，不是失败）
       summaries.value = []
     } else {
       console.warn('[email] 拉取摘要列表失败:', e)
       summaries.value = []
+      loadError.value = '摘要列表加载失败'
     }
   } finally {
     loading.value = false
@@ -112,16 +136,18 @@ async function loadList() {
 
 async function loadDetail(target: string) {
   loading.value = true
+  loadError.value = ''
   summary.value = null
   try {
     summary.value = await emailApi.getSummary(target)
   } catch (e) {
     if (e instanceof ApiError && (e.status === 404 || e.status === 400)) {
-      // 未生成 → 友好提示
+      // 未生成 → 友好提示（这是「真的没有」）
       summary.value = null
     } else {
       console.warn('[email] 拉取摘要详情失败:', e)
       summary.value = null
+      loadError.value = target + ' 的摘要加载失败'
     }
   } finally {
     loading.value = false
@@ -182,6 +208,16 @@ onMounted(loadByMode)
 <style scoped>
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
 .hint { font-size: var(--text-sm); color: var(--text-muted); margin-top: var(--space-2); }
+.err-text { color: var(--danger); font-weight: 600; }
+.retry {
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border-default, var(--text-muted));
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
 
 .summary-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .summary-card {

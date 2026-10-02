@@ -18,7 +18,8 @@
     "error": "Error",
     "warning": "Warning",
     "info": "Info",
-    "close": "Close"
+    "close": "Close",
+    "retry": "Retry"
   },
   "app": {
     "title": "Redclaw",
@@ -60,7 +61,8 @@
     "localAgent": "Local Agent",
     "home": "Home",
     "study": "Study",
-    "flashcards": "Flashcards"
+    "flashcards": "Flashcards",
+    "messages": "Messages"
   },
   "routes": {
     "login": "Sign in",
@@ -371,6 +373,14 @@
       "title": "Inbox",
       "empty": "Inbox is empty",
       "advance": "Advance"
+    },
+    "source": {
+      "note": "Note",
+      "email": "Email",
+      "rss": "RSS",
+      "meeting": "Meeting",
+      "chat": "Chat",
+      "manual": "Manual"
     }
   },
   "email": {
@@ -440,12 +450,71 @@
     "empty": "Nothing collected yet. Use \"Add to learning\" on a note, email or RSS item.",
     "advance": "Start studying"
   },
-  "source": {
-    "note": "Note",
-    "email": "Email",
-    "rss": "RSS",
-    "meeting": "Meeting",
-    "chat": "Chat",
-    "manual": "Manual"
+  "notesHub": {
+    "title": "Notes",
+    "filter": {
+      "all": "All",
+      "manual": "Notes",
+      "meeting": "Meetings",
+      "pkm": "PKM notes"
+    },
+    "action": {
+      "newNote": "New note",
+      "startMeeting": "Start meeting",
+      "record": "Record a note"
+    },
+    "link": {
+      "allNotes": "All notes",
+      "allMeetings": "All meetings",
+      "allPkm": "Open PKM"
+    },
+    "empty": {
+      "title": "No notes yet",
+      "hint": "Tap the mic to capture your first note, or start a meeting",
+      "filtered": "Nothing in this source yet"
+    },
+    "meta": {
+      "voice": "Voice",
+      "pending": "Processing",
+      "minutes": "{count} min",
+      "hoursMinutes": "{hours} h {minutes} min"
+    },
+    "count": {
+      "notes": "{count} notes",
+      "meetings": "{count} meetings"
+    }
+  },
+  "messagesHub": {
+    "title": "Messages",
+    "filter": {
+      "all": "All",
+      "email": "Email",
+      "rss": "Feeds",
+      "task": "Tasks"
+    },
+    "action": {
+      "markAllRead": "Mark all read",
+      "openMail": "Open mail",
+      "manageFeeds": "Manage feeds"
+    },
+    "empty": {
+      "title": "Nothing new",
+      "hint": "Important mail, subscribed news and task updates land here"
+    },
+    "badge": {
+      "important": "Important"
+    },
+    "meta": {
+      "from": "From {name}",
+      "suggestedAction": "Suggested: {action}"
+    },
+    "unreadBadge": "{count} unread",
+    "partialFailure": "Some sources failed to load: {sources}"
+  },
+  "timefmt": {
+    "justNow": "just now",
+    "minutesAgo": "{count} min ago",
+    "hoursAgo": "{count} h ago",
+    "daysAgo": "{count} d ago"
   }
 }

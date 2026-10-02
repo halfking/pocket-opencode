@@ -8,17 +8,20 @@
       <span class="priority-chip" :class="task?.priority">
         {{ priorityText(task?.priority) }}
       </span>
-      <h1 class="title">{{ task?.title || '加载中...' }}</h1>
+      <h1 class="title">{{ task?.title || (loadError ? '任务不可用' : '加载中...') }}</h1>
       <span class="status-chip" :class="task?.status">
         {{ statusText(task?.status) }}
       </span>
     </div>
 
+    <!-- 加载失败必须看得见。少了这一块，失败会伪装成一个正常的任务页。 -->
+    <p v-if="loadError" class="load-error" role="alert">{{ loadError }}</p>
+
     <!-- Description -->
     <p v-if="task?.description" class="desc">{{ task.description }}</p>
 
     <!-- Stats strip -->
-    <div class="stats-strip">
+    <div v-if="task" class="stats-strip">
       <div class="stat">
         <span class="stat-icon">💬</span>
         <span class="stat-val">{{ task?.sessionCount || 0 }}</span>
@@ -37,7 +40,10 @@
     </div>
 
     <!-- Action Bar -->
-    <div class="action-bar">
+    <!-- 整条都用 v-if="task" 兜住：task 为 null 时 task?.status 的比较结果
+         （undefined !== 'active'）为真，按钮会渲染出来却什么都不做。
+         失败态由上面的 loadError 承担，这里不该再摆一排假控件。 -->
+    <div v-if="task" class="action-bar">
       <button
         v-if="task?.status !== 'active'"
         class="action-btn resume"
@@ -70,6 +76,7 @@
     <TaskCollaborationPanel v-if="task?.id" :task-id="task.id" />
 
     <TaskSessionPanel
+      v-if="task"
       :current="bundle.current"
       :historical="bundle.historical"
       :local-only="bundle.localOnly"
@@ -132,6 +139,19 @@ const { confirm } = useConfirm()
 const toast = useToast()
 
 const task = ref<Task | null>(null)
+// loadError 必须与 task 分开，不能靠 task === null 兼表「加载中」和「加载失败」。
+//
+// 实测（2026-10-03 真机，GET /api/tasks/:id 返回 404）：原来这两种情况渲染
+// **完全一样** —— 标题都是「加载中...」，统计条都是 0 / 「-」。
+// 更糟的是 v-if="task?.status !== 'active'" 在 task 为 null 时求值为 true
+// （undefined !== 'active'），于是 ▶恢复 / ✅完成 连同无条件的 📎附加 / 🗑
+// 四个按钮照常渲染；点下去却被 confirmDelete / updateStatus 开头的
+// if (!task.value) return 静默吞掉。
+//
+// 结果是：一条**不存在**的任务，呈现为一个看起来完全正常、按钮齐全、
+// 但按什么都没反应的详情页。对照 /gateway/:nodeId 加载失败会明确显示
+// 「加载网关信息失败」——所以这是这一处漏了，不是全局约定。
+const loadError = ref('')
 const bundle = ref<TaskSessionBundle>({
   current: [],
   historical: [],
@@ -169,13 +189,24 @@ async function loadBundle(taskId: string) {
 
 async function loadTask() {
   const taskId = route.params.id as string
-  if (!taskId) return
+  loadError.value = ''
+  // 原来这里是 `if (!taskId) return` —— 早退后没有任何状态变化，标题会永远
+  // 停在「加载中...」，和「加载失败」长得一模一样。缺 id 也是一种要说出口的状态。
+  if (!taskId) {
+    task.value = null
+    loadError.value = '缺少任务 ID'
+    return
+  }
   try {
     task.value = await api.getTask(taskId)
     await loadBundle(taskId)
   } catch (e) {
     console.error('Failed to load task:', e)
     task.value = null
+    // 404 与其它失败对用户是两件事：一个是「没了」，一个是「再试试」。
+    // 不区分就会把网络抖动也说成任务被删，反过来也一样误导。
+    const status = (e as { status?: number })?.status
+    loadError.value = status === 404 ? '任务不存在或已被删除' : '任务加载失败，请重试'
   }
 }
 
@@ -297,6 +328,16 @@ function formatDate(d?: string): string {
 .desc {
   font-size: var(--text-smd);
   color: var(--text-secondary);
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+.load-error {
+  font-size: var(--text-smd);
+  color: var(--danger, #d93025);
+  background: var(--danger-bg, rgba(217, 48, 37, 0.08));
+  border-radius: var(--radius-sm, 6px);
+  padding: 10px 12px;
   margin: 0 0 12px;
   line-height: 1.5;
 }

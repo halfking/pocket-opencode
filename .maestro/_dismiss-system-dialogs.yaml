@@ -15,17 +15,26 @@
 #   MIUI 对同一提示只弹一次，第二次起这里就是纯开销（~1s）。
 appId: com.kaixuan.opencode.pocket
 ---
-- runFlow:
-    when:
-      visible: "我知道了"
-    commands:
-      - tapOn: "我知道了"
+# ⚠️ 等待必须有上界，否则这步会把整轮 run 无限期挡住。
+# 2026-10-03 在 vivo V2436A（Android 16）上实测：`runFlow: when: visible:` 在弹窗
+# 永远不出现时（MIUI 的「我知道了」是 Xiaomi 独有的）会一直等——**为了等一个属于
+# 别的厂商的提示，把真正要跑的 flow 挡住**。「点不到就跳过」只有等待有上界时才是真的。
+#
+# 为什么用 extendedWaitUntil + optional tapOn，而不是 `runFlow: when:`：
+# runFlow 不接受 timeout 属性（Maestro 2.11 实测报
+# `Unknown Property: timeout`），而 extendedWaitUntil 原生带 timeout，
+# 超时后 optional 的 tapOn 会安静跳过。
+- extendedWaitUntil:
+    visible: "我知道了"
+    timeout: 5000
+- tapOn:
+    text: "我知道了"
+    optional: true
 
 # MIUI 另有「允许通知」等一次性系统弹，同类处理。
-- runFlow:
-    when:
-      visible: "允许|Allow"
-    commands:
-      - tapOn:
-          text: "允许|Allow"
-          optional: true
+- extendedWaitUntil:
+    visible: "允许|Allow"
+    timeout: 5000
+- tapOn:
+    text: "允许|Allow"
+    optional: true

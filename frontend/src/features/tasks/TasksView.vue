@@ -29,6 +29,19 @@
         @click="onToggleQuickPrompt"
       >
         <span class="material-symbols-outlined" aria-hidden="true">forum</span>
+        <!-- sr-only 的文字子节点不是冗余，是**唯一**能让读屏和 UI 自动化
+             拿到这个名字的东西。aria-label 在这个组合下会被丢掉：
+             button 带 aria-pressed ⇒ Chromium 把 role 算成 button，但
+             Android 桥接层把它映射成 android.widget.ToggleButton，
+             而**该桥接只保留来自内容子节点的文字，丢掉纯 aria-label**。
+             2026-10-03 vivo V2436A / Android 16 实测：改之前 uiautomator
+             dump 出来是 ToggleButton{text='', contentDescription=''}，
+             读屏播报为空、Maestro 永远 assert 不到「快速提问」；
+             加了这个非 aria-hidden 的文字节点后，同一棵树里
+             ToggleButton{text='快速提问'}，断言立刻成立。
+             Chromium 侧两种写法算出的 name 都是「快速提问」，所以别拿
+             DevTools 的 a11y 面板当判据——它看不到这一层丢失。 -->
+        <span class="sr-only">快速提问</span>
       </button>
       <button
         class="triage-pill"
@@ -2237,5 +2250,19 @@ function timeAgo(dateStr?: string): string {
 .ctx-btn.danger {
   color: var(--danger);
   border-color: var(--danger-bg);
+}
+/* 只给读屏/自动化看的文字节点。见模板里那段注释：aria-label 在
+   aria-pressed 按钮上会被 Android 桥接丢掉，必须有一个真实的文字子节点。
+   规则与 BottomNav/MessagesHubView/PromptOptimizeField 保持一致。 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 </style>
