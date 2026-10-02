@@ -44,16 +44,42 @@ func TestDiagRealInvoiceExtraction(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("parse dsn: %v", perr)
 	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = os.Getenv("POCKET_REAL_MAIL_SCHEMA") + ",public"
-	if cfg.ConnConfig.RuntimeParams["search_path"][0] == ',' {
-		cfg.ConnConfig.RuntimeParams["search_path"] = "opencode_pocket,public"
+	// 【2026-10-02 修正】原来写的是
+	//     cfg.ConnConfig.RuntimeParams["search_path"] = os.Getenv("POCKET_REAL_MAIL_SCHEMA") + ",public"
+	//     if cfg.ConnConfig.RuntimeParams["search_path"][0] == ',' { ... = "opencode_pocket,public" }
+	// 那个兜底靠「拼完看首字符是不是逗号」来发现环境变量没设——脆弱且难读：
+	// 变量真被设成 ",public" 或以逗号开头时同样会误判。
+	// 改成先取值再判空，意图直白。
+	schema := os.Getenv("POCKET_REAL_MAIL_SCHEMA")
+	if schema == "" {
+		schema = "opencode_pocket" // 本文件的缺省就是生产 schema
 	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
 	defer pool.Close()
 
+	// 2026-10-02 补：当场验证 search_path 确实落在目标 schema 上。
+	//
+	// 覆盖式设置（RuntimeParams）只有单一来源，不像 DSN 拼接那样有
+	// 「pgx 取第一个同名参数」的歧义；但「以为钉住了」正是本仓库
+	// search_path 缺陷家族的特征（见 diag_merge_exec_test.go 与
+	// reminder_notified_diag_test.go 的注释），所以读回来确认一次。
+	//
+	// 代价是每次诊断多一个 round trip；收益是打错库时**立刻**报出
+	// schema 名，而不是扫到空集后输出误导性结论。
+	var resolvedSchema string
+	if err := pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&resolvedSchema); err != nil {
+		t.Fatalf("verify search_path: %v", err)
+	}
+	if resolvedSchema != schema {
+		t.Fatalf("search_path 未生效：期望 %q，连接实际落在 %q。**拒绝继续**"+
+			"——本诊断的全部价值在于「和实现看到同一批数据」，"+
+			"打到别的库会输出误导性结论。", schema, resolvedSchema)
+	}
+	t.Logf("search_path verified: current_schema() = %q", resolvedSchema)
 	rows, qerr := pool.Query(ctx, `
 		SELECT e.id, COALESCE(e.subject,''), COALESCE(e.snippet,''), COALESCE(e.from_address,'')
 		FROM emails e
