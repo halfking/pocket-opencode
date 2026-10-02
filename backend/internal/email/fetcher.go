@@ -497,9 +497,26 @@ func findBodySection(sections []imapclient.FetchBodySectionBuffer) ([]byte, erro
 }
 
 // fetchSnippetOnConnected 在已建立的 IMAP 连接上按 UID 单封拉 BODY[TEXT]
-// （Peek，不带 partial），返回截断后的 snippet；任何失败都返回空串——调用方
-// （Sync 循环）只是补齐摘要，不应因摘要失败丢邮件。
-func (f *Fetcher) fetchSnippetOnConnected(client *imapclient.Client, uid imap.UID) string {
+// （Peek，不带 partial），返回截断后的 snippet 与「正文里有没有发票下载链接」。
+// 任何失败都返回 ("", false)——调用方（Sync 循环）只是补齐摘要，不应因摘要
+// 失败丢邮件。
+//
+// ## 为什么第二返回值不是从 snippet 里找链接（q3，2026-10-04 实测）
+//
+// 最初的想法是「snippet 里已经有正文了，顺带扫一下链接就行」。实测否掉了它：
+// snippet 走 DeriveSnippet，而 DeriveSnippet 对 HTML 正文会调 htmlToText，
+// 后者用 reTag 把标签**整个删掉**——
+//
+//	<a href="https://inv.example.com/download/abc123.pdf">点击下载发票</a>
+//	→ "点击下载发票"
+//
+// URL 整个消失（临时测试实测：snippet 里含 "inv.example.com" = false，
+// extractInvoiceURLs 命中数 = 0）。所以必须扫**原始 MIME 字节**，
+// 那才是 href 还在的地方。
+//
+// 这条路径不新增任何网络请求：BODY[TEXT] 本来就为了取 snippet 拉了一次，
+// 同一份字节上多跑一遍正则而已。
+func (f *Fetcher) fetchSnippetOnConnected(client *imapclient.Client, uid imap.UID) (string, bool) {
 	uidSet := imap.UIDSet{}
 	uidSet.AddNum(uid)
 	messages, err := client.Fetch(uidSet, &imap.FetchOptions{
@@ -511,19 +528,22 @@ func (f *Fetcher) fetchSnippetOnConnected(client *imapclient.Client, uid imap.UI
 	}).Collect()
 	if err != nil {
 		log.Printf("[email/fetcher] snippet fetch uid=%d: %v", uid, err)
-		return ""
+		return "", false
 	}
 	if len(messages) == 0 {
-		return ""
+		return "", false
 	}
 	for _, bs := range messages[0].BodySection {
 		if len(bs.Bytes) > 0 {
 			// 2026-10-01 真机审计：原来直接取原始字节，用户会看到整段 MIME
 			//（--part_xxx / Content-Type: …）或字面 HTML 标签。改走 DeriveSnippet。
-			return DeriveSnippet(bs.Bytes, 500)
+			//
+			// hasInvoiceLink 必须用 bs.Bytes（原始 MIME），**不能**用 DeriveSnippet
+			// 的返回值 —— 理由见函数头。
+			return DeriveSnippet(bs.Bytes, 500), bodyHasInvoiceLink(bs.Bytes)
 		}
 	}
-	return ""
+	return "", false
 }
 
 // Sync 同步一个账户的新邮件。返回 (新增邮件数, error)。

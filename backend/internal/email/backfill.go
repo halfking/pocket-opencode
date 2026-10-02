@@ -259,7 +259,14 @@ func (f *Fetcher) emailFromMessage(
 	}
 
 	var snippet string
+	hasInvoiceLink := false
 	for _, bs := range m.BodySection {
+		// q3：正文里的发票下载链接也算附件。判定必须在**原始 MIME** 上做 ——
+		// DeriveSnippet 会把 HTML 标签整个删掉，href 里的 URL 随之消失
+		// （见 body_invoice_link.go 文件头与 fetchSnippetOnConnected 的注释）。
+		if bodyHasInvoiceLink(bs.Bytes) {
+			hasInvoiceLink = true
+		}
 		snippet = DeriveSnippet(bs.Bytes, 500)
 		break
 	}
@@ -267,7 +274,7 @@ func (f *Fetcher) emailFromMessage(
 		if onStep != nil {
 			onStep(fmt.Sprintf("snippet uid=%d", uid))
 		}
-		snippet = f.fetchSnippetOnConnected(client, uid)
+		snippet, hasInvoiceLink = f.fetchSnippetOnConnected(client, uid)
 	}
 
 	messageID := ""
@@ -301,7 +308,12 @@ func (f *Fetcher) emailFromMessage(
 		// 批量 fetch 只带 envelope，附件信息要靠 BODYSTRUCTURE；
 		// 内联图（cid:）不算附件。bs==nil（POP3 / 历史补采无 BodyStructure）时
 		// 保守返回 false，POP3 路径随后会用真实解析结果覆盖（见 fetcher.go）。
-		HasAttachments: bodyStructureHasAttachment(m.BodyStructure),
+		//
+		// q3：再或上「正文里有发票下载链接」。电子发票邮件大量把发票放在链接里、
+		// 邮件本身零附件，只看 BODYSTRUCTURE 时这类邮件的 📎 永不亮 ——
+		// 而它们恰恰是最该被一眼看见的那类。两条口径是「或」不是「或替代」：
+		// 带真附件的照旧置位，只有链接的也置位。
+		HasAttachments: bodyStructureHasAttachment(m.BodyStructure) || hasInvoiceLink,
 	}
 	em, pending := applyInlineRules(em, parsedRules, m.Envelope.Date)
 	return em, true, pending

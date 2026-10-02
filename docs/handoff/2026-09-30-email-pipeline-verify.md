@@ -11210,3 +11210,100 @@ BODYSTRUCTURE 兼容性未验（Docker daemon 未运行）。
 
 阿里云白名单 `monitor.aliyun.com` 已在代码里加上但**未获产品确认**，
 代码注释中显式标注了这一点。
+
+---
+
+## §7er q2/q3：读路径补齐与链接附件判定（2026-10-04）
+
+合并落地后立刻实施 q2/q3。两条都不是「新功能」，是**已有机制的读路径缺失**
+与**判据口径过窄**。
+
+### q2：action_reason 写路径齐了、读路径从来没读过
+
+写路径早就齐了（applyInlineRules / SetClassificationWithReasonScoped /
+InsertEmail 的 ON CONFLICT 都有 `CASE WHEN ... <> '' THEN ... ELSE 旧值 END`），
+但 `scanEmail` 不 SELECT 这一列、`GetEmailByIDScoped` 的 SELECT 里也没有。
+于是无论库里有没有值，列表页与详情页拿到的 ActionReason 恒为空串 ——
+接口 200、字段少一个、界面少一行文案，没有任何错误信号。
+
+「真库 122/122 为空」是**另一处**问题（上游 kxmemory DTO 曾丢字段，已修）。
+读路径缺失是独立的第二处：即使有值也显示不出来。两条都要修。
+
+前端必须整条链打通，否则读到了也显示不出来：DTO → local_emails 建表
+**与 COLUMN_MIGRATIONS**（已存在的本地库不会因为改了 CREATE TABLE 而补列，
+SQLite 的 `CREATE TABLE IF NOT EXISTS` 对老库是 no-op）→ INSERT → rowToEmail
+→ WS 推送 → 卡片渲染。
+
+两处写入都用 `COALESCE(excluded.action_reason, local_emails.action_reason)`：
+这一轮没带理由不代表判定变了，抹掉会让已判为重要的邮件突然失去「为什么」。
+
+展示只挂在 `importance=high` 上：判成 low/normal 时 action_reason 解释的是
+「为什么不重要」，没有行动价值，全量展示会变成每张卡片一行噪音。
+
+**顺带修了一条护栏豁免**：`readback_guard_test.go` 的
+`readbackGuardedFields["ActionReason"]` 此前是**惰性的**（文件头自己写着：
+唯一赋值点在已豁免的 Sync 里，负控去掉它全仓仍绿）。q2 给 `scanEmail` 加了
+赋值，豁免立刻报红。那不是漏查列，是判据的固有盲区——`scanEmail` 是纯扫描
+函数，SQL 在调用方。豁免里写明了成因与「读路径由哪个文件的哪条用例负责」，
+并明确写了**不要**把它当读路径已被守住的证据。
+
+### q3：正文里的发票下载链接也算附件——先被一个实测否掉了「顺手做」
+
+**最初的设想是错的**：snippet 里已经有正文了，顺带扫一下链接就行。
+实测否掉了它：
+
+    <a href="https://inv.example.com/download/abc123.pdf">点击下载发票</a>
+    → DeriveSnippet → "点击下载发票"
+
+`htmlToText` 用 `reTag` 把标签**整个删掉**，URL 随之消失
+（实测：snippet 含 "inv.example.com" = false，extractInvoiceURLs 命中数 = 0）。
+
+所以判定必须作用在**原始 MIME 字节**上。好在 `fetchSnippetOnConnected`
+本来就为了取 snippet 拉过一次 BODY[TEXT]，同一份字节上多跑一遍正则，
+**零新增网络请求**。
+
+**判据不是「有链接就算」**：`extractInvoiceURLs` 收集所有非跳过链接，
+营销邮件的「了解更多」也会命中。用了 `scoreInvoiceURL` 打分，但第一版
+`>= 20` 的阈值**误杀了两个真实平台**（实测）：
+
+    https://fapiao.example.cn/detail?id=7788   score=10
+    https://etax.example.gov.cn/print/556677   score=10
+
+原因是 `scoreInvoiceURL` 对每个命中的 hint 一律给 10 分，**不区分完整词与
+子串**——`inv` 既是 fapiao/etax/invoice 的组成部分，也是 inviter/invite 的
+组成部分。分数这个维度**不携带专属性信息**。
+
+降阈值到 10 更糟：`https://example.com/inviter/join` 与 fapiao 平台同分，
+每一封带推广链接的营销邮件都会亮 📎。
+
+最终判据改成两条 OR：
+- 命中**专有词**（fapiao / etax / invoice / fapiaoquery / invoicecenter），
+  判据是**词边界**而非子串——`fapiao.example.cn` 前面是 `/` 算独立词，
+  `inviter` 里 `inv` 紧挨字母不算。
+- 或 `scoreInvoiceURL >= 20`（.pdf 后缀 / 多个弱特征叠加）。
+
+**真实库里没有任何链接来源的发票样本**（127 封邮件、2 行发票都是附件路径），
+所以这个阈值**没有真实数据支撑**，是按上述推理定的。这是本条最弱的一环，
+已写进代码注释；接入真实样本后应复核 `strongInvoiceHints` 与阈值。
+
+### 两个源码级护栏，以及它们暴露的一个盲区
+
+`body_invoice_link_test.go`（7 条）覆盖判据本身。**但它转绿不能证明判据被
+接线**：实测把 `bodyHasInvoiceLink(bs.Bytes)` 改成
+`bodyHasInvoiceLink([]byte(DeriveSnippet(...)))`（本功能最核心的约束被破坏）
+时，那 7 条**全绿**——因为没有一条断言会去看 fetcher.go。
+
+补了 `body_invoice_link_wiring_test.go` 两条源码级接线断言，负控实测转红：
+
+    bodyHasInvoiceLink 的实参用了 DeriveSnippet 的结果：...
+    htmlToText 会把 href 里的 URL 整个删掉，链接判据将恒为 false
+
+写这条护栏时踩了一个坑，值得记：**`ast.Fprint(&b, fset, node, nil)` 输出的
+不是 Go 语法，而是带点线的调试格式**（`579 . . . . Name: "bodyHasInvoiceLink"`），
+于是所有 `strings.Contains(src, "bodyHasInvoiceLink(")` 恒为 false，护栏恒红，
+而报错信息是「q3 的判据没接线」——**把排查方向带到了错误的文件**
+（fetcher.go / backfill.go 两处接线其实都在）。正确写法是
+`printer.Fprint(&b, fset, fn.Body)`。判据恒红且被检查的代码看起来确实有那行
+时，先把判据的中间产物打印出来看。
+
+同理：护栏恒红时先问「判据有没有可能恒假 / 恒不可匹配」，再问「实现是不是坏了」。

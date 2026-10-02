@@ -231,7 +231,8 @@ func TestDiagIMAPStepTiming(t *testing.T) {
 		}
 		uid := u
 		step(fmt.Sprintf("snippet uid=%d", uid), func() error {
-			s := f.fetchSnippetOnConnected(client, uid)
+			// 第二返回值是 q3 新增的「正文里有发票下载链接」，这个诊断不关心它。
+			s, _ := f.fetchSnippetOnConnected(client, uid)
 			if s == "" {
 				return fmt.Errorf("空 snippet")
 			}
