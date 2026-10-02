@@ -127,6 +127,20 @@ type Config struct {
 	// 垃圾规则没在真实邮箱上验证过，先看判定结果，确认无误再置 false。
 	EmailSpamDryRun        bool
 	EmailServerPipelineURL string // POCKET_EMAIL_SERVER_PIPELINE_URL：server 模式的远端流水线 URL
+	// POCKET_EMAIL_CLASSIFY_VIA_GATEWAY：**默认 false**。
+	//
+	// true 时每日流水线的第 1.6 步用已配置的 LLM 网关给未归类邮件分类
+	// （需求 4「定时…然后进行处理」的必要环节：importance 是重要提醒的唯一
+	// 入口，而它只在分类里被写）。
+	//
+	// 为什么默认关：这条开关会**自动产生真实 LLM 调用与费用**。需求原文
+	// 没有说要每天自动花网关额度，这条属于产品取舍，不该由默认值替用户
+	// 决定——和 POCKET_EMAIL_SPAM_DRYRUN 默认 true 是同一类安全阀的思路，
+	// 但方向相反：那个是「别动用户邮件」，这个是「别替用户花钱」。
+	//
+	// 开着但网关没配时不会静默：流水线会走 Pusher/Notifier 之外的路径并在
+	// 报告里记下原因（见 email.Pipeline 的 ClassifySkip 字段）。
+	EmailClassifyViaGateway bool
 
 	// 飞书出站（发票推送）：复用回调的 AppID/Secret，另需接收群 chat_id
 	FeishuInvoiceChatID string // POCKET_FEISHU_INVOICE_CHAT_ID：发票文件推送目标群
@@ -287,6 +301,8 @@ func Load() Config {
 		EmailExecutionMode:     getEnv("POCKET_EMAIL_EXECUTION_MODE", "local"),
 		EmailSpamDryRun:        getEnv("POCKET_EMAIL_SPAM_DRYRUN", "true") == "true",
 		EmailServerPipelineURL: getEnv("POCKET_EMAIL_SERVER_PIPELINE_URL", ""),
+		// 显式写 "true" 才开：这条会每天自动发真实 LLM 请求，默认必须是关。
+		EmailClassifyViaGateway: getEnv("POCKET_EMAIL_CLASSIFY_VIA_GATEWAY", "") == "true",
 		// 飞书出站（发票推送）
 		FeishuInvoiceChatID: getEnv("POCKET_FEISHU_INVOICE_CHAT_ID", ""),
 		FeishuInvoiceFolderToken: getEnv("POCKET_FEISHU_INVOICE_FOLDER_TOKEN", ""),

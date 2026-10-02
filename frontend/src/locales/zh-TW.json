@@ -173,6 +173,7 @@
     "newVersionAvailable": "發現新版本 v{version}！\n\n更新內容:\n{changelog}",
     "alreadyLatest": "目前已是最新版本！",
     "checkUpdateFailed": "檢查更新失敗，請稍後重試",
+    "versionConfigUnavailable": "伺服器版本設定不可用，無法判斷是否有新版本。請管理員檢查 config/version.json。{detail}",
     "redclawIntegration": "RedClaw 整合",
     "redclawConnected": "已連線",
     "redclawMisconfigured": "已設定 · 連線異常",

@@ -1,19 +1,27 @@
 package server
 
 import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 // loadVersionConfig 的默认路径是相对**进程工作目录**的，不是相对可执行文件。
 // 这不是学术问题：两个启动脚本（start-pocketd-pg.ps1 /
 // start-pocketd-email-verify.ps1）都从仓库根启 pocketd，原来的实现因此读不到
-// backend/config/version.json，而失败分支**静默回落默认值**——App 报 1.2.0，
+// backend/config/version.json，而失败分支曾经**静默回落默认值**——App 报 1.2.0，
 // 日志里只有一行 Warning，没有任何东西指向「路径不对」。
 //
-// 所以这里钉住三件事：默认按 CWD 解析、环境变量优先于一切猜测、
-// 真的找不到时才回落默认值。
+// 路径修好之后，回落本身也被去掉了：拿不到配置就返回 ErrVersionConfigNotFound，
+// 理由见 TestLoadVersionConfig_MissingReturnsErrorNotSilentDefaults。
+//
+// 这里钉住四件事：默认按 CWD 解析、环境变量优先于一切猜测、
+// 错误里带路径、缺失不回落；外加 HTTP 层真的把它翻成 503。
 func TestLoadVersionConfig_DefaultPathIsCWDRelative(t *testing.T) {
 	root := t.TempDir()
 	cfgDir := filepath.Join(root, "config")
@@ -67,17 +75,94 @@ func TestLoadVersionConfig_EnvVarWins(t *testing.T) {
 	}
 }
 
-func TestLoadVersionConfig_MissingFallsBackToDefaults(t *testing.T) {
-	// 这一条钉住「静默回落」这个已知行为本身：拿不到文件时**不报错**，
-	// 返回内置默认值。若将来有人改成返回 error，App 的更新检查会整个 500，
-	// 那比现在更难排查——所以要么保持现状、要么连同调用方一起改，并更新本用例。
-	t.Setenv("POCKET_VERSION_CONFIG_PATH", filepath.Join(t.TempDir(), "nope.json"))
+func TestLoadVersionConfig_MissingReturnsErrorNotSilentDefaults(t *testing.T) {
+	// 这一条**改写过**。原用例钉的是「缺失时静默回落默认值」：
+	//
+	//	拿不到文件时**不报错**，返回内置的 1.2.0 / build 2 / 一个写死的下载 URL。
+	//
+	// 那个行为不是「保守」，是**说谎**：回落值与实际发版毫无关系，于是配置路径
+	// 写错时（两个启动脚本都从仓库根启 pocketd，这正是当初的真实成因），
+	// 真实版本已经到 1.5.0 的用户会被告知「当前已是最新版本」。
+	// 一行 Warning 日志不会有人看，一个自信的假版本号会被所有人相信。
+	//
+	// 现在契约是返回 ErrVersionConfigNotFound，由 handleCheckUpdate 翻成 503。
+	// 下面的断言必须用 errors.Is，而不是 err != nil：调用方靠 Is 区分
+	// 「配置没配对」(503) 与「配置坏了」(500)，写不成 Is 就退化成 500 风暴。
+	missing := filepath.Join(t.TempDir(), "nope.json")
+	t.Setenv("POCKET_VERSION_CONFIG_PATH", missing)
 
 	v, err := (&Server{}).loadVersionConfig()
-	if err != nil {
-		t.Fatalf("缺失时按现状应回落默认值而不是返回 error，实际 err=%v", err)
+	if !errors.Is(err, ErrVersionConfigNotFound) {
+		t.Fatalf("缺失配置必须返回 ErrVersionConfigNotFound，实际 err=%v", err)
 	}
-	if v == nil || v.Version == "" {
-		t.Fatal("回落时必须返回一个非空 VersionInfo")
+	if v != nil {
+		t.Fatalf("错误路径上不得同时返回一个「兜底」VersionInfo，实际拿到 %+v —— "+
+			"调用方一旦误用这个值，就等于把假版本号又送回 App", v)
+	}
+	// 错误信息里必须带路径，否则排查者仍然只能猜。
+	if !strings.Contains(err.Error(), missing) {
+		t.Fatalf("错误信息必须含试过的路径 %q，实际 %q", missing, err.Error())
+	}
+}
+
+// 上面那条只保证 loadVersionConfig 的契约；这条保证契约**真的传到了 HTTP 层**。
+// 漏掉它就会出现「函数已经不回落了，但 handleCheckUpdate 还在 500」——
+// 用户看到的还是「检查更新失败」，只是失败原因变得更难猜。
+func TestHandleCheckUpdate_MissingConfigIs503WithDiagnosticBody(t *testing.T) {
+	t.Setenv("POCKET_VERSION_CONFIG_PATH", filepath.Join(t.TempDir(), "nope.json"))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/app/check-update?version=1.2.0", nil)
+	(&Server{}).handleCheckUpdate(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("配置缺失应是 503（部署问题），实际 %d body=%s", rr.Code, rr.Body.String())
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("错误响应也必须是 JSON：App 侧 checkUpdate() 会走 assertNotHTML，实际 Content-Type=%q", ct)
+	}
+	var body struct {
+		Error  string `json:"error"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("响应体不是合法 JSON: %v body=%s", err, rr.Body.String())
+	}
+	if body.Error != "version_config_not_found" {
+		t.Fatalf("错误码应可被前端/脚本识别，实际 %q", body.Error)
+	}
+	if !strings.Contains(body.Detail, "nope.json") {
+		t.Fatalf("响应体必须回带试过的路径，实际 %q", body.Detail)
+	}
+}
+
+// 反向：配置**在**时必须 200 且给出真实版本，不是 503。
+// 只写上一条的话，「永远 503」也能全绿。
+func TestHandleCheckUpdate_ValidConfigStillReturns200(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "version.json")
+	if err := os.WriteFile(cfg, []byte(`{"version":"1.5.0","buildNumber":9}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("POCKET_VERSION_CONFIG_PATH", cfg)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/app/check-update?version=1.2.0&build=2", nil)
+	(&Server{}).handleCheckUpdate(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("配置存在时必须 200，实际 %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		HasUpdate bool `json:"hasUpdate"`
+		Latest    *struct {
+			Version string `json:"version"`
+		} `json:"latest"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.HasUpdate || body.Latest == nil || body.Latest.Version != "1.5.0" {
+		t.Fatalf("必须按真实配置判定更新，实际 %s", rr.Body.String())
 	}
 }
