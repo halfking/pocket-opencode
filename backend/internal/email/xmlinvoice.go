@@ -211,8 +211,18 @@ func mergeXMLFields(inv *Invoice, f *XMLInvoiceFields) {
 	if inv.Amount == 0 {
 		inv.Amount = f.Amount
 	}
-	if inv.Seller == "" {
+	// 销售方：XML 里的 SellerName 是**开票方**（权威值），
+	// 而 inv.Seller 在兜底时可能是**发件地址**——那只是邮件经过了谁的服务器。
+	// 2026-10-03 真实数据实测：兜底成 noreply@toll.example 后，
+	// 规范文件名成了 `其他-noreply@toll.example-5.61-….pdf`，
+	// 需求原文 `{费用类型}-{对方单位}-{金额}-{日期}.pdf` 里的
+	// 「对方单位」直接是错的。
+	//
+	// 只覆盖**带兜底标记**的值：从正文「销售方：」或主题「来自XX的发票」
+	// 解析出来的单位名是真证据，不许被 XML 顶掉（那会丢掉正文里更精确的写法）。
+	if f.Seller != "" && (inv.Seller == "" || inv.sellerIsFallback) {
 		inv.Seller = f.Seller
+		inv.sellerIsFallback = false
 	}
 	if inv.Title == "" {
 		inv.Title = f.BuyerTitle
