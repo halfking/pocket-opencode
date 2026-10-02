@@ -82,6 +82,26 @@ func (s *Store) migrate() error {
 		created_at BIGINT NOT NULL
 	);
 
+	-- 2026-10-02：把「同步失败」变成**可查询的事实**，而不是只进 stdout。
+	--
+	-- 为什么必须加：last_synced_at **只在成功时写**（成功出口在
+	-- fetcher.go 的「无新邮件早退」「拉到邮件」「POP3 兜底」三处，任何失败
+	-- 出口都直接 return error 不碰它）。于是「账户没被调度到」和「账户每
+	-- 60 秒被轮询一次但每次都失败」在库里长得**一模一样**。
+	--
+	-- 真实代价（2026-10-02 实测）：huangxutao@kxpms.cn 的水位停在
+	-- 01:37:22 长达 19 小时，期间调度器每分钟都在轮询它、每次都失败，
+	-- 而**库里没有任何一处记录过这件事**——唯一的线索是进程 stdout，
+	-- 而那个进程的 stdout 没有落任何文件。不看水位就完全发现不了。
+	--
+	-- last_attempt_at 是关键：它让上面两种状态**可区分**——
+	--   · last_synced_at 陈旧 + last_attempt_at 在推进 + sync_failures>0
+	--     ⇒ 在轮询但一直失败（查 last_sync_error）
+	--   · 两个时间都陈旧 ⇒ 压根没被轮到（查调度器/进程）
+	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS last_attempt_at BIGINT NOT NULL DEFAULT 0;
+	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS last_sync_error TEXT NOT NULL DEFAULT '';
+	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS sync_failures INTEGER NOT NULL DEFAULT 0;
+
 	CREATE TABLE IF NOT EXISTS emails (
 		id TEXT PRIMARY KEY,
 		account_id TEXT NOT NULL,
@@ -808,6 +828,7 @@ func (s *Store) GetSyncStatus(ctx context.Context, userID string) ([]AccountSync
 func (s *Store) GetSyncStatusScoped(ctx context.Context, userID, workspaceID string) ([]AccountSyncStatus, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT a.id, a.display_name, a.email_address, a.last_synced_uid, a.last_synced_at, a.enabled,
+		       COALESCE(a.last_attempt_at, 0), COALESCE(a.last_sync_error, ''), COALESCE(a.sync_failures, 0),
 		       COALESCE((SELECT COUNT(*) FROM emails e WHERE e.account_id=a.id AND e.is_read=FALSE), 0)
 		FROM email_accounts a WHERE a.user_id=$1 AND a.workspace_id=$2 ORDER BY a.created_at`, userID, workspaceID)
 	if err != nil {
@@ -818,7 +839,8 @@ func (s *Store) GetSyncStatusScoped(ctx context.Context, userID, workspaceID str
 	for rows.Next() {
 		var st AccountSyncStatus
 		var uid, at sql.NullInt64
-		if err := rows.Scan(&st.AccountID, &st.DisplayName, &st.EmailAddress, &uid, &at, &st.Enabled, &st.PendingCount); err != nil {
+		if err := rows.Scan(&st.AccountID, &st.DisplayName, &st.EmailAddress, &uid, &at, &st.Enabled,
+			&st.LastAttemptAt, &st.LastSyncError, &st.SyncFailures, &st.PendingCount); err != nil {
 			return nil, err
 		}
 		if uid.Valid {
@@ -1405,8 +1427,42 @@ func (s *Store) SetAccountAuthTypeScoped(ctx context.Context, id, userID, worksp
 	return err
 }
 
+// UpdateSyncState 记录一次**成功**的同步。
+//
+// 它同时把 last_attempt_at 推进到与 last_synced_at 相同的时刻，并清空
+// last_sync_error / sync_failures —— 「尝试过且成功了」和「从没尝试过」
+// 在这两列上必须能区分开，否则连上了、跑了一轮、又坏掉的情况会被读成
+// 「一切正常，只是最近没新邮件」。
 func (s *Store) UpdateSyncState(ctx context.Context, id string, lastUID int64, lastAt int64) error {
-	_, err := s.pool.Exec(ctx, `UPDATE email_accounts SET last_synced_uid = $2, last_synced_at = $3 WHERE id = $1`, id, lastUID, lastAt)
+	_, err := s.pool.Exec(ctx, `
+		UPDATE email_accounts
+		SET last_synced_uid = $2,
+		    last_synced_at = $3,
+		    last_attempt_at = $3,
+		    last_sync_error = '',
+		    sync_failures = 0
+		WHERE id = $1`, id, lastUID, lastAt)
+	return err
+}
+
+// RecordSyncFailure 记录一次**失败**的同步尝试。
+//
+// last_synced_uid / last_synced_at 一律不动：失败没有推进过任何进度，
+// 改了就是谎报水位（而谎报出来的水位正是这次要解决的问题本身）。
+//
+// errText 会截断——错误串可能带上服务端返回的长文本，也可能含账号信息；
+// 这一列是给人看的状态，不是日志归档。
+func (s *Store) RecordSyncFailure(ctx context.Context, id string, errText string) error {
+	const maxErr = 500
+	if len(errText) > maxErr {
+		errText = errText[:maxErr] + "…(truncated)"
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE email_accounts
+		SET last_attempt_at = $2,
+		    last_sync_error = $3,
+		    sync_failures = sync_failures + 1
+		WHERE id = $1`, id, time.Now().Unix(), errText)
 	return err
 }
 

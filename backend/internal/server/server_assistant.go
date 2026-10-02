@@ -2155,6 +2155,12 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 			return s.emailFetcher.Sync(syncCtx, acc.ID)
 		}()
 		if ferr != nil {
+			// 落库：手工触发失败也要变成可查询的事实。定时链路在
+			// scheduler.tick 里也记，两条入口都记，缺一条就会出现
+			// 「只有定时失败查得到、手工失败查不到」这种半截可观测性。
+			if rerr := s.emailStore.RecordSyncFailure(r.Context(), acc.ID, ferr.Error()); rerr != nil {
+				log.Printf("[email/sync] record failure %s: %v", acc.ID, rerr)
+			}
 			log.Printf("[email/sync] account %s (%s): %v", acc.ID, acc.EmailAddress, ferr)
 			failed = append(failed, acc.EmailAddress)
 			continue
