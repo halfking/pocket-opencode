@@ -35,7 +35,7 @@
 appId: com.kaixuan.opencode.pocket
 ---
 # ---------- 0. 前置：harness 已真实登录，起点是 #/ai ----------
-# ⚠️ 2026-10-03：原先这里是 `- runFlow: _login.yaml`。但 _login.yaml 的登录走
+# ⚠️ 2026-10-02：原先这里是 `- runFlow: _login.yaml`。但 _login.yaml 的登录走
 #    Maestro 的 `inputText: ${POCKET_DEV_PASS}`，而 Maestro 实测把它展开成
 #    **字面量 "undefined"**（.maestro/_probe-env.yaml 坐实：框内容
 #    adminPWLEN-undefined）。登录已改由 scripts/maestro-run.mjs 的 preflight

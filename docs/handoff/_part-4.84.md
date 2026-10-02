@@ -18,7 +18,7 @@
 ## §4.84.1 先澄清一件事：那条解锁分支不是死代码
 
 我上一轮写「`_goto-pkm.yaml` 的 `${POCKET_MASTER}` 被阻塞」，但没验证它
-**会不会真的被触发**。2026-10-03 探针实测（`scripts/_probe-pkm.mjs`）：
+**会不会真的被触发**。2026-10-02 探针实测（`scripts/_probe-pkm.mjs`）：
 
 ```
 hashBefore = #/ai

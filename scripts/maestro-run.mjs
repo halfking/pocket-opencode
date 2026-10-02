@@ -46,7 +46,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 /**
  * 绑定一个 CDP 转发端口，返回 adb 实际分配到的端口号。
  *
- * 2026-10-03 真机实测的缺陷：原先这里是
+ * 2026-10-02 真机实测的缺陷：原先这里是
  *   `const port = 9500 + Math.floor(Math.random() * 300)`
  * 然后直接 forward。撞上已被占用的端口就抛
  *   `cannot bind listener: cannot bind to 127.0.0.1:9528 ... (10048)`
@@ -54,7 +54,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
  *
  * 后果分两种，差别很大：
  *   · 落在 assertFetchIntact 上 → 它 catch 后只打一句「未能判定，不阻断」，
- *     run 继续（2026-10-03 实测就是如此，run 仍然 exit=0）。
+ *     run 继续（2026-10-02 实测就是如此，run 仍然 exit=0）。
  *     也就是说**这个碰撞可以完全静默**：守卫没跑成，但没有人在乎，
  *     绿灯照出。
  *   · 落在 assertAppUsesReverseBase 或 CDP 登录块上 → preflight 直接崩，
@@ -63,7 +63,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
  * 修法不是「多随机几次然后重试」——那只是把概率推低，没有取消它；
  * 本机同时有别的会话在驱设备，端口是**共享可变状态**。
  * 而是让 adb 自己挑空闲端口：`forward tcp:0` 会由 adb 分配一个当前空闲的
- * 端口并把它打印出来。2026-10-03 实测：分配到 55704，`forward --list`
+ * 端口并把它打印出来。2026-10-02 实测：分配到 55704，`forward --list`
  * 里确实出现该条目。碰撞因此从「概率事件」变成「不可能」。
  *
  * 仍要校验返回值：端口号必须是正整数，否则说明 adb 的行为变了或输出被改，
@@ -380,13 +380,13 @@ async function assertDeviceReachesBackend() {
 /**
  * 守卫：让 App **真的**走 adb reverse 这条通道，并从 App 自己的网络栈验通。
  *
- * 2026-10-03 查出来的硬伤（此前所有轮次都建立在错前提上）：
+ * 2026-10-02 查出来的硬伤（此前所有轮次都建立在错前提上）：
  *   本文件上方三处注释都写着「App 的 API 基址是 http://127.0.0.1:18099」，
  *   assertBackendUp / assertDeviceReachesBackend 也都按这个前提去核对。
  *   但装机的那版 APK 是用 frontend/.env.android-dev 构的，而那个文件里是
  *     VITE_API_BASE=http://192.168.31.20:18099      ← **LAN 地址**
 //   实际生效的基址是 localStorage.pocket_api_base 优先于它（api-base.ts:4），
-//   而这个 key 是**上一轮调试遗留下来的、从来没人断言过**的值。2026-10-03
+//   而这个 key 是**上一轮调试遗留下来的、从来没人断言过**的值。2026-10-02
 //   真机读回时它是 http://localhost:18099 —— override 通道确实在起作用，
 //   所以初版写的「App 压根没走 reverse」是**错的**（已更正）。
 //
@@ -697,7 +697,7 @@ await resetAppAuth()
 /**
  * 守卫：确保本地 SQLCipher 库处于**已解锁**状态，并自证这个守卫不是恒真。
  *
- * 为什么要做（2026-10-03 真机实测）：
+ * 为什么要做（2026-10-02 真机实测）：
  *   本地库的 AES key 走 crypto.ts:53 initAppCrypto() 的 PBKDF2 派生，需要主密码。
  *   守卫只在「导航到依赖本地库的路由」那一刻才判定，所以：
  *     · 停在 #/ai 时**看不出**库锁着（#/ai 不依赖本地库）
@@ -718,7 +718,7 @@ await resetAppAuth()
  *   定位不依赖任何坐标。
  *
  * ⚠️ 判「解锁屏在不在」必须用 bodyText，不能用某个标签的精确文本匹配。
- *    2026-10-03 实测踩过：`document.querySelectorAll('label,div,span,h1,h2')` 里
+ *    2026-10-02 实测踩过：`document.querySelectorAll('label,div,span,h1,h2')` 里
  *    找 textContent === '解锁本地数据' **恒为 false**，而同一时刻
  *    document.body.innerText 明明以「解锁本地数据 检测到已有登录态…」开头。
  *    用那个检查当守卫 ⇒ 永远判「已解锁」⇒ 跳过解锁 ⇒ 后面全是不可解读的结果。
@@ -837,7 +837,7 @@ async function ensureLocalDbUnlocked() {
 // 继续停在业务页上。2026-10-02 实测：smoke-login 连红两轮，根因一直看不见，
 // 表象却像「App 没反应」。再导航一次，守卫重算，起点才确定是登录页。
 //
-// 2026-10-03 修掉这里一处自伤：原来无条件 setRoute('#/ai')，但未登录时守卫
+// 2026-10-02 修掉这里一处自伤：原来无条件 setRoute('#/ai')，但未登录时守卫
 // 会把它弹成 '#/login?returnTo=/ai'，hash 永远不等于 '#/ai' ⇒ setRoute 必然
 // 空转满 30s 才返回 false。判据最后只读 hash，于是照样判「通过」——
 // 代价是每轮白等 30 秒，而且 setRoute 的 ready 判据压根没起作用（形同虚设）。
@@ -851,7 +851,7 @@ async function ensureLocalDbUnlocked() {
   } else {
     // ready 判据放宽为 true：登录页没有 App 外壳的「打开菜单」那层。
     // 必须制造一次**真实的 hash 变化**。
-    // 2026-10-03 负控实测：App 已经停在 #/ai 时，location.hash = "#/ai"
+    // 2026-10-02 负控实测：App 已经停在 #/ai 时，location.hash = "#/ai"
     // **不产生 hashchange**（浏览器只在字符串真的变了才发）⇒ 路由守卫不重算
     // ⇒ App 带着一个刚被清掉的 token 继续停在业务页上。
     // 追加一次性 query（Vue Router 的 hash 模式正常解析该 query），
@@ -873,7 +873,7 @@ async function ensureLocalDbUnlocked() {
 }
 
 // ── 登录：CDP 驱动真实表单 ────────────────────────────────────────────
-// 为什么不用 Maestro 敲键盘：2026-10-03 实测 `${POCKET_DEV_PASS}` 被 Maestro
+// 为什么不用 Maestro 敲键盘：2026-10-02 实测 `${POCKET_DEV_PASS}` 被 Maestro
 // 展开成**字面量 undefined**（_probe-env.yaml 坐实：框内容 adminPWLEN-undefined），
 // 而 `--env` 会把口令暴露在进程命令行里。两者都不接受，改由 CDP 直接填真实
 // 表单。**换掉的是「谁来敲键盘」，不是「被测什么」** —— 走的是同一个
@@ -881,7 +881,7 @@ async function ensureLocalDbUnlocked() {
 //
 // ⚠️ 顺序：这一段必须排在上面「清完 token 后再走一次路由」**之后**。
 // 反过来的话起点还没落到登录页，登录表单根本不存在，填表只会拿到 0 个输入框。
-// 2026-10-03 就是这么写的，顺序错了以后登录成功必然误报 exit 3。
+// 2026-10-02 就是这么写的，顺序错了以后登录成功必然误报 exit 3。
 // POCKET_SKIP_CDP_LOGIN=1 可跳过（例如只想验「未登录态被正确弹回」的 flow）。
 if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
   const passJson = JSON.stringify(DEV_PASS)
@@ -982,7 +982,7 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
   await setRoute(`${back}?__afterunlock=${Date.now()}`, 'true', 8000)
   let h2 = '(读不到)'
   try { h2 = String(await cdpEval('location.hash') || '') } catch { /* 通道也坏了 */ }
-  // ⚠️ 2026-10-03 实测踩到：POCKET_SKIP_CDP_LOGIN=1（有意不登录）时，
+  // ⚠️ 2026-10-02 实测踩到：POCKET_SKIP_CDP_LOGIN=1（有意不登录）时，
   //    守卫会把 #/ai 正确地弹回 #/login?returnTo=/ai?…，而 h2.includes('#/ai')
   //    为 false（那是 `returnTo=/ai`，没有 `#`）⇒ 被误判成「复位失败」。
   //    弹回登录页在「有意不登录」时恰恰是**正确**行为，不能与失败混为一谈。

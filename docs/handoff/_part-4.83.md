@@ -19,7 +19,7 @@
 永不成立的断言（`visible: "ZZZ_故意失败_导出任务详情页可访问性树"`），
 用来导出任务详情页的可访问性树。
 
-2026-10-03 跑一轮拿到证据（`~/.maestro/tests/2026-10-02_224548/tasks-crud/
+2026-10-02 跑一轮拿到证据（`~/.maestro/tests/2026-10-02_224548/tasks-crud/
 screen-hierarchy/step-024-*.json`，99 节点），补成真断言：
 
 | 断言 | 作用 | 会不会恒真 |
@@ -61,7 +61,7 @@ opencode_pocket.tasks → task-1790952387600 | active | Maestro任务
 
 ## §4.83.2 BUG-V9：CDP 转发端口随机取值会撞
 
-2026-10-03 真机日志里出现：
+2026-10-02 真机日志里出现：
 
 ```
 adb.exe: error: cannot bind listener: cannot bind to 127.0.0.1:9528:
@@ -83,7 +83,7 @@ adb.exe: error: cannot bind listener: cannot bind to 127.0.0.1:9528:
 
 **修法不是「多随机几次然后重试」**（那只把概率推低，没有取消它），
 而是 `adb forward tcp:0`：由 adb 分配一个当前空闲的端口并打印出来。
-2026-10-03 实测分配到 `55704` / `59207` 等高位端口，`forward --list` 里确实出现。
+2026-10-02 实测分配到 `55704` / `59207` 等高位端口，`forward --list` 里确实出现。
 碰撞因此从「概率事件」变成「不可能」。仍校验返回值必须是正整数，
 否则说明 adb 行为变了，不能拿 `NaN` 去拼 URL。
 

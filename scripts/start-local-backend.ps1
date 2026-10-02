@@ -79,7 +79,7 @@ if (-not (Test-Path $bin)) {
 
 # Dev password: read from the caller's environment, NEVER from the Go source.
 #
-# 2026-10-03: this used to scrape a hardcoded 'devPass = "..."' constant out of
+# 2026-10-02: this used to scrape a hardcoded 'devPass = "..."' constant out of
 # server_assistant.go. The security remediation that removed that constant (the
 # password sat in plaintext in 8 tracked files, so "dev mode" was really "an
 # admin bypass guarded by a public password") left this script behind. Result:
@@ -111,7 +111,7 @@ if (-not $devPass) {
 # Refuse to double-bind: two pocketd on one port means the App may randomly
 # talk to the stale one, which is exactly the confusion described above.
 #
-# 2026-10-03: "stop, sleep 2, start" is NOT enough. The old process can still
+# 2026-10-02: "stop, sleep 2, start" is NOT enough. The old process can still
 # hold the port when the new one tries to bind; the new one then dies with
 # "bind: Only one usage of each socket address", and the /healthz poll below
 # happily answers from the OLD process and reports "ready".
@@ -197,7 +197,7 @@ for ($i = 0; $i -lt 60 -and -not $ok; $i++) {
 }
 if ($ok) {
   # "healthz answered" is NOT "the process I started is the one answering".
-  # 2026-10-03: a stale process that outlived Stop-Process (or a second pocketd
+  # 2026-10-02: a stale process that outlived Stop-Process (or a second pocketd
   # that bound first) answers /healthz perfectly while the process we just
   # launched has already exited. Reporting $p.Id as "ready" in that case is a
   # lie that outlives the script - callers then attribute results to a binary
