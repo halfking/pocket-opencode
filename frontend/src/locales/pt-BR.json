@@ -390,6 +390,7 @@
     "llmNotConfigured": "Nenhum modelo de linguagem configurado ainda. Escolha um nas Configurações de modelo.",
     "modelNotFound": "Esse modelo não existe mais; ele pode ter sido removido.",
     "gatewayUnreachable": "Não foi possível acessar o gateway de modelos. Verifique o endereço e a rede.",
+    "gatewayAdminMissing": "Este nó de gateway ainda não tem conta de administrador. Adicione primeiro o usuário e a senha em Gateway de modelos.",
     "workspaceNotFound": "Espaço de trabalho não encontrado.",
     "notConfigured": "Este recurso ainda não foi configurado.",
     "unauthorized": "Sua sessão expirou. Entre novamente.",

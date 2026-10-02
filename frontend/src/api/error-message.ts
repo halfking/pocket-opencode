@@ -38,6 +38,18 @@ export const ERROR_CODE_I18N_KEYS: Record<string, string> = {
 
 /** 语义兜底：按错误文本里的关键词归类，避免每个码都硬编码。 */
 const SEMANTIC_RULES: Array<{ re: RegExp; key: string }> = [
+  // 网关节点缺 admin 账号（2026-10-02 真机实测）。
+  //
+  // 为什么不并进下面的 notConfigured / unauthorized：后端
+  // gatewayAdminClient.login 发的是 `node %q has no admin credentials
+  // configured`（llm_gateway_admin_client.go:132）。这句**不匹配任何已有规则**——
+  // 没有 "not configured"、没有 "invalid credential"、正文里也没有状态码——于是
+  // resolveErrorI18nKey 返回 null，/gateway/{id}/{providers,credentials,models}
+  // 三个页面统一显示「加载网关信息失败」。用户既看不到原因，也无从下手：
+  // 节点列表页其实已经渲染了「待补录账号」chip 和编辑表单，缺的只是一句指路。
+  //
+  // 放在规则表第一位：它比通用规则更具体，且不应被后面的规则抢走。
+  { re: /no\s+admin\s+credentials/i, key: 'errors.gatewayAdminMissing' },
   { re: /not\s*configured|no\s*store|unavailable/i, key: 'errors.notConfigured' },
   // 覆盖 IMAP/SMTP 的典型措辞：后端常回 "535 auth failed"、"authentication required"
   { re: /unauthorized|forbidden|invalid\s*credential|auth\s*failed|auth\s*error|authentication|401|403/i, key: 'errors.unauthorized' },

@@ -195,3 +195,85 @@ test('summaryMoney：单币种一个数，多币种逐个列出', () => {
   // 绝不能把跨币种的 150 渲染成 ¥150.00
   assert.ok(!multi.includes('¥150'))
 })
+
+// ---------------------------------------------------------------------------
+// 本地镜像的发票行没有 filePath（2026-10-02）
+// ---------------------------------------------------------------------------
+//
+// 判据收紧成「filePath 非空」之后，**设备本地模式**下每一行都会被滤掉：
+// 本地表 local_email_invoices 没有 file_path 列（schema.ts 的建表与
+// local-db.ts 的迁移清单里都没有），rowToInvoice（invoices-store.ts）也只
+// 产出 fileName。实测过：本地镜像行合计 ¥0.00，同一行带 filePath 是 ¥3,500.00。
+//
+// 关键在下面这个夹具的造法：**字段名从 rowToInvoice 的真实源码里正则提取**，
+// 不是我手写一份。所以哪天有人给映射器补上 filePath，这些用例会因为
+// 「夹具形状变了」而需要重新审视，而不会继续绿着掩盖一个已经修好的前提。
+
+const storeSrc = fs.readFileSync(path.join(FEAT, 'invoices-store.ts'), 'utf8')
+const mapperBody = storeSrc.match(/function rowToInvoice\([^)]*\)\s*:\s*LocalInvoice\s*\{([\s\S]*?)\n\}/)?.[1]
+const localRowKeys = mapperBody
+  ? [...mapperBody.matchAll(/^\s{4}([A-Za-z0-9_]+):/gm)].map((m) => m[1])
+  : []
+
+/** 按 rowToInvoice 真实产出的字段造一行设备本地镜像发票。 */
+const localMirrorRow = (over = {}) => {
+  assert.ok(localRowKeys.length > 0, '未能在 invoices-store.ts 里定位 rowToInvoice')
+  const sample = {
+    id: 'inv-1', emailId: 'e-1', accountId: 'a-1', kind: 'bill', category: '其他',
+    title: '', seller: '杭州创客家投资管理有限公司', amount: 3500, currency: 'CNY',
+    invoiceNo: 'INV-001', invoiceDate: '2026-09-01', emailDate: 1756684800,
+    subject: '发票', status: 'downloaded', extractedBy: 'rule',
+    createdAt: 1756684800, updatedAt: 1756684800,
+    fileName: '其他-杭州创客家投资管理有限公司-3500.00-20260901.pdf',
+    fileSource: 'attachment', attempts: 1, lastError: '', feishuSentAt: 0,
+    dirty: false, clientId: '',
+    ...over,
+  }
+  const row = {}
+  for (const k of localRowKeys) row[k] = sample[k]
+  return row
+}
+
+test('本地镜像行（无 filePath）必须照样计入合计', () => {
+  // 前提钉死：本地镜像确实不产出 filePath。哪天它产出了，这条会提醒重看判据。
+  assert.equal(localRowKeys.includes('filePath'), false,
+    'rowToInvoice 现在产出 filePath 了——判据可以收回单字段，本组用例需重写')
+  const groups = money.sumByCurrency([localMirrorRow()])
+  assert.equal(groups.length, 1, '设备本地模式下合计被整条滤空了')
+  assert.equal(groups[0].amount, 3500)
+  assert.equal(money.summaryMoney(groups), '¥3,500.00')
+})
+
+test('真实库两行：服务端行与本地镜像行给出同一个合计', () => {
+  // 真实库 email_invoices 就是这两行（3500 downloaded+有文件 / 58000 new+无文件）。
+  // 两个数据源形状不同（filePath vs fileName），判据必须收敛到同一个数。
+  const serverRows = [
+    { amount: 3500, currency: 'CNY', status: 'downloaded', filePath: 'data/email-invoices/a.pdf' },
+    { amount: 58000, currency: 'CNY', status: 'new' },
+  ]
+  const mirrorRows = [
+    localMirrorRow({ amount: 3500, status: 'downloaded' }),
+    localMirrorRow({ id: 'inv-2', amount: 58000, status: 'new', fileName: undefined }),
+  ]
+  const fromServer = money.summaryMoney(money.resolveSummaryGroups(undefined, serverRows))
+  const fromMirror = money.summaryMoney(money.resolveSummaryGroups(undefined, mirrorRows))
+  assert.equal(fromMirror, '¥3,500.00')
+  assert.equal(fromMirror, fromServer, '两个数据源给出不同合计 = 又一次两套口径')
+})
+
+test('fileName 为空串时不算有凭证', () => {
+  // 放行 fileName 之后最容易漏的一档：字段在、值是空串。
+  assert.equal(
+    money.invoiceCountsTowardTotal({ status: 'downloaded', fileName: '' }),
+    false,
+  )
+  assert.equal(
+    money.invoiceCountsTowardTotal({ status: 'new', fileName: 'a.pdf' }),
+    false,
+    '状态不是 downloaded/filed 时，凭证字段非空也不能放行',
+  )
+  assert.equal(
+    money.invoiceCountsTowardTotal({ status: 'filed', fileName: 'a.pdf' }),
+    true,
+  )
+})

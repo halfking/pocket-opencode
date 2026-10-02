@@ -228,8 +228,18 @@ type PipelineReport struct {
 	NewEmails      int   `json:"newEmails"`
 	SpamMoved      int   `json:"spamMoved"`
 	SpamLocalOnly  int   `json:"spamLocalOnly"`
-	// SpamDryRun>0 表示本轮是预演：这 SpamDryRun 封「本可以移走但没移」，
+	// SpamDryRun>0 表示本轮是预演：这 SpamDryRun **封**邮件「本可以移走但没移」，
 	// 逐账户列在 SpamDryRunSamples 里。真实邮箱上先看这个再决定是否真移。
+	//
+	// 单位是**邮件**不是账户，2026-10-02 修：它原先在账户循环里 `++`，数的是
+	// 账户数，而日志把它写成「%d mail(s) would be moved」、注释写成「这
+	// SpamDryRun 封」。两个后果：
+	//   1. 预演报告的条数**少于**真实 MOVE 会移的条数（真实分支的
+	//      `SpamMoved += moved` 数的是邮件）——预演恰恰是「开 MOVE 前看的
+	//      那个数」，它报少报就等于让人在错误的量级上做决定；
+	//   2. SpamDryRun 与 SpamMoved 单位不同却长得一样，报告上无法互相印证。
+	// 真实库当场抓到：1 个账户 2 封「【阿里云】云安全中心周报」被判垃圾，
+	// 旧实现报 1 封，真跑会移 2 封。
 	SpamDryRun        int               `json:"spamDryRun,omitempty"`
 	SpamDryRunSamples []SpamPreviewItem `json:"spamDryRunSamples,omitempty"`
 	// SpamNearMiss 是「未判垃圾但有分」的邮件，按账户分组。
@@ -262,6 +272,22 @@ type PipelineReport struct {
 	//
 	// 注意这**不是**「发了多少条提醒」，两者不可互相替代。
 	RemindersOutOfWindow int `json:"remindersOutOfWindow,omitempty"`
+	// RemindersPending 是「这轮**将要**推送的条数」——判定完候选、在真正
+	// 逐条 Notify 之前就记下来。
+	//
+	// 为什么必须有它：RemindersSent 只有推完才知道，而 notifyImportant
+	// **没有限流**，候选有多少就推多少。2026-10-02 窗口从 2 天放宽到 90 天
+	// （37c53e6d）之后，跑着的二进制第一次要跑这个窗口时，真实库里积压了
+	// **32 封**未提醒的 high（用与生产等价的判据数出来的）——但在那之前，
+	// 报告上没有任何一个数字能提前说出「这轮会推 32 条」。
+	//
+	// RemindersOutOfWindow 救不了这个场景：它数的是窗口**外**的，而积压
+	// 全在窗口**内**。两个计数缺一不可，合起来才画得出全貌：
+	// 「窗外 N 封永远轮不到」+「窗内这轮要推 M 条」。
+	//
+	// 注意它与 RemindersSent 不可互相替代：推送失败时 Pending > Sent，
+	// 这个差值就是「本该提醒却没提醒出去」的条数。
+	RemindersPending int `json:"remindersPending,omitempty"`
 	// 发票候选（步骤 1.5）的三个计数。同样的理由：只报 invoices.Processed
 	// 时，「扫了 0 封候选」和「这批里没有发票」长得一模一样，
 	// 于是 0 到底是链路没跑、还是跑了但没命中，看报告分不出来。
@@ -759,7 +785,8 @@ func (p *Pipeline) cleanSpam(ctx context.Context, rep *PipelineReport) {
 	}
 	if p.SpamDryRun {
 		for accountID, uids := range byAccount {
-			rep.SpamDryRun++
+			// += len(uids) 而不是 ++：单位必须是邮件，见字段注释。
+			rep.SpamDryRun += len(uids)
 			rep.SpamDryRunSamples = append(rep.SpamDryRunSamples, SpamPreviewItem{
 				AccountID: accountID,
 				Count:     len(uids),
@@ -781,8 +808,8 @@ func (p *Pipeline) cleanSpam(ctx context.Context, rep *PipelineReport) {
 				Near:      nearByAccount[id],
 			})
 		}
-		log.Printf("[email/pipeline] spam dry-run: %d mail(s) would be moved, %d near-miss (未判垃圾但有分，开真实 MOVE 前值得人看一眼)",
-			rep.SpamDryRun, countNearMiss(rep.SpamNearMiss))
+		log.Printf("[email/pipeline] spam dry-run: %d mail(s) across %d account(s) would be moved, %d near-miss (未判垃圾但有分，开真实 MOVE 前值得人看一眼)",
+			rep.SpamDryRun, len(rep.SpamDryRunSamples), countNearMiss(rep.SpamNearMiss))
 		return
 	}
 	for accountID, uids := range byAccount {
@@ -886,6 +913,15 @@ func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 	rep.RemindersScanned = len(emails)
 	candidates, unclassified := splitReminderCandidates(emails, notified)
 	rep.RemindersUnclassified = unclassified
+	// 在推之前就把条数记下来。推送失败时 Pending > Sent，那个差值就是
+	// 「本该提醒却没提醒出去」的数量——只有 Sent 时这个信息就丢了。
+	rep.RemindersPending = len(candidates)
+	if rep.RemindersPending > 0 {
+		log.Printf("[email/pipeline] 本轮将推送 %d 条重要邮件提醒（%d 天窗口内、importance=high、"+
+			"从未提醒、非 spam）。notifyImportant 没有限流，条数就是候选数——"+
+			"积压会在首次覆盖到它们的这一轮一次性推出。",
+			rep.RemindersPending, importantReminderLookbackDays)
+	}
 	if unclassified > 0 {
 		log.Printf("[email/pipeline] %s", reminderUnclassifiedHint(unclassified, len(emails)))
 	}

@@ -390,6 +390,7 @@
     "llmNotConfigured": "Aucun modèle configuré. Choisissez-en un dans les réglages Modèles.",
     "modelNotFound": "Ce modèle n'existe plus ; il a peut-être été supprimé.",
     "gatewayUnreachable": "Passerelle de modèle injoignable. Vérifiez son adresse et le réseau.",
+    "gatewayAdminMissing": "Ce nœud de passerelle n'a pas encore de compte administrateur. Ajoutez d'abord le nom d'utilisateur et le mot de passe dans Passerelle de modèle.",
     "workspaceNotFound": "Cet espace de travail est introuvable.",
     "notConfigured": "Cette fonctionnalité n'est pas encore configurée.",
     "unauthorized": "Votre session a expiré. Reconnectez-vous.",

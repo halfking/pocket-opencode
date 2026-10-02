@@ -390,6 +390,7 @@
     "llmNotConfigured": "No language model configured yet. Pick one in Model settings.",
     "modelNotFound": "That model no longer exists; it may have been removed.",
     "gatewayUnreachable": "Cannot reach the model gateway. Check its address and your network.",
+    "gatewayAdminMissing": "This gateway node has no admin account yet. Add the admin username and password in Model Gateway first.",
     "workspaceNotFound": "That workspace could not be found.",
     "notConfigured": "This feature has not been configured yet.",
     "unauthorized": "Your session expired. Please sign in again.",
