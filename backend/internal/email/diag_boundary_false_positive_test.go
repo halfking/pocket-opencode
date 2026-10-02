@@ -31,23 +31,16 @@ package email
 //
 // 本文件不连数据库、不改任何生产正则：把真实库里的原样文本拿来问那个函数。
 
-import (
-	"os"
-	"testing"
-)
+import "testing"
 
-// 门控原因：这是一个**已知缺陷的证据**，不是回归护栏。
+// 门控已移除（2026-10-03）：reBoundaryToken 的裸 `-` 已从字符类去掉，
+// 本文件断言的缺陷**已修复**，它从「已知缺陷的证据」转为**常驻护栏**。
 //
-// 在 reBoundaryToken 收紧之前，带门控跑它是红的（下面两条 Errorf 会命中）。
-// 不加门控就会让 internal/email 整包变红，把「缺陷」伪装成「我这轮改坏了」。
-// 修好之后应当把门控去掉，让它变成常驻护栏——那时它才有牙齿。
+// 此前加门控是为了不把「缺陷」伪装成「我这轮改坏了」；现在缺陷没了，
+// 继续门控只会让它失去牙齿（没人会记得去设那个环境变量）。
 //
-//	POCKET_DIAG_BOUNDARY_FP=1 go test ./internal/email/ -run BoundaryFalsePositive -v
+// 负控：把 snippet.go:467 改回 `--(?:[=_-]|[Pp]art[_-])` → 本文件立刻转红。
 func TestDiagBoundaryFalsePositiveOnRealSnippets(t *testing.T) {
-	if os.Getenv("POCKET_DIAG_BOUNDARY_FP") != "1" {
-		t.Skip("set POCKET_DIAG_BOUNDARY_FP=1 to surface the known MIME-guard false positives")
-	}
-
 	// 全部取自真实库 summaries 的**原样片段**（logs/zz-boundary-fp.txt M5）。
 	cases := []struct {
 		name    string
