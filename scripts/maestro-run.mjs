@@ -43,6 +43,41 @@ const adb = (args, t = 60000) =>
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** 一次性 CDP 求值：连上当前 App 的 WebView，评估一个表达式，拿回值后断开。 */
+/**
+ * 绑定一个 CDP 转发端口，返回 adb 实际分配到的端口号。
+ *
+ * 2026-10-03 真机实测的缺陷：原先这里是
+ *   `const port = 9500 + Math.floor(Math.random() * 300)`
+ * 然后直接 forward。撞上已被占用的端口就抛
+ *   `cannot bind listener: cannot bind to 127.0.0.1:9528 ... (10048)`
+ * 撞的是**上一轮没清干净的 forward**，或同机另一个会话的 forward。
+ *
+ * 后果分两种，差别很大：
+ *   · 落在 assertFetchIntact 上 → 它 catch 后只打一句「未能判定，不阻断」，
+ *     run 继续（2026-10-03 实测就是如此，run 仍然 exit=0）。
+ *     也就是说**这个碰撞可以完全静默**：守卫没跑成，但没有人在乎，
+ *     绿灯照出。
+ *   · 落在 assertAppUsesReverseBase 或 CDP 登录块上 → preflight 直接崩，
+ *     而报错「端口被占用」指向的是装置，看不出「真问题是上次没清干净」。
+ *
+ * 修法不是「多随机几次然后重试」——那只是把概率推低，没有取消它；
+ * 本机同时有别的会话在驱设备，端口是**共享可变状态**。
+ * 而是让 adb 自己挑空闲端口：`forward tcp:0` 会由 adb 分配一个当前空闲的
+ * 端口并把它打印出来。2026-10-03 实测：分配到 55704，`forward --list`
+ * 里确实出现该条目。碰撞因此从「概率事件」变成「不可能」。
+ *
+ * 仍要校验返回值：端口号必须是正整数，否则说明 adb 的行为变了或输出被改，
+ * 静默地拿一个 NaN 去拼 URL 会得到一个更费解的报错。
+ */
+function bindCdpForward(sock) {
+  const out = adb(['forward', 'tcp:0', `localabstract:${sock}`], 15000)
+  const port = Number(String(out).trim())
+  if (!Number.isInteger(port) || port <= 0) {
+    throw new Error(`CDP_FORWARD_NO_PORT: adb forward tcp:0 没返回可用端口号，输出=${JSON.stringify(String(out))}`)
+  }
+  return port
+}
+
 async function cdpEval(expr, ms = 8000) {
   const pid = adb(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
   if (!pid) throw new Error('APP_NOT_RUNNING')
@@ -50,8 +85,7 @@ async function cdpEval(expr, ms = 8000) {
     .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
   const sock = socks.find((s) => s.endsWith(`_${pid}`)) || socks[socks.length - 1]
   if (!sock) throw new Error('NO_DEVTOOLS_SOCKET')
-  const port = 9500 + Math.floor(Math.random() * 300)
-  adb(['forward', `tcp:${port}`, `localabstract:${sock}`], 15000)
+  const port = bindCdpForward(sock)   // 端口被占用会重试，见 bindCdpForward 的注释
   try {
     const page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page')
     if (!page) throw new Error('NO_PAGE_TARGET')
@@ -86,9 +120,13 @@ async function setRoute(hash, readyExpr, timeoutMs = 30000) {
     .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
   const sock = socks.find((s) => s.endsWith(`_${pid}`)) || socks[socks.length - 1]
   if (!sock) return false
-  const port = 9500 + Math.floor(Math.random() * 300)
+  let port
   try {
-    adb(['forward', `tcp:${port}`, `localabstract:${sock}`], 15000)
+    port = bindCdpForward(sock)      // 端口被占用会重试
+  } catch {
+    return false                     // 连不上就别往下走：下面的 finally 会误删别人的 forward
+  }
+  try {
     const page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page')
     if (!page) return false
     const ws = new WebSocket(page.webSocketDebuggerUrl.replace(/:\d+\//, `:${port}/`))
