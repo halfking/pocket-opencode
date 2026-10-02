@@ -25,6 +25,7 @@
     "check:callback-routes": "node ../scripts/verify-callback-routes.mjs",
     "check:edge-route-reach": "node ../scripts/verify-edge-route-reach.mjs",
     "check:runtime-data": "node ../scripts/check-runtime-data-tracked.mjs --selftest && node ../scripts/check-runtime-data-tracked.mjs",
+    "check:vacuous-guard": "node scripts/check-vacuous-optional-guard.mjs",
     "test:native:all": "node --test src/native/__tests__/*.test.mjs src/native/__tests__/*.test.ts",
     "audit:vm-gaps": "node scripts/audit-viewmodel-gaps.mjs",
     "audit:i18n-keys": "node scripts/audit-i18n-keys.mjs",

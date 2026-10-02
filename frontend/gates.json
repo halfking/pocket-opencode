@@ -16,6 +16,7 @@
     "check:callback-routes",
     "check:edge-route-reach",
     "check:runtime-data",
+    "check:vacuous-guard",
     "check:vm-gaps",
     "check:i18n",
     "check:i18n-translated",

@@ -12019,3 +12019,236 @@ process.exitCode = failed ? 1 : 0
 - **BUG-V21 / BUG-V22 是真缺陷**（都在工装里），都已修；BUG-V21 在真实故障条件下验证过修复生效，BUG-V22 只做了代码修正，**未在真机上验证过**（同 §4.118.6 的原因）。
 - §4.118.6 的三条判据加固**未跑过**，不计入成果。
 - 真机写路径本轮**整体未推进**，原因是网络阻塞，不是「测过了没问题」。
+## §4.119 真机 UI 全路由巡检：挖出第二个真缺陷，并给它配了结构判据
+
+### §4.119.1 起因：后端面全绿之后，剩下最可能藏问题的地方
+
+§4.100 把 139 条后端 GET 路由扫完后（48×200 / 25×400 / 46×405 / 14×404 / 1×503，
+无意外 5xx），接口层已经没什么可挖的。本轮之前发现的两个界面缺陷
+（死掉的密码箱入口、第五个版本显示点）都是靠**逐个消费点比对**发现的，
+不是靠跑测试发现的——所以真机界面本身值得系统扫一遍。
+
+`scripts/.scratch-ui-sweep.mjs`（一次性，已删）：从
+`frontend/src/app/router-mobile.ts` 解析出 **81 条路由**（源码是权威，不靠点导航
+反推），逐条 `location.hash` 切过去，读 DOM 正文 + 收集 console 错误 +
+network 失败。只导航与读取，**不点任何动作按钮**——不触发发送/删除/清理/同步
+这类会改动数据的操作，也不登出、不清数据。
+
+### §4.119.2 缺陷二：任务详情页加载失败时，伪装成一个正常但按不动的页面
+
+真机实测（`#/tasks/:id`，后端 404）：
+
+```
+正文: 任务详情 ... 加载中... 💬 0 会话 📅 - 创建 ▶ 恢复 ✅ 完成 📎 附加 🗑
+console.error: Failed to load task: ApiError: Not Found
+```
+
+三处问题叠在一起：
+
+1. `<h1>{{ task?.title || '加载中...' }}</h1>` —— **「加载中」和「加载失败」共用
+   `task === null`**，两者渲染完全一样。统计条也都是 0 / 「-」。
+2. `v-if="task?.status !== 'active'"` —— `undefined !== 'active'` 求值为**真**，
+   守卫在「实体根本不存在」时反而**放行**。于是 ▶恢复 / ✅完成 连同无条件的
+   📎附加 / 🗑 四个按钮全部渲染。
+3. 这些按钮的处理函数开头都是 `if (!task.value) return`，**点下去被静默吞掉**。
+
+净效果：一条**不存在**的任务，呈现为一个看起来完全正常、按钮齐全、按什么都没
+反应的详情页。对照组：`/gateway/:nodeId` 加载失败会明确显示「加载网关信息失败」
+——所以这是这一处漏了，不是全局约定。
+
+**修法**（`TaskDetailView.vue`，CRLF 保持）：
+
+- 新增独立的 `loadError` ref，把「加载中 / 加载失败 / 已加载」拆成三态，
+  标题与新增的 `role="alert"` 错误条分别对应后两者；
+- 404 与其它失败分开措辞（`任务不存在或已被删除` vs `任务加载失败，请重试`）——
+  不区分就会把网络抖动说成任务被删；
+- 原来 `if (!taskId) return` 的早退也补上错误态，否则标题会永远停在「加载中...」；
+- `stats-strip` / `action-bar` / `TaskSessionPanel` 三处加 `v-if="task"` 兜底，
+  失败时**不再摆一排假控件**。
+
+### §4.119.3 判据：check-vacuous-optional-guard.mjs（已接进 gates）
+
+在写判据之前先**量了失效面**：全仓 178 个 `.vue`，可选链比较型 `v-if` 只有
+**8 处、涉及 2 个文件**。数量小不等于可以放过——这类缺陷不产生任何报错，
+界面看起来是对的，只是按钮不响应。
+
+关键是**不能「见可选链比较就报错」**：同样写法在 `TasksView.vue` 的右键上下文菜单
+里出现 5 处，是**正确的**——那个菜单经 `<BottomSheet>` 渲染，门控写在
+`:model-value="showContextMenu && !!contextTask"` 上，而
+`BottomSheet.vue:10` 的根节点是 `v-if="visible"`；实体缺席时整棵子树不渲染。
+静态判据看不见这一跳。
+
+所以判据守的是**结构形状**：
+
+> 命中可选链比较型 `v-if` 时，沿祖先链向上必须存在对**同一实体**的 `v-if` 兜底；
+> 没有 ⇒ 这条守卫是无效的。
+
+三处配套设计，都是被自己的失败逼出来的：
+
+- **交叉自检**：用**完全独立**的行级正则数一遍命中数，与标签解析器的结果对照，
+  对不上就 exit 2 拒绝按通过处理。第一版正是栽在这里——用
+  `indexOf('</template>')` 截取根模板，被嵌套的 `<template #slot>` 提前截断，
+  TasksView 的 5 处命中**被静默丢弃**（行级数 8、解析器数 3）。改成「整份文件删掉
+  script/style 段」后两种方法一致（8 == 8）。**少提取不会报错，只会少报问题。**
+- **失明即失败**：扫描根下一个 `.vue` 都没有时 exit 2，不按通过处理。
+- **自验证豁免**：豁免条目不只写理由，还必须引用可复核的具体机制；判据每次运行
+  都亲自验证（文件存在 + 正则仍匹配）。`&& !!contextTask` 或 BottomSheet 的
+  `v-if="visible"` 一旦被删，豁免自动失效并单独报出来。**豁免 ≠ 永久放行。**
+- 默认扫描根**相对脚本自身位置**解析而非 `process.cwd()`——第一版写死
+  `frontend/src`，被 npm script 调起就变成 `frontend/frontend/src`。
+  三种调用方式（仓根 / frontend 目录 / 显式传参）现已验证结果一致。
+
+**负控 5/5 符合预期**（`logs/vacuous-negctl-20261003-0450.txt`，全部喂合成副本，
+真仓零改动）：拆掉 `v-if="task"` 兜底 → exit 1 且点名；保留兜底 → exit 0；
+删掉豁免引用的 `!!contextTask` → 豁免失效并报出；路径不存在 → exit 2；
+真仓 → exit 0。
+
+### §4.119.4 顺带查清的两件事（都不是缺陷）
+
+**36% 的路由我验不了，原因已确定。** 29 / 81 条路由带 `requiresLobster`
+（notes、email、contacts、vault、pkm、study、meetings、rss 全部在内）。
+lobster 是**用户主密码解锁的本地 SQLCipher 库 + 共享 AES key**
+（`native/lobster-init.ts`），`routeGuards.ts:82` 的 Case C 在未解锁时把它们
+导去 `/login?unlock=1`。
+
+我读了实际落到的那一屏，提示是清楚的：「解锁本地数据 / 检测到已有登录态，
+但本地加密库未解锁」，带主密码输入框与解锁按钮；生物识别不可用（`code:11`，
+设备能力）时有密码兜底。**这是设计，不是缺陷**，但意味着**要验证这一大片功能
+需要你提供主密码**——我不会自己编一个，那是你的数据加密密钥。已记为只能由
+你解除的阻塞。
+
+**其余 52 条路由全部正常渲染**，`console` 零错误、network 零失败。几个值得记的
+观察：`/cost` 显示真实用量（222 次调用 / 230.7K Tokens / $0.4630）；
+`/settings/stt` 明确显示「网关暂无可用模型，且未配置外部转写服务地址」
+（STT 需配置，fail-closed 正确）；`/flashcards/decks/:deckId/review` 有一条
+`SCHEDULE_EXACT_ALARM denied` 警告并已自动回退到 inexact alarm
+（OriginOS 限制，警告文本本身就在教用户怎么绕过）。
+
+**一处方法上的自我更正**：带 `:id` / `:agentId` 的参数化路由，我是用字面量
+`:id` 去导航的，命中的是「路由已接线、实体不存在」。所以它们能证明**接线正确**，
+不能证明**内容正确**——不这么记账就会把「没找到」当成「验过了」。
+
+### §4.119.5 口径
+
+- 本轮新增/改动：`TaskDetailView.vue`（修缺陷，CRLF 保持：538 CRLF / 0 裸 LF /
+  无 BOM / 零 U+FFFD）、`frontend/scripts/check-vacuous-optional-guard.mjs`（新）、
+  `frontend/package.json`（新增 `check:vacuous-guard` 并接入 gates；
+  5133 → 5241 字节，CRLF 87 → 88，bareLF 仍为 0，JSON 合法）。
+- `vue-tsc --noEmit` exit 0；`npm run gates` 端到端 exit 0。
+- **未在真机上复验 TaskDetailView 的修复效果**——修复在已安装的包里生效需要
+  重新构建并安装 APK，而安装 release 包会因签名不匹配触发卸载、清掉已认证会话
+  （本会话一直遵守的纪律）。证据是源码级判据 + 负控，不是「真机已修复」。
+- 仍未触碰并行会话的 18099 实例（`pocketd-invoicenan-fix` pid 8168）与它在
+  `backend/internal/email` 的作业。
+## §4.120 把「加载失败被吞成空态」量了一遍：4 处真缺陷、1 处误报
+
+### §4.120.1 起因与量法
+
+§4.119 的 TaskDetailView 是**一例**，不是一类。这一步先量全仓：`.vue` 里
+「catch 把数据 ref 置成空态（null/[]/''），且模板里找不到任何错误信号」的写法。
+共 **5 处、2 个文件**（`logs/swallowed-load-audit-20261003-0545.txt`）。
+
+先量再写判据，是因为上一轮的教训：没量就写卡口，很可能造出一个在正确代码上
+误报的判据——那比没有更危险。
+
+### §4.120.2 真缺陷：EmailSummaryView 的 if/else 是**死区分**
+
+`features/email/EmailSummaryView.vue` 原本是：
+
+```js
+} catch (e) {
+  if (e instanceof ApiError && e.status === 404) {
+    // 后端 endpoint 尚未实现 → 空列表
+    summaries.value = []
+  } else {
+    console.warn('[email] 拉取摘要列表失败:', e)
+    summaries.value = []          // ← 和 404 分支同一个结果
+  }
+}
+```
+
+**作者本意就是要区分这两件事**（404 = 后端还没这个 endpoint，属于「真的没有」；
+其它 = 真出问题了），但两个分支殊途同归，那个 if/else 是**死代码**。
+
+后果不只是缺提示，而是**文案主动误导**：网络错误、500、404 全部渲染成
+「暂无摘要」或「{{ date }} 当日的摘要暂未生成 / 每日 21:00 cron 自动生成」。
+用户会以为今天还没跑调度器，于是去查 cron——而真正的原因只是这次请求挂了。
+`loadDetail` 同样形状（404/400 与其它分支都置 `null`）。
+
+**修法**：
+
+- 新增 `loadError` ref，**只在请求真的失败时**非空；
+- 列表态与详情态各插入一个 `role="alert"` 的错误分支，放在空态分支**之前**，
+  附一句「这与『暂无摘要』是两回事」和「重试」按钮；
+- 404/400 仍走原来的友好空态——那个区分现在**真的生效了**。
+
+### §4.120.3 我自己第一版修复里的 bug（同一轮内发现并修掉）
+
+第一版只加了错误态，**没有在 `loadList` 开头清 `loadError`**。而模板里
+`v-else-if="loadError"` 排在空态和列表**之前**，于是失败后点「重试」即使请求成功，
+错误分支仍然胜出、列表不渲染——**重试按钮看起来完全没反应**。
+`loadDetail` 我清了，`loadList` 漏了。已补（两个 loader 现在都在开头重置）。
+
+教训具体：**「加了错误态」不等于「错误态可达」**。一个只在自己 happy path
+验证过的修复，最容易漏掉「从错误态回到正常态」这条边。
+
+### §4.120.4 误报一例：VaultEntryView 本来就是对的
+
+`features/vault/VaultEntryView.vue` 的 `load()` catch 是：
+
+```js
+} catch (err: any) {
+  showToast(apiError(err, 'errors.loadSettingsFailed'), 'danger')
+  entry.value = null
+}
+```
+
+**用户会被 toast 告知**。我的审计漏判它，是因为信号表只列了
+`toast.error` / `toast.warn`，没列 `showToast`。
+
+### §4.120.5 因此没有把它做成卡口，并记下审计工具的两个局限
+
+**没有为「加载失败必须有可见信号」加 gates 卡口**，理由是这一版的判据已经证明
+自己不可靠：
+
+1. **信号表不完整** → 漏报（VaultEntryView 误报）；
+2. **行号是相对 `<script>` 段的偏移，不是文件行号** → 我按它报的 L255 去
+   `VaultEntryView` 找，读到的却是一句剪贴板注释，白跑一趟；
+3. 根本问题是「模板里没有错误字样」不等于「用户看不到错误」——toast、
+   父组件、路由层都可能兜底。VaultEntryView 就是被 toast 兜住的。
+
+一个会在正确代码上误报的卡口，下一个人只会去改对的代码，或者更糟——
+把它禁用。要做这个卡口，得先把「错误信号」的定义做实（例如把
+`showToast`/`toast.*`/`apiError`/`role="alert"`/错误态 ref 统一登记），
+而不是拿关键词表去猜。**这条留作将来的工作，不是本轮的欠账。**
+
+### §4.120.6 顺带查清：首页那两条「疑似卡死」不是缺陷
+
+真机首页正文出现两次「疑似卡死 PG matrix probe 6 小时无响应 ⏹ 停止会话」。
+只读查 `/api/tasks` 确认：2 条任务，标题均为 `PG matrix probe`，
+`status: active`，创建于 2026-10-02 21:28 / 21:31。
+
+**这是我们自己的诊断探针残留，不是产品缺陷**——app 正确识别成僵死会话、
+标注了时长、并给出「⏹ 停止会话」，卡死检测功能本身在工作。删它属于改动
+共享数据，**未删**，留给用户决定：
+
+- `task-77cdf12dd930560678cfd49aaa945c45`
+- `task-d11e72a0dbcc5bd8a50d54fdee7e7e47`
+
+另外复查了 UI 扫描里所有「正文很短」的页面，**全部是合格的空态**，
+带解释文案和 CTA，没有新缺陷：
+`/settings/scheduled-tasks`「还没有自动化任务 / 创建自动化」、
+`/marketplace/skills`「技能由发布者提交、审核、发布后才会出现在这里」、
+`/marketplace/workbuddies`「后续 sprint 接入完整流程编排」、
+`/flashcards`「暂无卡组」、`/finance`「暂无账单」。
+`/settings/scheduled-tasks/:id` 甚至是「找不到对应的内容 / 重试」——
+**正好是 TaskDetailView 该有的样子**，可作为修复后的对照。
+
+### §4.120.7 口径
+
+- 本轮改动：`frontend/src/features/email/EmailSummaryView.vue`
+  （CRLF 保持：302 CRLF / 0 裸 LF / 无 BOM / 零 U+FFFD）。
+- `npm run gates` 端到端 **exit 0**（含新判据 `check:vacuous-guard`）。
+- **未在真机复验** EmailSummaryView 的修复——它属于 29 条 `requiresLobster`
+  路由之一，既需要主密码解锁，也需要重建安装 APK。
+- 仍未触碰并行会话的 18099 实例与其在 `backend/internal/email` 的作业。
