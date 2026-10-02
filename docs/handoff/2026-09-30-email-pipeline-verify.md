@@ -9116,3 +9116,109 @@ oldest=2026-09-05 15:37:15+08   newest=2026-10-02 09:07:39+08
 - 探针脚本 `zz_probe_blindspot_test.go` 跑完已删（`git clean`），
   `go.mod` 被 `-mod=mod` 顺带改动（`x/image` indirect→direct）已 `git checkout` 还原，
   提交前 `git status` 为空
+
+---
+
+## §7dv 收尾核实：并发会话已独立修复同一缺陷，已 cherry-pick 同步
+
+### 怎么发现的
+
+写完 §7du 准备收尾时，核实一条**必须说清的边界**：§7du 那些日志证据
+来自 `openpocket-wt-maildeploy` 那个 worktree 构建的二进制，不是本 worktree
+的代码。若两个 worktree 的 `pipeline.go` 不同，我对那次 08:00 跑批的根因
+分析就对不上。
+
+实测两个文件差 **357 行**（200 插 / 157 删）——
+而且 `maildeploy` 的 step1.5 **没有**我读的那行硬编码：
+
+```go
+// openpocket-wt-maildeploy（对方）
+emails, _, err := p.Store.ListEmailsSince(ctx,
+    rep.StartedAt-int64(invoiceCandidateLookbackDays)*86400, invoiceCandidateScanLimit)
+```
+
+`invoiceCandidateLookbackDays = 90`、`invoiceCandidateScanLimit = 2000`。
+**这个缺陷在对方分支上已经被修过了。**
+
+### 时间线：两次测量指向同一结论
+
+| 时刻 | 事件 |
+|---|---|
+| 2026-10-02 01:35:53 | `pocketd.exe` 构建（maildeploy） |
+| 2026-10-02 01:36:00 | 进程启动 |
+| 2026-10-02 03:57:27 | 修复提交 `46d9e779` 落地（**在构建之后**） |
+| 2026-10-02 08:00:00 | 定时跑批，`scanned=1` |
+
+二进制构建早于修复 2 小时 21 分，所以**那次 08:00 跑批跑的确实是修复前的
+24h 硬编码版本**——§7du 对它的根因分析成立，没有张冠李戴。
+
+更值得记的是**两份独立测量的数字完全吻合**：
+
+| | 我（§7du，09:24:59） | 对方（46d9e779 的 commit message） |
+|---|---|---|
+| 库内邮件 | 121 封 | 120 封 |
+| 24h 窗口内 | 2 封 | 2 封 |
+| envelope 命中的真发票 | `uid=10435`，号码 `2633200000826…` | 号码 `26332000008261110741` |
+| 抽出的销售方 | — | 杭州创客家投资管理有限公司 / 3500.00 / 2026-09-24 |
+
+两个互不知情的会话，同一天、同一份真实库、同一张发票、同一个数字。
+121 vs 120 的差异是测量时刻不同（对方测于 03:57 之前，我测于 09:24，
+期间有同步）。**这是本次排查里最强的交叉印证**。
+
+### 已 cherry-pick 到本分支
+
+`5f52b146`（cherry-pick `46d9e779`）——不重复造轮子。
+
+两处冲突，逐处比对语义合并，**没有整文件覆盖**：
+
+1. **`PipelineReport` 字段块**：对方加 `InvoiceCandidatesScanned` /
+   `Created` / `BodyFetchDeferred`，本分支已有 `RemindersOutOfWindow`。
+   **两侧都保留**，四个字段现在都在。
+2. **`stripGoComments` 重名**（编译失败）：本分支
+   `pgisolation_guard_test.go` 已有同名**词法级**实现（识别字符串/字符/
+   反引号字面量），对方带来一个简化版。两者**语义不等价**——对方那份
+   依赖「块注释保留内部换行」，因为 `extractFuncBody` 靠 `"\n}\n"`
+   切函数体，块注释被压成空格会截错。故把对方那份改名为
+   `stripGoCommentsKeepLines` 并注明分工，**不动已验证的判据逻辑**
+   （`48f5c1a1`）。
+
+### 自验负控（不只信 cherry-pick 过来的 commit message）
+
+把调用点退回 `rep.StartedAt-86400, 500`，实测**转红 3 条**：
+
+```
+--- FAIL: TestExtractInvoiceCandidates_SeesInvoiceOlderThan24h
+--- FAIL: TestExtractInvoiceCandidates_IsIdempotent
+--- FAIL: TestExtractInvoiceCandidates_UsesLookbackConstantAtCallSite
+```
+
+还原后 `git diff --numstat` 对 `pipeline.go` 为空。
+全包 `go test ./internal/email/ -count=1` **ok 77.4s**；
+两个文件 `gofmt -l` 均无输出（`pipeline.go` 差异 0 行）。
+
+**一次假绿要记下来**：第一次跑负控时用 PowerShell 的
+`[IO.File]::ReadAllText/WriteAllText` 改生产代码，`.NET` 用的是**进程级
+CWD**，不跟随 PowerShell 的 `cd`——文件实际改在主仓 `C:\workspace\openpocket`
+下，**worktree 里的代码一行没动**，测试于是「全绿」。改用 Node 重做，
+并在跑测试**之前**回读文件确认 `MUTATED=true`。
+判据：凡是「改了 A 再看 B 变没变」的负控，**必须先验证改动真的落在目标文件上**，
+否则报告的绿/红都没有意义。
+
+### 对 §7du 拍板项的影响
+
+§7du 列的三个修法选项（created_at 兜底 / watermark 游标 / 复用
+`processed_at` 死列）**已被并发会话用第四种方式回答**：
+直接放宽到 90 天 + 扫描上限 2000。理由写在 `pipeline.go` 的常量注释里——
+envelope 判定不碰 IMAP，放宽几乎零代价；贵的拉原文仍受
+`maxInvoiceBodyFetches = 24` 预算限制。
+
+这个选择**绕开了**我担心的「扫描上限 500 会被最近邮件占满」问题
+（`ORDER BY date DESC` + LIMIT），并同步把上限提到 2000。
+
+因此 §7du 的选项 3 作废，**不再需要你为「窗口定多宽」拍板**。
+仍然需要你定的只剩一件：
+
+> **存量补采要不要现在做。** 90 天窗口一开，下次定时跑批会为那 5 封
+> `candidate` 各开一次完整 IMAP 会话拉原文（只读 FETCH，不改邮箱状态），
+> 并把 `uid=10435` 那张真发票建档 + 下载附件 + 推飞书。
+> 不开自动补采的话，可以改成手动 `POST /api/email/pipeline/run` 触发一次。
