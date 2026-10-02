@@ -5,13 +5,11 @@
 // 必须带 token 再测，才能区分「路由不存在(404)」和「路由存在但我没带 token(401)」。
 // 同时拿一个**确定存在**的同类端点做阳性对照，证明探针本身能区分 404/401/200。
 import http from 'node:http';
-import { readFileSync } from 'node:fs';
+import { requireDevPass } from './lib/dev-pass.mjs'
+const HOST = process.env.POCKET_API_HOST || '127.0.0.1';
+const PORT = Number(process.env.POCKET_API_PORT || 8088);
 
-const HOST = '127.0.0.1';
-const PORT = 8088;
-
-const devPass =
-  (readFileSync('backend/internal/server/server_assistant.go', 'utf8').match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || '';
+const devPass = requireDevPass()
 
 function api(path, token, method = 'GET') {
   return new Promise((res) => {

@@ -1,14 +1,14 @@
 // probe-login-paths.mjs —— 直接对 /api/auth/login 打两发，比较 auth_method 与 workspace_id。
 // 目的：确认「dev-bypass 返回 default / legacy 返回 ws_user-admin」这条分歧在当前后端是否可复现。
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { requireDevPass } from './lib/dev-pass.mjs'
 import http from 'node:http';
 
-const devPass=(readFileSync('backend/internal/server/server_assistant.go','utf8').match(/devPass\s*=\s*"([^"]+)"/)||[])[1]||'';
+const devPass = requireDevPass()
 function post(path,body){
   return new Promise((res)=>{
     const payload=JSON.stringify(body);
-    const req=http.request({host:'127.0.0.1',port:8088,path,method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(payload)},timeout:15000},(r)=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>res({status:r.statusCode,body:b}));});
+    const req=http.request({host:'127.0.0.1',port:Number(process.env.POCKET_API_PORT || 8088),path,method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(payload)},timeout:15000},(r)=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>res({status:r.statusCode,body:b}));});
     req.on('error',e=>res({status:0,body:String(e)}));
     req.write(payload);req.end();
   });

@@ -2,11 +2,10 @@
 // 邮箱那次的教训：先探 API 再点 UI —— 后端若直接 503/400，
 // 可以在不占用设备、不受 UI 选择器干扰的前提下把「后端不支持」和「UI 有 bug」分开。
 import http from 'node:http';
-import { readFileSync } from 'node:fs';
-
-const HOST = '127.0.0.1';
-const PORT = 8088;
-const devPass = (readFileSync('backend/internal/server/server_assistant.go', 'utf8').match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || '';
+import { requireDevPass } from './lib/dev-pass.mjs'
+const HOST = process.env.POCKET_API_HOST || '127.0.0.1';
+const PORT = Number(process.env.POCKET_API_PORT || 8088);
+const devPass = requireDevPass()
 
 function api(path, { token, method = 'GET', body } = {}) {
   return new Promise((res) => {

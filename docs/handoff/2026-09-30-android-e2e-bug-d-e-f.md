@@ -9367,3 +9367,2653 @@ exit=1        adb forward --list → 0 条
 先把 `check-fixed-cdp-ports.mjs` 改成**基线棘轮**（记录当前 140 的文件清单，只对新增违规失败），
 再接进 `gates`。这样债务不会继续涨，且不会因为存量把别人的流水线打红；
 之后每轮顺手迁几个脚本，数字单调下降。
+# §4.87 32 个探针在刮一个**已被删除的常量** ⇒ 它们的 401 输出全是「没登录」；外加 secrets 卡口的一个盲区
+
+> 承 §4.86。本轮把一条被搬了三轮的「待查项」挖到底了：
+> **`/api/marketplace` 带有效 token 仍 401** —— 前提是错的，它**根本不返回 401**。
+> 顺着这条线挖出 BUG-V12（32 个探针必然拿不到 token）和 BUG-V13（secrets 卡口的
+> password-literal 规则有盲区），并给这一整类建了守门脚本。
+
+## §4.87.0 结论
+
+- **「`/api/marketplace` 带有效 token 仍 401，守卫与 `/api/tasks` 不同」= 幽灵结论，撤案。**
+  实测（有效 token，291 字符）：`/api/tasks` 200、`/api/marketplace/packages` **200**、
+  `/api/marketplace/releases` **200**、`/api/marketplace/agents` **404**。**401 的条数 = 0。**
+- 根因不是路由，也不是守卫：`server.go:855-858` 四条 marketplace 路由**全部**是
+  `s.requireAuth(...)`，与 `/api/tasks` **同一个守卫**（我此前写的「守卫不同」是错的）。
+- **BUG-V12（本轮新发现）**：**32 个**探针/验证脚本用
+  `readFileSync('backend/internal/server/server_assistant.go').match(/devPass\s*=\s*"([^"]+)"/)`
+  取 dev 口令，而那个常量**已被 `b6187bc1` 删除** ⇒ 刮取**必然**返回空串
+  ⇒ 登录 401 ⇒ **拿不到 token** ⇒ 后续每一条探测都是**未鉴权**的
+  ⇒ `/api/marketplace/*` 一律 401。**那份输出被当成证据记进了 handoff。**
+- **BUG-V13（本轮新发现）**：`backend/internal/repohygiene/secrets_test.go` 的
+  `password-literal` 规则**看不见** `MASTER = process.env.POCKET_MASTER || 'PocketTest2026'`，
+  所以那道卡口是**绿的**，而 `scripts/` 下有 22 处这样的硬编码口令兜底。
+- 新增 `scripts/check-dev-pass-sourcing.mjs`：把这一整类量化为 **54 处**（32 刮源码 + 22 硬编码兜底）。
+
+## §4.87.1 BUG-V12：失败不是「有时」，是**必然**
+
+```js
+// 32 个脚本里 7 个 marketplace 探针全都长这样（写法完全一致，典型的复制粘贴病）
+const devPass = (readFileSync('backend/internal/server/server_assistant.go', 'utf8')
+  .match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || ''
+```
+
+实测 `server_assistant.go` 里**已无** `devPass = "…"` ⇒ 5 个脚本按自己的正则实跑，
+**全部**得到「正则无命中 → 空串」。
+
+链条：
+
+```
+刮取空串 → login(password='') 401 → 没有 token
+        → 后面每条探测都是未鉴权的
+        → requireAuth 先于路由匹配跑 ⇒ /api/marketplace/* 一律 401
+        → 而这份输出被当成「带有效 token 的观测」记进 handoff
+```
+
+**这与 BUG-V10 是同一类**：安全整改删掉了一个字面量，某个消费者仍在按名字找它，
+而消费者的报错指向的是一个**已经不存在的东西**。BUG-V10 藏在 1 个文件里，
+**BUG-V12 藏在 32 个文件里**——因为那段代码被复制粘贴了 32 次。
+
+### 关键教训：401 处处都是，最常见的成因是**探针自己没登录**
+
+`requireAuth` 在路由匹配**之前**跑，所以未鉴权请求根本走不到「这条路由注册了没有」。
+**401 和 404 只有靠「同一个 token 下的对照路由」才分得开。**
+
+§4.86 刚写完的那句话在这里要再强调一次，因为它同时是这轮的教训：
+**「受阻于环境」是能吸收任何失败的解释。** 这次它吸收的是「脚本自己坏了」。
+
+## §4.87.2 BUG-V13：secrets 卡口是绿的，但它看不见这一种写法
+
+`secrets_test.go:141-145` 的规则：
+
+```go
+regexp.MustCompile(`(?i)\b[A-Za-z_]*(?:pass|pwd)[A-Za-z_]*\b\s*[:=]\s*` +
+    `(?:"([^"$]{8,})"|'([^'$]{8,})')`)
+```
+
+`TestNoCommittedSecrets` 实跑：**ok, 2.919s**（绿）。而
+`scripts/diag-marketplace-agents.mjs:11` 写着
+`const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'`。
+
+**两重漏**：
+
+1. 变量名 `MASTER` **不含 `pass` / `pwd`** ⇒ 主模式根本不匹配；
+2. 字面量不在 `=` 正后方（中间隔着 `process.env.POCKET_MASTER ||`）⇒ 形态也对不上。
+
+判别力实测（拿它的正则直接跑，3 个对照**全部命中**⇒ 证明正则不是永不匹配器）：
+
+| 样本 | 结果 |
+|---|---|
+| `const MASTER = process.env.POCKET_MASTER \|\| 'PocketTest2026'`（现场那行） | **不命中** |
+| `const adminPass = 'SomeRealPassword123'` | 命中 | <!-- secret-scan-ok 合成夹具：本文档在记录密钥扫描器的命中清单，示例值 SomeRealPassword123 是自造的对照样本，不是真实凭据 -->
+| `const devPass = "SomeRealPassword123"` | 命中 | <!-- secret-scan-ok 合成夹具：本文档在记录密钥扫描器的命中清单，示例值 SomeRealPassword123 是自造的对照样本，不是真实凭据 -->
+| `const pwd = 'SomeRealPassword123'` | 命中 | <!-- secret-scan-ok 合成夹具：本文档在记录密钥扫描器的命中清单，示例值 SomeRealPassword123 是自造的对照样本，不是真实凭据 -->
+
+> 抄这条正则时还踩了一个小坑：Go/RE2 的内联标志 `(?i)` 在 **JavaScript 里不认**
+> （`Invalid group`），要提到 `RegExp` 构造函数的第二个参数。而 `node --check`
+> **不会**报，只在运行时炸——「语法检查通过」不等于「判据能跑」。
+
+**本轮没有改这个 Go 规则**：它在 `backend/`，正被并发会话写；而且新脚本已经覆盖了
+`scripts/` 这一侧的缺口（54 处全部报出）。**Go 规则的这个盲区按「已定位、未修改」记录**，
+要改需要连带处理那 22 处硬编码兜底，否则一改就把整仓打红。
+
+## §4.87.3 新增守门脚本，以及它自己踩的三个坑
+
+`scripts/check-dev-pass-sourcing.mjs`（`--selftest` / `--list` / 默认 exit 1）：
+
+```
+扫描 280 个 .mjs，发现 54 处
+  scrape-dev-pass     32   （刮 .go 源码里的口令类常量）
+  hardcoded-fallback  22   （凭据名变量的 env 兜底里塞了字面量）
+```
+
+`--selftest` 三项全过：3 类能报出、6 类该放过的放过（含注释行、读 `.go` 取端口号等合法形态）、
+逐条关规则后恰好各少报 1。
+
+**这个脚本自己连踩三个坑，全部记在这里，因为它们都属于「不报红、只是让判据少干活」那一类**：
+
+1. **第一版 R2 噪声爆炸**：写成「任何 `process.env.X || '字面量'` 都报」，
+   扫出 **142 处**，大半是 `POCKET_SERIAL || '4c308e2e'`、`POCKET_API || 'http://…'`、
+   `JAVA_HOME || 'C:\Program Files\…'` 这类无害默认值。
+   **142 条里大半是假的守门脚本，下一周就会被 `--list | head` 忽略掉——比没有更糟。**
+   ⇒ 收紧成「变量名本身像凭据 **且** 字面量含字母数字且长度 ≥ 8」，降到 54 处且条条是真货。
+2. **收紧时把真实案例一起收没了**：多写了个否定预查 `(?![A-Za-z]*$)`（「排除纯字母的名字」），
+   而 **`MASTER` 恰好是纯字母** ⇒ 被自己排除。是 `--selftest` 的「该报的报」当场报红的。
+   *多余限定符在写规则时非常自然，但它们不报红、只是让判据变瞎。*
+3. **自指豁免静默失效**：`SELF` 取自 `URL.pathname`（正斜杠），而待扫路径来自
+   `path.join`（Windows 上是**反斜杠**）⇒ `f === SELF` 永远为 false，豁免从未生效，
+   自己被自己报了 3 条。**两边都归一化成正斜杠**才修好。
+
+> 第 1 条和 §4.86 记的「豁免清单是护栏的坟场」是同一个教训的另一面：
+> **过宽的规则和过长的豁免表，效果一样——都是让判据失去可信度。**
+
+## §4.87.4 回应本轮外部审计的四条证据缺口
+
+前一轮已回过同样的三条，这轮**重新拿当前证据复核**，结论一致。**没有一条靠「我记得改过」**。
+
+| 审计说法 | 核对结果 | 证据 |
+|---|---|---|
+| 「真机 Maestro 从未成功执行一次（零安装包、零运行产物）」 | **不成立** | `~/.maestro/tests/` 下 **155 个**运行目录（最近 `2026-10-02_231342`）。该目录内有 `login-gesture/commands.json`（11.1KB）、`manifest.json`（声明 `DEVICE_LOG` 340125 字节 + `TAKE_SCREENSHOT` 1 张）、`logs/device-logcat.txt`（332KB）、`takeScreenshot/…/login-gesture-rejected.png`（197KB）。**截图内容已目视核对**：真机状态栏 11:14 / 电量 76% / 720×1640，页面为 OpenCode Pocket 登录页，`admin` + 一串掩码密码，**「登录失败：用户名或密码错误」**（401 往返可见），页脚 `v1.2.0-mobile` / `后端服务器 · http://127.0.0.1:18099` |
+| 「闪卡入口缺陷（『新建卡组』文案 → 卡片编辑页）只记录未修」 | **不成立（已证伪）** | 代码实证：`FlashcardListView.vue:79-84` 有 `data-testid="deck-create-toggle"` + 文案取 `flashcards.deck.create`；`:89-99` 展开后的建组表单 `deck-create-form-existing`；`:17` 的按钮取 `flashcards.list.create` 并在 `:160` 跳 `/flashcards/new`。i18n 实值：`flashcards.list.create="新建卡片"`（→ 建卡片页）、`flashcards.deck.create="新建卡组"`（→ 真的建卡组）。**标签与行为已对齐** |
+| 「`/api/marketplace/agents` 的 404 说法在只读探测下无法证实（返回 401）」 | **404 成立**，且本轮把「401 从哪来」也定位了 | 有效 token 实测：`/api/marketplace/agents` → **404** `{"error":"not found"}`；同 token `/api/tasks` → 200、`/api/marketplace/packages` → 200（**token 有效性由此坐实**）。而 401 的来源已查明：**§4.87.1 那 32 个必然拿不到 token 的脚本** |
+| 「多个功能点写路径与 https 回归仍为未验证，Keystore 插件缺失未实现，『打通所有的功能点』不成立」 | **成立，不推辞** | 见 §4.87.5。**Goal 未完成，我没有把它标成完成。** |
+
+> 这三条被连续三轮重提（§4.78 / §4.81-4.82 / §4.83-4.85）。本轮把它们**连同原始产物路径
+> 一起**写进 §4.87，而不是只写结论——审计方大概只看了当轮会话目录。
+> 但**根因不在审计方**：根因是这些证据只以散文形式存在于 handoff 里，
+> 没有一条判据把「Maestro 产物目录存在且含截图」和「闪卡两个 key 各归其位」钉成可重跑的检查。
+
+## §4.87.5 本轮遗留
+
+- **32 个脚本仍在刮已删除的常量**（`scripts/check-dev-pass-sourcing.mjs --list` 可列全）。
+  它们的 401 类输出**一律不可信**。逐个改成「口令只从环境取 + 缺就 exit 2」是独立一件事。
+- **22 处 `MASTER = process.env.POCKET_MASTER || 'PocketTest2026'` 硬编码兜底未清。**
+  Go 侧 `password-literal` 看不见（新脚本能看见），要清就得配套改规则，否则改一个红一个。
+- 其余 §4.86.5 的遗留照旧：138 个 `.mjs` 硬编码 CDP 端口；BUG-V11 需生产 env 授权；
+  `POCKET_PROD_PASS` 缺失；`_login.yaml` 孤儿；BUG-AX 设备侧负控、闪卡两入口渲染/点击、
+  会议写入设备侧持久化、「tap 报 COMPLETED 但没反应」坐标对账、`:param` 模板、gateway 六页。
+- 待产品定范围 9 项（Keystore 原生插件已确认**全平台不可用**、同步编排层、改密入口、
+  gateway 四页、BUG-AV、i18n ~800 条、BUG-AR、PKM 删除入口、BUG-AQ/AK、`/contacts` 端点、
+  `TICK_MS` 与录音策略）照旧。
+
+### 下一轮建议的第一件事
+
+把 §4.87.1 那 32 个脚本收敛成一个共享的 `scripts/lib/dev-pass.mjs`
+（`requireDevPass()`：只从 env 取，缺就 `exit 2`），逐个替换。
+**关键不是「让它们能登录」，是让「拿不到 token」这件事变成响亮的失败**——
+现在它们失败得悄无声息，而那份沉默的输出被当成了三轮的证据。
+# §4.88 BUG-V12 收口：32 个探针从「必然拿不到 token」改成「拿不到就响亮退出」；顺带挖出第二处标签说谎的断言
+
+> 承 §4.87。§4.87 定位了「32 个脚本刮一个已被删除的常量 ⇒ 它们的 401 输出全是没登录」，
+> 本轮把这件事**真的修完**，并用双向对照证明修完之后它们**真的能验功能点了**。
+> 另外，脚本一活，就露出了里面一处**标签与判据不符**的假 PASS。
+
+## §4.88.0 结论
+
+- **32/32** 脚本改走 `scripts/lib/dev-pass.mjs` 的 `requireDevPass()`。
+  门禁复测：`scrape-dev-pass` **32 → 0**（总发现 54 → 22，剩下的全是 `hardcoded-fallback`）。
+- **契约是「响亮失败」**：缺口令时打印可操作说明并 `exit 2`，且**在碰设备/发请求之前**。
+  双向对照实测：负控 `exit 2` + `DEV_PASS_MISSING`；正控真登录成功、`exit 0`。
+- 新增 `scripts/migrate-dev-pass.mjs`（`--dry` 优先、逐文件 `node --check` + 失败即回退、
+  UTF-8 往返自证、只认一种形态、匹配不上就**跳过并报告**而不「尽力改一下」）。
+- **迁移让一个此前完全死掉的脚本活了，于是露出它里面一处假 PASS**（见 §4.88.3）——
+  这本身说明「让探针能跑」不是整理代码，是**把判据重新暴露在证据下**。
+
+## §4.88.1 为什么「响亮失败」比「能登录」更重要
+
+32 个脚本原来的失败是**静默**的：空口令 → 401 → 没有 token → 后面每条探测都按未鉴权跑
+→ 输出里一片 401 → **看起来像一份正常的探测报告**。§4.87 已经说明那份输出被当成了
+三轮的证据。所以真正要修的不是「让它们能登录」，而是**让「拿不到 token」变成一件显眼的事**。
+
+```js
+// scripts/lib/dev-pass.mjs
+const VARS = ['POCKET_AUTH_PASS', 'POCKET_DEV_PASS', 'POCKET_MASTER']
+export function requireDevPass(opts = {}) { ... exit(2) ... }
+```
+
+优先级理由：`POCKET_AUTH_PASS` 是后端 dev bootstrap 真正用的那个（`config.go:101`），最贴切；
+`POCKET_MASTER` 排最后，因为它是 App 的主密码，**不要**在探针日志里打出来。
+
+判别力自测（6 项，含一个恒真陷阱）：
+
+| 场景 | 期望 | 结果 |
+|---|---|---|
+| 有口令 | 返回该值 | ✅ |
+| 只有 `POCKET_MASTER` | 也能取到 | ✅ |
+| 无口令 | `exit 2` | ✅ |
+| 无口令 | 打印说明且含 `DEV_PASS_MISSING` | ✅ 15 行 |
+| **`POCKET_AUTH_PASS=''`（空串）** | **仍算「没有」** | ✅ `exit 2` |
+| `devUser()` | 读 env，带缺省 | ✅ |
+
+> 空串那条是刻意加的：`process.env.X || fallback` 那种写法里，**空串和没设是两种情况**，
+> 而 `if (env[k])` 恰好都能识破；但只要哪天有人改成 `env[k] ?? fallback`，空串就会漏过去。
+
+## §4.88.2 迁移工具自己踩的坑：一条正则，两种句式
+
+第一版迁移跑完是 **18 成功 / 14 失败并回退**。失败的 14 个不是「这些文件特殊」，
+而是**同一条正则**对**有无分号**两种情况处理不一致：
+
+```
+原文（无分号）：
+  const devPass =
+    (readFileSync(…).match(/devPass…/) || [])[1] || ''
+                      ← 这里的 \s* 把后面的换行符也吞了
+替换后：
+  const devPass = requireDevPass()function api(path, token, …) {
+                      ^^^^^^^^^^^^^^^^ SyntaxError
+```
+
+修法：尾部由 `\s*` 改成 `[ \t]*`（只吃行内空白）。**同时加了一条不变量**：
+
+```js
+function assertNoTrailingNewline(span, file) {
+  if (/\r?\n$/.test(span)) throw new Error(`MIGRATE_BUG_REGRESSION：${file} 的匹配片段以换行结尾…`)
+}
+```
+
+为什么不只靠 `node --check` 兜底？因为它只在 14/32 上触发，**看不出「为什么有的成功有的失败」**。
+把「匹配片段不得以换行结尾」写死成机械检查，下次改这条正则会立刻响。
+
+修完复跑：14/14 成功，`scrape-dev-pass` 归零，`node --check` **32/32 通过**（逐个独立复验）。
+迁移后 32 个文件都留下了未使用的 `readFileSync` import，工具第二遍一并清理（同样带回退）。
+
+## §4.88.3 脚本一活，露出的假 PASS：`/api/opencode/instances/stats`
+
+正向对照跑 `probe-instances-api.mjs` 时看到这一行：
+
+```
+PASS  /api/opencode/instances/stats 可达（非 404/501/503）  — status=404
+```
+
+**标签说不许 404，状态码就是 404，却判了 PASS。** 查下去是两层问题：
+
+1. **判据与标签不符**（原第 96 行）：
+   `check('…（非 404/501/503）', stats.status < 500, …)` —— `status < 500` 只排除了
+   501/503，**根本没排除 404**。标签在撒谎，而 PASS 把谎言印成了绿灯。
+2. **它打的 URL 根本不存在**：真实路由是
+   `GET /api/opencode/instances/{instance_id}/stats`（`server_opencode.go:228` 的注释写明），
+   **必须带 instance_id**。`handleOpenCodeInstanceOperations` 用
+   `len(path) > 6 && path[len(path)-6:] == "/stats"` 分发，裸 `stats` 只有 5 个字符，
+   进不去这个分支 → 落 default → 404。
+
+⇒ **404 是正确行为，坏的是测试。** 实测四种形态：
+
+| 请求 | 状态 | 解读 |
+|---|---|---|
+| `/api/opencode/instances/stats`（缺 id） | 404 | 正确：路由要求 id |
+| `/api/opencode/instances/demo-main/stats` | 500 `instance not found: demo-main` | 到了 handler；该实例的 OpenCode API base 未配置，属**环境** |
+| `/api/opencode/instances/nope-not-real/stats` | 500 同上 | handler 不区分实例真伪，都是「取不到 API base」 |
+| `/api/opencode/instances/demo-main/tasks` | **404** | `handleGetInstanceTasks`（`server_opencode_discovery.go:78`）有文档，但 dispatcher 只特判 `/stats` 后缀，**它从未被分发到** —— 疑似死 handler |
+
+改法：拆成两条断言，**让标签和判据对上**，并用 `/api/instances` 列表里**真实的**
+`instance_id`（不再自造）：
+
+```js
+check('缺 instance_id 的 /stats 返回 404（路由要求 id，非缺陷）', noId.status === 404, …)
+const reachedHandler = ![404, 501, 503].includes(withId.status)
+check(`/api/opencode/instances/${id}/stats 过路由匹配（非 404/501/503）`, reachedHandler,
+  `status=${withId.status}` + (/* 500 = handler 到了但 API base 未配置，关键是不是 404/501/503 */))
+```
+
+改后 **13/13 通过**。附带一条事实写进注释：**前端全仓不引用 `opencode/instances`**
+（grep 无命中），所以这组断言是「后端契约」级别，不是「App 用得到」的级别。
+
+> 这一条印证了一件事：**死脚本里藏着的坏判据，只有在脚本能跑之后才会暴露。**
+> 之前它从没红过 —— 不是因为它对，是因为它根本没跑到那里。
+
+## §4.88.4 双向对照（这是「修好了」的证据）
+
+```
+负控（不设任何 POCKET_* 口令）
+  $ node scripts/probe-instances-api.mjs
+  ❌ DEV_PASS_MISSING —— 没有 dev 口令，**不继续跑**。
+  exit=2          ← 且在发任何请求之前就退了
+
+正控（POCKET_API_PORT=18100 + POCKET_AUTH_PASS=…）
+  登录成功
+  PASS  阴性对照 A：未鉴权 401（探针能区分 401）  — status=401
+  PASS  阴性对照 B：随机实例子路径 404            — status=404
+  PASS  列表端点 200 — {"instances":[{"id":"demo-main",…}]}
+  PASS  每条实例都有 id/displayName/environment（UI 不会渲染出 undefined）
+  PASS  since 过滤生效（未来的时间戳应滤掉全部）    — n=0
+  PASS  since 过滤不是「恒空」：过去时间戳仍返回全部  — n=1
+  PASS  DELETE /api/instances 被拒                — status=405
+  PASS  PUT    /api/instances 被拒                — status=405
+  PASS  缺 instance_id 的 /stats 返回 404
+  PASS  /api/opencode/instances/demo-main/stats 过路由匹配（非 404/501/503）
+  13/13 通过      exit=0
+```
+
+`since` 那两条是**双向**的：只测「未来时间戳 → 0」会被恒空骗过去，加上
+「过去时间戳 → 1」才排除了「这个过滤根本没接上」。
+
+> 附一条我自己的测量错误：第一次数 FAIL 时用 PowerShell `Select-String 'FAIL'`，
+> 它**大小写不敏感**，匹配到了响应体里的 `get instance API base **failed**`，
+> 于是报「1 个 FAIL」。脚本其实 13/13 全过。**是我的计数方法错了，不是脚本坏了** ——
+> 与 §4.87 记的「命令没跑起来 / 判据不判它」同一个家族：先确认工具在做什么，再读它的结论。
+
+## §4.88.5 本轮遗留
+
+- **22 处 `MASTER = process.env.POCKET_MASTER || 'PocketTest2026'` 硬编码兜底未清。**
+  门禁 `check-dev-pass-sourcing.mjs` 已能报出，但**清理时要一并决定 `POCKET_MASTER`
+  是不是该继续当 dev 口令用**（它是 App 主密码，语义上不该）。清完才能动
+  `backend/internal/repohygiene/secrets_test.go` 的 `password-literal` 规则（§4.87.2 的盲区）。
+- 其余 31 个已迁移脚本**只验了语法，没逐个实跑**——它们多数硬编码 8088 等已不用的端口，
+  要逐个跑得先统一 base。这条别当成「32 个都验过了」。
+- `handleGetInstanceTasks` 疑似死 handler（§4.88.3 第四行）：有文档、有实现，
+  但 dispatcher 不分发。**未修**，也未确认前端是否需要它。
+- §4.86.5 / §4.87.5 其余遗留照旧：138 个 `.mjs` 硬编码 CDP 端口；两道门禁均未接 `gates`
+  （需先改基线棘轮）；BUG-V11 需生产 env 授权；`POCKET_PROD_PASS` 缺失；`_login.yaml` 孤儿；
+  BUG-AX 设备侧负控、闪卡两入口渲染/点击、会议写入设备侧持久化、
+  「tap 报 COMPLETED 但没反应」坐标对账、`:param` 模板、gateway 六页；待产品定范围 9 项。
+
+### 下一轮建议的第一件事
+
+把 §4.88.5 的两件事按顺序做：① 用 `POCKET_API_BASE`/`POCKET_API_PORT` 把已迁移脚本的
+base 统一到 env，然后**逐个实跑**，把「语法通过」升级成「验过功能点」；
+② 决定 `POCKET_MASTER` 的去留，清掉 22 处硬编码兜底，再动 Go 侧规则。
+# §4.89 32 个探针里 API 族先跑起来：5 个只读脚本产出真证据，并追出两条线索（一条是死路）
+
+> 承 §4.88。§4.88 把 32 个脚本的**口令来源**修好了，但它们多数还**硬编码 8088**——
+> 那个端口现在没有服务在跑。所以「语法通过」≠「能跑」：逐个实跑会全部撞 ECONNREFUSED，
+> 看起来像「脚本坏了」，其实是**地址写死**。本轮把 API 族改成走 env 并**真的跑起来**。
+
+## §4.89.0 结论
+
+- **16 个脚本的 API base 改成环境变量**（`POCKET_API_HOST` / `POCKET_API_PORT`），
+  约定与仓库里已有的 env 版（`probe-instances-api.mjs`）一致。
+- **5 个只读脚本实跑通过（全部 exit=0），产出真实证据**；其中 2 个还带出了新线索。
+- 追查两条线索：① `GET /api/flashcards?since=0` 返回 **`{"cards":null,"decks":null}`**
+  ——**不是缺陷**（前端有 `Array.isArray` 兜底），但**没有那些兜底就会崩**；
+  ② `default` vs `ws_user-admin` 数据孤岛 —— **§4.26.2 已记录的旧项**，不是新发现。
+- **7 个会写数据的脚本一律没跑**（`vault/sync`、`llm-gateway/nodes`、`email/accounts`、
+  `emails/sync`、`marketplace/submit`、`finance`）——它们写的是**与另一会话共享的开发库**。
+
+## §4.89.1 必须先分清两族：CDP 端口 ≠ API 端口
+
+清点时我一开始把两族混为一谈了。实测形态：
+
+| 族 | 形态 | 数量 | 该怎么修 |
+|---|---|---|---|
+| **CDP / 设备族** | `const PORT = process.env.POCKET_CDP_PORT \|\| '92xx'` | 多数 | 迁 `lib/adb-cdp.mjs`（`forward tcp:0`）——**就是 §4.86 那 138 处的本体** |
+| **API 族** | `const HOST = '127.0.0.1'; const PORT = 8088` 或内联 `port:8088` | 16 | 改成 `POCKET_API_HOST` / `POCKET_API_PORT` |
+
+判据用**字面量 8088** 区分两族，因为 CDP 那批写的是 92xx。
+**混在一起改会把「CDP 端口」也改成 API 端口** —— 那是把好实现换成瞎实现。
+
+> 顺带纠正清点脚本自己的一个错：它把 `lib/dev-pass.mjs` 和 `migrate-dev-pass.mjs`
+> 也算进了「已迁移脚本」，因为这两处的**文档/常量里含同样的 import 字符串**。
+> 实际是 32 个，不是清点报出的 34 个。
+
+## §4.89.2 实跑的 5 个（全部只读、全部 exit=0）
+
+跑之前先用一条**区分得开**的判据把脚本分成读写两族。第一版判据写错了：
+`\b(POST|PUT|PATCH|DELETE)\b` 把**登录**也算成写方法 ⇒ 16 个全标「有写方法」。
+改成「写方法的路径里排除 `auth/login`」才分清：9 个只读、7 个写。
+
+```
+probe-marketplace-404      exit=0
+  /api/marketplace/agents     无 token 401 · 带 token 404  {"error":"not found"}
+  /api/marketplace/skills     无 token 401 · 带 token 404
+  /api/marketplace/installs   无 token 401 · 带 token 404
+
+probe-marketplace-agents   exit=0
+  401  不带 token                    /api/marketplace/agents
+  404  带 token                      /api/marketplace/agents
+  404  阴性对照（随机路径）            /api/marketplace/definitely-not-a-route
+  200  同族端点（对照）                /api/marketplace/packages
+  结论：不带 token 的 401 只是鉴权层，不是路由结论。
+
+probe-login-paths         exit=0
+  4 条登录路径全 200，auth_method=dev-bypass workspace_id=ws_user-admin
+
+diag-workspace-claim      exit=0
+  连续 3 次全新登录：workspace 稳定 ws_user-admin
+
+probe-flashcards-api      exit=0
+  GET /api/flashcards?since=0&limit=200 → 200 {"cards":null,"decks":null,...}
+  GET /api/flashcards/notes?since=0     → 200 {"notes":null,...}
+  GET /api/flashcards/decks             → 404
+```
+
+> `probe-marketplace-agents.mjs` 在 §4.88 之前是**完全死**的（拿不到 token），
+> 现在它给出的是这条争议最干净的四重对照。**把探针修活，证据的质量会自己上去。**
+
+## §4.89.3 线索一：`cards: null` / `decks: null` —— 查到底，**不是缺陷**
+
+看着就不对：契约测试（`services/__tests__/flashcards.contract.test.ts:171`）写的是数组，
+实测却是 `null`。链路查到底：
+
+1. `flashcards_handler.go:68-70` 把 store 的返回值直接塞进 `map[string]interface{}`；
+2. `flashcards/store.go:385` 是 `var out []*Card` —— **nil slice**，零行时保持 nil；
+3. `encoding/json` 把 **nil slice 序列化成 `null`**（Go 的经典坑）。
+
+**但它不会出事**，因为前端早就防了（`services/flashcards.ts` 的 `pullCards`）：
+
+```ts
+cards: Array.isArray(body.cards) ? body.cards : [],
+decks: Array.isArray(body.decks) ? body.decks : [],
+notes: Array.isArray(body.notes) ? body.notes : [],
+```
+
+⇒ **判定为契约味道，不是活 bug**。本轮**不动**后端：改了是对共享代码的无谓行为变更，
+而客户端已经能扛；而且**没有那些 `Array.isArray` 兜底的客户端会直接崩在 `.map()` 上** ——
+这才是值得写进 handoff 的部分。
+
+`GET /api/flashcards/decks → 404` 同理**正确**：前端用的是
+`POST /api/flashcards/decks`（建卡组）与 `GET /api/flashcards/decks/:id/due?now=`，
+裸 `GET /decks` 没给 id，item handler 落 default → 404。
+
+## §4.89.4 线索二：`default` 数据孤岛 —— **旧项，不是新的**
+
+`diag-workspace-claim.mjs` 报「API 侧 `ws_user-admin` vs 设备上 App 的 token 是 `default`
+⇒ 两个数据孤岛（真缺陷）」。
+
+查 handoff：**§4.26.2 已经记过同一件事**（「App 与 API 可能在两个不同的 workspace（数据孤岛）」），
+且与 `identity.EnsureDefaultWorkspace` 的 `ws_<userID>` 约定有关。**不是本轮新发现。**
+
+而且这条输出**不算新鲜证据**：脚本里那句「来自上一轮诊断解出的 JWT payload」说明它
+**复用的是上一轮解出的 payload**，不是这次真机上读回来的。按「不可归因的结果不报结论」，
+本轮只记为「已知仍开放，待设备侧重新取 token 核实」。
+
+## §4.89.5 本轮遗留
+
+- **7 个写数据的脚本仍没跑**：`probe-vault-api`、`probe-vault-sync-empty-blob`、
+  `probe-gateway-nodes-api`、`probe-email-account-api`、`probe-email-sync-honesty`、
+  `verify-bug-z`、`diag-finance-workspace` / `diag-finance-samescope` /
+  `verify-finance-writepath`。它们的 base 已改 env，**但**要跑得先决定
+  「往与另一会话共享的开发库写测试数据」的策略（建议：起一个**独立 PG** 或
+  用完即删且自证删干净）。
+- **CDP / 设备族（约 14 个）仍硬编码 92xx 端口**，且没实跑——它们依赖设备 + 前向通道。
+  这批与 §4.86 的 138 处是同一件事。
+- `handleGetInstanceTasks` 疑似死 handler（§4.88.3），未修。
+- §4.88.5 其余遗留照旧：22 处硬编码 `MASTER` 兜底；BUG-V11 需生产 env 授权；
+  `POCKET_PROD_PASS` 缺失；`_login.yaml` 孤儿；BUG-AX 设备侧负控、闪卡两入口渲染/点击、
+  会议写入设备侧持久化、「tap 报 COMPLETED 但没反应」坐标对账、`:param` 模板、
+  gateway 六页；待产品定范围 9 项。**「打通所有的功能点」仍不成立。**
+
+### 下一轮建议的第一件事
+
+先定「写路径脚本能不能往共享开发库写」这个前置（它是 7 个脚本 + 一堆功能点写路径的
+共同阻塞），再把 CDP 族迁到 `lib/adb-cdp.mjs` 并逐个实跑。
+# §4.90 「写路径能不能往共享开发库写」这个前置：我自己给了答案 —— 3 个自清理 / 6 个不自清理；顺带修掉一处**失败路径不删数据**的污染源
+
+> 承 §4.89。§4.89 说「7 个会写数据的脚本一律没跑，因为它们写的是与另一会话共享的开发库」，
+> 把「能不能写」当成一个需要别人拍板的前置。**其实不需要**：能自己判。
+> 判据不是「它写了没有」（都写了），而是「**它写的会不会留下**」。
+
+## §4.90.0 结论
+
+- **3 个自清理**（finance 族）：`verify-finance-writepath` / `diag-finance-samescope` /
+  `diag-finance-workspace` —— 播完 seed 会 DELETE。**这 3 个可以跑。**
+- **6 个不自清理**：`probe-vault-api`、`probe-vault-sync-empty-blob`、
+  `probe-gateway-nodes-api`（会建 gateway node）、`probe-email-account-api`（会建邮箱账号）、
+  `probe-email-sync-honesty`、`verify-bug-z`（会 submit 3 个 marketplace 版本）——
+  **要跑必须先有隔离环境**，本轮不跑。
+- **修掉一处真缺陷（BUG-V14）**：那 3 个「自清理」脚本的 DELETE 写在脚本**末尾**，
+  **不在 `finally` 里** ⇒ 中间任何抛错都会把 seed 留在**共享**开发库。
+  后果不是「自己测试脏了」，是**污染另一会话的基线**。
+- 负控证明修完之后异常路径**真的**会删（不是装饰代码）。
+
+## §4.90.1 BUG-V14：自清理不等于「一定会清」
+
+```js
+// 修之前（三个脚本同款）
+let seedId = null;
+try { seedId = JSON.parse(seed.body).id } catch {}
+// …中间 200 多行，任何一处 throw 都到不了下面…
+if (seedId) { await api(`/api/finance/${seedId}`, { token, method: 'DELETE' }) }
+```
+
+这与 **BUG-V10**（`verify-https-prod.mjs` 失败路径不还原覆盖值）**同一类**：
+清理写在 happy path 上。而这次的残留物是**共享库里的数据行**，
+会被另一会话当成真实数据卷进它的基线——**比 BUG-V10 的「配置值留在生产」更主动地有害**。
+
+修法（三个脚本同款）：
+
+```js
+let cleaned = false;
+async function cleanupSeed(reason) {
+  if (!seedId || cleaned) return;      // 幂等
+  cleaned = true;
+  const cl = await api(`/api/finance/${seedId}`, { token, method: 'DELETE' });
+  console.log(`[cleanup:${reason}] 删除 SEED ${seedId} -> ${cl.status}`);
+}
+process.on('unhandledRejection', async (e) => { await cleanupSeed('rejection'); process.exit(1) });
+process.on('uncaughtException',  async (e) => { await cleanupSeed('exception'); process.exit(1) });
+// 末尾也调同一个函数
+await cleanupSeed('normal');
+```
+
+两个细节：① **`process.on('exit')` 不能 await**，所以钩子要挂
+`unhandledRejection` / `uncaughtException`；② 清理函数必须**幂等**，
+否则正常路径 + 异常钩子会删两次。
+
+## §4.90.2 负控：证明钩子真的会触发（以及我自己在负控里踩的两个坑）
+
+不碰数据库——`api()` 换成只记录调用的假实现，制造一次未处理 rejection：
+
+```
+CLEANED:rejection CALLS=["DELETE /api/finance/SEED-123"]
+清理触发次数 = 1（幂等）      异常路径退出码 = 1
+```
+
+**做这个负控的过程里我自己写坏了两次，两次都差点让我得出错误结论：**
+
+1. **临时文件与负控脚本同名** ⇒ 它把自己的源码覆盖掉再删掉。
+   *自我验证的工具必须把产物写到别处*，否则「工具验证了工具自己」根本不会发生，
+   只会更安静地给出假结果。
+2. **漏了 `execFileSync` 的 import**，而 `catch` 把这个 `ReferenceError` 吞成
+   「stdout 空 + status undefined」——**看起来正好像子进程没输出**。
+   判据把自己的失败伪装成了被测对象的结果。修法：`catch` 里**区分**
+   「子进程非 0 退出」（`e.status` 是数字）与「我自己的代码抛了」，后者立刻 exit 2。
+   修完之后才暴露出第 3 个问题：
+3. 我那条断言 `out.includes('DELETE …')` **永远不可能满足**——异常路径清理完立刻
+   `process.exit`，`setTimeout` 里的 `console.log` 根本没机会执行。
+   *判据里任何依赖「后面还会跑」的前提，都要显式检查那个前提。*
+
+> 三次里有两次是「判据没执行 / 判据看错了地方」，只有一次是实现的问题。
+> 这就是为什么负控必须**真的跑**，而不是「看一眼觉得对」。
+
+## §4.90.3 6 个不自清理的脚本：需要隔离环境才能跑
+
+| 脚本 | 写什么 | 留下的东西 |
+|---|---|---|
+| `probe-vault-api` | `POST /api/vault/sync/` ×2 | vault 同步结果 |
+| `probe-vault-sync-empty-blob` | `POST /api/vault/sync/` | 同上 |
+| `probe-gateway-nodes-api` | `POST` + `PUT /api/llm-gateway/nodes` | **一个 gateway node** |
+| `probe-email-account-api` | `POST /api/email/accounts` | **一个邮箱账号** |
+| `probe-email-sync-honesty` | `POST /api/emails/sync` | 同步副作用 |
+| `verify-bug-z` | `POST /api/marketplace/submit` ×3 | **3 个 marketplace 版本** |
+
+**建议的隔离方案（未做，等下一轮）**：起一个**独立 PG 数据库**（`POCKET_POSTGRES_DSN`
+指过去）+ 一个独立端口的后端，验证跑完直接 drop 库。
+这样写路径测试不再需要「用完即删」这种**依赖纪律**的约定——
+**纪律靠不住，隔离才靠得住**（本轮这条负控本身就是纪律失效的例子）。
+
+## §4.90.4 本轮遗留
+
+- **6 个不自清理的脚本仍没跑**（见 §4.90.3），它们覆盖的功能点：vault 同步、
+  LLM gateway 节点、邮箱账号、邮件同步、marketplace 提交流程。
+- 3 个自清理的脚本**代码改完了但还没实跑**——它们都依赖设备 + CDP 通道，
+  而设备上的 App 当前指向 **18099（另一会话的后端）**，不是本 worktree 的 18100。
+  改 `adb reverse` 是**共享状态**，动手前要先确认对方没在跑。
+- CDP / 设备族约 14 个仍硬编码 92xx 端口（与 §4.86 的 138 处同一件事）。
+- `default` vs `ws_user-admin` 数据孤岛（§4.26.2 旧项）待设备侧重取 token 核实。
+- 22 处硬编码 `MASTER` 兜底；`handleGetInstanceTasks` 疑似死 handler 未修；
+  BUG-V11 需生产 env 授权；`POCKET_PROD_PASS` 缺失；`_login.yaml` 孤儿；
+  BUG-AX 设备侧负控、闪卡两入口渲染/点击、会议写入设备侧持久化、
+  「tap 报 COMPLETED 但没反应」坐标对账、`:param` 模板、gateway 六页；
+  待产品定范围 9 项。**「打通所有的功能点」仍不成立。**
+
+### 下一轮建议的第一件事
+
+搭**独立 PG + 独立端口后端**的隔离验证环境（§4.90.3），一次解锁 6 个写路径脚本
+和一大批功能点写路径；随后把 3 个已修好清理逻辑的 finance 脚本对着隔离环境实跑，
+确认「失败路径也会删」这条不只停在负控里。
+
+<!-- ============ 编号碰撞分界（2026-10-03 round29 合并 origin/main 时产生） ============
+
+     下面这一段来自 origin/main，它与上面那段是**两条互相独立的编号轨道**，
+     各自独立地把章节编到了 §4.91，合并时撞车。两边内容都是真的，一行都没丢。
+
+       · 上半段（本会话这条轨道）：§4.90 – §4.100
+         主题：更新通道字典序、版本显示点、边缘 /callback/ 可达性、
+               feikemanager 邮箱追查、/api/app/download 假 APK
+       · 下半段（origin/main 那条轨道）：§4.91 – §4.98
+         主题：隔离验证环境（POCKET_PG_SCHEMA）、写路径探针、
+               BUG-V15 ~ BUG-V22、BUG-V20 的三段定性反复
+
+     **为什么不在这里自动重编号**：这两条轨道各有 8~10 个章节，
+     且**互相引用自己的章节号**（例如下半段的「§4.96 更正 §4.95」、
+     「§4.98 撤回 §4.97 的定性」）。机械地把下半段整体 +10 会同时改掉
+     章节标题和章节**内部**的引用，而从文档外部指向它们的引用散落在
+     round26/27/28/29 等其它 handoff 文件里，一次 sed 改不干净，
+     留下的错误引用比重复编号更难发现。
+
+     所以本轮选择：**保留两侧原始编号 + 在此加分界说明**。
+     重复编号是**显式**的、能一眼看见的问题；错误交叉引用是**隐性**的。
+     重编号留给下一轮连同全量引用一起审计，别塞进 cron。
+
+     ⚠ 读下半段时注意：「§4.97」指的是 BUG-V20 的真产品缺陷，
+        **不是**上半段 §4.97 的飞书回调 nginx 缺陷。两者同号不同事。
+
+=========================================================================== -->
+
+
+# §4.91 更新通道：服务端字典序 bug 的黑盒定案 + 「设备跑的是哪个构建」改成读原生
+
+## §4.91.0 结论
+
+本轮两件事，都拿到了比上一轮更强的证据：
+
+1. **服务端版本比较的修复已在真实 HTTP 后端证明**，不再只是 go test 层面的绿。
+   方法：用 go build -overlay 从同一棵树构建两个二进制，唯一差别是
+   hasUpdateAvailable 的判定（真实现 vs 退回裸字符串 <），起两个隔离实例
+   （schema vercmp_verify、scheduler 关、邮件抓取关，共享开发库未参与），
+   打同一份请求体。latest 固定 1.10.0/build 2：
+
+   | 设备侧上报 | 期望 | 新 :8096 | 旧 :8097 |
+   |---|---|---|---|
+   | 1.9.0 / build 2 | true | **True** | **False** |
+   | 1.2.0 / build 2 | true | **True** | **False** |
+   | 1.10.0 / build 2 | false | False | False |
+   | 1.10.2 / build 2 | false | False | False |
+   | 1.9.0 / build 1 | true | True | True |
+
+   负控有判别力：同一请求两个二进制答案相反（True vs False），所以这次绿灯
+   不是恒真。证据留档 logs/vercmp-blackbox-20261003-0200.txt。
+
+2. **「设置页显示的是 TS 常量、不是设备上真装的构建」已修**（§4.91.3）。
+   这是 §4.74.2 那个坑的直接根因。
+
+## §4.91.1 :18099 不能当「旧代码」对照 —— 这条差点让我得出假结论
+
+真机点「检查更新」时我先想拿 18099 当 pre-fix 对照。查进程才发现它是
+pocketd-invoicenan-fix.exe，启动时间 **01:32:59**，而 app_version_compare.go
+的写入时间是 **01:32:57** —— 差 2 秒。并行会话是在我写完新文件**之后**
+构建的，所以那个二进制**很可能已经包含我的修复**。
+
+结论：18099 上「点了没报错」这件事，对「我的修复是否生效」**零信息量**。
+必须自建 overlay 对照对。教训：拿别人（或自己）的进程当对照之前，
+先核它的构建时刻与被测代码的写入时刻，别靠进程名猜。
+
+## §4.91.2 探针起不来时，先怀疑环境而不是判据
+
+第一次并行起两个 pocketd，8097 秒挂在启动：
+
+    task store: task migrate: ERROR: duplicate key value violates unique
+    constraint "pg_type_typname_nsp_index" (SQLSTATE 23505)
+
+不是判据的问题，是**两个进程同时在同一张全新 schema 上建表**撞了唯一约束，
+输的那个启动即死。串行化启动（等第一个 healthz 通过再起第二个）后两个都健康。
+
+一般化的教训：「命令返回了错误」先问「这是被测对象坏了，还是我没准备好环境」。
+同一形态我这轮在判据上也遇到过一次（函数体切片正则没匹配上，报的是
+「找不到 checkUpdate」而不是「判据扫错范围」）—— 判据自己坏掉时报错会伪装成
+被测对象的问题，所以判据必须自己先证明它在检查你以为的东西。
+
+## §4.91.3 已修：设置页的「应用信息」现在显示设备真实构建
+
+### 病根
+
+SettingsView 的三行直接渲染 TS 常量 APP_VERSION，于是**无论设备装的是哪个
+APK，界面恒显示** v1.2.0 (Build 2) / 2026-06-29。而 gradle 里写的是
+versionCode 3 / versionName 1.2.0-openpocket，build-mobile.mjs 两个计数器
+都不碰。
+
+后果不是「版本号难看」，而是**「设备上跑的是不是最新包」从界面上完全
+看不出来**。§4.74.2 丢的那一整轮验收就是这个形态：整轮在测过时产物，
+没有任何异常信号。
+
+### 修法（不需要产品拍板）
+
+原生才是唯一真相源。新增 resolveAppVersion()：
+
+- 原生平台走 @capacitor/app 的 App.getInfo()，拿 versionName / versionCode；
+- 任何一步失败（非原生、插件缺失、字段为空/垃圾）逐项回退到常量；
+- 结果只算一次并缓存（版本号在一进程内不会变）；
+- SettingsView 的应用名/版本号两行改读解析值，「构建日期」旁加来源标注
+  （原生拿不到构建时间，日期仍是配置值，不加标注就会让人误以为那是构建时间）。
+
+### 刻意**不做**的事：比较层仍用常量
+
+checkUpdate() 上报的 currentVersion/currentBuild **仍取 APP_VERSION 常量**，
+不是原生值。理由：原生 versionName 带 -openpocket 后缀，而服务端的版本
+比较会把预发布后缀判成比正式版旧 —— 设备明明已是最新版，却每次启动都被
+告知「发现新版本」。把原生值直接送进比较会引入一个新的 UX bug。
+
+统一版本语义（version.ts 与 build.gradle 哪套为准）仍是**产品决定**，见
+§4.91.5。判据里有一条专门钉住「比较层当前用常量」，将来产品决定落地时
+连同那条用例一起改，不让它悄悄红着。
+
+### 判据（8 条，负控实测过）
+
+frontend/src/utils/__tests__/app-version-identity.test.mjs。要点：
+
+- **5 条行为用例真 import version.ts 并调用 resolveAppVersion()**，不是源码
+  grep。注入的原生值（1.2.0-openpocket / build 3）与常量（1.2.0 / build 2）
+  **刻意不同**，所以「恒返回常量」的实现无法通过。
+- 为此给 version.ts 加了 __setNativeInfoProviderForTest()：测试环境里
+  runtimePlatform() 恒为 web，永远走回退分支，没有这个把手就只剩一半可测。
+- **负控实测**：把 normalise 改成恒返回 fallback → 恰好 2 条转红
+  （原生优先、parseInt 数字化），其余 6 条保持绿；源文件逐字节还原
+  （7453 字节 / 195 CRLF / 无 BOM）。
+- version.ts 的三个内部 import 改成显式 .ts 扩展名：tsconfig 已开
+  allowImportingTsExtensions，Vite 也能解析，这样 node --test 能直接 import
+  它跑行为用例。实测 Node 22.23 **默认就 strip types**，不需要
+  --experimental-strip-types，所以本文件在 test:all 里能正常执行、
+  **不需要加进 test-coverage-waivers.json**。
+
+## §4.91.4 全量前端测试当场抓住我的一个遗漏
+
+我给 9 个语言包里的 zh-CN / en-US 加了 settings.buildDateNote，跑全量时
+
+    locale-parity.test.mjs: zh-TW.json 缺少 1 个 key：settings.buildDateNote
+
+补齐其余 7 个（de-DE / es-ES / fr-FR / ja-JP / ko-KR / pt-BR / zh-TW）。
+这正是 locale-parity 门禁存在的意义：漏一个语言包，界面会直接显示原始 key 名。
+
+回归：全量 node scripts/run-mjs-tests.mjs = **1737 用例 / 1736 pass / 1 fail**
+（那 1 条就是上面这个 locale 遗漏，补齐后复跑全绿）；
+vue-tsc --noEmit **exit 0**。
+
+## §4.91.5 本轮遗留
+
+- **构建身份仍未统一**：本轮只让「显示」读原生，「比较」仍用常量。
+  version.ts 的 buildNumber 2 / buildDate 2026-06-29 与 gradle 的
+  versionCode 3 / versionName 1.2.0-openpocket 该以哪套为准，需要产品拍板。
+  拍板后要同步改 checkUpdate 的上报来源 + 判据里那条「仍用常量」的用例。
+- 「构建日期」本身仍无真相源：原生不提供构建时间，要真值得在
+  build-mobile.mjs 里把构建时刻 stamp 进产物。
+- 38 个 POST 端点仍未探（理由见前轮），本轮新增的 2 个探针实例已停、
+  :8096/:8097 已释放、scratch 目录已删。
+- 其余待决项（飞书 Encrypt Key、llm.kxpms.cn admin、/api/embed 的 embedding
+  模型、密码箱入口、生物认证）不变。
+
+### 下一轮建议的第一件事
+
+等构建身份的产品决定落地后，把 checkUpdate 的上报切到 resolveAppVersion()，
+并把判据里那条「仍用常量」的用例改成断言新来源 —— 一次改动同时消掉
+「界面看不出构建」和「比较基线可能过期」两个问题。
+
+# §4.92 buildDate 也有了真相源：把构建时刻编译进产物；并把「产物级」验证固化成门禁
+
+## §4.92.0 结论
+
+§4.91 让「版本号/构建号」读原生，但 `buildDate` 还不是真的：原生 `App.getInfo()`
+**不提供构建时间**，所以设置页仍只能显示 TS 常量里那个写死的 2026-06-29。
+本轮把它变成真的，并把「验证改动进了产物」这件事从一次性动作固化成构建门禁。
+
+## §4.92.1 buildDate：编译期常量注入
+
+做法：vite.config.ts 里用 `define` 把 `__BUILD_TIME__` 替换成本次构建时刻，
+version.ts 读它。
+
+- 格式：`2026-10-03 02:20:02 UTC+08:00`。
+- **不用 toISOString()**：它丢掉时区偏移，读起来像 UTC 却没写出来，
+  不同机器上「构建日期」含义会漂。这里取本机时区并显式带偏移。
+- 用**编译期常量**而不是运行时读时钟：运行时没有任何可信时钟来源，
+  而编译期常量会随这一次构建固化进 bundle，读它就是读「这个包什么时候打的」。
+- node --test 下 `__BUILD_TIME__` 不存在，所以 `buildTimestamp()` 必须用
+  `typeof` 守卫 + try/catch 兜 ReferenceError。判据里专门有一条盯这个：
+  守卫写错的话，**import 阶段就炸** —— 那是「跑不起来」，不是「测试失败」，
+  两者在 CI 输出里长得一样，必须能分开。
+- 设置页的「这是配置值」标注改为**只在回退时出现**（`v-if="!appVersion.fromNative"`）。
+  有真实时间戳时还显示那个标注反而是误导。
+
+## §4.92.2 产物级门禁：类型检查与单测都证明不了「修复进了 APK」
+
+这是本轮补上的最大缺口。§4.91 结束时我只跑了 `vue-tsc`，**没跑生产构建**，
+也没验证改动真进了产物。而 §4.91.3 那个修复的本质就是「产物里没有的东西
+源码里再对也没用」—— 判据与类型检查都跑在**源码**上，vite 会 tree-shake，
+改名/拆包也能让代码「还在仓库里、但不在产物里」。
+
+补了三件事：
+
+1. **真跑一次生产构建**（vite build --mode android-dev，exit 0，12.82s）。
+   注意 outDir 指向隔离目录，**没有覆盖共享 dist/** —— 那是并行会话 00:58 的产物。
+2. **扫产物字节**确认修复真在里面：`buildDateNote` 在 SettingsView chunk、
+   `getInfo` 在主 chunk、回退常量仍在、编译期时间戳已替换且
+   **`__BUILD_TIME__` 字面量零残留**（产物里实际值 = 2026-10-03 02:20:02 UTC+08:00，
+   与真实构建时刻一致）。
+3. **固化成门禁** `frontend/scripts/verify-build-identity.mjs`，
+   接进 `build-mobile.mjs`，位置在 **`cap sync` 之前** ——
+   门禁失败时 dist 还没被拷进原生工程，不会留下「已 sync 过但 bundle 是旧的」的
+   平台目录。
+
+## §4.92.3 门禁的判别力（6 种负控，全部实测转红）
+
+| 负控 | 结果 |
+|---|---|
+| 产物无任何 js | **exit 3** —— 拒绝在「所有检查都会空转通过」的状态下给结论 |
+| 产物目录不存在 | exit 3 |
+| 缺 getInfo | exit 4 |
+| 缺 buildDateNote | exit 4 |
+| **define 被删（无构建时刻）** | exit 4 |
+| **`__BUILD_TIME__` 未被替换** | exit 4（同时报「字面量残留」与「无构建时刻」两条）|
+
+关键设计：**exit 3 与 exit 4 必须分开**。3 = 「没有证据」（产物不可读/为空），
+4 = 「检查项缺失」。把两者都报成「通过」或都报成同一类失败，
+门禁本身就成了 §4.92.2 说的那种「假绿」。
+
+## §4.92.4 过程中我自己踩的三个坑
+
+1. **TDZ 崩溃**：给门禁加时间戳检查时，`bad++` 写在了 `let bad = 0` **之前**，
+   脚本会直接 ReferenceError 崩掉。读回来发现还有一个重复的 `let bad = 0`，
+   一并清掉。教训：改判据脚本时先 `node --check`，别直接跑。
+2. **判据跟着需求变化是对的，不是判据错了**：§4.91 那条「必须有来源标注」
+   在 buildDate 变成真值后**理应转红**（有真实时间戳时再标「配置值」是误导）。
+   我改的是**断言的语义**（标注只在回退时出现），不是删断言放过。
+3. **又一次「几层路径」算错**：判据的 REPO 根一开始少上溯一层，
+   三个源码契约用例全部 ENOENT。行为用例仍全绿，所以只看总数会误判成
+   「大体通过」—— 是逐条看 ok/not ok 才定位到。
+
+## §4.92.5 本轮遗留
+
+- **构建身份仍未统一**（不变，仍需产品拍板）：显示侧现在读原生 + 真实构建时刻，
+  但 `checkUpdate` 上报仍用常量（原生 versionName 带 -openpocket，
+  喂进服务端比较会误报「发现新版本」）。判据里那条「仍用常量」继续钉着。
+- `APP_VERSION.buildDate` 常量本身没删：它是 node 测试与「非 vite 构建」时的
+  回退值。产物门禁也守着它不消失（非原生环境要有东西可退）。
+- 其余待决项（飞书 Encrypt Key、llm.kxpms.cn admin、/api/embed、
+  密码箱入口、生物认证、38 个未探 POST 端点、emails/sync 无整体上限）不变。
+
+### 下一轮建议的第一件事
+
+构建身份的产品决定一旦落地，把 `checkUpdate` 切到 `resolveAppVersion()`，
+并同步改判据里那条「仍用常量」的用例 + 门禁的 fallbackDate 检查
+（届时 2026-06-29 只应出现在测试路径，不该再出现在产物里）。
+
+# §4.93 顺手收掉两个真机上看到的小缺陷；并补上「第三个版本显示点」
+
+## §4.93.0 结论
+
+本轮处理两个低风险 UI 缺陷（都不碰并行会话正在改的发票区域），
+顺带发现版本号显示点其实有**三个**而不是两个。
+
+## §4.93.1 空分组渲染：侧边抽屉里那个「运维与高级」
+
+真机侧边抽屉出现一个**只有标题、下面什么都没有**的「运维与高级」分区，
+看着像渲染坏了。查证链条：
+
+1. 该字符串在源码里零命中，只在 `locales/zh-CN.json:37` 有 `groupOps`；
+2. `SettingsMenuDrawer.vue:110` 用了 `settingsMenu.groupOps`；
+3. 那一组的 `items` 是 **`[]`（第 111 行）** —— 2026-09-23 Phase 1 把
+   11 个入口迁去 MoreHubView 后留下的空壳；
+4. 模板 `v-for="group in groups"` **无条件**渲染每个 `<section>`，
+   于是空壳的 `<h4>` 也被画了出来。
+
+同一段注释写的是「本抽屉仅保留设置一组」—— 代码和注释本来就不一致。
+修法：新增 `nonEmptyGroups = groups.filter(g => g.items.length > 0)`，
+模板改遍历它。**不在模板里写死判断**，因为「有没有条目」是运行时的，
+模板写死会立刻和 `groups` 脱节。
+
+## §4.93.2 版本显示点其实有三个，不是两个
+
+§4.91 修了设置页，§4.92 修了更新弹窗。本轮在查 §4.93.1 时发现
+SettingsMenuDrawer 底部还有第三处：它把 version 传进 versionFootnote 词条渲染，
+而那个 version 当时是 computed(() => APP_VERSION.version)。
+
+这一行不是可有可无的角落 —— 它是**用户判断「我是不是最新版」时最先看的字**，
+而它在任何 APK 上都写同一个版本号。已经改成 `onMounted` 里读
+`resolveAppVersion()`。
+
+## §4.93.3 本地智能体的 placeholder 被截断
+
+原来那句是「给本地智能体下达任务(Enter 发送,Shift+Enter 换行)」，
+**31 个字符**，而 Redmi 真机 CSS 视口 360px，实测被截到句子中间。
+
+修法：placeholder 只说「做什么」（8 字），键盘提示挪到输入框下方的
+`.key-hint` 行 —— 提示语属于辅助信息，不该挤占输入框里最显眼的位置，
+而且那行有整行宽度。执行中（`store.running`）时 hint 隐藏，因为那时
+输入框是禁用的，再提示「Enter 发送」是废话。
+
+**刻意没有**给这两行接 vue-i18n：该组件通篇硬编码中文
+（`expertLabel` 的本地 `Record<string,string>` map 也是这么写的），
+单独给两行接 i18n 会造成「一半多语言、一半不」的更糟状态。
+判据里有一条把这个决定钉住：将来有人把整个组件本地化了，就该删掉那条。
+
+## §4.93.4 判据与负控
+
+**版本身份判据扩到 12 条**（新增：侧边抽屉脚注、空分组渲染）。
+负控：把 `v-for` 退回 `groups`（空标题回来）→ **恰好 1 条转红**
+（「空分组不得渲染标题」），其余 11 条保持绿。
+源文件逐字节还原（9579 字节 / 290 CRLF / 无 BOM）。
+
+**新增本地智能体判据 4 条**（量 placeholder 长度上限 = 16 字符，
+并要求键盘说明不得出现在 placeholder 里）。
+负控：把 placeholder 改回原来那句 31 字符 → **恰好 1 条转红**
+（长度那条），其余 3 条保持绿。源文件逐字节还原（14181 字节 / 446 CRLF）。
+
+阈值 16 是**留了余量的保守值**，不是实测出来的精确值：CJK 在 14px 字号下
+约 14px 宽，360px 视口减去内边距与发送按钮后约 260px 可用，
+16 字 ≈ 224px。真机若仍被截断就调小它，**不要把判据删掉**。
+
+## §4.93.5 本轮遗留
+
+- 发票区域三个问题（汇总口径混用、两个谓词不一致、内部错误串上屏）依旧
+  **未改**：并行会话正在同一批文件上作业，撞车风险高于收益。
+- 其余待决项（构建身份的产品决定、飞书 Encrypt Key、llm.kxpms.cn admin、
+  /api/embed、密码箱入口、生物认证、38 个未探 POST 端点、
+  emails/sync 无整体上限）不变。
+
+# §4.94 把 §4.91-4.93 的三处前端修复**装机验证**（源码绿 ≠ 设备绿）
+
+## §4.94.0 结论
+
+前三轮的修复全部只在**源码、单测、产物字节**三层验证过，**没有在真机上看过一眼**。
+本轮补上这一层：三处修复全部装机确认生效。
+
+## §4.94.1 完整构建链（门禁第一次在真实链里被检验）
+
+`node scripts/build-mobile.mjs android dev`：
+
+1. **BUG-F 守卫先把构建拦下了**（exit=1）：目标后端是**非回环明文 http**
+   （http://192.168.31.20:18099）。守卫给了逃生舱，
+   按它自己写的说明设 POCKET_ALLOW_PLAINTEXT_API=1 后放行。
+   —— 守卫在正常工作，不是缺陷。顺带核了它的设计：https 一律放行、
+   回环地址放行，只拦「非回环明文 http」，判据是合理的。
+2. vite build 成功（12.28s）。
+3. **§4.92.2 加的产物门禁第一次在真实链里跑过并转绿**（4/4 命中），
+   位置在 cap sync 之前。
+4. `cap sync android` 成功。
+5. `gradlew assembleDebug`：**BUILD SUCCESSFUL in 14s**（27 executed, 374 up-to-date）。
+
+APK 34250149 字节。
+
+## §4.94.2 装机前先证明 APK 里确实有本轮改动
+
+装机前扫 APK 内部资产。**第一次扫描给了假阴性**，值得单独记：
+
+在 APK 的**原始字节**里搜构建时间戳与 getInfo，结果是 **0 命中**。
+当时最省事的结论是「改动没打进去」—— 但那是**搜索方法的缺陷**：
+assets 是 **DEFLATE 压缩**的（index chunk 548919 → 190423 字节），
+明文根本不在未解压的字节里。
+
+改用 `System.IO.Compression.ZipArchive` 逐 entry 解压后再搜，124 个 chunk：
+
+| 检查项 | 命中 |
+|---|---|
+| 编译期构建时刻 | 1 |
+| getInfo（原生版本读取） | 2 |
+| 空分组过滤 | 2 |
+| 旧 31 字符 placeholder | **0**（正确：已消失） |
+
+**教训**：「搜不到」有两种完全不同的成因——东西真不在，或者我的搜索方法看不见它。
+必须先排除方法缺陷，才能下「不在」的结论。压缩格式是最常见的一种。
+
+## §4.94.3 真机三处验证结果（全部通过）
+
+装机：`lastUpdateTime=2026-10-03 02:38:30`，
+`versionCode=3` / `versionName=1.2.0-openpocket`（dumpsys 确认）。
+
+### 1. 设置页「应用信息」—— 本轮最核心的证明
+
+| 行 | 旧包显示 | 新包显示 |
+|---|---|---|
+| 版本号 | v1.2.0 (Build 2) | **v1.2.0-openpocket (Build 3)** |
+| 构建日期 | 2026-06-29 | **2026-10-03 02:36:26 UTC+08:00** |
+| 日期旁标注 | 无 | 无（有真实时间戳时不该出现） |
+
+Build 3 与 dumpsys 查到的 versionCode 一致；日期与本次构建时刻一致。
+**§4.74.2 那个「看不出设备跑的是哪个构建」的坑，到这里才算真正闭上** ——
+它此前只在源码和产物里成立。
+
+### 2. 侧边抽屉
+
+- 「运维与高级」**空标题消失**了（现在只有「设置」一组，4 个条目）；
+- 底部脚注显示 **Redclaw · v1.2.0-openpocket**（原生 versionName），
+  旧包这里是 v1.2.0。
+
+顺带确认修复范围没扩大：「更多」页**也有**一个「运维与高级」分组，
+但它有内容（设置项），**不该删**。只修抽屉那个空壳是对的。
+
+### 3. 本地智能体
+
+- placeholder「给本地智能体下达任务」**完整显示**，不再截断；
+- 「Enter 发送 · Shift+Enter 换行」在输入框下方**独立成行**，完整可读。
+
+## §4.94.4 导航过程中的两次弯路（都是我没先查就动手）
+
+1. **盲点坐标点不开抽屉**。连点 4 次画面字节数始终不变。
+   我先去找了「这个按钮到底是什么」而不是继续加坐标：
+   AppLayout.vue:127 有一个 **dev 专用测试钩子**（`__openMenu` / `?openMenu=1`），
+   正是仓库为「模拟器无 UI 自动化」准备的。
+   但用 `am start -d com.kaixuan.opencode.pocket://...` 解析失败，
+   换 `https://localhost/...` 却被**系统浏览器**接管（App 被切后台）。
+   最终仍靠坐标点开 —— 只是**多试几次并比对画面哈希**才确认成功
+   （字节从 144162 变成稳定的 70174）。
+   教训：仓库里已有测试钩子时，先查它再想别的办法；
+   而 adb 输入被吞时，「画面哈希变了」才是「点击生效」的证据。
+
+2. **把一次压缩问题当成了「构建没生效」**。见 §4.94.2。
+
+## §4.94.5 本轮遗留
+
+- 发票区域三个问题（汇总口径、两个谓词不一致、内部错误串上屏）依旧未改，
+  理由同前：并行会话正在同一批文件上作业。
+- 设备上装的是 **dev 构建**（因此 AppLayout 的 dev 测试钩子可用）。
+  验收产物在 release 路径下还需重跑一次 —— `import.meta.env.DEV` 为 false
+  时那些钩子不存在，行为应当一致但未实测。
+- 其余待决项（构建身份的产品决定、飞书 Encrypt Key、llm.kxpms.cn admin、
+  /api/embed、密码箱入口、生物认证、38 个未探 POST 端点、
+  emails/sync 无整体上限）不变。
+
+### 下一轮建议的第一件事
+
+构建身份的产品决定一旦落地，把 checkUpdate 切到 resolveAppVersion，
+并同步改「仍用常量」那条判据 + 门禁的 fallbackDate 检查，
+然后**再装机验一次**（这条闭环本轮刚补上，别又只停在源码层）。
+
+## §4.95 第五个版本显示点、密码箱死入口，以及一次「判据恒绿」的自查
+
+### §4.95.1 先更正我自己的两条账
+
+**更正一：所谓「Web Crypto 降级不可达」不是缺陷。**
+
+上一轮把它记成待办。重新读源码后站不住：
+
+- native/keystore.ts:60-75 的 StubKeystore 把 12 个方法**全部**实现成 reject，
+  根本没有任何 WebCrypto 兜底实现。也就是说「让 Android 走降级」等于从零写一个
+  保险库后端，不是修一条降级路径。
+- VaultListView.vue:144-150 那条 catch 分支在「插件存在、探针抛错」时**是可达的**。
+  它只在 Android 上够不到，而 Android 正是插件缺失的唯一平台 —— 此时显示
+  「功能不可用」是正确行为。
+
+教训：我当时是按「界面上看到一句不可用」推的，没去读降级路径本身。
+源码读全之后，这条待办应当取消，而不是照着修。
+
+**更正二：版本显示点是五个，不是四个。**
+
+features/more/MoreHubView.vue:85 的页脚注写的是 computed(() => APP_VERSION.version)，
+喂的是常量。设备上原生 versionName 是 1.2.0-openpocket，而「更多」页会显示 1.2.0。
+前四轮修了设置页 / 更新弹窗 / 侧边抽屉 / 登录页，唯独漏了它。
+
+漏掉它的原因不是疏忽，是**判据形状**：既有判据是「一个显示点一条断言」，
+每找到一个补一条。补得再勤也只是在追我自己的记忆 —— 第五个当然畅通无阻。
+
+### §4.95.2 两处修复
+
+1. MoreHubView 页脚注改读 resolveAppVersion()，常量降级为首帧占位，
+   onMounted 后被原生真实版本覆盖（与其它四处同源）。
+2. 密码箱入口按**真实能力**门控：isKeystoreAvailable() 为真才显示。
+   不用 featureFlags 的 security.keystore_v1 —— 那个 flag 默认 false 且
+   serverOverrideable=false，用它 gate 入口的话，插件真落地那天还得有人记得
+   回来把开关打开，等于把「平台有没有这个能力」伪装成「谁记得改开关」。
+   门控抽成纯函数 applyCapabilityGates（features/more/hubItems.ts），
+   其中 null（探针未返回，首帧必然如此）按**不可用**处理：
+   先藏后现，好过先闪一个必然失败的入口、被用户刚好点中。
+
+顺带查到但**刻意没动**：pages/Home.vue:37 也有一处 /vault 快捷入口，
+但 router-mobile.ts 是本仓唯一的路由表且从未引用该文件 —— 孤儿页，
+不构成用户可达的死胡同，改它只会给共享分支添无关 diff。
+
+### §4.95.3 判据：守不变量，不再逐个点名
+
+新增 src/utils/__tests__/app-version-display-coverage.test.mjs，四条不变量：
+
+- A 任何 .vue 都不得渲染裸版本号字面量（盖住 LoginView 那种形状 ——
+  它不出现在任何 import 里，靠 import 判据根本查不到）。
+- B 引用 APP_VERSION 的文件集合必须**恰好**等于白名单；白名单每条必须写明理由，
+  条目失效（文件已不再引用）也要报，防止白名单烂成万能通行证。
+- B2 常量只能做首帧占位，**绝不能**成为显示值的活来源：
+  不得出现在 computed 实参里，也不得被模板直接绑定。
+- C 已知显示点必须真的**调用** resolveAppVersion()（不是只 import），
+  且出现清单外的消费方时也要报，逼一次决定而不是默默多一个数据源。
+
+所有扫描走新底座 src/__tests__/source-scan.mjs（剥 HTML/块/行注释、
+括号配对截取 computed 实参、版本字面量定位到行号），底座自带 12 条自检。
+不剥注释的话，下一个人只要在注释里提一句版本号或常量名，结论就被散文翻过去。
+
+### §4.95.4 一次「判据恒绿」的自查（本节最值钱的部分）
+
+第一版 C 只检查「该文件里出现过 resolveAppVersion」。我于是把 MoreHubView 的
+version 退回成 computed(() => APP_VERSION.version)、onMounted 原样保留，跑判据 ——
+
+**全绿。**
+
+符号还在文件里，绑定已经断了。这是我一直提防的恒绿护栏，真撞上时才发现：
+「出现过」和「显示绑定接在真相源上」完全是两件事。于是才有 B2，
+它锁的是不变式本身而不是某个具体写法。
+
+B2 的第一版实现用「computed 后面到下一个 APP_VERSION 之间没有分号/花括号」
+这种字符类护栏，结果在**正确代码**上误报 —— 本仓库不写分号，
+上一行的 userName computed 会被判成「把常量接进了 computed」。
+改成按括号配对精确截取实参（computedArgs），与代码风格无关。
+两次都是「判据错了」，不是「实现错了」；判据在正确代码上误报，
+下一个人只会去改代码，不会怀疑判据 —— 这比漏报更危险。
+
+### §4.95.5 负控（判据有牙齿的证据）
+
+| 负控 | 预期转红 | 实测 |
+| --- | --- | --- |
+| 第五处退回读常量 | B2 | 红，且只有 B2 |
+| 植入第六个裸字面量显示点 | A | 红，报到 文件:行号 |
+| 植入第六个常量消费方 | B | 红，点名该文件 |
+| 门控算了但模板没渲染 | 门控判据第 6 条 | 红 |
+| 把能力探针换成静态 feature flag | 门控判据第 7 条 | 红 |
+
+每次负控后源文件都逐字节还原：MoreHubView.vue 的 sha256 两次复核均为
+071998FAC2D038740BA0F671151874331A91450D6913C9DADC47DB4B0807A7DB。
+
+### §4.95.6 刻意没做的事（都写了理由，不是遗漏）
+
+- **没有为了看登录页而登出。** /login 被路由守卫弹回（已认证 + 本地库已就绪），
+  冷启动也不再要主密码 —— 之前那次成功解锁把主密钥持久化了
+  （persistMasterSecretIfBound），于是解锁屏几乎不可达。要看到登录页只能登出，
+  而我没有 App 账号，登出很可能把自己永久锁在设备外。为一行字符串冒这个险
+  不划算。记账口径：登录页版本号修复**产物级已验证**（APK 内旧字面量 0 命中），
+  **真机未验**。不写成「已验证」。
+- **没有把新不变量塞进产物门禁 verify-build-identity.mjs。** 那个门禁管的是
+  「修复有没有进产物」，新不变量是源码级、全量套件每次都会跑。
+  为了在产物里定位「第 5 个显示点」而写 minified 产物匹配，
+  只会得到一条一改构建就失效的假护栏。
+
+### §4.95.7 真机验证（这一节是行为证据，不是字节证据）
+
+构建链：build-mobile.mjs android dev（vite 10.72s，产物门禁 4/4 绿，cap sync 通过，
+sanity check 通过）→ gradlew assembleDebug BUILD SUCCESSFUL in 11s（27 executed）
+→ APK 34250293 字节 → 装机 lastUpdateTime=2026-10-03 03:07:51，versionCode 3。
+
+**没有做字节级声明。** 我先试着在 APK 里搜 reachableMainFeatures / applyCapabilityGates /
+isKeystoreAvailable / resolveAppVersion，四个全是 0 —— 但这是**假阴性**：vite 产物经过压缩，
+局部标识符名根本不保留，能扛过压缩的只有字符串字面量。
+字符串层面能证实的只有 MoreHubView 自己的 chunk 存在（/vault、versionFootnote 都在里面），
+证不了门控。所以门控改用真机行为验证。
+
+真机结果（用 CDP 只读取 DOM 文本，不是靠截图认字）：
+
+- 页脚注 = 「Redclaw · v1.2.0-openpocket」→ 第五处读的是原生版本号，**通过**。
+- hasVaultCell = false，主宫格 10 项（原 11 项）→ 密码箱入口已撤掉，**通过**。
+- 运维分组 9 项齐全，未受影响。
+
+顺带钉死一个我差点误报的现象：「更多」页看起来滚不动。做了变量隔离 —— 首页用同样手势
+同样不滚，所以是手势没送达，不是页面缺陷。再用 CDP 读滚动容器：
+MAIN.content scrollHeight/clientHeight = 1404/741，页面本来就能滚。
+该 ROM 上 input swipe 与 input motionevent 都注不进拖拽（tap 正常）。
+
+### §4.95.8 本轮回归
+
+- 三个新/改判据合计 25/25 通过。
+- 全量：192/192 测试文件全部被实际执行且都有产出，exit 0。
+- vue-tsc --noEmit exit 0。
+
+### §4.95.9 本轮遗留（都还等着人，不是我能替用户定的）
+
+- 登录页版本号：产物级已验证（APK 内旧字面量 0 命中），**真机未验**。理由见 §4.95.6。
+- 构建身份以哪套为准（version.ts 常量 vs build.gradle）仍是产品决定，
+  checkUpdate() 依旧上报常量。
+- 密码箱本身仍未实现（原生侧无 KeystorePlugin.java）。本轮只是拿掉必然失败的入口，
+  没有让功能可用 —— 插件落地后入口会自己回来。
+- 本轮未提交文件继续累积（新增 hubItems.ts、source-scan.mjs 及自检、两个判据，
+  改 MoreHubView.vue），共享分支上是否提交仍待用户决定。
+
+## §4.96 release 路径实检、登录页真机验证，以及两条我自己记错的账
+
+### §4.96.1 更正一：设备上那个包从来不是「dev 构建」
+
+我上一轮记过一条待办：设备装的是 DEV 构建，所以 dev-only 测试钩子存在，
+「欠一次 release 路径验证」。**这个前提是错的。**
+
+实测：把 dev 产物（--mode android-dev）和 release 产物并排扫字符串，
+AppLayout 那个仅 dev 的测试钩子 __openMenu 在**两边都是 0 次**。
+源码 AppLayout.vue:129 / :138 两处钩子都包在 if (import.meta.env.DEV && ...) 里。
+
+原因是 vite 的 --mode 只决定加载哪个 .env 文件；import.meta.env.DEV 由**命令**决定，
+vite build 一律为 false。所以「android-dev 模式的构建产物」在 DEV 语义上与 production 完全一致，
+我之前在真机上验过的那套行为，对 release 同样成立。
+
+也就是说：那条「欠的 release 验证」大部分其实已经覆盖了。真正与 release 不同的只剩
+API 基址、签名、以及 minifyEnabled（release 是 false，Java 层不收缩）。
+
+### §4.96.2 更正二：那条守卫文案不是过时的，我差点改错
+
+build-mobile.mjs 的生产宿主守卫报错时提示「生产包必须打到 https://pocket.itestu.cn」，
+而用户给的公网入口是 m.kxpms.cn。我一度想把它改掉。
+
+改之前全仓搜了一遍：pocket.itestu.cn 在本仓是**既定的生产 API 基址**——
+api-base.ts:9 的 PRODUCTION_API_BASE、deploy/edge 下的 nginx vhost、9 个语言包的
+productionServer、以及 docs/2026-09-07-local-cutover 整份切换计划都指向它。
+不是残留，是 SSOT。m.kxpms.cn 是**回调**那一面的地址，与 App 的 API 基址不是同一件事。
+
+**没有改。** 差点因为一个没查全的假设，去动一处全仓一致的正确文案。
+
+### §4.96.3 release 产物实检（隔离目录，没碰共享 dist/）
+
+- vite build --mode production --outDir .dist-releasecheck：成功，11.05s。
+- 产物门禁跑在这个目录上：**4/4 绿**（locale 接线 / getInfo / 回退常量 / 编译期构建时刻）。
+- 与 dev 产物对照：chunk 数同为 125，JS 总体积 2263151 vs 2263167（差 16 字节）。
+- API 基址按模式正确切换：dev 产物里 192.168.31.20 出现 2 次、release 里 0 次；
+  m.kxpms.cn 在 release 里 5 次。
+- 守卫判别力负控：生产模式指向 LAN → 拒（exit 1）；指向占位符 pocket.example.com → 拒（exit 1）；
+  同样 LAN 地址在 dev 模式 → 放行（exit 0）。
+
+**口径**：为了过守卫随手用了 m.kxpms.cn，**这不构成「哪个域名是对的」的结论**，
+只说明生产构建机制本身是通的。
+
+### §4.96.4 真实的 release 缺口：能打包，但打不出可安装的包
+
+gradlew assembleRelease **BUILD SUCCESSFUL in 2m 47s**（520 executed），产物
+app-release-unsigned.apk，32002793 字节。
+
+签不了名。证据不是文件名，是内容：
+
+- frontend/android 全目录搜 signingConfigs / storeFile / storePassword / keyAlias / keyPassword：**零命中**；
+- 全目录搜 *.jks / *.keystore：**零命中**；
+- 解压 release APK，META-INF 下无任何 .SF/.RSA/.DSA/.EC。
+
+所以 release 这条路目前能走到「编译并打包」，走不到「安装 / 发布 / 覆盖升级」。
+补齐它需要签名凭据（keystore + 口令），**只有用户能给**，不代造。
+
+### §4.96.5 登录页版本号：真机验证通过（用旁挂包，没动正式会话）
+
+上一轮记的是「产物级已验证、真机未验」，理由是要看到 /login 只能登出、而登出有把设备锁死的风险。
+这次找到了仓库自带的正解（android/app/build.gradle:23-34）：
+
+-PsttDevApp 会给调试包加 applicationIdSuffix .sttdev 与 versionNameSuffix -sttdev，
+与正式包**并存、数据互不干扰**。注释里写明它就是为了不改动用户已登录会话而存在的。
+
+做法与证据：
+
+1. gradlew assembleDebug -PsttDevApp → BUILD SUCCESSFUL in 15s，APK 34063301 字节。
+2. 装机前后对比：正式包 lastUpdateTime 全程停在 03:07:51，versionName 不变 —— **一字未动**。
+3. 旁挂包未认证 → 直接落 #/login?returnTo=/ai（isLoginForm=true）。
+4. CDP 只读取 DOM：versionLine = **1.2.0-openpocket-sttdev**。
+
+第 4 条是判别力所在：常量是 1.2.0，而 -sttdev 后缀只有原生 BuildConfig 才有，
+常量**不可能**产生这个字符串。截图 logs/r21-login-version.png 可见整页无需滚动、底部那行即原生版本。
+
+验证后已卸载旁挂包、删掉 CDP forward、反向隧道 18099 保持原样。
+
+### §4.96.6 顺手查清：m.kxpms.cn 与 pocket.itestu.cn 不是同一套部署
+
+只读 GET，未带凭据：
+
+| 探测 | m.kxpms.cn | pocket.itestu.cn |
+| --- | --- | --- |
+| /healthz | 200 JSON（status ok，version 2.5.8 开头） | 200 纯文本 ok |
+| /api/tasks | 401 | 401 |
+| /api/app/check-update | **404** | 200 返回真实更新负载 |
+| /callback/feishu | 401 | 200（其实是 SPA 的 HTML 兜底） |
+
+两个后果，都只是记账、本轮未改：
+
+1. api-base.ts:233 的 probeHealthz 判的是 text 严格等于 ok。m.kxpms.cn 返回 JSON，
+   所以**若**把 App 基址指向它，「后端服务器」健康检查会报不健康——尽管服务是好的。
+   没有放宽这个判断：它对现有两个 pocketd 部署是正确的，
+   放宽等于为一个未确认的意图放松判据。
+2. m.kxpms.cn 没有 /api/app/check-update（正是本会话前面修过的那条路由），
+   指向它会 404。它更像另一套/较旧的部署，不能与 PRODUCTION_API_BASE 互换。
+
+### §4.96.7 本轮遗留
+
+- **release 签名**：需要用户提供 keystore 与口令才能补齐，本轮无法代劳。
+- 构建身份以哪套为准（version.ts 常量 vs build.gradle）仍是产品决定。
+- 登录页版本号那条待办**本轮已关闭**（§4.96.5），不再是「未验」。
+- 发票三处问题仍刻意未改：并行会话正在同一批文件里作业。
+- 本轮临时脚本与 .dist-releasecheck 已全部删除；未提交文件继续累积，是否提交待用户决定。
+
+## §4.97 飞书/企微回调的真实根因：边缘 nginx 缺一条 location（之前一直被当成「缺密钥」）
+
+### §4.97.1 一句话结论
+
+这一直被记成「等用户给 Encrypt Key / Verify Secret」。**不是。**
+即使密钥齐全，事件投递也到不了应用：
+
+- 全仓 deploy/edge/*.conf 里**一条 /callback/ 反代规则都没有**（实测 grep 零命中）；
+- 请求于是落进各 vhost 的 location /，被前端当 SPA 返回 index.html；
+- 证据：GET https://pocket.itestu.cn/callback/feishu 返回 200 加一段 HTML，
+  而同一个路由在应用里是活的（POST 空体返回 200 {"code":0,"msg":"ok"}，企微那个返回 400 拒畸形）。
+
+后端**没有**问题：server.go:682/689 两条回调路由都刻意不套 requireAuth，
+注释也写明外部平台带的是协议签名而不是本站 JWT。缺陷全在边缘。
+
+这件事有两层难受，所以值得单独记：
+
+1. **静默** —— nginx 不报错、TLS 正常、页面能开，只有事件投递悄悄失败。
+2. **报错形态误导** —— 平台侧看到的是 HTML/非预期内容，很容易被结论成
+   「飞书那边没配好」，于是反复重配平台，而真正的原因是边缘缺一条 location。
+
+### §4.97.2 用户给的回调地址指向的不是这个应用
+
+brief 里的回调地址是 https://m.kxpms.cn/callback/feishu 与 /callback/weixin。
+实测它是**另一套服务**：
+
+| 探测 | m.kxpms.cn | 本机 pocketd / pocket.itestu.cn |
+| --- | --- | --- |
+| /healthz | 200 application/json（status ok，version 2.5.8，git_sha f609ecab，构建于 2026-10-02） | 200 text/plain，正文就是 ok |
+| /api/tasks | 401 | 401 |
+| /api/app/check-update | **404** | 200 返回真实更新负载 |
+| /callback/feishu、/callback/weixin | 401 空体 | GET 405 / POST 200 {"code":0,"msg":"ok"} |
+
+响应头也对不上，进一步确认不是同一套中间件：
+
+- 本机：X-Frame-Options: DENY（单值）、X-Correlation-Id: cor-...、无 X-XSS-Protection；
+- m.kxpms.cn：X-Frame-Options: SAMEORIGIN,SAMEORIGIN（重复值）、
+  X-Content-Type-Options: nosniff,nosniff（重复值）、X-XSS-Protection: 1; mode=block、
+  **无** X-Correlation-Id、X-Request-Id 格式也不同（无连字符）。
+
+而且**仓内根本没有 m.kxpms.cn 的 vhost**（仓里管的是 openpocket-api / openpocket-web /
+openpocket.kxpms.cn / pocket.kxpms.cn:9443 / pocket.itestu.cn）。
+
+结论：这两个回调地址要么需要改指到真正跑 pocketd 的主机，要么 m.kxpms.cn 前面
+本该有一层转发。**这是要用户拍板的部署事实，不是代码能替他们决定的。**
+
+### §4.97.3 补齐了三个 vhost，第三个是判据找出来的
+
+「未知路径回落前端」的 vhost 一共三个，全部补了 location /callback/：
+
+| vhost | /api/ 上游 | 回落上游 | 补的 /callback/ 指向 |
+| --- | --- | --- | --- |
+| pocket.itestu.cn.conf | pocket_mac_api | pocket_mac_web（前端） | pocket_mac_api |
+| pocket.kxpms-cn-9443.conf | pocket_kxpms_api | pocket_kxpms_web（前端） | pocket_kxpms_api |
+| openpocket-web.kxpms.cn.conf | openpocket_web_kxpms_api | openpocket_web_kxpms_web（前端） | openpocket_web_kxpms_api |
+
+**第三个（openpocket-web.kxpms.cn）不是我翻出来的，是写完判据扫出来的。**
+这正是「守不变量而不是点名」的价值：我本来只打算改用户会用到的那两个。
+
+另外 openpocket-api.kxpms.cn.conf 的 location / 本来就全量转 API 上游，
+回调在那儿是通的，不需要改。
+
+写 upstream 名时我先查了定义再写（pocket_mac_api / pocket_kxpms_api 都在文件内有 upstream 块，
+被现有 /api/、/ws 复用）。**猜对了也必须查** —— 猜错的话 nginx 起不来，
+而这个仓的 vhost 是由 apply-edge-conf.sh 直接渲染上线的。
+
+### §4.97.4 判据：scripts/verify-callback-routes.mjs（已接进 gates）
+
+判的是**形状**不是点名：只要一个 vhost 同时满足
+
+- (1) 有 location /api/ 且转到上游 A，且
+- (2) location / 转到**另一个**上游 B（= 未知路径回落前端），
+
+它就处在「/callback/ 会被吃掉」的形状里，必须有 location /callback/，
+**且其 proxy_pass 必须与 /api/ 相同**。新加的 vhost 会自动纳入，不依赖我记得哪几个域名。
+
+第二条（上游一致）不是多余的：复制粘贴把 proxy_pass 写成前端上游，nginx 一样不报错，
+只是继续返回 HTML —— 形状对、指向错比形状缺失更难查。
+
+放在 scripts/ 仓根并接进 frontend/package.json 的 gates 链（check:callback-routes），
+不是当孤儿脚本。理由是本仓有过 114 个孤儿测试的前车之鉴，
+run-mjs-tests.mjs 本身就是为治这个才写的。支持 argv[2] 覆盖被扫目录，
+负控因此**完全不需要动真文件**（真文件是直接上线的东西）。
+
+负控四项，全部按预期：
+
+| 负控 | 期望 | 实测 |
+| --- | --- | --- |
+| 用 git HEAD 的改动前版本喂进去 | exit 1 | 红，点名 pocket.itestu.cn.conf 缺 location /callback/ |
+| /callback/ 复制粘贴成前端上游 | exit 1 | 红，同时打出两个上游做对比 |
+| 故意让形状解析失明 | exit 4 | 红并明说「别把这当成通过」 |
+| 空目录 | exit 3 | 红，拒绝给结论 |
+
+**第一个负控我第一版是无效的**：用正则去删副本里的块，结果正则没匹配上、文件一个字节没变，
+判据当然还是绿的。差点把「没转红」当成判据没牙齿。改用 git show HEAD:<file>
+直接取改动前的真版本来做负控 —— 这既是真的「改之前」，也不用在脆弱的正则上纠缠。
+
+### §4.97.5 口径与未做的事
+
+- **只改了仓内 SSOT 模板，没有动线上任何服务器。** 这三个 vhost 要生效，
+  仍需运维跑一次 apply-edge-conf.sh（并先 nginx -t）。这一步是生产变更，我不代劳。
+- 改前逐个核对：三个文件都是 CRLF-only、无 BOM、花括号配平、各恰好 1 个 /callback/ 块；
+  UTF-8 严格解码通过、零 U+FFFD。package.json 仍是合法 JSON，CRLF 85 到 86、裸 LF 仍为 0。
+- 线上当前状态未变：pocket.itestu.cn 上 GET /callback/feishu 依然会返回 HTML，
+  直到配置被应用。这一条不要记成「已修复并生效」。
+- 飞书 Encrypt Key / Verify Secret、企微 Token / EncodingAESKey / CorpID 仍然缺，
+  但那已经是**第二道**门了；第一道门（本节这个）此前没人提。
+
+## §4.98 边缘可达性交叉核对：139 条路由逐条验，并记下判据自己踩的三个坑
+
+### §4.98.1 起因与结论
+
+§4.97 补完 /callback/ 之后，顺手把后端路由全量枚举了一遍，想确认边缘**没有第二处**缺口。
+
+结论：全仓 139 条注册路由（`mux.HandleFunc`，全部集中在 server.go），在三个
+「未知路径回落前端」的 vhost 上**全部可达**。`/callback/email/oauth`（邮箱 OAuth 回调）
+是被我这轮补的 `location /callback/` 顺带救下来的——它此前同样不可达。
+
+逐条核对用 AST 之外的另一条路：仓里已有 `long_lived_route_audit_test.go` 用 AST 扫路由，
+说明仓库早知道裸正则不可靠；我仍然用了正则，所以踩了坑（见 §4.98.3）。
+
+### §4.98.2 判据：scripts/verify-edge-route-reach.mjs（已接进 gates）
+
+问的是不变式：**对每个「SPA 回落型」vhost，后端每一条路由都必须在它的某个反代前缀内。**
+
+- 反代前缀**从 .conf 里解析出来**，不写死——配置改了判据自动跟着变；
+- 覆盖语义照 Go 1.22 `http.ServeMux` 还原：`= /x` 精确、`/x/` 子树、
+  `/x`（无尾斜杠）**只**匹配自身、`/` 兜底全覆盖；
+- 只针对「SPA 回落型」vhost。`openpocket-api.*` 那种 `location /` 全量转 API 的域
+  对本判据是空转（兜底让它恒真），所以明确排除；
+- 兜底的 `location /` **必须从覆盖集合里排除**——它当然覆盖每条路由，
+  但那正是问题本身（§4.98.3 的坑二）。
+
+### §4.98.3 判据自己踩的三个坑（负控逼出来的，不是想出来的）
+
+**坑一：提取器静默吃掉了全部路由。**
+第一版是「先剥块注释、再剥行注释」，结果从 93 个非测试 .go 里**只提取到 0 条路由**。
+原因：`internal/server` 里 7 个非测试文件的块注释开闭符不配平——
+`llm_gateway_admin_client.go` 的**行**注释里写着 `/api/credentials/*` 这种 glob，
+块注释正则把它当成块注释开头，一路吞到下一个闭符，把中间的真实路由全吃光。
+**成片删除的失败形态是「提取到 0 条」而不是报错**，只有防空跑断言能抓住。
+改成只剥行注释（实测 139 条 = server.go 里 `mux.HandleFunc(` 的原始出现次数，无污染）。
+
+**坑二：把兜底 `location /` 当成了覆盖，于是自己判自己绿。**
+负控（从副本里删掉 `/callback/` 前缀）跑出来**全绿**。原因就是兜底覆盖一切。
+修正后同一负控精确报出 3 条：`/callback/email/oauth`、`/callback/feishu`、`/callback/weixin`。
+
+**坑三：我的自检本身定错了不变式。**
+我原本断言「剥注释后 HandleFunc 出现次数必须不变」，实测 140 -> 139，
+于是报「剥离器吃掉代码」。但那 1 条差异是**注释里真的有一个 HandleFunc**，
+剥掉它是正确行为。真正要防的是成片删除，不是剥掉注释里的字样。
+改成九成下限 + 哨兵路由（必须提到 /api/tasks、总数下限 100）。
+
+另外还踩了一次 `= /healthz` 的假阳性：nginx 的精确匹配写法是
+`location = /healthz {`，`=` 与路径之间**有空格**是两个 token，我用 `\S+` 只捕到 `=`，
+于是 /healthz 在**真仓**上被误报。**先跑真仓这一步救了它**——真仓变红立刻说明是判据的错，
+而不是仓里真有缺口。改成 `(.+?)` 后真仓绿、副本红。
+
+### §4.98.4 负控（全部喂合成仓副本，真文件一个字节没动）
+
+| 负控 | 期望 | 实测 |
+| --- | --- | --- |
+| 副本删掉某 vhost 的 /callback/ 前缀 | exit 1 | 红，精确报那 3 条回调路由 |
+| 注入 /metrics 与 /internal/diag | exit 1 | 红，三个 vhost 各自点名这两条 |
+| 清空全部路由字面量（提取器失明） | exit 4 | 红并明说「提取多半失明了」 |
+| 还原后的副本 | exit 0 | 与真仓同结论 |
+| 真仓 | exit 0 | 绿 |
+
+（第三个负控最初是**意外**得到的：我把变异脚本的 restore 写成了反向调用，
+误把副本里的路由字面量清空。判据当场报 exit 4 是对的，
+但那是流程错误不是设计——补了整份回填后单独重跑了一次。）
+
+### §4.98.5 本轮顺带记下的操作教训
+
+今天在同一类错误上栽了**三次**，都是「看起来改了，其实什么都没改」：
+
+1. 用 PowerShell 正则删副本里的 nginx 块——没匹配上，文件字节数不变，
+   判据当然还是绿的。差点把「没转红」当成判据没牙齿。
+2. 同上，第二次。
+3. 用 PowerShell 的 `Get-Content` / `Set-Content -Encoding UTF8` 往返改一个
+   含中文的 .mjs——Get-Content 猜错编码，中文被写成乱码，脚本直接语法错。
+
+⇒ **变异合成副本一律用 node 写、用 edit 工具改，不要用 PowerShell 做文本往返。**
+这与「负控要能区分编译失败与测试失败」是同一条：工具的读数不可信时，
+先换一种量法，再下结论。
+
+（另：`.mjs` 注释里写 `/*` 与 `*/` 这两个序列要当心——本轮就在自己的
+JSDoc 里写了真实闭符，导致注释提前终止、脚本语法错。编译期报错，一字未写。）
+
+### §4.98.6 口径
+
+- 两个新判据都只是**静态核对**，不替代 `apply-edge-conf.sh` 上线与真机验证。
+- 本轮没有动线上任何服务器；`pocket.itestu.cn` 上回调仍返回 HTML，
+  直到配置被应用。
+- 本轮未提交文件继续累积：两个新判据、三个 vhost、package.json 的两条 scripts、
+  以及前几轮的改动。是否提交仍待用户决定。
+## §4.99 feikemanager1@163.com 追到底：账户是好的，诊断和我的探针各错一次
+
+### §4.99.1 一句话结论
+
+`feikemanager1@163.com` **从来没有过缺陷**。它在正常同步，收件箱是真的空的。
+本轮把它当成「最后一个未验证项」追完，结果是**两处结论都被推翻**——一处是并行会话
+写进注释的，一处是我自己早前探针的。两处都不是产品的错。
+
+### §4.99.2 真实 IMAP 登录（带对照账户）
+
+`scripts/.scratch-imap-login.mjs`（已删）照抄 App 握手顺序
+（`backend/internal/email/fetcher.go:562` `sendClientID`：name=pocketd / version=1.0.0 /
+vendor=openpocket / address=<邮箱地址>），对 imap.163.com:993 走
+greeting → CAPABILITY → ID → LOGIN → SELECT INBOX，逐步原样打印服务端回复。
+
+**带一个已知可用账户做对照**（`feikemanager@163.com`），否则分不清「这个账户不行」
+和「我的脚本或网络不行」——这正是本会话已经栽过好几次的坑。
+
+| 账户 | LOGIN | SELECT |
+| --- | --- | --- |
+| `feikemanager@163.com`（对照） | `a3 OK LOGIN completed` | `14 EXISTS` / `3 RECENT` |
+| `feikemanager1@163.com`（目标） | `a3 OK LOGIN completed` | **`0 EXISTS` / `0 RECENT`** |
+
+⇒ **服务端不拒绝。**（b）「密码错 / 账号未激活 / IP 未放行」被实测推翻。
+
+口令只从环境变量读，不落盘、不打印、不进命令行参数；打印时对口令打码。
+
+### §4.99.3 凭据比对：形态 ≠ 内容
+
+上一步用的是**用户给的口令**。库里存的那份是否同一份，仍未验证——
+`diag_credential_health_test.go` 只证明了「能解密 + 16 位形态」，而形态不等于内容：
+库里完全可能存着另一条 16 位字符串。
+
+为此建了一次性 `backend/cmd/zz-scratch-creddigest`（已删）：解密后**只比较 sha256**，
+只打印布尔值与长度，明文绝不离开进程。5 个账户**全部一致**。
+
+同时带了两条自检（本仓 search_path 缺陷家族的老教训）：
+读回 `current_schema()` 必须等于目标 schema；`email_accounts` 行数必须非零，
+否则「零行」是查错库而不是「没有账户」。
+
+### §4.99.4 uid=0 的真正成因：邮箱本来就是空的
+
+`last_synced_uid=0` 有两种截然不同的成因：有邮件没抓到（缺陷）／邮箱真的是空的（正常）。
+`emails` 表行数是唯一能分开的证据：
+
+| 账户 | uid | last_synced_at | emails 行数 |
+| --- | --- | --- | --- |
+| `56551681@qq.com` | 10459 | 1790970418 | 98 |
+| `feikemanager1@163.com` | **0** | **1790970416** | **0** |
+| `feikemanager@163.com` | 1669791329 | 1790970417 | 14 |
+| `huangxutao@kxpms.cn` | 11 | 1790970416 | 10 |
+| `kimmy.huang@163.com` | 1298896151 | 1790970417 | 58 |
+
+五个 `last_synced_at` 彼此只差 2 秒——刚跑完一轮轮询。`failures=0`、`last_sync_error=""`。
+
+所以「从未成功同步过」这个说法本身就不成立：**它一直在成功同步**，
+只是这个账户的 INBOX 里没有邮件，于是 `last_synced_uid` 停在 0。
+这正是 `fetcher.go:776-784` 注释里写的那条路径——「没有新邮件」的早退只推进
+`last_synced_at`，UID 原样不动。**这是设计，不是缺陷。**
+
+### §4.99.5 我自己的错账：字段名少打一个 ed
+
+早前我从设备读到 5 个账户 `lastSyncAt: null`、`lastError: null`，据此记下了
+「设备上 5 个邮箱全部从未同步」。那是**我的探针打错字段名**：
+
+- 真字段名是 `lastSyncedAt`（`backend/internal/email/model.go:22`），
+- 我读的是 `lastSyncAt`（少一个 `ed`），
+- 读不到 ⇒ `undefined` ⇒ 落成 `null`。
+
+同一份 JSON 里还有 `folderCount`，而 `folderCount` 在整个 Go 后端**一次都没出现过**——
+那份 JSON 本来就是我拼的形状，不是 API 原始返回。教训和上轮那条一样：
+**取值必须点名，不能靠「长得像」。**
+
+端到端复核（真打 `POST /api/emails/sync/status`，token 从设备 WebView 取、只报长度）：
+
+```
+huangxutao@kxpms.cn    lastSyncedAt=1790970416 lastAttemptAt=1790970416 pending=10
+feikemanager1@163.com  lastSyncedAt=1790970416 lastAttemptAt=1790970416 pending=0
+feikemanager@163.com   lastSyncedAt=1790970417 lastAttemptAt=1790970417 pending=14
+kimmy.huang@163.com    lastSyncedAt=1790970417 lastAttemptAt=1790970417 pending=58
+56551681@qq.com        lastSyncedAt=1790970418 lastAttemptAt=1790970418 pending=98
+```
+
+与库完全一致。`failures=undefined` 是 `omitempty` 把 0 省略了，属预期，
+且前端把 undefined 显示成「从未失败」并不失真。
+
+生产告警判据 `NeverSyncedAccounts`（`classify_run.go:101`）读的是
+`LastSyncedAt > 0` 而**不是** uid——所以这个空邮箱账户不会被永久误报。这一条是对的设计。
+
+### §4.99.6 我本轮第三次「读太浅」
+
+`handleEmailSyncStatus` 在 `server.go` 的 `mux.HandleFunc` 列表里**找不到**，
+我据此准备记「死端点」。实际它在 `/api/emails/` 子树 handler 内部靠**后缀分派**接住
+（`server_assistant.go:1967-1972`）：路径是 `POST /api/emails/sync/status`。
+
+（`/api/emails/sync` 与 `/api/emails/sync/status` 在 Go 1.22 ServeMux 下不冲突：
+前者无尾斜杠只匹配自身，后者由 `/api/emails/` 子树接住。）
+
+**判据/读数只扫一层就下结论，是本会话最贵的失误模式**：本轮三处误判
+（字段名、路由注册、并行会话的 (b)）形态不同，病根相同。
+
+### §4.99.7 需要更正的是注释，不是代码（我没动，并行会话正在那些文件里作业）
+
+以下三处把「feikemanager1@163.com 是坏的」当成**当前事实**写进了注释，
+现已证伪。留着会误导下一个读它们的人：
+
+- `backend/internal/email/diag_credential_health_test.go:158-159`
+  —— 凭 `uid==0 && lastAt==0` 推出「凭据完好，问题在服务端侧（密码错/需激活/IP 放行）」。
+  这条推断当时**只差一步就是错的**：它把「从未尝试」直接读成「尝试了被拒」。
+- `backend/internal/email/classify_run.go:95-99`
+- `backend/internal/email/never_synced_accounts_test.go:21-24`
+
+并行会话本轮 03:37 仍在该目录写文件（本轮 03:37 / 03:23 各新增一个被 gitignore 的
+`diag_*.go`），**故未改**。生产代码本身没问题，只有注释过时。
+
+### §4.99.8 口径与本轮遗留
+
+- 本轮**没有改动任何产品代码**。新增即三个一次性诊断脚本/目录（IMAP 登录探针、
+  凭据摘要比对、真接口复核），验证完已全部删除。
+  证据留在 `logs/imap-login-20261003-0400.txt`、`logs/creddigest-20261003-0400.txt`、
+  `logs/email-account-state-20261003-0410.txt`、`logs/email-sync-status-20261003-0415.txt`
+  （均不含口令明文）。
+- 设备侧 `adb forward tcp:9222` 本轮用完已清理（复核为空）；App 连后端用的
+  `adb reverse tcp:18099` **原样保留未动**。
+- 邮箱链路上真正待办的东西没有变化：§4.99.7 的注释更正、`/api/embed` 的 embedding 模型、
+  以及「38 个 POST 端点未探」。
+## §4.100 修掉一个真缺陷：/api/app/download 的 404 会被存成假 APK
+
+### §4.100.1 怎么发现的：把「38 个 POST 未探」从散文账变成可重跑的扫描
+
+交接里「38 个 POST 端点未探」是一条**散文记账**，跨很多轮累积，无法复核，
+也一定会再次过期。与其继续往散文里追加，不如产出一份能重跑的扫描：
+`scripts/sweep-api-readonly.mjs`（本轮新增，**故意不接进 gates**——它需要一台
+开着真机 WebView 的设备才能取到 token，CI 里跑不了；gates 里放一个必然失败
+或必然跳过的脚本，比不放更糟）。
+
+139 条注册路由逐条 GET，先打对照路由证明 token 有效（401/403 则不产出任何结论、
+exit 3）。结果：
+
+| 状态 | 条数 | 含义 |
+| --- | --- | --- |
+| 200 | 48 | 正常 |
+| 400 | 25 | **缺 id 的参数校验**——handler 确实被路由到并做了校验 |
+| 405 | 46 | **正确的方法拒绝**（这些是 POST-only 端点） |
+| 404 | 14 | 见下 |
+| 503 | 1 | `/api/redclaw/health` |
+
+**没有意外 5xx。** 405 与 400 不是「没探到」，而是**另一种覆盖率**：它们证明
+handler 活着并做了该做的校验。404 里绝大多数是子树路径被裸探（`/api/agents/`
+缺 id、`/api/emails/` 缺 email id），另有三组是**有意的功能关闭**：
+
+- `/api/auth/sso/*`（3 条）→ `sso not enabled`
+- `/api/redclaw/*`（3 条）→ `RedClaw bridge not configured`
+- `/api/flashcards/`、`/api/learning/` → not found
+
+RedClaw 是**外部集成**（auth mirror / admin 权威源 / LLM 兜底 / 定时执行器），
+需要一整套 `POCKET_REDCLAW_*`。本地实例一项没配，503 fail-closed 是**正确行为**，
+与 `/api/embed`、飞书密钥同类，属「缺外部资源」而非缺陷。**新增一条待用户提供的资源。**
+
+### §4.100.2 缺陷：404 响应带着 `Content-Disposition: attachment; ...apk`
+
+`handleDownloadAPK` 原来是这个顺序：
+
+```
+w.Header().Set("Content-Type", "application/vnd.android.package-archive")
+w.Header().Set("Content-Disposition", "attachment; filename=opencode-pocket.apk")
+http.ServeFile(w, r, apkPath)     // 文件不在 -> 404
+```
+
+实测（`GET /api/app/download`）：
+
+```
+STATUS=404   Content-Length: 19
+Content-Disposition = attachment; filename=opencode-pocket.apk
+Content-Type = text/plain; charset=utf-8
+```
+
+`http.Error` 会覆盖 `Content-Type`，**却不会删掉 `Content-Disposition`**。
+所以那 19 字节的 `404 page not found` 会以 `opencode-pocket.apk` 为文件名被存下来。
+用户点「下载更新」、拿到一个 19 字节的假 APK，安装时才报解析失败——
+真实原因（服务器上没部署 APK）在客户端表现为「包坏了」，排查方向被彻底带偏。
+
+**404 长成「下载成功但文件坏了」的样子，这是它自己的错。**
+
+顺带确认：这个端点**不套 `requireAuth`**（路由表里是裸的 `s.handleDownloadAPK`），
+这是对的——APK 下载本就该对未登录设备公开。不是漏鉴权。
+
+### §4.100.3 修复：先 stat 再设头 + 路径搬进配置
+
+`backend/internal/server/server.go` 的 `handleDownloadAPK`：
+
+1. `os.Stat` 确认文件在（并单独拒掉「路径是目录」），**再**设下载头；
+   失败时走 `http.Error` + 日志记实际路径，**不回显服务端路径给调用方**。
+2. 路径不再硬编码：新增 `POCKET_APK_DOWNLOAD_PATH`（`config.Config.APKDownloadPath`）。
+   原硬编码值搬成 `config.DefaultAPKDownloadPath`，**默认值故意保持不变**——
+   搬进配置是为了让它**可改**，顺手改掉一个正在被某台机器依赖的路径是另一件事，
+   而那台机器不在仓库里、也不在本轮能观察到的范围内。
+
+### §4.100.4 判据：6 条 + 负控（含我自己把判据写错的一次更正）
+
+`backend/internal/server/apk_download_test.go`（6 条）：
+
+- 三个**失败路径**：文件缺失 / 路径是目录 / 配置为空退回默认 —— 响应都**不得**
+  携带 `Content-Disposition`，也不得宣称自己是 APK。
+- 两个**成功路径**（对照组，防退化成「一律不设头」）：文件在时必须照常带下载头
+  并**原样服务文件内容**；路径必须来自配置。
+- 一条钉住 `DefaultAPKDownloadPath` 未被擅自改动。
+
+**负控**（`logs/apk-negctl-20261003-0410.txt`）：把 handler 退化成「先设头再 stat」，
+失败路径整组转红、成功路径整组保持绿，**恰好是这个分布**；真文件 sha256 还原一致
+（`2b07db75…`）。
+
+负控脚本自己也栽了一次，值得一提：第一版按「只准红 1 个」判定，报「红了 3 个 = 判据过宽」。
+**那条规则本身是错的**——三个失败路径用例守的是**同一个**不变量，只是三个真实入口，
+刻意纵深防御；退化实现让它们一起红才是正确的。改成两段式语义后成立：
+「该红的整组红 + 该绿的整组绿」。**改的是判据的语义，没删任何断言。**
+
+负控脚本还因为用 `\n` 写变异片段而在 CRLF 的 `server.go` 上**一个字符都匹配不上**
+（exit 2 作废）——静默匹配失败正是本会话反复栽的坑，已改为按文件实际行尾构造。
+
+### §4.100.5 口径：本轮没有做到的事
+
+- **未在真机/真后端验证修复效果。** 18099 上跑的是并行会话的二进制
+  （`pocketd-invoicenan-fix`，pid 8168，01:32:59 启动），**全程未触碰**：
+  重启它等于把代码换到别人脚下（该仓的 restart 脚本自己也这么警告）。
+  修复的行为证据来自 `httptest` 直接打真实 handler（`ResponseRecorder` 捕获的就是
+  handler 设置的响应头），**不是**「线上已生效」。
+- **没有跑 `gofmt -w`。** `server.go` / `config.go` 被 gofmt 标出，但那是
+  **既有**问题、且 193 个文件同样被标出——根因是这些文件是 CRLF 而 gofmt 要 LF。
+  LF 副本上的 diff 显示真正的问题在别处（`RSSConfig` 的对齐、`wecom` 的 import 顺序，
+  都是别人的既有代码）。跑 `gofmt -w` 会在共享仓里制造上百 KB 无关 diff，
+  还会顺手改掉并行会话的 import 排序。**没有动。**
+- 对两个 CRLF 文件的编辑**保留了 CRLF**（`server.go` CRLF=2596/bareLF=0，
+  `config.go` CRLF=734/bareLF=0）；本轮新建的 `apk_download_test.go` 是 LF，
+  与我上一轮建的 `app_version_compare.go` 一致。
+- `internal/server` 与 `internal/config` 全量测试均 exit 0；`go build ./...` exit 0。
+
+---
+
+<!-- ===== 编号碰撞分界以下：origin/main 那条独立轨道（§4.91 – §4.98） ===== -->
+
+## §4.91 隔离验证环境落地：把「不能安全跑」变成「能跑且不污染」，外加两个自己工具里的真缺陷
+
+本节记录一次以「解锁一批跑不了的验证」为目标的改动，以及在做的过程中
+**在自己的测量工具里**翻出来的两个缺陷（Bugs V15 / V16）。两个都不是新功能，
+但都属同一类：**判据说的话和判据实际做的事不是一回事**。
+
+### §4.91.1 隔离环境：`POCKET_PG_SCHEMA` 确实是硬隔离，不是纸面参数
+
+- 后端：`scripts/start-local-backend.ps1 -Port 18101 -Schema opencode_pocket_verify`
+  （DataDir `backend/data-verify`），与共享后端 18099 / 18077 / 18100 并存。
+- 隔离依据：`backend/internal/config/config.go:259`
+  `PostgresSchema: getEnv("POCKET_PG_SCHEMA", "opencode_pocket")`。
+
+验证脚本 `scripts/verify-schema-isolation.mjs`（11 条判据全过，exit 0）：
+
+| 判据 | 结果 |
+|---|---|
+| 隔离 schema 收到了这一行（同一 SQL 打 verify 返回 **1**） | PASS |
+| 共享 schema 没收到这一行 | PASS |
+| public schema 没收到这一行 | PASS |
+| DELETE 返回 204 / 按 id 复查隔离已空 / 按 id 复查共享为空 / 按 note 复查已空 | PASS |
+| 隔离 schema 总行数回到 POST **前**的基线 | PASS |
+| 共享 finance 表、共享 tasks 表总行数均未变 | PASS |
+| 阳性对照：共享 schema 确实有数据（`shared.tasks=2`） | PASS |
+
+**为什么要有「阳性对照」**：「共享库里数到 0」在**那张表根本不存在**时也会得到 0。
+所以除了阴性结果，还必须证明 psql 真的看得见 `opencode_pocket`（用 `shared.tasks > 0`），
+以及同一条 SQL 在隔离 schema 上**确实返回 1**（证明判据不是恒真）。
+
+**三次自伤换来的三条纪律**（都写进了脚本注释）：
+
+1. **基线必须在 POST 之前取。** 第一版把基线取在 POST 之后却标成「播种前基线」，
+   于是「删后回到基线」永远差 1。当时的输出是 `verify 总行 1（期望回到基线 2）`
+   ——看起来像隔离出了问题，实际上是**判据和它的标签一起说谎**。
+2. **「共享里 0」要配阳性对照。** 共享的 finance 表本身就是空的，
+   这条的强度有限；脚本会把它当 NOTE 打印出来，而不是假装它很强。
+3. **SQL 报错必须响亮退出。** 第一版 `catch` 里 `process.exit(2)`，
+   会把「查错了表」伪装成「结果是 0」——而第一版恰恰就写错过表名
+   （真表名是 `finance_transactions`，不是 `finance`），报的是
+   `relation "…finance" does not exist`。现在改成 `throw`，由异常钩子兜住清理。
+
+**故障注入负控**（`POCKET_FAULT=sql`，在播种**之后**故意执行一条会报错的 SQL）：
+
+```
+[清理 uncaughtException] DELETE txn_1790960258955121400 -> 204
+uncaughtException: Error: SQL 失败：SELECT count(*) FROM opencode_pocket_verify.no_such_table_xyz
+exit=1
+```
+
+顶层 `await` 抛错确实会触发 `uncaughtException`，钩子里的 `cleanup()` 真的把行删了。
+`process.on('exit')` 不能 await，所以钩子挂在 `unhandledRejection` / `uncaughtException` 上。
+
+顺带清掉一行历史遗留（`ISOLATE-856420`，时间戳早于已知的那次运行 ⇒ 是某次崩溃
+在跑到 DELETE 之前就挂了留下的，正是 BUG-V14 那一类）。`--purge-residue` 显式 opt-in，
+逐条走 API 删，不裸 SQL 写库。
+
+### §4.91.2 真实写负载下的隔离：共享库 66 张表两轮跑完零变动
+
+跑之前/之后各拍一次 `opencode_pocket` 全表行数快照，diff 必须为空：
+
+```
+before=66  after=66   SHARED SCHEMA UNCHANGED after 2 full probe runs (66 tables)
+```
+
+这是比「单条 finance 行落在哪」强得多的证据：它是**六个真写脚本各跑两遍**之后的
+全库零变动。
+
+### §4.91.3 6 个写路径探针首次实跑：6/6 exit 0，27 PASS
+
+`scripts/run-isolated-probes.mjs`（新，串行执行、逐个落日志、区分「脚本失败」与「runner 自己抛了」）：
+
+| 脚本 | exit | PASS | FAIL |
+|---|---|---|---|
+| probe-vault-api.mjs | 0 | 6 | 0 |
+| probe-vault-sync-empty-blob.mjs | 0 | 3 | 0 |
+| probe-gateway-nodes-api.mjs | 0 | 6 | 0 |
+| probe-email-account-api.mjs | 0 | 3 | 0 |
+| probe-email-sync-honesty.mjs | 0 | 5 | 0 |
+| verify-bug-z.mjs | 0 | 4 | 0 |
+
+这 6 个是**纯 API** 脚本：读 `POCKET_API_HOST`/`POCKET_API_PORT`，不碰 adb、不碰 CDP、
+不直接查 PG ⇒ 把 base 指到隔离后端，写入就落在隔离 schema。
+
+runner 里两处刻意写法：只统计**行首**的 `PASS`/`FAIL`（之前栽在 `Select-String`
+大小写不敏感上，响应体里的 `failed` 被数成了 FAIL）；`spawnSync` 的非 0 退出与
+「我自己抛了」分开归类。日志目录不存在时 `mkdirSync` 补上，且写日志失败不许中断整轮
+——头一版那行 `writeFileSync` 在 `try` 之外，目录不存在时 runner 自己崩掉，
+**第一个脚本的结果也一起丢了**。
+
+### §4.91.4 BUG-V15：邮件同步诚实性探针 —— 前置不自建 + 结论硬编码已过时 + 退出码恒 0
+
+首次实跑就报 `FAIL 找到那个指向不存在主机的账户（前置） — (没找到)`，
+但 **exit=0**。三处缺陷：
+
+1. **前置不自建。** 脚本只做 `accounts.find(a => a.imapHost === 'imap.invalid.test')`，
+   却从不创建那个账户。在干净环境里它**永远**跑不起来。
+2. **结论硬编码且已过时。** 脚本结尾无条件打印
+   「前端 `EmailAccountAddView` 只读 `sync.new`，不读 `sync.failed`，所以把失败显示成了成功」。
+   实测 `frontend/src/features/email/EmailAccountAddView.vue:219-226` **已经读**
+   `sync.failed` 并据此 `imapOk.value = false`——那个 bug 早就修了。
+   一句过时的断言留在脚本里，会让下一个读它的人以为问题还在。
+3. **退出码恒为 0。** 前置缺失时整段探针被 `if (target)` 跳过，
+   打印「0/1 通过」然后 exit 0 ——自动化无从分辨「跑过了」和「什么都没跑」。
+
+修法：
+
+- 自己建 `imap.invalid.test`（RFC 2606 保留 TDD，永不可解析）账户，跑完在
+  `finally` + 异常钩子里删；建不起来就 `exit 3`，响亮失败。
+- 结论改成**从源码推导**：读前端文件，判它到底读不读 `sync.failed`、有没有据此置 false。
+  修完实测输出是「前端确实读 / 确实置 false ⇒ **不存在**『把失败显示成成功』的问题」。
+- 退出码反映判定。
+
+**判据自证**（`--selftest`，10/10 通过）：每条读外部输入的判据都喂一个必须判 false 的
+输入——`{failed: []}`、`{}`、`null`、`'not json'`、空源码、只读 `sync.new` 的源码、
+读 failed 却仍置 `true` 的源码。**变盲对照**（`POCKET_FE_FILE` 指向不存在的文件）：
+
+```
+FAIL  前端确实读 sync.failed（否则失败会被显示成成功）
+FAIL  前端据 failed 把结果置为失败
+3/5 通过    exit=1
+```
+
+后端那三条仍 PASS ⇒ 不是整体变盲，只是前端那两条对「读不到文件」敏感。
+
+修完实跑：5/5 PASS，exit 0，账户删净（隔离 schema 里 `honesty-*` 两轮都清掉了）。
+
+### §4.91.5 BUG-V16：30 处写死 PG schema，把写路径脚本锁死在共享库上
+
+一批「直接查库对照」的探针把 `opencode_pocket.` 写进了 SQL。两个后果：
+
+1. 它们**只能**对着共享开发库跑 ⇒ 失败时 SEED 留在**另一会话**的库里（BUG-V14 的放大器）。
+2. 想在隔离后端上验证它们时，断言会去查**另一个** schema ——
+   要么假失败，要么更糟：静悄悄对着错库给出「通过」。
+
+- 门禁 `scripts/check-pg-schema-hardcoded.mjs`（新）：`--selftest` **11/11 通过**
+  （敏感度 2 / 特异度 5 / 变盲 2 / 自指豁免 1 / 注释归类 1），实跑 **0 命中**。
+- 迁移 `scripts/migrate-pg-schema.mjs`（新）：12 个文件 30 处，`flashcards-test-fixture.mjs`
+  与 `marshal-probe.mjs` 手改（前者是**跨行模板串**，逐行匹配处理不了，且它的 DELETE
+  是自清理部分，值得手工）。
+
+**迁移脚本自己也翻车了一次，值得记**：
+
+- 锚点规则太松：`process.env.POCKET_PSQL,` 这行落在 `resolvePsql()` 里**多行数组
+  字面量的中间**，SCHEMA 声明被插进去 ⇒ `verify-bugaa-realdevice.mjs` 语法错误。
+- 而 `node --check` 查的是**磁盘上的旧文件**（改完还没落盘），所以放行了。
+  **判据没对着被测对象。** 两处都修了：锚点必须在语句边界
+  （行尾 `;` 或行首 `const|let|function`），语法检查改为写临时文件后检查新内容、
+  `finally` 里删。
+
+**负控**：把 `verify-bugaa-realdevice.mjs` 的改前版本取成 `_negctl-bugaa.mjs` 再跑一次迁移 ——
+现在它**跳过并说明原因**（「找不到语句边界上的 POCKET_PSQL / psql 帮助函数锚点」），
+不再产出坏文件。旧行为是静悄悄写坏。
+
+判据与门禁的一致性也踩了一次：迁移头一版按**全文**数 `opencode_pocket.` 出现次数，
+而门禁按行排除整行注释 ⇒ 7 个跳过里有 6 个纯属这个不一致。已统一成同一个计数函数。
+
+### §4.91.6 隔离环境解锁不了什么（重要边界，别高估它）
+
+`verify-finance-writepath.mjs` / `diag-finance-*` 这类**真机 UI** 脚本，
+隔离环境**救不了**：UI 走哪个后端由设备侧 `adb reverse` 决定（当前指向 18099，
+是并发会话的后端），不是由脚本的 env 决定。改那个映射是**共享可变状态**，
+没跟对方确认之前不动。
+
+所以这轮的准确表述是：**3 个 finance 脚本已 schema 化（可对着隔离后端跑），但未实跑**。
+未实跑 ≠ 已验证。
+
+### §4.91.7 本轮自己的工具翻了车（记账）
+
+- runner 的 `writeFileSync` 在 `try` 之外，目录不存在时 runner 自己崩，第一个脚本结果一起丢。
+- 迁移的 `node --check` 查旧文件（上面已详述）。
+- 迁移的注释/代码判定与门禁不一致，导致 6 个假跳过。
+- `Out-File -Encoding UTF8` 造夹具时带出 BOM，`node --check` 报
+  `Invalid or unexpected token` ——那是夹具的问题不是迁移的问题。
+  **看到语法错先确认错在哪个文件**：那次的 BOM 来自 PowerShell，不是代码。
+## §4.92 三条外部审计缺口的定性：两条证伪、一条转化为新门禁
+
+外部审计回了三条缺口。逐条查证，结论是**两条不成立、一条成立但被我错误归类**。
+成立的那条又牵出一个此前没记录的前置条件。
+
+### §4.92.1 「闪卡入口『新建卡组』跳到卡片编辑页」—— 不复现
+
+审计说这是「本轮新发现、只记录未修」。逐层查下来它在当前代码里不存在：
+
+| 层 | 证据 | 结论 |
+|---|---|---|
+| i18n 值 | `list.create`="新建卡片"、`deck.create`="新建卡组"（zh-CN）；en-US 为 "New card"/"New deck" | 未对调 |
+| 9 种语言 | de/en/es/fr/ja/ko/pt/zh-CN/zh-TW 的 `list.create` 与 `deck.create` **全部互不相同** | 一致 |
+| 模板绑定 | `.add` → `goCreate()` → `/flashcards/new`（卡片编辑页）；`deck-create-toggle` → `showDeckForm = !showDeckForm`（**页内展开**，不导航） | 语义正确 |
+| 后端路由 | `server.go` 里无 `/api/marketplace/agents` 之类字面量 | — |
+
+历史：**§4.14 BUG-K** 就是这个缺陷（「按钮写新建卡组、实际跳到新建卡片页」），
+修法是把 `list.create` 从「新建卡组」改成「新建卡片」并新增 `deck.create`；
+**§4.28 BUG-AA** 补齐了 BUG-K 只改对 2/9 语言的问题。两轮都已闭环。
+
+**没做过的是真机侧**。新增 `scripts/probe-flashcards-entries-readonly.mjs`，
+**严格只读**（只 openCdp + 读 DOM，不导航、不点击、不碰 `adb reverse`），
+实跑结果：
+
+```
+CDP 已连：pid=21096 socket=webview_devtools_remote_21096 port=52330
+当前页面：origin=https://localhost hash=#/more
+当前不在闪卡页。**不跳转** —— 跳转是状态变更……
+本次结论：闪卡两入口的真机渲染「未验证」（不是「通过」，也不是「不通过」）。
+exit=2
+```
+
+`exit=2` 是刻意设计的：它把「没验」和「验过不通过」区分开，
+免得下一轮在汇总表里把这一项当成通过。跳转属于共享设备上的状态变更，
+而设备的 `adb reverse` 指向并发会话的后端，动手前必须先确认对方没在跑。
+
+跑完确认共享状态未动：`reverse` 仍是 `tcp:18099 → tcp:18099`，
+`forward --list` 为空（`close()` 清理干净），App 仍停在同一个 Activity。
+
+### §4.92.2 顺带查出一个没记录的前置条件：设备跑的是**生产 https 包**
+
+上面那次附着读到 `origin=https://localhost` —— 设备上装的是**生产包**，
+而 `verify-finance-writepath.mjs` / `verify-instances-readpath.mjs` 的
+`POCKET_EXPECT_ORIGIN` 默认值是 `http://localhost`（开发包）。
+
+⇒ **用默认值跑这两个脚本，会在第一关 `origin 与预期不符` 就 exit 5，
+根本走不到真正要验的判据上。** 跑它们必须带
+`POCKET_EXPECT_ORIGIN=https://localhost`（脚本本来就为「生产 https 回归」留了这个口子）。
+
+全仓只有这 2 处涉及该默认值，所以不是普遍问题，但它是**实跑前置条件**，
+之前从没记进 handoff。
+
+### §4.92.3 「/api/marketplace/agents 到底是 404 还是 401」—— 两个都不是缺陷
+
+审计说「本次只读探测下无法证实（返回 401）」。实测三种请求（隔离后端 18101）：
+
+```
+① 不带凭证      -> 401  {"code":"unauthenticated","error":"missing authorization token"}
+② 带错 token    -> 401  {"code":"unauthenticated","error":"invalid or expired token"}
+③ 带有效 token  -> 404  {"error":"not found"}
+```
+
+源码对照：`server.go` 里**没有** `/api/marketplace/agents` 这个字面量。
+
+所以两轮旧结论各自错在哪：
+
+- 「404 = 路由没注册」——**这句是对的**，但当时是**没带 token** 探测的，
+  被 `requireAuth` 先挡成 401，压根没走到路由判定。
+- 「市场接口 401」——同样是没带凭证的只读探测，401 只是鉴权中间件在工作。
+
+**真正的结论**：`frontend/src/features/marketplace/api.ts` 的
+`base = '/api/marketplace'` 下只列了 `packages` / `releases` /
+`packages/{id}/versions` / `submit` / `review` / `publish` / `install` / `revoke` / `rate`
+—— **没有任何地方调 `/api/marketplace/agents`**。它是一个**契约里不存在的 URL**。
+「智能体市场」页（`AgentMarketView`）走的是 `/api/marketplace/packages?kind=agent`，实测 200。
+
+⇒ 这不是缺陷，是个**反复被人当成缺陷讨论的幻影 URL**。为此新增门禁
+`scripts/check-marketplace-contract.mjs`：从 `api.ts` 抽出真实路径，
+逐个拿**有效 token** 打一遍，必须 2xx；写路径（submit/publish/install/revoke/review/rate）
+只 SKIP 不探。实跑 5/5 PASS：
+
+```
+200  /api/marketplace/packages          {"packages":[...]}
+200  /api/marketplace/releases          {"releases":[]}
+200  /api/marketplace/packages/X/versions {"versions":[]}
+404  /api/marketplace/agents（有效 token）
+401  /api/marketplace/agents（无凭证）
+```
+
+### §4.92.4 「真机 Maestro 从未成功执行一次（零安装包、零运行产物）」—— 不成立
+
+审计这条说「零安装包、零运行产物」。`~/.maestro/tests/` 下实际有 **155 个运行目录**：
+
+| flow | 运行次数 |
+|---|---|
+| flashcards-write | 26 |
+| notes-crud | 22 |
+| tasks-crud | 18 |
+| smoke-login | 9 |
+| login-gesture | 2 |
+
+每次运行的产物结构完整，例如 `2026-10-02_223553/flashcards-write/`：
+`commands.json` (21.9KB)、`manifest.json`、`logs/maestro.log` (24.4KB)、
+`logs/device-logcat.txt` (**980KB**)。`2026-10-02_231342/login-gesture/` 另有
+`takeScreenshot/logs/maestro/login-gesture-rejected.png` (197KB，本轮之前已目视核对)。
+
+设备侧 logcat 是**真机上的 Maestro 进程**留下的，不是模拟：
+
+```
+10-02 22:36:15.711 D/Maestro ( 9060): Requesting view hierarchy
+10-02 22:36:15.732 I/Maestro ( 9060): Skipping invisible child: … boundsInScreen: Rect(38, 10 - 38, 68) …
+```
+
+一点如实说明：Maestro 的 `manifest.json` 里把设备来源标成 `"source": "emulator"`，
+但设备是 `192.168.31.19:5555` 这台真机（前面那张截图里能看到真机状态栏与电量）。
+**那是 Maestro 自己的固定标签，不是设备类型。**
+
+### §4.92.5 这轮新门禁又把自己的作者判红了一次
+
+`check-marketplace-contract.mjs` 第一版把
+`${base}/packages${query}` 里的 `${query}` 当成路径参数替换成了 `X`，
+于是拼出 `/api/marketplace/packagesX` —— 一个**根本不存在的 URL**，
+然后门禁红灯，输出「有接口不可达 —— 这才是真缺陷」。
+
+真凶是抽取器，不是后端。修法：`${…}` 出现在**捕获串末尾**时它是查询串占位符
+（listPackages 专门拼 `?kind=`），不是路径段，去掉即可。
+
+**这条值得单独记**：门禁把作者的错报成后端的错，而那行结论写得很有把握
+（「这才是真缺陷」）。判据出错时，它输出结论的**语气**不会变——
+这跟 §4.91 的迁移脚本把文件改坏而 `node --check` 放行是同一类：
+**判据的错误会以结论的口气出现，而不会以「我不确定」出现。**
+## §4.93 找到不动 `adb reverse` 也能让真机打到隔离库的办法，并让 3 个 finance 脚本真跑
+
+§4.92 说「设备 forward 指向并发会话的后端，改它是共享可变状态，动手前必须先确认对方没在跑」。
+这轮找到了**不碰它**的办法，于是这个卡点解除了。
+
+### §4.93.1 解法：App 的后端地址是 `localStorage` 里一个可改的键
+
+`frontend/src/config/api-base.ts` 是 API 基址的 SSOT，优先级
+**localStorage 覆盖 > VITE_API_BASE > 同源**。关键在规则 1 与规则 2 的分工，
+源码注释写得很明确：
+
+> 构建默认值：Capacitor 壳上**且**是 loopback 时丢弃——真机不可达……
+> **用户显式填的地址不受影响**，因为 `adb reverse` 开发流确实需要用户主动指定 localhost。
+
+⇒ 设备上的 App 之所以打到 18099，是**用户显式填的**，不是构建烘进去的。
+实测（只读 CDP）：
+
+```
+origin            = https://localhost
+pocket_api_base   = "http://127.0.0.1:18099"
+pocket_token 长度 = 291
+最近的 /api/ 请求： http://127.0.0.1:18099/api/finance、/api/redclaw/health、…
+```
+
+那么换一个地址行不行？隔离后端 18101 绑在 `::`（全接口），主机 WLAN 是 `192.168.31.20`，
+设备 `192.168.31.19` 同网段。从**页面里**实测（只发 GET，不写任何数据）：
+
+```
+fetch http://192.168.31.20:18101/healthz  →  {"ok":true,"status":200,"body":"ok"}
+```
+
+**混合内容没有被拦**（Capacitor WebView 允许 cleartext）。所以：
+
+| 方案 | 动的东西 | 谁会受影响 |
+|---|---|---|
+| 改 `adb reverse` | 设备↔主机的端口映射 | **并发会话**（它就靠这个打自己的后端） |
+| **改 `localStorage.pocket_api_base`** | 这台设备上这个 App 的一个键 | 只有下一个用这个 App 的人，且**可原样写回** |
+
+选了后者。`scripts/run-device-against-isolated.mjs` 的纪律：
+动手前先探后端可达（连不上就不改，免得把 App 指到虚空）→ **原值原样记录** →
+改指向 → 跑脚本 → `finally` 写回，外加 `unhandledRejection` / `uncaughtException` 两个钩子
+一起兜（只写在 happy path 上，就会「跑失败就把 App 留在隔离库上」，
+让下一个人莫名打到一个空库 —— 与 BUG-V10/V14 同一类）。
+
+### §4.93.2 动手前先证明设备空闲，且分清「有人在用」与「App 轮询」
+
+`scripts/probe-device-idle.mjs`：连续采样 `/api/` 请求条数。
+12 秒窗口 0 增长；但 60 秒窗口 +2，于是判红。**不能就此断定有人在驱设备** ——
+`/api/redclaw/health`、`/api/scheduled-tasks?since=…` 这类很可能是 App 自带轮询器。
+`scripts/probe-device-request-cadence.mjs` 把 URL 逐条打出来区分二者，
+结果 45 秒窗口 **0 条新增，完全静止**。
+
+顺带白拿了一份**这个 App 真实会打的端点清单**（Performance 资源表反推，44 个去重端点）：
+`/api/finance` `/api/finance/stats` `/api/flashcards` `/api/flashcards/notes`
+`/api/learning/*` `/api/llm-gateway/nodes` `/api/rss/*` `/api/emails*` `/api/tasks`
+`/api/marketplace/packages` `/api/scheduled-tasks` …
+
+### §4.93.3 verify-finance-writepath.mjs：真机 **26/26 通过**
+
+对着隔离后端（`POCKET_API_PORT=18101` + `POCKET_PG_SCHEMA=opencode_pocket_verify`
++ `POCKET_EXPECT_ORIGIN=https://localhost`）实跑，全绿。关键几条：
+
+```
+PASS  API 播种成功（2xx，拿到 id）  — status=201 id=txn_1790962273121029200
+PASS  播种后 PG 行数 +1             — 0 -> 1
+PASS  读路径：API 播种的记录出现在 UI 列表里 — ↑UI测试-¥11.11 … SEED-273012
+PASS  点「记账」后预览出现            — "支出 · 交通 · ¥97.77 确认入账 取消"
+PASS  解析接口 2xx                  — status=200
+PASS  **直接查 PG** 确认真的写进去了   — 1 -> 2
+PASS  PG 最新一条的备注来自 UI 输入的自然语言原文 — note="打车花了 97.77 元"
+PASS  POST /api/finance 非 4xx/5xx  — status=201
+PASS  界面给出成功反馈（toast）        — toasts=["已入账"]
+PASS  ⚠️ 没有失败类反馈与成功类反馈并存
+PASS  ⚠️ 没出现「PG 未变却说成功」的假成功 — saidOk=true PG 1->2
+PASS  列表回显 / 统计联动（本月支出 -¥108.88）/ 删除生效（2 -> 1）/ 对照组 SEED 仍在
+PASS  无未捕获 JS 异常                — 0 条
+[cleanup:normal] 删除 SEED -> 204，PG 终值 = 0
+26/26 通过
+```
+
+跑完三件事同时成立：**共享库 66 表逐表一致**、**隔离库 finance 归零**、
+`pocket_api_base` 已写回 `"http://127.0.0.1:18099"`、`adb reverse` 仍是
+`host-25 tcp:18099 tcp:18099`（我一个字节没动）。
+
+#### 第一次跑 20/26 —— 6 条 FAIL 全是我 runner 的 bug，不是产品缺陷
+
+头一版 runner 传了 `POCKET_API_PORT` 却**漏了 `POCKET_PG_SCHEMA`**，
+finance 脚本的 `SCHEMA` 于是落回默认的 `opencode_pocket`（共享库），
+而 App 写的是隔离库 ⇒ 6 条「直接查 PG」判据全红，其中一条打印成
+`⚠️ 没出现「PG 未变却说成功」的假成功 — saidOk=true PG 0->0`
+——**看起来像一条很严重的真缺陷**。
+
+那条判据其实是对的：它看到的确实是「UI 报成功、它查的库没变」。
+**判据红不一定是产品坏了，先问「我查的是不是同一个库」。**
+补上 `POCKET_PG_SCHEMA` 后同一脚本 26/26。
+
+同时修掉 runner 两处会掩盖结论的地方：`execFileSync` 在子进程非 0 时会 throw，
+不拆开就会把子脚本失败报成 runner 失败；以及子脚本 exit=1 被吞掉、
+外层只把自己的 exitCode 带出去（管道里于是显示成 `EXIT=0`）。
+
+### §4.93.4 BUG-V17：diag-finance-workspace 的「App 看不到 SEED」结论是错的
+
+`diag-finance-workspace.mjs` 里那行「App token 调 list」用的是
+**相对路径** `fetch('/api/finance')`。Capacitor 壳的 origin 是 `https://localhost`，
+相对路径解析到 `https://localhost/api/finance` → 命中本地 index.html → 返回 HTML：
+
+```
+App token 调 list = {"error":"SyntaxError: Unexpected token '<', \"<!doctype \"…"}
+=== 判定 ===
+作用域一致但 App 看不到 SEED —— 需要继续查服务端 ListScoped 过滤或 App 的 fetch
+```
+
+两处都错：
+
+1. 真实 App 走的是 `api/http.ts` 的 `${resolveRuntimeApiBase()}${path}`，
+   即**绝对 base + 相对 path**。脚本测的那次请求**不是 App 发的请求**。
+2. `admin token` 直调同一个接口是 200/hasSeed=true —— 数据在库、作用域也对。
+
+按 `api-base.ts` 的解析顺序改掉（localStorage 覆盖优先，空串=同源），
+并把「实际用的 URL」和 Content-Type 一起回传 +
+`text/html` 时响亮报 `RETURNED_HTML` 而不是继续往下推。修后实测：
+
+```
+App token 调 list = {"url":"http://192.168.31.20:18101/api/finance","status":200,
+                     "count":1,"hasSeed":true,"notes":["DIAG-SEED-491547"]}
+   [自检] App 侧请求用的是绝对 base = YES
+=== 判定 ===
+App 其实能看到 SEED —— 读路径 FAIL 是时序/等待问题，不是作用域问题
+```
+
+⇒ §4.26.2 那个「`default` vs `ws_user-admin` 数据孤岛」**大半是探针自己造出来的**：
+一个用相对路径的假请求 + 一次播种作用域错配。两侧都用 `ws_user-admin` 时一切正常。
+这一条待办可以从「数据孤岛」降级为「时序/等待问题」继续查。
+
+`diag-finance-samescope.mjs` 同一轮也自证了这一点：它原本记录的 FAIL 原因正是
+「跨工作区错配（测试播 ws_user-admin / App 看 default）」，改成同作用域后读路径正常。
+
+### §4.93.5 本轮我自己的两次失误
+
+- `/^\\//.test(...)` 在正则字面量里被斜杠截断，`.` 之后报 `Unexpected token '.'`。
+  改用 `startsWith('/')`。**在会被程序再读一遍的文本里，别嵌套你正在用的分隔符**
+  （与 Go 块注释里写 `*/`、`.mjs` 模板串里写反引号是同一类）。
+- 第一次写 BUG-V17 修复时，`/^\\//` 那行同时被我自己的**自检判据**忽略了 ——
+  自检在 `ev()` 里，没在 Node 侧；`node --check` 才抓到。
+  **语法检查和语义自证是两道闸，不能只留一道。**
+
+### §4.93.6 这一节没有解决什么
+
+- 设备侧其余 CDP 族（约 14 个）**尚未**逐个实跑，只是把通道打开了。
+- BUG-AX 设备侧负控、闪卡两入口的**点击**、会议写入设备侧持久化，仍未做。
+- `default` vs `ws_user-admin` 的**时序/等待**问题需要单独复现，不是本节能结的。
+## §4.94 给 26/26 配负控：查出一条**恒假**的证伪判据（BUG-V18），并解掉 5 个脚本的 origin 硬写
+
+§4.93 拿到 `verify-finance-writepath.mjs` 真机 **26/26 通过**。但按一直守着的规矩，
+**绿灯本身不证明判据有区分力** —— 这一节就是去证明它。
+
+### §4.94.1 BUG-V18：证伪判定里有一条**设计上永远绿**的判据
+
+先跑 `--sabotage=hide-cta`（把「记账」按钮从 DOM 摘掉，模拟死 CTA）：
+
+```
+11/26 通过
+FAIL: 对照组 A：空输入时「记账」按钮 disabled
+FAIL: 点「记账」后预览出现（解析请求走通）
+FAIL: **直接查 PG** 确认真的写进去了
+FAIL: POST /api/finance 非 4xx/5xx
+FAIL: 删除按钮点得动 …（共 15 条红）
+证伪判定：❌ 判据没抓到破坏 —— 本次证伪无效
+```
+
+**15 条判据明明抓到了破坏，脚本自己却判「证伪无效」。** 查它的期望键：
+
+```js
+: ['页面就位：快速记账输入框与「记账」按钮都存在', '点「记账」后预览出现（解析请求走通）']
+```
+
+而脚本的执行顺序是：**先测 `页面就位`，再摘按钮**。所以在 hide-cta 模式下
+这条判据**必然 PASS** —— 它量的是破坏之前的状态。
+`expectKey.every(...)` 于是永远 false，**无论破坏多彻底都输出「证伪无效」**。
+
+这不是「判据不敏感」，是**恒假**：它要求一个不可能成立的条件。
+（同一文件里还留着两处同类自证的注释——`*` 只剥一边、failed 是对象数组——
+说明这条链已经栽过两次。）
+
+顺带一个标签问题：那条 `页面就位：…按钮都存在` 是在 sabotage **之后**打印的，
+此刻按钮已经被摘掉，日志却报 PASS 并声称「按钮都存在」。标签在说它没在说的东西。
+
+修法两处：
+
+1. 改名 `页面就位（sabotage 前基线）`，并**在摘除之后再测一次**按钮在不在，
+   把真实状态打成可核对的现场证据：
+   ```
+   [sabotage 生效确认] 摘除后：btn=false（期望 false） input=true（期望 true，说明只摘了按钮）
+   ```
+   `btn` 不是 false 就 `exit 8` —— sabotage 没生效的话，后面的红**不能**算「判据抓到了破坏」。
+2. hide-cta 的期望键换成 sabotage 真正会打坏的三条：
+   `点「记账」后预览出现` / `**直接查 PG** 确认真的写进去了` / `POST /api/finance 非 4xx/5xx`。
+
+修完复跑，两个负控都通过：
+
+```
+# hide-cta
+逐条匹配：HIT «点「记账」后预览出现（解析请求走通）»  HIT «直接查 PG 确认真的写进去了»  HIT «POST /api/finance 非 4xx/5xx»
+证伪判定：✅ 判据在有缺陷一侧如期失败
+
+# swallow-create（拦掉 POST /api/finance 并回一个假的 201 —— 复刻 BUG-AC）
+FAIL  ⚠️ 没出现「PG 未变却说成功」的假成功 — saidOk=true PG 1->1
+逐条匹配：HIT «直接查 PG 确认真的写进去了»  HIT «⚠️ 没出现「PG 未变却说成功」的假成功»  HIT «POST /api/finance 非 4xx/5xx»
+证伪判定：✅ 判据在有缺陷一侧如期失败
+```
+
+**⇒ 26/26 这个绿灯现在被证明不是恒真**：两种人为破坏下，判据都如期转红，
+且 swallow-create 精确复现了 BUG-AC 的原场景——界面报「已入账」、
+PG 停在 1→1，只有「直接查 PG」那条能识破。
+
+注意修判据之后**必须复跑负控**：我只是把一条恒假判据换掉，
+不验证新期望键能被命中的话，只是把恒假换成恒假。
+
+### §4.94.2 5 个写路径脚本 origin 硬写，在当前设备上一律 exit 5
+
+§4.92 查出设备装的是**生产 https 包**（`origin=https://localhost`），
+而这批脚本第一关写死开发包：
+
+| 脚本 | 原有断言 | CDP 端口 | API 端口 |
+|---|---|---|---|
+| verify-email-writepath.mjs | `origin !== 'http://localhost'` → exit 5 | `POCKET_CDP_PORT \|\| 9253` | env |
+| verify-gateway-writepath.mjs | 同上 | `… \|\| 9260` | env |
+| verify-marketplace-install.mjs | 同上 | `… \|\| 9250` | **写死 8088** |
+| verify-bug-u.mjs | 同上 | `… \|\| 9247` | env |
+| verify-bugaa-realdevice.mjs | 同上 | env | env |
+
+用当前设备跑，它们会在**还没走到任何真正要验的判据**之前就退出——
+看着像「脚本坏了」，实则是前置假设不成立。
+`verify-finance-writepath.mjs` 早留了这个口子（`POCKET_EXPECT_ORIGIN`，
+注释写明「做生产 https 回归时用…否则脚本会在第一关就退出」），这批漏了。
+
+新增 `scripts/migrate-expect-origin.mjs`（机械不变量：替换数一致、
+`EXPECT_ORIGIN` 恰好声明一次、`node --check` 对着**新内容**过、任一不满足则该文件不动），
+改掉 5 个文件；`verify-marketplace-install.mjs` 的 `const API_PORT = 8088`
+也改成 `Number(process.env.POCKET_API_PORT || 8088)`。
+
+**头一版 TARGETS 漏了 `verify-bugaa-realdevice.mjs`**，
+是迁移后的**全仓残留复查**把它捞出来的 —— 所以批量迁移之后必须再扫一遍全仓，
+不能只看「我列的那几个」。
+
+### §4.94.3 这一节没有解决什么
+
+- `verify-task / email / gateway / marketplace / bug-u / bugaa` 六个脚本**尚未逐个实跑**，
+  只是把前置条件解开了。
+- 它们仍**各写各的 `adb forward`**（约 14 处硬编码 CDP 端口），
+  尚未迁到 `lib/adb-cdp.mjs` 的 `tcp:0`。跑的时候要显式传 `POCKET_CDP_PORT` 避开撞端口。
+- 闪卡两入口的**点击**、BUG-AX 设备侧负控、会议写入设备侧持久化，仍未做。
+## §4.95 BUG-V19（退出码恒 0）+ 新门禁，以及一个刚坐实的 UI 缺陷（BUG-V20，待定位）
+
+### §4.95.1 BUG-V19：4 个脚本判出 FAIL 仍然 `process.exit(0)`
+
+`verify-task-writepath.mjs` 跑出 `exit=0 PASS=8 FAIL=1`。退出码是**写死**的：
+
+```js
+const passed = checks.filter((c) => c.pass).length
+console.log(`\n=== 汇总 ===\n${passed}/${checks.length} 通过`)
+ws.close()
+process.exit(0)          // ← 无论 passed 是多少
+```
+
+⇒ CI、批量 runner、`&&` 链**全都无从分辨**「跑过了」与「全绿」——
+绿灯是被无条件发出去的。与 BUG-V15（邮件同步探针退出码恒 0）同一类，
+只是那次的脚本我改了、这一批漏了。
+
+新增门禁 `scripts/check-exit-reflects-verdict.mjs`（`--selftest` 7/7：
+敏感度 2 / 特异度 3 / 变盲 2），判据是「含 `const checks = []` 或 `const check = (…)`
+的文件里不允许出现无条件收尾的 `process.exit(0)`」，
+首跑就抓出 3 个：`verify-notes-crud.mjs`、`verify-notes-inputtext.mjs`、
+`verify-scheduled-task-writepath.mjs`。连同 `verify-task-writepath.mjs` 全部改成
+`process.exitCode = checks.some(c => !c.pass) ? 1 : 0`，
+复跑门禁 **0 命中**。
+
+**刻意保持保守**：只看行首就是 `process.exit(0)` 的收尾行，且同文件没有
+`process.exitCode` 赋值、没被 `if (` 包住。全仓有一百多个 `process.exit(0)`，
+绝大多数是合理的（幂等追加器、诊断脚本、早退路径）——门禁宁可漏报也不误报。
+
+### §4.95.2 verify-task-writepath 修判据后：8/9，剩一条判红
+
+顺带修掉另一处判据缺陷：原来 `goto('#/ai')` 之后**立刻**读 DOM，
+把「慢」和「不刷新」混成一个结论。改成轮询到 15 秒并打印耗时：
+
+```
+FAIL  删除后列表不再回显（轮询至多 15s）  — found=true  耗时=15070ms
+      ⇒ 15s 内始终不消失，指向「删除后列表不刷新」
+exit=1
+```
+
+### §4.95.3 BUG-V20（待定位）：任务删除后，列表三种刷新方式都不更新
+
+新增 `scripts/diag-task-list-refresh.mjs` 做定性，实测（隔离库，2026-10-03 01:58）：
+
+```
+播种 LISTREFRESH-523881 -> 201 id=task-bee90b47bdbe2f3238ee52391595a47d
+① 删除前刷新一次，列表里能看到            = true
+② 服务端 DELETE -> 200；PG = 0            ← 服务端确实删了
+③ 删除后（不刷新）仍能看到                = true
+④ 离开再回来（没点刷新）仍能看到           = true
+⑤ 点刷新（clicked）后仍能看到              = true      ← 连手动刷新都救不回来
+```
+
+**服务端是对的（200 + PG 归零），UI 三种刷新方式都不更新。**
+这不是等待不足，也不是「缺一个刷新触发」——是**列表读到的数据源**不对。
+
+⚠️ **根因尚未定位，不下结论。** 待查的候选（都需要再验，不能现在就选一个）：
+- 本地缓存合并：闪卡那边有过一模一样的坑
+  （`stores/flashcards.ts:291` 的 `mergeById(本地, 服务端)` 只做增量合并、
+  删除只走 `envelope.deletedIds` 增量通道）。任务 store 若是同一模式，
+  被删的项会**从本地缓存里复活**。
+- 列表查询的作用域/来源与写入端不一致（写入 `ws_user-admin`，列表读别的）。
+- 列表走了不同的接口（`.task-card` 渲染的数据未必来自 `/api/tasks`）。
+
+**下一步该做的判据**（不要只靠肉眼看）：开着 `Network` 域，
+点刷新后抓 `/api/tasks` 的**响应体**，看服务端返回里到底还有没有那条。
+返回里有 ⇒ 前端合并/渲染问题；返回里没有 ⇒ 请求根本没发到隔离后端。
+这一条能把上面三个候选一刀切开。
+
+### §4.95.4 5 个写路径脚本的 origin 硬写已解（§4.94.2 已记）
+
+`verify-task-writepath` 已在解开的条件下实跑（8/9，剩 BUG-V20 那条）。
+`verify-email / gateway / marketplace / bug-u / bugaa` **尚未逐个实跑**。
+
+### §4.95.5 本轮新增/修改清单
+
+| 文件 | 变化 |
+|---|---|
+| `scripts/verify-finance-writepath.mjs` | BUG-V18 证伪判据修复 + sabotage 生效现场确认 |
+| `scripts/verify-task-writepath.mjs` | 列表回显改轮询 + 退出码反映判定 |
+| `scripts/verify-notes-crud.mjs` / `verify-notes-inputtext.mjs` / `verify-scheduled-task-writepath.mjs` | 退出码反映判定 |
+| `scripts/verify-email/gateway/marketplace/bug-u/bugaa-*.mjs` | origin 断言改 env |
+| `scripts/verify-marketplace-install.mjs` | API 端口改 env |
+| `scripts/migrate-expect-origin.mjs`（新） | 批量迁移，带机械不变量 |
+| `scripts/check-exit-reflects-verdict.mjs`（新） | 门禁，selftest 7/7 |
+| `scripts/diag-task-list-refresh.mjs`（新） | BUG-V20 定性探针 |
+| `scripts/run-device-against-isolated.mjs` | 支持透传 `--` 参数（证伪模式要用） |
+
+### §4.95.6 这一节没有解决什么
+
+- BUG-V20 根因未定位，**不能算已修**。
+- 5 个脚本未逐个实跑；约 14 处硬编码 CDP 端口未迁 `lib/adb-cdp.mjs`。
+- 闪卡两入口的**点击**、BUG-AX 设备侧负控、会议写入设备侧持久化，仍未做。
+## §4.96 更正 §4.95：BUG-V20 的「已坐实」建立在一个**空对照**上，撤回
+
+§4.95 我把 BUG-V20 写成「已坐实」。这轮查下来，**那个结论的支撑不成立**，本节撤回它。
+
+### §4.96.1 我自己又写了一个没建立被测状态的判据
+
+新增 `scripts/diag-task-list-source.mjs` 想回答那个正确的问题
+（「删除后服务端 `/api/tasks` 返回里还有没有那条」）。
+头一版**只播种、没删除**，`cleanup` 是在 `finally` 里才跑的
+⇒ 查询时那条任务本来就在库里，探针据此打印
+「服务端返回里还有那条 ⇒ 不是 UI 问题」。
+
+**一个没先建立被测状态的判据，给出的结论看起来和真结论一模一样。**
+加上「先删再查」之后才拿到有意义的那组数据。
+
+### §4.96.2 §4.95 那个「点刷新」对照是空的
+
+§4.95 写「点刷新（clicked）后仍能看到」并据此断定「不是缺刷新触发」。
+但 `TasksView.vue` 里**没有** `button[aria-label="刷新"]`：
+
+```vue
+<PullToRefresh :on-refresh="handleRefresh" class="ai-hub-scroll">
+```
+
+刷新是**下拉手势**（`handleRefresh` → `loadTasks` + `loadSessions` + `approvals.refresh`），
+页面里根本没有那个 aria-label 的按钮。我的脚本用
+`document.querySelector('button[aria-label="刷新"]')` 去找，
+**在别的视图（或旧渲染）里匹配到了同名按钮，点它根本不会触发 `handleRefresh`**。
+
+⇒ 「三种刷新方式都不更新」这句话，**第三种是无效对照**。整条结论的强度塌了。
+
+### §4.96.3 产品的删除路径按代码看是对的
+
+`TaskDetailView.vue` 的 `confirmDelete`：
+
+```js
+await api.deleteTask(deleted.id)
+// 必须在 push 之前登记：push 之后列表页立刻被激活，
+// 顺序反了 consumeListDirty 会读到还没置位的状态。
+markListDirty('tasks')
+router.push('/ai')
+```
+
+列表侧 `loadTasks()` 是**整体替换** `tasks.value`（无 `mergeById` 式合并），
+`deleteTask` 也会 `filter` 掉。`TasksView` 在 KeepAlive 名单里、返回时靠
+`markListDirty` 触发重取——**这套设计就是专门为「详情页删掉→返回」准备的**，
+源码注释里还记着它修过一次同样的问题。
+
+而 `localStorage` 里**没有**任务缓存键 ⇒「本地缓存把被删项复活」这条也被证据否掉了。
+
+### §4.96.4 撤回后的准确表述
+
+已确认的事实：
+- 服务端删除是干净的：HTTP 200、PG 归零、`/api/tasks` 不再返回那条。
+- 产品的删除→回列表路径，**按代码看是对的**。
+- `verify-task-writepath.mjs` 走 UI 详情页删除后，列表里那条确实还在（轮询 15s 未消失）。
+
+**尚未确认的是**：这到底是不是产品缺陷。
+`verify-task-writepath` 的删除点击用的是「找文本为 删除/确认删除/确定删除 的按钮」，
+而确认弹层是 `useConfirm` 的 BottomSheet、`confirmText` 就是「删除」——
+**点到的未必是弹层里那个确认按钮**。它可能只点了个空转，
+后面 `sleep(3000)` 就直接查库，看到的「PG 无该行」其实是**上一条**删除的结果。
+
+⚠️ 所以现在有两条互斥的可能，都还没排除：
+- (a) 产品缺陷：删除后列表确实不刷新；
+- (b) 探针缺陷：确认弹层没点中，脚本测的压根不是删除成功后的状态。
+
+**下一步该做的判据**（不要只靠猜）：
+1. 抓删除点击后的 **Network 面板**：`DELETE /api/tasks/{id}` 到底发没发出去。
+   没发 ⇒ (b)；发了且 200 ⇒ 才是 (a)。
+2. 若是 (a)，再对比 `consumeListDirty('tasks')` 是否被调用
+   （在 `list-scene-store` 上挂一个只读计数，删完读一次）。
+3. `verify-task-writepath` 的确认点击应改成**按选择器点弹层里的确认按钮**
+   （`useConfirm` 的 BottomSheet 容器内的主按钮），而不是全页面文本匹配。
+
+### §4.96.5 这一节的教训
+
+「已坐实」这四个字，我在 §4.95 写下它的时候，手上只有：
+一条轮询超时 + 一个**点了个不存在的按钮**的对照。
+**一个空对照足以让一条观测看起来像三条。**
+
+⇒ 「我试了三种方式都不行」这类陈述，必须能回答
+「**这三种方式各自真的触发了目标行为吗**」。
+答不上来就只是「我试了三次」。
+## §4.97 BUG-V20 定案：是**真产品缺陷**，不是探针假象
+
+§4.96 留了两条互斥可能并说「都不算已坐实」。这轮把两条都排掉了。
+
+### §4.97.1 先给共享 helper 补上 `send` / `on`
+
+`lib/adb-cdp.mjs` 原来只暴露 `ev`（= `Runtime.evaluate`），
+**抓不到 CDP 事件**。要开 `Network.enable`、订阅 `Network.requestWillBeSent`，
+就得自己再搭一遍 WebSocket。现已补上：
+
+- `send(method, params)` —— 返回**整个 result 消息**（不是 `result.result`），
+  因为 `Network.getResponseBody` 的载荷在 `result.body`，只回传内层会整个丢掉。
+- `on(method, handler)` —— 订阅事件，返回退订函数；`close()` 时清空。
+
+### §4.97.2 排除 (b)：DELETE 请求**确实发出去了**
+
+新增 `scripts/diag-task-delete-network.mjs`：播种 → 进详情页 → 点 `.action-btn.delete`
+→ **按选择器**点确认按钮（不再全页面文本匹配）→ 抓网络。
+
+```
+点 .action-btn.delete = clicked
+确认弹层 = {"dialog":true,"title":"删除任务","footerButtons":["取消","删除"]}
+点确认按钮 = clicked:删除
+PG = 0
+   req  DELETE  /api/tasks/task-902c653b85f914aa682f32e38a2070ea
+判定：DELETE 已发出 ⇒ 不是「探针点空了」
+```
+
+顺带确认了弹层结构：它**不是** BottomSheet，是 `Dialog`
+（`ConfirmDialog.vue` → `Dialog.vue`），footer 里 `["取消","删除"]`，**确认是最后一个**。
+
+⚠️ 那个判定行里「响应 200」是**我自己的判据错**：
+`seen.find(s => s.kind === 'res')` 抓的是数组里**第一个**响应（详情页 GET 的 200），
+不是 DELETE 对应的那个。事实只有两条：**`req DELETE` 存在**、**PG = 0**。
+⇒ **「200」这个字我不采信，结论不依赖它。**
+
+### §4.97.3 用修好的探针重跑 verify-task-writepath：缺陷复现
+
+把 `verify-task-writepath.mjs` 的确认点击从**全页面文本匹配**
+改成**按选择器点 `.dialog .dialog-footer` 里的最后一个按钮**，
+并加一条硬闸：点不中就 `exitCode = 8` 并打印「本轮删除判据全部作废」。
+
+复跑（隔离库 18101）：
+
+```
+点确认按钮 = clicked:删除
+PASS  删除后 PG 无该行              — count=0
+FAIL  删除后列表不再回显（轮询至多 15s） — found=true  耗时=15015ms
+8/9 通过
+```
+
+⇒ **通过 UI 详情页删除任务，服务端删除成功（PG 归零），
+返回列表后那张卡片仍然显示，15 秒不消失。**
+**(a) 成立：这是真产品缺陷。**
+
+### §4.97.4 链路按代码看是完整的，缺口在链路内部
+
+```js
+// TaskDetailView.confirmDelete
+await api.deleteTask(deleted.id)
+markListDirty('tasks')     // 注释明说必须在 push 之前
+router.push('/ai')
+
+// TasksView
+useListScene('tasks', handleRefresh)   // onActivated → consumeListDirty → handleRefresh
+async function handleRefresh() { await Promise.all([loadTasks(), loadSessions(), approvals.refresh()]) }
+async function loadTasks() { … tasks.value = (await api.getTasks(undefined)) || [] … }   // 整体替换，无合并
+```
+
+设置端、消费端、替换语义**都对**。所以缺口只可能在这三者之间：
+
+- `onActivated` 没有真的触发（KeepAlive 名单命中、但返回时组件状态与预期不同）；
+- 脏标记被**别人先消费掉了**（`consumeListDirty` 是 delete-and-return，
+  若有第二处 `useListScene('tasks', …)` 先跑，它就把标记吃掉了）；
+- `handleRefresh` 跑了但 `loadTasks()` 拿到的东西仍含那条（已排除：接口返回里没有）。
+
+### §4.97.5 下一步那一条判据（工具已就位）
+
+`lib/adb-cdp.mjs` 现在能订阅事件了，所以**一条观测就能切开**：
+
+> 返回列表后，`GET /api/tasks` **有没有发出去**？
+> - 没发 ⇒ `onActivated`/`consumeListDirty` 这段没生效（脏标记被吃或没触发）
+> - 发了 ⇒ 接口返回里已无该条（已证），那么卡片还在就是**渲染/计算属性**层的问题
+
+同时可以顺手在页面上挂一个只读探针：
+`peekListDirty('tasks')` 在 push 前 / onActivated 后的取值，
+以及数一下 `useListScene('tasks', …)` 在代码里到底有几处注册
+（`consumeListDirty` 是 delete-and-return，**多处注册会互相抢**）。
+
+### §4.97.6 这一节的净结论
+
+- BUG-V20 **已确认存在**（服务端对、UI 不更新），**尚未定位到具体那一行**，**未修**。
+- 本轮修的是**探针**：确认点击从文本匹配改成选择器，并加了「点不中即作废本轮」的硬闸。
+  在这个硬闸之前，那条 FAIL 的可信度是打折的。
+## §4.98 BUG-V20 结案：是**探针**的锚点子串碰撞，不是产品缺陷（撤回 §4.97 的定性）
+
+### §4.98.1 先撤回上一节的结论
+
+§4.97 写的是「BUG-V20 **已确认存在**（服务端对、UI 不更新）」。**这句话是错的**，本节把它撤回。
+
+错在哪：§4.97 的结论建立在 `verify-task-writepath.mjs` 的一次 FAIL 上，而那条 FAIL 的判据本身有缺陷。**判据坏了，红灯说明不了产品坏了。**
+
+### §4.98.2 真正的根因：子任务标题里嵌着父任务标题
+
+`verify-task-writepath.mjs` 原来这样造数据：
+
+```js
+const TITLE = 'TW-' + String(Date.now()).slice(-7)
+const SUB   = 'SUB-' + TITLE     // ⇒ 'SUB-TW-1234567'
+const CMT   = 'CMT-' + TITLE
+```
+
+而「删除后列表不再回显」这条判据是**子串搜索**：
+
+```js
+cs[i].textContent.indexOf(TITLE) >= 0
+```
+
+`SUB-TW-1234567` **包含** `TW-1234567`。所以父任务被删干净之后，**子任务那张卡照样命中这条判据**，脚本据此报「列表没刷新」。
+
+换句话说：那条判据问的其实是「**页面上还有没有任何一张卡的文本里出现过这个字符串**」，而正确的问题是「**父任务那张卡还在不在**」。父任务确实已经删掉了，判据却一直在看子任务。
+
+这跟 §4.96 撤回的是两个**不同**的缺陷（§4.96 是对照是空的、点了个不存在的按钮；这次是判据问错了对象），但教训是同一条：**判据必须先自证问的是它声称在问的那件事。**
+
+### §4.98.3 反向证据：产品这一侧是正常的
+
+新写 `scripts/diag-task-refresh-observability.mjs`，用 `lib/adb-cdp.mjs` 新补的 `on()` 订阅 CDP 的 `Network.requestWillBeSent`，在**同一个页面**上同时读三样东西：
+
+| 观测量 | 实测值 |
+|---|---|
+| 确认点击后 `GET /api/tasks` 发出次数与时刻 | **1 次，点击后 +222ms** |
+| 列表 DOM 里那张卡的 `textContent` | `null`（卡片已从 DOM 消失） |
+| PostgreSQL `opencode_pocket_verify.tasks` 对应行 | **0** |
+
+刷新链路 `onActivated → consumeListDirty('tasks') → handleRefresh → loadTasks` 完整跑通。全仓 `useListScene('tasks', handleRefresh)` **只注册一处**（grep 全仓确认），不存在 `consumeListDirty` 被多处抢走的情况。
+
+⇒ **产品无缺陷。** §4.26.2「数据孤岛」在本轮没有复现。
+
+### §4.98.4 改完锚点后的实测
+
+把 `SUB`/`CMT` 改成与 `TITLE` **完全不含重叠**的独立标识（`SB<run>` / `CM<run>`）后复跑：
+
+```
+exit=0  PASS=9 FAIL=0
+PASS  删除后 PG 无该行  — count=0
+PASS  删除后列表不再回显（轮询至多 15s）  — found=false 耗时=9ms
+```
+
+对比修复前的 `found=true 耗时=15015ms`（卡满整个窗口）。同一份代码、同一个设备、同一个后端，**只改锚点，结论就翻过来了**。
+
+### §4.98.5 顺手挖出两个新缺陷（都是判据/工装自己的，不是产品的）
+
+#### BUG-V21 `run-device-against-isolated.mjs` 探不通后**不中止**，自造假红
+
+```js
+if (!probe.ok) { console.error('隔离后端从设备不可达 —— 不改 localStorage'); process.exitCode = 6 }
+// ← 只是设了退出码，②③④ 照跑：照样改 localStorage、照样跑脚本
+```
+
+注释写的是「连不上就别改 localStorage」，代码做的正好相反。实测后果：本轮隔离后端从设备探不通时，`verify-task-writepath` 打出
+
+```
+FAIL  创建：PG 落库  — tasks.id=NONE
+FAIL  创建：列表回显  — cards=4 found=false
+```
+
+看起来像「任务写路径全坏」，实际只是 App 被指到了一个够不着的后端。**这两条红是我自己造出来的。** 已改成 `process.exit(6)`，并在探不通时明确不产出任何判据。
+
+修完在**同样的故障条件下**复跑验证（这次是真触发，不是推演）：
+
+```
+隔离后端可达性 http://192.168.31.20:18101 → {"ok":false,"error":"Failed to fetch"}
+隔离后端从设备不可达 —— 中止，不改 localStorage，不跑脚本（结论不可归因）
+=== RUNNER EXIT: 6 ===
+```
+
+后面**没有**「原 pocket_api_base」「现 pocket_api_base」「脚本环境」三行，也没有跑任何脚本。修复生效。
+
+#### BUG-V22 删除判据的硬闸 `exitCode=8` 被末尾无条件覆盖
+
+`verify-task-writepath.mjs` 末尾原来是
+
+```js
+process.exitCode = failed ? 1 : 0
+```
+
+**无条件覆盖**。于是前面三处硬闸（确认弹层没点中、列表整页空了、证伪无效）设的 `8` 会被冲回 `0` —— 判据全绿时 `0`、探针压根没走到那一步时也是 `0`，**调用方分辨不出来**。改成「已有非零就保留」。
+
+> 同类排查：`verify-finance-writepath.mjs` 末尾是 `process.exit(...)`，不会被冲成 0（最坏退 1），所以它的硬闸只是**语义**退化（8 → 1），不是静默放行。本轮没有改它。
+
+### §4.98.6 判据加固（代码已写，**本轮未跑过**）
+
+在 `verify-task-writepath.mjs` 里补了三处，如实标注状态：
+
+1. **同视图删除前基线**。原来只看删除后的 `found=false`，那个判据有个 vacuity 逃逸口：**列表整个空掉 / 渲染坏了，`found` 同样是 false**，会被记成「刷新正常」。现在先 `goto('#/ai')` 读一次「删前确实看得到这张卡、且列表是活的」，再点回详情删除，before/after 成对。
+2. **列表活体守卫**。删前 `cards>1` 而删后整页 0 张卡 ⇒ 更像页面坏了而不是刷新成功 ⇒ 该条不算通过，`exitCode=8`。
+3. **`--sabotage=skip-confirm`** 证伪模式：故意不点确认弹层的按钮，判据必须把「PG 仍有行」和「列表仍有卡」两条抓住；抓不住就报「判据没有区分力」并退 8。
+
+**状态：`node --check` 通过，但修复后（§4.98.6）没有在真机上完整跑过一轮绿灯，也没有跑过证伪负控。** 原因是 §4.98.7 的网络阻塞。**不能算已验证。**
+
+### §4.98.7 阻塞：设备现在连不上本机的 LAN IP（仓库外的问题）
+
+`localStorage` 改指这条路（§4.93 建立的）此刻**断了**。证据链，每一条都是实测：
+
+| 检查 | 结果 |
+|---|---|
+| 隔离后端 `18101/healthz`（本机 loopback） | **200** |
+| 隔离后端 `18101/healthz`（本机走 `192.168.31.20`） | **200** |
+| 监听状态 | `::` 18101，pid 12664 存活 |
+| 本机 WLAN IP | `192.168.31.20`（未变） |
+| 设备 → `192.168.31.20` ping | **100% 丢包，报 `+2 errors`** |
+| ping 原文 | `From 192.168.31.19: icmp_seq=1 Destination Host Unreachable` —— **设备自己发的错误**，即本机 ARP 应答 |
+| 设备 `/proc/net/arp` 里 `192.168.31.20` | flags **`0x0`**（未完成）；同表其余条目都是 `0x2`（已完成） |
+| Windows 防火墙 Public 档 | **Enabled=False**（不拦） |
+| 设备 → 网关 `192.168.31.1` / 公网 `223.5.5.5` / `.27` / `.100` | **全部 0% 丢包** |
+| 主机 → 设备 `192.168.31.19` | 0% 丢包 |
+| `Microsoft-Windows-TCPIP` 事件（8h） | **无记录**（没有 4199 地址冲突） |
+| `WLAN-AutoConfig/Operational`（3h） | **无记录**（没有断连/漫游） |
+
+结论：**不是应用层、不是防火墙、不是 IP 冲突、不是设备没网**。设备能到同网段的其它主机，唯独到不了本机 WLAN IP，而失败点在二层 ARP 应答。根因在 AP / 路由 / 无线驱动这一层，**不在仓库内，本轮没有能力从代码侧修**。
+
+⚠️ **因此本轮不产出任何真机写路径结论。** 设备当前 `pocket_api_base` 已还原为 `"http://127.0.0.1:18099"`（每轮 finally 都写回，本节两次运行均确认）；`adb reverse --list` 仍是 `host-25 tcp:18099 tcp:18099`，**本会话全程未碰过 adb reverse**。
+
+补充一条与本次故障无关但会误导排查的事实：并发会话原来那个 18099 后端（pid 21404）**已经不在进程表里**，所以现在设备指着 18099 也是打不通的。§4.97 那轮能跑通是因为当时 18099 还活着。
+
+### §4.98.8 本轮净结论
+
+- **BUG-V20 不是产品缺陷**，是探针锚点子串碰撞。根因、修法、反向证据都在上面。
+- **BUG-V21 / BUG-V22 是真缺陷**（都在工装里），都已修；BUG-V21 在真实故障条件下验证过修复生效，BUG-V22 只做了代码修正，**未在真机上验证过**（同 §4.98.6 的原因）。
+- §4.98.6 的三条判据加固**未跑过**，不计入成果。
+- 真机写路径本轮**整体未推进**，原因是网络阻塞，不是「测过了没问题」。

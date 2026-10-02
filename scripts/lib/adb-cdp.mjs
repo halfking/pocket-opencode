@@ -31,6 +31,9 @@
 //   const cdp = await openCdp({ pkg: 'com.kaixuan.opencode.pocket' })
 //   try {
 //     const v = await cdp.ev('location.hash')
+//     // 要抓网络/控制台就得开事件（`ev` 只能求值）：
+//     await cdp.send('Network.enable')
+//     cdp.on('Network.requestWillBeSent', (p) => { /* … */ })
 //   } finally {
 //     await cdp.close()
 //   }
@@ -117,9 +120,12 @@ export async function openCdp(opts = {}) {
   const ws = new WebSocket(page.webSocketDebuggerUrl.replace(/:\d+\//, `:${port}/`))
   let id = 0
   const pending = new Map()
+  const listeners = new Map()   // CDP 事件名 -> Set<handler>
   ws.addEventListener('message', (e) => {
     const m = JSON.parse(e.data)
-    if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id) }
+    if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); return }
+    const hs = listeners.get(m.method)
+    if (hs) for (const h of [...hs]) { try { h(m.params) } catch { /* 处理器自己的错不该打断通道 */ } }
   })
   const opened = await Promise.race([
     new Promise((r) => ws.addEventListener('open', () => r(true))),
@@ -132,17 +138,37 @@ export async function openCdp(opts = {}) {
    * `exceptionDetails.exception.description`，`exceptionDetails.text` 恒为 "Uncaught"。
    * 这里直接把 description 抛出去，别让调用方拿到一个没信息量的字符串。
    */
-  const ev = async (expr, ms = 20000) => {
+  /**
+   * 通用 CDP 命令。`ev` 只够用 Runtime.evaluate；
+   * 要开 `Network.enable`、订阅 `Network.requestWillBeSent` 这类**事件**，
+   * 就必须走这里 —— 否则每个要抓网络/控制台的脚本都得自己再搭一遍 WebSocket。
+   * 返回**整个 result 消息**（不是 result.result），因为
+   * `Network.getResponseBody` 的载荷在 `result.body`，
+   * 只回传 `m.result` 会把它整个丢掉。
+   */
+  const send = async (method, params = {}, ms = 20000) => {
     const i = ++id
     const v = await new Promise((r) => {
       const t = setTimeout(() => { pending.delete(i); r({ __timeout: 1 }) }, ms)
       pending.set(i, (y) => { clearTimeout(t); r(y) })
-      ws.send(JSON.stringify({
-        id: i, method: 'Runtime.evaluate',
-        params: { expression: expr, returnByValue: true, awaitPromise: true },
-      }))
+      ws.send(JSON.stringify({ id: i, method, params }))
     })
-    if (v?.__timeout) throw new Error(`CDP_EVAL_TIMEOUT（${ms}ms）: ${String(expr).slice(0, 80)}`)
+    if (v?.__timeout) throw new Error(`CDP_SEND_TIMEOUT（${ms}ms）: ${method}`)
+    if (v?.error) throw new Error(`CDP_ERROR ${method}: ${v.error.message || JSON.stringify(v.error)}`)
+    return v?.result
+  }
+
+  /** 订阅 CDP 事件；返回退订函数。close() 时全部失效。 */
+  const on = (method, handler) => {
+    if (!listeners.has(method)) listeners.set(method, new Set())
+    listeners.get(method).add(handler)
+    return () => listeners.get(method)?.delete(handler)
+  }
+
+  const ev = async (expr, ms = 20000) => {
+    const v = await send('Runtime.evaluate', {
+      expression: expr, returnByValue: true, awaitPromise: true,
+    }, ms)
     if (v?.exceptionDetails) {
       const d = v.exceptionDetails?.exception?.description || v.exceptionDetails?.text || '(无描述)'
       throw new Error(`CDP_EVAL_EXCEPTION: ${String(d).slice(0, 300)}`)
@@ -151,9 +177,10 @@ export async function openCdp(opts = {}) {
   }
 
   const close = async () => {
+    try { listeners.clear() } catch { /* ignore */ }
     try { ws.close() } catch { /* 已经关了 */ }
     adbSoft(['forward', '--remove', `tcp:${port}`])
   }
 
-  return { ws, port, pid, socket, ev, close }
+  return { ws, port, pid, socket, ev, send, on, close }
 }

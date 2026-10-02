@@ -10,7 +10,7 @@ const PKG='com.kaixuan.opencode.pocket';
 const PORT=process.env.POCKET_CDP_PORT||'9269';
 const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
 const adb=(a,t=60000)=>execFileSync(ADB,a,{encoding:'utf8',timeout:t,maxBuffer:33554432});
-function api(path,{token,method='GET',body}={}){return new Promise((res)=>{const payload=body?JSON.stringify(body):'';const h={};if(token)h.Authorization='Bearer '+token;if(payload){h['Content-Type']='application/json';h['Content-Length']=Buffer.byteLength(payload);}const req=http.request({host:'127.0.0.1',port:8088,path,method,headers:h,timeout:15000},(r)=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>res({status:r.statusCode,body:b}));});req.on('error',e=>res({status:0,body:String(e)}));req.on('timeout',()=>{req.destroy();res({status:0,body:'timeout'})});if(payload)req.write(payload);req.end();});}
+function api(path,{token,method='GET',body}={}){return new Promise((res)=>{const payload=body?JSON.stringify(body):'';const h={};if(token)h.Authorization='Bearer '+token;if(payload){h['Content-Type']='application/json';h['Content-Length']=Buffer.byteLength(payload);}const req=http.request({host:'127.0.0.1',port:Number(process.env.POCKET_API_PORT || 8088),path,method,headers:h,timeout:15000},(r)=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>res({status:r.statusCode,body:b}));});req.on('error',e=>res({status:0,body:String(e)}));req.on('timeout',()=>{req.destroy();res({status:0,body:'timeout'})});if(payload)req.write(payload);req.end();});}
 
 const pid=adb(['-s',SERIAL,'shell',`pidof ${PKG}`]).trim().split(/\s+/)[0];
 if(!pid){console.log('APP_NOT_RUNNING');process.exit(2);}
@@ -37,6 +37,19 @@ const seed=await api('/api/finance',{token:appToken,method:'POST',body:{type:'ex
 let seedId=null; try{seedId=JSON.parse(seed.body).id}catch{}
 console.log('同作用域播种 status=',seed.status,' id=',seedId);
 
+// 失败路径也必须删 SEED：这是**共享**开发库，中间任何抛错都会把行留下，
+// 而那些行会被另一会话当成真实数据卷进它的基线（= 污染别人的运行）。
+// 幂等 + 挂异常钩子；process.on('exit') 不能 await，所以用前两个。
+let cleaned=false;
+async function cleanupSeed(reason){
+  if(!seedId||cleaned) return; cleaned=true;
+  try{ const cl=await api(`/api/finance/${seedId}`,{token:appToken,method:'DELETE'});
+       console.log(`[cleanup:${reason}] 删除 SEED ${seedId} -> ${cl.status}`); }
+  catch(e){ console.error(`[cleanup:${reason}] 删除 SEED ${seedId} 失败：${String(e?.message||e).slice(0,120)}`); }
+}
+process.on('unhandledRejection',async e=>{ console.error('[未处理的 rejection]',e); await cleanupSeed('rejection'); process.exit(1); });
+process.on('uncaughtException',async e=>{ console.error('[未捕获异常]',e); await cleanupSeed('exception'); process.exit(1); });
+
 // 进记账页 + 刷新
 await ev(`location.hash='#/finance'`);
 const d2=Date.now()+15000;while(Date.now()<d2&&(await ev('location.hash'))!=='#/finance')await sleep(300);
@@ -50,5 +63,5 @@ while(Date.now()<d3){
 const n=await ev(`document.querySelectorAll('.tx-card').length`);
 console.log('同作用域 SEED 是否显示 =', found?('YES -> '+found.replace(/\s+/g,' ').slice(0,70)):('NO (共 '+n+' 张卡)'));
 console.log(found?'✅ 读路径正常：此前 FAIL 是跨工作区错配(测试播 ws_user-admin / App 看 default)':'❌ 同作用域仍不显示 -> 读路径确有独立 bug');
-if(seedId) await api(`/api/finance/${seedId}`,{token:appToken,method:'DELETE'});
+await cleanupSeed('normal');
 process.exit(0);

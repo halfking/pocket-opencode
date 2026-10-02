@@ -65,16 +65,22 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { canDownloadApk, checkUpdate, downloadAPK, APP_VERSION, formatFileSize, type VersionInfo } from '../utils/version'
+import { canDownloadApk, checkUpdate, downloadAPK, formatFileSize, resolveAppVersion, type ResolvedAppVersion, type VersionInfo } from '../utils/version'
 
 const showUpdateDialog = ref(false)
 const updateInfo = ref<VersionInfo | null>(null)
 const forceUpdate = ref(false)
 const downloading = ref(false)
-const currentVersion = APP_VERSION.version
-const currentBuild = APP_VERSION.buildNumber
+// 弹窗里的「当前版本」同样必须显示设备上真装的那个构建。
+// 它过去读的是 TS 常量，于是弹窗会写「当前 v1.2.0 (Build 2)」而设备上装的是
+// Build 3 —— 用户拿这一行去判断「我是不是最新版」时，被告知的信息本身就是错的。
+const currentVersion = ref('')
+const currentBuild = ref(0)
 
 onMounted(async () => {
+  const me: ResolvedAppVersion = await resolveAppVersion()
+  currentVersion.value = me.version
+  currentBuild.value = me.buildNumber
   // 检查更新（启动时）
   await performUpdateCheck()
 })

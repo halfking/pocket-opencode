@@ -9,6 +9,10 @@ const PKG = 'com.kaixuan.opencode.pocket'
 const PORT = process.env.POCKET_CDP_PORT || '9360'
 const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'
 const PSQL = process.env.POCKET_PSQL || 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'
+// PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
+// 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
 const psql = (sql) => execFileSync(PSQL, ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-c', sql], { encoding: 'utf8' }).trim()
@@ -54,6 +58,6 @@ console.log('=== 页面快照 ===')
 console.log(JSON.stringify(JSON.parse(dump || '{}'), null, 2))
 
 console.log('\n=== PG 最近 8 条任务 ===')
-console.log(psql(`select id || ' | ' || status || ' | ' || left(title,44) from opencode_pocket.tasks order by created_at desc limit 8`))
+console.log(psql(`select id || ' | ' || status || ' | ' || left(title,44) from ${SCHEMA}.tasks order by created_at desc limit 8`))
 ws.close()
 process.exit(0)

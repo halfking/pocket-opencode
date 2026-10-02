@@ -171,6 +171,41 @@ export function invoiceTotalsFrom(res: {
 }
 
 /**
+ * 服务端 `amounts[]` 元素在线上的键名归一化。
+ *
+ * 2026-10-03 真机实测（Redmi /email/invoices）：`email.CurrencyTotal` 当时
+ * **没有 json tag**，线上是 `{"Currency":"CNY","Amount":3500,"Count":1}`，
+ * 而下面的 `resolveSummaryGroups` 读 `a.currency` / `a.amount` —— 两个都读到
+ * undefined，`round2(undefined)` = NaN，页面顶部合计金额显示 **¥NaN**
+ * （同一屏「共 4 张」正常，因为那个数走另一个字段）。
+ *
+ * 两种拼写都读，是因为 APK 与后端不会同时换：先发后端时旧 APK 正常，
+ * 先发 APK 时旧后端仍在打大写键。灰度期两边都要显示对数。
+ *
+ * 但这**不能替代**服务端那条判据：让服务端保持诚实的是跨语言护栏
+ * `__tests__/invoice-totals-wire-keys.test.mjs`（它断言 Go 的 json tag 与这里
+ * 读的键同名）。这里只是兜住灰度窗口，不是把契约改成「两种都算对」。
+ *
+ * 形状不可信时**整组作废**（返回空数组），而不是逐项跳过：跳过会让合计
+ * 少算一组却看起来正常——那正是这个模块一路在消灭的「看起来正常的错数」。
+ * 作废后由调用方落回 `amount`+`currency`、再落回本地分组求和，两条都是
+ * 真实可算的数。
+ */
+function normalizeAmounts(raw: unknown): CurrencyAmount[] {
+  if (!Array.isArray(raw) || raw.length === 0) return []
+  const out: CurrencyAmount[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') return []
+    const a = item as Record<string, unknown>
+    const currency = a.currency ?? a.Currency
+    const amount = Number(a.amount ?? a.Amount)
+    if (typeof currency !== 'string' || !currency.trim() || !Number.isFinite(amount)) return []
+    out.push({ currency: normalizeCurrency(currency), amount: round2(amount) })
+  }
+  return out
+}
+
+/**
  * 按优先级决定合计区展示哪一组数。
  *
  * 1. `amounts` —— 服务端按币种分组的全量合计，**以它为准**；
@@ -195,12 +230,8 @@ export function resolveSummaryGroups(
     fileName?: string | null
   }>,
 ): CurrencyAmount[] {
-  if (totals?.amounts?.length) {
-    return totals.amounts.map((a) => ({
-      currency: normalizeCurrency(a.currency),
-      amount: round2(a.amount),
-    }))
-  }
+  const grouped = normalizeAmounts(totals?.amounts)
+  if (grouped.length) return grouped
   if (totals?.amount) {
     return [{ currency: normalizeCurrency(totals.currency), amount: round2(totals.amount) }]
   }

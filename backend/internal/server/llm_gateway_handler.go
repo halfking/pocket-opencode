@@ -152,10 +152,48 @@ func (s *Server) EnsureLLMGatewayDefaults(workspaceIDs ...string) {
 				} else {
 					log.Printf("[llm-gateway] replaced obsolete local gateway for workspace=%s baseURL=%s", wsID, migrated.BaseURL)
 				}
+			} else if existing.APIKey == "" && strings.TrimSpace(def.APIKey) != "" {
+				// 补 key 的空洞（2026-10-02 真机实测）。
+
+				// 为什么需要这一支：一条 api_key_encrypted 为空的 active 行
+				// **不是**"解不开"，decryptString 对空串直接返回 ("", nil)，
+				// 于是上面 err != nil 的自愈分支永远不触发；而 existing != nil
+				// 又让本函数直接 continue。结果是：哪怕运维后来把
+				// POCKET_LLM_GATEWAY_API_KEY 配好了，那一行也永远停在空 key 上，
+				// 该 workspace 的 chat/embed 全部硬 503，App 内没有任何提示，
+				// 唯一出路是用户自己去设置页重填一遍 key。
+
+				// 实测证据：2026-10-02 21:08 那次启动明确设了
+				// POCKET_LLM_GATEWAY_API_KEY，日志对 workspace=default 打的仍是
+				// `loaded config from DB`，而 llm_gateway_configs id=1 至今
+				// api_key_encrypted='' 、is_active=true。
+
+				// 语义上和 HTTP 入口对齐：POST /api/llm-gateway/config 本身就
+				// 拒绝把首份配置存成空 key（"apiKey required for first
+				// configuration"），启动播种不该绕过这条约束去制造同样的状态。
+				// 同样只改 key，不碰用户自己的 baseURL / models / preferred。
+				backfilled := *existing
+				backfilled.APIKey = def.APIKey
+				if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, backfilled); saveErr != nil {
+					log.Printf("[llm-gateway] backfill empty gateway key failed for %s: %v", wsID, saveErr)
+				} else {
+					log.Printf("[llm-gateway] backfilled empty gateway key from env for workspace=%s baseURL=%s",
+						wsID, backfilled.BaseURL)
+				}
 			}
 			continue
 		}
 
+		// 首份播种同样不许写出空 key 的 active 行：上面 err != nil 那一支已经
+		// 为「env 无 key 时覆写会毁掉现有配置」踩过一次坑，这里是同一个坑的
+		// 另一半——新建时 def.APIKey 为空（env 未配）同样会落一条永久不可用
+		// 的 active 行，而 GET /api/llm-gateway/config 本来就会回落到
+		// defaultLLMGatewayState()，跳过的唯一可观察差别是 DB 里少一行空洞。
+		if strings.TrimSpace(def.APIKey) == "" {
+			log.Printf("[llm-gateway] default-seed skipped for %s: POCKET_LLM_GATEWAY_API_KEY not set; "+
+				"不写入空 key 的 active 行（写入后没有任何启动路径能修复它）", wsID)
+			continue
+		}
 		if err := s.llmGWStore.SaveConfig(context.Background(), wsID, def); err != nil {
 			log.Printf("[llm-gateway] default-seed SaveConfig failed for %s: %v", wsID, err)
 			continue

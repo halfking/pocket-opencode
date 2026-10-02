@@ -20,8 +20,11 @@
  * 用法：POCKET_SERIAL=... POCKET_MASTER=... node scripts/verify-gateway-writepath.mjs
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-
+import { requireDevPass } from './lib/dev-pass.mjs'
+// 设备上装的是**生产 https 包**（实测 origin=https://localhost），
+// 而这一关原本写死开发包 http://localhost ⇒ 在当前设备上会在走到任何
+// 真正要验的判据之前就 exit 5。生产 https 回归用 POCKET_EXPECT_ORIGIN 放宽。
+const EXPECT_ORIGIN = process.env.POCKET_EXPECT_ORIGIN || 'http://localhost';
 const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe';
 const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555';
 const PKG = 'com.kaixuan.opencode.pocket';
@@ -30,6 +33,10 @@ const MASTER = process.env.POCKET_MASTER || '';
 
 function resolvePsql() {
   const cands = [process.env.POCKET_PSQL, 'logs/pg/dist2/pgsql/bin/psql.exe', 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'].filter(Boolean);
+// PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
+// 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
   for (const c of cands) { try { execFileSync(c, ['--version'], { stdio: 'ignore' }); return c } catch { /* next */ } }
   console.error('找不到 psql.exe，请设置 POCKET_PSQL');
   process.exit(4);
@@ -39,8 +46,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: t, maxBuffer: 33554432 });
 const psql = (sql) => execFileSync(PSQL, ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-c', sql], { encoding: 'utf8' }).trim();
 // 兜底串必须纯 ASCII：中文经系统 ANSI 码页传给 psql 会报 invalid byte sequence
-const nodeCount = () => Number(psql('select count(*) from opencode_pocket.llm_gateway_nodes;').match(/-?\d+/)?.[0] ?? NaN);
-const nodeNames = () => psql("select coalesce(string_agg(name,'|' order by id),'(none)') from opencode_pocket.llm_gateway_nodes;");
+const nodeCount = () => Number(psql(`select count(*) from ${SCHEMA}.llm_gateway_nodes;`).match(/-?\d+/)?.[0] ?? NaN);
+const nodeNames = () => psql(`select coalesce(string_agg(name,'|' order by id),'(none)') from ${SCHEMA}.llm_gateway_nodes;`);
 
 // ---------- CDP ----------
 const pid = adb(['-s', SERIAL, 'shell', `pidof ${PKG}`]).trim().split(/\s+/)[0];
@@ -76,7 +83,7 @@ let origin = null;
 const readyDl = Date.now() + 20000;
 while (Date.now() < readyDl) { origin = await ev('location.origin'); if (origin && origin !== 'null') break; await sleep(500) }
 console.log('origin =', origin, '（必须是 http://localhost）');
-if (origin !== 'http://localhost') { console.log('非 dev 包或 WebView 未就绪，中止。'); process.exit(5) }
+if (origin !== EXPECT_ORIGIN) { console.log('非 dev 包或 WebView 未就绪，中止。'); process.exit(5) }
 
 // ---------- 登录 ----------
 await ev(`location.hash = '#/login'`); await sleep(2600);
@@ -87,7 +94,7 @@ if (await ev(`!!document.querySelector('input[placeholder*="主密码"]')`)) {
   await sleep(4200);
 }
 if (await ev(`!!document.querySelector('input[placeholder*="用户名"]')`)) {
-  const devPass = (readFileSync('backend/internal/server/server_assistant.go', 'utf8').match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || '';
+  const devPass = requireDevPass()
   const fillBy = (sel, val) => `(function(){var el=document.querySelector(${JSON.stringify(sel)});if(!el)return 'NF';var s=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el),'value').set;s.call(el,${JSON.stringify(val)});el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return 'ok'})()`;
   await ev(fillBy('input[placeholder*="用户名"]', 'admin'));
   await ev(fillBy('input[type="password"]', devPass)); await sleep(900);

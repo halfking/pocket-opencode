@@ -6,11 +6,10 @@
 //   - 阳性对照（随机路由 404、无 token 401）证明探针能区分 404/401 与正常；
 //   - 幂等、统计、删除回读这三项若后端写错就会 FAIL。
 import http from 'node:http';
-import { readFileSync } from 'node:fs';
-
+import { requireDevPass } from './lib/dev-pass.mjs'
 const HOST = process.env.POCKET_API_HOST || '127.0.0.1';
 const PORT = Number(process.env.POCKET_API_PORT || 8088);
-const devPass = (readFileSync('backend/internal/server/server_assistant.go', 'utf8').match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || '';
+const devPass = requireDevPass()
 
 function api(path, { token, method = 'GET', body } = {}) {
   return new Promise((res) => {
