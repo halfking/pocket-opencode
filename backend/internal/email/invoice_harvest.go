@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -423,7 +424,20 @@ func (h *InvoiceHarvester) saveInvoiceFile(ctx context.Context, inv *Invoice, da
 	if inv.InvoiceDate == "" {
 		inv.InvoiceDate = ParseInvoiceDateFromBytes(data)
 	}
-	_, ext := DetectInvoiceMedia(data)
+	kind, ext := DetectInvoiceMedia(data)
+	if kind == "pdf" {
+		// 2026-10-02：只凭 magic 收下退化 PDF（只有 Catalog、无页树，实测 69 字节）。
+		// 后果有两条：台账多出一张 0 元「发票」，以及导出接口被 pdfcpu 的页树
+		// panic 打成 500。采集侧就该把它挡在外面走重试——这正是需求「有可能需要
+		// 多次操作才能下载到发票文件」要覆盖的情形：拿回来不是发票就该重试，
+		// 而不是当成下载成功。
+		if ok, verr := pdfHasPages(data); verr != nil || !ok {
+			if verr == nil {
+				verr = errors.New("pdf has no page")
+			}
+			return h.markRetry(ctx, inv, "unusable pdf: "+verr.Error())
+		}
+	}
 	if ext == "" {
 		ext = ".pdf"
 	}

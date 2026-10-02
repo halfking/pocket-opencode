@@ -111,6 +111,115 @@ var (
 	reTitle       = regexp.MustCompile(`(?:发票抬头|抬头|购买方名称|购买方)[:：\s]*([^\s,，;；。]{2,60})`)
 )
 
+// invoiceLabelWords 是电子发票邮件里**当列头用的标签词**。
+//
+// 为什么需要它（2026-10-02 实测）：reSeller 的值规则是「标签后取 1–6 个 ≥2 字的词」，
+// 它挡不住**紧接着的另一个标签**。月度批量开票邮件是 HTML 表格，拍平成文本后
+// 单元格之间是换行：
+//
+//	销售方
+//	发票抬头
+//	发票号码
+//	开票日期
+//	价税合计
+//
+// reSeller 匹配「销售方」后吃掉换行，把「发票抬头」当成了销售方名字。
+// 后果直击需求「发票文件格式：{费用类型}-{对方单位}-{金额}-{日期}.pdf」：
+// 文件名多出一段变成 5 段（真实产物：
+// `其他-云服务开票中心-发票抬头-1280.00-2026-09-28.pdf`），而第 5 段
+// 「发票抬头」是**买方**的列头，根本不是对方单位，对账时认不出人。
+//
+// 本文件 reSeller 上方的注释早就写着「值要取**冒号/空格之后第一个非标签词**」——
+// 那是**意图**，实现里从来没有这个判断。这里补上。
+//
+// 词表与本文件其它正则的词典对齐（reSeller / reTitle / reAmountTotal /
+// reInvoiceNo / reInvoiceDate 的中文键 + 常见电子发票列头）。加词的标准是
+// 「它确实是某张发票的列头」，不是「它看起来不像公司名」——公司名里出现
+// 「金额」「日期」的概率低，但列头表里没有的词一律别加，宁可漏判。
+var invoiceLabelWords = map[string]bool{
+	// 销售方侧
+	"销售方名称": true, "销售方": true, "销方名称": true, "销方": true,
+	"开票方": true, "开票单位": true, "商户名称": true, "商户": true,
+	"商家": true, "卖方": true, "供应商": true, "供货方": true,
+	// 购买方侧
+	"发票抬头": true, "抬头": true, "购买方名称": true, "购买方": true,
+	"购方名称": true, "购方": true, "买方": true,
+	// 单据标识与日期
+	"发票号码": true, "发票号": true, "票据号码": true, "号码": true,
+	"开票日期": true, "发票日期": true, "开票时间": true, "日期": true,
+	// 金额侧
+	"价税合计": true, "价税合计金额": true, "合计金额": true, "合计": true,
+	"总金额": true, "总额": true, "金额": true, "小写": true, "大写": true,
+	"不含税金额": true, "税额": true, "税率": true, "单价": true, "数量": true,
+	// 登记与联系方式
+	"纳税人识别号": true, "统一社会信用代码": true, "税号": true,
+	"单位地址": true, "地址": true, "开户行": true, "开户银行": true,
+	"银行账号": true, "账号": true, "电话": true, "备注": true,
+	"序号": true, "类型": true, "名称": true, "规格": true,
+	// 英文列头
+	"seller": true, "sellername": true, "merchant": true, "buyer": true,
+	"buyername": true, "invoice": true, "invoiceno": true, "invoicenumber": true,
+	"amount": true, "total": true, "totalamount": true, "date": true,
+	"name": true, "number": true, "taxid": true, "address": true,
+	"quantity": true, "unitprice": true, "remark": true, "type": true,
+}
+
+// sellerTokenTrim 去掉词两端的标点，正则抓到的值常带「：」「,」这类残留。
+var sellerTokenTrim = " \t:：,，;；。、()（）[]【】<>《》\"'"
+
+// isInvoiceLabelWord 判断一个词是不是发票邮件的列头标签（大小写不敏感）。
+func isInvoiceLabelWord(w string) bool {
+	return invoiceLabelWords[strings.ToLower(strings.Trim(w, sellerTokenTrim))]
+}
+
+// isNumericToken 判断一个词是不是纯数字（金额/票号片段）。
+func isNumericToken(tok string) bool {
+	s := strings.NewReplacer(",", "", "¥", "", "￥", "").Replace(tok)
+	if s == "" {
+		return true
+	}
+	_, err := strconv.ParseFloat(s, 64)
+	return err == nil
+}
+
+// cleanSellerValue 把 reSeller 抓到的原始值收敛成「对方单位」。
+//
+// 规则：跳过开头的标签词，从**第一个非标签词**开始取，遇到下一个标签词或数字
+// 就停（公司名里不会夹着「发票号码」这种列头，也不会以金额结尾）。取不出、
+// 或取到的只是数字，说明这次匹配抓到的是表头而不是单位名，返回 ok=false，
+// 让调用方继续走主题规则与发件人兜底。
+func cleanSellerValue(raw string) (string, bool) {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\v' || r == '\f'
+	})
+	var kept []string
+	for _, f := range fields {
+		tok := strings.Trim(f, sellerTokenTrim)
+		// 数字是段落终止符，不是单位名：既挡住「跳过头部标签后剩下金额」
+		// （销售方\n发票抬头\n价税合计：1280.00），也挡住金额被粘在单位名后面
+		// （…\n云服务开票中心\n1280.00）。
+		if isNumericToken(tok) {
+			break
+		}
+		if isInvoiceLabelWord(f) {
+			// 还没取到正主的标签直接跳过；取到之后再遇标签就是段落结束。
+			if len(kept) == 0 {
+				continue
+			}
+			break
+		}
+		kept = append(kept, tok)
+	}
+	if len(kept) == 0 {
+		return "", false
+	}
+	out := strings.Join(kept, " ")
+	if len([]rune(out)) < 2 {
+		return "", false
+	}
+	return out, true
+}
+
 // invoiceKeywordHit 判断文本是否像发票/账单邮件（主题或正文关键词）。
 func invoiceKeywordHit(text string) bool {
 	t := strings.ToLower(text)
@@ -294,7 +403,13 @@ func ExtractInvoiceLoose(e Email, bodyText string, hasInvoiceAttachment bool) (*
 	}
 	inv.InvoiceDate = ParseInvoiceDate(joined)
 	if m := reSeller.FindStringSubmatch(joined); m != nil {
-		inv.Seller = strings.TrimSpace(m[1])
+		// reSeller 只保证「标签后 1–6 个词」，不保证那些词不是**另一个标签**
+		// （月度批量开票邮件的表格拍平后，「销售方」后面紧跟的就是「发票抬头」
+		// 这个列头）。这里按 cleanSellerValue 收敛；收敛不出单位名就当作
+		// 这次匹配无效，落到下面主题/发件人的兜底。
+		if s, ok := cleanSellerValue(m[1]); ok {
+			inv.Seller = s
+		}
 	}
 	if inv.Seller == "" {
 		// 正文里没有「销售方：」时，主题里的「来自XX的发票」往往就是开票方。

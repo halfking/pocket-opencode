@@ -151,7 +151,11 @@ func TestHarvestOne_POP3UsesRawCacheInsteadOfIMAPFetch(t *testing.T) {
 		"Content-Type: application/pdf; name=\"invoice.pdf\"\r\n" +
 		"Content-Disposition: attachment; filename=\"invoice.pdf\"\r\n" +
 		"Content-Transfer-Encoding: base64\r\n\r\n" +
-		b64("%PDF-1.4 fake pdf body") + "\r\n" +
+		// 附件正文也必须是**真有页的** PDF（原因同 XMLRenderer 那处）：
+		// 采集器现在会在落盘前用 pdfcpu 确认「至少有 1 页」。原来的
+		// "%PDF-1.4 fake pdf body" 只有 magic 没有页树，会被拒收，
+		// 于是本用例测的「POP3 走原文缓存」被夹具自身的退化件盖住。
+		b64(e2eInvoicePDF) + "\r\n" +
 		"--BOUND--\r\n")
 	if _, err := cache.Put("em-pop3-acct-pop3-2-XYZ", 12, raw); err != nil {
 		t.Fatalf("cache put: %v", err)
@@ -165,8 +169,15 @@ func TestHarvestOne_POP3UsesRawCacheInsteadOfIMAPFetch(t *testing.T) {
 		Fetcher:   &Fetcher{},
 		DataDir:   dataDir,
 		BodyCache: cache,
+		// 必须返回**真有页的** PDF：采集器现在会用 pdfcpu 确认「至少有 1 页」
+		// 才肯落盘（见 invoice_stub_pdf_rejected_test.go）。这里原来返回的是
+		// "%PDF-1.4 fake rendered pdf"——只有 magic 没有页树，正是本次要拒的
+		// 那种退化件，于是本用例被自己的夹具绊倒（LastError:
+		// "unusable pdf: ... no header version available"）。
+		// 本用例的主题是「POP3 来源走原文缓存而不是 IMAP FETCH」，渲染器的
+		// 字节内容本不该决定成败；换成 e2eInvoicePDF 让夹具不再自相矛盾。
 		XMLRenderer: func(name string, inv *Invoice, xmlRaw []byte) ([]byte, error) {
-			return []byte("%PDF-1.4 fake rendered pdf"), nil
+			return []byte(e2eInvoicePDF), nil
 		},
 	}
 	// 先把发票行建出来：saveInvoiceFile 最后要 UpdateInvoiceHarvest，
