@@ -63,6 +63,26 @@ $env:POCKET_PG_SCHEMA          = 'opencode_pocket'
 $env:POCKET_HTTP_PORT          = "$Port"
 $env:POCKET_AUTH_LEGACY_ONLY   = 'true'
 $env:POCKET_VERSION_CONFIG_PATH = Join-Path $Root 'backend\config\version.json'
+# POCKET_ALLOWED_ORIGINS -- found by measurement, not by reading the old log.
+#
+# The first restart here set only the JWT secret and the notification center
+# came back EMPTY on the device even though the very same token got 200 with
+# 24 rows over plain HTTP. WebView console said:
+#   "Access to fetch at 'http://127.0.0.1:18099/api/notific...' ..."
+#   "Uncaught (in promise) TypeError: Failed to fetch"
+# and measured ACAO headers:
+#   :18099 200  ACAO= null
+#   :18100 200  ACAO= https://localhost
+#
+# The App's origin is https://localhost (Capacitor). No ACAO => the browser
+# blocks the response => "Failed to fetch" => the view renders empty with no
+# error. **An empty list and a blocked request look identical on screen.**
+# Both Capacitor origins are listed, not just the one observed in the
+# console: on Android the WebView origin is scheme-dependent
+# (http://localhost in dev, https://localhost in the packaged build), and
+# listing only the one that happened to appear would leave the other
+# silently blocked -- the same empty-list-no-error symptom.
+$env:POCKET_ALLOWED_ORIGINS   = 'https://localhost,capacitor://localhost,http://localhost'
 
 # NOTE: POCKET_EMAIL_MASTER_KEY deliberately NOT set. The boot log says
 # "using auto-generated key at <dataDir>\email_master.key" and the
