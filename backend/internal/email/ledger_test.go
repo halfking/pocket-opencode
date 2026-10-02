@@ -73,7 +73,7 @@ func TestLedgerRows_HasHeaderDetailAndTotalRow(t *testing.T) {
 		t.Fatalf("rows = %d, want 4", len(rows))
 	}
 	header := rows[0]
-	wantHeader := []string{"费用类型", "对方单位", "金额", "币种", "发票号", "开票日期", "状态", "文件名", "来源邮件"}
+	wantHeader := []string{"费用类型", "对方单位", "金额", "币种", "发票号", "开票日期", "状态", "核验", "文件名", "来源邮件"}
 	if len(header) != len(wantHeader) {
 		t.Fatalf("header cols = %d, want %d", len(header), len(wantHeader))
 	}
@@ -105,10 +105,10 @@ func TestLedgerRows_HasHeaderDetailAndTotalRow(t *testing.T) {
 func TestLedgerCellRange_CoversAllRows(t *testing.T) {
 	rows, _ := LedgerRows(sampleInvoices())
 	got := LedgerCellRange("0Sheet1", rows)
-	if got != "0Sheet1!A1:I4" {
+	if got != "0Sheet1!A1:J4" {
 		t.Fatalf("range = %q", got)
 	}
-	if LedgerCellRange("S", [][]any{{"a"}}) != "S!A1:I1" {
+	if LedgerCellRange("S", [][]any{{"a"}}) != "S!A1:J1" {
 		t.Fatal("single row range wrong")
 	}
 }

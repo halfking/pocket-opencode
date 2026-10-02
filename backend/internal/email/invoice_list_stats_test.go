@@ -20,7 +20,16 @@ import (
 	"testing"
 )
 
-func seedInvoiceForStats(t *testing.T, store *Store, id, currency, status string, amount float64) {
+// seedInvoiceForStats 插一行发票。
+//
+// filePath 是显式参数而不是可选默认值：2026-10-02 之前这个夹具根本不写
+// file_path，于是所有 status='downloaded' 的行其实都是「没有凭证」的行。
+// 新的合计判据（InvoiceCountsTowardTotal）要求 downloaded **且**有文件，
+// 若夹具继续隐式留空，测试就会在「夹具不真实」和「判据写错」之间二选一地
+// 变红，而两者的修法完全相反。显式传参让每个用例都自证自己造的是哪种票。
+//
+// 造「未核验」行请显式传 ""。
+func seedInvoiceForStats(t *testing.T, store *Store, id, currency, status string, amount float64, filePath string) {
 	t.Helper()
 	ctx := context.Background()
 	// 同一测试里会插多张发票，账户/邮件只建一次（与 seedInvoiceForCurrency 同口径）
@@ -42,9 +51,9 @@ func seedInvoiceForStats(t *testing.T, store *Store, id, currency, status string
 	}
 	if _, err := store.pool.Exec(ctx, `
 		INSERT INTO email_invoices (id, email_id, account_id, user_id, workspace_id,
-		                            amount, currency, status, attempts, created_at, updated_at)
-		VALUES ($1,$2,'acct-stats','u','ws-stats',$3,$4,$5,0,1700000000,1700000000)`,
-		id, emailID, amount, currency, status); err != nil {
+		                            amount, currency, status, file_path, attempts, created_at, updated_at)
+		VALUES ($1,$2,'acct-stats','u','ws-stats',$3,$4,$5,$6,0,1700000000,1700000000)`,
+		id, emailID, amount, currency, status, filePath); err != nil {
 		t.Fatalf("seed invoice %s: %v", id, err)
 	}
 }
@@ -55,9 +64,9 @@ func TestInvoiceListStats_MultiCurrencyGrouped(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	seedInvoiceForStats(t, store, "inv-st-usd", "USD", "downloaded", 100)
-	seedInvoiceForStats(t, store, "inv-st-cny1", "CNY", "downloaded", 50)
-	seedInvoiceForStats(t, store, "inv-st-cny2", "CNY", "downloaded", 50)
+	seedInvoiceForStats(t, store, "inv-st-usd", "USD", "downloaded", 100, "email-invoices/inv-st-usd.pdf")
+	seedInvoiceForStats(t, store, "inv-st-cny1", "CNY", "downloaded", 50, "email-invoices/inv-st-cny1.pdf")
+	seedInvoiceForStats(t, store, "inv-st-cny2", "CNY", "downloaded", 50, "email-invoices/inv-st-cny2.pdf")
 
 	st, err := store.InvoiceListStats(ctx, "u", "ws-stats", "")
 	if err != nil {
@@ -91,8 +100,8 @@ func TestInvoiceListStats_SingleCurrencyKeepsScalar(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	seedInvoiceForStats(t, store, "inv-sc-1", "CNY", "downloaded", 126.00)
-	seedInvoiceForStats(t, store, "inv-sc-2", "CNY", "downloaded", 328.50)
+	seedInvoiceForStats(t, store, "inv-sc-1", "CNY", "downloaded", 126.00, "email-invoices/inv-sc-1.pdf")
+	seedInvoiceForStats(t, store, "inv-sc-2", "CNY", "downloaded", 328.50, "email-invoices/inv-sc-2.pdf")
 
 	st, err := store.InvoiceListStats(ctx, "u", "ws-stats", "")
 	if err != nil {
@@ -118,8 +127,8 @@ func TestInvoiceListStats_EmptyCurrencyFoldsIntoCNY(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	seedInvoiceForStats(t, store, "inv-ec-1", "", "downloaded", 10)
-	seedInvoiceForStats(t, store, "inv-ec-2", "CNY", "downloaded", 5)
+	seedInvoiceForStats(t, store, "inv-ec-1", "", "downloaded", 10, "email-invoices/inv-ec-1.pdf")
+	seedInvoiceForStats(t, store, "inv-ec-2", "CNY", "downloaded", 5, "email-invoices/inv-ec-2.pdf")
 
 	st, err := store.InvoiceListStats(ctx, "u", "ws-stats", "")
 	if err != nil {
@@ -139,8 +148,8 @@ func TestInvoiceListStats_StatusFilterRespected(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	seedInvoiceForStats(t, store, "inv-sf-1", "CNY", "filed", 100)
-	seedInvoiceForStats(t, store, "inv-sf-2", "CNY", "downloaded", 999)
+	seedInvoiceForStats(t, store, "inv-sf-1", "CNY", "filed", 100, "email-invoices/inv-sf-1.pdf")
+	seedInvoiceForStats(t, store, "inv-sf-2", "CNY", "downloaded", 999, "email-invoices/inv-sf-2.pdf")
 
 	st, err := store.InvoiceListStats(ctx, "u", "ws-stats", "filed")
 	if err != nil {

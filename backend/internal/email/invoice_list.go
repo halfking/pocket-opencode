@@ -133,10 +133,26 @@ func (s *Store) InvoiceListStats(ctx context.Context, userID, workspaceID, statu
 	}
 
 	// 逐币种合计。空币种归 CNY，与 currencyOrDefault 同源。
+	//
+	// 2026-10-02 修正：这里此前**完全没有过滤**，把整张表按 status 之外的
+	// 口径求和。真实库 2 行发票（3500 downloaded+有文件、58000 new+无文件），
+	// 这条 SQL 返回 CNY 61,500，而 LedgerRows / WriteInvoiceSummaryDocs
+	// 返回 CNY 3,500 —— 同一个「汇总金额」需求，两个 17.6 倍差的结果。
+	// 发票页显示的是这条（前端 resolveSummaryGroups 优先读 API 的 amounts），
+	// 飞书台账显示的是另一条。
+	//
+	// 过滤条件与 InvoiceCountsTowardTotal 逐项对应：
+	// status IN ('downloaded','filed') AND file_path 非空。
+	// 这段 SQL 与那个 Go 函数是同一条规则的两种写法，无法真正共用一份代码；
+	// 能做的是让 invoice_list_stats_guard_test.go 用同一组夹具同时跑两者，
+	// 任何一侧漂移都会红。**不要再把它改回无过滤。**
 	sumQ := `SELECT COALESCE(NULLIF(currency, ''), 'CNY'),
 			COALESCE(SUM(ROUND(amount::numeric, 2)), 0),
 			COUNT(*)
-		FROM email_invoices WHERE workspace_id=$1 AND user_id=$2`
+		FROM email_invoices
+		WHERE workspace_id=$1 AND user_id=$2
+		  AND status IN ('downloaded','filed')
+		  AND COALESCE(file_path, '') <> ''`
 	sumArgs := []any{workspaceID, userID}
 	if status != "" {
 		sumQ += ` AND status=$3`

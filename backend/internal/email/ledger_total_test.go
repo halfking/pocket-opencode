@@ -153,7 +153,7 @@ func TestLedgerRows_EmptyLedger(t *testing.T) {
 		t.Fatalf("最后一行必须是合计行：%v", rows[len(rows)-1])
 	}
 	// 合计行里的「共 N 张」必须是 0，不能带上一轮残留的计数。
-	if got := rows[len(rows)-1][7]; got != "共 0 张" {
-		t.Fatalf("合计行张数 = %v, want \"共 0 张\"", got)
+	if got := rows[len(rows)-1][8]; got != "计入 0 张 / 共 0 张" {
+		t.Fatalf("合计行张数 = %v, want \"计入 0 张 / 共 0 张\"", got)
 	}
 }

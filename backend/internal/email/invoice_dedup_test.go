@@ -158,6 +158,7 @@ func TestInvoiceNoHasNoUniqueConstraintAcrossEmails(t *testing.T) {
 		EmailID: "em-same-1", AccountID: "acct-same", Kind: "e-invoice",
 		Category: "办公", Seller: "供应商", Amount: 500, Currency: "CNY",
 		InvoiceNo: "INV-DUP", InvoiceDate: "2026-10-01",
+		Status: "downloaded",
 	}, "u-same", "ws-same"); err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
@@ -165,6 +166,7 @@ func TestInvoiceNoHasNoUniqueConstraintAcrossEmails(t *testing.T) {
 		EmailID: "em-same-2", AccountID: "acct-same", Kind: "e-invoice",
 		Category: "办公", Seller: "供应商", Amount: 500, Currency: "CNY",
 		InvoiceNo: "INV-DUP", InvoiceDate: "2026-10-01",
+		Status: "downloaded",
 	}, "u-same", "ws-same"); err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}
@@ -176,6 +178,16 @@ func TestInvoiceNoHasNoUniqueConstraintAcrossEmails(t *testing.T) {
 	}
 	if rows != 2 {
 		t.Fatalf("got %d rows for invoice_no=INV-DUP, want 2", rows)
+	}
+
+	// UpsertInvoice 按设计**不写** file_path（那几列归采集流水线的
+	// UpdateInvoiceHarvest 管），所以在结构体里填 FilePath 不会落库。
+	// 这里直接写列：合计判据要求「downloaded 且有落盘文件」，而本用例要验的
+	// 恰恰是「两行都该被计入、却被算了两遍」——前提是先让它们真的被计入。
+	if _, err := store.pool.Exec(ctx,
+		`UPDATE email_invoices SET file_path = 'email-invoices/dup-' || id || '.pdf'
+		  WHERE invoice_no='INV-DUP'`); err != nil {
+		t.Fatalf("set file_path: %v", err)
 	}
 
 	// 汇总会把 500 算两遍 —— 这正是需求 3「汇总金额」会多算的地方。

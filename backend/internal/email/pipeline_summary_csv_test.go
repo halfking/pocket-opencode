@@ -83,7 +83,7 @@ func TestBuildInvoiceSummaryDocs_CSVCarriesRequiredColumns(t *testing.T) {
 		t.Fatalf("read csv: %v", err)
 	}
 	header := firstLine(string(raw[3:]))
-	want := []string{"费用类型", "对方单位", "金额", "币种", "发票号", "日期", "状态", "文件名", "来源邮件"}
+	want := []string{"费用类型", "对方单位", "金额", "币种", "发票号", "日期", "状态", "核验", "文件名", "来源邮件"}
 	got := strings.Split(header, ",")
 	if len(got) != len(want) {
 		t.Fatalf("表头列数 = %d，want %d：%q", len(got), len(want), header)

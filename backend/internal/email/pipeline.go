@@ -1051,8 +1051,11 @@ func (p *Pipeline) BuildInvoiceSummaryDocs(ctx context.Context, userID, workspac
 
 // invoiceSummaryHeader 是汇总 CSV 的列定义。合计行按**这张表**定位「金额」列，
 // 不再靠手数字符串里的逗号个数。
+//
+// 2026-10-02 加「核验」列：与 ledger.go 的飞书表头保持同一组列。两侧列数/
+// 列序必须一致，否则用户在飞书表格和本地 CSV 之间对照时会错位。
 var invoiceSummaryHeader = []string{
-	"费用类型", "对方单位", "金额", "币种", "发票号", "日期", "状态", "文件名", "来源邮件",
+	"费用类型", "对方单位", "金额", "币种", "发票号", "日期", "状态", "核验", "文件名", "来源邮件",
 }
 
 // invoiceSummaryTotalRow 生成合计行，长度与表头一致，金额落在「金额」列。
@@ -1118,17 +1121,15 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 		// 明细行：所有发票都列出来（不计入合计 ≠ 从列表消失）。
 		rows = append(rows, []string{
 			inv.Category, inv.Seller, fmt.Sprintf("%.2f", amount), inv.Currency,
-			inv.InvoiceNo, inv.InvoiceDate, inv.Status, inv.FileName, inv.Subject,
+			inv.InvoiceNo, inv.InvoiceDate, inv.Status, InvoiceVerifiedLabel(inv), inv.FileName, inv.Subject,
 		})
-		// 计入合计的门槛与 LedgerRows 保持一致：**只统计已下载的**。
-		// 2026-10-01 修正（见 ledger.go 的详细说明）：原来无条件累加全部记录，
-		// failed 发票若带着错误抽取出的非零金额，会静默把对账总额算高，
-		// 而且没有任何地方会提示。两处口径必须一致，否则 CSV 与飞书表格
-		// 的「合计」会给出两个不同的数。
+		// 计入合计的门槛用**唯一**判据 InvoiceCountsTowardTotal，与 LedgerRows
+		// 逐字共用同一个函数。此前这里和 ledger.go 各写了一份逐字符相同的
+		// 内联表达式——两份相同的代码就是两份可以各自漂移的代码。
 		//
 		// 注意 counted 与 centsByCur 在同一处递增：把「计入了几张」和
 		// 「各币种各多少」绑在一起，才能在 Markdown 头部如实说明覆盖范围。
-		if !((inv.Status == "downloaded" || inv.Status == "filed") && inv.FilePath != "") {
+		if !InvoiceCountsTowardTotal(inv) {
 			continue
 		}
 		if _, seen := centsByCur[cur]; !seen {

@@ -72,8 +72,8 @@ func TestLedgerRows_SingleCurrencyKeepsLegacyShape(t *testing.T) {
 	if trs[0][3] != "" {
 		t.Errorf("single-currency total must leave the currency cell empty, got %v", trs[0][3])
 	}
-	if trs[0][7] != "共 2 张" {
-		t.Errorf("count = %v, want 共 2 张", trs[0][7])
+	if trs[0][8] != "计入 2 张 / 共 2 张" {
+		t.Errorf("count = %v, want 计入 2 张 / 共 2 张", trs[0][8])
 	}
 }
 
@@ -97,7 +97,7 @@ func TestLedgerRows_MultiCurrencyEmitsOneTotalPerCurrency(t *testing.T) {
 	countByCur := map[string]string{}
 	for _, r := range trs {
 		byCur[r[3].(string)] = r[2].(float64)
-		countByCur[r[3].(string)] = r[7].(string)
+		countByCur[r[3].(string)] = r[8].(string)
 	}
 	if byCur["CNY"] != 454.50 {
 		t.Errorf("CNY total = %v, want 454.50", byCur["CNY"])
@@ -108,14 +108,14 @@ func TestLedgerRows_MultiCurrencyEmitsOneTotalPerCurrency(t *testing.T) {
 	if byCur["EUR"] != 20.00 {
 		t.Errorf("EUR total = %v, want 20.00", byCur["EUR"])
 	}
-	if countByCur["CNY"] != "共 2 张" {
-		t.Errorf("CNY count = %q, want 共 2 张", countByCur["CNY"])
+	if countByCur["CNY"] != "计入 2 张 / 共 2 张" {
+		t.Errorf("CNY count = %q, want 计入 2 张 / 共 2 张", countByCur["CNY"])
 	}
-	if countByCur["USD"] != "共 2 张" {
-		t.Errorf("USD count = %q, want 共 2 张", countByCur["USD"])
+	if countByCur["USD"] != "计入 2 张 / 共 2 张" {
+		t.Errorf("USD count = %q, want 计入 2 张 / 共 2 张", countByCur["USD"])
 	}
-	if countByCur["EUR"] != "共 1 张" {
-		t.Errorf("EUR count = %q, want 共 1 张", countByCur["EUR"])
+	if countByCur["EUR"] != "计入 1 张 / 共 1 张" {
+		t.Errorf("EUR count = %q, want 计入 1 张 / 共 1 张", countByCur["EUR"])
 	}
 
 	// 返回值必须按币种分开，不能再是一个跨币种的标量总额
@@ -171,8 +171,8 @@ func TestLedgerRows_EmptyCurrencyFoldsIntoCNY(t *testing.T) {
 	if trs[0][2].(float64) != 150.00 {
 		t.Errorf("total = %v, want 150.00", trs[0][2])
 	}
-	if trs[0][7] != "共 2 张" {
-		t.Errorf("count = %v, want 共 2 张", trs[0][7])
+	if trs[0][8] != "计入 2 张 / 共 2 张" {
+		t.Errorf("count = %v, want 计入 2 张 / 共 2 张", trs[0][8])
 	}
 }
 

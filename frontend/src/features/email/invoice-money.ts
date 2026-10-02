@@ -42,16 +42,45 @@ export function formatMoney(amount: number, currency?: string | null): string {
 }
 
 /**
- * 按币种分组累加。整数分累加保证「逐行相加 == 合计」，与后端
- * LedgerRows / WriteInvoiceSummaryDocs / InvoiceListStats 同一口径。
+ * 一张发票是否计入合计。**必须**与后端 `InvoiceCountsTowardTotal`
+ * （backend/internal/email/ledger.go）逐项对应。
+ *
+ * 2026-10-02：此前这个函数**完全不过滤**，而它上面的注释却写着「与后端
+ * LedgerRows / WriteInvoiceSummaryDocs / InvoiceListStats 同一口径」——
+ * 注释是假的，InvoiceListStats 那时也在无过滤求和。真实库 2 行发票下，
+ * 飞书台账写 3,500、列表 API 与这个兜底重算都给 61,500。
+ *
+ * `status` 设为必填而不是给个默认值：默认值会把「构造不出凭证的行」
+ * 悄悄放行，那正是这次要消灭的歧义。造「未核验」行请显式传
+ * `filePath: undefined`。
+ */
+export function invoiceCountsTowardTotal(it: {
+  status: string
+  filePath?: string | null
+}): boolean {
+  return (it.status === 'downloaded' || it.status === 'filed') && !!it.filePath
+}
+
+/**
+ * 按币种分组累加。整数分累加保证「逐行相加 == 合计」。
+ *
+ * 只累加 invoiceCountsTowardTotal 为真的行——判据与后端三处实现共用同一
+ * 条规则（见上面函数的注释）。未核验的行**仍然出现在列表里**，只是不进
+ * 合计，这是需求 3 明确要的行为。
  */
 export function sumByCurrency(
-  items: Array<{ amount: number | string; currency?: string | null }>,
+  items: Array<{
+    amount: number | string
+    currency?: string | null
+    status: string
+    filePath?: string | null
+  }>,
 ): CurrencyAmount[] {
   const cents = new Map<string, number>()
   const counts = new Map<string, number>()
   const order: string[] = []
   for (const it of items) {
+    if (!invoiceCountsTowardTotal(it)) continue
     const cur = normalizeCurrency(it.currency)
     if (!cents.has(cur)) order.push(cur)
     cents.set(cur, (cents.get(cur) || 0) + Math.round(round2(Number(it.amount) || 0) * 100))
@@ -132,10 +161,19 @@ export function invoiceTotalsFrom(res: {
  *
  * 顺序不能换：第 2 步的 `currency` 一旦丢了就会兜底成 CNY，所以第 1 步必须
  * 优先于第 2 步，而第 1 步的数据又依赖转发层没把 `amounts` 吃掉。
+ *
+ * 第 3 步的 `list` 必须是带 status/filePath 的完整发票行：兜底重算要按与
+ * 服务端相同的判据过滤，只给 `{amount, currency}` 会让类型系统放行一个
+ * 必然算错的调用（那样算出来的是全表求和，正是 61,500 的来源）。
  */
 export function resolveSummaryGroups(
   totals: Pick<InvoiceTotals, 'amount' | 'currency' | 'amounts'> | undefined,
-  list: Array<{ amount: number | string; currency?: string | null }>,
+  list: Array<{
+    amount: number | string
+    currency?: string | null
+    status: string
+    filePath?: string | null
+  }>,
 ): CurrencyAmount[] {
   if (totals?.amounts?.length) {
     return totals.amounts.map((a) => ({

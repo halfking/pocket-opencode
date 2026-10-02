@@ -69,6 +69,50 @@ func SumByCurrency(invs []Invoice) []CurrencyTotal {
 	return out
 }
 
+// InvoiceCountsTowardTotal 是**唯一**的「这一张算不算进合计」判据。
+//
+// ## 为什么必须只有一处
+//
+// 2026-10-02 实测（真实库 2 行发票）：同一份数据，两条消费路径给出两个数——
+//
+//	LedgerRows（本文件）            → CNY 3,500  （只计 downloaded/filed 且有文件）
+//	InvoiceListStats（invoice_list.go）→ CNY 61,500（**完全没有过滤**）
+//
+// 而发票页显示的是后者：`frontend/src/features/email/invoice-money.ts` 的
+// `resolveSummaryGroups` 优先读列表 API 的 `amounts`，只有它缺失时才退回
+// 客户端自己按全部行重算的 `sumByCurrency(list)`。于是页面上摆着 61,500，
+// 飞书台账里是 3,500，差 17.6 倍——而需求要的就是「汇总金额」。
+//
+// 病根不是某一处写错，是**同一条规则被手写了三遍**（LedgerRows、
+// WriteInvoiceSummaryDocs、InvoiceListStats），前两处逐字符相同、
+// 第三处干脆漏了。三处里任何一处漂移都不会被任何测试发现，因为每处
+// 只测自己。
+//
+// ## 判据本身
+//
+// 只统计**已经拿到凭证**的票：状态属于已下载态，且服务端磁盘上确有落盘文件。
+// 只有邮件正文里一个自称的金额（对账单/扣款通知这类没有发票号也没有附件的
+// 邮件）不计入——那不是发票金额，是对账单金额，两者的财务含义不同。
+//
+// 这类行**不删除**，仍出现在明细里并标记为「未核验」（见 InvoiceVerifiedLabel）：
+// 删掉就再也看不见「有一封 58,000 的东西需要人去追」，而保留但不标记
+// 则会让用户以为表里的每一行都参与了合计。
+func InvoiceCountsTowardTotal(inv Invoice) bool {
+	return (inv.Status == "downloaded" || inv.Status == "filed") && inv.FilePath != ""
+}
+
+// InvoiceVerifiedLabel 是明细行里「核验」列的取值。
+//
+// 口径必须与 InvoiceCountsTowardTotal 严格一致：判据说不计的，这里就写
+// 「未核验」。两处若各写各的，会出现「标着已核验却不计入合计」的行，
+// 那比没有这一列更难排查。
+func InvoiceVerifiedLabel(inv Invoice) string {
+	if InvoiceCountsTowardTotal(inv) {
+		return "已核验"
+	}
+	return "未核验"
+}
+
 // LedgerRows 把发票清单转成表格二维数组：表头 + 每张票一行 + 每币种一行合计。
 //
 // 合计单独占行（而不是只在文字里提一句），这样对账时能直接在表里排序/求和。
@@ -91,7 +135,7 @@ func SumByCurrency(invs []Invoice) []CurrencyTotal {
 func LedgerRows(invs []Invoice) (rows [][]any, totals []CurrencyTotal) {
 	rows = make([][]any, 0, len(invs)+2)
 	rows = append(rows, []any{
-		"费用类型", "对方单位", "金额", "币种", "发票号", "开票日期", "状态", "文件名", "来源邮件",
+		"费用类型", "对方单位", "金额", "币种", "发票号", "开票日期", "状态", "核验", "文件名", "来源邮件",
 	})
 	// 按币种分组累加。单一币种（当前真实数据 7 张全是 CNY）时只出一行合计，
 	// 与旧行为完全一致；混入外币时每个币种各出一行——USD 与 CNY 直接相加
@@ -104,20 +148,20 @@ func LedgerRows(invs []Invoice) (rows [][]any, totals []CurrencyTotal) {
 		// 明细行：所有发票都列出来。**不计入合计 ≠ 从列表消失** ——
 		// failed/pending 的行照样在表里、状态列照样写明，用户依然看得到
 		//「有几张没拿到」，这正是合计能用来对账的前提。
+		//
+		// 「核验」列（2026-10-02 加）：此前只靠「状态」列暗示某行没计入，
+		// 而 failed 与「未核验」在状态列上长得一样（都是 new/failed），
+		// 用户无法分辨「这张失败了」和「这张只是个自称的金额」——前者
+		// 该重试，后者该去追对账单，两种跟进动作不一样。
 		rows = append(rows, []any{
 			inv.Category, inv.Seller, round2(inv.Amount), cur,
-			inv.InvoiceNo, inv.InvoiceDate, inv.Status, inv.FileName, inv.Subject,
+			inv.InvoiceNo, inv.InvoiceDate, inv.Status, InvoiceVerifiedLabel(inv), inv.FileName, inv.Subject,
 		})
-		// 合计：判据与 server 层 handleEmailInvoiceSummary 的 downloaded 计数
-		// 完全一致（status 属于已下载态 **且** FilePath 非空），否则界面上
-		//「已下载 N 张」和「合计 X 元」会指向两批不同的发票。
-		//
-		// 库里确实存在 status=failed 却残留脏字段的记录（两张 QQ Wallet：
-		// seller="name:"、invoiceNo="Issuance"，见 handoff §7o），那些字段是
-		// 从邮件错误段落里抽出来的，金额当时恰好是 0 才没出事。若将来某张
-		// failed 发票带着非零但错误的金额，它会被静默算进合计，让对账虚高，
-		// 而没有任何地方会提示。
-		if !((inv.Status == "downloaded" || inv.Status == "filed") && inv.FilePath != "") {
+		// 合计：判据是唯一的 InvoiceCountsTowardTotal，与
+		// WriteInvoiceSummaryDocs、InvoiceListStats 共用同一个函数。
+		// 此前这里是手写的内联表达式，与 pipeline.go 那份逐字符相同——
+		// 两份相同代码就是两份可以各自漂移的代码。
+		if !InvoiceCountsTowardTotal(inv) {
 			continue
 		}
 		// 四舍五入到分再累加：发票金额本身是两位小数，
@@ -132,23 +176,44 @@ func LedgerRows(invs []Invoice) (rows [][]any, totals []CurrencyTotal) {
 	if len(order) == 0 {
 		// 空清单也必须有合计行（需求：「整理一个列表…并汇总金额」）：
 		// 只有表头 + 一行 0 合计，下游按行数算写入范围的逻辑才不用特判。
-		rows = append(rows, []any{"合计", "", 0.0, "", "", "", "", "共 0 张", ""})
+		rows = append(rows, ledgerTotalRow(0.0, "", 0, len(invs)))
 		return rows, nil
 	}
 	totals = make([]CurrencyTotal, 0, len(order))
 	for _, cur := range order {
 		sum := round2(float64(centsByCur[cur]) / 100)
-		if !multi {
-			// 单币种：合计行不带币种标签，与旧输出一致（下游按列位取值）。
-			rows = append(rows, []any{"合计", "", sum, "", "", "", "", fmt.Sprintf("共 %d 张", len(invs)), ""})
-		} else {
-			// 多币种：每币种一行，且必须标出币种与该币种的张数——
-			// 否则两行「合计」加起来仍然没有意义。
-			rows = append(rows, []any{"合计", "", sum, cur, "", "", "", fmt.Sprintf("共 %d 张", countByCur[cur]), ""})
+		// 单币种不标币种标签（与旧输出一致，下游按列位取值）；多币种必须标，
+		// 否则两行「合计」加起来仍然没有意义。
+		label := ""
+		rowTotal := len(invs)
+		if multi {
+			label = cur
+			// 多币种时每行只覆盖本币种，「共 N 张」必须也是本币种的张数。
+			// 三行各写「共 5 张」会让读者以为这一行是全部 5 张的合计——
+			// 而它其实只覆盖其中 2 张。
+			rowTotal = countByCur[cur]
 		}
+		rows = append(rows, ledgerTotalRow(sum, label, countByCur[cur], rowTotal))
 		totals = append(totals, CurrencyTotal{Currency: cur, Amount: sum, Count: countByCur[cur]})
 	}
 	return rows, totals
+}
+
+// ledgerTotalRow 拼出合计行，列数与 LedgerRows 的表头严格一致（10 列）。
+//
+// 单独抽出来是因为合计行此前散在三个分支里各写一遍字面量，加「核验」列时
+// 漏改一处就会让飞书表格按错误的列数写入、或把张数写进「核验」列。
+//
+// 张数必须写「计入 N 张 / 共 M 张」而不是「共 M 张」：真实库 2 行发票里只有
+// 1 行进了合计，写「共 2 张」会让读者以为 3,500 是那 2 张的总额——纸面上
+// 看不出错，账上就是错的。
+func ledgerTotalRow(sum float64, currency string, counted, total int) []any {
+	return []any{
+		"合计", "", sum, currency, "", "", "",
+		"",
+		fmt.Sprintf("计入 %d 张 / 共 %d 张", counted, total),
+		"",
+	}
 }
 
 // round2 把金额规整到分（2 位小数），消除二进制浮点的表示误差。
@@ -161,10 +226,11 @@ func currencyOrDefault(c string) string {
 	return c
 }
 
-// LedgerCellRange 把行数换算成 "<sheetId>!A1:I<n>" 形式的写入范围。
-// 列数固定 9（表头宽度），行数 = 表头 + 明细 + 合计。
+// LedgerCellRange 把行数换算成 "<sheetId>!A1:J<n>" 形式的写入范围。
+// 列数固定 10（表头宽度，2026-10-02 加「核验」列后由 9 变 10），
+// 行数 = 表头 + 明细 + 合计。
 func LedgerCellRange(sheetID string, rows [][]any) string {
-	cols := 9
+	cols := 10
 	return fmt.Sprintf("%s!A1:%s%d", sheetID, columnName(cols), len(rows))
 }
 

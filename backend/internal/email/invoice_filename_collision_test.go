@@ -155,11 +155,11 @@ func TestListHarvestableInvoices_ExcludesDownloadedAndFiled(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	seedInvoiceForStats(t, store, "inv-h-new", "CNY", "new", 10)
-	seedInvoiceForStats(t, store, "inv-h-pending", "CNY", "pending", 10)
-	seedInvoiceForStats(t, store, "inv-h-done", "CNY", "downloaded", 10)
-	seedInvoiceForStats(t, store, "inv-h-filed", "CNY", "filed", 10)
-	seedInvoiceForStats(t, store, "inv-h-failed", "CNY", "failed", 10)
+	seedInvoiceForStats(t, store, "inv-h-new", "CNY", "new", 10, "email-invoices/inv-h-new.pdf")
+	seedInvoiceForStats(t, store, "inv-h-pending", "CNY", "pending", 10, "email-invoices/inv-h-pending.pdf")
+	seedInvoiceForStats(t, store, "inv-h-done", "CNY", "downloaded", 10, "email-invoices/inv-h-done.pdf")
+	seedInvoiceForStats(t, store, "inv-h-filed", "CNY", "filed", 10, "email-invoices/inv-h-filed.pdf")
+	seedInvoiceForStats(t, store, "inv-h-failed", "CNY", "failed", 10, "email-invoices/inv-h-failed.pdf")
 
 	got, err := store.ListHarvestableInvoices(ctx, 50)
 	if err != nil {

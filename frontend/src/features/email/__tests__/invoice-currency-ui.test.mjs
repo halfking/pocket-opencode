@@ -133,12 +133,18 @@ test('round2：分组求和不会留下浮点尾巴', () => {
   assert.equal(money.round2(0.1 + 0.2), 0.3)
 })
 
+// 造一张「已核验」的发票行：downloaded + 有落盘文件。
+// 这两个字段是必填的而不是可选默认值——没有它们时 sumByCurrency 会把
+// 「构造不出凭证的行」也放行，那正是 61,500 那次错账的来源。
+const ok = (amount, currency) => ({
+  amount,
+  currency,
+  status: 'downloaded',
+  filePath: 'email-invoices/x.pdf',
+})
+
 test('sumByCurrency：不同币种绝不相加', () => {
-  const groups = money.sumByCurrency([
-    { amount: 100, currency: 'USD' },
-    { amount: 50, currency: 'CNY' },
-    { amount: 50, currency: 'CNY' },
-  ])
+  const groups = money.sumByCurrency([ok(100, 'USD'), ok(50, 'CNY'), ok(50, 'CNY')])
   const byCur = Object.fromEntries(groups.map((g) => [g.currency, g.amount]))
   assert.equal(byCur.USD, 100)
   assert.equal(byCur.CNY, 100)
@@ -147,10 +153,35 @@ test('sumByCurrency：不同币种绝不相加', () => {
 })
 
 test('sumByCurrency：币种为空归 CNY', () => {
-  const groups = money.sumByCurrency([{ amount: 10, currency: '' }, { amount: 5, currency: 'CNY' }])
+  const groups = money.sumByCurrency([ok(10, ''), ok(5, 'CNY')])
   assert.equal(groups.length, 1)
   assert.equal(groups[0].currency, 'CNY')
   assert.equal(groups[0].amount, 15)
+})
+
+// 2026-10-02：真实库 2 行发票（3500 downloaded+有文件、58000 new+无文件）。
+// 兜底重算此前对两行一视同仁，给出 61,500；后端 LedgerRows 给 3,500。
+// 这条用例把该分歧钉在客户端侧——它是发票页在 totals 缺失时走的那条路。
+test('sumByCurrency：未核验的行不进合计，但仍在列表里', () => {
+  const list = [ok(3500, 'CNY'), { amount: 58000, currency: 'CNY', status: 'new' }]
+  const groups = money.sumByCurrency(list)
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].amount, 3500, '合计必须排除没有凭证的那行')
+  assert.equal(groups[0].count, 1)
+  // 列表本身不受影响：两行都还在
+  assert.equal(list.length, 2)
+})
+
+// 「状态是 downloaded 但服务端磁盘上没有凭证」这一档最容易被漏：
+// 它长得和正常发票一模一样，却是采集流水线中途失败留下的残行。
+test('sumByCurrency：downloaded 但无落盘文件同样不计入', () => {
+  const groups = money.sumByCurrency([
+    { amount: 100, currency: 'CNY', status: 'downloaded', filePath: '' },
+    { amount: 20, currency: 'CNY', status: 'filed', filePath: 'a.pdf' },
+  ])
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].amount, 20)
+  assert.equal(groups[0].count, 1)
 })
 
 test('summaryMoney：单币种一个数，多币种逐个列出', () => {
