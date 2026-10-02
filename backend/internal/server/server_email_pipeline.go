@@ -245,7 +245,42 @@ func (s *Server) ensurePipeline() *email.Pipeline {
 }
 
 // RunEmailPipeline 供 scheduler 定时调用（或调试）。执行位置按配置决定。
+//
+// 这里是**唯一**加跨进程互斥锁的地方，而且是刻意只加在这里：
+//   - 定时路径（scheduler 的每日 8 点）会在多实例下同时进来，进程内的
+//     emailPipelineMu 拦不住它们。重复跑的代价是重复推送——重要邮件提醒
+//     的已通知标记在整个推送循环跑完之后才写，而 notifications 表除主键外
+//     没有唯一约束，于是同一封邮件被推 N 份。
+//   - 手工路径（handleEmailPipelineRun）直接调 runEmailPipeline，**不**走这里，
+//     所以用户显式点"跑一次"不会被另一轮挡住。
 func (s *Server) RunEmailPipeline(ctx context.Context) *email.PipelineReport {
+	if s.cfg.EmailPipelineAdvisoryLock {
+		release, state, err := s.emailStore.TryLockDailyPipeline(ctx)
+		switch state {
+		case email.DailyPipelineLockBusy:
+			log.Printf("[email/pipeline] 每日定时流水线跨进程锁已被其它实例持有，本轮跳过")
+			return &email.PipelineReport{
+				Errors: []string{"daily pipeline already running in another instance; skipped"},
+			}
+		case email.DailyPipelineLockAcquired:
+			// 只有真的拿到锁才 defer release。
+			//
+			// 这里必须按 state 分派而不是写 default: err==nil 且非 Busy 时
+			// release 可能是 nil（锁机制不可用），`defer release()` 会在函数
+			// 返回时 nil-pointer panic —— 而这个 goroutine 是 scheduler 的，
+			// 未捕获的 panic 会直接终止整个 pocketd 进程。
+			defer release()
+		default:
+			// Unavailable：没有连接池，或取连接/查询失败。**不是**"别人在跑"。
+			// 必须降级照跑：若也跳过，一次数据库抖动就会让每日流水线永久
+			// 静默，而日志只会写"跳过"，看不出真实原因。
+			if err != nil {
+				log.Printf("[email/pipeline] 每日定时流水线跨进程锁不可用（%v），本轮降级为直接执行", err)
+			} else {
+				log.Printf("[email/pipeline] 每日定时流水线跨进程锁不可用（无数据库连接池），本轮降级为直接执行")
+			}
+		}
+	}
 	return s.runEmailPipeline(ctx, nil)
 }
 

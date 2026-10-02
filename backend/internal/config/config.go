@@ -127,6 +127,15 @@ type Config struct {
 	// 垃圾规则没在真实邮箱上验证过，先看判定结果，确认无误再置 false。
 	EmailSpamDryRun        bool
 	EmailServerPipelineURL string // POCKET_EMAIL_SERVER_PIPELINE_URL：server 模式的远端流水线 URL
+	// POCKET_EMAIL_PIPELINE_ADVISORY_LOCK：**默认 true**。
+	//
+	// 只作用于**每日定时**触发，不作用于 HTTP 手工触发（后者是用户显式
+	// 要求，不该被另一轮挡住）。多个 pocketd 共享同一个 PG 库时，进程内的
+	// emailPipelineMu 拦不住它们，于是同一点会跑 N 轮流水线，重要邮件提醒
+	// 被重复推 N 份（notifications 表除主键外无唯一约束）。
+	//
+	// 置 false 逃生用：无 PG 的纯本地部署，或需要手工重跑定时轮次。
+	EmailPipelineAdvisoryLock bool
 	// POCKET_EMAIL_CLASSIFY_VIA_GATEWAY：**默认 false**。
 	//
 	// true 时每日流水线的第 1.6 步用已配置的 LLM 网关给未归类邮件分类
@@ -301,6 +310,9 @@ func Load() Config {
 		EmailExecutionMode:     getEnv("POCKET_EMAIL_EXECUTION_MODE", "local"),
 		EmailSpamDryRun:        getEnv("POCKET_EMAIL_SPAM_DRYRUN", "true") == "true",
 		EmailServerPipelineURL: getEnv("POCKET_EMAIL_SERVER_PIPELINE_URL", ""),
+		// 默认 true：多实例共享一个库时必须由数据库裁决谁跑这一轮。
+		// 取不到锁会降级照跑（不是跳过），所以默认开着不会让流水线静默停摆。
+		EmailPipelineAdvisoryLock: getEnv("POCKET_EMAIL_PIPELINE_ADVISORY_LOCK", "true") == "true",
 		// 显式写 "true" 才开：这条会每天自动发真实 LLM 请求，默认必须是关。
 		EmailClassifyViaGateway: getEnv("POCKET_EMAIL_CLASSIFY_VIA_GATEWAY", "") == "true",
 		// 飞书出站（发票推送）
