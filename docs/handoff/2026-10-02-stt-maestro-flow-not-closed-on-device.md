@@ -7,43 +7,47 @@
 
 ## 0. 状态一句话
 
-`.maestro/notes-stt-error-visibility.yaml` 这条流在真机上**只跑通过前 5 步**
-（10:39 那次，见 §1），从未跑完全程。等价的文本断言验证已在真机完成
-（7/7 + 3 路负控 + 实拍截图），但那不等于「流跑通了」。
-差的这一步需要人在手机上操作（开「USB 安装」），我做不到。
+`.maestro/notes-stt-error-visibility.yaml` 这条流在真机上**从未真正跑通**。
+等价路径的文本断言验证已在真机完成（7/7 + 3 路负控 + 实拍截图），
+但那不等于「流跑通了」。当前阻塞需要人在手机上操作，我做不到。
 
-## 1. 阻塞：不是「装不上驱动」，而是「App 停在解锁页导致第 5 步失败」
+> ⚠️ 本文件归因改过两次，两次的教训都记在这里：
+> v1 说是「MIUI 装不上驱动」——错，理由见 §1；
+> v2 说是「真机跑通了前 5 步，卡在解锁页」——**也错**，理由见 §1。
 
-⚠️ **本文件初版把阻塞归因成「MIUI 装不上 Maestro 驱动」，那个结论下得太早，
-已修正。** 2026-10-02 11:22 复查 `~/.maestro/tests/` 时找到铁证：
+## 1. 真正的阻塞：Maestro 从未与设备建立会话
 
-`~/.maestro/tests/2026-10-02_103958/notes-stt-error-visibility/`
-—— 这是一次**在真机上**的真实运行（`maestro.log` 里
-`MAESTRO_DEVICE_UDID=192.168.31.19:5555`），它有 `commands.json`、
-`screen-hierarchy/`、`screenshots/`，并且**真的执行了 5 步**：
+唯一那次看起来"跑了几步"的运行是 `~/.maestro/tests/2026-10-02_103958/`。
+初读它会以为流跑到了第 5 步（`tapOn 学习|Study`），但逐行读日志后结论相反：
 
 ```
-launchApp → runFlow(when 解锁本地数据) → tapOn 学习|Study
+10:40:27.850  Launch app "com.kaixuan.opencode.pocket.sttdev" RUNNING
+10:40:31.981  [ERROR] Failed to record heartbeat
+              java.io.IOException: 另一个程序已锁定文件的一部分
+10:40:36.981  [ERROR] Failed to record heartbeat
+10:40:37.403  [DEBUG] Failed to set permission ... READ_EXTERNAL_STORAGE
+10:40:41.566  Run flow when "解锁本地数据" is visible
+10:40:58.893  [ERROR] CommandFailed: Element not found: Text matching regex: 学习|Study
+10:40:59.647  [INFO]  Tap on "学习|Study" FAILED
 ```
 
-终止原因（maestro.log 末尾）：
+判据：
+- 日志中**没有任何"已连接设备"的记录**（无 `Connected to device` / session started）；
+- `Launch app` 之后立刻陷入 heartbeat 失败循环，那是**本地文件锁**问题
+  （`SessionStore.heartbeat`），与设备无关；
+- `screen-hierarchy/` 只抓到 **1 帧**（step-005），说明它对设备视图几乎没有采样；
+- `Tap on 学习|Study FAILED` 的直接原因是**没拿到设备视图**，
+  而不是因为 App 停在解锁页。
 
-```
-[ERROR] CommandFailed: Element not found: Text matching regex: 学习|Study
-[INFO]  Tap on "学习|Study" FAILED
-```
+⇒ **那次运行的"5 步"是空转，不构成任何执行证据。**
+（`MAESTRO_DEVICE_UDID=192.168.31.19:5555` 只是它启动时读到的环境变量，
+不代表会话建立成功。manifest 里的 `"source": "emulator"` 也只是
+logcat 采集来源标注 —— 两个字段都不能当作"它在设备上跑过"的证据。）
 
-即**驱动当时是装上的、能跑**，失败是因为 App 停在**主密码解锁页**
-（`# /login?returnTo=/study&unlock=1`），底部导航压根不存在。
-（`manifest.json` 里的 `"source": "emulator"` 只是 logcat 采集来源的
-元数据标注，不代表运行设备 —— 别被它误导。）
-
-同目录没有 `notes-stt-error-after-stop*` 截图，可佐证它没跑到最后的
-`takeScreenshot` 步骤。
+这与本机反复出现的现象一致：`maestro.bat --device <serial>` 常直接报
+"not connected"，需要它自己完成驱动安装与会话建立，而那一步在本机不成立。
 
 ### 仍然存在的安装阻塞（11:19 复测）
-
-当下 MIUI 又拦住了驱动重装：
 
 ```
 adb install logs/maestro/driver/maestro-app.apk
@@ -61,19 +65,18 @@ adb install logs/maestro/driver/maestro-app.apk
 ⇒ **需人工操作**：手机「设置 → 更多设置 → 开发者选项 → 打开『USB 安装』」
 （MIUI/HyperOS 的中文标签，可能是「通过 USB 安装」）。
 
-## 2. 这次失败的真正教训：解锁步骤是流的前置，不是可选项
+## 2. 输入口令这一步另有陷阱（与阻塞无关，但要预先知道）
 
-10:39 那次跑之所以卡在第 5 步，是因为 `runFlow(when: visible: 解锁本地数据)`
-虽然**匹配到了**解锁页，但它内部的 `tapOn 主密码` / `inputText` / `tapOn 解锁`
-没能走完 —— 之后流直接往下执行 `tapOn 学习|Study`，自然找不到底部导航。
+我后来用 CDP 手动解锁时发现：`adb shell input text` 走软键盘会吞字符
+（13 位口令输入后 `input.value.length` 在 13/14 间跳变），
+必须用 JS 原生 setter 赋值再 dispatch `input` 事件，Vue 的 `v-model` 才收得到。
 
-而我后来用 CDP 手动走时，**输入主密码这一步用了完全不同的手法**才成功：
-`adb shell input text` 走软键盘会吞字符（13 位口令输入后长度在 13/14 间跳变），
-必须用 JS 原生 setter 赋值（`Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set`）
-再 `dispatchEvent(new Event('input'))` 才能让 Vue 的 `v-model` 收到。
+且口令错时**界面不报错**：`LoginView.unlock()` 的 `error.value` 只在
+`initLobster` 抛错时写入，而 AES-GCM 解密失败发生在更下游，
+表现是「点了没反应」。
 
-**这说明 Maestro 的 `inputText` 在这台设备上很可能同样会吞字符**，
-即当前 `e768a53` 补的 `hideKeyboard` 未必够。跑之前先准备好这个假设。
+⇒ Maestro 的 `inputText` 很可能同样中招。跑之前先备好这个假设，
+否则会误判成「路由没跳转」。
 
 ## 3. 等价路径做了什么、为什么它不能替代「流跑通」
 

@@ -54,22 +54,24 @@
 # appId 用 sttdev 并存包：调试包带独立 applicationIdSuffix，与正式包数据隔离，
 # 不动用户正式 App 的后端设置（那会清掉登录态）。
 #
-# ⚠️ 这条流在 MIUI/HyperOS 真机上**尚未跑通**，别再重复踩（2026-10-02 实测）：
-#   最新一次真机运行 `~/.maestro/tests/2026-10-02_103958/` 走到了第 5 步
-#   （launchApp → runFlow(解锁) → tapOn 学习|Study），失败于
-#     CommandFailed: Element not found: Text matching regex: 学习|Study
-#   原因是 App 停在**主密码解锁页**，底部导航不存在 —— 不是选择器写错。
+# ⚠️ 这条流在 MIUI/HyperOS 真机上**从未真正跑通**，别再重复踩（2026-10-02 实测）：
+#   唯一那次看起来跑了几步的运行是 ~/.maestro/tests/2026-10-02_103958/，
+#   但逐行读它的 maestro.log 后结论相反：
+#     - 日志里**没有任何"已连接设备"的记录**；
+#     - `Launch app` 之后立刻陷入 `Failed to record heartbeat`
+#       （java.io.IOException 另一个程序已锁定文件）——那是**本地文件锁**问题；
+#     - `screen-hierarchy/` 只抓到 1 帧，说明它对设备视图几乎没有采样；
+#     - `Tap on "学习|Study" FAILED` 的直接原因是**没拿到设备视图**。
+#   ⇒ 那次运行的"5 步"是空转，不构成任何执行证据。
+#   `MAESTRO_DEVICE_UDID=192.168.31.19:5555` 只是启动时读到的环境变量，
+#   manifest 里的 `"source": "emulator"` 也只是 logcat 采集来源标注 ——
+#   **两个字段都不能当作"它在设备上跑过"的证据。**
 #
-#   ⚠️ 本段初版把阻塞归因成「Maestro 装不上驱动」，**那是错的**：
-#   那次运行有完整的 commands.json / screen-hierarchy / screenshots，
-#   说明驱动当时是装上的、能执行步骤。真正卡住的是解锁步骤没走完。
-#   （同目录 manifest 里的 `"source": "emulator"` 只是 logcat 采集来源标注，
-#     不代表运行设备；真机证据是 maestro.log 里的 MAESTRO_DEVICE_UDID。）
-#
-#   但当下驱动**又**装不上了（11:19 复测）：
+#   根因是 Maestro 从未与设备建立会话（本机 `maestro.bat --device <serial>`
+#   常直接报 "not connected"），而建立会话需要设备侧驱动 App，而当下装不上：
 #     adb install maestro-app.apk
-#     → Failure [INSTALL_FAILED_USER_RESTRICTED: Install canceled by user]
-#   MIUI 默认关闭「开发者选项 → USB 安装」。弹窗点「继续安装」无效（连点 2 次
+#     -> Failure [INSTALL_FAILED_USER_RESTRICTED: Install canceled by user]
+#   MIUI 默认关闭「开发者选项 -> USB 安装」。弹窗点「继续安装」无效（连点 2 次
 #   被系统撤销），设备无 root（adbd cannot run as root in production builds），
 #   相关 settings（verifier_verify_adb_installs / adb_install_need_confirm /
 #   install_non_market_apps）实测全已是宽松值，改不动。
