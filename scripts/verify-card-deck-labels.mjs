@@ -21,8 +21,14 @@
 //   node scripts/verify-card-deck-labels.mjs --selftest   先证明判据能转红，再跑判据
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const FRONTEND_SRC = 'C:/workspace/openpocket/wt3/frontend/src'
+// ⚠️ 绝不写死工作区路径（BUG-V2 同款死法）。
+// 旧版写的是 C:/workspace/openpocket/wt3/frontend/src —— 那个 worktree 还在时，
+// 这个判据会**静默地判另一棵源码树**：跑出绿也不代表当前树是绿的。
+// 仓库根从脚本自身位置推导（scripts/ 的上一级），换 worktree 也永远判当前树。
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const FRONTEND_SRC = path.join(ROOT, 'frontend', 'src')
 const LOCALES_DIR = path.join(FRONTEND_SRC, 'locales')
 
 // ── 判定规则（好样本与合成坏样本共用同一套，判据才有意义）──────────────
@@ -135,7 +141,16 @@ for (const r of rows) {
 const vueFiles = []
 for (const f of ['features/flashcards/FlashcardListView.vue', 'features/flashcards/FlashcardEditView.vue', 'features/study/StudyHubView.vue']) {
   const p = path.join(FRONTEND_SRC, f)
-  if (fs.existsSync(p)) vueFiles.push(p)
+  // ⚠️ 绝不能"文件不存在就跳过"。文件被改名/挪走时，"检查了 0 个视图"和
+  // "检查了 3 个视图且都通过"在输出里长得一模一样，判据照样报绿。
+  // 缺文件 = 判据没在检查它声称在检查的东西，直接判不可用。
+  if (!fs.existsSync(p)) {
+    console.error(`❌ 判据不可用：视图文件不存在 ${p}`)
+    console.error('   文件被改名/挪走时，判据会"少检查几个视图"然后照样报绿。')
+    console.error('   先修路径，或确认该视图确实已重命名。')
+    process.exit(2)
+  }
+  vueFiles.push(p)
 }
 console.log(`\n── 逐视图绑定核对（${vueFiles.length} 个视图）──`)
 const vueProblems = vueFiles.flatMap(checkVue)

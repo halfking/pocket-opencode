@@ -254,21 +254,49 @@ async function assertDeviceReachesBackend() {
   const base = process.env.POCKET_API_BASE || 'http://127.0.0.1:18099'
   const port = (base.match(/:(\d+)/) || [])[1]
   if (!port) { console.log('[preflight] 解析不出端口，跳过设备侧检查'); return true }
+  // 设备侧端口 = App 里烧进去的 API 基址端口（通常 18099）
+  // 宿主侧端口 = 这个 worktree 的后端实际监听在哪
+  // 两者不同时映射是 tcp:<dev> -> tcp:<host>，守卫核对的目标必须跟着变。
+  // 否则"同端口"这个隐含假设会把本 worktree 锁死在"必须抢别人端口"上。
+  const dev = process.env.POCKET_DEVICE_PORT || port
+  const findMapping = (list) => list.split(/\r?\n/).map((x) => x.trim())
+    .find((l) => new RegExp(`tcp:${dev}\\s`).test(l)
+      && (l.match(/tcp:\d+\s+tcp:(\d+)/) || [])[1] === port) || null
+  if (dev !== port) {
+    console.log(`[preflight] 设备端口 ${dev} != 宿主端口 ${port}：App 仍用 ${dev}，映射改指本 worktree 的后端`)
+  }
   let list = ''
   try { list = adb(['reverse', '--list'], 15000) } catch { /* 没配 reverse */ }
-  const mapping = list.split(/\r?\n/).map((l) => l.trim()).find((l) => new RegExp(`tcp:${port}\\s`).test(l))
+  // 设备端口上可能挂着**别的会话**的映射（指向它的宿主端口）。那种映射
+  // "通得很正常"，但后面全是另一个后端的数据：dev 口令不同 => 登录 401；
+  // 即便登进去了，列表恒空且没有任何报错。极易误判成产品缺陷。
+  const anyForDev = list.split(/\r?\n/).map((l) => l.trim())
+    .find((l) => new RegExp(`tcp:${dev}\\s`).test(l))
+  const mapping = findMapping(list)
   const target = mapping ? (mapping.match(/tcp:\d+\s+tcp:(\d+)/) || [])[1] : null
-  if (!mapping) {
+  if (anyForDev && !mapping) {
+    const t = (anyForDev.match(/tcp:\d+\s+tcp:(\d+)/) || [])[1]
+    console.error(`[preflight] ⚠️ 设备 tcp:${dev} 被映射到了宿主 tcp:${t}（不是本 worktree 的 ${port}），正在改指`)
+    try {
+      adb(['reverse', '--remove', `tcp:${dev}`], 15000)
+      adb(['reverse', `tcp:${dev}`, `tcp:${port}`], 15000)
+      if (!findMapping(adb(['reverse', '--list'], 15000))) {
+        console.error('[preflight] ❌ 改指失败'); return false
+      }
+      console.error(`[preflight] ✅ 已改指为 tcp:${dev} → tcp:${port}`)
+    } catch (e) {
+      console.error(`[preflight] ❌ 改指失败：${e?.message || e}`); return false
+    }
+  } else if (!mapping) {
     // 设备重连（adb kill-server / WiFi 抖动 / 换 USB 模式）会把 reverse 映射整个清掉。
     // 正确映射唯一（App 的 API 基址端口 → 宿主同一端口），直接补上。
-    console.error(`[preflight] ⚠️ 设备上没有 tcp:${port} 的 adb reverse 映射，正在补建`)
+    console.error(`[preflight] ⚠️ 设备上没有 tcp:${dev} 的 adb reverse 映射，正在补建`)
     try {
-      adb(['reverse', `tcp:${port}`, `tcp:${port}`], 15000)
-      const after = adb(['reverse', '--list'], 15000)
-        .split(/\r?\n/).map((l) => l.trim()).find((l) => new RegExp(`tcp:${port}\\s`).test(l))
+      adb(['reverse', `tcp:${dev}`, `tcp:${port}`], 15000)
+      const after = findMapping(adb(['reverse', '--list'], 15000))
       const now = after ? (after.match(/tcp:\d+\s+tcp:(\d+)/) || [])[1] : null
       if (now !== port) { console.error(`[preflight] ❌ 补建失败，当前映射：${after || '<无>'}`); return false }
-      console.error(`[preflight] ✅ 已补建为 tcp:${port} → tcp:${port}`)
+      console.error(`[preflight] ✅ 已补建为 tcp:${dev} → tcp:${port}`)
     } catch (e) {
       console.error(`[preflight] ❌ 补建失败：${e?.message || e}`)
       return false
@@ -282,16 +310,15 @@ async function assertDeviceReachesBackend() {
     console.error(`           App 读到的是别的实例（很可能是另一个 worktree）的数据，`)
     console.error(`           表现为「列表恒空但没有任何报错」，极易被误判成产品缺陷。`)
     try {
-      adb(['reverse', '--remove', `tcp:${port}`], 15000)
-      adb(['reverse', `tcp:${port}`, `tcp:${port}`], 15000)
-      const after = adb(['reverse', '--list'], 15000)
-        .split(/\r?\n/).map((l) => l.trim()).find((l) => new RegExp(`tcp:${port}\\s`).test(l))
-      const now = (after || '').match(/tcp:\d+\s+tcp:(\d+)/)
-      if (!now || now[1] !== port) {
+      adb(['reverse', '--remove', `tcp:${dev}`], 15000)
+      adb(['reverse', `tcp:${dev}`, `tcp:${port}`], 15000)
+      const after = findMapping(adb(['reverse', '--list'], 15000))
+      const now = after ? (after.match(/tcp:\d+\s+tcp:(\d+)/) || [])[1] : null
+      if (now !== port) {
         console.error(`[preflight] ❌ 自愈失败，当前映射：${after || '<无>'}`)
         return false
       }
-      console.error(`[preflight] ✅ 已自愈为 tcp:${port} → tcp:${port}`)
+      console.error(`[preflight] ✅ 已自愈为 tcp:${dev} → tcp:${port}`)
     } catch (e) {
       console.error(`[preflight] ❌ 自愈失败：${e?.message || e}`)
       return false
@@ -299,16 +326,16 @@ async function assertDeviceReachesBackend() {
   }
   // 映射对了，再确认设备上真的能拿到 200（reverse 存在但宿主没监听也会失败）
   try {
-    const out = adb(['shell', `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${port}/healthz`], 20000).trim()
+    const out = adb(['shell', `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${dev}/healthz`], 20000).trim()
     if (out !== '200') {
-      console.error(`[preflight] ❌ 设备 curl 127.0.0.1:${port}/healthz 返回 "${out}"`)
+    console.error(`[preflight] ❌ 设备 curl 127.0.0.1:${dev}/healthz 返回 "${out}"`)
       console.error(`           先起后端：powershell -ExecutionPolicy Bypass -File scripts/start-local-backend.ps1`)
       return false
     }
   } catch {
     console.log(`[preflight] 设备侧 curl 不可用，跳过（映射本身已核对为 tcp:${port} → tcp:${port}）`)
   }
-  console.log(`[preflight] 设备可达后端 ${base}（reverse tcp:${port} → tcp:${target}）✅`)
+  console.log(`[preflight] 设备可达后端 ${base}（reverse tcp:${dev} → tcp:${port}）✅`)
   return true
 }
 
@@ -477,9 +504,22 @@ if (!(await preflight())) process.exit(3)
   // 顺带等 App 外壳真的渲染出来：只等 hash 匹配时，flow 第一条断言（打开菜单）
   // 仍可能失败——hash 变了但 DOM 还没画完。ready 判据用 aria-label，结构性、稳定。
   const ok = await setRoute(route, `!!document.querySelector('[aria-label="打开菜单"]')`)
-  console.log(ok
-    ? `[preflight] 已复位到 ${route} 且 App 外壳已渲染`
-    : '[preflight] ⚠️ 复位路由/等渲染未成功，flow 的起始状态可能不确定')
+  if (ok) {
+    console.log(`[preflight] 已复位到 ${route} 且 App 外壳已渲染`)
+  } else {
+    // 失败即停。2026-10-02 实测：只警告的话，smoke-login 与 flashcards-write
+    // 两条 flow 都在**错误的起点**上跑红了，红的原因是"没复位成功"而不是产品缺陷——
+    // 那种红没有任何解释力，纯粹浪费一轮排查。
+    // 把实际路由打出来：只说"没复位成功"本身也定位不了问题。
+    let actual = '(读不到)'
+    try { actual = await cdpEval('location.hash') } catch { /* 通道也坏了 */ }
+    console.error(`[preflight] ❌ 复位到 ${route} 失败；App 当前实际停在 ${actual}`)
+    console.error('           flow 的起点不确定 ⇒ 后续所有"等某个元素出现"的断言都不可解释。')
+    console.error('           常见原因：App 进程刚起还没渲染完 / 上一次调试把它停在了深层页面。')
+    console.error('           确实要在不确定起点上跑（调试用）：设 POCKET_ALLOW_UNCERTAIN_START=1')
+    if (process.env.POCKET_ALLOW_UNCERTAIN_START !== '1') process.exit(3)
+    console.error('           已按 POCKET_ALLOW_UNCERTAIN_START=1 继续 —— 本次 flow 结果不可解释')
+  }
 }
 
 // 复位完成后再清登录态：顺序不能反，否则清完 token 页面又会把旧壳渲染回来。
