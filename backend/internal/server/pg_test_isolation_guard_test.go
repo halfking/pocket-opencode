@@ -201,6 +201,15 @@ var pgSafeWithoutIsolation = map[string]string{
 	// 同上：**本条目使护栏完全跳过该文件**，写语句无机器守护。
 	"internal/email/diag_real_invoice_extract_test.go": "只读真实库诊断：0 写语句，4 处 pool.Query；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_DATA_DIR 双重开关（读真实库里的真实发票，隔离库会让它输出「发票都没了」的假结论）。**注意：本条目使护栏完全跳过该文件，写语句无机器守护**",
 
+	// 2026-10-02 新增（发票准入门取证）：
+	//   · 0 写语句，1 处 pool.Query（一条 SELECT），.Exec( 出现 0 次；
+	//   · 门控只有 POCKET_REAL_MAIL_DSN（schema 缺省 opencode_pocket），
+	//     与 CI 设的 POCKET_TEST_POSTGRES_DSN 是两个不同变量，CI 里恒 skip；
+	//   · 显式把 search_path 指向 POCKET_REAL_MAIL_SCHEMA——它要读的就是
+	//     真实 schema，自建隔离 schema 会让它输出「发票都没了」的假结论。
+	// 同上：**本条目使护栏完全跳过该文件，写语句无机器守护**。
+	"internal/email/diag_real_invoice_gate_test.go": "只读真实库诊断：0 写语句，1 处 pool.Query（单条 SELECT）；需 POCKET_REAL_MAIL_DSN（schema 缺省 opencode_pocket）。产出是准入门交叉表，不落库。**注意：本条目使护栏完全跳过该文件，写语句无机器守护**",
+
 	// 下面三个是 2026-10-02 合入 feat/mail-config-deploy 时被本护栏判红的，
 	// 逐个核过后确认安全，理由可核查：
 	//   · 只用 pool.Query，**一次 Exec 都没有**（2026-10-02 全文件扫
