@@ -77,6 +77,12 @@ var (
 	reInvoiceNo = regexp.MustCompile(`(?i)(?:发票号码|发票号|票据号码|Invoice\s*(?:No\.?|Number)?|Bill\s*No\.?)[:：\s]*([A-Za-z0-9\-]{7,31}[0-9][A-Za-z0-9\-]*)`)
 	reInvoiceDate = regexp.MustCompile(`(?:开票日期|发票日期|开票时间|日期|Date)[:：\s]*(\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}|\d{8})日?`)
 	reLooseCNDate = regexp.MustCompile(`(\d{4}年\d{1,2}月\d{1,2})日?`)
+	// 账单/对账单的出具日。必须**单列一层**，且刻意不含「账单周期」——
+	// 工行那封里是「账单周期 2026年09月01日—2026年09月30日 对账单生成日
+	// 2026年09月30日」：周期起始日不是出具日，只靠「跳过未来日期」会取到
+	// 2026-09-01，仍然是错的（只比 2026-10-25 好一点，仍然错）。
+	// reInvoiceDate 也抓不到它：那里的标签是「日期」二字，「生成日」不含。
+	reStatementDate = regexp.MustCompile(`(?i)(?:对账单生成日|账单生成日|对账日期|账单日期|出账日|statement\s*date)\s*[:：]?\s*(\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}|\d{8})日?`)
 	// 货币代码 / 符号前缀。
 	//
 	// 为什么加 ISO 4217 代码（2026-10-01 真实数据）：QQ Wallet 英文发票写
@@ -470,14 +476,48 @@ func isDigits(s string) bool {
 
 // ParseInvoiceDate 从发票/邮件文本里抽出开票日期并归一化为 YYYY-MM-DD。
 // 先匹配带「开票日期」等标签的写法，再兜底中文年月日。
-func ParseInvoiceDate(text string) string {
-	if m := reInvoiceDate.FindStringSubmatch(text); m != nil {
-		return normalizeInvoiceDate(m[1])
-	}
-	if m := reLooseCNDate.FindStringSubmatch(text); m != nil {
-		return normalizeInvoiceDate(m[1])
+//
+// ## 为什么必须跳过「未来的日期」
+//
+// 2026-10-02 真实库实测（diag_real_invoice_extract_test.go 记录的那条）：
+// 工商银行信用卡对账单被抽成发票，invoice_date 落成 **2026-10-25**——
+// 那是原文里的「贷记卡到期还款日」，比当天晚 23 天。同一封邮件里其实带着
+// 正确的「对账单生成日 2026年09月30日」，但 `reLooseCNDate` 只取**第一个**
+// 中文年月日，于是先撞上了还款日。
+//
+// 发票不可能在未来开具，「到期还款日」是债务通知的字段而不是凭证的日期。
+// 这一点与「对账单要不要算进台账」那个产品决定无关：无论算不算，
+// 未来日期都不是开票日期。所以这里直接跳过它并继续往后找。
+//
+// 留 1 天宽限：服务器时区与邮件出具地可能跨日，临界日不至于被误杀。
+func ParseInvoiceDate(text string) string { return parseInvoiceDateAt(text, time.Now()) }
+
+func parseInvoiceDateAt(text string, now time.Time) string {
+	// 三层优先级，每层都跳过未来日期并继续往后找：
+	//   1) 发票标签（开票日期 / 发票日期 / 日期 / Date）
+	//   2) 账单出具日（对账单生成日 / 账单日期 / 出账日 …）
+	//   3) 裸中文年月日
+	// 顺序是承重的：真发票邮件有「开票日期」就该以它为准；对账单没有「开票日期」，
+	// 只能落到第 2 层，否则会取到「账单周期」的起始日或「到期还款日」。
+	for _, re := range []*regexp.Regexp{reInvoiceDate, reStatementDate, reLooseCNDate} {
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			if d := normalizeInvoiceDate(m[1]); d != "" && !isFutureInvoiceDate(d, now) {
+				return d
+			}
+		}
 	}
 	return ""
+}
+
+// isFutureInvoiceDate 判断 YYYY-MM-DD 是否比 now 晚了超过 1 天。
+func isFutureInvoiceDate(d string, now time.Time) bool {
+	t, err := time.Parse("2006-01-02", d)
+	if err != nil {
+		return false // 解析不了就当它不是未来日期，交给调用方按原样处理
+	}
+	cut := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).
+		AddDate(0, 0, 2)
+	return t.After(cut)
 }
 
 // ParseInvoiceDateFromBytes 扫描文件字节（PDF 未压缩文本 / 图片旁路无效）。
