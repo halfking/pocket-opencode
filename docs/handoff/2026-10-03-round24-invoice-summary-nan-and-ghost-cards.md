@@ -757,6 +757,80 @@ to_char(to_timestamp(max(created_at)), 'YYYY-MM-DD HH24:MI:SS')
 实测 `server_encoding` 与 `client_encoding` **都是 UTF8**，编码不是原因——
 把注释换成英文也没用，因为真正的错在查询里。两个假设都要用实测排除，不能只换一个就下结论。）
 
+---
+
+## §18 更正 §16.3 的框架：重复提醒是**顺序**问题，最可能只发生一次
+
+§16.3 我写的是「34 条可能被推 1 次、2 次或 3 次，58 只能当下界」。
+那是**上界**，没说清概率。这一节把机制查实，并给出更可能的结局——
+**它可能让「要不要打断并发会话」这个问题不再紧急**。
+
+### 18.1 落库层没有任何兜底（实测）
+
+```
+pg_constraint on opencode_pocket.notifications:
+  notifications_pkey | p | PRIMARY KEY (id)      <- id 每次插入新生成，不是业务键
+  （另有两个普通索引 idx_notif_ws_time / idx_notif_unread，都非唯一）
+pg_constraint on opencode_pocket.emails:
+  UNIQUE (account_id, message_id)                 <- 邮件去重，与提醒无关
+  notified_at 上没有任何约束
+```
+
+⇒ 代码层的去重**只是**一句 `UPDATE emails SET notified_at=$1 WHERE id=ANY($2)`
+（`store_pipeline.go:155-161`），配合读取时的 `COALESCE(notified_at,0)=0` 判断。
+**没有唯一约束兜底**，所以竞态一旦发生，重复通知会真的落库。
+
+### 18.2 但去重是「读—推—标记」，所以**后到者会跳过**
+
+`notifyImportant`（`pipeline.go:998-1050`）的顺序是：
+
+```
+1. ListEmailsSince(ctx, since, 2000)   -> 拿到 (emails, notified) 快照
+2. splitReminderCandidates(emails, notified)   -> 对着**那一刻的快照**判定
+3. for 每个 candidate: Notifier.NotifyImportantEmail  -> 逐条 INSERT notifications
+4. 循环结束后才 MarkEmailsNotified(ids)         -> UPDATE notified_at
+```
+
+**没有锁、没有事务、没有推送前复查。** 但正因为快照在第 1 步、标记在第 4 步，
+**只要某个进程在另一个进程读完快照之后才读完快照，它就会看到 notified_at≠0 而整批跳过。**
+
+### 18.3 谁会先到？——18100，因为它同步最快地**失败**
+
+- **18100**：解密在本地就失败，**不产生任何 IMAP 往返**（fetcher 日志 0 行），
+  所以第 1 步几乎瞬间结束，接着 1.5/1.6/2 都是轻量的，直接进第 3 步。
+- **18077 / 18099**：要做真实的 5 账户 IMAP 同步（18099 的日志里单次
+  `/api/emails/sync` 就要 2.5–3 秒，5 个账户更多），之后还有 1.5 发票候选
+  （可能去下正文链接）和 1.6 分类，才到第 3 步。
+
+⇒ **最可能的结果：18100 先读快照、推 34 条、标记；18077 与 18099 随后读到
+快照时 `notified_at` 已非 0，`RemindersPending=0`，一条都不推。**
+也就是**只推一次，总数 58**。
+
+### 18.4 但这仍是**预测**，明早要这样判别
+
+- 若三份日志里**只有一个**出现 `本轮将推送 34 条` + `reminders sent:` ⇒ 上面的顺序成立，58 成立。
+- 若出现 2~3 份 ⇒ 三者快照落在同一秒内，重复发生，此时**总数会 >58**，
+  且不能把多出来的部分算到任何一个进程头上。
+- 判别用每份日志的 `RemindersSent` 之和与 `notifications` 实际增量对账，不要只看 DB 差值。
+
+### 18.5 顺带记一个与 08:00 无关、但真实存在的健壮性缺口
+
+即使**只有单进程**，这段「先 INSERT 后 UPDATE、中间无事务」的写法也有一个洞：
+**进程在两者之间崩溃 / 被杀，下一轮会把这批邮件重推一遍。**
+更普遍地说，只要将来出现多实例部署（这个仓库现在就有 4 个 pocketd 实例在跑），
+重复就是结构性的。
+
+正解是让数据库兜住，而不是靠应用层的列值判断：
+`notifications` 上加一条以「来源邮件」为业务键的**部分唯一索引**，或
+用 `pg_try_advisory_lock` 把「读快照—推送—标记」整段包起来。
+**本轮没有动手改**——那是行为变更，涉及幂等语义与历史数据该不该回填，
+该由你拍板，不是我顺手就能定的。
+
+（`pending_high` 我用独立 SQL 复核过：`date >= now()-90d AND deleted_at=0
+AND notified_at=0 AND importance='high'` = **34**，与 01:14 那份只读诊断的
+`RemindersPending=34` 完全吻合。两个口径互相对上了。）
+
+
 
 
 ---
