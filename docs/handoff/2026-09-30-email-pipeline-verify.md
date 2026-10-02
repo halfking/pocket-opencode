@@ -9478,3 +9478,85 @@ if delay < 0 { delay = 0 }                 // → clamp 成 0，loop 立刻触�
 
 `go build ./...` 0、`go vet ./internal/email/` 0、
 `go test ./internal/email/ -count=1` 全包 ok。
+
+---
+
+## §7dy 迟来的 `-race`：本机一直能跑，之前 20 轮一次都没用
+
+### 怎么发现的
+
+改完 `Scheduler.Stop()`（加了 `sync.Once`）之后复核自己的验证链，
+发现一件事：**这一整轮改的全是并发代码**（scheduler 的 loop、fetcher 的
+goroutine、`sync.Once`），但从头到尾只跑过普通 `go test`，
+一次都没带 `-race`。
+
+于是去查本机到底能不能跑。
+
+### 能跑，而且一直能跑
+
+```
+$ Get-ChildItem C:\tools -Recurse -Filter gcc.exe
+C:\tools\w64devkit\w64devkit\bin\gcc.exe        # GCC 16.2.0, x86_64-w64-mingw32
+
+$ go env CGO_ENABLED CC
+                                                   # 两者都是空（= 未设置）
+
+$env:PATH='C:\tools\w64devkit\w64devkit\bin;'+$env:PATH
+$env:CC='C:\tools\w64devkit\w64devkit\bin\gcc.exe'
+$env:CGO_ENABLED='1'
+go test -race ./internal/email/ -count=1
+```
+
+**「本机跑不了 `-race`」是一个被沿用过的错误结论**——它只搜过 PATH 和几个
+猜测目录，没搜 `C:\tools`。这个假阻塞还有个更坏的副作用：它会伪装成
+「无法验证，只能请你贴日志」，把本该自己完成的工作推给用户。
+
+### 实测结果
+
+先验本轮改动直接相关的部分：
+
+```
+--- PASS: TestPipelineLoop_FiresWhenRunnerInjectedBeforeStart
+--- PASS: TestPipelineLoop_FiresWhenRunnerInjectedAfterStart
+--- PASS: TestPipelineLoop_NegativeHourDisablesSchedule
+--- PASS: TestPipelineLoop_RepeatedInjectionStartsSingleLoop
+--- PASS: TestStop_IsIdempotent
+--- PASS: TestStop_SafeWhenNeverStarted
+--- PASS: TestStop_EndsPipelineLoopBeforeTrigger
+--- PASS: TestAccountDueForSync
+ok  github.com/halfking/pocket-opencode/backend/internal/email  2.795s
+```
+
+**0 DATA RACE**。然后跑整包：
+
+```
+$ go test -race ./internal/email/ -count=1
+ok  github.com/halfking/pocket-opencode/backend/internal/email  94.111s
+```
+
+**0 DATA RACE**（非 race 时同一包是 85.101s，race 开销约 +11%，
+这个比例说明 race detector 确实在工作，而不是被静默跳过）。
+
+注意口径：上面那句「全绿」必须带上 `-race` 才成立，
+不带 `-race` 的全绿**不能**用来声称并发安全。
+
+### 为什么要专门记一条
+
+`sync.Once` 这类改动的正确性判据就是并发安全性，而 `-race` 是唯一能给出
+「没有数据竞争」这个结论的工具。**只跑普通测试得到的「全绿」与并发安全
+是两回事**——普通测试不会因为缺同步而失败，它只会**碰巧**没触发。
+
+本轮 20 个提交里，涉及并发的那几处（`pipelineOnce` 补起 loop、
+`SetPipelineRunner` 的 `startMu`、`accountDueForSync` 的抽取）
+此前都只有非 race 的测试背书。从现在起，本分支的回归口径改为：
+
+```
+go test -race ./internal/email/ -count=1     # 涉及并发时必须带
+go test ./internal/email/ -count=1           # 其余可用
+```
+
+### 顺带：`-race` 也不能替代负控
+
+race detector 只能证明「这段并发代码没有数据竞争」，证不了「Stop 幂等」
+（「二次 close 会不会 panic」是逻辑性质，不是数据竞争）。两者是互补的，
+不是二选一。
