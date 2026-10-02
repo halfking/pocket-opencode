@@ -8701,3 +8701,122 @@ if len(uids) > 50 {
 - **没有测 444 封规模下的耗时**。50 封/轮 → 约 9 轮排空，间隔取决于
   `sync_interval_min`；这个排空节奏是否可接受**未量化**。
 - **没有验真实 IMAP server**（同 §7dq，imapmemserver 不等于第三方实现）。
+
+---
+
+## §7ds 【需求 1】把「同步 N 封打几次 IMAP 往返」变成可测量的数字：实测 FETCH = N+1，50 封一轮 = 51 次串行往返（2026-10-03）
+
+### 为什么量这个
+
+`fetcher.go` 里紧挨着 `fetchSnippetOnConnected` 的注释自己写着：
+
+> 这里是 Sync 里最可疑的一段：同一连接上**逐封串行**发部分取回，没有并发也没有
+> 单独预算。企业微信（imap.exmail.qq.com）实测在这一步会挂到分钟级，而外层只能
+> 看到 90s 上界。单独打点。
+
+「可疑」不等于「有多少」。而 §7dr 把「每轮处理 50 封」变成了常态（积压按最老
+50 封排空），于是「50 封 = 多少个串行往返」成了需求 1 定时收信路径上的一个
+**必须量的数字**，不是直觉。
+
+### 怎么量的：`imapserver.Options.DebugWriter`
+
+go-imap 的 `imapserver.Options` 带一个 `DebugWriter io.Writer`，注释明写
+「Raw ingress and egress data will be written to this writer」。在本进程里挂一个
+缓冲，把 server 收发的**明文 IMAP 流**抓下来，用正则数命令出现次数即可。
+
+- 不需要 MITM、不需要 Docker、不需要真实 server、不需要网络；
+- **本文件只统计次数，绝不打印内容**——明文流里含登录凭据（DebugWriter 的
+  文档也这么警告）。
+
+### 实测（新增 `fetcher_rounds_test.go`，`go test -v` 输出）
+
+```
+n= 1 saved= 1 FETCH=  2 SEARCH=1  (每封 2.00 次 FETCH)
+n= 5 saved= 5 FETCH=  6 SEARCH=1  (每封 1.20 次 FETCH)
+n=10 saved=10 FETCH= 11 SEARCH=1  (每封 1.10 次 FETCH)
+n=20 saved=20 FETCH= 21 SEARCH=1  (每封 1.05 次 FETCH)
+n=50 saved=50 FETCH= 51 SEARCH=1  (每封 1.02 次 FETCH)
+```
+
+**干净的线性关系：FETCH = N + 1，SEARCH 恒为 1。**
+
+拆开看：1 次是批量取 envelope 的（一次 `UID FETCH 1:50 (ENVELOPE ...)`），
+**另外 N 次全部是逐封补 snippet 的**——因为批量 fetch 根本没请求 `BodySection`
+（为了绕开 Greenmail 的 SP 分隔符问题），所以每封邮件的 snippet 都是空，
+必然走 `fetchSnippetOnConnected` 补一次。
+
+所以在 §7dr 之后的**生产轮次大小（50 封）下，单轮固定 50 次串行往返**，
+这与注释里「企业微信实测挂到分钟级」的症状是吻合的。
+
+### 第一版量出 0 的坑
+
+最初在每个 `Write` 回调里切行统计，得到 FETCH=0。两个原因：
+
+1. IMAP 命令行带 tag 前缀（`a001 UID FETCH …`），不以 `UID FETCH` 开头；
+2. **DebugWriter 的 Write 边界与 IMAP 的行边界无关**，一条命令完全可能被切成
+   两次 Write，按 Write 切行必然漏。
+
+正确做法是整段缓冲在 `stats()` 里统一用正则扫。**判据要匹配真实格式**，
+不是「大概长什么样」——第一版的正则「看起来」是对的，拿到 0 才发现。
+
+### 负控 1 次
+
+| 变异 | 结果 |
+|---|---|
+| 把 `if snippet == ""` 分支里的 `fetchSnippetOnConnected` 调用删掉 | n=10 的 FETCH **11 → 1**，**2 条转红**（`TestSyncUsesOneBatchedFetchForEnvelopes` 与 `TestSyncSnippetFetchesAreStillPerMessage`） |
+
+说明计数器确实在数真东西，基线用例确实承重。已还原。
+
+`TestSyncSnippetFetchesAreStillPerMessage` 是**故意钉住现状并把数字写死**的：
+它是「把逐封 snippet 改成批量」这件事的基线，改动会让它转红——写死数字是为了
+让「往返次数从 O(n) 降到 O(1)」有一个可对比的起点，而不是拍脑袋。
+
+### 本轮**没有**改 snippet 补拉路径（这是一个有取舍的待拍板项）
+
+把 N 次逐封补拉改成 1 次批量，方向明确（N+1 → 2），但**不是零成本**，所以
+本轮只量不改：
+
+- **带宽换往返**：当前每次取**整封**正文（`FetchItemBodySection` 没设
+  `Partial`）。批量 50 封 = 单次传输 50 封正文；对带大附件的邮件，单次响应
+  可能很大，甚至触发服务端/中间设备的响应上限。
+- **原有的「部分取回」已被放弃过**：`fetcher.go` 的注释记录了
+  `BODY[TEXT]<partial>` 曾导致部分 server 响应缺 SP 分隔符、imapwire 解析失败。
+  也就是说「小体积」这条路已经试过并退回，批量方案要面对同样的兼容性面。
+- **可观测性会变好**：现在每封一次 `tr.step("snippet uid=%d")` 打点，批量后
+  只能看到一次，排查时定位不到具体哪一封卡住。
+
+所以这是一个**需要拍板的性能/兼容性取舍**，不是我该单方面改的。建议的折中方案
+（若要实施）：先按 UID 分组批量、每批 10~20 封，保留每封的 `tr.step` 打点，
+把往返从 50 降到 3~6，同时把单次响应体量控制住。
+
+### 顺带记录一个未修复的隐患（读代码得出，未复现）
+
+IMAP 阶段的硬截止是 `time.AfterFunc(imapStageBudget, client.Close())`，
+而 `UpdateSyncState`（写 `last_synced_uid`）**只在整个循环结束后调用一次**。
+若某一轮在中途被 `client.Close()` 掐断，则：
+
+- 已经 InsertEmail 成功的邮件**留住了**（不丢数据）；
+- 但 `last_synced_uid` **没推进** → 下一轮重新搜同一批 UID → `InsertEmail`
+  幂等（`ON CONFLICT DO NOTHING`）→ saved=0 → **同一批反复重试**。
+
+§7dr 之前也存在这个风险；§7dr 之后**风险变大**了：现在每轮取的是最老 50 封，
+若这批里有系统性慢的一封，它会**永久堵住整个积压**（新邮件排在它后面）。
+
+**我没有修，也没有复现它**——本机 harness 里 `imapmemserver` 太快，无法在循环
+中途稳定触发 `Close`。修法方向很清楚（每插成功一封就推进 watermark，或每 N 封
+推进一次），但**没有实测支撑就不动**，与本轮其余改动的标准一致。
+
+### 数字
+
+- `fetcher_rounds_test.go`：3 条，全绿
+- `go test ./internal/email/`：**全绿**（121.4s）
+- `gofmt -l` 新文件：无输出
+- 生产代码：**本轮只加注释**，无逻辑改动（§7dr 的改动已在上一提交）
+
+### 本轮**没有**做的事
+
+- **没有改 snippet 补拉路径**（如上，有取舍）
+- **没有测真实 server 的单次往返延迟**。本机 harness 是 loopback，往返几乎免费；
+  企业微信的每次往返实际耗时**未量化**，所以「50 次串行 = 分钟级」这个推论
+  **不由本次实测支撑**，只由代码注释里的线上观察支撑。
+- **没有复现「中途 Close 导致 watermark 不推进」**，理由见上。

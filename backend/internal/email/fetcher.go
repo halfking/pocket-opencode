@@ -822,6 +822,11 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 			// 这里是 Sync 里最可疑的一段：同一连接上**逐封串行**发部分取回，
 			// 没有并发也没有单独预算。企业微信（imap.exmail.qq.com）实测在这
 			// 一步会挂到分钟级，而外层只能看到 90s 上界。单独打点。
+			//
+			// 实测（§7ds，用 imapserver 的 DebugWriter 数明文命令）：同步
+			// N 封恰好打 N+1 次 FETCH（1 次批量 envelope + N 次逐封 snippet），
+			// SEARCH 恒为 1。§7dr 把「每轮 50 封」变成常态，于是单轮固定
+			// 50 次串行往返。
 			tr.step(fmt.Sprintf("snippet uid=%d", uid))
 			snippet = f.fetchSnippetOnConnected(client, uid)
 		}
