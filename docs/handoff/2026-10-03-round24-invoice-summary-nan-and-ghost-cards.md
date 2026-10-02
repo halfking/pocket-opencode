@@ -220,3 +220,38 @@ high 有 32 封。08:00 定时流水线一跑，总数 24 + 32 = **56 > 50**。
 而不是 API 返回多少条——空列表和被截断的列表在屏幕上一模一样，只量 API 会全绿：
 用 `adb-cdp-eval.ps1` 读 `document.body.innerText` 数渲染条数，与
 `/api/notifications?limit=200` 的条数对照，并确认最早的 6 条仍能翻到。
+
+---
+
+## §7 复查 json tag 影响面时挖出的第二现场（`05cc27df`）
+
+`handleEmailInvoiceSummary` 的响应里也有 `"amounts": amounts`
+（`server_email_pipeline.go:615`），序列化的是**同一个类型** `CurrencyTotal`，
+修复前同样发 PascalCase。
+
+**要说准现状**：前端 `emailApi.invoiceSummary()` 全仓**只有定义、没有任何调用方**
+（`invoiceSummary` / `EmailInvoiceSummary` 只出现在 `api/email.ts` 与一条测试注释里），
+所以这个现场的错键今天**不显示**。按「闸门逻辑上一直关着、目前没造成损失」记录，
+不是「已造成错账」。
+
+### 7.1 这个缺陷当初为什么能活下来（整轮最值得记住的一段）
+
+`server_email_invoice_summary_test.go` 的 `summaryResponse.Amounts` 元素带
+`json:"currency"` 这类小驼峰 tag，却在修复前一直从 PascalCase 载荷里
+**读到真值并断言成功**（`byCur["USD"]==100`、`Amounts[0].Amount==75.5`、`Count==2`……）。
+
+原因是 **Go 的 `json.Unmarshal` 对字段名做大小写不敏感匹配**：`"Currency"`
+能落进标了 `json:"currency"` 的字段。
+
+所以「Go 侧用例全绿」**不能**证明线上键名对——它只证明了 Go 能读懂自己。
+真正发作的是大小写敏感的 TS，也就是 §1 那个 ¥NaN。
+这也是 `server_email_invoice_wire_keys_test.go` 全部断言都解到 `map[string]any`
+的原因：解进 struct 会把这件事藏起来。
+
+负控实测（删掉三个 tag）：新 wire 用例三条全红，而 `TestInvoiceSummary_` 全部
+5 条**照旧通过**——用例全绿与线上键名错误可以长期共存，这条对照就是证据。
+
+### 7.2 顺带闭合的一个验证缺口
+
+上一段报告说「改了生产 TS」，其实只跑了 `.mjs` 用例，**没跑类型检查**。
+本轮补：`vue-tsc --noEmit` exit=0。
