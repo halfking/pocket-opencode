@@ -55,14 +55,57 @@
   `=20 =E7=94=A8 ChatGPT Images=EF=BC=8C` 正是这 15 封里出现过的真实串，
   `snippet_test.go:141` 也钉了 QP 必须解码。
 
-## 5. 根因（已定位，属已修项）
+## 5. 根因归因 —— ⚠️ 本节已在同日更正过一次，别照抄
 
-`064ce292c`（2026-10-02 01:40:40，`fix(email): 摘要不再显示原始 MIME`）
-在 `mime.go:548-567` 加了 QP 解码前的 CRLF 归一化。Go 的
-`quotedprintable.Reader` 不认 RFC 2045 规定的 CRLF 软换行，真实邮件里的
-`=\r\n` 会让它报 `invalid bytes after =: "\r\r\n"`，整段正文被丢掉。
+### 5.1 我原先写的（错的）
 
-该提交已在 HEAD 祖先链上（`git merge-base --is-ancestor 064ce292c HEAD` → 0）。
+「`064ce292c`（2026-10-02 01:40:40）在 `mime.go:548-567` 加了 QP 解码前的
+CRLF 归一化，Go 的 `quotedprintable.Reader` 不认 CRLF 软换行，会报
+`invalid bytes after =: "\r\r\n"`，所以它修好了乱码。」
+
+### 5.2 实测推翻了它
+
+`backend/internal/email/diag_qp_reader_crlf_test.go`（2026-10-03 新增）直接问
+stdlib 本身，结果是：
+
+```
+payload = "abc=\r\ndef=\r\n=E4=BD=A0=E5=A5=BD\r\n"
+err     = <nil>
+got     = "abcdef你好\r\n"
+```
+
+**Go 1.27.1 的 `mime/quotedprintable` 遇到 `=\r\n` 不报错，软换行正确去掉、
+`=E4=BD=A0` 正确解成「你」。** `mime.go:549-553` 注释里写的那个报错
+**在当前工具链复现不出来**。
+
+负控也一致：`logs/negctrl-qp-crlf.mjs` 删掉 `mime.go:561-566` 那两段
+`bytes.ReplaceAll`，**整包 0 个用例转红**（两轮都试过：单部件样本和真实
+multipart 样本各一轮）。那两行现在只影响**硬换行**的编码（CRLF→LF），
+而摘要出口本来就会 `normalizeWhitespace`，摘要上看不出差别。
+
+### 5.3 所以
+
+- **不能**把 18 封乱码摘要归因于 `064ce292c` 的 CRLF 归一化。
+- 真正让摘要变干净的是**同一提交里的净化层**
+  （`SnippetFromParsed` / `DeriveSnippet` 那条线，护栏在
+  `snippet_mime_leak_test.go`，含 `TestFetcherSnippetIsWiredThroughSnippetFromParsed`
+  这条接线护栏）。
+- 本节唯一仍然成立的部分是**时间线**：18 封全部入库于
+  2026-10-01 23:56（16 封）/ 2026-10-02 22:21（2 封），
+  而 `064ce292c` 落在 2026-10-02 01:40:40 且在 HEAD 祖先链上。
+  其中那 2 封 22:21 入库的，时间上晚于该提交——对应证据是它们有正文缓存、
+  重放干净，说明当时跑的是未含该修复的旧二进制。
+
+**教训**：把「某次提交同时改了 A 和 B，而现象消失了」当成「B 修好了它」，
+是本轮实打实犯的错。负控（删掉 B，全绿）才是拆开这个归因的工具。
+
+## 5.4 补的护栏
+
+`backend/internal/email/qp_crlf_sync_path_test.go`（3 条，全绿）钉的是
+**端到端契约**而非那两行代码：QP + CRLF 软换行 + 同步路径那两个函数
+（`ParseMIMEMessage` → `SnippetFromParsed`）必须吐出干净可读的中文。
+文件头已写明它的负控（删 mime.go 归一化）恒绿及其原因，避免下一个维护者
+把「护栏失明」的结论套到它头上。
 
 ## 6. 过程中我自己犯的两个错（都写进代码注释了）
 
