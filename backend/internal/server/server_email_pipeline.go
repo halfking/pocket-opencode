@@ -200,6 +200,15 @@ func (s *Server) ensureInvoiceHarvester() *email.InvoiceHarvester {
 	}
 }
 
+// harvesterBodyCache 取采集器的原文缓存，好让流水线第 2 趟与采集器共用同一份。
+// harvester 为 nil（依赖不齐）时返回 nil，流水线会按「无缓存」处理。
+func harvesterBodyCache(h *email.InvoiceHarvester) email.BodyCache {
+	if h == nil {
+		return nil
+	}
+	return h.BodyCache
+}
+
 // ensurePipeline 惰性构造流水线（单例）。依赖缺失时返回 nil。
 func (s *Server) ensurePipeline() *email.Pipeline {
 	s.emailPipelineOnce.Do(func() {
@@ -219,6 +228,12 @@ func (s *Server) ensurePipeline() *email.Pipeline {
 			Store:    s.emailStore,
 			Fetcher:  s.emailFetcher,
 			Harvest:  harvester,
+			// 与采集器共用**同一个** BodyCache 实例：第 2 趟的取原文和
+			// harvestOne 的取原文必须走同一条 POP3 感知路径（email/raw_body_resolve.go）。
+			// 此前第 2 趟直接调 IMAP-only 的 FetchMessageRaw，于是 POP3 来源的
+			// 发票候选永远取不到原文、建不了档（实测两封通行费电子发票
+			// 24.61 元，而它们的原文就在 email-bodies-raw/ 里）。
+			BodyCache: harvesterBodyCache(harvester),
 			Pusher:   pusher,
 			Notifier: notifier,
 			Ledger:   &feishuLedgerPublisher{client: pusher.client, folderToken: s.cfg.FeishuInvoiceFolderToken},
