@@ -38,14 +38,16 @@ func TestDiagnoseReminderNotifiedAt(t *testing.T) {
 	}
 	defer pool.Close()
 
-	since := time.Now().AddDate(0, 0, -2).Unix()
+	since := time.Now().AddDate(0, 0, -importantReminderLookbackDays).Unix()
 
 	// 与 ListEmailsSince 完全一致的扫描窗口与过滤条件。
+	// 天数取自常量而非写死：这个诊断的价值全在「和实现看到同一批邮件」，
+	// 窗口一改这里若还写死 -2 天，它会拿另一个集合去解释 remindersSent=0。
 	const cols = `id, category, importance, notified_at`
 	rows, err := pool.Query(ctx, `SELECT `+cols+`
 		FROM emails
 		WHERE date >= $1 AND COALESCE(deleted_at,0)=0
-		ORDER BY date DESC LIMIT 500`, since)
+		ORDER BY date DESC LIMIT 2000`, since)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}

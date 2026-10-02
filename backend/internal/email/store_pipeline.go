@@ -119,7 +119,8 @@ func (s *Store) ListEmailsSince(ctx context.Context, since int64, limit int) ([]
 // CountHighImportanceOutside 统计「date < before、importance=high、且从未提醒过」
 // 的邮件数。
 //
-// 为什么需要它：重要邮件提醒的扫描窗口是硬编码的 2 天（见 notifyImportant），
+// 为什么需要它：重要邮件提醒的扫描窗口是 importantReminderLookbackDays
+// （原为硬编码 2 天，见 notifyImportant），
 // 落在窗口之外的高重要度邮件**永远不会被提醒** —— 不是「这轮没轮到」，是
 // 「不在扫描范围里」。而报告上只有 RemindersSent / RemindersScanned /
 // RemindersUnclassified，0 这个数**分不清**下面两种情况：

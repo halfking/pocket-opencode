@@ -8,6 +8,11 @@ import (
 
 // ---- 以下两段文件头注释分别来自两侧：ours 记录真实库 46 封的实测状态，
 // theirs 记录「2 天窗口让老邮件永远不被提醒」这个缺陷的来龙去脉。两侧都保留。 ----
+//
+// ⚠️ 时态说明：下面两段里所有的「2 天」都指的是**当时的实现**，是缺陷现场
+// 记录，不是当前值。当前窗口是 importantReminderLookbackDays（已放宽到 90 天，
+// 见 notifyImportant 上方的常量与其理由）。保留原文是因为它们记录的是「这个坑
+// 怎么发现的」，改写成 90 天会让后来者读不到缺陷本身。
 
 // reminder_window_test.go — 钉住一个真实数据里暴露的矛盾。
 //
@@ -147,12 +152,20 @@ func runReminderScan(t *testing.T) (*PipelineReport, int) {
 
 	// 窗口内（1 天前）的高重要度：应该被提醒。
 	seedEmailWithAge(t, store, "e-fresh-high", "acc-w", "ws-w", "窗口内重要", "high", 1)
-	// 窗口外（9 天前）的高重要度：**永远不会被提醒**，但必须被计数。
-	seedEmailWithAge(t, store, "e-old-high", "acc-w", "ws-w", "窗口外重要", "high", 9)
+	// 「窗口外」的年龄**从常量推导**，不写死天数。
+	//
+	// 此处原本写的是 9 天：它在 2 天窗口下确实落在窗口外，但窗口放宽到 90 天后
+	// 9 天变成了窗口**内**，而这三个夹具会**静默转绿**——它们不再测「窗口外」，
+	// 却仍以窗口外的名义通过，用例名和断言文案都不会提醒你。判据随实现一起
+	// 漂移时，只有「判据从同一个常量推导」才不会出现这种假绿。
+	// +30 天是余量，避免边界抖动。
+	outOfWindowAge := importantReminderLookbackDays + 30
+	// 窗口外的高重要度：**永远不会被提醒**，但必须被计数。
+	seedEmailWithAge(t, store, "e-old-high", "acc-w", "ws-w", "窗口外重要", "high", outOfWindowAge)
 	// 窗口外但重要性不是 high：不计入。
-	seedEmailWithAge(t, store, "e-old-medium", "acc-w", "ws-w", "窗口外一般", "medium", 9)
+	seedEmailWithAge(t, store, "e-old-medium", "acc-w", "ws-w", "窗口外一般", "medium", outOfWindowAge)
 	// 窗口外、high，但已提醒过：不计入（不是漏掉，是已经做过了）。
-	seedEmailWithAge(t, store, "e-old-done", "acc-w", "ws-w", "窗口外已提醒", "high", 9)
+	seedEmailWithAge(t, store, "e-old-done", "acc-w", "ws-w", "窗口外已提醒", "high", outOfWindowAge)
 	if _, err := store.pool.Exec(context.Background(),
 		`UPDATE emails SET notified_at=$1 WHERE id=$2`, time.Now().Unix(), "e-old-done"); err != nil {
 		t.Fatalf("mark notified: %v", err)

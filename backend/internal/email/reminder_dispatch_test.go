@@ -238,7 +238,7 @@ func TestNotifyImportantDoesNotRepeatOnSecondRun(t *testing.T) {
 		t.Fatalf("两轮共尝试派发 %d 次，want 1", attempted)
 	}
 	if second.RemindersScanned != 1 {
-		t.Fatalf("第二轮 remindersScanned=%d，want 1（邮件仍在 2 天窗口内）", second.RemindersScanned)
+		t.Fatalf("第二轮 remindersScanned=%d，want 1（邮件仍在扫描窗口内）", second.RemindersScanned)
 	}
 }
 

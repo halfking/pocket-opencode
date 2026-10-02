@@ -251,7 +251,8 @@ type PipelineReport struct {
 	RemindersScanned      int `json:"remindersScanned,omitempty"`
 	RemindersUnclassified int `json:"remindersUnclassified,omitempty"`
 	// RemindersOutOfWindow 是「importance=high、从未提醒、但 date 比扫描窗口
-	// （notifyImportant 里硬编码的 2 天）更老」的邮件数。
+	// （notifyImportant 里的 importantReminderLookbackDays，原为硬编码 2 天）
+	// 更老」的邮件数。
 	//
 	// 为什么必须有它：那些邮件**永远不会被提醒**——不是「这轮没轮到」，是
 	// 「不在扫描范围里」。没有这个计数时，报告上的 0 分不清
@@ -829,23 +830,55 @@ func splitReminderCandidates(emails []Email, notified []int64) (toNotify []Email
 	return toNotify, unclassified
 }
 
+// importantReminderLookbackDays 是重要邮件提醒的回看天数。
+//
+// 原实现硬编码 2 天（time.Now().AddDate(0, 0, -2)）。缺陷与
+// invoiceCandidateLookbackDays 是同一个：定时任务每天跑一次，2 天窗口意味着
+// 任何一次漏掉的邮件——服务端重启、通知中心当时不可用、AI 分类器连续失败、
+// 机器关机——都会**永久**失去被提醒的机会。
+//
+// 2026-10-02 对真实库只读统计（55 封 importance=high，未删）：
+//
+//	落在 2 天窗口内   =  1 封
+//	落在 2 天窗口外   = 54 封
+//	  其中从未提醒过  = 30 封  ← 这 30 封在 2 天窗口下**永远不会被提醒**
+//	最老的一封 high   = 23 天前
+//
+// 也就是说 2 天窗口下，当前每 55 封重要邮件只有 1 封真正进得了扫描。
+// 90 天窗口能完整覆盖现有数据（最老的 high 才 23 天），还留有余量应对积压。
+//
+// 放宽到 90 天的代价：扫描行数变多（不碰 IMAP，只是多读几行 emails），
+// 且首次上线时会把积压的老 high 一次性全部推送出来（按当前数据约 30 封）。
+// 后者是产品取舍（要不要限流、要不要只推最近 N 条），已单列待拍板，
+// **不在本轮擅自决定**。
+const importantReminderLookbackDays = 90
+
+// importantReminderScanLimit 是重要提醒扫描的行数上限。
+//
+// 必须与回看窗口配套调大，理由与 invoiceCandidateScanLimit 完全一致：
+// Store.ListEmailsSince 是 `ORDER BY date DESC LIMIT n`，500 行几乎必然被
+// 最近的邮件占满，**宽窗口形同虚设**——被挤掉的恰好是窗口末端那些
+// 「重要但很老」的邮件，也就是这个窗口本来要救的那批。Store.ListEmailsSince
+// 自身把 >2000 的值重置为 500，故此处取其上限。
+const importantReminderScanLimit = 2000
+
 // notifyImportant 对未提醒过的重要邮件派发通知并记录时间。
 func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 	if p.Notifier == nil {
 		return
 	}
-	since := time.Now().AddDate(0, 0, -2).Unix()
+	since := time.Now().AddDate(0, 0, -importantReminderLookbackDays).Unix()
 	// 窗口之外的高重要度邮件：它们**永远不会被提醒**，但报告上原本看不出来。
 	// 先数出来，再决定要不要改窗口——改窗口是产品取舍，可见性不是。
 	if n, err := p.Store.CountHighImportanceOutside(ctx, since, 2000); err != nil {
 		rep.AddError("reminder out-of-window count: %v", err)
 	} else if n > 0 {
 		rep.RemindersOutOfWindow = n
-		log.Printf("[email/pipeline] %d 封 importance=high 的邮件早于 %d 秒（2 天窗口），"+
+		log.Printf("[email/pipeline] %d 封 importance=high 的邮件早于 %d 秒（%d 天窗口），"+
 			"**永远不会进入重要提醒** —— 报告里 RemindersSent=0 有一部分是这个原因",
-			n, time.Now().Unix()-since)
+			n, time.Now().Unix()-since, importantReminderLookbackDays)
 	}
-	emails, notified, err := p.Store.ListEmailsSince(ctx, since, 500)
+	emails, notified, err := p.Store.ListEmailsSince(ctx, since, importantReminderScanLimit)
 	if err != nil {
 		rep.AddError("reminder scan list: %v", err)
 		return
