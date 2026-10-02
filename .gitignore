@@ -92,6 +92,26 @@ data/email-bodies/
 # 不依赖 .gitignore 的写法，所以以后再加子目录也不会复发。
 data/
 
+# 2026-10-03（并发会话同日独立发现同一漏洞，此处保留其增量）：邮件正文落盘其实
+# 有两个目录，格式不同，只覆盖一个就会漏另一个：
+#   data/email-bodies/      = 8B 大端 UID + 1B format + base64 密文
+#   data/email-bodies-raw/  = 8B 大端 UID + base64 密文（body_cache.go:16）
+# 那侧实测 49 个 em-pop3-acct-*.bin 一直以未跟踪状态躺在工作区；我这侧用
+# `git add -A --dry-run` 独立数到 45 条。数量不同是统计时刻的抓取批次不同，
+# 两者指向同一批文件。合并的是同一次发现，不是两次不同的问题。
+#
+# 上一条 `data/` 已经把 data/ 这一侧整目录覆盖了，这里显式再写一遍，是为了让
+# 「有两个落盘目录、且格式不同」这个事实留在文件里——正文格式差异另有文档记录，
+# 但忽略规则这一层不该依赖那份文档才写得全。
+data/email-bodies-raw/
+
+# 同理：POCKET_DATA_DIR 可以配到 backend/data。只在 data/ 上加规则，等于换个
+# data dir 就重新漏一次。backend/data/email_master.key 本文件后面已列过，
+# 正文缓存目录要一并覆盖，否则这条守卫在 POCKET_DATA_DIR=backend/data 的
+# 部署上形同虚设。
+backend/data/email-bodies-raw/
+backend/data/email-bodies/
+
 # 2026-10-01 audit: 调试会话丢在仓库根目录的一次性探针脚本与采样音频
 # （ASR 端点扫描、模型探测、一段语音样本）。真正有价值的探针应该整理成
 # scripts/ 下的正经脚本，这些是一次性的，不入库。
