@@ -8008,3 +8008,124 @@ stamp := "GREATEST(e.date, COALESCE(e.processed_at, 0), e.created_at)"
   绕开阻塞的 `pg_ctl`，用 `Start-Process` 直接起 `postgres.exe`。
 - 两张真实 QQ Wallet 发票（uid=134/135）存量无法可靠救回。
 
+
+---
+
+## §7dm 【需求 7】邮件 HTML 净化边界首次可测：补 17 条钉子用例，查出 3 处「配置写了但不生效」+ 1 条独立远程请求通道（2026-10-03）
+
+### 起因
+
+需求 7 是「在邮件的窗口中可以查看收到的各类邮件」。详情页把**发件人完全可控的
+HTML 正文**经 `v-html` 塞进 Capacitor WebView（`EmailDetailView.vue:76/:93/:96`），
+而这个 WebView 同时持有 IMAP 凭证与 native bridge。所以
+`sanitizeEmailHtml` 是整条链上**唯一**的信任边界。
+
+查覆盖率时发现两个事实：
+
+1. `sanitizeEmailHtml`（`email-detail-format.ts:18`）此前**一条测试都没有**；
+2. 它当时**也测不了**——实测（Node 22.23.2，无 DOM 环境）：
+
+   ```
+   isSupported = false
+   DOMPurify.sanitize is not a function   ← TypeError，不是「原样返回」
+   ```
+
+   也就是说，任何「给净化器补测试」的尝试都会先抛 `TypeError`。这大概率就是它
+   一直没有护栏的原因：**不是没人写，是一写就炸。**
+
+### 做法：把 DOM 装起来再动态 import
+
+`npm install --save-dev jsdom@^30.1.1`（新增 35 个包；`dompurify` 本来就在
+`dependencies`，不需要动生产依赖）。测试文件
+`frontend/src/features/email/__tests__/email-detail-sanitize.test.mjs`：
+先把 jsdom 的 `window/document/Node/…` 挂到 `globalThis`，**再用顶层 await 动态
+import** 被测模块——因为 `dompurify` 在 import 期就要 window，静态 import 会早于
+jsdom 安装。
+
+### 三处「配置写了但不生效」（全部为实测，不是从配置推的）
+
+| # | 配置意图 | 实测 | 后果 |
+|---|---|---|---|
+| 1 | `ALLOWED_TAGS` 显式列了 `'style'`（`email-detail-format.ts:26`），模块注释第 9/16 行专门论证「基准样式必须**在净化前**注入，否则会被剥掉」 | **`<style>` 照样被剥掉**。用 DOMPurify **自己的默认配置**（不含任何自定义 `ALLOWED_TAGS`）也一样剥 | `injectBaseStyle`（`email-body-style.ts:99`）/ `normalizeStyleBlocks`（`:92`）/ `baseEmailStyle`（`:72`）**整条链路是死的**。邮件正文拿不到 CJK 字体兜底与图片 `max-width` 约束 |
+| 2 | `ALLOWED_URI_REGEXP`（`:32`）只放行 `https?:` 与 `data:image/…` | `data:text/html;base64,…` 能进 `<img src>` | DOMPurify 对 img/audio/video/source/track 另有一条「`data:` 一律放行」的内建豁免，配置意图没兑现。**现代引擎在 `<img>` 上下文不渲染 data:text/html，故不构成 XSS** |
+| 3 | `stripRemoteFonts`（`email-body-style.ts:32`）只管 `@font-face` | `style="background:url(https://track.example.com/bg.png)"` **原样保留** | 这是一条**独立于 `<img>` 的远程请求通道**，见下 |
+
+第 1 条是本节最实的一条：**一段被仔细论证过顺序的代码，整条是无效的**。用
+`git grep` 量过 blast radius——`baseEmailStyle` 只被 `injectBaseStyle` 调，
+`injectBaseStyle` 只被 `sanitizeEmailHtml` 调，所以死掉的是**整个样式归一化链路**，
+没有别处兜底。
+
+> **定性**：以上三条对用户目前都**没有可感知的损害**（第 1 条是外观；第 2、3 条
+> 是「配置意图没兑现」与隐私面，不是崩溃、不是 XSS）。如实标注，不夸大成安全漏洞。
+
+### 远程请求面：实测「打开一封邮件会向谁发请求」
+
+实测链路（`EmailDetailView.vue:436` 附近 `renderBody()`）：
+
+```
+净化(不拦 http 图源) → 先把净化后的 HTML 塞进 v-html（文字立刻可见）
+                    → 再 preloadRemoteImages(sanitized) 抓远程图转 data URI
+```
+
+于是对 `<img src="https://track.example.com/px.gif">` 这封邮件，**用户什么都没点，
+详情页就已经向 track.example.com 发了一次请求**。用例
+「实测：净化后 `<img>` 的远程图仍会随后被 `preloadRemoteImages` 抓走」用注入的
+`fetchImpl` 断言了 `calls === ['https://track.example.com/px.gif']`。
+
+对照组：`<a href="https://tracker.example/collect">` 净化后保留但**不会**被自动
+请求（用例断言 `calls === []`）——自动追踪的洞目前只在图片这条通道上。
+
+**重要限定**：只给 `<img>` 加「默认不加载远程图」**不构成完整修复**，因为上面第 3
+条的 CSS `url()` 通道还在，且 `preloadRemoteImages` 的采集正则
+（`email-image-preload.ts:43`）只认 `<img src=…>`，覆盖不到它。
+
+**真实语料的暴露面未量化**：120 封真实邮件里有几封带远程图、来自哪些主机——
+**本轮没有测出来**，因为正文存在 `data/email-bodies/`（41 个文件，AES-GCM 加密，
+密钥在 `POCKET_EMAIL_MASTER_KEY` 里，不在本 worktree 环境）。不要拿这里的合成
+样例数字冒充真实命中率。
+
+### 负控：3 次，全部按预期转红
+
+| 负控 | 变异 | 结果 |
+|---|---|---|
+| NEGCTL-1 | `sanitizeEmailHtml` 开头加 `if (raw) return raw`（关掉净化器） | **17 条里 14 条转红**，含哨兵本身 |
+| NEGCTL-2 | 从 `ALLOWED_ATTR` 去掉 `'style'` | 精确 1 条转红（CSS `url()` 那条）——NEGCTL-1 漏掉的用例由它补上 |
+| NEGCTL-3 | 从 `ALLOWED_URI_REGEXP` 去掉 `https?:` | 3 条转红，其中包含 NEGCTL-1、NEGCTL-2 都没碰到的「远程图被抓走」那条 |
+
+三次变异全部用 `git checkout --` 还原，还原后 `git diff --numstat` 为空
+（逐字节验过生产文件没被改）。
+
+**哨兵的作用**：第 1 条用例「净化器确实在删东西」是为了防「jsdom 没装成功 /
+dompurify 变不支持 → 净化器退化成原样返回 → 上面所有『危险标签被剥掉』的断言
+全部变成永真、静悄悄全绿」。这是本仓库反复踩的失效模式（判据失效但退出码 0），
+所以把它做成第一条、并且 NEGCTL-1 证明它会红。
+
+### 数字
+
+- `frontend/src/features/email/__tests__/email-detail-sanitize.test.mjs`：17 条，全绿
+- `npm.cmd run test:email`：**248 → 265** 条全绿（0 fail / 0 skipped）
+- `npm.cmd run typecheck`：exit 0
+- `package.json` / `package-lock.json`：仅新增 `jsdom` devDependency
+
+### 本轮**没有**做的事（如实列出）
+
+- **没有改任何生产代码。** 三处「配置写了但不生效」都只写了「现状钉子」用例，
+  没去修——修法涉及产品取舍（要不要远程图片默认加载、CSS `url()` 堵不堵），
+  见下面待拍板项。
+- **没有验证真机 WebView。** 上述 DOMPurify 行为是在 **jsdom** 下测的。
+  DOMPurify 解析走 `DOMParser`/`createHTMLDocument`，`<style>` 落到 `<head>`
+  而它只返回 `<body>` 子节点——这是 DOM 实现层面的机制，真机 WebView 预期一致，
+  但**未经真机验证**，不下断言。
+- **没有量化真实语料的远程图命中率**（原因见上）。
+
+### 新增待拍板项
+
+1. **远程图片要不要默认阻断**（像 Outlook/Gmail/Thunderbird 那样给一个
+   「显示远程内容」开关）。当前是**默认全加载、无开关、无主机白名单**，且开一封
+   邮件就等于向正文里所有主机发请求。这是我建议优先处理的一条——理由是
+   「打开邮件」这个动作本身在隐私上等价于主动联系了对方所有第三方。
+2. **CSS `url()` 通道要不要一起堵**。只堵 `<img>` 不完整。
+3. **`injectBaseStyle` / `normalizeStyleBlocks` / `baseEmailStyle` / `stripRemoteFonts`
+   这一整条无效链路怎么办**：删掉，还是改用「不走 `<style>` 标签、直接把基准样式
+   拼到宿主页面的 CSS 里」把它救活（后者能真正解决邮件正文的 CJK 字体兜底）。
+   归入既有待拍板项「是否删除死字段与已证死函数」，**不擅自删**。
