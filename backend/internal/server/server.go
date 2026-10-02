@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -2397,12 +2398,34 @@ type VersionInfo struct {
 // loadVersionConfig 从配置文件加载版本信息
 func (s *Server) loadVersionConfig() (*VersionInfo, error) {
 	configPath := os.Getenv("POCKET_VERSION_CONFIG_PATH")
-	if configPath == "" {
-		// 默认路径：相对于可执行文件的 config/version.json
+	explicit := configPath != ""
+	if !explicit {
+		// 默认路径相对的是**进程工作目录**，不是可执行文件目录。
+		//
+		// 这一行注释原来写的是「相对于可执行文件」，而实现是 os.ReadFile 一个
+		// 相对路径 —— 相对 CWD。两句话不一致，代价是实打实的：
+		// scripts/start-pocketd-pg.ps1 与 start-pocketd-email-verify.ps1 都
+		// `Set-Location` 到仓库根再启 pocketd，于是 config/version.json 找不到，
+		// 而下面这个分支**静默回落默认值**（只打一行 Warning，返回 nil error），
+		// 于是 App 一直报 1.2.0 默认版本，没有任何报错指向真正原因。
+		// 两个脚本现在显式设 POCKET_VERSION_CONFIG_PATH 绕开它；这里把默认
+		// 路径的语义写对，免得下一个脚本再踩。
 		configPath = "config/version.json"
 	}
 
 	data, err := os.ReadFile(configPath)
+	if err != nil && !explicit {
+		// CWD 找不到时再试可执行文件目录。部署布局常是 <root>/bin/pocketd 配
+		// <root>/config/version.json：从 <root> 启动能命中 CWD，从 <root>/bin
+		// 启动就落空。显式设了环境变量就不做这个猜测——那是有意的选择。
+		if exe, exeErr := os.Executable(); exeErr == nil {
+			alt := filepath.Join(filepath.Dir(exe), "config", "version.json")
+			if altData, altErr := os.ReadFile(alt); altErr == nil {
+				log.Printf("version config not at %s; using %s instead", configPath, alt)
+				data, err = altData, nil
+			}
+		}
+	}
 	if err != nil {
 		// 如果文件不存在，使用默认配置
 		log.Printf("Warning: version config not found at %s, using defaults: %v", configPath, err)
