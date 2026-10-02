@@ -10,11 +10,17 @@
         :show-time="false"
         :show-progress="false"
       />
-      <button class="notes-action" type="button" :aria-pressed="showSearch" @click="showSearch = !showSearch">
-        <span class="material-symbols-outlined">{{ showSearch ? 'search_off' : 'search' }}</span>
+      <button class="notes-action" type="button" :aria-pressed="showSearch" :aria-label="showSearch ? '关闭搜索' : '搜索笔记'" @click="showSearch = !showSearch">
+        <!-- 原来这个图标 span 没有 aria-hidden：图标连字（"search"/"search_off"）
+             就成了这个 ToggleButton 的可访问名，读屏会念英文图标名。
+             aria-label 又会因为 aria-pressed 被 Android 桥接丢掉（同 TasksView
+             「快速提问」，2026-10-03 vivo 实测），所以必须同时给文字子节点。 -->
+        <span class="material-symbols-outlined" aria-hidden="true">{{ showSearch ? 'search_off' : 'search' }}</span>
+        <span class="sr-only">{{ showSearch ? '关闭搜索' : '搜索笔记' }}</span>
       </button>
       <button class="notes-action" type="button" aria-label="新建笔记" @click="goCreate">
-        <span class="material-symbols-outlined">add</span>
+        <span class="material-symbols-outlined" aria-hidden="true">add</span>
+        <span class="sr-only">新建笔记</span>
       </button>
     </HeaderActionsPortal>
 
@@ -443,4 +449,15 @@ useListScene('notes', load)
 .note-meta { display: flex; gap: 8px; margin-top: 8px; font-size: var(--text-xs); color: var(--text-muted); }
 .time { margin-left: auto; }
 .more { padding: 16px 0 24px; text-align: center; font-size: var(--text-sm); color: var(--text-muted); }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 </style>

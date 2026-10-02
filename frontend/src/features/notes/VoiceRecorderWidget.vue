@@ -21,6 +21,12 @@
         <span v-if="busy" class="fab-spinner" />
         <template v-else>{{ recording ? '⏹' : '🎤' }}</template>
       </span>
+      <!-- 与 TasksView 的「快速提问」同一处 Android 桥接缺陷：按钮带
+           aria-pressed ⇒ 被映射成 android.widget.ToggleButton，而该桥接
+           丢掉纯 aria-label、只保留内容子节点的文字 ⇒ 名字变空串。
+           2026-10-03 vivo V2436A / Android 16 实测。详见
+           src/__tests__/aria-pressed-needs-text-node.test.mjs -->
+      <span class="sr-only">{{ busy ? '正在转写录音，请稍候' : (recording ? '停止录音' : '开始录音') }}</span>
     </button>
     <div v-if="recording" class="pulse" aria-hidden="true" />
   </div>
@@ -83,5 +89,16 @@ defineEmits<{ toggle: [] }>()
 @keyframes pulse {
   0% { transform: scale(1); opacity: 0.8; }
   100% { transform: scale(1.8); opacity: 0; }
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 </style>
