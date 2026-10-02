@@ -44,16 +44,24 @@ round20 把它当"保守行为"留着，这轮判定为**说谎**：回落值与
 | **同一个 token 在 18100 上** | **200，24 条通知** |
 
 token **没过期**（`exp` = 2026-10-03T14:27Z，还在未来 14 小时）。
-18099 上的 pocketd 是 pid 2196（23:35 起，`.logs/pocketd-invoicecheck.exe`），
-18100 是 pid 28160（22:26 起，`.wt-e2e/backend/.verify-bin/pocketd.exe`）——
-**两个后端的签名密钥不同**。
 
-结论：**真机上那个 App 现在连不上它自己配置的后端**，
-症状是"登录态失效/接口报错"，真因是两个 pocketd 的密钥不一致。
-`healthz 200` 完全掩盖了这件事——这正是 handoff 记过三次的
-"连通性绿灯不等于验证对象正确"。
+**根因已定位到密钥，不只是"两个进程不一样"**：
+
+| | 密钥 |
+|---|---|
+| 真机 App 的 token 由谁签发 | `pocket-local-dev-jwt-secret-do-not-use-in-shared-env`（`scripts/start-local-backend.ps1:29` 的默认 `$JwtSecret`）——本机实测 HMAC 重算 **MATCH** |
+| 18099 那个 pocketd（pid 2196）实际用的 | `pocket-dev-insecure-secret-0000000000`（`config.go:17` 的 `DevDefaultJWTSecret`）——本机实测用它重签的 token 在 18099 上 **200** |
+| 18100 那个（pid 28160，`.wt-e2e`） | 认 `start-local-backend.ps1` 那个默认密钥 |
+
+也就是说 **18099 上的后端是「忘了设 `POCKET_JWT_SECRET`」裸跑 dev 默认值**的那个，
+它必然带着 `POCKET_DEV_AUTH=true`（`config.go:383-385` 明确拒绝 dev 默认密钥 +
+dev auth 的组合，所以它只能在 dev 模式下活着）。
 
 **任何真机验收之前必须先解决它**，否则验的是另一台后端。
+最小动作：把 18099 那个进程按 `scripts/start-local-backend.ps1` 重起
+（它会设同一个 `$JwtSecret`），或者让 App 用 18100。
+不改代码——这是**环境**不一致，不是代码缺陷。
+
 
 ## 3. 需求 4：限流修复已在代码里，但**没上过真机**
 
