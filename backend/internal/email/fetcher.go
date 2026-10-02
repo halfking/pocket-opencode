@@ -720,8 +720,24 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		// 的发票邮件再没被拉到）。
 		return 0, nil
 	}
+	// 每轮最多处理 50 封（避免一轮把整个信箱拉完，超时预算扛不住）。
+	//
+	// **取最老的 50 封，不是最新的 50 封。**
+	//
+	// 为什么：循环末尾 UpdateSyncState 写的是「已插入的最大 UID」，下一轮搜索
+	// 条件是 UID last_synced_uid+1 .. UIDNEXT。取最新的一段就等于把 watermark
+	// 一下子推到信箱顶端，**更老的那些永远搜不到**——不是这轮不处理，是从此
+	// 不在搜索范围内。首次同步一个 444 封的信箱，会永久丢掉约 394 封。
+	//
+	// 这与 fetcher.go 里「无新邮件时不推进 LastSyncedUID……否则会永久跳过那封
+	// 新邮件」是同一条原则：watermark 只能沿着**已处理的连续前缀**推进。
+	// 取最老的一段恰好满足——每轮处理完 watermark 就正好是这段的末尾，下轮从
+	// 下一封接着走，既不跳也不重（InsertEmail 幂等）。积压会在若干轮后排空。
+	//
+	// 代价：积压很重时，新邮件要排在老邮件后面等几轮才出现。老邮件往往是
+	// 发票（需求 2 明确要「多次操作才能下载到发票」），优先收它们是对的。
 	if len(uids) > 50 {
-		uids = uids[len(uids)-50:]
+		uids = uids[:50]
 	}
 
 	var uidSet imap.UIDSet

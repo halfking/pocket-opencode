@@ -8594,3 +8594,110 @@ filename 又无 disposition，本实现会判成「不是附件」，这与预�
 - **没有碰 `attachments` JSON 列**。它同样从未写入（`attachments_col_nonempty=0`），
   本轮只做了布尔标记。
 - **没有验 POP3 路径**。它本来就正确（`ParseMIMEMessage`），本轮未改动、未加测试。
+
+---
+
+## §7dr 【需求 1/2】首次同步时超过 50 封的老邮件被**永久跳过** —— 实测 60 封丢 10 封，第二轮补不回来（2026-10-03）
+
+### 缺陷机制（三段代码叠出来的）
+
+IMAP 同步主流程里：
+
+1. `criteria.UID` **只在 `LastSyncedUID > 0` 时**才设
+   （`fetcher.go` 的 `if acc.LastSyncedUID > 0`）。所以**首次同步**搜索**没有 UID
+   过滤**，返回 INBOX 里**全部** N 封。
+2. `if len(uids) > 50 { uids = uids[len(uids)-50:] }` —— 只保留**最新 50 封**。
+3. 循环末尾 `UpdateSyncState(ctx, accountID, int64(highestUID), ...)`，而
+   `highestUID` 是**已插入的最大 UID**（从 `acc.LastSyncedUID` 起只增不减）。
+
+三段叠加的后果：
+
+> 首次同步 N>50 封 → 只落库最新 50 封 → `last_synced_uid` 被推到那 50 封里最大的
+> UID → 下一轮搜索条件变成 `UID last_synced_uid+1 .. UIDNEXT` → **更老的那 N-50 封
+> 再也搜不到**。不是「这轮不处理」，是**从此不在搜索范围内**。
+
+### 与仓库既有原则直接冲突
+
+`fetcher.go` 里紧挨着这段的注释明写：
+
+> 「无新邮件时不推进 LastSyncedUID：语义是『已拉到的最大 UID』。若写成 uidNext
+> ……下轮从 uidNext+1 起搜会**永久跳过**恰好分到 uidNext 的那封新邮件（真实踩中）」
+
+那次修的是 **uidNext 方向**的洞，**留下了 50 封截断这个方向的同一个洞**。
+判据按本会话一贯做法定为**修漏**：原则已写在代码注释里，缺的是遵守。
+
+### 实测（新增 `fetcher_backlog_test.go`，用仓库自带的 in-process IMAP）
+
+造 60 封邮件（>50 的截断阈值），跑 `Fetcher.Sync`：
+
+```
+=== RUN   TestSyncDrainsBacklogInsteadOfSkippingOldest
+    second sync saved 0 —— 首批之外的 10 封被**永久跳过**了
+                         （last_synced_uid 被推到最新 UID，更老的再也搜不到）
+--- FAIL
+=== RUN   TestSyncBacklogKeepsNewestFirstOrdering
+--- PASS
+```
+
+**60 封丢 10 封，第二轮返回 0，且永远补不上。**
+
+判据为什么必须连打两轮：只断言「首轮只落 50 封」证明不了丢失——那也可能是
+分批设计。关键是**第二轮**：watermark 正确推进时第二轮必须把剩下的补齐。
+修复前第二轮是 0，这是不变式被破坏的直接证据。
+
+### 修法：取最老的 50 封，不是最新的
+
+```go
+if len(uids) > 50 {
+    uids = uids[:50]      // 原为 uids[len(uids)-50:]
+}
+```
+
+不变式：**watermark 只能沿着已处理的连续前缀推进。** 取最老的一段恰好满足——
+每轮处理完 watermark 正好是这段末尾，下轮从下一封接着走，既不跳也不重
+（`InsertEmail` 幂等）。积压会在若干轮后排空。
+
+**代价（如实列出）**：积压很重时，新邮件要排在老邮件后面等几轮才出现。但老邮件
+往往正是发票（需求 2 明确写「有可能我们需要多次操作才能下载到发票文件」），
+优先收它们与需求方向一致。`TestSyncBacklogKeepsNewestFirstOrdering` 钉住了
+**每轮 50 封的上限本身还在**——修 bug 不等于删上限。
+
+### 负控 1 次
+
+| 变异 | 结果 |
+|---|---|
+| 把 `uids[:50]` 改回 `uids[len(uids)-50:]` | **1 条转红**（`TestSyncDrainsBacklogInsteadOfSkippingOldest`） |
+
+注意 `TestSyncBacklogKeepsNewestFirstOrdering` 在负控下**仍然全绿**——它只断言
+`saved == 50`，两个变体都满足。真正承重的是那条「连打两轮」的用例。这正是
+`threshold-predicates-need-the-common-value-negative-control` 那条教训：
+判据要问「覆盖了哪些取值」，不是「跑过了几个用例」。
+
+### 对需求的实际影响
+
+- **需求 2「收取发票邮件」**：落在被跳过那批里的发票邮件**永远不会被采集**。
+- **需求 3「发到飞书」**：同理，且**没有任何报错**——报告上「这轮 0 封新邮件」
+  和「这轮没东西可收」长得一模一样，属于本仓库反复吃过的那类可观测性缺口。
+- **需求 1「定时收信」**：首轮同步一个 444 封的信箱（§7de 记的 QQ 实测值）会
+  永久丢掉约 394 封。§7cy 记的「6 封发票候选只建档 1 封」与这条同族。
+
+### 数字
+
+- `fetcher_backlog_test.go`：2 条（60 封排空 + 50 封上限），全绿
+- `go test ./internal/email/`：**全绿**（117.2s；比 §7dq 的 75.1s 慢，因为新增
+  两条要同步 60/55 封）
+- `go test ./internal/server/`：只剩**两个既有失败**
+  （`TestTaskWriteGuardBlocksPlainMemberPatch/Delete`，非邮件分支、非本轮引入）
+- `gofmt -l` 新文件：无输出（干净）
+- 生产代码改动：`fetcher.go` 一行（`uids[len(uids)-50:]` → `uids[:50]`）+ 注释
+
+### 本轮**没有**做的事
+
+- **没有回填存量**。库里那 120 封是被旧逻辑选出来的那一批，**更老的邮件现在仍然
+  不在库里、也搜不到**。要捞回来必须把 `last_synced_uid` 清零强制全量重扫，
+  那会**动真实账号状态并触发大量 IMAP 拉取**，需要单独授权，未做。
+- **没有改 POP3 路径**。POP3 那条没有 UID watermark，用的是 UIDL 幂等，
+  不受此 bug 影响（本轮未验证该说法，只是读过代码未见同类截断）。
+- **没有测 444 封规模下的耗时**。50 封/轮 → 约 9 轮排空，间隔取决于
+  `sync_interval_min`；这个排空节奏是否可接受**未量化**。
+- **没有验真实 IMAP server**（同 §7dq，imapmemserver 不等于第三方实现）。
