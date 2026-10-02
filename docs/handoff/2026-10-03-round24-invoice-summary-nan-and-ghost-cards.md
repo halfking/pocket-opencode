@@ -1136,6 +1136,67 @@ rows_total=4  distinct_email_ids=4
 **这三条的账都不一样**，且都会改变已核对的数，所以必须你定。
 在此之前 §22.2 的结论应读作「有据可查的潜在风险」，不是「已经算错了」。
 
+---
+
+## §23 并发会话正在修 §18 那个跨进程竞态——但**今晚 08:00 不会生效**
+
+02:20 发现工作区里出现了 `backend/internal/email/pipeline_lock.go`
+（外加两个 `.negbak`——他们在跑负控）。只读查了一遍，结论如下。
+
+### 23.1 实现是**跨进程**的，而且接线接对了
+
+`pipeline_lock.go` 用 `pg_try_advisory_lock`（**会话级**，`DailyPipelineLockKey`
+= `"email:daily-pipeline"`），正是 §18.5 建议的那条。三处做得比我预期的周全：
+
+1. **三态而非两态**：`Busy`（别的实例在跑 → 跳过）与 `Unavailable`
+   （取不到连接/查询报错 → **降级照常跑**）。这样一次数据库抖动不会让
+   每日流水线永久静默，而日志里能区分「别人在跑」与「锁坏了」。
+2. **会话级锁的归还陷阱**：解锁失败时**销毁连接**（`Hijack` + `Close`）而不是
+   `Release` 回池子——否则下一个借用这条连接的查询会继承锁，
+   每日流水线被永久锁死且无错误日志指向原因。
+3. **测试里显式验证它没有退化成进程内状态**：`lockProbeOnFreshConn` 用同池的另一条
+   连接去取锁，取到就 `t.Fatal("the lock is not session-scoped, so it cannot
+   protect multiple pocketd instances")`。
+
+接线在 `server_email_pipeline.go:256-275` 的 `RunEmailPipeline`——**只有定时路径取锁**，
+手工路径 `handleEmailPipelineRun` 刻意绕过，用户显式点「跑一次」不会被另一轮挡住。
+开关 `POCKET_EMAIL_PIPELINE_ADVISORY_LOCK` **默认 true**（`config.go:315`）。
+
+⇒ 这份工作是对的，且比我 §18.5 写的建议更完整。
+
+### 23.2 但**跑着的二进制里没有它**（字节探测，实测）
+
+`logs/zz-probe-lock-in-binary-20261003.mjs`：
+
+```
+=== pocketd-invoicenan-fix.exe（18099 现在跑的就是它）===
+  ABSENT   每日定时流水线跨进程锁已被其它实例持有
+  ABSENT   POCKET_EMAIL_PIPELINE_ADVISORY_LOCK
+  ABSENT   email:daily-pipeline
+  ABSENT   pg_try_advisory_lock
+  ABSENT   daily pipeline already running in another instance
+  present  control: pocketd listening          <- 对照：扫描本身有效
+  present  control: pipeline scheduled at
+```
+
+`pocketd-invoicecheck.exe` 同样全缺。**这是「这个构建没有这条代码路径」，
+不是「这条路径没跑到」**——两者不能混。
+
+⇒ **今晚 08:00 那三个实例不会互斥**，除非并发会话提交后**重建 18099**
+（重建会带进他们的在制品，需要你授权；上次我重建时是带着授权做的）。
+
+### 23.3 所以 08:00 有两种可能签名
+
+| 条件 | 预期日志 |
+|---|---|
+| 18099 未重建（当前状态） | 靠**到达顺序**取胜：18100 同步全灭最先到第 3 步，推 34 并标记；18077/18099 随后 `RemindersPending=0`。**一份**日志出现「本轮将推送 34 条」+「reminders sent:」 |
+| 18099 被重建且带锁 | **一份**出现「本轮将推送 34 条」，另**两份**明确打印「每日定时流水线跨进程锁已被其它实例持有，本轮跳过」 |
+
+两种签名的结论相同（**只推一次，总数 58**），但要找的字符串不同。
+⇒ **先看三份日志里有没有「跨进程锁…本轮跳过」这一行**，有就是走了锁，
+没有就是走的顺序。08:00 的提醒里已写明这个判别顺序。
+
+
 
 
 
