@@ -167,6 +167,17 @@ const TABLE = [
     server: { goFile: 'server_stt_settings.go', handler: 'handleSTTProbe' },
     note: '设置页「试转」',
   },
+  {
+    // 2026-10-02 round7 补：这张表建起来时**漏了这一行**，而它恰好是提交说明里
+    // 专门点名的「相等即错」那两条之一。实测负控：把 STT_TRANSCRIBE_TIMEOUT_MS
+    // 退回修复前的 120_000（== 服务端 handleSttTranscribe 的预算），本文件 8 例全绿。
+    // 常量没有任何测试引用 → 这条不变式在 STT 转写上是没人守的。
+    route: 'POST /api/stt/transcribe',
+    tsFile: 'api/stt.ts',
+    constName: 'STT_TRANSCRIBE_TIMEOUT_MS',
+    server: { goFile: 'server_assistant.go', handler: 'handleSttTranscribe' },
+    note: '会议长录音转写（「相等即错」那一条）',
+  },
 ]
 
 describe('客户端超时 ≥ 服务端预算（表驱动）', () => {
