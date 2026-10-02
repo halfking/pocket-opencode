@@ -390,6 +390,7 @@
     "llmNotConfigured": "Aún no hay ningún modelo configurado. Elige uno en Ajustes de modelos.",
     "modelNotFound": "Ese modelo ya no existe; puede que se haya eliminado.",
     "gatewayUnreachable": "No se puede conectar con la pasarela de modelos. Revisa su dirección y la red.",
+    "gatewayAdminMissing": "Este nodo de puerta de enlace aún no tiene cuenta de administrador. Añade primero el usuario y la contraseña en Pasarela de modelos.",
     "workspaceNotFound": "No se encontró ese espacio de trabajo.",
     "notConfigured": "Esta función aún no está configurada.",
     "unauthorized": "Tu sesión ha caducado. Inicia sesión de nuevo.",

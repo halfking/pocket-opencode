@@ -390,6 +390,7 @@
     "llmNotConfigured": "尚未設定可用的大模型，請先在模型設定中選擇",
     "modelNotFound": "找不到該模型，可能已被移除",
     "gatewayUnreachable": "無法連線模型閘道，請檢查閘道位址與網路",
+    "gatewayAdminMissing": "該閘道節點尚未補錄 Admin 帳號，請先在「模型閘道」的節點清單裡填寫 Admin 使用者名稱與密碼",
     "workspaceNotFound": "找不到該工作區",
     "notConfigured": "該功能尚未完成設定",
     "unauthorized": "身分驗證已失效，請重新登入",
