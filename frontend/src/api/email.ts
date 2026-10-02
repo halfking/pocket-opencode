@@ -666,7 +666,11 @@ export interface EmailInvoice {
   extractedBy: 'rule' | 'llm'
   createdAt: number
   updatedAt: number
-  /** 文件采集产物：规范名 {费用类型}-{对方单位}-{金额}-{日期}.pdf。 */
+  /**
+   * 文件采集产物：规范名 {费用类型}-{对方单位}-{金额}-{日期}.pdf。
+   * 服务端可能再加两段后缀：可选的 `[-{发票号}]`，以及目标名已被另一张票
+   * 占用时的 `[-N]` 序号。按不透明字符串用，不要按 `-` 拆解解析字段。
+   */
   fileName?: string
   filePath?: string
   /** attachment=邮件附件 | pdf-url=正文链接直下 | xml-render=XML 解析重渲染 */

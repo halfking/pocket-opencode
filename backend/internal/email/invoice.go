@@ -40,7 +40,11 @@ type Invoice struct {
 	UpdatedAt   int64   `json:"updatedAt"`
 
 	// —— 发票文件采集（Harvest 流水线维护）——
-	// FileName 落盘文件名，格式 {费用类型}-{对方单位}-{金额}-{日期}.pdf。
+	// FileName 落盘文件名，基础格式 {费用类型}-{对方单位}-{金额}-{日期}.pdf。
+	// 实际可能带两段后缀（都由 saveInvoiceFile 决定，不要在这里反推）：
+	//   · `[-{发票号}]`——有发票号时加，防不同发票同名（见 InvoiceFileName）；
+	//   · `[-N]`——**目标名已被内容不同的另一张票占用**时加序号，
+	//     防止 os.Rename 静默覆盖掉别人的凭证（见 pickFreeInvoicePath）。
 	// FilePath 服务端磁盘相对路径（dataDir 下）。FileSource 标记来源：
 	// attachment（邮件附件）/ pdf-url（正文链接直下）/ xml-render（XML 解析后重渲染）。
 	// Attempts 记录下载尝试次数——部分发票平台要多次点击才能拿到文件，
