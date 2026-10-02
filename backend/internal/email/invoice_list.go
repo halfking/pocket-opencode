@@ -13,7 +13,15 @@ type InvoiceListPage struct {
 	HasMore  bool
 	Total    int
 	Filed    int
+	// Amount 是**单一币种**时的合计额，供前端直接显示。
+	//
+	// 混入多种币种时它是 0，且 Amounts 非空——跨币种的算术和不是金额，
+	// 给一个「看起来正常」的标量会直接误导（前端会把它渲染成 ¥）。
+	// 调用方应当优先读 Amounts；只有在 len(Amounts) <= 1 时才用 Amount。
 	Amount   float64
+	Amounts  []CurrencyTotal
+	// Currency 是 Amount 对应的币种（单币种时非空）。
+	Currency string
 }
 
 const invoiceSelectListed = `inv.id, inv.email_id, inv.account_id, inv.workspace_id, inv.user_id, inv.kind, inv.category, inv.title, inv.seller,
@@ -57,7 +65,8 @@ func (s *Store) ListInvoicesPage(ctx context.Context, userID, workspaceID, statu
 	if err != nil {
 		return page, err
 	}
-	page.Total, page.Filed, page.Amount = stats.Total, stats.Filed, stats.Amount
+	page.Total, page.Filed = stats.Total, stats.Filed
+	page.Amount, page.Amounts, page.Currency = stats.Amount, stats.Amounts, stats.Currency
 
 	q := `SELECT ` + invoiceSelectListed + `
 FROM email_invoices inv
@@ -96,27 +105,69 @@ WHERE inv.workspace_id=$1 AND inv.user_id=$2`
 }
 
 type invoiceListStats struct {
-	Total  int
-	Filed  int
-	Amount float64
+	Total    int
+	Filed    int
+	Amount   float64
+	Amounts  []CurrencyTotal
+	Currency string
 }
 
 // InvoiceListStats 全量汇总（不受分页截断）。status 空 = 全部。
+//
+// 合计**按币种分组**（2026-10-01 补）。此前这里是裸 `SUM(amount)`，把 USD
+// 与 CNY 直接相加后交给前端渲染成「¥xxx」——需求 3 要的是「汇总金额」，
+// 而跨币种的算术和不是金额。这是同一规则的**第三处实现**（前两处：
+// LedgerRows、WriteInvoiceSummaryDocs），此处此前漏网。
 func (s *Store) InvoiceListStats(ctx context.Context, userID, workspaceID, status string) (invoiceListStats, error) {
 	var st invoiceListStats
 	q := `SELECT COUNT(*),
-		COUNT(*) FILTER (WHERE status='filed'),
-		COALESCE(SUM(amount), 0)
-	FROM email_invoices WHERE workspace_id=$1 AND user_id=$2`
+		COUNT(*) FILTER (WHERE status='filed')
+		FROM email_invoices WHERE workspace_id=$1 AND user_id=$2`
 	args := []any{workspaceID, userID}
 	if status != "" {
 		q += ` AND status=$3`
 		args = append(args, status)
 	}
-	err := s.pool.QueryRow(ctx, q, args...).Scan(&st.Total, &st.Filed, &st.Amount)
-	return st, err
-}
+	if err := s.pool.QueryRow(ctx, q, args...).Scan(&st.Total, &st.Filed); err != nil {
+		return st, err
+	}
 
+	// 逐币种合计。空币种归 CNY，与 currencyOrDefault 同源。
+	sumQ := `SELECT COALESCE(NULLIF(currency, ''), 'CNY'),
+			COALESCE(SUM(ROUND(amount::numeric, 2)), 0),
+			COUNT(*)
+		FROM email_invoices WHERE workspace_id=$1 AND user_id=$2`
+	sumArgs := []any{workspaceID, userID}
+	if status != "" {
+		sumQ += ` AND status=$3`
+		sumArgs = append(sumArgs, status)
+	}
+	sumQ += ` GROUP BY 1 ORDER BY 1`
+	rows, err := s.pool.Query(ctx, sumQ, sumArgs...)
+	if err != nil {
+		return st, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cur string
+		var amt float64
+		var n int
+		if err := rows.Scan(&cur, &amt, &n); err != nil {
+			return st, err
+		}
+		st.Amounts = append(st.Amounts, CurrencyTotal{Currency: cur, Amount: round2(amt), Count: n})
+	}
+	if err := rows.Err(); err != nil {
+		return st, err
+	}
+	// 单一币种时保留旧的标量 Amount，既有前端代码不改也能继续工作；
+	// 多币种时 Amount 保持 0，调用方必须读 Amounts。
+	if len(st.Amounts) == 1 {
+		st.Amount = st.Amounts[0].Amount
+		st.Currency = st.Amounts[0].Currency
+	}
+	return st, nil
+}
 // attachEmailDates 批量补来源邮件收到时间（Unix 秒）。
 func (s *Store) attachEmailDates(ctx context.Context, invoices []Invoice) error {
 	if len(invoices) == 0 {

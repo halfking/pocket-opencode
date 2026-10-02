@@ -175,27 +175,50 @@ func TestWorkItemReminderFiresDueReminder(t *testing.T) {
 // no matter what hour the suite runs at — hard-coding 23:50 would only be
 // inside the window half the day, and a test that passes only at night is
 // worse than no test.
+//
+// The minute must be read in **time.Local**, not from the raw epoch. That was
+// the second half of the suite's time-of-day coupling: the window was built
+// from `time.Now().Unix()/60 % 1440` (a UTC minute-of-day) while
+// QuietWindow.Defer resolves the owner's zone via time.Local. The two only
+// agree when the server runs on UTC — so any pinned non-UTC zone shifted the
+// window by the zone offset and the deferral fixtures missed it.
 func windowAroundNow() (task.QuietWindow, int) {
-	nowMin := int((time.Now().Unix() / 60) % 1440)
+	now := time.Now().In(time.Local)
+	nowMin := now.Hour()*60 + now.Minute()
 	return task.QuietWindow{
 		StartMin: (nowMin - 30 + 1440) % 1440,
 		EndMin:   (nowMin + 30) % 1440,
 	}, nowMin
 }
 
-// pinServerZone fixes the server's local zone for the duration of a test.
+// pinServerZone fixes the server's local zone for the duration of a test, at a
+// point in the day that is guaranteed to be **outside** the default
+// do-not-disturb window (22:30→07:30).
 //
-// The executor resolves do-not-disturb in the owner's zone, and with no stored
-// preference that is the server's. On a UTC+8 machine the *server* zone is
-// eight hours away from the UTC minute-of-day these fixtures are written in,
-// so without this they fail by clock rather than by logic — which is the same
-// hidden UTC assumption the production bug came from. The non-UTC behaviour
-// itself is covered in workitem_reminder_quiet_test.go, which drives the zone
-// through user settings rather than through the machine.
+// Why "a point in the day" and not plain UTC — this helper used to pin
+// `time.Local = time.UTC`, and the fixtures below assert that a due reminder
+// *fires*. That assertion is only true when the local minute-of-day is outside
+// 22:30–07:30, so pinning to UTC made the suite time-of-day dependent: on a
+// UTC+8 machine running at 11:59 local, UTC is 03:59 — inside the window —
+// and 7 cases failed with `remind_at was cleared` / `event not written`.
+//
+// The bug this file's comment originally described (minute-of-day computed
+// against the UTC day boundary) is real, but pinning to UTC only trades it for
+// a different clock assumption. What the fixtures actually need is a
+// deterministic *and* representative local time, so we offset the zone from
+// the current instant to land near local noon. The non-UTC behaviour itself is
+// covered in workitem_reminder_quiet_test.go, which drives the zone through
+// user settings rather than through the machine.
 func pinServerZone(t *testing.T) {
 	t.Helper()
 	orig := time.Local
-	time.Local = time.UTC
+	// FixedZone's offset is relative to **UTC**, so it has to be derived from the
+	// UTC reading of now — not from now.Hour(), which is in the *original* zone.
+	// Mixing the two silently lands on the wrong wall clock (measured: local
+	// 15:56 / UTC 07:56 with a now.Hour()-derived offset pinned it to 04:00).
+	utc := time.Now().UTC()
+	offset := 12*3600 - (utc.Hour()*3600 + utc.Minute()*60 + utc.Second())
+	time.Local = time.FixedZone("pinned-noon", offset)
 	t.Cleanup(func() { time.Local = orig })
 }
 
@@ -243,7 +266,12 @@ func TestWorkItemReminderDefersInsideQuietHours(t *testing.T) {
 	// The deferral must land on the window's end. Combined with
 	// next > fireAt, the minute-of-day check is what proves it is the *next*
 	// occurrence rather than one that already passed.
-	if got := int((next / 60) % 1440); got != window.EndMin {
+	//
+	// Read the minute in time.Local for the same reason windowAroundNow does:
+	// `(next/60)%1440` is a **UTC** minute-of-day, so under any pinned non-UTC
+	// zone it disagrees with the window the executor resolved.
+	got := time.Unix(next, 0).In(time.Local).Hour()*60 + time.Unix(next, 0).In(time.Local).Minute()
+	if got != window.EndMin {
 		t.Errorf("deferred to minute %d, want the window end %d", got, window.EndMin)
 	}
 	out := decode(t, res)

@@ -37,7 +37,7 @@ func TestLooksLikeSpam(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := LooksLikeSpam(c.from, c.subject, c.snippet, c.inv, c.imp)
+			got := LooksLikeSpam(c.from, c.subject, c.snippet, c.inv, c.imp, 1)
 			if got.Spam != c.want {
 				t.Fatalf("spam=%v score=%d why=%q, want %v", got.Spam, got.Score, got.Why, c.want)
 			}
@@ -61,6 +61,21 @@ func TestInvoiceFileName(t *testing.T) {
 	empty := &Invoice{}
 	if s := InvoiceFileName(empty); !strings.HasPrefix(s, "其他-未知单位-") {
 		t.Fatalf("empty invoice naming: %q", s)
+	}
+	// 有发票号时文件名带上它（2026-10-01 修撞名覆盖，见 invoice_filename_collision_test.go）。
+	// 这是「凭证可追溯 + 文件名唯一」的关键：同额同日同单位的不同票会互相覆盖。
+	withNo := &Invoice{
+		Category: "餐饮", Seller: "某某科技公司", Amount: 120.5,
+		InvoiceNo: "26332000008261110741", InvoiceDate: "2026/09/05",
+	}
+	wantNo := "餐饮-某某科技公司-120.50-2026-09-05-26332000008261110741.pdf"
+	if got := InvoiceFileName(withNo); got != wantNo {
+		t.Fatalf("got %q want %q", got, wantNo)
+	}
+	// 发票号里的非法字符同样要清洗，不能拼出路径分隔符
+	withNo.InvoiceNo = `NO/1:2`
+	if s := InvoiceFileName(withNo); strings.ContainsAny(s, `/\:*?"<>|`) {
+		t.Fatalf("invoice no must be sanitized, got %q", s)
 	}
 }
 

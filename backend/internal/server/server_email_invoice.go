@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // server_email_invoice.go — 邮件发票自动整理 HTTP handlers。
 //
@@ -49,7 +49,12 @@ func (s *Server) handleEmailInvoices(w http.ResponseWriter, r *http.Request) {
 			"invoices": page.Invoices,
 			"total":    page.Total,
 			"filed":    page.Filed,
+			// amount/currency 仅在**单一币种**时有意义（多币种时 amount=0、
+			// currency=""）。多币种请读 amounts（按币种分组的合计），
+			// 前端绝不能把跨币种的数渲染成 ¥。
 			"amount":   page.Amount,
+			"currency": page.Currency,
+			"amounts":  page.Amounts,
 			"hasMore":  page.HasMore,
 			"offset":   offset,
 		})

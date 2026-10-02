@@ -31,7 +31,7 @@
             >
           </label>
           <span class="inv-seller">{{ inv.seller || '未知销售方' }}</span>
-          <span class="inv-amount">¥{{ amount }}</span>
+          <span class="inv-amount">{{ amount }}</span>
         </div>
         <div class="inv-meta">
           <span class="cat-badge">{{ inv.category || '其他' }}</span>
@@ -48,10 +48,11 @@
       <span :class="['status-pill', inv.status]">{{ statusText }}</span>
       <button v-if="hasFile" class="act-btn" type="button" @click="emit('download')">下载</button>
       <button
-        v-if="canBook"
+        v-if="showBook"
         class="act-btn primary"
         type="button"
-        :disabled="booking"
+        :disabled="booking || !canBook"
+        :title="bookReason || undefined"
         @click="emit('book')"
       >{{ booking ? '入账中…' : '入账' }}</button>
       <button v-if="inv.status !== 'filed'" class="act-btn" type="button" @click="emit('file')">归档</button>
@@ -77,7 +78,13 @@ const props = defineProps<{
   statusText: string
   amount: string
   canBook: boolean
+  /** 不能入账的原因（空串=可以入账）。外币发票要能看到原因，而不是按钮凭空消失。 */
+  bookReason?: string
 }>()
+
+// 完全没有金额的发票（采集失败/待整理）本来就没有入账入口，不显示按钮。
+// 但**有金额却因币种被挡**的必须显示成禁用态 + 原因，否则用户以为功能坏了。
+const showBook = computed(() => props.canBook || !!props.amount)
 
 const emit = defineEmits<{
   preview: []

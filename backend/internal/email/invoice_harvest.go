@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // invoice_harvest.go — 发票文件采集流水线（对应需求「收取发票类邮件并解析
@@ -23,7 +24,8 @@ import (
 //  1. 拉整封邮件原文（IMAP BODY[]），拆出附件与正文；
 //  2. 优先级：PDF 附件 > 正文/HTML 里的 PDF 下载链接 > XML 附件（解析后
 //     重渲染成 PDF）；
-//  3. 落盘 dataDir/email-invoices/<workspace>/{费用类型}-{对方单位}-{金额}-{日期}.pdf；
+//  3. 落盘 dataDir/email-invoices/<workspace>/{费用类型}-{对方单位}-{金额}-{日期}[-{发票号}].pdf
+//     （发票号段与限长见 InvoiceFileName；补发票号是为了同额同日的票不互相覆盖）；
 //  4. 下载失败置 pending（下一轮流水线自动重试）——对应「有可能需要多次
 //     操作才能下载到发票文件」；重试超限转 failed 终态。
 //
@@ -458,7 +460,25 @@ func (h *InvoiceHarvester) downloadPDF(ctx context.Context, url string) ([]byte,
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("http %d", resp.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, MaxInvoicePDFBytes))
+	// 上限判定必须读 MaxInvoicePDFBytes+1 字节再回头看长度。
+	//
+	// 原先这里是 `io.ReadAll(io.LimitReader(resp.Body, MaxInvoicePDFBytes))`：
+	// 超限时**静默截断**成正好 20MB 并且不返回任何 error。而调用方
+	// （invoice_harvest.go:348）只判 `isPDFBytes(data)`，被截断的 PDF
+	// 头部 `%PDF-` 依然完好 → 判定通过 → 落盘 → 标记 `downloaded`。
+	// 后果是：需求 3 交付给用户的凭证附件是一个**打不开的 PDF**，
+	// 而库里记着「已下载成功」，没有任何报错可查。
+	//
+	// 这条路径此前 0% 覆盖（§7bw），所以缺陷一直藏着；给 downloadPDF
+	// 补 mock server 测试（invoice_download_test.go）第一轮就复现了。
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxInvoicePDFBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > MaxInvoicePDFBytes {
+		return nil, fmt.Errorf("invoice file too large: exceeds %d bytes", MaxInvoicePDFBytes)
+	}
+	return body, nil
 }
 
 // isPDFBytes 检查 PDF magic（允许头部有少量空白/BOM 的服务器差异）。
@@ -556,9 +576,33 @@ func scoreInvoiceURL(u string) int {
 	return score
 }
 
-// InvoiceFileName 生成规范文件名 {费用类型}-{对方单位}-{金额}-{日期}.pdf。
-// 非法字符（路径分隔符/空白/Windows 保留符）替换为连字符；字段缺省用
-// "未知"。重名冲突由调用方（确定性命名 + 幂等 upsert）天然规避。
+// InvoiceFileName 生成规范文件名。
+//
+// 格式：`{费用类型}-{对方单位}-{金额}-{日期}[-{发票号}].pdf`
+//
+// 关于发票号这一段（2026-10-01 补）：需求原文写的是
+// `{费用类型}-{对方单位}-{金额}-{日期}.pdf`，但**这个格式不足以唯一标识一张票**。
+// 实测三张不同的发票得到同一个文件名：
+//
+//	云服务-AWS-100.00-2026-09-15.pdf  票 A（CNY，发票号 …741）
+//	云服务-AWS-100.00-2026-09-15.pdf  票 B（USD，发票号 …001）
+//	云服务-AWS-100.00-2026-09-15.pdf  票 C（CNY，发票号 …742）
+//
+// 而 saveInvoiceFile 用 `os.Rename(tmp, path)` 落盘——**同名直接静默覆盖**，
+// 不报错、不重试。两行 DB 记录都 status='downloaded'、file_path 指向同一个
+// 文件，但磁盘上只剩最后写入的那张票，另一张的凭证永久丢失，列表里两张
+// 看起来都正常、点开却是同一份内容。
+//
+// 「同一天、同一供应商、同一金额」在真实场景很常见（充值两次、订阅续费、
+// 重开发票），这不是边角情况。发票号是发票的**唯一标识**，加进去既符合
+// 需求意图（凭证可追溯），又让文件名真正唯一。
+//
+// 发票号为空时（采集早期/XML 未解析出）不加这一段，保持需求原文的格式。
+// 同一输入必须稳定：重跑采集不会换名字（幂等）。这个分支仍可能在
+// 「同额同日同单位且都没有发票号」时撞名——但那要求两张票连发票号都
+// 解析不出来，属于采集完全失败的场景，优先级低于「有发票号却撞名」
+// 这种日常场景。若后续发现它也发生，应在 saveInvoiceFile 里检测目标
+// 已存在并加序号，而不是继续往文件名里塞字段。
 func InvoiceFileName(inv *Invoice) string {
 	category := sanitizeFileName(inv.Category, "其他")
 	seller := sanitizeFileName(inv.Seller, "未知单位")
@@ -567,7 +611,37 @@ func InvoiceFileName(inv *Invoice) string {
 	if date == "" {
 		date = time.Now().Format("2006-01-02")
 	}
-	return fmt.Sprintf("%s-%s-%s-%s.pdf", category, seller, amount, date)
+	name := fmt.Sprintf("%s-%s-%s-%s", category, seller, amount, date)
+	if no := sanitizeFileName(inv.InvoiceNo, ""); no != "" {
+		name += "-" + no
+	}
+	name += ".pdf"
+	// 整名兜底长度（2026-10-01 补）。
+	//
+	// 为什么需要：sanitizeFileName 对**每个**字段各截到 60，四个字段拼起来
+	// 最坏可达 60*3 + 金额 + 日期 + 发票号 ≈ 208 字节；加上
+	// `<dataDir>/email-invoices/<workspace>/` 这段前缀后实测全路径 269 字节，
+	// **超过 Windows MAX_PATH 260**——os.WriteFile 会直接失败（报
+	// "File name too long"），采集器 markRetry 重试也是白试。
+	//
+	// 名字对「可读」的要求低于对「唯一」的要求，所以超长时优先砍
+	// 发票号（尾部），保住 {费用类型}-{对方单位}-{金额}-{日期} 这段
+	// 需求约定的可读部分。
+	// 上界 180 而不是 200：实测 200 时全路径 263 字节仍超 MAX_PATH，
+	// 数据目录前缀在不同部署下可能更长，留足余量。180 对应的全路径约 243。
+	const maxNameBytes = 180
+	if len(name) > maxNameBytes {
+		cut := name[:maxNameBytes]
+		// 不要把 .pdf 切掉，也尽量不要切在多字节字符中间
+		if i := strings.LastIndex(cut, ".pdf"); i > 0 {
+			cut = cut[:i]
+		}
+		for len(cut) > 0 && !utf8.ValidString(cut) {
+			cut = cut[:len(cut)-1]
+		}
+		name = strings.TrimRight(cut, "-.") + ".pdf"
+	}
+	return name
 }
 
 func sanitizeFileName(s, fallback string) string {

@@ -1,4 +1,4 @@
-﻿package email
+package email
 
 // export_pdf_test.go — A4 网格导出的真实产物校验。
 //

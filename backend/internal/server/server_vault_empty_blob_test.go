@@ -1,4 +1,4 @@
-﻿// internal/server/server_vault_empty_blob_test.go
+// internal/server/server_vault_empty_blob_test.go
 package server
 
 import (

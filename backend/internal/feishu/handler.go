@@ -5,20 +5,28 @@
 //   - URL 验证：飞书后台首次订阅时发送 {"type":"url_verification",...}，必须回 {"challenge":...}
 //   - 事件回调：{"schema":"2.0","header":{...},"event":{...}}，必须在 3s 内返回 {"code":0}，否则飞书会重试
 //
-// 签名验证：V2 使用 HMAC-SHA256（消息体不加密）。
+// 签名验证：按飞书官方「签名校验」算法（请求地址配置文档）。
 //
-//	X-Lark-Signature = base64(hmac_sha256(timestamp + nonce + secret, body))
-//	其中 timestamp 来自 X-Lark-Request-Timestamp header，nonce 来自 X-Lark-Request-Nonce。
+//	stringToSign = timestamp + nonce + encryptKey + body
+//	X-Lark-Signature = hex(sha256(stringToSign))
 //
-// dev 模式：若 POCKET_FEISHU_VERIFY_SECRET 留空则跳过签名校验（生产前必须配置）。
+// 密钥是「事件与回调 > 加密策略」里的 Encrypt Key，即 POCKET_FEISHU_ENCRYPT_KEY；
+// 为兼容既有部署，未配置时回退到 POCKET_FEISHU_VERIFY_SECRET。
+// 注意：既不是 HMAC 也不是 base64。
+//
+// dev 模式：若 Encrypt Key 与 Verify Secret 都留空则跳过签名校验（生产前必须配置）。
 package feishu
 
 import (
-	"crypto/hmac"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -55,24 +63,62 @@ func PublicEntry(cfg config.Config, broadcast func(msgType string, payload inter
 			return
 		}
 
-		// 4) 分支 1: URL 验证（飞书首次订阅时的 challenge）
+		// 4) 分支 0: 加密事件 —— 配了 Encrypt Key 后飞书只发 {"encrypt":"<base64>"}。
+		//    必须先验签（签名基于**原始 body**），再解密，最后才解析事件。
+		if env.Encrypt != "" {
+			key := signatureKey(cfg)
+			if key == "" {
+				log.Printf("[feishu] received encrypted event but no encrypt key configured; cannot decrypt")
+				writeJSON(w, http.StatusUnauthorized, map[string]any{"code": -1, "msg": "encrypt key not configured"})
+				return
+			}
+			timestamp := r.Header.Get("X-Lark-Request-Timestamp")
+			nonce := r.Header.Get("X-Lark-Request-Nonce")
+			signature := r.Header.Get("X-Lark-Signature")
+			// 签名对原始 body 计算（不是对明文），故此处仍用 raw。
+			if !verifySignature(timestamp, nonce, key, string(raw), signature) {
+				log.Printf("[feishu] signature verification failed (encrypted event) ts=%s nonce=%s", timestamp, nonce)
+				writeJSON(w, http.StatusUnauthorized, map[string]any{"code": -1, "msg": "signature invalid"})
+				return
+			}
+			plain, err := decryptEvent(key, env.Encrypt)
+			if err != nil {
+				log.Printf("[feishu] decrypt event failed: %v", err)
+				writeJSON(w, http.StatusBadRequest, map[string]any{"code": -1, "msg": "decrypt failed"})
+				return
+			}
+			// 明文才是真正的事件体
+			var inner eventEnvelope
+			if err := json.Unmarshal(plain, &inner); err != nil {
+				log.Printf("[feishu] parse decrypted event failed: %v plain=%q", err, string(plain))
+				writeJSON(w, http.StatusOK, map[string]any{"code": 0, "msg": "ignored: decrypted payload not event v2"})
+				return
+			}
+			dispatch(inner.Event.Type, inner.Event, broadcast)
+			writeJSON(w, http.StatusOK, map[string]any{"code": 0, "msg": "ok"})
+			return
+		}
+
+		// 5) 分支 1: URL 验证（飞书首次订阅时的 challenge）
 		if env.Type == "url_verification" {
 			handleURLVerification(w, cfg, env)
 			return
 		}
 
-		// 5) 分支 2: 事件回调 —— 验签（仅当配置了 verify_secret 才验）
-		if cfg.FeishuVerifySecret != "" {
+		// 5) 分支 2: 事件回调 —— 验签。
+		// 官方算法用的是「加密策略」里的 Encrypt Key；未配置时回退到 Verify Secret，
+		// 两者都为空才是 dev 模式（跳过验签）。
+		if key := signatureKey(cfg); key != "" {
 			timestamp := r.Header.Get("X-Lark-Request-Timestamp")
 			nonce := r.Header.Get("X-Lark-Request-Nonce")
 			signature := r.Header.Get("X-Lark-Signature")
-			if !verifySignature(timestamp, nonce, cfg.FeishuVerifySecret, string(raw), signature) {
+			if !verifySignature(timestamp, nonce, key, string(raw), signature) {
 				log.Printf("[feishu] signature verification failed ts=%s nonce=%s sig=%q", timestamp, nonce, signature)
 				writeJSON(w, http.StatusUnauthorized, map[string]any{"code": -1, "msg": "signature invalid"})
 				return
 			}
 		} else {
-			log.Printf("[feishu] WARNING: POCKET_FEISHU_VERIFY_SECRET is unset; signature check SKIPPED (dev mode)")
+			log.Printf("[feishu] WARNING: POCKET_FEISHU_ENCRYPT_KEY and POCKET_FEISHU_VERIFY_SECRET are both unset; signature check SKIPPED (dev mode)")
 		}
 
 		// 6) 解析 event 字段
@@ -99,6 +145,9 @@ type envelope struct {
 	Schema    string          `json:"schema,omitempty"`
 	Header    json.RawMessage `json:"header,omitempty"`
 	Event     json.RawMessage `json:"event,omitempty"`
+	// Encrypt 加密事件体：配置 Encrypt Key 后事件以 AES-256-CBC 加密，
+	// 整个回调退化为 {"encrypt":"<base64>"} 一个字段。
+	Encrypt string `json:"encrypt,omitempty"`
 }
 
 // eventEnvelope V2 事件结构（仅取 type 字段做派发）
@@ -143,12 +192,23 @@ func logTokenMismatch(gotLen, wantLen int, got, want string) {
 		gotLen, wantLen, got, want)
 }
 
-// verifySignature 飞书 V2 HMAC-SHA256 验签 + 时间戳新鲜度校验
-// 签名公式：hmac_sha256(timestamp + nonce + secret, body) → base64
-// 时间戳校验：防止重放攻击，要求 timestamp 在 5 分钟内
-func verifySignature(timestamp, nonce, secret, body, signature string) bool {
-	if secret == "" {
-		return true // dev 模式（无 secret 时跳过验签和时间戳校验）
+// verifySignature 飞书事件回调验签 + 时间戳新鲜度校验。
+//
+// 官方「签名校验」算法（请求地址配置 / Signature verification）：
+//
+//	stringToSign = timestamp + nonce + encryptKey + body
+//	signature    = hex(sha256(stringToSign))     // 小写 hex
+//
+// 注意既不是 HMAC 也不是 base64 —— 密钥是**被哈希的明文前缀**，输出是 hex。
+// timestamp 取自 X-Lark-Request-Timestamp，nonce 取自 X-Lark-Request-Nonce，
+// encryptKey 为开发者后台「事件与回调 > 加密策略」中的 Encrypt Key。
+// 官方参考（含 Python/Java/Golang/Node/PHP 五语言示例）：
+// https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/event-subscription-guide/event-subscription-configure-/request-url-configuration-case
+//
+// 时间戳额外加 5 分钟窗口防重放（官方未强制，属本实现的加固）。
+func verifySignature(timestamp, nonce, encryptKey, body, signature string) bool {
+	if encryptKey == "" {
+		return true // dev 模式（无 encrypt key 时跳过验签和时间戳校验）
 	}
 	if timestamp == "" || signature == "" {
 		return false
@@ -164,12 +224,80 @@ func verifySignature(timestamp, nonce, secret, body, signature string) bool {
 		return false // 时间戳过期或来自未来
 	}
 
-	// HMAC 签名验证
-	stringToSign := timestamp + nonce + secret
-	h := hmac.New(sha256.New, []byte(stringToSign))
-	h.Write([]byte(body))
-	expected := base64.StdEncoding.EncodeToString(h.Sum(nil))
+	// 官方签名：sha256(timestamp + nonce + encryptKey + body) -> 小写 hex
+	sum := sha256.Sum256([]byte(timestamp + nonce + encryptKey + body))
+	expected := hex.EncodeToString(sum[:])
 	return subtle.ConstantTimeCompare([]byte(expected), []byte(signature)) == 1
+}
+
+// signatureKey 返回用于事件回调验签的密钥。
+// 官方「签名校验」用的是「事件与回调 > 加密策略」中的 Encrypt Key；
+// FeishuVerifySecret 是本仓历史字段，保留为回退以兼容既有部署。
+// 两者都为空 = dev 模式，跳过验签。
+func signatureKey(cfg config.Config) string {
+	if cfg.FeishuEncryptKey != "" {
+		return cfg.FeishuEncryptKey
+	}
+	return cfg.FeishuVerifySecret
+}
+
+// decryptEvent 按飞书官方「事件解密」算法解密加密事件体。
+//
+// 官方算法（请求地址配置 / 事件解密）：
+//
+//	key  = sha256(encrypt_key)                    // 32 字节
+//	raw  = base64decode(encrypt)
+//	iv   = raw[:16]                               // 前 16 字节即 IV
+//	body = AES-256-CBC-decrypt(key, iv, raw[16:])
+//	body = PKCS#7-unpad(body)
+//
+// 官方参考（含 Python/Java/Golang/Node/PHP 五语言示例）：
+// https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/event-subscription-guide/event-subscription-configure-/request-url-configuration-case
+//
+// 注意 IV **内嵌在密文头部**（前 16 字节），不是配置项。
+func decryptEvent(encryptKey, encrypted string) ([]byte, error) {
+	if encryptKey == "" {
+		return nil, errors.New("feishu: encrypt key not configured")
+	}
+	raw, err := base64.StdEncoding.DecodeString(encrypted)
+	if err != nil {
+		return nil, fmt.Errorf("feishu: decode encrypt field: %w", err)
+	}
+	// 需要 IV(16) + 至少一个密文块
+	if len(raw) <= aes.BlockSize {
+		return nil, fmt.Errorf("feishu: encrypted payload too short: %d bytes", len(raw))
+	}
+	key := sha256.Sum256([]byte(encryptKey))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, fmt.Errorf("feishu: new cipher: %w", err)
+	}
+	iv := raw[:aes.BlockSize]
+	ciphertext := raw[aes.BlockSize:]
+	if len(ciphertext)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("feishu: ciphertext not a multiple of block size: %d", len(ciphertext))
+	}
+	plain := make([]byte, len(ciphertext))
+	cipher.NewCBCDecrypter(block, iv).CryptBlocks(plain, ciphertext)
+	return unpadPKCS7(plain, aes.BlockSize)
+}
+
+// unpadPKCS7 去除 PKCS#7 填充。blockSize 用于校验填充字节的合法范围，
+// 避免畸形输入被静默截断。
+func unpadPKCS7(b []byte, blockSize int) ([]byte, error) {
+	if len(b) == 0 {
+		return nil, errors.New("feishu: empty plaintext after decrypt")
+	}
+	pad := int(b[len(b)-1])
+	if pad == 0 || pad > blockSize || pad > len(b) {
+		return nil, fmt.Errorf("feishu: invalid PKCS#7 padding byte %d", pad)
+	}
+	for _, c := range b[len(b)-pad:] {
+		if int(c) != pad {
+			return nil, errors.New("feishu: inconsistent PKCS#7 padding")
+		}
+	}
+	return b[:len(b)-pad], nil
 }
 
 // abs 返回绝对值

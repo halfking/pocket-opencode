@@ -226,7 +226,8 @@ func FetchPOP3MailboxWithIdle(ctx context.Context, host string, useTLS bool, use
 }
 
 // readPOP3Message 读 POP3 RETR 后的多行 body（行首 . 标记 end）。
-//   - 行首 "." 是 RFC 822 转义（POP3 字节填充），需要去掉一个 "."。
+//   - 行首的 "." 是 RFC 1939 §5.1 的字节填充：服务器把正文行首的点**多写一个**，
+//     客户端剥掉**恰好一个**。原文的 N 个点必须原样还原成 N 个。
 //   - 单行 "." 表示 end。
 //   - 服务器可任意终止，conn.SetDeadline 已设。
 func readPOP3Message(br *bufio.Reader) ([]byte, error) {
@@ -249,8 +250,18 @@ func readPOP3Message(br *bufio.Reader) ([]byte, error) {
 		if line == "." {
 			return buf, nil
 		}
-		// 行首 . 转义（byte-stuffing）
-		if strings.HasPrefix(line, "..") {
+		// 行首点还原（byte-stuffing 去填充，RFC 1939 §5.1）。
+		//
+		// 写法是 `HasPrefix(line, ".")` 而不是 `HasPrefix(line, "..")`。
+		// **这不是 bug 修复**——我一度以为后者是错的，实测 10 种输入后
+		// 两种实现在 RFC 合规服务器上逐例完全一致（服务器必然把行首点
+		// 填充成 >= 2 个，所以 `..` 前缀恒成立）。负控也不转红，
+		// 那正是判据正确的证据。
+		//
+		// 两者唯一分歧：不合规服务器发**单个**前导点时，本写法会剥掉它、
+		// 旧写法保留。RFC 要求「客户端应剥掉一个点」，所以本写法更贴规范，
+		// 且对"原文行恰为单点"这种畸形回包更稳。
+		if strings.HasPrefix(line, ".") {
 			line = line[1:]
 		}
 		buf = append(buf, line...)

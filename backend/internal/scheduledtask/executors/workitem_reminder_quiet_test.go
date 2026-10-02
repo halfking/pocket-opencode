@@ -1,4 +1,4 @@
-﻿package executors
+package executors
 
 // B-11, executor half: the do-not-disturb window belongs to the *owner* of the
 // work item, resolved from their stored settings.
@@ -34,30 +34,42 @@ func (f *fakeQuietPrefs) QuietPreferences(_ context.Context, _, userID string) (
 	return p, ok
 }
 
-// reminderAtLocal builds a remind_at at a fixed wall-clock time in loc, taken
-// from the current day in that same location.
+// wallClockAt 返回「loc 时区今天 hh:mm」的 UNIX 秒；若那一刻**还没到**，退回昨天。
 //
-// Absolute dates are a time bomb in this file, and one already went off. The
-// cases below used to pin 2026-09-30, which was the day they were written; on
-// 2026-10-01 the executor's staleness bound (DefaultStaleAfter, 24h) started
-// retiring them — workitem_reminder.go checks staleness *before* quiet hours, so
-// a fixture a day old is retired silently and the case that was asserting a
-// reminder is delivered reported zero events. The file went permanently red
-// while the code under test was unchanged and correct.
+// ## 为什么不能钉死绝对日期
 //
-// Deriving the day from now keeps the minute-of-day each case is actually about
-// (23:50 Shanghai, noon UTC) and keeps the instant within half a day of the
-// executor's clock, so the staleness bound can never decide the outcome. It also
-// means the New York owner in the two-owner case is still in late morning,
-// whatever the date.
-func reminderAtLocal(loc *time.Location, hour, min int) int64 {
-	now := time.Now().In(loc)
-	at := time.Date(now.Year(), now.Month(), now.Day(), hour, min, 0, 0, loc)
-	if now.Sub(at) > 12*time.Hour {
-		// More than half a day behind us, so that wall-clock time is yesterday's.
-		at = at.AddDate(0, 0, 1)
+// executor 用的是墙上时钟（workitem_reminder.go:172 `now := time.Now().Unix()`），
+// 且有 24 小时的陈旧上界（`:99` `DefaultStaleAfter`，判定在 `:197`，且**排在
+// 免打扰之前**）。这里原来写死 `2026-09-30`：写完当天绿，跨过 24h 之后**永久红**。
+//
+// 2026-10-01 22:12 实测：`FallsBackWithoutPreferences` 报
+// `a user with no stored preferences must still get their reminder, got 0 events` ——
+// 夹具已 34.2 小时 > 24h，被判陈旧后直接 `ClearTaskRemindAt(..., 0)` 退役，
+// 根本没走到免打扰逻辑。症状与「免打扰没生效」几乎一样，极易误判方向。
+//
+// 退回昨天而不是往后推，是因为 `DueTaskReminders(ctx, wsID, now, limit)` 只取
+// `remind_at <= now`，往后的夹具**根本不会到期**。
+func wallClockAt(t *testing.T, loc *time.Location, hour, minute int) int64 {
+	t.Helper()
+	now := time.Now()
+	y, m, d := now.In(loc).Date()
+	w := time.Date(y, m, d, hour, minute, 0, 0, loc)
+	if w.After(now) {
+		w = w.AddDate(0, 0, -1)
 	}
-	return at.Unix()
+	return w.Unix()
+}
+
+// freshExecutor 造一个 executor，并把陈旧上界关掉。
+//
+// **陈旧不是这些用例的主题** —— 它们测的是免打扰窗口属于 owner、四条分支各自
+// 的判定。留着 24h 上界只会让夹具随日历腐烂（见 wallClockAt 的注释）。姊妹文件
+// `workitem_reminder_test.go:468` 早就用 `SetStaleAfter(0)` 做了同样的事，这里对齐。
+// 真要验陈旧行为，去 TestWorkItemReminderStaleBoundIsConfigurable。
+func freshExecutor(store *fakeWorkItemStore, notif *fakeWorkNotifier) *WorkItemReminderExecutor {
+	ex := NewWorkItemReminderExecutor(store, notif)
+	ex.SetStaleAfter(0)
+	return ex
 }
 
 // At 23:50 Shanghai time the reminder must be deferred; the same instant read
@@ -67,8 +79,8 @@ func TestWorkItemReminderDefersInTheOwnersTimezone(t *testing.T) {
 	if err != nil {
 		t.Skipf("tzdata unavailable: %v", err)
 	}
-	// 23:50 in Shanghai, on whatever day it happens to be.
-	fireAt := reminderAtLocal(sh, 23, 50)
+	// 23:50 Shanghai time, on the day that wall time most recently came round.
+	fireAt := wallClockAt(t, sh, 23, 50)
 
 	store := newFakeStore()
 	store.due = []task.Task{{ID: "t-1", Title: "Late", OwnerID: "alice", WorkspaceID: "ws-1", RemindAt: fireAt}}
@@ -76,7 +88,7 @@ func TestWorkItemReminderDefersInTheOwnersTimezone(t *testing.T) {
 		"alice": {Timezone: "Asia/Shanghai"},
 	}}
 	notif := &fakeWorkNotifier{}
-	ex := NewWorkItemReminderExecutor(store, notif)
+	ex := freshExecutor(store, notif)
 	ex.SetQuietPreferences(prefs)
 
 	res, err := ex.Execute(context.Background(), schedTask())
@@ -109,8 +121,8 @@ func TestWorkItemReminderFallsBackWithoutPreferences(t *testing.T) {
 	// A time well outside any window, so the only question is whether the
 	// reminder still fires.
 	store.due = []task.Task{{ID: "t-1", Title: "Noon", OwnerID: "alice", WorkspaceID: "ws-1",
-		RemindAt: reminderAtLocal(time.UTC, 12, 0)}}
-	ex := NewWorkItemReminderExecutor(store, &fakeWorkNotifier{})
+		RemindAt: wallClockAt(t, time.Local, 12, 0)}}
+	ex := freshExecutor(store, &fakeWorkNotifier{})
 	ex.SetQuietPreferences(&fakeQuietPrefs{}) // knows nobody
 
 	if _, err := ex.Execute(context.Background(), schedTask()); err != nil {
@@ -126,12 +138,12 @@ func TestWorkItemReminderFallsBackWithoutPreferences(t *testing.T) {
 func TestWorkItemReminderHonoursDisabledQuietHours(t *testing.T) {
 	store := newFakeStore()
 	store.due = []task.Task{{ID: "t-1", Title: "Night owl", OwnerID: "alice", WorkspaceID: "ws-1",
-		RemindAt: reminderAtLocal(time.UTC, 23, 50)}}
+		RemindAt: wallClockAt(t, time.UTC, 23, 50)}}
 	prefs := &fakeQuietPrefs{byUser: map[string]task.QuietPreferences{
 		"alice": {Timezone: "UTC", Disabled: true},
 	}}
 	notif := &fakeWorkNotifier{}
-	ex := NewWorkItemReminderExecutor(store, notif)
+	ex := freshExecutor(store, notif)
 	ex.SetQuietPreferences(prefs)
 
 	res, err := ex.Execute(context.Background(), schedTask())
@@ -162,8 +174,8 @@ func TestWorkItemReminderJudgesEachOwnerSeparately(t *testing.T) {
 	if err != nil {
 		t.Skipf("tzdata unavailable: %v", err)
 	}
-	// One instant: 23:50 in Shanghai is late morning in New York.
-	instant := reminderAtLocal(sh, 23, 50)
+	// One instant: 23:50 in Shanghai is 10:50 in New York.
+	instant := wallClockAt(t, sh, 23, 50)
 
 	store := newFakeStore()
 	store.due = []task.Task{
@@ -174,7 +186,7 @@ func TestWorkItemReminderJudgesEachOwnerSeparately(t *testing.T) {
 		"alice": {Timezone: "Asia/Shanghai"},
 		"bob":   {Timezone: "America/New_York"},
 	}}
-	ex := NewWorkItemReminderExecutor(store, &fakeWorkNotifier{})
+	ex := freshExecutor(store, &fakeWorkNotifier{})
 	ex.SetQuietPreferences(prefs)
 
 	res := mustResult(t, ex, schedTask())
@@ -279,4 +291,3 @@ func TestSettingsQuietPreferences(t *testing.T) {
 		}
 	})
 }
-

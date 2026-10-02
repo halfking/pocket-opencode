@@ -2250,8 +2250,8 @@ func (s *Server) classifyEmailsAsync(emails []email.Email, userID, workspaceID s
 	// 回写分类结果
 	classified := 0
 	for _, result := range resp.Results {
-		if err := s.emailStore.SetClassificationScoped(ctx, result.EmailID, userID, workspaceID,
-			result.Category, result.Importance, result.Summary, result.SuggestedAction); err != nil {
+		if err := s.emailStore.SetClassificationWithReasonScoped(ctx, result.EmailID, userID, workspaceID,
+			result.Category, result.Importance, result.Summary, result.SuggestedAction, result.ActionReason); err != nil {
 			log.Printf("[kxmemory] update email %s classification failed: %v", result.EmailID, err)
 			continue
 		}

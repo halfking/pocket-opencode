@@ -1,4 +1,4 @@
-﻿package email
+package email
 
 // mime_header_decode_test.go — RFC 2047 头字段解码（BUG-AP 的回归）。
 //
@@ -45,7 +45,9 @@ func TestDecodeMIMEWord_UTF8Base64AndQuotedPrintable(t *testing.T) {
 	}
 	// Q 编码的 GBK。注意 hex 转义里放的是**GBK 字节**：
 	// 发票 = B7 EE B7 A8。用 UTF-8 字节(=E5=8F=91=E7=A5=A8)冒充 GBK 会解出
-	// 经典乱码「鍙戠エ」——那不是 bug，是夹具写错了。
+	// 注意下面这串「鍙戠エ」是**故意的**：它正是「用 UTF-8 字节冒充 GBK」时
+	// 解出来的经典乱码（U+94B5 U+6220 U+6D5C）。这个用例是反向夹具——证明
+	// 编码搞错时长什么样，别把它当成乱码 bug 顺手改掉。
 	enc, err := simplifiedchinese.GBK.NewEncoder().Bytes([]byte("发票"))
 	if err != nil {
 		t.Fatal(err)

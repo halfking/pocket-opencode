@@ -1,4 +1,4 @@
-﻿package email
+package email
 
 // pipeline_dryrun_test.go — 每日流水线的清垃圾预演模式。
 //

@@ -25,7 +25,7 @@ func TestLooksLikeSpam_FiresOnRealisticSpam(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			v := LooksLikeSpam(c.from, c.subject, c.snippet, false, false)
+			v := LooksLikeSpam(c.from, c.subject, c.snippet, false, false, 1)
 			if !v.Spam {
 				t.Fatalf("未判为垃圾: from=%q subject=%q snippet=%q（score=%d）",
 					c.from, c.subject, c.snippet, v.Score)
@@ -50,7 +50,7 @@ func TestLooksLikeSpam_DoesNotFireOnWorkMail(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if v := LooksLikeSpam(c.from, c.subject, c.snippet, false, false); v.Spam {
+			if v := LooksLikeSpam(c.from, c.subject, c.snippet, false, false, 1); v.Spam {
 				t.Fatalf("误判为垃圾: from=%q subject=%q why=%s", c.from, c.subject, v.Why)
 			}
 		})
@@ -69,7 +69,7 @@ func TestLooksLikeSpam_DoesNotFireOnWorkMail(t *testing.T) {
 // 调用方要靠这个区别决定「是否值得人工看一眼」。
 func TestLooksLikeSpam_ExposesScoreBelowThreshold(t *testing.T) {
 	// 只有弱信号（发件人 30 分），达不到 100 阈值。
-	v := LooksLikeSpam("newsletter@newsletter.aliyun.com", "本周精选", "", false, false)
+	v := LooksLikeSpam("newsletter@newsletter.aliyun.com", "本周精选", "", false, false, 1)
 	if v.Spam {
 		t.Fatalf("单条弱信号不该判垃圾: %+v", v)
 	}
@@ -81,12 +81,12 @@ func TestLooksLikeSpam_ExposesScoreBelowThreshold(t *testing.T) {
 	}
 
 	// 豁免路径：邮件根本没参与评分。
-	ex := LooksLikeSpam("billing@alipay.com", "促销 折扣 优惠 秒杀", "限时抢购", false, false)
+	ex := LooksLikeSpam("billing@alipay.com", "促销 折扣 优惠 秒杀", "限时抢购", false, false, 1)
 	if ex.Score != 0 || ex.Why != "" {
 		t.Fatalf("白名单域应走豁免（不评分），却拿到 score=%d why=%q", ex.Score, ex.Why)
 	}
 	// invoiceCandidate 短路同理。
-	ic := LooksLikeSpam("promo@shop.cn", "促销 折扣 优惠 秒杀", "限时抢购", true, false)
+	ic := LooksLikeSpam("promo@shop.cn", "促销 折扣 优惠 秒杀", "限时抢购", true, false, 1)
 	if ic.Score != 0 || ic.Why != "" {
 		t.Fatalf("发票候选应短路不评分，却拿到 score=%d why=%q", ic.Score, ic.Why)
 	}

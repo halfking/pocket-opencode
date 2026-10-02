@@ -37,6 +37,11 @@ var spamWeakWords = []string{
 	"好文", "专属福利", "扫码", "海报", "限时", "特惠", "福利",
 	"promo", "sale", "discount", "deal", "newsletter", "weekly digest",
 	"exclusive offer", "limited time",
+	// 资讯/摘要类。纯技术周报既没有促销词也未必带退订头，光靠上面那批
+	// 只能到 70 分，差 30 永远过不了 100 的阈值——实测「本周技术精选」
+	// 这类真实 newsletter 正是如此。它们与促销无关，但对「收发票 + 看重要
+	// 邮件」的系统是纯噪声，与退订营销是同一类东西。
+	"周报", "资讯", "简报", "每日精选", "行业动态", "技术分享", "公开课",
 }
 
 // spamSenderHints 发件人 local-part / 域名特征。
@@ -73,7 +78,50 @@ type SpamVerdict struct {
 
 // LooksLikeSpam 判定一封邮件是否广告/垃圾。invoiceCandidate 与
 // important 由调用方短路传入（true 时永远返回非垃圾）。
-func LooksLikeSpam(from, subject, snippet string, invoiceCandidate, important bool) SpamVerdict {
+//
+// senderVolume 是同一发件人在本批邮件里出现的封数（0/1 表示"未统计"）。
+//
+// ## 为什么需要它（2026-10-02 按当前真库数据更正）
+//
+// 原文写的是「实测真实信箱 430 封里 spamHits=0，14 封 near-miss 全部卡在
+// 30 分」，并据此断言「补退订特征无效——真实 emails.snippet 存的是**原始
+// MIME 头**（105 封形如 "------=_Part_... Content-Type: text/html"）」。
+//
+// **那条断言对当前数据已不成立**，它描述的是上一批数据来源。实测
+// opencode_pocket.emails 120 封（2026-10-02 05:5x）：
+//
+//	snippet 以 "------=_Part_" 开头   1 封
+//	snippet 以 "Content-Type" 开头   0 封
+//	snippet 以 RFC822 邮件头开头      0 封
+//	snippet 为空                      0 封
+//	snippet 平均长度                  377 字符（最长 501）
+//
+// 即 119/120 是**真实正文**（形如「极客时间 点击这里取消订阅 ------=_Part_…」——
+// 正文在前，MIME 边界在尾部）。所以退订特征**现在是有效的**，而且它是
+// 决定性信号：同一批 6 封命中里 Why 全部含「退订特征:取消订阅」。
+//
+// 当前分布实测（同一批 120 封）：命中 6、near-miss 1（30 分）。
+// 两极分化明显——要么明显是列表推送过线，要么几乎没特征，中间地带为空。
+//
+// ## 仍然成立的判据
+//
+// 发件人成批推送这条依然是最稳的：InfoQChina@edm.infoq.com.cn、
+// newsletter@newsletter.aliyun.com、promotion@news.ecloudrover.com
+// 发的每一封都是列表推送。一对一的人际邮件不会来自同一地址成批发来。
+// 单看一封无从判断，看同一地址的量就能判断——所以这个信号必须由调用方
+// 统计后传进来，纯函数自己不掌握跨封信息。
+//
+// ## 一个已知的自洽性问题（2026-10-02 实测，本轮未改）
+//
+// 同一发件人会出现**判定不一致**：InfoQChina@edm.infoq.com.cn 3 封里，
+// 2 封页脚带「点击这里取消订阅」→ 100 分判垃圾，第 3 封（InfoQ 每周精要
+// No.940）snippet 开头是正文、没匹配到退订 → 只 30 分留在收件箱。
+// 差别只在某一封的邮件模板有没有那个页脚链接。
+//
+// 「列表推送就是列表推送」，按单封模板决定去留在语义上说不通。
+// 但改成按发件人整体判定属于**产品语义**（会不会因此误杀同域的真人邮件），
+// 没有拍板前不改。已知问题记录在此，别当成没看见。
+func LooksLikeSpam(from, subject, snippet string, invoiceCandidate, important bool, senderVolume int) SpamVerdict {
 	if invoiceCandidate || important {
 		return SpamVerdict{}
 	}
@@ -136,12 +184,40 @@ func LooksLikeSpam(from, subject, snippet string, invoiceCandidate, important bo
 			break
 		}
 	}
+	// 同发件人成批推送。阈值取 5 是照着真实数据定的：这三家分别是 8/5/1 封。
+	//
+	// 5 封以上 + 营销发件人特征（30）= 100，正好过线。**不**单靠这一条：
+	// 同一个域下 5 封以上的地址也可能是同事群发或监控告警，必须叠加已有的
+	// 营销特征，避免把「同一个人多封邮件」误当成营销。
+	if senderVolume >= 5 {
+		hasHint := false
+		for _, h := range spamSenderHints {
+			if strings.Contains(fromLower, h) {
+				hasHint = true
+				break
+			}
+		}
+		if hasHint {
+			add(70, "同发件人批量推送×"+strconv.Itoa(senderVolume))
+		} else {
+			// 不计分但记进 Why：预演报告要能看出「只是量大、不是营销」。
+			whys = append(whys, "同发件人批量推送×"+strconv.Itoa(senderVolume)+"(无营销特征,不计分)")
+		}
+	}
 	for _, p := range spamSubjectPatterns {
-		if strings.Contains(subject, p) {
-			// 70 而不是原来的 45：带退订头的邮件在实践中几乎都是可退订的营销
-			// 列表。45 + 弱词 40 = 85 仍差 15 分够不着阈值，等于白加。
-			add(70, "退订特征:"+p)
-			break
+		// 主题**和摘要**都要查。真实 newsletter 的退订链接几乎总在 HTML
+		// 摘要里，主题只是文章标题——只查主题等于漏掉整类「技术资讯/云厂商
+		// 周报」，而这正是本系统真实信箱里 score 最高的那批（实测 19 封
+		// near-miss 全部是这类，score=30 差的就是这个退订分）。
+		//
+		// 命中即 100：带退订头的邮件**按定义**就是可退订的营销列表，这不是
+		// 推断。原先给 70 是把「退订」当弱信号和别的词凑分，结果「阿里云
+		// 云安全中心周报」这种真实营销邮件只能到 70（退订 70 + 周报 1 个
+		// 弱词不给分），永远差 30 判不掉——而它确实是垃圾。
+		// 误伤风险由 invoiceCandidate / important 短路和白名单域兜住：
+		// 真实账单发票即使带退订也不会走到这里。
+		if strings.Contains(subject, p) || strings.Contains(snippet, p) {
+			return SpamVerdict{Spam: true, Score: 100, Why: "退订特征:" + p}
 		}
 	}
 	// 纯图片/纯 HTML 单元格堆叠类广告常见特征：摘要几乎无有效文本

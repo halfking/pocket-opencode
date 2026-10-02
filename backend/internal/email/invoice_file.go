@@ -2,6 +2,7 @@ package email
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"strings"
 
@@ -82,7 +83,26 @@ func ExtractInvoiceThumb(data []byte) (thumb []byte, contentType string, ok bool
 	return img, ct, true
 }
 
-func firstPDFEmbeddedImage(data []byte) ([]byte, string, error) {
+// firstPDFEmbeddedImage 抽出第一页里的第一张嵌入图。
+//
+// 发票附件是外部输入，而 pdfcpu v0.11.0 对退化 PDF（只有 Catalog、没有页树）
+// 会 panic：model.skipStringLit（pkg/pdfcpu/model/parse.go:1273）报
+// `slice bounds out of range [-1:]`，经 api.ExtractImagesRaw 冒到调用方。
+//
+// 同一批代码里的导出路径早就为这件事定过规矩并且做了防御
+// （export_pdf.go 的 exportNUp / pdfPageCountSafe：「绝不让它冒到 handler」，
+// 配套用例 TestExportInvoiceGrid_SkipsMalformedPDFAndKeepsGoodOnes）。
+// 这里当时漏了，于是 GET /api/emails/invoices/{id}/thumb 遇到畸形发票时
+// 表现为 500 而不是 404 thumbnail unavailable。
+//
+// 现在按同一条规矩补上：panic 转成普通 error，由 ExtractInvoiceThumb 当成
+// 「抽不出缩略图」。注意必须用**具名返回值**，否则 recover 里改不动 err。
+func firstPDFEmbeddedImage(data []byte) (img []byte, fileType string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			img, fileType, err = nil, "", fmt.Errorf("unreadable invoice pdf: %v", r)
+		}
+	}()
 	pages, err := api.ExtractImagesRaw(bytes.NewReader(data), []string{"1"}, nil)
 	if err != nil {
 		return nil, "", err

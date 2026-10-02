@@ -157,3 +157,14 @@ __pycache__/
 # 每个平台/架构都不同，入库只会让 git status 长期挂着未跟踪噪声，并诱导别人
 # `git add -A` 把几十 MB 的可执行文件提交进去。
 backend/.verify-bin/
+# 需求 6 A 路线 wasm 探针的编译产物（单个 ~4-9MB，几乎全是 Go runtime）。
+# 由 scripts/wasmprobe-run.mjs 生成，用完自删；这里兜底防止手动构建时误提交。
+# 注意：frontend/public/assets/*.wasm 是**前端产物**，已在上面单独处理，别一起排除。
+backend/cmd/wasmprobe/*.wasm
+backend/cmd/wasmprobe/*/*.wasm
+backend/cmd/wasmprobe/*.native.json
+backend/cmd/wasmprobe/*/*.native.json
+backend/cmd/wasmprobe/*.wasm.json
+backend/cmd/wasmprobe/*/*.wasm.json
+backend/cmd/wasmbaseline/*.wasm
+

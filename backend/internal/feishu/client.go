@@ -149,9 +149,20 @@ func (c *Client) SendMessage(ctx context.Context, receiveIDType, receiveID, msgT
 	if err != nil {
 		return err
 	}
-	payload, _ := json.Marshal(map[string]string{"content": contentText})
+	// content 直接放 contentText 本身，**不要再包一层** {"content": ...}。
+	//
+	// 飞书 im/v1/messages 的 content 字段要的就是消息体本身（text 时是
+	// `{"text":"..."}`，file 时是 `{"file_key":"..."}`），只不过它要求这个
+	// 消息体以**字符串**形式出现（整体双重编码）。原先这里先把它包成
+	// `{"content": contentText}` 再塞进去，线上实际发出去的是
+	// `{"content":"{\"text\":\"...\"}"}` —— 飞书解出来看到的是一个叫
+	// `content` 的未知字段，于是 text 消息正文为空、file 消息拿不到 file_key。
+	//
+	// 这个缺陷能活下来只有一个原因：这条路径**从未真正跑过**（线上缺
+	// POCKET_FEISHU_INVOICE_CHAT_ID，需求 3/4 都是关的）。首次给它加
+	// mock server 测试（client_test.go）就直接复现了。
 	url := fmt.Sprintf("%s/open-apis/im/v1/messages?receive_id_type=%s", c.BaseURL, receiveIDType)
-	body, _ := json.Marshal(map[string]any{"receive_id": receiveID, "msg_type": msgType, "content": string(payload)})
+	body, _ := json.Marshal(map[string]any{"receive_id": receiveID, "msg_type": msgType, "content": contentText})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
