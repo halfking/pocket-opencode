@@ -37,14 +37,34 @@ $root = Split-Path -Parent $PSScriptRoot
 # by loadCompanionOverlay to find companion.env), so the real data directory was
 # always filepath.Dir(POCKET_DB_PATH) = Dir("./data/pocket.sqlite") resolved
 # against -WorkingDirectory, i.e. <root>\backend\data -- where the live
-# chat_agents.sqlite and email_master.key actually live. POCKET_DATA_DIR now
-# decides it for real (config.ResolveDataDir), so keeping the logs\ default
-# would have silently moved this instance to an empty directory: a fresh
-# email_master.key would be generated and every account would fail with
-# "decrypt credential: cipher: message authentication failed".
+# chat_agents.sqlite lives. POCKET_DATA_DIR now decides it for real
+# (config.ResolveDataDir), so keeping the logs\ default would have silently
+# moved this instance to an empty directory: a fresh email_master.key would be
+# generated and every account would fail with "decrypt credential: cipher:
+# message authentication failed".
 #
 # The old default was simply never in effect, so aligning it with reality
 # changes nothing for existing instances and makes the two env vars agree.
+#
+# 2026-10-02 CORRECTION: the same comment used to say email_master.key
+# "actually lives" in backend\data too. **That is false, and it is the whole
+# problem with this default.** Measured by running
+# backend/internal/email/diag_credential_health_test.go once per data dir
+# (read-only, no IMAP): the key in backend\data decrypts 0 of the 5 real
+# accounts; the working one is <root>\data\email_master.key, which decrypts 5/5.
+# backend\data also has no email-bodies/ and no email-invoices/ at all.
+#
+# So an instance started with this default has a perfectly healthy /healthz,
+# a "Email scheduler started" line, a correct port owner -- and **zero working
+# mail**. That is why the boot-time master-key check below is a warning and not
+# a silent pass.
+#
+# We do NOT change the default: backend\data\chat_agents.sqlite is the copy that
+# is actually being written (its -wal was touched today), while <root>\data\'s
+# copy has not been written since 09-30. Repointing it would trade a dead mail
+# pipeline for a stale chat-agents database. If you need working mail, pass
+# -DataDir <root>\data explicitly, or use scripts\start-pocketd-pg.ps1, which
+# does that for you and turns a wrong key into a non-zero exit.
 if (-not $DataDir) { $DataDir = Join-Path $root "backend\data" }
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $bin = Join-Path $root "backend\.verify-bin\pocketd.exe"
@@ -195,6 +215,37 @@ if ($ok) {
     }
     exit 1
   }
+
+  # Master-key check. Same judgement as scripts\start-pocketd-pg.ps1, but a
+  # WARNING and not a hard exit: this launcher is generic, and a backend with a
+  # wrong key is still a perfectly usable backend for everything except mail.
+  #
+  # Why bother here at all: the port-owner check above proves we are talking to
+  # the process we launched, and /healthz proves it is up. Neither says anything
+  # about whether it can decrypt anything. With the default DataDir above it
+  # cannot - measured 0/5 - so it would otherwise be reported "ready" with a
+  # dead mail pipeline and no hint why. See the comment on $DataDir.
+  #
+  # The same key also encrypts the LLM gateway api key, so this one line often
+  # explains "mail never syncs" AND "every LLM feature silently does nothing"
+  # at the same time.
+  Start-Sleep -Milliseconds 300
+  if (Select-String -Path $err -Pattern 'MASTER KEY LOOKS WRONG' -Quiet -ErrorAction SilentlyContinue) {
+    Write-Warning "[backend] WRONG EMAIL MASTER KEY for dataDir '$DataDir'."
+    Write-Warning "[backend]   None of the real accounts decrypt -> no mail will sync on this instance,"
+    Write-Warning "[backend]   and the LLM gateway api key (same key) is unreadable -> classification /"
+    Write-Warning "[backend]   summary / invoice extraction / STT all silently do nothing."
+    Write-Warning "[backend]   The working key is: $root\data\email_master.key"
+    Write-Warning "[backend]   Restart with: -DataDir $root\data"
+    Write-Warning "[backend]   (or use scripts\start-pocketd-pg.ps1, which does this and exits non-zero)"
+    Select-String -Path $err -Pattern 'MASTER KEY LOOKS WRONG|decrypt api key' -ErrorAction SilentlyContinue |
+      Select-Object -First 4 | ForEach-Object { Write-Host "[backend]     $($_.Line)" }
+  } elseif (Select-String -Path $err -Pattern 'Email credential self-check' -Quiet -ErrorAction SilentlyContinue) {
+    Write-Host "[backend] master key OK (email credential self-check passed for $DataDir)"
+  } else {
+    Write-Host "[backend] no email credential self-check line in this boot; mail module appears off - gate skipped"
+  }
+
   Write-Host "[backend] pid=$($p.Id) ready on $Port, schema=$Schema, port-owner-verified"
 } else {
   Write-Host "[backend] FAILED: /healthz unanswered after 30s. stderr tail:"
