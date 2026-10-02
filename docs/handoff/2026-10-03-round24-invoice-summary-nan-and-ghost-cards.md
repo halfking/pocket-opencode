@@ -1225,6 +1225,49 @@ POCKET_TEST_POSTGRES_DSN=... go test ./internal/email -run TestDailyPipelineLock
 ⇒ **重建 18099 的风险不在锁本身**（已验证），而在"会把并发会话另外 40 项
 在制品一起带进二进制"——那需要你授权，而不是技术判断。
 
+### 23.5 但那份诊断的第 2 步**测的不是它声称要测的东西**
+
+跑 `POCKET_DIAG_ADVISORY_REENTRANT=1 go test -run TestDiagAdvisoryReentrant -v`：
+
+```
+SAME SESSION: first=true second=true                      （可重入，假设成立）
+after ONE unlock, re-lock=true                            （计数仍>0，可重入坐实）
+OTHER SESSION while conn still holds: got=true (want false)   ← 期望 false，拿到 true
+pg_locks matching rows = 1   holding backend pid = 33136
+```
+
+最后那行**不是**锁坏了。查 pgx 源码坐实了原因：
+
+```
+pgxpool -> puddle/v2@v2.2.2/pool.go:133
+    idleResources *genstack.GenStack[*Resource[T]]     ← 栈
+    :302 tryAcquireIdleResource() { res, ok := p.idleResources.Pop() }
+```
+
+⇒ puddle 的空闲资源是**栈**：`Release` 推入、`Acquire` 弹出，
+**Release 之后紧接着 Acquire 拿回的是同一条连接**（LIFO 是 pgx 有意的性能选择）。
+
+而 `diag_advisory_reentrant_test.go` 的顺序是：
+
+```go
+conn.Release()          // :57  先把持锁的连接还回池子
+probe, _ := store.pool.Acquire(ctx)   // :60  紧接着取
+pg_try_advisory_lock(...)  // :66     于是拿到的是**同一条**连接 -> true
+```
+
+⇒ 那个 `probe` **不是别的会话**，它就是持锁的那条会话自己。
+所以 `got=true` 完全没有信息量，而这一行只是 `t.Logf`、**没有任何断言**，
+测试照样 PASS。问题在于日志里那句 `(want false)` 会被下一个人（包括 08:00 的我）
+读成「锁是坏的」。
+
+**修法**（属于并发会话的在制品，我**没有改**）：要么像
+`TestDailyPipelineLock_IndependentPoolsAreMutuallyExclusive` 那样开**第二个连接池**，
+要么至少把 `probe` 的 backend PID 也打出来、与 `connPID` 对比后再解释。
+
+**这不影响那 7 条锁用例**——它们用的是 `pg_locks` 探针与独立连接池，
+对可重入免疫（§23.4 实测全绿）。这是**诊断脚本自己的标签错了**，不是锁的缺陷。
+
+
 
 
 
