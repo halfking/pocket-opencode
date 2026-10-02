@@ -732,8 +732,19 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 		Envelope:     true,
 		UID:          true,
 		InternalDate: true,
+		// BODYSTRUCTURE：附件判定的**唯一**数据来源。
+		//
+		// 为什么必须单独要：ENVELOPE 里没有附件信息，而 go-imap v2 的
+		// imap.Envelope（fetch.go:85-95）也没有 Body 字段（v1 才有）。
+		// 不加这一项，has_attachments 在 IMAP 路径上恒为 false——
+		// 实测真实库 120 封全部 IMAP 来源、has_attachments=true 的 0 封，
+		// 前端 EmailCard.vue 的 📎 标记因此永不显示（需求 7）。
+		//
+		// POP3 路径不需要它：RETR 拿到完整 RFC 5322 原文，ParseMIMEMessage
+		// 直接给出 Attachments。
+		BodyStructure: &imap.FetchItemBodyStructure{},
 		// 部分 IMAP server（如 Greenmail）对 BODY[TEXT]<0.1024> 的响应缺
-		// SP 分隔符导致 imapwire 解析失败，因此仅 envelope + UID 起步，
+		// SP 分隔符导致 imapwire 解析失败，因此不批量取正文，只取 envelope，
 		// 完整正文由后续 harvester 通过 FetchMessageRaw 按需单封拉取。
 	}
 	// uidSet 必须按值传：imapwire.NumSetKind 对 imap.NumSet 做类型 switch，只
@@ -825,6 +836,8 @@ func (f *Fetcher) Sync(ctx context.Context, accountID string) (int, error) {
 			Subject:     subject,
 			Snippet:     snippet,
 			Date:        date,
+			// 附件判定：见 bodyStructureHasAttachment。内联图不算附件。
+			HasAttachments: bodyStructureHasAttachment(m.BodyStructure),
 		}
 		// 评估账户规则。规则输出分两类落地：
 		//   - 内联型（mark-important / label-category / archive）：直接写邮件字段，

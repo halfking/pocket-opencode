@@ -8471,3 +8471,126 @@ attachments_col_nonempty=0
   我**没有证据**，不下断言。脚本已删，要复核需要重跑。
 - **没有改任何生产代码**，也没有给 `has_attachments` 补测试。
 - **没有验 Greenmail**，因此 BODYSTRUCTURE 方案的实际风险未量化。
+
+---
+
+## §7dq 【需求 7】修掉 `has_attachments` 在 IMAP 路径上恒为 false；过程中实测到「负控第四次不转红」的真因（2026-10-03）
+
+### 缺陷（承接 §7dp）
+
+`emails.has_attachments` 全仓库原本**只有一处**被赋值，在 POP3 降级路径里
+（`em.HasAttachments = len(parsed.Attachments) > 0`）。IMAP 路径**从未**赋过值——
+不是漏写一行，是那条路径上没有数据来源：FETCH 只请求 Envelope / UID /
+InternalDate，而 go-imap v2 的 `imap.Envelope`（`fetch.go:85-95`）**没有 Body
+字段**（v1 才有），「反正 envelope 里就有」被实测证伪。
+
+§7dp 实测（08:25:22）：真实库 120 封全部 IMAP 来源、`has_attachments_true=0`，
+唯一能置位的 POP3 路径产出为 0。于是 `EmailCard.vue` 的 📎 标记**永不显示**。
+
+### 修法
+
+- `fetcher.go` 的 `fetchOpts` 加 `BodyStructure: &imap.FetchItemBodyStructure{}`
+- 新增 `fetcher_attachment.go`：`bodyStructureHasAttachment(bs imap.BodyStructure) bool`
+
+口径：disposition=attachment → 是；带 filename（Disposition 的 filename 或
+Content-Type 的 name）→ 是；**内联图不算附件**（`Content-Disposition: inline`
+且无 filename 时不算，否则每封带签名图的邮件都会亮 📎）。
+`bs == nil` 保守返回 false（不凭空置真）。
+
+### 关键：不需要 Docker，仓库里已经有 in-process IMAP
+
+`fetcher_pipeline_test.go` 早就用 go-imap 的 `imapserver/imapmemserver` 起了
+一个 TLS 的进程内 IMAP server（随机 loopback 端口 + 自签证书 + `dialTLS` 注入）。
+所以 IMAP 链路**可以**在 `go test` 里真跑，不需要 Greenmail、不需要 Docker、
+不需要网络与真实凭证。
+
+端到端用例 `fetcher_attachments_test.go` 3 条：带附件 / 纯文本 / 内联图，
+跑 `Fetcher.Sync` 后从库里读回 `has_attachments`。
+
+### 本轮最重要的一件事：负控**第四次**不转红，这次查到了真因
+
+第一次负控是「把 `case "inline"` 的豁免删掉」，期望
+`TestSyncDoesNotCountInlineImageAsAttachment` 转红。**没有转红。**
+
+按惯例先怀疑三件事（判据太松 / 注入没生效 / 结论本身错了），这次都不是。
+写了个临时探针 dump `imapmemserver` 真实返回的 BODYSTRUCTURE：
+
+```
+--- uid=1 subject="inline probe"
+    path=[] <multipart> *imap.BodyStructureMultiPart
+    path=[1] type=text/html    params={charset=utf-8} disp=<nil> extended=false
+    path=[2] type=image/png    params={}              disp=<nil> extended=false
+--- uid=2 subject="att probe"
+    path=[] <multipart> *imap.BodyStructureMultiPart
+    path=[1] type=text/plain         params={charset=utf-8}      disp=<nil> extended=false
+    path=[2] type=application/pdf    params={name=invoice.pdf}   disp=<nil> extended=false
+```
+
+**`imapmemserver` 根本不填 BODYSTRUCTURE 的 extended 部分**——`Disposition()`
+对任何 part 都返回 nil。于是：
+
+- `case "inline"` 与 `case "attachment"` 两个分支在端到端用例里**从未被执行**；
+- 内联那条用例是**碰巧**通过的：内联图没有 `name=` 参数，走 `default` 分支
+  得到 `filename == ""` → false。它验证的是「没有 filename 就不是附件」，
+  **不是**「inline 不是附件」。
+
+所以第四种原因的确切形态是：**被测逻辑（disposition 分支）根本没被执行到**，
+变异落在一条 no-op 路径上。这与本会话早先记录的 `if s.kxmemory != nil` →
+`if true` 那次同源：**「全绿」的前提是被测逻辑真的跑过**。
+
+修法：把两个端到端/单测层次**分工**写进注释，并补 10 条直接构造
+`imap.BodyStructureSinglePart` 的单测（`fetcher_attachment_test.go`）逐分支钉：
+
+| 层 | 钉什么 | 覆盖不到的 |
+|---|---|---|
+| 端到端（`fetcher_attachments_test.go`） | 「整条链路真的用上了这个函数」 | disposition 两个分支（server 不给） |
+| 单测（`fetcher_attachment_test.go`） | 判定口径逐分支 | 链路是否真的接上 |
+
+**两层不能互相替代**：只写端到端，用例会因为 no-op 变异而全绿；
+只写单测，函数没被接进 Sync 也照样全绿。
+
+### 负控 2 次（都按预期转红）
+
+| 负控 | 变异 | 结果 |
+|---|---|---|
+| NEGCTL-1 | `case "inline"` 的 `found = filename != ""` 改成 `found = true` | **精确 1 条转红**（`TestBodyStructure_InlineWithoutFilenameIsNotAttachment`）。注意：**第一轮做过同一个变异，端到端用例全绿** |
+| NEGCTL-2 | 从 `fetchOpts` 去掉 `BodyStructure` | 精确 1 条转红（`TestSyncSetsHasAttachments_AttachmentOnly`） |
+
+两次均已还原；`git diff --stat` 为 `fetcher.go` 净 +14/-1，另加 3 个新文件。
+
+### 数字
+
+- `fetcher_attachment_test.go`（单测）10 条全绿
+- `fetcher_attachments_test.go`（端到端）3 条全绿
+- `go test ./internal/email/`：**全绿**（75.1s）
+- `go test ./internal/server/`：只剩**两个既有失败**
+  （`TestTaskWriteGuardBlocksPlainMemberPatch/Delete`，非邮件分支、非本轮引入）
+- `gofmt -l` 三个新文件：无输出（干净）。**只对新增文件跑 gofmt**，
+  `fetcher.go` 是既有文件，未格式化，diff 保持 14/-1
+
+### 这个修复**证明了什么、没证明什么**（重要）
+
+**证明了**：go-imap 客户端 ↔ 服务端这一对能正确协商并解析 BODYSTRUCTURE；
+判定口径对纯文本 / 附件 / 内联图 / 嵌套 multipart / 大小写 disposition
+都成立；整条 `Sync → InsertEmail → 读回` 链路真的把这个函数用上了。
+
+**没证明**：真实第三方 IMAP server 不会因此出问题。`fetcher.go` 里那条注释
+记录过「加过数据项导致部分 server 响应缺 SP 分隔符、imapwire 解析失败」的历史，
+而 `imapmemserver` 是 go-imap 自己的实现，**不可能**复现那种畸形响应。
+**那一半仍然未验**，仍需 Greenmail（卡在 Docker daemon 未运行）。
+
+此外 `imapmemserver` 不填 extended 这件事本身也有生产含义：它说明
+**至少有一类实现不返回 disposition**，此时判定会退到「只看 filename」。
+这在真实 server 上是常见形态（不少服务器只给 Content-Type 的 name=），
+所以 `default` 分支不是多余的——但反过来，**真实 server 上 inline 图若既无
+filename 又无 disposition，本实现会判成「不是附件」，这与预期一致**。
+
+### 本轮**没有**做的事
+
+- **没有验真实 server**（如上，仍需 Greenmail）
+- **没有回填存量 120 封**。新增的 `has_attachments` 只对**今后同步**的邮件生效；
+  库里已有的 120 封仍是 false，📎 标记对它们依然不显示。要回填只能重同步
+  （或清 `last_synced_uid` 强制重拉），那是**会动真实账号状态**的操作，未做。
+- **没有碰 `attachments` JSON 列**。它同样从未写入（`attachments_col_nonempty=0`），
+  本轮只做了布尔标记。
+- **没有验 POP3 路径**。它本来就正确（`ParseMIMEMessage`），本轮未改动、未加测试。
