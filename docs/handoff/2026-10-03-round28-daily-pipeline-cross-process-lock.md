@@ -37,7 +37,8 @@ tick 循环，但它在**数据库内**做租约式认领（`ClaimDue` 的
 - `MarkEmailsNotified` 写在**整个推送循环跑完之后**（`pipeline.go:1036` 循环 / `:1044` 标记）
 - `notifycenter.InsertNotification` 是裸 INSERT，唯一约束只有主键
 
-⇒ 24 行基线最多变 **126 行**（24 封 × 3 实例 + 原有）。
+⇒ 24 行基线变 129 行（24 + 35×3；`pending_high=35` 见 §7.1 的重算）。
+按 24 算的初稿数字（126 / 102）已作废。
 
 ---
 
@@ -134,6 +135,61 @@ internal/config/config.go:316   getEnv("POCKET_EMAIL_PIPELINE_ADVISORY_LOCK", "t
 
 两次负控都只让**该转红的那一条**红，其余保持绿——判据是有牙齿的，
 不是恰好被实现细节顺带满足。
+
+### 4.5 真进程验收（2026-10-03 03:00 实跑）——这一节是护栏替代不了的
+
+上面所有护栏都在**一个测试进程里用两个 `pgxpool`** 模拟多实例。那证明的是
+PostgreSQL 侧的锁语义，但证不了三件事：
+
+- 真实 `pipelineLoop` 真的走到 `RunEmailPipeline`
+- `EmailPipelineAdvisoryLock` 默认 true 真的在 `Load()` 里生效
+- 两个**进程**（不是两个连接池）真的抢同一把锁
+
+任一件断了，15 条护栏都会全绿，而 08:00 照样重复推送。
+
+**做法**：用 HEAD 构建 `pocketd-lock.exe`，起两个真实实例——**同一个隔离 schema**
+`pocket_locktest_20261003`（不碰 `opencode_pocket`）、不同端口、都排到
+`2026-10-03T03:00:00+08:00`。这是 08:00 三实例竞态的最小复现。
+脚本 `.scratch-locktest/start-detached.ps1` + `check-lock.sql` / `hold-lock.sql`。
+
+**结果**（同一刻 `03:00:00`）：
+
+```
+inst-a: [email/pipeline] 每日定时流水线跨进程锁已被其它实例持有，本轮跳过
+inst-b: [email/pipeline] step 1/5 … step 5/5
+        [email/pipeline] done synced=0 new=0 spam=0(+0 local) reminders=0 … errors=0
+```
+
+⇒ **只有一个执行，另一个跳过。** 三条附加判据也都过：
+
+1. `pg_locks` 里该 advisory lock **0 行**（已干净释放）——泄漏的表现是
+   明天起永久不再触发而日志一片正常。
+2. 判据自身双向验证：先用一个持锁 45 秒的会话证明 `check-lock.sql`
+   **看得见**被持有的锁（pid 32036，classid 1903246281 / objid 2785338973，
+   与 Go 诊断读到的完全一致），释放后回到 0 行。否则那个「0 行」
+   分不清是「干净释放」还是「判据看不见锁」。
+3. **两个实例都重新排到了 `2026-10-04T03:00:00+08:00`**——被跳过的那一个也排了。
+   若实现让跳过者 `return` 出 `pipelineLoop`，明天就只剩一个实例武装，
+   等于用另一种方式悄悄坏掉。这条不看日志会漏。
+
+### 4.6 搭这个真实环境时踩的两个坑（都属于「静默失效」型）
+
+1. **master key 必须精确 32 字节**（`email/crypto.go:22-24`）。第一次给了 45 字符：
+   `NewCrypto` 报错 → `emailCrypto` 为 nil → `main.go:439` 的 else 分支不进 →
+   **整个 email 块（fetcher/scheduler/SetPipelineRunner）被跳过**。进程照常启动、
+   `/healthz` 照常 200，**日志里连一行 WARN 都没有**。我一度以为是接线问题，
+   去查 `main.go` 的 `SetPipelineRunner`。真正的判据是日志里必须出现子系统
+   自己的启动行：`Email scheduler started (...)` +
+   `[email/scheduler] daily pipeline runner injected (hour=N)` +
+   `[email/scheduler] pipeline scheduled at <ISO>`。三行缺一 ⇒ 子系统没起来。
+2. **长跑实例不能用 `& exe | Tee-Object`**。工具/会话超时杀掉宿主 shell 时
+   管道一起死、子进程变孤儿、日志停在 14 行——我差点把「日志里没有
+   pipeline scheduled」误读成「scheduler 没启动」。真相是日志管道断了、
+   实例其实在服务。必须 `Start-Process -RedirectStandardOutput/-RedirectStandardError`。
+   孤儿判据：进程还在 + 端口在 listen + 日志不再增长 ⇒ 是日志坏了不是程序坏了。
+
+（顺带：PowerShell 的 `param(...)` 必须是 .ps1 的**第一条语句**，放在
+`$ErrorActionPreference` 之后会被当普通命令执行。）
 
 ---
 
@@ -270,10 +326,37 @@ the two ClaimDue windows DID overlap — concurrency was real
 ### 7.1 08:00 的止血（最紧急）
 
 代码修的是"以后"。**18077 / 18100 上跑着的旧二进制不会因此改变行为**，
-它们仍会在 08:00 各跑一轮 ⇒ 最多 102 条重复推送。
+它们仍会在 08:00 各跑一轮。
 
 零代码止血只有一条路：**在 08:00 前停掉 18077 和 18100**。
 它们是并发会话的验证环境，我不能擅自停。
+
+**【本节数字已重算·2026-10-03 02:56】** 本文初稿写的「24 行 → 最多 126 行
+（最多 102 条重复推送）」**两个数都是错的**，来源是过期的 `pending_high=24`
+基线，以及一处算术错误。重算证据：`logs/zz-8am-pending-take4-20261003.{sql,txt}`
+（psql exit=0 / stderr 空，只读，全查询显式限定 `opencode_pocket.`）：
+
+```
+M0  notified_at / deleted_at : bigint, column_default=0, is_nullable=NO   ← 0 才是"空"
+M2  total_emails=180, high_total=59
+M3  notifications_now = 24
+M4  notified_at 分布：0 → 156 封（其中 high 35 封）
+                    1790890713 (2026-10-02 05:38:33) → 24 封（全部 high）
+M5  pending_high = 35
+```
+
+正确的算术：
+
+| 情形 | notifications 总行数 |
+|---|---|
+| 现在 | 24 |
+| 08:00 只跑 1 个实例（修复后应有结果） | 24 + 35 = **59** |
+| 08:00 跑 3 个实例（未修复） | 24 + 35×3 = **129** |
+| ⇒ **重复推送多出来的行** | **70** |
+
+08:00 之后唯一该断言的数字是 **59**；若是 129，说明修复没生效（或旧实例未停）。
+（并发会话在 §26 独立算出了同样的 35 / 59，证据文件
+`logs/zz-8am-pending-take3-20261003.*`；两轮独立复核一致。）
 
 ### 7.2 推送
 
