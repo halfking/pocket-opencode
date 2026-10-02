@@ -1577,3 +1577,93 @@ pocket_crypto_cfg = {"fieldEncryption":"disabled","hasMasterPassword":true,...}
 把"哪些本地 id 该回收"抽成纯函数（例如 `orphansToDrop(localIds, serverIds, dirtySet)`），
 再用**能让两条路径给出不同结果**的夹具测它，并配 `email-cache-heal` 那条
 `local-ahead` 信号的用例。
+
+## 26. 08:00 基线刷新（03:15）：§11 的 34/58 已漂移，且我**在半小时内踩了两次同一个坑**
+
+### 26.1 我把同一个错误犯了第二次
+
+§25 里我因为 `deleted_at IS NOT NULL` 判出「180 封全部软删」，实际
+`deleted_at` 是 `bigint NOT NULL DEFAULT 0`、**0 = 未删**。我当场把这条写进了记忆。
+
+然后**紧接着的下一条查询**（`zz-8am-pending-take2`）我写了
+`notified_at IS NULL`，得出 `pending_high = 0`、并差点报成
+「08:00 已经没活可干了」。`notified_at` 是**完全同构**的一列：
+
+```
+ column_name  | data_type | column_default | is_nullable
+--------------+-----------+----------------+------------
+ notified_at  | bigint    | 0              | NO        <- 0 = 未通知
+ deleted_at   | bigint    | 0              | NO        <- 0 = 未删
+ processed_at | bigint    | (空)           | YES       <- 这列才允许 NULL
+ updated_at   | bigint    | (空)           | YES
+```
+
+正确判据是 `notified_at = 0`。两次都是 **exit=0、stderr 空、结果排版正常**，
+而且第二次的假结论（"今天没活干"）比第一次更诱人——它正好是我想听到的答案。
+
+**规则**：本表所有「时间戳型状态列」在写判据前，先
+`information_schema.columns` 读 `column_default` 与 `is_nullable`，
+**不许凭列名猜 0/null 的含义**。已在
+`zz-8am-pending-take3-20261003.sql` 的 M0 段固化成每次查询都跑的自检。
+
+### 26.2 刷新后的真值（`logs/zz-8am-pending-take3-20261003.out.txt`，exit=0 / stderr 空）
+
+| 量 | §11 记的（02:00 前） | 03:15 实测 | 变化 |
+|---|---:|---:|---|
+| `emails` 总数 | 179 | **180** | +1 |
+| `importance` 为空 | 4 | **0** | 4 封已被分类 |
+| eligible（已分类） | 175 | **180** | +5 |
+| `importance='high'` | 58 | **59** | +1 |
+| `notified_at > 0` | 24 | **24** | 不变 |
+| `notified_at = 0` | 155 | **156** | +1 |
+| **`pending_high`（08:00 的输入）** | **34** | **35** | **+1** |
+| `notifications` 总数 | 24 | 24 | 不变 |
+
+⇒ **§11 与 §15.3 写的「34 条积压」「24 + 34 = 58」都要改成 35 与 59。**
+今晚对账若按 58 去核，会得出「少推了一条」的假结论。
+
+### 26.3 08:00 至今**从未成功跑过**的硬证据
+
+`notified_at` 全表只有两个取值：
+
+```
+ notified_at |         at          |  n
+------------+---------------------+-----
+           0 | 1970-01-01 08:00:00 | 156
+ 1790890713 | 2026-10-02 05:38:33  |  24
+```
+
+- 那 24 条全部是 `high`，且**同一秒**写入 ⇒ 一次推送，且发生在
+  **10-02 05:38:33**（一次按需/手动运行，不是 08:00 定时）。
+- 定时任务排在 **2026-10-03T08:00:00+08:00**，到那一刻**一次都还没到过**。
+- 今晚 08:00 是这条链路的**首次定时执行**。若它跑成，
+  `notifications` 应从 24 涨到 **59**；这就是今晚唯一该断言的数字。
+
+### 26.4 仍然没有去重兜底（§18 的结论复查）
+
+`pg_indexes` 实测（`logs/zz-8am-pending-take2-20261003.out.txt` K5）：
+
+```
+ notifications_pkey    UNIQUE (id)                      <- 主键，无业务含义
+ idx_notif_unread      (workspace_id, read_at)          <- 非唯一
+ idx_notif_ws_time     (workspace_id, created_at DESC) <- 非唯一
+```
+
+**没有任何「同一封邮件只能有一条提醒」的唯一约束。** §15.3 表格里那三个
+生产 schema 实例各排了一次 08:00，若跨进程锁不生效，去重只靠
+`MarkEmailsNotified` 写在推送循环**之后**这一条时序。结论不变。
+
+### 26.5 幽灵卡根因带来的一个可核对数字
+
+服务端级联是干净的（`zz-8am-baseline-take2` J 段）：
+
+```
+ orphan_emails | orphan_invoices
+---------------+-----------------
+             0 |               0
+```
+
+⇒ 今晚 08:00 之后，若 `J` 段仍为 0 且 `orphan_emails` 没涨，
+就说明流水线没有重新造出孤儿；反之若涨了，说明它会为新账号重新采集，
+届时设备端又会多出一批「服务端有、本地没有」的**反向**缺口——
+那正是 `email-cache-heal` 的 `server-ahead` 方向覆盖的，无需新代码。
