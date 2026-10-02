@@ -4,7 +4,7 @@
 #         配合 adb reverse tcp:<设备端口> tcp:<宿主后端端口>
 #         POCKET_DEVICE_PORT 指定设备端口、POCKET_API_BASE 指定宿主端口
 #
-# ── 2026-10-03 第三次重写：登录动作从本 flow 移到 harness ──────────────
+# ── 2026-10-02 第三次重写：登录动作从本 flow 移到 harness ──────────────
 #
 # 1) 为什么移走：Maestro 实测把 `${POCKET_DEV_PASS}` 展开成**字面量
 #    "undefined"**（.maestro/_probe-env.yaml 坐实：密码框内容
@@ -37,7 +37,7 @@
 #     当**会话存活**的守卫：token 失效时 client.ts:53 forceReauth 会把
 #     App 弹回 #/login，这条断言就是那时候红的。
 #
-# ⚠️ 2026-10-03 删掉了一条恒真断言：原 `- extendedWaitUntil: visible: "🟢"`
+# ⚠️ 2026-10-02 删掉了一条恒真断言：原 `- extendedWaitUntil: visible: "🟢"`
 #    被注释成「WebSocket 已连上」——**那是错的**。TasksView.vue:42 的
 #    `{{ triage.hasAttention ? '🔴' : '🟢' }}` 是**任务分诊徽章**，不是连接
 #    状态；且它在「0 个运行中任务」的健康态下同样显示 🟢「全部正常 · 0」，

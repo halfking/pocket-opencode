@@ -69,7 +69,7 @@ Write-Host ("[pkg] " + ("$pkg" -replace '^\s+', ''))
 # "[backend] 192.168.31.20:18099 reachable = True" - a green line that was
 # true about the host while saying nothing about the only thing that matters.
 #
-# Measured on the handset (2026-10-03, Redmi 2411DRN47C / Android 14,
+# Measured on the handset (2026-10-02, Redmi 2411DRN47C / Android 14,
 # adb 192.168.31.19:5555): at the time this check was written the device could
 # not even ARP-resolve 192.168.31.20 (AP client isolation) while the host
 # check said True. Re-measured later the same day, all three now return 200.

@@ -1,6 +1,6 @@
 # Maestro 真机功能流 · 任务写路径（创建 → 列表回显 → 进详情）
 #
-# ✅ 2026-10-03：不再是半成品，可以当回归测试跑了。
+# ✅ 2026-10-02：不再是半成品，可以当回归测试跑了。
 #    此前第 6 步是**故意失败**的（一句永不成立的断言，用来导出任务详情页的
 #    可访问性树），文件头标着「不要当回归测试」。那一轮真跑（2026-10-02_224548）
 #    导出成功后已补成真断言，前 5 步在同一次运行里全过。
@@ -44,7 +44,7 @@
 appId: com.kaixuan.opencode.pocket
 ---
 # ---------- 0. 前置：harness 已真实登录，起点是 #/ai ----------
-# ⚠️ 2026-10-03：原先这里是 `- runFlow: _login.yaml`。但 _login.yaml 的登录走
+# ⚠️ 2026-10-02：原先这里是 `- runFlow: _login.yaml`。但 _login.yaml 的登录走
 #    Maestro 的 `inputText: ${POCKET_DEV_PASS}`，而 Maestro 实测把它展开成
 #    **字面量 "undefined"**（.maestro/_probe-env.yaml 坐实：框内容
 #    adminPWLEN-undefined）。登录已改由 scripts/maestro-run.mjs 的 preflight
@@ -123,10 +123,10 @@ appId: com.kaixuan.opencode.pocket
     timeout: 25000
 - assertVisible: { text: "Maestro任务.*" }
 
-# ---- 6. 进详情：从列表进详情页，标题必须带过去（2026-10-03 补完）----
+# ---- 6. 进详情：从列表进详情页，标题必须带过去（2026-10-02 补完）----
 # ⚠️ 这一步此前是**故意失败**的（第 6 步写着一句永不成立的断言，用来导出
 #    详情页的可访问性树），文件头也标着「半成品，不要当回归测试」。
-#    2026-10-03 真跑一轮导出后已补完，现在它是一条真的会红的回归。
+#    2026-10-02 真跑一轮导出后已补完，现在它是一条真的会红的回归。
 #    证据：~/.maestro/tests/2026-10-02_224548/tasks-crud/screen-hierarchy/
 #    step-024-*.json（43 个文本节点，摘录见下）。抽取脚本
 #    scripts/_dump-a11y.mjs 的字段名要注意：文本在 **attributes.text**，

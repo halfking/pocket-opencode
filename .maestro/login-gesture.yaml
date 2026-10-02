@@ -1,6 +1,6 @@
 # Maestro 真机功能流 · 登录表单的**软键盘手势**路径
 #
-# 为什么需要这条单独一条（2026-10-03）：
+# 为什么需要这条单独一条（2026-10-02）：
 #   §4.82 之后，登录改由 maestro-run.mjs 的 preflight 用 CDP 填表单，
 #   「谁来敲键盘」换成了 CDP。这带来一个必须补的覆盖空洞：
 #   **Maestro 自己那套手势（tap 输入框 → 软键盘 → inputText → hideKeyboard →
@@ -44,7 +44,7 @@ appId: com.kaixuan.opencode.pocket
 - inputText: "admin"
 
 # ⚠️ 这里的中间 hideKeyboard 是**防御性**的，不是被证明必要的。
-#   2026-10-03 做过负控：复制本文件、只删掉两次 tap 之间这一次 hideKeyboard，
+#   2026-10-02 做过负控：复制本文件、只删掉两次 tap 之间这一次 hideKeyboard，
 #   重跑仍然 `2/2 Flows Passed` ⇒ 在这台设备（720x1640）上，键盘并没有遮住
 #   密码框，Maestro 的 tapOn 照样移到了焦点。
 #   保留它的理由只是「让每一步不依赖上一步的键盘状态」，零成本；

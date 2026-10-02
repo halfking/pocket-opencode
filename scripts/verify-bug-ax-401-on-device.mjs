@@ -121,7 +121,7 @@ async function ensureDevicePath(phase) {
   // 从设备自己的网络栈验归属。⚠️ 这里必须**现签一枚新 token**，不能用 real.token：
   // 换 JWT secret 之后 real.token 正是被作废的那枚，拿它探路必然 401，
   // 会被读成"设备没走到我的后端"——而真实情况是设备走得好好的，
-  // 是那枚 token 该死。2026-10-03 实测在这个假警报上栽了一轮。
+  // 是那枚 token 该死。2026-10-02 实测在这个假警报上栽了一轮。
   // 现签的 token 对当前后端必然有效，于是这个检查只回答一件事：
   // 设备现在能不能走到我手上这个后端。
   const fresh = await api('/api/auth/login', { method: 'POST', body: { username: 'admin', password: PASS } })
@@ -199,7 +199,7 @@ async function openSession(pid) {
     const m = JSON.parse(e.data)
     if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); return }
     // 记**全量** /api/*，不只 /api/tasks。
-    // 2026-10-03 实测踩到：401 可能由 /api/auth/refresh 先触发（http.ts 早就有兜底），
+    // 2026-10-02 实测踩到：401 可能由 /api/auth/refresh 先触发（http.ts 早就有兜底），
     // 而不是 /api/tasks（client.ts:53 才是 BUG-AX 的修复点）。只记 /api/tasks 时，
     // 这两种情况在输出里长得一模一样，只能靠猜——而猜错就会把
     // 「refresh 兜底生效」误报成「BUG-AX 修复生效」。
@@ -245,7 +245,7 @@ async function openSession(pid) {
       const d = r.result.exceptionDetails
       // ⚠️ d.text 恒为 "Uncaught"。真正的信息在 exception.description
       // （例如 "SyntaxError: Illegal return statement"）。只读 d.text 会把一眼可查的
-      // 语法错误报成"未知错误"——2026-10-03 就这样白卡了一轮。
+      // 语法错误报成"未知错误"——2026-10-02 就这样白卡了一轮。
       throw new Error(`页内求值抛错（${what}）：${d.exception?.description || d.text || '(无详情)'} @line${d.lineNumber} col${d.columnNumber}`)
     }
     const v = r?.result?.result?.value
@@ -291,7 +291,7 @@ async function plantSession() {
   const s1 = await openSession(await launchApp('写入状态'))
   // ⚠️ 必须先等 App 的启动逻辑跑完再写。App 启动时会做自己的鉴权初始化，
   // 读到空的 localStorage 就 clearLocal() 清掉 4 个键（auth.ts clearLocal）。
-  // 2026-10-03 实测：这个清理发生在我们写入**之后**，刚写进去的 token 被抹掉，
+  // 2026-10-02 实测：这个清理发生在我们写入**之后**，刚写进去的 token 被抹掉，
   // 读回 0 字符，报 WRITE_VERIFY_FAILED。写入和 App 的启动清理是竞态，
   // 等它跑完再写才不会输。
   await sleep(8000)
@@ -347,7 +347,7 @@ async function probeTasks(label) {
   await sleep(9000)                                   // 等 store 初始化 + 首屏
 
   // 这个进程实际持有的 token。**不能**要求它与我们写进去的逐字节相等：
-  // App 启动会 POST /api/auth/refresh 做滑动续期，2026-10-03 实测冷启动后
+  // App 启动会 POST /api/auth/refresh 做滑动续期，2026-10-02 实测冷启动后
   // token 同为 291 字符但内容已变。真正的不变量是「它仍被后端接受」。
   const held = (await s.evStrict(`localStorage.getItem('pocket_token') || ''`, '读冷启动 token')) || ''
   const accept = held ? await api('/api/tasks', { token: held }) : { status: 0 }
@@ -355,7 +355,7 @@ async function probeTasks(label) {
   console.log(`  冷启动落在 = ${await s.evStrict('location.hash', '读冷启动 hash')}`)
 
   // ⚠️ 这里**不能**清 netLog。数据是 TasksView 在冷启动挂载时取的（它走全局 store
-  // 缓存，换路由不会重新拉），2026-10-03 实测清掉之后控制支就再也看不到
+  // 缓存，换路由不会重新拉），2026-10-02 实测清掉之后控制支就再也看不到
   // /api/tasks，尽管页面上夹具任务明明渲染着。启动期的请求正是要观测的对象。
   await sleep(4000)
   await s.evStrict(`location.hash = '#/more'`, '跳离')
@@ -430,7 +430,7 @@ if (!cOk) {
     console.log('  判定：❌ 判据不可用（anti-vacuity）—— 会话并未真的被作废，"App 没跳登录"什么都不能说明')
   } else {
     // 作废之后必须**冷启动**而不是原地换路由：TasksView 走全局 store 缓存，
-    // 原地换路由不会重新拉数据（2026-10-03 实测）。新进程 = 空 store，
+    // 原地换路由不会重新拉数据（2026-10-02 实测）。新进程 = 空 store，
     // 挂载时必然重新拉一次 /api/tasks。
     const s = await openSession(await launchApp('作废后冷启动'))
     await sleep(9000)

@@ -10,7 +10,7 @@
 //
 // ⚠️ 全部 ASCII。带中文的 WHERE 条件经 PowerShell 传给 psql 会报
 //    `invalid byte sequence for encoding "UTF8": 0xc8 0xce`（GBK 字节），
-//    2026-10-03 踩过。标题 `Maestro任务` 的 ASCII 前缀是 `Maestro`，
+//    2026-10-02 踩过。标题 `Maestro任务` 的 ASCII 前缀是 `Maestro`，
 //    用 `title LIKE 'Maestro%'` 即可，不需要在命令行传任何非 ASCII 字节。
 //
 // 用法：node scripts/tasks-crud-fixture.mjs [--dry]
