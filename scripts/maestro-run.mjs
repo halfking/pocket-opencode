@@ -372,10 +372,37 @@ async function ensureBackend() {
   return false
 }
 
+/**
+ * 唤醒并解锁设备。
+ *
+ * 2026-10-02 实测踩到：设备在无人操作时会自动熄屏，`mWakefulness=Asleep`。
+ * 这时 `monkey` 的启动意图发得出去，App 进程也真的会起来（pidof 有值），
+ * 但**屏幕上没有任何窗口**，于是下面那个"等进前台"的检查必然 60s 超时，
+ * 报出来的是「App 60s 内未进入前台，中止」—— 一句指向 App 的报错，
+ * 真因却是设备在睡觉。App 到底能不能起，跟它一点关系都没有。
+ *
+ * keyguard 同理：MIUI 的锁屏会让焦点停在 com.miui.home。
+ */
+function wakeDevice() {
+  try {
+    adb(['shell', 'input', 'keyevent', '224'], 15000)          // KEYCODE_WAKEUP
+    adb(['shell', 'wm', 'dismiss-keyguard'], 15000)
+    adb(['shell', 'input', 'keyevent', '82'], 15000)           // KEYCODE_MENU，解锁兜底
+    adb(['shell', 'svc', 'power', 'stayon', 'true'], 15000)   // 测试期间别再睡
+  } catch (e) {
+    // 唤醒失败不直接判死：部分设备/模拟器没有 keyguard，dismiss 会报错。
+    // 真正要不要继续，交给后面的前台检查去判。
+  }
+  const awake = /mWakefulness=Awake/.test(adb(['shell', 'dumpsys', 'power'], 20000) || '')
+  console.log(awake ? '[preflight] 设备已唤醒并保持常亮 ✅' : '[preflight] ⚠️ 设备唤醒未确认，后续前台检查可能失败')
+  return awake
+}
+
 async function preflight() {
   if (!(await ensureBackend())) return false
   if (!(await assertDeviceReachesBackend())) return false
   if (!(await ensureDriver())) return false
+  wakeDevice()
   console.log('[preflight] 强停并重新启动 App（绕开 MIUI 吞掉 force-stop 后启动意图的问题）')
   try { adb(['shell', 'am', 'force-stop', PKG]) } catch { /* 本来就没跑 */ }
   await sleep(1500)
@@ -401,26 +428,41 @@ async function preflight() {
   return false
 }
 
-// 2026-10-02 修复：这里原本从 Go 源码里正则抓 `devPass = "..."` 常量。
-// 那天做安全整改时**有意删掉了那个硬编码口令**（server_assistant.go 现在是
-// `devPass := s.cfg.DevAuthPass`，拿不到配置就关闭 dev 旁路），于是本脚本
-// 每天都在第 2 步 exit(2)，整条真机 Maestro 链路直接不可用——而且报错信息
-// （"未能从后端源码定位 dev 口令常量"）指向的是一个已经不存在的东西。
+// ── dev 口令来源 ──────────────────────────────────────────────────────
+// 2026-10-02 修复（两侧独立发现同一个问题，这里合并两侧增量）：
 //
-// 正确的来源是环境变量：服务端读的就是 POCKET_AUTH_PASS，
-// 启动 pocketd 的那个 shell 里本来就有。改读 env 之后，
-// 「口令不进仓库」这个安全属性一点没变（它本来就不在仓库里，是从源码抓的），
-// 反而更不容易和实际配置漂移。
+// 本脚本原先用正则从 backend/internal/server/server_assistant.go 抠
+// `devPass = "…"` 常量。那天的安全整改**有意删掉了那个硬编码口令** ——
+// server_assistant.go 现在是 `devPass := s.cfg.DevAuthPass`，拿不到配置就
+// 关闭 dev 旁路；config.go 的 DevAuthPass 读 POCKET_AUTH_PASS 且**无缺省值**；
+// internal/repohygiene/secrets_test.go 会把硬编码口令判成违规。
 //
-// 顺序：POCKET_AUTH_PASS 环境变量 -> 旧版源码常量（仅当老 checkout 还在用）。
+// 于是本脚本每天都在第 2 步 exit(2)，整条真机 Maestro 链路不可用，而报错
+// （"未能从后端源码定位 dev 口令常量"）指向的是一个**已经不存在的东西** ——
+// 典型的「报错指向错误原因」。
+//
+// 现在的取值顺序（三者取第一个非空）：
+//   1. POCKET_DEV_PASS   —— 本 harness 专用，与服务端变量不同名，
+//                           避免"给 harness 设的值顺手把服务端也改了"
+//   2. POCKET_AUTH_PASS  —— 服务端真正读的那个
+//   3. 源码常量          —— **仅当老 checkout 还在用**时兜底（不新增任何
+//                           硬编码口令，只是读一个已经存在的）
+//
+// 不设时不猜、不用明文兜底：报错里写明**两个值必须一致**。不一致的表现
+// 极具误导性 —— 登录 401 → 任务列表空 → 看起来像"列表功能坏了"（见 BUG-AX）。
 const src = readFileSync(GO, 'utf8')
-const devPass = process.env.POCKET_AUTH_PASS || (src.match(/devPass\s*=\s*"([^"]+)"/) || [])[1]
-if (!devPass) {
-  console.error(
-    '拿不到 dev 口令。请设置 POCKET_AUTH_PASS 环境变量，' +
-    '并确保它与启动 pocketd 时用的 POCKET_AUTH_PASS 一致。\n' +
-    '（不提供明文兜底：口令只从环境来，不落仓库、不进命令行。）'
-  )
+const DEV_PASS = process.env.POCKET_DEV_PASS
+  || process.env.POCKET_AUTH_PASS
+  || (src.match(/devPass\s*=\s*"([^"]+)"/) || [])[1]
+  || ''
+if (!DEV_PASS) {
+  console.error('[preflight] 未提供 dev 口令。')
+  console.error('  本仓库已移除源码里的硬编码 devPass（internal/repohygiene 会判违规），')
+  console.error('  口令必须显式提供，并且**同一个值**要同时给到两处：')
+  console.error('    $env:POCKET_DEV_PASS="<口令>"      # 本 harness，给 Maestro flow 用')
+  console.error('    $env:POCKET_AUTH_PASS="<口令>"     # 起 pocketd 时用')
+  console.error('  两者不一致的表现极具误导性：登录 401 -> 任务列表空 -> 看起来像列表功能坏了。')
+
   process.exit(2)
 }
 
@@ -456,7 +498,8 @@ await resetAppAuth()
 // 2026-10-01 13:40 实测踩到过「Maestro 把 ${POCKET_DEV_PASS} 展开成字符串
 // "undefined"」，现场只留下一条 assert `^undefined$` 不成立，根因看不见。
 // 这行让「变量到底传没传过去」一眼可见（口令本身仍不落 stdout）。
-console.log(`[preflight] 注入子进程：POCKET_MASTER=${(process.env.POCKET_MASTER || 'PocketTest2026').length} 字符 / POCKET_DEV_PASS=${(devPass || '').length} 字符`)
+
+console.log(`[preflight] 注入子进程：POCKET_MASTER=${(process.env.POCKET_MASTER || 'PocketTest2026').length} 字符 / POCKET_DEV_PASS=${DEV_PASS.length} 字符`)
 
 const SYSTEM_DIALOG_FLOW = '.maestro/_dismiss-system-dialogs.yaml'
 const args = ['--device', DEVICE, 'test', '--no-reinstall-driver', SYSTEM_DIALOG_FLOW, ...flows]
@@ -466,7 +509,8 @@ const r = spawnSync(MAESTRO, args, {
   shell: true,
   env: {
     ...process.env,
-    POCKET_DEV_PASS: devPass, // 只进子进程 env
+
+    POCKET_DEV_PASS: DEV_PASS, // 只进子进程 env
     // 本地 SQLCipher 主密码是测试装置上本会话约定的值，不是仓库内推导出来的。
     // 仍然只经 env 传递，避免出现在 flow 文件里。
     POCKET_MASTER: process.env.POCKET_MASTER || 'PocketTest2026',

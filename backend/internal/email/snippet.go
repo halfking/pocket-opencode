@@ -33,7 +33,7 @@ import (
 //     会在多字节字符中间劈开，产生用户可见的乱码（U+FFFD）。
 //
 // 任何一步都失败时返回空串——宁可摘要为空，也不要把 MIME 头转储给用户看。
-// ��里没有"退回原文"这条兜底，那正是这个缺陷本身。
+// 这里没有"退回原文"这条兜底，那正是这个缺陷本身。
 func DeriveSnippet(raw []byte, maxRunes int) string {
 	if len(raw) == 0 {
 		return ""
@@ -57,14 +57,27 @@ func DeriveSnippet(raw []byte, maxRunes int) string {
 		if err != nil {
 			continue
 		}
-		if t := normalizeWhitespace(msg.TextBody); t != "" {
-			return truncateRunes(t, maxRunes)
+		// 两条正文都要过 containsMIMESource。
+		//
+		// 判据跑在**未压平**的 TextBody / HTMLBody 上，不是压平后的 t / h。
+		//
+		// 这一点是本轮踩过的坑，代价是三条「不许泄漏」的护栏全绿而函数
+		// 在实泄：containsMIMESource 的行锚点判据（^Content-Type: / ^--…）
+		// 逐行匹配，压平之后整段变成一行，锚点全部失效；而压平后的那份
+		// 恰恰是**真正会被返回给用户**的字符串。判据必须跑在它成立的那个
+		// 输入上——顺带 token 判据（reMIMEHeaderToken / reBoundaryToken）
+		// 与位置无关，压平后仍然有效，两者缺一不可。
+		if t := normalizeWhitespace(msg.TextBody); t != "" && !containsMIMESource(msg.TextBody) {
+			return truncateRunes(stripTrailingBoundary(t), maxRunes)
 		}
-		if h := htmlToText(msg.HTMLBody); h != "" {
+		if h := htmlToText(msg.HTMLBody); h != "" && !containsMIMESource(msg.HTMLBody) {
 			return truncateRunes(h, maxRunes)
 		}
-		// 解析成功但没有正文：常见于只拉到了 header 的 <partial> fetch。
-		// 下面再试一次「纯文本」路径，但**不**再退回原始字节。
+		// 解析成功但正文本身就是 MIME 源码（TextBody 聚合进了内层报文原文），
+		// 或者压根没有正文（只拉到 header 的 <partial> fetch）。
+		// 两种都**不能**退回原始字节——那正是 2026-10-03 真机上
+		// 邮件列表 5/5 封 snippet 直接显示 `------=_Part_… Content-Type: …`
+		// 的成因。继续往下走第 2 步的纯文本/HTML 判定。
 		break
 	}
 
@@ -122,6 +135,104 @@ func DeriveSnippet(raw []byte, maxRunes int) string {
 	//    宁可返回空串，也不把 Content-Type / boundary 转储给用户看 ——
 	//    「退回原文」正是这个缺陷本身。
 	return ""
+}
+
+// SnippetFromParsed 从已解析的邮件里取一行可展示的摘要。
+//
+// ## 为什么要单独一个函数
+//
+// 2026-10-03 真机实测（Redmi 2411DRN47C / Android 14）：邮件列表的
+// snippet 直接显示 MIME 源码，5/5 封全中，开头就是
+//
+//	------=_Part_8505717_93977514.1790821420306
+//	Content-Type: text/html; charset=utf-8
+//
+// 根因不在解析器，而在出口：fetcher.go 当时写的是
+//
+//	em.Snippet = truncateStr(strings.TrimSpace(parsed.TextBody), 500)
+//
+// TextBody 是**所有 text/plain 部件的聚合**（mime.go 里 `out.TextBody += body`）。
+// 对 `multipart/mixed` 里嵌一整封内层报文原文的形态（企业网关转发的常见形态），
+// 被聚合进来的就是那封内层报文——boundary 行和 Content-* 头一起进了摘要。
+//
+// DeriveSnippet 里已经写明「这里没有『退回原文』这条兜底，那正是这个缺陷本身」，
+// 但它只用在 HTMLBody 的回退分支上，主路径绕过了它。本函数把那条不变量
+// 收到**所有**取摘要的出口都必须经过的地方。
+//
+// ## 判据为什么跑在未压平的原文上
+//
+// 第一版这里写的是
+//
+//	if t := normalizeWhitespace(msg.TextBody); t != "" && !looksLikeMIMEStructure(t)
+//
+// 两处都错，且互相掩护：
+//   · looksLikeMIMEStructure 的行锚点在压平后全部失效（t 变成一行）；
+//   · 就算锚点没失效，t 才是**真正被返回**的那份字符串，判据跑在别的
+//     字符串上，绿灯不指向用户看到的东西。
+//
+// 结果是本函数对着实泄的输入返回 PASS，护栏 3/3 全绿。修法见
+// containsMIMESource 的注释。
+func SnippetFromParsed(msg *ParsedMessage, maxRunes int) string {
+	if msg == nil {
+		return ""
+	}
+	if maxRunes <= 0 {
+		maxRunes = 500
+	}
+	// text/plain 优先（已解码，无需再剥标签）。
+	if t := normalizeWhitespace(msg.TextBody); t != "" && !containsMIMESource(msg.TextBody) {
+		return truncateRunes(stripTrailingBoundary(t), maxRunes)
+	}
+	// 只有 HTML 时剥标签。判据同样跑在未压平的 HTMLBody 上。
+	if h := htmlToText(msg.HTMLBody); h != "" && !containsMIMESource(msg.HTMLBody) {
+		return truncateRunes(h, maxRunes)
+	}
+	// 两条都不可用：宁可返回空串，也不把 MIME 源码转储给用户看。
+	return ""
+}
+
+// containsMIMESource 判断一段文本里是否混进了 MIME 源码。
+//
+// ## 为什么不能只用 looksLikeMIMEStructure
+//
+// looksLikeMIMEStructure 的两条主力判据都是**逐行正则**（`^Content-Type: …`、
+// `^--…`），只在**保留换行的原文**上成立。而摘要出口返回给用户的字符串
+// 绝大多数已经被 normalizeWhitespace 压成一行——
+//
+//	------=_Part_8505717_… Content-Type: text/html; charset=utf-8 <html>…
+//
+// 压平之后行首锚点全部失效，判据形同虚设。2026-10-03 本轮实测：派生函数
+// 明明在整段转储 MIME 源码，三条「不许泄漏」的护栏却全绿——检测器只会
+// 找行首，于是对着一个单行字符串永远找不到 `^Content-Type:`。
+//
+// ## 两层判据，缺一不可
+//
+//  1. 行锚点判据（looksLikeMIMEStructure）：保留换行的原文上最准，保留；
+//     它还能识别「开头第一行就是一个头字段」（looksLikeMIME）。
+//  2. token 判据（reMIMEHeaderToken / reBoundaryToken）：与位置无关，
+//     压平之后仍然有效。
+//
+// ## token 判据的误伤控制
+//
+// 边界 token 只认 `--` 后面紧跟 `=` / `_` / `-` 或 `part_` / `Part_` 的形态
+//（`------=_Part_…`、`--_000_10f7b8d35f184af`、`--part_8057f3aacb…` 都是真机
+// 实测形态）。不写成宽松的 `--[A-Za-z]{6,}`：那会把正文里的
+// 「COVID-19--related」「见附件 --」一并判成 MIME 源码，摘要直接清空，
+// 那是用一个缺陷换另一个缺陷。
+//
+// 头字段 token 允许大小写不敏感（QP 解码后可能残留大写形态），但要求
+// 前面不是字母数字（`\b`），避免把「参见 MyContent-Type 规范」误判。
+//
+// 宁可误伤也不要漏：这条函数保护的是**用户可见界面**，
+// 一次误判的代价是一封邮件没有摘要，一次漏判的代价是整段 MIME 源码
+// 铺在列表页上。
+func containsMIMESource(s string) bool {
+	if s == "" {
+		return false
+	}
+	return looksLikeMIMEStructure(s) ||
+		reMIMEHeaderToken.MatchString(s) ||
+		reBoundaryToken.MatchString(s)
 }
 
 // mimeCandidates 给出解析 MIME 时的候选输入：原样，以及「剥掉开头一行
@@ -346,6 +457,16 @@ var (
 	// 「头字段行」与「MIME 边界行」——出现这些就说明这是 MIME 源码不是正文
 	reMIMEHeaderLine = regexp.MustCompile(`(?m)^(Content-Type|Content-Transfer-Encoding|Content-Disposition|MIME-Version|Content-ID)\s*:`)
 	reBoundaryLine   = regexp.MustCompile(`(?m)^--[^\s-].*$`)
+	// 与位置无关的 token 判据：给「已被 normalizeWhitespace 压成一行」的
+	// 摘要兜底。行锚点（reMIMEHeaderLine / reBoundaryLine）在压平后失效，
+	// 而压平后的那份恰恰是要返回给用户的那一份。详见 containsMIMESource。
+	//
+	// 边界 token 刻意收紧：只认 `--` 后紧跟 `=` / `_` / `-` 或 `part_` / `Part_`。
+	// 真机实测的三种形态都覆盖到了：------=_Part_… / --_000_10f7b8d35f184af /
+	// --part_8057f3aacb3e5508e…；而「COVID-19--related」「见附件 --」不会误伤。
+	reBoundaryToken = regexp.MustCompile(`--(?:[=_-]|[Pp]art[_-])`)
+	// 头字段 token：`\b` 保证前面不是字母数字，避免「参见 MyContent-Type 规范」误判。
+	reMIMEHeaderToken = regexp.MustCompile(`(?i)\b(?:Content-Type|Content-Transfer-Encoding|Content-Disposition|Content-ID|MIME-Version)\s*:`)
 	// RFC 5322 的 field-name：可打印 ASCII，去掉冒号，且不能以空格开头。
 	reMIMEFieldName = regexp.MustCompile(`^[!-9;-~]+:[ \t]`)
 	// quoted-printable 的 =XX 转义。`=?utf-8?B?` 这类 MIME 编码字里的 `=?`

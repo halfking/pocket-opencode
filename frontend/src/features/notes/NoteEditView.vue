@@ -276,10 +276,10 @@ function goBack() {
 .tag-row { display: flex; gap: 8px; }
 .extract-btn, .video-btn {
   padding: 8px 12px; border-radius: var(--radius-md);
-  border: 1px solid var(--border); background: var(--bg-subtle); font-size: 12px;
+  border: 1px solid var(--border); background: var(--bg-subtle); font-size: var(--text-sm);
 }
 .hidden-file { display: none; }
-.media-hint { margin: 4px 0 0; font-size: 12px; color: var(--text-muted); }
+.media-hint { margin: 4px 0 0; font-size: var(--text-sm); color: var(--text-muted); }
 .domain-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .chip {
   padding: var(--space-2) var(--space-4); border-radius: var(--radius-full);
