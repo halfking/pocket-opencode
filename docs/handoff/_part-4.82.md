@@ -43,7 +43,7 @@ resetAppAuth() → CDP 登录 → post-auth 导航
 | 装机 APK 怎么构的 | `frontend/.env.android-dev`，里面是 `VITE_API_BASE=http://192.168.31.20:18099`（**LAN 地址**） |
 | 本文件上方三处注释 | 写的是「App 的 API 基址是 `http://127.0.0.1:18099`」——**与事实不符** |
 | 实际生效的基址 | `localStorage.pocket_api_base` **优先于**构建默认值（`config/api-base.ts:4`） |
-| 那个 key 里是什么 | 2026-10-03 真机读回是 `http://localhost:18099`——**上一轮调试遗留、没人断言过的值** |
+| 那个 key 里是什么 | 2026-10-02 真机读回是 `http://localhost:18099`——**上一轮调试遗留、没人断言过的值** |
 
 ⇒ 真缺陷不是「App 不走 reverse」（初版注释就是这么写的，**已被实测否掉**），
 而是「**从未断言**」。两种坏法：
