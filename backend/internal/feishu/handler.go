@@ -117,6 +117,14 @@ func PublicEntry(cfg config.Config, broadcast func(msgType string, payload inter
 				writeJSON(w, http.StatusUnauthorized, map[string]any{"code": -1, "msg": "signature invalid"})
 				return
 			}
+		} else if cfg.IsProduction() {
+			// production 一律 fail-closed。放行等于把回调端点变成任何人可伪造的公开入口：
+			// 攻击者构造一条 im.message.receive_v1 就能把内容广播进所有已连接客户端的
+			// 实时通道（2026-10-03 端到端实测确认）。
+			// 与企业微信侧一致：config.go:72-73 写明「任一为空时一律 503 拒绝，而不是放行」。
+			log.Printf("[feishu] ERROR: production 但 POCKET_FEISHU_ENCRYPT_KEY / POCKET_FEISHU_VERIFY_SECRET 皆为空，拒绝未验签事件（type=%s）", env.Type)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": -1, "msg": "signature verification not configured"})
+			return
 		} else {
 			log.Printf("[feishu] WARNING: POCKET_FEISHU_ENCRYPT_KEY and POCKET_FEISHU_VERIFY_SECRET are both unset; signature check SKIPPED (dev mode)")
 		}

@@ -154,6 +154,7 @@
     "version": "Version",
     "versionFormat": "v{version} (Build {buildNumber})",
     "buildDate": "Build Date",
+    "buildDateNote": "(설정값, 실측 빌드 시각이 아님)",
     "apiAddress": "API Address",
     "privacy": "Privacy",
     "permissionsPrivacy": "권한 및 개인정보",

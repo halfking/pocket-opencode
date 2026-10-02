@@ -35,6 +35,14 @@ type RSSConfig struct {
 	WeiboRedirectURL        string
 }
 
+// DefaultAPKDownloadPath 是 /api/app/download 的默认 APK 路径。
+//
+// 它是原 handleDownloadAPK 里硬编码的那个值搬过来的，**故意保持不变**：
+// 搬进配置的目的是让部署方能改，而不是顺手改掉现网路径。改了默认值就等于
+// 悄悄换掉一个正在被某台机器依赖的路径，而那台机器不在仓库里、也不在本轮
+// 能观察到的范围内。
+const DefaultAPKDownloadPath = "/data/www/pocket.kxpms.cn/downloads/opencode-pocket-latest.apk"
+
 // Config holds all application configuration loaded from environment variables.
 // It supports multiple deployment phases including personal assistant features,
 // AI gateway integration, email processing, and enterprise backend connectivity.
@@ -43,6 +51,13 @@ type Config struct {
 	HTTPPort                 string
 	DBPath                   string // 保留兼容；Postgres 迁移后仅用于 data 目录定位
 	DataDir                  string // POCKET_DATA_DIR：数据目录；留空则退回 Dir(DBPath)（见 ResolveDataDir）
+	// APKDownloadPath 是 /api/app/download 实际服务的 APK 文件路径。
+	//
+	// 为什么从硬编码搬进配置：原先它写死在 handleDownloadAPK 里
+	// （/data/www/pocket.kxpms.cn/downloads/opencode-pocket-latest.apk），
+	// 换一台主机、换一个域名都要改代码重新编译，而 APK 路径恰恰是最随部署
+	// 环境变化的东西。默认值与原硬编码值一致，未设置时行为不变。
+	APKDownloadPath          string // POCKET_APK_DOWNLOAD_PATH
 	PostgresDSN              string // Phase 0: pocket 后端统一数据层
 	PostgresSchema           string // pocket 私有的 PG schema 名（隔离共享 PG 上的其他模块表）
 	NPSBaseURL               string
@@ -260,6 +275,7 @@ func Load() Config {
 		HTTPPort:                 getEnv("POCKET_HTTP_PORT", "8088"),
 		DBPath:                   getEnv("POCKET_DB_PATH", "./data/pocket.sqlite"),
 		DataDir:                  getEnv("POCKET_DATA_DIR", ""),
+		APKDownloadPath:          getEnv("POCKET_APK_DOWNLOAD_PATH", DefaultAPKDownloadPath),
 		NPSBaseURL:               getFirstEnv([]string{"POCKET_INSTANCE_DISCOVERY_BASE_URL", "POCKET_NPS_BASE_URL"}, ""),
 		NPSAuthKey:               getFirstEnv([]string{"POCKET_INSTANCE_DISCOVERY_AUTH_TOKEN", "POCKET_NPS_AUTH_KEY"}, ""),
 		NPSAuthCryptKey:          getFirstEnv([]string{"POCKET_INSTANCE_DISCOVERY_AUTH_SECRET", "POCKET_NPS_AUTH_CRYPT_KEY"}, ""),

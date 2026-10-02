@@ -154,6 +154,7 @@
     "version": "バージョン",
     "versionFormat": "v{version} (ビルド {buildNumber})",
     "buildDate": "ビルド日",
+    "buildDateNote": "（設定値。実測のビルド時刻ではありません）",
     "apiAddress": "APIアドレス",
     "privacy": "プライバシー",
     "permissionsPrivacy": "権限とプライバシー",

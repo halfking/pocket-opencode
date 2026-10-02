@@ -162,21 +162,23 @@
           <div class="setting-icon"><span class="material-symbols-outlined">smartphone</span></div>
           <div class="setting-content">
             <div class="setting-label">{{ t('settings.appName') }}</div>
-            <div class="setting-value">{{ APP_VERSION.name }}</div>
+            <div class="setting-value">{{ appVersion.name }}</div>
           </div>
         </div>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">info</span></div>
           <div class="setting-content">
             <div class="setting-label">{{ t('settings.version') }}</div>
-            <div class="setting-value">{{ t('settings.versionFormat', { version: APP_VERSION.version, buildNumber: APP_VERSION.buildNumber }) }}</div>
+            <div class="setting-value">{{ t('settings.versionFormat', { version: appVersion.version, buildNumber: appVersion.buildNumber }) }}</div>
           </div>
         </div>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">event</span></div>
           <div class="setting-content">
             <div class="setting-label">{{ t('settings.buildDate') }}</div>
-            <div class="setting-value">{{ APP_VERSION.buildDate }}</div>
+            <!-- 有编译期时间戳就说明那是真实构建时刻，不必再标注；
+                 退回常量日期时才提示「这是配置值」，避免把旧日期误读成构建时间。 -->
+            <div class="setting-value">{{ appVersion.buildDate }}<span v-if="!appVersion.fromNative" class="setting-hint"> {{ t('settings.buildDateNote') }}</span></div>
           </div>
         </div>
       </div>
@@ -243,7 +245,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useApiError } from '../../composables/useApiError'
 import type { IconName } from '../../constants/icons'
-import { APP_VERSION, canDownloadApk, checkUpdate, VersionConfigUnavailableError } from '../../utils/version'
+import { APP_VERSION, canDownloadApk, checkUpdate, resolveAppVersion, VersionConfigUnavailableError, type ResolvedAppVersion } from '../../utils/version'
 import { runtimePlatform } from '../../native/runtime-platform'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
 import { http } from '../../api/http'
@@ -290,7 +292,15 @@ const redclaw = ref<{ connected: boolean | null; tenantId: string }>({
   tenantId: '',
 })
 
+// 「应用信息」显示的是**设备上真正装的那个构建**，不是 TS 常量。
+// 初值用常量保证首帧就有内容，onMounted 后被原生值替换。
+// 这样「跑的是不是最新包」终于能从界面上直接看出来——这正是 §4.74.2 缺的。
+const appVersion = ref<ResolvedAppVersion>({ ...APP_VERSION, fromNative: false })
+
 onMounted(async () => {
+  // 先解析设备真实版本：读原生失败会自己回退常量，不会中断后面的加载。
+  appVersion.value = await resolveAppVersion()
+
   // 历史版本曾把裸用户名（非 JSON）写入 pocket_user，坏值不得中断挂载流程
   // （曾导致后续 AI 网关配置加载被跳过、区块恒显"未配置"）。
   const readJSON = <T,>(key: string): T | null => {
@@ -528,6 +538,12 @@ async function handleLogout() {
 .setting-value {
   font-size: var(--text-sm);
   color: var(--text-secondary);
+}
+
+/* 「构建日期」旁的来源标注：说明这个日期是配置值而不是实测构建时间。 */
+.setting-hint {
+  font-size: var(--text-xs);
+  opacity: 0.75;
 }
 
 .setting-value.small {

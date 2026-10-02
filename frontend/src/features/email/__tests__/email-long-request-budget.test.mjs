@@ -447,3 +447,172 @@ describe('判据自检：负控必须转红', () => {
     assert.equal(pipelineWiring(broken).signal, false)
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 第三条不变式：syncNow 的客户端超时 vs 服务端**单账户**预算
+//
+// 2026-10-02 补。同一个病根（调用点没传 timeoutMs → 吃 30s 默认）在这条路径上
+// 又漏了一处：email.ts 里 classify / 发票提取 / 附件早就显式放宽到
+// LONG_REQUEST_TIMEOUT_MS，只有 syncNow 没接。
+//
+// 实测代价：23:37 一次同步里 imap.exmail.qq.com:993 握手卡住，服务端打出
+//   imap stage budget 50s exhausted … / SLOW step login took 50.001s
+// 30s 时前端已抛 TimeoutError，界面报「请求超时」，而另外 4 个账户早同步完了。
+//
+// **这条判据只保证"盖住一个账户"，不保证"盖住全部账户"**，也不是那个意思：
+// /api/emails/sync 把所有启用账户串行跑完，N 个同时卡住时最坏是 N × 单账户预算。
+// backend/internal/email/diag_hard_deadline_test.go 记录的生产实测更难看：
+// IMAP 单账户就占 80.1xx s，已经超出 fetcher.go 的 syncBudget=70s。
+// 真正的修法在服务端（把单账户工作量框进预算 / 尽快返回部分结果），那边在跟。
+// 这里能断言的上界就是 syncBudget，别把它说成比实际更��的保证。
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BACKEND_FETCHER = path.join(REPO, 'backend', 'internal', 'email', 'fetcher.go')
+
+// 模块级：第二个 describe 的负控也要读它。放在 describe 内部会让负控 3
+// 抛 ReferenceError —— 那是负控自己坏了，不是判据判红。
+const fetcherSrc = fs.readFileSync(BACKEND_FETCHER, 'utf8')
+
+/**
+ * 只替换**锚点之后第一处**匹配。
+ *
+ * 为什么不能直接用 String#replace：`email.ts` 里有 5 处
+ * `timeoutMs: LONG_REQUEST_TIMEOUT_MS,`（classify / 发票提取 / 附件…），
+ * 不带锚点的 replace 会改到**第一处**——也就是别人的调用点。
+ * 那样负控 6 看上去"改成功了"，可 syncNow 根本没被碰到，
+ * `syncNowWiring` 读出来的仍是原值 → 负控假红。
+ * 这与「验证动作必须指向被验证对象」是同一条：注入要能自证改到了目标。
+ */
+function replaceAfter(src, anchor, re, replacement) {
+  const at = src.indexOf(anchor)
+  assert.notEqual(at, -1, `找不到锚点 ${anchor}——判据可能已随重构失效`)
+  const tail = src.slice(at)
+  const m = re.exec(tail)
+  assert.notEqual(m, null, `锚点 ${anchor} 之后没有匹配 ${re}——负控样本没改成，判据坏了`)
+  return src.slice(0, at) + tail.slice(0, m.index) + replacement + tail.slice(m.index + m[0].length)
+}
+
+/**
+ * 从 fetcher.go 反推单账户同步预算（`const syncBudget = N * time.Second`）。
+ * 只认真正的 const 声明节点，注释里的同名字样不算。
+ * @returns {number|null} 毫秒
+ */
+export function syncServerBudgetMs(goSrc) {
+  const sf = ts.createSourceFile('fetcher.go', goSrc, ts.ScriptTarget.Latest, true)
+  for (const st of sf.statements) {
+    if (!ts.isVariableStatement(st)) continue
+    for (const d of st.declarationList.declarations) {
+      if (!ts.isIdentifier(d.name) || d.name.text !== 'syncBudget') continue
+      if (!d.initializer) return null
+      return evalGoDurationMs(d.initializer)
+    }
+  }
+  return null
+}
+
+/** 求 `N * time.Second` / `N * time.Millisecond` 这类表达式的毫秒数。 */
+function evalGoDurationMs(expr) {
+  if (ts.isNumericLiteral(expr)) return Number(expr.text)
+  if (!ts.isBinaryExpression(expr) || expr.operatorToken.kind !== ts.SyntaxKind.AsteriskToken) {
+    return null
+  }
+  const lhs = ts.isNumericLiteral(expr.left) ? Number(expr.left.text) : null
+  if (lhs === null || !ts.isPropertyAccessExpression(expr.right)) return null
+  const unit = expr.right.name.getText()
+  if (unit === 'Second') return lhs * 1000
+  if (unit === 'Millisecond') return lhs
+  return null
+}
+
+/**
+ * emailApi.syncNow 传给 http 的选项对象里，是否**以属性形式**接了 timeoutMs。
+ * 走 AST，注释满足不了它（负控 5 就是拿注释喂它）。
+ */
+export function syncNowWiring(src) {
+  const sf = ts.createSourceFile('email.ts', src, ts.ScriptTarget.Latest, true)
+  let found = null
+  const visit = (node) => {
+    if (found) return
+    if (ts.isMethodDeclaration(node) && node.name && node.name.getText(sf) === 'syncNow') {
+      found = node
+      return
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sf)
+  if (!found || !found.body) return { timeoutMs: false, timeoutExpr: null }
+
+  const obj = findHttpOptionsObject(found.body)
+  if (!obj) return { timeoutMs: false, timeoutExpr: null }
+  for (const p of obj.properties) {
+    if (!ts.isPropertyAssignment(p)) continue
+    if (p.name.getText(sf).replace(/['"]/g, '') !== 'timeoutMs') continue
+    return { timeoutMs: true, timeoutExpr: p.initializer.getText(sf) }
+  }
+  return { timeoutMs: false, timeoutExpr: null }
+}
+
+describe('syncNow 客户端超时 vs 服务端单账户预算', () => {
+  it('能从 fetcher.go 反推出单账户预算（反推不能空跑）', () => {
+    const budget = syncServerBudgetMs(fetcherSrc)
+    assert.notEqual(budget, null, '没从 fetcher.go 反推出 syncBudget——判据失效，不是代码有问题')
+    assert.ok(budget > 0, `反推出的单账户预算 ${budget}ms 非法`)
+  })
+
+  it('syncNow 接上了显式 timeoutMs（AST 判据，注释不算）', () => {
+    const w = syncNowWiring(apiSrc)
+    assert.equal(w.timeoutMs, true,
+      'syncNow 没有传 timeoutMs，会退回 http.ts 的默认 30s；' +
+      '一个邮件服务器握手卡住（实测 50~80s）就会让界面误报"请求超时"，' +
+      '而此时其余账户其实已经同步完成')
+    assert.equal(w.timeoutExpr, 'LONG_REQUEST_TIMEOUT_MS')
+  })
+
+  it('客户端超时严格大于服务端单账户预算', () => {
+    const server = syncServerBudgetMs(fetcherSrc)
+    const client = evalConstMs(fs.readFileSync(path.join(SRC, 'api', 'http.ts'), 'utf8'),
+      'LONG_REQUEST_TIMEOUT_MS')
+    assert.notEqual(client, null, 'http.ts 里找不到 LONG_REQUEST_TIMEOUT_MS')
+    assert.ok(client > server,
+      `LONG_REQUEST_TIMEOUT_MS=${client}ms 必须大于服务端单账户预算 ${server}ms`)
+  })
+})
+
+describe('判据自检：syncNow 的负控必须转红', () => {
+  // 负控 5：只把常量名写进注释、实际不接——判据必须不认。
+  it('只有注释提到 timeoutMs（不接）→ 接线判据转红', () => {
+    const broken = mutateAfter(apiSrc, "'/api/emails/sync'", /\r?\n\s*timeoutMs: LONG_REQUEST_TIMEOUT_MS,(?=\r?\n)/)
+    assert.notEqual(broken, apiSrc, '负控样本没有真的删掉 timeoutMs（替换没命中）')
+    const w = syncNowWiring(broken)
+    assert.equal(w.timeoutMs, false, '负控本该转红却判成了通过——说明判据在读注释')
+  })
+
+  // 负控 6：接了，但退回到 30s 量级（这正是本轮修掉的形态）。
+  it('timeoutMs 接成 30s → 预算判据转红', () => {
+    // 必须锚在 syncNow 的调用点上：email.ts 里有 5 处同名 timeoutMs，
+    // 不带锚点的 replace 会改到 classify 那个，syncNow 原封不动 →
+    // 负控假红（第一版就是这么栽的）。
+    const broken = replaceAfter(apiSrc, "'/api/emails/sync'",
+      /timeoutMs: LONG_REQUEST_TIMEOUT_MS,/, 'timeoutMs: 30_000,')
+    assert.notEqual(broken, apiSrc, '负控样本没有把 syncNow 的 timeoutMs 改成 30_000（替换没命中）')
+    // 先自证改到了目标：syncNow 的表达式必须真的变成 30_000
+    assert.equal(syncNowWiring(broken).timeoutExpr, '30_000',
+      '替换改到的不是 syncNow——负控没有作用在被验证对象上')
+    // 顺带自证没误伤别人：别处仍是原常量
+    assert.equal(pipelineWiring(broken).timeoutExpr, 'PIPELINE_TIMEOUT_MS',
+      '负控误伤了别的调用点')
+    const server = syncServerBudgetMs(fetcherSrc)
+    assert.ok(30_000 <= server, '负控本该转红却判成了通过——判据坏了')
+  })
+
+  // 负控 7：注释里塞一个假的 syncBudget，反推不许把它算进去。
+  it('注释里的 syncBudget 不计入服务端预算', () => {
+    const inflated = fetcherSrc.replace(
+      'const syncBudget = 70 * time.Second',
+      '// const syncBudget = 99 * time.Hour\nconst syncBudget = 70 * time.Second',
+    )
+    assert.notEqual(inflated, fetcherSrc, '负控样本没有插进注释（替换没命中）')
+    assert.equal(syncServerBudgetMs(inflated), syncServerBudgetMs(fetcherSrc),
+      '注释里的预算被算进去了——反推判据必须剥注释')
+  })
+})

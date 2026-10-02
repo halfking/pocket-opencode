@@ -154,6 +154,7 @@
     "version": "版本号",
     "versionFormat": "v{version} (Build {buildNumber})",
     "buildDate": "构建日期",
+    "buildDateNote": "（配置值，非实测构建时间）",
     "apiAddress": "API 地址",
     "privacy": "隐私",
     "permissionsPrivacy": "权限与隐私",

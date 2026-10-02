@@ -9446,9 +9446,9 @@ regexp.MustCompile(`(?i)\b[A-Za-z_]*(?:pass|pwd)[A-Za-z_]*\b\s*[:=]\s*` +
 | 样本 | 结果 |
 |---|---|
 | `const MASTER = process.env.POCKET_MASTER \|\| 'PocketTest2026'`（现场那行） | **不命中** |
-| `const adminPass = 'SomeRealPassword123'` | 命中 |
-| `const devPass = "SomeRealPassword123"` | 命中 |
-| `const pwd = 'SomeRealPassword123'` | 命中 |
+| `const adminPass = 'SomeRealPassword123'` | 命中 | <!-- secret-scan-ok 合成夹具：本文档在记录密钥扫描器的命中清单，示例值 SomeRealPassword123 是自造的对照样本，不是真实凭据 -->
+| `const devPass = "SomeRealPassword123"` | 命中 | <!-- secret-scan-ok 合成夹具：本文档在记录密钥扫描器的命中清单，示例值 SomeRealPassword123 是自造的对照样本，不是真实凭据 -->
+| `const pwd = 'SomeRealPassword123'` | 命中 | <!-- secret-scan-ok 合成夹具：本文档在记录密钥扫描器的命中清单，示例值 SomeRealPassword123 是自造的对照样本，不是真实凭据 -->
 
 > 抄这条正则时还踩了一个小坑：Go/RE2 的内联标志 `(?i)` 在 **JavaScript 里不认**
 > （`Invalid group`），要提到 `RegExp` 构造函数的第二个参数。而 `node --check`
@@ -9932,3 +9932,1089 @@ CLEANED:rejection CALLS=["DELETE /api/finance/SEED-123"]
 搭**独立 PG + 独立端口后端**的隔离验证环境（§4.90.3），一次解锁 6 个写路径脚本
 和一大批功能点写路径；随后把 3 个已修好清理逻辑的 finance 脚本对着隔离环境实跑，
 确认「失败路径也会删」这条不只停在负控里。
+
+# §4.91 更新通道：服务端字典序 bug 的黑盒定案 + 「设备跑的是哪个构建」改成读原生
+
+## §4.91.0 结论
+
+本轮两件事，都拿到了比上一轮更强的证据：
+
+1. **服务端版本比较的修复已在真实 HTTP 后端证明**，不再只是 go test 层面的绿。
+   方法：用 go build -overlay 从同一棵树构建两个二进制，唯一差别是
+   hasUpdateAvailable 的判定（真实现 vs 退回裸字符串 <），起两个隔离实例
+   （schema vercmp_verify、scheduler 关、邮件抓取关，共享开发库未参与），
+   打同一份请求体。latest 固定 1.10.0/build 2：
+
+   | 设备侧上报 | 期望 | 新 :8096 | 旧 :8097 |
+   |---|---|---|---|
+   | 1.9.0 / build 2 | true | **True** | **False** |
+   | 1.2.0 / build 2 | true | **True** | **False** |
+   | 1.10.0 / build 2 | false | False | False |
+   | 1.10.2 / build 2 | false | False | False |
+   | 1.9.0 / build 1 | true | True | True |
+
+   负控有判别力：同一请求两个二进制答案相反（True vs False），所以这次绿灯
+   不是恒真。证据留档 logs/vercmp-blackbox-20261003-0200.txt。
+
+2. **「设置页显示的是 TS 常量、不是设备上真装的构建」已修**（§4.91.3）。
+   这是 §4.74.2 那个坑的直接根因。
+
+## §4.91.1 :18099 不能当「旧代码」对照 —— 这条差点让我得出假结论
+
+真机点「检查更新」时我先想拿 18099 当 pre-fix 对照。查进程才发现它是
+pocketd-invoicenan-fix.exe，启动时间 **01:32:59**，而 app_version_compare.go
+的写入时间是 **01:32:57** —— 差 2 秒。并行会话是在我写完新文件**之后**
+构建的，所以那个二进制**很可能已经包含我的修复**。
+
+结论：18099 上「点了没报错」这件事，对「我的修复是否生效」**零信息量**。
+必须自建 overlay 对照对。教训：拿别人（或自己）的进程当对照之前，
+先核它的构建时刻与被测代码的写入时刻，别靠进程名猜。
+
+## §4.91.2 探针起不来时，先怀疑环境而不是判据
+
+第一次并行起两个 pocketd，8097 秒挂在启动：
+
+    task store: task migrate: ERROR: duplicate key value violates unique
+    constraint "pg_type_typname_nsp_index" (SQLSTATE 23505)
+
+不是判据的问题，是**两个进程同时在同一张全新 schema 上建表**撞了唯一约束，
+输的那个启动即死。串行化启动（等第一个 healthz 通过再起第二个）后两个都健康。
+
+一般化的教训：「命令返回了错误」先问「这是被测对象坏了，还是我没准备好环境」。
+同一形态我这轮在判据上也遇到过一次（函数体切片正则没匹配上，报的是
+「找不到 checkUpdate」而不是「判据扫错范围」）—— 判据自己坏掉时报错会伪装成
+被测对象的问题，所以判据必须自己先证明它在检查你以为的东西。
+
+## §4.91.3 已修：设置页的「应用信息」现在显示设备真实构建
+
+### 病根
+
+SettingsView 的三行直接渲染 TS 常量 APP_VERSION，于是**无论设备装的是哪个
+APK，界面恒显示** v1.2.0 (Build 2) / 2026-06-29。而 gradle 里写的是
+versionCode 3 / versionName 1.2.0-openpocket，build-mobile.mjs 两个计数器
+都不碰。
+
+后果不是「版本号难看」，而是**「设备上跑的是不是最新包」从界面上完全
+看不出来**。§4.74.2 丢的那一整轮验收就是这个形态：整轮在测过时产物，
+没有任何异常信号。
+
+### 修法（不需要产品拍板）
+
+原生才是唯一真相源。新增 resolveAppVersion()：
+
+- 原生平台走 @capacitor/app 的 App.getInfo()，拿 versionName / versionCode；
+- 任何一步失败（非原生、插件缺失、字段为空/垃圾）逐项回退到常量；
+- 结果只算一次并缓存（版本号在一进程内不会变）；
+- SettingsView 的应用名/版本号两行改读解析值，「构建日期」旁加来源标注
+  （原生拿不到构建时间，日期仍是配置值，不加标注就会让人误以为那是构建时间）。
+
+### 刻意**不做**的事：比较层仍用常量
+
+checkUpdate() 上报的 currentVersion/currentBuild **仍取 APP_VERSION 常量**，
+不是原生值。理由：原生 versionName 带 -openpocket 后缀，而服务端的版本
+比较会把预发布后缀判成比正式版旧 —— 设备明明已是最新版，却每次启动都被
+告知「发现新版本」。把原生值直接送进比较会引入一个新的 UX bug。
+
+统一版本语义（version.ts 与 build.gradle 哪套为准）仍是**产品决定**，见
+§4.91.5。判据里有一条专门钉住「比较层当前用常量」，将来产品决定落地时
+连同那条用例一起改，不让它悄悄红着。
+
+### 判据（8 条，负控实测过）
+
+frontend/src/utils/__tests__/app-version-identity.test.mjs。要点：
+
+- **5 条行为用例真 import version.ts 并调用 resolveAppVersion()**，不是源码
+  grep。注入的原生值（1.2.0-openpocket / build 3）与常量（1.2.0 / build 2）
+  **刻意不同**，所以「恒返回常量」的实现无法通过。
+- 为此给 version.ts 加了 __setNativeInfoProviderForTest()：测试环境里
+  runtimePlatform() 恒为 web，永远走回退分支，没有这个把手就只剩一半可测。
+- **负控实测**：把 normalise 改成恒返回 fallback → 恰好 2 条转红
+  （原生优先、parseInt 数字化），其余 6 条保持绿；源文件逐字节还原
+  （7453 字节 / 195 CRLF / 无 BOM）。
+- version.ts 的三个内部 import 改成显式 .ts 扩展名：tsconfig 已开
+  allowImportingTsExtensions，Vite 也能解析，这样 node --test 能直接 import
+  它跑行为用例。实测 Node 22.23 **默认就 strip types**，不需要
+  --experimental-strip-types，所以本文件在 test:all 里能正常执行、
+  **不需要加进 test-coverage-waivers.json**。
+
+## §4.91.4 全量前端测试当场抓住我的一个遗漏
+
+我给 9 个语言包里的 zh-CN / en-US 加了 settings.buildDateNote，跑全量时
+
+    locale-parity.test.mjs: zh-TW.json 缺少 1 个 key：settings.buildDateNote
+
+补齐其余 7 个（de-DE / es-ES / fr-FR / ja-JP / ko-KR / pt-BR / zh-TW）。
+这正是 locale-parity 门禁存在的意义：漏一个语言包，界面会直接显示原始 key 名。
+
+回归：全量 node scripts/run-mjs-tests.mjs = **1737 用例 / 1736 pass / 1 fail**
+（那 1 条就是上面这个 locale 遗漏，补齐后复跑全绿）；
+vue-tsc --noEmit **exit 0**。
+
+## §4.91.5 本轮遗留
+
+- **构建身份仍未统一**：本轮只让「显示」读原生，「比较」仍用常量。
+  version.ts 的 buildNumber 2 / buildDate 2026-06-29 与 gradle 的
+  versionCode 3 / versionName 1.2.0-openpocket 该以哪套为准，需要产品拍板。
+  拍板后要同步改 checkUpdate 的上报来源 + 判据里那条「仍用常量」的用例。
+- 「构建日期」本身仍无真相源：原生不提供构建时间，要真值得在
+  build-mobile.mjs 里把构建时刻 stamp 进产物。
+- 38 个 POST 端点仍未探（理由见前轮），本轮新增的 2 个探针实例已停、
+  :8096/:8097 已释放、scratch 目录已删。
+- 其余待决项（飞书 Encrypt Key、llm.kxpms.cn admin、/api/embed 的 embedding
+  模型、密码箱入口、生物认证）不变。
+
+### 下一轮建议的第一件事
+
+等构建身份的产品决定落地后，把 checkUpdate 的上报切到 resolveAppVersion()，
+并把判据里那条「仍用常量」的用例改成断言新来源 —— 一次改动同时消掉
+「界面看不出构建」和「比较基线可能过期」两个问题。
+
+# §4.92 buildDate 也有了真相源：把构建时刻编译进产物；并把「产物级」验证固化成门禁
+
+## §4.92.0 结论
+
+§4.91 让「版本号/构建号」读原生，但 `buildDate` 还不是真的：原生 `App.getInfo()`
+**不提供构建时间**，所以设置页仍只能显示 TS 常量里那个写死的 2026-06-29。
+本轮把它变成真的，并把「验证改动进了产物」这件事从一次性动作固化成构建门禁。
+
+## §4.92.1 buildDate：编译期常量注入
+
+做法：vite.config.ts 里用 `define` 把 `__BUILD_TIME__` 替换成本次构建时刻，
+version.ts 读它。
+
+- 格式：`2026-10-03 02:20:02 UTC+08:00`。
+- **不用 toISOString()**：它丢掉时区偏移，读起来像 UTC 却没写出来，
+  不同机器上「构建日期」含义会漂。这里取本机时区并显式带偏移。
+- 用**编译期常量**而不是运行时读时钟：运行时没有任何可信时钟来源，
+  而编译期常量会随这一次构建固化进 bundle，读它就是读「这个包什么时候打的」。
+- node --test 下 `__BUILD_TIME__` 不存在，所以 `buildTimestamp()` 必须用
+  `typeof` 守卫 + try/catch 兜 ReferenceError。判据里专门有一条盯这个：
+  守卫写错的话，**import 阶段就炸** —— 那是「跑不起来」，不是「测试失败」，
+  两者在 CI 输出里长得一样，必须能分开。
+- 设置页的「这是配置值」标注改为**只在回退时出现**（`v-if="!appVersion.fromNative"`）。
+  有真实时间戳时还显示那个标注反而是误导。
+
+## §4.92.2 产物级门禁：类型检查与单测都证明不了「修复进了 APK」
+
+这是本轮补上的最大缺口。§4.91 结束时我只跑了 `vue-tsc`，**没跑生产构建**，
+也没验证改动真进了产物。而 §4.91.3 那个修复的本质就是「产物里没有的东西
+源码里再对也没用」—— 判据与类型检查都跑在**源码**上，vite 会 tree-shake，
+改名/拆包也能让代码「还在仓库里、但不在产物里」。
+
+补了三件事：
+
+1. **真跑一次生产构建**（vite build --mode android-dev，exit 0，12.82s）。
+   注意 outDir 指向隔离目录，**没有覆盖共享 dist/** —— 那是并行会话 00:58 的产物。
+2. **扫产物字节**确认修复真在里面：`buildDateNote` 在 SettingsView chunk、
+   `getInfo` 在主 chunk、回退常量仍在、编译期时间戳已替换且
+   **`__BUILD_TIME__` 字面量零残留**（产物里实际值 = 2026-10-03 02:20:02 UTC+08:00，
+   与真实构建时刻一致）。
+3. **固化成门禁** `frontend/scripts/verify-build-identity.mjs`，
+   接进 `build-mobile.mjs`，位置在 **`cap sync` 之前** ——
+   门禁失败时 dist 还没被拷进原生工程，不会留下「已 sync 过但 bundle 是旧的」的
+   平台目录。
+
+## §4.92.3 门禁的判别力（6 种负控，全部实测转红）
+
+| 负控 | 结果 |
+|---|---|
+| 产物无任何 js | **exit 3** —— 拒绝在「所有检查都会空转通过」的状态下给结论 |
+| 产物目录不存在 | exit 3 |
+| 缺 getInfo | exit 4 |
+| 缺 buildDateNote | exit 4 |
+| **define 被删（无构建时刻）** | exit 4 |
+| **`__BUILD_TIME__` 未被替换** | exit 4（同时报「字面量残留」与「无构建时刻」两条）|
+
+关键设计：**exit 3 与 exit 4 必须分开**。3 = 「没有证据」（产物不可读/为空），
+4 = 「检查项缺失」。把两者都报成「通过」或都报成同一类失败，
+门禁本身就成了 §4.92.2 说的那种「假绿」。
+
+## §4.92.4 过程中我自己踩的三个坑
+
+1. **TDZ 崩溃**：给门禁加时间戳检查时，`bad++` 写在了 `let bad = 0` **之前**，
+   脚本会直接 ReferenceError 崩掉。读回来发现还有一个重复的 `let bad = 0`，
+   一并清掉。教训：改判据脚本时先 `node --check`，别直接跑。
+2. **判据跟着需求变化是对的，不是判据错了**：§4.91 那条「必须有来源标注」
+   在 buildDate 变成真值后**理应转红**（有真实时间戳时再标「配置值」是误导）。
+   我改的是**断言的语义**（标注只在回退时出现），不是删断言放过。
+3. **又一次「几层路径」算错**：判据的 REPO 根一开始少上溯一层，
+   三个源码契约用例全部 ENOENT。行为用例仍全绿，所以只看总数会误判成
+   「大体通过」—— 是逐条看 ok/not ok 才定位到。
+
+## §4.92.5 本轮遗留
+
+- **构建身份仍未统一**（不变，仍需产品拍板）：显示侧现在读原生 + 真实构建时刻，
+  但 `checkUpdate` 上报仍用常量（原生 versionName 带 -openpocket，
+  喂进服务端比较会误报「发现新版本」）。判据里那条「仍用常量」继续钉着。
+- `APP_VERSION.buildDate` 常量本身没删：它是 node 测试与「非 vite 构建」时的
+  回退值。产物门禁也守着它不消失（非原生环境要有东西可退）。
+- 其余待决项（飞书 Encrypt Key、llm.kxpms.cn admin、/api/embed、
+  密码箱入口、生物认证、38 个未探 POST 端点、emails/sync 无整体上限）不变。
+
+### 下一轮建议的第一件事
+
+构建身份的产品决定一旦落地，把 `checkUpdate` 切到 `resolveAppVersion()`，
+并同步改判据里那条「仍用常量」的用例 + 门禁的 fallbackDate 检查
+（届时 2026-06-29 只应出现在测试路径，不该再出现在产物里）。
+
+# §4.93 顺手收掉两个真机上看到的小缺陷；并补上「第三个版本显示点」
+
+## §4.93.0 结论
+
+本轮处理两个低风险 UI 缺陷（都不碰并行会话正在改的发票区域），
+顺带发现版本号显示点其实有**三个**而不是两个。
+
+## §4.93.1 空分组渲染：侧边抽屉里那个「运维与高级」
+
+真机侧边抽屉出现一个**只有标题、下面什么都没有**的「运维与高级」分区，
+看着像渲染坏了。查证链条：
+
+1. 该字符串在源码里零命中，只在 `locales/zh-CN.json:37` 有 `groupOps`；
+2. `SettingsMenuDrawer.vue:110` 用了 `settingsMenu.groupOps`；
+3. 那一组的 `items` 是 **`[]`（第 111 行）** —— 2026-09-23 Phase 1 把
+   11 个入口迁去 MoreHubView 后留下的空壳；
+4. 模板 `v-for="group in groups"` **无条件**渲染每个 `<section>`，
+   于是空壳的 `<h4>` 也被画了出来。
+
+同一段注释写的是「本抽屉仅保留设置一组」—— 代码和注释本来就不一致。
+修法：新增 `nonEmptyGroups = groups.filter(g => g.items.length > 0)`，
+模板改遍历它。**不在模板里写死判断**，因为「有没有条目」是运行时的，
+模板写死会立刻和 `groups` 脱节。
+
+## §4.93.2 版本显示点其实有三个，不是两个
+
+§4.91 修了设置页，§4.92 修了更新弹窗。本轮在查 §4.93.1 时发现
+SettingsMenuDrawer 底部还有第三处：它把 version 传进 versionFootnote 词条渲染，
+而那个 version 当时是 computed(() => APP_VERSION.version)。
+
+这一行不是可有可无的角落 —— 它是**用户判断「我是不是最新版」时最先看的字**，
+而它在任何 APK 上都写同一个版本号。已经改成 `onMounted` 里读
+`resolveAppVersion()`。
+
+## §4.93.3 本地智能体的 placeholder 被截断
+
+原来那句是「给本地智能体下达任务(Enter 发送,Shift+Enter 换行)」，
+**31 个字符**，而 Redmi 真机 CSS 视口 360px，实测被截到句子中间。
+
+修法：placeholder 只说「做什么」（8 字），键盘提示挪到输入框下方的
+`.key-hint` 行 —— 提示语属于辅助信息，不该挤占输入框里最显眼的位置，
+而且那行有整行宽度。执行中（`store.running`）时 hint 隐藏，因为那时
+输入框是禁用的，再提示「Enter 发送」是废话。
+
+**刻意没有**给这两行接 vue-i18n：该组件通篇硬编码中文
+（`expertLabel` 的本地 `Record<string,string>` map 也是这么写的），
+单独给两行接 i18n 会造成「一半多语言、一半不」的更糟状态。
+判据里有一条把这个决定钉住：将来有人把整个组件本地化了，就该删掉那条。
+
+## §4.93.4 判据与负控
+
+**版本身份判据扩到 12 条**（新增：侧边抽屉脚注、空分组渲染）。
+负控：把 `v-for` 退回 `groups`（空标题回来）→ **恰好 1 条转红**
+（「空分组不得渲染标题」），其余 11 条保持绿。
+源文件逐字节还原（9579 字节 / 290 CRLF / 无 BOM）。
+
+**新增本地智能体判据 4 条**（量 placeholder 长度上限 = 16 字符，
+并要求键盘说明不得出现在 placeholder 里）。
+负控：把 placeholder 改回原来那句 31 字符 → **恰好 1 条转红**
+（长度那条），其余 3 条保持绿。源文件逐字节还原（14181 字节 / 446 CRLF）。
+
+阈值 16 是**留了余量的保守值**，不是实测出来的精确值：CJK 在 14px 字号下
+约 14px 宽，360px 视口减去内边距与发送按钮后约 260px 可用，
+16 字 ≈ 224px。真机若仍被截断就调小它，**不要把判据删掉**。
+
+## §4.93.5 本轮遗留
+
+- 发票区域三个问题（汇总口径混用、两个谓词不一致、内部错误串上屏）依旧
+  **未改**：并行会话正在同一批文件上作业，撞车风险高于收益。
+- 其余待决项（构建身份的产品决定、飞书 Encrypt Key、llm.kxpms.cn admin、
+  /api/embed、密码箱入口、生物认证、38 个未探 POST 端点、
+  emails/sync 无整体上限）不变。
+
+# §4.94 把 §4.91-4.93 的三处前端修复**装机验证**（源码绿 ≠ 设备绿）
+
+## §4.94.0 结论
+
+前三轮的修复全部只在**源码、单测、产物字节**三层验证过，**没有在真机上看过一眼**。
+本轮补上这一层：三处修复全部装机确认生效。
+
+## §4.94.1 完整构建链（门禁第一次在真实链里被检验）
+
+`node scripts/build-mobile.mjs android dev`：
+
+1. **BUG-F 守卫先把构建拦下了**（exit=1）：目标后端是**非回环明文 http**
+   （http://192.168.31.20:18099）。守卫给了逃生舱，
+   按它自己写的说明设 POCKET_ALLOW_PLAINTEXT_API=1 后放行。
+   —— 守卫在正常工作，不是缺陷。顺带核了它的设计：https 一律放行、
+   回环地址放行，只拦「非回环明文 http」，判据是合理的。
+2. vite build 成功（12.28s）。
+3. **§4.92.2 加的产物门禁第一次在真实链里跑过并转绿**（4/4 命中），
+   位置在 cap sync 之前。
+4. `cap sync android` 成功。
+5. `gradlew assembleDebug`：**BUILD SUCCESSFUL in 14s**（27 executed, 374 up-to-date）。
+
+APK 34250149 字节。
+
+## §4.94.2 装机前先证明 APK 里确实有本轮改动
+
+装机前扫 APK 内部资产。**第一次扫描给了假阴性**，值得单独记：
+
+在 APK 的**原始字节**里搜构建时间戳与 getInfo，结果是 **0 命中**。
+当时最省事的结论是「改动没打进去」—— 但那是**搜索方法的缺陷**：
+assets 是 **DEFLATE 压缩**的（index chunk 548919 → 190423 字节），
+明文根本不在未解压的字节里。
+
+改用 `System.IO.Compression.ZipArchive` 逐 entry 解压后再搜，124 个 chunk：
+
+| 检查项 | 命中 |
+|---|---|
+| 编译期构建时刻 | 1 |
+| getInfo（原生版本读取） | 2 |
+| 空分组过滤 | 2 |
+| 旧 31 字符 placeholder | **0**（正确：已消失） |
+
+**教训**：「搜不到」有两种完全不同的成因——东西真不在，或者我的搜索方法看不见它。
+必须先排除方法缺陷，才能下「不在」的结论。压缩格式是最常见的一种。
+
+## §4.94.3 真机三处验证结果（全部通过）
+
+装机：`lastUpdateTime=2026-10-03 02:38:30`，
+`versionCode=3` / `versionName=1.2.0-openpocket`（dumpsys 确认）。
+
+### 1. 设置页「应用信息」—— 本轮最核心的证明
+
+| 行 | 旧包显示 | 新包显示 |
+|---|---|---|
+| 版本号 | v1.2.0 (Build 2) | **v1.2.0-openpocket (Build 3)** |
+| 构建日期 | 2026-06-29 | **2026-10-03 02:36:26 UTC+08:00** |
+| 日期旁标注 | 无 | 无（有真实时间戳时不该出现） |
+
+Build 3 与 dumpsys 查到的 versionCode 一致；日期与本次构建时刻一致。
+**§4.74.2 那个「看不出设备跑的是哪个构建」的坑，到这里才算真正闭上** ——
+它此前只在源码和产物里成立。
+
+### 2. 侧边抽屉
+
+- 「运维与高级」**空标题消失**了（现在只有「设置」一组，4 个条目）；
+- 底部脚注显示 **Redclaw · v1.2.0-openpocket**（原生 versionName），
+  旧包这里是 v1.2.0。
+
+顺带确认修复范围没扩大：「更多」页**也有**一个「运维与高级」分组，
+但它有内容（设置项），**不该删**。只修抽屉那个空壳是对的。
+
+### 3. 本地智能体
+
+- placeholder「给本地智能体下达任务」**完整显示**，不再截断；
+- 「Enter 发送 · Shift+Enter 换行」在输入框下方**独立成行**，完整可读。
+
+## §4.94.4 导航过程中的两次弯路（都是我没先查就动手）
+
+1. **盲点坐标点不开抽屉**。连点 4 次画面字节数始终不变。
+   我先去找了「这个按钮到底是什么」而不是继续加坐标：
+   AppLayout.vue:127 有一个 **dev 专用测试钩子**（`__openMenu` / `?openMenu=1`），
+   正是仓库为「模拟器无 UI 自动化」准备的。
+   但用 `am start -d com.kaixuan.opencode.pocket://...` 解析失败，
+   换 `https://localhost/...` 却被**系统浏览器**接管（App 被切后台）。
+   最终仍靠坐标点开 —— 只是**多试几次并比对画面哈希**才确认成功
+   （字节从 144162 变成稳定的 70174）。
+   教训：仓库里已有测试钩子时，先查它再想别的办法；
+   而 adb 输入被吞时，「画面哈希变了」才是「点击生效」的证据。
+
+2. **把一次压缩问题当成了「构建没生效」**。见 §4.94.2。
+
+## §4.94.5 本轮遗留
+
+- 发票区域三个问题（汇总口径、两个谓词不一致、内部错误串上屏）依旧未改，
+  理由同前：并行会话正在同一批文件上作业。
+- 设备上装的是 **dev 构建**（因此 AppLayout 的 dev 测试钩子可用）。
+  验收产物在 release 路径下还需重跑一次 —— `import.meta.env.DEV` 为 false
+  时那些钩子不存在，行为应当一致但未实测。
+- 其余待决项（构建身份的产品决定、飞书 Encrypt Key、llm.kxpms.cn admin、
+  /api/embed、密码箱入口、生物认证、38 个未探 POST 端点、
+  emails/sync 无整体上限）不变。
+
+### 下一轮建议的第一件事
+
+构建身份的产品决定一旦落地，把 checkUpdate 切到 resolveAppVersion，
+并同步改「仍用常量」那条判据 + 门禁的 fallbackDate 检查，
+然后**再装机验一次**（这条闭环本轮刚补上，别又只停在源码层）。
+
+## §4.95 第五个版本显示点、密码箱死入口，以及一次「判据恒绿」的自查
+
+### §4.95.1 先更正我自己的两条账
+
+**更正一：所谓「Web Crypto 降级不可达」不是缺陷。**
+
+上一轮把它记成待办。重新读源码后站不住：
+
+- native/keystore.ts:60-75 的 StubKeystore 把 12 个方法**全部**实现成 reject，
+  根本没有任何 WebCrypto 兜底实现。也就是说「让 Android 走降级」等于从零写一个
+  保险库后端，不是修一条降级路径。
+- VaultListView.vue:144-150 那条 catch 分支在「插件存在、探针抛错」时**是可达的**。
+  它只在 Android 上够不到，而 Android 正是插件缺失的唯一平台 —— 此时显示
+  「功能不可用」是正确行为。
+
+教训：我当时是按「界面上看到一句不可用」推的，没去读降级路径本身。
+源码读全之后，这条待办应当取消，而不是照着修。
+
+**更正二：版本显示点是五个，不是四个。**
+
+features/more/MoreHubView.vue:85 的页脚注写的是 computed(() => APP_VERSION.version)，
+喂的是常量。设备上原生 versionName 是 1.2.0-openpocket，而「更多」页会显示 1.2.0。
+前四轮修了设置页 / 更新弹窗 / 侧边抽屉 / 登录页，唯独漏了它。
+
+漏掉它的原因不是疏忽，是**判据形状**：既有判据是「一个显示点一条断言」，
+每找到一个补一条。补得再勤也只是在追我自己的记忆 —— 第五个当然畅通无阻。
+
+### §4.95.2 两处修复
+
+1. MoreHubView 页脚注改读 resolveAppVersion()，常量降级为首帧占位，
+   onMounted 后被原生真实版本覆盖（与其它四处同源）。
+2. 密码箱入口按**真实能力**门控：isKeystoreAvailable() 为真才显示。
+   不用 featureFlags 的 security.keystore_v1 —— 那个 flag 默认 false 且
+   serverOverrideable=false，用它 gate 入口的话，插件真落地那天还得有人记得
+   回来把开关打开，等于把「平台有没有这个能力」伪装成「谁记得改开关」。
+   门控抽成纯函数 applyCapabilityGates（features/more/hubItems.ts），
+   其中 null（探针未返回，首帧必然如此）按**不可用**处理：
+   先藏后现，好过先闪一个必然失败的入口、被用户刚好点中。
+
+顺带查到但**刻意没动**：pages/Home.vue:37 也有一处 /vault 快捷入口，
+但 router-mobile.ts 是本仓唯一的路由表且从未引用该文件 —— 孤儿页，
+不构成用户可达的死胡同，改它只会给共享分支添无关 diff。
+
+### §4.95.3 判据：守不变量，不再逐个点名
+
+新增 src/utils/__tests__/app-version-display-coverage.test.mjs，四条不变量：
+
+- A 任何 .vue 都不得渲染裸版本号字面量（盖住 LoginView 那种形状 ——
+  它不出现在任何 import 里，靠 import 判据根本查不到）。
+- B 引用 APP_VERSION 的文件集合必须**恰好**等于白名单；白名单每条必须写明理由，
+  条目失效（文件已不再引用）也要报，防止白名单烂成万能通行证。
+- B2 常量只能做首帧占位，**绝不能**成为显示值的活来源：
+  不得出现在 computed 实参里，也不得被模板直接绑定。
+- C 已知显示点必须真的**调用** resolveAppVersion()（不是只 import），
+  且出现清单外的消费方时也要报，逼一次决定而不是默默多一个数据源。
+
+所有扫描走新底座 src/__tests__/source-scan.mjs（剥 HTML/块/行注释、
+括号配对截取 computed 实参、版本字面量定位到行号），底座自带 12 条自检。
+不剥注释的话，下一个人只要在注释里提一句版本号或常量名，结论就被散文翻过去。
+
+### §4.95.4 一次「判据恒绿」的自查（本节最值钱的部分）
+
+第一版 C 只检查「该文件里出现过 resolveAppVersion」。我于是把 MoreHubView 的
+version 退回成 computed(() => APP_VERSION.version)、onMounted 原样保留，跑判据 ——
+
+**全绿。**
+
+符号还在文件里，绑定已经断了。这是我一直提防的恒绿护栏，真撞上时才发现：
+「出现过」和「显示绑定接在真相源上」完全是两件事。于是才有 B2，
+它锁的是不变式本身而不是某个具体写法。
+
+B2 的第一版实现用「computed 后面到下一个 APP_VERSION 之间没有分号/花括号」
+这种字符类护栏，结果在**正确代码**上误报 —— 本仓库不写分号，
+上一行的 userName computed 会被判成「把常量接进了 computed」。
+改成按括号配对精确截取实参（computedArgs），与代码风格无关。
+两次都是「判据错了」，不是「实现错了」；判据在正确代码上误报，
+下一个人只会去改代码，不会怀疑判据 —— 这比漏报更危险。
+
+### §4.95.5 负控（判据有牙齿的证据）
+
+| 负控 | 预期转红 | 实测 |
+| --- | --- | --- |
+| 第五处退回读常量 | B2 | 红，且只有 B2 |
+| 植入第六个裸字面量显示点 | A | 红，报到 文件:行号 |
+| 植入第六个常量消费方 | B | 红，点名该文件 |
+| 门控算了但模板没渲染 | 门控判据第 6 条 | 红 |
+| 把能力探针换成静态 feature flag | 门控判据第 7 条 | 红 |
+
+每次负控后源文件都逐字节还原：MoreHubView.vue 的 sha256 两次复核均为
+071998FAC2D038740BA0F671151874331A91450D6913C9DADC47DB4B0807A7DB。
+
+### §4.95.6 刻意没做的事（都写了理由，不是遗漏）
+
+- **没有为了看登录页而登出。** /login 被路由守卫弹回（已认证 + 本地库已就绪），
+  冷启动也不再要主密码 —— 之前那次成功解锁把主密钥持久化了
+  （persistMasterSecretIfBound），于是解锁屏几乎不可达。要看到登录页只能登出，
+  而我没有 App 账号，登出很可能把自己永久锁在设备外。为一行字符串冒这个险
+  不划算。记账口径：登录页版本号修复**产物级已验证**（APK 内旧字面量 0 命中），
+  **真机未验**。不写成「已验证」。
+- **没有把新不变量塞进产物门禁 verify-build-identity.mjs。** 那个门禁管的是
+  「修复有没有进产物」，新不变量是源码级、全量套件每次都会跑。
+  为了在产物里定位「第 5 个显示点」而写 minified 产物匹配，
+  只会得到一条一改构建就失效的假护栏。
+
+### §4.95.7 真机验证（这一节是行为证据，不是字节证据）
+
+构建链：build-mobile.mjs android dev（vite 10.72s，产物门禁 4/4 绿，cap sync 通过，
+sanity check 通过）→ gradlew assembleDebug BUILD SUCCESSFUL in 11s（27 executed）
+→ APK 34250293 字节 → 装机 lastUpdateTime=2026-10-03 03:07:51，versionCode 3。
+
+**没有做字节级声明。** 我先试着在 APK 里搜 reachableMainFeatures / applyCapabilityGates /
+isKeystoreAvailable / resolveAppVersion，四个全是 0 —— 但这是**假阴性**：vite 产物经过压缩，
+局部标识符名根本不保留，能扛过压缩的只有字符串字面量。
+字符串层面能证实的只有 MoreHubView 自己的 chunk 存在（/vault、versionFootnote 都在里面），
+证不了门控。所以门控改用真机行为验证。
+
+真机结果（用 CDP 只读取 DOM 文本，不是靠截图认字）：
+
+- 页脚注 = 「Redclaw · v1.2.0-openpocket」→ 第五处读的是原生版本号，**通过**。
+- hasVaultCell = false，主宫格 10 项（原 11 项）→ 密码箱入口已撤掉，**通过**。
+- 运维分组 9 项齐全，未受影响。
+
+顺带钉死一个我差点误报的现象：「更多」页看起来滚不动。做了变量隔离 —— 首页用同样手势
+同样不滚，所以是手势没送达，不是页面缺陷。再用 CDP 读滚动容器：
+MAIN.content scrollHeight/clientHeight = 1404/741，页面本来就能滚。
+该 ROM 上 input swipe 与 input motionevent 都注不进拖拽（tap 正常）。
+
+### §4.95.8 本轮回归
+
+- 三个新/改判据合计 25/25 通过。
+- 全量：192/192 测试文件全部被实际执行且都有产出，exit 0。
+- vue-tsc --noEmit exit 0。
+
+### §4.95.9 本轮遗留（都还等着人，不是我能替用户定的）
+
+- 登录页版本号：产物级已验证（APK 内旧字面量 0 命中），**真机未验**。理由见 §4.95.6。
+- 构建身份以哪套为准（version.ts 常量 vs build.gradle）仍是产品决定，
+  checkUpdate() 依旧上报常量。
+- 密码箱本身仍未实现（原生侧无 KeystorePlugin.java）。本轮只是拿掉必然失败的入口，
+  没有让功能可用 —— 插件落地后入口会自己回来。
+- 本轮未提交文件继续累积（新增 hubItems.ts、source-scan.mjs 及自检、两个判据，
+  改 MoreHubView.vue），共享分支上是否提交仍待用户决定。
+
+## §4.96 release 路径实检、登录页真机验证，以及两条我自己记错的账
+
+### §4.96.1 更正一：设备上那个包从来不是「dev 构建」
+
+我上一轮记过一条待办：设备装的是 DEV 构建，所以 dev-only 测试钩子存在，
+「欠一次 release 路径验证」。**这个前提是错的。**
+
+实测：把 dev 产物（--mode android-dev）和 release 产物并排扫字符串，
+AppLayout 那个仅 dev 的测试钩子 __openMenu 在**两边都是 0 次**。
+源码 AppLayout.vue:129 / :138 两处钩子都包在 if (import.meta.env.DEV && ...) 里。
+
+原因是 vite 的 --mode 只决定加载哪个 .env 文件；import.meta.env.DEV 由**命令**决定，
+vite build 一律为 false。所以「android-dev 模式的构建产物」在 DEV 语义上与 production 完全一致，
+我之前在真机上验过的那套行为，对 release 同样成立。
+
+也就是说：那条「欠的 release 验证」大部分其实已经覆盖了。真正与 release 不同的只剩
+API 基址、签名、以及 minifyEnabled（release 是 false，Java 层不收缩）。
+
+### §4.96.2 更正二：那条守卫文案不是过时的，我差点改错
+
+build-mobile.mjs 的生产宿主守卫报错时提示「生产包必须打到 https://pocket.itestu.cn」，
+而用户给的公网入口是 m.kxpms.cn。我一度想把它改掉。
+
+改之前全仓搜了一遍：pocket.itestu.cn 在本仓是**既定的生产 API 基址**——
+api-base.ts:9 的 PRODUCTION_API_BASE、deploy/edge 下的 nginx vhost、9 个语言包的
+productionServer、以及 docs/2026-09-07-local-cutover 整份切换计划都指向它。
+不是残留，是 SSOT。m.kxpms.cn 是**回调**那一面的地址，与 App 的 API 基址不是同一件事。
+
+**没有改。** 差点因为一个没查全的假设，去动一处全仓一致的正确文案。
+
+### §4.96.3 release 产物实检（隔离目录，没碰共享 dist/）
+
+- vite build --mode production --outDir .dist-releasecheck：成功，11.05s。
+- 产物门禁跑在这个目录上：**4/4 绿**（locale 接线 / getInfo / 回退常量 / 编译期构建时刻）。
+- 与 dev 产物对照：chunk 数同为 125，JS 总体积 2263151 vs 2263167（差 16 字节）。
+- API 基址按模式正确切换：dev 产物里 192.168.31.20 出现 2 次、release 里 0 次；
+  m.kxpms.cn 在 release 里 5 次。
+- 守卫判别力负控：生产模式指向 LAN → 拒（exit 1）；指向占位符 pocket.example.com → 拒（exit 1）；
+  同样 LAN 地址在 dev 模式 → 放行（exit 0）。
+
+**口径**：为了过守卫随手用了 m.kxpms.cn，**这不构成「哪个域名是对的」的结论**，
+只说明生产构建机制本身是通的。
+
+### §4.96.4 真实的 release 缺口：能打包，但打不出可安装的包
+
+gradlew assembleRelease **BUILD SUCCESSFUL in 2m 47s**（520 executed），产物
+app-release-unsigned.apk，32002793 字节。
+
+签不了名。证据不是文件名，是内容：
+
+- frontend/android 全目录搜 signingConfigs / storeFile / storePassword / keyAlias / keyPassword：**零命中**；
+- 全目录搜 *.jks / *.keystore：**零命中**；
+- 解压 release APK，META-INF 下无任何 .SF/.RSA/.DSA/.EC。
+
+所以 release 这条路目前能走到「编译并打包」，走不到「安装 / 发布 / 覆盖升级」。
+补齐它需要签名凭据（keystore + 口令），**只有用户能给**，不代造。
+
+### §4.96.5 登录页版本号：真机验证通过（用旁挂包，没动正式会话）
+
+上一轮记的是「产物级已验证、真机未验」，理由是要看到 /login 只能登出、而登出有把设备锁死的风险。
+这次找到了仓库自带的正解（android/app/build.gradle:23-34）：
+
+-PsttDevApp 会给调试包加 applicationIdSuffix .sttdev 与 versionNameSuffix -sttdev，
+与正式包**并存、数据互不干扰**。注释里写明它就是为了不改动用户已登录会话而存在的。
+
+做法与证据：
+
+1. gradlew assembleDebug -PsttDevApp → BUILD SUCCESSFUL in 15s，APK 34063301 字节。
+2. 装机前后对比：正式包 lastUpdateTime 全程停在 03:07:51，versionName 不变 —— **一字未动**。
+3. 旁挂包未认证 → 直接落 #/login?returnTo=/ai（isLoginForm=true）。
+4. CDP 只读取 DOM：versionLine = **1.2.0-openpocket-sttdev**。
+
+第 4 条是判别力所在：常量是 1.2.0，而 -sttdev 后缀只有原生 BuildConfig 才有，
+常量**不可能**产生这个字符串。截图 logs/r21-login-version.png 可见整页无需滚动、底部那行即原生版本。
+
+验证后已卸载旁挂包、删掉 CDP forward、反向隧道 18099 保持原样。
+
+### §4.96.6 顺手查清：m.kxpms.cn 与 pocket.itestu.cn 不是同一套部署
+
+只读 GET，未带凭据：
+
+| 探测 | m.kxpms.cn | pocket.itestu.cn |
+| --- | --- | --- |
+| /healthz | 200 JSON（status ok，version 2.5.8 开头） | 200 纯文本 ok |
+| /api/tasks | 401 | 401 |
+| /api/app/check-update | **404** | 200 返回真实更新负载 |
+| /callback/feishu | 401 | 200（其实是 SPA 的 HTML 兜底） |
+
+两个后果，都只是记账、本轮未改：
+
+1. api-base.ts:233 的 probeHealthz 判的是 text 严格等于 ok。m.kxpms.cn 返回 JSON，
+   所以**若**把 App 基址指向它，「后端服务器」健康检查会报不健康——尽管服务是好的。
+   没有放宽这个判断：它对现有两个 pocketd 部署是正确的，
+   放宽等于为一个未确认的意图放松判据。
+2. m.kxpms.cn 没有 /api/app/check-update（正是本会话前面修过的那条路由），
+   指向它会 404。它更像另一套/较旧的部署，不能与 PRODUCTION_API_BASE 互换。
+
+### §4.96.7 本轮遗留
+
+- **release 签名**：需要用户提供 keystore 与口令才能补齐，本轮无法代劳。
+- 构建身份以哪套为准（version.ts 常量 vs build.gradle）仍是产品决定。
+- 登录页版本号那条待办**本轮已关闭**（§4.96.5），不再是「未验」。
+- 发票三处问题仍刻意未改：并行会话正在同一批文件里作业。
+- 本轮临时脚本与 .dist-releasecheck 已全部删除；未提交文件继续累积，是否提交待用户决定。
+
+## §4.97 飞书/企微回调的真实根因：边缘 nginx 缺一条 location（之前一直被当成「缺密钥」）
+
+### §4.97.1 一句话结论
+
+这一直被记成「等用户给 Encrypt Key / Verify Secret」。**不是。**
+即使密钥齐全，事件投递也到不了应用：
+
+- 全仓 deploy/edge/*.conf 里**一条 /callback/ 反代规则都没有**（实测 grep 零命中）；
+- 请求于是落进各 vhost 的 location /，被前端当 SPA 返回 index.html；
+- 证据：GET https://pocket.itestu.cn/callback/feishu 返回 200 加一段 HTML，
+  而同一个路由在应用里是活的（POST 空体返回 200 {"code":0,"msg":"ok"}，企微那个返回 400 拒畸形）。
+
+后端**没有**问题：server.go:682/689 两条回调路由都刻意不套 requireAuth，
+注释也写明外部平台带的是协议签名而不是本站 JWT。缺陷全在边缘。
+
+这件事有两层难受，所以值得单独记：
+
+1. **静默** —— nginx 不报错、TLS 正常、页面能开，只有事件投递悄悄失败。
+2. **报错形态误导** —— 平台侧看到的是 HTML/非预期内容，很容易被结论成
+   「飞书那边没配好」，于是反复重配平台，而真正的原因是边缘缺一条 location。
+
+### §4.97.2 用户给的回调地址指向的不是这个应用
+
+brief 里的回调地址是 https://m.kxpms.cn/callback/feishu 与 /callback/weixin。
+实测它是**另一套服务**：
+
+| 探测 | m.kxpms.cn | 本机 pocketd / pocket.itestu.cn |
+| --- | --- | --- |
+| /healthz | 200 application/json（status ok，version 2.5.8，git_sha f609ecab，构建于 2026-10-02） | 200 text/plain，正文就是 ok |
+| /api/tasks | 401 | 401 |
+| /api/app/check-update | **404** | 200 返回真实更新负载 |
+| /callback/feishu、/callback/weixin | 401 空体 | GET 405 / POST 200 {"code":0,"msg":"ok"} |
+
+响应头也对不上，进一步确认不是同一套中间件：
+
+- 本机：X-Frame-Options: DENY（单值）、X-Correlation-Id: cor-...、无 X-XSS-Protection；
+- m.kxpms.cn：X-Frame-Options: SAMEORIGIN,SAMEORIGIN（重复值）、
+  X-Content-Type-Options: nosniff,nosniff（重复值）、X-XSS-Protection: 1; mode=block、
+  **无** X-Correlation-Id、X-Request-Id 格式也不同（无连字符）。
+
+而且**仓内根本没有 m.kxpms.cn 的 vhost**（仓里管的是 openpocket-api / openpocket-web /
+openpocket.kxpms.cn / pocket.kxpms.cn:9443 / pocket.itestu.cn）。
+
+结论：这两个回调地址要么需要改指到真正跑 pocketd 的主机，要么 m.kxpms.cn 前面
+本该有一层转发。**这是要用户拍板的部署事实，不是代码能替他们决定的。**
+
+### §4.97.3 补齐了三个 vhost，第三个是判据找出来的
+
+「未知路径回落前端」的 vhost 一共三个，全部补了 location /callback/：
+
+| vhost | /api/ 上游 | 回落上游 | 补的 /callback/ 指向 |
+| --- | --- | --- | --- |
+| pocket.itestu.cn.conf | pocket_mac_api | pocket_mac_web（前端） | pocket_mac_api |
+| pocket.kxpms-cn-9443.conf | pocket_kxpms_api | pocket_kxpms_web（前端） | pocket_kxpms_api |
+| openpocket-web.kxpms.cn.conf | openpocket_web_kxpms_api | openpocket_web_kxpms_web（前端） | openpocket_web_kxpms_api |
+
+**第三个（openpocket-web.kxpms.cn）不是我翻出来的，是写完判据扫出来的。**
+这正是「守不变量而不是点名」的价值：我本来只打算改用户会用到的那两个。
+
+另外 openpocket-api.kxpms.cn.conf 的 location / 本来就全量转 API 上游，
+回调在那儿是通的，不需要改。
+
+写 upstream 名时我先查了定义再写（pocket_mac_api / pocket_kxpms_api 都在文件内有 upstream 块，
+被现有 /api/、/ws 复用）。**猜对了也必须查** —— 猜错的话 nginx 起不来，
+而这个仓的 vhost 是由 apply-edge-conf.sh 直接渲染上线的。
+
+### §4.97.4 判据：scripts/verify-callback-routes.mjs（已接进 gates）
+
+判的是**形状**不是点名：只要一个 vhost 同时满足
+
+- (1) 有 location /api/ 且转到上游 A，且
+- (2) location / 转到**另一个**上游 B（= 未知路径回落前端），
+
+它就处在「/callback/ 会被吃掉」的形状里，必须有 location /callback/，
+**且其 proxy_pass 必须与 /api/ 相同**。新加的 vhost 会自动纳入，不依赖我记得哪几个域名。
+
+第二条（上游一致）不是多余的：复制粘贴把 proxy_pass 写成前端上游，nginx 一样不报错，
+只是继续返回 HTML —— 形状对、指向错比形状缺失更难查。
+
+放在 scripts/ 仓根并接进 frontend/package.json 的 gates 链（check:callback-routes），
+不是当孤儿脚本。理由是本仓有过 114 个孤儿测试的前车之鉴，
+run-mjs-tests.mjs 本身就是为治这个才写的。支持 argv[2] 覆盖被扫目录，
+负控因此**完全不需要动真文件**（真文件是直接上线的东西）。
+
+负控四项，全部按预期：
+
+| 负控 | 期望 | 实测 |
+| --- | --- | --- |
+| 用 git HEAD 的改动前版本喂进去 | exit 1 | 红，点名 pocket.itestu.cn.conf 缺 location /callback/ |
+| /callback/ 复制粘贴成前端上游 | exit 1 | 红，同时打出两个上游做对比 |
+| 故意让形状解析失明 | exit 4 | 红并明说「别把这当成通过」 |
+| 空目录 | exit 3 | 红，拒绝给结论 |
+
+**第一个负控我第一版是无效的**：用正则去删副本里的块，结果正则没匹配上、文件一个字节没变，
+判据当然还是绿的。差点把「没转红」当成判据没牙齿。改用 git show HEAD:<file>
+直接取改动前的真版本来做负控 —— 这既是真的「改之前」，也不用在脆弱的正则上纠缠。
+
+### §4.97.5 口径与未做的事
+
+- **只改了仓内 SSOT 模板，没有动线上任何服务器。** 这三个 vhost 要生效，
+  仍需运维跑一次 apply-edge-conf.sh（并先 nginx -t）。这一步是生产变更，我不代劳。
+- 改前逐个核对：三个文件都是 CRLF-only、无 BOM、花括号配平、各恰好 1 个 /callback/ 块；
+  UTF-8 严格解码通过、零 U+FFFD。package.json 仍是合法 JSON，CRLF 85 到 86、裸 LF 仍为 0。
+- 线上当前状态未变：pocket.itestu.cn 上 GET /callback/feishu 依然会返回 HTML，
+  直到配置被应用。这一条不要记成「已修复并生效」。
+- 飞书 Encrypt Key / Verify Secret、企微 Token / EncodingAESKey / CorpID 仍然缺，
+  但那已经是**第二道**门了；第一道门（本节这个）此前没人提。
+
+## §4.98 边缘可达性交叉核对：139 条路由逐条验，并记下判据自己踩的三个坑
+
+### §4.98.1 起因与结论
+
+§4.97 补完 /callback/ 之后，顺手把后端路由全量枚举了一遍，想确认边缘**没有第二处**缺口。
+
+结论：全仓 139 条注册路由（`mux.HandleFunc`，全部集中在 server.go），在三个
+「未知路径回落前端」的 vhost 上**全部可达**。`/callback/email/oauth`（邮箱 OAuth 回调）
+是被我这轮补的 `location /callback/` 顺带救下来的——它此前同样不可达。
+
+逐条核对用 AST 之外的另一条路：仓里已有 `long_lived_route_audit_test.go` 用 AST 扫路由，
+说明仓库早知道裸正则不可靠；我仍然用了正则，所以踩了坑（见 §4.98.3）。
+
+### §4.98.2 判据：scripts/verify-edge-route-reach.mjs（已接进 gates）
+
+问的是不变式：**对每个「SPA 回落型」vhost，后端每一条路由都必须在它的某个反代前缀内。**
+
+- 反代前缀**从 .conf 里解析出来**，不写死——配置改了判据自动跟着变；
+- 覆盖语义照 Go 1.22 `http.ServeMux` 还原：`= /x` 精确、`/x/` 子树、
+  `/x`（无尾斜杠）**只**匹配自身、`/` 兜底全覆盖；
+- 只针对「SPA 回落型」vhost。`openpocket-api.*` 那种 `location /` 全量转 API 的域
+  对本判据是空转（兜底让它恒真），所以明确排除；
+- 兜底的 `location /` **必须从覆盖集合里排除**——它当然覆盖每条路由，
+  但那正是问题本身（§4.98.3 的坑二）。
+
+### §4.98.3 判据自己踩的三个坑（负控逼出来的，不是想出来的）
+
+**坑一：提取器静默吃掉了全部路由。**
+第一版是「先剥块注释、再剥行注释」，结果从 93 个非测试 .go 里**只提取到 0 条路由**。
+原因：`internal/server` 里 7 个非测试文件的块注释开闭符不配平——
+`llm_gateway_admin_client.go` 的**行**注释里写着 `/api/credentials/*` 这种 glob，
+块注释正则把它当成块注释开头，一路吞到下一个闭符，把中间的真实路由全吃光。
+**成片删除的失败形态是「提取到 0 条」而不是报错**，只有防空跑断言能抓住。
+改成只剥行注释（实测 139 条 = server.go 里 `mux.HandleFunc(` 的原始出现次数，无污染）。
+
+**坑二：把兜底 `location /` 当成了覆盖，于是自己判自己绿。**
+负控（从副本里删掉 `/callback/` 前缀）跑出来**全绿**。原因就是兜底覆盖一切。
+修正后同一负控精确报出 3 条：`/callback/email/oauth`、`/callback/feishu`、`/callback/weixin`。
+
+**坑三：我的自检本身定错了不变式。**
+我原本断言「剥注释后 HandleFunc 出现次数必须不变」，实测 140 -> 139，
+于是报「剥离器吃掉代码」。但那 1 条差异是**注释里真的有一个 HandleFunc**，
+剥掉它是正确行为。真正要防的是成片删除，不是剥掉注释里的字样。
+改成九成下限 + 哨兵路由（必须提到 /api/tasks、总数下限 100）。
+
+另外还踩了一次 `= /healthz` 的假阳性：nginx 的精确匹配写法是
+`location = /healthz {`，`=` 与路径之间**有空格**是两个 token，我用 `\S+` 只捕到 `=`，
+于是 /healthz 在**真仓**上被误报。**先跑真仓这一步救了它**——真仓变红立刻说明是判据的错，
+而不是仓里真有缺口。改成 `(.+?)` 后真仓绿、副本红。
+
+### §4.98.4 负控（全部喂合成仓副本，真文件一个字节没动）
+
+| 负控 | 期望 | 实测 |
+| --- | --- | --- |
+| 副本删掉某 vhost 的 /callback/ 前缀 | exit 1 | 红，精确报那 3 条回调路由 |
+| 注入 /metrics 与 /internal/diag | exit 1 | 红，三个 vhost 各自点名这两条 |
+| 清空全部路由字面量（提取器失明） | exit 4 | 红并明说「提取多半失明了」 |
+| 还原后的副本 | exit 0 | 与真仓同结论 |
+| 真仓 | exit 0 | 绿 |
+
+（第三个负控最初是**意外**得到的：我把变异脚本的 restore 写成了反向调用，
+误把副本里的路由字面量清空。判据当场报 exit 4 是对的，
+但那是流程错误不是设计——补了整份回填后单独重跑了一次。）
+
+### §4.98.5 本轮顺带记下的操作教训
+
+今天在同一类错误上栽了**三次**，都是「看起来改了，其实什么都没改」：
+
+1. 用 PowerShell 正则删副本里的 nginx 块——没匹配上，文件字节数不变，
+   判据当然还是绿的。差点把「没转红」当成判据没牙齿。
+2. 同上，第二次。
+3. 用 PowerShell 的 `Get-Content` / `Set-Content -Encoding UTF8` 往返改一个
+   含中文的 .mjs——Get-Content 猜错编码，中文被写成乱码，脚本直接语法错。
+
+⇒ **变异合成副本一律用 node 写、用 edit 工具改，不要用 PowerShell 做文本往返。**
+这与「负控要能区分编译失败与测试失败」是同一条：工具的读数不可信时，
+先换一种量法，再下结论。
+
+（另：`.mjs` 注释里写 `/*` 与 `*/` 这两个序列要当心——本轮就在自己的
+JSDoc 里写了真实闭符，导致注释提前终止、脚本语法错。编译期报错，一字未写。）
+
+### §4.98.6 口径
+
+- 两个新判据都只是**静态核对**，不替代 `apply-edge-conf.sh` 上线与真机验证。
+- 本轮没有动线上任何服务器；`pocket.itestu.cn` 上回调仍返回 HTML，
+  直到配置被应用。
+- 本轮未提交文件继续累积：两个新判据、三个 vhost、package.json 的两条 scripts、
+  以及前几轮的改动。是否提交仍待用户决定。
+## §4.99 feikemanager1@163.com 追到底：账户是好的，诊断和我的探针各错一次
+
+### §4.99.1 一句话结论
+
+`feikemanager1@163.com` **从来没有过缺陷**。它在正常同步，收件箱是真的空的。
+本轮把它当成「最后一个未验证项」追完，结果是**两处结论都被推翻**——一处是并行会话
+写进注释的，一处是我自己早前探针的。两处都不是产品的错。
+
+### §4.99.2 真实 IMAP 登录（带对照账户）
+
+`scripts/.scratch-imap-login.mjs`（已删）照抄 App 握手顺序
+（`backend/internal/email/fetcher.go:562` `sendClientID`：name=pocketd / version=1.0.0 /
+vendor=openpocket / address=<邮箱地址>），对 imap.163.com:993 走
+greeting → CAPABILITY → ID → LOGIN → SELECT INBOX，逐步原样打印服务端回复。
+
+**带一个已知可用账户做对照**（`feikemanager@163.com`），否则分不清「这个账户不行」
+和「我的脚本或网络不行」——这正是本会话已经栽过好几次的坑。
+
+| 账户 | LOGIN | SELECT |
+| --- | --- | --- |
+| `feikemanager@163.com`（对照） | `a3 OK LOGIN completed` | `14 EXISTS` / `3 RECENT` |
+| `feikemanager1@163.com`（目标） | `a3 OK LOGIN completed` | **`0 EXISTS` / `0 RECENT`** |
+
+⇒ **服务端不拒绝。**（b）「密码错 / 账号未激活 / IP 未放行」被实测推翻。
+
+口令只从环境变量读，不落盘、不打印、不进命令行参数；打印时对口令打码。
+
+### §4.99.3 凭据比对：形态 ≠ 内容
+
+上一步用的是**用户给的口令**。库里存的那份是否同一份，仍未验证——
+`diag_credential_health_test.go` 只证明了「能解密 + 16 位形态」，而形态不等于内容：
+库里完全可能存着另一条 16 位字符串。
+
+为此建了一次性 `backend/cmd/zz-scratch-creddigest`（已删）：解密后**只比较 sha256**，
+只打印布尔值与长度，明文绝不离开进程。5 个账户**全部一致**。
+
+同时带了两条自检（本仓 search_path 缺陷家族的老教训）：
+读回 `current_schema()` 必须等于目标 schema；`email_accounts` 行数必须非零，
+否则「零行」是查错库而不是「没有账户」。
+
+### §4.99.4 uid=0 的真正成因：邮箱本来就是空的
+
+`last_synced_uid=0` 有两种截然不同的成因：有邮件没抓到（缺陷）／邮箱真的是空的（正常）。
+`emails` 表行数是唯一能分开的证据：
+
+| 账户 | uid | last_synced_at | emails 行数 |
+| --- | --- | --- | --- |
+| `56551681@qq.com` | 10459 | 1790970418 | 98 |
+| `feikemanager1@163.com` | **0** | **1790970416** | **0** |
+| `feikemanager@163.com` | 1669791329 | 1790970417 | 14 |
+| `huangxutao@kxpms.cn` | 11 | 1790970416 | 10 |
+| `kimmy.huang@163.com` | 1298896151 | 1790970417 | 58 |
+
+五个 `last_synced_at` 彼此只差 2 秒——刚跑完一轮轮询。`failures=0`、`last_sync_error=""`。
+
+所以「从未成功同步过」这个说法本身就不成立：**它一直在成功同步**，
+只是这个账户的 INBOX 里没有邮件，于是 `last_synced_uid` 停在 0。
+这正是 `fetcher.go:776-784` 注释里写的那条路径——「没有新邮件」的早退只推进
+`last_synced_at`，UID 原样不动。**这是设计，不是缺陷。**
+
+### §4.99.5 我自己的错账：字段名少打一个 ed
+
+早前我从设备读到 5 个账户 `lastSyncAt: null`、`lastError: null`，据此记下了
+「设备上 5 个邮箱全部从未同步」。那是**我的探针打错字段名**：
+
+- 真字段名是 `lastSyncedAt`（`backend/internal/email/model.go:22`），
+- 我读的是 `lastSyncAt`（少一个 `ed`），
+- 读不到 ⇒ `undefined` ⇒ 落成 `null`。
+
+同一份 JSON 里还有 `folderCount`，而 `folderCount` 在整个 Go 后端**一次都没出现过**——
+那份 JSON 本来就是我拼的形状，不是 API 原始返回。教训和上轮那条一样：
+**取值必须点名，不能靠「长得像」。**
+
+端到端复核（真打 `POST /api/emails/sync/status`，token 从设备 WebView 取、只报长度）：
+
+```
+huangxutao@kxpms.cn    lastSyncedAt=1790970416 lastAttemptAt=1790970416 pending=10
+feikemanager1@163.com  lastSyncedAt=1790970416 lastAttemptAt=1790970416 pending=0
+feikemanager@163.com   lastSyncedAt=1790970417 lastAttemptAt=1790970417 pending=14
+kimmy.huang@163.com    lastSyncedAt=1790970417 lastAttemptAt=1790970417 pending=58
+56551681@qq.com        lastSyncedAt=1790970418 lastAttemptAt=1790970418 pending=98
+```
+
+与库完全一致。`failures=undefined` 是 `omitempty` 把 0 省略了，属预期，
+且前端把 undefined 显示成「从未失败」并不失真。
+
+生产告警判据 `NeverSyncedAccounts`（`classify_run.go:101`）读的是
+`LastSyncedAt > 0` 而**不是** uid——所以这个空邮箱账户不会被永久误报。这一条是对的设计。
+
+### §4.99.6 我本轮第三次「读太浅」
+
+`handleEmailSyncStatus` 在 `server.go` 的 `mux.HandleFunc` 列表里**找不到**，
+我据此准备记「死端点」。实际它在 `/api/emails/` 子树 handler 内部靠**后缀分派**接住
+（`server_assistant.go:1967-1972`）：路径是 `POST /api/emails/sync/status`。
+
+（`/api/emails/sync` 与 `/api/emails/sync/status` 在 Go 1.22 ServeMux 下不冲突：
+前者无尾斜杠只匹配自身，后者由 `/api/emails/` 子树接住。）
+
+**判据/读数只扫一层就下结论，是本会话最贵的失误模式**：本轮三处误判
+（字段名、路由注册、并行会话的 (b)）形态不同，病根相同。
+
+### §4.99.7 需要更正的是注释，不是代码（我没动，并行会话正在那些文件里作业）
+
+以下三处把「feikemanager1@163.com 是坏的」当成**当前事实**写进了注释，
+现已证伪。留着会误导下一个读它们的人：
+
+- `backend/internal/email/diag_credential_health_test.go:158-159`
+  —— 凭 `uid==0 && lastAt==0` 推出「凭据完好，问题在服务端侧（密码错/需激活/IP 放行）」。
+  这条推断当时**只差一步就是错的**：它把「从未尝试」直接读成「尝试了被拒」。
+- `backend/internal/email/classify_run.go:95-99`
+- `backend/internal/email/never_synced_accounts_test.go:21-24`
+
+并行会话本轮 03:37 仍在该目录写文件（本轮 03:37 / 03:23 各新增一个被 gitignore 的
+`diag_*.go`），**故未改**。生产代码本身没问题，只有注释过时。
+
+### §4.99.8 口径与本轮遗留
+
+- 本轮**没有改动任何产品代码**。新增即三个一次性诊断脚本/目录（IMAP 登录探针、
+  凭据摘要比对、真接口复核），验证完已全部删除。
+  证据留在 `logs/imap-login-20261003-0400.txt`、`logs/creddigest-20261003-0400.txt`、
+  `logs/email-account-state-20261003-0410.txt`、`logs/email-sync-status-20261003-0415.txt`
+  （均不含口令明文）。
+- 设备侧 `adb forward tcp:9222` 本轮用完已清理（复核为空）；App 连后端用的
+  `adb reverse tcp:18099` **原样保留未动**。
+- 邮箱链路上真正待办的东西没有变化：§4.99.7 的注释更正、`/api/embed` 的 embedding 模型、
+  以及「38 个 POST 端点未探」。
+## §4.100 修掉一个真缺陷：/api/app/download 的 404 会被存成假 APK
+
+### §4.100.1 怎么发现的：把「38 个 POST 未探」从散文账变成可重跑的扫描
+
+交接里「38 个 POST 端点未探」是一条**散文记账**，跨很多轮累积，无法复核，
+也一定会再次过期。与其继续往散文里追加，不如产出一份能重跑的扫描：
+`scripts/sweep-api-readonly.mjs`（本轮新增，**故意不接进 gates**——它需要一台
+开着真机 WebView 的设备才能取到 token，CI 里跑不了；gates 里放一个必然失败
+或必然跳过的脚本，比不放更糟）。
+
+139 条注册路由逐条 GET，先打对照路由证明 token 有效（401/403 则不产出任何结论、
+exit 3）。结果：
+
+| 状态 | 条数 | 含义 |
+| --- | --- | --- |
+| 200 | 48 | 正常 |
+| 400 | 25 | **缺 id 的参数校验**——handler 确实被路由到并做了校验 |
+| 405 | 46 | **正确的方法拒绝**（这些是 POST-only 端点） |
+| 404 | 14 | 见下 |
+| 503 | 1 | `/api/redclaw/health` |
+
+**没有意外 5xx。** 405 与 400 不是「没探到」，而是**另一种覆盖率**：它们证明
+handler 活着并做了该做的校验。404 里绝大多数是子树路径被裸探（`/api/agents/`
+缺 id、`/api/emails/` 缺 email id），另有三组是**有意的功能关闭**：
+
+- `/api/auth/sso/*`（3 条）→ `sso not enabled`
+- `/api/redclaw/*`（3 条）→ `RedClaw bridge not configured`
+- `/api/flashcards/`、`/api/learning/` → not found
+
+RedClaw 是**外部集成**（auth mirror / admin 权威源 / LLM 兜底 / 定时执行器），
+需要一整套 `POCKET_REDCLAW_*`。本地实例一项没配，503 fail-closed 是**正确行为**，
+与 `/api/embed`、飞书密钥同类，属「缺外部资源」而非缺陷。**新增一条待用户提供的资源。**
+
+### §4.100.2 缺陷：404 响应带着 `Content-Disposition: attachment; ...apk`
+
+`handleDownloadAPK` 原来是这个顺序：
+
+```
+w.Header().Set("Content-Type", "application/vnd.android.package-archive")
+w.Header().Set("Content-Disposition", "attachment; filename=opencode-pocket.apk")
+http.ServeFile(w, r, apkPath)     // 文件不在 -> 404
+```
+
+实测（`GET /api/app/download`）：
+
+```
+STATUS=404   Content-Length: 19
+Content-Disposition = attachment; filename=opencode-pocket.apk
+Content-Type = text/plain; charset=utf-8
+```
+
+`http.Error` 会覆盖 `Content-Type`，**却不会删掉 `Content-Disposition`**。
+所以那 19 字节的 `404 page not found` 会以 `opencode-pocket.apk` 为文件名被存下来。
+用户点「下载更新」、拿到一个 19 字节的假 APK，安装时才报解析失败——
+真实原因（服务器上没部署 APK）在客户端表现为「包坏了」，排查方向被彻底带偏。
+
+**404 长成「下载成功但文件坏了」的样子，这是它自己的错。**
+
+顺带确认：这个端点**不套 `requireAuth`**（路由表里是裸的 `s.handleDownloadAPK`），
+这是对的——APK 下载本就该对未登录设备公开。不是漏鉴权。
+
+### §4.100.3 修复：先 stat 再设头 + 路径搬进配置
+
+`backend/internal/server/server.go` 的 `handleDownloadAPK`：
+
+1. `os.Stat` 确认文件在（并单独拒掉「路径是目录」），**再**设下载头；
+   失败时走 `http.Error` + 日志记实际路径，**不回显服务端路径给调用方**。
+2. 路径不再硬编码：新增 `POCKET_APK_DOWNLOAD_PATH`（`config.Config.APKDownloadPath`）。
+   原硬编码值搬成 `config.DefaultAPKDownloadPath`，**默认值故意保持不变**——
+   搬进配置是为了让它**可改**，顺手改掉一个正在被某台机器依赖的路径是另一件事，
+   而那台机器不在仓库里、也不在本轮能观察到的范围内。
+
+### §4.100.4 判据：6 条 + 负控（含我自己把判据写错的一次更正）
+
+`backend/internal/server/apk_download_test.go`（6 条）：
+
+- 三个**失败路径**：文件缺失 / 路径是目录 / 配置为空退回默认 —— 响应都**不得**
+  携带 `Content-Disposition`，也不得宣称自己是 APK。
+- 两个**成功路径**（对照组，防退化成「一律不设头」）：文件在时必须照常带下载头
+  并**原样服务文件内容**；路径必须来自配置。
+- 一条钉住 `DefaultAPKDownloadPath` 未被擅自改动。
+
+**负控**（`logs/apk-negctl-20261003-0410.txt`）：把 handler 退化成「先设头再 stat」，
+失败路径整组转红、成功路径整组保持绿，**恰好是这个分布**；真文件 sha256 还原一致
+（`2b07db75…`）。
+
+负控脚本自己也栽了一次，值得一提：第一版按「只准红 1 个」判定，报「红了 3 个 = 判据过宽」。
+**那条规则本身是错的**——三个失败路径用例守的是**同一个**不变量，只是三个真实入口，
+刻意纵深防御；退化实现让它们一起红才是正确的。改成两段式语义后成立：
+「该红的整组红 + 该绿的整组绿」。**改的是判据的语义，没删任何断言。**
+
+负控脚本还因为用 `\n` 写变异片段而在 CRLF 的 `server.go` 上**一个字符都匹配不上**
+（exit 2 作废）——静默匹配失败正是本会话反复栽的坑，已改为按文件实际行尾构造。
+
+### §4.100.5 口径：本轮没有做到的事
+
+- **未在真机/真后端验证修复效果。** 18099 上跑的是并行会话的二进制
+  （`pocketd-invoicenan-fix`，pid 8168，01:32:59 启动），**全程未触碰**：
+  重启它等于把代码换到别人脚下（该仓的 restart 脚本自己也这么警告）。
+  修复的行为证据来自 `httptest` 直接打真实 handler（`ResponseRecorder` 捕获的就是
+  handler 设置的响应头），**不是**「线上已生效」。
+- **没有跑 `gofmt -w`。** `server.go` / `config.go` 被 gofmt 标出，但那是
+  **既有**问题、且 193 个文件同样被标出——根因是这些文件是 CRLF 而 gofmt 要 LF。
+  LF 副本上的 diff 显示真正的问题在别处（`RSSConfig` 的对齐、`wecom` 的 import 顺序，
+  都是别人的既有代码）。跑 `gofmt -w` 会在共享仓里制造上百 KB 无关 diff，
+  还会顺手改掉并行会话的 import 排序。**没有动。**
+- 对两个 CRLF 文件的编辑**保留了 CRLF**（`server.go` CRLF=2596/bareLF=0，
+  `config.go` CRLF=734/bareLF=0）；本轮新建的 `apk_download_test.go` 是 LF，
+  与我上一轮建的 `app_version_compare.go` 一致。
+- `internal/server` 与 `internal/config` 全量测试均 exit 0；`go build ./...` exit 0。

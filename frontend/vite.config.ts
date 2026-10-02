@@ -53,8 +53,49 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   assertApiBaseForBuild(mode, env)
 
+  // 构建时刻（2026-10-03）。
+  //
+  // 为什么需要它：APP_VERSION.buildDate 是写死的 '2026-06-29'，而
+  // build-mobile.mjs 从不更新它。设置页因此长期显示一个与实际产物无关的日期，
+  // 而「设备上装的是不是最新包」恰恰是验收时最需要判断的一件事
+  // （handoff §4.74.2 丢过一整轮就是这个）。
+  //
+  // 注入成**编译期常量**而不是运行时读：运行时没有任何可信的时钟来源，
+  // 而 __BUILD_TIME__ 会随这一次构建被固化进 bundle，读它就是读「这个包
+  // 是什么时候打的」。
+  //
+  // 格式说明：不用 toISOString()，因为它丢掉时区偏移，读起来像是 UTC 却没写。
+  // 这里取本机时区并显式带偏移，避免「构建日期」在不同机器上含义漂移。
+  const builtAt = new Date()
+  const tzOffsetMinutes = -builtAt.getTimezoneOffset()
+  const tzSign = tzOffsetMinutes >= 0 ? '+' : '-'
+  const tzAbs = Math.abs(tzOffsetMinutes)
+  const tzLabel =
+    tzSign +
+    String(Math.floor(tzAbs / 60)).padStart(2, '0') +
+    ':' +
+    String(tzAbs % 60).padStart(2, '0')
+  const buildTimestamp =
+    builtAt.getFullYear() +
+    '-' +
+    String(builtAt.getMonth() + 1).padStart(2, '0') +
+    '-' +
+    String(builtAt.getDate()).padStart(2, '0') +
+    ' ' +
+    String(builtAt.getHours()).padStart(2, '0') +
+    ':' +
+    String(builtAt.getMinutes()).padStart(2, '0') +
+    ':' +
+    String(builtAt.getSeconds()).padStart(2, '0') +
+    ' UTC' +
+    tzLabel
+
   return {
     plugins: [vue()],
+    define: {
+      // 字符串字面量形式：__BUILD_TIME__ 会被替换成带引号的字符串。
+      __BUILD_TIME__: JSON.stringify(buildTimestamp),
+    },
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),

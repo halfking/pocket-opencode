@@ -78,9 +78,9 @@ regexp.MustCompile(`(?i)\b[A-Za-z_]*(?:pass|pwd)[A-Za-z_]*\b\s*[:=]\s*` +
 | 样本 | 结果 |
 |---|---|
 | `const MASTER = process.env.POCKET_MASTER \|\| 'PocketTest2026'`（现场那行） | **不命中** |
-| `const adminPass = 'SomeRealPassword123'` | 命中 |
-| `const devPass = "SomeRealPassword123"` | 命中 |
-| `const pwd = 'SomeRealPassword123'` | 命中 |
+| `const adminPass = 'SomeRealPassword123'` | 命中 | <!-- secret-scan-ok 合成夹具：本文档在记录密钥扫描器的命中清单，示例值 SomeRealPassword123 是自造的对照样本，不是真实凭据 -->
+| `const devPass = "SomeRealPassword123"` | 命中 | <!-- secret-scan-ok 合成夹具：本文档在记录密钥扫描器的命中清单，示例值 SomeRealPassword123 是自造的对照样本，不是真实凭据 -->
+| `const pwd = 'SomeRealPassword123'` | 命中 | <!-- secret-scan-ok 合成夹具：本文档在记录密钥扫描器的命中清单，示例值 SomeRealPassword123 是自造的对照样本，不是真实凭据 -->
 
 > 抄这条正则时还踩了一个小坑：Go/RE2 的内联标志 `(?i)` 在 **JavaScript 里不认**
 > （`Invalid group`），要提到 `RegExp` 构造函数的第二个参数。而 `node --check`

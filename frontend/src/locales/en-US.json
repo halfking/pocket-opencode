@@ -154,6 +154,7 @@
     "version": "Version",
     "versionFormat": "v{version} (Build {buildNumber})",
     "buildDate": "Build Date",
+    "buildDateNote": "(configured value, not the measured build time)",
     "apiAddress": "API Address",
     "privacy": "Privacy",
     "permissionsPrivacy": "Permissions & Privacy",
