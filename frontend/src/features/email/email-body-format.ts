@@ -135,9 +135,30 @@ function metaCharsetOf(html: string): string {
   return m?.[1] || ''
 }
 
+/**
+ * 这封报文是不是 MIME（多部件 / 有 MIME 头）。
+ *
+ * 2026-10-03 真机实测的缺陷就在这个窗口上：原来只在**前 4000 字符**里
+ * 找 Content-Type / Content-Transfer-Encoding。经 Gmail + Coremail 转发的
+ * 邮件前面堆了 40 组 Received / ARC-Seal / DKIM-Signature，Content-Type
+ * 被推到 4000 字符之外，于是整封被判成「不是 MIME」，解析整条跳过——
+ * 详情页于是把协议头当正文渲染：首屏全是
+ * `Received: from mail-yx2-f41.google.com (unknown [74.125.224.169])`
+ * 与 `ARC-Seal: ...`，真实正文一屏都看不到（实测正文长 95869 字符）。
+ *
+ * 修法不是把窗口调大（猜一个更大的数，下次照样被顶出去），而是
+ * **按结构找头段**：RFC 5322 里头部是第一个空行之前的内容，Content-Type
+ * 无论堆多少个 Received 都必然落在里面。取 256KB 上限是为了给畸形报文
+ * 一个硬边界，不是「预计头部长度」。
+ */
+const MIME_HEAD_SCAN_LIMIT = 256 * 1024
+
 function looksLikeMime(s: string): boolean {
-  const head = s.slice(0, 4000)
+  // 结构判据：头部止于第一个空行（CRLF 与 LF 都认）。
+  const head = splitHeadBody(s.slice(0, MIME_HEAD_SCAN_LIMIT)).headers
   if (/content-type\s*:/i.test(head) || /content-transfer-encoding\s*:/i.test(head)) return true
+  if (/^mime-version\s*:/i.test(head)) return true
+  // 非 multipart 的单部件 MIME 也可能只有边界式首行。
   return /^--[\w'+=.-]+/m.test(s.slice(0, 200))
 }
 
