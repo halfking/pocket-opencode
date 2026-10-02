@@ -13,6 +13,10 @@ const PSQL = 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'
 const DB = ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-F', '|']
 
 const q = (sql) => {
+// PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
+// 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
   try {
     return execFileSync(PSQL, [...DB, '-c', sql], { encoding: 'utf8', timeout: 60000 })
   } catch (e) {
@@ -61,7 +65,7 @@ for (const c of cols) {
     out = execFileSync(
       PSQL,
       [...DB, '-v', 'ON_ERROR_STOP=1', '-c',
-        `select ${sel} from opencode_pocket."${t}" where "${col}"::text like '%${esc}%' limit 3;`],
+        `select ${sel} from ${SCHEMA}."${t}" where "${col}"::text like '%${esc}%' limit 3;`],
       { encoding: 'utf8', timeout: 60000 },
     ).trim()
     queried++

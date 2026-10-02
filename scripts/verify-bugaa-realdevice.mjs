@@ -53,6 +53,10 @@ function resolvePsql() {
   console.error('找不到 psql.exe，请设置 POCKET_PSQL')
   process.exit(4)
 }
+// PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
+// 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
 const PSQL = resolvePsql()
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
@@ -65,9 +69,9 @@ function pgNum(sql) {
 }
 // 兜底串必须是纯 ASCII：中文会经系统 ANSI 码页传给 psql 报 invalid byte sequence
 const deckNames = () => execFileSync(PSQL, ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres',
-  '-t', '-A', '-c', "select coalesce(string_agg(name,'|' order by created_at),'(none)') from opencode_pocket.flashcard_deck_config;"],
+  '-t', '-A', '-c', `select coalesce(string_agg(name,'|' order by created_at),'(none)') from ${SCHEMA}.flashcard_deck_config;`],
   { encoding: 'utf8' }).trim()
-const deckCount = () => pgNum('select count(*) from opencode_pocket.flashcard_deck_config;')
+const deckCount = () => pgNum(`select count(*) from ${SCHEMA}.flashcard_deck_config;`)
 
 // ---------- 连 CDP ----------
 const pid = adb(['-s', SERIAL, 'shell', `pidof ${PKG}`]).trim().split(/\s+/)[0]

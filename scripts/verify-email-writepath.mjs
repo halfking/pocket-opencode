@@ -36,6 +36,10 @@ const MASTER = process.env.POCKET_MASTER || ''
 
 function resolvePsql() {
   const cands = [process.env.POCKET_PSQL, 'logs/pg/dist2/pgsql/bin/psql.exe', 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'].filter(Boolean)
+// PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
+// 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
   for (const c of cands) { try { execFileSync(c, ['--version'], { stdio: 'ignore' }); return c } catch { /* next */ } }
   console.error('找不到 psql.exe，请设置 POCKET_PSQL')
   process.exit(4)
@@ -46,8 +50,8 @@ const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: 
 const psql = (sql) => execFileSync(PSQL, ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-c', sql], { encoding: 'utf8' }).trim()
 
 // 兜底串必须纯 ASCII：中文经系统 ANSI 码页传给 psql 会报 invalid byte sequence
-const acctCount = () => Number(psql('select count(*) from opencode_pocket.email_accounts;').match(/-?\d+/)?.[0] ?? NaN)
-const acctAddresses = () => psql("select coalesce(string_agg(email_address,'|' order by created_at),'(none)') from opencode_pocket.email_accounts;")
+const acctCount = () => Number(psql(`select count(*) from ${SCHEMA}.email_accounts;`).match(/-?\d+/)?.[0] ?? NaN)
+const acctAddresses = () => psql(`select coalesce(string_agg(email_address,'|' order by created_at),'(none)') from ${SCHEMA}.email_accounts;`)
 
 // ---------- 连 CDP ----------
 const pid = adb(['-s', SERIAL, 'shell', `pidof ${PKG}`]).trim().split(/\s+/)[0]

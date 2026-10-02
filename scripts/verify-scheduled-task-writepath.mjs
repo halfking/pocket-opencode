@@ -10,6 +10,10 @@ const PKG = 'com.kaixuan.opencode.pocket'
 const PORT = process.env.POCKET_CDP_PORT || '9395'
 const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'
 const PSQL = process.env.POCKET_PSQL || 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'
+// PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
+// 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
 // psql 串必须纯 ASCII——中文经 ANSI 码页会报 invalid byte sequence
@@ -85,8 +89,8 @@ const NAME = 'ST-' + String(Date.now()).slice(-7)
 const NAME2 = 'ST2-' + String(Date.now()).slice(-7)
 console.log('task name =', NAME)
 
-const pgRow = () => psql(`select id || '|' || enabled::int from opencode_pocket.scheduled_tasks where name = '${NAME}' limit 1`)
-const pgCount = () => psql(`select count(*) from opencode_pocket.scheduled_tasks where name = '${NAME}'`)
+const pgRow = () => psql(`select id || '|' || enabled::int from ${SCHEMA}.scheduled_tasks where name = '${NAME}' limit 1`)
+const pgCount = () => psql(`select count(*) from ${SCHEMA}.scheduled_tasks where name = '${NAME}'`)
 
 await ensureUnlocked()
 await goto('#/settings/scheduled-tasks')
@@ -154,7 +158,7 @@ console.log('改名后输入框 =', newVal)
 const saved = await visibleClickText(/^保存修改$/)
 console.log('点「保存修改」=', saved)
 await sleep(3000)
-const renamed = psql(`select count(*) from opencode_pocket.scheduled_tasks where id = '${tid}' and name = '${NAME2}'`)
+const renamed = psql(`select count(*) from ${SCHEMA}.scheduled_tasks where id = '${tid}' and name = '${NAME2}'`)
 check('编辑改名落库', String(renamed) === '1', `name=${NAME2} count=${renamed}`)
 
 // ---------- 4. 删除 ----------
@@ -164,7 +168,7 @@ console.log('点「删除」=', del)
 await sleep(1500)
 await ev(`(function(){var bs=Array.prototype.slice.call(document.querySelectorAll('button')).filter(function(b){return !!b.offsetParent && /^(删除|确认|确定)$/.test((b.textContent||'').trim())});if(!bs.length)return 0;bs[bs.length-1].click();return 1})()`)
 await sleep(3000)
-const gone = psql(`select count(*) from opencode_pocket.scheduled_tasks where id = '${tid}'`)
+const gone = psql(`select count(*) from ${SCHEMA}.scheduled_tasks where id = '${tid}'`)
 check('删除后 PG 无该行', String(gone) === '0', `count=${gone}`)
 
 const passed = checks.filter((c) => c.pass).length
