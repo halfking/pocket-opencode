@@ -9890,3 +9890,64 @@ PG 的用例真的执行过、包数与 `go list` 对上证明没有包被 OOM �
    本次直接跳到了 ①，白绕一圈。
 2. 看到「某个修复/文档/测试存在」时，**先确认它在哪个 worktree**，
    再下「已有/没有」的结论。
+
+---
+
+## §7eb 当前分支的完整基线（2026-10-02 10:45）
+
+前几节的修复合完之后，把能跑的全跑了一遍，作为**可复核的基线**留档。
+这一节没有新缺陷，只有数字——而数字的意义在于它能被下一个会话拿来对比。
+
+### 后端：70 个包，`-race`，全绿
+
+```
+$ go test -race ./... -count=1 -p 2
+EXIT=0
+ok=52   no-test=18   FAIL=0   合计=70
+skip=0                ← 依赖真 PG 的用例没有被静默跳过
+DATA RACE=0
+$ go list ./...  | Measure-Object      → 70     ← 两个独立方法对上
+```
+
+「绿」的四条依据，缺一条这个结论就比实际证据弱（详见 §7ea）：
+
+| 依据 | 本轮实测 | 不做会怎样 |
+|---|---|---|
+| `-race` | `DATA RACE=0` | 普通 `go test` 不会因缺同步而失败，只会**碰巧**没触发 |
+| `-p 2` | 无 `[build failed]` | 默认并发会 OOM，失败包集合每次不同、不可复现 |
+| 显式 `POCKET_TEST_POSTGRES_DSN` | `skip=0` | 不设则依赖真 PG 的用例**静默 SKIP** 而非 PASS |
+| `ok+no-test+FAIL` vs `go list` | 70 = 70 | OOM 静默跳过的包会让这个数对不上 |
+
+### 前端：330 用例，全绿
+
+```
+$ npm.cmd run typecheck          EXIT=0   （输出含 "> vue-tsc --noEmit" 横幅）
+$ npm.cmd run test:email         EXIT=0   tests 292 / pass 292 / fail 0 / skipped 0
+$ npm.cmd run gates              EXIT=0   tests 38 + 292 = 330 / fail 0 / skipped 0
+```
+
+两处细节：
+
+- **必须用 `npm.cmd`**：PowerShell 下 `npm` 先解析到 `npm.ps1` 并被执行策略拦截，
+  而它**可能仍给出 exit 0**——脚本根本没跑，退出码来自 PowerShell 自身。
+  判据是输出里有没有 `> <script>` 横幅（`test:email` 那次有，`gates` 那次有）。
+- **gates 的退出码本身不可信**（node 匹配不到文件时不报错、退出码仍是 0），
+  所以判据是 `test:pass` 的**实际计数**。这里两批分别 38 与 292，
+  有计数就说明真的执行过；「空输出 + 0」不算数。
+
+### 覆盖面与其边界
+
+这份基线覆盖的是**自动化可判的部分**。它**不覆盖**下面这些，
+所以「全绿」不能读成「需求已交付」：
+
+| 未覆盖 | 原因 |
+|---|---|
+| 真机 Android WebView（wasm、DOMPurify 剥 `<style>`、UI 行为） | 无设备 |
+| 真实 IMAP 取原文 / MOVE | 需授权（不可逆） |
+| 飞书推送 | `POCKET_FEISHU_INVOICE_CHAT_ID` 未配置，回调未部署 |
+| Greenmail / 真实第三方 IMAP 的 BODYSTRUCTURE 兼容性 | Docker daemon 未运行 |
+| 生产实例 | 运行中的 pocketd 二进制构建于 01:35，落后当前 HEAD |
+
+需求 1 的定时路径目前只有**日志实证**（2026-10-02 08:00:00 那次跑批），
+而那份日志来自旧二进制；当前代码的定时行为由 in-process IMAP 单测保证，
+**没有在生产二进制上复验过**——要复验得先重新构建并重启。
