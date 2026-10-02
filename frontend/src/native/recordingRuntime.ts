@@ -51,7 +51,8 @@ import {
 } from './recording-voice-prompt'
 import { setHeaderTitle } from '../composables/useAppHeaderTitle'
 import {
-  appendTranscript, formatRecordingClock, nextRecordingState, type RecordingPhase,
+  appendTranscript, EMPTY_RECORDING_NOTICE, emptyRecordingNotice, formatRecordingClock,
+  nextRecordingState, type RecordingPhase,
 } from '../features/notes/note-recording'
 import { decideMeetingStart, decideNoteStart } from './recordingPolicy'
 
@@ -889,6 +890,10 @@ export class NoteRecorderRuntime {
         }
       }
       this.pendingResult = { text: this.transcript.value.trim(), audioBlob, durationMs }
+      // 一个音都没录到时必须说话，否则整段收尾是静默的。
+      // 判据与理由见 note-recording.ts emptyRecordingNotice 的注释。
+      const emptyNotice = emptyRecordingNotice(this.transcript.value.trim() !== '', audioBlob.size)
+      if (emptyNotice) this.error.value = EMPTY_RECORDING_NOTICE
       return { text: this.transcript.value.trim(), audioBlob, durationMs }
     } finally {
       this.phase.value = nextRecordingState('stopping', 'drafted')
