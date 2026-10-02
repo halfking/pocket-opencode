@@ -69,10 +69,27 @@ export const ICON = {
   settingsGear: 'settings',
 
   // ── components/BottomNav.vue ──
+  // 2026-10-03 全局 IA 重组后一级 tab 收敛为 4 个：首页 / 笔记 / 消息 / 更多。
+  // navStyle / navMic 仍留着：闪卡（style）与会议录音（mic）的图标在
+  // MoreHubView 宫格和会议详情页里继续作为数据表 / 模板字面量使用。
   navHome: 'home',
   navApps: 'apps',
   navStyle: 'style',
   navMic: 'mic',
+  navNotes: 'edit_note',
+  navMessages: 'notifications',
+
+  // ── features/notes/NotesHubView.vue：统一流的来源图标（switch 早返回）──
+  hubSourceNote: 'edit_note',
+  hubSourceMeeting: 'event',
+  hubSourcePkm: 'sticky_note_2',
+  hubActionRecord: 'mic',
+  hubActionNew: 'note_add',
+
+  // ── features/messages/MessagesHubView.vue：统一时间线的来源图标 ──
+  msgSourceEmail: 'mail',
+  msgSourceRss: 'rss_feed',
+  msgSourceTask: 'notifications',
 
   // ── features/sessions/useSessionDrafts.ts：草稿类型 ──
   draftPlay: 'play_arrow',

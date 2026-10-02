@@ -60,7 +60,8 @@
     "localAgent": "Local Agent",
     "home": "Home",
     "study": "Study",
-    "flashcards": "Cartes mémoire"
+    "flashcards": "Cartes mémoire",
+    "messages": "Messages"
   },
   "routes": {
     "login": "Connexion",
@@ -445,5 +446,76 @@
     "meeting": "Réunion",
     "chat": "Discussion",
     "manual": "Manuel"
+  },
+  "notesHub": {
+    "title": "Notes",
+    "filter": {
+      "all": "Toutes",
+      "manual": "Notes",
+      "meeting": "Réunions",
+      "pkm": "Notes PKM"
+    },
+    "action": {
+      "newNote": "Nouvelle note",
+      "startMeeting": "Démarrer la réunion",
+      "record": "Enregistrer une note"
+    },
+    "link": {
+      "allNotes": "Toutes les notes",
+      "allMeetings": "Toutes les réunions",
+      "allPkm": "Ouvrir PKM"
+    },
+    "empty": {
+      "title": "Aucune note pour le moment",
+      "hint": "Appuyez sur le micro pour votre première note ou lancez une réunion"
+    },
+    "state": {
+      "loading": "Chargement…"
+    },
+    "meta": {
+      "voice": "Note vocale",
+      "pending": "En cours",
+      "minutes": "{count} min",
+      "hoursMinutes": "{hours} h et {minutes} min"
+    },
+    "count": {
+      "notes": "{count} notes",
+      "meetings": "{count} réunions"
+    }
+  },
+  "messagesHub": {
+    "title": "Messages",
+    "filter": {
+      "all": "Tous",
+      "email": "E-mail",
+      "rss": "Flux",
+      "task": "Tâches"
+    },
+    "action": {
+      "markAllRead": "Tout marquer comme lu",
+      "openMail": "Ouvrir la messagerie",
+      "manageFeeds": "Gérer les flux"
+    },
+    "empty": {
+      "title": "Rien de nouveau",
+      "hint": "Les e-mails importants, les infos abonnées et les tâches arrivent ici"
+    },
+    "state": {
+      "loading": "Chargement…"
+    },
+    "badge": {
+      "important": "Important"
+    },
+    "meta": {
+      "from": "De {name}",
+      "suggestedAction": "Suggestion : {action}"
+    },
+    "unreadBadge": "{count} non lus"
+  },
+  "timefmt": {
+    "justNow": "à l'instant",
+    "minutesAgo": "il y a {count} min",
+    "hoursAgo": "il y a {count} h",
+    "daysAgo": "il y a {count} j"
   }
 }

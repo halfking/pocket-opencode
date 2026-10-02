@@ -60,7 +60,8 @@
     "localAgent": "Local Agent",
     "home": "Home",
     "study": "Study",
-    "flashcards": "Karteikarten"
+    "flashcards": "Karteikarten",
+    "messages": "Nachrichten"
   },
   "routes": {
     "login": "Anmelden",
@@ -445,5 +446,76 @@
     "meeting": "Meeting",
     "chat": "Chat",
     "manual": "Manuell"
+  },
+  "notesHub": {
+    "title": "Notizen",
+    "filter": {
+      "all": "Alle",
+      "manual": "Notizen",
+      "meeting": "Meeting-Notizen",
+      "pkm": "PKM-Notizen"
+    },
+    "action": {
+      "newNote": "Neue Notiz",
+      "startMeeting": "Meeting starten",
+      "record": "Notiz aufnehmen"
+    },
+    "link": {
+      "allNotes": "Alle Notizen",
+      "allMeetings": "Alle Meetings",
+      "allPkm": "PKM öffnen"
+    },
+    "empty": {
+      "title": "Noch keine Notizen",
+      "hint": "Tippe auf das Mikrofon für die erste Notiz oder starte ein Meeting"
+    },
+    "state": {
+      "loading": "Wird geladen…"
+    },
+    "meta": {
+      "voice": "Sprachnotiz",
+      "pending": "In Bearbeitung",
+      "minutes": "{count} Min.",
+      "hoursMinutes": "{hours} Std. {minutes} Min."
+    },
+    "count": {
+      "notes": "{count} Notizen",
+      "meetings": "{count} Meetings"
+    }
+  },
+  "messagesHub": {
+    "title": "Nachrichten",
+    "filter": {
+      "all": "Alle",
+      "email": "E-Mail",
+      "rss": "RSS-Feeds",
+      "task": "Aufgaben"
+    },
+    "action": {
+      "markAllRead": "Alle als gelesen markieren",
+      "openMail": "E-Mail öffnen",
+      "manageFeeds": "Feeds verwalten"
+    },
+    "empty": {
+      "title": "Nichts Neues",
+      "hint": "Wichtige E-Mails, Feed-Neuigkeiten und Aufgaben landen hier"
+    },
+    "state": {
+      "loading": "Wird geladen…"
+    },
+    "badge": {
+      "important": "Wichtig"
+    },
+    "meta": {
+      "from": "Von {name}",
+      "suggestedAction": "Vorschlag: {action}"
+    },
+    "unreadBadge": "{count} ungelesen"
+  },
+  "timefmt": {
+    "justNow": "gerade eben",
+    "minutesAgo": "vor {count} Min.",
+    "hoursAgo": "vor {count} Std.",
+    "daysAgo": "vor {count} T."
   }
 }

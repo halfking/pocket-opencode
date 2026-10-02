@@ -43,8 +43,10 @@
     </button>
 
     <!-- 今日明细：四项计数（仅服务端 Learning Core 可用时出现） -->
-    <!-- 连续学习天数：不可用时整块不渲染（区别于「0 天」） -->
-    <div v-if="streak" class="streak" data-testid="study-streak">
+    <!-- 连续学习天数：不可用时整块不渲染（区别于「0 天」）
+         v-if 判的是 streak.streak.current 这个**内层**字段，不是 streak 本身：
+         外层判空挡不住「200 但体残缺」，那会让下面的两级解引用抛异常白屏。 -->
+    <div v-if="streak?.streak?.current" class="streak" data-testid="study-streak">
       <span class="material-symbols-outlined" aria-hidden="true">local_fire_department</span>
       <span class="streak-num">{{ streak.streak.current }}</span>
       <span class="streak-label">{{ t('study.streak.days') }}</span>
@@ -264,6 +266,7 @@ import {
   nextReminderAt,
 } from '../../utils/learning-due'
 import { listNotes } from '../notes/notes-store'
+import { normalizeStreakView } from './learning-streak-view'
 import { useApiError } from '../../composables/useApiError'
 
 defineOptions({ name: 'StudyHubView' })
@@ -367,7 +370,9 @@ async function loadLearning() {
   void learningApi
     .fetchStreak(learningApi.localUtcOffsetSeconds())
     .then((v) => {
-      streak.value = v
+      // 形状校验见 learning-streak-view.ts：模板里是两级解引用，
+      // 而 `v-if="streak"` 挡不住「200 但体残缺」，那会整页白屏。
+      streak.value = normalizeStreakView(v)
     })
     .catch(() => {
       streak.value = null

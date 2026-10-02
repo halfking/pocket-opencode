@@ -60,7 +60,8 @@
     "localAgent": "Local Agent",
     "home": "Home",
     "study": "Study",
-    "flashcards": "Cartões de memorização"
+    "flashcards": "Cartões de memorização",
+    "messages": "Mensagens"
   },
   "routes": {
     "login": "Entrar",
@@ -445,5 +446,76 @@
     "meeting": "Reunião",
     "chat": "Chat",
     "manual": "Manual"
+  },
+  "notesHub": {
+    "title": "Notas",
+    "filter": {
+      "all": "Todas",
+      "manual": "Notas",
+      "meeting": "Reuniões",
+      "pkm": "Notas PKM"
+    },
+    "action": {
+      "newNote": "Nova nota",
+      "startMeeting": "Iniciar reunião",
+      "record": "Gravar uma nota"
+    },
+    "link": {
+      "allNotes": "Todas as notas",
+      "allMeetings": "Todas as reuniões",
+      "allPkm": "Abrir PKM"
+    },
+    "empty": {
+      "title": "Ainda sem notas",
+      "hint": "Toque no microfone para a primeira nota ou inicie uma reunião"
+    },
+    "state": {
+      "loading": "Carregando…"
+    },
+    "meta": {
+      "voice": "Nota de voz",
+      "pending": "Processando",
+      "minutes": "{count} min",
+      "hoursMinutes": "{hours} h e {minutes} min"
+    },
+    "count": {
+      "notes": "{count} notas",
+      "meetings": "{count} reuniões"
+    }
+  },
+  "messagesHub": {
+    "title": "Mensagens",
+    "filter": {
+      "all": "Todos",
+      "email": "E-mail",
+      "rss": "Assinaturas",
+      "task": "Tarefas"
+    },
+    "action": {
+      "markAllRead": "Marcar tudo como lido",
+      "openMail": "Abrir e-mail",
+      "manageFeeds": "Gerenciar assinaturas"
+    },
+    "empty": {
+      "title": "Nada novo",
+      "hint": "E-mails importantes, notícias assinadas e tarefas chegam aqui"
+    },
+    "state": {
+      "loading": "Carregando…"
+    },
+    "badge": {
+      "important": "Importante"
+    },
+    "meta": {
+      "from": "De {name}",
+      "suggestedAction": "Sugestão: {action}"
+    },
+    "unreadBadge": "{count} não lidas"
+  },
+  "timefmt": {
+    "justNow": "agora mesmo",
+    "minutesAgo": "há {count} min",
+    "hoursAgo": "há {count} h",
+    "daysAgo": "há {count} d"
   }
 }
