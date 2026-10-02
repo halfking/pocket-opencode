@@ -80,6 +80,18 @@ deploy-local.sh.bak-*
 # 而不是只忽略主密钥。
 data/email-bodies/
 
+# 2026-10-03 audit: 上面那句「整个目录忽略」在实现上没兑现——当时只逐个列出
+# 已知的子目录，于是每多一个子目录就再漏一次。实测漏了 data/email-bodies-raw/
+# （POP3 原始 MIME 落盘）：`git add -A` 的 dry-run 里有 45 个真实邮件正文
+# 会被加进暂存区。email_master.key 那条规则当时仍然拦得住，所以密钥没泄露，
+# 但正文泄露这条路是通的。
+#
+# 这里改成整目录忽略，与本段已声明的意图一致：data/ 下装的是运行时数据
+# （sqlite、正文、发票、master key），仓库里一个都不该有 tracked。
+# 守卫见 scripts/check-runtime-data-tracked.mjs——它查的是「有没有被跟踪」，
+# 不依赖 .gitignore 的写法，所以以后再加子目录也不会复发。
+data/
+
 # 2026-10-01 audit: 调试会话丢在仓库根目录的一次性探针脚本与采样音频
 # （ASR 端点扫描、模型探测、一段语音样本）。真正有价值的探针应该整理成
 # scripts/ 下的正经脚本，这些是一次性的，不入库。
