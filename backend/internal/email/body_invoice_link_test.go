@@ -73,7 +73,7 @@ func TestBodyHasInvoiceLink_AcceptsBareURLInPlainText(t *testing.T) {
 }
 
 // 关键回归：判定必须作用在**原始 MIME** 上。
-// DeriveSnippet 对 HTML 会走 htmlToText，href 里的 URL 整个消失 —— 2026-10-04
+// DeriveSnippet 对 HTML 会走 htmlToText，href 里的 URL 整个消失 —— 2026-10-02
 // 实测：`<a href="https://inv.example.com/download/abc123.pdf">下载</a>` 经
 // DeriveSnippet 后是 "下载"，URL 一个不剩。所以本条同时钉住「原始字节判 true」
 // 与「snippet 判 false」这个反差，防止有人把入参悄悄换成 snippet。
@@ -105,7 +105,7 @@ func TestBodyHasInvoiceLink_EmptyAndNil(t *testing.T) {
 
 // 承重用例：区分「命中完整词」与「命中子串」。
 //
-// 这正是本文件存在的理由（2026-10-04 实测）：
+// 这正是本文件存在的理由（2026-10-02 实测）：
 //
 //	fapiao.example.cn  score=10（专有平台）
 //	example.com/inviter score=10（含 "inv" 子串，与上面同分）

@@ -86,7 +86,7 @@ var readbackFnExempt = map[string]string{
 		"emailFromMessage，ActionReason 的实际赋值在 applyInlineRules），" +
 		"所以这条豁免已无对应赋值点。保留是为了将来有人在这里新赋一个受管字段时" +
 		"能立刻看到说明，而不是凭空多一条无理由的静默豁免。真实理由见上面那条",
-	"scanEmail": "q2（2026-10-04）新增的赋值点：ActionReason。**它是一个纯扫描函数**——" +
+	"scanEmail": "q2（2026-10-02）新增的赋值点：ActionReason。**它是一个纯扫描函数**——" +
 		"签名是 `func scanEmail(row interface{ Scan(...any) error })`，SQL 在**调用方**" +
 		"（ListEmailsScoped）的字符串里，本函数体内不可能出现列名。" +
 		"这不是「漏查列」，而是判据的固有盲区：凡是把 row.Scan 拆出去的函数都看不见 SQL。" +

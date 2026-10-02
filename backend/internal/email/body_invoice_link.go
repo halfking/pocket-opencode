@@ -11,7 +11,7 @@ package email
 //
 // 见 fetcher.go 里 fetchSnippetOnConnected 的函数头：DeriveSnippet 会对 HTML
 // 正文调 htmlToText，后者把标签整个删掉，href 里的 URL 随之消失。
-// 实测（2026-10-04）：`<a href="https://inv.example.com/download/abc123.pdf">
+// 实测（2026-10-02）：`<a href="https://inv.example.com/download/abc123.pdf">
 // 点击下载发票</a>` 经 DeriveSnippet 后是 "点击下载发票"，URL 一个不剩。
 //
 // ## 为什么不用「有链接就算」
@@ -39,7 +39,7 @@ const invoiceLinkScoreThreshold = 20
 //
 // ## 为什么不直接用 scoreInvoiceURL 的分数
 //
-// 最初的实现是 `scoreInvoiceURL(u) >= 20`。实测（2026-10-04）它会误杀两个
+// 最初的实现是 `scoreInvoiceURL(u) >= 20`。实测（2026-10-02）它会误杀两个
 // **真实**的电子发票平台：
 //
 //	https://fapiao.example.cn/detail?id=7788   score=10
@@ -57,7 +57,7 @@ const invoiceLinkScoreThreshold = 20
 //
 // 那会让 `inviter` / `invite` / `inventory` 这类含 "inv" 的普通链接全部
 // 判成发票链接 —— 每一封带推广链接的营销邮件都会亮 📎，标记失去意义。
-// 实测（2026-10-04）这就是降阈值后的样子：`https://example.com/inviter/join`
+// 实测（2026-10-02）这就是降阈值后的样子：`https://example.com/inviter/join`
 // score=10，与 fapiao 平台同分。
 //
 // ## 阈值仍然保留

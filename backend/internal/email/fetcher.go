@@ -501,7 +501,7 @@ func findBodySection(sections []imapclient.FetchBodySectionBuffer) ([]byte, erro
 // 任何失败都返回 ("", false)——调用方（Sync 循环）只是补齐摘要，不应因摘要
 // 失败丢邮件。
 //
-// ## 为什么第二返回值不是从 snippet 里找链接（q3，2026-10-04 实测）
+// ## 为什么第二返回值不是从 snippet 里找链接（q3，2026-10-02 实测）
 //
 // 最初的想法是「snippet 里已经有正文了，顺带扫一下链接就行」。实测否掉了它：
 // snippet 走 DeriveSnippet，而 DeriveSnippet 对 HTML 正文会调 htmlToText，

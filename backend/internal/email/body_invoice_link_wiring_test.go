@@ -14,7 +14,7 @@ import (
 // ## 为什么纯函数测试不够
 //
 // body_invoice_link_test.go 覆盖的是 bodyHasInvoiceLink 本身。它转红能说明
-// 判据写错了，**转绿不能说明调用点真的在用它**。2026-10-04 实测过一次：
+// 判据写错了，**转绿不能说明调用点真的在用它**。2026-10-02 实测过一次：
 // 负控把 fetcher.go 里的 bodyHasInvoiceLink(bs.Bytes) 改成
 // bodyHasInvoiceLink([]byte(DeriveSnippet(bs.Bytes, 500))) —— 也就是
 // 「改用 snippet 判链接」，这是本功能最核心的约束被破坏的形态 ——
