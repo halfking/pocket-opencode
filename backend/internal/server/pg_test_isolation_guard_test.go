@@ -326,6 +326,11 @@ var pgSafeWithoutIsolation = map[string]string{
 	"internal/email/diag_dup_report_test.go":      "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（重复副本预演报表，产出为报告不落库）",
 	"internal/email/diag_merge_plan_test.go":       "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（合并迁移**预演**，只出计划不执行）",
 	"internal/email/diag_rest_dupes_test.go":      "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（剩余重复候选的定性排查）",
+
+	// 需求 2 的判定预演。**单独成组**：它的 key 比上面那组长，会把整组的
+	// 对齐列宽都撑开，逼着 gofmt 重排那几行与本次改动无关的邻居；空行分开
+	// 才能让 gofmt 按组对齐、diff 里只剩我这一条。
+	"internal/email/diag_spam_verdict_test.go": "只读真实库诊断：全文件 0 写语句；需 POCKET_DIAG_SPAM_VERDICT=1 显式开关 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（需求 2「开真实 IMAP MOVE 前到底会移哪些」的判定预演）。它**必须**指向生产 schema——隔离库里没有真实邮件，预演只会输出「一封都没有」这种假结论（与 reminder_notified_diag_test.go 同一类危害）。只读由数据库强制而非靠读代码：连接上先 `SET default_transaction_read_only = on`，任何写尝试直接报错；search_path 由 AfterConnect 显式覆盖为 POCKET_REAL_MAIL_SCHEMA。它绕开 NewStore（那会调 migrate() 建表，本身是写），直接 &Store{pool: pool}，只跑 Pipeline.cleanSpam 的 dry-run 分支（该分支只填报告+打日志，无任何写）。诊断在读不到任何邮件时 t.Fatal，避免把空结果读成「没有垃圾」",
 	"internal/email/realprobe_test.go":            "只读真实库探针：0 写语句；**2026-10-02 复核发现它此前从不设置 search_path**（只靠 PG_DSN 自带的那个），而它经 NewStore(pool) 读、Store 的 SQL 一律不带 schema 限定符，打错库会扫到空集。现已改为从 DSN 读出目标 schema 后 RuntimeParams 覆盖 + current_schema() 验证。登记在 pgAllowlistedWrites 的理由是「由 pgscope_test.go 的 dsnSearchPathFromDSN 解析 PG_DSN 的 search_path」，该函数有 7 个分支的测试",
 	//
 	// 第 2 组：**这个文件本身是隔离助手**，它实现隔离而不是违反隔离。

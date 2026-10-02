@@ -17,6 +17,7 @@ package email
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -47,6 +48,66 @@ func seedSpamPair(t *testing.T, store *Store) {
 		"【限时优惠】本周精选好文，回复 退TD退订", "限时优惠精选好文，回复 退TD退订")
 	mk("em-pop3-ok1", okUID, "colleague@partner.example.com",
 		"关于下季度合作方案的确认", "你好，关于下季度合作方案，见附件。")
+}
+
+// TestCleanSpam_DryRunCountsEmailsNotAccounts 钉住 SpamDryRun 的**单位**。
+//
+// 2026-10-02 真实库诊断当场抓到：pre-existing 的 `rep.SpamDryRun++` 在账户
+// 循环里递增，数的是**账户数**，而字段注释、日志文案、以及真实分支的
+// `SpamMoved += moved` 全都当它是**邮件数**。于是同一批数据，预演报 1 封、
+// 真跑移 2 封——而预演恰恰是「开真实 MOVE 前看的那个数」。
+//
+// 判据形状：同一个账户里放 3 封必过阈值的广告。此时账户数=1、邮件数=3，
+// 两种实现分别给出 1 和 3，**只有 1 个断言能把它们分开**。用单封夹具
+// （既有用例 seedSpamPair 就是单封）是分不开的——那正是这个 bug 活到今天
+// 的原因：既有用例 `SpamDryRun != 1` 在新旧两种语义下都通过。
+func TestCleanSpam_DryRunCountsEmailsNotAccounts(t *testing.T) {
+	store, cleanup := newWorkspaceTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	seedAccount(t, store, spamAcct, "user-1", "ws-1")
+	now := time.Now().Unix()
+	const n = 3
+	for i := 0; i < n; i++ {
+		// 主题必须逐封不同：emails 上有 (subject, date) 唯一约束，同主题同日期
+		// 会直接撞键——那样只会插进去 1 封，用例变成恒真。
+		if err := store.InsertEmail(ctx, Email{
+			ID: fmt.Sprintf("em-spam-multi-%d", i), AccountID: spamAcct, WorkspaceID: "ws-1",
+			FromAddress: "promo@shopmail.example.com",
+			Subject:     fmt.Sprintf("【限时优惠】第%d期精选好文，回复 退TD退订", i+1),
+			Snippet:     "限时优惠精选好文，回复 退TD退订",
+			Date:        now, UID: spamUID + int64(i),
+		}); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+
+	p := &Pipeline{Store: store, SpamDryRun: true, SpamLookbackDays: 7}
+	rep := &PipelineReport{}
+	p.cleanSpam(ctx, rep)
+
+	if rep.SpamDryRun != n {
+		t.Fatalf("SpamDryRun = %d，want %d（单位必须是**邮件**不是账户：同账户 %d 封）。"+
+			"报 %d 说明它数的是账户——那个数小于真实 MOVE 会移走的条数，"+
+			"会让「开不开真实 MOVE」的决定建立在偏小的量上",
+			rep.SpamDryRun, n, n, rep.SpamDryRun)
+	}
+	// 样本里的 Count 之和必须与总数一致：这两个数在报告上并排出现，
+	// 不一致就说明有一处仍按账户计数。
+	sum := 0
+	for _, s := range rep.SpamDryRunSamples {
+		sum += s.Count
+	}
+	if sum != rep.SpamDryRun {
+		t.Errorf("各账户样本 Count 之和 = %d，与 SpamDryRun = %d 不一致；"+
+			"报告上这两个数并排出现，不一致就说明有一处仍按账户计数", sum, rep.SpamDryRun)
+	}
+	if len(rep.SpamDryRunSamples) != 1 {
+		t.Errorf("样本条数 = %d，want 1（%d 封都在同一个账户里）", len(rep.SpamDryRunSamples), n)
+	}
+	if rep.SpamMoved != 0 {
+		t.Errorf("SpamMoved = %d，预演绝不许 MOVE", rep.SpamMoved)
+	}
 }
 
 func categoryOf(t *testing.T, store *Store, id string) string {

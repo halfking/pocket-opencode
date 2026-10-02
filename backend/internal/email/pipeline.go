@@ -228,8 +228,18 @@ type PipelineReport struct {
 	NewEmails      int   `json:"newEmails"`
 	SpamMoved      int   `json:"spamMoved"`
 	SpamLocalOnly  int   `json:"spamLocalOnly"`
-	// SpamDryRun>0 表示本轮是预演：这 SpamDryRun 封「本可以移走但没移」，
+	// SpamDryRun>0 表示本轮是预演：这 SpamDryRun **封**邮件「本可以移走但没移」，
 	// 逐账户列在 SpamDryRunSamples 里。真实邮箱上先看这个再决定是否真移。
+	//
+	// 单位是**邮件**不是账户，2026-10-02 修：它原先在账户循环里 `++`，数的是
+	// 账户数，而日志把它写成「%d mail(s) would be moved」、注释写成「这
+	// SpamDryRun 封」。两个后果：
+	//   1. 预演报告的条数**少于**真实 MOVE 会移的条数（真实分支的
+	//      `SpamMoved += moved` 数的是邮件）——预演恰恰是「开 MOVE 前看的
+	//      那个数」，它报少报就等于让人在错误的量级上做决定；
+	//   2. SpamDryRun 与 SpamMoved 单位不同却长得一样，报告上无法互相印证。
+	// 真实库当场抓到：1 个账户 2 封「【阿里云】云安全中心周报」被判垃圾，
+	// 旧实现报 1 封，真跑会移 2 封。
 	SpamDryRun        int               `json:"spamDryRun,omitempty"`
 	SpamDryRunSamples []SpamPreviewItem `json:"spamDryRunSamples,omitempty"`
 	// SpamNearMiss 是「未判垃圾但有分」的邮件，按账户分组。
@@ -775,7 +785,8 @@ func (p *Pipeline) cleanSpam(ctx context.Context, rep *PipelineReport) {
 	}
 	if p.SpamDryRun {
 		for accountID, uids := range byAccount {
-			rep.SpamDryRun++
+			// += len(uids) 而不是 ++：单位必须是邮件，见字段注释。
+			rep.SpamDryRun += len(uids)
 			rep.SpamDryRunSamples = append(rep.SpamDryRunSamples, SpamPreviewItem{
 				AccountID: accountID,
 				Count:     len(uids),
@@ -797,8 +808,8 @@ func (p *Pipeline) cleanSpam(ctx context.Context, rep *PipelineReport) {
 				Near:      nearByAccount[id],
 			})
 		}
-		log.Printf("[email/pipeline] spam dry-run: %d mail(s) would be moved, %d near-miss (未判垃圾但有分，开真实 MOVE 前值得人看一眼)",
-			rep.SpamDryRun, countNearMiss(rep.SpamNearMiss))
+		log.Printf("[email/pipeline] spam dry-run: %d mail(s) across %d account(s) would be moved, %d near-miss (未判垃圾但有分，开真实 MOVE 前值得人看一眼)",
+			rep.SpamDryRun, len(rep.SpamDryRunSamples), countNearMiss(rep.SpamNearMiss))
 		return
 	}
 	for accountID, uids := range byAccount {
