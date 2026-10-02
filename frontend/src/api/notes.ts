@@ -88,10 +88,11 @@ export const notesApi = {
    * 「服务端算完了、前端报失败」——这正是用户报的「没有即时总结」里最难查的
    * 那一类：后端日志写着 200，界面却拿不到 summary。
    */
-  summarize(id: string): Promise<{ summary: string; model?: string }> {
+  summarize(id: string, signal?: AbortSignal): Promise<{ summary: string; model?: string }> {
     return http(`/api/notes/${id}/summarize`, {
       method: 'POST',
       timeoutMs: NOTE_SUMMARIZE_TIMEOUT_MS,
+      signal,
     })
   },
   /** Hybrid search across notes. */

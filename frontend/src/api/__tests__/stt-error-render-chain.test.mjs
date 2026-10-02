@@ -15,7 +15,7 @@
  * `extractErrorCode()` 取**第一个冒号前**的片段当错误码，前缀没了 → 取不到码
  * → 落回通用兜底「语音转写服务尚未配置」。
  *
- * 结果：并行会话在 §4.4 费力保住的���行动原因，在**笔记录音**这条链路上被静默
+ * 结果：并行会话在 §4.4 费力保住的可行动原因，在**笔记录音**这条链路上被静默
  * 压回通用文案；同一份文案在会议页（直接渲染 sttError）却是完整的。
  * 用户报的原话正是"笔记录音没有转成文字"——最需要解释的那条路径反而被盖掉了。
  *
@@ -197,10 +197,31 @@ describe('runtime 的 error 写入点不变量', () => {
       assert.ok(
         /sttFailureText\(/.test(rhs)
           || /['"`]/.test(rhs)               // 至少含一个字面文案（含字面量三元）
-          || /mic\.deniedLabel\.value/.test(rhs),
+          || /mic\.deniedLabel\.value/.test(rhs)
+          || /EMPTY_RECORDING_NOTICE/.test(rhs),
         `recordingRuntime.ts:${i + 1} 的 error 写入既无字面文案也未过 sttFailureText：${line.trim()}`,
       )
     })
+  })
+
+  it('白名单里的 EMPTY_RECORDING_NOTICE 必须真的是字符串字面量', () => {
+    // 上一条把常量名放行了，那就必须在这里把它钉死——否则「放行一个名字」
+    // 就变成了绕过不变量的后门：任何人把常量指向原始异常 message 都能过。
+    //
+    // 这一条比既有的 mic.deniedLabel.value 先例更严：那处放行时**什么都不查**，
+    // 这里放行则要求定义确实是面向用户的字面文案。
+    const note = read('../../features/notes/note-recording.ts')
+    const decl = note.match(/export const EMPTY_RECORDING_NOTICE\s*=\s*([\s\S]*?)\n/)
+    assert.ok(decl, 'note-recording.ts 里没有 EMPTY_RECORDING_NOTICE 的定义')
+    const rhs = decl[1].trim()
+    assert.ok(
+      /^['"`]/.test(rhs),
+      `EMPTY_RECORDING_NOTICE 必须定义为字符串字面量，实际是：${rhs.slice(0, 60)}`,
+    )
+    assert.ok(
+      !/\b(?:err|e|ex|exc|error)\b\s*\??\s*\.\s*(?:message|body|response)\b/.test(rhs),
+      'EMPTY_RECORDING_NOTICE 指向了原始异常的可行动信息会在这里被二次压掉',
+    )
   })
 
   it('会议侧渲染 sttError 时不再叠加归一（与笔记侧保持一致）', () => {

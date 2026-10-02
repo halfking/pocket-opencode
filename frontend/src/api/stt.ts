@@ -44,7 +44,7 @@ export const sttApi = {
    * Transcribe recorded audio with automatic fallback.
    * Pass `audioBlob` for web recordings, `audioPath` for native file paths.
    */
-  async transcribe(opts: SttOptions): Promise<SttResult> {
+  async transcribe(opts: SttOptions, signal?: AbortSignal): Promise<SttResult> {
     const minConf = opts.minConfidence ?? 0.7
 
     // Try local sherpa-onnx first (native only, needs file path).
@@ -77,9 +77,13 @@ export const sttApi = {
     // 注释里记着）。**相等即错**：客户端计时从请求发出开始，服务端的从
     // handler 进来开始，中间还隔着网络与鉴权，所以客户端实际总是先到点，
     // 于是「刚好用满预算」的那一档必然失败。取 3 分钟。
+    // signal 透传给 http：调用方（如 useVoiceInput 的孤儿转写）据此可以
+    // 在页面离开后仍跑的同时**仍被中止**。http 的 HttpOptions.signal 早就是
+    // 接好的，这里只是把它从这条长任务链上暴露出来——此前这条链是整条
+    // stt 链里唯一没有中止入口的环节，而它恰恰是设计上要跨页存活的。
     const res = await http<{ text: string; confidence: number; costCents?: number }>(
       '/api/stt/transcribe',
-      { method: 'POST', body, timeoutMs: STT_TRANSCRIBE_TIMEOUT_MS },
+      { method: 'POST', body, timeoutMs: STT_TRANSCRIBE_TIMEOUT_MS, signal },
     )
     return {
       text: res.text,

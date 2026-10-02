@@ -425,9 +425,12 @@ export function resolveCidImages(html: string, parts: MimePart[]): string {
     return `data:${part.contentType};base64,${raw64}`
   }
 
-  // 1) 带引号的 src="cid:..."（原始实现覆盖的形态）
+  // 1) 带引号的 src="cid:..." / background="cid:..."
+  //
+  //    background 一起收：旧式邮件客户端（Outlook HTML 导出）大量用
+  //    <body background="cid:logo@corp">，漏掉它就是首屏那个 logo 位置裂图。
   let out = html.replace(
-    /(src\s*=\s*)(["'])\s*cid:([^"'\s>]+)\s*\2/gi,
+    /((?:src|background)\s*=\s*)(["'])\s*cid:([^"'\s>]+)\s*\2/gi,
     (whole, prefix: string, quote: string, cid: string) => {
       const data = inline(cid)
       return data ? `${prefix}${quote}${data}${quote}` : whole
@@ -439,13 +442,20 @@ export function resolveCidImages(html: string, parts: MimePart[]): string {
   //    email-detail-format.ts 的 ALLOWED_ATTR 白名单里，净化会放行，
   //    但 cid: 对 WebView 依然不可解析 —— 少了这一步就是「正文在、图全空」。
   //    这里刻意不区分引号有无：CSS 里 url() 的引号是可选的，两种都要覆盖。
-  out = out.replace(
-    /(url\(\s*)["']?\s*cid:([^"')]+?)\s*["']?\s*(\))/gi,
-    (whole, prefix: string, cid: string, close: string) => {
-      const data = inline(cid)
-      return data ? `${prefix}${data}${close}` : whole
-    },
+  //
+  //    还必须认**HTML 实体形式的引号**：`style="...url(&quot;cid:x&quot;)"`。
+  //    2026-10-03 实测：Word/Outlook 导出的 HTML 就是这么写的（属性分隔符被
+  //    实体化成 &quot;），原来的 ["']? 只认字面引号，于是整批背景图裂掉。
+  //    这是「邮件详情缺图」的另一个高频入口。
+  const cssQuote = `(?:["']|&(?:quot|apos|#34|#39);)?`
+  const urlRe = new RegExp(
+    `(url\\(\\s*)${cssQuote}\\s*cid:([^"')\\s]+?)\\s*${cssQuote}\\s*(\\))`,
+    'gi',
   )
+  out = out.replace(urlRe, (whole, prefix: string, cid: string, close: string) => {
+    const data = inline(cid)
+    return data ? `${prefix}${data}${close}` : whole
+  })
 
   // 3) 无引号的 src=cid:...。HTML 允许属性值不带引号，部分发信方就这么写。
   out = out.replace(
@@ -455,6 +465,16 @@ export function resolveCidImages(html: string, parts: MimePart[]): string {
       return data ? `${prefix}${data}` : whole
     },
   )
+
+  // 4) srcset="cid:a 1x, cid:b 2x"。现代响应式邮件的标配。
+  //
+  //    之前完全没覆盖，而且**被第 1 条的 src= 兜底掩盖了**：响应式邮件总是
+  //    同时写 srcset 与 src，只测「这一张图有没有解析出来」会显示正常，
+  //    实际 srcset 里那两个 cid 引用仍然是裂图（2026-10-03 实测残留 2 处）。
+  out = out.replace(/(\ssrcset\s*=\s*)(["'])([^"']*)\2/gi, (whole: string, prefix: string, quote: string, value: string) => {
+    const patched = value.replace(/cid:([^"'\s,]+)/gi, (m: string, cid: string) => inline(cid) || m)
+    return patched === value ? whole : `${prefix}${quote}${patched}${quote}`
+  })
 
   return out
 }

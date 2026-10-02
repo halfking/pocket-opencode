@@ -8351,3 +8351,645 @@ if (fs.existsSync(p)) vueFiles.push(p)
   https 设备侧端到端、「tap 报 COMPLETED 但没反应」、i18n ~800 条 —— 全部原样
 - **本会话在开发库里留了测试数据**：`probe-a/c/d` 与 4 个 `BUGAX夹具-*` 任务
   （截图里能看到它们带着「疑似卡死」标签）。清理脚本未写。
+# §4.82 两条真机 flow 第一次全绿（本轮）
+
+> 承 §4.81：那一轮把两条 flow 的红都定位到了根因，但**一次都没绿过**。
+> 本轮绿了。三个根因全是装置自身的缺陷，不是产品缺陷。
+
+## §4.82.0 一句话结论
+
+`smoke-login.yaml` 与 `flashcards-write.yaml` 在 Redmi 2411DRN47C（Android 14 / 720x1640）
+上首次 `2/2 Flows Passed`、`exit=0`，且都做过**负控**证明断言有区分力。
+
+```
+node scripts/maestro-run.mjs .maestro/smoke-login.yaml        → 2/2 Flows，exit=0（两轮可复现）
+node scripts/maestro-run.mjs .maestro/flashcards-write.yaml   → 2/2 Flows，exit=0
+负控：POCKET_SKIP_CDP_LOGIN=1 POCKET_ALLOW_UNCERTAIN_START=1
+     → [Failed] smoke-login (47s) Assertion is false: "AI 工具" is visible，exit=1
+```
+
+## §4.82.1 BUG-V6：CDP 登录块写在了「再走一次路由」之前
+
+写的时候把登录块插在了第 533 行，而「清完 token 之后再走一次路由」在第 582 行。
+执行顺序因此变成：
+
+```
+resetAppAuth() → CDP 登录 → post-auth 导航
+```
+
+而 post-auth 导航那段期望落在 `#/login`，且 `atLogin=false` 时 `exit 3`
+⇒ **登录成功之后必然误报 exit 3**。已把登录块整体移到导航块之后。
+
+补丁脚本做了双向自证：替换前断言区域形状确实是「登录在导航之前」，
+替换后断言导航行号 < 登录行号；否证不成立直接抛错。
+（防的是「补丁没生效却报成功」——这是最坏的失败模式。）
+
+## §4.82.2 BUG-V7：从来没断言过 App 到底在打哪个后端
+
+这条比前两条严重，因为它让**所有健康检查都绿、而结论是别人的**。
+
+事实链：
+
+| 环节 | 内容 |
+|---|---|
+| 装机 APK 怎么构的 | `frontend/.env.android-dev`，里面是 `VITE_API_BASE=http://192.168.31.20:18099`（**LAN 地址**） |
+| 本文件上方三处注释 | 写的是「App 的 API 基址是 `http://127.0.0.1:18099`」——**与事实不符** |
+| 实际生效的基址 | `localStorage.pocket_api_base` **优先于**构建默认值（`config/api-base.ts:4`） |
+| 那个 key 里是什么 | 2026-10-03 真机读回是 `http://localhost:18099`——**上一轮调试遗留、没人断言过的值** |
+
+⇒ 真缺陷不是「App 不走 reverse」（初版注释就是这么写的，**已被实测否掉**），
+而是「**从未断言**」。两种坏法：
+
+- key 缺失 ⇒ 落回构建默认的 LAN `18099` = **同机另一个会话的 pocketd-invoicecheck**（dev 口令不同）
+- key 陈旧 ⇒ 指向一个已经没人监听的端口
+
+两种情况下宿主 `/healthz` 200、设备 `adb shell curl` 200、reverse 映射端口正确，
+**三道守卫全绿**，而 App 读的是别的后端。dev 口令不同 ⇒ 登录 401 ⇒
+「列表恒空但没有任何报错」——就是 §4.80 记的那个差点被当成产品缺陷的现象。
+
+新增 `assertAppUsesReverseBase()`，接进 `preflight()`：
+
+1. 用产品自己支持的开关（设置页「后端服务器」写的同一个 key）写入
+   `http://127.0.0.1:<dev>`。`api-base.ts:136-137` 明确：显式填的 loopback
+   **不**被 `loopbackBuildRejected` 拒掉，因为「adb reverse 开发流确实需要
+   用户主动指定 localhost」——这是设计内的路径。
+2. **写入后读回自证**：`setItem` 成功 ≠ 值就是我们要的。
+3. `location.reload()`：基址是模块加载期解析的，不重载则页内 fetch 用的还是旧 base，
+   而守卫照样拿到 200——又是一次假绿。
+4. 用**页内 `fetch`**（App 自己的 WebView + CORS）打 `/healthz` 要求 `200 ok`。
+   不用 `adb shell curl`：后者只证明**手机 OS** 能到那个端口，
+   两者不是一回事。
+5. 日志里打出构建期基址（从本 worktree 的 `.env.android-dev` 读），
+   基址对不上时一眼可见。
+
+`POCKET_API_BASE_OVERRIDE=0` 可关闭（只在你确实要测构建期那个 LAN 基址时）。
+
+## §4.82.3 BUG-V8：「再导航一次强制守卫重算」在同路由时是空操作
+
+§4.81 写下的「清完 token 之后再走一次路由」这个手法有个前提没写：
+**`location.hash` 必须真的发生变化**。浏览器只在字符串变了才发 `hashchange`。
+App 已经停在 `#/ai` 时，`location.hash = '#/ai'` 什么都不会发生 ⇒ 路由守卫不重算
+⇒ App 带着一个刚被清掉的 token 继续停在业务页上。
+
+这是**负控跑出来的**，不是读代码看出来的：`POCKET_SKIP_CDP_LOGIN=1` 那轮日志里
+`已清登录态但 App 停在 #/ai，没有落到登录页`。
+
+修法：追加一次性 query（Vue Router 的 hash 模式正常解析该 query），
+保证目标字符串与当前 hash 必然不同：
+
+```js
+await setRoute(`${want}?__recheck=${Date.now()}`, 'true', 5000)
+```
+
+顺带修掉同一段的两处自伤：
+
+- 原来无条件 `setRoute('#/ai')`，但未登录时守卫会把它弹成 `#/login?returnTo=/ai`，
+  hash 永远不等于 `#/ai` ⇒ `setRoute` 必然空转满 30s 才返回 false。
+  判据最后只读 hash，于是照样判「通过」——代价是每轮白等 30 秒，
+  而且 `setRoute` 的 ready 判据**压根没起作用**（形同虚设）。
+- 改成「已经在登录页就跳过导航」，不在才导航且只给 5s。
+
+## §4.82.4 smoke-login.yaml：删掉一条恒真断言
+
+原第 46-50 行：
+
+```yaml
+# WebSocket 连上的外部可观测面：右上角状态胶囊
+#   🟢 = 已连上。断连时是 🔴，而这**不会**报错，只会静默变红，所以必须显式断言。
+- extendedWaitUntil:
+    visible: "🟢"
+    timeout: 30000
+```
+
+**这个注释是错的，断言也是恒真的**：
+
+- `TasksView.vue:42` 的 `{{ triage.hasAttention ? '🔴' : '🟢' }}` 是
+  **任务分诊徽章**（`.triage-pill`，`aria-label` 是「全部正常」/「需要你介入」），
+  不是连接状态。
+- 且它在「0 个运行中任务」的健康态下**同样**显示 🟢「全部正常 · 0」⇒ 恒真。
+- 真正的连接面在 `GlobalStatusBar.vue`，而它的 `visible` 计算
+  （`GlobalStatusBar.vue:46-52`）在「在线且无待发队列」时**根本不渲染**
+  ⇒ 健康态下压根没有可断言的 UI，只能靠 CDP 读 store。
+- 本次实测分诊是 🔴（11 项待介入，见截图）——**旧的 🟢 断言在这份数据上本来就该红**。
+
+换上的三条断言全部对着源码核过（不靠肉眼截图猜）：
+
+| 断言 | 源码依据 | 作用 |
+|---|---|---|
+| `AI 工具` | `AppLayout.vue:45` `<h1 class="title">{{ title }}</h1>`，`title = route.meta.title`（`AppLayout.vue:149`），`/ai` 的 `meta.title` 见 `router-mobile.ts:80` | 证明路由解析 + 标题渲染 |
+| `快速提问` | `TasksView.vue:28` `aria-label` | 证明 TasksView 真挂载，不只是 AppLayout 空壳 |
+| `密码登录` 用 `assertNotVisible` | `LoginView.vue:252` Tab 标签 | 会话存活守卫：token 失效时 `client.ts:53` forceReauth 会把 App 弹回 `#/login`，这条就红 |
+
+## §4.82.5 登录改由 preflight 用 CDP 填真实表单
+
+§4.81 已经坐实 Maestro 把 `${POCKET_DEV_PASS}` 展开成**字面量 `undefined`**
+（`_probe-env.yaml` 实测：密码框内容 `adminPWLEN-undefined`），而 `--env`
+会把口令暴露在进程命令行里。两者都不接受，改由 CDP 直接填真实表单。
+
+CDP 侧的两个要点：
+
+1. **按 placeholder 定位，不按下标**。下标取决于当前 Tab 与指纹区块；
+   App 停在「解锁」界面（BUG-AV 场景：已登录但 crypto 未初始化）时会填到**错误的框**，
+   而**填错框看起来和填对一样**。定位不到时把页面上真实的 placeholder 全部打出来，
+   让报错指向「界面不是登录表单」而不是一句没信息量的「0 个输入框」。
+2. Vue 受控 input 必须用 `HTMLInputElement.prototype` 上的 value setter
+   再派发 `input` 事件。直接写 `el.value` 不触发 v-model 更新
+   （写进去了但状态没变，提交仍是空）。
+
+**换掉的是「谁来敲键盘」，不是「被测什么」**：同一个 `LoginView` 表单、
+同一个 `POST /api/auth/login`、同一个 401/200 判定。
+
+⚠️ **如实记录覆盖变窄**：软键盘那套手势（tap 输入框起键盘 → `inputText` →
+`hideKeyboard` → tap 提交）两条 flow 都不再走。`_login.yaml` 里
+`${POCKET_MASTER}` 那条解锁分支同样没被覆盖——它有和 `${POCKET_DEV_PASS}`
+完全相同的展开风险，但本轮没有触发（登录后没出现「解锁本地数据」屏）。
+这两项单列为遗留。
+
+## §4.82.6 判据的证据（正控 + 负控 + 独立复核）
+
+**正控**
+
+- `smoke-login.yaml` → `2/2 Flows Passed in 11s`，`exit=0`，连跑两轮一致。
+- `flashcards-write.yaml` → `2/2 Flows Passed in 48s`，`exit=0`。
+
+**归属证明**（这是「App 读的到底是不是我这个后端」的直接证据）：
+
+- 截图 `~/.maestro/tests/2026-10-02_222752/smoke-login/takeScreenshot/logs/maestro/smoke-after-login.png`
+  里列表是 `Maestro任务` / `probe-a` / `probe-c` / `probe-d` / `BUGAX夹具-*`
+  ——**正是本 worktree 开发库的夹具**。同机另一个实例（18099）的数据不会长这样。
+- 页内 `fetch` 守卫每一轮都打 `App 内 fetch http://127.0.0.1:18099/healthz → 200 ok`。
+
+**独立复核落库**（不只看屏幕）：
+
+```
+flashcard_deck_config = 1   （name=回归卡组）
+flashcard_cards       = 1
+flashcard_notes       : front=回归正面
+```
+
+**负控**（证明断言不是恒真）：
+
+```
+POCKET_SKIP_CDP_LOGIN=1 POCKET_ALLOW_UNCERTAIN_START=1
+  → flow 真跑到登录页上
+  → [Failed] smoke-login (47s)  Assertion is false: "AI 工具" is visible
+  → exit=1
+```
+
+**夹具自证**：`scripts/flashcards-test-fixture.mjs` 输出
+`before [decks|notes|cards|revlog] = 0|0|0|0` → `after` 同为 0，
+localStorage 清理读回 `[["flashcards:v1",true],["flashcards:v1:outbox",true]]`。
+
+## §4.82.7 本轮顺手清掉的开发库残留
+
+`opencode_pocket.tasks` 里 11 条 `active` 探针残留，删掉 9 条可归因的
+（`Maestro任务` / `probe-a` / `probe-c` / `probe-d` / `BUGAX夹具-*` × 5），
+`DELETE 9` 由 `RETURNING id` 自证。
+
+**保留 2 条 `PG matrix probe`**：归属不明，可能是并发会话的，
+这张表是共享可变状态，不做无法归因的删除。
+
+⚠️ 踩到的坑：带中文的 `WHERE title='Maestro任务'` 经 PowerShell 传给 `psql` 会
+报 `invalid byte sequence for encoding "UTF8": 0xc8 0xce`（GBK 字节）。
+改用纯 ASCII 的 id 列表才成功。与 `flashcards-test-fixture.mjs` 注释里
+「全部 ASCII，避免 PowerShell/psql 兜底串编码问题」是同一条。
+
+## §4.82.8 遗留（本轮没做，不是有意搁置）
+
+- **软键盘手势路径无覆盖**：两条 flow 都不再走 Maestro 敲键盘。
+  要验这条只能单开一条用**错误口令**的 flow（不需要真口令、无泄露面），
+  验「点输入框起键盘 → inputText → hideKeyboard → tap 提交」后错误提示可见。
+- `_login.yaml` 的 `${POCKET_MASTER}` 解锁分支未覆盖，展开风险同 §4.82.5。
+- BUG-AX 设备侧负控、闪卡两入口的渲染/点击、会议写入的设备侧持久化、
+  「tap 报 COMPLETED 但没反应」的坐标对账：仍未做。
+- `:param` 模板、gateway 六页、生产部署、https 设备侧端到端、Keystore：仍未做。
+
+## §4.82.9 本轮跑法（可复现）
+
+```powershell
+$env:POCKET_API_BASE='http://127.0.0.1:18100'   # 宿主后端端口
+$env:POCKET_DEVICE_PORT='18099'                 # 设备侧端口（App 用的）
+$env:POCKET_DEV_PASS='<口令>'                   # 必须与下面同一个值
+$env:POCKET_AUTH_PASS='<口令>'
+cd C:\workspace\openpocket\.wt-e2e
+node scripts\flashcards-test-fixture.mjs          # 闪卡 flow 前置
+node scripts\maestro-run.mjs .maestro\smoke-login.yaml
+node scripts\maestro-run.mjs .maestro\flashcards-write.yaml
+```
+
+`POCKET_DEV_PASS` 与 `POCKET_AUTH_PASS` **必须是同一个值**：
+不一致的表现极具误导性——登录 401 → 任务列表空 → 看起来像「列表功能坏了」。
+本轮为此专门用 `scripts/start-local-backend.ps1` 以已知口令重启了 18100，
+并实测鉴权三态：真口令 200 + 291 字符 token、`/api/tasks` 200；
+伪造口令 401；无 token 401。
+# §4.83 任务写路径真机跑通 + BUG-V9（CDP 端口）+ 回应外部审计（本轮）
+
+> 承 §4.82。本轮把 Goal 审计提的 4 条证据缺口逐条用**当前权威证据**复核，
+> 其中两条基于过期证据；同时把 `tasks-crud.yaml` 从「半成品」补成真回归，
+> 并修掉一个新暴露的装置缺陷。
+
+## §4.83.0 结论
+
+- **第三条 flow 绿了**：`tasks-crud.yaml` → `2/2 Flows Passed in 34s`, `exit=0`。
+  任务写路径（创建 → 列表回显 → 进详情）在真机上端到端验证，PG 落库独立复核。
+- **BUG-V9 修复并证成**：CDP 转发端口从「随机 9500+rand(300)」改为
+  `adb forward tcp:0`（由 adb 分配空闲端口），碰撞从概率事件变成不可能。
+- 审计 4 条里 **2 条成立、2 条基于过期证据**，逐条见 §4.83.4。
+
+## §4.83.1 tasks-crud.yaml：从「半成品」补成真回归
+
+这个 flow 此前在文件头自标「**半成品，不要当回归测试**」——第 6 步是一句
+永不成立的断言（`visible: "ZZZ_故意失败_导出任务详情页可访问性树"`），
+用来导出任务详情页的可访问性树。
+
+2026-10-03 跑一轮拿到证据（`~/.maestro/tests/2026-10-02_224548/tasks-crud/
+screen-hierarchy/step-024-*.json`，99 节点），补成真断言：
+
+| 断言 | 作用 | 会不会恒真 |
+|---|---|---|
+| `visible: "任务详情"` | 证明真的进了详情页 | 否 |
+| `assertNotVisible: "\+ 新任务"` | 列表页专属按钮必须消失 ⇒ 证明离开了列表页 | 否 |
+| `assertVisible: { text: "Maestro任务.*" }` | **跨页一致性**：列表里点的卡，详情页必须显示同一标题 | 否 |
+| `assertVisible: "进行中"` | 状态徽章 | 否 |
+| `assertVisible: { text: ".*暂停.*" }` | 动作行是 enabled 的 Button，不是静态文字 | 否 |
+
+**落库独立复核**（不只看屏幕）：
+
+```
+opencode_pocket.tasks → task-1790952387600 | active | Maestro任务
+```
+
+**负控**：复制整份 flow，只把第 6 步那条标题断言换成 `PG matrix probe.*`
+（这条任务确实存在于库里，但它不是本轮建的，详情页显示的应该是 `Maestro任务`），
+其余一字不改：
+
+```
+[Failed] _neg-tasks-detail (42s) (Assertion is false: "PG matrix probe.*" is visible)
+```
+
+⇒ 第 6 步有判别力，不是恒真。负控副本已删除。
+
+### 前置修复 + 新增夹具
+
+原先 `- runFlow: _login.yaml`（含崩掉的 `${POCKET_DEV_PASS}`），
+换成与 smoke/flashcards 一致的前置断言（`AI 工具` 可见、`密码登录` 不可见）。
+
+新增 `scripts/tasks-crud-fixture.mjs`，删掉上一轮同名任务。**必需**，理由与
+`flashcards-test-fixture.mjs` 同源：Maestro 判 `visible` 只看节点在不在
+无障碍树里，**不看它是不是上一轮留下的**，于是残留会让第 5 步假通过——
+恰好在最需要它报警的时候不报。本轮实测夹具生效：`before=1 deleted=1 after=0`。
+
+夹具用 ASCII 前缀 `title LIKE 'Maestro%'` 匹配中文标题：带中文的 WHERE 条件
+经 PowerShell 传给 `psql` 会报 `invalid byte sequence for encoding "UTF8": 0xc8 0xce`。
+
+## §4.83.2 BUG-V9：CDP 转发端口随机取值会撞
+
+2026-10-03 真机日志里出现：
+
+```
+adb.exe: error: cannot bind listener: cannot bind to 127.0.0.1:9528:
+  通常每个套接字地址(协议/网络地址/端口)只允许使用一次。 (10048)
+[preflight] fetch 守卫未能判定（…），不阻断
+```
+
+`cdpEval` / `setRoute` 原来都是 `9500 + Math.floor(Math.random() * 300)`，
+撞上已被占用的端口就抛错。**两种后果差别很大**：
+
+- 落在 `assertFetchIntact` 上 → 它 catch 后只打一句「未能判定，不阻断」，
+  run 继续（实测 run 仍 `exit=0`）。也就是说**这个碰撞可以完全静默**：
+  守卫没跑成，绿灯照出。
+- 落在 `assertAppUsesReverseBase` 或 CDP 登录块上 → preflight 直接崩，
+  而报错「端口被占用」指向的是装置，看不出「真问题是上次没清干净」。
+
+撞的是**上一轮没清干净的 forward**，或同机另一个会话的 forward——端口是
+**共享可变状态**，随机撞上的概率随并发会话数上升。
+
+**修法不是「多随机几次然后重试」**（那只把概率推低，没有取消它），
+而是 `adb forward tcp:0`：由 adb 分配一个当前空闲的端口并打印出来。
+2026-10-03 实测分配到 `55704` / `59207` 等高位端口，`forward --list` 里确实出现。
+碰撞因此从「概率事件」变成「不可能」。仍校验返回值必须是正整数，
+否则说明 adb 行为变了，不能拿 `NaN` 去拼 URL。
+
+### 负控：占满旧随机区间
+
+把 **9500–9799 全部 300 个端口占满**再跑 harness：
+
+```
+occupied old random range: 300 ports (9500..9799)
+forward entries now: 303
+[preflight] fetch 为原生实现 ✅
+[preflight] 已设 pocket_api_base：http://127.0.0.1:18099 → http://127.0.0.1:18099
+[preflight] App 已重载，外壳回来了
+[preflight] App 内 fetch http://127.0.0.1:18099/healthz → 200 ok ✅
+[preflight] 登录成功，已进入 #/ai
+[Passed] smoke-login (2s)   2/2 Flows Passed in 10s
+=== EXIT=0 ===
+```
+
+旧实现在这个压力下选到空闲端口的概率是 **0/300**，必然失败。
+⇒ 这个对照能区分「修好了」与「只是这次运气好」。
+
+⚠️ 复现步骤：`for ($p=9500; $p -le 9799; $p++) { adb -s <serial> forward tcp:$p tcp:1 }`，
+跑完 `adb -s <serial> forward --remove tcp:$p`。脚本是 ASCII-only 的
+（PowerShell 5.1 把无 BOM 的 .ps1 按 ANSI 解析，中文会变乱码并破坏引号配对——
+第一版就因为这个直接语法错误，见 `start-local-backend.ps1` 顶部的同款警告）。
+
+## §4.83.3 我自己犯的两个错（都记下来）
+
+### 1. `$pid` 是 PowerShell 只读自动变量 ⇒ 存活检查恒为「已死」
+
+清理残留 forward 时我写了 `$pid = $matches[2]`，PowerShell 直接拒绝赋值，
+`$pid` 一直是**宿主 PowerShell 自己的** pid（26764）。于是检查
+`adb shell "test -d /proc/$pid"` 测的是设备上根本不存在的一个 pid，
+**恒为「已死」**，于是 5 条 forward 全被删除，包括可能活着的。
+
+实际影响为零——但**不是靠那个检查证明的**，而是靠删除**前**实际读到的
+`forward --list`：5 条的目标 pid 是 25501 / 27763 / 28988 / 30595 / 8208，
+而当时存活的 App pid 是 **12373**，没有一条指向活进程。
+
+判据自身失效却照样给出了破坏性许可。这类事故的共性是
+**「检查通过」与「检查有效」是两件事**。
+
+### 2. 用更差的临时版本覆盖了一个已提交的工具
+
+我把临时写的 `_dump-a11y.mjs` 改名成 `scripts/dump-a11y-text.mjs`，
+结果 `git status` 显示 `M` —— **那个文件在 HEAD 里已经存在**
+（`07bfd143`，42 行，还能处理目录/多文件）。我以为「schema 字段名不对」
+其实是我自己写错了字段（文本在 `attributes.text`，原版读的就是
+`o.attributes`）。已 `git checkout HEAD --` 还原，并用原版重跑同一棵树验证：
+99 节点，输出更全。
+
+**教训**：`Move-Item -Force` 到某个名字之前先 `git ls-files` 查一下。
+自造同名文件是这条路上最常见的静默覆盖。
+
+## §4.83.4 回应外部审计的四条（逐条用当前证据）
+
+| 审计说法 | 结论 | 证据 |
+|---|---|---|
+| 「真机 Maestro 从未成功执行一次（零安装包、零运行产物）」 | **不成立（过期证据）** | `~/.maestro/tests/` 下 8 次运行目录（最近 22:36），带 `screenshots` / `screen-hierarchy`；设备上 `com.kaixuan.opencode.pocket` 在装（`lastUpdateTime 2026-10-02 20:40:59`）；本会话已实测 `smoke-login` / `flashcards-write` / `tasks-crud` 三条 flow `exit=0` |
+| 「闪卡入口缺陷（『新建卡组』跳卡片编辑页）只记录未修」 | **不成立（已证伪）** | handoff §4.78.2 / §4.81 记载已证伪；判据 `scripts/verify-card-deck-labels.mjs --selftest` 已入库可重跑，9 语言 × 3 视图 `exit=0`（提交 `6e89480a`） |
+| 「`/api/marketplace/agents` 的 404 无法证实（返回 401）」 | **原结论成立，审计探针未带 token** | 带有效 token：`/api/marketplace/agents` → **404**；同 token `/api/tasks` → 200、`/api/agents` → 200（**token 有效性由此坐实**）；同一 token 不带 Authorization 头 → 401。⇒ 404 是「路由不存在」不是「鉴权失败」 |
+| 「多个功能点写路径与 https 回归仍为未验证，Keystore 插件缺失未实现」 | **成立** | 任务写路径本轮已补（§4.83.1）；闪卡写路径 §4.82 已验。https 设备侧端到端、其余功能点仍未验。Keystore 见 §4.83.5 |
+
+附带发现：`/api/marketplace` 带**有效** token 反而返回 **401**，而
+`/api/tasks` 同 token 返回 200 ⇒ 这条路由的守卫与 `/api/tasks` 不同
+（可能要求租户/角色）。单列为待查。
+
+## §4.83.5 Keystore：全平台抛错的 stub，密码库功能在**任何**平台都不可用
+
+`frontend/src/native/keystore.ts:60-75` 是 `StubKeystore`，11 个方法全部
+`Promise.reject(new Error('cap-keystore plugin not available on this platform'))`：
+
+```
+isVaultInitialized / setupMasterPassword / unlockWithBiometric / unlockWithPassword /
+lock / listEntries / getEntry / saveEntry / deleteEntry / generatePassword / evaluateStrength
+```
+
+文件头注释写着「To register the plugin after implementing it natively」——
+原生 Kotlin 侧**从未实现**，所以这不是「Android 上退化」，而是
+**Web/PWA 与 Android 都不可用**。UI 侧靠 `isVaultInitialized()` 的
+availability 做门控（注释里写 "the UI gates the vault feature on
+isVaultInitialized() availability"），而该调用本身就是 reject ⇒
+门控拿到的是异常，**密码库功能整体不可达**。
+
+这解释了为什么 `_goto-pkm.yaml` / `_login.yaml` 里的「解锁本地数据」分支
+要用 `${POCKET_MASTER}`：本地 SQLCipher 的 AES key 走
+`crypto.ts:53 initAppCrypto(masterPassword)` 的 PBKDF2 派生，
+与 Keystore 是**两条不同的路径**（Keystore 那条在 Web 上是 stub，
+但 PBKDF2 那条不依赖插件）。所以 PKM 本地库能加密、能解锁，
+而**密码库功能不能**——两者不要混为一谈。
+
+## §4.83.6 阻塞下一条 flow 的具体位置
+
+`notes-crud.yaml` 的前置是 `- runFlow: _login.yaml` + `- runFlow: _goto-pkm.yaml`，
+后者第 69 行：
+
+```yaml
+- inputText: ${POCKET_MASTER}
+```
+
+**与崩掉的 `${POCKET_DEV_PASS}` 是同一个缺陷**。机制已被 `_goto-pkm.yaml`
+自己的注释记录（第 16 行）：
+
+```
+❌ evalScript: ${location.hash = '#/more'}
+   → TypeError: Cannot set property 'hash' of undefined
+     说明 evalScript 不在 WebView 的 JS 上下文里跑
+```
+
+⇒ Maestro 的脚本插值跑在 **driver 侧**，不在 WebView 上下文；
+变量不在 Maestro 的变量域里时就被替换成字符串 `"undefined"`。
+`${POCKET_DEV_PASS}` 的实测证据：框内容 `adminadminundefined`。
+
+所以 `notes-crud` 要能跑，必须像登录那样把主密码交给 CDP 填，
+而不是继续在 flow 里用 `${POCKET_MASTER}`。这与 §4.82.5 记录的
+「软键盘手势覆盖变窄」是同一个取舍的延续。
+
+## §4.83.7 本轮遗留
+
+- `notes-crud.yaml`：被 §4.83.6 的 `${POCKET_MASTER}` 阻塞，未动。
+- 软键盘手势路径仍无覆盖（可用**错误口令**单开一条 flow 验，无真口令泄露面）。
+- BUG-AX 设备侧负控、闪卡两入口渲染/点击、会议写入设备侧持久化、
+  「tap 报 COMPLETED 但没反应」坐标对账：未做。
+- `:param` 模板、gateway 六页、生产部署、https 设备侧端到端：未做。
+- `/api/marketplace` 带有效 token 仍 401，守卫与 `/api/tasks` 不同，待查。
+- Keystore 原生插件：待产品定范围（见 §4.83.5，已确认不是「只缺 Android」）。
+# §4.84 PKM 写路径 + 登录表单键盘手势（两条新 flow 绿）+ 主密码解锁上移（本轮）
+
+> 承 §4.83。本轮解掉了 §4.83.6 指出的那个具体阻塞（`${POCKET_MASTER}`），
+> 让 `notes-crud.yaml` 第一次跑通；并补上了一条**不需要任何口令**的键盘手势回归。
+> 另外更正一条我自己此前说错的结论。
+
+## §4.84.0 结论
+
+- **第四条 flow 绿了**：`notes-crud.yaml` → `2/2 Flows Passed in 40s`, `exit=0`。
+  PKM 笔记的「创建 → 改名 → 列表回显」在真机上端到端验证，
+  且用**独立于屏幕**的方式复核了落库。
+- **第五条 flow 绿了**：新增 `login-gesture.yaml` → `2/2 Flows Passed in 26s`,
+  连跑两轮。Maestro 那套软键盘手势（tap 输入框 → 键盘 → `inputText` →
+  `hideKeyboard` → tap 提交）在**登录表单**上被验证了。
+- `${POCKET_MASTER}` 这条坏路径彻底移除：解锁责任上移到 harness。
+
+## §4.84.1 先澄清一件事：那条解锁分支不是死代码
+
+我上一轮写「`_goto-pkm.yaml` 的 `${POCKET_MASTER}` 被阻塞」，但没验证它
+**会不会真的被触发**。2026-10-03 探针实测（`scripts/_probe-pkm.mjs`）：
+
+```
+hashBefore = #/ai
+导航到 #/pkm/today（含一次性 query 强制 hashchange）
+hashAfter  = #/login?returnTo=/pkm/today?__probe=…&unlock=1
+localStorage: pocket_crypto_cfg、pocket_crypto_salt   ← PBKDF2 盐 ⇒ 主密码设过
+unlockVisible: true
+inputs: [{ type: "password", ph: "输入主密码解锁" }]
+buttons: [ {text:"解锁", disabled:true}, {text:"退出重新登录 →"}, {text:"后端服务器 · http://127.0…"} ]
+```
+
+`routeGuards.ts:126-129` 的 `redirectUnlock` 带 `unlock=1`，
+localStorage 里有 `pocket_crypto_salt` ⇒ **主密码确实设过，屏幕确实会出现**。
+「它没报错所以大概是死代码」这个推断是不成立的——它是被 `undefined` 静默填错
+口令，不是没被触发。
+
+## §4.84.2 主密码实测有效，CDP 解锁端到端可用
+
+用 CDP 填 `输入主密码解锁` 并点 `解锁`（`PocketTest2026`，harness 的默认值）：
+
+| 阶段 | 证据 |
+|---|---|
+| before | 输入框 `len=0`，`解锁` `disabled: true` |
+| afterFill | 输入框 **`len=14`**，`解锁` **`disabled: false`** ← v-model 真接到了值 |
+| afterClick | **hash 跳到 `#/pkm/today`**，页面出现 `今日 Daily Note` / `MaestroPKM笔记` |
+
+⇒ 主密码有效，且**不需要坐标**。`_goto-pkm.yaml` 的注释说那个框在无障碍树里
+`[EditText] t="" cd=""`、只能按 50%,59% 点——那是对 Maestro 而言。
+DOM 里它有 placeholder：**可访问性树里没有的东西，DOM 里有**。
+
+## §4.84.3 harness 新增 `ensureLocalDbUnlocked()`
+
+放在**登录块之后**（解锁屏的前提是「已有登录态」，页面上原话「检测到已有登录态，
+但本地加密库未解锁」）。三段设计：
+
+1. 导航到 `#/pkm/today`（带一次性 query）逼守卫把解锁屏弹出来
+2. CDP 按 placeholder 填 → 点 `解锁` → 等解锁屏消失
+3. **再导航回 `#/pkm/today` 自证**：解锁屏**不再出现**。
+   少了第 3 步，「解锁屏消失」可能只是换页副作用，下次导航又被弹回来。
+
+### ⚠️ 判「解锁屏在不在」必须用 bodyText
+
+第一版探针用
+`document.querySelectorAll('label,div,span,h1,h2')` 找 `textContent === '解锁本地数据'`，
+**恒为 false** —— 而同一时刻 `document.body.innerText` 明明以
+`解锁本地数据 检测到已有登录态，但本地加密库未解锁。` 开头。
+
+用那个检查当守卫 ⇒ 永远判「已解锁」⇒ 跳过解锁 ⇒ 后面全是不可解读的结果。
+**恒为 false 的检查和恒为 true 的一样有害。** 现在用 `bodyText.includes(...)`。
+
+### 解锁会持久
+
+`login-gesture` 那轮日志：`本地库已解锁（#/login?… 无「解锁本地数据」屏）`
+⇒ 上一次 run 解的锁，跨 App force-stop / 重新启动仍然有效。
+
+## §4.84.4 起点必须再复位一次（新增的坑）
+
+解锁会把 App 停在 `#/pkm/today`，而三条 flow 的前置都假定在起点路由。
+起点复位是在**解锁之前**做的，所以解锁之后必须再复位。
+与 BUG-V8 同一个道理：必须制造真实的 hash 变化，守卫才会重算
+（`${back}?__afterunlock=${Date.now()}`）。
+
+### ⚠️ 而且要区分「有意不登录」
+
+`POCKET_SKIP_CDP_LOGIN=1`（`login-gesture` 用它，因为那条 flow 就是去测登录屏的）时，
+守卫会把 `#/ai` **正确地**弹回 `#/login?returnTo=/ai?…`，
+而 `h2.includes('#/ai')` 为 false（那是 `returnTo=/ai`，没有 `#`）
+⇒ 被误判成「复位失败」。
+
+修法：`skippedLogin = process.env.POCKET_SKIP_CDP_LOGIN === '1'`，
+此时判据改成「落在登录页即正确」。同时 `ensureLocalDbUnlocked()` 在该模式下**跳过**——
+没登录时解锁屏要么不出现、要么做了也白做，而且它会把 App 从登录屏带走，
+恰好毁掉本轮要测的起点。
+
+## §4.84.5 `_goto-pkm.yaml`：从静默分支改成硬断言
+
+```yaml
+- assertNotVisible: "解锁本地数据"
+```
+
+原来那段 `runFlow: when: visible: 解锁本地数据` 用的就是坏掉的
+`inputText: ${POCKET_MASTER}`。**为什么不再写成条件分支**：
+`runFlow when` 在条件不满足时静默跳过，于是「harness 的解锁悄悄回归了」
+这件事没有任何人会看见。解锁屏出现就红。
+
+## §4.84.6 `notes-crud.yaml` 首次全绿 + 独立复核
+
+```
+node scripts/pkm-test-fixture.mjs
+  → {"deleted":[{"id":"ast_muosqyyc_0ggtnz","ws":"ws_user-admin","title":"MaestroPKM笔记"}],"remaining":0}
+node scripts/maestro-run.mjs .maestro/notes-crud.yaml
+  → [Passed] notes-crud (31s)   2/2 Flows Passed in 40s   exit=0
+```
+
+**独立复核**（新增 `scripts/verify-pkm-note.mjs`，只读，不依赖 flow 的屏幕断言）：
+PKM 笔记存在**设备本地加密库**的 `local_assets` 表（`kind='note'`），
+走 `pinia._s.get('connectivity').runtime.deps.db()` 取 db 实例：
+
+```
+{"rows":[{"id":"ast_mur3kclr_zmscrh","workspace_id":"ws_user-admin","title":"MaestroPKM笔记"}]}
+```
+
+⚠️ 踩到的：第一版探针用 `app.config.globalProperties.$db` 取 db，取不到。
+正确路径是上面那条 pinia 路径（与 `pkm-test-fixture.mjs` 相同），
+且 `db.all()` 只接 SQL 一个参数。取不到就静默返回 `undefined` 的那版，
+差点被读成「没查到 = 没落库」。
+
+## §4.84.7 新增 `login-gesture.yaml`（不需要任何口令）
+
+### ⚠️ 先更正一条我说错的话
+
+我在 §4.82.5 / §4.83.7 写过「软键盘手势路径无覆盖」。**那是错的。**
+
+`tasks-crud.yaml` 的 `tapOn point 50%,41% + inputText + hideKeyboard`
+和 `flashcards-write.yaml` 的 `tapOn point 36%,26% + inputText` **都跑过**，
+而且它们各自后续的「按钮由 disabled 变 enabled」断言证明文本**真的落进了输入框**。
+所以「表单输入的手势链」一直是被覆盖的。
+
+真正没覆盖的只是**登录表单上**那条链——因为它必须用口令，而 Maestro 的口令传递是坏的。
+
+### 做法：用**错误口令**
+
+零泄露面（不需要真口令，也就不用 `--env`），但完整走一遍
+tap → 键盘 → `inputText` → `hideKeyboard` → tap 提交，
+判据是「后端回了 401 且错误文案上屏」。
+
+三条判据各自都问过「它恒真吗」：
+
+| 判据 | 为什么非恒真 |
+|---|---|
+| `{text:"登录", enabled:true}` | `LoginView.vue:100` 是 `:disabled="!username \|\| !password \|\| loading"` ⇒ 它变绿**同时证明两个框都收到了文本** |
+| `.*用户名或密码错误.*` | `LoginView.vue:536` 的固定文案，只在一次真实 401 往返后出现 |
+| `assertNotVisible: "AI 工具"` | 反向确认没真登进去 |
+
+截图证据（`login-gesture-rejected.png`）：用户名 `admin`、密码框 22 位点、
+`登录` 按钮已解禁（实心紫）、错误文案 `登录失败：用户名或密码错误`、
+仍停在登录页、底部 `后端服务器 · http://127.0.0.1:18099`（覆盖生效）。
+
+## §4.84.8 负控**没有**复现 ⇒ 我删掉了自己的因果故事
+
+复制 `login-gesture.yaml`，只删掉两次 tap 之间那次 `hideKeyboard`，其余一字不改，
+重跑 ⇒ **`2/2 Flows Passed`，exit=0**。
+
+⇒ 在这台设备（720x1640）上键盘**没有**遮住密码框，Maestro 的 tapOn 照样移到了焦点。
+
+所以：
+- 保留 `hideKeyboard`（防御性，零成本，让每步不依赖上一步的键盘状态）
+- 但 flow 注释里那句「不这样做就失败」**没有证据，已删除**
+- 顺带更正：2026-10-02 那次登录失败，已证实的根因是
+  **Maestro 把 `${POCKET_DEV_PASS}` 展开成字面量 `"undefined"`**
+  （`_probe-env.yaml` 坐实：框内容 `adminPWLEN-undefined`），**与键盘遮挡无关**。
+  键盘遮挡是我当时并列的**另一个假设，从未被隔离验证**；负控说它在本设备上不成立。
+
+**负控没复现，是「我之前的解释错了」的信号，不是「负控白做了」。**
+
+## §4.84.9 本轮我自己的两个脚本级失误（补丁自证抓到的）
+
+1. **前提假设错**：补丁脚本假定「post-auth 导航块在登录块之后」，
+   被自证当场否掉——真实顺序是导航块在**之前**（那正是 BUG-V6 的修复顺序）。
+   **先读结构再写补丁。**
+2. **自造语法判据**：用「数全文件花括号是否配平」当语法检查，被自证否掉。
+   本文件大量使用模板串（`${...}`）和内嵌在 `cdpEval` 里的页脚本，
+   字符串里就有花括号，计数天然不可靠。权威判据是 `node --check`。
+
+另外 `.trim()` 匹配 `}` 会把**内层** `if` 的缩进闭合也算上（登录块里就有），
+必须列 0 精确匹配。
+
+## §4.84.10 本轮遗留
+
+- `https` 设备侧端到端回归：未做。
+- BUG-AX 设备侧负控、闪卡两入口渲染/点击、会议写入设备侧持久化、
+  「tap 报 COMPLETED 但没反应」坐标对账：未做。
+- `/api/marketplace` 带有效 token 仍 401（守卫与 `/api/tasks` 不同）：未查。
+- `:param` 模板、gateway 六页、生产部署：未做。
+- Keystore 原生插件（§4.83.5 已确认全平台不可用）、同步编排层、改密入口、
+  gateway 四页、BUG-AV、i18n ~800 条：待产品定范围。
+- **`_login.yaml` 现在是孤儿**：`notes-crud`/`tasks-crud`/`flashcards-write`
+  都不再 `runFlow` 它了，但它仍含 `${POCKET_MASTER}` 与会话锁相关的逻辑。
+  下一轮要么删、要么按新前置重写，别留着让人以为还能用。

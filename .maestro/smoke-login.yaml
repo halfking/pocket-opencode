@@ -1,30 +1,61 @@
-# Maestro 真机冒烟流 · 登录与主界面
+# Maestro 真机冒烟流 · 登录后的主界面
 #
-# 目标包：.env.reversedev (VITE_API_BASE=http://localhost:8088) + CAP_ANDROID_SCHEME=http
-# 前置：adb reverse tcp:8088 tcp:8088；localStorage.pocket_api_base 必须为空
+# 目标包：.env.android-dev（VITE_API_BASE=http://127.0.0.1:18099），
+#         配合 adb reverse tcp:<设备端口> tcp:<宿主后端端口>
+#         POCKET_DEVICE_PORT 指定设备端口、POCKET_API_BASE 指定宿主端口
 #
-# 运行：
-#   maestro --device <serial> test .maestro/smoke-login.yaml
-#   $env:POCKET_SERIAL='192.168.31.19:5555'   # 真机；模拟器用 emulator-5554
+# ── 2026-10-03 第三次重写：登录动作从本 flow 移到 harness ──────────────
+#
+# 1) 为什么移走：Maestro 实测把 `${POCKET_DEV_PASS}` 展开成**字面量
+#    "undefined"**（.maestro/_probe-env.yaml 坐实：密码框内容
+#    `adminPWLEN-undefined`）。`--env` 能绕开展开，但会把口令暴露在进程
+#    命令行里，不接受。于是改由 scripts/maestro-run.mjs 的 preflight 用
+#    CDP 直接填真实 LoginView 表单 —— 同一个表单、同一个
+#    POST /api/auth/login、同一个 401/200 判定。**换掉的是「谁来敲键盘」，
+#    不是「被测什么」。**
+#
+# 2) 同时去掉了 `launchApp`。Maestro 的 launchApp = force-stop + start：
+#    force-stop 杀掉 App（device-logcat: Killing 407:com.kaixuan… from
+#    process:977），start 被 MIUI wakepath 拦下（START u0 … cmp=
+#    com.miui.securitycenter/com.miui.wakepath.ui.ConfirmStartActivity），
+#    之后 400 行日志里**没有任何 Start proc** ⇒ App 永不到前台 ⇒ launcher
+#    停在最近任务视图 ⇒ 第一条断言必然超时。
+#    现在 App 由 preflight 拉起并复位路由，本 flow **不碰 App 生命周期**。
+#
+# 3) 前置由 harness 保证，且每一项都有可读的失败点：起点是登录页
+#    （resetAppAuth 后再导航一次强制 routeGuards 重算）、harness 已经
+#    真实登录并离开 #/login、本地 token 长度 > 100。
+#    任一条不成立 harness 自己 exit 3，不会跑到这里给出不可解读的红。
+#
+# ── 控件文案全部取自源码，不靠肉眼截图猜 ─────────────────────────────
+#   · 「AI 工具」  = AppLayout.vue:45 <h1 class="title">{{ title }}</h1>，
+#     title = route.meta.title（AppLayout.vue:149），而 /ai 的 meta.title
+#     是 'AI 工具'（router-mobile.ts:80）。是真渲染的标题，不是 meta。
+#   · 「快速提问」 = TasksView.vue:28 aria-label，位于 HeaderActionsPortal
+#     里的按钮。它证明 TasksView 真的挂载了（不只是 AppLayout 的空壳）。
+#   · 「密码登录」 = LoginView.vue:252 的 Tab 标签。用 assertNotVisible
+#     当**会话存活**的守卫：token 失效时 client.ts:53 forceReauth 会把
+#     App 弹回 #/login，这条断言就是那时候红的。
+#
+# ⚠️ 2026-10-03 删掉了一条恒真断言：原 `- extendedWaitUntil: visible: "🟢"`
+#    被注释成「WebSocket 已连上」——**那是错的**。TasksView.vue:42 的
+#    `{{ triage.hasAttention ? '🔴' : '🟢' }}` 是**任务分诊徽章**，不是连接
+#    状态；且它在「0 个运行中任务」的健康态下同样显示 🟢「全部正常 · 0」，
+#    恒真。真正的连接面在 GlobalStatusBar.vue，而它 `visible` 计算在
+#    「在线且无待发队列」时**根本不渲染**（GlobalStatusBar.vue:46-52）
+#    —— 健康态下没有可断言的 UI，只能靠 CDP 读 store。
 appId: com.kaixuan.opencode.pocket
 ---
-- launchApp:
-    clearState: false
+# 登录后的落点：/ai → TasksView，标题由路由 meta 提供
 - extendedWaitUntil:
-    visible: "登录|退出重新登录|🟢|解锁"
-    timeout: 30000
-- runFlow:
-    when:
-      visible: "输入用户名"
-    commands:
-      - tapOn: "输入用户名"
-      - inputText: "admin"
-      - tapOn: "输入密码"
-      - inputText: "${POCKET_DEV_PASS}"
-      - tapOn: "登录"
-- extendedWaitUntil:
-    visible: "🟢"
-    timeout: 30000
-- assertVisible: "全部正常"
-# WebSocket 连上的外部可观测面：状态胶囊
+    visible: "AI 工具"
+    timeout: 45000
+- assertVisible: "AI 工具"
+
+# TasksView 真的挂载了（不只是 AppLayout 外壳）
+- assertVisible: "快速提问"
+
+# 会话存活守卫：登录后若被 forceReauth 踢回登录页，这里红
+- assertNotVisible: "密码登录"
+
 - takeScreenshot: "logs/maestro/smoke-after-login"

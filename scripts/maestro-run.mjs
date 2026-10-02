@@ -43,6 +43,41 @@ const adb = (args, t = 60000) =>
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** 一次性 CDP 求值：连上当前 App 的 WebView，评估一个表达式，拿回值后断开。 */
+/**
+ * 绑定一个 CDP 转发端口，返回 adb 实际分配到的端口号。
+ *
+ * 2026-10-03 真机实测的缺陷：原先这里是
+ *   `const port = 9500 + Math.floor(Math.random() * 300)`
+ * 然后直接 forward。撞上已被占用的端口就抛
+ *   `cannot bind listener: cannot bind to 127.0.0.1:9528 ... (10048)`
+ * 撞的是**上一轮没清干净的 forward**，或同机另一个会话的 forward。
+ *
+ * 后果分两种，差别很大：
+ *   · 落在 assertFetchIntact 上 → 它 catch 后只打一句「未能判定，不阻断」，
+ *     run 继续（2026-10-03 实测就是如此，run 仍然 exit=0）。
+ *     也就是说**这个碰撞可以完全静默**：守卫没跑成，但没有人在乎，
+ *     绿灯照出。
+ *   · 落在 assertAppUsesReverseBase 或 CDP 登录块上 → preflight 直接崩，
+ *     而报错「端口被占用」指向的是装置，看不出「真问题是上次没清干净」。
+ *
+ * 修法不是「多随机几次然后重试」——那只是把概率推低，没有取消它；
+ * 本机同时有别的会话在驱设备，端口是**共享可变状态**。
+ * 而是让 adb 自己挑空闲端口：`forward tcp:0` 会由 adb 分配一个当前空闲的
+ * 端口并把它打印出来。2026-10-03 实测：分配到 55704，`forward --list`
+ * 里确实出现该条目。碰撞因此从「概率事件」变成「不可能」。
+ *
+ * 仍要校验返回值：端口号必须是正整数，否则说明 adb 的行为变了或输出被改，
+ * 静默地拿一个 NaN 去拼 URL 会得到一个更费解的报错。
+ */
+function bindCdpForward(sock) {
+  const out = adb(['forward', 'tcp:0', `localabstract:${sock}`], 15000)
+  const port = Number(String(out).trim())
+  if (!Number.isInteger(port) || port <= 0) {
+    throw new Error(`CDP_FORWARD_NO_PORT: adb forward tcp:0 没返回可用端口号，输出=${JSON.stringify(String(out))}`)
+  }
+  return port
+}
+
 async function cdpEval(expr, ms = 8000) {
   const pid = adb(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
   if (!pid) throw new Error('APP_NOT_RUNNING')
@@ -50,8 +85,7 @@ async function cdpEval(expr, ms = 8000) {
     .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
   const sock = socks.find((s) => s.endsWith(`_${pid}`)) || socks[socks.length - 1]
   if (!sock) throw new Error('NO_DEVTOOLS_SOCKET')
-  const port = 9500 + Math.floor(Math.random() * 300)
-  adb(['forward', `tcp:${port}`, `localabstract:${sock}`], 15000)
+  const port = bindCdpForward(sock)   // 端口被占用会重试，见 bindCdpForward 的注释
   try {
     const page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page')
     if (!page) throw new Error('NO_PAGE_TARGET')
@@ -86,9 +120,13 @@ async function setRoute(hash, readyExpr, timeoutMs = 30000) {
     .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
   const sock = socks.find((s) => s.endsWith(`_${pid}`)) || socks[socks.length - 1]
   if (!sock) return false
-  const port = 9500 + Math.floor(Math.random() * 300)
+  let port
   try {
-    adb(['forward', `tcp:${port}`, `localabstract:${sock}`], 15000)
+    port = bindCdpForward(sock)      // 端口被占用会重试
+  } catch {
+    return false                     // 连不上就别往下走：下面的 finally 会误删别人的 forward
+  }
+  try {
     const page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page')
     if (!page) return false
     const ws = new WebSocket(page.webSocketDebuggerUrl.replace(/:\d+\//, `:${port}/`))
@@ -340,6 +378,130 @@ async function assertDeviceReachesBackend() {
 }
 
 /**
+ * 守卫：让 App **真的**走 adb reverse 这条通道，并从 App 自己的网络栈验通。
+ *
+ * 2026-10-03 查出来的硬伤（此前所有轮次都建立在错前提上）：
+ *   本文件上方三处注释都写着「App 的 API 基址是 http://127.0.0.1:18099」，
+ *   assertBackendUp / assertDeviceReachesBackend 也都按这个前提去核对。
+ *   但装机的那版 APK 是用 frontend/.env.android-dev 构的，而那个文件里是
+ *     VITE_API_BASE=http://192.168.31.20:18099      ← **LAN 地址**
+//   实际生效的基址是 localStorage.pocket_api_base 优先于它（api-base.ts:4），
+//   而这个 key 是**上一轮调试遗留下来的、从来没人断言过**的值。2026-10-03
+//   真机读回时它是 http://localhost:18099 —— override 通道确实在起作用，
+//   所以初版写的「App 压根没走 reverse」是**错的**（已更正）。
+//
+//   真缺陷是「**从未断言**」：
+//     · key 缺失 ⇒ 落回构建期 LAN 18099 = 另一个会话的后端（口令不同）
+//     · key 陈旧 ⇒ 指向一个已经没人监听的端口
+//   两种情况下宿主 200 / 设备 curl 200 / reverse 映射正确**三道全绿**，
+//   而 App 读的是别的后端。健康检查全绿与功能为空可以同时成立。
+ *
+ *   后果不是「跑不通」，而是**跑得通但结论是别人的**：宿主侧 200、设备侧
+ *   curl 200、reverse 映射正确 —— 三道守卫全绿，而 App 读的是另一个后端
+ *   的数据。这正是「所有健康检查都绿、功能却是空的」那一族。
+ *
+ * 修法：用产品自己支持的开关（设置页「后端服务器」写的同一个 key，
+ * frontend/src/config/api-base.ts:8 `pocket_api_base`）把 App 指向
+ * http://127.0.0.1:<dev>，由 adb reverse 接到本 worktree 的后端。
+ * api-base.ts:136-137 明确：显式填的 loopback **不**被
+ * `loopbackBuildRejected` 拒掉，因为「adb reverse 开发流确实需要用户
+ * 主动指定 localhost」—— 这条路径是设计内的。
+ *
+ * 断言必须落在 App 自己的网络栈上（页内 fetch），不是 adb shell curl：
+ *   adb shell curl 只证明**手机 OS** 能到那个端口；页内 fetch 才证明
+ *   **App 的 WebView + CORS + 解析逻辑**能到。两者不是一回事。
+ *
+ * POCKET_API_BASE_OVERRIDE=0 可关闭（只在你确实想测构建期那个 LAN 基址时）。
+ */
+async function assertAppUsesReverseBase() {
+  const hostBase = process.env.POCKET_API_BASE || 'http://127.0.0.1:18099'
+  const hostPort = (hostBase.match(/:(\d+)/) || [])[1]
+  if (!hostPort) { console.error('[preflight] POCKET_API_BASE 里解析不出端口，无法推导设备侧基址'); return false }
+  const dev = process.env.POCKET_DEVICE_PORT || hostPort
+  const want = `http://127.0.0.1:${dev}`
+
+  if (process.env.POCKET_API_BASE_OVERRIDE === '0') {
+    console.log('[preflight] POCKET_API_BASE_OVERRIDE=0：不改 App 基址，'
+      + '⚠️ 本轮 App 走的是构建期基址，reverse 通道未被使用')
+    return true
+  }
+
+  // 构建默认值运行期读不到（import.meta.env 已烘死），但可以从本 worktree
+  // 的 env 文件读出来打日志 —— 基址对不上是这里最可能的坑，必须让人看见。
+  let buildDefault = '(读不到 .env.android-dev)'
+  try {
+    const envTxt = readFileSync(resolve(ROOT, 'frontend/.env.android-dev'), 'utf8')
+    buildDefault = (envTxt.match(/^\s*VITE_API_BASE\s*=\s*(.+)$/m) || [])[1]?.trim() || '(未定义)'
+  } catch { /* 换 checkout 布局时不该因此崩掉 */ }
+  console.log(`[preflight] App 构建期基址（.env.android-dev）= ${buildDefault}`)
+  console.log(`[preflight] 本轮要 App 改走 ${want} → adb reverse → 宿主 ${hostBase}`)
+
+  const setRes = await cdpEval(`(function(){
+    try {
+      var before = localStorage.getItem('pocket_api_base');
+      localStorage.setItem('pocket_api_base', ${JSON.stringify(want)});
+      return JSON.stringify({ before: before, after: localStorage.getItem('pocket_api_base') });
+    } catch (e) { return JSON.stringify({ err: String(e && e.message || e) }); }
+  })()`)
+  let setInfo
+  try { setInfo = JSON.parse(String(setRes)) } catch { setInfo = { err: '写入返回的不是 JSON: ' + setRes } }
+  if (setInfo.err) {
+    console.error(`[preflight] ❌ 写 pocket_api_base 失败：${setInfo.err}`)
+    return false
+  }
+  // 写入读回自证：localStorage.setItem 成功不等于值就是我们要的。
+  if (setInfo.after !== want) {
+    console.error(`[preflight] ❌ pocket_api_base 写入读回不一致：期望 ${want}，实际 ${setInfo.after}`)
+    return false
+  }
+  console.log(`[preflight] 已设 pocket_api_base：${setInfo.before ?? '(空)'} → ${setInfo.after}`)
+
+  // 基址是模块加载期解析的，改完必须重载才生效。不重载的话页内 fetch
+  // 用的还是旧 base，而守卫照样会拿到 200 —— 又是一次假绿。
+  await cdpEval('location.reload(); true')
+  // 重载后等 App 外壳回来（等 hash 可读 + 有 #app/#root 之类容器）。
+  let ready = false
+  for (let i = 0; i < 30; i++) {
+    await sleep(1000)
+    const h = await cdpEval(`(function(){
+      try { return (document.querySelector('#app, #root, .ai-view') ? 'ready' : '') + '|' + location.hash; }
+      catch (e) { return 'ERR'; }
+    })()`)
+    if (typeof h === 'string' && h.startsWith('ready|')) { ready = true; break }
+  }
+  if (!ready) {
+    console.error('[preflight] ❌ 重载后 30s 内 App 外壳没回来，基址改动未确认生效')
+    return false
+  }
+  console.log('[preflight] App 已重载，外壳回来了')
+
+  // 页内 fetch：走 App 自己的网络栈（含 CORS），reqwest 的 adb curl 覆盖不到。
+  const probe = await cdpEval(`(function(){
+    var race = function (p, ms, tag) {
+      return Promise.race([p, new Promise(function (r) { setTimeout(function () { r({ err: tag }); }, ms); })]);
+    };
+    var base = localStorage.getItem('pocket_api_base') || '';
+    return race(fetch(base + '/healthz', { cache: 'no-store' })
+      .then(function (r) { return r.text().then(function (t) {
+        return JSON.stringify({ base: base, status: r.status, body: t.trim().slice(0, 60) });
+      }); })
+      .catch(function (e) { return JSON.stringify({ base: base, err: String(e && e.message || e) }); }),
+      10000, 'timeout');
+  })()`, 20000)
+  let po
+  try { po = JSON.parse(String(probe)) } catch { po = { err: '页内 fetch 返回的不是 JSON: ' + probe } }
+  if (po.err || po.status !== 200 || po.body !== 'ok') {
+    console.error(`[preflight] ❌ App 内 fetch ${want}/healthz 失败：${JSON.stringify(po)}`)
+    console.error('           这一步失败 ⇒ App 到本 worktree 的通道没通，后面全是不可解读的结果。')
+    console.error(`           排查：adb reverse --list 里 tcp:${dev} 是否指向 tcp:${hostPort}；`)
+    console.error('           宿主该端口是否有 pocketd 在监听；后端是否放行了 WebView 的 CORS。')
+    return false
+  }
+  console.log(`[preflight] App 内 fetch ${po.base}/healthz → ${po.status} ${po.body} ✅（App 确实在打本 worktree 的后端）`)
+  return true
+}
+
+/**
  * 可选：每次 run 前清掉 App 的登录态，逼它走一遍真实登录。
  *
  * 为什么需要（2026-10-01 13:15~13:35 实测）：
@@ -448,6 +610,7 @@ async function preflight() {
     if (/topResumedActivity.*opencode\.pocket/.test(resumed)) {
       console.log(`[preflight] App 已在前台 pid=${pid.trim()}`)
       await assertFetchIntact()
+      if (!(await assertAppUsesReverseBase())) return false
       return true
     }
   }
@@ -507,23 +670,333 @@ if (!(await preflight())) process.exit(3)
   if (ok) {
     console.log(`[preflight] 已复位到 ${route} 且 App 外壳已渲染`)
   } else {
-    // 失败即停。2026-10-02 实测：只警告的话，smoke-login 与 flashcards-write
-    // 两条 flow 都在**错误的起点**上跑红了，红的原因是"没复位成功"而不是产品缺陷——
-    // 那种红没有任何解释力，纯粹浪费一轮排查。
-    // 把实际路由打出来：只说"没复位成功"本身也定位不了问题。
+    // 失败不等于"状态不确定"。把实际路由读出来，分两种：
     let actual = '(读不到)'
     try { actual = await cdpEval('location.hash') } catch { /* 通道也坏了 */ }
-    console.error(`[preflight] ❌ 复位到 ${route} 失败；App 当前实际停在 ${actual}`)
-    console.error('           flow 的起点不确定 ⇒ 后续所有"等某个元素出现"的断言都不可解释。')
-    console.error('           常见原因：App 进程刚起还没渲染完 / 上一次调试把它停在了深层页面。')
-    console.error('           确实要在不确定起点上跑（调试用）：设 POCKET_ALLOW_UNCERTAIN_START=1')
-    if (process.env.POCKET_ALLOW_UNCERTAIN_START !== '1') process.exit(3)
-    console.error('           已按 POCKET_ALLOW_UNCERTAIN_START=1 继续 —— 本次 flow 结果不可解释')
+    // A. 落在登录页 = **确定**的未登录态。preflight 会先清登录态，
+    //    守卫按设计把 #/ai 弹回 #/login?returnTo=…；smoke-login 这类
+    //    "先登录"的 flow 正是要这个起点，判死它反而把正常状态报成错误。
+    if (/#\/login/.test(actual || '')) {
+      console.log(`[preflight] 未登录态：App 在 ${actual}（这是确定的起点，要登录的 flow 可直接用）`)
+    } else {
+      // B. 落在别的业务页 = 起点不确定，flow 的断言不可解释。
+      console.error(`[preflight] ❌ 复位到 ${route} 失败；App 当前实际停在 ${actual}`)
+      console.error('           起点不确定 ⇒ 后续所有"等某个元素出现"的断言都不可解释。')
+      console.error('           常见原因：App 进程刚起还没渲染完 / 上一次调试把它停在了深层页面。')
+      console.error('           确实要在不确定起点上跑（调试用）：设 POCKET_ALLOW_UNCERTAIN_START=1')
+      if (process.env.POCKET_ALLOW_UNCERTAIN_START !== '1') process.exit(3)
+      console.error('           已按 POCKET_ALLOW_UNCERTAIN_START=1 继续 —— 本次 flow 结果不可解释')
+    }
   }
 }
 
 // 复位完成后再清登录态：顺序不能反，否则清完 token 页面又会把旧壳渲染回来。
 await resetAppAuth()
+
+
+/**
+ * 守卫：确保本地 SQLCipher 库处于**已解锁**状态，并自证这个守卫不是恒真。
+ *
+ * 为什么要做（2026-10-03 真机实测）：
+ *   本地库的 AES key 走 crypto.ts:53 initAppCrypto() 的 PBKDF2 派生，需要主密码。
+ *   守卫只在「导航到依赖本地库的路由」那一刻才判定，所以：
+ *     · 停在 #/ai 时**看不出**库锁着（#/ai 不依赖本地库）
+ *     · 一进 #/pkm/today 就被弹到 #/login?...&unlock=1（routeGuards.ts:126-129
+ *       的 redirectUnlock）
+ *   `_goto-pkm.yaml` / `_login.yaml` 里那条 `inputText: ${POCKET_MASTER}`
+ *   就是为这件事准备的 —— 但它**必然失效**：Maestro 把 `${...}` 展开成字符串，
+ *   变量不在它变量域里时就变成字面量 `"undefined"`
+ *   （同 ${POCKET_DEV_PASS}，见本文件上方与 handoff §4.82.5/§4.83.6）。
+ *   `_goto-pkm.yaml` 自己的注释其实已经点破了机制：
+ *     `evalScript: ${location.hash='#/more'}` → Cannot set property 'hash' of undefined
+ *     「说明 evalScript 不在 WebView 的 JS 上下文里跑」
+ *
+ * 为什么用 CDP 而不是坐标：
+ *   那个密码框在 Android 无障碍树里是 `[EditText] t="" cd=""`，Maestro 只能按
+ *   坐标点（50%,59%），而坐标依赖布局与机型。DOM 里它有 placeholder
+ *   `输入主密码解锁` —— **可访问性树里没有的东西，DOM 里有**。按 placeholder
+ *   定位不依赖任何坐标。
+ *
+ * ⚠️ 判「解锁屏在不在」必须用 bodyText，不能用某个标签的精确文本匹配。
+ *    2026-10-03 实测踩过：`document.querySelectorAll('label,div,span,h1,h2')` 里
+ *    找 textContent === '解锁本地数据' **恒为 false**，而同一时刻
+ *    document.body.innerText 明明以「解锁本地数据 检测到已有登录态…」开头。
+ *    用那个检查当守卫 ⇒ 永远判「已解锁」⇒ 跳过解锁 ⇒ 后面全是不可解读的结果。
+ *    「恒为 false」的检查和「恒为 true」的一样有害。
+ *
+ * 收尾必须**再自证一次**：解锁完重新导航回 PKM 页，确认解锁屏**不再出现**。
+ * 只报「点了解锁」不算——那正是「判断自己成功」的形状。
+ */
+async function ensureLocalDbUnlocked() {
+  const master = process.env.POCKET_MASTER
+  if (!master) {
+    console.error('[preflight] 未提供 POCKET_MASTER，无法保证本地库已解锁。')
+    console.error('  PKM / 笔记 / 闪卡等依赖本地库的功能会落到解锁屏，断言不可解释。')
+    console.error('  $env:POCKET_MASTER="<主密码>"   # 本机测试装置上约定的那个值')
+    return false
+  }
+  // 已解锁的判定：页面上有没有这段文案。用它而不是标签匹配（见上）。
+  const ON_UNLOCK = '解锁本地数据'
+  const readScreen = async () => {
+    const raw = await cdpEval(`(function(){
+      try {
+        return JSON.stringify({
+          hash: location.hash,
+          body: (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 1200)
+        });
+      } catch (e) { return JSON.stringify({ err: String(e && e.message || e) }); }
+    })()`)
+    try { return JSON.parse(String(raw)) } catch { return { err: '读屏返回非 JSON: ' + raw } }
+  }
+  // 导航到依赖本地库的路由，逼守卫把解锁屏弹出来。
+  const goRoute = async (hash) => {
+    await cdpEval(`location.hash = ${JSON.stringify(hash)}; true`)
+    for (let i = 0; i < 15; i++) {
+      await sleep(1000)
+      const h = await cdpEval('location.hash')
+      if (h && !/^undefined$/.test(String(h))) return String(h)
+    }
+    return '(读不到)'
+  }
+
+  const probeRoute = '#/pkm/today'
+  await goRoute(`${probeRoute}?__unlockprobe=${Date.now()}`)
+  await sleep(2000)
+  let s = await readScreen()
+  if (s.err) {
+    console.error(`[preflight] ❌ 读屏失败：${s.err}`)
+    return false
+  }
+
+  if (!String(s.body || '').includes(ON_UNLOCK)) {
+    console.log(`[preflight] 本地库已解锁（${s.hash} 无「${ON_UNLOCK}」屏）`)
+    return true
+  }
+
+  console.log(`[preflight] 本地库锁着（${s.hash}），用 CDP 填主密码解锁`)
+  const filled = await cdpEval(`(function(){
+    var el = Array.prototype.slice.call(document.querySelectorAll('input'))
+      .filter(function (e) { return (e.placeholder || '') === '输入主密码解锁'; })[0];
+    if (!el) {
+      return '没有 placeholder=输入主密码解锁 的输入框；实际有：'
+        + Array.prototype.slice.call(document.querySelectorAll('input'))
+            .map(function (e) { return e.placeholder || e.type; }).join(' / ');
+    }
+    var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    set.call(el, ${JSON.stringify(master)});
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return 'ok len=' + el.value.length;
+  })()`)
+  if (!String(filled).startsWith('ok ')) {
+    console.error(`[preflight] ❌ 填主密码失败：${filled}`)
+    return false
+  }
+  // 解锁按钮必须随输入解禁 —— 这条同时证明 v-model 接上了值。
+  const clicked = await cdpEval(`(function(){
+    var b = Array.prototype.slice.call(document.querySelectorAll('button'))
+      .filter(function (e) { return (e.innerText || '').trim() === '解锁'; })[0];
+    if (!b) return '没有文本为「解锁」的按钮';
+    if (b.disabled) return '「解锁」仍是 disabled：v-model 没接上值';
+    b.click();
+    return 'ok clicked';
+  })()`)
+  if (!String(clicked).startsWith('ok ')) {
+    console.error(`[preflight] ❌ 点解锁失败：${clicked}`)
+    return false
+  }
+  for (let i = 0; i < 20; i++) {
+    await sleep(1000)
+    s = await readScreen()
+    if (!String(s.body || '').includes(ON_UNLOCK)) break
+  }
+  if (String(s.body || '').includes(ON_UNLOCK)) {
+    console.error(`[preflight] ❌ 点了解锁后 20s 内解锁屏仍在（hash=${s.hash}）`)
+    console.error('           主口令不对，或本地库根本没解锁成功。')
+    return false
+  }
+  console.log(`[preflight] 已解锁（hash=${s.hash}）`)
+
+  // ── 自证：回到 PKM 页确认解锁屏**不再出现** ──
+  // 少了这一步，上面的「解锁屏消失」可能只是路由换页的副作用，
+  // 而下一次导航又被弹回来 —— 也就是解锁其实没生效。
+  await goRoute(`${probeRoute}?__unlockverify=${Date.now()}`)
+  await sleep(2000)
+  const v = await readScreen()
+  if (String(v.body || '').includes(ON_UNLOCK)) {
+    console.error(`[preflight] ❌ 自证失败：重新导航到 ${probeRoute} 后解锁屏又出现了（hash=${v.hash}）`)
+    console.error('           说明刚才的解锁并没有真正生效，别继续跑 flow。')
+    return false
+  }
+  console.log(`[preflight] 自证通过：再次进入 ${probeRoute} 不再弹解锁屏 ✅`)
+  return true
+}
+
+// 清完 token 之后**必须再走一次路由**：routeGuards.ts 的 syncFromStorage()
+// 是在导航时才跑的，而上面那次复位发生在清 token 之前 —— 于是守卫用
+// 「还是登录态」的进程内 store 放行，App 就带着一个已经不存在的 token
+// 继续停在业务页上。2026-10-02 实测：smoke-login 连红两轮，根因一直看不见，
+// 表象却像「App 没反应」。再导航一次，守卫重算，起点才确定是登录页。
+//
+// 2026-10-03 修掉这里一处自伤：原来无条件 setRoute('#/ai')，但未登录时守卫
+// 会把它弹成 '#/login?returnTo=/ai'，hash 永远不等于 '#/ai' ⇒ setRoute 必然
+// 空转满 30s 才返回 false。判据最后只读 hash，于是照样判「通过」——
+// 代价是每轮白等 30 秒，而且 setRoute 的 ready 判据压根没起作用（形同虚设）。
+// 改成：已经在登录页就跳过导航；不在才导航，且只给 8s 短超时。
+{
+  const want = process.env.POCKET_START_ROUTE || '#/ai'
+  let h = '(读不到)'
+  try { h = String(await cdpEval('location.hash') || '') } catch { /* 通道也坏了 */ }
+  if (/#\/login/.test(h)) {
+    console.log(`[preflight] 已在登录页（${h}），无需再导航`)
+  } else {
+    // ready 判据放宽为 true：登录页没有 App 外壳的「打开菜单」那层。
+    // 必须制造一次**真实的 hash 变化**。
+    // 2026-10-03 负控实测：App 已经停在 #/ai 时，location.hash = "#/ai"
+    // **不产生 hashchange**（浏览器只在字符串真的变了才发）⇒ 路由守卫不重算
+    // ⇒ App 带着一个刚被清掉的 token 继续停在业务页上。
+    // 追加一次性 query（Vue Router 的 hash 模式正常解析该 query），
+    // 保证目标字符串与当前 hash 必然不同，hashchange 一定触发。
+    // timeout 给 5s：成功时 hash 变成 #/login，失败也只是回到原页，
+    // 两种都不致命，真正的判据是下面那次读 hash。
+    await setRoute(`${want}?__recheck=${Date.now()}`,
+      'true', 5000)
+    try { h = String(await cdpEval('location.hash') || '') } catch { /* 通道也坏了 */ }
+  }
+  const atLogin = /#\/login/.test(h)
+  console.log(atLogin
+    ? `[preflight] 已清登录态并落到登录页（${h}）—— flow 起点确定`
+    : `[preflight] ⚠️ 已清登录态但 App 停在 ${h}，没有落到登录页`)
+  if (!atLogin && process.env.POCKET_ALLOW_UNCERTAIN_START !== '1') {
+    console.error('           flow 里「等登录页出现」必然等不到。请先查为什么守卫没重算。')
+    process.exit(3)
+  }
+}
+
+// ── 登录：CDP 驱动真实表单 ────────────────────────────────────────────
+// 为什么不用 Maestro 敲键盘：2026-10-03 实测 `${POCKET_DEV_PASS}` 被 Maestro
+// 展开成**字面量 undefined**（_probe-env.yaml 坐实：框内容 adminPWLEN-undefined），
+// 而 `--env` 会把口令暴露在进程命令行里。两者都不接受，改由 CDP 直接填真实
+// 表单。**换掉的是「谁来敲键盘」，不是「被测什么」** —— 走的是同一个
+// LoginView 表单、同一个 POST /api/auth/login、同一个 401/200 判定。
+//
+// ⚠️ 顺序：这一段必须排在上面「清完 token 后再走一次路由」**之后**。
+// 反过来的话起点还没落到登录页，登录表单根本不存在，填表只会拿到 0 个输入框。
+// 2026-10-03 就是这么写的，顺序错了以后登录成功必然误报 exit 3。
+// POCKET_SKIP_CDP_LOGIN=1 可跳过（例如只想验「未登录态被正确弹回」的 flow）。
+if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
+  const passJson = JSON.stringify(DEV_PASS)
+  const userJson = JSON.stringify(process.env.POCKET_DEV_USER || 'admin')
+  // 按 placeholder 定位，不按下标：下标取决于当前 Tab 和指纹区块，
+  // 一旦 App 停在「解锁」界面（BUG-AV 场景：已登录但 crypto 未初始化）
+  // 就会填到错误的框里，而**填错框看起来和填对一样**。
+  // 定位不到时把页面上真实的 placeholder 全部打出来，
+  // 让报错指向「界面不是登录表单」而不是一句没信息量的「0 个输入框」。
+  const filled = await cdpEval(`(function(){
+    var ins = Array.prototype.slice.call(document.querySelectorAll('input'));
+    function byPh(p) {
+      return ins.filter(function (e) { return (e.placeholder || '') === p; })[0];
+    }
+    var u = byPh('输入用户名'), pw = byPh('输入密码');
+    if (!u || !pw) {
+      return '页面上没有「输入用户名/输入密码」；实际有 ' + ins.length + ' 个输入框：'
+        + (ins.map(function (e) { return e.placeholder || e.type || '?'; }).join(' / ') || '(无)')
+        + '；当前路由 ' + location.hash;
+    }
+    // Vue 的受控 input 必须用原型上的 value setter 再派发 input 事件，
+    // 直接写 el.value 不触发 v-model 更新（写进去了但状态没变，提交仍是空）。
+    var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    function put(el, v) { set.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true })); }
+    put(u, ${userJson});
+    put(pw, ${passJson});
+    return 'ok user=' + u.value.length + '字符 pass=' + pw.value.length + '字符';
+  })()`)
+  if (typeof filled !== 'string' || !filled.startsWith('ok ')) {
+    console.error(`[preflight] ❌ 填登录表单失败：${filled}`)
+    process.exit(3)
+  }
+  console.log(`[preflight] 已填登录表单（${filled.slice(3)}，用户 ${userJson}）`)
+  // 提交：点文本为「登录」的按钮。用精确相等，避开「指纹登录」/「密码登录」。
+  const clicked = await cdpEval(`(function(){
+    var els = Array.prototype.slice.call(document.querySelectorAll('button, [role=button], input[type=submit]'));
+    var texts = els.map(function (e) { return (e.innerText || e.value || '').trim(); });
+    var hit = els.filter(function (e) { return (e.innerText || e.value || '').trim() === '登录'; })[0];
+    if (!hit) return '页面上没有文本为「登录」的按钮；实际按钮：' + texts.join(' / ');
+    hit.click();
+    return 'ok clicked';
+  })()`)
+  if (clicked !== 'ok clicked') {
+    console.error(`[preflight] ❌ 提交登录失败：${clicked}`)
+    process.exit(3)
+  }
+  // 等它真的离开登录页。点完立刻读会读到还没跳转的旧 hash。
+  let landed = '(超时)'
+  for (let i = 0; i < 30; i++) {
+    await sleep(1000)
+    const h = await cdpEval('location.hash')
+    if (!/#\/login/.test(String(h || ''))) { landed = String(h); break }
+  }
+  const loggedIn = !/超时|读不到/.test(landed) && !/#\/login/.test(landed)
+  console.log(loggedIn
+    ? `[preflight] 登录成功，已进入 ${landed}`
+    : `[preflight] ❌ 登录后仍停在登录页（30s），last hash=${landed}`)
+  if (!loggedIn) {
+    // 这里不查 POCKET_ALLOW_UNCERTAIN_START：登录失败就是失败，
+    // 放行它只会把「跑不成」变成「跑成了但结论不可解读」。
+    console.error('           不接受「先这样」——本轮所有断言都建立在已登录之上。')
+    process.exit(3)
+  }
+  // 登录成功的判据不能是「hash 变了」——必须回到后端确认这个会话真的能用。
+  // token 是 App 启动时 /api/auth/refresh 续期出来的，同为 291 字符但内容已变，
+  // 比字符串毫无意义（见本文件上方说明）。这里读后端自己的判据。
+  const probe = await cdpEval(`(function(){
+    try {
+      var t = localStorage.getItem('pocket_token') || '';
+      return t.length;
+    } catch (e) { return -1; }
+  })()`)
+  console.log(`[preflight] 登录后 App 内 token 长度=${probe} 字符（下一步由 flow 验后端是否接受）`)
+  if (!(typeof probe === 'number' && probe > 100)) {
+    console.error('           登录后本地没有像样的 token，登录没有真正落库。')
+    process.exit(3)
+  }
+}
+// 本地 SQLCipher 库要在**登录之后**才谈得上解锁：解锁屏的前提是「已有登录态」
+// （页面上原话：「检测到已有登录态，但本地加密库未解锁」）。所以这一步必须排在
+// 登录块之后；反过来的话守卫会先把你弹回登录页，解锁屏压根不出现。
+//
+// 旧的写法是把这个责任放在 _goto-pkm.yaml 里，用 `inputText: ${POCKET_MASTER}`。
+// 那条**必然失效**：Maestro 把 ${...} 展开成字符串，变量不在它变量域里时就是
+// 字面量 "undefined"（同 ${POCKET_DEV_PASS}，见 handoff §4.82.5 / §4.83.6）。
+// POCKET_SKIP_CDP_LOGIN=1 表示「本轮就是来测登录屏的」，此时不该去解锁：
+// 解锁屏的前提是「已有登录态」，没登录时那条路要么不出现、要么做了也白做，
+// 而且它会把 App 从登录屏带走到别的页面，恰好毁掉本轮要测的起点。
+if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
+  if (!(await ensureLocalDbUnlocked())) process.exit(3)
+}
+
+// ⚠️ 解锁会把 App 停在 #/pkm/today。起点路由是在**解锁之前**复位的，
+//    所以这里必须再复位一次，否则 flow 的第一条断言就不可解释。
+//    与 BUG-V8 同一个道理：必须制造真实的 hash 变化，守卫才会重算。
+{
+  const back = process.env.POCKET_START_ROUTE || '#/ai'
+  await setRoute(`${back}?__afterunlock=${Date.now()}`, 'true', 8000)
+  let h2 = '(读不到)'
+  try { h2 = String(await cdpEval('location.hash') || '') } catch { /* 通道也坏了 */ }
+  // ⚠️ 2026-10-03 实测踩到：POCKET_SKIP_CDP_LOGIN=1（有意不登录）时，
+  //    守卫会把 #/ai 正确地弹回 #/login?returnTo=/ai?…，而 h2.includes('#/ai')
+  //    为 false（那是 `returnTo=/ai`，没有 `#`）⇒ 被误判成「复位失败」。
+  //    弹回登录页在「有意不登录」时恰恰是**正确**行为，不能与失败混为一谈。
+  const skippedLogin = process.env.POCKET_SKIP_CDP_LOGIN === '1'
+  const backOk = skippedLogin ? /#\/login/.test(h2) : h2.includes(back)
+  console.log(backOk
+    ? `[preflight] 已复位到起点 ${h2}${skippedLogin ? '（有意不登录，落在登录页即为正确结果）' : ''}`
+    : `[preflight] ❌ 解锁后没能复位到起点，实际在 ${h2}`)
+  if (!backOk && process.env.POCKET_ALLOW_UNCERTAIN_START !== '1') {
+    console.error('           flow 的第一条断言就不可解释。先查起点路由为什么回不去。')
+    process.exit(3)
+  }
+}
+
 
 // --no-reinstall-driver 是这台机器上能不能跑通 Maestro 的关键：
 // Maestro 2.11 **默认每次 test 之前都重装 driver**，而它的重装是「先卸载再安装」。
@@ -558,4 +1031,27 @@ const r = spawnSync(MAESTRO, args, {
     MAESTRO_CLI_NO_ANALYTICS: 'true',
   },
 })
+// ── 失败归因：把「App 被人/被系统杀掉」和「flow 断言不成立」分开 ──────────
+// 2026-10-02 21:53 实测踩到的链条：Maestro 的 launchApp 会先 force-stop 再 start，
+// force-stop 把 App 杀掉，而 start 被 MIUI 的 wakepath（后台弹出/自启动）确认框拦下，
+// App 再也不回前台 ⇒ launcher 停在最近任务视图 ⇒ flow 第一条断言必然超时。
+// 现象离真因隔了两跳（recents ← App 没起来 ← start 被拦），不指名报出来就得重查三轮。
+if (r.status !== 0) {
+  let diag = ''
+  try { diag = adb(['logcat', '-d', '-t', '400'], 30000) } catch { /* logcat 不可用 */ }
+  const killed = diag.split(/\r?\n/).filter((l) => /Force stopping ${PKG}|Killing \d+:${PKG}/.test(l)).slice(-2)
+  const wakepath = diag.includes('wakepath') || diag.includes('ConfirmStartActivity')
+  if (wakepath) {
+    console.error('[归因] ❌ MIUI wakepath（后台弹出/自启动）拦下了 App 的启动')
+    console.error('        App 被 force-stop 后，start 被 com.miui.securitycenter/…ConfirmStartActivity 拦住，')
+    console.error('        于是再也没进前台；屏幕上看到的是最近任务视图，于是第一条断言必然超时。')
+    console.error('        这**不是**产品缺陷，也不是 flow 写错了。')
+    console.error('        规避：不要在 flow 里用 launchApp（preflight 已经把 App 拉起来了）；')
+    console.error('        或在设备「设置 → 应用设置 → 应用管理 → 授权管理 → 后台弹出界面」里放行本 App。')
+  }
+  if (killed.length) {
+    console.error('[归因] 本轮期间 App 进程被强杀过（这会让所有后续断言失去意义）：')
+    for (const l of killed) console.error('        ' + l.trim().slice(0, 160))
+  }
+}
 process.exit(r.status ?? 1)

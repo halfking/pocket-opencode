@@ -77,6 +77,12 @@ var (
 	reInvoiceNo = regexp.MustCompile(`(?i)(?:发票号码|发票号|票据号码|Invoice\s*(?:No\.?|Number)?|Bill\s*No\.?)[:：\s]*([A-Za-z0-9\-]{7,31}[0-9][A-Za-z0-9\-]*)`)
 	reInvoiceDate = regexp.MustCompile(`(?:开票日期|发票日期|开票时间|日期|Date)[:：\s]*(\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}|\d{8})日?`)
 	reLooseCNDate = regexp.MustCompile(`(\d{4}年\d{1,2}月\d{1,2})日?`)
+	// 账单/对账单的出具日。必须**单列一层**，且刻意不含「账单周期」——
+	// 工行那封里是「账单周期 2026年09月01日—2026年09月30日 对账单生成日
+	// 2026年09月30日」：周期起始日不是出具日，只靠「跳过未来日期」会取到
+	// 2026-09-01，仍然是错的（只比 2026-10-25 好一点，仍然错）。
+	// reInvoiceDate 也抓不到它：那里的标签是「日期」二字，「生成日」不含。
+	reStatementDate = regexp.MustCompile(`(?i)(?:对账单生成日|账单生成日|对账日期|账单日期|出账日|statement\s*date)\s*[:：]?\s*(\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}|\d{8})日?`)
 	// 货币代码 / 符号前缀。
 	//
 	// 为什么加 ISO 4217 代码（2026-10-01 真实数据）：QQ Wallet 英文发票写
@@ -369,6 +375,55 @@ func InvoiceCandidate(e Email) bool {
 	return invoiceKeywordHit(e.Subject + "\n" + e.Snippet)
 }
 
+// reDebtNoticeShape 识别「债务通知」形态：信用卡/银行的对账单、还款提醒。
+//
+// 这类邮件在 invoiceKeywordHit 里必然放行——关键词表本来就含
+// 「账单」「对账单」「扣款」「支付成功」。而它们**不是发票**：
+// 2026-10-02 真实库实例（diag_real_invoice_extract_test.go 记录）：
+//
+//	inv_1790903383222583800_1  amount=58000.00  invoice_date=2026-10-25
+//	主题=中国工商银行客户对账单(ICBC Peony Card Bank Statement)
+//
+// 58000 是原文里的**信用额度**（由 invoice.go 的「兜底取全文最大值」选中），
+// 10-25 是**贷记卡到期还款日**。一笔根本没发生的 5.8 万元支出进了台账。
+var reDebtNoticeShape = regexp.MustCompile(`(?i)(对账单|账单周期|还款日|应还款|最低还款|信用额度|授信额度|信用卡|贷记卡|借记卡|account\s+statement|statement\s+of\s+account|billing\s+statement|credit\s*card|amount\s+due)`)
+
+// reTaxNo 识别开票方税号。开票方必须披露税号，没有它基本可断定不是发票。
+var reTaxNo = regexp.MustCompile(`(?i)(纳税人识别号|统一社会信用代码|销售方纳税人识别号|税\s*号|tax\s*id|VAT\s*(?:No|Number))`)
+
+// admitDebtNotice 判断一封「债务通知形态」的邮件是否仍应进发票台账。
+//
+// 规则：债务通知必须**另外**带至少一个真实发票语义信号——
+// 发票号、税号、或发票类附件——否则不建档。
+//
+// ## 为什么附件算一个信号
+//
+// 真实账单邮件的形态是「主题写月度对账单、金额只印在附件 PDF 里」
+// （见 ExtractInvoiceLoose 的注释）。那种邮件正文里本来就没有发票号，
+// 但它也不是发票；反过来，若它确实带着**发票类**附件（PDF/图片/XML），
+// 说明对方是当凭证发的，仍应建档交给采集器。判据保持与
+// ExtractInvoiceLoose 的 hasInvoiceAttachment 同源。
+//
+// ## 风险已用真实数据量化
+//
+// 收紧前准入门放行 7 封、最终建档 2 封（1 真 + 1 幽灵）。被放行但在
+// invoice.go 门槛处丢弃的 5 封逐个复核（2026-10-02）：
+//
+//	Xiaomi MiMo API 开放平台扣款成功通知   交易通知    非发票
+//	所需操作：AWS 账户提示                 发票词      非发票（操作提醒）
+//	Amazon Web Services Account Alert     对账单词    非发票（告警）
+//	AWS 账户提醒                           对账单词    非发票（提醒）
+//	来自 Apple 西湖商务团队的问候          发票词      非发票（商务拓展信）
+//
+// 5 封里 **0 封是真发票**，收紧的误杀在当前真实数据上为 0。
+func admitDebtNotice(joined string, hasInvoiceAttachment bool) bool {
+	if !reDebtNoticeShape.MatchString(joined) {
+		return true // 不是债务通知，行为不变
+	}
+	// 带真实发票语义才放行。
+	return hasInvoiceAttachment || reInvoiceNo.MatchString(joined) || reTaxNo.MatchString(joined)
+}
+
 // classifyInvoiceKind 按关键词判断票据种类。
 func classifyInvoiceKind(text string) string {
 	t := strings.ToLower(text)
@@ -470,14 +525,48 @@ func isDigits(s string) bool {
 
 // ParseInvoiceDate 从发票/邮件文本里抽出开票日期并归一化为 YYYY-MM-DD。
 // 先匹配带「开票日期」等标签的写法，再兜底中文年月日。
-func ParseInvoiceDate(text string) string {
-	if m := reInvoiceDate.FindStringSubmatch(text); m != nil {
-		return normalizeInvoiceDate(m[1])
-	}
-	if m := reLooseCNDate.FindStringSubmatch(text); m != nil {
-		return normalizeInvoiceDate(m[1])
+//
+// ## 为什么必须跳过「未来的日期」
+//
+// 2026-10-02 真实库实测（diag_real_invoice_extract_test.go 记录的那条）：
+// 工商银行信用卡对账单被抽成发票，invoice_date 落成 **2026-10-25**——
+// 那是原文里的「贷记卡到期还款日」，比当天晚 23 天。同一封邮件里其实带着
+// 正确的「对账单生成日 2026年09月30日」，但 `reLooseCNDate` 只取**第一个**
+// 中文年月日，于是先撞上了还款日。
+//
+// 发票不可能在未来开具，「到期还款日」是债务通知的字段而不是凭证的日期。
+// 这一点与「对账单要不要算进台账」那个产品决定无关：无论算不算，
+// 未来日期都不是开票日期。所以这里直接跳过它并继续往后找。
+//
+// 留 1 天宽限：服务器时区与邮件出具地可能跨日，临界日不至于被误杀。
+func ParseInvoiceDate(text string) string { return parseInvoiceDateAt(text, time.Now()) }
+
+func parseInvoiceDateAt(text string, now time.Time) string {
+	// 三层优先级，每层都跳过未来日期并继续往后找：
+	//   1) 发票标签（开票日期 / 发票日期 / 日期 / Date）
+	//   2) 账单出具日（对账单生成日 / 账单日期 / 出账日 …）
+	//   3) 裸中文年月日
+	// 顺序是承重的：真发票邮件有「开票日期」就该以它为准；对账单没有「开票日期」，
+	// 只能落到第 2 层，否则会取到「账单周期」的起始日或「到期还款日」。
+	for _, re := range []*regexp.Regexp{reInvoiceDate, reStatementDate, reLooseCNDate} {
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			if d := normalizeInvoiceDate(m[1]); d != "" && !isFutureInvoiceDate(d, now) {
+				return d
+			}
+		}
 	}
 	return ""
+}
+
+// isFutureInvoiceDate 判断 YYYY-MM-DD 是否比 now 晚了超过 1 天。
+func isFutureInvoiceDate(d string, now time.Time) bool {
+	t, err := time.Parse("2006-01-02", d)
+	if err != nil {
+		return false // 解析不了就当它不是未来日期，交给调用方按原样处理
+	}
+	cut := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).
+		AddDate(0, 0, 2)
+	return t.After(cut)
 }
 
 // ParseInvoiceDateFromBytes 扫描文件字节（PDF 未压缩文本 / 图片旁路无效）。
@@ -541,6 +630,12 @@ func ExtractInvoiceLoose(e Email, bodyText string, hasInvoiceAttachment bool) (*
 		joined = subject + "\n" + snippet + "\n" + bodyText
 	}
 	if !invoiceKeywordHit(joined) {
+		return nil, false
+	}
+	// 债务通知形态（信用卡/银行对账单、还款提醒）额外要求真实发票语义。
+	// 详见 admitDebtNotice 的注释——那是 2026-10-02 真实库里那笔
+	// 「amount=58000（其实是信用额度）」幽灵发票的根因。
+	if !admitDebtNotice(joined, hasInvoiceAttachment) {
 		return nil, false
 	}
 

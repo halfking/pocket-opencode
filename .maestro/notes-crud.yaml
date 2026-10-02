@@ -34,7 +34,24 @@
 #   务必走启动器：裸调 maestro 会触发 driver 重装，MIUI 拦下安装就把 driver 卸了。
 appId: com.kaixuan.opencode.pocket
 ---
-- runFlow: _login.yaml
+# ---------- 0. 前置：harness 已登录 + 已解锁本地库，起点在 #/ai ----------
+# ⚠️ 2026-10-03：原先这里是 `- runFlow: _login.yaml`。但 _login.yaml 的登录走
+#    Maestro 的 `inputText: ${POCKET_DEV_PASS}`，而 Maestro 实测把它展开成
+#    **字面量 "undefined"**（.maestro/_probe-env.yaml 坐实：框内容
+#    adminPWLEN-undefined）。登录已改由 scripts/maestro-run.mjs 的 preflight
+#    用 CDP 填真实 LoginView 表单完成；本地 SQLCipher 库的主密码解锁也已
+#    上移到同处的 ensureLocalDbUnlocked()（同样走 CDP，按 placeholder 定位，
+#    不依赖坐标）。_login.yaml 在本流程里已无必要。
+#    如实记录覆盖变窄：软键盘那套手势本流程不再走（见 handoff §4.82.5）。
+# 前置可复现：node scripts/pkm-test-fixture.mjs（删掉上一轮同名笔记，
+# 否则最后一步的列表回显会假通过——Maestro 判 visible 只看节点在不在
+# 无障碍树里，不看它是不是上一轮留下的）。
+- extendedWaitUntil:
+    visible: "AI 工具"
+    timeout: 45000
+- assertVisible: "AI 工具"
+- assertNotVisible: "密码登录"
+
 - runFlow: _goto-pkm.yaml
 
 # ---- 创建 ----

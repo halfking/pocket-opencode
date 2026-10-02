@@ -481,10 +481,11 @@ export const emailApi = {
    * 移动邮件到目录（folder 传 '' = 移回收件箱）。本地立即生效并记操作日志，
    * 服务端尽力即时 IMAP MOVE；失败的操作留在日志里等 /ops/sync 重放。
    */
-  moveEmails(ids: string[], folder: string): Promise<{ moved: number; applied: number; pending: number; errors?: string[]; folder?: string }> {
+  moveEmails(ids: string[], folder: string, signal?: AbortSignal): Promise<{ moved: number; applied: number; pending: number; errors?: string[]; folder?: string }> {
     return http('/api/emails/move', {
       method: 'POST',
       body: JSON.stringify({ ids, folder }),
+      signal,
       timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     })
   },
@@ -503,20 +504,22 @@ export const emailApi = {
     return http('/api/emails/ops', { method: 'POST', body: JSON.stringify({ ops }) })
   },
   /** 同步执行：keys 传幂等键数组 = 可选同步；不传 = 全量 pending。 */
-  syncOps(keys?: string[]): Promise<EmailOpsSyncReport> {
+  syncOps(keys?: string[], signal?: AbortSignal): Promise<EmailOpsSyncReport> {
     return http('/api/emails/ops/sync', {
       method: 'POST',
       body: JSON.stringify(keys?.length ? { ids: keys } : {}),
+      signal,
       timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     })
   },
 
   // ── 智能识别系统通知邮件 → 整理进目录 ─────────────────────────────────
   /** dryRun=true 只预览（返回命中的 id 与原因）；false 直接整理。 */
-  organizeInbox(opts: { accountId?: string; folder?: string; dryRun?: boolean } = {}): Promise<EmailOrganizeReport> {
+  organizeInbox(opts: { accountId?: string; folder?: string; dryRun?: boolean } = {}, signal?: AbortSignal): Promise<EmailOrganizeReport> {
     return http('/api/emails/organize', {
       method: 'POST',
       body: JSON.stringify(opts),
+      signal,
       timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     })
   },

@@ -51,7 +51,8 @@ import {
 } from './recording-voice-prompt'
 import { setHeaderTitle } from '../composables/useAppHeaderTitle'
 import {
-  appendTranscript, formatRecordingClock, nextRecordingState, type RecordingPhase,
+  appendTranscript, EMPTY_RECORDING_NOTICE, emptyRecordingNotice, formatRecordingClock,
+  nextRecordingState, type RecordingPhase,
 } from '../features/notes/note-recording'
 import { decideMeetingStart, decideNoteStart } from './recordingPolicy'
 
@@ -198,6 +199,39 @@ export class MeetingRecorderRuntime {
   }
 
   /**
+   * 会议录音期间**分片转写**的中止器。
+   *
+   * 与 NoteRecorderRuntime 的 transcribeAbort 分开是有意的：后者是
+   * 「录完之后那次兜底全量转写」的，生命周期只有 stop() 收尾那一段；而分片
+   * 转写从录音一开始就在跑，每次 processSegment 都是一次独立的
+   * sttApi.transcribe（各自 3 分钟预算）。此前会议录音这一层**完全无法终止**。
+   *
+   * 生命周期跟着「一次录音会话」走：start() 换新（换之前先 abort 旧的，上一场
+   * 遗留的分片不该继续烧配额，也不该被写进新会议），不在 stop() 上清——
+   * stop() 还要等 inFlightSegments 收尾，中止它等于砍掉最后一个语音块。
+   */
+  private segmentAbort: AbortController | null = null
+
+  /**
+   * 强行终止在途的分片转写。
+   *
+   * 目前**没有界面调用它**——会议录音页还没有「停止转写」入口（这一点由
+   * api/long-task-terminable.test.mjs 的缺口登记表盯着，新增/移除都要同步）。
+   * 先把能力摆在这里，是为了让「录音中这批分片停不掉」不再是结构性缺陷。
+   *
+   * @returns 是否确实中止了在途分片转写（false = 没有可停的）
+   */
+  cancelSegmentTranscription(): boolean {
+    const seg = this.segmentAbort
+    // 用 processingCount 判定「真的在途」：只看 segmentAbort 非空是不够的，
+    // 它在两场录音之间一直留着，不清就会在没有请求可停时也返回 true——
+    // 那又是一个假成功。
+    if (!seg || seg.signal.aborted || this.processingCount.value === 0) return false
+    seg.abort()
+    return true
+  }
+
+  /**
    * 开始(或幂等重入)一场会议录音。决策语义见 recordingPolicy.decideMeetingStart:
    * - 已在录同一场会议(页面重进)→ 直接 true,不重启采集;
    * - 别的会议在录 → 先正式收尾旧录音(落库),再开新的;顶替场景强制
@@ -233,6 +267,10 @@ export class MeetingRecorderRuntime {
       this.processingCount.value = 0
       this.partSeq = 0
     }
+    // 换场录音先中止上一场还在跑的分片转写：那些语音块属于已经结束的会议，
+    // 留着只会白烧上游 ASR 配额，并且它们的分段会被写进新会议里。
+    if (this.segmentAbort) this.segmentAbort.abort()
+    this.segmentAbort = new AbortController()
     if (freshSession || !this.diarizer) {
       this.diarizer = new SpeakerDiarizer(0.72)
       try {
@@ -395,9 +433,14 @@ export class MeetingRecorderRuntime {
         await ingestSpeechBlob({
           meetingId: this.activeMeetingId.value, blob, startMs, endMs, seq: this.partSeq, diarizer: this.diarizer!,
           segments: this.segments.value, segmentProfiles: this.segmentProfiles,
+          signal: this.segmentAbort?.signal,
         })
         this.syncSpeakers()
       } catch (e) {
+        // 用户中止不是失败：显示「转写失败，将在下一段重试」会让他以为录音坏了，
+        // 实际上是他自己刚点的停止。判据取 signal.aborted 而不是错误对象——
+        // 这里 abort 传下去后 fetch 抛什么由运行时决定，signal 才是稳定可读的那个。
+        if (this.segmentAbort?.signal.aborted) return
         // 2026-10-01：原来这里写死「转写失败，将在下一段重试」，真实原因只进
         // console.warn。结果「网关列了 ASR 模型但没开通 provider」和「网络断了」
         // 在用户眼里完全一样，而这两种要采取的动作完全不同（前者去设置里换模型，
@@ -889,6 +932,10 @@ export class NoteRecorderRuntime {
         }
       }
       this.pendingResult = { text: this.transcript.value.trim(), audioBlob, durationMs }
+      // 一个音都没录到时必须说话，否则整段收尾是静默的。
+      // 判据与理由见 note-recording.ts emptyRecordingNotice 的注释。
+      const emptyNotice = emptyRecordingNotice(this.transcript.value.trim() !== '', audioBlob.size)
+      if (emptyNotice) this.error.value = EMPTY_RECORDING_NOTICE
       return { text: this.transcript.value.trim(), audioBlob, durationMs }
     } finally {
       this.phase.value = nextRecordingState('stopping', 'drafted')
