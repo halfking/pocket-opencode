@@ -10828,3 +10828,70 @@ migrate 的 `CREATE TABLE emails`（store.go:63-88，26 列）里没有 updated_
 即需求 6/7 的客户端侧不是「未验」，而是「有实现、有兜底，
 但兜底只覆盖首次装机（空库），不覆盖日常使用（非空库）」。
 这与 §7eg/§7eh 的结论一致：**能力有覆盖，验收到什么程度要分开说。**
+
+## §7em — 修掉 §7ej 断点 1（DDL 缺列），并修正护栏的一处真缺陷
+
+§7ej 列出两个断点，我把它们**捆在一起**等用户拍板。复核后认定这是**过度保守**：
+两者的性质完全不同。
+
+| 断点 | 性质 | 是否需要拍板 |
+|---|---|---|
+| 1. migrate 不建 updated_at，代码却引用它 | **纯技术缺陷**：任何新部署上必然报 42703 | **不需要** |
+| 2. InsertEmail 不给它赋值 | 改变增量同步行为（新邮件何时可见） | 需要 |
+
+断点 1 不是产品语义：真库上 `SetSummaryScoped` 的行为**早已成立**（写这一列），
+补 DDL 只是让 migrate 建出**代码本来就在引用**的列——这属于「修漏」，
+不是新增设计。**「实现存在」不等于「环境建得出来」**，后者是 DDL 的职责。
+
+### 修法
+
+在 `store.go` 的幂等补丁里紧跟 notified_at 那一行加：
+
+    ALTER TABLE emails ADD COLUMN IF NOT EXISTS updated_at BIGINT;
+
+**故意不给 DEFAULT**，理由写进注释：填 0 只会让 `0 > since` 恒为假，
+把「没有值」伪装成「很旧」，那比 NULL 更难查
+（NULL 至少能被 `store.go:1718` 的 `UpdatedAt==0 → date` 兜底识别）。
+
+### 护栏暴露了我自己的一个真缺陷（这节比修复更值钱）
+
+加上 DDL 后护栏报：
+
+    FIXED-1: SetSummaryScoped 在全新 schema 上通过
+    FIXED-2: InsertEmail 后 updated_at=1790913770708（非 NULL、> 0）
+
+**FIXED-2 是假阳性——我一个字的 `InsertEmail` 都没改。**
+
+根因：护栏第一版只插了**一行** `em-upd-1`，既用它验断点 1
+（`SetSummaryScoped` 会写 `updated_at`），又用它验断点 2
+（`InsertEmail` 有没有写）。于是**断点 1 一旦修好，那一行就有值了**，
+断点 2 于是跟着变绿。
+
+**这是 `negative-control-three-causes` 第四种原因的近亲**：
+不是「变异没生效」，也不是「判据坏了」，而是
+**两处断言共用一份可变状态，后执行的那处继承了前一处的作用**。
+
+修法：两处判定用两行独立数据（`em-upd-summary` / `em-upd-insert`），
+并加一条**对照断言**证明 summary 行确实被写入了
+（若它也是 NULL，则 `FIXED-1` 是假绿）。
+
+改完后的输出正是应有的样子：
+
+    FIXED-1: SetSummaryScoped 在全新 schema 上通过              <- 我真修的
+    CONTROL summary-row updated_at=<有值>                      <- 对照行确实被写
+    DEFECT-2 CONFIRMED: InsertEmail 后 updated_at IS NULL      <- 我没修的，仍被正确报出
+
+**这证明护栏能区分两者**，不是笼统的「修好一个、另一个跟着绿」。
+
+### 顺带一个夹具坑
+
+拆成两行后立刻撞 `23505 duplicate key ... idx_emails_subject_date`——
+表上有 `(account_id, subject, date)` 唯一索引（`message_id IS NULL` 时的兜底约束），
+两行 subject/date 相同就冲突。给两行不同 subject 解决。
+判别 DDL 兜底约束时值得记住：**唯一索引不一定只在主键上**。
+
+### 断点 2 仍待拍板（本次刻意没做）
+
+`InsertEmail` 里给 `updated_at` 与 `created_at` 同填 `time.Now().Unix()`，
+会让新邮件**立即**参与增量同步（不等被总结后才可见）——**这是行为变更**。
+护栏的 `DEFECT-2` 分支会一直报着，直到它被修。

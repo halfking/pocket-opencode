@@ -80,16 +80,35 @@ func TestGuard_EmailsUpdatedAtConsistency(t *testing.T) {
 	t.Logf("SCHEMA %s: emails.updated_at exists = %v", schema, hasUpdatedAt)
 
 	seedAccount(t, store, "acct-upd", "u", "ws-upd")
-	if err := store.InsertEmail(ctx, Email{
-		ID: "em-upd-1", AccountID: "acct-upd", UID: 4242,
-		FromAddress: "s@example.com", Subject: "刚同步进来、尚未分类的邮件",
-		Snippet: "正文", Date: time.Now().Unix(),
-	}); err != nil {
-		t.Fatalf("InsertEmail: %v", err)
+
+	// **两处判定必须用两行独立数据。**
+	// 第一版这里只插一行 em-upd-1，然后既用它验断点 1（SetSummaryScoped 会
+	// 写 updated_at），又用它验断点 2（InsertEmail 有没有写）。
+	// 于是断点 1 一旦被修好（SetSummaryScoped 成功执行），
+	// 那一行的 updated_at 就有值了 —— 断点 2 于是**假报** FIXED-2，
+	// 而 InsertEmail 其实一个字都没改。
+	// 这是「变异对所选用例是 no-op」的近亲：
+	// **两处断言共用一份可变状态，后执行的那处会继承前一处的作用。**
+	const rowForSummary = "em-upd-summary" // 只给断点 1 用，会被 SetSummaryScoped 写
+	const rowForInsert = "em-upd-insert"  // 只给断点 2 用，不许任何别的写路径碰
+
+	insert := func(id, subject string) {
+		t.Helper()
+		if err := store.InsertEmail(ctx, Email{
+			ID: id, AccountID: "acct-upd", UID: 4242,
+			FromAddress: "s@example.com", Subject: subject,
+			// 两行的 date 必须不同：表上有 (account_id, subject, date) 唯一索引
+			// （message_id IS NULL 时的兜底约束），相同会直接撞 23505。
+			Snippet: "正文", Date: time.Now().Unix(),
+		}); err != nil {
+			t.Fatalf("InsertEmail(%s): %v", id, err)
+		}
 	}
+	insert(rowForSummary, "断点1 专用行")
+	insert(rowForInsert, "断点2 专用行")
 
 	// ---- 断点 1：SetSummaryScoped 能否在全新 schema 上跑通 ----
-	sumErr := store.SetSummaryScoped(ctx, "em-upd-1", "u", "ws-upd", "摘要")
+	sumErr := store.SetSummaryScoped(ctx, rowForSummary, "u", "ws-upd", "摘要")
 	switch {
 	case sumErr != nil:
 		t.Logf("DEFECT-1 CONFIRMED: SetSummaryScoped 在全新 schema 上失败 —— %v", sumErr)
@@ -111,9 +130,18 @@ func TestGuard_EmailsUpdatedAtConsistency(t *testing.T) {
 	// 而两者在这里推理链不同（NULL=列无默认值；0=有 DEFAULT 0）。
 	var updatedRaw *int64
 	if err := store.pool.QueryRow(ctx,
-		`SELECT updated_at FROM emails WHERE id='em-upd-1'`).Scan(&updatedRaw); err != nil {
+		`SELECT updated_at FROM emails WHERE id=$1`, rowForInsert).Scan(&updatedRaw); err != nil {
 		t.Fatalf("read back: %v", err)
 	}
+	// 对照断言：另一行**确实**被 SetSummaryScoped 写过（有值）。
+	// 若它也是 NULL，说明 SetSummaryScoped 名义上成功但没写进去，
+	// 那样 FIXED-1 就是假绿。
+	var summaryRow *int64
+	if err := store.pool.QueryRow(ctx,
+		`SELECT updated_at FROM emails WHERE id=$1`, rowForSummary).Scan(&summaryRow); err != nil {
+		t.Fatalf("read summary row: %v", err)
+	}
+	t.Logf("CONTROL summary-row updated_at=%v (SetSummaryScoped 写的那一行)", summaryRow)
 	switch {
 	case updatedRaw == nil:
 		t.Logf("DEFECT-2 CONFIRMED: InsertEmail 后 updated_at IS NULL —— " +

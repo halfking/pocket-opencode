@@ -210,6 +210,24 @@ func (s *Store) migrate() error {
 	-- 已派发的时间，防止流水线每轮重复推送同一封邮件。
 	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS updated_at BIGINT NOT NULL DEFAULT 0;
 	ALTER TABLE emails ADD COLUMN IF NOT EXISTS notified_at BIGINT NOT NULL DEFAULT 0;
+	-- updated_at 是邮件的「最后修改时间」，供客户端增量同步取 MAX(updated_at)
+	-- 作 since、服务端按 updated_at > since 过滤（需求 6/7 的本地优先架构）。
+	--
+	-- 2026-10-02 补。此前**代码引用了这一列而 migrate 不建它**：
+	-- SetSummaryScoped（store.go:531）写的是
+	--   UPDATE emails e SET ai_summary = $1, updated_at = $2 ...
+	-- 而 CREATE TABLE 与上面那批补丁里都没有这一列。实测在全新 schema 上：
+	--   ERROR: column "updated_at" of relation "emails" does not exist (42703)
+	-- 即**手动总结在全新部署上直接失败**。
+	-- 真库 opencode_pocket 之所以有这一列，是历史上有人手工加过——
+	-- 那是迁移遗留，不是本仓库的 migrate 产物（见 §7ej）。
+	--
+	-- 口径：Unix **秒**，与 created_at / date 一致，也与客户端
+	-- MAX(updated_at) 的用法一致。故意不给 DEFAULT：填 0 只会让
+	-- "0 > since" 恒为假，把「没有值」伪装成「很旧」，那比 NULL 更难查
+	-- （NULL 至少能被 ListEmailsScoped:1700 的 UpdatedAt==0 → date 兜底识别）。
+	-- 真正的赋值由 InsertEmail 补齐，那是独立的一处改动。
+	ALTER TABLE emails ADD COLUMN IF NOT EXISTS updated_at BIGINT;
 	CREATE TABLE IF NOT EXISTS email_vacation_replies (
 		id TEXT PRIMARY KEY,
 		account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
