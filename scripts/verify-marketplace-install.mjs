@@ -30,7 +30,7 @@
  * 用法：POCKET_SERIAL=... POCKET_MASTER=... node scripts/verify-marketplace-install.mjs
  */
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { requireDevPass } from './lib/dev-pass.mjs'
 import http from 'node:http'
 
 const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
@@ -79,7 +79,7 @@ const check = (name, pass, detail) => {
 }
 
 // ---------- 播种 ----------
-const devPass = (readFileSync('backend/internal/server/server_assistant.go', 'utf8').match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || ''
+const devPass = requireDevPass()
 const login = await api('/api/auth/login', '', 'POST', JSON.stringify({ username: 'admin', password: devPass }))
 let token = ''
 try { token = JSON.parse(login.body).token || '' } catch { /* 下面报告 */ }

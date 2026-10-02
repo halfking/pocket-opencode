@@ -2,11 +2,10 @@
 // 后端 handleEmailSync 会把失败的账户收进 failed 数组但**仍返回 200**。
 // 如果前端不读 failed，就会把失败显示成「同步成功」。
 import http from 'node:http';
-import { readFileSync } from 'node:fs';
-
+import { requireDevPass } from './lib/dev-pass.mjs'
 const HOST = '127.0.0.1';
 const PORT = 8088;
-const devPass = (readFileSync('backend/internal/server/server_assistant.go', 'utf8').match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || '';
+const devPass = requireDevPass()
 
 function api(path, { token, method = 'GET', body } = {}) {
   return new Promise((res) => {

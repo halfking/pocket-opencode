@@ -35,7 +35,7 @@
  * 用法：POCKET_SERIAL=... POCKET_MASTER=... node scripts/verify-finance-writepath.mjs
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { requireDevPass } from './lib/dev-pass.mjs'
 import http from 'node:http';
 
 const SABOTAGE = (process.argv.find((a) => a.startsWith('--sabotage=')) || '').split('=')[1] || '';
@@ -82,7 +82,7 @@ function api(path, { token, method = 'GET', body } = {}) {
     r.end();
   });
 }
-const devPass = (readFileSync('backend/internal/server/server_assistant.go', 'utf8').match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || '';
+const devPass = requireDevPass()
 
 // ---------- CDP ----------
 const pid = adb(['-s', SERIAL, 'shell', `pidof ${PKG}`]).trim().split(/\s+/)[0];

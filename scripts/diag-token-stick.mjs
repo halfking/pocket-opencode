@@ -2,7 +2,7 @@
 // 保留 ws_user-admin => 之前读路径失败另有原因（缓存/时序）
 // 回弹 default      => App 启动逻辑强制重新认证到 default（陈旧 bundle / dev 自动登录）
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { requireDevPass } from './lib/dev-pass.mjs'
 import http from 'node:http';
 
 const ADB='C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe';
@@ -12,7 +12,7 @@ const PORT=process.env.POCKET_CDP_PORT||'9270';
 const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
 const adb=(a,t=60000)=>execFileSync(ADB,a,{encoding:'utf8',timeout:t,maxBuffer:33554432});
 function api(path,{token,method='GET',body}={}){return new Promise((res)=>{const payload=body?JSON.stringify(body):'';const h={};if(token)h.Authorization='Bearer '+token;if(payload){h['Content-Type']='application/json';h['Content-Length']=Buffer.byteLength(payload);}const req=http.request({host:'127.0.0.1',port:8088,path,method,headers:h,timeout:15000},(r)=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>res({status:r.statusCode,body:b}));});req.on('error',e=>res({status:0,body:String(e)}));req.on('timeout',()=>{req.destroy();res({status:0,body:'timeout'})});if(payload)req.write(payload);req.end();});}
-const devPass=(readFileSync('backend/internal/server/server_assistant.go','utf8').match(/devPass\s*=\s*"([^"]+)"/)||[])[1]||'';
+const devPass = requireDevPass()
 const claim=(t)=>{try{return JSON.parse(Buffer.from(t.split('.')[1],'base64').toString('utf8')).workspace_id}catch{return '??'}};
 
 const pid=adb(['-s',SERIAL,'shell',`pidof ${PKG}`]).trim().split(/\s+/)[0];

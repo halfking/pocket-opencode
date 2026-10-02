@@ -12,11 +12,9 @@
  * 用法：node scripts/diag-workspace-claim.mjs [轮数]
  */
 import http from 'node:http'
-import { readFileSync } from 'node:fs'
-
+import { requireDevPass } from './lib/dev-pass.mjs'
 const ROUNDS = Number(process.argv[2] || 3)
-const devPass =
-  (readFileSync('backend/internal/server/server_assistant.go', 'utf8').match(/devPass\s*=\s*"([^"]+)"/) || [])[1] || ''
+const devPass = requireDevPass()
 
 function login(body) {
   return new Promise((res) => {
