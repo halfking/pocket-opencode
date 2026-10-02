@@ -1267,6 +1267,49 @@ pg_try_advisory_lock(...)  // :66     于是拿到的是**同一条**连接 -> t
 **这不影响那 7 条锁用例**——它们用的是 `pg_locks` 探针与独立连接池，
 对可重入免疫（§23.4 实测全绿）。这是**诊断脚本自己的标签错了**，不是锁的缺陷。
 
+---
+
+## §24 ⚠️ 更正我自己早先的「全量回归」：那时 PG 集成测试其实是**静默 skip** 的
+
+02:26 在当前这棵**含并发会话 43 项在制品**的树上跑全量：
+
+```
+POCKET_TEST_POSTGRES_DSN=... go test ./internal/email  -count=1  -> ok  177.075s
+POCKET_TEST_POSTGRES_DSN=... go test ./internal/server -count=1  -> ok   77.002s
+```
+
+⇒ **全绿，包括他们那批在制品。** 但**耗时本身就推翻了我之前的说法**：
+
+| | 我先前报的 | 真实（含 PG 集成） |
+|---|---|---|
+| `internal/email` | ok **12.8s** | ok **177.1s** |
+| `internal/server` | ok **19.6s** | ok **77.0s** |
+
+差一个数量级。原因：`newWorkspaceTestStore` 在拿不到
+`POCKET_TEST_POSTGRES_DSN` 时走的是
+
+```go
+if dsn == "" { t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping ...") }
+```
+
+⇒ 我先前那两次「全量回归」**根本没跑那些需要真 PG 的用例**，它们静默 skip 了，
+而我在提交信息与上一轮汇报里都写成了「全量 ok」。**那是高估了覆盖范围。**
+
+（讽刺的是，同一个包里 `pipeline_lock_test.go` 的同类用例是**故意大声 FAIL**
+而不是 skip 的，失败信息写着 `silently skipping would make every assertion above
+vacuously true`——**约定已经在仓库里了，我先前没对齐它**。）
+
+### 24.1 结论本身没有变，但证据强度变了
+
+- 现在有证据：全量（含 PG 集成）在 43 项在制品共存时是绿的。
+- 之前没有：之前那次只能证明「不需要 PG 的那部分绿」。
+
+⇒ 引用本轮任何「全量 ok」的地方，都应带上 `POCKET_TEST_POSTGRES_DSN` 这一句，
+否则那不是全量。**这也是本轮第四次撞到同一族问题**（§19 数界面、§20 机制推断、
+§23.5 探针复用连接、这里 skip 被当成通过）：
+**"没报错"和"它真的被检查了"是两件事。**
+
+
 
 
 
