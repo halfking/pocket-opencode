@@ -10623,3 +10623,89 @@ NULL 也被排除——**结论巧合相同，推理链却是错的**。
 **教训**：探针报错时，**先分清是「我的 Scan 类型不对」还是「数据不对」**。
 前者是探针 bug（改类型），后者才是结论（改代码）。本轮两者都发生了，
 我一开始差点当成后者。
+
+## §7ej — 顺着 §7ei 写护栏，挖出**更严重**的断点：全新部署上 emails.updated_at 这一列根本不存在
+
+§7ei 我在**真库**上量到 emails.updated_at 存在但只有 122/124 有值，
+判定为「InsertEmail 不写它 → 增量同步对未分类邮件失明」。
+本节去写护栏时，顺手在**测试 schema**（由本仓库自己的 migrate 建）上读同一列，
+结果**那一列不存在**。于是 §7ei 的结论要大幅修正。
+
+### 断点 1（严重）：本仓库的 migrate 建不出 updated_at
+
+migrate 的 `CREATE TABLE emails`（store.go:63-88，26 列）里没有 updated_at；
+它后面的幂等补丁 `ALTER TABLE emails ADD COLUMN IF NOT EXISTS notified_at ...`（:212）
+**也只加了 notified_at**，没有 updated_at。
+
+而 `SetSummaryScoped`（store.go:531）写的是：
+
+    UPDATE emails e SET ai_summary = $1, updated_at = $2 ...
+
+在**全新 schema**（newWorkspaceTestStore 建的，走仓库自己的 migrate）上实测：
+
+    列数=26  has_updated_at=false
+    SetSummaryScoped ERR = ERROR: column "updated_at" of relation "emails"
+                          does not exist (SQLSTATE 42703)
+
+**即「手动总结」（POST /api/emails/{id}/summarize）在全新部署上直接失败。**
+
+真库 opencode_pocket 之所以有这一列（28 列，多出 updated_at 与 folder_name），
+是因为**历史上有人手工加过**——那不是本仓库 migrate 的产物。
+**「真库有」不能推出「代码会建」。** 这与 §7eg 的教训同族：
+我又一次拿「某一个环境里的事实」当成了「代码保证的事实」，只是这次方向是「有 ⇒ 会建」。
+
+### 断点 2（§7ei 的结论，保留但降级）
+
+即便补上 DDL，InsertEmail（store.go:560）的 19 列 INSERT 仍不含它。
+真库实测 updated_at IS NULL 的两行是**当时最新的两封**：
+
+    em-1298896146 "What we shipped in September"  created_at=1790910721  updated_at=NULL
+    em-1298896147 "每日信用管家"                   created_at=1790911681  updated_at=NULL
+    rows_visible_to_incremental(since=MAX(updated_at)) = 0
+
+规律仍是「手动总结过的有值、同步进来的没有」。
+
+### 护栏：updated_at_guard_test.go
+
+打真 PG、在**全新 schema** 上真跑一遍，回读数据库判定，**不匹配源码字面量**
+（所以「换个写法写这一列」它也成立）。两个断点各一个分支，
+输出 DEFECT-1 / DEFECT-2 / PARTIAL-2 / FIXED-1 / FIXED-2。
+
+**故意用 t.Log 而不是 t.Error**：两处修法都改变产品行为，属用户拍板范围。
+先把断点量化钉住，让任何一次改动都能立刻看到状态变化。
+改成 t.Error 的那天，就是行为已定、修法已落地的那天。
+
+**负控证明它有区分度**（不是永远打印 DEFECT 的假绿）：
+按修法 A 变异（补 DDL + INSERT 列清单加 updated_at）后，两个分支都变 FIXED：
+
+    SCHEMA email_ws_test_b633a6d08cfc: emails.updated_at exists = true
+    FIXED-1: SetSummaryScoped 在全新 schema 上通过
+    FIXED-2: InsertEmail 后 updated_at=<非 NULL、> 0>
+
+还原后复核，仍报 DEFECT-1 CONFIRMED。
+
+### 负控脚本自己翻车两次（第五、六次判据失误）
+
+1. **needle 缩进猜错**：DDL 行是**一个** tab 缩进，我按两个 tab 写，
+   脚本 exit 2 拒绝执行。**这次我没接着跑测试**——
+   校验失败后的任何绿灯都必须当作不存在（这条我上一轮犯过）。
+2. **还原校验条件过宽**：RESTORE VERIFY FAILED 报出来了，但 git diff 是**空的**
+   ——还原其实成功了。原因是校验条件 `!back.includes("created_at, updated_at)")` 太宽：
+   那个字符串在 email_accounts / vacation_replies / action_intents 等**别的表**
+   的列清单里合法存在。
+   **「校验失败」要分清是还原没做，还是校验写错了**——
+   这次是后者，若照着报错去「再还原一次」反而会出事。
+
+### 修法（属产品语义，本轮不擅自决定）
+
+| 方案 | 做法 | 后果 |
+|---|---|---|
+| **A** | DDL 补 ADD COLUMN IF NOT EXISTS updated_at BIGINT + InsertEmail 列清单加它、与 created_at 同填 | 新邮件**立即**参与增量同步（不等被总结后才可见）——**这是行为变更** |
+| B | 只给列加 NOT NULL DEFAULT 0 | 只消除 NULL，但 0 > since 仍为假，**断点 2 失明依旧**，治标不治本 |
+
+我倾向 A（B 解决不了增量失明，而断点 1 只是让手动总结不报错），
+但两者都改变产品行为，**留给用户拍板**。
+
+**注意 A 有一个单位陷阱**：负控里日志打出 updated_at=1790913072524（13 位 = **毫秒**）。
+真修法必须确认这一列的单位与客户端 MAX(updated_at)、服务端 > since **三者一致**。
+§7ei 已量过真库 updated_at 是**秒**（1.79e9 量级），所以应填 time.Now().Unix() 而非毫秒。
