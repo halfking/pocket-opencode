@@ -31,10 +31,24 @@ type LedgerPublisher interface {
 
 // CurrencyTotal 是单个币种的合计。跨币种的「总额」不是金额，所以本函数
 // 只能按币种分别返回合计，调用方拿不到一个可以随手相加的标量。
+//
+// json tag 不是装饰，删掉它等于把发票页的合计金额打成「¥NaN」。
+//
+// 2026-10-03 真机实测（Redmi，/email/invoices）：没有 tag 时
+// encoding/json 按字段名原样输出 amounts[] = {"Currency","Amount","Count"}，
+// 而前端 resolveSummaryGroups（invoice-money.ts）读的是 a.currency / a.amount
+// —— 两个都读到 undefined，round2(undefined) 得到 NaN，页面顶部合计金额
+// 显示 **¥NaN**（同一屏的「共 N 张」正常，因为那个数走另一个字段）。
+//
+// 为什么整条链上一条用例都没红：invoice-totals-chain.test.mjs 的夹具是
+// **手写的 camelCase**，invoice_total_parity_test.go 则三处都在 Go 内部
+// 比对、从不出 JSON。数值一致 ≠ 线上字段名一致——这条边界此前无人断言。
+// 护栏见 server_email_invoice_wire_keys_test.go（真 handler 出线上的字节），
+// 跨语言那一半在 frontend/src/features/email/__tests__/invoice-totals-wire-keys.test.mjs。
 type CurrencyTotal struct {
-	Currency string
-	Amount   float64
-	Count    int
+	Currency string  `json:"currency"`
+	Amount   float64 `json:"amount"`
+	Count    int     `json:"count"`
 }
 
 // SumByCurrency 按币种分组求和，返回每币种的合计与张数。
