@@ -118,13 +118,36 @@
     <!-- TransitionGroup：增量同步落库后的新增/更新/删除以动画呈现（无刷新更新可感知）。
          "more" 哨兵不带 key，放在 TransitionGroup 外避免 move 类误伤。 -->
     <template v-else>
-      <TransitionGroup name="elist" tag="div" class="email-list">
+      <!-- role/aria/tabindex（2026-10-03 22:5x 真机实测后补）：
+           卡片原本是纯 <div class="email-card">，**没有任何可访问语义** ——
+           没有 role、没有 aria-label、没有 tabindex。DOM 里 30 张卡片齐活、
+           文本也在，但它们在无障碍侧是完全不存在的：
+             · 键盘/开关控制用户 tab 不到，收件箱没法用键盘读；
+             · 屏幕阅读器只会念出一个无名容器；
+             · 依赖无障碍树的自动化（含本仓的 Maestro flow）也选不中它们
+               —— 2026-10-03 22:38 实测 email-browse 卡在「点开首行」，
+               Maestro 抓下的层级里 `.email-list` 对应节点是个**零子节点**的叶子。
+
+           对照证据（同一次会话、同一台设备、同一套层级抓取）：首页的列表项
+           是**带子节点**的（TextView t="Maestro任务" / t="无响应" / t=" · 4 小时"），
+           所以这不是 WebView 无障碍桥接的全局问题，是邮箱列表独有的。
+
+           为什么用 listitem 而不是 button：卡片内部还有一个真 <button>
+           （「标为已读」）。把外层声明成 button 就成了「可交互元素里嵌可交互
+           元素」，是明确的 a11y 反模式，TalkBack 的焦点模型会错乱。
+           listitem + tabindex 既给出了结构与焦点，又不与内层按钮冲突。 -->
+      <TransitionGroup name="elist" tag="div" class="email-list" role="list" aria-label="邮件列表">
         <div
           v-for="m in shownEmails"
           :key="m.id"
           class="email-card"
           :class="{ high: m.importance === 'high', unread: !m.isRead }"
+          role="listitem"
+          tabindex="0"
+          :aria-label="emailCardAriaLabel(m)"
           @click="inbox.selectMode.value ? inbox.toggle(m.id) : open(m.id)"
+          @keydown.enter.prevent="inbox.selectMode.value ? inbox.toggle(m.id) : open(m.id)"
+          @keydown.space.prevent="inbox.selectMode.value ? inbox.toggle(m.id) : open(m.id)"
         >
           <label v-if="inbox.selectMode.value" class="pick" @click.stop>
             <input type="checkbox" :checked="inbox.selected.value.has(m.id)" @change="inbox.toggle(m.id)" />
@@ -241,6 +264,29 @@ import { setHeaderTitle } from '../../composables/useAppHeaderTitle'
 import { useListScene } from '../../composables/use-list-scene'
 
 defineOptions({ name: 'EmailInboxView' })
+
+/**
+ * emailCardAriaLabel 组装单张邮件卡片的可访问名。
+ *
+ * 为什么需要它：卡片在无障碍侧原本是**完全不存在**的（纯 div，无 role /
+ * aria-label / tabindex，见模板处的说明与真机实测）。给它一个聚合的名字，
+ * 屏幕阅读器才能把「谁、什么时候、什么主题、读过没有」一次念完，而不是
+ * 让用户自己在四个兄弟节点间跳。
+ *
+ * 摘要**故意不放进来**：它最长 500 字符，塞进 label 会让播报变成一段噪音，
+ * 而这正是「一封邮件没有摘要」时最该被听见的缺失。
+ */
+function emailCardAriaLabel(m: LocalEmail): string {
+  const parts: string[] = []
+  const who = (m.fromName || m.fromAddress || '').trim()
+  if (who) parts.push(who)
+  const when = formatEmailRelTime(m.date)
+  if (when) parts.push(when)
+  const subject = (m.subject || '').trim()
+  if (subject) parts.push(subject)
+  parts.push(m.isRead ? '已读' : '未读')
+  return parts.join('，')
+}
 
 const router = useRouter()
 const route = useRoute()
