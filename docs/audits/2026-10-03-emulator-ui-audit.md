@@ -345,9 +345,40 @@ pre-push 车道**——这类改动有把前端行为冲掉的可能，所以从
 | ① 键盘 | `/ai-chat` 键盘弹起：`.app-layout` 高 **529.7**（= 文档记录的修复后期望值 529.667）、根布局底 578.7 = 键盘上沿 578.6、`uc.bottom 526.7 ≤ 578.6`，整条工具行在键盘上方（截图 `29-aichat-kb-fixed.png`） | 通过 |
 | ② 多行输入 | 12 路由 **6 个**多行框全部命中；`hiddenWithoutResize = []`、`hiddenButResizable = []`；`/local-agent` 写入后 `grewH 122.5 / clientH 121 / hiddenPx 0 / fits true` | 通过 |
 | ③ 图标 | 17 路由 **137 个图标 / 29 个方形背景**：字形裁切 0、盒子异常大 0、偏心 0、异常大字号 0 | 通过 |
-| ④ 后台存活 | 录音切后台 **7/7 采样 / 123 秒**：`MeetingRecordService isForeground=true types=0x00000080`，`pid` 全程 5116 未变；回前台后 `createTime=-2m57s`（连续未中断），停止后服务与通知均已撤 | 通过 |
+| ④ 后台存活 · 录音腿 | 切后台 **7/7 采样 / 123 秒**：`MeetingRecordService isForeground=true types=0x00000080`，`pid` 全程 5116 未变；回前台后 `createTime=-2m57s`（连续未中断），停止后服务与通知均已撤 | 通过 |
+| ④ 后台存活 · 流式腿 | 切后台 **39 个 chunk** 到达（bg+30s 15 个 / bg+60s 30 个 / bg+90s 39 个），`AiStreamService isForeground=true types=0x00000001`（DATA_SYNC），`pid` 全程 5116 未变。J1 流式在后台继续推进 / J2 进程未被杀 / J3 后台有前台服务 —— **三条全 True** | 通过 |
 
-**这一轮真正抓到的问题：App 空闲自动上锁，把普查静默削掉一半。**
+流式腿的 chunk **按时间戳落在后台窗口内的行数**统计，而不是按 `chunk N` 的
+编号差。编号非单调：App 重试就是新请求，编号从 1 重数，上一轮就是被这个
+坑误导过一次。39 个 chunk 与上一轮完全一致，可复现。
+
+采样表里 `svc=none` 出现在 T0 与 T4 两处，都不是故障：T0 是请求刚发出、
+前台服务还没起来；T4 是 90s 总预算到点后 `aiStreamKeepalive` 正确收掉了
+`AiStreamService`——「请求结束」与「服务被停掉」是配套行为。
+
+### 3.3 顺带发现：上游新加的 gofmt 门禁在 `main` 上是红的
+
+`5026bf78` 引入 gofmt 门禁后，`main` 上一直有 2 个文件在**真债**名单里，
+`npm run check:gofmt` 一直 EXIT=1：
+
+```
+归一化后仍不 gofmt（真债）: 2  2 (0.2%)
+  backend/cmd/invoiceprobe/main.go
+  backend/internal/server/pg_test_isolation_guard_test.go
+```
+
+两处都是纯格式，不含语义：`main.go` 是 gofmt 要在以全角括号开头的行注释后
+补空格（5 行），`pg_test_isolation_guard_test.go` 是两行连续空行并成一行。
+
+**别把这条读成「911 个文件行尾不干净」**：门禁自己分了类，911 是纯行尾伪债
+（工作区 `core.autocrlf=true` 的必然产物，git 归一化后并不脏），真债只有这
+2 个。门禁自己的提示也写了「`gofmt -w` 一次就干净了」在本机是错的，所以按
+提示跑了两遍。
+
+修复走独立分支 `fix/2026-10-03-gofmt-gate-red`（与本审计分支无关，不混），
+`check:gofmt` EXIT=0、真债 2 → 0，`go build` / `go vet` 均 EXIT=0。
+
+### 3.4 这一轮真正抓到的问题：App 空闲自动上锁，把普查静默削掉一半
 
 首轮再验证跑出来「17 路由只有 71 个图标、其中 8 条路由 `i0`」。差点按
 「这些页面本来就没图标」收工。实际去查 `landed` 才发现 8 条路由全部落到了
