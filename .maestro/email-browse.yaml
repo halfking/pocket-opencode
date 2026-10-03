@@ -1,0 +1,136 @@
+# Maestro 真机功能流 · 邮箱读信（列表 → 详情 → 返回）
+#
+# 为什么要这条（2026-10-03）
+# ----------------------------
+# 需求里邮箱是最重的一块：5 个内置账户、邮件是「消息」tab 的三源之一。
+# 但真机回归里**从来没有一条 flow 打开过邮件正文** ——
+# email-accounts.yaml 覆盖的是「账户设置页」（5 个账号可见且已启用），
+# messages-hub.yaml 覆盖的是「聚合时间线」，两者都没点进过任何一封信。
+# 查库能证明行在，证明不了「点得开、读得到」——
+# 后端返回了但前端没渲染、渲染了但正文是空、详情页白屏，这三种在库里都长得一样。
+#
+# 选择器全部来自真机实测（CDP 量可访问性树，设备 Redmi 2411DRN47C）：
+#   #/email         标题 h1/h2 = 邮箱
+#                   页头动作 aria-label = 搜索 / 归类 / 更多
+#                   分类 chip = 全部 / 未分类 / 重要 / 工作 / 账单
+#                   文件夹 chip = 私人 / 通知 / 广告 / 垃圾
+#                   行文本形态 = 「发件人 + 相对时间 + 主题 + 摘要预览」
+#   #/email/:id     标题 h1/h2 = 邮件详情
+#                   动作 aria-label = 返回 / 切换语言（当前 原文）/ 回复 /
+#                                   更多操作 / 邮件详情 / 加入学习 / 转为任务
+#
+# 为什么 tap 行用「相对时间」而不是标题
+# ------------------------------------
+# 邮件标题是外部数据（阿里云额度提醒、GitHub runner、Cursor 登录…），
+# 明天第一封就可能换人，绑定标题等于绑定某一天的邮箱状态。
+# 唯一跨天稳定的形状是**行的结构**：都带 `N 分钟前 / N 小时前 / N 天前`
+# （locales/zh-CN.json 的 timefmt.minutesAgo / hoursAgo / daysAgo）。
+# tapOn 取树里**第一个**匹配项 ⇒ 命中的是首屏第一行，也就是最新一封。
+# 三个写法并列是刻意的：哪一封在最上面取决于时间，三种都要能匹配。
+# ⚠️ 数字与「小时前」之间**没有空格**（实测是「2小时前」）。第一版写成
+#    `\d+ 小时前` 带了个空格，首跑直接红在 `Element not found` ——
+#    注释里写着「三种都要能匹配」，模式里却多了一个不存在的空格。
+#    现在用 `\s*` 两种都容忍。
+#
+# 运行：
+#   node scripts/maestro-run.mjs .maestro/email-browse.yaml
+# 不需要 fixture：本 flow 只读，不写库。
+appId: com.kaixuan.opencode.pocket
+---
+# ---------- 0. 先保证自己站在一个**有底部导航**的页面上 ----------
+# 借 messages-hub.yaml 的同一条纪律：不能假设起点是 #/ai。
+# 邮件详情页的 meta 是 bottomNav:false，那页的树里没有「首页」。
+- runFlow:
+    when:
+      notVisible: "首页"
+    commands:
+      - tapOn: "返回"
+      - waitForAnimationToEnd:
+          timeout: 3000
+- extendedWaitUntil:
+    visible: "首页"
+    timeout: 30000
+- assertNotVisible: "密码登录"
+
+# ---------- 1. 更多 → 邮箱 ----------
+# 「邮箱」是「更多」宫格里的一格（MoreHubView 的 mainFeatures），
+# 一级底部导航里没有它 —— 这是 IA 重组后的真实形状。
+- tapOn:
+    text: "更多|More"
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible: "更多功能"
+    timeout: 40000
+- runFlow:
+    when:
+      notVisible: "更多功能"
+    commands:
+      - tapOn:
+          text: "更多|More"
+          retryTapIfNoChange: true
+      - waitForAnimationToEnd:
+          timeout: 3000
+- extendedWaitUntil:
+    visible: "更多功能"
+    timeout: 40000
+- assertVisible: "更多功能"
+- tapOn:
+    text: ".*邮箱.*"
+    retryTapIfNoChange: true
+- runFlow:
+    when:
+      notVisible: "邮箱"
+    commands:
+      - tapOn:
+          text: ".*邮箱.*"
+          retryTapIfNoChange: true
+      - waitForAnimationToEnd:
+          timeout: 3000
+
+# ---------- 2. 列表页渲染完整 ----------
+- extendedWaitUntil:
+    visible: "邮箱"
+    timeout: 40000
+- assertNotVisible: "密码登录"
+# 分类 chip 齐全：只有 EmailView 会同时渲染这五个
+#（实测文本就是「全部 / 未分类 / 重要 / 工作 / 账单」，无计数后缀，
+#  所以这里可以写整串而不是 `X.*`）。
+- assertVisible: "全部"
+- assertVisible: "未分类"
+- assertVisible: "重要"
+- assertVisible: "工作"
+- assertVisible: "账单"
+# 页头动作：能进搜索/归类/更多，说明工具栏不是空壳
+- assertVisible: "搜索"
+- assertVisible: "归类"
+
+# ---------- 3. 点开一封信 ----------
+- tapOn:
+    text: ".*\\d+\\s*分钟前.*|.*\\d+\\s*小时前.*|.*\\d+\\s*天前.*"
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible: "邮件详情"
+    timeout: 40000
+- assertVisible: "邮件详情"
+
+# ---------- 4. 详情页是**能用的**，不是白屏 ----------
+# 动作齐全 = 这一屏真的渲染出了内容与操作面。
+- assertVisible: "返回"
+- assertVisible: "回复"
+- assertVisible: "更多操作"
+# 正文不许是原始 MIME。实测 2026-10-03 详情页正文是干净的
+#（"您的账号，当前的可用额度为44.37元…"），而**列表页的摘要**当时还是坏的 ——
+# 两者来源不同：详情走完整正文缓存，摘要走 IMAP BODY[TEXT]。
+# 正则前后都带 `.*`：Maestro 文本匹配是整串全匹配，
+# 不带 `.*` 的模式只能匹配「整段文本恰好等于它」的节点 ⇒ 恒绿。
+- assertNotVisible: '.*(Content-Transfer-Encoding|------=_Part_|Content-Type: text).*'
+# 正文确实有内容（不是空壳）：标题之外至少有一段可读文字。
+# 用「您的账号」这类**外部数据**当锚点是错的（会随邮件变），所以这里只做否定断言，
+# 正面由上面四条动作断言承担。
+
+# ---------- 5. 返回能回到列表 ----------
+- tapOn: "返回"
+- extendedWaitUntil:
+    visible: "邮箱"
+    timeout: 30000
+- assertNotVisible: "邮件详情"

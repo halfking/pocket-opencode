@@ -133,10 +133,16 @@ appId: com.kaixuan.opencode.pocket
 #                snippet = CASE WHEN EXCLUDED.snippet <> '' THEN EXCLUDED.snippet
 #                               ELSE emails.snippet END
 #              —— **空串意味着「不覆盖」**，旧的那条坏摘要因此被原样冻结。
-#          ⇒ 只有「能抓到完整正文」才能重算出干净摘要，也就是要改 fetcher 的
-#             抓取策略，不是摘要函数的问题。
+#          ⇒ 不是「后端拿不到正文」。**2026-10-03 21:0x 进一步实测订正**：
+#            `fetchSnippetOnConnected` 把**未压平**的 bs.Bytes 直接交给 DeriveSnippet
+#            （不是压平问题），真正的原因是 IMAP 的 BODY[TEXT] 对这类邮件返回的是
+#            **带分片头、没有完整报文**的形态 —— mimeCandidates 剥不掉，
+#            任何 MIME 解析都取不出正文。
+#            同时：邮件**详情页正文是干净的**（走完整正文缓存，10 行里已有 8 行有缓存），
+#            坏的**只有列表摘要**。⇒ 要么摘要改从完整正文缓存派生，
+#            要么抓取时对这种形态补一次 BODY[]。这是 fetcher.go 层的改动。
 #      在那之前，UI 上仍会看到这 10 封的原始 MIME —— 这是**已知未修**，
-#      不是回归。修 fetcher 之后把下面这行取消注释即可。
+#      不是回归。修好之后把下面这行取消注释即可。
 # - assertNotVisible: '.*(Content-Transfer-Encoding|------=_Part_).*'
 
 # ---------- 4. 切到「邮件」来源，验证 chips 真的在切数据 ----------
