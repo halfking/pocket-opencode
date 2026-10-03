@@ -257,6 +257,23 @@ var pgSafeWithoutIsolation = map[string]string{
 	"internal/email/diag_kxpms_test.go":    "只读真实库探针：无写语句；需 POCKET_DIAG_ACCOUNT + POCKET_DIAG_ALLOW=1 + POCKET_REAL_MAIL_DSN + POCKET_DIAG_DATA_DIR",
 	"internal/email/spam_realdata_test.go": "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（目的就是读真实 schema）",
 
+	// internal/email/diag_purge_injected_invoices_test.go（2026-10-04 新增）：
+	// **会真的 DELETE 发票行**，所以两张表都要登记：
+	//   · 本表（pgSafeWithoutIsolation）—— 规则 2 的出口在这里。它**不能**自建
+	//     `*_test_` schema：它的全部意义就是指向生产库、规划/执行那一批
+	//     自注入行的剔除，指向隔离库就毫无意义。
+	//   · pgAllowlistedWrites —— 规则 4 要求「豁免不豁免写」，有写语句就得
+	//     登记它写了什么。
+	//
+	// 三道闸门：POCKET_DIAG_PURGE=1（打开）+ POCKET_REAL_MAIL_DSN /
+	// POCKET_REAL_MAIL_SCHEMA（显式传入，均无缺省值）+ POCKET_DIAG_PURGE_EXEC=1
+	// （**额外**这一条才允许删）。只读阶段由数据库强制
+	// （default_transaction_read_only=on，并用一次故意失败的 CREATE TEMP TABLE
+	// 自证）；search_path 覆盖式设置后用 current_schema() 读回校验，不一致即拒绝；
+	// 删除走单事务：先 CREATE TABLE 备份（行数必须等于计划数，不等即回滚），
+	// 再 DELETE（影响行数不等计划即回滚），最后才 Commit。
+	"internal/email/diag_purge_injected_invoices_test.go": "会真删 email_invoices 行，且**必须**指向生产库（指向隔离库就失去意义，故不能自建 _test_ schema）：默认只出计划（DB 侧 default_transaction_read_only 强制 + CREATE TEMP TABLE 自证），删除需额外 POCKET_DIAG_PURGE_EXEC=1；DSN/schema 无缺省值、search_path 覆盖式设置并用 current_schema() 读回校验；备份与删除同事务，行数不符即回滚。写语句登记见 pgAllowlistedWrites",
+
 	// internal/email/diag_spam_preview_test.go（2026-10-03 补登，提交 4de72306 时漏了，
 	// 当时把 internal/server 跑成了红的）：
 	//   · 只读：全文件只有一条 SELECT，INSERT/UPDATE/DELETE/DROP/CREATE 一个都没有。
@@ -501,6 +518,17 @@ var pgAllowlistedWrites = map[string]string{
 	// 写路径额外拒绝 schema 缺省值（缺省=生产库 opencode_pocket，且 who='ALL'
 	// 可改写全部账户的同步进度）。
 	"internal/email/diag_snippet_leak_test.go": "1 条 UPDATE（重置 last_synced_uid），被 POCKET_REAL_MAIL_DSN + POCKET_DIAG_RESET_ACCOUNT + POCKET_DIAG_ALLOW_RESET=1 三重开关挡住；写路径拒绝 schema 缺省值（缺省=生产库 opencode_pocket 且 who='ALL' 可改全部账户）",
+
+	// internal/email/diag_purge_injected_invoices_test.go（2026-10-04 新增）：
+	// **会真的 DELETE 发票行**，但默认只出计划。三道闸门：
+	//   POCKET_DIAG_PURGE=1（打开） + POCKET_REAL_MAIL_DSN/POCKET_REAL_MAIL_SCHEMA
+	//   （显式传入，均无缺省值）+ POCKET_DIAG_PURGE_EXEC=1（**额外**这一条才允许删）。
+	// 只读阶段由数据库强制（default_transaction_read_only=on，并用一次故意失败的
+	// CREATE TEMP TABLE 自证）；search_path 覆盖式设置后用 current_schema() 读回校验，
+	// 不一致即拒绝。删除走单事务：先 CREATE TABLE 备份（行数必须等于计划数，
+	// 不等即回滚），再 DELETE（影响行数不等计划即回滚），最后才 Commit ——
+	// 不存在「删了但没备份」。指向生产 schema 是目的。
+	"internal/email/diag_purge_injected_invoices_test.go": "会真删 email_invoices 行：默认只出计划（DB 侧 default_transaction_read_only 强制 + CREATE TEMP TABLE 自证），删除需额外 POCKET_DIAG_PURGE_EXEC=1；DSN/schema 无缺省值、search_path 覆盖式设置并用 current_schema() 读回校验；备份与删除同事务，行数不符即回滚",
 
 	// internal/email/store_upsert_messageid_test.go：**刻意不登记**（2026-10-04）。
 	// 它曾经登记在这里，理由是「会真写 emails 行，所以不隔离 schema 不安全」。
