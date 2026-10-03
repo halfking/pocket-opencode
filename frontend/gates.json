@@ -24,8 +24,36 @@
     "check:raw-error",
     "check:crlf-needles",
     "check:icons",
-    "check:test-coverage"
+    "check:test-coverage",
+    "check:gofmt"
   ],
+  "ciRuns": [
+    "check:dueclock",
+    "check:callback-routes",
+    "check:edge-route-reach",
+    "check:runtime-data",
+    "check:vacuous-guard",
+    "check:vm-gaps",
+    "check:i18n",
+    "check:i18n-translated",
+    "check:dead-api",
+    "check:raw-error",
+    "check:icons",
+    "check:gofmt"
+  ],
+  "ciCoveredElsewhere": {
+    "typecheck": "frontend.yml 的 frontend-lint job 已手列 `npm run typecheck`",
+    "build:gate": "frontend.yml 已手列 `npm run build:gate`（丢弃产物的冒烟构建）",
+    "test:all": "frontend.yml 已手列 `npm run test:all`（全量 + 执行普查）",
+    "test:native": "不是被跳过：test:all 的枚举覆盖全部 *.test.mjs/*.test.ts，本条是它的子集，CI 再跑一遍纯属重复",
+    "test:stores": "同 test:native：已被 test:all 覆盖",
+    "test:auth": "同 test:native：已被 test:all 覆盖",
+    "test:styles": "同 test:native：已被 test:all 覆盖",
+    "test:stt": "同 test:native：已被 test:all 覆盖",
+    "test:email-heal": "同 test:native：已被 test:all 覆盖",
+    "check:test-coverage": "frontend.yml 已手列（2026-10-02 接入，孤儿测试卡口）",
+    "check:crlf-needles": "frontend.yml 已手列（2026-10-02 接入，跨行 needle 脆弱性）"
+  },
   "notGates": {
     "check:icons:visual": "node scripts/build-icon-harness.mjs —— 生成供人眼打开的图标验证页（frontend/.icon-harness/index.html），是构建器不是判定器：它没有「通过/不通过」的退出码语义。把它接进 gates 只会让每跑一次门禁就重建一次静态页，而它的产物本来就是按需手工打开的。"
   }
