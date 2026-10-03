@@ -31,12 +31,17 @@ const PKG = 'com.kaixuan.opencode.pocket';
 const PORT = process.env.POCKET_CDP_PORT || '9260';
 const MASTER = process.env.POCKET_MASTER || '';
 
-function resolvePsql() {
-  const cands = [process.env.POCKET_PSQL, 'logs/pg/dist2/pgsql/bin/psql.exe', 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'].filter(Boolean);
 // PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
 // 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
+//
+// ⚠️ 必须在模块顶层：24abc616 曾把这行插进下面的 resolvePsql() 函数体，
+// 于是 49/50 行 psql() 里的 `${SCHEMA}` 一旦被调用就 ReferenceError。
+// 门禁：node scripts/check-pg-schema-scope.mjs
 const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
 if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
+
+function resolvePsql() {
+  const cands = [process.env.POCKET_PSQL, 'logs/pg/dist2/pgsql/bin/psql.exe', 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'].filter(Boolean);
   for (const c of cands) { try { execFileSync(c, ['--version'], { stdio: 'ignore' }); return c } catch { /* next */ } }
   console.error('找不到 psql.exe，请设置 POCKET_PSQL');
   process.exit(4);

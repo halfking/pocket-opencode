@@ -1268,23 +1268,61 @@ if (!isMiui) {
   await sleep(1200)
 }
 
-const args = ['--device', DEVICE, 'test', ...driverFlag, ...preFlows, ...flows]
-const r = spawnSync(MAESTRO, args, {
-  cwd: ROOT,
-  stdio: 'inherit',
-  shell: true,
-  env: {
-    ...process.env,
+// ⚠️ 多 flow 必须**逐条跑**，每条之前用 CDP 把 App 复位到起点路由。
+//
+// 2026-10-03 真机全量套件实测（Xiaomi 2411DRN47C）：
+//   一次 `maestro test flowA flowB …` 会把所有 flow 跑在同一次调用里，
+//   而 App 的复位只发生在 preflight（整批一次）。于是第 2 条及以后的 flow
+//   继承的是**上一条 flow 的结束页面**：
+//     · notes-crud 结束在 PKM 页 → tasks-crud 第一条 `visible: "AI 工具"` 45s 超时；
+//     · flashcards-write 结束在闪卡复习页 → settings-llm-gateway 首条断言失败。
+//   对照：tasks-crud **单跑 2/2 通过（41s）** ⇒ 产品没坏，坏的是「起点假设」。
+//
+// 为什么不在 flow 里点「首页」tab 解决（试过，不可靠）：
+//   底部导航**不是全局常驻**。实测 router-mobile.ts 里 /flashcards、/flashcards/decks/:id
+//   等子路由 `bottomNav: false`；探针在 #/flashcards 上量到 `nav: []`。
+//   从 #/flashcards/decks/:id 退回「有底部导航」的页面需要**两次** back ——
+//   而需要几次取决于上一条 flow 恰好停在哪，写死次数就是把一个已知缺陷
+//   换成另一个。所以复位放在 harness，用 CDP 直接改路由，不靠 UI 导航猜。
+const START_ROUTE = process.env.POCKET_START_ROUTE || '#/ai'
 
-    POCKET_DEV_PASS: DEV_PASS, // 只进子进程 env
+/** 每条 flow 之前的复位：造一次真实 hash 变化，让路由守卫重算。 */
+async function resetToStart() {
+  const want = `${START_ROUTE}?__reflow=${Date.now()}`
+  const ok = await setRoute(want, 'true', 8000)
+  let h = '(读不到)'
+  try { h = String(await cdpEval('location.hash') || '') } catch { /* 通道也坏了 */ }
+  console.log(`[per-flow] ${ok ? '✅' : '⚠️ '} 复位到起点 ${h}`)
+}
 
-    // 本地 SQLCipher 主密码是测试装置上本会话约定的值，不是仓库内推导出来的。
-    // 仍然只经 env 传递，避免出现在 flow 文件里。
-    POCKET_MASTER: process.env.POCKET_MASTER || 'PocketTest2026',
-    JAVA_HOME: resolveJavaHome() || process.env.JAVA_HOME,
-    MAESTRO_CLI_NO_ANALYTICS: 'true',
-  },
-})
+const maestroEnv = {
+  ...process.env,
+
+  POCKET_DEV_PASS: DEV_PASS, // 只进子进程 env
+
+  // 本地 SQLCipher 主密码是测试装置上本会话约定的值，不是仓库内推导出来的。
+  // 仍然只经 env 传递，避免出现在 flow 文件里。
+  POCKET_MASTER: process.env.POCKET_MASTER || 'PocketTest2026',
+  JAVA_HOME: resolveJavaHome() || process.env.JAVA_HOME,
+  MAESTRO_CLI_NO_ANALYTICS: 'true',
+}
+
+const runOne = (flow) =>
+  spawnSync(MAESTRO, ['--device', DEVICE, 'test', ...driverFlag, ...preFlows, flow], {
+    cwd: ROOT,
+    stdio: 'inherit',
+    shell: true,
+    env: maestroEnv,
+  })
+
+let r = { status: 0 }
+for (const [i, flow] of flows.entries()) {
+  if (i > 0) await resetToStart()
+  if (flows.length > 1) console.log(`\n──────── flow ${i + 1}/${flows.length}: ${flow} ────────`)
+  const one = runOne(flow)
+  if (one.status !== 0) r = one   // 保留失败那次的返回码，交给下面的归因逻辑
+}
+if (flows.length > 1) console.log(`\n[suite] ${flows.length} 条 flow 跑完`)
 // ── 失败归因：把「App 被人/被系统杀掉」和「flow 断言不成立」分开 ──────────
 // 2026-10-02 21:53 实测踩到的链条：Maestro 的 launchApp 会先 force-stop 再 start，
 // force-stop 把 App 杀掉，而 start 被 MIUI 的 wakepath（后台弹出/自启动）确认框拦下，

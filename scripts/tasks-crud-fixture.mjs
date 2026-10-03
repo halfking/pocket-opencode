@@ -19,11 +19,19 @@ import { execFileSync } from 'node:child_process'
 const PSQL = 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'
 const DRY = process.argv.includes('--dry')
 
-const q = (sql) => {
 // PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
 // 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
-const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
-if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
+//
+// ⚠️ 这两行**必须在模块顶层**，不能放进下面的 q()。
+// 2026-10-03：24abc616 那次批量去写死改造把插入锚点选在了 `const q = (sql) => {`
+// 的函数体首行，于是声明落进函数体、而 `${SCHEMA}` 的引用全在顶层 ——
+// `const` 是块级作用域，函数外看不见它，脚本一启动就
+// `ReferenceError: SCHEMA is not defined`（36 行）。
+// 门禁：node scripts/check-pg-schema-scope.mjs
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket'
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`)
+
+const q = (sql) => {
   const out = execFileSync(PSQL, ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-c', sql], {
     encoding: 'utf8', timeout: 60000, maxBuffer: 33554432,
   })
