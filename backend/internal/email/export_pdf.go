@@ -221,6 +221,19 @@ func normalizeInvoiceFilesToPDF(files []string, outDir string) ([]string, []stri
 // 差别只在结构：gofpdf 生成的页 CropBox == MediaBox。
 // 所以「按尺寸构造的用例」永远复现不了这个缺陷 —— 必须用真实票面。
 //
+// ## 为什么不用 api.TrimFile（试过了，不可用）
+//
+// 看起来 TrimFile 更优：它把页裁到**内容框**，裁完 MediaBox 就是墨迹范围，
+// 放进格子既不越格又最大（fit 会正好等于 0.559，票面填满格宽）。
+//
+// 但 2026-10-04 实测在这三张真实票面上：`api.TrimFile` **返回 nil error**，
+// 产出的文件却**读不出任何页尺寸**（PageDimsFile 返回空结果，不 panic）。
+// 也就是说它会**静默产出退化件**——没有任何错误信号。
+//
+// 所以这里只认 CropBox→MediaBox 对齐这条它确实可靠的路径，
+// 并且**必须**保留下面的复验：正因为见过「返回成功但文件已废」，
+// 才不能只看 err 就把文件塞进 A4。
+//
 // ## 修法与它的取舍
 //
 // `api.CropFile(..., b=nil, ...)` 表示「按内容自动裁」，裁完 MediaBox == 内容框，
