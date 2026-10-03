@@ -231,6 +231,14 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 		_ = h.Store.UpdateInvoiceHarvest(ctx, inv)
 		return "failed"
 	}
+	// 重新判定 seller 是不是发件人兜底。
+	//
+	// 必须在**任何** mergeXMLFields 之前做：inv 是从库里读回来的，
+	// `sellerIsFallback`（非导出字段、不落库）恒为 false，XML 里的权威
+	// SellerName 因此顶不掉 FromName 兜底值。2026-10-03 15:10 生产实测：
+	// 两封通行费发票的「对方单位」被写成发件人显示名「通行费电子发票」，
+	// 而不是真实开票方。详见 rederiveSellerFallback 的注释。
+	rederiveSellerFallback(inv, em)
 	// Attempts++ 必须在**取原文之前**：BodyCache 命中 / POP3 自愈 / IMAP FETCH
 	// 三条路径都要计数。
 	//
