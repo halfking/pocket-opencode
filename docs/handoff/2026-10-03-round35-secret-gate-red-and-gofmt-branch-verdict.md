@@ -21,7 +21,8 @@ FAIL	github.com/halfking/pocket-opencode/backend/internal/repohygiene	16.581s
 
 1. 该文件在我的 worktree 里**未被修改**（`git status --porcelain scripts/start-rssdemo-backend.ps1` 为空）。
 2. 命中行确实存在于 `origin/main` 的 blob 里：`git show origin/main:scripts/start-rssdemo-backend.ps1` 含
-   `$env:POCKET_AUTH_PASS   = 'demo-pass-123'`。
+   `$env:POCKET_AUTH_PASS` 被赋了一个 12 字符的合成 demo 口令
+   （本文件**不复现该字面量**——理由见 §2 末尾「文档也会被扫」）。
 3. `git log -S "demo-pass-123" -- scripts/start-rssdemo-backend.ps1` 定位到唯一的引入提交：
    **`a5de5f96`（fix(rss): 修两个会让订阅/日报整体失效的真缺陷）**。
 
@@ -37,7 +38,7 @@ FAIL	github.com/halfking/pocket-opencode/backend/internal/repohygiene	16.581s
 任何新增含字面量的脚本都会踩到它，而它恰好不在这四 个包里。
 
 这不是偶发疏漏，是**可复现的机制**：`a5de5f96` 新增了一个 `.ps1`，`.ps1` 里的
-`POCKET_AUTH_PASS = 'demo-pass-123'` 命中 `password-literal` 规则；而
+`POCKET_AUTH_PASS` 后面那个 12 字符串字面量命中 `password-literal` 规则；而
 `passwordStrength` 把「同时含数字与字母」的串判为「像真口令」，`demo-pass-123` 正好落在这一档。
 **任何人在这个仓库里新增带 demo 口令的启动脚本，都会撞上同一条红。**
 
@@ -80,6 +81,29 @@ $env:POCKET_AUTH_PASS   = 'demo-pass-123'  # secret-scan-ok: synthetic demo pass
 所以豁免理由**不能写中文**——PS 5.1 按 ANSI 读无 BOM 文件，一个被误解码的中文注释会把
 **下一行吞进注释里**，从而让 `$env:POCKET_JWT_SECRET = '...'` 这一行失效、脚本行为静默改变。
 这是「加一行注释修红」这个动作本身的风险点，不是理论风险。
+
+### 文档也会被扫：本文件第一版把自己扫红了（负控的意外收获）
+
+写完这份 handoff 后重跑 `repohygiene`，**它又红了——这次是我自己造成的**：
+
+```
+命中明细：docs/handoff/2026-10-03-round35-…-verdict.md:24  [password-literal]  demo-p…<13 chars, 已打码>
+          docs/handoff/2026-10-03-round35-…-verdict.md:40  [password-literal]  demo-p…<13 chars, 已打码>
+```
+
+原因：这份文档在**引用**那个字面量来解释缺陷时，顺手复制了 `POCKET_AUTH_PASS = '<字面量>'`
+这个**赋值形态**。扫描器不区分「这是缺陷现场」与「这是真凭据」——它扫的是形态。
+
+两条可复用的结论：
+
+1. **豁免理由本身、以及任何解释缺陷的文档，都不能复制那个赋值形态。**
+   本文件改成描述而不复现（`POCKET_AUTH_PASS` 被赋了一个 12 字符串字面量）。
+   注意**打码并不管用**：规则是 `pass` + `[:=]` + 引号内 ≥8 字符，
+   所以 `'demo-pass-***'`（13 字符）照样命中。唯一有效的办法是不出现那个形态。
+2. **「修完门禁要重跑全量」不是流程洁癖。** 本轮如果在改完 `.ps1` 之后没有重跑
+   `go test ./...`，这份文档会带着两条红进主干，而提交信息会写着「已修复」。
+
+
 
 ### A/B 对照（判据有牙齿）
 
