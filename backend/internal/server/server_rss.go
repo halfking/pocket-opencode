@@ -566,7 +566,7 @@ func (s *Server) handleRSSSourceRefresh(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusServiceUnavailable, "rss scheduler unavailable")
 		return
 	}
-	res, err := sched.RunNow(r.Context(), sourceID)
+	res, err := sched.RunNowInScope(r.Context(), s.rssScopeFromClaims(r), sourceID)
 	if err != nil {
 		writeRSSError(w, err)
 		return

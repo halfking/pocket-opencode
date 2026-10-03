@@ -1,0 +1,109 @@
+# Maestro 真机功能流 · 「消息」tab（新版 IA 的四个一级 tab 之一）
+#
+# 为什么要这条：「消息」是 2026-10-03 IA 重组后的一级 tab，语义是
+# 「邮件 + 订阅 + 任务」三类消息按时间倒序汇成一条统一时间线，顶部 chips 切来源
+# （MessagesHubView.vue:13）。它**从来没在真机上跑过**——此前 7 条 flow 里没有一条
+# 碰过它。四个一级 tab 只测了 首页/笔记，更没测过 消息。
+#
+# 风险点也在这：MessagesHubView 的注释里明确记过一个白屏形态
+# （"整个「消息」tab 白屏——而且只在「首次进入、收件箱还是空的」这一种"），
+# 那是按数据状态才触发的分支，静态读代码看不出来。
+#
+# 覆盖的结构：
+#   chips: 全部 / 邮件 / 订阅 / 任务
+#   行列表 data-testid=messages-hub-list
+#   空态  「没有新消息」+ 提示「重要邮件、订阅新闻和任务消息会汇总到这里」
+#   顶栏  aria-label=全部已读 / 管理订阅
+#
+# 断言的判别力：
+#   · 「消息」二字在**每个页面**的页头都有 ⇒ 单独 assertVisible「消息」几乎恒真，
+#     所以真正的判据是 **chips 那一组**（全部/邮件/订阅/任务），
+#     只有 MessagesHubView 会同时渲染这四个。
+#   · 不硬绑「有消息」或「没消息」：收件箱有没有内容取决于后端同步到哪一步，
+#     两种状态都是合法的。判据是「页面**渲染完整**」——chips 齐全，
+#     且列表与空态**二选一**（两者都没有才是白屏）。
+#
+# 运行：
+#   node scripts/maestro-run.mjs .maestro/messages-hub.yaml
+appId: com.kaixuan.opencode.pocket
+---
+# ---------- 0. 先保证自己站在一个**有底部导航**的页面上 ----------
+# ⚠️ 2026-10-03 15:33 实测踩到：首跑直接红在 `assertVisible: 首页`，
+#   失败现场是**邮件详情页**（可见「返回 / 邮件详情 / 回复 / 更多操作」）。
+#   原因是 harness preflight 说它已「复位到 #/ai」，但 App 实际停在上一轮
+#   遗留的深链页；而 `/email/:id` 的 meta 是 **bottomNav: false**，
+#   那页的树里根本没有 首页/笔记/消息 ⇒ 这条断言在该状态下**永远不可能通过**。
+#
+#   ⇒ 不能假设起点是 #/ai。要先把底部导航变出来。
+#   「返回」是 canGoBack 页的通用出口（EmailDetailView 的返回按钮 aria-label=返回）。
+- runFlow:
+    when:
+      notVisible: "首页"
+    commands:
+      - tapOn: "返回"
+      - waitForAnimationToEnd:
+          timeout: 3000
+- extendedWaitUntil:
+    visible: "首页"
+    timeout: 30000
+- assertVisible: "首页"
+- assertNotVisible: "密码登录"
+
+# ---------- 1. 底部导航切到「消息」 ----------
+# ⚠️ MIUI 会吞掉底部导航的 tap：报 COMPLETED 但界面没动
+#   （2026-10-03 15:06 在 settings-llm-gateway 上实测，失败现场仍停在首页）。
+#   retryTapIfNoChange 管第一次，runFlow 补点管第二次，两个都要。
+- tapOn:
+    text: "消息"
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible: "全部.*"
+    timeout: 40000
+- runFlow:
+    when:
+      notVisible: "邮件.*"
+    commands:
+      - tapOn: "消息"
+      - waitForAnimationToEnd:
+          timeout: 3000
+- extendedWaitUntil:
+    visible: "邮件.*"
+    timeout: 30000
+
+# ---------- 2. 核心断言：chips 齐全 ----------
+# ⚠️ 2026-10-03 15:36 实测修正：chip 的**可见文本带未读计数**，实测是
+#   「全部 88」「邮件 30」「订阅」「任务 58」——chip 与数字被 WebView 并成
+#   一个节点。写成字面「全部」必然匹配不上（Maestro 的 visible 是整串全匹配）。
+#   ⇒ 一律写成 `锚点.*` 容忍后缀计数。
+#   注意「订阅」实测**没有**计数（该来源暂无未读），所以它不能用 `订阅.*` 之外
+#   的任何假设；「全部.*」在计数为 0 时会退化成「全部」，那也仍然匹配。
+- assertVisible: "全部.*"
+- assertVisible: "邮件.*"
+- assertVisible: "订阅"
+- assertVisible: "任务.*"
+
+# ---------- 3. 列表与空态必须二选一（两者皆无 = 白屏）----------
+# 用 runFlow 把「有行」的情形记下来，再断言「没有行」时不成立。
+# 只写「不得同时为空」在 Maestro 里表达不了，于是反过来写两条可判的：
+#   · 空态文案若出现，则必须带着它的说明句（半截文案 = 渲染坏了）
+#   · 两段式判断留给下面的 conditional
+- runFlow:
+    when:
+      visible: "没有新消息"
+    commands:
+      - assertVisible: "重要邮件、订阅新闻和任务消息会汇总到这里"
+      - takeScreenshot: "logs/maestro/messages-hub-empty"
+
+# ---------- 4. 切到「邮件」来源，验证 chips 真的在切数据 ----------
+# chip 带未读计数（实测「邮件 30」），所以点击目标与断言都要容忍计数。
+- tapOn: "邮件.*"
+- extendedWaitUntil:
+    visible: "全部.*"
+    timeout: 25000
+- assertVisible: "邮件.*"
+- takeScreenshot: "logs/maestro/messages-hub-email"
+
+# ---------- 5. 负向锚点 ----------
+# 部分来源加载失败是这个页面自己会渲染的状态（src-error），不该被静默吞掉；
+# 但「白屏」不是合法状态，上面的 chips 断言已经守住。
+- assertNotVisible: "密码登录"

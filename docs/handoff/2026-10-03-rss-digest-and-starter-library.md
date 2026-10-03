@@ -133,7 +133,61 @@
   卡片条目上限、dataURL 拆解、截断、例句抽取（只取引号内英文，不把中文释义念出来）。
 - `vue-tsc --noEmit` 与仓库门禁（`npm run gates`）。
 
-## 5. 明确没做的事（避免下次误以为已完成）
+## 5. 真实进程端到端实测（15:10，隔离 schema `rssdemo_test` + 端口 18190）
+
+单测全绿不等于功能可用 —— 下面这一轮是真进程、真外网、真 PostgreSQL
+（`scripts/start-rssdemo-backend.ps1` 起实例，schema/端口/dataDir 全部隔离，
+不碰生产 `opencode_pocket`）。
+
+### 5.1 跑通的部分
+
+| 步骤 | 实测结果 |
+|------|----------|
+| 内置目录 | 38 条（it 20 / finance 11 / news 7） |
+| 一键导入 | created=38 skipped=0；再点一次 created=0 skipped=38（幂等） |
+| 真拉取 | **38 个源里 36 个成功，真实入库 1467 条**（第二次统计累计 1505 条） |
+| 日报 | `2026-10-03` 87 条 / 13 个来源，分 IT 科技 8 · 财经 8 · 时事 8 |
+| 分享正文 | 真实中文标题 + 原文链接，可直接粘进微博/朋友圈 |
+| 通知推送 | `notifications` 表落 3 行 `rss.digest.ready`（含"暂无新内容"那种） |
+| 内置学习库 | 4 套牌组 320 张卡一次导入成功，note 主键带用户后缀（`…-cebf292c`） |
+
+### 5.2 实测抓出来的两个真缺陷（单测抓不到，已修）
+
+**缺陷 A：手动「立即拉取」对真实用户恒 404。**
+上一轮只修了后台扫描的作用域，`Scheduler.RunNow` 仍只用构造时的
+`Scope{local, default}` 找源 → 真实用户的源一律 `not_found`，UI 上那个刷新
+按钮从来没成功过（本地单用户部署两边恰好相同，所以看不出来）。
+实测：38 个源刷新全部 404。
+修法：`RunNowInScope(ctx, 作用域, id)` 显式按请求方作用域查找（找不到就 404，
+**不跨作用域回退**，否则 A 用户能刷新 B 用户的源）；`RunNow` 保留跨作用域兜底。
+回归锁：`TestRunNowFindsSourceOutsideSchedulerScope`（跨作用域能找到）+
+`TestRunNowInScopeDoesNotCrossTenants`（对照组：别人的源必须 404）。
+
+**缺陷 B：每个源最多只能存进一条 item。**
+`parser.go` 原本写 `itemID := stableHash(source.ID, h, "", "")`，而
+`stableHash` 的语义是「guid / link / 标题+正文 里取第一个非空」——
+传 (source.ID, h) 进去等于只哈希了 source.ID，于是**同一个源的所有条目主键
+完全相同**，第二条就 `duplicate key value violates unique constraint
+"rss_items_pkey"`。实测后台调度日志刷满这条错误，日报自然是空的。
+同一篇稿件被两个源转载（中新网财经/要闻、CNBC Markets/Technology）或两个用户
+订同一 feed，也会撞同一个主键。
+修法：新增 `itemID(sourceID, contentHash)` 显式拼 `sourceID\x00hash` 再哈希；
+`UpsertItemScoped` 在调用方没给 id 时也走它。
+回归锁：`TestItemIDIsPerSourceAndContent`（同源不同文/异源同文/稳定性）+
+`TestParserGivesEveryItemItsOwnID` + 真实 PG 的 `TestUpsertItemRealWorldCollisions`
+（一源 3 条 + 转载 + 重复抓取）+ `TestUpsertItemAcrossUsers`。
+负控：把 id 换回 `stableHash(source.ID, h, "", "")` 后，
+`TestParserGivesEveryItemItsOwnID` 立刻转红并打印"items One and Two share id
+cb51f000…"——判据确实有牙齿。
+
+### 5.3 实测发现但不属于代码缺陷的
+
+`hnrss.org` 与 `ruanyifeng.com` 在批量刷新后返回 500；随后用同样的
+`User-Agent: OpenPocket-RSS/1.0` 单独请求这两个源也超时 —— 是这两个站点对
+本机出口的限流，不是抓取逻辑的问题（同一批探测阶段它们都是 200）。日报与
+订阅列表对个别源的失败是容错的：源被标 error，其余源照常出报。
+
+## 6. 明确没做的事（避免下次误以为已完成）
 
 - 没有接微博开放平台 / 微信开放平台的**代发**接口。分享是"生成内容 + 拉起系统面板"，
   发布动作由用户在原生选择器里完成。这是刻意选择：代发需要用户授权第三方凭据，

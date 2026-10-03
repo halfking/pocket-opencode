@@ -95,7 +95,7 @@ func (p *Parser) Parse(data []byte, source Source) ([]Item, error) {
 		}
 		cats := append([]string(nil), in.Categories...)
 		h := stableHash(guid, link, title, content)
-		itemID := stableHash(source.ID, h, "", "")
+		itemID := itemID(source.ID, h)
 		items = append(items, Item{ID: itemID, SourceID: source.ID, UserID: source.UserID, WorkspaceID: source.WorkspaceID, GUID: normalizeText(guid, MaxURLLength), Hash: h, URL: link, Title: title, Author: author, Summary: summary, Content: content, Categories: cats, PublishedAt: published, UpdatedAt: updated, FetchedAt: timePtr(time.Now().UTC()), Status: ItemUnread, Language: source.Language})
 	}
 	return items, nil
