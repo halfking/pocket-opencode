@@ -31,7 +31,7 @@ $env:POCKET_DB_PATH     = Join-Path $DataDir 'pocket.db'
 $env:POCKET_DEV_AUTH    = 'true'
 $env:POCKET_AUTH_LEGACY_ONLY = 'true'
 $env:POCKET_AUTH_USER   = 'admin'
-$env:POCKET_AUTH_PASS   = 'demo-pass-123'
+$env:POCKET_AUTH_PASS   = 'demo-pass-123'  # secret-scan-ok: synthetic demo password for this throwaway local instance only; not a real credential
 $env:POCKET_JWT_SECRET  = 'rssdemo-local-secret-0123456789abcdef'
 # Digest: run once at startup instead of waiting for 08:30, so the notification
 # can be observed within minutes instead of a day.
