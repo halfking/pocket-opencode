@@ -13365,3 +13365,34 @@ Error: 标记 "=======" 出现 13 次，预期 1 次；不消解
    但**新增**文件应写 LF，否则它们会混进这 811 个里。
 7. `scripts/pre-push-ab.sh` 里有硬编码的 `/c/Program Files/Git/bin/sh.exe`，
    换机即失效。它是测试 harness 而非产品代码，本轮未改；用之前先确认路径。
+
+
+### §4.127.7 增补：实际删除结果，以及一个并发冲突预警
+
+推送 5d907b63 成功后按「已完全并入 + 无活跃 worktree + 不活跃」三条同时满足才删，
+逐条用 merge-base --is-ancestor 复核，结果：
+
+| 分支 | 动作 |
+|---|---|
+| wip/round34-preserve（本轮自建的保全分支） | 已删 |
+| udit/round35-secret-gate（本地） | 已删 |
+| origin/fix/2026-10-03-keyboard-overlay-and-multiline-input | 远端已删 |
+| origin/fix/2026-10-03-autogrow-border-compensation | 远端已删 |
+| origin/audit/gofmt-debt-20261003 | 远端已删 |
+| udit/gofmt-debt-20261003（wt-a32 检出） | **保留** |
+| origin/audit/round35-secret-gate | 并发会话已先删 |
+| ix/pg-schema-scope-20261003（原 wt-e2e） | 并发会话已先删，worktree 也已不在 |
+
+udit/gofmt-debt-20261003 保留的理由要写清楚，别被下一轮当成漏删：它的内容
+**已 100% 并入 origin/main**（head=0）、worktree 干净，但最后写入时间距本轮
+收尾只有 ~37 分钟，**没到 1 小时的不活跃阈值**。删它必须先 git worktree remove，
+而那是另一个会话的工作面。⇒ 留到下一轮，届时的判据是「距上次写入 >1h 且仍干净」。
+
+**⚠️ 并发冲突预警（本轮最重要的交接信息）**：收尾时发现新 worktree
+C:/workspace/wt-attach（detached 在 ee912940）正在改
+ackend/internal/email/diag_stale_debt_notice_row_test.go、invoice_store.go，
+**以及 ackend/internal/server/pg_test_isolation_guard_test.go——正是本轮 §4.127.1 改的那个文件**，
+另有 diag_icbc_statement_attachment_test.go 等新文件。也就是说：
+§4.127.1 补的豁免登记，那个会话很可能没看见（它的工作基线是 ee912940，
+不含本轮的 6b2ec2e）。它提交/合并时大概率会撞上同一处，**以 main 上的版本为准**
+（理由文本已含三处弱点，别让它被覆盖成一句「安全」了事）。
