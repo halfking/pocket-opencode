@@ -89,8 +89,17 @@ func inkFixturePDF(a4w, a4h float64, forms []inkFixtureForm) []byte {
 	objs = append(objs, streamObj(forms[0].pageBody))
 
 	fontObj := func(i int) int { return firstFormObj + len(forms) + i }
+	// nestedRefTo：form i 的内容会 Do 这个下标的 form（用来造「票面内部还有
+	// 嵌套 form」的真实形态）。返回该 form 的 XObject 名字与对象号。
+	nestedName := func(i int) (string, int) {
+		return fmt.Sprintf("Fn%d", i), firstFormObj + i
+	}
 	for i, f := range forms {
 		fontRes := fmt.Sprintf("/Font << /F1 %d 0 R >> ", fontObj(i))
+		if f.nestedRef >= 0 {
+			nm, obj := nestedName(f.nestedRef)
+			fontRes += fmt.Sprintf("/XObject << /%s %d 0 R >> ", nm, obj)
+		}
 		objs = append(objs, fmt.Sprintf(
 			"<< /Type /XObject /Subtype /Form /BBox [0 0 %s %s] /Matrix [%s] /Resources << %s>> /Length %d >>\nstream\n%s\nendstream",
 			fTrim(a4w), fTrim(a4h), fTrimMat(f.formMatrix), fontRes, len(f.formBody), f.formBody))
@@ -138,6 +147,8 @@ type inkFixtureForm struct {
 	formMatrix [6]float64
 	formBody   string
 	pageBody   string
+	// nestedRef ≥ 0 时，本 form 的内容会 Do 第 nestedRef 个 form。
+	nestedRef int
 }
 
 func streamObj(s string) string {
@@ -189,7 +200,8 @@ type inkCellVerdict struct {
 	frameOver float64
 	inkOver   float64
 	placed    bool
-	widthUnk  int
+	bounded   int // 按上界算宽度的绘制次数（墨迹盒是上界：可误报，不漏报）
+
 }
 
 type inkCheckReport struct {
@@ -251,7 +263,7 @@ func inkCheckA4(ctx *model.Context, pageNr int, grid int) inkCheckPage {
 	var page inkPageResult
 	page.pageInk = inkEmpty()
 	w := &inkWalker{xt: xt, seen: map[int]bool{}}
-	if !w.walk(res, bb, inkIdentity, nil, &page, 0) {
+	if !w.walk(res, bb, inkIdentity, nil, &page, 0, -1) {
 		out.parseMsg = "content stream walk failed：" + w.at
 		return out
 	}
@@ -269,31 +281,44 @@ func inkCheckA4(ctx *model.Context, pageNr int, grid int) inkCheckPage {
 			})
 		}
 	}
-	// **判定必须逐个放置一条**，不能按格子存一条。
-	// 第一版把判定写进格子表：同一格里有多个放置时后者覆盖前者，
-	// 于是 3x3 那份里 Fm4/Fm5 被静默吞掉，汇总报「页框越界 0」——
-	// 而 cell_fit 诊断在同一批文件上报了 4 处出格（含 23.43pt）。
-	// 「少算了几条」与「一条都没越界」在输出上完全一样。
+	// **判定按顶层放置归组**，不是按「每一个 form」。
+	// pdfcpu NUp 把一张票整体放成一个顶层 form，票面内部还有嵌套 form
+	// （背景条、表格线、文字块）。实测一页 A4 上顶层只有 4 个放置，
+	// 嵌套碎片却有 21 个 —— 按碎片各自归格会得到一堆 y 为负、
+	// 归不到任何格子的小框，而「这张票被放在哪一格」只由顶层决定。
+	//
+	// 归组的存储单位必须等于**被测对象的单位**：被测对象是「一张票在一个格子」。
+	byRoot := map[int]*inkCellVerdict{}
+	var order []int
 	for i := range page.placements {
 		p := &page.placements[i]
+		v, seen := byRoot[p.root]
+		if !seen {
+			v = &inkCellVerdict{frameBox: p.box, inkBox: inkEmpty(), placed: true}
+			byRoot[p.root] = v
+			order = append(order, p.root)
+		}
+		v.frameBox.unionInto(p.box)
+		v.inkBox.unionInto(p.ink)
+		v.bounded += p.boundedCnt
+	}
+	for _, root := range order {
+		p := &page.placements[root]
+		v := byRoot[root]
 		idx := inkCellIndexOf(cells, p.box)
 		if idx < 0 {
-			// 页框中心落在所有格子之外（实测：负 y，即整块摆到了页面上方之外）。
+			// 顶层放置的中心落在所有格子之外：整块摆到了页面上方/下方之外。
 			// **不静默跳过**，单列一条，汇总里单独计数。
-			out.verdicts = append(out.verdicts, inkCellVerdict{
-				col: -1, row: -1, frameBox: p.box, inkBox: p.ink,
-				frameOver: -1, inkOver: -1, placed: true, widthUnk: p.widthUnknownCnt,
-			})
+			v.col, v.row = -1, -1
+			v.frameOver, v.inkOver = -1, -1
+			out.verdicts = append(out.verdicts, *v)
 			continue
 		}
 		cell := cells[idx].cell
-		out.verdicts = append(out.verdicts, inkCellVerdict{
-			col: cells[idx].col, row: cells[idx].row, cell: cell,
-			frameBox: p.box, inkBox: p.ink,
-			frameOver: p.box.overflowDepth(cell),
-			inkOver:   p.ink.overflowDepth(cell),
-			placed:    true, widthUnk: p.widthUnknownCnt,
-		})
+		v.col, v.row, v.cell = cells[idx].col, cells[idx].row, cell
+		v.frameOver = v.frameBox.overflowDepth(cell)
+		v.inkOver = v.inkBox.overflowDepth(cell)
+		out.verdicts = append(out.verdicts, *v)
 	}
 	out.parseOK = true
 	return out
@@ -334,24 +359,41 @@ func TestA4InkOverflowCheckerOnSyntheticGrid(t *testing.T) {
 		wantInkOut bool
 		wantCell   string
 		wantDepth  float64
+		nested     bool // 顶层 form 内部再套一层 form
+		wantVerds  int
 	}{
-		{"C-inside", 0, 0, 0.5, false, "0,0", 0},
-		{"C-pastRight", 0, 0, 0.559037, true, "0,0", 49.72},
-		{"C-pastInCell11", 1, 1, 0.559037, true, "1,1", 49.72},
+		{"C-inside", 0, 0, 0.5, false, "0,0", 0, false, 1},
+		{"C-pastRight", 0, 0, 0.559037, true, "0,0", 49.72, false, 1},
+		{"C-pastInCell11", 1, 1, 0.559037, true, "1,1", 49.72, false, 1},
 		// 鉴别性：页框比格子小 1%（**不**出格），墨迹也只画到页框内 ⇒ 未越界。
 		// 若判据被写成「页框小就一定不越界」之外的任何恒真分支，它会红。
-		{"C-thin", 1, 0, 0.49, false, "1,0", 0},
+		{"C-thin", 1, 0, 0.49, false, "1,0", 0, false, 1},
+		// 鉴别性（嵌套）：顶层 form 里再 Do 一个子 form。
+		// **判定必须只有 1 条** —— 一张票 = 一个被测对象。
+		// 若嵌套不继承顶层 root，碎片会各自被当成顶层放置，判定条数变 2，
+		// 而按碎片归格得到的格子/越界值都可能仍然「看着对」。
+		{"C-nested", 0, 0, 0.559037, true, "0,0", 49.72, true, 1},
 	}
 	ran := 0
 	for _, c := range cases {
 		ran++
 		t.Run(c.name, func(t *testing.T) {
-			form := inkFixtureForm{
+			forms := []inkFixtureForm{{
 				formMatrix: inkPlaceInto(c.col, c.row, c.scale),
 				formBody:   inkFullBlockBody(),
 				pageBody:   "q 1 0 0 1 0 0 cm /Fm0 Do Q",
+			}}
+			if c.nested {
+				// 顶层 form 的内容改成 Do 子 form；子 form 才是真正画东西的。
+				// 两者 BBox / Matrix 相同 ⇒ 越界量应与 C-pastRight 完全一致。
+				forms[0].formBody = "q 1 0 0 1 0 0 cm /Fn1 Do Q"
+				forms[0].nestedRef = 1
+				forms = append(forms, inkFixtureForm{
+					formMatrix: inkIdentity,
+					formBody:   inkFullBlockBody(),
+				})
 			}
-			raw := inkFixturePDF(inkA4W, inkA4H, []inkFixtureForm{form})
+			raw := inkFixturePDF(inkA4W, inkA4H, forms)
 			dir := t.TempDir()
 			// 文件名必须带 grid，判据据此取切格数。
 			p := filepath.Join(dir, fmt.Sprintf("invoices-a4-%dx%d-fixture.pdf", inkGrd, inkGrd))
@@ -370,6 +412,11 @@ func TestA4InkOverflowCheckerOnSyntheticGrid(t *testing.T) {
 			pg := inkCheckA4(ctx, 1, inkGrd)
 			if !pg.parseOK {
 				t.Fatalf("判据没能解析夹具：%s", pg.parseMsg)
+			}
+			if len(pg.verdicts) != c.wantVerds {
+				t.Errorf("判据出了 %d 条判定，用例表期望 %d 条 —— "+
+					"一张票 = 一个被测对象，嵌套 form 必须归并到顶层",
+					len(pg.verdicts), c.wantVerds)
 			}
 			var got *inkCellVerdict
 			for i := range pg.verdicts {
@@ -409,7 +456,7 @@ func TestA4InkOverflowCheckerOnSyntheticGrid(t *testing.T) {
 	}
 	// 光比对数量不够：**用例表自己少一条**时数量照样相等（变异 T2 实测）。
 	// 所以把必须存在的负控名钉死：负控被删必须让测试红。
-	inkAssertControlSet(t, names, []string{"C-inside", "C-pastRight", "C-pastInCell11", "C-thin"})
+	inkAssertControlSet(t, names, []string{"C-inside", "C-pastRight", "C-pastInCell11", "C-thin", "C-nested"})
 }
 
 // inkAssertControlSet 断言必需的负控都在用例表里。
@@ -471,13 +518,14 @@ func TestA4InkOverflowCheckerOnText(t *testing.T) {
 	}{
 		// 0.5 恰好铺满格子：页框与墨迹都零越界。
 		{"T-inside", 0.5, 200, 5, 0, 0},
-		// 坏缩放 + 文字铺满宽度：墨迹横向被夹到页框右边界
-		// 0.559037×595.2756 = 332.759，超出 297.638 得 **35.12**；
-		// 纵向文字贴着 form 底部（基线 form y=100 → A4 55.9），
-		// 所以**没有**纵向越界，而页框纵向越界 49.67。
-		// ⇒ 墨迹 35.12 与页框 49.67 **不相等**：两者是独立量，
-		// 判据不能把 frameOver 抄成 inkOver。
-		{"T-scaled559", 0.559037, 200, 15, 35.12, 49.67},
+		// 坏缩放 + 文字**落在页框内、格子外的那条窄带**里。
+		// 这个位置是刻意选的：文字若画到 /BBox 之外，会被 BBox 裁剪掉，
+		// 而裁剪会把「CTM×Tm 顺序反了」这类坐标错误**掩盖**掉
+		// （实测：n=15 时那条变异测不出来，因为两种顺序裁剪后结果相同）。
+		// 11 组 "MA" 推进 = 330，起点 200 ⇒ 终点 530（< BBox 595.28），
+		// ×0.559037 = 296.29，再加保守外扩 20 ⇒ 316.29，
+		// 落在 (297.64, 332.76] 这条「框内格外」的窄带里。
+		{"T-scaled559", 0.559037, 200, 11, 18.65, 49.67},
 		// 坏缩放 + 文字只在左半边（终点 form x=170 ⇒ A4 x=95.04）：
 		// 页框越界 49.67，墨迹越界 0 —— 降级。
 		{"T-frameOnly", 0.559037, 20, 5, 0, 49.67},
@@ -527,8 +575,8 @@ func TestA4InkOverflowCheckerOnText(t *testing.T) {
 				t.Fatalf("没算到墨迹（got=%+v）—— 文字路径没被走到", got)
 			}
 			// 本组用例的前提：字宽必须解析成功，否则「未越界」的结论没有意义。
-			if got.widthUnk > 0 {
-				t.Fatalf("字宽解析失败 %d 次，字宽未知时「未越界」的结论不成立", got.widthUnk)
+			if got.bounded > 0 {
+				t.Fatalf("有 %d 次绘制只拿到宽度上界，本组用例要求精确字宽", got.bounded)
 			}
 			if over := got.inkOver > inkTolPt; over != (c.wantInk > inkTolPt) {
 				t.Errorf("墨迹越界=%v（深度 %.2fpt），期望 %.2fpt（frame=%+v ink=%+v）",
@@ -585,7 +633,7 @@ func TestA4InkOverflowOnRealExports(t *testing.T) {
 		t.Fatalf("%s 里没有 invoices-a4-NxN-*.pdf —— 判据会输出「一切正常」的假结论", dir)
 	}
 
-	totalPlaced, totalInkOver, totalFrameOver, totalUnk, totalUnplaced := 0, 0, 0, 0, 0
+	totalPlaced, totalInkOver, totalFrameOver, totalBounded, totalUnplaced := 0, 0, 0, 0, 0
 	for _, name := range names {
 		m := inkA4NameRe.FindStringSubmatch(name)
 		grid, _ := strconv.Atoi(m[1])
@@ -621,20 +669,20 @@ func TestA4InkOverflowOnRealExports(t *testing.T) {
 					continue
 				}
 				totalPlaced++
-				totalUnk += v.widthUnk
+				totalBounded += v.bounded
 				if v.frameOver > inkTolPt {
 					totalFrameOver++
 				}
 				if v.inkOver > inkTolPt {
 					totalInkOver++
 				}
-				t.Logf("   p%d 格(%d,%d) 页框越界=%.2f 墨迹越界=%.2f 字宽未知=%d frame=%+v ink=%+v",
-					pn, v.col, v.row, v.frameOver, v.inkOver, v.widthUnk, v.frameBox, v.inkBox)
+				t.Logf("   p%d 格(%d,%d) 页框越界=%.2f 墨迹越界=%.2f 字宽上界=%d frame=%+v ink=%+v",
+					pn, v.col, v.row, v.frameOver, v.inkOver, v.bounded, v.frameBox, v.inkBox)
 			}
 		}
 	}
-	t.Logf("汇总：%d 个 A4 文件，%d 处放置，页框越界 %d，墨迹越界 %d，字宽未知的绘制 %d 次，无法归格 %d",
-		len(names), totalPlaced, totalFrameOver, totalInkOver, totalUnk, totalUnplaced)
+	t.Logf("汇总：%d 个 A4 文件，%d 处放置，页框越界 %d，墨迹越界 %d，按上界算宽度的绘制 %d 次，无法归格 %d",
+		len(names), totalPlaced, totalFrameOver, totalInkOver, totalBounded, totalUnplaced)
 	if totalUnplaced > 0 {
 		t.Errorf("有 %d 处放置无法归格，判据覆盖不完整", totalUnplaced)
 	}
