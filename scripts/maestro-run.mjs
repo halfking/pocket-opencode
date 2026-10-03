@@ -75,7 +75,28 @@ function resolveJavaHome() {
   return process.env.JAVA_HOME || null
 }
 
-const PKG = 'com.kaixuan.opencode.pocket'
+// 被测 App 的 applicationId。默认主包；并存包（sttdev 等）用 POCKET_APP_ID 覆盖。
+//
+// 为什么必须可覆盖：PKG 决定了 force-stop / monkey 启动 / pidof / CDP target 匹配
+// 四件事，是整套 rig 里唯一绑死 applicationId 的常量。sttdev 并存包的
+// applicationId 是 com.kaixuan.opencode.pocket.sttdev，hardcode 时 preflight 会去
+// stop/启动主包、pidof 拿到主包的 pid、CDP 那边也连错 target ——
+// **flow 一行都没跑就已经在测错的 App**，而报错形态是「元素找不到」这种
+// 看起来像产品缺陷的东西。2026-10-03 实测。
+//
+// 只接受形如 com.x.y 的合法包名：空串、空白、带空格的都会让 adb 参数变成两个
+// token，报错位置离真正的原因很远。宁可在这里 exit 2。
+const PKG = (() => {
+  const raw = process.env.POCKET_APP_ID
+  if (raw === undefined || raw === '') return 'com.kaixuan.opencode.pocket'
+  const v = raw.trim()
+  if (!/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(v)) {
+    console.error(`[config] POCKET_APP_ID 不是合法的 applicationId: ${JSON.stringify(raw)}`)
+    console.error('[config] 期望形如 com.kaixuan.opencode.pocket.sttdev；不传则用主包。')
+    process.exit(2)
+  }
+  return v
+})()
 const DRIVER_PKGS = ['dev.mobile.maestro', 'dev.mobile.maestro.test']
 // 与 maestro-client.jar 内嵌的是同一份（SHA256 A7F12BBD…1F0B9），用 jar 里解出来的那份。
 // 两个包都要装：Maestro 的 installMaestroApks 依次装 maestro-app 与 maestro-server，
@@ -88,6 +109,37 @@ const flows = process.argv.slice(2)
 if (!flows.length) {
   console.error('用法: node scripts/maestro-run.mjs <flow.yaml> [...]')
   process.exit(2)
+}
+
+// ---- flow 声明的 appId 必须与本进程实际操作的包一致 ----
+//
+// 两个包各管一半、互不知情，是这类 harness 最容易出的**静默错测**：
+//   · PKG 决定 force-stop / monkey / pidof / CDP target —— 它动的是谁；
+//   · flow 里的 `appId:` 决定 Maestro 截图与操作谁 —— 它测的是谁。
+// 两者不一致时，preflight 会去停主包、CDP 连上主包，而 Maestro 的断言全打在
+// sttdev 上：轻则找不到元素，重则**对着一个刚被我 force-stop 的 App 取树**，
+// 报错形态仍然只是「Element not found」，与真实的产品缺陷无法区分。
+//
+// 这里宁可响亮退出。允许的两种一致：声明 == PKG，或 flow 干脆不声明 appId
+// （Maestro 默认取 config 里的，也未必对，所以一样要求显式一致）。
+{
+  const mismatched = []
+  for (const f of flows) {
+    const p = resolve(ROOT, f)
+    if (!existsSync(p)) continue
+    const m = readFileSync(p, 'utf8').match(/^appId:\s*(\S+)\s*$/m)
+    if (!m) {
+      mismatched.push(`${f}: 未声明 appId（期望 ${PKG}）`)
+    } else if (m[1] !== PKG) {
+      mismatched.push(`${f}: appId=${m[1]}`)
+    }
+  }
+  if (mismatched.length) {
+    console.error(`[config] 以下 flow 与本进程操作的包不一致（当前 ${PKG}）：`)
+    for (const line of mismatched) console.error(`[config]   ${line}`)
+    console.error('[config] 用 POCKET_APP_ID 指定与 flow 一致的包，或改 flow 的 appId。')
+    process.exit(2)
+  }
 }
 
 // ---- 确定性前置 ----
