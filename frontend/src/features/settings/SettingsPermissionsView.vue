@@ -585,7 +585,7 @@ onMounted(async () => {
 
 .bind-overlay {
   position: fixed;
-  inset: 0;
+  /* 底边随 --kb-inset 抬升：键盘在场时浮层收在键盘上沿之上，弹层内的输入框与确认按钮不会被盖住。同 BottomSheet.vue。 */ inset: 0 0 var(--kb-inset, 0px) 0;
   z-index: 40;
   background: var(--color-bg-overlay, rgba(0, 0, 0, 0.45));
   display: flex;

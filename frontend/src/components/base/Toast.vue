@@ -105,7 +105,25 @@ defineExpose({
 <style scoped>
 .toast {
   position: fixed;
-  bottom: calc(var(--bottom-chrome-height) + var(--space-4));
+  /*
+   * 底边要避开两样东西（2026-10-03 模拟器 API 35 实测，/ai-chat 错误 toast
+   * 压住整条工具行 + 发送按钮，覆盖麦克风/相机/附件/角色/优化）：
+   *
+   *   max(--bottom-chrome-height, --composer-inset)
+   *       底部那一整条带。没有输入区的页面只有 tabbar（--composer-inset
+   *       回落 0）；有输入区的页面 --composer-inset 量的是
+   *       「#app 底边 → 输入框顶边」，**已经把 tabbar 算在里面了**，
+   *       所以这里必须取 max 而不是相加——相加会把 tabbar 重复算一次，
+   *       toast 平白上浮 88px。
+   *
+   *   --kb-inset
+   *       软键盘净高。键盘在场时整个 #app 上移，输入区带高与键盘无关，
+   *       这一份只能在这里加（与「键盘那一份只算一次」是同一条理由）。
+   */
+  bottom: calc(
+    max(var(--bottom-chrome-height), var(--composer-inset, 0px)) + var(--kb-inset, 0px) +
+      var(--space-4)
+  );
   left: 50%;
   transform: translateX(-50%);
   display: flex;
