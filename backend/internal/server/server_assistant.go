@@ -1924,7 +1924,23 @@ func (s *Server) readCachedEmailBody(ctx context.Context, emailID string, expect
 		return nil, nil
 	}
 	prefixUID := int64(binary.BigEndian.Uint64(data[:8]))
-	if expectedUID > 0 && prefixUID != expectedUID {
+	// 写端**故意**把 UID 写成 0 作为「未记录」哨兵（见 writeCachedEmailBody 的
+	// 注释），所以 0 不参与失配判断——只有**真的记了 UID** 且与调用方持有的
+	// 不一致时才算旧缓存。
+	//
+	// 【2026-10-03 修的缺陷】原判断是 `expectedUID > 0 && prefixUID != expectedUID`，
+	// 它把「未记录 UID」也当成失配，于是**写端写 0 → 读端必然判未命中**。
+	// 后果不是某个文件失效，而是**整份缓存 100% 失效**：实测 data/email-bodies/
+	// 54 个文件的头部 UID 全是 0，三个生产调用点（邮件详情页 server_assistant.go
+	// 的 handleEmailBody、发票正文增强 server_email_invoice.go、AI 摘要取正文
+	// server_email_summary.go 的 summarizeBody）**全部**每次都未命中，于是每次
+	// 都退回 IMAP 重拉整封原文；POP3 来源的邮件甚至取不到（详情页 502）。
+	//
+	// 【为什么一直没被发现】既有单测全都传 expectedUID=0（见
+	// email_body_cache_test.go 的 TestBodyCacheVersionedFormatsHit 等），而 0
+	// 恰好是让旧判断通过的值 —— 测的是**生产从不走的路径**。新增判据一律用
+	// expectedUID != 0 的生产形态。
+	if expectedUID > 0 && prefixUID != 0 && prefixUID != expectedUID {
 		return nil, nil // 旧缓存，视为未命中
 	}
 	switch data[8] {
@@ -1966,8 +1982,13 @@ func (s *Server) writeCachedEmailBody(ctx context.Context, emailID string, body 
 		}
 	}()
 	hdr := make([]byte, 9)
-	// UID 在缓存写入时被省略（0），让 readCachedEmailBody 跳过 UID 校验，
-	// 避免 sync 增量 UID 改变导致命中旧内容。
+	// UID 在缓存写入时被省略（0），作为「未记录」哨兵：读端据此**不参与** UID
+	// 失配判断（见 readCachedEmailBody 里 prefixUID != 0 那一支）。
+	// 之所以不把真实 UID 写进头部：sync 的增量 UID 会随 UIDVALIDITY 变化，
+	// 绑死 UID 会让一次账号迁移把**全部**缓存判成旧缓存。
+	// 陈旧性另有把关：调用方在 body_path 为空时根本不读缓存
+	// （handleEmailBody 的 `if em.BodyPath != ""`），而 body_path 只在服务端
+	// 真正落盘时才有值。
 	binary.BigEndian.PutUint64(hdr[:8], 0)
 	hdr[8] = format
 	if _, err := tmp.Write(hdr); err != nil {
