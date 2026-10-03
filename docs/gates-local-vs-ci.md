@@ -50,9 +50,17 @@ git config --worktree --unset core.hooksPath    # 还原当前 worktree
 
 | 车道 | 触发 | 范围 | 作用 |
 |---|---|---|---|
-| `npm run gates` | 手工 / 提交前 | **全部 23 条** | 本地全量 |
+| `npm run gates` | 手工 / 提交前 | **gates 名单全部**（条数见 `gates.json`） | 本地全量 |
 | `pre-push` 钩子 | `git push` | 改 `backend/` → `go test ./...`；改 `frontend/` → 全量 gates | 阻止「有边界的结论」进主干 |
-| CI `gates-parity` job | 每个 push / PR | 12 条 `check:*` | 补上「只在本机跑过」的那部分 |
+| CI `gates-parity` job | 每个 push / PR | `ciRuns` 里的 `check:*` | 补上「只在本机跑过」的那部分 |
+
+**本文刻意不写死条数。** 2026-10-03 落地时是 23 / 12 / 11，同日下午并发会话又加了
+`check:pg-schema-scope`，变成 **24 / 13 / 11**。写死的数字在第二次加门禁时就过期了，
+而一个过期的数字比没有数字更坏——它会让人以为分工没变。要看当前条数：
+
+```
+cd frontend && node scripts/run-gates.mjs --list
+```
 
 第三条车道存在的理由是第二条：**2026-10-03 那次真红里，提交信息写的
 「internal/rss、flashcards、config、server 全部通过」这句话不假，它只是有边界。
@@ -60,12 +68,12 @@ git config --worktree --unset core.hooksPath    # 还原当前 worktree
 
 ## 一句话
 
-本地跑全量 23 条；CI 跑其中的 12 条 `check:*`，另外 11 条由 CI 里已存在的步骤覆盖。
+本地跑全量；CI 跑 `ciRuns` 那部分 `check:*`，其余由 CI 里已存在的步骤覆盖。
 这个划分是**数据**（`gates.json` 的 `ciRuns` / `ciCoveredElsewhere`），不是 workflow 里手写的一串名字。
 
 ## 为什么要拆，而不是在 CI 里直接 `npm run gates`
 
-`gates` 的 23 条里，`typecheck` / `build:gate` / `test:all` 与 6 个 `test:*` 子集，
+`gates` 名单里 `typecheck` / `build:gate` / `test:all` 与 6 个 `test:*` 子集，
 在 `frontend.yml` 的 `frontend-lint` job 里**已经跑过**。全量再跑一遍等于把
 `vue-tsc` + `vite build` + 全量 `node --test` 重做一次，而那个 job 的 `timeout-minutes: 20`
 是硬约束。所以 CI 侧只补跑它没跑过的那部分。
@@ -102,7 +110,7 @@ git config --worktree --unset core.hooksPath    # 还原当前 worktree
 ```
 cd frontend
 node scripts/run-gates.mjs --list   # 打印名单 + 本地/CI 分工 + 接线核对结果
-node scripts/run-gates.mjs --ci     # 只跑 CI 负责的那 12 条
+node scripts/run-gates.mjs --ci     # 只跑 CI 负责的那几条（名单来自 ciRuns）
 ```
 
 `--ci` 与 `--only` 的差别在于**名字从数据来**，不需要人同步。
@@ -169,7 +177,7 @@ git merge-base --is-ancestor origin/main audit/gofmt-debt-20261003 && echo "仍�
 
 ```bash
 cd frontend && node scripts/run-gates.mjs --list   # 规则 1-5 全过、CI 分工仍对
-cd frontend && node scripts/run-gates.mjs --ci     # 12 条全绿
+cd frontend && node scripts/run-gates.mjs --ci     # ciRuns 那几条全绿
 cd backend  && go test ./...                       # 全量，不是挑几个包
 ```
 
