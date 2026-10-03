@@ -426,7 +426,8 @@ var pgSafeWithoutIsolation = map[string]string{
 	//   · 确实隔离：自建 `claim_race_diag_<unixnano>` schema，两个 pool 的
 	//     RuntimeParams["search_path"] 都钉成它，cleanup 里 DROP ... CASCADE。
 	//   · 判红原因只是 schema 名不含 `_test_` 子串（守卫的 isolatedSchemaRe
-	//     是 `"(\w*_test_)`），隔离本身是到位的。
+	//     要求 `"<标识符>_test_`，2026-10-04 起还额外要求有 CREATE SCHEMA /
+	//     search_path 用途形态），隔离本身是到位的。
 	//   · 它要写库（INSERT 一个到期任务），所以同时登记进 pgAllowlistedWrites。
 	"internal/scheduledtask/diag_claimdue_race_test.go": "并发 ClaimDue 诊断：自建 `claim_race_diag_<unixnano>` schema，两个 pool 的 search_path 都钉成它，cleanup DROP CASCADE。判红仅因 schema 名不含 `_test_` 子串",
 
@@ -850,8 +851,8 @@ func judgePGFile(rel, code string) pgVerdict {
 	// fetcher_greenmail_test.go 则自建了 `email_greenmail_test_` schema，
 	// 由 newScopedPool 覆盖 search_path。
 	// （收窄分两步：先加「无 `*_test_` schema」仍判红 4 个——
-	//  因为 isolatedSchemaRe 要求双引号字面量 `"(\w*_test_)`，
-	//  而这几个文件是 `+schema+` 拼接，没有那个字面量。
+	//  因为 isolatedSchemaRe 要求双引号字面量 `"xxx_test_`（2026-10-04 起
+	//  写作 `"\w+_test_`），而这几个文件是 `+schema+` 拼接，没有那个字面量。
 	//  最后补上 qualifiedTableRe 才彻底收住。**两次都是我的判据太宽**，
 	//  不是这些文件有错。）
 	//
