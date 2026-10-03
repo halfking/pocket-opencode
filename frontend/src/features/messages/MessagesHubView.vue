@@ -150,6 +150,7 @@ import { ICON, type IconName } from '../../constants/icons'
 import { rssApi } from '../../api/rss'
 import { useNotificationStore } from '../../stores/notification'
 import { listEmails, markRead as markEmailRead, type LocalEmail } from '../email/emails-store'
+import { notificationSourceLabel } from './sourceLabels'
 import { formatRelative, toEpochSeconds } from '../../utils/relative-time'
 
 defineOptions({ name: 'MessagesHubView' })
@@ -260,7 +261,7 @@ const taskRows = computed<HubRow[]>(() =>
     id: n.id,
     ts: n.created_at,
     title: n.title?.trim() || t('messagesHub.filter.task'),
-    subtitle: n.kind || n.source || '',
+    subtitle: notificationSourceLabel(n.source, n.kind, t),
     preview: preview(n.body),
     action: '',
     unread: !n.read_at,

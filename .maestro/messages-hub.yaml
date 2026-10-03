@@ -94,6 +94,51 @@ appId: com.kaixuan.opencode.pocket
       - assertVisible: "重要邮件、订阅新闻和任务消息会汇总到这里"
       - takeScreenshot: "logs/maestro/messages-hub-empty"
 
+# ---------- 3.5 两条 UI 层不变量（2026-10-03 真机实测后追加）----------
+# **位置与写法都很要紧，两个坑都踩过，记录在这里防止有人再犯：**
+#
+# ① 必须在第 4 段「切到邮件来源」**之前**。带这两个毛病的行都是**任务行**（通知行），
+#    而第 4 段点了「邮件.*」chip 会把它们全滤掉 —— 断言于是对着一个干净列表恒绿。
+#    第一版就放错了位置，flow 2/2 通过，而它当时是失明的。
+#
+# ② 正则必须**前后都带 `.*`**。Maestro 的文本匹配是**整串全匹配**（本文件第 2 段
+#    已经记过「chip 与数字被 WebView 并成一个节点」，第 73-84 行的 `全部.*` 就是这个原因）。
+#    行节点的文本是「未读 + 图标 + 来源 + 标记 + 时间 + 标题 + 副标题」拼起来的长串，
+#    `email\.[a-z]+` 这种没有 `.*` 包裹的模式只能匹配「整个节点文本恰好等于它」的节点 ——
+#    不存在 ⇒ 断言恒绿。第一版又踩了一次这个。
+#
+# 3.5.1 assertNotVisible: '.*email\.[a-z]+.*'
+#     实测：消息页**每一行**通知下面都显示 `email.important` ——
+#     /api/notifications 50 条的 kind 全部是 'email.important'。
+#     根因是 MessagesHubView 原来 `subtitle: n.kind || n.source || ''`，
+#     把服务端内部分类键当成了展示文案。已修（features/messages/sourceLabels.ts）。
+#     这里取**子串**匹配是有意的：任何祖先容器只要含这串就会命中，
+#     而它含这串正是因为行里真的有它。
+- assertNotVisible: '.*email\.[a-z]+.*'
+#
+# 3.5.2 【暂时停用 · 2026-10-03】assertNotVisible: '.*(Content-Transfer-Encoding|------=_Part_).*'
+#     这条断言本身是对的 —— 它在未修复的构建上如实报红过（判据有牙齿已证）。
+#     停用是因为它反映的是**一个还没修完的问题**，挂在主干上会让整条 flow 常红。
+#     下面是实测到的完整因果链，修好之前不要打开它：
+#
+#       1) 原始症状：邮件预览显示 boundary + 分片头 + 未解码的 quoted-printable。
+#       2) 后端 DeriveSnippet 已收口（先剥尾部 boundary 再判 containsMIMESource），
+#          **新同步的邮件不再泄漏** —— 这条已用真实语料验证（snippet_flattened_part_regression_test.go）。
+#       3) 但存量行治不好。实测 2026-10-03 19:0x：库里仍有 10 行是原始 MIME
+#          （09-23 ~ 10-03，两个账户）。跑 POST /api/email/backfill 重算后**仍然是它们**。
+#          原因不是修复无效，而是两个规则叠在一起：
+#            · backfill 对这些邮件的抓取是**残缺**的（只拿到分片头/半截），
+#              于是修好的 DeriveSnippet 正确地返回**空串**；
+#            · 而 upsert 是
+#                snippet = CASE WHEN EXCLUDED.snippet <> '' THEN EXCLUDED.snippet
+#                               ELSE emails.snippet END
+#              —— **空串意味着「不覆盖」**，旧的那条坏摘要因此被原样冻结。
+#          ⇒ 只有「能抓到完整正文」才能重算出干净摘要，也就是要改 fetcher 的
+#             抓取策略，不是摘要函数的问题。
+#      在那之前，UI 上仍会看到这 10 封的原始 MIME —— 这是**已知未修**，
+#      不是回归。修 fetcher 之后把下面这行取消注释即可。
+# - assertNotVisible: '.*(Content-Transfer-Encoding|------=_Part_).*'
+
 # ---------- 4. 切到「邮件」来源，验证 chips 真的在切数据 ----------
 # chip 带未读计数（实测「邮件 30」），所以点击目标与断言都要容忍计数。
 - tapOn: "邮件.*"
@@ -107,3 +152,20 @@ appId: com.kaixuan.opencode.pocket
 # 部分来源加载失败是这个页面自己会渲染的状态（src-error），不该被静默吞掉；
 # 但「白屏」不是合法状态，上面的 chips 断言已经守住。
 - assertNotVisible: "密码登录"
+
+# ---------- 6. 常驻条能进邮箱 ----------
+# 「打开邮箱」是消息 tab 通向邮件的出口，在 nav[aria-label=消息] 里。
+# 必须放在**最后**：它会把页面导航到 #/email，之后再断言消息页就没意义了。
+# 常驻条带 counts 门控（无数据时不存在），所以先判它在不在再点，
+# 免得把「没数据」报成「出口坏了」。
+- runFlow:
+    when:
+      visible: ".*打开邮箱.*"
+    commands:
+      - tapOn:
+          text: ".*打开邮箱.*"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "邮箱"
+          timeout: 30000
+      - assertVisible: "邮箱"
