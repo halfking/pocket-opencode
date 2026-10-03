@@ -127,7 +127,27 @@ func DeriveSnippet(raw []byte, maxRunes int) string {
 					return truncateRunes(t, maxRunes)
 				}
 			}
-			return truncateRunes(stripTrailingBoundary(s), maxRunes)
+			// ⚠️ 这里**不能**无条件退回原文。looksLikeMIMEStructure 用的是逐行锚点
+			// （^Content-Type: / ^--boundary），压平之后整段变成一行、锚点全部失效
+			// —— 本文件上方注释已经写明「判据形同虚设」。真实语料上确实漏判：
+			// 2026-10-03 真机（Redmi 2411DRN47C）em-10462-acct-…-2 的 snippet
+			// 就是这样进来的（boundary + Content-* 头 + 未解码的 quoted-printable
+			// 正文，压平成一行），实测 looksLikeMIMEStructure=false 而
+			// containsMIMESource=true。
+			//
+			// 而 SnippetFromParsed 的文档（见本文件下方）点名「DeriveSnippet 里已经
+			// 写明『这里没有退回原文这条兜底』」—— 那句话在修之前是**不成立**的，
+			// 这一行就是那条兜底。
+			//
+			// 判据要**先剥尾部 boundary 再判**：正常正文后面跟着一行 boundary
+			// （`snippet_partial_fetch_test.go` 的 "text-with-trailing-boundary" 用例）
+			// 是合法形态，剥掉之后剩下的就是干净正文，不该被一起拒掉。
+			// 判保守方向：正文里恰好提到 "Content-Type:" 的邮件会从「显示原文」变成
+			// 「显示空」。空是安全的一侧，泄漏不是。
+			trimmed := stripTrailingBoundary(s)
+			if !containsMIMESource(trimmed) {
+				return truncateRunes(trimmed, maxRunes)
+			}
 		}
 	}
 
