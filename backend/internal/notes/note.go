@@ -11,17 +11,17 @@ package notes
 // fields are fetched from kxmemory on demand; only fields needed for list
 // rendering offline are cached here.
 type Note struct {
-	ID            string `json:"id"`
-	UserID        string `json:"userId"`
-	WorkspaceID   string `json:"workspaceId,omitempty"`
-	Title         string `json:"title,omitempty"`
-	Snippet       string `json:"snippet"`              // first ~200 chars of content
-	ContentType   string `json:"contentType"`          // voice | text | mixed
-	Domain        string `json:"domain,omitempty"`     // work | study | life | idea
-	Tags          string `json:"tags,omitempty"`       // JSON array
-	AudioPath     string `json:"audioPath,omitempty"`
-	AudioDuration int    `json:"audioDuration,omitempty"`
-	CreatedByVoice bool  `json:"createdByVoice"`
-	CreatedAt     int64  `json:"createdAt"`
-	UpdatedAt     int64  `json:"updatedAt"`
+	ID             string `json:"id"`
+	UserID         string `json:"userId"`
+	WorkspaceID    string `json:"workspaceId,omitempty"`
+	Title          string `json:"title,omitempty"`
+	Snippet        string `json:"snippet"`          // first ~200 chars of content
+	ContentType    string `json:"contentType"`      // voice | text | mixed
+	Domain         string `json:"domain,omitempty"` // work | study | life | idea
+	Tags           string `json:"tags,omitempty"`   // JSON array
+	AudioPath      string `json:"audioPath,omitempty"`
+	AudioDuration  int    `json:"audioDuration,omitempty"`
+	CreatedByVoice bool   `json:"createdByVoice"`
+	CreatedAt      int64  `json:"createdAt"`
+	UpdatedAt      int64  `json:"updatedAt"`
 }

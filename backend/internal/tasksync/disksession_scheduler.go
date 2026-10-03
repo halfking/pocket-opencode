@@ -113,16 +113,16 @@ func (s *DiskSessionScheduler) runOnce(ctx context.Context) {
 				taskID = s.lookup(ctx, m.ID)
 			}
 			args := map[string]interface{}{
-				"gateway_type":      "custom-agent",
-				"device_name":       inst.DisplayName,
-				"agent_id":          inst.Agent,
-				"agent_kind":        inst.Agent,
-				"agent_session_id":  m.ID,
-				"session_path":      m.FilePath,
-				"task_id":           taskID,
-				"input":             m.Title,
-				"output":            "",
-				"model_id":          m.Model,
+				"gateway_type":     "custom-agent",
+				"device_name":      inst.DisplayName,
+				"agent_id":         inst.Agent,
+				"agent_kind":       inst.Agent,
+				"agent_session_id": m.ID,
+				"session_path":     m.FilePath,
+				"task_id":          taskID,
+				"input":            m.Title,
+				"output":           "",
+				"model_id":         m.Model,
 			}
 			if _, err := s.mcpClient.ReportSession(ctx, args); err != nil {
 				if time.Since(s.lastErr) > time.Minute {

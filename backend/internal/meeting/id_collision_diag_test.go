@@ -11,8 +11,10 @@ import (
 // 生成重复 ID。
 //
 // 背景：TestMeetingWorkspaceIsolation/list_A 在全包跑时失败，报
-//   list total/items=0/0, want 1
-//   cross-workspace meeting GET status=200 body={... workspace_id:"ws-b" ...}
+//
+//	list total/items=0/0, want 1
+//	cross-workspace meeting GET status=200 body={... workspace_id:"ws-b" ...}
+//
 // 第二条尤其说明问题：请求 meetingA.ID 却返回了 ws-b 的那条。两个症状
 // 用同一个原因就能解释 —— 两次 CreateScoped 拿到了**相同的 ID**，
 // s.meetings[m.ID] 让后者覆盖前者，前者被静默丢弃。

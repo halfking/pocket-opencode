@@ -153,6 +153,7 @@ func exportNUp(outDir string, invoiceFiles []string, grid int, border bool) (res
 // normalizeInvoiceFilesToPDF 把混合清单归一成「全是可合并的 PDF」：
 //   - PDF：先 Validate，畸形件跳过（记入 skipped）；
 //   - 图片：转成 A4 单页 PDF（等比缩放居中，留 5mm 白边方便剪裁）。
+//
 // 返回的 cleanup 会删掉中间产物。
 func normalizeInvoiceFilesToPDF(files []string, outDir string) ([]string, []string, func(), error) {
 	out := make([]string, 0, len(files))

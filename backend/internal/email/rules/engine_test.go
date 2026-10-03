@@ -144,13 +144,16 @@ func TestEvaluate_UnknownActionSkipped(t *testing.T) {
 }
 
 func TestMatchEmail(t *testing.T) {
-	cases := map[string]struct{ pattern, email string; want bool }{
-		"exact":      {"alice@x.com", "alice@x.com", true},
-		"wildcard":   {"*@x.com", "alice@x.com", true},
-		"wildmiss":   {"*@y.com", "alice@x.com", false},
-		"regex":      {`^[a-z]+@x\.com$`, "alice@x.com", true},
-		"empty":      {"", "alice@x.com", false},
-		"emptyaddr":  {"x@y", "", false},
+	cases := map[string]struct {
+		pattern, email string
+		want           bool
+	}{
+		"exact":     {"alice@x.com", "alice@x.com", true},
+		"wildcard":  {"*@x.com", "alice@x.com", true},
+		"wildmiss":  {"*@y.com", "alice@x.com", false},
+		"regex":     {`^[a-z]+@x\.com$`, "alice@x.com", true},
+		"empty":     {"", "alice@x.com", false},
+		"emptyaddr": {"x@y", "", false},
 	}
 	for name, tc := range cases {
 		if got := matchEmail(tc.pattern, tc.email); got != tc.want {

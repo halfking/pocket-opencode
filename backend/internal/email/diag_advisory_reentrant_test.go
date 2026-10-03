@@ -71,14 +71,14 @@ func TestDiagAdvisoryReentrant(t *testing.T) {
 
 	// ---- 3. pg_locks 能不能穿透可重入地回答「现在谁持锁」 ----
 	type row struct {
-		Locktype  string
-		Classid   int64
-		Objid     int64
-		Objsubid  int32
-		Granted   bool
-		Mode      string
-		Pid       int32
-		Count     int64
+		Locktype string
+		Classid  int64
+		Objid    int64
+		Objsubid int32
+		Granted  bool
+		Mode     string
+		Pid      int32
+		Count    int64
 	}
 	rows, err := store.pool.Query(ctx, `
 		SELECT locktype, classid::bigint, objid::bigint, objsubid, granted, mode, pid

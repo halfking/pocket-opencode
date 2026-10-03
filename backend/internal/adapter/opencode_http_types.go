@@ -25,12 +25,14 @@ type LocationRefRef struct {
 
 // SendPromptRequest 是 POST /session/:sessionID/message 的请求体。
 // OpenCode V2 真实格式（来自 SDK types.gen.ts SessionPromptData）：
-//   { parts: [...], agent?, model?, tools?, system? }
+//
+//	{ parts: [...], agent?, model?, tools?, system? }
+//
 // 注意：没有 prompt 包装，parts 在顶层。V1 的 prompt.text 不再支持。
 type SendPromptRequest struct {
-	Parts    []PromptPart   `json:"parts"`              // V2 必填：多模态内容数组
-	Agent    *string        `json:"agent,omitempty"`
-	Model    *ModelRefHTTP  `json:"model,omitempty"`
+	Parts     []PromptPart  `json:"parts"` // V2 必填：多模态内容数组
+	Agent     *string       `json:"agent,omitempty"`
+	Model     *ModelRefHTTP `json:"model,omitempty"`
 	MessageID *string       `json:"messageID,omitempty"`
 }
 

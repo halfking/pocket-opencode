@@ -92,7 +92,3 @@ func TestCleanSpam_DryRunWorksWithoutFetcher(t *testing.T) {
 		t.Fatalf("dry-run must never move, got %d", rep.SpamMoved)
 	}
 }
-
-
-
-

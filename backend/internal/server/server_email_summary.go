@@ -191,7 +191,6 @@ func (s *Server) summarizeBody(ctx context.Context, em *email.Email) string {
 	return ""
 }
 
-
 // parseGatewaySummary 从模型输出里取出 summary 字段。
 //
 // 与分类的 JSON 解析分开：总结只需要一个字段，独立解析可以避免为了一个

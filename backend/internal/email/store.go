@@ -582,7 +582,7 @@ func (s *Store) SetClassification(ctx context.Context, id, category, importance,
 // importance='high' 而 category 仍为空；ListUnclassifiedScoped 挑待分类邮件
 // 过滤的是 **category**（不是 importance），于是这封照常进 AI 队列；LLM
 // 没给 importance 时 BuildClassifyWrites 只检查 category 就放行；最后这个
-// 方法是**全量覆盖**，importance 被写成 '' 或 'normal'。
+// 方法是**全量覆盖**，importance 被写成 ” 或 'normal'。
 //
 // 结果：用户明确配了「这个发件人的邮件标重要」，被 AI 一句话降级，重要邮件
 // 提醒永远不发，且没有任何报错 —— 与「规则没落到库」症状相同，排查方向却
@@ -695,23 +695,23 @@ func (s *Store) InsertEmailIfNew(ctx context.Context, e Email) (inserted bool, e
 		//     若直接赋值，一次同步就能把正常摘要刷成空白，这比留着旧 MIME 更糟。
 		//   - subject / from_address 同样是从信封派生的，但本轮没有证据表明它们
 		//     出过错，暂不扩大刷新面。
-	//
-	// 2026-10-02 修正：importance / action_reason 也改为「规则判出来才刷新」。
-	// 原来连它们都不刷新，于是「先收信、后配 rules」这条路是断的：fetcher 里
-	// 算出的 importance=high 在 ON CONFLICT 分支被直接丢掉。症状极具迷惑性
-	// ——新邮件走 INSERT 有提醒，旧邮件走 DO UPDATE 永远补不上，而用户唯一能
-	// 让旧邮件重过一遍规则的办法（重置 last_synced_uid 重同步）走的正是
-	// ON CONFLICT。判据是 EXCLUDED 为空 = 这条规则没命中，此时必须保留旧值，
-	// 否则一次没配规则的重跑会把 AI 分类出的 importance 抹成空。
-	//
-	// category 刻意**不**加进来：label-category 只在入库时播种，之后由 AI
-	// 分类（SetClassificationScoped）拥有。若让规则在每次重跑时覆盖它，规则
-	// 就会反过来压过 AI 分类，与「AI 拥有分类结果」的既有语义相反。
-	//
-	// RETURNING (xmax = 0)：xmax 为 0 表示这一行走的是 INSERT 分支，非 0 表示
-	// 走的是 ON CONFLICT DO UPDATE 分支。这是判断「新邮件」的可靠信号——Exec
-	// 拿不到它，而靠「先查后插」会与并发同步竞态。
-	`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments, created_at, updated_at)
+		//
+		// 2026-10-02 修正：importance / action_reason 也改为「规则判出来才刷新」。
+		// 原来连它们都不刷新，于是「先收信、后配 rules」这条路是断的：fetcher 里
+		// 算出的 importance=high 在 ON CONFLICT 分支被直接丢掉。症状极具迷惑性
+		// ——新邮件走 INSERT 有提醒，旧邮件走 DO UPDATE 永远补不上，而用户唯一能
+		// 让旧邮件重过一遍规则的办法（重置 last_synced_uid 重同步）走的正是
+		// ON CONFLICT。判据是 EXCLUDED 为空 = 这条规则没命中，此时必须保留旧值，
+		// 否则一次没配规则的重跑会把 AI 分类出的 importance 抹成空。
+		//
+		// category 刻意**不**加进来：label-category 只在入库时播种，之后由 AI
+		// 分类（SetClassificationScoped）拥有。若让规则在每次重跑时覆盖它，规则
+		// 就会反过来压过 AI 分类，与「AI 拥有分类结果」的既有语义相反。
+		//
+		// RETURNING (xmax = 0)：xmax 为 0 表示这一行走的是 INSERT 分支，非 0 表示
+		// 走的是 ON CONFLICT DO UPDATE 分支。这是判断「新邮件」的可靠信号——Exec
+		// 拿不到它，而靠「先查后插」会与并发同步竞态。
+		`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments, created_at, updated_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 			 ON CONFLICT (id) DO UPDATE SET
 			   snippet = CASE WHEN EXCLUDED.snippet <> '' THEN EXCLUDED.snippet ELSE emails.snippet END,

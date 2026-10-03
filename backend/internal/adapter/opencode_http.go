@@ -111,8 +111,8 @@ type OpenCodeSessionInfo struct {
 		} `json:"cache"`
 	} `json:"tokens"`
 	Time struct {
-		Created  int64  `json:"created"`  // Unix ms
-		Updated  int64  `json:"updated"`  // Unix ms
+		Created  int64  `json:"created"` // Unix ms
+		Updated  int64  `json:"updated"` // Unix ms
 		Archived *int64 `json:"archived,omitempty"`
 	} `json:"time"`
 	Title    string `json:"title"`
@@ -688,7 +688,8 @@ func (a *OpenCodeHTTPAdapter) HealthCheck(ctx context.Context, instanceBaseURL s
 
 // PermissionRequest 权限请求对象
 // 对应 OpenCode: ~/workspace/ai/opencode/packages/core/src/permission.ts
-//   export const Request = Schema.Struct({ id, sessionID, action, resources, save?, metadata?, source? })
+//
+//	export const Request = Schema.Struct({ id, sessionID, action, resources, save?, metadata?, source? })
 type PermissionRequest struct {
 	ID        string            `json:"id"`        // per_xxx
 	SessionID string            `json:"sessionID"` // ses_xxx
@@ -707,7 +708,8 @@ type PermissionSource struct {
 }
 
 // PermissionReply 权限回复值
-//   export const Reply = Schema.Literals(["once", "always", "reject"])
+//
+//	export const Reply = Schema.Literals(["once", "always", "reject"])
 type PermissionReply string
 
 const (
@@ -852,16 +854,17 @@ type QuestionOption struct {
 
 // QuestionInfo 单个问题
 type QuestionInfo struct {
-	Question  string          `json:"question"`  // 完整问题
-	Header    string          `json:"header"`    // 短标签（≤30 字符）
-	Options   []QuestionOption `json:"options"`  // 可选项
-	Multiple  *bool           `json:"multiple,omitempty"`  // 是否允许多选
-	Custom    *bool           `json:"custom,omitempty"`    // 是否允许自定义回答
+	Question string           `json:"question"`           // 完整问题
+	Header   string           `json:"header"`             // 短标签（≤30 字符）
+	Options  []QuestionOption `json:"options"`            // 可选项
+	Multiple *bool            `json:"multiple,omitempty"` // 是否允许多选
+	Custom   *bool            `json:"custom,omitempty"`   // 是否允许自定义回答
 }
 
 // QuestionRequest 问题请求对象
 // 对应 OpenCode: ~/workspace/ai/opencode/packages/core/src/question.ts
-//   export const Request = Schema.Struct({ id, sessionID, questions, tool? })
+//
+//	export const Request = Schema.Struct({ id, sessionID, questions, tool? })
 type QuestionRequest struct {
 	ID        string         `json:"id"`        // que_xxx
 	SessionID string         `json:"sessionID"` // ses_xxx
@@ -1050,6 +1053,7 @@ type OpenCodeEvent struct {
 //   - 新格式 {type, properties:{sessionID, info, ...}}：无 data 字段，把
 //     properties 归一化进 Data，让 extractSessionID / eventBelongsToSession /
 //     session_event_broadcaster 等所有 Data 读取方无需各自感知信封版本。
+//
 // 经此归一化，事件再被 json.Marshal 下发时仍是本结构体的 {type, data} 形状
 // （前端 SSE 客户端按旧形状解析）。
 func (e *OpenCodeEvent) UnmarshalJSON(b []byte) error {

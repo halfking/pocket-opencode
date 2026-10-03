@@ -8,8 +8,8 @@ import (
 
 // recordingWriter 把每次 Write 调用记录下来便于断言。
 type recordingWriter struct {
-	mu      sync.Mutex
-	calls   []recordedAudit
+	mu    sync.Mutex
+	calls []recordedAudit
 }
 
 type recordedAudit struct {

@@ -48,7 +48,7 @@ import (
 // cross-tenant tests. It exposes a `GET /resource/:id` and a
 // `POST /resource` so we can drive the auth middleware end-to-end.
 type tenantStore struct {
-	mu       sync.Mutex
+	mu        sync.Mutex
 	resources map[string]map[string]string // workspaceID → id → payload
 }
 
@@ -360,10 +360,10 @@ func TestXTenantHeaderIgnoredWhenJWTPresent(t *testing.T) {
 func TestDualSignerRequiredForCriticalOps(t *testing.T) {
 	// The handler enforces "command: pod.terminate AND signers == 2".
 	type cmdReq struct {
-		Command  string `json:"command"`
-		Signers  int    `json:"signers"`
-		SignerA  string `json:"signer_a"`
-		SignerB  string `json:"signer_b"`
+		Command string `json:"command"`
+		Signers int    `json:"signers"`
+		SignerA string `json:"signer_a"`
+		SignerB string `json:"signer_b"`
 	}
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		var c cmdReq
@@ -453,16 +453,16 @@ func TestSecondSignerSameSubjectRejected(t *testing.T) {
 // a high-risk op downstream. Tests in other files may use this type
 // to build payloads.
 type signedRequest struct {
-	Method     string `json:"method"`
-	Path       string `json:"path"`
-	BodyHash   string `json:"body_hash"`
-	TenantID   string `json:"tenant_id"`
-	Subject    string `json:"subject"`
-	IssuedAt   int64  `json:"issued_at"`
-	ExpiresAt  int64  `json:"expires_at"`
-	Nonce      string `json:"nonce"`
-	KeyID      string `json:"key_id"`
-	Signature  string `json:"signature,omitempty"` // hex(HMAC-SHA256(secret, body))
+	Method    string `json:"method"`
+	Path      string `json:"path"`
+	BodyHash  string `json:"body_hash"`
+	TenantID  string `json:"tenant_id"`
+	Subject   string `json:"subject"`
+	IssuedAt  int64  `json:"issued_at"`
+	ExpiresAt int64  `json:"expires_at"`
+	Nonce     string `json:"nonce"`
+	KeyID     string `json:"key_id"`
+	Signature string `json:"signature,omitempty"` // hex(HMAC-SHA256(secret, body))
 }
 
 // TestSignedPayloadTamperRejected verifies that flipping a single byte

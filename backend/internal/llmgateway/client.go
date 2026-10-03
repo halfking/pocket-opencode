@@ -49,7 +49,7 @@ type Client struct {
 
 // discoveredFormats 记录「某网关哪种协议形态实测可用」。key 是归一化后的
 // BaseURL。进程级缓存：第一次回退探测要付出一次 openai-chat 的失败代价
-//（ResponseHeaderTimeout 30s），之后同进程内直接走可用形态，不再重复付。
+// （ResponseHeaderTimeout 30s），之后同进程内直接走可用形态，不再重复付。
 var discoveredFormats sync.Map // baseURL(normalized) -> string
 
 // NewClient 构造 llm-gateway 客户端。baseURL 会自动归一化（剥离结尾的 /v1 与
@@ -247,6 +247,7 @@ func (c *Client) chatOpenAI(ctx context.Context, req ChatRequest) (*ChatResponse
 //   - 传输层失败（超时/连接重置/ResponseHeaderTimeout）——llm.kxpms.cn 对
 //     /chat/completions 的已知症状就是「收下请求既不回结果也不回错误」；
 //   - HTTP 404/405/501——端点不存在/方法不对/未实现。
+//
 // 鉴权失败(401/403)、配额(429)、模型无 provider(503 no_candidate) 等业务
 // 错误**不**回退：那些在 anthropic 形态下同样会失败，多打一次只会掩盖根因。
 func (c *Client) chatWithFormatFallback(ctx context.Context, req ChatRequest, openAIErr error, retry func() (*ChatResponse, error)) (*ChatResponse, error) {
@@ -337,12 +338,12 @@ func (c *Client) Stream(ctx context.Context, req ChatRequest, fn func(StreamDelt
 // streamOpenAI 是原始的 /v1/chat/completions 流式调用（Stream 拆出的内核）。
 func (c *Client) streamOpenAI(ctx context.Context, req ChatRequest, fn func(StreamDelta) bool) (*StreamDelta, error) {
 	payload := map[string]any{
-		"model":       req.Model,
-		"messages":    req.Messages,
-		"temperature": req.Temperature,
-		"max_tokens":  req.MaxTokens,
-		"stream":      true,
-		"user":        req.User,
+		"model":          req.Model,
+		"messages":       req.Messages,
+		"temperature":    req.Temperature,
+		"max_tokens":     req.MaxTokens,
+		"stream":         true,
+		"user":           req.User,
 		"stream_options": map[string]bool{"include_usage": true},
 	}
 	if len(req.Tools) > 0 {
@@ -482,9 +483,9 @@ type SessionPack struct {
 		Blockers      []string `json:"blockers,omitempty"`
 		NextAction    string   `json:"nextAction,omitempty"`
 	} `json:"resume_brief"`
-	Messages    []json.RawMessage `json:"messages,omitempty"`
-	Summary     string            `json:"summary,omitempty"`
-	ExportedAt  string            `json:"exported_at,omitempty"`
+	Messages   []json.RawMessage `json:"messages,omitempty"`
+	Summary    string            `json:"summary,omitempty"`
+	ExportedAt string            `json:"exported_at,omitempty"`
 }
 
 // ExportSession 从 llm-gateway-go 导出指定会话的完整迁移包。

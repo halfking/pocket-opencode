@@ -4,10 +4,10 @@ import "testing"
 
 func TestNativeAgentKind(t *testing.T) {
 	cases := map[string]string{
-		"":             "",
-		"cursor":       "cursor",
-		"disk-cursor":  "cursor",
-		"disk-zcode":   "zcode",
+		"":                 "",
+		"cursor":           "cursor",
+		"disk-cursor":      "cursor",
+		"disk-zcode":       "zcode",
 		"  disk-opencode ": "opencode",
 	}
 	for in, want := range cases {

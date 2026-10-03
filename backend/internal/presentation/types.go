@@ -28,10 +28,10 @@ const (
 type Presentation struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
-	Type      string    `json:"type"`       // prd / tech-spec / weekly / quarterly
-	Content   string    `json:"content"`    // Markdown content
+	Type      string    `json:"type"`             // prd / tech-spec / weekly / quarterly
+	Content   string    `json:"content"`          // Markdown content
 	Slides    []Slide   `json:"slides,omitempty"` // PPT slides
-	Status    string    `json:"status"`     // draft / completed / archived
+	Status    string    `json:"status"`           // draft / completed / archived
 	Tags      []string  `json:"tags,omitempty"`
 	ProjectID string    `json:"project_id,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
@@ -47,11 +47,11 @@ type Slide struct {
 
 // GenerateRequest represents a request to generate a presentation
 type GenerateRequest struct {
-	Type      string `json:"type"`                  // prd / tech-spec / weekly
-	Topic     string `json:"topic"`                 // Presentation topic
-	Context   string `json:"context,omitempty"`     // Context/requirements description
-	Audience  string `json:"audience,omitempty"`    // Target audience
-	KeyPoints string `json:"key_points,omitempty"`  // Key points
+	Type      string `json:"type"`                 // prd / tech-spec / weekly
+	Topic     string `json:"topic"`                // Presentation topic
+	Context   string `json:"context,omitempty"`    // Context/requirements description
+	Audience  string `json:"audience,omitempty"`   // Target audience
+	KeyPoints string `json:"key_points,omitempty"` // Key points
 }
 
 // GenerateResponse represents the response from generating a presentation

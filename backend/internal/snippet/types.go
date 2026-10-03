@@ -14,8 +14,8 @@ type Snippet struct {
 	Description string    `json:"description,omitempty"`
 	Tags        []string  `json:"tags,omitempty"`
 	ProjectID   string    `json:"project_id,omitempty"`
-	Source      string    `json:"source,omitempty"`      // manual / session / import
-	SourceID    string    `json:"source_id,omitempty"`   // 来源会话 ID
+	Source      string    `json:"source,omitempty"`    // manual / session / import
+	SourceID    string    `json:"source_id,omitempty"` // 来源会话 ID
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }

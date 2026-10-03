@@ -39,15 +39,15 @@ type BiometricStore struct {
 
 // BiometricCredential 是单条已注册凭证。
 type BiometricCredential struct {
-	ID           string `json:"id"`            // credential_id（COSE base64url）
-	UserID       string `json:"user_id"`
-	WorkspaceID  string `json:"workspace_id"`
-	DeviceName   string `json:"device_name"`   // 用户给的别名（如 "iPhone 15"）
-	PublicKey    []byte `json:"public_key"`    // COSE-encoded public key
-	Counter      uint32 `json:"counter"`       // signature counter（防重放）
-	Transports   string `json:"transports"`    // JSON 数组字符串
-	CreatedAt    int64  `json:"created_at"`
-	LastUsedAt   int64  `json:"last_used_at"`
+	ID          string `json:"id"` // credential_id（COSE base64url）
+	UserID      string `json:"user_id"`
+	WorkspaceID string `json:"workspace_id"`
+	DeviceName  string `json:"device_name"` // 用户给的别名（如 "iPhone 15"）
+	PublicKey   []byte `json:"public_key"`  // COSE-encoded public key
+	Counter     uint32 `json:"counter"`     // signature counter（防重放）
+	Transports  string `json:"transports"`  // JSON 数组字符串
+	CreatedAt   int64  `json:"created_at"`
+	LastUsedAt  int64  `json:"last_used_at"`
 }
 
 // NewBiometricStore 构造 BiometricStore。pool 为 nil 时降级到内存存储（测试/单机部署）。

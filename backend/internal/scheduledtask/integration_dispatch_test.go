@@ -153,9 +153,9 @@ func TestSchedulerCloudDispatchIntegration(t *testing.T) {
 	store := &integrationMemoryStore{
 		due: []*scheduledtask.Task{{
 			ID: "sched-cloud-1", Name: "daily-summary",
-			UserID:      "user-cloud",
-			WorkspaceID: "workspace-cloud",
-			Kind:        scheduledtask.KindCloudDispatch,
+			UserID:       "user-cloud",
+			WorkspaceID:  "workspace-cloud",
+			Kind:         scheduledtask.KindCloudDispatch,
 			ScheduleKind: scheduledtask.ScheduleInterval,
 			ScheduleExpr: "1h",
 			Timezone:     "UTC",

@@ -1094,7 +1094,7 @@ func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 //
 // 教训：这段注释自己写着「真实库实测」，但**记录状态的注释不会自己声明
 // 过期**。我本人 2026-10-02 就因为直接引用了上一版结论，误判成
-//「q4 的 90 天窗口一封也不会提醒」，被真库数据当场打脸。
+// 「q4 的 90 天窗口一封也不会提醒」，被真库数据当场打脸。
 func reminderUnclassifiedHint(unclassified, scanned int) string {
 	return fmt.Sprintf("%d/%d 封邮件 importance 为空 —— 不会进入重要提醒。"+
 		"importance 只有两条写入路径：① 账户规则（email_accounts.rules 里的 "+

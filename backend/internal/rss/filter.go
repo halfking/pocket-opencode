@@ -121,7 +121,7 @@ type FilterRuleRequest struct {
 	IncludeKeywords []string   `json:"includeKeywords"`
 	ExcludeKeywords []string   `json:"excludeKeywords"`
 	Languages       []string   `json:"languages"`
-	Since          *time.Time `json:"since,omitempty"`
-	Until          *time.Time `json:"until,omitempty"`
+	Since           *time.Time `json:"since,omitempty"`
+	Until           *time.Time `json:"until,omitempty"`
 	MinRelevance    float64    `json:"minRelevance"`
 }

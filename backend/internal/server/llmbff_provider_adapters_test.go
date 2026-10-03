@@ -829,17 +829,17 @@ func TestDynamicGatewayStreamToolCallsRoundTrip(t *testing.T) {
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		
+
 		fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"calculate","arguments":""}}]}}]}`+"\n\n")
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
-		
+
 		fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"expr\":\"2+2\"}"}}]}}]}`+"\n\n")
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
-		
+
 		fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":50,"completion_tokens":10,"total_tokens":60}}`+"\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		if f, ok := w.(http.Flusher); ok {

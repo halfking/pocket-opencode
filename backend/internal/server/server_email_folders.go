@@ -185,11 +185,11 @@ func (s *Server) handleEmailMove(w http.ResponseWriter, r *http.Request) {
 
 // moveRep 是移动操作统一的响应/执行报告。
 type moveRep struct {
-	Moved int      `json:"moved"`            // 本地改写 folder_name 的封数
-	Applied int    `json:"applied"`          // 即时 IMAP 同步成功的封数
-	Pending int    `json:"pending"`          // 留在操作日志里等待「同步到服务器」的封数
-	Errors []string `json:"errors,omitempty"` // IMAP 侧失败明细（截断）
-	Folder string   `json:"folder,omitempty"`
+	Moved   int      `json:"moved"`            // 本地改写 folder_name 的封数
+	Applied int      `json:"applied"`          // 即时 IMAP 同步成功的封数
+	Pending int      `json:"pending"`          // 留在操作日志里等待「同步到服务器」的封数
+	Errors  []string `json:"errors,omitempty"` // IMAP 侧失败明细（截断）
+	Folder  string   `json:"folder,omitempty"`
 }
 
 // moveEmailsToFolder 是移动/智能整理共用的执行核心：

@@ -156,7 +156,7 @@ func TestBridgeDoubleStop(t *testing.T) {
 	bridge := NewBridge(client, nil)
 	bridge.Start()
 	bridge.Stop()
-	
+
 	// Second stop should not panic
 	bridge.Stop()
 }
@@ -167,7 +167,7 @@ func TestBridgeNilClient(t *testing.T) {
 			t.Error("expected panic for nil client")
 		}
 	}()
-	
+
 	NewBridge(nil, nil)
 }
 

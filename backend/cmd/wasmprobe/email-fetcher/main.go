@@ -11,8 +11,9 @@
 // 全部拉进编译单元。
 //
 // 两种结果的含义：
-//   · 体积暴涨        → 死代码**没有**被剔除，§7cd 的结论要推翻
-//   · 体积变化很小    → 剔除成立，且「搬纯逻辑」的包体账是可信的
+//
+//	· 体积暴涨        → 死代码**没有**被剔除，§7cd 的结论要推翻
+//	· 体积变化很小    → 剔除成立，且「搬纯逻辑」的包体账是可信的
 //
 // 用法由 scripts/wasmprobe-run.mjs 统一驱动，不要手工编。
 package main
@@ -31,7 +32,7 @@ func main() {
 	f := email.NewFetcher(nil, nil)
 
 	out := map[string]any{
-		"probe":      "email-fetcher",
+		"probe":       "email-fetcher",
 		"constructed": f != nil,
 		// 顺带确认一个不触 socket 的导出函数仍然可用，
 		// 以便和 wasmprobe/email 的输出做交叉参照。

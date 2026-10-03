@@ -30,12 +30,12 @@ import "testing"
 // 于是「0」无法解释。
 func TestSplitReminderCandidates_SeparatesUnclassified(t *testing.T) {
 	emails := []Email{
-		{ID: "e1", Importance: "high"},    // 该提醒
-		{ID: "e2", Importance: "high"},    // 已提醒过 → 跳过
-		{ID: "e3", Importance: ""},        // 未分类 → 单独计数
-		{ID: "e4", Importance: "medium"},  // 已分类但不重要 → 静默跳过
+		{ID: "e1", Importance: "high"},               // 该提醒
+		{ID: "e2", Importance: "high"},               // 已提醒过 → 跳过
+		{ID: "e3", Importance: ""},                   // 未分类 → 单独计数
+		{ID: "e4", Importance: "medium"},             // 已分类但不重要 → 静默跳过
 		{ID: "e5", Importance: "", Category: "spam"}, // 垃圾，无论如何不提醒
-		{ID: "e6", Importance: "high"},    // 该提醒
+		{ID: "e6", Importance: "high"},               // 该提醒
 	}
 	notified := []int64{0, 1, 0, 0, 0, 0}
 

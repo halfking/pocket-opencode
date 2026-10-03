@@ -52,10 +52,10 @@ type pop3Message struct {
 type pop3Server struct {
 	ln net.Listener
 
-	mu       sync.Mutex
-	cmds     []string
-	retrIdx  []int  // 被 RETR 的位置序号
-	deleted  []int  // 被 DELE 的位置序号（不该出现）
+	mu      sync.Mutex
+	cmds    []string
+	retrIdx []int // 被 RETR 的位置序号
+	deleted []int // 被 DELE 的位置序号（不该出现）
 	// msgs 是收件箱内容。
 	msgs []pop3Message
 	// authOK 控制 USER/PASS 是否通过。

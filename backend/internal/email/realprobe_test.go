@@ -45,11 +45,12 @@ import (
 
 // mailboxState 是用来证明「什么都没改」的只读快照。
 type mailboxState struct {
-	unseen    int
-	uidFlags  string
-	messages  int
-	uidNext   imap.UID
-	uidValid  uint32}
+	unseen   int
+	uidFlags string
+	messages int
+	uidNext  imap.UID
+	uidValid uint32
+}
 
 func (s mailboxState) String() string {
 	return fmt.Sprintf("unseen=%d messages=%d uidnext=%d uidvalidity=%d flags[%s]",

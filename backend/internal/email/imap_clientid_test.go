@@ -154,7 +154,6 @@ func (s *idRequiringIMAPServer) handle(conn net.Conn, requireID bool) {
 	}
 }
 
-
 // dialAndSelect 用**真实的 go-imap v2 客户端**连上假服务器，然后调用生产函数
 // selectInboxWithClientID（mime.go）——与 FetchMessageRaw 走的是同一行代码。
 func dialAndSelect(t *testing.T, addr, email string) error {

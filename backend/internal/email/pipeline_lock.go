@@ -11,7 +11,7 @@ import (
 // DailyPipelineLockKey 是每日定时流水线的跨进程锁键。
 //
 // 用 hashtextextended 而不是自己算 hash，与本包既有的 advisory 用法保持一致
-//（见 store.go 的 vacation 领取锁），避免两处算出不同的 int64。
+// （见 store.go 的 vacation 领取锁），避免两处算出不同的 int64。
 const DailyPipelineLockKey = "email:daily-pipeline"
 
 // DailyPipelineLockState 描述取每日定时流水线跨进程锁的结果。

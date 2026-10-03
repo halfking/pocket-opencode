@@ -69,7 +69,7 @@ func TestStore_CRUD(t *testing.T) {
 
 func TestStore_Create_EmptyTitle(t *testing.T) {
 	s := NewStore()
-	
+
 	_, err := s.Create(CreateMeetingRequest{Title: ""})
 	if err == nil {
 		t.Error("expected error for empty title")
@@ -77,7 +77,7 @@ func TestStore_Create_EmptyTitle(t *testing.T) {
 	if !strings.Contains(err.Error(), "empty") {
 		t.Errorf("expected 'empty' in error message, got: %v", err)
 	}
-	
+
 	_, err = s.Create(CreateMeetingRequest{Title: "   "})
 	if err == nil {
 		t.Error("expected error for whitespace-only title")
@@ -86,7 +86,7 @@ func TestStore_Create_EmptyTitle(t *testing.T) {
 
 func TestStore_Get_InvalidID(t *testing.T) {
 	s := NewStore()
-	
+
 	_, err := s.Get("")
 	if err == nil {
 		t.Error("expected error for empty ID")
@@ -94,12 +94,12 @@ func TestStore_Get_InvalidID(t *testing.T) {
 	if !strings.Contains(err.Error(), "empty") {
 		t.Errorf("expected 'empty' in error message, got: %v", err)
 	}
-	
+
 	_, err = s.Get("   ")
 	if err == nil {
 		t.Error("expected error for whitespace-only ID")
 	}
-	
+
 	_, err = s.Get("nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent ID")
@@ -111,7 +111,7 @@ func TestStore_Get_InvalidID(t *testing.T) {
 
 func TestStore_Update_NilMeeting(t *testing.T) {
 	s := NewStore()
-	
+
 	err := s.Update(nil)
 	if err == nil {
 		t.Error("expected error for nil meeting")
@@ -123,7 +123,7 @@ func TestStore_Update_NilMeeting(t *testing.T) {
 
 func TestStore_Update_EmptyID(t *testing.T) {
 	s := NewStore()
-	
+
 	err := s.Update(&Meeting{ID: ""})
 	if err == nil {
 		t.Error("expected error for empty ID")
@@ -135,7 +135,7 @@ func TestStore_Update_EmptyID(t *testing.T) {
 
 func TestStore_Update_NotFound(t *testing.T) {
 	s := NewStore()
-	
+
 	err := s.Update(&Meeting{ID: "nonexistent", Title: "Test"})
 	if err == nil {
 		t.Error("expected error for nonexistent meeting")
@@ -147,7 +147,7 @@ func TestStore_Update_NotFound(t *testing.T) {
 
 func TestStore_Delete_InvalidID(t *testing.T) {
 	s := NewStore()
-	
+
 	err := s.Delete("")
 	if err == nil {
 		t.Error("expected error for empty ID")
@@ -155,7 +155,7 @@ func TestStore_Delete_InvalidID(t *testing.T) {
 	if !strings.Contains(err.Error(), "empty") {
 		t.Errorf("expected 'empty' in error message, got: %v", err)
 	}
-	
+
 	err = s.Delete("nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent ID")
@@ -167,16 +167,16 @@ func TestStore_Delete_InvalidID(t *testing.T) {
 
 func TestStore_ConcurrentAccess(t *testing.T) {
 	s := NewStore()
-	
+
 	// Create initial meeting
 	m, err := s.Create(CreateMeetingRequest{Title: "Concurrent Test"})
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	
+
 	var wg sync.WaitGroup
 	errChan := make(chan error, 100)
-	
+
 	// Concurrent reads
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
@@ -188,7 +188,7 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 			}
 		}()
 	}
-	
+
 	// Concurrent updates
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
@@ -207,10 +207,10 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 			}
 		}(i)
 	}
-	
+
 	wg.Wait()
 	close(errChan)
-	
+
 	for err := range errChan {
 		t.Errorf("concurrent access error: %v", err)
 	}
@@ -218,13 +218,13 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 
 func TestStore_DataIsolation(t *testing.T) {
 	s := NewStore()
-	
+
 	// Create meeting
 	m, err := s.Create(CreateMeetingRequest{Title: "Isolation Test"})
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	
+
 	// Get meeting and modify it
 	got, err := s.Get(m.ID)
 	if err != nil {
@@ -232,7 +232,7 @@ func TestStore_DataIsolation(t *testing.T) {
 	}
 	got.Transcript = "Modified externally"
 	got.KeyDecisions = []string{"External decision"}
-	
+
 	// Get again - should not reflect external modifications
 	got2, err := s.Get(m.ID)
 	if err != nil {

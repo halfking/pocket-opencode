@@ -3,12 +3,13 @@
 // fetcher_greenmail_test.go — 真实 IMAP 链路验证（-tags=greenmail 启用）。
 //
 // 前置：
-//   docker run -d --rm --name greenmail-test -p 3025:3025 -p 3993:3993 \
-//     greenmail/standalone:latest -Dgreenmail.setup.test.all \
-//     -Dgreenmail.users=huangxutao@kxmail.local:h8pass
-//   通过 3025 SMTP 投递若干封带 PDF 附件的发票邮件到 huangxutao@kxmail.local
-//   env PG_DSN=postgresql://...:.../pocket?sslmode=disable go test -tags=greenmail \
-//     ./internal/email/ -run TestSyncGreenmail -v
+//
+//	docker run -d --rm --name greenmail-test -p 3025:3025 -p 3993:3993 \
+//	  greenmail/standalone:latest -Dgreenmail.setup.test.all \
+//	  -Dgreenmail.users=huangxutao@kxmail.local:h8pass
+//	通过 3025 SMTP 投递若干封带 PDF 附件的发票邮件到 huangxutao@kxmail.local
+//	env PG_DSN=postgresql://...:.../pocket?sslmode=disable go test -tags=greenmail \
+//	  ./internal/email/ -run TestSyncGreenmail -v
 //
 // 验证项：fetcher.Sync 真实 TCP 链路 → IMAP login → UIDSearch → InsertEmail
 // 落库到 email_accounts / emails（message_id 用 uid-{n} 兜底，避免 Greenmail
@@ -103,7 +104,6 @@ func TestSyncGreenmail(t *testing.T) {
 	if err := store.InsertAccount(ctx, acc, encrypted); err != nil {
 		t.Fatalf("insert account: %v", err)
 	}
-
 
 	// 收尾：DROP 掉自建的 schema，而不是逐表 DELETE。
 	//

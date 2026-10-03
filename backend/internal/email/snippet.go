@@ -166,9 +166,10 @@ func DeriveSnippet(raw []byte, maxRunes int) string {
 //	if t := normalizeWhitespace(msg.TextBody); t != "" && !looksLikeMIMEStructure(t)
 //
 // 两处都错，且互相掩护：
-//   · looksLikeMIMEStructure 的行锚点在压平后全部失效（t 变成一行）；
-//   · 就算锚点没失效，t 才是**真正被返回**的那份字符串，判据跑在别的
-//     字符串上，绿灯不指向用户看到的东西。
+//
+//	· looksLikeMIMEStructure 的行锚点在压平后全部失效（t 变成一行）；
+//	· 就算锚点没失效，t 才是**真正被返回**的那份字符串，判据跑在别的
+//	  字符串上，绿灯不指向用户看到的东西。
 //
 // 结果是本函数对着实泄的输入返回 PASS，护栏 3/3 全绿。修法见
 // containsMIMESource 的注释。
@@ -215,7 +216,7 @@ func SnippetFromParsed(msg *ParsedMessage, maxRunes int) string {
 // ## token 判据的误伤控制
 //
 // 边界 token 只认 `--` 后面紧跟 `=` / `_` / `-` 或 `part_` / `Part_` 的形态
-//（`------=_Part_…`、`--_000_10f7b8d35f184af`、`--part_8057f3aacb…` 都是真机
+// （`------=_Part_…`、`--_000_10f7b8d35f184af`、`--part_8057f3aacb…` 都是真机
 // 实测形态）。不写成宽松的 `--[A-Za-z]{6,}`：那会把正文里的
 // 「COVID-19--related」「见附件 --」一并判成 MIME 源码，摘要直接清空，
 // 那是用一个缺陷换另一个缺陷。

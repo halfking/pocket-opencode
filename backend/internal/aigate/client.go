@@ -34,7 +34,7 @@ type LLMClient interface {
 }
 
 type ChatMessage struct {
-	Role    string `json:"role"`    // system / user / assistant
+	Role    string `json:"role"` // system / user / assistant
 	Content string `json:"content"`
 }
 

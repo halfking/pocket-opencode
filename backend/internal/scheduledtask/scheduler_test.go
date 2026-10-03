@@ -286,7 +286,7 @@ func TestSchedulerFailureNotifiesOnce(t *testing.T) {
 }
 
 // TestSchedulerSuccessDoesNotNotify — 成功 run 不产生 inbox 通知
-//(WS 事件仍会广播;inbox 只记失败)。
+// (WS 事件仍会广播;inbox 只记失败)。
 func TestSchedulerSuccessDoesNotNotify(t *testing.T) {
 	store := &fakeSchedulerStore{due: []*Task{{
 		ID: "task-ok", UserID: "user-1", WorkspaceID: "workspace-1", Kind: "test",

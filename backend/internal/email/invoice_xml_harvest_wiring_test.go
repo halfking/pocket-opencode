@@ -66,7 +66,7 @@ func TestHarvestOne_XMLAttachmentRendersThroughHarvester(t *testing.T) {
 	dir := t.TempDir()
 	h := &InvoiceHarvester{
 		Store: store, Fetcher: &Fetcher{}, DataDir: dir,
-		BodyCache:  &memBodyCache{data: map[string][]byte{em.ID: raw}},
+		BodyCache: &memBodyCache{data: map[string][]byte{em.ID: raw}},
 		XMLRenderer: func(name string, i *Invoice, xmlRaw []byte) ([]byte, error) {
 			return RenderInvoiceXMLPDF(font, i, xmlRaw)
 		},

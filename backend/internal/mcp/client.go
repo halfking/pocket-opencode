@@ -516,33 +516,33 @@ func parseToolTasksJSON(text string) ([]ParsedTask, bool) {
 		Owner   string `json:"owner"`
 		AgentID string `json:"agent_id"`
 	}
-// 任务判定契约：id 与 title 都非空才算任务对象。仅凭 id 非空会把
-// {"id":"foo","message":"No tasks found"} 这类响应性 JSON 当成任务，
-// 写库后产生空 title 的脏行；status 缺失时回退 phase（ACC 以 phase 驱动
-// 看板），不作为任务判定条件。
-mapTasks := func(rows []accTask) []ParsedTask {
-	tasks := make([]ParsedTask, 0, len(rows))
-	for _, r := range rows {
-		if strings.TrimSpace(r.ID) == "" || strings.TrimSpace(r.Title) == "" {
-			continue
+	// 任务判定契约：id 与 title 都非空才算任务对象。仅凭 id 非空会把
+	// {"id":"foo","message":"No tasks found"} 这类响应性 JSON 当成任务，
+	// 写库后产生空 title 的脏行；status 缺失时回退 phase（ACC 以 phase 驱动
+	// 看板），不作为任务判定条件。
+	mapTasks := func(rows []accTask) []ParsedTask {
+		tasks := make([]ParsedTask, 0, len(rows))
+		for _, r := range rows {
+			if strings.TrimSpace(r.ID) == "" || strings.TrimSpace(r.Title) == "" {
+				continue
+			}
+			status := r.Status
+			if status == "" {
+				status = r.Phase
+			}
+			owner := r.Owner
+			if owner == "" {
+				owner = r.AgentID
+			}
+			tasks = append(tasks, ParsedTask{
+				ID:     strings.TrimSpace(r.ID),
+				Title:  r.Title,
+				Status: status,
+				Owner:  owner,
+			})
 		}
-		status := r.Status
-		if status == "" {
-			status = r.Phase
-		}
-		owner := r.Owner
-		if owner == "" {
-			owner = r.AgentID
-		}
-		tasks = append(tasks, ParsedTask{
-			ID:     strings.TrimSpace(r.ID),
-			Title:  r.Title,
-			Status: status,
-			Owner:  owner,
-		})
+		return tasks
 	}
-	return tasks
-}
 
 	var rows []accTask
 	if err := json.Unmarshal([]byte(trimmed), &rows); err == nil {
