@@ -1,0 +1,123 @@
+# Maestro 真机功能流 · 邮箱账户（5 个内置账号在设备上确实可见、已启用）
+#
+# 为什么要这条：需求要求「邮箱信息，需要内置到本地数据库及服务端用户下的
+# 数据库中」，列了 5 个邮箱。此前只做过**只读查库**确认 5 条记录都在
+# opencode_pocket.email_accounts 且 enabled=true。
+# 查库证明不了界面 —— 后端返回了但前端没渲染、渲染了但被 v-if 掉、
+# 账号列表加载失败退化成「尚未配置邮箱账户」，这三种在库里都长得一模一样。
+#
+# 覆盖的结构（EmailSettingsView.vue）：
+#   EmptyState「尚未配置邮箱账户」  ← 一个账号都没有时
+#   每个账户：displayName + `${displayName} 启用` 开关 + 「已启用/已停用」
+#
+# 断言为什么用**邮箱地址**而不是 displayName：
+#   displayName 是中文（kaixuan 邮箱 / QQ 私人 / 163 feikemanager…），
+#   在 PowerShell/PG 客户端下多处编码不稳，写进 flow 只会制造假红。
+#   emailAddress 是 ASCII，且是账号身份本身，判别力等价。
+#
+# 运行：
+#   node scripts/maestro-run.mjs .maestro/email-accounts.yaml
+appId: com.kaixuan.opencode.pocket
+---
+# ---------- 0. harness preflight 已真实登录，起点是 #/ai ----------
+- extendedWaitUntil:
+    visible: "首页"
+    timeout: 45000
+- assertVisible: "首页"
+- assertNotVisible: "密码登录"
+
+# ---------- 1. 进「更多」 ----------
+# ⚠️ MIUI 会吞掉底部导航的 tap：报 COMPLETED 但界面没动（2026-10-03 15:06
+#   在 settings-llm-gateway 上实测过，失败现场可访问性树仍停在首页）。
+#   retryTapIfNoChange 管第一次，runFlow 补点管第二次，两者都要。
+- extendedWaitUntil:
+    visible: "更多|More"
+    timeout: 45000
+- tapOn:
+    text: "更多|More"
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible: "更多功能"
+    timeout: 40000
+- runFlow:
+    when:
+      notVisible: "更多功能"
+    commands:
+      - tapOn: "更多|More"
+      - waitForAnimationToEnd:
+          timeout: 3000
+- extendedWaitUntil:
+    visible: "更多功能"
+    timeout: 30000
+
+# ---------- 2. 进「邮箱」 ----------
+# ⚠️ 2026-10-03 15:16 实测修正：本条原先等的是「每日摘要」，红了 58s。
+#   失败现场的可访问性树显示**邮箱页其实已经正常打开**——有顶栏「搜索/归类/更多」、
+#   有分类 chip（全部/未分类/重要/工作/账单/私人）、有真实邮件列表。
+#   「每日摘要」是**顶栏「更多」菜单里的一项**，不点开就不渲染 ⇒
+#   拿菜单项当页面就绪信号，等的是一个此刻根本不该存在的节点。
+#   页面就绪信号改用收件箱自己就有的：分类 chip + 同步状态行。
+- tapOn: "邮箱|Email|Mail"
+- extendedWaitUntil:
+    visible: "全部"
+    timeout: 40000
+- extendedWaitUntil:
+    visible: "已同步|个账户|新邮件|下拉同步邮件"
+    timeout: 40000
+
+# ---------- 3. 顶栏「更多」菜单 → 邮箱设置 ----------
+# 收件箱页面本身可能是「暂无邮件」——那**不能**当失败：邮件是后台同步的，
+# 空收件箱与授权失败在收件箱这一屏长得一样。账户设置页才能区分两者。
+#
+# ⚠️ 2026-10-03 15:19 实测：这一段第一次跑时，「更多」tap 成功、菜单里的
+#   「邮箱设置」也 tap 成功了（前面的步骤全过），但等 huangxutao 那一步时
+#   失败现场的可访问性树又是**收件箱**（有 归类/分类 chip/邮件列表，
+#   没有 imap.exmail、没有 163.com、没有「邮箱设置」字样）。
+#   所以到达设置页必须有**它独有的**标记，否则「菜单项同名」会把两边搞混：
+#   菜单里那一项叫「邮箱设置」，而设置页自己的 <h2> 标题**也叫「邮箱设置」**
+#   （EmailSettingsView.vue:19）。用同名文本判到达，分不清是菜单项还是页面。
+#   改用「新增」——那是设置页 head-actions 里独有的按钮（EmailSettingsView.vue:22）。
+- tapOn: "更多"
+- extendedWaitUntil:
+    visible: "邮箱设置"
+    timeout: 25000
+- tapOn: "邮箱设置"
+- extendedWaitUntil:
+    visible: "新增"
+    timeout: 30000
+- takeScreenshot: "logs/maestro/email-settings-accounts"
+
+# ---------- 4. 核心断言：5 个内置账号都在，且都是启用态 ----------
+# ⚠️ 断言用**正则**而不是字面串：账户行渲染成
+#   `{{ emailAddress }} · {{ imapHost }}:{{ imapPort }}`
+#   （EmailSettingsView.vue:49），WebView 把它并成一个可访问性节点。
+#   Maestro 的 visible/assertVisible 是**整串全匹配**，字面串必然匹配不上；
+#   列表类断言必须写成 `.*锚点.*`（这条是 flashcards-write.yaml 里就记过的规矩）。
+- assertNotVisible: "尚未配置邮箱账户"
+- assertVisible: ".*huangxutao@kxpms\\.cn.*"
+- assertVisible: ".*56551681@qq\\.com.*"
+- assertVisible: ".*feikemanager@163\\.com.*"
+- assertVisible: ".*feikemanager1@163\\.com.*"
+- assertVisible: ".*kimmy\\.huang@163\\.com.*"
+
+# ---------- 4b. 显示名不得是有损转换过的「?」串 ----------
+# 2026-10-03 15:23 真机截图抓到的真实缺陷：设备上显示的是
+#   「kaixuan ???」「QQ ??」——中文在**写入时**就被有损转成了字面 '?'（hex 3f，
+#   已在库里用 encode(convert_to(...,'UTF8'),'hex') 坐实），不是显示层问题。
+# 成因：账号是经 PowerShell 播种的，PS 5.1 走 ANSI 码页，中文在出进程时就变 '?'；
+# 仓库里 scripts/seed_email_accounts.sh 的标签本身是对的（凯轩企业邮 / QQ 私人）。
+#
+# 这条断言是**防复发**的：只要有人再从 PowerShell 播种一次就会红。
+# 判据用**规范标签本身**，不用「不含 ??」——后者在 displayName 整个被替换成别的
+# 字符串时会误判为通过，而前者的字面串一旦对不上就必然红。
+- assertVisible: "凯轩企业邮"
+- assertVisible: "QQ 私人"
+
+# 「已启用」与「已停用」互斥。出现任意一个「已停用」都说明有账号没启用，
+# 与需求（5 个账号都该能收信）不符。
+- assertNotVisible: "已停用"
+
+# ---------- 5. 负向锚点 ----------
+# 后端把凭据解不开时会在这一屏报出来；这属于真问题，不该被静默吞掉。
+- assertNotVisible: "解密失败"
+- assertNotVisible: "invalid_grant"
