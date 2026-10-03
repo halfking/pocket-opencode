@@ -571,6 +571,22 @@ var pgSafeWithoutIsolation = map[string]string{
 
 	// vendored 第三方代码，需 -tags=integration + IDENTITY_SHADOW_DSN。
 	"third_party/identity-go/shadow/dao_test.go": "vendored 第三方，需 -tags=integration + IDENTITY_SHADOW_DSN",
+
+	// 下面 4 个是 round37 第三十一~三十八节陆续新增的**只读**真实库诊断，
+	// 同一个提交者、同一形态，此前**从未登记**（当时只跑 ./internal/email/，
+	// 没跑 internal/server，于是 PG 隔离门禁被留成红的直到 2026-10-04 才暴露）。
+	// 形态逐条核过：它们的 2 条 conn.Exec 是 `SET default_transaction_read_only = on`
+	// 与 `SET search_path TO <schema>`——只改**会话设置**，不是 SQL 写语句；
+	// 其余只有 pool.Query（SELECT）。所以本表登记即可，不需要进 pgAllowlistedWrites。
+	//
+	// 之所以**不能**改成自建 `*_test_` 隔离 schema：它们要回答的问题本身就是
+	// 「生产库/生产导出目录现在是什么样」，隔离库只会输出「没有票、没有产物、
+	// 没有那一行」这种假结论——那比不跑诊断更糟。
+	"internal/email/diag_a4_real_export_test.go":     "只读真实库诊断：0 条 SQL 写语句（2 条 conn.Exec 是 SET default_transaction_read_only=on 与 SET search_path，只改会话设置；1 条 pool.Query 为 SELECT）；需 POCKET_DIAG_A4_REAL=1 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA + POCKET_REAL_DATA_DIR（**均无缺省值**）。指向生产 schema 是**目的**：它核对的正是生产台账与生产 A4 产物，隔离库会输出「没有票」的假结论",
+	"internal/email/diag_amount_provenance_test.go":  "只读真实库诊断：0 条 SQL 写语句（同上形态：2 条 SET 会话设置 + 1 条 SELECT）；需 POCKET_DIAG_AMOUNT_PROV=1 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA + POCKET_REAL_DATA_DIR（均无缺省值）。目的=把生产库里已建档发票的金额逐一回溯到来源邮件，隔离库没有那些行",
+	"internal/email/diag_ledger_table_test.go":       "只读真实库诊断：0 条 SQL 写语句（同上形态：2 条 SET 会话设置 + 1 条 SELECT）；需 POCKET_DIAG_LEDGER_TABLE=1 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（均无缺省值）。目的=核对生产台账的列拼装与行数，隔离库只会产出 0 行的空表",
+	"internal/email/zz_diag_spam_score_dist_test.go": "只读真实库诊断：0 条 SQL 写语句（Exec=0，仅 1 条 pool.Query 为 SELECT）；需 POCKET_DIAG_SPAM_SCORE=1 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（均无缺省值）。隔离形态与上面几条**不同**：不设 search_path，只读靠连接参数 default_transaction_read_only=on（:61 RuntimeParams）",
+	"internal/email/diag_cleanup_preview_test.go":    "只读真实库预览：除只读查询外含 **1 条 DELETE 自证语句**（写语句登记见 pgAllowlistedWrites）——它 DELETE 的是一个必然不存在的 id（__preview_probe_must_fail__），目的正是验证数据库侧只读门禁生效，**一旦成功就 t.Fatal 退出**；需 POCKET_DIAG_CLEANUP_PREVIEW=1 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA + POCKET_REAL_DATA_DIR（均无缺省值）。指向生产 schema 是**目的**：它要规划剔除的就是生产库里那批自注入行，隔离库会输出「没有待剔除项」的假结论",
 }
 
 // sqlWriteRe 匹配 SQL 写语句动词，用于**规则 4**（见下）。
@@ -677,7 +693,17 @@ var pgAllowlistedWrites = map[string]string{
 	"internal/email/diag_merge_exec_test.go": "三道闸门——POCKET_DIAG_MERGE_EXEC=1 显式开关 + POCKET_REAL_MAIL_DSN/POCKET_REAL_MAIL_SCHEMA 显式指定 + 备份表不存在或为空时 t.Fatal 拒绝执行；只打墓碑（deleted_at）保留数据，文件里的 UPDATE 是以 t.Logf 给出的回滚语句而非可执行写操作。search_path 已于 2026-10-02 从 DSN 拼接改为 RuntimeParams 覆盖式设置（原先在 DSN 已带不同 search_path 时会打错库，而备份检查走显式前缀、写操作走 search_path，两者可指向不同的库）。**待单独授权执行**",
 
 	// vendored 第三方，需 -tags=integration + IDENTITY_SHADOW_DSN。
-	"third_party/identity-go/shadow/dao_test.go": "vendored 第三方；需 -tags=integration + IDENTITY_SHADOW_DSN，默认不编译",
+
+	// diag_cleanup_preview_test.go（2026-10-04 登记）：全文件唯一的写语句是
+	// 1 条 DELETE，DELETE 的 WHERE 用的是必然不存在的 id
+	// `id='__preview_probe_must_fail__'`，因此它删不到任何真实行；
+	// **成功就是异常**（说明数据库侧 default_transaction_read_only 没生效、
+	// 整个只读前提失效），测试会立刻 t.Fatal 退出而不是继续输出计划。
+	// 与 diag_purge_injected_invoices_test.go 那条真会删行的登记性质不同：
+	// 那条删的是计划内的真实行（需 POCKET_DIAG_PURGE_EXEC=1 才放行），
+	// 这条连放行开关都没有——只读由数据库强制，不靠开关。
+	"internal/email/diag_cleanup_preview_test.go": "1 条 DELETE 自证语句，WHERE 用必然不存在的 id（__preview_probe_must_fail__），删不到任何真实行；成功即 t.Fatal（说明 default_transaction_read_only 失效、只读前提不成立）；无任何放行开关，只读由数据库强制",
+	"third_party/identity-go/shadow/dao_test.go":  "vendored 第三方；需 -tags=integration + IDENTITY_SHADOW_DSN，默认不编译",
 }
 
 // hasSQLWrite 判断剥注释后的代码里是否有 SQL 写语句。

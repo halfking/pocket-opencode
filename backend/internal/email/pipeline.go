@@ -74,6 +74,9 @@ type Pipeline struct {
 	SpamDryRun bool
 	// AccountSyncTimeout 单账户同步墙钟上限；<=0 时用 DefaultAccountSyncTimeout。
 	AccountSyncTimeout time.Duration
+	// A4Grid 是每日 A4 网格导出阶段的格数（2=2x2，3=3x3）。其它值（默认 0）
+	// 关闭该阶段，报告里 A4ExportSkip 会写明关闭原因。见 pipeline_a4.go。
+	A4Grid int
 }
 
 // EmailClassifier 对一个 (user, workspace) 下的未归类邮件跑一次分类，
@@ -374,8 +377,18 @@ type PipelineReport struct {
 	ShareDocCSV             string        `json:"shareDocCsv,omitempty"`
 	ShareDocMD              string        `json:"shareDocMd,omitempty"`
 	// ShareDocURL 是飞书共享台账链接（未配置飞书时为空，本地 CSV/MD 仍会生成）。
-	ShareDocURL string   `json:"shareDocUrl,omitempty"`
-	Errors      []string `json:"errors,omitempty"`
+	ShareDocURL string `json:"shareDocUrl,omitempty"`
+	// A4* 是每日 A4 网格导出阶段的结果（见 pipeline_a4.go）。该阶段默认关闭
+	// （POCKET_EMAIL_A4_GRID 未设为 2/3）。
+	//
+	// A4ExportSkip 存在的意义是让「没导出」与「压根没有票」可区分：把阶段打开
+	// 之后，字段为空会长成「导出成功了但没东西可导」的样子。
+	A4ExportPath    string   `json:"a4ExportPath,omitempty"`
+	A4ExportCount   int      `json:"a4ExportCount,omitempty"`
+	A4ExportSkipped []string `json:"a4ExportSkipped,omitempty"`
+	A4ExportMarked  int      `json:"a4ExportMarked,omitempty"`
+	A4ExportSkip    string   `json:"a4ExportSkip,omitempty"`
+	Errors          []string `json:"errors,omitempty"`
 }
 
 // AddError 记录非致命错误（流水线继续跑完）。
@@ -476,6 +489,10 @@ func (p *Pipeline) Run(ctx context.Context) *PipelineReport {
 			rep.ShareDocCSV = csvPath
 			rep.ShareDocMD = mdPath
 		}
+		// A4 网格导出（见 pipeline_a4.go）。必须放在 scope 循环**内**：
+		// 一个发票文件只属于一个 workspace，放到循环外就只会导出最后一个
+		// scope 的票，其它工作区的票永远拿不到可打印凭证。
+		p.exportPendingA4(ctx, rep, sc[0], sc[1], invoices)
 	}
 	return rep
 }
