@@ -94,11 +94,13 @@
     <!-- Composer -->
     <div class="composer">
       <textarea
+        ref="draftEl"
         v-model="draft"
         class="draft"
         rows="1"
         :placeholder="placeholder"
         :disabled="store.running && !store.pendingApproval"
+        @input="onDraftInput"
         @keydown.enter.exact.prevent="onEnter"
       />      <button
         v-if="store.running"
@@ -132,6 +134,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useLocalAgentStore } from './agentStore'
+import { autoGrow } from '../../composables/useAutoGrowTextarea'
 import ToolCallCard from './ToolCallCard.vue'
 import ApprovalBar from './ApprovalBar.vue'
 import PlanCard from './PlanCard.vue'
@@ -139,6 +142,22 @@ import type { TimelineItem } from '../../localagent/runtime.ts'
 
 const store = useLocalAgentStore()
 const draft = ref('')
+
+/* 草稿框动态长高。原先 rows=1 + max-height 120px + resize:none 且**没有任何
+ * 高度逻辑**：本地 Agent 往往要喂一段较长的指令（贴报错、贴路径、贴需求），
+ * 写到第 3 行以后内容就藏在内部滚动条后面，而 resize 又是 none——用户既
+ * 看不见也拖不大。与 UnifiedComposer 是同一个病，两处一起治。
+ * .draft 自己的 min-height/max-height 继续作上下限，autoGrow 只在中间长高。 */
+const draftEl = ref<HTMLTextAreaElement | null>(null)
+function onDraftInput(e: Event) {
+  autoGrow(e.target as HTMLTextAreaElement)
+}
+watch(draft, () => {
+  nextTick(() => autoGrow(draftEl.value))
+})
+onMounted(() => {
+  nextTick(() => autoGrow(draftEl.value))
+})
 const expert = ref('general')
 const pickedSkills = ref(new Set<string>())
 const showPickers = ref(false)
@@ -399,7 +418,9 @@ watch(() => store.activeId, () => {
 .draft {
   flex: 1;
   min-height: 40px;
-  max-height: 120px;
+  /* 与 UnifiedComposer 紧凑变体同一条上限：标题级输入 1-2 行够用，
+     真写长了要看得见，120px(≈5行) 封顶转内部滚动是「内容看不完整」的高发点。 */
+  max-height: 30vh;
   resize: none;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);

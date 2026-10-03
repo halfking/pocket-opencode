@@ -1,4 +1,4 @@
-<!--
+﻿<!--
   UnifiedComposer — 全站统一输入组件（标准 / 全屏双模式）。
 
   布局标准（用户定稿）：
@@ -27,6 +27,7 @@
     </div>
 
     <textarea
+      ref="inputEl"
       :value="modelValue"
       class="uc-input"
       :class="{ 'uc-input--fs': false }"
@@ -218,6 +219,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onBeforeUnmount, useSlots, nextTick } from 'vue'
+import { useAutoGrowTextarea } from '../../composables/useAutoGrowTextarea'
 import { useVoiceInput } from '../../composables/useVoiceInput'
 import { useAttachments } from '../../composables/useAttachments'
 import { useCameraCapture } from '../../composables/useCameraCapture'
@@ -278,6 +280,18 @@ const emit = defineEmits<{
 }>()
 
 const slots = useSlots()
+
+/* 自适应增高：实现文件头「标准模式：自适应增高，上限 40vh 后滚动」承诺。
+ * 机制与三类调用点（手动输入 / 程序化改值 / 首帧）都在
+ * composables/useAutoGrowTextarea.ts，那里有可跑的用例守着；
+ * 上限数字留在 CSS（标准 40vh / 紧凑 30vh），JS 不复制一份。 */
+const inputEl = ref<HTMLTextAreaElement | null>(null)
+const { onInput: autoGrowOnInput } = useAutoGrowTextarea(() => props.modelValue, inputEl)
+
+function onInput(e: Event) {
+  autoGrowOnInput(e)
+  emit('update:modelValue', (e.target as HTMLTextAreaElement).value)
+}
 
 const enable = computed(() => {
   const e = props.enable ?? {}
@@ -363,10 +377,6 @@ const canSubmit = computed(
   () => !props.submitting && (props.modelValue.trim().length > 0 || attachments.value.length > 0),
 )
 const canOptimize = computed(() => props.modelValue.trim().length > 0)
-
-function onInput(e: Event) {
-  emit('update:modelValue', (e.target as HTMLTextAreaElement).value)
-}
 
 function onKeydown(e: KeyboardEvent) {
   // e.repeat：长按/输入法（如 Gboard 语音听写收尾）合成的重复 Enter 只应提交
@@ -496,7 +506,10 @@ onBeforeUnmount(() => {
 }
 .uc--single .uc-input {
   min-height: 44px;
-  max-height: 120px;
+  /* 紧凑变体也按内容长高，但留更浅的上限——标题类输入正常 1-2 行，
+     真写成多行时仍要让用户看得见（原先 120px ≈ 5 行就封顶并转内部滚动，
+     「内容看不全」的高发点）。超限后由 overflow-y 接管滚动。 */
+  max-height: 30vh;
   padding: var(--space-2, 8px) var(--space-3, 12px);
   resize: none;
 }

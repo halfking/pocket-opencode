@@ -177,6 +177,36 @@ input, textarea, select, button {
   font-family: inherit;
 }
 
+/* 多行输入的全局舒适基线（2026-10-03 审计）
+ *
+ * 诉求：「所有有多行文本输入的区域，输入的内容展示要尽可能地完整，
+ * 区域足够大，让人感觉舒服，不要太小或看不完整。」
+ *
+ * 现状是 21 处裸 <textarea> 各自手写尺寸：有的 rows="1"、有的没写 rows
+ * （浏览器默认 2 行）、min-height 有 60px 有 80px 有 112px 也有干脆没有。
+ * 逐个改是一锤子定音不了的——下一个人加个 textarea 又回到老样子。
+ *
+ * 所以把「下限」提到全局，只给下限、不给上限：
+ *   - min-height 72px ≈ 3 行，任何多行输入都不是一条缝；
+ *   - resize: vertical 让用户能自己拖大（这是移动端唯一可靠的手动手段，
+ *     iOS/Android 键盘上都没有放大控件）。
+ *
+ * **紧凑型豁免**：`.textarea-compact` 覆盖这条下限。它给「列表里每项都带
+ * 一个」的场景用——例如 ApprovalPanel 每张待批卡片一个 rows=1 的备注框，
+ * 5 张卡片 × 96px 就是 480px 空白，列表直接被撑垮。这些框的正确做法不是
+ * 垫高，而是**平时 1 行、用户真写了才长高**（useAutoGrowTextarea），
+ * 两者互补：紧凑型用动态长高，表单型用固定下限。
+ *
+ * 下限必须能被单点覆盖：UnifiedComposer 自适应增高（高度由 JS 写 inline
+ * style，优先级高于本规则）、转写回显等各有自己的 class 规则。 */
+textarea:not(.textarea-compact) {
+  min-height: 72px;
+  resize: vertical;
+}
+
+/* 同一处规则也写进 styles.css：App.vue 与 styles.css 的注入顺序无关，
+   两条都留着，避免其中一个没加载时基线整条消失（与 #app 高度那条同理）。 */
+
 input:focus, textarea:focus, select:focus {
   outline: none;
 }
