@@ -252,7 +252,9 @@ function looksLikeMime(s: string): boolean {
   // 规则去读，若这里用松散正则就会造出「判定为 MIME、却读不出任何部件」的
   // 状态——那种状态最终会落到 return src，把整封协议头当正文。
   if (headerField(head, 'content-type') || headerField(head, 'content-transfer-encoding')) return true
-  if (/^mime-version[ \t]*:/im.test(head)) return true
+  // 同一条规则，冒号紧跟字段名（理由见 headerField）：容忍冒号前空格会让 QQ
+  // 追踪头里行首的 `mime-version : content-type : ...` 冒充真头。
+  if (headerField(head, 'mime-version')) return true
   // 非 multipart 的单部件 MIME 也可能只有边界式首行。
   //
   // 判据是「**首行**就是边界」，所以锚在字符串开头即可，**不设字符窗口**。
@@ -326,10 +328,31 @@ function walkMime(raw: string, out: MimePart[], depth: number): void {
  *
  * 折叠行（RFC 5322 §2.2.3，以空白开头的续行）仍被 `splitHeadBody` 原样保留在
  * headers 里；本函数只锚定**字段名所在行的行首**，续行内容不会被误认成新字段。
+ *
+ * ## 冒号前不容忍空格（2026-10-03 round33 负控实测）
+ *
+ * 本函数第一版写的是 `^${name}[ \\t]*:`，理由是「宽容一点」。它**没有实现上面
+ * 那段注释自己声称的不变式**：RFC 5322 的 field-name 是 `1*ftext`，末尾不允许
+ * 空白，所以 `content-type : ...` 不是合法字段名。而 QQ 追踪头里的伪字段名恰恰
+ * 就是**冒号前带空格**的形态 —— 一旦它落在行首（没有折叠缩进那种前导空格护着），
+ * `[ \\t]*` 会让它重新被认成真字段名，`+` 后面紧跟的下一个伪字段名
+ * （`list-unsubscribe : ...`）就被当成 content-type 的值。
+ *
+ * 负控（前端/src/features/email/__tests__/email-body-header-anchoring.test.mjs
+ * 里的「行首伪 content-type」用例）实测：修复前顶层类型被读成
+ * `list-unsubscribe : from : sender`，parts 树不成立，cid 内联图没有被解析成
+ * data: URI —— 与当初那个「49 封里 23 封命中」的缺陷**同一形态**，只是触发条件
+ * 从「行中间」挪到了「行首」。
+ *
+ * 为什么收紧不会伤到真邮件：`content-type : multipart/...` 这种畸形头一旦不再
+ * 被认出来，解析不会崩，而是落到 `stripMessageHeader` / `stripMultipartWrapper`
+ * 兜底出口，正文照样可读（损失的是 parts 树，也就是 cid 图与附件元数据）。
+ * 反过来放过它，代价是顶层类型被垃圾值劫持、整条 MIME 树不成立。
  */
 function headerField(headers: string, name: string): RegExpExecArray | null {
-  // 字段名只允许 ASCII 可见字符且不含冒号；`m` 让 ^ 锚定每一行的行首。
-  return new RegExp(`^${name}[ \\t]*:[ \\t]*([^\\r\\n]*)`, 'im').exec(headers)
+  // 冒号**紧跟**字段名：行首锚定 + 无空格，两条都是协议给出的判据。
+  // `m` 让 ^ 锚定每一行的行首；冒号后仍容忍空白（`Content-Type:text/html` 合法）。
+  return new RegExp(`^${name}:[ \\t]*([^\\r\\n]*)`, 'im').exec(headers)
 }
 
 /**

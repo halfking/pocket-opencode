@@ -187,3 +187,50 @@ test('extractEmailBody: 折行的真实 Content-Type 仍能被读到', () => {
   assert.match(out, /hello body/)
   assert.doesNotMatch(out, /^From:/m)
 })
+
+test('extractEmailBody: 伪字段名落在**行首**（冒号前有空格）时同样不生效', () => {
+  // round33 负控实测出来的残余漏洞。
+  //
+  // 上一轮的 headerField 写的是 /^name[ \t]*:/ —— 冒号前容忍空白。它挡得住
+  // 「伪字段名在行中间」（行首锚定就够了），挡不住「伪字段名恰好在行首」：
+  // QQ 追踪头里伪字段名的形态就是 `content-type : <下一个伪字段名>`，
+  // 一旦那一行前面没有折叠缩进的前导空格，整行从 content-type 起被认成真头，
+  // 值取到紧跟其后的 list-unsubscribe，顶层 MIME 类型被劫持。
+  //
+  // 负控（把 headerField 还原成容忍冒号前空格的版本）实测三条判据同时转红：
+  // cid 内联图不再被解析、QP 不解码、正文里直接露出裸 base64 载荷 ——
+  // 与「49 封里 23 封命中」那个缺陷同一形态，只是触发位置从行中间挪到了行首。
+  //
+  // 收紧的代价（畸形头 `content-type : multipart/...` 不再被认出来）是可控的：
+  // 解析不崩，落到 stripMessageHeader / stripMultipartWrapper 兜底，正文照样可读，
+  // 损失的只是 parts 树（cid 图与附件元数据）。
+  const msg = [
+    'From: a@example.com',
+    'X-QQ-XMRINFO: h=date : from :',
+    'content-type : list-unsubscribe : from : sender',
+    'MIME-Version: 1.0',
+    'Content-Type: multipart/related; boundary="B9"',
+    '',
+    '--B9',
+    'Content-Type: text/html; charset="UTF-8"',
+    'Content-Transfer-Encoding: quoted-printable',
+    '',
+    '<img src=3D"cid:logo@corp">=E5=AE=98=E6=96=B9=E6=9C=8D=E5=8A=A1',
+    '--B9',
+    'Content-Type: image/gif',
+    'Content-ID: <logo@corp>',
+    '',
+    GIF_B64,
+    '--B9--',
+    '',
+  ].join('\r\n')
+  const out = extractEmailBody(msg)
+  // 主判据的可观测证据：parts 树成立 ⇒ resolveCidImages 跑过 ⇒ cid 变 data: URI。
+  // 兜底出口也能让「正文可读」，所以可读性不能当主判据。
+  assert.doesNotMatch(out, /cid:logo@corp/, 'cid 引用没被替换 ⇒ 顶层 MIME 类型被行首伪字段名劫持')
+  assert.match(out, /data:image\/gif;base64,/, 'cid 内联图未被内联 ⇒ parts 树不成立')
+  // 兜底出口不解码子部件，所以「QP 已解码」同样能区分两条出口。
+  assert.match(out, /官方服务/, 'QP 未解码 ⇒ 走的是兜底出口而不是 text/html 分支')
+  assert.doesNotMatch(out, /=E5=AE=98/, 'quoted-printable 未解码')
+  assert.doesNotMatch(out, /R0lGOD/, '附件的裸 base64 载荷漏进正文 ⇒ parts 树没成立')
+})

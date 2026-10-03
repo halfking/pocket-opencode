@@ -12648,3 +12648,114 @@ origin/main 上这段原文已被 §4.121 **明确标注为假红并修掉**（`
   装包）；没有重启 18099；没有触碰 `wt-a32`；没有合并任何分支
   （`rev-list` 证明无未合并内容）。
 
+## §4.124 round33 审计：上一轮的「行首锚定」只挡住了行中间，行首那一半没挡住
+
+### §4.124.0 范围与分支实况
+
+- `git fetch --all --prune` 后 `main` 与 `origin/main` 完全一致（`8e0538ca`，0/0 分叉），
+  工作区干净。本轮从「拉主分支」这一步开始，实际无事可拉。
+- **24h 内没有任何未合并的子分支**：本地只有 `main`，远端只有 `origin/main`。
+  round32 的分支已经合并并删除。所以本轮「合并/清理分支」这一项是空操作，
+  下面记的是我**实际做了什么核查**，以免下轮误以为漏了。
+- 残留 worktree 一个：`C:/workspace/openpocket-wt-a32`，detached HEAD `cafb3d6c`
+  （已在 main 历史里）。它的工作区有 169 个文件显示为已修改——**先别信这个数字**：
+  本机 checkout 是 CRLF，`git diff` 满屏 `LF will be replaced by CRLF` 警告。
+  滤掉行尾噪声（`git diff -w`）后，真正有内容差异的是 45 个文件。
+
+  判定它是否还留着 main 没有的东西，用的是**方向**而不是数量：
+  `git diff -w main --numstat` 汇总为 **+228 / -9664**。抽样看那 228 行里的
+  `+1`，全都是同一个形态——main 有、它没有的 gofmt 补的空注释行
+  （`//` 插在列表项之前）；`.maestro/2026-10-02-real-login.yaml` 的 38/27
+  同理，它那份是「实测跑不通，留档说明为什么」的旧版，main 已按实测重写。
+
+  ⇒ **该 worktree 不含任何 main 之外的独有工作**，它是 wip 落盘前的旧快照。
+  但我没有删它：`git worktree remove` 面对这批「冗余但未提交」的改动必须加
+  `--force`，而它是 `C:\workspace` 下主工作区之外的目录，删掉不可逆。
+  要清的人自己跑这一条即可（先看一眼再决定）：
+  `git worktree remove --force C:/workspace/openpocket-wt-a32`。
+- 11 条 2026-09-30 / 10-01 的 stash 仍在，**本轮未动**（drop 不可逆，且它们早于
+  本轮 24h 窗口，不属于本次授权范围）。
+
+### §4.124.1 基线：22 项门禁在 8e0538ca 上全绿
+
+`frontend/npm.cmd run gates` → `✅ 全部 22 项通过，用时 71.7s`。
+后端 `go build ./...` = 0、`go vet ./internal/email/` = 0、
+`go test ./internal/email/` = ok 12.465s。
+
+> 顺带记一个本机老坑：PowerShell 下 `npm` 解析到 `npm.ps1`，被执行策略拦掉，
+> 报错是 `PSSecurityException`，看起来像「门禁跑挂了」。必须用 `npm.cmd`。
+
+### §4.124.2 本轮真缺陷：行首锚定只挡住了「行中间」
+
+**根因**：`round32` 把 `headerField` 从 `/content-type\s*:\s*([^\s;]+)/i` 改成
+`^${name}[ \t]*:`，用来挡 QQ `X-QQ-XMRINFO` 追踪头里「把字段名当值写」的那批邮件
+（真实数据 49 封里 23 封命中）。但它**没有实现自己注释里声称的不变式**——
+注释写着「RFC 5322 的 field-name 语法本就不允许空格，`content-type :` 根本不是
+合法字段名」，代码却用 `[ \t]*` 容忍了冒号前的空白。
+
+于是漏洞从「行中间」挪到了「行首」：追踪头的伪字段名形态恰恰是
+`content-type : <下一个伪字段名>`，只要那一行前面没有折叠缩进的前导空格挡着，
+整行就从 `content-type` 起被认成真字段名，取到的值是紧跟其后的
+`list-unsubscribe`——顶层 MIME 类型被劫持，`walkMime` 不再递归切分。
+
+**证据（负控，实测）**：夹具为 multipart/related + text/html（QP）+ image/gif。
+- 修复前：`cid:` 引用没被替换、QP 没解码、正文里直接露出裸 base64 载荷；
+- 修复后：与「根本没有伪字段名」的对照组**逐项一致**。
+即：与 23/49 那次同一形态的缺陷，只是触发位置不同。
+
+**修法**：`headerField` 改成 `^${name}:[ \t]*([^\r\n]*)`，冒号紧跟字段名；
+冒号**后**仍容忍空白（`Content-Type:text/html` 合法）。`looksLikeMime` 里
+`mime-version` 的判定改走同一条 `headerField`，不再单独写宽松正则。
+
+**为什么收紧不会伤到真邮件**：畸形头 `content-type : multipart/...` 一旦不再被
+认出来，解析不会崩，而是落到 `stripMessageHeader` / `stripMultipartWrapper`
+兜底出口，正文照样可读；损失的只是 parts 树（cid 内联图与附件元数据）。
+反过来放过它，代价是顶层类型被垃圾值劫持、整条 MIME 树不成立。
+
+**护栏**：`email-body-header-anchoring.test.mjs` 新增第 6 条用例
+「伪字段名落在**行首**（冒号前有空格）时同样不生效」，断言三条主判据
+（cid 被内联 / QP 已解码 / 附件 base64 没漏进正文）。
+负控：把源文件还原成修复前版本 → 该用例 `AssertionError` 转红，5 条老用例仍绿。
+
+> 这里我犯过一次错，值得记下来：**第一版探针的判据是错的**。
+> 我用 `cid: 被换成 data: URI` 当「parts 树成立」的证据，但探针正文写的是
+> `text/plain` 部件——而 `resolveCidImages` 只在 `text/html` 分支被调用，
+> 所以对照组的 cid 也**必然**没被替换。若当时直接下结论，就会把一个恒假判据
+> 写成「已复现缺陷」。改成 html 部件后才有真正的 A/B。
+> 教训：**判据必须先在已知正常的对照组上跑一遍**，确认它会亮，再拿它去照缺陷。
+
+### §4.124.3 顺手排除的怀疑：后端没有这个毛病
+
+前端要手写 MIME 解析，后端不用——`mime.go` 走 `net/mail` 的 `Header.Get` 加
+`mime.ParseMediaType`，标准库按行锚定解析头，不会把行中间的内容当字段名。
+所以「QQ 追踪头劫持顶层类型」是**前端独有**的缺陷，后端不用改。
+
+### §4.124.4 wip(round32) 其余改动的审计结论
+
+上一轮那笔 `wip(round32)` 是以「在制品」名义直接进 main 的，本轮逐个看过：
+
+- `EmailSummaryView.vue` / `TaskDetailView.vue` 的错误态可见化：**成立**。
+  两处都把「加载失败」与「没有数据」拆开了，且作者已经踩过并写下
+  「重试前必须先清 `loadError`，否则 `v-else-if` 顺序会让错误分支一直胜出、
+  重试按钮看起来没反应」——这个坑是真实存在的（模板里错误分支排在空态之前），
+  代码里也确实清了。
+- `check-vacuous-optional-guard.mjs`：**有牙齿**。负控实测——往
+  `EmailSummaryView.vue` 注入一处 `v-if="x?.y !== 0"`，脚本 exit 1 并点名
+  文件/行号/表达式/祖先链；`git checkout` 还原后 exit 0。它还有两条我认为
+  值得肯定的自我保护：① 行级正则与标签解析器**双计数交叉自检**，对不上直接
+  exit 2 拒绝按通过处理（作者自己在注释里记了第一版被嵌套 `<template #slot>`
+  截断、静默丢掉 5 处命中的坑）；② 豁免必须引用一条**可复核的具体机制**
+  （文件必须存在且匹配指定正则），机制被删则豁免自动失效。
+- 两个 `diag_*_test.go`（真实票 A4 拼版 + 汇总统计、rawbytes dump）：编译干净，
+  随包测试通过。它们由 `POCKET_DIAG_TOLL_E2E=1` 门控，常规 `go test` 下是 skip，
+  属于「真实数据手工验收」这一类，本轮**没有**真实数据可跑，故不宣称其通过。
+
+### §4.124.5 口径
+
+- 本轮改的是**一处**产品代码（`email-body-format.ts` 的两个正则）+ 一条新用例。
+  门禁侧零改动：`gates.json` 的 22 项名单与 `package.json` 的 `gates` 一行
+  保持原状（`node scripts/run-gates.mjs`）。
+- 「已验证」= 本机 22 项门禁全绿 + `go build`/`go vet`/`go test ./internal/email/`
+  通过 + 针对该缺陷的正控/负控 A/B。**未验证** = 真实 QQ 邮件在本轮没有再取样
+  （没有新的解密原文），行首形态是按真实追踪头格式构造的等价夹具；
+  真机端到端本轮未跑（无设备）。
