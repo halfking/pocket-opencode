@@ -1790,3 +1790,54 @@ MD 里**没有文件名**（`r[8]` 未被使用）。这是既有形状，不是
 
 ⇒ **「命令挂住」先怀疑自己留下的资源没释放**，别急着归因到环境或并发会话。
 排查动作：先看有没有残留 `go` / `email.test` 进程（本次没有，说明是被干净终止的）。
+## 三十二、核实一个多轮继承却从未验证的前提：定时流水线确实是每天 08:00
+
+第二十六节起的每一轮都在说「08:00 那轮」。那句话**一直是继承来的**，
+本轮第一次去查它成立与否——结论成立，但**附带两条此前没人写下来的运行约束**。
+
+### 32.1 08:00 从哪来（代码 + 运行日志双向确认）
+
+- `internal/config/config.go:336`：
+  `EmailPipelineHour: getEnvInt("POCKET_EMAIL_PIPELINE_HOUR", 8)` —— **默认 8**
+- `cmd/pocketd/main.go:792`：`emailScheduler.SetPipelineRunner(srv, cfg.EmailPipelineHour)`
+- `scheduler.go:768`：`next := nextTimeAt(s.now(), hour, 0, 0)` —— 定点、每天一次
+
+运行实例日志直接印证（**不是从配置推的**）：
+
+    2026/10/04 05:02:02 [email/scheduler] daily pipeline runner injected (hour=8)
+    2026/10/04 05:02:02 [email/scheduler] pipeline scheduled at 2026-10-04T08:00:00+08:00
+
+⇒ **今天这轮会跑**，08:15 复核瞄准的是对的东西。
+
+### 32.2 约束一：**没有补跑**。错过就是整天错过
+
+`scheduler.go:954-959`：
+
+    next := time.Date(now.Year(), now.Month(), now.Day(), hour, min, sec, 0, now.Location())
+    if !next.After(now) { next = next.Add(24 * time.Hour) }
+
+⇒ 只要进程**不是严格早于 08:00:00 启动**，当天那轮就被静默排到明天。
+连「刚好 08:00:00 启动」也会跳过（`After` 为 false）。
+**没有「启动时补跑今天」的逻辑。**
+
+今天 18099 已经换过二进制（`pocketd-qpfix.exe` → `pocketd-qpfix2.exe` 05:02）。
+所以：**若 08:00 之后有人重启实例，今天这一轮就没了**，
+且不会有任何报错或提示。08:15 复核时若发现「什么都没发生」，
+先查这个，而不是先怀疑流水线坏了。
+
+### 32.3 约束二：整轮有 **30 分钟**预算
+
+`scheduler.go:782`：`context.WithTimeout(..., 30*time.Minute)` 包住
+`runner.RunEmailPipeline`。超时即中断，且只会在
+`rep.Errors` 非空时打一行日志。分类网关当前频繁
+`context deadline exceeded`（每次手工触发 2 分钟预算打满），
+在这一轮里是**可预期的失败面**，复核时看到部分分类失败不应直接读成「流水线崩了」。
+
+### 32.4 多实例会重复推提醒（当前无风险，但要盯着）
+
+`config_email_pipeline_lock_test.go` 的注释写明这条失效模式是**静默**的：
+多实例共享同一个 PG 库时，08:00 会把重要邮件提醒**推多份**，
+要到 08:00 当天才发现。默认开关 `POCKET_EMAIL_PIPELINE_ADVISORY_LOCK=true`。
+
+⇒ 本轮实测**当前只有 PID 95820 一个 pocketd 进程**，无重复风险。
+但复核时若发现提醒数**成倍**增长，先查是不是又起了一个实例。
