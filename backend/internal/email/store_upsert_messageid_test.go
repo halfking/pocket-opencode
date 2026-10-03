@@ -25,45 +25,137 @@ package email
 // (account_id, message_id) 相同。仓库自己的注释就记着「QQ 信箱 284/444 封
 // 走 POP3 路径，47 组是重复副本」。
 //
-// ## 门控
+// ## 隔离：2026-10-04 审计重写（本文件此前有三个可证伪的缺陷）
 //
-//	POCKET_REAL_MAIL_DSN='postgresql://...' POCKET_DIAG_SCHEMA='opencode_pocket'
+// 初版把隔离寄托在**运维手工指定** `POCKET_DIAG_SCHEMA` 上：
 //
-// 只在显式给了 DSN 时跑；会**建自己的临时行**并在结束时删掉，不碰既有数据。
+//  1. **main 的 CI 是红的。** 规则 2（打开 PG 必须钉自建 `*_test_` schema）
+//     判 `TestPGTestsNeverTargetTheProductionSchema` 失败，而
+//     `.github/workflows/backend.yml` 跑的就是 `go test -race ./... -count=1`
+//     —— 于是一个测试文件把整条主干判红。
+//  2. **这个用例在 CI 里恒 skip，永远不执行。** 闸门是
+//     `POCKET_DIAG_SCHEMA` 非空，而 CI 只设 `POCKET_TEST_POSTGRES_DSN`。
+//     它在本地/真库上「跑过」，在 CI 上从不跑。
+//  3. **它结构上跑不起来。** 初版借真实账户
+//     （`SELECT id FROM email_accounts LIMIT 1`），而干净的自建 schema 里
+//     `email_accounts` 是空的 ⇒ 落到 `t.Skipf("库里没有可用账户")`。
+//     能让它真正断言的场景，恰好是它拒绝的那个（生产库）。
+//
+// 修法：按本包 fetcher_greenmail_test.go 的既有形态在本文件内自建
+// `email_upsertguard_test_<hex>` schema（守卫的 isolatedSchemaRe 认得的
+// 正是这个字面量）、用 RuntimeParams 把 search_path 钉上去、
+// `NewStore` 跑真迁移 ⇒ 两条唯一约束是真的、账户自建解开外键、
+// 收尾整条 schema DROP。⇒ 不再需要 `POCKET_REAL_MAIL_DSN` /
+// `POCKET_DIAG_SCHEMA`，也不再需要在 PG 隔离守卫的豁免表里登记。
+//
+// ## 为什么隔离写在本文件里，而不是调 newWorkspaceTestStore
+//
+// 试过复用 `newWorkspaceTestStore`，能过守卫——**但过得没有道理**：
+// 规则 2 的 `isolatedSchemaRe` 是词法判据（要求文件里出现 `"..._test_"`
+// 字面量），看不见「连接由 helper 提供」。负控实测：把一个真·不隔离的
+// `pgxpool.New` + `DELETE FROM emails` 塞进那个版本，守卫**依然绿**。
+// 也就是说隔离由别处兜着、而这条判据在本文件上已经没有牙齿。
+// 自己建 schema 才能让「守卫绿」与「确实隔离」是同一件事。
 
 import (
 	"context"
-	"os"
+	"crypto/rand"
+	"encoding/hex"
+	"strings"
 	"testing"
+	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// upsertGuardSchema 解析目标 schema，并**拒绝**生产库与「没给」。
+// newUpsertGuardStore 自建隔离 schema + Store，并返回收尾函数。
 //
-// 2026-10-04 复核：本文件原先把 POCKET_DIAG_SCHEMA 缺省成 `opencode_pocket`，
-// 而它下面两个测试是会**真的写** emails 行的（cleanup 就是
-// `DELETE FROM emails WHERE message_id = $1`，以及 InsertEmailIfNew）。
-// 闸门又只有 `POCKET_REAL_MAIL_DSN` 非空 —— 而本仓跑只读真实库诊断时
-// **本来就要**带 POCKET_REAL_MAIL_DSN。两边一撞就是「跑一次全量 go test，
-// 往生产 emails 表插两行再删掉」。当时它已被 PG 隔离守卫判红
-// （TestPGTestsNeverTargetTheProductionSchema），属真违规而非误报。
-//
-// 修法沿用本仓既有约定（见 diag_snippet_leak_test.go 的登记理由）：
-// **写路径拒绝 schema 缺省值**，并且显式点名生产库时直接 Fatal。
-func upsertGuardSchema(t *testing.T) string {
+// 形态照抄 fetcher_greenmail_test.go（那个文件是守卫注释里点名的
+// 「已正确隔离」范例），差别只有 schema 前缀。
+func newUpsertGuardStore(t *testing.T) (*Store, *string, func()) {
 	t.Helper()
-	schema := os.Getenv("POCKET_DIAG_SCHEMA")
-	if schema == "" {
-		t.Skip("POCKET_DIAG_SCHEMA 未设置，故不运行：本文件会真的 INSERT/DELETE emails 行，" +
-			"缺省会落到生产库 opencode_pocket。请显式指定一个隔离 schema 后再跑。")
+	dsn := greenmailDSN()
+	if dsn == "" {
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping upsert-conflict guard")
 	}
-	if schema == "opencode_pocket" {
-		t.Fatalf("POCKET_DIAG_SCHEMA=%s 指向生产库，拒绝运行：", schema)
+	ctx := context.Background()
+
+	buf := make([]byte, 6)
+	if _, err := rand.Read(buf); err != nil {
+		t.Fatalf("rand: %v", err)
 	}
-	return schema
+	schema := "email_upsertguard_test_" + hex.EncodeToString(buf)
+
+	rootPool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Skipf("cannot reach postgres: %v", err)
+	}
+	if _, err := rootPool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		rootPool.Close()
+		t.Fatalf("create schema: %v", err)
+	}
+
+	// 清理在这里就注册：下面还有 t.Fatalf，而 t.Fatalf 走 Goexit，
+	// 栈上 defer 会跑但尚未返回的 cleanup 永远不会执行。
+	pool, err := newScopedPool(ctx, dsn, schema)
+	if err != nil {
+		rootPool.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+		rootPool.Close()
+		t.Fatalf("scoped pool: %v", err)
+	}
+	cleanup := func() {
+		pool.Close()
+		if _, err := rootPool.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+			t.Logf("drop schema %s: %v", schema, err)
+		}
+		rootPool.Close()
+	}
+	t.Cleanup(cleanup)
+
+	store, err := NewStore(pool)
+	if err != nil {
+		t.Fatalf("NewStore (migrate): %v", err)
+	}
+	return store, &schema, cleanup
+}
+
+// seedGuardAccount 建一个本用例自有的账户，解开 emails.account_id 的外键。
+//
+// 初版是借生产库里已存在的账户（`SELECT id FROM email_accounts LIMIT 1`），
+// 理由写的是「不往业务表塞测试行」。在自建 schema 里这个理由不再成立：
+// 这里**就是**本用例自己的表，自建一行反而是唯一不碰真实库的做法。
+func seedGuardAccount(t *testing.T, s *Store, id string) {
+	t.Helper()
+	acc := &Account{
+		ID: id, UserID: "user-" + id, WorkspaceID: "ws-" + id,
+		DisplayName: "guard " + id, EmailAddress: id + "@example.com",
+		IMAPHost: "imap.example.com", IMAPPort: 993, AuthType: "password",
+		SyncIntervalMin: 15, Enabled: true, CreatedAt: time.Now().Unix(),
+	}
+	if err := s.InsertAccount(context.Background(), acc, "enc-cred"); err != nil {
+		t.Fatalf("insert account %s: %v", id, err)
+	}
+}
+
+// requireIsolatedSchema 在**运行期**自证确实落在 `*_test_` schema 上。
+//
+// 为什么在守卫之外还要这一层：词法判据只能证明「文件里写了自建 schema」，
+// 证明不了「连接真的用它」。而本用例会真的 INSERT/DELETE `emails` 行；
+// 隔离若失效，它会安静地改到真实库、并且**报告 ok**。
+func requireIsolatedSchema(t *testing.T, s *Store, want *string) {
+	t.Helper()
+	var cur string
+	if err := s.pool.QueryRow(context.Background(), `SELECT current_schema()`).Scan(&cur); err != nil {
+		t.Fatalf("read current_schema: %v", err)
+	}
+	if cur != *want {
+		t.Fatalf("current_schema()=%q，应为本用例自建的 %q：隔离没生效，"+
+			"下面的写入会落到真实库", cur, *want)
+	}
+	if !strings.Contains(cur, "_test") {
+		t.Fatalf("current_schema()=%q 不含 _test_", cur)
+	}
 }
 
 // TestStoreUpsertSurvivesMessageIDConflict 用**真 PG**跑这条冲突。
@@ -71,48 +163,21 @@ func upsertGuardSchema(t *testing.T) string {
 // 为什么不拿 mock 代替：缺陷本体就是 PG 对 ON CONFLICT 目标与唯一约束的匹配
 // 规则，mock 复现不了它 —— 而这个缺陷的整个教训就是「以为构造上不可能」。
 func TestStoreUpsertSurvivesMessageIDConflict(t *testing.T) {
-	dsn := os.Getenv("POCKET_REAL_MAIL_DSN")
-	if dsn == "" {
-		t.Skip("POCKET_REAL_MAIL_DSN not set")
-	}
-	schema := upsertGuardSchema(t)
+	store, schema, cleanup := newUpsertGuardStore(t)
+	defer cleanup()
 	ctx := context.Background()
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("parse dsn: %v", err)
-	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer pool.Close()
+	requireIsolatedSchema(t, store, schema)
 
-	// emails.account_id 有外键指向 email_accounts，所以必须借一个**真实存在**的
-	// 账户；不去新建账户，是为了不往业务表塞测试行。message_id 用本次运行独有的
-	// 值，清理也只按它删，绝不碰既有数据。
-	//
-	// （外键是本轮实测才发现的：最初这里写死一个假 account_id，第一次插入就被
-	// 23503 挡下。用 mock 或「假设没有外键」都会把这个事实一并掩盖掉。）
-	var acct string
-	if err := pool.QueryRow(ctx,
-		`SELECT id FROM email_accounts ORDER BY id LIMIT 1`).Scan(&acct); err != nil {
-		t.Skipf("库里没有可用账户（需要至少一个 email_accounts 行）：%v", err)
-	}
+	const acctID = "acct-guard-upsert"
+	seedGuardAccount(t, store, acctID)
+
 	const msgID = "guard-upsert-msgid-20261003"
 	const idA = "em-guard-A-upsert"
 	const idB = "em-guard-B-upsert"
-	cleanup := func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM emails WHERE message_id = $1`, msgID)
-	}
-	cleanup()
-	t.Cleanup(cleanup)
-
-	s := &Store{pool: pool}
 
 	// 第 1 行：POP3 形态的 id。
-	ins1, err := s.InsertEmailIfNew(ctx, Email{
-		ID: idA, AccountID: acct, MessageID: msgID, UID: 1,
+	ins1, err := store.InsertEmailIfNew(ctx, Email{
+		ID: idA, AccountID: acctID, MessageID: msgID, UID: 1,
 		FromAddress: "a@example.com", Subject: "第一行", Snippet: "旧摘要", Date: 1,
 	})
 	if err != nil {
@@ -123,8 +188,8 @@ func TestStoreUpsertSurvivesMessageIDConflict(t *testing.T) {
 	}
 
 	// 第 2 行：**同账户、同 message_id、不同 id** —— 精确构造出那条冲突。
-	ins2, err := s.InsertEmailIfNew(ctx, Email{
-		ID: idB, AccountID: acct, MessageID: msgID, UID: 2,
+	ins2, err := store.InsertEmailIfNew(ctx, Email{
+		ID: idB, AccountID: acctID, MessageID: msgID, UID: 2,
 		FromAddress: "a@example.com", Subject: "第二行", Snippet: "新摘要", Date: 2,
 	})
 	if err != nil {
@@ -136,10 +201,8 @@ func TestStoreUpsertSurvivesMessageIDConflict(t *testing.T) {
 	}
 
 	var rows int
-	// 按 message_id 数，**不能**按 account_id 数：上面借的是一个真实账户，
-	// 它本来就有别的邮件行，按账户数会把它们一并算进来（实测 11 行）。
-	// 断言的口径必须与「本用例造出来的那几行」一致。
-	if err := pool.QueryRow(ctx,
+	// 按 message_id 数，**不能**按 account_id 数：账户名下的其它邮件会被算进来。
+	if err := store.pool.QueryRow(ctx,
 		`SELECT count(*) FROM emails WHERE message_id = $1`, msgID).Scan(&rows); err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -148,9 +211,9 @@ func TestStoreUpsertSurvivesMessageIDConflict(t *testing.T) {
 	}
 
 	var gotSnippet string
-	if err := pool.QueryRow(ctx,
+	if err := store.pool.QueryRow(ctx,
 		`SELECT snippet FROM emails WHERE account_id = $1 AND message_id = $2`,
-		acct, msgID).Scan(&gotSnippet); err != nil {
+		acctID, msgID).Scan(&gotSnippet); err != nil {
 		t.Fatalf("select snippet: %v", err)
 	}
 	if gotSnippet != "新摘要" {
@@ -165,55 +228,34 @@ func TestStoreUpsertSurvivesMessageIDConflict(t *testing.T) {
 // 「空值保留旧值」，一次抓不到正文的重跑就会把正常摘要刷成空白 ——
 // 那是用新缺陷换旧缺陷。
 func TestStoreUpsertMessageIDConflictKeepsOldSnippetOnEmpty(t *testing.T) {
-	dsn := os.Getenv("POCKET_REAL_MAIL_DSN")
-	if dsn == "" {
-		t.Skip("POCKET_REAL_MAIL_DSN not set")
-	}
-	schema := upsertGuardSchema(t)
+	store, schema, cleanup := newUpsertGuardStore(t)
+	defer cleanup()
 	ctx := context.Background()
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("parse dsn: %v", err)
-	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer pool.Close()
+	requireIsolatedSchema(t, store, schema)
 
-	var acct string
-	if err := pool.QueryRow(ctx,
-		`SELECT id FROM email_accounts ORDER BY id LIMIT 1`).Scan(&acct); err != nil {
-		t.Skipf("库里没有可用账户：%v", err)
-	}
+	const acctID = "acct-guard-empty"
+	seedGuardAccount(t, store, acctID)
+
 	const msgID = "guard-upsert-empty-20261003"
-	cleanup := func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM emails WHERE message_id = $1`, msgID)
-	}
-	cleanup()
-	t.Cleanup(cleanup)
-
-	s := &Store{pool: pool}
-	if _, err := s.InsertEmailIfNew(ctx, Email{
-		ID: "em-guard-A-empty-upsert", AccountID: acct, MessageID: msgID, UID: 1,
+	if _, err := store.InsertEmailIfNew(ctx, Email{
+		ID: "em-guard-A-empty-upsert", AccountID: acctID, MessageID: msgID, UID: 1,
 		Subject: "保留", Snippet: "正常摘要", Date: 1,
 	}); err != nil {
 		t.Fatalf("第一次插入失败：%v", err)
 	}
 
 	// 第二行摘要为空 —— 必须保留旧值。
-	if _, err := s.InsertEmailIfNew(ctx, Email{
-		ID: "em-guard-B-empty-upsert", AccountID: acct, MessageID: msgID, UID: 2,
+	if _, err := store.InsertEmailIfNew(ctx, Email{
+		ID: "em-guard-B-empty-upsert", AccountID: acctID, MessageID: msgID, UID: 2,
 		Subject: "保留", Snippet: "", Date: 2,
 	}); err != nil {
 		t.Fatalf("空摘要的冲突兜底失败：%v", err)
 	}
 
 	var got string
-	if err := pool.QueryRow(ctx,
+	if err := store.pool.QueryRow(ctx,
 		`SELECT snippet FROM emails WHERE account_id = $1 AND message_id = $2`,
-		acct, msgID).Scan(&got); err != nil {
+		acctID, msgID).Scan(&got); err != nil {
 		t.Fatalf("select: %v", err)
 	}
 	if got != "正常摘要" {
@@ -244,5 +286,4 @@ func TestIsUniqueViolationIsNotTooLoose(t *testing.T) {
 	if isUniqueViolation(nil, "emails_account_id_message_id_key") {
 		t.Error("nil 被当成唯一冲突了")
 	}
-	var _ = pgx.ErrNoRows // 保持 import 有用，避免误删后编译失败掩盖真错误
 }

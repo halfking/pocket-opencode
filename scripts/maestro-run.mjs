@@ -1110,6 +1110,90 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
     console.error(`[preflight] ❌ 提交登录失败：${clicked}`)
     process.exit(3)
   }
+  // ⚠️ 2026-10-04 补：**登录后可能压着「创建主密码」弹窗**，它会挡住路由跳转。
+  //
+  // 现场：登录**其实成功了**（pocket_token 291 字符，与后端一致，
+  // /api/auth/login 实测 200），但对话框让 `location.hash` 一直停在
+  // `#/login` ⇒ 下面「等 hash 离开 #/login」30s 超时 ⇒ **误报登录失败**。
+  // 这条弹窗在「设备上还没有主密码」时必然出现（首登、或 App 数据被清过）。
+  //
+  // ⚠️⚠️ 填值手法试了四轮才成功，全部记在这里，别再走回头路：
+  //   ① native setter + input 事件        → 值不进 v-model，提示不变
+  //   ② 补 change/blur/keyup + 回读校验     → 仍不行
+  //   ③ 只填第一个密码框                    → 漏了「再次输入主密码」那个
+  //   ④ 逐字符派发键盘事件                  → 仍不行
+  //   ⑤ **CDP `el.focus()` + adb `input text`（系统级真实输入）→ 成功**
+  //      真机实测：焦点落在正确框、两框值都是 11、弹窗消失、hash 跳到 #/ai。
+  // 原理：CDP 直接设 value 绕过了 Vue 的事件链；而 `input text` 走系统输入
+  // 通路，v-model 一定收得到。用 focus 选框则避开了坐标换算在滚动页面上的错位。
+  const master = process.env.POCKET_MASTER
+  const adbBin = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
+  const serial = process.env.POCKET_SERIAL || '192.168.31.19:5555'
+  const ash = (cmd) => execFileSync(adbBin, ['-s', serial, 'shell', cmd], {
+    encoding: 'utf8', timeout: 30000, maxBuffer: 33554432,
+  })
+  let masterDialogHandled = false
+  for (let i = 0; i < 4; i++) {
+    await sleep(800)
+    const need = await cdpEval(`(function(){
+      try {
+        if ((document.body.innerText||'').indexOf('创建主密码') < 0) return 'no'
+        var ins = Array.from(document.querySelectorAll('input'))
+        var p1 = ins.filter(function(x){ return /至少/.test(x.placeholder||'') })[0]
+        var p2 = ins.filter(function(x){ return /再次|确认主密码|重复/.test(x.placeholder||'') })[0]
+        if (!p1) return 'no-input1'
+        if (!p2) return 'no-input2'
+        return 'present'
+      } catch (e) { return 'err:' + String(e).slice(0, 80) }
+    })()`)
+    if (need === 'no') { masterDialogHandled = true; break }
+    if (need !== 'present') {
+      console.log(`[preflight] ⚠️ 「创建主密码」弹窗在但处理不了：${need}`)
+      break
+    }
+    // 逐个框：CDP focus 选框（确定）→ adb input text 敲键盘（v-model 才收得到）
+    for (const which of ['至少', '再次']) {
+      const f = await cdpEval(`(function(){
+        try {
+          var ins = Array.from(document.querySelectorAll('input'))
+          var el = ins.filter(function(x){ return ${JSON.stringify(which)}.test(x.placeholder||'') })[0]
+          if (!el) return 'no-el'
+          el.focus()
+          return document.activeElement === el ? 'focused' : 'focus-failed'
+        } catch (e) { return 'err:' + String(e).slice(0,80) }
+      })()`)
+      if (f !== 'focused') { console.log(`[preflight] ⚠️ focus 失败(/${which}/)：${f}`); break }
+      await sleep(400)
+      try {
+        ash('input keyevent 123')
+        for (let k = 0; k < 40; k++) ash('input keyevent 67')
+        await sleep(250)
+        ash(`input text ${master || ''}`)
+      } catch (e) {
+        console.log(`[preflight] ⚠️ 系统级输入失败：${String(e?.message || e).split('\n')[0]}`)
+        break
+      }
+      await sleep(700)
+    }
+    const lens = await cdpEval(`JSON.stringify(Array.from(document.querySelectorAll('input'))
+        .filter(function(i){ return (i.type||'')==='password' })
+        .map(function(e){ return e.value.length }))`)
+    console.log(`[preflight] 主密码弹窗：两框已输入，长度=${lens}`)
+  }
+  if (masterDialogHandled) {
+    try { ash('input keyevent 111') } catch { /* 收键盘失败不致命 */ }
+    await sleep(500)
+    const ok = await cdpEval(`(function(){
+      try {
+        var b = Array.from(document.querySelectorAll('button'))
+                 .filter(function(x){ return /^(确认|确定|OK|Confirm)$/.test((x.textContent||'').trim()) })[0]
+        if (!b) return 'no-confirm'
+        b.click(); return 'confirmed'
+      } catch (e) { return 'err:' + String(e).slice(0,80) }
+    })()`)
+    console.log(`[preflight] 主密码弹窗确认：${ok}`)
+    await sleep(2500)
+  }
   // 等它真的离开登录页。点完立刻读会读到还没跳转的旧 hash。
   let landed = '(超时)'
   for (let i = 0; i < 30; i++) {

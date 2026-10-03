@@ -95,23 +95,24 @@ if (cacheErr) {
   process.exit(1)
 }
 
-// ⚠️ 2026-10-04 两轮修正的**最终形态**：force-stop 之后**删磁盘上的
-// localStorage 文件**，而不是靠 CDP removeItem。
+// ⚠️ 2026-10-04 修的竞态：清完 localStorage **立刻 force-stop**。
 //
-// 实测（真机，PG 已清零）：列表页仍显示上一轮的「回归卡组」，
-// 且 localStorage 里那条 deck 的 createdAt/updatedAt 与清场**前完全相同**
-// ⇒ 它不是被重写的，是从磁盘原样恢复的。
+// 现象：PG 已清零，列表页仍显示上一轮的「回归卡组」，且那条 deck 的
+// createdAt/updatedAt 与清场**前完全相同** ⇒ 不是被重写的，是从磁盘恢复的。
 //
-// 走过的两条弯路，都不成立：
-//   ① 「先 force-stop 再 CDP 清」——App 不在运行，devtools socket 连不上，
-//      缓存根本清不掉。
-//   ② 「先 CDP removeItem 再 force-stop」（2026-10-04 第一版）——顺序对，
-//      但**两步之间 App 还活着**：内存里的 store 仍持有卡组，
-//      在这个窗口里又把缓存落了盘。清完实测 `flashcards:v1` 仍在。
+// 走过的三条弯路（都留档，避免再走）：
+//   ① 先 force-stop 再 CDP 清 → App 不在运行，devtools socket 连不上，清不掉。
+//   ② 先 CDP removeItem 再 force-stop → **两步之间 App 还活着**，内存里的
+//      store 仍持有卡组，在这个窗口里又把缓存落了盘。
+//   ③ 删掉整个 app_webview/Default/Local Storage 目录 → 竞态是没了，
+//      但把**主密码设置也一起清掉**了（leveldb 按 key 没法精确删）。
+//      后果实测：下一次登录后 App 弹「创建主密码」对话框盖住路由，
+//      maestro-run.mjs 等 hash 离开 #/login 超时 → **误报登录失败**
+//      （后端 /api/auth/login 实测 200、token 291 字符都在）。
+//      为了跑一条闪卡 flow 毁掉整个 App 登录态，不划算。
 //
-// ⇒ 唯一没有竞态的做法是让 App 处于**停止态**再动磁盘：
-//   force-stop → 删 app_webview/Default/Local Storage 下的 leveldb。
-// 这条路径经 run-as 实测存在（debug 包可 run-as）。
+// ⇒ 采纳 ② + 把回写窗口压到最小：removeItem 之后**立刻**force-stop。
+// 仍以「force-stop 后重启复查键是否真的没了」为判据，不靠推测。
 const adbBin = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
 const serial = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 const sh = (cmd) => execFileSync(adbBin, ['-s', serial, 'shell', cmd], {
@@ -119,30 +120,10 @@ const sh = (cmd) => execFileSync(adbBin, ['-s', serial, 'shell', cmd], {
 })
 try {
   sh(`am force-stop ${PKG}`)
-  console.log(`  已 force-stop ${PKG}`)
+  console.log(`  已 force-stop ${PKG}（否则运行中的 store 会把缓存写回）`)
 } catch (e) {
   console.log(`  ❌ force-stop 失败：${String(e?.message || e).split('\n')[0]}`)
-  console.log('   App 仍在运行 → 删了磁盘也会被写回，这轮会静默测错分支。')
-  process.exit(1)
-}
-
-// App 停止后再删磁盘上的 localStorage（只删 Local Storage 目录，不碰 Cookie/IndexedDB）。
-//
-// 校验要注意：目录**不存在**时 adb shell 也会返回非零退出码，
-// 用 execFileSync 校验会把它当成「删除失败」—— 实测踩过：删除其实成功了，
-// 却被自己的校验判成失败。所以校验改用 `|| true` 吞掉退出码，只看输出。
-try {
-  sh(`run-as ${PKG} rm -rf "/data/data/${PKG}/app_webview/Default/Local Storage"`)
-  const check = sh(
-    `run-as ${PKG} ls "/data/data/${PKG}/app_webview/Default/Local Storage" 2>&1 || true`,
-  )
-  if (!/No such file/i.test(String(check))) {
-    throw new Error('删除后目录仍存在：' + String(check).trim().slice(0, 200))
-  }
-  console.log('  已删除磁盘 localStorage（App 停止态，无回写竞态）')
-} catch (e) {
-  console.log(`  ❌ 删磁盘 localStorage 失败：${String(e?.message || e).split('\n')[0]}`)
-  console.log('   缓存没删干净 ⇒ 列表页会回显上一轮卡组 ⇒ 这轮测的是 deck-toggle 分支。')
+  console.log('   App 仍在运行 → 它可能把闪卡缓存写回，这轮会静默测错分支。')
   process.exit(1)
 }
 
