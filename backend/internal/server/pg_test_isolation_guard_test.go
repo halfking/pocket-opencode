@@ -502,6 +502,18 @@ var pgAllowlistedWrites = map[string]string{
 	// 可改写全部账户的同步进度）。
 	"internal/email/diag_snippet_leak_test.go": "1 条 UPDATE（重置 last_synced_uid），被 POCKET_REAL_MAIL_DSN + POCKET_DIAG_RESET_ACCOUNT + POCKET_DIAG_ALLOW_RESET=1 三重开关挡住；写路径拒绝 schema 缺省值（缺省=生产库 opencode_pocket 且 who='ALL' 可改全部账户）",
 
+	// internal/email/store_upsert_messageid_test.go（2026-10-04 复核后登记）：
+	// 这个文件**会真的写** emails 行（InsertEmailIfNew + cleanup 里的
+	// `DELETE FROM emails WHERE message_id = $1`），所以它必须登记在这里、
+	// 而不是 pgSafeWithoutIsolation（那个表只收「无写语句」的文件，规则 4 会拦）。
+	// 2026-10-04 复核发现它原先把 POCKET_DIAG_SCHEMA 缺省成 `opencode_pocket`，
+	// 而闸门只有 POCKET_REAL_MAIL_DSN 非空——本仓跑只读真实库诊断时本来就带
+	// POCKET_REAL_MAIL_DSN，两者相撞即等于「跑一次全量 go test 就在生产库插删行」。
+	// 已改为经 upsertGuardSchema 统一把关：缺省即 t.Skip，显式点名 opencode_pocket
+	// 即 t.Fatalf。仍允许连非生产库，是因为被测行为（ON CONFLICT 目标与唯一约束
+	// 的匹配）必须在**有真实 emails 表结构**的库上才复现得出来。
+	"internal/email/store_upsert_messageid_test.go": "会真写 emails 行（INSERT + DELETE），故登记在此而非 pgSafeWithoutIsolation：schema 缺省即 t.Skip、显式点名 opencode_pocket 即 t.Fatalf（见文件内 upsertGuardSchema），2026-10-04 修掉了原先「缺省=生产库 + 闸门只有 POCKET_REAL_MAIL_DSN」的组合",
+
 	// 隔离助手本身：dropScopedSchema 只 DROP 调用方传进来的那个 schema 名。
 	"internal/email/pgscope_test.go": "隔离助手本身：dropScopedSchema 只 DROP 调用方传进来的 schema 名（'DROP SCHEMA IF EXISTS '+schema+' CASCADE'），是「只删自己建的」的安全收尾模式",
 

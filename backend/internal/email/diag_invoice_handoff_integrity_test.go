@@ -133,20 +133,37 @@ func TestDiagInvoiceHandoffIntegrity(t *testing.T) {
 		t.Fatal("连接竟然可写，只读保护没生效，拒绝继续")
 	}
 
+	// 带上「这行是从哪封邮件来的、发件人是谁、那个发件人是不是就是收件邮箱本身」。
+	// 判据 0a 要用到后两个字段——没有它们就只能靠 PDF 正文里的英文字符串猜，
+	// 那判据只认一种写法（与「grep 不到 ≠ 不存在」同源）。
 	rows, err := pool.Query(ctx, `
-		SELECT COALESCE(file_name,''), COALESCE(file_path,''), COALESCE(invoice_date,''),
-		       COALESCE(amount::text,'0'), status
-		  FROM email_invoices
-		 WHERE COALESCE(status,'') = 'downloaded'`)
+		SELECT COALESCE(ci.file_name,''), COALESCE(ci.file_path,''),
+		       COALESCE(ci.invoice_date::text,''),
+		       COALESCE(ci.amount::float8, 0), ci.status,
+		       COALESCE(ci.email_id,''),
+		       COALESCE(e.from_address,''), COALESCE(e.from_name,''),
+		       COALESCE(ac.email_address,''),
+		       (ci.invoice_date IS NULL) AS date_is_null
+		  FROM email_invoices ci
+		  LEFT JOIN emails e ON e.id = ci.email_id
+		  LEFT JOIN email_accounts ac ON ac.id = e.account_id
+		 WHERE COALESCE(ci.status,'') = 'downloaded'`)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
 	defer rows.Close()
-	type inv struct{ fileName, filePath, date, amount, status string }
+	type inv struct {
+		fileName, filePath, date, status string
+		amount                           float64
+		emailID, fromAddr, fromName      string
+		mailbox                          string
+		dateIsNull                       bool
+	}
 	var claimed []inv
 	for rows.Next() {
 		var i inv
-		if err := rows.Scan(&i.fileName, &i.filePath, &i.date, &i.amount, &i.status); err != nil {
+		if err := rows.Scan(&i.fileName, &i.filePath, &i.date, &i.amount, &i.status,
+			&i.emailID, &i.fromAddr, &i.fromName, &i.mailbox, &i.dateIsNull); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
 		claimed = append(claimed, i)
@@ -159,6 +176,94 @@ func TestDiagInvoiceHandoffIntegrity(t *testing.T) {
 			"两种都不该被本诊断读成「目录干净」（dir 里还有 %d 个 PDF）", len(files))
 	}
 	t.Logf("[diag] 台账 downloaded 行：%d", len(claimed))
+
+	// ---- 判据 0：**台账引用**的行里，有多少其实不该当凭证交出去 ----
+	//
+	// 为什么排在最前：台账的 `status=downloaded` 只表示「拿到过某个 PDF」，
+	// 它**不表示**那个 PDF 是对方开来的票面。2026-10-03 深夜实测 3 张
+	// 「腾讯云发票」（合计 513.40 CNY）整条链路是自造的：
+	//
+	//   · 来源邮件 from_address == 收件邮箱地址本身（56551681@qq.com 发给
+	//     56551681@qq.com），from_name 伪装成 `[QQ Wallet] …`；
+	//   · 正文是英文 `Dear user, your electronic invoice has been issued.`；
+	//   · 附件是 973 字节的 Helvetica 纯文本 7 行 PDF，无内嵌 CJK 字体、
+	//     无发票代码/密码区/校验码，结构上不可能是增值税电子普通发票票面；
+	//   · 同一个邮箱里另有 `[urgent-e2e]` 前缀的自注入邮件（round27/28
+	//     文档已记录），说明这个真实邮箱**本来就是 E2E 注入靶子**。
+	//
+	// 判据拆成三条，因为它们各自会失效：
+	//   0a 自发自收 —— 纯 DB 事实，最硬，不依赖任何文案字面量；
+	//   0b 夹具/退化件 —— 复用 classifyOrphanPDF（会解压 Flate 流），
+	//      但它只看**内容**，自造的英文摘要页不含它的关键词，会漏；
+	//   0c 摘要页 —— 只认 `system-generated` 这一种写法，改个文案就失效，
+	//      所以它只是 0a 的补充佐证，**不能单独作为结论**。
+	var selfSent, fixture, degenerate, sysSummary []inv
+	var selfSentAmt, sysSummaryAmt float64
+	for _, c := range claimed {
+		if c.mailbox != "" && strings.EqualFold(c.fromAddr, c.mailbox) {
+			selfSent = append(selfSent, c)
+			selfSentAmt += c.amount
+		}
+		p := filepath.Join(dir, filepath.Base(c.fileName))
+		info, serr := os.Stat(p)
+		if serr != nil {
+			continue // 判据 1 会报它
+		}
+		switch classifyOrphanPDF(p, info.Size()) {
+		case "夹具":
+			fixture = append(fixture, c)
+			continue
+		case "退化件":
+			degenerate = append(degenerate, c)
+			continue
+		}
+		if isSystemSummaryPDF(p) {
+			sysSummary = append(sysSummary, c)
+			sysSummaryAmt += c.amount
+		}
+	}
+	// 计入合计的口径只认 InvoiceCountsTowardTotal；这里只用 downloaded 行
+	// 求和，是为了让「剔除可疑后还剩多少」这句话有个可复算的底数。
+	var total float64
+	for _, c := range claimed {
+		total += c.amount
+	}
+	nullDate := 0
+	for _, c := range claimed {
+		if c.dateIsNull {
+			nullDate++
+		}
+	}
+	if len(selfSent) > 0 {
+		t.Logf("[⚠ 台账行来自自发自收] %d 行，合计 %.2f —— 发件人地址就是收件邮箱本身，"+
+			"这些**不是任何一家供应商开来的票**，是本系统自己的测试注入"+
+			"（同邮箱另有 [urgent-e2e] 前缀注入记录，见 round27/28 文档）",
+			len(selfSent), selfSentAmt)
+		for _, c := range selfSent {
+			t.Logf("     自发  %10.2f  发件=%s  伪装名=%q  %s",
+				c.amount, c.fromAddr, c.fromName, c.fileName)
+		}
+	}
+	if len(fixture)+len(degenerate) > 0 {
+		t.Logf("[⚠ 台账引用了非票面文件] 夹具 %d 个、退化件 %d 个", len(fixture), len(degenerate))
+		for _, c := range fixture {
+			t.Logf("     夹具    %s", c.fileName)
+		}
+		for _, c := range degenerate {
+			t.Logf("     退化件  %s", c.fileName)
+		}
+	}
+	if len(sysSummary) > 0 {
+		t.Logf("[佐证·不单独作结论] 台账引用了 %d 个自称 system-generated 的摘要页，合计 %.2f；"+
+			"该判据只认这一种文案，改文案即失效，结论请以 0a 为准",
+			len(sysSummary), sysSummaryAmt)
+		for _, c := range sysSummary {
+			t.Logf("     摘要页  %10.2f  %s", c.amount, c.fileName)
+		}
+	}
+	t.Logf("[⚠ 口径] downloaded 行合计 %.2f；剔除自发自收的 %.2f 后 = %.2f；"+
+		"其中 invoice_date 为空的 %d 行（文件名日期是采集当天兜底的，见 invoice_harvest.go:765）",
+		total, selfSentAmt, total-selfSentAmt, nullDate)
 
 	// ---- 判据 1：台账声称的文件是否真在磁盘上 ----
 	byName := map[string]handoffFile{}
@@ -248,10 +353,52 @@ func TestDiagInvoiceHandoffIntegrity(t *testing.T) {
 		}
 	}
 
+	// 汇总时要按**文件**去重：自发自收与摘要页在真实数据上命中的是同一批行
+	// （那 3 张既是自注入、正文也自称 system-generated）。第一版直接把三个
+	// 计数相加报成「6 行要先定性」，而肉眼看目录只有 3 个文件——
+	// 判据自报的统计量必须和肉眼可数的事实对得上，否则读者会照着 6 去核对，
+	// 核不出来就再也不信这条诊断。
+	flagged := map[string]bool{}
+	for _, c := range claimed {
+		for _, group := range [][]inv{selfSent, fixture, degenerate, sysSummary} {
+			for _, f := range group {
+				if f.fileName == c.fileName {
+					flagged[c.fileName] = true
+				}
+			}
+		}
+	}
 	t.Logf("[diag] 汇总：台账缺文件 %d / 磁盘孤儿 %d / 内容重复组 %d / 日期打架组 %d"+
 		"（目录 %d 个 PDF，台账 %d 行）", missing, orphans, dupGroups, mismatch, len(files), len(claimed))
-	if orphans == 0 && missing == 0 && dupGroups == 0 {
+	t.Logf("[diag] 判据 0：自发自收 %d 行 / 夹具 %d / 退化件 %d / 摘要页 %d"+
+		"；按文件去重后实际待定性 **%d** 个（多条判据可能命中同一文件）",
+		len(selfSent), len(fixture), len(degenerate), len(sysSummary), len(flagged))
+	if orphans == 0 && missing == 0 && dupGroups == 0 && len(flagged) == 0 {
 		t.Log("[diag] 目录与台账一致。**这只覆盖这一个目录**——" +
 			"A4 拼版产物在 exports 子目录、且由 export 端点按 id 生成，不在本诊断范围内。")
 	}
+}
+
+// isSystemSummaryPDF 判断一个 PDF 正文是否自称「系统生成的电子发票」。
+//
+// ## 它只是一条佐证，不是结论
+//
+// 第一版把它当成「不是官方票面」的判据。错在两点：
+//
+//  1. 它只认 `system-generated` **这一种英文写法**。上游把文案改成
+//     "auto-generated" / "电子发票（系统开具）" 就完全漏判——
+//     与「grep 不到 ≠ 不存在」同源：文本搜索只认你会写的那一种。
+//  2. 更糟的是它**恒亮**：只要有一张这样的页被引用就报出来，于是
+//     读日志的人会以为「抓到证据了」，而真正硬的证据（发件人==收件人）
+//     反而被这条弱判据盖住。
+//
+// 所以现在它的定位是「补充佐证」，主判据是 DB 侧的
+// `from_address = email_accounts.email_address`。
+func isSystemSummaryPDF(path string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	hay := strings.ToUpper(latin1(b) + "\n" + inflateAllStreams(b))
+	return strings.Contains(hay, "SYSTEM-GENERATED")
 }

@@ -41,6 +41,31 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// upsertGuardSchema 解析目标 schema，并**拒绝**生产库与「没给」。
+//
+// 2026-10-04 复核：本文件原先把 POCKET_DIAG_SCHEMA 缺省成 `opencode_pocket`，
+// 而它下面两个测试是会**真的写** emails 行的（cleanup 就是
+// `DELETE FROM emails WHERE message_id = $1`，以及 InsertEmailIfNew）。
+// 闸门又只有 `POCKET_REAL_MAIL_DSN` 非空 —— 而本仓跑只读真实库诊断时
+// **本来就要**带 POCKET_REAL_MAIL_DSN。两边一撞就是「跑一次全量 go test，
+// 往生产 emails 表插两行再删掉」。当时它已被 PG 隔离守卫判红
+// （TestPGTestsNeverTargetTheProductionSchema），属真违规而非误报。
+//
+// 修法沿用本仓既有约定（见 diag_snippet_leak_test.go 的登记理由）：
+// **写路径拒绝 schema 缺省值**，并且显式点名生产库时直接 Fatal。
+func upsertGuardSchema(t *testing.T) string {
+	t.Helper()
+	schema := os.Getenv("POCKET_DIAG_SCHEMA")
+	if schema == "" {
+		t.Skip("POCKET_DIAG_SCHEMA 未设置，故不运行：本文件会真的 INSERT/DELETE emails 行，" +
+			"缺省会落到生产库 opencode_pocket。请显式指定一个隔离 schema 后再跑。")
+	}
+	if schema == "opencode_pocket" {
+		t.Fatalf("POCKET_DIAG_SCHEMA=%s 指向生产库，拒绝运行：", schema)
+	}
+	return schema
+}
+
 // TestStoreUpsertSurvivesMessageIDConflict 用**真 PG**跑这条冲突。
 //
 // 为什么不拿 mock 代替：缺陷本体就是 PG 对 ON CONFLICT 目标与唯一约束的匹配
@@ -50,10 +75,7 @@ func TestStoreUpsertSurvivesMessageIDConflict(t *testing.T) {
 	if dsn == "" {
 		t.Skip("POCKET_REAL_MAIL_DSN not set")
 	}
-	schema := os.Getenv("POCKET_DIAG_SCHEMA")
-	if schema == "" {
-		schema = "opencode_pocket"
-	}
+	schema := upsertGuardSchema(t)
 	ctx := context.Background()
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -147,10 +169,7 @@ func TestStoreUpsertMessageIDConflictKeepsOldSnippetOnEmpty(t *testing.T) {
 	if dsn == "" {
 		t.Skip("POCKET_REAL_MAIL_DSN not set")
 	}
-	schema := os.Getenv("POCKET_DIAG_SCHEMA")
-	if schema == "" {
-		schema = "opencode_pocket"
-	}
+	schema := upsertGuardSchema(t)
 	ctx := context.Background()
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
