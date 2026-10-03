@@ -5,6 +5,13 @@
       旧实现用 height 撑开 + translateY(-100%)，指示器出现时会跳一下
       （高度变了再位移，两帧之间不连续）。这里改成固定满高 + 位移揭开，
       揭开过程与手指 1:1 对齐，不存在跳帧。
+
+      静止时必须**完全藏在内容之上**（2026-10-03 模拟器 API 35 实测修复）：
+      原式 `INDICATOR_HEIGHT - pullDistance` 在 pullDistance=0 时得 +56px，
+      方向是反的——把指示器从「藏在顶部」推到了内容区内部，于是
+      「下拉同步邮件」以 0.25 不透明度常驻在筛选 chip 行上面叠着
+      （实测 rect: 指示器 top 165 / bottom 221，.work-filters top 152 /
+      bottom 214，168px 宽的 x 区间几乎完全重叠）。
     -->
     <div
       class="refresh-indicator"
@@ -113,12 +120,27 @@ const progress = computed(() => pullProgress(pullDistance.value, props.threshold
 /**
  * 指示器位移：让它「藏」在上方，随下拉逐步落进可视区。
  *
- * 刻意不写死 -100%：指示器满高 INDICATOR_HEIGHT，位移到
- * `indicatorHeight - pullDistance` 才是完全露出。用百分比在
- * 高度随内容变化的容器里会和实际像素脱节。
+ * 刻意不写死 -100%：指示器满高 INDICATOR_HEIGHT，用百分比在高度随内容
+ * 变化的容器里会和实际像素脱节。
+ *
+ * 方向（2026-10-03 模拟器 API 35 实测修复）：静止时必须是**负值**——
+ * 指示器整块退到容器顶边之上，与内容零重叠；拉到 INDICATOR_HEIGHT 时
+ * 恰好位移 0、完整落进内容让出的那道缝。原式 `INDICATOR_HEIGHT - d`
+ * 在 d=0 时得 +56（把自己推进内容区），在 d=56 时得 0（只到顶边），
+ * 两端都错，是位移方向写反了。超拉时钳在 0，不再继续下压。
  */
-const indicatorOffset = computed(() => INDICATOR_HEIGHT - Math.max(pullDistance.value, 0))
-const indicatorOpacity = computed(() => Math.min(1, 0.25 + progress.value * 0.75))
+const indicatorOffset = computed(() =>
+  Math.min(0, Math.max(pullDistance.value, 0) - INDICATOR_HEIGHT),
+)
+/**
+ * 不透明度：静止 0（完全不可见），随进度升到 1。
+ *
+ * 原来写死 `min(1, 0.25 + progress*0.75)`，也就是**静止时也留 0.25**——
+ * 那是上面那个方向 bug 的放大器：位置错了还被这条下限「保证」看得见，
+ * 于是叠在 chip 上的半透明文字成了常驻。位置修好后下限必须一并去掉，
+ * 否则静止时仍会有一层 25% 的残影压在内容上。
+ */
+const indicatorOpacity = computed(() => Math.min(1, progress.value * 1.4))
 /** 背景渐变只在拉开后出现，避免顶部长期糊着一层色。 */
 const backdropOpacity = computed(() => Math.max(0, (pullDistance.value - 8) / props.threshold))
 

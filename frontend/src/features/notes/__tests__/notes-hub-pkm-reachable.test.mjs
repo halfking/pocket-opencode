@@ -58,15 +58,47 @@ describe('NotesHubView 的 PKM 入口可达性', () => {
     )
   })
 
-  it('「全部笔记 / 全部会议」仍保留 counts 门控（没数据时不该出现）', () => {
-    for (const goCall of ["go('/notes/voice')", "go('/meetings')"]) {
-      const navTag = owningNavTag(goCall)
-      assert.match(
-        navTag,
-        /counts\.total/,
-        `${goCall} 所在的 nav: ${navTag}\n`
-          + '列表类入口在空库时不该渲染（与 PKM 的工具入口不同）',
-      )
-    }
+  it('「全部笔记」入口不被 counts.total 门控 —— 它是录音 FAB 的宿主', () => {
+    // ⚠️ 这条断言 2026-10-03 17:16 **方向反转过**，反转的理由要留在文件里，
+    //    否则下一个人会照着旧注释把它改回去。
+    //
+    // 本文件原来断言的是「/notes/voice 仍保留 counts 门控」，
+    // 理由写着「列表类入口在空库时不该渲染」。那条理由**对 /meetings 成立，
+    // 对 /notes/voice 不成立** —— 它漏看了一件事：
+    //
+    //   /notes/voice 渲染的是 NoteListView，而 NoteListView.vue:113
+    //     <VoiceRecorderWidget :recording="isRecording" :busy="recorderUi.busy" @toggle="onMicToggle" />
+    //   是**录音 FAB 的唯一挂载点**（.recorder-fab 只此一处）。
+    //
+    // 而 /notes（底部「笔记」tab，NotesHubView）自己**不渲染任何录音入口**，
+    //   它的空态按钮「录音记一笔」走的是 NotesHubView.vue:145
+    //     @action="go('/notes/new')"  —— 那是**新建笔记表单**，不是录音器。
+    //
+    // ⇒ 空库用户的实际体验：笔记 tab 里既没有 FAB，也没有能点开 FAB 的入口，
+    //   语音转写整条功能不可达。真机 CDP 对照（Xiaomi 2411DRN47C）：
+    //     A. #/notes       see-all nav 只有「打开 PKM」；.recorder-fab = ABSENT
+    //     B. #/notes/voice  .recorder-fab 在，aria-label=开始录音，60×60 @(282,674)
+    //   B 侧证明目标页本身是好的，缺的只是 A 侧那个入口。
+    //
+    // 判别力说明：这条判据取的是**门控关系**（正向形状：那个 nav 开标签里
+    // 不能有 counts.total），不是「页面上有没有这个词」——后者加个空壳就过。
+    const navTag = owningNavTag("go('/notes/voice')")
+    assert.doesNotMatch(
+      navTag,
+      /counts\.total/,
+      `「全部笔记」入口的 nav 被 counts 门控了：${navTag}\n`
+        + '空库用户会因此在笔记页找不到录音 FAB，语音转写整条功能不可达'
+        + '（2026-10-03 真机实测的缺陷，与本文件记录的 PKM 那条同源）',
+    )
+  })
+
+  it('「全部会议」仍保留 counts 门控（纯列表展开项，没数据时不该出现）', () => {
+    const navTag = owningNavTag("go('/meetings')")
+    assert.match(
+      navTag,
+      /counts\.total/,
+      `go('/meetings') 所在的 nav: ${navTag}\n`
+        + '会议列表是纯展开项，空库时不该渲染（与录音工具入口不同）',
+    )
   })
 })

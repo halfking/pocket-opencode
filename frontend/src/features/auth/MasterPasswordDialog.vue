@@ -65,7 +65,7 @@ async function submit() {
 </script>
 
 <style scoped>
-.dialog-mask { position: fixed; inset: 0; z-index: var(--z-alert); display: grid; place-items: center; padding: 20px; background: rgba(0, 0, 0, .45); }
+.dialog-mask { position: fixed; /* 底边随 --kb-inset 抬升：键盘在场时浮层收在键盘上沿之上，弹层内的输入框与确认按钮不会被盖住。同 BottomSheet.vue。 */ inset: 0 0 var(--kb-inset, 0px) 0; z-index: var(--z-alert); display: grid; place-items: center; padding: 20px; background: rgba(0, 0, 0, .45); }
 .dialog { width: min(100%, 420px); display: grid; gap: 12px; padding: 24px; border-radius: var(--radius-lg); background: var(--bg-card); color: var(--text-primary); box-shadow: var(--shadow-lg); }
 .hint { color: var(--text-secondary); font-size: var(--text-smd); line-height: 1.5; }
 .dialog input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-base); color: inherit; }

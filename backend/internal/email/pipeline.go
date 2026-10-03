@@ -363,12 +363,16 @@ type PipelineReport struct {
 	InvoiceCandidatesScanned int `json:"invoiceCandidatesScanned,omitempty"`
 	InvoiceCandidatesCreated int `json:"invoiceCandidatesCreated,omitempty"`
 	// InvoiceBodyFetchDeferred 是超出单轮 IMAP 预算、顺延到下一轮的候选数。
-	InvoiceBodyFetchDeferred int           `json:"invoiceBodyFetchDeferred,omitempty"`
-	Invoices                 HarvestResult `json:"invoices"`
-	FeishuPushed             int           `json:"feishuPushed"`
-	FeishuFailed             int           `json:"feishuFailed"`
-	ShareDocCSV              string        `json:"shareDocCsv,omitempty"`
-	ShareDocMD               string        `json:"shareDocMd,omitempty"`
+	InvoiceBodyFetchDeferred int `json:"invoiceBodyFetchDeferred,omitempty"`
+	// InvoiceBodyDeadLettered 是本轮新判定为「原文在服务端已不存在」的邮件数。
+	// 单独一个字段而不是混进 fetchFailed：前者在修复后应当稳定在一个很小的
+	// 数字上并最终归零（它们不再占用预算），后者会一直有网络噪声。
+	InvoiceBodyDeadLettered int           `json:"invoiceBodyDeadLettered,omitempty"`
+	Invoices                HarvestResult `json:"invoices"`
+	FeishuPushed            int           `json:"feishuPushed"`
+	FeishuFailed            int           `json:"feishuFailed"`
+	ShareDocCSV             string        `json:"shareDocCsv,omitempty"`
+	ShareDocMD              string        `json:"shareDocMd,omitempty"`
 	// ShareDocURL 是飞书共享台账链接（未配置飞书时为空，本地 CSV/MD 仍会生成）。
 	ShareDocURL string   `json:"shareDocUrl,omitempty"`
 	Errors      []string `json:"errors,omitempty"`
@@ -527,8 +531,25 @@ func (p *Pipeline) classifyPending(ctx context.Context, scopes map[[2]string]str
 // IMAP 路径只落 envelope（snippet 为空、金额/发票号在正文里），因此候选命中
 // 后需 FetchMessageRaw 拉原文做二次提取（与手动提取端点同路径）。
 func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Account, rep *PipelineReport) {
+	lookbackSince := rep.StartedAt - int64(invoiceCandidateLookbackDays)*86400
+
+	// 死信淘汰（raw_body_dead.go）：先把过了保留期的标记复检掉，再读出当前
+	// 仍被标记的邮件。顺序不能反——先读后复检会让刚复检的邮件本轮仍被跳过。
+	if n, err := p.Store.ReArmStaleRawBodyDead(ctx, time.Now().Add(-rawBodyDeadRetryAfter)); err != nil {
+		rep.AddError("raw-body dead letter re-arm: %v", err)
+	} else if n > 0 {
+		log.Printf("[email/pipeline] step1.5 re-armed %d stale raw-body dead letter(s) for re-check", n)
+	}
+	deadLetters, err := p.Store.ListRawBodyDeadEmailIDs(ctx, lookbackSince)
+	if err != nil {
+		// 读不到标记集就不能安全地跳过任何邮件：宁可这一轮多花预算，
+		// 也不能因为查询失败而把「已淘汰」当成「已确认可取」。
+		rep.AddError("raw-body dead letter list: %v", err)
+		deadLetters = nil
+	}
+
 	emails, _, err := p.Store.ListEmailsSince(ctx,
-		rep.StartedAt-int64(invoiceCandidateLookbackDays)*86400, invoiceCandidateScanLimit)
+		lookbackSince, invoiceCandidateScanLimit)
 	if err != nil {
 		rep.AddError("invoice candidates list: %v", err)
 		return
@@ -540,6 +561,7 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 		}
 	}
 	created := 0
+	deadSkipped := 0
 
 	// 两类「需要拉原文」的邮件合并成一批并发处理：
 	//   - date：envelope 已命中发票但缺开票日期（IMAP 只落 envelope，日期在正文里）；
@@ -564,6 +586,13 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 		if !ok {
 			continue
 		}
+		// 已判定死信：原文在服务端已不存在，再拉一次必然失败，只会白占
+		// 取原文预算（2026-10-03 实测两封被删的 AWS 告警占了 6 次里的 2 次）。
+		// 跳过发生在**建 job 之前**，这才是真正省下预算的位置。
+		if deadLetters[e.ID] {
+			deadSkipped++
+			continue
+		}
 		if _, err := p.Store.GetInvoiceByEmailID(ctx, e.ID); err == nil {
 			continue // 已建档，幂等跳过
 		}
@@ -586,27 +615,59 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 		log.Printf("[email/pipeline] step1.5 raw-body budget %d exceeded, %d candidate(s) deferred to next run",
 			maxInvoiceBodyFetches, skipped)
 	}
-	// jobs 的下标 → keptIdx 结果的下标，便于回填
-	posInKept := make([]int, len(jobs))
-	for k, idx := range keptIdx {
-		posInKept[idx] = k
-	}
+	// jobs 的下标 → keptIdx 结果的下标，便于回填。
+	posInKept := mapJobsToKeptPositions(len(jobs), keptIdx)
 
 	// 并发拉原文：与第 1 步同理，单封信不应拖住整步。
 	bodies := p.fetchBodies(ctx, keptIdx, jobs)
 
 	created = 0
 	fetchFailed := 0
+	// 报错归因按成因分桶。原实现只有一句「（IMAP 侧问题，本轮未建档）」，
+	// 而实测里这些失败的成因至少有三类，且「IMAP 侧问题」对其中两类是错的：
+	//   - gone：服务端已无此消息（邮件被单独删除）——不是 IMAP 坏了；
+	//   - pop3：POP3 来源无原文缓存且自愈失败——与 IMAP 无关；
+	//   - other：网络/协议/凭据等——只有这一类谈得上「IMAP 侧」。
+	// 一律写成「IMAP 侧问题」会把运维引向查一个没坏的东西（fetchInvoiceBodies
+	// 的 POP3 判定链注释里记的就是同一类误导）。
+	var failGone, failPOP3, failOther, failDeferred int
+	newlyDead := 0
 	for i := range cands {
 		c := &cands[i]
 		if c.jobAt >= 0 {
 			k := posInKept[c.jobAt]
 			var b bodyResult
-			if k < len(bodies) {
+			// k == -1 是「本轮被预算顺延」，没有对应的 fetch 结果。
+			// 旧代码只判 `k < len(bodies)`，而顺延的 job 在 posInKept 里是零值 0，
+			// 于是它会读到 bodies[0]——**另一封邮件的正文**。
+			if k >= 0 && k < len(bodies) {
 				b = bodies[k]
 			}
 			if b.err != nil || b.parsed == nil {
 				fetchFailed++
+				if k >= 0 {
+					// 只对真正试过的这一轮记账；顺延的 job 没试过，不该累加 streak。
+					kind := classifyRawBodyFetchFailure(b.err)
+					switch kind {
+					case rawBodyFailureGone:
+						failGone++
+					case rawBodyFailurePOP3:
+						failPOP3++
+					case rawBodyFailureOther:
+						failOther++
+					}
+					if _, dead, merr := p.Store.MarkRawBodyGone(ctx, c.email.ID,
+						kind == rawBodyFailureGone); merr != nil {
+						rep.AddError("raw-body dead letter mark email=%s: %v", c.email.ID, merr)
+					} else if dead && !deadLetters[c.email.ID] {
+						// 本轮才跨过阈值（此前不在标记集里）。
+						newlyDead++
+					}
+				} else {
+					// 被预算顺延：它没有「拉取失败」，只是没轮到。归到
+					// failOther 会把预算说成故障，所以单列。
+					failDeferred++
+				}
 				if c.reason == "candidate" {
 					// 与原实现一致：正文拉不到就没法二次提取，本轮不建档。
 					// 下一轮会重来（幂等，不会重复建档）。
@@ -653,17 +714,55 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 		created++
 	}
 	if fetchFailed > 0 {
-		rep.AddError("invoice raw body fetch failed for %d message(s) (IMAP 侧问题，本轮未建档)", fetchFailed)
+		// 归因必须能区分成因：原来一句「（IMAP 侧问题）」把「邮件已被从服务器
+		// 删除」和「POP3 来源没有原文缓存」都算成 IMAP 故障，两种都会把排查
+		// 引向一个没坏的东西（2026-10-03 实测的线上表现就是照这句去查 IMAP）。
+		rep.AddError("invoice raw body fetch: %d 未建档（服务端已无此消息 %d、POP3 无原文且自愈失败 %d、"+
+			"网络/协议/凭据等其他失败 %d、本轮被预算顺延 %d）；连续 %d 轮「服务端已无此消息」的邮件"+
+			"会被淘汰，本轮新淘汰 %d 封、累计跳过 %d 封",
+			fetchFailed, failGone, failPOP3, failOther, failDeferred,
+			rawBodyGoneStreakThreshold, newlyDead, deadSkipped)
 	}
 	deferred := len(jobs) - len(keptIdx)
 	rep.InvoiceCandidatesScanned = len(emails)
 	rep.InvoiceCandidatesCreated = created
 	rep.InvoiceBodyFetchDeferred = deferred
-	log.Printf("[email/pipeline] step1.5 window=%dd scanned=%d rawBodyFetches=%d deferred=%d fetchFailed=%d autoCreated=%d",
-		invoiceCandidateLookbackDays, len(emails), len(keptIdx), deferred, fetchFailed, created)
+	rep.InvoiceBodyDeadLettered = newlyDead
+	log.Printf("[email/pipeline] step1.5 window=%dd scanned=%d rawBodyFetches=%d deferred=%d fetchFailed=%d"+
+		" failGone=%d failPOP3=%d failOther=%d newlyDead=%d deadSkipped=%d autoCreated=%d",
+		invoiceCandidateLookbackDays, len(emails), len(keptIdx), deferred, fetchFailed,
+		failGone, failPOP3, failOther, newlyDead, deadSkipped, created)
+	if newlyDead > 0 {
+		log.Printf("[email/pipeline] step1.5 retired %d message(s) whose raw body no longer exists server-side", newlyDead)
+	}
 	if created > 0 {
 		log.Printf("[email/pipeline] auto-created %d invoice candidates", created)
 	}
+}
+
+// mapJobsToKeptPositions 把 jobs 的下标映射到「在 keptIdx 结果里的位置」。
+//
+// **-1 是「本轮被预算顺延、没拉」的哨兵，绝不能用零值。**
+//
+// 零值会让顺延的 job 读到 bodies[0]——那是**另一封邮件**的解析结果，于是把
+// 别人的正文拿来补这封的开票日期、把别人的附件当成这封的发票落进台账。
+// 2026-10-03 复核时发现的既有缺陷：原实现 `make([]int, len(jobs))` 全零，
+// 只给保留下来的 job 回填，而调用方的门控是 `c.jobAt >= 0`（顺延的 jobAt
+// 同样 >= 0），于是顺延分支畅通无阻地读到了 bodies[0]。
+//
+// 抽成纯函数是因为这个映射原先内联在一个 120 行的大循环里，从外部完全
+// 测不到——而它错的形态是「静默串档」，测试不写就没有牙齿。
+func mapJobsToKeptPositions(numJobs int, keptIdx []int) []int {
+	pos := make([]int, numJobs)
+	for i := range pos {
+		pos[i] = -1
+	}
+	for k, idx := range keptIdx {
+		if idx >= 0 && idx < numJobs {
+			pos[idx] = k
+		}
+	}
+	return pos
 }
 
 // invoiceCandidateLookbackDays 是第 1.5 步扫描「尚未建档的发票候选」的回看天数。

@@ -587,12 +587,29 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
   min-height: 100%;
   background: var(--brand-gradient);
   display: flex;
-  align-items: center;
+  /* 垂直居中改由 .login-container 的 margin:auto 承担，不用 align-items:center。
+   *
+   * 原因（2026-10-03 模拟器 API 35 实测）：软键盘避让的 revealFocusedInput()
+   * 只在「聚焦字段最近的可滚动祖先」里滚动字段。本视图原先既不是滚动容器，
+   * body/#app 又都是 overflow:hidden —— 于是整条链上一个可滚容器都没有，
+   * reveal 直接放弃。实测点密码框：键盘弹起后密码框正好被键盘上沿切掉一半
+   * （截图 test-evidence/2026-10-03-audit/02-keyboard-password.png），
+   * 用户在往一个自己看不见的框里打字。
+   *
+   * align-items:center 还有一个副作用：内容高于容器时它两端同时溢出，顶部
+   * 溢出部分滚不回去。margin:auto 则在装得下时居中、装不下时从顶部开始排，
+   * 键盘态下把卡片整体推到可滚区域里。
+   */
   justify-content: center;
+  /* 键盘避让的前提：本视图必须自己可滚。 */
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: var(--space-4);
 }
 
 .login-container {
+  /* 承载垂直居中（见 .login-view 注释） */
+  margin: auto;
   width: 100%;
   max-width: 400px;
   background: var(--bg-card);

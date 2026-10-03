@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -56,6 +57,19 @@ type ParsedMessage struct {
 	HTMLBody    string // text/html 聚合（发票链接多藏在 href 里）
 	Attachments []ParsedAttachment
 }
+
+// ErrRawBodyGone 表示「服务端已匹配不到这条消息」——不是网络问题，也不是
+// 协议问题，而是 INBOX 里已经没有这封邮件了（被 expunge / 移走），或整个
+// UIDVALIDITY 已变、旧 uid 整体失效。
+//
+// 为什么必须是**哨兵错误**而不是一句错误文案：调用方要据此决定两件不同的事
+// ——累计 streak（可能演进成死信淘汰）与对外的报错归因。改成按字符串匹配
+// `"matched 0 messages"` 的话，任何一次文案微调都会让这两个判断静默失效，
+// 而失效方向是「不再淘汰、报错继续说 IMAP 坏了」，也就是回到缺陷现场。
+//
+// 两种成因里只有「邮件没了」是永久的，所以 raw_body_dead.go 里的淘汰要求
+// 连续多轮观察到该信号，并设了复检窗口兜底 UIDVALIDITY 误判。
+var ErrRawBodyGone = errors.New("raw body gone: server has no such message")
 
 // selectInboxWithClientID 声明 RFC 2971 客户端标识后 SELECT INBOX。
 //
@@ -144,7 +158,11 @@ func (f *Fetcher) FetchMessageRaw(ctx context.Context, accountID string, uid int
 			// go-imap 没报错、却一条都没匹配到（uid 已被服务端 expunge、
 			// 或 UIDVALIDITY 变了）。不显式记下来就会掉到降级路径，
 			// 最终只报一句跟本问题无关的降级错误。
-			fetchErr = fmt.Errorf("go-imap matched 0 messages for uid=%d", uid)
+			//
+			// 带上 ErrRawBodyGone：这是「服务端已无此消息」这一整类失败的
+			// 唯一可判定入口，raw_body_dead.go 的死信记账与流水线的报错归因
+			// 都靠 errors.Is 识别它。
+			fetchErr = fmt.Errorf("%w: go-imap matched 0 messages for uid=%d", ErrRawBodyGone, uid)
 		} else if body, ferr := findBodySection(messages[0].BodySection); ferr == nil && len(body) > 0 {
 			return body, nil
 		} else {
@@ -162,7 +180,24 @@ func (f *Fetcher) FetchMessageRaw(ctx context.Context, accountID string, uid int
 		return body, nil
 	}
 	if fetchErr != nil {
-		return nil, fmt.Errorf("fetch raw uid=%d (go-imap): %v; textproto fallback: %v", uid, fetchErr, rawErr)
+		// ErrRawBodyGone 只在**两条独立通道都给出「服务端没有这条消息」**
+		// 时才成立：
+		//   - go-imap：匹配 0 条（服务端对不存在的 UID 回 OK + 空结果集）；
+		//   - textproto 降级通道：成功但一条 BODY literal 都没有（errNoBodyLiteral）。
+		//
+		// 降级通道自己失败（拨号/TLS/登录被拒/超时）只说明它没跑成，
+		// 不构成佐证。把哨兵留着会把一次网络抖动记成一次死信观察，
+		// 累积几轮就把好邮件误判成死信——而误判的代价是它再也不参与
+		// 发票建档。
+		if errors.Is(fetchErr, ErrRawBodyGone) {
+			if !errors.Is(rawErr, errNoBodyLiteral) {
+				return nil, fmt.Errorf("fetch raw uid=%d: go-imap matched 0 messages; "+
+					"textproto fallback inconclusive, NOT counted as gone: %w", uid, rawErr)
+			}
+			return nil, fmt.Errorf("fetch raw uid=%d: %w (go-imap and textproto both returned no data)",
+				uid, ErrRawBodyGone)
+		}
+		return nil, fmt.Errorf("fetch raw uid=%d (go-imap): %w; textproto fallback: %v", uid, fetchErr, rawErr)
 	}
 	return nil, fmt.Errorf("fetch raw uid=%d (textproto): %v", uid, rawErr)
 }
@@ -353,10 +388,24 @@ func (f *Fetcher) fetchRawByTextproto(ctx context.Context, acc *Account, passwor
 		// 契约：要么给正文，要么给错误。原来这里返回 (空, nil)，调用方只看到
 		// 「textproto fallback: <nil>」，把「一条 literal 都没解析到」这个
 		// 真正的线索吞掉了（真实 163/QQ 账户上就是这么变成一句废话报错的）。
-		return nil, fmt.Errorf("no BODY literal in UID FETCH response (uid=%d)", uid)
+		//
+		// 带 errNoBodyLiteral 哨兵的原因：服务器对一个不存在的 UID 回的是
+		// tagged `OK` + 零条 untagged `*` 行，也就是**成功但没有数据**。
+		// 这个「没有数据」正是 FetchMessageRaw 判定「服务端已无此消息」
+		// 时第二条通道的佐证；写成裸 error 的话，上游只能靠匹配这句文案
+		// 才能认出它，而文案一改，死信判定就静默失效。
+		return nil, fmt.Errorf("%w (uid=%d)", errNoBodyLiteral, uid)
 	}
 	return collected.Bytes(), nil
 }
+
+// errNoBodyLiteral 表示 UID FETCH 拿到了成功的 tagged 响应，却一条 BODY
+// literal 都没有。对不存在的 UID，这是服务器的标准行为。
+//
+// 它是 ErrRawBodyGone 的**佐证**而非同一件事：两条通道都这么说，才认定
+// 「服务端已无此消息」；只有降级通道这么说（而 go-imap 根本没跑成），
+// 不能下这个结论。
+var errNoBodyLiteral = errors.New("no BODY literal in UID FETCH response")
 
 // parseBodyLiteralSize 从 untagged FETCH 响应行找 BODY[...]<...> 后的 {size}。
 // 返回 0 表示这一行不携带 literal。

@@ -188,11 +188,18 @@ function goLogin() {
   min-height: 100%;
   background: var(--brand-gradient);
   display: flex;
-  align-items: center;
+  /* 居中交给 .forgot-container 的 margin:auto；本视图必须自己可滚，
+   * 否则软键盘避让的 revealFocusedInput 找不到可滚动祖先，聚焦字段会被
+   * 键盘盖住（与 LoginView 同一个 bug，2026-10-03 模拟器 API 35 实测）。
+   * 详见 LoginView.vue .login-view 的注释。 */
   justify-content: center;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: var(--space-4);
 }
+
 .forgot-container {
+  margin: auto;
   width: 100%;
   max-width: 400px;
   background: var(--bg-card);
