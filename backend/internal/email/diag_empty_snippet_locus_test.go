@@ -96,10 +96,15 @@ func TestDiagWhyEmptySnippet(t *testing.T) {
 	}
 	var rows []emptyRow
 	for i := range enabled {
+		// ⚠️ 刻意**不 LIMIT**。原先「每账户取 uid 最大的 3 行」，结果 uid 最小
+		// 的那条恰好被排除 —— 而它正是修完之后**唯一**还没修好的那条。
+		// 「抽样」在追「剩几条」这个问题时是自毁的：按大小排序抽样，被排除的
+		// 永远是还没修好的那批，于是修一轮好一轮、诊断却始终看不见剩下的。
+		// 空 snippet 是罕见形态（真库 32/978），全取的成本可以忽略。
 		r, qerr := pool.Query(ctx, `
 			SELECT uid, left(subject, 50) FROM emails
 			 WHERE account_id=$1 AND deleted_at=0 AND snippet='' AND uid IS NOT NULL
-			 ORDER BY uid DESC LIMIT 3`, enabled[i].ID)
+			 ORDER BY uid`, enabled[i].ID)
 		if qerr != nil {
 			continue
 		}
@@ -118,7 +123,7 @@ func TestDiagWhyEmptySnippet(t *testing.T) {
 		t.Fatalf("真库里 0 行空 snippet —— 判据在空集上转绿是假绿。" +
 			"（若刚跑过清理，这是真结论；否则先确认 snippet='' 这个口径没失效。）")
 	}
-	t.Logf("抽样 %d 行空 snippet（共每账户取 3 行）", len(rows))
+	t.Logf("空 snippet 行共 %d 条（全取，无抽样）", len(rows))
 
 	var working []byte
 	for _, p := range keyPaths {
