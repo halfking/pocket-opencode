@@ -2201,3 +2201,118 @@ summary 是 `GET` 一行说明，export 是 `POST` 带 `{ids,grid}`。
 **key 与 lookup 的表示不一致时，判据会静默失效而不是报错。**
 连着三次都是「判据不报错、只是悄悄给出错误答案」——
 **判据静默失效比判据报错危险得多，因为它看起来是绿的。**
+
+## 第三十九节（2026-10-04 06:44–07:20）把 A4 接进每日流水线；并修回一个**三轮前就弄红、直到今天才暴露**的门禁
+
+### 39.1 起点：第三十七节记的缺口是真的
+
+第三十七节查明「A4 是手动产物，唯一生产调用方是 HTTP 端点」。据此对照需求原文
+「每天定时或手工进行邮件接收，然后进行处理……发票类的邮件中发票导出格式：单个
+PDF 文件，包含多张发票，按照 A4 纸张规范排版……打印后可直接剪裁，作为凭证附件」，
+结论是：**需求里明确要的「凭证附件」，在无人值守跑完一天这个场景下没有产物。**
+这不是实现有 bug，是**这一环压根没接**。
+
+### 39.2 接法：口径选「已下载且 `exported_at=0`」，默认关闭
+
+新增 `backend/internal/email/pipeline_a4.go`，在流水线的 scope 循环内调用
+（`pipeline.go` 第 5 步，汇总文档之后）。
+
+口径**不是**「本轮采集到的票」，理由是查代码查出来的：
+`HarvestResult`（`invoice.go`）只有 `Processed/Downloaded/Pending/Failed/Skipped`
+**五个计数，没有任何清单**——拿不到「本轮采到哪几张」。
+而 `email_invoices.exported_at`（`invoice_store.go:53`）是现成的持久状态，
+`ListInvoicesScoped` 已经把它填进 `Invoice.ExportedAt`。于是口径是「持久状态、
+跨天可续」：今天导过的明天不重导，没导过的明天一定补上。
+若按「本轮采集」，采集阶段漏一轮 ⇒ 那几张票**永远**拿不到 A4。
+
+开关 `POCKET_EMAIL_A4_GRID`（默认 **0 = 关闭**，取 2 或 3 才开）。默认关有两个
+理由：一是无人值守的定时任务不能默默改变交付物目录的内容；二是 18099 现在跑的是
+05:02 构建的临时二进制，本轮改动**对今天 08:00 那一轮没有任何影响**，要等授权替换。
+
+### 39.3 一处**主动写下来的坑**：记不上 `exported_at` 必须报错，不能静默
+
+`p.Store == nil` 时打不了时间戳 ⇒ 这些票下一轮又「未导出」⇒ 同一批票每天被重新
+拼一次、exports 目录每天多一个文件，而网格里其实还是那些票。
+静默跳过这个标记是最糟的形态（报告上看起来一切正常），所以记成 `rep.AddError`。
+生产路径不会走到那里（`ensurePipeline` 在 `emailStore==nil` 时直接不构造
+Pipeline），留这条分支是为了让该阶段能被无库判据完整覆盖。
+
+判据 `TestExportPendingA4_OnProducesOnePageA4AndFlagsUnrecordedMarker` 直接钉它。
+
+### 39.4 判据（4 条）+ 负控实测转红
+
+`backend/internal/email/pipeline_a4_test.go`。四条用例的输入刻意落在**不同的窄边**
+上，避免一条判据同时被好几个缺陷满足：
+
+| 用例 | 钉住什么 |
+|---|---|
+| `TestPendingA4Files_SelectsOnlyUnexportedWithRealFile` | 4 张票（未导出 / 已导出 / 文件已不在磁盘 / 无 FilePath）只应选中第 1 张，且选中路径必须 join 上 `DataDir` |
+| `TestExportPendingA4_DisabledByDefaultProducesNothing` | 关闭时**磁盘上**不出现 exports 目录，且 `A4ExportSkip` 非空且含 "disabled" |
+| `TestExportPendingA4_OnProducesOnePageA4AndFlagsUnrecordedMarker` | 3 张单页票 + grid=2 ⇒ 输出**1 页**（4 格里放 3 张），输出目录正确，`A4ExportMarked=0` 且报出「记不上」 |
+| `TestExportPendingA4_SkippedFileIsNotCountedAsExported` | 1 张手写 69 字节残件 + 2 张好票 ⇒ 入网格 2、跳过 1，跳过名进报告 |
+
+第二条特意断言**磁盘事实**而不是报告字段：报告字段是这条代码自己写的，
+用它证明自己没写文件是循环论证。
+
+负控两次实测转红（每次都先在 git 对象层 `git grep --cached -c` 确认变异**真落盘**）：
+
+- 变异 1 `inv.ExportedAt != 0` → `< 0`
+  → `pipeline_a4_test.go:54: selected ids = [keep-1 already-exported], want exactly [keep-1]`
+- 变异 2 `if p.A4Grid != 2 && p.A4Grid != 3` → `if p.A4Grid == 99`
+  → `pipeline_a4_test.go:82: disabled stage left A4ExportSkip empty`
+
+**还原时踩了一个坑，值得单独记**：变异后我 `git add` 了它，于是
+`git checkout -- <file>` 取回的是**变异版**而不是干净版（第一次还原就是这么"还原"
+成功的假象）。正确做法是显式反向替换，再回读确认。所以**变异后的还原不能用
+`git checkout --`**，至少在变异已入索引时不行。
+
+### 39.5 顺手修回一个**三轮前就弄红、我今天才发现**的门禁（重要）
+
+跑 `./internal/server/` 时红了两条：
+`TestPGTestsNeverTargetTheProductionSchema` 与 `TestPGIsolationNegativeControlMatrix`。
+原因是 **PG 测试隔离门禁**，报 5 个文件「打开了 PostgreSQL 连接但没有把 search_path
+钉到自建的 `*_test_` schema」：
+
+| 文件 | 引入于 |
+|---|---|
+| `internal/email/zz_diag_spam_score_dist_test.go` | `c3ba8ef3`（round37 第二十三节） |
+| `internal/email/diag_ledger_table_test.go` | `d7c65d36`（第三十一节） |
+| `internal/email/diag_amount_provenance_test.go` | `dbb9ed89`（第三十六节） |
+| `internal/email/diag_a4_real_export_test.go` | `a392b1a4`（第二十九节） |
+| `internal/email/diag_cleanup_preview_test.go` | `0d516887`（第三十八节） |
+
+**五个全是自己加的**，而且不是今天引入的——是 round37 里那几天引入的。
+
+**为什么一直没发现**：那几轮我跑的回归是 `go test ./internal/email/ -count=1`，
+全绿就收工。门禁在 `./internal/server/`，**从来没被跑到过**。
+⇒ 与「只验代码路径」同族：**「我跑的那个包绿了」不等于「门禁绿了」**。
+护栏的覆盖面比被测代码小的时候，跑对包比跑全量更重要。
+
+**修法**：按门禁自己的出口机制登记，而不是放宽判据。
+前 4 个进 `pgSafeWithoutIsolation`（0 条 SQL 写语句——它们的 2 条 `conn.Exec`
+是 `SET default_transaction_read_only = on` 与 `SET search_path TO ...`，
+只改会话设置；其余只有 `pool.Query`）。
+`diag_cleanup_preview_test.go` **两张表都进**：它含 1 条 DELETE 自证语句
+（DELETE 的 WHERE 用的是必然不存在的 `__preview_probe_must_fail__`，
+**成功即 t.Fatal**——目的正是验证只读门禁生效）。
+
+**没有**改成自建隔离 schema，理由照实写进登记里：这几个诊断要回答的问题就是
+「生产库/生产导出目录**现在**是什么样」，隔离库只会输出「没有票、没有产物、
+没有那一行」这种假结论——那比不跑诊断更糟。
+
+修完两条门禁都绿。**注意：这 5 个文件里没有一行代码被改动，动的只有登记表**。
+
+### 39.6 本轮实测汇总
+
+- `go test ./internal/email/ ./internal/config/ ./internal/server/ -count=1` 全绿
+  （14.98s / 0.78s / 21.33s）
+- `node scripts/check-gofmt.mjs`（在 **.wt-build** 里跑）真债 0
+- 6 个改动文件行尾均 `i/lf w/crlf`
+- 正式二进制已在干净 worktree 构建完成：`.wt-build/backend/pocketd-official-0d516887.exe`
+  （51,974,144 字节，06:44:47）。**只构建，未替换 18099**——替换需授权，
+  且 08:00 之后重启才不会丢掉当天那轮（无补跑）。
+
+### 39.7 留给你的一个开关（新增待拍板项）
+
+`POCKET_EMAIL_A4_GRID=2` 让每日流水线自动产出 A4 凭证（默认关，代码已就绪且判据覆盖）。
+要开的话还需要同时授权替换 18099 上的二进制——**代码就绪 ≠ 已经会跑**。
