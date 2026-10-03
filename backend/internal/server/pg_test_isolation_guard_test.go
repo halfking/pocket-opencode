@@ -587,6 +587,15 @@ var pgSafeWithoutIsolation = map[string]string{
 	"internal/email/diag_ledger_table_test.go":       "只读真实库诊断：0 条 SQL 写语句（同上形态：2 条 SET 会话设置 + 1 条 SELECT）；需 POCKET_DIAG_LEDGER_TABLE=1 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（均无缺省值）。目的=核对生产台账的列拼装与行数，隔离库只会产出 0 行的空表",
 	"internal/email/zz_diag_spam_score_dist_test.go": "只读真实库诊断：0 条 SQL 写语句（Exec=0，仅 1 条 pool.Query 为 SELECT）；需 POCKET_DIAG_SPAM_SCORE=1 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（均无缺省值）。隔离形态与上面几条**不同**：不设 search_path，只读靠连接参数 default_transaction_read_only=on（:61 RuntimeParams）",
 	"internal/email/diag_cleanup_preview_test.go":    "只读真实库预览：除只读查询外含 **1 条 DELETE 自证语句**（写语句登记见 pgAllowlistedWrites）——它 DELETE 的是一个必然不存在的 id（__preview_probe_must_fail__），目的正是验证数据库侧只读门禁生效，**一旦成功就 t.Fatal 退出**；需 POCKET_DIAG_CLEANUP_PREVIEW=1 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA + POCKET_REAL_DATA_DIR（均无缺省值）。指向生产 schema 是**目的**：它要规划剔除的就是生产库里那批自注入行，隔离库会输出「没有待剔除项」的假结论",
+	// internal/email/diag_a4_auto_preview_test.go（2026-10-04，与上面 4 条同形态）：
+	// **只读**预演「打开 POCKET_EMAIL_A4_GRID 后第一轮会导出哪几张票、拼几页」。
+	// 形态与同批登记一致——2 条 conn.Exec 是 SET default_transaction_read_only=on
+	// 与 SET search_path（只改会话设置，不是 SQL 写语句），其余只有
+	// Store.ListInvoicesScoped（内部 SELECT）与那 1 条**故意被拒**的 UPDATE 自证。
+	// 它**不能**自建 `*_test_` 隔离 schema：要回答的就是「生产台账现在什么样、
+	// 哪些票还没导出」，隔离库只会输出「0 张票」的假结论。写语句登记见
+	// pgAllowlistedWrites。
+	"internal/email/diag_a4_auto_preview_test.go": "只读真实库预演：除只读查询外含 1 条 UPDATE 自证语句（WHERE 用必然不存在的 __a4_probe_must_fail__，成功即 t.Fatal 证明 default_transaction_read_only 失效；写语句登记见 pgAllowlistedWrites）；需 POCKET_DIAG_A4_AUTO=1 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA + POCKET_REAL_DATA_DIR（**均无缺省值**）。指向生产 schema 是**目的**：它要预演的正是生产台账里 exported_at=0 的那批票，隔离库只会输出「0 张票」。选片复用生产函数 p.pendingA4Files、台账读取复用生产 Store.ListInvoicesScoped，不另写一套判定。它还自证不写文件：运行前后比对 exports 目录文件名集合，有新增即 t.Errorf",
 }
 
 // sqlWriteRe 匹配 SQL 写语句动词，用于**规则 4**（见下）。
@@ -704,6 +713,11 @@ var pgAllowlistedWrites = map[string]string{
 	// 这条连放行开关都没有——只读由数据库强制，不靠开关。
 	"internal/email/diag_cleanup_preview_test.go": "1 条 DELETE 自证语句，WHERE 用必然不存在的 id（__preview_probe_must_fail__），删不到任何真实行；成功即 t.Fatal（说明 default_transaction_read_only 失效、只读前提不成立）；无任何放行开关，只读由数据库强制",
 	"third_party/identity-go/shadow/dao_test.go":  "vendored 第三方；需 -tags=integration + IDENTITY_SHADOW_DSN，默认不编译",
+	// diag_a4_auto_preview_test.go（2026-10-04）：全文件唯一的写语句是 1 条 UPDATE，
+	// WHERE 用必然不存在的 id（__a4_probe_must_fail__），**成功就是异常**
+	// ——它证明数据库侧 default_transaction_read_only 没生效、只读前提不成立，
+	// 于是立刻 t.Fatal 退出而不是继续输出预演结果。无任何放行开关。
+	"internal/email/diag_a4_auto_preview_test.go": "1 条 UPDATE 自证语句，WHERE 用必然不存在的 id（__a4_probe_must_fail__），碰不到任何真实行；成功即 t.Fatal（说明 default_transaction_read_only 失效、只读前提不成立）；无放行开关，只读由数据库强制",
 }
 
 // hasSQLWrite 判断剥注释后的代码里是否有 SQL 写语句。
