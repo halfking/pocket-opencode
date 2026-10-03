@@ -189,16 +189,53 @@ if c.jobAt >= 0 { k := posInKept[c.jobAt]; if k < len(bodies) { b = bodies[k] } 
 
 ---
 
-## 四、本轮**未做**的事（需要显式授权）
+## 四、部署记录（已于 18:25 显式授权后执行）
 
-以下动作本轮一律**没有执行**，因为问卷是 `automatic_timeout` 自动采纳的
-（`explicitUserConfirmation: false`），按既定规矩不算授权：
+> 本节是 18:25 授权后的实际执行记录。**下面第四节的原文写于部署之前，
+> 当时的三项「未做」现已全部完成**——保留原文是为了让「先做代码、拿到显式
+> 确认再动生产」这个次序本身可查。
 
-1. **重启生产实例 18099**（当前 PID 61356）——代码要生效必须重启。
+原计划的三件不可逆动作需要显式授权（问卷若为 `automatic_timeout` 自动采纳则不算）：
+
+1. **重启生产实例 18099**（PID 61356）——代码要生效必须重启。
 2. **ALTER 生产表 `opencode_pocket.emails`**（加上述两列）——由重启时的
    `migrateRawBodyDead` 触发。形态是 `ADD COLUMN IF NOT EXISTS`，可逆。
 
-因此**生产行为目前仍是旧的**：明天 08:00 锁竞争照旧、死信照旧占预算。
+授权方式：`responseSource: user` + `explicitUserConfirmation: true`。
+
+### 执行前的两处状态变化（都不是我做的）
+
+- `origin/main` 已由 `e5a65339` 推进到 `e9f176fe`（并发会话推了 17 个提交，
+  **没有一个碰 `backend/internal/email`**，本轮改动完好）。
+- **PID 69476 / 18190 已经不在了**——并发会话把那个 demo 实例关掉了。
+  于是授权里的第 (3) 项（换 18190 的二进制以避开混用锁键窗口）**不再需要**：
+  窗口的成因是「两个实例同时在跑」，只有一个实例时窗口不存在。
+
+### 执行步骤与证据
+
+| 步骤 | 证据 |
+|---|---|
+| 从 `e9f176fe` 构建 | `go build -o logs/pocketd-1830-e5a65339.exe ./cmd/pocketd`，exit 0，51924992 字节 |
+| **确认新代码真在二进制里** | 二进制内 `raw_body_dead_at` 9 次、`raw_body_gone_streak` 6 次、`COALESCE(current_schema()` 1 次、新文案「服务端已无此消息」2 次；**旧错文案「IMAP 侧问题，本轮未建档」0 次** |
+| 三道执行点守卫 | `logs/restart-pocketd.ps1 -ExpectPid 61356 -ExpectExe …/pocketd-1528-new.exe -ExpectExeSha256 73C197CD…` 全过（端口归属 / exe 路径 / exe SHA256，PID 未被回收） |
+| 重启 | 旧 PID 61356 停止 → 新 PID **72004**，`logs/pocketd-1830-e5a65339.exe` |
+| 邮件子系统自检 | 四行全中：`Email credential self-check: all 5 enabled email account(s) decrypt`、`Email scheduler started`、`daily pipeline runner injected (hour=8)`、`pipeline scheduled at 2026-10-04T08:00:00+08:00` |
+| `healthz` | 200 |
+| **schema 变更已落库**（查库确认，不只看启动没报错） | `opencode_pocket.emails` 实有 `raw_body_gone_streak integer NOT NULL DEFAULT 0` 与 `raw_body_dead_at timestamp with time zone` 两列 |
+| 数据无损 | `emails` 182 行、`email_invoices` 7 行（与变更前一致） |
+| 跑着的确实是新二进制 | PID 72004 的 exe SHA256 = `EE85E09B…39930` = 刚构建产物的哈希 |
+| 混用锁键窗口 | 全机只剩 **1 个** pocketd 实例，无第二个实例与它抢锁 |
+
+### 生效时间线（**别把「已部署」当成「已见效」**）
+
+- **锁键分片：已生效。** 明天（2026-10-04）08:00 就是第一个在新键空间下跑的
+  定时流水线。本次重启**没有**手工触发流水线（那会推通知、写标记，属于另一次
+  授权范围），所以「生产整轮不再被跳过」要等 08:00 那一轮才能拿到证据。
+- **死信淘汰：已部署但尚未触发。** 查库 `raw_body_dead_at IS NOT NULL` 当前为
+  **0 行**——设计要求**连续 3 轮**观察到 gone 信号才置标记，而新代码启动后
+  一轮都还没跑过。预计 10-04 / 10-05 / 10-06 三轮 08:00 之后，
+  `em-10443` / `em-10444` 才会被淘汰，届时取原文预算从每天 6 次里的 2 次释放出来。
+  也就是说：**今天看不到效果是预期的，不是没修好。**
 
 飞书推送环节（`APP_ID` / `APP_SECRET` / `INVOICE_CHAT_ID` / `INVOICE_FOLDER_TOKEN`
 四项缺失）本轮同样未动，按需求原文的备选路径收尾：台账 CSV/MD + A4 拼版交付，
