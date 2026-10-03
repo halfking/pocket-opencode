@@ -26,6 +26,11 @@ public class MainActivity extends BridgeActivity {
     private float lastSafeTopCssPx = -1f;
     private float lastSafeBottomCssPx = -1f;
 
+    /** 最近一次 IME insets 底边（CSS px）。见 injectSafeInsets 的注释——这是
+        软键盘避让唯一的可靠信号源，不能靠 visualViewport 推。 */
+    private float lastImeBottomCssPx = 0f;
+    private boolean imeInsetKnown = false;
+
     private void injectSafeInsets() {
         if (lastSafeTopCssPx < 0 && lastSafeBottomCssPx < 0) return;
         if (getBridge() != null && getBridge().getWebView() != null) {
@@ -41,6 +46,18 @@ public class MainActivity extends BridgeActivity {
                     + lastSafeTopCssPx + "px');"
                     + "document.documentElement.style.setProperty('--android-safe-bottom','"
                     + lastSafeBottomCssPx + "px');"
+                    // 软键盘净高（CSS px，键盘不在场时 0）。
+                    // 为什么必须来自原生：edge-to-edge + 未声明 adjustResize 时，
+                    // Android 15 的 IME **既不缩小 WebView 视口、也不改
+                    // visualViewport.height**（2026-10-03 模拟器 API 35 实测：
+                    // 键盘弹起时 innerHeight 与 vv.height 恒为 915，与收起时
+                    // 一模一样）。所以 JS 侧「baseline - min(innerHeight, vv.height)」
+                    // 永远算出 0 —— 整条键盘避让机制不触发，聚焦输入框被键盘盖住。
+                    // 真机 Android 15 是同一条 overlay 路径（见
+                    // useKeyboardInset.ts 文件头），所以这不是模拟器特例，
+                    // 而是这一整类设备上的真实缺陷。原生 insets 是唯一信号源。
+                    + "document.documentElement.style.setProperty('--android-ime-inset','"
+                    + lastImeBottomCssPx + "px');"
                     + "}catch(e){console.debug('[MainActivity] injectSafeInsets skipped:',(e&&e.message)||e)}";
             getBridge().getWebView().evaluateJavascript(script, null);
         }
@@ -52,6 +69,15 @@ public class MainActivity extends BridgeActivity {
         // BridgeActivity#onResume 是 final；用窗口焦点回调兜底：页面就绪获得焦点时
         // 重放 insets，消除首启动 evaluateJavascript 早于页面加载而丢失的竞态。
         if (hasFocus) injectSafeInsets();
+    }
+
+    @Override
+    public void onPostResume() {
+        super.onPostResume();
+        // insets 监听在第一次 setOnApplyWindowInsetsListener 之后才注册，若那一刻
+        // 键盘已经开着（例如冷启动直接被输入框聚焦），WebView 不会主动来问一次。
+        // 页面 ready 后补一次重放，让 --android-ime-inset 一定有初值。
+        getBridge().getWebView().postDelayed(this::injectSafeInsets, 400);
     }
 
     /** 等待系统权限回调时挂起的 WebView 请求；grant 后需要 resume() 它 */
@@ -82,9 +108,15 @@ public class MainActivity extends BridgeActivity {
                         androidx.core.view.WindowInsetsCompat.Type.systemBars());
                 androidx.core.graphics.Insets gestures = insets.getInsets(
                         androidx.core.view.WindowInsetsCompat.Type.mandatorySystemGestures());
+                // 软键盘 insets：必须显式取。原实现只处理 systemBars / gestures，
+                // 于是 IME 弹出时 JS 侧拿不到任何信号（见 injectSafeInsets 注释）。
+                androidx.core.graphics.Insets ime = insets.getInsets(
+                        androidx.core.view.WindowInsetsCompat.Type.ime());
                 float density = getResources().getDisplayMetrics().density;
                 lastSafeTopCssPx = systemBars.top / density;
                 lastSafeBottomCssPx = Math.max(systemBars.bottom, gestures.bottom) / density;
+                lastImeBottomCssPx = ime.bottom / density;
+                imeInsetKnown = true;
                 injectSafeInsets();
                 return insets;
             });
