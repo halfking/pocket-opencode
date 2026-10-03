@@ -353,6 +353,13 @@ const router = createRouter({
       meta: { requiresAuth: true, requiresLobster: true, title: '条目详情', bottomNav: false, canGoBack: true, scrollMode: 'self' },
     },
     {
+      // 每天推送那条系统通知的落点：点通知直接进这里。
+      path: '/rss/digest',
+      name: 'rss-digest',
+      component: () => import('../features/rss/RssDigestView.vue'),
+      meta: { requiresAuth: true, requiresLobster: true, title: '每日摘要', bottomNav: false, canGoBack: true, scrollMode: 'self' },
+    },
+    {
       path: '/login',
       name: 'login',
       component: LoginView,

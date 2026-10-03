@@ -1129,6 +1129,29 @@ func main() {
 			if schedRef != nil {
 				schedRef.SetNotifier(svc)
 			}
+			// 每日「全部信息摘要」：日报服务同样在这之后才拿得到通知出口。
+			// 放在这个 if 里是必须的：没有 notifycenter 就没有"每天收到"这件事。
+			if rssStore != nil && cfg.RSS.Enabled && cfg.RSS.DigestEnabled {
+				digestSvc := rss.NewDigestService(rssStore, &rssDigestNotifier{svc: svc}, rss.Scope{
+					UserID:      "local",
+					WorkspaceID: "default",
+				}, rss.DigestServiceOptions{
+					AtHour:         cfg.RSS.DigestHour,
+					AtMinute:       cfg.RSS.DigestMinute,
+					Opts: rss.DigestOptions{
+						MaxPerSection:  cfg.RSS.DigestMaxPerSection,
+						IncludeSummary: cfg.RSS.DigestIncludeSummary,
+					},
+					StartupRunOnStart: cfg.RSS.DigestStartupRun,
+				})
+				if err := digestSvc.Start(context.Background()); err != nil {
+					log.Printf("WARN: rss digest service start failed: %v", err)
+				} else {
+					defer digestSvc.Stop()
+					log.Printf("RSS daily digest started (at=%02d:%02d, max_per_section=%d, startup_run=%v)",
+						cfg.RSS.DigestHour, cfg.RSS.DigestMinute, cfg.RSS.DigestMaxPerSection, cfg.RSS.DigestStartupRun)
+				}
+			}
 			log.Println("Notification Center enabled (inbox + rules + WS foreground push)")
 		}
 	}

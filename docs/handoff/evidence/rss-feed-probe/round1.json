@@ -1,0 +1,422 @@
+﻿[
+    {
+        "url":  "https://hnrss.org/frontpage",
+        "title":  "Hacker News — Front Page",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/xml; charset=utf-8",
+        "items":  20,
+        "ms":  2537,
+        "err":  ""
+    },
+    {
+        "url":  "https://hnrss.org/best",
+        "title":  "Hacker News — Best",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/xml; charset=utf-8",
+        "items":  30,
+        "ms":  283,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.36kr.com/feed",
+        "title":  "36氪",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/rss+xml; charset=utf-8",
+        "items":  30,
+        "ms":  509,
+        "err":  ""
+    },
+    {
+        "url":  "https://sspai.com/feed",
+        "title":  "少数派",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/xml; charset=UTF-8",
+        "items":  10,
+        "ms":  222,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.ruanyifeng.com/blog/atom.xml",
+        "title":  "阮一峰的网络日志",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/xml",
+        "items":  3,
+        "ms":  1172,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.theverge.com/rss/index.xml",
+        "title":  "The Verge",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/xml; charset=UTF-8",
+        "items":  10,
+        "ms":  346,
+        "err":  ""
+    },
+    {
+        "url":  "https://feeds.arstechnica.com/arstechnica/index",
+        "title":  "Ars Technica",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "text/xml; charset=utf-8",
+        "items":  20,
+        "ms":  272,
+        "err":  ""
+    },
+    {
+        "url":  "https://techcrunch.com/feed/",
+        "title":  "TechCrunch",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/rss+xml; charset=UTF-8",
+        "items":  20,
+        "ms":  238,
+        "err":  ""
+    },
+    {
+        "url":  "https://github.blog/feed/",
+        "title":  "GitHub Blog",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/rss+xml; charset=UTF-8",
+        "items":  10,
+        "ms":  409,
+        "err":  ""
+    },
+    {
+        "url":  "https://stackoverflow.blog/feed/",
+        "title":  "Stack Overflow Blog",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/rss+xml; charset=UTF-8",
+        "items":  40,
+        "ms":  254,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.jiqizhixin.com/rss",
+        "title":  "机器之心",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "text/html; charset=utf-8",
+        "items":  0,
+        "ms":  250,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.infoq.cn/feed",
+        "title":  "InfoQ 中文",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/xml; charset=utf-8",
+        "items":  20,
+        "ms":  184,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.solidot.org/index.rss",
+        "title":  "Solidot",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/xml;charset=utf-8",
+        "items":  17,
+        "ms":  259,
+        "err":  ""
+    },
+    {
+        "url":  "https://feeds.bbci.co.uk/news/technology/rss.xml",
+        "title":  "BBC Technology",
+        "category":  "it",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  14601,
+        "err":  "无法连接到远程服务器"
+    },
+    {
+        "url":  "https://www.wired.com/feed/rss",
+        "title":  "WIRED",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/xml",
+        "items":  50,
+        "ms":  847,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.daringfireball.net/feeds/main",
+        "title":  "Daring Fireball",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "text/xml; charset=utf-8",
+        "items":  48,
+        "ms":  1994,
+        "err":  ""
+    },
+    {
+        "url":  "https://blog.google/technology/ai/rss/",
+        "title":  "Google AI Blog",
+        "category":  "it",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15018,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://openai.com/blog/rss.xml",
+        "title":  "OpenAI Blog",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "text/xml; charset=utf-8",
+        "items":  1245,
+        "ms":  465,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.smashingmagazine.com/feed/",
+        "title":  "Smashing Magazine",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/xml",
+        "items":  40,
+        "ms":  625,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.ftchinese.com/rss/feed",
+        "title":  "FT中文网",
+        "category":  "finance",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  2272,
+        "err":  "无法连接到远程服务器"
+    },
+    {
+        "url":  "https://dedicated.wallstreetcn.com/rss.xml",
+        "title":  "华尔街见闻",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "text/html; charset=UTF-8",
+        "items":  63,
+        "ms":  541,
+        "err":  ""
+    },
+    {
+        "url":  "https://rss.sina.com.cn/roll/finance/hot_roll.xml",
+        "title":  "新浪财经",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "text/xml",
+        "items":  0,
+        "ms":  119,
+        "err":  ""
+    },
+    {
+        "url":  "https://finance.yahoo.com/news/rssindex",
+        "title":  "Yahoo Finance",
+        "category":  "finance",
+        "status":  403,
+        "ctype":  "",
+        "items":  0,
+        "ms":  942,
+        "err":  "远程服务器返回错误: (403) 已禁止。"
+    },
+    {
+        "url":  "https://www.cnbc.com/id/10001147/device/rss/rss.html",
+        "title":  "CNBC Markets",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "application/xml",
+        "items":  30,
+        "ms":  369,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+        "title":  "CNBC Technology",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "application/xml",
+        "items":  30,
+        "ms":  220,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.investing.com/rss/news_25.rss",
+        "title":  "Investing.com",
+        "category":  "finance",
+        "status":  403,
+        "ctype":  "",
+        "items":  0,
+        "ms":  810,
+        "err":  "远程服务器返回错误: (403) 已禁止。"
+    },
+    {
+        "url":  "https://www.economist.com/finance-and-economics/rss.xml",
+        "title":  "The Economist — Finance",
+        "category":  "finance",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15019,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+        "title":  "MarketWatch",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "application/xml; charset=utf-8",
+        "items":  10,
+        "ms":  659,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.marketwatch.com/rss/topstories",
+        "title":  "MarketWatch Top Stories",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "application/xml; charset=utf-8",
+        "items":  10,
+        "ms":  1045,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.chinanews.com.cn/rss/finance.xml",
+        "title":  "中新网财经",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "text/xml",
+        "items":  30,
+        "ms":  111,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.yicai.com/api/ajax/getlistbycid?cid=53",
+        "title":  "第一财经",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "application/json; charset=utf-8",
+        "items":  0,
+        "ms":  577,
+        "err":  ""
+    },
+    {
+        "url":  "https://feeds.bbci.co.uk/zhongwen/simp/rss.xml",
+        "title":  "BBC中文网",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  14568,
+        "err":  "无法连接到远程服务器"
+    },
+    {
+        "url":  "https://news.un.org/feed/subscribe/zh/news/all/rss.xml",
+        "title":  "联合国新闻",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  14999,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://www.aljazeera.com/xml/rss/all.xml",
+        "title":  "Al Jazeera",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15025,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://rss.dw.com/rdf/rss-chi-all",
+        "title":  "德国之声中文",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15027,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://feeds.npr.org/1004/rss.xml",
+        "title":  "NPR World",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/xml;charset=UTF-8",
+        "items":  10,
+        "ms":  248,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.theguardian.com/world/rss",
+        "title":  "The Guardian World",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15026,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://www.zaobao.com/realtime/china/rss.xml",
+        "title":  "联合早报",
+        "category":  "news",
+        "status":  404,
+        "ctype":  "",
+        "items":  0,
+        "ms":  461,
+        "err":  "远程服务器返回错误: (404) 未找到。"
+    },
+    {
+        "url":  "https://www.zaobao.com/rss/realtime/world",
+        "title":  "联合早报国际",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/html",
+        "items":  0,
+        "ms":  366,
+        "err":  ""
+    },
+    {
+        "url":  "https://cn.nytimes.com/rss/",
+        "title":  "纽约时报中文网",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15022,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://www.voachinese.com/api/zkvyteuiy",
+        "title":  "美国之音中文",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15022,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://rsshub.app/zhihu/hotlist",
+        "title":  "知乎热榜",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15022,
+        "err":  "The operation has timed out."
+    }
+]

@@ -72,6 +72,56 @@ export interface RSSShareResponse {
   downloadUrl?: string
 }
 
+/** 内置推荐源目录条目（后端 rss.StarterFeed）。 */
+export interface RSSStarterFeed {
+  url: string
+  title: string
+  siteUrl: string
+  language: string
+  category: string
+  categoryLabel: string
+  note?: string
+  fetchInterval?: string
+}
+
+/** 每日摘要里的一条。 */
+export interface RSSDigestItem {
+  id: string
+  title: string
+  url: string
+  sourceId: string
+  sourceTitle: string
+  category: string
+  language: string
+  summary?: string
+  publishedAt?: string
+}
+
+export interface RSSDigestSection {
+  category: string
+  label: string
+  items: RSSDigestItem[]
+}
+
+/** 每天一份的「全部信息摘要」。body 是可直接分享出去的纯文本。 */
+export interface RSSDigest {
+  id: string
+  date: string
+  headline: string
+  body: string
+  sections: RSSDigestSection[]
+  itemCount: number
+  sourceCount: number
+  generatedAt: string
+}
+
+export interface RSSDigestListItem {
+  date: string
+  headline: string
+  itemCount: number
+  generatedAt: string
+}
+
 export const rssApi = {
   async listSources(): Promise<RSSSource[]> {
     const res = await http<{ sources: RSSSource[] }>('/api/rss/sources')
@@ -79,8 +129,53 @@ export const rssApi = {
   },
 
   async listSeeds(): Promise<RSSSeed[]> {
-    const res = await http<{ seeds: RSSSeed[] }>('/api/rss/sources/seeds')
-    return res.seeds ?? []
+    // 老端点同时回 seeds / feeds 两个键；这里两个都读，避免任一侧改名就静默空列表。
+    const res = await http<{ seeds?: RSSSeed[]; feeds?: RSSSeed[] }>('/api/rss/sources/seeds')
+    return res.seeds ?? res.feeds ?? []
+  },
+
+  /** 内置推荐源目录（it / finance / news 三类，可按分类过滤）。 */
+  async listStarter(category?: string): Promise<{ feeds: RSSStarterFeed[]; categories: string[] }> {
+    const qs = new URLSearchParams()
+    if (category) qs.set('category', category)
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return http(`/api/rss/sources/starter${suffix}`)
+  },
+
+  /**
+   * 一键把推荐源加入订阅列表（幂等）：已订阅的会被跳过。
+   * 返回 { created, skipped, total, sources }。
+   */
+  async importStarter(input: { categories?: string[]; maxPerCategory?: number; enabled?: boolean } = {}): Promise<{
+    created: number
+    skipped: number
+    total: number
+    sources: RSSSource[]
+  }> {
+    return http('/api/rss/sources/import-starter', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  },
+
+  /** 取某天的全部信息摘要（缺省今天；当天还没有时后端会按需生成）。 */
+  async getDigest(date?: string): Promise<RSSDigest> {
+    const qs = date ? `?date=${encodeURIComponent(date)}` : ''
+    const res = await http<{ digest: RSSDigest }>(`/api/rss/digest${qs}`)
+    return res.digest
+  },
+
+  /** 强制重新生成并落库（"生成今日摘要"按钮）。 */
+  async runDigest(date?: string): Promise<RSSDigest> {
+    const qs = date ? `?date=${encodeURIComponent(date)}` : ''
+    const res = await http<{ digest: RSSDigest }>(`/api/rss/digest/run${qs}`, { method: 'POST' })
+    return res.digest
+  },
+
+  /** 历史摘要列表（新的在前）。 */
+  async listDigests(limit = 14): Promise<RSSDigestListItem[]> {
+    const res = await http<{ digests: RSSDigestListItem[] }>(`/api/rss/digests?limit=${limit}`)
+    return res.digests ?? []
   },
 
   async discover(url: string): Promise<RSSCandidate[]> {

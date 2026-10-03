@@ -121,6 +121,13 @@ export interface PocketShare {
     text: string
     url?: string
     dialogTitle?: string
+    /**
+     * 作为附件分享的文件 URI（Capacitor Filesystem getUri 的返回值）。
+     *
+     * Android 上分享图片必须走 files：Share.share({url}) 的 url 在 Android
+     * 侧不会作为附件传下去，图片分享会静默退化成"只发文字"；iOS 才是 url 生效。
+     */
+    files?: string[]
   }): Promise<void>
   /** 是否支持系统分享面板（Web 通常仅在 navigator.share 可用时为 true）。 */
   canShare(): Promise<boolean>
@@ -359,6 +366,8 @@ function createAndroidBridge(): PocketNative {
           text: opts.text,
           url: opts.url,
           dialogTitle: opts.dialogTitle,
+          // Android 分享图片必须显式传 files；不传会被静默丢掉。
+          ...(opts.files && opts.files.length > 0 ? { files: opts.files } : {}),
         })
       },
       canShare: async () => {
@@ -429,6 +438,24 @@ function createWebFallback(): PocketNative {
   }
 }
 
+/**
+ * 把 data:/blob: 链接转成 File，供 Web Share Level 2 的 files 使用。
+ * 非图片/非 data URL 一律返回 null（调用方自行降级）。
+ */
+function dataURLToFile(uri: string, fallbackName: string): File | null {
+  if (typeof document === 'undefined' || !uri.startsWith('data:')) return null
+  const m = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(uri)
+  if (!m) return null
+  const mime = m[1] || 'application/octet-stream'
+  if (!mime.startsWith('image/')) return null
+  const raw = m[3] ?? ''
+  const bin = m[2] ? atob(raw) : decodeURIComponent(raw)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  const ext = mime.includes('png') ? 'png' : mime.includes('jpeg') ? 'jpg' : 'bin'
+  return new File([bytes], fallbackName || `share.${ext}`, { type: mime })
+}
+
 /* ===== Web share（navigator.share + <a download> fallback）===== */
 function createWebShare(): PocketShare {
   return {
@@ -439,11 +466,17 @@ function createWebShare(): PocketShare {
       // 优先 navigator.share（移动浏览器 / Safari PWA）。
       if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
         try {
-          await navigator.share({
-            title: opts.title,
-            text: opts.text,
-            url: opts.url,
-          })
+          // 附件分享：data:/blob: 的 PNG 必须转成 File 交给 Web Share Level 2。
+          const files = (opts.files ?? []).map((uri) => dataURLToFile(uri, opts.title || 'share.png')).filter(Boolean) as File[]
+          if (files.length > 0 && (navigator as { canShare?: (d: ShareData) => boolean }).canShare?.({ files })) {
+            await navigator.share({ files, title: opts.title, text: opts.text })
+          } else {
+            await navigator.share({
+              title: opts.title,
+              text: opts.text,
+              url: opts.url,
+            })
+          }
           return
         } catch (e) {
           // 用户取消（AbortError）= 正常路径，不重试

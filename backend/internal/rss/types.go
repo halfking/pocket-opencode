@@ -53,6 +53,8 @@ const (
 type Source struct {
 	ID, UserID, WorkspaceID                    string
 	URL, Title, Description, SiteURL, Language string
+	// Category 决定日报分组：it / finance / news，空值归入 other。
+	Category string
 	ETag, LastModified                         string
 	Status                                     SourceStatus
 	Enabled                                    bool
@@ -96,11 +98,13 @@ type PublishAttempt struct {
 
 type CreateSourceRequest struct {
 	URL, Title, Description, SiteURL, Language string
+	Category                                   string
 	Enabled                                    bool
 	FetchInterval                              time.Duration
 }
 type UpdateSourceRequest struct {
 	URL, Title, Description, SiteURL, Language *string
+	Category                                   *string
 	Enabled                                    *bool
 	FetchInterval                              *time.Duration
 	Status                                     *SourceStatus

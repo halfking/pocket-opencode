@@ -577,8 +577,73 @@ func (s *Server) handleEmailInvoicePush(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, result)
 }
 
+// invoiceSummarySplit 是 summarizeInvoiceRows 的结果。
+type invoiceSummarySplit struct {
+	// Rows 是**全部**发票的明细行。不计入合计 ≠ 从列表消失：failed/pending 的行
+	// 照样在表里、状态列照样写明，用户依然看得到「有几张没拿到」，
+	// 这正是合计能用来对账的前提。
+	Rows []map[string]any
+	// Counted 是计入合计的那一批，见 summarizeInvoiceRows 的口径说明。
+	Counted []email.Invoice
+	// Downloaded 必须与 Counted **同长**：界面上「已下载 N 张」和「合计 X 元」
+	// 指的是同一批发票，否则两个数字会互相矛盾。
+	Downloaded int
+	Pending   int
+	Failed    int
+}
+
+// summarizeInvoiceRows 把发票清单切成「明细行 + 计入合计的集合 + 三类计数」。
+//
+// ## 为什么抽出来、为什么判据只有一处
+//
+// 这段筛选此前是**手写**在 handleEmailInvoiceSummary 里的
+// `case "downloaded","filed": if inv.FilePath != ""`，而
+// `internal/email/ledger.go` 里 `InvoiceCountsTowardTotal` 明写自己是
+// 「**唯一**的『这一张算不算进合计』判据」「为什么必须只有一处」。
+// 两者今天等价、**没有错账**，但这是 2026-10-02 那起
+// `3,500 vs 61,500`（17.6 倍）事故的**同一个病**换了个位置：
+// 同一条规则手写第二遍，将来判据一改，这里就会静默漂移，
+// 于是同一批发票在台账表里是一个数、在汇总接口里是另一个数。
+//
+// 改调 `email.InvoiceCountsTowardTotal` 后，「已下载张数」与「计入合计的集合」
+// 由**同一个判据**导出，两者不可能再分叉——这正是本函数存在的全部意义。
+//
+// ## 为什么还要单独数 pending / failed
+//
+// 三类计数互斥且穷尽：downloaded/filed 且有文件 → 已下载；pending/new → 待处理；
+// failed → 失败。原来它们在一个 switch 里，现在判据归判据、分类归分类。
+func summarizeInvoiceRows(invoices []email.Invoice) invoiceSummarySplit {
+	out := invoiceSummarySplit{Rows: make([]map[string]any, 0, len(invoices))}
+	for _, inv := range invoices {
+		if email.InvoiceCountsTowardTotal(inv) {
+			out.Counted = append(out.Counted, inv)
+			out.Downloaded++
+		}
+		switch inv.Status {
+		case "pending", "new":
+			out.Pending++
+		case "failed":
+			out.Failed++
+		}
+		out.Rows = append(out.Rows, map[string]any{
+			"id": inv.ID, "category": inv.Category, "seller": inv.Seller,
+			"amount": inv.Amount, "currency": inv.Currency, "invoiceNo": inv.InvoiceNo,
+			"invoiceDate": inv.InvoiceDate, "status": inv.Status, "fileName": inv.FileName,
+			"feishuSent": inv.FeishuSentAt > 0,
+		})
+	}
+	return out
+}
+
 // handleEmailInvoiceSummary — GET /api/emails/invoices/summary
 // 生成（或刷新）共享汇总文档，返回列表行 + 合计金额 + 文件名。
+//
+// 合计**按币种分组**。此前这里是裸 `total += inv.Amount`，把 USD 与 CNY
+// 直接相加后放进 amountTotal —— 跨币种的算术和不是金额。
+//
+// 行为与列表端点 handleEmailInvoices 保持一致：单一币种时 amountTotal 可用，
+// 混入多币种时它是 0 且 amounts 非空 —— 给一个「看起来正常」的标量会直接
+// 误导（前端会把它渲染成 ¥）。
 func (s *Server) handleEmailInvoiceSummary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
@@ -596,47 +661,9 @@ func (s *Server) handleEmailInvoiceSummary(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	var downloaded, pendingCount, failed int
-	// 合计**按币种分组**。此前这里是裸 `total += inv.Amount`，把 USD 与 CNY
-	// 直接相加后放进 amountTotal —— 跨币种的算术和不是金额。
-	// 这条规则在仓库里已有三处实现（LedgerRows、WriteInvoiceSummaryDocs、
-	// InvoiceListStats），三处都配了用例；那三次修复的审计范围只在 internal/email，
-	// server 层这处手写求和没被看到。它是第四处，也是唯一一处直接把标量交给前端。
-	//
-	// 行为与列表端点 handleEmailInvoices 保持一致：单一币种时 amountTotal 可用，
-	// 混入多币种时它是 0 且 amounts 非空 —— 给一个「看起来正常」的标量会直接
-	// 误导（前端会把它渲染成 ¥）。
-	//
-	// 【合并后的叠加】先按「只统计真正拿到文件的发票」筛出 counted，再对它按币种
-	// 分组。两个修复解决的是**不同**问题，都要成立：
-	//   - 只统计已下载且 FilePath 非空：库里存在 status=failed 却残留脏字段的记录
-	//     （两张 QQ Wallet：seller="name:"、invoiceNo="Issuance"，字段是从邮件错误
-	//     段落抽出来的，见 handoff §7o），金额当时恰好是 0 才没出事。将来某张 failed
-	//     发票若带着错误抽取的非零金额，就会被静默算进总额，让对账虚高且无处提示。
-	//     判定与紧邻的 downloaded 计数完全对齐 —— 界面上「已下载 N 张」和「合计 X 元」
-	//     指的是同一批发票，否则两个数字会互相矛盾。
-	//   - 按币种分组：跨币种的算术和不是金额。
-	var counted []email.Invoice
-	rows := make([]map[string]any, 0, len(invoices))
-	for _, inv := range invoices {
-		switch inv.Status {
-		case "downloaded", "filed":
-			if inv.FilePath != "" {
-				downloaded++
-				counted = append(counted, inv)
-			}
-		case "pending", "new":
-			pendingCount++
-		case "failed":
-			failed++
-		}
-		rows = append(rows, map[string]any{
-			"id": inv.ID, "category": inv.Category, "seller": inv.Seller,
-			"amount": inv.Amount, "currency": inv.Currency, "invoiceNo": inv.InvoiceNo,
-			"invoiceDate": inv.InvoiceDate, "status": inv.Status, "fileName": inv.FileName,
-			"feishuSent": inv.FeishuSentAt > 0,
-		})
-	}
+	summary := summarizeInvoiceRows(invoices)
+	rows, counted := summary.Rows, summary.Counted
+	downloaded, pendingCount, failed := summary.Downloaded, summary.Pending, summary.Failed
 	amounts := email.SumByCurrency(counted)
 	var total float64
 	var totalCurrency string

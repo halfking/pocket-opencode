@@ -1,0 +1,554 @@
+{
+  "deckId": "starter-english-phrases",
+  "name": "英语常用句",
+  "description": "按场景组织的实用英语口语句 60 条：会议汇报、邮件、协作澄清、社交、谈判、面试、远程办公、礼貌拒绝与闲聊，附音标、中文意思与语体提示。",
+  "tags": [
+    "english",
+    "phrases",
+    "speaking"
+  ],
+  "newPerDay": 15,
+  "reviewsPerDay": 80,
+  "cards": [
+    {
+      "id": "starter-english-phrases-001",
+      "front": "Let's get started.",
+      "back": "IPA: /ˈlets ɡet ˈstɑːtɪd/ · 我们开始吧。 · 会议开场，中性偏正式；比 Let's begin 更自然。",
+      "tags": [
+        "meeting",
+        "opening"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-002",
+      "front": "Could you walk us through the process?",
+      "back": "IPA: /kʊd juː wɔːk ʌs θruː ðə ˈprəʊses/ · 你能带我们过一遍流程吗？ · 会议常用；比 explain 更礼貌具体。",
+      "tags": [
+        "meeting",
+        "asking"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-003",
+      "front": "I'd like to circle back to the budget.",
+      "back": "IPA: /aɪd laɪk tə ˈsɜːkl bæk tə ðə ˈbʌdʒɪt/ · 我想回到预算这个话题。 · 正式；circle back 指稍后再谈，不一定是本轮。",
+      "tags": [
+        "meeting",
+        "framing"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-004",
+      "front": "Just to make sure we're on the same page,",
+      "back": "IPA: /dʒʌst tə ˈmeɪk ʃʊə wiər ɒn ðə ˌseɪm peɪdʒ/ · 我确认一下我们理解一致。 · 澄清前提的万能开头，后面接复述你的理解。",
+      "tags": [
+        "meeting",
+        "clarifying"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-005",
+      "front": "Can I add one thing here?",
+      "back": "IPA: /kən aɪ æd wʌn ˈθɪŋ hɪə/ · 我补充一点可以吗？ · 打断别人时先用这句，礼貌且不显突兀。",
+      "tags": [
+        "meeting",
+        "interrupting"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-006",
+      "front": "If I understand correctly, the deadline is Friday.",
+      "back": "IPA: /ɪf aɪ ˌʌndəˈstænd ˈkɒrɪktli/ · 如果我理解得没错，截止日期是周五。 · 正式；用疑问语调可避免听起来像断言。",
+      "tags": [
+        "meeting",
+        "clarifying"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-007",
+      "front": "That's a good point, but let's consider the cost.",
+      "back": "IPA: /ðæts ə ɡʊd pɔɪnt bʌt lets kənˈsɪdə ðə kɒst/ · 说得有道理，不过我们得考虑成本。 · 温和反对；先肯定再转折，避免听起来像否定对方。",
+      "tags": [
+        "meeting",
+        "disagreeing"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-008",
+      "front": "I'll follow up with the client after the meeting.",
+      "back": "IPA: /aɪl ˈfɒləʊ ʌp wɪð ðə ˈklaɪənt ˈɑːftə ðə ˈmiːtɪŋ/ · 会后我会跟进客户。 · 会议收尾表态，负责的事项与时间都点明。",
+      "tags": [
+        "meeting",
+        "closing"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-009",
+      "front": "Let's park that and move on.",
+      "back": "IPA: /lets pɑːk ðæt ˌmuːv ˈwɒn/ · 这个先搁下，继续下一项。 · 会议控场；park 是英澳职场常见说法，美式也通用。",
+      "tags": [
+        "meeting",
+        "facilitating"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-010",
+      "front": "To summarize, we agreed on three things.",
+      "back": "IPA: /tə ˈsʌməraɪz wiː əˈɡriːd ɒn θriː ˈθɪŋz/ · 总结一下，我们达成了三点共识。 · 会议收尾；先说数量再逐条讲，听众容易跟。",
+      "tags": [
+        "meeting",
+        "closing"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-011",
+      "front": "I'm writing to follow up on our conversation.",
+      "back": "IPA: /aɪm ˈraɪtɪŋ tə ˈfɒləʊ ʌp ɒn ˈaʊə ˌkɒnvəˈseɪʃn/ · 我写信跟进我们之前的沟通。 · 邮件正式开头；follow up 兼有提醒和推进两层意思。",
+      "tags": [
+        "email",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-012",
+      "front": "Please find the report attached.",
+      "back": "IPA: /pliːz faɪnd ðə rɪˈpɔːt əˈtætʃt/ · 报告见附件。 · 邮件正式；find 是一种传统套语，母语者也常用，但 KnowBe1 建议 Attach 之类的直白写法。",
+      "tags": [
+        "email",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-013",
+      "front": "I wanted to get back to you about the schedule.",
+      "back": "IPA: /aɪ ˈwɑːntɪd tə ɡet ˈbæk tə juː əˈbaʊt ðə ˈʃedjuːl/ · 想就排期再跟你确认一下。 · 中性；get back to 语气比 contact 轻松。",
+      "tags": [
+        "email",
+        "neutral"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-014",
+      "front": "As discussed, here are the next steps.",
+      "back": "IPA: /əz dɪˈskʌst hɪər ər ðə nekst steps/ · 如前所述，附上下一步安排。 · 邮件正式；配项目符号列出步骤最清楚。",
+      "tags": [
+        "email",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-015",
+      "front": "Please let me know if you have any questions.",
+      "back": "IPA: /pliːz let miː nəʊ ɪf juː hæv ˈeni ˈkwestʃənz/ · 如有任何问题请告诉我。 · 邮件收尾最常见的礼貌句，适用几乎所有场合。",
+      "tags": [
+        "email",
+        "closing"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-016",
+      "front": "Apologies for the slow response.",
+      "back": "IPA: /əˈpɒlədʒiz fə ðə sləʊ rɪˈspɒns/ · 回复迟了，抱歉。 · 比 Sorry 更正式；英式拼 Apologies，美式 Apologies 都可。",
+      "tags": [
+        "email",
+        "polite"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-017",
+      "front": "I'd appreciate it if you could confirm by Friday.",
+      "back": "IPA: /aɪd əˈpriːʃieɪt ɪt ɪf juː kʊd kənˈfɜːm baɪ ˈfraɪdeɪ/ · 如能在周五前确认，我将不胜感激。 · 正式得体的催促；it 在这里是 it would 这个虚拟结构的简写。",
+      "tags": [
+        "email",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-018",
+      "front": "Thanks for your patience.",
+      "back": "IPA: /θæŋks fə jɔː ˈpeɪʃns/ · 感谢你的耐心等待。 · 轻度正式，客服和项目沟通都常见。",
+      "tags": [
+        "email",
+        "polite"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-019",
+      "front": "I've attached the updated version for your reference.",
+      "back": "IPA: /aɪv əˈtætʃt ði ˌʌpˈdeɪtɪd ˈvɜːʃn fə jɔː ˈrefrəns/ · 附上更新版本供您参考。 · 正式；for your reference 表明只是提供信息，不要求立即回复。",
+      "tags": [
+        "email",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-020",
+      "front": "Best regards,",
+      "back": "IPA: /best rɪˈɡɑːdz/ · 此致敬礼（邮件署名）。 · 邮件结尾用语；Regards 最通用，Sincerely 略正式，Cheers 偏随意。",
+      "tags": [
+        "email",
+        "closing"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-021",
+      "front": "Could you clarify what you mean by that?",
+      "back": "IPA: /kʊd juː ˈklærəfaɪ wɒt juː miːn baɪ ðæt/ · 你说的那是什么意思，能说明一下吗？ · 中性；比 What do you mean 更有余地，不显得质问。",
+      "tags": [
+        "collaboration",
+        "clarifying"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-022",
+      "front": "Sorry, I didn't quite catch that.",
+      "back": "IPA: /ˈsɒri aɪ ˈdɪdnt kwaɪt kætʃ ðæt/ · 抱歉，我没太听清。 · 会议中请求重复；quite 起了缓和作用。",
+      "tags": [
+        "collaboration",
+        "clarifying"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-023",
+      "front": "Who is responsible for this part?",
+      "back": "IPA: /huː ɪz rɪˈspɒnsəbl fə ðɪs pɑːt/ · 这部分谁负责？ · 分工不清时的标准问法。",
+      "tags": [
+        "collaboration",
+        "ownership"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-024",
+      "front": "I'm happy to take this on if that helps.",
+      "back": "IPA: /aɪm ˈhæpi tə teɪk ðɪs ɒn ɪf ðæt helps/ · 如果有帮助我可以接手。 · 协作中的主动表态；take this on 指接下任务。",
+      "tags": [
+        "collaboration",
+        "offering"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-025",
+      "front": "Let's split the work and sync tomorrow.",
+      "back": "IPA: /lets splɪt ðə wɜːk ˌsɪŋk təˈmɒrəʊ/ · 我们分头做，明天同步。 · 日常协作；sync 指简短对齐会议，口语中已泛化。",
+      "tags": [
+        "collaboration",
+        "casual"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-026",
+      "front": "I'll send over a summary once it's done.",
+      "back": "IPA: /aɪl send ˈəʊvər ə ˈsʌməri wʌns ɪts dʌn/ · 完成后我会发一份总结给你。 · send over 口语化，强调发到对方那里。",
+      "tags": [
+        "collaboration",
+        "casual"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-027",
+      "front": "Let's keep each other posted.",
+      "back": "IPA: /lets kiːp ˌiːtʃ ˈəʊðə ˈpəʊstɪd/ · 我们保持互相通气。 · 中性；keep someone posted 指随时同步进展。",
+      "tags": [
+        "collaboration",
+        "neutral"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-028",
+      "front": "I see your point, but I have a different view.",
+      "back": "IPA: /aɪ siː jɔː pɔɪnt bʌt aɪ hæv ə ˌdɪfrənt vjuː/ · 我理解你的观点，但看法不同。 · 正式；先认同再分歧，是英语里礼貌反对的骨架。",
+      "tags": [
+        "collaboration",
+        "disagreeing"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-029",
+      "front": "Let me double-check and get back to you.",
+      "back": "IPA: /ˌlet miː ˌdʌbl ˈtʃek ˌɡet ˈbæk tə juː/ · 我再核实一下，然后回复你。 · 万能拖延句；诚实说明需要时间，不承诺具体时间点。",
+      "tags": [
+        "collaboration",
+        "neutral"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-030",
+      "front": "We might want to run that by the team first.",
+      "back": "IPA: /wiː mɪt waɪnt tə rʌn ðæt baɪ ðə tiːm fɜːst/ · 我们可能最好先跟团队过一下。 · run something by someone 指征求意见。",
+      "tags": [
+        "collaboration",
+        "neutral"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-031",
+      "front": "It's great to see you again.",
+      "back": "IPA: /ɪts ɡreɪt tə siː juː əˈɡen/ · 很高兴又见到你。 · 寒暄开场，中性。",
+      "tags": [
+        "social",
+        "casual"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-032",
+      "front": "How have you been lately?",
+      "back": "IPA: /haʊ həv juː bɪn ˈleɪtli/ · 最近怎么样？ · 熟人寒暄；比 How are you 更能引出对方多说两句。",
+      "tags": [
+        "social",
+        "casual"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-033",
+      "front": "It was really nice catching up with you.",
+      "back": "IPA: /ɪt wəz ˈriːəli naɪs ˈkætʃɪŋ ʌp wɪð juː/ · 很高兴和你叙旧。 · 寒暄收尾；catch up 指叙旧，不是追赶。",
+      "tags": [
+        "social",
+        "casual"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-034",
+      "front": "How do you like working from home?",
+      "back": "IPA: /haʊ duː juː laɪk ˈwɜːkɪŋ frəm həʊm/ · 你觉得居家办公怎么样？ · 轻松话题，适合和同事、朋友开启对话。",
+      "tags": [
+        "social",
+        "casual"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-035",
+      "front": "What do you do for a living?",
+      "back": "IPA: /wɒt duː juː duː fər ə ˈlɪvɪŋ/ · 你是做什么工作的？ · 初次见面的标准问题；do for a living 指职业。",
+      "tags": [
+        "social",
+        "neutral"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-036",
+      "front": "I've heard so much about you.",
+      "back": "IPA: /aɪv hɜːd suː mʌt əˈbaʊt juː/ · 久仰大名。 · 恭维但不过分；商务初次见面也适用。",
+      "tags": [
+        "social",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-037",
+      "front": "How have you been keeping busy?",
+      "back": "IPA: /haʊ həv juː bɪn ˈkiːpɪŋ ˈbɪzi/ · 最近忙些什么？ · 轻松的调侃式提问，熟人间使用。",
+      "tags": [
+        "social",
+        "casual"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-038",
+      "front": "Let's keep in touch.",
+      "back": "IPA: /lets kiːp ɪn ˈtʌtʃ/ · 保持联系。 · 告别时最常见的收尾句。",
+      "tags": [
+        "social",
+        "casual"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-039",
+      "front": "What are your terms?",
+      "back": "IPA: /wɒt ɑː jɔː tɜːmz/ · 你们的条件是什么？ · 谈判开场，直接但不失礼。",
+      "tags": [
+        "negotiation",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-040",
+      "front": "Is there any flexibility on the price?",
+      "back": "IPA: /ɪz ðeər ˈeni ˌfleksəˈbɪləti ɒn ðə praɪs/ · 价格方面有商量余地吗？ · flexibility 是谈判中最有用的中性词。",
+      "tags": [
+        "negotiation",
+        "neutral"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-041",
+      "front": "We might be able to meet you halfway.",
+      "back": "IPA: /wiː mɪt biː ˈeɪbl tə miːt juː ˌhɑːfˈweɪ/ · 我们或许可以各让一步。 · meet halfway 指出双方各承担一半。",
+      "tags": [
+        "negotiation",
+        "neutral"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-042",
+      "front": "That's a bit steep for us.",
+      "back": "IPA: /ðæts ə bɪt stiːp fər ʌs/ · 这对我们来说有点高。 · 委婉说贵；steep 是谈判中委婉表达价格的常用词。",
+      "tags": [
+        "negotiation",
+        "casual"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-043",
+      "front": "Could you do 20 instead of 25?",
+      "back": "IPA: /kʊd juː duː ˈtwenti ɪnˈsted əv ˈtwenty faɪv/ · 25 的话能改成 20 吗？ · 具体数字的还价，比笼统说便宜点更有效。",
+      "tags": [
+        "negotiation",
+        "neutral"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-044",
+      "front": "If you can be flexible on the timeline, we can make it work.",
+      "back": "IPA: /ɪf juː kən bi ˈfleksəbl ɒn ðə ˈtaɪmlaɪn wiː kən meɪk ɪt wɜːk/ · 时间上如果能灵活些，我们就能做成。 · 用条件句交换让步，是谈判里最实用的句式之一。",
+      "tags": [
+        "negotiation",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-045",
+      "front": "We'd need to run it by our manager first.",
+      "back": "IPA: /wiːd niːd tə rʌn ɪt baɪ ˈaʊə ˈmænɪdʒə fɜːst/ · 我们得先跟我们经理确认。 · 不说“不”的拖延式拒绝，也给自己留余地。",
+      "tags": [
+        "negotiation",
+        "neutral"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-046",
+      "front": "Could you send that in writing?",
+      "back": "IPA: /kʊd juː send ðæt ɪn ˈraɪtɪŋ/ · 能把这条以书面形式给我吗？ · 谈判收尾，把口头共识固定下来。",
+      "tags": [
+        "negotiation",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-047",
+      "front": "Could you tell me a bit about yourself?",
+      "back": "IPA: /kʊd juː tel miː ə bɪt əˈbaʊt jɔːˈself/ · 能简单介绍一下你自己吗？ · 面试开场；a bit 让对方知道不必长篇大论。",
+      "tags": [
+        "interview",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-048",
+      "front": "Tell me about a time you handled a difficult client.",
+      "back": "IPA: /tel miː əˈbaʊt ə taɪm juː ˈhændld ə ˈdɪfɪkəlt ˈklaɪənt/ · 讲一个你处理难缠客户的经历。 · 行为面试题的标准问法，考的是具体做法。",
+      "tags": [
+        "interview",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-049",
+      "front": "What would you say is your greatest strength?",
+      "back": "IPA: /wɒt wʊd juː seɪ ɪz jɔː ˈɡreɪtɪst streŋθ/ · 你认为你最大的优势是什么？ · 面试自评题；回答时给例子比给形容词有用。",
+      "tags": [
+        "interview",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-050",
+      "front": "Do you have any questions for us?",
+      "back": "IPA: /duː juː hæv ˈeni ˈkwestʃənz fər ʌs/ · 你有什么想问我们的吗？ · 面试收尾；不问会显得准备不足，准备两三个真问题。",
+      "tags": [
+        "interview",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-051",
+      "front": "I'm currently working on a similar project.",
+      "back": "IPA: /aɪm kəˈrentli ˈwɜːkɪŋ ɒn ə ˈsɪmələ ˈprɒdʒekt/ · 我目前正在做一个类似的项目。 · 用实例证明相关经验，比抽象描述更有说服力。",
+      "tags": [
+        "interview",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-052",
+      "front": "I'm looking for my next challenge.",
+      "back": "IPA: /aɪm ˈlʊkɪŋ fər maɪ nekst ˈtʃælɪndʒ/ · 我在寻找下一个挑战。 · 说明求职动机的稳妥说法。",
+      "tags": [
+        "interview",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-053",
+      "front": "Sorry, you were breaking up a bit.",
+      "back": "IPA: /ˈsɒri juː wɔː ˈbreɪkɪŋ ʌp ə bɪt/ · 抱歉，你刚才信号断了一下。 · 远程会议；break up 指声音断续，不是画面切换。",
+      "tags": [
+        "remote",
+        "casual"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-054",
+      "front": "Can you hear me okay?",
+      "back": "IPA: /kən juː hɪə miː əʊˈkeɪ/ · 你能听清我说话吗？ · 会议开始或切换发言人时的标准确认。",
+      "tags": [
+        "remote",
+        "neutral"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-055",
+      "front": "You're on mute.",
+      "back": "IPA: /jɔː ɒn mjuːt/ · 你静音了。 · 远程办公高频提醒，说法简短直接。",
+      "tags": [
+        "remote",
+        "casual"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-056",
+      "front": "Let me share my screen.",
+      "back": "IPA: /ˌlet miː ˈʃeə maɪ skɪə/ · 我来共享一下屏幕。 · 远程协作常用操作句。",
+      "tags": [
+        "remote",
+        "neutral"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-057",
+      "front": "Could you give me a second to check?",
+      "back": "IPA: /kʊd juː ɡaɪv miː ə ˈsekənd tə tʃek/ · 能给我一点时间查一下吗？ · 争取思考时间，也提醒别人你在核对。",
+      "tags": [
+        "remote",
+        "casual"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-058",
+      "front": "I'm afraid we're out of time.",
+      "back": "IPA: /aɪm əˈfraɪd wiːr ˈaʊt əv taɪm/ · 恐怕时间到了。 · 会议控场的正式说法。",
+      "tags": [
+        "remote",
+        "formal"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-059",
+      "front": "I'd love to help, but I don't think I can this time.",
+      "back": "IPA: /aɪd lʌv tə help bʌt aɪ dəʊt θɪŋk aɪ kæn ðɪs taɪm/ · 我很想帮，但这次恐怕不行。 · 先表达意愿再拒绝，态度最柔和。",
+      "tags": [
+        "declining",
+        "polite"
+      ]
+    },
+    {
+      "id": "starter-english-phrases-060",
+      "front": "That doesn't work for me right now.",
+      "back": "IPA: /ðæt ˈdɒznt wɜːk fər miː raɪt naʊ/ · 这我现在不合适。 · 拒绝安排而不是拒绝人，语气中性偏口语。",
+      "tags": [
+        "declining",
+        "neutral"
+      ]
+    }
+  ]
+}

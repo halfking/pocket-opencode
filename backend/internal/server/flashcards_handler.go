@@ -47,8 +47,56 @@ func (s *Server) handleFlashcardsCollection(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func (s *Server) flashcardsGetCollection(w http.ResponseWriter, r *http.Request, userID string) {
-	ctx := r.Context()
+// flashcardsStarter 返回内置学习库的牌组目录。
+//
+// 这套数据编译进二进制（internal/flashcards/starter_data/*.json），
+// 所以新用户第一次打开学习模块就有内容可学，而不是一个空库。
+func (s *Server) flashcardsStarter(w http.ResponseWriter, r *http.Request, userID string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	decks, err := flashcards.StarterDeckSummaries()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	imported := false
+	if ok, err := s.flashcardStore.HasStarterDecks(r.Context(), userID); err == nil {
+		imported = ok
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"decks":    decks,
+		"imported": imported,
+	})
+}
+
+// flashcardsImportStarter 一键把内置牌组导入当前用户的闪卡库（幂等）。
+// body: {"deckIds":["starter-ai-basics"]}，省略 deckIds 即全部导入。
+func (s *Server) flashcardsImportStarter(w http.ResponseWriter, r *http.Request, userID string) {
+	var body struct {
+		DeckIDs []string `json:"deckIds"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+	}
+	result, err := s.flashcardStore.ImportStarterDecks(r.Context(), userID, body.DeckIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"decks":        result.Decks,
+		"cardsCreated": result.CardsCreated,
+		"cardsSkipped": result.CardsSkipped,
+		"deckIds":      result.DeckIDs,
+	})
+}
+
+func (s *Server) flashcardsGetCollection(w http.ResponseWriter, r *http.Request, userID string) {	ctx := r.Context()
 	since, limit := parseFlashcardsSinceLimit(r)
 	cards, err := s.flashcardStore.ListCardsSince(ctx, userID, since, limit)
 	if err != nil {
@@ -189,6 +237,15 @@ func (s *Server) handleFlashcardsItem(w http.ResponseWriter, r *http.Request) {
 	// 按钮又直接跳 /flashcards/new 这个「新建卡片」页，文案与行为不符）。
 	if len(parts) == 1 && parts[0] == "decks" && r.Method == http.MethodPost {
 		s.flashcardsCreateDeck(w, r, userID)
+		return
+	}
+	// 内置学习库（四套牌组）目录 + 一键导入。
+	if len(parts) == 1 && parts[0] == "starter" {
+		s.flashcardsStarter(w, r, userID)
+		return
+	}
+	if len(parts) == 2 && parts[0] == "starter" && parts[1] == "import" && r.Method == http.MethodPost {
+		s.flashcardsImportStarter(w, r, userID)
 		return
 	}
 	if len(parts) >= 2 && parts[0] == "cards" {
