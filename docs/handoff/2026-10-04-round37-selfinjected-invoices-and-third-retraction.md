@@ -2420,3 +2420,134 @@ select user_id, workspace_id, status, count(*) from opencode_pocket.email_invoic
 - `go vet ./internal/email/` 通过；`./internal/server` 两条 PG 护栏绿
 - 变异残留自检：`git grep --cached -c 'negctl'` 无输出；
   原逻辑 `if !beforeSet[n] {` 命中 1
+## 第四十一节（2026-10-04 07:14–07:50）候选判据过松的根因：`invoiceKeywordHit` **没有词边界**
+
+### 41.1 起点：用**已有**诊断看 08:00 那轮会动到什么
+
+跑现成的 `TestDiagInvoiceBacklog`（不新造判据），真实库输出：
+
+```
+窗口内邮件 978 封；其中已建档发票 7 封
+**未建档**：971 封
+  reason=date      1 封
+  reason=candidate 15 封
+拉原文预算 maxInvoiceBodyFetches=24/轮
+```
+
+那 15 封 candidate 逐封看主题，绝大多数是 **GitHub CI 失败通知、GitHub Actions
+分钟耗尽提醒、AWS 账户告警、Cursor/Grok 促销、NVIDIA 会议邀请、Apple 问候**——
+**一封都不是发票**。这就是待办里记的「候选判据偏松」。
+
+### 41.2 根因不是「词太宽」，是**根本没有词边界**
+
+`invoiceKeywordHit`（`invoice.go`）用 `strings.Contains(text, kw)`。
+拿生产词表在数据库侧逐封复算，命中情况是这样的：
+
+| 主题 | 命中的词 | 真实上下文 |
+|---|---|---|
+| `Amazon Web Services Account Alert` | `billing` | `console.aws.amazon.com/**billing**/home`（控制台 URL 路径） |
+| `[GitHub] You have used 100% of the Actions minutes` | `billing` | `so far this **billing** cycle`（套餐计费周期） |
+| `[GitHub] You have used 90% …` | `billing` | 同上 |
+| `You’re invited to GTC Berlin`（NVIDIA） | `vat` | `acti**vat**ion` / `pri**vat**e` 一类词的**子串** |
+| `Grok Bot launched. Come back for 50% off.` | `vat` | `…/acti**vat**e/grok-bot-…`（URL 里的 activate） |
+| `[halfking/…] Run failed: Installer CI` ×3 | `vat` | 同上 |
+
+⇒ `vat` 这个 3 字母的裸词，撞 `activation` / `activate` / `private`；
+`billing` 撞 URL 路径段和「billing cycle」。**都不是发票语义。**
+
+**代价是可量化的**：这些邮件会占掉 `maxInvoiceBodyFetches=24/轮` 的拉原文预算，
+把真发票挤到下一轮。而 24 封里若有 15 封是垃圾，真发票只剩 9 格。
+
+### 41.3 修法分两层（这是关键：两类问题混为一谈就会修错）
+
+**第一层 · 词边界**（子串巧合）
+英文关键词改用预编译的词边界正则，两侧不得是字母/数字/下划线，
+**也不得是 URL 与标点常见形态**（`. - _ / : ? & = # @ + %`）。
+把 `-` 也算进「词内」是刻意的：`console.aws.amazon.com/billing/home` 里的
+billing 是**路径段**，语义是「账单页面地址」而不是「这是一张账单」；
+只挡字母数字的话 `/billing/` 照样命中。
+
+**中文关键词不加词边界**——汉字没有「词内含子词」这回事，「发票」两字连续出现
+就是发票语义，原样保留 `Contains` 行为。
+
+正则**预编译**（`invoiceKeywordASCIIRegexes`）：`invoiceKeywordHit` 在候选扫描里
+对每封邮件调用一次（实测 978 封），现场 `MustCompile` 等于把常量开销乘以邮件数。
+
+**第二层 · 负向短语**（词边界正确命中、但语义无关）
+`this billing cycle` 里 billing 是**真的**独立词、词边界**正确命中**，
+所以第一层修不掉它。这需要短语级排除：
+
+```go
+var invoiceKeywordASCIINegPhrases = []*regexp.Regexp{
+    regexp.MustCompile(`(?i)\bbilling\s+(cycle|period)\b`),
+}
+```
+
+**判据** `invoice_keyword_wordboundary_test.go`，三条：
+- `RejectsSubstringFalsePositives`：夹具就是上面 4 封邮件的真实 subject+snippet，
+  期望值「不该命中」是独立字面量
+- `RejectsBareEnglishWordsInsideURLsAndCycles`：URL / billing cycle / activation / private
+- `StillAcceptsRealInvoiceSemantics`：**反向保护**，收紧不能把真发票挡在门外
+  （中文发票、电子发票下载、工行对账单、Your invoice is ready、Payment Receipt…）
+
+夹具用真实文本而非编造，是有意的：编造的样本证明不了真实库里会发生什么。
+
+### 41.4 判据**先如实转红**，再修
+
+写完判据首次运行：`RejectsSubstringFalsePositives` 与
+`RejectsBareEnglishWordsInsideURLsAndCycles` **两条都红**，
+逐条打印出是哪封、命中了哪个词、出现在什么上下文。
+反向保护那条**一开始就绿**（说明它测的是「别收紧过头」而非当前缺陷）。
+
+⇒ 这就是判据该有的样子：**红的部分精确定位缺陷，绿的部分证明修复没过头。**
+
+### 41.5 量化修复效果（真实库全量 978 封，新旧判据对跑）
+
+用临时探针把**修复前的实现逐字复制**一份，与新实现在真实库 978 封邮件上对跑：
+
+```
+邮件总数            : 978
+旧判据命中          : 27
+新判据命中          : 19
+两者都命中          : 19
+仅旧命中（被新拦掉）: 8
+仅新命中（新放行）  : 0
+--- 仅旧命中的样本 ---
+  Amazon Web Services Account Alert
+  [halfking/ai-native-gateway-core] Run failed: Installer CI - main (eff61ec)
+  You’re invited to GTC Berlin, October 20–22
+  Grok Bot launched. Come back for 50% off.
+  [GitHub] You have used 90% of the Actions minutes included …
+  [halfking/…] Run failed: Installer CI - main (bc68bd1)
+  [halfking/…] Run failed: Installer CI - main (fe85f57)
+  [GitHub] You have used 100% of the Actions minutes included …
+```
+
+⇒ **拦掉 8 封，逐封看全是非发票；新放行 0 封 ⇒ 零误伤。**
+「仅新命中 = 0」这一栏是判断收紧是否安全最硬的证据：
+它证明没有任何一封原本不被认为是发票的邮件，因为这次收紧而**开始**被认为像发票。
+探针跑完即删（mavis-trash），仓库里不留。
+
+### 41.6 过程中的一个自纠（同类，第五次）
+
+按行号插入代码时留下了原来的收尾 `return false`（应为 `return true`），
+表现是**中文关键词全 true、英文关键词全 false**——看起来像「正则全错」，
+实际是一个字写错。定位方式：写临时探针把每个关键词单独喂给正则，
+发现正则本身完全正常（`rawMatch=true`），才回头读函数体。
+
+**教训**：「新判据几乎全 false」这种症状，先怀疑**自己刚写的代码**，
+再怀疑被测对象。逐层隔离（正则单测 → 完整函数）的顺序能省很多猜测。
+
+### 41.7 实测
+
+- `go test ./internal/email/ ./internal/config/ ./internal/server/ -count=1` 全绿
+  （14.53s / 0.57s / 21.05s）
+- `go vet ./internal/email/` 通过；探针文件已删除，`git status` 只有
+  `invoice.go`（改）与 `invoice_keyword_wordboundary_test.go`（新）
+- 判据 3 条全绿；**修复前 2 条红、1 条绿**，红绿边界符合预期
+
+### 41.8 影响面（尚未生效，如实说）
+
+这份修复**在 18099 跑着的二进制里还没有**——那是 05:02 构建的临时二进制。
+所以今天 08:00 那一轮**仍会用旧的宽判据**，仍会为那 8 封非发票邮件占拉原文预算。
+要生效需随二进制替换一起上线（与 A4 开关同一个替换动作）。
