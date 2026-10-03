@@ -1432,3 +1432,102 @@ Scheduler。**两节的结论都错。** 本节更正。
 「积压释放了」。若一次推太多影响使用，应考虑先限量。
 
 本节只读：未改代码、未改配置、未触发流水线。
+## 二十七、18099 已换第三个临时二进制；网关当前实际不可用（2026-10-04 05:2x）
+
+本节全部为只读核对：未改代码、未改配置、未重启实例、未写库。
+
+### 27.1 18099 换人了：日志落点也换了
+
+上一轮记录的 `pocketd-qpfix.exe`（PID 91848）**已不在**。现跑的是：
+
+- `C:\workspace\openpocket-wt-i18n2\backend\pocketd-qpfix2.exe`
+- PID **95820**，**05:02:01** 启动，父进程已退出（detached）
+- 来自 `openpocket-wt-i18n2`，**detached HEAD `63131894`**
+  （已核 `merge-base --is-ancestor 63131894 origin/main` 退出码 0 ⇒ 是 origin/main
+  的祖先，**无分支冲突**；同名的 `docs/round37-section10` 仍归本会话的
+  `.wt-build`，worktree list 已确认）
+
+日志落点随之改变，**这是最容易踩的坑**：
+
+- 旧 `logs/pd-18099-upsert.err.log` 停在 **03:22:42**，之后再无写入
+- 新日志是 `openpocket-wt-i18n2/backend/pocketd-qpfix2.err.log`
+
+⇒ 复核时**不要**再读旧文件，否则会以为「服务两小时没动静」。
+同理，blocker「18099 跑的不是正式二进制」**依然成立**，且已连续换过多个。
+
+该 worktree 的 `backend/` **无未提交源码改动**（`git status --porcelain -- backend`
+为空），未跟踪的只有 `pocketd-qpfix*.exe/log`。
+
+### 27.2 网关确实在回内容，但整条链路当前基本不工作
+
+窗口 05:02:01–05:21:35（19.5 分钟），`[email/classify]` 共 **214 行、63 个不同邮件**：
+
+| 现象 | 次数 |
+|---|---|
+| `429 rate_limit_exceeded` | **115** |
+| `context canceled`（请求预算耗尽后级联取消） | 76 |
+| `unparseable`（11 次失败 × 每次 2 行日志） | 22 |
+| `deadline exceeded` | 1 |
+
+- 429 集中在 **05:07:06 – 05:21:24，即 14 分钟 115 次**
+- 每次 `POST /api/emails/classify` 耗时 `1m58s` / `2m0s` ⇒ 2 分钟请求预算
+  被吃满，超时后同批其余并发一起 `context canceled`
+
+⇒ 手工分类目前**不工作**。这改写了「是否打开关」那条待拍板项的前提（见 27.5）。
+
+### 27.3 11 次解析失败：网关把 JSON 的值换成了 `[REDACTED]`
+
+日志原文（**Node 按 UTF-8 读**，原文未改动）：
+
+```
+unparseable gateway output: "{\"category\": \"bill\", \"importance\": \"medium\", \"summary\": [REDACTED]", \"suggested_action\": [REDACTED]备查，可设置到期前提醒以免服务中断。\"}"
+```
+
+- 值被替换成 `[REDACTED]`，且**吞掉了开引号、留下闭引号** ⇒ JSON 非法 ⇒
+  `parseGatewayClassification` 在 `server_email_classify_gateway.go:82-84` 返回 false
+- 已排除三种本地可能：
+  1. **不是审计掩码** —— `auditSensitiveKeys`（`audit_writer.go:32-47`）里
+     没有 `summary` / `suggested_action`
+  2. **不是日志重定向** —— 全仓 `log.SetOutput` 只在测试里出现
+  3. **不是未提交改动** —— `wt-i18n2` 的 `backend/` 干净
+- ⇒ 只剩「上游 `llm.kxpms.cn` 返回的 content 本身就带 `[REDACTED]`」这一种解释。
+  **但这是推断，不是直接证据** —— 我没有抓到原始响应体。若要坐实，需在
+  `server_email_classify_gateway.go:167` 处临时落一份未截断的原始响应（需授权）。
+
+### 27.4 一次自我证伪：那个「编码 bug」是我读出来的
+
+我第一次用 PowerShell `Get-Content` 读日志，看到 `淇勫淇瀛愮偛澶掓紝` 这类乱码，
+当场判成「网关返回 GBK、我们按 UTF-8 解析，把引号吃进了双字节字符里」——
+**这是错的**。Node 按 UTF-8 读同一行是正常中文：
+
+```
+U+5907 U+67E5 U+FF0C U+53EF U+8BBE ... → 备查，可设置到期前提醒以免服
+```
+
+乱码只存在于我的终端。**教训：读本仓 UTF-8 日志一律用
+Node `readFileSync(p,'utf8')`；PowerShell 会凭空造出一个不存在的编码缺陷。**
+这条在既有约束里早就写着，本轮还是踩了 —— 说明它得配「读之前先想一句
+我用什么读的」才记得住。
+
+### 27.5 「定时分类未开」被重新验证（不是被推翻）
+
+- 整个日志里**没有** `[email/pipeline] 定时分类已开启` 那行
+  （`server_email_pipeline_classify.go:77`）
+- 214 行分类日志**全部**来自 `POST /api/emails/classify` 这个手工端点
+
+⇒ 第二十六节的结论**依然成立**：定时路径不分类，199 封 high 积压仍会在
+08:00 那轮由 `notifyImportant` 一次性放出。这轮看到网关在回内容，
+**不构成「定时开关已开」的证据** —— 别把「网关活着」读成「定时在分类」。
+
+### 27.6 对「是否把 POCKET_EMAIL_CLASSIFY_VIA_GATEWAY 置 true」的结论改写
+
+我此前给的口径是「代码已具备，不需开发，只等你拍板」。**这个口径现在不完整**，
+必须补上前提：
+
+- 网关 14 分钟内拒绝 115 次（429）
+- 2 分钟请求预算被打满，其余并发被级联取消
+- 部分响应的 JSON 被上游破坏成非法格式，我方解析器直接拒绝
+
+⇒ **在网关限流 / 额度 / 上游 JSON 完整性这三件事解决之前，打开开关只会
+每轮白烧额度并失败**，不会换来可用分类。建议顺序：先确认网关侧限流与额度
+（这要问网关的负责人，不是我在本仓能查的），再谈开关。
