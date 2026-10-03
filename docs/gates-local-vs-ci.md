@@ -3,10 +3,16 @@
 > 2026-10-03 实测后成文。本文**解释机制，不是名单**。
 > 名单的权威只有一处：`frontend/gates.json`。本文若与它冲突，以它为准。
 
-## 装 pre-push 钩子前必须知道的一件事：它是**仓库级共享**的
+## 装 pre-push 钩子：默认只装在**当前 worktree**
 
-`scripts/install-git-hooks.ps1` 做的是 `git config core.hooksPath .githooks`。
-这个键写在**共用的 `.git/config`** 里，不是某个 worktree 私有的。实测：
+`scripts/install-git-hooks.ps1` 默认走 per-worktree 配置：
+
+```powershell
+git config extensions.worktreeConfig true
+git config --worktree core.hooksPath .githooks
+```
+
+**为什么不默认装仓库级**——这是实测出来的，不是风格选择：
 
 ```
 $ git -C <某个 worktree> config core.hooksPath .githooks
@@ -14,16 +20,43 @@ $ git -C <主工作区>       config core.hooksPath
 .githooks          # 主工作区立刻看到
 ```
 
-`git rev-parse --git-common-dir` 在主工作区与 worktree 里指向**同一个** `.git`，所以
-**从任何 worktree 装这个钩子，会让这个仓库所有 worktree 的 push 都开始跑全量后端测试**。
+`git rev-parse --git-common-dir` 在主工作区与 worktree 里指向**同一个** `.git`，
+所以裸的 `git config core.hooksPath` 写在共用配置里：**从任何 worktree 装它，
+这个仓库所有 worktree 的 push 都会开始跑全量后端测试**。后果要正视——
+并行会话正在 push 时，一条既有的红就会把它的 push 挡下来，而它看不到原因。
 
-后果要正视：并行会话正在 push 时，钩子会让它的 `go test ./...` 跑十几分钟，
-一旦某条既有的红被算到它头上，**它的 push 会被拒绝，而且它不知道为什么**。
-所以本轮没有安装它（实测后已把 `core.hooksPath` 还原为空）。
+per-worktree 配置没有这个问题。实测装完之后：
 
-什么时候装：合并进 main 之后、且确认没有并行会话在 push 时。
-装完自己验一次：`git config core.hooksPath` 应为 `.githooks`，
-然后 `git config --unset core.hooksPath` 可以随时还原。
+```
+[install-git-hooks] other worktree sees: (unset)   <- C:/workspace/openpocket
+[install-git-hooks] other worktree sees: (unset)   <- C:/workspace/openpocket/.wt-stt3
+```
+
+`extensions.worktreeConfig` 本身是仓库级的，但它只负责「允许按 worktree 存配置」，
+本身不改变任何行为。
+
+用法与还原：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-git-hooks.ps1              # 装到当前 worktree
+powershell -ExecutionPolicy Bypass -File scripts/install-git-hooks.ps1 -Worktree D:\path\to\wt
+git config --worktree --unset core.hooksPath    # 还原当前 worktree
+```
+
+脚本开头会打印它装的是哪个 worktree——因为它第一版用 CWD 解析目标，
+在主工作区调用、想配 side worktree 的话会**静默装错对象**。
+
+## 三条车道，各自负责什么
+
+| 车道 | 触发 | 范围 | 作用 |
+|---|---|---|---|
+| `npm run gates` | 手工 / 提交前 | **全部 23 条** | 本地全量 |
+| `pre-push` 钩子 | `git push` | 改 `backend/` → `go test ./...`；改 `frontend/` → 全量 gates | 阻止「有边界的结论」进主干 |
+| CI `gates-parity` job | 每个 push / PR | 12 条 `check:*` | 补上「只在本机跑过」的那部分 |
+
+第三条车道存在的理由是第二条：**2026-10-03 那次真红里，提交信息写的
+「internal/rss、flashcards、config、server 全部通过」这句话不假，它只是有边界。
+钩子把边界的决定权从人手里拿走了**，剩下的「门禁配没配进 CI」则由规则 5 保证。
 
 ## 一句话
 
@@ -87,3 +120,57 @@ node scripts/run-gates.mjs --ci     # 只跑 CI 负责的那 12 条
 `check:icons` 的字体子集、`check:i18n*` 的 locale 文件。
 `check:gofmt` 已经在自己内部把行尾归一化后再判，所以 Windows 与 Linux 结论应当一致；
 若某条门禁在两侧结论不同，先按 `check:*` 名字定位它依赖的环境，再讨论谁对。
+
+## gofmt 门禁的修法
+
+`check:gofmt` 报出的是**文件路径**，并自带修法：
+
+```
+node scripts/check-gofmt.mjs          # 只判
+node scripts/check-gofmt.mjs --fix    # 判 + 用 gofmt -w 修，然后请重跑确认
+```
+
+**用 `--fix`，不要裸跑 `gofmt -w`。** 本机 `core.autocrlf=true`，裸 `gofmt -d`
+会把整个文件按 LF 重写（实测 203 行的文件整份报差异），那是门禁专门要滤掉的
+行尾伪债；门禁先归一化再判，报出来的才是真债。
+
+「`gofmt -w` 一次就干净了」在本机是**错的**：实测单遍之后仍有一批文件不通过
+（单文件 diff 356 行 → 19 行），第二遍才收敛到 0。所以修完必须重跑门禁确认。
+
+## 落地跑道（`audit/gofmt-debt-20261003` -> main）
+
+写这一节是因为落地不是「pull 完 merge 一下」就完事，**有三个文件是必争点**。
+
+### 落地前先做这件事
+
+```bash
+# 1. 确认主干工作区是干净的、有没有人在写。不干净就先等，别硬合。
+git status --porcelain
+git worktree list
+
+# 2. 看远端有没有前移。前移了就不能再指望 fast-forward。
+git fetch origin
+git rev-list --count HEAD..origin/main
+git merge-base --is-ancestor origin/main audit/gofmt-debt-20261003 && echo "仍是 fast-forward"
+```
+
+### 三个必争点，以及机械解法
+
+| 文件 | 冲突形态 | 怎么解 |
+|---|---|---|
+| `backend/internal/email/invoice_harvest.go` | 本分支是 gofmt 空白（对齐 / `em.Date-parsed` 简写 / 注释重排），对方是逻辑改动 | 两边都留：逻辑取对方的，空白取 gofmt 的。跑 `node scripts/check-gofmt.mjs` 确认不红 |
+| `backend/internal/server/server_assistant.go` | 本分支只改了一行对齐 | 同上，通常自动合 |
+| `docs/handoff/2026-09-30-android-e2e-bug-d-e-f.md` | 两边都在**同一个行号后插入**（§4.125 与 §4.126） | 两段都留，按节号顺序排列。**不要**用 `git checkout <branch> -- <path>`，那会丢一侧 |
+
+第三条最容易出事：它是纯追加冲突，diff 上下文长但**没有一行内容相同**，
+所以「看起来像重复」而实际是两个不同的节。判据是节号，不是行号。
+
+### 落地后必须跑的三件事
+
+```bash
+cd frontend && node scripts/run-gates.mjs --list   # 规则 1-5 全过、CI 分工仍对
+cd frontend && node scripts/run-gates.mjs --ci     # 12 条全绿
+cd backend  && go test ./...                       # 全量，不是挑几个包
+```
+
+第三条是这一整套机制存在的理由：它就是当初没被跑的那一条。
