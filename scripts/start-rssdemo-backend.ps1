@@ -2,7 +2,9 @@ param(
   [int]$Port = 18190,
   [string]$Schema = 'rssdemo_test',
   [string]$DataDir = 'C:\workspace\openpocket\data\rssdemo',
-  [string]$LogPrefix = 'C:\workspace\openpocket\logs\rssdemo'
+  [string]$LogPrefix = 'C:\workspace\openpocket\logs\rssdemo',
+  [Parameter(Mandatory = $false)][string]$AuthUser = 'admin',
+  [Parameter(Mandatory = $false)][string]$AuthPass = ''
 )
 # Starts an ISOLATED pocketd instance (own schema + own port + own dataDir) to
 # verify the whole chain in a REAL process with REAL outbound fetching:
@@ -30,8 +32,15 @@ $env:POCKET_DATA_DIR    = $DataDir
 $env:POCKET_DB_PATH     = Join-Path $DataDir 'pocket.db'
 $env:POCKET_DEV_AUTH    = 'true'
 $env:POCKET_AUTH_LEGACY_ONLY = 'true'
-$env:POCKET_AUTH_USER   = 'admin'
-$env:POCKET_AUTH_PASS   = 'demo-pass-123'
+$env:POCKET_AUTH_USER   = $AuthUser
+# AuthPass is passed in at call time on purpose: never bake a real password into
+# a committed script. When empty, generate a throwaway one and print it, so the
+# log always says which credential this instance actually uses.
+if ([string]::IsNullOrEmpty($AuthPass)) {
+  $AuthPass = 'demo-pass-' + (Get-Random -Minimum 1000 -Maximum 9999)
+  "GENERATED_AUTH_PASS=$AuthPass"
+}
+$env:POCKET_AUTH_PASS   = $AuthPass
 $env:POCKET_JWT_SECRET  = 'rssdemo-local-secret-0123456789abcdef'
 # Digest: run once at startup instead of waiting for 08:30, so the notification
 # can be observed within minutes instead of a day.
