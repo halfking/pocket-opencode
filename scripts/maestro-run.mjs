@@ -1478,6 +1478,80 @@ if (!isMiui) {
 //   换成另一个。所以复位放在 harness，用 CDP 直接改路由，不靠 UI 导航猜。
 const START_ROUTE = process.env.POCKET_START_ROUTE || '#/ai'
 
+// POCKET_PRE_ROUTE：每条 flow 开始前用 **CDP** 把路由切到指定页面。
+//
+// ## 它是什么
+//
+// 一个**诊断用逃生口**，不是修复。它的用途只有一个：把「导航没发生」和
+// 「页面坏了」这两种红法区分开 —— 前者用本功能把页面送到位，如果 flow 随即
+// 转绿，那问题在导航链路；仍然红，那问题在页面里。
+//
+// ## 观察到的现象（不是结论）
+//
+// 底部 tabbar 的 `tapOn` 在这台设备上**有时**报 COMPLETED 而页面没动，
+// `retryTapIfNoChange` 也不触发。`_goto-pkm.yaml` 注释里记过两次同样观察。
+// 另有一条更硬的约束：flow 内部**无法**用脚本改 hash 绕开它 ——
+//
+//	evalScript: ${location.hash = '#/more'}
+//	  → TypeError: Cannot set property 'hash' of undefined
+//	    （evalScript **不在 WebView 的 JS 上下文里**跑）
+//
+// 而 harness 这一侧有 CDP（lib/adb-cdp.mjs 的 ev，**是**在 WebView 上下文里）。
+// 实测 scripts/probe-cdp-route.mjs：设 location.hash='#/more' → 页面内容真的
+// 切成「更多功能 / 学习 / 对话 / 会议 / 邮箱 / 定时自动化 / 闪卡 / 设置 …」。
+//
+// ## ⚠️ 归因更正（2026-10-04）：别把这个当「MIUI 吞 tap」的证据
+//
+// 2026-10-04 早先那轮，`email-accounts` / `flashcards-write` 都红在
+// 「找不到目标页」，当时记下的归因是「MIUI 吞掉底部 tab tap」。
+// **这个归因是错的**，用对照实验推翻了：
+//
+//   同时做了两件事 —— ① 打开 POCKET_PRE_ROUTE；② 清掉首页 7 条
+//   自造的测试探针任务（Maestro任务×5 / PG matrix probe×2），它们此前把
+//   首页的「需要你介入」面板占满。
+//
+//	关掉 POCKET_PRE_ROUTE、清完探针后，email-accounts **2/2 通过（47s）**。
+//
+// ⇒ 真正的原因是**测试残留数据把导航区盖住了**（tap 落在面板上，
+// 不是被系统吞掉），不是设备级的 MIUI bug。两件事一起动过、只按「开/关
+// pre-route」归因，就会把绕过手段误当成修复，并把错误结论写进注释传播出去。
+// 记这一条是因为这正是本注释上一版的错误。
+//
+// ## 为什么必须自证「真的到了」
+//
+// setRoute 只能证明 **hash 变了**，不能证明**页面切了**。所以这里额外读一次
+// body.innerText，并用 POCKET_PRE_ROUTE_MARK（正则）判「确实在目标页」。
+// 负控实测：MARK 填一个绝不可能出现的字符串 → 守卫响亮报「页面自证失败」
+// 并打印页面内容前 220 字。
+const PRE_ROUTE = (process.env.POCKET_PRE_ROUTE || '').trim()
+const PRE_ROUTE_MARK = (process.env.POCKET_PRE_ROUTE_MARK || '').trim()
+
+async function gotoPreRoute() {
+  if (!PRE_ROUTE) return
+  const sep = PRE_ROUTE.includes('?') ? '&' : '?'
+  const want = `${PRE_ROUTE}${sep}__preroute=${Date.now()}`
+  const ok = await setRoute(want, 'true', 8000)
+  let h = '(读不到)'
+  let body = ''
+  try {
+    h = String(await cdpEval('location.hash') || '')
+    body = String(await cdpEval('document.body.innerText') || '').replace(/\s+/g, ' ')
+  } catch { /* 通道也坏了；下面的 mark 判据会报出来 */ }
+  const line = `[pre-route] ${ok ? '✅' : '⚠️ '} ${PRE_ROUTE} → ${h}`
+  if (PRE_ROUTE_MARK) {
+    const re = new RegExp(PRE_ROUTE_MARK)
+    if (re.test(body)) {
+      console.log(`${line} · 页面自证通过（/${PRE_ROUTE_MARK}/ 命中）`)
+      return
+    }
+    console.error(`${line} · ❌ 页面自证**失败**：/${PRE_ROUTE_MARK}/ 没命中。`)
+    console.error(`   页面内容前 220 字：${body.slice(0, 220)}`)
+    console.error(`   ⇒ flow 很可能仍会红在「找不到目标页」。这不是 flow 的问题，是导航没到位。`)
+    return
+  }
+  console.log(`${line} · 页面内容前 120 字：${body.slice(0, 120)}`)
+}
+
 /** 每条 flow 之前的复位：造一次真实 hash 变化，让路由守卫重算。 */
 async function resetToStart() {
   const want = `${START_ROUTE}?__reflow=${Date.now()}`
@@ -1510,6 +1584,7 @@ const runOne = (flow) =>
 let r = { status: 0 }
 for (const [i, flow] of flows.entries()) {
   if (i > 0) await resetToStart()
+  await gotoPreRoute()
   if (flows.length > 1) console.log(`\n──────── flow ${i + 1}/${flows.length}: ${flow} ────────`)
   const one = runOne(flow)
   if (one.status !== 0) r = one   // 保留失败那次的返回码，交给下面的归因逻辑
