@@ -52,9 +52,28 @@ export async function drainConfigOutbox(): Promise<number> {
   for (const row of queued) {
     try {
       if (row.namespace === 'email_account') {
-        const { emailApi } = await import('../../api/email')
+        const { emailApi, isStaleWriteError } = await import('../../api/email')
+        // payload 是 enqueueConfigPush 存下来的 patch，字段集见
+        // account-sync.ts 的 pushAccountToServer（displayName /
+        // syncIntervalMin / enabled / imapHost / imapPort / authType）。
+        // 下面这个类型只声明了其中三个字段，属于**收窄**：其余字段运行时照样
+        // 带着走，只是类型上看不见。若日后要按字段分支，先把它对齐。
         const p = row.payload as { displayName?: string; syncIntervalMin?: number; enabled?: boolean }
-        await emailApi.updateAccount(row.entityId, p)
+        // 基准取行上的 updatedAt：它就是入队那一刻客户端据以编辑的那一版
+        // （enqueueConfigPush 收到的 _a.updatedAt 原样落在这里）。
+        // 传 0 会让服务端按 store.go 的 baseUpdatedAt<=0 分支退化成无条件
+        // 覆盖，守卫等于不存在 —— 所以这里**不能**用 `?? 0` 兜底。
+        try {
+          await emailApi.updateAccount(row.entityId, p, row.updatedAt)
+        } catch (err) {
+          // 409 = 服务端那份更新，按需求「新的胜出」就该让服务端赢，不重试。
+          // 必须在分支内消化：外层 catch 只会 markConfigPushFailed，而它只加
+          // attempts、**不改 state**，这一行仍是 'queued'，于是每轮 online 事件
+          // 和每轮 syncUserSettings 都会重放同一行，永远推不进去。
+          // 本地值随后由下行 syncUserSettings 的 writeLocalIfNewer 覆盖。
+          if (!isStaleWriteError(err)) throw err
+          console.warn('[config-sync] email_account push rejected as stale; server copy wins', row.entityId)
+        }
         await markConfigPushDone(row.id)
         pushed++
         continue

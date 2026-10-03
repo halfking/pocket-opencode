@@ -15,11 +15,13 @@
 //    ⇒ 改成 `forward tcp:0`，让 adb 自己挑一个当前空闲的端口并打印出来。
 //       碰撞从「概率事件」变成「不可能」。不是「多随机几次」——那只推低概率。
 //
-// 2) **socket 必须按当前进程 pid 选，不是取最后一个。**
+// 2) **socket 必须按当前进程 pid 选，选不到就抛错。**
 //    设备 `/proc/net/unix` 里会留着**死进程**的
-//    `webview_devtools_remote_<pid>`。取「最后一个」会连到不响应的旧 socket，
-//    表现是「CDP 探测超时」——看着像 CDP 坏了，其实是自己选错了。
-//    这个坑我在一次性探针里连踩两次，固化在这里。
+//    `webview_devtools_remote_<pid>`，也有**另一个活着的 App** 的
+//    （本机同时装了 `…pocket` 与 `…pocket.sttdev` 两个包时必然如此）。
+//    取「最后一个」会连到错误的对象，且**不报错**：/json/list 与
+//    Runtime.evaluate 全部正常返回，调用方无从察觉。
+//    2026-10-04 因此废掉了原来的「回退到最后一个」，详见下面 openCdp 里的注释。
 //
 // 3) **必须能清理。** 154 个绑定点里只有 27 处做了 `--remove`（同一实测）。
 //    close() 是必经路径，请放在 finally 里。
@@ -93,16 +95,55 @@ export async function openCdp(opts = {}) {
     throw new Error(`APP_NOT_RUNNING（${pkg} 没在跑；先跑 node scripts/maestro-run.mjs 任意 flow 拉起它）`)
   }
 
-  // 按当前 pid 精确匹配；匹配不到才退回最后一个，并**大声说出来**——
-  // 静默退回会让「选错 socket」变成一个看不见的错误来源。
+  // 按当前 pid 精确匹配。**匹配不到就抛错，不回退。**
+  //
+  // ⚠️ 2026-10-04 修：原来这里是「匹配不到 → 取最后一个 socket」并只打一句警告。
+  // 那个假设是「非本 pid 的 socket 都是死进程残留」，**设备上装了第二个包时就不成立**：
+  // `com.kaixuan.opencode.pocket` 与 `com.kaixuan.opencode.pocket.sttdev` 同时在跑时，
+  // 两个 `webview_devtools_remote_<pid>` 都是**活的**。回退连过去拿到的是**另一个 App 的
+  // WebView**，而 /json/list 与 Runtime.evaluate 一切正常 —— 没有报错、没有异常。
+  //
+  // 实测后果（都发生在「静默连错包」之后，且从结果上完全看不出异常）：
+  //   - flashcards-test-fixture.mjs 报告「localStorage 清理成功」，被测主 App 的
+  //     `flashcards:v1` 却原封不动 ⇒ 零卡组前置根本没生效，flow 测的是 deck-toggle 分支；
+  //   - 布局/坐标测量全部取自 .sttdev 的页面 ⇒ 坐标判据建立在错误的 App 上。
+  //
+  // 「回退到最后一个」这个做法本身就是反的：死进程的 socket 连不上（/json/list 直接失败），
+  // 真正会静默成功的恰恰是**活着但不是你要的那个**。
+  //
+  // 逃生口：确实需要「随便连一个活着的」时显式设 POCKET_CDP_ALLOW_ANY_SOCKET=1，
+  // 并且调用方必须自己在返回值里核对 pid。
   const socks = adbSoft(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`])
     .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
+  if (!socks.length) throw new Error('NO_DEVTOOLS_SOCKET（设备上没有任何 webview_devtools_remote_*）')
+
   let socket = socks.find((s) => s.endsWith(`_${pid}`))
   if (!socket) {
-    const dead = socks.filter((s) => !s.endsWith(`_${pid}`))
-    if (!socks.length) throw new Error('NO_DEVTOOLS_SOCKET（设备上没有任何 webview_devtools_remote_*）')
-    socket = socks[socks.length - 1]
-    console.error(`[cdp] ⚠️ 没有 pid=${pid} 的 socket，退回 ${socket}。设备上另有 ${dead.length} 个死进程的陈旧 socket。`)
+    const others = [...new Set(socks.filter((s) => !s.endsWith(`_${pid}`)))]
+    // 区分「死进程残留」和「另一个活着的 App」：能 pidof 到的就是活的。
+    const alive = []
+    for (const s of others) {
+      const otherPid = s.slice(s.lastIndexOf('_') + 1)
+      try {
+        if (adbSoft(['shell', `pidof -s ${otherPid}`], 5000).trim()) alive.push(s)
+      } catch { /* pidof 查不到 = 死进程 */ }
+    }
+    if (process.env.POCKET_CDP_ALLOW_ANY_SOCKET === '1') {
+      socket = others[others.length - 1]
+      console.error(`[cdp] ⚠️ POCKET_CDP_ALLOW_ANY_SOCKET=1，放弃 pid=${pid}，改连 ${socket}。` +
+        `若 ${socket} 属于**另一个 App**，此后所有读写都不是被测对象。`)
+    } else {
+      throw new Error(
+        `CDP_SOCKET_PID_MISMATCH：没有 pid=${pid}（${pkg}）的 webview devtools socket。\n` +
+        `  设备上现有：${[...new Set(socks)].join(', ') || '(无)'}\n` +
+        `  其中**进程仍存活**的：${alive.length ? alive.join(', ') : '(无)'}\n` +
+        (alive.length
+          ? `  ⇒ 活着的那些属于**其它 App**（本机同时装了多个包时常见）。` +
+            `连过去会静默操作错误的 WebView，所以这里直接失败。\n`
+          : `  ⇒ 都是死进程残留，等 App 起来后重试。\n`) +
+        `  确实要连别的：设 POCKET_CDP_ALLOW_ANY_SOCKET=1（调用方须自行核对返回的 pid）。`
+      )
+    }
   }
 
   // 端口：显式给了就用，没给就让 adb 分配空闲端口。

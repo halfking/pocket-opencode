@@ -203,6 +203,41 @@ func deriveSnippetUnsanitized(raw []byte, maxRunes int) string {
 	// 2) 抓回来的不是完整 MIME（部分服务器 BODY[TEXT] 直接给正文），
 	//    或者只有一段裸 HTML。这时**先判断是不是 HTML**，别让它原样透出。
 	if s := normalizeWhitespace(string(raw)); s != "" {
+		// ⚠️⚠️ 2026-10-04 真库实测新增的一腿，必须排在 HTML 分支**之前**。
+		//
+		// 现象：BACKFILL 落库的 25 条脏 snippet（`=0D=0A=0D=0A =0D=0A …`）
+		// 全部产出于下面那个 looksLikeHTML 分支，不是产出于 QP 解码分支。
+		//
+		// 机制（diag_real_fetch_snippet_stages_test.go 在真库 + 真 IMAP 上量的）：
+		// backfill 走 fetcher.go:519 fetchSnippetOnConnected，取的是
+		// **BODY[TEXT]（不带头）**。于是 raw =
+		//
+		//	<!DOCTYPE html>=0D=0A<html lang=3D\"en\">=0D=0A  <head>=0D=0A …
+		//
+		// normalizeWhitespace 压平后 looksLikeHTML(s)=true，于是走到
+		// `h := htmlToText(s)` —— **对一个 QP 编码的源码剥标签**：
+		// 标签被剥掉，剩下的正好全是 `=0D=0A` 残留。然后
+		// `!containsMIMESource(h)` 为真（纯 QP 源码里没有 Content-Type/
+		// boundary），于是这坨 `=0D=0A` 被 truncateRunes 到 500 runes
+		// **当摘要返回**。库里 503 字节的脏行与该输出逐字同形。
+		//
+		// 而本文件原有的 QP 解码分支在 HTML 分支**之后**（见下方 246 行），
+		// 对这个输入永远走不到 ⇒ 结构顺序就是缺陷本身。
+		//
+		// 修法：HTML 判定必须跑在**解码之后**。这里先整体解一次 QP：
+		//   · 解出来像 HTML  ⇒ 剥标签后返回（正文）
+		//   · 解出来不像 HTML ⇒ 当纯文本返回
+		// 解不开就走回原来的 HTML 分支，行为与改动前逐字一致。
+		if dec, ok := decodeWholeQuotedPrintable(string(raw)); ok {
+			decFlat := normalizeWhitespace(dec)
+			if looksLikeHTML(decFlat) {
+				if h := htmlToText(decFlat); h != "" && !containsMIMESource(h) {
+					return truncateRunes(h, maxRunes)
+				}
+			} else if decFlat != "" && !containsMIMESource(dec) {
+				return truncateRunes(stripTrailingBoundary(decFlat), maxRunes)
+			}
+		}
 		if looksLikeHTML(s) {
 			// ⚠️ 这一分支在 2026-10-03 晚之前**完全没有 MIME 判据**，
 			// 是上面那次在产泄漏真正的出口：第 1 步因为分片里内层 part 的
@@ -580,10 +615,62 @@ func decodeWholeQuotedPrintable(s string) (string, bool) {
 		return "", false
 	}
 	dec := out.String()
-	if !utf8.ValidString(dec) || !looksLikeReadableText([]byte(dec)) {
+	// ⚠️ 下面两条腿必须**互斥**，且都要再过一道 MIME 结构闸。三处都是实测打回来的：
+	//
+	// (1) 写成「先试 UTF-8，不行再**无条件**试 GB18030」是错的。dec 已是合法 UTF-8、
+	//     只是 looksLikeReadableText 判否时，仍会掉进 GB18030 那条腿，把正常中文
+	//     **再当 GBK 解一遍**。GB18030 兜底的前提是「QP 解开后根本不是合法 UTF-8」。
+	//
+	// (2) 但「dec 一定还是合法 UTF-8」同样不成立 —— 这条是我一开始的误判，
+	//     也是最容易骗过人的那条。真实机制：压平成一行的 MIME 分片会把 QP 的
+	//     **软换行** `=\n` 变成 `= `（等号+空格），于是 `=E9=98=\n=BF` 解成
+	//     `E9 98` + `=` + ` ` + `BF` —— UTF-8 序列被空格劈开，dec **非法 UTF-8**，
+	//     也不可能是纯 GBK（中间夹着 ASCII 的 `=` 和空格）。GBK 解码器把这种
+	//     「GBK 半截 + ASCII 噪声」读成 mojibake，而 mojibake 里全是 CJK，
+	//     looksLikeReadableText 照样放行。
+	//
+	// (3) 于是缺的不是「更聪明的编码判定」，而是**结构闸**：解码结果里仍带着
+	//     `------=_Part_…` / `Content-Type:` / `quoted-printable`，
+	//     就说明这个位置压根不是正文、QP 载荷只是被误读了一遍。
+	//     containsMIMESource 是位置无关的（逐行 + token 两路），压平形态下仍为 true，
+	//     正是为此而写的那道闸。
+	if utf8.ValidString(dec) {
+		if looksLikeReadableText([]byte(dec)) && !containsMIMESource(dec) {
+			return dec, true
+		}
 		return "", false
 	}
-	return dec, true
+	// ⚠️ 2026-10-04 真机/真库实测新增的一腿：QP 解开后**不是合法 UTF-8**。
+	//
+	// 国内企业邮箱（本次实测是 163 的 kimmy.huang@163.com 与
+	// feikemanager@163.com）的正文用 GBK/GB18030。原实现在这里判否后
+	// 直接 `return "", false`，调用方随即**退回未解码的原文** ——
+	// 列表里显示的就是 `=0D=0A=0D=0A =0D=0A =E8=B5=84=E6=BA=90…` 这种源码。
+	//
+	// 判据是 2026-10-04 的决定性实验给的：把那批行删掉、让后端用**当前代码**
+	// 重新抓回（fetched=856 saved=856），它们**原样回来了** ⇒ 不是旧值冻结，
+	// 是当前出口就在产出脏摘要。
+	//
+	// 关键取舍：**「解不开」绝不能成为把原文透出去的理由。** 退回原文比退回
+	// 一段解不开的 GBK 严格更差 —— 用户看到的是编码源码，而不是乱码。
+	// 所以这里补一次 GB18030 兜底（包里已有 gbkToUTF8，charset.go）。
+	if b, gerr := gbkToUTF8([]byte(dec)); gerr == nil &&
+		looksLikeReadableText(b) && !containsMIMESource(string(b)) {
+		return string(b), true
+	}
+	// ⚠️ 2026-10-04 自我推翻（第一版）：这里**曾经**在两条腿之外再补一条 ——
+	//「dec 是合法 UTF-8、只是 looksLikeReadableText 说不可读，那就返回
+	// normalizeWhitespace(dec)」。理由当时写的是「正文以一长串空行开头、
+	// 实质内容落在截断窗口之外，解码后的形态仍优于原文」。
+	// 那**是推断，不是实测**。实测把它否掉了：既有护栏
+	// TestSnippetDerive_FlattenedPartIsNotReturned 立刻转红。
+	//
+	// 教训写在这里是因为它还会诱我第三次：**「解不开就退回原文」不可接受，
+	// 但「解不开就硬返回同样解不开的东西」更不可接受** —— 后者绕过
+	// looksLikeReadableText 这道结构性护栏，把 MIME 头一起放出去，
+	// 比前一种失败更靠后也更难发现。唯一正确的出口是 return "", false，
+	// 让调用方走其它净化腿。
+	return "", false
 }
 
 func hexPair(a, b byte) (byte, bool) {
