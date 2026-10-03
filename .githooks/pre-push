@@ -20,6 +20,20 @@
 #   frontend/** changed -> npm run gates
 # Non-zero blocks the push.
 #
+# HOW THE INPUT IS READ -- this is the part that was wrong first
+# --------------------------------------------------------------
+# The first version of this hook read the pushed refs from the environment:
+#     PRE_PUSH_REMOTE_SHA / PRE_PUSH_LOCAL_SHA
+# Git sets NO such variables. It passes one line per ref on STDIN:
+#     <local ref> <local sha> <remote ref> <remote sha>
+# With `set -u` in front, the first real `git push` died with
+#     line 49: PRE_PUSH_LOCAL_SHA: unbound variable
+# and blocked EVERY push. The unit harness passed 10/10 because it EXPORTED those
+# two variables itself -- the harness invented the interface it was testing, so it
+# could never catch that the interface was fictional. Lesson recorded in the repo
+# history: a green harness proves nothing about an interface it supplies itself.
+# Stdin is the only real source, and the end-to-end push is the only real test.
+#
 # Escape hatch
 # ------------
 # SKIP_PREPUSH=1 skips, but it REQUIRES SKIP_PREPUSH_REASON and prints the reason,
@@ -44,23 +58,43 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
 ZERO=0000000000000000000000000000000000000000
+EMPTY_TREE=$(git hash-object -t tree /dev/null)
 
-# git feeds one line per ref to be pushed: <local ref> <local sha> <remote ref> <remote sha>
-CHANGED_FILES=$(git diff --name-only "${PRE_PUSH_REMOTE_SHA:-$ZERO}" "$PRE_PUSH_LOCAL_SHA" 2>/dev/null || true)
+# ---- read the refs git actually gives us, on stdin -------------------------
+# Union the touched paths across every ref being pushed; a push can carry several.
+CHANGED=""
+SEEN_REFS=0
+while read -r LOCAL_REF LOCAL_SHA REMOTE_REF REMOTE_SHA; do
+  [ -n "${LOCAL_SHA:-}" ] || continue
+  SEEN_REFS=$((SEEN_REFS + 1))
+  # A brand-new remote ref has an all-zero (or empty) remote sha: everything the local
+  # sha reaches counts as changed. Otherwise compare against what the remote already has.
+  if [ -n "$REMOTE_SHA" ] && [ "$REMOTE_SHA" != "$ZERO" ]; then
+    FROM=$REMOTE_SHA
+  else
+    FROM=$EMPTY_TREE
+  fi
+  FILES=$(git diff --name-only "$FROM" "$LOCAL_SHA" 2>/dev/null || true)
+  if [ -n "$FILES" ]; then
+    CHANGED="$CHANGED
+$FILES"
+  fi
+done
 
-if [ -z "$CHANGED_FILES" ]; then
-  # No ref pair available (some hook invocations): fall back to the worktree.
-  CHANGED_FILES=$(git status --porcelain | awk '{print $2}' || true)
+if [ "$SEEN_REFS" -eq 0 ]; then
+  # No ref lines (some invocations, or a manual run): fall back to the worktree.
+  CHANGED=$(git status --porcelain | awk '{print $2}' || true)
+  echo "[pre-push] no ref lines on stdin; falling back to the current worktree."
 fi
 
-if [ -z "$CHANGED_FILES" ]; then
-  echo "[pre-push] could not determine the pushed paths; treating as full scope."
+if [ -z "$CHANGED" ]; then
+  echo "[pre-push] nothing to compare; treating as full scope."
   NEED_BACKEND=1
   NEED_FRONTEND=1
 else
   NEED_BACKEND=0
   NEED_FRONTEND=0
-  for f in $CHANGED_FILES; do
+  for f in $CHANGED; do
     case "$f" in
       backend/*) NEED_BACKEND=1 ;;
       frontend/*) NEED_FRONTEND=1 ;;

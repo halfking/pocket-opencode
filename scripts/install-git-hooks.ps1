@@ -31,11 +31,28 @@
 #   Install only when no parallel session is pushing. Undo with:
 #     git config --unset core.hooksPath
 
+param(
+  # Which worktree to arm. Defaults to the current directory's worktree.
+  # Measured 2026-10-03: this script originally resolved the target from CWD via
+  # `git rev-parse --show-toplevel` and armed whatever worktree you happened to be standing
+  # in. Running it from the main worktree while meaning to configure a side worktree armed
+  # the MAIN one instead -- a silent misdirection, the exact failure shape this repo keeps
+  # paying for. So the target is now explicit, printed, and overridable.
+  [string]$Worktree = ''
+)
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$RepoRoot = (& git rev-parse --show-toplevel).Trim()
-if (-not $RepoRoot) { throw 'not inside a git repository' }
+if ($Worktree) {
+  if (-not (Test-Path $Worktree)) { throw "no such directory: $Worktree" }
+  Push-Location $Worktree
+}
+
+try {
+  $RepoRoot = (& git rev-parse --show-toplevel).Trim()
+  if (-not $RepoRoot) { throw 'not inside a git repository' }
+  Write-Output "[install-git-hooks] target worktree: $RepoRoot"
 
 $HooksDir = Join-Path $RepoRoot '.githooks'
 $Hook = Join-Path $HooksDir 'pre-push'
@@ -45,15 +62,45 @@ if (-not (Test-Path $Hook)) { throw "missing $Hook" }
 # is what matters, but make the bit correct anyway so a Linux/macOS clone works too.
 try { & git update-index --chmod=+x -- $Hook 2>$null | Out-Null } catch { }
 
-& git config core.hooksPath .githooks
-if ($LASTEXITCODE -ne 0) { throw 'git config core.hooksPath failed' }
+# DEFAULT: per-worktree, not repo-wide.
+# Measured 2026-10-03: a plain `git config core.hooksPath` lands in the shared .git/config,
+# so installing from ONE worktree silently arms the hook for EVERY worktree of this repo --
+# including any parallel session, whose push would then start running the full backend
+# suite and could be rejected for a pre-existing red it cannot see.
+# `extensions.worktreeConfig` + `git config --worktree` scopes it to this worktree only.
+# `extensions.worktreeConfig` itself is repo-wide but inert: it only enables the feature.
+& git config extensions.worktreeConfig true
+if ($LASTEXITCODE -ne 0) { throw 'could not enable extensions.worktreeConfig' }
+
+& git config --worktree core.hooksPath .githooks
+if ($LASTEXITCODE -ne 0) { throw 'git config --worktree core.hooksPath failed' }
 
 $Now = (& git config core.hooksPath).Trim()
-Write-Output "[install-git-hooks] core.hooksPath = $Now"
+Write-Output "[install-git-hooks] core.hooksPath (this worktree) = $Now"
 if ($Now -ne '.githooks') { throw "core.hooksPath did not take ($Now)" }
 
-Write-Output '[install-git-hooks] active: backend/** -> go test ./... ; frontend/** -> npm run gates'
+# Prove the isolation instead of asserting it: ask git which hook file it would execute here.
+$Resolved = (& git rev-parse --git-path hooks/pre-push).Trim()
+Write-Output "[install-git-hooks] git will execute: $Resolved"
+
+# Report what OTHER worktrees see, so a surprise is visible immediately rather than later.
+$OtherWorktrees = @(& git worktree list --porcelain | Select-String -Pattern '^worktree ' | ForEach-Object { $_.Line.Substring(9) })
+foreach ($wt in $OtherWorktrees) {
+  if ([IO.Path]::GetFullPath($wt) -eq [IO.Path]::GetFullPath($RepoRoot)) { continue }
+  $seen = (& git -C $wt config core.hooksPath 2>$null)
+  $shown = if ($seen) { $seen.Trim() } else { '(unset)' }
+  Write-Output "[install-git-hooks] other worktree sees: $shown   <- $wt"
+}
+
+Write-Output '[install-git-hooks] active in THIS worktree: backend/** -> go test ./... ; frontend/** -> npm run gates'
 Write-Output '[install-git-hooks] escape hatch: SKIP_PREPUSH=1 SKIP_PREPUSH_REASON="..." git push'
+Write-Output '[install-git-hooks] to arm it repo-wide (know the consequence first):'
+Write-Output '[install-git-hooks]   git config --worktree --unset core.hooksPath'
+Write-Output '[install-git-hooks]   git config core.hooksPath .githooks'
 Write-Output '[install-git-hooks] a real pre-push run is NOT exercised here on purpose:'
-Write-Output '[install-git-hooks] it would run the full backend suite. Verify with:'
-Write-Output '[install-git-hooks]   node --test <hook-ab harness>  /  or just push a scratch branch.'
+Write-Output '[install-git-hooks] it would run the full backend suite.'
+}
+finally {
+  if ($Worktree) { Pop-Location }
+}
+
