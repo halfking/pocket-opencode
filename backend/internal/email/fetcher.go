@@ -501,7 +501,40 @@ func findBodySection(sections []imapclient.FetchBodySectionBuffer) ([]byte, erro
 // 任何失败都返回 ("", false)——调用方（Sync 循环）只是补齐摘要，不应因摘要
 // 失败丢邮件。
 //
-// ## 为什么第二返回值不是从 snippet 里找链接（q3，2026-10-02 实测）
+// ## 为什么 BODY[TEXT] 之后还要补一次 BODY[]（2026-10-03 真机实测）
+//
+// `BODY[TEXT]` 对**第一个 part 本身是 multipart 容器**的邮件，回的不是正文，
+// 而是「那个容器的分片头 + 第一个子 part 的一段前缀」。实测样本：
+//
+//	------=_Part_397111_1624436759.1790214518883
+//	Content-Type: multipart/alternative; boundary="----=_Part_397110_1060649035.…"
+//	------=_Part_397110_1060649035.…
+//	Content-Type: text/plain; charset=UTF-8
+//	Content-Transfer-Encoding: 8bit
+//
+// 剥掉首行 boundary 后它是**合法可解析**的（ParseMIMEMessage 不报错），
+// 但取不出正文：Go 的 `multipart` reader 要求 part 结束处有终止分隔行
+// `--boundary--`，而这里只拿到**前缀**，读整段 part 撞
+// `io.ErrUnexpectedEOF`，part 被整段丢弃 → TextBody/HTMLBody 双空 →
+// DeriveSnippet 判定「这确实是一堆 MIME 头」并**正确地**返回空串。
+//
+// 也就是说：**需要的字节服务端压根没发**，本地怎么解析都变不出来。
+// 库里的 10 行存量因此治不好——InsertEmail 的
+// `snippet = CASE WHEN EXCLUDED.snippet <> ” THEN … ELSE emails.snippet END`
+// 把空串当成「不覆盖」，旧的那条坏摘要被原样冻结。
+//
+// 唯一出路是再问服务端一次，要**整封**（`BODY[]`）：那里外层结构完整、
+// boundary 对得上，正文取得到。这与邮件详情页一直干净的原因相同
+// （它走 FetchMessageRaw 的 BODY[]）。
+//
+// ## 为什么只在「取不到」时才补拉
+//
+// 每封都补一次整封拉取，一轮同步的流量与耗时接近翻倍，而这份浪费发生在
+// 摘要本来就正确的绝大多数邮件上——只断言「摘要对不对」完全看不出来。
+// 触发条件必须窄：`BODY[TEXT]` 明明回了字节、却什么都解析不出来。
+// `snippet_whole_message_fallback_test.go` 钉住了这一条边界。
+//
+// ## 为什么 hasInvoiceLink 的第二返回值不是从 snippet 里找链接（q3，2026-10-02 实测）
 //
 // 最初的想法是「snippet 里已经有正文了，顺带扫一下链接就行」。实测否掉了它：
 // snippet 走 DeriveSnippet，而 DeriveSnippet 对 HTML 正文会调 htmlToText，
@@ -517,33 +550,89 @@ func findBodySection(sections []imapclient.FetchBodySectionBuffer) ([]byte, erro
 // 这条路径不新增任何网络请求：BODY[TEXT] 本来就为了取 snippet 拉了一次，
 // 同一份字节上多跑一遍正则而已。
 func (f *Fetcher) fetchSnippetOnConnected(client *imapclient.Client, uid imap.UID) (string, bool) {
-	uidSet := imap.UIDSet{}
-	uidSet.AddNum(uid)
-	messages, err := client.Fetch(uidSet, &imap.FetchOptions{
-		UID: true,
-		BodySection: []*imap.FetchItemBodySection{{
-			Specifier: imap.PartSpecifierText,
-			Peek:      true,
-		}},
-	}).Collect()
+	raw, err := f.fetchSectionOnConnected(client, uid, imap.PartSpecifierText, 0)
 	if err != nil {
 		log.Printf("[email/fetcher] snippet fetch uid=%d: %v", uid, err)
 		return "", false
 	}
-	if len(messages) == 0 {
+	if len(raw) == 0 {
 		return "", false
 	}
-	for _, bs := range messages[0].BodySection {
-		if len(bs.Bytes) > 0 {
-			// 2026-10-01 真机审计：原来直接取原始字节，用户会看到整段 MIME
-			//（--part_xxx / Content-Type: …）或字面 HTML 标签。改走 DeriveSnippet。
-			//
-			// hasInvoiceLink 必须用 bs.Bytes（原始 MIME），**不能**用 DeriveSnippet
-			// 的返回值 —— 理由见函数头。
-			return DeriveSnippet(bs.Bytes, 500), bodyHasInvoiceLink(bs.Bytes)
-		}
+	// 2026-10-01 真机审计：原来直接取原始字节，用户会看到整段 MIME
+	//（--part_xxx / Content-Type: …）或字面 HTML 标签。改走 DeriveSnippet。
+	//
+	// hasInvoiceLink 必须用 raw（原始 MIME），**不能**用 DeriveSnippet
+	// 的返回值 —— 理由见函数头。
+	snippet := DeriveSnippet(raw, 500)
+	if snippet != "" {
+		return snippet, bodyHasInvoiceLink(raw)
 	}
-	return "", false
+
+	// 走到这里 = 服务端回了字节，但里面没有可读的正文。补拉整封。
+	whole, err := f.fetchSectionOnConnected(client, uid, "", snippetWholeMessageMaxBytes)
+	if err != nil {
+		log.Printf("[email/fetcher] whole-message refetch uid=%d: %v", uid, err)
+		return "", false
+	}
+	s := DeriveSnippet(whole, 500)
+	if s == "" {
+		// 整封也取不到正文：保持空串。
+		//
+		// 这里**不能**退回「把 BODY[TEXT] 的原始字节当摘要」——那正是
+		// 2026-10-03 真机上 10 封邮件摘要显示成原始 MIME 的成因。
+		// 宁可没有摘要，也不要把 MIME 头转储给用户（DeriveSnippet 文件头
+		// 第 35-36 行的既定取舍）。
+		log.Printf("[email/fetcher] uid=%d: BODY[TEXT] 与 BODY[] 都取不到正文，摘要留空 "+
+			"(bodyText=%d whole=%d)", uid, len(raw), len(whole))
+		return "", false
+	}
+	log.Printf("[email/fetcher] uid=%d: BODY[TEXT] 只给出分片头（%d 字节），"+
+		"补拉 BODY[]（%d 字节）后取到正文", uid, len(raw), len(whole))
+	// href 只存在于整封报文里，分片头那点字节里没有，所以这里用 whole 判定。
+	return s, bodyHasInvoiceLink(whole)
+}
+
+// snippetWholeMessageMaxBytes 是「补拉整封」的单封上限。
+//
+// 补拉只为拿**列表摘要**：外层头 + 第一个 text part 永远落在报文最前面几 KB。
+// 8MB（FetchMessageRaw 用的那个上限）是为发票 PDF 采集留的，对摘要来说是
+// 白白多传的流量；而没有上限时，一封几十 MB 的邮件会让一轮同步失去上界
+// —— 那是 mime.go:136-144 明确记着的教训。
+const snippetWholeMessageMaxBytes = 1 << 20
+
+// fetchSectionOnConnected 在已建立的连接上按 UID 拉一个 BODY 取件项。
+//
+// specifier 为 imap.PartSpecifierText 时是 `BODY[TEXT]`，为空串时是 `BODY[]`
+// （整封报文）。maxBytes > 0 时按 <offset.size> 部分取。
+//
+// 抽出来的理由只有一个：`BODY[TEXT]` 与 `BODY[]` 的**应答形态不同**，而这个
+// 差异正是摘要缺陷的全部成因（见 fetchSnippetOnConnected 的函数头）。
+// 两条取件路径写成两份代码，它们就会各自漂移，那时没人能看出
+// 「补拉整封」到底有没有真的发生。
+func (f *Fetcher) fetchSectionOnConnected(
+	client *imapclient.Client, uid imap.UID, specifier imap.PartSpecifier, maxBytes int,
+) ([]byte, error) {
+	uidSet := imap.UIDSet{}
+	uidSet.AddNum(uid)
+	item := &imap.FetchItemBodySection{Specifier: specifier, Peek: true}
+	if maxBytes > 0 {
+		item.Partial = &imap.SectionPartial{Offset: 0, Size: int64(maxBytes)}
+	}
+	messages, err := client.Fetch(uidSet, &imap.FetchOptions{
+		UID:         true,
+		BodySection: []*imap.FetchItemBodySection{item},
+	}).Collect()
+	if err != nil {
+		return nil, err
+	}
+	if len(messages) == 0 {
+		return nil, fmt.Errorf("uid %d: no message in fetch response", uid)
+	}
+	raw, err := findBodySection(messages[0].BodySection)
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 // Sync 同步一个账户的新邮件。返回 (新增邮件数, error)。

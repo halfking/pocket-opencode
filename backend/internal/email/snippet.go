@@ -1,7 +1,9 @@
 package email
 
 import (
+	"bytes"
 	"encoding/base64"
+	"mime"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -344,6 +346,23 @@ func snippetFromMIMEParts(raw []byte) string {
 	// 只有 12 个拿到摘要，13 个落空）。
 	var plain, html []string
 	for _, p := range parts {
+		// **只看声明的 Content-Type**，不看解出来像不像正文。
+		//
+		// 2026-10-04 审计实测的泄漏：`multipart/mixed` 里 PDF 附件排在
+		// text/plain 之前时，摘要变成 `%PDF-1.4` —— base64 解码后的
+		// 二进制恰好落进 `TextBody`，而 `containsMIMESource` 只查
+		// `Content-Type:` / `boundary=` 这类 token，PDF 里没有，于是放行。
+		//
+		// 这条闸门问的是**判据自己宣称的那件事**：「优先 text/plain、
+		// 其次 text/html」。原来那句「优先」只体现在**收集顺序**上，
+		// 没有任何一处**排除**非文本 part，所以附件只要能解出非空
+		// TextBody 就会排进 plain 组并被优先返回。
+		//
+		// 附件解码出的字节「读起来像文本」这件事，与它是不是正文无关 ——
+		// `%PDF-1.4` 正是这种形态。
+		if !partDeclaresTextContent(p) {
+			continue
+		}
 		for _, cand := range mimeCandidates(p) {
 			msg, err := ParseMIMEMessage(cand)
 			if err != nil {
@@ -365,6 +384,52 @@ func snippetFromMIMEParts(raw []byte) string {
 		}
 	}
 	return ""
+}
+
+// partDeclaresTextContent 判断一个 part **自己声明的** Content-Type 是不是文本。
+//
+// 只读 part 头部那一段（在第一个空行之前），不解析正文 —— 附件的正文
+// 解出来「像文本」与它是不是正文无关（`%PDF-1.4` 就是这种形态）。
+//
+// 判据的三条边界，每条都有用例：
+//
+//  1. **没有 Content-Type 头** → 按 RFC 2045 §5.2 缺省即 `text/plain`，
+//     收下。这条必须显式写出来：`mimeParts` 切出来的 part 完全可能没有头，
+//     而「无头」与「声明了 application/pdf」不能走同一条路。
+//  2. **`Content-Type` 解析失败**（畸形、缺 subtype）→ 不收。
+//     判不清的时候往「少一段摘要」那侧倒。
+//  3. **显式声明 `text/*`** → 收。charset 一律不看：
+//     编码方式由 ParseMIMEMessage 负责解，摘要出口另有 C0 净化。
+func partDeclaresTextContent(part []byte) bool {
+	head := part
+	if i := bytes.Index(head, []byte("\r\n\r\n")); i >= 0 {
+		head = head[:i]
+	} else if i := bytes.Index(head, []byte("\n\n")); i >= 0 {
+		head = head[:i]
+	}
+	var raw string
+	for _, ln := range strings.Split(string(head), "\n") {
+		ln = strings.TrimRight(ln, "\r")
+		if ln == "" {
+			continue
+		}
+		lower := strings.ToLower(ln)
+		if strings.HasPrefix(lower, "content-type:") {
+			raw = strings.TrimSpace(ln[len("content-type:"):])
+			break
+		}
+	}
+	if raw == "" {
+		// 规则 1：整段头里没有 Content-Type ⇒ 缺省 text/plain。
+		return true
+	}
+	mediaType, _, err := mime.ParseMediaType(raw)
+	if err != nil {
+		// 规则 2：声明了但读不懂 ⇒ 不收。
+		return false
+	}
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	return mediaType == "" || strings.HasPrefix(mediaType, "text/")
 }
 
 // mimeParts 把 BODY[TEXT] 分片拆成一个个 part 的原始字节。
