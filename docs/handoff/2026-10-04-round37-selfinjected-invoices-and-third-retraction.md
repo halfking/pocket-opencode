@@ -1116,3 +1116,60 @@ llm.kxpms.cn 这个网关为什么超时**。
 不适用」，而不是靠记忆判断自己覆盖了哪些。
 
 本节全部只读：未调用写端点、未改数据库、未重启进程。
+## 二十一、更正第二十节对提醒停摆根因的判断（2026-10-04 04:5x）
+
+第二十节把根因写成「llm.kxpms.cn 分类超时」。**本节推翻它。**
+
+### 21.1 网关现在是通的
+
+    GET https://llm.kxpms.cn/v1/models  ->  401（鉴权拒绝 = 服务在线）
+    DNS: llm.kxpms.cn -> 47.97.111.154
+
+所以 10-03 那批 `context deadline exceeded` 是**当时**的现象，不是持续故障。
+
+### 21.2 真正的根因：定时路径压根不执行分类
+
+`scheduler.go:731-746`：
+
+    if reason := ClassifySkipReason(s.kxmem != nil, userID); reason != "" {
+        classifySkipOnce.Do(func() { log.Printf(...) })
+        return                       // ← 自动分类**根本不执行**
+    }
+    if !ShouldProcessAfterFetch(1, n) { return }
+    if _, cerr := ClassifyUnclassified(ctx, s.store, s.kxmem, userID, wsID, 20); ...
+
+LLM 网关兜底只接在 HTTP 端点（`server_email_pipeline_classify.go:44` 调
+`ClassifyUnclassifiedWith`），Scheduler 在 `internal/email` 包里**拿不到它**。
+
+而日志里那些 `llm-gateway chat: ... deadline exceeded` 全部来自
+`POST /api/emails/classify`（**手动**路径），不是定时路径 —— 上一节把两件事
+混为一谈了。
+
+这正是 `classify_run.go:142-146` 早已描述、**至今未修**的缺陷。
+
+### 21.3 守卫
+
+`zz_diag_sched_classify_guard_test.go` 两条：
+
+1. `TestSchedulerAutoClassifyStillSkipped` —— 断言 `ClassifySkipReason` 之后
+   **紧跟**一条裸 return（跳过即返回），且 Scheduler 仍调
+   `ClassifyUnclassified(ctx, s.store, s.kxmem, ...)`；
+2. `TestSchedulerSkipGuardHasDiscriminatingPower` —— 负控：把首个 return 改成
+   continue，前置守卫必须转红。
+
+**判据第一版太弱，负控把它揭穿了**（这也是它自己的价值）：
+初版只断言「600 字符窗口内有没有 return」，而那段里其实有**两个** return
+（跳过那个 + `ShouldProcessAfterFetch` 那个），把前者改成 continue 后
+窗口里仍留着后者 ⇒ 判据照样绿。已收窄为「锚定首个 return，
+且它与锚点之间不夹其它条件分支」。
+
+两处刻意**不用 t.Skip** 兜底读文件失败 —— Skip 会让守卫在路径假设
+失效时静默通过，是最危险的假绿。
+
+全量 internal/email 15.2s 绿，gofmt 真债 0。
+
+### 21.4 方法论：负控必须与前置守卫用同一个判据
+
+我第一版负控复刻的是**旧判据**，于是它测的是「窗口内有无 return」
+而不是前置守卫真正断言的那件事。⇒ 写负控时若判据被收窄过，
+负控必须同步收窄，否则两者会各说各话。
