@@ -12,6 +12,7 @@
     "test:styles",
     "test:stt",
     "test:email-heal",
+    "check:pg-schema-scope",
     "check:dueclock",
     "check:callback-routes",
     "check:edge-route-reach",
