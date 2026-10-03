@@ -159,7 +159,7 @@ func contains(s, sub string) bool { return strings.Contains(s, sub) }
 // 这条是 rederiveSellerFallback 刻意不比对 Subject 的原因。
 func TestSellerFromBodyIsNotDowngradedToFallback(t *testing.T) {
 	em := Email{
-		FromName: "通行费电子发票",
+		FromName:    "通行费电子发票",
 		FromAddress: "service@invoice.txffp.com",
 		Subject:     "通行费电子发票",
 	}
