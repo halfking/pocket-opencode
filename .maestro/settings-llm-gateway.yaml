@@ -1,0 +1,100 @@
+# Maestro 真机功能流 · 设置页「AI 网关」默认值
+#
+# 为什么要单独一条：需求原话是「请将我们的网关服务器默认初始化在设置中，
+# 并且保存在服务端的用户的配置下」。这句话有两个可验证的落点：
+#   1. **设置页上确实能看到它**（不是只有后端有库里没有界面）
+#   2. 界面上显示的是**配置好的那台网关**，而不是「未配置」兜底文案
+# 只查数据库能证明 1 的下半段，证明不了界面真的渲染了 —— 组件没挂、
+# loading 卡住、字段被 v-if 掉，库里数据再对也不会红。所以这条必须在真机上跑。
+#
+# 覆盖的结构（SettingsView.vue:6-54）：
+#   h2                      = settings.aiGateway        「AI 网关」
+#   span.gateway-status     = 已配置 / 未配置
+#   setting-label           = 网关地址 / API 密钥 / 可用模型
+#   setting-value           = gateway.baseURL，或 models 前 3 个 chip + 「+N」
+#
+# 断言的判别力（别只看「AI 网关」四个字，它在未配置时也渲染）：
+#   · 网关地址必须出现 **llm.kxpms.cn** —— 这一条才是「配置真的到位了」。
+#     未配置时该位置渲染的是「未配置」三字，域名不会出现。
+#   · 状态徽标必须为「已配置」而不是「未配置」。
+#   · 可用模型区域要么出现模型 chip，要么出现明确的「未获取」——
+#     **两者都算通过**，因为网关可达性取决于后端当时能不能拉到列表；
+#     硬绑模型名会让这条流程在网关抖动时变成一条测网络的流程。
+#     真正要守住的是「这里不能是一片空白/报错」。
+#
+# 运行：
+#   node scripts/maestro-run.mjs .maestro/settings-llm-gateway.yaml
+appId: com.kaixuan.opencode.pocket
+---
+# ---------- 0. harness preflight 已真实登录，起点是 #/ai ----------
+- extendedWaitUntil:
+    visible: "首页"
+    timeout: 45000
+- assertVisible: "首页"
+- assertNotVisible: "密码登录"
+
+# ---------- 1. 进「更多」 ----------
+# ⚠️ 底部导航的 tap 会被 MIUI 吞掉：2026-10-03 15:06 实测本 flow 第一次跑，
+#   `tapOn: "更多|More"` 报 COMPLETED，但失败现场的可访问性树里
+#   仍完整停在首页（可见「AI 工具 / 快速提问 / 全部 3 / Maestro任务」，
+#   底部导航四项齐全），随后「更多功能」断言 30s 超时。
+#   这与 flashcards-write.yaml 2026-10-01 记的是同一个抖动。
+#
+#   两个动作缺一不可：
+#     · retryTapIfNoChange —— tap 报 COMPLETED 但界面没变时自动重试一次；
+#     · runFlow when notVisible 补点 —— 覆盖「重试也仍然没动」的情况。
+#   只写 retryTapIfNoChange 时，第二次被吞掉就没人管了；而只写断言不补点，
+#   就会像这次一样把一次抖动报成「设置页不可达」。
+- extendedWaitUntil:
+    visible: "更多|More"
+    timeout: 45000
+- tapOn:
+    text: "更多|More"
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible: "更多功能"
+    timeout: 40000
+- runFlow:
+    when:
+      notVisible: "更多功能"
+    commands:
+      - tapOn: "更多|More"
+      - waitForAnimationToEnd:
+          timeout: 3000
+- extendedWaitUntil:
+    visible: "更多功能"
+    timeout: 30000
+
+# ---------- 2. 进「设置」 ----------
+# ⚠️ 宫格是懒渲染 + 需要滚动：设置排在 16 个入口的靠后位置。
+#    直接 tapOn 在首屏找不到时会 FAILED。这里先滚，再点。
+- scrollUntilVisible:
+    element:
+      text: "设置|Settings"
+    direction: DOWN
+    timeout: 25000
+    visibilityPercentage: 100
+- tapOn: "设置|Settings"
+- extendedWaitUntil:
+    visible: "AI 网关"
+    timeout: 30000
+
+# ---------- 3. 核心断言：网关真的配置好了，不是「未配置」兜底 ----------
+# 这是本 flow 唯一有判别力的部分。前面两条只是「页面到了」。
+- assertVisible: "AI 网关"
+# 网关地址里必须出现目标域名。未配置时这一格显示的是「未配置」。
+- assertVisible: ".*llm\\.kxpms\\.cn.*"
+- assertVisible: "网关地址"
+- assertVisible: "API 密钥"
+- assertVisible: "可用模型"
+
+# 状态徽标：已配置 ⇔ apiKeySet=true。两条互斥，必须用 assertVisible 正向确认
+# 「已配置」出现，而不是「不出现未配置」—— 后者在前一步已经渲染出真实
+# 地址时仍可能成立（没判别力）。
+- assertVisible: "已配置"
+
+# ---------- 4. 负向锚点：不该出现的东西 ----------
+# · 「未配置 — AI 聊天需要密钥」是 apiKeySet=false 时的文案；
+#   与上面的「已配置」互斥，出现在同一屏就说明两个分支同时渲染了。
+- assertNotVisible: "未设置 — AI 聊天需要密钥"
+- assertNotVisible: "该网关节点尚未补录 Admin 账号"
