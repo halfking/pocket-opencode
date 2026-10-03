@@ -174,6 +174,10 @@ export async function pushAccountToServer(_a: ServerAccount): Promise<boolean> {
   //   → 触发上行 → 但 payload 里没有 imapHost，服务端原样不动
   //   → 下一轮下行又把服务端的旧 imapHost 覆盖回来
   // 用户改动被静默丢弃，且没有任何报错。必须与下行覆盖的字段集保持对称。
+  //
+  // updatedAt **不在**这个字段集里：它是 LWW 的基准版本，不是账户数据，
+  // 由 updateAccount 的必填第三参单独传（早先混在 patch 里，于是「传没传」
+  // 全看调用点心情：outbox 路径带了，交互式 UI 的几处没带，守卫静默失效）。
   const patch = {
     displayName: _a.displayName,
     syncIntervalMin: _a.syncIntervalMin,
@@ -181,10 +185,9 @@ export async function pushAccountToServer(_a: ServerAccount): Promise<boolean> {
     imapHost: _a.imapHost,
     imapPort: _a.imapPort,
     authType: narrowAuthType(_a.authType),
-    updatedAt: _a.updatedAt ?? 0,
   }
   try {
-    await emailApi.updateAccount(_a.id, patch)
+    await emailApi.updateAccount(_a.id, patch, _a.updatedAt ?? 0)
     return true
   } catch (e: unknown) {
     // 409 = 服务端更新，本地下行覆盖即可（不是「推送失败」，别进 outbox 干等）。

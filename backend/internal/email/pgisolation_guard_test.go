@@ -43,6 +43,16 @@ import (
 // pgDSNGuardExempt 允许读 PG_DSN 的文件，及理由（理由必须写进这条豁免里）。
 var pgDSNGuardExempt = map[string]string{
 	"realprobe_test.go": "只读真实数据探针（-tags=realprobe），刻意连生产 schema，另有 POCKET_REAL_KEYS 门控",
+	// 与 realprobe 同型：只读真实数据探针，同样是「PG_DSN 指向生产 schema
+	// 才有意义」——它要量的正是生产 emails 表里那批脏 snippet 的落库形态，
+	// 打错库就会扫到空集并输出与「已修复」无法区分的结论（该文件里
+	// `t.Fatalf("判据在空集上转绿是假绿")` 与 current_schema() 当场校验
+	// 就是为这件事准备的）。只读，不写库不改邮箱状态（UID FETCH PEEK）。
+	"diag_real_fetch_snippet_stages_test.go": "只读真实数据探针：量生产 emails 的 BODY[TEXT] 落库形态，刻意连生产 schema，另有 POCKET_REAL_KEYS 门控，空集与 search_path 当场自证",
+	// 与上面同型：只读真实数据探针，量的是生产 emails 里 snippet='' 的 32 行
+	// 落空在哪一步（同一批数据、同一套门控、同样当场自证 search_path 与空集）。
+	// 它要的就是生产表 —— 换库扫到空集，输出将与「没有这个问题」无法区分。
+	"diag_empty_snippet_locus_test.go": "只读真实数据探针：定位生产 emails 中 snippet='' 的落空点，刻意连生产 schema，另有 POCKET_REAL_KEYS 门控，空集与 search_path 当场自证",
 }
 
 // stripGoComments 剥掉行注释与块注释，保留字符串字面量内容。

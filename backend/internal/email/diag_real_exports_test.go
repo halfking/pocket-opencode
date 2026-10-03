@@ -33,6 +33,21 @@ const (
 	realA4Height = 841.89
 )
 
+// cellOriginTolPt 是落点聚类容差（pt）。
+//
+// **不是拍脑袋的数**：票面页宽有 595.0 与 595.3 两种实测值（A4 舍入差），
+// 居中后左边缘因此差约 0.15pt。原实现按 0.1pt 量化，0.15pt 活了下来，
+// 于是 2×2 的四张票被读成「4 个不同列」，**对完全正确的产物报红**。
+//
+// 0.5pt = 0.18mm：远小于任何与剪裁相关的量（刀口公差以毫米计），
+// 又足以吸收上面那点页宽抖动。
+//
+// ⚠ 这个容差只用于**落点是否构成网格**的判定。它**不能**用来判定
+// 「票面有没有压到邻格」——那要看墨迹范围，需要栅格化，而 pdfcpu v0.11
+// 没有渲染 API。已知的 0.55904 那个外层 cm 缩放也**不是**这个含义
+// （见下面注释），因此本诊断不再据此判红。
+const cellOriginTolPt = 0.5
+
 func TestDiagRealExportGridGeometry(t *testing.T) {
 	if os.Getenv("POCKET_DIAG_REAL_EXPORTS") != "1" {
 		t.Skip("set POCKET_DIAG_REAL_EXPORTS=1 and POCKET_DIAG_EXPORT_DIR=<dir> to run (read-only)")
@@ -101,18 +116,28 @@ func TestDiagRealExportGridGeometry(t *testing.T) {
 				bad++
 				continue
 			}
-			// 缩放必须正好是 1/grid。
+			// 缩放：外层 cm 的 a/d **不是**「页面→格子」的比例。
+			//
+			// 实测（2026-10-03 23:31，用同一个文件的 4 份字节相同副本导出，
+			// 落点实测 x∈{0,297.64}、y∈{532.375,111.43}，是标准 2×2）：
+			// 外层 cm 恒为 a=d=0.55904，grid=3 时恒为 0.3727 —— 两者与
+			// 1/grid 的比值都是 1.118，即这个数与「是否网格正确」无关。
+			// 原实现按「缩放必须正好是 1/grid」判红，于是**对完全正确的产物
+			// 报红**（我据此差点去改本来正常的导出代码）。
+			//
+			// 真正的「票面有没有压到邻格」取决于**墨迹**范围，而页框溢出 ≠
+			// 墨迹碰撞：票面在页内常带旋转与大量白边（实测通行费票面内容流
+			// 首层变换是 a=0.24 d=-0.24 的 90° 旋转 + 0.24 缩放）。
+			// 要判墨迹需要栅格化，而 pdfcpu v0.11 没有渲染 API。
+			// ⇒ 这里只**记录**缩放，不据此判红；把「能不能剪裁」如实留作未验证。
 			wantScale := 1.0 / float64(grid)
-			badScale := 0
-			for _, pl := range ps {
-				if math.Abs(pl.scale-wantScale) > 0.005 {
-					badScale++
-				}
-			}
-			// 落点必须互不相同（按 0.1pt 量化），否则就是叠印、剪裁不出来。
+			// 落点互不相同（按 cellOriginTolPt 聚类），否则就是叠印、剪裁不出来。
 			cells := map[[2]int64]int{}
 			for _, pl := range ps {
-				cells[[2]int64{int64(math.Round(pl.x * 10)), int64(math.Round(pl.y * 10))}]++
+				cells[[2]int64{
+					int64(math.Round(pl.x / cellOriginTolPt)),
+					int64(math.Round(pl.y / cellOriginTolPt)),
+				}]++
 			}
 			overlap := 0
 			for _, n := range cells {
@@ -120,19 +145,29 @@ func TestDiagRealExportGridGeometry(t *testing.T) {
 					overlap++
 				}
 			}
-			// 列/行落点各自去重后不能超过 grid（否则不是 grid 宽的网格）。
+			// 列/行：**列**按落点 x 聚类（票面页宽差 0.3pt 只造成 0.15pt 抖动，
+			// 已被 cellOriginTolPt 吸收）；**行**不能按落点 y 聚类——票面高度
+			// 不同、居中后 y 天然不同（实测 3500 那张只有 396.9 高，在 420.9
+			// 的格子里居中，上下各留 6pt，于是 2×2 的一页能读出 4 个不同 y）。
+			// 那不是「不在网格上」，恰恰是「每张票都待在自己格子的中央」。
+			// 行数必须按**格高**把落点归到行号来数。
 			xs := map[int64]bool{}
-			ys := map[int64]bool{}
 			for _, pl := range ps {
-				xs[int64(math.Round(pl.x*10))] = true
-				ys[int64(math.Round(pl.y*10))] = true
+				xs[int64(math.Round(pl.x/cellOriginTolPt))] = true
 			}
-			t.Logf("%s p%d: grid=%d placed=%d distinctCells=%d distinctX=%d distinctY=%d scale=%.4f(want %.4f) A4=%.2fx%.2f",
-				base, p, grid, len(ps), len(cells), len(xs), len(ys), ps[0].scale, wantScale, w, h)
-			if badScale > 0 {
-				t.Errorf("%s p%d: %d/%d 张发票缩放不是 1/%d", base, p, badScale, len(ps), grid)
-				bad++
+			cellH := h / float64(grid)
+			yMin := ps[0].y
+			for _, pl := range ps {
+				if pl.y < yMin {
+					yMin = pl.y
+				}
 			}
+			rows := map[int64]bool{}
+			for _, pl := range ps {
+				rows[int64(math.Round((pl.y-yMin)/cellH))] = true
+			}
+			t.Logf("%s p%d: grid=%d placed=%d distinctCells=%d distinctX=%d rows=%d scale=%.4f(1/%d=%.4f, 仅记录不判定) A4=%.2fx%.2f",
+				base, p, grid, len(ps), len(cells), len(xs), len(rows), ps[0].scale, grid, wantScale, w, h)
 			if overlap > 0 {
 				t.Errorf("%s p%d: %d 个落点被多张发票共用 —— 剪裁后会重叠", base, p, overlap)
 				bad++
@@ -141,8 +176,14 @@ func TestDiagRealExportGridGeometry(t *testing.T) {
 				t.Errorf("%s p%d: 放置数 %d != 互异落点数 %d", base, p, len(ps), len(cells))
 				bad++
 			}
-			if len(xs) > grid || len(ys) > grid {
-				t.Errorf("%s p%d: 落点列数 %d / 行数 %d 超过 grid=%d", base, p, len(xs), len(ys), grid)
+			if len(xs) > grid {
+				t.Errorf("%s p%d: 落点列数 %d 超过 grid=%d（聚类容差 %.2fpt）",
+					base, p, len(xs), grid, cellOriginTolPt)
+				bad++
+			}
+			if len(rows) > grid {
+				t.Errorf("%s p%d: 落点行数 %d 超过 grid=%d（按格高 %.2fpt 归行）",
+					base, p, len(rows), grid, cellH)
 				bad++
 			}
 		}

@@ -1485,7 +1485,13 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 	// 绝不给一个无币种的裸数字。两者说的是不同的事，必须都在。
 	md.WriteString(fmt.Sprintf("生成时间：%s · 共 %d 张（计入合计 %d 张）· 合计金额 **%s**\n\n",
 		time.Now().Format("2006-01-02 15:04"), len(invoices), counted, amountSummary))
-	md.WriteString("| 费用类型 | 对方单位 | 金额 | 发票号 | 日期 | 状态 | 文件 |\n")
+	md.WriteString("| 费用类型 | 对方单位 | 金额 | 发票号 | 日期 | 状态 | 核验 |\n")
+	// 末列是**核验状态**（r[7]=InvoiceVerifiedLabel），不是文件名。
+	// 原先这里写的是「| 文件 |」——表头说文件、内容是「已核验/未核验」，
+	// 而文件名在 r[8]，从头到尾没进过 Markdown。CSV 侧是「核验」与
+	// 「文件名」两列分开的，没有这个问题。
+	// 要在 MD 里也带文件名就**加一列**，不要把这一列改名了事——
+	// 下方合计行的列数假设依赖这个 7 列形状。
 	md.WriteString("|---|---|---:|---|---|---|---|\n")
 	for _, r := range rows {
 		md.WriteString(fmt.Sprintf("| %s | %s | %s %s | %s | %s | %s | %s |\n",

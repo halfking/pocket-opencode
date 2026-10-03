@@ -1,7 +1,9 @@
 package email
 
 import (
+	"bytes"
 	"encoding/base64"
+	"mime"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -34,12 +36,131 @@ import (
 //
 // 任何一步都失败时返回空串——宁可摘要为空，也不要把 MIME 头转储给用户看。
 // 这里没有"退回原文"这条兜底，那正是这个缺陷本身。
+//
+// ## 为什么要再包一层
+//
+// 下面真正的实现是 deriveSnippetUnsanitized，它有 **6 个 return 点**。
+// 净化必须发生在**所有**返回路径上，而靠「在每个 return 前记得加一句」
+// 来保证，正是本文件此前反复踩过的形态（判据/净化只加在一条分支上，
+// 另一条分支照样漏）。所以这里用一个薄包装强制收口：新增返回分支时
+// 不会漏掉净化。
 func DeriveSnippet(raw []byte, maxRunes int) string {
+	return sanitizeSnippet(deriveSnippetUnsanitized(raw, maxRunes))
+}
+
+// sanitizeSnippet 清掉会**让整条 INSERT 失败**的字符。
+//
+// ## 缺陷（2026-10-03 22:0x 真机/真库实测）
+//
+// quoted-printable 的 `=00` 与 base64 解码出来的二进制都含 NUL。
+// NUL 是合法 UTF-8（`utf8.ValidString` 对它返回 true），所以
+// `decodeWholeQuotedPrintable` / `decodeWholeBase64` 的「解出来像文本吗」
+// 判据**全部放行**，DeriveSnippet 原样把 NUL 带进摘要。
+//
+// 而 PostgreSQL 的 `text` 类型**不能存 NUL**：值在协议层就被拒，
+// 报 `ERROR: invalid byte sequence for encoding "UTF8": 0x00 (SQLSTATE 22021)`。
+// 后果不是「这封邮件摘要变空」，而是 **`store.InsertEmail` 整条失败、
+// 这封邮件根本没有入库** —— 比摘要难看严重得多，且没有任何补偿逻辑。
+//
+// 真机实测：2026-10-03 22:02 的一次 backfill 里出现 3 次该错误
+// （em-10349 / em-10350 / 另一条），全部静默失败。
+//
+// ## 为什么连其他 C0 控制字符一起清
+//
+// 只清 NUL 是针对报错文本打补丁。其余 C0（0x01-0x08、0x0B、0x0C、0x0E-0x1F）
+// 同样不该出现在一行摘要里，且历史上就有过它们进 `snippet` 的记录。
+// 保留 \t（0x09）与 \n（0x0A）：normalizeWhitespace 已经把它们压成空格，
+// 走到这里本就不该剩下，清掉也无副作用。
+//
+// 保留 U+FFFD：那是「按 rune 截断」的既有产物，清掉等于把乱码藏起来。
+func sanitizeSnippet(s string) string {
+	if s == "" {
+		return ""
+	}
+	if !strings.ContainsFunc(s, isDisruptiveControl) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if isDisruptiveControl(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func isDisruptiveControl(r rune) bool {
+	if r >= 0x00 && r <= 0x08 {
+		return true
+	}
+	if r == 0x0B || r == 0x0C {
+		return true
+	}
+	if r >= 0x0E && r <= 0x1F {
+		return true
+	}
+	return false
+}
+
+// deriveSnippetUnsanitized 是 DeriveSnippet 的真实实现；返回值**可能**含
+// NUL / C0 控制字符，必须经 DeriveSnippet 的净化出口后才能落库。
+func deriveSnippetUnsanitized(raw []byte, maxRunes int) string {
 	if len(raw) == 0 {
 		return ""
 	}
 	if maxRunes <= 0 {
 		maxRunes = 500
+	}
+
+	// 0) **BODY[TEXT] 分片**：先按 MIME part 拆开再取摘要。
+	//
+	//    ## 这是 2026-10-03 晚定位到的真·在产泄漏根因
+	//
+	//    IMAP 对 multipart 邮件的 BODY[TEXT] 返回的是「**去掉顶层头之后的
+	//    整个 body 部分**」，里面依次是：
+	//
+	//    	----…-Part_1
+	//    	Content-Type: text/plain; charset=utf-8
+	//    	Content-Transfer-Encoding: quoted-printable
+	//
+	//    	<part1 正文>
+	//    	----…-Part_2
+	//    	Content-Type: text/html; charset=utf-8
+	//    	…
+	//    	----…-Part_1--
+	//
+	//    而下面第 1 步的 mimeCandidates **只丢掉第一行 boundary**。于是
+	//    ParseMIMEMessage 把 part1 的头当成顶层头，把「part1 正文 + part2 的
+	//    头 + part2 的正文」整体当作一封邮件的 body。后果是 TextBody 里必然
+	//    带着 part2 的 Content-* 头与 boundary token ⇒ containsMIMESource
+	//    判 true。
+	//
+	//    **这里必须说清楚：那次判据并没有误判。** 实测（真库真实报文原文，
+	//    em-1298896153）TextBody 第 15/16 行确实是
+	//    `Content-Type: text/html; charset=utf-8` 与
+	//    `Content-Transfer-Encoding: quoted-printable` —— 它**真的**是 MIME
+	//    源码。判据是对的，**被丢掉的是正确答案**：TextBody 的开头
+	//    「订阅到期提醒 nick，您好：…」是完全正常可读的正文。
+	//
+	//    于是流程掉到第 2 步，而第 2 步的 HTML 分支**当时没有任何 MIME 判据**
+	//    （纯文本分支才有），htmlToText 把整段分片原样吐出来 ⇒ 列表页上
+	//    显示 `----_NmP-…-Part_1 Content-Type: text/plain; … =E8=AE=A2…`。
+	//
+	//    ## 为什么不能靠放宽 containsMIMESource 来修
+	//
+	//    放宽它就等于把第 1 步那份「带内层头」的 TextBody 当正文放行 ——
+	//    那是**用更隐蔽的泄漏换更显眼的泄漏**。正确的修法是补一个候选：
+	//    把分片**按 part 切开**，每个 part 单独解析，优先 text/plain。
+	//
+	//    真库 25 个真实样本实测（diag_live_snippet_replay_test.go）：
+	//    只取第一个 part = OK 12 / EMPTY 13 / 泄漏 0；
+	//    按类型优先级全拆   = OK 21 / EMPTY 4  / 泄漏 0。
+	//    修前这 25 个在 BODY[TEXT] 出口上 **25/25 全部泄漏**。
+	//    剩下 4 个取不到正文，落空串是安全的一侧（它们今天正在泄漏）。
+	if s := snippetFromMIMEParts(raw); s != "" {
+		return truncateRunes(s, maxRunes)
 	}
 
 	// 1) 正常情况：整封 MIME 能解析出正文。
@@ -84,8 +205,54 @@ func DeriveSnippet(raw []byte, maxRunes int) string {
 	// 2) 抓回来的不是完整 MIME（部分服务器 BODY[TEXT] 直接给正文），
 	//    或者只有一段裸 HTML。这时**先判断是不是 HTML**，别让它原样透出。
 	if s := normalizeWhitespace(string(raw)); s != "" {
+		// ⚠️⚠️ 2026-10-04 真库实测新增的一腿，必须排在 HTML 分支**之前**。
+		//
+		// 现象：BACKFILL 落库的 25 条脏 snippet（`=0D=0A=0D=0A =0D=0A …`）
+		// 全部产出于下面那个 looksLikeHTML 分支，不是产出于 QP 解码分支。
+		//
+		// 机制（diag_real_fetch_snippet_stages_test.go 在真库 + 真 IMAP 上量的）：
+		// backfill 走 fetcher.go:519 fetchSnippetOnConnected，取的是
+		// **BODY[TEXT]（不带头）**。于是 raw =
+		//
+		//	<!DOCTYPE html>=0D=0A<html lang=3D\"en\">=0D=0A  <head>=0D=0A …
+		//
+		// normalizeWhitespace 压平后 looksLikeHTML(s)=true，于是走到
+		// `h := htmlToText(s)` —— **对一个 QP 编码的源码剥标签**：
+		// 标签被剥掉，剩下的正好全是 `=0D=0A` 残留。然后
+		// `!containsMIMESource(h)` 为真（纯 QP 源码里没有 Content-Type/
+		// boundary），于是这坨 `=0D=0A` 被 truncateRunes 到 500 runes
+		// **当摘要返回**。库里 503 字节的脏行与该输出逐字同形。
+		//
+		// 而本文件原有的 QP 解码分支在 HTML 分支**之后**（见下方 246 行），
+		// 对这个输入永远走不到 ⇒ 结构顺序就是缺陷本身。
+		//
+		// 修法：HTML 判定必须跑在**解码之后**。这里先整体解一次 QP：
+		//   · 解出来像 HTML  ⇒ 剥标签后返回（正文）
+		//   · 解出来不像 HTML ⇒ 当纯文本返回
+		// 解不开就走回原来的 HTML 分支，行为与改动前逐字一致。
+		if dec, ok := decodeWholeQuotedPrintable(string(raw)); ok {
+			decFlat := normalizeWhitespace(dec)
+			if looksLikeHTML(decFlat) {
+				if h := htmlToText(decFlat); h != "" && !containsMIMESource(h) {
+					return truncateRunes(h, maxRunes)
+				}
+			} else if decFlat != "" && !containsMIMESource(dec) {
+				return truncateRunes(stripTrailingBoundary(decFlat), maxRunes)
+			}
+		}
 		if looksLikeHTML(s) {
-			if h := htmlToText(s); h != "" {
+			// ⚠️ 这一分支在 2026-10-03 晚之前**完全没有 MIME 判据**，
+			// 是上面那次在产泄漏真正的出口：第 1 步因为分片里内层 part 的
+			// Content-* 头而正确地拒收（判据没错，拒的是「带内层头的
+			// TextBody」），流程落到这里，htmlToText(s) 于是把
+			// boundary + Content-* 头 + 未解码的 quoted-printable 正文
+			// 原样压成一行吐给用户。
+			//
+			// 现在补上与纯文本分支同一条闸门。判据跑在**压平后的 s** 上：
+			// s 就是要返回给用户的那一份，判据必须指向它。
+			// （行锚点在这里全部失效，靠的正是 token 判据 —— 这也是
+			// containsMIMESource 存在的理由。）
+			if h := htmlToText(s); h != "" && !containsMIMESource(h) {
 				return truncateRunes(h, maxRunes)
 			}
 			return ""
@@ -155,6 +322,200 @@ func DeriveSnippet(raw []byte, maxRunes int) string {
 	//    宁可返回空串，也不把 Content-Type / boundary 转储给用户看 ——
 	//    「退回原文」正是这个缺陷本身。
 	return ""
+}
+
+// snippetFromMIMEParts 把 BODY[TEXT] 分片按 MIME part 拆开，
+// 优先 text/plain、其次 text/html，返回第一个**干净且非空**的正文。
+//
+// 输入不是分片（普通完整报文，没有开头的 boundary 行）时立刻返回空串，
+// 让 DeriveSnippet 走原有的解析路径 —— 这一步对完整报文必须是**零影响**，
+// 否则就是拿一类邮件的改善换另一类邮件的回归。
+//
+// 每个 part 都带自己的 Content-* 头，因此可以直接喂 ParseMIMEMessage。
+// 判据仍是 containsMIMESource：某个 part 解出来还带 MIME 源码就跳过它，
+// 继续试下一个 —— 宁可少一段摘要，也不放走转储。
+func snippetFromMIMEParts(raw []byte) string {
+	parts := mimeParts(raw)
+	if len(parts) == 0 {
+		return ""
+	}
+	// 两轮：先收齐所有候选，再按 text/plain → text/html 的顺序取。
+	//
+	// 不写成「边走边返回」：那样会取到**第一个** part 的正文，而 multipart
+	// 邮件的第一个 part 常常不是正文（实测 25 个真实样本，只取第一个 part
+	// 只有 12 个拿到摘要，13 个落空）。
+	var plain, html []string
+	for _, p := range parts {
+		// **只看声明的 Content-Type**，不看解出来像不像正文。
+		//
+		// 2026-10-04 审计实测的泄漏：`multipart/mixed` 里 PDF 附件排在
+		// text/plain 之前时，摘要变成 `%PDF-1.4` —— base64 解码后的
+		// 二进制恰好落进 `TextBody`，而 `containsMIMESource` 只查
+		// `Content-Type:` / `boundary=` 这类 token，PDF 里没有，于是放行。
+		//
+		// 这条闸门问的是**判据自己宣称的那件事**：「优先 text/plain、
+		// 其次 text/html」。原来那句「优先」只体现在**收集顺序**上，
+		// 没有任何一处**排除**非文本 part，所以附件只要能解出非空
+		// TextBody 就会排进 plain 组并被优先返回。
+		//
+		// 附件解码出的字节「读起来像文本」这件事，与它是不是正文无关 ——
+		// `%PDF-1.4` 正是这种形态。
+		if !partDeclaresTextContent(p) {
+			continue
+		}
+		for _, cand := range mimeCandidates(p) {
+			msg, err := ParseMIMEMessage(cand)
+			if err != nil {
+				continue
+			}
+			if t := normalizeWhitespace(msg.TextBody); t != "" && !containsMIMESource(msg.TextBody) {
+				plain = append(plain, stripTrailingBoundary(t))
+			}
+			if h := htmlToText(msg.HTMLBody); h != "" && !containsMIMESource(msg.HTMLBody) {
+				html = append(html, h)
+			}
+		}
+	}
+	for _, group := range [][]string{plain, html} {
+		for _, s := range group {
+			if s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// partDeclaresTextContent 判断一个 part **自己声明的** Content-Type 是不是文本。
+//
+// 只读 part 头部那一段（在第一个空行之前），不解析正文 —— 附件的正文
+// 解出来「像文本」与它是不是正文无关（`%PDF-1.4` 就是这种形态）。
+//
+// 判据的三条边界，每条都有用例：
+//
+//  1. **没有 Content-Type 头** → 按 RFC 2045 §5.2 缺省即 `text/plain`，
+//     收下。这条必须显式写出来：`mimeParts` 切出来的 part 完全可能没有头，
+//     而「无头」与「声明了 application/pdf」不能走同一条路。
+//  2. **`Content-Type` 解析失败**（畸形、缺 subtype）→ 不收。
+//     判不清的时候往「少一段摘要」那侧倒。
+//  3. **显式声明 `text/*`** → 收。charset 一律不看：
+//     编码方式由 ParseMIMEMessage 负责解，摘要出口另有 C0 净化。
+func partDeclaresTextContent(part []byte) bool {
+	head := part
+	if i := bytes.Index(head, []byte("\r\n\r\n")); i >= 0 {
+		head = head[:i]
+	} else if i := bytes.Index(head, []byte("\n\n")); i >= 0 {
+		head = head[:i]
+	}
+	var raw string
+	for _, ln := range strings.Split(string(head), "\n") {
+		ln = strings.TrimRight(ln, "\r")
+		if ln == "" {
+			continue
+		}
+		lower := strings.ToLower(ln)
+		if strings.HasPrefix(lower, "content-type:") {
+			raw = strings.TrimSpace(ln[len("content-type:"):])
+			break
+		}
+	}
+	if raw == "" {
+		// 规则 1：整段头里没有 Content-Type ⇒ 缺省 text/plain。
+		return true
+	}
+	mediaType, _, err := mime.ParseMediaType(raw)
+	if err != nil {
+		// 规则 2：声明了但读不懂 ⇒ 不收。
+		return false
+	}
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	return mediaType == "" || strings.HasPrefix(mediaType, "text/")
+}
+
+// mimeParts 把 BODY[TEXT] 分片拆成一个个 part 的原始字节。
+//
+// 判据刻意保守：**首行必须**是一个不含冒号、以 `--` 开头的 boundary 行，
+// 否则返回 nil（视为「这不是分片」）。正文第一行恰好是 `--` 开头的情况
+// 会在这里被排除，代价是那一封走老路径；反过来若放宽，则任何正文里带
+// `--` 行的邮件都会被切碎，风险大得多。
+func mimeParts(raw []byte) [][]byte {
+	if !startsWithBoundaryLine(string(raw)) {
+		return nil
+	}
+	lines := strings.SplitAfter(string(raw), "\n")
+	var (
+		parts   [][]byte
+		cur     []string
+		started bool
+	)
+	for _, ln := range lines {
+		trimmed := strings.TrimRight(ln, "\r\n")
+		if isBoundaryLine(trimmed) {
+			if started && !isBlankPart(cur) {
+				parts = append(parts, []byte(strings.Join(cur, "")))
+			}
+			cur = nil
+			started = true
+			continue
+		}
+		cur = append(cur, ln)
+	}
+	if started && !isBlankPart(cur) {
+		parts = append(parts, []byte(strings.Join(cur, "")))
+	}
+	return parts
+}
+
+// isBlankPart 判断累积出来的 part 是否只有空白。
+//
+// 结束 boundary（`----…-Part_1--`）之后通常还跟一个空行；不滤掉它，
+// 就会多产出一个「只有换行」的 part，解析必然失败，纯属噪音。
+func isBlankPart(lines []string) bool {
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func isBoundaryLine(line string) bool {
+	return strings.HasPrefix(line, "--") && !strings.Contains(line, ":")
+}
+
+// startsWithBoundaryLine 判断 BODY[TEXT] 的**首个非空行**是不是 boundary 行。
+//
+// ⚠️ 2026-10-04 真库 + 真 IMAP 实测修正：这里原先是「首行必须是 boundary」，
+// 而 BODY[TEXT] 的首行常常是**空行**，boundary 落在第二行：
+//
+//	首[0] ""
+//	首[1] "------=_Part_21554049_1801402642.1790152695491"
+//	首[2] "Content-Type: text/html; charset=\"UTF-8\""
+//	尾[-2] "------=_Part_21554049_1801402642.1790152695491--"
+//
+// （同一形态的第二种 boundary：`----==_mimepart_6ab9d1503b4e7_e511d8145119`）
+//
+// 首行判否 ⇒ mimeParts 返回 nil ⇒ snippetFromMIMEParts 返回 "" ⇒
+// 流程掉到第 2 步，而第 2 步的 containsMIMESource 又**正确地**认出这是
+// MIME 源码（它确实是）⇒ 末尾 return ""。两道闸都没错，错的是第一道
+// 闸认不出 boundary 在第二行。
+//
+// 代价不是一次性显示空白：store.go 的「空串=不覆盖」把这一格永久冻结，
+// 重跑多少次 backfill 都填不上。真库 32 行，受影响的全是 GitHub 通知、
+// GitLab MR 这类普通业务邮件。
+//
+// 跳过的是**空行**，不是任意内容行 —— 后者会让「首行是正文」的普通邮件
+// 也被当成分片，风险大得多。
+func startsWithBoundaryLine(s string) bool {
+	lines := strings.SplitAfter(s, "\n")
+	for _, ln := range lines {
+		trimmed := strings.TrimRight(ln, "\r\n")
+		if strings.TrimSpace(trimmed) == "" {
+			continue
+		}
+		return isBoundaryLine(trimmed)
+	}
+	return false
 }
 
 // SnippetFromParsed 从已解析的邮件里取一行可展示的摘要。
@@ -345,10 +706,62 @@ func decodeWholeQuotedPrintable(s string) (string, bool) {
 		return "", false
 	}
 	dec := out.String()
-	if !utf8.ValidString(dec) || !looksLikeReadableText([]byte(dec)) {
+	// ⚠️ 下面两条腿必须**互斥**，且都要再过一道 MIME 结构闸。三处都是实测打回来的：
+	//
+	// (1) 写成「先试 UTF-8，不行再**无条件**试 GB18030」是错的。dec 已是合法 UTF-8、
+	//     只是 looksLikeReadableText 判否时，仍会掉进 GB18030 那条腿，把正常中文
+	//     **再当 GBK 解一遍**。GB18030 兜底的前提是「QP 解开后根本不是合法 UTF-8」。
+	//
+	// (2) 但「dec 一定还是合法 UTF-8」同样不成立 —— 这条是我一开始的误判，
+	//     也是最容易骗过人的那条。真实机制：压平成一行的 MIME 分片会把 QP 的
+	//     **软换行** `=\n` 变成 `= `（等号+空格），于是 `=E9=98=\n=BF` 解成
+	//     `E9 98` + `=` + ` ` + `BF` —— UTF-8 序列被空格劈开，dec **非法 UTF-8**，
+	//     也不可能是纯 GBK（中间夹着 ASCII 的 `=` 和空格）。GBK 解码器把这种
+	//     「GBK 半截 + ASCII 噪声」读成 mojibake，而 mojibake 里全是 CJK，
+	//     looksLikeReadableText 照样放行。
+	//
+	// (3) 于是缺的不是「更聪明的编码判定」，而是**结构闸**：解码结果里仍带着
+	//     `------=_Part_…` / `Content-Type:` / `quoted-printable`，
+	//     就说明这个位置压根不是正文、QP 载荷只是被误读了一遍。
+	//     containsMIMESource 是位置无关的（逐行 + token 两路），压平形态下仍为 true，
+	//     正是为此而写的那道闸。
+	if utf8.ValidString(dec) {
+		if looksLikeReadableText([]byte(dec)) && !containsMIMESource(dec) {
+			return dec, true
+		}
 		return "", false
 	}
-	return dec, true
+	// ⚠️ 2026-10-04 真机/真库实测新增的一腿：QP 解开后**不是合法 UTF-8**。
+	//
+	// 国内企业邮箱（本次实测是 163 的 kimmy.huang@163.com 与
+	// feikemanager@163.com）的正文用 GBK/GB18030。原实现在这里判否后
+	// 直接 `return "", false`，调用方随即**退回未解码的原文** ——
+	// 列表里显示的就是 `=0D=0A=0D=0A =0D=0A =E8=B5=84=E6=BA=90…` 这种源码。
+	//
+	// 判据是 2026-10-04 的决定性实验给的：把那批行删掉、让后端用**当前代码**
+	// 重新抓回（fetched=856 saved=856），它们**原样回来了** ⇒ 不是旧值冻结，
+	// 是当前出口就在产出脏摘要。
+	//
+	// 关键取舍：**「解不开」绝不能成为把原文透出去的理由。** 退回原文比退回
+	// 一段解不开的 GBK 严格更差 —— 用户看到的是编码源码，而不是乱码。
+	// 所以这里补一次 GB18030 兜底（包里已有 gbkToUTF8，charset.go）。
+	if b, gerr := gbkToUTF8([]byte(dec)); gerr == nil &&
+		looksLikeReadableText(b) && !containsMIMESource(string(b)) {
+		return string(b), true
+	}
+	// ⚠️ 2026-10-04 自我推翻（第一版）：这里**曾经**在两条腿之外再补一条 ——
+	//「dec 是合法 UTF-8、只是 looksLikeReadableText 说不可读，那就返回
+	// normalizeWhitespace(dec)」。理由当时写的是「正文以一长串空行开头、
+	// 实质内容落在截断窗口之外，解码后的形态仍优于原文」。
+	// 那**是推断，不是实测**。实测把它否掉了：既有护栏
+	// TestSnippetDerive_FlattenedPartIsNotReturned 立刻转红。
+	//
+	// 教训写在这里是因为它还会诱我第三次：**「解不开就退回原文」不可接受，
+	// 但「解不开就硬返回同样解不开的东西」更不可接受** —— 后者绕过
+	// looksLikeReadableText 这道结构性护栏，把 MIME 头一起放出去，
+	// 比前一种失败更靠后也更难发现。唯一正确的出口是 return "", false，
+	// 让调用方走其它净化腿。
+	return "", false
 }
 
 func hexPair(a, b byte) (byte, bool) {

@@ -45,10 +45,12 @@ package server
 // 新增 PG 测试助手时若忘了隔离，本护栏会在 CI 里直接失败。
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -56,8 +58,72 @@ import (
 // pgOpenRe 匹配「打开 PostgreSQL 连接」的写法。
 var pgOpenRe = regexp.MustCompile(`pgxpool\.New|pgx\.Connect|sql\.Open\(\s*"postgres`)
 
-// isolatedSchemaRe 要求文件里存在自建测试 schema 的字面量前缀。
-var isolatedSchemaRe = regexp.MustCompile(`"(\w*_test_)`)
+// isolatedSchemaRe 要求文件里存在**自建测试 schema 的名字字面量**。
+//
+// 【2026-10-04 收紧，勿改回 \w*】原式是 `"(\w*_test_)`，而 **`\w*` 可以匹配
+// 零个字符**，于是 `"_test_"` 这个**与隔离毫无关系**的字面量就能让整条规则 2
+// 短路。本轮实测的假绿：把一个已隔离文件里的 `strings.Contains(cur, "_test_")`
+// 换成真·不隔离的 `pgxpool.New` + `DELETE FROM emails`，护栏**依然绿**——
+// 让人以为「已隔离已证」，实际那段判据与「连接真的用了自建 schema」毫无关系。
+//
+// 一句话自查（比读正则快）：**让判据变绿的那段代码，和判据想守的性质，
+// 是同一件事吗？** 本例不是：`\w*` 吃 0 字符 ⇒ 任何 `_test_` 字面量都算。
+//
+// 现在要求 `_test_` 前面至少有一个词字符（`\w+`），即它必须是某个标识符的
+// **前缀**（`"task_test_"`、`"email_ws_test_"`），而不是裸的 `"_test_"`。
+// 单改这一点还不够——真正的修复是与 schemaPurposeRe 组合，见 hasSelfBuiltTestSchema。
+var isolatedSchemaRe = regexp.MustCompile(`"\w+_test_`)
+
+// schemaPurposeRe 匹配「**真的在用**这个 schema」的两种用途形态：
+// 自建它（CREATE SCHEMA），或把连接的 search_path 钉上去。
+//
+// 【为什么要它：锚到用途，而不是只锚字面量】本仓库已隔离的 27 个 PG 测试助手
+// 形态高度一致：
+//
+//	schema := "task_test_" + hex.EncodeToString(b)
+//	rootPool.Exec(ctx, fmt.Sprintf("CREATE SCHEMA %s", schema))
+//	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
+//
+// 也就是说「`_test_` 字面量」与「CREATE SCHEMA / search_path 钉定」是
+// **成对出现**的。只查字面量时，任何一个碰巧提到 `_test_` 的文件都能冒充
+// 已隔离；加上用途形态后，无关字面量不再能短路规则 2。
+//
+// 残留盲区（如实说明，不假装覆盖）：正则看不出「这个 CREATE SCHEMA 用的
+// 是不是那个 `_test_` 变量」。要连变量数据流一起判就得上 go/ast + 类型分析，
+// 本护栏刻意停在词法层——它守的是「忘了隔离」这个真实事故，不是形式化证明。
+//
+// 【`SET search_path TO` 那一支是被自己的测试逼出来的，不是预防性加的】
+// 第一版只写了 `=` 与 `:`，结果 TestIsolatedSchemaJudgesAreNotVacuous 里
+// 「`pool.Exec(ctx, `SET search_path TO ` + schema)`」这条**仓库里真实存在**
+// 的形态判不出来——internal/db/pg.go:59 与三个诊断探针都在用它。
+// 判据红时先怀疑判据本身：这条是判据的漏，不是测试写错。
+var schemaPurposeRe = regexp.MustCompile(`(?i)CREATE\s+SCHEMA|RuntimeParams\[\s*"search_path"\s*\]\s*=|(?:\bSET\s+)?search_path\s*(?:[=:]|\bTO\b)`)
+
+// hasSelfBuiltTestSchema 判定「文件真的自建并钉住了一个测试 schema」。
+//
+// 判据 = 有名字字面量（isolatedSchemaRe）**且**有用途形态（schemaPurposeRe）。
+// 两者缺一不可：只有字面量 ⇒ 一次无关的字符串就足以短路规则；
+// 只有用途形态 ⇒ 不带 `_test_` 标记的诊断 schema 会被误当成隔离。
+func hasSelfBuiltTestSchema(code string) bool {
+	return isolatedSchemaRe.MatchString(code) && schemaPurposeRe.MatchString(code)
+}
+
+// writeAllowlistScopeViolations 实现**规则 6**：pgAllowlistedWrites 的条目
+// 必须落在 pgSafeWithoutIsolation 的作用域内，否则是永远读不到的死配置。
+//
+// 抽成纯函数（收 map 作参数）而不是内联在测试里，是为了让
+// TestWriteAllowlistScopeIsEnforced 能用合成 map 做负控——直接改包级
+// map 会在测试间互相污染。
+func writeAllowlistScopeViolations(safe, writes map[string]string) []string {
+	var out []string
+	for rel := range writes {
+		if _, ok := safe[rel]; !ok {
+			out = append(out, rel)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
 
 // dsnSearchPathHelperReUnpinned 匹配「读了 DSN 却不钉 search_path」的形态。
 //
@@ -257,6 +323,23 @@ var pgSafeWithoutIsolation = map[string]string{
 	"internal/email/diag_kxpms_test.go":    "只读真实库探针：无写语句；需 POCKET_DIAG_ACCOUNT + POCKET_DIAG_ALLOW=1 + POCKET_REAL_MAIL_DSN + POCKET_DIAG_DATA_DIR",
 	"internal/email/spam_realdata_test.go": "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（目的就是读真实 schema）",
 
+	// internal/email/diag_purge_injected_invoices_test.go（2026-10-04 新增）：
+	// **会真的 DELETE 发票行**，所以两张表都要登记：
+	//   · 本表（pgSafeWithoutIsolation）—— 规则 2 的出口在这里。它**不能**自建
+	//     `*_test_` schema：它的全部意义就是指向生产库、规划/执行那一批
+	//     自注入行的剔除，指向隔离库就毫无意义。
+	//   · pgAllowlistedWrites —— 规则 4 要求「豁免不豁免写」，有写语句就得
+	//     登记它写了什么。
+	//
+	// 三道闸门：POCKET_DIAG_PURGE=1（打开）+ POCKET_REAL_MAIL_DSN /
+	// POCKET_REAL_MAIL_SCHEMA（显式传入，均无缺省值）+ POCKET_DIAG_PURGE_EXEC=1
+	// （**额外**这一条才允许删）。只读阶段由数据库强制
+	// （default_transaction_read_only=on，并用一次故意失败的 CREATE TEMP TABLE
+	// 自证）；search_path 覆盖式设置后用 current_schema() 读回校验，不一致即拒绝；
+	// 删除走单事务：先 CREATE TABLE 备份（行数必须等于计划数，不等即回滚），
+	// 再 DELETE（影响行数不等计划即回滚），最后才 Commit。
+	"internal/email/diag_purge_injected_invoices_test.go": "会真删 email_invoices 行，且**必须**指向生产库（指向隔离库就失去意义，故不能自建 _test_ schema）：默认只出计划（DB 侧 default_transaction_read_only 强制 + CREATE TEMP TABLE 自证），删除需额外 POCKET_DIAG_PURGE_EXEC=1；DSN/schema 无缺省值、search_path 覆盖式设置并用 current_schema() 读回校验；备份与删除同事务，行数不符即回滚。写语句登记见 pgAllowlistedWrites",
+
 	// internal/email/diag_spam_preview_test.go（2026-10-03 补登，提交 4de72306 时漏了，
 	// 当时把 internal/server 跑成了红的）：
 	//   · 只读：全文件只有一条 SELECT，INSERT/UPDATE/DELETE/DROP/CREATE 一个都没有。
@@ -288,6 +371,37 @@ var pgSafeWithoutIsolation = map[string]string{
 	// 语句，只有 2 条 pool.Query（均为 SELECT）。
 	"internal/email/diag_stale_debt_notice_row_test.go": "只读真实库诊断：全文件 0 写语句（2 条 pool.Query 均为 SELECT）；需 POCKET_DIAG_STALE_ROW=1 显式开关 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（**两者都无缺省值**，缺省会误打生产库）。它**必须**指向生产 schema——那一行（inv_1790903383222583800_1，58000.00）只存在于生产库，隔离库只会输出「查无此行」这种假结论。只读由**数据库强制**：连接 default_transaction_read_only = on，写尝试直接报错，不靠「文件里没有写语句」这句话；search_path 由 RuntimeParams 显式设为 POCKET_REAL_MAIL_SCHEMA，表名不带 schema 限定符。判定链复用生产函数 ExtractInvoice / admitDebtNotice / GetInvoiceByEmailID，不重抄。查无此行时 t.Fatal，避免把「行没了」读成「问题不存在」",
 
+	// internal/email/diag_debt_notice_candidates_test.go（2026-10-03 新增）：
+	//   · 目的：平安/招商两张信用卡电子账单在 2026-10-04 08:00 那一轮会不会
+	//     再建一张幽灵发票（工行那封 58000.00 的前车之鉴）。建档是幂等写入，
+	//     跑完就落库，所以必须在跑之前判定。
+	//   · 全文件 0 写语句：1 条 pool.Query（SELECT）+ 1 条**故意失败**的
+	//     CREATE TEMP TABLE 只读自证（被 default_transaction_read_only 拒绝，
+	//     若成功则 t.Fatal 退出）。
+	//   · 只读由数据库强制；DSN/schema 必须显式传入且无缺省值；
+	//     需 POCKET_DIAG_DEBT_SHAPE=1 开关。
+	//   · 弱点照实登记：① 它**必须**指向生产 schema（隔离库里没有那两封
+	//     信用卡账单，只会输出「无风险」的假结论）；② 只跑 envelope 那一腿，
+	//     生产第 2 趟用完整正文，`reInvoiceNo` 在正文里更容易命中 ⇒ 结论是
+	//     幽灵风险的**下界**，判「拦住」不等于明早安全（文件头已写明）；
+	//     ③ 附件那一维取不到（正文加密在缓存里，重拉原文属取邮箱操作）。
+	//   · 一行都没取到时 t.Fatal，避免把「粗筛写错了」读成「没有风险」。
+	"internal/email/diag_debt_notice_candidates_test.go": "只读真实库诊断：0 写语句（1 条 SELECT + 1 条故意被拒的 CREATE TEMP TABLE 自证）；需 POCKET_DIAG_DEBT_SHAPE=1 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（**均无缺省值**）。指向生产 schema 是**目的**（那两封信用卡账单只在生产库）。只读由数据库强制（default_transaction_read_only = on）。判定复用生产函数 reDebtNoticeShape / ExtractInvoiceLoose，不重抄。已知弱点：只跑 envelope 腿，结论是幽灵风险**下界**；附件证据取不到；粗筛 0 行即 t.Fatal",
+
+	// internal/email/diag_invoice_handoff_integrity_test.go（2026-10-03 新增）：
+	//   · 目的：交财务前核对「data/email-invoices 目录 vs 台账」。实测发现磁盘
+	//     11 个 PDF 而台账只有 6 行 downloaded，其中 5 个无台账引用，且构成
+	//     3 组字节相同的重复（含 2 份 69 字节空壳、1 份日期错成采集当天的重复票）。
+	//   · 0 写语句：1 条 pool.Query（SELECT）+ 1 条故意被拒的 CREATE TEMP TABLE
+	//     只读自证；磁盘侧只用 os.ReadDir/os.ReadFile。
+	//   · 只读由数据库强制；DSN/schema **无缺省值**；发票目录由
+	//     POCKET_DIAG_INVOICE_DIR 显式传入（不设就 t.Fatal，避免扫到空目录后
+	//     输出「一切干净」的假结论）；门禁 POCKET_DIAG_HANDOFF=1。
+	//   · 指向生产 schema 是**目的**（台账行只在生产库）。弱点照实登记：它只
+	//     覆盖单个发票目录，A4 拼版产物在 exports 子目录、按 id 由 export 端点
+	//     生成，不在本诊断范围内。
+	"internal/email/diag_invoice_handoff_integrity_test.go": "只读交付前完整性诊断：0 写语句（1 条 SELECT + 1 条故意被拒的 CREATE TEMP TABLE 自证；磁盘侧只读）；需 POCKET_DIAG_HANDOFF=1 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA + POCKET_DIAG_INVOICE_DIR（**均无缺省值**，目录不设就 t.Fatal，否则空目录会产出「一切干净」的假结论）。指向生产 schema 是目的。重复判定用内容 sha256 而非文件名。只读由数据库强制。已知弱点：只覆盖单个发票目录，A4 拼版产物（exports 子目录、按 id 生成）不在范围内",
+
 	// internal/email/pipeline_lock_test.go（2026-10-03 新增）：
 	//   · 它**确实**隔离，只是隔离逻辑在被复用的助手里，本文件因此没有
 	//     isolatedSchemaRe 要找的 `"*_test_` 字面量（schema 名由 helper 现场生成）。
@@ -312,7 +426,8 @@ var pgSafeWithoutIsolation = map[string]string{
 	//   · 确实隔离：自建 `claim_race_diag_<unixnano>` schema，两个 pool 的
 	//     RuntimeParams["search_path"] 都钉成它，cleanup 里 DROP ... CASCADE。
 	//   · 判红原因只是 schema 名不含 `_test_` 子串（守卫的 isolatedSchemaRe
-	//     是 `"(\w*_test_)`），隔离本身是到位的。
+	//     要求 `"<标识符>_test_`，2026-10-04 起还额外要求有 CREATE SCHEMA /
+	//     search_path 用途形态），隔离本身是到位的。
 	//   · 它要写库（INSERT 一个到期任务），所以同时登记进 pgAllowlistedWrites。
 	"internal/scheduledtask/diag_claimdue_race_test.go": "并发 ClaimDue 诊断：自建 `claim_race_diag_<unixnano>` schema，两个 pool 的 search_path 都钉成它，cleanup DROP CASCADE。判红仅因 schema 名不含 `_test_` 子串",
 
@@ -376,6 +491,40 @@ var pgSafeWithoutIsolation = map[string]string{
 	"internal/email/diag_schema_present_test.go":    "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN + POCKET_DIAG_SCHEMA（目的是查真实 schema 在不在）",
 	"internal/email/ledger_realdata_diag_test.go":   "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（核对台账合计口径在真实数据上的变化）",
 	"internal/email/reminder_notified_diag_test.go": "只读真实库探针：0 写语句；**2026-10-02 复核发现它此前从不设置 search_path**，危害是产出**假结论**——它的判据 `if highUnnotified == 0 { 不是缺陷 }` 在查空库时必然成立。现已改为 RuntimeParams 覆盖 + current_schema() 验证。登记在 pgAllowlistedWrites 的理由同上（该文件在规则 5 下受检）",
+
+	// 2026-10-04：824a0391（QP 编码 HTML 泄漏那条）带进来的分阶段诊断探针，
+	// 与上面同族，但**门控变量名不同**，所以不能靠上面几条的推理顺带覆盖。
+	// 逐项核对（命令与结果记在 handoff round39）：
+	//   · 写语句：扫 INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE，**0 命中**；
+	//     `.Exec(` **0 次**；DB 调用只有 3 处 pool.Query / pool.QueryRow。
+	//   · 门控：PG_DSN + POCKET_REAL_KEYS，**均无缺省值**，缺任一即 t.Skip；
+	//     PG_DSN 与 CI 设的 POCKET_TEST_POSTGRES_DSN 是不同变量 ⇒ CI 里恒 skip。
+	//   · 它要读的是**真实库里那批仍带 QP 源码的 snippet**，用
+	//     `current_schema()` 读回值与 DSN 里的 search_path 逐字比对，
+	//     不一致即 t.Fatalf（L85-90，注释写明「以为钉住了是这个缺陷家族的标志」）。
+	//     自建隔离 schema 会让「哪些行还脏」这个问题查成空集并输出
+	//     「已全部干净」的假结论 —— 与 reminder_notified_diag_test.go 同理。
+	//   · 规则 4 独立生效：本文件一旦出现写语句仍会判红（豁免的只是
+	//     「自建隔离 schema」这一项）。
+	"internal/email/diag_real_fetch_snippet_stages_test.go": "只读真实库分阶段诊断（824a0391 引入）：0 写语句、.Exec( 0 次、3 处 pool.Query；需 PG_DSN + POCKET_REAL_KEYS 双重开关（**均无缺省值**，与 CI 的 POCKET_TEST_POSTGRES_DSN 是不同变量，故 CI 里恒 skip）；search_path 取自 DSN 并用 current_schema() 读回逐字校验，不符即 Fatal。它要定位的是真实库里仍带 QP 源码的那批 snippet，自建隔离 schema 会让它查成空集并输出「已全部干净」的假结论。**规则 4 会在本文件出现写语句时判红**",
+
+	// 2026-10-04 round39 第二次：又是一个新引入的只读诊断探针。
+	//
+	// 【这一条不是「又一个条目」，是一个模式】同一天内 `824a0391` 与本文件
+	// **各带来一个探针，两个都把主干判红**。两次形态完全一致：
+	//   · 0 写语句、`.Exec(` 0 次、只有 pool.Query；
+	//   · 双开关 `PG_DSN` + `POCKET_REAL_KEYS`，均无缺省值；
+	//   · search_path 取自 DSN + `current_schema()` 读回校验；
+	//   · 必须指向生产 schema（要读的就是真实库里那批行）。
+	//
+	// ⇒ 「写探针的人不知道要登记」这件事已经发生两次。**新建这类探针时
+	// 请连同本条一起提交**，否则主干会红，而红的原因（一行 allowlist）
+	// 与症状（CI 失败）之间隔着一百多行守卫输出。
+	//
+	// 逐项核对：0 写语句（INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE
+	// 全扫，0 命中）、`.Exec(` 0 次、2 处 pool.Query；门控同上；
+	// L77-82 用 `current_schema()` 与 DSN 里的 schema 逐字比对，不符即 Fatal。
+	"internal/email/diag_empty_snippet_locus_test.go": "只读真实库定位探针（round39 登记，当天第二个同族探针）：0 写语句、.Exec( 0 次、2 处 pool.Query；需 PG_DSN + POCKET_REAL_KEYS 双重开关（**均无缺省值**，与 CI 的 POCKET_TEST_POSTGRES_DSN 不同变量，故 CI 里恒 skip）；search_path 取自 DSN 并用 current_schema() 读回校验（L77-82，不符即 Fatal）。它要定位的是真实库里空摘要的行，自建隔离 schema 会让它输出「没有空摘要」的假结论。**规则 4 会在本文件出现写语句时判红**",
 
 	// ===== 2026-10-02 合并 email 分支时本护栏新增判红的 7 个，逐个核过 =====
 	//
@@ -470,6 +619,29 @@ var pgAllowlistedWrites = map[string]string{
 	// 写路径额外拒绝 schema 缺省值（缺省=生产库 opencode_pocket，且 who='ALL'
 	// 可改写全部账户的同步进度）。
 	"internal/email/diag_snippet_leak_test.go": "1 条 UPDATE（重置 last_synced_uid），被 POCKET_REAL_MAIL_DSN + POCKET_DIAG_RESET_ACCOUNT + POCKET_DIAG_ALLOW_RESET=1 三重开关挡住；写路径拒绝 schema 缺省值（缺省=生产库 opencode_pocket 且 who='ALL' 可改全部账户）",
+
+	// internal/email/diag_purge_injected_invoices_test.go（2026-10-04 新增）：
+	// **会真的 DELETE 发票行**，但默认只出计划。三道闸门：
+	//   POCKET_DIAG_PURGE=1（打开） + POCKET_REAL_MAIL_DSN/POCKET_REAL_MAIL_SCHEMA
+	//   （显式传入，均无缺省值）+ POCKET_DIAG_PURGE_EXEC=1（**额外**这一条才允许删）。
+	// 只读阶段由数据库强制（default_transaction_read_only=on，并用一次故意失败的
+	// CREATE TEMP TABLE 自证）；search_path 覆盖式设置后用 current_schema() 读回校验，
+	// 不一致即拒绝。删除走单事务：先 CREATE TABLE 备份（行数必须等于计划数，
+	// 不等即回滚），再 DELETE（影响行数不等计划即回滚），最后才 Commit ——
+	// 不存在「删了但没备份」。指向生产 schema 是目的。
+	"internal/email/diag_purge_injected_invoices_test.go": "会真删 email_invoices 行：默认只出计划（DB 侧 default_transaction_read_only 强制 + CREATE TEMP TABLE 自证），删除需额外 POCKET_DIAG_PURGE_EXEC=1；DSN/schema 无缺省值、search_path 覆盖式设置并用 current_schema() 读回校验；备份与删除同事务，行数不符即回滚",
+
+	// internal/email/store_upsert_messageid_test.go：**刻意不登记**（2026-10-04）。
+	// 它曾经登记在这里，理由是「会真写 emails 行，所以不隔离 schema 不安全」。
+	// 现在它改用 newWorkspaceTestStore 自建 `email_ws_test_<hex>` schema，
+	// search_path 由 RuntimeParams 钉住，收尾整条 schema DROP —— 隔离是真隔离，
+	// 不再需要任何豁免。
+	//
+	// 顺带记下它当初为什么会红，因为那是**两道判据同时失明**的组合：
+	// 它被登记在 pgAllowlistedWrites（本表）却**不在** pgSafeWithoutIsolation，
+	// 而本表只对豁免表内的文件生效 ⇒ 这一条登记从写下那天起就永远读不到，
+	// 规则 2 照样判红。留着它会让人以为「已豁免」，实际是**装饰性配置**。
+	// 这类「登记了但作用域够不着」的条目比不登记更危险：它把冲突变沉默。
 
 	// 隔离助手本身：dropScopedSchema 只 DROP 调用方传进来的那个 schema 名。
 	"internal/email/pgscope_test.go": "隔离助手本身：dropScopedSchema 只 DROP 调用方传进来的 schema 名（'DROP SCHEMA IF EXISTS '+schema+' CASCADE'），是「只删自己建的」的安全收尾模式",
@@ -621,7 +793,210 @@ func TestCensusSQLWriteReIsNotVacuous(t *testing.T) {
 	}
 }
 
-func TestPGTestsNeverTargetTheProductionSchema(t *testing.T) {
+// pgVerdict 是护栏对**单个文件**的判定结果。
+//
+// 【为什么要抽成纯函数】原先规则体直接长在 filepath.Walk 的回调里，于是
+// 「拿某个文件的源码跑一遍判据」这件事只能靠**真的去改那个文件**。
+// 2026-10-04 收紧规则 2 时需要做完整负控矩阵（27 个已隔离文件逐个注入
+// 真·不隔离的连接 + 写语句），改文件既慢又会与并发会话的工作区打架。
+// 抽出来之后矩阵是对**真实文件字节**做内存内变异，一个测试跑完全部用例。
+type pgVerdict struct {
+	violations []string
+	notes      []string
+}
+
+func (v *pgVerdict) notef(format string, args ...interface{}) {
+	v.notes = append(v.notes, fmt.Sprintf(format, args...))
+}
+
+func (v *pgVerdict) errorf(format string, args ...interface{}) {
+	v.violations = append(v.violations, fmt.Sprintf(format, args...))
+}
+
+// judgePGFile 对一个**已剥注释**的 _test.go 源码跑全部规则。
+//
+// rel 是相对 backend/ 的路径（斜杠分隔），只用于查豁免表与报错。
+func judgePGFile(rel, code string) pgVerdict {
+	var v pgVerdict
+
+	// 规则 1：任何测试都不得**读**生产 DSN 变量（Setenv 写假值不算）。
+	if hits := productionDSNRe.FindAllStringIndex(code, -1); len(hits) > 0 {
+		reads := 0
+		for _, h := range hits {
+			from := h[0] - 64
+			if from < 0 {
+				from = 0
+			}
+			if productionDSNWriteRe.MatchString(code[from:h[0]]) {
+				continue
+			}
+			reads++
+		}
+		if reads > 0 {
+			if reason, ok := pgProductionDSNWriteOnly[rel]; ok {
+				v.notef("allowlist(只写不读): %s — %s", rel, reason)
+			} else {
+				v.errorf("%s: 测试读取了 POCKET_POSTGRES_DSN（服务自己的生产连接串）%d 处。\n"+
+					"  测试必须只认 POCKET_TEST_POSTGRES_DSN：同一个 DSN 既喂服务也喂测试时，\n"+
+					"  读生产变量等于零配置地把测试打到生产库——CI 只设 TEST 变量，所以本地\n"+
+					"  `go test ./...` 才会踩到，而它会在生产库里建表/建 schema 并报告 ok。\n"+
+					"  切片回退（[]string{\"POCKET_TEST_POSTGRES_DSN\", \"POCKET_POSTGRES_DSN\"}）\n"+
+					"  同样算读：字面量在切片里、传给 Getenv 的是变量。", rel, reads)
+			}
+		}
+	}
+
+	// 规则 3：不得靠拼接 DSN 字符串来设置 search_path（见上面的注释）。
+	//
+	// 两个判据并存：字面拼接（dsnSearchPathAppendRe）与辅助函数调用
+	// （dsnSearchPathHelperRe）。后者是 2026-10-02 补的——原先只有前者，
+	// diag_merge_exec_test.go 把拼接包进 appendSearchPath() 就整套隐身。
+	if dsnSearchPathAppendRe.MatchString(code) {
+		v.errorf("%s: 通过拼接 DSN 字符串（dsn+\"&search_path=\"）来隔离 schema。\n"+
+			"  本仓库的 DSN 往往已经带 search_path，拼接会产生两个同名参数、pgx 取第一个，\n"+
+			"  隔离静默失效而测试照样报告 ok。改用 ParseConfig 后的\n"+
+			"  RuntimeParams[\"search_path\"] = schema + \",public\"。", rel)
+	}
+	if dsnSearchPathHelperRe.MatchString(code) {
+		v.errorf("%s: 调用了疑似「把 search_path 拼进 DSN」的辅助函数。\n"+
+			"  这类封装会让拼接**整套隐身**——拼接在函数体内，调用处看不出意图\n"+
+			"  （2026-10-02 实测：diag_merge_exec_test.go 的 appendSearchPath 就是这样\n"+
+			"  躲过了规则 3 的字面判据）。改用 ParseConfig 后的\n"+
+			"  RuntimeParams[\"search_path\"] = schema + \",public\"，\n"+
+			"  并在连接建立后用 SELECT current_schema() 读回来验证。\n"+
+			"  若你确认这个函数名不涉及 search_path 拼接，改个名即可。", rel)
+	}
+
+	// 规则 5：豁免表内的文件若**直连**（pgxpool.New(ctx, dsn)），
+	// 就必须显式钉 search_path。
+	//
+	// 存在理由：2026-10-02 复核豁免表的登记理由时发现两个文件从未设置过
+	// search_path——reminder_notified_diag_test.go 与 realprobe_test.go。
+	// 它们的危害不是「读到脏数据」，而是**产出假结论**：
+	// reminder 那个的判据是 `if highUnnotified == 0 { 不是缺陷 }`，
+	// DSN 指向 public 时它扫到 0 行，于是输出「不是缺陷」。
+	// **查空库永远「符合设计」。**
+	//
+	// 【判据收窄的过程，勿改回宽版】第一版只判「直连 + 全文无
+	// search_path 字样」，结果判红 6 个文件，而其中 6 个**全是误报**：
+	// diag_backfill_align / diag_dup_report / diag_merge_plan /
+	// diag_pop3_backfill / diag_pop3_invoice 的每条查询都带**显式
+	// schema 前缀**（`FROM `+schema+`.emails`），根本不依赖 search_path；
+	// fetcher_greenmail_test.go 则自建了 `email_greenmail_test_` schema，
+	// 由 newScopedPool 覆盖 search_path。
+	// （收窄分两步：先加「无 `*_test_` schema」仍判红 4 个——
+	//  因为 isolatedSchemaRe 要求双引号字面量 `"xxx_test_`（2026-10-04 起
+	//  写作 `"\w+_test_`），而这几个文件是 `+schema+` 拼接，没有那个字面量。
+	//  最后补上 qualifiedTableRe 才彻底收住。**两次都是我的判据太宽**，
+	//  不是这些文件有错。）
+	//
+	// 收窄后的判据：直连 + 无 search_path + 无自建 `*_test_` schema +
+	// 无显式 schema 前缀。四者同时成立才意味着**完全无从判断目标库**。
+	// 残留盲区（明说，不假装覆盖）：大部分查询带显式前缀、只有一处
+	// 未限定的文件，判据看不见。宁可漏报，不可对正确写法误报。
+	if _, exempt := pgSafeWithoutIsolation[rel]; exempt &&
+		dsnSearchPathHelperReUnpinned.MatchString(code) &&
+		!searchPathAnyRe.MatchString(code) &&
+		!hasSelfBuiltTestSchema(code) &&
+		!qualifiedTableRe.MatchString(code) {
+		v.errorf("%s: 在 pgSafeWithoutIsolation 里被豁免，直连数据库"+
+			"（pgxpool.New(ctx, dsn)），且既没有设置 search_path、"+
+			"也没有自建 `*_test_` schema。\n"+
+			"  它查哪个库完全无从判断，于是：\n"+
+			"    · DSN 指向 public 时，未限定表名的查询会扫到空集；\n"+
+			"    · 而「扫到空集」在这些诊断里会变成**假结论**——\n"+
+			"      reminder_notified_diag_test.go 的判据是\n"+
+			"        if highUnnotified == 0 { 结论：不是缺陷 }\n"+
+			"      查空库时 highUnnotified 必然是 0，于是输出「不是缺陷」。\n"+
+			"  2026-10-02 实测：reminder_notified_diag_test.go 与 realprobe_test.go\n"+
+			"  正是这个形态（姊妹文件 diag_snippet_leak_test.go / spam_realdata_test.go\n"+
+			"  都显式钉了 schema，只有这两个没有）。\n"+
+			"  修法二选一：\n"+
+			"    a) ParseConfig 后写 RuntimeParams[\"search_path\"] = schema + \",public\"，\n"+
+			"       并用 SELECT current_schema() 读回验证（推荐）；\n"+
+			"    b) 所有查询都带显式 `schema.` 前缀，完全不依赖 search_path——\n"+
+			"       本判据看到自建 `*_test_` schema 或 schema 前缀就会放过，所以这种写法安全。", rel)
+	}
+
+	// 规则 4：**豁免表内**的文件仍要登记它有哪些写语句。
+	//
+	// 这条规则存在的唯一理由：旧设计里「在 pgSafeWithoutIsolation 里」
+	// 一次性放行了**全部**检查，于是 allowlist 变成完全的盲区——
+	// 负控实测（2026-10-02）往 diag_credential_health_test.go 注入一段
+	// `pool.Exec(ctx, "DELETE FROM email_accounts")`，护栏依然绿。
+	// 豁免的语义应当是「不豁免写」。
+	//
+	// 【作用域限定在豁免表内，这是踩过坑才定下来的】
+	// 最初把规则 4 写成全仓扫描，结果判红 77 个文件，而其中绝大多数是
+	// 假阳性，分两类：
+	//   · **已正确隔离**的文件（internal/task/store_test.go 等自建
+	//     `*_test_` schema 的助手）——它们本来就清楚自己写在隔离库里，
+	//     登记「我写了什么」纯属仪式；
+	//   · **Go 标识符撞上 SQL 动词**：time.Now().Truncate(...)、
+	//     t.Fatal("status update missing")、TestCaptureTruncatesLongSummary。
+	//     正则分不出 SQL 动词和普通函数/字符串。sqlWriteRe 里的
+	//     TRUNCATE / GRANT 无限定词，正是这一类。
+	// 盲区从来只存在于**豁免表内**——表外的文件要么被规则 2 强制隔离，
+	// 要么根本不开 PG 连接。所以作用域收窄到豁免表是准确的，不是妥协。
+	//
+	// 收窄后仍保留方向正确性：豁免「不隔离 schema」不再等于豁免「写」。
+	if _, exempt := pgSafeWithoutIsolation[rel]; exempt && hasSQLWrite(code) {
+		if reason, ok := pgAllowlistedWrites[rel]; ok {
+			v.notef("allowlist(含写语句): %s — %s", rel, reason)
+		} else {
+			v.errorf("%s: 在 pgSafeWithoutIsolation 里被豁免，且出现了 SQL 写语句，\n"+
+				"  但没有登记到 pgAllowlistedWrites。\n"+
+				"  护栏不检查豁免表的写语句——负控实测（2026-10-02）往\n"+
+				"  diag_credential_health_test.go 注入 `pool.Exec(ctx, \"DELETE FROM\n"+
+				"  email_accounts\")` 时护栏依然绿。所以「有写语句」是**一次性观察**，\n"+
+				"  不是机器维持的不变式。\n"+
+				"  修法二选一：\n"+
+				"    a) 若它该写隔离 schema：让文件自建 `*_test_` schema 并把 search_path 钉上去，\n"+
+				"       然后从 pgSafeWithoutIsolation 里删掉它；\n"+
+				"    b) 若它确实要写真实库（如诊断探针）：把文件与可核查的理由加进\n"+
+				"       pgAllowlistedWrites——理由要写清：写什么、被哪几道开关挡住、\n"+
+				"       schema 缺省指向哪里。\n"+
+				"  不要靠把 pgSafeWithoutIsolation 的理由写宽松来绕过——那是让冲突变沉默。", rel)
+		}
+	}
+
+	// 规则 2：打开 PG 连接就必须隔离 schema。
+	if !pgOpenRe.MatchString(code) {
+		return v
+	}
+	if hasSelfBuiltTestSchema(code) {
+		return v
+	}
+	if reason, ok := pgSafeWithoutIsolation[rel]; ok {
+		v.notef("allowlist: %s — %s", rel, reason)
+		return v
+	}
+	v.errorf("%s: 打开了 PostgreSQL 连接但没有把 search_path 钉到自建的 `*_test_` schema。\n"+
+		"  没有隔离时，测试的建表迁移与 DELETE 会落到 DSN search_path 指向的 schema\n"+
+		"  （在本仓库的惯例下那就是生产库），而测试会报告 ok。\n"+
+		"  判据要求**两件事同时成立**（2026-10-04 收紧）：\n"+
+		"    · 文件里有自建 schema 的名字字面量 `\"xxx_test_`（`\\w+` 不得匹配零字符）；\n"+
+		"    · 且文件真的在建它或钉它（`CREATE SCHEMA` / `search_path` 赋值）。\n"+
+		"  只满足前者是不行的：一个与隔离无关的 `_test_` 字符串曾能让整条规则短路。\n"+
+		"  修法见 internal/task/store_test.go 等 27 处已隔离的助手；\n"+
+		"  若隔离由**同包的助手**完成（newScopedPool / newWorkspaceTestStore 之类，\n"+
+		"  CREATE SCHEMA 与 search_path 都在助手文件里，本文件看不到），\n"+
+		"  请连同助手名与行号加入 pgSafeWithoutIsolation——判据是词法的，\n"+
+		"  它看不见跨文件的委托，而这类登记正是为此存在的出口。", rel)
+	return v
+}
+
+// pgTestFile 是护栏作用域内的一个 _test.go 及其**剥注释后**的可执行代码。
+type pgTestFile struct {
+	rel  string // 相对 backend/，斜杠分隔
+	code string // stripGoComments 之后
+}
+
+// listPGTestFiles 枚举护栏管辖的全部 _test.go。**单一来源**：
+// 主护栏与逐文件负控矩阵都必须用它，否则矩阵可能覆盖着另一套文件集，
+// 于是「矩阵全绿」与「护栏其实没扫到那些文件」会长得一模一样。
+func listPGTestFiles(t *testing.T) []pgTestFile {
+	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("cannot locate this test file")
@@ -629,7 +1004,7 @@ func TestPGTestsNeverTargetTheProductionSchema(t *testing.T) {
 	// backend/internal/server/xxx_test.go -> backend
 	backendRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
 
-	var checked int
+	var out []pgTestFile
 	err := filepath.Walk(backendRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -654,184 +1029,325 @@ func TestPGTestsNeverTargetTheProductionSchema(t *testing.T) {
 		if rel == "internal/server/pg_test_isolation_guard_test.go" {
 			return nil
 		}
-
 		raw, rerr := os.ReadFile(path)
 		if rerr != nil {
 			return rerr
 		}
-		src := string(raw)
-		checked++
-
-		// 规则只对**可执行代码**生效：注释里出现的反例（说明"不要这么写"）
-		// 不该把文件判红。必须剥掉行尾注释与块注释，只看代码。
-		code := stripGoComments(src)
-
-		// 规则 1：任何测试都不得**读**生产 DSN 变量（Setenv 写假值不算）。
-		if hits := productionDSNRe.FindAllStringIndex(code, -1); len(hits) > 0 {
-			reads := 0
-			for _, h := range hits {
-				from := h[0] - 64
-				if from < 0 {
-					from = 0
-				}
-				if productionDSNWriteRe.MatchString(code[from:h[0]]) {
-					continue
-				}
-				reads++
-			}
-			if reads > 0 {
-				if reason, ok := pgProductionDSNWriteOnly[rel]; ok {
-					t.Logf("allowlist(只写不读): %s — %s", rel, reason)
-				} else {
-					t.Errorf("%s: 测试读取了 POCKET_POSTGRES_DSN（服务自己的生产连接串）%d 处。\n"+
-						"  测试必须只认 POCKET_TEST_POSTGRES_DSN：同一个 DSN 既喂服务也喂测试时，\n"+
-						"  读生产变量等于零配置地把测试打到生产库——CI 只设 TEST 变量，所以本地\n"+
-						"  `go test ./...` 才会踩到，而它会在生产库里建表/建 schema 并报告 ok。\n"+
-						"  切片回退（[]string{\"POCKET_TEST_POSTGRES_DSN\", \"POCKET_POSTGRES_DSN\"}）\n"+
-						"  同样算读：字面量在切片里、传给 Getenv 的是变量。", rel, reads)
-				}
-			}
-		}
-
-		// 规则 3：不得靠拼接 DSN 字符串来设置 search_path（见上面的注释）。
-		//
-		// 两个判据并存：字面拼接（dsnSearchPathAppendRe）与辅助函数调用
-		// （dsnSearchPathHelperRe）。后者是 2026-10-02 补的——原先只有前者，
-		// diag_merge_exec_test.go 把拼接包进 appendSearchPath() 就整套隐身。
-		if dsnSearchPathAppendRe.MatchString(code) {
-			t.Errorf("%s: 通过拼接 DSN 字符串（dsn+\"&search_path=\"）来隔离 schema。\n"+
-				"  本仓库的 DSN 往往已经带 search_path，拼接会产生两个同名参数、pgx 取第一个，\n"+
-				"  隔离静默失效而测试照样报告 ok。改用 ParseConfig 后的\n"+
-				"  RuntimeParams[\"search_path\"] = schema + \",public\"。", rel)
-		}
-		if dsnSearchPathHelperRe.MatchString(code) {
-			t.Errorf("%s: 调用了疑似「把 search_path 拼进 DSN」的辅助函数。\n"+
-				"  这类封装会让拼接**整套隐身**——拼接在函数体内，调用处看不出意图\n"+
-				"  （2026-10-02 实测：diag_merge_exec_test.go 的 appendSearchPath 就是这样\n"+
-				"  躲过了规则 3 的字面判据）。改用 ParseConfig 后的\n"+
-				"  RuntimeParams[\"search_path\"] = schema + \",public\"，\n"+
-				"  并在连接建立后用 SELECT current_schema() 读回来验证。\n"+
-				"  若你确认这个函数名不涉及 search_path 拼接，改个名即可。", rel)
-		}
-
-		// 规则 5：豁免表内的文件若**直连**（pgxpool.New(ctx, dsn)），
-		// 就必须显式钉 search_path。
-		//
-		// 存在理由：2026-10-02 复核豁免表的登记理由时发现两个文件从未设置过
-		// search_path——reminder_notified_diag_test.go 与 realprobe_test.go。
-		// 它们的危害不是「读到脏数据」，而是**产出假结论**：
-		// reminder 那个的判据是 `if highUnnotified == 0 { 不是缺陷 }`，
-		// DSN 指向 public 时它扫到 0 行，于是输出「不是缺陷」。
-		// **查空库永远「符合设计」。**
-		//
-		// 【判据收窄的过程，勿改回宽版】第一版只判「直连 + 全文无
-		// search_path 字样」，结果判红 6 个文件，而其中 6 个**全是误报**：
-		// diag_backfill_align / diag_dup_report / diag_merge_plan /
-		// diag_pop3_backfill / diag_pop3_invoice 的每条查询都带**显式
-		// schema 前缀**（`FROM `+schema+`.emails`），根本不依赖 search_path；
-		// fetcher_greenmail_test.go 则自建了 `email_greenmail_test_` schema，
-		// 由 newScopedPool 覆盖 search_path。
-		// （收窄分两步：先加「无 `*_test_` schema」仍判红 4 个——
-		//  因为 isolatedSchemaRe 要求双引号字面量 `"(\w*_test_)`，
-		//  而这几个文件是 `+schema+` 拼接，没有那个字面量。
-		//  最后补上 qualifiedTableRe 才彻底收住。**两次都是我的判据太宽**，
-		//  不是这些文件有错。）
-		//
-		// 收窄后的判据：直连 + 无 search_path + 无 `*_test_` schema +
-		// 无显式 schema 前缀。四者同时成立才意味着**完全无从判断目标库**。
-		// 残留盲区（明说，不假装覆盖）：大部分查询带显式前缀、只有一处
-		// 未限定的文件，判据看不见。宁可漏报，不可对正确写法误报。
-		if _, exempt := pgSafeWithoutIsolation[rel]; exempt &&
-			dsnSearchPathHelperReUnpinned.MatchString(code) &&
-			!searchPathAnyRe.MatchString(code) &&
-			!isolatedSchemaRe.MatchString(code) &&
-			!qualifiedTableRe.MatchString(code) {
-			t.Errorf("%s: 在 pgSafeWithoutIsolation 里被豁免，直连数据库"+
-				"（pgxpool.New(ctx, dsn)），且既没有设置 search_path、"+
-				"也没有自建 `*_test_` schema。\n"+
-				"  它查哪个库完全无从判断，于是：\n"+
-				"    · DSN 指向 public 时，未限定表名的查询会扫到空集；\n"+
-				"    · 而「扫到空集」在这些诊断里会变成**假结论**——\n"+
-				"      reminder_notified_diag_test.go 的判据是\n"+
-				"        if highUnnotified == 0 { 结论：不是缺陷 }\n"+
-				"      查空库时 highUnnotified 必然是 0，于是输出「不是缺陷」。\n"+
-				"  2026-10-02 实测：reminder_notified_diag_test.go 与 realprobe_test.go\n"+
-				"  正是这个形态（姊妹文件 diag_snippet_leak_test.go / spam_realdata_test.go\n"+
-				"  都显式钉了 schema，只有这两个没有）。\n"+
-				"  修法二选一：\n"+
-				"    a) ParseConfig 后写 RuntimeParams[\"search_path\"] = schema + \",public\"，\n"+
-				"       并用 SELECT current_schema() 读回验证（推荐）；\n"+
-				"    b) 所有查询都带显式 `schema.` 前缀，完全不依赖 search_path——\n"+
-				"       本判据看到 `*_test_` 或 schema 前缀就会放过，所以这种写法安全。", rel)
-		}
-
-		// 规则 4：**豁免表内**的文件仍要登记它有哪些写语句。
-		//
-		// 这条规则存在的唯一理由：旧设计里「在 pgSafeWithoutIsolation 里」
-		// 一次性放行了**全部**检查，于是 allowlist 变成完全的盲区——
-		// 负控实测（2026-10-02）往 diag_credential_health_test.go 注入一段
-		// `pool.Exec(ctx, "DELETE FROM email_accounts")`，护栏依然绿。
-		// 豁免的语义应当是「不豁免写」。
-		//
-		// 【作用域限定在豁免表内，这是踩过坑才定下来的】
-		// 最初把规则 4 写成全仓扫描，结果判红 77 个文件，而其中绝大多数是
-		// 假阳性，分两类：
-		//   · **已正确隔离**的文件（internal/task/store_test.go 等自建
-		//     `*_test_` schema 的助手）——它们本来就清楚自己写在隔离库里，
-		//     登记「我写了什么」纯属仪式；
-		//   · **Go 标识符撞上 SQL 动词**：time.Now().Truncate(...)、
-		//     t.Fatal("status update missing")、TestCaptureTruncatesLongSummary。
-		//     正则分不出 SQL 动词和普通函数/字符串。sqlWriteRe 里的
-		//     TRUNCATE / GRANT 无限定词，正是这一类。
-		// 盲区从来只存在于**豁免表内**——表外的文件要么被规则 2 强制隔离，
-		// 要么根本不开 PG 连接。所以作用域收窄到豁免表是准确的，不是妥协。
-		//
-		// 收窄后仍保留方向正确性：豁免「不隔离 schema」不再等于豁免「写」。
-		if _, exempt := pgSafeWithoutIsolation[rel]; exempt && hasSQLWrite(code) {
-			if reason, ok := pgAllowlistedWrites[rel]; ok {
-				t.Logf("allowlist(含写语句): %s — %s", rel, reason)
-			} else {
-				t.Errorf("%s: 在 pgSafeWithoutIsolation 里被豁免，且出现了 SQL 写语句，\n"+
-					"  但没有登记到 pgAllowlistedWrites。\n"+
-					"  护栏不检查豁免表的写语句——负控实测（2026-10-02）往\n"+
-					"  diag_credential_health_test.go 注入 `pool.Exec(ctx, \"DELETE FROM\n"+
-					"  email_accounts\")` 时护栏依然绿。所以「有写语句」是**一次性观察**，\n"+
-					"  不是机器维持的不变式。\n"+
-					"  修法二选一：\n"+
-					"    a) 若它该写隔离 schema：让文件自建 `*_test_` schema 并把 search_path 钉上去，\n"+
-					"       然后从 pgSafeWithoutIsolation 里删掉它；\n"+
-					"    b) 若它确实要写真实库（如诊断探针）：把文件与可核查的理由加进\n"+
-					"       pgAllowlistedWrites——理由要写清：写什么、被哪几道开关挡住、\n"+
-					"       schema 缺省指向哪里。\n"+
-					"  不要靠把 pgSafeWithoutIsolation 的理由写宽松来绕过——那是让冲突变沉默。", rel)
-			}
-		}
-
-		// 规则 2：打开 PG 连接就必须隔离 schema。
-		if !pgOpenRe.MatchString(code) {
-			return nil
-		}
-		if isolatedSchemaRe.MatchString(code) {
-			return nil
-		}
-		if reason, ok := pgSafeWithoutIsolation[rel]; ok {
-			t.Logf("allowlist: %s — %s", rel, reason)
-			return nil
-		}
-		t.Errorf("%s: 打开了 PostgreSQL 连接但没有把 search_path 钉到自建的 `*_test_` schema。\n"+
-			"  没有隔离时，测试的建表迁移与 DELETE 会落到 DSN search_path 指向的 schema\n"+
-			"  （在本仓库的惯例下那就是生产库），而测试会报告 ok。\n"+
-			"  修法见 internal/task/store_test.go 等 20 处已隔离的助手；\n"+
-			"  若本文件确实安全，请连同理由加入 pgSafeWithoutIsolation。", rel)
+		out = append(out, pgTestFile{rel: rel, code: stripGoComments(string(raw))})
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("walk backend: %v", err)
 	}
-	if checked < 20 {
-		t.Errorf("只扫描到 %d 个测试文件，路径推导可能不对（本护栏会因此失明）", checked)
+	sort.Slice(out, func(i, j int) bool { return out[i].rel < out[j].rel })
+	return out
+}
+
+func TestPGTestsNeverTargetTheProductionSchema(t *testing.T) {
+	files := listPGTestFiles(t)
+	if len(files) < 20 {
+		t.Errorf("只扫描到 %d 个测试文件，路径推导可能不对（本护栏会因此失明）", len(files))
 	}
-	t.Logf("已扫描 %d 个 _test.go", checked)
+
+	visited := map[string]bool{}
+	for _, f := range files {
+		visited[f.rel] = true
+		verdict := judgePGFile(f.rel, f.code)
+		for _, n := range verdict.notes {
+			t.Logf("%s", n)
+		}
+		for _, msg := range verdict.violations {
+			t.Errorf("%s", msg)
+		}
+	}
+
+	// 规则 6：**豁免表的作用域**。pgAllowlistedWrites 只对
+	// pgSafeWithoutIsolation 里的文件生效（规则 4 就是这么限定的），
+	// 所以登记在它里面、却**不在**豁免表里的条目是**永远读不到的死配置**。
+	//
+	// 为什么死配置比不登记更危险：文件仍会被规则 2 正常判红（没人被放过），
+	// 但写注释的人看到「已登记」会以为写操作已被复核过。冲突于是变沉默。
+	// internal/email/store_upsert_messageid_test.go 就是这个形态：它曾经登记在
+	// pgAllowlistedWrites 里，那条登记从写下那天起就没人读过。
+	//
+	// 负控：把任意一个不在豁免表里的路径登记进 pgAllowlistedWrites，
+	// 本规则必须转红（见 TestWriteAllowlistScopeIsEnforced）。
+	for _, rel := range writeAllowlistScopeViolations(pgSafeWithoutIsolation, pgAllowlistedWrites) {
+		t.Errorf("%s: 登记在 pgAllowlistedWrites 里，但**不在** pgSafeWithoutIsolation 里。\n"+
+			"  规则 4 的作用域被限定在豁免表内，所以这条登记永远读不到——\n"+
+			"  是**死配置**：文件照样被规则 2 判红（没人被放过），但注释里\n"+
+			"  「已登记写操作」这句话会让人以为复核过。冲突变沉默。\n"+
+			"  修法二选一：\n"+
+			"    a) 若它确实该写真实库：把可核查的理由同时登记进 pgSafeWithoutIsolation；\n"+
+			"    b) 若它已经改成真隔离（如 store_upsert_messageid_test.go 改用\n"+
+			"       newWorkspaceTestStore）：从 pgAllowlistedWrites 删掉这条登记。", rel)
+	}
+	// 反向：豁免表里的文件若已不存在（或被改名），登记会一直躺在这里，
+	// 而读代码的人会以为那份理由仍在生效。扫到的文件集合才是权威的。
+	for rel := range pgSafeWithoutIsolation {
+		if !visited[rel] {
+			t.Errorf("%s: 登记在 pgSafeWithoutIsolation 里，但仓库中已找不到这个测试文件。\n"+
+				"  陈旧的豁免会让后来人以为该文件仍受护栏管辖（实际它已不存在或被改名）。", rel)
+		}
+	}
+	for rel := range pgAllowlistedWrites {
+		if !visited[rel] {
+			t.Errorf("%s: 登记在 pgAllowlistedWrites 里，但仓库中已找不到这个测试文件。", rel)
+		}
+	}
+
+	t.Logf("已扫描 %d 个 _test.go", len(files))
+}
+
+// TestIsolatedSchemaJudgesAreNotVacuous 钉住规则 2 的两个判据
+// （isolatedSchemaRe / schemaPurposeRe）与它们的合取 hasSelfBuiltTestSchema。
+//
+// 存在理由是一次**实测的假绿**：旧判据是 `"(\w*_test_)`，而 `\w*` 可以匹配
+// **零个字符**，所以文件里任何一处与隔离无关的 `_test_` 字面量——一行
+// `strings.Contains(cur, "_test_")`、一个错误消息、一段注释示例——都能让
+// 整条规则 2 短路。实测：把一个已隔离文件里的那种无关字面量换成真·
+// 不隔离的 `pgxpool.New(ctx, dsn)` + `pool.Exec(ctx, "DELETE FROM emails")`，
+// 护栏依然绿。
+//
+// 教训（本条测试真正要钉住的那句）：**让判据变绿的那段代码，和判据想守的
+// 性质，是同一件事吗？** 旧判据里那行 `strings.Contains(cur, "_test_")`
+// 与「连接真的用了自建 schema」毫无关系，而判据看不见这个差别。
+//
+// 负控：把 isolatedSchemaRe 改回 `"(\w*_test_)`，本测试必须转红。
+func TestIsolatedSchemaJudgesAreNotVacuous(t *testing.T) {
+	// 正向：本仓库真实的隔离形态必须被认出来。
+	for _, ok := range []string{
+		"\tschema := \"task_test_\" + hex.EncodeToString(b)\n\trootPool.Exec(ctx, fmt.Sprintf(\"CREATE SCHEMA %s\", schema))\n",
+		"\tschema := \"email_ws_test_\" + hex.EncodeToString(buf)\n\trootPool.Exec(ctx, \"CREATE SCHEMA \"+schema)\n",
+		"\tconst p = \"finance_test_\"\n\tschema := p + hex\n\trootPool.Exec(ctx, \"CREATE SCHEMA \"+schema)\n",
+		"\tcfg.ConnConfig.RuntimeParams[\"search_path\"] = \"ledger_test_\" + hex + \",public\"\n",
+		"\tschema := \"lock_test_\" + hex\n\tpool.Exec(ctx, `SET search_path TO ` + schema)\n",
+	} {
+		if !hasSelfBuiltTestSchema(ok) {
+			t.Errorf("判据漏掉了真实的隔离形态 %q——规则 2 会把正确隔离判红。", ok)
+		}
+	}
+
+	// 反向：**零字符陷阱**。这些 `_test_` 字面量与隔离毫无关系，
+	// 它们曾在旧判据下让整条规则 2 短路。
+	for _, notIsolation := range []string{
+		// \w* 吃 0 字符：裸 "_test_" 就够（旧判据在这里为真）
+		"\tif strings.Contains(cur, \"_test_\") {\n\t\tskip = true\n\t}\n",
+		"\tt.Fatalf(\"expected a *_test_ schema, got %q\", cur)\n",
+		"\tconst guard = \"_test_\"\n",
+		// 名字字面量齐全，但**没有用途形态**：没人建它、没人钉它
+		"\tschema := \"probe_test_\"\n",
+		"\tt.Log(\"the _test_ schema is gone\")\n",
+	} {
+		if hasSelfBuiltTestSchema(notIsolation) {
+			t.Errorf("判据把「与隔离无关的 _test_ 字面量」当成了隔离证据：%q\n"+
+				"  旧判据 \"(\\w*_test_)\" 在这里为真——\\w* 匹配零个字符，\n"+
+				"  于是任何 _test_ 字符串都能短路规则 2，护栏对真·不隔离的文件转不了红。",
+				notIsolation)
+		}
+	}
+
+	// 反向：只有用途形态、没有 `_test_` 标记 —— 不能算隔离。
+	// （诊断 schema 不带 _test_ 标记时，护栏必须要求人写理由而不是默默放过。）
+	if hasSelfBuiltTestSchema("\trootPool.Exec(ctx, \"CREATE SCHEMA \"+schema)\n") {
+		t.Errorf("只有 CREATE SCHEMA、没有 `*_test_` 名字字面量就被当成了隔离")
+	}
+
+	// 旧判据的失效必须**在本测试里可见**，否则下一个人会把 \\w* 改回去。
+	legacy := regexp.MustCompile(`"(\w*_test_)`)
+	const trap = "\tif strings.Contains(cur, \"_test_\") {\n\t\tskip = true\n\t}\n"
+	if !legacy.MatchString(trap) {
+		t.Fatalf("对照用的旧判据不再匹配陷阱输入，本测试的对照前提失效")
+	}
+	if hasSelfBuiltTestSchema(trap) {
+		t.Errorf("新判据与旧判据对同一输入给出相同结论——收紧没有生效")
+	}
+}
+
+// TestWriteAllowlistScopeIsEnforced 给规则 6 做负控：豁免表外的文件一旦
+// 登记进 pgAllowlistedWrites，writeAllowlistScopeViolations 必须报出来。
+//
+// 为什么这条要单独钉：pgAllowlistedWrites 只对 pgSafeWithoutIsolation 里的
+// 文件生效（规则 4 就是这么限定的）。登记在它里面却**不在**豁免表里的条目，
+// 从写下那天起就没人读过——而注释里「已登记写操作」这句话会让人以为复核过。
+// internal/email/store_upsert_messageid_test.go 正是这个形态（现已真隔离并
+// 删掉登记）。这类冲突变沉默的问题，只能靠断言钉住。
+//
+// 负控：把下面 safe 里删掉任意一个 key（等于把某条登记挪出作用域），
+// 报告里必须出现那个 key。
+func TestWriteAllowlistScopeIsEnforced(t *testing.T) {
+	safe := map[string]string{
+		"internal/email/a_test.go": "理由 A",
+		"internal/email/b_test.go": "理由 B",
+	}
+	writes := map[string]string{
+		"internal/email/a_test.go": "写操作理由 A",
+		"internal/email/b_test.go": "写操作理由 B",
+	}
+
+	if got := writeAllowlistScopeViolations(safe, writes); len(got) != 0 {
+		t.Fatalf("作用域内不该报出违规，却报了 %v", got)
+	}
+
+	// 负控 1：登记一个不在豁免表里的文件（真实事故形态）。
+	writes["internal/email/store_upsert_messageid_test.go"] = "已改成真隔离，不该留在这里"
+	got := writeAllowlistScopeViolations(safe, writes)
+	if len(got) != 1 || got[0] != "internal/email/store_upsert_messageid_test.go" {
+		t.Fatalf("豁免表外的登记必须被报出，却得到 %v", got)
+	}
+	delete(writes, "internal/email/store_upsert_messageid_test.go")
+
+	// 负控 2：把某条登记从豁免表里删掉 —— 同一条登记立刻变成死配置。
+	delete(safe, "internal/email/b_test.go")
+	got = writeAllowlistScopeViolations(safe, writes)
+	if len(got) != 1 || got[0] != "internal/email/b_test.go" {
+		t.Fatalf("脱离豁免作用域的登记必须被报出，却得到 %v", got)
+	}
+
+	// 现状自检：真实的两个表此刻必须自洽（这条失败说明有人加了一处死配置）。
+	if bad := writeAllowlistScopeViolations(pgSafeWithoutIsolation, pgAllowlistedWrites); len(bad) > 0 {
+		t.Errorf("真实豁免表里存在作用域外的登记：%v", bad)
+	}
+}
+
+// TestPGIsolationNegativeControlMatrix 对**每一个**护栏管辖的 PG 测试文件
+// 跑一遍正控 + 负控，证明规则 2 收紧后不是「把判红换成了判红」。
+//
+// 三段：
+//
+//	A. 正控：所有文件的原始字节必须零 violation。这同时回答了
+//	   「收紧后 27 个已隔离助手是否仍绿」。
+//	B. 负控（规则 2）：对每个**非豁免且开 PG** 的文件，抹掉它的隔离证据
+//	   （把 `_test_` 改名、删掉 CREATE SCHEMA 与 search_path 赋值行），
+//	   再注入真·不隔离的 `pgxpool.New(ctx, dsn)` + `DELETE FROM emails`
+//	   ——必须转红。
+//	C. 负控（规则 4）：对每个**已登记豁免**的文件注入同一段真·不隔离代码，
+//	   未登记写的必须被规则 4 判红。
+//
+// 为什么要做成测试而不是一次性核验：护栏注释里记着它已经因判据太宽
+// 误判过两轮（6 个、4 个文件）。一次性核验留不下牙齿，下一个人改宽正则时
+// 没有任何东西会响。这里的每个断言都在**真实文件字节**上跑，且是内存内变异，
+// 不碰工作区（并发会话的教训）。
+func TestPGIsolationNegativeControlMatrix(t *testing.T) {
+	files := listPGTestFiles(t)
+
+	// 注入片段：真·不隔离的连接 + 真·写语句。
+	const inject = "\n\tpool, _ := pgxpool.New(ctx, dsn)\n" +
+		"\tpool.Exec(ctx, `DELETE FROM emails WHERE id=$1`)\n"
+
+	// 抹掉隔离证据用的三个变体。**三者缺一不可**：只有 B1 时，旧判据
+	// （`"(\w*_test_)`，且不要求用途形态）同样会红，矩阵就没有鉴别力——
+	// 那样它只能证明「规则 2 不是摆设」，证明不了这次收紧。
+	// B2/B3 才是**旧判据会放行、新判据转红**的两种形态。
+	stripPurposeRe := regexp.MustCompile(`(?im)^.*(?:CREATE\s+SCHEMA|RuntimeParams\[\s*"search_path"\s*\]\s*=|(?:\bSET\s+)?search_path\s*(?:[=:]|\bTO\b)).*$`)
+	bareLiteralRe := regexp.MustCompile(`"\w+_test_`) // "task_test_" → "_test_"（零字符陷阱）
+	renameAwayRe := regexp.MustCompile(`_test_`)      // "task_test_" → "task_probe_"
+
+	var isolated, exempted, wroteRed int
+	var exemptRegisteredGreen []string
+
+	for _, f := range files {
+		clean := judgePGFile(f.rel, f.code)
+
+		// A. 正控。
+		if len(clean.violations) > 0 {
+			t.Errorf("[正控] %s 未改动就判红，说明收紧误伤了现有正确文件：\n%s",
+				f.rel, strings.Join(clean.violations, "\n"))
+			continue
+		}
+
+		_, exempt := pgSafeWithoutIsolation[f.rel]
+		opens := pgOpenRe.MatchString(f.code)
+
+		switch {
+		case exempt:
+			// C. 负控：豁免文件注入真·不隔离 + 写语句。
+			exempted++
+			dirty := judgePGFile(f.rel, f.code+inject)
+			hasWriteViolation := false
+			for _, m := range dirty.violations {
+				if strings.Contains(m, "没有登记到 pgAllowlistedWrites") {
+					hasWriteViolation = true
+				}
+			}
+			if _, registered := pgAllowlistedWrites[f.rel]; !registered {
+				if !hasWriteViolation {
+					t.Errorf("[负控C] %s 在豁免表内却无写语句登记，注入 DELETE 后规则 4 未判红：\n%s",
+						f.rel, strings.Join(dirty.violations, "\n"))
+					continue
+				}
+				wroteRed++
+			} else {
+				// 登记粒度是**文件级**：已登记的豁免文件里再注入一条写语句，
+				// 本护栏不会转红。如实记录，不假装覆盖。
+				exemptRegisteredGreen = append(exemptRegisteredGreen, f.rel)
+			}
+
+		case opens:
+			// B. 负控：非豁免的 PG 文件，抹掉隔离证据后必须判红。
+			//
+			// B1 完全没有隔离证据（名字与用途都抹掉）；
+			// B2 只留下一个**零字符陷阱**字面量 `"_test_`（旧判据在这里为真）；
+			// B3 留下正确的名字字面量但**没有用途形态**（建了名字却没人建、没人钉）。
+			variants := []struct {
+				name string
+				make func(string) string
+			}{
+				{"B1 无任何隔离证据", func(s string) string {
+					return renameAwayRe.ReplaceAllString(stripPurposeRe.ReplaceAllString(s, ""), "_probe_")
+				}},
+				{"B2 零字符陷阱字面量", func(s string) string {
+					return bareLiteralRe.ReplaceAllString(stripPurposeRe.ReplaceAllString(s, ""), `"_test_`)
+				}},
+				{"B3 有名字无用途形态", func(s string) string {
+					return stripPurposeRe.ReplaceAllString(s, "")
+				}},
+			}
+			allRed := true
+			for _, v := range variants {
+				mangled := v.make(f.code)
+				if hasSelfBuiltTestSchema(mangled) {
+					t.Errorf("[负控B/%s] %s 抹掉隔离证据后仍被判定为已隔离——"+
+						"判据抓不到这种退化。", v.name, f.rel)
+					allRed = false
+					continue
+				}
+				dirty := judgePGFile(f.rel, mangled+inject)
+				rule2 := false
+				for _, m := range dirty.violations {
+					if strings.Contains(m, "打开了 PostgreSQL 连接但没有把 search_path 钉到") {
+						rule2 = true
+					}
+				}
+				if !rule2 {
+					t.Errorf("[负控B/%s] %s 抹掉隔离证据并注入裸 pgxpool.New + DELETE 后规则 2 未判红：\n%s",
+						v.name, f.rel, strings.Join(dirty.violations, "\n"))
+					allRed = false
+				}
+			}
+			if allRed {
+				isolated++
+			}
+		}
+	}
+
+	// 覆盖面本身也要钉：矩阵「全绿」若是因为一个文件都没跑到，和没做一样。
+	if isolated < 20 {
+		t.Errorf("负控 B 只覆盖了 %d 个已隔离的 PG 文件，路径推导或文件集可能不对", isolated)
+	}
+	if exempted != len(pgSafeWithoutIsolation) {
+		t.Errorf("负控 C 覆盖了 %d 个豁免文件，而豁免表里有 %d 个——两者必须相等，"+
+			"否则「矩阵全绿」可能只是没扫到", exempted, len(pgSafeWithoutIsolation))
+	}
+	if wroteRed < 5 {
+		t.Errorf("负控 C 只让 %d 个豁免文件转红，覆盖面过小", wroteRed)
+	}
+	t.Logf("矩阵：正控 %d 个文件全绿；负控B（规则 2）%d 个已隔离文件全部转红；"+
+		"负控C（规则 4）%d 个豁免文件转红，%d 个已登记写操作的豁免文件按文件级登记粒度仍绿",
+		len(files), isolated, wroteRed, len(exemptRegisteredGreen))
+	for _, rel := range exemptRegisteredGreen {
+		t.Logf("  （登记粒度限制）%s 已在 pgAllowlistedWrites 内，本护栏不区分它写了几条", rel)
+	}
 }
 
 // TestStripGoCommentsHandlesTheThreeWaysToHideCode 锁住 stripGoComments 自己的

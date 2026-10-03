@@ -193,10 +193,42 @@ function bindCdpForward(sock) {
 async function cdpEval(expr, ms = 8000) {
   const pid = adb(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
   if (!pid) throw new Error('APP_NOT_RUNNING')
-  const socks = adb(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
+  // socket 是 App 起来**之后**才注册的，pidof 返回得比它早。
+  // 所以这里等它出现（有界），而不是「等不到就退而求其次连别的」——
+  // 后者正是连错 App 的根源，而连错之后**没有任何报错**。
+  const listSocks = () => adb(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
     .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
-  const sock = socks.find((s) => s.endsWith(`_${pid}`)) || socks[socks.length - 1]
-  if (!sock) throw new Error('NO_DEVTOOLS_SOCKET')
+  let socks = []
+  for (let i = 0; i < 15; i++) {
+    socks = listSocks()
+    if (socks.some((s) => s.endsWith(`_${pid}`))) break
+    if (i === 0 && socks.length && !socks.some((s) => s.endsWith(`_${pid}`))) {
+      // 只提示一次，避免把「正常等 socket」刷成一片警告
+      console.log(`[cdp] 等待 pid=${pid} 的 devtools socket（现有：${[...new Set(socks)].join(', ') || '无'}）…`)
+    }
+    await sleep(1000)
+  }
+  if (!socks.length) throw new Error('NO_DEVTOOLS_SOCKET')
+  // ⚠️ 2026-10-04 修：原来这里是 `find(…) || socks[socks.length - 1]`。
+  // 本机同时装着 com.kaixuan.opencode.pocket 与 …pocket.sttdev，两个
+  // webview_devtools_remote_<pid> 都是**活的**，「取最后一个」会连到**另一个 App**，
+  // 而 /json/list 与 Runtime.evaluate 一切正常、不报错。
+  //
+  // 这条通道比 lib/adb-cdp.mjs 那条更危险：它是 preflight 用来**填登录表单、
+  // 填主密码、复位路由**的。一旦连错包，preflight 会把登录态、路由全写到另一个 App 上，
+  // 然后对着另一个 App 的 hash 判「登录成功/失败」——结论与被测对象无关。
+  const sock = socks.find((s) => s.endsWith(`_${pid}`))
+  if (!sock) {
+    const others = [...new Set(socks.filter((s) => !s.endsWith(`_${pid}`)))]
+    throw new Error(
+      `CDP_SOCKET_PID_MISMATCH：等 15s 仍没有 pid=${pid}（${PKG}）的 webview devtools socket。` +
+      `设备上现有：${[...new Set(socks)].join(', ')}。` +
+      (others.length
+        ? `其中可能属于**其它 App**（本机装了多个包时常见），连过去会静默操作错误的 WebView。`
+        : '看起来都是死进程残留。') +
+      '不要退回连别的 socket。'
+    )
+  }
   const port = bindCdpForward(sock)   // 端口被占用会重试，见 bindCdpForward 的注释
   try {
     const page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page')
@@ -512,6 +544,82 @@ async function assertDeviceReachesBackend() {
     console.log(`[preflight] 设备侧 curl 不可用，跳过（映射本身已核对为 tcp:${port} → tcp:${port}）`)
   }
   console.log(`[preflight] 设备可达后端 ${base}（reverse tcp:${dev} → tcp:${port}）✅`)
+
+  // ⚠️ 2026-10-04 补：**POCKET_API_BASE_OVERRIDE=0 时，App 走的是构建期那个 LAN 基址，
+  //    reverse 通道完全用不上。** 上面那句「设备可达后端」此时是**误导**——
+  //    它证明的是 reverse 通，不是 App 真正要走的那条路通。
+  //
+  // 实测踩过：设备重启后（pid 从 31052 变成 1315）设备→主机 LAN 方向 100% 丢包
+  //（同 /24 网段、IP 都没变、主机能 ping 到设备、反向不行，防火墙 Public/Private 档都是禁用的），
+  // App 登录页显示「登录失败，请检查网络连接与后端地址后重试」、token 长度 0。
+  // 而 preflight 只在 30s 后报一句「❌ 登录后仍停在登录页（30s），last hash=(超时)」
+  // —— 把一个网络问题伪装成登录问题，排查方向整个被带偏（先去查了后端接口，实测 200 正常）。
+  //
+  // ⇒ 这里在跑 flow 之前就把「App 真正要走的那条路通不通」验掉，通不了就直接说清楚是哪一条。
+  if (process.env.POCKET_API_BASE_OVERRIDE === '0') {
+    let lanBase = process.env.POCKET_API_BASE_LAN || null
+    if (!lanBase) {
+      for (const p of [resolve('frontend/.env.android-dev'), resolve('../frontend/.env.android-dev')]) {
+        if (!existsSync(p)) continue
+        const hit = (readFileSync(p, 'utf8').match(/VITE_API_BASE\s*=\s*(\S+)/) || [])[1]
+        if (hit) { lanBase = hit; break }
+      }
+    }
+    // ⚠️ 读不到就**响亮告警**，不许静默跳过。
+    //   本 worktree 里 frontend/.env.android-dev 常常不存在（那个文件只在使用
+    //   build-mobile 的 worktree 里），于是这条守卫会**整段失效且一声不吭** ——
+    //   「判据存在但不触发」比「没有判据」更危险，因为它让人以为有网。
+    //   兜底从 App 自己读：登录页页脚就渲染着当前后端地址。
+    if (!lanBase) {
+      try {
+        lanBase = (await cdpEval(`(function(){
+          try {
+            var m = (document.body.innerText || '').match(/http:\\/\\/[^\\s]{4,60}/g) || [];
+            return m.filter(function(u){ return /:\\d{4,5}/.test(u) })[0] || null;
+          } catch (e) { return null }
+        })()`)) || null
+      } catch { /* 取不到就按下面的告警走 */ }
+    }
+    if (!lanBase) {
+      console.error('[preflight] ⚠️ POCKET_API_BASE_OVERRIDE=0，但**读不到 App 实际会用的构建期基址**')
+      console.error('           （frontend/.env.android-dev 不存在，页内也没扫到 http://…:port）')
+      console.error('           ⇒ 「设备能否到达构建期基址」这条守卫现在是**失效**的，本轮不会替你验它。')
+      console.error('           可用 POCKET_API_BASE_LAN=http://<host>:<port> 显式指定以恢复该校验。')
+    } else {
+      // 设备侧 timeout 兜底：curl -m 5 之外再加一层 shell timeout，
+      // 否则遇到黑洞地址（丢包不回 RST）时 adb shell 会一直挂着。
+      const probeCmd = `timeout 12 curl -s -m 5 -o /dev/null -w '%{http_code}' ${lanBase}/healthz`
+      try {
+        const code = adb(['shell', probeCmd], 25000).trim()
+        if (code !== '200') {
+          console.error(`[preflight] ❌ POCKET_API_BASE_OVERRIDE=0 ⇒ App 走构建期基址 ${lanBase}，`)
+          console.error(`           但设备 curl ${lanBase}/healthz 返回 "${code}"（拿不到 200）。`)
+          console.error(`           reverse 通道（127.0.0.1:${dev}）是通的，但**这一轮用不上**。`)
+          console.error(`           ⇒ 别去查登录/后端：先修设备到主机的网络，或去掉 POCKET_API_BASE_OVERRIDE=0 走 reverse。`)
+          return false
+        }
+        console.log(`[preflight] 构建期基址 ${lanBase} 设备侧可达（200）✅`)
+      } catch (e) {
+        const msg = String(e?.message || e)
+        // ⚠️ 这里必须区分两种失败，**不能一律降级成告警**（2026-10-04 自踩）：
+        //   「设备没装 curl」  → 探不了，守卫确实失效，响亮告警但继续；
+        //   「探测本身到不了」 → 黑洞地址会让 adb shell 超时抛错，而这**本身就是
+        //     「App 走这个基址会连不上」的证据**。当成「curl 不可用」放过，
+        //     等于把唯一的判据在最该报警的时候关掉。
+        if (/not found|command not found|enoent/i.test(msg)) {
+          console.error(`[preflight] ⚠️ 设备上没有 curl，无法验证 ${lanBase} 是否可达`)
+          console.error('           ⇒ 这条守卫现在是**失效**的，本轮不会替你验构建期基址。')
+          console.error('           （reverse 通道是通的；如果 App 其实走的是构建期基址，登录会失败。）')
+        } else {
+          console.error(`[preflight] ❌ 探测 ${lanBase} 失败：${msg.split('\n')[0].slice(0, 120)}`)
+          console.error('           设备连**探测**都做不到 ⇒ 走到这个基址必然连不上。')
+          console.error(`           reverse 通道（127.0.0.1:${dev}）是通的，但**这一轮用不上**。`)
+          console.error('           ⇒ 修设备到主机的网络，或去掉 POCKET_API_BASE_OVERRIDE=0 走 reverse。')
+          return false
+        }
+      }
+    }
+  }
   return true
 }
 
@@ -1370,6 +1478,80 @@ if (!isMiui) {
 //   换成另一个。所以复位放在 harness，用 CDP 直接改路由，不靠 UI 导航猜。
 const START_ROUTE = process.env.POCKET_START_ROUTE || '#/ai'
 
+// POCKET_PRE_ROUTE：每条 flow 开始前用 **CDP** 把路由切到指定页面。
+//
+// ## 它是什么
+//
+// 一个**诊断用逃生口**，不是修复。它的用途只有一个：把「导航没发生」和
+// 「页面坏了」这两种红法区分开 —— 前者用本功能把页面送到位，如果 flow 随即
+// 转绿，那问题在导航链路；仍然红，那问题在页面里。
+//
+// ## 观察到的现象（不是结论）
+//
+// 底部 tabbar 的 `tapOn` 在这台设备上**有时**报 COMPLETED 而页面没动，
+// `retryTapIfNoChange` 也不触发。`_goto-pkm.yaml` 注释里记过两次同样观察。
+// 另有一条更硬的约束：flow 内部**无法**用脚本改 hash 绕开它 ——
+//
+//	evalScript: ${location.hash = '#/more'}
+//	  → TypeError: Cannot set property 'hash' of undefined
+//	    （evalScript **不在 WebView 的 JS 上下文里**跑）
+//
+// 而 harness 这一侧有 CDP（lib/adb-cdp.mjs 的 ev，**是**在 WebView 上下文里）。
+// 实测 scripts/probe-cdp-route.mjs：设 location.hash='#/more' → 页面内容真的
+// 切成「更多功能 / 学习 / 对话 / 会议 / 邮箱 / 定时自动化 / 闪卡 / 设置 …」。
+//
+// ## ⚠️ 归因更正（2026-10-04）：别把这个当「MIUI 吞 tap」的证据
+//
+// 2026-10-04 早先那轮，`email-accounts` / `flashcards-write` 都红在
+// 「找不到目标页」，当时记下的归因是「MIUI 吞掉底部 tab tap」。
+// **这个归因是错的**，用对照实验推翻了：
+//
+//   同时做了两件事 —— ① 打开 POCKET_PRE_ROUTE；② 清掉首页 7 条
+//   自造的测试探针任务（Maestro任务×5 / PG matrix probe×2），它们此前把
+//   首页的「需要你介入」面板占满。
+//
+//	关掉 POCKET_PRE_ROUTE、清完探针后，email-accounts **2/2 通过（47s）**。
+//
+// ⇒ 真正的原因是**测试残留数据把导航区盖住了**（tap 落在面板上，
+// 不是被系统吞掉），不是设备级的 MIUI bug。两件事一起动过、只按「开/关
+// pre-route」归因，就会把绕过手段误当成修复，并把错误结论写进注释传播出去。
+// 记这一条是因为这正是本注释上一版的错误。
+//
+// ## 为什么必须自证「真的到了」
+//
+// setRoute 只能证明 **hash 变了**，不能证明**页面切了**。所以这里额外读一次
+// body.innerText，并用 POCKET_PRE_ROUTE_MARK（正则）判「确实在目标页」。
+// 负控实测：MARK 填一个绝不可能出现的字符串 → 守卫响亮报「页面自证失败」
+// 并打印页面内容前 220 字。
+const PRE_ROUTE = (process.env.POCKET_PRE_ROUTE || '').trim()
+const PRE_ROUTE_MARK = (process.env.POCKET_PRE_ROUTE_MARK || '').trim()
+
+async function gotoPreRoute() {
+  if (!PRE_ROUTE) return
+  const sep = PRE_ROUTE.includes('?') ? '&' : '?'
+  const want = `${PRE_ROUTE}${sep}__preroute=${Date.now()}`
+  const ok = await setRoute(want, 'true', 8000)
+  let h = '(读不到)'
+  let body = ''
+  try {
+    h = String(await cdpEval('location.hash') || '')
+    body = String(await cdpEval('document.body.innerText') || '').replace(/\s+/g, ' ')
+  } catch { /* 通道也坏了；下面的 mark 判据会报出来 */ }
+  const line = `[pre-route] ${ok ? '✅' : '⚠️ '} ${PRE_ROUTE} → ${h}`
+  if (PRE_ROUTE_MARK) {
+    const re = new RegExp(PRE_ROUTE_MARK)
+    if (re.test(body)) {
+      console.log(`${line} · 页面自证通过（/${PRE_ROUTE_MARK}/ 命中）`)
+      return
+    }
+    console.error(`${line} · ❌ 页面自证**失败**：/${PRE_ROUTE_MARK}/ 没命中。`)
+    console.error(`   页面内容前 220 字：${body.slice(0, 220)}`)
+    console.error(`   ⇒ flow 很可能仍会红在「找不到目标页」。这不是 flow 的问题，是导航没到位。`)
+    return
+  }
+  console.log(`${line} · 页面内容前 120 字：${body.slice(0, 120)}`)
+}
+
 /** 每条 flow 之前的复位：造一次真实 hash 变化，让路由守卫重算。 */
 async function resetToStart() {
   const want = `${START_ROUTE}?__reflow=${Date.now()}`
@@ -1402,6 +1584,7 @@ const runOne = (flow) =>
 let r = { status: 0 }
 for (const [i, flow] of flows.entries()) {
   if (i > 0) await resetToStart()
+  await gotoPreRoute()
   if (flows.length > 1) console.log(`\n──────── flow ${i + 1}/${flows.length}: ${flow} ────────`)
   const one = runOne(flow)
   if (one.status !== 0) r = one   // 保留失败那次的返回码，交给下面的归因逻辑
