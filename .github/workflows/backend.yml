@@ -45,6 +45,18 @@ jobs:
       - name: Build backend (blocking gate)
         run: go build ./...
 
+      # 2026-10-04 新增。挡的是一类**注释与代码语义不一致**的损坏：
+      # SQL 的空串字面量 `''` 被写成 `”`（U+201D）。7 处存量在 round39 修掉，
+      # 这道门禁挡复发。
+      #
+      # 放在 build-gate 而不是 test job：它只需要 node、不需要 Go toolchain
+      # 与 postgres service，失败得越早越好。
+      # 自证用 --selftest（敏感度/特异度/变盲 19 条），不另开一条流水线。
+      - name: Smart-quote gate
+        run: |
+          node scripts/check-smart-quotes.mjs --selftest
+          node scripts/check-smart-quotes.mjs
+
   test:
     # 编译不过时不必再等测试，build-gate 先失败。
     needs: build-gate

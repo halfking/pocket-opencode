@@ -508,6 +508,24 @@ var pgSafeWithoutIsolation = map[string]string{
 	//     「自建隔离 schema」这一项）。
 	"internal/email/diag_real_fetch_snippet_stages_test.go": "只读真实库分阶段诊断（824a0391 引入）：0 写语句、.Exec( 0 次、3 处 pool.Query；需 PG_DSN + POCKET_REAL_KEYS 双重开关（**均无缺省值**，与 CI 的 POCKET_TEST_POSTGRES_DSN 是不同变量，故 CI 里恒 skip）；search_path 取自 DSN 并用 current_schema() 读回逐字校验，不符即 Fatal。它要定位的是真实库里仍带 QP 源码的那批 snippet，自建隔离 schema 会让它查成空集并输出「已全部干净」的假结论。**规则 4 会在本文件出现写语句时判红**",
 
+	// 2026-10-04 round39 第二次：又是一个新引入的只读诊断探针。
+	//
+	// 【这一条不是「又一个条目」，是一个模式】同一天内 `824a0391` 与本文件
+	// **各带来一个探针，两个都把主干判红**。两次形态完全一致：
+	//   · 0 写语句、`.Exec(` 0 次、只有 pool.Query；
+	//   · 双开关 `PG_DSN` + `POCKET_REAL_KEYS`，均无缺省值；
+	//   · search_path 取自 DSN + `current_schema()` 读回校验；
+	//   · 必须指向生产 schema（要读的就是真实库里那批行）。
+	//
+	// ⇒ 「写探针的人不知道要登记」这件事已经发生两次。**新建这类探针时
+	// 请连同本条一起提交**，否则主干会红，而红的原因（一行 allowlist）
+	// 与症状（CI 失败）之间隔着一百多行守卫输出。
+	//
+	// 逐项核对：0 写语句（INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE
+	// 全扫，0 命中）、`.Exec(` 0 次、2 处 pool.Query；门控同上；
+	// L77-82 用 `current_schema()` 与 DSN 里的 schema 逐字比对，不符即 Fatal。
+	"internal/email/diag_empty_snippet_locus_test.go": "只读真实库定位探针（round39 登记，当天第二个同族探针）：0 写语句、.Exec( 0 次、2 处 pool.Query；需 PG_DSN + POCKET_REAL_KEYS 双重开关（**均无缺省值**，与 CI 的 POCKET_TEST_POSTGRES_DSN 不同变量，故 CI 里恒 skip）；search_path 取自 DSN 并用 current_schema() 读回校验（L77-82，不符即 Fatal）。它要定位的是真实库里空摘要的行，自建隔离 schema 会让它输出「没有空摘要」的假结论。**规则 4 会在本文件出现写语句时判红**",
+
 	// ===== 2026-10-02 合并 email 分支时本护栏新增判红的 7 个，逐个核过 =====
 	//
 	// 背景：email 分支上有一批 2026-10-01 的只读诊断探针，此前 main 的护栏
