@@ -1173,3 +1173,44 @@ LLM 网关兜底只接在 HTTP 端点（`server_email_pipeline_classify.go:44` �
 我第一版负控复刻的是**旧判据**，于是它测的是「窗口内有无 return」
 而不是前置守卫真正断言的那件事。⇒ 写负控时若判据被收窄过，
 负控必须同步收窄，否则两者会各说各话。
+## 二十二、更正「这是跨包改动」——它不是（2026-10-04 05:00）
+
+第二十一节末尾把「把网关兜底接进 Scheduler」描述为**跨包设计改动**，
+并说代码注释已把它标为需单独拍板。**本节推翻「跨包」这半句。**
+
+### 22.1 证据
+
+- `cmd/pocketd/main.go:481-485`：
+
+      emailScheduler = email.NewScheduler(emailStore, emailFetcher, cfg.EmailFetchEnabled)
+      if kxmem != nil { emailScheduler.SetKxmemory(kxmem) }
+
+  Scheduler 由 **main 包**创建，`SetKxmemory` 已经是现成的注入模式。
+
+- 网关在同一个文件里就绪：`main.go:929` 的
+  `NewDynamicLLMGatewayBFFProvider(func(wsID, userID) { srv.ResolveGatewayForUser(...) })`。
+
+  **main 就在 `internal/email` 与网关两者的上方**，两样东西都在它手里。
+
+- `classify_run.go:224` 的 `ClassifyOneFunc` 本来就是为「分类实现可注入」
+  抽出来的类型；`ClassifyUnclassifiedWith` 接收它。
+
+### 22.2 结论：改动形状是现成的
+
+1. `Scheduler` 加一个与 `SetKxmemory` 同构的 `SetClassifyOne(ClassifyOneFunc)`；
+2. `scheduler.go:731` 的 nil-return 分支改为：kxmem 在则用它，否则用注入的
+   `ClassifyOneFunc`；两者都没有才跳过并保留那条一次性告警；
+3. `main.go` 在 `SetKxmemory` 旁边注入网关分类函数。
+
+**没有新的接口、没有循环依赖、没有跨包搬代码。**
+
+### 22.3 那句「需要单独拍板」该怎么读
+
+`classify_run.go:152` 写的是「这里只把原因说出来，不替产品决定要不要把
+网关兜底接进 Scheduler（那是跨包的设计改动，需要单独拍板）」。
+
+它标出的决策点是**「要不要接」**，这一点仍然成立 —— 那是产品决定
+（定时路径每轮会对每封未分类邮件调一次 LLM，代价与限流影响需认可）。
+但它对成本的描述（「跨包」）不准确，别拿那句话当不做的技术理由。
+
+本节只读：未改任何代码，未接兜底。
