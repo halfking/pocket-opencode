@@ -390,8 +390,6 @@ var pgSafeWithoutIsolation = map[string]string{
 	"internal/email/diag_merge_plan_test.go":     "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（合并迁移**预演**，只出计划不执行）",
 	"internal/email/diag_rest_dupes_test.go":     "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（剩余重复候选的定性排查）",
 
-
-
 	// 需求 2 的判定预演。**单独成组**：它的 key 比上面那组长，会把整组的
 	// 对齐列宽都撑开，逼着 gofmt 重排那几行与本次改动无关的邻居；空行分开
 	// 才能让 gofmt 按组对齐、diff 里只剩我这一条。
