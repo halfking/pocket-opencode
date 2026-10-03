@@ -1739,10 +1739,38 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 		}
 	}
 
+	// 1b) POP3 来源的原文缓存在**另一个目录**（email-bodies-raw/），上面那条
+	//     readCachedEmailBody 只会去读 server 层的 email-bodies/，对 POP3 那份
+	//     必然未命中。漏掉这一步的实测后果（2026-10-03 真机）：
+	//       GET /api/emails/em-pop3-…/body - 502
+	//       [email/body] imap fetch email=em-pop3-… uid=2
+	//     —— 原文明明就在 dataDir/email-bodies-raw/<id>.bin（当场解密出 49 封），
+	//     详情页却因为取不到原文而只剩摘要。前端 extractEmailBody 根本没被调用过，
+	//     于是 §4.124 那类首屏缺陷在 POP3 邮件上连复现的机会都没有。
+	//
+	//     两边格式不同（这里 8B UID + base64、无 format 字节；server 层那份多一个
+	//     format 字节），所以不能复用 readCachedEmailBody，用 email 包自己的
+	//     FileBodyCache 读 —— 它就是当初写这两个文件的那份实现。
+	if email.IsPOP3SourcedEmailID(em.ID) {
+		if raw, _ := email.NewFileBodyCache(s.dataDir, s.emailCrypto).Get(emailID, em.UID); raw != nil {
+			writeJSON(w, http.StatusOK, s.emailBodyResponse(emailID, "raw-cache", raw))
+			return
+		}
+	}
+
 	// 2) 未命中 → IMAP 拉取。这一步才真正要求 fetcher：IMAP 未装配的部署
 	//    （如仅启用缓存层、不开邮件收发）会落到此分支并明确提示。
 	if s.emailFetcher == nil {
 		writeError(w, http.StatusServiceUnavailable, "email fetcher not configured")
+		return
+	}
+	// 2a) POP3 来源的 UID 是**位置序号**，不是 IMAP UID。拿它去 UID FETCH 会取到
+	//     毫不相干的另一封邮件（invoice_harvest.go 里的 isPOP3SourcedEmail 守卫
+	//     就是为这件事加的，POST /invoice/harvest 走对了，这里漏了）。
+	//     宁可明确失败，也不返回错邮件的正文 —— 后者会静默地把别人的信显示成这封信。
+	if email.IsPOP3SourcedEmailID(em.ID) {
+		log.Printf("[email/body] email=%s: POP3-sourced, raw cache miss; refusing IMAP FETCH with position index uid=%d", emailID, em.UID)
+		writeError(w, http.StatusBadGateway, "raw body not cached for POP3-sourced email")
 		return
 	}
 	if em.UID <= 0 {

@@ -12759,3 +12759,225 @@ origin/main 上这段原文已被 §4.121 **明确标注为假红并修掉**（`
   通过 + 针对该缺陷的正控/负控 A/B。**未验证** = 真实 QQ 邮件在本轮没有再取样
   （没有新的解密原文），行首形态是按真实追踪头格式构造的等价夹具；
   真机端到端本轮未跑（无设备）。
+
+## §4.126 round34 审计：真实语料重放（§4.124 的结论在真数据上成立），并挖出一个让该修复无从生效的真缺陷
+
+### §4.126.0 范围与基线实况
+
+- 基线 `origin/main`：`a5de5f96`，前端门禁 `npm.cmd run gates` **22/22 通过**（156.6s），
+  本轮新增的前端探针不改变门禁结论。
+- 上一轮（§4.124 / commit `4d781dc9`）把 `headerField` 收紧成 `^name:`（冒号紧跟字段名），
+  结论全部建立在**等价夹具**上，并明确写了「真实 QQ 邮件本轮没有再取样」。
+  本轮就是去补这个缺口。
+- 本轮 4 个目标：① 真实解密原文重放；② 真机跑一轮；③ wt-a32 与 11 条 stash 的去留；
+  ④ 观察「行首 content-type: 零空格」变体。①②④ 已做完，③ 见 §4.126.6。
+
+### §4.126.1 真实语料到位：49 封 POP3 原文解密成功
+
+`data/email-bodies-raw/*.bin` = 8 字节大端 UID + base64(AES-256-GCM)，密钥 `data/email_master.key`
+（`email/body_cache.go` + `email/crypto.go`）。解密 **49/49 成功，0 失败**
+（工具 `logs/decrypt-raw-bodies.mjs`，明文落在 gitignored 的 `logs/real-bodies/`）。
+
+这一步之前是「有语料但没人解开过」—— 上轮只能凭格式注释推断。
+
+### §4.126.2 重放结论：§4.124 在真实 QQ 追踪头上成立，且判据有牙齿
+
+新增 `frontend/src/features/email/__tests__/email-body-real-corpus-replay.test.mjs`（env 门控
+`POCKET_DIAG_REAL_BODIES`，指向解密后的明文目录）：
+
+- 49 封全部通过：正文不含行首 `Received:` / `X-QQ-*` / `DKIM-Signature` / `Authentication-Results`、
+  不含 300 字符以上的裸 base64、不含未解码 QP。
+- **负控实测有牙齿**：把 `headerField` 临时改成不锚行首的 `new RegExp(\`${name}\\s*:\\s*(...)\`,'i')`
+  后，重放立刻转红，12 封以上真实邮件报出「裸 base64 载荷」与「中文 QP 未解码 x22~x210」——
+  正是 §4.124 描述的形态。还原（`git checkout --`）后恢复 3/3 绿。
+
+**判据自己错了三次，都是判据侧的问题，记录下来免得下一轮重犯：**
+
+1. **不能直接抄 `diag_qp_replay_test.go` 的绝对阈值。** 那个 `qpThreshold = 20` 是给
+   **500 字摘要**设计的；拿它判 2.5 万~8.3 万字节的整页 HTML，49 封里报出 6 封「QP 未解码」。
+   逐条查上下文全是 `msgid=6960126090300432146` / `content="IE=edge"` / `?v=6&fm=jpeg`——
+   **中文 QP 三连命中数是 0，纯误报**。阈值随语料长度漂移就等于没有阈值。
+2. **中文 QP 的判据不能写成「首字节 E4-E9 连续三组」**：UTF-8 是流式的，
+   `点=E7=82=B9` 的第二字节 `B9` 属于「点」，`E5` 才是「击」的首字节，
+   `/(?:=E[4-9A-F][0-9A-F]){3,}/` 对 `=E7=82=B9=E5=87=BB` 这种真实序列**漏判**。
+   （这条是被新加的「判据自检」用例当场抓出来的，不是想出来的。）
+   最终判据取 `(?:=[89A-Fa-f][0-9A-Fa-f]){3,}`——连续 3 组以上、每组首字节高位为 1，
+   即「非 ASCII 文本仍以 QP 形态存在」，与字符集无关。
+3. **判据必须有「对已知脏输入会亮」的自检。** 文件末尾那条用例拿「整封报文当正文」
+   的形态喂 `findViolations`，要求它报出 4 类违规；反向对干净正文不许误报。
+   门控外的任何机器都会跑它，所以这个文件不是「永远 skip 的绿」。
+
+### §4.126.3 ④「行首 content-type: 零空格」变体：真实语料里不存在
+
+普查 49 封（`logs/survey-real-bodies.mjs`）：
+
+| 形态 | 命中 |
+|---|---|
+| 含 `X-QQ-XMRINFO` 追踪头 | 49/49 |
+| 行首 `content-type`（冒号**零空格**） | 49/49，但取值 **21 种全是合法 MIME 类型**（`multipart/…; boundary=` / `text/html; charset=` / `application/pdf;` …）⇒ **全是真 MIME 部件头，不是伪字段名** |
+| 行首 `content-type`（冒号**前有空格**） | **0 封** |
+| 行中伪 `content-type :` | 8 封，全部在 **DKIM-Signature 的折叠续行**里（形如 `\t reply-to : to : … content-type : list-unsubscribe : …`） |
+
+**A/B 实测**：把 `headerField` 换回 §4.124 之前的「容忍冒号前空格」版本，对 49 封逐字节比较，
+**差异 0/49**。
+
+所以要如实说清：§4.124 那次收紧在**当前语料上没有可区分样本**——真实语料里的伪字段名都在
+行中（续行），行首锚定已经足够挡住。收紧的价值由合成夹具那条护栏证明，不是由语料证明。
+这不是「修复无效」，是「这个形态尚未在真实数据里出现」；真出现了，上面第二条用例会以
+「真实语料里出现了『行首伪 content-type』」的形式报出来，而不是悄悄变绿。
+
+### §4.126.4 真机：含修复的 APK 装上后，详情首屏判据全绿
+
+- 重装 APK（`build-mobile.mjs android dev` + `gradlew assembleDebug`，BUILD SUCCESSFUL 54s，
+  产物 34MB，SHA256 `B92B5878…`，已存档 `logs/apk/app-debug-round33.apk`；
+  `output-metadata.json` 的 versionName 是 `1.2.0-openpocket`，确认是主包不是 `-PsttDevApp` 并存包）。
+  装入前设备上是 07:47 的旧包，**早于 §4.124 提交**（12:56），所以不装就没有验证对象。
+  `adb install -r` 这次成功（WiFi adb；此前记录的「MIUI 拒网络安装」本次未复现）。
+- CDP（`scripts/cdp.mjs`，POCKET_SERIAL=192.168.31.19:5555）读渲染后的 DOM 跑同一套判据：
+  两封真实邮件详情（`em-pop3-…-ZL0007_Z2bNm…` 发票通知、`em-pop3-…-ZC0003_R0bN…` GoPro 广告）
+  的 `violations` 均为 `[]`，首屏是干净可读正文。
+- 记一条量纲纠正：详情页 `innerText` 734 字符 vs Node 侧重放输出 83417 **字节**，
+  这不是矛盾——后者是 HTML 源码，`<style>`/属性占绝大部分，`innerText` 只算可见文字。
+  判据要用「用户看得见的」那个量。
+
+### §4.126.5 本轮真缺陷（比上面那条更要紧）：`/api/emails/{id}/body` 读错目录 + 缺 POP3 守卫
+
+真机验详情时撞到的，日志实锤：
+
+```
+GET /api/emails/em-pop3-acct-…-ZC0003_R0bNl36M6LYuaWoAEWJzn10/body - 502
+[email/body] imap fetch email=em-pop3-… account=acct-… uid=2
+```
+
+- **原文明明在** `data/email-bodies-raw/<id>.bin`（§4.126.1 当场解出 49 封），
+  但 `handleEmailBody` 的缓存读只有一条 `readCachedEmailBody`，它硬编码读 **server 层的
+  `email-bodies/`**（`server_assistant.go:1883`），对 POP3 那份必然未命中。
+  两边**格式还不一样**：server 层那份是 8B UID + **1B format** + base64，POP3 那份是 8B UID + base64。
+- 未命中就落到 IMAP 回源，而 POP3 的 UID 是**位置序号**。`invoice_harvest.go:169` 的
+  `isPOP3SourcedEmail` 守卫正是为这件事加的，`/invoice/harvest` 走对了，**这个端点漏了**。
+  后果分两种：IMAP 不可用时（当时就是）502；**IMAP 可用时会静默返回毫不相干的另一封邮件的正文**。
+- 连带后果要说清：POP3 邮件取不到原文 ⇒ 前端 `extractEmailBody` **根本没被调用过** ⇒
+  §4.124 修的那类首屏缺陷在 POP3 邮件上**连复现机会都没有**。详情页看着「还过得去」
+  只是因为退化到了 snippet，不代表解析器是对的。
+
+**修法**（`server_assistant.go` handleEmailBody）：
+
+1. 新增 1b 分支：POP3 来源先用 `email.NewFileBodyCache(s.dataDir, s.emailCrypto).Get(...)`
+   读 `email-bodies-raw/`（用它是因为它就是当初写这两个文件的那份实现），命中则
+   `source: "raw-cache"` 返回。
+2. 新增 2a 分支：IMAP 回源**之前**加 POP3 守卫，明确 502 而不是拿位置序号去 FETCH。
+3. 判据导出到 `email.IsPOP3SourcedEmailID`（`invoice_harvest.go`），server 调它 ——
+   让 server 再抄一遍 `strings.HasPrefix(id, "em-pop3-")` 就是两份判据，
+   改一处漏一处的后果是把别人的信显示成这封信。
+
+**验证**：
+
+- `go build ./...` 通过；`go vet` 通过；`go test ./internal/server/ ./internal/email/` 全绿。
+- 真实数据离线验证（`POCKET_DIAG_POP3_RAW=<dataDir>`）：**49/49 封真实 POP3 原文
+  经 `FileBodyCache.Get` 解出且是合法 RFC 5322 报文，0 空、0 乱码**。
+- 源码级护栏（`email_body_pop3_guard_test.go`）**负控实测会红**：把守卫整块删掉后
+  用例以「没有会**拒绝请求**的 POP3 守卫」转红；还原后绿。
+  该护栏第一版写成「`strings.Index(body, "IsPOP3SourcedEmailID(em.ID)") >= 0`」，
+  负控把守卫改成 `if false && email.IsPOP3SourcedEmailID(...)` 时**判据全绿而守卫已失效** ——
+  所以判据改成要求「那个 if 块里真的有 `writeError(`」，即取**正向形状**（拒绝动作）而不是条件字符串。
+
+**真实 HTTP 路径上的 A/B（补做，2026-10-03 15:56）**：
+
+没有重启 18099（那是被并发会话 15:28 起的长跑实例，重启会打断别人），改为**起一个隔离实例**：
+用 `read-proc-env` 的同源逻辑 dump 出 pid 61356 的**完整原始环境**
+（`logs/dump-proc-env.ps1`，注意 `read-proc-env.ps1` 会把 KEY/SECRET/DSN **mask 掉**，
+mask 过的值没法拿去复现实例），灌进 `go build` 出来的当前源码二进制，只改一个变量：
+`POCKET_HTTP_PORT=18100`。schema / dataDir / 密钥一律不动 ——
+换 dataDir 会让全部邮箱凭据解不开，而 healthz 照样 200。
+
+同一封邮件、同一 token、两个实例：
+
+| 实例 | 构建 | `GET /api/emails/em-pop3-…-ZC0003_R0bN…/body` |
+|---|---|---|
+| :18099 | 15:28（**不含**本轮修复） | **HTTP 502** |
+| :18100 | 当前工作区（**含**修复） | **HTTP 200**，`source=raw-cache`，`bytes=101605` |
+
+18100 返回的 body **与磁盘上 `email-bodies-raw` 解密出的明文逐字节相同**（实测 `true`），
+把这串字节喂给前端 `extractEmailBody`：
+
+```
+extractEmailBody 输出 83417 字符
+判据违规: （无）
+中文 QP 三连命中: 0
+```
+
+**整条链路闭合**：POP3 原文 → 后端 `/body` 200 → 前端解析 → 零违规的首屏正文。
+而在 :18099 上这一步连跑都跑不到（502，解析器不会被调用）。
+这同时补上了 §4.126.4 那个量纲疑问：真机上 `innerText` 只有 734 字符，是因为当时拿的是
+snippet 回落；解析后的 HTML 是 83417 字符，可见文字才是 734 —— 两者不矛盾。
+
+收尾：18100 实例已停（18099 复测 healthz=200，未受影响），
+含密钥的 `logs/env-18099-61356.txt` 与 token 文件已删除。
+
+### §4.126.6 ③ wt-a32 与 11 条 stash：按你确认的处置方式做完核验
+
+**wt-a32（先说结论：它自己解决了）**。开工时它有 174 个未提交改动（173 个 .go 的 gofmt
+import 排序/字段对齐 + 新文件 `scripts/check-gofmt.mjs`），HEAD 与 origin/main 相同、0 个独有提交。
+按你选的「先导出 patch 存档再删」执行时，发现 **`git diff` 突然返回 0 行**——查下去是
+并发会话在这期间把它提交了：
+
+- `331ba4f3 style(go): 归一 173 个 .go 的 gofmt 格式债（纯格式化，零语义变化）`
+- `12a49913 test(gates): 加 gofmt 门禁 + 记 §4.125`
+
+内容与本轮抽样验证的结论一致（纯格式化）。**但这两个提交还不在 `origin/main` 上**
+（`git merge-base --is-ancestor` 实测为 false），只挂在 wt-a32 的 detached HEAD 上。
+⇒ worktree 无需删除（里面已没有未提交内容），但**需要有人把这两个提交并回 main**。
+「导出 patch 存档」这一步因此没有可导的东西（`logs/wt-a32-gofmt.patch` 是 0 字节，已弃用；
+唯一单独存下的是 `logs/wt-a32-check-gofmt.mjs`）。
+
+教训记一笔：**备份路径本身也会坏**。第一版 `git diff --binary > $out` 在 PS 里产出 0 字节，
+一度像「改动没了」；真实原因是并发会话提交了改动。判据是 `git status` + `git log`，不是 patch 大小。
+
+**11 条 stash（全部 2026-09-30 ~ 10-01 的审计快照）**。按你选的「先核验、不 drop」，做了两层只读核验：
+
+- 逐文件比较（stash 快照内容 vs `origin/main`）：11 条里 **10 条 `main缺失=0`**，所有文件要么
+  同内容、要么已演进（main 普遍更大：fetcher.go 998→1185、invoice.go 338→757）。
+  唯一例外是 `stash@{9}`（consolidate-staged，148 文件）有 10 个文件在 main 上不存在，
+  全是**一次性探针脚本**（`scripts/cdp-doc-open-probe.mjs`、`gw-audio-probe.mjs`、
+  `run-pipeline-once.mjs`、`verify-real-mailbox-readonly.mjs` 等），是有意清理掉的调试工具。
+- 逐行比较（stash 引入的每一行是否还在 main）：**不能作为判据**。归一化空白后仍有
+  5~104 行「不在 main」，抽查关键符号发现 `applyInlineRules` / `BACKFILL_LIMIT` /
+  `email-cache-heal` / `DefaultBackfillMax` **全都活着**且已演进；逐行对不上的是
+  函数签名变更、注释重写、import 调整这类**改写**。
+
+⇒ 能给的结论是：**产品代码的内容看起来都已被后续提交覆盖**（信号强：main 的文件普遍更大、
+关键符号都在），唯一 stash 独有的东西是那 10 个一次性探针脚本。
+**但我不能证明「零丢失」**——逐行比对在有改写的情况下天然失真，真要 drop 需要人工逐条 review。
+未执行任何 `git stash drop`。
+
+### §4.126.7 本轮新增文件与改动清单
+
+| 文件 | 性质 |
+|---|---|
+| `frontend/src/features/email/__tests__/email-body-real-corpus-replay.test.mjs` | 新增，真实语料重放 + 形态普查 + 判据自检（env 门控） |
+| `backend/internal/server/email_body_pop3_guard_test.go` | 新增，POP3 守卫接线护栏（负控已验会红） |
+| `backend/internal/server/email_body_pop3_realdata_test.go` | 新增，49 封真实原文经 FileBodyCache 的离线往返（env 门控） |
+| `backend/internal/server/server_assistant.go` | 改：handleEmailBody 加 raw 缓存读 + POP3 守卫（+28 行） |
+| `backend/internal/email/invoice_harvest.go` | 改：判据导出为 `IsPOP3SourcedEmailID` |
+
+未提交（并发会话在同一 main 上活动，本轮不 commit / 不 push）。
+
+### §4.126.8 留给下一轮的
+
+1. **App 端还差一步手动确认**：后端侧已经实测通了（:18100 返回 200 + 原文，前端解析零违规），
+   但**真机上还没让 App 指向 18100 看过一眼 POP3 邮件详情**（App 的 API base 存在
+   localStorage 的 `pocket_api_base`，当前是 `http://127.0.0.1:18099`）。
+   要做：`adb reverse tcp:18100 tcp:18100` + 改 App 的 api_base，或等 18100 这类实例常驻。
+2. **把 `331ba4f3` / `12a49913` 并回 main**（现在只挂在 wt-a32 的 detached HEAD 上）。
+3. **11 条 stash 的人工 review**（逐行核验给不了「零丢失」证明）。
+4. **列表摘要的 QP 脏数据是另一个问题**：真机 `/api/emails` 返回里，IMAP 路径的三封新邮件
+   （FlatRouter / 招商银行 / GitHub）`snippet` 仍是 `----=_Part_… Content-Type: … =E8=AE=A2…`
+   这种「边界行 + 部件头 + 未解码 QP」形态。那是**后端** `SnippetFromParsed` 产出、落库存量，
+   与本轮的前端解析器无关（§round26 判定过「库里那批是历史脏数据」，但这几封是**今天新入库**的，
+   值得单独查一次当前代码对它们会产出什么）。
+5. `gofmt` 全仓仍不干净（CRLF 债），并发会话的 §4.125 正在处理；本轮新文件已 gofmt 干净。
+6. **隔离实例的做法值得固化成脚本**：本轮 `logs/dump-proc-env.ps1` +
+   `logs/start-round34-18100.ps1` 手工拼出来的，下次别再手搓。
+   两个坑记在这：① `.ps1` 文件必须存**带 BOM 的 UTF-8**，否则 PS 5.1 按 ANSI 解码中文，
+   报出来的是 `Missing closing '}'` 这种与中文无关的语法错误；
+   ② PS 5.1 的 `Add-Type` 是 C# 5 编译器，**没有 `out` discard**，得先声明变量。
