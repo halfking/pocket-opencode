@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -726,7 +727,76 @@ func (s *Store) InsertEmailIfNew(ctx context.Context, e Email) (inserted bool, e
 		e.IsRead, e.IsStarred, e.Category, e.Importance, e.AISummary, e.SuggestedAction,
 		nullStr(e.ActionReason), e.HasAttachments, time.Now().Unix(), time.Now().Unix()).Scan(&inserted)
 
+	// 2026-10-03 23:1x 补：ON CONFLICT **只消解它写明的那条约束**。
+	//
+	// 本表的唯一约束有两条：
+	//   · emails_pkey                  PRIMARY KEY (id)
+	//   · emails_account_id_message_id_key  UNIQUE (account_id, message_id)
+	// 上面那句只写了 `ON CONFLICT (id)`，于是**第二条约束冲突时整条 INSERT 直接
+	// 报错**（SQLSTATE 23505），而不是像 id 冲突那样走 DO UPDATE。
+	//
+	// 这不是理论边界，两条入库路径**在结构上就会撞上**：
+	//   · POP3：ID = `em-pop3-<acct>-<uidl>`（fetcher.go:927）
+	//   · IMAP：ID = `em-<uid>-<acct>`      （backfill.go:291）
+	// 但两者的 message_id 都取**同一封邮件的真实 Message-ID**（fetcher.go:944-945
+	// / backfill.go:281-282），所以同一账户、同一封邮件经两条路径各落一行时，
+	// **id 不同、(account_id, message_id) 相同** —— 精确命中第二条约束。
+	// 仓库自己早就量过这个规模：fetcher.go 的注释写着「实测 QQ 信箱 284/444 封
+	// 走 POP3 路径，47 组是重复副本」。
+	//
+	// 后果是**数据丢失**，两种形态都很糟：
+	//   1. 已存在的邮件：摘要刷新整个丢掉。存量里那 3 行原始 MIME 摘要
+	//      （em-6 / em-11 / em-1669791317）就是被它冻住的 —— 重跑多少次
+	//      backfill 都刷不掉，因为每一次都走不进 DO UPDATE。
+	//   2. 新的邮件：**整封根本没有入库**。2026-10-03 22:02 的一次真库 backfill
+	//      里出现 33 次该错误，全部静默失败。
+	//
+	// 修法：只在「因 message_id 唯一约束失败」时兜底，按与 ON CONFLICT 分支
+	// **完全相同**的窄口径去刷新那一行（空摘要不覆盖），并返回 inserted=false
+	// （它确实不是新插入，fetcher 的「新邮件 N」统计不能被虚增）。
+	//
+	// 为什么不改成 `ON CONFLICT ON CONSTRAINT` 或两个冲突目标：PG 的
+	// ON CONFLICT 只接受**一个**目标，无法同时覆盖两条约束；而删掉任一条约束
+	// 又会改变既有语义（message_id 唯一正是防重复副本的最后一道闸）。
+	// 失败后兜底既不动约束，也不动正常路径的语句。
+	if err != nil && isUniqueViolation(err, "emails_account_id_message_id_key") {
+		tag, uerr := s.pool.Exec(ctx,
+			`UPDATE emails SET
+			   snippet       = CASE WHEN $3 <> '' THEN $3 ELSE snippet END,
+			   importance    = CASE WHEN $4 <> '' THEN $4 ELSE importance END,
+			   action_reason = CASE WHEN $5 <> '' THEN $5 ELSE action_reason END
+			 WHERE account_id = $1 AND message_id = $2`,
+			e.AccountID, nullStr(e.MessageID), e.Snippet, e.Importance, nullStr(e.ActionReason))
+		if uerr != nil {
+			// 兜底也失败：把**原始**错误带出去，��证这条路径不会把问题藏起来。
+			return false, err
+		}
+		if tag.RowsAffected() == 0 {
+			// 报 23505 却一行都没命中：约束与 WHERE 口径不一致，属于本函数
+			// 的判断出错了。必须显式失败，不能静默当成功。
+			return false, fmt.Errorf(
+				"email: message_id 唯一约束冲突但按 (account_id, message_id) 更新未命中任何行 (id=%s)",
+				e.ID)
+		}
+		return false, nil
+	}
+
 	return inserted, err
+}
+
+// isUniqueViolation 判断 err 是不是 pgconn 的唯一约束冲突（SQLSTATE 23505），
+// 且落在指定约束上。
+//
+// 为什么必须连约束名一起比：同表两条唯一约束共用同一个 SQLSTATE，只比 23505
+// 会把 id 冲突也当成 message_id 冲突吞掉 —— 而 id 冲突本来就已经被
+// `ON CONFLICT (id)` 处理掉了，根本不会走到这里。放宽的代价是「一条本该
+// 硬失败的写入被静默改写」。
+func isUniqueViolation(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return pgErr.Code == "23505" && pgErr.ConstraintName == constraint
 }
 
 func (s *Store) Close() error { return nil }
