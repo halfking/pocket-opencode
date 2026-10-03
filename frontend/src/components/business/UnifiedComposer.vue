@@ -17,7 +17,7 @@
   - AI 优化：经 llm-bff 流式润色草稿并回填，不自动提交
 -->
 <template>
-  <div class="uc" :class="{ 'uc--single': singleLine }">
+  <div ref="ucEl" class="uc" :class="{ 'uc--single': singleLine }">
     <!-- 待发送图片缩略图条 -->
     <div v-if="attachments.length" class="uc-attach-strip">
       <div v-for="(a, i) in attachments" :key="i" class="uc-thumb">
@@ -218,7 +218,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onBeforeUnmount, useSlots, nextTick } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted, useSlots, nextTick } from 'vue'
 import { useAutoGrowTextarea } from '../../composables/useAutoGrowTextarea'
 import { useVoiceInput } from '../../composables/useVoiceInput'
 import { useAttachments } from '../../composables/useAttachments'
@@ -287,6 +287,64 @@ const slots = useSlots()
  * 上限数字留在 CSS（标准 40vh / 紧凑 30vh），JS 不复制一份。 */
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 const { onInput: autoGrowOnInput } = useAutoGrowTextarea(() => props.modelValue, inputEl)
+
+/* 把「自己占据的整条底部带」发布成 --composer-inset，供 Toast 避让。
+ *
+ * 为什么需要：Toast 的 bottom 只认 --bottom-chrome-height（底部 tabbar），
+ * 而本组件是**停靠在 tabbar 之上**的输入区，比 tabbar 高得多。实测
+ * /ai-chat 上错误 toast 正好压住整条工具行（全屏/麦克风/相机/附件/角色/
+ * 优化）——而麦克风是这个 App 的主打能力之一，被一条 3 秒的提示盖住不该
+ * 算可接受。
+ *
+ * 为什么在 JS 里量而不是纯 CSS：输入框是**内容驱动高度**的（autoGrow），
+ * 高度随内容变，CSS 侧无从得知当前是多少。这里用 ResizeObserver 跟着
+ * autoGrow 的每次高度变化重新发布，零布局抖动。
+ *
+ * 为什么发布的是「带」而不是「自身高度」（2026-10-03 设备实测打回过一次）：
+ * 调用方的 .composer 包裹层有 padding 8px 12px + padding-bottom
+ * calc(8px + safe) + 1px 上边框，而 .uc 自身不含这些。发自身高度的话
+ * toast 底边落在 255px，输入区顶边实际在 290px，仍压住工具行 35px。
+ * 改成量「#app 底边 → .uc 顶边」这条整条带（含 tabbar）后是 281px，
+ * toast 落在 295px，比输入区顶边还高 5px。
+ *
+ * 为什么以 #app 底边为基准而不是 innerHeight：#app 高度是
+ * calc(100% - var(--kb-inset))，键盘弹起时它的底边与输入区同步上移，
+ * 两者相减与键盘无关。于是这里量到的是「不含键盘的带高」，键盘那一份
+ * 交给 toast 自己加 --kb-inset，不会重复计算。
+ *
+ * 没有本组件的页面读不到这个变量，var() 回落到 0px，toast 行为不变。
+ */
+const ucEl = ref<HTMLElement | null>(null)
+let ucObserver: ResizeObserver | null = null
+onMounted(() => {
+  const el = ucEl.value
+  if (!el) return
+  const publish = () => {
+    const root = document.getElementById('app')
+    if (!root) return
+    const band = root.getBoundingClientRect().bottom - el.getBoundingClientRect().top
+    document.documentElement.style.setProperty(
+      '--composer-inset',
+      `${Math.max(0, Math.round(band))}px`,
+    )
+  }
+  publish()
+  if (typeof ResizeObserver !== 'undefined') {
+    ucObserver = new ResizeObserver(publish)
+    ucObserver.observe(el)
+  }
+  // ResizeObserver 只在「盒子尺寸」变化时回调，不含位移。唯一会让本组件
+  // 在尺寸不变的情况下下移的场景是 AppLayout 滚动联动隐藏 tabbar
+  // （.composer 上的 transform/margin 变化），此时发布值偏大，toast 会
+  // 站得比需要的位置更高——偏高的方向是安全方向（宁可空一段也不压控件），
+  // 且 tabbar 归位后几何自动回到已发布的值，故不额外挂滚动监听。
+})
+onBeforeUnmount(() => {
+  ucObserver?.disconnect()
+  ucObserver = null
+  // 离开带输入区的页面后必须清零，否则 toast 会被一个已不存在的元素顶高。
+  document.documentElement.style.setProperty('--composer-inset', '0px')
+})
 
 function onInput(e: Event) {
   autoGrowOnInput(e)
