@@ -34,6 +34,7 @@
     "check:raw-error": "node scripts/check-raw-error-text.mjs",
     "check:crlf-needles": "node scripts/check-crlf-fragile-needles.mjs",
     "check:gofmt": "node ../scripts/check-gofmt.mjs",
+    "check:blankline-bloat": "node ../scripts/check-blankline-bloat.mjs",
     "check:test-coverage": "node scripts/check-test-coverage.mjs",
     "check:i18n": "node scripts/check-i18n-keys.mjs",
     "check:i18n-translated": "node scripts/check-i18n-translated.mjs",

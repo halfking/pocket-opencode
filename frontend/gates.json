@@ -26,7 +26,8 @@
     "check:crlf-needles",
     "check:icons",
     "check:test-coverage",
-    "check:gofmt"
+    "check:gofmt",
+    "check:blankline-bloat"
   ],
   "ciRuns": [
     "check:pg-schema-scope",
@@ -41,7 +42,8 @@
     "check:dead-api",
     "check:raw-error",
     "check:icons",
-    "check:gofmt"
+    "check:gofmt",
+    "check:blankline-bloat"
   ],
   "ciCoveredElsewhere": {
     "typecheck": "frontend.yml 的 frontend-lint job 已手列 `npm run typecheck`",
