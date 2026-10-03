@@ -88,6 +88,34 @@
             <span class="see-all-label">{{ t('notesHub.link.allPkm') }}</span>
             <span class="material-symbols-outlined see-all-chevron" aria-hidden="true">chevron_right</span>
           </button>
+          <!-- ⚠️ 2026-10-03 17:16 真机挖出的可达性缺陷，与上面 PKM 那条同源：
+               「全部笔记」原来留在下面 `v-if="counts.total"` 的 nav 里，
+               而 counts.total === 0（新装 / 空库用户）时整个 nav 不渲染。
+
+               当时留下的理由是「列表入口没数据时不该出现」——对**列表**成立，
+               对这一条不成立：/notes/voice 渲染的是 NoteListView，它是
+               **录音 FAB 的唯一宿主**（NoteListView.vue:113
+               `<VoiceRecorderWidget :recording="isRecording" .../>`）。
+               而 /notes 这个 hub 自己不渲染任何录音入口，它的空态按钮
+               「录音记一笔」走的是 EmptyState.vue:145 `@action="go('/notes/new')"`
+               —— 那是**新建笔记表单**，不是录音器。
+
+               ⇒ 空库用户的实际体验：笔记 tab 里**根本找不到录音**，
+                 既没有 FAB，也没有能点开 FAB 的入口。语音转写整条功能不可达。
+
+               真机对照（CDP 实测，非源码推断）：
+                 A. #/notes       see-all nav 只有「打开 PKM」；.recorder-fab ABSENT
+                 B. #/notes/voice  .recorder-fab 在，aria-label=开始录音，60×60 @(282,674)
+               B 侧证明目标页本身是好的，缺的只是 A 侧那个入口 —— 判别清楚，
+               不是「录音功能整体坏了」。
+
+               与 PKM 同理：录音是**工具入口**不是列表展开项，该常驻在手边。
+               「全部会议」仍然是纯列表展开项，继续留在 v-if 里。 -->
+          <button type="button" class="see-all-btn" @click="go('/notes/voice')">
+            <span class="material-symbols-outlined" aria-hidden="true">mic</span>
+            <span class="see-all-label">{{ t('notesHub.link.allNotes') }}</span>
+            <span class="material-symbols-outlined see-all-chevron" aria-hidden="true">chevron_right</span>
+          </button>
         </nav>
 
         <!-- 概览条：只统计「加载成功」的来源，三个计数与下面的列表是同一份数据，
@@ -158,11 +186,6 @@
              「全部笔记 / 全部会议」是**列表**入口，没数据时不该出现（合理）；
              但「打开 PKM」是一个**工具入口**，该常驻。故把它拆出来放在 v-if 之外。 -->
         <nav v-if="counts.total" class="see-all" :aria-label="t('notesHub.title')">
-          <button type="button" class="see-all-btn" @click="go('/notes/voice')">
-            <span class="material-symbols-outlined" aria-hidden="true">mic</span>
-            <span class="see-all-label">{{ t('notesHub.link.allNotes') }}</span>
-            <span class="material-symbols-outlined see-all-chevron" aria-hidden="true">chevron_right</span>
-          </button>
           <button type="button" class="see-all-btn" @click="go('/meetings')">
             <span class="material-symbols-outlined" aria-hidden="true">event</span>
             <span class="see-all-label">{{ t('notesHub.link.allMeetings') }}</span>

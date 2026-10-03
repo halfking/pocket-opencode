@@ -85,20 +85,59 @@
 #   两个通用兜底文案与裸错误码/技术串均未出现）。
 appId: com.kaixuan.opencode.pocket.sttdev
 ---
-- launchApp:
-    clearState: false
-
-# 为什么要在这里等：2026-10-02 真机实测发现 Maestro 的 `Launch app`
-#   仅用 0.5s 就报 COMPLETED（日志 11:38:42.123 -> 11:38:42.614），
-#   而 App 实测需 1.6s 才 Displayed（am start -W: +1s624ms）。
-#   它抢跑后立即去抓 hierarchy，抓到的是还没切换完的桌面，
-#   因此 `tapOn "学习|Study"` 报 Element not found。
-#   这个失败很容易被误读成「选择器写错」或「设备语言不对」。
-- waitForAnimationToEnd:
-    timeout: 20000
+# ---- 本 flow 不写 launchApp，这是 2026-10-03 17:04 用 logcat 定位出来的硬约束 ----
+# 现象：flow 一开头 `launchApp`，App 反而**起不来**，第一条断言等满 30s 落空
+#   （实测 1m57s = 3×(6s 等提示 + 15s 等动画) + 30s 断言，轮次对得上）。
+# logcat 实证（不是猜的）：
+#   ActivityTaskManager: START u0 {act=android.app.action.CHECK_ALLOW_START_ACTIVITY
+#     ... cmp=com.miui.securitycenter/com.miui.wakepath.ui.ConfirmStartActivity}
+#     from uid 10294 from pid ... callingPackage dev.mobile.maestro ... result code=102
+# ⇒ MIUI 安全中心把 Maestro「从非 Activity 上下文启动 App」这件事拦下来弹确认框，
+#   而这个确认框在自动化里没人点，App 永远回不到前台。
+#
+# 为什么 harness 的启动不受影响：preflight 用的是 `am start` / `monkey` 走 shell，
+#   不是 Maestro 的启动接口，不触发 CHECK_ALLOW_START_ACTIVITY。
+#   它已经完成：强停→启动→CDP 登录→主密码解锁→「自证通过：再次进入 #/pkm/today
+#   不再弹解锁屏」→复位到 #/ai。App 此刻就在前台且状态确定。
+# ⇒ flow 再 launchApp 纯属重复，而且重复的恰好是被拦的那一下。
+#
+# 保留的只有「清系统提示」：MIUI 的语音引擎下线提示页
+#   （com.xiaomi.mibrain.speech/.asr.AsrRemovalNotice，logcat 实证）
+#   会在 App 起来后盖到前台。点掉它用 optional，点不到就跳过，不给别的 flow 添乱。
 - extendedWaitUntil:
-    visible: "还没有笔记|AI 工具|解锁本地数据"
-    timeout: 30000
+    visible: "我知道了"
+    timeout: 6000
+    optional: true
+- tapOn:
+    text: "我知道了"
+    optional: true
+- extendedWaitUntil:
+    visible: "还没有笔记|AI 工具|解锁本地数据|创建主密码"
+    timeout: 40000
+
+# ---- 全新并存包首启会停在「创建主密码」，先把本地库建起来 ----
+# ⚠️ 2026-10-03 16:28 真机首次装上 sttdev 时踩到：并存包是**全新安装**，
+#   本地库里没有 pocket_crypto_salt，于是首启弹的是**「创建主密码」设置向导**，
+#   而**不是**下面那个「解锁本地数据」分支。
+#   症状极具误导性：harness 的 CDP 登录把表单填了、点提交，30s 后报
+#   「登录后仍停在登录页（last hash 超时）」—— 看起来像口令错或后端 401，
+#   实际是被向导整层挡在前面，根本没走到登录。
+#
+#   两个输入框的 placeholder 分别是「主密码（至少 8 位）」与「再次输入主密码」，
+#   按钮是「确认」。口令与下面的解锁分支用同一个值，库建好之后那边才命中。
+- runFlow:
+    when:
+      visible: "创建主密码"
+    commands:
+      - tapOn: "主密码（至少 8 位）"
+      - inputText: "PocketStt9527"
+      - tapOn: "再次输入主密码"
+      - inputText: "PocketStt9527"
+      - hideKeyboard
+      - tapOn: "确认"
+      - extendedWaitUntil:
+          notVisible: "创建主密码"
+          timeout: 40000
 
 # ---- 冷启动可能停在主密码解锁页，先处理掉 ----
 # 2026-10-02 真机（Redmi / Android 14 / WebView 126）实测补充：
@@ -121,36 +160,117 @@ appId: com.kaixuan.opencode.pocket.sttdev
           visible: "AI 工具|首页"
           timeout: 30000
 
-# ---- 进笔记页 ----
-# ⚠️ 2026-10-03 IA 重组修正：这一段原来只有一句 `tapOn: "学习|Study"`。
-#   重组**前**「学习」是一级 tab（底部导航：首页/学习/会议/更多），点一下就到；
-#   重组后一级 tab 变成 首页 / 笔记 / 消息 / 更多，「学习」下沉成了「更多」宫格里的
-#   第一格（MoreHubView items，MoreHubView.vue:12 `{ to: '/study', label: t('nav.study') }`）。
-#   底 tab 上已经没有「学习」这个节点 ⇒ `tapOn` 直接 FAILED / Element not found。
-#   这个报错形态与「设备语言不对」「选择器写错」完全一样，很容易被误读成前者。
-#   修法：先点「更多」进宫格，再点「学习」，并**每一步都断言**，否则「更多」没点开
-#   时后半句会静默走到别的格子（与 PKM flow 里 point 坐标误触录音是同一类教训）。
-- tapOn: "更多|More"
+# ---- 进笔记页 → 进语音笔记列表页 ----
+# ⚠️ 2026-10-03 17:12 整段重写：IA 又动了一次，本段三级跳转已经**整条作废**。
+# 用 CDP 逐级点过去、把每一页的真实文本抓出来对照（不是靠猜）：
+#   首页 #/ai        → 任务/会话面板 + 筛选 chip（全部/工作/生活/学习/未分类）
+#   更多 #/more      → 「更多功能」宫格：学习 对话 会议 邮箱 定时自动化 技能市场
+#                      智能体市场 本地智能体 工作搭子 闪卡 +「运维与高级」
+#   学习 #/study     → **仪表盘**：今日待复习 / 今日已完成 / 天连续 / 今日待办 /
+#                      待复习卡片 / 收件箱待处理 / 待回顾 / 待办任务 / 每日回顾提醒
+#                      —— 这里**已经没有「语音笔记」这一项**了
+#   笔记 #/notes     → NotesHubView（hub）：全部/手记/会议纪要/PKM 笔记 四个 chip
+#                      +「打开 PKM」「全部笔记」两个常驻入口 + 空态
+#   笔记/voice       → NoteListView（列表）：**录音 FAB 只在这里**
+#
+# 结论一：原路径「更多 → 学习 → 语音笔记」是重组**前**的形状。`/study` 从
+#   「来源列表」变成了学习仪表盘，原 flow 必然卡在 `visible: "语音笔记"`
+#   （实测 20s 超时报红）。注意报错指向一个**已不存在**的文案，跟「选择器写错」
+#   「设备语言不对」长得一模一样，这正是本文件开头警告过的那类误读。
+#
+# 结论二（真缺陷，本 flow 是它的发现现场）：`/notes` 是 hub，**不渲染录音 FAB**；
+#   FAB 的唯一挂载点是 NoteListView.vue:113 的 <VoiceRecorderWidget>，
+#   也就是 `/notes/voice`。而「全部笔记」这个入口当时挂在
+#   `v-if="counts.total"` 上 ⇒ 空库用户（counts.total === 0）在界面上
+#   **找不到任何录音入口**，语音转写整条功能不可达。
+#   已修：把「全部笔记」提到常驻条（NotesHubView.vue:85 那个 nav）。
+#   本 flow 现在顺带就是这条修复的**真机回归**——进不去就会在这里报红。
+#
+# 到达判据为什么用「会议纪要」而不是「笔记」：
+#   笔记 hub 的页头标题与底部 tab 文案**都是「笔记」**（zh-CN.json
+#   `notesHub.title` = 笔记、`nav.notes` = 笔记），拿它当到达判据等于没判。
+#   「会议纪要」是 hub 独有的 chip，首页与 /study 都没有（已按上面抓到的
+#   两页文本逐字核对），且不随有没有笔记而变化。
+#   原 flow 用的「还没有笔记」是**空态文案**——一旦用户建了第一条笔记它就消失，
+#   属于把判据绑死在数据状态上，这里一并去掉。
+# ⚠️ 2026-10-03 17:46 底部导航必须带 `retryTapIfNoChange: true`：
+#   单次 `tapOn: "笔记"`（无论带不带 index、无论用 point 打坐标）在
+#   这台 MIUI 上**状态是 COMPLETED 但页面根本没动** —— COMPLETED 只说明
+#   「点下去了」，不代表「路由跳了」，这是 Maestro 命令状态最容易骗人的地方。
+#   证据链（三条互相独立）：
+#     ① `tapOn {text:"笔记", index:0}` 报 COMPLETED(duration 2403ms)，
+#        而它紧接着的失败断言所抓的 screen-hierarchy 明确还是首页
+#        （AI 工具 / 需要你介入 / 主导航 首页笔记消息更多）；
+#     ② 失败瞬间的截图同样是首页，通知栏没被拉开、没有系统弹窗遮挡；
+#     ③ **不是产品缺陷**：绕过 Maestro 直接 `adb shell input tap 270 1535`，
+#        四个 tab 全部正常跳转（#/notes / #/messages / #/more）。
+#   用探针把五种点法排着试了一遍，只有带 retryTapIfNoChange 的那次真正切走：
+#   runFlow#1（单次 tap）跑完 when 仍为真 → runFlow#2（retry 版）才切走 →
+#   #3~#5 全 SKIPPED。⇒ 结论写死在这里，不要再退回单次点击。
+#   层级原因（screen-hierarchy 实测）：可点的是父节点
+#   accessibilityText="笔记" clickable=true bounds=[180,1498][360,1608]，
+#   而 text="笔记" 的是它内部 clickable=false 的 TextView
+#   [246,1570][294,1600] —— WebView 桥接把可点性挂在了父节点上，
+#   单次合成 tap 有时打不进去，retry 才补上。
+- tapOn:
+    text: "笔记|Notes"
+    retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "学习|Study"
-    timeout: 20000
-- tapOn: "学习|Study"
-# 2026-10-02 真机首跑修正：这条流原本等的是「还没有笔记」，但那行文案
-#   在**学习 hub 页**上，录音 FAB 在**笔记页**（#/notes）。两者中间隔着
-#   一次「语音笔记」卡片点击 —— 原流在 hub 页等一个 hub 页永远不会出现的
-#   文案，必然超时。实测 hub 页的同类文案是「还没有牌组」。
-# 「语音笔记」在重组后仍是 study 页来源列表里的那一项（locales zh-CN.json
-#   `study.sources.voice` = 语音笔记），所以这条锚点本身没过期，过的只是它的父级。
+    visible: "会议纪要"
+    timeout: 25000
+# 「全部笔记」是常驻入口（不在 v-if 里），空库也点得到 —— 这正是被修的那条。
+# 点它之前先断言它在：这一条断言就是「录音入口可达」的判据本体，
+# 缺了它的话，后面 tapOn 失败会指向「元素不存在」，看不出是可达性回归。
+#
+# ⚠️ 2026-10-03 17:30 为什么这两条要用 `.*….*` 包起来（一次真实的假红）：
+#   写成 `assertVisible: "全部笔记"` 时**判据为假**，而按钮明明在视口里
+#   （CDP 实测：see-all-btn 的 boundingClientRect y=187 h=46 inView=true，
+#     body.innerText 也确实含「全部笔记」）。真因是 **Maestro 的文本选择器是
+#     整串正则匹配**，而这个按钮的文本节点不是「全部笔记」，是
+#     `mic 全部笔记 chevron_right` —— 首尾各夹着一个 Material Symbols
+#     的 ligature 名（见本文件下面 NotesHubView 的按钮结构：
+#     `<span class="material-symbols-outlined">mic</span>` + label + chevron）。
+#     整串匹配下 `全部笔记` 匹配不上，于是报「不可见」。
+#   ⇒ 凡是文案旁边带图标 ligature 的按钮，正向断言一律写成 `.*文案.*`。
+#     同一份真机 DOM 上「会议纪要」能过，是因为那个 chip 没有图标，文本恰好是纯文案。
+# 反向断言（assertNotVisible）**故意保持整串精确匹配**：放宽成 `.*X.*` 后，
+#   任何祖先容器（其 innerText 天然包含整页文字）都会命中，判据会从「没有兜底文案」
+#   悄悄退化成「整页都不含这几个字」，那是另一种失明。
+- assertVisible: ".*全部笔记.*"
+- tapOn:
+    text: ".*全部笔记.*"
+    retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "语音笔记"
-    timeout: 20000
-- tapOn: "语音笔记"
-- extendedWaitUntil:
-    visible: "还没有笔记"
+    visible: ".*新建笔记.*"
     timeout: 25000
 
 # ---- 开始录音（aria-label 随状态切换）----
-- tapOn: "开始录音"
+# 同理包 `.*….*`：FAB 的可见文本是 emoji 图标 + aria-label/sr-only 文案
+# （VoiceRecorderWidget.vue:20-29），不是纯「开始录音」。
+# 也带 retryTapIfNoChange：理由同上，WebView 里的合成 tap 单次可能不生效，
+# 而这里点空了会一路静默走到「等即时转写」再超时，失败点离根因很远。
+- tapOn:
+    text: ".*开始录音.*"
+    retryTapIfNoChange: true
+
+# ---- 麦克风权限弹窗（2026-10-03 17:49 真机实拍）----
+# 全新安装的并存包第一次点录音，系统会弹
+#   「是否允许"OpenCode Pocket"使用麦克风进行录音」
+#   三个按钮：拒绝 / 本次使用允许 / 仅在使用中允许
+# 它会整层盖住录音面板，于是下一步 `visible: "即时转写"` 必然超时，
+# 而报错指向「即时转写」，跟根因隔了两步 —— 与本文件开头记的那类误读同形。
+#
+# 为什么这里点得动：Maestro 的 tapOn 走整屏 uiautomator 树、不限被测包
+# （同 `_dismiss-system-dialogs` 处理 MIUI「我知道了」的依据）。
+# 三个按钮按文字取，只有系统弹窗才会出现，不与页面文案冲突。
+# 优先选「仅在使用中允许」：录音要持续一会儿，「本次使用允许」在某些
+# ROM 上会在录音中途被撤销，导致转写刚起来就断。
+- tapOn:
+    text: "仅在使用中允许"
+    optional: true
+- tapOn:
+    text: ".*允许.*"
+    optional: true
 - extendedWaitUntil:
     visible: "即时转写"
     timeout: 25000
@@ -162,7 +282,10 @@ appId: com.kaixuan.opencode.pocket.sttdev
     timeout: 40000
 
 # ---- 停止录音，回到列表页 ----
-- tapOn: "停止录音"
+# 同样包 `.*….*` + retry：停止态的 aria-label 是「停止录音」，可见文本是 ⏹ + 该文案。
+- tapOn:
+    text: ".*停止录音.*"
+    retryTapIfNoChange: true
 - extendedWaitUntil:
     notVisible: "即时转写"
     timeout: 30000
