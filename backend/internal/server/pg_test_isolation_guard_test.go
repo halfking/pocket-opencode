@@ -288,6 +288,23 @@ var pgSafeWithoutIsolation = map[string]string{
 	// 语句，只有 2 条 pool.Query（均为 SELECT）。
 	"internal/email/diag_stale_debt_notice_row_test.go": "只读真实库诊断：全文件 0 写语句（2 条 pool.Query 均为 SELECT）；需 POCKET_DIAG_STALE_ROW=1 显式开关 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（**两者都无缺省值**，缺省会误打生产库）。它**必须**指向生产 schema——那一行（inv_1790903383222583800_1，58000.00）只存在于生产库，隔离库只会输出「查无此行」这种假结论。只读由**数据库强制**：连接 default_transaction_read_only = on，写尝试直接报错，不靠「文件里没有写语句」这句话；search_path 由 RuntimeParams 显式设为 POCKET_REAL_MAIL_SCHEMA，表名不带 schema 限定符。判定链复用生产函数 ExtractInvoice / admitDebtNotice / GetInvoiceByEmailID，不重抄。查无此行时 t.Fatal，避免把「行没了」读成「问题不存在」",
 
+	// internal/email/diag_debt_notice_candidates_test.go（2026-10-03 新增）：
+	//   · 目的：平安/招商两张信用卡电子账单在 2026-10-04 08:00 那一轮会不会
+	//     再建一张幽灵发票（工行那封 58000.00 的前车之鉴）。建档是幂等写入，
+	//     跑完就落库，所以必须在跑之前判定。
+	//   · 全文件 0 写语句：1 条 pool.Query（SELECT）+ 1 条**故意失败**的
+	//     CREATE TEMP TABLE 只读自证（被 default_transaction_read_only 拒绝，
+	//     若成功则 t.Fatal 退出）。
+	//   · 只读由数据库强制；DSN/schema 必须显式传入且无缺省值；
+	//     需 POCKET_DIAG_DEBT_SHAPE=1 开关。
+	//   · 弱点照实登记：① 它**必须**指向生产 schema（隔离库里没有那两封
+	//     信用卡账单，只会输出「无风险」的假结论）；② 只跑 envelope 那一腿，
+	//     生产第 2 趟用完整正文，`reInvoiceNo` 在正文里更容易命中 ⇒ 结论是
+	//     幽灵风险的**下界**，判「拦住」不等于明早安全（文件头已写明）；
+	//     ③ 附件那一维取不到（正文加密在缓存里，重拉原文属取邮箱操作）。
+	//   · 一行都没取到时 t.Fatal，避免把「粗筛写错了」读成「没有风险」。
+	"internal/email/diag_debt_notice_candidates_test.go": "只读真实库诊断：0 写语句（1 条 SELECT + 1 条故意被拒的 CREATE TEMP TABLE 自证）；需 POCKET_DIAG_DEBT_SHAPE=1 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（**均无缺省值**）。指向生产 schema 是**目的**（那两封信用卡账单只在生产库）。只读由数据库强制（default_transaction_read_only = on）。判定复用生产函数 reDebtNoticeShape / ExtractInvoiceLoose，不重抄。已知弱点：只跑 envelope 腿，结论是幽灵风险**下界**；附件证据取不到；粗筛 0 行即 t.Fatal",
+
 	// internal/email/pipeline_lock_test.go（2026-10-03 新增）：
 	//   · 它**确实**隔离，只是隔离逻辑在被复用的助手里，本文件因此没有
 	//     isolatedSchemaRe 要找的 `"*_test_` 字面量（schema 名由 helper 现场生成）。
