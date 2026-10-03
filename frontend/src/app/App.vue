@@ -1,5 +1,29 @@
 <template>
-  <div id="app">
+  <!--
+    根节点**不能**再带 id="app"（2026-10-03 模拟器 API 35 实测）。
+
+    index.html 的挂载点就是 <div id="app">，而 main.ts 走 app.mount("#app")：
+    Vue 保留挂载容器、把本组件渲染成它的子节点。于是 DOM 里出现了两个嵌套的
+    #app，而 `#app { height: calc(100% - var(--kb-inset)) }`（styles.css 与本文件
+    各写一份）会同时命中两者 —— 键盘净高被**扣两遍**。
+
+    实测（/ai-chat，模拟器 API 35，键盘净高 336.38px）：
+
+        外层 #app  = 100% - 336.38 = 529.67
+        内层 #app  = 529.67 - 336.38 = 193.29   ← 与实测 193.286 逐位吻合
+
+    后果是整条 flex 链塌到 193px：main.content 被压到 148.5px，而
+    .composer 高 201.8px 溢出后被 main.content 的 overflow:hidden 裁掉——
+    **输入框的工具行（麦克风/相机/附件/角色/优化/发送）整条消失**，
+    tabbar 也被顶到 y=947（视口外）。也就是需求① 在旗舰页上其实是破的，
+    只是无键盘时 --kb-inset=0、两层等高，看不出异常。
+
+    改法：id 归挂载点独占，本根节点只留 class。#app 的高度/裁切规则继续由
+    styles.css 与本文件各写一份（双写只为样式表注入顺序无关），现在只命中
+    挂载点一次。诊断脚本用 document.querySelector('#app').__vue_app__ 拿
+    pinia，取到的正是挂载容器（__vue_app__ 挂在 mount 元素上），不受影响。
+  -->
+  <div class="app-root">
     <!--
       ✅ 修复：用 AppLayout 包裹 router-view，让共享的 TopBar + BottomNav 全局生效。
       否则每个 view 都要自己实现顶栏/底栏，会出现重复 UI 或不一致（如之前的
@@ -165,6 +189,9 @@ body {
 }
 
 #app {
+  /* 挂载点（index.html 的 <div id="app">）的规则。App.vue 的根节点是它的子节点，
+     刻意不再带 id="app"：两个 #app 会让下面这条 calc(100% - var(--kb-inset))
+     扣两遍键盘高度（实测数据见 template 注释）。 */
   /* 软键盘避让：--kb-inset 由 useKeyboardInset 实时写入（visualViewport
      高度差）。键盘弹起时根布局收缩，flex 停靠的输入区贴住键盘上沿，
      滚动容器随之收缩供聚焦字段对齐到输入区上沿之上。 */
@@ -173,9 +200,49 @@ body {
   overflow: hidden;
 }
 
+/* App.vue 根节点。它必须**自己定高**：`.app-layout` 是 height:100%，若这一层
+   高度 auto，百分比就落回 auto，flex 链（top-bar / main.content / bottom-nav）
+   会整体塌成内容高度——main.content 拿不到剩余空间，输入区被裁。
+   键盘净高只在上一层的 #app 扣一次，这里只做 100% 接力。 */
+.app-root {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
 input, textarea, select, button {
   font-family: inherit;
 }
+
+/* 多行输入的全局舒适基线（2026-10-03 审计）
+ *
+ * 诉求：「所有有多行文本输入的区域，输入的内容展示要尽可能地完整，
+ * 区域足够大，让人感觉舒服，不要太小或看不完整。」
+ *
+ * 现状是 21 处裸 <textarea> 各自手写尺寸：有的 rows="1"、有的没写 rows
+ * （浏览器默认 2 行）、min-height 有 60px 有 80px 有 112px 也有干脆没有。
+ * 逐个改是一锤子定音不了的——下一个人加个 textarea 又回到老样子。
+ *
+ * 所以把「下限」提到全局，只给下限、不给上限：
+ *   - min-height 72px ≈ 3 行，任何多行输入都不是一条缝；
+ *   - resize: vertical 让用户能自己拖大（这是移动端唯一可靠的手动手段，
+ *     iOS/Android 键盘上都没有放大控件）。
+ *
+ * **紧凑型豁免**：`.textarea-compact` 覆盖这条下限。它给「列表里每项都带
+ * 一个」的场景用——例如 ApprovalPanel 每张待批卡片一个 rows=1 的备注框，
+ * 5 张卡片 × 96px 就是 480px 空白，列表直接被撑垮。这些框的正确做法不是
+ * 垫高，而是**平时 1 行、用户真写了才长高**（useAutoGrowTextarea），
+ * 两者互补：紧凑型用动态长高，表单型用固定下限。
+ *
+ * 下限必须能被单点覆盖：UnifiedComposer 自适应增高（高度由 JS 写 inline
+ * style，优先级高于本规则）、转写回显等各有自己的 class 规则。 */
+textarea:not(.textarea-compact) {
+  min-height: 72px;
+  resize: vertical;
+}
+
+/* 同一处规则也写进 styles.css：App.vue 与 styles.css 的注入顺序无关，
+   两条都留着，避免其中一个没加载时基线整条消失（与 #app 高度那条同理）。 */
 
 input:focus, textarea:focus, select:focus {
   outline: none;

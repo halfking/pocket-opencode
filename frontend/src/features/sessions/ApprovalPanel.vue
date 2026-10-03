@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 /**
  * ApprovalPanel — human-in-the-loop 审批面板（权限批准/拒绝 + 问答回答）。
  *
@@ -9,6 +9,7 @@
  */
 import { onMounted, onBeforeUnmount, watch, reactive, computed } from 'vue'
 import { useApprovalStore } from '../../stores/approval'
+import { autoGrow } from '../../composables/useAutoGrowTextarea'
 
 const props = defineProps<{
   instanceId: string
@@ -19,6 +20,14 @@ const store = useApprovalStore()
 
 // 每个权限请求的附言（可选）
 const permMessage = reactive<Record<string, string>>({})
+// 附言框的动态高度：待批请求是 v-for 出来的，一个请求一张卡。给每张卡的
+// rows=1 备注框垫固定高度，5 张卡就是 5 块空白把列表撑散；所以走
+// 「平时 1 行、写了才长高」——.textarea-compact 豁免了全局 min-height 下限，
+// 由 autoGrow 接管（见 App.vue 的紧凑型豁免注释）。
+const permMsgEls = reactive<Record<string, HTMLTextAreaElement | null>>({})
+function onPermMsgInput(e: Event) {
+  autoGrow(e.target as HTMLTextAreaElement)
+}
 // 每个问题请求：按子问题索引保存已选 label 列表
 const qSelected = reactive<Record<string, string[][]>>({})
 // 每个问题请求：按子问题索引保存自定义文本
@@ -179,10 +188,12 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <textarea
+          ref="permMsgEls[p.id]"
           v-model="permMessage[p.id]"
-          class="msg-input"
+          class="msg-input textarea-compact"
           rows="1"
           placeholder="附言（可选）"
+          @input="onPermMsgInput"
         />
         <div class="card-actions">
           <button
