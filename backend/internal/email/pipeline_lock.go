@@ -5,14 +5,60 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// DailyPipelineLockKey 是每日定时流水线的跨进程锁键。
+// DailyPipelineLockKey 是每日定时流水线的跨进程锁键的**后半段**。
 //
 // 用 hashtextextended 而不是自己算 hash，与本包既有的 advisory 用法保持一致
 //（见 store.go 的 vacation 领取锁），避免两处算出不同的 int64。
+//
+// 实际拿去加锁的键是 "<当前 schema>:" + 本常量，见 dailyPipelineLockKey。
+// 原因见该函数的说明：advisory lock 按**数据库**生效、与 schema 无关，
+// 而本仓库多个实例共用同一个 postgres 库、各自钉在不同的 schema 上。
 const DailyPipelineLockKey = "email:daily-pipeline"
+
+// dailyPipelineLockKey 在**取锁那条连接上**现查 current_schema()，拼出这一轮
+// 实际使用的锁键。
+//
+// ## 为什么要带 schema
+//
+// PG 的 session 级 advisory lock 的作用域是**数据库**，与 search_path 无关。
+// 2026-10-03 实测：生产实例（schema=opencode_pocket，:18099）与另一个实例
+// （schema=rssdemo_test，:18190）连的是同一个 postgres 库，于是每天 08:00
+// 互相抢同一把锁——实测当天生产整轮被跳过：
+// `[email/pipeline] 每日定时流水线跨进程锁已被其它实例持有，本轮跳过`，
+// 重要邮件提醒因此积压（pending_high 35 封）。抢到锁的那个实例跑的是
+// 另一个 schema 的数据，对生产毫无意义。
+//
+// schema 在连接上现查而不是从配置读，是因为 Store 结构体里没有 schema 字段
+// （schema 是 db.New 用来钉 search_path 的，没有传进各模块），而
+// current_schema() 返回的正是该连接实际生效的 search_path 第一项——
+// 问「我现在连的是哪个 schema」这件事，问库最不容易答错。
+//
+// ## 升级窗口（必须知道，否则会引入更糟的故障）
+//
+// 键里加了 schema 之后，**新旧两版二进制用的是不同的键**。若只把生产实例
+// 升级、另一个实例还跑旧版，两边就不再互相排斥——反而会同时跑一轮，
+// 造成重复推送。所以升级必须让共用同一个 schema 的实例一起换到新二进制；
+// 混用期间的正确做法是别让它们同时排 08:00。
+// COALESCE 到 'public'：current_schema() 只在 search_path 为空时返回 NULL，
+// 而那恰好就是「没做 schema 隔离」的旧部署（db.New 在 schema=="" 时不加
+// search_path）。在 SQL 里处理掉，而不是扫进 Go 变量后再判空——
+// pgx 把 NULL 扫进 *string 是**报错**，那种写法会让兜底分支永远走不到，
+// 留下一段声称处理了 NULL、实际不可达的代码。
+const dailyPipelineLockKeyQuery = `SELECT COALESCE(current_schema(), 'public')`
+
+func dailyPipelineLockKey(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}) (string, error) {
+	var schema string
+	if err := q.QueryRow(ctx, dailyPipelineLockKeyQuery).Scan(&schema); err != nil {
+		return "", err
+	}
+	return schema + ":" + DailyPipelineLockKey, nil
+}
 
 // DailyPipelineLockState 描述取每日定时流水线跨进程锁的结果。
 //
@@ -72,9 +118,17 @@ func (s *Store) TryLockDailyPipeline(ctx context.Context) (release func(), state
 	if err != nil {
 		return nil, DailyPipelineLockUnavailable, fmt.Errorf("email: acquire lock connection: %w", err)
 	}
+	// 锁键带 schema，且必须在**这条连接上**查：它的 search_path 才是这个
+	// 实例真正工作的 schema。查失败按 Unavailable 处理——锁机制已经不完整，
+	// 此时若当成「取到了」就等于没加锁。
+	lockKey, err := dailyPipelineLockKey(ctx, conn)
+	if err != nil {
+		conn.Release()
+		return nil, DailyPipelineLockUnavailable, fmt.Errorf("email: resolve daily pipeline lock key: %w", err)
+	}
 	var got bool
 	if err := conn.QueryRow(ctx,
-		`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, DailyPipelineLockKey,
+		`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, lockKey,
 	).Scan(&got); err != nil {
 		conn.Release()
 		return nil, DailyPipelineLockUnavailable, fmt.Errorf("email: try daily pipeline lock: %w", err)
@@ -83,7 +137,10 @@ func (s *Store) TryLockDailyPipeline(ctx context.Context) (release func(), state
 		conn.Release()
 		return nil, DailyPipelineLockBusy, nil
 	}
-	return func() { releaseDailyPipelineLock(conn) }, DailyPipelineLockAcquired, nil
+	// release 必须用**当初实际加锁的那个键**：用常量 DailyPipelineLockKey
+	// 去解锁一个带 schema 前缀的键会返回 false，于是走兜底销毁连接——
+	// 每轮都白白毁掉一条连接，且解锁失败的真实原因（键对不上）被掩盖。
+	return func() { releaseDailyPipelineLock(conn, lockKey) }, DailyPipelineLockAcquired, nil
 }
 
 // releaseDailyPipelineLock 解锁并归还连接。
@@ -92,7 +149,7 @@ func (s *Store) TryLockDailyPipeline(ctx context.Context) (release func(), state
 // 下一个借用这条连接的查询会继承这把锁——而那可能是几小时后的另一轮流水线，
 // 于是每日流水线被永久锁死，且没有任何错误日志指向真正的原因。
 // 所以解锁失败时必须销毁连接（服务端随之自动释放会话锁），绝不归还。
-func releaseDailyPipelineLock(conn *pgxpool.Conn) {
+func releaseDailyPipelineLock(conn *pgxpool.Conn, lockKey string) {
 	if conn == nil {
 		return
 	}
@@ -101,7 +158,7 @@ func releaseDailyPipelineLock(conn *pgxpool.Conn) {
 	defer cancel()
 	var unlocked bool
 	err := conn.QueryRow(unlockCtx,
-		`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, DailyPipelineLockKey,
+		`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, lockKey,
 	).Scan(&unlocked)
 	if err == nil && unlocked {
 		conn.Release()
