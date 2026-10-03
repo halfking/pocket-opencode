@@ -9,7 +9,6 @@ import assert from 'node:assert/strict'
 import {
   notificationSourceLabel,
   NOTIFICATION_SOURCE_KEYS,
-  INTERNAL_KEY_RE,
 } from '../sourceLabels.ts'
 
 // 假装成 vue-i18n 的 t：直接把 key 回显，便于断言"到底取了哪条文案"
@@ -40,24 +39,49 @@ test('未知来源留空，而不是把内部键原样透出去', () => {
   assert.equal(notificationSourceLabel('  email  ', 'x', t), 'T(messagesHub.filter.email)', '两端空白应被容忍')
 })
 
-test('source 里混进内部键形态时同样拦住（兜底）', () => {
-  // 万一有人把 'email.important' 塞进 source 字段，也不能漏到界面上。
+test('含点的内部键被白名单拦下（靠的是白名单，不是某道正则）', () => {
+  // 这两条**过去**被挂在一条名叫「兜底」的用例下，注释声称覆盖
+  // `INTERNAL_KEY_RE` 那一道兜底。实测那是假的：把兜底整段删掉，
+  // 本文件 6 条用例照样 6/6 全绿 —— 因为含点的 raw 根本走不到兜底，
+  // 它在白名单查表（!key 就 return ''）那一步就已经被拦下了。
+  //
+  // 所以真正保护这批值的是白名单，本用例断言的也正是白名单的行为。
+  // 少写一层就少一层，但不能靠一条**名字里写着它、实际碰不到它**的用例
+  // 来假装有两层防护。
   assert.equal(notificationSourceLabel('email.important', 'x', t), '')
   assert.equal(notificationSourceLabel('a.b.c', 'x', t), '')
+
+  // 负控（实测可转红）：把未知来源**放行**（`if (!key) return ''` 改成透传 raw），
+  // 上面两条立刻转红 —— 说明本用例不是恒绿的装饰。
+  //
+  // 负控（实测可转红）：往白名单里加一个带点的键 `'email.important'`，
+  // 下一条的不变量立刻转红。
 })
 
-test('INTERNAL_KEY_RE 只认「至少两段小写点分」，不会误伤正常文案', () => {
-  for (const s of ['email.important', 'scheduledtask.weekly', 'a.b']) {
-    assert.ok(INTERNAL_KEY_RE.test(s), `应判为内部键: ${s}`)
-  }
-  for (const s of ['email', '邮件', 'Important Email', 'email-important', 'Email.Alert']) {
-    assert.equal(INTERNAL_KEY_RE.test(s), false, `不该判为内部键: ${s}`)
+test('白名单里不许出现带点的键 —— 这是「只有一层防护」成立的前提', () => {
+  // 含点的值之所以必然被拦下，是因为整张表一个带点的键都没有。
+  // 有人往表里塞一个 `email.important` 之类，这条就会转红，
+  // 逼着做决定，而不是让真机上某一行的副标题静默变空。
+  //
+  // 内部键的形态（`email.important` / `scheduledtask.weekly` / `a.b`）在
+  // 上一条用例里以实参形式钉住了，这里只钉「表里不许有点」这一条不变量。
+  for (const [src, key] of Object.entries(NOTIFICATION_SOURCE_KEYS)) {
+    assert.ok(!src.includes('.'), `白名单的来源名不许带点，否则内部键会被当合法来源放行: ${src}`)
+    // 反过来，**文案 key 本来就该带点**（它是 i18n 命名空间路径
+    // messagesHub.filter.email），所以不能对它做同样的断言 ——
+    // 写成 !key.includes('.') 会把正确的表判红（本条第一版就栽在这里，
+    // 自己把自己写红了）。别把「来源名不许有点」错误地套到 key 上。
+    assert.ok(key.includes('.'), `文案 key 应是带点的 i18n 路径: ${key}`)
   }
 })
 
-test('映射表里的每个值都必须是已存在的 i18n 命名空间', () => {
-  // 防漂移：新增来源时若拼错命名空间，vue-i18n 会静默回退成 key 本身，
-  // 于是又变成"把 key 显示给用户"——那正是我们在修的那个缺陷。
+test('映射表里的每个值都必须是 messagesHub.filter.* 下的 key', () => {
+  // 防跑偏：新增来源时若写到了别的命名空间，这条会转红。
+  // ⚠️ 这条**只**保证命名空间前缀，不保证 key 拼写正确 ——
+  //   `messagesHub.filter.emial` 这种拼错它照样放行。
+  //   key 拼错时 vue-i18n 会静默回退成 key 本身，那又变成
+  //   「把 key 显示给用户」，正是我们在修的那个缺陷。
+  //   全量 key 的存在性由仓库门禁 `npm run check:i18n` 把关，不在这里重复实现。
   for (const [src, key] of Object.entries(NOTIFICATION_SOURCE_KEYS)) {
     assert.ok(
       key.startsWith('messagesHub.filter.'),
