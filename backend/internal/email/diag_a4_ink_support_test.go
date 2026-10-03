@@ -446,41 +446,54 @@ type inkFont struct {
 	cidWidth    map[int]float64
 	defaultW    float64 // 1/1000 em
 	hasWidths   bool
+	// boundPerCode 是**每码位的宽度上界**（1/1000 em），>0 表示这份
+	// 字体的精确宽度拿不到、只能按上界算。
+	//
+	// 为什么上界够用：判据问的是「墨迹有没有越过裁切线」。把宽度算大
+	// 只会让墨迹盒变大 ⇒ 可能**误报**越界，但绝不会**漏报**。
+	// 对「这批 A4 能不能直接交财务」这个问题，误报可以逐条复核，
+	// 漏报则是直接交付事故。
+	//
+	// 取 1000（1 em）的前提：标准 14 字体（Helvetica/Times/Courier 系）
+	// 的任何字形宽度都不超过 1 em。这是本判据**唯一的字体假设**，
+	// 写在字段上，将来若要放宽必须同时改这里。
+	boundPerCode float64
 }
 
-// glyphWidthOf 返回该字节串的推进宽度（1/1000 em 单位，不含 Tc/Tw/Tfs）。
-func (f *inkFont) glyphWidthOf(s []byte) (w float64, known bool) {
+// glyphWidthOf 返回该字节串的推进宽度（1/1000 em，不含 Tc/Tw/Tfs）。
+// exact=false 表示用的是上界而非精确值。
+func (f *inkFont) glyphWidthOf(s []byte) (w float64, exact bool) {
 	if f == nil {
 		return 0, false
 	}
 	if f.twoByte {
-		if f.cidWidth == nil {
-			return 0, false
-		}
-		if len(s)%2 != 0 {
-			return 0, false
-		}
-		for i := 0; i+1 < len(s); i += 2 {
-			cid := int(s[i])<<8 | int(s[i+1])
-			gw, ok := f.cidWidth[cid]
-			if !ok {
-				gw = f.defaultW
+		if f.cidWidth != nil && len(s)%2 == 0 {
+			for i := 0; i+1 < len(s); i += 2 {
+				cid := int(s[i])<<8 | int(s[i+1])
+				gw, ok := f.cidWidth[cid]
+				if !ok {
+					gw = f.defaultW
+				}
+				w += gw
 			}
-			w += gw
+			return w, f.hasWidths
 		}
-		return w, f.hasWidths
+		// /W 没解析出来：按每 2 字节 1 个码位算上界。
+		return f.boundPerCode * float64(len(s)/2), false
 	}
-	if f.simpleWidth == nil {
-		return 0, false
-	}
-	for _, c := range s {
-		idx := int(c) - f.firstChar
-		if idx < 0 || idx >= len(f.simpleWidth) {
-			return 0, false
+	if f.simpleWidth != nil {
+		exact = true
+		for _, c := range s {
+			idx := int(c) - f.firstChar
+			if idx < 0 || idx >= len(f.simpleWidth) {
+				// 码位落在 /Widths 覆盖之外：整串退回上界，不能一半精确一半猜。
+				return f.boundPerCode * float64(len(s)), false
+			}
+			w += f.simpleWidth[idx]
 		}
-		w += f.simpleWidth[idx]
+		return w, true
 	}
-	return w, true
+	return f.boundPerCode * float64(len(s)), false
 }
 
 func resolveInkFont(xt *model.XRefTable, res types.Dict, name string) *inkFont {
@@ -503,7 +516,7 @@ func resolveInkFont(xt *model.XRefTable, res types.Dict, name string) *inkFont {
 	if err != nil || d == nil {
 		return nil
 	}
-	f := &inkFont{defaultW: 1000}
+	f := &inkFont{defaultW: 1000, boundPerCode: 1000}
 	if st := d.Type(); st != nil && *st == "Type0" {
 		f.twoByte = true
 		df, found := d.Find("DescendantFonts")
@@ -631,10 +644,18 @@ type inkPlacement struct {
 	objNr int
 	box   inkRect // 页框（BBox 经完整变换）
 	ink   inkRect // 墨迹
-	// widthUnknownCnt 是「解析不出字宽」的绘制次数；>0 时 ink 的横向右边界
-	// 只能算下界，结论强度更弱。
-	widthUnknownCnt int
-	strokeUnknown   int // 线宽未知的描边次数（未按 lw/2 外扩）
+	// root 指向「顶层放置」的下标：0 表示自己就是顶层。
+	//
+	// 为什么必须按顶层归组：pdfcpu NUp 把一张票整体放成一个 form，
+	// 而票面自己内部还有嵌套 form（背景条、表格线、文字块）。
+	// 实测一页 841.89pt 的 A4 上，顶层只有 4 个放置，嵌套碎片却有 21 个
+	// —— 按碎片各自归格会得到一堆 y 为负、无法归到任何格子的小框，
+	// 而「这张票被放在哪一格」只由顶层决定。
+	root int
+	// boundedCnt 是「按 1 em 上界算宽度」的绘制次数：这类绘制的墨迹盒是
+	// **上界**，可能误报越界，但不会漏报。
+	boundedCnt    int
+	strokeUnknown int // 线宽未知的描边次数（未按 lw/2 外扩）
 }
 
 // inkPageResult 是一张 A4 输出页的结果。
@@ -692,7 +713,7 @@ func (w *inkWalker) failf(format string, args ...any) bool {
 }
 
 func (w *inkWalker) walk(res types.Dict, content []byte, ctm inkMat,
-	pl *inkPlacement, page *inkPageResult, depth int) (ok bool) {
+	pl *inkPlacement, page *inkPageResult, depth int, parentRoot int) (ok bool) {
 	if depth > inkMaxDepth {
 		return false
 	}
@@ -750,13 +771,13 @@ func (w *inkWalker) walk(res types.Dict, content []byte, ctm inkMat,
 		// 再乘一次等于把平移加两遍（第一版真踩了，坐标 200 → 400）。
 		full := inkMul(tm, ctm)
 		ax, ay := inkApply(full, 0, fs.rise)
-		w1000, known := fs.font.glyphWidthOf(raw)
+		w1000, exact := fs.font.glyphWidthOf(raw)
 		adv := (w1000/1000*fs.size + fs.charSpace*float64(len(raw)) + fs.wordSpanned(raw)) * fs.hScale
 		bx, by := inkApply(full, adv, fs.rise)
 		record(inkRectOfPoints([]inkRect{{ax, ay, ax, ay}, {bx, by, bx, by}}).
 			grow(fs.size * inkInflateFs))
-		if !known && pl != nil {
-			pl.widthUnknownCnt++
+		if !exact && pl != nil {
+			pl.boundedCnt++
 		}
 	}
 
@@ -919,7 +940,9 @@ func (w *inkWalker) walk(res types.Dict, content []byte, ctm inkMat,
 			if idx < 1 || toks[idx-1].kind != inkName {
 				return false
 			}
-			if !w.walkXObject(res, toks[idx-1].str, ctm, page, depth, record) {
+			// parentRoot 必须**传下去**：顶层调用传 -1，嵌套调用传本层的 root，
+			// 否则票面内部的子 form 全被当成顶层放置（实测一页 4 顶层 + 21 碎片）。
+			if !w.walkXObject(res, toks[idx-1].str, ctm, page, depth, record, parentRoot) {
 				return false
 			}
 		case "BI":
@@ -984,7 +1007,7 @@ func inkTJItems(toks []inkTok, idx int) ([]inkTJItem, bool) {
 }
 
 func (w *inkWalker) walkXObject(res types.Dict, name string, ctm inkMat,
-	page *inkPageResult, depth int, record func(inkRect)) bool {
+	page *inkPageResult, depth int, record func(inkRect), parentRoot int) bool {
 	if res == nil {
 		return false
 	}
@@ -1055,17 +1078,22 @@ func (w *inkWalker) walkXObject(res types.Dict, name string, ctm inkMat,
 		}
 	}
 	ctm2 := inkMul(ctm, m)
+	pi := len(page.placements)
+	root := pi
+	if parentRoot >= 0 {
+		root = parentRoot
+	}
 	pl := inkPlacement{
 		objNr: -1,
 		box:   inkRectOfCorners(ctm2, bb),
 		ink:   inkEmpty(),
+		root:  root,
 	}
 	// BBox 默认就有内容，不递归也会记下「这里放过东西」。
 	if !pl.box.valid() {
 		return false
 	}
 	page.placements = append(page.placements, pl)
-	pi := len(page.placements) - 1
 	fr, found := sd.Find("Resources")
 	var fres types.Dict
 	if found && fr != nil {
@@ -1084,7 +1112,7 @@ func (w *inkWalker) walkXObject(res types.Dict, name string, ctm inkMat,
 			return false
 		}
 	}
-	if !w.walk(fres, sd.Content, ctm2, &page.placements[pi], page, depth+1) {
+	if !w.walk(fres, sd.Content, ctm2, &page.placements[pi], page, depth+1, root) {
 		return false
 	}
 	// form 内容**必须**按 /BBox 裁剪（PDF 32000-1 8.10.1：BBox 界定 form

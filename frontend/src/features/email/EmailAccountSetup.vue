@@ -171,7 +171,7 @@ import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue
 import { isLocalTestAddress } from './providers'
 import * as emailsStore from './emails-store'
 import type { EmailAccount } from './emails-store'
-import { emailApi } from '../../api/email'
+import { emailApi, isStaleWriteError } from '../../api/email'
 import type { EmailAccount as ApiEmailAccount, EmailCredentialInput } from '../../api/email'
 import { ApiError } from '../../api/http'
 import { useConfirm } from '../../composables/useConfirm'
@@ -329,6 +329,22 @@ function validate(): string | null {
 }
 
 /**
+ * 本次编辑所基于的那一版的 updatedAt（LWW 基准）。
+ *
+ * 取自 cloudAccounts 里该账户**最近一次拉取**的快照 —— 也就是用户眼前
+ * 看到的那份表单数据的版本，不是正在编辑的新值。
+ *
+ * 这里显式给 0 而不是在快照缺失时省略：编辑态一定有对应账户（新增走的是
+ * addAccount 分支，不会到这里），而传 0 会让服务端按 baseUpdatedAt<=0
+ * 退化成无条件覆盖。宁可让服务端 409 拒掉，也不要静默覆盖别人的新配置。
+ */
+function editingBaseUpdatedAt(): number {
+  const id = editId.value
+  if (!id) return 0
+  return cloudAccounts.value.get(id)?.updatedAt ?? 0
+}
+
+/**
  * 构造 PUT 的 SMTP 部分。后端约定：只有携带 smtpHost 才会写 SMTP 列。
  *
  *   - host 非空                → 写 host+port，凭证按下面规则
@@ -386,7 +402,7 @@ async function onTestSmtp() {
   }
   smtpTesting.value = true
   try {
-    await emailApi.updateAccount(editId.value, buildSmtpPatch())
+    await emailApi.updateAccount(editId.value, buildSmtpPatch(), editingBaseUpdatedAt())
     await refreshCloudSnapshot()
     const r = await emailApi.testSmtp(editId.value)
     testOk.value = true
@@ -395,8 +411,17 @@ async function onTestSmtp() {
     form.clearSmtpCredential = false
   } catch (e) {
     testOk.value = false
-    const status = e instanceof ApiError ? `HTTP ${e.status} ` : ''
-    testMsg.value = `SMTP 测试失败：${status}${apiError(e, '未知错误')}`
+    // 409 = LWW 守卫拒绝：服务端那份更新，本次改动没写进去，且**不该**重试
+    // （需求是「以最后修改时间为准」，服务端更新就是胜出的一方）。
+    // 混进下面的通用文案会显示成「SMTP 测试失败：HTTP 409 ...」，
+    // 让用户以为是 SMTP 参数错了 —— 实际错的是版本冲突。
+    if (isStaleWriteError(e)) {
+      testMsg.value = '服务端这份配置已更新，本次改动未写入，已为你刷新为服务端版本'
+      await refreshCloudSnapshot()
+    } else {
+      const status = e instanceof ApiError ? `HTTP ${e.status} ` : ''
+      testMsg.value = `SMTP 测试失败：${status}${apiError(e, '未知错误')}`
+    }
   } finally {
     smtpTesting.value = false
   }
@@ -424,7 +449,7 @@ async function testAndSave() {
         patch.password = form.credential
       }
       Object.assign(patch, buildSmtpPatch())
-      await emailApi.updateAccount(editId.value, patch)
+      await emailApi.updateAccount(editId.value, patch, editingBaseUpdatedAt())
       testOk.value = true
       testMsg.value = describeSaveResult()
     } else {
@@ -473,6 +498,14 @@ async function testAndSave() {
     showForm.value = false
   } catch (e) {
     testOk.value = false
+    // 409 = LWW 守卫拒绝，与「连接失败」无关：服务端那份配置更新，本次改动
+    // 没写进去且不该重试。混进下面的文案会显示成「连接失败（HTTP 409）」，
+    // 把版本冲突误报成网络/凭证问题。
+    if (isStaleWriteError(e)) {
+      testMsg.value = '服务端这份配置已更新，本次改动未写入，已为你刷新为服务端版本'
+      await refreshCloudSnapshot()
+      return
+    }
     // 状态码是可行动的诊断信息（404 / 535 / 401 各指向不同处理），保留；
     // 但 message 是后端原文（可能是英文技术串），交给 apiError 映射成用户文案。
     const status = e instanceof ApiError ? `（HTTP ${e.status}）` : ''

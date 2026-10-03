@@ -232,7 +232,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { emailApi, type EmailAccount, type VacationReply } from '../../api/email'
+import { emailApi, isStaleWriteError, type EmailAccount, type VacationReply } from '../../api/email'
 import type { EmailRuleActionName, EmailRuleActionSpec, EmailRuleEntry } from '../../api/email'
 import { parseRules, isLegacyRules, serializeRules } from './rules-format'
 import { syncAccountsFromServer } from './account-sync'
@@ -340,16 +340,31 @@ function setActionParam(r: EmailRuleEntry, name: EmailRuleActionName, key: 'cate
   )
 }
 
+/**
+ * LWW 守卫拒绝（409）时的统一处理：提示 + 重新拉取。
+ *
+ * 需求要的是「以最后修改时间为准更新旧的一方」，所以服务端那份更新时
+ * **本次改动不该写入**，用户看到的就是服务端版本 —— 不能只弹一句
+ * 「保存失败」，否则用户会以为是自己操作有误而反复重试。
+ * 返回 true 表示这个错误已被处理，调用方不要再走通用 toast.error。
+ */
+async function handleStaleWrite(e: unknown): Promise<boolean> {
+  if (!isStaleWriteError(e)) return false
+  toast.warning('服务端这份配置更新，本次改动未写入，已为你刷新为服务端版本')
+  await loadAll()
+  return true
+}
+
 async function saveRules(a: EmailAccount) {
   const payload = serializeRules(rulesOf(a))
   savingRulesId.value = a.id
   try {
-    const updated = await emailApi.updateAccount(a.id, { rules: payload } as any)
+    const updated = await emailApi.updateAccount(a.id, { rules: payload } as any, a.updatedAt ?? 0)
     // 同步本地账户（避免重新拉取后编辑态丢失）
     Object.assign(a, updated)
     toast.success(`已保存「${a.displayName}」过滤策略（${payload.rules.length} 条）`)
   } catch (e: any) {
-    toast.error(apiError(e, 'errors.saveFailed'))
+    if (!(await handleStaleWrite(e))) toast.error(apiError(e, 'errors.saveFailed'))
   } finally {
     savingRulesId.value = ''
   }
@@ -359,11 +374,11 @@ async function saveRules(a: EmailAccount) {
 
 async function toggleEnabled(a: EmailAccount, enabled: boolean) {
   try {
-    const updated = await emailApi.updateAccount(a.id, { enabled })
+    const updated = await emailApi.updateAccount(a.id, { enabled }, a.updatedAt ?? 0)
     Object.assign(a, updated)
     toast.success(enabled ? `已启用 ${a.displayName}` : `已停用 ${a.displayName}`)
   } catch (e: any) {
-    toast.error(apiError(e, 'errors.operateFailed'))
+    if (!(await handleStaleWrite(e))) toast.error(apiError(e, 'errors.operateFailed'))
   }
 }
 
@@ -420,11 +435,11 @@ async function saveInterval(a: EmailAccount, raw: string) {
     return
   }
   try {
-    const updated = await emailApi.updateAccount(a.id, { syncIntervalMin: v })
+    const updated = await emailApi.updateAccount(a.id, { syncIntervalMin: v }, a.updatedAt ?? 0)
     Object.assign(a, updated)
     toast.success('已保存同步间隔')
   } catch (e: any) {
-    toast.error(apiError(e, 'errors.saveFailed'))
+    if (!(await handleStaleWrite(e))) toast.error(apiError(e, 'errors.saveFailed'))
   }
 }
 

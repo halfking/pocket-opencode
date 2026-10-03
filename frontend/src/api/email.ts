@@ -2,10 +2,28 @@
  * Email assistant API — multi-account IMAP aggregation, AI classification,
  * and daily summaries. See docs/2026-07-02-email-assistant-design.md.
  */
-import { http, LONG_REQUEST_TIMEOUT_MS } from './http'
+import { http, LONG_REQUEST_TIMEOUT_MS, ApiError } from './http'
 import { assertNotHTML } from './jsonGuard'
 import { resolveRuntimeApiBase } from '../config/api-base'
 import { useAuthStore } from '../stores/auth'
+
+/**
+ * isStaleWriteError 判断一次失败是不是「LWW 守卫拒绝」。
+ *
+ * 服务端语义：客户端带的 baseUpdatedAt 比服务端这一行的 updated_at 旧
+ * ⇒ 服务端那份更新 ⇒ 409 + body.updatedAt（服务端当前值）。
+ * 调用方据此**不要重试**，而应刷新本地镜像 —— 需求要的是「新的胜出」，
+ * 而不是「我一定要写进去」。
+ *
+ * 注意服务端**确实**在 409 body 里回 updatedAt（server_assistant.go 的
+ * ErrStaleWrite 分支），但现有三个处理点（设置页 3 处、账户向导 2 处、
+ * outbox 回放 1 处）都是重新拉全量列表来覆盖本地，用不到这个单值，
+ * 所以没有为它导出取值函数（check:dead-api 会把无调用方的导出判为死能力）。
+ * 若将来出现只需要单值、不想重拉全量的场景，再从这里取。
+ */
+export function isStaleWriteError(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 409
+}
 
 /**
  * 邮件流水线（收信 → 清垃圾 → 重要提醒 → 发票采集 → 飞书/汇总）的客户端超时。
@@ -328,9 +346,34 @@ export const emailApi = {
    * SMTP 语义（与后端 updateEmailAccount 一致）：
    *   - 只有携带 smtpHost 时后端才会写 SMTP 列；单独传 smtpPort/smtpPassword 无效。
    *   - smtpPassword 省略 → 保留原凭证；传 '' → 清空凭证；传非空 → 重新加密写入。
+   *
+   * ## baseUpdatedAt 是**必填**的，不是可选优化
+   *
+   * 需求原文：「这个信息有最后修改时间，在服务端与客户端中，以最后时间为准
+   * 来更新旧的一方。」服务端据此实现 LWW：`UpdateAccountLWTScoped` 拿
+   * `baseUpdatedAt` 做守卫（`WHERE ... updated_at <= $base`），服务端这一行在
+   * 客户端上次读到之后被别人改过时返回 409 + 它当前的 `updatedAt`
+   * （见 `email/store.go` 的 ErrStaleWrite 与 server_assistant.go 的 409 分支）。
+   *
+   * 漏传的后果不是「少一个保护」，而是**保护整个失效**：
+   * `baseUpdatedAt <= 0` 时服务端直接退化成无条件覆盖（store.go 的显式分支），
+   * 于是行为变回 last-write-by-arrival —— 离线客户端回传的旧配置会把服务端的
+   * 新配置冲掉，正是那段注释记录的原始 bug。所以这里用**必填参数**而不是可选
+   * 参数：想改这份配置，就必须先说清自己编辑的是哪一版。
+   *
+   * 注意必填参数只挡「漏传」，**挡不住「传 0」** —— 实测把某个调用点的第三参
+   * 改成 0，vue-tsc 依然全绿，而 0 正是退化成无条件覆盖的那个值。所以调用点
+   * 的第三参必须是真实的基准版本（本地快照的 updatedAt），不要图省事写 0。
    */
-  updateAccount(id: string, patch: Partial<EmailAccount> & EmailCredentialInput): Promise<EmailAccount> {
-    return http(`/api/email/accounts/${id}`, { method: 'PUT', body: JSON.stringify(patch) })
+  updateAccount(
+    id: string,
+    patch: Partial<EmailAccount> & EmailCredentialInput,
+    baseUpdatedAt: number,
+  ): Promise<EmailAccount> {
+    return http(`/api/email/accounts/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ ...patch, updatedAt: baseUpdatedAt }),
+    })
   },
   deleteAccount(id: string): Promise<void> {
     return http(`/api/email/accounts/${id}`, { method: 'DELETE' })
