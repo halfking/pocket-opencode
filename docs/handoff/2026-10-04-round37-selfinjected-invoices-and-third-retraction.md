@@ -1325,3 +1325,51 @@ marketing 67 封的评分分布：
 ⇒ 待拍板项可以降级：从「阻塞重出」降为「将来解析不出日期时的兜底口径」。
 
 本节全部只读：未改文件名、未删孤儿文件、未改数据库。
+## 二十五、需求「多次操作才能下载」：状态机实测在跑（2026-10-04 05:1x）
+
+需求原文：「有可能我们需要多次操作才能下载到发票文件」。这是八条里最后
+一条从未验过的，本节拿真实数据 + 代码查清了它的实现与实际表现。
+
+### 25.1 实现是完整的，不是「有没有重试」这种程度
+
+`invoice_harvest.go` 明确对应该需求（第 30-31 行），且实现远超字面要求：
+
+- `MaxInvoiceAttempts = 8`：超限转 `failed` 终态；
+- `MaxInvoicesPerHarvestRound = 20`：单轮预算，其余顺延（status 仍是 pending）；
+- `markRetry`：未成功一律回 pending 等下一轮；
+- **POP3 来源取原文失败直接判 failed**（没有可重试路径，重试只会再失败，
+  还会占掉单轮预算）；
+- **退化 PDF（69 B、只有 Catalog 无页树）走重试而不是当成功**——
+  `saveInvoiceFile` 里用 `pdfHasPages` 挡，注释明写「拿回来不是发票就该重试，
+  而不是当成下载成功」，正是需求这句话；
+- `Attempts++` 前置到**取原文之前**（含 BodyCache 命中 / POP3 自愈 / IMAP FETCH
+  三条路径）。注释记录了它曾只写在 IMAP 分支，导致命中缓存的发票状态机
+  永不前进、每轮占满预算的「僵尸发票」事故。
+
+### 25.2 真实数据证明重试真的发生过
+
+    status     | attempts | n | file_source
+    downloaded | 1        | 3 | attachment
+    downloaded | 1        | 1 | pdf-url
+    downloaded | **2**    | 2 | zip-pdf      ← 重试后成功
+    pending    | 1        | 1 | (none)
+
+两行 `attempts=2` 的是那两张通行费票（file_source=zip-pdf）：
+先在 zip 分支失败一次，下一轮拿到 PDF 成功。**这就是需求那句话的真实样本。**
+
+### 25.3 顺带查清 58000 那行的 last_error
+
+    inv_1790903383222583800_1  attempts=1  status=pending
+    last_error: 发票链接未能取到 PDF 文件：http://www.icbc.com.cn/icbc/…/default.htm -> not…
+
+即：它之所以被反复当发票重试，是因为正文里有个 icbc 的链接、而该链接
+返回的不是 PDF。**根子仍在判定**（对账单被当成发票），不在重试机制；
+重试机制本身行为正确 —— 拿不到就重试，超限才转 failed。
+
+### 25.4 结论
+
+需求第 6 条**已实现且实测在跑**，不需要改动。要动的是它上游的判定：
+`admitDebtNotice` 那条闸门（见第十六/二十节）已经在拦对账单，
+存量那行是闸门修复前的产物。
+
+本节只读：未触发任何重试、未改数据库。
