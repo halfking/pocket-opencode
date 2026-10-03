@@ -175,8 +175,31 @@ function go(to: string) {
 
 <style scoped>
 .more-hub {
+  /* ⚠️ 2026-10-03 真机实测修的缺陷：这一页**根本滚不动**，
+   * 「运维与高级」分组有 8 项，真机上只有前 2 项露得出来。
+   *
+   * 证据（Xiaomi 2411DRN47C / 720x1640）：
+   *   连续 3 次上滑（三种不同起点与时长），前后截图**逐字节相同**；
+   *   截图显示内容明显溢出视口（运维组被底部导航切断，只剩「设置」半行），
+   *   而页面纹丝不动。⇒ 会话 / 任务 / 成本与配额 / 网关节点 / 选择服务器 /
+   *   导入导出 这 6 个入口对真实用户**永久不可达**（不是测试工装问题，是产品缺陷）。
+   *
+   * 机制与 NotesHubView 是同一个：/more 的路由 meta 声明了 `scrollMode:'self'`，
+   * 而 AppLayout 对 scroll-self 路由把外层滚动关掉
+   * ——`.content.scroll-self { overflow-y: hidden }`，契约是「视图自己滚」；
+   * 可本容器既没有 `height:100%` 也没有 `overflow-y:auto`，于是内容超出后
+   * 既滚不动、也点不到。
+   *
+   * 形状照抄同族已验证可用的写法（NotesHubView 的 .notes-hub、
+   * TasksView 的 .ai-view）：有界 flex 列 + 自己就是滚动容器。
+   * `min-height:0` 不能省：flex 子项默认 min-height:auto，会拒绝缩到
+   * 容器高度以下，那样 height:100% 形同虚设。 */
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   gap: var(--space-5);
   padding-bottom: var(--space-3);
 }

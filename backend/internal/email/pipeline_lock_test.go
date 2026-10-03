@@ -43,6 +43,28 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// testDailyPipelineLockKey 取这个 store **实际**会用的锁键。
+//
+// 必须调生产实现 dailyPipelineLockKey，不能在测试里自己拼
+// `schema + ":" + DailyPipelineLockKey`：后者正是 mime.go:117 注释里记的那个坑的
+// 翻版——测试自己手搓出那行字符串，于是把生产代码里的 schema 前缀删掉，
+// 下面这两条用例照样全绿，测的是测试自己写的键。
+func testDailyPipelineLockKey(t *testing.T, store *Store) string {
+	t.Helper()
+	key, err := dailyPipelineLockKey(context.Background(), store.pool)
+	if err != nil {
+		t.Fatalf("resolve daily pipeline lock key: %v", err)
+	}
+	// 判据自检：键里必须还带着基础键，否则说明键的构造变了，两条探针会
+	// 在 pg_locks 里数到 0 行，下面所有断言都变成恒真。
+	if !strings.Contains(key, DailyPipelineLockKey) {
+		t.Fatalf("resolved lock key %q does not contain the base key %q — the key "+
+			"construction changed, so these probes would count zero pg_locks rows "+
+			"and every assertion below would be vacuously true", key, DailyPipelineLockKey)
+	}
+	return key
+}
+
 // lockProbeOnFreshConn 在一条"刚取出来"的连接上直接问 PG：这把锁此刻被谁拿着。
 //
 // ⚠ 这条**只**在"持锁的那条连接还活着、没被归还进池子"的前提下有效。
@@ -63,7 +85,7 @@ func lockProbeOnFreshConn(t *testing.T, store *Store) bool {
 	defer conn.Release()
 	var got bool
 	if err := conn.QueryRow(ctx,
-		`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, DailyPipelineLockKey,
+		`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, testDailyPipelineLockKey(t, store),
 	).Scan(&got); err != nil {
 		t.Fatalf("probe lock: %v", err)
 	}
@@ -71,7 +93,7 @@ func lockProbeOnFreshConn(t *testing.T, store *Store) bool {
 	if got {
 		var unlocked bool
 		if err := conn.QueryRow(ctx,
-			`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, DailyPipelineLockKey,
+			`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, testDailyPipelineLockKey(t, store),
 		).Scan(&unlocked); err != nil {
 			t.Fatalf("probe unlock: %v", err)
 		}
@@ -101,7 +123,7 @@ func advisoryLockHolders(t *testing.T, store *Store) int {
 		   AND classid = ((hashtextextended($1, 0) >> 32) & 4294967295)
 		   AND objid   =  (hashtextextended($1, 0) &  4294967295)
 		   AND objsubid = 1
-		   AND granted`, DailyPipelineLockKey)
+		   AND granted`, testDailyPipelineLockKey(t, store))
 	if err != nil {
 		t.Fatalf("query pg_locks: %v", err)
 	}

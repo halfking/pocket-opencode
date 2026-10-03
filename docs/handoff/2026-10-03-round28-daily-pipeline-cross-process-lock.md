@@ -917,7 +917,7 @@ B 的修法里**刻意不加裸 `amount`**：`IssuItemInformation/Amount` 是不
 **仍未验证（不记为已完成）**
 
 - 08:00 那一轮的**真实执行结果**（含 §7.7.7 的锁归属）：新代码第一次上生产，
-  结果待 08:20 核对。
+  结果待 08:20 核对。**→ 已在 §7.9 核对完毕：生产实例输掉锁，整轮跳过。**
 - **飞书推送**：凭据四项缺失，真实环境一次没跑过，整条链路唯一完全未验证环节。
 - **A4 拼版 / 按币种汇总 / 下载**：代码与端点本就齐全，本轮未改动，
   也**未在真实发票集合上端到端跑过**。**→ 已在 §7.8 用两封真实通行费票跑通。**
@@ -971,6 +971,128 @@ B 的修法里**刻意不加裸 `amount`**：`IssuItemInformation/Amount` 是不
 2. `SumByCurrency` 夹在「判据」与「调用方」之间，谁都可以绕过它。
    若哪天有人直接 `SumByCurrency(全部发票)`，合计会静默虚高。
    本轮用例的「调用方口径 vs LedgerRows 口径」断言就是为这条设的。
+
+---
+
+### 7.9 08:00 实际结果、15:10 手工补跑，以及补跑暴露的一个真缺陷
+
+#### 7.9.1 08:00：生产实例**输掉了**锁，整轮跳过
+
+```
+08:00:00 [email/pipeline] 每日定时流水线跨进程锁已被其它实例持有，本轮跳过
+08:00:00 [email/scheduler] pipeline finished with 1 errors:
+         [daily pipeline already running in another instance; skipped]
+08:00:00 [email/scheduler] pipeline scheduled at 2026-10-04T08:00:00+08:00
+```
+
+align 实例（18102）跑完了全程：
+
+```
+08:01:03 [email/pipeline] done synced=5 new=4 spam=0(+0 local) reminders=43
+         inv={Processed:10 Downloaded:10 Pending:0 Failed:0 Skipped:0} feishu=0/0 errors=0
+```
+
+**生产库在 08:00 后逐项未变**（07:52 基线 vs 08:01 复测，七个指标全同），
+两封通行费仍无建档行 ⇒ 既证实生产实例被挡下，也证实 align 的写入
+没有污染生产 schema。
+
+但 align 那一轮**在真实定时流水线里把两封通行费处理对了**：
+
+```
+交通-通行费发票通知-19.00-2026-09-14-26337903130900517835.pdf  source=zip-pdf
+交通-通行费发票通知-5.61-2026-09-14-26337904450900255091.pdf   source=zip-pdf
+```
+
+发票号两两不同（车牌号冒充发票号的缺陷已消除，不会被去重吞掉一张）、
+金额正确、`source=zip-pdf` 说明存的是 ZIP 里的票面而非 45KB 汇总单。
+`source=zip-pdf` 这个取值只有 `invoice_zip.go` 才会产生，所以那个二进制
+确实带着本轮修复。⇒ **本轮修复在真实流水线里被验证了，只是不在生产 schema。**
+
+#### 7.9.2 15:10 手工补跑（用户显式授权，走真实登录）
+
+并发会话的 18102 已退出，现在只有 18099 独自在跑，锁竞争自行消解。
+用 `POST /api/email/pipeline/run`（`logs/zz-run-pipeline.mjs`）补了一轮：
+真实 `/api/auth/login` 取 token（不伪造身份），先打 `/api/auth/me` 自证
+token 有效再发写操作，200 / 53.9s。
+
+**基线必须在执行点重测**：07:52 的基线到 15:09 已漂（emails 180 → **182**，
+这 7 小时来了 2 封新邮件）。拿 07:52 当对照会把自然增长误读成流水线效果。
+
+| 指标 | 15:09 补跑前 | 15:10 补跑后 | 判定 |
+|---|---|---|---|
+| emails | 182 | 182 | 未变 |
+| `notified_at=0` | 158 | **123** | −35 = pending_high 全清 |
+| `notified_at>0` | 24 | **59** | +35 |
+| notifications | 24 | **59** | +35，**单实例，无重复推送**（多实例会是 129） |
+| pending_high | 35 | **0** | 全清 |
+| email_invoices | 4 | 7 | +3（报告 `invoiceCandidatesCreated: 3`） |
+| 计入合计 | 1 | 6 | 与 7 行里 1 行 pending 吻合 |
+
+两封通行费：
+
+```
+downloaded  19.00  26337903130900517835  zip-pdf  交通-通行费电子发票-19.00-2026-09-14-…pdf
+downloaded   5.61  26337904450900255091  zip-pdf  交通-通行费电子发票-5.61-2026-09-14-…pdf
+```
+
+#### 7.9.3 ⚠️ 补跑暴露一个**真缺陷**：「对方单位」是发件人显示名，不是开票方
+
+生产实测 `seller = 通行费电子发票`（= 真实邮件的 `from_name`），
+而 XML 里的权威 `SellerName` 是 `浙江沪杭甬高速公路股份有限公司`。
+需求原文 `{费用类型}-{对方单位}-{金额}-{日期}.pdf` 里的「对方单位」直接是错的，
+交付财务时拿不到真实开票方。
+
+**根因**（`xmlinvoice.go` / `invoice_harvest.go`）：
+
+- `invoice.go:717` 只给 **FromName/FromAddress 兜底**打 `sellerIsFallback`；
+- `xmlinvoice.go:223` 只在 `inv.Seller == "" || inv.sellerIsFallback` 时
+  才让 XML 的 `SellerName` 覆盖；
+- `sellerIsFallback` 是**非导出**字段（不能导出+`json:"-"`，会被
+  `TestWireTagGuard_ExportedFieldsHaveJSONTags` 判红），因此**不落库**；
+- `HarvestAll` 走 `ListHarvestableInvoices`，**每张发票都过一次数据库往返**
+  ⇒ 读回来的 `Invoice` 上该标记恒为 `false`
+  ⇒ 那个条件恒为「seller 非空 **且** 不是兜底」
+  ⇒ **XML 里的真实开票方永远顶不掉 FromName。**
+
+**为什么上一轮的离线验收没抓到**：那些用例把内存里刚解析出来的
+`Invoice` **直接**交给 `harvestOne`，从未过数据库。这是「夹具形态会骗人」
+的又一例——这次骗人的不是字段形态，而是**数据通路**。同一段业务代码，
+「内存 → harvestOne」和「落库 → 读回 → harvestOne」结论相反。
+
+**修法**：新增 `rederiveSellerFallback(inv, em)`，在 `harvestOne` 拿到
+`em` 之后、**任何** `mergeXMLFields` 之前重新判定——只与
+**FromName / FromAddress** 比对（逐字对应打标记的那一条分支）。
+**刻意不比对 Subject**：从主题「来自XX的发票」解析出的单位名是**真证据**，
+而真实数据里主题常常与 FromName 相同（本例就是），一旦把主题纳入判定，
+真证据与兜底就再也分不开。
+
+**回归用例**（`invoice_seller_fallback_roundtrip_test.go`）刻意走
+「落库 → `ListInvoicesScoped` 读回 → harvestOne」这条**生产同款**通路。
+
+**负控实测转红**（摘掉 `rederiveSellerFallback` 一行），
+且复现出的文件名与生产库里那条**同形**：
+
+```
+FAIL 过库之后再采集，seller = "通行费电子发票", want 浙江沪杭甬高速公路股份有限公司
+FAIL 规范文件名 "其他-通行费电子发票-5.61-20260914094742000-26337904450900255091.pdf"
+     里仍是发件人显示名，不是开票方
+```
+
+⇒ 测试转红的原因与生产出错的原因确实是同一个，不是碰巧。
+
+#### 7.9.4 本节遗留（不记为已完成）
+
+- **`§7.9.3` 的修法尚未进生产**：需要重建 + 重启 18099 才生效；
+  库里那两行的 `seller` 目前仍是错的，要靠重跑采集修正。
+- **飞书推送**：凭据四项仍缺（用户只给过 checkbox，从未给凭据内容），
+  补跑报告里 `feishuSkip` 明写「本轮不会推任何发票到飞书」。
+  需求 3 的「发送到飞书」**整条链路至今一次没在真实环境跑过**。
+- **2 封邮件取原文失败**（`em-10443` / `em-10444`，uid 10443/10444）：
+  `via=imap-uid-fetch FAILED … matched 0 messages for uid=…`。
+  与两封通行费无关（那两封 uid 32/33 走的 body cache + zip-pdf，已成功），
+  是 IMAP UID 失效一类的独立问题，本轮未定位。
+- `huangxutao@kxpms.cn` 的 IMAP 每轮都 50s 预算耗尽后回退 POP3
+  （`read tcp …:993: i/o timeout`），稳定复现，未处理。
 
 ---
 

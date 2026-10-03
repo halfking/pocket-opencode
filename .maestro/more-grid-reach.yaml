@@ -1,0 +1,164 @@
+# Maestro 真机功能流 · 「更多」宫格入口全量可达性
+#
+# 为什么要这条：入口存在性与「入口能不能用」是两类缺陷，而后者更隐蔽。
+# 仓库里已经因此出过两次同族事故，代码注释都还留着：
+#   BUG-Q —— 有个入口写的是 '/scheduled-tasks'，而路由表里根本没这条路径，
+#           只有一个 '/settings/scheduled-tasks'。入口在、点进去空白页或 404。
+#   BUG-P —— 闪卡只保存在这个列表里，而列表挂 v-if="counts.total"，
+#           空库用户连入口都看不到（现已修）。
+# 两次的共同点：**读代码看不出入口在真机上是否可用**。
+#
+# 本 flow 把宫格当前应有的完整构成钉死，两个方向都钉：
+#   A. 该在的都在（10 个主功能 + 8 个运维项）
+#   B. **不该在的确实不在** —— 这条才是重点，见下面「密码箱」那段。
+#
+# 运行：
+#   node scripts/maestro-run.mjs .maestro/more-grid-reach.yaml
+appId: com.kaixuan.opencode.pocket
+---
+# ---------- 0. 先保证站在有底部导航的页面上 ----------
+# preflight 自称已复位到 #/ai，但 App 可能停在上一轮遗留的深链页；
+# 而 /email/:id 的 meta 是 bottomNav:false，那页树里没有首页/笔记/消息
+# ⇒ 照惯例先 assertVisible 首页会永远不可能通过（2026-10-03 15:33 实测）。
+- runFlow:
+    when:
+      notVisible: "首页"
+    commands:
+      - tapOn: "返回"
+      - waitForAnimationToEnd:
+          timeout: 3000
+- extendedWaitUntil:
+    visible: "首页"
+    timeout: 30000
+- assertVisible: "首页"
+- assertNotVisible: "密码登录"
+
+# ---------- 1. 进「更多」 ----------
+# MIUI 会吞掉底部导航 tap（报 COMPLETED 但界面没动）。
+# retryTapIfNoChange 管第一次，runFlow 补点管第二次，两个都要。
+- tapOn:
+    text: "更多|More"
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible: "更多功能"
+    timeout: 40000
+- runFlow:
+    when:
+      notVisible: "更多功能"
+    commands:
+      - tapOn: "更多|More"
+      - waitForAnimationToEnd:
+          timeout: 3000
+- extendedWaitUntil:
+    visible: "更多功能"
+    timeout: 30000
+
+# ---------- 2. 主功能宫格：10 项全在 ----------
+- assertVisible: "学习"
+- assertVisible: "对话"
+- assertVisible: "会议"
+- assertVisible: "邮箱"
+- assertVisible: "定时自动化"
+- assertVisible: "技能市场"
+- assertVisible: "智能体市场"
+- assertVisible: "本地智能体"
+- assertVisible: "工作搭子"
+- assertVisible: "闪卡"
+
+# ---------- 2b. 负向断言：密码箱在 Android 上**必须不可见** ----------
+# 这条是本 flow 判别力最强的一条。
+# 「密码箱」（/vault）受能力门控：MoreHubView 用 applyCapabilityGates 配
+# vaultUsable = await isKeystoreAvailable()，而密码箱插件的原生侧
+# (KeystorePlugin.java) 在 Android 上缺失 —— StubKeystore 的 12 个方法全 reject。
+# 代码注释写得很清楚：门控是「**真实能力**而不是静态开关」，
+# 插件真落地后入口会自动回来，不依赖假设。
+#
+# 为什么要把「不可见」写成断言：BUG-Q 那类缺陷（入口指向空白/404 页）
+# 正是「入口还在、功能其实没有」。把预期构成钉死，才能发现有人把门控摘掉
+# 或把路由改错——两种情况都会让这个入口重新出现在宫格里而实际上是坏的。
+#
+# ⚠️ **位置至关重要**：这条必须放在主功能区**还在视口内**的时候断言。
+#   运维分组在下面，滚过去之后主功能区已滚出视口，WebView 不再把它们放进树里，
+#   于是 `assertNotVisible: 密码箱` 会**恒真** —— 判据失明，绿灯不再携带信息。
+- assertNotVisible: "密码箱"
+
+# ---------- 3. 运维与高级分组（逐项滚到视口内再断言）----------
+# ⚠️ 2026-10-03 15:53 实测修正：原先只 scrollUntilVisible 到分组标题「运维与高级」，
+#   然后一口气 assert 剩下 7 项，红在「会话」。
+#   失败现场的可访问性树里运维组**只到「设置 | 实例」**为止 —— 后面的项在视口外，
+#   WebView 压根没把它们放进树里。Maestro 的可见性判定是**视口内**，不是 DOM 内，
+#   所以「存在但没滚到」与「不存在」在断言里长得一模一样。
+#   ⇒ 必须**逐项**滚到可见再断言。用固定次数的 swipe 不行：滚动距离依赖
+#     设备分辨率与行高，换一台机就错位。
+- scrollUntilVisible:
+    element:
+      text: "运维与高级"
+    direction: DOWN
+    timeout: 20000
+    visibilityPercentage: 100
+- assertVisible: "运维与高级"
+
+- scrollUntilVisible:
+    element:
+      text: "设置"
+    direction: DOWN
+    timeout: 20000
+    visibilityPercentage: 100
+- assertVisible: "设置"
+
+- scrollUntilVisible:
+    element:
+      text: "实例"
+    direction: DOWN
+    timeout: 20000
+    visibilityPercentage: 100
+- assertVisible: "实例"
+
+- scrollUntilVisible:
+    element:
+      text: "会话"
+    direction: DOWN
+    timeout: 20000
+    visibilityPercentage: 100
+- assertVisible: "会话"
+
+- scrollUntilVisible:
+    element:
+      text: "任务"
+    direction: DOWN
+    timeout: 20000
+    visibilityPercentage: 100
+- assertVisible: "任务"
+
+- scrollUntilVisible:
+    element:
+      text: "成本与配额"
+    direction: DOWN
+    timeout: 20000
+    visibilityPercentage: 100
+- assertVisible: "成本与配额"
+
+- scrollUntilVisible:
+    element:
+      text: "网关节点"
+    direction: DOWN
+    timeout: 20000
+    visibilityPercentage: 100
+- assertVisible: "网关节点"
+
+- scrollUntilVisible:
+    element:
+      text: "选择服务器"
+    direction: DOWN
+    timeout: 20000
+    visibilityPercentage: 100
+- assertVisible: "选择服务器"
+
+- scrollUntilVisible:
+    element:
+      text: "导入导出"
+    direction: DOWN
+    timeout: 20000
+    visibilityPercentage: 100
+- assertVisible: "导入导出"
+- takeScreenshot: "logs/maestro/more-grid-full"

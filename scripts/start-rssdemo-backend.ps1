@@ -33,11 +33,12 @@ $env:POCKET_DB_PATH     = Join-Path $DataDir 'pocket.db'
 $env:POCKET_DEV_AUTH    = 'true'
 $env:POCKET_AUTH_LEGACY_ONLY = 'true'
 $env:POCKET_AUTH_USER   = $AuthUser
-# AuthPass is passed in at call time on purpose: never bake a real password into
-# a committed script. When empty, generate a throwaway one and print it, so the
-# log always says which credential this instance actually uses.
+# AuthPass is passed in at call time on purpose: never bake a password into a
+# committed script. When empty, mint a throwaway one at RUNTIME from a GUID, so
+# this file contains no credential-shaped literal at all -- the repo secret
+# scanner has nothing to match and needs no per-line exemption for it.
 if ([string]::IsNullOrEmpty($AuthPass)) {
-  $AuthPass = 'demo-pass-' + (Get-Random -Minimum 1000 -Maximum 9999)
+  $AuthPass = ([guid]::NewGuid().ToString('N')).Substring(0, 12)
   "GENERATED_AUTH_PASS=$AuthPass"
 }
 $env:POCKET_AUTH_PASS   = $AuthPass

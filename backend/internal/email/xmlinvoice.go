@@ -199,6 +199,54 @@ func stripCurrency(s string) string {
 	return strings.TrimSpace(repl.Replace(s))
 }
 
+// rederiveSellerFallback 重新判定「inv.Seller 当前是不是发件人兜底」。
+//
+// ## 为什么必须重新判定，而不是只靠 ExtractInvoiceLoose 打的那个标记
+//
+// `Invoice.sellerIsFallback` 是**非导出**字段（不能导出+`json:"-"`，会被
+// TestWireTagGuard_ExportedFieldsHaveJSONTags 判红），因此**不落库**。
+// 而 `HarvestAll` 处理的发票全部来自 `ListHarvestableInvoices`——
+// **每一次采集都过一次数据库往返**，读回来的 Invoice 上这个标记恒为 false。
+//
+// 于是 `mergeXMLFields` 里的 `inv.Seller == "" || inv.sellerIsFallback`
+// 在真实流水线里恒等于「seller 非空 **且** 不是兜底」，XML 里的权威
+// `SellerName` **永远顶不掉**发件人兜底值。§7.7.3 那次修复在离线用例里
+// 之所以看起来生效，是因为那条用例把内存里的 Invoice 直接交给 harvestOne、
+// 从未过数据库——**夹具的数据通路与生产不一致**。
+//
+// 2026-10-03 15:10 生产实测（手工补跑一轮）：两封通行费发票的 seller
+// 落成「通行费电子发票」（= 发件人显示名），而不是 XML 里的
+// 「浙江沪杭甬高速公路股份有限公司」/「浙江高速公路智能收费运营服务有限公司」。
+// 需求原文 `{费用类型}-{对方单位}-{金额}-{日期}.pdf` 里的「对方单位」直接是错的，
+// 交付财务时拿不到真实开票方。
+//
+// ## 判定口径
+//
+// 只与**发件人显示名 / 发件地址**比对——那正是 `ExtractInvoiceLoose` 里
+// 打标记的那一条分支（invoice.go 的 FromName/FromAddress 兜底），
+// 逐字对应，不扩大范围。
+//
+// **刻意不比对 Subject**：从主题「来自XX的发票」解析出的单位名是**真证据**
+// （见 mergeXMLFields 的注释），把整个主题当成兜底会把真证据误标成兜底，
+// 从而让 XML 顶掉正文/主题里更精确的写法。真实数据里主题常常与 FromName
+// 相同（这正是本例），一旦把主题纳入判定，真证据与兜底就再也分不开。
+func rederiveSellerFallback(inv *Invoice, em *Email) {
+	if inv == nil || em == nil {
+		return
+	}
+	seller := strings.TrimSpace(inv.Seller)
+	if seller == "" {
+		return
+	}
+	for _, artifact := range []string{em.FromName, em.FromAddress} {
+		v := strings.TrimSpace(artifact)
+		if v != "" && strings.EqualFold(v, seller) {
+			inv.sellerIsFallback = true
+			return
+		}
+	}
+}
+
 // mergeXMLFields 用解析结果补全发票记录（只在原字段为空/为零时覆盖，
 // 保持邮件主题提取值的优先级）。
 func mergeXMLFields(inv *Invoice, f *XMLInvoiceFields) {
