@@ -257,6 +257,23 @@ var pgSafeWithoutIsolation = map[string]string{
 	"internal/email/diag_kxpms_test.go":    "只读真实库探针：无写语句；需 POCKET_DIAG_ACCOUNT + POCKET_DIAG_ALLOW=1 + POCKET_REAL_MAIL_DSN + POCKET_DIAG_DATA_DIR",
 	"internal/email/spam_realdata_test.go": "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（目的就是读真实 schema）",
 
+	// internal/email/diag_purge_injected_invoices_test.go（2026-10-04 新增）：
+	// **会真的 DELETE 发票行**，所以两张表都要登记：
+	//   · 本表（pgSafeWithoutIsolation）—— 规则 2 的出口在这里。它**不能**自建
+	//     `*_test_` schema：它的全部意义就是指向生产库、规划/执行那一批
+	//     自注入行的剔除，指向隔离库就毫无意义。
+	//   · pgAllowlistedWrites —— 规则 4 要求「豁免不豁免写」，有写语句就得
+	//     登记它写了什么。
+	//
+	// 三道闸门：POCKET_DIAG_PURGE=1（打开）+ POCKET_REAL_MAIL_DSN /
+	// POCKET_REAL_MAIL_SCHEMA（显式传入，均无缺省值）+ POCKET_DIAG_PURGE_EXEC=1
+	// （**额外**这一条才允许删）。只读阶段由数据库强制
+	// （default_transaction_read_only=on，并用一次故意失败的 CREATE TEMP TABLE
+	// 自证）；search_path 覆盖式设置后用 current_schema() 读回校验，不一致即拒绝；
+	// 删除走单事务：先 CREATE TABLE 备份（行数必须等于计划数，不等即回滚），
+	// 再 DELETE（影响行数不等计划即回滚），最后才 Commit。
+	"internal/email/diag_purge_injected_invoices_test.go": "会真删 email_invoices 行，且**必须**指向生产库（指向隔离库就失去意义，故不能自建 _test_ schema）：默认只出计划（DB 侧 default_transaction_read_only 强制 + CREATE TEMP TABLE 自证），删除需额外 POCKET_DIAG_PURGE_EXEC=1；DSN/schema 无缺省值、search_path 覆盖式设置并用 current_schema() 读回校验；备份与删除同事务，行数不符即回滚。写语句登记见 pgAllowlistedWrites",
+
 	// internal/email/diag_spam_preview_test.go（2026-10-03 补登，提交 4de72306 时漏了，
 	// 当时把 internal/server 跑成了红的）：
 	//   · 只读：全文件只有一条 SELECT，INSERT/UPDATE/DELETE/DROP/CREATE 一个都没有。
@@ -502,17 +519,28 @@ var pgAllowlistedWrites = map[string]string{
 	// 可改写全部账户的同步进度）。
 	"internal/email/diag_snippet_leak_test.go": "1 条 UPDATE（重置 last_synced_uid），被 POCKET_REAL_MAIL_DSN + POCKET_DIAG_RESET_ACCOUNT + POCKET_DIAG_ALLOW_RESET=1 三重开关挡住；写路径拒绝 schema 缺省值（缺省=生产库 opencode_pocket 且 who='ALL' 可改全部账户）",
 
-	// internal/email/store_upsert_messageid_test.go（2026-10-04 复核后登记）：
-	// 这个文件**会真的写** emails 行（InsertEmailIfNew + cleanup 里的
-	// `DELETE FROM emails WHERE message_id = $1`），所以它必须登记在这里、
-	// 而不是 pgSafeWithoutIsolation（那个表只收「无写语句」的文件，规则 4 会拦）。
-	// 2026-10-04 复核发现它原先把 POCKET_DIAG_SCHEMA 缺省成 `opencode_pocket`，
-	// 而闸门只有 POCKET_REAL_MAIL_DSN 非空——本仓跑只读真实库诊断时本来就带
-	// POCKET_REAL_MAIL_DSN，两者相撞即等于「跑一次全量 go test 就在生产库插删行」。
-	// 已改为经 upsertGuardSchema 统一把关：缺省即 t.Skip，显式点名 opencode_pocket
-	// 即 t.Fatalf。仍允许连非生产库，是因为被测行为（ON CONFLICT 目标与唯一约束
-	// 的匹配）必须在**有真实 emails 表结构**的库上才复现得出来。
-	"internal/email/store_upsert_messageid_test.go": "会真写 emails 行（INSERT + DELETE），故登记在此而非 pgSafeWithoutIsolation：schema 缺省即 t.Skip、显式点名 opencode_pocket 即 t.Fatalf（见文件内 upsertGuardSchema），2026-10-04 修掉了原先「缺省=生产库 + 闸门只有 POCKET_REAL_MAIL_DSN」的组合",
+	// internal/email/diag_purge_injected_invoices_test.go（2026-10-04 新增）：
+	// **会真的 DELETE 发票行**，但默认只出计划。三道闸门：
+	//   POCKET_DIAG_PURGE=1（打开） + POCKET_REAL_MAIL_DSN/POCKET_REAL_MAIL_SCHEMA
+	//   （显式传入，均无缺省值）+ POCKET_DIAG_PURGE_EXEC=1（**额外**这一条才允许删）。
+	// 只读阶段由数据库强制（default_transaction_read_only=on，并用一次故意失败的
+	// CREATE TEMP TABLE 自证）；search_path 覆盖式设置后用 current_schema() 读回校验，
+	// 不一致即拒绝。删除走单事务：先 CREATE TABLE 备份（行数必须等于计划数，
+	// 不等即回滚），再 DELETE（影响行数不等计划即回滚），最后才 Commit ——
+	// 不存在「删了但没备份」。指向生产 schema 是目的。
+	"internal/email/diag_purge_injected_invoices_test.go": "会真删 email_invoices 行：默认只出计划（DB 侧 default_transaction_read_only 强制 + CREATE TEMP TABLE 自证），删除需额外 POCKET_DIAG_PURGE_EXEC=1；DSN/schema 无缺省值、search_path 覆盖式设置并用 current_schema() 读回校验；备份与删除同事务，行数不符即回滚",
+
+	// internal/email/store_upsert_messageid_test.go：**刻意不登记**（2026-10-04）。
+	// 它曾经登记在这里，理由是「会真写 emails 行，所以不隔离 schema 不安全」。
+	// 现在它改用 newWorkspaceTestStore 自建 `email_ws_test_<hex>` schema，
+	// search_path 由 RuntimeParams 钉住，收尾整条 schema DROP —— 隔离是真隔离，
+	// 不再需要任何豁免。
+	//
+	// 顺带记下它当初为什么会红，因为那是**两道判据同时失明**的组合：
+	// 它被登记在 pgAllowlistedWrites（本表）却**不在** pgSafeWithoutIsolation，
+	// 而本表只对豁免表内的文件生效 ⇒ 这一条登记从写下那天起就永远读不到，
+	// 规则 2 照样判红。留着它会让人以为「已豁免」，实际是**装饰性配置**。
+	// 这类「登记了但作用域够不着」的条目比不登记更危险：它把冲突变沉默。
 
 	// 隔离助手本身：dropScopedSchema 只 DROP 调用方传进来的那个 schema 名。
 	"internal/email/pgscope_test.go": "隔离助手本身：dropScopedSchema 只 DROP 调用方传进来的 schema 名（'DROP SCHEMA IF EXISTS '+schema+' CASCADE'），是「只删自己建的」的安全收尾模式",
