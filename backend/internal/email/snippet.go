@@ -34,7 +34,77 @@ import (
 //
 // 任何一步都失败时返回空串——宁可摘要为空，也不要把 MIME 头转储给用户看。
 // 这里没有"退回原文"这条兜底，那正是这个缺陷本身。
+//
+// ## 为什么要再包一层
+//
+// 下面真正的实现是 deriveSnippetUnsanitized，它有 **6 个 return 点**。
+// 净化必须发生在**所有**返回路径上，而靠「在每个 return 前记得加一句」
+// 来保证，正是本文件此前反复踩过的形态（判据/净化只加在一条分支上，
+// 另一条分支照样漏）。所以这里用一个薄包装强制收口：新增返回分支时
+// 不会漏掉净化。
 func DeriveSnippet(raw []byte, maxRunes int) string {
+	return sanitizeSnippet(deriveSnippetUnsanitized(raw, maxRunes))
+}
+
+// sanitizeSnippet 清掉会**让整条 INSERT 失败**的字符。
+//
+// ## 缺陷（2026-10-03 22:0x 真机/真库实测）
+//
+// quoted-printable 的 `=00` 与 base64 解码出来的二进制都含 NUL。
+// NUL 是合法 UTF-8（`utf8.ValidString` 对它返回 true），所以
+// `decodeWholeQuotedPrintable` / `decodeWholeBase64` 的「解出来像文本吗」
+// 判据**全部放行**，DeriveSnippet 原样把 NUL 带进摘要。
+//
+// 而 PostgreSQL 的 `text` 类型**不能存 NUL**：值在协议层就被拒，
+// 报 `ERROR: invalid byte sequence for encoding "UTF8": 0x00 (SQLSTATE 22021)`。
+// 后果不是「这封邮件摘要变空」，而是 **`store.InsertEmail` 整条失败、
+// 这封邮件根本没有入库** —— 比摘要难看严重得多，且没有任何补偿逻辑。
+//
+// 真机实测：2026-10-03 22:02 的一次 backfill 里出现 3 次该错误
+// （em-10349 / em-10350 / 另一条），全部静默失败。
+//
+// ## 为什么连其他 C0 控制字符一起清
+//
+// 只清 NUL 是针对报错文本打补丁。其余 C0（0x01-0x08、0x0B、0x0C、0x0E-0x1F）
+// 同样不该出现在一行摘要里，且历史上就有过它们进 `snippet` 的记录。
+// 保留 \t（0x09）与 \n（0x0A）：normalizeWhitespace 已经把它们压成空格，
+// 走到这里本就不该剩下，清掉也无副作用。
+//
+// 保留 U+FFFD：那是「按 rune 截断」的既有产物，清掉等于把乱码藏起来。
+func sanitizeSnippet(s string) string {
+	if s == "" {
+		return ""
+	}
+	if !strings.ContainsFunc(s, isDisruptiveControl) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if isDisruptiveControl(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func isDisruptiveControl(r rune) bool {
+	if r >= 0x00 && r <= 0x08 {
+		return true
+	}
+	if r == 0x0B || r == 0x0C {
+		return true
+	}
+	if r >= 0x0E && r <= 0x1F {
+		return true
+	}
+	return false
+}
+
+// deriveSnippetUnsanitized 是 DeriveSnippet 的真实实现；返回值**可能**含
+// NUL / C0 控制字符，必须经 DeriveSnippet 的净化出口后才能落库。
+func deriveSnippetUnsanitized(raw []byte, maxRunes int) string {
 	if len(raw) == 0 {
 		return ""
 	}
