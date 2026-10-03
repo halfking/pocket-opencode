@@ -155,7 +155,7 @@ func TestDiagInvoiceHandoffIntegrity(t *testing.T) {
 		t.Fatalf("rows: %v", err)
 	}
 	if len(claimed) == 0 {
-		t.Fatalf("台账里 downloaded 行数为 0——要么真没有可交付的票，要么口径变了；" +
+		t.Fatalf("台账里 downloaded 行数为 0——要么真没有可交付的票，要么口径变了；"+
 			"两种都不该被本诊断读成「目录干净」（dir 里还有 %d 个 PDF）", len(files))
 	}
 	t.Logf("[diag] 台账 downloaded 行：%d", len(claimed))
@@ -169,7 +169,7 @@ func TestDiagInvoiceHandoffIntegrity(t *testing.T) {
 	for _, c := range claimed {
 		if _, ok := byName[filepath.Base(c.fileName)]; !ok {
 			missing++
-			t.Errorf("[台账有·磁盘无] %s（file_path=%s）—— 交付时会被财务追问" +
+			t.Errorf("[台账有·磁盘无] %s（file_path=%s）—— 交付时会被财务追问"+
 				"「凭证在哪」，而目录里根本没有它", c.fileName, c.filePath)
 		}
 	}
