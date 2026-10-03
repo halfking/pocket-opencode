@@ -122,14 +122,28 @@ appId: com.kaixuan.opencode.pocket.sttdev
           timeout: 30000
 
 # ---- 进笔记页 ----
-# 双语兜底：zh-CN 是「学习」，en-US 是「Study」（src/locales/en-US.json）。
-# 真正的修法是前置第 5 条把设备语言钉成 zh-CN，这里只是不再死在入口。
-- tapOn:
-    text: "学习|Study"
+# ⚠️ 2026-10-03 IA 重组修正：这一段原来只有一句 `tapOn: "学习|Study"`。
+#   重组**前**「学习」是一级 tab（底部导航：首页/学习/会议/更多），点一下就到；
+#   重组后一级 tab 变成 首页 / 笔记 / 消息 / 更多，「学习」下沉成了「更多」宫格里的
+#   第一格（MoreHubView items，MoreHubView.vue:12 `{ to: '/study', label: t('nav.study') }`）。
+#   底 tab 上已经没有「学习」这个节点 ⇒ `tapOn` 直接 FAILED / Element not found。
+#   这个报错形态与「设备语言不对」「选择器写错」完全一样，很容易被误读成前者。
+#   修法：先点「更多」进宫格，再点「学习」，并**每一步都断言**，否则「更多」没点开
+#   时后半句会静默走到别的格子（与 PKM flow 里 point 坐标误触录音是同一类教训）。
+- tapOn: "更多|More"
+- extendedWaitUntil:
+    visible: "学习|Study"
+    timeout: 20000
+- tapOn: "学习|Study"
 # 2026-10-02 真机首跑修正：这条流原本等的是「还没有笔记」，但那行文案
 #   在**学习 hub 页**上，录音 FAB 在**笔记页**（#/notes）。两者中间隔着
 #   一次「语音笔记」卡片点击 —— 原流在 hub 页等一个 hub 页永远不会出现的
 #   文案，必然超时。实测 hub 页的同类文案是「还没有牌组」。
+# 「语音笔记」在重组后仍是 study 页来源列表里的那一项（locales zh-CN.json
+#   `study.sources.voice` = 语音笔记），所以这条锚点本身没过期，过的只是它的父级。
+- extendedWaitUntil:
+    visible: "语音笔记"
+    timeout: 20000
 - tapOn: "语音笔记"
 - extendedWaitUntil:
     visible: "还没有笔记"

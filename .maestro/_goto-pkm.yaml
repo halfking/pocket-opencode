@@ -25,11 +25,17 @@ appId: com.kaixuan.opencode.pocket
 - extendedWaitUntil:
     visible: "主导航"
     timeout: 30000
+# ⚠️ 2026-10-03 真机实测：目标从「更多」改成了「笔记」。
+# 旧写法点底部「更多」、再点宫格里的「PKM笔记」——那是 IA 重组**之前**的入口。
+# 2026-10-03 一级 tab 收敛为 首页 / 笔记 / 消息 / 更多之后：
+#   · 「PKM笔记」已从「更多」宫格移除（MoreHubView 的 items 里没有它了）
+#   · PKM 工作台改由一级 tab「笔记」(/notes) 页里的「打开 PKM」按钮进入
+# 旧流程的实测症状：在 `visible: "PKM笔记"` 上 20s 超时，整条 flow 中止。
 - extendedWaitUntil:
-    visible: "更多"
+    visible: "笔记"
     timeout: 20000
 
-- tapOn: "更多"
+- tapOn: "笔记"
 - waitForAnimationToEnd:
     timeout: 3000
 
@@ -39,18 +45,46 @@ appId: com.kaixuan.opencode.pocket
 #    把可能失败的等待放在最后一条。
 - runFlow:
     when:
-      notVisible: "PKM笔记"
+      notVisible: "打开 PKM"
     commands:
-      - tapOn: "更多"
+      - tapOn: "笔记"
       - waitForAnimationToEnd:
           timeout: 3000
 
+# ⚠️ 2026-10-03 真机证据（本条是**定位**出来的，不是推测）：
+# 失败现场 maestro 的 screen-hierarchy 快照 step-015 抓到的可见节点是
+#   全部 11 / 手记 / 会议纪要 11 / PKM 笔记 + 一长串会议条目 + 底部导航
+# ——「打开 PKM」**不在里面**。它在 NotesHubView 里排在整张列表**之后**
+# （见 NotesHubView 的 see-all 区块），而那台机上会议纪要有 11 条，
+# 于是它在**首屏之下**：Maestro 的可见性只看视口内节点，滚不到就永远匹配不上。
+# 旧路径（更多 → 宫格里的 PKM笔记）在宫格首屏，所以从前不需要滚动——
+# 这就是「换了入口之后同一个 flow 从能过变成必红」的真实原因。
+# 「打开 PKM」现在常驻在**列表之前**（2026-10-03 真机实测两次改位置，见
+# NotesHubView 里的说明），所以这里不需要滚动。
+# ⚠️ 别再加回 scrollUntilVisible：它曾把点击落到**会议详情**上并触发录音——
+# 列表滚完之后坐标已经漂了，而 bottom-list 元素天然容易被点错。
+# 入口在手边的另一个好处：这条 flow 也不再依赖「滚到底部」。
 - extendedWaitUntil:
-    visible: "PKM笔记"
+    visible: "打开 PKM"
     timeout: 20000
-- assertVisible: "PKM笔记"
+- assertVisible: "打开 PKM"
 
-- tapOn: "PKM笔记"
+- tapOn: "打开 PKM"
+- waitForAnimationToEnd:
+    timeout: 3000
+
+# ⚠️ 必须**硬断言真的到了 PKM 页**，不能就这么往下走。
+# 2026-10-03 真机实测踩过：漏掉这一步时，流程在「笔记」hub 上就已经匹配到了
+# 头部的 aria-label=新建笔记（hub 自己也有一个同名按钮），于是 tapOn 进的
+# 是 /notes/new 的 NoteEditView（标题/正文/分类/标签/✓创建），
+# 而本流程后面等的是 PKM 编辑器那个**预填「无标题」**的输入框 ——
+# 报错会指向上游那个无辜的 `^无标题$`，真实原因（页面根本没到 PKM）被埋掉。
+# 「走错页要响」比「走错页还继续」值钱。
+# PKM 页独有的标题（两种日更状态）：今日 Daily Note / 继续今日笔记。
+- extendedWaitUntil:
+    visible: "今日 Daily Note|继续今日笔记"
+    timeout: 20000
+- assertVisible: "今日 Daily Note|继续今日笔记"
 
 # 守卫判定：本地库没解锁会把会话改写成 #/login?returnTo=/pkm/today&unlock=1
 #

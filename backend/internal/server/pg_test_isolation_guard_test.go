@@ -271,10 +271,18 @@ var pgSafeWithoutIsolation = map[string]string{
 	//     该助手 CREATE SCHEMA "email_ws_test_<random>" 并把
 	//     RuntimeParams["search_path"] 钉成 "<schema>,public"（store_workspace_test.go:50-87），
 	//     退出时 DROP SCHEMA ... CASCADE。
-	//   · 另有一条自检用例 TestDailyPipelineLock_TestHarnessIsActuallyIsolated
-	//     断言 current_schema() 既非 public 也非空——helper 若退化成不隔离，这条会红。
+	//   · 自检用例 TestDailyPipelineLock_TestHarnessIsActuallyIsolated 断言
+	//     current_schema() 带 `email_ws_test_` 前缀。
+	//     【2026-10-03 更正】这里原写的是「断言 current_schema() 非 public」，
+	//     那与代码不符，且那个判据本身有盲区：生产 schema 叫 opencode_pocket，
+	//     而 public 恰是空的诱饵 schema —— helper 退化成不隔离时
+	//     current_schema() 会返回 opencode_pocket 并被放行。已收紧为前缀判定。
+	//     同一次更正把该自检的「无 DSN 即 t.Fatal」改成 t.Skip（它让没有任何
+	//     测试库的机器上 go test ./... 恒红），改由同文件两个**不需要数据库**的
+	//     用例（SchemaIsolationPredicate / DBBackedTestsStayWired）承担
+	//     「不许静默变恒真」——那两个在所有环境都跑，覆盖面严格更大。
 	//   · 只读吗？不是：NewStore 会 migrate 建表。但那 9 张表全部建在自建 schema 里。
-	"internal/email/pipeline_lock_test.go": "跨进程 advisory lock 的集成测试：确实隔离，全部用例走 newWorkspaceTestStore（该助手建 `email_ws_test_<random>` schema 并把 search_path 钉上去，store_workspace_test.go:50-87）。本文件无 `\"*_test_\"` 字面量是因为 schema 名由 helper 现场生成；自检用例 TestDailyPipelineLock_TestHarnessIsActuallyIsolated 断言 current_schema() 非 public",
+	"internal/email/pipeline_lock_test.go": "跨进程 advisory lock 的集成测试：确实隔离，全部用例走 newWorkspaceTestStore（该助手建 `email_ws_test_<random>` schema 并把 search_path 钉上去，store_workspace_test.go:50-87）。本文件无 `\"*_test_\"` 字面量是因为 schema 名由 helper 现场生成；自检用例 TestDailyPipelineLock_TestHarnessIsActuallyIsolated 断言 current_schema() 带 `email_ws_test_` 前缀（2026-10-03 从「非 public」收紧，原判据会放行生产 schema 名 opencode_pocket）",
 
 	// internal/scheduledtask/diag_claimdue_race_test.go（2026-10-03 新增）：
 	//   · 确实隔离：自建 `claim_race_diag_<unixnano>` schema，两个 pool 的
@@ -999,5 +1007,72 @@ func TestStripGoCommentsHandlesTheThreeWaysToHideCode(t *testing.T) {
 				t.Errorf("剥注释把代码误伤了，%q 消失：\n%s", c.wantKept, got)
 			}
 		})
+	}
+}
+
+// TestEmailWorkspaceHelperNeverFallsBackToProductionDSN —— 钉住 testDSN() 的
+// 门控**只**认测试专用 DSN。
+//
+// 放在这里而不是 internal/email/pipeline_lock_test.go，是被规则 1 逼出来的
+// （2026-10-03 实测）：那条规则是源码级 grep，判 `("POCKET_POSTGRES_DSN"`
+// 这个形态出现。想断言"helper 没有回退读生产 DSN"，就必须在源码里写出那个
+// 被禁的形态，于是断言自己被判红。在豁免表里给个理由绕过去是错的——护栏
+// 自己写着"不要靠把理由写宽松来绕过，那是让冲突变沉默"。而这条不变量本来
+// 就是仓库级的，就该由仓库级护栏钉在豁免自身的文件里。
+//
+// 它有血：store_workspace_test.go 的 testDSN() 注释记着，回退读生产 DSN 曾让
+// 本地 `go test ./...` 零配置地打到生产库，并在生产库留下 meeting_test_* 残留
+// schema。规则 1 只能抓住"直接读"，抓不住"经 testDSN() 间接读"，这一条补的
+// 就是那个缺口。
+func TestEmailWorkspaceHelperNeverFallsBackToProductionDSN(t *testing.T) {
+	const rel = "internal/email/store_workspace_test.go"
+	// 本测试的工作目录是 backend/internal/server，所以 helper 在 ../email/。
+	// 路径写错时 os.ReadFile 报错——但下面用的是 Skip，于是「读不到文件」会
+	// 伪装成「通过」。这正是本轮一直在审计的那个失效模式，所以这里改成
+	// Fatal：这条不变量要么被检查，要么明确失败。
+	b, err := os.ReadFile(filepath.Join("..", "email", "store_workspace_test.go"))
+	if err != nil {
+		t.Fatalf("读不到 internal/email/store_workspace_test.go: %v", err)
+	}
+	code := stripGoComments(string(b))
+
+	if !strings.Contains(code, `os.Getenv("POCKET_TEST_POSTGRES_DSN")`) {
+		t.Errorf("%s 的 testDSN() 不再读测试专用 DSN——email 包的集成测试会开始"+
+			"打到机器上碰巧有的那个库", rel)
+	}
+	// 切片回退形态（[]string{"...", "..."} 后取第一个非空）同样要抓住：
+	// productionDSNRe 认的是「字面量作为实参出现」，两种写法都会命中。
+	if productionDSNRe.MatchString(code) {
+		t.Errorf("%s 读了生产 DSN。回退读它会让本地 go test ./... 打到活库，"+
+			"且已经在生产库留下过 meeting_test_* 残留 schema", rel)
+	}
+}
+
+// TestProductionDSNReCatchesFallbackShapes —— 上一条所依赖的判据自检。
+//
+// 「不许回退」是一条**否定**断言：它要靠 productionDSNRe 命中来翻红，而否定
+// 断言最常见的失效就是判据本身不命中（于是永远绿）。这里对两种真实回退写法
+// 直接断言判据命中，顺带断言干净写法不命中——后者防止把判据收得过宽、把所有
+// 文件都判红。
+func TestProductionDSNReCatchesFallbackShapes(t *testing.T) {
+	dirty := map[string]string{
+		"直接读":            "\treturn os.Getenv(\"POCKET_POSTGRES_DSN\")\n",
+		"切片回退（两个变量名）":  "\tfor _, k := range []string{\"POCKET_TEST_POSTGRES_DSN\", \"POCKET_POSTGRES_DSN\"} {\n",
+		"if 形态回退":         "\tif v := os.Getenv(\"POCKET_POSTGRES_DSN\"); v != \"\" {\n\t\treturn v\n\t}\n",
+	}
+	for name, src := range dirty {
+		if !productionDSNRe.MatchString(stripGoComments(src)) {
+			t.Errorf("%s：productionDSNRe 没命中，"+
+				"「helper 不得回退读生产 DSN」这条否定断言会永远绿：\n%s", name, src)
+		}
+	}
+	clean := "\treturn os.Getenv(\"POCKET_TEST_POSTGRES_DSN\")\n"
+	if productionDSNRe.MatchString(stripGoComments(clean)) {
+		t.Errorf("判据过宽：只读测试专用 DSN 的正确写法也被判红：\n%s", clean)
+	}
+	// 提示文本里提到该变量名不应判红（判据认的是"字面量作为实参出现"）。
+	note := "\t// POCKET_POSTGRES_DSN 是服务自己的连接串，测试不得使用\n"
+	if productionDSNRe.MatchString(stripGoComments(note)) {
+		t.Errorf("注释里提到该变量名被判红，判据把注释当代码了：\n%s", note)
 	}
 }

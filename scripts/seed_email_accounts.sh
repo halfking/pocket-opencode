@@ -91,7 +91,11 @@ PY
 
 echo "== seeding admin email accounts =="
 upsert "凯轩企业邮" "huangxutao@kxpms.cn" "imap.exmail.qq.com" 993 "smtp.exmail.qq.com" 465 "$SEED_KAIXUAN_PASSWORD"
-upsert "QQ 私人" "${SEED_QQ_ADDRESS:-inbox@example.invalid}" "imap.qq.com" 993 "smtp.qq.com" 465 "$SEED_QQ_PASSWORD"
+# 2026-10-02：默认地址此前是 inbox@example.invalid —— 一个占位符，seed 脚本在
+# 没有显式传 SEED_QQ_ADDRESS 时会把「QQ 私人」账户建成一个假地址，且因为 upsert
+# 按 emailAddress 幂等，真实地址再 seed 时会多出一个账户而不是刷新它。默认改成
+# 用户 2026-10-02 指定的真实地址。
+upsert "QQ 私人" "${SEED_QQ_ADDRESS:-56551681@qq.com}" "imap.qq.com" 993 "smtp.qq.com" 465 "$SEED_QQ_PASSWORD"
 upsert "163 / feikemanager" "feikemanager@163.com" "imap.163.com" 993 "smtp.163.com" 465 "$SEED_163_FK_PASSWORD"
 upsert "163 / feikemanager1" "feikemanager1@163.com" "imap.163.com" 993 "smtp.163.com" 465 "$SEED_163_FK1_PASSWORD"
 upsert "163 / kimmy.huang" "kimmy.huang@163.com" "imap.163.com" 993 "smtp.163.com" 465 "$SEED_163_KH_PASSWORD"

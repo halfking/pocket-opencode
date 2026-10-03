@@ -15,17 +15,41 @@
 #   MIUI 对同一提示只弹一次，第二次起这里就是纯开销（~1s）。
 appId: com.kaixuan.opencode.pocket
 ---
-- runFlow:
-    when:
-      visible: "我知道了"
-    commands:
-      - tapOn: "我知道了"
+# ⚠️ 等待必须有上界，否则这步会把整轮 run 无限期挡住。
+# 2026-10-03 在 vivo V2436A（Android 16）上实测：`runFlow: when: visible:` 在弹窗
+# 永远不出现时（MIUI 的「我知道了」是 Xiaomi 独有的）会一直等——**为了等一个属于
+# 别的厂商的提示，把真正要跑的 flow 挡住**。「点不到就跳过」只有等待有上界时才是真的。
+#
+# ⚠️ 光有上界**还是不够**：2026-10-03 在 Xiaomi 2411DRN47C 上实测，
+# 只写 `timeout: 5000` 的 extendedWaitUntil 在弹窗不再出现时会把本 flow 判成
+# **Failed**（`Assertion is false: "我知道了" is visible`），而 MIUI 对这个提示
+# 只弹一次 —— 于是**每一轮 run 都稳定报一个假红**，且报红的是预流程，
+# 结论容易读成「App 或系统有问题」。本文件自己第 14 行写的是「全部 optional，
+# 点不到就跳过，不会给别的 flow 添乱」，而当时的写法并没有做到这件事。
+#
+# 修法与证据：给 extendedWaitUntil 本身加 `optional: true`（Maestro 2.11 支持）。
+# A/B 实测，同一台机、同样 5s 上界、同样一个**永远不会出现**的文本：
+#   · 不带 optional → `[Failed] ... Assertion is false: ... is visible`
+#   · 带 optional   → `[Passed]`
+# 判据是「跑一次不出现的等待」这种负控，不是「弹窗出现时能不能点掉」——
+# 后者在 MIUI 只弹一次的前提下根本没法稳定复现。
+#
+# 为什么不用 `runFlow: when: visible:`：runFlow 不接受 timeout 属性
+#（Maestro 2.11 实测报 `Unknown Property: timeout`），而 extendedWaitUntil
+# 原生带 timeout，加 optional 后两者兼得。
+- extendedWaitUntil:
+    visible: "我知道了"
+    timeout: 5000
+    optional: true
+- tapOn:
+    text: "我知道了"
+    optional: true
 
 # MIUI 另有「允许通知」等一次性系统弹，同类处理。
-- runFlow:
-    when:
-      visible: "允许|Allow"
-    commands:
-      - tapOn:
-          text: "允许|Allow"
-          optional: true
+- extendedWaitUntil:
+    visible: "允许|Allow"
+    timeout: 5000
+    optional: true
+- tapOn:
+    text: "允许|Allow"
+    optional: true

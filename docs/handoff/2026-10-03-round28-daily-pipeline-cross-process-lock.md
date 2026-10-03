@@ -615,11 +615,35 @@ if t := strings.TrimSpace(msg.TextBody); t != "" && !containsMIMESource(msg.Text
 重新定界（例如要求 boundary 出现在行首、或要求 `=_Part_` 这类强特征），
 属于会影响邮件摘要取值的改动，且与 §7.5.5 的 QP 取证可能互相干扰。
 
-**注意：`go test ./internal/email/` 不带 DSN 时是红的，这是设计如此**——
-`TestDailyPipelineLock_TestHarnessIsActuallyIsolated`（`pipeline_lock_test.go:331`）
-在 `POCKET_TEST_POSTGRES_DSN` 未设时主动 `t.Fatal`，因为静默 skip 会让
-同文件其余 14 条断言全部变成恒真。判定这个包必须带 DSN 跑：
-本轮 107.2s ok（EXIT=0）。
+**【2026-10-03 round31 更正】这一段的定性是错的，已推翻。**
+原文写「`go test ./internal/email/` 不带 DSN 时是红的，这是设计如此」——
+**它不是设计如此，它是一条假红**，本轮已修掉。错在哪：
+
+- 那个担心（静默 skip ⇒ 同文件其余断言全部恒真）**是真的**，但补救选错了。
+  `store_workspace_test.go` 的包约定明写「否则 skip，好让没有数据库的机器上
+  `go test ./...` 保持绿」，这一条测试单方面推翻了它，于是**任何**没有测试库的
+  机器（含 CI、含任何新克隆、含任何没配 `POCKET_TEST_POSTGRES_DSN` 的同事）
+  上 `go test ./...` 恒红。恒红的门槛会被整体忽略，被牺牲的不只是这一个文件，
+  而是整套测试的红绿语义。
+- 它在无 DSN 时**提供的保护是零**：此时同文件其余用例同样 skip，没有任何断言
+  会变恒真，恒红只是噪声。它唯一真正生效的配置，恰恰是那批断言本来就在跑的
+  配置——而在那里它本来就绿。也就是说它把「一个配置下的假绿风险」换成了
+  「所有配置下的假红」，赔率是负的。
+- 顺带查出原判据本身有**盲区**：它只排除 `public`/空，而本仓库生产 schema 叫
+  `opencode_pocket`、`public` 恰恰是那个空的诱饵 schema。helper 一旦退化成
+  不隔离，`current_schema()` 会返回 `opencode_pocket` 并被**放行**。
+
+现状（round31 修完，两种配置都实测过）：
+
+| 配置 | 结果 |
+|---|---|
+| 无 `POCKET_TEST_POSTGRES_DSN` | `go test ./...` **exit 0**（锁用例 SKIP，两个 DB-free 护栏 PASS） |
+| 有 DSN（`postgres@127.0.0.1:5432`） | 锁用例 **9/9 PASS**（含真库隔离自检） |
+
+「不许静默变恒真」改由两个**不需要数据库**的用例承担
+（`TestDailyPipelineLock_SchemaIsolationPredicate` /
+`TestDailyPipelineLock_DBBackedTestsStayWired`），它们在所有环境都执行，
+覆盖面严格大于原来那一条。详见主 handoff §4.121。
 
 ### 7.5.8 收紧方案已用全库 180 条真实语料验完（待拍板，未改生产正则）
 
@@ -764,9 +788,8 @@ pipeline 从没跟上，于是 POP3 来源的发票候选取原文必然失败 �
 
 ### 7.7 §7.6 之后继续做的四件事（06:00–07:20）
 
-§7.6.5 当时留下的「仍未验证」里，最要命的是发票号抽不到。追下去发现
-**不是单点缺陷，是四个叠在一起的独立缺陷**，每一个都得单独修，缺一个
-另外三个都白修。
+§7.6.5 当时留下的「invoiceNo 仍为空」根因**不在解析器**，而在四个叠在一起的
+独立缺陷。每一个都得单独修，缺一个另外三个都白修。
 
 #### 7.7.1 ④ 电子发票 ZIP 不被当作附件（`a5b131e8`）
 
@@ -776,10 +799,11 @@ pipeline 从没跟上，于是 POP3 来源的发票候选取原文必然失败 �
 
 - 旧逻辑只认 PDF/图片，zip 被忽略 ⇒ 存下来的是那份 45KB 汇总单，
   它**没有单张发票**，也就永远抽不出发票号。§7.6.5 的「invoiceNo 为空」
-  根因在此，不在解析器。
+  根因在此。
 - 新增 `internal/email/invoice_zip.go`：`readZipInvoiceContents`（只取
-  `pdf/` 与 `xml/`，**忽略 `ofd/`**）、`isZipBytes`（magic 为主）、
-  `zipAttachmentContents`；三重解压上限（条目 64 / 单条目 20MB / 总量 80MB）。
+  `pdf/` 与 `xml/`，**忽略 `ofd/`**——现有渲染链不产 OFD，硬转会造出打不开的
+  文件）、`isZipBytes`（magic 为主）、`zipAttachmentContents`；
+  三重解压上限（条目 64 / 单条目 20MB / 总量 80MB）。
 - `harvestOne` 在步骤 1（PDF/图片）**之前**插入「步骤 0」：先用 zip 内 XML
   `mergeXMLFields` 补全字段，再存 zip 内票面 PDF（`source=zip-pdf`）；
   zip 只有 XML 时走 `XMLRenderer`（`source=zip-xml-render`）。
@@ -799,9 +823,9 @@ pipeline 从没跟上，于是 POP3 来源的发票候选取原文必然失败 �
 A 这一条最阴险：`invoice_dedup` 是**按号判重**的，车牌号冒充发票号
 ⇒ 同车的两张真票被判成同一张 ⇒ **悄悄丢掉一张**。不报错、不告警。
 
-B 修法里**刻意不加裸 `amount`**：`IssuItemInformation/Amount` 是不含税
-单价 5.45，加进词表会让单价冒充总额 5.61。这是「让它更宽松」最典型的
-反例——负向的代价大于正向的收益。
+B 的修法里**刻意不加裸 `amount`**：`IssuItemInformation/Amount` 是不含税
+单价 5.45，加进词表会让单价冒充总额 5.61。这是「让它更宽松」最典型的反例
+——负向代价大于正向收益。
 
 负控：删掉车牌排除 ⇒ 读成 `浙AB59453`；删掉金额变体 ⇒ `amount=0`。
 
@@ -837,27 +861,26 @@ B 修法里**刻意不加裸 `amount`**：`IssuItemInformation/Amount` 是不含
 两票**发票号不同** ⇒ 不会再被 `invoice_dedup` 吞掉一张；落盘 105KB
 而不是 45KB ⇒ 存的是票面不是汇总单。
 
-#### 7.7.5 一个必须记下来的判据失效
+#### 7.7.5 夹具形态会骗人（补记，呼应 §7.6.4 第 2 条）
 
-反向用例（防「车车牌号又混回来」）的 fixture 一度用「本期交易汇总」，
-而那份汇总单里**没有「合计」二字** ⇒ 主断言本来就是空转，靠假绿通过。
-判据自检把它抓出来后换了 fixture。
-
-**夹具形态会骗人，本轮四次证明**（HTML 标签被抹掉、EUI 连字符拼写、
-车牌号排在 InvoiceNumber 之前、汇总单里没有「合计」）。真实数据优先于手写夹具。
+本轮四次被真实数据打脸：HTML 标签被夹具抹掉、EUI 元素名带连字符、
+车牌号排在 `InvoiceNumber` 之前、以及汇总单里根本没有「合计」二字。
+**真实数据优先于手写夹具**；反向用例的 fixture 必须先自证「它确实含
+被断言的那个东西」。
 
 #### 7.7.6 08:00 之前重启了 18099（07:13，用户显式授权）
 
-- 上一轮记的「08:00 用的是旧二进制」在 07:13 作废：新实例 PID **47068**，
-  exe `logs\pocketd-1007-new.exe`（构建自 `569420bf`，一次性 worktree
-  `openpocket-wt-b1007` 内构建，主工作区有并发会话未提交改动**不能**从那儿构建）。
+- §7.6.5 末条在 07:13 作废：新实例 PID **47068**，exe
+  `logs\pocketd-1007-new.exe`（构建自 `569420bf`，在一次性 worktree
+  `openpocket-wt-b1007` 内构建——主工作区有并发会话的未提交改动，
+  **不能**从那儿构建）。
 - **重启前先用 P/Invoke 读了旧进程（PID 8168）的环境块**，照抄它那 8 个
-  `POCKET_*` 键启动。这一步不是形式：`POCKET_EMAIL_MASTER_KEY` **不在环境里**，
-  靠 `EnsureMasterKey` 从 `data\email_master.key` 兜底——若换一份配置启动，
-  邮箱凭据会全部解不开而进程照常起来、`healthz` 照样 200。
-  `logs\restart-pocketd.ps1` 是可复用的脚本，三道守卫（端口归属 PID /
-  exe 路径 / exe SHA256）在**执行点**复量，对不上就在停任何东西之前中止。
-- 验收看的是 **email 子系统自己的启动行**，不是 `healthz`：
+  `POCKET_*` 键启动。这不是形式：`POCKET_EMAIL_MASTER_KEY` **根本不在环境里**，
+  靠 `EnsureMasterKey` 从 `data\email_master.key` 兜底——换一份配置启动，
+  全部邮箱凭据都会解不开，而进程照常起来、`healthz` 照样 200。
+  `logs\restart-pocketd.ps1` 可复用，三道守卫（端口归属 PID / exe 路径 /
+  exe SHA256）在**执行点**复量，对不上就在停任何东西之前中止。
+- 验收看 **email 子系统自己的启动行**，不看 `healthz`：
   `Email credential self-check: all 5 enabled email account(s) decrypt`、
   `Email scheduler started (fetch_enabled=true, …)`、
   `[email/scheduler] daily pipeline runner injected (hour=8)`、
@@ -865,13 +888,89 @@ B 修法里**刻意不加裸 `amount`**：`IssuItemInformation/Amount` 是不含
 - `POCKET_KXMEMORY_BASE_URL` 仍未配（定时路径无分类器），
   `POCKET_FEISHU_*` 四项仍缺（走共享汇总文档路径）。
 
+#### 7.7.7 【新发现的竞争】08:00 会有**两个**实例抢同一把锁（07:35 实测）
+
+并发会话在 `.wt-fix` 起了第二个 pocketd（PID 39564 / 18102 /
+`.wt-fix\logs\pocketd-18102-20261003-071140.err.log`），它**也**打印了
+`daily pipeline runner injected (hour=8)` 与
+`pipeline scheduled at 2026-10-03T08:00:00+08:00`。
+
+两个实例的 DSN 实测指向**同一个库**（`postgres@127.0.0.1:5432`，
+只差用户名/口令 2 个字符），schema 不同
+（`opencode_pocket` vs `opencode_pocket_align`）、dataDir 也不同。
+
+而 `pipeline_lock.go:77` 用的是
+`pg_try_advisory_lock(hashtextextended($1, 0))`——**advisory lock 是按库
+生效的，与 schema 无关**。所以：
+
+- 08:00 两个实例抢**同一把**锁，Try 语义不排队 ⇒ **只有一个真跑**，
+  另一个整轮跳过，跳过的只打一行
+  `[email/pipeline] 每日定时流水线跨进程锁已被其它实例持有，本轮跳过`。
+- **风险**：若 18102 抢到，生产实例 18099 跳过 ⇒ 两封通行费**不会建档**，
+  08:00 验不出本轮修复（假阴性）。
+- 补救路径已存在：手工入口 `handleEmailPipelineRun` → `runEmailPipeline`
+  **刻意不加锁**（`server_email_pipeline.go:269-270`，
+  `TestManualPathIgnoresTheLock` 钉住这条边界）。但它会写生产库、
+  可能推通知，**动手前须取得用户显式授权**。
+- 这一条不解决，下一轮接手的人会误以为「锁坏了/没生效」。
+
 **仍未验证（不记为已完成）**
 
-- 08:00 那一轮的**真实执行结果**：新代码第一次上生产，结果待 08:20 核对
-  （两行通行费 / 5.61 与 19.00 / 105KB 票面 PDF / 单实例不重复推送）。
+- 08:00 那一轮的**真实执行结果**（含 §7.7.7 的锁归属）：新代码第一次上生产，
+  结果待 08:20 核对。
 - **飞书推送**：凭据四项缺失，真实环境一次没跑过，整条链路唯一完全未验证环节。
 - **A4 拼版 / 按币种汇总 / 下载**：代码与端点本就齐全，本轮未改动，
-  也**未在真实发票集合上端到端跑过**。
+  也**未在真实发票集合上端到端跑过**。**→ 已在 §7.8 用两封真实通行费票跑通。**
+
+---
+
+### 7.8 A4 拼版 + 按币种汇总：首次在**真实发票集合**上端到端跑通（07:35）
+
+`diag_toll_a4_ledger_offline_test.go`（门控 `POCKET_DIAG_TOLL_E2E=1` +
+`POCKET_DIAG_QP_DATADIR`，可选 `POCKET_DIAG_EXPORT_OUT` 留产物）。
+复用 `diag_toll_e2e_offline_test.go` 的 `tollE2ECases`，同一批真实原文缓存、
+同一个采集器，把三段接起来：**采集 → A4 拼版 → 按币种汇总**。
+
+实测结果：
+
+| 环节 | 结果 |
+|---|---|
+| 采集落盘 | 105854 / 105869 字节（票面，`source=zip-pdf`），文件名含发票号 |
+| A4 拼版 2x2 | 1 页，**595.28 x 841.89 pt**（A4 竖版），117930 字节，`Count=2`、`Skipped` 空 |
+| A4 拼版 3x3 | 1 页，同尺寸，117964 字节，`Count=2`、`Skipped` 空 |
+| 坏件负控 | 混入畸形 PDF ⇒ 记入 `Skipped=[malformed.pdf]`，好件 2 张照常入网格 |
+| 汇总 | CNY 24.61 / 2 张（期望值由 `tollE2ECases` 现场算出，不是写死的常数） |
+| 台账行 | 4 行 = 表头 + 明细 2 + 合计 1；合计行 `计入 2 张 / 共 2 张` |
+| 混币种负控 | 混入 USD 50 ⇒ `CNY=24.61` / `USD=50` **两组**，没被加成一个数 |
+| 无凭证负控 | 清掉一张 `FilePath` ⇒ 合计 19.00 / 1 张，核验列转「未核验」，**明细行仍在** |
+
+**A4 判据的负控实测转红**（不是装饰性判据）：把宽高对调后立刻报
+`页高当页宽 = 841.89pt, want 595.28±0.50`——证明它真读到了 PDF 的 MediaBox。
+`Count` 判据同样实测转红（`Count = 2, want 3`）。
+
+#### 7.8.1 顺手查出一个**真发现**：合计口径在 server 层是手写的第四份
+
+第一版判据断言「`SumByCurrency` 会把无凭证的票剔掉」，**实测转红**。
+查证结论：这是**判据形态不匹配，不是产品缺陷**——
+`SumByCurrency` 的契约是「把给它的都加起来」，筛选是调用方职责，
+生产链路 `server_email_pipeline.go:622-627` 确实先筛后传。
+已改判据（不记成缺陷），并在用例里钉住真正该守的不变量：
+**同一批发票，调用方口径与 `LedgerRows` 的合计必须相等**。
+
+但顺着查出两件事：
+
+1. `server_email_pipeline.go:622-627` 的筛选是**手写的**
+   `case "downloaded","filed": if inv.FilePath != ""`——
+   而 `ledger.go:86` 明写 `InvoiceCountsTowardTotal` 是
+   「**唯一**的『这一张算不算进合计』判据」「为什么必须只有一处」。
+   今天两者等价，**没有错账**；但这是 2026-10-02 那起
+   `3,500 vs 61,500`（17.6 倍）事故的**同一个病**换了个位置。
+   改法很小：改成 `email.InvoiceCountsTowardTotal(inv)`，同时保住
+   `downloaded++` 计数与合计指向同一批。**本轮没改**——08:00 前动 server
+   代码要连带重建并重启 18099，风险不对等，留给下一轮。
+2. `SumByCurrency` 夹在「判据」与「调用方」之间，谁都可以绕过它。
+   若哪天有人直接 `SumByCurrency(全部发票)`，合计会静默虚高。
+   本轮用例的「调用方口径 vs LedgerRows 口径」断言就是为这条设的。
 
 ---
 
@@ -1087,10 +1186,11 @@ worktree 已 `git worktree remove`。
 | `internal/email/xmlinvoice_eui_test.go` | EUI 车牌排除 + 价税合计变体（§7.7.2） |
 | `internal/email/invoice_zip_harvest_test.go` | ZIP 优先于汇总单的负控（§7.7.1） |
 | `internal/email/diag_toll_e2e_offline_test.go` | 真实原文缓存端到端离线验收（§7.7.4） |
+| `internal/email/diag_toll_a4_ledger_offline_test.go` | 真实票的 A4 拼版 + 按币种汇总端到端离线验收（§7.8） |
 | `internal/email/diag_toll_attachment_test.go` / `diag_eui_xml_shape_test.go` / `diag_toll_invoice_replay_test.go` | 门控诊断（附件形态 / EUI XML 形态 / 原文重放） |
 | `internal/email/diag_boundary_tighten_candidates_test.go` | 180 条真实语料的边界收紧对比 |
 | `internal/email/diag_boundary_false_positive_test.go` | 边界误报常驻护栏（已去门控） |
-| `logs/restart-pocketd.ps1` / `logs/read-proc-env.ps1` | 带三道执行点守卫的重启脚本 / 读他进程环境块（§7.7.6） |
+| `logs/restart-pocketd.ps1` / `logs/read-proc-env.ps1` / `logs/cmp-instance-dsn.ps1` | 带三道执行点守卫的重启脚本 / 读他进程环境块 / 比对两实例是否同库（§7.7.6、§7.7.7） |
 
 改动既有文件：`invoice_harvest.go`（步骤 0、删 `recoverPOP3SourcedRaw`）、
 `pipeline.go`（`BodyCache` 字段）、`invoice.go`（`reHTMLTagRun`、`sellerIsFallback`）、

@@ -62,7 +62,14 @@
       </ul>
 
       <!-- 新建 FAB -->
-      <button class="fab" @click="newNote">＋</button>
+      <!-- ⚠️ 2026-10-03 真机实测补的无障碍名：这里原来只有一个裸「＋」。
+           后果不只是读屏用户找不到「新建笔记」—— **库里一旦已有笔记，
+           空态那个 action-label=新建笔记 的按钮就不渲染了**，
+           于是全页再没有任何可按文本匹配的新建入口：
+           实测 notes-crud 在 `visible: 新建笔记` 上超时 60s 报红，
+           而那台设备上 PKM 编辑器功能完全正常（有笔记、有预填「无标题」）。
+           有了 aria-label，有无笔记时都是同一个可定位元素。 -->
+      <button class="fab" :aria-label="'新建笔记'" @click="newNote">＋</button>
     </div>
 </template>
 

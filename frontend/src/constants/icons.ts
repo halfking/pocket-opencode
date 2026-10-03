@@ -69,10 +69,25 @@ export const ICON = {
   settingsGear: 'settings',
 
   // ── components/BottomNav.vue ──
+  // 2026-10-03 全局 IA 重组后一级 tab 收敛为 4 个：首页 / 笔记 / 消息 / 更多。
+  // 这里的四个名字**只覆盖走数据表的写法**；BottomNav 的 items 数组目前是裸字符串
+  // 字面量（'home' / 'edit_note' / 'notifications' / 'apps'），由 check:icons 兜底。
+  // 早先在这里额外登记 navNotes / navMessages 是多余的——它们一个引用都没有，
+  // 反而给人「已集中登记」的错觉。动态图标登记表的规则是**有引用才登记**。
   navHome: 'home',
   navApps: 'apps',
   navStyle: 'style',
   navMic: 'mic',
+
+  // ── features/notes/NotesHubView.vue：统一流的来源图标（switch 早返回）──
+  hubSourceNote: 'edit_note',
+  hubSourceMeeting: 'event',
+  hubSourcePkm: 'sticky_note_2',
+
+  // ── features/messages/MessagesHubView.vue：统一时间线的来源图标 ──
+  msgSourceEmail: 'mail',
+  msgSourceRss: 'rss_feed',
+  msgSourceTask: 'notifications',
 
   // ── features/sessions/useSessionDrafts.ts：草稿类型 ──
   draftPlay: 'play_arrow',

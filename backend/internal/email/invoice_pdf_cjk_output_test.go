@@ -42,20 +42,47 @@ import (
 )
 
 // latinOnlyFont 找一个只有拉丁字形的系统字体，用作负控。
+// latinOnlyFont 找一本**本机确实存在**且不含 CJK 字形的字体做负控。
+//
+// 2026-10-03 修：原实现只判 fontHasCJK(p)，而 fontHasCJK 对**不存在的文件**
+// 同样返回 false，于是 `!fontHasCJK(p)` 在第一个候选（Windows 的 arial.ttf）
+// 上就成立并被直接返回——在 Linux 上返回的是一个根本不存在的路径，
+// 紧接着 renderProbePDF 加载失败 t.Fatalf。后果有两层：
+//  1. 非 Windows 宿主上这条负控恒红，go test ./... 过不去；
+//  2. 更糟的是那行 t.Skip("本机找不到可用的拉丁字体做负控") **永远不可达**——
+//     「环境不支持」被伪装成了「负控失败」，正是负控最不该有的那种失效。
+//
+// 所以必须先 stat 再判字形，并补上 Linux 上真实存在的拉丁字体候选。
 func latinOnlyFont(t *testing.T) string {
 	t.Helper()
 	win := os.Getenv("SystemRoot")
 	if win == "" {
 		win = `C:\Windows`
 	}
-	for _, name := range []string{"arial.ttf", "arialbd.ttf", "tahoma.ttf", "segoeui.ttf"} {
-		p := filepath.Join(win, "Fonts", name)
+	cands := []string{
+		filepath.Join(win, "Fonts", "arial.ttf"),
+		filepath.Join(win, "Fonts", "arialbd.ttf"),
+		filepath.Join(win, "Fonts", "tahoma.ttf"),
+		filepath.Join(win, "Fonts", "segoeui.ttf"),
+		// Linux（Debian/Ubuntu 的 fonts-dejavu / fonts-liberation）
+		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+		"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+	}
+	for _, p := range cands {
+		if !fontFileExists(p) {
+			continue
+		}
 		if !fontHasCJK(p) {
 			return p
 		}
 	}
-	t.Skip("本机找不到可用的拉丁字体做负控")
+	t.Skip("本机找不到可用的拉丁字体做负控（本测试只验证判据的区分力，跳过不影响正控）")
 	return ""
+}
+
+func fontFileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
 }
 
 var fontFile2Re = regexp.MustCompile(`/FontFile2\s+(\d+)\s+0\s+R`)

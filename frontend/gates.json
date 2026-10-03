@@ -1,0 +1,32 @@
+{
+  "_comment": "npm run gates 的权威名单。执行者见 scripts/run-gates.mjs。顺序即执行顺序，失败即停。改这里，不要改 package.json 里的 gates（那一条在各分支上恒为 `node scripts/run-gates.mjs`，正是为了让它永远不冲突）。",
+  "_why": "2026-10-03 实测：gates 过去是 package.json 里一条 1000+ 字符的单行长字符串。两个分支各自往同一行末尾追加一个门禁（round29 加 check:callback-routes/check:edge-route-reach，round28 加 check:runtime-data），必然在同一行冲突，冲突上下文长到无法人工阅读。改成数组后，追加门禁只是多一行 JSON，git 能正常合并。",
+  "_notGates_why": "notGates 是「刻意不接进 gates 的 check:* 脚本」及其理由。run-gates.mjs 会核对 package.json 里每一个 check:* 都出现在 gates 或 notGates 里，否则退出码非 0 —— 防止新加了门禁却忘了接线（run-mjs-tests.mjs 头注释里记的就是同一类事故：146 个测试文件只有 32 个被某个 npm script 引用，114 个是孤儿，而 gates 全绿）。",
+  "gates": [
+    "typecheck",
+    "build:gate",
+    "test:all",
+    "test:native",
+    "test:stores",
+    "test:auth",
+    "test:styles",
+    "test:stt",
+    "test:email-heal",
+    "check:dueclock",
+    "check:callback-routes",
+    "check:edge-route-reach",
+    "check:runtime-data",
+    "check:vacuous-guard",
+    "check:vm-gaps",
+    "check:i18n",
+    "check:i18n-translated",
+    "check:dead-api",
+    "check:raw-error",
+    "check:crlf-needles",
+    "check:icons",
+    "check:test-coverage"
+  ],
+  "notGates": {
+    "check:icons:visual": "node scripts/build-icon-harness.mjs —— 生成供人眼打开的图标验证页（frontend/.icon-harness/index.html），是构建器不是判定器：它没有「通过/不通过」的退出码语义。把它接进 gates 只会让每跑一次门禁就重建一次静态页，而它的产物本来就是按需手工打开的。"
+  }
+}

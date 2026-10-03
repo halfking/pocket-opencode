@@ -46,10 +46,15 @@ appId: com.kaixuan.opencode.pocket
 # 前置可复现：node scripts/pkm-test-fixture.mjs（删掉上一轮同名笔记，
 # 否则最后一步的列表回显会假通过——Maestro 判 visible 只看节点在不在
 # 无障碍树里，不看它是不是上一轮留下的）。
+# ⚠️ 2026-10-03 真机实测：锚点文本随 IA 重组变了。
+# 原来等的是「AI 工具」——那是重组**前**首页 tab 的标签。重组后一级 tab 是
+# 首页 / 笔记 / 消息 / 更多（BottomNav.vue items），于是这一行 45s 超时、
+# 整条 flow 在第一条断言就中止，报 `Assertion is false: "AI 工具" is visible`。
+# 「首页」是新 tab 的真实标签（locales/zh-CN.json nav.home）。
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: "首页"
     timeout: 45000
-- assertVisible: "AI 工具"
+- assertVisible: "首页"
 - assertNotVisible: "密码登录"
 
 - runFlow: _goto-pkm.yaml
