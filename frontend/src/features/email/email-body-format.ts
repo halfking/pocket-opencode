@@ -103,7 +103,10 @@ export function extractEmailBody(raw: string): string {
   }
   const text = parts.find((p) => p.contentType === 'text/plain')
   if (text) return decodeTransfer(text.body, text.encoding, text.charset)
-  return src
+  // 部件树里只有附件（image/* / application/*）时，这里原本 `return src`，
+  // 与上面两个出口同样的毛病：把协议头 + 附件载荷当正文。剥掉首部，
+  // 剩下的空正文由调用方按「无正文」处理，比展示一屏 Received: 强。
+  return stripMessageHeader(src)
 }
 
 /**
@@ -198,14 +201,58 @@ function looksLikeRFC5322Message(s: string): boolean {
  */
 function stripMessageHeader(s: string): string {
   if (!looksLikeRFC5322Message(s)) return s
-  return splitHeadBody(s).body
+  const stripped = splitHeadBody(s).body
+  // 剥掉顶层首部后，剩下的往往还是**一层 multipart 包裹**：边界行 + 子部件头。
+  //
+  // 2026-10-03 实测（只有附件的邮件）：剥完首部拿到的仍是
+  //   --B2 / Content-Type: application/pdf ... / Content-Transfer-Encoding: base64 ...
+  // 直接当正文渲染，用户看到的是一屏 MIME 语法而不是「这封信只有附件」。
+  // 所以这里再剥一层：剥掉**成对的**边界行（首行开边界、末行 `--X--` 结束边界），
+  // 并丢掉每个子部件的头部。
+  //
+  // 之所以在剥完首部**之后**才认边界：只有到这里才知道它真是 MIME 包裹，
+  // 而不是在猜正文的开头是不是一条 `---` 分隔线（签名档、Markdown 水平线）。
+  return stripMultipartWrapper(stripped)
+}
+
+/**
+ * 剥掉 multipart 包裹：去边界行与子部件头，保留子部件体。
+ *
+ * 只在首行是边界**且**能找到对应结束边界时才动手（`cuts.length >= 2`），
+ * 否则原样返回——「看起来像 MIME 但切不开」比「不动」更危险。
+ */
+function stripMultipartWrapper(body: string): string {
+  // trimStart 会一并吃掉 U+FEFF / BOM，不需要额外 replace。
+  const trimmed = body.trimStart()
+  const openMatch = /^(--[\w'+=.-]+)[ \t]*\r?\n/.exec(trimmed)
+  if (!openMatch) return body
+  const b = openMatch[1]
+  const marker = new RegExp(`^[ \\t]*${escapeRe(b)}[ \\t]*(--)?[ \\t]*(?=\\r?\\n|$)`, 'gm')
+  const cuts: Array<{ start: number; end: number; closing: boolean }> = []
+  let m: RegExpExecArray | null
+  while ((m = marker.exec(trimmed)) !== null) {
+    cuts.push({ start: m.index, end: m.index + m[0].length, closing: !!m[1] })
+    if (m[1]) break
+  }
+  if (cuts.length < 2) return body
+  const out: string[] = []
+  for (let i = 0; i < cuts.length - 1; i++) {
+    const start = cuts[i].end + 1
+    const end = cuts[i + 1].start
+    if (end <= start) continue
+    out.push(splitHeadBody(trimmed.slice(start, end)).body)
+  }
+  return out.join('\n').trim()
 }
 
 function looksLikeMime(s: string): boolean {
   // 结构判据：头部止于第一个空行（CRLF 与 LF 都认）。
   const head = splitHeadBody(s.slice(0, MIME_HEAD_SCAN_LIMIT)).headers
-  if (/content-type\s*:/i.test(head) || /content-transfer-encoding\s*:/i.test(head)) return true
-  if (/^mime-version\s*:/i.test(head)) return true
+  // 字段名行首锚定，理由见 headerField。这里判 true 之后 walkMime 会用**同一条**
+  // 规则去读，若这里用松散正则就会造出「判定为 MIME、却读不出任何部件」的
+  // 状态——那种状态最终会落到 return src，把整封协议头当正文。
+  if (headerField(head, 'content-type') || headerField(head, 'content-transfer-encoding')) return true
+  if (/^mime-version[ \t]*:/im.test(head)) return true
   // 非 multipart 的单部件 MIME 也可能只有边界式首行。
   //
   // 判据是「**首行**就是边界」，所以锚在字符串开头即可，**不设字符窗口**。
@@ -228,9 +275,9 @@ function walkMime(raw: string, out: MimePart[], depth: number): void {
   // 防御畸形/超深嵌套邮件导致的栈溢出
   if (depth > 6) return
   const { headers, body } = splitHeadBody(raw)
-  const contentType = (/content-type\s*:\s*([^\s;]+)/i.exec(headers)?.[1] || '').toLowerCase()
-  const encoding = /content-transfer-encoding\s*:\s*(\S+)/i.exec(headers)?.[1] || ''
-  const contentId = normalizeCid(/content-id\s*:\s*([^\r\n]+)/i.exec(headers)?.[1] || '')
+  const contentType = headerField(headers, 'content-type')?.[1]?.split(';')[0]?.trim().toLowerCase() || ''
+  const encoding = (headerField(headers, 'content-transfer-encoding')?.[1] || '').trim()
+  const contentId = normalizeCid(headerField(headers, 'content-id')?.[1] || '')
   const charset = headerCharset(headers)
 
   if (contentType.startsWith('multipart/')) {
@@ -246,14 +293,55 @@ function walkMime(raw: string, out: MimePart[], depth: number): void {
 }
 
 /**
+ * 读一个头字段，**只认行首的字段名**。
+ *
+ * ## 为什么必须是行首锚定（2026-10-03 真实数据实测，49 封里 23 封命中）
+ *
+ * 原来用的是 `/content-type\s*:\s*([^\s;]+)/i` —— 不锚行首，且 `\s*` 容忍
+ * 字段名与冒号之间的空格。QQ 的 `X-QQ-XMRINFO` 追踪头正好把一堆字段名**当作
+ * 值**写在一行里（实测原文）：
+ *
+ *   h=date : from : reply-to : to : message-id : subject : mime-version :
+ *   content-type : list-unsubscribe : from : ...
+ *
+ * 于是正则抓到的是 `list-unsubscribe`（甚至更长的
+ * `date:from:mime-version:message-id:subject:to`），顶层 MIME 类型被读成
+ * `list-unsubscribe` / `reply-to` 这类垃圾值 —— `startsWith('multipart/')`
+ * 不成立，`walkMime` 于是**不递归切分**，一个 text 部件都找不到。
+ *
+ * 后果不是「正文为空」而是更糟的形态：`extractEmailBody` 落到末尾的
+ * `return src`，把整封报文原样交给详情页。于是首屏是
+ * `Received: from ptr2.edm.infoq.com.cn ...` 和 QQ 追踪头里成百行的
+ * base64 噪声，正文则是一整片未解码的 `=E7=82=B9=E5=87=BB` QP 转义
+ * （实测最严重一封 94364 字节的报文，正文 94356 字符里 4115 处 `=XX`），
+ * 完全无法阅读。这正是「邮件详情里有大量原始字节」的成因。
+ *
+ * ## 判据为什么是「行首」而不是「更严格的字段名白名单」
+ *
+ * RFC 5322 的 field-name 语法本就不允许空格，`content-type :` 根本不是合法
+ * 字段名——**行首锚定是协议本身给出的判据**，不需要维护一张头字段白名单
+ * （真实邮件里 `X-*` / `ARC-*` / `List-*` 头多到写不完，白名单必然漏）。
+ * 附带好处：顶层解析和 `walkMime` 用的是同一条规则，不会出现
+ * 「外层认得出、内层读不出」的自相矛盾。
+ *
+ * 折叠行（RFC 5322 §2.2.3，以空白开头的续行）仍被 `splitHeadBody` 原样保留在
+ * headers 里；本函数只锚定**字段名所在行的行首**，续行内容不会被误认成新字段。
+ */
+function headerField(headers: string, name: string): RegExpExecArray | null {
+  // 字段名只允许 ASCII 可见字符且不含冒号；`m` 让 ^ 锚定每一行的行首。
+  return new RegExp(`^${name}[ \\t]*:[ \\t]*([^\\r\\n]*)`, 'im').exec(headers)
+}
+
+/**
  * 头部里的 charset。优先取 Content-Type 的 `charset=` 参数——正文部件的权威声明
  * 就写在这里；某些客户端还会额外发一个裸 `charset=` 头，一并兜住。
  */
 function headerCharset(headers: string): string {
-  const ct = /content-type\s*:\s*([^\r\n]*)/i.exec(headers)?.[1] || ''
+  const ct = headerField(headers, 'content-type')?.[1] || ''
   const fromType = /charset\s*=\s*"?([^";\s]+)"?/i.exec(ct)?.[1] || ''
   if (fromType) return fromType
-  return /^\s*charset\s*=\s*"?([^";\s]+)"?/im.exec(headers)?.[1] || ''
+  // 裸 charset 头同样只认行首（理由见 headerField）。
+  return /^charset[ \t]*=[ \t]*"?([^";\s]+)"?/im.exec(headers)?.[1] || ''
 }
 
 /** 以第一处空行为界拆头/体。 */
