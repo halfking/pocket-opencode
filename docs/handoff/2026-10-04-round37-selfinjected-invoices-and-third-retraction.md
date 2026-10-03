@@ -2912,3 +2912,40 @@ CSV 至今保留着文件名（10 列）。若要恢复，MD 应为 8 列
 - 24 封/轮的预算是否够（15 < 24，够）
 - 08:00 那轮的实际耗时（历史无 08:00 完整运行时长记录，10-01/10-02 两次的
   `done` 行已随旧日志消失）
+### 45.6 补上 45.4 留的那个未验证项：4 封真发票候选的取件条件
+
+45.4 写「真发票最多 4 封可能建档，能否解析成功取决于拉回正文后的提取，本节未验证」。
+这一项**只读就能查清一半**，实测如下：
+
+```
+09-20  donotreply@email.apple.com   Apple Store 零售店服务确认        att=f  body=NO
+09-19  noreply@email.apple.com      zixuan huang不再参与"家人共享"      att=f  body=NO
+09-18  …acct_1Ika5JA3KZ32dPo1@stripe.com  Your receipt from X #2662…  att=t  body=NO
+09-17  developer@email.apple.com   Agreement signed: Apple Developer  att=f  body=NO
+09-15  yun1@vip.baiwang.com         电子发票下载                       att=t  body=NO
+09-15  yun1@vip.baiwang.com         电子发票下载                       att=t  body=NO
+09-13  no_reply@email.apple.com     Apple 提供的收据                   att=f  body=NO
+09-04  no_reply@email.apple.com     Apple 提供的收据                   att=f  body=NO
+```
+
+**两处需要澄清的读数：**
+
+1. **`attachments` 列对 `has_attachments=true` 的那三封显示为空**。一度像矛盾，
+   查了采集器才确认无关：采集器读的是 **MIME 解析结果** `parsed.Attachments`
+   （`invoice_harvest.go:327/357/385`），**不读 `attachments` 列**。
+   ⇒ 那列为空**不代表**附件拿不到。
+
+2. **这 4 封全部 `body_path` 为空**（无缓存正文）。但采集器不依赖缓存：
+   `invoice_harvest.go:286` 走 `resolveRawBody`，缓存未命中会走
+   **IMAP FETCH 自愈**（`raw_body_resolve.go`，IMAP 来源用真实 UID 而非位置序号）。
+   ⇒ 取件路径存在，08:00 那轮**会去现场拉原文**。
+
+**所以 45.4 第 2 条的准确表述**：
+- Stripe ×1 与电子发票下载 ×2 **有发票类附件** ⇒ 拉回 MIME 后由
+  `zipAttachmentContents` / 附件遍历取到票面，成功率高；
+- **Apple 收据 ×2 既无附件也无缓存正文** ⇒ 只能靠 IMAP FETCH 拿到正文，
+  再由 `ExtractInvoice` 从正文抽金额——**这一条仍不可预测**，
+  因为我没有 Apple 收据正文的样本（它没被拉过）。
+
+⇒ 08:00 的预期从「最多 4 封」细化为：**附件型 3 封大概率建档；
+Apple 收据 2 封不确定**。留到 08:11 用实际产出回答。
