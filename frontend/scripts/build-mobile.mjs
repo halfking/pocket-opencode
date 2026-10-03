@@ -14,6 +14,21 @@
 // Skip vite typecheck (fast path):
 //   MOBILE_FAST=1 node scripts/build-mobile.mjs ios dev
 //
+// Build the coexisting STT debug package (android only):
+//   node scripts/build-mobile.mjs android dev --sttdev
+//   -> vite build + cap sync + `gradlew assembleDebug -PsttDevApp`
+//
+//   Why this exists: `-PsttDevApp` flips applicationIdSuffix to ".sttdev", giving a
+//   package that can sit on the phone next to the real one with separate data
+//   (app/build.gradle). That is how STT getsmessed with on-device recording without
+//   touching the user's installed app. But the flag lived only in gradle, so the
+//   sanctioned build path stopped at `cap sync` and the gradle step was a
+//   hand-typed incantation that nothing verified — a mistyped property silently
+//   yields a **main-package** APK that would overwrite the real app on install.
+//
+//   So this flag does not just pass the property; it asserts the produced
+//   artifact really is the coexisting one (see verifySttdevArtifact).
+//
 // Behaviour:
 //   - Validates args (platform ∈ {ios, android}; env ∈ {dev, staging, prod}).
 //   - Picks a vite --mode profile: ios-dev | android-dev | staging | production.
@@ -53,9 +68,23 @@ function usage(exitCode = 1) {
   process.exit(exitCode);
 }
 
-const [, , platform, env] = process.argv;
+const [, , platform, env, ...rest] = process.argv;
 if (!platform || !PLATFORMS.has(platform)) usage();
 if (!env || !ENVS.has(env)) usage();
+
+// --sttdev is a build VARIANT, orthogonal to platform/env. Reject it on iOS
+// instead of ignoring it: silently dropping the flag would hand back a
+// main-package build while the caller believes they got the coexisting one.
+const sttdev = rest.includes("--sttdev");
+const unknownFlags = rest.filter((a) => a !== "--sttdev");
+if (unknownFlags.length) {
+  console.error(`[build-mobile] unknown argument(s): ${unknownFlags.join(" ")}`);
+  usage();
+}
+if (sttdev && platform !== "android") {
+  console.error("[build-mobile] --sttdev is android-only (it drives app/build.gradle)");
+  process.exit(1);
+}
 
 function modeFor(platform, env) {
   if (env === "dev") return `${platform}-dev`;
@@ -260,4 +289,67 @@ if (sync.status !== 0) {
   }
 }
 
-console.log(`[build-mobile] OK — ${platform}/${env} (mode=${mode})`);
+// ---- sttdev variant: gradle assembleDebug + assert the artifact is the
+// coexisting package, not the main one -------------------------------------
+//
+// The assertion is the point. `assembleDebug -PsttDevApp` is only a *request*:
+// if app/build.gradle ever drops the `if (project.hasProperty('sttDevApp'))`
+// branch, gradle still exits 0 and emits an APK — a **main-package** APK that
+// `adb install -r` would happily push over the user's real app. Nothing in the
+// gradle output distinguishes the two, and the damage only shows up later, on
+// the user's data. So we read what was actually produced.
+function verifySttdevArtifact() {
+  const meta = path.join(
+    frontendRoot, "android", "app", "build", "outputs", "apk", "debug", "output-metadata.json"
+  );
+  if (!existsSync(meta)) {
+    console.error(`[build-mobile] sttdev verification failed: ${path.relative(frontendRoot, meta)} not found`);
+    console.error("[build-mobile] gradle reported success but produced no APK metadata — treating as FATAL");
+    console.error("[build-mobile] (a main-package APK here would overwrite the user's installed app on install)");
+    process.exit(1);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(meta, "utf8"));
+  } catch (e) {
+    // A read/parse failure must NOT be reported as "wrong applicationId":
+    // the distinction matters, because the first means "the build is broken" and
+    // the second means "the build is fine but you built the wrong thing".
+    console.error(`[build-mobile] sttdev verification could not parse metadata: ${e.code || e.message}`);
+    console.error("[build-mobile] this is a READ failure, not a wrong-applicationId failure");
+    process.exit(1);
+  }
+  const appId = parsed?.applicationId;
+  if (typeof appId !== "string" || !appId.endsWith(".sttdev")) {
+    console.error(`[build-mobile] sttdev verification failed: applicationId=${JSON.stringify(appId)}`);
+    console.error("[build-mobile] expected it to end with '.sttdev'. The APK that was built is the MAIN package —");
+    console.error("[build-mobile] installing it would overwrite the user's real app. Do not install it.");
+    process.exit(1);
+  }
+  const attrs = parsed?.elements?.[0]?.attributes;
+  const versionName = Array.isArray(attrs) ? attrs.find((a) => a?.name === "versionName")?.value : undefined;
+  console.log(
+    `[build-mobile] sttdev artifact verified: applicationId=${appId}` +
+    (versionName ? ` versionName=${versionName}` : "")
+  );
+}
+
+if (sttdev) {
+  const androidDir = path.join(frontendRoot, "android");
+  const gradlew = process.platform === "win32" ? "gradlew.bat" : "./gradlew";
+  console.log("[build-mobile] gradle assembleDebug -PsttDevApp (coexisting package)");
+  const g = spawnSync(gradlew, ["--no-daemon", "assembleDebug", "-PsttDevApp"], {
+    cwd: androidDir,
+    env: envVars,
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
+  if (g.status !== 0) {
+    if (g.error) console.error(`[build-mobile] gradle could not start: ${g.error.code || g.error.message}`);
+    console.error(`[build-mobile] gradle failed (exit=${g.status})`);
+    process.exit(g.status ?? 1);
+  }
+  verifySttdevArtifact();
+}
+
+console.log(`[build-mobile] OK — ${platform}/${env} (mode=${mode}${sttdev ? ", variant=sttdev" : ""})`);
