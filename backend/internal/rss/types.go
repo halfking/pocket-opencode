@@ -150,6 +150,22 @@ func stableHash(guid, link, title, content string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// itemID 是一条 item 的行主键。
+//
+// 必须是 (source_id, content hash) 的**组合**，不能只拿其中之一：
+//   - 只用 content hash：两个源转载同一篇稿件（中新网财经/要闻、CNBC 的
+//     Markets/Technology）会撞主键；两个用户订同一个源也会撞。
+//   - 只用 source_id：同一个源的所有条目主键相同 ⇒ 每个源最多只能存进一条，
+//     后面每一条都报 duplicate key。真实 38 个源上跑，一分钟就能把这堵死。
+//
+// 单独写这个函数而不是复用 stableHash：stableHash 的语义是「guid / link /
+// 标题+正文 里取第一个非空的」，它**不是**「把这些都拼起来哈希」——
+// stableHash(source.ID, h, "", "") 只等于 sha256(source.ID)。
+func itemID(sourceID, contentHash string) string {
+	h := sha256.Sum256([]byte(strings.TrimSpace(sourceID) + "\x00" + strings.TrimSpace(contentHash)))
+	return "it_" + hex.EncodeToString(h[:])
+}
+
 // StoreAPI is the persistence surface needed by ingestion and scheduling.
 type StoreAPI interface {
 	Available() bool

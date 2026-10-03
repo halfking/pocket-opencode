@@ -39,7 +39,7 @@ func (s *Store) UpsertItemScoped(ctx context.Context, x Item, sc Scope) (bool, e
 		x.Hash = stableHash(x.GUID, x.URL, x.Title, x.Content)
 	}
 	if x.ID == "" {
-		x.ID = x.Hash
+		x.ID = itemID(x.SourceID, x.Hash)
 	}
 	if x.Status == "" {
 		x.Status = ItemUnread

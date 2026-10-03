@@ -155,16 +155,32 @@ func (s *Scheduler) Stop() {
 }
 
 // RunNow synchronously refreshes one source while respecting the same worker bound as scheduled runs.
+//
+// 旧实现只用构造时那个作用域去找源：订阅源是按真实 (user, workspace) 写的，
+// 于是手动「立即拉取」对真实用户**永远 404**（本地单用户部署看不出来，因为
+// 两边恰好都是 local/default）。现在先按传入作用域找，找不到再在库里的其它
+// 活跃作用域里找 —— 拿到的 Source 自带真实的 UserID/WorkspaceID，抓取与落库
+// 都跟着它走，不会写到别人的作用域去。
 func (s *Scheduler) RunNow(ctx context.Context, sourceID string) (FetchResult, error) {
+	return s.runNow(ctx, nil, sourceID)
+}
+
+// RunNowInScope 是 RunNow 的作用域显式版本，供 HTTP handler 使用：请求方已经
+// 知道自己是谁，直接在自己的作用域里找，既不用扫库，也不会命中别人的源。
+func (s *Scheduler) RunNowInScope(ctx context.Context, sc Scope, sourceID string) (FetchResult, error) {
+	return s.runNow(ctx, &sc, sourceID)
+}
+
+func (s *Scheduler) runNow(ctx context.Context, sc *Scope, sourceID string) (FetchResult, error) {
 	var out FetchResult
 	if s == nil || s.store == nil || !s.store.Available() {
 		return out, ErrStoreUnavailable
 	}
-	src, err := s.store.GetSource(ctx, sourceID, s.scope)
+	scope, src, err := s.resolveSource(ctx, sc, sourceID)
 	if err != nil {
 		return out, err
 	}
-	rules, err := s.store.ListFilterRules(ctx, s.scope)
+	rules, err := s.store.ListFilterRules(ctx, scope)
 	if err != nil {
 		return out, err
 	}
@@ -175,4 +191,39 @@ func (s *Scheduler) RunNow(ctx context.Context, sourceID string) (FetchResult, e
 		return out, ctx.Err()
 	}
 	return s.fetcher.RefreshSource(ctx, *src, rules)
+}
+
+// resolveSource 定位源所属的作用域。prefer 非空时只用它（找不到就 404，
+// 不跨作用域回退——那会把 A 用户点的刷新打到 B 用户的源上）。
+func (s *Scheduler) resolveSource(ctx context.Context, prefer *Scope, sourceID string) (Scope, *Source, error) {
+	try := func(sc Scope) (*Source, bool) {
+		src, err := s.store.GetSource(ctx, sourceID, sc)
+		if err != nil {
+			return nil, false
+		}
+		return src, true
+	}
+	if prefer != nil {
+		if !prefer.valid() {
+			return Scope{}, nil, ErrInvalidScope
+		}
+		if src, ok := try(*prefer); ok {
+			return *prefer, src, nil
+		}
+		return Scope{}, nil, ErrNotFound
+	}
+	if s.scope.valid() {
+		if src, ok := try(s.scope); ok {
+			return s.scope, src, nil
+		}
+	}
+	for _, sc := range s.scopes(ctx) {
+		if sc == s.scope {
+			continue
+		}
+		if src, ok := try(sc); ok {
+			return sc, src, nil
+		}
+	}
+	return Scope{}, nil, ErrNotFound
 }
