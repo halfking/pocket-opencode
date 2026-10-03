@@ -29,6 +29,8 @@ UI 视觉技法 3 件套: ✅ AnimatedNumber + ProgressRing + StaggerList（#34�
 
 > **9-21 进度**：emulator + 真机 + UI 优化 3 块全部闭环。Native 单测 99/99 由 25/25 提升上来了（test:native:all 包含子测试）。
 
+> **2026-10-03 进度**：Phase 9.4 落库 — `frontend/src/utils/download.ts` 迁 pocket-native，新增 9 cases download.test.mjs；native 单测 45/45（pocket-native 36 + download 9），vm-gap 0/120。
+
 > **8 层静态证据链**（`npm run verify:android` 一键跑完）：
 > 1. typecheck (vue-tsc) ✅
 > 2. build (vite) ✅
@@ -51,11 +53,16 @@ UI 视觉技法 3 件套: ✅ AnimatedNumber + ProgressRing + StaggerList（#34�
 | 3. UI 与数据分离 | ✅ | 邮件域天然 4 层 + 0/118 ViewModel 缺口 + 2 VM 抽出 | `2f58aee` `58499e0` `check:vm-gaps` |
 | 4. 代码层后台保活 | ✅ | M1 + M5/T2 + 8 原生 plugin + 18 关键权限 + 完整 build | `332132d` + `5a03deb` |
 | 5. **运行时 30min 后台** | ✅ 真机 4c308e2e Redmi T+12:52 验证通过 | FGS AiStreamService alive / 通知 active / 0 OEM kill / 0 Watchdog | 本地 logs/ 产物（不入库）：real-device-summary-20260921-120102.txt · redmi-30min-logcat-full.txt |
-| 6. **pocket-native 跨端抽象**（Phase 7-9） | ✅ Phase 9.1 filesystem + Phase 9.3 share 三平台实装 | 业务 flashcards 域 `@capacitor/filesystem` 0 处 `@capacitor/share` 0 处 `@capacitor/local-notifications` 0 处；iOS stub 待 Phase 7.1 Swift plugin 镜像 | `docs/design/2026-09-24-phase-9-pocket-native-complete.md` §3 · commit `530ad1e` |
+| 6. **pocket-native 跨端抽象**（Phase 7-9） | ✅ Phase 9.1 filesystem + Phase 9.3 share + Phase 9.4 utils/download.ts 三平台实装 | 业务 flashcards + utils 域 `@capacitor/filesystem` 0 处 `@capacitor/share` 0 处 `@capacitor/local-notifications` 0 处；iOS stub 待 Phase 7.1 Swift plugin 镜像 | `docs/design/2026-09-24-phase-9-pocket-native-complete.md` §3 · commit `530ad1e` + Phase 9.4 接力单 `handoff/2026-10-03-phase-9-4-utils-download-migration.md` |
 
 ## 3. 完整 commit 链（从最近往前）
 
 ```
+e9c0991d feat(native): Phase 9.4 —— utils/download.ts 迁 pocket-native 抽象
+2694e9a merge: 2026-09-27 一致性清扫（docs/README 补登 7 篇 design）
+e0709bf docs: 2026-09-27 一致性清扫 — 专题现行方案表补登 7 篇 design 文档
+fdc2041 merge: 2026-09-26 一致性清扫（STATE.md 跟齐 399dfc0 + 索引补登）
+7a79d93 docs(sweep): 2026-09-26 一致性清扫 —— STATE.md last commit 跟齐 399dfc0 + handoff 6 + 索引补登 3 篇 design
 399dfc0 docs(handoff): 2026-09-25 Phase 9.3 接力单（审计 / 修复 / 验证矩阵 / Phase 9.4 接力范围）
 92b6fda docs(sweep): 2026-09-25 STATE.md last commit 跟齐 530ad1e（Phase 9.3 PocketShare 三平台实装 + flashcardIo 切流后指针跟进）
 530ad1e feat(native): Phase 9.3 —— PocketShare 三平台实装 + flashcardIo 切流
