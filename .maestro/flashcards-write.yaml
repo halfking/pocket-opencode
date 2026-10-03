@@ -125,17 +125,39 @@ appId: com.kaixuan.opencode.pocket
 #      保存按钮始终不解禁）。
 #   2. textarea 的 placeholder 在可访问性树里未必暴露成 text（闪卡建卡组那个
 #      input 实测 t="" cd=""），没有稳定的文本选择器可用。
-# 坐标来自 scripts/diag-textarea-bounds.mjs 实测（dpr=2，视口 360x820）：
-#   正面 cssRect[14,188,332,100] → 中心 50%,29%
-#   背面 cssRect[14,365,332,139] → 中心 50%,53%
-#   保存按钮 .save-link 中心 91%,8%（底部 .primary 在 100% 处，会被主导航压住）
-# 点歪了不会静默通过：输入没进去 → 保存按钮不解禁 → 下面那条断言必红。
+#
+# ⚠️⚠️ 两个坐标**故意不一样**，这是本 flow 最容易踩的地方（2026-10-04 真机时间线定死）：
+#
+#   滚动的不是 window，是 <main class="content scroll-shell fullscreen">。
+#   window.scrollY 恒为 0、scrollHeight 也等于 innerHeight（页面看着「没滚」），
+#   一切滚动量都藏在这个内层容器的 scrollTop 上。**只看 window 级读数会得出「页面没滚、
+#   坐标稳定」的错误结论。**
+#
+#   带采样器跑真实 flow 抓到的状态变化（scripts/diag-flashcard-timeline.mjs）：
+#     t=99.1s  进入建卡页      scrollTop=0      正面29% 背面53% 标签74%
+#     t=101.1s 键盘弹出        scrollTop=0      正面29% 背面53% 标签74%   ← 坐标纹丝不动
+#     t=104.1s 第一次 inputText 后 scrollTop=122.5 正面14% 背面38% 标签59% ← 整体上移 122.5px
+#     t=107.4s 第二次 tap 53%  落到**标签**上（焦点变成「输入标签后回车」）
+#     t=110.1s 「回归背面」进了标签框
+#
+#   ⇒ 第一次 tap 用**滚动前**的坐标，第二次 tap 用**滚动后**的坐标。
+#   ⇒ 滚动不是键盘压缩视口造成的：键盘开合期间 innerHeight 恒为 820、
+#     visualViewport.height 恒为 820、scrollY 恒为 0。键盘只是**浮在上面**，
+#     占屏 970..1640（InsetsSource type=ime frame 实测），不参与 WebView 布局。
+#     真正的滚动是 WebView 原生的「IME 打开后把聚焦元素滚进可视区」。
+#     触发它的是 **Maestro 的 inputText**（走真实 InputConnection 组字）；
+#     `adb shell input text` 注入的是 KeyEvent，**复现不出这个滚动**——
+#     所以 scripts/diag-flashcard-tap-replica.mjs 只能用来验第一个坐标，
+#     第二个坐标只能靠真 flow 验。别拿复刻脚本的结论去改这里的第二个数。
+#
+# 29%/38% 均落在 IME 顶边（59%）以上，可点。53% 落在背面与标签之间的空档，会打空。
+# 另有 74% 是标签、91% 是卡组名称，后两者在键盘打开时被完全遮住，点不到。
 - extendedWaitUntil:
     visible: { text: "保存|Save" }
     timeout: 20000
 - tapOn: { point: "50%,29%" }
 - inputText: "回归正面"
-- tapOn: { point: "50%,53%" }
+- tapOn: { point: "50%,38%" }
 - inputText: "回归背面"
 # 保存按钮必须随正反面填入而解禁 —— 这条同时证明两次输入都落进了 textarea
 - extendedWaitUntil:
