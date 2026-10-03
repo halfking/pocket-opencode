@@ -60,6 +60,9 @@ func NewStore(pool *pgxpool.Pool) (*Store, error) {
 	if err := s.migrateFolders(context.Background()); err != nil {
 		return nil, fmt.Errorf("email folders migrate: %w", err)
 	}
+	if err := s.migrateRawBodyDead(context.Background()); err != nil {
+		return nil, fmt.Errorf("email raw-body dead migrate: %w", err)
+	}
 	return s, nil
 }
 
