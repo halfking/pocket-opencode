@@ -1373,3 +1373,62 @@ marketing 67 封的评分分布：
 存量那行是闸门修复前的产物。
 
 本节只读：未触发任何重试、未改数据库。
+## 二十六、更正第二十一~二十二节：08:00 那轮**不受** kxmemory 缺失影响（2026-10-04 05:2x）
+
+第二十一节说「定时路径压根不执行分类」，第二十二节说要把网关兜底接进
+Scheduler。**两节的结论都错。** 本节更正。
+
+### 26.1 两条定时路径被混为一谈了
+
+`ClassifySkipReason`（`scheduler.go:731`）拦的是**每分钟增量同步**路径里的
+分类，它**不在** `Pipeline.Run` 里。`Pipeline.Run`（`pipeline.go`）是另一条路：
+
+    1   收信
+    1.5 发票候选建档
+    1.6 classifyPending      ← 有自己的分类器，与 kxmemory 无关
+    2   清垃圾
+    3   notifyImportant      ← 无条件执行
+    4   发票采集
+    5   飞书推送 + 共享台账
+
+`classifyPending`（`pipeline.go:505-523`）用的是 `p.Classifier` 这个注入点，
+为 nil 时记 `rep.ClassifySkip` 并整步跳过，报错文案点名
+`POCKET_EMAIL_CLASSIFY_VIA_GATEWAY`。
+
+### 26.2 开关早就存在，且注释已给出决策依据
+
+`config.go:165-178` 的 `POCKET_EMAIL_CLASSIFY_VIA_GATEWAY`（默认 false）：
+
+    需求原文没有说要每天自动花网关额度，这条属于产品取舍，不该由默认值
+    替用户决定——和 POCKET_EMAIL_SPAM_DRYRUN 默认 true 是同一类安全阀的
+    思路，但方向相反：那个是「别动用户邮件」，这个是「**别替用户花钱**」。
+
+并有 `internal/config/email_pipeline_classify_config_test.go` 三条用例
+钉住「默认关 / 只认精确 true / 误设（0、False、yes、TRUE…）都不误开」。
+
+⇒ 第二十二节列的三步改动（加 `SetClassifyOne`、改 731 分支、main 注入）
+**已经做完了**。不需要再改代码，只需要决定要不要把开关置 true。
+
+### 26.3 199 封漏提醒的真实成因
+
+不是「定时路径不分类」，而是 `POCKET_EMAIL_CLASSIFY_VIA_GATEWAY` 未开 ⇒
+每轮第 1.6 步整步跳过 ⇒ **新到**的邮件拿不到 importance。
+
+而那 199 封 importance 早已在库里（它们是历史手工分类的产物），所以
+第 3 步 `notifyImportant` 仍会扫到它们 —— **但要看 08:00 那轮实际跑没跑**。
+
+### 26.4 对 08:00 那一轮的预期（重要）
+
+现在 05:2x，08:00 那轮还有约 2.5 小时。它会：
+
+- 1.6 步跳过（`ClassifySkip` 非空），**但**
+- 3 步 `notifyImportant` **无条件执行** ⇒ 库里那 199 封 high 里，
+  尚未 `notified_at>0` 的会**在本轮被提醒**。
+
+这是本轮最需要盯的一件事：**08:00 之后提醒数会从 59 跳到接近 258**。
+那不是新发现的邮件被分类了，是历史积压一次性涌出。
+
+⇒ 08:15 复核时**不要**把「提醒数暴增」读成「修好了」，要读成
+「积压释放了」。若一次推太多影响使用，应考虑先限量。
+
+本节只读：未改代码、未改配置、未触发流水线。
