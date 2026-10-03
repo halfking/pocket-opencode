@@ -264,6 +264,26 @@ var pgSafeWithoutIsolation = map[string]string{
 	//     换 schema 需改代码；且它绕开 NewStore（那会 migrate 建表，是写操作）。
 	"internal/email/diag_spam_preview_test.go": "只读真实库探针：无写语句（仅一条 SELECT）；需 POCKET_DIAG_SPAM_PREVIEW=1 + POCKET_DIAG_PG。隔离靠 SQL 里显式限定 `FROM opencode_pocket.emails`（:77）而非 search_path，故不依赖 DSN 的 search_path。弱点：schema 名硬编码，换库需改代码",
 
+	// internal/email/diag_stale_debt_notice_row_test.go（2026-10-03 补登，提交
+	// ee912940 新增该文件时漏了，把 internal/server 跑成了红的——**同一个文件
+	// 上一轮已经犯过一次**（见上面 diag_spam_preview_test.go 的登记），所以
+	// 这次把它单独写清楚，免得第三次只看到一个文件名就去改护栏：
+	//   · 只读：全文件只有 2 条 pool.Query（均为 SELECT，:71 / :120），
+	//     INSERT/UPDATE/DELETE/DROP/CREATE/TRUNCATE 一个都没有。
+	//   · 门控：POCKET_DIAG_STALE_ROW=1 且 POCKET_TEST_POSTGRES_DSN 非空，否则 t.Skip。
+	//   · 隔离形态：SQL 里三处表名全部写成 `opencode_pocket.email_invoices` /
+	//     `opencode_pocket.emails`（:76-77 / :121），**不依赖 search_path**。
+	//     :59 那句 `RuntimeParams["search_path"] = "opencode_pocket"` 钉的是
+	//     **生产** schema 而不是 `*_test_` schema——它不是隔离措施，只是让
+	//     任何未限定的查询也落到生产（该文件里没有未限定查询，故当前无害）；
+	//     这一点是它**看起来**做了防护、实际并不构成防护的地方，照实登记。
+	//   · 已知的真实弱点（不属本护栏管辖，未擅自改动）：schema 名硬编码；
+	//     「只读」靠「文件里没有写语句」维持，而非像 diag_invoice_backlog_test.go
+	//     那样由 `SET default_transaction_read_only = on` 在数据库侧强制；
+	//     且它读的是 **POCKET_TEST_POSTGRES_DSN**（测试变量名）却查生产 schema，
+	//     也就是说「指到生产」是刻意行为而非变量名带来的默认值。
+	"internal/email/diag_stale_debt_notice_row_test.go": "只读真实库诊断：0 写语句，2 条 pool.Query（均为 SELECT）；需 POCKET_DIAG_STALE_ROW=1 显式开关 + POCKET_TEST_POSTGRES_DSN。指向生产 schema 是目的（隔离库里没有那张 inv_1790903383222583800_1 行，只会报「查无此行」的假结论）。读哪张表由 SQL 自己写死（`FROM opencode_pocket.email_invoices` / `.emails`），不依赖 search_path。弱点：schema 名硬编码；只读靠「无写语句」维持而非数据库侧强制；:59 钉的是生产 schema，不构成隔离",
+
 	// internal/email/pipeline_lock_test.go（2026-10-03 新增）：
 	//   · 它**确实**隔离，只是隔离逻辑在被复用的助手里，本文件因此没有
 	//     isolatedSchemaRe 要找的 `"*_test_` 字面量（schema 名由 helper 现场生成）。
