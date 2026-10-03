@@ -2551,3 +2551,92 @@ var invoiceKeywordASCIINegPhrases = []*regexp.Regexp{
 这份修复**在 18099 跑着的二进制里还没有**——那是 05:02 构建的临时二进制。
 所以今天 08:00 那一轮**仍会用旧的宽判据**，仍会为那 8 封非发票邮件占拉原文预算。
 要生效需随二进制替换一起上线（与 A4 开关同一个替换动作）。
+## 第四十二节（2026-10-04 07:29–07:40）修复后的真实效果核对：12 封 candidate，且**幽灵发票同类已全部堵住**
+
+### 42.1 为什么要单独核对
+
+第四十一节把候选判据收紧了，但收紧之后**还剩什么**没有查过。
+这不是「顺手确认一下」——剩下的名单里如果混着信用卡账单，
+而 58000 幽灵发票（`inv_1790903383222583800_1`）恰恰就是工行对账单造成的，
+那么「收紧了关键词」并不等于「幽灵发票堵住了」。两件事必须分别验。
+
+### 42.2 修复后真实库还剩 12 封 candidate（原 15 封）
+
+用生产判据 `InvoiceCandidate` 跑真实库全部未建档邮件，逐封列出：
+
+```
+ 1. support-mimo@xiaomi.com          Xiaomi MiMo API 开放平台扣款成功通知
+ 2. no-reply@amazonaws.com           所需操作：AWS 账户提示
+ 3. no-reply@amazonaws.com           AWS 账户提醒
+ 4. westlakebusiness@apple.com      来自 Apple 西湖商务团队的问候
+ 5. invoice+statements+…@stripe.com  Your receipt from X #2662-4636-8457
+ 6. yun1@vip.baiwang.com             电子发票下载
+ 7. yun1@vip.baiwang.com             电子发票下载
+ 8. no_reply@email.apple.com         Apple 提供的收据
+ 9. creditcard@service.pingan.com    平安信用卡电子账单      ← 债务通知形态
+10. ccsvc@message.cmbchina.com       招商银行信用卡电子账单  ← 债务通知形态
+11. no_reply@email.apple.com         Apple 提供的收据
+12. noreply@github.com               [GitHub] Payment Receipt for halfking
+```
+
+⇒ 15 → 12，减掉的正是第四十一节查出的 GitHub CI / Actions 分钟 / Grok 促销 /
+NVIDIA 会议邀请那批。剩下的 12 封里，**真发票 4 封**（Stripe receipt ×1、
+电子发票下载 ×2、Apple 收据 ×2），**债务通知 4 封**，其余是服务通知。
+
+### 42.3 债务通知那一类：用生产判据 `admitDebtNotice` 实测
+
+**不推断，直接跑生产函数**：
+
+```
+debt-notice admit=false hasInvAtt=false  所需操作：AWS 账户提示
+debt-notice admit=false hasInvAtt=false  AWS 账户提醒
+debt-notice admit=false hasInvAtt=false  平安信用卡电子账单
+debt-notice admit=false hasInvAtt=false  招商银行信用卡电子账单
+=== candidate=12  债务通知形态=4  会被放行建档=0 ===
+```
+
+⇒ **4 封全部被拦下，0 封会建档。**
+
+这两封信用卡账单的形态与 58000 幽灵发票**完全同类**，值得展开说：
+`ccsvc@message.cmbchina.com` 的 snippet 第一句就是
+「可用额度 ￥37,903.33」——与「信用额度 58000」是同一类数字（都是**额度**，
+不是**支出**）。实测 `has_attachments = f`、`attachments` 为空，
+所以 `admitDebtNotice` 要求的「另外带一个真实发票语义信号」拿不出来 ⇒ 拦下。
+
+**这是 58000 那次修复在真实数据上的有效性验证**，而不是又一次新发现：
+`admitDebtNotice` 是 `f20ed001` 引入的（第三十五节已确认在运行二进制里），
+本节只是**首次在真实库上跑出「0 封会建档」这个量化结果**。
+
+### 42.4 过程中的第三次「重造已有实现」
+
+探针里我写了 `containsFold` 做附件名匹配，编译报
+`containsFold redeclared in this block`——`cleanup_filter.go:80` 早有同名同义实现。
+
+⇒ 这是本轮（也是本会话）第三次犯「没先搜同包有没有现成 helper」。
+前两次的教训我明明刚写进 handoff（第三十九节：「`fullPlacements()` 早就写好了」），
+结果同一个错在同一轮里又犯了一次。
+**判据重复实现 = 两份会分叉的真相**，probing 代码尤其容易这样，因为它短、直觉上「不值得搜」。
+
+### 42.5 探针已清理
+
+两个临时探针（`zz_probe_after_test.go`、`zz_probe_admit_test.go`）跑完即用
+mavis-trash 删掉，`git status` 干净，仓库里不留测量代码——
+**测量脚本不该进版本库**，它的价值是一次性的，而它内含的判据猜想会过期。
+
+### 42.6 对 08:00 那轮的预期（修正第四十一节的说法）
+
+第四十一节末尾写「今天 08:00 仍会用旧的宽判据」，那是对的（修复未上线）。
+本节补充一条**新预期**：
+
+即便上线了，08:00 那轮也不会因为这 12 封造出新的幽灵发票——
+4 封债务通知已被 `admitDebtNotice` 拦住。真正的效果是
+**拉原文预算从被 15 封垃圾占用，降到最多 12 封**（其中真发票 4 封真正有机会被抓到）。
+
+### 42.7 探针测量的边界（如实说）
+
+- 测量的是**未建档**邮件的候选命中率，**不含**已建档的 7 封
+- `hasInvoiceAttachment` 在探针里是按附件名含 pdf/xml/jpg/jpeg/png/ofd 近似，
+  与生产 `hasInvoiceAttachment` 同源但**不是同一个函数调用**；
+  本次结论成立是因为这 4 封的 `attachments` **本来就是空**，
+  近似与精确在空集上结果一致
+- 未验证「拉回原文后」的情形：那 4 封真发票能否解析出票面数据，本节没测
