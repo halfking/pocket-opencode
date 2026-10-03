@@ -305,6 +305,20 @@ var pgSafeWithoutIsolation = map[string]string{
 	//   · 一行都没取到时 t.Fatal，避免把「粗筛写错了」读成「没有风险」。
 	"internal/email/diag_debt_notice_candidates_test.go": "只读真实库诊断：0 写语句（1 条 SELECT + 1 条故意被拒的 CREATE TEMP TABLE 自证）；需 POCKET_DIAG_DEBT_SHAPE=1 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（**均无缺省值**）。指向生产 schema 是**目的**（那两封信用卡账单只在生产库）。只读由数据库强制（default_transaction_read_only = on）。判定复用生产函数 reDebtNoticeShape / ExtractInvoiceLoose，不重抄。已知弱点：只跑 envelope 腿，结论是幽灵风险**下界**；附件证据取不到；粗筛 0 行即 t.Fatal",
 
+	// internal/email/diag_invoice_handoff_integrity_test.go（2026-10-03 新增）：
+	//   · 目的：交财务前核对「data/email-invoices 目录 vs 台账」。实测发现磁盘
+	//     11 个 PDF 而台账只有 6 行 downloaded，其中 5 个无台账引用，且构成
+	//     3 组字节相同的重复（含 2 份 69 字节空壳、1 份日期错成采集当天的重复票）。
+	//   · 0 写语句：1 条 pool.Query（SELECT）+ 1 条故意被拒的 CREATE TEMP TABLE
+	//     只读自证；磁盘侧只用 os.ReadDir/os.ReadFile。
+	//   · 只读由数据库强制；DSN/schema **无缺省值**；发票目录由
+	//     POCKET_DIAG_INVOICE_DIR 显式传入（不设就 t.Fatal，避免扫到空目录后
+	//     输出「一切干净」的假结论）；门禁 POCKET_DIAG_HANDOFF=1。
+	//   · 指向生产 schema 是**目的**（台账行只在生产库）。弱点照实登记：它只
+	//     覆盖单个发票目录，A4 拼版产物在 exports 子目录、按 id 由 export 端点
+	//     生成，不在本诊断范围内。
+	"internal/email/diag_invoice_handoff_integrity_test.go": "只读交付前完整性诊断：0 写语句（1 条 SELECT + 1 条故意被拒的 CREATE TEMP TABLE 自证；磁盘侧只读）；需 POCKET_DIAG_HANDOFF=1 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA + POCKET_DIAG_INVOICE_DIR（**均无缺省值**，目录不设就 t.Fatal，否则空目录会产出「一切干净」的假结论）。指向生产 schema 是目的。重复判定用内容 sha256 而非文件名。只读由数据库强制。已知弱点：只覆盖单个发票目录，A4 拼版产物（exports 子目录、按 id 生成）不在范围内",
+
 	// internal/email/pipeline_lock_test.go（2026-10-03 新增）：
 	//   · 它**确实**隔离，只是隔离逻辑在被复用的助手里，本文件因此没有
 	//     isolatedSchemaRe 要找的 `"*_test_` 字面量（schema 名由 helper 现场生成）。
