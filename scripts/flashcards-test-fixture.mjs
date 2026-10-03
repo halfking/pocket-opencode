@@ -21,7 +21,16 @@ import { openCdp } from './lib/adb-cdp.mjs'
 
 const PSQL = 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'
 const DRY = process.argv.includes('--dry')
-const USER = process.env.POCKET_PG_USER || 'user-admin'
+// ⚠️ 2026-10-03 改名的坑：原来这里读的是 `process.env.POCKET_PG_USER`。
+// 而 **POCKET_PG_USER 在后端 config.go 里是 PostgreSQL 的登录角色**
+// （start-local-backend.ps1 连库就用它），不是 App 的 user_id。
+// 两个语义撞在一个变量名上，后果是静默的：对着隔离库跑时若按后端习惯
+// 设成 POCKET_PG_USER=postgres，本脚本就会去删 `user_id='postgres'` 的行，
+// 而真数据在 `user_id='user-admin'` 下 —— 实测 before=1|1|1|0、after 仍是
+// 1|1|1|0，看起来像「删不掉」。旧的 user_id 覆盖开关保留为
+// FLASH_FIXTURE_USER，只在确实要清别的账号时才用。
+const USER = process.env.FLASH_FIXTURE_USER || 'user-admin'
+
 const PKG = 'com.kaixuan.opencode.pocket'
 const CACHE_KEYS = ['flashcards:v1', 'flashcards:v1:outbox']
 

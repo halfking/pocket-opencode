@@ -71,11 +71,30 @@
       </div>
 
       <template v-else>
+        <!-- PKM 工作台入口：**常驻，且排在列表之前**。
+             2026-10-03 真机实测改了两次位置，两次都有现场证据：
+             ① 它原来和「全部笔记/全部会议」一起挂在列表**之后**的
+                `v-if="counts.total"` 区块里 ⇒ 空库用户根本看不到它
+                （IA 重组后这是 /pkm/today 唯一的入口）；
+             ② 把它拆出来常驻之后仍放在列表末尾，真机上它落在
+                长列表的最底部（该机有 11 条会议纪要）——一次滚到底的
+                自动化点击直接落到了**会议详情**上并触发了录音，
+                人手也要一路拖到底才能摸到。
+             PKM 是**工作台**（工具入口），不是列表的展开项：
+             工具入口该在手边，列表展开项才该在末尾。 -->
+        <nav class="see-all see-always" :aria-label="t('notesHub.title')">
+          <button type="button" class="see-all-btn" @click="go('/pkm/today')">
+            <span class="material-symbols-outlined" aria-hidden="true">sticky_note_2</span>
+            <span class="see-all-label">{{ t('notesHub.link.allPkm') }}</span>
+            <span class="material-symbols-outlined see-all-chevron" aria-hidden="true">chevron_right</span>
+          </button>
+        </nav>
+
         <!-- 概览条：只统计「加载成功」的来源，三个计数与下面的列表是同一份数据，
              避免出现「数字说 12 条、列表只有 5 条」这种自相矛盾的界面。 -->
         <!-- 概览只列手记与会议：PKM 的量级通常与前两者不同量纲，
              把它塞进同一行会让「0 手记 · 0 会议」在纯 PKM 用户眼里变成
-             「我是空的」。PKM 的入口在下方 see-all 里。 -->
+             「我是空的」。PKM 的入口在上面的常驻条里。 -->
         <p v-if="rows.length" class="overview" data-testid="notes-hub-overview">
           <span>{{ t('notesHub.count.notes', { count: counts.note }) }}</span>
           <span class="dot" aria-hidden="true">·</span>
@@ -147,15 +166,6 @@
           <button type="button" class="see-all-btn" @click="go('/meetings')">
             <span class="material-symbols-outlined" aria-hidden="true">event</span>
             <span class="see-all-label">{{ t('notesHub.link.allMeetings') }}</span>
-            <span class="material-symbols-outlined see-all-chevron" aria-hidden="true">chevron_right</span>
-          </button>
-        </nav>
-
-        <!-- 常驻：PKM 工作台入口（不依赖库里有没有数据）。见上方说明。 -->
-        <nav class="see-all see-always" :aria-label="t('notesHub.title')">
-          <button type="button" class="see-all-btn" @click="go('/pkm/today')">
-            <span class="material-symbols-outlined" aria-hidden="true">sticky_note_2</span>
-            <span class="see-all-label">{{ t('notesHub.link.allPkm') }}</span>
             <span class="material-symbols-outlined see-all-chevron" aria-hidden="true">chevron_right</span>
           </button>
         </nav>
@@ -397,8 +407,27 @@ async function load() {
 
 <style scoped>
 .notes-hub {
+  /* ⚠️ 2026-10-03 真机实测修的第二个真缺陷：这一页**根本滚不动**。
+   *
+   * 证据（Xiaomi 2411DRN47C，11 条会议纪要）：
+   *   连续 6 次上滑（两种手势/时长各试），前后两张截图**逐字节相同**。
+   * 机制：/notes 的路由 meta 声明了 `scrollMode: 'self'`，而 AppLayout 对
+   *   scroll-self 路由把外层滚动关掉——`.content.scroll-self { overflow-y: hidden }`，
+   * 契约是「视图自己滚」。可这一页既没有 `height:100%` 也没有 `overflow-y:auto`，
+   * 于是内容超出视口后既滚不动、也点不到：底部条目和「打开 PKM」入口
+   * 对真实用户同样**永久不可达**（这不是测试工装的问题，是产品缺陷）。
+   *
+   * 形状照抄同族的 TasksView（`.ai-view` + `.ai-hub-scroll`）已验证可用的写法：
+   * 有界 flex 列 + 自己就是滚动容器。
+   *
+   * 顶部那排来源 chips 走 ScrollChromePortal 渲染在 .content 之外，
+   * 所以本容器滚动时它们不会被带走。 */
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   gap: var(--space-3);
   padding: 0 var(--space-3) var(--space-6);
 }
@@ -447,6 +476,8 @@ async function load() {
   list-style: none;
   margin: 0;
   padding: 0;
+  /* 同上：容器自己滚，列表不该被压扁（见 .see-all 的注释）。 */
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: var(--spacing-list-gap);
@@ -567,6 +598,13 @@ async function load() {
 .see-all {
   display: flex;
   flex-direction: column;
+  /* ⚠️ 必须显式不收缩。2026-10-03 真机实测：把 PKM 入口提到列表之前后，
+     它在无障碍树里的 bounds 变成了 `48,274 → 660,280` —— **只有 6px 高**。
+     原因：.notes-hub 是可滚动的 flex 列，而 flex 子项默认 flex-shrink:1；
+     一旦内容溢出，各子项被按比例压扁，于是这个按钮被压成一条 6px 的缝，
+     点击落在它后面的元素上（实测误点进了会议详情并触发了录音）。
+     容器已经自己滚了，子项就该保持自然高度。 */
+  flex-shrink: 0;
   margin-top: var(--space-2);
   background: var(--bg-card);
   border: 1px solid var(--border);
