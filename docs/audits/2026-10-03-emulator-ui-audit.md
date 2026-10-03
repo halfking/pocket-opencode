@@ -224,7 +224,7 @@ resize:vertical }`，并给「列表里每项一个」的紧凑型留 `.textarea
 | 下拉指示器叠内容 | 与 `.work-filters` 完全重叠，opacity 0.25 | `opacity: 0`，指示器底 109 < 内容顶 153 | `09-after-master.png` |
 | toast 压工具行 | 底边 255px vs 输入区顶边 289.7px（重叠 34.7px） | `worstOverlapPx = 0`（295px vs 289.7px） | `21-toast-clears-composer.png` |
 | **两个 `#app`** | `.app-layout` 193.286 = 529.667 − 336.381，工具行整条消失 | `#app` 数量 1；`.app-root` = 529.667；工具行完整可见 | `26-…-clean.png` → `29-aichat-kb-fixed.png` |
-| autoGrow 裁 2px | `scrollHeight 121 / clientHeight 119` | 见 §7.6 | `35-textarea-sweep.png` |
+| autoGrow 裁 2px | `scrollHeight 121 / clientHeight 119`，`hiddenPx 2` | `clientHeight 121`，`hiddenPx 0`，`fits: true` | `35-…-sweep.png` → `37-…-border-fix.png` |
 
 判据本身的可靠性用**变异测试**验过：把每个修复改回坏写法，确认对应断言
 真的会红（`✅ 判据拦住了`），避免留下「永远绿」的假护栏。toast 那批 5 条与
@@ -252,17 +252,13 @@ resize:vertical }`，并给「列表里每项一个」的紧凑型留 `.textarea
    被 qemu 吃到只剩 1.9 GB 时 boot 会卡十分钟以上；强杀后内存立刻回到
    7.4 GB 并恢复正常。批量走查时要把「设备掉线」当正常故障重新
    `adb wait-for-device`，别误读成应用崩溃。处置细节见 §0.1。
+   最后一次带 `-memory 2048` 冷启动 **42 秒** `boot_completed=1`，
+   六个缺陷的设备复验数据都在这台机器上取到。
 7. **本轮发现的需求① 覆盖盲区值得单独记**：键盘避让此前只在登录/注册页
    验过（那两页是全屏固定定位表单，不吃根布局的 flex 链），而
    `/ai-chat` 这种「自管滚动 + 底部停靠输入区」的页面当时是破的（§7.5）。
    也就是说「登录页验过」不能推广成「键盘避让已修好」——
    后面新增任何带输入区的停靠式页面，都要在**键盘弹起态**下走一遍。
-8. **§7.6 那 2px 的修复只做到了单测 + 变异验证，没能在设备上复量**：
-   补丁打完之后模拟器开始反复掉线（§0.1）。它的判据是纯算术
-   （`scrollHeight + 上下边框`），已有 2 条新断言精确到像素
-   （121 → 123px / 无边框时 240px 不变）+ 3 条变异全部被拦住，
-   但**设备侧 after 值没有实测数字**，补验时按 §5 的探针跑
-   `textarea-sweep.js` 即可（预期 `/local-agent` 的 `hiddenPx` 从 2 变 0）。
 
 ## 5. 复现本轮实测
 
@@ -459,6 +455,16 @@ adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>
 修法：`height = scrollHeight + borderTopWidth + borderBottomWidth`，
 边框值经 `target.ownerDocument.defaultView.getComputedStyle` 取，
 取不到（SSR / Node 单测）时退化成 0 而不是抛错。
+
+**设备复验**（同一台 AVD、同一个 `/local-agent` 页面、同一段文本，修复前后）：
+
+| | `scrollHeight` | `clientHeight` | `hiddenPx` | `fits` |
+|---|---|---|---|---|
+| 修复前 | 121 | 119 | **2** | ❌ |
+| 修复后 | 122.52（写回 123） | **121** | **0** | ✅ |
+
+同一次普查里 `hiddenWithoutResize` 与 `hiddenButResizable` 都是空数组——
+**全仓再没有「内容装不下自己」的框了**。
 
 **这一条值得记的是判据的来历**：不是「看起来好像少了两像素」，而是先把
 「内容装得下」的必要条件写成可量化的 `scrollHeight <= clientHeight`，
