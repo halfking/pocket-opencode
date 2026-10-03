@@ -31,6 +31,19 @@ package email
 // 才会被放行，而那个开关依赖**附件**信息 —— 本诊断拿不到（正文是加密缓存，
 // 附件要从 IMAP/POP3 重新拉，属于写/取邮箱操作，本诊断不做）。
 // 所以「不会被放行」的结论只覆盖「凭主题+摘要不足以建档」这一半。
+//
+// ## 隔离（为什么不硬编码生产 schema）
+//
+// 本文件**必须**指向生产 schema：那一行只存在于生产库里，隔离库跑出来会是
+// 「查无此行」这种假结论。但「必须指向生产库」不等于「可以随手把生产库名写
+// 进代码」—— 那正是 pg_test_isolation_guard_test.go 规则 5 禁止的形态。
+//
+// 照仓库既定写法：
+//   - DSN 与 schema **必须显式**从 POCKET_REAL_MAIL_DSN / POCKET_REAL_MAIL_SCHEMA
+//     传入，**没有缺省值**（缺省会让人在不知情的情况下打到生产库）；
+//   - 只读由**数据库强制**：连接上 default_transaction_read_only = on，
+//     任何写尝试直接报错，而不是靠「代码里只有 SELECT」这句话；
+//   - 门禁 POCKET_DIAG_STALE_ROW=1。
 
 import (
 	"context"
@@ -46,9 +59,13 @@ func TestDiagStaleDebtNoticeRow(t *testing.T) {
 	if os.Getenv("POCKET_DIAG_STALE_ROW") != "1" {
 		t.Skip("set POCKET_DIAG_STALE_ROW=1 to run this read-only diagnostic")
 	}
-	dsn := os.Getenv("POCKET_TEST_POSTGRES_DSN")
+	dsn := os.Getenv("POCKET_REAL_MAIL_DSN")
 	if dsn == "" {
-		t.Skip("POCKET_TEST_POSTGRES_DSN not set")
+		t.Skip("POCKET_REAL_MAIL_DSN not set; refusing to guess a database")
+	}
+	schema := os.Getenv("POCKET_REAL_MAIL_SCHEMA")
+	if schema == "" {
+		t.Skip("POCKET_REAL_MAIL_SCHEMA not set; refusing to guess a schema")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -56,7 +73,9 @@ func TestDiagStaleDebtNoticeRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse dsn: %v", err)
 	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = "opencode_pocket"
+	// 只读由数据库强制，不是靠「代码里只有 SELECT」。
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	cfg.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("pool: %v", err)
@@ -73,8 +92,8 @@ func TestDiagStaleDebtNoticeRow(t *testing.T) {
 		       coalesce(i.status,''), coalesce(i.last_error,''),
 		       coalesce(e.subject,''), coalesce(e.snippet,''),
 		       coalesce(e.from_name,''), coalesce(e.from_address,'')
-		  FROM opencode_pocket.email_invoices i
-		  JOIN opencode_pocket.emails e ON e.id = i.email_id
+		  FROM email_invoices i
+		  JOIN emails e ON e.id = i.email_id
 		 WHERE i.id = $1`, rowID).
 		Scan(&emailID, &amountText, &invDate, &seller, &status, &lastErr,
 			&subject, &snippet, &fromName, &fromAddr)
@@ -118,7 +137,7 @@ func TestDiagStaleDebtNoticeRow(t *testing.T) {
 	t.Logf("=== 腿 3：幂等跳过 ===")
 	var existing int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM opencode_pocket.email_invoices WHERE email_id = $1`, emailID).
+		`SELECT count(*) FROM email_invoices WHERE email_id = $1`, emailID).
 		Scan(&existing); err != nil {
 		t.Fatalf("count: %v", err)
 	}

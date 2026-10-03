@@ -190,15 +190,60 @@ func (s *Store) SetInvoiceStatusScoped(ctx context.Context, id, userID, workspac
 	return nil
 }
 
+// maxInvoiceHarvestAttempts / exhaustedInvoiceRetryBackoff 控制「反复下载失败」的发票
+// 还要不要每轮都重试。
+//
+// ## 为什么需要它（真实实例，2026-10-03）
+//
+// `inv_1790903383222583800_1`（工行信用卡对账单被误建档，amount=58000.00）的
+// last_error 是：两个 URL 都返回 `text/html`（112771 / 523383 字节）——
+// 那是工行官网的营销落地页，**永远不可能变成 PDF**。于是它每轮采集都重试、
+// 每轮白抓 635KB 的 HTML，status 永远停在 pending。
+//
+// 真实发票拿不到文件时同样会重试（网络抖动、附件晚到），所以不能简单地把
+// 「失败过」变成「不再试」。
+//
+// ## 为什么不是「试够 N 次就永久不重试」
+//
+// 永久上限有一个致命失败模式：**一次持续 N 轮的服务抖动会把真发票永久搁死**。
+// 一天一轮的话，5 次就是 5 天；而 URL 可能在第 6 天就恢复（补发链接、
+// 对方系统修好、临时证书过期）。届时这一行既不会被采集器捞到，也没有任何
+// 入口能把它捞回来 —— 缺陷存在、CI 绿、无人察觉。
+//
+// 所以改成**降频**而不是**终止**：
+//   - 已有文件的：一律照常处理（它已经成功过，cap 与它无关）；
+//   - 还没试够 maxInvoiceHarvestAttempts 次的：一律照常重试；
+//   - 试够了且仍无文件的：每 exhaustedInvoiceRetryBackoff 才给一次机会。
+//
+// 依据可行：UpdateInvoiceHarvest 每次采集（**包括失败**）都会把 updated_at
+// 刷成 now()，所以「距上次失败超过冷却期」这个条件会自然到期。
+//
+// 纯读过滤：不写库、不新增 status 取值、不改任何已有行的内容。
+const (
+	maxInvoiceHarvestAttempts    = 5
+	exhaustedInvoiceRetryBackoff = 7 * 24 * 3600 // 秒
+)
+
 // ListHarvestableInvoices 列出需要采集发票文件的记录（status IN new/pending，
 // 即尚未落盘或上一轮下载失败待重试的），供 InvoiceHarvester 消费。
 // limit<=0 时默认 100。
+//
+// 「试够了」的发票不会每轮都被重试，但冷却期过后仍会回来（见上面两个常量的
+// 注释：永久上限会把真发票永久搁死）。
 func (s *Store) ListHarvestableInvoices(ctx context.Context, limit int) ([]Invoice, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	backoffCutoff := time.Now().Unix() - exhaustedInvoiceRetryBackoff
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+invoiceSelectCols+` FROM email_invoices WHERE status IN ('new','pending') ORDER BY created_at LIMIT $1`, limit)
+		`SELECT `+invoiceSelectCols+` FROM email_invoices
+		  WHERE status IN ('new','pending')
+		    AND (
+		          COALESCE(file_path, '') <> ''     -- 已有文件：与 cap 无关，照常
+		       OR COALESCE(attempts, 0) < $2       -- 还没试够次数
+		       OR COALESCE(updated_at, 0) <= $3    -- 试够了，但冷却期已过
+		    )
+		  ORDER BY created_at LIMIT $1`, limit, maxInvoiceHarvestAttempts, backoffCutoff)
 	if err != nil {
 		return nil, err
 	}

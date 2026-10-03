@@ -362,9 +362,18 @@ var pgSafeWithoutIsolation = map[string]string{
 	// 第 1 组：纯只读，无任何写语句（INSERT|UPDATE|DELETE|DROP|CREATE|TRUNCATE
 	// 全文件 0 命中），且都要显式开关才运行。
 	"internal/email/diag_backfill_align_test.go": "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（核对 backfill 补采与对齐口径的差异）",
-	"internal/email/diag_dup_report_test.go":      "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（重复副本预演报表，产出为报告不落库）",
-	"internal/email/diag_merge_plan_test.go":       "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（合并迁移**预演**，只出计划不执行）",
-	"internal/email/diag_rest_dupes_test.go":      "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（剩余重复候选的定性排查）",
+	"internal/email/diag_dup_report_test.go":     "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（重复副本预演报表，产出为报告不落库）",
+	"internal/email/diag_merge_plan_test.go":     "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（合并迁移**预演**，只出计划不执行）",
+	"internal/email/diag_rest_dupes_test.go":     "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（剩余重复候选的定性排查）",
+
+	// 工行信用卡对账单那张「phantom 58000」存量行的定性诊断（2026-10-03）。
+	// 单独成组，理由同下面 diag_invoice_backlog_test.go：它**必须**指向生产
+	// schema —— 那一行只存在于生产库，隔离库跑出来是「查无此行」这种假结论。
+	// 不同点：DSN 与 schema **都没有缺省值**（缺省会让人在不知情时打到生产库），
+	// 且只读由数据库强制（RuntimeParams 里 default_transaction_read_only = on），
+	// 不靠「代码里只有 SELECT」这句话。判定链复用生产函数 ExtractInvoice /
+	// admitDebtNotice / GetInvoiceByEmailID，不重抄。
+	"internal/email/diag_stale_debt_notice_row_test.go": "只读真实库诊断：全文件 0 写语句；需 POCKET_DIAG_STALE_ROW=1 显式开关 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（**两者都无缺省值**，缺省会误打生产库）。它**必须**指向生产 schema——那一行（inv_1790903383222583800_1，58000.00）只存在于生产库，隔离库只会输出「查无此行」这种假结论。只读由数据库强制：连接 default_transaction_read_only = on，写尝试直接报错；search_path 由 RuntimeParams 显式设为 POCKET_REAL_MAIL_SCHEMA。判定链复用生产函数 ExtractInvoice / admitDebtNotice / GetInvoiceByEmailID，不重抄。查无此行时 t.Fatal，避免把「行没了」读成「问题不存在」",
 
 	// 需求 2 的判定预演。**单独成组**：它的 key 比上面那组长，会把整组的
 	// 对齐列宽都撑开，逼着 gofmt 重排那几行与本次改动无关的邻居；空行分开
@@ -374,7 +383,7 @@ var pgSafeWithoutIsolation = map[string]string{
 	"internal/email/diag_spam_verdict_test.go": "只读真实库诊断：全文件 0 写语句；需 POCKET_DIAG_SPAM_VERDICT=1 显式开关 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（需求 2「开真实 IMAP MOVE 前到底会移哪些」的判定预演）。它**必须**指向生产 schema——隔离库里没有真实邮件，预演只会输出「一封都没有」这种假结论（与 reminder_notified_diag_test.go 同一类危害）。只读由数据库强制而非靠读代码：连接上先 `SET default_transaction_read_only = on`，任何写尝试直接报错；search_path 由 AfterConnect 显式覆盖为 POCKET_REAL_MAIL_SCHEMA。它绕开 NewStore（那会调 migrate() 建表，本身是写），直接 &Store{pool: pool}，只跑 Pipeline.cleanSpam 的 dry-run 分支（该分支只填报告+打日志，无任何写）。诊断在读不到任何邮件时 t.Fatal，避免把空结果读成「没有垃圾」",
 
 	"internal/email/diag_reminder_backlog_test.go": "只读真实库诊断：全文件 0 写语句；需 POCKET_DIAG_REMINDER_BACKLOG=1 显式开关 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（需求 4「90 天窗口上线后会一次性推出多少条提醒、分别是什么」）。它**必须**指向生产 schema——隔离库里没有真实邮件，只会输出「积压 0」这种假结论。只读由数据库强制：连接上先 `SET default_transaction_read_only = on`；search_path 由 AfterConnect 显式覆盖。绕开 NewStore（会 migrate() 建表，本身是写），直接 &Store{pool: pool}。判定链复用生产函数 splitReminderCandidates / ListEmailsSince / CountHighImportanceOutside 与常量 importantReminderLookbackDays / importantReminderScanLimit，不重抄——它存在的意义就是「线上会推什么」这个问题有一份可复算的答案。窗口内读不到邮件时 t.Fatal；扫描触顶时必须声明计数只是下界",
-	"internal/email/realprobe_test.go":            "只读真实库探针：0 写语句；**2026-10-02 复核发现它此前从不设置 search_path**（只靠 PG_DSN 自带的那个），而它经 NewStore(pool) 读、Store 的 SQL 一律不带 schema 限定符，打错库会扫到空集。现已改为从 DSN 读出目标 schema 后 RuntimeParams 覆盖 + current_schema() 验证。登记在 pgAllowlistedWrites 的理由是「由 pgscope_test.go 的 dsnSearchPathFromDSN 解析 PG_DSN 的 search_path」，该函数有 7 个分支的测试",
+	"internal/email/realprobe_test.go":             "只读真实库探针：0 写语句；**2026-10-02 复核发现它此前从不设置 search_path**（只靠 PG_DSN 自带的那个），而它经 NewStore(pool) 读、Store 的 SQL 一律不带 schema 限定符，打错库会扫到空集。现已改为从 DSN 读出目标 schema 后 RuntimeParams 覆盖 + current_schema() 验证。登记在 pgAllowlistedWrites 的理由是「由 pgscope_test.go 的 dsnSearchPathFromDSN 解析 PG_DSN 的 search_path」，该函数有 7 个分支的测试",
 	//
 	// 第 2 组：**这个文件本身是隔离助手**，它实现隔离而不是违反隔离。
 	// pgscope_test.go 提供 newScopedPool（search_path 只指向调用方建好的
@@ -459,7 +468,7 @@ var pgAllowlistedWrites = map[string]string{
 	// 这两个 2026-10-02 复核时发现「从不设置 search_path」的文件。
 	// 危害是产出假结论，已修为 RuntimeParams 覆盖 + current_schema() 验证。
 	"internal/email/reminder_notified_diag_test.go": "只读真实库探针：0 写语句。**2026-10-02 复核发现它此前从不设置 search_path**（只靠 DSN 自带的），而它的判据是 `if highUnnotified == 0 { 结论：不是缺陷 }`——DSN 指向 public 时它扫到 0 行，该判据**必然成立**，于是输出「不是缺陷」。**查空库永远「符合设计」。** 已改为 ParseConfig + RuntimeParams 覆盖，并在查询前用 current_schema() 验证",
-	"internal/email/realprobe_test.go": "只读真实库探针：0 写语句。**2026-10-02 复核发现它此前从不设置 search_path**，而它经 NewStore(pool) 读、Store 的 SQL 一律不带 schema 限定符，打错库会扫到空集并输出「没有这批邮件」。已改为由 pgscope_test.go 的 dsnSearchPathFromDSN 读出目标 schema 后 RuntimeParams 覆盖 + current_schema() 验证",
+	"internal/email/realprobe_test.go":              "只读真实库探针：0 写语句。**2026-10-02 复核发现它此前从不设置 search_path**，而它经 NewStore(pool) 读、Store 的 SQL 一律不带 schema 限定符，打错库会扫到空集并输出「没有这批邮件」。已改为由 pgscope_test.go 的 dsnSearchPathFromDSN 读出目标 schema 后 RuntimeParams 覆盖 + current_schema() 验证",
 
 	// 合并重复副本的执行探针，三道闸门：POCKET_DIAG_MERGE_EXEC=1 显式开关；
 	// POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA 显式指定目标库；
@@ -660,11 +669,11 @@ func TestPGTestsNeverTargetTheProductionSchema(t *testing.T) {
 					t.Logf("allowlist(只写不读): %s — %s", rel, reason)
 				} else {
 					t.Errorf("%s: 测试读取了 POCKET_POSTGRES_DSN（服务自己的生产连接串）%d 处。\n"+
-					"  测试必须只认 POCKET_TEST_POSTGRES_DSN：同一个 DSN 既喂服务也喂测试时，\n"+
-					"  读生产变量等于零配置地把测试打到生产库——CI 只设 TEST 变量，所以本地\n"+
-					"  `go test ./...` 才会踩到，而它会在生产库里建表/建 schema 并报告 ok。\n"+
-					"  切片回退（[]string{\"POCKET_TEST_POSTGRES_DSN\", \"POCKET_POSTGRES_DSN\"}）\n"+
-					"  同样算读：字面量在切片里、传给 Getenv 的是变量。", rel, reads)
+						"  测试必须只认 POCKET_TEST_POSTGRES_DSN：同一个 DSN 既喂服务也喂测试时，\n"+
+						"  读生产变量等于零配置地把测试打到生产库——CI 只设 TEST 变量，所以本地\n"+
+						"  `go test ./...` 才会踩到，而它会在生产库里建表/建 schema 并报告 ok。\n"+
+						"  切片回退（[]string{\"POCKET_TEST_POSTGRES_DSN\", \"POCKET_POSTGRES_DSN\"}）\n"+
+						"  同样算读：字面量在切片里、传给 Getenv 的是变量。", rel, reads)
 				}
 			}
 		}
@@ -981,8 +990,8 @@ func TestStripGoCommentsHandlesTheThreeWaysToHideCode(t *testing.T) {
 			wantGone: true,
 		},
 		{
-			name: "多行块注释（中间行不以 * 开头）必须被剥掉",
-			in: "/* 旧实现：\n" + lit + " 是回退项\n后来删掉了 */\ndsn := os.Getenv(\"POCKET_TEST_POSTGRES_DSN\")\n",
+			name:     "多行块注释（中间行不以 * 开头）必须被剥掉",
+			in:       "/* 旧实现：\n" + lit + " 是回退项\n后来删掉了 */\ndsn := os.Getenv(\"POCKET_TEST_POSTGRES_DSN\")\n",
 			wantGone: true,
 		},
 		{
@@ -1056,9 +1065,9 @@ func TestEmailWorkspaceHelperNeverFallsBackToProductionDSN(t *testing.T) {
 // 文件都判红。
 func TestProductionDSNReCatchesFallbackShapes(t *testing.T) {
 	dirty := map[string]string{
-		"直接读":            "\treturn os.Getenv(\"POCKET_POSTGRES_DSN\")\n",
-		"切片回退（两个变量名）":  "\tfor _, k := range []string{\"POCKET_TEST_POSTGRES_DSN\", \"POCKET_POSTGRES_DSN\"} {\n",
-		"if 形态回退":         "\tif v := os.Getenv(\"POCKET_POSTGRES_DSN\"); v != \"\" {\n\t\treturn v\n\t}\n",
+		"直接读":         "\treturn os.Getenv(\"POCKET_POSTGRES_DSN\")\n",
+		"切片回退（两个变量名）": "\tfor _, k := range []string{\"POCKET_TEST_POSTGRES_DSN\", \"POCKET_POSTGRES_DSN\"} {\n",
+		"if 形态回退":     "\tif v := os.Getenv(\"POCKET_POSTGRES_DSN\"); v != \"\" {\n\t\treturn v\n\t}\n",
 	}
 	for name, src := range dirty {
 		if !productionDSNRe.MatchString(stripGoComments(src)) {
