@@ -66,4 +66,3 @@ func getBool(m map[string]any, key string) bool {
 	}
 	return false
 }
-

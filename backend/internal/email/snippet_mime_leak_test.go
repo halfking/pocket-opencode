@@ -140,7 +140,7 @@ func assertNoMIMELeak(t *testing.T, got, where string) {
 // 同时 TestSnippetNeverLeaksMIMESource 的前置检查也会转红。
 func TestLeakDetectorItselfDetectsRecordedDeviceLeak(t *testing.T) {
 	if leak := detectMIMELeak(recordedLeakFromDevice); leak == "" {
-		t.Fatal("检测器对真机实录的泄漏样本返回「没发现」——"+
+		t.Fatal("检测器对真机实录的泄漏样本返回「没发现」——" +
 			"本文件所有「不许泄漏」用例从此全部失去意义（永远绿的检测器）")
 	}
 	// 校准样本必须真的含泄漏 token，否则上面那句转红可能来自别的巧合。

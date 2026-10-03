@@ -53,8 +53,8 @@ func TestSplitReminderCandidates_UpstreamCaseDoesNotLoseReminders(t *testing.T) 
 	notified := []int64{0, 0, 0}
 	emails := []Email{
 		{ID: "e1", Importance: "high"},
-		{ID: "e2", Importance: "High"},  // 上游大小写偏差
-		{ID: "e3", Importance: "HIGH"},  // 上游全大写
+		{ID: "e2", Importance: "High"}, // 上游大小写偏差
+		{ID: "e3", Importance: "HIGH"}, // 上游全大写
 	}
 	// 归一化后应当三者都进 toNotify
 	normalized := make([]Email, len(emails))

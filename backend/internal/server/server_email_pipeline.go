@@ -225,19 +225,19 @@ func (s *Server) ensurePipeline() *email.Pipeline {
 		}
 		notifier := &notifycenterEmailNotifier{svc: s.notifySvc, store: s.emailStore}
 		p := &email.Pipeline{
-			Store:    s.emailStore,
-			Fetcher:  s.emailFetcher,
-			Harvest:  harvester,
+			Store:   s.emailStore,
+			Fetcher: s.emailFetcher,
+			Harvest: harvester,
 			// 与采集器共用**同一个** BodyCache 实例：第 2 趟的取原文和
 			// harvestOne 的取原文必须走同一条 POP3 感知路径（email/raw_body_resolve.go）。
 			// 此前第 2 趟直接调 IMAP-only 的 FetchMessageRaw，于是 POP3 来源的
 			// 发票候选永远取不到原文、建不了档（实测两封通行费电子发票
 			// 24.61 元，而它们的原文就在 email-bodies-raw/ 里）。
 			BodyCache: harvesterBodyCache(harvester),
-			Pusher:   pusher,
-			Notifier: notifier,
-			Ledger:   &feishuLedgerPublisher{client: pusher.client, folderToken: s.cfg.FeishuInvoiceFolderToken},
-			DataDir:  s.dataDir,
+			Pusher:    pusher,
+			Notifier:  notifier,
+			Ledger:    &feishuLedgerPublisher{client: pusher.client, folderToken: s.cfg.FeishuInvoiceFolderToken},
+			DataDir:   s.dataDir,
 			// 默认预演：清垃圾会 IMAP MOVE 真实邮件，规则没在真实邮箱上验证过，
 			// 无人值守地搬用户邮件风险太大。置 POCKET_EMAIL_SPAM_DRYRUN=false 才真移。
 			SpamDryRun: s.cfg.EmailSpamDryRun,
@@ -588,8 +588,8 @@ type invoiceSummarySplit struct {
 	// Downloaded 必须与 Counted **同长**：界面上「已下载 N 张」和「合计 X 元」
 	// 指的是同一批发票，否则两个数字会互相矛盾。
 	Downloaded int
-	Pending   int
-	Failed    int
+	Pending    int
+	Failed     int
 }
 
 // summarizeInvoiceRows 把发票清单切成「明细行 + 计入合计的集合 + 三类计数」。

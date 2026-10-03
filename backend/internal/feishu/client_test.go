@@ -106,10 +106,10 @@ func writeJSONBody(w http.ResponseWriter, v any) {
 func tokenRoute(tok string, expire int) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONBody(w, map[string]any{
-			"code":                 0,
-			"msg":                  "ok",
-			"tenant_access_token":  tok,
-			"expire":               expire,
+			"code":                0,
+			"msg":                 "ok",
+			"tenant_access_token": tok,
+			"expire":              expire,
 		})
 	}
 }

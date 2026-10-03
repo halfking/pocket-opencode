@@ -40,12 +40,12 @@ const (
 
 // Scope names match the canonical scope strings from docs/新架构v1/01-architecture/安全模型.md §3.2.
 const (
-	ScopeAgentRead     = "agent:read"
-	ScopeTaskCreate    = "task:create"
-	ScopePermission    = "permission:approve"
-	ScopeIDEWrite      = "ide:write"
-	ScopePodControl    = "pod:control"
-	ScopeSecretAdmin   = "secret:admin"
+	ScopeAgentRead   = "agent:read"
+	ScopeTaskCreate  = "task:create"
+	ScopePermission  = "permission:approve"
+	ScopeIDEWrite    = "ide:write"
+	ScopePodControl  = "pod:control"
+	ScopeSecretAdmin = "secret:admin"
 )
 
 // Event is the normalized SSE/WebSocket event payload. The producer fills in
@@ -64,24 +64,24 @@ type Event struct {
 
 // Pod mirrors the ZAG /api/v1/pods payload (see pocketd-fleet-bridge.md §2.2).
 type Pod struct {
-	ID         string    `json:"id"`
-	FleetID    string    `json:"fleetId"`
-	Name       string    `json:"name"`
-	Hostname   string    `json:"hostname"`
-	OS         string    `json:"os"`
-	Status     string    `json:"status"`
-	CPUs       int       `json:"cpus"`
-	MemoryGB   int       `json:"memoryGB"`
-	GPU        string    `json:"gpu,omitempty"`
-	Agents     []string  `json:"agents"`
-	IDEs       []string  `json:"ides"`
-	Region     string    `json:"region"`
-	LastSeen   time.Time `json:"lastSeen"`
+	ID       string    `json:"id"`
+	FleetID  string    `json:"fleetId"`
+	Name     string    `json:"name"`
+	Hostname string    `json:"hostname"`
+	OS       string    `json:"os"`
+	Status   string    `json:"status"`
+	CPUs     int       `json:"cpus"`
+	MemoryGB int       `json:"memoryGB"`
+	GPU      string    `json:"gpu,omitempty"`
+	Agents   []string  `json:"agents"`
+	IDEs     []string  `json:"ides"`
+	Region   string    `json:"region"`
+	LastSeen time.Time `json:"lastSeen"`
 }
 
 // ControlPodRequest models POST /api/v1/pods/:id/control body.
 type ControlPodRequest struct {
-	Kind   string `json:"kind"`   // pause|resume|restart|upgrade|rollback|terminate
+	Kind   string `json:"kind"` // pause|resume|restart|upgrade|rollback|terminate
 	Reason string `json:"reason"`
 }
 

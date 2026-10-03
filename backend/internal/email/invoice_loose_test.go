@@ -55,9 +55,9 @@ func TestExtractInvoiceLoose_AttachmentCarriesAmountKeepsRecord(t *testing.T) {
 
 func TestExtractInvoiceLoose_PureMarketingMailStillDropped(t *testing.T) {
 	e := Email{
-		ID:      "em-ad",
-		Subject: "账单提醒：本月账单可查",
-		Snippet: "点击查看你的账单，点击即可领券。",
+		ID:          "em-ad",
+		Subject:     "账单提醒：本月账单可查",
+		Snippet:     "点击查看你的账单，点击即可领券。",
 		FromAddress: "promo@example.com",
 	}
 	if _, hit := ExtractInvoiceLoose(e, e.Snippet, false); hit {

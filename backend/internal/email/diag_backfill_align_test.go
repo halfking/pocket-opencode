@@ -60,10 +60,10 @@ func TestDiagBackfillAlignment(t *testing.T) {
 		t.Fatalf("query: %v", err)
 	}
 	type cand struct {
-		acct, subj              string
-		date                    int64
-		imapID, imapMsg         string
-		pop3ID, pop3Msg         string
+		acct, subj      string
+		date            int64
+		imapID, imapMsg string
+		pop3ID, pop3Msg string
 	}
 	var cands []cand
 	for rows.Next() {

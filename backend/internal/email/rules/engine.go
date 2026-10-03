@@ -43,10 +43,10 @@ import (
 type Action string
 
 const (
-	ActionMarkImportant   Action = "mark-important"
-	ActionLabelCategory   Action = "label-category"
-	ActionArchive         Action = "archive"
-	ActionRouteFolder     Action = "route-folder"
+	ActionMarkImportant    Action = "mark-important"
+	ActionLabelCategory    Action = "label-category"
+	ActionArchive          Action = "archive"
+	ActionRouteFolder      Action = "route-folder"
 	ActionTriggerAutoReply Action = "trigger-autoreply"
 	// ActionUnsupported 表示类型匹配但当前未实现，调用方应安全忽略。
 	ActionUnsupported Action = "unsupported"
@@ -122,8 +122,8 @@ func ImportanceRank(s string) int {
 }
 
 // ParseRules 解析 Account.Rules JSON。允许两种输入：
-//   1) 新格式：{"rules": [{ "type": "...", "pattern": "...", "actions": [...] }, ...]}
-//   2) 旧格式：{"whitelist": [...], "blacklist": [...], "keywords": [...]}
+//  1. 新格式：{"rules": [{ "type": "...", "pattern": "...", "actions": [...] }, ...]}
+//  2. 旧格式：{"whitelist": [...], "blacklist": [...], "keywords": [...]}
 //
 // 任一格式解析成功即返回；都不识别或解析失败时返回错误，调用方应保留
 // 原始 JSON，不静默吞掉用户的配置。
@@ -179,6 +179,7 @@ func ParseRules(raw string) ([]Rule, error) {
 // decodeActionSpecs 把 heterogeneous action 数组统一成 []actionSpec：
 //   - 字符串 → {Name: s, Category: ""}（旧格式）
 //   - 对象   → {Name: <name>, Category: <category>}
+//
 // 其它类型（数组/数字/null）视为错误，避免静默吞掉用户配置。
 func decodeActionSpecs(raw []json.RawMessage) ([]actionSpec, error) {
 	out := make([]actionSpec, 0, len(raw))

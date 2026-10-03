@@ -15,7 +15,7 @@ import (
 
 func main() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
-	
+
 	// 1. 创建 stdio transport（连接到 agent_echo）
 	tr := agent.NewStdioTransport(agent.TransportConfig{
 		AgentPath: "/tmp/agent_echo",
@@ -37,21 +37,21 @@ func main() {
 	log.Println("发送 JSON-RPC call: echo")
 	var result map[string]any
 	err := tr.Call(ctx, "echo", map[string]any{
-		"text": "hello from StdioTransport test",
+		"text":      "hello from StdioTransport test",
 		"timestamp": time.Now().Unix(),
 	}, &result)
-	
+
 	if err != nil {
 		log.Fatalf("Call failed: %v", err)
 	}
-	
+
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	log.Printf("✅ Call succeeded, result:\n%s", resultJSON)
 
 	// 4. 测试 notification（无返回值）
 	log.Println("发送 JSON-RPC notification: log")
 	err = tr.Notify(ctx, "log", map[string]any{
-		"level": "info",
+		"level":   "info",
 		"message": "test notification from StdioTransport",
 	})
 	if err != nil {

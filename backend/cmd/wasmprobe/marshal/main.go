@@ -3,10 +3,11 @@
 // ## 状态：native 与三种 wasm 形态**都已跑通**（2026-10-02 更新）
 //
 // 见 docs/handoff 的 §7ce 与 §7cv。
-//   · `go run ./cmd/wasmprobe/marshal/`              -> 正常输出 JSON
-//   · `go run ./cmd/wasmprobe/marshal/ -emit-corpus` -> 正常输出 120 封语料
-//   · `GOOS=js GOARCH=wasm go build`                -> 正常产出 wasm
-//   · `node scripts/marshal-probe.mjs`              -> 四条路径数字 + 一致性校验
+//
+//	· `go run ./cmd/wasmprobe/marshal/`              -> 正常输出 JSON
+//	· `go run ./cmd/wasmprobe/marshal/ -emit-corpus` -> 正常输出 120 封语料
+//	· `GOOS=js GOARCH=wasm go build`                -> 正常产出 wasm
+//	· `node scripts/marshal-probe.mjs`              -> 四条路径数字 + 一致性校验
 //
 // §7ce 记的那个「driver 退出码 0、stderr 全空、stdout 0 字节」已定位并修掉，
 // 根因是 wasm 侧的 `js.Global().Get("Array").New(arr)`（JS 语义坑：
@@ -139,12 +140,12 @@ func report(label string, n int, total time.Duration, in []mailIn, out []mailOut
 	enc := json.NewEncoder(mustStdout())
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(map[string]any{
-		"label":        label,
-		"count":        n,
-		"elapsed_ns":   total.Nanoseconds(),
-		"ns_per_mail":  total.Nanoseconds() / int64(maxInt(n, 1)),
+		"label":         label,
+		"count":         n,
+		"elapsed_ns":    total.Nanoseconds(),
+		"ns_per_mail":   total.Nanoseconds() / int64(maxInt(n, 1)),
 		"result_digest": digest(out),
-		"input_bytes":  approxJSONSize(in),
+		"input_bytes":   approxJSONSize(in),
 	})
 }
 

@@ -33,14 +33,14 @@ func TestHubBroadcastToWorkspace_OnlyMatchingClients(t *testing.T) {
 	hub.Register(clientGlobal)
 
 	envelope := map[string]any{
-		"v":        1,
-		"id":       "approval_1",
-		"ts":       1723710000000,
-		"channel":  "approvals",
-		"topic":    "inst-a",
-		"type":     "approval.permission.pending",
-		"data":     map[string]any{"instance_id": "inst-a"},
-		"cause":    map[string]any{"approval_id": "per-1"},
+		"v":       1,
+		"id":      "approval_1",
+		"ts":      1723710000000,
+		"channel": "approvals",
+		"topic":   "inst-a",
+		"type":    "approval.permission.pending",
+		"data":    map[string]any{"instance_id": "inst-a"},
+		"cause":   map[string]any{"approval_id": "per-1"},
 	}
 	hub.BroadcastToWorkspace("ws-a", "approval.permission.pending", envelope)
 

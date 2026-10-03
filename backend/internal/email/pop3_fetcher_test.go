@@ -155,4 +155,3 @@ func TestFetchPOP3MailboxAuthRejected(t *testing.T) {
 		t.Fatalf("want server -ERR message surfaced, got %v", err)
 	}
 }
-

@@ -135,7 +135,7 @@ func CheckCredentials(ctx context.Context, store *Store, c *Crypto) (CredentialC
 		// 「master key 拿错了」。这是写测试时真抓出来的：判「解出来是不是空」
 		// 放在解密之后是不够的。
 		if strings.TrimSpace(r.CredentialCipher) == "" {
-		res.Skipped++
+			res.Skipped++
 			continue
 		}
 		plain, derr := c.DecryptString(r.CredentialCipher)

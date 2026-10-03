@@ -214,7 +214,7 @@ func TestStore_DeleteValidation(t *testing.T) {
 
 func TestStore_ListTagFilter(t *testing.T) {
 	s := NewStore()
-	
+
 	s.Create(CreateSnippetRequest{
 		Title:    "Test 1",
 		Language: "go",
@@ -329,7 +329,7 @@ func TestStore_CopyMutation(t *testing.T) {
 
 func TestStore_ConcurrentAccess(t *testing.T) {
 	s := NewStore()
-	
+
 	// Create initial snippet
 	snip, _ := s.Create(CreateSnippetRequest{
 		Title:    "Concurrent Test",

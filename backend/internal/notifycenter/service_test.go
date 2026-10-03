@@ -15,9 +15,9 @@ import (
 // fakeStoreForSvc satisfies just what Service.Dispatch needs: matchRule +
 // InsertNotification. We don't use the real *Store (needs PG).
 type fakeStoreForSvc struct {
-	rules       []*Rule
-	inserted    []*Notification
-	insertErr   error
+	rules     []*Rule
+	inserted  []*Notification
+	insertErr error
 }
 
 func (f *fakeStoreForSvc) matchRule(_ context.Context, _, source, kind string) (*Rule, error) {

@@ -90,8 +90,8 @@ func TestAmountExtraction_TagBetweenLabelAndNumber(t *testing.T) {
 // 最要紧的一条：放宽标签容差不得让对账单的「合计人民币(本位币)」命中。
 func TestAmountExtraction_StatementTotalStillNotAnInvoice(t *testing.T) {
 	if reAmountTotal.MatchString(icbcStatementTotal) {
-		t.Errorf("工行对账单的「合计人民币(本位币)12,838.93」被当成了发票金额；"+
-			"那是应还款额。命中它会把一笔应还款伪装成一张发票——"+
+		t.Errorf("工行对账单的「合计人民币(本位币)12,838.93」被当成了发票金额；" +
+			"那是应还款额。命中它会把一笔应还款伪装成一张发票——" +
 			"错误数字改对了一点，比错误数字更危险（handoff §7.2）")
 	}
 	// 前置自检：确认「合计」这两个字确实在样本里。

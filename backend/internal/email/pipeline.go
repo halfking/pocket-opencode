@@ -369,10 +369,10 @@ type PipelineReport struct {
 	// 数字上并最终归零（它们不再占用预算），后者会一直有网络噪声。
 	InvoiceBodyDeadLettered int           `json:"invoiceBodyDeadLettered,omitempty"`
 	Invoices                HarvestResult `json:"invoices"`
-	FeishuPushed             int           `json:"feishuPushed"`
-	FeishuFailed             int           `json:"feishuFailed"`
-	ShareDocCSV              string        `json:"shareDocCsv,omitempty"`
-	ShareDocMD               string        `json:"shareDocMd,omitempty"`
+	FeishuPushed            int           `json:"feishuPushed"`
+	FeishuFailed            int           `json:"feishuFailed"`
+	ShareDocCSV             string        `json:"shareDocCsv,omitempty"`
+	ShareDocMD              string        `json:"shareDocMd,omitempty"`
 	// ShareDocURL 是飞书共享台账链接（未配置飞书时为空，本地 CSV/MD 仍会生成）。
 	ShareDocURL string   `json:"shareDocUrl,omitempty"`
 	Errors      []string `json:"errors,omitempty"`
@@ -755,7 +755,7 @@ func (p *Pipeline) extractInvoiceCandidates(ctx context.Context, accounts []Acco
 func mapJobsToKeptPositions(numJobs int, keptIdx []int) []int {
 	pos := make([]int, numJobs)
 	for i := range pos {
-	pos[i] = -1
+		pos[i] = -1
 	}
 	for k, idx := range keptIdx {
 		if idx >= 0 && idx < numJobs {
@@ -1193,7 +1193,7 @@ func (p *Pipeline) notifyImportant(ctx context.Context, rep *PipelineReport) {
 //
 // 教训：这段注释自己写着「真实库实测」，但**记录状态的注释不会自己声明
 // 过期**。我本人 2026-10-02 就因为直接引用了上一版结论，误判成
-//「q4 的 90 天窗口一封也不会提醒」，被真库数据当场打脸。
+// 「q4 的 90 天窗口一封也不会提醒」，被真库数据当场打脸。
 func reminderUnclassifiedHint(unclassified, scanned int) string {
 	return fmt.Sprintf("%d/%d 封邮件 importance 为空 —— 不会进入重要提醒。"+
 		"importance 只有两条写入路径：① 账户规则（email_accounts.rules 里的 "+

@@ -54,14 +54,14 @@ type Source struct {
 	ID, UserID, WorkspaceID                    string
 	URL, Title, Description, SiteURL, Language string
 	// Category 决定日报分组：it / finance / news，空值归入 other。
-	Category string
-	ETag, LastModified                         string
-	Status                                     SourceStatus
-	Enabled                                    bool
-	Error                                      string
-	FetchInterval                              time.Duration
-	NextFetchAt, LastFetchedAt                 *time.Time
-	CreatedAt, UpdatedAt                       time.Time
+	Category                   string
+	ETag, LastModified         string
+	Status                     SourceStatus
+	Enabled                    bool
+	Error                      string
+	FetchInterval              time.Duration
+	NextFetchAt, LastFetchedAt *time.Time
+	CreatedAt, UpdatedAt       time.Time
 }
 
 type Item struct {

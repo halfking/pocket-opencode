@@ -11,13 +11,13 @@ import (
 
 // fakeProvider is a controllable Provider for tests.
 type fakeProvider struct {
-	chatResp    *ChatResponse
-	chatErr     error
+	chatResp     *ChatResponse
+	chatErr      error
 	streamDeltas []Delta
 	streamUsage  *Usage
 	streamErr    error
-	embedResp   *EmbedResponse
-	embedErr    error
+	embedResp    *EmbedResponse
+	embedErr     error
 
 	// Capture fields to assert what the BFF forwarded.
 	lastChatReq  *ChatRequest

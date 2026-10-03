@@ -236,7 +236,7 @@ func TestLooksLikeSpam_AliyunHasNoDomainBackdoor(t *testing.T) {
 // 站在目标需求「发票类邮件要能被采集整理」的反面。
 func TestLooksLikeSpam_InvoiceAndImportantAreNeverSpam(t *testing.T) {
 	// 对照组：一封营销邮件，在两个闸门都关闭时确实会被判垃圾。
-	promo := realSpamSamples[len(realSpamSamples)-2] // obvious-promo
+	promo := realSpamSamples[len(realSpamSamples)-2]                                 // obvious-promo
 	base := LooksLikeSpam(promo.from, promo.subject, promo.snippet, false, false, 0) /* senderVolume=0「未统计」*/
 	if !base.Spam {
 		t.Fatalf("control failed: promo sample should be spam with both gates open, got score=%d why=%q", base.Score, base.Why)

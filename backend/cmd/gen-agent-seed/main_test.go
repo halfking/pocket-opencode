@@ -7,12 +7,12 @@ import (
 
 func TestSQLEscape(t *testing.T) {
 	cases := map[string]string{
-		"":                    "",
-		"plain":               "plain",
-		"it's":                "it''s",
-		"中文'引号":               "中文''引号",
-		"multi''quote":        "multi''''quote",
-		"line\nbreak":         "line\nbreak",
+		"":             "",
+		"plain":        "plain",
+		"it's":         "it''s",
+		"中文'引号":        "中文''引号",
+		"multi''quote": "multi''''quote",
+		"line\nbreak":  "line\nbreak",
 	}
 	for in, want := range cases {
 		if got := sqlEscape(in); got != want {

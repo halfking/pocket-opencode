@@ -541,12 +541,12 @@ func TestPipelineRun_NoHarvestSkipsStep4(t *testing.T) {
 // TestPipelineRun_NotifiesOnlyHighImportance 需求 4 的主判定。
 //
 // 只有 importance='high' 才提醒。这条同时钉住三件事：
-//   1. high 被提醒、medium/low 不被提醒（不是「全提醒」也不是「都不提醒」）
-//   2. 提醒过的邮件被标记，**下一轮不再重复提醒**（否则每轮轰炸用户）
-//   3. RemindersUnclassified 统计 importance 为空的邮件 —— 这个计数是
-//      需求 4 能否排查的关键：kxmemory 没配时它会告诉你「这批邮件根本没
-//      被分类过」，而不是让你对着恒为 0 的 RemindersSent 猜（见
-//      PipelineReport 字段注释里记录的那次踩坑）。
+//  1. high 被提醒、medium/low 不被提醒（不是「全提醒」也不是「都不提醒」）
+//  2. 提醒过的邮件被标记，**下一轮不再重复提醒**（否则每轮轰炸用户）
+//  3. RemindersUnclassified 统计 importance 为空的邮件 —— 这个计数是
+//     需求 4 能否排查的关键：kxmemory 没配时它会告诉你「这批邮件根本没
+//     被分类过」，而不是让你对着恒为 0 的 RemindersSent 猜（见
+//     PipelineReport 字段注释里记录的那次踩坑）。
 func TestPipelineRun_NotifiesOnlyHighImportance(t *testing.T) {
 	p, store, cleanup := newPipelineFixture(t)
 	defer cleanup()

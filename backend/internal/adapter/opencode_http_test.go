@@ -21,7 +21,7 @@ type mockOpenCodeServer struct {
 	permissionList []PermissionRequest
 	questionList   []QuestionRequest
 	messages       []opencodeMessage // exported via /api/session/:id/message
-	events         []string                  // newline-separated "data: {...}" SSE payloads
+	events         []string          // newline-separated "data: {...}" SSE payloads
 	replyCalls     []map[string]any
 	rejectCalls    []map[string]string
 	healthOK       bool
@@ -29,7 +29,7 @@ type mockOpenCodeServer struct {
 
 func newMockOpenCodeServer() *mockOpenCodeServer {
 	return &mockOpenCodeServer{
-		healthOK:   true,
+		healthOK: true,
 		permissionList: []PermissionRequest{
 			{
 				ID:        "per_test_1",

@@ -121,8 +121,8 @@ func TestApplyCost_ModelScenarios(t *testing.T) {
 		model       string
 		input       int
 		output      int
-		wantAtLeast  float64
-		wantAtMost   float64
+		wantAtLeast float64
+		wantAtMost  float64
 	}{
 		{"gpt-4o", "gpt-4o", 1_000_000, 1_000_000, 19.9, 20.1},
 		{"claude-sonnet", "claude-3-5-sonnet", 1_000_000, 1_000_000, 17.9, 18.1},

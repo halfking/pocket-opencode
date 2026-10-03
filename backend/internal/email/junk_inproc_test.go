@@ -58,12 +58,12 @@ type testMailbox struct {
 type imapServer struct {
 	ln net.Listener
 
-	mu        sync.Mutex
-	cmds      []string // 逐条收到的命令
-	movedTo   []string // 每次 MOVE/COPY 的目标信箱
-	movedUIDs []string // 每次 MOVE/COPY 带的 UID 串
+	mu         sync.Mutex
+	cmds       []string // 逐条收到的命令
+	movedTo    []string // 每次 MOVE/COPY 的目标信箱
+	movedUIDs  []string // 每次 MOVE/COPY 带的 UID 串
 	fetchCmds_ []string // 每次 UID FETCH 的取件项（供 fetcher_inproc_test 断言）
-	seenSet   bool     // 是否收到过会置 \Seen 的命令
+	seenSet    bool     // 是否收到过会置 \Seen 的命令
 
 	// bodyByUID 是各 UID 的正文（fetcher_inproc_test 用；junk 用例留空）。
 	bodyByUID map[int64]string

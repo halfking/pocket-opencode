@@ -157,4 +157,3 @@ data: [DONE]
 		t.Errorf("usage = %+v, want 15 tokens", finalUsage)
 	}
 }
-

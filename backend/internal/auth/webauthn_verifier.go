@@ -28,9 +28,9 @@ type WebAuthnVerifier struct {
 
 // challengeSession 存储一次性的 challenge 与关联的用户上下文。
 type challengeSession struct {
-	Challenge  []byte
-	UserID     string // register 场景已知；login 场景为空（等客户端回传 credential_id）
-	ExpiresAt  time.Time
+	Challenge []byte
+	UserID    string // register 场景已知；login 场景为空（等客户端回传 credential_id）
+	ExpiresAt time.Time
 }
 
 // challengeStore 是内存 TTL map，定期清理过期 challenge（每分钟扫一次）。
@@ -249,10 +249,10 @@ type webAuthnUser struct {
 	displayName string
 }
 
-func (u *webAuthnUser) WebAuthnID() []byte              { return u.id }
-func (u *webAuthnUser) WebAuthnName() string            { return u.name }
-func (u *webAuthnUser) WebAuthnDisplayName() string     { return u.displayName }
-func (u *webAuthnUser) WebAuthnIcon() string            { return "" }
+func (u *webAuthnUser) WebAuthnID() []byte                         { return u.id }
+func (u *webAuthnUser) WebAuthnName() string                       { return u.name }
+func (u *webAuthnUser) WebAuthnDisplayName() string                { return u.displayName }
+func (u *webAuthnUser) WebAuthnIcon() string                       { return "" }
 func (u *webAuthnUser) WebAuthnCredentials() []webauthn.Credential { return nil }
 
 // webAuthnUserWithCredentials 实现 webauthn.User 接口（登录验证时需要提供 credentials）。
@@ -261,10 +261,10 @@ type webAuthnUserWithCredentials struct {
 	credentials []webauthn.Credential
 }
 
-func (u *webAuthnUserWithCredentials) WebAuthnID() []byte       { return u.id }
-func (u *webAuthnUserWithCredentials) WebAuthnName() string     { return string(u.id) }
+func (u *webAuthnUserWithCredentials) WebAuthnID() []byte          { return u.id }
+func (u *webAuthnUserWithCredentials) WebAuthnName() string        { return string(u.id) }
 func (u *webAuthnUserWithCredentials) WebAuthnDisplayName() string { return string(u.id) }
-func (u *webAuthnUserWithCredentials) WebAuthnIcon() string     { return "" }
+func (u *webAuthnUserWithCredentials) WebAuthnIcon() string        { return "" }
 func (u *webAuthnUserWithCredentials) WebAuthnCredentials() []webauthn.Credential {
 	return u.credentials
 }

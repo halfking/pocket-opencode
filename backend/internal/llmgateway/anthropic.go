@@ -439,8 +439,8 @@ func parseAnthropicSSE(r io.Reader, fn func(StreamDelta) bool) (*StreamDelta, er
 					args = "{}"
 				}
 				final.ToolCalls = append(final.ToolCalls, ToolCall{
-					ID:   acc.id,
-					Type: "function",
+					ID:       acc.id,
+					Type:     "function",
 					Function: ToolCallFunc{Name: acc.name, Arguments: args},
 				})
 				delete(toolAcc, payload.Index)

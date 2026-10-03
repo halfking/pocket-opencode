@@ -32,8 +32,8 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
 	"github.com/halfking/pocket-opencode/backend/internal/lobster"
 	"github.com/halfking/pocket-opencode/backend/internal/marketplace"
-	"github.com/halfking/pocket-opencode/backend/internal/meeting"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
+	"github.com/halfking/pocket-opencode/backend/internal/meeting"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/notify"
@@ -103,7 +103,7 @@ func main() {
 		scheduledTaskStore *scheduledtask.Store
 		marketplaceStore   *marketplace.Store
 		financeStore       finance.FinanceStore
-	meetingStore       meeting.MeetingStore
+		meetingStore       meeting.MeetingStore
 		rssStore           *rss.Store
 		// v1 闪卡模块（docs/flashcards-contract.md §1, §5）。PG 就绪时构造
 		// store 与 EnsureSchema；remote-only 模式下保持 nil，handler 返 503。
@@ -450,8 +450,8 @@ func main() {
 						log.Printf("WARN: email credential self-check failed to run: %v", cerr)
 					} else if chk.AllFailed() {
 						log.Printf("ERROR: %s", chk.Summary())
-						log.Printf("ERROR:   凭据是用 POCKET_EMAIL_MASTER_KEY（或 <dataDir>/email_master.key）加密的，"+
-							"当前这把它一把都解不开。请确认这个环境的 key 与写入凭据时用的是同一把；"+
+						log.Printf("ERROR:   凭据是用 POCKET_EMAIL_MASTER_KEY（或 <dataDir>/email_master.key）加密的，" +
+							"当前这把它一把都解不开。请确认这个环境的 key 与写入凭据时用的是同一把；" +
 							"改 key 前不要直接重启，否则所有邮箱都会停止同步。")
 						// 同一把 key 还封着 **LLM 网关的 API key**
 						// （llm_gateway_store.go:198 的 decryptAPIKey 用的是同一个 cipher）。
@@ -462,7 +462,7 @@ func main() {
 						// 邮件 0/5 与 `[llm-gateway] decrypt api key: cipher: message
 						// authentication failed`，两边同一个根因。
 						log.Printf("ERROR:   同一把 key 也封着 LLM 网关的 API key。" +
-							"如果启动日志里有 `[llm-gateway] … decrypt api key: cipher: message authentication failed`、"+
+							"如果启动日志里有 `[llm-gateway] … decrypt api key: cipher: message authentication failed`、" +
 							"或网关显示未配置/调用全失败，**根因就是这一条**，不必另查。")
 					} else if !chk.AllDecryptable() {
 						log.Printf("WARN: %s", chk.Summary())
@@ -1136,8 +1136,8 @@ func main() {
 					UserID:      "local",
 					WorkspaceID: "default",
 				}, rss.DigestServiceOptions{
-					AtHour:         cfg.RSS.DigestHour,
-					AtMinute:       cfg.RSS.DigestMinute,
+					AtHour:   cfg.RSS.DigestHour,
+					AtMinute: cfg.RSS.DigestMinute,
 					Opts: rss.DigestOptions{
 						MaxPerSection:  cfg.RSS.DigestMaxPerSection,
 						IncludeSummary: cfg.RSS.DigestIncludeSummary,

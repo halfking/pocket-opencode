@@ -124,7 +124,6 @@ func probeRules(base time.Time) []probeResult {
 	return out
 }
 
-
 func toActions(names []string) []rules.ActionResult {
 	a := make([]rules.ActionResult, 0, len(names))
 	for _, n := range names {

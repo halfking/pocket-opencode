@@ -140,6 +140,60 @@ jobs:
       - name: Build HarmonyOS ArkWeb assets
         run: MOBILE_FAST=1 VITE_API_BASE=https://harmony-ci.example.invalid node scripts/build-harmony.mjs dev
 
+  # ── gates 的 CI 侧（2026-10-03 接入）────────────────────────────────────
+  # 为什么这是独立 job，而不是在 frontend-lint 里加一步 `npm run gates`：
+  # gates 共 23 条，其中 typecheck / build:gate / test:all 与 6 个 test:* 子集
+  # 在 frontend-lint 里已经跑过（见 gates.json 的 ciCoveredElsewhere，每条都写了
+  # 「CI 里由谁跑」）。全量跑一遍等于把 vue-tsc + vite build + 全量 node --test
+  # 重做一次，20 分钟的 job 超时风险是实打实的。
+  #
+  # 而**只跑剩下的 check:*** 有个陷阱：把名字硬写进 workflow，等于又造一份
+  # 「加了门禁却忘了同步」的清单——正是本仓吃过两次亏的那类缺陷
+  # （146 个测试文件只有 32 个被引用；check:test-coverage 长期只在本机跑）。
+  # 所以名单是**数据**：gates.json 的 ciRuns，run-gates.mjs 的规则 5 会在
+  # 「有新 check:* 既不在 ciRuns 也不在 ciCoveredElsewhere」时直接退出码 2。
+  # 新加门禁不需要改这个 workflow，改 gates.json 即可，且忘了改就会被拦。
+  #
+  # npm ci 不能省：实测（node_modules 缺席时跑 --ci）前 10 条通过，
+  # 第 11 条 check:icons 报 `Cannot find package 'harfbuzzjs'`。
+  # setup-go 也不能省：check:gofmt 调 gofmt，不在 PATH 时它 exit 1（拒绝给结论）。
+  gates-parity:
+    name: gates parity (every check:* declared in gates.json)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # 与 build-gate 同理：门禁不允许被降级为非阻塞。
+    continue-on-error: false
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # check:gofmt 走 gofmt；缺工具链时它会 exit 1 而不是静默通过。
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Show the local/CI split this job is responsible for
+        run: node scripts/run-gates.mjs --list
+
+      - name: Run every check:* gate that CI owns
+        run: node scripts/run-gates.mjs --ci
   android-assemble:
     name: android assembleDebug (frontend/android)
     runs-on: ubuntu-latest

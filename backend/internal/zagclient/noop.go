@@ -16,8 +16,8 @@ import (
 //
 // NoopClient is safe for concurrent use. Close is idempotent.
 type NoopClient struct {
-	closed   bool
-	closeMu  sync.Mutex
+	closed  bool
+	closeMu sync.Mutex
 }
 
 // NewNoopClient returns a NoopClient. There is no configuration because the

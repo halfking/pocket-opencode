@@ -391,4 +391,3 @@ func TestIMAPLeavesBudgetForPOP3Fallback(t *testing.T) {
 	}
 	t.Logf("IMAP 有效截止 %s / 预算 %s → POP3 兜底可用余量 %s", effective, syncBudget, left)
 }
-

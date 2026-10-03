@@ -96,7 +96,8 @@ func (s *Server) flashcardsImportStarter(w http.ResponseWriter, r *http.Request,
 	})
 }
 
-func (s *Server) flashcardsGetCollection(w http.ResponseWriter, r *http.Request, userID string) {	ctx := r.Context()
+func (s *Server) flashcardsGetCollection(w http.ResponseWriter, r *http.Request, userID string) {
+	ctx := r.Context()
 	since, limit := parseFlashcardsSinceLimit(r)
 	cards, err := s.flashcardStore.ListCardsSince(ctx, userID, since, limit)
 	if err != nil {

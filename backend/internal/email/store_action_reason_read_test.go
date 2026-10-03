@@ -85,7 +85,7 @@ func TestListEmailsScoped_ReturnsActionReason(t *testing.T) {
 	// 夹具的 has_attachments 是 false（InsertEmail 没给附件），所以这里断言
 	// 它**仍是 false**——若被读成了 action_reason 的非空值就说明串位了。
 	if got.HasAttachments {
-		t.Errorf("em-r1 的 has_attachments=true —— SELECT 与 Scan 的列数/列序可能已错位"+
+		t.Errorf("em-r1 的 has_attachments=true —— SELECT 与 Scan 的列数/列序可能已错位" +
 			"（action_reason 被读进了 has_attachments）")
 	}
 	if got.Importance != "high" || got.Category != "work" {

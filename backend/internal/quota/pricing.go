@@ -9,9 +9,9 @@ import "github.com/halfking/pocket-opencode/backend/internal/llmbff"
 // fallback (we never want to charge $0 for a model we don't recognize — that's
 // how S3 cost dashboards drift away from reality).
 type ModelPrice struct {
-	Model         string  `json:"model"`
-	InputPer1K    float64 `json:"input_per_1k"`
-	OutputPer1K   float64 `json:"output_per_1k"`
+	Model       string  `json:"model"`
+	InputPer1K  float64 `json:"input_per_1k"`
+	OutputPer1K float64 `json:"output_per_1k"`
 }
 
 // defaultPriceTable is the static pricing table. Future iterations should

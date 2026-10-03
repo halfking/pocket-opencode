@@ -126,4 +126,3 @@ func TestDecodeMIMEWord_CharsetReaderIsWired(t *testing.T) {
 		t.Fatalf("charset reader not applied: %q", out)
 	}
 }
-

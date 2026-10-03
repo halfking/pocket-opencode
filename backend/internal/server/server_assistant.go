@@ -652,7 +652,7 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 		// summary 空串，界面上就表现为「没有即时总结」——一个字节都不报错。
 		// 笔记总结只要 3~5 句话，2048 足够容纳推理开销加正文。
 		MaxTokens: 2048,
-		User:        uid,
+		User:      uid,
 	}
 
 	resp, err := s.llmBFF.Chat(ctx, req, "note_summary")

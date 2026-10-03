@@ -165,7 +165,7 @@ func TestDiagRealInvoiceExtractionBlastRadius(t *testing.T) {
 
 	type rec struct {
 		id, subj, seller, cur, kind, date string
-		amt                                float64
+		amt                               float64
 	}
 	var total, hit int
 	var sum float64

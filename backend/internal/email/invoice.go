@@ -32,7 +32,7 @@ type Invoice struct {
 	InvoiceDate string  `json:"invoiceDate,omitempty"`
 	// EmailDate 是来源邮件的收到时间（Unix 秒）。列表按它倒排；
 	// 不落 email_invoices 列，由 JOIN emails.date 填入。
-	EmailDate int64  `json:"emailDate,omitempty"`
+	EmailDate int64 `json:"emailDate,omitempty"`
 	// sellerIsFallback 标记 Seller 来自**信封兜底**（发件人名称/地址），
 	// 而不是从邮件正文或发票 XML 里解析出来的。
 	//
@@ -50,11 +50,11 @@ type Invoice struct {
 	// 只给**发件人兜底**打标；「来自XX的发票」这类从主题解析出的单位名
 	// 是真证据，不打标，不许被 XML 覆盖。
 	sellerIsFallback bool
-	Subject   string `json:"subject"` // 来源邮件主题（便于回溯）
-	Status      string  `json:"status"`      // new | pending | downloaded | failed | filed
-	ExtractedBy string  `json:"extractedBy"` // rule | llm
-	CreatedAt   int64   `json:"createdAt"`
-	UpdatedAt   int64   `json:"updatedAt"`
+	Subject          string `json:"subject"`     // 来源邮件主题（便于回溯）
+	Status           string `json:"status"`      // new | pending | downloaded | failed | filed
+	ExtractedBy      string `json:"extractedBy"` // rule | llm
+	CreatedAt        int64  `json:"createdAt"`
+	UpdatedAt        int64  `json:"updatedAt"`
 
 	// —— 发票文件采集（Harvest 流水线维护）——
 	// FileName 落盘文件名，基础格式 {费用类型}-{对方单位}-{金额}-{日期}.pdf。
@@ -91,7 +91,7 @@ var (
 	// invoice_no="Issuance"、真实号码被丢（2026-10-01 真实数据）。
 	// 用「含数字」而不是「数字打头」：后者会把 INV-TEST-0001 这类
 	// 合规的字母前缀号码也误杀（invoice_realworld_test.go 覆盖）。
-	reInvoiceNo = regexp.MustCompile(`(?i)(?:发票号码|发票号|票据号码|Invoice\s*(?:No\.?|Number)?|Bill\s*No\.?)[:：\s]*([A-Za-z0-9\-]{7,31}[0-9][A-Za-z0-9\-]*)`)
+	reInvoiceNo   = regexp.MustCompile(`(?i)(?:发票号码|发票号|票据号码|Invoice\s*(?:No\.?|Number)?|Bill\s*No\.?)[:：\s]*([A-Za-z0-9\-]{7,31}[0-9][A-Za-z0-9\-]*)`)
 	reInvoiceDate = regexp.MustCompile(`(?:开票日期|发票日期|开票时间|日期|Date)[:：\s]*(\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}|\d{8})日?`)
 	reLooseCNDate = regexp.MustCompile(`(\d{4}年\d{1,2}月\d{1,2})日?`)
 	// 账单/对账单的出具日。必须**单列一层**，且刻意不含「账单周期」——
@@ -144,12 +144,12 @@ var (
 	// "Invoice details please see attachment (PDF)." 一起吞成销售方，
 	// 规范文件名退化成 `其他-Tencent-…-Invoice-details-please-see-a-….pdf`。
 	// 同时限制最多 6 个词，避免长句被当单位名。
-	reSeller      = regexp.MustCompile(`(?i)(?:销售方名称|销售方|开票方|商户名称|商户|Merchant(?:\s*Name)?|Seller(?:\s*Name)?)[:：\s]*([^\s:：,，;；。]{2,40}(?:[^\S\r\n]+[^\s:：,，;；。]{2,40}){0,5})`)
+	reSeller = regexp.MustCompile(`(?i)(?:销售方名称|销售方|开票方|商户名称|商户|Merchant(?:\s*Name)?|Seller(?:\s*Name)?)[:：\s]*([^\s:：,，;；。]{2,40}(?:[^\S\r\n]+[^\s:：,，;；。]{2,40}){0,5})`)
 	// 「您收到来自XX的发票」——中文发票邮件最常见的形态，主题里就有对方单位。
 	// 不抽的话销售方会退化成发件地址，规范文件名变成
 	// 「其他-noreply@<发件域名>-3500.00-….pdf」，对账时看不出是谁开的票。
 	reSellerFromSubject = regexp.MustCompile(`(?:来自|由)\s*([^,，;；。]{2,40}?)(?:开具|开具的|提供|提供的|的)?\s*(?:电子)?(?:发票|账单|收据|票据)`)
-	reTitle       = regexp.MustCompile(`(?:发票抬头|抬头|购买方名称|购买方)[:：\s]*([^\s,，;；。]{2,60})`)
+	reTitle             = regexp.MustCompile(`(?:发票抬头|抬头|购买方名称|购买方)[:：\s]*([^\s,，;；。]{2,60})`)
 )
 
 // invoiceLabelWords 是电子发票邮件里**当列头用的标签词**。

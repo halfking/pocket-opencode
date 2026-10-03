@@ -101,7 +101,7 @@ func TestDiagTollInvoiceA4AndLedgerOffline(t *testing.T) {
 	if err := store.InsertAccount(ctx, &Account{
 		ID: acctID, UserID: userID, WorkspaceID: wsID,
 		EmailAddress: "acct@example.com",
-		IMAPHost:    "", IMAPPort: 0, AuthType: "password",
+		IMAPHost:     "", IMAPPort: 0, AuthType: "password",
 		Enabled: true, CreatedAt: time.Now().Unix(),
 	}, "enc-cred"); err != nil {
 		t.Fatalf("insert account: %v", err)

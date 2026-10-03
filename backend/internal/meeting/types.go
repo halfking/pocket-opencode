@@ -9,7 +9,7 @@ type Meeting struct {
 	OwnerID      string       `json:"owner_id,omitempty"`
 	WorkspaceID  string       `json:"workspace_id,omitempty"`
 	Title        string       `json:"title"`
-	Duration     int          `json:"duration"`      // 秒
+	Duration     int          `json:"duration"` // 秒
 	RecordingURL string       `json:"recording_url,omitempty"`
 	Transcript   string       `json:"transcript,omitempty"`
 	Summary      string       `json:"summary,omitempty"`

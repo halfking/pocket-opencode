@@ -79,7 +79,7 @@ var invoiceLinkHints = []string{
 var (
 	reHTMLHrefs = regexp.MustCompile(`(?i)href\s*=\s*["']([^"'h][^"']*(?:https?:)?[^"']*)["']|href\s*=\s*["'](https?://[^"']+)["']`)
 	reBareURLs  = regexp.MustCompile(`https?://[^\s<>"'\)\]，。；]+`)
-	reSkippable  = regexp.MustCompile(`(?i)(unsubscribe|\.png|\.jpg|\.jpeg|\.gif|\.css|\.js|\.ico|facebook|twitter|doubleclick|google-analytics|mailto:|tel:)`)
+	reSkippable = regexp.MustCompile(`(?i)(unsubscribe|\.png|\.jpg|\.jpeg|\.gif|\.css|\.js|\.ico|facebook|twitter|doubleclick|google-analytics|mailto:|tel:)`)
 )
 
 // HarvestAll 对所有待采集发票执行一轮下载/渲染。
@@ -216,7 +216,7 @@ func sameEmailMessage(em *Email, raw []byte) bool {
 	}
 	if em.Date > 0 && parsed.Date.Unix() > 0 {
 		const day = 24 * time.Hour
-		diff := time.Duration(em.Date - parsed.Date.Unix()) * time.Second
+		diff := time.Duration(em.Date-parsed.Date.Unix()) * time.Second
 		if diff < 0 {
 			diff = -diff
 		}
@@ -436,10 +436,11 @@ func (h *InvoiceHarvester) markRetry(ctx context.Context, inv *Invoice, msg stri
 // 磁盘上只剩最后写入的那张，另一张的凭证永久丢失。
 //
 // 判据是**内容**而不是存在性：
-//   · 目标不存在 → 用它；
-//   · 目标已存在且内容**相同** → 仍用它（同一张票的重跑必须幂等，
-//     否则每次补跑都多出 `-2`、`-3`，台账被副本淹没）；
-//   · 目标已存在但内容**不同** → 说明是另一张票，换 `-2`、`-3`……
+//
+//	· 目标不存在 → 用它；
+//	· 目标已存在且内容**相同** → 仍用它（同一张票的重跑必须幂等，
+//	  否则每次补跑都多出 `-2`、`-3`，台账被副本淹没）；
+//	· 目标已存在但内容**不同** → 说明是另一张票，换 `-2`、`-3`……
 //
 // 这正是 InvoiceFileName 注释里写下的「若后续发现它也发生，应在
 // saveInvoiceFile 里检测目标已存在并加序号，而不是继续往文件名里塞字段」。

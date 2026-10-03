@@ -71,8 +71,8 @@ func TestResolveGatewayForUserPrefersSettings(t *testing.T) {
 	})
 	store := usersetting.NewMemStore()
 	payload, _ := json.Marshal(map[string]any{
-		"baseURL": "https://llm.kxpms.cn/v1",
-		"format":  "openai-chat",
+		"baseURL":         "https://llm.kxpms.cn/v1",
+		"format":          "openai-chat",
 		"preferredModels": []string{"glm-5.2"},
 	})
 	if _, err := store.Put(usersetting.Record{

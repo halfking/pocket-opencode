@@ -99,7 +99,7 @@ func TestParseInvoiceXML_EUINoIsInvoiceNumberNotPlate(t *testing.T) {
 	// 反向护栏：车牌号绝不能被当成发票号码。
 	// 它出现得更早，正是修复前 first-wins 取错的那个字段。
 	if f.InvoiceNo == "浙AB59453" {
-		t.Error("invoiceNo 取到了车牌号（PlateNumber）——"+
+		t.Error("invoiceNo 取到了车牌号（PlateNumber）——" +
 			"同一辆车的两张票会读出同一个号码，去重时会被当成同一张票而丢一张")
 	}
 }

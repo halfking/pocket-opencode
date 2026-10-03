@@ -26,7 +26,7 @@ func (s *PostgresHistoryStore) SaveEvent(ctx context.Context, sessionID string, 
 		(session_id, timestamp, event_type, actor, content, metadata)
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`
-	
+
 	metadataJSON, err := jsonMarshal(event.Metadata)
 	if err != nil {
 		return fmt.Errorf("marshal metadata failed: %w", err)
@@ -40,7 +40,7 @@ func (s *PostgresHistoryStore) SaveEvent(ctx context.Context, sessionID string, 
 		event.Content,
 		metadataJSON,
 	)
-	
+
 	if err != nil {
 		return fmt.Errorf("insert history event failed: %w", err)
 	}
@@ -72,7 +72,7 @@ func (s *PostgresHistoryStore) GetHistory(ctx context.Context, sessionID string,
 	for rows.Next() {
 		event := &HistoryEvent{}
 		var metadataJSON []byte
-		
+
 		err := rows.Scan(
 			&event.Timestamp,
 			&event.Type,

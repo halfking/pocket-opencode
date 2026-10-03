@@ -121,9 +121,9 @@ func TestDiagTollEndToEndOffline(t *testing.T) {
 				MessageID:   "<toll-e2e-" + c.wantNo + "@vendor.example>",
 				UID:         c.uid,
 				FromAddress: "noreply@toll.example",
-				Subject:   "通行费电子发票",
-				Snippet:   "",
-				Date:      c.date,
+				Subject:     "通行费电子发票",
+				Snippet:     "",
+				Date:        c.date,
 			}
 			if err := store.InsertEmail(ctx, e); err != nil {
 				t.Fatalf("insert email: %v", err)

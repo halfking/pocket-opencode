@@ -55,7 +55,7 @@ type FileChangeStats struct {
 // HistoryEvent 历史事件
 type HistoryEvent struct {
 	Timestamp time.Time              `json:"timestamp"`
-	Type      string                 `json:"type"` // message, edit, test, error
+	Type      string                 `json:"type"`  // message, edit, test, error
 	Actor     string                 `json:"actor"` // user, ai, system
 	Content   string                 `json:"content"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`
@@ -152,10 +152,10 @@ func (m *Manager) GetSessions(ctx context.Context, instanceID string) ([]*Cached
 	// 转换并缓存
 	sessions := make([]*CachedSession, 0, len(rawSessions))
 	sessionIDs = make([]string, 0, len(rawSessions))
-	
+
 	m.sessionCache.mu.Lock()
 	defer m.sessionCache.mu.Unlock()
-	
+
 	for _, raw := range rawSessions {
 		cached := &CachedSession{
 			ID:         raw.ID,
@@ -165,16 +165,16 @@ func (m *Manager) GetSessions(ctx context.Context, instanceID string) ([]*Cached
 			CreatedAt:  time.Now(), // OpenCode API 返回的时间需要解析
 			UpdatedAt:  time.Now(),
 		}
-		
-	m.sessionCache.sessions[raw.ID] = cached
-	sessions = append(sessions, cached)
-	sessionIDs = append(sessionIDs, raw.ID)
-}
 
-m.sessionCache.byInstance[instanceID] = sessionIDs
-m.sessionCache.cachedAt[instanceID] = time.Now() // 记录缓存时间用于 TTL 校验
+		m.sessionCache.sessions[raw.ID] = cached
+		sessions = append(sessions, cached)
+		sessionIDs = append(sessionIDs, raw.ID)
+	}
 
-return sessions, nil
+	m.sessionCache.byInstance[instanceID] = sessionIDs
+	m.sessionCache.cachedAt[instanceID] = time.Now() // 记录缓存时间用于 TTL 校验
+
+	return sessions, nil
 }
 
 // GetSessionHistory 获取会话的详细历史
@@ -214,7 +214,7 @@ func (m *Manager) UpdateSessionStatus(sessionID, status string) {
 		Status:    status,
 		Timestamp: time.Now(),
 	}
-	
+
 	select {
 	case m.statusMonitor.updateChannel <- update:
 	default:
@@ -381,7 +381,7 @@ func (m *Manager) InvalidateCache(instanceID string) {
 // GetAllSessions 获取所有实例的会话（聚合）
 func (m *Manager) GetAllSessions(ctx context.Context) ([]*CachedSession, error) {
 	instances := m.registry.ListInstances()
-	
+
 	allSessions := make([]*CachedSession, 0)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -390,7 +390,7 @@ func (m *Manager) GetAllSessions(ctx context.Context) ([]*CachedSession, error) 
 		wg.Add(1)
 		go func(instanceID string) {
 			defer wg.Done()
-			
+
 			sessions, err := m.GetSessions(ctx, instanceID)
 			if err != nil {
 				log.Printf("Failed to get sessions for instance %s: %v", instanceID, err)

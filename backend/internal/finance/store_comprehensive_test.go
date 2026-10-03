@@ -9,14 +9,14 @@ import (
 
 func TestStore_ConcurrentAccess(t *testing.T) {
 	s := NewStore()
-	
+
 	// Create initial transactions
 	tx1, _ := s.Create(CreateTransactionRequest{Type: "expense", Amount: 100, Category: "餐饮"})
 	tx2, _ := s.Create(CreateTransactionRequest{Type: "income", Amount: 5000, Category: "工资"})
-	
+
 	var wg sync.WaitGroup
 	errors := make(chan error, 100)
-	
+
 	// Concurrent reads
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
@@ -28,7 +28,7 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 			}
 		}()
 	}
-	
+
 	// Concurrent writes
 	for i := 0; i < 25; i++ {
 		wg.Add(1)
@@ -44,7 +44,7 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 			}
 		}(i + 1)
 	}
-	
+
 	// Concurrent stats
 	for i := 0; i < 25; i++ {
 		wg.Add(1)
@@ -56,20 +56,20 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 			}
 		}()
 	}
-	
+
 	wg.Wait()
 	close(errors)
-	
+
 	for err := range errors {
 		t.Errorf("concurrent operation error: %v", err)
 	}
-	
+
 	// Verify data integrity
 	list, _ := s.List()
 	if len(list) < 27 {
 		t.Errorf("expected at least 27 transactions, got %d", len(list))
 	}
-	
+
 	// Verify original transactions still exist
 	got1, err := s.Get(tx1.ID)
 	if err != nil {
@@ -78,7 +78,7 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 	if got1.Amount != 100 {
 		t.Errorf("tx1 amount corrupted: expected 100, got %f", got1.Amount)
 	}
-	
+
 	got2, err := s.Get(tx2.ID)
 	if err != nil {
 		t.Errorf("tx2 lost during concurrent access: %v", err)
@@ -118,26 +118,26 @@ func TestStore_NegativeAmount(t *testing.T) {
 
 func TestStore_MonthFiltering(t *testing.T) {
 	s := NewStore()
-	
+
 	// Create transactions in different months
 	tx1, _ := s.Create(CreateTransactionRequest{Type: "income", Amount: 10000, Category: "工资"})
 	tx1.CreatedAt = time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	s.transactions[tx1.ID] = tx1
-	
+
 	tx2, _ := s.Create(CreateTransactionRequest{Type: "expense", Amount: 100, Category: "餐饮"})
 	tx2.CreatedAt = time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
 	s.transactions[tx2.ID] = tx2
-	
+
 	tx3, _ := s.Create(CreateTransactionRequest{Type: "expense", Amount: 200, Category: "交通"})
 	tx3.CreatedAt = time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	s.transactions[tx3.ID] = tx3
-	
+
 	// Query July stats
 	stats, err := s.GetStats(StatsQuery{Month: "2026-07"})
 	if err != nil {
 		t.Fatalf("GetStats failed: %v", err)
 	}
-	
+
 	if stats.TotalIncome != 10000 {
 		t.Errorf("expected income 10000 for July, got %f", stats.TotalIncome)
 	}
@@ -147,13 +147,13 @@ func TestStore_MonthFiltering(t *testing.T) {
 	if stats.Count != 2 {
 		t.Errorf("expected 2 transactions for July, got %d", stats.Count)
 	}
-	
+
 	// Query August stats
 	stats, err = s.GetStats(StatsQuery{Month: "2026-08"})
 	if err != nil {
 		t.Fatalf("GetStats failed: %v", err)
 	}
-	
+
 	if stats.TotalExpense != 200 {
 		t.Errorf("expected expense 200 for August, got %f", stats.TotalExpense)
 	}
@@ -167,12 +167,12 @@ func TestStore_CategoryFiltering(t *testing.T) {
 	s.Create(CreateTransactionRequest{Type: "expense", Amount: 100, Category: "餐饮"})
 	s.Create(CreateTransactionRequest{Type: "expense", Amount: 50, Category: "餐饮"})
 	s.Create(CreateTransactionRequest{Type: "expense", Amount: 200, Category: "交通"})
-	
+
 	stats, err := s.GetStats(StatsQuery{Category: "餐饮"})
 	if err != nil {
 		t.Fatalf("GetStats failed: %v", err)
 	}
-	
+
 	if stats.TotalExpense != 150 {
 		t.Errorf("expected expense 150 for 餐饮, got %f", stats.TotalExpense)
 	}
@@ -186,12 +186,12 @@ func TestStore_IncomeInByCategory(t *testing.T) {
 	s.Create(CreateTransactionRequest{Type: "income", Amount: 10000, Category: "工资"})
 	s.Create(CreateTransactionRequest{Type: "income", Amount: 5000, Category: "项目收入"})
 	s.Create(CreateTransactionRequest{Type: "expense", Amount: 100, Category: "餐饮"})
-	
+
 	stats, err := s.GetStats(StatsQuery{})
 	if err != nil {
 		t.Fatalf("GetStats failed: %v", err)
 	}
-	
+
 	// Income categories should now be included
 	if stats.ByCategory["工资"] != 10000 {
 		t.Errorf("expected 工资 category 10000, got %f", stats.ByCategory["工资"])
@@ -212,14 +212,14 @@ func TestStore_DataIsolation(t *testing.T) {
 		Category: "餐饮",
 		Tags:     []string{"lunch", "work"},
 	})
-	
+
 	// Get transaction and modify it
 	got, _ := s.Get(tx.ID)
 	got.Amount = 999
 	if len(got.Tags) > 0 {
 		got.Tags[0] = "modified"
 	}
-	
+
 	// Verify original is unchanged
 	original, _ := s.Get(tx.ID)
 	if original.Amount != 100 {
@@ -247,7 +247,7 @@ func TestStore_EmptyCategory(t *testing.T) {
 
 func TestStore_DecimalPrecision(t *testing.T) {
 	s := NewStore()
-	
+
 	// Test decimal precision
 	tx, err := s.Create(CreateTransactionRequest{
 		Type:     "expense",
@@ -260,11 +260,11 @@ func TestStore_DecimalPrecision(t *testing.T) {
 	if tx.Amount != 38.50 {
 		t.Errorf("decimal precision lost: expected 38.50, got %f", tx.Amount)
 	}
-	
+
 	// Test statistics with decimals
 	s.Create(CreateTransactionRequest{Type: "expense", Amount: 12.75, Category: "餐饮"})
 	s.Create(CreateTransactionRequest{Type: "expense", Amount: 5.25, Category: "餐饮"})
-	
+
 	stats, _ := s.GetStats(StatsQuery{})
 	expected := 38.50 + 12.75 + 5.25
 	if stats.TotalExpense != expected {

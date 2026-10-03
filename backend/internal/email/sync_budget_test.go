@@ -9,6 +9,7 @@
 // 那条**测的是测试自己**：把 Sync 里那行 AfterFunc 删掉，它照样绿。而真正要防
 // 的回归恰恰是「有人把 Sync 里那行删了」。
 package email
+
 // 所以这里走完整 Sync：真 store（隔离 schema）+ 真 account + dialTLS 指向
 // 一个黑洞 IMAP 服务器。IMAP 登录会挂住，于是只有 Sync 自己装的那个
 // AfterFunc 能把它断掉；断掉之后走 POP3 分支，而 POP3 端点解析不出来，所以
