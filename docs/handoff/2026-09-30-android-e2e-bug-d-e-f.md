@@ -12252,118 +12252,6 @@ lobster 是**用户主密码解锁的本地 SQLCipher 库 + 共享 AES key**
 - **未在真机复验** EmailSummaryView 的修复——它属于 29 条 `requiresLobster`
   路由之一，既需要主密码解锁，也需要重建安装 APK。
 - 仍未触碰并行会话的 18099 实例与其在 `backend/internal/email` 的作业。
-
-## §4.103 邮件详情「大量原始字节」：根因是 MIME 头解析被伪字段名劫持
-
-### §4.103.1 现象与定位方法
-
-现象：邮件详情页正文出现大量原始字节（协议头、base64 追踪噪声、`=E7=82=B9` 这类
-QP 转义），无法阅读。
-
-定位用的是**真实数据**而不是夹具：`data/email-bodies-raw/` 下有 49 封 POP3 抓下来的
-整封 MIME 原文（AES-GCM 加密，8 字节大端 UID + format 字节 + base64 密文）。新增
-一次性诊断 `backend/internal/email/diag_rawbytes_dump_test.go`（门禁
-`POCKET_DIAG_RAWBYTES_DUMP=1`）把它们解密成明文，再用**生产的**
-`extractEmailBody` + `renderBodyByFormat` 逐封跑一遍，按「协议头残留 / QP 密度 /
-边界行残留 / U+FFFD」四项指标排序。
-
-后端 `diag_qp_replay_test.go` 对同一批原文重放是**全部干净**的（49/49）——因为它走
-`ParseMIMEMessage`，与前端是两套实现。所以问题在前端链路，不是解析器。
-
-### §4.103.2 根因
-
-`email-body-format.ts` 里 `walkMime` 用
-
-```js
-/content-type\s*:\s*([^\s;]+)/i
-```
-
-读顶层 MIME 类型。它有两个问题：正则**不锚行首**，且 `\s*` 容忍字段名与冒号之间的
-空格。QQ 的 `X-QQ-XMRINFO` 追踪头恰好把一堆字段名**当作值**写在同一行（真实原文）：
-
-```
-X-QQ-XMRINFO: h=date : from :\r\n reply-to : to : message-id : subject :
- mime-version :\r\n content-type : list-unsubscribe : from : list-unsubscribe-post :\r\n
-```
-
-于是抓到的是 `list-unsubscribe`（或其它垃圾值）。顶层类型因此**不是** `multipart/*`
-⇒ `walkMime` 不递归切分 ⇒ 一个 text 部件都找不到 ⇒ `extractEmailBody` 落到末尾的
-`return src` ⇒ **整封报文原样**交给详情页。
-
-实测最严重一封（94364 字节）正文 94356 字符里有 4115 处 `=XX`，首屏是
-`Received: from ptr2.edm.infoq.com.cn ...` 加 QQ 追踪头成百行 base64。
-实测另有 3 种同类垃圾值：`reply-to`、`message-id:date`、
-`date:from:mime-version:message-id:subject:to`。
-
-**影响面（49 封真实邮件）**：27 封输出有问题，其中 **23 封是这一个根因**；
-剩下 4 封经逐封取证是 URL/HTML 里的巧合匹配（`IE=edge`、`&mscareaid=cn`、
-`fm=jpeg`），中文 QP 必然出现的 `(=XX){6,}` 长串在这 6 封里**一次都没有**。
-
-### §4.103.3 修法
-
-1. 新增 `headerField(headers, name)`：字段名**行首锚定**（`^name[ \t]*:` + `m` 标志）。
-   判据是 RFC 5322 本身——field-name 语法不允许空格，`content-type :` 根本不是合法
-   字段名。不维护头字段白名单（真实邮件里 `X-*`/`ARC-*`/`List-*` 多到写不完）。
-   `walkMime` 三个字段、`headerCharset`、`looksLikeMime` 全部改走它，避免
-   「外层认得出、内层读不出」的自相矛盾。
-2. 收紧两处 fail-open 出口：`stripMessageHeader` 原本只剥顶层首部，剥完还是
-   `--B2` 边界行 + 子部件头；新增 `stripMultipartWrapper` 去边界行与子部件头，
-   只在首行是边界**且**能切出 >=2 段时才动手。`extractEmailBody` 末尾原本的
-   `return src`（只有附件时）也改走这条路。
-
-### §4.103.4 效果（修复前 / 修复后，同一批 49 封真实原文）
-
-| 判据 | 修复前 | 修复后 |
-|---|---|---|
-| 可读邮件 | 22/49 | **43/49** |
-| 协议头残留 | 23 封 | **0** |
-| QP 未解码 | 最高 4115 处 | **0 封**（残留 6 封为 URL 噪声） |
-| multipart 边界行残留 | 有 | **0** |
-
-基线是用 `git stash` 还原修复后跑同一判据脚本得到的，不是估计值。
-
-### §4.103.5 护栏与负控（这里踩了两个坑，都记下来）
-
-新增 `frontend/src/features/email/__tests__/email-body-header-anchoring.test.mjs`
-（5 个用例，已被 gates 覆盖 192/192）。
-
-**坑一：护栏因为「别的原因」通过。** 第一版夹具把伪字段名与真正的 `Content-Type`
-分在两行，结果**还原修复后护栏依然全绿**。原因是 `\s` 含 `\r\n`，旧正则跨行时会把
-下一行真正的头一并吞掉，恰好命中正确值。真实邮件里出问题是因为伪字段名后面跟的是
-**同一行内的下一个字段名**。夹具改成同行形态后才真正复现。
-
-**坑二：兜底掩盖主判据，导致负控假阴性。** 只关 `headerField`、保留
-`stripMultipartWrapper` 时，`extractEmailBody` 走 `return stripMessageHeader(src)`
-这条新出口，兜底照样剥出可读正文 ⇒ 护栏全绿。补的判据是 **cid: 内联图被换成
-data: URI**——`resolveCidImages` 只在 parts 树建起来（即顶层 multipart 判定正确）
-时才运行，兜底路径拿不到它。
-
-**负控最终结果**（还原 `contentType` 为松散正则）：
-
-- 修复在位：5 pass / 0 fail
-- 还原主判据：**3 个用例同时转红**（#1 #2 #4）
-- 还原 `stripMultipartWrapper`：#3 转红
-
-期间还发现一次**假阴性**：第一次负控的还原脚本因引号形式没匹配上，实际没改到代码，
-却报了「已应用」。后来改成读回文件确认第 277 行内容才发现。**负控必须验证「还原真的
-生效」，否则结论是反的。**
-
-### §4.103.6 口径
-
-- 改动：`frontend/src/features/email/email-body-format.ts`（CRLF 保持：596 CRLF /
-  0 裸 LF / 无 BOM；文件内 1 个 U+FFFD 是 `replacementCount` 正则里的字面量 `�`，
-  原有代码，非损坏）、
-  `frontend/src/features/email/__tests__/email-body-header-anchoring.test.mjs`（新，
-  189 CRLF / 0 裸 LF / 无 BOM）、`backend/internal/email/diag_rawbytes_dump_test.go`
-  （新，一次性诊断，默认 skip）。
-- `vue-tsc --noEmit` exit 0；email 目录 469 个用例全过；
-  `npm run gates` 端到端 **exit 0**，无孤儿测试。
-- **未在真机复验**：邮件详情属 29 条 `requiresLobster` 路由之一，需要主密码解锁
-  lobster 库、且需重建安装 APK。本轮证据是**真实加密原文上的源码级重放 + 负控**，
-  不是「真机已恢复」。这批 49 封是 POP3 账户的原文，IMAP 账户是否同形态未经实测。
-- 诊断期间把 49 封真实邮件**明文**解到了 `logs/.scratch-eml/`，含真实收发件地址；
-  已全部移入回收站，未留在工作区、未入库。
-
 ## §4.121 round31 审计：origin/main 上唯一的红是一条假红，而它自己的判据还有盲区
 
 ### §4.121.0 先说范围：并发实况与本轮**没有**做的事
@@ -12513,3 +12401,250 @@ Junction。`git worktree remove` 会把联接**原样留下**并返回 exit 0，
 - **未做**：没有动主工作区那 10 个未提交文件（属并发会话）；
   没有合并 `align/main-20261003` 的 `7d5ec0ed`（属正在运行的会话）；
   没有在真机复验任何东西（本轮改动全在后端测试与护栏，不涉及 APK）。
+
+## §4.122 邮件详情「大量原始字节」：根因是 MIME 头解析被伪字段名劫持
+
+### §4.122.1 现象与定位方法
+
+现象：邮件详情页正文出现大量原始字节（协议头、base64 追踪噪声、`=E7=82=B9` 这类
+QP 转义），无法阅读。
+
+定位用的是**真实数据**而不是夹具：`data/email-bodies-raw/` 下有 49 封 POP3 抓下来的
+整封 MIME 原文（AES-GCM 加密，8 字节大端 UID + format 字节 + base64 密文）。新增
+一次性诊断 `backend/internal/email/diag_rawbytes_dump_test.go`（门禁
+`POCKET_DIAG_RAWBYTES_DUMP=1`）把它们解密成明文，再用**生产的**
+`extractEmailBody` + `renderBodyByFormat` 逐封跑一遍，按「协议头残留 / QP 密度 /
+边界行残留 / U+FFFD」四项指标排序。
+
+后端 `diag_qp_replay_test.go` 对同一批原文重放是**全部干净**的（49/49）——因为它走
+`ParseMIMEMessage`，与前端是两套实现。所以问题在前端链路，不是解析器。
+
+### §4.122.2 根因
+
+`email-body-format.ts` 里 `walkMime` 用
+
+```js
+/content-type\s*:\s*([^\s;]+)/i
+```
+
+读顶层 MIME 类型。它有两个问题：正则**不锚行首**，且 `\s*` 容忍字段名与冒号之间的
+空格。QQ 的 `X-QQ-XMRINFO` 追踪头恰好把一堆字段名**当作值**写在同一行（真实原文）：
+
+```
+X-QQ-XMRINFO: h=date : from :\r\n reply-to : to : message-id : subject :
+ mime-version :\r\n content-type : list-unsubscribe : from : list-unsubscribe-post :\r\n
+```
+
+于是抓到的是 `list-unsubscribe`（或其它垃圾值）。顶层类型因此**不是** `multipart/*`
+⇒ `walkMime` 不递归切分 ⇒ 一个 text 部件都找不到 ⇒ `extractEmailBody` 落到末尾的
+`return src` ⇒ **整封报文原样**交给详情页。
+
+实测最严重一封（94364 字节）正文 94356 字符里有 4115 处 `=XX`，首屏是
+`Received: from ptr2.edm.infoq.com.cn ...` 加 QQ 追踪头成百行 base64。
+实测另有 3 种同类垃圾值：`reply-to`、`message-id:date`、
+`date:from:mime-version:message-id:subject:to`。
+
+**影响面（49 封真实邮件）**：27 封输出有问题，其中 **23 封是这一个根因**；
+剩下 4 封经逐封取证是 URL/HTML 里的巧合匹配（`IE=edge`、`&mscareaid=cn`、
+`fm=jpeg`），中文 QP 必然出现的 `(=XX){6,}` 长串在这 6 封里**一次都没有**。
+
+### §4.122.3 修法
+
+1. 新增 `headerField(headers, name)`：字段名**行首锚定**（`^name[ \t]*:` + `m` 标志）。
+   判据是 RFC 5322 本身——field-name 语法不允许空格，`content-type :` 根本不是合法
+   字段名。不维护头字段白名单（真实邮件里 `X-*`/`ARC-*`/`List-*` 多到写不完）。
+   `walkMime` 三个字段、`headerCharset`、`looksLikeMime` 全部改走它，避免
+   「外层认得出、内层读不出」的自相矛盾。
+2. 收紧两处 fail-open 出口：`stripMessageHeader` 原本只剥顶层首部，剥完还是
+   `--B2` 边界行 + 子部件头；新增 `stripMultipartWrapper` 去边界行与子部件头，
+   只在首行是边界**且**能切出 >=2 段时才动手。`extractEmailBody` 末尾原本的
+   `return src`（只有附件时）也改走这条路。
+
+### §4.122.4 效果（修复前 / 修复后，同一批 49 封真实原文）
+
+| 判据 | 修复前 | 修复后 |
+|---|---|---|
+| 可读邮件 | 22/49 | **43/49** |
+| 协议头残留 | 23 封 | **0** |
+| QP 未解码 | 最高 4115 处 | **0 封**（残留 6 封为 URL 噪声） |
+| multipart 边界行残留 | 有 | **0** |
+
+基线是用 `git stash` 还原修复后跑同一判据脚本得到的，不是估计值。
+
+### §4.122.5 护栏与负控（这里踩了两个坑，都记下来）
+
+新增 `frontend/src/features/email/__tests__/email-body-header-anchoring.test.mjs`
+（5 个用例，已被 gates 覆盖 192/192）。
+
+**坑一：护栏因为「别的原因」通过。** 第一版夹具把伪字段名与真正的 `Content-Type`
+分在两行，结果**还原修复后护栏依然全绿**。原因是 `\s` 含 `\r\n`，旧正则跨行时会把
+下一行真正的头一并吞掉，恰好命中正确值。真实邮件里出问题是因为伪字段名后面跟的是
+**同一行内的下一个字段名**。夹具改成同行形态后才真正复现。
+
+**坑二：兜底掩盖主判据，导致负控假阴性。** 只关 `headerField`、保留
+`stripMultipartWrapper` 时，`extractEmailBody` 走 `return stripMessageHeader(src)`
+这条新出口，兜底照样剥出可读正文 ⇒ 护栏全绿。补的判据是 **cid: 内联图被换成
+data: URI**——`resolveCidImages` 只在 parts 树建起来（即顶层 multipart 判定正确）
+时才运行，兜底路径拿不到它。
+
+**负控最终结果**（还原 `contentType` 为松散正则）：
+
+- 修复在位：5 pass / 0 fail
+- 还原主判据：**3 个用例同时转红**（#1 #2 #4）
+- 还原 `stripMultipartWrapper`：#3 转红
+
+期间还发现一次**假阴性**：第一次负控的还原脚本因引号形式没匹配上，实际没改到代码，
+却报了「已应用」。后来改成读回文件确认第 277 行内容才发现。**负控必须验证「还原真的
+生效」，否则结论是反的。**
+
+### §4.122.6 口径
+
+- 改动：`frontend/src/features/email/email-body-format.ts`（CRLF 保持：596 CRLF /
+  0 裸 LF / 无 BOM；文件内 1 个 U+FFFD 是 `replacementCount` 正则里的字面量 `�`，
+  原有代码，非损坏）、
+  `frontend/src/features/email/__tests__/email-body-header-anchoring.test.mjs`（新，
+  189 CRLF / 0 裸 LF / 无 BOM）、`backend/internal/email/diag_rawbytes_dump_test.go`
+  （新，一次性诊断，默认 skip）。
+- `vue-tsc --noEmit` exit 0；email 目录 469 个用例全过；
+  `npm run gates` 端到端 **exit 0**，无孤儿测试。
+- **未在真机复验**：邮件详情属 29 条 `requiresLobster` 路由之一，需要主密码解锁
+  lobster 库、且需重建安装 APK。本轮证据是**真实加密原文上的源码级重放 + 负控**，
+  不是「真机已恢复」。这批 49 封是 POP3 账户的原文，IMAP 账户是否同形态未经实测。
+- 诊断期间把 49 封真实邮件**明文**解到了 `logs/.scratch-eml/`，含真实收发件地址；
+  已全部移入回收站，未留在工作区、未入库。
+
+## §4.123 round32 审计：并发会话独立实现了同一批修复，于是「我以为的未提交工作」大部分已经在主干上
+
+### §4.123.0 范围与并发实况
+
+开工时 `main` 落后 `origin/main` **47 个提交**，工作区躺着 10 个未提交文件
+（6 改 4 新），另有 3 个 worktree。**第一件事不是编译，是先分清哪些改动
+本来就属于我**——因为按 mtime 扫最近 90 分钟，只有 `logs/pg` 数据文件和
+一个 pocketd 在动，源码最后一次写入是 07:56，说明**没有并发会话正在写**
+（但这一条只说明"此刻没人在写"，不说明"之前没人写过"）。
+
+### §4.123.1 第一个发现：未提交的工作里，只有一小部分是我的
+
+把工作区快照提交到 `audit/round32-audit` 再合并 `origin/main`，逐 blob 比对：
+
+| 文件 | 与 origin/main 关系 |
+|---|---|
+| `EmailSummaryView.vue` / `TaskDetailView.vue` | **完全相同**（已由 `e15765b1` 落地） |
+| `check-vacuous-optional-guard.mjs` | **完全相同**（同上） |
+| `diag_toll_a4_ledger_offline_test.go` | **完全相同** |
+| `email-body-format.ts` | **不同** —— 这才是我的 |
+| `email-body-header-anchoring.test.mjs` | origin/main 上不存在 |
+| `diag_rawbytes_dump_test.go` | origin/main 上不存在 |
+
+即：并发会话在 `e15765b1` 里**独立实现了同一批前端修复**。若按"这些都是我的"
+直接提交，只会制造一个内容等同于已存在提交的提交。
+
+**这也说明为什么"工作区有未提交改动"不能当作"这些改动还没人做"**——
+必须逐 blob 比对，而不是看 `git status`。
+
+### §4.123.2 第二个发现：`package.json` 冲突暴露了 gates 结构已经变了
+
+冲突只有三处，但 `frontend/package.json` 那处**不是选边就能解决的**：
+`origin/main` 上的 `5532222e` 已把 `gates` 从 1000+ 字符的单行长字符串改成
+`node scripts/run-gates.mjs`，权威名单搬进了 `frontend/gates.json`。
+
+而我这份未提交的 `package.json` 是**改旧的单行字符串**的。若照原样解冲突，
+结果会是"新的 runner + 旧的字符串"并存——两套结构，只有一份生效。
+正确解法是：采用 `run-gates.mjs`，保留 `check:vacuous-guard` 的 script 条目，
+并确认它已登记在 `gates.json`（实测已登记，否则 `run-gates.mjs` 的第 4 类
+防空跑会因"有 `check:*` 未接线"直接退出非 0）。
+
+**判据读的结构化配置必须跟着结构一起搬。** 这与
+`915ec2b1`（孤儿卡口改读 gates.json）是同一类事故的两面。
+
+### §4.123.3 第三个发现：另一份 handoff 文档**已经更正**了我要合回去的那句话
+
+`docs/handoff/2026-10-03-round28-*.md` 冲突 6 处。逐行比对（去空行后
+`Compare-Object`）显示我这边只有 33 行是 origin 没有的，而其中真正独有的是
+一条**已经被推翻的断言**：
+
+> 注意：`go test ./internal/email/` 不带 DSN 时是红的，这是设计如此
+
+origin/main 上这段原文已被 §4.121 **明确标注为假红并修掉**（`bd32abe6`）。
+把这句话合回去 = 把一条已被证伪的结论重新写进文档。
+所以这份文档整体采用 origin/main 版本（它还多出 §7.7.7 锁竞争、§7.8 A4 端到端、
+`cmp-instance-dsn.ps1`）。**这是"冲突里我这边更全"与"我这边更对"是两回事。**
+
+### §4.123.4 本轮真正修的缺陷：§4.103 是个编号撞车
+
+`§4.122`（原写作 §4.103）那一整节在物理位置上落在 §4.120 与 §4.121 之间，
+而它的编号是 **§4.103**——恰好落在 round30 重编号腾出来的**空档**
+（§4.91–§4.98 → §4.111–§4.118，+10）。也就是说 §4.103 是一个**曾经存在过、
+被搬走、现在空着的号**；拿它当新章节号，等于把仓库已经修过两次的"编号撞车"
+又造了一次（`66a7d70f` 挪一次、`44f8837c` 再挪一次）。
+
+修法：整节搬到文件末尾、改号 §4.122，7 个标题行（含子章节 §4.122.1–.6）
+一并改，**正文一个字没动**。改后一级编号末段为
+§4.117 → §4.118 → §4.119 → §4.120 → §4.121 → §4.122，单调且无重复。
+全文件 §4.101–§4.110 保持空档，不再复用。
+
+**教训**：本仓的章节号是**全局唯一且只增不减**的资源。空档不等于可回收——
+它记录着"这里曾经有过什么"，正是靠它才能判断一个号到底是不是撞车。
+
+### §4.123.5 一个差点被我当成证据的**假红**
+
+给 §4.122 的新护栏做负控时，用 PowerShell 的 `git show ... > file` 还原
+修复前源码，测试确实变红了——但红的方式是
+`SyntaxError [ERR_INVALID_TYPESCRIPT_SYNTAX]: Unexpected character '�'`，
+**不是断言失败**。查字节才发现 `>` 重定向把文件写成了 **UTF-16LE**
+（首字节 `255,254,47,0,42,0,42,0`），Node 读到的根本不是 TypeScript。
+
+改用 `git checkout origin/main -- <file>`（字节精确）重做负控，才得到
+有意义的结论：**5 条用例里 4 条以 `AssertionError` 转红**，第 5 条
+（折行的真实 Content-Type 仍可读）在修复前后都绿——它是**正控**，
+本来就该两边都过。
+
+**"变红"不等于"因为被测逻辑而变红"。** 负控必须看清失败形态，
+否则一次编码事故就能被当成"判据有牙齿"的证据。
+
+### §4.123.6 分支与 worktree 盘点（24h 内、不活跃、已合并）
+
+用 `git rev-list --count origin/main..<branch>` 逐个核实（**不用
+`git branch --contains`**，它对已删除分支会给出误导性结论）：
+
+| 分支 | 未合并提交 | 最后提交 | 处置 |
+|---|---|---|---|
+| `align/main-20261003` | 0 | 07:08 | 已删 |
+| `audit/round31-audit` | 0 | 07:05 | 已删（连带清掉干净的 worktree `wt-a31`） |
+| `fix/appid-stt-flows-20261003` | 0 | 08:16 | 本地 + 远端均已删 |
+| `fix/maestro-ia-flows-20261003` | 0 | 08:07 | 已删 |
+| `rss-digest-20261003` | 0 | 07:56 | 已删 |
+
+**全部 `unmerged=0`**，即没有任何一个分支持有未被主干吸收的提交，
+所以本轮不存在"需要逐文件合并"的分支——合并工作量为零不是因为偷懒，
+是因为 `rev-list` 证明无事可做。删除一律用 `git branch -d`（未合并会拒绝），
+不用 `-D`。
+
+**`C:\workspace\openpocket-wt-a32` 保留，未动。** 它是 detached HEAD
+（`cafb3d6c`，已合入 main），但工作区有 **169 个文件被修改**，其中
+`--ignore-all-space` 之后仍有 **45 个文件有真实内容改动**
+（净 +58/−27）。169 vs 45 的差额是行尾/末行换行的规范化噪声，
+但那 45 个文件里的内容改动**不是噪声**，可能属于仍在运行的并发会话。
+按"不毁别人在制品"处理：不 commit、不 push、不删目录，仅在此登记。
+
+### §4.123.7 口径
+
+- 本轮**未新增产品代码**。唯一落地的行为改动是 §4.122 描述的
+  `email-body-format.ts` MIME 头行首锚定修复（它属于上一轮在制品，
+  本轮只是把它从"未提交"变成"已验证并入库"）。
+- 测试：`go build ./...` exit 0；`go test ./...` **54 包 ok / 0 FAIL**
+  （18 包无测试文件）。**无 DSN 环境**：4 条 advisory-lock 用例按包约定
+  `t.Skip`，4 条**不需要数据库**的防空转护栏照常执行并通过
+  （`SchemaIsolationPredicate` / `DBBackedTestsStayWired` 等）——
+  这正是 §4.121 那次更正要的效果，绿得有据。
+- 前端：`npm run gates`（`node scripts/run-gates.mjs`）**22/22 exit 0**，
+  74.5s，日志里 22 条 `[gates] ── [n/22]` 逐项行齐全（不是"任务返回
+  succeeded 就算跑过"），测试覆盖 197/197 无孤儿。
+- 文档：本节 + §4.122 改号。两份 handoff 均为 CRLF / 无 BOM /
+  0 裸 LF；本文件 2 个 U+FFFD **都是有意的字面量**——一个在
+  `replacementCount` 正则的说明里（原有代码，非损坏），一个是 §4.123.5
+  引用的那个 `SyntaxError` 原文，均非编码事故。
+- **未做**：没有真机复验任何东西（设备仅 WiFi adb，MIUI 拒绝网络 adb
+  装包）；没有重启 18099；没有触碰 `wt-a32`；没有合并任何分支
+  （`rev-list` 证明无未合并内容）。
+
